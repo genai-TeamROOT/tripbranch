@@ -2,14 +2,12 @@
   "name": "tripbranch",
   "private": true,
   "version": "0.1.0",
-  "description": "TripBranch monorepo root scripts",
+  "description": "TripBranch minimal team scaffold",
   "scripts": {
-    "dev": "concurrently -k -n FRONTEND,BACKEND -c blue,green \"npm run dev --prefix frontend\" \"npm run dev --prefix backend\"",
-    "lint": "npm run lint --prefix frontend && npm run lint --prefix backend",
-    "format": "npm run format --prefix frontend && npm run format --prefix backend",
-    "test": "npm run test --prefix frontend -- --run && npm run test --prefix backend",
-    "build": "npm run build --prefix frontend",
-    "generate:api-types": "npm run export-openapi --prefix backend && npm run generate:api-types --prefix frontend"
+    "dev": "node scripts/dev.mjs",
+    "lint": "npm run lint --prefix frontend && node scripts/ruff.mjs check backend/app backend/tests",
+    "test": "npm run test --prefix frontend -- --run && python -m pytest backend",
+    "build": "npm run build --prefix frontend"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

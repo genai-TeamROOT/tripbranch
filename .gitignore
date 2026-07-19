@@ -232,13 +232,6 @@ frontend/.env
 frontend/node_modules/
 *.tsbuildinfo
 
-# Generated OpenAPI artifacts. Optional/opt-in tool for now (see README
-# "OpenAPI 타입 생성") -- nothing in the app imports from these, so `npm run
-# dev` / `npm run build` work fine right after clone without ever running
-# `npm run generate:api-types`. Regenerate locally if you want to poke at them.
-backend/openapi.json
-frontend/src/generated/*.ts
-
 # Backend
 backend/.env
 backend/.venv/
@@ -247,4 +240,3 @@ backend/.venv/
 .claude/
 .codex/
 .cursor/
-

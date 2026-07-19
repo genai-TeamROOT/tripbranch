@@ -6,12 +6,11 @@
 
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { getRecommendations } from "../api/recommendations";
+import { getRecommendations } from "../api/trip";
 import { ApiError } from "../api/client";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { PlaceCard } from "../components/PlaceCard";
-import { useTripDispatch } from "../context/useTripDispatch";
-import { useTripState } from "../context/useTripState";
+import { useTripDispatch, useTripState } from "../state/TripContext";
 
 const RADIUS_RELAXATION_STEP_KM = 0.5;
 
@@ -26,7 +25,7 @@ export function ResultsPage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const hasNoResults =
-    state.recommendation_results.length === 0 && state.unverified_recommendations.length === 0;
+    state.recommendations.length === 0 && state.unverified_recommendations.length === 0;
 
   async function fetchMore(searchRadiusKm: number, resetShown = false) {
     setIsLoading(true);
@@ -41,7 +40,7 @@ export function ResultsPage() {
       dispatch({ type: "SET_RECOMMENDATIONS", payload: result });
       if (searchRadiusKm !== conditions.search_radius_km) {
         dispatch({
-          type: "UPDATE_INTERPRETED_CONDITIONS",
+          type: "UPDATE_CONDITIONS",
           payload: { search_radius_km: searchRadiusKm },
         });
       }
@@ -91,7 +90,7 @@ export function ResultsPage() {
           <section className="flex flex-col gap-3">
             <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400">추천 장소</h2>
             <ul className="flex flex-col gap-3">
-              {state.recommendation_results.map((item) => (
+              {state.recommendations.map((item) => (
                 <PlaceCard key={item.place_id} item={item} />
               ))}
             </ul>

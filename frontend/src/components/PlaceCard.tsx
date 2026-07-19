@@ -2,7 +2,7 @@
 // unverified_recommendations 양쪽에 재사용된다(unverifiedHours prop으로 남은시간 표시를
 // "확인 불가"로 강제). total_score/score_breakdown은 의도적으로 화면에 노출하지 않는다(스펙).
 
-import type { RecommendationItem } from "../types/domain";
+import type { RecommendationItem } from "../types";
 
 interface PlaceCardProps {
   item: RecommendationItem;

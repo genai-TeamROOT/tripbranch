@@ -5,10 +5,10 @@
 
 import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import { interpretUserInput } from "../api/interpret";
+import { interpretUserInput } from "../api/trip";
 import { ApiError } from "../api/client";
 import { ErrorBanner } from "../components/ErrorBanner";
-import { useTripDispatch } from "../context/useTripDispatch";
+import { useTripDispatch } from "../state/TripContext";
 
 export function InputPage() {
   const dispatch = useTripDispatch();
@@ -28,7 +28,7 @@ export function InputPage() {
     try {
       const conditions = await interpretUserInput(userInput);
       dispatch({ type: "SET_USER_INPUT", payload: userInput });
-      dispatch({ type: "SET_INTERPRETED_CONDITIONS", payload: conditions });
+      dispatch({ type: "SET_CONDITIONS", payload: conditions });
       navigate("/confirm");
     } catch (error) {
       setErrorMessage(

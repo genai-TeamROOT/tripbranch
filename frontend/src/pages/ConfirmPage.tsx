@@ -5,12 +5,11 @@
 
 import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import { getRecommendations } from "../api/recommendations";
+import { getRecommendations } from "../api/trip";
 import { ApiError } from "../api/client";
 import { ErrorBanner } from "../components/ErrorBanner";
-import { useTripDispatch } from "../context/useTripDispatch";
-import { useTripState } from "../context/useTripState";
-import type { WeatherCondition } from "../types/domain";
+import { useTripDispatch, useTripState } from "../state/TripContext";
+import type { WeatherCondition } from "../types";
 
 const WEATHER_OPTIONS: { value: WeatherCondition | ""; label: string }[] = [
   { value: "", label: "모름" },
@@ -49,7 +48,7 @@ export function ConfirmPage() {
       weather_condition: weather === "" ? null : weather,
       search_radius_km: radiusKm,
     };
-    dispatch({ type: "UPDATE_INTERPRETED_CONDITIONS", payload: updated });
+    dispatch({ type: "UPDATE_CONDITIONS", payload: updated });
 
     try {
       const result = await getRecommendations({ ...updated, shown_place_ids: [] });
