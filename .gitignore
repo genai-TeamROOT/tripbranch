@@ -149,6 +149,9 @@ activemq-data/
 
 # Environments
 .env
+.env.*
+!.env.example
+!*/.env.example
 .envrc
 .venv
 env/
@@ -199,7 +202,9 @@ cython_debug/
 #   that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
 #   and can be added to the global gitignore or merged into this file. However, if you prefer, 
 #   you could uncomment the following to ignore the entire vscode folder
-# .vscode/
+# No team-wide shared VS Code settings are required for this project yet;
+# ignore the whole folder so personal editor config doesn't get committed.
+.vscode/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
 
@@ -216,3 +221,30 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# macOS
+.DS_Store
+
+# Node / frontend
+node_modules/
+frontend/dist/
+frontend/.env
+frontend/node_modules/
+*.tsbuildinfo
+
+# Generated OpenAPI artifacts. Optional/opt-in tool for now (see README
+# "OpenAPI 타입 생성") -- nothing in the app imports from these, so `npm run
+# dev` / `npm run build` work fine right after clone without ever running
+# `npm run generate:api-types`. Regenerate locally if you want to poke at them.
+backend/openapi.json
+frontend/src/generated/*.ts
+
+# Backend
+backend/.env
+backend/.venv/
+
+# Editor/AI-tool local config (not everyone on the team uses the same tooling)
+.claude/
+.codex/
+.cursor/
+
