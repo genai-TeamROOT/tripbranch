@@ -1,3 +1,12 @@
+"""추천 API 회귀 테스트.
+
+역할: /api/recommendations의 stub 결과와 이미 노출된 장소 필터링을 검증한다.
+입력: TestClient가 보내는 POST /api/recommendations JSON payload.
+출력: 추천/검증 불가 목록과 place_id 필터링에 대한 pytest assertion.
+호출 시점: 로컬 테스트와 CI에서 pytest 실행 시 호출된다.
+TODO: 실제 provider 도입 후 랭킹, 검증 불가, 빈 결과 케이스를 확장한다.
+"""
+
 from fastapi.testclient import TestClient
 
 from app.main import app

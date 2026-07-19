@@ -1,6 +1,10 @@
-// Vite 설정: React/Tailwind 플러그인, 개발 서버의 "/api" -> localhost:8000 프록시,
-// Vitest 설정(jsdom 환경, 전역 matcher, setupFiles)을 한 파일에서 관리한다.
-// 사용법: 백엔드 포트를 바꾸면 이 파일의 proxy target도 같이 수정할 것.
+/*
+ * 역할: Vite, React, Tailwind, Vitest 실행 환경을 설정한다.
+ * 입력: 개발 서버/빌드/테스트 명령과 환경 설정.
+ * 출력: 프론트엔드 번들링, dev proxy, 테스트 환경 구성.
+ * 호출 시점: npm scripts가 vite 또는 vitest를 실행할 때 로드된다.
+ * TODO: 배포 환경별 API base URL과 프록시 정책이 생기면 mode별로 분기한다.
+ */
 
 /// <reference types="vitest/config" />
 import { defineConfig } from "vite";

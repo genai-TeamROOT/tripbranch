@@ -1,3 +1,12 @@
+"""추천 결과를 반환하는 임시 도메인 서비스.
+
+역할: Fake provider 단계에서 사용할 고정 추천 목록과 중복 노출 필터를 제공한다.
+입력: 이미 사용자에게 보여준 place_id 목록.
+출력: RecommendationResponse 모델.
+호출 시점: /api/recommendations 라우터와 StubTripProvider에서 호출된다.
+TODO: 실제 장소 검색/랭킹 provider와 검증 불가 후보 분리 로직으로 교체한다.
+"""
+
 from __future__ import annotations
 
 from app.schemas import RecommendationItem, RecommendationResponse

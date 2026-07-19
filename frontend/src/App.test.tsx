@@ -1,3 +1,11 @@
+/*
+ * 역할: 주요 사용자 흐름과 보호 라우팅을 검증하는 앱 통합 테스트.
+ * 입력: mocked fetch 응답, MemoryRouter 수준의 브라우저 상호작용.
+ * 출력: 화면 전환, API 호출, 결과 렌더링에 대한 assertion.
+ * 호출 시점: vitest 실행 시 프론트엔드 smoke/regression 테스트로 호출된다.
+ * TODO: 오류 배너와 재추천 흐름이 생기면 사용자 시나리오를 확장한다.
+ */
+
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";

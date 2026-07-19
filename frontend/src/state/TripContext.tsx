@@ -1,4 +1,12 @@
 /* eslint-disable react-refresh/only-export-components */
+/*
+ * 역할: 여행 입력, 해석 조건, 추천 결과를 보관하는 전역 상태 컨텍스트.
+ * 입력: reducer action, sessionStorage에 저장된 이전 TripState.
+ * 출력: TripProvider, useTripState, useTripDispatch hook.
+ * 호출 시점: App에서 provider로 감싸고 각 페이지가 상태를 읽거나 갱신할 때 호출된다.
+ * TODO: 상태가 커지면 서버 캐시와 화면 전용 상태를 분리한다.
+ */
+
 import {
   createContext,
   useContext,

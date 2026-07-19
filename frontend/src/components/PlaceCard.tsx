@@ -1,6 +1,10 @@
-// 추천 장소 하나를 카드 형태로 보여주는 컴포넌트. ResultsPage에서 recommendations와
-// unverified_recommendations 양쪽에 재사용된다(unverifiedHours prop으로 남은시간 표시를
-// "확인 불가"로 강제). total_score/score_breakdown은 의도적으로 화면에 노출하지 않는다(스펙).
+/*
+ * 역할: 추천 장소 하나를 카드 형태로 렌더링한다.
+ * 입력: RecommendationItem 데이터와 운영시간 미확인 표시 여부.
+ * 출력: 장소명, 카테고리, 추천 이유, 주소, 검증 상태 UI.
+ * 호출 시점: ResultsPage가 추천 목록과 검증 불가 목록을 표시할 때 호출된다.
+ * TODO: 지도 링크, 저장/제외 액션, 실시간 영업 정보가 생기면 하위 UI를 확장한다.
+ */
 
 import type { RecommendationItem } from "../types";
 

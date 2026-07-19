@@ -1,7 +1,10 @@
-// 두 번째 화면("/confirm"): interpret 결과를 사용자가 확인/수정 후 /api/recommendations를
-// 호출해 /results로 이동. 선호 카테고리는 현재 쉼표 구분 텍스트 입력으로 순서를 표현한다.
-// TODO: 카테고리 우선순위를 직관적으로 조작할 수 있는 UI(드래그 정렬, 태그 추가/삭제)로
-// 교체하는 게 다음 개선 방향 - 지금은 "실행 가능한 최소 구조"를 우선한 임시 구현.
+/*
+ * 역할: 해석된 여행 조건을 사용자에게 확인시키고 추천 API를 호출한다.
+ * 입력: TripContext의 interpreted_conditions와 사용자가 수정한 조건 값.
+ * 출력: 추천 결과 상태 갱신, /results 경로 이동, 오류 배너.
+ * 호출 시점: /confirm 라우트에서 조건 확인 후 추천 보기를 누를 때 호출된다.
+ * TODO: 조건 편집 UI를 더 세분화하고 서버 검증 오류를 필드별로 표시한다.
+ */
 
 import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";

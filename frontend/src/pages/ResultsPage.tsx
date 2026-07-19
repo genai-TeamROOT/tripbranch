@@ -1,8 +1,10 @@
-// 세 번째 화면("/results"): 추천 결과(recommendations)와 운영시간 미확인 목록
-// (unverified_recommendations)을 구분해서 보여준다. "다른 장소 보기"는 같은 조건 +
-// 누적된 shown_place_ids로 재요청하고, 결과가 0개면 검색 반경을 넓혀 재시도하는 버튼을 노출한다.
-// TODO: 반경 확대 외의 조건 완화(카테고리 완화, 날씨 무시 등) 선택지는 아직 없음 -
-// 필요해지면 hasNoResults 분기 안에 옵션을 추가할 것.
+/*
+ * 역할: 추천 장소와 검증 불가 후보를 결과 화면에 렌더링한다.
+ * 입력: TripContext의 recommendations, unverified_recommendations, user_input.
+ * 출력: 장소 카드 목록, 재시작/추가 추천 버튼, 빈 결과 안내.
+ * 호출 시점: 추천 API 응답 이후 /results 라우트가 활성화될 때 호출된다.
+ * TODO: 재추천, 필터, 지도/동선 보기 기능이 생기면 이 화면에서 연결한다.
+ */
 
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";

@@ -1,5 +1,10 @@
-// API 에러 메시지를 보여주는 공통 배너 컴포넌트. onRetry가 주어지면 재시도 버튼을 표시.
-// 사용법: 각 페이지의 에러 상태(useState<string|null>)를 그대로 message로 넘기면 됨.
+/*
+ * 역할: 사용자에게 API/검증 오류 메시지를 보여주는 공통 배너 컴포넌트.
+ * 입력: 화면에 표시할 message 문자열과 선택적인 onRetry 핸들러.
+ * 출력: 접근 가능한 alert UI와 선택적인 재시도 버튼.
+ * 호출 시점: 페이지 컴포넌트가 요청 실패나 입력 오류를 표시할 때 호출된다.
+ * TODO: 오류 코드별 안내가 필요해지면 props를 확장한다.
+ */
 
 interface ErrorBannerProps {
   message: string;

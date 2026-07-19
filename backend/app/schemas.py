@@ -1,3 +1,12 @@
+"""TripBranch 백엔드 API의 요청/응답 스키마 정의.
+
+역할: Pydantic 모델로 API 계약과 프론트엔드가 기대하는 데이터 형태를 고정한다.
+입력: 라우터로 들어온 원시 JSON payload와 서비스가 반환하는 dict/model 값.
+출력: 검증된 요청 모델, 직렬화 가능한 응답 모델, 공통 오류 모델.
+호출 시점: FastAPI 요청 검증, 응답 직렬화, 서비스/테스트 타입 확인 때 사용된다.
+TODO: 실제 도메인 확정 후 문자열 카테고리와 날씨 값은 Enum으로 좁힌다.
+"""
+
 from __future__ import annotations
 
 from pydantic import BaseModel, Field

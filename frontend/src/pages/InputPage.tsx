@@ -1,7 +1,10 @@
-// 첫 화면("/"): 자유 텍스트 입력을 받아 /api/interpret 호출 후 /confirm으로 이동.
-// 로딩/에러 상태를 로컬 useState로 관리하고, 성공 시에만 전역 상태(user_input,
-// interpreted_conditions)를 dispatch한다. 사용법 및 방향: 입력 검증(길이 제한 등)을
-// 강화하려면 이 파일의 handleSubmit에서 처리할 것.
+/*
+ * 역할: 사용자의 자유 형식 여행 요청을 입력받고 해석 API를 호출한다.
+ * 입력: textarea의 user_input 문자열과 제출 이벤트.
+ * 출력: TripContext의 입력/해석 조건 갱신, /confirm 경로 이동, 오류 배너.
+ * 호출 시점: 사용자가 첫 화면에서 여행 요청을 작성하고 제출할 때 호출된다.
+ * TODO: 예시 프롬프트, 입력 길이 안내, 요청 취소 처리를 추가한다.
+ */
 
 import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";

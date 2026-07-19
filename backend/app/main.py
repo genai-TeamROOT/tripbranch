@@ -1,3 +1,12 @@
+"""TripBranch API 애플리케이션 조립 지점.
+
+역할: FastAPI 인스턴스, 공통 예외 응답, CORS, 라우터 등록을 구성한다.
+입력: ASGI 서버나 테스트 클라이언트가 전달하는 HTTP 요청.
+출력: JSON API 응답과 FastAPI 앱 객체.
+호출 시점: uvicorn 실행, 테스트 클라이언트 생성, 앱 부팅 시 호출된다.
+TODO: 실제 운영 환경별 CORS/로깅/관측 설정이 필요해지면 여기에서 연결한다.
+"""
+
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException, Request
