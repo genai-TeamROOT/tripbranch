@@ -1,30 +1,28 @@
 # TripBranch
 
-TripBranch is a minimal team scaffold for a travel fallback recommendation app.
+TripBranch는 여행 중 날씨 악화, 방문 장소 이용 불가, 남은 시간 부족 같은 상황에서 대체 장소를 추천하는 서비스를 만들기 위한 **최소 팀 프로젝트 골격**입니다.
 
-The current default branch intentionally uses stubbed backend responses. It exists so frontend,
-backend, provider, and recommendation-domain teammates can start from a small working app before
-designing the real implementation.
+현재 기본 브랜치는 의도적으로 백엔드 응답을 Stub으로 고정해 두었습니다. 프론트엔드, 백엔드, Provider, 추천 도메인 담당자가 실제 구현을 설계하기 전에 작고 실행 가능한 앱에서 출발할 수 있게 하는 것이 목적입니다.
 
-## Current User Flow
+## 현재 사용자 흐름
 
 ```text
-Free text input
--> fixed interpreted conditions
--> confirmation screen
--> fixed recommendation results
--> results screen
--> show other places
--> start again
+사용자 자유 입력
+-> 고정된 입력 해석 결과
+-> 조건 확인 화면
+-> 고정된 추천 결과
+-> 결과 화면
+-> 다른 장소 보기
+-> 처음부터 다시 시작
 ```
 
-## Stack
+## 기술 스택
 
-- Backend: Python 3.11+, FastAPI, Pydantic, pytest, Ruff
-- Frontend: Node.js 20+, React, TypeScript, Vite, React Router, Tailwind CSS, Vitest
-- Root orchestration: npm + concurrently
+- 백엔드: Python 3.11+, FastAPI, Pydantic, pytest, Ruff
+- 프론트엔드: Node.js 20+, React, TypeScript, Vite, React Router, Tailwind CSS, Vitest
+- 루트 실행 스크립트: npm + 간단한 Node 스크립트
 
-## Project Structure
+## 프로젝트 구조
 
 ```text
 tripbranch/
@@ -63,15 +61,15 @@ tripbranch/
    └─ .env.example
 ```
 
-## Setup
+## 설치 방법
 
-Install root dependencies:
+루트 의존성을 설치합니다.
 
 ```bash
 npm ci
 ```
 
-Create and activate the backend environment:
+백엔드 가상환경을 만들고 활성화합니다.
 
 ```bash
 cd backend
@@ -82,13 +80,13 @@ cp .env.example .env
 cd ..
 ```
 
-Windows activation:
+Windows PowerShell에서는 다음 명령으로 가상환경을 활성화합니다.
 
 ```powershell
 backend\.venv\Scripts\Activate.ps1
 ```
 
-Install frontend dependencies:
+프론트엔드 의존성을 설치합니다.
 
 ```bash
 cd frontend
@@ -97,10 +95,9 @@ cp .env.example .env
 cd ..
 ```
 
-The root backend commands use the currently active `python`. Activate the backend virtual
-environment before running root scripts.
+루트의 백엔드 관련 명령은 현재 활성화된 `python`을 사용합니다. 루트 스크립트를 실행하기 전에 `backend/.venv`를 활성화해 주세요.
 
-## Commands
+## 실행 명령
 
 ```bash
 npm run dev
@@ -109,17 +106,17 @@ npm run test
 npm run build
 ```
 
-`npm run dev` starts:
+`npm run dev`는 다음 서버를 실행합니다.
 
-- Frontend: http://localhost:5173
-- Backend: http://localhost:8000
-- Swagger/OpenAPI: http://localhost:8000/docs
+- 프론트엔드: http://localhost:5173
+- 백엔드: http://localhost:8000
+- Swagger/OpenAPI 문서: http://localhost:8000/docs
 
-The Vite dev server proxies `/api/*` to the FastAPI backend.
+Vite 개발 서버는 `/api/*` 요청을 FastAPI 백엔드로 프록시합니다.
 
-## Backend Stub Contract
+## 백엔드 Stub 계약
 
-`POST /api/interpret` returns fixed interpreted conditions for any non-empty input:
+`POST /api/interpret`는 비어 있지 않은 모든 입력에 대해 고정된 조건 해석 결과를 반환합니다.
 
 ```json
 {
@@ -130,16 +127,15 @@ The Vite dev server proxies `/api/*` to the FastAPI backend.
 }
 ```
 
-`POST /api/recommendations` returns fixed place cards and filters out IDs listed in
-`shown_place_ids`.
+`POST /api/recommendations`는 고정된 추천 장소 목록을 반환합니다. 요청의 `shown_place_ids`에 포함된 장소 ID는 결과에서 제외됩니다.
 
-Implemented endpoints:
+현재 구현된 엔드포인트는 다음과 같습니다.
 
 - `GET /api/health`
 - `POST /api/interpret`
 - `POST /api/recommendations`
 
-Current error envelope:
+현재 공통 오류 응답 형식은 다음과 같습니다.
 
 ```json
 {
@@ -152,9 +148,9 @@ Current error envelope:
 }
 ```
 
-## Frontend State
+## 프론트엔드 상태
 
-The frontend keeps only the state needed for the stub flow:
+프론트엔드는 Stub 흐름에 필요한 최소 상태만 관리합니다.
 
 - `user_input`
 - `interpreted_conditions`
@@ -162,26 +158,28 @@ The frontend keeps only the state needed for the stub flow:
 - `unverified_recommendations`
 - `shown_place_ids`
 
-`sessionStorage` restores the current tab after refresh.
+`sessionStorage`를 사용해 같은 탭에서 새로고침해도 현재 상태를 복구합니다.
 
-## Deferred Team Work
+## 이후 팀 작업
 
-The detailed recommendation prototype was archived in Git before this scaffold was reduced. Restore
-it from the archive commit/branch when you need reference code.
+상세 추천 프로토타입은 이 골격으로 축소하기 전에 Git에 보존되어 있습니다. 참고 구현이 필요하면 보존 커밋 또는 보존 브랜치에서 복구할 수 있습니다.
 
-Recommended implementation order:
+- 보존 브랜치: `archive-full-prototype`
+- 보존 커밋: `cb75c48 Archive full TripBranch prototype`
 
-1. Replace stub recommendation results with a Place Provider contract.
-2. Add geocoding provider and location resolution.
-3. Add distance filtering.
-4. Add operating-hours parsing and current open/closed/unknown status.
-5. Add weather provider and weather-to-environment matching.
-6. Add weighted scoring.
-7. Add deterministic sorting and shown-place exclusion.
-8. Add candidate shortage handling.
-9. Add real provider implementations.
+권장 구현 순서는 다음과 같습니다.
 
-Reference scoring rules to preserve for the future implementation:
+1. Stub 추천 결과를 Place Provider 계약으로 교체
+2. 지오코딩 Provider와 위치 해석 추가
+3. 거리 필터 구현
+4. 운영시간 파싱과 `open` / `closed` / `unknown` 판정 구현
+5. 날씨 Provider와 날씨-환경 유형 매칭 추가
+6. 가중치 기반 점수 계산 구현
+7. 결정적 정렬과 `shown_place_ids` 제외 처리 구현
+8. 후보 부족 처리 구현
+9. 실제 Provider 구현 연결
+
+향후 추천 로직 구현 시 보존할 점수 규칙은 다음과 같습니다.
 
 ```yaml
 weights:
@@ -210,19 +208,19 @@ distance:
   within_100_percent_of_radius: 0.40
 ```
 
-Weather/environment score table:
+날씨와 장소 환경 유형 점수표는 다음과 같습니다.
 
-| weather | indoor | mixed | outdoor | unknown |
+| 날씨 | indoor | mixed | outdoor | unknown |
 | --- | ---: | ---: | ---: | ---: |
 | good | 0.8 | 0.9 | 1.0 | 0.7 |
 | neutral | 1.0 | 0.9 | 0.8 | 0.7 |
 | bad | 1.0 | 0.7 | 0.3 | 0.5 |
 
-## Out Of Scope In This Scaffold
+## 현재 골격에서 제외된 범위
 
-- Real LLM interpretation
-- Real geocoding/weather/place APIs
-- Distance, operating-hour, weather, score, and sorting logic
-- OpenAPI TypeScript generation
-- Production static file serving
-- Database, login, Docker, and automatic condition relaxation
+- 실제 LLM 입력 해석
+- 실제 지오코딩, 날씨, 장소 API 연동
+- 거리 계산, 운영시간 계산, 날씨 반영, 점수 계산, 정렬 로직
+- OpenAPI TypeScript 타입 생성
+- production 정적 파일 서빙
+- 데이터베이스, 로그인, Docker, 자동 조건 완화
