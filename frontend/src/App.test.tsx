@@ -1,9 +1,9 @@
 /*
- * 역할: 주요 사용자 흐름과 보호 라우팅을 검증하는 앱 통합 테스트.
- * 입력: mocked fetch 응답, MemoryRouter 수준의 브라우저 상호작용.
- * 출력: 화면 전환, API 호출, 결과 렌더링에 대한 assertion.
+ * 역할: 채팅형 사용자 흐름과 보호 라우팅을 검증하는 앱 통합 테스트.
+ * 입력: mocked fetch 응답, feature flag 환경변수, 브라우저 상호작용.
+ * 출력: 모드별 메시지 렌더링과 API 호출에 대한 assertion.
  * 호출 시점: vitest 실행 시 프론트엔드 smoke/regression 테스트로 호출된다.
- * TODO: 오류 배너와 재추천 흐름이 생기면 사용자 시나리오를 확장한다.
+ * TODO: 실제 다회 대화 의미 분석이 생기면 후속 입력 시나리오를 확장한다.
  */
 
 import { render, screen, waitFor } from "@testing-library/react";
@@ -44,47 +44,86 @@ const recommendationsResponse = {
   ],
 };
 
+function mockFetch() {
+  return vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/interpret")) {
+      return Response.json(interpretResponse);
+    }
+    if (url.endsWith("/recommendations")) {
+      return Response.json(recommendationsResponse);
+    }
+    return Response.json({ error: { message: "not found" } }, { status: 404 });
+  });
+}
+
 beforeEach(() => {
   sessionStorage.clear();
   window.history.pushState({}, "", "/");
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.endsWith("/interpret")) {
-        return Response.json(interpretResponse);
-      }
-      if (url.endsWith("/recommendations")) {
-        return Response.json(recommendationsResponse);
-      }
-      return Response.json({ error: { message: "not found" } }, { status: 404 });
-    }),
-  );
+  vi.stubGlobal("fetch", mockFetch());
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
-test("input to confirm to results flow shows recommendations", async () => {
+test("debug mode shows condition debug message before recommendations", async () => {
+  vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "true");
   render(<App />);
 
   await userEvent.type(screen.getByPlaceholderText(/경복궁 근처/), "비 오는 날 갈 곳");
-  await userEvent.click(screen.getByRole("button", { name: "조건 확인하기" }));
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
 
-  expect(await screen.findByText("조건 확인")).toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button", { name: "추천 받기" }));
+  expect(await screen.findByText("개발용 입력 해석 결과")).toBeInTheDocument();
+  expect(screen.getAllByText("비 오는 날 갈 곳").length).toBeGreaterThan(0);
+  expect(screen.queryByText("테스트 박물관")).not.toBeInTheDocument();
 
-  expect(await screen.findByText("추천 결과")).toBeInTheDocument();
-  expect(screen.getByText("테스트 박물관")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "추천 진행" }));
+
+  expect(await screen.findByText("테스트 박물관")).toBeInTheDocument();
   expect(screen.getByText("운영시간 미확인 갤러리")).toBeInTheDocument();
   expect(screen.getByText("운영시간을 확인할 수 없는 장소")).toBeInTheDocument();
 });
 
-test("protected results route redirects without stored state", async () => {
-  window.history.pushState({}, "", "/results");
+test("release mode hides debug message and requests recommendations automatically", async () => {
+  vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "false");
+  render(<App />);
+
+  await userEvent.type(screen.getByPlaceholderText(/경복궁 근처/), "비 오는 날 갈 곳");
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+
+  expect(await screen.findByText(/경복궁 근처에서/)).toBeInTheDocument();
+  expect(screen.queryByText("개발용 입력 해석 결과")).not.toBeInTheDocument();
+  expect(await screen.findByText("테스트 박물관")).toBeInTheDocument();
+
+  const fetchMock = vi.mocked(fetch);
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  expect(String(fetchMock.mock.calls[0][0])).toContain("/interpret");
+  expect(String(fetchMock.mock.calls[1][0])).toContain("/recommendations");
+});
+
+test("requesting more places appends a new result message with shown ids", async () => {
+  vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "false");
+  render(<App />);
+
+  await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+
+  expect(await screen.findByText("테스트 박물관")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "다른 장소 보기" }));
+
+  await waitFor(() => expect(screen.getAllByText("테스트 박물관")).toHaveLength(2));
+  const fetchMock = vi.mocked(fetch);
+  const requestBody = JSON.parse(String(fetchMock.mock.calls[2][1]?.body));
+  expect(requestBody.shown_place_ids).toEqual(["stub-museum-1", "stub-gallery-1"]);
+});
+
+test("chat route redirects without stored state", async () => {
+  window.history.pushState({}, "", "/chat");
 
   render(<App />);
 
   await waitFor(() => expect(screen.getByText("TripBranch")).toBeInTheDocument());
+  expect(screen.getByRole("button", { name: "추천 시작하기" })).toBeInTheDocument();
 });

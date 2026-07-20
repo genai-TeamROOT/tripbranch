@@ -33,6 +33,44 @@ export interface RecommendationsResponse {
   unverified_recommendations: RecommendationItem[];
 }
 
+export type ChatPhase =
+  | "idle"
+  | "interpreting"
+  | "waiting_for_debug_confirmation"
+  | "recommending"
+  | "ready"
+  | "error";
+
+export type ChatMessage =
+  | {
+      id: string;
+      type: "user_text";
+      text: string;
+    }
+  | {
+      id: string;
+      type: "assistant_text";
+      text: string;
+    }
+  | {
+      id: string;
+      type: "interpretation_summary";
+      text: string;
+    }
+  | {
+      id: string;
+      type: "condition_debug";
+      userInput: string;
+      conditions: InterpretedConditions;
+      status: "pending" | "confirmed";
+    }
+  | {
+      id: string;
+      type: "recommendation_result";
+      recommendations: RecommendationItem[];
+      unverified_recommendations: RecommendationItem[];
+    };
+
 export interface ApiErrorBody {
   code: string;
   message: string;

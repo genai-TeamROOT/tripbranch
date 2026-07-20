@@ -9,12 +9,15 @@ TripBranch는 여행 중 날씨 악화, 방문 장소 이용 불가, 남은 시�
 ```text
 사용자 자유 입력
 -> 고정된 입력 해석 결과
--> 조건 확인 화면
--> 고정된 추천 결과
--> 결과 화면
+-> 채팅 화면으로 이동
+-> 개발 모드: 입력 해석 디버그 메시지 확인 후 추천 진행
+-> 릴리즈 모드: 조건 요약 메시지 표시 후 추천 자동 진행
+-> 추천 결과 메시지 누적
 -> 다른 장소 보기
 -> 처음부터 다시 시작
 ```
+
+TripBranch 프론트엔드는 최종 서비스 UX에 맞춰 페이지를 순서대로 이동하는 구조가 아니라, `/chat` 안에서 사용자 입력과 추천 결과가 시간순으로 쌓이는 채팅형 흐름을 사용합니다.
 
 ## 기술 스택
 
@@ -47,7 +50,16 @@ tripbranch/
    ├─ src/
    │  ├─ api/
    │  ├─ components/
+   │  │  └─ chat/
+   │  │     ├─ ChatComposer.tsx
+   │  │     ├─ ChatMessageList.tsx
+   │  │     ├─ ConditionDebugMessage.tsx
+   │  │     └─ RecommendationResultMessage.tsx
+   │  ├─ config/
+   │  │  └─ features.ts
    │  ├─ pages/
+   │  │  ├─ HomePage.tsx
+   │  │  └─ ChatPage.tsx
    │  ├─ state/
    │  ├─ test/
    │  ├─ App.tsx
@@ -114,6 +126,84 @@ npm run build
 
 Vite 개발 서버는 `/api/*` 요청을 FastAPI 백엔드로 프록시합니다.
 
+## 프론트엔드 라우트
+
+현재 프론트엔드 라우트는 다음 두 개가 기본입니다.
+
+- `/`: `HomePage`
+- `/chat`: `ChatPage`
+
+기존 전환 과정에서 쓰던 `/confirm`, `/results`는 독립 화면으로 유지하지 않고 `/chat`으로 리다이렉트합니다.
+
+`HomePage`는 최초 질문 입력, 입력 해석 API 호출, 채팅 상태 초기화를 담당합니다. `ChatPage`는 사용자 메시지, 조건 요약/디버그 메시지, 추천 결과 메시지를 시간순으로 렌더링합니다.
+
+## 개발 모드와 릴리즈 모드
+
+프론트엔드는 다음 공개 환경변수로 입력 해석 디버그 카드 노출 여부를 제어합니다.
+
+```env
+VITE_SHOW_INTERPRETATION_DEBUG=true
+```
+
+- `true`: 개발 모드. `/chat`에서 `ConditionDebugMessage`를 표시하고, 개발자가 구조화된 조건을 확인한 뒤 추천을 진행합니다.
+- `false`: 릴리즈 모드. 조건 디버그 카드를 숨기고, 짧은 조건 요약 메시지를 표시한 뒤 추천을 자동 요청합니다.
+
+이 값은 `frontend/src/config/features.ts`에서 읽습니다. `VITE_` 환경변수는 브라우저 빌드 결과에 포함되므로 API 키나 내부 프롬프트 같은 비밀값을 넣으면 안 됩니다.
+
+`frontend/.env.example`은 팀원 참고용 예시 파일입니다. 실제 로컬 개발 서버에는 적용되지 않습니다. 로컬에서 개발 모드를 켜려면 `frontend/.env`에 값을 설정해야 합니다.
+
+```bash
+cp frontend/.env.example frontend/.env
+```
+
+`.env`를 바꾼 뒤에는 Vite 개발 서버를 재시작해야 합니다.
+
+릴리즈 빌드나 시연 환경에서 디버그 카드를 숨기려면 다음처럼 설정합니다.
+
+```env
+VITE_SHOW_INTERPRETATION_DEBUG=false
+```
+
+## 프론트엔드 환경변수
+
+| 변수 | 기본/예시 값 | 설명 |
+| --- | --- | --- |
+| `VITE_API_BASE_URL` | 비움 | 비워두면 동일 출처의 `/api`를 사용합니다. 로컬 개발에서는 Vite 프록시가 백엔드로 전달합니다. |
+| `VITE_SHOW_INTERPRETATION_DEBUG` | `true` | `true`면 개발용 입력 해석 디버그 카드를 표시하고, `false`면 조건 요약 후 추천을 자동 진행합니다. |
+
+실제 로컬 실행 값은 `frontend/.env`에 둡니다. `frontend/.env.example`은 팀원이 참고하는 예시 파일이며, Vite dev 서버가 자동으로 적용하는 실행 설정 파일은 아닙니다.
+
+## 수동 동작 확인
+
+로컬 서버를 실행합니다.
+
+```bash
+npm run dev
+```
+
+개발 모드 확인:
+
+1. `frontend/.env`에 `VITE_SHOW_INTERPRETATION_DEBUG=true`를 설정합니다.
+2. dev 서버를 재시작합니다.
+3. http://localhost:5173 에서 질문을 입력합니다.
+4. `/chat`으로 이동한 뒤 `개발용 입력 해석 결과` 카드가 보이는지 확인합니다.
+5. `추천 진행` 버튼을 눌러 추천 결과 메시지가 추가되는지 확인합니다.
+
+릴리즈 모드 확인:
+
+1. `frontend/.env`에 `VITE_SHOW_INTERPRETATION_DEBUG=false`를 설정합니다.
+2. dev 서버를 재시작합니다.
+3. 질문을 입력합니다.
+4. `/chat`에서 개발용 디버그 카드가 보이지 않는지 확인합니다.
+5. 조건 요약 메시지 뒤에 추천 결과가 자동으로 표시되는지 확인합니다.
+
+공통 확인:
+
+1. 추천 결과에서 `다른 장소 보기`를 누릅니다.
+2. 기존 추천 결과가 사라지지 않고 새 추천 결과 메시지가 대화 하단에 추가되는지 확인합니다.
+3. `/chat`에서 새로고침했을 때 같은 탭의 대화가 복구되는지 확인합니다.
+4. `처음부터` 버튼을 누르면 저장된 대화가 초기화되고 `/`로 돌아가는지 확인합니다.
+
 ## 백엔드 Stub 계약
 
 `POST /api/interpret`는 비어 있지 않은 모든 입력에 대해 고정된 조건 해석 결과를 반환합니다.
@@ -150,15 +240,22 @@ Vite 개발 서버는 `/api/*` 요청을 FastAPI 백엔드로 프록시합니다
 
 ## 프론트엔드 상태
 
-프론트엔드는 Stub 흐름에 필요한 최소 상태만 관리합니다.
+프론트엔드는 채팅 흐름에 필요한 최소 상태만 관리합니다.
 
 - `user_input`
 - `interpreted_conditions`
 - `recommendations`
 - `unverified_recommendations`
 - `shown_place_ids`
+- `messages`
+- `phase`
+- `error`
 
-`sessionStorage`를 사용해 같은 탭에서 새로고침해도 현재 상태를 복구합니다.
+추천 결과는 각 `recommendation_result` 메시지 안에 저장되어 대화 하단에 누적됩니다. 기존 `recommendations`, `unverified_recommendations` 필드는 현재 마지막 추천 결과와의 호환을 위해 함께 유지합니다.
+
+`sessionStorage`를 사용해 같은 탭에서 새로고침해도 현재 대화를 복구합니다. 저장 구조는 버전으로 검증하며, 잘못된 JSON이나 schema가 들어오면 무시합니다.
+
+릴리즈 모드에서는 저장된 `condition_debug` 메시지가 있어도 화면에 렌더링하지 않습니다.
 
 ## 이후 팀 작업
 
