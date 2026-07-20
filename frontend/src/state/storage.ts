@@ -7,9 +7,10 @@
  */
 
 import type { TripState } from "./TripContext";
+import type { ChatMessage, ChatPhase } from "../types";
 
 const STORAGE_KEY = "tripbranch_state";
-const STORAGE_VERSION = 1;
+const STORAGE_VERSION = 2;
 
 interface StoredState {
   version: number;
@@ -23,8 +24,49 @@ function isTripState(value: unknown): value is TripState {
     typeof state.user_input === "string" &&
     Array.isArray(state.recommendations) &&
     Array.isArray(state.unverified_recommendations) &&
-    Array.isArray(state.shown_place_ids)
+    Array.isArray(state.shown_place_ids) &&
+    Array.isArray(state.messages) &&
+    state.messages.every(isChatMessage) &&
+    isChatPhase(state.phase) &&
+    (state.error === null || typeof state.error === "string")
   );
+}
+
+function isChatPhase(value: unknown): value is ChatPhase {
+  return (
+    value === "idle" ||
+    value === "interpreting" ||
+    value === "waiting_for_debug_confirmation" ||
+    value === "recommending" ||
+    value === "ready" ||
+    value === "error"
+  );
+}
+
+function isChatMessage(value: unknown): value is ChatMessage {
+  if (!value || typeof value !== "object") return false;
+  const message = value as Record<string, unknown>;
+  if (typeof message.id !== "string" || typeof message.type !== "string") return false;
+  if (message.type === "user_text" || message.type === "assistant_text") {
+    return typeof message.text === "string";
+  }
+  if (message.type === "interpretation_summary") {
+    return typeof message.text === "string";
+  }
+  if (message.type === "condition_debug") {
+    return (
+      typeof message.userInput === "string" &&
+      typeof message.conditions === "object" &&
+      (message.status === "pending" || message.status === "confirmed")
+    );
+  }
+  if (message.type === "recommendation_result") {
+    return (
+      Array.isArray(message.recommendations) &&
+      Array.isArray(message.unverified_recommendations)
+    );
+  }
+  return false;
 }
 
 export function loadState(): TripState | null {

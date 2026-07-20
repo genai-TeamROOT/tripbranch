@@ -20,6 +20,27 @@ const state: TripState = {
   recommendations: [],
   unverified_recommendations: [],
   shown_place_ids: [],
+  messages: [
+    {
+      id: "message-1",
+      type: "user_text",
+      text: "비 피할 곳",
+    },
+    {
+      id: "message-2",
+      type: "condition_debug",
+      userInput: "비 피할 곳",
+      conditions: {
+        location_query: "경복궁",
+        preferred_categories: ["museum", "cafe"],
+        weather_condition: "bad",
+        search_radius_km: 1,
+      },
+      status: "pending",
+    },
+  ],
+  phase: "waiting_for_debug_confirmation",
+  error: null,
 };
 
 beforeEach(() => {
