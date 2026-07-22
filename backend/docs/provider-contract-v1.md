@@ -4,7 +4,8 @@
 
 ## 범위
 
-Geocoding, Weather, Place Provider의 Stub/Real 구현이 공유하는 최소 계약이다.
+Geocoding, Weather, Place, Concentration, Holiday Provider의 Fake/Real 구현이
+공유하는 최소 계약이다.
 서비스는 구체 Provider를 직접 알지 않고 `providers/protocols.py`의 Protocol만 사용한다.
 
 ## 공통 원칙
@@ -17,8 +18,8 @@ Geocoding, Weather, Place Provider의 Stub/Real 구현이 공유하는 최소 �
 ## Provider 모드
 
 `PROVIDER_MODE`가 Provider들의 공통 기본값이다. `GEOCODING_PROVIDER`,
-`WEATHER_PROVIDER`, `PLACE_PROVIDER`, `CONCENTRATION_PROVIDER`에 값이 있으면
-해당 Provider만 재정의한다.
+`WEATHER_PROVIDER`, `PLACE_PROVIDER`, `CONCENTRATION_PROVIDER`,
+`HOLIDAY_PROVIDER`에 값이 있으면 해당 Provider만 재정의한다.
 
 ```env
 PROVIDER_MODE=real
@@ -66,12 +67,19 @@ async def search_by_keyword(
 ) -> list[PlaceCandidate]
 
 async def get_details(content_id: str, content_type_id: str) -> PlaceDetails
+
+async def find_details_by_name(
+    name: str,
+    region_code: str | None = None,
+    district_code: str | None = None,
+) -> PlaceDetails
 ```
 
 나담당에게 공유 가능한 장소 필드는 `place_id`, `name`, `category`, `latitude`,
 `longitude`, `address`, `operating_hours`, `raw_source`, `content_type_id`다.
 `get_details`는 `detailCommon2`와 `detailIntro2`를 결합해 소개, 홈페이지, 연락처,
-장소 유형별 운영시간을 반환한다.
+장소 유형별 운영시간을 반환한다. `find_details_by_name`은 키워드 검색에서 장소명이
+정확히 일치하는 후보만 선택한 뒤 상세조회하며 유사 후보를 임의 선택하지 않는다.
 
 종로구 경복궁 키워드 검색은 `region_code="11"`, `district_code="110"`을 사용한다.
 집중률 API의 `signguCd="11110"`과 달리 KorService2의 `lDongSignguCd`는 순수
@@ -95,6 +103,19 @@ async def get_forecast(
 Provider와 같은 `TOUR_API_SERVICE_KEY`를 사용한다. 원본 응답 필드가 변경되더라도
 Mapper에서 `ConcentrationForecast`와 `raw_data`로 정규화한다.
 
+## Holiday
+
+한국천문연구원 특일 정보 서비스의 공휴일 전용 `getRestDeInfo`를 사용한다.
+응답 XML은 Provider 내부에서 `HolidayResult`로 정규화한다.
+
+```python
+async def get_holidays(year: int, month: int | None = None) -> HolidayResult
+```
+
+Real Provider는 `TOUR_API_SERVICE_KEY`에 설정한 공공데이터포털 서비스 키를
+공유한다. `getAnniversaryInfo`는 기념일 조회이므로 공휴일 Provider에서 사용하지
+않는다.
+
 ## 오류 상태
 
 | 코드 | 의미 | 재시도 |
@@ -106,6 +127,7 @@ Mapper에서 `ConcentrationForecast`와 `raw_data`로 정규화한다.
 | `weather_unavailable` | Weather 호출 또는 응답 오류 | 가능 |
 | `provider_timeout` | 외부 Provider 시간 초과 | 가능 |
 | `provider_unavailable` | Place Provider 호출 또는 응답 오류 | 가능 |
+| `place_not_found` | 키워드 결과에 정확히 일치하는 장소가 없음 | 아니오 |
 
 Provider 공통 오류에는 `provider`와 선택적인 `details` 메타데이터를 함께 둔다.
 
