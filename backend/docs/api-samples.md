@@ -41,40 +41,42 @@
 
 ## Naver Cloud Platform Geocoding API
 
-- 엔드포인트: `GET https://naveropenapi.apigw.ntruss.com/map-geocode/v2/geocode`
+- 엔드포인트: `GET https://maps.apigw.ntruss.com/map-geocode/v2/geocode`
+  (레거시 `naveropenapi.apigw.ntruss.com`은 별도 구독이 필요해 `401 Permission
+  Denied(errorCode 210)`가 남 - 신버전 도메인을 써야 함. 2026-07-22 실제 키로 확인.)
 - 필수 헤더: `Accept: application/json`, `x-ncp-apigw-api-key-id`, `x-ncp-apigw-api-key`
 - 쿼리 파라미터: `query`(필수), `count`(결과 개수, provider는 `1`로 고정해 top1을 채택)
 
-응답 스키마(공식 문서 기준, 실제 키로는 아래 "확인된 문제" 참고):
+응답 샘플(2026-07-22 실제 키로 확인):
 
 ```json
+// GET ...?query=서울특별시 종로구 사직로 161&count=1
 {
   "status": "OK",
-  "meta": { "totalCount": 1, "page": 1, "count": 1 },
+  "meta": { "totalCount": 1, "count": 1 },
   "addresses": [
     {
-      "roadAddress": "서울특별시 종로구 사직로 161",
-      "jibunAddress": "서울특별시 종로구 세종로 1-1",
-      "englishAddress": "161, Sajik-ro, Jongno-gu, Seoul, Republic of Korea",
-      "x": "126.9770",
-      "y": "37.5796",
-      "distance": 0,
-      "addressElements": ["..."]
+      "roadAddress": "서울특별시 종로구 사직로 161 경복궁",
+      "x": "126.9770162",
+      "y": "37.5788408"
     }
-  ]
+  ],
+  "errorMessage": ""
 }
+
+// GET ...?query=경복궁&count=1  (결과 없음)
+{ "status": "OK", "meta": { "totalCount": 0, "count": 0 }, "addresses": [], "errorMessage": "" }
 ```
 
 - `x`는 경도, `y`는 위도(둘 다 문자열) - 순서가 직관과 반대라 실수하기 쉬움.
-- 결과 없음: `status: "OK"` + `addresses: []`로 추정(공식 문서에 명시 안 됨) → `AppError(code="location_not_found")`.
-- 이 API는 도로명/지번 주소 검색에 최적화되어 있어 "경복궁" 같은 순수 장소명 인식률은 검증 전.
+- 결과 없음은 `status: "OK"` + `addresses: []`로 확인됨(HTTP 200) → `AppError(code="location_not_found")`.
 
-**확인된 문제(2026-07-22 실제 키로 호출)**: 인증 헤더는 통과했으나 모든 요청이
-`401 Permission Denied`(`errorCode: "210", "A subscription to the API is required."`)로
-실패함. NCP 콘솔에서 해당 애플리케이션에 **Maps > Geocoding** 서비스 이용 신청이
-안 되어 있을 가능성이 높음 (Client ID/Secret 발급과 API별 이용 신청은 별개 절차).
-→ 콘솔에서 구독 처리 후 재검증 필요. `RealGeocodingProvider` 코드는 공식 응답
-스키마 기준으로 작성·단위테스트(mock)까지 마쳤으며, 구독 활성화 후 실호출
-샘플로 이 섹션을 갱신할 것.
+**중요한 한계(2026-07-22 실제 키로 확인)**: 이 API는 도로명/지번 주소만
+인식하고 순수 장소명(POI)은 인식하지 못한다. `서울특별시 종로구 사직로 161`은
+1건 나오지만, 같은 장소를 뜻하는 `경복궁`, `강남역`, `부산 해운대`, `제주도청`,
+`판교역`은 전부 0건이었다. 오늘 범위(주소·장소명 → 좌표)의 "장소명" 절반은
+이 API 단독으로는 충족되지 않음 - 장소명 검색을 지원하는 API(예: 별도 지역검색
+API, Kakao Local API)를 보조로 붙일지 여부는 팀 결정 필요. `FakeGeocodingProvider`는
+로컬 개발용으로 소수 지명을 고정 좌표로 매핑해 이 한계를 우회한다.
 
 구현: [`app/providers/geocoding.py`](../app/providers/geocoding.py).
