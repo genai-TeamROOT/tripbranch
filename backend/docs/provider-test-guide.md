@@ -165,12 +165,16 @@ RUN_REAL_PROVIDER_TESTS=true python -m pytest \
 다음 흐름을 검증한다.
 
 ```text
-searchKeyword2("경복궁")
+find_details_by_name("경복궁")
+→ searchKeyword2에서 장소명 정확 일치 후보 선택
 → contentid/contenttypeid 확보
 → detailCommon2
 → detailIntro2
 → PlaceDetails
 ```
+
+정확히 일치하는 장소가 없으면 유사 후보를 임의 선택하지 않고
+`place_not_found` 오류를 반환한다.
 
 ### TourAPI 관광지 집중률
 

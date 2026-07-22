@@ -71,6 +71,15 @@ class PlaceProvider(Protocol):
         """TourAPI content ID로 공통·소개 상세정보를 조회한다."""
         ...
 
+    async def find_details_by_name(
+        self,
+        name: str,
+        region_code: str | None = None,
+        district_code: str | None = None,
+    ) -> PlaceDetails:
+        """장소명으로 정확히 일치하는 후보를 찾아 상세정보까지 반환한다."""
+        ...
+
 
 class ConcentrationProvider(Protocol):
     async def get_forecast(

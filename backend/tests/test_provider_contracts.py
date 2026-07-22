@@ -48,6 +48,9 @@ async def test_fake_place_provider_uses_common_candidate() -> None:
     details = await FakePlaceProvider().get_details("fake-museum-1", "14")
     assert details.title == "테스트 박물관"
 
+    named_details = await FakePlaceProvider().find_details_by_name("테스트 박물관")
+    assert named_details.title == "테스트 박물관"
+
 
 @pytest.mark.asyncio
 async def test_fake_concentration_provider_uses_common_result() -> None:

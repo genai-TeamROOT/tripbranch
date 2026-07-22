@@ -7,7 +7,7 @@ from collections.abc import Mapping
 import httpx
 
 from app.domain.models import PlaceDetails
-from app.errors import ProviderTimeoutError, ProviderUnavailableError
+from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
 from app.providers.mappers import map_tour_api_response
 from app.schemas import PlaceCandidate
 
@@ -171,3 +171,40 @@ class RealPlaceProvider:
             raw_intro=intro,
             provider="tour_api",
         )
+
+    async def find_details_by_name(
+        self,
+        name: str,
+        region_code: str | None = None,
+        district_code: str | None = None,
+    ) -> PlaceDetails:
+        normalized_name = name.strip()
+        if not normalized_name:
+            raise ValueError("name은 비어 있을 수 없습니다.")
+
+        candidates = await self.search_by_keyword(
+            normalized_name,
+            region_code=region_code,
+            district_code=district_code,
+            limit=100,
+        )
+        exact = next(
+            (
+                candidate
+                for candidate in candidates
+                if candidate.name.strip().casefold() == normalized_name.casefold()
+            ),
+            None,
+        )
+        if exact is None:
+            raise AppError(
+                code="place_not_found",
+                message=f"'{normalized_name}' 장소를 정확히 찾을 수 없어요.",
+                status_code=404,
+                details={"candidate_names": [item.name for item in candidates[:5]]},
+            )
+        if not exact.content_type_id:
+            raise ProviderUnavailableError(
+                "TourAPI", detail="matched place has no contentTypeId"
+            )
+        return await self.get_details(exact.place_id, exact.content_type_id)

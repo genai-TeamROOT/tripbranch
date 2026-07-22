@@ -10,6 +10,7 @@ TODO: 실제 provider(RealPlaceProvider 등)가 준비되면 팩토리에서 설
 from __future__ import annotations
 
 from app.domain.models import PlaceDetails, WeatherCondition
+from app.errors import AppError
 from app.schemas import (
     InterpretedConditions,
     PlaceCandidate,
@@ -109,3 +110,29 @@ class FakePlaceProvider:
             raw_intro={},
             provider="fake_place",
         )
+
+    async def find_details_by_name(
+        self,
+        name: str,
+        region_code: str | None = None,
+        district_code: str | None = None,
+    ) -> PlaceDetails:
+        normalized_name = name.strip()
+        candidates = await self.search_by_keyword(
+            normalized_name, region_code, district_code, limit=100
+        )
+        exact = next(
+            (
+                candidate
+                for candidate in candidates
+                if candidate.name.strip().casefold() == normalized_name.casefold()
+            ),
+            None,
+        )
+        if exact is None or not exact.content_type_id:
+            raise AppError(
+                code="place_not_found",
+                message=f"'{normalized_name}' 장소를 정확히 찾을 수 없어요.",
+                status_code=404,
+            )
+        return await self.get_details(exact.place_id, exact.content_type_id)
