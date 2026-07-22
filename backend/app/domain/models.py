@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -23,3 +24,24 @@ class GeocodeResult:
     resolved_name: str
     latitude: float
     longitude: float
+
+
+@dataclass(frozen=True)
+class ConcentrationForecast:
+    """관광지의 날짜별 상대 집중률 예측 한 건."""
+
+    place_name: str
+    forecast_date: str | None
+    concentration_rate: float | None
+    raw_data: Mapping[str, object]
+
+
+@dataclass(frozen=True)
+class ConcentrationResult:
+    """지역·관광지 조건으로 조회한 집중률 예측 결과."""
+
+    area_code: str
+    district_code: str
+    requested_place_name: str | None
+    forecasts: tuple[ConcentrationForecast, ...]
+    provider: str

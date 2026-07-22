@@ -14,8 +14,9 @@ Geocoding, Weather, Place Provider의 Stub/Real 구현이 공유하는 최소 �
 
 ## Provider 모드
 
-`PROVIDER_MODE`가 세 Provider의 공통 기본값이다. `GEOCODING_PROVIDER`,
-`WEATHER_PROVIDER`, `PLACE_PROVIDER`에 값이 있으면 해당 Provider만 재정의한다.
+`PROVIDER_MODE`가 Provider들의 공통 기본값이다. `GEOCODING_PROVIDER`,
+`WEATHER_PROVIDER`, `PLACE_PROVIDER`, `CONCENTRATION_PROVIDER`에 값이 있으면
+해당 Provider만 재정의한다.
 
 ```env
 PROVIDER_MODE=real
@@ -59,6 +60,24 @@ async def search_places(
 나담당에게 공유 가능한 장소 필드는 `place_id`, `name`, `category`, `latitude`,
 `longitude`, `address`, `operating_hours`, `raw_source`다. 현재 TourAPI
 `locationBasedList2`만으로 운영시간을 얻을 수 없어 `operating_hours`는 `None`이다.
+
+## Concentration
+
+관광지 집중률 Provider는 한국관광공사 `TatsCnctrRateService`를 사용한다.
+장소 검색과 달리 법정동 시도·시군구 코드와 선택적인 관광지명을 입력받는다.
+
+```python
+async def get_forecast(
+    area_code: str,
+    district_code: str,
+    place_name: str | None = None,
+) -> ConcentrationResult
+```
+
+종로구 경복궁의 기본 조회값은 `area_code="11"`,
+`district_code="11110"`, `place_name="경복궁"`이다. Real Provider는 Place
+Provider와 같은 `TOUR_API_SERVICE_KEY`를 사용한다. 원본 응답 필드가 변경되더라도
+Mapper에서 `ConcentrationForecast`와 `raw_data`로 정규화한다.
 
 ## 오류 상태
 

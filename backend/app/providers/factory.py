@@ -6,8 +6,14 @@ import httpx
 
 from app.config import settings
 from app.domain.models import WeatherCondition
+from app.providers.concentration import FakeConcentrationProvider, RealConcentrationProvider
 from app.providers.geocoding import FakeGeocodingProvider, RealGeocodingProvider
-from app.providers.protocols import GeocodingProvider, PlaceProvider, WeatherProvider
+from app.providers.protocols import (
+    ConcentrationProvider,
+    GeocodingProvider,
+    PlaceProvider,
+    WeatherProvider,
+)
 from app.providers.real_place import RealPlaceProvider
 from app.providers.stub import FakePlaceProvider, FakeWeatherProvider
 from app.providers.weather import RealWeatherProvider
@@ -63,3 +69,16 @@ def get_place_provider(client: httpx.AsyncClient) -> PlaceProvider:
             timeout_seconds=settings.external_api_timeout_seconds,
         )
     raise ValueError(f"지원하지 않는 PLACE_PROVIDER: {mode}")
+
+
+def get_concentration_provider(client: httpx.AsyncClient) -> ConcentrationProvider:
+    mode = settings.resolved_concentration_provider
+    if mode == "fake":
+        return FakeConcentrationProvider()
+    if mode == "real":
+        return RealConcentrationProvider(
+            api_key=_require_key(settings.tour_api_service_key, "TOUR_API_SERVICE_KEY"),
+            client=client,
+            timeout_seconds=settings.external_api_timeout_seconds,
+        )
+    raise ValueError(f"지원하지 않는 CONCENTRATION_PROVIDER: {mode}")

@@ -12,3 +12,4 @@ def isolate_regular_tests_from_real_providers(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(settings, "geocoding_provider", None)
     monkeypatch.setattr(settings, "weather_provider", None)
     monkeypatch.setattr(settings, "place_provider", None)
+    monkeypatch.setattr(settings, "concentration_provider", None)

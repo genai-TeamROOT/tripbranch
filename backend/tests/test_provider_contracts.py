@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from app.domain.models import GeocodeResult, WeatherCondition
+from app.providers.concentration import FakeConcentrationProvider
 from app.providers.geocoding import FakeGeocodingProvider
 from app.providers.stub import FakePlaceProvider, FakeWeatherProvider
 
@@ -39,3 +40,11 @@ async def test_fake_place_provider_uses_common_candidate() -> None:
 
     assert result[0].raw_source == "fake_place"
     assert result[0].latitude == 37.5796
+
+
+@pytest.mark.asyncio
+async def test_fake_concentration_provider_uses_common_result() -> None:
+    result = await FakeConcentrationProvider().get_forecast("11", "11110", "경복궁")
+
+    assert result.provider == "fake_concentration"
+    assert result.forecasts

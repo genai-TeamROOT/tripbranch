@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from app.domain.models import GeocodeResult, WeatherCondition
+from app.domain.models import ConcentrationResult, GeocodeResult, WeatherCondition
 from app.schemas import InterpretedConditions, PlaceCandidate, RecommendationResponse
 
 
@@ -49,4 +49,15 @@ class PlaceProvider(Protocol):
         search_radius_km: float,
     ) -> list[PlaceCandidate]:
         """주어진 좌표/조건으로 장소 후보 목록을 조회해 공통 모델로 반환한다."""
+        ...
+
+
+class ConcentrationProvider(Protocol):
+    async def get_forecast(
+        self,
+        area_code: str,
+        district_code: str,
+        place_name: str | None = None,
+    ) -> ConcentrationResult:
+        """지역과 선택적인 관광지명에 대한 향후 집중률을 반환한다."""
         ...

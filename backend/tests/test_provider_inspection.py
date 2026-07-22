@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from app.config import Settings
+from app.providers.concentration import RealConcentrationProvider
 from app.providers.geocoding import RealGeocodingProvider
 from app.providers.real_place import RealPlaceProvider
 from app.providers.weather import RealWeatherProvider
@@ -142,3 +143,15 @@ async def test_inspect_tour_api_place_request_and_response() -> None:
 
     print(f"normalized_count: {len(result)}")
     print(f"normalized_samples: {[candidate.name for candidate in result[:3]]}")
+
+
+async def test_inspect_tour_api_concentration_request_and_response() -> None:
+    async with _inspection_client() as client:
+        provider = RealConcentrationProvider(
+            api_key=_required_value("TOUR_API_SERVICE_KEY", settings.tour_api_service_key),
+            client=client,
+        )
+        result = await provider.get_forecast("11", "11110", "경복궁")
+
+    print(f"normalized_count: {len(result.forecasts)}")
+    print(f"normalized_samples: {list(result.forecasts[:3])}")
