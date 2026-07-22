@@ -1,30 +1,65 @@
-"""Provider 팩토리.
-
-역할: 설정(Settings)의 provider 모드(fake/real)에 따라 알맞은 provider
-      구현체를 선택해 반환한다. 서비스 계층은 이 팩토리만 알면 되고
-      구체적인 provider 클래스를 직접 import하지 않는다.
-입력: app.config.settings의 place_provider, geocoding_provider 값.
-출력: PlaceProvider, GeocodingProvider protocol을 만족하는 인스턴스.
-호출 시점: 서비스 계층이 provider가 필요할 때 호출한다.
-TODO: RealPlaceProvider, RealGeocodingProvider 구현되면 분기에 연결한다.
-"""
+"""설정에 따라 공통 계약을 만족하는 Stub/Real Provider를 생성한다."""
 
 from __future__ import annotations
 
+import httpx
+
 from app.config import settings
-from app.providers.protocols import GeocodingProvider, PlaceProvider
-from app.providers.stub import FakeGeocodingProvider, FakePlaceProvider
+from app.domain.models import WeatherCondition
+from app.providers.geocoding import FakeGeocodingProvider, RealGeocodingProvider
+from app.providers.protocols import GeocodingProvider, PlaceProvider, WeatherProvider
+from app.providers.real_place import RealPlaceProvider
+from app.providers.stub import FakePlaceProvider, FakeWeatherProvider
+from app.providers.weather import RealWeatherProvider
 
 
-def get_geocoding_provider() -> GeocodingProvider:
-    if settings.geocoding_provider == "real":
-        raise NotImplementedError("RealGeocodingProvider가 아직 구현되지 않았습니다.")
-    return FakeGeocodingProvider()
+def _require_key(value: str, variable_name: str) -> str:
+    if not value:
+        raise ValueError(f"{variable_name} 환경변수가 필요합니다.")
+    return value
 
 
-def get_place_provider() -> PlaceProvider:
-    if settings.place_provider == "real":
-        from app.providers.real_place import RealPlaceProvider
+def get_geocoding_provider(client: httpx.AsyncClient) -> GeocodingProvider:
+    mode = settings.resolved_geocoding_provider
+    if mode == "fake":
+        return FakeGeocodingProvider()
+    if mode == "real":
+        return RealGeocodingProvider(
+            api_key_id=_require_key(settings.naver_map_client_id, "NAVER_MAP_CLIENT_ID"),
+            api_key=_require_key(settings.naver_map_client_secret, "NAVER_MAP_CLIENT_SECRET"),
+            client=client,
+            timeout_seconds=settings.external_api_timeout_seconds,
+        )
+    raise ValueError(f"지원하지 않는 GEOCODING_PROVIDER: {mode}")
 
-        return RealPlaceProvider()
-    return FakePlaceProvider()
+
+def get_weather_provider(client: httpx.AsyncClient) -> WeatherProvider:
+    mode = settings.resolved_weather_provider
+    if mode == "fake":
+        try:
+            condition = WeatherCondition(settings.fake_weather_condition)
+        except ValueError as exc:
+            raise ValueError(
+                f"지원하지 않는 FAKE_WEATHER_CONDITION: {settings.fake_weather_condition}"
+            ) from exc
+        return FakeWeatherProvider(condition)
+    if mode == "real":
+        return RealWeatherProvider(
+            api_key=_require_key(settings.weather_api_key, "WEATHER_API_KEY"),
+            client=client,
+            timeout_seconds=settings.external_api_timeout_seconds,
+        )
+    raise ValueError(f"지원하지 않는 WEATHER_PROVIDER: {mode}")
+
+
+def get_place_provider(client: httpx.AsyncClient) -> PlaceProvider:
+    mode = settings.resolved_place_provider
+    if mode == "fake":
+        return FakePlaceProvider()
+    if mode == "real":
+        return RealPlaceProvider(
+            api_key=_require_key(settings.tour_api_service_key, "TOUR_API_SERVICE_KEY"),
+            client=client,
+            timeout_seconds=settings.external_api_timeout_seconds,
+        )
+    raise ValueError(f"지원하지 않는 PLACE_PROVIDER: {mode}")

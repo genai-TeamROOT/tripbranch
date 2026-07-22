@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from app.domain.models import GeocodeResult, WeatherCondition
 from app.schemas import InterpretedConditions, PlaceCandidate, RecommendationResponse
 
 
@@ -26,13 +27,21 @@ class RecommendationProvider(Protocol):
         ...
 
 class GeocodingProvider(Protocol):
-    def geocode(self, location_query: str) -> tuple[float, float]:
-        """장소 이름이나 주소를 (위도, 경도) 좌표로 변환한다."""
+    async def geocode(self, location_query: str) -> GeocodeResult:
+        """장소 이름이나 주소를 정규화된 좌표 결과로 변환한다."""
+        ...
+
+
+class WeatherProvider(Protocol):
+    async def get_current_condition(
+        self, latitude: float, longitude: float
+    ) -> WeatherCondition:
+        """좌표의 현재 날씨를 공통 상태로 반환한다."""
         ...
 
 
 class PlaceProvider(Protocol):
-    def search_places(
+    async def search_places(
         self,
         latitude: float,
         longitude: float,

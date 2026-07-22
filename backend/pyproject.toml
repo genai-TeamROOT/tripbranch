@@ -38,3 +38,7 @@ known-first-party = ["app"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+  "smoke: calls real external providers and requires explicit environment opt-in",
+  "inspection: prints sanitized real provider requests and raw responses",
+]

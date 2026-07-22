@@ -9,6 +9,7 @@ TODO: 실제 provider(RealPlaceProvider 등)가 준비되면 팩토리에서 설
 
 from __future__ import annotations
 
+from app.domain.models import WeatherCondition
 from app.schemas import (
     InterpretedConditions,
     PlaceCandidate,
@@ -32,18 +33,22 @@ class FakeRecommendationProvider:
         return get_stub_recommendations(shown_place_ids)
 
 
-class FakeGeocodingProvider:
-    """장소 이름을 고정 좌표로 대체하는 fake provider."""
+class FakeWeatherProvider:
+    """설정한 공통 날씨 상태를 반환하는 가짜 구현."""
 
-    def geocode(self, location_query: str) -> tuple[float, float]:
-        # 경복궁 좌표를 기본값으로 고정 (fake 모드 재현성 확보용)
-        return (37.5796, 126.9770)
+    def __init__(self, condition: WeatherCondition = WeatherCondition.NEUTRAL) -> None:
+        self._condition = condition
+
+    async def get_current_condition(
+        self, latitude: float, longitude: float
+    ) -> WeatherCondition:
+        return self._condition
 
 
 class FakePlaceProvider:
     """장소 검색 결과를 고정 후보 목록으로 대체하는 fake provider."""
 
-    def search_places(
+    async def search_places(
         self,
         latitude: float,
         longitude: float,

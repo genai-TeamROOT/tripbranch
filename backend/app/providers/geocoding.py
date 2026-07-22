@@ -8,8 +8,6 @@ AppError(code="location_not_found")를 던진다. 검색 결과가 여러 건이
 
 from __future__ import annotations
 
-from typing import Protocol
-
 import httpx
 
 from app.domain.models import GeocodeResult
@@ -44,15 +42,6 @@ def _apply_landmark_alias(normalized_query: str) -> str:
         if name in normalized_query:
             return address
     return normalized_query
-
-
-class GeocodingProvider(Protocol):
-    async def geocode(self, query: str) -> GeocodeResult:
-        """자유 텍스트 위치 질의를 좌표로 변환한다.
-
-        결과를 찾지 못하면 AppError(code="location_not_found")를 던진다.
-        """
-        ...
 
 
 # 로컬 개발/테스트용 고정 지명 테이블. MVP 범위(서울 종로구)에 맞춰

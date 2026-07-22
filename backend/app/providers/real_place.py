@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import httpx
 
-from app.config import settings
 from app.errors import ProviderTimeoutError, ProviderUnavailableError
 from app.providers.mappers import map_tour_api_response
 from app.schemas import PlaceCandidate
@@ -22,7 +21,17 @@ _LOCATION_BASED_LIST_PATH = "/locationBasedList2"
 
 
 class RealPlaceProvider:
-    def search_places(
+    def __init__(
+        self,
+        api_key: str,
+        client: httpx.AsyncClient,
+        timeout_seconds: float = 10.0,
+    ) -> None:
+        self._api_key = api_key
+        self._client = client
+        self._timeout_seconds = timeout_seconds
+
+    async def search_places(
         self,
         latitude: float,
         longitude: float,
@@ -32,7 +41,7 @@ class RealPlaceProvider:
         radius_m = min(int(search_radius_km * 1000), 20000)  # TourAPI 최대 반경 20km
 
         params = {
-            "serviceKey": settings.place_api_key,
+            "serviceKey": self._api_key,
             "MobileOS": "ETC",
             "MobileApp": "TripBranch",
             "_type": "json",
@@ -47,10 +56,10 @@ class RealPlaceProvider:
         url = "http://apis.data.go.kr/B551011/KorService2" + _LOCATION_BASED_LIST_PATH
 
         try:
-            response = httpx.get(
+            response = await self._client.get(
                 url,
                 params=params,
-                timeout=settings.external_api_timeout_seconds,
+                timeout=self._timeout_seconds,
             )
         except httpx.TimeoutException as exc:
             raise ProviderTimeoutError("TourAPI") from exc
