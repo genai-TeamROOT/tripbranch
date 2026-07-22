@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 
 
@@ -14,3 +15,11 @@ class WeatherCondition(StrEnum):
     GOOD = "good"
     NEUTRAL = "neutral"
     BAD = "bad"
+
+
+@dataclass(frozen=True)
+class GeocodeResult:
+    query: str
+    resolved_name: str
+    latitude: float
+    longitude: float
