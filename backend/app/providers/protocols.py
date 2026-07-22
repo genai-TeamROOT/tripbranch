@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from app.schemas import InterpretedConditions, RecommendationResponse
+from app.schemas import InterpretedConditions, RecommendationResponse, PlaceCandidate
 
 
 class InterpretProvider(Protocol):
@@ -23,4 +23,21 @@ class InterpretProvider(Protocol):
 class RecommendationProvider(Protocol):
     def recommendations(self, shown_place_ids: list[str]) -> RecommendationResponse:
         """Return place recommendations, excluding already shown IDs."""
+        ...
+
+class GeocodingProvider(Protocol):
+    def geocode(self, location_query: str) -> tuple[float, float]:
+        """장소 이름이나 주소를 (위도, 경도) 좌표로 변환한다."""
+        ...
+
+
+class PlaceProvider(Protocol):
+    def search_places(
+        self,
+        latitude: float,
+        longitude: float,
+        preferred_categories: list[str],
+        search_radius_km: float,
+    ) -> list[PlaceCandidate]:
+        """주어진 좌표/조건으로 장소 후보 목록을 조회해 공통 모델로 반환한다."""
         ...

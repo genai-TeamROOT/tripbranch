@@ -11,12 +11,18 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.schemas import RecommendationRequest, RecommendationResponse
-from app.services.recommendations import get_stub_recommendations
+from app.schemas import InterpretedConditions, RecommendationRequest, RecommendationResponse
+from app.services.recommendations import get_recommendations
 
 router = APIRouter(tags=["recommendations"])
 
 
 @router.post("/recommendations", response_model=RecommendationResponse)
 async def recommendations(request: RecommendationRequest) -> RecommendationResponse:
-    return get_stub_recommendations(request.shown_place_ids)
+    conditions = InterpretedConditions(
+        location_query=request.location_query,
+        preferred_categories=request.preferred_categories,
+        weather_condition=request.weather_condition,
+        search_radius_km=request.search_radius_km,
+    )
+    return get_recommendations(conditions, request.shown_place_ids)

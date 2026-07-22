@@ -56,3 +56,20 @@ class RecommendationItem(BaseModel):
 class RecommendationResponse(BaseModel):
     recommendations: list[RecommendationItem]
     unverified_recommendations: list[RecommendationItem]
+
+class PlaceCandidate(BaseModel):
+    """장소 API 원본 응답을 정규화한 공통 후보 모델.
+
+    역할: 어떤 장소 API(TourAPI, 카카오 등)를 쓰든 Mapper가 이 모양으로
+    변환해서 Recommendation Service에 넘긴다. Service는 이 모델만 알면 되고
+    원본 API 응답 구조를 몰라도 된다.
+    """
+
+    place_id: str
+    name: str
+    category: str
+    latitude: float
+    longitude: float
+    address: str | None = None
+    operating_hours: str | None = None
+    raw_source: str = Field(description="어떤 provider가 만든 후보인지 (예: 'tour_api')")
