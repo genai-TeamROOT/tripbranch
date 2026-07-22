@@ -17,6 +17,34 @@ from app.errors import AppError
 
 _GEOCODE_URL = "https://maps.apigw.ntruss.com/map-geocode/v2/geocode"
 
+# Naver Geocoding은 도로명/지번 주소와 행정동/법정동 이름은 인식하지만("인사동",
+# "익선동"은 그대로 통함) 궁궐·공원·상가 같은 개별 장소명(POI)은 인식하지 못한다
+# (실제 호출로 확인, backend/docs/api-samples.md 참고). MVP 범위를 서울 종로구로
+# 한정하기로 해서, 종로구의 잘 알려진 장소명만 우선 formal 주소로 치환해 우회한다.
+# 각 주소는 실제 Naver Geocoding 호출로 결과가 나오는 것을 확인한 값이다.
+_JONGNO_LANDMARK_ADDRESS_ALIASES: dict[str, str] = {
+    "경복궁": "서울특별시 종로구 사직로 161",
+    "광화문": "서울특별시 종로구 사직로 161",  # 경복궁 정문
+    "창덕궁": "서울특별시 종로구 율곡로 99",
+    "종묘": "서울특별시 종로구 종로 157",
+    "탑골공원": "서울특별시 종로구 종로 99",
+    "북촌한옥마을": "서울특별시 종로구 계동길 37",
+    "광장시장": "서울특별시 종로구 창경궁로 88",
+    "청계광장": "서울특별시 종로구 청계천로 1",
+    "종로구청": "서울특별시 종로구 삼봉로 43",
+    "대학로": "서울특별시 종로구 대학로 100",
+    "동묘": "서울특별시 종로구 종로 359",
+    "낙원악기상가": "서울특별시 종로구 삼일대로 428",
+    "낙원상가": "서울특별시 종로구 삼일대로 428",
+}
+
+
+def _apply_landmark_alias(normalized_query: str) -> str:
+    for name, address in _JONGNO_LANDMARK_ADDRESS_ALIASES.items():
+        if name in normalized_query:
+            return address
+    return normalized_query
+
 
 class GeocodingProvider(Protocol):
     async def geocode(self, query: str) -> GeocodeResult:
@@ -27,12 +55,14 @@ class GeocodingProvider(Protocol):
         ...
 
 
-# 로컬 개발/테스트용 고정 지명 테이블. substring 매칭으로 찾는다.
+# 로컬 개발/테스트용 고정 지명 테이블. MVP 범위(서울 종로구)에 맞춰
+# _JONGNO_LANDMARK_ADDRESS_ALIASES와 같은 장소들로 구성했다. substring 매칭으로 찾는다.
 _KNOWN_LOCATIONS: dict[str, tuple[str, float, float]] = {
-    "경복궁": ("경복궁", 37.5796, 126.9770),
-    "서울역": ("서울역", 37.5547, 126.9707),
-    "광화문": ("광화문", 37.5759, 126.9769),
-    "강남역": ("강남역", 37.4979, 127.0276),
+    "경복궁": ("경복궁", 37.5788, 126.9770),
+    "광화문": ("광화문", 37.5788, 126.9770),
+    "창덕궁": ("창덕궁", 37.5826, 126.9919),
+    "종묘": ("종묘", 37.5739, 126.9945),
+    "인사동": ("인사동", 37.5717, 126.9860),
 }
 
 
@@ -59,8 +89,9 @@ class FakeGeocodingProvider:
 class RealGeocodingProvider:
     """Naver Cloud Platform Geocoding API를 사용하는 실제 구현.
 
-    이 API는 도로명/지번 주소 검색에 최적화되어 있어, 잘 알려진 장소명(POI)은
-    질의에 따라 인식률이 떨어질 수 있다 - 실제 서비스 적용 전 검증 필요.
+    이 API는 도로명/지번 주소 검색에 최적화되어 있어 개별 장소명(POI)은 인식하지
+    못한다. 종로구 MVP 범위의 잘 알려진 장소명은 _JONGNO_LANDMARK_ADDRESS_ALIASES로
+    formal 주소로 치환해서 우회하고, 그 외 지역/장소명은 아직 지원하지 않는다.
     """
 
     def __init__(
@@ -85,7 +116,7 @@ class RealGeocodingProvider:
             "x-ncp-apigw-api-key-id": self._api_key_id,
             "x-ncp-apigw-api-key": self._api_key,
         }
-        params = {"query": normalized, "count": "1"}
+        params = {"query": _apply_landmark_alias(normalized), "count": "1"}
 
         try:
             response = await self._client.get(
