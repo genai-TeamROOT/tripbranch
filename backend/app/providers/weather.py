@@ -9,8 +9,17 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from typing import Protocol
+from zoneinfo import ZoneInfo
+
+import httpx
 
 from app.domain.models import WeatherCondition
+from app.providers.kma_grid import latlon_to_grid
+
+_KST = ZoneInfo("Asia/Seoul")
+_ULTRA_SRT_FCST_URL = (
+    "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getUltraSrtFcst"
+)
 
 # PTY(강수형태): 0 없음 외에는 모두 강수 상황 -> bad로 취급.
 _PRECIPITATION_PTY_CODES = {"1", "2", "3", "4", "5", "6", "7"}
@@ -70,3 +79,46 @@ def _earliest_sky_and_pty(items: list[dict]) -> tuple[str | None, str | None]:
         return earliest["fcstValue"]
 
     return _earliest_value(sky_items), _earliest_value(pty_items)
+
+
+class RealWeatherProvider:
+    """KMA 단기예보 조회서비스(getUltraSrtFcst)를 사용하는 실제 구현.
+
+    초단기실황(getUltraSrtNcst)과 달리 SKY(하늘상태)와 PTY(강수형태)를 한 번의
+    호출로 함께 제공해서 good/neutral/bad 판정에 필요한 값을 모두 얻을 수 있다.
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        client: httpx.AsyncClient,
+        timeout_seconds: float = 10.0,
+    ) -> None:
+        self._api_key = api_key
+        self._client = client
+        self._timeout_seconds = timeout_seconds
+
+    async def get_current_condition(self, latitude: float, longitude: float) -> WeatherCondition:
+        nx, ny = latlon_to_grid(latitude, longitude)
+        base_date, base_time = resolve_base_date_time(datetime.now(_KST))
+
+        params = {
+            "serviceKey": self._api_key,
+            "pageNo": "1",
+            "numOfRows": "100",
+            "dataType": "JSON",
+            "base_date": base_date,
+            "base_time": base_time,
+            "nx": str(nx),
+            "ny": str(ny),
+        }
+
+        response = await self._client.get(
+            _ULTRA_SRT_FCST_URL, params=params, timeout=self._timeout_seconds
+        )
+        response.raise_for_status()
+        payload = response.json()
+
+        items = payload["response"]["body"]["items"]["item"]
+        sky_value, pty_value = _earliest_sky_and_pty(items)
+        return map_sky_pty_to_condition(sky_value, pty_value)
