@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from app.domain.models import WeatherCondition
+from app.errors import AppError
 from app.providers.kma_grid import latlon_to_grid
 
 _KST = ZoneInfo("Asia/Seoul")
@@ -63,8 +64,12 @@ def map_sky_pty_to_condition(sky: str | None, pty: str | None) -> WeatherConditi
         return WeatherCondition.BAD
     if sky is not None and sky in _SKY_TO_CONDITION:
         return _SKY_TO_CONDITION[sky]
-    # sky/pty 값을 아직 못 구한 경우의 처리는 에러 처리 단계에서 다룬다.
-    return WeatherCondition.NEUTRAL
+    raise AppError(
+        code="weather_no_data",
+        message="해당 좌표의 날씨 데이터가 제공되지 않습니다.",
+        status_code=502,
+        retryable=True,
+    )
 
 
 def _earliest_sky_and_pty(items: list[dict]) -> tuple[str | None, str | None]:
@@ -113,11 +118,28 @@ class RealWeatherProvider:
             "ny": str(ny),
         }
 
-        response = await self._client.get(
-            _ULTRA_SRT_FCST_URL, params=params, timeout=self._timeout_seconds
-        )
-        response.raise_for_status()
-        payload = response.json()
+        try:
+            response = await self._client.get(
+                _ULTRA_SRT_FCST_URL, params=params, timeout=self._timeout_seconds
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise AppError(
+                code="weather_unavailable",
+                message="날씨 정보를 가져오지 못했습니다.",
+                status_code=502,
+                retryable=True,
+            ) from exc
+
+        header = payload.get("response", {}).get("header", {})
+        if header.get("resultCode") != "00":
+            raise AppError(
+                code="weather_unavailable",
+                message=header.get("resultMsg", "날씨 정보를 가져오지 못했습니다."),
+                status_code=502,
+                retryable=True,
+            )
 
         items = payload["response"]["body"]["items"]["item"]
         sky_value, pty_value = _earliest_sky_and_pty(items)

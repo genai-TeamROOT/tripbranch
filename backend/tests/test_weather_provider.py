@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from app.domain.models import WeatherCondition
+from app.errors import AppError
 from app.providers.weather import (
     RealWeatherProvider,
     map_sky_pty_to_condition,
@@ -40,6 +41,12 @@ def test_resolve_base_date_time_crosses_midnight() -> None:
 )
 def test_map_sky_pty_to_condition(sky: str, pty: str, expected: WeatherCondition) -> None:
     assert map_sky_pty_to_condition(sky, pty) == expected
+
+
+def test_map_sky_pty_to_condition_missing_data_raises_weather_no_data() -> None:
+    with pytest.raises(AppError) as exc_info:
+        map_sky_pty_to_condition(None, None)
+    assert exc_info.value.code == "weather_no_data"
 
 
 def _fcst_item(category: str, fcst_time: str, value: str) -> dict:
@@ -81,4 +88,27 @@ async def test_real_weather_provider_picks_earliest_forecast_slot() -> None:
     condition = await provider.get_current_condition(37.5636, 126.9976)
 
     assert condition == WeatherCondition.GOOD
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_real_weather_provider_raises_on_failed_result_code() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "response": {
+                    "header": {"resultCode": "03", "resultMsg": "NODATA_ERROR"},
+                    "body": {},
+                }
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = RealWeatherProvider(api_key="dummy", client=client)
+
+    with pytest.raises(AppError) as exc_info:
+        await provider.get_current_condition(37.5636, 126.9976)
+
+    assert exc_info.value.code == "weather_unavailable"
     await client.aclose()
