@@ -23,3 +23,27 @@ class AppError(Exception):
         self.message = message
         self.status_code = status_code
         self.retryable = retryable
+
+class ProviderTimeoutError(AppError):
+    """외부 provider 호출이 타임아웃됐을 때."""
+
+    def __init__(self, provider_name: str) -> None:
+        super().__init__(
+            code="PROVIDER_TIMEOUT",
+            message=f"{provider_name} 응답이 지연되고 있어요. 잠시 후 다시 시도해주세요.",
+            status_code=504,
+            retryable=True,
+        )
+
+
+class ProviderUnavailableError(AppError):
+    """외부 provider가 에러를 반환했을 때 (5xx, 인증 실패 등)."""
+
+    def __init__(self, provider_name: str, detail: str = "") -> None:
+        super().__init__(
+            code="PROVIDER_UNAVAILABLE",
+            message=f"{provider_name} 연동에 문제가 발생했어요.",
+            status_code=502,
+            retryable=True,
+        )
+        self.detail = detail

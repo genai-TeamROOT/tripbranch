@@ -4,7 +4,7 @@
 입력: 프로세스 환경 변수와 선택적인 .env 값.
 출력: 앱 전역에서 재사용할 Settings 인스턴스.
 호출 시점: 앱 부팅 또는 provider/API 키가 필요한 서비스 초기화 시 사용된다.
-TODO: 실제 외부 API 연동 시 provider별 키, 타임아웃, 캐시 설정을 추가한다.
+TODO: 실제 외부 API 연동 시 provider별 캐시 설정을 추가한다.
 """
 
 from __future__ import annotations
@@ -16,6 +16,25 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     app_env: str = "local"
+
+    # Provider selection: "fake" (default, no external calls) or "real"
+    llm_provider: str = "fake"
+    weather_provider: str = "fake"
+    place_provider: str = "fake"
+    geocoding_provider: str = "fake"
+
+    # Only required when the corresponding *_provider above is set to "real".
+    llm_api_key: str = ""
+    weather_api_key: str = ""
+    place_api_key: str = ""
+
+    # Real provider HTTP behavior (ignored by fake providers).
+    external_api_timeout_seconds: float = 10.0
+    external_api_retry_count: int = 2
+
+    # Fake-provider-only knobs
+    fake_weather_condition: str = "neutral"
+    fake_current_datetime: str = "2026-07-15T14:00:00"
 
 
 settings = Settings()
