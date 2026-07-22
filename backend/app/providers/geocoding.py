@@ -15,7 +15,7 @@ import httpx
 from app.domain.models import GeocodeResult
 from app.errors import AppError
 
-_GEOCODE_URL = "https://naveropenapi.apigw.ntruss.com/map-geocode/v2/geocode"
+_GEOCODE_URL = "https://maps.apigw.ntruss.com/map-geocode/v2/geocode"
 
 
 class GeocodingProvider(Protocol):
