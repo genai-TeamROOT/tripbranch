@@ -7,9 +7,20 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Protocol
 
 from app.domain.models import WeatherCondition
+
+# PTY(강수형태): 0 없음 외에는 모두 강수 상황 -> bad로 취급.
+_PRECIPITATION_PTY_CODES = {"1", "2", "3", "4", "5", "6", "7"}
+
+# SKY(하늘상태): 1 맑음, 3 구름많음, 4 흐림. 흐림은 강수는 아니므로 neutral로 취급.
+_SKY_TO_CONDITION = {
+    "1": WeatherCondition.GOOD,
+    "3": WeatherCondition.NEUTRAL,
+    "4": WeatherCondition.NEUTRAL,
+}
 
 
 class WeatherProvider(Protocol):
@@ -26,3 +37,36 @@ class FakeWeatherProvider:
 
     async def get_current_condition(self, latitude: float, longitude: float) -> WeatherCondition:
         return self._condition
+
+
+def resolve_base_date_time(now: datetime) -> tuple[str, str]:
+    """주어진 시각 기준으로 조회 가능한 가장 최신 초단기예보 base_date/base_time을 구한다.
+
+    발표는 매시 30분, API 제공은 발표 후 10분 뒤(매시 40분)부터 시작되므로
+    45분 이전이면 직전 시각의 30분 발표분을 사용한다.
+    """
+    base_dt = now if now.minute >= 45 else now - timedelta(hours=1)
+    return base_dt.strftime("%Y%m%d"), base_dt.strftime("%H30")
+
+
+def map_sky_pty_to_condition(sky: str | None, pty: str | None) -> WeatherCondition:
+    if pty is not None and pty in _PRECIPITATION_PTY_CODES:
+        return WeatherCondition.BAD
+    if sky is not None and sky in _SKY_TO_CONDITION:
+        return _SKY_TO_CONDITION[sky]
+    # sky/pty 값을 아직 못 구한 경우의 처리는 에러 처리 단계에서 다룬다.
+    return WeatherCondition.NEUTRAL
+
+
+def _earliest_sky_and_pty(items: list[dict]) -> tuple[str | None, str | None]:
+    """응답 항목 중 가장 이른 fcstDate/fcstTime의 SKY, PTY 값을 찾는다."""
+    sky_items = [item for item in items if item.get("category") == "SKY"]
+    pty_items = [item for item in items if item.get("category") == "PTY"]
+
+    def _earliest_value(candidates: list[dict]) -> str | None:
+        if not candidates:
+            return None
+        earliest = min(candidates, key=lambda item: (item["fcstDate"], item["fcstTime"]))
+        return earliest["fcstValue"]
+
+    return _earliest_value(sky_items), _earliest_value(pty_items)
