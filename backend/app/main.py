@@ -32,7 +32,12 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(AppError)
     async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
-        return _error_response(exc.code, exc.message, exc.status_code, exc.retryable)
+        details: dict[str, object] | None = None
+        if exc.provider or exc.details:
+            details = {"provider": exc.provider, "upstream": exc.details}
+        return _error_response(
+            exc.code, exc.message, exc.status_code, exc.retryable, details=details
+        )
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(
@@ -62,6 +67,7 @@ def _error_response(
     message: str,
     status_code: int,
     retryable: bool = False,
+    details: object | None = None,
 ) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
@@ -70,7 +76,7 @@ def _error_response(
                 "code": code,
                 "message": message,
                 "retryable": retryable,
-                "details": None,
+                "details": details,
             }
         },
     )

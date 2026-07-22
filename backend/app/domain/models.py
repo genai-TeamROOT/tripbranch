@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -23,3 +24,68 @@ class GeocodeResult:
     resolved_name: str
     latitude: float
     longitude: float
+
+
+@dataclass(frozen=True)
+class ConcentrationForecast:
+    """관광지의 날짜별 상대 집중률 예측 한 건."""
+
+    place_name: str
+    forecast_date: str | None
+    concentration_rate: float | None
+    raw_data: Mapping[str, object]
+
+
+@dataclass(frozen=True)
+class ConcentrationResult:
+    """지역·관광지 조건으로 조회한 집중률 예측 결과."""
+
+    area_code: str
+    district_code: str
+    requested_place_name: str | None
+    forecasts: tuple[ConcentrationForecast, ...]
+    provider: str
+
+
+@dataclass(frozen=True)
+class PlaceDetails:
+    """TourAPI의 공통·소개 상세 응답을 정규화한 장소 상세정보."""
+
+    content_id: str
+    content_type_id: str
+    title: str | None
+    address: str | None
+    overview: str | None
+    homepage: str | None
+    telephone: str | None
+    operating_hours: str | None
+    raw_common: Mapping[str, object]
+    raw_intro: Mapping[str, object]
+    provider: str
+
+
+@dataclass(frozen=True)
+class HolidayEntry:
+    """한국천문연구원 공휴일 API 응답 한 건."""
+
+    date: str
+    name: str
+    kind: str | None
+    sequence: int | None
+    is_holiday: bool
+    raw_data: Mapping[str, object]
+
+
+@dataclass(frozen=True)
+class HolidayResult:
+    """연·월 조건으로 조회한 공휴일 결과."""
+
+    year: int
+    month: int | None
+    entries: tuple[HolidayEntry, ...]
+    provider: str
+
+    @property
+    def holidays(self) -> tuple[HolidayEntry, ...]:
+        """응답 중 isHoliday=Y인 항목만 반환한다."""
+        return tuple(entry for entry in self.entries if entry.is_holiday)

@@ -9,6 +9,8 @@ TODO: 실제 provider(RealPlaceProvider 등)가 준비되면 팩토리에서 설
 
 from __future__ import annotations
 
+from app.domain.models import PlaceDetails, WeatherCondition
+from app.errors import AppError
 from app.schemas import (
     InterpretedConditions,
     PlaceCandidate,
@@ -32,18 +34,22 @@ class FakeRecommendationProvider:
         return get_stub_recommendations(shown_place_ids)
 
 
-class FakeGeocodingProvider:
-    """장소 이름을 고정 좌표로 대체하는 fake provider."""
+class FakeWeatherProvider:
+    """설정한 공통 날씨 상태를 반환하는 가짜 구현."""
 
-    def geocode(self, location_query: str) -> tuple[float, float]:
-        # 경복궁 좌표를 기본값으로 고정 (fake 모드 재현성 확보용)
-        return (37.5796, 126.9770)
+    def __init__(self, condition: WeatherCondition = WeatherCondition.NEUTRAL) -> None:
+        self._condition = condition
+
+    async def get_current_condition(
+        self, latitude: float, longitude: float
+    ) -> WeatherCondition:
+        return self._condition
 
 
 class FakePlaceProvider:
     """장소 검색 결과를 고정 후보 목록으로 대체하는 fake provider."""
 
-    def search_places(
+    async def search_places(
         self,
         latitude: float,
         longitude: float,
@@ -53,6 +59,7 @@ class FakePlaceProvider:
         return [
             PlaceCandidate(
                 place_id="fake-museum-1",
+                content_type_id="14",
                 name="테스트 박물관",
                 category="museum",
                 latitude=latitude,
@@ -63,6 +70,7 @@ class FakePlaceProvider:
             ),
             PlaceCandidate(
                 place_id="fake-cafe-1",
+                content_type_id="39",
                 name="테스트 카페",
                 category="cafe",
                 latitude=latitude + 0.001,
@@ -72,3 +80,59 @@ class FakePlaceProvider:
                 raw_source="fake_place",
             ),
         ]
+
+    async def search_by_keyword(
+        self,
+        keyword: str,
+        region_code: str | None = None,
+        district_code: str | None = None,
+        limit: int = 20,
+    ) -> list[PlaceCandidate]:
+        candidates = await self.search_places(37.5796, 126.9770, [], 1.0)
+        normalized = keyword.strip().lower()
+        return [candidate for candidate in candidates if normalized in candidate.name.lower()][
+            :limit
+        ]
+
+    async def get_details(self, content_id: str, content_type_id: str) -> PlaceDetails:
+        candidates = await self.search_places(37.5796, 126.9770, [], 1.0)
+        candidate = next((item for item in candidates if item.place_id == content_id), None)
+        return PlaceDetails(
+            content_id=content_id,
+            content_type_id=content_type_id,
+            title=candidate.name if candidate else None,
+            address=candidate.address if candidate else None,
+            overview="Fake Provider의 장소 상세정보입니다.",
+            homepage=None,
+            telephone=None,
+            operating_hours=candidate.operating_hours if candidate else None,
+            raw_common={},
+            raw_intro={},
+            provider="fake_place",
+        )
+
+    async def find_details_by_name(
+        self,
+        name: str,
+        region_code: str | None = None,
+        district_code: str | None = None,
+    ) -> PlaceDetails:
+        normalized_name = name.strip()
+        candidates = await self.search_by_keyword(
+            normalized_name, region_code, district_code, limit=100
+        )
+        exact = next(
+            (
+                candidate
+                for candidate in candidates
+                if candidate.name.strip().casefold() == normalized_name.casefold()
+            ),
+            None,
+        )
+        if exact is None or not exact.content_type_id:
+            raise AppError(
+                code="place_not_found",
+                message=f"'{normalized_name}' 장소를 정확히 찾을 수 없어요.",
+                status_code=404,
+            )
+        return await self.get_details(exact.place_id, exact.content_type_id)

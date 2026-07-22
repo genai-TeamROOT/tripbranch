@@ -17,22 +17,27 @@ class AppError(Exception):
         message: str,
         status_code: int = 400,
         retryable: bool = False,
+        provider: str | None = None,
+        details: object | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.status_code = status_code
         self.retryable = retryable
+        self.provider = provider
+        self.details = details
 
 class ProviderTimeoutError(AppError):
     """외부 provider 호출이 타임아웃됐을 때."""
 
     def __init__(self, provider_name: str) -> None:
         super().__init__(
-            code="PROVIDER_TIMEOUT",
+            code="provider_timeout",
             message=f"{provider_name} 응답이 지연되고 있어요. 잠시 후 다시 시도해주세요.",
             status_code=504,
             retryable=True,
+            provider=provider_name,
         )
 
 
@@ -41,9 +46,10 @@ class ProviderUnavailableError(AppError):
 
     def __init__(self, provider_name: str, detail: str = "") -> None:
         super().__init__(
-            code="PROVIDER_UNAVAILABLE",
+            code="provider_unavailable",
             message=f"{provider_name} 연동에 문제가 발생했어요.",
             status_code=502,
             retryable=True,
+            provider=provider_name,
+            details={"upstream_detail": detail} if detail else None,
         )
-        self.detail = detail

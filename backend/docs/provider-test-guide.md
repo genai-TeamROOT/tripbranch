@@ -1,0 +1,299 @@
+# Provider 테스트 가이드
+
+TripBranch의 Geocoding, Weather, Place, Concentration, Holiday Provider 테스트 명령을
+한곳에 정리한다. 모든 명령은 `backend` 디렉터리를 기준으로 실행한다.
+
+## 1. 최초 환경 준비
+
+```bash
+cd /Users/jinhyoungkim/Desktop/Dev/TripBranch/backend
+source .venv/bin/activate
+python -m pip install -e ".[dev]"
+```
+
+Python 실행 경로 확인:
+
+```bash
+which python
+python --version
+```
+
+`which python`은 프로젝트의 `backend/.venv/bin/python`을 가리켜야 한다.
+
+## 2. 환경변수
+
+실제 Provider 테스트에는 `backend/.env`의 다음 값이 필요하다.
+
+```env
+PROVIDER_MODE=real
+
+NAVER_MAP_CLIENT_ID=...
+NAVER_MAP_CLIENT_SECRET=...
+WEATHER_API_KEY=...
+TOUR_API_SERVICE_KEY=...
+```
+
+개별 Provider Override는 선택 사항이다.
+
+```env
+GEOCODING_PROVIDER=
+WEATHER_PROVIDER=
+PLACE_PROVIDER=
+CONCENTRATION_PROVIDER=
+HOLIDAY_PROVIDER=
+```
+
+빈 값이면 `PROVIDER_MODE`를 사용한다. 예를 들어 전체는 Real이지만 Place만
+Fake로 실행하려면 다음처럼 설정한다.
+
+```env
+PROVIDER_MODE=real
+PLACE_PROVIDER=fake
+```
+
+## 3. 일반 테스트
+
+전체 테스트:
+
+```bash
+python -m pytest -v
+```
+
+간결한 출력:
+
+```bash
+python -m pytest -q
+```
+
+일반 테스트는 로컬 `.env`가 Real이어도 Fake 또는 Mock Provider를 사용하며 실제
+외부 API를 호출하지 않는다.
+
+Provider 계약 테스트:
+
+```bash
+python -m pytest tests/test_provider_contracts.py -v
+```
+
+Place Provider Mock 테스트:
+
+```bash
+python -m pytest tests/test_place_provider.py -v
+```
+
+집중률 Provider Mock 테스트:
+
+```bash
+python -m pytest tests/test_concentration_provider.py -v
+```
+
+공휴일 Provider Mock 테스트:
+
+```bash
+python -m pytest tests/test_holiday_provider.py -v
+```
+
+설정 전환 테스트:
+
+```bash
+python -m pytest tests/test_provider_settings.py -v
+```
+
+## 4. 코드 검사
+
+Ruff:
+
+```bash
+python -m ruff check app tests
+```
+
+Python 컴파일 검사:
+
+```bash
+python -m compileall -q app tests
+```
+
+## 5. 실제 API Smoke Test
+
+Smoke Test는 실제 외부 API를 호출하고 최소 응답 계약을 검증한다.
+
+전체 실행:
+
+```bash
+RUN_REAL_PROVIDER_TESTS=true python -m pytest -m smoke -v -s
+```
+
+### Naver Geocoding
+
+```bash
+RUN_REAL_PROVIDER_TESTS=true python -m pytest \
+  tests/test_provider_smoke.py::test_naver_geocoding_real_smoke \
+  -v -s
+```
+
+경복궁 질의를 Naver Geocoding에 전달하고 종로구 범위의 좌표가 반환되는지
+검증한다.
+
+### KMA 날씨
+
+```bash
+RUN_REAL_PROVIDER_TESTS=true python -m pytest \
+  tests/test_provider_smoke.py::test_kma_weather_real_smoke \
+  -v -s
+```
+
+경복궁 좌표를 KMA 격자로 변환하고 `good`, `neutral`, `bad` 중 하나가
+반환되는지 검증한다.
+
+### TourAPI 좌표 기반 장소 검색
+
+```bash
+RUN_REAL_PROVIDER_TESTS=true python -m pytest \
+  tests/test_provider_smoke.py::test_tour_api_place_real_smoke \
+  -v -s
+```
+
+경복궁 반경 1km 장소 목록이 반환되는지 검증한다.
+
+### TourAPI 키워드 검색 및 상세정보
+
+```bash
+RUN_REAL_PROVIDER_TESTS=true python -m pytest \
+  tests/test_provider_smoke.py::test_tour_api_keyword_and_details_real_smoke \
+  -v -s
+```
+
+다음 흐름을 검증한다.
+
+```text
+find_details_by_name("경복궁")
+→ searchKeyword2에서 장소명 정확 일치 후보 선택
+→ contentid/contenttypeid 확보
+→ detailCommon2
+→ detailIntro2
+→ PlaceDetails
+```
+
+정확히 일치하는 장소가 없으면 유사 후보를 임의 선택하지 않고
+`place_not_found` 오류를 반환한다.
+
+### TourAPI 관광지 집중률
+
+```bash
+RUN_REAL_PROVIDER_TESTS=true python -m pytest \
+  tests/test_provider_smoke.py::test_tour_api_concentration_real_smoke \
+  -v -s
+```
+
+`areaCd=11`, `signguCd=11110`, `tAtsNm=경복궁` 조건으로 날짜별 집중률이
+반환되고 숫자로 정규화되는지 검증한다.
+
+### 한국천문연구원 공휴일
+
+```bash
+RUN_REAL_PROVIDER_TESTS=true python -m pytest \
+  tests/test_provider_smoke.py::test_kasi_holiday_real_smoke \
+  -v -s
+```
+
+`getRestDeInfo`의 2026년 공휴일을 조회하고 날짜·명칭·휴일 여부가 정규화되는지
+검증한다. 인증에는 기존 `TOUR_API_SERVICE_KEY`를 공공데이터포털 서비스 키로
+사용한다.
+
+## 6. 실제 요청·원본 응답 Inspection Test
+
+Inspection Test는 실제 API 요청 파라미터, HTTP 상태, 원본 JSON 응답과 정규화
+결과를 출력한다. `-s` 옵션이 없으면 출력이 보이지 않을 수 있다.
+
+인증 쿼리와 헤더는 `<redacted>`로 마스킹된다. 실패 로그를 공유하기 전에도
+요청 URL에 인증키가 포함되지 않았는지 반드시 확인한다.
+
+전체 실행:
+
+```bash
+RUN_REAL_PROVIDER_INSPECTION=true python -m pytest -m inspection -v -s
+```
+
+### Naver Geocoding 요청·응답
+
+```bash
+RUN_REAL_PROVIDER_INSPECTION=true python -m pytest \
+  tests/test_provider_inspection.py::test_inspect_naver_geocoding_request_and_response \
+  -v -s
+```
+
+### KMA 날씨 요청·응답
+
+```bash
+RUN_REAL_PROVIDER_INSPECTION=true python -m pytest \
+  tests/test_provider_inspection.py::test_inspect_kma_weather_request_and_response \
+  -v -s
+```
+
+### TourAPI 좌표 기반 장소 검색 요청·응답
+
+```bash
+RUN_REAL_PROVIDER_INSPECTION=true python -m pytest \
+  tests/test_provider_inspection.py::test_inspect_tour_api_place_request_and_response \
+  -v -s
+```
+
+### TourAPI 키워드 검색·상세정보 요청·응답
+
+```bash
+RUN_REAL_PROVIDER_INSPECTION=true python -m pytest \
+  tests/test_provider_inspection.py::test_inspect_tour_api_keyword_and_details_request_and_response \
+  -v -s
+```
+
+이 테스트는 `searchKeyword2`, `detailCommon2`, `detailIntro2`의 원본 응답을
+순서대로 출력한다.
+
+### TourAPI 집중률 요청·응답
+
+```bash
+RUN_REAL_PROVIDER_INSPECTION=true python -m pytest \
+  tests/test_provider_inspection.py::test_inspect_tour_api_concentration_request_and_response \
+  -v -s
+```
+
+경복궁의 날짜별 `baseYmd`, `cnctrRate` 원본값과 `ConcentrationForecast`
+정규화 결과를 출력한다.
+
+### 한국천문연구원 공휴일 요청·응답
+
+```bash
+RUN_REAL_PROVIDER_INSPECTION=true python -m pytest \
+  tests/test_provider_inspection.py::test_inspect_kasi_holiday_request_and_response \
+  -v -s
+```
+
+인증키가 마스킹된 요청 파라미터, 원본 XML 응답, 정규화된 공휴일 목록을 출력한다.
+
+## 7. 결과 해석
+
+```text
+PASSED      요청과 최소 응답 계약 검증 성공
+FAILED      인증, 권한, 네트워크, 응답 형식 또는 데이터 검증 실패
+SKIPPED     실제 호출 실행 플래그가 없거나 필요한 키가 없음
+DESELECTED  선택한 marker 또는 단일 테스트 외의 테스트를 실행 대상에서 제외
+```
+
+대표적인 실패 원인:
+
+```text
+401/403                 인증키 또는 활용 권한 문제
+provider_timeout        외부 API 응답 시간 초과
+provider_unavailable    외부 API 장애 또는 예상하지 못한 응답
+빈 장소 목록            검색 반경·키워드·지역 조건 또는 데이터 부족
+집중률 파싱 실패        원본 응답 필드 변경 가능성
+```
+
+## 8. 권장 실행 순서
+
+```bash
+python -m ruff check app tests
+python -m pytest -q
+RUN_REAL_PROVIDER_TESTS=true python -m pytest -m smoke -v -s
+```
+
+원본 요청과 응답 확인이 필요할 때만 Inspection Test를 추가로 실행한다.

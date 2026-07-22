@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import math
 
+import httpx
+
 from app.config import settings
 from app.providers.protocols import GeocodingProvider, PlaceProvider
 from app.schemas import (
@@ -72,7 +74,7 @@ def _to_recommendation_item(
     )
 
 
-def build_recommendations(
+async def build_recommendations(
     conditions: InterpretedConditions,
     shown_place_ids: list[str],
     geocoding_provider: GeocodingProvider,
@@ -86,9 +88,11 @@ def build_recommendations(
     4. 항목 변환 (거리, 실내외, 추천 이유)
     5. 운영시간 검증 여부로 recommendations / unverified 분리
     """
-    latitude, longitude = geocoding_provider.geocode(conditions.location_query)
+    geocode_result = await geocoding_provider.geocode(conditions.location_query)
+    latitude = geocode_result.latitude
+    longitude = geocode_result.longitude
 
-    candidates = place_provider.search_places(
+    candidates = await place_provider.search_places(
         latitude=latitude,
         longitude=longitude,
         preferred_categories=conditions.preferred_categories,
@@ -164,7 +168,7 @@ def get_stub_recommendations(shown_place_ids: list[str]) -> RecommendationRespon
     )
 
 
-def get_recommendations(
+async def get_recommendations(
     conditions: InterpretedConditions, shown_place_ids: list[str]
 ) -> RecommendationResponse:
     """라우터가 호출하는 단일 진입점.
@@ -172,14 +176,18 @@ def get_recommendations(
     설정이 둘 다 fake면 기존 고정 stub 응답(회귀 테스트 호환)을 반환하고,
     하나라도 real이면 실제 provider 파이프라인(build_recommendations)을 실행한다.
     """
-    if settings.place_provider == "fake" and settings.geocoding_provider == "fake":
+    if (
+        settings.resolved_place_provider == "fake"
+        and settings.resolved_geocoding_provider == "fake"
+    ):
         return get_stub_recommendations(shown_place_ids)
 
     from app.providers.factory import get_geocoding_provider, get_place_provider
 
-    return build_recommendations(
-        conditions,
-        shown_place_ids,
-        geocoding_provider=get_geocoding_provider(),
-        place_provider=get_place_provider(),
-    )
+    async with httpx.AsyncClient() as client:
+        return await build_recommendations(
+            conditions,
+            shown_place_ids,
+            geocoding_provider=get_geocoding_provider(client),
+            place_provider=get_place_provider(client),
+        )

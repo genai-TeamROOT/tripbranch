@@ -1,80 +1,210 @@
-"""TourAPI(한국관광공사) 기반 실제 장소 Provider.
-
-역할: TourAPI locationBasedList2를 호출해 좌표 기준 장소 후보를 조회하고,
-      mapper를 통해 공통 PlaceCandidate 모델로 변환해 반환한다.
-입력: 위도, 경도, 선호 카테고리, 검색 반경(km).
-출력: PlaceCandidate 리스트 (빈 리스트 가능, 예외적 상황에서만 AppError 계열 발생).
-호출 시점: PLACE_PROVIDER=real일 때 providers/factory.get_place_provider()가 반환한다.
-TODO: detailIntro2 연동으로 operating_hours 채우기.
-      contentTypeId를 preferred_categories 기준으로 필터링해 요청 자체를 줄이기.
-"""
+"""TourAPI 기반 좌표·키워드 검색과 장소 상세정보 Provider."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import httpx
 
-from app.config import settings
-from app.errors import ProviderTimeoutError, ProviderUnavailableError
+from app.domain.models import PlaceDetails
+from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
 from app.providers.mappers import map_tour_api_response
 from app.schemas import PlaceCandidate
 
+_BASE_URL = "https://apis.data.go.kr/B551011/KorService2"
 _LOCATION_BASED_LIST_PATH = "/locationBasedList2"
+_SEARCH_KEYWORD_PATH = "/searchKeyword2"
+_DETAIL_COMMON_PATH = "/detailCommon2"
+_DETAIL_INTRO_PATH = "/detailIntro2"
+_OPERATING_HOURS_KEYS = (
+    "usetime",
+    "usetimeculture",
+    "opentimefood",
+    "checkintime",
+    "openperiod",
+)
+
+
+def _first_item(payload: Mapping[str, object]) -> dict[str, object]:
+    response = payload.get("response")
+    body = response.get("body") if isinstance(response, Mapping) else None
+    items = body.get("items") if isinstance(body, Mapping) else None
+    raw_items = items.get("item", []) if isinstance(items, Mapping) else []
+    if isinstance(raw_items, Mapping):
+        return dict(raw_items)
+    if isinstance(raw_items, list) and raw_items and isinstance(raw_items[0], Mapping):
+        return dict(raw_items[0])
+    return {}
+
+
+def _first_text(item: Mapping[str, object], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = item.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return None
 
 
 class RealPlaceProvider:
-    def search_places(
+    def __init__(
+        self,
+        api_key: str,
+        client: httpx.AsyncClient,
+        timeout_seconds: float = 10.0,
+    ) -> None:
+        self._api_key = api_key
+        self._client = client
+        self._timeout_seconds = timeout_seconds
+
+    def _base_params(self) -> dict[str, object]:
+        return {
+            "serviceKey": self._api_key,
+            "MobileOS": "ETC",
+            "MobileApp": "TripBranch",
+            "_type": "json",
+        }
+
+    async def _request_json(self, path: str, params: dict[str, object]) -> dict[str, object]:
+        try:
+            response = await self._client.get(
+                _BASE_URL + path,
+                params=params,
+                timeout=self._timeout_seconds,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except httpx.TimeoutException as exc:
+            raise ProviderTimeoutError("TourAPI") from exc
+        except httpx.HTTPError as exc:
+            raise ProviderUnavailableError("TourAPI") from exc
+        except ValueError as exc:
+            raise ProviderUnavailableError("TourAPI", detail="non-JSON response") from exc
+
+        header = payload.get("response", {}).get("header", {})
+        result_code = str(header.get("resultCode", ""))
+        if result_code not in {"", "00", "0000"}:
+            raise ProviderUnavailableError(
+                "TourAPI",
+                detail=f"{result_code}: {header.get('resultMsg', '')}",
+            )
+        return payload
+
+    async def search_places(
         self,
         latitude: float,
         longitude: float,
         preferred_categories: list[str],
         search_radius_km: float,
     ) -> list[PlaceCandidate]:
-        radius_m = min(int(search_radius_km * 1000), 20000)  # TourAPI 최대 반경 20km
-
+        radius_m = min(int(search_radius_km * 1000), 20000)
         params = {
-            "serviceKey": settings.place_api_key,
-            "MobileOS": "ETC",
-            "MobileApp": "TripBranch",
-            "_type": "json",
+            **self._base_params(),
             "mapX": longitude,
             "mapY": latitude,
             "radius": radius_m,
-            "arrange": "E",  # 거리순 정렬
+            "arrange": "E",
             "numOfRows": 20,
             "pageNo": 1,
         }
-
-        url = "http://apis.data.go.kr/B551011/KorService2" + _LOCATION_BASED_LIST_PATH
-
-        try:
-            response = httpx.get(
-                url,
-                params=params,
-                timeout=settings.external_api_timeout_seconds,
-            )
-        except httpx.TimeoutException as exc:
-            raise ProviderTimeoutError("TourAPI") from exc
-        except httpx.HTTPError as exc:
-            raise ProviderUnavailableError("TourAPI", detail=str(exc)) from exc
-
-        if response.status_code >= 500:
-            raise ProviderUnavailableError("TourAPI", detail=f"status={response.status_code}")
-
-        if response.status_code >= 400:
-            # 4xx는 재시도해도 소용없는 경우가 많음 (키 오류, 파라미터 오류 등)
-            raise ProviderUnavailableError("TourAPI", detail=f"status={response.status_code}")
-
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            # TourAPI는 인증키 오류 시 JSON 대신 XML을 반환하는 경우가 있음
-            raise ProviderUnavailableError("TourAPI", detail="non-JSON response") from exc
-
-        result_code = payload.get("response", {}).get("header", {}).get("resultCode")
-        if result_code not in (None, "0000"):
-            # 결과 코드가 있는데 정상(0000)이 아니면 provider 오류로 취급
-            result_msg = payload.get("response", {}).get("header", {}).get("resultMsg", "")
-            raise ProviderUnavailableError("TourAPI", detail=f"{result_code}: {result_msg}")
-
-        # 여기 도달하면 응답 자체는 정상. 결과가 0건이어도 그냥 빈 리스트 반환 (에러 아님)
+        payload = await self._request_json(_LOCATION_BASED_LIST_PATH, params)
         return map_tour_api_response(payload)
+
+    async def search_by_keyword(
+        self,
+        keyword: str,
+        region_code: str | None = None,
+        district_code: str | None = None,
+        limit: int = 20,
+    ) -> list[PlaceCandidate]:
+        normalized_keyword = keyword.strip()
+        if not normalized_keyword:
+            raise ValueError("keyword는 비어 있을 수 없습니다.")
+        if district_code and not region_code:
+            raise ValueError("district_code 사용 시 region_code가 필요합니다.")
+
+        params = {
+            **self._base_params(),
+            "keyword": normalized_keyword,
+            "arrange": "A",
+            "numOfRows": max(1, min(limit, 100)),
+            "pageNo": 1,
+        }
+        if region_code:
+            params["lDongRegnCd"] = region_code
+        if district_code:
+            params["lDongSignguCd"] = district_code
+
+        payload = await self._request_json(_SEARCH_KEYWORD_PATH, params)
+        return map_tour_api_response(payload)
+
+    async def get_details(self, content_id: str, content_type_id: str) -> PlaceDetails:
+        if not content_id or not content_type_id:
+            raise ValueError("content_id와 content_type_id가 필요합니다.")
+
+        common_payload = await self._request_json(
+            _DETAIL_COMMON_PATH,
+            {**self._base_params(), "contentId": content_id},
+        )
+        intro_payload = await self._request_json(
+            _DETAIL_INTRO_PATH,
+            {
+                **self._base_params(),
+                "contentId": content_id,
+                "contentTypeId": content_type_id,
+            },
+        )
+        common = _first_item(common_payload)
+        intro = _first_item(intro_payload)
+        address_parts = [common.get("addr1"), common.get("addr2")]
+        address = " ".join(str(part) for part in address_parts if part) or None
+
+        return PlaceDetails(
+            content_id=content_id,
+            content_type_id=content_type_id,
+            title=_first_text(common, ("title",)),
+            address=address,
+            overview=_first_text(common, ("overview",)),
+            homepage=_first_text(common, ("homepage",)),
+            telephone=_first_text(common, ("tel",)) or _first_text(intro, ("infocenter",)),
+            operating_hours=_first_text(intro, _OPERATING_HOURS_KEYS),
+            raw_common=common,
+            raw_intro=intro,
+            provider="tour_api",
+        )
+
+    async def find_details_by_name(
+        self,
+        name: str,
+        region_code: str | None = None,
+        district_code: str | None = None,
+    ) -> PlaceDetails:
+        normalized_name = name.strip()
+        if not normalized_name:
+            raise ValueError("name은 비어 있을 수 없습니다.")
+
+        candidates = await self.search_by_keyword(
+            normalized_name,
+            region_code=region_code,
+            district_code=district_code,
+            limit=100,
+        )
+        exact = next(
+            (
+                candidate
+                for candidate in candidates
+                if candidate.name.strip().casefold() == normalized_name.casefold()
+            ),
+            None,
+        )
+        if exact is None:
+            raise AppError(
+                code="place_not_found",
+                message=f"'{normalized_name}' 장소를 정확히 찾을 수 없어요.",
+                status_code=404,
+                details={"candidate_names": [item.name for item in candidates[:5]]},
+            )
+        if not exact.content_type_id:
+            raise ProviderUnavailableError(
+                "TourAPI", detail="matched place has no contentTypeId"
+            )
+        return await self.get_details(exact.place_id, exact.content_type_id)

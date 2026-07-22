@@ -1,0 +1,191 @@
+# TripBranch 아키텍처
+
+## 1. 문서 목적과 상태
+
+이 문서는 Phase 1-A의 목표 아키텍처와 현재 저장소 구현을 함께 설명합니다.
+다이어그램의 일부 계층은 목표 구조이며 아직 코드로 존재하지 않습니다.
+
+| 구분 | 상태 |
+| --- | --- |
+| React Frontend, 분리된 Interpret/Recommendations API | 구현됨 |
+| Fake/Real Provider와 일부 외부 API 연동 | 구현됨 |
+| Chat API, Orchestrator, Context Merge, Tool | 미구현 (`TBD`) |
+| Recommendation Request Builder, 가중치 Engine | 미구현 (`TBD`) |
+| LLM Interpret/Response Generator | 미구현 (`TBD`) |
+| Supabase Persistence | 미구현 (`TBD`) |
+
+## 2. 전체 시스템 흐름
+
+```mermaid
+flowchart LR
+    FE["Frontend"] --> CHAT["Chat API"]
+    CHAT --> ORCH["Orchestrator"]
+    ORCH --> INT["Interpret"]
+    INT --> MERGE["Context Merge"]
+    MERGE --> TOOL["Tool"]
+    TOOL --> PROV["Provider"]
+    PROV --> EXT["External API"]
+    EXT --> PROV
+    PROV --> TOOL
+    TOOL --> BUILDER["Recommendation Request Builder"]
+    BUILDER --> ENGINE["Recommendation Engine"]
+    ENGINE --> GEN["Response Generator"]
+    GEN --> CHAT
+    CHAT --> FE
+```
+
+현재 코드는 `Frontend → /api/interpret → /api/recommendations → Service →
+Geocoding/Place Provider`의 축소된 경로만 실행합니다. Weather, Concentration,
+Holiday Provider는 구현되어 있지만 추천 서비스에 아직 조립되지 않았습니다.
+
+## 3. 계층별 책임
+
+### Frontend
+
+- 담당: 사용자 입력, 메시지·추천 결과 렌더링, API 호출, UI 상태 관리
+- 현재: `TripContext`와 `sessionStorage`에 같은 탭의 대화를 저장
+- 하지 않음: LLM/외부 Provider 직접 호출, API 키 보관, 추천 점수 계산
+- 목표: 새 채팅에서 `chatSessionId` 생성
+
+### Chat API
+
+- 담당: `ChatRequest` 검증, Orchestrator 호출, 공개 `ChatResponse` 반환
+- 하지 않음: Provider 원본 응답 직접 조작, 추천 점수 직접 계산
+- 상태: 미구현. 현재는 `/api/interpret`, `/api/recommendations`로 분리됨
+
+### Orchestrator
+
+- 담당: Intent에 따른 실행 순서, Tool 호출, fallback, 실행 ID 및 로그 연결
+- 하지 않음: 외부 API별 필드 파싱, 도메인 점수식 자체 구현
+- 상태: `TBD`
+
+### Interpret
+
+- 담당: 자연어에서 Intent와 명시 조건·변경 조건을 구조화
+- 하지 않음: 최종 추천 장소 결정, 외부 API 사실을 추측, 점수 계산
+- 현재: 모든 유효 입력에 고정 `InterpretedConditions`를 반환하는 Stub
+
+### Context Merge
+
+- 담당: 현재 발화에서 추출한 변경분을 이전 조건 및 현재 장소 맥락과 병합
+- 하지 않음: 과거의 날씨·운영정보 스냅샷을 현재 사실로 간주
+- 상태: `TBD`; 필드별 Add/Remove/Update 규칙은 `docs/design`에 초안 존재
+
+### Tool
+
+- 담당: 추천 파이프라인이 사용하는 업무 단위 기능 제공
+- 예: `resolveLocation`, `searchNearbyPlaces`, `getPlaceDetails`,
+  `estimateTravelTime`, `getCurrentWeather`, `getCongestion`,
+  `searchPlaceFeatureEvidence`
+- 하지 않음: 특정 외부 API 응답 형식을 호출자에게 노출
+- 상태: 별도 Tool 계층은 미구현
+
+### Provider
+
+- 담당: 외부 API 호출, 인증, timeout, 응답 파싱, 내부 모델 정규화
+- 하지 않음: 사용자 의도 판단, 추천 정책 결정
+- 현재: Geocoding, Weather, Place, Concentration, Holiday의 Fake/Real 구현 존재
+
+### Recommendation Request Builder
+
+- 담당: 병합된 조건을 검증하고 Provider/Tool 결과를 결합해 내부
+  `RecommendationRequest` 생성
+- 하지 않음: 프론트 공개 계약으로 노출, 원문 발화를 그대로 점수기로 전달
+- 상태: `TBD`
+
+### Recommendation Engine
+
+- 담당: 명시적 필수 조건의 하드 필터, Feature 계산, 가중치 점수, 결정적 정렬,
+  이전 노출·거절 장소 제외
+- 현재: 거리 계산과 `shown_place_ids` 제외만 일부 구현; 가중치 Scoring은 미구현
+
+### Response Generator
+
+- 담당: 추천 결과와 근거·경고를 사용자에게 읽기 쉬운 자연어로 변환
+- 하지 않음: 추천 순위 재결정 또는 검증되지 않은 사실 생성
+- 상태: `TBD`; 현재는 정적인 `recommendation_reason` 문자열 사용
+
+### Persistence / Supabase
+
+- 담당 목표: 세션 메타데이터, 정규화 조건, 추천 실행·결과·외부 데이터 스냅샷 저장
+- 사용자 자연어 원문은 영구 저장하지 않는 것이 원칙
+- 실제 테이블, 보존기간, 접근정책: `TBD`
+- 현재 저장소에 Supabase 연동 코드는 없음
+
+### localStorage
+
+- 목표: 채팅 복원용 사용자 원문과 표시 메시지를 브라우저에 저장 가능
+- 서버 영속 데이터와 달리 사용자 기기 범위의 UI 상태로 취급
+- 현재 구현은 `localStorage`가 아니라 버전 2의 `sessionStorage`를 사용함
+- 전환 여부와 만료/삭제 정책: 현재 논의 중
+
+## 4. 주요 경계
+
+### Interpret와 Recommendation
+
+Interpret는 “사용자가 무엇을 원하는가”를 조건으로 추출합니다. Recommendation은
+검증·병합·외부 데이터 보완이 끝난 조건을 사용해 장소를 평가합니다. Interpret가
+장소를 직접 고르면 외부 사실 검증과 결정적 점수 정책을 우회하므로 금지합니다.
+
+### Provider와 Tool
+
+Provider는 TourAPI나 기상청처럼 외부 시스템과 직접 통신합니다. Tool은
+`getPlaceDetails`처럼 업무 목적을 표현하며 하나 이상의 Provider 호출을 조합할 수
+있습니다. 두 계층은 외부 엔드포인트와 1:1일 필요가 없습니다.
+
+### 외부 응답과 추천 모델
+
+Provider 응답 필드는 서비스마다 이름, 누락 규칙, 자료형이 다릅니다. 추천기가
+원본 응답을 직접 사용하면 Provider 변경이 점수 로직 전체로 전파됩니다. 따라서
+Provider/Mapper가 `PlaceCandidate`, `PlaceDetails`, `WeatherCondition` 등의 내부
+모델로 정규화하고 원본은 진단용 `raw_*` 필드로만 보존합니다.
+
+### 사용자 발화와 추천 계산 입력
+
+자연어에는 생략, 모호성, 이전 턴 참조가 포함됩니다. 추천 계산 입력은 단위·기본값·
+출처·신뢰도가 확정된 값이어야 하므로, 원문과 `RecommendationRequest`를 분리합니다.
+
+### 프론트와 백엔드 상태
+
+- Frontend: 입력 중 상태, 렌더링 메시지, 로컬 복원 데이터
+- Backend: 정규화 조건, 실행 상태, 외부 데이터 스냅샷, 추천 결과와 로그
+- 현재 Backend 세션 저장은 미구현이며 Frontend `sessionStorage`만 존재
+
+### 식별자 생성 위치
+
+- `chatSessionId`: 새 채팅 생성 시 Frontend가 `crypto.randomUUID()` 등으로 생성
+- `recommendationRunId`: 추천 실행 시작 시 Backend가 생성
+- 두 식별자는 현재 코드와 API 계약에는 아직 없음 (`TBD`)
+- `chatSessionId`는 사용자 인증 ID가 아님
+
+## 5. 외부 데이터 스냅샷
+
+과거 채팅을 열 때는 당시 추천 판단에 사용한 날씨·운영정보·혼잡도·추천 결과를
+스냅샷으로 표시합니다. 과거 대화를 단순 열람하는 행위는 Provider 재호출을 유발하지
+않고, 사용자가 후속 입력을 보낼 때만 현재 데이터를 새로 조회하는 방향입니다.
+구체 저장 스키마와 TTL은 `TBD`입니다.
+
+## 6. 오류와 fallback 방향
+
+| 상황 | 기본 방향 | 확정 상태 |
+| --- | --- | --- |
+| Geocoding 실패 | 위치 재입력 요청; 추천 실행 중단 | 부분 구현 |
+| Place 후보 조회 실패 | 후보 자체가 없으므로 해당 실행 실패 | 제안, `TBD` |
+| Weather 실패 | 날씨 Feature 제외 후 나머지 가중치 재정규화 | 설계 초안, 미구현 |
+| 운영시간 누락 | 제외 또는 `unverified_recommendations`로 분리 | 현재는 분리 |
+| Concentration 실패 | 혼잡도 Feature 없이 부분 추천 | 제안, `TBD` |
+| Blog 근거 실패 | 분위기/조용함 Feature를 미확인 처리 | 제안, `TBD` |
+| 하드 필터 후 후보 없음 | 완화 가능한 조건을 설명하고 사용자 확인 요청 | `TBD` |
+| LLM 실패 | 재시도 또는 구조화 입력 UI 제공 | `TBD` |
+
+전체 실패와 부분 추천의 기준은 다음 원칙으로 구분합니다.
+
+- 위치와 장소 후보처럼 추천 실행에 필수인 데이터 실패는 실행 실패
+- 날씨·혼잡도·블로그 근거처럼 선택 Feature 실패는 해당 Feature만 제외 가능
+- 사용자가 명시한 필수 조건은 자동 완화하지 않고 확인 요청
+- 부분 추천에는 누락된 검증 항목과 경고를 함께 표시
+
+로그 후보 항목은 `recommendationRunId`, Provider/Tool 이름, 시작·종료 시각,
+성공 여부, 표준 오류 코드, latency, fallback 여부, 후보 수 변화입니다. API 키,
+사용자 원문, 인증 헤더 및 전체 민감 응답은 기록하지 않습니다. 구체 로그 스키마와
+보존기간은 `TBD`입니다.

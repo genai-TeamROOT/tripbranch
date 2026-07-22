@@ -11,6 +11,13 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from app.domain.models import (
+    ConcentrationResult,
+    GeocodeResult,
+    HolidayResult,
+    PlaceDetails,
+    WeatherCondition,
+)
 from app.schemas import InterpretedConditions, PlaceCandidate, RecommendationResponse
 
 
@@ -26,13 +33,21 @@ class RecommendationProvider(Protocol):
         ...
 
 class GeocodingProvider(Protocol):
-    def geocode(self, location_query: str) -> tuple[float, float]:
-        """장소 이름이나 주소를 (위도, 경도) 좌표로 변환한다."""
+    async def geocode(self, location_query: str) -> GeocodeResult:
+        """장소 이름이나 주소를 정규화된 좌표 결과로 변환한다."""
+        ...
+
+
+class WeatherProvider(Protocol):
+    async def get_current_condition(
+        self, latitude: float, longitude: float
+    ) -> WeatherCondition:
+        """좌표의 현재 날씨를 공통 상태로 반환한다."""
         ...
 
 
 class PlaceProvider(Protocol):
-    def search_places(
+    async def search_places(
         self,
         latitude: float,
         longitude: float,
@@ -40,4 +55,46 @@ class PlaceProvider(Protocol):
         search_radius_km: float,
     ) -> list[PlaceCandidate]:
         """주어진 좌표/조건으로 장소 후보 목록을 조회해 공통 모델로 반환한다."""
+        ...
+
+    async def search_by_keyword(
+        self,
+        keyword: str,
+        region_code: str | None = None,
+        district_code: str | None = None,
+        limit: int = 20,
+    ) -> list[PlaceCandidate]:
+        """장소명·키워드로 후보와 TourAPI content ID를 조회한다."""
+        ...
+
+    async def get_details(self, content_id: str, content_type_id: str) -> PlaceDetails:
+        """TourAPI content ID로 공통·소개 상세정보를 조회한다."""
+        ...
+
+    async def find_details_by_name(
+        self,
+        name: str,
+        region_code: str | None = None,
+        district_code: str | None = None,
+    ) -> PlaceDetails:
+        """장소명으로 정확히 일치하는 후보를 찾아 상세정보까지 반환한다."""
+        ...
+
+
+class ConcentrationProvider(Protocol):
+    async def get_forecast(
+        self,
+        area_code: str,
+        district_code: str,
+        place_name: str | None = None,
+    ) -> ConcentrationResult:
+        """지역과 선택적인 관광지명에 대한 향후 집중률을 반환한다."""
+        ...
+
+
+class HolidayProvider(Protocol):
+    async def get_holidays(
+        self, year: int, month: int | None = None
+    ) -> HolidayResult:
+        """공휴일 목록을 반환한다."""
         ...

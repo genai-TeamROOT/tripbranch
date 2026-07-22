@@ -1,0 +1,153 @@
+# Provider Contract v1
+
+실행 명령은 [Provider 테스트 가이드](./provider-test-guide.md)를 참고한다.
+
+## 범위
+
+Geocoding, Weather, Place, Concentration, Holiday Provider의 Fake/Real 구현이
+공유하는 최소 계약이다.
+서비스는 구체 Provider를 직접 알지 않고 `providers/protocols.py`의 Protocol만 사용한다.
+
+## 공통 원칙
+
+- 외부 I/O 가능성을 고려해 모든 메서드는 `async`다.
+- Stub과 Real은 동일한 입력과 반환 타입을 사용한다.
+- 외부 응답은 Provider 또는 Mapper에서 내부 모델로 정규화한다.
+- API 키와 원본 응답은 API 응답이나 테스트 로그에 노출하지 않는다.
+
+## Provider 모드
+
+`PROVIDER_MODE`가 Provider들의 공통 기본값이다. `GEOCODING_PROVIDER`,
+`WEATHER_PROVIDER`, `PLACE_PROVIDER`, `CONCENTRATION_PROVIDER`,
+`HOLIDAY_PROVIDER`에 값이 있으면 해당 Provider만 재정의한다.
+
+```env
+PROVIDER_MODE=real
+PLACE_PROVIDER=fake
+```
+
+위 예시는 Geocoding과 Weather는 Real, Place만 Fake로 실행한다.
+
+## Geocoding
+
+입력은 자유 텍스트 위치 질의다. 출력은 `GeocodeResult`이며 원문 질의,
+정규화된 위치명, 위도, 경도를 포함한다.
+
+```python
+async def geocode(location_query: str) -> GeocodeResult
+```
+
+## Weather
+
+입력은 위도와 경도다. 출력은 `good`, `neutral`, `bad` 중 하나인
+`WeatherCondition`이다.
+
+```python
+async def get_current_condition(latitude: float, longitude: float) -> WeatherCondition
+```
+
+## Place
+
+장소 탐색은 좌표 기반 검색과 키워드 검색을 지원한다. 키워드 검색 결과에는 상세
+조회에 필요한 `place_id`(TourAPI `contentid`)와 `content_type_id`가 포함된다.
+
+```python
+async def search_places(
+    latitude: float,
+    longitude: float,
+    preferred_categories: list[str],
+    search_radius_km: float,
+) -> list[PlaceCandidate]
+
+async def search_by_keyword(
+    keyword: str,
+    region_code: str | None = None,
+    district_code: str | None = None,
+    limit: int = 20,
+) -> list[PlaceCandidate]
+
+async def get_details(content_id: str, content_type_id: str) -> PlaceDetails
+
+async def find_details_by_name(
+    name: str,
+    region_code: str | None = None,
+    district_code: str | None = None,
+) -> PlaceDetails
+```
+
+나담당에게 공유 가능한 장소 필드는 `place_id`, `name`, `category`, `latitude`,
+`longitude`, `address`, `operating_hours`, `raw_source`, `content_type_id`다.
+`get_details`는 `detailCommon2`와 `detailIntro2`를 결합해 소개, 홈페이지, 연락처,
+장소 유형별 운영시간을 반환한다. `find_details_by_name`은 키워드 검색에서 장소명이
+정확히 일치하는 후보만 선택한 뒤 상세조회하며 유사 후보를 임의 선택하지 않는다.
+
+종로구 경복궁 키워드 검색은 `region_code="11"`, `district_code="110"`을 사용한다.
+집중률 API의 `signguCd="11110"`과 달리 KorService2의 `lDongSignguCd`는 순수
+3자리 시군구 코드인 `110`을 사용하므로 혼동하지 않는다.
+
+## Concentration
+
+관광지 집중률 Provider는 한국관광공사 `TatsCnctrRateService`를 사용한다.
+장소 검색과 달리 법정동 시도·시군구 코드와 선택적인 관광지명을 입력받는다.
+
+```python
+async def get_forecast(
+    area_code: str,
+    district_code: str,
+    place_name: str | None = None,
+) -> ConcentrationResult
+```
+
+종로구 경복궁의 기본 조회값은 `area_code="11"`,
+`district_code="11110"`, `place_name="경복궁"`이다. Real Provider는 Place
+Provider와 같은 `TOUR_API_SERVICE_KEY`를 사용한다. 원본 응답 필드가 변경되더라도
+Mapper에서 `ConcentrationForecast`와 `raw_data`로 정규화한다.
+
+## Holiday
+
+한국천문연구원 특일 정보 서비스의 공휴일 전용 `getRestDeInfo`를 사용한다.
+응답 XML은 Provider 내부에서 `HolidayResult`로 정규화한다.
+
+```python
+async def get_holidays(year: int, month: int | None = None) -> HolidayResult
+```
+
+Real Provider는 `TOUR_API_SERVICE_KEY`에 설정한 공공데이터포털 서비스 키를
+공유한다. `getAnniversaryInfo`는 기념일 조회이므로 공휴일 Provider에서 사용하지
+않는다.
+
+## 오류 상태
+
+| 코드 | 의미 | 재시도 |
+| --- | --- | --- |
+| `invalid_request` | 입력값이 유효하지 않음 | 아니오 |
+| `location_not_found` | 위치를 식별하지 못함 | 아니오 |
+| `weather_no_data` | 유효한 좌표지만 날씨 항목이 없음 | 가능 |
+| `geocoding_unavailable` | Geocoding 호출 또는 응답 오류 | 가능 |
+| `weather_unavailable` | Weather 호출 또는 응답 오류 | 가능 |
+| `provider_timeout` | 외부 Provider 시간 초과 | 가능 |
+| `provider_unavailable` | Place Provider 호출 또는 응답 오류 | 가능 |
+| `place_not_found` | 키워드 결과에 정확히 일치하는 장소가 없음 | 아니오 |
+
+Provider 공통 오류에는 `provider`와 선택적인 `details` 메타데이터를 함께 둔다.
+
+## 실제 Smoke Test 실행 조건
+
+일반 테스트에서는 실제 API를 호출하지 않는다. 아래 값을 준비한 뒤 명시적으로
+실행한 경우에만 `tests/test_provider_smoke.py`가 외부 호출을 수행한다.
+
+```bash
+RUN_REAL_PROVIDER_TESTS=true \
+NAVER_MAP_CLIENT_ID=... \
+NAVER_MAP_CLIENT_SECRET=... \
+WEATHER_API_KEY=... \
+TOUR_API_SERVICE_KEY=... \
+pytest -m smoke
+```
+
+요청 파라미터와 원본 JSON 응답을 확인할 때는 별도 Inspection Test를 사용한다.
+인증 쿼리와 헤더는 `<redacted>`로 마스킹되며, 일반 테스트에서는 실행되지 않는다.
+
+```bash
+RUN_REAL_PROVIDER_INSPECTION=true pytest -m inspection -v -s
+```

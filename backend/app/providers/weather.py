@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Protocol
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -31,22 +30,6 @@ _SKY_TO_CONDITION = {
     "3": WeatherCondition.NEUTRAL,
     "4": WeatherCondition.NEUTRAL,
 }
-
-
-class WeatherProvider(Protocol):
-    async def get_current_condition(self, latitude: float, longitude: float) -> WeatherCondition:
-        """좌표의 현재(가장 가까운 예보 시각) 날씨를 반환한다."""
-        ...
-
-
-class FakeWeatherProvider:
-    """설정된 고정 날씨를 반환하는 테스트/로컬 개발용 구현."""
-
-    def __init__(self, condition: WeatherCondition = WeatherCondition.NEUTRAL) -> None:
-        self._condition = condition
-
-    async def get_current_condition(self, latitude: float, longitude: float) -> WeatherCondition:
-        return self._condition
 
 
 def resolve_base_date_time(now: datetime) -> tuple[str, str]:

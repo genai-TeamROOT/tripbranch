@@ -25,4 +25,4 @@ async def recommendations(request: RecommendationRequest) -> RecommendationRespo
         weather_condition=request.weather_condition,
         search_radius_km=request.search_radius_km,
     )
-    return get_recommendations(conditions, request.shown_place_ids)
+    return await get_recommendations(conditions, request.shown_place_ids)
