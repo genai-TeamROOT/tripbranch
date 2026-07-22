@@ -41,6 +41,12 @@ async def test_fake_place_provider_uses_common_candidate() -> None:
     assert result[0].raw_source == "fake_place"
     assert result[0].latitude == 37.5796
 
+    keyword_result = await FakePlaceProvider().search_by_keyword("박물관")
+    assert keyword_result[0].content_type_id == "14"
+
+    details = await FakePlaceProvider().get_details("fake-museum-1", "14")
+    assert details.title == "테스트 박물관"
+
 
 @pytest.mark.asyncio
 async def test_fake_concentration_provider_uses_common_result() -> None:

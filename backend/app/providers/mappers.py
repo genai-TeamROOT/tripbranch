@@ -48,6 +48,7 @@ def map_tour_api_item(item: dict) -> PlaceCandidate | None:
 
     return PlaceCandidate(
         place_id=str(content_id),
+        content_type_id=content_type_id or None,
         name=title,
         category=category,
         latitude=latitude,

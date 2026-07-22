@@ -1,5 +1,7 @@
 # Provider Contract v1
 
+실행 명령은 [Provider 테스트 가이드](./provider-test-guide.md)를 참고한다.
+
 ## 범위
 
 Geocoding, Weather, Place Provider의 Stub/Real 구현이 공유하는 최소 계약이다.
@@ -45,8 +47,8 @@ async def get_current_condition(latitude: float, longitude: float) -> WeatherCon
 
 ## Place
 
-입력은 중심 좌표, 선호 카테고리, 검색 반경이다. 출력은 정규화된
-`PlaceCandidate` 목록이다. 결과가 없으면 빈 목록을 반환한다.
+장소 탐색은 좌표 기반 검색과 키워드 검색을 지원한다. 키워드 검색 결과에는 상세
+조회에 필요한 `place_id`(TourAPI `contentid`)와 `content_type_id`가 포함된다.
 
 ```python
 async def search_places(
@@ -55,11 +57,25 @@ async def search_places(
     preferred_categories: list[str],
     search_radius_km: float,
 ) -> list[PlaceCandidate]
+
+async def search_by_keyword(
+    keyword: str,
+    region_code: str | None = None,
+    district_code: str | None = None,
+    limit: int = 20,
+) -> list[PlaceCandidate]
+
+async def get_details(content_id: str, content_type_id: str) -> PlaceDetails
 ```
 
 나담당에게 공유 가능한 장소 필드는 `place_id`, `name`, `category`, `latitude`,
-`longitude`, `address`, `operating_hours`, `raw_source`다. 현재 TourAPI
-`locationBasedList2`만으로 운영시간을 얻을 수 없어 `operating_hours`는 `None`이다.
+`longitude`, `address`, `operating_hours`, `raw_source`, `content_type_id`다.
+`get_details`는 `detailCommon2`와 `detailIntro2`를 결합해 소개, 홈페이지, 연락처,
+장소 유형별 운영시간을 반환한다.
+
+종로구 경복궁 키워드 검색은 `region_code="11"`, `district_code="110"`을 사용한다.
+집중률 API의 `signguCd="11110"`과 달리 KorService2의 `lDongSignguCd`는 순수
+3자리 시군구 코드인 `110`을 사용하므로 혼동하지 않는다.
 
 ## Concentration
 

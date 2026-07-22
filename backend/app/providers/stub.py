@@ -9,7 +9,7 @@ TODO: 실제 provider(RealPlaceProvider 등)가 준비되면 팩토리에서 설
 
 from __future__ import annotations
 
-from app.domain.models import WeatherCondition
+from app.domain.models import PlaceDetails, WeatherCondition
 from app.schemas import (
     InterpretedConditions,
     PlaceCandidate,
@@ -58,6 +58,7 @@ class FakePlaceProvider:
         return [
             PlaceCandidate(
                 place_id="fake-museum-1",
+                content_type_id="14",
                 name="테스트 박물관",
                 category="museum",
                 latitude=latitude,
@@ -68,6 +69,7 @@ class FakePlaceProvider:
             ),
             PlaceCandidate(
                 place_id="fake-cafe-1",
+                content_type_id="39",
                 name="테스트 카페",
                 category="cafe",
                 latitude=latitude + 0.001,
@@ -77,3 +79,33 @@ class FakePlaceProvider:
                 raw_source="fake_place",
             ),
         ]
+
+    async def search_by_keyword(
+        self,
+        keyword: str,
+        region_code: str | None = None,
+        district_code: str | None = None,
+        limit: int = 20,
+    ) -> list[PlaceCandidate]:
+        candidates = await self.search_places(37.5796, 126.9770, [], 1.0)
+        normalized = keyword.strip().lower()
+        return [candidate for candidate in candidates if normalized in candidate.name.lower()][
+            :limit
+        ]
+
+    async def get_details(self, content_id: str, content_type_id: str) -> PlaceDetails:
+        candidates = await self.search_places(37.5796, 126.9770, [], 1.0)
+        candidate = next((item for item in candidates if item.place_id == content_id), None)
+        return PlaceDetails(
+            content_id=content_id,
+            content_type_id=content_type_id,
+            title=candidate.name if candidate else None,
+            address=candidate.address if candidate else None,
+            overview="Fake Provider의 장소 상세정보입니다.",
+            homepage=None,
+            telephone=None,
+            operating_hours=candidate.operating_hours if candidate else None,
+            raw_common={},
+            raw_intro={},
+            provider="fake_place",
+        )

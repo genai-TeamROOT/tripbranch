@@ -45,3 +45,20 @@ class ConcentrationResult:
     requested_place_name: str | None
     forecasts: tuple[ConcentrationForecast, ...]
     provider: str
+
+
+@dataclass(frozen=True)
+class PlaceDetails:
+    """TourAPI의 공통·소개 상세 응답을 정규화한 장소 상세정보."""
+
+    content_id: str
+    content_type_id: str
+    title: str | None
+    address: str | None
+    overview: str | None
+    homepage: str | None
+    telephone: str | None
+    operating_hours: str | None
+    raw_common: Mapping[str, object]
+    raw_intro: Mapping[str, object]
+    provider: str

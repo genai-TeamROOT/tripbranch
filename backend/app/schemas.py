@@ -66,6 +66,7 @@ class PlaceCandidate(BaseModel):
     """
 
     place_id: str
+    content_type_id: str | None = None
     name: str
     category: str
     latitude: float

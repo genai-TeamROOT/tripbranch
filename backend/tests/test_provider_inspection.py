@@ -145,6 +145,24 @@ async def test_inspect_tour_api_place_request_and_response() -> None:
     print(f"normalized_samples: {[candidate.name for candidate in result[:3]]}")
 
 
+async def test_inspect_tour_api_keyword_and_details_request_and_response() -> None:
+    async with _inspection_client() as client:
+        provider = RealPlaceProvider(
+            api_key=_required_value("TOUR_API_SERVICE_KEY", settings.tour_api_service_key),
+            client=client,
+        )
+        candidates = await provider.search_by_keyword(
+            "경복궁", region_code="11", district_code="110"
+        )
+        exact = next((candidate for candidate in candidates if candidate.name == "경복궁"), None)
+        assert exact is not None
+        assert exact.content_type_id is not None
+        details = await provider.get_details(exact.place_id, exact.content_type_id)
+
+    print(f"normalized_candidate: {exact}")
+    print(f"normalized_details: {details}")
+
+
 async def test_inspect_tour_api_concentration_request_and_response() -> None:
     async with _inspection_client() as client:
         provider = RealConcentrationProvider(

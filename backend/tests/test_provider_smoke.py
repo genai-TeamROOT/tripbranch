@@ -85,6 +85,27 @@ async def test_tour_api_place_real_smoke() -> None:
     print(f"TourAPI Places: count={len(result)}, samples=[{sample_names}]")
 
 
+async def test_tour_api_keyword_and_details_real_smoke() -> None:
+    async with httpx.AsyncClient() as client:
+        provider = RealPlaceProvider(
+            api_key=_tour_api_service_key(),
+            client=client,
+        )
+        candidates = await provider.search_by_keyword(
+            "경복궁", region_code="11", district_code="110"
+        )
+        exact = next((candidate for candidate in candidates if candidate.name == "경복궁"), None)
+        assert exact is not None
+        assert exact.content_type_id is not None
+        details = await provider.get_details(exact.place_id, exact.content_type_id)
+
+    assert details.title == "경복궁"
+    print(
+        f"TourAPI Keyword: content_id={details.content_id}, "
+        f"content_type_id={details.content_type_id}, title={details.title}"
+    )
+
+
 async def test_tour_api_concentration_real_smoke() -> None:
     async with httpx.AsyncClient() as client:
         provider = RealConcentrationProvider(
