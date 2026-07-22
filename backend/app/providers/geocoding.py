@@ -10,8 +10,12 @@ from __future__ import annotations
 
 from typing import Protocol
 
+import httpx
+
 from app.domain.models import GeocodeResult
 from app.errors import AppError
+
+_GEOCODE_URL = "https://naveropenapi.apigw.ntruss.com/map-geocode/v2/geocode"
 
 
 class GeocodingProvider(Protocol):
@@ -49,4 +53,74 @@ class FakeGeocodingProvider:
         raise AppError(
             code="location_not_found",
             message=f"'{query}' 위치를 찾을 수 없어요.",
+        )
+
+
+class RealGeocodingProvider:
+    """Naver Cloud Platform Geocoding API를 사용하는 실제 구현.
+
+    이 API는 도로명/지번 주소 검색에 최적화되어 있어, 잘 알려진 장소명(POI)은
+    질의에 따라 인식률이 떨어질 수 있다 - 실제 서비스 적용 전 검증 필요.
+    """
+
+    def __init__(
+        self,
+        api_key_id: str,
+        api_key: str,
+        client: httpx.AsyncClient,
+        timeout_seconds: float = 10.0,
+    ) -> None:
+        self._api_key_id = api_key_id
+        self._api_key = api_key
+        self._client = client
+        self._timeout_seconds = timeout_seconds
+
+    async def geocode(self, query: str) -> GeocodeResult:
+        normalized = query.strip()
+        if not normalized:
+            raise AppError(code="invalid_request", message="위치를 입력해주세요.")
+
+        headers = {
+            "Accept": "application/json",
+            "x-ncp-apigw-api-key-id": self._api_key_id,
+            "x-ncp-apigw-api-key": self._api_key,
+        }
+        params = {"query": normalized, "count": "1"}
+
+        try:
+            response = await self._client.get(
+                _GEOCODE_URL, params=params, headers=headers, timeout=self._timeout_seconds
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise AppError(
+                code="geocoding_unavailable",
+                message="위치 검색 서비스를 사용할 수 없습니다.",
+                status_code=502,
+                retryable=True,
+            ) from exc
+
+        if payload.get("status") != "OK":
+            raise AppError(
+                code="geocoding_unavailable",
+                message="위치 검색 서비스를 사용할 수 없습니다.",
+                status_code=502,
+                retryable=True,
+            )
+
+        addresses = payload.get("addresses", [])
+        if not addresses:
+            raise AppError(
+                code="location_not_found",
+                message=f"'{query}' 위치를 찾을 수 없어요.",
+            )
+
+        top = addresses[0]
+        resolved_name = top.get("roadAddress") or top.get("jibunAddress") or normalized
+        return GeocodeResult(
+            query=query,
+            resolved_name=resolved_name,
+            latitude=float(top["y"]),
+            longitude=float(top["x"]),
         )
