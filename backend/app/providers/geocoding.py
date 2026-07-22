@@ -83,6 +83,7 @@ class FakeGeocodingProvider:
         raise AppError(
             code="location_not_found",
             message=f"'{query}' 위치를 찾을 수 없어요.",
+            status_code=404,
         )
 
 
@@ -145,6 +146,7 @@ class RealGeocodingProvider:
             raise AppError(
                 code="location_not_found",
                 message=f"'{query}' 위치를 찾을 수 없어요.",
+                status_code=404,
             )
 
         top = addresses[0]

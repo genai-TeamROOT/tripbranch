@@ -27,6 +27,7 @@ async def test_fake_geocoding_provider_raises_not_found_for_unknown_location() -
         await provider.geocode("아무도 모르는 동네")
 
     assert exc_info.value.code == "location_not_found"
+    assert exc_info.value.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -116,6 +117,7 @@ async def test_real_geocoding_provider_raises_not_found_on_empty_addresses() -> 
         await provider.geocode("존재하지않는주소12345")
 
     assert exc_info.value.code == "location_not_found"
+    assert exc_info.value.status_code == 404
     await client.aclose()
 
 
