@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from app.schemas import InterpretedConditions, RecommendationResponse, PlaceCandidate
+from app.schemas import InterpretedConditions, PlaceCandidate, RecommendationResponse
 
 
 class InterpretProvider(Protocol):
