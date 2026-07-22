@@ -1,6 +1,6 @@
 # Provider 테스트 가이드
 
-TripBranch의 Geocoding, Weather, Place, Concentration Provider 테스트 명령을
+TripBranch의 Geocoding, Weather, Place, Concentration, Holiday Provider 테스트 명령을
 한곳에 정리한다. 모든 명령은 `backend` 디렉터리를 기준으로 실행한다.
 
 ## 1. 최초 환경 준비
@@ -40,6 +40,7 @@ GEOCODING_PROVIDER=
 WEATHER_PROVIDER=
 PLACE_PROVIDER=
 CONCENTRATION_PROVIDER=
+HOLIDAY_PROVIDER=
 ```
 
 빈 값이면 `PROVIDER_MODE`를 사용한다. 예를 들어 전체는 Real이지만 Place만
@@ -83,6 +84,12 @@ python -m pytest tests/test_place_provider.py -v
 
 ```bash
 python -m pytest tests/test_concentration_provider.py -v
+```
+
+공휴일 Provider Mock 테스트:
+
+```bash
+python -m pytest tests/test_holiday_provider.py -v
 ```
 
 설정 전환 테스트:
@@ -176,6 +183,18 @@ RUN_REAL_PROVIDER_TESTS=true python -m pytest \
 `areaCd=11`, `signguCd=11110`, `tAtsNm=경복궁` 조건으로 날짜별 집중률이
 반환되고 숫자로 정규화되는지 검증한다.
 
+### 한국천문연구원 공휴일
+
+```bash
+RUN_REAL_PROVIDER_TESTS=true python -m pytest \
+  tests/test_provider_smoke.py::test_kasi_holiday_real_smoke \
+  -v -s
+```
+
+`getRestDeInfo`의 2026년 공휴일을 조회하고 날짜·명칭·휴일 여부가 정규화되는지
+검증한다. 인증에는 기존 `TOUR_API_SERVICE_KEY`를 공공데이터포털 서비스 키로
+사용한다.
+
 ## 6. 실제 요청·원본 응답 Inspection Test
 
 Inspection Test는 실제 API 요청 파라미터, HTTP 상태, 원본 JSON 응답과 정규화
@@ -235,6 +254,16 @@ RUN_REAL_PROVIDER_INSPECTION=true python -m pytest \
 
 경복궁의 날짜별 `baseYmd`, `cnctrRate` 원본값과 `ConcentrationForecast`
 정규화 결과를 출력한다.
+
+### 한국천문연구원 공휴일 요청·응답
+
+```bash
+RUN_REAL_PROVIDER_INSPECTION=true python -m pytest \
+  tests/test_provider_inspection.py::test_inspect_kasi_holiday_request_and_response \
+  -v -s
+```
+
+인증키가 마스킹된 요청 파라미터, 원본 XML 응답, 정규화된 공휴일 목록을 출력한다.
 
 ## 7. 결과 해석
 

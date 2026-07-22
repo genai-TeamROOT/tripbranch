@@ -8,9 +8,11 @@ from app.config import settings
 from app.domain.models import WeatherCondition
 from app.providers.concentration import FakeConcentrationProvider, RealConcentrationProvider
 from app.providers.geocoding import FakeGeocodingProvider, RealGeocodingProvider
+from app.providers.holiday import FakeHolidayProvider, RealHolidayProvider
 from app.providers.protocols import (
     ConcentrationProvider,
     GeocodingProvider,
+    HolidayProvider,
     PlaceProvider,
     WeatherProvider,
 )
@@ -82,3 +84,16 @@ def get_concentration_provider(client: httpx.AsyncClient) -> ConcentrationProvid
             timeout_seconds=settings.external_api_timeout_seconds,
         )
     raise ValueError(f"지원하지 않는 CONCENTRATION_PROVIDER: {mode}")
+
+
+def get_holiday_provider(client: httpx.AsyncClient) -> HolidayProvider:
+    mode = settings.resolved_holiday_provider
+    if mode == "fake":
+        return FakeHolidayProvider()
+    if mode == "real":
+        return RealHolidayProvider(
+            api_key=_require_key(settings.tour_api_service_key, "TOUR_API_SERVICE_KEY"),
+            client=client,
+            timeout_seconds=settings.external_api_timeout_seconds,
+        )
+    raise ValueError(f"지원하지 않는 HOLIDAY_PROVIDER: {mode}")

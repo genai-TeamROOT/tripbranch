@@ -62,3 +62,30 @@ class PlaceDetails:
     raw_common: Mapping[str, object]
     raw_intro: Mapping[str, object]
     provider: str
+
+
+@dataclass(frozen=True)
+class HolidayEntry:
+    """한국천문연구원 공휴일 API 응답 한 건."""
+
+    date: str
+    name: str
+    kind: str | None
+    sequence: int | None
+    is_holiday: bool
+    raw_data: Mapping[str, object]
+
+
+@dataclass(frozen=True)
+class HolidayResult:
+    """연·월 조건으로 조회한 공휴일 결과."""
+
+    year: int
+    month: int | None
+    entries: tuple[HolidayEntry, ...]
+    provider: str
+
+    @property
+    def holidays(self) -> tuple[HolidayEntry, ...]:
+        """응답 중 isHoliday=Y인 항목만 반환한다."""
+        return tuple(entry for entry in self.entries if entry.is_holiday)

@@ -10,6 +10,7 @@ import pytest
 from app.config import Settings
 from app.providers.concentration import RealConcentrationProvider
 from app.providers.geocoding import RealGeocodingProvider
+from app.providers.holiday import RealHolidayProvider
 from app.providers.real_place import RealPlaceProvider
 from app.providers.weather import RealWeatherProvider
 
@@ -120,3 +121,19 @@ async def test_tour_api_concentration_real_smoke() -> None:
     assert result.forecasts
     assert any(forecast.concentration_rate is not None for forecast in result.forecasts)
     print(f"TourAPI Concentration: forecasts={len(result.forecasts)}")
+
+
+async def test_kasi_holiday_real_smoke() -> None:
+    async with httpx.AsyncClient() as client:
+        provider = RealHolidayProvider(
+            api_key=_tour_api_service_key(),
+            client=client,
+        )
+        result = await provider.get_holidays(2026)
+
+    assert result.entries
+    assert all(entry.date.startswith("2026") for entry in result.entries)
+    print(
+        f"KASI Holidays: entries={len(result.entries)}, "
+        f"holidays={len(result.holidays)}"
+    )

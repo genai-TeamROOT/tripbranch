@@ -5,6 +5,7 @@ import pytest
 from app.domain.models import GeocodeResult, WeatherCondition
 from app.providers.concentration import FakeConcentrationProvider
 from app.providers.geocoding import FakeGeocodingProvider
+from app.providers.holiday import FakeHolidayProvider
 from app.providers.stub import FakePlaceProvider, FakeWeatherProvider
 
 
@@ -54,3 +55,12 @@ async def test_fake_concentration_provider_uses_common_result() -> None:
 
     assert result.provider == "fake_concentration"
     assert result.forecasts
+
+
+@pytest.mark.asyncio
+async def test_fake_holiday_provider_uses_common_result() -> None:
+    result = await FakeHolidayProvider().get_holidays(2026)
+
+    assert result.provider == "fake_holiday"
+    assert result.entries
+    assert result.holidays

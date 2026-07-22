@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     place_provider: str | None = None
     geocoding_provider: str | None = None
     concentration_provider: str | None = None
+    holiday_provider: str | None = None
 
     # Only required when the corresponding *_provider above is set to "real".
     llm_api_key: str = ""
@@ -59,6 +60,10 @@ class Settings(BaseSettings):
     @property
     def resolved_concentration_provider(self) -> str:
         return self.concentration_provider or self.provider_mode
+
+    @property
+    def resolved_holiday_provider(self) -> str:
+        return self.holiday_provider or self.provider_mode
 
 
 settings = Settings()

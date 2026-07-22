@@ -12,6 +12,7 @@ import pytest
 from app.config import Settings
 from app.providers.concentration import RealConcentrationProvider
 from app.providers.geocoding import RealGeocodingProvider
+from app.providers.holiday import RealHolidayProvider
 from app.providers.real_place import RealPlaceProvider
 from app.providers.weather import RealWeatherProvider
 
@@ -173,3 +174,17 @@ async def test_inspect_tour_api_concentration_request_and_response() -> None:
 
     print(f"normalized_count: {len(result.forecasts)}")
     print(f"normalized_samples: {list(result.forecasts[:3])}")
+
+
+async def test_inspect_kasi_holiday_request_and_response() -> None:
+    async with _inspection_client() as client:
+        provider = RealHolidayProvider(
+            api_key=_required_value(
+                "TOUR_API_SERVICE_KEY", settings.tour_api_service_key
+            ),
+            client=client,
+        )
+        result = await provider.get_holidays(2026)
+
+    print(f"normalized_count: {len(result.entries)}")
+    print(f"normalized_holidays: {list(result.holidays)}")

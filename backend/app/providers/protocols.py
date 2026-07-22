@@ -11,7 +11,13 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from app.domain.models import ConcentrationResult, GeocodeResult, PlaceDetails, WeatherCondition
+from app.domain.models import (
+    ConcentrationResult,
+    GeocodeResult,
+    HolidayResult,
+    PlaceDetails,
+    WeatherCondition,
+)
 from app.schemas import InterpretedConditions, PlaceCandidate, RecommendationResponse
 
 
@@ -74,4 +80,12 @@ class ConcentrationProvider(Protocol):
         place_name: str | None = None,
     ) -> ConcentrationResult:
         """지역과 선택적인 관광지명에 대한 향후 집중률을 반환한다."""
+        ...
+
+
+class HolidayProvider(Protocol):
+    async def get_holidays(
+        self, year: int, month: int | None = None
+    ) -> HolidayResult:
+        """공휴일 목록을 반환한다."""
         ...
