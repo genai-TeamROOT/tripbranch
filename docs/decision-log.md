@@ -259,6 +259,16 @@
 - 이유: 여행코스 자체는 개별 시설의 입장시간과 다른 이동 경로 데이터이며, 누락을
   이유로 후보 전체를 운영 미확인으로 제외하지 않기 위함
 
+### D-025 — `resolve_location` 종로구 범위와 재질문 정책
+
+- 상태: `Accepted`, Tool 구현 완료
+- 지원 범위: MVP는 서울특별시 종로구로 한정하며 범위 밖은 `unsupported`
+- alias: 공식 주소를 우선 조회하고 정상 빈 결과에만 원문으로 1회 fallback
+- 장애: timeout·인증·통신·파싱 실패에는 fallback하지 않고 `unavailable`
+- 모호성: 직접·fallback 결과가 복수이면 임의 선택하지 않고 `no_data`와
+  `details.reason=ambiguous_location`으로 사용자에게 구체적인 위치를 요청
+- 검증: 좌표 bounding box가 아니라 Provider의 행정구 정보를 사용
+
 ## 현재 논의가 필요한 항목
 
 | 항목 | 선택지/질문 | 상태 |

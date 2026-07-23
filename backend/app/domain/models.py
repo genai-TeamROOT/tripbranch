@@ -41,6 +41,8 @@ class GeocodeResult:
     resolved_name: str
     latitude: float
     longitude: float
+    candidate_count: int = 1
+    administrative_district: str | None = None
 
 
 @dataclass(frozen=True)

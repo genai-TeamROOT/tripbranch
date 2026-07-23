@@ -10,7 +10,7 @@
 | React Frontend, 분리된 Interpret/Recommendations API | 구현됨 |
 | Fake/Real Provider와 일부 외부 API 연동 | 구현됨 |
 | Chat API, Orchestrator, Context Merge | 미구현 (`TBD`) |
-| Tool | `NearbyPlaceDetailsTool` 구현, 나머지 `TBD` |
+| Tool | `ResolveLocationTool`, `NearbyPlaceDetailsTool` 구현, 나머지 `TBD` |
 | 가중치 Engine (Scoring v1) | 독립 모듈 구현됨; Request Builder/route 연결은 미구현 (`TBD`) |
 | Recommendation Request Builder | 미구현 (`TBD`) |
 | LLM Interpret/Response Generator | 미구현 (`TBD`) |

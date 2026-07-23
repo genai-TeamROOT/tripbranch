@@ -34,7 +34,9 @@ class RecommendationProvider(Protocol):
         ...
 
 class GeocodingProvider(Protocol):
-    async def geocode(self, location_query: str) -> GeocodeResult:
+    async def geocode(
+        self, location_query: str, *, use_alias: bool = True
+    ) -> GeocodeResult:
         """장소 이름이나 주소를 정규화된 좌표 결과로 변환한다."""
         ...
 

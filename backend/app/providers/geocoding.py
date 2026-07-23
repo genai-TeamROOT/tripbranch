@@ -37,11 +37,15 @@ _JONGNO_LANDMARK_ADDRESS_ALIASES: dict[str, str] = {
 }
 
 
-def _apply_landmark_alias(normalized_query: str) -> str:
+def get_jongno_landmark_alias(normalized_query: str) -> str | None:
     for name, address in _JONGNO_LANDMARK_ADDRESS_ALIASES.items():
         if name in normalized_query:
             return address
-    return normalized_query
+    return None
+
+
+def _apply_landmark_alias(normalized_query: str) -> str:
+    return get_jongno_landmark_alias(normalized_query) or normalized_query
 
 
 # 로컬 개발/테스트용 고정 지명 테이블. MVP 범위(서울 종로구)에 맞춰
@@ -58,15 +62,42 @@ _KNOWN_LOCATIONS: dict[str, tuple[str, float, float]] = {
 class FakeGeocodingProvider:
     """정해진 소수의 지명만 좌표로 변환하는 가짜 구현."""
 
-    async def geocode(self, query: str) -> GeocodeResult:
+    async def geocode(
+        self, query: str, *, use_alias: bool = True
+    ) -> GeocodeResult:
         normalized = query.strip()
         if not normalized:
             raise AppError(code="invalid_request", message="위치를 입력해주세요.")
 
+        provider_query = (
+            _apply_landmark_alias(normalized) if use_alias else normalized
+        )
+        alias_name = next(
+            (
+                name
+                for name, address in _JONGNO_LANDMARK_ADDRESS_ALIASES.items()
+                if address == provider_query and name in _KNOWN_LOCATIONS
+            ),
+            None,
+        )
+        if alias_name:
+            resolved_name, lat, lon = _KNOWN_LOCATIONS[alias_name]
+            return GeocodeResult(
+                query=query,
+                resolved_name=resolved_name,
+                latitude=lat,
+                longitude=lon,
+                administrative_district="종로구",
+            )
+
         for name, (resolved_name, lat, lon) in _KNOWN_LOCATIONS.items():
-            if name in normalized:
+            if name in provider_query:
                 return GeocodeResult(
-                    query=query, resolved_name=resolved_name, latitude=lat, longitude=lon
+                    query=query,
+                    resolved_name=resolved_name,
+                    latitude=lat,
+                    longitude=lon,
+                    administrative_district="종로구",
                 )
 
         raise AppError(
@@ -96,7 +127,9 @@ class RealGeocodingProvider:
         self._client = client
         self._timeout_seconds = timeout_seconds
 
-    async def geocode(self, query: str) -> GeocodeResult:
+    async def geocode(
+        self, query: str, *, use_alias: bool = True
+    ) -> GeocodeResult:
         normalized = query.strip()
         if not normalized:
             raise AppError(code="invalid_request", message="위치를 입력해주세요.")
@@ -106,7 +139,10 @@ class RealGeocodingProvider:
             "x-ncp-apigw-api-key-id": self._api_key_id,
             "x-ncp-apigw-api-key": self._api_key,
         }
-        params = {"query": _apply_landmark_alias(normalized), "count": "1"}
+        provider_query = (
+            _apply_landmark_alias(normalized) if use_alias else normalized
+        )
+        params = {"query": provider_query, "count": "5"}
 
         try:
             response = await self._client.get(
@@ -146,9 +182,31 @@ class RealGeocodingProvider:
 
         top = addresses[0]
         resolved_name = top.get("roadAddress") or top.get("jibunAddress") or normalized
+        meta = payload.get("meta")
+        total_count = meta.get("totalCount") if isinstance(meta, dict) else None
+        try:
+            candidate_count = int(total_count)
+        except (TypeError, ValueError):
+            candidate_count = len(addresses)
         return GeocodeResult(
             query=query,
             resolved_name=resolved_name,
             latitude=float(top["y"]),
             longitude=float(top["x"]),
+            candidate_count=max(candidate_count, len(addresses)),
+            administrative_district=_extract_district(top, resolved_name),
         )
+
+
+def _extract_district(address: dict, resolved_name: str) -> str | None:
+    elements = address.get("addressElements")
+    if isinstance(elements, list):
+        for element in elements:
+            if not isinstance(element, dict) or "SIGUGUN" not in element.get("types", []):
+                continue
+            district = element.get("shortName") or element.get("longName")
+            if district:
+                return str(district).strip()
+    if "종로구" in resolved_name:
+        return "종로구"
+    return None

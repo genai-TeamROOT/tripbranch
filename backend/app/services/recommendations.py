@@ -15,12 +15,18 @@ import math
 import httpx
 
 from app.config import settings
+from app.errors import AppError
 from app.providers.protocols import GeocodingProvider, PlaceProvider
 from app.schemas import (
     InterpretedConditions,
     PlaceCandidate,
     RecommendationItem,
     RecommendationResponse,
+)
+from app.tools.resolve_location import (
+    ResolveLocationQuery,
+    ResolveLocationStatus,
+    ResolveLocationTool,
 )
 
 _INDOOR_CATEGORIES = {"museum", "cafe", "gallery", "restaurant"}
@@ -88,9 +94,31 @@ async def build_recommendations(
     4. 항목 변환 (거리, 실내외, 추천 이유)
     5. 운영시간 검증 여부로 recommendations / unverified 분리
     """
-    geocode_result = await geocoding_provider.geocode(conditions.location_query)
-    latitude = geocode_result.latitude
-    longitude = geocode_result.longitude
+    resolved = await ResolveLocationTool(geocoding_provider).execute(
+        ResolveLocationQuery(conditions.location_query)
+    )
+    if (
+        resolved.status is not ResolveLocationStatus.SUCCESS
+        or resolved.location is None
+    ):
+        error = resolved.error
+        raise AppError(
+            code=error.code if error else "unavailable",
+            message=(
+                error.message
+                if error
+                else "위치 검색 서비스를 사용할 수 없습니다."
+            ),
+            status_code={
+                ResolveLocationStatus.NO_DATA: 404,
+                ResolveLocationStatus.UNSUPPORTED: 422,
+                ResolveLocationStatus.UNAVAILABLE: 502,
+            }.get(resolved.status, 502),
+            retryable=error.retryable if error else False,
+            details=error.details if error else None,
+        )
+    latitude = resolved.location.latitude
+    longitude = resolved.location.longitude
 
     candidates = await place_provider.search_places(
         latitude=latitude,

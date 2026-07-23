@@ -371,9 +371,10 @@ type WeatherMetadata = ProviderMetadata & {
 
 ## 6. Tool 계약 초안
 
-`NearbyPlaceDetailsTool`은 코드로 구현되어 있으며, 나머지 Tool 이름과 책임은
-방향입니다. 공통 결과와 오류 envelope는 v1으로 확정했지만, 구현된 다건 조회
-Tool은 현재 전용 결과 모델을 사용하므로 공통 envelope 적용은 후속 작업입니다.
+`ResolveLocationTool`과 `NearbyPlaceDetailsTool`은 코드로 구현되어 있으며, 나머지
+Tool 이름과 책임은 방향입니다. 공통 결과와 오류 envelope는 v1으로 확정했지만,
+구현된 Tool은 현재 전용 결과 모델을 사용하므로 공통 envelope 적용은 후속
+작업입니다.
 
 | Tool | 책임 | 예상 Provider |
 | --- | --- | --- |
@@ -385,6 +386,23 @@ Tool은 현재 전용 결과 모델을 사용하므로 공통 envelope 적용은
 | `get_current_weather` | 현재 날씨 조회 및 정규화 | Weather |
 | `get_congestion` | 장소/지역 혼잡도 조회 | Concentration |
 | `search_place_feature_evidence` | 조용함·분위기 근거 수집 | Naver Blog Search TBD |
+
+### `resolve_location` 구현 계약
+
+```python
+ResolveLocationTool(provider: GeocodingProvider)
+```
+
+- 입력: `location_query` 1~200자
+- 지원 범위: 서울특별시 종로구
+- alias 우선 조회 후 정상 빈 결과에만 원문으로 1회 fallback
+- Provider 장애에는 fallback하지 않고 `unavailable`
+- 종로구 밖 또는 행정구를 확인할 수 없는 결과는 `unsupported`
+- 직접·fallback 조회의 복수 후보는 `no_data`,
+  `details.reason="ambiguous_location"`으로 사용자 재질문
+- 성공 method: `direct`, `alias`, `fallback`
+- fallback 성공 시 `fallback_used` warning
+- Provider 결과에는 `candidate_count`, `administrative_district` 포함
 
 ### `get_nearby_place_details` 구현 계약
 
@@ -506,7 +524,8 @@ HTTP 200이더라도 응답 schema가 깨져 파싱할 수 없으면 `no_data`�
 | Provider 결과/오류 | Tool 오류 code | cause | retryable 기본값 |
 | --- | --- | --- | --- |
 | `invalid_request`, `ValueError` | `invalid_input` | `validation_error` | `false` |
-| `location_not_found`, `place_not_found` | `not_found` | 생략 가능 | `false` |
+| `location_not_found` (`resolve_location`) | `no_data` | `location_not_found` | `false` |
+| `place_not_found` | `not_found` | 생략 가능 | `false` |
 | 정상 빈 후보/forecast/holiday 결과 | `no_data` | 생략 가능 | `false` |
 | `weather_no_data` | `no_data` | 생략 가능 | `false` |
 | `provider_timeout` | `unavailable` | `timeout` | `true` |

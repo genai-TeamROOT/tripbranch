@@ -387,10 +387,14 @@ property는 `is_holiday=True` 항목만 다시 필터링합니다.
 - Protocol: `GeocodingProvider`
 - Fake: `app/providers/geocoding.py::FakeGeocodingProvider`
 - Real: `app/providers/geocoding.py::RealGeocodingProvider`
-- 목표 Tool: `resolve_location` (`TBD`)
+- Tool: `app/tools/resolve_location.py::ResolveLocationTool`
 
 ```python
-async def geocode(location_query: str) -> GeocodeResult
+async def geocode(
+    location_query: str,
+    *,
+    use_alias: bool = True,
+) -> GeocodeResult
 ```
 
 ### 8.2 Real 외부 계약
@@ -400,12 +404,14 @@ async def geocode(location_query: str) -> GeocodeResult
 | Provider | Naver Cloud Platform Geocoding |
 | Method | `GET` |
 | URL | `https://maps.apigw.ntruss.com/map-geocode/v2/geocode` |
-| Query | `query`, `count=1` |
+| Query | `query`, `count=5` |
 | Headers | `x-ncp-apigw-api-key-id`, `x-ncp-apigw-api-key`, `Accept: application/json` |
 
 Naver Geocoding은 주소 검색 중심이며 일반 POI 이름을 직접 찾지 못할 수 있습니다.
 현재 종로구 MVP를 위해 경복궁, 광화문, 창덕궁, 종묘 등 일부 장소명을 공식 주소로
-치환하는 `_JONGNO_LANDMARK_ADDRESS_ALIASES`를 사용합니다.
+치환하는 `_JONGNO_LANDMARK_ADDRESS_ALIASES`를 사용합니다. 기존 호출은
+`use_alias=True`가 기본값이며 Tool은 alias와 원문 fallback을 구분하기 위해
+`use_alias=False`로 명시 호출합니다.
 
 ### 8.3 응답 매핑
 
@@ -413,14 +419,38 @@ Naver Geocoding은 주소 검색 중심이며 일반 POI 이름을 직접 찾지
 - `addresses`의 첫 항목만 선택
 - `resolved_name`: `roadAddress` → `jibunAddress` → 원 질의 순 fallback
 - `y` → latitude, `x` → longitude
-- 후보가 여러 건이어도 사용자에게 재질문하지 않음
+- `meta.totalCount` → `candidate_count`
+- `addressElements`의 `SIGUGUN` 또는 정규화 주소 → `administrative_district`
 
-### 8.4 Fake 동작
+### 8.4 `ResolveLocationTool`
+
+Tool 입력은 1~200자의 `location_query`입니다. 처리 순서는 다음과 같습니다.
+
+1. alias가 있으면 공식 주소를 먼저 조회
+2. alias 조회가 정상 `no_data`일 때만 원문을 1회 재조회
+3. Provider 장애에는 원문 fallback을 수행하지 않음
+4. 결과의 `administrative_district`가 `종로구`가 아니면 `unsupported`
+5. 직접·fallback 조회 후보가 복수이면 `no_data`와
+   `details.reason=ambiguous_location`으로 재질문
+6. 정확한 alias 주소는 복수 주소 표기가 있어도 첫 결과를 사용
+
+성공 결과에는 `requested_query`, 실제 `provider_query`, 정규화 장소명, 좌표,
+`resolution_method`, `confidence`가 포함됩니다. method는 `direct`, `alias`,
+`fallback`이며 fallback 성공 시 `fallback_used` warning을 반환합니다.
+
+| 상황 | Tool 상태/code | cause |
+| --- | --- | --- |
+| 결과 없음 | `no_data` | `location_not_found` |
+| 직접 조회 후보 복수 | `no_data` | `ambiguous_location` |
+| 종로구 밖 또는 행정구 확인 불가 | `unsupported` | `outside_supported_region` |
+| Provider 장애 | `unavailable` | `timeout` 또는 `upstream_error` |
+
+### 8.5 Fake 동작
 
 경복궁, 광화문, 창덕궁, 종묘, 인사동의 고정 좌표만 substring 방식으로 인식합니다.
 그 외는 `location_not_found`입니다.
 
-### 8.5 오류와 제약
+### 8.6 오류와 제약
 
 | 상황 | 결과 |
 | --- | --- |
@@ -429,8 +459,9 @@ Naver Geocoding은 주소 검색 중심이며 일반 POI 이름을 직접 찾지
 | HTTP/JSON/상태 오류 | `geocoding_unavailable`, retryable |
 
 - POI 검색 Provider가 아니므로 alias 밖의 관광지명 성공을 보장하지 않음
-- 첫 결과 자동 선택에 따른 모호성 해소 정책은 `TBD`
-- 좌표 유효 범위 검증은 별도로 하지 않음
+- 현재 Provider가 인증·HTTP·파싱 원인을 모두 `geocoding_unavailable`로 축약하므로
+  Tool의 세부 cause는 일부 `upstream_error`로 남음
+- 종로구 판정은 좌표 bounding box가 아니라 응답의 행정구 정보를 사용
 
 ## 9. WeatherProvider
 
@@ -1136,9 +1167,9 @@ InterpretedConditions.location_query
 
 | ID | 우선순위 | Blocker | 영향 | 현재 대응 | 해결 조건 | 상태 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `GEO-01` | `P1` | Naver Geocoding은 일반 POI 이름 검색에 제한 | alias 밖 관광지명이 `location_not_found`가 될 수 있음 | 종로구 주요 장소를 주소 alias로 변환 | Place 키워드 검색 연계 또는 POI Provider 확정, alias 밖 시나리오 통과 | `Open` |
-| `GEO-02` | `P2` | 다중 주소 결과에서 첫 항목 자동 선택 | 모호한 지명이 잘못된 좌표로 결정될 수 있음 | `count=1` 사용 | confidence/후보 확인 또는 사용자 clarification 정책 확정 | `현재 논의 중` |
-| `GEO-03` | `P2` | 지원 지역과 좌표 범위 검증 없음 | 서울 외 요청 또는 비정상 좌표 통제 불가 | MVP 문맥상 종로구 중심 | 지원 지역 정책과 좌표 validation 테스트 | `Open` |
+| `GEO-01` | `P1` | Naver Geocoding은 일반 POI 이름 검색에 제한 | alias 밖 관광지명이 `location_not_found`가 될 수 있음 | 종로구 주요 장소 alias와 원문 1회 fallback | Place 키워드 검색 연계 또는 POI Provider 확정, alias 밖 시나리오 통과 | `부분 해결` |
+| `GEO-02` | `P2` | 다중 주소 결과의 모호성 | 모호한 지명이 잘못된 좌표로 결정될 수 있음 | `candidate_count>1`이면 `ambiguous_location` 재질문 | Tool 모호성 단위 테스트 | `Resolved` |
+| `GEO-03` | `P2` | 지원 지역 검증 | 종로구 밖 요청을 추천에 사용할 위험 | 행정구가 종로구가 아니면 `unsupported` | 종로구 밖 Tool 단위 테스트 | `Resolved` |
 
 ### 16.4 WeatherProvider Blocker
 

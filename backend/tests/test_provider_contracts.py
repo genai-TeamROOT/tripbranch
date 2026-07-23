@@ -18,6 +18,7 @@ async def test_fake_geocoding_provider_uses_common_result() -> None:
         resolved_name="경복궁",
         latitude=37.5788,
         longitude=126.9770,
+        administrative_district="종로구",
     )
 
 

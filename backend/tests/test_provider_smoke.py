@@ -13,6 +13,12 @@ from app.providers.geocoding import RealGeocodingProvider
 from app.providers.holiday import RealHolidayProvider
 from app.providers.real_place import RealPlaceProvider
 from app.providers.weather import RealWeatherProvider
+from app.tools.resolve_location import (
+    ResolutionMethod,
+    ResolveLocationQuery,
+    ResolveLocationStatus,
+    ResolveLocationTool,
+)
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -45,13 +51,18 @@ async def test_naver_geocoding_real_smoke() -> None:
             ),
             client=client,
         )
-        result = await provider.geocode("경복궁")
+        result = await ResolveLocationTool(provider).execute(
+            ResolveLocationQuery("경복궁")
+        )
 
-    assert 37.0 < result.latitude < 38.0
-    assert 126.0 < result.longitude < 128.0
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert result.location is not None
+    assert result.location.resolution_method is ResolutionMethod.ALIAS
+    assert 37.0 < result.location.latitude < 38.0
+    assert 126.0 < result.location.longitude < 128.0
     print(
-        f"Naver Geocoding: {result.resolved_name} "
-        f"({result.latitude:.4f}, {result.longitude:.4f})"
+        f"Naver Geocoding: {result.location.resolved_name} "
+        f"({result.location.latitude:.4f}, {result.location.longitude:.4f})"
     )
 
 

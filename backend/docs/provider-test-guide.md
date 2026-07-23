@@ -133,6 +133,13 @@ RUN_REAL_PROVIDER_TESTS=true python -m pytest \
 경복궁 질의를 Naver Geocoding에 전달하고 종로구 범위의 좌표가 반환되는지
 검증한다.
 
+Tool의 alias 우선 조회, 원문 fallback, 종로구 제한, 모호한 결과와 Provider 장애
+분리는 실제 API를 호출하지 않는 다음 테스트로 확인한다.
+
+```bash
+python -m pytest tests/test_resolve_location_tool.py -v
+```
+
 ### KMA 날씨
 
 ```bash
