@@ -9,6 +9,7 @@ from app.domain.models import WeatherCondition
 from app.errors import AppError
 from app.providers.weather import (
     RealWeatherProvider,
+    map_items_to_forecast_slots,
     map_sky_pty_to_condition,
     resolve_base_date_time,
 )
@@ -62,6 +63,24 @@ def _fcst_item(category: str, fcst_time: str, value: str) -> dict:
     }
 
 
+def test_maps_items_to_time_aware_forecast_slots() -> None:
+    slots = map_items_to_forecast_slots(
+        [
+            _fcst_item("SKY", "1100", "1"),
+            _fcst_item("PTY", "1100", "0"),
+            _fcst_item("SKY", "1200", "4"),
+            _fcst_item("PTY", "1200", "1"),
+        ]
+    )
+
+    assert [slot.forecast_for.hour for slot in slots] == [11, 12]
+    assert slots[0].forecast_for.tzinfo is not None
+    assert slots[0].condition is WeatherCondition.GOOD
+    assert slots[1].condition is WeatherCondition.BAD
+    assert slots[1].sky_code == "4"
+    assert slots[1].precipitation_type == "1"
+
+
 @pytest.mark.asyncio
 async def test_real_weather_provider_picks_earliest_forecast_slot() -> None:
     items = [
@@ -89,6 +108,38 @@ async def test_real_weather_provider_picks_earliest_forecast_slot() -> None:
 
     assert condition == WeatherCondition.GOOD
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_real_weather_provider_returns_all_forecast_slots() -> None:
+    items = [
+        _fcst_item("SKY", "1100", "1"),
+        _fcst_item("PTY", "1100", "0"),
+        _fcst_item("SKY", "1200", "4"),
+        _fcst_item("PTY", "1200", "1"),
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "response": {
+                    "header": {"resultCode": "00", "resultMsg": "NORMAL_SERVICE"},
+                    "body": {"items": {"item": items}},
+                }
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await RealWeatherProvider(
+            api_key="dummy",
+            client=client,
+        ).get_forecast_slots(37.5636, 126.9976)
+
+    assert result.grid_x > 0
+    assert result.grid_y > 0
+    assert len(result.slots) == 2
+    assert result.provider == "kma_ultra_short_forecast"
 
 
 @pytest.mark.asyncio

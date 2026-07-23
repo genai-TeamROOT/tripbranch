@@ -19,6 +19,11 @@ from app.tools.resolve_location import (
     ResolveLocationStatus,
     ResolveLocationTool,
 )
+from app.tools.weather_forecast import (
+    GetWeatherForecastTool,
+    WeatherForecastQuery,
+    WeatherToolStatus,
+)
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -72,10 +77,20 @@ async def test_kma_weather_real_smoke() -> None:
             api_key=_required_value("WEATHER_API_KEY", settings.weather_api_key),
             client=client,
         )
-        result = await provider.get_current_condition(37.5788, 126.9770)
+        result = await GetWeatherForecastTool(provider).execute(
+            WeatherForecastQuery(37.5788, 126.9770)
+        )
 
-    assert result.value in {"good", "neutral", "bad"}
-    print(f"KMA Weather: condition={result.value}")
+    assert result.status is WeatherToolStatus.SUCCESS
+    assert result.forecast is not None
+    assert result.forecast.condition.value in {"good", "neutral", "bad"}
+    assert result.forecast.data_type == "forecast"
+    assert result.forecast.observed_at is None
+    print(
+        "KMA Weather: "
+        f"condition={result.forecast.condition.value}, "
+        f"forecast_for={result.forecast.forecast_for.isoformat()}"
+    )
 
 
 async def test_tour_api_place_real_smoke() -> None:

@@ -18,6 +18,7 @@ from app.domain.models import (
     PlaceCategoryFilter,
     PlaceDetails,
     WeatherCondition,
+    WeatherForecastResult,
 )
 from app.schemas import InterpretedConditions, PlaceCandidate, RecommendationResponse
 
@@ -46,6 +47,12 @@ class WeatherProvider(Protocol):
         self, latitude: float, longitude: float
     ) -> WeatherCondition:
         """좌표의 현재 날씨를 공통 상태로 반환한다."""
+        ...
+
+    async def get_forecast_slots(
+        self, latitude: float, longitude: float
+    ) -> WeatherForecastResult:
+        """좌표의 시각별 초단기예보 목록을 반환한다."""
         ...
 
 

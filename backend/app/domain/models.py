@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import time
+from datetime import datetime, time
 from enum import StrEnum
 
 from app.domain.operating_hours import OperatingSchedule
@@ -21,6 +21,24 @@ class WeatherCondition(StrEnum):
     GOOD = "good"
     NEUTRAL = "neutral"
     BAD = "bad"
+
+
+@dataclass(frozen=True)
+class WeatherForecastSlot:
+    forecast_for: datetime
+    condition: WeatherCondition
+    sky_code: str | None
+    precipitation_type: str | None
+
+
+@dataclass(frozen=True)
+class WeatherForecastResult:
+    latitude: float
+    longitude: float
+    grid_x: int
+    grid_y: int
+    slots: tuple[WeatherForecastSlot, ...]
+    provider: str
 
 
 @dataclass(frozen=True)

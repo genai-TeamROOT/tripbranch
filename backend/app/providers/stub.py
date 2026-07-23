@@ -9,7 +9,16 @@ TODO: 실제 provider(RealPlaceProvider 등)가 준비되면 팩토리에서 설
 
 from __future__ import annotations
 
-from app.domain.models import PlaceCategoryFilter, PlaceDetails, WeatherCondition
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+from app.domain.models import (
+    PlaceCategoryFilter,
+    PlaceDetails,
+    WeatherCondition,
+    WeatherForecastResult,
+    WeatherForecastSlot,
+)
 from app.domain.operating_hours import normalize_operating_schedule
 from app.errors import AppError
 from app.schemas import (
@@ -45,6 +54,31 @@ class FakeWeatherProvider:
         self, latitude: float, longitude: float
     ) -> WeatherCondition:
         return self._condition
+
+    async def get_forecast_slots(
+        self, latitude: float, longitude: float
+    ) -> WeatherForecastResult:
+        now = datetime.now(ZoneInfo("Asia/Seoul")).replace(
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        return WeatherForecastResult(
+            latitude=latitude,
+            longitude=longitude,
+            grid_x=60,
+            grid_y=127,
+            slots=tuple(
+                WeatherForecastSlot(
+                    forecast_for=now + timedelta(hours=offset),
+                    condition=self._condition,
+                    sky_code=None,
+                    precipitation_type=None,
+                )
+                for offset in range(6)
+            ),
+            provider="fake_weather",
+        )
 
 
 class FakePlaceProvider:

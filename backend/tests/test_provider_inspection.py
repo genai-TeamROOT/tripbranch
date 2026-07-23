@@ -23,6 +23,10 @@ from app.tools.nearby_place_details import (
     NearbyPlaceDetailsQuery,
     NearbyPlaceDetailsTool,
 )
+from app.tools.weather_forecast import (
+    GetWeatherForecastTool,
+    WeatherForecastQuery,
+)
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -207,9 +211,30 @@ async def test_inspect_kma_weather_request_and_response() -> None:
             api_key=_required_value("WEATHER_API_KEY", settings.weather_api_key),
             client=client,
         )
-        result = await provider.get_current_condition(37.5788, 126.9770)
+        result = await GetWeatherForecastTool(provider).execute(
+            WeatherForecastQuery(37.5788, 126.9770)
+        )
 
-    print(f"normalized: {result.value}")
+    forecast = result.forecast
+    summary = {
+        "condition": forecast.condition.value if forecast else None,
+        "sky_code": forecast.sky_code if forecast else None,
+        "precipitation_type": forecast.precipitation_type if forecast else None,
+        "requested_visit_at": (
+            forecast.requested_visit_at.isoformat() if forecast else None
+        ),
+        "forecast_for": forecast.forecast_for.isoformat() if forecast else None,
+        "retrieved_at": forecast.retrieved_at.isoformat() if forecast else None,
+        "data_type": forecast.data_type if forecast else None,
+        "observed_at": forecast.observed_at if forecast else None,
+        "timezone": forecast.timezone if forecast else None,
+        "timezone_assumed": forecast.timezone_assumed if forecast else None,
+        "selection_method": (
+            forecast.selection_method.value if forecast else None
+        ),
+    }
+    print(f"normalized_status: {result.status.value}")
+    print(f"normalized_forecast: {_format_body(summary)}")
 
 
 async def test_inspect_tour_api_place_request_and_response() -> None:

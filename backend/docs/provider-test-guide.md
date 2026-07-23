@@ -148,8 +148,15 @@ RUN_REAL_PROVIDER_TESTS=true python -m pytest \
   -v -s
 ```
 
-경복궁 좌표를 KMA 격자로 변환하고 `good`, `neutral`, `bad` 중 하나가
-반환되는지 검증한다.
+경복궁 좌표를 KMA 격자로 변환하고 `GetWeatherForecastTool`이 현재와 가장 가까운
+예보를 선택하는지 검증한다. condition과 `forecast_for`가 출력된다.
+
+시간대 가정, 동률 미래 우선, 범위 밖, 빈 예보와 장애 분리는 다음 단위 테스트로
+검증한다.
+
+```bash
+python -m pytest tests/test_weather_forecast_tool.py -v
+```
 
 ### TourAPI 좌표 기반 장소 검색
 

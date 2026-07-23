@@ -499,7 +499,9 @@ async def get_current_condition(
 
 ### 9.3 날씨 매핑
 
-가장 이른 `fcstDate`/`fcstTime`의 `SKY`, `PTY`를 선택합니다.
+`fcstDate`/`fcstTime`별로 `SKY`, `PTY`를 묶어 timezone-aware
+`WeatherForecastSlot` 목록을 생성합니다. 기존 `get_current_condition()`은 호환을
+위해 가장 이른 slot의 condition을 반환합니다.
 
 | 원본 | 내부 상태 |
 | --- | --- |
@@ -524,8 +526,10 @@ TripBranch의 `WeatherProvider`는 현재 관측 날씨가 아니라 기상청 �
 - 현재 관측 날씨는 MVP 필수 범위에서 제외
 - 실제 사용자 테스트에서 즉시 추천 품질이 부족한 경우 현재 관측 데이터 추가 검토
 
-현재 구현은 방문 예정 시각을 입력받지 않고 응답 중 가장 이른 예보 slot을 선택하므로
-“즉시 방문 추천”만 지원합니다. 일정 기반 예보 선택은 후속 구현 대상입니다.
+`GetWeatherForecastTool`은 `visit_at`이 없으면 Backend Clock의 현재 시각을
+사용하고, 명시된 경우 방문 예정 시각과 가장 가까운 slot을 선택합니다. 시간 차이가
+같으면 미래 slot을 우선합니다. 즉시 방문 시 현재보다 이른 slot이 없으면 가장 이른
+미래 예보를 선택합니다.
 
 Weather 결과에는 공통 `ProviderMetadata`와 함께 다음 시간 기준을 포함합니다.
 
@@ -545,9 +549,9 @@ type WeatherMetadata = ProviderMetadata & {
 | `observed_at` | 관측 데이터의 관측 시각; MVP에서는 `null` |
 
 시간 필드는 timezone-aware ISO 8601로 표현하고 Backend 내부/JSON 모두
-`snake_case`를 사용합니다. 기상청의 KST `fcstDate`/`fcstTime`은 내부 모델에서
-timezone을 명시한 시각으로 변환해야 하며, UTC `Z`로 정규화할지는 구현 단계에서
-공통 시간 규칙과 함께 확정합니다.
+`snake_case`를 사용합니다. 기상청 `fcstDate`/`fcstTime`과 timezone 없는
+`visit_at`은 `Asia/Seoul`로 해석하며 `timezone_assumed=true`로 구분합니다.
+`retrieved_at`은 UTC로 반환합니다.
 
 향후 현재 관측값과 예보를 함께 제공하더라도 방문 예정 시각의 예보를 우선합니다.
 현재 관측값은 가까운 시간대 추천의 품질을 보완하는 정보로만 사용하고 예보를
@@ -556,9 +560,32 @@ timezone을 명시한 시각으로 변환해야 하며, UTC `Z`로 정규화할�
 ### 9.5 Fake 동작
 
 생성 시 전달된 `WeatherCondition`을 그대로 반환합니다. Factory에서는
-`FAKE_WEATHER_CONDITION`으로 값을 결정합니다.
+`FAKE_WEATHER_CONDITION`으로 값을 결정합니다. `get_forecast_slots()`는 현재
+KST 정시부터 6개 고정 condition slot을 반환해 Real과 같은 계약을 만족합니다.
 
-### 9.6 오류와 제약
+### 9.6 `GetWeatherForecastTool`
+
+```python
+WeatherForecastQuery(
+    latitude: float,
+    longitude: float,
+    visit_at: datetime | None = None,
+)
+```
+
+- 위도·경도만 검증하며 종로구 범위는 `ResolveLocationTool` 책임
+- `visit_at=None`: Backend Clock 기준 즉시 방문
+- timezone 없는 `visit_at`: `Asia/Seoul`로 간주
+- 명시 시각이 제공 예보의 처음~마지막 범위 밖이면 `unsupported`
+- 빈 slot은 `no_data`, Provider 장애는 `unavailable`
+- 최소 결과: condition, SKY, PTY, forecast_for, retrieved_at,
+  data_type=forecast, observed_at=null
+- 온도·습도·강수량·풍속은 v1 범위 밖
+
+결과에는 입력 좌표와 KMA 격자, `requested_visit_at`, `timezone`,
+`timezone_assumed`, `selection_method`도 포함합니다.
+
+### 9.7 오류와 제약
 
 | 상황 | 결과 |
 | --- | --- |
@@ -566,9 +593,9 @@ timezone을 명시한 시각으로 변환해야 하며, UTC `Z`로 정규화할�
 | KMA `resultCode != 00` | `weather_unavailable`, retryable |
 | SKY/PTY 없음 | `weather_no_data`, retryable |
 
-- 메서드 이름은 current지만 실제 데이터는 가장 가까운 초단기 **예보** 시각임
-- 특정 방문 예정 시각 입력과 가장 가까운 예보 slot 선택은 아직 미구현
-- `WeatherMetadata`는 설계 확정 상태이며 현재 반환 모델에는 미반영
+- `get_current_condition()`은 기존 호출 호환용이며 실제 데이터는 예보
+- 공통 `ProviderMetadata` wrapper는 아직 미구현이지만 Tool 전용 결과에 시간
+  metadata가 반영됨
 - 추천 서비스에는 아직 연결되지 않음
 - 날씨 결측 시 가중치 재정규화 정책은 추천 계층의 `TBD`
 
@@ -1175,11 +1202,11 @@ InterpretedConditions.location_query
 
 | ID | 우선순위 | Blocker | 영향 | 현재 대응 | 해결 조건 | 상태 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `WTH-01` | `P1` | 메서드는 current지만 실제로 가장 가까운 초단기예보 사용 | 사용자가 “현재 날씨”로 오해할 수 있음 | 예보 우선 정책과 WeatherMetadata 확정 | Tool/모델 명칭 변경, forecast_for 반환 테스트 | `정책 확정/구현 대기` |
+| `WTH-01` | `P1` | 메서드는 current지만 실제 데이터는 초단기예보 | 사용자가 “현재 날씨”로 오해할 수 있음 | `GetWeatherForecastTool`, data_type과 forecast_for 구현 | Tool/모델 명칭 및 forecast_for 테스트 | `Resolved` |
 | `WTH-02` | `P1` | 추천 파이프라인에 Weather가 미연결 | 날씨 조건이 실제 추천 점수에 반영되지 않음 | Interpret Stub 값만 존재 | Weather Tool 연결 및 유/무날씨 Scoring 테스트 | `Open` |
 | `WTH-03` | `P2` | SKY/PTY를 세 단계로만 축약 | 온도·습도·강수량·풍속 기반 조건 사용 불가 | `good/neutral/bad`만 반환 | Weather Feature 요구사항 확정 후 모델 확장 여부 결정 | `현재 논의 중` |
 | `WTH-04` | `P2` | 발표 제공 시각을 45분 기준으로 고정 | 지연 시 최신 base time에 데이터가 없을 수 있음 | 직전 시간 fallback 계산 | no_data 시 이전 발표분 제한 재조회 정책과 테스트 | `Open` |
-| `WTH-05` | `P1` | 방문 예정 시각을 입력받지 않아 일정 기반 예보 선택 불가 | 미래 방문 추천도 가장 이른 예보로 판단할 위험 | 즉시 방문 시나리오만 지원 | visit_at 입력, 가장 가까운 forecast_for 선택 및 범위 초과 정책 테스트 | `Open` |
+| `WTH-05` | `P1` | 방문 예정 시각 기반 예보 선택 | 미래 방문 추천에 잘못된 slot을 사용할 위험 | visit_at, 최근접·동률 미래 우선·범위 밖 unsupported 구현 | 고정 Clock Tool 테스트와 실제 Smoke Test | `Resolved` |
 
 ### 16.5 PlaceProvider Blocker
 

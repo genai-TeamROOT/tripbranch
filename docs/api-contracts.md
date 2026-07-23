@@ -366,15 +366,15 @@ type WeatherMetadata = ProviderMetadata & {
 - 즉시 추천은 현재와 가장 가까운 예보 선택
 - 특정 시간 추천은 방문 예정 시각과 가장 가까운 예보 선택
 
-현재 코드는 가장 이른 초단기예보만 선택하고 위 metadata를 반환하지 않습니다. 방문
-예정 시각 입력과 `WeatherMetadata` 적용은 후속 구현 작업입니다.
+`GetWeatherForecastTool`이 방문 시각에 가장 가까운 예보를 선택하고 위 시간
+metadata를 반환합니다. 공통 `ProviderMetadata` wrapper 적용은 후속 작업입니다.
 
 ## 6. Tool 계약 초안
 
-`ResolveLocationTool`과 `NearbyPlaceDetailsTool`은 코드로 구현되어 있으며, 나머지
-Tool 이름과 책임은 방향입니다. 공통 결과와 오류 envelope는 v1으로 확정했지만,
-구현된 Tool은 현재 전용 결과 모델을 사용하므로 공통 envelope 적용은 후속
-작업입니다.
+`ResolveLocationTool`, `GetWeatherForecastTool`, `NearbyPlaceDetailsTool`은 코드로
+구현되어 있으며, 나머지 Tool 이름과 책임은 방향입니다. 공통 결과와 오류
+envelope는 v1으로 확정했지만, 구현된 Tool은 현재 전용 결과 모델을 사용하므로
+공통 envelope 적용은 후속 작업입니다.
 
 | Tool | 책임 | 예상 Provider |
 | --- | --- | --- |
@@ -383,7 +383,7 @@ Tool 이름과 책임은 방향입니다. 공통 결과와 오류 envelope는 v1
 | `get_place_details` | 특정 장소 식별 및 상세정보 조회 | Place |
 | `get_nearby_place_details` | 주변 후보 수집 후 제한된 동시성으로 다건 상세조회 | Place Search + Place Details |
 | `estimate_travel_time` | 이동수단별 예상 시간 계산 | 지도/위치 Provider TBD |
-| `get_current_weather` | 현재 날씨 조회 및 정규화 | Weather |
+| `get_weather_forecast` | 방문 예정 시각의 초단기예보 선택 | Weather |
 | `get_congestion` | 장소/지역 혼잡도 조회 | Concentration |
 | `search_place_feature_evidence` | 조용함·분위기 근거 수집 | Naver Blog Search TBD |
 
@@ -403,6 +403,20 @@ ResolveLocationTool(provider: GeocodingProvider)
 - 성공 method: `direct`, `alias`, `fallback`
 - fallback 성공 시 `fallback_used` warning
 - Provider 결과에는 `candidate_count`, `administrative_district` 포함
+
+### `get_weather_forecast` 구현 계약
+
+- 입력: 위도, 경도, 선택적 `visit_at`
+- `visit_at=None`: Backend Clock의 현재 시각 사용
+- timezone 없는 시각: `Asia/Seoul`로 간주하고 `timezone_assumed=true`
+- timezone 포함 시각: `Asia/Seoul`로 변환
+- 가장 가까운 예보 선택, 동률이면 미래 예보 우선
+- 명시 시각이 예보 범위 밖이면 `unsupported/outside_forecast_range`
+- 빈 예보는 `no_data/forecast_not_found`
+- 장애는 `unavailable`이며 timeout과 upstream error를 구분
+- Weather Tool 자체는 지역을 제한하지 않고 좌표 범위만 검증
+- 결과: condition, SKY, PTY, forecast_for, retrieved_at, KMA 격자,
+  data_type=forecast, observed_at=null
 
 ### `get_nearby_place_details` 구현 계약
 

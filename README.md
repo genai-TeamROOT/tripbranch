@@ -40,6 +40,7 @@
 - Naver Geocoding 기반 위치 좌표 변환
 - 종로구 범위·alias fallback·모호성 검증을 적용하는 `ResolveLocationTool`
 - 기상청 단기예보 기반 날씨 상태 정규화
+- 방문 예정 시각과 가장 가까운 초단기예보를 선택하는 `GetWeatherForecastTool`
 - TourAPI 위치 기반 장소 검색, 키워드 검색, 장소 상세조회
 - 장소명 정확 일치 검색 후 상세조회하는 `find_details_by_name()`
 - 주변 후보와 다건 상세정보를 결합하는 `NearbyPlaceDetailsTool`

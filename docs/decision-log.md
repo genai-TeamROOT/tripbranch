@@ -223,7 +223,7 @@
 
 ### D-022 — 방문 예정 시각의 초단기예보 우선
 
-- 상태: `Accepted`, 일정 기반 선택 구현은 후속 작업
+- 상태: `Accepted`, Weather Tool 구현 완료
 - 결정: MVP Weather 기본 데이터는 현재 관측이 아닌 기상청 초단기예보
 - 즉시 방문: 현재 시각과 가장 가까운 예보 사용
 - 특정 시간/일정: 방문 예정 시각과 가장 가까운 예보 사용
@@ -232,7 +232,8 @@
 - 추가 검토 조건: 실제 테스트에서 즉시 방문 추천 품질 부족이 확인된 경우
 - Weather metadata: `data_type=forecast`, `retrieved_at`, `forecast_for`,
   `observed_at=null`
-- 현재 구현 차이: 가장 이른 초단기예보만 선택하며 방문 예정 시각 입력과 metadata 없음
+- 구현: timezone 없는 입력은 KST로 가정하고, 가장 가까운 예보를 선택하며 동률이면
+  미래 예보를 우선
 - 이유: 사용자의 요청 시점보다 실제 장소 도착·방문 시점의 날씨가 추천 판단에 중요
 
 ### D-023 — 장소 다건 상세조회 Provider 교체 경계
@@ -269,6 +270,16 @@
   `details.reason=ambiguous_location`으로 사용자에게 구체적인 위치를 요청
 - 검증: 좌표 bounding box가 아니라 Provider의 행정구 정보를 사용
 
+### D-026 — Weather Tool v1 시간·범위 정책
+
+- 상태: `Accepted`, Tool 구현 완료
+- 서비스 전제: 국내 사용자·국내 장소, 별도 표기 없는 시각은 `Asia/Seoul`
+- 즉시 방문: `visit_at=None`이면 Backend Clock 사용
+- 명시 시각: 예보 범위 밖이면 마지막 예보로 대체하지 않고 `unsupported`
+- 지역: Weather Tool은 좌표만 검증하며 서비스 지역 통제는 위치 Tool과 상위 계층 책임
+- v1 필드: condition, SKY, PTY와 예보·조회 시각만 사용
+- 범위 밖: 온도·습도·강수량·풍속, 해외 현지 시간, DST
+
 ## 현재 논의가 필요한 항목
 
 | 항목 | 선택지/질문 | 상태 |
@@ -287,7 +298,7 @@
 | Tool 오류 구현 | `ToolResult<T>`, 오류 매핑, fallback 연결 | 설계 확정/구현 `TBD` |
 | Provider Blocker | P0~P3 표의 해결 조건 기준으로 추적 | 목록 확정/해결 진행 `TBD` |
 | ProviderError 구현 | 공통 오류 모델, sanitize, ToolError 변환 | 설계 확정/구현 `TBD` |
-| Weather 방문시각 선택 | visit_at 입력, forecast_for 선택, 범위 초과 처리 | 정책 확정/구현 `TBD` |
+| Weather 방문시각 선택 | visit_at 입력, forecast_for 선택, 범위 초과 처리 | 구현 완료 |
 | 배포 | Hosting, CI/CD, Secret 관리 | `TBD` |
 
 ## 변경 이력
