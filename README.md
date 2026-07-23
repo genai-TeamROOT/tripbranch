@@ -41,6 +41,7 @@
 - 기상청 단기예보 기반 날씨 상태 정규화
 - TourAPI 위치 기반 장소 검색, 키워드 검색, 장소 상세조회
 - 장소명 정확 일치 검색 후 상세조회하는 `find_details_by_name()`
+- 주변 후보와 다건 상세정보를 결합하는 `NearbyPlaceDetailsTool`
 - TourAPI 대·중·소분류 기준 데이터 240건 JSON 정규화
 - 관광지 집중률 예측 조회
 - 한국천문연구원 공휴일 조회
@@ -51,7 +52,7 @@
 - 통합 `POST /api/chat`
 - 실제 LLM 기반 Intent/조건 추출 및 자연어 응답 생성
 - 이전 대화 조건 병합과 백엔드 세션 상태
-- Tool 계층과 Orchestrator
+- Orchestrator와 나머지 업무 단위 Tool
 - `RecommendationRequest Builder`
 - 사용자 자연어 별칭을 표준 장소 유형으로 변환하는 Interpret 연동
 - 표준 장소 유형과 TourAPI 분류를 연결하는 Category Mapper
@@ -225,7 +226,7 @@ TourAPI의 대·중·소분류 기준 데이터는
 ## 다음 작업
 
 1. `ChatRequest`/`ChatResponse` 공개 계약 확정 및 `POST /api/chat` 구현
-2. Orchestrator, Context Merge, Tool 경계 도입
+2. Orchestrator, Context Merge 및 나머지 Tool 경계 도입
 3. 실제 Interpret 및 Response Generator LLM Provider 결정
 4. 내부 `RecommendationRequest` 스키마 확정
 5. 표준 장소 유형과 TourAPI 분류를 연결하는 Category Mapper 구현

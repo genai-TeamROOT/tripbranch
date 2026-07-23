@@ -9,7 +9,8 @@
 | --- | --- |
 | React Frontend, 분리된 Interpret/Recommendations API | 구현됨 |
 | Fake/Real Provider와 일부 외부 API 연동 | 구현됨 |
-| Chat API, Orchestrator, Context Merge, Tool | 미구현 (`TBD`) |
+| Chat API, Orchestrator, Context Merge | 미구현 (`TBD`) |
+| Tool | `NearbyPlaceDetailsTool` 구현, 나머지 `TBD` |
 | Recommendation Request Builder, 가중치 Engine | 미구현 (`TBD`) |
 | LLM Interpret/Response Generator | 미구현 (`TBD`) |
 | Supabase Persistence | 미구현 (`TBD`) |
@@ -78,7 +79,7 @@ Holiday Provider는 구현되어 있지만 추천 서비스에 아직 조립되�
   `estimate_travel_time`, `get_current_weather`, `get_congestion`,
   `search_place_feature_evidence`
 - 하지 않음: 특정 외부 API 응답 형식을 호출자에게 노출
-- 상태: 별도 Tool 계층은 미구현
+- 상태: 주변 후보 다건 상세조회 Tool은 구현, 나머지 Tool은 미구현
 
 ### Provider
 

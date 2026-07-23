@@ -36,7 +36,7 @@
 
 ### D-004 — Provider와 Tool 분리
 
-- 상태: Provider `Implemented`, Tool `TBD`
+- 상태: Provider `Implemented`, 다건 장소 상세조회 Tool `Implemented`, 나머지 Tool `TBD`
 - 결정: Provider는 외부 통신, Tool은 추천 파이프라인의 업무 단위를 담당한다.
 - 이유: Tool과 외부 엔드포인트의 1:1 결합을 피하고 Provider 교체 영향을 제한
 
@@ -141,7 +141,7 @@
 
 ### D-018 — Tool 공통 오류와 no_data/unavailable 경계
 
-- 상태: `Accepted`, Tool 구현은 후속 작업
+- 상태: `Accepted`, 다건 장소 상세조회에 일부 적용, 공통 envelope 구현은 후속 작업
 - 공통 code: `invalid_input`, `not_found`, `no_data`, `unavailable`, `unsupported`,
   `internal_error`
 - 결정: `no_data`는 호출·파싱 성공 후 데이터 없음이 확인된 상태
@@ -154,6 +154,18 @@
 - 이유: 추천 파이프라인의 분기 수를 제한하면서 데이터 부재와 시스템 장애를
   혼동하지 않기 위함
 - 후속: `ToolResult<T>`, Provider 오류 cause 보존, Orchestrator fallback 구현
+
+### D-023 — 장소 다건 상세조회 Provider 교체 경계
+
+- 상태: `Accepted`, DB 구현은 `TBD`
+- 결정: 후보 검색과 상세조회를 각각 `PlaceSearchProvider`,
+  `PlaceDetailsProvider`로 분리하고 `NearbyPlaceDetailsTool`에서 조합한다.
+- 근거: TourAPI로 장소 10개의 상세정보를 조회하면 목록 1회와 장소별 상세 2회로
+  최대 21회의 외부 요청이 발생하며, 2026-07-23 로컬 실측에서 동시성 3 기준 약
+  20초가 소요됐다.
+- 방향: 실서비스에서는 상세정보를 우선 DB 다건 조회로 교체하고, 누락되거나 오래된
+  데이터만 TourAPI로 보완한다. 필요하면 후보 검색도 이후 DB로 이전한다.
+- 미확정: DB 종류·스키마, 갱신 주기, stale 기준, 캐시 및 fallback 정책
 
 ### D-019 — Provider Blocker 우선순위와 관리 기준
 

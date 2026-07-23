@@ -47,7 +47,7 @@ class WeatherProvider(Protocol):
         ...
 
 
-class PlaceProvider(Protocol):
+class PlaceSearchProvider(Protocol):
     async def search_places(
         self,
         latitude: float,
@@ -60,6 +60,14 @@ class PlaceProvider(Protocol):
         """주어진 좌표/조건으로 장소 후보 목록을 조회해 공통 모델로 반환한다."""
         ...
 
+
+class PlaceDetailsProvider(Protocol):
+    async def get_details(self, content_id: str, content_type_id: str) -> PlaceDetails:
+        """장소 ID와 유형 ID로 정규화된 상세정보를 반환한다."""
+        ...
+
+
+class PlaceProvider(PlaceSearchProvider, PlaceDetailsProvider, Protocol):
     async def search_by_keyword(
         self,
         keyword: str,
@@ -68,10 +76,6 @@ class PlaceProvider(Protocol):
         limit: int = 20,
     ) -> list[PlaceCandidate]:
         """장소명·키워드로 후보와 TourAPI content ID를 조회한다."""
-        ...
-
-    async def get_details(self, content_id: str, content_type_id: str) -> PlaceDetails:
-        """TourAPI content ID로 공통·소개 상세정보를 조회한다."""
         ...
 
     async def find_details_by_name(

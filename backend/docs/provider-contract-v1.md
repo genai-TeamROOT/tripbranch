@@ -16,7 +16,7 @@
 ## 2. 목적과 범위
 
 Provider는 외부 API와 직접 통신하고 공급자별 요청·응답을 TripBranch 내부 모델로
-변환하는 경계 계층입니다. 서비스와 향후 Tool은 외부 API의 원본 필드 대신
+변환하는 경계 계층입니다. 서비스와 Tool은 외부 API의 원본 필드 대신
 `providers/protocols.py`의 Protocol과 정규화 모델을 사용합니다.
 
 이 문서가 다루는 범위:
@@ -29,7 +29,7 @@ Provider는 외부 API와 직접 통신하고 공급자별 요청·응답을 Tri
 
 이 문서가 확정하지 않는 범위:
 
-- Tool 입력·출력 계약
+- 구현된 다건 장소 상세조회 외 Tool 입력·출력 계약
 - Provider 호출 순서를 결정하는 Orchestrator
 - 가중치 Scoring과 fallback 정책
 - 캐시, retry, rate limit, circuit breaker
@@ -55,7 +55,7 @@ Recommendation Pipeline / Tool
 - Tool: `resolve_location`, `get_place_details`처럼 업무 목적 단위로 Provider를 조합
 - Provider는 추천 순위, 사용자 Intent, 조건 완화 여부를 결정하지 않음
 - Tool은 외부 API 엔드포인트와 1:1로 대응할 필요가 없음
-- 현재 저장소에는 별도의 Tool 계층이 아직 없음
+- 현재 `NearbyPlaceDetailsTool`이 구현되어 있으며 나머지 Tool은 `TBD`
 
 ## 4. 구현 현황 요약
 
@@ -546,10 +546,11 @@ timezone을 명시한 시각으로 변환해야 하며, UTC `Z`로 정규화할�
 ### 10.1 책임과 구현
 
 - Protocol: `PlaceProvider`
+- 역할별 Protocol: `PlaceSearchProvider`, `PlaceDetailsProvider`
 - Fake: `app/providers/stub.py::FakePlaceProvider`
 - Real: `app/providers/real_place.py::RealPlaceProvider`
 - 후보 Mapper: `app/providers/mappers.py`
-- 목표 Tool: `search_nearby_places`, `get_place_details` (`TBD`)
+- 구현 Tool: `app/tools/nearby_place_details.py::NearbyPlaceDetailsTool`
 
 ### 10.2 좌표 기반 후보 검색
 
@@ -695,6 +696,57 @@ async def find_details_by_name(
 - 상세조회 2회 중 부분 성공 캐시 없음
 - 홈페이지와 운영시간은 HTML/복합 문자열 원문일 수 있음
 - 휴무일, 주차 등은 정규 필드가 아니라 현재 `raw_intro`에서만 접근 가능
+
+### 10.10 다건 상세조회 Tool
+
+`NearbyPlaceDetailsTool`은 후보 검색과 상세조회 구현을 각각
+`PlaceSearchProvider`, `PlaceDetailsProvider`로 주입받습니다. 현재 Real 실행에서는
+한 `RealPlaceProvider`가 두 Protocol을 모두 만족하지만, 향후 상세정보를 DB에서
+조회할 경우 검색 Provider를 유지하고 상세 Provider만 교체할 수 있습니다.
+
+처리 순서는 다음과 같습니다.
+
+1. 제외 ID 수만큼 여유 있게 주변 후보 조회
+2. 제외 ID 적용 및 `limit` 절단
+3. 최대 동시성 3을 기본값으로 상세조회
+4. 입력 후보 순서대로 상세 결과 결합
+5. 장소별 `success`, `no_data`, `unavailable` 분류
+6. 일부 상세 실패 시 전체 결과를 `partial`로 반환
+
+반경은 20km 이하, 결과 수는 20개 이하로 검증합니다. 결과에는 Tool 실행 기준
+`source`, UTC `retrieved_at`, 전체 `elapsed_ms`가 포함됩니다. 개별 Provider
+metadata와 공통 `ToolResult` envelope 적용은 후속 작업입니다.
+
+### 10.11 다건 상세조회 성능 제한과 DB 전환 고려사항
+
+현재 TourAPI 기반 다건 상세조회는 후보 목록 조회 1회에 더해, 장소마다
+`detailCommon2`와 `detailIntro2`를 각각 호출합니다. 따라서 장소 10개를 조회하면
+정상적인 경우 최대 21회의 외부 요청이 발생합니다.
+
+2026-07-23 로컬 Inspection Test에서는 경복궁 반경 2km의 장소 10개를 대상으로
+동시성 3을 적용했을 때 전체 조회에 약 20초가 걸렸습니다. 이 값은 당시 네트워크와
+TourAPI 응답 상태에서 측정한 참고값이며 항상 동일한 성능을 보장하지 않습니다.
+
+실서비스 적용 시 다음 사항을 고려해야 합니다.
+
+- 요청 시마다 여러 장소의 상세정보를 TourAPI에서 직접 조회하면 응답 지연과 API
+  quota 사용량이 크게 증가함
+- 동시성을 높이면 응답 시간을 줄일 수 있지만 Provider 부하, rate limit, timeout
+  위험이 증가하므로 무제한 병렬 호출은 사용하지 않음
+- 상세정보 일부가 실패해도 성공한 장소는 사용할 수 있도록 `partial` 결과를 유지
+- 운영시간과 휴무 정보는 복합 원문이므로 DB 저장 전후에 원본과 정규화 값을 함께
+  관리하는 방안을 검토
+- 캐시 유효기간과 데이터 갱신 주기는 운영시간·휴무일·일반 소개 정보별로 다르게
+  설정할 수 있음
+
+권장 전환 방향은 TourAPI 데이터를 배치 또는 필요 시점에 수집해 DB에 저장하고,
+실시간 추천 요청에서는 후보와 상세정보를 DB에서 다건 조회하는 방식입니다.
+누락되었거나 오래된 데이터만 TourAPI로 보완하는 fallback을 둘 수 있습니다.
+
+현재 Tool은 `PlaceSearchProvider`와 `PlaceDetailsProvider`를 분리해 주입하므로,
+우선 상세조회만 DB 구현으로 교체하고 이후 후보 검색까지 단계적으로 DB로 이전할
+수 있습니다. DB 종류, 스키마, 갱신 주기, stale 판정 기준과 fallback 정책은
+`TBD`입니다.
 
 ## 11. ConcentrationProvider
 
@@ -970,7 +1022,7 @@ InterpretedConditions.location_query
 | ID | 우선순위 | Blocker | 영향 | 현재 대응 | 해결 조건 | 상태 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `PLC-01` | `P1` | `preferred_categories`가 검색/후처리에 미사용 | 사용자 선호와 무관한 후보가 섞임 | content type을 내부 대분류로만 매핑 | 카테고리 매핑·필터·빈 후보 정책 테스트 | `Open` |
-| `PLC-02` | `P1` | Real 후보의 `operating_hours`가 항상 `None` | 현재 서비스에서 모든 Real 후보가 미검증 결과로 분류 | 특정 장소만 상세조회 가능 | 후보 상세조회 범위, 병렬성, quota 정책 및 운영시간 채움 테스트 | `Open` |
+| `PLC-02` | `P1` | Real 후보의 `operating_hours`가 항상 `None` | 후보만 사용하는 서비스에서는 모든 Real 후보가 미검증 결과로 분류 | 최대 20개 후보를 제한 병렬로 보완하는 `NearbyPlaceDetailsTool` 구현 | quota·캐시 정책 및 운영시간 parser 확정 | `부분 해결` |
 | `PLC-03` | `P1` | 운영시간·휴무일·주차가 복합 원문 또는 raw 필드 | 영업 여부와 남은 시간을 계산할 수 없음 | 원본을 `raw_intro`에 보존 | 정규 운영정보 모델, parser, unknown 규칙, 경복궁 회귀 테스트 | `Open` |
 | `PLC-04` | `P2` | 위치 검색 20건, 키워드 검색 최대 100건의 첫 페이지만 사용 | 후보가 많은 지역에서 적합 장소 누락 가능 | 고정 pageNo=1 | 후보 예산과 pagination 중단 조건 확정 | `Open` |
 | `PLC-05` | `P2` | 정확 이름 검색은 첫 exact match를 선택 | 동명 장소가 여러 지역에 있으면 오선택 가능 | 지역 코드 전달 가능 | 좌표/주소 기반 동명 tie-break와 clarification 정책 | `현재 논의 중` |

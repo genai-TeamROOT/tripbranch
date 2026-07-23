@@ -336,19 +336,44 @@ type WeatherMetadata = ProviderMetadata & {
 
 ## 6. Tool 계약 초안
 
-Tool은 아직 코드로 구현되지 않았습니다. 다음 이름과 책임은 방향이며 입력·출력
-스키마의 업무별 `data` 타입은 `TBD`입니다. 공통 결과와 오류 envelope는 v1으로
-확정합니다.
+`NearbyPlaceDetailsTool`은 코드로 구현되어 있으며, 나머지 Tool 이름과 책임은
+방향입니다. 공통 결과와 오류 envelope는 v1으로 확정했지만, 구현된 다건 조회
+Tool은 현재 전용 결과 모델을 사용하므로 공통 envelope 적용은 후속 작업입니다.
 
 | Tool | 책임 | 예상 Provider |
 | --- | --- | --- |
 | `resolve_location` | 장소명/주소를 좌표로 해석 | Geocoding |
 | `search_nearby_places` | 기준 좌표 주변 후보 수집 | Place |
 | `get_place_details` | 특정 장소 식별 및 상세정보 조회 | Place |
+| `get_nearby_place_details` | 주변 후보 수집 후 제한된 동시성으로 다건 상세조회 | Place Search + Place Details |
 | `estimate_travel_time` | 이동수단별 예상 시간 계산 | 지도/위치 Provider TBD |
 | `get_current_weather` | 현재 날씨 조회 및 정규화 | Weather |
 | `get_congestion` | 장소/지역 혼잡도 조회 | Concentration |
 | `search_place_feature_evidence` | 조용함·분위기 근거 수집 | Naver Blog Search TBD |
+
+### `get_nearby_place_details` 구현 계약
+
+`NearbyPlaceDetailsTool`은 목록과 상세 데이터 소스를 별도로 주입받습니다.
+
+```python
+NearbyPlaceDetailsTool(
+    search_provider: PlaceSearchProvider,
+    details_provider: PlaceDetailsProvider,
+    max_concurrency: int = 3,
+)
+```
+
+- 입력: 좌표, 검색 반경, 최대 결과 수, 선호 카테고리, TourAPI 분류 필터,
+  제외할 `place_id`
+- 제한: 반경 `0 < km <= 20`, 결과 수 `1..20`, 동시 상세조회 `1..10`
+- 순서: 검색 결과 순서를 유지하며 제외 ID 적용 후 최대 결과 수만 반환
+- 상세 상태: `success`, `no_data`, `unavailable`
+- 전체 상태: 후보가 없으면 `no_data`, 모든 상세조회가 성공하면 `success`,
+  일부 상세정보가 없거나 실패하면 `partial`
+- 부분 실패: 한 장소의 상세조회 실패가 다른 장소 조회를 중단하지 않음
+- 교체 경계: 현재는 두 역할 모두 `RealPlaceProvider`가 담당하지만,
+  `details_provider`만 DB 구현으로 교체할 수 있음
+- 관측 정보: 결과에 `source`, `retrieved_at`, 전체 `elapsed_ms` 포함
 
 ### 공통 Tool 결과
 

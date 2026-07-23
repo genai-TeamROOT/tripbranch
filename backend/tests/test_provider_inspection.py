@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 from time import perf_counter
@@ -13,13 +12,17 @@ import httpx
 import pytest
 
 from app.config import Settings
-from app.errors import AppError
 from app.providers.concentration import RealConcentrationProvider
 from app.providers.geocoding import RealGeocodingProvider
 from app.providers.holiday import RealHolidayProvider
 from app.providers.real_place import RealPlaceProvider
 from app.providers.tour_category_registry import get_tour_category_registry
 from app.providers.weather import RealWeatherProvider
+from app.tools.nearby_place_details import (
+    DetailStatus,
+    NearbyPlaceDetailsQuery,
+    NearbyPlaceDetailsTool,
+)
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -226,78 +229,63 @@ async def test_inspect_tour_api_cafe_category_request_and_response() -> None:
 
 
 async def test_inspect_tour_api_nearby_place_details_request_and_response() -> None:
-    inspection_started_at = perf_counter()
     async with _inspection_client() as client:
         provider = RealPlaceProvider(
             api_key=_required_value("TOUR_API_SERVICE_KEY", settings.tour_api_service_key),
             client=client,
             timeout_seconds=30.0,
         )
-        candidates = await provider.search_places(
-            latitude=37.5788,
-            longitude=126.9770,
-            preferred_categories=[],
-            search_radius_km=2.0,
-            limit=11,
+        tool = NearbyPlaceDetailsTool(
+            search_provider=provider,
+            details_provider=provider,
+            max_concurrency=3,
         )
-        nearby_candidates = [
-            candidate for candidate in candidates if candidate.name.strip() != "경복궁"
-        ][:10]
-        semaphore = asyncio.Semaphore(3)
-
-        async def load_details(candidate: Any) -> dict[str, Any]:
-            summary = {
-                "place_id": candidate.place_id,
-                "content_type_id": candidate.content_type_id,
-                "name": candidate.name,
-                "address": candidate.address,
-                "latitude": candidate.latitude,
-                "longitude": candidate.longitude,
-                "lcls_systm1": candidate.lcls_systm1,
-                "lcls_systm2": candidate.lcls_systm2,
-                "lcls_systm3": candidate.lcls_systm3,
-            }
-            if not candidate.content_type_id:
-                return {**summary, "detail_status": "no_content_type_id"}
-
-            try:
-                async with semaphore:
-                    details = await provider.get_details(
-                        candidate.place_id,
-                        candidate.content_type_id,
-                    )
-            except AppError as exc:
-                return {
-                    **summary,
-                    "detail_status": "unavailable",
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                }
-
-            return {
-                **summary,
-                "detail_status": "success",
-                "title": details.title,
-                "overview": details.overview,
-                "homepage": details.homepage,
-                "telephone": details.telephone,
-                "operating_hours": details.operating_hours,
-                "rest_date": details.rest_date,
-            }
-
-        results = await asyncio.gather(
-            *(load_details(candidate) for candidate in nearby_candidates)
+        result = await tool.execute(
+            NearbyPlaceDetailsQuery(
+                latitude=37.5788,
+                longitude=126.9770,
+                search_radius_km=2.0,
+                limit=10,
+                excluded_place_ids=frozenset({"126508"}),
+            )
         )
 
-    assert nearby_candidates
-    assert len(nearby_candidates) <= 10
-    assert any(result["detail_status"] == "success" for result in results)
-    assert any(result.get("operating_hours") for result in results)
-    assert any(result.get("rest_date") for result in results)
-    total_elapsed_ms = (perf_counter() - inspection_started_at) * 1000
-    print(f"normalized_nearby_count: {len(results)}")
-    print(f"normalized_nearby_total_elapsed_ms: {total_elapsed_ms:.2f}")
-    print(f"normalized_nearby_details: {_format_body(results)}")
+    summaries = [
+        {
+            "place_id": item.candidate.place_id,
+            "content_type_id": item.candidate.content_type_id,
+            "name": item.candidate.name,
+            "address": item.candidate.address,
+            "latitude": item.candidate.latitude,
+            "longitude": item.candidate.longitude,
+            "lcls_systm1": item.candidate.lcls_systm1,
+            "lcls_systm2": item.candidate.lcls_systm2,
+            "lcls_systm3": item.candidate.lcls_systm3,
+            "detail_status": item.detail_status.value,
+            "error_code": item.error_code,
+            "title": item.details.title if item.details else None,
+            "overview": item.details.overview if item.details else None,
+            "homepage": item.details.homepage if item.details else None,
+            "telephone": item.details.telephone if item.details else None,
+            "operating_hours": (
+                item.details.operating_hours if item.details else None
+            ),
+            "rest_date": item.details.rest_date if item.details else None,
+        }
+        for item in result.places
+    ]
+
+    assert result.places
+    assert len(result.places) <= 10
+    assert any(
+        item.detail_status is DetailStatus.SUCCESS for item in result.places
+    )
+    assert any(item.details and item.details.operating_hours for item in result.places)
+    assert any(item.details and item.details.rest_date for item in result.places)
+    print(f"normalized_nearby_count: {len(result.places)}")
+    print(f"normalized_nearby_status: {result.status.value}")
+    print(f"normalized_nearby_total_elapsed_ms: {result.elapsed_ms:.2f}")
+    print(f"normalized_nearby_details: {_format_body(summaries)}")
 
 
 async def test_inspect_tour_api_keyword_and_details_request_and_response() -> None:

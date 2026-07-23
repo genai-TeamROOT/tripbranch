@@ -270,13 +270,20 @@ RUN_REAL_PROVIDER_INSPECTION=true python -m pytest \
 ```
 
 경복궁 좌표 반경 2km에서 거리순 후보를 조회하고, 경복궁 자체를 제외한 최대 10개
-장소에 `detailCommon2`와 `detailIntro2`를 호출한다. 상세조회는 동시에 최대 3개만
-실행하며, 일부 상세조회가 실패해도 다른 장소 결과는 계속 수집한다. 마지막에는
+장소에 `NearbyPlaceDetailsTool`을 통해 `detailCommon2`와 `detailIntro2`를 호출한다.
+후보 검색과 상세조회는 분리된 Protocol로 주입되며, 이 테스트에서는 하나의
+`RealPlaceProvider`가 두 역할을 담당한다. 상세조회는 동시에 최대 3개만 실행하며,
+일부 상세조회가 실패해도 다른 장소 결과는 계속 수집한다. 마지막에는
 장소 ID·유형·주소·좌표·신분류 코드와 소개·홈페이지·전화번호·운영시간·휴무
 정보를 정규화한 요약을 출력한다. 원본 응답에서는 장소 유형별 `usetime*`와
 `restdate*` 필드도 확인할 수 있다. 요청과 원본 응답의 인증정보는 마스킹된다.
 각 외부 요청에는 응답 본문 수신 완료까지 걸린 `elapsed_ms`가 표시되며, 전체
-목록·상세조회에는 `normalized_nearby_total_elapsed_ms`가 함께 출력된다.
+목록·상세조회에는 Tool 상태와 `normalized_nearby_total_elapsed_ms`가 함께 출력된다.
+장소 10개는 후보 목록 1회와 장소별 상세 API 2회로 최대 21회의 외부 요청을
+발생시킨다. 2026-07-23 동시성 3의 로컬 실측은 약 20초였으며, 이는 환경에 따라
+달라지는 참고값이다. 실서비스 성능 고려사항과 DB 전환 방향은
+[Provider Contract v1의 10.11절](./provider-contract-v1.md#1011-다건-상세조회-성능-제한과-db-전환-고려사항)을
+참고한다.
 
 ### TourAPI 집중률 요청·응답
 
