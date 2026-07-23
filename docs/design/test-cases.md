@@ -4,9 +4,9 @@
 
 | 항목 | 값 |
 |------|-----|
-| 버전 | v0.1 |
+| 버전 | v0.2 |
 | 상태 | 초안 (Draft) |
-| 최종 수정 | 2026-07-22 |
+| 최종 수정 | 2026-07-23 |
 | 경로 | `docs/design/test-cases.md` |
 
 ---
@@ -50,7 +50,7 @@
 | 입력 | "추천해줘" |
 | Intent | RECOMMEND |
 | Conditions | 모든 필드 null/빈 배열 |
-| missing_conditions | current_location |
+| missing_conditions | api_context.gps_location |
 | 처리 | 추천 미진행, 현재 위치(GPS) 질문 알럿 |
 | 기대 결과 | "현재 위치를 알려주세요" GPS 응답 |
 
@@ -102,7 +102,7 @@
 | 입력 | "무료인 곳으로" |
 | Intent | MODIFY |
 | ModifyRequest | modify_type: "CHANGE_CONDITION", condition_changes: {budget: "free"} |
-| 처리 | current_conditions.budget = "free"로 갱신, 기존 추천 제외, 재추천 |
+| 처리 | user_conditions.budget = "free"로 갱신, 기존 추천 제외, 재추천 |
 | 기대 결과 | 무료 장소만 추천 |
 
 ### TC-09: search_center 변경 (제외 초기화)
@@ -112,8 +112,8 @@
 | 이전 상태 | search_center: "경복궁", excluded: [A, B, C] |
 | 입력 | "인사동 근처로 바꿔줘" |
 | Intent | MODIFY |
-| ModifyRequest | modify_type: "CHANGE_CONDITION", condition_changes: {search_center: "인사동"} |
-| 처리 | search_center 변경 → excluded 초기화 → 새 API 호출 |
+| ModifyRequest | modify_type: "CHANGE_CONDITION", condition_changes: {search_center: "인사동"}, reset_scope: "history" |
+| 처리 | A가 search_center 변경을 감지해 reset_scope: "history"를 명시적으로 함께 전달 → excluded 초기화 → 새 API 호출 |
 | 기대 결과 | 인사동 기준 새로운 추천, 이전 제외 목록 리셋 |
 
 ---
@@ -198,3 +198,12 @@
 | 상황 | 사용자 날씨 미입력 + API 실패 |
 | 처리 | 날씨 가중치 제외, 재정규화 적용 |
 | 기대 결과 | 추천 제공 + "날씨 조건을 제외하고 추천했어요" 안내 |
+
+---
+
+## 8. 변경 이력
+
+| 버전 | 날짜 | 변경 내용 |
+|------|------|-----------|
+| v0.1 | 2026-07-22 | 초안 작성 |
+| v0.2 | 2026-07-23 | Conditions 3층 구조 반영 — TC-04 missing_conditions를 api_context.gps_location으로 수정, TC-08 용어 통일(current_conditions→user_conditions), TC-09 reset_scope 명시 방식 반영 |

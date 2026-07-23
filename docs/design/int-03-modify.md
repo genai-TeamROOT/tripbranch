@@ -4,9 +4,9 @@
 
 | 항목 | 값 |
 |------|-----|
-| 버전 | v0.1 |
+| 버전 | v0.2 |
 | 상태 | 초안 (Draft) |
-| 최종 수정 | 2026-07-22 |
+| 최종 수정 | 2026-07-23 |
 
 ---
 
@@ -115,18 +115,19 @@ type ModifyType =
 1. 명시된 필드만 변경 (condition_changes에 포함된 것만)
 2. 언급되지 않은 조건은 그대로 유지
 3. 제외 장소는 누적
-4. place_types 교체 시 소속되지 않는 place_tags 자동 제거
+4. place_types 교체 시 소속되지 않는 place_tags는 B가 자동으로 제거하지 않는다.
+   A가 place_types Update와 함께 해당 place_tags에 대한 Remove를 명시적으로 전달한다.
 ```
 
 ### 필드별 병합 동작
 
 | 필드 | 병합 방식 | 예시 |
 |------|-----------|------|
-| `current_location` | Update | "나 지금 홍대야" → 위치 변경 |
+| `current_location` | Update | user_conditions 내 사용자 발화 반영 기준 — "나 지금 홍대야" → 위치 변경 (GPS 보충값은 api_context.gps_location 별도 관리) |
 | `search_center` | Update | "경복궁 말고 인사동 근처로" |
 | `place_types` | 전체 교체 | "카페 말고 맛집" → ["restaurant"] |
 | `place_tags` | Add: 기존에 추가 / Remove: 기존에서 제거 | "박물관도 포함" → 추가 |
-| `weather` | Update | "비 그쳤어" → weather 변경 |
+| `weather` | Update | user_conditions 내 사용자 발화 반영 기준 — "비 그쳤어" → weather 변경 (API 갱신값은 api_context.api_weather 별도 관리) |
 | `weather_intent` | Update | "야외도 괜찮아" → IGNORE |
 | `transport` | Update | "차로 갈게" → car |
 | `max_travel_time` | Update | "10분 이내로" → 10 |
@@ -146,9 +147,15 @@ type ModifyType =
 
 사용자: "음식점 빼고 쇼핑으로"
 
+A가 place_types 교체를 감지하여, 소속되지 않는 place_tags에 대한 Remove를
+명시적으로 함께 전달 (B는 자동으로 정리하지 않음):
+  operations:
+    { "op": "Update", "field": "place_types", "value": ["cultural_facility", "shopping"] }
+    { "op": "Remove", "field": "place_tags", "value": ["카페"] }
+
 변경 후:
   place_types: ["cultural_facility", "shopping"]  (restaurant → shopping)
-  place_tags: ["박물관"]  ("카페"는 restaurant 소속이므로 자동 제거)
+  place_tags: ["박물관"]  (A가 명시한 Remove "카페" 적용)
 ```
 
 ---
@@ -189,13 +196,20 @@ interface ExcludedPlaces {
 
 ### 제외 목록 초기화 조건
 
+제외 목록 초기화는 B가 조건 변경을 감지해서 자동으로 판단하지 않는다. A가
+reset_scope(soft/history/full/null)를 명시적으로 판정하여 operations와 함께
+전달해야 초기화가 일어난다.
+
 ```
-다음 경우 제외 목록을 초기화:
+다음 경우 A가 reset_scope: "history"를 판정하여 함께 전달:
 - search_center가 변경됨 (새로운 지역 검색)
+  예) { "reset_scope": "history", "operations": [{ "op": "Update", "field": "search_center", "value": "인사동" }] }
 - place_types가 완전히 다른 유형으로 교체됨
+
+다음 경우 A가 reset_scope: "full"을 판정하여 함께 전달:
 - 사용자가 명시적으로 "처음부터 다시" 요청
 
-다음 경우 제외 목록을 유지:
+다음 경우 reset_scope를 null로 전달 (제외 목록 유지):
 - 같은 지역 내 조건 세부 변경 (budget, environment 등)
 - place_tags 추가/제거
 - REJECT_ALL
@@ -249,7 +263,7 @@ interface ExcludedPlaces {
 | search_center 변경 | 검색 중심 좌표가 달라짐 |
 | place_types 변경 | contentTypeId가 달라짐 |
 | max_travel_time 증가 (반경 확대) | 더 넓은 범위 검색 필요 |
-| weather 변경 (날씨 API 재호출) | 날씨 점수 재계산 필요 |
+| user_conditions.weather 변경 (사용자 발화) | 날씨 점수 재계산 필요 — api_context.api_weather 재호출과는 무관 (1시간 만료 기반 별도 경로, [conditions-schema.md](./conditions-schema.md) 3절 참고) |
 
 ### 기존 후보 내에서 재정렬로 충분한 경우
 
@@ -406,7 +420,7 @@ MODIFY 후 추천 가능한 후보가 부족한 경우.
       place_types: ["restaurant"]  (유지)
       place_tags: []  (유지)
       budget: "free"  (유지)
-    제외: 초기화 (search_center 변경)
+    제외: 초기화 (A가 reset_scope: "history" 판정하여 함께 전달)
     추천 결과: [L맛집, M맛집, N맛집]
 ```
 
@@ -444,3 +458,12 @@ MODIFY 후 추천 가능한 후보가 부족한 경우.
 - [INT-04: COMPARE](./int-04-compare.md) — 후보 비교
 - [추천 점수 설계](./recommendation-scoring.md) — 가중치 및 점수 계산 상세(현재x)
 - [MVP 설계 기준서](./mvp-design-spec.md) — 후보 부족 시 처리 원칙(현재x)
+
+---
+
+## 17. 변경 이력
+
+| 버전 | 날짜 | 변경 내용 |
+|------|------|-----------|
+| v0.1 | 2026-07-22 | 초안 작성 |
+| v0.2 | 2026-07-23 | reset_scope를 B 자동 감지가 아닌 A의 명시적 판정으로 수정(8·13절), place_tags 자동 제거 서술 수정(7절), weather API 재호출 경로 분리 서술(10절) |

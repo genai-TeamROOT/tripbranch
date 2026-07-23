@@ -4,9 +4,9 @@
 
 | 항목 | 값 |
 |------|-----|
-| 버전 | v0.1 |
+| 버전 | v0.2 |
 | 상태 | 초안 (Draft) |
-| 최종 수정 | 2026-07-22 |
+| 최종 수정 | 2026-07-23 |
 
 ---
 
@@ -97,14 +97,18 @@ interface CompareRequest {
 
 ### targets 결정 규칙
 
+번호(1-indexed)는 `get_session_context` 반환값의 `shown_place_ids`(현재 노출된
+장소 ID 목록, 순서 보장)를 기준으로 해석한다. 예) `[1, 2]` → `shown_place_ids[0]`,
+`shown_place_ids[1]`.
+
 ```
 사용자가 번호를 명시한 경우
-  → 해당 번호 사용
+  → shown_place_ids에서 해당 순번의 장소 사용
 
 사용자가 번호를 명시하지 않은 경우 ("어디가 좋아?")
-  → targets: "all" (전체 비교)
+  → targets: "all" (shown_place_ids 전체 비교)
 
-지정한 번호가 추천 결과 범위를 초과하는 경우
+지정한 번호가 shown_place_ids 범위를 초과하는 경우
   → "추천 결과는 N개까지 있어요. 몇 번을 비교할까요?" 안내
 ```
 
@@ -328,3 +332,12 @@ MVP 처리:
 - [INT-03: MODIFY](./int-03-modify.md) — 비교 후 거절 시 재추천
 - [추천 점수 설계](./recommendation-scoring.md) — 비교에 사용되는 점수 항목(현재x)
 - [MVP 설계 기준서](./mvp-design-spec.md) — 추천 결과 표시 항목(현재x)
+
+---
+
+## 15. 변경 이력
+
+| 버전 | 날짜 | 변경 내용 |
+|------|------|-----------|
+| v0.1 | 2026-07-22 | 초안 작성 |
+| v0.2 | 2026-07-23 | targets 번호 해석이 get_session_context의 shown_place_ids 기준임을 명시(6절) |

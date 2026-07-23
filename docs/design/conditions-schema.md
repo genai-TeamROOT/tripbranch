@@ -1,12 +1,12 @@
-# 조건 스키마 v0.1
+# 조건 스키마 v0.2
 
 ## 문서 정보
 
 | 항목 | 값 |
 |------|-----|
-| 버전 | v0.1 |
+| 버전 | v0.2 |
 | 상태 | 초안 (Draft) |
-| 최종 수정 | 2026-07-22 |
+| 최종 수정 | 2026-07-23 |
 | 경로 | `docs/design/conditions-schema.md` |
 
 ---
@@ -28,11 +28,16 @@ Conditions (조건 N개, Intent가 RECOMMEND/MODIFY일 때 추출)
 
 ---
 
-## 2. Conditions 필드 정의
+## 2. Conditions 필드 정의 (= user_conditions)
+
+아래 인터페이스는 B가 저장하는 `user_conditions`에 해당한다. 사용자 발화에서 LLM이
+추출한 값만 담으며, GPS·날씨 API로 보충한 값은 별도의 `api_context` 구조(3절 참고)에
+저장한다. `user_conditions`와 `api_context`를 병합한 최종 조건은 `answer_conditions`이며,
+이는 A가 매 실행 시 생성하고 B는 저장하지 않는다.
 
 ```typescript
 interface Conditions {
-  // 위치
+  // 위치 (사용자 발화 기준 — API로 보충한 값은 api_context.gps_location에 별도 저장)
   current_location: string | null;
   search_center: string | null;
 
@@ -40,7 +45,7 @@ interface Conditions {
   place_types: PlaceType[];
   place_tags: PlaceTag[];
 
-  // 날씨
+  // 날씨 (사용자 발화 기준 — API로 보충한 값은 api_context.api_weather에 별도 저장)
   weather: "rain" | "snow" | "hot" | "cold" | "good" | null;
   weather_intent: "AVOID" | "ENJOY" | "IGNORE" | null;
 
@@ -94,18 +99,22 @@ type PlaceTag =
 
 ## 3. 상태 구조
 
-### initial_conditions
+Conditions는 3층 구조로 분리되어 관리된다. B는 `user_conditions`와 `api_context`를
+저장하고, `answer_conditions`는 A가 병합하여 생성한다 (B에 저장하지 않음).
 
-첫 RECOMMEND 요청 시 LLM이 추출한 최초 조건.
+### user_conditions
+
+첫 RECOMMEND 요청 시 LLM이 추출한 최초 조건. 사용자가 직접 언급한 값만 채워지며,
+언급하지 않은 위치·날씨는 null로 남는다 (API로 보충한 값은 `api_context`에 별도 저장).
 
 ```json
 {
-  "current_location": "37.5665,126.9780",
+  "current_location": null,
   "search_center": "경복궁",
   "place_types": ["restaurant"],
   "place_tags": ["카페"],
-  "weather": "rain",
-  "weather_intent": "AVOID",
+  "weather": null,
+  "weather_intent": null,
   "transport": "walk",
   "max_travel_time": null,
   "time_available": null,
@@ -117,9 +126,56 @@ type PlaceTag =
 }
 ```
 
-### current_conditions
+MODIFY를 거치며 갱신된 현재 유효 조건. 추천 엔진은 이 값을 직접 쓰지 않고, 아래
+`api_context`와 병합한 `answer_conditions`를 사용한다.
 
-MODIFY를 거치며 갱신된 현재 유효 조건. 추천 엔진은 항상 이 값을 사용한다.
+```json
+{
+  "current_location": null,
+  "search_center": "경복궁",
+  "place_types": ["restaurant"],
+  "place_tags": ["카페"],
+  "weather": "rain",
+  "weather_intent": "AVOID",
+  "transport": "walk",
+  "max_travel_time": 15,
+  "time_available": null,
+  "environment": "indoor",
+  "companion": null,
+  "budget": "free",
+  "exclude_tags": [],
+  "special_requirements": []
+}
+```
+
+### api_context
+
+GPS·날씨 API로 확보한 값. `user_conditions`와 분리되어 저장되며, operations 대상이
+아니다. A/Runtime이 API를 재호출한 뒤 B에 직접 갱신을 전달하는 별도 경로로 관리된다.
+
+```json
+{
+  "gps_location": "37.5665,126.9780",
+  "api_weather": "rain",
+  "gps_location_updated_at": "2026-07-23T09:00:00+09:00",
+  "api_weather_updated_at": "2026-07-23T09:00:00+09:00"
+}
+```
+
+| 필드 | 필수 여부 | 유효기간 | 비고 |
+|------|-----------|---------|------|
+| `gps_location` | 필수 (세션 시작 전 확보) | 1시간 | GPS 알럿 → 확보 후 세션 시작 |
+| `api_weather` | 선택 | 1시간 | 실패 시 null 유지 (이전 만료값 재사용 금지), 가중치 제외 |
+
+### answer_conditions (병합 결과, B에 저장 안 함)
+
+A가 `user_conditions` + `api_context`를 병합하여 매 실행 시 생성하는 최종 조건.
+LLM 답변 생성과 추천 엔진에 전달되며, B에는 저장하지 않는다.
+
+병합 우선순위:
+- `current_location`: user_conditions 값이 있으면 사용, 없으면 api_context.gps_location
+- `weather`: user_conditions 값이 있으면 사용, 없으면 api_context.api_weather (둘 다 없으면 가중치 제외)
+- 나머지 필드: user_conditions 값 그대로
 
 ```json
 {
@@ -144,16 +200,16 @@ MODIFY를 거치며 갱신된 현재 유효 조건. 추천 엔진은 항상 이 
 
 추천 실행에 필수이지만 아직 확보되지 않은 조건.
 
-| 필드 | 필수 여부 | 미확보 시 처리 |
-|------|-----------|---------------|
-| `current_location` | 필수 (세션 시작 전 확보) | GPS 알럿 → 확보 후 세션 시작 |
-| `search_center` | 선택 | null이면 current_location 사용 |
-| `place_types` | 선택 | 빈 배열이면 전체 유형 검색 |
-| `weather` | 선택 | API 호출 → 실패 시 가중치 제외 |
+| 필드 | 위치 | 필수 여부 | 미확보 시 처리 |
+|------|------|-----------|---------------|
+| `gps_location` | api_context | 필수 (세션 시작 전 확보) | GPS 알럿 → 확보 후 세션 시작 |
+| `search_center` | user_conditions | 선택 | null이면 answer_conditions에서 gps_location 사용 |
+| `place_types` | user_conditions | 선택 | 빈 배열이면 전체 유형 검색 |
+| `weather` / `api_weather` | 병합 | 선택 | 둘 다 없으면 가중치 제외 |
 
 ```
 missing_conditions 처리 흐름:
-  ① 필수 조건 미확보 → 사용자에게 질문 (추천 진행하지 않음)
+  ① 필수 조건(gps_location) 미확보 → 사용자에게 GPS 알럿 (추천 진행하지 않음)
   ② 선택 조건 미확보 → 기본값 적용 또는 해당 가중치 제외
 ```
 
@@ -183,7 +239,7 @@ missing_conditions 처리 흐름:
 
 | 필드 | 단일/복수 | 변경 시 처리 | 해제 시 처리 |
 |------|-----------|-------------|-------------|
-| `current_location` | 단일 | Update | — (필수 필드) |
+| `current_location` | 단일 | Update | Remove → null (사용자 발화 기준, 필수 아님 — 필수인 것은 api_context.gps_location) |
 | `search_center` | 단일 | Update | Remove → null (current_location 사용) |
 | `place_types` | 복수 | Update (전체 교체) | Remove → 빈 배열 (전체 검색) |
 | `place_tags` | 복수 | Add / Update / Remove | Remove → 빈 배열 |
@@ -205,7 +261,9 @@ missing_conditions 처리 흐름:
 | `place_types` | **Update** (전체 교체) | "카페 말고 맛집"은 기존 유형을 대체하는 의도 |
 | `place_tags` | **Add** (누적) 또는 **Remove** (제거) | "박물관도 보고 싶어"는 기존 태그에 추가하는 의도 |
 
-단, place_types가 교체되면 소속되지 않는 place_tags는 자동 제거된다.
+단, place_types가 교체될 때 소속되지 않는 place_tags의 정리는 B가 자동으로
+수행하지 않는다. A가 place_types Update 연산과 함께 해당 place_tags에 대한
+Remove 연산을 명시적으로 함께 전달한다.
 
 ---
 
@@ -214,7 +272,7 @@ missing_conditions 처리 흐름:
 ### 예시 1: 조건 추가 (Add)
 
 ```
-current_conditions:
+user_conditions:
   place_types: ["restaurant"]
   place_tags: ["카페"]
   special_requirements: []
@@ -233,7 +291,7 @@ current_conditions:
 ### 예시 2: 조건 교체 (Update)
 
 ```
-current_conditions:
+user_conditions:
   place_types: ["restaurant"]
   place_tags: ["카페"]
   budget: null
@@ -253,7 +311,7 @@ current_conditions:
 ### 예시 3: 조건 해제 (Remove)
 
 ```
-current_conditions:
+user_conditions:
   budget: "free"
   environment: "indoor"
 
@@ -271,7 +329,7 @@ current_conditions:
 ### 예시 4: 유지 (Keep)
 
 ```
-current_conditions:
+user_conditions:
   search_center: "경복궁"
   place_types: ["restaurant"]
   place_tags: ["카페"]
@@ -292,22 +350,26 @@ current_conditions:
   max_travel_time: 15           (Update)
 ```
 
-### 예시 5: place_types 교체에 따른 place_tags 자동 정리
+### 예시 5: place_types 교체에 따른 place_tags 정리 (A가 명시적으로 Remove 지시)
 
 ```
-current_conditions:
+user_conditions:
   place_types: ["cultural_facility", "restaurant"]
   place_tags: ["박물관", "카페"]
 
 사용자: "음식점 빼고 쇼핑으로"
 
 처리:
-  place_types: Update → ["cultural_facility", "shopping"]
-  place_tags: "카페"는 restaurant 소속이므로 자동 Remove
+  A가 place_types 교체를 감지하고, 소속되지 않는 place_tags("카페")에 대한
+  Remove 연산을 함께 생성하여 전달 (B는 자동으로 정리하지 않음)
+
+operations:
+  { "op": "Update", "field": "place_types", "value": ["cultural_facility", "shopping"] }
+  { "op": "Remove", "field": "place_tags", "value": ["카페"] }
 
 결과:
   place_types: ["cultural_facility", "shopping"]   (Update)
-  place_tags: ["박물관"]                            (자동 Remove "카페")
+  place_tags: ["박물관"]                            (A가 명시한 Remove "카페" 적용)
 ```
 
 ---
@@ -317,15 +379,18 @@ current_conditions:
 ```
 [시작]
     ↓
-RECOMMEND → initial_conditions 생성 → current_conditions = initial_conditions
+RECOMMEND → user_conditions 최초 생성
     ↓
-MODIFY → Add/Update/Remove 적용 → current_conditions 갱신 (나머지 Keep)
+MODIFY → Add/Update/Remove 적용 → user_conditions 갱신 (나머지 Keep)
     ↓
-MODIFY → Add/Update/Remove 적용 → current_conditions 갱신 (나머지 Keep)
+MODIFY → Add/Update/Remove 적용 → user_conditions 갱신 (나머지 Keep)
     ↓
 ... (반복)
     ↓
-새 RECOMMEND → initial_conditions 재생성 → current_conditions 초기화
+새 RECOMMEND → user_conditions 재생성 (초기화)
+
+※ 매 단계에서 추천 엔진은 user_conditions를 직접 쓰지 않고, api_context와
+  병합한 answer_conditions(A가 생성, 미저장)를 사용한다.
 ```
 
 ---
@@ -342,9 +407,18 @@ LLM이 condition_changes 추출 (변경된 필드만)
   - 명시적 해제면 → Remove
   - 언급 없으면 → Keep
     ↓
-current_conditions에 반영
+user_conditions에 반영
     ↓
-place_types 변경 시 → 소속 안 되는 place_tags 자동 정리
+place_types 변경 시 → A가 소속 안 되는 place_tags에 대한 Remove 연산을 함께 전달
     ↓
-갱신된 current_conditions로 재추천
+갱신된 user_conditions로 재추천 (실제로는 api_context와 병합한 answer_conditions 사용)
 ```
+
+---
+
+## 8. 변경 이력
+
+| 버전 | 날짜 | 변경 내용 |
+|------|------|-----------|
+| v0.1 | 2026-07-22 | 초안 작성 |
+| v0.2 | 2026-07-23 | Conditions 3층 구조(user_conditions/api_context/answer_conditions) 반영, place_tags 자동 제거 서술을 A의 명시적 Remove로 수정, 용어 통일(current_conditions → user_conditions) |

@@ -4,7 +4,7 @@
 
 | 항목 | 값 |
 |------|-----|
-| 버전 | v0.2 |
+| 버전 | v0.3 |
 | 상태 | 초안 (Draft) |
 | 브랜치 | `docs/intent-definition` |
 | 경로 | `docs/design/intent-definition.md` |
@@ -117,11 +117,20 @@
 
 ## 6. Conditions 공통 스키마
 
-RECOMMEND, MODIFY, REPLAN이 공유하는 조건 구조:
+RECOMMEND, MODIFY, REPLAN이 공유하는 조건은 3층 구조로 관리된다. 상세 스키마는
+[conditions-schema.md](./conditions-schema.md)를 따른다.
+
+```
+① user_conditions  — 사용자 발화에서 추출한 값만 저장 (아래 인터페이스, B 저장)
+② api_context       — GPS·날씨 API로 확보한 값, 별도 구조로 B 저장 (operations 대상 아님)
+③ answer_conditions — ①+②를 병합한 최종 조건, A가 생성 (B에 저장 안 함)
+```
+
+아래 `Conditions` 인터페이스는 `user_conditions`에 해당한다.
 
 ```typescript
 interface Conditions {
-  // 위치
+  // 위치 (사용자 발화 기준 — API로 보충한 값은 api_context.gps_location에 별도 저장)
   current_location: string | null;
   search_center: string | null;
 
@@ -129,7 +138,7 @@ interface Conditions {
   place_types: PlaceType[];
   place_tags: PlaceTag[];
 
-  // 날씨
+  // 날씨 (사용자 발화 기준 — API로 보충한 값은 api_context.api_weather에 별도 저장)
   weather: "rain" | "snow" | "hot" | "cold" | "good" | null;
   weather_intent: "AVOID" | "ENJOY" | "IGNORE" | null;
 
@@ -182,11 +191,11 @@ type PlaceTag =
 
 | 필드 | 단일/복수 | 변경 방식 | MODIFY 시 동작 |
 |------|-----------|-----------|---------------|
-| `current_location` | 단일 | Update | GPS 갱신 또는 직접 입력 |
+| `current_location` | 단일 | Update | 사용자가 위치를 직접 언급했을 때만 갱신 (GPS 보충값은 api_context.gps_location, operations 대상 아님) |
 | `search_center` | 단일 | Update | "인사동 근처로" → 교체 |
 | `place_types` | 복수 | Update (전체 교체) | "카페 말고 맛집" → ["restaurant"] |
 | `place_tags` | 복수 | Add / Remove | "박물관도 추가" → 기존에 추가 |
-| `weather` | 단일 | Update | API 최신값 또는 사용자 변경 |
+| `weather` | 단일 | Update | 사용자 발화로 변경 시에만 user_conditions.weather 갱신 (API 값은 api_context.api_weather로 별도 관리) |
 | `weather_intent` | 단일 | Update | "실내로" → AVOID |
 | `transport` | 단일 | Update | "차로 갈게" → car |
 | `max_travel_time` | 단일 | Update | "30분 이내로" → 30 |
@@ -203,10 +212,10 @@ type PlaceTag =
 
 | 상황 | 처리 |
 |------|------|
-| current_location 없음 (GPS 실패) | "현재 위치를 알려주세요" 질문 |
-| search_center 없음 | current_location을 검색 기준으로 사용 |
-| place_types 빈 배열 | 전체 유형에서 가까운 순 추천 |
-| weather 없음 + API 실패 | 날씨 가중치 제외, 나머지 재정규화 |
+| api_context.gps_location 확보 실패 | GPS 알럿 → 재확보 전까지 세션 시작 불가 |
+| user_conditions.search_center 없음 | answer_conditions 생성 시 api_context.gps_location을 검색 기준으로 사용 |
+| user_conditions.place_types 빈 배열 | 전체 유형에서 가까운 순 추천 |
+| user_conditions.weather 없음 + api_context.api_weather 확보 실패 | 날씨 가중치 제외, 나머지 재정규화 |
 | weather_intent 모호 | 사용자에게 실내/야외 선호 추가 질문 |
 | 모든 조건 없음 ("추천해줘") | current_location 확인 우선 |
 | transport 없음 | 기본값 도보 기준 (default_transport: walk) |
@@ -229,3 +238,4 @@ type PlaceTag =
 |------|------|-----------|
 | v0.1 | 2026-07-22 | 초안 작성 — Intent 5개, Conditions 공통화, 판별 규칙 |
 | v0.2 | 2026-07-22 | INT-06 OUT_OF_SCOPE 추가, 판별 우선순위 수정, 위치 필드 분리(current_location/search_center), preference_tags 제거 |
+| v0.3 | 2026-07-23 | Conditions 3층 구조 반영(6절), weather/current_location 필드 설명을 user_conditions/api_context 기준으로 수정(6·7절) |
