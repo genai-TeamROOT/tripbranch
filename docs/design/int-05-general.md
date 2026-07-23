@@ -284,5 +284,5 @@ GENERAL은 단발성 질문-응답으로 처리하며, 복잡한 대화 흐름�
 
 - [INT-02: INFO](./int-02-info.md) — API 조회 가능 정보와의 구분
 - [INT-01: RECOMMEND](./int-01-recommend.md) — 장소 추천 요청과의 구분
-- [MVP 설계 기준서](./mvp-design-spec.md) — 서비스 범위 정의
+- [MVP 설계 기준서](./mvp-design-spec.md) — 서비스 범위 정의(현재x)
 
