@@ -10,7 +10,8 @@
 | React Frontend, 분리된 Interpret/Recommendations API | 구현됨 |
 | Fake/Real Provider와 일부 외부 API 연동 | 구현됨 |
 | Chat API, Orchestrator, Context Merge, Tool | 미구현 (`TBD`) |
-| Recommendation Request Builder, 가중치 Engine | 미구현 (`TBD`) |
+| 가중치 Engine (Scoring v1) | 독립 모듈 구현됨; Request Builder/route 연결은 미구현 (`TBD`) |
+| Recommendation Request Builder | 미구현 (`TBD`) |
 | LLM Interpret/Response Generator | 미구현 (`TBD`) |
 | Supabase Persistence | 미구현 (`TBD`) |
 
@@ -97,7 +98,15 @@ Holiday Provider는 구현되어 있지만 추천 서비스에 아직 조립되�
 
 - 담당: 명시적 필수 조건의 하드 필터, Feature 계산, 가중치 점수, 결정적 정렬,
   이전 노출·거절 장소 제외
-- 현재: 거리 계산과 `shown_place_ids` 제외만 일부 구현; 가중치 Scoring은 미구현
+- 현재: `backend/app/domain/scoring.py::score_candidates()`로 날씨·남은 운영
+  시간·거리 Feature 가중치 점수와 결정적 정렬(Scoring v1)을 독립 모듈로 구현.
+  카테고리는 1차 하드 필터가 처리한다고 보고 가중치에서 제외했고, 운영 유무는
+  가중치 Feature가 아니라 `now`와 `OperatingHours`를 비교하는 최종 하드
+  필터로 판정. 이전 노출·거절 ID 하드 필터, 운영시간 미확인과 폐점의 구분,
+  날씨·남은 운영시간 결측 시(후보별로 독립적일 수 있는) 가중치 재분배 포함.
+  상세는 [추천 점수 설계](./design/recommendation-scoring.md) 참고
+- 미구현: `services/recommendations.py`/`/api/recommendations` 라우트와의 실제
+  연결(Request Builder 경유), 혼잡도·근거 신뢰도 Feature, 실이동시간 거리
 
 ### Response Generator
 
@@ -186,7 +195,7 @@ Weather Snapshot은 `data_type=forecast`, `retrieved_at`, `forecast_for`,
 | --- | --- | --- |
 | Geocoding 실패 | 위치 재입력 요청; 추천 실행 중단 | 부분 구현 |
 | Place 후보 조회 실패 | 후보 자체가 없으므로 해당 실행 실패 | 제안, `TBD` |
-| Weather 실패 | 날씨 Feature 제외 후 나머지 가중치 재정규화 | 설계 초안, 미구현 |
+| Weather 실패 | 날씨 Feature 제외 후 나머지 가중치 재정규화 | Scoring 엔진 구현됨; 파이프라인 연결 `TBD` |
 | 운영시간 누락 | 제외 또는 `unverified_recommendations`로 분리 | 현재는 분리 |
 | Concentration 실패 | 혼잡도 Feature 없이 부분 추천 | 제안, `TBD` |
 | Blog 근거 실패 | 분위기/조용함 Feature를 미확인 처리 | 제안, `TBD` |

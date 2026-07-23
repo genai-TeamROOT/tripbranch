@@ -197,7 +197,9 @@ RUN_REAL_PROVIDER_INSPECTION=true python -m pytest \
 
 - 실제 Interpret는 미구현이며 고정 결과를 반환합니다.
 - Fake/Fake 추천은 고정 응답이며 실제 Provider 파이프라인과 경로가 다릅니다.
-- 가중치 Scoring, 운영시간 계산, 이동시간 계산은 미구현입니다.
+- 가중치 Scoring 엔진(Scoring v1, `backend/app/domain/scoring.py`)은 독립 모듈로
+  구현되어 있으나 `/api/recommendations` 라우트에는 아직 연결되지 않았습니다.
+  운영시간 계산, 이동시간 계산은 미구현입니다.
 - Weather, Concentration, Holiday Provider는 추천 서비스에 아직 연결되지 않았습니다.
 - `EXTERNAL_API_RETRY_COUNT`는 설정만 있고 실제 재시도에 사용되지 않습니다.
 - Frontend는 목표의 `localStorage`가 아니라 현재 `sessionStorage`를 사용합니다.
