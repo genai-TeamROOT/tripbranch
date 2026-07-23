@@ -55,7 +55,7 @@ Score 계산 (가중치 적용)
 ```typescript
 interface Conditions {
   // 위치
-  current_location: string; // 필수 (새 채팅 시작 시 GPS로 확보)
+  current_location: string | null; 
   search_center: string | null;
 
   // 장소 유형 (복수 가능)
@@ -97,7 +97,7 @@ interface Conditions {
 
 | 필드 | 타입 | 설명 | 처리 방식 | 예시 |
 |------|------|------|-----------|------|
-| `current_location` | string | 사용자의 현재 위치 (세션 시작 시 GPS로 필수 확보) | Update | "강남역", GPS 좌표 문자열 |
+| `current_location` | string | 사용자의 현재 위치 | Update | "강남역" |
 | `search_center` | string \| null | 장소 검색 기준점. null이면 current_location 사용 | Update | "경복궁", "성수동", null |
 
 ### 장소 유형 필드
@@ -141,16 +141,14 @@ interface Conditions {
 
 | 필드 | 역할 | 데이터 소스 |
 |------|------|------------|
-| `current_location` | 사용자가 지금 있는 곳 | ① 기기 GPS (기본) ② 사용자 직접 입력 |
+| `current_location` | 사용자가 지금 있는 곳 | ① 사용자 직접 입력 |
 | `search_center` | 장소 검색 반경의 중심점 | ① 사용자 발화에서 추출 ② 없으면 current_location과 동일 |
 
 ### 위치 확보 순서
 
 ```
 current_location 확보:
-  ① 앱 접속 시 기기 GPS로 자동 획득 (기본)
-  ② GPS 사용 불가 또는 거부 시 → 사용자에게 현재 위치 직접 입력 요청
-  ③ 사용자가 "나 지금 ~~야"로 현재 위치를 명시 → GPS 대신 사용
+  ① 사용자가 "나 지금 ~~야"로 현재 위치를 명시 → GPS 대신 사용
 
 search_center 결정:
   ① 사용자가 "~~ 근처", "~~ 주변", "~~ 가려는데"로 목적지 명시
@@ -403,7 +401,7 @@ LLM이 AVOID/ENJOY 판별 불가
 
 | 상황 | 처리 |
 |------|------|
-| current_location 없음 (GPS 실패) | "현재 위치를 알려주세요" 질문 |
+| current_location 없음 (GPS도 실패) | "현재 위치를 알려주세요" 질문 |
 | search_center 없음 | current_location을 검색 기준으로 사용 |
 | place_types 빈 배열 | 전체 유형에서 검색 기준점 가까운 순 추천 |
 | weather 없음 + API 실패 | 날씨 가중치 제외, 나머지 재정규화 |
@@ -420,7 +418,7 @@ LLM이 AVOID/ENJOY 판별 불가
 
 | 필드 | 단일/복수 | 변경 방식 | MODIFY 시 동작 예시 |
 |------|-----------|-----------|-------------------|
-| `current_location` | 단일 | Update | GPS 갱신 또는 "나 지금 ~~야" |
+| `current_location` | 단일 | Update | "나 지금 ~~야" |
 | `search_center` | 단일 | Update | "경복궁 말고 인사동 근처로" |
 | `place_types` | 복수 | Update (전체 교체) | "카페 말고 맛집" → ["restaurant"], tags 조정 |
 | `place_tags` | 복수 | Add / Remove | "박물관도 포함" → 기존에 추가 |
@@ -476,7 +474,7 @@ LLM이 AVOID/ENJOY 판별 불가
 {
   "intent": "RECOMMEND",
   "conditions": {
-    "current_location": "37.5665,126.9780",
+    "current_location": "홍대",
     "search_center": "경복궁",
     "place_types": ["cultural_facility", "restaurant"],
     "place_tags": ["박물관", "미술관", "카페"],
@@ -542,4 +540,3 @@ place_types 빈 배열 (전체 검색) + place_tags 없음:
 
 ---
 
-## 15. 관련 문서

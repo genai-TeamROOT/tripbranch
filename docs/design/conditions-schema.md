@@ -1,12 +1,12 @@
-# 조건 스키마 v0.1
+# 조건 스키마 v0.2
 
 ## 문서 정보
 
 | 항목 | 값 |
 |------|-----|
-| 버전 | v0.1 |
+| 버전 | v0.2 |
 | 상태 | 초안 (Draft) |
-| 최종 수정 | 2026-07-22 |
+| 최종 수정 | 2026-07-23 |
 | 경로 | `docs/design/conditions-schema.md` |
 
 ---
@@ -413,3 +413,12 @@ place_types 변경 시 → A가 소속 안 되는 place_tags에 대한 Remove �
     ↓
 갱신된 user_conditions로 재추천 (실제로는 api_context와 병합한 answer_conditions 사용)
 ```
+
+---
+
+## 8. 변경 이력
+
+| 버전 | 날짜 | 변경 내용 |
+|------|------|-----------|
+| v0.1 | 2026-07-22 | 초안 작성 |
+| v0.2 | 2026-07-23 | Conditions 3층 구조(user_conditions/api_context/answer_conditions) 반영, place_tags 자동 제거 서술을 A의 명시적 Remove로 수정, 용어 통일(current_conditions → user_conditions) |

@@ -4,7 +4,7 @@
 
 | 항목 | 값 |
 |------|-----|
-| 버전 | v0.2 |
+| 버전 | v0.3 |
 | 상태 | 초안 (Draft) |
 | 브랜치 | `docs/intent-definition` |
 | 경로 | `docs/design/intent-definition.md` |
@@ -238,3 +238,4 @@ type PlaceTag =
 |------|------|-----------|
 | v0.1 | 2026-07-22 | 초안 작성 — Intent 5개, Conditions 공통화, 판별 규칙 |
 | v0.2 | 2026-07-22 | INT-06 OUT_OF_SCOPE 추가, 판별 우선순위 수정, 위치 필드 분리(current_location/search_center), preference_tags 제거 |
+| v0.3 | 2026-07-23 | Conditions 3층 구조 반영(6절), weather/current_location 필드 설명을 user_conditions/api_context 기준으로 수정(6·7절) |
