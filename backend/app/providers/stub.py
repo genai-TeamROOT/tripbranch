@@ -56,11 +56,15 @@ class FakePlaceProvider:
         preferred_categories: list[str],
         search_radius_km: float,
         category_filter: PlaceCategoryFilter | None = None,
+        limit: int = 20,
     ) -> list[PlaceCandidate]:
         candidates = [
             PlaceCandidate(
                 place_id="fake-museum-1",
                 content_type_id="14",
+                lcls_systm1="VE",
+                lcls_systm2="VE07",
+                lcls_systm3="VE070100",
                 name="테스트 박물관",
                 category="museum",
                 latitude=latitude,
@@ -72,6 +76,9 @@ class FakePlaceProvider:
             PlaceCandidate(
                 place_id="fake-cafe-1",
                 content_type_id="39",
+                lcls_systm1="FD",
+                lcls_systm2="FD05",
+                lcls_systm3="FD050100",
                 name="테스트 카페",
                 category="cafe",
                 latitude=latitude + 0.001,
@@ -82,12 +89,12 @@ class FakePlaceProvider:
             ),
         ]
         if category_filter and category_filter.content_type_id:
-            return [
+            candidates = [
                 candidate
                 for candidate in candidates
                 if candidate.content_type_id == category_filter.content_type_id
             ]
-        return candidates
+        return candidates[: max(1, min(limit, 100))]
 
     async def search_by_keyword(
         self,
@@ -114,6 +121,7 @@ class FakePlaceProvider:
             homepage=None,
             telephone=None,
             operating_hours=candidate.operating_hours if candidate else None,
+            rest_date="매주 월요일" if candidate else None,
             raw_common={},
             raw_intro={},
             provider="fake_place",

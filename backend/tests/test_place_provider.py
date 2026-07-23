@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from app.domain.models import PlaceCategoryFilter
-from app.errors import AppError
+from app.errors import AppError, ProviderTimeoutError
 from app.providers.real_place import RealPlaceProvider
 
 
@@ -30,6 +30,9 @@ async def test_search_places_sends_tour_api_category_filters() -> None:
                 {
                     "contentid": "cafe-1",
                     "contenttypeid": "39",
+                    "lclsSystm1": "FD",
+                    "lclsSystm2": "FD05",
+                    "lclsSystm3": "FD050100",
                     "title": "테스트 카페",
                     "mapx": "126.9770",
                     "mapy": "37.5788",
@@ -44,6 +47,7 @@ async def test_search_places_sends_tour_api_category_filters() -> None:
             longitude=126.9770,
             preferred_categories=["cafe"],
             search_radius_km=5.0,
+            limit=10,
             category_filter=PlaceCategoryFilter(
                 content_type_id="39",
                 lcls_systm1="FD",
@@ -56,7 +60,11 @@ async def test_search_places_sends_tour_api_category_filters() -> None:
     assert seen_params["lclsSystm1"] == "FD"
     assert seen_params["lclsSystm2"] == "FD05"
     assert seen_params["lclsSystm3"] == "FD050100"
+    assert seen_params["numOfRows"] == "10"
     assert result[0].content_type_id == "39"
+    assert result[0].lcls_systm1 == "FD"
+    assert result[0].lcls_systm2 == "FD05"
+    assert result[0].lcls_systm3 == "FD050100"
 
 
 @pytest.mark.parametrize(
@@ -74,6 +82,19 @@ def test_place_category_filter_requires_parent_codes(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         PlaceCategoryFilter(**kwargs)
+
+
+@pytest.mark.asyncio
+async def test_place_provider_timeout_does_not_chain_sensitive_request() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = RealPlaceProvider(api_key="sensitive-key", client=client)
+        with pytest.raises(ProviderTimeoutError) as exc_info:
+            await provider.search_places(37.5788, 126.9770, [], 1.0)
+
+    assert exc_info.value.__cause__ is None
 
 
 @pytest.mark.asyncio
@@ -137,6 +158,7 @@ async def test_get_details_combines_common_and_intro_responses() -> None:
                     "contentid": "126508",
                     "contenttypeid": "12",
                     "usetime": "09:00~18:00",
+                    "restdate": "매주 화요일",
                 }
             ),
         )
@@ -149,6 +171,7 @@ async def test_get_details_combines_common_and_intro_responses() -> None:
     assert seen_paths[1].endswith("/detailIntro2")
     assert result.title == "경복궁"
     assert result.operating_hours == "09:00~18:00"
+    assert result.rest_date == "매주 화요일"
     assert result.overview == "조선 왕조의 법궁"
 
 
@@ -191,6 +214,7 @@ async def test_find_details_by_name_searches_exact_match_then_gets_details() -> 
                     "contentid": "126508",
                     "contenttypeid": "12",
                     "usetime": "09:00~18:00",
+                    "restdate": "매주 화요일",
                 }
             ),
         )
@@ -208,6 +232,7 @@ async def test_find_details_by_name_searches_exact_match_then_gets_details() -> 
     ]
     assert result.title == "경복궁"
     assert result.operating_hours == "09:00~18:00"
+    assert result.rest_date == "매주 화요일"
 
 
 @pytest.mark.asyncio

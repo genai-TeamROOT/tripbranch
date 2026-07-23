@@ -342,6 +342,9 @@ Factory에서 `ValueError`가 발생합니다.
 | --- | --- | --- |
 | `place_id` | `str` | TourAPI `contentid` 또는 Fake ID |
 | `content_type_id` | `str \| None` | TourAPI `contenttypeid` |
+| `lcls_systm1` | `str \| None` | TourAPI 신분류 대분류 `lclsSystm1` |
+| `lcls_systm2` | `str \| None` | TourAPI 신분류 중분류 `lclsSystm2` |
+| `lcls_systm3` | `str \| None` | TourAPI 신분류 소분류 `lclsSystm3` |
 | `name` | `str` | 장소명 |
 | `category` | `str` | 내부 대분류 |
 | `latitude` / `longitude` | `float` | 좌표 |
@@ -361,6 +364,7 @@ Factory에서 `ValueError`가 발생합니다.
 | `homepage` | `str \| None` | 홈페이지 원문 |
 | `telephone` | `str \| None` | 공통 `tel`, 없으면 소개 `infocenter` |
 | `operating_hours` | `str \| None` | 유형별 운영시간 원문 |
+| `rest_date` | `str \| None` | 유형별 휴무 정보 원문 |
 | `raw_common` | `Mapping` | `detailCommon2` 첫 항목 |
 | `raw_intro` | `Mapping` | `detailIntro2` 첫 항목 |
 | `provider` | `str` | `tour_api` 또는 `fake_place` |
@@ -627,8 +631,10 @@ async def get_details(
 2. `GET .../detailIntro2?contentId=...&contentTypeId=...`
 3. 양쪽 첫 항목을 `PlaceDetails`로 결합
 
-운영시간은 `usetime`, `usetimeculture`, `opentimefood`, `checkintime`,
-`openperiod` 중 처음 존재하는 값을 사용합니다. 장소 유형에 따라 `restdate`,
+운영시간은 `usetime`, `usetimeculture`, `playtime`, `usetimeleports`, `opentime`,
+`opentimefood`, `checkintime`, `openperiod` 중 처음 존재하는 값을 사용합니다.
+휴무 정보는 `restdate`, `restdateculture`, `restdateleports`,
+`restdateshopping`, `restdatefood` 중 처음 존재하는 값을 사용합니다. 이외에도
 `parking`, `infocenter`, 체험 정보 등이 `raw_intro`에 추가로 존재할 수 있습니다.
 
 ### 10.6 장소명 기반 상세조회

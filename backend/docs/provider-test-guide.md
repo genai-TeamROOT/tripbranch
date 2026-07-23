@@ -261,6 +261,23 @@ RUN_REAL_PROVIDER_INSPECTION=true python -m pytest \
 분류 필드를 확인하고, 원본 응답과 정규화된 장소명·`content_type_id` 표본을 함께
 검증한다. `serviceKey`는 `<redacted>`로 표시된다.
 
+### 경복궁 인근 10개 장소 목록·상세정보 요청·응답
+
+```bash
+RUN_REAL_PROVIDER_INSPECTION=true python -m pytest \
+  tests/test_provider_inspection.py::test_inspect_tour_api_nearby_place_details_request_and_response \
+  -v -s
+```
+
+경복궁 좌표 반경 2km에서 거리순 후보를 조회하고, 경복궁 자체를 제외한 최대 10개
+장소에 `detailCommon2`와 `detailIntro2`를 호출한다. 상세조회는 동시에 최대 3개만
+실행하며, 일부 상세조회가 실패해도 다른 장소 결과는 계속 수집한다. 마지막에는
+장소 ID·유형·주소·좌표·신분류 코드와 소개·홈페이지·전화번호·운영시간·휴무
+정보를 정규화한 요약을 출력한다. 원본 응답에서는 장소 유형별 `usetime*`와
+`restdate*` 필드도 확인할 수 있다. 요청과 원본 응답의 인증정보는 마스킹된다.
+각 외부 요청에는 응답 본문 수신 완료까지 걸린 `elapsed_ms`가 표시되며, 전체
+목록·상세조회에는 `normalized_nearby_total_elapsed_ms`가 함께 출력된다.
+
 ### TourAPI 집중률 요청·응답
 
 ```bash

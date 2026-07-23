@@ -55,12 +55,16 @@ async def test_fake_place_provider_uses_common_candidate() -> None:
         ),
     )
     assert [candidate.content_type_id for candidate in cafe_result] == ["39"]
+    assert cafe_result[0].lcls_systm1 == "FD"
+    assert cafe_result[0].lcls_systm2 == "FD05"
+    assert cafe_result[0].lcls_systm3 == "FD050100"
 
     keyword_result = await FakePlaceProvider().search_by_keyword("박물관")
     assert keyword_result[0].content_type_id == "14"
 
     details = await FakePlaceProvider().get_details("fake-museum-1", "14")
     assert details.title == "테스트 박물관"
+    assert details.rest_date == "매주 월요일"
 
     named_details = await FakePlaceProvider().find_details_by_name("테스트 박물관")
     assert named_details.title == "테스트 박물관"

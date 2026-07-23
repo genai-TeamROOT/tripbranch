@@ -190,6 +190,9 @@ type RecommendationRequest = {
 type PlaceCandidate = {
   place_id: string;
   content_type_id?: string | null;
+  lcls_systm1?: string | null;
+  lcls_systm2?: string | null;
+  lcls_systm3?: string | null;
   name: string;
   category: string;
   latitude: number;

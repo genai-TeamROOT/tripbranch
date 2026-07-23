@@ -19,9 +19,19 @@ _DETAIL_INTRO_PATH = "/detailIntro2"
 _OPERATING_HOURS_KEYS = (
     "usetime",
     "usetimeculture",
+    "playtime",
+    "usetimeleports",
+    "opentime",
     "opentimefood",
     "checkintime",
     "openperiod",
+)
+_REST_DATE_KEYS = (
+    "restdate",
+    "restdateculture",
+    "restdateleports",
+    "restdateshopping",
+    "restdatefood",
 )
 
 
@@ -58,27 +68,36 @@ class RealPlaceProvider:
 
     def _base_params(self) -> dict[str, object]:
         return {
-            "serviceKey": self._api_key,
             "MobileOS": "ETC",
             "MobileApp": "TripBranch",
             "_type": "json",
         }
 
     async def _request_json(self, path: str, params: dict[str, object]) -> dict[str, object]:
+        request_params = {"serviceKey": self._api_key, **params}
         try:
             response = await self._client.get(
                 _BASE_URL + path,
-                params=params,
+                params=request_params,
                 timeout=self._timeout_seconds,
             )
             response.raise_for_status()
             payload = response.json()
-        except httpx.TimeoutException as exc:
-            raise ProviderTimeoutError("TourAPI") from exc
-        except httpx.HTTPError as exc:
-            raise ProviderUnavailableError("TourAPI") from exc
-        except ValueError as exc:
-            raise ProviderUnavailableError("TourAPI", detail="non-JSON response") from exc
+        except httpx.TimeoutException:
+            # httpx 예외와 traceback에는 ServiceKey가 포함된 전체 URL이 남을 수 있다.
+            request_params.clear()
+            response = None
+            raise ProviderTimeoutError("TourAPI") from None
+        except httpx.HTTPError:
+            request_params.clear()
+            response = None
+            raise ProviderUnavailableError("TourAPI") from None
+        except ValueError:
+            request_params.clear()
+            response = None
+            raise ProviderUnavailableError(
+                "TourAPI", detail="non-JSON response"
+            ) from None
 
         header = payload.get("response", {}).get("header", {})
         result_code = str(header.get("resultCode", ""))
@@ -96,6 +115,7 @@ class RealPlaceProvider:
         preferred_categories: list[str],
         search_radius_km: float,
         category_filter: PlaceCategoryFilter | None = None,
+        limit: int = 20,
     ) -> list[PlaceCandidate]:
         radius_m = min(int(search_radius_km * 1000), 20000)
         params = {
@@ -104,7 +124,7 @@ class RealPlaceProvider:
             "mapY": latitude,
             "radius": radius_m,
             "arrange": "E",
-            "numOfRows": 20,
+            "numOfRows": max(1, min(limit, 100)),
             "pageNo": 1,
         }
         if category_filter is not None:
@@ -182,6 +202,7 @@ class RealPlaceProvider:
             homepage=_first_text(common, ("homepage",)),
             telephone=_first_text(common, ("tel",)) or _first_text(intro, ("infocenter",)),
             operating_hours=_first_text(intro, _OPERATING_HOURS_KEYS),
+            rest_date=_first_text(intro, _REST_DATE_KEYS),
             raw_common=common,
             raw_intro=intro,
             provider="tour_api",

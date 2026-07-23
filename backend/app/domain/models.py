@@ -85,6 +85,7 @@ class PlaceDetails:
     homepage: str | None
     telephone: str | None
     operating_hours: str | None
+    rest_date: str | None
     raw_common: Mapping[str, object]
     raw_intro: Mapping[str, object]
     provider: str

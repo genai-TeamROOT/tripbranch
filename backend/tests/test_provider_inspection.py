@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+from time import perf_counter
 from typing import Any
+from urllib.parse import quote, quote_plus
 
 import httpx
 import pytest
 
 from app.config import Settings
 from app.domain.models import PlaceCategoryFilter
+from app.errors import AppError
 from app.providers.concentration import RealConcentrationProvider
 from app.providers.geocoding import RealGeocodingProvider
 from app.providers.holiday import RealHolidayProvider
@@ -35,6 +39,28 @@ _SENSITIVE_HEADER_KEYS = {
     "x-ncp-apigw-api-key",
 }
 _MAX_RESPONSE_CHARS = 30_000
+_INSPECTION_STARTED_AT = "tripbranch_inspection_started_at"
+
+
+def _known_secrets() -> tuple[str, ...]:
+    values = (
+        settings.tour_api_service_key,
+        settings.weather_api_key,
+        settings.naver_map_client_id,
+        settings.naver_map_client_secret,
+        settings.llm_api_key,
+    )
+    return tuple(value for value in values if value)
+
+
+def _redact_known_secrets(value: str) -> str:
+    redacted = value
+    for secret in _known_secrets():
+        variants = {secret, quote(secret, safe=""), quote_plus(secret, safe="")}
+        for variant in variants:
+            if variant:
+                redacted = redacted.replace(variant, _REDACTED)
+    return redacted
 
 
 def _required_value(name: str, value: str) -> str:
@@ -69,7 +95,9 @@ def _sanitized_headers(request: httpx.Request) -> dict[str, str]:
 
 
 def _format_body(payload: Any) -> str:
-    rendered = json.dumps(payload, ensure_ascii=False, indent=2)
+    rendered = _redact_known_secrets(
+        json.dumps(payload, ensure_ascii=False, indent=2)
+    )
     if len(rendered) <= _MAX_RESPONSE_CHARS:
         return rendered
     omitted = len(rendered) - _MAX_RESPONSE_CHARS
@@ -77,6 +105,7 @@ def _format_body(payload: Any) -> str:
 
 
 async def _print_request(request: httpx.Request) -> None:
+    request.extensions[_INSPECTION_STARTED_AT] = perf_counter()
     print("\n=== Provider Request ===")
     print(f"method: {request.method}")
     print(f"url: {request.url.copy_with(query=None)}")
@@ -86,9 +115,17 @@ async def _print_request(request: httpx.Request) -> None:
 
 async def _print_response(response: httpx.Response) -> None:
     await response.aread()
+    started_at = response.request.extensions.get(_INSPECTION_STARTED_AT)
+    elapsed_ms = (
+        (perf_counter() - started_at) * 1000
+        if isinstance(started_at, (int, float))
+        else None
+    )
     print("=== Provider Response ===")
     print(f"status: {response.status_code}")
     print(f"content-type: {response.headers.get('content-type', '')}")
+    if elapsed_ms is not None:
+        print(f"elapsed_ms: {elapsed_ms:.2f}")
     try:
         payload: Any = response.json()
     except ValueError:
@@ -135,6 +172,7 @@ async def test_inspect_tour_api_place_request_and_response() -> None:
         provider = RealPlaceProvider(
             api_key=_required_value("TOUR_API_SERVICE_KEY", settings.tour_api_service_key),
             client=client,
+            timeout_seconds=30.0,
         )
         result = await provider.search_places(
             latitude=37.5788,
@@ -152,6 +190,7 @@ async def test_inspect_tour_api_cafe_category_request_and_response() -> None:
         provider = RealPlaceProvider(
             api_key=_required_value("TOUR_API_SERVICE_KEY", settings.tour_api_service_key),
             client=client,
+            timeout_seconds=30.0,
         )
         result = await provider.search_places(
             latitude=37.5788,
@@ -168,11 +207,99 @@ async def test_inspect_tour_api_cafe_category_request_and_response() -> None:
 
     assert result
     assert all(candidate.content_type_id == "39" for candidate in result)
+    assert all(candidate.lcls_systm1 == "FD" for candidate in result)
+    assert all(candidate.lcls_systm2 == "FD05" for candidate in result)
+    assert all(candidate.lcls_systm3 == "FD050100" for candidate in result)
     print(f"normalized_count: {len(result)}")
+    samples = [
+        (
+            candidate.name,
+            candidate.content_type_id,
+            candidate.lcls_systm1,
+            candidate.lcls_systm2,
+            candidate.lcls_systm3,
+        )
+        for candidate in result[:10]
+    ]
     print(
         "normalized_samples: "
-        f"{[(candidate.name, candidate.content_type_id) for candidate in result[:10]]}"
+        f"{samples}"
     )
+
+
+async def test_inspect_tour_api_nearby_place_details_request_and_response() -> None:
+    inspection_started_at = perf_counter()
+    async with _inspection_client() as client:
+        provider = RealPlaceProvider(
+            api_key=_required_value("TOUR_API_SERVICE_KEY", settings.tour_api_service_key),
+            client=client,
+            timeout_seconds=30.0,
+        )
+        candidates = await provider.search_places(
+            latitude=37.5788,
+            longitude=126.9770,
+            preferred_categories=[],
+            search_radius_km=2.0,
+            limit=11,
+        )
+        nearby_candidates = [
+            candidate for candidate in candidates if candidate.name.strip() != "경복궁"
+        ][:10]
+        semaphore = asyncio.Semaphore(3)
+
+        async def load_details(candidate: Any) -> dict[str, Any]:
+            summary = {
+                "place_id": candidate.place_id,
+                "content_type_id": candidate.content_type_id,
+                "name": candidate.name,
+                "address": candidate.address,
+                "latitude": candidate.latitude,
+                "longitude": candidate.longitude,
+                "lcls_systm1": candidate.lcls_systm1,
+                "lcls_systm2": candidate.lcls_systm2,
+                "lcls_systm3": candidate.lcls_systm3,
+            }
+            if not candidate.content_type_id:
+                return {**summary, "detail_status": "no_content_type_id"}
+
+            try:
+                async with semaphore:
+                    details = await provider.get_details(
+                        candidate.place_id,
+                        candidate.content_type_id,
+                    )
+            except AppError as exc:
+                return {
+                    **summary,
+                    "detail_status": "unavailable",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+
+            return {
+                **summary,
+                "detail_status": "success",
+                "title": details.title,
+                "overview": details.overview,
+                "homepage": details.homepage,
+                "telephone": details.telephone,
+                "operating_hours": details.operating_hours,
+                "rest_date": details.rest_date,
+            }
+
+        results = await asyncio.gather(
+            *(load_details(candidate) for candidate in nearby_candidates)
+        )
+
+    assert nearby_candidates
+    assert len(nearby_candidates) <= 10
+    assert any(result["detail_status"] == "success" for result in results)
+    assert any(result.get("operating_hours") for result in results)
+    assert any(result.get("rest_date") for result in results)
+    total_elapsed_ms = (perf_counter() - inspection_started_at) * 1000
+    print(f"normalized_nearby_count: {len(results)}")
+    print(f"normalized_nearby_total_elapsed_ms: {total_elapsed_ms:.2f}")
+    print(f"normalized_nearby_details: {_format_body(results)}")
 
 
 async def test_inspect_tour_api_keyword_and_details_request_and_response() -> None:

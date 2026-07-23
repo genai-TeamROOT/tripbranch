@@ -55,6 +55,7 @@ class PlaceProvider(Protocol):
         preferred_categories: list[str],
         search_radius_km: float,
         category_filter: PlaceCategoryFilter | None = None,
+        limit: int = 20,
     ) -> list[PlaceCandidate]:
         """주어진 좌표/조건으로 장소 후보 목록을 조회해 공통 모델로 반환한다."""
         ...
