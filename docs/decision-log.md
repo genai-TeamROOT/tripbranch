@@ -63,10 +63,21 @@
 
 ### D-008 — 추천은 하드 필터와 가중치 점수 조합
 
-- 상태: `Accepted`, 구현은 `TBD`
+- 상태: `Accepted`; Scoring v1 엔진 `Implemented` (아직 API 라우트에는 미연결)
 - 결정: 명시적 필수 조건은 하드 필터, 선호 조건은 가중치 점수로 처리한다.
-- 현재: 거리 계산과 노출 ID 제외만 일부 구현
-- 미결: Feature 정의, 기본/무날씨 가중치 최종값, tie-break 규칙
+- 현재: `backend/app/domain/scoring.py::score_candidates()`로 카테고리·남은
+  영업시간·날씨·거리 Feature 기반 가중치 점수 계산과 정렬을 구현. 폐점/이전
+  노출·거절 ID는 하드 필터, 운영시간 미확인은 하드 필터에서 제외하고 중립
+  점수 처리. 상세는 [추천 점수 설계](./design/recommendation-scoring.md) 참고.
+- 기본 가중치: 카테고리 0.35 / 날씨 0.25 / 남은 영업시간 0.25 / 거리 0.15
+- 날씨 결측 시: 날씨 가중치를 나머지 3개 Feature에 기존 비중 비례로 재분배
+- tie-break: score 내림차순 → distance_km 오름차순 → place_id 오름차순
+- 입력 모델: `ScoringCandidate`(Provider/Tool 독립적인 Candidate Model v1).
+  C-01 Tool 계약이 아직 없어 현재는 Stub 데이터로 검증했으며, Tool 확정 후
+  "Tool 출력 → `ScoringCandidate`" 매퍼만 추가하면 됨
+- 미결: 혼잡도·근거 신뢰도 Feature, 실제 이동시간 기반 거리, 예산/동행 하드
+  필터, `services/recommendations.py`/`/api/recommendations`와의 실제 연결
+  (D-03에서 진행)
 
 ### D-009 — Naver Blog Search는 보완 근거로 사용
 
@@ -130,7 +141,7 @@
 | Chat 계약 naming | camelCase 또는 기존 snake_case | `TBD` |
 | Backend 상태 저장 | Supabase 테이블과 캐시 역할 | `TBD` |
 | Frontend 저장 | `sessionStorage` 유지 또는 `localStorage` 전환 | `TBD` |
-| Scoring v1 | Feature, 가중치, 결측값, tie-break | 현재 논의 중 |
+| Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); 실제 파이프라인(route) 연결 | 연결은 `TBD` |
 | 혼잡도 fallback | 장소 근접치, 구 단위, Feature 제외 | 현재 논의 중 |
 | 운영시간 파싱 | 휴무·공휴일·계절별 시간과 unknown 처리 | `TBD` |
 | 이동시간 | 지도 Provider 및 교통수단별 계산 | `TBD` |
@@ -143,3 +154,4 @@
 | 날짜 | 변경 |
 | --- | --- |
 | 2026-07-23 | Phase 1-A 실개발 시작용 최초 통합 의사결정 로그 작성 |
+| 2026-07-23 | D-008 Scoring v1 엔진 구현 반영 (Feature/가중치/tie-break 확정) |
