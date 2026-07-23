@@ -17,6 +17,8 @@ from app.domain.models import (
     HolidayResult,
     PlaceCategoryFilter,
     PlaceDetails,
+    PlaceOperatingDetails,
+    TourPlacePage,
     WeatherCondition,
     WeatherForecastResult,
 )
@@ -94,6 +96,26 @@ class PlaceProvider(PlaceSearchProvider, PlaceDetailsProvider, Protocol):
         district_code: str | None = None,
     ) -> PlaceDetails:
         """장소명으로 정확히 일치하는 후보를 찾아 상세정보까지 반환한다."""
+        ...
+
+
+class TourAreaPlaceProvider(Protocol):
+    async def list_places_by_area(
+        self,
+        area_code: str,
+        district_code: str,
+        page_no: int,
+        num_of_rows: int = 100,
+    ) -> TourPlacePage:
+        """행정구역에 속한 TourAPI 장소 목록 한 페이지를 반환한다."""
+        ...
+
+    async def get_operating_details(
+        self,
+        content_id: str,
+        content_type_id: str,
+    ) -> PlaceOperatingDetails:
+        """소개 상세 조회만 사용해 운영시간과 휴무일 원문을 반환한다."""
         ...
 
 

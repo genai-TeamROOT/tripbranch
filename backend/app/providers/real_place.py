@@ -3,16 +3,24 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime
 
 import httpx
 
-from app.domain.models import PlaceCategoryFilter, PlaceDetails
+from app.domain.models import (
+    PlaceCategoryFilter,
+    PlaceDetails,
+    PlaceOperatingDetails,
+    TourPlacePage,
+    TourPlaceRecord,
+)
 from app.domain.operating_hours import normalize_operating_schedule
 from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
 from app.providers.mappers import map_tour_api_response
 from app.schemas import PlaceCandidate
 
 _BASE_URL = "https://apis.data.go.kr/B551011/KorService2"
+_AREA_BASED_LIST_PATH = "/areaBasedList2"
 _LOCATION_BASED_LIST_PATH = "/locationBasedList2"
 _SEARCH_KEYWORD_PATH = "/searchKeyword2"
 _DETAIL_COMMON_PATH = "/detailCommon2"
@@ -54,6 +62,92 @@ def _first_text(item: Mapping[str, object], keys: tuple[str, ...]) -> str | None
         if value not in (None, ""):
             return str(value)
     return None
+
+
+def _body(payload: Mapping[str, object]) -> Mapping[str, object]:
+    response = payload.get("response")
+    body = response.get("body") if isinstance(response, Mapping) else None
+    return body if isinstance(body, Mapping) else {}
+
+
+def _items(payload: Mapping[str, object]) -> tuple[Mapping[str, object], ...]:
+    items = _body(payload).get("items")
+    raw_items = items.get("item", []) if isinstance(items, Mapping) else []
+    if isinstance(raw_items, Mapping):
+        return (raw_items,) if raw_items else ()
+    if isinstance(raw_items, list):
+        return tuple(item for item in raw_items if isinstance(item, Mapping))
+    return ()
+
+
+def _required_text(item: Mapping[str, object], key: str) -> str:
+    value = item.get(key)
+    if value is None or not str(value).strip():
+        raise ProviderUnavailableError(
+            "TourAPI", detail=f"areaBasedList2 item missing {key}"
+        )
+    return str(value).strip()
+
+
+def _optional_float(item: Mapping[str, object], key: str) -> float | None:
+    value = item.get(key)
+    if value in (None, ""):
+        return None
+    try:
+        return float(str(value))
+    except ValueError:
+        raise ProviderUnavailableError(
+            "TourAPI", detail=f"areaBasedList2 item has invalid {key}"
+        ) from None
+
+
+def _optional_modified_at(value: object) -> datetime | None:
+    if value in (None, ""):
+        return None
+    try:
+        return datetime.strptime(str(value), "%Y%m%d%H%M%S")
+    except ValueError:
+        raise ProviderUnavailableError(
+            "TourAPI", detail="areaBasedList2 item has invalid modifiedtime"
+        ) from None
+
+
+def _non_negative_int(value: object, field: str) -> int:
+    try:
+        parsed = int(str(value))
+    except (TypeError, ValueError):
+        raise ProviderUnavailableError(
+            "TourAPI", detail=f"areaBasedList2 response has invalid {field}"
+        ) from None
+    if parsed < 0:
+        raise ProviderUnavailableError(
+            "TourAPI", detail=f"areaBasedList2 response has invalid {field}"
+        )
+    return parsed
+
+
+def _map_area_place(
+    item: Mapping[str, object],
+    *,
+    requested_area_code: str,
+    requested_district_code: str,
+) -> TourPlaceRecord:
+    address_parts = (item.get("addr1"), item.get("addr2"))
+    address = " ".join(str(part).strip() for part in address_parts if part).strip() or None
+    return TourPlaceRecord(
+        content_id=_required_text(item, "contentid"),
+        content_type_id=_required_text(item, "contenttypeid"),
+        title=_required_text(item, "title"),
+        address=address,
+        latitude=_optional_float(item, "mapy"),
+        longitude=_optional_float(item, "mapx"),
+        area_code=_first_text(item, ("areacode",)) or requested_area_code,
+        district_code=_first_text(item, ("sigungucode",)) or requested_district_code,
+        lcls_systm1=_first_text(item, ("lclsSystm1",)),
+        lcls_systm2=_first_text(item, ("lclsSystm2",)),
+        lcls_systm3=_first_text(item, ("lclsSystm3",)),
+        source_modified_at=_optional_modified_at(item.get("modifiedtime")),
+    )
 
 
 class RealPlaceProvider:
@@ -144,6 +238,74 @@ class RealPlaceProvider:
             )
         payload = await self._request_json(_LOCATION_BASED_LIST_PATH, params)
         return map_tour_api_response(payload)
+
+    async def list_places_by_area(
+        self,
+        area_code: str,
+        district_code: str,
+        page_no: int,
+        num_of_rows: int = 100,
+    ) -> TourPlacePage:
+        normalized_area_code = area_code.strip()
+        normalized_district_code = district_code.strip()
+        if not normalized_area_code or not normalized_district_code:
+            raise ValueError("area_code와 district_code가 필요합니다.")
+        if page_no < 1:
+            raise ValueError("page_no는 1 이상이어야 합니다.")
+        if not 1 <= num_of_rows <= 100:
+            raise ValueError("num_of_rows는 1 이상 100 이하여야 합니다.")
+
+        payload = await self._request_json(
+            _AREA_BASED_LIST_PATH,
+            {
+                **self._base_params(),
+                "lDongRegnCd": normalized_area_code,
+                "lDongSignguCd": normalized_district_code,
+                "arrange": "A",
+                "pageNo": page_no,
+                "numOfRows": num_of_rows,
+            },
+        )
+        body = _body(payload)
+        return TourPlacePage(
+            page_no=_non_negative_int(body.get("pageNo"), "pageNo"),
+            num_of_rows=_non_negative_int(body.get("numOfRows"), "numOfRows"),
+            total_count=_non_negative_int(body.get("totalCount"), "totalCount"),
+            places=tuple(
+                _map_area_place(
+                    item,
+                    requested_area_code=normalized_area_code,
+                    requested_district_code=normalized_district_code,
+                )
+                for item in _items(payload)
+            ),
+        )
+
+    async def get_operating_details(
+        self,
+        content_id: str,
+        content_type_id: str,
+    ) -> PlaceOperatingDetails:
+        normalized_content_id = content_id.strip()
+        normalized_content_type_id = content_type_id.strip()
+        if not normalized_content_id or not normalized_content_type_id:
+            raise ValueError("content_id와 content_type_id가 필요합니다.")
+
+        payload = await self._request_json(
+            _DETAIL_INTRO_PATH,
+            {
+                **self._base_params(),
+                "contentId": normalized_content_id,
+                "contentTypeId": normalized_content_type_id,
+            },
+        )
+        intro = _first_item(payload)
+        return PlaceOperatingDetails(
+            content_id=normalized_content_id,
+            content_type_id=normalized_content_type_id,
+            operating_hours_raw=_first_text(intro, _OPERATING_HOURS_KEYS),
+            rest_date_raw=_first_text(intro, _REST_DATE_KEYS),
+        )
 
     async def search_by_keyword(
         self,

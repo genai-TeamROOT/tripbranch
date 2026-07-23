@@ -9,6 +9,7 @@ from enum import StrEnum
 from html.parser import HTMLParser
 
 _COURSE_CONTENT_TYPE_ID = "25"
+OPERATING_PARSER_VERSION = "operating-hours-1.0.0"
 _WEEKDAY_INDEX = {
     "월": 0,
     "화": 1,
