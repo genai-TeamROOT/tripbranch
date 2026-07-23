@@ -9,19 +9,29 @@ TODO: 실제 운영 환경별 CORS/로깅/관측 설정이 필요해지면 여�
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.errors import AppError
+from app.providers.tour_category_registry import get_tour_category_registry
 from app.routes.health import router as health_router
 from app.routes.interpret import router as interpret_router
 from app.routes.recommendations import router as recommendations_router
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    app.state.tour_category_registry = get_tour_category_registry()
+    yield
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="TripBranch API", version="0.1.0")
+    app = FastAPI(title="TripBranch API", version="0.1.0", lifespan=lifespan)
 
     app.add_middleware(
         CORSMiddleware,

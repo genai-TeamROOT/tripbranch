@@ -53,8 +53,8 @@
 - 이전 대화 조건 병합과 백엔드 세션 상태
 - Tool 계층과 Orchestrator
 - `RecommendationRequest Builder`
-- 사용자 장소 유형을 TourAPI 분류 코드로 변환하는 Category Mapper
-- 분류 JSON의 시작 시 로드·메모리 인덱스 및 Place Provider 분류 필터 연동
+- 사용자 자연어 별칭을 표준 장소 유형으로 변환하는 Interpret 연동
+- 표준 장소 유형과 TourAPI 분류를 연결하는 Category Mapper
 - 운영시간 계산, 하드 필터, 가중치 Scoring 및 결정적 정렬
 - Naver Blog Search 근거 수집
 - Supabase 영속화
@@ -205,11 +205,12 @@ TourAPI의 대·중·소분류 기준 데이터는
 보관합니다. CSV 원본의 계층형 빈 셀을 부모 분류 값으로 채워, 각 JSON 항목만으로
 대분류부터 소분류 및 `content_type_id`까지 확인할 수 있도록 정규화했습니다.
 
-현재는 기준 데이터 파일만 준비된 상태입니다. 서버 시작 시 파일을 한 번 읽어
-분류명 기반 메모리 인덱스를 만들고, 사용자 표현을 표준 분류명으로 변환한 뒤
-`PlaceProvider` 요청의 대·중·소분류 필터로 전달하는 기능은 다음 구현 범위입니다.
-실행 중인 서버에 JSON 변경을 자동 반영하는 정책은 `TBD`이며, MVP에서는 서버
-재시작 시 다시 로드하는 방향을 우선 검토합니다.
+서버 시작 시 파일을 한 번 읽어 대·중·소분류의 이름·코드 인덱스를 생성하고,
+프로세스 안에서 같은 Registry를 재사용합니다. 소분류 조회 결과는
+`PlaceCategoryFilter`로 변환해 `PlaceProvider` 요청에 전달할 수 있습니다. 실행
+중인 서버에는 JSON 변경이 자동 반영되지 않으며, MVP에서는 서버 재시작 시 다시
+로드합니다. 사용자 자연어 별칭을 표준 분류명으로 변환하는 Interpret 연동은 아직
+구현되지 않았습니다.
 
 ## 문서
 
@@ -227,8 +228,8 @@ TourAPI의 대·중·소분류 기준 데이터는
 2. Orchestrator, Context Merge, Tool 경계 도입
 3. 실제 Interpret 및 Response Generator LLM Provider 결정
 4. 내부 `RecommendationRequest` 스키마 확정
-5. TourAPI 분류 데이터 로더·메모리 인덱스와 Category Mapper 구현
-6. 장소 유형을 Place Provider의 대·중·소분류 필터로 연결
+5. 표준 장소 유형과 TourAPI 분류를 연결하는 Category Mapper 구현
+6. Intent 담당자의 `place_types`·`place_tags` 출력을 분류 Registry와 연결
 7. 운영시간·날씨·거리·혼잡도 Feature 정규화
 8. 하드 필터와 가중치 Scoring 구현
 9. `chat_session_id`/`recommendation_run_id` 및 Supabase 저장 모델 확정

@@ -637,7 +637,24 @@ async def get_details(
 `restdateshopping`, `restdatefood` 중 처음 존재하는 값을 사용합니다. 이외에도
 `parking`, `infocenter`, 체험 정보 등이 `raw_intro`에 추가로 존재할 수 있습니다.
 
-### 10.6 장소명 기반 상세조회
+### 10.6 TourAPI 분류 Registry
+
+`TourCategoryRegistry`는
+`backend/resources/tour_api/tour_api_category_codes.json`을 서버 시작 시 한 번
+읽고 대·중·소분류의 이름·코드 인덱스를 생성합니다. 같은 프로세스에서는
+`get_tour_category_registry()`가 캐시된 인스턴스를 반환합니다.
+
+- 소분류 코드는 단일 `TourCategory`로 조회
+- 이름과 중·대분류는 중복 가능성을 고려해 tuple로 조회
+- 검색 키에서는 공백과 영문 대소문자만 정규화
+- 소분류 결과는 `PlaceCategoryFilter`로 변환 가능
+- 알 수 없는 분류는 `None` 또는 빈 tuple
+- 잘못된 JSON과 중복 소분류 코드는 서버 시작 오류
+
+자연어 별칭과 `place_types`·`place_tags` 해석은 Registry 책임이 아니며, 표준
+분류명까지 변환한 뒤 Registry를 호출해야 합니다.
+
+### 10.7 장소명 기반 상세조회
 
 ```python
 async def find_details_by_name(
@@ -655,14 +672,14 @@ async def find_details_by_name(
 유사 이름만 존재할 때 임의로 선택하지 않습니다. 정확 일치가 없으면
 `place_not_found`와 최대 5개 후보명을 details에 포함합니다.
 
-### 10.7 Fake 동작
+### 10.8 Fake 동작
 
 - 좌표 기준 테스트 박물관과 테스트 카페 반환
 - 키워드 substring으로 후보 필터
 - 상세정보에 Fake 소개와 후보 운영시간 반환
 - `find_details_by_name`은 Real과 마찬가지로 정확 일치 요구
 
-### 10.8 오류와 제약
+### 10.9 오류와 제약
 
 | 상황 | 결과 |
 | --- | --- |
