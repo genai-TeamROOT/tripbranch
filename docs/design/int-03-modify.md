@@ -122,17 +122,17 @@ type ModifyType =
 
 | 필드 | 병합 방식 | 예시 |
 |------|-----------|------|
-| `current_location` | 새 값으로 교체 | "나 지금 홍대야" → 위치 변경 |
-| `search_center` | 새 값으로 교체 | "경복궁 말고 인사동 근처로" |
+| `current_location` | Update | "나 지금 홍대야" → 위치 변경 |
+| `search_center` | Update | "경복궁 말고 인사동 근처로" |
 | `place_types` | 전체 교체 | "카페 말고 맛집" → ["restaurant"] |
 | `place_tags` | Add: 기존에 추가 / Remove: 기존에서 제거 | "박물관도 포함" → 추가 |
-| `weather` | 새 값으로 교체 | "비 그쳤어" → weather 변경 |
-| `weather_intent` | 새 값으로 교체 | "야외도 괜찮아" → IGNORE |
-| `transport` | 새 값으로 교체 | "차로 갈게" → car |
-| `max_travel_time` | 새 값으로 교체 | "10분 이내로" → 10 |
-| `time_available` | 새 값으로 교체 | "30분밖에 없어" → 30 |
-| `environment` | 새 값으로 교체 | "야외로" → outdoor |
-| `companion` | 새 값으로 교체 | "아이도 같이 가" → child |
+| `weather` | Update | "비 그쳤어" → weather 변경 |
+| `weather_intent` | Update | "야외도 괜찮아" → IGNORE |
+| `transport` | Update | "차로 갈게" → car |
+| `max_travel_time` | Update | "10분 이내로" → 10 |
+| `time_available` | Update | "30분밖에 없어" → 30 |
+| `environment` | Update | "야외로" → outdoor |
+| `companion` | Update | "아이도 같이 가" → child |
 | `budget` | 교체 또는 제거 | "무료만" → "free" / "가격 상관없어" → null |
 | `exclude_tags` | Add / Remove | "붐비는 곳 빼줘" → 추가 |
 | `special_requirements` | Add / Remove | "주차 가능한 곳" → 추가 |
@@ -442,5 +442,5 @@ MODIFY 후 추천 가능한 후보가 부족한 경우.
 
 - [INT-01: RECOMMEND](./int-01-recommend.md) — Conditions 스키마 및 추천 처리 상세
 - [INT-04: COMPARE](./int-04-compare.md) — 후보 비교
-- [추천 점수 설계](./recommendation-scoring.md) — 가중치 및 점수 계산 상세
-- [MVP 설계 기준서](./mvp-design-spec.md) — 후보 부족 시 처리 원칙
+- [추천 점수 설계](./recommendation-scoring.md) — 가중치 및 점수 계산 상세(현재x)
+- [MVP 설계 기준서](./mvp-design-spec.md) — 후보 부족 시 처리 원칙(현재x)

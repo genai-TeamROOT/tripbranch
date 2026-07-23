@@ -51,8 +51,8 @@
 | Intent | RECOMMEND |
 | Conditions | 모든 필드 null/빈 배열 |
 | missing_conditions | current_location |
-| 처리 | 추천 미진행, 위치 질문 |
-| 기대 결과 | "현재 위치를 알려주세요" 응답 |
+| 처리 | 추천 미진행, 현재 위치(GPS) 질문 알럿 |
+| 기대 결과 | "현재 위치를 알려주세요" GPS 응답 |
 
 ---
 

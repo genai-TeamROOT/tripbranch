@@ -146,7 +146,7 @@ MODIFY를 거치며 갱신된 현재 유효 조건. 추천 엔진은 항상 이 
 
 | 필드 | 필수 여부 | 미확보 시 처리 |
 |------|-----------|---------------|
-| `current_location` | 필수 | 사용자에게 질문 |
+| `current_location` | 필수 (세션 시작 전 확보) | GPS 알럿 → 확보 후 세션 시작 |
 | `search_center` | 선택 | null이면 current_location 사용 |
 | `place_types` | 선택 | 빈 배열이면 전체 유형 검색 |
 | `weather` | 선택 | API 호출 → 실패 시 가중치 제외 |
