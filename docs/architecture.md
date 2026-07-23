@@ -98,11 +98,12 @@ Holiday Provider는 구현되어 있지만 추천 서비스에 아직 조립되�
 
 - 담당: 명시적 필수 조건의 하드 필터, Feature 계산, 가중치 점수, 결정적 정렬,
   이전 노출·거절 장소 제외
-- 현재: `backend/app/domain/scoring.py::score_candidates()`로 카테고리·남은
-  영업시간·날씨·거리 Feature 가중치 점수와 결정적 정렬(Scoring v1)을 독립
-  모듈로 구현. 폐점/이전 노출·거절 ID 하드 필터, 운영시간 미확인과 폐점의
-  구분, 날씨 결측 시 가중치 재분배 포함. 상세는
-  [추천 점수 설계](./design/recommendation-scoring.md) 참고
+- 현재: `backend/app/domain/scoring.py::score_candidates()`로 날씨·운영 유무·
+  거리 Feature 가중치 점수와 결정적 정렬(Scoring v1)을 독립 모듈로 구현.
+  카테고리는 1차 하드 필터가 처리한다고 보고 가중치에서 제외했고, 남은
+  영업시간(분)도 세분화 없이 운영 유무로만 구분. 폐점/이전 노출·거절 ID
+  하드 필터, 운영시간 미확인과 폐점의 구분, 날씨 결측 시 가중치 재분배 포함.
+  상세는 [추천 점수 설계](./design/recommendation-scoring.md) 참고
 - 미구현: `services/recommendations.py`/`/api/recommendations` 라우트와의 실제
   연결(Request Builder 경유), 혼잡도·근거 신뢰도 Feature, 실이동시간 거리
 
