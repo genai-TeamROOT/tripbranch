@@ -200,8 +200,28 @@ type PlaceCandidate = {
 };
 ```
 
-Scoring용 `Candidate`에는 category match, remaining open time, weather fit,
-distance, congestion, evidence confidence 등이 추가될 예정이지만 아직 미구현입니다.
+Scoring v1용 `Candidate`는 `backend/app/domain/models.py::ScoringCandidate`로
+구현되어 있으며, `PlaceCandidate`와 별도 모델입니다.
+
+```ts
+type ScoringCandidate = {
+  place_id: string;
+  name: string;
+  category: string;
+  environment_type: "indoor" | "outdoor" | "unknown";
+  distance_km: number;
+  place_status: "open" | "closed" | "unknown";
+  remaining_open_minutes: number | null;
+  raw_source: string;
+};
+```
+
+`backend/app/domain/scoring.py::score_candidates()`가 이 모델을 입력받아 category
+match, remaining open time, weather fit, distance 4개 Feature로 가중치 점수를
+계산하고 정렬합니다. congestion, evidence confidence Feature는 아직
+미구현입니다. Feature·가중치·제외 규칙 상세는
+[추천 점수 설계](./design/recommendation-scoring.md)를 참고합니다. 이 엔진은
+아직 `/api/recommendations` 라우트에 연결되지 않았습니다.
 
 ### `RecommendationResult`
 
