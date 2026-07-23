@@ -67,24 +67,23 @@ class SupabasePlaceRepository:
     def __init__(
         self,
         supabase_url: str,
-        service_role_key: str,
+        secret_key: str,
         client: httpx.AsyncClient,
         timeout_seconds: float = 10.0,
     ) -> None:
         normalized_url = supabase_url.strip().rstrip("/")
         if not normalized_url:
             raise ValueError("supabase_url이 필요합니다.")
-        if not service_role_key.strip():
-            raise ValueError("service_role_key가 필요합니다.")
+        if not secret_key.strip():
+            raise ValueError("secret_key가 필요합니다.")
         self._rest_url = f"{normalized_url}/rest/v1"
-        self._service_role_key = service_role_key
+        self._secret_key = secret_key
         self._client = client
         self._timeout_seconds = timeout_seconds
 
     def _headers(self, prefer: str | None = None) -> dict[str, str]:
         headers = {
-            "apikey": self._service_role_key,
-            "Authorization": f"Bearer {self._service_role_key}",
+            "apikey": self._secret_key,
             "Content-Type": "application/json",
         }
         if prefer is not None:

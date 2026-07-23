@@ -23,7 +23,7 @@ def _repository(
 ) -> SupabasePlaceRepository:
     return SupabasePlaceRepository(
         supabase_url="https://project.supabase.co/",
-        service_role_key="service-secret",
+        secret_key="sb_secret_test",
         client=client,
     )
 
@@ -46,7 +46,7 @@ def _place(content_id: str) -> TourPlaceRecord:
 
 
 @pytest.mark.asyncio
-async def test_create_sync_run_uses_service_role_headers() -> None:
+async def test_create_sync_run_uses_secret_key_header() -> None:
     seen: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -60,8 +60,8 @@ async def test_create_sync_run_uses_service_role_headers() -> None:
     request = seen["request"]
     assert isinstance(request, httpx.Request)
     assert request.url.path == "/rest/v1/place_sync_runs"
-    assert request.headers["apikey"] == "service-secret"
-    assert request.headers["authorization"] == "Bearer service-secret"
+    assert request.headers["apikey"] == "sb_secret_test"
+    assert "authorization" not in request.headers
     assert request.headers["prefer"] == "return=representation"
     assert request.read() == b'{"area_code":"11","district_code":"110"}'
     assert result == RUN_ID
@@ -308,7 +308,7 @@ async def test_complete_sync_run_updates_counts() -> None:
 
 
 @pytest.mark.asyncio
-async def test_http_error_does_not_expose_service_role_key() -> None:
+async def test_http_error_does_not_expose_secret_key() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(401, request=request)
 
@@ -317,6 +317,6 @@ async def test_http_error_does_not_expose_service_role_key() -> None:
         with pytest.raises(SupabaseRepositoryError) as exc_info:
             await _repository(transport, client).create_sync_run("11", "110")
 
-    assert "service-secret" not in str(exc_info.value)
-    assert "service-secret" not in repr(exc_info.value.details)
+    assert "sb_secret_test" not in str(exc_info.value)
+    assert "sb_secret_test" not in repr(exc_info.value.details)
     assert exc_info.value.details == {"upstream_detail": "HTTP 401"}

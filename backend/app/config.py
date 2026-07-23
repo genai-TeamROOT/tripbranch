@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     naver_map_client_id: str = Field(default="", repr=False, exclude=True)
     naver_map_client_secret: str = Field(default="", repr=False, exclude=True)
     supabase_url: str = ""
-    supabase_service_role_key: str = Field(default="", repr=False, exclude=True)
+    supabase_secret_key: str = Field(default="", repr=False, exclude=True)
 
     # Real provider HTTP behavior (ignored by fake providers).
     external_api_timeout_seconds: float = 10.0

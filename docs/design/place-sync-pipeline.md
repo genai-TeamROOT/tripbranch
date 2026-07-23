@@ -207,7 +207,7 @@ class StoredPlaceState:
 
 ```text
 SUPABASE_URL
-SUPABASE_SERVICE_ROLE_KEY
+SUPABASE_SECRET_KEY
 PLACE_SYNC_PAGE_SIZE=100
 PLACE_SYNC_DETAIL_CONCURRENCY=5
 PLACE_SYNC_DETAIL_TTL_DAYS=30
@@ -217,10 +217,10 @@ PLACE_SYNC_DISTRICT_CODE=110
 
 보안 규칙:
 
-- Service Role Key는 `repr=False`, `exclude=True`로 선언한다.
+- Secret Key는 `repr=False`, `exclude=True`로 선언한다.
 - 키는 프론트엔드 환경변수에 넣지 않는다.
 - 요청 URL, HTTP 예외, 로그에 키를 출력하지 않는다.
-- Repository는 `apikey`와 `Authorization: Bearer` 헤더를 내부에서만 구성한다.
+- Repository는 `apikey` 헤더를 내부에서만 구성한다.
 
 새 의존성을 추가하지 않고 기존 `httpx`로 Supabase PostgREST를 호출한다.
 
@@ -231,8 +231,7 @@ PLACE_SYNC_DISTRICT_CODE=110
 ```text
 Base URL: {SUPABASE_URL}/rest/v1
 Headers:
-  apikey: {SUPABASE_SERVICE_ROLE_KEY}
-  Authorization: Bearer {SUPABASE_SERVICE_ROLE_KEY}
+  apikey: {SUPABASE_SECRET_KEY}
   Content-Type: application/json
 ```
 
@@ -503,7 +502,7 @@ backend/
 
 `httpx.MockTransport`로 검증한다.
 
-- Service Role 헤더 설정
+- Secret Key의 `apikey` 헤더 설정
 - `content_id` 충돌 기준 upsert
 - 100건 chunk 처리
 - 실패 시 기존 운영정보를 payload에 포함하지 않음
@@ -533,7 +532,7 @@ Fake Provider와 Fake Repository를 사용한다.
 1. TourAPI `--dry-run --details-limit 3`
 2. 테스트용 Supabase 프로젝트 또는 별도 테스트 지역에 제한 적재
 3. 실행 건수와 DB 행 확인
-4. Service Role Key 및 TourAPI Key 로그 미노출 확인
+4. Supabase Secret Key 및 TourAPI Key 로그 미노출 확인
 
 운영 프로젝트에서 테스트용 가짜 행을 만들지 않는다.
 
@@ -614,7 +613,7 @@ anon/authenticated 직접 접근 불가 유지
 | 동기화 잠금 TTL | 2시간 |
 | 정기 실행 주기 | 주 1회 |
 | 파서 버전 | `operating-hours-1.0.0` |
-| Supabase 접근 | 백엔드 Service Role + PostgREST |
+| Supabase 접근 | 백엔드 Secret Key + PostgREST |
 | 목록 조회 | 순차 |
 | 상세조회 | 제한된 비동기 병렬 |
 | 자동 삭제 | 하지 않음 |

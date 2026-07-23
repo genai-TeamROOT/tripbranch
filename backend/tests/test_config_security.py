@@ -31,7 +31,7 @@ def test_settings_repr_and_dump_exclude_provider_secrets(
         "TOUR_API_SERVICE_KEY": "secret-tour",
         "NAVER_MAP_CLIENT_ID": "secret-naver-id",
         "NAVER_MAP_CLIENT_SECRET": "secret-naver-key",
-        "SUPABASE_SERVICE_ROLE_KEY": "secret-supabase",
+        "SUPABASE_SECRET_KEY": "sb_secret_test",
     }
     for name, value in secrets.items():
         monkeypatch.setenv(name, value)
@@ -43,7 +43,7 @@ def test_settings_repr_and_dump_exclude_provider_secrets(
     assert all(value not in rendered for value in secrets.values())
     assert all(value not in dumped.values() for value in secrets.values())
     assert settings.tour_api_service_key == "secret-tour"
-    assert settings.supabase_service_role_key == "secret-supabase"
+    assert settings.supabase_secret_key == "sb_secret_test"
 
 
 @pytest.mark.asyncio

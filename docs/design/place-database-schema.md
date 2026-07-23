@@ -333,7 +333,7 @@ API 일시 오류로 전체 장소가 비활성화되는 것을 막기 위해 �
 
 ## 9. 보안과 Supabase 정책
 
-- 브라우저에 Service Role Key를 노출하지 않는다.
+- 브라우저에 Supabase Secret Key를 노출하지 않는다.
 - 동기화 INSERT·UPDATE는 FastAPI 백엔드 또는 관리자 배치만 수행한다.
 - MVP에서는 네 테이블 모두 RLS를 활성화하고 `anon`, `authenticated` 역할에
   직접 쓰기 정책을 만들지 않는다.
