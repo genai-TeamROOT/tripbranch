@@ -77,7 +77,7 @@ Holiday Provider는 구현되어 있지만 추천 서비스에 아직 조립되�
 
 - 담당: 추천 파이프라인이 사용하는 업무 단위 기능 제공
 - 예: `resolve_location`, `search_nearby_places`, `get_place_details`,
-  `estimate_travel_time`, `get_current_weather`, `get_congestion`,
+  `estimate_travel_time`, `get_weather_forecast`, `get_congestion`,
   `search_place_feature_evidence`
 - 하지 않음: 특정 외부 API 응답 형식을 호출자에게 노출
 - 상태: `ResolveLocationTool`, `GetWeatherForecastTool`,

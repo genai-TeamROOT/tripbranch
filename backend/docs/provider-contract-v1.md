@@ -471,13 +471,18 @@ Tool 입력은 1~200자의 `location_query`입니다. 처리 순서는 다음과
 - Fake: `app/providers/stub.py::FakeWeatherProvider`
 - Real: `app/providers/weather.py::RealWeatherProvider`
 - 보조 모듈: `app/providers/kma_grid.py`
-- 목표 Tool: `get_current_weather` (`TBD`)
+- Tool: `app/tools/weather_forecast.py::GetWeatherForecastTool`
 
 ```python
 async def get_current_condition(
     latitude: float,
     longitude: float,
 ) -> WeatherCondition
+
+async def get_forecast_slots(
+    latitude: float,
+    longitude: float,
+) -> WeatherForecastResult
 ```
 
 ### 9.2 Real 외부 계약
@@ -1146,7 +1151,8 @@ Inspection Test는 마스킹된 요청, 원본 응답, 정규화 결과를 출�
 
 ```text
 InterpretedConditions.location_query
-→ GeocodingProvider.geocode
+→ ResolveLocationTool
+→ GeocodingProvider
 → PlaceProvider.search_places
 → shown_place_ids 제외
 → Haversine 직선거리 계산
@@ -1182,9 +1188,9 @@ InterpretedConditions.location_query
 
 | ID | 우선순위 | Blocker | 영향 | 현재 대응 | 해결 조건 | 상태 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `COM-01` | `P0` | 일부 Real Provider가 인증 쿼리를 포함한 `httpx` 예외를 chaining | 실패 traceback에서 API 키 노출 가능 | ProviderError 안전 메시지 계약 확정, Inspection 로그 마스킹, Holiday만 예외 체인 제거 | 모든 Provider 오류에서 URL/헤더 sanitize 테스트 통과 | `정책 확정/구현 대기` |
+| `COM-01` | `P0` | Real Provider 실패 traceback의 인증정보 노출 위험 | API 키 유출 가능 | 요청 파라미터 제거, 예외 chain 차단, Inspection 마스킹 적용 | 5개 Real Provider의 traceback secret 회귀 테스트 | `Resolved` |
 | `COM-02` | `P1` | `ProviderMetadata`가 코드 모델에 없음 | 출처·결측·조회시각을 일관되게 판단 불가 | 본 문서에서 계약 확정 | 모든 Fake/Real 결과에 source/status/retrieved_at 적용 및 Clock 테스트 | `정책 확정/구현 대기` |
-| `COM-03` | `P1` | Tool 계층과 공통 오류 envelope 미구현 | no_data와 장애를 Orchestrator가 구분 불가 | `ToolResult<T>`와 오류 매핑 문서 확정 | 대표 Provider 오류의 Tool 매핑 테스트 통과 | `정책 확정/구현 대기` |
+| `COM-03` | `P1` | Tool별 전용 결과는 있으나 공통 오류 envelope 미적용 | Orchestrator가 Tool별 결과 타입을 각각 처리해야 함 | 위치·날씨·다건 장소 Tool에서 no_data/unavailable 구분 구현 | 공통 `ToolResult<T>` 적용 및 대표 오류 매핑 테스트 | `부분 해결` |
 | `COM-04` | `P2` | `EXTERNAL_API_RETRY_COUNT`가 실제 호출에 미적용 | 일시 장애에 취약 | timeout과 retryable 오류만 표시 | 제한된 retry/backoff 구현 및 중복 호출 테스트 | `Open` |
 | `COM-05` | `P2` | 구조화 metrics/tracing 없음 | Provider 지연·실패율과 fallback 추적 불가 | Smoke/Inspection 수동 확인 | source/tool/run ID 기반 latency·결과 로그 확정 | `Open` |
 | `COM-06` | `P3` | 캐시와 rate limit 보호 없음 | 호출량 증가 시 quota와 latency 위험 | 후보 수와 페이지 고정 제한 | Provider별 TTL·cache key·quota 정책 및 테스트 | `Open` |
@@ -1217,7 +1223,7 @@ InterpretedConditions.location_query
 | `PLC-03` | `P1` | 운영시간·휴무일이 다양한 복합 원문 | 아직 지원하지 않는 회차·공휴일 예외는 영업 여부와 남은 시간을 계산할 수 없음 | 원문 보존, HTML 정리, 월별 시간·주간 휴무·여행코스 가정 정규화 구현 | 운영 상태 evaluator, 공휴일 예외 규칙, 실제 응답 회귀 표본 확대 | `부분 해결` |
 | `PLC-04` | `P2` | 위치 검색 20건, 키워드 검색 최대 100건의 첫 페이지만 사용 | 후보가 많은 지역에서 적합 장소 누락 가능 | 고정 pageNo=1 | 후보 예산과 pagination 중단 조건 확정 | `Open` |
 | `PLC-05` | `P2` | 정확 이름 검색은 첫 exact match를 선택 | 동명 장소가 여러 지역에 있으면 오선택 가능 | 지역 코드 전달 가능 | 좌표/주소 기반 동명 tie-break와 clarification 정책 | `현재 논의 중` |
-| `PLC-06` | `P2` | 반경 0/음수와 좌표 범위 검증 없음 | 잘못된 외부 요청 또는 예측 불가능한 빈 결과 | 최대 20km clamp만 적용 | 입력 validation 및 Tool invalid_input 매핑 테스트 | `Open` |
+| `PLC-06` | `P2` | Provider 직접 호출에는 반경 0/음수와 좌표 범위 검증 없음 | 잘못된 외부 요청 또는 예측 불가능한 빈 결과 | `NearbyPlaceDetailsQuery`에서 좌표·반경 검증 | Provider 직접 입력 validation과 공통 invalid_input 매핑 | `부분 해결` |
 | `PLC-07` | `P2` | `detailCommon2`와 `detailIntro2`가 all-or-nothing | 소개 성공·운영정보 실패 시 부분 데이터도 반환하지 못함 | 두 호출 순차 실행 | 필수/선택 상세 정의와 `partial` 결과·warning 테스트 | `Open` |
 
 ### 16.6 ConcentrationProvider Blocker
@@ -1241,12 +1247,11 @@ InterpretedConditions.location_query
 
 ### 16.8 다음 구현 순서
 
-1. `COM-01` ProviderError와 Secret-safe 공통 예외 변환
-2. `COM-02` ProviderMetadata 모델과 결과 wrapper
-3. `COM-03` ToolResult/ToolError 변환 계층
-4. `PLC-02`, `PLC-03`, `HOL-01` 운영정보 정규화 및 판정
-5. `WTH-02`, `CON-02`, `CON-03` 선택 Feature와 fallback 연결
-6. pagination, retry, cache, observability 보완
+1. `COM-02` ProviderMetadata 모델과 결과 wrapper
+2. `COM-03` 공통 ToolResult/ToolError 변환 계층
+3. `PLC-02`, `PLC-03`, `HOL-01` 운영정보 정규화 및 판정
+4. `WTH-02`, `CON-02`, `CON-03` 선택 Feature와 fallback 연결
+5. pagination, retry, cache, observability 보완
 
 ## 17. 변경 이력
 
@@ -1254,5 +1259,6 @@ InterpretedConditions.location_query
 | --- | --- | --- |
 | 2026-07-23 | v1 상세화 | 5개 Provider의 실제 요청·응답·오류·제약·테스트 명세 확장 |
 | 2026-07-23 | v1 계약 보완 | ProviderMetadata, Tool 오류, Provider별 Blocker 확정 |
+| 2026-07-23 | Tool v1 구현 반영 | 종로구 위치 해석, 방문시각 날씨, 장소 다건 상세조회 계약과 Blocker 상태 갱신 |
 | 2026-07-23 | v1 오류 계약 | ProviderError와 retrieved_at/occurred_at 경계 확정 |
 | 2026-07-23 | v1 Weather 기준 | 방문 예정 시각의 초단기예보 우선 정책 확정 |

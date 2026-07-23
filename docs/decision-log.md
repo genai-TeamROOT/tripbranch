@@ -191,7 +191,8 @@
 - 결정: Provider별 Blocker는 영향, 현재 대응, 객관적인 해결 조건, 상태를 함께 기록
 - 결정: `Resolved`는 해결 조건과 관련 테스트가 모두 충족된 경우에만 사용
 - 현재 P0: 일부 Provider 예외 traceback의 인증 쿼리 노출 가능성
-- 현재 주요 P1: metadata/Tool 오류 구현, Place 운영정보, Weather/Concentration 연결,
+- 현재 주요 P1: metadata/공통 Tool envelope, Place 운영정보,
+  Weather/Concentration 연결,
   혼잡도 coverage, Holiday와 장소 휴무 규칙 결합
 - 상세 목록: `backend/docs/provider-contract-v1.md` 16장
 
@@ -295,7 +296,7 @@
 | 조건 완화 | 자동 완화 범위와 사용자 확인 UX | `TBD` |
 | 관측성 | 구조화 로그, tracing, 보존기간 | `TBD` |
 | Provider metadata 구현 | 공통 wrapper, Clock, 기존 필드 마이그레이션 | 설계 확정/구현 `TBD` |
-| Tool 오류 구현 | `ToolResult<T>`, 오류 매핑, fallback 연결 | 설계 확정/구현 `TBD` |
+| Tool 오류 구현 | 전용 결과에서 분류 구현, 공통 `ToolResult<T>` 적용 | 부분 구현 |
 | Provider Blocker | P0~P3 표의 해결 조건 기준으로 추적 | 목록 확정/해결 진행 `TBD` |
 | ProviderError 구현 | 공통 오류 모델, sanitize, ToolError 변환 | 설계 확정/구현 `TBD` |
 | Weather 방문시각 선택 | visit_at 입력, forecast_for 선택, 범위 초과 처리 | 구현 완료 |
@@ -314,4 +315,6 @@
 | 2026-07-23 | Backend Python/JSON snake_case 공통 규칙 확정 |
 | 2026-07-23 | ProviderMetadata와 ProviderError 분리 및 오류 시각 계약 확정 |
 | 2026-07-23 | 방문 예정 시각의 초단기예보 우선 정책 확정 |
+| 2026-07-23 | 종로구 `resolve_location` 범위·fallback·재질문 정책 구현 반영 |
+| 2026-07-23 | Weather Tool v1의 KST·방문시각·예보 범위 정책 구현 반영 |
 | 2026-07-23 | D-008 재설계: 운영 유무를 가중치에서 제외하고 `now`/`OperatingHours` 기반 최종 하드 필터로 이동, 가중치 Feature를 남은 운영시간(분 정규화)으로 교체 (날씨 0.40/남은 운영시간 0.40/거리 0.20), `weights_used`를 후보별로 노출하도록 변경 |
