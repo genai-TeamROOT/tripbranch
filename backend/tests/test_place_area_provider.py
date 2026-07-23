@@ -47,8 +47,8 @@ async def test_list_places_by_area_maps_page_and_place_fields() -> None:
                             "addr2": "(세종로)",
                             "mapx": "126.9770162",
                             "mapy": "37.5788222",
-                            "areacode": "11",
-                            "sigungucode": "110",
+                            "areacode": "1",
+                            "sigungucode": "23",
                             "lclsSystm1": "VE",
                             "lclsSystm2": "VE01",
                             "lclsSystm3": "VE010100",
@@ -75,6 +75,8 @@ async def test_list_places_by_area_maps_page_and_place_fields() -> None:
     assert place.content_id == "126508"
     assert place.title == "경복궁"
     assert place.address == "서울특별시 종로구 사직로 161 (세종로)"
+    assert place.area_code == "11"
+    assert place.district_code == "110"
     assert place.latitude == pytest.approx(37.5788222)
     assert place.longitude == pytest.approx(126.9770162)
     assert place.lcls_systm3 == "VE010100"

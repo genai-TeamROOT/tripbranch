@@ -115,9 +115,20 @@ class SupabasePlaceRepository:
             raise SupabaseRepositoryError("request timeout") from None
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
+            detail = f"HTTP {status_code}"
+            try:
+                error_payload = exc.response.json()
+                if isinstance(error_payload, Mapping):
+                    code = str(error_payload.get("code", "")).strip()
+                    message = str(error_payload.get("message", "")).strip()
+                    safe_parts = [part for part in (code, message) if part]
+                    if safe_parts:
+                        detail = f"{detail}: {' - '.join(safe_parts)}"
+            except ValueError:
+                pass
             response = None
             exc = None
-            raise SupabaseRepositoryError(f"HTTP {status_code}") from None
+            raise SupabaseRepositoryError(detail) from None
         except httpx.HTTPError:
             response = None
             raise SupabaseRepositoryError("request failed") from None
@@ -291,14 +302,20 @@ class SupabasePlaceRepository:
                 )
             payloads.append(row)
 
-        for chunk in _chunks(payloads, _UPSERT_CHUNK_SIZE):
-            await self._request(
-                "POST",
-                "/places",
-                params={"on_conflict": "content_id"},
-                json=list(chunk),
-                prefer="resolution=merge-duplicates,return=minimal",
-            )
+        payload_groups: dict[tuple[str, ...], list[dict[str, object]]] = {}
+        for payload in payloads:
+            key_shape = tuple(sorted(payload))
+            payload_groups.setdefault(key_shape, []).append(payload)
+
+        for group in payload_groups.values():
+            for chunk in _chunks(group, _UPSERT_CHUNK_SIZE):
+                await self._request(
+                    "POST",
+                    "/places",
+                    params={"on_conflict": "content_id"},
+                    json=list(chunk),
+                    prefer="resolution=merge-duplicates,return=minimal",
+                )
 
     async def update_operating_details(
         self,

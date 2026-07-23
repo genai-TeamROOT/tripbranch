@@ -157,12 +157,16 @@ async def test_upsert_chunks_by_100_and_preserves_existing_manual_state() -> Non
 
     assert len(requests) == 3
     request_payloads = [json.loads(request.content) for request in requests]
-    assert [len(payload) for payload in request_payloads] == [100, 100, 1]
+    assert [len(payload) for payload in request_payloads] == [1, 100, 100]
+    assert all(
+        len({frozenset(row) for row in payload}) == 1
+        for payload in request_payloads
+    )
     first_row = request_payloads[0][0]
     assert "operating_hours_raw" not in first_row
     assert "detail_fetch_status" not in first_row
     assert "is_active" not in first_row
-    new_row = request_payloads[0][1]
+    new_row = request_payloads[1][0]
     assert new_row["detail_fetch_status"] == "pending"
     assert new_row["is_active"] is True
     assert requests[0].url.params["on_conflict"] == "content_id"
