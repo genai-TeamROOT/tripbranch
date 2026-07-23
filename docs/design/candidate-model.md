@@ -183,6 +183,17 @@ type EnvironmentType =
 
 ### 재정규화 예시
 
+> **[2026-07-23 Superseded]** 아래 예시의 `category` 가중치는 Scoring v1 결정
+> (D-008, [`recommendation-scoring.md`](./recommendation-scoring.md))에 따라
+> 폐기되었습니다. 카테고리는 하드 필터로만 처리합니다. `remaining_time`은
+> 이름이 `remaining_operating_time`으로 바뀌었고, 분 단위 값 자체는 유지하되
+> 후보의 원문 운영시간을 `open_time`/`close_time`(`OperatingHours`)으로
+> 정규화한 뒤 기준 시각(`now`)과 비교해 계산합니다. 현재 기본 가중치는 날씨
+> 0.40 / 남은 운영시간 0.40 / 거리 0.20이며, 날씨·남은 운영시간은 후보마다
+> 독립적으로 결측될 수 있어 결측된 Feature(들)만 나머지에 비례 재분배합니다.
+> 폐점 여부(운영 유무) 자체는 가중치가 아니라 `now`/`OperatingHours` 비교로
+> 판정하는 최종 하드 필터입니다.
+
 ```
 정상 (날씨 있음):
   category: 0.40

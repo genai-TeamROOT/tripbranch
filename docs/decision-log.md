@@ -63,10 +63,38 @@
 
 ### D-008 — 추천은 하드 필터와 가중치 점수 조합
 
-- 상태: `Accepted`, 구현은 `TBD`
+- 상태: `Accepted`; Scoring v1 엔진 `Implemented` (아직 API 라우트에는 미연결)
 - 결정: 명시적 필수 조건은 하드 필터, 선호 조건은 가중치 점수로 처리한다.
-- 현재: 거리 계산과 노출 ID 제외만 일부 구현
-- 미결: Feature 정의, 기본/무날씨 가중치 최종값, tie-break 규칙
+- 현재: `backend/app/domain/scoring.py::score_candidates()`로 날씨·남은 운영
+  시간·거리 Feature 기반 가중치 점수 계산과 정렬을 구현. 이전 노출·거절 ID
+  하드 필터에 더해, `now`와 `OperatingHours`(개장~마감)를 비교해 폐점 여부를
+  최종 하드 필터로 직접 판정한다(운영 유무는 가중치 Feature가 아니라 필터).
+  운영시간 미확인(`operating_hours=None`)은 폐점과 달리 하드 필터에서
+  제외하지 않고, 남은 운영시간 Feature만 결측 처리한다. 상세는
+  [추천 점수 설계](./design/recommendation-scoring.md) 참고.
+- 카테고리는 가중치 계산에서 제외한다: place_type/place_tag 1차 하드 필터가
+  이미 처리한다고 보고, `category`는 표시용 메타데이터로만 남긴다.
+- 기본 가중치: 날씨 0.40 / 남은 운영시간 0.40 / 거리 0.20. 남은 운영시간은
+  boolean이 아니라 `now` 기준 마감까지 남은 분을 정규화한 값(120분 이상이면
+  만점)이다.
+- 결측 시 재분배: 날씨와 남은 운영시간은 후보마다 독립적으로 결측될 수 있어
+  (날씨는 실행 전체 공통, 남은 운영시간은 후보별 `operating_hours` 유무에
+  따름) 결측된 Feature(들)의 가중치를 나머지 Feature에 기존 비중 비례로
+  재분배한다. 이 때문에 `weights_used`는 `ScoringResult` 전체가 아니라
+  `RankedCandidate`마다 따로 노출한다.
+- tie-break: score 내림차순 → distance_km 오름차순 → place_id 오름차순
+- 입력 모델: `ScoringCandidate`(Provider/Tool 독립적인 Candidate Model v1).
+  C-01 Tool 계약이 아직 없어 현재는 Stub 데이터로 검증했으며, Tool 확정 후
+  "Tool 출력 → `ScoringCandidate`" 매퍼만 추가하면 됨
+- 범위 제한: `OperatingHours`는 `open_time <= close_time`인 당일 운영만
+  다루며 자정을 넘기는 운영시간은 `TBD`
+- 미결: 카테고리 하드 필터 자체(및 다중 카테고리 허용 시 우선순위 표현),
+  혼잡도·근거 신뢰도 Feature, 실제 이동시간 기반 거리, 예산/동행 하드 필터,
+  실제 운영시간 원문("0900~1800" 등)을 `OperatingHours`로 정규화하는 파서
+  (`PLC-03`과 동일 범위), 자정을 넘기는 운영시간, 기준 시각(`now`)의 실제
+  출처(즉시 방문 vs 방문 예정 시각, D-022 연계),
+  `services/recommendations.py`/`/api/recommendations`와의 실제 연결
+  (D-03에서 진행)
 
 ### D-009 — Naver Blog Search는 보완 근거로 사용
 
@@ -239,7 +267,7 @@
 | Chat 계약 naming | Backend Python/JSON `snake_case` | `Accepted` |
 | Backend 상태 저장 | Supabase 테이블과 캐시 역할 | `TBD` |
 | Frontend 저장 | `sessionStorage` 유지 또는 `localStorage` 전환 | `TBD` |
-| Scoring v1 | Feature, 가중치, 결측값, tie-break | 현재 논의 중 |
+| Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); 실제 파이프라인(route) 연결 | 연결은 `TBD` |
 | 혼잡도 fallback | 장소 근접치, 구 단위, Feature 제외 | 현재 논의 중 |
 | 운영시간 파싱 | 기본 시간·월별·주간 휴무 구현, 공휴일·회차 예외 확대 | `부분 구현` |
 | 이동시간 | 지도 Provider 및 교통수단별 계산 | `TBD` |
@@ -257,9 +285,12 @@
 | 날짜 | 변경 |
 | --- | --- |
 | 2026-07-23 | Phase 1-A 실개발 시작용 최초 통합 의사결정 로그 작성 |
+| 2026-07-23 | D-008 Scoring v1 엔진 구현 반영 (Feature/가중치/tie-break 확정) |
+| 2026-07-23 | D-008 Scoring v1에서 카테고리 Feature 제외, 남은 영업시간 → 운영 유무로 단순화 (날씨 0.40/운영 유무 0.40/거리 0.20) |
 | 2026-07-23 | Provider 공통 metadata의 source/status/retrieved_at 계약 확정 |
 | 2026-07-23 | Tool 공통 오류와 no_data/unavailable 판정 기준 확정 |
 | 2026-07-23 | Provider별 Blocker와 P0~P3 해결 기준 확정 |
 | 2026-07-23 | Backend Python/JSON snake_case 공통 규칙 확정 |
 | 2026-07-23 | ProviderMetadata와 ProviderError 분리 및 오류 시각 계약 확정 |
 | 2026-07-23 | 방문 예정 시각의 초단기예보 우선 정책 확정 |
+| 2026-07-23 | D-008 재설계: 운영 유무를 가중치에서 제외하고 `now`/`OperatingHours` 기반 최종 하드 필터로 이동, 가중치 Feature를 남은 운영시간(분 정규화)으로 교체 (날씨 0.40/남은 운영시간 0.40/거리 0.20), `weights_used`를 후보별로 노출하도록 변경 |
