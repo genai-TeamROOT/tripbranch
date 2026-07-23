@@ -1,0 +1,93 @@
+"""장소 동기화 저장소가 제공해야 하는 비동기 계약."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from datetime import datetime
+from typing import Protocol
+from uuid import UUID
+
+from app.domain.models import StoredPlaceState, TourPlaceRecord
+
+
+class PlaceRepository(Protocol):
+    async def create_sync_run(self, area_code: str, district_code: str) -> UUID: ...
+
+    async def try_acquire_sync_lock(
+        self,
+        area_code: str,
+        district_code: str,
+        sync_run_id: UUID,
+        lock_ttl: str = "2 hours",
+    ) -> bool: ...
+
+    async def release_sync_lock(
+        self,
+        area_code: str,
+        district_code: str,
+        sync_run_id: UUID,
+    ) -> bool: ...
+
+    async def get_region_place_states(
+        self,
+        area_code: str,
+        district_code: str,
+    ) -> dict[str, StoredPlaceState]: ...
+
+    async def upsert_place_list(
+        self,
+        places: Sequence[TourPlaceRecord],
+        existing_states: Mapping[str, StoredPlaceState],
+        sync_run_id: UUID,
+        fetched_at: datetime,
+    ) -> None: ...
+
+    async def update_operating_details(
+        self,
+        content_id: str,
+        operating_hours_raw: str | None,
+        rest_date_raw: str | None,
+        operating_schedule: Mapping[str, object] | None,
+        parse_status: str,
+        parser_version: str,
+        fetched_at: datetime,
+    ) -> None: ...
+
+    async def update_parsed_schedule(
+        self,
+        content_id: str,
+        operating_schedule: Mapping[str, object] | None,
+        parse_status: str,
+        parser_version: str,
+    ) -> None: ...
+
+    async def mark_detail_failed(self, content_id: str, error_code: str) -> None: ...
+
+    async def reactivate_source_missing_places(
+        self,
+        content_ids: Sequence[str],
+    ) -> int: ...
+
+    async def deactivate_unseen_places(
+        self,
+        area_code: str,
+        district_code: str,
+        sync_run_id: UUID,
+        inactive_at: datetime,
+    ) -> int: ...
+
+    async def complete_sync_run(
+        self,
+        sync_run_id: UUID,
+        *,
+        status: str,
+        api_total_count: int | None,
+        processed_count: int,
+        success_count: int,
+        failed_count: int,
+        new_count: int,
+        updated_count: int,
+        deactivated_count: int,
+        error_summary: Mapping[str, object] | None = None,
+        completed_at: datetime,
+    ) -> None: ...

@@ -130,6 +130,59 @@ class PlaceDetails:
 
 
 @dataclass(frozen=True)
+class TourPlaceRecord:
+    """TourAPI 지역 기반 목록의 장소 한 건."""
+
+    content_id: str
+    content_type_id: str
+    title: str
+    address: str | None
+    latitude: float | None
+    longitude: float | None
+    area_code: str
+    district_code: str
+    lcls_systm1: str | None
+    lcls_systm2: str | None
+    lcls_systm3: str | None
+    source_modified_at: datetime | None
+
+
+@dataclass(frozen=True)
+class TourPlacePage:
+    """TourAPI 지역 기반 목록의 페이지 메타데이터와 장소 목록."""
+
+    page_no: int
+    num_of_rows: int
+    total_count: int
+    places: tuple[TourPlaceRecord, ...]
+
+
+@dataclass(frozen=True)
+class PlaceOperatingDetails:
+    """TourAPI 소개 상세 응답에서 가져온 운영시간·휴무일 원문."""
+
+    content_id: str
+    content_type_id: str
+    operating_hours_raw: str | None
+    rest_date_raw: str | None
+
+
+@dataclass(frozen=True)
+class StoredPlaceState:
+    """상세 재조회와 활성화 여부 판단에 필요한 기존 장소 상태."""
+
+    content_id: str
+    source_modified_at: datetime | None
+    detail_fetched_at: datetime | None
+    detail_fetch_status: str
+    operating_parser_version: str
+    operating_hours_raw: str | None
+    rest_date_raw: str | None
+    is_active: bool
+    inactive_reason: str | None
+
+
+@dataclass(frozen=True)
 class HolidayEntry:
     """한국천문연구원 공휴일 API 응답 한 건."""
 
