@@ -41,6 +41,7 @@
 - 기상청 단기예보 기반 날씨 상태 정규화
 - TourAPI 위치 기반 장소 검색, 키워드 검색, 장소 상세조회
 - 장소명 정확 일치 검색 후 상세조회하는 `find_details_by_name()`
+- TourAPI 대·중·소분류 기준 데이터 240건 JSON 정규화
 - 관광지 집중률 예측 조회
 - 한국천문연구원 공휴일 조회
 - 실제 외부 요청을 명시적으로만 실행하는 Smoke/Inspection Test
@@ -52,10 +53,12 @@
 - 이전 대화 조건 병합과 백엔드 세션 상태
 - Tool 계층과 Orchestrator
 - `RecommendationRequest Builder`
+- 사용자 장소 유형을 TourAPI 분류 코드로 변환하는 Category Mapper
+- 분류 JSON의 시작 시 로드·메모리 인덱스 및 Place Provider 분류 필터 연동
 - 운영시간 계산, 하드 필터, 가중치 Scoring 및 결정적 정렬
 - Naver Blog Search 근거 수집
 - Supabase 영속화
-- `chatSessionId`, `recommendationRunId` 처리
+- `chat_session_id`, `recommendation_run_id` 처리
 
 ## 기술 스택
 
@@ -81,6 +84,10 @@ TripBranch/
 │   │   ├── routes/              # health, interpret, recommendations
 │   │   ├── services/            # Stub Interpret와 추천 파이프라인
 │   │   └── providers/           # Fake/Real Provider와 Mapper
+│   ├── resources/
+│   │   └── tour_api/
+│   │       └── tour_api_category_codes.json
+│   │                              # TourAPI 대·중·소분류 기준 데이터
 │   ├── tests/
 │   ├── docs/                    # Provider 계약·샘플·테스트 가이드
 │   ├── pyproject.toml
@@ -155,6 +162,22 @@ npm run dev
 루트 명령은 활성화된 Python 환경을 사용하므로 `npm run dev`, `npm run test`,
 `npm run lint` 전에 `backend/.venv`를 활성화해야 합니다.
 
+## Naming 규칙
+
+Backend가 소유하는 Python 필드와 JSON 필드에는 모두 `snake_case`를 사용합니다.
+
+```text
+retrieved_at
+chat_session_id
+recommendation_run_id
+provider_metadata
+```
+
+Python과 JSON 사이에 camelCase alias를 두지 않습니다. Frontend 컴포넌트의 내부
+상태는 TypeScript 관례를 따를 수 있지만 Backend API 요청·응답 타입은 Backend JSON
+계약의 `snake_case`를 그대로 사용합니다. TourAPI처럼 외부 Provider가 정한 원본
+필드명은 Provider/Mapper 경계 안에서만 유지합니다.
+
 ## 테스트와 검사
 
 ```bash
@@ -175,6 +198,19 @@ RUN_REAL_PROVIDER_INSPECTION=true python -m pytest -m inspection -v -s
 실제 API 테스트는 키와 네트워크를 사용하므로 명시적 플래그가 있을 때만 실행됩니다.
 요청·응답 Inspection 출력은 인증 쿼리와 헤더를 `<redacted>`로 마스킹합니다.
 
+## TourAPI 장소 분류 데이터
+
+TourAPI의 대·중·소분류 기준 데이터는
+[`backend/resources/tour_api/tour_api_category_codes.json`](backend/resources/tour_api/tour_api_category_codes.json)에
+보관합니다. CSV 원본의 계층형 빈 셀을 부모 분류 값으로 채워, 각 JSON 항목만으로
+대분류부터 소분류 및 `content_type_id`까지 확인할 수 있도록 정규화했습니다.
+
+현재는 기준 데이터 파일만 준비된 상태입니다. 서버 시작 시 파일을 한 번 읽어
+분류명 기반 메모리 인덱스를 만들고, 사용자 표현을 표준 분류명으로 변환한 뒤
+`PlaceProvider` 요청의 대·중·소분류 필터로 전달하는 기능은 다음 구현 범위입니다.
+실행 중인 서버에 JSON 변경을 자동 반영하는 정책은 `TBD`이며, MVP에서는 서버
+재시작 시 다시 로드하는 방향을 우선 검토합니다.
+
 ## 문서
 
 - [아키텍처](docs/architecture.md)
@@ -191,10 +227,12 @@ RUN_REAL_PROVIDER_INSPECTION=true python -m pytest -m inspection -v -s
 2. Orchestrator, Context Merge, Tool 경계 도입
 3. 실제 Interpret 및 Response Generator LLM Provider 결정
 4. 내부 `RecommendationRequest` 스키마 확정
-5. 운영시간·날씨·거리·혼잡도 Feature 정규화
-6. 하드 필터와 가중치 Scoring 구현
-7. `chatSessionId`/`recommendationRunId` 및 Supabase 저장 모델 확정
-8. 프론트 저장소를 `sessionStorage`에서 `localStorage`로 바꿀지 결정
+5. TourAPI 분류 데이터 로더·메모리 인덱스와 Category Mapper 구현
+6. 장소 유형을 Place Provider의 대·중·소분류 필터로 연결
+7. 운영시간·날씨·거리·혼잡도 Feature 정규화
+8. 하드 필터와 가중치 Scoring 구현
+9. `chat_session_id`/`recommendation_run_id` 및 Supabase 저장 모델 확정
+10. 프론트 저장소를 `sessionStorage`에서 `localStorage`로 바꿀지 결정
 
 상기 항목의 세부 계약과 일정은 현재 논의 중이며 확정되지 않은 값은 각 문서에서
 `TBD`로 표시합니다.

@@ -163,6 +163,13 @@ RUN_REAL_PROVIDER_INSPECTION=true python -m pytest \
 
 ## 7. 코드 구조와 구현 규칙
 
+- Backend Python 필드와 Backend JSON 필드는 모두 `snake_case`를 사용합니다.
+- Python↔JSON 직렬화에 camelCase alias를 추가하지 않습니다.
+- Frontend API 타입도 Backend JSON의 `snake_case` 필드명을 그대로 선언합니다.
+- Frontend 내부 컴포넌트 상태는 TypeScript 관례를 따를 수 있으나 API DTO와 섞지
+  않습니다.
+- 외부 API의 `serviceKey`, `contentid` 같은 원본 이름은 Provider/Mapper 경계에서만
+  사용하고 내부 모델로 정규화합니다.
 - 공개 HTTP 모델은 `backend/app/schemas.py`에 둡니다.
 - 외부 API와 독립적인 Provider 모델은 `backend/app/domain/models.py`에 둡니다.
 - Provider 계약은 `backend/app/providers/protocols.py`에 정의합니다.
