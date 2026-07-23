@@ -97,14 +97,18 @@ interface CompareRequest {
 
 ### targets 결정 규칙
 
+번호(1-indexed)는 `get_session_context` 반환값의 `shown_place_ids`(현재 노출된
+장소 ID 목록, 순서 보장)를 기준으로 해석한다. 예) `[1, 2]` → `shown_place_ids[0]`,
+`shown_place_ids[1]`.
+
 ```
 사용자가 번호를 명시한 경우
-  → 해당 번호 사용
+  → shown_place_ids에서 해당 순번의 장소 사용
 
 사용자가 번호를 명시하지 않은 경우 ("어디가 좋아?")
-  → targets: "all" (전체 비교)
+  → targets: "all" (shown_place_ids 전체 비교)
 
-지정한 번호가 추천 결과 범위를 초과하는 경우
+지정한 번호가 shown_place_ids 범위를 초과하는 경우
   → "추천 결과는 N개까지 있어요. 몇 번을 비교할까요?" 안내
 ```
 
