@@ -308,7 +308,11 @@ type ProviderError = {
 | `HolidayProvider` | `get_holidays(year, month)` | `HolidayResult` |
 
 `PlaceDetails`는 정규화된 제목, 주소, 소개, 홈페이지, 연락처, 운영시간과 진단용
-`raw_common`, `raw_intro`를 포함합니다. Provider 상세 계약은
+`raw_common`, `raw_intro`를 포함합니다. `operating_schedule`은 원문을 보존하면서
+해석 가능한 시간·월·휴무 규칙을 구조화합니다. `parse_status`는 `parsed`,
+`partial`, `unknown`, `assumed`이며, 여행코스의 운영시간 누락을 24시간 이용
+가능으로 처리한 경우 `assumed`와 `course_without_operating_hours` 사유를 함께
+반환합니다. Provider 상세 계약은
 [`backend/docs/provider-contract-v1.md`](../backend/docs/provider-contract-v1.md)를
 참고합니다.
 

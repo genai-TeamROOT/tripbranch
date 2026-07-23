@@ -4,6 +4,10 @@ import httpx
 import pytest
 
 from app.domain.models import PlaceCategoryFilter
+from app.domain.operating_hours import (
+    OperatingAvailability,
+    OperatingParseStatus,
+)
 from app.errors import AppError, ProviderTimeoutError
 from app.providers.real_place import RealPlaceProvider
 
@@ -173,6 +177,37 @@ async def test_get_details_combines_common_and_intro_responses() -> None:
     assert result.operating_hours == "09:00~18:00"
     assert result.rest_date == "매주 화요일"
     assert result.overview == "조선 왕조의 법궁"
+    assert result.operating_schedule is not None
+    assert (
+        result.operating_schedule.availability
+        is OperatingAvailability.SCHEDULED
+    )
+    assert result.operating_schedule.closure_rules[0].weekdays == frozenset({1})
+
+
+@pytest.mark.asyncio
+async def test_get_course_details_assumes_all_day_when_hours_are_missing() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/detailCommon2"):
+            return httpx.Response(
+                200,
+                json=_payload({"contentid": "course-1", "title": "테스트 여행코스"}),
+            )
+        return httpx.Response(
+            200,
+            json=_payload({"contentid": "course-1", "contenttypeid": "25"}),
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await RealPlaceProvider(
+            api_key="dummy",
+            client=client,
+        ).get_details("course-1", "25")
+
+    assert result.operating_hours is None
+    assert result.operating_schedule is not None
+    assert result.operating_schedule.availability is OperatingAvailability.ALL_DAY
+    assert result.operating_schedule.parse_status is OperatingParseStatus.ASSUMED
 
 
 @pytest.mark.asyncio

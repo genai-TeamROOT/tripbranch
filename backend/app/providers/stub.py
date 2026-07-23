@@ -10,6 +10,7 @@ TODO: 실제 provider(RealPlaceProvider 등)가 준비되면 팩토리에서 설
 from __future__ import annotations
 
 from app.domain.models import PlaceCategoryFilter, PlaceDetails, WeatherCondition
+from app.domain.operating_hours import normalize_operating_schedule
 from app.errors import AppError
 from app.schemas import (
     InterpretedConditions,
@@ -112,6 +113,8 @@ class FakePlaceProvider:
     async def get_details(self, content_id: str, content_type_id: str) -> PlaceDetails:
         candidates = await self.search_places(37.5796, 126.9770, [], 1.0)
         candidate = next((item for item in candidates if item.place_id == content_id), None)
+        operating_hours = candidate.operating_hours if candidate else None
+        rest_date = "매주 월요일" if candidate else None
         return PlaceDetails(
             content_id=content_id,
             content_type_id=content_type_id,
@@ -120,11 +123,16 @@ class FakePlaceProvider:
             overview="Fake Provider의 장소 상세정보입니다.",
             homepage=None,
             telephone=None,
-            operating_hours=candidate.operating_hours if candidate else None,
-            rest_date="매주 월요일" if candidate else None,
+            operating_hours=operating_hours,
+            rest_date=rest_date,
             raw_common={},
             raw_intro={},
             provider="fake_place",
+            operating_schedule=normalize_operating_schedule(
+                content_type_id=content_type_id,
+                operating_hours=operating_hours,
+                rest_date=rest_date,
+            ),
         )
 
     async def find_details_by_name(

@@ -7,6 +7,7 @@ from collections.abc import Mapping
 import httpx
 
 from app.domain.models import PlaceCategoryFilter, PlaceDetails
+from app.domain.operating_hours import normalize_operating_schedule
 from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
 from app.providers.mappers import map_tour_api_response
 from app.schemas import PlaceCandidate
@@ -193,6 +194,8 @@ class RealPlaceProvider:
         address_parts = [common.get("addr1"), common.get("addr2")]
         address = " ".join(str(part) for part in address_parts if part) or None
 
+        operating_hours = _first_text(intro, _OPERATING_HOURS_KEYS)
+        rest_date = _first_text(intro, _REST_DATE_KEYS)
         return PlaceDetails(
             content_id=content_id,
             content_type_id=content_type_id,
@@ -201,11 +204,16 @@ class RealPlaceProvider:
             overview=_first_text(common, ("overview",)),
             homepage=_first_text(common, ("homepage",)),
             telephone=_first_text(common, ("tel",)) or _first_text(intro, ("infocenter",)),
-            operating_hours=_first_text(intro, _OPERATING_HOURS_KEYS),
-            rest_date=_first_text(intro, _REST_DATE_KEYS),
+            operating_hours=operating_hours,
+            rest_date=rest_date,
             raw_common=common,
             raw_intro=intro,
             provider="tour_api",
+            operating_schedule=normalize_operating_schedule(
+                content_type_id=content_type_id,
+                operating_hours=operating_hours,
+                rest_date=rest_date,
+            ),
         )
 
     async def find_details_by_name(

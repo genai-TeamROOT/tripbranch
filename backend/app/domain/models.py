@@ -11,6 +11,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
+from app.domain.operating_hours import OperatingSchedule
+
 
 class WeatherCondition(StrEnum):
     GOOD = "good"
@@ -89,6 +91,7 @@ class PlaceDetails:
     raw_common: Mapping[str, object]
     raw_intro: Mapping[str, object]
     provider: str
+    operating_schedule: OperatingSchedule | None = None
 
 
 @dataclass(frozen=True)

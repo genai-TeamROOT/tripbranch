@@ -638,6 +638,139 @@ async def get_details(
 `restdateshopping`, `restdatefood` 중 처음 존재하는 값을 사용합니다. 이외에도
 `parking`, `infocenter`, 체험 정보 등이 `raw_intro`에 추가로 존재할 수 있습니다.
 
+`PlaceDetails.operating_schedule`에는 원문을 보존한 정규화 결과가 함께 포함됩니다.
+정규화기는 `<br>`과 block tag, HTML entity, `HH:MM~HH:MM`, 복수 시간 구간,
+`24:00`과 익일 종료, 월 범위, 입장·매표 마감, 매주 휴무와 `24시간` 표현을
+우선 지원합니다.
+
+파싱 상태는 `parsed`, `partial`, `unknown`, `assumed`로 구분합니다. 해석하지 못한
+원문을 임의로 영업 또는 휴무로 판정하지 않으며 warning과 원문을 남깁니다.
+
+여행코스(`content_type_id=25`)는 운영시간 필드가 없을 때만 `all_day`로
+정규화하고 `parse_status=assumed`,
+`assumption_reason=course_without_operating_hours`를 기록합니다. 이는 Provider가
+실제 24시간 운영을 명시한 결과가 아니므로 화면과 로그에서 추정값으로 구분해야
+합니다. 다른 장소 유형의 운영시간 누락은 `unknown`입니다.
+
+#### 10.5.1 `OperatingSchedule` 정규화 계약
+
+`OperatingSchedule`은 운영시간 원문을 없애거나 덮어쓰지 않고, 추천 계산에서
+사용할 수 있는 구조를 추가로 제공합니다.
+
+| 필드 | 타입 | 의미 |
+| --- | --- | --- |
+| `raw_operating_hours` | `str \| None` | TourAPI 운영시간 원문 |
+| `raw_rest_date` | `str \| None` | TourAPI 휴무 원문 |
+| `cleaned_operating_hours` | `str \| None` | HTML·entity·공백을 정리한 운영시간 |
+| `cleaned_rest_date` | `str \| None` | HTML·entity·공백을 정리한 휴무 정보 |
+| `availability` | enum | `scheduled`, `all_day`, `unknown` |
+| `rules` | `tuple[OperatingRule, ...]` | 월·요일·시간 구간별 운영 규칙 |
+| `closure_rules` | `tuple[ClosureRule, ...]` | 구조화된 정기 휴무 규칙 |
+| `parse_status` | enum | `parsed`, `partial`, `unknown`, `assumed` |
+| `assumption_reason` | `str \| None` | 서비스 정책으로 값을 가정한 이유 |
+| `warnings` | `tuple[str, ...]` | 해석하지 못한 예외와 사용 시 주의사항 |
+
+`availability`의 의미:
+
+| 값 | 의미 |
+| --- | --- |
+| `scheduled` | 하나 이상의 시간 구간이 구조화됨 |
+| `all_day` | 원문에 24시간이 명시됐거나 여행코스 누락 정책이 적용됨 |
+| `unknown` | 영업시간을 확정할 수 없음 |
+
+`parse_status`의 의미:
+
+| 값 | 의미 |
+| --- | --- |
+| `parsed` | 현재 지원하는 규칙 범위에서 필요한 내용을 해석함 |
+| `partial` | 시간이나 기본 휴무는 해석했지만 일부 예외를 해석하지 못함 |
+| `unknown` | 원문이 없거나 시간 구간을 구조화할 수 없음 |
+| `assumed` | Provider 명시값이 아니라 프로젝트 정책으로 값을 가정함 |
+
+실제 원문에 `24시간`이 있는 경우와 여행코스 정책은 다음처럼 구분합니다.
+
+```json
+{
+  "availability": "all_day",
+  "parse_status": "parsed",
+  "assumption_reason": null
+}
+```
+
+```json
+{
+  "availability": "all_day",
+  "parse_status": "assumed",
+  "assumption_reason": "course_without_operating_hours"
+}
+```
+
+`OperatingRule` 구조:
+
+| 필드 | 의미 |
+| --- | --- |
+| `months` | 적용 월 집합, `None`이면 월 제한 없음 |
+| `weekdays` | 적용 요일 집합, `None`이면 요일 제한 없음 |
+| `time_ranges` | 하루에 적용되는 하나 이상의 시작·종료 구간 |
+| `last_admission` | 입장·매표 마감 시각 |
+| `source_text` | 규칙을 추출한 정리된 원문 |
+
+요일 번호는 Python `datetime.weekday()` 기준을 사용합니다.
+
+| 값 | 요일 | 값 | 요일 |
+| ---: | --- | ---: | --- |
+| `0` | 월요일 | `4` | 금요일 |
+| `1` | 화요일 | `5` | 토요일 |
+| `2` | 수요일 | `6` | 일요일 |
+| `3` | 목요일 |  |  |
+
+`TimeRange.crosses_midnight=true`는 종료 시각이 다음 날임을 의미합니다.
+`17:00~익일 02:00`은 `start=17:00`, `end=02:00`,
+`crosses_midnight=true`로 저장합니다. `09:00~24:00`은 Python `time`이
+`24:00`을 표현할 수 없으므로 `end=00:00`, `crosses_midnight=true`로
+정규화합니다.
+
+경복궁 형식의 예:
+
+```json
+{
+  "availability": "scheduled",
+  "parse_status": "partial",
+  "assumption_reason": null,
+  "cleaned_operating_hours": "[1월~2월] 09:00~17:00 (입장마감 16:00)",
+  "cleaned_rest_date": "매주 화요일\n공휴일과 겹치면 다음 비공휴일 휴무",
+  "rules": [
+    {
+      "months": [1, 2],
+      "weekdays": null,
+      "time_ranges": [
+        {
+          "start": "09:00",
+          "end": "17:00",
+          "crosses_midnight": false
+        }
+      ],
+      "last_admission": "16:00",
+      "source_text": "[1월~2월] 09:00~17:00 (입장마감 16:00)"
+    }
+  ],
+  "closure_rules": [
+    {
+      "weekdays": [1],
+      "source_text": "매주 화요일"
+    }
+  ],
+  "warnings": [
+    "휴무 문구의 일부 예외를 구조화하지 못했습니다."
+  ]
+}
+```
+
+`partial` 결과도 구조화된 기본 규칙은 사용할 수 있지만, warning에 해당하는
+예외까지 확정적으로 판정해서는 안 됩니다. `OperatingSchedule`은 정규화까지만
+담당하며 방문 시각 기준 `open`, `closed`, 남은 영업시간 계산은 별도 evaluator의
+책임입니다.
+
 ### 10.6 TourAPI 분류 Registry
 
 `TourCategoryRegistry`는
@@ -1023,7 +1156,7 @@ InterpretedConditions.location_query
 | --- | --- | --- | --- | --- | --- | --- |
 | `PLC-01` | `P1` | `preferred_categories`가 검색/후처리에 미사용 | 사용자 선호와 무관한 후보가 섞임 | content type을 내부 대분류로만 매핑 | 카테고리 매핑·필터·빈 후보 정책 테스트 | `Open` |
 | `PLC-02` | `P1` | Real 후보의 `operating_hours`가 항상 `None` | 후보만 사용하는 서비스에서는 모든 Real 후보가 미검증 결과로 분류 | 최대 20개 후보를 제한 병렬로 보완하는 `NearbyPlaceDetailsTool` 구현 | quota·캐시 정책 및 운영시간 parser 확정 | `부분 해결` |
-| `PLC-03` | `P1` | 운영시간·휴무일·주차가 복합 원문 또는 raw 필드 | 영업 여부와 남은 시간을 계산할 수 없음 | 원본을 `raw_intro`에 보존 | 정규 운영정보 모델, parser, unknown 규칙, 경복궁 회귀 테스트 | `Open` |
+| `PLC-03` | `P1` | 운영시간·휴무일이 다양한 복합 원문 | 아직 지원하지 않는 회차·공휴일 예외는 영업 여부와 남은 시간을 계산할 수 없음 | 원문 보존, HTML 정리, 월별 시간·주간 휴무·여행코스 가정 정규화 구현 | 운영 상태 evaluator, 공휴일 예외 규칙, 실제 응답 회귀 표본 확대 | `부분 해결` |
 | `PLC-04` | `P2` | 위치 검색 20건, 키워드 검색 최대 100건의 첫 페이지만 사용 | 후보가 많은 지역에서 적합 장소 누락 가능 | 고정 pageNo=1 | 후보 예산과 pagination 중단 조건 확정 | `Open` |
 | `PLC-05` | `P2` | 정확 이름 검색은 첫 exact match를 선택 | 동명 장소가 여러 지역에 있으면 오선택 가능 | 지역 코드 전달 가능 | 좌표/주소 기반 동명 tie-break와 clarification 정책 | `현재 논의 중` |
 | `PLC-06` | `P2` | 반경 0/음수와 좌표 범위 검증 없음 | 잘못된 외부 요청 또는 예측 불가능한 빈 결과 | 최대 20km clamp만 적용 | 입력 validation 및 Tool invalid_input 매핑 테스트 | `Open` |

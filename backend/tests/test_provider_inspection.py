@@ -145,6 +145,48 @@ def _inspection_client() -> httpx.AsyncClient:
     )
 
 
+def _operating_schedule_summary(details: Any) -> dict[str, Any] | None:
+    schedule = details.operating_schedule if details else None
+    if schedule is None:
+        return None
+    return {
+        "availability": schedule.availability.value,
+        "parse_status": schedule.parse_status.value,
+        "assumption_reason": schedule.assumption_reason,
+        "cleaned_operating_hours": schedule.cleaned_operating_hours,
+        "cleaned_rest_date": schedule.cleaned_rest_date,
+        "rules": [
+            {
+                "months": sorted(rule.months) if rule.months else None,
+                "weekdays": sorted(rule.weekdays) if rule.weekdays else None,
+                "time_ranges": [
+                    {
+                        "start": time_range.start.isoformat(timespec="minutes"),
+                        "end": time_range.end.isoformat(timespec="minutes"),
+                        "crosses_midnight": time_range.crosses_midnight,
+                    }
+                    for time_range in rule.time_ranges
+                ],
+                "last_admission": (
+                    rule.last_admission.isoformat(timespec="minutes")
+                    if rule.last_admission
+                    else None
+                ),
+                "source_text": rule.source_text,
+            }
+            for rule in schedule.rules
+        ],
+        "closure_rules": [
+            {
+                "weekdays": sorted(rule.weekdays),
+                "source_text": rule.source_text,
+            }
+            for rule in schedule.closure_rules
+        ],
+        "warnings": list(schedule.warnings),
+    }
+
+
 async def test_inspect_naver_geocoding_request_and_response() -> None:
     async with _inspection_client() as client:
         provider = RealGeocodingProvider(
@@ -271,6 +313,7 @@ async def test_inspect_tour_api_nearby_place_details_request_and_response() -> N
                 item.details.operating_hours if item.details else None
             ),
             "rest_date": item.details.rest_date if item.details else None,
+            "operating_schedule": _operating_schedule_summary(item.details),
         }
         for item in result.places
     ]

@@ -42,6 +42,7 @@
 - TourAPI 위치 기반 장소 검색, 키워드 검색, 장소 상세조회
 - 장소명 정확 일치 검색 후 상세조회하는 `find_details_by_name()`
 - 주변 후보와 다건 상세정보를 결합하는 `NearbyPlaceDetailsTool`
+- TourAPI 운영시간·휴무 원문 보존 및 제한적 구조화
 - TourAPI 대·중·소분류 기준 데이터 240건 JSON 정규화
 - 관광지 집중률 예측 조회
 - 한국천문연구원 공휴일 조회

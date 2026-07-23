@@ -155,18 +155,6 @@
   혼동하지 않기 위함
 - 후속: `ToolResult<T>`, Provider 오류 cause 보존, Orchestrator fallback 구현
 
-### D-023 — 장소 다건 상세조회 Provider 교체 경계
-
-- 상태: `Accepted`, DB 구현은 `TBD`
-- 결정: 후보 검색과 상세조회를 각각 `PlaceSearchProvider`,
-  `PlaceDetailsProvider`로 분리하고 `NearbyPlaceDetailsTool`에서 조합한다.
-- 근거: TourAPI로 장소 10개의 상세정보를 조회하면 목록 1회와 장소별 상세 2회로
-  최대 21회의 외부 요청이 발생하며, 2026-07-23 로컬 실측에서 동시성 3 기준 약
-  20초가 소요됐다.
-- 방향: 실서비스에서는 상세정보를 우선 DB 다건 조회로 교체하고, 누락되거나 오래된
-  데이터만 TourAPI로 보완한다. 필요하면 후보 검색도 이후 DB로 이전한다.
-- 미확정: DB 종류·스키마, 갱신 주기, stale 기준, 캐시 및 fallback 정책
-
 ### D-019 — Provider Blocker 우선순위와 관리 기준
 
 - 상태: `Accepted`
@@ -219,6 +207,30 @@
 - 현재 구현 차이: 가장 이른 초단기예보만 선택하며 방문 예정 시각 입력과 metadata 없음
 - 이유: 사용자의 요청 시점보다 실제 장소 도착·방문 시점의 날씨가 추천 판단에 중요
 
+### D-023 — 장소 다건 상세조회 Provider 교체 경계
+
+- 상태: `Accepted`, DB 구현은 `TBD`
+- 결정: 후보 검색과 상세조회를 각각 `PlaceSearchProvider`,
+  `PlaceDetailsProvider`로 분리하고 `NearbyPlaceDetailsTool`에서 조합한다.
+- 근거: TourAPI로 장소 10개의 상세정보를 조회하면 목록 1회와 장소별 상세 2회로
+  최대 21회의 외부 요청이 발생하며, 2026-07-23 로컬 실측에서 동시성 3 기준 약
+  20초가 소요됐다.
+- 방향: 실서비스에서는 상세정보를 우선 DB 다건 조회로 교체하고, 누락되거나 오래된
+  데이터만 TourAPI로 보완한다. 필요하면 후보 검색도 이후 DB로 이전한다.
+- 미확정: DB 종류·스키마, 갱신 주기, stale 기준, 캐시 및 fallback 정책
+
+### D-024 — 여행코스 운영시간 누락 처리
+
+- 상태: `Accepted`, 운영 상태 evaluator는 `TBD`
+- 결정: 여행코스(`content_type_id=25`)에 운영시간 원본이 없으면 `all_day`로
+  정규화한다.
+- 구분: 실제 Provider 명시값과 혼동하지 않도록 `parse_status=assumed`,
+  `assumption_reason=course_without_operating_hours`를 기록한다.
+- 예외: 다른 장소 유형의 운영시간 누락은 `unknown`을 유지한다.
+- 원문: 운영시간과 휴무 원문은 그대로 보존하고 HTML을 정리한 별도 필드를 둔다.
+- 이유: 여행코스 자체는 개별 시설의 입장시간과 다른 이동 경로 데이터이며, 누락을
+  이유로 후보 전체를 운영 미확인으로 제외하지 않기 위함
+
 ## 현재 논의가 필요한 항목
 
 | 항목 | 선택지/질문 | 상태 |
@@ -229,7 +241,7 @@
 | Frontend 저장 | `sessionStorage` 유지 또는 `localStorage` 전환 | `TBD` |
 | Scoring v1 | Feature, 가중치, 결측값, tie-break | 현재 논의 중 |
 | 혼잡도 fallback | 장소 근접치, 구 단위, Feature 제외 | 현재 논의 중 |
-| 운영시간 파싱 | 휴무·공휴일·계절별 시간과 unknown 처리 | `TBD` |
+| 운영시간 파싱 | 기본 시간·월별·주간 휴무 구현, 공휴일·회차 예외 확대 | `부분 구현` |
 | 이동시간 | 지도 Provider 및 교통수단별 계산 | `TBD` |
 | 조건 완화 | 자동 완화 범위와 사용자 확인 UX | `TBD` |
 | 관측성 | 구조화 로그, tracing, 보존기간 | `TBD` |

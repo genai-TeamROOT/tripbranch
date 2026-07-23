@@ -275,7 +275,10 @@ RUN_REAL_PROVIDER_INSPECTION=true python -m pytest \
 `RealPlaceProvider`가 두 역할을 담당한다. 상세조회는 동시에 최대 3개만 실행하며,
 일부 상세조회가 실패해도 다른 장소 결과는 계속 수집한다. 마지막에는
 장소 ID·유형·주소·좌표·신분류 코드와 소개·홈페이지·전화번호·운영시간·휴무
-정보를 정규화한 요약을 출력한다. 원본 응답에서는 장소 유형별 `usetime*`와
+정보를 정규화한 요약을 출력한다. `operating_schedule`에는 `availability`,
+`parse_status`, 가정 사유, 정리된 원문, 월·요일·시간 구간, 입장마감, 휴무 규칙과
+warning이 포함되어 실제 파싱 결과를 장소별로 확인할 수 있다. 원본 응답에서는
+장소 유형별 `usetime*`와
 `restdate*` 필드도 확인할 수 있다. 요청과 원본 응답의 인증정보는 마스킹된다.
 각 외부 요청에는 응답 본문 수신 완료까지 걸린 `elapsed_ms`가 표시되며, 전체
 목록·상세조회에는 Tool 상태와 `normalized_nearby_total_elapsed_ms`가 함께 출력된다.
