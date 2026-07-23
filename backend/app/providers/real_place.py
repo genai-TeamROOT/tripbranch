@@ -6,7 +6,7 @@ from collections.abc import Mapping
 
 import httpx
 
-from app.domain.models import PlaceDetails
+from app.domain.models import PlaceCategoryFilter, PlaceDetails
 from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
 from app.providers.mappers import map_tour_api_response
 from app.schemas import PlaceCandidate
@@ -95,6 +95,7 @@ class RealPlaceProvider:
         longitude: float,
         preferred_categories: list[str],
         search_radius_km: float,
+        category_filter: PlaceCategoryFilter | None = None,
     ) -> list[PlaceCandidate]:
         radius_m = min(int(search_radius_km * 1000), 20000)
         params = {
@@ -106,6 +107,20 @@ class RealPlaceProvider:
             "numOfRows": 20,
             "pageNo": 1,
         }
+        if category_filter is not None:
+            optional_filters = {
+                "contentTypeId": category_filter.content_type_id,
+                "lclsSystm1": category_filter.lcls_systm1,
+                "lclsSystm2": category_filter.lcls_systm2,
+                "lclsSystm3": category_filter.lcls_systm3,
+            }
+            params.update(
+                {
+                    key: value
+                    for key, value in optional_filters.items()
+                    if value is not None
+                }
+            )
         payload = await self._request_json(_LOCATION_BASED_LIST_PATH, params)
         return map_tour_api_response(payload)
 

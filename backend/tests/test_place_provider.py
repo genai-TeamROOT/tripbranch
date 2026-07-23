@@ -3,6 +3,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from app.domain.models import PlaceCategoryFilter
 from app.errors import AppError
 from app.providers.real_place import RealPlaceProvider
 
@@ -14,6 +15,65 @@ def _payload(item: dict) -> dict:
             "body": {"items": {"item": item}},
         }
     }
+
+
+@pytest.mark.asyncio
+async def test_search_places_sends_tour_api_category_filters() -> None:
+    seen_params: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/locationBasedList2")
+        seen_params.update(dict(request.url.params))
+        return httpx.Response(
+            200,
+            json=_payload(
+                {
+                    "contentid": "cafe-1",
+                    "contenttypeid": "39",
+                    "title": "테스트 카페",
+                    "mapx": "126.9770",
+                    "mapy": "37.5788",
+                }
+            ),
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = RealPlaceProvider(api_key="dummy", client=client)
+        result = await provider.search_places(
+            latitude=37.5788,
+            longitude=126.9770,
+            preferred_categories=["cafe"],
+            search_radius_km=5.0,
+            category_filter=PlaceCategoryFilter(
+                content_type_id="39",
+                lcls_systm1="FD",
+                lcls_systm2="FD05",
+                lcls_systm3="FD050100",
+            ),
+        )
+
+    assert seen_params["contentTypeId"] == "39"
+    assert seen_params["lclsSystm1"] == "FD"
+    assert seen_params["lclsSystm2"] == "FD05"
+    assert seen_params["lclsSystm3"] == "FD050100"
+    assert result[0].content_type_id == "39"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"lcls_systm2": "FD05"}, "lcls_systm1"),
+        (
+            {"lcls_systm1": "FD", "lcls_systm3": "FD050100"},
+            "lcls_systm1과 lcls_systm2",
+        ),
+    ],
+)
+def test_place_category_filter_requires_parent_codes(
+    kwargs: dict[str, str], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        PlaceCategoryFilter(**kwargs)
 
 
 @pytest.mark.asyncio

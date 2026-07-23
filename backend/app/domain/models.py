@@ -48,6 +48,32 @@ class ConcentrationResult:
 
 
 @dataclass(frozen=True)
+class PlaceCategoryFilter:
+    """TourAPI 장소 목록 조회에 사용할 선택적 분류 코드 묶음."""
+
+    content_type_id: str | None = None
+    lcls_systm1: str | None = None
+    lcls_systm2: str | None = None
+    lcls_systm3: str | None = None
+
+    def __post_init__(self) -> None:
+        values = (
+            self.content_type_id,
+            self.lcls_systm1,
+            self.lcls_systm2,
+            self.lcls_systm3,
+        )
+        if any(value is not None and not value.strip() for value in values):
+            raise ValueError("분류 코드는 비어 있는 문자열일 수 없습니다.")
+        if self.lcls_systm2 and not self.lcls_systm1:
+            raise ValueError("lcls_systm2 사용 시 lcls_systm1이 필요합니다.")
+        if self.lcls_systm3 and not (self.lcls_systm1 and self.lcls_systm2):
+            raise ValueError(
+                "lcls_systm3 사용 시 lcls_systm1과 lcls_systm2가 필요합니다."
+            )
+
+
+@dataclass(frozen=True)
 class PlaceDetails:
     """TourAPI의 공통·소개 상세 응답을 정규화한 장소 상세정보."""
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.domain.models import GeocodeResult, WeatherCondition
+from app.domain.models import GeocodeResult, PlaceCategoryFilter, WeatherCondition
 from app.providers.concentration import FakeConcentrationProvider
 from app.providers.geocoding import FakeGeocodingProvider
 from app.providers.holiday import FakeHolidayProvider
@@ -41,6 +41,20 @@ async def test_fake_place_provider_uses_common_candidate() -> None:
 
     assert result[0].raw_source == "fake_place"
     assert result[0].latitude == 37.5796
+
+    cafe_result = await FakePlaceProvider().search_places(
+        latitude=37.5796,
+        longitude=126.9770,
+        preferred_categories=["cafe"],
+        search_radius_km=1.0,
+        category_filter=PlaceCategoryFilter(
+            content_type_id="39",
+            lcls_systm1="FD",
+            lcls_systm2="FD05",
+            lcls_systm3="FD050100",
+        ),
+    )
+    assert [candidate.content_type_id for candidate in cafe_result] == ["39"]
 
     keyword_result = await FakePlaceProvider().search_by_keyword("박물관")
     assert keyword_result[0].content_type_id == "14"

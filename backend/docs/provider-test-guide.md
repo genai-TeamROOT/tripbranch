@@ -248,6 +248,19 @@ RUN_REAL_PROVIDER_INSPECTION=true python -m pytest \
 이 테스트는 `searchKeyword2`, `detailCommon2`, `detailIntro2`의 원본 응답을
 순서대로 출력한다.
 
+### TourAPI 카페 대·중·소분류 요청·응답
+
+```bash
+RUN_REAL_PROVIDER_INSPECTION=true python -m pytest \
+  tests/test_provider_inspection.py::test_inspect_tour_api_cafe_category_request_and_response \
+  -v -s
+```
+
+경복궁 반경 5km를 기준으로 `contentTypeId=39`, `lclsSystm1=FD`,
+`lclsSystm2=FD05`, `lclsSystm3=FD050100`을 전달한다. 출력되는 요청 쿼리에서
+분류 필드를 확인하고, 원본 응답과 정규화된 장소명·`content_type_id` 표본을 함께
+검증한다. `serviceKey`는 `<redacted>`로 표시된다.
+
 ### TourAPI 집중률 요청·응답
 
 ```bash

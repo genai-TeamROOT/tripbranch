@@ -9,7 +9,7 @@ TODO: 실제 provider(RealPlaceProvider 등)가 준비되면 팩토리에서 설
 
 from __future__ import annotations
 
-from app.domain.models import PlaceDetails, WeatherCondition
+from app.domain.models import PlaceCategoryFilter, PlaceDetails, WeatherCondition
 from app.errors import AppError
 from app.schemas import (
     InterpretedConditions,
@@ -55,8 +55,9 @@ class FakePlaceProvider:
         longitude: float,
         preferred_categories: list[str],
         search_radius_km: float,
+        category_filter: PlaceCategoryFilter | None = None,
     ) -> list[PlaceCandidate]:
-        return [
+        candidates = [
             PlaceCandidate(
                 place_id="fake-museum-1",
                 content_type_id="14",
@@ -80,6 +81,13 @@ class FakePlaceProvider:
                 raw_source="fake_place",
             ),
         ]
+        if category_filter and category_filter.content_type_id:
+            return [
+                candidate
+                for candidate in candidates
+                if candidate.content_type_id == category_filter.content_type_id
+            ]
+        return candidates
 
     async def search_by_keyword(
         self,

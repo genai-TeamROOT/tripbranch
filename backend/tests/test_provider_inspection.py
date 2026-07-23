@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from app.config import Settings
+from app.domain.models import PlaceCategoryFilter
 from app.providers.concentration import RealConcentrationProvider
 from app.providers.geocoding import RealGeocodingProvider
 from app.providers.holiday import RealHolidayProvider
@@ -144,6 +145,34 @@ async def test_inspect_tour_api_place_request_and_response() -> None:
 
     print(f"normalized_count: {len(result)}")
     print(f"normalized_samples: {[candidate.name for candidate in result[:3]]}")
+
+
+async def test_inspect_tour_api_cafe_category_request_and_response() -> None:
+    async with _inspection_client() as client:
+        provider = RealPlaceProvider(
+            api_key=_required_value("TOUR_API_SERVICE_KEY", settings.tour_api_service_key),
+            client=client,
+        )
+        result = await provider.search_places(
+            latitude=37.5788,
+            longitude=126.9770,
+            preferred_categories=["cafe"],
+            search_radius_km=5.0,
+            category_filter=PlaceCategoryFilter(
+                content_type_id="39",
+                lcls_systm1="FD",
+                lcls_systm2="FD05",
+                lcls_systm3="FD050100",
+            ),
+        )
+
+    assert result
+    assert all(candidate.content_type_id == "39" for candidate in result)
+    print(f"normalized_count: {len(result)}")
+    print(
+        "normalized_samples: "
+        f"{[(candidate.name, candidate.content_type_id) for candidate in result[:10]]}"
+    )
 
 
 async def test_inspect_tour_api_keyword_and_details_request_and_response() -> None:
