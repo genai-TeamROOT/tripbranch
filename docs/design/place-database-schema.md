@@ -6,11 +6,12 @@ TripBranch MVP에서 TourAPI 장소 데이터를 미리 수집해 추천 요청 
 위한 장소 영역 스키마를 정의한다. 최초 수집 범위는 종로구지만, 동일한 구조로
 다른 시·군·구를 추가할 수 있어야 한다.
 
-이번 설계 범위는 다음 세 테이블이다.
+이번 설계 범위는 장소 데이터·실행 테이블 세 개와 동기화 제어 테이블 한 개다.
 
 - `places`: TourAPI 장소 기본정보와 운영정보 캐시
 - `place_enrichments`: TripBranch가 관리하는 추천용 보완정보
 - `place_sync_runs`: 종로구 장소 동기화 작업 이력
+- `place_sync_locks`: 동일 지역 동기화의 중복 실행 방지
 
 추천 실행 및 사용자 피드백 테이블은 이 문서의 범위에서 제외한다.
 
@@ -32,9 +33,12 @@ place_sync_runs 1 ───── N places
                             │
                             0..1
                      place_enrichments
+
+place_sync_runs 1 ───── 0..1 place_sync_locks
 ```
 
 - 장소는 마지막으로 처리된 동기화 실행을 선택적으로 참조한다.
+- 실행 중인 지역에는 최대 하나의 동기화 잠금만 존재한다.
 - 장소 하나에는 보완정보가 없거나 한 건 존재한다.
 - 동기화 실행을 삭제해도 장소는 삭제하지 않는다.
 - 장소를 삭제하면 연결된 보완정보는 함께 삭제한다.
@@ -80,6 +84,34 @@ place_sync_runs 1 ───── N places
   "DETAIL_EMPTY": 5
 }
 ```
+
+### 4.1 `place_sync_locks`
+
+동일한 시·군·구의 동기화 작업이 동시에 실행되지 않도록 지역별 잠금 한 건을
+관리한다.
+
+| 컬럼 | PostgreSQL 형식 | 필수 | 설명 |
+| --- | --- | --- | --- |
+| `area_code` | `text` | 필수 | 잠금 대상 시도 코드, 복합 PK |
+| `district_code` | `text` | 필수 | 잠금 대상 시군구 코드, 복합 PK |
+| `sync_run_id` | `uuid` | 필수 | 잠금을 소유한 실행 ID, Unique 및 FK |
+| `acquired_at` | `timestamptz` | 필수 | 잠금 획득 시각 |
+| `expires_at` | `timestamptz` | 필수 | 비정상 종료에 대비한 만료 시각 |
+
+잠금 획득과 해제는 테이블 직접 조작 대신 다음 DB 함수를 사용한다.
+
+```text
+try_acquire_place_sync_lock(...)
+release_place_sync_lock(...)
+```
+
+- 동일 지역에 유효한 잠금이 있으면 새 실행의 획득 요청은 `false`를 반환한다.
+- 기본 잠금 TTL은 2시간이다.
+- 만료된 잠금은 새 실행이 원자적으로 교체할 수 있다.
+- 교체된 이전 실행이 아직 `running`이면 `failed`로 정리한다.
+- 해제 시 지역 코드뿐 아니라 `sync_run_id`도 일치해야 한다.
+- 실행 행 삭제 시 연결된 잠금은 `ON DELETE CASCADE`로 제거한다.
+- `anon`, `authenticated`에는 테이블과 함수 실행 권한을 부여하지 않는다.
 
 ## 5. `places`
 
@@ -303,7 +335,7 @@ API 일시 오류로 전체 장소가 비활성화되는 것을 막기 위해 �
 
 - 브라우저에 Service Role Key를 노출하지 않는다.
 - 동기화 INSERT·UPDATE는 FastAPI 백엔드 또는 관리자 배치만 수행한다.
-- MVP에서는 세 테이블 모두 RLS를 활성화하고 `anon`, `authenticated` 역할에
+- MVP에서는 네 테이블 모두 RLS를 활성화하고 `anon`, `authenticated` 역할에
   직접 쓰기 정책을 만들지 않는다.
 - 일반 사용자에게 장소 목록 직접 조회를 열 필요가 생기면 공개 가능한 컬럼만
   노출하는 View 또는 FastAPI API를 사용한다.
@@ -313,7 +345,8 @@ API 일시 오류로 전체 장소가 비활성화되는 것을 막기 위해 �
 
 ### v0.1 확정
 
-- 장소 관련 테이블은 `places`, `place_enrichments`, `place_sync_runs` 세 개다.
+- 장소 데이터·실행 테이블은 `places`, `place_enrichments`, `place_sync_runs`,
+  중복 실행 제어 테이블은 `place_sync_locks`다.
 - 운영정보는 MVP에서 `places`에 포함한다.
 - 운영정보 원문과 정규화 JSON을 모두 저장한다.
 - 장소별 상세조회 시각과 배치 실행 이력을 모두 보관한다.
@@ -329,5 +362,7 @@ API 일시 오류로 전체 장소가 비활성화되는 것을 막기 위해 �
 - 최초 마이그레이션은
   `supabase/migrations/202607240001_create_place_tables.sql`이며 2026-07-24에
   Supabase SQL Editor로 적용했다.
+- 동기화 잠금은
+  `supabase/migrations/202607240002_add_place_sync_locks.sql`로 같은 날 적용했다.
 - SQL Editor 적용으로 원격 마이그레이션 이력은 생성되지 않았으므로, Supabase CLI
   최초 도입 시 `supabase/README.md`의 이력 복구 절차를 먼저 수행한다.

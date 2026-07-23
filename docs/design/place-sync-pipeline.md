@@ -76,7 +76,8 @@ PlaceSyncService
    └─ PlaceRepository
         └─ Supabase PostgREST
              ├─ places
-             └─ place_sync_runs
+             ├─ place_sync_runs
+             └─ place_sync_locks
 ```
 
 ### `TourAreaPlaceProvider`
@@ -109,6 +110,8 @@ Supabase 테이블 읽기와 쓰기를 담당한다.
 ```python
 class PlaceRepository(Protocol):
     async def create_sync_run(...) -> UUID: ...
+    async def try_acquire_sync_lock(...) -> bool: ...
+    async def release_sync_lock(...) -> bool: ...
     async def get_region_place_states(...) -> dict[str, StoredPlaceState]: ...
     async def upsert_place_list(...) -> None: ...
     async def update_operating_details(...) -> None: ...
@@ -283,8 +286,17 @@ detail_error_code=<내부 코드>
 ### 7.1 실행 시작
 
 1. `place_sync_runs`에 `running` 행을 생성한다.
-2. 실행 ID를 이후 모든 장소의 `last_sync_run_id`에 사용한다.
-3. 실행 도중 예외가 발생해도 가능한 경우 실행 행을 `failed`로 종료한다.
+2. `try_acquire_place_sync_lock` RPC로 해당 지역의 잠금을 요청한다.
+3. 잠금 획득에 실패하면 새 실행을 `failed`로 종료하고 장소 처리를 시작하지 않는다.
+4. 잠금 기본 TTL은 2시간으로 한다.
+5. 실행 ID를 이후 모든 장소의 `last_sync_run_id`에 사용한다.
+6. 실행 도중 예외가 발생해도 가능한 경우 실행 행을 `failed`로 종료한다.
+7. 성공·부분 실패·실패 여부와 관계없이 `finally`에서 자신의 실행 ID로 잠금
+   해제를 요청한다.
+
+잠금은 `(area_code, district_code)` 복합 PK로 한 지역에 한 행만 허용한다.
+획득 RPC는 유효한 기존 잠금을 덮어쓰지 않으며, 만료된 잠금만 원자적으로
+교체한다. 해제 RPC는 `sync_run_id`까지 일치할 때만 행을 삭제한다.
 
 ### 7.2 전체 목록 수집
 
@@ -497,6 +509,7 @@ backend/
 - 실패 시 기존 운영정보를 payload에 포함하지 않음
 - 수동 비활성 상태를 목록 upsert가 덮어쓰지 않음
 - 실행 완료 상태와 건수 업데이트
+- 잠금 획득·중복 거절·정확한 실행 ID 해제 RPC 호출
 
 ### Service 단위 테스트
 
@@ -510,6 +523,8 @@ Fake Provider와 Fake Repository를 사용한다.
 - 다시 나타난 `missing_from_source` 자동 활성화
 - 수동 제외 장소 자동 활성화 금지
 - `details_limit` 사용 시 비활성화 금지
+- 잠금 획득 실패 시 Provider 호출 없이 실행 종료
+- 성공·예외 경로 모두에서 자신의 잠금 해제
 
 ### 실제 연동 테스트
 
@@ -566,6 +581,7 @@ Fake Provider와 Fake Repository를 사용한다.
 Fake 250건으로 3페이지 동기화 시나리오 통과
 목록 불완전 시 비활성화가 발생하지 않음
 동일 입력 재실행이 중복 행을 만들지 않음
+동일 지역 동시 실행 두 건 중 한 건만 잠금을 획득함
 ```
 
 ### 4단계 — 최초 종로구 적재
@@ -595,6 +611,7 @@ anon/authenticated 직접 접근 불가 유지
 | 목록 페이지 크기 | 100 |
 | 상세 동시성 | 5 |
 | 상세 TTL | 30일 |
+| 동기화 잠금 TTL | 2시간 |
 | 정기 실행 주기 | 주 1회 |
 | 파서 버전 | `operating-hours-1.0.0` |
 | Supabase 접근 | 백엔드 Service Role + PostgREST |
