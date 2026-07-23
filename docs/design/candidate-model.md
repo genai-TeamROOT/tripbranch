@@ -1,0 +1,199 @@
+
+# 2. 후보 정규화 모델 v0.1
+
+## 문서 정보
+
+| 항목 | 값 |
+|------|-----|
+| 버전 | v0.1 |
+| 상태 | 초안 (Draft) |
+| 최종 수정 | 2026-07-22 |
+| 경로 | `docs/design/candidate-model.md` |
+
+---
+
+## 1. 개요
+
+외부 장소 API(TourAPI)의 원본 응답을 추천 엔진이 직접 사용하지 않는다. Provider가 외부 응답을 내부 정규화 모델로 변환한 뒤 추천 엔진에 전달한다.
+
+```
+TourAPI 원본 응답 → Provider 변환 → PlaceCandidate (내부 모델) → 추천 엔진
+```
+
+---
+
+## 2. PlaceCandidate 모델
+
+```typescript
+interface PlaceCandidate {
+  // 식별
+  content_id: string;
+  content_type_id: string;
+  name: string;
+
+  // 위치
+  latitude: number;
+  longitude: number;
+  address: string;
+  distance_km: number | null;  // search_center로부터 직선거리 (조회 시 계산)
+
+  // 분류
+  place_type: PlaceType;
+  place_tag: PlaceTag | null;
+  cat1: string | null;
+  cat2: string | null;
+  cat3: string | null;
+
+  // 운영시간
+  operating_status: OperatingStatus;
+  operating_hours_raw: string | null;
+  remaining_minutes: number | null;
+
+  // 환경
+  environment_type: EnvironmentType;
+
+  // 부가 정보
+  image_url: string | null;
+  tel: string | null;
+  overview: string | null;
+}
+```
+
+---
+
+## 3. 필드 상세
+
+### 필수 필드
+
+| 필드 | 설명 | 소스 |
+|------|------|------|
+| `content_id` | TourAPI 고유 ID | locationBasedList2 → contentid |
+| `content_type_id` | 유형 코드 | locationBasedList2 → contenttypeid |
+| `name` | 장소명 | locationBasedList2 → title |
+| `latitude` | 위도 | locationBasedList2 → mapy |
+| `longitude` | 경도 | locationBasedList2 → mapx |
+| `address` | 주소 | locationBasedList2 → addr1 |
+| `place_type` | 내부 유형 분류 | content_type_id로 매핑 |
+| `operating_status` | 운영 상태 | detailIntro2에서 판정 |
+| `environment_type` | 실내/야외 | 카테고리 기반 매핑 |
+
+### 선택 필드
+
+| 필드 | 설명 | 없을 때 |
+|------|------|---------|
+| `distance_km` | 직선거리 | 위치기반 조회가 아니면 null → 별도 계산 |
+| `place_tag` | 세부 분류 | 매핑 불가 시 null |
+| `remaining_minutes` | 남은 운영시간 | 판정 불가 시 null |
+| `operating_hours_raw` | 운영시간 원본 텍스트 | 조회 실패 시 null |
+| `image_url` | 대표 이미지 | 없으면 null |
+| `tel` | 연락처 | 없으면 null |
+| `overview` | 장소 개요 | 없으면 null |
+
+---
+
+## 4. OperatingStatus 정의
+
+```typescript
+type OperatingStatus =
+  | "open"      // 현재 영업 중 (남은 시간 계산 가능)
+  | "closed"    // 현재 영업 종료 또는 정기 휴무
+  | "unknown";  // 운영시간 확인 불가
+```
+
+| 상태 | 추천 처리 |
+|------|-----------|
+| `open` | 정상 추천 후보 |
+| `closed` | Hard Filter에서 제외 |
+| `unknown` | 별도 그룹으로 분리하여 안내 |
+
+---
+
+## 5. EnvironmentType 정의
+
+```typescript
+type EnvironmentType =
+  | "indoor"   // 실내
+  | "outdoor"  // 야외
+  | "mixed"    // 실내+야외 혼합
+  | "unknown"; // 판단 불가
+```
+
+### 카테고리 기반 기본 매핑
+
+| place_tag / place_type | environment_type |
+|------------------------|-----------------|
+| 박물관, 미술관, 도서관, 과학관, 전시관 | indoor |
+| 카페, 음식점 (restaurant 전체) | indoor |
+| 쇼핑몰, 백화점, 면세점 | indoor |
+| 공원, 산, 해변, 호수, 계곡, 둘레길 | outdoor |
+| 궁궐, 사찰, 성곽 | mixed |
+| 테마파크, 동물원 | mixed |
+| 시장 | mixed |
+| 기타 / 판단 불가 | unknown |
+
+---
+
+## 6. 운영시간 Unknown 처리 정책
+
+### 발생 원인
+
+- detailIntro2에서 운영시간 필드가 빈 값
+- detailIntro2 API 호출 실패
+- 비정형 텍스트 파싱 불가
+
+### 처리 규칙
+
+```
+1. operating_status = "unknown"으로 설정
+2. remaining_minutes = null
+3. 추천 시 정상 점수 목록에 섞지 않음
+4. 별도 영역("운영시간 확인 필요")에 표시
+5. "방문 전에 운영 여부를 확인해주세요" 경고 표시
+
+표시 조건:
+  - 정상 후보(open)가 3개 미만일 때만 unknown 후보를 추가 표시
+  - 정상 후보가 충분하면 unknown 후보는 숨김
+```
+
+### unknown 후보 정렬 기준
+
+```
+카테고리 매칭 → 거리 (운영시간 점수 제외)
+```
+
+---
+
+## 7. 날씨 데이터 없음 처리 정책
+
+### 발생 원인
+
+- 사용자가 날씨를 언급하지 않음
+- 날씨 API 호출 실패
+- 사용자에게 날씨 입력을 요청했으나 미제공
+
+### 처리 규칙
+
+```
+1. weather = null, weather_intent = "IGNORE"로 설정
+2. 추천 점수 계산에서 날씨 가중치를 제외
+3. 나머지 가중치를 100%로 재정규화
+4. 사용자에게 안내:
+   "현재 날씨를 확인하지 못해 날씨 조건을 제외하고 추천했어요."
+```
+
+### 재정규화 예시
+
+```
+정상 (날씨 있음):
+  category: 0.40
+  remaining_time: 0.30
+  weather: 0.20
+  distance: 0.10
+
+날씨 없음:
+  category: 0.50  (0.40 / 0.80)
+  remaining_time: 0.375  (0.30 / 0.80)
+  distance: 0.125  (0.10 / 0.80)
+```
+
+
