@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import time
 from enum import StrEnum
 
 
@@ -20,17 +21,16 @@ class WeatherCondition(StrEnum):
     BAD = "bad"
 
 
-class PlaceStatus(StrEnum):
-    """Scoring 단계에서 사용하는 장소 운영 상태.
+@dataclass(frozen=True)
+class OperatingHours:
+    """하루 운영시간 구간 (개장~마감).
 
-    OPEN/CLOSED는 운영시간 데이터로 확인된 상태이고, UNKNOWN은 운영시간
-    데이터 자체를 확인하지 못한 상태다. 폐점(CLOSED)과 미확인(UNKNOWN)은
-    서로 다른 상태이므로 하드필터 적용 여부가 다르다.
+    v1은 `open_time <= close_time`인 당일 운영만 다룬다. 자정을 넘기는
+    운영시간(예: 22:00~02:00)은 범위 밖이며 `TBD`다.
     """
 
-    OPEN = "open"
-    CLOSED = "closed"
-    UNKNOWN = "unknown"
+    open_time: time
+    close_time: time
 
 
 @dataclass(frozen=True)
@@ -118,8 +118,10 @@ class ScoringCandidate:
     변환만 새로 작성하면 된다.
 
     `category`는 표시용 메타데이터로만 보존한다 (Scoring v1은 카테고리를
-    가중치 계산에 사용하지 않기로 결정됨). 운영시간은 남은 분(minute) 단위가
-    아니라 `place_status`의 운영 유무로만 구분한다.
+    가중치 계산에 사용하지 않고, place_type/place_tag 1차 하드 필터가 이미
+    처리했다고 전제한다). `operating_hours`가 `None`이면 운영시간 자체를
+    확인하지 못한 상태(미검증)이고, 폐점 여부는 Scoring이 `now`와
+    `operating_hours`를 비교해 최종 하드 필터로 직접 판정한다.
     """
 
     place_id: str
@@ -127,5 +129,5 @@ class ScoringCandidate:
     category: str
     environment_type: str  # "indoor" | "outdoor" | "unknown"
     distance_km: float
-    place_status: PlaceStatus
+    operating_hours: OperatingHours | None
     raw_source: str = "unknown"

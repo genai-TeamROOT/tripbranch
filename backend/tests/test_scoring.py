@@ -1,8 +1,9 @@
 """Scoring v1 (domain/scoring.py) 고정 입력 테스트.
 
-역할: 고정 `ScoringCandidate` 목록으로 하드 필터, Feature 계산, 가중치 재분배,
-정렬 규칙을 검증한다. Scoring v1은 카테고리를 가중치 계산에 사용하지 않고
-운영 유무·날씨·거리 3개 Feature만 사용한다.
+역할: 고정 `ScoringCandidate` 목록으로 하드 필터(폐점 최종 판정, 이전 노출/거절),
+Feature 계산(날씨·남은 운영시간·거리), 가중치 재분배, 정렬 규칙을 검증한다.
+Scoring v1은 카테고리를 가중치 계산에 사용하지 않고, 운영 유무는 boolean이
+아니라 `now`와 `OperatingHours`를 비교해 남은 운영시간(분)으로 계산한다.
 입력 데이터 주의: C-01 Tool 출력 초안이 아직 확정되지 않아, 실제 Tool 응답 대신
 `ScoringCandidate` 계약에 맞춘 고정 Stub 값을 사용한다. Tool 계약이 나오면
 "Tool 출력 → ScoringCandidate" 매퍼 테스트로 대체/보강한다.
@@ -10,10 +11,15 @@
 
 from __future__ import annotations
 
+from datetime import datetime, time
+
 import pytest
 
-from app.domain.models import PlaceStatus, ScoringCandidate, WeatherCondition
+from app.domain.models import OperatingHours, ScoringCandidate, WeatherCondition
 from app.domain.scoring import DEFAULT_WEIGHTS, score_candidates
+
+# 고정 기준 시각 (모든 테스트가 공유): 14:00
+NOW = datetime(2026, 7, 23, 14, 0, 0)
 
 # 고정 후보 Stub (C-01 Tool 출력 확정 전까지 사용하는 임시 입력)
 MUSEUM_OPEN = ScoringCandidate(
@@ -22,15 +28,15 @@ MUSEUM_OPEN = ScoringCandidate(
     category="museum",
     environment_type="indoor",
     distance_km=0.5,
-    place_status=PlaceStatus.OPEN,
+    operating_hours=OperatingHours(time(9, 0), time(18, 0)),  # 마감까지 240분
 )
-CAFE_OPEN = ScoringCandidate(
+CAFE_CLOSING_SOON = ScoringCandidate(
     place_id="p2",
     name="카페B",
     category="cafe",
     environment_type="indoor",
     distance_km=0.8,
-    place_status=PlaceStatus.OPEN,
+    operating_hours=OperatingHours(time(9, 0), time(15, 0)),  # 마감까지 60분
 )
 PARK_CLOSED = ScoringCandidate(
     place_id="p3",
@@ -38,7 +44,7 @@ PARK_CLOSED = ScoringCandidate(
     category="park",
     environment_type="outdoor",
     distance_km=0.3,
-    place_status=PlaceStatus.CLOSED,
+    operating_hours=OperatingHours(time(9, 0), time(13, 0)),  # 14:00엔 이미 마감
 )
 GALLERY_UNKNOWN_HOURS = ScoringCandidate(
     place_id="p4",
@@ -46,7 +52,7 @@ GALLERY_UNKNOWN_HOURS = ScoringCandidate(
     category="gallery",
     environment_type="indoor",
     distance_km=0.9,
-    place_status=PlaceStatus.UNKNOWN,
+    operating_hours=None,
 )
 RESTAURANT_FAR = ScoringCandidate(
     place_id="p5",
@@ -54,24 +60,23 @@ RESTAURANT_FAR = ScoringCandidate(
     category="restaurant",
     environment_type="indoor",
     distance_km=1.2,
-    place_status=PlaceStatus.OPEN,
+    operating_hours=OperatingHours(time(11, 0), time(23, 0)),  # 마감까지 540분(캡)
 )
 
 
 def test_scores_and_sorts_fixed_candidates() -> None:
     result = score_candidates(
-        [MUSEUM_OPEN, CAFE_OPEN, GALLERY_UNKNOWN_HOURS, RESTAURANT_FAR],
+        [MUSEUM_OPEN, CAFE_CLOSING_SOON, GALLERY_UNKNOWN_HOURS, RESTAURANT_FAR],
+        now=NOW,
         weather_condition=WeatherCondition.BAD,
         max_distance_km=1.5,
     )
 
-    # 날씨(모두 indoor라 동일)와 운영 유무(open > unknown)가 우선 반영되고,
-    # 같은 조건이면 거리가 가까울수록 위로 온다. 계산 근거는
+    # 날씨(모두 indoor라 동일)에 남은 운영시간과 거리가 함께 반영된다. 계산 근거는
     # recommendation-scoring.md 참고.
     place_ids = [item.place_id for item in result.ranked]
-    assert place_ids == ["p1", "p2", "p5", "p4"]
+    assert place_ids == ["p1", "p5", "p4", "p2"]
     assert [item.rank for item in result.ranked] == [1, 2, 3, 4]
-    # score는 내림차순으로 정렬되어 있어야 한다.
     scores = [item.score for item in result.ranked]
     assert scores == sorted(scores, reverse=True)
 
@@ -79,6 +84,7 @@ def test_scores_and_sorts_fixed_candidates() -> None:
 def test_closed_place_is_excluded() -> None:
     result = score_candidates(
         [MUSEUM_OPEN, PARK_CLOSED],
+        now=NOW,
         weather_condition=WeatherCondition.GOOD,
         max_distance_km=1.5,
     )
@@ -90,6 +96,7 @@ def test_closed_place_is_excluded() -> None:
 def test_unknown_hours_is_distinct_from_closed() -> None:
     result = score_candidates(
         [PARK_CLOSED, GALLERY_UNKNOWN_HOURS],
+        now=NOW,
         weather_condition=WeatherCondition.GOOD,
         max_distance_km=1.5,
     )
@@ -101,12 +108,16 @@ def test_unknown_hours_is_distinct_from_closed() -> None:
     gallery = next(item for item in result.ranked if item.place_id == "p4")
     assert gallery.is_unverified is True
     assert gallery.warnings == ("방문 전에 운영 여부를 확인해주세요.",)
-    assert gallery.feature_scores["operating"] == pytest.approx(0.5)
+    assert gallery.feature_scores["remaining_operating_time"] is None
+    assert "remaining_operating_time" not in gallery.weights_used
+    assert gallery.weights_used["weather"] == pytest.approx(0.4 / 0.6)
+    assert gallery.weights_used["distance"] == pytest.approx(0.2 / 0.6)
 
 
 def test_shown_and_rejected_ids_are_excluded() -> None:
     result = score_candidates(
-        [MUSEUM_OPEN, CAFE_OPEN],
+        [MUSEUM_OPEN, CAFE_CLOSING_SOON],
+        now=NOW,
         weather_condition=WeatherCondition.GOOD,
         max_distance_km=1.5,
         shown_place_ids=["p1"],
@@ -117,39 +128,59 @@ def test_shown_and_rejected_ids_are_excluded() -> None:
     assert set(result.excluded_place_ids) == {"p1", "p2"}
 
 
-def test_default_weights_used_when_weather_present() -> None:
+def test_default_weights_used_when_all_features_present() -> None:
     result = score_candidates(
         [MUSEUM_OPEN],
+        now=NOW,
         weather_condition=WeatherCondition.GOOD,
         max_distance_km=1.5,
     )
 
-    assert result.weights_used == DEFAULT_WEIGHTS
-    assert result.ranked[0].feature_scores["weather"] is not None
+    ranked = result.ranked[0]
+    assert ranked.weights_used == DEFAULT_WEIGHTS
+    assert ranked.feature_scores["weather"] is not None
+    assert ranked.feature_scores["remaining_operating_time"] is not None
 
 
 def test_weather_weight_is_redistributed_when_missing() -> None:
     result = score_candidates(
         [MUSEUM_OPEN],
+        now=NOW,
         weather_condition=None,
         max_distance_km=1.5,
     )
 
-    assert "weather" not in result.weights_used
-    assert result.weights_used["operating"] == pytest.approx(0.4 / 0.6)
-    assert result.weights_used["distance"] == pytest.approx(0.2 / 0.6)
-    assert sum(result.weights_used.values()) == pytest.approx(1.0)
-    assert result.ranked[0].feature_scores["weather"] is None
+    ranked = result.ranked[0]
+    assert "weather" not in ranked.weights_used
+    assert ranked.weights_used["remaining_operating_time"] == pytest.approx(0.4 / 0.6)
+    assert ranked.weights_used["distance"] == pytest.approx(0.2 / 0.6)
+    assert sum(ranked.weights_used.values()) == pytest.approx(1.0)
+    assert ranked.feature_scores["weather"] is None
+
+
+def test_both_weather_and_hours_missing_gives_distance_full_weight() -> None:
+    result = score_candidates(
+        [GALLERY_UNKNOWN_HOURS],
+        now=NOW,
+        weather_condition=None,
+        max_distance_km=1.5,
+    )
+
+    ranked = result.ranked[0]
+    assert ranked.weights_used == {"distance": pytest.approx(1.0)}
+    assert ranked.feature_scores["weather"] is None
+    assert ranked.feature_scores["remaining_operating_time"] is None
 
 
 def test_tie_break_uses_distance_then_place_id() -> None:
+    ample_hours = OperatingHours(time(9, 0), time(18, 0))
     tied_near_a = ScoringCandidate(
         place_id="z-near",
         name="Z",
         category="museum",
         environment_type="indoor",
         distance_km=0.5,
-        place_status=PlaceStatus.OPEN,
+        operating_hours=ample_hours,
     )
     tied_near_b = ScoringCandidate(
         place_id="a-near",
@@ -157,7 +188,7 @@ def test_tie_break_uses_distance_then_place_id() -> None:
         category="museum",
         environment_type="indoor",
         distance_km=0.5,
-        place_status=PlaceStatus.OPEN,
+        operating_hours=ample_hours,
     )
     tied_far = ScoringCandidate(
         place_id="a-far",
@@ -165,11 +196,12 @@ def test_tie_break_uses_distance_then_place_id() -> None:
         category="museum",
         environment_type="indoor",
         distance_km=1.0,
-        place_status=PlaceStatus.OPEN,
+        operating_hours=ample_hours,
     )
 
     result = score_candidates(
         [tied_far, tied_near_a, tied_near_b],
+        now=NOW,
         weather_condition=WeatherCondition.GOOD,
         max_distance_km=1.5,
     )
