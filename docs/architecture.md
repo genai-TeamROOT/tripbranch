@@ -9,7 +9,8 @@
 | --- | --- |
 | React Frontend, 분리된 Interpret/Recommendations API | 구현됨 |
 | Fake/Real Provider와 일부 외부 API 연동 | 구현됨 |
-| Chat API, Orchestrator, Context Merge, Tool | 미구현 (`TBD`) |
+| Chat API, Orchestrator, Context Merge | 미구현 (`TBD`) |
+| Tool | 위치·날씨·장소 다건 상세조회 Tool 구현, 나머지 `TBD` |
 | 가중치 Engine (Scoring v1) | 독립 모듈 구현됨; Request Builder/route 연결은 미구현 (`TBD`) |
 | Recommendation Request Builder | 미구현 (`TBD`) |
 | LLM Interpret/Response Generator | 미구현 (`TBD`) |
@@ -76,10 +77,11 @@ Holiday Provider는 구현되어 있지만 추천 서비스에 아직 조립되�
 
 - 담당: 추천 파이프라인이 사용하는 업무 단위 기능 제공
 - 예: `resolve_location`, `search_nearby_places`, `get_place_details`,
-  `estimate_travel_time`, `get_current_weather`, `get_congestion`,
+  `estimate_travel_time`, `get_weather_forecast`, `get_congestion`,
   `search_place_feature_evidence`
 - 하지 않음: 특정 외부 API 응답 형식을 호출자에게 노출
-- 상태: 별도 Tool 계층은 미구현
+- 상태: `ResolveLocationTool`, `GetWeatherForecastTool`,
+  `NearbyPlaceDetailsTool`은 구현, 나머지 Tool은 미구현
 
 ### Provider
 
@@ -186,8 +188,9 @@ MVP의 Weather 판단은 현재 관측값이 아니라 방문 예정 시각에 �
 - 품질 검증에서 즉시 추천이 부족하다고 확인될 때만 관측 API 추가 검토
 
 Weather Snapshot은 `data_type=forecast`, `retrieved_at`, `forecast_for`,
-`observed_at=null`을 보존해야 합니다. 현재 코드는 즉시 방문용 가장 이른 예보만
-선택하며 Snapshot 저장은 미구현입니다.
+`observed_at=null`을 보존합니다. `GetWeatherForecastTool`은 즉시 방문 또는
+명시적인 방문 예정 시각에 가장 가까운 예보를 선택하며 Snapshot 저장은
+미구현입니다.
 
 ## 6. 오류와 fallback 방향
 

@@ -6,7 +6,8 @@ from collections.abc import Mapping
 
 import httpx
 
-from app.domain.models import PlaceDetails
+from app.domain.models import PlaceCategoryFilter, PlaceDetails
+from app.domain.operating_hours import normalize_operating_schedule
 from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
 from app.providers.mappers import map_tour_api_response
 from app.schemas import PlaceCandidate
@@ -19,9 +20,19 @@ _DETAIL_INTRO_PATH = "/detailIntro2"
 _OPERATING_HOURS_KEYS = (
     "usetime",
     "usetimeculture",
+    "playtime",
+    "usetimeleports",
+    "opentime",
     "opentimefood",
     "checkintime",
     "openperiod",
+)
+_REST_DATE_KEYS = (
+    "restdate",
+    "restdateculture",
+    "restdateleports",
+    "restdateshopping",
+    "restdatefood",
 )
 
 
@@ -58,27 +69,36 @@ class RealPlaceProvider:
 
     def _base_params(self) -> dict[str, object]:
         return {
-            "serviceKey": self._api_key,
             "MobileOS": "ETC",
             "MobileApp": "TripBranch",
             "_type": "json",
         }
 
     async def _request_json(self, path: str, params: dict[str, object]) -> dict[str, object]:
+        request_params = {"serviceKey": self._api_key, **params}
         try:
             response = await self._client.get(
                 _BASE_URL + path,
-                params=params,
+                params=request_params,
                 timeout=self._timeout_seconds,
             )
             response.raise_for_status()
             payload = response.json()
-        except httpx.TimeoutException as exc:
-            raise ProviderTimeoutError("TourAPI") from exc
-        except httpx.HTTPError as exc:
-            raise ProviderUnavailableError("TourAPI") from exc
-        except ValueError as exc:
-            raise ProviderUnavailableError("TourAPI", detail="non-JSON response") from exc
+        except httpx.TimeoutException:
+            # httpx 예외와 traceback에는 ServiceKey가 포함된 전체 URL이 남을 수 있다.
+            request_params.clear()
+            response = None
+            raise ProviderTimeoutError("TourAPI") from None
+        except httpx.HTTPError:
+            request_params.clear()
+            response = None
+            raise ProviderUnavailableError("TourAPI") from None
+        except ValueError:
+            request_params.clear()
+            response = None
+            raise ProviderUnavailableError(
+                "TourAPI", detail="non-JSON response"
+            ) from None
 
         header = payload.get("response", {}).get("header", {})
         result_code = str(header.get("resultCode", ""))
@@ -95,6 +115,8 @@ class RealPlaceProvider:
         longitude: float,
         preferred_categories: list[str],
         search_radius_km: float,
+        category_filter: PlaceCategoryFilter | None = None,
+        limit: int = 20,
     ) -> list[PlaceCandidate]:
         radius_m = min(int(search_radius_km * 1000), 20000)
         params = {
@@ -103,9 +125,23 @@ class RealPlaceProvider:
             "mapY": latitude,
             "radius": radius_m,
             "arrange": "E",
-            "numOfRows": 20,
+            "numOfRows": max(1, min(limit, 100)),
             "pageNo": 1,
         }
+        if category_filter is not None:
+            optional_filters = {
+                "contentTypeId": category_filter.content_type_id,
+                "lclsSystm1": category_filter.lcls_systm1,
+                "lclsSystm2": category_filter.lcls_systm2,
+                "lclsSystm3": category_filter.lcls_systm3,
+            }
+            params.update(
+                {
+                    key: value
+                    for key, value in optional_filters.items()
+                    if value is not None
+                }
+            )
         payload = await self._request_json(_LOCATION_BASED_LIST_PATH, params)
         return map_tour_api_response(payload)
 
@@ -158,6 +194,8 @@ class RealPlaceProvider:
         address_parts = [common.get("addr1"), common.get("addr2")]
         address = " ".join(str(part) for part in address_parts if part) or None
 
+        operating_hours = _first_text(intro, _OPERATING_HOURS_KEYS)
+        rest_date = _first_text(intro, _REST_DATE_KEYS)
         return PlaceDetails(
             content_id=content_id,
             content_type_id=content_type_id,
@@ -166,10 +204,16 @@ class RealPlaceProvider:
             overview=_first_text(common, ("overview",)),
             homepage=_first_text(common, ("homepage",)),
             telephone=_first_text(common, ("tel",)) or _first_text(intro, ("infocenter",)),
-            operating_hours=_first_text(intro, _OPERATING_HOURS_KEYS),
+            operating_hours=operating_hours,
+            rest_date=rest_date,
             raw_common=common,
             raw_intro=intro,
             provider="tour_api",
+            operating_schedule=normalize_operating_schedule(
+                content_type_id=content_type_id,
+                operating_hours=operating_hours,
+                rest_date=rest_date,
+            ),
         )
 
     async def find_details_by_name(

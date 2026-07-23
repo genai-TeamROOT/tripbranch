@@ -12,7 +12,11 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from app.domain.models import WeatherCondition
+from app.domain.models import (
+    WeatherCondition,
+    WeatherForecastResult,
+    WeatherForecastSlot,
+)
 from app.errors import AppError
 from app.providers.kma_grid import latlon_to_grid
 
@@ -55,18 +59,46 @@ def map_sky_pty_to_condition(sky: str | None, pty: str | None) -> WeatherConditi
     )
 
 
-def _earliest_sky_and_pty(items: list[dict]) -> tuple[str | None, str | None]:
-    """응답 항목 중 가장 이른 fcstDate/fcstTime의 SKY, PTY 값을 찾는다."""
-    sky_items = [item for item in items if item.get("category") == "SKY"]
-    pty_items = [item for item in items if item.get("category") == "PTY"]
+def map_items_to_forecast_slots(items: list[dict]) -> tuple[WeatherForecastSlot, ...]:
+    """KMA 항목을 예보 대상 시각별 SKY·PTY slot으로 묶는다."""
+    grouped: dict[tuple[str, str], dict[str, str]] = {}
+    for item in items:
+        category = item.get("category")
+        forecast_date = item.get("fcstDate")
+        forecast_time = item.get("fcstTime")
+        value = item.get("fcstValue")
+        if (
+            category not in {"SKY", "PTY"}
+            or not forecast_date
+            or not forecast_time
+            or value is None
+        ):
+            continue
+        grouped.setdefault((str(forecast_date), str(forecast_time)), {})[
+            str(category)
+        ] = str(value)
 
-    def _earliest_value(candidates: list[dict]) -> str | None:
-        if not candidates:
-            return None
-        earliest = min(candidates, key=lambda item: (item["fcstDate"], item["fcstTime"]))
-        return earliest["fcstValue"]
-
-    return _earliest_value(sky_items), _earliest_value(pty_items)
+    slots: list[WeatherForecastSlot] = []
+    for (forecast_date, forecast_time), values in sorted(grouped.items()):
+        try:
+            forecast_for = datetime.strptime(
+                f"{forecast_date}{forecast_time}", "%Y%m%d%H%M"
+            ).replace(tzinfo=_KST)
+            condition = map_sky_pty_to_condition(
+                values.get("SKY"),
+                values.get("PTY"),
+            )
+        except (AppError, ValueError):
+            continue
+        slots.append(
+            WeatherForecastSlot(
+                forecast_for=forecast_for,
+                condition=condition,
+                sky_code=values.get("SKY"),
+                precipitation_type=values.get("PTY"),
+            )
+        )
+    return tuple(slots)
 
 
 class RealWeatherProvider:
@@ -86,12 +118,25 @@ class RealWeatherProvider:
         self._client = client
         self._timeout_seconds = timeout_seconds
 
-    async def get_current_condition(self, latitude: float, longitude: float) -> WeatherCondition:
+    async def get_current_condition(
+        self, latitude: float, longitude: float
+    ) -> WeatherCondition:
+        result = await self.get_forecast_slots(latitude, longitude)
+        if not result.slots:
+            raise AppError(
+                code="weather_no_data",
+                message="해당 좌표의 날씨 데이터가 제공되지 않습니다.",
+                status_code=404,
+            )
+        return result.slots[0].condition
+
+    async def get_forecast_slots(
+        self, latitude: float, longitude: float
+    ) -> WeatherForecastResult:
         nx, ny = latlon_to_grid(latitude, longitude)
         base_date, base_time = resolve_base_date_time(datetime.now(_KST))
 
         params = {
-            "serviceKey": self._api_key,
             "pageNo": "1",
             "numOfRows": "100",
             "dataType": "JSON",
@@ -100,20 +145,26 @@ class RealWeatherProvider:
             "nx": str(nx),
             "ny": str(ny),
         }
+        request_params = {"serviceKey": self._api_key, **params}
 
         try:
             response = await self._client.get(
-                _ULTRA_SRT_FCST_URL, params=params, timeout=self._timeout_seconds
+                _ULTRA_SRT_FCST_URL,
+                params=request_params,
+                timeout=self._timeout_seconds,
             )
             response.raise_for_status()
             payload = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
+        except (httpx.HTTPError, ValueError):
+            # httpx 원인 예외에는 ServiceKey가 포함된 요청 정보가 남을 수 있다.
+            request_params.clear()
+            response = None
             raise AppError(
                 code="weather_unavailable",
                 message="날씨 정보를 가져오지 못했습니다.",
                 status_code=502,
                 retryable=True,
-            ) from exc
+            ) from None
 
         header = payload.get("response", {}).get("header", {})
         if header.get("resultCode") != "00":
@@ -124,6 +175,16 @@ class RealWeatherProvider:
                 retryable=True,
             )
 
-        items = payload["response"]["body"]["items"]["item"]
-        sky_value, pty_value = _earliest_sky_and_pty(items)
-        return map_sky_pty_to_condition(sky_value, pty_value)
+        try:
+            items = payload["response"]["body"]["items"]["item"]
+        except (KeyError, TypeError):
+            items = []
+        slots = map_items_to_forecast_slots(items if isinstance(items, list) else [])
+        return WeatherForecastResult(
+            latitude=latitude,
+            longitude=longitude,
+            grid_x=nx,
+            grid_y=ny,
+            slots=slots,
+            provider="kma_ultra_short_forecast",
+        )

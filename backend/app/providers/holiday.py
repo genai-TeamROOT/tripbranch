@@ -106,24 +106,30 @@ class RealHolidayProvider:
     ) -> HolidayResult:
         _validate_date_scope(year, month)
         params = {
-            "serviceKey": self._api_key,
             "pageNo": "1",
             "numOfRows": "100",
             "solYear": f"{year:04d}",
         }
         if month is not None:
             params["solMonth"] = f"{month:02d}"
+        request_params = {"serviceKey": self._api_key, **params}
 
         try:
             response = await self._client.get(
-                _HOLIDAY_URL, params=params, timeout=self._timeout_seconds
+                _HOLIDAY_URL,
+                params=request_params,
+                timeout=self._timeout_seconds,
             )
             response.raise_for_status()
             return map_holiday_xml(response.text, year=year, month=month)
         except httpx.TimeoutException:
             # httpx 예외 문자열에는 ServiceKey가 포함된 전체 URL이 들어갈 수 있다.
+            request_params.clear()
+            response = None
             raise ProviderTimeoutError("KASI Holiday") from None
         except ProviderUnavailableError:
             raise
         except (httpx.HTTPError, ElementTree.ParseError):
+            request_params.clear()
+            response = None
             raise ProviderUnavailableError("KASI Holiday") from None

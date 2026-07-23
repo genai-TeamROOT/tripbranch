@@ -9,7 +9,17 @@ TODO: 실제 provider(RealPlaceProvider 등)가 준비되면 팩토리에서 설
 
 from __future__ import annotations
 
-from app.domain.models import PlaceDetails, WeatherCondition
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+from app.domain.models import (
+    PlaceCategoryFilter,
+    PlaceDetails,
+    WeatherCondition,
+    WeatherForecastResult,
+    WeatherForecastSlot,
+)
+from app.domain.operating_hours import normalize_operating_schedule
 from app.errors import AppError
 from app.schemas import (
     InterpretedConditions,
@@ -45,6 +55,31 @@ class FakeWeatherProvider:
     ) -> WeatherCondition:
         return self._condition
 
+    async def get_forecast_slots(
+        self, latitude: float, longitude: float
+    ) -> WeatherForecastResult:
+        now = datetime.now(ZoneInfo("Asia/Seoul")).replace(
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        return WeatherForecastResult(
+            latitude=latitude,
+            longitude=longitude,
+            grid_x=60,
+            grid_y=127,
+            slots=tuple(
+                WeatherForecastSlot(
+                    forecast_for=now + timedelta(hours=offset),
+                    condition=self._condition,
+                    sky_code=None,
+                    precipitation_type=None,
+                )
+                for offset in range(6)
+            ),
+            provider="fake_weather",
+        )
+
 
 class FakePlaceProvider:
     """장소 검색 결과를 고정 후보 목록으로 대체하는 fake provider."""
@@ -55,11 +90,16 @@ class FakePlaceProvider:
         longitude: float,
         preferred_categories: list[str],
         search_radius_km: float,
+        category_filter: PlaceCategoryFilter | None = None,
+        limit: int = 20,
     ) -> list[PlaceCandidate]:
-        return [
+        candidates = [
             PlaceCandidate(
                 place_id="fake-museum-1",
                 content_type_id="14",
+                lcls_systm1="VE",
+                lcls_systm2="VE07",
+                lcls_systm3="VE070100",
                 name="테스트 박물관",
                 category="museum",
                 latitude=latitude,
@@ -71,6 +111,9 @@ class FakePlaceProvider:
             PlaceCandidate(
                 place_id="fake-cafe-1",
                 content_type_id="39",
+                lcls_systm1="FD",
+                lcls_systm2="FD05",
+                lcls_systm3="FD050100",
                 name="테스트 카페",
                 category="cafe",
                 latitude=latitude + 0.001,
@@ -80,6 +123,13 @@ class FakePlaceProvider:
                 raw_source="fake_place",
             ),
         ]
+        if category_filter and category_filter.content_type_id:
+            candidates = [
+                candidate
+                for candidate in candidates
+                if candidate.content_type_id == category_filter.content_type_id
+            ]
+        return candidates[: max(1, min(limit, 100))]
 
     async def search_by_keyword(
         self,
@@ -97,6 +147,8 @@ class FakePlaceProvider:
     async def get_details(self, content_id: str, content_type_id: str) -> PlaceDetails:
         candidates = await self.search_places(37.5796, 126.9770, [], 1.0)
         candidate = next((item for item in candidates if item.place_id == content_id), None)
+        operating_hours = candidate.operating_hours if candidate else None
+        rest_date = "매주 월요일" if candidate else None
         return PlaceDetails(
             content_id=content_id,
             content_type_id=content_type_id,
@@ -105,10 +157,16 @@ class FakePlaceProvider:
             overview="Fake Provider의 장소 상세정보입니다.",
             homepage=None,
             telephone=None,
-            operating_hours=candidate.operating_hours if candidate else None,
+            operating_hours=operating_hours,
+            rest_date=rest_date,
             raw_common={},
             raw_intro={},
             provider="fake_place",
+            operating_schedule=normalize_operating_schedule(
+                content_type_id=content_type_id,
+                operating_hours=operating_hours,
+                rest_date=rest_date,
+            ),
         )
 
     async def find_details_by_name(

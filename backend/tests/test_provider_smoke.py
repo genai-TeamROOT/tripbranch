@@ -13,6 +13,17 @@ from app.providers.geocoding import RealGeocodingProvider
 from app.providers.holiday import RealHolidayProvider
 from app.providers.real_place import RealPlaceProvider
 from app.providers.weather import RealWeatherProvider
+from app.tools.resolve_location import (
+    ResolutionMethod,
+    ResolveLocationQuery,
+    ResolveLocationStatus,
+    ResolveLocationTool,
+)
+from app.tools.weather_forecast import (
+    GetWeatherForecastTool,
+    WeatherForecastQuery,
+    WeatherToolStatus,
+)
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -45,13 +56,18 @@ async def test_naver_geocoding_real_smoke() -> None:
             ),
             client=client,
         )
-        result = await provider.geocode("경복궁")
+        result = await ResolveLocationTool(provider).execute(
+            ResolveLocationQuery("경복궁")
+        )
 
-    assert 37.0 < result.latitude < 38.0
-    assert 126.0 < result.longitude < 128.0
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert result.location is not None
+    assert result.location.resolution_method is ResolutionMethod.ALIAS
+    assert 37.0 < result.location.latitude < 38.0
+    assert 126.0 < result.location.longitude < 128.0
     print(
-        f"Naver Geocoding: {result.resolved_name} "
-        f"({result.latitude:.4f}, {result.longitude:.4f})"
+        f"Naver Geocoding: {result.location.resolved_name} "
+        f"({result.location.latitude:.4f}, {result.location.longitude:.4f})"
     )
 
 
@@ -61,10 +77,20 @@ async def test_kma_weather_real_smoke() -> None:
             api_key=_required_value("WEATHER_API_KEY", settings.weather_api_key),
             client=client,
         )
-        result = await provider.get_current_condition(37.5788, 126.9770)
+        result = await GetWeatherForecastTool(provider).execute(
+            WeatherForecastQuery(37.5788, 126.9770)
+        )
 
-    assert result.value in {"good", "neutral", "bad"}
-    print(f"KMA Weather: condition={result.value}")
+    assert result.status is WeatherToolStatus.SUCCESS
+    assert result.forecast is not None
+    assert result.forecast.condition.value in {"good", "neutral", "bad"}
+    assert result.forecast.data_type == "forecast"
+    assert result.forecast.observed_at is None
+    print(
+        "KMA Weather: "
+        f"condition={result.forecast.condition.value}, "
+        f"forecast_for={result.forecast.forecast_for.isoformat()}"
+    )
 
 
 async def test_tour_api_place_real_smoke() -> None:

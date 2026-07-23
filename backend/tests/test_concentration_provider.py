@@ -3,6 +3,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from app.errors import ProviderTimeoutError
 from app.providers.concentration import (
     FakeConcentrationProvider,
     RealConcentrationProvider,
@@ -99,3 +100,16 @@ async def test_real_concentration_provider_returns_empty_forecasts_for_no_items(
         result = await provider.get_forecast("11", "11110", "경복궁")
 
     assert result.forecasts == ()
+
+
+@pytest.mark.asyncio
+async def test_real_concentration_provider_does_not_chain_sensitive_request() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = RealConcentrationProvider(api_key="sensitive-key", client=client)
+        with pytest.raises(ProviderTimeoutError) as exc_info:
+            await provider.get_forecast("11", "11110", "경복궁")
+
+    assert exc_info.value.__cause__ is None

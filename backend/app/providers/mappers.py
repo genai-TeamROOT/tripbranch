@@ -45,10 +45,16 @@ def map_tour_api_item(item: dict) -> PlaceCandidate | None:
     category = _CONTENT_TYPE_TO_CATEGORY.get(content_type_id, "unknown")
 
     address = item.get("addr1") or None
+    lcls_systm1 = str(item.get("lclsSystm1", "")).strip() or None
+    lcls_systm2 = str(item.get("lclsSystm2", "")).strip() or None
+    lcls_systm3 = str(item.get("lclsSystm3", "")).strip() or None
 
     return PlaceCandidate(
         place_id=str(content_id),
         content_type_id=content_type_id or None,
+        lcls_systm1=lcls_systm1,
+        lcls_systm2=lcls_systm2,
+        lcls_systm3=lcls_systm3,
         name=title,
         category=category,
         latitude=latitude,

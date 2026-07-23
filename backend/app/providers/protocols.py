@@ -15,8 +15,10 @@ from app.domain.models import (
     ConcentrationResult,
     GeocodeResult,
     HolidayResult,
+    PlaceCategoryFilter,
     PlaceDetails,
     WeatherCondition,
+    WeatherForecastResult,
 )
 from app.schemas import InterpretedConditions, PlaceCandidate, RecommendationResponse
 
@@ -33,7 +35,9 @@ class RecommendationProvider(Protocol):
         ...
 
 class GeocodingProvider(Protocol):
-    async def geocode(self, location_query: str) -> GeocodeResult:
+    async def geocode(
+        self, location_query: str, *, use_alias: bool = True
+    ) -> GeocodeResult:
         """장소 이름이나 주소를 정규화된 좌표 결과로 변환한다."""
         ...
 
@@ -45,18 +49,34 @@ class WeatherProvider(Protocol):
         """좌표의 현재 날씨를 공통 상태로 반환한다."""
         ...
 
+    async def get_forecast_slots(
+        self, latitude: float, longitude: float
+    ) -> WeatherForecastResult:
+        """좌표의 시각별 초단기예보 목록을 반환한다."""
+        ...
 
-class PlaceProvider(Protocol):
+
+class PlaceSearchProvider(Protocol):
     async def search_places(
         self,
         latitude: float,
         longitude: float,
         preferred_categories: list[str],
         search_radius_km: float,
+        category_filter: PlaceCategoryFilter | None = None,
+        limit: int = 20,
     ) -> list[PlaceCandidate]:
         """주어진 좌표/조건으로 장소 후보 목록을 조회해 공통 모델로 반환한다."""
         ...
 
+
+class PlaceDetailsProvider(Protocol):
+    async def get_details(self, content_id: str, content_type_id: str) -> PlaceDetails:
+        """장소 ID와 유형 ID로 정규화된 상세정보를 반환한다."""
+        ...
+
+
+class PlaceProvider(PlaceSearchProvider, PlaceDetailsProvider, Protocol):
     async def search_by_keyword(
         self,
         keyword: str,
@@ -65,10 +85,6 @@ class PlaceProvider(Protocol):
         limit: int = 20,
     ) -> list[PlaceCandidate]:
         """장소명·키워드로 후보와 TourAPI content ID를 조회한다."""
-        ...
-
-    async def get_details(self, content_id: str, content_type_id: str) -> PlaceDetails:
-        """TourAPI content ID로 공통·소개 상세정보를 조회한다."""
         ...
 
     async def find_details_by_name(

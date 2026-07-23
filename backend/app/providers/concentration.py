@@ -135,7 +135,6 @@ class RealConcentrationProvider:
         place_name: str | None = None,
     ) -> ConcentrationResult:
         params = {
-            "serviceKey": self._api_key,
             "pageNo": "1",
             "numOfRows": "100",
             "MobileOS": "ETC",
@@ -146,19 +145,25 @@ class RealConcentrationProvider:
         }
         if place_name:
             params["tAtsNm"] = place_name
+        request_params = {"serviceKey": self._api_key, **params}
 
         try:
             response = await self._client.get(
                 _CONCENTRATION_URL,
-                params=params,
+                params=request_params,
                 timeout=self._timeout_seconds,
             )
             response.raise_for_status()
             payload = response.json()
-        except httpx.TimeoutException as exc:
-            raise ProviderTimeoutError("TourAPI Concentration") from exc
-        except (httpx.HTTPError, ValueError) as exc:
-            raise ProviderUnavailableError("TourAPI Concentration") from exc
+        except httpx.TimeoutException:
+            # httpx 원인 예외에는 ServiceKey가 포함된 요청 정보가 남을 수 있다.
+            request_params.clear()
+            response = None
+            raise ProviderTimeoutError("TourAPI Concentration") from None
+        except (httpx.HTTPError, ValueError):
+            request_params.clear()
+            response = None
+            raise ProviderUnavailableError("TourAPI Concentration") from None
 
         response_node = payload.get("response", {})
         header = response_node.get("header", {}) if isinstance(response_node, dict) else {}

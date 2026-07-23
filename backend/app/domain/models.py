@@ -11,14 +11,34 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import time
+from datetime import datetime, time
 from enum import StrEnum
+
+from app.domain.operating_hours import OperatingSchedule
 
 
 class WeatherCondition(StrEnum):
     GOOD = "good"
     NEUTRAL = "neutral"
     BAD = "bad"
+
+
+@dataclass(frozen=True)
+class WeatherForecastSlot:
+    forecast_for: datetime
+    condition: WeatherCondition
+    sky_code: str | None
+    precipitation_type: str | None
+
+
+@dataclass(frozen=True)
+class WeatherForecastResult:
+    latitude: float
+    longitude: float
+    grid_x: int
+    grid_y: int
+    slots: tuple[WeatherForecastSlot, ...]
+    provider: str
 
 
 @dataclass(frozen=True)
@@ -39,6 +59,8 @@ class GeocodeResult:
     resolved_name: str
     latitude: float
     longitude: float
+    candidate_count: int = 1
+    administrative_district: str | None = None
 
 
 @dataclass(frozen=True)
@@ -63,6 +85,32 @@ class ConcentrationResult:
 
 
 @dataclass(frozen=True)
+class PlaceCategoryFilter:
+    """TourAPI 장소 목록 조회에 사용할 선택적 분류 코드 묶음."""
+
+    content_type_id: str | None = None
+    lcls_systm1: str | None = None
+    lcls_systm2: str | None = None
+    lcls_systm3: str | None = None
+
+    def __post_init__(self) -> None:
+        values = (
+            self.content_type_id,
+            self.lcls_systm1,
+            self.lcls_systm2,
+            self.lcls_systm3,
+        )
+        if any(value is not None and not value.strip() for value in values):
+            raise ValueError("분류 코드는 비어 있는 문자열일 수 없습니다.")
+        if self.lcls_systm2 and not self.lcls_systm1:
+            raise ValueError("lcls_systm2 사용 시 lcls_systm1이 필요합니다.")
+        if self.lcls_systm3 and not (self.lcls_systm1 and self.lcls_systm2):
+            raise ValueError(
+                "lcls_systm3 사용 시 lcls_systm1과 lcls_systm2가 필요합니다."
+            )
+
+
+@dataclass(frozen=True)
 class PlaceDetails:
     """TourAPI의 공통·소개 상세 응답을 정규화한 장소 상세정보."""
 
@@ -74,9 +122,11 @@ class PlaceDetails:
     homepage: str | None
     telephone: str | None
     operating_hours: str | None
+    rest_date: str | None
     raw_common: Mapping[str, object]
     raw_intro: Mapping[str, object]
     provider: str
+    operating_schedule: OperatingSchedule | None = None
 
 
 @dataclass(frozen=True)

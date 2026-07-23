@@ -16,7 +16,7 @@
 ## 2. 목적과 범위
 
 Provider는 외부 API와 직접 통신하고 공급자별 요청·응답을 TripBranch 내부 모델로
-변환하는 경계 계층입니다. 서비스와 향후 Tool은 외부 API의 원본 필드 대신
+변환하는 경계 계층입니다. 서비스와 Tool은 외부 API의 원본 필드 대신
 `providers/protocols.py`의 Protocol과 정규화 모델을 사용합니다.
 
 이 문서가 다루는 범위:
@@ -29,7 +29,7 @@ Provider는 외부 API와 직접 통신하고 공급자별 요청·응답을 Tri
 
 이 문서가 확정하지 않는 범위:
 
-- Tool 입력·출력 계약
+- 구현된 다건 장소 상세조회 외 Tool 입력·출력 계약
 - Provider 호출 순서를 결정하는 Orchestrator
 - 가중치 Scoring과 fallback 정책
 - 캐시, retry, rate limit, circuit breaker
@@ -55,7 +55,7 @@ Recommendation Pipeline / Tool
 - Tool: `resolve_location`, `get_place_details`처럼 업무 목적 단위로 Provider를 조합
 - Provider는 추천 순위, 사용자 Intent, 조건 완화 여부를 결정하지 않음
 - Tool은 외부 API 엔드포인트와 1:1로 대응할 필요가 없음
-- 현재 저장소에는 별도의 Tool 계층이 아직 없음
+- 현재 `NearbyPlaceDetailsTool`이 구현되어 있으며 나머지 Tool은 `TBD`
 
 ## 4. 구현 현황 요약
 
@@ -342,6 +342,9 @@ Factory에서 `ValueError`가 발생합니다.
 | --- | --- | --- |
 | `place_id` | `str` | TourAPI `contentid` 또는 Fake ID |
 | `content_type_id` | `str \| None` | TourAPI `contenttypeid` |
+| `lcls_systm1` | `str \| None` | TourAPI 신분류 대분류 `lclsSystm1` |
+| `lcls_systm2` | `str \| None` | TourAPI 신분류 중분류 `lclsSystm2` |
+| `lcls_systm3` | `str \| None` | TourAPI 신분류 소분류 `lclsSystm3` |
 | `name` | `str` | 장소명 |
 | `category` | `str` | 내부 대분류 |
 | `latitude` / `longitude` | `float` | 좌표 |
@@ -361,6 +364,7 @@ Factory에서 `ValueError`가 발생합니다.
 | `homepage` | `str \| None` | 홈페이지 원문 |
 | `telephone` | `str \| None` | 공통 `tel`, 없으면 소개 `infocenter` |
 | `operating_hours` | `str \| None` | 유형별 운영시간 원문 |
+| `rest_date` | `str \| None` | 유형별 휴무 정보 원문 |
 | `raw_common` | `Mapping` | `detailCommon2` 첫 항목 |
 | `raw_intro` | `Mapping` | `detailIntro2` 첫 항목 |
 | `provider` | `str` | `tour_api` 또는 `fake_place` |
@@ -383,10 +387,14 @@ property는 `is_holiday=True` 항목만 다시 필터링합니다.
 - Protocol: `GeocodingProvider`
 - Fake: `app/providers/geocoding.py::FakeGeocodingProvider`
 - Real: `app/providers/geocoding.py::RealGeocodingProvider`
-- 목표 Tool: `resolve_location` (`TBD`)
+- Tool: `app/tools/resolve_location.py::ResolveLocationTool`
 
 ```python
-async def geocode(location_query: str) -> GeocodeResult
+async def geocode(
+    location_query: str,
+    *,
+    use_alias: bool = True,
+) -> GeocodeResult
 ```
 
 ### 8.2 Real 외부 계약
@@ -396,12 +404,14 @@ async def geocode(location_query: str) -> GeocodeResult
 | Provider | Naver Cloud Platform Geocoding |
 | Method | `GET` |
 | URL | `https://maps.apigw.ntruss.com/map-geocode/v2/geocode` |
-| Query | `query`, `count=1` |
+| Query | `query`, `count=5` |
 | Headers | `x-ncp-apigw-api-key-id`, `x-ncp-apigw-api-key`, `Accept: application/json` |
 
 Naver Geocoding은 주소 검색 중심이며 일반 POI 이름을 직접 찾지 못할 수 있습니다.
 현재 종로구 MVP를 위해 경복궁, 광화문, 창덕궁, 종묘 등 일부 장소명을 공식 주소로
-치환하는 `_JONGNO_LANDMARK_ADDRESS_ALIASES`를 사용합니다.
+치환하는 `_JONGNO_LANDMARK_ADDRESS_ALIASES`를 사용합니다. 기존 호출은
+`use_alias=True`가 기본값이며 Tool은 alias와 원문 fallback을 구분하기 위해
+`use_alias=False`로 명시 호출합니다.
 
 ### 8.3 응답 매핑
 
@@ -409,14 +419,38 @@ Naver Geocoding은 주소 검색 중심이며 일반 POI 이름을 직접 찾지
 - `addresses`의 첫 항목만 선택
 - `resolved_name`: `roadAddress` → `jibunAddress` → 원 질의 순 fallback
 - `y` → latitude, `x` → longitude
-- 후보가 여러 건이어도 사용자에게 재질문하지 않음
+- `meta.totalCount` → `candidate_count`
+- `addressElements`의 `SIGUGUN` 또는 정규화 주소 → `administrative_district`
 
-### 8.4 Fake 동작
+### 8.4 `ResolveLocationTool`
+
+Tool 입력은 1~200자의 `location_query`입니다. 처리 순서는 다음과 같습니다.
+
+1. alias가 있으면 공식 주소를 먼저 조회
+2. alias 조회가 정상 `no_data`일 때만 원문을 1회 재조회
+3. Provider 장애에는 원문 fallback을 수행하지 않음
+4. 결과의 `administrative_district`가 `종로구`가 아니면 `unsupported`
+5. 직접·fallback 조회 후보가 복수이면 `no_data`와
+   `details.reason=ambiguous_location`으로 재질문
+6. 정확한 alias 주소는 복수 주소 표기가 있어도 첫 결과를 사용
+
+성공 결과에는 `requested_query`, 실제 `provider_query`, 정규화 장소명, 좌표,
+`resolution_method`, `confidence`가 포함됩니다. method는 `direct`, `alias`,
+`fallback`이며 fallback 성공 시 `fallback_used` warning을 반환합니다.
+
+| 상황 | Tool 상태/code | cause |
+| --- | --- | --- |
+| 결과 없음 | `no_data` | `location_not_found` |
+| 직접 조회 후보 복수 | `no_data` | `ambiguous_location` |
+| 종로구 밖 또는 행정구 확인 불가 | `unsupported` | `outside_supported_region` |
+| Provider 장애 | `unavailable` | `timeout` 또는 `upstream_error` |
+
+### 8.5 Fake 동작
 
 경복궁, 광화문, 창덕궁, 종묘, 인사동의 고정 좌표만 substring 방식으로 인식합니다.
 그 외는 `location_not_found`입니다.
 
-### 8.5 오류와 제약
+### 8.6 오류와 제약
 
 | 상황 | 결과 |
 | --- | --- |
@@ -425,8 +459,9 @@ Naver Geocoding은 주소 검색 중심이며 일반 POI 이름을 직접 찾지
 | HTTP/JSON/상태 오류 | `geocoding_unavailable`, retryable |
 
 - POI 검색 Provider가 아니므로 alias 밖의 관광지명 성공을 보장하지 않음
-- 첫 결과 자동 선택에 따른 모호성 해소 정책은 `TBD`
-- 좌표 유효 범위 검증은 별도로 하지 않음
+- 현재 Provider가 인증·HTTP·파싱 원인을 모두 `geocoding_unavailable`로 축약하므로
+  Tool의 세부 cause는 일부 `upstream_error`로 남음
+- 종로구 판정은 좌표 bounding box가 아니라 응답의 행정구 정보를 사용
 
 ## 9. WeatherProvider
 
@@ -436,13 +471,18 @@ Naver Geocoding은 주소 검색 중심이며 일반 POI 이름을 직접 찾지
 - Fake: `app/providers/stub.py::FakeWeatherProvider`
 - Real: `app/providers/weather.py::RealWeatherProvider`
 - 보조 모듈: `app/providers/kma_grid.py`
-- 목표 Tool: `get_current_weather` (`TBD`)
+- Tool: `app/tools/weather_forecast.py::GetWeatherForecastTool`
 
 ```python
 async def get_current_condition(
     latitude: float,
     longitude: float,
 ) -> WeatherCondition
+
+async def get_forecast_slots(
+    latitude: float,
+    longitude: float,
+) -> WeatherForecastResult
 ```
 
 ### 9.2 Real 외부 계약
@@ -464,7 +504,9 @@ async def get_current_condition(
 
 ### 9.3 날씨 매핑
 
-가장 이른 `fcstDate`/`fcstTime`의 `SKY`, `PTY`를 선택합니다.
+`fcstDate`/`fcstTime`별로 `SKY`, `PTY`를 묶어 timezone-aware
+`WeatherForecastSlot` 목록을 생성합니다. 기존 `get_current_condition()`은 호환을
+위해 가장 이른 slot의 condition을 반환합니다.
 
 | 원본 | 내부 상태 |
 | --- | --- |
@@ -489,8 +531,10 @@ TripBranch의 `WeatherProvider`는 현재 관측 날씨가 아니라 기상청 �
 - 현재 관측 날씨는 MVP 필수 범위에서 제외
 - 실제 사용자 테스트에서 즉시 추천 품질이 부족한 경우 현재 관측 데이터 추가 검토
 
-현재 구현은 방문 예정 시각을 입력받지 않고 응답 중 가장 이른 예보 slot을 선택하므로
-“즉시 방문 추천”만 지원합니다. 일정 기반 예보 선택은 후속 구현 대상입니다.
+`GetWeatherForecastTool`은 `visit_at`이 없으면 Backend Clock의 현재 시각을
+사용하고, 명시된 경우 방문 예정 시각과 가장 가까운 slot을 선택합니다. 시간 차이가
+같으면 미래 slot을 우선합니다. 즉시 방문 시 현재보다 이른 slot이 없으면 가장 이른
+미래 예보를 선택합니다.
 
 Weather 결과에는 공통 `ProviderMetadata`와 함께 다음 시간 기준을 포함합니다.
 
@@ -510,9 +554,9 @@ type WeatherMetadata = ProviderMetadata & {
 | `observed_at` | 관측 데이터의 관측 시각; MVP에서는 `null` |
 
 시간 필드는 timezone-aware ISO 8601로 표현하고 Backend 내부/JSON 모두
-`snake_case`를 사용합니다. 기상청의 KST `fcstDate`/`fcstTime`은 내부 모델에서
-timezone을 명시한 시각으로 변환해야 하며, UTC `Z`로 정규화할지는 구현 단계에서
-공통 시간 규칙과 함께 확정합니다.
+`snake_case`를 사용합니다. 기상청 `fcstDate`/`fcstTime`과 timezone 없는
+`visit_at`은 `Asia/Seoul`로 해석하며 `timezone_assumed=true`로 구분합니다.
+`retrieved_at`은 UTC로 반환합니다.
 
 향후 현재 관측값과 예보를 함께 제공하더라도 방문 예정 시각의 예보를 우선합니다.
 현재 관측값은 가까운 시간대 추천의 품질을 보완하는 정보로만 사용하고 예보를
@@ -521,9 +565,32 @@ timezone을 명시한 시각으로 변환해야 하며, UTC `Z`로 정규화할�
 ### 9.5 Fake 동작
 
 생성 시 전달된 `WeatherCondition`을 그대로 반환합니다. Factory에서는
-`FAKE_WEATHER_CONDITION`으로 값을 결정합니다.
+`FAKE_WEATHER_CONDITION`으로 값을 결정합니다. `get_forecast_slots()`는 현재
+KST 정시부터 6개 고정 condition slot을 반환해 Real과 같은 계약을 만족합니다.
 
-### 9.6 오류와 제약
+### 9.6 `GetWeatherForecastTool`
+
+```python
+WeatherForecastQuery(
+    latitude: float,
+    longitude: float,
+    visit_at: datetime | None = None,
+)
+```
+
+- 위도·경도만 검증하며 종로구 범위는 `ResolveLocationTool` 책임
+- `visit_at=None`: Backend Clock 기준 즉시 방문
+- timezone 없는 `visit_at`: `Asia/Seoul`로 간주
+- 명시 시각이 제공 예보의 처음~마지막 범위 밖이면 `unsupported`
+- 빈 slot은 `no_data`, Provider 장애는 `unavailable`
+- 최소 결과: condition, SKY, PTY, forecast_for, retrieved_at,
+  data_type=forecast, observed_at=null
+- 온도·습도·강수량·풍속은 v1 범위 밖
+
+결과에는 입력 좌표와 KMA 격자, `requested_visit_at`, `timezone`,
+`timezone_assumed`, `selection_method`도 포함합니다.
+
+### 9.7 오류와 제약
 
 | 상황 | 결과 |
 | --- | --- |
@@ -531,9 +598,9 @@ timezone을 명시한 시각으로 변환해야 하며, UTC `Z`로 정규화할�
 | KMA `resultCode != 00` | `weather_unavailable`, retryable |
 | SKY/PTY 없음 | `weather_no_data`, retryable |
 
-- 메서드 이름은 current지만 실제 데이터는 가장 가까운 초단기 **예보** 시각임
-- 특정 방문 예정 시각 입력과 가장 가까운 예보 slot 선택은 아직 미구현
-- `WeatherMetadata`는 설계 확정 상태이며 현재 반환 모델에는 미반영
+- `get_current_condition()`은 기존 호출 호환용이며 실제 데이터는 예보
+- 공통 `ProviderMetadata` wrapper는 아직 미구현이지만 Tool 전용 결과에 시간
+  metadata가 반영됨
 - 추천 서비스에는 아직 연결되지 않음
 - 날씨 결측 시 가중치 재정규화 정책은 추천 계층의 `TBD`
 
@@ -542,10 +609,11 @@ timezone을 명시한 시각으로 변환해야 하며, UTC `Z`로 정규화할�
 ### 10.1 책임과 구현
 
 - Protocol: `PlaceProvider`
+- 역할별 Protocol: `PlaceSearchProvider`, `PlaceDetailsProvider`
 - Fake: `app/providers/stub.py::FakePlaceProvider`
 - Real: `app/providers/real_place.py::RealPlaceProvider`
 - 후보 Mapper: `app/providers/mappers.py`
-- 목표 Tool: `search_nearby_places`, `get_place_details` (`TBD`)
+- 구현 Tool: `app/tools/nearby_place_details.py::NearbyPlaceDetailsTool`
 
 ### 10.2 좌표 기반 후보 검색
 
@@ -627,11 +695,163 @@ async def get_details(
 2. `GET .../detailIntro2?contentId=...&contentTypeId=...`
 3. 양쪽 첫 항목을 `PlaceDetails`로 결합
 
-운영시간은 `usetime`, `usetimeculture`, `opentimefood`, `checkintime`,
-`openperiod` 중 처음 존재하는 값을 사용합니다. 장소 유형에 따라 `restdate`,
+운영시간은 `usetime`, `usetimeculture`, `playtime`, `usetimeleports`, `opentime`,
+`opentimefood`, `checkintime`, `openperiod` 중 처음 존재하는 값을 사용합니다.
+휴무 정보는 `restdate`, `restdateculture`, `restdateleports`,
+`restdateshopping`, `restdatefood` 중 처음 존재하는 값을 사용합니다. 이외에도
 `parking`, `infocenter`, 체험 정보 등이 `raw_intro`에 추가로 존재할 수 있습니다.
 
-### 10.6 장소명 기반 상세조회
+`PlaceDetails.operating_schedule`에는 원문을 보존한 정규화 결과가 함께 포함됩니다.
+정규화기는 `<br>`과 block tag, HTML entity, `HH:MM~HH:MM`, 복수 시간 구간,
+`24:00`과 익일 종료, 월 범위, 입장·매표 마감, 매주 휴무와 `24시간` 표현을
+우선 지원합니다.
+
+파싱 상태는 `parsed`, `partial`, `unknown`, `assumed`로 구분합니다. 해석하지 못한
+원문을 임의로 영업 또는 휴무로 판정하지 않으며 warning과 원문을 남깁니다.
+
+여행코스(`content_type_id=25`)는 운영시간 필드가 없을 때만 `all_day`로
+정규화하고 `parse_status=assumed`,
+`assumption_reason=course_without_operating_hours`를 기록합니다. 이는 Provider가
+실제 24시간 운영을 명시한 결과가 아니므로 화면과 로그에서 추정값으로 구분해야
+합니다. 다른 장소 유형의 운영시간 누락은 `unknown`입니다.
+
+#### 10.5.1 `OperatingSchedule` 정규화 계약
+
+`OperatingSchedule`은 운영시간 원문을 없애거나 덮어쓰지 않고, 추천 계산에서
+사용할 수 있는 구조를 추가로 제공합니다.
+
+| 필드 | 타입 | 의미 |
+| --- | --- | --- |
+| `raw_operating_hours` | `str \| None` | TourAPI 운영시간 원문 |
+| `raw_rest_date` | `str \| None` | TourAPI 휴무 원문 |
+| `cleaned_operating_hours` | `str \| None` | HTML·entity·공백을 정리한 운영시간 |
+| `cleaned_rest_date` | `str \| None` | HTML·entity·공백을 정리한 휴무 정보 |
+| `availability` | enum | `scheduled`, `all_day`, `unknown` |
+| `rules` | `tuple[OperatingRule, ...]` | 월·요일·시간 구간별 운영 규칙 |
+| `closure_rules` | `tuple[ClosureRule, ...]` | 구조화된 정기 휴무 규칙 |
+| `parse_status` | enum | `parsed`, `partial`, `unknown`, `assumed` |
+| `assumption_reason` | `str \| None` | 서비스 정책으로 값을 가정한 이유 |
+| `warnings` | `tuple[str, ...]` | 해석하지 못한 예외와 사용 시 주의사항 |
+
+`availability`의 의미:
+
+| 값 | 의미 |
+| --- | --- |
+| `scheduled` | 하나 이상의 시간 구간이 구조화됨 |
+| `all_day` | 원문에 24시간이 명시됐거나 여행코스 누락 정책이 적용됨 |
+| `unknown` | 영업시간을 확정할 수 없음 |
+
+`parse_status`의 의미:
+
+| 값 | 의미 |
+| --- | --- |
+| `parsed` | 현재 지원하는 규칙 범위에서 필요한 내용을 해석함 |
+| `partial` | 시간이나 기본 휴무는 해석했지만 일부 예외를 해석하지 못함 |
+| `unknown` | 원문이 없거나 시간 구간을 구조화할 수 없음 |
+| `assumed` | Provider 명시값이 아니라 프로젝트 정책으로 값을 가정함 |
+
+실제 원문에 `24시간`이 있는 경우와 여행코스 정책은 다음처럼 구분합니다.
+
+```json
+{
+  "availability": "all_day",
+  "parse_status": "parsed",
+  "assumption_reason": null
+}
+```
+
+```json
+{
+  "availability": "all_day",
+  "parse_status": "assumed",
+  "assumption_reason": "course_without_operating_hours"
+}
+```
+
+`OperatingRule` 구조:
+
+| 필드 | 의미 |
+| --- | --- |
+| `months` | 적용 월 집합, `None`이면 월 제한 없음 |
+| `weekdays` | 적용 요일 집합, `None`이면 요일 제한 없음 |
+| `time_ranges` | 하루에 적용되는 하나 이상의 시작·종료 구간 |
+| `last_admission` | 입장·매표 마감 시각 |
+| `source_text` | 규칙을 추출한 정리된 원문 |
+
+요일 번호는 Python `datetime.weekday()` 기준을 사용합니다.
+
+| 값 | 요일 | 값 | 요일 |
+| ---: | --- | ---: | --- |
+| `0` | 월요일 | `4` | 금요일 |
+| `1` | 화요일 | `5` | 토요일 |
+| `2` | 수요일 | `6` | 일요일 |
+| `3` | 목요일 |  |  |
+
+`TimeRange.crosses_midnight=true`는 종료 시각이 다음 날임을 의미합니다.
+`17:00~익일 02:00`은 `start=17:00`, `end=02:00`,
+`crosses_midnight=true`로 저장합니다. `09:00~24:00`은 Python `time`이
+`24:00`을 표현할 수 없으므로 `end=00:00`, `crosses_midnight=true`로
+정규화합니다.
+
+경복궁 형식의 예:
+
+```json
+{
+  "availability": "scheduled",
+  "parse_status": "partial",
+  "assumption_reason": null,
+  "cleaned_operating_hours": "[1월~2월] 09:00~17:00 (입장마감 16:00)",
+  "cleaned_rest_date": "매주 화요일\n공휴일과 겹치면 다음 비공휴일 휴무",
+  "rules": [
+    {
+      "months": [1, 2],
+      "weekdays": null,
+      "time_ranges": [
+        {
+          "start": "09:00",
+          "end": "17:00",
+          "crosses_midnight": false
+        }
+      ],
+      "last_admission": "16:00",
+      "source_text": "[1월~2월] 09:00~17:00 (입장마감 16:00)"
+    }
+  ],
+  "closure_rules": [
+    {
+      "weekdays": [1],
+      "source_text": "매주 화요일"
+    }
+  ],
+  "warnings": [
+    "휴무 문구의 일부 예외를 구조화하지 못했습니다."
+  ]
+}
+```
+
+`partial` 결과도 구조화된 기본 규칙은 사용할 수 있지만, warning에 해당하는
+예외까지 확정적으로 판정해서는 안 됩니다. `OperatingSchedule`은 정규화까지만
+담당하며 방문 시각 기준 `open`, `closed`, 남은 영업시간 계산은 별도 evaluator의
+책임입니다.
+
+### 10.6 TourAPI 분류 Registry
+
+`TourCategoryRegistry`는
+`backend/resources/tour_api/tour_api_category_codes.json`을 서버 시작 시 한 번
+읽고 대·중·소분류의 이름·코드 인덱스를 생성합니다. 같은 프로세스에서는
+`get_tour_category_registry()`가 캐시된 인스턴스를 반환합니다.
+
+- 소분류 코드는 단일 `TourCategory`로 조회
+- 이름과 중·대분류는 중복 가능성을 고려해 tuple로 조회
+- 검색 키에서는 공백과 영문 대소문자만 정규화
+- 소분류 결과는 `PlaceCategoryFilter`로 변환 가능
+- 알 수 없는 분류는 `None` 또는 빈 tuple
+- 잘못된 JSON과 중복 소분류 코드는 서버 시작 오류
+
+자연어 별칭과 `place_types`·`place_tags` 해석은 Registry 책임이 아니며, 표준
+분류명까지 변환한 뒤 Registry를 호출해야 합니다.
+
+### 10.7 장소명 기반 상세조회
 
 ```python
 async def find_details_by_name(
@@ -649,14 +869,14 @@ async def find_details_by_name(
 유사 이름만 존재할 때 임의로 선택하지 않습니다. 정확 일치가 없으면
 `place_not_found`와 최대 5개 후보명을 details에 포함합니다.
 
-### 10.7 Fake 동작
+### 10.8 Fake 동작
 
 - 좌표 기준 테스트 박물관과 테스트 카페 반환
 - 키워드 substring으로 후보 필터
 - 상세정보에 Fake 소개와 후보 운영시간 반환
 - `find_details_by_name`은 Real과 마찬가지로 정확 일치 요구
 
-### 10.8 오류와 제약
+### 10.9 오류와 제약
 
 | 상황 | 결과 |
 | --- | --- |
@@ -672,6 +892,57 @@ async def find_details_by_name(
 - 상세조회 2회 중 부분 성공 캐시 없음
 - 홈페이지와 운영시간은 HTML/복합 문자열 원문일 수 있음
 - 휴무일, 주차 등은 정규 필드가 아니라 현재 `raw_intro`에서만 접근 가능
+
+### 10.10 다건 상세조회 Tool
+
+`NearbyPlaceDetailsTool`은 후보 검색과 상세조회 구현을 각각
+`PlaceSearchProvider`, `PlaceDetailsProvider`로 주입받습니다. 현재 Real 실행에서는
+한 `RealPlaceProvider`가 두 Protocol을 모두 만족하지만, 향후 상세정보를 DB에서
+조회할 경우 검색 Provider를 유지하고 상세 Provider만 교체할 수 있습니다.
+
+처리 순서는 다음과 같습니다.
+
+1. 제외 ID 수만큼 여유 있게 주변 후보 조회
+2. 제외 ID 적용 및 `limit` 절단
+3. 최대 동시성 3을 기본값으로 상세조회
+4. 입력 후보 순서대로 상세 결과 결합
+5. 장소별 `success`, `no_data`, `unavailable` 분류
+6. 일부 상세 실패 시 전체 결과를 `partial`로 반환
+
+반경은 20km 이하, 결과 수는 20개 이하로 검증합니다. 결과에는 Tool 실행 기준
+`source`, UTC `retrieved_at`, 전체 `elapsed_ms`가 포함됩니다. 개별 Provider
+metadata와 공통 `ToolResult` envelope 적용은 후속 작업입니다.
+
+### 10.11 다건 상세조회 성능 제한과 DB 전환 고려사항
+
+현재 TourAPI 기반 다건 상세조회는 후보 목록 조회 1회에 더해, 장소마다
+`detailCommon2`와 `detailIntro2`를 각각 호출합니다. 따라서 장소 10개를 조회하면
+정상적인 경우 최대 21회의 외부 요청이 발생합니다.
+
+2026-07-23 로컬 Inspection Test에서는 경복궁 반경 2km의 장소 10개를 대상으로
+동시성 3을 적용했을 때 전체 조회에 약 20초가 걸렸습니다. 이 값은 당시 네트워크와
+TourAPI 응답 상태에서 측정한 참고값이며 항상 동일한 성능을 보장하지 않습니다.
+
+실서비스 적용 시 다음 사항을 고려해야 합니다.
+
+- 요청 시마다 여러 장소의 상세정보를 TourAPI에서 직접 조회하면 응답 지연과 API
+  quota 사용량이 크게 증가함
+- 동시성을 높이면 응답 시간을 줄일 수 있지만 Provider 부하, rate limit, timeout
+  위험이 증가하므로 무제한 병렬 호출은 사용하지 않음
+- 상세정보 일부가 실패해도 성공한 장소는 사용할 수 있도록 `partial` 결과를 유지
+- 운영시간과 휴무 정보는 복합 원문이므로 DB 저장 전후에 원본과 정규화 값을 함께
+  관리하는 방안을 검토
+- 캐시 유효기간과 데이터 갱신 주기는 운영시간·휴무일·일반 소개 정보별로 다르게
+  설정할 수 있음
+
+권장 전환 방향은 TourAPI 데이터를 배치 또는 필요 시점에 수집해 DB에 저장하고,
+실시간 추천 요청에서는 후보와 상세정보를 DB에서 다건 조회하는 방식입니다.
+누락되었거나 오래된 데이터만 TourAPI로 보완하는 fallback을 둘 수 있습니다.
+
+현재 Tool은 `PlaceSearchProvider`와 `PlaceDetailsProvider`를 분리해 주입하므로,
+우선 상세조회만 DB 구현으로 교체하고 이후 후보 검색까지 단계적으로 DB로 이전할
+수 있습니다. DB 종류, 스키마, 갱신 주기, stale 판정 기준과 fallback 정책은
+`TBD`입니다.
 
 ## 11. ConcentrationProvider
 
@@ -880,7 +1151,8 @@ Inspection Test는 마스킹된 요청, 원본 응답, 정규화 결과를 출�
 
 ```text
 InterpretedConditions.location_query
-→ GeocodingProvider.geocode
+→ ResolveLocationTool
+→ GeocodingProvider
 → PlaceProvider.search_places
 → shown_place_ids 제외
 → Haversine 직선거리 계산
@@ -916,9 +1188,9 @@ InterpretedConditions.location_query
 
 | ID | 우선순위 | Blocker | 영향 | 현재 대응 | 해결 조건 | 상태 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `COM-01` | `P0` | 일부 Real Provider가 인증 쿼리를 포함한 `httpx` 예외를 chaining | 실패 traceback에서 API 키 노출 가능 | ProviderError 안전 메시지 계약 확정, Inspection 로그 마스킹, Holiday만 예외 체인 제거 | 모든 Provider 오류에서 URL/헤더 sanitize 테스트 통과 | `정책 확정/구현 대기` |
+| `COM-01` | `P0` | Real Provider 실패 traceback의 인증정보 노출 위험 | API 키 유출 가능 | 요청 파라미터 제거, 예외 chain 차단, Inspection 마스킹 적용 | 5개 Real Provider의 traceback secret 회귀 테스트 | `Resolved` |
 | `COM-02` | `P1` | `ProviderMetadata`가 코드 모델에 없음 | 출처·결측·조회시각을 일관되게 판단 불가 | 본 문서에서 계약 확정 | 모든 Fake/Real 결과에 source/status/retrieved_at 적용 및 Clock 테스트 | `정책 확정/구현 대기` |
-| `COM-03` | `P1` | Tool 계층과 공통 오류 envelope 미구현 | no_data와 장애를 Orchestrator가 구분 불가 | `ToolResult<T>`와 오류 매핑 문서 확정 | 대표 Provider 오류의 Tool 매핑 테스트 통과 | `정책 확정/구현 대기` |
+| `COM-03` | `P1` | Tool별 전용 결과는 있으나 공통 오류 envelope 미적용 | Orchestrator가 Tool별 결과 타입을 각각 처리해야 함 | 위치·날씨·다건 장소 Tool에서 no_data/unavailable 구분 구현 | 공통 `ToolResult<T>` 적용 및 대표 오류 매핑 테스트 | `부분 해결` |
 | `COM-04` | `P2` | `EXTERNAL_API_RETRY_COUNT`가 실제 호출에 미적용 | 일시 장애에 취약 | timeout과 retryable 오류만 표시 | 제한된 retry/backoff 구현 및 중복 호출 테스트 | `Open` |
 | `COM-05` | `P2` | 구조화 metrics/tracing 없음 | Provider 지연·실패율과 fallback 추적 불가 | Smoke/Inspection 수동 확인 | source/tool/run ID 기반 latency·결과 로그 확정 | `Open` |
 | `COM-06` | `P3` | 캐시와 rate limit 보호 없음 | 호출량 증가 시 quota와 latency 위험 | 후보 수와 페이지 고정 제한 | Provider별 TTL·cache key·quota 정책 및 테스트 | `Open` |
@@ -928,30 +1200,30 @@ InterpretedConditions.location_query
 
 | ID | 우선순위 | Blocker | 영향 | 현재 대응 | 해결 조건 | 상태 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `GEO-01` | `P1` | Naver Geocoding은 일반 POI 이름 검색에 제한 | alias 밖 관광지명이 `location_not_found`가 될 수 있음 | 종로구 주요 장소를 주소 alias로 변환 | Place 키워드 검색 연계 또는 POI Provider 확정, alias 밖 시나리오 통과 | `Open` |
-| `GEO-02` | `P2` | 다중 주소 결과에서 첫 항목 자동 선택 | 모호한 지명이 잘못된 좌표로 결정될 수 있음 | `count=1` 사용 | confidence/후보 확인 또는 사용자 clarification 정책 확정 | `현재 논의 중` |
-| `GEO-03` | `P2` | 지원 지역과 좌표 범위 검증 없음 | 서울 외 요청 또는 비정상 좌표 통제 불가 | MVP 문맥상 종로구 중심 | 지원 지역 정책과 좌표 validation 테스트 | `Open` |
+| `GEO-01` | `P1` | Naver Geocoding은 일반 POI 이름 검색에 제한 | alias 밖 관광지명이 `location_not_found`가 될 수 있음 | 종로구 주요 장소 alias와 원문 1회 fallback | Place 키워드 검색 연계 또는 POI Provider 확정, alias 밖 시나리오 통과 | `부분 해결` |
+| `GEO-02` | `P2` | 다중 주소 결과의 모호성 | 모호한 지명이 잘못된 좌표로 결정될 수 있음 | `candidate_count>1`이면 `ambiguous_location` 재질문 | Tool 모호성 단위 테스트 | `Resolved` |
+| `GEO-03` | `P2` | 지원 지역 검증 | 종로구 밖 요청을 추천에 사용할 위험 | 행정구가 종로구가 아니면 `unsupported` | 종로구 밖 Tool 단위 테스트 | `Resolved` |
 
 ### 16.4 WeatherProvider Blocker
 
 | ID | 우선순위 | Blocker | 영향 | 현재 대응 | 해결 조건 | 상태 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `WTH-01` | `P1` | 메서드는 current지만 실제로 가장 가까운 초단기예보 사용 | 사용자가 “현재 날씨”로 오해할 수 있음 | 예보 우선 정책과 WeatherMetadata 확정 | Tool/모델 명칭 변경, forecast_for 반환 테스트 | `정책 확정/구현 대기` |
+| `WTH-01` | `P1` | 메서드는 current지만 실제 데이터는 초단기예보 | 사용자가 “현재 날씨”로 오해할 수 있음 | `GetWeatherForecastTool`, data_type과 forecast_for 구현 | Tool/모델 명칭 및 forecast_for 테스트 | `Resolved` |
 | `WTH-02` | `P1` | 추천 파이프라인에 Weather가 미연결 | 날씨 조건이 실제 추천 점수에 반영되지 않음 | Interpret Stub 값만 존재 | Weather Tool 연결 및 유/무날씨 Scoring 테스트 | `Open` |
 | `WTH-03` | `P2` | SKY/PTY를 세 단계로만 축약 | 온도·습도·강수량·풍속 기반 조건 사용 불가 | `good/neutral/bad`만 반환 | Weather Feature 요구사항 확정 후 모델 확장 여부 결정 | `현재 논의 중` |
 | `WTH-04` | `P2` | 발표 제공 시각을 45분 기준으로 고정 | 지연 시 최신 base time에 데이터가 없을 수 있음 | 직전 시간 fallback 계산 | no_data 시 이전 발표분 제한 재조회 정책과 테스트 | `Open` |
-| `WTH-05` | `P1` | 방문 예정 시각을 입력받지 않아 일정 기반 예보 선택 불가 | 미래 방문 추천도 가장 이른 예보로 판단할 위험 | 즉시 방문 시나리오만 지원 | visit_at 입력, 가장 가까운 forecast_for 선택 및 범위 초과 정책 테스트 | `Open` |
+| `WTH-05` | `P1` | 방문 예정 시각 기반 예보 선택 | 미래 방문 추천에 잘못된 slot을 사용할 위험 | visit_at, 최근접·동률 미래 우선·범위 밖 unsupported 구현 | 고정 Clock Tool 테스트와 실제 Smoke Test | `Resolved` |
 
 ### 16.5 PlaceProvider Blocker
 
 | ID | 우선순위 | Blocker | 영향 | 현재 대응 | 해결 조건 | 상태 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `PLC-01` | `P1` | `preferred_categories`가 검색/후처리에 미사용 | 사용자 선호와 무관한 후보가 섞임 | content type을 내부 대분류로만 매핑 | 카테고리 매핑·필터·빈 후보 정책 테스트 | `Open` |
-| `PLC-02` | `P1` | Real 후보의 `operating_hours`가 항상 `None` | 현재 서비스에서 모든 Real 후보가 미검증 결과로 분류 | 특정 장소만 상세조회 가능 | 후보 상세조회 범위, 병렬성, quota 정책 및 운영시간 채움 테스트 | `Open` |
-| `PLC-03` | `P1` | 운영시간·휴무일·주차가 복합 원문 또는 raw 필드 | 영업 여부와 남은 시간을 계산할 수 없음 | 원본을 `raw_intro`에 보존 | 정규 운영정보 모델, parser, unknown 규칙, 경복궁 회귀 테스트 | `Open` |
+| `PLC-02` | `P1` | Real 후보의 `operating_hours`가 항상 `None` | 후보만 사용하는 서비스에서는 모든 Real 후보가 미검증 결과로 분류 | 최대 20개 후보를 제한 병렬로 보완하는 `NearbyPlaceDetailsTool` 구현 | quota·캐시 정책 및 운영시간 parser 확정 | `부분 해결` |
+| `PLC-03` | `P1` | 운영시간·휴무일이 다양한 복합 원문 | 아직 지원하지 않는 회차·공휴일 예외는 영업 여부와 남은 시간을 계산할 수 없음 | 원문 보존, HTML 정리, 월별 시간·주간 휴무·여행코스 가정 정규화 구현 | 운영 상태 evaluator, 공휴일 예외 규칙, 실제 응답 회귀 표본 확대 | `부분 해결` |
 | `PLC-04` | `P2` | 위치 검색 20건, 키워드 검색 최대 100건의 첫 페이지만 사용 | 후보가 많은 지역에서 적합 장소 누락 가능 | 고정 pageNo=1 | 후보 예산과 pagination 중단 조건 확정 | `Open` |
 | `PLC-05` | `P2` | 정확 이름 검색은 첫 exact match를 선택 | 동명 장소가 여러 지역에 있으면 오선택 가능 | 지역 코드 전달 가능 | 좌표/주소 기반 동명 tie-break와 clarification 정책 | `현재 논의 중` |
-| `PLC-06` | `P2` | 반경 0/음수와 좌표 범위 검증 없음 | 잘못된 외부 요청 또는 예측 불가능한 빈 결과 | 최대 20km clamp만 적용 | 입력 validation 및 Tool invalid_input 매핑 테스트 | `Open` |
+| `PLC-06` | `P2` | Provider 직접 호출에는 반경 0/음수와 좌표 범위 검증 없음 | 잘못된 외부 요청 또는 예측 불가능한 빈 결과 | `NearbyPlaceDetailsQuery`에서 좌표·반경 검증 | Provider 직접 입력 validation과 공통 invalid_input 매핑 | `부분 해결` |
 | `PLC-07` | `P2` | `detailCommon2`와 `detailIntro2`가 all-or-nothing | 소개 성공·운영정보 실패 시 부분 데이터도 반환하지 못함 | 두 호출 순차 실행 | 필수/선택 상세 정의와 `partial` 결과·warning 테스트 | `Open` |
 
 ### 16.6 ConcentrationProvider Blocker
@@ -975,12 +1247,11 @@ InterpretedConditions.location_query
 
 ### 16.8 다음 구현 순서
 
-1. `COM-01` ProviderError와 Secret-safe 공통 예외 변환
-2. `COM-02` ProviderMetadata 모델과 결과 wrapper
-3. `COM-03` ToolResult/ToolError 변환 계층
-4. `PLC-02`, `PLC-03`, `HOL-01` 운영정보 정규화 및 판정
-5. `WTH-02`, `CON-02`, `CON-03` 선택 Feature와 fallback 연결
-6. pagination, retry, cache, observability 보완
+1. `COM-02` ProviderMetadata 모델과 결과 wrapper
+2. `COM-03` 공통 ToolResult/ToolError 변환 계층
+3. `PLC-02`, `PLC-03`, `HOL-01` 운영정보 정규화 및 판정
+4. `WTH-02`, `CON-02`, `CON-03` 선택 Feature와 fallback 연결
+5. pagination, retry, cache, observability 보완
 
 ## 17. 변경 이력
 
@@ -988,5 +1259,6 @@ InterpretedConditions.location_query
 | --- | --- | --- |
 | 2026-07-23 | v1 상세화 | 5개 Provider의 실제 요청·응답·오류·제약·테스트 명세 확장 |
 | 2026-07-23 | v1 계약 보완 | ProviderMetadata, Tool 오류, Provider별 Blocker 확정 |
+| 2026-07-23 | Tool v1 구현 반영 | 종로구 위치 해석, 방문시각 날씨, 장소 다건 상세조회 계약과 Blocker 상태 갱신 |
 | 2026-07-23 | v1 오류 계약 | ProviderError와 retrieved_at/occurred_at 경계 확정 |
 | 2026-07-23 | v1 Weather 기준 | 방문 예정 시각의 초단기예보 우선 정책 확정 |

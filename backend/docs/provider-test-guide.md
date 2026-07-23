@@ -133,6 +133,13 @@ RUN_REAL_PROVIDER_TESTS=true python -m pytest \
 경복궁 질의를 Naver Geocoding에 전달하고 종로구 범위의 좌표가 반환되는지
 검증한다.
 
+Tool의 alias 우선 조회, 원문 fallback, 종로구 제한, 모호한 결과와 Provider 장애
+분리는 실제 API를 호출하지 않는 다음 테스트로 확인한다.
+
+```bash
+python -m pytest tests/test_resolve_location_tool.py -v
+```
+
 ### KMA 날씨
 
 ```bash
@@ -141,8 +148,15 @@ RUN_REAL_PROVIDER_TESTS=true python -m pytest \
   -v -s
 ```
 
-경복궁 좌표를 KMA 격자로 변환하고 `good`, `neutral`, `bad` 중 하나가
-반환되는지 검증한다.
+경복궁 좌표를 KMA 격자로 변환하고 `GetWeatherForecastTool`이 현재와 가장 가까운
+예보를 선택하는지 검증한다. condition과 `forecast_for`가 출력된다.
+
+시간대 가정, 동률 미래 우선, 범위 밖, 빈 예보와 장애 분리는 다음 단위 테스트로
+검증한다.
+
+```bash
+python -m pytest tests/test_weather_forecast_tool.py -v
+```
 
 ### TourAPI 좌표 기반 장소 검색
 
@@ -247,6 +261,46 @@ RUN_REAL_PROVIDER_INSPECTION=true python -m pytest \
 
 이 테스트는 `searchKeyword2`, `detailCommon2`, `detailIntro2`의 원본 응답을
 순서대로 출력한다.
+
+### TourAPI 카페 대·중·소분류 요청·응답
+
+```bash
+RUN_REAL_PROVIDER_INSPECTION=true python -m pytest \
+  tests/test_provider_inspection.py::test_inspect_tour_api_cafe_category_request_and_response \
+  -v -s
+```
+
+경복궁 반경 5km를 기준으로 `contentTypeId=39`, `lclsSystm1=FD`,
+`lclsSystm2=FD05`, `lclsSystm3=FD050100`을 전달한다. 출력되는 요청 쿼리에서
+분류 필드를 확인하고, 원본 응답과 정규화된 장소명·`content_type_id` 표본을 함께
+검증한다. `serviceKey`는 `<redacted>`로 표시된다.
+
+### 경복궁 인근 10개 장소 목록·상세정보 요청·응답
+
+```bash
+RUN_REAL_PROVIDER_INSPECTION=true python -m pytest \
+  tests/test_provider_inspection.py::test_inspect_tour_api_nearby_place_details_request_and_response \
+  -v -s
+```
+
+경복궁 좌표 반경 2km에서 거리순 후보를 조회하고, 경복궁 자체를 제외한 최대 10개
+장소에 `NearbyPlaceDetailsTool`을 통해 `detailCommon2`와 `detailIntro2`를 호출한다.
+후보 검색과 상세조회는 분리된 Protocol로 주입되며, 이 테스트에서는 하나의
+`RealPlaceProvider`가 두 역할을 담당한다. 상세조회는 동시에 최대 3개만 실행하며,
+일부 상세조회가 실패해도 다른 장소 결과는 계속 수집한다. 마지막에는
+장소 ID·유형·주소·좌표·신분류 코드와 소개·홈페이지·전화번호·운영시간·휴무
+정보를 정규화한 요약을 출력한다. `operating_schedule`에는 `availability`,
+`parse_status`, 가정 사유, 정리된 원문, 월·요일·시간 구간, 입장마감, 휴무 규칙과
+warning이 포함되어 실제 파싱 결과를 장소별로 확인할 수 있다. 원본 응답에서는
+장소 유형별 `usetime*`와
+`restdate*` 필드도 확인할 수 있다. 요청과 원본 응답의 인증정보는 마스킹된다.
+각 외부 요청에는 응답 본문 수신 완료까지 걸린 `elapsed_ms`가 표시되며, 전체
+목록·상세조회에는 Tool 상태와 `normalized_nearby_total_elapsed_ms`가 함께 출력된다.
+장소 10개는 후보 목록 1회와 장소별 상세 API 2회로 최대 21회의 외부 요청을
+발생시킨다. 2026-07-23 동시성 3의 로컬 실측은 약 20초였으며, 이는 환경에 따라
+달라지는 참고값이다. 실서비스 성능 고려사항과 DB 전환 방향은
+[Provider Contract v1의 10.11절](./provider-contract-v1.md#1011-다건-상세조회-성능-제한과-db-전환-고려사항)을
+참고한다.
 
 ### TourAPI 집중률 요청·응답
 

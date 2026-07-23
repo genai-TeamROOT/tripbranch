@@ -36,7 +36,7 @@
 
 ### D-004 — Provider와 Tool 분리
 
-- 상태: Provider `Implemented`, Tool `TBD`
+- 상태: Provider `Implemented`, 다건 장소 상세조회 Tool `Implemented`, 나머지 Tool `TBD`
 - 결정: Provider는 외부 통신, Tool은 추천 파이프라인의 업무 단위를 담당한다.
 - 이유: Tool과 외부 엔드포인트의 1:1 결합을 피하고 Provider 교체 영향을 제한
 
@@ -169,7 +169,7 @@
 
 ### D-018 — Tool 공통 오류와 no_data/unavailable 경계
 
-- 상태: `Accepted`, Tool 구현은 후속 작업
+- 상태: `Accepted`, 다건 장소 상세조회에 일부 적용, 공통 envelope 구현은 후속 작업
 - 공통 code: `invalid_input`, `not_found`, `no_data`, `unavailable`, `unsupported`,
   `internal_error`
 - 결정: `no_data`는 호출·파싱 성공 후 데이터 없음이 확인된 상태
@@ -191,7 +191,8 @@
 - 결정: Provider별 Blocker는 영향, 현재 대응, 객관적인 해결 조건, 상태를 함께 기록
 - 결정: `Resolved`는 해결 조건과 관련 테스트가 모두 충족된 경우에만 사용
 - 현재 P0: 일부 Provider 예외 traceback의 인증 쿼리 노출 가능성
-- 현재 주요 P1: metadata/Tool 오류 구현, Place 운영정보, Weather/Concentration 연결,
+- 현재 주요 P1: metadata/공통 Tool envelope, Place 운영정보,
+  Weather/Concentration 연결,
   혼잡도 coverage, Holiday와 장소 휴무 규칙 결합
 - 상세 목록: `backend/docs/provider-contract-v1.md` 16장
 
@@ -223,7 +224,7 @@
 
 ### D-022 — 방문 예정 시각의 초단기예보 우선
 
-- 상태: `Accepted`, 일정 기반 선택 구현은 후속 작업
+- 상태: `Accepted`, Weather Tool 구현 완료
 - 결정: MVP Weather 기본 데이터는 현재 관측이 아닌 기상청 초단기예보
 - 즉시 방문: 현재 시각과 가장 가까운 예보 사용
 - 특정 시간/일정: 방문 예정 시각과 가장 가까운 예보 사용
@@ -232,8 +233,53 @@
 - 추가 검토 조건: 실제 테스트에서 즉시 방문 추천 품질 부족이 확인된 경우
 - Weather metadata: `data_type=forecast`, `retrieved_at`, `forecast_for`,
   `observed_at=null`
-- 현재 구현 차이: 가장 이른 초단기예보만 선택하며 방문 예정 시각 입력과 metadata 없음
+- 구현: timezone 없는 입력은 KST로 가정하고, 가장 가까운 예보를 선택하며 동률이면
+  미래 예보를 우선
 - 이유: 사용자의 요청 시점보다 실제 장소 도착·방문 시점의 날씨가 추천 판단에 중요
+
+### D-023 — 장소 다건 상세조회 Provider 교체 경계
+
+- 상태: `Accepted`, DB 구현은 `TBD`
+- 결정: 후보 검색과 상세조회를 각각 `PlaceSearchProvider`,
+  `PlaceDetailsProvider`로 분리하고 `NearbyPlaceDetailsTool`에서 조합한다.
+- 근거: TourAPI로 장소 10개의 상세정보를 조회하면 목록 1회와 장소별 상세 2회로
+  최대 21회의 외부 요청이 발생하며, 2026-07-23 로컬 실측에서 동시성 3 기준 약
+  20초가 소요됐다.
+- 방향: 실서비스에서는 상세정보를 우선 DB 다건 조회로 교체하고, 누락되거나 오래된
+  데이터만 TourAPI로 보완한다. 필요하면 후보 검색도 이후 DB로 이전한다.
+- 미확정: DB 종류·스키마, 갱신 주기, stale 기준, 캐시 및 fallback 정책
+
+### D-024 — 여행코스 운영시간 누락 처리
+
+- 상태: `Accepted`, 운영 상태 evaluator는 `TBD`
+- 결정: 여행코스(`content_type_id=25`)에 운영시간 원본이 없으면 `all_day`로
+  정규화한다.
+- 구분: 실제 Provider 명시값과 혼동하지 않도록 `parse_status=assumed`,
+  `assumption_reason=course_without_operating_hours`를 기록한다.
+- 예외: 다른 장소 유형의 운영시간 누락은 `unknown`을 유지한다.
+- 원문: 운영시간과 휴무 원문은 그대로 보존하고 HTML을 정리한 별도 필드를 둔다.
+- 이유: 여행코스 자체는 개별 시설의 입장시간과 다른 이동 경로 데이터이며, 누락을
+  이유로 후보 전체를 운영 미확인으로 제외하지 않기 위함
+
+### D-025 — `resolve_location` 종로구 범위와 재질문 정책
+
+- 상태: `Accepted`, Tool 구현 완료
+- 지원 범위: MVP는 서울특별시 종로구로 한정하며 범위 밖은 `unsupported`
+- alias: 공식 주소를 우선 조회하고 정상 빈 결과에만 원문으로 1회 fallback
+- 장애: timeout·인증·통신·파싱 실패에는 fallback하지 않고 `unavailable`
+- 모호성: 직접·fallback 결과가 복수이면 임의 선택하지 않고 `no_data`와
+  `details.reason=ambiguous_location`으로 사용자에게 구체적인 위치를 요청
+- 검증: 좌표 bounding box가 아니라 Provider의 행정구 정보를 사용
+
+### D-026 — Weather Tool v1 시간·범위 정책
+
+- 상태: `Accepted`, Tool 구현 완료
+- 서비스 전제: 국내 사용자·국내 장소, 별도 표기 없는 시각은 `Asia/Seoul`
+- 즉시 방문: `visit_at=None`이면 Backend Clock 사용
+- 명시 시각: 예보 범위 밖이면 마지막 예보로 대체하지 않고 `unsupported`
+- 지역: Weather Tool은 좌표만 검증하며 서비스 지역 통제는 위치 Tool과 상위 계층 책임
+- v1 필드: condition, SKY, PTY와 예보·조회 시각만 사용
+- 범위 밖: 온도·습도·강수량·풍속, 해외 현지 시간, DST
 
 ## 현재 논의가 필요한 항목
 
@@ -245,15 +291,15 @@
 | Frontend 저장 | `sessionStorage` 유지 또는 `localStorage` 전환 | `TBD` |
 | Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); 실제 파이프라인(route) 연결 | 연결은 `TBD` |
 | 혼잡도 fallback | 장소 근접치, 구 단위, Feature 제외 | 현재 논의 중 |
-| 운영시간 파싱 | 휴무·공휴일·계절별 시간과 unknown 처리 | `TBD` |
+| 운영시간 파싱 | 기본 시간·월별·주간 휴무 구현, 공휴일·회차 예외 확대 | `부분 구현` |
 | 이동시간 | 지도 Provider 및 교통수단별 계산 | `TBD` |
 | 조건 완화 | 자동 완화 범위와 사용자 확인 UX | `TBD` |
 | 관측성 | 구조화 로그, tracing, 보존기간 | `TBD` |
 | Provider metadata 구현 | 공통 wrapper, Clock, 기존 필드 마이그레이션 | 설계 확정/구현 `TBD` |
-| Tool 오류 구현 | `ToolResult<T>`, 오류 매핑, fallback 연결 | 설계 확정/구현 `TBD` |
+| Tool 오류 구현 | 전용 결과에서 분류 구현, 공통 `ToolResult<T>` 적용 | 부분 구현 |
 | Provider Blocker | P0~P3 표의 해결 조건 기준으로 추적 | 목록 확정/해결 진행 `TBD` |
 | ProviderError 구현 | 공통 오류 모델, sanitize, ToolError 변환 | 설계 확정/구현 `TBD` |
-| Weather 방문시각 선택 | visit_at 입력, forecast_for 선택, 범위 초과 처리 | 정책 확정/구현 `TBD` |
+| Weather 방문시각 선택 | visit_at 입력, forecast_for 선택, 범위 초과 처리 | 구현 완료 |
 | 배포 | Hosting, CI/CD, Secret 관리 | `TBD` |
 
 ## 변경 이력
@@ -269,4 +315,6 @@
 | 2026-07-23 | Backend Python/JSON snake_case 공통 규칙 확정 |
 | 2026-07-23 | ProviderMetadata와 ProviderError 분리 및 오류 시각 계약 확정 |
 | 2026-07-23 | 방문 예정 시각의 초단기예보 우선 정책 확정 |
+| 2026-07-23 | 종로구 `resolve_location` 범위·fallback·재질문 정책 구현 반영 |
+| 2026-07-23 | Weather Tool v1의 KST·방문시각·예보 범위 정책 구현 반영 |
 | 2026-07-23 | D-008 재설계: 운영 유무를 가중치에서 제외하고 `now`/`OperatingHours` 기반 최종 하드 필터로 이동, 가중치 Feature를 남은 운영시간(분 정규화)으로 교체 (날씨 0.40/남은 운영시간 0.40/거리 0.20), `weights_used`를 후보별로 노출하도록 변경 |
