@@ -91,7 +91,6 @@ class RealWeatherProvider:
         base_date, base_time = resolve_base_date_time(datetime.now(_KST))
 
         params = {
-            "serviceKey": self._api_key,
             "pageNo": "1",
             "numOfRows": "100",
             "dataType": "JSON",
@@ -100,20 +99,26 @@ class RealWeatherProvider:
             "nx": str(nx),
             "ny": str(ny),
         }
+        request_params = {"serviceKey": self._api_key, **params}
 
         try:
             response = await self._client.get(
-                _ULTRA_SRT_FCST_URL, params=params, timeout=self._timeout_seconds
+                _ULTRA_SRT_FCST_URL,
+                params=request_params,
+                timeout=self._timeout_seconds,
             )
             response.raise_for_status()
             payload = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
+        except (httpx.HTTPError, ValueError):
+            # httpx 원인 예외에는 ServiceKey가 포함된 요청 정보가 남을 수 있다.
+            request_params.clear()
+            response = None
             raise AppError(
                 code="weather_unavailable",
                 message="날씨 정보를 가져오지 못했습니다.",
                 status_code=502,
                 retryable=True,
-            ) from exc
+            ) from None
 
         header = payload.get("response", {}).get("header", {})
         if header.get("resultCode") != "00":

@@ -101,7 +101,7 @@ class RealGeocodingProvider:
         if not normalized:
             raise AppError(code="invalid_request", message="위치를 입력해주세요.")
 
-        headers = {
+        request_headers = {
             "Accept": "application/json",
             "x-ncp-apigw-api-key-id": self._api_key_id,
             "x-ncp-apigw-api-key": self._api_key,
@@ -110,17 +110,23 @@ class RealGeocodingProvider:
 
         try:
             response = await self._client.get(
-                _GEOCODE_URL, params=params, headers=headers, timeout=self._timeout_seconds
+                _GEOCODE_URL,
+                params=params,
+                headers=request_headers,
+                timeout=self._timeout_seconds,
             )
             response.raise_for_status()
             payload = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
+        except (httpx.HTTPError, ValueError):
+            # httpx 원인 예외에는 인증 헤더가 포함된 요청 정보가 남을 수 있다.
+            request_headers.clear()
+            response = None
             raise AppError(
                 code="geocoding_unavailable",
                 message="위치 검색 서비스를 사용할 수 없습니다.",
                 status_code=502,
                 retryable=True,
-            ) from exc
+            ) from None
 
         if payload.get("status") != "OK":
             raise AppError(

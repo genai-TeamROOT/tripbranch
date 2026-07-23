@@ -112,3 +112,17 @@ async def test_real_weather_provider_raises_on_failed_result_code() -> None:
 
     assert exc_info.value.code == "weather_unavailable"
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_real_weather_provider_does_not_chain_sensitive_request() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = RealWeatherProvider(api_key="sensitive-key", client=client)
+        with pytest.raises(AppError) as exc_info:
+            await provider.get_current_condition(37.5636, 126.9976)
+
+    assert exc_info.value.code == "weather_unavailable"
+    assert exc_info.value.__cause__ is None

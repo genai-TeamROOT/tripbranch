@@ -133,4 +133,5 @@ async def test_real_geocoding_provider_raises_unavailable_on_http_error() -> Non
         await provider.geocode("서울역")
 
     assert exc_info.value.code == "geocoding_unavailable"
+    assert exc_info.value.__cause__ is None
     await client.aclose()
