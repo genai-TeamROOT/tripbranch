@@ -53,6 +53,14 @@ class PlaceRepository(Protocol):
         fetched_at: datetime,
     ) -> None: ...
 
+    async def update_parsed_schedule(
+        self,
+        content_id: str,
+        operating_schedule: Mapping[str, object] | None,
+        parse_status: str,
+        parser_version: str,
+    ) -> None: ...
+
     async def mark_detail_failed(self, content_id: str, error_code: str) -> None: ...
 
     async def reactivate_source_missing_places(

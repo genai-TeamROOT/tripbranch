@@ -257,6 +257,28 @@ async def test_mark_detail_failed_does_not_overwrite_cached_details() -> None:
 
 
 @pytest.mark.asyncio
+async def test_update_parsed_schedule_does_not_change_detail_fetched_at() -> None:
+    seen_payload: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_payload.update(json.loads(request.content))
+        return httpx.Response(204)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        await _repository(transport, client).update_parsed_schedule(
+            "126508",
+            {"availability": "scheduled"},
+            "parsed",
+            "operating-hours-1.1.0",
+        )
+
+    assert seen_payload["operating_parser_version"] == "operating-hours-1.1.0"
+    assert "detail_fetched_at" not in seen_payload
+    assert "operating_hours_raw" not in seen_payload
+
+
+@pytest.mark.asyncio
 async def test_deactivate_unseen_places_returns_changed_count() -> None:
     seen_request: httpx.Request | None = None
 

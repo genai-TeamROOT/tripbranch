@@ -346,6 +346,27 @@ class SupabasePlaceRepository:
             prefer="return=minimal",
         )
 
+    async def update_parsed_schedule(
+        self,
+        content_id: str,
+        operating_schedule: Mapping[str, object] | None,
+        parse_status: str,
+        parser_version: str,
+    ) -> None:
+        if parse_status not in _VALID_PARSE_STATUSES:
+            raise ValueError("유효하지 않은 parse_status입니다.")
+        await self._request(
+            "PATCH",
+            "/places",
+            params={"content_id": f"eq.{content_id}"},
+            json={
+                "operating_schedule": operating_schedule,
+                "operating_parse_status": parse_status,
+                "operating_parser_version": parser_version,
+            },
+            prefer="return=minimal",
+        )
+
     async def reactivate_source_missing_places(
         self,
         content_ids: Sequence[str],

@@ -195,7 +195,7 @@ release_place_sync_lock(...)
 
 - 최초 파서 버전은 `operating-hours-1.0.0`으로 시작한다.
 - 현재 파서 버전은 백엔드 코드의
-  `OPERATING_HOURS_PARSER_VERSION` 상수로 관리한다.
+  `OPERATING_PARSER_VERSION` 상수로 관리한다.
 - 각 장소를 마지막으로 처리한 버전은
   `places.operating_parser_version`에 저장한다.
 - 버전은 `operating-hours-MAJOR.MINOR.PATCH` 형식을 사용한다.

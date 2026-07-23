@@ -187,6 +187,14 @@ class RealPlaceProvider:
             request_params.clear()
             response = None
             raise ProviderTimeoutError("TourAPI") from None
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            request_params.clear()
+            response = None
+            exc = None
+            raise ProviderUnavailableError(
+                "TourAPI", detail=f"HTTP {status_code}"
+            ) from None
         except httpx.HTTPError:
             request_params.clear()
             response = None
