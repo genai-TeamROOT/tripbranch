@@ -89,15 +89,15 @@ type ErrorResponse = {
 
 ```ts
 type ChatRequest = {
-  chatSessionId: string;
+  chat_session_id: string;
   message: string;
   context?: ChatContext;
   debug?: boolean;
 };
 
 type ChatContext = {
-  currentPlaceId?: string;
-  currentLocation?: {
+  current_place_id?: string;
+  current_location?: {
     latitude: number;
     longitude: number;
   };
@@ -105,17 +105,17 @@ type ChatContext = {
 };
 ```
 
-- `chatSessionId`는 Frontend가 새 채팅 생성 시 생성합니다.
+- `chat_session_id`는 Frontend가 새 채팅 생성 시 생성합니다.
 - `message` 원문은 Backend 영구 저장 대상이 아닙니다.
 - `context`는 신뢰 가능한 서버 상태를 대체하지 않으며 검증이 필요합니다.
-- 필드 naming을 camelCase로 유지할지 현재 snake_case와 통일할지는 `TBD`입니다.
+- Backend Python과 JSON 필드는 프로젝트 공통 규칙에 따라 `snake_case`를 사용합니다.
 
 ### `ChatResponse`
 
 ```ts
 type ChatResponse = {
-  chatSessionId: string;
-  recommendationRunId?: string;
+  chat_session_id: string;
+  recommendation_run_id?: string;
   intent: Intent;
   message: string;
   recommendations?: RecommendationResult[];
@@ -153,8 +153,8 @@ type ClarificationRequest = {
 ```ts
 type InterpretResultDraft = {
   intent: Intent;
-  conditionPatch: ConditionPatch;
-  missingRequiredFields: string[];
+  condition_patch: ConditionPatch;
+  missing_required_fields: string[];
   // confidence/evidence 구조 TBD
 };
 ```
@@ -167,15 +167,15 @@ Interpret 결과는 추천 장소나 Provider 원본 데이터를 포함하지 �
 
 ```ts
 type RecommendationRequest = {
-  chatSessionId: string;
-  recommendationRunId: string;
+  chat_session_id: string;
+  recommendation_run_id: string;
   origin: ResolvedLocation;
   conditions: NormalizedConditions;
   candidates: Candidate[];
-  shownPlaceIds: string[];
-  rejectedPlaceIds: string[];
-  currentContext: CurrentExternalContext;
-  scoringPolicyVersion: string;
+  shown_place_ids: string[];
+  rejected_place_ids: string[];
+  current_context: CurrentExternalContext;
+  scoring_policy_version: string;
 };
 ```
 
@@ -207,13 +207,13 @@ distance, congestion, evidence confidence 등이 추가될 예정이지만 아�
 
 ```ts
 type RecommendationResult = {
-  placeId: string;
+  place_id: string;
   name: string;
   score?: number;
   rank?: number;
   reason: string;
   warnings: string[];
-  featureScores?: Record<string, number | null>;
+  feature_scores?: Record<string, number | null>;
   snapshot?: RecommendationSnapshot;
 };
 ```
@@ -224,6 +224,74 @@ type RecommendationResult = {
 
 모든 Provider 메서드는 외부 I/O를 고려해 비동기이며 Fake/Real 구현이 같은 계약을
 따릅니다.
+
+### 공통 결과 메타데이터
+
+Provider의 정상 결과에는 다음 공통 metadata를 포함합니다. 이 계약은 설계상
+확정됐지만 현재 코드 모델에는 아직 반영되지 않았습니다.
+
+```ts
+type ProviderMetadata = {
+  source: ProviderSource;
+  status: "success" | "no_data" | "partial";
+  retrieved_at: string; // UTC ISO 8601: 2026-07-23T05:30:00.123Z
+};
+
+type ProviderSource =
+  | "naver_geocoding"
+  | "kma_ultra_short_forecast"
+  | "tour_api_place"
+  | "tour_api_concentration"
+  | "kasi_holiday"
+  | "fake_geocoding"
+  | "fake_weather"
+  | "fake_place"
+  | "fake_concentration"
+  | "fake_holiday";
+```
+
+- `success`: 유효 데이터가 하나 이상 있는 정상 결과
+- `no_data`: 호출·파싱은 성공했지만 유효 데이터가 없는 정상 결과
+- `partial`: 일부 누락이 있으나 안전하게 사용할 데이터가 있는 결과
+- `unavailable`: 결과 status가 아니라 Provider/Tool 오류로 처리
+- `retrieved_at`: 캐시 반환 시각이 아닌 최초 외부 조회·정규화 완료 시각
+- Python 모델과 Backend JSON 모두 `retrieved_at` 사용
+
+단건 Geocoding과 정확 장소 조회는 찾지 못한 경우 기존 `not_found` 오류 의미를
+유지합니다. `no_data`는 장소 후보, 집중률, 공휴일 같은 목록 또는 선택 Feature의
+빈 결과에 사용합니다.
+
+### Provider 실패 계약
+
+정상 결과에는 `ProviderMetadata`가 붙고, 호출 실패 시에는 정상 결과 대신
+`ProviderError`가 발생합니다.
+
+```ts
+type ProviderError = {
+  source: ProviderSource;
+  code: "invalid_input" | "not_found" | "unavailable" | "internal_error";
+  cause:
+    | "timeout"
+    | "unauthorized"
+    | "rate_limited"
+    | "network"
+    | "upstream_error"
+    | "parse_error"
+    | "validation_error"
+    | "unknown";
+  occurred_at: string;
+  retryable: boolean;
+  message: string;
+  details?: Record<string, unknown>;
+};
+```
+
+- `retrieved_at`: 데이터를 성공적으로 조회하고 정규화한 시각
+- `occurred_at`: Provider 오류를 감지한 시각
+- 실패 결과에 `retrieved_at`을 생성하지 않음
+- `no_data`는 오류가 아니라 `status="no_data"`인 정상 결과
+- 파싱 실패는 `unavailable/parse_error`
+- `message`와 `details`에는 Secret과 전체 요청 URL을 포함하지 않음
 
 | Provider | 주요 메서드 | 내부 반환 타입 |
 | --- | --- | --- |
@@ -241,29 +309,173 @@ type RecommendationResult = {
 [`backend/docs/provider-contract-v1.md`](../backend/docs/provider-contract-v1.md)를
 참고합니다.
 
+### Weather 시간 metadata
+
+Weather 결과는 관측과 예보를 혼동하지 않도록 Provider 공통 metadata를 확장합니다.
+
+```ts
+type WeatherMetadata = ProviderMetadata & {
+  data_type: "forecast";
+  forecast_for: string;
+  observed_at: string | null;
+};
+```
+
+- `data_type`: MVP에서는 `forecast`
+- `retrieved_at`: Provider 조회·정규화 시각
+- `forecast_for`: 추천 판단에 사용한 예보 대상 시각
+- `observed_at`: 현재 관측값은 사용하지 않으므로 `null`
+- 즉시 추천은 현재와 가장 가까운 예보 선택
+- 특정 시간 추천은 방문 예정 시각과 가장 가까운 예보 선택
+
+현재 코드는 가장 이른 초단기예보만 선택하고 위 metadata를 반환하지 않습니다. 방문
+예정 시각 입력과 `WeatherMetadata` 적용은 후속 구현 작업입니다.
+
 ## 6. Tool 계약 초안
 
 Tool은 아직 코드로 구현되지 않았습니다. 다음 이름과 책임은 방향이며 입력·출력
-스키마는 `TBD`입니다.
+스키마의 업무별 `data` 타입은 `TBD`입니다. 공통 결과와 오류 envelope는 v1으로
+확정합니다.
 
 | Tool | 책임 | 예상 Provider |
 | --- | --- | --- |
-| `resolveLocation` | 장소명/주소를 좌표로 해석 | Geocoding |
-| `searchNearbyPlaces` | 기준 좌표 주변 후보 수집 | Place |
-| `getPlaceDetails` | 특정 장소 식별 및 상세정보 조회 | Place |
-| `estimateTravelTime` | 이동수단별 예상 시간 계산 | 지도/위치 Provider TBD |
-| `getCurrentWeather` | 현재 날씨 조회 및 정규화 | Weather |
-| `getCongestion` | 장소/지역 혼잡도 조회 | Concentration |
-| `searchPlaceFeatureEvidence` | 조용함·분위기 근거 수집 | Naver Blog Search TBD |
+| `resolve_location` | 장소명/주소를 좌표로 해석 | Geocoding |
+| `search_nearby_places` | 기준 좌표 주변 후보 수집 | Place |
+| `get_place_details` | 특정 장소 식별 및 상세정보 조회 | Place |
+| `estimate_travel_time` | 이동수단별 예상 시간 계산 | 지도/위치 Provider TBD |
+| `get_current_weather` | 현재 날씨 조회 및 정규화 | Weather |
+| `get_congestion` | 장소/지역 혼잡도 조회 | Concentration |
+| `search_place_feature_evidence` | 조용함·분위기 근거 수집 | Naver Blog Search TBD |
 
-Tool 오류는 `success`, `data`, `warnings`, `error`처럼 공통 envelope를 사용할지
-현재 논의 중입니다.
+### 공통 Tool 결과
+
+```ts
+type ToolResult<T> =
+  | {
+      ok: true;
+      data: T;
+      warnings: ToolWarning[];
+      provider_metadata: ProviderMetadata[];
+    }
+  | {
+      ok: false;
+      error: ToolError;
+      provider_metadata: ProviderMetadata[];
+    };
+
+type ToolWarning = {
+  code: "partial_data" | "stale_data" | "fallback_used";
+  message: string;
+};
+```
+
+Tool이 Provider를 호출하지 못한 경우 `provider_metadata`는 빈 배열일 수 있습니다.
+복수 Provider를 조합하면 각 정상 결과의 metadata를 호출 순서대로 보존합니다.
+
+### 공통 오류 코드
+
+```ts
+type ToolErrorCode =
+  | "invalid_input"
+  | "not_found"
+  | "no_data"
+  | "unavailable"
+  | "unsupported"
+  | "internal_error";
+
+type ToolErrorCause =
+  | "timeout"
+  | "unauthorized"
+  | "rate_limited"
+  | "network"
+  | "upstream_error"
+  | "parse_error"
+  | "validation_error"
+  | "unknown";
+
+type ToolError = {
+  code: ToolErrorCode;
+  message: string;
+  retryable: boolean;
+  tool: string;
+  cause?: ToolErrorCause;
+  source?: ProviderSource;
+  occurred_at: string;
+  details?: Record<string, unknown>;
+};
+```
+
+`message`는 사용자 또는 상위 계층에 전달 가능한 비민감 문장입니다. ProviderError를
+변환할 때 `source`, `cause`, `occurred_at`, `retryable`을 보존합니다. `details`에는
+API 키, 인증 헤더, 전체 요청 URL, 원본 사용자 발화를 넣지 않습니다.
+
+### `no_data`와 `unavailable`
+
+| 구분 | `no_data` | `unavailable` |
+| --- | --- | --- |
+| 외부 호출 | 성공 | 실패 또는 응답 신뢰 불가 |
+| 파싱 | 성공 | 실패할 수 있음 |
+| 데이터 존재 여부 | 요청 조건에 없음을 확인 | 존재 여부를 판단할 수 없음 |
+| 동일 요청 즉시 재시도 | 기본적으로 의미 없음 | 원인에 따라 가능 |
+| 사용자 행동 | 조건/범위 변경 가능 | 잠시 후 재시도 또는 운영 조치 |
+| 추천 처리 | 선택 Feature면 제외 가능 | 선택 Feature면 fallback 가능, 필수 데이터면 중단 |
+
+HTTP 200이더라도 응답 schema가 깨져 파싱할 수 없으면 `no_data`가 아니라
+`unavailable(cause="parse_error")`입니다. 반대로 빈 `items`가 API의 정상 계약이면
+`no_data`입니다.
+
+### 코드 판정 기준
+
+| 코드 | 의미 | 동일 요청 기본 retry |
+| --- | --- | --- |
+| `invalid_input` | Tool 입력 형식·범위가 잘못됨 | 아니오 |
+| `not_found` | 위치나 특정 장소 같은 식별 대상을 찾지 못함 | 아니오 |
+| `no_data` | 식별 대상은 유효하지만 요청한 부가/목록 데이터가 없음 | 아니오 |
+| `unavailable` | 외부 의존성 문제로 결과를 확인할 수 없음 | 원인에 따라 |
+| `unsupported` | 현재 Tool이 요청 기능·지역·형식을 지원하지 않음 | 아니오 |
+| `internal_error` | Tool 자체의 예상하지 못한 오류 | 아니오, 운영 확인 |
+
+`timeout`, `unauthorized`, `rate_limited`는 Orchestrator의 업무 분기를 불필요하게
+늘리지 않도록 v1 최상위 code로 두지 않고 `unavailable`의 `cause`로 둡니다.
+
+### Provider 오류 매핑
+
+| Provider 결과/오류 | Tool 오류 code | cause | retryable 기본값 |
+| --- | --- | --- | --- |
+| `invalid_request`, `ValueError` | `invalid_input` | `validation_error` | `false` |
+| `location_not_found`, `place_not_found` | `not_found` | 생략 가능 | `false` |
+| 정상 빈 후보/forecast/holiday 결과 | `no_data` | 생략 가능 | `false` |
+| `weather_no_data` | `no_data` | 생략 가능 | `false` |
+| `provider_timeout` | `unavailable` | `timeout` | `true` |
+| 인증 401/403 | `unavailable` | `unauthorized` | `false` |
+| HTTP 429 | `unavailable` | `rate_limited` | `true` |
+| `geocoding_unavailable`, `weather_unavailable` | `unavailable` | `upstream_error` | `true` |
+| `provider_unavailable` | `unavailable` | 실제 원인에 맞춤 | 원인에 따라 |
+| Tool 내부 예상 밖 예외 | `internal_error` | `unknown` | `false` |
+
+현재 Provider 오류가 HTTP status나 세부 원인을 구조화해 보존하지 않는 경우가 있어
+`cause`를 정확히 설정하지 못할 수 있습니다. 이 경우 `upstream_error` 또는
+`unknown`을 사용하고 후속 Provider 오류 모델 구현에서 보완합니다.
+
+### Orchestrator 기본 처리
+
+| Tool 오류 | 필수 데이터 | 선택 Feature |
+| --- | --- | --- |
+| `invalid_input` | 요청 검증 실패 또는 사용자 수정 요청 | 해당 Feature 입력 무시 금지; 수정 요청 |
+| `not_found` | 위치/장소 재확인 요청 | 대상 Feature 제외 가능 |
+| `no_data` | 조건 완화 여부를 사용자에게 확인 | Feature 제외 후 warning과 함께 진행 가능 |
+| `unavailable` | 제한된 재시도 후 실행 실패 | fallback/Feature 제외 후 warning 가능 |
+| `unsupported` | 지원 범위 안내 | Feature 제외 가능 |
+| `internal_error` | 안전하게 실패하고 실행 ID 로그 | 원칙적으로 자동 무시하지 않음 |
+
+명시적 필수 조건을 자동으로 완화하지 않습니다. Tool은 오류를 분류하고,
+중단·부분 진행·재질문의 최종 결정은 Orchestrator가 담당합니다.
 
 ## 7. 세션과 실행 식별자
 
 | 필드 | 생성 주체 | 역할 | 현재 구현 |
 | --- | --- | --- | --- |
-| `chatSessionId` | Frontend | 채팅 하나 식별, 사용자 ID 아님 | 미구현 |
-| `recommendationRunId` | Backend | 추천 실행·로그·Snapshot 연결 | 미구현 |
+| `chat_session_id` | Frontend | 채팅 하나 식별, 사용자 ID 아님 | 미구현 |
+| `recommendation_run_id` | Backend | 추천 실행·로그·Snapshot 연결 | 미구현 |
 
 형식은 UUID 사용 방향이지만 버전, 저장 위치, 중복/재시도 정책은 `TBD`입니다.
