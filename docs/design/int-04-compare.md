@@ -326,5 +326,5 @@ MVP 처리:
 - [INT-01: RECOMMEND](./int-01-recommend.md) — 추천 결과 및 점수 계산
 - [INT-02: INFO](./int-02-info.md) — 비교 후 장소 상세 조회 연계
 - [INT-03: MODIFY](./int-03-modify.md) — 비교 후 거절 시 재추천
-- [추천 점수 설계](./recommendation-scoring.md) — 비교에 사용되는 점수 항목
-- [MVP 설계 기준서](./mvp-design-spec.md) — 추천 결과 표시 항목
+- [추천 점수 설계](./recommendation-scoring.md) — 비교에 사용되는 점수 항목(현재x)
+- [MVP 설계 기준서](./mvp-design-spec.md) — 추천 결과 표시 항목(현재x)

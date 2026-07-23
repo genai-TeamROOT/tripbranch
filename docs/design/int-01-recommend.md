@@ -55,7 +55,7 @@ Score 계산 (가중치 적용)
 ```typescript
 interface Conditions {
   // 위치
-  current_location: string | null;
+  current_location: string; // 필수 (새 채팅 시작 시 GPS로 확보)
   search_center: string | null;
 
   // 장소 유형 (복수 가능)
@@ -97,7 +97,7 @@ interface Conditions {
 
 | 필드 | 타입 | 설명 | 처리 방식 | 예시 |
 |------|------|------|-----------|------|
-| `current_location` | string \| null | 사용자의 현재 위치 | Update | "강남역", GPS 좌표 문자열 |
+| `current_location` | string | 사용자의 현재 위치 (세션 시작 시 GPS로 필수 확보) | Update | "강남역", GPS 좌표 문자열 |
 | `search_center` | string \| null | 장소 검색 기준점. null이면 current_location 사용 | Update | "경복궁", "성수동", null |
 
 ### 장소 유형 필드
@@ -286,11 +286,13 @@ type PlaceTag =
   | "한식" | "일식" | "중식" | "양식" | "카페" | "찻집" | "주점" | "분식";
 ```
 
-### place_tags → place_type 소속 매핑
+### place_tags → place_type 소속 매핑 (수정)
+ - '신분류체계정보 관광타입정보 연계 정의서.xlsx' 참고 
+
 
 | place_tag | 소속 place_type | 신분류 코드 (참고) |
 |-----------|----------------|-------------------|
-| 공원 | attraction | VE0301~VE0305 |
+| 공원 | attraction | VE030100~VE030500 |
 | 궁궐 | attraction | HS010100 |
 | 산 | attraction | NA010100 |
 | 해변 | attraction | NA020900 |
@@ -305,30 +307,31 @@ type PlaceTag =
 | 마을 | attraction | VE040200 |
 | 둘레길 | attraction | VE040300 |
 | 전통체험 | attraction | EX010100 |
-| 공예체험 | attraction | EX0201xx |
-| 웰니스 | attraction | EX0501xx |
+| 공예체험 | attraction | EX020100~EX020400 |
+| 웰니스 | attraction | EX050100~EX050800 |
 | 박물관 | cultural_facility | VE070100 |
 | 미술관 | cultural_facility | VE070600 |
 | 도서관 | cultural_facility | VE090300 |
 | 공연장 | cultural_facility | VE060100 |
 | 과학관 | cultural_facility | VE070500 |
 | 전시관 | cultural_facility | VE070300 |
-| 축제 | festival | EV0101xx |
+| 축제 | festival | EV010100~EV010600 |
 | 전시회 | festival | EV030100 |
-| 공연 | festival | EV0201xx |
+| 공연 | festival | EV020100~EV021000 |
 | 콘서트 | festival | EV020700 |
-| 시장 | shopping | SH0601~SH0602 |
+| 시장 | shopping | SH060100~SH060200 |
 | 쇼핑몰 | shopping | SH020100 |
-| 면세점 | shopping | SH0401xx |
+| 면세점 | shopping | SH040100~SH040300 |
 | 백화점 | shopping | SH010100 |
-| 한식 | restaurant | FD0101xx |
+| 한식 | restaurant | FD010100~FD010200 |
 | 일식 | restaurant | FD020200 |
 | 중식 | restaurant | FD020100 |
 | 양식 | restaurant | FD020300 |
 | 카페 | restaurant | FD050100 |
 | 찻집 | restaurant | FD050200 |
-| 주점 | restaurant | FD0401xx |
+| 주점 | restaurant | FD040100~FD040500 |
 | 분식 | restaurant | FD030400 |
+
 
 ### place_tags 처리 규칙
 
@@ -429,7 +432,7 @@ LLM이 AVOID/ENJOY 판별 불가
 | `environment` | 단일 | Update | "야외로" → outdoor |
 | `companion` | 단일 | Update | "아이랑 같이" → child |
 | `budget` | 단일 | Update / Remove | "무료만" → "free" / "가격 상관없어" → null |
-| `preference_tags` | 복수 | Add / Remove | "조용한 곳" → 추가 |
+| `preference_tags` | 복수 | Add / Remove | "조용한 곳" → 추가(심화) |
 | `exclude_tags` | 복수 | Add / Remove | "시끄러운 곳 빼줘" → 추가 |
 | `special_requirements` | 복수 | Add / Remove | "주차 가능한 곳" → 추가 |
 
