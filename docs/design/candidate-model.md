@@ -183,6 +183,13 @@ type EnvironmentType =
 
 ### 재정규화 예시
 
+> **[2026-07-23 Superseded]** 아래 예시의 `category`/`remaining_time` 가중치는
+> Scoring v1 결정(D-008, [`recommendation-scoring.md`](./recommendation-scoring.md))에
+> 따라 폐기되었습니다. 카테고리는 하드 필터로만 처리하고, 운영시간은 분 단위
+> `remaining_time`이 아니라 운영 유무(OPEN/UNKNOWN) 이진 값으로 단순화되었습니다.
+> 현재 기본 가중치는 날씨 0.40 / 운영 유무 0.40 / 거리 0.20이며, 날씨 결측 시
+> 나머지 두 Feature에 비례 재분배합니다.
+
 ```
 정상 (날씨 있음):
   category: 0.40

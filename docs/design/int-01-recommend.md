@@ -512,6 +512,12 @@ LLM이 AVOID/ENJOY 판별 불가
 
 ### 카테고리 점수
 
+> **[2026-07-23 Superseded]** 카테고리를 가중치 점수로 계산하는 아래 방식은
+> Scoring v1 결정(D-008, [`recommendation-scoring.md`](./recommendation-scoring.md))에
+> 따라 폐기되었습니다. 카테고리(place_type/place_tag)는 가중치 계산이 아니라
+> 1차 하드 필터로만 처리하며, 여러 태그를 동시에 허용한 경우의 우선순위 표현은
+> 아직 `TBD`입니다. 최신 가중치(날씨/운영 유무/거리)는 위 문서를 참고하세요.
+
 ```
 place_tags 언급 순서 기반 (선호 순위):
   rank_1: 1.00  (첫 번째 언급)

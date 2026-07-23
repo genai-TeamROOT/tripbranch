@@ -46,7 +46,7 @@ Holiday Provider는 구현되어 있지만 추천 서비스에 아직 조립되�
 - 담당: 사용자 입력, 메시지·추천 결과 렌더링, API 호출, UI 상태 관리
 - 현재: `TripContext`와 `sessionStorage`에 같은 탭의 대화를 저장
 - 하지 않음: LLM/외부 Provider 직접 호출, API 키 보관, 추천 점수 계산
-- 목표: 새 채팅에서 `chatSessionId` 생성
+- 목표: 새 채팅에서 `chat_session_id` 생성
 
 ### Chat API
 
@@ -75,9 +75,9 @@ Holiday Provider는 구현되어 있지만 추천 서비스에 아직 조립되�
 ### Tool
 
 - 담당: 추천 파이프라인이 사용하는 업무 단위 기능 제공
-- 예: `resolveLocation`, `searchNearbyPlaces`, `getPlaceDetails`,
-  `estimateTravelTime`, `getCurrentWeather`, `getCongestion`,
-  `searchPlaceFeatureEvidence`
+- 예: `resolve_location`, `search_nearby_places`, `get_place_details`,
+  `estimate_travel_time`, `get_current_weather`, `get_congestion`,
+  `search_place_feature_evidence`
 - 하지 않음: 특정 외부 API 응답 형식을 호출자에게 노출
 - 상태: 별도 Tool 계층은 미구현
 
@@ -138,7 +138,7 @@ Interpret는 “사용자가 무엇을 원하는가”를 조건으로 추출합
 ### Provider와 Tool
 
 Provider는 TourAPI나 기상청처럼 외부 시스템과 직접 통신합니다. Tool은
-`getPlaceDetails`처럼 업무 목적을 표현하며 하나 이상의 Provider 호출을 조합할 수
+`get_place_details`처럼 업무 목적을 표현하며 하나 이상의 Provider 호출을 조합할 수
 있습니다. 두 계층은 외부 엔드포인트와 1:1일 필요가 없습니다.
 
 ### 외부 응답과 추천 모델
@@ -161,10 +161,10 @@ Provider/Mapper가 `PlaceCandidate`, `PlaceDetails`, `WeatherCondition` 등의 �
 
 ### 식별자 생성 위치
 
-- `chatSessionId`: 새 채팅 생성 시 Frontend가 `crypto.randomUUID()` 등으로 생성
-- `recommendationRunId`: 추천 실행 시작 시 Backend가 생성
+- `chat_session_id`: 새 채팅 생성 시 Frontend가 `crypto.randomUUID()` 등으로 생성
+- `recommendation_run_id`: 추천 실행 시작 시 Backend가 생성
 - 두 식별자는 현재 코드와 API 계약에는 아직 없음 (`TBD`)
-- `chatSessionId`는 사용자 인증 ID가 아님
+- `chat_session_id`는 사용자 인증 ID가 아님
 
 ## 5. 외부 데이터 스냅샷
 
@@ -172,6 +172,21 @@ Provider/Mapper가 `PlaceCandidate`, `PlaceDetails`, `WeatherCondition` 등의 �
 스냅샷으로 표시합니다. 과거 대화를 단순 열람하는 행위는 Provider 재호출을 유발하지
 않고, 사용자가 후속 입력을 보낼 때만 현재 데이터를 새로 조회하는 방향입니다.
 구체 저장 스키마와 TTL은 `TBD`입니다.
+
+### Weather 기준시각
+
+MVP의 Weather 판단은 현재 관측값이 아니라 방문 예정 시각에 가까운 기상청
+초단기예보를 사용합니다.
+
+- 즉시 방문: 현재 시각과 가장 가까운 예보
+- 일정 기반 방문: 방문 예정 시각과 가장 가까운 예보
+- 현재 관측 날씨는 MVP 필수 범위에서 제외
+- 관측값이 추가되더라도 가까운 시간대 판단을 보완하며 방문 시각 예보가 우선
+- 품질 검증에서 즉시 추천이 부족하다고 확인될 때만 관측 API 추가 검토
+
+Weather Snapshot은 `data_type=forecast`, `retrieved_at`, `forecast_for`,
+`observed_at=null`을 보존해야 합니다. 현재 코드는 즉시 방문용 가장 이른 예보만
+선택하며 Snapshot 저장은 미구현입니다.
 
 ## 6. 오류와 fallback 방향
 
@@ -193,7 +208,25 @@ Provider/Mapper가 `PlaceCandidate`, `PlaceDetails`, `WeatherCondition` 등의 �
 - 사용자가 명시한 필수 조건은 자동 완화하지 않고 확인 요청
 - 부분 추천에는 누락된 검증 항목과 경고를 함께 표시
 
-로그 후보 항목은 `recommendationRunId`, Provider/Tool 이름, 시작·종료 시각,
+로그 후보 항목은 `recommendation_run_id`, Provider/Tool 이름, 시작·종료 시각,
 성공 여부, 표준 오류 코드, latency, fallback 여부, 후보 수 변화입니다. API 키,
 사용자 원문, 인증 헤더 및 전체 민감 응답은 기록하지 않습니다. 구체 로그 스키마와
 보존기간은 `TBD`입니다.
+
+### Tool 오류 경계
+
+Tool 공통 오류 code는 `invalid_input`, `not_found`, `no_data`, `unavailable`,
+`unsupported`, `internal_error`로 확정합니다.
+
+- `no_data`: 호출과 파싱은 성공했으며 요청 조건에 데이터가 없음을 확인
+- `unavailable`: timeout, 인증, 네트워크, 파싱 오류 등으로 존재 여부 확인 실패
+- timeout·인증·rate limit은 `unavailable`의 `cause`로 표현
+- Provider 실패는 `ProviderError(source, code, cause, occurred_at, retryable)`로
+  표현하고 ToolError 변환 시 해당 진단정보를 보존
+- 정상 데이터의 `retrieved_at`과 오류 감지 시각 `occurred_at`을 구분
+- Tool은 오류를 분류하고 Orchestrator가 중단·부분 진행·재질문을 결정
+- 선택 Feature의 `no_data`/`unavailable`은 warning과 함께 제외할 수 있음
+- 위치와 장소 후보 같은 필수 데이터의 오류는 추천 실행을 중단하거나 사용자에게
+  조건 수정을 요청
+
+세부 `ToolResult<T>` 및 매핑표는 [API 계약](./api-contracts.md)을 따릅니다.
