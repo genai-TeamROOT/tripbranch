@@ -79,7 +79,7 @@ async def test_list_places_by_area_maps_page_and_place_fields() -> None:
     assert place.longitude == pytest.approx(126.9770162)
     assert place.lcls_systm3 == "VE010100"
     assert place.source_modified_at is not None
-    assert place.source_modified_at.isoformat() == "2026-07-23T15:30:45"
+    assert place.source_modified_at.isoformat() == "2026-07-23T15:30:45+09:00"
 
 
 @pytest.mark.asyncio

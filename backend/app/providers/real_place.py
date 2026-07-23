@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -42,6 +43,7 @@ _REST_DATE_KEYS = (
     "restdateshopping",
     "restdatefood",
 )
+_TOUR_API_TIMEZONE = ZoneInfo("Asia/Seoul")
 
 
 def _first_item(payload: Mapping[str, object]) -> dict[str, object]:
@@ -105,7 +107,9 @@ def _optional_modified_at(value: object) -> datetime | None:
     if value in (None, ""):
         return None
     try:
-        return datetime.strptime(str(value), "%Y%m%d%H%M%S")
+        return datetime.strptime(str(value), "%Y%m%d%H%M%S").replace(
+            tzinfo=_TOUR_API_TIMEZONE
+        )
     except ValueError:
         raise ProviderUnavailableError(
             "TourAPI", detail="areaBasedList2 item has invalid modifiedtime"

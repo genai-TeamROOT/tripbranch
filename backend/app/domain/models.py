@@ -168,6 +168,21 @@ class PlaceOperatingDetails:
 
 
 @dataclass(frozen=True)
+class StoredPlaceState:
+    """상세 재조회와 활성화 여부 판단에 필요한 기존 장소 상태."""
+
+    content_id: str
+    source_modified_at: datetime | None
+    detail_fetched_at: datetime | None
+    detail_fetch_status: str
+    operating_parser_version: str
+    operating_hours_raw: str | None
+    rest_date_raw: str | None
+    is_active: bool
+    inactive_reason: str | None
+
+
+@dataclass(frozen=True)
 class HolidayEntry:
     """한국천문연구원 공휴일 API 응답 한 건."""
 

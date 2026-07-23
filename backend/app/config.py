@@ -38,10 +38,19 @@ class Settings(BaseSettings):
     )
     naver_map_client_id: str = Field(default="", repr=False, exclude=True)
     naver_map_client_secret: str = Field(default="", repr=False, exclude=True)
+    supabase_url: str = ""
+    supabase_service_role_key: str = Field(default="", repr=False, exclude=True)
 
     # Real provider HTTP behavior (ignored by fake providers).
     external_api_timeout_seconds: float = 10.0
     external_api_retry_count: int = 2
+
+    # Place synchronization policy.
+    place_sync_page_size: int = 100
+    place_sync_detail_concurrency: int = 5
+    place_sync_detail_ttl_days: int = 30
+    place_sync_area_code: str = "11"
+    place_sync_district_code: str = "110"
 
     # Fake-provider-only knobs
     fake_weather_condition: str = "neutral"
