@@ -65,18 +65,23 @@
 
 - 상태: `Accepted`; Scoring v1 엔진 `Implemented` (아직 API 라우트에는 미연결)
 - 결정: 명시적 필수 조건은 하드 필터, 선호 조건은 가중치 점수로 처리한다.
-- 현재: `backend/app/domain/scoring.py::score_candidates()`로 카테고리·남은
-  영업시간·날씨·거리 Feature 기반 가중치 점수 계산과 정렬을 구현. 폐점/이전
-  노출·거절 ID는 하드 필터, 운영시간 미확인은 하드 필터에서 제외하고 중립
-  점수 처리. 상세는 [추천 점수 설계](./design/recommendation-scoring.md) 참고.
-- 기본 가중치: 카테고리 0.35 / 날씨 0.25 / 남은 영업시간 0.25 / 거리 0.15
-- 날씨 결측 시: 날씨 가중치를 나머지 3개 Feature에 기존 비중 비례로 재분배
+- 현재: `backend/app/domain/scoring.py::score_candidates()`로 날씨·운영 유무·
+  거리 Feature 기반 가중치 점수 계산과 정렬을 구현. 폐점/이전 노출·거절 ID는
+  하드 필터, 운영시간 미확인은 하드 필터에서 제외하고 중립 점수 처리. 상세는
+  [추천 점수 설계](./design/recommendation-scoring.md) 참고.
+- 카테고리는 가중치 계산에서 제외한다: place_type/place_tag 1차 하드 필터가
+  이미 처리한다고 보고, `category`는 표시용 메타데이터로만 남긴다. 남은
+  영업시간(분)도 세분화하지 않고 운영 유무(OPEN/UNKNOWN)로만 구분한다.
+- 기본 가중치: 날씨 0.40 / 운영 유무 0.40 / 거리 0.20
+- 날씨 결측 시: 날씨 가중치를 나머지 2개 Feature(운영 유무, 거리)에 기존 비중
+  비례로 재분배
 - tie-break: score 내림차순 → distance_km 오름차순 → place_id 오름차순
 - 입력 모델: `ScoringCandidate`(Provider/Tool 독립적인 Candidate Model v1).
   C-01 Tool 계약이 아직 없어 현재는 Stub 데이터로 검증했으며, Tool 확정 후
   "Tool 출력 → `ScoringCandidate`" 매퍼만 추가하면 됨
-- 미결: 혼잡도·근거 신뢰도 Feature, 실제 이동시간 기반 거리, 예산/동행 하드
-  필터, `services/recommendations.py`/`/api/recommendations`와의 실제 연결
+- 미결: 카테고리 하드 필터 자체(및 다중 카테고리 허용 시 우선순위 표현),
+  혼잡도·근거 신뢰도 Feature, 실제 이동시간 기반 거리, 예산/동행 하드 필터,
+  `services/recommendations.py`/`/api/recommendations`와의 실제 연결
   (D-03에서 진행)
 
 ### D-009 — Naver Blog Search는 보완 근거로 사용
@@ -155,3 +160,4 @@
 | --- | --- |
 | 2026-07-23 | Phase 1-A 실개발 시작용 최초 통합 의사결정 로그 작성 |
 | 2026-07-23 | D-008 Scoring v1 엔진 구현 반영 (Feature/가중치/tie-break 확정) |
+| 2026-07-23 | D-008 Scoring v1에서 카테고리 Feature 제외, 남은 영업시간 → 운영 유무로 단순화 (날씨 0.40/운영 유무 0.40/거리 0.20) |

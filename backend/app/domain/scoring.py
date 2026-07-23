@@ -1,9 +1,8 @@
 """Scoring v1: Candidate 목록에 하드 필터와 가중치 점수를 적용해 정렬한다.
 
 역할: `ScoringCandidate` 목록을 받아 폐점/이전 노출/거절 후보를 제외하고,
-카테고리·남은 영업시간·날씨·거리 Feature로 가중치 점수를 계산해 정렬한다.
-입력: `ScoringCandidate` 목록과 실행 조건(선호 카테고리, 날씨, 검색 반경,
-이전 노출·거절 ID).
+운영 유무·날씨·거리 Feature로 가중치 점수를 계산해 정렬한다.
+입력: `ScoringCandidate` 목록과 실행 조건(날씨, 검색 반경, 이전 노출·거절 ID).
 출력: `ScoringResult` (정렬된 `RankedCandidate` 목록, 사용된 가중치, 제외 ID).
 호출 시점: 추천 파이프라인이 후보 조회를 마친 뒤 순위를 매길 때 호출한다.
 설계 근거: `docs/design/recommendation-scoring.md` 참고.
@@ -18,17 +17,13 @@ from dataclasses import dataclass
 from app.domain.models import PlaceStatus, ScoringCandidate, WeatherCondition
 
 DEFAULT_WEIGHTS: Mapping[str, float] = {
-    "category": 0.35,
-    "weather": 0.25,
-    "remaining_time": 0.25,
-    "distance": 0.15,
+    "weather": 0.4,
+    "operating": 0.4,
+    "distance": 0.2,
 }
 
-_REMAINING_TIME_FULL_SCORE_MINUTES = 120.0
-
-_CATEGORY_RANK_SCORES = (1.00, 0.85, 0.70)
-_CATEGORY_RANK_FLOOR_SCORE = 0.60
-_CATEGORY_UNMATCHED_SCORE = 0.50
+_OPERATING_OPEN_SCORE = 1.0
+_OPERATING_UNKNOWN_SCORE = 0.5
 
 _WEATHER_FIT_TABLE: Mapping[tuple[WeatherCondition, str], float] = {
     (WeatherCondition.GOOD, "indoor"): 0.70,
@@ -83,21 +78,11 @@ def _is_excluded(
     return candidate.place_id in shown_place_ids or candidate.place_id in rejected_place_ids
 
 
-def _category_score(category: str, preferred_categories: Sequence[str]) -> float:
-    if not preferred_categories:
-        return 1.0
-    if category not in preferred_categories:
-        return _CATEGORY_UNMATCHED_SCORE
-    rank = preferred_categories.index(category)
-    if rank < len(_CATEGORY_RANK_SCORES):
-        return _CATEGORY_RANK_SCORES[rank]
-    return _CATEGORY_RANK_FLOOR_SCORE
-
-
-def _remaining_time_score(candidate: ScoringCandidate) -> float:
-    if candidate.remaining_open_minutes is None:
-        return 0.5
-    return _clamp(candidate.remaining_open_minutes / _REMAINING_TIME_FULL_SCORE_MINUTES, 0.0, 1.0)
+def _operating_score(candidate: ScoringCandidate) -> float:
+    if candidate.place_status is PlaceStatus.OPEN:
+        return _OPERATING_OPEN_SCORE
+    # CLOSED는 하드필터에서 이미 제외되므로 여기 도달하면 UNKNOWN이다.
+    return _OPERATING_UNKNOWN_SCORE
 
 
 def _weather_fit_score(candidate: ScoringCandidate, weather_condition: WeatherCondition) -> float:
@@ -128,7 +113,6 @@ def redistribute_weights(
 def score_candidates(
     candidates: Sequence[ScoringCandidate],
     *,
-    preferred_categories: Sequence[str] = (),
     weather_condition: WeatherCondition | None,
     max_distance_km: float,
     shown_place_ids: Iterable[str] = (),
@@ -139,7 +123,7 @@ def score_candidates(
 
     1. 폐점/이전 노출/거절 후보 제외 (운영시간 미확인은 제외하지 않음)
     2. 날씨 정보 유무에 따라 기본 가중치 또는 재분배 가중치 결정
-    3. Feature별 점수 계산 후 가중합
+    3. Feature별 점수 계산 후 가중합 (운영 유무, 날씨, 거리)
     4. score 내림차순 → distance_km 오름차순 → place_id 오름차순으로 정렬
     """
     base_weights = dict(weights) if weights is not None else dict(DEFAULT_WEIGHTS)
@@ -161,8 +145,7 @@ def score_candidates(
             continue
 
         feature_scores: dict[str, float | None] = {
-            "category": _category_score(candidate.category, preferred_categories),
-            "remaining_time": _remaining_time_score(candidate),
+            "operating": _operating_score(candidate),
             "distance": _distance_score(candidate.distance_km, max_distance_km),
         }
         feature_scores["weather"] = (

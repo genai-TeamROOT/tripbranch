@@ -112,10 +112,14 @@ class ScoringCandidate:
 
     역할: 특정 Provider나 Tool 출력 형태에 종속되지 않는 정규화된 후보 표현.
     `PlaceCandidate`(Provider 산출물)에 Tool Context가 채워 넣은 판단 근거
-    (운영 상태, 남은 영업시간, 실내외 구분, 거리)를 더해 Scoring이 필요로
-    하는 형태로 만든 것이다. C-01 Tool 계약이 확정되기 전에는 이 모델에
-    맞춘 응답 샘플/Stub 데이터로 Scoring을 개발하고, Tool 완성 후에는
-    Tool 출력 → 이 모델로의 변환만 새로 작성하면 된다.
+    (운영 상태, 실내외 구분, 거리)를 더해 Scoring이 필요로 하는 형태로 만든
+    것이다. C-01 Tool 계약이 확정되기 전에는 이 모델에 맞춘 응답 샘플/Stub
+    데이터로 Scoring을 개발하고, Tool 완성 후에는 Tool 출력 → 이 모델로의
+    변환만 새로 작성하면 된다.
+
+    `category`는 표시용 메타데이터로만 보존한다 (Scoring v1은 카테고리를
+    가중치 계산에 사용하지 않기로 결정됨). 운영시간은 남은 분(minute) 단위가
+    아니라 `place_status`의 운영 유무로만 구분한다.
     """
 
     place_id: str
@@ -124,5 +128,4 @@ class ScoringCandidate:
     environment_type: str  # "indoor" | "outdoor" | "unknown"
     distance_km: float
     place_status: PlaceStatus
-    remaining_open_minutes: int | None
     raw_source: str = "unknown"
