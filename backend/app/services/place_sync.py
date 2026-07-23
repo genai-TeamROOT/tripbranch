@@ -414,7 +414,7 @@ class PlaceSyncService:
     def _validate_page(self, page: TourPlacePage, *, expected_page: int) -> None:
         if page.page_no != expected_page:
             raise IncompletePlaceListError("unexpected page number")
-        if page.num_of_rows != self._page_size:
+        if not 0 <= page.num_of_rows <= self._page_size:
             raise IncompletePlaceListError("unexpected page size")
         if any(
             not place.content_id or not place.content_type_id or not place.title

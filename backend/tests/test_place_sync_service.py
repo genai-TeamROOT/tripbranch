@@ -82,11 +82,12 @@ class FakeAreaProvider:
     ) -> TourPlacePage:
         self.list_calls.append(page_no)
         start = (page_no - 1) * num_of_rows
+        page_places = tuple(self.places[start : start + num_of_rows])
         return TourPlacePage(
             page_no=page_no,
-            num_of_rows=num_of_rows,
+            num_of_rows=len(page_places),
             total_count=len(self.places),
-            places=tuple(self.places[start : start + num_of_rows]),
+            places=page_places,
         )
 
     async def get_operating_details(
