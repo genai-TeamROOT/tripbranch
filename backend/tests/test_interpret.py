@@ -1,10 +1,10 @@
 """사용자 입력 해석 API 회귀 테스트.
 
-역할: /api/interpret의 정상 응답과 요청 검증 오류 포맷을 확인한다.
+역할: /api/interpret이 fake LLMProvider 경로에서 LLMOutput 계약(intent/status/payload)을
+지키는지, 요청 검증 오류 포맷이 유지되는지 확인한다.
 입력: TestClient가 보내는 POST /api/interpret JSON payload.
-출력: 해석 조건 JSON과 공통 오류 JSON에 대한 pytest assertion.
+출력: LLMOutput JSON과 공통 오류 JSON에 대한 pytest assertion.
 호출 시점: 로컬 테스트와 CI에서 pytest 실행 시 호출된다.
-TODO: 실제 해석 로직 도입 후 다양한 문장/위치/날씨 케이스를 추가한다.
 """
 
 from fastapi.testclient import TestClient
@@ -12,18 +12,124 @@ from fastapi.testclient import TestClient
 from app.main import app
 
 
-def test_interpret_returns_stub_conditions() -> None:
+def test_interpret_tc01_recommend() -> None:
     client = TestClient(app)
 
-    response = client.post("/api/interpret", json={"user_input": "비 피할 곳 추천해줘"})
+    response = client.post(
+        "/api/interpret", json={"user_input": "경복궁 근처 카페 추천해줘"}
+    )
 
     assert response.status_code == 200
-    assert response.json() == {
-        "location_query": "경복궁",
-        "preferred_categories": ["museum", "cafe"],
-        "weather_condition": "bad",
-        "search_radius_km": 1.0,
-    }
+    body = response.json()
+    assert body["intent"] == "RECOMMEND"
+    assert body["status"] == "complete"
+    assert body["recommend"]["conditions"]["search_center"] == "경복궁"
+    assert body["recommend"]["conditions"]["place_tags"] == ["카페"]
+
+
+def test_interpret_tc02_weather_recommend() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/interpret", json={"user_input": "비 오는데 갈 만한 곳 추천"}
+    )
+
+    conditions = response.json()["recommend"]["conditions"]
+    assert conditions["weather"] == "rain"
+    assert conditions["weather_intent"] == "AVOID"
+    assert conditions["environment"] == "indoor"
+
+
+def test_interpret_tc07_modify_reject_all_requires_history() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/interpret",
+        json={
+            "user_input": "다른 곳 보여줘",
+            "has_previous_recommendation": True,
+            "shown_place_count": 3,
+            "current_conditions": {"search_center": "경복궁"},
+        },
+    )
+
+    body = response.json()
+    assert body["intent"] == "MODIFY"
+    assert body["modify"]["modify_type"] == "REJECT_ALL"
+
+
+def test_interpret_tc07_without_history_falls_back_to_recommend() -> None:
+    """TC-14: 이전 추천 이력 없이 MODIFY 패턴 발화 -> RECOMMEND로 처리."""
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/interpret",
+        json={"user_input": "다른 곳 보여줘", "has_previous_recommendation": False},
+    )
+
+    assert response.json()["intent"] == "RECOMMEND"
+
+
+def test_interpret_tc08_modify_change_condition() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/interpret",
+        json={
+            "user_input": "무료인 곳으로",
+            "has_previous_recommendation": True,
+            "shown_place_count": 2,
+            "current_conditions": {
+                "search_center": "경복궁",
+                "place_types": ["restaurant"],
+            },
+        },
+    )
+
+    body = response.json()
+    assert body["modify"]["modify_type"] == "CHANGE_CONDITION"
+    assert body["modify"]["condition_changes"]["budget"] == "free"
+    assert body["modify"]["changed_fields"] == ["budget"]
+
+
+def test_interpret_modify_without_current_conditions_needs_clarification() -> None:
+    """current_conditions 없이 MODIFY로 판정될 상황이면 LLM 호출 없이 단락 처리."""
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/interpret",
+        json={
+            "user_input": "무료인 곳으로",
+            "has_previous_recommendation": True,
+            "shown_place_count": 2,
+        },
+    )
+
+    body = response.json()
+    assert body["intent"] == "MODIFY"
+    assert body["status"] == "needs_clarification"
+
+
+def test_interpret_tc11_general() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/interpret", json={"user_input": "경복궁은 언제 지어졌어?"}
+    )
+
+    body = response.json()
+    assert body["intent"] == "GENERAL"
+    assert body["general"]["topic"] == "place_knowledge"
+
+
+def test_interpret_tc13_out_of_scope() -> None:
+    client = TestClient(app)
+
+    response = client.post("/api/interpret", json={"user_input": "주식 추천해줘"})
+
+    body = response.json()
+    assert body["intent"] == "OUT_OF_SCOPE"
+    assert body["out_of_scope"]["category"] == "unrelated"
 
 
 def test_interpret_rejects_empty_input() -> None:

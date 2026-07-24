@@ -9,10 +9,12 @@ import pytest
 
 from app.config import Settings
 from app.providers.concentration import RealConcentrationProvider
+from app.providers.gemini import RealGeminiProvider
 from app.providers.geocoding import RealGeocodingProvider
 from app.providers.holiday import RealHolidayProvider
 from app.providers.real_place import RealPlaceProvider
 from app.providers.weather import RealWeatherProvider
+from app.schemas import Intent, UserConditions
 from app.tools.resolve_location import (
     ResolutionMethod,
     ResolveLocationQuery,
@@ -45,6 +47,10 @@ def _required_value(name: str, value: str) -> str:
 
 def _tour_api_service_key() -> str:
     return _required_value("TOUR_API_SERVICE_KEY", settings.tour_api_service_key)
+
+
+def _llm_api_key() -> str:
+    return _required_value("LLM_API_KEY", settings.llm_api_key)
 
 
 async def test_naver_geocoding_real_smoke() -> None:
@@ -146,6 +152,50 @@ async def test_tour_api_concentration_real_smoke() -> None:
     assert result.forecasts
     assert any(forecast.concentration_rate is not None for forecast in result.forecasts)
     print(f"TourAPI Concentration: forecasts={len(result.forecasts)}")
+
+
+async def test_gemini_real_smoke() -> None:
+    """Gemini 연결 + 구조화 출력 JSON 파싱이 실제로 되는지 확인 (오늘 1순위)."""
+    provider = RealGeminiProvider(
+        api_key=_llm_api_key(),
+        model_name=settings.llm_model_name,
+    )
+
+    classification = (
+        await provider.classify_intent(
+            "경복궁 근처 카페 추천해줘",
+            has_previous_recommendation=False,
+            shown_place_count=0,
+        )
+    ).data
+    assert classification.intent is Intent.RECOMMEND
+
+    output = (
+        await provider.extract_recommend_conditions("경복궁 근처 카페 추천해줘")
+    ).data
+    assert output.recommend is not None
+    assert output.recommend.conditions.search_center == "경복궁"
+    print(f"Gemini RECOMMEND: {output.recommend.conditions.model_dump_json()}")
+
+
+async def test_gemini_modify_reject_all_vs_change_condition_real_smoke() -> None:
+    """MODIFY의 REJECT_ALL vs CHANGE_CONDITION 구분이 핵심 검증 포인트."""
+    provider = RealGeminiProvider(
+        api_key=_llm_api_key(),
+        model_name=settings.llm_model_name,
+    )
+    current = UserConditions(search_center="경복궁", place_types=["restaurant"])
+
+    reject_all = (
+        await provider.extract_modify_conditions("다른 곳 보여줘", current)
+    ).data
+    change_condition = (
+        await provider.extract_modify_conditions("무료인 곳으로", current)
+    ).data
+
+    assert reject_all.modify.modify_type.value == "REJECT_ALL"
+    assert change_condition.modify.modify_type.value == "CHANGE_CONDITION"
+    assert change_condition.modify.condition_changes.budget == "free"
 
 
 async def test_kasi_holiday_real_smoke() -> None:

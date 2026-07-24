@@ -23,12 +23,61 @@ from app.domain.models import (
     WeatherForecastResult,
 )
 from app.providers.contracts import ProviderResult
-from app.schemas import InterpretedConditions, PlaceCandidate, RecommendationResponse
+from app.schemas import (
+    IntentClassificationResult,
+    InterpretedConditions,
+    LLMOutput,
+    PlaceCandidate,
+    RecommendationResponse,
+    UserConditions,
+)
 
 
 class InterpretProvider(Protocol):
     def interpret(self, user_input: str) -> InterpretedConditions:
         """Return structured trip conditions from free-form input."""
+        ...
+
+
+class LLMProvider(Protocol):
+    async def classify_intent(
+        self,
+        user_input: str,
+        *,
+        has_previous_recommendation: bool,
+        shown_place_count: int,
+    ) -> ProviderResult[IntentClassificationResult]:
+        """사용자 발화의 Intent를 1단계로 판정한다."""
+        ...
+
+    async def extract_recommend_conditions(
+        self, user_input: str
+    ) -> ProviderResult[LLMOutput]:
+        """RECOMMEND 발화에서 UserConditions를 추출한다."""
+        ...
+
+    async def extract_modify_conditions(
+        self, user_input: str, current_conditions: UserConditions
+    ) -> ProviderResult[LLMOutput]:
+        """MODIFY 발화에서 modify_type과 condition_changes를 추출한다."""
+        ...
+
+    async def extract_info_query(
+        self, user_input: str, *, has_previous_recommendation: bool
+    ) -> ProviderResult[LLMOutput]:
+        """INFO 발화에서 장소/질문 정보를 추출한다."""
+        ...
+
+    async def extract_compare_request(
+        self, user_input: str, *, shown_place_count: int
+    ) -> ProviderResult[LLMOutput]:
+        """COMPARE 발화에서 비교 대상과 기준을 추출한다."""
+        ...
+
+    async def extract_general_request(
+        self, user_input: str
+    ) -> ProviderResult[LLMOutput]:
+        """GENERAL 발화의 주제를 분류한다."""
         ...
 
 
