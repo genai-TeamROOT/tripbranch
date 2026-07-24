@@ -4,10 +4,14 @@
 Intent 분류와 2단계 Intent별 조건 추출을 별도 호출로 나눠 수행한다(설계는
 docs/design/intent-definition.md, docs/design/llm-output-schema.md 참고). 구조화 출력
 검증 실패는 1회 재시도하고, 그래도 실패하면 AppError(code="llm_output_invalid")를 던진다.
+타임아웃/429/5xx 같은 일시적 오류는 지수 백오프로 별도 재시도한다(둘은 독립적인 재시도다 —
+검증 재시도는 "응답은 왔지만 스키마가 안 맞음", 백오프 재시도는 "응답 자체가 안 옴"을 다룬다).
 """
 
 from __future__ import annotations
 
+import asyncio
+import random
 from typing import TypeVar
 
 import httpx
@@ -23,6 +27,16 @@ from app.schemas import IntentClassificationResult, LLMOutput, UserConditions
 
 T = TypeVar("T", bound=BaseModel)
 
+# 429(rate limit)와 5xx(서버 과부하/일시 장애)만 재시도 대상. 4xx(인증 실패, 잘못된 요청 등)는
+# 재시도해도 같은 결과이므로 즉시 실패시킨다.
+_RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
+_BACKOFF_BASE_SECONDS = 0.5
+
+
+def _backoff_seconds(attempt: int) -> float:
+    """지수 백오프 + 지터. attempt=0이 첫 번째 재시도 전 대기시간."""
+    return _BACKOFF_BASE_SECONDS * (2**attempt) + random.uniform(0, 0.25)
+
 
 class RealGeminiProvider:
     """google-genai SDK로 Gemini 구조화 출력을 호출하는 실제 구현.
@@ -36,12 +50,14 @@ class RealGeminiProvider:
         api_key: str,
         model_name: str,
         timeout_seconds: float = 10.0,
+        max_retries: int = 2,
     ) -> None:
         self._client = genai.Client(
             api_key=api_key,
             http_options=genai_types.HttpOptions(timeout=int(timeout_seconds * 1000)),
         )
         self._model_name = model_name
+        self._max_retries = max_retries
 
     async def classify_intent(
         self,
@@ -130,27 +146,37 @@ class RealGeminiProvider:
         user_input: str,
         response_model: type[T],
     ) -> T:
-        try:
-            response = await self._client.aio.models.generate_content(
-                model=self._model_name,
-                contents=user_input,
-                config=genai_types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    response_mime_type="application/json",
-                    response_schema=response_model,
-                    temperature=0.0,
-                ),
-            )
-        except httpx.TimeoutException:
-            raise ProviderTimeoutError("Gemini") from None
-        except genai_errors.APIError as exc:
-            detail = f"{exc.code} {exc.status}" if hasattr(exc, "status") else str(exc.code)
-            raise ProviderUnavailableError("Gemini", detail=detail) from None
+        """타임아웃/429/5xx는 지수 백오프로 최대 self._max_retries회 재시도한다."""
 
-        if response.parsed is not None:
-            return response_model.model_validate(response.parsed)
-        # response_schema가 SDK 자동 파싱을 못 한 경우(빈 응답 등) 원문 텍스트로 직접 검증한다.
-        return response_model.model_validate_json(response.text or "")
+        for attempt in range(self._max_retries + 1):
+            try:
+                response = await self._client.aio.models.generate_content(
+                    model=self._model_name,
+                    contents=user_input,
+                    config=genai_types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        response_mime_type="application/json",
+                        response_schema=response_model,
+                        temperature=0.0,
+                    ),
+                )
+            except httpx.TimeoutException:
+                if attempt >= self._max_retries:
+                    raise ProviderTimeoutError("Gemini") from None
+            except genai_errors.APIError as exc:
+                if exc.code not in _RETRYABLE_STATUS_CODES or attempt >= self._max_retries:
+                    detail = f"{exc.code} {exc.status}" if hasattr(exc, "status") else str(exc.code)
+                    raise ProviderUnavailableError("Gemini", detail=detail) from None
+            else:
+                if response.parsed is not None:
+                    return response_model.model_validate(response.parsed)
+                # response_schema가 SDK 자동 파싱을 못 한 경우(빈 응답 등)
+                # 원문 텍스트로 직접 검증한다.
+                return response_model.model_validate_json(response.text or "")
+
+            await asyncio.sleep(_backoff_seconds(attempt))
+
+        raise AssertionError("unreachable: retry loop exited without returning or raising")
 
 
 __all__ = ["RealGeminiProvider"]

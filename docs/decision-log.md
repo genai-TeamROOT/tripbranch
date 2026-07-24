@@ -92,9 +92,7 @@
   혼잡도·근거 신뢰도 Feature, 실제 이동시간 기반 거리, 예산/동행 하드 필터,
   실제 운영시간 원문("0900~1800" 등)을 `OperatingHours`로 정규화하는 파서
   (`PLC-03`과 동일 범위), 자정을 넘기는 운영시간, 기준 시각(`now`)의 실제
-  출처(즉시 방문 vs 방문 예정 시각, D-022 연계),
-  `services/recommendations.py`/`/api/recommendations`와의 실제 연결
-  (D-03에서 진행)
+  출처(즉시 방문 vs 방문 예정 시각, D-022 연계)
 
 ### D-009 — Naver Blog Search는 보완 근거로 사용
 
@@ -281,6 +279,26 @@
 - v1 필드: condition, SKY, PTY와 예보·조회 시각만 사용
 - 범위 밖: 온도·습도·강수량·풍속, 해외 현지 시간, DST
 
+### D-027 — 추천 Evidence·평가 Fixture v1
+
+- 상태: `Accepted`, `Implemented`
+- 결정: `RankedCandidate`의 `feature_scores`/`weights_used`를 자연어 없이
+  Feature별 기여도(score × weight)로 재구성하는 `RecommendationEvidence`를
+  도입하고, 반복 검증 가능한 고정 평가 Fixture v1을 구축한다.
+- 구현: `backend/app/domain/evidence.py::build_evidence()`/`build_evidence_list()`,
+  `backend/tests/fixtures/scoring_fixture_v1.py`(7개 시나리오),
+  `backend/tests/test_scoring_fixture.py`(정렬·제외·미확인 검증 + 동일 입력
+  반복 실행 결정성 검증 + Evidence 대응 검증, 21개 테스트). 상세는
+  [추천 Evidence·평가 Fixture 설계](./design/recommendation-evidence-fixture.md)
+  참고.
+- 범위 제외: `/api/recommendations` 라우트 연결, Provider 운영시간 원문
+  정규화(`operating_hours.py`의 `OperatingSchedule`↔`ScoringCandidate.operating_hours`
+  매퍼 포함), 카테고리 하드 필터, 혼잡도·신뢰도 Feature, LLM 기반 자연어
+  추천 이유 생성
+- 이유: Scoring 결과를 사용자에게 설명 가능한 형태로 준비하면서도, 아직
+  확정되지 않은 Response Generator(LLM)나 Persistence(Snapshot) 설계에
+  선행 결합되지 않도록 순수 데이터 변환으로 한정함
+
 ## 현재 논의가 필요한 항목
 
 | 항목 | 선택지/질문 | 상태 |
@@ -289,7 +307,7 @@
 | Chat 계약 naming | Backend Python/JSON `snake_case` | `Accepted` |
 | Backend 상태 저장 | Supabase 테이블과 캐시 역할 | `TBD` |
 | Frontend 저장 | `sessionStorage` 유지 또는 `localStorage` 전환 | `TBD` |
-| Scoring v1 | Feature/가중치/tie-break와 Recommendations API 연결 | 구현 완료 |
+| Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); Recommendations API 연결 | 구현 완료 |
 | 혼잡도 fallback | 장소 근접치, 구 단위, Feature 제외 | 현재 논의 중 |
 | 운영시간 파싱 | 기본 시간·월별·주간 휴무 구현, 공휴일·회차 예외 확대 | `부분 구현` |
 | 이동시간 | 지도 Provider 및 교통수단별 계산 | `TBD` |
@@ -316,5 +334,6 @@
 | 2026-07-23 | ProviderMetadata와 ProviderError 분리 및 오류 시각 계약 확정 |
 | 2026-07-23 | 방문 예정 시각의 초단기예보 우선 정책 확정 |
 | 2026-07-23 | 종로구 `resolve_location` 범위·fallback·재질문 정책 구현 반영 |
-| 2026-07-23 | Weather Tool v1의 KST·방문시각·예보 범위 정책 구현 반영 |
 | 2026-07-23 | D-008 재설계: 운영 유무를 가중치에서 제외하고 `now`/`OperatingHours` 기반 최종 하드 필터로 이동, 가중치 Feature를 남은 운영시간(분 정규화)으로 교체 (날씨 0.40/남은 운영시간 0.40/거리 0.20), `weights_used`를 후보별로 노출하도록 변경 |
+| 2026-07-23 | Weather Tool v1의 KST·방문시각·예보 범위 정책 구현 반영 |
+| 2026-07-24 | D-027 추천 Evidence·평가 Fixture v1 구현 반영 (Feature 기여도 모델, 고정 Fixture v1, 결정성 검증) |

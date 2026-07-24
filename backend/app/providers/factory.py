@@ -38,6 +38,7 @@ def get_llm_provider() -> LLMProvider:
             api_key=_require_key(settings.llm_api_key, "LLM_API_KEY"),
             model_name=settings.llm_model_name,
             timeout_seconds=settings.external_api_timeout_seconds,
+            max_retries=settings.external_api_retry_count,
         )
     raise ValueError(f"지원하지 않는 LLM_PROVIDER: {mode}")
 
