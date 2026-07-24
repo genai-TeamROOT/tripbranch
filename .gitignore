@@ -241,3 +241,6 @@ backend/.venv*/
 .claude/
 .codex/
 .cursor/
+
+# 개인 작업 지시 메모 (task 파일 모음, 커밋 대상 아님)
+package_D/
