@@ -4,10 +4,10 @@
 
 | 항목 | 값 |
 |------|-----|
-| 버전 | v1.0 |
+| 버전 | v1.1 |
 | 작성자 | 임기민 |
 | 상태 | 초안 (Draft) |
-| 최종 수정 | 2025-07-23 |
+| 최종 수정 | 2026-07-23 |
 | 경로 | `docs/design/llm-output-schema.md` |
 
 ---
@@ -341,6 +341,8 @@ interface AmbiguousField {
 
 ## 8. Pydantic 모델 초안
 
+아래 `UserConditions` 필드 정의는 [conditions-schema.md § 2. Conditions 필드 정의](./conditions-schema.md#2-conditions-필드-정의)를 기준으로 파생되었다. 필드 의미·예시·PlaceType/PlaceTag enum 전문은 해당 문서를 참조한다.
+
 ```python
 from __future__ import annotations
 from enum import Enum
@@ -510,21 +512,29 @@ class LLMOutput(BaseModel):
 
 아래 항목들은 본 문서(A 출력)와 Agent State(B 수신) 사이의 **인터페이스 계약**으로, 태화님과 협의 후 확정 예정.
 
+## 9. B 전달 시 협의 사항
+
+본 문서(A 출력)와 Agent State(B 수신) 사이의 인터페이스 계약.
+
+### 확정 사항
+
+| # | 항목 | 확정 내용 | 확정일 |
+|---|------|----------|--------|
+| 1 | LLMOutput → B 전달 포맷 | A가 LLMOutput을 StateApplyRequest로 변환한 뒤 전달한다. B에 LLMOutput 원본이 가지 않는다. LLMOutput의 intent별 payload를 읽고 operations로 변환하는 건 해석 행위이므로 A의 영역 | 2026-07-23 |
+| 2 | operations 연산 체계 | Add / Update / Remove 3종. Keep은 별도 op가 아니라 operations 배열에 없으면 자동 Keep. 필드별 허용 연산은 [conditions-schema.md § 4절](./conditions-schema.md#4-조건-변경-연산) 기준 | 2026-07-23 |
+| 3 | reset_scope 트리거 조건 | B가 조건 변경을 감지해 자동으로 판단하지 않는다. A가 soft / history / full / null 중 하나를 명시적으로 판정하여 operations와 함께 전달한다 (예: search_center 변경 시 A가 `reset_scope: "history"`를 함께 전달) | 2026-07-23 |
+| 4 | condition_changes에서 Remove 표현 | 시그널 값(`"__REMOVE__"` 등)을 쓰지 않는다. A가 제거 의도를 판단하면 Operation을 `{"op": "Remove", "field": "..."}`로 직접 생성하여 전달한다 | 2026-07-23 |
+| 5 | api_context 갱신 경로 | operations와 별도 경로로 갱신한다. A/Runtime이 GPS·날씨 API를 재호출한 뒤 B에 직접 전달하며, condition_version은 증가하지 않는다 | 2026-07-23 |
+
+
+### 미확정 항목 (B 확인 필요)
+
 | # | 항목 | 현재 상태 | 협의 내용 |
-|---|------|-----------|-----------|
-| 1 | LLMOutput → B 전달 포맷 변환 | 미확정 | LLMOutput을 그대로 넘길지, StateApplyRequest로 변환해서 넘길지 |
-| 3 | rejected_places 처리 | 초안 있음 | 거부 장소를 누가 목록으로 만들지 (A? B?), reason_code 확정 |
-| 5 | confirmed 플래그 처리 | 초안 있음 | false일 때 B가 아예 무시할지, 부분 저장할지 |
-| 7 | answer_conditions 상세 스키마 | 초안 있음 | 추천 엔진 설계 시 확정 |
-
-### 확정된 사항 (2026-07-23)
-
-| # | 항목 | 확정 내용 |
-|---|------|-----------|
-| 2 | operations 연산 체계 (Update/Add/Remove) | Add / Update / Remove 3종. Keep은 별도 op가 아니라 operations 배열에 없으면 자동 Keep. 필드별 허용 연산은 [conditions-schema.md](./conditions-schema.md) 4절 기준 |
-| 4 | reset_scope 트리거 조건 | B가 조건 변경을 감지해 자동으로 판단하지 않는다. A가 soft/history/full/null 중 하나를 명시적으로 판정하여 operations와 함께 전달한다 (예: search_center 변경 시 A가 `reset_scope: "history"`를 함께 전달) |
-| 6 | condition_changes에서 Remove 표현 | 시그널 값(`"__REMOVE__"` 등)을 쓰지 않는다. A가 제거 의도를 판단하면 Operation을 `{"op": "Remove", "field": "..."}`로 직접 생성하여 전달한다 |
-| 8 | api_context 갱신 경로 | operations와 별도 경로로 갱신한다. A/Runtime이 GPS·날씨 API를 재호출한 뒤 B에 직접 전달하며, condition_version은 증가하지 않는다 |
+|---|------|----------|----------|
+| 6 | answer_conditions 생성 | A 내부 전용. B에 저장하지 않으며 B는 관여하지 않는다. 상세 스키마는 추천 엔진 설계 시 A가 확정한다 | 이 형식으로 확정 가능한지 확인 |
+| 7 | rejected_places — reason_code 목록 | 후보 5종 (`too_far` / `not_interested` / `already_visited` / `closed` / `other`) | 이 5종으로 확정 가능한지, B쪽에서 reason_code별 다른 처리가 필요한지 확인 |
+| 8 | rejected_places — place_id 형식 | TourAPI contentid 문자열 그대로 (예: `"126508"`) | 이 형식으로 확정 가능한지 확인 |
+| 9 | confirmed: false일 때 B 동작 범위 | 초안 있음 | operations·rejected_places는 무시하되, intent 기록(last_intent)·Trace(run_id 발급)·세션 TTL은 갱신하는 "부분 저장" 방식을 A가 제안 중. B쪽 설계에 맞는 방식 확인 필요 |
 
 ---
 
@@ -542,4 +552,5 @@ class LLMOutput(BaseModel):
 
 | 버전 | 날짜 | 변경 내용 |
 |------|------|-----------|
-| v1.0 | 2025-07-23 | 초안 작성. 3층 구조, Envelope, Status, Intent별 Payload, Clarification, Pydantic 모델 |
+| v1.0 | 2026-07-23 | 초안 작성. 3층 구조, Envelope, Status, Intent별 Payload, Clarification, Pydantic 모델 |
+| v1.1 | 2026-07-23 | 9절 협의 필요 사항 중 4건(#2,4,6,8: operations 연산 체계, reset_scope, condition_changes Remove 표현, api_context 갱신 경로)을 확정 사항으로 반영. 8절 Pydantic 모델에 conditions-schema.md 기준 파생임을 명시(소유권 정리) |
