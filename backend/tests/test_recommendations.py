@@ -7,23 +7,37 @@
 TODO: 실제 provider 도입 후 랭킹, 검증 불가, 빈 결과 케이스를 확장한다.
 """
 
+from datetime import datetime
+from unittest.mock import patch
+from zoneinfo import ZoneInfo
+
 from fastapi.testclient import TestClient
 
 from app.main import app
 
+KST = ZoneInfo("Asia/Seoul")
+FIXED_VISIT_AT = datetime(2026, 7, 24, 12, 0, tzinfo=KST)
+
+
+class _FixedDateTime(datetime):
+    @classmethod
+    def now(cls, tz: ZoneInfo | None = None) -> datetime:
+        return FIXED_VISIT_AT if tz is None else FIXED_VISIT_AT.astimezone(tz)
+
 
 def _request(shown_place_ids: list[str] | None = None) -> dict:
     client = TestClient(app)
-    response = client.post(
-        "/api/recommendations",
-        json={
-            "location_query": "경복궁",
-            "preferred_categories": ["museum", "cafe"],
-            "weather_condition": "bad",
-            "search_radius_km": 1.0,
-            "shown_place_ids": shown_place_ids or [],
-        },
-    )
+    with patch("app.services.recommendation_pipeline.datetime", _FixedDateTime):
+        response = client.post(
+            "/api/recommendations",
+            json={
+                "location_query": "경복궁",
+                "preferred_categories": ["museum", "cafe"],
+                "weather_condition": "bad",
+                "search_radius_km": 1.0,
+                "shown_place_ids": shown_place_ids or [],
+            },
+        )
     assert response.status_code == 200
     return response.json()
 
