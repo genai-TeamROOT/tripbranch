@@ -10,7 +10,7 @@ TODO: 실제 도메인 확정 후 문자열 카테고리와 날씨 값은 Enum�
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -189,12 +189,6 @@ class PlaceContext(StrEnum):
     FROM_CONVERSATION = "from_conversation"
 
 
-class OperationType(StrEnum):
-    ADD = "Add"
-    UPDATE = "Update"
-    REMOVE = "Remove"
-
-
 class PlaceType(StrEnum):
     ATTRACTION = "attraction"
     CULTURAL_FACILITY = "cultural_facility"
@@ -353,25 +347,6 @@ class IntentClassificationResult(BaseModel):
     intent: Intent
     out_of_scope_category: OutOfScopeCategory | None = None
     out_of_scope_severity: Severity | None = None
-
-
-class Operation(BaseModel):
-    """conditions-schema.md §4의 조건 변경 연산 한 건."""
-
-    op: OperationType
-    field: str
-    value: Any = None
-
-
-class StateApplyRequest(BaseModel):
-    """LLMOutput을 B(Agent State)에 전달하기 위한 변환 결과 스키마.
-
-    llm-output-schema.md §9 기준 확정된 필드만 포함한다. rejected_places는 reason_code/
-    place_id 형식이 아직 B와 미확정(§9 #7,#8)이라 이 스키마에는 넣지 않았다.
-    """
-
-    operations: list[Operation] = Field(default_factory=list)
-    reset_scope: Literal["soft", "history", "full"] | None = None
 
 
 class InterpretRequest(BaseModel):

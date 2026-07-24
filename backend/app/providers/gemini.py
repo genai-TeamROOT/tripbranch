@@ -165,7 +165,11 @@ class RealGeminiProvider:
                     raise ProviderTimeoutError("Gemini") from None
             except genai_errors.APIError as exc:
                 if exc.code not in _RETRYABLE_STATUS_CODES or attempt >= self._max_retries:
-                    detail = f"{exc.code} {exc.status}" if hasattr(exc, "status") else str(exc.code)
+                    status = f" {exc.status}" if hasattr(exc, "status") else ""
+                    retry_note = (
+                        f" (재시도 {attempt}회 소진)" if attempt > 0 else " (첫 시도부터 실패)"
+                    )
+                    detail = f"{exc.code}{status}{retry_note}"
                     raise ProviderUnavailableError("Gemini", detail=detail) from None
             else:
                 if response.parsed is not None:

@@ -56,6 +56,22 @@ from app.schemas import (
 )
 from app.services.recommendations import get_stub_recommendations
 
+# NOTE(비활성화, 팀 논의 후 결정 필요): 아래 FakeInterpretProvider는 669cc82(2026-07-22,
+# 작성자 mac)에서 도입된 원본 코드다. 2026-07-24 LLM provider 1차 구현(21aad22)에서
+# interpret_user_input()의 시그니처가
+#   def interpret_user_input(user_input: str) -> InterpretedConditions
+# 에서
+#   async def interpret_user_input(request: InterpretRequest) -> LLMOutput
+# 로 바뀌면서 아래 코드를 그대로 실행하면 깨진다(인자 개수·타입, sync/async 모두 불일치).
+# 삭제하지 않고 주석으로만 남겨둔다 — 이 provider를 계속 쓸지, 새 LLMOutput 계약에 맞게
+# 고쳐 쓸지는 팀 확인 후 결정한다.
+#
+# class FakeInterpretProvider:
+#     """자연어 입력 해석을 고정 조건으로 대체하는 fake provider."""
+#
+#     def interpret(self, user_input: str) -> InterpretedConditions:
+#         return interpret_user_input(user_input)
+
 _KNOWN_PLACE_NAMES = ("경복궁", "창덕궁", "종묘", "인사동", "광화문", "북촌한옥마을")
 _HARMFUL_MARKERS = ("바보", "미친", "죽어", "씨발", "개새끼")
 _OFF_TOPIC_MARKERS = ("주식", "수학 문제", "코드 짜줘", "파이썬 코드")

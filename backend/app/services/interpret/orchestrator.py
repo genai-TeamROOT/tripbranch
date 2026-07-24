@@ -7,6 +7,8 @@ get_recommendations()/build_recommendations() 분리와 동일한 패턴).
 입력: InterpretRequest (user_input + 이전 추천 이력 컨텍스트).
 출력: LLMOutput 모델.
 호출 시점: /api/interpret 라우터가 interpret_user_input()을 호출한다.
+TODO: B(Agent State) 연동(state_transform.py/session_orchestrator.py)을 이 흐름에
+실제로 통합하는 작업은 다음 세션에서 진행한다 — InterpretRequest/응답 계약이 함께 바뀐다.
 """
 
 from __future__ import annotations
