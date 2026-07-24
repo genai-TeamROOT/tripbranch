@@ -15,9 +15,8 @@ from app.state import history as history_module
 from app.state import session as session_module
 from app.state.merge import merge_conditions
 from app.state.operations import IgnoredOperation, Operation, validate_all
-from app.state.schema import ApiContext, UserConditions, now_kst
+from app.state.schema import UserConditions, now_kst
 from app.state.store import StateStore, get_store
-
 
 # ================================================================ 요청·응답
 

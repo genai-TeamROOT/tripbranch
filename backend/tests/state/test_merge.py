@@ -3,7 +3,6 @@
 계약 문서: 2.3~2.9절, 5.5절
 """
 
-import pytest
 
 from app.state.merge import merge_conditions
 from app.state.operations import Operation, validate_all

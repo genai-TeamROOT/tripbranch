@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timedelta
 
 from app.state import history as history_module
-from app.state.schema import AgentState, UserConditions, now_kst
+from app.state.schema import AgentState, now_kst
 from app.state.store import StateStore
 
 # ---------------------------------------------------------------- 설정

@@ -6,7 +6,8 @@
 "무엇을" 허용할지는 field_spec.py가, 검증은 operations.py가 담당한다.
 """
 
-from dataclasses import dataclass, field as dc_field
+from dataclasses import dataclass
+from dataclasses import field as dc_field
 from typing import Any
 
 from app.state import field_spec as fs
