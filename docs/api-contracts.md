@@ -238,6 +238,34 @@ Feature·가중치·제외 규칙 상세는
 [추천 점수 설계](./design/recommendation-scoring.md)를 참고합니다. 이 엔진은
 아직 `/api/recommendations` 라우트에 연결되지 않았습니다.
 
+`backend/app/domain/evidence.py::build_evidence_list()`는 `RankedCandidate`를
+자연어 없이 Feature별 기여도(score × weight)로 재구성한
+`RecommendationEvidence`로 변환합니다.
+
+```ts
+type FeatureContribution = {
+  feature: string;
+  score: number | null;
+  weight: number | null;
+  contribution: number | null; // score * weight; 결측 시 null
+};
+
+type RecommendationEvidence = {
+  place_id: string;
+  name: string;
+  category: string;
+  rank: number;
+  score: number;
+  contributions: FeatureContribution[];
+  is_unverified: boolean;
+  warnings: string[];
+};
+```
+
+상세와 고정 평가 Fixture v1은
+[추천 Evidence·평가 Fixture 설계](./design/recommendation-evidence-fixture.md)를
+참고합니다.
+
 ### `RecommendationResult`
 
 ```ts
