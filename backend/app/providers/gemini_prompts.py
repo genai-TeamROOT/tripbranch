@@ -166,22 +166,24 @@ _MODIFY_RELATIVE_EXPRESSION_RULES = """\
 """
 
 _MODIFY_FIELD_MERGE_RULES = """\
-필드 병합 규칙 — condition_changes는 "현재 조건 + 이번 변경"을 반영한 최종 값을 채운다:
+필드 병합 규칙 — condition_changes에는 이번 발화로 실제로 바뀌는 필드만 값을 채우고,
+그 외 모든 필드는 null(목록형 필드는 빈 배열)로 두세요. 현재 조건 값을 복사해서 채우지
+마세요 — 바뀌지 않은 필드는 서버가 별도로 유지하므로, 여기서 다시 채울 필요가 없습니다.
+
 - current_location/search_center/weather/weather_intent/transport/max_travel_time/
-  time_available/environment/companion: 언급된 필드만 새 값으로 교체, 나머지는 현재 조건과
-  동일한 값을 그대로 채운다
+  time_available/environment/companion: 언급된 필드만 새 값으로 채운다
 - budget: "무료만" 같은 교체는 새 값으로("free" 리터럴 사용, 아래 budget 규칙 참고),
   "가격 상관없어" 같은 해제는 null로
 - place_types: 사용자가 유형을 바꾸면 전체 교체 (예: "카페 말고 맛집" → ["restaurant"])
-- place_tags: 사용자가 추가/제거를 말하면 현재 place_tags에 그 변경을 반영한 최종 목록을 채운다
-  (예: 현재 ["카페"]에서 "박물관도 포함" → ["카페", "박물관"])
+- place_tags: 사용자가 추가/제거를 말하면 "현재 조건"에 제시된 place_tags를 참고해서
+  그 변경을 반영한 최종 목록을 채운다 (예: 현재 ["카페"]에서 "박물관도 포함" →
+  ["카페", "박물관"]) — place_tags 자체는 바뀌었으므로 채우는 것이 맞다
 - exclude_tags/special_requirements: 추가/제거를 반영한 최종 목록
-- 사용자가 언급하지 않은 필드는 현재 조건 값을 그대로 유지해서 채운다 (바뀐 게 아니므로
-  changed_fields에는 넣지 않는다)
+- "더 가까운 곳"처럼 상대적 표현은 "현재 조건"의 값을 참고해서 계산한 새 값을 채운다
+  (예: 현재 max_travel_time=30 → 15). 이 경우도 값이 실제로 바뀌는 것이므로 채운다
 
-changed_fields에는 이번 발화로 실제 값이 달라진 UserConditions 필드명만 넣는다. 값이 그대로여도
-condition_changes에는 항상 현재 조건을 기준으로 한 완전한 UserConditions를 채워야 하지만,
-"무엇이 바뀌었는지"는 changed_fields만으로 판단하니 정확히 표시하세요.
+changed_fields에는 이번 발화로 값을 채운 UserConditions 필드명만 정확히 나열하세요.
+condition_changes에서 값을 채운 필드와 changed_fields의 목록은 항상 일치해야 합니다.
 """
 
 

@@ -10,11 +10,37 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
 
+// /api/interpret은 LLMOutput(intent + Intent별 조건)을 반환한다. interpretUserInput()이
+// RECOMMEND 결과를 옛 InterpretedConditions 형태로 변환하므로, 아래 값들이
+// location_query="경복궁"/preferred_categories=["museum","cafe"]/weather_condition="bad"로
+// 변환되어야 기존 화면 검증이 그대로 통과한다.
 const interpretResponse = {
-  location_query: "경복궁",
-  preferred_categories: ["museum", "cafe"],
-  weather_condition: "bad",
-  search_radius_km: 1.0,
+  intent: "RECOMMEND",
+  status: "complete",
+  recommend: {
+    conditions: {
+      current_location: null,
+      search_center: "경복궁",
+      place_types: [],
+      place_tags: ["museum", "cafe"],
+      weather: "rain",
+      weather_intent: "AVOID",
+      transport: null,
+      max_travel_time: null,
+      time_available: null,
+      environment: "indoor",
+      companion: null,
+      budget: null,
+      exclude_tags: [],
+      special_requirements: [],
+    },
+  },
+  info: null,
+  modify: null,
+  compare: null,
+  general: null,
+  out_of_scope: null,
+  clarification: null,
 };
 
 const recommendationsResponse = {

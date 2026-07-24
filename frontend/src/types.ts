@@ -78,3 +78,85 @@ export interface ApiErrorBody {
   retryable: boolean;
   details: unknown;
 }
+
+// --- LLMOutput(Intent 분류 + 조건 추출) 관련 타입 ---
+// backend/app/schemas.py의 LLMOutput 계약을 그대로 옮긴 개발용 디버그 타입.
+// 화면 표시에 필요한 최소한만 좁혀서 선언하며, enum 값은 string으로 느슨하게 받는다.
+
+export type Intent = "RECOMMEND" | "INFO" | "MODIFY" | "COMPARE" | "GENERAL" | "OUT_OF_SCOPE";
+
+export type LLMOutputStatus = "complete" | "needs_clarification";
+
+export interface UserConditions {
+  current_location: string | null;
+  search_center: string | null;
+  place_types: string[];
+  place_tags: string[];
+  weather: string | null;
+  weather_intent: string | null;
+  transport: string | null;
+  max_travel_time: number | null;
+  time_available: number | null;
+  environment: string | null;
+  companion: string | null;
+  budget: string | null;
+  exclude_tags: string[];
+  special_requirements: string[];
+}
+
+export interface RecommendPayload {
+  conditions: UserConditions;
+}
+
+export interface InfoPayload {
+  place_name: string | null;
+  place_context: string;
+  question_type: string;
+  specific_question: string | null;
+}
+
+export interface ModifyPayload {
+  modify_type: "REJECT_ALL" | "CHANGE_CONDITION";
+  condition_changes: UserConditions | null;
+  changed_fields: string[];
+}
+
+export interface ComparePayload {
+  targets: "all" | number[];
+  criteria: string;
+}
+
+export interface GeneralPayload {
+  topic: string;
+  original_question: string;
+}
+
+export interface OutOfScopePayload {
+  category: string;
+  severity: string;
+}
+
+export interface ClarificationPayload {
+  missing_fields: { field: string; reason: string }[];
+  ambiguous_fields: { field: string; user_input: string; candidates: string[]; reason: string }[];
+  message: string;
+}
+
+export interface LLMOutput {
+  intent: Intent;
+  status: LLMOutputStatus;
+  recommend: RecommendPayload | null;
+  info: InfoPayload | null;
+  modify: ModifyPayload | null;
+  compare: ComparePayload | null;
+  general: GeneralPayload | null;
+  out_of_scope: OutOfScopePayload | null;
+  clarification: ClarificationPayload | null;
+}
+
+export interface InterpretDebugRequest {
+  user_input: string;
+  has_previous_recommendation?: boolean;
+  shown_place_count?: number;
+  current_conditions?: Partial<UserConditions> | null;
+}
