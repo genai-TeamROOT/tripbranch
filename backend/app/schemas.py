@@ -12,7 +12,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class HealthResponse(BaseModel):
@@ -286,11 +286,38 @@ class ModifyPayload(BaseModel):
     "명시적으로 null로 해제"를 값만으로 구분할 수 없다(§10 #3이 "구현 시 확정"으로 남긴 지점).
     `changed_fields`에 실제로 변경(Update/Remove)된 UserConditions 필드명만 명시하고,
     나머지는 condition_changes에 어떤 값이 있든 Keep으로 처리한다.
+
+    `_clear_unlisted_fields`가 이 불변식을 생성 시점에 구조적으로 강제한다 — LLM이
+    changed_fields 밖 필드에 값을 채워 보내도(예: 호출자가 current_conditions에 실제
+    null이 아닌 값을 실어 보내서 LLM이 그 값을 그대로 carry-forward한 경우) 여기서
+    null/빈 배열로 정리되므로, 이 필드를 나중에 직접 읽는 소비자가 생겨도 안전하다.
     """
 
     modify_type: ModifyType
     condition_changes: UserConditions | None = None
     changed_fields: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _clear_unlisted_fields(self) -> ModifyPayload:
+        if self.condition_changes is None:
+            return self
+
+        allowed = set(self.changed_fields)
+        updates: dict[str, object] = {}
+        for name, field_info in UserConditions.model_fields.items():
+            if name in allowed:
+                continue  # changed_fields에 있는 필드는 절대 건드리지 않는다.
+            empty = (
+                field_info.default_factory()  # type: ignore[call-arg]
+                if field_info.default_factory is not None
+                else field_info.default
+            )
+            if getattr(self.condition_changes, name) != empty:
+                updates[name] = empty
+
+        if updates:
+            self.condition_changes = self.condition_changes.model_copy(update=updates)
+        return self
 
 
 class ComparePayload(BaseModel):

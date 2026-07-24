@@ -149,7 +149,10 @@ async def test_extract_modify_conditions_tc08_change_condition_budget() -> None:
 
     assert output.modify.modify_type is ModifyType.CHANGE_CONDITION
     assert output.modify.condition_changes.budget == "free"
-    assert output.modify.condition_changes.search_center == "경복궁"  # Keep
+    # search_center는 changed_fields에 없으므로 Keep 대상이지만, condition_changes
+    # 자체에는 null로 정리되어 담긴다(ModifyPayload 검증기가 강제) — 실제 Keep 처리는
+    # state_transform.py가 changed_fields만 읽어서 수행한다.
+    assert output.modify.condition_changes.search_center is None
     assert output.modify.changed_fields == ["budget"]
 
 

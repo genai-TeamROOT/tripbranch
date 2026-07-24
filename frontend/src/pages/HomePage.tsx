@@ -11,6 +11,7 @@ import { useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
 import { interpretUserInput } from "../api/trip";
 import { ErrorBanner } from "../components/ErrorBanner";
+import { IntentDebugPanel } from "../components/IntentDebugPanel";
 import { featureFlags } from "../config/features";
 import { useTripDispatch } from "../state/TripContext";
 
@@ -107,6 +108,8 @@ export function HomePage() {
           {isLoading ? "분석 중..." : "추천 시작하기"}
         </button>
       </form>
+
+      <IntentDebugPanel />
     </main>
   );
 }
