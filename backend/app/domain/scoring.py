@@ -78,7 +78,11 @@ def _remaining_minutes(now: datetime, hours: OperatingHours) -> float | None:
     current_time = now.time()
     if not (hours.open_time <= current_time < hours.close_time):
         return None
-    close_at = datetime.combine(now.date(), hours.close_time)
+    close_at = datetime.combine(
+        now.date(),
+        hours.close_time,
+        tzinfo=now.tzinfo,
+    )
     return (close_at - now).total_seconds() / 60.0
 
 

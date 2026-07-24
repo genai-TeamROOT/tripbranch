@@ -98,6 +98,24 @@ python -m pytest tests/test_holiday_provider.py -v
 python -m pytest tests/test_provider_settings.py -v
 ```
 
+추천 파이프라인 집중 테스트:
+
+```bash
+python -m pytest \
+  tests/test_recommendation_pipeline.py \
+  tests/test_recommendations.py \
+  -v
+```
+
+다음을 Fake/Mock Provider로 검증하며 실제 외부 API는 호출하지 않는다.
+
+- 거리순 후보 예산 내 Candidate 변환과 Scoring
+- 최종 추천 수 제한
+- Scoring 상위 후보만 집중률 후조회
+- 날씨 실패 시 날씨 Feature를 제외한 가중치 재분배
+- 장소 목록 실패의 `unavailable` 변환
+- 이미 노출된 `place_id` 제외
+
 ## 4. 코드 검사
 
 Ruff:
@@ -112,7 +130,76 @@ Python 컴파일 검사:
 python -m compileall -q app tests
 ```
 
-## 5. 실제 API Smoke Test
+## 5. 로컬 추천 API 통합 확인
+
+`backend/.env`에서 Provider 모드와 추천 후보 예산을 설정한다.
+
+```env
+PROVIDER_MODE=real
+RECOMMENDATION_RESULT_LIMIT=5
+RECOMMENDATION_CANDIDATE_LIMIT=10
+```
+
+첫 번째 터미널에서 서버를 실행한다.
+
+```bash
+cd /Users/jinhyoungkim/Desktop/Dev/TripBranch/backend
+source .venv/bin/activate
+uvicorn app.main:app --reload
+```
+
+다음 로그가 나오면 서버 준비가 완료된 것이다.
+
+```text
+Uvicorn running on http://127.0.0.1:8000
+Application startup complete.
+```
+
+두 번째 터미널에서 Health API를 확인한다. Health 경로는 `/health`가 아니라
+`/api/health`다.
+
+```bash
+curl http://127.0.0.1:8000/api/health
+```
+
+정상 응답:
+
+```json
+{"status":"ok"}
+```
+
+추천 API를 호출한다.
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/recommendations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "location_query": "경복궁",
+    "preferred_categories": ["museum"],
+    "weather_condition": null,
+    "search_radius_km": 2.0,
+    "shown_place_ids": []
+  }'
+```
+
+확인할 내용:
+
+- `recommendations`와 `unverified_recommendations`의 합이 최대 5개
+- 응답 최상위 `elapsed_ms`에 전체 추천 파이프라인 처리시간이 millisecond로 표시
+- 이미 표시한 장소는 `shown_place_ids`에 넣으면 다음 응답에서 제외
+- Real 모드는 거리순 후보 최대 10개의 상세정보를 API로 조회
+- Scoring 순위가 확정된 뒤 상위 후보에 대해서만 집중률 조회
+- 집중률 결과가 없거나 실패해도 기존 추천 순위와 장소는 유지
+
+Real 모드에서는 후보마다 `detailCommon2`, `detailIntro2`를 호출하므로 응답에
+수십 초가 걸릴 수 있다. 서버 터미널의 traceback 또는 HTTP 오류를 함께 확인한다.
+테스트가 끝나면 서버 터미널에서 `Ctrl+C`로 종료한다.
+
+`curl: (28) Failed to connect`는 서버가 실행되지 않았거나 시작 완료 전이라는
+뜻이다. `{"detail":"Not Found"}`는 서버는 실행 중이지만 요청 경로가 잘못됐다는
+뜻이다.
+
+## 6. 실제 API Smoke Test
 
 Smoke Test는 실제 외부 API를 호출하고 최소 응답 계약을 검증한다.
 
@@ -213,7 +300,7 @@ RUN_REAL_PROVIDER_TESTS=true python -m pytest \
 검증한다. 인증에는 기존 `TOUR_API_SERVICE_KEY`를 공공데이터포털 서비스 키로
 사용한다.
 
-## 6. 실제 요청·원본 응답 Inspection Test
+## 7. 실제 요청·원본 응답 Inspection Test
 
 Inspection Test는 실제 API 요청 파라미터, HTTP 상태, 원본 JSON 응답과 정규화
 결과를 출력한다. `-s` 옵션이 없으면 출력이 보이지 않을 수 있다.
@@ -323,7 +410,7 @@ RUN_REAL_PROVIDER_INSPECTION=true python -m pytest \
 
 인증키가 마스킹된 요청 파라미터, 원본 XML 응답, 정규화된 공휴일 목록을 출력한다.
 
-## 7. 결과 해석
+## 8. 결과 해석
 
 ```text
 PASSED      요청과 최소 응답 계약 검증 성공
@@ -342,7 +429,7 @@ provider_unavailable    외부 API 장애 또는 예상하지 못한 응답
 집중률 파싱 실패        원본 응답 필드 변경 가능성
 ```
 
-## 8. 권장 실행 순서
+## 9. 권장 실행 순서
 
 ```bash
 python -m ruff check app tests

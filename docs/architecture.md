@@ -10,8 +10,8 @@
 | React Frontend, 분리된 Interpret/Recommendations API | 구현됨 |
 | Fake/Real Provider와 일부 외부 API 연동 | 구현됨 |
 | Chat API, Orchestrator, Context Merge | 미구현 (`TBD`) |
-| Tool | 위치·날씨·장소 다건 상세조회 Tool 구현, 나머지 `TBD` |
-| 가중치 Engine (Scoring v1) | 독립 모듈 구현됨; Request Builder/route 연결은 미구현 (`TBD`) |
+| Tool | 위치·날씨·장소·집중률·공휴일 Tool 구현, 이동시간 등은 `TBD` |
+| 가중치 Engine (Scoring v1) | Recommendations API 파이프라인에 연결됨 |
 | Recommendation Request Builder | 미구현 (`TBD`) |
 | LLM Interpret/Response Generator | 미구현 (`TBD`) |
 | Supabase Persistence | 미구현 (`TBD`) |
@@ -205,10 +205,10 @@ Weather Snapshot은 `data_type=forecast`, `retrieved_at`, `forecast_for`,
 | 상황 | 기본 방향 | 확정 상태 |
 | --- | --- | --- |
 | Geocoding 실패 | 위치 재입력 요청; 추천 실행 중단 | 부분 구현 |
-| Place 후보 조회 실패 | 후보 자체가 없으므로 해당 실행 실패 | 제안, `TBD` |
-| Weather 실패 | 날씨 Feature 제외 후 나머지 가중치 재정규화 | Scoring 엔진 구현됨; 파이프라인 연결 `TBD` |
+| Place 후보 조회 실패 | `unavailable`로 추천 실행 중단 | 구현됨 |
+| Weather 실패 | 날씨 Feature 제외 후 나머지 가중치 재정규화 | 구현됨 |
 | 운영시간 누락 | 제외 또는 `unverified_recommendations`로 분리 | 현재는 분리 |
-| Concentration 실패 | 혼잡도 Feature 없이 부분 추천 | 제안, `TBD` |
+| Concentration 실패 | 순위 확정 후 후조회만 생략하고 기존 추천 유지 | 구현됨 |
 | Blog 근거 실패 | 분위기/조용함 Feature를 미확인 처리 | 제안, `TBD` |
 | 하드 필터 후 후보 없음 | 완화 가능한 조건을 설명하고 사용자 확인 요청 | `TBD` |
 | LLM 실패 | 재시도 또는 구조화 입력 UI 제공 | `TBD` |

@@ -48,6 +48,13 @@
 - TourAPI 대·중·소분류 기준 데이터 240건 JSON 정규화
 - 관광지 집중률 예측 조회
 - 한국천문연구원 공휴일 조회
+- 5개 Provider 공통 `ProviderResult`·`ProviderMetadata` 계약
+- 위치·날씨·장소·집중률·공휴일 Tool의 공통 상태·오류·metadata 필드
+- Tool 결과를 동일 형식으로 보관하는 `AgentToolContext`
+- 장소 Tool 결과를 Scoring 입력으로 변환하는 Candidate Mapper
+- 위치·장소·날씨 Tool → Candidate → Scoring → 상위 5개 추천 파이프라인
+- Scoring 상위 후보에 한정한 집중률 후조회
+- 추천 API 응답의 전체 Backend 파이프라인 처리시간 `elapsed_ms`
 - 실제 외부 요청을 명시적으로만 실행하는 Smoke/Inspection Test
 
 아직 구현되지 않은 핵심 범위:
@@ -55,11 +62,11 @@
 - 통합 `POST /api/chat`
 - 실제 LLM 기반 Intent/조건 추출 및 자연어 응답 생성
 - 이전 대화 조건 병합과 백엔드 세션 상태
-- Orchestrator와 나머지 업무 단위 Tool
+- 전체 Tool 실행 순서를 제어하는 Orchestrator
 - `RecommendationRequest Builder`
 - 사용자 자연어 별칭을 표준 장소 유형으로 변환하는 Interpret 연동
 - 표준 장소 유형과 TourAPI 분류를 연결하는 Category Mapper
-- 운영시간 계산, 하드 필터, 가중치 Scoring 및 결정적 정렬
+- 운영시간의 공휴일·복합 예외 판정
 - Naver Blog Search 근거 수집
 - Supabase 영속화
 - `chat_session_id`, `recommendation_run_id` 처리

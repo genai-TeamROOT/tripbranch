@@ -105,6 +105,7 @@ async def test_tour_api_place_real_smoke() -> None:
             preferred_categories=[],
             search_radius_km=1.0,
         )
+        result = result.data
 
     assert result
     assert all(candidate.place_id and candidate.name for candidate in result)
@@ -121,6 +122,7 @@ async def test_tour_api_keyword_and_details_real_smoke() -> None:
         details = await provider.find_details_by_name(
             "경복궁", region_code="11", district_code="110"
         )
+        details = details.data
 
     assert details.title == "경복궁"
     print(
@@ -136,6 +138,7 @@ async def test_tour_api_concentration_real_smoke() -> None:
             client=client,
         )
         result = await provider.get_forecast("11", "11110", "경복궁")
+        result = result.data
 
     assert result.area_code == "11"
     assert result.district_code == "11110"
@@ -152,6 +155,7 @@ async def test_kasi_holiday_real_smoke() -> None:
             client=client,
         )
         result = await provider.get_holidays(2026)
+        result = result.data
 
     assert result.entries
     assert all(entry.date.startswith("2026") for entry in result.entries)

@@ -10,16 +10,14 @@ from zoneinfo import ZoneInfo
 
 from app.domain.models import WeatherCondition, WeatherForecastSlot
 from app.errors import AppError
+from app.providers.contracts import ProviderMetadata
 from app.providers.protocols import WeatherProvider
+from app.tools.contracts import ToolError, ToolStatus
 
 _KST = ZoneInfo("Asia/Seoul")
 
 
-class WeatherToolStatus(StrEnum):
-    SUCCESS = "success"
-    NO_DATA = "no_data"
-    UNSUPPORTED = "unsupported"
-    UNAVAILABLE = "unavailable"
+WeatherToolStatus = ToolStatus
 
 
 class ForecastSelectionMethod(StrEnum):
@@ -59,12 +57,7 @@ class SelectedWeatherForecast:
     selection_method: ForecastSelectionMethod
 
 
-@dataclass(frozen=True)
-class WeatherToolError:
-    code: str
-    message: str
-    cause: str
-    retryable: bool
+WeatherToolError = ToolError
 
 
 @dataclass(frozen=True)
@@ -72,6 +65,8 @@ class WeatherForecastToolResult:
     status: WeatherToolStatus
     forecast: SelectedWeatherForecast | None
     error: WeatherToolError | None
+    warnings: tuple[str, ...] = ()
+    provider_metadata: tuple[ProviderMetadata, ...] = ()
 
 
 class GetWeatherForecastTool:
@@ -94,10 +89,11 @@ class GetWeatherForecastTool:
         )
 
         try:
-            result = await self._provider.get_forecast_slots(
+            provider_result = await self._provider.get_forecast_slots(
                 query.latitude,
                 query.longitude,
             )
+            result = provider_result.data
         except AppError as exc:
             if exc.code == "weather_no_data":
                 return _error_result(
@@ -159,6 +155,7 @@ class GetWeatherForecastTool:
                 selection_method=selection_method,
             ),
             error=None,
+            provider_metadata=(provider_result.metadata,),
         )
 
 

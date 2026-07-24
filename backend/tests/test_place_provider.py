@@ -59,6 +59,7 @@ async def test_search_places_sends_tour_api_category_filters() -> None:
                 lcls_systm3="FD050100",
             ),
         )
+        result = result.data
 
     assert seen_params["contentTypeId"] == "39"
     assert seen_params["lclsSystm1"] == "FD"
@@ -127,6 +128,7 @@ async def test_search_by_keyword_returns_content_identifiers() -> None:
         result = await provider.search_by_keyword(
             "경복궁", region_code="11", district_code="110"
         )
+        result = result.data
 
     assert seen_params["keyword"] == "경복궁"
     assert seen_params["lDongRegnCd"] == "11"
@@ -170,6 +172,7 @@ async def test_get_details_combines_common_and_intro_responses() -> None:
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         provider = RealPlaceProvider(api_key="dummy", client=client)
         result = await provider.get_details("126508", "12")
+        result = result.data
 
     assert seen_paths[0].endswith("/detailCommon2")
     assert seen_paths[1].endswith("/detailIntro2")
@@ -203,6 +206,7 @@ async def test_get_course_details_assumes_all_day_when_hours_are_missing() -> No
             api_key="dummy",
             client=client,
         ).get_details("course-1", "25")
+        result = result.data
 
     assert result.operating_hours is None
     assert result.operating_schedule is not None
@@ -259,6 +263,7 @@ async def test_find_details_by_name_searches_exact_match_then_gets_details() -> 
         result = await provider.find_details_by_name(
             "경복궁", region_code="11", district_code="110"
         )
+        result = result.data
 
     assert seen_paths == [
         "/B551011/KorService2/searchKeyword2",

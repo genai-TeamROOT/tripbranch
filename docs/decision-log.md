@@ -63,7 +63,7 @@
 
 ### D-008 — 추천은 하드 필터와 가중치 점수 조합
 
-- 상태: `Accepted`; Scoring v1 엔진 `Implemented` (아직 API 라우트에는 미연결)
+- 상태: `Implemented`; Recommendations API 파이프라인에 연결
 - 결정: 명시적 필수 조건은 하드 필터, 선호 조건은 가중치 점수로 처리한다.
 - 현재: `backend/app/domain/scoring.py::score_candidates()`로 날씨·남은 운영
   시간·거리 Feature 기반 가중치 점수 계산과 정렬을 구현. 이전 노출·거절 ID
@@ -92,9 +92,7 @@
   혼잡도·근거 신뢰도 Feature, 실제 이동시간 기반 거리, 예산/동행 하드 필터,
   실제 운영시간 원문("0900~1800" 등)을 `OperatingHours`로 정규화하는 파서
   (`PLC-03`과 동일 범위), 자정을 넘기는 운영시간, 기준 시각(`now`)의 실제
-  출처(즉시 방문 vs 방문 예정 시각, D-022 연계),
-  `services/recommendations.py`/`/api/recommendations`와의 실제 연결
-  (D-03에서 진행)
+  출처(즉시 방문 vs 방문 예정 시각, D-022 연계)
 
 ### D-009 — Naver Blog Search는 보완 근거로 사용
 
@@ -309,14 +307,14 @@
 | Chat 계약 naming | Backend Python/JSON `snake_case` | `Accepted` |
 | Backend 상태 저장 | Supabase 테이블과 캐시 역할 | `TBD` |
 | Frontend 저장 | `sessionStorage` 유지 또는 `localStorage` 전환 | `TBD` |
-| Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); 실제 파이프라인(route) 연결 | 연결은 `TBD` |
+| Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); Recommendations API 연결 | 구현 완료 |
 | 혼잡도 fallback | 장소 근접치, 구 단위, Feature 제외 | 현재 논의 중 |
 | 운영시간 파싱 | 기본 시간·월별·주간 휴무 구현, 공휴일·회차 예외 확대 | `부분 구현` |
 | 이동시간 | 지도 Provider 및 교통수단별 계산 | `TBD` |
 | 조건 완화 | 자동 완화 범위와 사용자 확인 UX | `TBD` |
 | 관측성 | 구조화 로그, tracing, 보존기간 | `TBD` |
-| Provider metadata 구현 | 공통 wrapper, Clock, 기존 필드 마이그레이션 | 설계 확정/구현 `TBD` |
-| Tool 오류 구현 | 전용 결과에서 분류 구현, 공통 `ToolResult<T>` 적용 | 부분 구현 |
+| Provider metadata 구현 | 5개 Provider 공통 `ProviderResult`와 UTC metadata 적용 | 구현 완료 |
+| Tool 오류 구현 | 5개 Tool에 공통 상태·오류·warning·provider metadata 적용 | 구현 완료 |
 | Provider Blocker | P0~P3 표의 해결 조건 기준으로 추적 | 목록 확정/해결 진행 `TBD` |
 | ProviderError 구현 | 공통 오류 모델, sanitize, ToolError 변환 | 설계 확정/구현 `TBD` |
 | Weather 방문시각 선택 | visit_at 입력, forecast_for 선택, 범위 초과 처리 | 구현 완료 |

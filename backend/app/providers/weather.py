@@ -18,6 +18,7 @@ from app.domain.models import (
     WeatherForecastSlot,
 )
 from app.errors import AppError
+from app.providers.contracts import ProviderResult, ProviderSource, provider_result
 from app.providers.kma_grid import latlon_to_grid
 
 _KST = ZoneInfo("Asia/Seoul")
@@ -120,19 +121,22 @@ class RealWeatherProvider:
 
     async def get_current_condition(
         self, latitude: float, longitude: float
-    ) -> WeatherCondition:
-        result = await self.get_forecast_slots(latitude, longitude)
+    ) -> ProviderResult[WeatherCondition]:
+        result = (await self.get_forecast_slots(latitude, longitude)).data
         if not result.slots:
             raise AppError(
                 code="weather_no_data",
                 message="해당 좌표의 날씨 데이터가 제공되지 않습니다.",
                 status_code=404,
             )
-        return result.slots[0].condition
+        return provider_result(
+            result.slots[0].condition,
+            source=ProviderSource.KMA_ULTRA_SHORT_FORECAST,
+        )
 
     async def get_forecast_slots(
         self, latitude: float, longitude: float
-    ) -> WeatherForecastResult:
+    ) -> ProviderResult[WeatherForecastResult]:
         nx, ny = latlon_to_grid(latitude, longitude)
         base_date, base_time = resolve_base_date_time(datetime.now(_KST))
 
@@ -180,11 +184,14 @@ class RealWeatherProvider:
         except (KeyError, TypeError):
             items = []
         slots = map_items_to_forecast_slots(items if isinstance(items, list) else [])
-        return WeatherForecastResult(
-            latitude=latitude,
-            longitude=longitude,
-            grid_x=nx,
-            grid_y=ny,
-            slots=slots,
-            provider="kma_ultra_short_forecast",
+        return provider_result(
+            WeatherForecastResult(
+                latitude=latitude,
+                longitude=longitude,
+                grid_x=nx,
+                grid_y=ny,
+                slots=slots,
+                provider="kma_ultra_short_forecast",
+            ),
+            source=ProviderSource.KMA_ULTRA_SHORT_FORECAST,
         )

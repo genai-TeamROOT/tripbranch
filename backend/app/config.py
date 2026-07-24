@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     external_api_timeout_seconds: float = 10.0
     external_api_retry_count: int = 2
 
+    # Recommendation pipeline budgets
+    recommendation_result_limit: int = 5
+    recommendation_candidate_limit: int = 10
+
     # Place synchronization policy.
     place_sync_page_size: int = 100
     place_sync_detail_concurrency: int = 5

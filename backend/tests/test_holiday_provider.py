@@ -9,7 +9,7 @@ pytestmark = pytest.mark.asyncio
 
 
 async def test_fake_holiday_provider_filters_month_and_exposes_holidays() -> None:
-    result = await FakeHolidayProvider().get_holidays(2026, 3)
+    result = (await FakeHolidayProvider().get_holidays(2026, 3)).data
 
     assert [entry.name for entry in result.entries] == ["삼일절"]
     assert result.holidays == result.entries
@@ -32,7 +32,7 @@ async def test_real_holiday_provider_maps_xml_and_request_parameters() -> None:
         return httpx.Response(200, text=xml)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        result = await RealHolidayProvider("dummy", client).get_holidays(2026, 3)
+        result = (await RealHolidayProvider("dummy", client).get_holidays(2026, 3)).data
 
     assert len(result.entries) == 2
     assert result.entries[0].name == "삼일절"

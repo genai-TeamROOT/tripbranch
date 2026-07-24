@@ -17,6 +17,12 @@ from app.domain.models import (
 )
 from app.domain.operating_hours import normalize_operating_schedule
 from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
+from app.providers.contracts import (
+    ProviderResult,
+    ProviderSource,
+    ProviderStatus,
+    provider_result,
+)
 from app.providers.mappers import map_tour_api_response
 from app.schemas import PlaceCandidate
 
@@ -223,7 +229,7 @@ class RealPlaceProvider:
         search_radius_km: float,
         category_filter: PlaceCategoryFilter | None = None,
         limit: int = 20,
-    ) -> list[PlaceCandidate]:
+    ) -> ProviderResult[list[PlaceCandidate]]:
         radius_m = min(int(search_radius_km * 1000), 20000)
         params = {
             **self._base_params(),
@@ -249,7 +255,12 @@ class RealPlaceProvider:
                 }
             )
         payload = await self._request_json(_LOCATION_BASED_LIST_PATH, params)
-        return map_tour_api_response(payload)
+        candidates = map_tour_api_response(payload)
+        return provider_result(
+            candidates,
+            source=ProviderSource.TOUR_API_PLACE,
+            status=ProviderStatus.SUCCESS if candidates else ProviderStatus.NO_DATA,
+        )
 
     async def list_places_by_area(
         self,
@@ -325,7 +336,7 @@ class RealPlaceProvider:
         region_code: str | None = None,
         district_code: str | None = None,
         limit: int = 20,
-    ) -> list[PlaceCandidate]:
+    ) -> ProviderResult[list[PlaceCandidate]]:
         normalized_keyword = keyword.strip()
         if not normalized_keyword:
             raise ValueError("keyword는 비어 있을 수 없습니다.")
@@ -345,9 +356,16 @@ class RealPlaceProvider:
             params["lDongSignguCd"] = district_code
 
         payload = await self._request_json(_SEARCH_KEYWORD_PATH, params)
-        return map_tour_api_response(payload)
+        candidates = map_tour_api_response(payload)
+        return provider_result(
+            candidates,
+            source=ProviderSource.TOUR_API_PLACE,
+            status=ProviderStatus.SUCCESS if candidates else ProviderStatus.NO_DATA,
+        )
 
-    async def get_details(self, content_id: str, content_type_id: str) -> PlaceDetails:
+    async def get_details(
+        self, content_id: str, content_type_id: str
+    ) -> ProviderResult[PlaceDetails]:
         if not content_id or not content_type_id:
             raise ValueError("content_id와 content_type_id가 필요합니다.")
 
@@ -370,7 +388,7 @@ class RealPlaceProvider:
 
         operating_hours = _first_text(intro, _OPERATING_HOURS_KEYS)
         rest_date = _first_text(intro, _REST_DATE_KEYS)
-        return PlaceDetails(
+        details = PlaceDetails(
             content_id=content_id,
             content_type_id=content_type_id,
             title=_first_text(common, ("title",)),
@@ -389,23 +407,41 @@ class RealPlaceProvider:
                 rest_date=rest_date,
             ),
         )
+        has_data = any(
+            (
+                details.title,
+                details.address,
+                details.overview,
+                details.homepage,
+                details.telephone,
+                details.operating_hours,
+                details.rest_date,
+                details.raw_common,
+                details.raw_intro,
+            )
+        )
+        return provider_result(
+            details,
+            source=ProviderSource.TOUR_API_PLACE,
+            status=ProviderStatus.SUCCESS if has_data else ProviderStatus.NO_DATA,
+        )
 
     async def find_details_by_name(
         self,
         name: str,
         region_code: str | None = None,
         district_code: str | None = None,
-    ) -> PlaceDetails:
+    ) -> ProviderResult[PlaceDetails]:
         normalized_name = name.strip()
         if not normalized_name:
             raise ValueError("name은 비어 있을 수 없습니다.")
 
-        candidates = await self.search_by_keyword(
+        candidates = (await self.search_by_keyword(
             normalized_name,
             region_code=region_code,
             district_code=district_code,
             limit=100,
-        )
+        )).data
         exact = next(
             (
                 candidate
