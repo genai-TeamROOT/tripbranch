@@ -209,28 +209,24 @@ time_available  : 분 단위
 
 | 키 | 타입 | 설명 |
 | --- | --- | --- |
-| `op` | string | `Add` / `Update` / `Remove` |
+| `op` | string | `Add` / `Update` / `Remove` / `Keep` |
 | `field` | string | 1.2절 `user_conditions` 14개 필드 중 하나 |
-| `value` | any \| null | 적용할 값. `Remove`는 생략 가능 |
+| `value` | any \| null | 적용할 값. `Remove`·`Keep`은 생략 가능 |
 
-- 연산은 **3종**이다. `Keep`은 payload에 포함되지 않는다.
-- `operations` 배열에 포함되지 않은 필드는 자동으로 유지된다. (= Keep)
+- 연산은 **4종**이다.
+- `operations` 배열에 포함되지 않은 필드는 자동으로 유지된다.
+  `Keep`은 A가 유지를 명시적으로 판단한 경우에 전달된다.
 - 복수 필드의 `value`는 원소가 하나여도 리스트로 전달한다.
 - `api_context`는 `operations` 대상이 아니다. (6.5절 별도 경로)
 
-**`Keep` 수신 시**
-A는 `Keep`을 전송하지 않으나, 수신할 경우 오류로 처리하지 않는다.
-State를 변경하지 않고 `condition_version`도 증가시키지 않으며,
-변경 기록에만 남긴다.
-
 ### 2.2 필드별 허용 연산
 
-`conditions-schema.md` 4절 「필드별 적용 방식」을 기준으로 한다.
+`conditions-schema.md` v0.3 4절 「필드별 적용 방식」을 기준으로 한다.
 **허용되지 않은 연산은 적용하지 않고 `ignored_operations`로 반환한다.**
 
 | 필드 | 값 성격 | 허용 연산 | `Remove` 결과 |
 | --- | --- | --- | --- |
-| `current_location` | 단일 | `Update` | — (해제 불가) |
+| `current_location` | 단일 | `Update` / `Remove` | `null` |
 | `search_center` | 단일 | `Update` / `Remove` | `null` |
 | `place_types` | 복수 | `Update` / `Remove` | `[]` |
 | `place_tags` | 복수 | `Add` / `Update` / `Remove` | 해당 원소 제거 |
@@ -245,13 +241,18 @@ State를 변경하지 않고 `condition_version`도 증가시키지 않으며,
 | `exclude_tags` | 복수 | `Add` / `Remove` | 해당 원소 제거 |
 | `special_requirements` | 복수 | `Add` / `Remove` | 해당 원소 제거 |
 
-**`current_location`만 `Remove`를 허용하지 않는다.**
-`conditions-schema.md` 4절에 필수 필드로 명시되어 있다.
+**14개 필드 모두 `Remove`를 허용한다.**
+`conditions-schema.md` v0.3에서 `current_location`의 필수 지위가
+`api_context.gps_location`으로 이관되었으므로,
+`user_conditions`에는 해제 불가 필드가 없다.
+
+**`Keep`은 이 표의 제약을 받지 않는다.**
+모든 필드에서 무동작이므로 허용 연산 검사를 거치지 않는다.
 
 **허용 범위를 넓게 잡은 이유**
 허용해 두었으나 전달되지 않으면 해당 분기가 사용되지 않을 뿐이지만,
 차단해 두었는데 전달되면 사용자 조건이 반영되지 않은 채 사라진다.
-실제 사용 범위가 확정되면 표를 좁힌다. (7절 P0-1)
+실제 사용 범위가 확정되면 표를 좁힌다.
 
 **`place_types` 교체 시 `place_tags` 정리**
 B는 자동 정리를 수행하지 않는다.
@@ -274,10 +275,17 @@ B가 매핑 정보를 보유하지 않는다.
 | `Update` | 값 전체 교체 | 리스트 전체 교체 |
 | `Add` | (허용 필드 없음) | 리스트에 추가. 중복 원소는 무시 |
 | `Remove` | `null`로 되돌림 | `value` 있으면 해당 원소 제거, 없으면 전체 비움 |
+| `Keep` | 변경 없음 | 변경 없음 |
 
 **존재하지 않는 원소에 대한 `Remove`**
 오류로 처리하지 않고 무시하며, 결과가 변하지 않으므로
 `condition_version`도 증가시키지 않는다.
+
+**`Keep`**
+State를 변경하지 않으며 `condition_version`도 증가시키지 않는다.
+모든 필드에서 무동작이므로 2.2절 허용 연산표의 제약을 받지 않는다.
+A가 명시적으로 유지를 판단했다는 신호이므로 변경 기록에는 남긴다.
+연산이 전달되지 않은 것과 `Keep`이 전달된 것을 구분하기 위함이다.
 
 ### 2.4 적용 순서
 
@@ -336,7 +344,8 @@ B가 매핑 정보를 보유하지 않는다.
 적용 전후의 `user_conditions`를 전체 비교하여 판정한다.
 
 - 결과가 달라진 경우에만 1 증가시킨다.
-- 빈 연산, 전부 무효 처리된 경우, 적용 결과가 이전과 동일한 경우에는 증가시키지 않는다.
+- 빈 연산, `Keep`만 있는 경우, 전부 무효 처리된 경우,
+  적용 결과가 이전과 동일한 경우에는 증가시키지 않는다.
 - `api_context` 변경은 판정에서 제외한다.
 - `updated_at`도 동일한 기준으로 갱신한다.
 
@@ -355,7 +364,7 @@ B가 매핑 정보를 보유하지 않는다.
 }
 ```
 
-- 유효한 연산은 결과 변화가 없어도 기록한다.
+- 유효한 연산은 결과 변화가 없어도 기록한다. `Keep`도 기록 대상이다.
 - 무효한 연산은 기록하지 않고 `ignored_operations`로만 반환한다.
 - `api_context` 갱신은 별도 경로이므로 이 기록에 남기지 않는다.
 - 사용자 원문 발화와 LLM 원문 응답은 기록하지 않는다.
@@ -397,6 +406,14 @@ ops:     [{ op: "Add", field: "place_types", value: ["shopping"] }]
 after:   { place_types: ["restaurant"] }   ← 변경 없음
 version: 6 → 6
 ignored: place_types + Add → unsupported_operation
+
+[예시 6] Keep 이 포함된 경우
+before:  { place_types: ["restaurant"], companion: "parent" }
+ops:     [{ op: "Update", field: "budget",    value: "free" },
+          { op: "Keep",   field: "companion" }]
+after:   { place_types: ["restaurant"], companion: "parent", budget: "free" }
+version: 6 → 7
+※ Keep 은 State 를 바꾸지 않지만 변경 기록에는 남는다. (기록 2건)
 ```
 
 ## 3. 추천·거절 이력 구조
@@ -463,7 +480,7 @@ B는 값을 검증하지 않고 그대로 저장한다. 값이 없으면 `null`�
 ### 3.3 제외 ID 목록
 
 ```
-exclusion_place_ids = recommended의 place_id ∪ rejected의 place_id
+excluded_place_ids = recommended의 place_id ∪ rejected의 place_id
 ```
 
 - 중복은 제거하여 반환한다.
@@ -505,7 +522,7 @@ shown_place_ids = recommended 중 last_recommended_run_id 와 일치하는 항�
 ### 3.5 중복 처리
 
 - 동일한 `place_id`가 다시 전달되어도 오류로 처리하지 않고 리스트에 추가한다.
-- 중복 제거는 `exclusion_place_ids` 생성 시점에만 수행한다.
+- 중복 제거는 `excluded_place_ids` 생성 시점에만 수행한다.
 
 이력을 append-only로 유지하면 저장 로직에 조회·비교 단계가 필요 없고,
 같은 장소가 두 번 노출된 사실 자체도 기록으로 남는다.
@@ -945,7 +962,7 @@ HTTP 엔드포인트 노출은 AF-05 Agent Runtime의 책임 범위다.
       "before_value": 30, "after_value": 15 }
   ],
   "ignored_operations": [],
-  "exclusion_place_ids": ["126508", "126509"],
+  "excluded_place_ids": ["126508", "126509"],
   "reset_applied": null
 }
 ```
@@ -961,7 +978,7 @@ HTTP 엔드포인트 노출은 AF-05 Agent Runtime의 책임 범위다.
 | `condition_changed` | bool | 이번 요청으로 조건이 실제 변경됐는지 |
 | `applied_operations` | list | 적용된 연산과 전후 값 |
 | `ignored_operations` | list | 무시된 연산과 사유 |
-| `exclusion_place_ids` | list[string] | 추천 제외 대상 ID |
+| `excluded_place_ids` | list[string] | 추천 제외 대상 ID |
 | `reset_applied` | string \| null | 적용된 초기화 종류 |
 
 **조건의 단일 기준은 B다.**
@@ -1160,7 +1177,6 @@ GPS·날씨 API로 확보한 데이터를 저장한다.
 | # | 항목 | 잠정 결정 |
 | --- | --- | --- |
 | P1-1 | 새 `RECOMMEND` 수신 시 조건 초기화 | B는 자동 초기화하지 않음. 필요 시 A가 `reset_scope: soft` 동반 전송 |
-| P1-2 | 조건 필드 명칭 통일 | `user_conditions`로 통일. (`current_conditions` / `final_conditions` 혼재) |
 | P1-3 | `reason_code` 목록 | `too_far` / `not_interested` / `already_visited` / `closed` / `other` (A 확정 대기) |
 | P1-4 | 추천 결과 기록 호출 주체 | AF-05 Agent Runtime |
 | P1-5 | 식별자 생성 방식 | ULID 우선, 의존성 제약 시 `uuid4` |
@@ -1199,3 +1215,6 @@ GPS·날씨 API로 확보한 데이터를 저장한다.
 | 07-23 | 이력 자동 초기화 | B는 조건 변화를 감지해 초기화하지 않음 | A 회신 7 |
 | 07-23 | `operations` 생성 인텐트 | `RECOMMEND` / `MODIFY`만 | A 회신 |
 | 07-23 | `place_id` 형식 | TourAPI `contentid` 문자열 | A 회신 |
+| 07-24 | 연산 종류 | **4종**(`Add`/`Update`/`Remove`/`Keep`)으로 재확정. 07-23 3종 결정을 대체 | A 재회신 |
+| 07-24 | `Remove` 허용 범위 | 14개 필드 전체. `current_location` 필수 지위가 `gps_location`으로 이관 | conditions-schema v0.3 |
+| 07-24 | 조건 필드 명칭 | `user_conditions`로 통일. `current_conditions` / `final_conditions` 표기를 대체 | conditions-schema v0.3 |
