@@ -51,6 +51,9 @@ class RecommendationItem(BaseModel):
     environment_type: str
     recommendation_reason: str
     warnings: list[str]
+    score: float
+    feature_scores: dict[str, float | None]
+    weights_used: dict[str, float]
 
 
 class RecommendationResponse(BaseModel):

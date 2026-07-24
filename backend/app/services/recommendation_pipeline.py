@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from app.domain.agent_context import AgentToolContext, context_value
 from app.domain.candidate_mapper import map_places_to_scoring_candidates
+from app.domain.evidence import build_evidence
 from app.domain.models import ScoringCandidate
 from app.domain.scoring import RankedCandidate, ScoringResult, score_candidates
 from app.errors import AppError
@@ -328,6 +329,7 @@ def _build_response(
     for ranked_item in ranked:
         candidate = candidate_by_id[ranked_item.place_id]
         place = place_by_id[ranked_item.place_id]
+        evidence = build_evidence(ranked_item)
         item = RecommendationItem(
             place_id=candidate.place_id,
             name=candidate.name,
@@ -344,6 +346,16 @@ def _build_response(
                 not in ranked_item.warnings
                 else []
             ),
+            score=evidence.score,
+            feature_scores={
+                contribution.feature: contribution.score
+                for contribution in evidence.contributions
+            },
+            weights_used={
+                contribution.feature: contribution.weight
+                for contribution in evidence.contributions
+                if contribution.weight is not None
+            },
         )
         (unverified if ranked_item.is_unverified else verified).append(item)
 
