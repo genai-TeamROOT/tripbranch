@@ -22,6 +22,7 @@ from app.domain.models import (
     WeatherCondition,
     WeatherForecastResult,
 )
+from app.providers.contracts import ProviderResult
 from app.schemas import InterpretedConditions, PlaceCandidate, RecommendationResponse
 
 
@@ -39,7 +40,7 @@ class RecommendationProvider(Protocol):
 class GeocodingProvider(Protocol):
     async def geocode(
         self, location_query: str, *, use_alias: bool = True
-    ) -> GeocodeResult:
+    ) -> ProviderResult[GeocodeResult]:
         """장소 이름이나 주소를 정규화된 좌표 결과로 변환한다."""
         ...
 
@@ -47,13 +48,13 @@ class GeocodingProvider(Protocol):
 class WeatherProvider(Protocol):
     async def get_current_condition(
         self, latitude: float, longitude: float
-    ) -> WeatherCondition:
+    ) -> ProviderResult[WeatherCondition]:
         """좌표의 현재 날씨를 공통 상태로 반환한다."""
         ...
 
     async def get_forecast_slots(
         self, latitude: float, longitude: float
-    ) -> WeatherForecastResult:
+    ) -> ProviderResult[WeatherForecastResult]:
         """좌표의 시각별 초단기예보 목록을 반환한다."""
         ...
 
@@ -67,13 +68,15 @@ class PlaceSearchProvider(Protocol):
         search_radius_km: float,
         category_filter: PlaceCategoryFilter | None = None,
         limit: int = 20,
-    ) -> list[PlaceCandidate]:
+    ) -> ProviderResult[list[PlaceCandidate]]:
         """주어진 좌표/조건으로 장소 후보 목록을 조회해 공통 모델로 반환한다."""
         ...
 
 
 class PlaceDetailsProvider(Protocol):
-    async def get_details(self, content_id: str, content_type_id: str) -> PlaceDetails:
+    async def get_details(
+        self, content_id: str, content_type_id: str
+    ) -> ProviderResult[PlaceDetails]:
         """장소 ID와 유형 ID로 정규화된 상세정보를 반환한다."""
         ...
 
@@ -85,7 +88,7 @@ class PlaceProvider(PlaceSearchProvider, PlaceDetailsProvider, Protocol):
         region_code: str | None = None,
         district_code: str | None = None,
         limit: int = 20,
-    ) -> list[PlaceCandidate]:
+    ) -> ProviderResult[list[PlaceCandidate]]:
         """장소명·키워드로 후보와 TourAPI content ID를 조회한다."""
         ...
 
@@ -94,7 +97,7 @@ class PlaceProvider(PlaceSearchProvider, PlaceDetailsProvider, Protocol):
         name: str,
         region_code: str | None = None,
         district_code: str | None = None,
-    ) -> PlaceDetails:
+    ) -> ProviderResult[PlaceDetails]:
         """장소명으로 정확히 일치하는 후보를 찾아 상세정보까지 반환한다."""
         ...
 
@@ -125,7 +128,7 @@ class ConcentrationProvider(Protocol):
         area_code: str,
         district_code: str,
         place_name: str | None = None,
-    ) -> ConcentrationResult:
+    ) -> ProviderResult[ConcentrationResult]:
         """지역과 선택적인 관광지명에 대한 향후 집중률을 반환한다."""
         ...
 
@@ -133,6 +136,6 @@ class ConcentrationProvider(Protocol):
 class HolidayProvider(Protocol):
     async def get_holidays(
         self, year: int, month: int | None = None
-    ) -> HolidayResult:
+    ) -> ProviderResult[HolidayResult]:
         """공휴일 목록을 반환한다."""
         ...

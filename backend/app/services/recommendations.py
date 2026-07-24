@@ -120,12 +120,12 @@ async def build_recommendations(
     latitude = resolved.location.latitude
     longitude = resolved.location.longitude
 
-    candidates = await place_provider.search_places(
+    candidates = (await place_provider.search_places(
         latitude=latitude,
         longitude=longitude,
         preferred_categories=conditions.preferred_categories,
         search_radius_km=conditions.search_radius_km,
-    )
+    )).data
 
     shown = set(shown_place_ids)
     candidates = [c for c in candidates if c.place_id not in shown]

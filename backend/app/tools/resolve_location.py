@@ -7,17 +7,14 @@ from enum import StrEnum
 
 from app.domain.models import GeocodeResult
 from app.errors import AppError
+from app.providers.contracts import ProviderMetadata
 from app.providers.geocoding import get_jongno_landmark_alias
 from app.providers.protocols import GeocodingProvider
+from app.tools.contracts import ToolError, ToolStatus
 
 _SUPPORTED_DISTRICT = "종로구"
 
-
-class ResolveLocationStatus(StrEnum):
-    SUCCESS = "success"
-    NO_DATA = "no_data"
-    UNSUPPORTED = "unsupported"
-    UNAVAILABLE = "unavailable"
+ResolveLocationStatus = ToolStatus
 
 
 class ResolutionMethod(StrEnum):
@@ -55,13 +52,7 @@ class ResolvedLocation:
     confidence: ResolutionConfidence
 
 
-@dataclass(frozen=True)
-class ResolveLocationError:
-    code: str
-    message: str
-    cause: str | None
-    retryable: bool
-    details: dict[str, str]
+ResolveLocationError = ToolError
 
 
 @dataclass(frozen=True)
@@ -70,6 +61,7 @@ class ResolveLocationResult:
     location: ResolvedLocation | None
     error: ResolveLocationError | None
     warnings: tuple[str, ...] = ()
+    provider_metadata: tuple[ProviderMetadata, ...] = ()
 
 
 class ResolveLocationTool:
@@ -88,38 +80,45 @@ class ResolveLocationTool:
                 fallback = await self._lookup(requested_query, use_alias=False)
                 if isinstance(fallback, ResolveLocationResult):
                     return fallback
+                fallback_data, fallback_metadata = fallback
                 return self._success_or_policy_result(
-                    result=fallback,
+                    result=fallback_data,
                     requested_query=requested_query,
                     provider_query=requested_query,
                     method=ResolutionMethod.FALLBACK,
                     warnings=("fallback_used",),
+                    provider_metadata=(fallback_metadata,),
                 )
+            first_data, first_metadata = first
             return self._success_or_policy_result(
-                result=first,
+                result=first_data,
                 requested_query=requested_query,
                 provider_query=alias,
                 method=ResolutionMethod.ALIAS,
+                provider_metadata=(first_metadata,),
             )
 
         direct = await self._lookup(requested_query, use_alias=False)
         if isinstance(direct, ResolveLocationResult):
             return direct
+        direct_data, direct_metadata = direct
         return self._success_or_policy_result(
-            result=direct,
+            result=direct_data,
             requested_query=requested_query,
             provider_query=requested_query,
             method=ResolutionMethod.DIRECT,
+            provider_metadata=(direct_metadata,),
         )
 
     async def _lookup(
         self, provider_query: str, *, use_alias: bool = False
-    ) -> GeocodeResult | ResolveLocationResult:
+    ) -> tuple[GeocodeResult, ProviderMetadata] | ResolveLocationResult:
         try:
-            return await self._provider.geocode(
+            result = await self._provider.geocode(
                 provider_query,
                 use_alias=use_alias,
             )
+            return result.data, result.metadata
         except AppError as exc:
             if exc.code == "location_not_found":
                 return self._error_result(
@@ -143,6 +142,7 @@ class ResolveLocationTool:
         provider_query: str,
         method: ResolutionMethod,
         warnings: tuple[str, ...] = (),
+        provider_metadata: tuple[ProviderMetadata, ...] = (),
     ) -> ResolveLocationResult:
         if result.administrative_district != _SUPPORTED_DISTRICT:
             return self._error_result(
@@ -180,6 +180,7 @@ class ResolveLocationTool:
             ),
             error=None,
             warnings=warnings,
+            provider_metadata=provider_metadata,
         )
 
     @staticmethod

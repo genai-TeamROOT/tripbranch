@@ -295,8 +295,8 @@
 | 이동시간 | 지도 Provider 및 교통수단별 계산 | `TBD` |
 | 조건 완화 | 자동 완화 범위와 사용자 확인 UX | `TBD` |
 | 관측성 | 구조화 로그, tracing, 보존기간 | `TBD` |
-| Provider metadata 구현 | 공통 wrapper, Clock, 기존 필드 마이그레이션 | 설계 확정/구현 `TBD` |
-| Tool 오류 구현 | 전용 결과에서 분류 구현, 공통 `ToolResult<T>` 적용 | 부분 구현 |
+| Provider metadata 구현 | 5개 Provider 공통 `ProviderResult`와 UTC metadata 적용 | 구현 완료 |
+| Tool 오류 구현 | 5개 Tool에 공통 상태·오류·warning·provider metadata 적용 | 구현 완료 |
 | Provider Blocker | P0~P3 표의 해결 조건 기준으로 추적 | 목록 확정/해결 진행 `TBD` |
 | ProviderError 구현 | 공통 오류 모델, sanitize, ToolError 변환 | 설계 확정/구현 `TBD` |
 | Weather 방문시각 선택 | visit_at 입력, forecast_for 선택, 범위 초과 처리 | 구현 완료 |

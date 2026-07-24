@@ -201,6 +201,7 @@ async def test_inspect_naver_geocoding_request_and_response() -> None:
             client=client,
         )
         result = await provider.geocode("경복궁")
+        result = result.data
 
     print(f"normalized: {result}")
 
@@ -250,6 +251,7 @@ async def test_inspect_tour_api_place_request_and_response() -> None:
             preferred_categories=[],
             search_radius_km=1.0,
         )
+        result = result.data
 
     print(f"normalized_count: {len(result)}")
     print(f"normalized_samples: {[candidate.name for candidate in result[:3]]}")
@@ -272,6 +274,7 @@ async def test_inspect_tour_api_cafe_category_request_and_response() -> None:
             search_radius_km=5.0,
             category_filter=cafe_matches[0].to_filter(),
         )
+        result = result.data
 
     assert result
     assert all(candidate.content_type_id == "39" for candidate in result)
@@ -365,6 +368,7 @@ async def test_inspect_tour_api_keyword_and_details_request_and_response() -> No
         details = await provider.find_details_by_name(
             "경복궁", region_code="11", district_code="110"
         )
+        details = details.data
 
     print(f"normalized_details: {details}")
 
@@ -376,6 +380,7 @@ async def test_inspect_tour_api_concentration_request_and_response() -> None:
             client=client,
         )
         result = await provider.get_forecast("11", "11110", "경복궁")
+        result = result.data
 
     print(f"normalized_count: {len(result.forecasts)}")
     print(f"normalized_samples: {list(result.forecasts[:3])}")
@@ -390,6 +395,7 @@ async def test_inspect_kasi_holiday_request_and_response() -> None:
             client=client,
         )
         result = await provider.get_holidays(2026)
+        result = result.data
 
     print(f"normalized_count: {len(result.entries)}")
     print(f"normalized_holidays: {list(result.holidays)}")

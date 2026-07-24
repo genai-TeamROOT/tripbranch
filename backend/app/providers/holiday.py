@@ -8,6 +8,12 @@ import httpx
 
 from app.domain.models import HolidayEntry, HolidayResult
 from app.errors import ProviderTimeoutError, ProviderUnavailableError
+from app.providers.contracts import (
+    ProviderResult,
+    ProviderSource,
+    ProviderStatus,
+    provider_result,
+)
 
 _HOLIDAY_URL = (
     "https://apis.data.go.kr/B090041/openapi/service/SpcdeInfoService/"
@@ -70,7 +76,7 @@ class FakeHolidayProvider:
 
     async def get_holidays(
         self, year: int, month: int | None = None
-    ) -> HolidayResult:
+    ) -> ProviderResult[HolidayResult]:
         _validate_date_scope(year, month)
         entries = tuple(
             entry
@@ -78,7 +84,11 @@ class FakeHolidayProvider:
             if int(entry.date[:4]) == year
             and (month is None or int(entry.date[4:6]) == month)
         )
-        return HolidayResult(year, month, entries, "fake_holiday")
+        return provider_result(
+            HolidayResult(year, month, entries, "fake_holiday"),
+            source=ProviderSource.FAKE_HOLIDAY,
+            status=ProviderStatus.SUCCESS if entries else ProviderStatus.NO_DATA,
+        )
 
 
 def _validate_date_scope(year: int, month: int | None) -> None:
@@ -103,7 +113,7 @@ class RealHolidayProvider:
 
     async def get_holidays(
         self, year: int, month: int | None = None
-    ) -> HolidayResult:
+    ) -> ProviderResult[HolidayResult]:
         _validate_date_scope(year, month)
         params = {
             "pageNo": "1",
@@ -121,7 +131,16 @@ class RealHolidayProvider:
                 timeout=self._timeout_seconds,
             )
             response.raise_for_status()
-            return map_holiday_xml(response.text, year=year, month=month)
+            result = map_holiday_xml(response.text, year=year, month=month)
+            return provider_result(
+                result,
+                source=ProviderSource.KASI_HOLIDAY,
+                status=(
+                    ProviderStatus.SUCCESS
+                    if result.entries
+                    else ProviderStatus.NO_DATA
+                ),
+            )
         except httpx.TimeoutException:
             # httpx 예외 문자열에는 ServiceKey가 포함된 전체 URL이 들어갈 수 있다.
             request_params.clear()

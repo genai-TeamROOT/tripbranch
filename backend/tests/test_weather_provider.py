@@ -104,7 +104,7 @@ async def test_real_weather_provider_picks_earliest_forecast_slot() -> None:
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     provider = RealWeatherProvider(api_key="dummy", client=client)
 
-    condition = await provider.get_current_condition(37.5636, 126.9976)
+    condition = (await provider.get_current_condition(37.5636, 126.9976)).data
 
     assert condition == WeatherCondition.GOOD
     await client.aclose()
@@ -135,6 +135,7 @@ async def test_real_weather_provider_returns_all_forecast_slots() -> None:
             api_key="dummy",
             client=client,
         ).get_forecast_slots(37.5636, 126.9976)
+        result = result.data
 
     assert result.grid_x > 0
     assert result.grid_y > 0

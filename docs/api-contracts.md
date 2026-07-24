@@ -367,14 +367,15 @@ type WeatherMetadata = ProviderMetadata & {
 - 특정 시간 추천은 방문 예정 시각과 가장 가까운 예보 선택
 
 `GetWeatherForecastTool`이 방문 시각에 가장 가까운 예보를 선택하고 위 시간
-metadata를 반환합니다. 공통 `ProviderMetadata` wrapper 적용은 후속 작업입니다.
+metadata를 반환합니다. 공통 `ProviderMetadata` wrapper가 Fake/Real Provider에
+적용되어 Tool Context로 전달됩니다.
 
 ## 6. Tool 계약 초안
 
-`ResolveLocationTool`, `GetWeatherForecastTool`, `NearbyPlaceDetailsTool`은 코드로
-구현되어 있으며, 나머지 Tool 이름과 책임은 방향입니다. 공통 결과와 오류
-envelope는 v1으로 확정했지만, 구현된 Tool은 현재 전용 결과 모델을 사용하므로
-공통 envelope 적용은 후속 작업입니다.
+`ResolveLocationTool`, `GetWeatherForecastTool`, `NearbyPlaceDetailsTool`,
+`GetConcentrationTool`, `GetHolidaysTool`은 코드로 구현되어 있습니다. 각 Tool은
+업무별 payload를 유지하되 `status`, `error`, `warnings`, `provider_metadata`
+필드를 공통으로 제공하며 `ToolResult<T>` Protocol을 만족합니다.
 
 | Tool | 책임 | 예상 Provider |
 | --- | --- | --- |

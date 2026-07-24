@@ -11,6 +11,7 @@ from app.domain.models import (
     WeatherForecastSlot,
 )
 from app.errors import AppError, ProviderTimeoutError
+from app.providers.contracts import ProviderResult, ProviderSource, provider_result
 from app.tools.weather_forecast import (
     ForecastSelectionMethod,
     GetWeatherForecastTool,
@@ -42,21 +43,27 @@ class ForecastProvider:
 
     async def get_current_condition(
         self, latitude: float, longitude: float
-    ) -> WeatherCondition:
-        return self.slots[0].condition
+    ) -> ProviderResult[WeatherCondition]:
+        return provider_result(
+            self.slots[0].condition,
+            source=ProviderSource.FAKE_WEATHER,
+        )
 
     async def get_forecast_slots(
         self, latitude: float, longitude: float
-    ) -> WeatherForecastResult:
+    ) -> ProviderResult[WeatherForecastResult]:
         if self.error:
             raise self.error
-        return WeatherForecastResult(
-            latitude=latitude,
-            longitude=longitude,
-            grid_x=60,
-            grid_y=127,
-            slots=self.slots,
-            provider="test",
+        return provider_result(
+            WeatherForecastResult(
+                latitude=latitude,
+                longitude=longitude,
+                grid_x=60,
+                grid_y=127,
+                slots=self.slots,
+                provider="test",
+            ),
+            source=ProviderSource.FAKE_WEATHER,
         )
 
 
@@ -87,6 +94,7 @@ async def test_selects_nearest_forecast_and_assumes_kst_for_naive_visit_at() -> 
     assert result.forecast.data_type == "forecast"
     assert result.forecast.observed_at is None
     assert result.forecast.retrieved_at == FIXED_NOW
+    assert result.provider_metadata[0].source is ProviderSource.FAKE_WEATHER
 
 
 @pytest.mark.asyncio

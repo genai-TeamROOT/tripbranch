@@ -55,7 +55,7 @@ Recommendation Pipeline / Tool
 - Tool: `resolve_location`, `get_place_details`처럼 업무 목적 단위로 Provider를 조합
 - Provider는 추천 순위, 사용자 Intent, 조건 완화 여부를 결정하지 않음
 - Tool은 외부 API 엔드포인트와 1:1로 대응할 필요가 없음
-- 현재 `NearbyPlaceDetailsTool`이 구현되어 있으며 나머지 Tool은 `TBD`
+- 위치·날씨·장소·집중률·공휴일 Tool이 구현되어 있으며, 이동시간 등 확장 Tool은 `TBD`
 
 ## 4. 구현 현황 요약
 
@@ -1189,8 +1189,8 @@ InterpretedConditions.location_query
 | ID | 우선순위 | Blocker | 영향 | 현재 대응 | 해결 조건 | 상태 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `COM-01` | `P0` | Real Provider 실패 traceback의 인증정보 노출 위험 | API 키 유출 가능 | 요청 파라미터 제거, 예외 chain 차단, Inspection 마스킹 적용 | 5개 Real Provider의 traceback secret 회귀 테스트 | `Resolved` |
-| `COM-02` | `P1` | `ProviderMetadata`가 코드 모델에 없음 | 출처·결측·조회시각을 일관되게 판단 불가 | 본 문서에서 계약 확정 | 모든 Fake/Real 결과에 source/status/retrieved_at 적용 및 Clock 테스트 | `정책 확정/구현 대기` |
-| `COM-03` | `P1` | Tool별 전용 결과는 있으나 공통 오류 envelope 미적용 | Orchestrator가 Tool별 결과 타입을 각각 처리해야 함 | 위치·날씨·다건 장소 Tool에서 no_data/unavailable 구분 구현 | 공통 `ToolResult<T>` 적용 및 대표 오류 매핑 테스트 | `부분 해결` |
+| `COM-02` | `P1` | `ProviderMetadata`가 코드 모델에 없음 | 출처·결측·조회시각을 일관되게 판단 불가 | 5개 Fake/Real Provider에 `ProviderResult`와 source/status/retrieved_at 적용 | 고정 Clock과 Fake/Real 계약 테스트 | `Resolved` |
+| `COM-03` | `P1` | Tool별 전용 결과는 있으나 공통 오류 envelope 미적용 | Orchestrator가 Tool별 결과 타입을 각각 처리해야 함 | 공통 `ToolStatus`·`ToolError`·`ToolResult` Protocol 및 5개 Tool 공통 필드 적용 | Agent Context 조립 및 대표 상태 테스트 | `Resolved` |
 | `COM-04` | `P2` | `EXTERNAL_API_RETRY_COUNT`가 실제 호출에 미적용 | 일시 장애에 취약 | timeout과 retryable 오류만 표시 | 제한된 retry/backoff 구현 및 중복 호출 테스트 | `Open` |
 | `COM-05` | `P2` | 구조화 metrics/tracing 없음 | Provider 지연·실패율과 fallback 추적 불가 | Smoke/Inspection 수동 확인 | source/tool/run ID 기반 latency·결과 로그 확정 | `Open` |
 | `COM-06` | `P3` | 캐시와 rate limit 보호 없음 | 호출량 증가 시 quota와 latency 위험 | 후보 수와 페이지 고정 제한 | Provider별 TTL·cache key·quota 정책 및 테스트 | `Open` |
@@ -1247,9 +1247,9 @@ InterpretedConditions.location_query
 
 ### 16.8 다음 구현 순서
 
-1. `COM-02` ProviderMetadata 모델과 결과 wrapper
-2. `COM-03` 공통 ToolResult/ToolError 변환 계층
-3. `PLC-02`, `PLC-03`, `HOL-01` 운영정보 정규화 및 판정
+1. Tool Context를 실제 Orchestrator 실행 순서에 연결
+2. Candidate Mapper 결과를 Scoring 파이프라인에 연결
+3. `PLC-03`, `HOL-01` 공휴일·복합 운영정보 판정
 4. `WTH-02`, `CON-02`, `CON-03` 선택 Feature와 fallback 연결
 5. pagination, retry, cache, observability 보완
 

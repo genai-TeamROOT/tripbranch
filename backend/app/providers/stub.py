@@ -21,6 +21,12 @@ from app.domain.models import (
 )
 from app.domain.operating_hours import normalize_operating_schedule
 from app.errors import AppError
+from app.providers.contracts import (
+    ProviderResult,
+    ProviderSource,
+    ProviderStatus,
+    provider_result,
+)
 from app.schemas import (
     InterpretedConditions,
     PlaceCandidate,
@@ -52,32 +58,35 @@ class FakeWeatherProvider:
 
     async def get_current_condition(
         self, latitude: float, longitude: float
-    ) -> WeatherCondition:
-        return self._condition
+    ) -> ProviderResult[WeatherCondition]:
+        return provider_result(self._condition, source=ProviderSource.FAKE_WEATHER)
 
     async def get_forecast_slots(
         self, latitude: float, longitude: float
-    ) -> WeatherForecastResult:
+    ) -> ProviderResult[WeatherForecastResult]:
         now = datetime.now(ZoneInfo("Asia/Seoul")).replace(
             minute=0,
             second=0,
             microsecond=0,
         )
-        return WeatherForecastResult(
-            latitude=latitude,
-            longitude=longitude,
-            grid_x=60,
-            grid_y=127,
-            slots=tuple(
-                WeatherForecastSlot(
-                    forecast_for=now + timedelta(hours=offset),
-                    condition=self._condition,
-                    sky_code=None,
-                    precipitation_type=None,
-                )
-                for offset in range(6)
+        return provider_result(
+            WeatherForecastResult(
+                latitude=latitude,
+                longitude=longitude,
+                grid_x=60,
+                grid_y=127,
+                slots=tuple(
+                    WeatherForecastSlot(
+                        forecast_for=now + timedelta(hours=offset),
+                        condition=self._condition,
+                        sky_code=None,
+                        precipitation_type=None,
+                    )
+                    for offset in range(6)
+                ),
+                provider="fake_weather",
             ),
-            provider="fake_weather",
+            source=ProviderSource.FAKE_WEATHER,
         )
 
 
@@ -92,7 +101,7 @@ class FakePlaceProvider:
         search_radius_km: float,
         category_filter: PlaceCategoryFilter | None = None,
         limit: int = 20,
-    ) -> list[PlaceCandidate]:
+    ) -> ProviderResult[list[PlaceCandidate]]:
         candidates = [
             PlaceCandidate(
                 place_id="fake-museum-1",
@@ -129,7 +138,12 @@ class FakePlaceProvider:
                 for candidate in candidates
                 if candidate.content_type_id == category_filter.content_type_id
             ]
-        return candidates[: max(1, min(limit, 100))]
+        selected = candidates[: max(1, min(limit, 100))]
+        return provider_result(
+            selected,
+            source=ProviderSource.FAKE_PLACE,
+            status=ProviderStatus.SUCCESS if selected else ProviderStatus.NO_DATA,
+        )
 
     async def search_by_keyword(
         self,
@@ -137,36 +151,46 @@ class FakePlaceProvider:
         region_code: str | None = None,
         district_code: str | None = None,
         limit: int = 20,
-    ) -> list[PlaceCandidate]:
-        candidates = await self.search_places(37.5796, 126.9770, [], 1.0)
+    ) -> ProviderResult[list[PlaceCandidate]]:
+        candidates = (await self.search_places(37.5796, 126.9770, [], 1.0)).data
         normalized = keyword.strip().lower()
-        return [candidate for candidate in candidates if normalized in candidate.name.lower()][
+        selected = [candidate for candidate in candidates if normalized in candidate.name.lower()][
             :limit
         ]
+        return provider_result(
+            selected,
+            source=ProviderSource.FAKE_PLACE,
+            status=ProviderStatus.SUCCESS if selected else ProviderStatus.NO_DATA,
+        )
 
-    async def get_details(self, content_id: str, content_type_id: str) -> PlaceDetails:
-        candidates = await self.search_places(37.5796, 126.9770, [], 1.0)
+    async def get_details(
+        self, content_id: str, content_type_id: str
+    ) -> ProviderResult[PlaceDetails]:
+        candidates = (await self.search_places(37.5796, 126.9770, [], 1.0)).data
         candidate = next((item for item in candidates if item.place_id == content_id), None)
         operating_hours = candidate.operating_hours if candidate else None
         rest_date = "매주 월요일" if candidate else None
-        return PlaceDetails(
-            content_id=content_id,
-            content_type_id=content_type_id,
-            title=candidate.name if candidate else None,
-            address=candidate.address if candidate else None,
-            overview="Fake Provider의 장소 상세정보입니다.",
-            homepage=None,
-            telephone=None,
-            operating_hours=operating_hours,
-            rest_date=rest_date,
-            raw_common={},
-            raw_intro={},
-            provider="fake_place",
-            operating_schedule=normalize_operating_schedule(
+        return provider_result(
+            PlaceDetails(
+                content_id=content_id,
                 content_type_id=content_type_id,
+                title=candidate.name if candidate else None,
+                address=candidate.address if candidate else None,
+                overview="Fake Provider의 장소 상세정보입니다.",
+                homepage=None,
+                telephone=None,
                 operating_hours=operating_hours,
                 rest_date=rest_date,
+                raw_common={},
+                raw_intro={},
+                provider="fake_place",
+                operating_schedule=normalize_operating_schedule(
+                    content_type_id=content_type_id,
+                    operating_hours=operating_hours,
+                    rest_date=rest_date,
+                ),
             ),
+            source=ProviderSource.FAKE_PLACE,
         )
 
     async def find_details_by_name(
@@ -174,11 +198,11 @@ class FakePlaceProvider:
         name: str,
         region_code: str | None = None,
         district_code: str | None = None,
-    ) -> PlaceDetails:
+    ) -> ProviderResult[PlaceDetails]:
         normalized_name = name.strip()
-        candidates = await self.search_by_keyword(
+        candidates = (await self.search_by_keyword(
             normalized_name, region_code, district_code, limit=100
-        )
+        )).data
         exact = next(
             (
                 candidate

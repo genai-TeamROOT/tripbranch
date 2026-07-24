@@ -6,6 +6,7 @@ import pytest
 
 from app.domain.models import GeocodeResult
 from app.errors import AppError
+from app.providers.contracts import ProviderResult, ProviderSource, provider_result
 from app.tools.resolve_location import (
     ResolutionConfidence,
     ResolutionMethod,
@@ -22,12 +23,12 @@ class SequenceGeocodingProvider:
 
     async def geocode(
         self, location_query: str, *, use_alias: bool = True
-    ) -> GeocodeResult:
+    ) -> ProviderResult[GeocodeResult]:
         self.calls.append((location_query, use_alias))
         response = next(self._responses)
         if isinstance(response, AppError):
             raise response
-        return response
+        return provider_result(response, source=ProviderSource.FAKE_GEOCODING)
 
 
 def _result(
@@ -58,6 +59,7 @@ async def test_resolves_alias_in_jongno() -> None:
     assert result.location.resolution_method is ResolutionMethod.ALIAS
     assert result.location.confidence is ResolutionConfidence.EXACT
     assert result.location.provider_query == "서울특별시 종로구 사직로 161"
+    assert result.provider_metadata[0].source is ProviderSource.FAKE_GEOCODING
     assert provider.calls == [("서울특별시 종로구 사직로 161", False)]
 
 
@@ -78,6 +80,7 @@ async def test_falls_back_to_original_only_after_alias_no_data() -> None:
     assert result.location is not None
     assert result.location.resolution_method is ResolutionMethod.FALLBACK
     assert result.warnings == ("fallback_used",)
+    assert len(result.provider_metadata) == 1
     assert provider.calls == [
         ("서울특별시 종로구 사직로 161", False),
         ("경복궁", False),

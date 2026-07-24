@@ -6,6 +6,7 @@ import pytest
 
 from app.domain.models import PlaceDetails
 from app.errors import ProviderUnavailableError
+from app.providers.contracts import ProviderResult, ProviderSource, provider_result
 from app.schemas import PlaceCandidate
 from app.tools.nearby_place_details import (
     DetailStatus,
@@ -57,9 +58,12 @@ class SearchProvider:
         search_radius_km: float,
         category_filter=None,
         limit: int = 20,
-    ) -> list[PlaceCandidate]:
+    ) -> ProviderResult[list[PlaceCandidate]]:
         self.seen_limit = limit
-        return self.candidates[:limit]
+        return provider_result(
+            self.candidates[:limit],
+            source=ProviderSource.FAKE_PLACE,
+        )
 
 
 class DetailsProvider:
@@ -70,14 +74,17 @@ class DetailsProvider:
 
     async def get_details(
         self, content_id: str, content_type_id: str
-    ) -> PlaceDetails:
+    ) -> ProviderResult[PlaceDetails]:
         self.active += 1
         self.max_active = max(self.max_active, self.active)
         await asyncio.sleep(0.001)
         self.active -= 1
         if content_id in self.failures:
             raise ProviderUnavailableError("test")
-        return _details(_candidate(int(content_id.rsplit("-", 1)[1]), content_type_id))
+        return provider_result(
+            _details(_candidate(int(content_id.rsplit("-", 1)[1]), content_type_id)),
+            source=ProviderSource.FAKE_PLACE,
+        )
 
 
 @pytest.mark.asyncio
@@ -97,6 +104,7 @@ async def test_tool_combines_separate_search_and_details_providers() -> None:
     assert all(item.detail_status is DetailStatus.SUCCESS for item in result.places)
     assert result.retrieved_at.tzinfo is not None
     assert result.elapsed_ms >= 0
+    assert len(result.provider_metadata) == 4
 
 
 @pytest.mark.asyncio
@@ -141,6 +149,7 @@ async def test_tool_returns_partial_for_detail_failures_and_missing_type() -> No
     ]
     assert result.places[1].error_code == "provider_unavailable"
     assert result.places[2].error_code == "missing_content_type_id"
+    assert result.warnings == ("partial_data",)
 
 
 @pytest.mark.asyncio

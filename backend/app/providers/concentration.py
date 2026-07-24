@@ -8,6 +8,12 @@ import httpx
 
 from app.domain.models import ConcentrationForecast, ConcentrationResult
 from app.errors import ProviderTimeoutError, ProviderUnavailableError
+from app.providers.contracts import (
+    ProviderResult,
+    ProviderSource,
+    ProviderStatus,
+    provider_result,
+)
 
 _CONCENTRATION_URL = (
     "https://apis.data.go.kr/B551011/TatsCnctrRateService/tatsCnctrRatedList"
@@ -87,7 +93,7 @@ class FakeConcentrationProvider:
         area_code: str,
         district_code: str,
         place_name: str | None = None,
-    ) -> ConcentrationResult:
+    ) -> ProviderResult[ConcentrationResult]:
         resolved_name = place_name or "경복궁"
         forecasts = tuple(
             ConcentrationForecast(
@@ -106,12 +112,17 @@ class FakeConcentrationProvider:
                 ("20260725", 76.0),
             )
         )
-        return ConcentrationResult(
+        result = ConcentrationResult(
             area_code=area_code,
             district_code=district_code,
             requested_place_name=place_name,
             forecasts=forecasts,
             provider="fake_concentration",
+        )
+        return provider_result(
+            result,
+            source=ProviderSource.FAKE_CONCENTRATION,
+            status=ProviderStatus.SUCCESS if forecasts else ProviderStatus.NO_DATA,
         )
 
 
@@ -133,7 +144,7 @@ class RealConcentrationProvider:
         area_code: str,
         district_code: str,
         place_name: str | None = None,
-    ) -> ConcentrationResult:
+    ) -> ProviderResult[ConcentrationResult]:
         params = {
             "pageNo": "1",
             "numOfRows": "100",
@@ -174,9 +185,18 @@ class RealConcentrationProvider:
                 detail=f"{result_code}: {header.get('resultMsg', '')}",
             )
 
-        return map_concentration_response(
+        result = map_concentration_response(
             payload,
             area_code=area_code,
             district_code=district_code,
             requested_place_name=place_name,
+        )
+        return provider_result(
+            result,
+            source=ProviderSource.TOUR_API_CONCENTRATION,
+            status=(
+                ProviderStatus.SUCCESS
+                if result.forecasts
+                else ProviderStatus.NO_DATA
+            ),
         )
