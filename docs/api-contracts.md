@@ -53,6 +53,9 @@ type RecommendationItem = {
   environment_type: "indoor" | "outdoor" | "mixed" | "unknown";
   recommendation_reason: string;
   warnings: string[];
+  score: number;
+  feature_scores: Record<string, number | null>; // Feature별 원점수(weather/remaining_operating_time/distance)
+  weights_used: Record<string, number>; // 실제 적용된 가중치(재분배 후, 결측 Feature는 키 자체가 없음)
 };
 
 type RecommendationResponse = {
@@ -65,6 +68,14 @@ type RecommendationResponse = {
 `elapsed_ms`는 위치 해석 시작부터 장소·날씨·공휴일 조회, Candidate 변환,
 Scoring, 상위 후보 집중률 후조회와 응답 조립이 끝날 때까지 Backend에서 측정한
 wall-clock 시간입니다. HTTP 전송시간과 Frontend 렌더링 시간은 포함하지 않습니다.
+
+`score`/`feature_scores`/`weights_used`는
+`backend/app/domain/evidence.py::build_evidence()`가 만든
+`RecommendationEvidence`를 그대로 반영한 값입니다(D-028). `feature_scores`는
+`contributions`의 `{feature: score}`를, `weights_used`는 `{feature: weight}`를
+평탄화한 값이며, 날씨나 남은 운영시간이 결측이었던 Feature는 `weights_used`
+키 자체에서 빠집니다. 자연어 추천 이유(`recommendation_reason`)는 아직 고정
+템플릿 문자열이며 Feature 근거를 문장으로 변환하는 로직은 별도 범위입니다.
 
 ### 공통 오류
 
@@ -236,7 +247,10 @@ type ScoringCandidate = {
 따로 노출됩니다. congestion, evidence confidence Feature는 아직 미구현입니다.
 Feature·가중치·제외 규칙 상세는
 [추천 점수 설계](./design/recommendation-scoring.md)를 참고합니다. 이 엔진은
-아직 `/api/recommendations` 라우트에 연결되지 않았습니다.
+`backend/app/services/recommendation_pipeline.py`를 통해
+`/api/recommendations` 라우트에 연결되어 있으며, 결과 근거(`score`/
+`feature_scores`/`weights_used`)도 `RecommendationItem`에 노출됩니다(D-028,
+아래 참고).
 
 `backend/app/domain/evidence.py::build_evidence_list()`는 `RankedCandidate`를
 자연어 없이 Feature별 기여도(score × weight)로 재구성한
@@ -281,7 +295,10 @@ type RecommendationResult = {
 };
 ```
 
-점수 공개 범위, Feature 설명 형식, Snapshot 상세 스키마는 `TBD`입니다.
+점수 공개 범위, Feature 설명 형식, Snapshot 상세 스키마는 `TBD`입니다. 참고로
+현재 REST `/api/recommendations`의 `RecommendationItem`(§2)은 이미
+`score`/`feature_scores`/`weights_used`를 노출하고 있어(D-028), 통합 Chat API
+설계 시 이를 그대로 재사용할 수 있는지 우선 검토합니다.
 
 ## 5. Provider 계약
 

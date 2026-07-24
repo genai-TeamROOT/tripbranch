@@ -75,6 +75,9 @@ def get_stub_recommendations(shown_place_ids: list[str]) -> RecommendationRespon
             environment_type="indoor",
             recommendation_reason="비 오는 날 방문하기 좋은 실내 장소예요.",
             warnings=[],
+            score=0.0,
+            feature_scores={},
+            weights_used={},
         ),
         RecommendationItem(
             place_id="stub-cafe-1",
@@ -85,6 +88,9 @@ def get_stub_recommendations(shown_place_ids: list[str]) -> RecommendationRespon
             environment_type="indoor",
             recommendation_reason="현재 위치에서 가까운 장소예요.",
             warnings=[],
+            score=0.0,
+            feature_scores={},
+            weights_used={},
         ),
         RecommendationItem(
             place_id="stub-park-1",
@@ -95,6 +101,9 @@ def get_stub_recommendations(shown_place_ids: list[str]) -> RecommendationRespon
             environment_type="outdoor",
             recommendation_reason="가까운 야외 장소예요.",
             warnings=["현재 날씨를 확인해주세요."],
+            score=0.0,
+            feature_scores={},
+            weights_used={},
         ),
     ]
     stub_unverified = [
@@ -107,6 +116,9 @@ def get_stub_recommendations(shown_place_ids: list[str]) -> RecommendationRespon
             environment_type="indoor",
             recommendation_reason="선호한 문화 장소와 비슷한 장소예요.",
             warnings=["방문 전에 운영 여부를 확인해주세요."],
+            score=0.0,
+            feature_scores={},
+            weights_used={},
         )
     ]
 

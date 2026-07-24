@@ -26,6 +26,9 @@ export interface RecommendationItem {
   environment_type: EnvironmentType;
   recommendation_reason: string;
   warnings: string[];
+  score: number;
+  feature_scores: Record<string, number | null>;
+  weights_used: Record<string, number>;
 }
 
 export interface RecommendationsResponse {
