@@ -299,6 +299,26 @@
   확정되지 않은 Response Generator(LLM)나 Persistence(Snapshot) 설계에
   선행 결합되지 않도록 순수 데이터 변환으로 한정함
 
+### D-028 — 추천 파이프라인 1차 E2E 통합: Evidence 응답 노출
+
+- 상태: `Accepted`, `Implemented`
+- 결정: D-027에서 만든 `evidence.py::build_evidence()`를
+  `recommendation_pipeline.py`의 응답 조립 단계에 연결해 `RecommendationItem`에
+  `score`/`feature_scores`/`weights_used`를 추가 노출한다. 상위 추천 개수는
+  기존 `RECOMMENDATION_RESULT_LIMIT`(기본 5)을 그대로 유지한다 — 작업 지시
+  문서에 한때 "2~3개"로 적혀 있었으나 팀 논의 후 "5개"로 정정되어 별도
+  설정 변경은 필요하지 않았음.
+- 구현: `backend/app/schemas.py::RecommendationItem`(신규 필드),
+  `backend/app/services/recommendation_pipeline.py::_build_response()`,
+  `backend/app/services/recommendations.py`의 레거시 stub 응답 및
+  `frontend/src/types.ts` 동기화. 날씨 조회 성공/실패 대응 E2E 테스트, 동일
+  입력 결정성 테스트, 재사용 가능한
+  `backend/tests/fixtures/recommendation_pipeline_fixture_v1.py`를 추가.
+- 범위 제외: 자연어 추천 이유 생성(`recommendation_reason`은 기존 고정
+  템플릿 유지), Persistence/Snapshot 연결, 카테고리 하드 필터
+- 이유: D-02(D-027)에서 준비해 둔 Evidence 모델을 실제 `/api/recommendations`
+  응답과 연결해, 추천 점수 근거를 Frontend/사용자가 그대로 소비할 수 있게 함
+
 ## 현재 논의가 필요한 항목
 
 | 항목 | 선택지/질문 | 상태 |
@@ -307,7 +327,7 @@
 | Chat 계약 naming | Backend Python/JSON `snake_case` | `Accepted` |
 | Backend 상태 저장 | Supabase 테이블과 캐시 역할 | `TBD` |
 | Frontend 저장 | `sessionStorage` 유지 또는 `localStorage` 전환 | `TBD` |
-| Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); Recommendations API 연결 | 구현 완료 |
+| Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); 응답 Evidence 노출·E2E 통합 `Implemented`(D-028) | 구현 완료 |
 | 혼잡도 fallback | 장소 근접치, 구 단위, Feature 제외 | 현재 논의 중 |
 | 운영시간 파싱 | 기본 시간·월별·주간 휴무 구현, 공휴일·회차 예외 확대 | `부분 구현` |
 | 이동시간 | 지도 Provider 및 교통수단별 계산 | `TBD` |
@@ -337,3 +357,4 @@
 | 2026-07-23 | D-008 재설계: 운영 유무를 가중치에서 제외하고 `now`/`OperatingHours` 기반 최종 하드 필터로 이동, 가중치 Feature를 남은 운영시간(분 정규화)으로 교체 (날씨 0.40/남은 운영시간 0.40/거리 0.20), `weights_used`를 후보별로 노출하도록 변경 |
 | 2026-07-23 | Weather Tool v1의 KST·방문시각·예보 범위 정책 구현 반영 |
 | 2026-07-24 | D-027 추천 Evidence·평가 Fixture v1 구현 반영 (Feature 기여도 모델, 고정 Fixture v1, 결정성 검증) |
+| 2026-07-24 | D-028 추천 파이프라인 1차 E2E 통합 구현 반영 (응답에 score/feature_scores/weights_used 노출, 날씨 유무·결정성 E2E 테스트, 재사용 가능한 파이프라인 Fixture) |

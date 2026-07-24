@@ -113,16 +113,21 @@ Holiday Provider는 구현되어 있지만 추천 서비스에 아직 조립되�
   Fixture v1(`backend/tests/fixtures/scoring_fixture_v1.py`)을 구축(D-027).
   자연어 문장은 만들지 않으며 상세는
   [추천 Evidence·평가 Fixture 설계](./design/recommendation-evidence-fixture.md) 참고
-- 미구현: `services/recommendations.py`/`/api/recommendations` 라우트와의 실제
-  연결(Request Builder 경유), 혼잡도·근거 신뢰도 Feature, 실이동시간 거리
+- 연결: `backend/app/services/recommendation_pipeline.py`가
+  `/api/recommendations` 라우트까지 실제로 연결돼 있으며,
+  `_build_response()`가 `build_evidence()`를 호출해 `RecommendationItem`에
+  `score`/`feature_scores`/`weights_used`를 노출한다(D-028). 재사용 가능한
+  파이프라인 레벨 Fixture(`backend/tests/fixtures/recommendation_pipeline_fixture_v1.py`)와
+  날씨 유무·결정성 E2E 테스트로 검증됨
+- 미구현: 혼잡도·근거 신뢰도 Feature, 실이동시간 거리, 카테고리 하드 필터
 
 ### Response Generator
 
 - 담당: 추천 결과와 근거·경고를 사용자에게 읽기 쉬운 자연어로 변환
 - 하지 않음: 추천 순위 재결정 또는 검증되지 않은 사실 생성
 - 상태: `TBD`; 현재는 정적인 `recommendation_reason` 문자열 사용. Feature별
-  숫자 근거(`RecommendationEvidence`)는 준비돼 있으나 이를 문장으로 바꾸는
-  로직은 아직 없음
+  숫자 근거(`score`/`feature_scores`/`weights_used`)는 API 응답에 그대로
+  노출되고 있으나(D-028), 이를 자연어 문장으로 바꾸는 로직은 아직 없음
 
 ### Persistence / Supabase
 
