@@ -72,7 +72,7 @@ class StateApplyResponse(BaseModel):
     condition_changed: bool
     applied_operations: list[AppliedOperation] = Field(default_factory=list)
     ignored_operations: list[IgnoredOperation] = Field(default_factory=list)
-    exclusion_place_ids: list[str] = Field(default_factory=list)
+    excluded_place_ids: list[str] = Field(default_factory=list)
     reset_applied: str | None = None
 
 
@@ -254,7 +254,7 @@ def _build_response(
         condition_changed=changed,
         applied_operations=applied,
         ignored_operations=ignored,
-        exclusion_place_ids=history_module.get_exclusion_place_ids(
+        excluded_place_ids=history_module.get_exclusion_place_ids(
             store, state.session_id
         ),
         reset_applied=reset_applied,
