@@ -58,12 +58,13 @@ type RecommendationItem = {
 type RecommendationResponse = {
   recommendations: RecommendationItem[];
   unverified_recommendations: RecommendationItem[];
+  elapsed_ms: number; // 전체 추천 파이프라인 처리시간(ms)
 };
 ```
 
-현재 Fake/Fake 모드에서는 고정 추천을 반환합니다. 실제 Geocoding 또는 Place 모드를
-사용하면 좌표 변환, 주변 검색, 노출 ID 제외, 직선거리 계산까지 수행하지만 가중치
-Scoring은 아직 없습니다.
+`elapsed_ms`는 위치 해석 시작부터 장소·날씨·공휴일 조회, Candidate 변환,
+Scoring, 상위 후보 집중률 후조회와 응답 조립이 끝날 때까지 Backend에서 측정한
+wall-clock 시간입니다. HTTP 전송시간과 Frontend 렌더링 시간은 포함하지 않습니다.
 
 ### 공통 오류
 
@@ -367,14 +368,15 @@ type WeatherMetadata = ProviderMetadata & {
 - 특정 시간 추천은 방문 예정 시각과 가장 가까운 예보 선택
 
 `GetWeatherForecastTool`이 방문 시각에 가장 가까운 예보를 선택하고 위 시간
-metadata를 반환합니다. 공통 `ProviderMetadata` wrapper 적용은 후속 작업입니다.
+metadata를 반환합니다. 공통 `ProviderMetadata` wrapper가 Fake/Real Provider에
+적용되어 Tool Context로 전달됩니다.
 
 ## 6. Tool 계약 초안
 
-`ResolveLocationTool`, `GetWeatherForecastTool`, `NearbyPlaceDetailsTool`은 코드로
-구현되어 있으며, 나머지 Tool 이름과 책임은 방향입니다. 공통 결과와 오류
-envelope는 v1으로 확정했지만, 구현된 Tool은 현재 전용 결과 모델을 사용하므로
-공통 envelope 적용은 후속 작업입니다.
+`ResolveLocationTool`, `GetWeatherForecastTool`, `NearbyPlaceDetailsTool`,
+`GetConcentrationTool`, `GetHolidaysTool`은 코드로 구현되어 있습니다. 각 Tool은
+업무별 payload를 유지하되 `status`, `error`, `warnings`, `provider_metadata`
+필드를 공통으로 제공하며 `ToolResult<T>` Protocol을 만족합니다.
 
 | Tool | 책임 | 예상 Provider |
 | --- | --- | --- |

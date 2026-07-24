@@ -13,7 +13,7 @@ from app.providers.concentration import (
 
 @pytest.mark.asyncio
 async def test_fake_concentration_provider_uses_common_contract() -> None:
-    result = await FakeConcentrationProvider().get_forecast("11", "11110", "경복궁")
+    result = (await FakeConcentrationProvider().get_forecast("11", "11110", "경복궁")).data
 
     assert result.area_code == "11"
     assert result.district_code == "11110"
@@ -73,7 +73,7 @@ async def test_real_concentration_provider_sends_jongno_palace_query() -> None:
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         provider = RealConcentrationProvider(api_key="dummy", client=client)
-        result = await provider.get_forecast("11", "11110", "경복궁")
+        result = (await provider.get_forecast("11", "11110", "경복궁")).data
 
     assert seen_params["areaCd"] == "11"
     assert seen_params["signguCd"] == "11110"
@@ -97,9 +97,10 @@ async def test_real_concentration_provider_returns_empty_forecasts_for_no_items(
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         provider = RealConcentrationProvider(api_key="dummy", client=client)
-        result = await provider.get_forecast("11", "11110", "경복궁")
+        wrapped = await provider.get_forecast("11", "11110", "경복궁")
 
-    assert result.forecasts == ()
+    assert wrapped.data.forecasts == ()
+    assert wrapped.metadata.status.value == "no_data"
 
 
 @pytest.mark.asyncio

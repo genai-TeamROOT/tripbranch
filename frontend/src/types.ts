@@ -31,6 +31,7 @@ export interface RecommendationItem {
 export interface RecommendationsResponse {
   recommendations: RecommendationItem[];
   unverified_recommendations: RecommendationItem[];
+  elapsed_ms: number;
 }
 
 export type ChatPhase =

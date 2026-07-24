@@ -1,6 +1,6 @@
-"""추천 API 회귀 테스트.
+"""추천 API Fake Provider 파이프라인 회귀 테스트.
 
-역할: /api/recommendations의 stub 결과와 이미 노출된 장소 필터링을 검증한다.
+역할: /api/recommendations의 Tool·Scoring 결과와 이미 노출된 장소 필터링을 검증한다.
 입력: TestClient가 보내는 POST /api/recommendations JSON payload.
 출력: 추천/검증 불가 목록과 place_id 필터링에 대한 pytest assertion.
 호출 시점: 로컬 테스트와 CI에서 pytest 실행 시 호출된다.
@@ -28,21 +28,22 @@ def _request(shown_place_ids: list[str] | None = None) -> dict:
     return response.json()
 
 
-def test_recommendations_return_stub_results() -> None:
+def test_recommendations_return_fake_pipeline_results() -> None:
     body = _request()
 
     assert [item["place_id"] for item in body["recommendations"]] == [
-        "stub-museum-1",
-        "stub-cafe-1",
-        "stub-park-1",
+        "fake-museum-1",
+        "fake-cafe-1",
     ]
-    assert body["unverified_recommendations"][0]["place_id"] == "stub-gallery-1"
+    assert body["unverified_recommendations"] == []
+    assert len(body["recommendations"]) <= 5
+    assert body["elapsed_ms"] >= 0
 
 
 def test_recommendations_filter_shown_place_ids() -> None:
-    body = _request(["stub-museum-1", "stub-gallery-1"])
+    body = _request(["fake-museum-1"])
 
     visible_ids = [item["place_id"] for item in body["recommendations"]]
     unverified_ids = [item["place_id"] for item in body["unverified_recommendations"]]
-    assert "stub-museum-1" not in visible_ids
-    assert "stub-gallery-1" not in unverified_ids
+    assert "fake-museum-1" not in visible_ids
+    assert "fake-museum-1" not in unverified_ids

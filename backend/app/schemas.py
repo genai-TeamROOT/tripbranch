@@ -56,6 +56,10 @@ class RecommendationItem(BaseModel):
 class RecommendationResponse(BaseModel):
     recommendations: list[RecommendationItem]
     unverified_recommendations: list[RecommendationItem]
+    elapsed_ms: float = Field(
+        ge=0,
+        description="추천 파이프라인 시작부터 응답 조립 완료까지의 총 처리시간(ms)",
+    )
 
 class PlaceCandidate(BaseModel):
     """장소 API 원본 응답을 정규화한 공통 후보 모델.

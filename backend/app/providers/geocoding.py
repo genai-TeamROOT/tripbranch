@@ -12,6 +12,7 @@ import httpx
 
 from app.domain.models import GeocodeResult
 from app.errors import AppError
+from app.providers.contracts import ProviderResult, ProviderSource, provider_result
 
 _GEOCODE_URL = "https://maps.apigw.ntruss.com/map-geocode/v2/geocode"
 
@@ -64,7 +65,7 @@ class FakeGeocodingProvider:
 
     async def geocode(
         self, query: str, *, use_alias: bool = True
-    ) -> GeocodeResult:
+    ) -> ProviderResult[GeocodeResult]:
         normalized = query.strip()
         if not normalized:
             raise AppError(code="invalid_request", message="위치를 입력해주세요.")
@@ -82,22 +83,28 @@ class FakeGeocodingProvider:
         )
         if alias_name:
             resolved_name, lat, lon = _KNOWN_LOCATIONS[alias_name]
-            return GeocodeResult(
-                query=query,
-                resolved_name=resolved_name,
-                latitude=lat,
-                longitude=lon,
-                administrative_district="종로구",
-            )
-
-        for name, (resolved_name, lat, lon) in _KNOWN_LOCATIONS.items():
-            if name in provider_query:
-                return GeocodeResult(
+            return provider_result(
+                GeocodeResult(
                     query=query,
                     resolved_name=resolved_name,
                     latitude=lat,
                     longitude=lon,
                     administrative_district="종로구",
+                ),
+                source=ProviderSource.FAKE_GEOCODING,
+            )
+
+        for name, (resolved_name, lat, lon) in _KNOWN_LOCATIONS.items():
+            if name in provider_query:
+                return provider_result(
+                    GeocodeResult(
+                        query=query,
+                        resolved_name=resolved_name,
+                        latitude=lat,
+                        longitude=lon,
+                        administrative_district="종로구",
+                    ),
+                    source=ProviderSource.FAKE_GEOCODING,
                 )
 
         raise AppError(
@@ -129,7 +136,7 @@ class RealGeocodingProvider:
 
     async def geocode(
         self, query: str, *, use_alias: bool = True
-    ) -> GeocodeResult:
+    ) -> ProviderResult[GeocodeResult]:
         normalized = query.strip()
         if not normalized:
             raise AppError(code="invalid_request", message="위치를 입력해주세요.")
@@ -188,13 +195,16 @@ class RealGeocodingProvider:
             candidate_count = int(total_count)
         except (TypeError, ValueError):
             candidate_count = len(addresses)
-        return GeocodeResult(
-            query=query,
-            resolved_name=resolved_name,
-            latitude=float(top["y"]),
-            longitude=float(top["x"]),
-            candidate_count=max(candidate_count, len(addresses)),
-            administrative_district=_extract_district(top, resolved_name),
+        return provider_result(
+            GeocodeResult(
+                query=query,
+                resolved_name=resolved_name,
+                latitude=float(top["y"]),
+                longitude=float(top["x"]),
+                candidate_count=max(candidate_count, len(addresses)),
+                administrative_district=_extract_district(top, resolved_name),
+            ),
+            source=ProviderSource.NAVER_GEOCODING,
         )
 
 
