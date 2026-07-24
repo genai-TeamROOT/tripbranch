@@ -20,12 +20,15 @@ class Settings(BaseSettings):
 
     # Provider selection: 개별 값이 비어 있으면 provider_mode를 공통 기본값으로 사용한다.
     provider_mode: str = "fake"
-    llm_provider: str = "fake"
+    llm_provider: str | None = None
     weather_provider: str | None = None
     place_provider: str | None = None
     geocoding_provider: str | None = None
     concentration_provider: str | None = None
     holiday_provider: str | None = None
+
+    # LLM_PROVIDER=real일 때 사용할 Gemini 모델명.
+    llm_model_name: str = "gemini-2.5-flash"
 
     # Only required when the corresponding *_provider above is set to "real".
     llm_api_key: str = Field(default="", repr=False, exclude=True)
@@ -59,6 +62,10 @@ class Settings(BaseSettings):
     # Fake-provider-only knobs
     fake_weather_condition: str = "neutral"
     fake_current_datetime: str = "2026-07-15T14:00:00"
+
+    @property
+    def resolved_llm_provider(self) -> str:
+        return self.llm_provider or self.provider_mode
 
     @property
     def resolved_weather_provider(self) -> str:

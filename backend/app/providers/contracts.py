@@ -25,11 +25,13 @@ class ProviderSource(StrEnum):
     TOUR_API_PLACE = "tour_api_place"
     TOUR_API_CONCENTRATION = "tour_api_concentration"
     KASI_HOLIDAY = "kasi_holiday"
+    GEMINI = "gemini"
     FAKE_GEOCODING = "fake_geocoding"
     FAKE_WEATHER = "fake_weather"
     FAKE_PLACE = "fake_place"
     FAKE_CONCENTRATION = "fake_concentration"
     FAKE_HOLIDAY = "fake_holiday"
+    FAKE_LLM = "fake_llm"
 
 
 @dataclass(frozen=True)

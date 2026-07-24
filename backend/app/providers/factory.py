@@ -7,17 +7,19 @@ import httpx
 from app.config import settings
 from app.domain.models import WeatherCondition
 from app.providers.concentration import FakeConcentrationProvider, RealConcentrationProvider
+from app.providers.gemini import RealGeminiProvider
 from app.providers.geocoding import FakeGeocodingProvider, RealGeocodingProvider
 from app.providers.holiday import FakeHolidayProvider, RealHolidayProvider
 from app.providers.protocols import (
     ConcentrationProvider,
     GeocodingProvider,
     HolidayProvider,
+    LLMProvider,
     PlaceProvider,
     WeatherProvider,
 )
 from app.providers.real_place import RealPlaceProvider
-from app.providers.stub import FakePlaceProvider, FakeWeatherProvider
+from app.providers.stub import FakeLLMProvider, FakePlaceProvider, FakeWeatherProvider
 from app.providers.weather import RealWeatherProvider
 
 
@@ -25,6 +27,19 @@ def _require_key(value: str, variable_name: str) -> str:
     if not value:
         raise ValueError(f"{variable_name} 환경변수가 필요합니다.")
     return value
+
+
+def get_llm_provider() -> LLMProvider:
+    mode = settings.resolved_llm_provider
+    if mode == "fake":
+        return FakeLLMProvider()
+    if mode == "real":
+        return RealGeminiProvider(
+            api_key=_require_key(settings.llm_api_key, "LLM_API_KEY"),
+            model_name=settings.llm_model_name,
+            timeout_seconds=settings.external_api_timeout_seconds,
+        )
+    raise ValueError(f"지원하지 않는 LLM_PROVIDER: {mode}")
 
 
 def get_geocoding_provider(client: httpx.AsyncClient) -> GeocodingProvider:
