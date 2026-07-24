@@ -1,83 +1,38 @@
 """추천 결과를 조립하는 도메인 서비스.
 
-역할: 설정에 따라 fake 고정 응답을 반환하거나, geocoding → place 검색 →
-      필터링 → 응답 조립으로 이어지는 실행 순서를 수행한다.
+역할: Provider Factory로 Tool을 조립하고 공통 추천 파이프라인을 실행한다.
 입력: 해석된 조건(InterpretedConditions), 이미 노출된 place_id 목록.
 출력: RecommendationResponse 모델.
 호출 시점: /api/recommendations 라우터가 get_recommendations()를 호출한다.
-TODO: 실제 운영시간 기반 remaining_minutes 계산은 app/core/clock.py 연동 후 처리한다.
 """
 
 from __future__ import annotations
 
-import math
-
 import httpx
 
 from app.config import settings
-from app.errors import AppError
-from app.providers.protocols import GeocodingProvider, PlaceProvider
+from app.providers.protocols import (
+    ConcentrationProvider,
+    GeocodingProvider,
+    HolidayProvider,
+    PlaceProvider,
+    WeatherProvider,
+)
 from app.schemas import (
     InterpretedConditions,
-    PlaceCandidate,
     RecommendationItem,
     RecommendationResponse,
 )
-from app.tools.resolve_location import (
-    ResolveLocationQuery,
-    ResolveLocationStatus,
-    ResolveLocationTool,
+from app.services.recommendation_pipeline import (
+    RecommendationTools,
+    build_pipeline_request,
+    run_recommendation_pipeline,
 )
-
-_INDOOR_CATEGORIES = {"museum", "cafe", "gallery", "restaurant"}
-_OUTDOOR_CATEGORIES = {"park", "trail", "beach"}
-
-
-def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    radius_km = 6371.0
-    d_lat = math.radians(lat2 - lat1)
-    d_lon = math.radians(lon2 - lon1)
-    a = (
-        math.sin(d_lat / 2) ** 2
-        + math.cos(math.radians(lat1))
-        * math.cos(math.radians(lat2))
-        * math.sin(d_lon / 2) ** 2
-    )
-    return radius_km * 2 * math.asin(math.sqrt(a))
-
-
-def _environment_type(category: str) -> str:
-    if category in _INDOOR_CATEGORIES:
-        return "indoor"
-    if category in _OUTDOOR_CATEGORIES:
-        return "outdoor"
-    return "unknown"
-
-
-def _build_reason(candidate: PlaceCandidate, conditions: InterpretedConditions) -> str:
-    if candidate.category in conditions.preferred_categories:
-        return f"선호하신 '{candidate.category}' 카테고리와 일치하는 장소예요."
-    return "현재 위치에서 가까운 장소예요."
-
-
-def _to_recommendation_item(
-    candidate: PlaceCandidate,
-    origin_lat: float,
-    origin_lon: float,
-    conditions: InterpretedConditions,
-) -> RecommendationItem:
-    return RecommendationItem(
-        place_id=candidate.place_id,
-        name=candidate.name,
-        category=candidate.category,
-        distance_km=round(
-            _haversine_km(origin_lat, origin_lon, candidate.latitude, candidate.longitude), 2
-        ),
-        remaining_minutes=None,  # TODO: core/clock.py 연동 후 계산
-        environment_type=_environment_type(candidate.category),
-        recommendation_reason=_build_reason(candidate, conditions),
-        warnings=[] if candidate.operating_hours else ["방문 전에 운영 여부를 확인해주세요."],
-    )
+from app.tools.concentration import GetConcentrationTool
+from app.tools.holiday import GetHolidaysTool
+from app.tools.nearby_place_details import NearbyPlaceDetailsTool
+from app.tools.resolve_location import ResolveLocationTool
+from app.tools.weather_forecast import GetWeatherForecastTool
 
 
 async def build_recommendations(
@@ -85,61 +40,27 @@ async def build_recommendations(
     shown_place_ids: list[str],
     geocoding_provider: GeocodingProvider,
     place_provider: PlaceProvider,
+    weather_provider: WeatherProvider,
+    concentration_provider: ConcentrationProvider,
+    holiday_provider: HolidayProvider,
 ) -> RecommendationResponse:
-    """실제 provider 파이프라인 실행 순서.
-
-    1. location_query → 좌표 변환
-    2. 좌표 기반 장소 후보 조회
-    3. 이미 노출된 place_id 제외
-    4. 항목 변환 (거리, 실내외, 추천 이유)
-    5. 운영시간 검증 여부로 recommendations / unverified 분리
-    """
-    resolved = await ResolveLocationTool(geocoding_provider).execute(
-        ResolveLocationQuery(conditions.location_query)
+    """Fake/Real과 무관하게 동일한 Tool·Candidate·Scoring 흐름을 실행한다."""
+    result = await run_recommendation_pipeline(
+        build_pipeline_request(
+            conditions,
+            shown_place_ids,
+            recommendation_limit=settings.recommendation_result_limit,
+            candidate_limit=settings.recommendation_candidate_limit,
+        ),
+        RecommendationTools(
+            location=ResolveLocationTool(geocoding_provider),
+            weather=GetWeatherForecastTool(weather_provider),
+            places=NearbyPlaceDetailsTool(place_provider, place_provider),
+            concentration=GetConcentrationTool(concentration_provider),
+            holidays=GetHolidaysTool(holiday_provider),
+        ),
     )
-    if (
-        resolved.status is not ResolveLocationStatus.SUCCESS
-        or resolved.location is None
-    ):
-        error = resolved.error
-        raise AppError(
-            code=error.code if error else "unavailable",
-            message=(
-                error.message
-                if error
-                else "위치 검색 서비스를 사용할 수 없습니다."
-            ),
-            status_code={
-                ResolveLocationStatus.NO_DATA: 404,
-                ResolveLocationStatus.UNSUPPORTED: 422,
-                ResolveLocationStatus.UNAVAILABLE: 502,
-            }.get(resolved.status, 502),
-            retryable=error.retryable if error else False,
-            details=error.details if error else None,
-        )
-    latitude = resolved.location.latitude
-    longitude = resolved.location.longitude
-
-    candidates = (await place_provider.search_places(
-        latitude=latitude,
-        longitude=longitude,
-        preferred_categories=conditions.preferred_categories,
-        search_radius_km=conditions.search_radius_km,
-    )).data
-
-    shown = set(shown_place_ids)
-    candidates = [c for c in candidates if c.place_id not in shown]
-
-    verified: list[RecommendationItem] = []
-    unverified: list[RecommendationItem] = []
-    for candidate in candidates:
-        item = _to_recommendation_item(candidate, latitude, longitude, conditions)
-        (verified if candidate.operating_hours else unverified).append(item)
-
-    return RecommendationResponse(
-        recommendations=verified,
-        unverified_recommendations=unverified,
-    )
+    return result.response
 
 
 def get_stub_recommendations(shown_place_ids: list[str]) -> RecommendationResponse:
@@ -199,18 +120,14 @@ def get_stub_recommendations(shown_place_ids: list[str]) -> RecommendationRespon
 async def get_recommendations(
     conditions: InterpretedConditions, shown_place_ids: list[str]
 ) -> RecommendationResponse:
-    """라우터가 호출하는 단일 진입점.
-
-    설정이 둘 다 fake면 기존 고정 stub 응답(회귀 테스트 호환)을 반환하고,
-    하나라도 real이면 실제 provider 파이프라인(build_recommendations)을 실행한다.
-    """
-    if (
-        settings.resolved_place_provider == "fake"
-        and settings.resolved_geocoding_provider == "fake"
-    ):
-        return get_stub_recommendations(shown_place_ids)
-
-    from app.providers.factory import get_geocoding_provider, get_place_provider
+    """라우터가 호출하는 Fake/Real 공통 추천 파이프라인 진입점."""
+    from app.providers.factory import (
+        get_concentration_provider,
+        get_geocoding_provider,
+        get_holiday_provider,
+        get_place_provider,
+        get_weather_provider,
+    )
 
     async with httpx.AsyncClient() as client:
         return await build_recommendations(
@@ -218,4 +135,7 @@ async def get_recommendations(
             shown_place_ids,
             geocoding_provider=get_geocoding_provider(client),
             place_provider=get_place_provider(client),
+            weather_provider=get_weather_provider(client),
+            concentration_provider=get_concentration_provider(client),
+            holiday_provider=get_holiday_provider(client),
         )

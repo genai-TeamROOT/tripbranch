@@ -63,7 +63,7 @@
 
 ### D-008 — 추천은 하드 필터와 가중치 점수 조합
 
-- 상태: `Accepted`; Scoring v1 엔진 `Implemented` (아직 API 라우트에는 미연결)
+- 상태: `Implemented`; Recommendations API 파이프라인에 연결
 - 결정: 명시적 필수 조건은 하드 필터, 선호 조건은 가중치 점수로 처리한다.
 - 현재: `backend/app/domain/scoring.py::score_candidates()`로 날씨·남은 운영
   시간·거리 Feature 기반 가중치 점수 계산과 정렬을 구현. 이전 노출·거절 ID
@@ -289,7 +289,7 @@
 | Chat 계약 naming | Backend Python/JSON `snake_case` | `Accepted` |
 | Backend 상태 저장 | Supabase 테이블과 캐시 역할 | `TBD` |
 | Frontend 저장 | `sessionStorage` 유지 또는 `localStorage` 전환 | `TBD` |
-| Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); 실제 파이프라인(route) 연결 | 연결은 `TBD` |
+| Scoring v1 | Feature/가중치/tie-break와 Recommendations API 연결 | 구현 완료 |
 | 혼잡도 fallback | 장소 근접치, 구 단위, Feature 제외 | 현재 논의 중 |
 | 운영시간 파싱 | 기본 시간·월별·주간 휴무 구현, 공휴일·회차 예외 확대 | `부분 구현` |
 | 이동시간 | 지도 Provider 및 교통수단별 계산 | `TBD` |

@@ -58,6 +58,8 @@ backend\.venv\Scripts\Activate.ps1
 | `LLM_API_KEY` | 빈 값 | 예약 설정; 현재 미사용 |
 | `DATABASE_URL` | 빈 값 | 예약 설정; 현재 미사용 |
 | `EXTERNAL_API_TIMEOUT_SECONDS` | `10` | Real Provider timeout |
+| `RECOMMENDATION_RESULT_LIMIT` | `5` | Scoring 후 반환할 최대 추천 수 |
+| `RECOMMENDATION_CANDIDATE_LIMIT` | `10` | 거리순으로 상세조회·평가할 후보 수 |
 | `EXTERNAL_API_RETRY_COUNT` | `2` | 설정은 있으나 재시도 로직 미구현 |
 | `FAKE_WEATHER_CONDITION` | `neutral` | Fake Weather 결과 |
 | `FAKE_CURRENT_DATETIME` | 고정 ISO 시각 | 예약값; 현재 추천 로직에서 미사용 |

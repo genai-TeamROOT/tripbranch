@@ -20,6 +20,11 @@ def map_places_to_scoring_candidates(
     origin_longitude: float,
     visit_at: datetime,
 ) -> tuple[ScoringCandidate, ...]:
+    source = (
+        result.provider_metadata[0].source.value
+        if result.provider_metadata
+        else "unknown"
+    )
     return tuple(
         ScoringCandidate(
             place_id=item.candidate.place_id,
@@ -36,7 +41,7 @@ def map_places_to_scoring_candidates(
                 item.details.operating_schedule if item.details else None,
                 visit_at,
             ),
-            raw_source=item.candidate.raw_source,
+            raw_source=source,
         )
         for item in result.places
     )
@@ -62,17 +67,31 @@ def _operating_hours_for_visit(
     if schedule.availability is OperatingAvailability.ALL_DAY:
         return OperatingHours(open_time=time.min, close_time=time.max)
 
+    found_supported_range = False
     for rule in schedule.rules:
         if rule.months is not None and visit_at.month not in rule.months:
             continue
         if rule.weekdays is not None and visit_at.weekday() not in rule.weekdays:
             continue
-        usable = next(
-            (item for item in rule.time_ranges if not item.crosses_midnight),
+        usable_ranges = tuple(
+            item for item in rule.time_ranges if not item.crosses_midnight
+        )
+        if not usable_ranges:
+            continue
+        found_supported_range = True
+        current_time = visit_at.time()
+        active = next(
+            (
+                item
+                for item in usable_ranges
+                if item.start <= current_time < item.end
+            ),
             None,
         )
-        if usable is not None:
-            return OperatingHours(open_time=usable.start, close_time=usable.end)
+        if active is not None:
+            return OperatingHours(open_time=active.start, close_time=active.end)
+    if found_supported_range:
+        return OperatingHours(open_time=time.min, close_time=time.min)
     return None
 
 

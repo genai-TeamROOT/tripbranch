@@ -12,6 +12,7 @@ Scoring v1은 카테고리를 가중치 계산에 사용하지 않고, 운영 �
 from __future__ import annotations
 
 from datetime import datetime, time
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -91,6 +92,17 @@ def test_closed_place_is_excluded() -> None:
 
     assert "p3" not in [item.place_id for item in result.ranked]
     assert "p3" in result.excluded_place_ids
+
+
+def test_timezone_aware_visit_time_is_supported() -> None:
+    result = score_candidates(
+        [MUSEUM_OPEN],
+        now=datetime(2026, 7, 23, 14, tzinfo=ZoneInfo("Asia/Seoul")),
+        weather_condition=WeatherCondition.GOOD,
+        max_distance_km=1.5,
+    )
+
+    assert result.ranked[0].place_id == "p1"
 
 
 def test_unknown_hours_is_distinct_from_closed() -> None:

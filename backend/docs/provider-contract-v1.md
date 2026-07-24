@@ -1147,27 +1147,30 @@ Inspection Test는 마스킹된 요청, 원본 응답, 정규화 결과를 출�
 
 ## 15. 추천 파이프라인 연결 현황
 
-현재 `services/recommendations.py`의 Real 경로는 다음만 사용합니다.
+현재 `services/recommendations.py`는 Fake/Real 모두 다음 공통 경로를 사용합니다.
 
 ```text
 InterpretedConditions.location_query
 → ResolveLocationTool
-→ GeocodingProvider
-→ PlaceProvider.search_places
-→ shown_place_ids 제외
-→ Haversine 직선거리 계산
+→ Weather / NearbyPlaceDetails / Holiday Tool
+→ AgentToolContext
+→ ScoringCandidate Mapper
+→ 날씨·운영시간·거리 Scoring
+→ 상위 5개 선정
+→ 선정 후보에 한정한 Concentration 후조회
 → RecommendationResponse
 ```
 
-다음 연결은 아직 없습니다.
+MVP는 거리순 첫 후보 10개만 상세조회·평가하며, 목표 추천 수가 부족해도 다음
+페이지를 추가 조회하지 않습니다. 추천 수 5개와 후보 수 10개는 환경변수
+`RECOMMENDATION_RESULT_LIMIT`, `RECOMMENDATION_CANDIDATE_LIMIT`로 조정할 수
+있습니다. 집중률은 순위 확정 후 Context 보완용으로만 조회하며 점수를 변경하지
+않습니다.
 
-- Weather를 이용한 환경 적합도 점수
-- Place 상세조회 기반 운영시간/휴무 판정
 - Holiday를 이용한 공휴일 운영 규칙 보완
-- Concentration을 이용한 혼잡도 Feature
+- Concentration을 이용한 혼잡도 Scoring Feature
 - 실제 이동시간 Provider
 - Naver Blog Search의 분위기/조용함 근거
-- 가중치 Scoring과 tie-break
 
 ## 16. Provider Blocker
 
@@ -1209,7 +1212,7 @@ InterpretedConditions.location_query
 | ID | 우선순위 | Blocker | 영향 | 현재 대응 | 해결 조건 | 상태 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `WTH-01` | `P1` | 메서드는 current지만 실제 데이터는 초단기예보 | 사용자가 “현재 날씨”로 오해할 수 있음 | `GetWeatherForecastTool`, data_type과 forecast_for 구현 | Tool/모델 명칭 및 forecast_for 테스트 | `Resolved` |
-| `WTH-02` | `P1` | 추천 파이프라인에 Weather가 미연결 | 날씨 조건이 실제 추천 점수에 반영되지 않음 | Interpret Stub 값만 존재 | Weather Tool 연결 및 유/무날씨 Scoring 테스트 | `Open` |
+| `WTH-02` | `P1` | 추천 파이프라인에 Weather가 미연결 | 날씨 조건이 실제 추천 점수에 반영되지 않음 | Weather Tool 연결 및 실패 시 가중치 재분배 구현 | 유/무날씨 Scoring 통합 테스트 | `Resolved` |
 | `WTH-03` | `P2` | SKY/PTY를 세 단계로만 축약 | 온도·습도·강수량·풍속 기반 조건 사용 불가 | `good/neutral/bad`만 반환 | Weather Feature 요구사항 확정 후 모델 확장 여부 결정 | `현재 논의 중` |
 | `WTH-04` | `P2` | 발표 제공 시각을 45분 기준으로 고정 | 지연 시 최신 base time에 데이터가 없을 수 있음 | 직전 시간 fallback 계산 | no_data 시 이전 발표분 제한 재조회 정책과 테스트 | `Open` |
 | `WTH-05` | `P1` | 방문 예정 시각 기반 예보 선택 | 미래 방문 추천에 잘못된 slot을 사용할 위험 | visit_at, 최근접·동률 미래 우선·범위 밖 unsupported 구현 | 고정 Clock Tool 테스트와 실제 Smoke Test | `Resolved` |
@@ -1232,7 +1235,7 @@ InterpretedConditions.location_query
 | --- | --- | --- | --- | --- | --- | --- |
 | `CON-01` | `P1` | 결과는 실시간 현재 혼잡도가 아닌 날짜별 상대 집중률 예측 | “지금 덜 붐비는 곳” 요청을 직접 충족하지 못함 | `forecast_date`와 rate 보존 | 현재 시각 추정 사용 여부와 표현 문구 확정 | `현재 논의 중` |
 | `CON-02` | `P1` | 임의 장소가 집중률 데이터셋에 없을 수 있음 | 많은 Place 후보에 혼잡도 Feature를 부여할 수 없음 | 빈 forecasts 반환 | 근처 지점/지역 fallback 또는 Feature 제외 정책 확정 | `현재 논의 중` |
-| `CON-03` | `P1` | 추천 파이프라인에 미연결 | 혼잡도 요청이 추천 결과에 반영되지 않음 | 수동 Provider 조회만 가능 | Tool 연결, no_data fallback, Scoring 적용 테스트 | `Open` |
+| `CON-03` | `P1` | 추천 파이프라인에 미연결 | 상위 후보의 혼잡도 확인 불가 | Scoring 상위 후보만 후조회하고 no_data/장애 시 추천 유지 | 혼잡도 Feature 반영 여부는 별도 정책 | `부분 해결` |
 | `CON-04` | `P2` | 여러 alias로 rate를 허용하지만 단위·범위 계약 미확정 | 다른 필드를 잘못 집중률로 해석하거나 점수 왜곡 가능 | `%` 제거 후 float 변환 | 공식 필드·범위 검증과 normalization 규칙 확정 | `Open` |
 | `CON-05` | `P2` | Place 지역코드와 Concentration 법정동 코드 체계가 다름 | `110`/`11110` 혼용 시 빈 결과 | 문서와 Smoke Test에 종로구 값 고정 | 공통 지역코드 Resolver와 매핑 테스트 | `Open` |
 
@@ -1247,11 +1250,11 @@ InterpretedConditions.location_query
 
 ### 16.8 다음 구현 순서
 
-1. Tool Context를 실제 Orchestrator 실행 순서에 연결
-2. Candidate Mapper 결과를 Scoring 파이프라인에 연결
-3. `PLC-03`, `HOL-01` 공휴일·복합 운영정보 판정
-4. `WTH-02`, `CON-02`, `CON-03` 선택 Feature와 fallback 연결
-5. pagination, retry, cache, observability 보완
+1. Chat Orchestrator와 Context Merge 연결
+2. `PLC-03`, `HOL-01` 공휴일·복합 운영정보 판정
+3. `CON-02`, `CON-03` 혼잡도 Feature 정책 확정
+4. 후보 부족 시 pagination·추가 조회 정책
+5. retry, cache, observability 보완
 
 ## 17. 변경 이력
 

@@ -84,14 +84,32 @@ class NearbyPlaceDetailsTool:
             100,
             query.limit + len(query.excluded_place_ids),
         )
-        search_result = await self._search_provider.search_places(
-            latitude=query.latitude,
-            longitude=query.longitude,
-            preferred_categories=list(query.preferred_categories),
-            search_radius_km=query.search_radius_km,
-            category_filter=query.category_filter,
-            limit=provider_limit,
-        )
+        try:
+            search_result = await self._search_provider.search_places(
+                latitude=query.latitude,
+                longitude=query.longitude,
+                preferred_categories=list(query.preferred_categories),
+                search_radius_km=query.search_radius_km,
+                category_filter=query.category_filter,
+                limit=provider_limit,
+            )
+        except AppError as exc:
+            return self._result(
+                places=(),
+                status=ToolStatus.UNAVAILABLE,
+                started_at=started_at,
+                provider_metadata=(),
+                error=ToolError(
+                    code="unavailable",
+                    message="주변 장소를 검색하지 못했습니다.",
+                    cause=(
+                        "timeout"
+                        if exc.code == "provider_timeout"
+                        else "upstream_error"
+                    ),
+                    retryable=exc.retryable,
+                ),
+            )
         candidates = search_result.data
         selected = tuple(
             candidate
@@ -199,6 +217,7 @@ class NearbyPlaceDetailsTool:
         status: ToolStatus,
         started_at: float,
         provider_metadata: tuple[ProviderMetadata, ...],
+        error: ToolError | None = None,
     ) -> NearbyPlaceDetailsResult:
         return NearbyPlaceDetailsResult(
             places=places,
@@ -206,6 +225,7 @@ class NearbyPlaceDetailsTool:
             source="nearby_place_details_tool",
             retrieved_at=datetime.now(UTC),
             elapsed_ms=(perf_counter() - started_at) * 1000,
+            error=error,
             warnings=("partial_data",) if status is ToolStatus.PARTIAL else (),
             provider_metadata=provider_metadata,
         )

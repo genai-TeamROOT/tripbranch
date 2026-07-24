@@ -163,6 +163,23 @@ async def test_tool_returns_no_data_without_candidates() -> None:
     assert result.places == ()
 
 
+@pytest.mark.asyncio
+async def test_tool_maps_search_failure_to_unavailable() -> None:
+    class FailingSearchProvider(SearchProvider):
+        async def search_places(self, *args, **kwargs):
+            raise ProviderUnavailableError("test")
+
+    result = await NearbyPlaceDetailsTool(
+        FailingSearchProvider([]),
+        DetailsProvider(),
+    ).execute(NearbyPlaceDetailsQuery(37.5, 127.0))
+
+    assert result.status is ToolStatus.UNAVAILABLE
+    assert result.error is not None
+    assert result.error.code == "unavailable"
+    assert result.provider_metadata == ()
+
+
 @pytest.mark.parametrize(
     "query",
     [

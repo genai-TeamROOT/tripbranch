@@ -52,6 +52,8 @@
 - 위치·날씨·장소·집중률·공휴일 Tool의 공통 상태·오류·metadata 필드
 - Tool 결과를 동일 형식으로 보관하는 `AgentToolContext`
 - 장소 Tool 결과를 Scoring 입력으로 변환하는 Candidate Mapper
+- 위치·장소·날씨 Tool → Candidate → Scoring → 상위 5개 추천 파이프라인
+- Scoring 상위 후보에 한정한 집중률 후조회
 - 실제 외부 요청을 명시적으로만 실행하는 Smoke/Inspection Test
 
 아직 구현되지 않은 핵심 범위:
@@ -63,7 +65,7 @@
 - `RecommendationRequest Builder`
 - 사용자 자연어 별칭을 표준 장소 유형으로 변환하는 Interpret 연동
 - 표준 장소 유형과 TourAPI 분류를 연결하는 Category Mapper
-- 운영시간의 공휴일·복합 예외 판정과 Scoring의 실제 파이프라인 연결
+- 운영시간의 공휴일·복합 예외 판정
 - Naver Blog Search 근거 수집
 - Supabase 영속화
 - `chat_session_id`, `recommendation_run_id` 처리
