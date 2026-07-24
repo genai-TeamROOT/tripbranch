@@ -32,7 +32,9 @@ def record(store, session_id: str, run_id: str, places: list[tuple[str, int]]):
         svc.RecordRecommendationRequest(
             session_id=session_id,
             run_id=run_id,
-            recommended=[{"place_id": p, "rank": r} for p, r in places],
+            recommended=[
+                svc.RecommendedPlace(place_id=p, rank=r) for p, r in places
+            ],
         ),
         store=store,
     )
@@ -87,12 +89,12 @@ class TestCompletionCriteria:
         record(store, sid, first.run_id, [("A", 1), ("B", 2), ("C", 3)])
 
         second = apply(store, session_id=sid, intent="MODIFY", operations=[])
-        assert second.exclusion_place_ids == ["A", "B", "C"]
+        assert second.excluded_place_ids == ["A", "B", "C"]
 
         record(store, sid, second.run_id, [("D", 1), ("E", 2)])
 
         third = apply(store, session_id=sid, intent="MODIFY", operations=[])
-        assert third.exclusion_place_ids == ["A", "B", "C", "D", "E"]
+        assert third.excluded_place_ids == ["A", "B", "C", "D", "E"]
 
     def test_기준4_초기화_후_이전_상태가_제거된다(self, store):
         first = apply(
@@ -110,7 +112,7 @@ class TestCompletionCriteria:
         assert after.session_created is True
         assert after.session_id != sid
         assert after.user_conditions.budget is None
-        assert after.exclusion_place_ids == []
+        assert after.excluded_place_ids == []
 
         # 이전 세션은 조회되지 않는다
         ctx = svc.get_session_context(sid, store=store)
@@ -138,7 +140,7 @@ class TestCompletionCriteria:
         r = svc.apply(request, store=store)
 
         assert r.user_conditions.place_types == ["cultural_facility", "shopping"]
-        assert "126508" in r.exclusion_place_ids
+        assert "126508" in r.excluded_place_ids
 
 
 # ================================================================ 6.1 / 6.2
@@ -256,7 +258,7 @@ class TestResetInApply:
         after = apply(store, session_id=sid, operations=[], reset_scope="soft")
 
         assert after.user_conditions.budget is None
-        assert after.exclusion_place_ids == ["A"]
+        assert after.excluded_place_ids == ["A"]
         assert after.session_id == sid
 
     def test_history는_조건을_유지하고_추천_이력만_비운다(self, store):
@@ -279,7 +281,7 @@ class TestResetInApply:
         after = apply(store, session_id=sid, operations=[], reset_scope="history")
 
         assert after.user_conditions.budget == "free"
-        assert after.exclusion_place_ids == ["B"]  # 거절만 남는다
+        assert after.excluded_place_ids == ["B"]  # 거절만 남는다
         assert after.session_id == sid
 
     def test_reset이_operations보다_먼저_적용된다(self, store):
@@ -401,7 +403,7 @@ class TestRecordRecommendation:
         record(store, first.session_id, first.run_id, [("A", 1)])
 
         second = apply(store, session_id=first.session_id, operations=[])
-        assert "A" in second.exclusion_place_ids
+        assert "A" in second.excluded_place_ids
 
     def test_빈_목록도_오류가_아니다(self, store):
         r = apply(store, session_id=None, operations=[])
@@ -422,6 +424,7 @@ class TestUpdateApiContext:
             store=store,
         )
 
+        assert res is not None          # ← 추가
         assert res.api_context.gps_location == "37.5665,126.9780"
         assert res.api_context.gps_expired is False
 
@@ -469,6 +472,9 @@ class TestUpdateApiContext:
             store=store,
         )
 
+        assert res is not None          # ← 추가
+
+        
         assert res.api_context.gps_location == "38.0,128.0"
         assert res.api_context.api_weather == "rain"  # 유지된다
 
@@ -486,6 +492,7 @@ class TestUpdateApiContext:
             store=store,
         )
 
+        assert res is not None          # ← 추가
         assert res.api_context.api_weather is None
 
     def test_없는_세션은_None을_반환하고_생성하지_않는다(self, store):
@@ -533,7 +540,7 @@ class TestMultiTurnScenario:
 
         assert t2.condition_changed is False
         assert t2.condition_version == 1
-        assert t2.exclusion_place_ids == ["A", "B", "C"]
+        assert t2.excluded_place_ids == ["A", "B", "C"]
 
         # 3턴: 조건 변경 + 거절
         t3 = apply(
@@ -547,7 +554,7 @@ class TestMultiTurnScenario:
         assert t3.condition_version == 2
         assert t3.user_conditions.search_center == "경복궁"  # 이전 조건 유지
         assert t3.user_conditions.budget == "free"
-        assert set(t3.exclusion_place_ids) == {"A", "B", "C", "D", "E"}
+        assert set(t3.excluded_place_ids) == {"A", "B", "C", "D", "E"}
 
         # 4턴: history reset — 조건 유지, 거절만 남음
         t4 = apply(
@@ -555,7 +562,7 @@ class TestMultiTurnScenario:
         )
 
         assert t4.user_conditions.budget == "free"
-        assert t4.exclusion_place_ids == ["D"]
+        assert t4.excluded_place_ids == ["D"]
         assert t4.session_id == sid
 
     def test_변경_기록이_run_id로_묶인다(self, store):

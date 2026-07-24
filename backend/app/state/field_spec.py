@@ -16,8 +16,8 @@ OP_REMOVE = "Remove"
 
 VALID_OPS = frozenset({OP_ADD, OP_UPDATE, OP_REMOVE})
 
-# A는 Keep을 전송하지 않으나, 수신 시 오류로 처리하지 않고 무동작 처리한다.
-# (계약 2.1절)
+# Keep은 무동작 연산이다. State를 변경하지 않고 condition_version도 올리지 않으며,
+# "A가 유지를 명시적으로 판단했다"는 신호로 변경 기록에만 남긴다. (계약 2.1절)
 OP_KEEP = "Keep"
 ACCEPTED_OPS = VALID_OPS | {OP_KEEP}
 
