@@ -148,6 +148,7 @@ def _tools(
 async def test_pipeline_scores_then_checks_only_top_five_concentrations() -> None:
     places = ManyPlacesProvider()
     concentration = RecordingConcentrationProvider()
+    timer_values = iter((10.0, 10.25))
     result = await run_recommendation_pipeline(
         RecommendationPipelineRequest(
             location_query="경복궁",
@@ -156,6 +157,7 @@ async def test_pipeline_scores_then_checks_only_top_five_concentrations() -> Non
             visit_at=VISIT_AT,
         ),
         _tools(places, concentration),
+        timer=lambda: next(timer_values),
     )
 
     returned = (
@@ -167,6 +169,7 @@ async def test_pipeline_scores_then_checks_only_top_five_concentrations() -> Non
     assert len(result.concentrations) == 5
     assert result.context.concentration is not None
     assert result.context.concentration.status is ToolStatus.NO_DATA
+    assert result.response.elapsed_ms == 250.0
 
 
 @pytest.mark.asyncio

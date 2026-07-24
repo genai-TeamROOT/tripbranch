@@ -6,6 +6,8 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from time import perf_counter
+from typing import TypeAlias
 from zoneinfo import ZoneInfo
 
 from app.domain.agent_context import AgentToolContext, context_value
@@ -93,6 +95,7 @@ class RecommendationPipelineResult:
 
 
 Clock = Callable[[], datetime]
+Timer: TypeAlias = Callable[[], float]
 
 
 def build_pipeline_request(
@@ -122,7 +125,10 @@ def build_pipeline_request(
 async def run_recommendation_pipeline(
     request: RecommendationPipelineRequest,
     tools: RecommendationTools,
+    *,
+    timer: Timer = perf_counter,
 ) -> RecommendationPipelineResult:
+    started_at = timer()
     location_result = await tools.location.execute(
         ResolveLocationQuery(request.location_query)
     )
@@ -198,6 +204,9 @@ async def run_recommendation_pipeline(
         candidates,
         places_result.places,
         request.visit_at,
+    )
+    response = response.model_copy(
+        update={"elapsed_ms": round((timer() - started_at) * 1000, 2)}
     )
     return RecommendationPipelineResult(
         response=response,
@@ -341,6 +350,7 @@ def _build_response(
     return RecommendationResponse(
         recommendations=verified,
         unverified_recommendations=unverified,
+        elapsed_ms=0,
     )
 
 

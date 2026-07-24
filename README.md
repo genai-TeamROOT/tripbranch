@@ -54,6 +54,7 @@
 - 장소 Tool 결과를 Scoring 입력으로 변환하는 Candidate Mapper
 - 위치·장소·날씨 Tool → Candidate → Scoring → 상위 5개 추천 파이프라인
 - Scoring 상위 후보에 한정한 집중률 후조회
+- 추천 API 응답의 전체 Backend 파이프라인 처리시간 `elapsed_ms`
 - 실제 외부 요청을 명시적으로만 실행하는 Smoke/Inspection Test
 
 아직 구현되지 않은 핵심 범위:

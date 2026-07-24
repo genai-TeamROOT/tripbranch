@@ -1158,14 +1158,17 @@ InterpretedConditions.location_query
 → 날씨·운영시간·거리 Scoring
 → 상위 5개 선정
 → 선정 후보에 한정한 Concentration 후조회
-→ RecommendationResponse
+→ RecommendationResponse(elapsed_ms 포함)
 ```
 
 MVP는 거리순 첫 후보 10개만 상세조회·평가하며, 목표 추천 수가 부족해도 다음
 페이지를 추가 조회하지 않습니다. 추천 수 5개와 후보 수 10개는 환경변수
 `RECOMMENDATION_RESULT_LIMIT`, `RECOMMENDATION_CANDIDATE_LIMIT`로 조정할 수
 있습니다. 집중률은 순위 확정 후 Context 보완용으로만 조회하며 점수를 변경하지
-않습니다.
+않습니다. 응답 최상위 `elapsed_ms`는 위치 해석 시작부터 외부 데이터 조회,
+Candidate 변환, Scoring, 상위 후보 집중률 후조회와 응답 조립 완료까지의 Backend
+wall-clock 시간을 millisecond로 표시합니다. HTTP 전송과 Frontend 렌더링 시간은
+포함하지 않습니다.
 
 - Holiday를 이용한 공휴일 운영 규칙 보완
 - Concentration을 이용한 혼잡도 Scoring Feature

@@ -58,12 +58,13 @@ type RecommendationItem = {
 type RecommendationResponse = {
   recommendations: RecommendationItem[];
   unverified_recommendations: RecommendationItem[];
+  elapsed_ms: number; // 전체 추천 파이프라인 처리시간(ms)
 };
 ```
 
-현재 Fake/Fake 모드에서는 고정 추천을 반환합니다. 실제 Geocoding 또는 Place 모드를
-사용하면 좌표 변환, 주변 검색, 노출 ID 제외, 직선거리 계산까지 수행하지만 가중치
-Scoring은 아직 없습니다.
+`elapsed_ms`는 위치 해석 시작부터 장소·날씨·공휴일 조회, Candidate 변환,
+Scoring, 상위 후보 집중률 후조회와 응답 조립이 끝날 때까지 Backend에서 측정한
+wall-clock 시간입니다. HTTP 전송시간과 Frontend 렌더링 시간은 포함하지 않습니다.
 
 ### 공통 오류
 

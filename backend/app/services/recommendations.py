@@ -114,6 +114,7 @@ def get_stub_recommendations(shown_place_ids: list[str]) -> RecommendationRespon
     return RecommendationResponse(
         recommendations=[i for i in stub_items if i.place_id not in shown],
         unverified_recommendations=[i for i in stub_unverified if i.place_id not in shown],
+        elapsed_ms=0,
     )
 
 

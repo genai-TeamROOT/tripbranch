@@ -37,6 +37,7 @@ def test_recommendations_return_fake_pipeline_results() -> None:
     ]
     assert body["unverified_recommendations"] == []
     assert len(body["recommendations"]) <= 5
+    assert body["elapsed_ms"] >= 0
 
 
 def test_recommendations_filter_shown_place_ids() -> None:
