@@ -1,10 +1,10 @@
-# 조건 스키마 v0.2
+# 조건 스키마 v0.3
 
 ## 문서 정보
 
 | 항목 | 값 |
 |------|-----|
-| 버전 | v0.2 |
+| 버전 | v0.3 |
 | 상태 | 초안 (Draft) |
 | 최종 수정 | 2026-07-23 |
 | 경로 | `docs/design/conditions-schema.md` |
@@ -28,7 +28,7 @@ Conditions (조건 N개, Intent가 RECOMMEND/MODIFY일 때 추출)
 
 ---
 
-## 2. Conditions 필드 정의 (= user_conditions)
+## 2. Conditions 필드 정의
 
 아래 인터페이스는 B가 저장하는 `user_conditions`에 해당한다. 사용자 발화에서 LLM이
 추출한 값만 담으며, GPS·날씨 API로 보충한 값은 별도의 `api_context` 구조(3절 참고)에
@@ -198,7 +198,7 @@ LLM 답변 생성과 추천 엔진에 전달되며, B에는 저장하지 않는�
 
 ### missing_conditions
 
-추천 실행에 필수이지만 아직 확보되지 않은 조건.
+추천 실행에 필수이지만 아직 확보되지 않은 조건. (= 조건 부족 시 기본 정책, 이 문서가 소유)
 
 | 필드 | 위치 | 필수 여부 | 미확보 시 처리 |
 |------|------|-----------|---------------|
@@ -206,6 +206,12 @@ LLM 답변 생성과 추천 엔진에 전달되며, B에는 저장하지 않는�
 | `search_center` | user_conditions | 선택 | null이면 answer_conditions에서 gps_location 사용 |
 | `place_types` | user_conditions | 선택 | 빈 배열이면 전체 유형 검색 |
 | `weather` / `api_weather` | 병합 | 선택 | 둘 다 없으면 가중치 제외 |
+| `weather_intent` | user_conditions | 선택 | 모호(null)하면 사용자에게 실내/야외 선호 추가 질문 |
+| `transport` | user_conditions | 선택 | 기본값 도보 기준 (default_transport: walk) |
+| `max_travel_time` | user_conditions | 선택 | 기본 검색 반경 1km 적용 |
+| `budget` | user_conditions | 선택 | 예산 필터 미적용 |
+| `companion` | user_conditions | 선택 | 동행자 필터 미적용 |
+| 모든 조건 없음 ("추천해줘") | — | — | api_context.gps_location 확인 우선 |
 
 ```
 missing_conditions 처리 흐름:
@@ -422,3 +428,4 @@ place_types 변경 시 → A가 소속 안 되는 place_tags에 대한 Remove �
 |------|------|-----------|
 | v0.1 | 2026-07-22 | 초안 작성 |
 | v0.2 | 2026-07-23 | Conditions 3층 구조(user_conditions/api_context/answer_conditions) 반영, place_tags 자동 제거 서술을 A의 명시적 Remove로 수정, 용어 통일(current_conditions → user_conditions) |
+| v0.3 | 2026-07-23 | 소유권 기반 문서 정리: "조건 부족 시 기본 정책"을 이 문서(missing_conditions)로 통합, weather_intent/transport/max_travel_time/budget/companion 기본값 추가. 다른 문서는 이 절을 참조하도록 정리 |

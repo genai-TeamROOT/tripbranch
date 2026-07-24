@@ -4,9 +4,9 @@
 
 | 항목 | 값 |
 |------|-----|
-| 버전 | v0.1 |
+| 버전 | v0.3 |
 | 상태 | 초안 (Draft) |
-| 최종 수정 | 2026-07-22 |
+| 최종 수정 | 2026-07-23 |
 
 ---
 
@@ -52,86 +52,27 @@ Score 계산 (가중치 적용)
 
 ## 3. Conditions 스키마
 
-```typescript
-interface Conditions {
-  // 위치
-  current_location: string | null; 
-  search_center: string | null;
+Conditions는 3층 구조로 관리된다. 상세 스키마는
+[conditions-schema.md](./conditions-schema.md)를 따른다.
 
-  // 장소 유형 (복수 가능)
-  place_types: PlaceType[];
-  place_tags: PlaceTag[];
-
-  // 날씨
-  weather: "rain" | "snow" | "hot" | "cold" | "good" | null;
-  weather_intent: "AVOID" | "ENJOY" | "IGNORE" | null;
-
-  // 이동
-  transport: "walk" | "public" | "car" | null;
-  max_travel_time: number | null;  // 분
-
-  // 시간
-  time_available: number | null;  // 분
-
-  // 환경
-  environment: "indoor" | "outdoor" | "any" | null;
-
-  // 동행
-  companion: "solo" | "couple" | "friend" | "parent" | "child" | "pet" | null;
-
-  // 예산
-  budget: "free" | string | null;
-
-  // 태그 (복수 가능)
-  preference_tags: string[];
-  exclude_tags: string[];
-  special_requirements: string[];
-}
 ```
+① user_conditions  — 사용자 발화에서 추출한 값만 저장 (아래 인터페이스, B 저장)
+② api_context       — GPS·날씨 API로 확보한 값, 별도 구조로 B 저장 (operations 대상 아님)
+③ answer_conditions — ①+②를 병합한 최종 조건, A가 생성 (B에 저장 안 함)
+                      추천 엔진에는 answer_conditions가 전달된다
+```
+
+14개 필드(UserConditions) 정의, PlaceType/PlaceTag enum, 필드별 허용 연산은
+[conditions-schema.md § 2. Conditions 필드 정의](./conditions-schema.md#2-conditions-필드-정의) 및
+[§ 4. 조건 변경 연산](./conditions-schema.md#4-조건-변경-연산)을 참조한다.
 
 ---
 
 ## 4. Conditions 필드 정의
 
-### 위치 필드
-
-| 필드 | 타입 | 설명 | 처리 방식 | 예시 |
-|------|------|------|-----------|------|
-| `current_location` | string | 사용자의 현재 위치 | Update | "강남역" |
-| `search_center` | string \| null | 장소 검색 기준점. null이면 current_location 사용 | Update | "경복궁", "성수동", null |
-
-### 장소 유형 필드
-
-| 필드 | 타입 | 설명 | 처리 방식 | 예시 |
-|------|------|------|-----------|------|
-| `place_types` | PlaceType[] | 추천 장소 유형 (복수 가능) | Update (전체 교체) | ["cultural_facility", "restaurant"] |
-| `place_tags` | PlaceTag[] | 세부 장소 분류 (복수 가능) | Add / Remove | ["박물관", "카페"] |
-
-### 날씨 필드
-
-| 필드 | 타입 | 설명 | 처리 방식 | 예시 |
-|------|------|------|-----------|------|
-| `weather` | enum \| null | 현재 날씨 상태 | Update | `rain`, `snow`, `hot`, `cold`, `good` |
-| `weather_intent` | enum \| null | 날씨에 대한 사용자 의도 | Update | `AVOID`, `ENJOY`, `IGNORE` |
-
-### 이동 필드
-
-| 필드 | 타입 | 설명 | 처리 방식 | 예시 |
-|------|------|------|-----------|------|
-| `transport` | enum \| null | 이동 수단 | Update | `walk`, `public`, `car` |
-| `max_travel_time` | int \| null | 최대 이동 시간 (분) | Update | 10, 30, 60 |
-
-### 기타 필드
-
-| 필드 | 타입 | 설명 | 처리 방식 | 예시 |
-|------|------|------|-----------|------|
-| `time_available` | int \| null | 남은 관광 가능 시간 (분) | Update | 60, 120 |
-| `environment` | enum \| null | 실내/야외 선호 | Update | `indoor`, `outdoor`, `any` |
-| `companion` | enum \| null | 동행자 유형 | Update | "solo", "parent", "child", "couple" |
-| `budget` | string \| null | 예산 조건 | Update / Remove | "free", "10000", "30000" |
-| `preference_tags` | string[] | 선호 분위기/특성 | Add / Remove | ["조용한", "감성", "사진찍기좋은"] |
-| `exclude_tags` | string[] | 제외 조건 | Add / Remove | ["붐비는", "시끄러운"] |
-| `special_requirements` | string[] | 필수 편의시설 | Add / Remove | ["주차", "휠체어", "반려동물"] |
+14개 필드의 타입·설명·허용 연산 전문은
+[conditions-schema.md § 2. Conditions 필드 정의](./conditions-schema.md#2-conditions-필드-정의) 및
+[§ 4. 조건 변경 연산 § 필드별 적용 방식](./conditions-schema.md#필드별-적용-방식)을 참조한다.
 
 ---
 
@@ -192,17 +133,7 @@ search_center 결정:
 
 ## 6. place_types 정의
 
-### enum 목록
-
-```typescript
-type PlaceType =
-  | "attraction"         // 관광지 (contentTypeId: 12)
-  | "cultural_facility"  // 문화시설 (contentTypeId: 14)
-  | "festival"           // 축제/공연/행사 (contentTypeId: 15)
-  | "leisure"            // 레포츠 (contentTypeId: 28)
-  | "shopping"           // 쇼핑 (contentTypeId: 38)
-  | "restaurant";        // 음식점/카페 (contentTypeId: 39)
-```
+enum 목록은 [conditions-schema.md § 2. Conditions 필드 정의](./conditions-schema.md#2-conditions-필드-정의)를 참조한다.
 
 ### 상세 정의
 
@@ -265,24 +196,7 @@ place_types: ["restaurant"]  → 음식점/카페만 검색
 
 ## 7. place_tags 정의
 
-### enum 목록 (MVP)
-
-```typescript
-type PlaceTag =
-  // attraction 하위
-  | "공원" | "궁궐" | "산" | "해변" | "호수" | "계곡"
-  | "전망대" | "테마파크" | "동물원" | "수목원"
-  | "사찰" | "성곽" | "마을" | "둘레길"
-  | "전통체험" | "공예체험" | "웰니스"
-  // cultural_facility 하위
-  | "박물관" | "미술관" | "도서관" | "공연장" | "과학관" | "전시관"
-  // festival 하위
-  | "축제" | "전시회" | "공연" | "콘서트"
-  // shopping 하위
-  | "시장" | "쇼핑몰" | "면세점" | "백화점"
-  // restaurant 하위
-  | "한식" | "일식" | "중식" | "양식" | "카페" | "찻집" | "주점" | "분식";
-```
+enum 목록(MVP)은 [conditions-schema.md § 2. Conditions 필드 정의](./conditions-schema.md#2-conditions-필드-정의)를 참조한다.
 
 ### place_tags → place_type 소속 매핑 (수정)
  - '신분류체계정보 관광타입정보 연계 정의서.xlsx' 참고 
@@ -399,48 +313,16 @@ LLM이 AVOID/ENJOY 판별 불가
 
 ## 10. 조건 부족 시 기본 정책
 
-| 상황 | 처리 |
-|------|------|
-| current_location 없음 (GPS도 실패) | "현재 위치를 알려주세요" 질문 |
-| search_center 없음 | current_location을 검색 기준으로 사용 |
-| place_types 빈 배열 | 전체 유형에서 검색 기준점 가까운 순 추천 |
-| weather 없음 + API 실패 | 날씨 가중치 제외, 나머지 재정규화 |
-| weather_intent null (모호) | 사용자에게 실내/야외 선호 추가 질문 |
-| 모든 조건 없음 ("추천해줘") | current_location 확인 우선 |
-| transport 없음 | 기본값 도보 기준 (default_transport: walk) |
-| max_travel_time 없음 | 기본 검색 반경 1km 적용 |
-| budget 없음 | 예산 필터 미적용 |
-| companion 없음 | 동행자 필터 미적용 |
+조건 미확보 시의 필수/선택 구분과 기본값 정책은
+[conditions-schema.md § missing_conditions](./conditions-schema.md#missing_conditions)를 따른다.
 
 ---
 
 ## 11. 필드별 변경 규칙
 
-| 필드 | 단일/복수 | 변경 방식 | MODIFY 시 동작 예시 |
-|------|-----------|-----------|-------------------|
-| `current_location` | 단일 | Update | "나 지금 ~~야" |
-| `search_center` | 단일 | Update | "경복궁 말고 인사동 근처로" |
-| `place_types` | 복수 | Update (전체 교체) | "카페 말고 맛집" → ["restaurant"], tags 조정 |
-| `place_tags` | 복수 | Add / Remove | "박물관도 포함" → 기존에 추가 |
-| `weather` | 단일 | Update | API 최신값 또는 사용자 변경 |
-| `weather_intent` | 단일 | Update | "실내로" → AVOID |
-| `transport` | 단일 | Update | "차로 갈게" → car |
-| `max_travel_time` | 단일 | Update | "30분 이내로" → 30 |
-| `time_available` | 단일 | Update | "1시간밖에 없어" → 60 |
-| `environment` | 단일 | Update | "야외로" → outdoor |
-| `companion` | 단일 | Update | "아이랑 같이" → child |
-| `budget` | 단일 | Update / Remove | "무료만" → "free" / "가격 상관없어" → null |
-| `preference_tags` | 복수 | Add / Remove | "조용한 곳" → 추가(심화) |
-| `exclude_tags` | 복수 | Add / Remove | "시끄러운 곳 빼줘" → 추가 |
-| `special_requirements` | 복수 | Add / Remove | "주차 가능한 곳" → 추가 |
-
-**`place_types`가 Update인 이유:**
-- "카페 말고 맛집"이면 기존 types를 통째로 교체하는 게 자연스러움
-- Add/Remove로 하면 매번 2개 동작으로 해석해야 함
-
-**`place_tags`가 Add/Remove인 이유:**
-- "박물관도 보고 싶어"처럼 기존 태그에 누적하는 것이 자연스러움
-- 단, MODIFY에서 place_types가 교체되면 소속되지 않는 place_tags는 자동 제거
+필드별 허용 연산(Update/Add/Remove), place_types가 Update인 이유, place_tags가
+Add/Remove인 이유, place_types 교체 시 place_tags 정리 규칙은
+[conditions-schema.md § 4. 조건 변경 연산](./conditions-schema.md#4-조건-변경-연산)을 참조한다.
 
 ---
 
@@ -486,7 +368,6 @@ LLM이 AVOID/ENJOY 판별 불가
     "environment": "indoor",
     "companion": "parent",
     "budget": null,
-    "preference_tags": ["조용한"],
     "exclude_tags": [],
     "special_requirements": []
   }
@@ -536,7 +417,15 @@ place_types 빈 배열 (전체 검색) + place_tags 없음:
 | "나 경복궁인데 카페 추천" | RECOMMEND | current_location="경복궁", search_center=null |
 | "맛집 추천" | RECOMMEND | place_types: ["restaurant"] |
 | "더 가까운 곳" (추천 이력 있음) | MODIFY | 조건 변경 |
-| "더 가까운 곳" (추천 이력 없음) | RECOMMEND | preference로 처리 |
+| "더 가까운 곳" (추천 이력 없음) | RECOMMEND | 조건으로 처리 |
 
 ---
+
+## 15. 변경 이력
+
+| 버전 | 날짜 | 변경 내용 |
+|------|------|-----------|
+| v0.1 | 2026-07-22 | 초안 작성 |
+| v0.2 | 2026-07-23 | Conditions 3층 구조 명시(3절), preference_tags 필드 제거, weather 변경 규칙을 user_conditions/api_context 기준으로 수정, place_types 교체 시 place_tags 정리를 A의 명시적 Remove로 수정. (5·9·12절의 GPS↔api_context 위치 프레이밍은 후속 정리 예정) |
+| v0.3 | 2026-07-23 | 소유권 기반 문서 정리: Conditions 필드 정의(3·4절), PlaceType/PlaceTag enum(6·7절), 조건 부족 시 기본 정책(10절), 필드별 변경 규칙(11절)을 conditions-schema.md 참조 링크로 교체. 추천 처리 흐름·위치 처리·날씨 확보·점수 계산 등 RECOMMEND 고유 로직은 유지 |
 
