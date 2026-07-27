@@ -111,13 +111,9 @@ def map_places_context(
                 if item.details is not None
                 else item.candidate.operating_hours
             ),
-            rest_date_raw=(
-                item.details.rest_date if item.details is not None else None
-            ),
+            rest_date_raw=(item.details.rest_date if item.details is not None else None),
             operating_schedule=_operating_schedule(
-                item.details.operating_schedule
-                if item.details is not None
-                else None
+                item.details.operating_schedule if item.details is not None else None
             ),
         )
         for item in result.places
@@ -138,10 +134,7 @@ def map_holidays_context(
     """공휴일 Provider 결과에서 실제 공휴일 항목만 전달한다."""
 
     holidays = (
-        [
-            HolidayInfo(date=item.date, name=item.name)
-            for item in result.holidays.holidays
-        ]
+        [HolidayInfo(date=item.date, name=item.name) for item in result.holidays.holidays]
         if result.holidays is not None
         else []
     )
@@ -221,6 +214,27 @@ def _operating_schedule(
         return None
     return {
         "availability": schedule.availability.value,
+        # D가 방문 예정 월·요일에 맞는 시간 구간을 선택할 수 있도록 규칙 단위를 보존한다.
+        "rules": [
+            {
+                "months": sorted(rule.months) if rule.months is not None else None,
+                "weekdays": (
+                    [_WEEKDAY_NAMES[index] for index in sorted(rule.weekdays)]
+                    if rule.weekdays is not None
+                    else None
+                ),
+                "time_ranges": [
+                    {
+                        "open_time": time_range.start.strftime("%H:%M"),
+                        "close_time": time_range.end.strftime("%H:%M"),
+                        "crosses_midnight": time_range.crosses_midnight,
+                    }
+                    for time_range in rule.time_ranges
+                ],
+            }
+            for rule in schedule.rules
+        ],
+        # 기존 A–C draft-v0 소비자를 위한 평탄화 필드는 당분간 유지한다.
         "time_ranges": [
             {
                 "open_time": time_range.start.strftime("%H:%M"),
@@ -232,9 +246,7 @@ def _operating_schedule(
         ],
         "closure_rules": [
             {
-                "weekdays": [
-                    _WEEKDAY_NAMES[index] for index in sorted(rule.weekdays)
-                ],
+                "weekdays": [_WEEKDAY_NAMES[index] for index in sorted(rule.weekdays)],
                 "source_text": rule.source_text,
             }
             for rule in schedule.closure_rules
