@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 from app.domain.agent_context import AgentToolContext, context_value
 from app.domain.candidate_mapper import map_places_to_scoring_candidates
 from app.domain.evidence import build_evidence
+from app.domain.explanation import build_explanations
 from app.domain.models import ScoringCandidate
 from app.domain.scoring import RankedCandidate, ScoringResult, score_candidates
 from app.errors import AppError
@@ -338,6 +339,7 @@ def _build_response(
             remaining_minutes=_remaining_minutes(candidate, visit_at),
             environment_type=candidate.environment_type,
             recommendation_reason=_recommendation_reason(ranked_item),
+            explanations=list(build_explanations(evidence)),
             warnings=list(ranked_item.warnings)
             + (
                 ["장소 상세정보 일부를 확인하지 못했습니다."]
