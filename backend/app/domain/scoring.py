@@ -59,6 +59,12 @@ class RankedCandidate:
     weights_used: Mapping[str, float]
     is_unverified: bool
     warnings: tuple[str, ...]
+    # 정규화 점수(feature_scores)만으로는 "직선거리 약 400m" 같은 구체적인
+    # 문장을 만들 수 없어, Explainability Layer(D-06)가 쓸 원본 값을 보존한다.
+    distance_km: float
+    remaining_minutes: float | None
+    weather_condition: WeatherCondition | None
+    environment_type: str
 
 
 @dataclass(frozen=True)
@@ -156,7 +162,14 @@ def score_candidates(
 
     excluded_ids: list[str] = []
     scored: list[
-        tuple[ScoringCandidate, float, dict[str, float | None], dict[str, float], bool]
+        tuple[
+            ScoringCandidate,
+            float,
+            dict[str, float | None],
+            dict[str, float],
+            bool,
+            float | None,
+        ]
     ] = []
 
     for candidate in candidates:
@@ -203,7 +216,9 @@ def score_candidates(
         )
 
         is_unverified = candidate.operating_hours is None
-        scored.append((candidate, score, feature_scores, weights_used, is_unverified))
+        scored.append(
+            (candidate, score, feature_scores, weights_used, is_unverified, remaining_minutes)
+        )
 
     scored.sort(key=lambda entry: (-entry[1], entry[0].distance_km, entry[0].place_id))
 
@@ -218,10 +233,19 @@ def score_candidates(
             weights_used=weights_used,
             is_unverified=is_unverified,
             warnings=(_UNVERIFIED_WARNING,) if is_unverified else (),
+            distance_km=candidate.distance_km,
+            remaining_minutes=remaining_minutes,
+            weather_condition=weather_condition,
+            environment_type=candidate.environment_type,
         )
-        for index, (candidate, score, feature_scores, weights_used, is_unverified) in enumerate(
-            scored
-        )
+        for index, (
+            candidate,
+            score,
+            feature_scores,
+            weights_used,
+            is_unverified,
+            remaining_minutes,
+        ) in enumerate(scored)
     )
 
     return ScoringResult(
