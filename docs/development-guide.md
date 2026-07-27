@@ -63,11 +63,17 @@ backend\.venv\Scripts\Activate.ps1
 | `RECOMMENDATION_RESULT_LIMIT` | `5` | Scoring 후 반환할 최대 추천 수 |
 | `RECOMMENDATION_CANDIDATE_LIMIT` | `10` | 거리순으로 상세조회·평가할 후보 수 |
 | `EXTERNAL_API_RETRY_COUNT` | `2` | 설정은 있으나 재시도 로직 미구현 |
-| `FAKE_WEATHER_CONDITION` | `neutral` | Fake Weather 결과 |
+| `FAKE_WEATHER_CONDITION` | `neutral` | Fake Weather 결과 (`good`/`neutral`/`bad`) |
 | `FAKE_CURRENT_DATETIME` | 고정 ISO 시각 | 예약값; 현재 추천 로직에서 미사용 |
 
 `PROVIDER_MODE=real`이면 개별 값이 비어 있는 모든 Provider가 Real 모드가 됩니다.
 특정 Provider만 Fake로 유지하려면 예를 들어 `PLACE_PROVIDER=fake`를 지정합니다.
+
+`PROVIDER_MODE`와 `*_PROVIDER`에는 `fake`와 `real`만 허용됩니다. 오타나 옛 이름을
+넣으면 앱이 기동하지 않고 어떤 변수가 잘못됐는지 즉시 보고합니다. Real 모드에
+필요한 키가 비어 있는 경우에도 첫 요청이 아니라 부팅 단계에서 실패하며, 누락된
+키를 한 번에 모아서 알려줍니다(`app/providers/factory.py`의
+`validate_provider_config()`가 `app/main.py` lifespan에서 실행됩니다).
 
 API 키는 채팅, 로그, 테스트 traceback, 커밋에 포함하지 않습니다. 새 키 환경변수를
 도입할 때는 `app/config.py`, `.env.example`, 실제 로컬 `.env`의 변수명을 함께
