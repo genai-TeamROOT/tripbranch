@@ -54,6 +54,7 @@ class RecommendationItem(BaseModel):
     remaining_minutes: int | None
     environment_type: str
     recommendation_reason: str
+    explanations: list[str]
     warnings: list[str]
     score: float
     feature_scores: dict[str, float | None]

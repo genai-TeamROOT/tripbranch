@@ -125,13 +125,30 @@ flowchart LR
   날씨 유무·결정성 E2E 테스트로 검증됨
 - 미구현: 혼잡도·근거 신뢰도 Feature, 실이동시간 거리
 
+### Explainability Layer
+
+- 담당: `RecommendationEvidence`의 Feature별 기여도를 Rule 기반·결정적으로
+  한국어 문장으로 변환 (LLM 미사용)
+- 하지 않음: 추천 순위 재결정, 애매하거나(0.4~0.7) 낮은(<0.4) Feature 점수에
+  대한 부정적 근거 문장 생성, 자연어 다듬기/요약(Response Generator 영역)
+- 상태: `Accepted`(D-029). `backend/app/domain/explanation.py::
+  build_explanations()`가 Feature 점수 0.7 이상인 것만 기여도 순으로
+  `RecommendationItem.explanations`에 노출. A(Agent Runtime) 담당과 API
+  Contract 협의 반영 완료 — 상세 설계는
+  [추천 Explainability Layer 설계](./design/recommendation-explainability.md)
+- 추가(D-030): 날씨 결측·전체 Feature 임계값 미달로 `explanations`가 조용히
+  비거나 줄어드는 두 케이스를 `warnings` 문구로 보완. 운영시간 결측만큼
+  심각한 불확실성은 아니라고 판단해 `unverified_recommendations` 분리는
+  적용하지 않음. 상세는 `docs/decision-log.md`의 D-030 참고
+
 ### Response Generator
 
 - 담당: 추천 결과와 근거·경고를 사용자에게 읽기 쉬운 자연어로 변환
 - 하지 않음: 추천 순위 재결정 또는 검증되지 않은 사실 생성
 - 상태: `TBD`; 현재는 정적인 `recommendation_reason` 문자열 사용. Feature별
   숫자 근거(`score`/`feature_scores`/`weights_used`)는 API 응답에 그대로
-  노출되고 있으나(D-028), 이를 자연어 문장으로 바꾸는 로직은 아직 없음
+  노출되고 있고(D-028), Rule 기반 문장(`explanations`)도 추가됐으나(D-029),
+  LLM으로 이를 자연스럽게 다듬거나 요약하는 로직은 아직 없음
 
 ### Persistence / Supabase
 

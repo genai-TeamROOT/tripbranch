@@ -25,6 +25,7 @@ export interface RecommendationItem {
   remaining_minutes: number | null;
   environment_type: EnvironmentType;
   recommendation_reason: string;
+  explanations: string[];
   warnings: string[];
   score: number;
   feature_scores: Record<string, number | null>;

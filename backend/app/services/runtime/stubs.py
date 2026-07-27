@@ -114,6 +114,7 @@ class FakeRecommendationProvider:
                 remaining_minutes=120,
                 environment_type="indoor",
                 recommendation_reason="Agent Runtime 골격 검증용 고정 추천입니다.",
+                explanations=[],
                 warnings=[],
                 score=0.5,
                 feature_scores={},

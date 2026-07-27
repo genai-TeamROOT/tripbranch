@@ -59,6 +59,7 @@ type RecommendationItem = {
   remaining_minutes: number | null;
   environment_type: "indoor" | "outdoor" | "mixed" | "unknown";
   recommendation_reason: string;
+  explanations: string[]; // Rule 기반 Feature별 설명 문장(0~3개), 기여도 큰 순
   warnings: string[];
   score: number;
   feature_scores: Record<string, number | null>; // Feature별 원점수(weather/remaining_operating_time/distance)
@@ -81,8 +82,26 @@ wall-clock 시간입니다. HTTP 전송시간과 Frontend 렌더링 시간은 �
 `RecommendationEvidence`를 그대로 반영한 값입니다(D-028). `feature_scores`는
 `contributions`의 `{feature: score}`를, `weights_used`는 `{feature: weight}`를
 평탄화한 값이며, 날씨나 남은 운영시간이 결측이었던 Feature는 `weights_used`
-키 자체에서 빠집니다. 자연어 추천 이유(`recommendation_reason`)는 아직 고정
-템플릿 문자열이며 Feature 근거를 문장으로 변환하는 로직은 별도 범위입니다.
+키 자체에서 빠집니다. 자연어 추천 이유(`recommendation_reason`)는 여전히 고정
+템플릿 문자열입니다.
+
+`explanations`는 `backend/app/domain/explanation.py::build_explanations()`가
+`RecommendationEvidence.contributions`를 Rule 기반으로 문장화한 값입니다
+(D-029, A 담당 Agent Runtime과 API Contract 협의 반영 완료 — 상세는
+[추천 Explainability Layer 설계](./design/recommendation-explainability.md)
+참고). LLM을 호출하지 않으며, Feature 점수가 0.7 이상인 것만 기여도
+(score × weight) 큰 순서로 포함합니다. 결측이거나 애매한 점수(<0.7)인
+Feature는 생략되므로 배열이 빈 값(`[]`)일 수 있습니다.
+
+`explanations`가 조용히 비거나 줄어드는 두 상황은 `warnings`에 문구를
+추가해 안내합니다(`backend/app/services/recommendation_pipeline.py::
+_extra_warnings()`). (1) 날씨 결측으로 `feature_scores.weather`가
+`null`이면 "현재 날씨 정보를 확인하지 못해 이 조건은 반영되지 않았어요.",
+(2) 점수는 있지만 모든 Feature가 0.7 미만이라 `explanations`가 완전히
+비면 "이 장소는 특별히 강조할 만한 조건은 없지만, 조건에 맞아
+추천했어요."가 추가됩니다. 운영시간 결측처럼 `unverified_recommendations`
+로 분리되지는 않고, 기존 `recommendations`/`unverified_recommendations`
+분류는 그대로 유지됩니다.
 
 ### 공통 오류
 
@@ -306,6 +325,14 @@ type RecommendationResult = {
 현재 REST `/api/recommendations`의 `RecommendationItem`(§2)은 이미
 `score`/`feature_scores`/`weights_used`를 노출하고 있어(D-028), 통합 Chat API
 설계 시 이를 그대로 재사용할 수 있는지 우선 검토합니다.
+
+D-029(Explainability Layer v1)에서 Rule 기반 `explanations: string[]`도
+추가됐습니다. A(Agent Runtime) 담당과 협의한 결과, `reason: string`(단일
+문장) 자리에 합치지 않고 **별도 필드로 유지**하기로 확정했습니다 — 상세
+근거는 [추천 Explainability Layer 설계](./design/recommendation-explainability.md)
+§3.1 참고. `RecommendationResult`에도 이 통합 Chat API 설계 시 `explanations:
+string[]` 필드가 별도로 추가될 예정이며, Rule 기반 문장은 있는 그대로
+노출하고 포맷팅만 Runtime 재량으로 둡니다(§3.2).
 
 ## 5. Provider 계약
 
