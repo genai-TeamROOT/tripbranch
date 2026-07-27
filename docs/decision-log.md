@@ -367,6 +367,31 @@
 - 이유: Explainability Layer 협의를 준비하며 발견한 실사용자 관점의 빈틈으로,
   A의 결정이 아니라 우리 쪽 구현 책임 영역이라고 판단해 협의 전에 먼저 해결
 
+### D-031 — Explanation 문장 구체화: 고정 텍스트 → 계산값 기반 사실 문장
+
+- 상태: `Implemented`
+- 결정: D-029의 Feature별 고정 문장(예: "지금 날씨 조건에 잘 맞는 장소예요.")을
+  실제 계산값이 들어간 문장으로 교체한다(`package_D/[D-06]explainability_detail.txt`
+  구체화 요청). 거리는 1km 미만 m(10m 반올림)/이상 km(소수 첫째자리)로
+  "직선거리"를 명시해 실제 이동거리로 오해되지 않게 하고, 남은 운영시간은
+  "N시간 M분" 형태로, 날씨·환경은 `(weather_condition, environment_type)`
+  9개 조합별 문장으로 조립한다. 문장은 "여유롭게 방문할 수 있어요" 같은
+  평가·어투 없이 사실만 전달하도록 의도적으로 짧게 유지한다 — 평가·어투를
+  더해 자연스러운 문단으로 잇는 것은 Response Generator(LLM, A 담당)의
+  몫이라고 판단했다(둘 다 넣으면 최종 응답에서 비슷한 평가 표현이 중복될
+  위험이 있음). 정렬 규칙(기여도 내림차순)과 임계값(0.7)·결측 시 생략 로직은
+  D-029에서 그대로 유지.
+- 구현: `backend/app/domain/scoring.py::RankedCandidate`에 원본 계산값
+  (`distance_km`/`remaining_minutes`/`weather_condition`/`environment_type`)
+  필드 추가, `backend/app/domain/evidence.py::RecommendationEvidence`로
+  그대로 전달, `backend/app/domain/explanation.py`의 문장 생성 로직을 고정
+  매핑에서 계산 함수로 교체. `backend/tests/test_explanation.py`에 거리
+  단위 경계(3개)·운영시간 경계(4개)·날씨-환경 조합 매트릭스(2개) 테스트 추가
+- 범위 제외: 여러 `explanations` 문장을 하나의 자연스러운 문단으로 잇는 것
+  (A 담당 Response Generator 영역)
+- 이유: task.txt 예시가 "Rule 계층은 사실만, 평가·어투는 LLM 몫"이라는
+  경계를 명확히 보여주고 있어, 그 경계에 맞춰 문장 톤을 다시 다듬음
+
 ## 현재 논의가 필요한 항목
 
 | 항목 | 선택지/질문 | 상태 |
@@ -375,7 +400,7 @@
 | Chat 계약 naming | Backend Python/JSON `snake_case` | `Accepted` |
 | Backend 상태 저장 | Supabase 테이블과 캐시 역할 | `TBD` |
 | Frontend 저장 | `sessionStorage` 유지 또는 `localStorage` 전환 | `TBD` |
-| Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); 응답 Evidence 노출·E2E 통합 `Implemented`(D-028); Explainability Layer v1 `Accepted`(D-029, A 협의 반영 완료); warning 커버리지 보완 `Implemented`(D-030) | 구현 완료 |
+| Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); 응답 Evidence 노출·E2E 통합 `Implemented`(D-028); Explainability Layer v1 `Accepted`(D-029, A 협의 반영 완료); warning 커버리지 보완 `Implemented`(D-030); Explanation 문장 구체화 `Implemented`(D-031) | 구현 완료 |
 | 혼잡도 fallback | 장소 근접치, 구 단위, Feature 제외 | 현재 논의 중 |
 | 운영시간 파싱 | 기본 시간·월별·주간 휴무 구현, 공휴일·회차 예외 확대 | `부분 구현` |
 | 이동시간 | 지도 Provider 및 교통수단별 계산 | `TBD` |
@@ -409,3 +434,4 @@
 | 2026-07-27 | D-029 Recommendation Explainability Layer v1(Rule 기반) 구현 반영 (초안, A 담당과 API Contract 협의 전) |
 | 2026-07-27 | D-030 날씨 결측·임계값 미달로 explanations가 비는 두 케이스에 warning 커버리지 보완 |
 | 2026-07-27 | D-029 A 담당과 API Contract 협의 반영 완료, Explanation Rule 정의 문서(`docs/design/recommendation-explainability.md`) 추가 |
+| 2026-07-27 | D-031 Explanation 문장을 고정 텍스트에서 거리/남은 운영시간/날씨·환경 계산값 기반 사실 문장으로 구체화 |
