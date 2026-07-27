@@ -1,0 +1,181 @@
+"""Agent Runtime — A가 B/C/D 호출 순서를 조정하는 상위 오케스트레이션 계층.
+
+역할: 사용자 발화 하나를 받아 LLMOutput 생성 → B(State) 병합 → C(Tool)/D(Recommendation)
+호출(부가 흐름에서만) → B(State)에 노출 결과 기록까지 전체 흐름을 조정한다. C/D는 서로
+직접 부르지 않고 항상 A(이 모듈)를 거쳐서만 결과를 주고받는다.
+입력: AgentRequest(user_input + session_id + device_location).
+출력: AgentResponse(LLMOutput + 병합된 State + 추천 결과).
+호출 시점: 아직 전용 HTTP 라우트는 없다 — C/D 실제 계약이 확정된 뒤 라우터를 연결한다.
+TODO: C(app.tool_intelligence)/D(추천 모듈)의 실제 계약이 확정되면 run_agent()의 provider
+조립 부분만 real/fake 분기로 바꾼다. run_agent_flow()는 Protocol에만 의존하므로 그대로 둔다.
+"""
+
+from __future__ import annotations
+
+import logging
+
+import httpx
+
+from app.providers.protocols import LLMProvider, WeatherProvider
+from app.schemas import AgentRequest, AgentResponse, Intent, InterpretRequest, OutputStatus
+from app.services.interpret.orchestrator import build_interpretation
+from app.services.interpret.session_orchestrator import ensure_current_context
+from app.services.interpret.state_transform import to_user_conditions, transform
+from app.services.runtime.context_transform import to_agent_context_request
+from app.services.runtime.protocols import RecommendationProvider, ToolProvider
+from app.services.runtime.stubs import FakeRecommendationProvider, FakeToolProvider
+from app.state.service import (
+    RecommendedPlace,
+    RecordRecommendationRequest,
+    apply,
+    record_recommendation,
+)
+from app.state.session import new_trace_id
+from app.state.store import StateStore
+
+logger = logging.getLogger(__name__)
+
+# C 단계에서 Recommendation으로 못 넘어가는 status. needs_clarification은 조건 재질문(사용자
+# 응답 필요), unsupported/unavailable은 그 자체로 안내만 하고 끝나는 상태다(계약 문서 §5.4).
+_TOOL_TERMINAL_STATUSES = frozenset({"needs_clarification", "unsupported", "unavailable"})
+
+
+async def run_agent_flow(
+    request: AgentRequest,
+    *,
+    llm: LLMProvider,
+    weather_provider: WeatherProvider,
+    tool_provider: ToolProvider,
+    recommendation_provider: RecommendationProvider,
+    store: StateStore | None = None,
+) -> AgentResponse:
+    """Provider를 인자로 받는 테스트 가능한 본체.
+
+    호출 순서(A가 전체를 조정, B/C/D는 각자 내부 판단만 담당):
+      A→B(세션 컨텍스트) → A(Intent+조건 추출) → A→B(조건 병합) →
+      [A→C(Tool) → A→D(Recommendation) → A→B(결과 기록)] → A(최종 응답)
+    대괄호 구간은 status가 complete이고 intent가 RECOMMEND/MODIFY일 때만 실행된다.
+    이 구간 안에서도 C 응답 status가 needs_clarification/unsupported/unavailable이면
+    D를 건너뛴다 — LLM 단계의 needs_clarification과는 별개 레이어다(계약 문서 §5.4).
+    """
+
+    # 1) A → B: GPS·날씨 세션 컨텍스트 최신화
+    session_context = await ensure_current_context(
+        request.session_id, request.device_location, weather_provider, store=store
+    )
+
+    # 2) A: LLMOutput 생성 (Intent 분류 + Intent별 조건 추출). B가 준 현재 조건(순수 문자열)을
+    #    A 쪽 enum 타입으로 변환해서 넘긴다 — MODIFY 추출이 이 타입을 요구한다.
+    current_conditions = (
+        to_user_conditions(session_context.user_conditions)
+        if session_context.has_recommendation
+        else None
+    )
+    interpret_request = InterpretRequest(
+        user_input=request.user_input,
+        has_previous_recommendation=session_context.has_recommendation,
+        shown_place_count=len(session_context.shown_place_ids),
+        current_conditions=current_conditions,
+    )
+    llm_output = await build_interpretation(interpret_request, llm)
+
+    # 3) A → B: 조건 병합. confirmed=False(= status가 complete가 아님)면 B가 State를
+    #    바꾸지 않고 현재 상태만 돌려주도록 이미 구현되어 있다(계약 2.6절) — 따로 걸러서
+    #    apply()를 건너뛸 필요가 없다. 그래야 needs_clarification 응답에도 병합된(=변화
+    #    없는) state가 항상 채워진다.
+    apply_request = transform(llm_output, session_context, request.user_input)
+    state_response = apply(apply_request, store=store)
+
+    # 4) 확인이 더 필요하거나(needs_clarification), RECOMMEND/MODIFY가 아니면(INFO/COMPARE/
+    #    GENERAL/OUT_OF_SCOPE) 여기서 끝난다 — Tool/Recommendation은 부가 흐름이라 스킵한다.
+    if llm_output.status is not OutputStatus.COMPLETE or llm_output.intent not in (
+        Intent.RECOMMEND,
+        Intent.MODIFY,
+    ):
+        return AgentResponse(llm_output=llm_output, state=state_response, recommendations=None)
+
+    # 5) A → C: Tool 결과 확보 (Protocol을 통해서만 — C의 구체 클래스는 여기서 모른다).
+    #    B가 준 조건(순수 문자열)을 A의 enum 타입으로 바꾼 뒤 C 계약 형태로 변환한다.
+    #    conditions.weather(5단계 rain/snow/hot/cold/good)만 넘기고, api_context.api_weather
+    #    (3단계 good/neutral/bad, Provider 정규화 값)는 여기 관여하지 않는다 — to_agent_
+    #    context_request()가 UserConditions만 받는 구조라 애초에 섞일 수 없다(계약 §5.2).
+    agent_conditions = to_user_conditions(state_response.user_conditions)
+    context_request = to_agent_context_request(
+        request_id=new_trace_id(), conditions=agent_conditions
+    )
+    tool_response = await tool_provider.fetch_context(context_request)
+
+    # 5-1) C 단계 자체의 needs_clarification/unsupported/unavailable — LLM 단계
+    #      needs_clarification(4번)과 같은 방식으로 여기서 바로 응답을 끝낸다.
+    if tool_response.status in _TOOL_TERMINAL_STATUSES:
+        if tool_response.status == "needs_clarification" and tool_response.error is not None:
+            # 계약(§5.5)상 needs_clarification이면 error는 항상 null이어야 한다. 위반이면
+            # 흐름을 막지 않고 로그만 남긴다 — A가 사용자에게 재질문하는 데는 지장이 없다.
+            logger.warning(
+                "C 응답이 needs_clarification인데 error도 채워짐(계약 위반 의심): "
+                "request_id=%s clarification=%s error=%s",
+                tool_response.request_id,
+                tool_response.clarification,
+                tool_response.error,
+            )
+        return AgentResponse(llm_output=llm_output, state=state_response, recommendations=None)
+
+    # success/partial/no_data는 Recommendation 단계로 진행한다(경고가 있어도 가능한
+    # 데이터로 계속 — 계약 문서 §5.4). 위에서 세 종료 상태를 걸렀으므로 context는 항상 있다.
+    # AgentContextResponse.warnings(최상위)만 지금은 보고 넘어간다.
+    # TODO(자연어 응답 생성 단계): RecommendationContext의 항목별 ContextValue.warnings
+    # (예: weather.warnings)까지 합쳐서 사용자에게 보여줄지 다시 검토한다.
+    tool_context = tool_response.context
+
+    # 6) A → D: 추천 결과 확보 (Protocol을 통해서만 — D의 구체 클래스는 여기서 모른다)
+    recommendations = await recommendation_provider.recommend(
+        agent_conditions,
+        tool_context,
+        state_response.excluded_place_ids,
+    )
+
+    # 7) A → B: 실제로 화면에 노출된 결과만 기록한다. recommendations와
+    #    unverified_recommendations 둘 다 프론트에 렌더링되므로(운영시간 미검증 섹션으로
+    #    구분되어 보일 뿐 노출 자체는 됨) 함께 기록한다 — 계산만 하고 안 보여준 건 넣지
+    #    않아야 "다른 곳 보여줘"의 제외 목록이 정확해진다.
+    shown = [*recommendations.recommendations, *recommendations.unverified_recommendations]
+    if shown:
+        record_recommendation(
+            RecordRecommendationRequest(
+                session_id=state_response.session_id,
+                run_id=state_response.run_id,
+                recommended=[
+                    RecommendedPlace(place_id=item.place_id, rank=index + 1)
+                    for index, item in enumerate(shown)
+                ],
+            ),
+            store=store,
+        )
+
+    # 8) A: 최종 응답 조립
+    return AgentResponse(
+        llm_output=llm_output, state=state_response, recommendations=recommendations
+    )
+
+
+async def run_agent(request: AgentRequest) -> AgentResponse:
+    """호출자가 쓰는 Fake/Real 공통 진입점 — factory로 provider를 조립한다.
+
+    ToolProvider/RecommendationProvider는 C/D 실제 계약이 확정되기 전까지 항상 Fake로
+    고정한다. app.tool_intelligence나 D의 구체 클래스는 이 함수를 포함해 이 모듈 어디서도
+    import하지 않는다(run_agent_flow()가 Protocol에만 의존하도록 하기 위함).
+    """
+
+    from app.providers.factory import get_llm_provider, get_weather_provider
+
+    async with httpx.AsyncClient() as client:
+        return await run_agent_flow(
+            request,
+            llm=get_llm_provider(),
+            weather_provider=get_weather_provider(client),
+            tool_provider=FakeToolProvider(),
+            recommendation_provider=FakeRecommendationProvider(),
+        )
+
+
+__all__ = ["run_agent", "run_agent_flow"]
