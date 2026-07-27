@@ -417,6 +417,13 @@ class FakeWeatherProvider:
 class FakePlaceProvider:
     """장소 검색 결과를 고정 후보 목록으로 대체하는 fake provider."""
 
+    _CATEGORY_ALIASES = {
+        "museum": frozenset({"museum"}),
+        "cultural_facility": frozenset({"museum"}),
+        "cafe": frozenset({"cafe"}),
+        "restaurant": frozenset({"cafe"}),
+    }
+
     async def search_places(
         self,
         latitude: float,
@@ -462,6 +469,23 @@ class FakePlaceProvider:
                 for candidate in candidates
                 if candidate.content_type_id == category_filter.content_type_id
             ]
+        elif preferred_categories:
+            # 명시적인 TourAPI 분류 필터가 없을 때만 레거시 선호 카테고리를 적용한다.
+            normalized_categories = {
+                category.strip().casefold()
+                for category in preferred_categories
+                if category.strip()
+            }
+            accepted_categories = {
+                candidate_category
+                for category in normalized_categories
+                for candidate_category in self._CATEGORY_ALIASES.get(category, ())
+            }
+            candidates = [
+                candidate
+                for candidate in candidates
+                if candidate.category in accepted_categories
+            ]
         selected = candidates[: max(1, min(limit, 100))]
         return provider_result(
             selected,
@@ -493,7 +517,13 @@ class FakePlaceProvider:
         candidates = (await self.search_places(37.5796, 126.9770, [], 1.0)).data
         candidate = next((item for item in candidates if item.place_id == content_id), None)
         operating_hours = candidate.operating_hours if candidate else None
-        rest_date = "매주 월요일" if candidate else None
+        rest_date = (
+            "매주 월요일"
+            if candidate and candidate.category == "museum"
+            else "연중무휴"
+            if candidate
+            else None
+        )
         return provider_result(
             PlaceDetails(
                 content_id=content_id,

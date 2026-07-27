@@ -83,6 +83,59 @@ async def test_fake_place_provider_uses_common_candidate() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("preferred_categories", "expected_ids"),
+    [
+        ([], ["fake-museum-1", "fake-cafe-1"]),
+        (["museum"], ["fake-museum-1"]),
+        (["  CAFE  "], ["fake-cafe-1"]),
+        (["museum", "cafe", "museum"], ["fake-museum-1", "fake-cafe-1"]),
+        (["cultural_facility"], ["fake-museum-1"]),
+        (["restaurant"], ["fake-cafe-1"]),
+        (["unsupported"], []),
+    ],
+)
+async def test_fake_place_provider_filters_preferred_categories(
+    preferred_categories: list[str],
+    expected_ids: list[str],
+) -> None:
+    result = await FakePlaceProvider().search_places(
+        latitude=37.5796,
+        longitude=126.9770,
+        preferred_categories=preferred_categories,
+        search_radius_km=1.0,
+    )
+
+    assert [candidate.place_id for candidate in result.data] == expected_ids
+    expected_status = ProviderStatus.SUCCESS if expected_ids else ProviderStatus.NO_DATA
+    assert result.metadata.status is expected_status
+
+
+@pytest.mark.asyncio
+async def test_fake_place_provider_category_filter_takes_precedence() -> None:
+    result = await FakePlaceProvider().search_places(
+        latitude=37.5796,
+        longitude=126.9770,
+        preferred_categories=["museum"],
+        search_radius_km=1.0,
+        category_filter=PlaceCategoryFilter(content_type_id="39"),
+    )
+
+    assert [candidate.place_id for candidate in result.data] == ["fake-cafe-1"]
+
+
+@pytest.mark.asyncio
+async def test_fake_place_provider_uses_distinct_rest_dates() -> None:
+    provider = FakePlaceProvider()
+
+    museum = await provider.get_details("fake-museum-1", "14")
+    cafe = await provider.get_details("fake-cafe-1", "39")
+
+    assert museum.data.rest_date == "매주 월요일"
+    assert cafe.data.rest_date == "연중무휴"
+
+
+@pytest.mark.asyncio
 async def test_fake_concentration_provider_uses_common_result() -> None:
     result = await FakeConcentrationProvider().get_forecast("11", "11110", "경복궁")
 
