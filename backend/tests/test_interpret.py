@@ -20,7 +20,7 @@ def test_interpret_tc01_recommend() -> None:
     )
 
     assert response.status_code == 200
-    body = response.json()
+    body = response.json()["output"]
     assert body["intent"] == "RECOMMEND"
     assert body["status"] == "complete"
     assert body["recommend"]["conditions"]["search_center"] == "경복궁"
@@ -34,7 +34,7 @@ def test_interpret_tc02_weather_recommend() -> None:
         "/api/interpret", json={"user_input": "비 오는데 갈 만한 곳 추천"}
     )
 
-    conditions = response.json()["recommend"]["conditions"]
+    conditions = response.json()["output"]["recommend"]["conditions"]
     assert conditions["weather"] == "rain"
     assert conditions["weather_intent"] == "AVOID"
     assert conditions["environment"] == "indoor"
@@ -53,7 +53,7 @@ def test_interpret_tc07_modify_reject_all_requires_history() -> None:
         },
     )
 
-    body = response.json()
+    body = response.json()["output"]
     assert body["intent"] == "MODIFY"
     assert body["modify"]["modify_type"] == "REJECT_ALL"
 
@@ -67,7 +67,7 @@ def test_interpret_tc07_without_history_falls_back_to_recommend() -> None:
         json={"user_input": "다른 곳 보여줘", "has_previous_recommendation": False},
     )
 
-    assert response.json()["intent"] == "RECOMMEND"
+    assert response.json()["output"]["intent"] == "RECOMMEND"
 
 
 def test_interpret_tc08_modify_change_condition() -> None:
@@ -86,7 +86,7 @@ def test_interpret_tc08_modify_change_condition() -> None:
         },
     )
 
-    body = response.json()
+    body = response.json()["output"]
     assert body["modify"]["modify_type"] == "CHANGE_CONDITION"
     assert body["modify"]["condition_changes"]["budget"] == "free"
     assert body["modify"]["changed_fields"] == ["budget"]
@@ -105,7 +105,7 @@ def test_interpret_modify_without_current_conditions_needs_clarification() -> No
         },
     )
 
-    body = response.json()
+    body = response.json()["output"]
     assert body["intent"] == "MODIFY"
     assert body["status"] == "needs_clarification"
 
@@ -117,7 +117,7 @@ def test_interpret_tc11_general() -> None:
         "/api/interpret", json={"user_input": "경복궁은 언제 지어졌어?"}
     )
 
-    body = response.json()
+    body = response.json()["output"]
     assert body["intent"] == "GENERAL"
     assert body["general"]["topic"] == "place_knowledge"
 
@@ -127,7 +127,7 @@ def test_interpret_tc13_out_of_scope() -> None:
 
     response = client.post("/api/interpret", json={"user_input": "주식 추천해줘"})
 
-    body = response.json()
+    body = response.json()["output"]
     assert body["intent"] == "OUT_OF_SCOPE"
     assert body["out_of_scope"]["category"] == "unrelated"
 
