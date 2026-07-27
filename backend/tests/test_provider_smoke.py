@@ -7,6 +7,9 @@ import os
 import httpx
 import pytest
 
+from app.agent_context.schemas import AgentContextRequest
+from app.agent_context.schemas import UserConditions as AgentUserConditions
+from app.agent_context.service import ContextService, ContextTools
 from app.config import Settings
 from app.providers.concentration import RealConcentrationProvider
 from app.providers.gemini import RealGeminiProvider
@@ -14,7 +17,9 @@ from app.providers.geocoding import RealGeocodingProvider
 from app.providers.holiday import RealHolidayProvider
 from app.providers.real_place import RealPlaceProvider
 from app.providers.weather import RealWeatherProvider
-from app.schemas import Intent, UserConditions
+from app.schemas import Intent, PlaceType, UserConditions
+from app.tools.holiday import GetHolidaysTool
+from app.tools.nearby_place_details import NearbyPlaceDetailsTool
 from app.tools.resolve_location import (
     ResolutionMethod,
     ResolveLocationQuery,
@@ -119,6 +124,75 @@ async def test_tour_api_place_real_smoke() -> None:
     print(f"TourAPI Places: count={len(result)}, samples=[{sample_names}]")
 
 
+async def test_context_service_real_smoke() -> None:
+    """실제 Provider 결과가 공통 AgentContextResponse로 조립되는지 확인한다."""
+
+    async with httpx.AsyncClient() as client:
+        geocoding = RealGeocodingProvider(
+            api_key_id=_required_value(
+                "NAVER_MAP_CLIENT_ID", settings.naver_map_client_id
+            ),
+            api_key=_required_value(
+                "NAVER_MAP_CLIENT_SECRET", settings.naver_map_client_secret
+            ),
+            client=client,
+        )
+        weather = RealWeatherProvider(
+            api_key=_required_value("WEATHER_API_KEY", settings.weather_api_key),
+            client=client,
+        )
+        places = RealPlaceProvider(
+            api_key=_tour_api_service_key(),
+            client=client,
+        )
+        holidays = RealHolidayProvider(
+            api_key=_tour_api_service_key(),
+            client=client,
+        )
+        service = ContextService(
+            ContextTools(
+                location=ResolveLocationTool(geocoding),
+                weather=GetWeatherForecastTool(weather),
+                places=NearbyPlaceDetailsTool(places, places),
+                holidays=GetHolidaysTool(holidays),
+            ),
+            candidate_limit=3,
+        )
+        response = await service.fetch_context(
+            AgentContextRequest(
+                request_id="real-context-smoke",
+                intent="RECOMMEND",
+                conditions=AgentUserConditions(
+                    search_center="경복궁",
+                    place_types=["restaurant"],
+                    place_tags=["카페"],
+                ),
+            )
+        )
+
+    assert response.status in {"success", "partial"}
+    context = response.context
+    assert context is not None
+    location_context = context.location
+    assert location_context is not None
+    assert location_context.data is not None
+    places_context = context.places
+    assert places_context is not None
+    place_data = places_context.data
+    assert place_data
+    assert response.metadata.provider_metadata
+    assert all(
+        metadata.retrieved_at.tzinfo is not None
+        for metadata in response.metadata.provider_metadata
+    )
+    print(
+        "ContextService: "
+        f"status={response.status}, "
+        f"places={len(place_data)}, "
+        f"sources={sorted({item.source for item in response.metadata.provider_metadata})}"
+    )
+
+
 async def test_tour_api_keyword_and_details_real_smoke() -> None:
     async with httpx.AsyncClient() as client:
         provider = RealPlaceProvider(
@@ -184,7 +258,10 @@ async def test_gemini_modify_reject_all_vs_change_condition_real_smoke() -> None
         api_key=_llm_api_key(),
         model_name=settings.llm_model_name,
     )
-    current = UserConditions(search_center="경복궁", place_types=["restaurant"])
+    current = UserConditions(
+        search_center="경복궁",
+        place_types=[PlaceType.RESTAURANT],
+    )
 
     reject_all = (
         await provider.extract_modify_conditions("다른 곳 보여줘", current)
@@ -193,9 +270,15 @@ async def test_gemini_modify_reject_all_vs_change_condition_real_smoke() -> None
         await provider.extract_modify_conditions("무료인 곳으로", current)
     ).data
 
-    assert reject_all.modify.modify_type.value == "REJECT_ALL"
-    assert change_condition.modify.modify_type.value == "CHANGE_CONDITION"
-    assert change_condition.modify.condition_changes.budget == "free"
+    reject_modify = reject_all.modify
+    change_modify = change_condition.modify
+    assert reject_modify is not None
+    assert change_modify is not None
+    assert reject_modify.modify_type.value == "REJECT_ALL"
+    assert change_modify.modify_type.value == "CHANGE_CONDITION"
+    condition_changes = change_modify.condition_changes
+    assert condition_changes is not None
+    assert condition_changes.budget == "free"
 
 
 async def test_kasi_holiday_real_smoke() -> None:

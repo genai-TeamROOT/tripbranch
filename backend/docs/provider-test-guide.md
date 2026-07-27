@@ -213,6 +213,20 @@ Smoke Test는 실제 외부 API를 호출하고 최소 응답 계약을 검증�
 RUN_REAL_PROVIDER_TESTS=true python -m pytest -m smoke -v -s
 ```
 
+### C ContextService 전체 조립
+
+```bash
+RUN_REAL_PROVIDER_TESTS=true python -m pytest \
+  tests/test_provider_smoke.py::test_context_service_real_smoke \
+  -v -s
+```
+
+A의 경복궁·카페 조건 한 건으로 Geocoding, Weather, Place, Holiday Real
+Provider를 호출하고 C의 공통 `AgentContextResponse`까지 조립되는지 검증한다.
+외부 호출량을 제한하기 위해 장소 후보는 최대 3개만 상세조회하며, 결과에는 최상위
+상태, 장소 수, metadata의 Provider source 목록을 출력한다. Concentration은
+A–C v0 초기 Context 범위에 포함되지 않아 이 테스트에서 호출하지 않는다.
+
 ### Naver Geocoding
 
 ```bash
