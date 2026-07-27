@@ -90,6 +90,7 @@ _RECOMMEND_LOCATION_RULES = """\
   (GPS로 보충되는 값이므로 언급 없으면 비워둔다)
 - search_center: 사용자가 "~~ 근처", "~~ 주변", "~~ 가려는데"로 목적지를 밝히면 그 장소.
   목적지 언급이 없으면 null
+- 값이 빈 문자열이거나 공백만 있으면 null로 반환하세요("" 또는 "   " 금지, 값이 없으면 null)
 """
 
 _RECOMMEND_PLACE_TAG_RULES = """\
