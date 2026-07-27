@@ -23,7 +23,7 @@ from app.services.interpret.session_orchestrator import ensure_current_context
 from app.services.interpret.state_transform import to_user_conditions, transform
 from app.services.runtime.context_transform import to_agent_context_request
 from app.services.runtime.protocols import RecommendationProvider, ToolProvider
-from app.services.runtime.stubs import FakeRecommendationProvider, FakeToolProvider
+from app.services.runtime.stubs import FakeRecommendationProvider
 from app.state.service import (
     RecommendedPlace,
     RecordRecommendationRequest,
@@ -126,6 +126,19 @@ async def run_agent_flow(
     # TODO(자연어 응답 생성 단계): RecommendationContext의 항목별 ContextValue.warnings
     # (예: weather.warnings)까지 합쳐서 사용자에게 보여줄지 다시 검토한다.
     tool_context = tool_response.context
+    if tool_context is None:
+        # success/partial은 Schema가 Context를 강제하지만 no_data는 아직 None을 허용한다.
+        # 잘못되거나 불완전한 C 응답을 D에 전달하지 않고 이번 실행을 안전하게 끝낸다.
+        logger.warning(
+            "C 응답에 RecommendationContext가 없음: request_id=%s status=%s",
+            tool_response.request_id,
+            tool_response.status,
+        )
+        return AgentResponse(
+            llm_output=llm_output,
+            state=state_response,
+            recommendations=None,
+        )
 
     # 6) A → D: 추천 결과 확보 (Protocol을 통해서만 — D의 구체 클래스는 여기서 모른다)
     recommendations = await recommendation_provider.recommend(
@@ -159,21 +172,22 @@ async def run_agent_flow(
 
 
 async def run_agent(request: AgentRequest) -> AgentResponse:
-    """호출자가 쓰는 Fake/Real 공통 진입점 — factory로 provider를 조립한다.
+    """호출자가 쓰는 Fake/Real 공통 진입점.
 
-    ToolProvider는 A–C 스키마가 확정됐지만 실제 C Service 연결 전이라 Fake를 사용한다.
-    RecommendationProvider도 D 계약 확정 전까지 Fake로 고정한다. 구체 클래스는
-    run_agent_flow()에 노출하지 않고 이 조립 지점에서만 주입한다.
+    A는 조건 기반 ContextProvider 계약만 알고, C 내부 Tool·Provider 조립은
+    app.agent_context.factory에 위임한다. D는 계약 확정 전이라 Fake로 유지한다.
     """
 
+    from app.agent_context.factory import get_context_provider
     from app.providers.factory import get_llm_provider, get_weather_provider
 
     async with httpx.AsyncClient() as client:
+        weather_provider = get_weather_provider(client)
         return await run_agent_flow(
             request,
             llm=get_llm_provider(),
-            weather_provider=get_weather_provider(client),
-            tool_provider=FakeToolProvider(),
+            weather_provider=weather_provider,
+            tool_provider=get_context_provider(client),
             recommendation_provider=FakeRecommendationProvider(),
         )
 
