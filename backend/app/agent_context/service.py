@@ -42,6 +42,10 @@ from app.tools.weather_forecast import (
 
 _KST = ZoneInfo("Asia/Seoul")
 _CATEGORY_RULE_VERSION = "tour-category-v1"
+_SEARCH_RADIUS_RULE_VERSION = "walking-radius-v1"
+_WALKING_KM_PER_MINUTE = 0.07
+_MIN_SEARCH_RADIUS_KM = 0.3
+_MAX_SEARCH_RADIUS_KM = 20.0
 
 
 @dataclass(frozen=True)
@@ -115,6 +119,10 @@ class ContextService:
             category_plan,
             latitude=location.latitude,
             longitude=location.longitude,
+            search_radius_km=_resolve_search_radius_km(
+                conditions.max_travel_time,
+                default_radius_km=self._search_radius_km,
+            ),
         )
         weather_result, holidays_result, places_result = await asyncio.gather(
             weather_task,
@@ -139,6 +147,7 @@ class ContextService:
         *,
         latitude: float,
         longitude: float,
+        search_radius_km: float,
     ) -> NearbyPlaceDetailsResult:
         """분류별 장소 조회를 병렬 실행하고 중복 후보를 제거해 한 결과로 합친다."""
 
@@ -149,7 +158,7 @@ class ContextService:
                     NearbyPlaceDetailsQuery(
                         latitude=latitude,
                         longitude=longitude,
-                        search_radius_km=self._search_radius_km,
+                        search_radius_km=search_radius_km,
                         limit=self._candidate_limit,
                         preferred_categories=plan.resolved_place_tags,
                         category_filter=category_filter,
@@ -163,6 +172,22 @@ class ContextService:
             limit=self._candidate_limit,
             started_at=started_at,
         )
+
+
+def _resolve_search_radius_km(
+    max_travel_time: int | None,
+    *,
+    default_radius_km: float,
+) -> float:
+    """최대 이동시간을 MVP 도보 속도로 환산한 후보 수집 반경으로 변환한다."""
+
+    if max_travel_time is None:
+        return default_radius_km
+    estimated_radius = max_travel_time * _WALKING_KM_PER_MINUTE
+    return min(
+        max(estimated_radius, _MIN_SEARCH_RADIUS_KM),
+        _MAX_SEARCH_RADIUS_KM,
+    )
 
 
 def _merge_place_results(
@@ -258,7 +283,10 @@ def _unsupported_category_response(
 
 
 def _rule_versions() -> dict[str, str]:
-    return {"category": _CATEGORY_RULE_VERSION}
+    return {
+        "category": _CATEGORY_RULE_VERSION,
+        "search_radius": _SEARCH_RADIUS_RULE_VERSION,
+    }
 
 
 def _as_kst(value: datetime) -> datetime:

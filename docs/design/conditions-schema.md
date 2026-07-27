@@ -208,7 +208,7 @@ LLM 답변 생성과 추천 엔진에 전달되며, B에는 저장하지 않는�
 | `weather` / `api_weather` | 병합 | 선택 | 둘 다 없으면 가중치 제외 |
 | `weather_intent` | user_conditions | 선택 | 모호(null)하면 사용자에게 실내/야외 선호 추가 질문 |
 | `transport` | user_conditions | 선택 | 기본값 도보 기준 (default_transport: walk) |
-| `max_travel_time` | user_conditions | 선택 | 기본 검색 반경 1km 적용 |
+| `max_travel_time` | user_conditions | 선택 | 없으면 기본 2km, 있으면 MVP 도보 기준 `분 × 0.07km`를 후보 수집 반경으로 적용(최소 0.3km, 최대 20km) |
 | `budget` | user_conditions | 선택 | 예산 필터 미적용 |
 | `companion` | user_conditions | 선택 | 동행자 필터 미적용 |
 | 모든 조건 없음 ("추천해줘") | — | — | api_context.gps_location 확인 우선 |
@@ -429,3 +429,4 @@ place_types 변경 시 → A가 소속 안 되는 place_tags에 대한 Remove �
 | v0.1 | 2026-07-22 | 초안 작성 |
 | v0.2 | 2026-07-23 | Conditions 3층 구조(user_conditions/api_context/answer_conditions) 반영, place_tags 자동 제거 서술을 A의 명시적 Remove로 수정, 용어 통일(current_conditions → user_conditions) |
 | v0.3 | 2026-07-23 | 소유권 기반 문서 정리: "조건 부족 시 기본 정책"을 이 문서(missing_conditions)로 통합, weather_intent/transport/max_travel_time/budget/companion 기본값 추가. 다른 문서는 이 절을 참조하도록 정리 |
+| v0.4 | 2026-07-27 | C 후보 수집 반경을 기본 2km 또는 `max_travel_time × 0.07km`로 정의하고 최소·최대 범위를 명시 |
