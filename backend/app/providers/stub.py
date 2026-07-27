@@ -47,14 +47,12 @@ from app.schemas import (
     PlaceTag,
     PlaceType,
     QuestionType,
-    RecommendationResponse,
     RecommendPayload,
     Severity,
     StatedWeather,
     UserConditions,
     WeatherIntent,
 )
-from app.services.recommendations import get_stub_recommendations
 
 # NOTE(비활성화, 팀 논의 후 결정 필요): 아래 FakeInterpretProvider는 669cc82(2026-07-22,
 # 작성자 mac)에서 도입된 원본 코드다. 2026-07-24 LLM provider 1차 구현(21aad22)에서
@@ -365,13 +363,6 @@ class FakeLLMProvider:
             general=GeneralPayload(topic=topic, original_question=user_input),
         )
         return provider_result(result, source=ProviderSource.FAKE_LLM)
-
-
-class FakeRecommendationProvider:
-    """추천 결과를 고정 목록으로 대체하는 fake provider."""
-
-    def recommendations(self, shown_place_ids: list[str]) -> RecommendationResponse:
-        return get_stub_recommendations(shown_place_ids)
 
 
 class FakeWeatherProvider:
