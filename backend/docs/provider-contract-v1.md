@@ -62,14 +62,15 @@ Recommendation Pipeline / Tool
 | Provider | Protocol | Fake | Real | 외부 시스템 | 현재 추천 서비스 연결 |
 | --- | --- | --- | --- | --- | --- |
 | Geocoding | `GeocodingProvider` | `FakeGeocodingProvider` | `RealGeocodingProvider` | Naver Geocoding | 연결됨 |
-| Weather | `WeatherProvider` | `FakeWeatherProvider` | `RealWeatherProvider` | 기상청 초단기예보 | 미연결 |
+| Weather | `WeatherProvider` | `FakeWeatherProvider` | `RealWeatherProvider` | 기상청 초단기예보 | 연결됨 |
 | Place | `PlaceProvider` | `FakePlaceProvider` | `RealPlaceProvider` | TourAPI KorService2 | 연결됨 |
-| Concentration | `ConcentrationProvider` | `FakeConcentrationProvider` | `RealConcentrationProvider` | TourAPI 집중률 예측 | 미연결 |
-| Holiday | `HolidayProvider` | `FakeHolidayProvider` | `RealHolidayProvider` | 한국천문연구원 특일 정보 | 미연결 |
+| Concentration | `ConcentrationProvider` | `FakeConcentrationProvider` | `RealConcentrationProvider` | TourAPI 집중률 예측 | Scoring 상위 후보 후조회 |
+| Holiday | `HolidayProvider` | `FakeHolidayProvider` | `RealHolidayProvider` | 한국천문연구원 특일 정보 | 조회·Context 연결, 운영판정 미사용 |
 
-`InterpretProvider`와 `RecommendationProvider` Protocol도 같은 파일에 존재하지만,
-현재 외부 API Provider v1의 다섯 종류에는 포함하지 않습니다. 두 계약은 동기
-메서드이며 기존 Stub 서비스 호환용입니다.
+`InterpretProvider`와 `RecommendationProvider` Protocol도 같은 파일에 남아 있지만
+현재 실행 경로에서는 사용하지 않는 레거시 계약입니다. LLM은 `LLMProvider`, Runtime
+추천은 `app/services/runtime/protocols.py::RecommendationProvider`를 사용합니다.
+레거시 Protocol 제거는 별도 정리 작업입니다.
 
 ## 5. 공통 설계 원칙
 
@@ -599,10 +600,9 @@ WeatherForecastQuery(
 | SKY/PTY 없음 | `weather_no_data`, retryable |
 
 - `get_current_condition()`은 기존 호출 호환용이며 실제 데이터는 예보
-- 공통 `ProviderMetadata` wrapper는 아직 미구현이지만 Tool 전용 결과에 시간
-  metadata가 반영됨
-- 추천 서비스에는 아직 연결되지 않음
-- 날씨 결측 시 가중치 재정규화 정책은 추천 계층의 `TBD`
+- 공통 `ProviderMetadata` wrapper와 Tool 결과 metadata 구현
+- 추천 서비스에 연결되어 방문시각 예보를 사용
+- 날씨 결측 시 해당 Feature를 제외하고 가중치 재분배
 
 ## 10. PlaceProvider
 
@@ -635,8 +635,10 @@ async def search_places(
 | 페이지 | `numOfRows=20`, `pageNo=1` |
 | 공통 | `serviceKey`, `MobileOS=ETC`, `MobileApp=TripBranch`, `_type=json` |
 
-`preferred_categories`는 Protocol 입력에 존재하지만 현재 API 요청 필터나 결과 후처리에
-사용되지 않습니다. 카테고리 필터 적용 방식은 `TBD`입니다.
+Real Provider는 `preferred_categories`를 직접 해석하지 않고 `category_filter`를
+TourAPI 요청 필드로 전달합니다. C의 `CategoryQueryPlan`이 A의 장소 유형·태그를
+하나 이상의 `PlaceCategoryFilter`로 변환합니다. Fake Provider는 레거시 직접 호출
+호환과 회귀 테스트를 위해 `preferred_categories`도 정규화해 필터링합니다.
 
 ### 10.3 키워드 검색
 
@@ -1005,7 +1007,7 @@ Provider 응답 필드 변화에 대비해 다음 alias를 순서대로 확인�
 - 반환값은 실시간 “현재 혼잡률”이 아니라 제공 날짜별 상대 집중률 예측
 - 임의 장소가 데이터셋에 없을 때 근처/구 단위 fallback은 미구현
 - 집중률의 정확한 범위와 Scoring 정규화 정책은 추천 계층의 `TBD`
-- 추천 서비스에는 아직 연결되지 않음
+- 추천 서비스에서 Scoring 상위 후보만 후조회하며 현재 점수에는 반영하지 않음
 
 ## 12. HolidayProvider
 
@@ -1073,7 +1075,7 @@ JSON 출력 옵션은 확인되지 않았으며 현재 구현은 XML만 처리�
 - 전체 연도 조회는 고정 `numOfRows=100`; 향후 공휴일 수가 이를 넘을 경우 pagination 필요
 - 공휴일이 특정 장소의 실제 영업 여부를 보장하지 않음
 - 장소 `restdate`와 공휴일이 겹치는 운영 규칙 해석은 별도 Tool/도메인 로직의 `TBD`
-- 추천 서비스에는 아직 연결되지 않음
+- 추천 서비스에서 조회해 Context에 보존하지만 장소별 운영 판정에는 아직 사용하지 않음
 
 ## 13. 오류 계약
 
@@ -1215,7 +1217,7 @@ wall-clock 시간을 millisecond로 표시합니다. HTTP 전송과 Frontend 렌
 | ID | 우선순위 | Blocker | 영향 | 현재 대응 | 해결 조건 | 상태 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `WTH-01` | `P1` | 메서드는 current지만 실제 데이터는 초단기예보 | 사용자가 “현재 날씨”로 오해할 수 있음 | `GetWeatherForecastTool`, data_type과 forecast_for 구현 | Tool/모델 명칭 및 forecast_for 테스트 | `Resolved` |
-| `WTH-02` | `P1` | 추천 파이프라인에 Weather가 미연결 | 날씨 조건이 실제 추천 점수에 반영되지 않음 | Weather Tool 연결 및 실패 시 가중치 재분배 구현 | 유/무날씨 Scoring 통합 테스트 | `Resolved` |
+| `WTH-02` | `P1` | 과거 추천 파이프라인에 Weather가 미연결 | 날씨 조건이 실제 추천 점수에 반영되지 않음 | Weather Tool 연결 및 실패 시 가중치 재분배 구현 | 유/무날씨 Scoring 통합 테스트 | `Resolved` |
 | `WTH-03` | `P2` | SKY/PTY를 세 단계로만 축약 | 온도·습도·강수량·풍속 기반 조건 사용 불가 | `good/neutral/bad`만 반환 | Weather Feature 요구사항 확정 후 모델 확장 여부 결정 | `현재 논의 중` |
 | `WTH-04` | `P2` | 발표 제공 시각을 45분 기준으로 고정 | 지연 시 최신 base time에 데이터가 없을 수 있음 | 직전 시간 fallback 계산 | no_data 시 이전 발표분 제한 재조회 정책과 테스트 | `Open` |
 | `WTH-05` | `P1` | 방문 예정 시각 기반 예보 선택 | 미래 방문 추천에 잘못된 slot을 사용할 위험 | visit_at, 최근접·동률 미래 우선·범위 밖 unsupported 구현 | 고정 Clock Tool 테스트와 실제 Smoke Test | `Resolved` |
@@ -1224,7 +1226,7 @@ wall-clock 시간을 millisecond로 표시합니다. HTTP 전송과 Frontend 렌
 
 | ID | 우선순위 | Blocker | 영향 | 현재 대응 | 해결 조건 | 상태 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `PLC-01` | `P1` | `preferred_categories`가 검색/후처리에 미사용 | 사용자 선호와 무관한 후보가 섞임 | content type을 내부 대분류로만 매핑 | 카테고리 매핑·필터·빈 후보 정책 테스트 | `Open` |
+| `PLC-01` | `P1` | Real Provider는 `preferred_categories` 대신 명시적 `category_filter`를 사용 | 호출부가 분류 계획을 만들지 않으면 선호와 무관한 후보가 섞임 | `CategoryQueryPlan`으로 장소 유형·태그를 TourAPI 필터로 변환하고 Fake 경계 테스트 적용 | A 조건→C Context 통합 시나리오 지속 검증 | `부분 해결` |
 | `PLC-02` | `P1` | Real 후보의 `operating_hours`가 항상 `None` | 후보만 사용하는 서비스에서는 모든 Real 후보가 미검증 결과로 분류 | 최대 20개 후보를 제한 병렬로 보완하는 `NearbyPlaceDetailsTool` 구현 | quota·캐시 정책 및 운영시간 parser 확정 | `부분 해결` |
 | `PLC-03` | `P1` | 운영시간·휴무일이 다양한 복합 원문 | 아직 지원하지 않는 회차·공휴일 예외는 영업 여부와 남은 시간을 계산할 수 없음 | 원문 보존, HTML 정리, 월별 시간·주간 휴무·여행코스 가정 정규화 구현 | 운영 상태 evaluator, 공휴일 예외 규칙, 실제 응답 회귀 표본 확대 | `부분 해결` |
 | `PLC-04` | `P2` | 위치 검색 20건, 키워드 검색 최대 100건의 첫 페이지만 사용 | 후보가 많은 지역에서 적합 장소 누락 가능 | 고정 pageNo=1 | 후보 예산과 pagination 중단 조건 확정 | `Open` |
@@ -1238,7 +1240,7 @@ wall-clock 시간을 millisecond로 표시합니다. HTTP 전송과 Frontend 렌
 | --- | --- | --- | --- | --- | --- | --- |
 | `CON-01` | `P1` | 결과는 실시간 현재 혼잡도가 아닌 날짜별 상대 집중률 예측 | “지금 덜 붐비는 곳” 요청을 직접 충족하지 못함 | `forecast_date`와 rate 보존 | 현재 시각 추정 사용 여부와 표현 문구 확정 | `현재 논의 중` |
 | `CON-02` | `P1` | 임의 장소가 집중률 데이터셋에 없을 수 있음 | 많은 Place 후보에 혼잡도 Feature를 부여할 수 없음 | 빈 forecasts 반환 | 근처 지점/지역 fallback 또는 Feature 제외 정책 확정 | `현재 논의 중` |
-| `CON-03` | `P1` | 추천 파이프라인에 미연결 | 상위 후보의 혼잡도 확인 불가 | Scoring 상위 후보만 후조회하고 no_data/장애 시 추천 유지 | 혼잡도 Feature 반영 여부는 별도 정책 | `부분 해결` |
+| `CON-03` | `P1` | 후조회 결과가 Scoring Feature에는 미반영 | 혼잡도가 최종 순위를 바꾸지 않음 | Scoring 상위 후보만 후조회하고 no_data/장애 시 추천 유지 | 혼잡도 Feature 반영 여부는 별도 정책 | `부분 해결` |
 | `CON-04` | `P2` | 여러 alias로 rate를 허용하지만 단위·범위 계약 미확정 | 다른 필드를 잘못 집중률로 해석하거나 점수 왜곡 가능 | `%` 제거 후 float 변환 | 공식 필드·범위 검증과 normalization 규칙 확정 | `Open` |
 | `CON-05` | `P2` | Place 지역코드와 Concentration 법정동 코드 체계가 다름 | `110`/`11110` 혼용 시 빈 결과 | 문서와 Smoke Test에 종로구 값 고정 | 공통 지역코드 Resolver와 매핑 테스트 | `Open` |
 
@@ -1247,13 +1249,13 @@ wall-clock 시간을 millisecond로 표시합니다. HTTP 전송과 Frontend 렌
 | ID | 우선순위 | Blocker | 영향 | 현재 대응 | 해결 조건 | 상태 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `HOL-01` | `P1` | 공휴일 여부가 특정 장소의 실제 영업 여부를 보장하지 않음 | 공휴일이라는 이유만으로 영업/휴무를 단정할 수 없음 | 공휴일 목록만 정규화 | Place `restdate`와 공휴일 예외 규칙을 결합하는 운영 판정 정책 | `Open` |
-| `HOL-02` | `P1` | 추천 파이프라인과 운영시간 계산에 미연결 | 공휴일 운영 예외가 추천 검증에 반영되지 않음 | 수동 Provider 조회만 가능 | 운영정보 Tool 연결 및 공휴일/대체공휴일 시나리오 테스트 | `Open` |
+| `HOL-02` | `P1` | 추천 파이프라인에서 조회하지만 운영시간 계산에는 미반영 | 공휴일 운영 예외가 추천 검증에 반영되지 않음 | Holiday Context 보존 | 공휴일/대체공휴일 운영 판정 시나리오 테스트 | `부분 해결` |
 | `HOL-03` | `P2` | 공공데이터포털 서비스별 활용 승인·키 동기화 필요 | 같은 키라도 401/403 또는 승인 지연 가능 | Smoke/Inspection으로 확인 | 배포 환경별 승인 체크리스트와 health 진단 | `Open` |
 | `HOL-04` | `P3` | 연간 조회도 `numOfRows=100`, 첫 페이지만 사용 | 데이터 증가 시 일부 누락 가능 | 현재 공휴일 수는 범위 내 | totalCount 기반 pagination 테스트 | `Open` |
 
 ### 16.8 다음 구현 순서
 
-1. Chat Orchestrator와 Context Merge 연결
+1. A Runtime의 D 실제 추천 구현 연결
 2. `PLC-03`, `HOL-01` 공휴일·복합 운영정보 판정
 3. `CON-02`, `CON-03` 혼잡도 Feature 정책 확정
 4. 후보 부족 시 pagination·추가 조회 정책

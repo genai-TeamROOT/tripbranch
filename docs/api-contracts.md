@@ -21,17 +21,24 @@ type HealthResponse = { status: string };
 ```ts
 type InterpretRequest = {
   user_input: string; // 최소 길이 1
+  session_id?: string;
+  device_location?: string; // "위도,경도"
+  // 아래 필드는 하위 호환용이며 세션이 있으면 Backend 상태로 대체됨
+  has_previous_recommendation?: boolean;
+  shown_place_count?: number;
+  current_conditions?: UserConditions;
 };
 
-type InterpretedConditions = {
-  location_query: string;
-  preferred_categories: string[];
-  weather_condition: "good" | "neutral" | "bad" | null;
-  search_radius_km: number;
+type InterpretResponse = {
+  output: LLMOutput;
+  state: SessionState;
 };
 ```
 
-현재 구현은 입력 내용과 관계없이 고정 조건을 반환하는 Stub입니다.
+`output`은 Intent별 구조화 결과이며, `state`에는 Backend가 생성한 `session_id`,
+`run_id`, 병합된 `user_conditions`, 노출·제외 장소 ID와 GPS·날씨 만료 상태가
+포함됩니다. 실제 상세 필드는 `backend/app/schemas.py`의 `LLMOutput`,
+`SessionState`를 기준으로 합니다.
 
 ### `POST /api/recommendations`
 
@@ -618,7 +625,10 @@ HTTP 200이더라도 응답 schema가 깨져 파싱할 수 없으면 `no_data`�
 
 | 필드 | 생성 주체 | 역할 | 현재 구현 |
 | --- | --- | --- | --- |
-| `chat_session_id` | Frontend | 채팅 하나 식별, 사용자 ID 아님 | 미구현 |
-| `recommendation_run_id` | Backend | 추천 실행·로그·Snapshot 연결 | 미구현 |
+| `session_id` | Backend State Service | 현재 채팅 세션 식별, 사용자 ID 아님 | 구현 |
+| `run_id` | Backend State Service | 조건 변경·추천 이력 실행 연결 | 구현 |
+| `chat_session_id` | Frontend 또는 Backend (`TBD`) | 목표 Chat API의 채팅 식별자 | 명칭·생성 주체 협의 필요 |
+| `recommendation_run_id` | Backend | 목표 Snapshot·로그 식별자 | 현재 `run_id`와 통합 방식 `TBD` |
 
-형식은 UUID 사용 방향이지만 버전, 저장 위치, 중복/재시도 정책은 `TBD`입니다.
+현재 `session_id`와 `run_id`는 UUID 기반 문자열입니다. 목표 공개 계약의 명칭,
+영속 저장 위치, 중복·재시도 정책은 `TBD`입니다.

@@ -4,8 +4,9 @@
 조건별 가중치를 적용해 적합한 장소를 추천하는 서비스입니다.
 
 > 현재 단계: **Phase 1-A — Core AI Agent Flow**
-> 현재 저장소는 실행 가능한 React/FastAPI 골격과 Provider 연동 기반을 갖추고 있지만,
-> 통합 Chat API·LLM 해석·상태 병합·가중치 Scoring은 아직 구현 전입니다.
+> 현재 저장소는 React/FastAPI 골격, Fake/Real Provider, LLM 해석, 세션 상태 병합,
+> C Context Service와 가중치 Scoring 기반을 갖추고 있습니다. 통합 Chat API와
+> A–D 실제 추천 연결, 자연어 응답 생성은 아직 구현 전입니다.
 
 ## 해결하려는 문제
 
@@ -27,15 +28,17 @@
 → 프론트엔드 표시
 ```
 
-현재 구현은 `/api/interpret`와 `/api/recommendations`가 분리되어 있고, Interpret와
-추천 응답은 Stub 중심입니다. 목표 흐름과 현재 구현의 차이는
+현재 구현은 `/api/interpret`와 `/api/recommendations`가 분리되어 있습니다.
+Interpret는 Fake/Real LLM Provider와 Backend 세션 상태를 사용하고, 추천 API는
+Fake/Real 외부 Provider가 공유하는 Tool·Candidate·Scoring 파이프라인을 실행합니다.
+목표 흐름과 현재 구현의 차이는
 [아키텍처 문서](docs/architecture.md)에 정리되어 있습니다.
 
 ## 현재 주요 기능
 
 - React 기반 채팅형 추천 화면과 같은 탭 내 상태 복원
 - FastAPI Health, Interpret, Recommendations API
-- Stub Interpret 및 Stub 추천 결과
+- Fake/Real LLM 기반 Intent·조건 추출과 Backend 세션 상태 병합
 - Fake/Real Provider 전환 구조
 - Naver Geocoding 기반 위치 좌표 변환
 - 종로구 범위·alias fallback·모호성 검증을 적용하는 `ResolveLocationTool`
@@ -51,6 +54,8 @@
 - 5개 Provider 공통 `ProviderResult`·`ProviderMetadata` 계약
 - 위치·날씨·장소·집중률·공휴일 Tool의 공통 상태·오류·metadata 필드
 - Tool 결과를 동일 형식으로 보관하는 `AgentToolContext`
+- A 조건을 받아 C 내부에서 Provider를 조립하는 `ContextService`
+- 장소 유형·태그를 TourAPI 분류 요청으로 변환하는 Category Rule
 - 장소 Tool 결과를 Scoring 입력으로 변환하는 Candidate Mapper
 - 위치·장소·날씨 Tool → Candidate → Scoring → 상위 5개 추천 파이프라인
 - Scoring 상위 후보에 한정한 집중률 후조회
@@ -60,12 +65,10 @@
 아직 구현되지 않은 핵심 범위:
 
 - 통합 `POST /api/chat`
-- 실제 LLM 기반 Intent/조건 추출 및 자연어 응답 생성
-- 이전 대화 조건 병합과 백엔드 세션 상태
-- 전체 Tool 실행 순서를 제어하는 Orchestrator
+- 자연어 추천 응답 생성
+- 통합 Chat API에 연결된 전체 Orchestrator
 - `RecommendationRequest Builder`
-- 사용자 자연어 별칭을 표준 장소 유형으로 변환하는 Interpret 연동
-- 표준 장소 유형과 TourAPI 분류를 연결하는 Category Mapper
+- A Runtime의 D 실제 추천 구현 연결
 - 운영시간의 공휴일·복합 예외 판정
 - Naver Blog Search 근거 수집
 - Supabase 영속화
@@ -76,8 +79,8 @@
 - Backend: Python 3.11+, FastAPI, Pydantic 2, httpx, pytest, Ruff
 - Frontend: Node.js 20+, React 19, TypeScript, Vite, React Router, Tailwind CSS
 - 개발 실행: npm, Node.js 스크립트, Uvicorn
-- 영속 저장소: TBD (Supabase 사용 방향만 합의됨)
-- LLM Provider: TBD
+- 영속 저장소: 프로세스 내 State Store, Supabase Place Repository 부분 구현
+- LLM Provider: Fake, Google Gemini
 
 ## 저장소 구조
 
@@ -93,7 +96,9 @@ TripBranch/
 │   │   ├── schemas.py           # 현재 공개 API Pydantic 모델
 │   │   ├── domain/models.py     # Provider 공통 도메인 모델
 │   │   ├── routes/              # health, interpret, recommendations
-│   │   ├── services/            # Stub Interpret와 추천 파이프라인
+│   │   ├── agent_context/       # A–C 계약, Category Rule, Context Service
+│   │   ├── services/            # Interpret/Runtime/추천 파이프라인
+│   │   ├── state/               # Backend 세션 조건·이력 병합
 │   │   └── providers/           # Fake/Real Provider와 Mapper
 │   ├── resources/
 │   │   └── tour_api/
@@ -236,15 +241,12 @@ TourAPI의 대·중·소분류 기준 데이터는
 ## 다음 작업
 
 1. `ChatRequest`/`ChatResponse` 공개 계약 확정 및 `POST /api/chat` 구현
-2. Orchestrator, Context Merge 및 나머지 Tool 경계 도입
-3. 실제 Interpret 및 Response Generator LLM Provider 결정
-4. 내부 `RecommendationRequest` 스키마 확정
-5. 표준 장소 유형과 TourAPI 분류를 연결하는 Category Mapper 구현
-6. Intent 담당자의 `place_types`·`place_tags` 출력을 분류 Registry와 연결
-7. 운영시간·날씨·거리·혼잡도 Feature 정규화
-8. 하드 필터와 가중치 Scoring 구현
-9. `chat_session_id`/`recommendation_run_id` 및 Supabase 저장 모델 확정
-10. 프론트 저장소를 `sessionStorage`에서 `localStorage`로 바꿀지 결정
+2. A Runtime의 D 실제 추천 구현 연결
+3. 자연어 Response Generator 구현
+4. 공휴일·복합 운영정보 판정과 후보 부족 시 추가 조회 정책 확정
+5. 혼잡도 Feature 반영 여부와 fallback 정책 확정
+6. Backend 세션·추천 Snapshot의 Supabase 저장 모델 확정
+7. 프론트 저장소를 `sessionStorage`에서 `localStorage`로 바꿀지 결정
 
 상기 항목의 세부 계약과 일정은 현재 논의 중이며 확정되지 않은 값은 각 문서에서
 `TBD`로 표시합니다.
