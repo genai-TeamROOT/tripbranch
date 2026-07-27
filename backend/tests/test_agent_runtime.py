@@ -262,6 +262,58 @@ async def test_non_recommend_modify_intents_skip_tool_and_recommendation(user_in
 
 
 @pytest.mark.asyncio
+async def test_first_turn_gps_seeded_survives_to_next_turn() -> None:
+    """ensure_current_context()는 세션을 만들 수 없어 최초 턴에는 GPS를 못 심는다.
+
+    apply()로 세션이 생긴 직후 run_agent_flow가 update_api_context를 호출해야
+    다음 턴부터 gps_expired가 False가 된다(session_orchestrator.py의 "알려진 한계"
+    후속 처리 — interpret.py의 동일 테스트를 run_agent_flow 기준으로도 고정한다).
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘", session_id=None, device_location=DEVICE_LOCATION
+        ),
+        store=store,
+        **providers,
+    )
+    assert first.state.api_context.gps_expired is True  # 최초 턴엔 아직 반영 전
+
+    second = await run_agent_flow(
+        AgentRequest(
+            user_input="무료인 곳으로", session_id=first.state.session_id, device_location=None
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert second.state.api_context.gps_expired is False
+    assert second.state.api_context.gps_location == DEVICE_LOCATION
+
+
+@pytest.mark.asyncio
+async def test_invalid_gps_format_skips_turn_without_error() -> None:
+    """잘못된 GPS 문자열은 예외 없이 이번 턴만 건너뛴다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location="not-a-gps-string",
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.state.api_context.gps_location is None
+    assert response.state.api_context.gps_expired is True
+
+
+@pytest.mark.asyncio
 async def test_record_recommendation_reflected_in_session_context() -> None:
     store = InMemoryStateStore()
     providers = _providers()
