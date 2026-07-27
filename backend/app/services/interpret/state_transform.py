@@ -20,6 +20,7 @@ from app.schemas import (
     UserConditions,
 )
 from app.state.operations import Operation
+from app.state.schema import UserConditions as StateUserConditions
 from app.state.service import RejectedPlace, SessionContextResponse, StateApplyRequest
 
 _SINGLE_FIELDS = (
@@ -143,6 +144,22 @@ def transform(
     )
 
 
+def to_user_conditions(state_conditions: StateUserConditions) -> UserConditions:
+    """B↔A 변환의 유일한 지점: app.state.schema.UserConditions(B, 순수 문자열)를
+    app.schemas.UserConditions(A, enum 타입)로 변환한다.
+
+    A↔C 변환(app.services.runtime.context_transform.to_agent_context_request())과
+    혼동하지 않는다 — 이 함수는 B→A 한 구간만 담당한다. D 계약이 확정되면 A↔D 변환
+    함수가 또 하나 늘어날 텐데, 그때도 이 세 변환 지점을 서로 섞지 않는다.
+
+    MODIFY 조건 추출 시(build_interpretation의 MODIFY 분기) 현재 조건을 다시 LLM에
+    넘기려면 A의 enum 타입 UserConditions가 필요하다. 두 모델은 필드 이름·개수가
+    완전히 동일하므로 dict 왕복으로 충분하다 — StrEnum이 문자열 값을 그대로 받아들인다.
+    """
+
+    return UserConditions.model_validate(state_conditions.model_dump())
+
+
 def _serialize(value: object) -> object:
     """StrEnum(PlaceTag 등)을 순수 str/list[str]로 변환한다.
 
@@ -244,4 +261,4 @@ def _detect_reset_scope(user_input: str, changed_fields: list[str]) -> str | Non
     return None
 
 
-__all__ = ["transform"]
+__all__ = ["transform", "to_user_conditions"]

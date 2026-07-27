@@ -11,7 +11,12 @@ from app.domain.models import (
     WeatherForecastSlot,
 )
 from app.errors import AppError, ProviderTimeoutError
-from app.providers.contracts import ProviderResult, ProviderSource, provider_result
+from app.providers.contracts import (
+    ProviderResult,
+    ProviderSource,
+    ProviderStatus,
+    provider_result,
+)
 from app.tools.weather_forecast import (
     ForecastSelectionMethod,
     GetWeatherForecastTool,
@@ -161,6 +166,9 @@ async def test_explicit_visit_outside_forecast_range_is_unsupported() -> None:
     assert result.status is WeatherToolStatus.UNSUPPORTED
     assert result.error is not None
     assert result.error.cause == "outside_forecast_range"
+    assert result.provider_metadata[0].source is ProviderSource.FAKE_WEATHER
+    assert result.provider_metadata[0].status is ProviderStatus.SUCCESS
+    assert result.provider_metadata[0].retrieved_at.tzinfo is not None
 
 
 @pytest.mark.asyncio
@@ -173,6 +181,9 @@ async def test_empty_slots_are_no_data() -> None:
     assert result.status is WeatherToolStatus.NO_DATA
     assert result.error is not None
     assert result.error.cause == "forecast_not_found"
+    assert result.provider_metadata[0].source is ProviderSource.FAKE_WEATHER
+    assert result.provider_metadata[0].status is ProviderStatus.SUCCESS
+    assert result.provider_metadata[0].retrieved_at.tzinfo is not None
 
 
 @pytest.mark.asyncio

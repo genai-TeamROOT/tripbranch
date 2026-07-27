@@ -14,6 +14,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.state.service import StateApplyResponse
+
 
 class HealthResponse(BaseModel):
     status: str
@@ -38,6 +40,9 @@ class InterpretedConditions(BaseModel):
 
 
 class RecommendationRequest(InterpretedConditions):
+    session_id: str | None = None
+    run_id: str | None = None
+    # 하위 호환용. session_id가 있으면 B가 조회한 값으로 대체된다.
     shown_place_ids: list[str] = Field(default_factory=list)
 
 
@@ -367,6 +372,31 @@ class LLMOutput(BaseModel):
     out_of_scope: OutOfScopePayload | None = None
     clarification: ClarificationPayload | None = None
 
+class SessionState(BaseModel):
+    """Package B가 관리하는 세션 상태 스냅샷.
+
+    프론트엔드는 session_id만 보관하면 되고, 조건과 이력은 서버가 들고 있다.
+    run_id는 /api/recommendations 요청에 실어 보내야 조건 변경 기록과
+    추천 이력이 같은 실행으로 묶인다.
+    """
+
+    session_id: str
+    run_id: str
+    session_created: bool
+    condition_version: int
+    condition_changed: bool
+    user_conditions: UserConditions
+    shown_place_ids: list[str] = Field(default_factory=list)
+    excluded_place_ids: list[str] = Field(default_factory=list)
+    gps_expired: bool = True
+    weather_expired: bool = True
+
+
+class InterpretResponse(BaseModel):
+    """/api/interpret 응답. 해석 결과와 세션 상태를 함께 반환한다."""
+
+    output: LLMOutput
+    state: SessionState
 
 class IntentClassificationResult(BaseModel):
     """1단계 LLM 호출(Intent 분류) 전용 최소 스키마. 문서에 없는 신규 모델.
@@ -382,8 +412,43 @@ class IntentClassificationResult(BaseModel):
 
 class InterpretRequest(BaseModel):
     user_input: str = Field(..., min_length=1)
-    # 서버가 세션을 들고 있지 않으므로(B/Agent State는 이 repo 밖) MODIFY/COMPARE 판별과
-    # 조건 병합에 필요한 컨텍스트를 매 요청마다 호출자가 함께 실어 보낸다.
+
+    # 세션 식별자. 없으면 B가 첫 apply()에서 발급한다.
+    session_id: str | None = None
+    # 브라우저에서 확보한 "위도,경도". api_context.gps_location과 동일 포맷.
+    device_location: str | None = None
+
+    # 아래 3개는 라우터가 B의 세션 컨텍스트로 채운다.
+    # 호출자가 보낸 값은 무시되며, 하위 호환을 위해 필드만 유지한다.
     has_previous_recommendation: bool = False
     shown_place_count: int = Field(default=0, ge=0)
     current_conditions: UserConditions | None = None
+
+
+# === Agent Runtime (A-03) ===
+#
+# Agent Runtime(app.services.runtime.agent_runtime)이 쓰는 요청/응답 모델. Tool 결과
+# (C)는 app.agent_context.schemas.AgentContextResponse/RecommendationContext로
+# 이미 계약이 확정됐다(A-C Context Contract v0). D(Recommendation)는 아직 확정 전이라
+# AgentResponse는 여전히 임시 모델이다 — 계약이 확정되면 필드가 바뀔 수 있다.
+
+
+class AgentRequest(BaseModel):
+    """run_agent()의 입력. has_previous_recommendation 등은 더 이상 호출자가 넣지 않는다 —
+    Runtime이 B의 SessionContextResponse에서 직접 계산한다."""
+
+    user_input: str = Field(..., min_length=1)
+    session_id: str | None = None
+    device_location: str | None = None  # "위도,경도" 문자열, api_context.gps_location과 동일 포맷
+
+
+class AgentResponse(BaseModel):
+    """TODO(D 계약 확정 시 필드 변경 가능): Agent Runtime의 임시 최종 응답.
+
+    recommendations는 RECOMMEND/MODIFY이고 status가 complete일 때만 채워진다(그 외에는
+    None — Tool/Recommendation 단계 자체를 건너뛰었다는 뜻).
+    """
+
+    llm_output: LLMOutput
+    state: StateApplyResponse
+    recommendations: RecommendationResponse | None = None

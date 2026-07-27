@@ -1,0 +1,34 @@
+"""C Context Service와 내부 Tool·Provider 의존성을 조립한다."""
+
+from __future__ import annotations
+
+import httpx
+
+from app.agent_context.service import ContextService, ContextTools
+from app.providers.factory import (
+    get_geocoding_provider,
+    get_holiday_provider,
+    get_place_provider,
+    get_weather_provider,
+)
+from app.tools.holiday import GetHolidaysTool
+from app.tools.nearby_place_details import NearbyPlaceDetailsTool
+from app.tools.resolve_location import ResolveLocationTool
+from app.tools.weather_forecast import GetWeatherForecastTool
+
+
+def get_context_provider(client: httpx.AsyncClient) -> ContextService:
+    """설정된 Fake/Real Provider로 A–C ContextProvider를 생성한다."""
+
+    place_provider = get_place_provider(client)
+    return ContextService(
+        ContextTools(
+            location=ResolveLocationTool(get_geocoding_provider(client)),
+            places=NearbyPlaceDetailsTool(place_provider, place_provider),
+            weather=GetWeatherForecastTool(get_weather_provider(client)),
+            holidays=GetHolidaysTool(get_holiday_provider(client)),
+        )
+    )
+
+
+__all__ = ["get_context_provider"]
