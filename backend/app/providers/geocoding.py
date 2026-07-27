@@ -64,9 +64,9 @@ class FakeGeocodingProvider:
     """정해진 소수의 지명만 좌표로 변환하는 가짜 구현."""
 
     async def geocode(
-        self, query: str, *, use_alias: bool = True
+        self, location_query: str, *, use_alias: bool = True
     ) -> ProviderResult[GeocodeResult]:
-        normalized = query.strip()
+        normalized = location_query.strip()
         if not normalized:
             raise AppError(code="invalid_request", message="위치를 입력해주세요.")
 
@@ -85,7 +85,7 @@ class FakeGeocodingProvider:
             resolved_name, lat, lon = _KNOWN_LOCATIONS[alias_name]
             return provider_result(
                 GeocodeResult(
-                    query=query,
+                    query=location_query,
                     resolved_name=resolved_name,
                     latitude=lat,
                     longitude=lon,
@@ -98,7 +98,7 @@ class FakeGeocodingProvider:
             if name in provider_query:
                 return provider_result(
                     GeocodeResult(
-                        query=query,
+                        query=location_query,
                         resolved_name=resolved_name,
                         latitude=lat,
                         longitude=lon,
@@ -109,7 +109,7 @@ class FakeGeocodingProvider:
 
         raise AppError(
             code="location_not_found",
-            message=f"'{query}' 위치를 찾을 수 없어요.",
+            message=f"'{location_query}' 위치를 찾을 수 없어요.",
             status_code=404,
         )
 
@@ -135,9 +135,9 @@ class RealGeocodingProvider:
         self._timeout_seconds = timeout_seconds
 
     async def geocode(
-        self, query: str, *, use_alias: bool = True
+        self, location_query: str, *, use_alias: bool = True
     ) -> ProviderResult[GeocodeResult]:
-        normalized = query.strip()
+        normalized = location_query.strip()
         if not normalized:
             raise AppError(code="invalid_request", message="위치를 입력해주세요.")
 
@@ -183,7 +183,7 @@ class RealGeocodingProvider:
         if not addresses:
             raise AppError(
                 code="location_not_found",
-                message=f"'{query}' 위치를 찾을 수 없어요.",
+                message=f"'{location_query}' 위치를 찾을 수 없어요.",
                 status_code=404,
             )
 
@@ -197,7 +197,7 @@ class RealGeocodingProvider:
             candidate_count = len(addresses)
         return provider_result(
             GeocodeResult(
-                query=query,
+                query=location_query,
                 resolved_name=resolved_name,
                 latitude=float(top["y"]),
                 longitude=float(top["x"]),
