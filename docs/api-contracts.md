@@ -85,6 +85,16 @@ wall-clock 시간입니다. HTTP 전송시간과 Frontend 렌더링 시간은 �
 (score × weight) 큰 순서로 포함합니다. 결측이거나 애매한 점수(<0.7)인
 Feature는 생략되므로 배열이 빈 값(`[]`)일 수 있습니다.
 
+`explanations`가 조용히 비거나 줄어드는 두 상황은 `warnings`에 문구를
+추가해 안내합니다(`backend/app/services/recommendation_pipeline.py::
+_extra_warnings()`). (1) 날씨 결측으로 `feature_scores.weather`가
+`null`이면 "현재 날씨 정보를 확인하지 못해 이 조건은 반영되지 않았어요.",
+(2) 점수는 있지만 모든 Feature가 0.7 미만이라 `explanations`가 완전히
+비면 "이 장소는 특별히 강조할 만한 조건은 없지만, 조건에 맞아
+추천했어요."가 추가됩니다. 운영시간 결측처럼 `unverified_recommendations`
+로 분리되지는 않고, 기존 `recommendations`/`unverified_recommendations`
+분류는 그대로 유지됩니다.
+
 ### 공통 오류
 
 ```ts

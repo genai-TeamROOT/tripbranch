@@ -131,6 +131,10 @@ Holiday Provider는 구현되어 있지만 추천 서비스에 아직 조립되�
   build_explanations()`가 Feature 점수 0.7 이상인 것만 기여도 순으로
   `RecommendationItem.explanations`에 노출. Chat API(`RecommendationResult`)
   로의 최종 반영은 A(Agent Runtime) 담당과의 API Contract 협의 후 확정 예정
+- 추가(D-030): 날씨 결측·전체 Feature 임계값 미달로 `explanations`가 조용히
+  비거나 줄어드는 두 케이스를 `warnings` 문구로 보완. 운영시간 결측만큼
+  심각한 불확실성은 아니라고 판단해 `unverified_recommendations` 분리는
+  적용하지 않음. 상세는 `docs/decision-log.md`의 D-030 참고
 
 ### Response Generator
 

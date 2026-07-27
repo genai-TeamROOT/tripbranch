@@ -344,6 +344,28 @@
   Generator가 붙을 때도 이 Feature별 판단을 근거 재료로 재사용할 수 있도록
   설계함
 
+### D-030 — 임계값 미달·날씨 결측 시 warning 커버리지 보완
+
+- 상태: `Implemented`
+- 결정: D-029 이후 남아 있던 빈틈 — (1) 날씨 결측으로 `weather` Feature
+  점수가 `None`인 경우, (2) 세 Feature 모두 0.7 미만이라 `explanations`가
+  완전히 비는 경우 — 둘 다 지금까지 아무 warning 없이 조용히 생략되던
+  것을 확인하고, `warnings` 문구를 추가해 안내하기로 결정. 운영시간 결측처럼
+  `unverified_recommendations`로 분리하지는 않는다 — "존재 자체를 모르는"
+  운영시간 결측과 달리, 날씨 결측·낮은 점수는 그 정도로 심각한 불확실성이
+  아니라고 판단했기 때문. 두 케이스는 원인이 다르므로(데이터 없음 vs.
+  데이터는 있으나 애매함) 문구도 분리했다. `distance`는 `ScoringCandidate.
+  distance_km`가 필수 필드라 결측 케이스 자체가 존재하지 않으므로 대상에서
+  제외
+- 구현: `backend/app/services/recommendation_pipeline.py::_extra_warnings()`
+  신설, `_build_response()`에서 기존 상세정보 결측 warning과 함께 조립.
+  `backend/tests/test_recommendation_pipeline.py`에 날씨 결측·전체 임계값
+  미달 케이스 각각 검증하는 테스트 추가
+- 범위 제외: `recommendation_reason` 존폐 여부, Explanation Rule 정의
+  문서화 — 둘 다 A 담당과의 협의 이후로 보류
+- 이유: Explainability Layer 협의를 준비하며 발견한 실사용자 관점의 빈틈으로,
+  A의 결정이 아니라 우리 쪽 구현 책임 영역이라고 판단해 협의 전에 먼저 해결
+
 ## 현재 논의가 필요한 항목
 
 | 항목 | 선택지/질문 | 상태 |
@@ -352,7 +374,7 @@
 | Chat 계약 naming | Backend Python/JSON `snake_case` | `Accepted` |
 | Backend 상태 저장 | Supabase 테이블과 캐시 역할 | `TBD` |
 | Frontend 저장 | `sessionStorage` 유지 또는 `localStorage` 전환 | `TBD` |
-| Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); 응답 Evidence 노출·E2E 통합 `Implemented`(D-028); Explainability Layer v1 `Implemented`(초안, D-029) | 구현 완료(Explainability는 A 협의 전 초안) |
+| Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); 응답 Evidence 노출·E2E 통합 `Implemented`(D-028); Explainability Layer v1 `Implemented`(초안, D-029); warning 커버리지 보완 `Implemented`(D-030) | 구현 완료(Explainability는 A 협의 전 초안) |
 | 혼잡도 fallback | 장소 근접치, 구 단위, Feature 제외 | 현재 논의 중 |
 | 운영시간 파싱 | 기본 시간·월별·주간 휴무 구현, 공휴일·회차 예외 확대 | `부분 구현` |
 | 이동시간 | 지도 Provider 및 교통수단별 계산 | `TBD` |
@@ -384,3 +406,4 @@
 | 2026-07-24 | D-027 추천 Evidence·평가 Fixture v1 구현 반영 (Feature 기여도 모델, 고정 Fixture v1, 결정성 검증) |
 | 2026-07-24 | D-028 추천 파이프라인 1차 E2E 통합 구현 반영 (응답에 score/feature_scores/weights_used 노출, 날씨 유무·결정성 E2E 테스트, 재사용 가능한 파이프라인 Fixture) |
 | 2026-07-27 | D-029 Recommendation Explainability Layer v1(Rule 기반) 구현 반영 (초안, A 담당과 API Contract 협의 전) |
+| 2026-07-27 | D-030 날씨 결측·임계값 미달로 explanations가 비는 두 케이스에 warning 커버리지 보완 |
