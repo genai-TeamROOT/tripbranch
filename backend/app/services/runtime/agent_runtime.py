@@ -24,11 +24,14 @@ from app.services.interpret.state_transform import to_user_conditions, transform
 from app.services.runtime.context_transform import to_agent_context_request
 from app.services.runtime.protocols import RecommendationProvider, ToolProvider
 from app.services.runtime.stubs import FakeRecommendationProvider
+from app.state.schema import now_kst
 from app.state.service import (
     RecommendedPlace,
     RecordRecommendationRequest,
+    UpdateApiContextRequest,
     apply,
     record_recommendation,
+    update_api_context,
 )
 from app.state.session import new_trace_id
 from app.state.store import StateStore
@@ -38,6 +41,25 @@ logger = logging.getLogger(__name__)
 # C 단계에서 Recommendation으로 못 넘어가는 status. needs_clarification은 조건 재질문(사용자
 # 응답 필요), unsupported/unavailable은 그 자체로 안내만 하고 끝나는 상태다(계약 문서 §5.4).
 _TOOL_TERMINAL_STATUSES = frozenset({"needs_clarification", "unsupported", "unavailable"})
+
+
+def _valid_location(device_location: str | None) -> str | None:
+    """'위도,경도' 형식이 아니면 None으로 낮춘다.
+
+    잘못된 GPS 문자열이 파싱 예외로 대화를 중단시키지 않도록 한다.
+    (interpret.py의 동일 함수와 중복 — interpret.py가 run_agent()로 교체되면 정리한다.)
+    """
+    if not device_location:
+        return None
+    parts = device_location.split(",")
+    if len(parts) != 2:
+        return None
+    try:
+        float(parts[0])
+        float(parts[1])
+    except ValueError:
+        return None
+    return device_location
 
 
 async def run_agent_flow(
@@ -59,9 +81,11 @@ async def run_agent_flow(
     D를 건너뛴다 — LLM 단계의 needs_clarification과는 별개 레이어다(계약 문서 §5.4).
     """
 
-    # 1) A → B: GPS·날씨 세션 컨텍스트 최신화
+    # 1) A → B: GPS·날씨 세션 컨텍스트 최신화. GPS 형식이 잘못되면 이번 턴만 건너뛴다 —
+    #    잘못된 GPS 문자열이 파싱 예외로 대화를 중단시키지 않아야 한다.
+    valid_gps = _valid_location(request.device_location)
     session_context = await ensure_current_context(
-        request.session_id, request.device_location, weather_provider, store=store
+        request.session_id, valid_gps, weather_provider, store=store
     )
 
     # 2) A: LLMOutput 생성 (Intent 분류 + Intent별 조건 추출). B가 준 현재 조건(순수 문자열)을
@@ -85,6 +109,20 @@ async def run_agent_flow(
     #    없는) state가 항상 채워진다.
     apply_request = transform(llm_output, session_context, request.user_input)
     state_response = apply(apply_request, store=store)
+
+    # 3-1) 최초 턴이면 방금 생성된 세션에 GPS를 심는다. ensure_current_context()(1번)는
+    #      세션이 이미 있을 때만 GPS를 갱신한다(B 계약상 read-only, 세션은 apply()만
+    #      생성) — 그래서 세션이 방금 생긴 최초 턴에는 1번에서 GPS를 심을 수 없다.
+    #      update_api_context()는 동기 함수라 await를 붙이지 않는다.
+    if state_response.session_created and valid_gps:
+        update_api_context(
+            UpdateApiContextRequest(
+                session_id=state_response.session_id,
+                gps_location=valid_gps,
+                gps_location_updated_at=now_kst(),
+            ),
+            store=store,
+        )
 
     # 4) 확인이 더 필요하거나(needs_clarification), RECOMMEND/MODIFY가 아니면(INFO/COMPARE/
     #    GENERAL/OUT_OF_SCOPE) 여기서 끝난다 — Tool/Recommendation은 부가 흐름이라 스킵한다.
