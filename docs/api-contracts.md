@@ -52,6 +52,7 @@ type RecommendationItem = {
   remaining_minutes: number | null;
   environment_type: "indoor" | "outdoor" | "mixed" | "unknown";
   recommendation_reason: string;
+  explanations: string[]; // Rule 기반 Feature별 설명 문장(0~3개), 기여도 큰 순
   warnings: string[];
   score: number;
   feature_scores: Record<string, number | null>; // Feature별 원점수(weather/remaining_operating_time/distance)
@@ -74,8 +75,15 @@ wall-clock 시간입니다. HTTP 전송시간과 Frontend 렌더링 시간은 �
 `RecommendationEvidence`를 그대로 반영한 값입니다(D-028). `feature_scores`는
 `contributions`의 `{feature: score}`를, `weights_used`는 `{feature: weight}`를
 평탄화한 값이며, 날씨나 남은 운영시간이 결측이었던 Feature는 `weights_used`
-키 자체에서 빠집니다. 자연어 추천 이유(`recommendation_reason`)는 아직 고정
-템플릿 문자열이며 Feature 근거를 문장으로 변환하는 로직은 별도 범위입니다.
+키 자체에서 빠집니다. 자연어 추천 이유(`recommendation_reason`)는 여전히 고정
+템플릿 문자열입니다.
+
+`explanations`는 `backend/app/domain/explanation.py::build_explanations()`가
+`RecommendationEvidence.contributions`를 Rule 기반으로 문장화한 값입니다
+(D-029, 초안 — Chat API 통합 시 A 담당과 협의 후 최종 형태가 바뀔 수
+있습니다). LLM을 호출하지 않으며, Feature 점수가 0.7 이상인 것만 기여도
+(score × weight) 큰 순서로 포함합니다. 결측이거나 애매한 점수(<0.7)인
+Feature는 생략되므로 배열이 빈 값(`[]`)일 수 있습니다.
 
 ### 공통 오류
 
@@ -299,6 +307,10 @@ type RecommendationResult = {
 현재 REST `/api/recommendations`의 `RecommendationItem`(§2)은 이미
 `score`/`feature_scores`/`weights_used`를 노출하고 있어(D-028), 통합 Chat API
 설계 시 이를 그대로 재사용할 수 있는지 우선 검토합니다.
+
+D-029(Explainability Layer v1, 초안)에서 Rule 기반 `explanations: string[]`도
+추가됐습니다. `reason: string`(단일 문장) 자리에 배열로 합칠지, 별도 필드로
+둘지는 아직 정해지지 않았고 — A(Agent Runtime) 담당과의 협의 대상입니다.
 
 ## 5. Provider 계약
 

@@ -319,6 +319,31 @@
 - 이유: D-02(D-027)에서 준비해 둔 Evidence 모델을 실제 `/api/recommendations`
   응답과 연결해, 추천 점수 근거를 Frontend/사용자가 그대로 소비할 수 있게 함
 
+### D-029 — Recommendation Explainability Layer v1 (Rule 기반)
+
+- 상태: `Implemented`(초안) — Chat API 통합 시점의 A(Agent Runtime) 담당과의
+  API Contract 협의는 아직 진행 전이라 필드 형태가 바뀔 수 있음
+- 결정: `RecommendationEvidence.contributions`(D-027)를 입력으로 받아, LLM을
+  호출하지 않는 Rule 기반·결정적 방식으로 Feature별 한국어 설명 문장을
+  생성한다. Feature 점수가 0.7 이상인 것만 "기여도(score × weight) 큰
+  순서"로 문장화하고, 결측이거나 애매한 점수(<0.7)는 생략한다(결측은 이미
+  `warnings`가 별도로 안내하므로 중복 설명하지 않음). 기존
+  `recommendation_reason`(고정 템플릿 한 줄)은 유지하고, `explanations:
+  string[]`을 신규 필드로 추가한다(대체가 아니라 추가 — Frontend가 이미
+  `recommendation_reason`을 렌더링하고 있어 하위 호환 유지).
+- 구현: `backend/app/domain/explanation.py::build_explanations()`,
+  `backend/app/services/recommendation_pipeline.py::_build_response()`
+  연결, `backend/app/schemas.py::RecommendationItem.explanations`,
+  `frontend/src/types.ts` 동기화, `backend/tests/test_explanation.py`(D-02
+  Fixture 재사용, 결정성·순서·빈 리스트 케이스 검증)
+- 범위 제외: LLM 기반 자연어 생성, 점수가 애매하거나(0.4~0.7) 낮은(<0.4)
+  Feature에 대한 부정적 근거 문장 생성, Chat API(`RecommendationResult`)로의
+  최종 반영(A 담당과 협의 후 확정)
+- 이유: 순수 Rule 기반이라 비용·지연시간이 없고, 동일 입력에 항상 동일한
+  설명이 나와 D-02 Fixture로 그대로 회귀 검증 가능함. 추후 LLM 기반 Response
+  Generator가 붙을 때도 이 Feature별 판단을 근거 재료로 재사용할 수 있도록
+  설계함
+
 ## 현재 논의가 필요한 항목
 
 | 항목 | 선택지/질문 | 상태 |
@@ -327,7 +352,7 @@
 | Chat 계약 naming | Backend Python/JSON `snake_case` | `Accepted` |
 | Backend 상태 저장 | Supabase 테이블과 캐시 역할 | `TBD` |
 | Frontend 저장 | `sessionStorage` 유지 또는 `localStorage` 전환 | `TBD` |
-| Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); 응답 Evidence 노출·E2E 통합 `Implemented`(D-028) | 구현 완료 |
+| Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); 응답 Evidence 노출·E2E 통합 `Implemented`(D-028); Explainability Layer v1 `Implemented`(초안, D-029) | 구현 완료(Explainability는 A 협의 전 초안) |
 | 혼잡도 fallback | 장소 근접치, 구 단위, Feature 제외 | 현재 논의 중 |
 | 운영시간 파싱 | 기본 시간·월별·주간 휴무 구현, 공휴일·회차 예외 확대 | `부분 구현` |
 | 이동시간 | 지도 Provider 및 교통수단별 계산 | `TBD` |
@@ -358,3 +383,4 @@
 | 2026-07-23 | Weather Tool v1의 KST·방문시각·예보 범위 정책 구현 반영 |
 | 2026-07-24 | D-027 추천 Evidence·평가 Fixture v1 구현 반영 (Feature 기여도 모델, 고정 Fixture v1, 결정성 검증) |
 | 2026-07-24 | D-028 추천 파이프라인 1차 E2E 통합 구현 반영 (응답에 score/feature_scores/weights_used 노출, 날씨 유무·결정성 E2E 테스트, 재사용 가능한 파이프라인 Fixture) |
+| 2026-07-27 | D-029 Recommendation Explainability Layer v1(Rule 기반) 구현 반영 (초안, A 담당과 API Contract 협의 전) |
