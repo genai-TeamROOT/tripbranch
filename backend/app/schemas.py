@@ -14,6 +14,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.state.service import StateApplyResponse
+
 
 class HealthResponse(BaseModel):
     status: str
@@ -420,3 +422,32 @@ class InterpretRequest(BaseModel):
     has_previous_recommendation: bool = False
     shown_place_count: int = Field(default=0, ge=0)
     current_conditions: UserConditions | None = None
+
+
+# === Agent Runtime (A-03) ===
+#
+# Agent Runtime(app.services.runtime.agent_runtime)이 쓰는 요청/응답 모델. Tool 결과
+# (C)는 app.services.runtime.context_schemas.AgentContextResponse/RecommendationContext로
+# 이미 계약이 확정됐다(A-C Context Contract v0). D(Recommendation)는 아직 확정 전이라
+# AgentResponse는 여전히 임시 모델이다 — 계약이 확정되면 필드가 바뀔 수 있다.
+
+
+class AgentRequest(BaseModel):
+    """run_agent()의 입력. has_previous_recommendation 등은 더 이상 호출자가 넣지 않는다 —
+    Runtime이 B의 SessionContextResponse에서 직접 계산한다."""
+
+    user_input: str = Field(..., min_length=1)
+    session_id: str | None = None
+    device_location: str | None = None  # "위도,경도" 문자열, api_context.gps_location과 동일 포맷
+
+
+class AgentResponse(BaseModel):
+    """TODO(D 계약 확정 시 필드 변경 가능): Agent Runtime의 임시 최종 응답.
+
+    recommendations는 RECOMMEND/MODIFY이고 status가 complete일 때만 채워진다(그 외에는
+    None — Tool/Recommendation 단계 자체를 건너뛰었다는 뜻).
+    """
+
+    llm_output: LLMOutput
+    state: StateApplyResponse
+    recommendations: RecommendationResponse | None = None
