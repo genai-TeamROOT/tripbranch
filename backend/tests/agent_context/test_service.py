@@ -3,8 +3,10 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import httpx
 import pytest
 
+from app.agent_context.factory import get_context_provider
 from app.agent_context.schemas import AgentContextRequest
 from app.agent_context.service import ContextService, ContextTools
 from app.providers.geocoding import FakeGeocodingProvider
@@ -95,3 +97,28 @@ async def test_multiple_categories_are_merged_without_duplicate_places() -> None
         "fake-museum-1",
         "fake-cafe-1",
     ]
+
+
+@pytest.mark.asyncio
+async def test_factory_wires_fake_providers_into_common_context() -> None:
+    """설정 기반 Factory도 수동 조립과 동일한 A–C 응답 계약을 사용한다."""
+
+    async with httpx.AsyncClient() as client:
+        response = await get_context_provider(client).fetch_context(
+            _request(place_types=["restaurant"], place_tags=["카페"])
+        )
+
+    assert response.status == "success"
+    assert response.context is not None
+    assert response.context.places is not None
+    assert [item.place_id for item in response.context.places.data or []] == [
+        "fake-cafe-1"
+    ]
+    assert {
+        metadata.source for metadata in response.metadata.provider_metadata
+    } == {
+        "fake_geocoding",
+        "fake_weather",
+        "fake_place",
+        "fake_holiday",
+    }
