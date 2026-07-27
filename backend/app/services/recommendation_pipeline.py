@@ -49,6 +49,13 @@ DEFAULT_CANDIDATE_LIMIT = 10
 _JONGNO_AREA_CODE = "11"
 _JONGNO_DISTRICT_CODE = "11110"
 
+_OPERATING_HOURS_UNVERIFIED_WARNING = "방문 전에 운영 여부를 확인해주세요."
+_DETAILS_MISSING_WARNING = "장소 상세정보 일부를 확인하지 못했습니다."
+_WEATHER_MISSING_WARNING = "현재 날씨 정보를 확인하지 못해 이 조건은 반영되지 않았어요."
+_NO_NOTABLE_EXPLANATION_WARNING = (
+    "이 장소는 특별히 강조할 만한 조건은 없지만, 조건에 맞아 추천했어요."
+)
+
 
 @dataclass(frozen=True)
 class RecommendationPipelineRequest:
@@ -331,6 +338,7 @@ def _build_response(
         candidate = candidate_by_id[ranked_item.place_id]
         place = place_by_id[ranked_item.place_id]
         evidence = build_evidence(ranked_item)
+        explanations = build_explanations(evidence)
         item = RecommendationItem(
             place_id=candidate.place_id,
             name=candidate.name,
@@ -339,15 +347,9 @@ def _build_response(
             remaining_minutes=_remaining_minutes(candidate, visit_at),
             environment_type=candidate.environment_type,
             recommendation_reason=_recommendation_reason(ranked_item),
-            explanations=list(build_explanations(evidence)),
+            explanations=list(explanations),
             warnings=list(ranked_item.warnings)
-            + (
-                ["장소 상세정보 일부를 확인하지 못했습니다."]
-                if place.details is None
-                and "방문 전에 운영 여부를 확인해주세요."
-                not in ranked_item.warnings
-                else []
-            ),
+            + _extra_warnings(ranked_item, place, explanations),
             score=evidence.score,
             feature_scores={
                 contribution.feature: contribution.score
@@ -366,6 +368,29 @@ def _build_response(
         unverified_recommendations=unverified,
         elapsed_ms=0,
     )
+
+
+def _extra_warnings(
+    ranked: RankedCandidate,
+    place: EnrichedPlace,
+    explanations: tuple[str, ...],
+) -> list[str]:
+    """운영시간 결측 외에, 지금까지 조용히 생략되던 두 케이스를 warning으로 보충한다.
+
+    (1) 날씨 결측으로 weather Feature 점수가 없는 경우
+    (2) Feature 점수가 있어도 전부 임계값 미만이라 explanations가 비는 경우
+    """
+    extra: list[str] = []
+    if (
+        place.details is None
+        and _OPERATING_HOURS_UNVERIFIED_WARNING not in ranked.warnings
+    ):
+        extra.append(_DETAILS_MISSING_WARNING)
+    if ranked.feature_scores.get("weather") is None:
+        extra.append(_WEATHER_MISSING_WARNING)
+    if not explanations:
+        extra.append(_NO_NOTABLE_EXPLANATION_WARNING)
+    return extra
 
 
 def _remaining_minutes(
