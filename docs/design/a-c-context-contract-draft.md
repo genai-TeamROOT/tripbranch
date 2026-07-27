@@ -1,4 +1,4 @@
-# A ↔︎ C Context Contract 초안
+# A ↔ C Context Contract 초안
 
 ## 1. 목적
 
@@ -31,7 +31,7 @@ v0는 `RECOMMEND`의 추천 Context 수집만 다룬다. `INFO`와 `COMPARE`는 
 식별·추천 스냅샷 계약이 추가로 필요하므로 후속 협의 대상으로 둔다.
 
 기존 `tool-intelligence-contract-v1.md`의 `ToolRequest`는 A가 `tool_type`을
-선택하는 형식이다. 이 초안은 A가 Tool을 선택하지 않는 상위 A↔︎C 호출 계약이다.
+선택하는 형식이다. 이 초안은 A가 Tool을 선택하지 않는 상위 A↔C 호출 계약이다.
 C 내부에서는 기존 Tool 계약을 계속 사용할 수 있다.
 
 외부 호출 창구는 하나로 유지한다. 이후 Intent가 추가되어도 공통 envelope
@@ -42,6 +42,7 @@ C 내부에서는 기존 Tool 계약을 계속 사용할 수 있다.
 from typing import Annotated
 
 from pydantic import Field
+
 
 AgentToCRequest = Annotated[
     RecommendContextRequest
@@ -63,6 +64,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+
 class UserConditions(BaseModel):
     current_location: str | None = None
     search_center: str | None = None
@@ -78,6 +80,7 @@ class UserConditions(BaseModel):
     budget: str | None = None
     exclude_tags: list[str] = Field(default_factory=list)
     special_requirements: list[str] = Field(default_factory=list)
+
 
 class AgentContextRequest(BaseModel):
     request_id: str
@@ -128,7 +131,7 @@ class AgentContextRequest(BaseModel):
 - 복수 조건은 빈 배열 `[]`을 허용한다.
 - 빈 문자열과 공백 문자열은 허용하지 않는다.
 - `current_location`과 `search_center`가 모두 `null`이면 요청 형식 오류가 아니라,
-C가 `needs_clarification`으로 반환한다.
+  C가 `needs_clarification`으로 반환한다.
 
 ## 5. C → A 응답
 
@@ -155,23 +158,28 @@ class AgentContextResponse(BaseModel):
     error: ContextError | None = None
     metadata: ResponseMetadata
 
+
 class Coordinates(BaseModel):
     latitude: float
     longitude: float
+
 
 class ProviderMetadata(BaseModel):
     source: str
     status: Literal["success", "no_data", "unavailable"]
     retrieved_at: datetime
 
+
 class Warning(BaseModel):
     code: str
     message: str
+
 
 class ContextError(BaseModel):
     code: str
     message: str
     retryable: bool
+
 
 class Clarification(BaseModel):
     code: Literal[
@@ -183,16 +191,19 @@ class Clarification(BaseModel):
     missing_fields: list[str] = Field(default_factory=list)
     candidates: list[str] = Field(default_factory=list)
 
+
 class ResolvedLocation(BaseModel):
     requested_query: str
     resolved_name: str
     location: Coordinates
     address: str | None = None
 
+
 class WeatherForecast(BaseModel):
     condition: Literal["good", "neutral", "bad"]
     forecast_for: datetime
     temperature_celsius: float | None = None
+
 
 class PlaceCandidate(BaseModel):
     place_id: str
@@ -203,11 +214,14 @@ class PlaceCandidate(BaseModel):
     rest_date_raw: str | None = None
     operating_schedule: dict[str, object] | None = None
 
+
 class HolidayInfo(BaseModel):
     date: str
     name: str
 
+
 T = TypeVar("T")
+
 
 class ContextValue(BaseModel, Generic[T]):
     status: Literal["success", "no_data", "partial", "unsupported", "unavailable"]
@@ -216,15 +230,20 @@ class ContextValue(BaseModel, Generic[T]):
     warnings: list[Warning] = Field(default_factory=list)
     provider_metadata: list[ProviderMetadata] = Field(default_factory=list)
 
+
 class RecommendationContext(BaseModel):
     location: ContextValue[ResolvedLocation] | None = None
     weather: ContextValue[WeatherForecast] | None = None
     places: ContextValue[list[PlaceCandidate]] | None = None
     holidays: ContextValue[list[HolidayInfo]] | None = None
 
+
 class ResponseMetadata(BaseModel):
     rule_versions: dict[str, str] = Field(default_factory=dict)
     provider_metadata: list[ProviderMetadata] = Field(default_factory=list)
+
+
+
 ```
 
 ### 5.2 Context 데이터 개요

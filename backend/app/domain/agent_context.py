@@ -28,11 +28,22 @@ def context_value(
     warnings: tuple[str, ...] = (),
     provider_metadata: tuple[ProviderMetadata, ...] = (),
 ) -> ToolContextValue[T]:
-    """Tool별 payload를 동일한 Agent Context 형식으로 감싼다."""
+    """Tool별 payload를 동일한 Agent Context 형식으로 정규화한다."""
+
+    if status in {ToolStatus.SUCCESS, ToolStatus.PARTIAL} and data is None:
+        raise ValueError(f"{status.value} Context에는 data가 필요합니다.")
+    if status in {ToolStatus.SUCCESS, ToolStatus.PARTIAL} and error is not None:
+        raise ValueError(f"{status.value} Context에는 error를 포함할 수 없습니다.")
+    if status in {ToolStatus.UNAVAILABLE, ToolStatus.UNSUPPORTED}:
+        if data is not None:
+            raise ValueError(f"{status.value} Context에는 data를 포함할 수 없습니다.")
+        if error is None:
+            raise ValueError(f"{status.value} Context에는 error가 필요합니다.")
 
     return ToolContextValue(
         status=status,
-        data=data,
+        # 빈 결과의 Tool별 표현(None, 빈 tuple, 빈 도메인 객체)을 하나로 맞춘다.
+        data=None if status is ToolStatus.NO_DATA else data,
         error=error,
         warnings=warnings,
         provider_metadata=provider_metadata,

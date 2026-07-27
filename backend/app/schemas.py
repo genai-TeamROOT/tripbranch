@@ -393,7 +393,7 @@ class InterpretRequest(BaseModel):
 # === Agent Runtime (A-03) ===
 #
 # Agent Runtime(app.services.runtime.agent_runtime)이 쓰는 요청/응답 모델. Tool 결과
-# (C)는 app.services.runtime.context_schemas.AgentContextResponse/RecommendationContext로
+# (C)는 app.agent_context.schemas.AgentContextResponse/RecommendationContext로
 # 이미 계약이 확정됐다(A-C Context Contract v0). D(Recommendation)는 아직 확정 전이라
 # AgentResponse는 여전히 임시 모델이다 — 계약이 확정되면 필드가 바뀔 수 있다.
 

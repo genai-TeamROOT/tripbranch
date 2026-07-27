@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import pytest
 
+from app.agent_context.schemas import AgentContextRequest, AgentContextResponse
 from app.providers.stub import FakeLLMProvider, FakeWeatherProvider
 from app.schemas import AgentRequest, OutputStatus
 from app.services.runtime.agent_runtime import run_agent_flow
-from app.services.runtime.context_schemas import AgentContextRequest, AgentContextResponse
 from app.services.runtime.stubs import FakeRecommendationProvider, FakeToolProvider
 from app.state.service import get_session_context
 from app.state.store import InMemoryStateStore

@@ -151,6 +151,7 @@ class ResolveLocationTool:
                 cause="outside_supported_region",
                 retryable=False,
                 details={"supported_region": "서울특별시 종로구"},
+                provider_metadata=provider_metadata,
             )
         if (
             method is not ResolutionMethod.ALIAS
@@ -162,6 +163,7 @@ class ResolveLocationTool:
                 cause="ambiguous_location",
                 retryable=False,
                 details={"reason": "ambiguous_location"},
+                provider_metadata=provider_metadata,
             )
         return ResolveLocationResult(
             status=ResolveLocationStatus.SUCCESS,
@@ -191,7 +193,10 @@ class ResolveLocationTool:
         cause: str,
         retryable: bool,
         details: dict[str, str] | None = None,
+        provider_metadata: tuple[ProviderMetadata, ...] = (),
     ) -> ResolveLocationResult:
+        """Provider 조회 뒤 정책 판정이 실패해도 조회 메타데이터는 보존한다."""
+
         return ResolveLocationResult(
             status=status,
             location=None,
@@ -202,6 +207,7 @@ class ResolveLocationTool:
                 retryable=retryable,
                 details=details or {},
             ),
+            provider_metadata=provider_metadata,
         )
 
 

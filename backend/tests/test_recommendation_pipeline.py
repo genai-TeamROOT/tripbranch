@@ -28,7 +28,11 @@ async def test_pipeline_scores_then_checks_only_top_five_concentrations() -> Non
             search_radius_km=2.0,
             visit_at=VISIT_AT,
         ),
-        build_tools(places, concentration),
+        build_tools(
+            places,
+            concentration,
+            weather_provider=SucceedingWeatherProvider(WeatherCondition.NEUTRAL),
+        ),
         timer=lambda: next(timer_values),
     )
 
@@ -39,8 +43,22 @@ async def test_pipeline_scores_then_checks_only_top_five_concentrations() -> Non
     assert len(returned) == 5
     assert concentration.place_names == [f"장소 {index}" for index in range(5)]
     assert len(result.concentrations) == 5
+    assert result.context.location is not None
+    assert result.context.location.status is ToolStatus.SUCCESS
+    assert result.context.location.data is not None
+    assert result.context.weather is not None
+    assert result.context.weather.status is ToolStatus.SUCCESS
+    assert result.context.weather.data is not None
+    assert result.context.places is not None
+    assert result.context.places.status is ToolStatus.SUCCESS
+    assert result.context.places.data is not None
     assert result.context.concentration is not None
     assert result.context.concentration.status is ToolStatus.NO_DATA
+    assert result.context.concentration.data is None
+    assert result.context.holidays is not None
+    assert result.context.holidays.status is ToolStatus.NO_DATA
+    assert result.context.holidays.data is None
+    assert result.context.provider_metadata
     assert result.response.elapsed_ms == 250.0
 
 
@@ -65,6 +83,8 @@ async def test_pipeline_continues_with_redistributed_weights_when_weather_fails(
     assert result.response.recommendations
     assert result.context.weather is not None
     assert result.context.weather.status is ToolStatus.UNAVAILABLE
+    assert result.context.weather.data is None
+    assert result.context.weather.error is not None
     assert all(
         "weather" not in item.weights_used
         for item in result.scoring.ranked

@@ -14,8 +14,7 @@ TODO: D 계약이 확정되면 FakeRecommendationProvider와 실제 구현체 �
 
 from __future__ import annotations
 
-from app.schemas import RecommendationItem, RecommendationResponse, UserConditions
-from app.services.runtime.context_schemas import (
+from app.agent_context.schemas import (
     AgentContextRequest,
     AgentContextResponse,
     Clarification,
@@ -25,6 +24,7 @@ from app.services.runtime.context_schemas import (
     ResponseMetadata,
     WeatherForecast,
 )
+from app.schemas import RecommendationItem, RecommendationResponse, UserConditions
 from app.state.schema import now_kst
 
 _FAKE_CANDIDATES = (

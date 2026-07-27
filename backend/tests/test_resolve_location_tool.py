@@ -6,7 +6,12 @@ import pytest
 
 from app.domain.models import GeocodeResult
 from app.errors import AppError
-from app.providers.contracts import ProviderResult, ProviderSource, provider_result
+from app.providers.contracts import (
+    ProviderResult,
+    ProviderSource,
+    ProviderStatus,
+    provider_result,
+)
 from app.tools.resolve_location import (
     ResolutionConfidence,
     ResolutionMethod,
@@ -124,6 +129,9 @@ async def test_rejects_location_outside_jongno() -> None:
     assert result.status is ResolveLocationStatus.UNSUPPORTED
     assert result.error is not None
     assert result.error.cause == "outside_supported_region"
+    assert result.provider_metadata[0].source is ProviderSource.FAKE_GEOCODING
+    assert result.provider_metadata[0].status is ProviderStatus.SUCCESS
+    assert result.provider_metadata[0].retrieved_at.tzinfo is not None
 
 
 @pytest.mark.asyncio
@@ -138,6 +146,9 @@ async def test_ambiguous_location_requires_clarification() -> None:
     assert result.error is not None
     assert result.error.cause == "ambiguous_location"
     assert result.error.details["reason"] == "ambiguous_location"
+    assert result.provider_metadata[0].source is ProviderSource.FAKE_GEOCODING
+    assert result.provider_metadata[0].status is ProviderStatus.SUCCESS
+    assert result.provider_metadata[0].retrieved_at.tzinfo is not None
 
 
 @pytest.mark.asyncio

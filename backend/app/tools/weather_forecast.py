@@ -116,6 +116,7 @@ class GetWeatherForecastTool:
                 "no_data",
                 "forecast_not_found",
                 False,
+                provider_metadata=(provider_result.metadata,),
             )
 
         if query.visit_at is not None and not (
@@ -126,6 +127,7 @@ class GetWeatherForecastTool:
                 "unsupported",
                 "outside_forecast_range",
                 False,
+                provider_metadata=(provider_result.metadata,),
             )
 
         selection_method = ForecastSelectionMethod.NEAREST
@@ -189,6 +191,7 @@ def _error_result(
     code: str,
     cause: str,
     retryable: bool,
+    provider_metadata: tuple[ProviderMetadata, ...] = (),
 ) -> WeatherForecastToolResult:
     message = {
         "forecast_not_found": "사용 가능한 날씨 예보가 없습니다.",
@@ -203,4 +206,5 @@ def _error_result(
             cause=cause,
             retryable=retryable,
         ),
+        provider_metadata=provider_metadata,
     )

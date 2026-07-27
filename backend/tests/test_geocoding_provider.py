@@ -12,7 +12,9 @@ from app.providers.geocoding import FakeGeocodingProvider, RealGeocodingProvider
 async def test_fake_geocoding_provider_resolves_known_location() -> None:
     provider = FakeGeocodingProvider()
 
-    result = (await provider.geocode("경복궁 근처")).data
+    result = (
+        await provider.geocode(location_query="경복궁 근처")
+    ).data
 
     assert result == GeocodeResult(
         query="경복궁 근처",
@@ -67,7 +69,7 @@ async def test_real_geocoding_provider_maps_top_result() -> None:
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     provider = RealGeocodingProvider(api_key_id="id", api_key="key", client=client)
 
-    result = (await provider.geocode("경복궁")).data
+    result = (await provider.geocode(location_query="경복궁")).data
 
     assert result.resolved_name == "서울특별시 종로구 사직로 161"
     assert result.latitude == pytest.approx(37.5796)

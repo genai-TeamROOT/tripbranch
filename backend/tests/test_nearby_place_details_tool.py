@@ -6,7 +6,12 @@ import pytest
 
 from app.domain.models import PlaceDetails
 from app.errors import ProviderUnavailableError
-from app.providers.contracts import ProviderResult, ProviderSource, provider_result
+from app.providers.contracts import (
+    ProviderResult,
+    ProviderSource,
+    ProviderStatus,
+    provider_result,
+)
 from app.schemas import PlaceCandidate
 from app.tools.nearby_place_details import (
     DetailStatus,
@@ -150,6 +155,13 @@ async def test_tool_returns_partial_for_detail_failures_and_missing_type() -> No
     assert result.places[1].error_code == "provider_unavailable"
     assert result.places[2].error_code == "missing_content_type_id"
     assert result.warnings == ("partial_data",)
+    assert len(result.provider_metadata) == 2
+    assert all(
+        metadata.source is ProviderSource.FAKE_PLACE
+        and metadata.status is ProviderStatus.SUCCESS
+        and metadata.retrieved_at.tzinfo is not None
+        for metadata in result.provider_metadata
+    )
 
 
 @pytest.mark.asyncio
@@ -161,6 +173,9 @@ async def test_tool_returns_no_data_without_candidates() -> None:
 
     assert result.status is ToolStatus.NO_DATA
     assert result.places == ()
+    assert result.provider_metadata[0].source is ProviderSource.FAKE_PLACE
+    assert result.provider_metadata[0].status is ProviderStatus.SUCCESS
+    assert result.provider_metadata[0].retrieved_at.tzinfo is not None
 
 
 @pytest.mark.asyncio
