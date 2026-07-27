@@ -16,14 +16,14 @@
 
 ### D-001 — LLM은 Backend에서만 호출
 
-- 상태: `Accepted`, 실제 LLM 연결은 미구현
+- 상태: `Accepted`, Fake/Real Gemini Provider 구현
 - 결정: Frontend는 LLM Provider를 직접 호출하지 않고 FastAPI Backend만 호출한다.
 - 이유: API 키 보호, 프롬프트·모델 교체의 캡슐화, 로깅과 오류 정책 일원화
 - 후속: LLM Provider와 모델 선정 `TBD`
 
 ### D-002 — Interpret와 Recommendation 분리
 
-- 상태: `Accepted`; 현재 API도 분리되어 있으나 실제 Interpret는 Stub
+- 상태: `Accepted`, `/api/interpret`와 `/api/recommendations` 분리 구현
 - 결정: Interpret는 자연어를 조건으로 추출하고 최종 장소 선택은 하지 않는다.
 - 이유: 언어 해석과 결정적 추천 정책의 책임을 분리하고 외부 사실을 검증하기 위함
 
@@ -310,8 +310,9 @@
   설정 변경은 필요하지 않았음.
 - 구현: `backend/app/schemas.py::RecommendationItem`(신규 필드),
   `backend/app/services/recommendation_pipeline.py::_build_response()`,
-  `backend/app/services/recommendations.py`의 레거시 stub 응답 및
-  `frontend/src/types.ts` 동기화. 날씨 조회 성공/실패 대응 E2E 테스트, 동일
+  `frontend/src/types.ts` 동기화. 당시 레거시 stub 응답에도 필드를 맞췄으나
+  이후 실제 Fake/Real 공통 파이프라인으로 대체되어 제거됨. 날씨 조회
+  성공/실패 대응 E2E 테스트, 동일
   입력 결정성 테스트, 재사용 가능한
   `backend/tests/fixtures/recommendation_pipeline_fixture_v1.py`를 추가.
 - 범위 제외: 자연어 추천 이유 생성(`recommendation_reason`은 기존 고정

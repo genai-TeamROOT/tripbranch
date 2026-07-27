@@ -9,11 +9,14 @@
 | --- | --- |
 | React Frontend, 분리된 Interpret/Recommendations API | 구현됨 |
 | Fake/Real Provider와 일부 외부 API 연동 | 구현됨 |
-| Chat API, Orchestrator, Context Merge | 미구현 (`TBD`) |
+| 통합 Chat API | 미구현 (`TBD`) |
+| Interpret Orchestrator, Backend Context Merge, Agent Runtime 본체 | 구현됨 |
+| Agent Runtime의 D 실제 추천 연결 | 미구현 (`TBD`) |
 | Tool | 위치·날씨·장소·집중률·공휴일 Tool 구현, 이동시간 등은 `TBD` |
 | 가중치 Engine (Scoring v1) | Recommendations API 파이프라인에 연결됨 |
 | Recommendation Request Builder | 미구현 (`TBD`) |
-| LLM Interpret/Response Generator | 미구현 (`TBD`) |
+| Fake/Real LLM Interpret | 구현됨 |
+| Response Generator | 미구현 (`TBD`) |
 | Supabase Persistence | 미구현 (`TBD`) |
 
 ## 2. 전체 시스템 흐름
@@ -36,9 +39,10 @@ flowchart LR
     CHAT --> FE
 ```
 
-현재 코드는 `Frontend → /api/interpret → /api/recommendations → Service →
-Geocoding/Place Provider`의 축소된 경로만 실행합니다. Weather, Concentration,
-Holiday Provider는 구현되어 있지만 추천 서비스에 아직 조립되지 않았습니다.
+현재 공개 API는 `Frontend → /api/interpret`와 `/api/recommendations`로 분리되어
+있습니다. 추천 API는 Geocoding·Weather·Place·Holiday를 수집하고 Scoring 후 상위
+후보에 Concentration을 후조회합니다. `Agent Runtime`은 A→B→C 호출까지 실제
+구현을 사용하지만 D는 아직 Runtime 전용 Fake 구현을 사용합니다.
 
 ## 3. 계층별 책임
 
@@ -59,19 +63,20 @@ Holiday Provider는 구현되어 있지만 추천 서비스에 아직 조립되�
 
 - 담당: Intent에 따른 실행 순서, Tool 호출, fallback, 실행 ID 및 로그 연결
 - 하지 않음: 외부 API별 필드 파싱, 도메인 점수식 자체 구현
-- 상태: `TBD`
+- 상태: Interpret Orchestrator와 HTTP 라우트 없는 `Agent Runtime` 본체 구현.
+  C까지 실제 연결됐으며 D 실제 구현과 통합 Chat API 연결은 `TBD`
 
 ### Interpret
 
 - 담당: 자연어에서 Intent와 명시 조건·변경 조건을 구조화
 - 하지 않음: 최종 추천 장소 결정, 외부 API 사실을 추측, 점수 계산
-- 현재: 모든 유효 입력에 고정 `InterpretedConditions`를 반환하는 Stub
+- 현재: Fake/Real LLM Provider를 선택하고 Intent별 구조화 결과를 반환
 
 ### Context Merge
 
 - 담당: 현재 발화에서 추출한 변경분을 이전 조건 및 현재 장소 맥락과 병합
 - 하지 않음: 과거의 날씨·운영정보 스냅샷을 현재 사실로 간주
-- 상태: `TBD`; 필드별 Add/Remove/Update 규칙은 `docs/design`에 초안 존재
+- 상태: Backend State Service에 Add/Update/Remove/Keep 병합과 세션 이력 구현
 
 ### Tool
 
@@ -80,8 +85,7 @@ Holiday Provider는 구현되어 있지만 추천 서비스에 아직 조립되�
   `estimate_travel_time`, `get_weather_forecast`, `get_congestion`,
   `search_place_feature_evidence`
 - 하지 않음: 특정 외부 API 응답 형식을 호출자에게 노출
-- 상태: `ResolveLocationTool`, `GetWeatherForecastTool`,
-  `NearbyPlaceDetailsTool`은 구현, 나머지 Tool은 미구현
+- 상태: 위치·날씨·장소·집중률·공휴일 Tool 구현. 이동시간 등은 `TBD`
 
 ### Provider
 
@@ -119,7 +123,7 @@ Holiday Provider는 구현되어 있지만 추천 서비스에 아직 조립되�
   `score`/`feature_scores`/`weights_used`를 노출한다(D-028). 재사용 가능한
   파이프라인 레벨 Fixture(`backend/tests/fixtures/recommendation_pipeline_fixture_v1.py`)와
   날씨 유무·결정성 E2E 테스트로 검증됨
-- 미구현: 혼잡도·근거 신뢰도 Feature, 실이동시간 거리, 카테고리 하드 필터
+- 미구현: 혼잡도·근거 신뢰도 Feature, 실이동시간 거리
 
 ### Explainability Layer
 
@@ -190,14 +194,15 @@ Provider/Mapper가 `PlaceCandidate`, `PlaceDetails`, `WeatherCondition` 등의 �
 
 - Frontend: 입력 중 상태, 렌더링 메시지, 로컬 복원 데이터
 - Backend: 정규화 조건, 실행 상태, 외부 데이터 스냅샷, 추천 결과와 로그
-- 현재 Backend 세션 저장은 미구현이며 Frontend `sessionStorage`만 존재
+- 현재 Backend는 프로세스 내 State Store에 세션 조건·이력을 저장하며,
+  영속화는 미구현입니다. Frontend는 `sessionStorage`를 사용합니다.
 
 ### 식별자 생성 위치
 
-- `chat_session_id`: 새 채팅 생성 시 Frontend가 `crypto.randomUUID()` 등으로 생성
-- `recommendation_run_id`: 추천 실행 시작 시 Backend가 생성
-- 두 식별자는 현재 코드와 API 계약에는 아직 없음 (`TBD`)
-- `chat_session_id`는 사용자 인증 ID가 아님
+- 현재 `session_id`와 `run_id`는 Backend State Service가 생성합니다.
+- 목표 공개 계약의 `chat_session_id` 생성 주체와 현재 `session_id`의 통합 방식은 `TBD`
+- `recommendation_run_id`에 해당하는 현재 `run_id`는 추천 실행·상태 변경을 연결합니다.
+- 세션 ID는 사용자 인증 ID가 아닙니다.
 
 ## 5. 외부 데이터 스냅샷
 

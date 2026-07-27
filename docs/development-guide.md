@@ -50,13 +50,15 @@ backend\.venv\Scripts\Activate.ps1
 | `PLACE_PROVIDER` | 빈 값 | Place 개별 Override |
 | `CONCENTRATION_PROVIDER` | 빈 값 | Concentration 개별 Override |
 | `HOLIDAY_PROVIDER` | 빈 값 | Holiday 개별 Override |
-| `LLM_PROVIDER` | `fake` | 예약 설정; 실제 LLM 미연결 |
+| `LLM_PROVIDER` | 빈 값 | Fake/Real LLM 개별 Override |
+| `LLM_MODEL_NAME` | `gemini-2.5-flash` | Real Gemini 모델명 |
 | `NAVER_MAP_CLIENT_ID` | 빈 값 | Real Geocoding |
 | `NAVER_MAP_CLIENT_SECRET` | 빈 값 | Real Geocoding |
 | `WEATHER_API_KEY` | 빈 값 | Real Weather |
 | `TOUR_API_SERVICE_KEY` | 빈 값 | Place, Concentration, Holiday |
-| `LLM_API_KEY` | 빈 값 | 예약 설정; 현재 미사용 |
-| `DATABASE_URL` | 빈 값 | 예약 설정; 현재 미사용 |
+| `LLM_API_KEY` | 빈 값 | Real Gemini |
+| `SUPABASE_URL` | 빈 값 | Place 동기화 저장소 |
+| `SUPABASE_SECRET_KEY` | 빈 값 | Place 동기화 저장소 |
 | `EXTERNAL_API_TIMEOUT_SECONDS` | `10` | Real Provider timeout |
 | `RECOMMENDATION_RESULT_LIMIT` | `5` | Scoring 후 반환할 최대 추천 수 |
 | `RECOMMENDATION_CANDIDATE_LIMIT` | `10` | 거리순으로 상세조회·평가할 후보 수 |
@@ -197,8 +199,9 @@ RUN_REAL_PROVIDER_INSPECTION=true python -m pytest \
 
 ## 9. 현재 알려진 제약
 
-- 실제 Interpret는 미구현이며 고정 결과를 반환합니다.
-- Fake/Fake 추천은 고정 응답이며 실제 Provider 파이프라인과 경로가 다릅니다.
+- Interpret는 Fake/Real LLM Provider와 Backend 세션 상태 병합을 사용합니다.
+- `/api/recommendations`는 Fake/Real이 동일한 Tool·Candidate·Scoring 경로를 사용합니다.
+  A Runtime의 D 연결만 현재 Runtime 전용 Fake 구현을 사용합니다.
 - 가중치 Scoring 엔진(Scoring v1, `backend/app/domain/scoring.py`)은
   `backend/app/services/recommendation_pipeline.py`를 통해
   `/api/recommendations` 라우트에 연결되어 있으며, 추천 결과에는 점수 근거
