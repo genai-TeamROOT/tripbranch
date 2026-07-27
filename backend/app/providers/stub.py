@@ -47,14 +47,12 @@ from app.schemas import (
     PlaceTag,
     PlaceType,
     QuestionType,
-    RecommendationResponse,
     RecommendPayload,
     Severity,
     StatedWeather,
     UserConditions,
     WeatherIntent,
 )
-from app.services.recommendations import get_stub_recommendations
 
 # NOTE(비활성화, 팀 논의 후 결정 필요): 아래 FakeInterpretProvider는 669cc82(2026-07-22,
 # 작성자 mac)에서 도입된 원본 코드다. 2026-07-24 LLM provider 1차 구현(21aad22)에서
@@ -367,13 +365,6 @@ class FakeLLMProvider:
         return provider_result(result, source=ProviderSource.FAKE_LLM)
 
 
-class FakeRecommendationProvider:
-    """추천 결과를 고정 목록으로 대체하는 fake provider."""
-
-    def recommendations(self, shown_place_ids: list[str]) -> RecommendationResponse:
-        return get_stub_recommendations(shown_place_ids)
-
-
 class FakeWeatherProvider:
     """설정한 공통 날씨 상태를 반환하는 가짜 구현."""
 
@@ -416,6 +407,13 @@ class FakeWeatherProvider:
 
 class FakePlaceProvider:
     """장소 검색 결과를 고정 후보 목록으로 대체하는 fake provider."""
+
+    _CATEGORY_ALIASES = {
+        "museum": frozenset({"museum"}),
+        "cultural_facility": frozenset({"museum"}),
+        "cafe": frozenset({"cafe"}),
+        "restaurant": frozenset({"cafe"}),
+    }
 
     async def search_places(
         self,
@@ -462,6 +460,23 @@ class FakePlaceProvider:
                 for candidate in candidates
                 if candidate.content_type_id == category_filter.content_type_id
             ]
+        elif preferred_categories:
+            # 명시적인 TourAPI 분류 필터가 없을 때만 레거시 선호 카테고리를 적용한다.
+            normalized_categories = {
+                category.strip().casefold()
+                for category in preferred_categories
+                if category.strip()
+            }
+            accepted_categories = {
+                candidate_category
+                for category in normalized_categories
+                for candidate_category in self._CATEGORY_ALIASES.get(category, ())
+            }
+            candidates = [
+                candidate
+                for candidate in candidates
+                if candidate.category in accepted_categories
+            ]
         selected = candidates[: max(1, min(limit, 100))]
         return provider_result(
             selected,
@@ -493,7 +508,13 @@ class FakePlaceProvider:
         candidates = (await self.search_places(37.5796, 126.9770, [], 1.0)).data
         candidate = next((item for item in candidates if item.place_id == content_id), None)
         operating_hours = candidate.operating_hours if candidate else None
-        rest_date = "매주 월요일" if candidate else None
+        rest_date = (
+            "매주 월요일"
+            if candidate and candidate.category == "museum"
+            else "연중무휴"
+            if candidate
+            else None
+        )
         return provider_result(
             PlaceDetails(
                 content_id=content_id,
