@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from app.agent_context.mappers import (
     map_holidays_context,
@@ -61,11 +62,7 @@ def assemble_agent_context_response(
         cause = location_result.error.cause if location_result.error else None
         return _clarification_response(
             request,
-            code=(
-                "location_ambiguous"
-                if cause == "ambiguous_location"
-                else "location_required"
-            ),
+            code=("location_ambiguous" if cause == "ambiguous_location" else "location_required"),
             missing_fields=[] if cause == "ambiguous_location" else ["current_location"],
             metadata_context=location_only,
             rule_versions=rule_versions,
@@ -275,7 +272,12 @@ def _collect_warnings(
 def _clarification_response(
     request: AgentContextRequest,
     *,
-    code: str,
+    code: Literal[
+        "location_required",
+        "location_ambiguous",
+        "place_required",
+        "place_ambiguous",
+    ],
     missing_fields: list[str],
     metadata_context: RecommendationContext | None = None,
     rule_versions: dict[str, str] | None = None,
@@ -301,7 +303,7 @@ def _clarification_response(
 def _blocked_response(
     request: AgentContextRequest,
     *,
-    status: str,
+    status: Literal["unsupported", "unavailable"],
     error: ContextError,
     output_context: RecommendationContext | None,
     metadata_context: RecommendationContext,

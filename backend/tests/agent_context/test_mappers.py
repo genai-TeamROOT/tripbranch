@@ -162,9 +162,7 @@ def test_maps_weather_success_without_inventing_temperature() -> None:
             selection_method=ForecastSelectionMethod.NEAREST,
         ),
         error=None,
-        provider_metadata=(
-            _metadata(ProviderSource.KMA_ULTRA_SHORT_FORECAST),
-        ),
+        provider_metadata=(_metadata(ProviderSource.KMA_ULTRA_SHORT_FORECAST),),
     )
 
     context = map_weather_context(result)
@@ -256,9 +254,20 @@ def test_maps_places_with_raw_and_normalized_operating_information() -> None:
             "crosses_midnight": False,
         }
     ]
-    assert place.operating_schedule["closure_rules"][0]["weekdays"] == [
-        "tuesday"
+    assert place.operating_schedule["rules"] == [
+        {
+            "months": None,
+            "weekdays": None,
+            "time_ranges": [
+                {
+                    "open_time": "09:00",
+                    "close_time": "18:00",
+                    "crosses_midnight": False,
+                }
+            ],
+        }
     ]
+    assert place.operating_schedule["closure_rules"][0]["weekdays"] == ["tuesday"]
 
 
 def test_maps_partial_places_without_dropping_unverified_candidate() -> None:
@@ -342,9 +351,7 @@ def test_maps_holidays_and_empty_holiday_result() -> None:
                 provider="fake",
             ),
             error=None,
-            provider_metadata=(
-                _metadata(ProviderSource.FAKE_HOLIDAY, ProviderStatus.NO_DATA),
-            ),
+            provider_metadata=(_metadata(ProviderSource.FAKE_HOLIDAY, ProviderStatus.NO_DATA),),
         )
     )
 
