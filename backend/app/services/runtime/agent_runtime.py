@@ -5,9 +5,9 @@
 직접 부르지 않고 항상 A(이 모듈)를 거쳐서만 결과를 주고받는다.
 입력: AgentRequest(user_input + session_id + device_location).
 출력: AgentResponse(LLMOutput + 병합된 State + 추천 결과).
-호출 시점: 아직 전용 HTTP 라우트는 없다 — C/D 실제 계약이 확정된 뒤 라우터를 연결한다.
-TODO: C(app.tool_intelligence)/D(추천 모듈)의 실제 계약이 확정되면 run_agent()의 provider
-조립 부분만 real/fake 분기로 바꾼다. run_agent_flow()는 Protocol에만 의존하므로 그대로 둔다.
+호출 시점: 아직 전용 HTTP 라우트는 없다. A–C 스키마는 확정됐고 실제 C Service와 D
+추천 계약이 연결되면 라우터를 추가한다. run_agent_flow()는 Protocol에만 의존하므로,
+run_agent()의 provider 조립 부분만 Fake에서 실제 구현으로 교체하면 된다.
 """
 
 from __future__ import annotations
@@ -161,9 +161,9 @@ async def run_agent_flow(
 async def run_agent(request: AgentRequest) -> AgentResponse:
     """호출자가 쓰는 Fake/Real 공통 진입점 — factory로 provider를 조립한다.
 
-    ToolProvider/RecommendationProvider는 C/D 실제 계약이 확정되기 전까지 항상 Fake로
-    고정한다. app.tool_intelligence나 D의 구체 클래스는 이 함수를 포함해 이 모듈 어디서도
-    import하지 않는다(run_agent_flow()가 Protocol에만 의존하도록 하기 위함).
+    ToolProvider는 A–C 스키마가 확정됐지만 실제 C Service 연결 전이라 Fake를 사용한다.
+    RecommendationProvider도 D 계약 확정 전까지 Fake로 고정한다. 구체 클래스는
+    run_agent_flow()에 노출하지 않고 이 조립 지점에서만 주입한다.
     """
 
     from app.providers.factory import get_llm_provider, get_weather_provider

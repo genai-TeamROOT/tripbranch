@@ -1,7 +1,7 @@
 """A → C 변환의 유일한 지점(A-C Context Contract v0).
 
 역할: A의 UserConditions(app.schemas, enum 타입)를 C의 AgentContextRequest
-(app.services.runtime.context_schemas, Literal 타입)로 변환한다.
+(app.agent_context.schemas, Literal 타입)로 변환한다.
 app.services.interpret.state_transform.to_user_conditions()가 B↔A 변환을 전담하는
 것과 같은 원칙으로, 이 모듈은 A↔C 변환만 전담한다 — 나중에 D 계약이 확정되면 A↔D
 변환 함수가 또 하나 늘어날 텐데, 그때도 A↔B/A↔C/A↔D 세 변환 지점을 서로 섞지 않는다.
@@ -9,9 +9,9 @@ app.services.interpret.state_transform.to_user_conditions()가 B↔A 변환을 �
 
 from __future__ import annotations
 
+from app.agent_context.schemas import AgentContextRequest
+from app.agent_context.schemas import UserConditions as ContextUserConditions
 from app.schemas import UserConditions
-from app.services.runtime.context_schemas import AgentContextRequest
-from app.services.runtime.context_schemas import UserConditions as ContextUserConditions
 
 
 def to_agent_context_request(request_id: str, conditions: UserConditions) -> AgentContextRequest:
