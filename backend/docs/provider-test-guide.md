@@ -102,6 +102,8 @@ python -m pytest tests/test_provider_settings.py -v
 
 ```bash
 python -m pytest \
+  tests/test_candidate_mapper.py \
+  tests/test_provider_contracts.py \
   tests/test_recommendation_pipeline.py \
   tests/test_recommendations.py \
   -v
@@ -115,6 +117,8 @@ python -m pytest \
 - 날씨 실패 시 날씨 Feature를 제외한 가중치 재분배
 - 장소 목록 실패의 `unavailable` 변환
 - 이미 노출된 `place_id` 제외
+- Fake 장소 카테고리 정규화·필터링과 `category_filter` 우선순위
+- 월요일 정기휴무와 운영시간 시작·마감 경계
 
 ## 4. 코드 검사
 
@@ -308,7 +312,19 @@ Inspection Test는 실제 API 요청 파라미터, HTTP 상태, 원본 JSON 응�
 인증 쿼리와 헤더는 `<redacted>`로 마스킹된다. 실패 로그를 공유하기 전에도
 요청 URL에 인증키가 포함되지 않았는지 반드시 확인한다.
 
-전체 실행:
+### Fake 추천 API 요청·응답
+
+```bash
+RUN_RECOMMENDATION_INSPECTION=true python -m pytest \
+  tests/test_recommendation_inspection.py \
+  -v -s
+```
+
+외부 API를 호출하지 않고 금요일 카페 추천, 월요일 전체 추천, 월요일 휴무
+카테고리의 요청·응답 JSON과 `elapsed_ms`를 출력한다. 이 테스트는
+`RUN_RECOMMENDATION_INSPECTION=true`가 없으면 일반 테스트에서 건너뛴다.
+
+실제 Provider 전체 실행:
 
 ```bash
 RUN_REAL_PROVIDER_INSPECTION=true python -m pytest -m inspection -v -s
