@@ -6,6 +6,8 @@ from typing import Any
 
 import pytest
 
+from app.agent_context.schemas import AgentContextResponse
+
 _EXPECTED_TOP_LEVEL_KEYS = {
     "request_id",
     "intent",
@@ -82,6 +84,26 @@ def test_agent_context_fixture_envelope_and_field_names(
     assert isinstance(payload["metadata"]["rule_versions"], dict)
     assert isinstance(payload["metadata"]["provider_metadata"], list)
     _assert_snake_case_keys(payload)
+
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    [
+        "success_agent_context_response",
+        "partial_weather_unavailable_response",
+        "needs_location_clarification_response",
+    ],
+)
+def test_agent_context_fixture_matches_confirmed_pydantic_contract(
+    fixture_name: str,
+    request: pytest.FixtureRequest,
+) -> None:
+    payload = request.getfixturevalue(fixture_name)
+
+    response = AgentContextResponse.model_validate(payload)
+
+    assert response.request_id == payload["request_id"]
+    assert response.status == payload["status"]
 
 
 def test_success_fixture_contains_all_required_context(
