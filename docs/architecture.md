@@ -127,10 +127,11 @@ Holiday Provider는 구현되어 있지만 추천 서비스에 아직 조립되�
   한국어 문장으로 변환 (LLM 미사용)
 - 하지 않음: 추천 순위 재결정, 애매하거나(0.4~0.7) 낮은(<0.4) Feature 점수에
   대한 부정적 근거 문장 생성, 자연어 다듬기/요약(Response Generator 영역)
-- 상태: `Implemented`(초안, D-029). `backend/app/domain/explanation.py::
+- 상태: `Accepted`(D-029). `backend/app/domain/explanation.py::
   build_explanations()`가 Feature 점수 0.7 이상인 것만 기여도 순으로
-  `RecommendationItem.explanations`에 노출. Chat API(`RecommendationResult`)
-  로의 최종 반영은 A(Agent Runtime) 담당과의 API Contract 협의 후 확정 예정
+  `RecommendationItem.explanations`에 노출. A(Agent Runtime) 담당과 API
+  Contract 협의 반영 완료 — 상세 설계는
+  [추천 Explainability Layer 설계](./design/recommendation-explainability.md)
 - 추가(D-030): 날씨 결측·전체 Feature 임계값 미달로 `explanations`가 조용히
   비거나 줄어드는 두 케이스를 `warnings` 문구로 보완. 운영시간 결측만큼
   심각한 불확실성은 아니라고 판단해 `unverified_recommendations` 분리는

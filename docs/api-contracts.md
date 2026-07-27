@@ -80,8 +80,9 @@ wall-clock 시간입니다. HTTP 전송시간과 Frontend 렌더링 시간은 �
 
 `explanations`는 `backend/app/domain/explanation.py::build_explanations()`가
 `RecommendationEvidence.contributions`를 Rule 기반으로 문장화한 값입니다
-(D-029, 초안 — Chat API 통합 시 A 담당과 협의 후 최종 형태가 바뀔 수
-있습니다). LLM을 호출하지 않으며, Feature 점수가 0.7 이상인 것만 기여도
+(D-029, A 담당 Agent Runtime과 API Contract 협의 반영 완료 — 상세는
+[추천 Explainability Layer 설계](./design/recommendation-explainability.md)
+참고). LLM을 호출하지 않으며, Feature 점수가 0.7 이상인 것만 기여도
 (score × weight) 큰 순서로 포함합니다. 결측이거나 애매한 점수(<0.7)인
 Feature는 생략되므로 배열이 빈 값(`[]`)일 수 있습니다.
 
@@ -318,9 +319,13 @@ type RecommendationResult = {
 `score`/`feature_scores`/`weights_used`를 노출하고 있어(D-028), 통합 Chat API
 설계 시 이를 그대로 재사용할 수 있는지 우선 검토합니다.
 
-D-029(Explainability Layer v1, 초안)에서 Rule 기반 `explanations: string[]`도
-추가됐습니다. `reason: string`(단일 문장) 자리에 배열로 합칠지, 별도 필드로
-둘지는 아직 정해지지 않았고 — A(Agent Runtime) 담당과의 협의 대상입니다.
+D-029(Explainability Layer v1)에서 Rule 기반 `explanations: string[]`도
+추가됐습니다. A(Agent Runtime) 담당과 협의한 결과, `reason: string`(단일
+문장) 자리에 합치지 않고 **별도 필드로 유지**하기로 확정했습니다 — 상세
+근거는 [추천 Explainability Layer 설계](./design/recommendation-explainability.md)
+§3.1 참고. `RecommendationResult`에도 이 통합 Chat API 설계 시 `explanations:
+string[]` 필드가 별도로 추가될 예정이며, Rule 기반 문장은 있는 그대로
+노출하고 포맷팅만 Runtime 재량으로 둡니다(§3.2).
 
 ## 5. Provider 계약
 

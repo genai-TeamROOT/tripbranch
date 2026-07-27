@@ -321,8 +321,8 @@
 
 ### D-029 — Recommendation Explainability Layer v1 (Rule 기반)
 
-- 상태: `Implemented`(초안) — Chat API 통합 시점의 A(Agent Runtime) 담당과의
-  API Contract 협의는 아직 진행 전이라 필드 형태가 바뀔 수 있음
+- 상태: `Accepted` — A(Agent Runtime) 담당과 API Contract 협의 반영 완료.
+  상세는 [추천 Explainability Layer 설계](./design/recommendation-explainability.md) 참고
 - 결정: `RecommendationEvidence.contributions`(D-027)를 입력으로 받아, LLM을
   호출하지 않는 Rule 기반·결정적 방식으로 Feature별 한국어 설명 문장을
   생성한다. Feature 점수가 0.7 이상인 것만 "기여도(score × weight) 큰
@@ -374,7 +374,7 @@
 | Chat 계약 naming | Backend Python/JSON `snake_case` | `Accepted` |
 | Backend 상태 저장 | Supabase 테이블과 캐시 역할 | `TBD` |
 | Frontend 저장 | `sessionStorage` 유지 또는 `localStorage` 전환 | `TBD` |
-| Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); 응답 Evidence 노출·E2E 통합 `Implemented`(D-028); Explainability Layer v1 `Implemented`(초안, D-029); warning 커버리지 보완 `Implemented`(D-030) | 구현 완료(Explainability는 A 협의 전 초안) |
+| Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); 응답 Evidence 노출·E2E 통합 `Implemented`(D-028); Explainability Layer v1 `Accepted`(D-029, A 협의 반영 완료); warning 커버리지 보완 `Implemented`(D-030) | 구현 완료 |
 | 혼잡도 fallback | 장소 근접치, 구 단위, Feature 제외 | 현재 논의 중 |
 | 운영시간 파싱 | 기본 시간·월별·주간 휴무 구현, 공휴일·회차 예외 확대 | `부분 구현` |
 | 이동시간 | 지도 Provider 및 교통수단별 계산 | `TBD` |
@@ -407,3 +407,4 @@
 | 2026-07-24 | D-028 추천 파이프라인 1차 E2E 통합 구현 반영 (응답에 score/feature_scores/weights_used 노출, 날씨 유무·결정성 E2E 테스트, 재사용 가능한 파이프라인 Fixture) |
 | 2026-07-27 | D-029 Recommendation Explainability Layer v1(Rule 기반) 구현 반영 (초안, A 담당과 API Contract 협의 전) |
 | 2026-07-27 | D-030 날씨 결측·임계값 미달로 explanations가 비는 두 케이스에 warning 커버리지 보완 |
+| 2026-07-27 | D-029 A 담당과 API Contract 협의 반영 완료, Explanation Rule 정의 문서(`docs/design/recommendation-explainability.md`) 추가 |
