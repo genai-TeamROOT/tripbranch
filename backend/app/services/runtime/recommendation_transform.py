@@ -5,15 +5,28 @@
 (B↔A)와 app.services.runtime.context_transform.to_agent_context_request()
 (A↔C)와 같은 원칙으로, 이 파일의 각 함수도 정확히 명시된 두 구간만 담당한다 —
 서로 다른 변환 지점을 섞지 않는다.
-D가 RecommendationContext를 받아 scoring→evidence→explanation까지 처리하는
-공개 진입점을 제공 예정(D 확인 대기 중) — 그래서 이
-파일은 D 내부(app.domain.*, app.services.recommendation_pipeline)를 전혀
-import하지 않는다. RealRecommendationProvider의 실제 D 호출 코드도 아직
-만들지 않는다.
+이 파일은 D 내부(app.domain.*, app.services.recommendation_pipeline)를 전혀
+import하지 않는다 — D 호출은 app.services.runtime.real_recommendation_provider가
+담당한다.
 """
 
 from __future__ import annotations
 
+<<<<<<< HEAD
+from app.schemas import RecommendationResponse, UserConditions
+from app.services.runtime.context_schemas import RecommendationContext
+from app.state.service import RecommendedPlace, RecordRecommendationRequest
+
+# app.agent_context.service._resolve_search_radius_km()와 동일한 값이어야 한다.
+# C가 context.places를 조회할 때 실제로 이 공식으로 반경을 계산하므로, A가 D에
+# 넘기는 search_radius_km도 같은 값이어야 거리 점수 정규화가 어긋나지 않는다
+# (run_recommendation_pipeline_from_context() docstring 참고). C가 공식을 바꾸면
+# 이 함수도 같이 바꿔야 한다.
+_DEFAULT_RADIUS_KM = 2.0
+_WALKING_KM_PER_MINUTE = 0.07  # 70m/min. transport 값과 무관하게 항상 이 속도를 쓴다.
+_MIN_RADIUS_KM = 0.3
+_MAX_RADIUS_KM = 20.0
+=======
 from app.place_search_policy import (
     DEFAULT_PLACE_SEARCH_RADIUS_KM,
     MAX_PLACE_SEARCH_RADIUS_KM,
@@ -25,21 +38,25 @@ from app.services.runtime.context_schemas import RecommendationContext
 from app.state.service import RecommendedPlace, RecordRecommendationRequest
 
 _OTHER_KM_PER_MIN = 20 / 60  # 임시: 대중교통/자동차/미언급 공통 가정(20km/h)
+>>>>>>> develop
 
 
 def to_search_radius_km(conditions: UserConditions) -> float:
-    """A의 UserConditions(max_travel_time + transport)를 검색 반경(km)으로 변환한다.
+    """A의 UserConditions.max_travel_time을 검색 반경(km)으로 변환한다.
 
-    TODO(D님 확인 대기): 기본 반경(1.0km)과 이동수단별 속도 가정값이 확정되면
-    이 함수만 수정하면 된다. 지금은 도보 70m/min(0.07km/min), 그 외(대중교통/
-    자동차/미언급)는 임시로 20km/h 단일값을 쓴다. max_travel_time이 없으면
-    conditions-schema.md의 missing_conditions 정책대로 기본 반경(1.0km)을
-    그대로 쓴다. 결과는 Tool 제약(NearbyPlaceDetailsQuery: 0 < radius ≤ 20)에
-    맞춰 [0.1, 20.0] 구간으로 clamp한다.
+    C(app.agent_context.service._resolve_search_radius_km())와 정확히 동일한
+    공식이다 — C가 context.places를 조회할 때 이 공식으로 반경을 계산하므로,
+    A가 D에 넘기는 값도 같아야 한다. max_travel_time이 없으면 기본 반경
+    2.0km을 쓴다. transport는 쓰지 않는다(C도 안 씀 — MVP는 도보 속도만
+    가정). 결과는 [0.3, 20.0] 구간으로 clamp한다.
     """
     if conditions.max_travel_time is None:
         return DEFAULT_PLACE_SEARCH_RADIUS_KM
 
+<<<<<<< HEAD
+    estimated_radius = conditions.max_travel_time * _WALKING_KM_PER_MINUTE
+    return max(_MIN_RADIUS_KM, min(_MAX_RADIUS_KM, estimated_radius))
+=======
     speed_km_per_min = (
         WALKING_SPEED_KM_PER_MINUTE
         if conditions.transport is Transport.WALK
@@ -50,6 +67,7 @@ def to_search_radius_km(conditions: UserConditions) -> float:
         MIN_PLACE_SEARCH_RADIUS_KM,
         min(MAX_PLACE_SEARCH_RADIUS_KM, radius),
     )
+>>>>>>> develop
 
 
 def to_weather_condition(context: RecommendationContext) -> str | None:
