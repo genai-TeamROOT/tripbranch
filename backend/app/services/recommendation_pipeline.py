@@ -10,11 +10,15 @@ from time import perf_counter
 from typing import TypeAlias
 from zoneinfo import ZoneInfo
 
+from app.agent_context.schemas import RecommendationContext
 from app.domain.agent_context import AgentToolContext, context_value
-from app.domain.candidate_mapper import map_places_to_scoring_candidates
+from app.domain.candidate_mapper import (
+    map_context_to_scoring_candidates,
+    map_places_to_scoring_candidates,
+)
 from app.domain.evidence import build_evidence
 from app.domain.explanation import build_explanations
-from app.domain.models import ScoringCandidate
+from app.domain.models import ScoringCandidate, WeatherCondition
 from app.domain.scoring import RankedCandidate, ScoringResult, score_candidates
 from app.errors import AppError
 from app.schemas import (
@@ -225,6 +229,90 @@ async def run_recommendation_pipeline(
         scoring=scoring,
         concentrations=concentrations,
     )
+
+
+async def run_recommendation_pipeline_from_context(
+    context: RecommendationContext,
+    *,
+    visit_at: datetime,
+    search_radius_km: float,
+    shown_place_ids: frozenset[str] = frozenset(),
+    rejected_place_ids: frozenset[str] = frozenset(),
+    recommendation_limit: int = DEFAULT_RECOMMENDATION_LIMIT,
+    timer: Timer = perf_counter,
+) -> RecommendationResponse:
+    """A가 C에서 받은 RecommendationContext를 그대로 넘기면, D 내부(후보 변환→
+    Scoring→Evidence→Explanation 조립)를 전부 처리해 RecommendationResponse만
+    반환하는 공개 진입점. `run_recommendation_pipeline()`(Tool 직접 호출 구조)과
+    별개로 공존하며, 기존 구조를 대체하지 않는다.
+
+    호출자 책임: `search_radius_km`은 C가 `context.places`를 조회할 때 실제로
+    사용한 검색 반경과 동일해야 한다 — Scoring의 거리 점수 정규화
+    (`max_distance_km`)가 이 값을 그대로 재사용하기 때문이다
+    (`docs/design/recommendation-scoring.md` 참고). 값이 어긋나면 거리 점수가
+    실제 후보 풀 범위와 안 맞게 계산된다.
+
+    Context 상태 처리: `location`/`places`가 없거나 `unavailable`(조회 자체
+    실패)이면 `AppError`를 던진다. `no_data`(정상 조회했지만 결과 없음)는
+    에러가 아니라 빈 `RecommendationResponse`로 처리한다 — "확인 못 함"과
+    "확인했는데 없음"은 다른 상황이라 구분한다.
+    """
+    started_at = timer()
+
+    location = context.location
+    if (
+        location is None
+        or location.status not in {"success", "partial"}
+        or location.data is None
+    ):
+        raise AppError(
+            code="location_unavailable",
+            message="위치 정보를 확인할 수 없습니다.",
+            status_code=502,
+            retryable=True,
+        )
+
+    places = context.places
+    if places is None or places.status == "unavailable":
+        error = places.error if places is not None else None
+        raise AppError(
+            code=error.code if error else "unavailable",
+            message=error.message if error else "주변 장소를 검색하지 못했습니다.",
+            status_code=502,
+            retryable=error.retryable if error else True,
+        )
+
+    candidates = map_context_to_scoring_candidates(context, visit_at=visit_at)
+    weather_condition = _weather_condition_from_context(context)
+
+    scoring = score_candidates(
+        candidates,
+        now=visit_at,
+        weather_condition=weather_condition,
+        max_distance_km=search_radius_km,
+        shown_place_ids=shown_place_ids,
+        rejected_place_ids=rejected_place_ids,
+    )
+    ranked = scoring.ranked[:recommendation_limit]
+
+    details_missing_place_ids = frozenset(
+        place.place_id
+        for place in (places.data or [])
+        if place.operating_schedule is None
+    )
+    response = _build_response(ranked, candidates, details_missing_place_ids, visit_at)
+    return response.model_copy(
+        update={"elapsed_ms": round((timer() - started_at) * 1000, 2)}
+    )
+
+
+def _weather_condition_from_context(
+    context: RecommendationContext,
+) -> WeatherCondition | None:
+    weather = context.weather
+    if weather is None or weather.status not in {"success", "partial"} or weather.data is None:
+        return None
+    return WeatherCondition(weather.data.condition)
 
 
 async def _fetch_ranked_concentrations(
