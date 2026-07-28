@@ -392,7 +392,45 @@
 - 이유: task.txt 예시가 "Rule 계층은 사실만, 평가·어투는 LLM 몫"이라는
   경계를 명확히 보여주고 있어, 그 경계에 맞춰 문장 톤을 다시 다듬음
 
-## 현재 논의가 필요한 항목
+### D-032 — RecommendationContext → RecommendationResponse 신규 진입점
+
+- 상태: `Implemented`
+- 결정: A(Agent Runtime)가 C에서 받은 `RecommendationContext`를 그대로
+  넘기면, D 내부(후보 변환→Scoring→Evidence→Explanation 조립)를 전부
+  처리해 `RecommendationResponse`만 반환하는 공개 함수
+  `run_recommendation_pipeline_from_context()`를 신설한다
+  (`package_D/[A] RecommendationContext → RecommendationResponse 진입점
+  요청.txt`). A가 D 내부 구현(`score_candidates()`/`build_evidence()`/
+  `build_explanations()`/private `_build_response()`)에 직접 의존하지
+  않도록 하기 위함. 기존 Tool 직접 호출 구조(`run_recommendation_pipeline()`,
+  `recommendations.py`)는 그대로 유지되며 대체되지 않는다 — 두 진입점이
+  공존한다.
+  - `candidate_limit`은 새 시그니처에 포함하지 않기로 판단했다. C가 이미
+    최종 후보 목록을 확정해서 넘기는 구조라, D가 그 뒤에 개수를 다시
+    제어할 근거가 없기 때문이다.
+  - `search_radius_km`은 호출자(A)가 C가 해당 요청에서 실제로 후보를
+    조회할 때 사용한 반경과 동일한 값을 넘겨야 한다는 전제를 docstring에
+    명시했다 — Scoring의 거리 점수 정규화(`max_distance_km`)가 이 값을
+    그대로 재사용하기 때문이며, 코드로는 이 일치 여부를 검증할 수 없다.
+  - `context.location`/`context.places` 상태를 구분해서 처리한다:
+    `success`/`partial`(정상 진행), `no_data`(정상 조회했지만 결과 없음 →
+    빈 `RecommendationResponse`, 에러 아님), `unavailable`(조회 자체 실패
+    → `AppError`). "확인 못 함"과 "확인했는데 없음"을 구분하기 위함이다.
+- 구현: `backend/app/services/recommendation_pipeline.py`에
+  `run_recommendation_pipeline_from_context()`, `_weather_condition_from_context()`
+  추가. 기존 `_build_response()`/`_extra_warnings()`가 Tool 전용 타입
+  `EnrichedPlace`에 의존하던 것을 "상세정보 결측 place_id 집합"
+  (`frozenset[str]`)으로 일반화해 두 진입점에서 공유하도록 리팩터링.
+  `backend/tests/test_recommendation_pipeline.py`에 정상/날씨 결측/후보
+  없음/조회 실패/위치 결측 5개 시나리오 테스트 추가
+- 범위 제외: `candidate_limit` 관련 논의는 A에게 별도로 공유하되 이번
+  구현엔 반영하지 않음. 혼잡도(concentration) 조회는 `RecommendationResponse`
+  자체에 포함되지 않는 부가 정보라 이 진입점에서 다루지 않음
+- 이유: `map_context_to_scoring_candidates()`가 이미 존재하지만 유닛
+  테스트로만 검증되고 어떤 파이프라인에도 연결되지 않은 상태였음. A가
+  D 내부 함수 4개를 직접 조합하는 대신, 단일 공개 진입점을 통해 D 내부
+  구현 변경에 영향받지 않도록 경계를 명확히 함
+
 
 | 항목 | 선택지/질문 | 상태 |
 | --- | --- | --- |
@@ -400,7 +438,7 @@
 | Chat 계약 naming | Backend Python/JSON `snake_case` | `Accepted` |
 | Backend 상태 저장 | Supabase 테이블과 캐시 역할 | `TBD` |
 | Frontend 저장 | `sessionStorage` 유지 또는 `localStorage` 전환 | `TBD` |
-| Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); 응답 Evidence 노출·E2E 통합 `Implemented`(D-028); Explainability Layer v1 `Accepted`(D-029, A 협의 반영 완료); warning 커버리지 보완 `Implemented`(D-030); Explanation 문장 구체화 `Implemented`(D-031) | 구현 완료 |
+| Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); 응답 Evidence 노출·E2E 통합 `Implemented`(D-028); Explainability Layer v1 `Accepted`(D-029, A 협의 반영 완료); warning 커버리지 보완 `Implemented`(D-030); Explanation 문장 구체화 `Implemented`(D-031); RecommendationContext 진입점 `Implemented`(D-032) | 구현 완료 |
 | 혼잡도 fallback | 장소 근접치, 구 단위, Feature 제외 | 현재 논의 중 |
 | 운영시간 파싱 | 기본 시간·월별·주간 휴무 구현, 공휴일·회차 예외 확대 | `부분 구현` |
 | 이동시간 | 지도 Provider 및 교통수단별 계산 | `TBD` |
@@ -435,3 +473,4 @@
 | 2026-07-27 | D-030 날씨 결측·임계값 미달로 explanations가 비는 두 케이스에 warning 커버리지 보완 |
 | 2026-07-27 | D-029 A 담당과 API Contract 협의 반영 완료, Explanation Rule 정의 문서(`docs/design/recommendation-explainability.md`) 추가 |
 | 2026-07-27 | D-031 Explanation 문장을 고정 텍스트에서 거리/남은 운영시간/날씨·환경 계산값 기반 사실 문장으로 구체화 |
+| 2026-07-28 | D-032 A 요청으로 `run_recommendation_pipeline_from_context()` 신규 진입점 추가, 기존 Tool 기반 파이프라인과 공존 |
