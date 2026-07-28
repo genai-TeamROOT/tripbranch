@@ -445,7 +445,9 @@
   RecommendationContext 경계 정리.txt`). Protocol 시그니처
   (`recommend(conditions, context, excluded_place_ids)`)는 A가 이미
   확정해둔 형태 그대로 사용했고 D 쪽에서 변경하지 않았다.
-- 구현: `backend/app/services/runtime/recommendation_provider.py` 신설.
+- 구현: `backend/app/services/runtime/recommendation_provider.py` 신설(주: 이
+  파일은 이후 D-035에서 develop과의 중복으로 삭제되고
+  `real_recommendation_provider.py`로 대체됐다 — 클래스명·시그니처는 동일).
   `search_radius_km`은 A가 이미 구현해둔
   `recommendation_transform.to_search_radius_km(conditions)`로 계산하고,
   `visit_at`은 `now_kst()`(현재 시각)를 쓴다 — 사용자가 미래 방문 시각을
@@ -513,13 +515,39 @@
   (`_operating_hours_for_visit()`), 관련 테스트 2개(`test_candidate_mapper.py`)까지
   함께 삭제해 D 도메인 코드에서 C Tool 타입 의존을 완전히 제거했다
 
+### D-035 — develop 재병합 시 RecommendationProvider 중복 구현 정리
+
+- 상태: `Implemented`
+- 결정: `feature/tech-02-context-boundary`에 최신 `develop`(mintee의
+  A-04 작업 포함)을 재병합하는 과정에서, D-033에서 만든
+  `recommendation_provider.py`(`RealRecommendationProvider`)와 develop에
+  이미 병합돼 있던 mintee의 `real_recommendation_provider.py`가 같은
+  `RecommendationProvider` Protocol을 사실상 동일하게 구현한 중복임을
+  확인했다. 우리 쪽 파일을 삭제하고 `real_recommendation_provider.py`
+  하나로 통합한다
+- 구현: `backend/app/services/runtime/recommendation_provider.py`와
+  `tests/test_recommendation_provider.py` 삭제. `agent_runtime.py`의
+  `run_agent()`가 주입하는 provider를
+  `app.services.runtime.real_recommendation_provider.RealRecommendationProvider`
+  로 교체. `protocols.py` docstring의 파일 경로 참조도 함께 갱신
+- 이유: 두 구현이 로직상 동일(`run_recommendation_pipeline_from_context()`
+  호출, `to_search_radius_km()`로 반경 계산)해 어느 쪽을 남겨도 기능
+  차이는 없었다. develop에 이미 병합되어 있고 자체 단위 테스트
+  (`test_real_recommendation_provider.py`)까지 갖춘 mintee 쪽을 정본으로
+  채택해 이후 develop과의 재충돌을 줄이는 쪽을 택했다
+- 확인: 병합 후 `ruff check .` 전체 통과, `pytest` 596 passed / 20
+  skipped로 회귀 없음을 확인했다. 이 병합으로 develop이 함께 가져온
+  `place_search_policy.py`의 `DEFAULT_PLACE_SEARCH_RADIUS_KM`(1.0→2.0)/
+  `MIN_PLACE_SEARCH_RADIUS_KM`(0.1→0.3) 변경은 D 코드가 상수를 import해서
+  쓰는 값이라 D 쪽 수정 없이 그대로 반영됐다
+
 | 항목 | 선택지/질문 | 상태 |
 | --- | --- | --- |
 | LLM Provider | 공급자, 모델, timeout, fallback | `TBD` |
 | Chat 계약 naming | Backend Python/JSON `snake_case` | `Accepted` |
 | Backend 상태 저장 | Supabase 테이블과 캐시 역할 | `TBD` |
 | Frontend 저장 | `sessionStorage` 유지 또는 `localStorage` 전환 | `TBD` |
-| Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); 응답 Evidence 노출·E2E 통합 `Implemented`(D-028); Explainability Layer v1 `Accepted`(D-029, A 협의 반영 완료); warning 커버리지 보완 `Implemented`(D-030); Explanation 문장 구체화 `Implemented`(D-031); RecommendationContext 진입점 `Implemented`(D-032); Agent Runtime RecommendationProvider 연결 `Implemented`(D-033); Tool 직접 호출 파이프라인 삭제·레거시 라우터 마이그레이션 `Implemented`(D-034) | 구현 완료 |
+| Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); 응답 Evidence 노출·E2E 통합 `Implemented`(D-028); Explainability Layer v1 `Accepted`(D-029, A 협의 반영 완료); warning 커버리지 보완 `Implemented`(D-030); Explanation 문장 구체화 `Implemented`(D-031); RecommendationContext 진입점 `Implemented`(D-032); Agent Runtime RecommendationProvider 연결 `Implemented`(D-033); Tool 직접 호출 파이프라인 삭제·레거시 라우터 마이그레이션 `Implemented`(D-034); develop 재병합 시 RecommendationProvider 중복 정리 `Implemented`(D-035) | 구현 완료 |
 | 혼잡도 fallback | 장소 근접치, 구 단위, Feature 제외 | 현재 논의 중 |
 | 운영시간 파싱 | 기본 시간·월별·주간 휴무 구현, 공휴일·회차 예외 확대 | `부분 구현` |
 | 이동시간 | 지도 Provider 및 교통수단별 계산 | `TBD` |
@@ -557,3 +585,4 @@
 | 2026-07-28 | D-032 A 요청으로 `run_recommendation_pipeline_from_context()` 신규 진입점 추가, 기존 Tool 기반 파이프라인과 공존(이후 D-034에서 공존 종료, 완전 삭제) |
 | 2026-07-28 | D-033 Agent Runtime `RecommendationProvider`에 `RealRecommendationProvider` 연결, `run_agent()` 기본 provider를 Fake에서 실제 구현으로 교체 |
 | 2026-07-28 | D-034 `run_recommendation_pipeline()`(Tool 직접 호출) 완전 삭제, `/api/recommendations` 라우터를 `run_recommendation_pipeline_from_context()` 기반으로 마이그레이션 |
+| 2026-07-28 | D-035 develop 재병합 시 발견된 `RealRecommendationProvider` 중복 구현 정리, mintee의 `real_recommendation_provider.py`로 통합 |
