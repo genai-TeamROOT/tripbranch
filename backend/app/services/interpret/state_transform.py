@@ -126,10 +126,11 @@ def transform(
                     modify.condition_changes, modify.changed_fields, session_context
                 )
             )
-            # CHANGE_CONDITION은 사용자가 싫어서가 아니라 조건이 바뀌어서 제외되는
-            # 것이므로 REJECT_ALL의 not_interested와 reason_code를 구분한다.
-            rejected_places = _rejected_from_shown(session_context, "other")
-        reset_scope = _detect_reset_scope(user_input, modify.changed_fields)
+            # CHANGE_CONDITION은 사용자가 싫어서가 아니라 조건이 바뀌어서 제외되는 것이다.
+            # rejected(영구 제외)로 기록하지 않는다 — 대신 reset_scope="history"로 직전
+            # 노출분(recommended)만 비워서, 조건이 되돌아오면 다시 노출될 수 있게 한다.
+            # (거절 이력은 그대로 유지되므로 REJECT_ALL의 not_interested는 영향 없음.)
+        reset_scope = _detect_reset_scope(user_input, modify.modify_type)
 
     # INFO/COMPARE/GENERAL/OUT_OF_SCOPE: operations=[], rejected_places=[], reset_scope=None.
 
@@ -250,13 +251,19 @@ def _rejected_from_shown(
     ]
 
 
-def _detect_reset_scope(user_input: str, changed_fields: list[str]) -> str | None:
-    """MODIFY에서만 호출된다. reset_scope는 B가 자동 판단하지 않으므로 A가 명시한다."""
+def _detect_reset_scope(user_input: str, modify_type: ModifyType) -> str | None:
+    """MODIFY에서만 호출된다. reset_scope는 B가 자동 판단하지 않으므로 A가 명시한다.
+
+    CHANGE_CONDITION은 phrase가 없어도 기본으로 "history"를 반환한다 — 조건이
+    바뀌면 직전 노출분(recommended)을 비워서, 조건이 되돌아왔을 때 다시 노출될
+    수 있게 한다. REJECT_ALL은 대상이 아니다 — 그쪽은 rejected 기록으로 영구
+    제외를 이미 표현하므로 기본값을 None으로 유지한다.
+    """
 
     for phrase, scope in _RESET_SCOPE_PHRASES:
         if phrase in user_input:
             return scope
-    if "search_center" in changed_fields:
+    if modify_type is ModifyType.CHANGE_CONDITION:
         return "history"
     return None
 

@@ -92,7 +92,12 @@ def test_tc07_reject_all_has_no_operations_and_marks_not_interested() -> None:
     assert request.reset_scope is None
 
 
-def test_tc08_change_condition_budget_update_and_reason_other() -> None:
+def test_tc08_change_condition_budget_update_triggers_reset_scope_history() -> None:
+    """CHANGE_CONDITION은 직전 노출분을 rejected로 영구 제외하지 않는다.
+
+    대신 reset_scope="history"로 recommended만 비워서, 조건이 되돌아오면 다시
+    노출될 수 있게 한다(거절 이력은 그대로 유지 — B의 history reset이 보장).
+    """
     current = StateUserConditions(search_center="경복궁", place_types=["restaurant"])
     context = _context(shown_place_ids=["A", "B", "C"], user_conditions=current)
     changes = UserConditions(search_center="경복궁", place_types=["restaurant"], budget="free")
@@ -112,8 +117,8 @@ def test_tc08_change_condition_budget_update_and_reason_other() -> None:
     assert request.operations[0].op == "Update"
     assert request.operations[0].field == "budget"
     assert request.operations[0].value == "free"
-    assert all(r.reason_code == "other" for r in request.rejected_places)
-    assert request.reset_scope is None
+    assert request.rejected_places == []
+    assert request.reset_scope == "history"
 
 
 def test_tc09_search_center_change_triggers_reset_scope_history() -> None:

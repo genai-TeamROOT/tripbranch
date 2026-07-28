@@ -12,7 +12,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.state.service import StateApplyResponse
 
@@ -264,13 +264,40 @@ class UserConditions(BaseModel):
     weather: StatedWeather | None = None
     weather_intent: WeatherIntent | None = None
     transport: Transport | None = None
-    max_travel_time: int | None = None
-    time_available: int | None = None
+    max_travel_time: int | None = Field(default=None, ge=0)
+    time_available: int | None = Field(default=None, ge=0)
     environment: Environment | None = None
     companion: Companion | None = None
     budget: str | None = None
     exclude_tags: list[str] = Field(default_factory=list)
     special_requirements: list[str] = Field(default_factory=list)
+
+    @field_validator("current_location", "search_center", mode="before")
+    @classmethod
+    def _blank_to_none(cls, value: str | None) -> str | None:
+        """공백/빈 문자열은 None으로 낮춘다.
+
+        A-C Context Contract v0 §4.4: "빈 문자열과 공백 문자열은 허용하지 않는다."
+        C로 넘어가기 전에 A 쪽에서 미리 차단한다.
+        """
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+    @field_validator("max_travel_time", "time_available", mode="before")
+    @classmethod
+    def _zero_to_none(cls, value: object) -> object:
+        """0은 "시간 제한 없음"이 아니라 None으로 정규화한다.
+
+        "시간 제한 없음"은 max_travel_time=0이 아니라 None으로 표현하기로
+        확정됐다. mode="before"라 Field(ge=0) 검사보다 먼저 실행되므로,
+        음수는 이 함수를 그대로 통과해 여전히 ValidationError로 막힌다.
+        C(app.agent_context.schemas.UserConditions)의 max_travel_time/
+        time_available은 Field(gt=0)이라 0을 애초에 거부하는데, 이 정규화
+        덕분에 A에서 C로 0이 넘어갈 일 자체가 없어진다.
+        """
+        return None if value == 0 else value
 
 
 class RecommendPayload(BaseModel):
