@@ -403,8 +403,11 @@
   요청.txt`). A가 D 내부 구현(`score_candidates()`/`build_evidence()`/
   `build_explanations()`/private `_build_response()`)에 직접 의존하지
   않도록 하기 위함. 기존 Tool 직접 호출 구조(`run_recommendation_pipeline()`,
-  `recommendations.py`)는 그대로 유지되며 대체되지 않는다 — 두 진입점이
-  공존한다.
+  `recommendations.py`)는 이 시점엔 그대로 유지하고 대체하지 않기로
+  했다 — 두 진입점이 공존하는 상태였다. **(주: 이 판단은 이후 D-034에서
+  뒤집혔다. `run_recommendation_pipeline()`은 완전히 삭제됐고
+  `recommendations.py`도 이 진입점 기반으로 마이그레이션됐다 — 상세는
+  D-034 참고.)**
   - `candidate_limit`은 새 시그니처에 포함하지 않기로 판단했다. C가 이미
     최종 후보 목록을 확정해서 넘기는 구조라, D가 그 뒤에 개수를 다시
     제어할 근거가 없기 때문이다.
@@ -551,6 +554,6 @@
 | 2026-07-27 | D-030 날씨 결측·임계값 미달로 explanations가 비는 두 케이스에 warning 커버리지 보완 |
 | 2026-07-27 | D-029 A 담당과 API Contract 협의 반영 완료, Explanation Rule 정의 문서(`docs/design/recommendation-explainability.md`) 추가 |
 | 2026-07-27 | D-031 Explanation 문장을 고정 텍스트에서 거리/남은 운영시간/날씨·환경 계산값 기반 사실 문장으로 구체화 |
-| 2026-07-28 | D-032 A 요청으로 `run_recommendation_pipeline_from_context()` 신규 진입점 추가, 기존 Tool 기반 파이프라인과 공존 |
+| 2026-07-28 | D-032 A 요청으로 `run_recommendation_pipeline_from_context()` 신규 진입점 추가, 기존 Tool 기반 파이프라인과 공존(이후 D-034에서 공존 종료, 완전 삭제) |
 | 2026-07-28 | D-033 Agent Runtime `RecommendationProvider`에 `RealRecommendationProvider` 연결, `run_agent()` 기본 provider를 Fake에서 실제 구현으로 교체 |
 | 2026-07-28 | D-034 `run_recommendation_pipeline()`(Tool 직접 호출) 완전 삭제, `/api/recommendations` 라우터를 `run_recommendation_pipeline_from_context()` 기반으로 마이그레이션 |
