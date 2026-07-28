@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.errors import AppError
+from app.providers.factory import validate_provider_config
 from app.providers.tour_category_registry import get_tour_category_registry
 from app.routes.health import router as health_router
 from app.routes.interpret import router as interpret_router
@@ -26,6 +27,8 @@ from app.routes.recommendations import router as recommendations_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    # 오설정을 첫 요청의 익명 500이 아니라 부팅 실패로 드러낸다.
+    validate_provider_config()
     app.state.tour_category_registry = get_tour_category_registry()
     yield
 
