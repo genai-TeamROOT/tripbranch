@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 import pytest
 from fixtures.recommendation_pipeline_fixture_v1 import (
     VISIT_AT,
@@ -8,13 +10,24 @@ from fixtures.recommendation_pipeline_fixture_v1 import (
     build_tools,
 )
 
+from app.agent_context.schemas import (
+    ContextError,
+    RecommendationContext,
+    ResolvedLocation,
+    WeatherForecast,
+)
+from app.agent_context.schemas import ContextValue as AgentContextValue
+from app.agent_context.schemas import Coordinates as AgentCoordinates
+from app.agent_context.schemas import PlaceCandidate as AgentPlaceCandidate
 from app.domain.models import PlaceDetails, WeatherCondition
 from app.domain.operating_hours import normalize_operating_schedule
+from app.errors import AppError
 from app.providers.contracts import ProviderResult, ProviderSource, provider_result
 from app.schemas import PlaceCandidate
 from app.services.recommendation_pipeline import (
     RecommendationPipelineRequest,
     run_recommendation_pipeline,
+    run_recommendation_pipeline_from_context,
 )
 from app.tools.contracts import ToolStatus
 
@@ -261,3 +274,125 @@ async def test_pipeline_warns_when_no_feature_is_notable() -> None:
     item = result.response.recommendations[0]
     assert item.explanations == []
     assert _NO_NOTABLE_EXPLANATION_WARNING in item.warnings
+
+
+# --- run_recommendation_pipeline_from_context() ----------------------------
+#
+# A가 C에서 받은 RecommendationContext를 그대로 넘기는 신규 진입점 검증.
+# package_D/[A] RecommendationContext → RecommendationResponse 진입점 요청.txt
+
+_CONTEXT_VISIT_AT = datetime(2026, 7, 28, 15, 0, tzinfo=UTC)
+
+
+def _context_location() -> AgentContextValue:
+    return AgentContextValue(
+        status="success",
+        data=ResolvedLocation(
+            requested_query="경복궁",
+            resolved_name="경복궁",
+            location=AgentCoordinates(latitude=37.5796, longitude=126.9770),
+        ),
+    )
+
+
+def _context_place(place_id: str = "place-1") -> AgentPlaceCandidate:
+    return AgentPlaceCandidate(
+        place_id=place_id,
+        name="근처 카페",
+        category="cafe",
+        location=AgentCoordinates(latitude=37.5806, longitude=126.9770),
+        operating_schedule={"availability": "all_day", "rules": [], "closure_rules": []},
+    )
+
+
+@pytest.mark.asyncio
+async def test_pipeline_from_context_builds_recommendation_with_explanations() -> None:
+    context = RecommendationContext(
+        location=_context_location(),
+        weather=AgentContextValue(
+            status="success",
+            data=WeatherForecast(condition="bad", forecast_for=_CONTEXT_VISIT_AT),
+        ),
+        places=AgentContextValue(status="success", data=[_context_place()]),
+    )
+
+    response = await run_recommendation_pipeline_from_context(
+        context,
+        visit_at=_CONTEXT_VISIT_AT,
+        search_radius_km=2.0,
+    )
+
+    assert len(response.recommendations) == 1
+    assert response.unverified_recommendations == []
+    assert response.recommendations[0].explanations
+
+
+@pytest.mark.asyncio
+async def test_pipeline_from_context_handles_missing_weather() -> None:
+    context = RecommendationContext(
+        location=_context_location(),
+        weather=None,
+        places=AgentContextValue(status="success", data=[_context_place()]),
+    )
+
+    response = await run_recommendation_pipeline_from_context(
+        context,
+        visit_at=_CONTEXT_VISIT_AT,
+        search_radius_km=2.0,
+    )
+
+    assert response.recommendations
+    assert _WEATHER_MISSING_WARNING in response.recommendations[0].warnings
+
+
+@pytest.mark.asyncio
+async def test_pipeline_from_context_returns_empty_when_places_have_no_data() -> None:
+    context = RecommendationContext(
+        location=_context_location(),
+        places=AgentContextValue(status="no_data", data=[]),
+    )
+
+    response = await run_recommendation_pipeline_from_context(
+        context,
+        visit_at=_CONTEXT_VISIT_AT,
+        search_radius_km=2.0,
+    )
+
+    assert response.recommendations == []
+    assert response.unverified_recommendations == []
+
+
+@pytest.mark.asyncio
+async def test_pipeline_from_context_raises_when_places_unavailable() -> None:
+    context = RecommendationContext(
+        location=_context_location(),
+        places=AgentContextValue(
+            status="unavailable",
+            error=ContextError(
+                code="place_search_failed", message="장소 조회 실패", retryable=True
+            ),
+        ),
+    )
+
+    with pytest.raises(AppError) as exc_info:
+        await run_recommendation_pipeline_from_context(
+            context,
+            visit_at=_CONTEXT_VISIT_AT,
+            search_radius_km=2.0,
+        )
+
+    assert exc_info.value.code == "place_search_failed"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_from_context_raises_when_location_missing() -> None:
+    context = RecommendationContext(location=None, places=None)
+
+    with pytest.raises(AppError) as exc_info:
+        await run_recommendation_pipeline_from_context(
+            context,
+            visit_at=_CONTEXT_VISIT_AT,
+            search_radius_km=2.0,
+        )
+
+    assert exc_info.value.code == "location_unavailable"
