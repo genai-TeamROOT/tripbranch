@@ -7,7 +7,16 @@ from typing import Literal
 from pydantic import Field, field_validator, model_validator
 
 from app.agent_context.schemas import ContextError, ProviderMetadata, StrictModel
+from app.concentration_policy import ConcentrationLabel, ConcentrationLevel
 from app.recommendation_limits import MAX_RECOMMENDATION_CANDIDATE_LIMIT
+
+CandidateEnrichmentStatus = Literal["success", "no_data", "unavailable"]
+EnrichmentResponseStatus = Literal[
+    "success",
+    "partial",
+    "no_data",
+    "unavailable",
+]
 
 
 class CandidateEnrichmentTarget(StrictModel):
@@ -47,11 +56,13 @@ class CandidateEnrichmentRequest(StrictModel):
 
 
 class ConcentrationForecastData(StrictModel):
-    """Provider 집중률 예측에서 A와 D가 소비할 표준 필드."""
+    """Provider 집중률 예측에서 A가 소비할 표준 필드."""
 
     place_name: str
     forecast_date: str | None = None
     concentration_rate: float | None = None
+    concentration_level: ConcentrationLevel
+    concentration_label: ConcentrationLabel
 
 
 class CandidateEnrichmentResult(StrictModel):
@@ -61,7 +72,7 @@ class CandidateEnrichmentResult(StrictModel):
     name: str = Field(min_length=1)
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
-    status: Literal["success", "no_data", "unavailable"]
+    status: CandidateEnrichmentStatus
     concentration: list[ConcentrationForecastData] | None = None
     error: ContextError | None = None
     provider_metadata: list[ProviderMetadata] = Field(default_factory=list)
@@ -90,7 +101,7 @@ class CandidateEnrichmentResponse(StrictModel):
     """C가 후보 순서를 유지해 반환하는 Concentration 보강 응답."""
 
     request_id: str = Field(min_length=1)
-    status: Literal["success", "partial", "no_data", "unavailable"]
+    status: EnrichmentResponseStatus
     candidates: list[CandidateEnrichmentResult] = Field(
         min_length=1,
         max_length=MAX_RECOMMENDATION_CANDIDATE_LIMIT,
@@ -109,8 +120,8 @@ class CandidateEnrichmentResponse(StrictModel):
 
 
 def resolve_enrichment_status(
-    statuses: list[Literal["success", "no_data", "unavailable"]],
-) -> Literal["success", "partial", "no_data", "unavailable"]:
+    statuses: list[CandidateEnrichmentStatus],
+) -> EnrichmentResponseStatus:
     """후보별 상태 조합을 보강 응답의 전체 상태로 축약한다."""
 
     if statuses and all(status == "success" for status in statuses):
@@ -126,6 +137,8 @@ __all__ = [
     "CandidateEnrichmentRequest",
     "CandidateEnrichmentResponse",
     "CandidateEnrichmentResult",
+    "CandidateEnrichmentStatus",
     "CandidateEnrichmentTarget",
     "ConcentrationForecastData",
+    "EnrichmentResponseStatus",
 ]

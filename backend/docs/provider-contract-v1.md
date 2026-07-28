@@ -997,12 +997,33 @@ Provider 응답 필드 변화에 대비해 다음 alias를 순서대로 확인�
 | 예측일 | `fcastYmd`, `forecastYmd`, `baseYmd`, `forecastDate`, `ymd` |
 | 집중률 | `cnctrRate`, `concentrationRate`, `congestionRate`, `rate` |
 
-집중률은 `%` 접미사를 제거하고 `float`로 변환합니다. 변환 불가는 `None`이며 원본은
-`raw_data`에 보존합니다. item이 없거나 예상 구조가 아니면 빈 forecasts를 반환합니다.
+Provider 계층은 집중률의 `%` 접미사를 제거하고 `float`로 변환합니다. 변환 불가는
+`None`이며 원본은 `raw_data`에 보존합니다. item이 없거나 예상 구조가 아니면 빈
+forecasts를 반환합니다.
+
+후보 보강 응답을 생성할 때 C는 API 호출 시점의 한국 날짜(`Asia/Seoul`)와 일치하는
+예측만 선택합니다. `YYYYMMDD` 또는 ISO 형식으로 수신한 날짜는 `YYYY-MM-DD`로
+정규화하고, 요청 후보와 장소명이 같은 유효한 숫자값을 우선해 최대 한 건짜리
+`concentration` 목록으로 반환합니다. 오늘 값이 없거나 숫자로 사용할 수 없으면 다른
+날짜로 대체하지 않고 해당 후보를 `no_data`로 처리합니다.
+
+선택한 오늘 집중률은 평시 대비 상대 비율로 보고 다음 네 단계로 정규화합니다. 원본
+`concentration_rate`는 유지하고 영문 코드 `concentration_level`과 사용자 표시용
+`concentration_label`을 함께 반환합니다. 임계값·단계 enum·표시명·정규화 함수는
+`app/concentration_policy.py`에서 공통 관리합니다.
+
+| 집중률 범위 | `concentration_level` | `concentration_label` |
+| --- | --- | --- |
+| 50% 이하 | `relaxed` | 여유 |
+| 50% 초과 75% 이하 | `normal` | 보통 |
+| 75% 초과 100% 이하 | `slightly_crowded` | 약간 붐빔 |
+| 100% 초과 | `crowded` | 붐빔 |
+
+음수·무한대·숫자 변환 불가 값은 등급을 만들지 않고 `no_data`로 처리합니다.
 
 ### 11.4 Fake 동작
 
-요청 장소명 또는 기본 경복궁에 대해 2026-07-23~25의 42.0, 58.0, 76.0 고정
+요청 장소명 또는 기본 경복궁에 대해 호출일 전날·당일·다음 날의 42.0, 58.0, 76.0
 예측값을 반환합니다.
 
 ### 11.5 오류와 제약
@@ -1016,7 +1037,7 @@ Provider 응답 필드 변화에 대비해 다음 alias를 순서대로 확인�
 
 - 반환값은 실시간 “현재 혼잡률”이 아니라 제공 날짜별 상대 집중률 예측
 - 임의 장소가 데이터셋에 없을 때 근처/구 단위 fallback은 미구현
-- 집중률의 정확한 범위와 Scoring 정규화 정책은 추천 계층의 `TBD`
+- 집중률 단계 구간은 확정했으며 Scoring 반영 여부는 별도 정책
 - 추천 서비스에서 Scoring 상위 후보만 후조회하며 현재 점수에는 반영하지 않음
 
 ## 12. HolidayProvider
@@ -1258,10 +1279,10 @@ C의 공식 후보 보강 흐름은 초기 `RecommendationContext`와 분리됩�
 
 | ID | 우선순위 | Blocker | 영향 | 현재 대응 | 해결 조건 | 상태 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `CON-01` | `P1` | 결과는 실시간 현재 혼잡도가 아닌 날짜별 상대 집중률 예측 | “지금 덜 붐비는 곳” 요청을 직접 충족하지 못함 | `forecast_date`와 rate 보존 | 현재 시각 추정 사용 여부와 표현 문구 확정 | `현재 논의 중` |
+| `CON-01` | `P1` | 결과는 실시간 현재 혼잡도가 아닌 날짜별 상대 집중률 예측 | “지금 덜 붐비는 곳” 요청을 직접 충족하지 못함 | API 호출일의 한국 날짜 값만 선택하고 상대 집중률 단계로 명시 | 실시간 데이터 추가 여부는 후속 검토 | `부분 해결` |
 | `CON-02` | `P1` | 임의 장소가 집중률 데이터셋에 없을 수 있음 | 많은 Place 후보에 혼잡도 Feature를 부여할 수 없음 | 빈 forecasts 반환 | 근처 지점/지역 fallback 또는 Feature 제외 정책 확정 | `현재 논의 중` |
-| `CON-03` | `P1` | 후조회 결과가 Scoring Feature에는 미반영 | 혼잡도가 최종 순위를 바꾸지 않음 | Scoring 상위 후보만 후조회하고 no_data/장애 시 추천 유지 | 혼잡도 Feature 반영 여부는 별도 정책 | `부분 해결` |
-| `CON-04` | `P2` | 여러 alias로 rate를 허용하지만 단위·범위 계약 미확정 | 다른 필드를 잘못 집중률로 해석하거나 점수 왜곡 가능 | `%` 제거 후 float 변환 | 공식 필드·범위 검증과 normalization 규칙 확정 | `Open` |
+| `CON-03` | `P1` | 후조회 결과가 Scoring Feature에는 미반영 | 혼잡도가 최종 순위를 바꾸지 않음 | 상위 후보만 후조회하고 A의 설명 정보로 사용하도록 확정 | 없음 | `Resolved` |
+| `CON-04` | `P2` | 상대 집중률의 사용자 표시 단계가 필요 | 원본 숫자만으로 혼잡 정도를 설명하기 어려움 | 50·75·100 경계의 네 단계와 음수·비정상 값 `no_data` 규칙 구현 | 경계값 회귀 테스트 유지 | `Resolved` |
 | `CON-05` | `P2` | Place 지역코드와 Concentration 법정동 코드 체계가 다름 | `110`/`11110` 혼용 시 빈 결과 | 문서와 Smoke Test에 종로구 값 고정 | 공통 지역코드 Resolver와 매핑 테스트 | `Open` |
 
 ### 16.7 HolidayProvider Blocker
@@ -1277,7 +1298,7 @@ C의 공식 후보 보강 흐름은 초기 `RecommendationContext`와 분리됩�
 
 1. A Runtime의 D 실제 추천 구현 연결
 2. `PLC-03`, `HOL-01` 공휴일·복합 운영정보 판정
-3. `CON-02`, `CON-03` 혼잡도 Feature 정책 확정
+3. `CON-02` 임의 장소 집중률 부재 시 fallback 정책 확정
 4. 후보 부족 시 pagination·추가 조회 정책
 5. retry, cache, observability 보완
 

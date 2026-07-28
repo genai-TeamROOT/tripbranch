@@ -13,7 +13,7 @@ from app.agent_context.enrichment_schemas import (
     CandidateEnrichmentTarget,
 )
 from app.agent_context.enrichment_service import CandidateEnrichmentService
-from app.agent_context.factory import get_candidate_enrichment_service
+from app.concentration_policy import normalize_concentration
 from app.config import settings
 from app.domain.models import ConcentrationForecast, ConcentrationResult
 from app.errors import AppError, ProviderTimeoutError
@@ -27,6 +27,7 @@ from app.providers.contracts import (
 from app.tools.concentration import GetConcentrationTool
 
 RETRIEVED_AT = datetime(2026, 7, 28, 1, tzinfo=UTC)
+REFERENCE_TIME = datetime(2026, 7, 29, 10, tzinfo=UTC)
 
 
 def _target(index: int, *, name: str | None = None) -> CandidateEnrichmentTarget:
@@ -84,6 +85,7 @@ def _service(provider: _ScriptedConcentrationProvider) -> CandidateEnrichmentSer
     return CandidateEnrichmentService(
         GetConcentrationTool(provider),
         candidate_limit=5,
+        clock=lambda: REFERENCE_TIME,
     )
 
 
@@ -160,6 +162,7 @@ async def test_all_success_preserves_order_metadata_and_internal_region_codes() 
     assert response.candidates[0].latitude == first.latitude
     assert response.candidates[0].longitude == first.longitude
     assert response.candidates[0].concentration[0].concentration_rate == 42.0
+    assert response.candidates[0].concentration[0].forecast_date == "2026-07-29"
     metadata = response.candidates[0].provider_metadata[0]
     assert metadata.source == "tour_api_concentration"
     assert metadata.status == "success"
@@ -168,6 +171,119 @@ async def test_all_success_preserves_order_metadata_and_internal_region_codes() 
         ("11", "11110", "경복궁"),
         ("11", "11110", "창덕궁"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_service_keeps_only_today_and_prefers_matching_place_name() -> None:
+    """여러 날짜·장소가 섞인 응답에서 오늘의 요청 장소 한 건만 반환한다."""
+
+    provider_result = _provider_result("경복궁")
+    provider_result = ProviderResult(
+        data=ConcentrationResult(
+            area_code="11",
+            district_code="11110",
+            requested_place_name="경복궁",
+            forecasts=(
+                ConcentrationForecast(
+                    place_name="경복궁",
+                    forecast_date="20260728",
+                    concentration_rate=31.0,
+                    raw_data={},
+                ),
+                ConcentrationForecast(
+                    place_name="다른 장소",
+                    forecast_date="2026-07-29",
+                    concentration_rate=44.0,
+                    raw_data={},
+                ),
+                ConcentrationForecast(
+                    place_name="경복궁",
+                    forecast_date="20260729",
+                    concentration_rate=55.5,
+                    raw_data={},
+                ),
+                ConcentrationForecast(
+                    place_name="경복궁",
+                    forecast_date="20260730",
+                    concentration_rate=78.0,
+                    raw_data={},
+                ),
+            ),
+            provider="test_concentration",
+        ),
+        metadata=provider_result.metadata,
+    )
+    provider = _ScriptedConcentrationProvider({"경복궁": provider_result})
+
+    response = await _service(provider).enrich(_request(_target(1, name="경복궁")))
+
+    assert response.status == "success"
+    assert response.candidates[0].concentration is not None
+    assert len(response.candidates[0].concentration) == 1
+    assert response.candidates[0].concentration[0].forecast_date == "2026-07-29"
+    assert response.candidates[0].concentration[0].concentration_rate == 55.5
+    assert response.candidates[0].concentration[0].concentration_level == "normal"
+    assert response.candidates[0].concentration[0].concentration_label == "보통"
+
+
+@pytest.mark.parametrize(
+    ("rate", "expected_level", "expected_label"),
+    [
+        (0.0, "relaxed", "여유"),
+        (50.0, "relaxed", "여유"),
+        (50.1, "normal", "보통"),
+        (75.0, "normal", "보통"),
+        (75.1, "slightly_crowded", "약간 붐빔"),
+        (100.0, "slightly_crowded", "약간 붐빔"),
+        (100.1, "crowded", "붐빔"),
+    ],
+)
+def test_normalize_concentration_uses_agreed_boundaries(
+    rate: float,
+    expected_level: str,
+    expected_label: str,
+) -> None:
+    normalized = normalize_concentration(rate)
+
+    assert normalized.level == expected_level
+    assert normalized.label == expected_label
+
+
+@pytest.mark.asyncio
+async def test_service_returns_no_data_when_today_has_no_valid_rate() -> None:
+    """오늘 항목이 없거나 숫자값이 유효하지 않으면 다른 날짜로 대체하지 않는다."""
+
+    provider_result = _provider_result("경복궁")
+    provider_result = ProviderResult(
+        data=ConcentrationResult(
+            area_code="11",
+            district_code="11110",
+            requested_place_name="경복궁",
+            forecasts=(
+                ConcentrationForecast(
+                    place_name="경복궁",
+                    forecast_date="20260728",
+                    concentration_rate=42.0,
+                    raw_data={},
+                ),
+                ConcentrationForecast(
+                    place_name="경복궁",
+                    forecast_date="20260729",
+                    concentration_rate=-1.0,
+                    raw_data={},
+                ),
+            ),
+            provider="test_concentration",
+        ),
+        metadata=provider_result.metadata,
+    )
+    provider = _ScriptedConcentrationProvider({"경복궁": provider_result})
+
+    response = await _service(provider).enrich(_request(_target(1, name="경복궁")))
+
+    assert response.status == "no_data"
+    assert response.candidates[0].status == "no_data"
+    assert response.candidates[0].concentration == []
 
 
 @pytest.mark.asyncio
@@ -275,6 +391,8 @@ async def test_fake_provider_uses_the_common_concentration_contract() -> None:
 async def test_factory_wires_configured_concentration_provider() -> None:
     """Factory가 설정된 Provider를 Tool 경계 안에서 보강 서비스에 연결한다."""
 
+    from app.agent_context.factory import get_candidate_enrichment_service
+
     async with httpx.AsyncClient() as client:
         response = await get_candidate_enrichment_service(client).enrich(
             _request(_target(1, name="경복궁"))
@@ -288,6 +406,8 @@ async def test_factory_wires_configured_concentration_provider() -> None:
 async def test_factory_uses_recommendation_result_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from app.agent_context.factory import get_candidate_enrichment_service
+
     monkeypatch.setattr(settings, "recommendation_result_limit", 1)
 
     async with httpx.AsyncClient() as client:
