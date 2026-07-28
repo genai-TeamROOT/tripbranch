@@ -13,19 +13,19 @@ from app.agent_context.enrichment_schemas import (
     resolve_enrichment_status,
 )
 from app.agent_context.schemas import ContextError, ProviderMetadata
-from app.errors import AppError
 from app.providers.contracts import ProviderMetadata as ProviderMetadataData
-from app.providers.protocols import ConcentrationProvider
+from app.tools.concentration import ConcentrationQuery, GetConcentrationTool
+from app.tools.contracts import ToolStatus
 
 _JONGNO_AREA_CODE = "11"
 _JONGNO_DISTRICT_CODE = "11110"
 
 
 class CandidateEnrichmentService:
-    """D의 상위 후보를 받아 C의 Concentration Provider로 보강한다."""
+    """D의 상위 후보를 받아 C의 Concentration Tool로 보강한다."""
 
-    def __init__(self, concentration_provider: ConcentrationProvider) -> None:
-        self._concentration_provider = concentration_provider
+    def __init__(self, concentration_tool: GetConcentrationTool) -> None:
+        self._concentration_tool = concentration_tool
 
     async def enrich(
         self,
@@ -47,39 +47,49 @@ class CandidateEnrichmentService:
         self,
         candidate: CandidateEnrichmentTarget,
     ) -> CandidateEnrichmentResult:
-        try:
-            provider_result = await self._concentration_provider.get_forecast(
+        tool_result = await self._concentration_tool.execute(
+            ConcentrationQuery(
                 area_code=_JONGNO_AREA_CODE,
                 district_code=_JONGNO_DISTRICT_CODE,
                 place_name=candidate.name,
             )
-        except AppError as error:
+        )
+        if tool_result.status is ToolStatus.UNAVAILABLE:
+            error = tool_result.error
             return CandidateEnrichmentResult(
                 **candidate.model_dump(),
                 status="unavailable",
                 concentration=None,
                 error=ContextError(
-                    code=error.code,
-                    message=error.message,
-                    retryable=error.retryable,
+                    code=error.code if error else "unavailable",
+                    message=(error.message if error else "집중률 정보를 가져오지 못했습니다."),
+                    retryable=error.retryable if error else True,
                 ),
-                provider_metadata=[],
+                provider_metadata=[
+                    _map_provider_metadata(metadata) for metadata in tool_result.provider_metadata
+                ],
             )
 
-        forecasts = [
-            ConcentrationForecastData(
-                place_name=forecast.place_name,
-                forecast_date=forecast.forecast_date,
-                concentration_rate=forecast.concentration_rate,
-            )
-            for forecast in provider_result.data.forecasts
-        ]
+        concentration = tool_result.concentration
+        forecasts = (
+            [
+                ConcentrationForecastData(
+                    place_name=forecast.place_name,
+                    forecast_date=forecast.forecast_date,
+                    concentration_rate=forecast.concentration_rate,
+                )
+                for forecast in concentration.forecasts
+            ]
+            if concentration is not None
+            else []
+        )
+        metadata = [_map_provider_metadata(item) for item in tool_result.provider_metadata]
         return CandidateEnrichmentResult(
             **candidate.model_dump(),
             status="success" if forecasts else "no_data",
             concentration=forecasts,
             error=None,
-            provider_metadata=[_map_provider_metadata(provider_result.metadata)],
+            provider_metadata=metadata,
         )
 
 

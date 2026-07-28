@@ -36,6 +36,8 @@ class ContextAssemblyInput:
     weather_result: WeatherForecastToolResult | None = None
     places_result: NearbyPlaceDetailsResult | None = None
     holidays_result: HolidayToolResult | None = None
+    weather_requested: bool = True
+    holidays_requested: bool = True
 
 
 def assemble_agent_context_response(
@@ -131,7 +133,11 @@ def assemble_agent_context_response(
             ),
             output_context=context,
             metadata_context=context,
-            warnings=_collect_warnings(context, weather_missing=weather is None),
+            warnings=_collect_warnings(
+                context,
+                weather_missing=assembly_input.weather_requested and weather is None,
+                holiday_missing=assembly_input.holidays_requested and holidays is None,
+            ),
             rule_versions=rule_versions,
         )
 
@@ -214,6 +220,8 @@ def _requires_partial_status(assembly_input: ContextAssemblyInput) -> bool:
 def _is_missing_or_failed_weather(
     assembly_input: ContextAssemblyInput,
 ) -> bool:
+    if not assembly_input.weather_requested:
+        return False
     result = assembly_input.weather_result
     return result is None or result.status is not ToolStatus.SUCCESS
 
@@ -221,6 +229,8 @@ def _is_missing_or_failed_weather(
 def _is_missing_or_failed_holiday(
     assembly_input: ContextAssemblyInput,
 ) -> bool:
+    if not assembly_input.holidays_requested:
+        return False
     result = assembly_input.holidays_result
     if result is None:
         return True

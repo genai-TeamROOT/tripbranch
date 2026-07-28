@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import httpx
 import pytest
 from pydantic import ValidationError
 
@@ -12,6 +13,7 @@ from app.agent_context.enrichment_schemas import (
     CandidateEnrichmentTarget,
 )
 from app.agent_context.enrichment_service import CandidateEnrichmentService
+from app.agent_context.factory import get_candidate_enrichment_service
 from app.domain.models import ConcentrationForecast, ConcentrationResult
 from app.errors import AppError, ProviderTimeoutError
 from app.providers.concentration import FakeConcentrationProvider
@@ -21,6 +23,7 @@ from app.providers.contracts import (
     ProviderSource,
     ProviderStatus,
 )
+from app.tools.concentration import GetConcentrationTool
 
 RETRIEVED_AT = datetime(2026, 7, 28, 1, tzinfo=UTC)
 
@@ -76,6 +79,10 @@ def _provider_result(
     )
 
 
+def _service(provider: _ScriptedConcentrationProvider) -> CandidateEnrichmentService:
+    return CandidateEnrichmentService(GetConcentrationTool(provider))
+
+
 class _ScriptedConcentrationProvider:
     """후보 이름별 결과나 오류를 반환하고 호출 인자를 기록한다."""
 
@@ -97,6 +104,7 @@ class _ScriptedConcentrationProvider:
         if isinstance(outcome, AppError):
             raise outcome
         return outcome
+
 
 def test_request_accepts_at_most_five_candidates_and_concentration_only() -> None:
     """후보 상한과 지원 feature를 계약 단계에서 거부한다."""
@@ -127,9 +135,7 @@ async def test_all_success_preserves_order_metadata_and_internal_region_codes() 
         }
     )
 
-    response = await CandidateEnrichmentService(provider).enrich(
-        _request(first, second)
-    )
+    response = await _service(provider).enrich(_request(first, second))
 
     assert response.status == "success"
     assert [candidate.place_id for candidate in response.candidates] == [
@@ -165,7 +171,7 @@ async def test_mixed_candidate_outcomes_return_partial_without_removing_candidat
         }
     )
 
-    response = await CandidateEnrichmentService(provider).enrich(
+    response = await _service(provider).enrich(
         _request(
             _target(1, name="성공"),
             _target(2, name="빈 결과"),
@@ -206,7 +212,7 @@ async def test_all_no_data_returns_no_data_and_keeps_candidates() -> None:
         }
     )
 
-    response = await CandidateEnrichmentService(provider).enrich(
+    response = await _service(provider).enrich(
         _request(_target(1, name="첫째"), _target(2, name="둘째"))
     )
 
@@ -226,7 +232,7 @@ async def test_all_failures_return_unavailable_and_keep_candidates() -> None:
         }
     )
 
-    response = await CandidateEnrichmentService(provider).enrich(
+    response = await _service(provider).enrich(
         _request(_target(1, name="첫째"), _target(2, name="둘째"))
     )
 
@@ -241,9 +247,22 @@ async def test_fake_provider_uses_the_common_concentration_contract() -> None:
     """실제 서비스가 Fake ConcentrationProvider 공통 계약으로 동작한다."""
 
     response = await CandidateEnrichmentService(
-        FakeConcentrationProvider()
+        GetConcentrationTool(FakeConcentrationProvider())
     ).enrich(_request(_target(1, name="경복궁")))
 
     assert response.status == "success"
     assert response.candidates[0].status == "success"
+    assert response.candidates[0].provider_metadata[0].source == "fake_concentration"
+
+
+@pytest.mark.asyncio
+async def test_factory_wires_configured_concentration_provider() -> None:
+    """Factory가 설정된 Provider를 Tool 경계 안에서 보강 서비스에 연결한다."""
+
+    async with httpx.AsyncClient() as client:
+        response = await get_candidate_enrichment_service(client).enrich(
+            _request(_target(1, name="경복궁"))
+        )
+
+    assert response.status == "success"
     assert response.candidates[0].provider_metadata[0].source == "fake_concentration"

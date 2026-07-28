@@ -1,6 +1,7 @@
 """실제 C ContextService가 조건에 따라 Tool을 조합하는 흐름을 검증한다."""
 
 from datetime import datetime
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -9,10 +10,11 @@ import pytest
 from app.agent_context.factory import get_context_provider
 from app.agent_context.schemas import AgentContextRequest, UserConditions
 from app.agent_context.service import ContextService, ContextTools
-from app.domain.models import PlaceCategoryFilter
+from app.domain.models import PlaceCategoryFilter, WeatherForecastResult
 from app.providers.contracts import ProviderResult
 from app.providers.geocoding import FakeGeocodingProvider
 from app.providers.holiday import FakeHolidayProvider
+from app.providers.protocols import WeatherProvider
 from app.providers.stub import FakePlaceProvider, FakeWeatherProvider
 from app.schemas import PlaceCandidate
 from app.tools.holiday import GetHolidaysTool
@@ -23,13 +25,13 @@ from app.tools.weather_forecast import GetWeatherForecastTool
 KST = ZoneInfo("Asia/Seoul")
 
 
-def _service() -> ContextService:
+def _service(weather_provider: WeatherProvider | None = None) -> ContextService:
     place_provider = FakePlaceProvider()
     return ContextService(
         ContextTools(
             location=ResolveLocationTool(FakeGeocodingProvider()),
             places=NearbyPlaceDetailsTool(place_provider, place_provider),
-            weather=GetWeatherForecastTool(FakeWeatherProvider()),
+            weather=GetWeatherForecastTool(weather_provider or FakeWeatherProvider()),
             holidays=GetHolidaysTool(FakeHolidayProvider()),
         ),
         # FakeWeatherProvider도 현재 시각 기준 슬롯을 생성하므로 같은 기준을 쓴다.
@@ -43,6 +45,7 @@ def _request(
     place_types: list[str] | None = None,
     place_tags: list[str] | None = None,
     max_travel_time: int | None = None,
+    weather_intent: Literal["AVOID", "ENJOY", "IGNORE"] | None = None,
 ) -> AgentContextRequest:
     return AgentContextRequest(
         request_id="request-1",
@@ -52,6 +55,7 @@ def _request(
             place_types=place_types or [],
             place_tags=place_tags or [],
             max_travel_time=max_travel_time,
+            weather_intent=weather_intent,
         ),
     )
 
@@ -72,6 +76,7 @@ async def test_collects_real_context_with_fake_external_providers() -> None:
     assert response.metadata.rule_versions == {
         "category": "tour-category-v1",
         "search_radius": "walking-radius-v1",
+        "tool_execution": "context-tool-plan-v1",
     }
 
 
@@ -156,6 +161,20 @@ class _RecordingPlaceProvider(FakePlaceProvider):
         )
 
 
+class _RecordingWeatherProvider(FakeWeatherProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.forecast_calls = 0
+
+    async def get_forecast_slots(
+        self,
+        latitude: float,
+        longitude: float,
+    ) -> ProviderResult[WeatherForecastResult]:
+        self.forecast_calls += 1
+        return await super().get_forecast_slots(latitude, longitude)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("max_travel_time", "expected_radius_km"),
@@ -195,3 +214,21 @@ async def test_max_travel_time_controls_place_search_radius(
     assert response.status == "success"
     # 이후 기록되는 1km 호출은 Fake 상세정보 구현의 내부 후보 재조회다.
     assert place_provider.search_radii[0] == pytest.approx(expected_radius_km)
+
+
+@pytest.mark.asyncio
+async def test_weather_ignore_returns_success_without_weather_context() -> None:
+    weather_provider = _RecordingWeatherProvider()
+    response = await _service(weather_provider).fetch_context(
+        _request(
+            place_types=["restaurant"],
+            place_tags=["카페"],
+            weather_intent="IGNORE",
+        )
+    )
+
+    assert response.status == "success"
+    assert response.context is not None
+    assert response.context.weather is None
+    assert weather_provider.forecast_calls == 0
+    assert all(warning.code != "weather_missing" for warning in response.warnings)

@@ -23,6 +23,11 @@ from app.agent_context.schemas import (
     ContextError,
     ResponseMetadata,
 )
+from app.agent_context.tool_rules import (
+    TOOL_EXECUTION_RULE_VERSION,
+    ContextTool,
+    build_tool_execution_plan,
+)
 from app.tools.contracts import ToolError, ToolStatus
 from app.tools.holiday import GetHolidaysTool, HolidayQuery
 from app.tools.nearby_place_details import (
@@ -79,6 +84,7 @@ class ContextService:
         request: AgentContextRequest,
     ) -> AgentContextResponse:
         conditions = request.conditions
+        execution_plan = build_tool_execution_plan(conditions)
         location_query = conditions.search_center or conditions.current_location
         if location_query is None:
             return assemble_agent_context_response(
@@ -105,30 +111,42 @@ class ContextService:
 
         visit_at = _as_kst(self._clock())
         location = location_result.location
-        weather_task = self._tools.weather.execute(
-            WeatherForecastQuery(
+        weather_task = (
+            asyncio.create_task(
+                self._tools.weather.execute(
+                    WeatherForecastQuery(
+                        latitude=location.latitude,
+                        longitude=location.longitude,
+                        visit_at=visit_at,
+                    )
+                )
+            )
+            if execution_plan.requires(ContextTool.GET_WEATHER)
+            else None
+        )
+        holidays_task = (
+            asyncio.create_task(
+                self._tools.holidays.execute(
+                    HolidayQuery(year=visit_at.year, month=visit_at.month)
+                )
+            )
+            if execution_plan.requires(ContextTool.GET_HOLIDAYS)
+            else None
+        )
+        places_task = asyncio.create_task(
+            self._collect_places(
+                category_plan,
                 latitude=location.latitude,
                 longitude=location.longitude,
-                visit_at=visit_at,
+                search_radius_km=_resolve_search_radius_km(
+                    conditions.max_travel_time,
+                    default_radius_km=self._search_radius_km,
+                ),
             )
         )
-        holidays_task = self._tools.holidays.execute(
-            HolidayQuery(year=visit_at.year, month=visit_at.month)
-        )
-        places_task = self._collect_places(
-            category_plan,
-            latitude=location.latitude,
-            longitude=location.longitude,
-            search_radius_km=_resolve_search_radius_km(
-                conditions.max_travel_time,
-                default_radius_km=self._search_radius_km,
-            ),
-        )
-        weather_result, holidays_result, places_result = await asyncio.gather(
-            weather_task,
-            holidays_task,
-            places_task,
-        )
+        weather_result = await weather_task if weather_task is not None else None
+        holidays_result = await holidays_task if holidays_task is not None else None
+        places_result = await places_task
 
         return assemble_agent_context_response(
             ContextAssemblyInput(
@@ -137,6 +155,8 @@ class ContextService:
                 weather_result=weather_result,
                 places_result=places_result,
                 holidays_result=holidays_result,
+                weather_requested=execution_plan.requires(ContextTool.GET_WEATHER),
+                holidays_requested=execution_plan.requires(ContextTool.GET_HOLIDAYS),
             ),
             rule_versions=_rule_versions(),
         )
@@ -286,6 +306,7 @@ def _rule_versions() -> dict[str, str]:
     return {
         "category": _CATEGORY_RULE_VERSION,
         "search_radius": _SEARCH_RADIUS_RULE_VERSION,
+        "tool_execution": TOOL_EXECUTION_RULE_VERSION,
     }
 
 
