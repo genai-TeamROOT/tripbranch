@@ -7,11 +7,14 @@ import httpx
 import pytest
 
 from app.agent_context.factory import get_context_provider
-from app.agent_context.schemas import AgentContextRequest
+from app.agent_context.schemas import AgentContextRequest, UserConditions
 from app.agent_context.service import ContextService, ContextTools
+from app.domain.models import PlaceCategoryFilter
+from app.providers.contracts import ProviderResult
 from app.providers.geocoding import FakeGeocodingProvider
 from app.providers.holiday import FakeHolidayProvider
 from app.providers.stub import FakePlaceProvider, FakeWeatherProvider
+from app.schemas import PlaceCandidate
 from app.tools.holiday import GetHolidaysTool
 from app.tools.nearby_place_details import NearbyPlaceDetailsTool
 from app.tools.resolve_location import ResolveLocationTool
@@ -39,15 +42,17 @@ def _request(
     search_center: str | None = "경복궁",
     place_types: list[str] | None = None,
     place_tags: list[str] | None = None,
+    max_travel_time: int | None = None,
 ) -> AgentContextRequest:
     return AgentContextRequest(
         request_id="request-1",
         intent="RECOMMEND",
-        conditions={
-            "search_center": search_center,
-            "place_types": place_types or [],
-            "place_tags": place_tags or [],
-        },
+        conditions=UserConditions(
+            search_center=search_center,
+            place_types=place_types or [],
+            place_tags=place_tags or [],
+            max_travel_time=max_travel_time,
+        ),
     )
 
 
@@ -64,7 +69,10 @@ async def test_collects_real_context_with_fake_external_providers() -> None:
     assert response.context.holidays is not None
     assert response.context.places is not None
     assert [item.place_id for item in response.context.places.data or []] == ["fake-cafe-1"]
-    assert response.metadata.rule_versions == {"category": "tour-category-v1"}
+    assert response.metadata.rule_versions == {
+        "category": "tour-category-v1",
+        "search_radius": "walking-radius-v1",
+    }
 
 
 @pytest.mark.asyncio
@@ -122,3 +130,68 @@ async def test_factory_wires_fake_providers_into_common_context() -> None:
         "fake_place",
         "fake_holiday",
     }
+
+
+class _RecordingPlaceProvider(FakePlaceProvider):
+    def __init__(self) -> None:
+        self.search_radii: list[float] = []
+
+    async def search_places(
+        self,
+        latitude: float,
+        longitude: float,
+        preferred_categories: list[str],
+        search_radius_km: float,
+        category_filter: PlaceCategoryFilter | None = None,
+        limit: int = 20,
+    ) -> ProviderResult[list[PlaceCandidate]]:
+        self.search_radii.append(search_radius_km)
+        return await super().search_places(
+            latitude=latitude,
+            longitude=longitude,
+            preferred_categories=preferred_categories,
+            search_radius_km=search_radius_km,
+            category_filter=category_filter,
+            limit=limit,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("max_travel_time", "expected_radius_km"),
+    [
+        (None, 2.0),
+        (1, 0.3),
+        (5, 0.35),
+        (30, 2.1),
+        (300, 20.0),
+    ],
+)
+async def test_max_travel_time_controls_place_search_radius(
+    max_travel_time: int | None,
+    expected_radius_km: float,
+) -> None:
+    """최대 이동시간이 실제 장소 Tool Query의 검색 반경으로 전달되는지 검증한다."""
+
+    place_provider = _RecordingPlaceProvider()
+    service = ContextService(
+        ContextTools(
+            location=ResolveLocationTool(FakeGeocodingProvider()),
+            places=NearbyPlaceDetailsTool(place_provider, place_provider),
+            weather=GetWeatherForecastTool(FakeWeatherProvider()),
+            holidays=GetHolidaysTool(FakeHolidayProvider()),
+        ),
+        clock=lambda: datetime.now(KST),
+    )
+
+    response = await service.fetch_context(
+        _request(
+            place_types=["restaurant"],
+            place_tags=["카페"],
+            max_travel_time=max_travel_time,
+        )
+    )
+
+    assert response.status == "success"
+    # 이후 기록되는 1km 호출은 Fake 상세정보 구현의 내부 후보 재조회다.
+    assert place_provider.search_radii[0] == pytest.approx(expected_radius_km)

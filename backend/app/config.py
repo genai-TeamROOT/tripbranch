@@ -9,8 +9,14 @@ TODO: 실제 외부 API 연동 시 provider별 캐시 설정을 추가한다.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.domain.models import WeatherCondition
+
+ProviderMode = Literal["fake", "real"]
 
 
 class Settings(BaseSettings):
@@ -19,13 +25,13 @@ class Settings(BaseSettings):
     app_env: str = "local"
 
     # Provider selection: 개별 값이 비어 있으면 provider_mode를 공통 기본값으로 사용한다.
-    provider_mode: str = "fake"
-    llm_provider: str | None = None
-    weather_provider: str | None = None
-    place_provider: str | None = None
-    geocoding_provider: str | None = None
-    concentration_provider: str | None = None
-    holiday_provider: str | None = None
+    provider_mode: ProviderMode = "fake"
+    llm_provider: ProviderMode | None = None
+    weather_provider: ProviderMode | None = None
+    place_provider: ProviderMode | None = None
+    geocoding_provider: ProviderMode | None = None
+    concentration_provider: ProviderMode | None = None
+    holiday_provider: ProviderMode | None = None
 
     # LLM_PROVIDER=real일 때 사용할 Gemini 모델명.
     llm_model_name: str = "gemini-2.5-flash"
@@ -60,31 +66,31 @@ class Settings(BaseSettings):
     place_sync_district_code: str = "110"
 
     # Fake-provider-only knobs
-    fake_weather_condition: str = "neutral"
+    fake_weather_condition: WeatherCondition = WeatherCondition.NEUTRAL
     fake_current_datetime: str = "2026-07-15T14:00:00"
 
     @property
-    def resolved_llm_provider(self) -> str:
+    def resolved_llm_provider(self) -> ProviderMode:
         return self.llm_provider or self.provider_mode
 
     @property
-    def resolved_weather_provider(self) -> str:
+    def resolved_weather_provider(self) -> ProviderMode:
         return self.weather_provider or self.provider_mode
 
     @property
-    def resolved_place_provider(self) -> str:
+    def resolved_place_provider(self) -> ProviderMode:
         return self.place_provider or self.provider_mode
 
     @property
-    def resolved_geocoding_provider(self) -> str:
+    def resolved_geocoding_provider(self) -> ProviderMode:
         return self.geocoding_provider or self.provider_mode
 
     @property
-    def resolved_concentration_provider(self) -> str:
+    def resolved_concentration_provider(self) -> ProviderMode:
         return self.concentration_provider or self.provider_mode
 
     @property
-    def resolved_holiday_provider(self) -> str:
+    def resolved_holiday_provider(self) -> ProviderMode:
         return self.holiday_provider or self.provider_mode
 
 
