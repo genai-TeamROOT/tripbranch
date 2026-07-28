@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime
 
 import pytest
 
@@ -10,73 +10,7 @@ from app.agent_context.schemas import (
     RecommendationContext,
     ResolvedLocation,
 )
-from app.domain.candidate_mapper import (
-    map_context_to_scoring_candidates,
-    map_places_to_scoring_candidates,
-)
-from app.providers.stub import FakePlaceProvider
-from app.tools.nearby_place_details import NearbyPlaceDetailsQuery, NearbyPlaceDetailsTool
-
-
-@pytest.mark.asyncio
-async def test_maps_place_tool_result_to_scoring_candidate() -> None:
-    provider = FakePlaceProvider()
-    result = await NearbyPlaceDetailsTool(provider, provider).execute(
-        NearbyPlaceDetailsQuery(37.5796, 126.9770, limit=2)
-    )
-
-    candidates = map_places_to_scoring_candidates(
-        result,
-        origin_latitude=37.5796,
-        origin_longitude=126.9770,
-        visit_at=datetime(2026, 7, 24, 12, 0),
-    )
-
-    assert len(candidates) == 2
-    assert candidates[0].place_id == "fake-museum-1"
-    assert candidates[0].environment_type == "indoor"
-    assert candidates[0].operating_hours is not None
-    assert candidates[0].raw_source == "fake_place"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("visit_time", "expected_open"),
-    [
-        (time(8, 59), False),
-        (time(9, 0), True),
-        (time(17, 59), True),
-        (time(18, 0), False),
-    ],
-)
-async def test_fake_museum_operating_time_boundaries(
-    visit_time: time,
-    expected_open: bool,
-) -> None:
-    provider = FakePlaceProvider()
-    result = await NearbyPlaceDetailsTool(provider, provider).execute(
-        NearbyPlaceDetailsQuery(
-            37.5796,
-            126.9770,
-            limit=1,
-            preferred_categories=("museum",),
-        )
-    )
-
-    candidate = map_places_to_scoring_candidates(
-        result,
-        origin_latitude=37.5796,
-        origin_longitude=126.9770,
-        visit_at=datetime.combine(datetime(2026, 7, 24), visit_time),
-    )[0]
-
-    assert candidate.operating_hours is not None
-    is_open = (
-        candidate.operating_hours.open_time
-        <= visit_time
-        < candidate.operating_hours.close_time
-    )
-    assert is_open is expected_open
+from app.domain.candidate_mapper import map_context_to_scoring_candidates
 
 
 def _context(

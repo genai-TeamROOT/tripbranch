@@ -36,7 +36,7 @@ def _request(
 ) -> dict:
     client = TestClient(app)
     with patch(
-        "app.services.recommendation_pipeline.datetime",
+        "app.services.recommendations.datetime",
         _fixed_datetime(visit_at),
     ):
         response = client.post(

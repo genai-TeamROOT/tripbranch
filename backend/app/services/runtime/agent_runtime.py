@@ -5,9 +5,8 @@
 직접 부르지 않고 항상 A(이 모듈)를 거쳐서만 결과를 주고받는다.
 입력: AgentRequest(user_input + session_id + device_location).
 출력: AgentResponse(LLMOutput + 병합된 State + 추천 결과).
-호출 시점: 아직 전용 HTTP 라우트는 없다. A–C 스키마는 확정됐고 실제 C Service와 D
-추천 계약이 연결되면 라우터를 추가한다. run_agent_flow()는 Protocol에만 의존하므로,
-run_agent()의 provider 조립 부분만 Fake에서 실제 구현으로 교체하면 된다.
+호출 시점: 아직 전용 HTTP 라우트는 없다. A–C 스키마, A–D RecommendationProvider
+계약([TECH-02]) 모두 확정되어 run_agent()가 Real Provider를 주입한다.
 """
 
 from __future__ import annotations
@@ -23,7 +22,6 @@ from app.services.interpret.session_orchestrator import ensure_current_context
 from app.services.interpret.state_transform import to_user_conditions, transform
 from app.services.runtime.context_transform import to_agent_context_request
 from app.services.runtime.protocols import RecommendationProvider, ToolProvider
-from app.services.runtime.real_recommendation_provider import RealRecommendationProvider
 from app.services.runtime.response_composer import compose_chat_message
 from app.state.schema import now_kst
 from app.state.service import (
@@ -233,15 +231,13 @@ async def run_agent(request: AgentRequest) -> AgentResponse:
     """호출자가 쓰는 Fake/Real 공통 진입점.
 
     A는 조건 기반 ContextProvider 계약만 알고, C 내부 Tool·Provider 조립은
-    app.agent_context.factory에 위임한다. D도 C(get_context_provider())와 같은
-    방식으로 항상 실제 구현체(RealRecommendationProvider)를 쓴다 — 개별 외부 API
-    Provider(LLM/날씨/장소 등)와 달리, ToolProvider/RecommendationProvider
-    Protocol 구현체 자체를 고르는 자리엔 fake/real 설정 분기가 없다.
-    FakeRecommendationProvider는 테스트용으로 stubs.py에 그대로 남아 있다.
+    app.agent_context.factory에 위임한다. D 계약이 확정되어([TECH-02])
+    RealRecommendationProvider를 기본으로 주입한다.
     """
 
     from app.agent_context.factory import get_context_provider
     from app.providers.factory import get_llm_provider, get_weather_provider
+    from app.services.runtime.real_recommendation_provider import RealRecommendationProvider
 
     async with httpx.AsyncClient() as client:
         weather_provider = get_weather_provider(client)
