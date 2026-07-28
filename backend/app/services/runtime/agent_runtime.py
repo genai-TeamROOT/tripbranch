@@ -23,7 +23,7 @@ from app.services.interpret.session_orchestrator import ensure_current_context
 from app.services.interpret.state_transform import to_user_conditions, transform
 from app.services.runtime.context_transform import to_agent_context_request
 from app.services.runtime.protocols import RecommendationProvider, ToolProvider
-from app.services.runtime.stubs import FakeRecommendationProvider
+from app.services.runtime.real_recommendation_provider import RealRecommendationProvider
 from app.state.schema import now_kst
 from app.state.service import (
     RecommendedPlace,
@@ -213,7 +213,11 @@ async def run_agent(request: AgentRequest) -> AgentResponse:
     """호출자가 쓰는 Fake/Real 공통 진입점.
 
     A는 조건 기반 ContextProvider 계약만 알고, C 내부 Tool·Provider 조립은
-    app.agent_context.factory에 위임한다. D는 계약 확정 전이라 Fake로 유지한다.
+    app.agent_context.factory에 위임한다. D도 C(get_context_provider())와 같은
+    방식으로 항상 실제 구현체(RealRecommendationProvider)를 쓴다 — 개별 외부 API
+    Provider(LLM/날씨/장소 등)와 달리, ToolProvider/RecommendationProvider
+    Protocol 구현체 자체를 고르는 자리엔 fake/real 설정 분기가 없다.
+    FakeRecommendationProvider는 테스트용으로 stubs.py에 그대로 남아 있다.
     """
 
     from app.agent_context.factory import get_context_provider
@@ -226,7 +230,7 @@ async def run_agent(request: AgentRequest) -> AgentResponse:
             llm=get_llm_provider(),
             weather_provider=weather_provider,
             tool_provider=get_context_provider(client),
-            recommendation_provider=FakeRecommendationProvider(),
+            recommendation_provider=RealRecommendationProvider(),
         )
 
 

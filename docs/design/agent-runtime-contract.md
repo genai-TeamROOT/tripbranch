@@ -222,8 +222,13 @@ C가 `context.places`를 조회할 때 이 공식으로 반경을 이미 정했�
 값도 같아야 거리 점수 정규화(`max_distance_km`)가 어긋나지 않는다
 (`run_recommendation_pipeline_from_context()` docstring 명시).
 
-**주의**: 기본값 `2.0km`은 A(`_DEFAULT_RADIUS_KM`)와 C(`ContextService.__init__`의
-`search_radius_km: float = 2.0`)에 각각 하드코딩돼 있다 — §8 참고.
+**해결 완료(2026-07-28)**: 기본값·속도·clamp 범위 전부 `app/place_search_policy.py`
+(공유 상수 모듈: `DEFAULT_PLACE_SEARCH_RADIUS_KM`, `WALKING_SPEED_KM_PER_MINUTE`,
+`MIN_PLACE_SEARCH_RADIUS_KM`, `MAX_PLACE_SEARCH_RADIUS_KM`)로 옮겨져 A(`recommendation_
+transform.py`)와 C(`agent_context/service.py`)가 **같은 상수를 import**해서 쓴다 —
+각자 하드코딩해서 우연히 값이 같던 이전 상태(§8에 있던 이슈)가 구조적으로 해소됐다.
+`tests/test_recommendation_transform.py::test_matches_c_formula`가 C의
+`_resolve_search_radius_km()`와의 일치를 계속 자동 검증한다.
 
 ### 4.2 `to_weather_condition()`
 
@@ -288,6 +293,39 @@ D 내부(`candidate_mapper`/`scoring`/`evidence`/`explanation`)는 직접 import
 7단계는 이 함수를 쓰지 않고 같은 로직(recommendations + unverified_recommendations를
 순서대로 이어붙여 1부터 rank 부여)을 인라인으로 수행한다. 기능은 동일하다 — §8에
 정리 필요 항목으로 남겨둔다.
+
+### 4.5 알려진 이슈 — 해결 완료: `run_agent()` → `RealRecommendationProvider` 연결
+
+**해결일**: 2026-07-28.
+
+`run_agent()`는 `recommendation_provider`를 `FakeRecommendationProvider()`로 하드코딩하고
+있었다. 확인 결과 이 자리(ToolProvider/RecommendationProvider Protocol 구현체 선택)엔
+애초에 설정 기반 fake/real 분기가 없다 — C의 `get_context_provider()`
+(`app/agent_context/factory.py`)도 항상 real `ContextService`를 반환하는 하드코딩
+구조이고, fake/real 분기는 그 한 단계 아래(`app.providers.factory.get_llm_provider()`
+등 개별 외부 API Provider)에만 있다. 그래서 D도 같은 패턴으로 `RealRecommendationProvider()`를
+직접 하드코딩했다(`FakeRecommendationProvider`는 `stubs.py`에 테스트용으로 남겨둠).
+
+```python
+recommendation_provider=RealRecommendationProvider(),  # 기존 FakeRecommendationProvider() 대체
+```
+
+**실제 E2E 검증**: `backend/scripts/try_agent_runtime.py`(신규, 수동 실행 스크립트,
+`python -m scripts.try_agent_runtime`)로 같은 세션에서 RECOMMEND → MODIFY(REJECT_ALL) →
+MODIFY(CHANGE_CONDITION) → INFO 4개 시나리오를 실제 Gemini + 실제 C + 실제 D로 순서대로
+실행해 확인했다. 결과는
+`backend/test_results/agent_runtime_e2e_timing_2026-07-28.csv` 참고.
+
+| 시나리오 | intent | 걸린 시간 | 확인된 것 |
+| --- | --- | --- | --- |
+| "경복궁 근처 카페 추천해줘" | RECOMMEND | 14.89s | 실제 추천 5건, 점수·근거(거리/운영시간) 정상 |
+| "다른 곳 보여줘" | MODIFY(REJECT_ALL) | 19.22s | 직전 노출 5곳 전부 제외됨 확인 |
+| "무료인 곳으로" | MODIFY(CHANGE_CONDITION) | 21.81s | `search_center` 유지, `budget=free`만 반영 확인 |
+| "경복궁 오늘 열어?" | INFO | 4.63s | Tool/Recommendation 스킵 확인(`recommendations=None`) |
+
+부수 확인: 네 시나리오 전부 `weather_intent=IGNORE`(날씨 미언급)라 C가 날씨 Tool 호출
+자체를 생략했다 — 계약 문서(§5.4 계열 규칙: "weather_intent=IGNORE면 Weather 호출을
+생략한다") 그대로 동작함을 실제 응답의 날씨 결측 warning으로 확인했다.
 
 ---
 
@@ -399,7 +437,7 @@ D 호출 자체가 1회에서 2회로 바뀌어야 한다.
 | `to_search_radius_km()` | `recommendation_transform.py` | A→D | 완료 |
 | `to_weather_condition()` | `recommendation_transform.py` | C context→D | 완료 |
 | `to_record_recommendation_request()` | `recommendation_transform.py` | D→B | 완료(미사용, §4.4) |
-| `RealRecommendationProvider.recommend()` | `real_recommendation_provider.py` | A→D 호출 | 완료(미연결, §8) |
+| `RealRecommendationProvider.recommend()` | `real_recommendation_provider.py` | A→D 호출 | 완료(연결 완료, §4.5) |
 | `compose_recommendation_message()` | `response_composer.py` | D→사용자 | 완료 |
 | `EnrichmentProvider`(Protocol) | 미정 | A↔C(보강) | TODO |
 | `to_candidate_enrichment_request()` | 미정 | D 후보→C | TODO |
@@ -411,7 +449,13 @@ D 호출 자체가 1회에서 2회로 바뀌어야 한다.
 | 이슈 | 담당 | 상태 |
 | --- | --- | --- |
 | 혼잡률 2단계 D 호출 흐름 (§6) | D팀 | 확인 대기 |
-| 기본 반경 2.0km 공유 상수화 — A(`_DEFAULT_RADIUS_KM`)와 C(`ContextService.search_radius_km` 기본값)에 각각 하드코딩(§4.1) | C팀 | 확인 대기 |
-| `RealRecommendationProvider` → `run_agent()`의 실제 `recommendation_provider`로 전환 시점 (현재는 `FakeRecommendationProvider` 그대로) | A(본인) | 결정 대기 |
 | GPS 최초 턴 심기 로직 중복(`app/routes/interpret.py` vs `agent_runtime.py`, 둘 다 `_valid_location()`을 독립적으로 가짐) (§2.5) | A(본인) | `run_agent()`가 라우터를 실제로 대체할 때 통합 예정 |
 | `to_record_recommendation_request()`가 작성됐지만 `run_agent_flow()` 7단계가 인라인 로직을 그대로 써서 미사용 상태 (§4.4) | A(본인) | 7단계를 이 함수 호출로 교체할지 결정 필요 |
+
+### 해결된 이슈
+
+| 이슈 | 해결일 | 근거 |
+| --- | --- | --- |
+| 기본 반경 2.0km 공유 상수화(A/C 각자 하드코딩) | 2026-07-28 | `app/place_search_policy.py` 공유 모듈로 통합(§4.1) |
+| `RealRecommendationProvider` → `run_agent()` 실제 연결 | 2026-07-28 | `run_agent()`가 기본으로 `RealRecommendationProvider()` 사용(§4.5) |
+| B의 영구 제외 문제(`recommended ∪ rejected`) | 2026-07-27 | §2.3 참고 |
