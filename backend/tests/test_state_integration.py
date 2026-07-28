@@ -3,10 +3,10 @@
 tests/state/test_service.py::TestMultiTurnScenario::test_전체_대화_흐름과 같은 흐름
 (1턴 추천 → 2턴 REJECT_ALL → 3턴 조건 변경)을, LLMOutput → transform() → apply()로
 재현했을 때 같은 결과가 나오는지 확인한다. 4턴은 그 테스트의 "history reset" 대신
-이번 구현이 실제로 지원하는 시나리오(RECOMMEND의 reset_scope=soft)로 검증한다 —
-CHANGE_CONDITION은 항상 현재 노출 장소를 rejected로 기록하므로(reason=other),
-원본 테스트의 "history reset이 노출 이력만 지운다" 뉘앙스는 REJECT_ALL 없이 조건만
-바뀌는 경우에는 그대로 관찰되지 않는다(둘 다 이번 구현에서 의도된 동작이다).
+이번 구현이 실제로 지원하는 시나리오(RECOMMEND의 reset_scope=soft)로 검증한다.
+CHANGE_CONDITION은 직전 노출 장소를 rejected로 기록하지 않는다 — 대신
+reset_scope="history"로 recommended만 비워서, 명시적으로 거절(REJECT_ALL)한 적
+없는 장소는 조건이 바뀌어도 영구 제외되지 않는다.
 """
 
 from __future__ import annotations
@@ -90,9 +90,9 @@ def test_multi_turn_flow_matches_raw_state_service_scenario() -> None:
     assert r2.condition_version == 1
     assert r2.excluded_place_ids == ["A", "B", "C"]
 
-    # 3턴: MODIFY CHANGE_CONDITION(budget=free) — 조건 병합 + 직전 노출분 자동 제외
-    # (원본 테스트는 D만 명시적으로 거절하지만, 이번 구현은 CHANGE_CONDITION 시 직전
-    # 노출 전체(D, E)를 reason=other로 제외 처리한다 — 설계상 의도된 차이)
+    # 3턴: MODIFY CHANGE_CONDITION(budget=free) — 조건 병합 + reset_scope="history"로
+    # 직전 노출분(D, E)만 recommended에서 비워진다. A/B/C는 2턴에서 REJECT_ALL로
+    # 명시적으로 거절됐으므로(rejected) history reset과 무관하게 계속 제외된다.
     ctx3 = get_session_context(sid, store=store)
     changes = ctx3.user_conditions.model_copy(update={"budget": "free"})
     llm3 = LLMOutput(
@@ -110,7 +110,10 @@ def test_multi_turn_flow_matches_raw_state_service_scenario() -> None:
     assert r3.condition_version == 2
     assert r3.user_conditions.search_center == "경복궁"  # 이전 조건 유지
     assert r3.user_conditions.budget == "free"
-    assert set(r3.excluded_place_ids) == {"A", "B", "C", "D", "E"}
+    # D, E는 rejected로 기록된 적이 없고 history reset으로 recommended에서도
+    # 비워졌으므로 더 이상 제외되지 않는다. A/B/C는 REJECT_ALL로 명시 거절돼
+    # rejected에 남아 있어 계속 제외된다.
+    assert set(r3.excluded_place_ids) == {"A", "B", "C"}
 
     # 4턴: 새 RECOMMEND — reset_scope=soft로 조건은 재생성되지만 이력은 유지된다
     # (이번 구현의 설계 결정: conditions-schema.md §6 "새 RECOMMEND → user_conditions 재생성")
@@ -129,4 +132,6 @@ def test_multi_turn_flow_matches_raw_state_service_scenario() -> None:
     assert r4.user_conditions.budget is None  # soft reset으로 조건 초기화
     assert r4.user_conditions.place_types == ["cultural_facility"]
     assert r4.session_id == sid  # soft는 세션을 새로 만들지 않는다
-    assert set(r4.excluded_place_ids) == {"A", "B", "C", "D", "E"}  # 이력은 유지
+    # soft reset은 조건만 초기화하고 이력(rejected)은 그대로 유지한다 — 3턴에서
+    # rejected로 남은 A/B/C만 계속 제외된다.
+    assert set(r4.excluded_place_ids) == {"A", "B", "C"}
