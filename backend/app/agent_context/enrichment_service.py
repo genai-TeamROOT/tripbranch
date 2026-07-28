@@ -3,16 +3,25 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from app.agent_context.enrichment_schemas import (
     CandidateEnrichmentRequest,
     CandidateEnrichmentResponse,
     CandidateEnrichmentResult,
+    CandidateEnrichmentStatus,
     CandidateEnrichmentTarget,
     ConcentrationForecastData,
     resolve_enrichment_status,
 )
 from app.agent_context.schemas import ContextError, ProviderMetadata
+from app.concentration_policy import (
+    is_valid_concentration_rate,
+    normalize_concentration,
+)
+from app.domain.models import ConcentrationForecast, ConcentrationResult
 from app.providers.contracts import ProviderMetadata as ProviderMetadataData
 from app.recommendation_limits import (
     MAX_RECOMMENDATION_CANDIDATE_LIMIT,
@@ -23,6 +32,7 @@ from app.tools.contracts import ToolStatus
 
 _JONGNO_AREA_CODE = "11"
 _JONGNO_DISTRICT_CODE = "11110"
+_KST = ZoneInfo("Asia/Seoul")
 
 
 class CandidateEnrichmentService:
@@ -33,6 +43,7 @@ class CandidateEnrichmentService:
         concentration_tool: GetConcentrationTool,
         *,
         candidate_limit: int,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         if not (
             MIN_RECOMMENDATION_LIMIT
@@ -46,6 +57,7 @@ class CandidateEnrichmentService:
             )
         self._concentration_tool = concentration_tool
         self._candidate_limit = candidate_limit
+        self._clock = clock or (lambda: datetime.now(_KST))
 
     async def enrich(
         self,
@@ -57,10 +69,16 @@ class CandidateEnrichmentService:
             raise ValueError(
                 f"보강 후보는 최대 {self._candidate_limit}개까지 요청할 수 있습니다."
             )
+        reference_date = _as_kst_date(self._clock())
         candidates = await asyncio.gather(
-            *(self._enrich_candidate(candidate) for candidate in request.candidates)
+            *(
+                self._enrich_candidate(candidate, reference_date=reference_date)
+                for candidate in request.candidates
+            )
         )
-        statuses = [candidate.status for candidate in candidates]
+        statuses: list[CandidateEnrichmentStatus] = [
+            candidate.status for candidate in candidates
+        ]
         return CandidateEnrichmentResponse(
             request_id=request.request_id,
             status=resolve_enrichment_status(statuses),
@@ -70,6 +88,8 @@ class CandidateEnrichmentService:
     async def _enrich_candidate(
         self,
         candidate: CandidateEnrichmentTarget,
+        *,
+        reference_date: date,
     ) -> CandidateEnrichmentResult:
         tool_result = await self._concentration_tool.execute(
             ConcentrationQuery(
@@ -94,19 +114,24 @@ class CandidateEnrichmentService:
                 ],
             )
 
-        concentration = tool_result.concentration
-        forecasts = (
-            [
+        forecast = _select_current_forecast(
+            tool_result.concentration,
+            candidate_name=candidate.name,
+            reference_date=reference_date,
+        )
+        forecasts: list[ConcentrationForecastData] = []
+        rate = forecast.concentration_rate if forecast is not None else None
+        if forecast is not None and is_valid_concentration_rate(rate):
+            normalized = normalize_concentration(rate)
+            forecasts = [
                 ConcentrationForecastData(
                     place_name=forecast.place_name,
-                    forecast_date=forecast.forecast_date,
-                    concentration_rate=forecast.concentration_rate,
+                    forecast_date=reference_date.isoformat(),
+                    concentration_rate=rate,
+                    concentration_level=normalized.level,
+                    concentration_label=normalized.label,
                 )
-                for forecast in concentration.forecasts
             ]
-            if concentration is not None
-            else []
-        )
         metadata = [_map_provider_metadata(item) for item in tool_result.provider_metadata]
         return CandidateEnrichmentResult(
             **candidate.model_dump(),
@@ -126,5 +151,53 @@ def _map_provider_metadata(metadata: ProviderMetadataData) -> ProviderMetadata:
         retrieved_at=metadata.retrieved_at,
     )
 
+
+def _as_kst_date(value: datetime) -> date:
+    """호출 시각을 한국 날짜로 바꿔 집중률 예측 기준일로 사용한다."""
+
+    if value.tzinfo is None:
+        return value.replace(tzinfo=_KST).date()
+    return value.astimezone(_KST).date()
+
+
+def _parse_forecast_date(value: str | None) -> date | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    try:
+        if len(normalized) == 8 and normalized.isdigit():
+            return datetime.strptime(normalized, "%Y%m%d").date()
+        return date.fromisoformat(normalized)
+    except ValueError:
+        return None
+
+
+def _select_current_forecast(
+    concentration: ConcentrationResult | None,
+    *,
+    candidate_name: str,
+    reference_date: date,
+) -> ConcentrationForecast | None:
+    """오늘 날짜의 유효값 중 요청 후보와 이름이 같은 예측을 우선한다."""
+
+    if concentration is None:
+        return None
+    forecasts = [
+        forecast
+        for forecast in concentration.forecasts
+        if _parse_forecast_date(forecast.forecast_date) == reference_date
+        and is_valid_concentration_rate(forecast.concentration_rate)
+    ]
+    if not forecasts:
+        return None
+    normalized_name = candidate_name.strip()
+    return next(
+        (
+            forecast
+            for forecast in forecasts
+            if forecast.place_name.strip() == normalized_name
+        ),
+        forecasts[0],
+    )
 
 __all__ = ["CandidateEnrichmentService"]
