@@ -1,15 +1,12 @@
-"""C(Tool Intelligence)/D(Recommendation) 실제 계약 확정 전까지 쓰는 Fake 구현.
+"""C(Tool Intelligence)/D(Recommendation) 테스트용 Fake 구현.
 
 역할: 고정된 가짜 결과로 ToolProvider/RecommendationProvider 계약을 만족시켜, C/D 없이도
 Agent Runtime 흐름을 끝까지 테스트할 수 있게 한다. app/providers/stub.py의 Fake provider들과
 같은 결 — 실제 계산이 아니라 고정/임시 데이터를 반환한다.
-ToolProvider는 A-C Context Contract v0으로 이미 확정됐으므로 FakeToolProvider는 실제
-AgentContextResponse 구조를 그대로 흉내 낸다(계약이 바뀌기 전까지는 이 부분을 다시 갈아
-엎을 필요가 없다). excluded_place_ids는 C의 책임이 아니므로 FakeToolProvider는 이제 후보를
-거르지 않는다 — 그 필터링은 여전히 계약이 확정 전인 D 쪽 FakeRecommendationProvider가 한다.
-호출 시점: app.services.runtime.agent_runtime.run_agent()가 C/D 계약 확정 전까지 기본으로
-주입한다.
-TODO: D 계약이 확정되면 FakeRecommendationProvider와 실제 구현체 분기를 손본다.
+ToolProvider·RecommendationProvider 모두 계약이 확정됐으므로([TECH-02]) run_agent()는
+FakeToolProvider/FakeRecommendationProvider 대신 실제 구현체(get_context_provider(),
+RealRecommendationProvider)를 기본 주입한다. 여기 두 Fake는 이제 테스트에서 Provider를
+직접 주입할 때만 쓴다.
 """
 
 from __future__ import annotations
