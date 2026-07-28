@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 
 from app.schemas import AgentRequest, AgentResponse
 from app.services.runtime.agent_runtime import run_agent
+from app.services.runtime.response_composer import compose_recommendation_message
 
 DEVICE_LOCATION = "37.5788,126.9770"
 
@@ -41,6 +42,8 @@ def _print_header(title: str) -> None:
 
 
 def _print_recommendations(response: AgentResponse) -> None:
+    print(f"  [chat message] {response.message!r}")
+
     if response.recommendations is None:
         print("  recommendations: None (Tool/Recommendation 단계 스킵됨)")
         return
@@ -59,6 +62,27 @@ def _print_recommendations(response: AgentResponse) -> None:
                 print(f"        explanations: {item.explanations}")
             if item.warnings:
                 print(f"        warnings: {item.warnings}")
+            composed = compose_recommendation_message(item)
+            print(f"        [compose_recommendation_message] {composed!r}")
+
+    _print_final_answer(response)
+
+
+def _print_final_answer(response: AgentResponse) -> None:
+    """카드별 compose_recommendation_message() 문장을 번호 목록으로 보여준다."""
+    if response.recommendations is None:
+        return
+    items = [
+        *response.recommendations.recommendations,
+        *response.recommendations.unverified_recommendations,
+    ]
+    if not items:
+        return
+
+    print("  [카드 목록 — 각 장소의 compose_recommendation_message() 결과]")
+    for index, item in enumerate(items, start=1):
+        message = compose_recommendation_message(item)
+        print(f"    {index}. {item.name}: {message}")
 
 
 async def _run_scenario(

@@ -370,6 +370,21 @@ def compose_recommendation_message(item: RecommendationItem) -> str
 message()`는 이 문장들의 **내용에 관여하지 않고** 순서·구분자만 담당하므로, D가 문장
 내용을 계속 다듬어도 A쪽 코드 변경이 필요 없다.
 
+### 5.4 알려진 이슈 — 해결 완료: 챗봇 말풍선 텍스트(`AgentResponse.message`)
+
+**해결일**: 2026-07-28. 자세한 설계·Intent별 처리·잠정 결정 근거는
+[`agent-response-generation.md`](./agent-response-generation.md) 참고 — 여기서는
+요약만 남긴다.
+
+`compose_recommendation_message()`는 카드 1건의 문장만 만들고, 카드들을 감싸는
+챗봇 말풍선 텍스트(`message: string`, 목표 계약 `docs/api-contracts.md` §3의
+`ChatResponse.message`에 대응)는 이번에 새로 구현했다 — `compose_chat_message()`
+(`response_composer.py`)가 `run_agent_flow()`의 4개 반환 지점 전부에서 호출되어
+`AgentResponse.message`를 채운다. 6개 Intent 중 **GENERAL만 실제 LLM을 새로
+호출**하고(`LLMProvider.generate_general_answer()`, `RealGeminiProvider`에 구현),
+나머지는 전부 규칙 기반 고정 템플릿이다. INFO/COMPARE는 답변할 데이터 자체가
+아직 없어 임시 안내 문구만 반환한다(별도 트랙).
+
 ---
 
 ## 6. 혼잡률(concentration) 보강 — 설계만, 미구현 (TODO)
@@ -439,6 +454,8 @@ D 호출 자체가 1회에서 2회로 바뀌어야 한다.
 | `to_record_recommendation_request()` | `recommendation_transform.py` | D→B | 완료(미사용, §4.4) |
 | `RealRecommendationProvider.recommend()` | `real_recommendation_provider.py` | A→D 호출 | 완료(연결 완료, §4.5) |
 | `compose_recommendation_message()` | `response_composer.py` | D→사용자 | 완료 |
+| `compose_chat_message()` | `response_composer.py` | A→사용자(챗봇 말풍선) | 완료(§5.4) |
+| `LLMProvider.generate_general_answer()` | `providers/gemini.py` | A→LLM(GENERAL 답변) | 완료(§5.4) |
 | `EnrichmentProvider`(Protocol) | 미정 | A↔C(보강) | TODO |
 | `to_candidate_enrichment_request()` | 미정 | D 후보→C | TODO |
 

@@ -10,7 +10,7 @@ app/providers/gemini.py에 두고, 이 모듈은 프롬프트 텍스트만 담�
 
 from __future__ import annotations
 
-from app.schemas import UserConditions
+from app.schemas import GeneralTopic, UserConditions
 
 _INTENT_DEFINITIONS = """\
 6개 Intent 정의:
@@ -317,6 +317,25 @@ original_question에는 사용자 원문을 그대로 담으세요. GENERAL은 �
 반드시 general 필드를 채우고, recommend/info/modify/compare/out_of_scope는 null로 두세요."""
 
 
+def build_general_answer_instruction(topic: GeneralTopic) -> str:
+    """GENERAL 발화에 실제로 답하는 system instruction(docs/design/agent-response-
+    generation.md §3/§6 — 6개 Intent 중 실제 LLM 자유생성이 필요한 유일한 지점).
+
+    build_general_extraction_instruction()과 별개 호출이다 — 저건 topic만 분류하고,
+    이건 그 topic이 확정된 뒤 실제 답변 문장을 만든다.
+    """
+
+    return f"""당신은 TripBranch의 여행 배경지식 답변 챗봇입니다. 사용자의 질문(주제:
+{topic.value})에 친절하고 간결하게 답변하세요.
+
+답변 규칙:
+- 2~4문장 정도로 간결하게 답하세요.
+- 확실하지 않은 정보는 단정하지 말고, 일반적으로 알려진 내용 위주로 답하세요.
+- 존댓말을 쓰고, 장소 추천이나 예약처럼 TripBranch가 실제로 조회하는 기능인 것처럼
+  답하지 마세요 — 이건 배경지식/상식 질문에 대한 답변입니다.
+- 사용자 발화를 그대로 반복하지 말고 바로 답변을 시작하세요."""
+
+
 def format_validation_retry_note(error: Exception) -> str:
     """1차 구조화 출력이 검증에 실패했을 때 재시도 프롬프트에 덧붙이는 안내문."""
 
@@ -334,5 +353,6 @@ __all__ = [
     "build_info_extraction_instruction",
     "build_compare_extraction_instruction",
     "build_general_extraction_instruction",
+    "build_general_answer_instruction",
     "format_validation_retry_note",
 ]

@@ -1,15 +1,62 @@
-"""D의 RecommendationItem을 사용자에게 보여줄 자연어 문장으로 조립한다.
+"""D의 RecommendationItem과 LLMOutput을 사용자에게 보여줄 텍스트로 조립한다.
 
-역할: D가 만든 explanations(근거 문장)와 warnings(경고 문장)를 D님과 협의한
-순서(근거 먼저, 경고는 "다만~"으로 마지막)로 이어붙인다. 문장 내용 자체는
-재작문하지 않고 D가 만든 그대로 쓴다 — 특정 문자열을 검사하는 조건 분기를
-넣지 않는다(날씨 결측/임계값 미달 등 warnings 문구가 나중에 추가·변경돼도
-이 함수는 손댈 필요가 없어야 한다).
+역할: 두 계층을 담당한다(docs/design/agent-response-generation.md 참고).
+1) compose_recommendation_message(): 장소 카드 1건에 들어갈 문장. D가 만든
+   explanations(근거)/warnings(경고)를 D님과 협의한 순서(근거 먼저, 경고는
+   "다만~"으로 마지막)로 이어붙인다. 문장 내용 자체는 재작문하지 않고 D가 만든
+   그대로 쓴다.
+2) compose_chat_message(): 카드들을 감싸는 챗봇 말풍선 텍스트(AgentResponse.message).
+   Intent/status별로 고정 템플릿을 고르거나(대부분), GENERAL만 유일하게 LLM을
+   호출해 실제 배경지식 답변을 생성한다.
 """
 
 from __future__ import annotations
 
-from app.schemas import RecommendationItem
+from app.providers.protocols import LLMProvider
+from app.schemas import Intent, LLMOutput, OutputStatus, RecommendationItem, RecommendationResponse
+from app.services.runtime.context_schemas import Clarification
+
+# C 단계에서 Recommendation으로 못 넘어가는 status. agent_runtime.py의
+# _TOOL_TERMINAL_STATUSES와 같은 집합이어야 한다 — 순환 import를 피하려고 별도로
+# 둔다(둘 다 3개 문자열 리터럴이라 값이 바뀔 일이 거의 없다).
+_TOOL_TERMINAL_STATUSES = frozenset({"needs_clarification", "unsupported", "unavailable"})
+
+_RECOMMEND_WRAPPER_MESSAGE = "이런 곳들을 찾아봤어요:"
+
+# int-03-modify.md §11 "후보 부족 처리" 정책 그대로 재사용 — 시스템이 임의로 조건을
+# 완화하지 않고, 사용자에게 선택지를 제시한다.
+_NO_DATA_MESSAGE = (
+    "조건에 맞는 곳을 찾지 못했어요. 검색 범위를 넓혀볼까요? "
+    "다른 종류의 장소도 포함할까요? 운영시간을 확인할 수 없는 장소도 볼까요?"
+)
+
+# C 단계 needs_clarification의 code별 템플릿. A 초안 — 팀 공유 후 피드백으로 보완 예정
+# (docs/design/agent-response-generation.md §5 결정사항 3).
+_CLARIFICATION_TEMPLATES: dict[str, str] = {
+    "location_required": "어디 근처에서 찾아드릴까요? 현재 위치나 원하시는 지역을 알려주세요.",
+    "location_ambiguous": (
+        "말씀하신 장소가 여러 곳으로 해석돼요. 어느 곳을 말씀하시는지 조금 더 알려주시겠어요?"
+    ),
+    "place_required": "어떤 장소에 대해 알고 싶으신가요?",
+    "place_ambiguous": "여러 장소 중 어느 곳을 말씀하시는 건가요?",
+}
+_CLARIFICATION_FALLBACK_MESSAGE = "조건을 조금 더 자세히 알려주시겠어요?"
+
+_TOOL_UNSUPPORTED_MESSAGE = "죄송하지만 아직 지원하지 않는 요청이에요."
+_TOOL_UNAVAILABLE_MESSAGE = "일시적으로 요청을 처리하지 못했어요. 잠시 후 다시 시도해주세요."
+
+_OUT_OF_SCOPE_TEMPLATES: dict[str, str] = {
+    "harmful": "죄송하지만 그런 요청은 도와드릴 수 없어요.",
+    "unrelated": (
+        "저는 국내 여행지 추천을 도와드리는 챗봇이에요. 여행 관련 질문을 해주시면 도와드릴게요!"
+    ),
+    "role_request": "저는 TripBranch 여행 추천 챗봇으로만 동작해요. 다른 역할은 수행할 수 없어요.",
+    "prompt_injection": "죄송하지만 그 요청은 처리할 수 없어요.",
+}
+
+# INFO/COMPARE: 답변할 실제 데이터·로직 자체가 아직 없다(별도 트랙, agent-response-
+# generation.md §3/§6 3차) — 임시 안내문.
+_NOT_YET_SUPPORTED_MESSAGE = "죄송해요, 이 기능은 아직 준비 중이에요."
 
 
 def compose_recommendation_message(item: RecommendationItem) -> str:
@@ -27,4 +74,57 @@ def compose_recommendation_message(item: RecommendationItem) -> str:
     return " ".join(parts)
 
 
-__all__ = ["compose_recommendation_message"]
+async def compose_chat_message(
+    llm_output: LLMOutput,
+    *,
+    recommendations: RecommendationResponse | None = None,
+    tool_status: str | None = None,
+    tool_clarification: Clarification | None = None,
+    llm: LLMProvider,
+) -> str:
+    """AgentResponse.message(챗봇 말풍선 텍스트)를 조립한다.
+
+    docs/design/agent-response-generation.md의 잠정 결정을 그대로 구현한다 —
+    GENERAL만 실제 LLM 호출이고 나머지는 전부 규칙 기반 템플릿이다. 카드
+    (recommendations)의 상세 내용은 여기서 다시 풀어쓰지 않는다.
+    """
+
+    if llm_output.status is OutputStatus.NEEDS_CLARIFICATION:
+        # LLM 단계 needs_clarification은 추출 단계에서 이미 자연어 메시지가 나온다.
+        assert llm_output.clarification is not None
+        return llm_output.clarification.message
+
+    if llm_output.intent is Intent.OUT_OF_SCOPE:
+        assert llm_output.out_of_scope is not None
+        return _OUT_OF_SCOPE_TEMPLATES[llm_output.out_of_scope.category.value]
+
+    if llm_output.intent is Intent.GENERAL:
+        assert llm_output.general is not None
+        result = await llm.generate_general_answer(
+            llm_output.general.topic, llm_output.general.original_question
+        )
+        return result.data
+
+    if llm_output.intent in (Intent.RECOMMEND, Intent.MODIFY):
+        if tool_status in _TOOL_TERMINAL_STATUSES:
+            if tool_status == "needs_clarification":
+                code = tool_clarification.code if tool_clarification is not None else None
+                return _CLARIFICATION_TEMPLATES.get(code, _CLARIFICATION_FALLBACK_MESSAGE)
+            if tool_status == "unsupported":
+                return _TOOL_UNSUPPORTED_MESSAGE
+            return _TOOL_UNAVAILABLE_MESSAGE
+
+        shown = (
+            [*recommendations.recommendations, *recommendations.unverified_recommendations]
+            if recommendations is not None
+            else []
+        )
+        if not shown:
+            return _NO_DATA_MESSAGE
+        return _RECOMMEND_WRAPPER_MESSAGE
+
+    # INFO/COMPARE — 별도 트랙(agent-response-generation.md §3/§6 3차), 지금은 안내만.
+    return _NOT_YET_SUPPORTED_MESSAGE
+
+
+__all__ = ["compose_recommendation_message", "compose_chat_message"]
