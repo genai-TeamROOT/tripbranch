@@ -474,8 +474,11 @@ class AgentResponse(BaseModel):
 
     recommendations는 RECOMMEND/MODIFY이고 status가 complete일 때만 채워진다(그 외에는
     None — Tool/Recommendation 단계 자체를 건너뛰었다는 뜻).
+    message는 사용자에게 보여줄 챗봇 말풍선 텍스트다(docs/design/agent-response-
+    generation.md 참고) — 카드(recommendations) 상세는 이 문장에 다시 풀어쓰지 않는다.
     """
 
     llm_output: LLMOutput
     state: StateApplyResponse
     recommendations: RecommendationResponse | None = None
+    message: str

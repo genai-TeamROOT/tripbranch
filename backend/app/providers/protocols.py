@@ -25,6 +25,7 @@ from app.domain.models import (
 from app.place_search_policy import DEFAULT_PLACE_PROVIDER_RESULT_LIMIT
 from app.providers.contracts import ProviderResult
 from app.schemas import (
+    GeneralTopic,
     IntentClassificationResult,
     InterpretedConditions,
     LLMOutput,
@@ -79,6 +80,16 @@ class LLMProvider(Protocol):
         self, user_input: str
     ) -> ProviderResult[LLMOutput]:
         """GENERAL 발화의 주제를 분류한다."""
+        ...
+
+    async def generate_general_answer(
+        self, topic: GeneralTopic, original_question: str
+    ) -> ProviderResult[str]:
+        """GENERAL 발화에 실제로 답할 배경지식 문장을 생성한다.
+
+        다른 메서드와 달리 구조화 조건 추출이 아니라 자유 텍스트 답변이다 —
+        docs/design/agent-response-generation.md §3/§6의 유일한 LLM 신규 호출 지점.
+        """
         ...
 
 

@@ -22,6 +22,7 @@ from app.services.interpret.session_orchestrator import ensure_current_context
 from app.services.interpret.state_transform import to_user_conditions, transform
 from app.services.runtime.context_transform import to_agent_context_request
 from app.services.runtime.protocols import RecommendationProvider, ToolProvider
+from app.services.runtime.response_composer import compose_chat_message
 from app.state.schema import now_kst
 from app.state.service import (
     RecommendedPlace,
@@ -128,7 +129,10 @@ async def run_agent_flow(
         Intent.RECOMMEND,
         Intent.MODIFY,
     ):
-        return AgentResponse(llm_output=llm_output, state=state_response, recommendations=None)
+        message = await compose_chat_message(llm_output, llm=llm)
+        return AgentResponse(
+            llm_output=llm_output, state=state_response, recommendations=None, message=message
+        )
 
     # 5) A → C: Tool 결과 확보 (Protocol을 통해서만 — C의 구체 클래스는 여기서 모른다).
     #    B가 준 조건(순수 문자열)을 A의 enum 타입으로 바꾼 뒤 C 계약 형태로 변환한다.
@@ -154,7 +158,15 @@ async def run_agent_flow(
                 tool_response.clarification,
                 tool_response.error,
             )
-        return AgentResponse(llm_output=llm_output, state=state_response, recommendations=None)
+        message = await compose_chat_message(
+            llm_output,
+            tool_status=tool_response.status,
+            tool_clarification=tool_response.clarification,
+            llm=llm,
+        )
+        return AgentResponse(
+            llm_output=llm_output, state=state_response, recommendations=None, message=message
+        )
 
     # success/partial/no_data는 Recommendation 단계로 진행한다(경고가 있어도 가능한
     # 데이터로 계속 — 계약 문서 §5.4). 위에서 세 종료 상태를 걸렀으므로 context는 항상 있다.
@@ -170,10 +182,14 @@ async def run_agent_flow(
             tool_response.request_id,
             tool_response.status,
         )
+        message = await compose_chat_message(
+            llm_output, tool_status=tool_response.status, llm=llm
+        )
         return AgentResponse(
             llm_output=llm_output,
             state=state_response,
             recommendations=None,
+            message=message,
         )
 
     # 6) A → D: 추천 결과 확보 (Protocol을 통해서만 — D의 구체 클래스는 여기서 모른다)
@@ -202,8 +218,12 @@ async def run_agent_flow(
         )
 
     # 8) A: 최종 응답 조립
+    message = await compose_chat_message(llm_output, recommendations=recommendations, llm=llm)
     return AgentResponse(
-        llm_output=llm_output, state=state_response, recommendations=recommendations
+        llm_output=llm_output,
+        state=state_response,
+        recommendations=recommendations,
+        message=message,
     )
 
 

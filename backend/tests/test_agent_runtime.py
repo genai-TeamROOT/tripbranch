@@ -13,6 +13,7 @@ from __future__ import annotations
 import pytest
 
 from app.agent_context.schemas import AgentContextRequest, AgentContextResponse
+from app.providers.contracts import ProviderSource, provider_result
 from app.providers.stub import FakeLLMProvider, FakeWeatherProvider
 from app.schemas import AgentRequest, OutputStatus
 from app.services.runtime.agent_runtime import run_agent_flow
@@ -21,6 +22,18 @@ from app.state.service import get_session_context
 from app.state.store import InMemoryStateStore
 
 DEVICE_LOCATION = "37.5788,126.9770"
+
+
+class _LLMProviderWithGeneralAnswer(FakeLLMProvider):
+    """FakeLLMProvider + generate_general_answer()만 로컬로 보강한 테스트 전용 더블.
+
+    app/providers/stub.py의 FakeLLMProvider는 건드리지 않는다(Fake 유지보수는
+    이번 작업 범위 밖) — compose_chat_message()의 GENERAL 분기만 테스트하기 위한
+    최소 보강이다.
+    """
+
+    async def generate_general_answer(self, topic, original_question):
+        return provider_result("(테스트용 고정 답변)", source=ProviderSource.FAKE_LLM)
 
 
 class _CountingToolProvider:
@@ -49,7 +62,7 @@ class _CountingRecommendationProvider:
 
 def _providers():
     return {
-        "llm": FakeLLMProvider(),
+        "llm": _LLMProviderWithGeneralAnswer(),
         "weather_provider": FakeWeatherProvider(),
         "tool_provider": _CountingToolProvider(),
         "recommendation_provider": _CountingRecommendationProvider(),
