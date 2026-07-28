@@ -17,6 +17,10 @@ from app.domain.models import (
 )
 from app.domain.operating_hours import normalize_operating_schedule
 from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
+from app.place_search_policy import (
+    DEFAULT_PLACE_PROVIDER_RESULT_LIMIT,
+    MAX_PLACE_SEARCH_RADIUS_KM,
+)
 from app.providers.contracts import (
     ProviderResult,
     ProviderSource,
@@ -228,9 +232,12 @@ class RealPlaceProvider:
         preferred_categories: list[str],
         search_radius_km: float,
         category_filter: PlaceCategoryFilter | None = None,
-        limit: int = 20,
+        limit: int = DEFAULT_PLACE_PROVIDER_RESULT_LIMIT,
     ) -> ProviderResult[list[PlaceCandidate]]:
-        radius_m = min(int(search_radius_km * 1000), 20000)
+        radius_m = min(
+            int(search_radius_km * 1000),
+            int(MAX_PLACE_SEARCH_RADIUS_KM * 1000),
+        )
         params = {
             **self._base_params(),
             "mapX": longitude,
@@ -335,7 +342,7 @@ class RealPlaceProvider:
         keyword: str,
         region_code: str | None = None,
         district_code: str | None = None,
-        limit: int = 20,
+        limit: int = DEFAULT_PLACE_PROVIDER_RESULT_LIMIT,
     ) -> ProviderResult[list[PlaceCandidate]]:
         normalized_keyword = keyword.strip()
         if not normalized_keyword:

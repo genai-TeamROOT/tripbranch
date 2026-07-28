@@ -640,10 +640,10 @@ TourAPI 요청 필드로 전달합니다. C의 `CategoryQueryPlan`이 A의 장�
 하나 이상의 `PlaceCategoryFilter`로 변환합니다. Fake Provider는 레거시 직접 호출
 호환과 회귀 테스트를 위해 `preferred_categories`도 정규화해 필터링합니다.
 
-C `ContextService`의 후보 수집 반경은 `max_travel_time`이 없으면 기본 2km를
+C `ContextService`의 후보 수집 반경은 `max_travel_time`이 없으면 A 기준인 기본 1km를
 사용하고, 값이 있으면 성인 도보 속도 1분당 0.07km로 환산합니다. 결과는 최소
-0.3km, TourAPI 제한인 최대 20km로 제한합니다. 이는 실제 도보 경로나 도착시간을
-보장하는 값이 아니라 2km 밖 후보 누락을 줄이기 위한 MVP 검색 반경입니다.
+0.1km, TourAPI 제한인 최대 20km로 제한합니다. 이는 실제 도보 경로나 도착시간을
+보장하는 값이 아니라 후보 수집을 위한 MVP 검색 반경입니다.
 
 C는 `context-tool-plan-v1` Rule로 초기 Context 수집 Tool을 선택합니다. 위치,
 장소, 공휴일은 기본 실행하고 `weather_intent=IGNORE`이면 Weather 호출을
@@ -1183,11 +1183,14 @@ wall-clock 시간을 millisecond로 표시합니다. HTTP 전송과 Frontend 렌
 포함하지 않습니다.
 
 C의 공식 후보 보강 흐름은 초기 `RecommendationContext`와 분리됩니다.
-`CandidateEnrichmentService`가 상위 후보 최대 5개를 받아
+`CandidateEnrichmentService`가 `RECOMMENDATION_RESULT_LIMIT`만큼의 상위 후보를 받아
 `GetConcentrationTool`을 거쳐 설정된 Fake/Real Concentration Provider를
 호출합니다. 후보별 상태와 `source`, `status`, `retrieved_at`을 유지하며, 일부
 후보의 빈 결과나 장애는 전체 추천을 차단하지 않습니다. Factory 진입점은
-`get_candidate_enrichment_service(client)`입니다.
+`get_candidate_enrichment_service(client)`입니다. 초기 C 장소 후보 수집도
+`RECOMMENDATION_CANDIDATE_LIMIT`을 사용하므로 기존 추천 파이프라인과 C가 같은
+5/10 기본 정책을 공유합니다. 두 설정은 각각 1~20 범위이며 결과 상한은 후보
+상한보다 클 수 없습니다.
 
 - Holiday를 이용한 공휴일 운영 규칙 보완
 - Concentration을 이용한 혼잡도 Scoring Feature
