@@ -47,11 +47,18 @@ class CandidateEnrichmentRequest(StrictModel):
 
 
 class ConcentrationForecastData(StrictModel):
-    """Provider 집중률 예측에서 A와 D가 소비할 표준 필드."""
+    """Provider 집중률 예측에서 A가 소비할 표준 필드."""
 
     place_name: str
     forecast_date: str | None = None
     concentration_rate: float | None = None
+    concentration_level: Literal[
+        "relaxed",
+        "normal",
+        "slightly_crowded",
+        "crowded",
+    ]
+    concentration_label: Literal["여유", "보통", "약간 붐빔", "붐빔"]
 
 
 class CandidateEnrichmentResult(StrictModel):

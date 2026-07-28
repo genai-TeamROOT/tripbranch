@@ -267,6 +267,23 @@ D가 선정하고 A가 중계한 후보를 `RECOMMENDATION_RESULT_LIMIT`만큼 �
 `success`/`no_data`/`unavailable`과 Provider metadata를 반환한다. 일부 후보만
 성공하거나 실패하면 전체 상태는 `partial`이며, 실패 후보도 목록에서 제거하지 않는다.
 
+방문일을 별도로 받지 않는 v1에서는 C가 집중률 API를 호출한 시점의 한국 날짜를
+기준일로 사용한다. 여러 날짜가 반환되더라도 오늘 날짜와 일치하는 유효한 값만
+`YYYY-MM-DD` 형식으로 정규화해 최대 한 건짜리 `concentration` 목록으로 반환한다.
+오늘 값이 없으면 미래나 과거 값으로 대체하지 않고 후보 상태를 `no_data`로 반환한다.
+
+오늘 집중률에는 원본 상대 비율과 정규화된 단계·표시명을 함께 포함한다.
+
+| 집중률 범위 | `concentration_level` | `concentration_label` |
+| --- | --- | --- |
+| 50% 이하 | `relaxed` | 여유 |
+| 50% 초과 75% 이하 | `normal` | 보통 |
+| 75% 초과 100% 이하 | `slightly_crowded` | 약간 붐빔 |
+| 100% 초과 | `crowded` | 붐빔 |
+
+음수·무한대·숫자 변환 불가 값은 `no_data`로 처리한다. 이 단계는 사용자 설명을 위한
+정규화이며 추천 점수를 다시 계산하거나 후보 순서를 변경하지 않는다.
+
 #### 5.2.1 A → C 후보 보강 재요청
 
 D는 1차 점수 계산 후 보강할 상위 후보를 `RECOMMENDATION_RESULT_LIMIT`까지 A에
@@ -338,8 +355,10 @@ ID와 로그에서 연관 지을 수는 있지만 같은 값일 필요는 없다
       "concentration": [
         {
           "place_name": "경복궁",
-          "forecast_date": "20260728",
-          "concentration_rate": 42.0
+          "forecast_date": "2026-07-28",
+          "concentration_rate": 42.0,
+          "concentration_level": "relaxed",
+          "concentration_label": "여유"
         }
       ],
       "error": null,
@@ -383,27 +402,29 @@ ID와 로그에서 연관 지을 수는 있지만 같은 값일 필요는 없다
 `no_data`와 `unavailable`은 후보 제외 사유가 아니다. C는 후보 순서를 변경하거나
 추천 결과를 제거하지 않는다.
 
-#### 5.2.3 A → D 전달 범위
+#### 5.2.3 A의 보강 응답 사용 범위
 
-A는 C 응답을 추천 조건으로 재해석하거나 필터링하지 않고 D에 전달한다. D가 후보와
-보강 결과를 안정적으로 결합할 수 있도록 최소한 다음 필드를 보존한다.
+A는 C 응답을 추천 조건으로 재해석하거나 후보 순서를 변경하지 않는다. 기존 추천
+후보와 보강 결과를 안정적으로 결합할 수 있도록 최소한 다음 필드를 보존한다.
 
-| 필드 | D의 사용 목적 | 필수 여부 |
+| 필드 | A의 사용 목적 | 필수 여부 |
 | --- | --- | --- |
 | 응답 `status` | 보강 전체 성공·부분 성공·실패 판단 | 필수 |
 | `candidate.place_id` | 기존 Scoring 후보와 결합하는 기준 키 | 필수 |
 | `candidate.status` | 해당 후보의 집중률 사용 가능 여부 판단 | 필수 |
-| `concentration[].forecast_date` | 방문 예정일과 맞는 예측값 선택 | 데이터가 있을 때 필수 |
-| `concentration[].concentration_rate` | 혼잡도 Feature 또는 설명 근거 | 데이터가 있을 때 필수 |
+| `concentration[].forecast_date` | 집중률 예측 기준일 표시 | 데이터가 있을 때 필수 |
+| `concentration[].concentration_rate` | 원본 상대 집중률 근거 | 데이터가 있을 때 필수 |
+| `concentration[].concentration_level` | 정규화된 혼잡 단계 | 데이터가 있을 때 필수 |
+| `concentration[].concentration_label` | 사용자 표시용 한글 단계 | 데이터가 있을 때 필수 |
 | `error` | 장애 원인·재시도 판단 | `unavailable`일 때 필수 |
 | `provider_metadata` | 출처·상태·조회 시각 추적 및 Snapshot | 보존 필수 |
 | `name`, `latitude`, `longitude` | 디버깅·응답 검증용 원본 후보 정보 | 보존 권장 |
 
-권장 방식은 A가 `CandidateEnrichmentResponse` 전체를 D 계약의 보강 Context로
-전달하는 것이다. D는 `place_id`로 기존 후보와 결합하고, `status=success`인 후보의
-집중률만 계산에 사용한다. `no_data`나 `unavailable`인 후보에는 혼잡도 Feature를
-적용하지 않으며 기존 점수와 추천 자격은 유지한다. `provider_metadata`는 점수값은
-아니지만 추천 근거와 당시 외부 데이터 Snapshot을 재현하기 위해 삭제하지 않는다.
+A는 `place_id`로 기존 상위 추천 후보와 결합하고 `status=success`인 후보의 정규화된
+단계를 최종 설명에 사용한다. 집중률은 추천 점수를 다시 계산하거나 순위를 변경하지
+않는다. `no_data`나 `unavailable`인 후보도 기존 점수와 추천 자격을 유지한다.
+`provider_metadata`는 점수값은 아니지만 추천 근거와 당시 외부 데이터 Snapshot을
+재현하기 위해 삭제하지 않는다.
 
 ```mermaid
 sequenceDiagram
@@ -412,16 +433,15 @@ sequenceDiagram
     participant D as D Recommendation
 
     A->>D: 초기 Context와 조건 전달
-    D-->>A: 설정된 결과 상한까지의 1차 점수 상위 후보
+    D-->>A: 설정된 결과 상한까지의 최종 상위 후보
     A->>C: CandidateEnrichmentRequest
     C-->>A: CandidateEnrichmentResponse
-    A->>D: 후보별 상태·집중률·metadata 전달
-    D-->>A: 보강 Feature를 반영한 최종 결과
+    A->>A: place_id로 결합하고 혼잡 단계 설명 생성
 ```
 
-현재 저장소에는 C의 요청·응답 Schema, Service, Tool·Provider 및 Factory까지만
-구현되어 있다. 위 A 재호출과 D 재전달 배선은 A–D 2단계 추천 계약이 확정된 뒤
-연결한다.
+현재 저장소에는 C의 요청·응답 Schema, Service, Tool·Provider 및 Factory까지
+구현되어 있다. A가 D의 최종 후보를 C 요청으로 변환하고 보강 응답을 최종 사용자
+응답에 결합하는 배선은 A 영역의 후속 작업이다.
 
 초기 Context의 Tool 선택은 C의 `context-tool-plan-v1` Rule이 담당한다. 위치,
 장소, 공휴일은 추천 Context에 필요한 기본 Tool이며, `weather_intent=IGNORE`이면

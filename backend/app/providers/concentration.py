@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -21,6 +23,7 @@ _CONCENTRATION_URL = (
 _PLACE_NAME_KEYS = ("tAtsNm", "tatsNm", "touristAttractionName")
 _FORECAST_DATE_KEYS = ("fcastYmd", "forecastYmd", "baseYmd", "forecastDate", "ymd")
 _CONCENTRATION_RATE_KEYS = ("cnctrRate", "concentrationRate", "congestionRate", "rate")
+_KST = ZoneInfo("Asia/Seoul")
 
 
 def _first_value(item: Mapping[str, object], keys: tuple[str, ...]) -> object | None:
@@ -95,21 +98,22 @@ class FakeConcentrationProvider:
         place_name: str | None = None,
     ) -> ProviderResult[ConcentrationResult]:
         resolved_name = place_name or "경복궁"
+        today = datetime.now(_KST).date()
         forecasts = tuple(
             ConcentrationForecast(
                 place_name=resolved_name,
-                forecast_date=date,
+                forecast_date=forecast_date.strftime("%Y%m%d"),
                 concentration_rate=rate,
                 raw_data={
                     "tAtsNm": resolved_name,
-                    "fcastYmd": date,
+                    "fcastYmd": forecast_date.strftime("%Y%m%d"),
                     "cnctrRate": rate,
                 },
             )
-            for date, rate in (
-                ("20260723", 42.0),
-                ("20260724", 58.0),
-                ("20260725", 76.0),
+            for forecast_date, rate in (
+                (today - timedelta(days=1), 42.0),
+                (today, 58.0),
+                (today + timedelta(days=1), 76.0),
             )
         )
         result = ConcentrationResult(
