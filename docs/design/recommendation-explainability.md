@@ -7,7 +7,7 @@
 | 버전 | v1 |
 | 상태 | Accepted (A 담당 Agent Runtime과 API Contract 협의 반영 완료) |
 | 최종 수정 | 2026-07-27 |
-| 관련 코드 | `backend/app/domain/explanation.py`, `backend/app/services/recommendation_pipeline.py`, `backend/tests/test_explanation.py`, `backend/tests/test_recommendation_pipeline.py` |
+| 관련 코드 | `backend/app/domain/explanation.py`, `backend/app/domain/evidence.py`, `backend/app/domain/scoring.py`, `backend/app/services/recommendation_pipeline.py`, `backend/tests/test_explanation.py`, `backend/tests/test_recommendation_pipeline.py` |
 
 이 문서는 D-02(`recommendation-evidence-fixture.md`)의 `RecommendationEvidence`를
 Rule 기반·결정적 방식으로 한국어 문장으로 변환하는 D-06 Explainability Layer의
@@ -27,8 +27,10 @@ D-06이 다루는 것:
 
 D-06이 다루지 않는 것 (`범위 제외`):
 
-- LLM 기반 자연어 생성 — 이 Layer는 고정 문장표만 사용하며, 문장을 다듬거나
-  요약하는 것은 Response Generator(LLM, `TBD`) 영역이다
+- LLM 기반 자연어 생성 — 이 Layer는 계산값이 채워진 Rule 기반 "사실" 문장만
+  만든다. 여러 문장을 자연스러운 한 문단으로 잇거나 평가·어투("여유롭게
+  방문할 수 있어요" 같은 표현)를 더하는 것은 Response Generator(LLM, `TBD`)
+  영역이다
 - 점수가 애매하거나(0.4~0.7) 낮은(<0.4) Feature에 대한 부정적 근거 문장 생성
   (예: "거리가 멀어요" 같은 부정적 서술은 만들지 않음)
 - Chat API(`RecommendationResult`)로의 최종 통합 — A 담당 Runtime이 담당
@@ -37,14 +39,30 @@ D-06이 다루지 않는 것 (`범위 제외`):
 
 `backend/app/domain/explanation.py`
 
+D-06 구체화 요청(`package_D/[D-06]explainability_detail.txt`) 이후, 문장은
+고정 텍스트가 아니라 `RecommendationEvidence`가 들고 있는 원본 계산값
+(`distance_km`/`remaining_minutes`/`weather_condition`/`environment_type`)을
+그대로 채워 넣은 "사실" 문장이다. 문장에는 평가·어투("여유롭게 방문할 수
+있어요" 등)를 넣지 않는다 — 그 역할은 A 담당 Response Generator(LLM)의
+몫이다(§3.2).
+
 ```python
 _EXPLANATION_SCORE_THRESHOLD = 0.7
 
-_EXPLANATION_SENTENCES: Mapping[str, str] = {
-    "weather": "지금 날씨 조건에 잘 맞는 장소예요.",
-    "remaining_operating_time": "운영 종료까지 시간 여유가 있어 방문하기 좋아요.",
-    "distance": "현재 위치에서 가까운 장소예요.",
-}
+def _distance_sentence(evidence) -> str:
+    # 1km 미만은 m(10m 반올림), 이상은 km(소수 첫째자리)로 "직선거리"를 명시.
+    # "현재 위치에서 직선거리 약 400m예요." / "...약 1.2km예요."
+    ...
+
+def _remaining_time_sentence(evidence) -> str:
+    # remaining_minutes를 "N시간 M분"/"N시간"/"M분"으로 변환(0분 나머지 생략).
+    # "마감까지 약 2시간 30분 남았어요."
+    ...
+
+def _weather_sentence(evidence) -> str:
+    # (weather_condition, environment_type) 조합을 "{날씨}에 적합한 {환경 }장소예요."
+    # 로 조립. "비 예보에 적합한 실내 장소예요."
+    ...
 
 def build_explanations(evidence: RecommendationEvidence) -> tuple[str, ...]: ...
 ```
@@ -106,8 +124,10 @@ Frontend `PlaceCard.tsx`가 이미 `recommendation_reason`을 렌더링하고 �
 참고만 하면 되는 것: `rank`는 별도 응답 필드가 아니라 배열 순서이며(Package
 B에 이력을 저장할 때는 이 배열 순서를 `rank`로 변환해서 넘겨야 함),
 `score`는 필요하면 참고용으로 쓰되 0~1 스케일(100점 만점 아님)이다.
-`distance_km`/`remaining_minutes`/`feature_scores`/`weights_used`는 숫자
-근거용이라 문장을 직접 새로 짓지 않는 이상 필요 없다.
+`distance_km`/`remaining_minutes`/`feature_scores`/`weights_used`는 D-06
+구체화 이후 `explanations` 문장 자체를 만드는 데(예: "약 400m") 이미
+쓰였으므로, A가 문장을 직접 새로 짓지 않는 이상 이 원본 숫자 필드를 별도로
+다시 참조할 필요는 없다.
 
 ### 3.4 `explanations`(근거)와 `warnings`(경고) 분리 유지
 
@@ -146,15 +166,18 @@ D-06 완료 전에 우리 쪽 구현 책임으로 판단하고 해결했다.
 | Evidence 기반 추천 설명 생성 가능 | `build_explanations()`가 `RecommendationEvidence.contributions`를 입력으로 사용 |
 | Rule 기반 Explanation 생성 구조 적용 | LLM 미호출, 고정 문장표 + 임계값·정렬 규칙만 사용 |
 | Recommendation 응답 구조에 설명 데이터 반영 | `RecommendationItem.explanations` |
-| Explanation 생성 Rule 및 테스트 추가 | 본 문서(Rule 정의) + `test_explanation.py`(4개) + `test_recommendation_pipeline.py`(D-030 warning 2개) |
+| Explanation 생성 Rule 및 테스트 추가 | 본 문서(Rule 정의) + `test_explanation.py`(13개: 기본 4개 + 거리 단위 경계 3개 + 운영시간 경계 4개 + 날씨·환경 조합 매트릭스 2개) + `test_recommendation_pipeline.py`(D-030 warning 2개) |
 
 ## 6. 알려진 제한사항
 
-- **자연어 다듬기 없음**: 문장은 고정 템플릿 그대로 나가며, 여러 문장을
-  자연스럽게 이어붙이거나 요약하는 것은 Response Generator(LLM, `TBD`)의
-  몫이다.
-- **Feature별 문장 1개 고정**: Feature당 항상 같은 문장 하나만 매핑되며,
-  점수 크기에 따라 문구 강도를 조절하지 않는다.
+- **자연어 다듬기 없음**: 문장은 계산값이 채워진 "사실"까지만 만들며, 여러
+  문장을 자연스럽게 이어붙이거나 평가·어투를 더하는 것은 Response
+  Generator(LLM, `TBD`)의 몫이다.
+- **날씨는 여전히 조합별 고정 문장**: 거리·남은 운영시간은 실제 계산값을
+  그대로 문장에 반영하지만, 날씨·환경은 (`weather_condition`,
+  `environment_type`) 9개 조합별 고정 문장이다 — 같은 조합 안에서 점수
+  크기(예: BAD+indoor 1.00 vs NEUTRAL+indoor 0.80)에 따라 문구 강도를
+  조절하지는 않는다.
 - **v2 조건 미반영**: `weather_intent`/`environment`/`companion`/`budget`/
   `transport`/`max_travel_time` 등은 Interpret·Package B 상태에는 이미
   존재하지만 Scoring/Explanation에는 아직 연결되지 않았다(`scoring.py`
@@ -162,7 +185,7 @@ D-06 완료 전에 우리 쪽 구현 책임으로 판단하고 해결했다.
 
 ## 7. 관련 문서
 
-- [`docs/decision-log.md`](../decision-log.md) — D-029, D-030
+- [`docs/decision-log.md`](../decision-log.md) — D-029, D-030, D-031
 - [추천 Evidence·평가 Fixture 설계](./recommendation-evidence-fixture.md) — D-02, 입력이 되는 `RecommendationEvidence` 정의
 - [추천 점수 설계](./recommendation-scoring.md) — Scoring v1 전체 설계
 - [`docs/api-contracts.md`](../api-contracts.md) — `RecommendationItem` 계약

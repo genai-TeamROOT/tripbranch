@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.domain.models import WeatherCondition
 from app.domain.scoring import RankedCandidate, ScoringResult
 
 # feature_scores/weights_used에 항상 존재하는 Feature 순서 (scoring.py와 동일).
@@ -41,6 +42,12 @@ class RecommendationEvidence:
     contributions: tuple[FeatureContribution, ...]
     is_unverified: bool
     warnings: tuple[str, ...]
+    # 문장 조립(explanation.py)에 필요한 원본 값. contributions는 정렬용
+    # 정규화 점수만 담으므로 별도로 보존한다.
+    distance_km: float
+    remaining_minutes: float | None
+    weather_condition: WeatherCondition | None
+    environment_type: str
 
 
 def _build_contributions(candidate: RankedCandidate) -> tuple[FeatureContribution, ...]:
@@ -71,6 +78,10 @@ def build_evidence(candidate: RankedCandidate) -> RecommendationEvidence:
         contributions=_build_contributions(candidate),
         is_unverified=candidate.is_unverified,
         warnings=candidate.warnings,
+        distance_km=candidate.distance_km,
+        remaining_minutes=candidate.remaining_minutes,
+        weather_condition=candidate.weather_condition,
+        environment_type=candidate.environment_type,
     )
 
 
