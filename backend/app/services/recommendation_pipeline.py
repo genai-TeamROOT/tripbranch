@@ -232,7 +232,7 @@ async def run_recommendation_pipeline(
 
 
 async def run_recommendation_pipeline_from_context(
-    context: RecommendationContext,
+    context: RecommendationContext | None,
     *,
     visit_at: datetime,
     search_radius_km: float,
@@ -252,12 +252,22 @@ async def run_recommendation_pipeline_from_context(
     (`docs/design/recommendation-scoring.md` 참고). 값이 어긋나면 거리 점수가
     실제 후보 풀 범위와 안 맞게 계산된다.
 
-    Context 상태 처리: `location`/`places`가 없거나 `unavailable`(조회 자체
-    실패)이면 `AppError`를 던진다. `no_data`(정상 조회했지만 결과 없음)는
-    에러가 아니라 빈 `RecommendationResponse`로 처리한다 — "확인 못 함"과
-    "확인했는데 없음"은 다른 상황이라 구분한다.
+    Context 상태 처리: `context` 자체가 `None`이거나(예: A의
+    `AgentContextResponse.status`가 `needs_clarification`/`unsupported`/
+    `unavailable`일 때), `location`/`places`가 없거나 `unavailable`(조회
+    자체 실패)이면 `AppError`를 던진다. `no_data`(정상 조회했지만 결과
+    없음)는 에러가 아니라 빈 `RecommendationResponse`로 처리한다 —
+    "확인 못 함"과 "확인했는데 없음"은 다른 상황이라 구분한다.
     """
     started_at = timer()
+
+    if context is None:
+        raise AppError(
+            code="context_unavailable",
+            message="Context 정보가 없습니다.",
+            status_code=502,
+            retryable=True,
+        )
 
     location = context.location
     if (

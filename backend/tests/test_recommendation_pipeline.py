@@ -396,3 +396,19 @@ async def test_pipeline_from_context_raises_when_location_missing() -> None:
         )
 
     assert exc_info.value.code == "location_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_from_context_raises_when_context_is_none() -> None:
+    """AgentContextResponse.status가 needs_clarification/unsupported/unavailable이면
+    AgentContextResponse.context 자체가 None일 수 있다 — 이 경우도 AppError로
+    처리해야 한다(속성 접근 시 AttributeError가 그대로 터지면 안 된다).
+    """
+    with pytest.raises(AppError) as exc_info:
+        await run_recommendation_pipeline_from_context(
+            None,
+            visit_at=_CONTEXT_VISIT_AT,
+            search_radius_km=2.0,
+        )
+
+    assert exc_info.value.code == "context_unavailable"
