@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import httpx
 
+from app.agent_context.enrichment_service import CandidateEnrichmentService
 from app.agent_context.service import ContextService, ContextTools
 from app.providers.factory import (
+    get_concentration_provider,
     get_geocoding_provider,
     get_holiday_provider,
     get_place_provider,
     get_weather_provider,
 )
+from app.tools.concentration import GetConcentrationTool
 from app.tools.holiday import GetHolidaysTool
 from app.tools.nearby_place_details import NearbyPlaceDetailsTool
 from app.tools.resolve_location import ResolveLocationTool
@@ -31,4 +34,12 @@ def get_context_provider(client: httpx.AsyncClient) -> ContextService:
     )
 
 
-__all__ = ["get_context_provider"]
+def get_candidate_enrichment_service(
+    client: httpx.AsyncClient,
+) -> CandidateEnrichmentService:
+    """설정된 Concentration Provider를 공통 Tool로 감싼 후보 보강 서비스를 생성한다."""
+
+    return CandidateEnrichmentService(GetConcentrationTool(get_concentration_provider(client)))
+
+
+__all__ = ["get_candidate_enrichment_service", "get_context_provider"]
