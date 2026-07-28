@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from app.domain.models import PlaceDetails, WeatherCondition
 from app.domain.operating_hours import normalize_operating_schedule
+from app.place_search_policy import DEFAULT_PLACE_SEARCH_RADIUS_KM
 from app.providers.contracts import (
     ProviderMetadata,
     ProviderSource,
@@ -229,5 +230,5 @@ def test_request_models_keep_request_id_and_tool_type() -> None:
     )
 
     assert location_request.request_id == "location-1"
-    assert places_request.parameters.radius_km == 1.0
+    assert places_request.parameters.radius_km == DEFAULT_PLACE_SEARCH_RADIUS_KM
     assert places_request.parameters.limit == 10

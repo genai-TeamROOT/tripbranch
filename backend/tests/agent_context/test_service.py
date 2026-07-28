@@ -12,6 +12,7 @@ from app.agent_context.schemas import AgentContextRequest, UserConditions
 from app.agent_context.service import ContextService, ContextTools
 from app.config import settings
 from app.domain.models import PlaceCategoryFilter, WeatherForecastResult
+from app.place_search_policy import DEFAULT_PLACE_SEARCH_RADIUS_KM
 from app.providers.contracts import ProviderResult
 from app.providers.geocoding import FakeGeocodingProvider
 from app.providers.holiday import FakeHolidayProvider
@@ -197,8 +198,8 @@ class _RecordingWeatherProvider(FakeWeatherProvider):
 @pytest.mark.parametrize(
     ("max_travel_time", "expected_radius_km"),
     [
-        (None, 1.0),
-        (1, 0.1),
+        (None, DEFAULT_PLACE_SEARCH_RADIUS_KM),
+        (1, 0.3),
         (5, 0.35),
         (30, 2.1),
         (300, 20.0),

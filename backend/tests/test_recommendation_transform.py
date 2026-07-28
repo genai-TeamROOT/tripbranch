@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import pytest
 
 from app.agent_context.service import _resolve_search_radius_km as _c_resolve_search_radius_km
+from app.place_search_policy import DEFAULT_PLACE_SEARCH_RADIUS_KM
 from app.schemas import RecommendationItem, RecommendationResponse, Transport, UserConditions
 from app.services.runtime.context_schemas import (
     ContextError,
@@ -40,24 +41,28 @@ def _item(place_id: str) -> RecommendationItem:
 
 class TestToSearchRadiusKm:
     def test_max_travel_time_none_returns_default(self) -> None:
-        assert to_search_radius_km(UserConditions()) == pytest.approx(2.0)
+        assert to_search_radius_km(UserConditions()) == pytest.approx(
+            DEFAULT_PLACE_SEARCH_RADIUS_KM
+        )
 
     def test_uses_70m_per_min(self) -> None:
-        conditions = UserConditions(max_travel_time=30)
+        conditions = UserConditions(transport=Transport.WALK, max_travel_time=30)
         assert to_search_radius_km(conditions) == pytest.approx(2.1)
 
-    @pytest.mark.parametrize("transport", [Transport.WALK, Transport.PUBLIC, Transport.CAR, None])
-    def test_transport_does_not_affect_result(self, transport: Transport | None) -> None:
-        """C도 transport를 안 쓰므로(MVP는 도보 속도만 가정) A도 무시해야 한다."""
+    @pytest.mark.parametrize("transport", [Transport.PUBLIC, Transport.CAR, None])
+    def test_non_walking_transport_uses_temporary_speed(
+        self,
+        transport: Transport | None,
+    ) -> None:
         conditions = UserConditions(transport=transport, max_travel_time=30)
-        assert to_search_radius_km(conditions) == pytest.approx(2.1)
+        assert to_search_radius_km(conditions) == pytest.approx(10.0)
 
     def test_clamped_to_upper_bound(self) -> None:
         conditions = UserConditions(max_travel_time=1000)
         assert to_search_radius_km(conditions) == pytest.approx(20.0)
 
     def test_clamped_to_lower_bound(self) -> None:
-        conditions = UserConditions(max_travel_time=1)
+        conditions = UserConditions(transport=Transport.WALK, max_travel_time=1)
         assert to_search_radius_km(conditions) == pytest.approx(0.3)
 
     def test_zero_max_travel_time_is_normalized_to_none_before_reaching_this_function(
@@ -66,7 +71,9 @@ class TestToSearchRadiusKm:
         """UserConditions가 0을 None으로 정규화하므로, 여기서는 기본 반경이 나온다."""
         conditions = UserConditions(max_travel_time=0)
         assert conditions.max_travel_time is None
-        assert to_search_radius_km(conditions) == pytest.approx(2.0)
+        assert to_search_radius_km(conditions) == pytest.approx(
+            DEFAULT_PLACE_SEARCH_RADIUS_KM
+        )
 
     @pytest.mark.parametrize("max_travel_time", [None, 1, 5, 15, 30, 60, 200, 1000])
     def test_matches_c_formula(self, max_travel_time: int | None) -> None:
@@ -75,8 +82,14 @@ class TestToSearchRadiusKm:
         이 테스트가 실패하면 C가 공식을 바꾼 것이다 — to_search_radius_km()도
         같이 맞춰야 한다.
         """
-        conditions = UserConditions(max_travel_time=max_travel_time)
-        expected = _c_resolve_search_radius_km(max_travel_time, default_radius_km=2.0)
+        conditions = UserConditions(
+            transport=Transport.WALK,
+            max_travel_time=max_travel_time,
+        )
+        expected = _c_resolve_search_radius_km(
+            max_travel_time,
+            default_radius_km=DEFAULT_PLACE_SEARCH_RADIUS_KM,
+        )
         assert to_search_radius_km(conditions) == pytest.approx(expected)
 
 

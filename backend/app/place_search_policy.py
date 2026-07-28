@@ -4,10 +4,10 @@
 WALKING_SPEED_KM_PER_MINUTE = 0.07
 
 # 이동시간 조건이 없을 때 A와 C가 공통으로 사용하는 기본 장소 검색 반경(km).
-DEFAULT_PLACE_SEARCH_RADIUS_KM = 1.0
+DEFAULT_PLACE_SEARCH_RADIUS_KM = 2.0
 
 # 짧은 이동시간도 후보 수집이 가능하도록 보장하는 최소 장소 검색 반경(km).
-MIN_PLACE_SEARCH_RADIUS_KM = 0.1
+MIN_PLACE_SEARCH_RADIUS_KM = 0.3
 
 # 장소 검색 Tool과 Provider가 허용하는 최대 검색 반경(km).
 MAX_PLACE_SEARCH_RADIUS_KM = 20.0
