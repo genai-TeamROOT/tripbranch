@@ -229,5 +229,5 @@ def test_request_models_keep_request_id_and_tool_type() -> None:
     )
 
     assert location_request.request_id == "location-1"
-    assert places_request.parameters.radius_km == 2.0
+    assert places_request.parameters.radius_km == 1.0
     assert places_request.parameters.limit == 10

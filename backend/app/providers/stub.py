@@ -21,6 +21,7 @@ from app.domain.models import (
 )
 from app.domain.operating_hours import normalize_operating_schedule
 from app.errors import AppError
+from app.place_search_policy import DEFAULT_PLACE_PROVIDER_RESULT_LIMIT
 from app.providers.contracts import (
     ProviderResult,
     ProviderSource,
@@ -422,7 +423,7 @@ class FakePlaceProvider:
         preferred_categories: list[str],
         search_radius_km: float,
         category_filter: PlaceCategoryFilter | None = None,
-        limit: int = 20,
+        limit: int = DEFAULT_PLACE_PROVIDER_RESULT_LIMIT,
     ) -> ProviderResult[list[PlaceCandidate]]:
         candidates = [
             PlaceCandidate(
@@ -489,7 +490,7 @@ class FakePlaceProvider:
         keyword: str,
         region_code: str | None = None,
         district_code: str | None = None,
-        limit: int = 20,
+        limit: int = DEFAULT_PLACE_PROVIDER_RESULT_LIMIT,
     ) -> ProviderResult[list[PlaceCandidate]]:
         candidates = (await self.search_places(37.5796, 126.9770, [], 1.0)).data
         normalized = keyword.strip().lower()

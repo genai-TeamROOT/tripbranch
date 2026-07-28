@@ -10,6 +10,7 @@ import pytest
 from app.agent_context.factory import get_context_provider
 from app.agent_context.schemas import AgentContextRequest, UserConditions
 from app.agent_context.service import ContextService, ContextTools
+from app.config import settings
 from app.domain.models import PlaceCategoryFilter, WeatherForecastResult
 from app.providers.contracts import ProviderResult
 from app.providers.geocoding import FakeGeocodingProvider
@@ -34,6 +35,7 @@ def _service(weather_provider: WeatherProvider | None = None) -> ContextService:
             weather=GetWeatherForecastTool(weather_provider or FakeWeatherProvider()),
             holidays=GetHolidaysTool(FakeHolidayProvider()),
         ),
+        candidate_limit=10,
         # FakeWeatherProvider도 현재 시각 기준 슬롯을 생성하므로 같은 기준을 쓴다.
         clock=lambda: datetime.now(KST),
     )
@@ -137,6 +139,22 @@ async def test_factory_wires_fake_providers_into_common_context() -> None:
     }
 
 
+@pytest.mark.asyncio
+async def test_factory_uses_recommendation_candidate_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "recommendation_candidate_limit", 1)
+
+    async with httpx.AsyncClient() as client:
+        response = await get_context_provider(client).fetch_context(
+            _request(place_types=["cultural_facility", "restaurant"])
+        )
+
+    assert response.context is not None
+    assert response.context.places is not None
+    assert len(response.context.places.data or []) == 1
+
+
 class _RecordingPlaceProvider(FakePlaceProvider):
     def __init__(self) -> None:
         self.search_radii: list[float] = []
@@ -179,8 +197,8 @@ class _RecordingWeatherProvider(FakeWeatherProvider):
 @pytest.mark.parametrize(
     ("max_travel_time", "expected_radius_km"),
     [
-        (None, 2.0),
-        (1, 0.3),
+        (None, 1.0),
+        (1, 0.1),
         (5, 0.35),
         (30, 2.1),
         (300, 20.0),
@@ -200,6 +218,7 @@ async def test_max_travel_time_controls_place_search_radius(
             weather=GetWeatherForecastTool(FakeWeatherProvider()),
             holidays=GetHolidaysTool(FakeHolidayProvider()),
         ),
+        candidate_limit=10,
         clock=lambda: datetime.now(KST),
     )
 

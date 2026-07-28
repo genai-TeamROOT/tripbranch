@@ -261,15 +261,17 @@ C에 별도 후보 보강 요청을 보낸다. D는 C를 직접 호출하지 않
 
 후보 보강 계약은 초기 Context 계약과 분리된
 `CandidateEnrichmentRequest`/`CandidateEnrichmentResponse`를 사용한다. 요청은
-D가 선정하고 A가 중계한 후보를 최대 5개까지 받으며, v1 지원 Feature는
+D가 선정하고 A가 중계한 후보를 `RECOMMENDATION_RESULT_LIMIT`만큼 받으며
+(기본 5개, 시스템 절대 상한 20개), v1 지원 Feature는
 `concentration` 하나다. C는 요청 순서를 유지하고 후보별
 `success`/`no_data`/`unavailable`과 Provider metadata를 반환한다. 일부 후보만
 성공하거나 실패하면 전체 상태는 `partial`이며, 실패 후보도 목록에서 제거하지 않는다.
 
 #### 5.2.1 A → C 후보 보강 재요청
 
-D는 1차 점수 계산 후 보강할 상위 후보를 최대 5개까지 A에 반환한다. A는 Provider나
-지역 코드를 선택하지 않고 후보 식별정보와 필요한 Feature만 C에 전달한다.
+D는 1차 점수 계산 후 보강할 상위 후보를 `RECOMMENDATION_RESULT_LIMIT`까지 A에
+반환한다. A는 Provider나 지역 코드를 선택하지 않고 후보 식별정보와 필요한
+Feature만 C에 전달한다.
 
 ```python
 from app.agent_context.enrichment_schemas import (
@@ -410,7 +412,7 @@ sequenceDiagram
     participant D as D Recommendation
 
     A->>D: 초기 Context와 조건 전달
-    D-->>A: 1차 점수 상위 후보(최대 5개)
+    D-->>A: 설정된 결과 상한까지의 1차 점수 상위 후보
     A->>C: CandidateEnrichmentRequest
     C-->>A: CandidateEnrichmentResponse
     A->>D: 후보별 상태·집중률·metadata 전달

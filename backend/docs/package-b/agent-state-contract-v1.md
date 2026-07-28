@@ -84,7 +84,7 @@ time_available  : 분 단위
 ```
 
 기본 검색 반경은 조건이 아니라 소비 측의 정책이다. 현재 C `ContextService`는
-`max_travel_time`이 없으면 2km를 사용하고, 값이 있으면 MVP 도보 기준
+`max_travel_time`이 없으면 A 기준인 1km를 사용하고, 값이 있으면 MVP 도보 기준
 `분 × 0.07km`로 후보 수집 반경을 계산한다.
 
 ### 1.3 미설정 값의 표현

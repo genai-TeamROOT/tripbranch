@@ -57,6 +57,26 @@ def test_fake_weather_condition_is_parsed_as_enum() -> None:
     assert settings.fake_weather_condition is WeatherCondition.BAD
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"recommendation_result_limit": 0},
+        {"recommendation_result_limit": 21},
+        {"recommendation_candidate_limit": 0},
+        {"recommendation_candidate_limit": 21},
+        {
+            "recommendation_result_limit": 6,
+            "recommendation_candidate_limit": 5,
+        },
+    ],
+)
+def test_invalid_recommendation_limits_fail_at_construction(
+    overrides: dict[str, int],
+) -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **overrides)
+
+
 def test_validate_provider_config_allows_fake_mode_without_keys() -> None:
     validate_provider_config(Settings(_env_file=None, provider_mode="fake"))
 

@@ -10,8 +10,17 @@ from time import perf_counter
 
 from app.domain.models import PlaceCategoryFilter, PlaceDetails
 from app.errors import AppError
+from app.place_search_policy import (
+    DEFAULT_PLACE_SEARCH_RADIUS_KM,
+    MAX_PLACE_SEARCH_RADIUS_KM,
+)
 from app.providers.contracts import ProviderMetadata
 from app.providers.protocols import PlaceDetailsProvider, PlaceSearchProvider
+from app.recommendation_limits import (
+    DEFAULT_RECOMMENDATION_CANDIDATE_LIMIT,
+    MAX_RECOMMENDATION_CANDIDATE_LIMIT,
+    MIN_RECOMMENDATION_LIMIT,
+)
 from app.schemas import PlaceCandidate
 from app.tools.contracts import ToolError, ToolStatus
 
@@ -26,8 +35,8 @@ class DetailStatus(StrEnum):
 class NearbyPlaceDetailsQuery:
     latitude: float
     longitude: float
-    search_radius_km: float = 2.0
-    limit: int = 10
+    search_radius_km: float = DEFAULT_PLACE_SEARCH_RADIUS_KM
+    limit: int = DEFAULT_RECOMMENDATION_CANDIDATE_LIMIT
     preferred_categories: tuple[str, ...] = ()
     category_filter: PlaceCategoryFilter | None = None
     excluded_place_ids: frozenset[str] = frozenset()
@@ -37,10 +46,21 @@ class NearbyPlaceDetailsQuery:
             raise ValueError("latitude는 -90 이상 90 이하여야 합니다.")
         if not -180 <= self.longitude <= 180:
             raise ValueError("longitude는 -180 이상 180 이하여야 합니다.")
-        if not 0 < self.search_radius_km <= 20:
-            raise ValueError("search_radius_km는 0 초과 20 이하여야 합니다.")
-        if not 1 <= self.limit <= 20:
-            raise ValueError("limit은 1 이상 20 이하여야 합니다.")
+        if not 0 < self.search_radius_km <= MAX_PLACE_SEARCH_RADIUS_KM:
+            raise ValueError(
+                "search_radius_km는 0 초과 "
+                f"{MAX_PLACE_SEARCH_RADIUS_KM:g} 이하여야 합니다."
+            )
+        if not (
+            MIN_RECOMMENDATION_LIMIT
+            <= self.limit
+            <= MAX_RECOMMENDATION_CANDIDATE_LIMIT
+        ):
+            raise ValueError(
+                "limit은 "
+                f"{MIN_RECOMMENDATION_LIMIT} 이상 "
+                f"{MAX_RECOMMENDATION_CANDIDATE_LIMIT} 이하여야 합니다."
+            )
 
 
 @dataclass(frozen=True)

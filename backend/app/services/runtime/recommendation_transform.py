@@ -14,15 +14,17 @@ import하지 않는다. RealRecommendationProvider의 실제 D 호출 코드도 
 
 from __future__ import annotations
 
+from app.place_search_policy import (
+    DEFAULT_PLACE_SEARCH_RADIUS_KM,
+    MAX_PLACE_SEARCH_RADIUS_KM,
+    MIN_PLACE_SEARCH_RADIUS_KM,
+    WALKING_SPEED_KM_PER_MINUTE,
+)
 from app.schemas import RecommendationResponse, Transport, UserConditions
 from app.services.runtime.context_schemas import RecommendationContext
 from app.state.service import RecommendedPlace, RecordRecommendationRequest
 
-_DEFAULT_RADIUS_KM = 1.0
-_WALK_KM_PER_MIN = 0.07  # 70m/min
 _OTHER_KM_PER_MIN = 20 / 60  # 임시: 대중교통/자동차/미언급 공통 가정(20km/h)
-_MIN_RADIUS_KM = 0.1
-_MAX_RADIUS_KM = 20.0
 
 
 def to_search_radius_km(conditions: UserConditions) -> float:
@@ -36,13 +38,18 @@ def to_search_radius_km(conditions: UserConditions) -> float:
     맞춰 [0.1, 20.0] 구간으로 clamp한다.
     """
     if conditions.max_travel_time is None:
-        return _DEFAULT_RADIUS_KM
+        return DEFAULT_PLACE_SEARCH_RADIUS_KM
 
     speed_km_per_min = (
-        _WALK_KM_PER_MIN if conditions.transport is Transport.WALK else _OTHER_KM_PER_MIN
+        WALKING_SPEED_KM_PER_MINUTE
+        if conditions.transport is Transport.WALK
+        else _OTHER_KM_PER_MIN
     )
     radius = speed_km_per_min * conditions.max_travel_time
-    return max(_MIN_RADIUS_KM, min(_MAX_RADIUS_KM, radius))
+    return max(
+        MIN_PLACE_SEARCH_RADIUS_KM,
+        min(MAX_PLACE_SEARCH_RADIUS_KM, radius),
+    )
 
 
 def to_weather_condition(context: RecommendationContext) -> str | None:
