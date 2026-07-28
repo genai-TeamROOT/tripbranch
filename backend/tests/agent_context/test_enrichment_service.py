@@ -12,10 +12,8 @@ from app.agent_context.enrichment_schemas import (
     CandidateEnrichmentRequest,
     CandidateEnrichmentTarget,
 )
-from app.agent_context.enrichment_service import (
-    CandidateEnrichmentService,
-    _normalize_concentration,
-)
+from app.agent_context.enrichment_service import CandidateEnrichmentService
+from app.concentration_policy import normalize_concentration
 from app.config import settings
 from app.domain.models import ConcentrationForecast, ConcentrationResult
 from app.errors import AppError, ProviderTimeoutError
@@ -245,7 +243,10 @@ def test_normalize_concentration_uses_agreed_boundaries(
     expected_level: str,
     expected_label: str,
 ) -> None:
-    assert _normalize_concentration(rate) == (expected_level, expected_label)
+    normalized = normalize_concentration(rate)
+
+    assert normalized.level == expected_level
+    assert normalized.label == expected_label
 
 
 @pytest.mark.asyncio

@@ -273,6 +273,7 @@ D가 선정하고 A가 중계한 후보를 `RECOMMENDATION_RESULT_LIMIT`만큼 �
 오늘 값이 없으면 미래나 과거 값으로 대체하지 않고 후보 상태를 `no_data`로 반환한다.
 
 오늘 집중률에는 원본 상대 비율과 정규화된 단계·표시명을 함께 포함한다.
+임계값과 단계 정의는 C의 `app/concentration_policy.py`를 단일 기준으로 사용한다.
 
 | 집중률 범위 | `concentration_level` | `concentration_label` |
 | --- | --- | --- |

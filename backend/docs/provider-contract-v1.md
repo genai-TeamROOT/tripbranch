@@ -1009,7 +1009,8 @@ forecasts를 반환합니다.
 
 선택한 오늘 집중률은 평시 대비 상대 비율로 보고 다음 네 단계로 정규화합니다. 원본
 `concentration_rate`는 유지하고 영문 코드 `concentration_level`과 사용자 표시용
-`concentration_label`을 함께 반환합니다.
+`concentration_label`을 함께 반환합니다. 임계값·단계 enum·표시명·정규화 함수는
+`app/concentration_policy.py`에서 공통 관리합니다.
 
 | 집중률 범위 | `concentration_level` | `concentration_label` |
 | --- | --- | --- |

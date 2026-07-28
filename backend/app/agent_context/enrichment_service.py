@@ -3,21 +3,24 @@
 from __future__ import annotations
 
 import asyncio
-import math
 from collections.abc import Callable
 from datetime import date, datetime
-from typing import Literal
 from zoneinfo import ZoneInfo
 
 from app.agent_context.enrichment_schemas import (
     CandidateEnrichmentRequest,
     CandidateEnrichmentResponse,
     CandidateEnrichmentResult,
+    CandidateEnrichmentStatus,
     CandidateEnrichmentTarget,
     ConcentrationForecastData,
     resolve_enrichment_status,
 )
 from app.agent_context.schemas import ContextError, ProviderMetadata
+from app.concentration_policy import (
+    is_valid_concentration_rate,
+    normalize_concentration,
+)
 from app.domain.models import ConcentrationForecast, ConcentrationResult
 from app.providers.contracts import ProviderMetadata as ProviderMetadataData
 from app.recommendation_limits import (
@@ -30,9 +33,6 @@ from app.tools.contracts import ToolStatus
 _JONGNO_AREA_CODE = "11"
 _JONGNO_DISTRICT_CODE = "11110"
 _KST = ZoneInfo("Asia/Seoul")
-_CONCENTRATION_RELAXED_MAX = 50.0
-_CONCENTRATION_NORMAL_MAX = 75.0
-_CONCENTRATION_SLIGHTLY_CROWDED_MAX = 100.0
 
 
 class CandidateEnrichmentService:
@@ -76,7 +76,9 @@ class CandidateEnrichmentService:
                 for candidate in request.candidates
             )
         )
-        statuses = [candidate.status for candidate in candidates]
+        statuses: list[CandidateEnrichmentStatus] = [
+            candidate.status for candidate in candidates
+        ]
         return CandidateEnrichmentResponse(
             request_id=request.request_id,
             status=resolve_enrichment_status(statuses),
@@ -118,15 +120,16 @@ class CandidateEnrichmentService:
             reference_date=reference_date,
         )
         forecasts: list[ConcentrationForecastData] = []
-        if forecast is not None:
-            level, label = _normalize_concentration(forecast.concentration_rate)
+        rate = forecast.concentration_rate if forecast is not None else None
+        if forecast is not None and is_valid_concentration_rate(rate):
+            normalized = normalize_concentration(rate)
             forecasts = [
                 ConcentrationForecastData(
                     place_name=forecast.place_name,
                     forecast_date=reference_date.isoformat(),
-                    concentration_rate=forecast.concentration_rate,
-                    concentration_level=level,
-                    concentration_label=label,
+                    concentration_rate=rate,
+                    concentration_level=normalized.level,
+                    concentration_label=normalized.label,
                 )
             ]
         metadata = [_map_provider_metadata(item) for item in tool_result.provider_metadata]
@@ -183,9 +186,7 @@ def _select_current_forecast(
         forecast
         for forecast in concentration.forecasts
         if _parse_forecast_date(forecast.forecast_date) == reference_date
-        and forecast.concentration_rate is not None
-        and math.isfinite(forecast.concentration_rate)
-        and forecast.concentration_rate >= 0
+        and is_valid_concentration_rate(forecast.concentration_rate)
     ]
     if not forecasts:
         return None
@@ -198,23 +199,5 @@ def _select_current_forecast(
         ),
         forecasts[0],
     )
-
-
-def _normalize_concentration(
-    rate: float,
-) -> tuple[
-    Literal["relaxed", "normal", "slightly_crowded", "crowded"],
-    Literal["여유", "보통", "약간 붐빔", "붐빔"],
-]:
-    """평시 대비 상대 집중률을 합의된 네 단계와 사용자 표시명으로 변환한다."""
-
-    if rate <= _CONCENTRATION_RELAXED_MAX:
-        return "relaxed", "여유"
-    if rate <= _CONCENTRATION_NORMAL_MAX:
-        return "normal", "보통"
-    if rate <= _CONCENTRATION_SLIGHTLY_CROWDED_MAX:
-        return "slightly_crowded", "약간 붐빔"
-    return "crowded", "붐빔"
-
 
 __all__ = ["CandidateEnrichmentService"]
