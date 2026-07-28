@@ -10,6 +10,7 @@ import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
 import { interpretUserInput } from "../api/trip";
+import { AgentRuntimeDebugPanel } from "../components/AgentRuntimeDebugPanel";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { IntentDebugPanel } from "../components/IntentDebugPanel";
 import { featureFlags } from "../config/features";
@@ -110,6 +111,7 @@ export function HomePage() {
       </form>
 
       <IntentDebugPanel />
+      <AgentRuntimeDebugPanel />
     </main>
   );
 }

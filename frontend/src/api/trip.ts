@@ -14,6 +14,8 @@
 
 import { apiClient } from "./client";
 import type {
+  AgentDebugRequest,
+  AgentResponse,
   InterpretDebugRequest,
   InterpretedConditions,
   LLMOutput,
@@ -55,4 +57,8 @@ export function getRecommendations(
   conditions: InterpretedConditions & { shown_place_ids: string[] },
 ) {
   return apiClient.post<RecommendationsResponse>("/recommendations", conditions);
+}
+
+export function runAgentDebug(request: AgentDebugRequest) {
+  return apiClient.post<AgentResponse>("/agent-debug", request);
 }

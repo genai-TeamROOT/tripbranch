@@ -164,3 +164,43 @@ export interface InterpretDebugRequest {
   shown_place_count?: number;
   current_conditions?: Partial<UserConditions> | null;
 }
+
+// --- Agent Runtime(run_agent()) 디버그 관련 타입 ---
+// backend/app/schemas.py의 AgentRequest/AgentResponse 계약을 그대로 옮긴 개발용 타입.
+
+export interface AgentDebugRequest {
+  user_input: string;
+  session_id?: string | null;
+  device_location?: string | null;
+}
+
+export interface SessionState {
+  session_id: string;
+  run_id: string;
+  session_created: boolean;
+  condition_version: number;
+  condition_changed: boolean;
+  user_conditions: UserConditions;
+  shown_place_ids: string[];
+  excluded_place_ids: string[];
+  gps_expired: boolean;
+  weather_expired: boolean;
+}
+
+export interface StateApplyResponse {
+  session_id: string;
+  run_id: string;
+  session_created: boolean;
+  user_conditions: UserConditions;
+  condition_version: number;
+  condition_changed: boolean;
+  excluded_place_ids: string[];
+  reset_applied: string | null;
+}
+
+export interface AgentResponse {
+  llm_output: LLMOutput;
+  state: StateApplyResponse;
+  recommendations: RecommendationsResponse | null;
+  message: string;
+}

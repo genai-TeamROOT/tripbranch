@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 from app.errors import AppError
 from app.providers.factory import validate_provider_config
 from app.providers.tour_category_registry import get_tour_category_registry
+from app.routes.agent import router as agent_router
 from app.routes.health import router as health_router
 from app.routes.interpret import router as interpret_router
 from app.routes.recommendations import router as recommendations_router
@@ -72,6 +73,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router, prefix="/api")
     app.include_router(interpret_router, prefix="/api")
     app.include_router(recommendations_router, prefix="/api")
+    app.include_router(agent_router, prefix="/api")
     return app
 
 
