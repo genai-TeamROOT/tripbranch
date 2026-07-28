@@ -12,6 +12,7 @@ import하지 않는다 — D 호출은 app.services.runtime.real_recommendation_
 
 from __future__ import annotations
 
+<<<<<<< HEAD
 from app.schemas import RecommendationResponse, UserConditions
 from app.services.runtime.context_schemas import RecommendationContext
 from app.state.service import RecommendedPlace, RecordRecommendationRequest
@@ -25,6 +26,19 @@ _DEFAULT_RADIUS_KM = 2.0
 _WALKING_KM_PER_MINUTE = 0.07  # 70m/min. transport 값과 무관하게 항상 이 속도를 쓴다.
 _MIN_RADIUS_KM = 0.3
 _MAX_RADIUS_KM = 20.0
+=======
+from app.place_search_policy import (
+    DEFAULT_PLACE_SEARCH_RADIUS_KM,
+    MAX_PLACE_SEARCH_RADIUS_KM,
+    MIN_PLACE_SEARCH_RADIUS_KM,
+    WALKING_SPEED_KM_PER_MINUTE,
+)
+from app.schemas import RecommendationResponse, Transport, UserConditions
+from app.services.runtime.context_schemas import RecommendationContext
+from app.state.service import RecommendedPlace, RecordRecommendationRequest
+
+_OTHER_KM_PER_MIN = 20 / 60  # 임시: 대중교통/자동차/미언급 공통 가정(20km/h)
+>>>>>>> develop
 
 
 def to_search_radius_km(conditions: UserConditions) -> float:
@@ -37,10 +51,23 @@ def to_search_radius_km(conditions: UserConditions) -> float:
     가정). 결과는 [0.3, 20.0] 구간으로 clamp한다.
     """
     if conditions.max_travel_time is None:
-        return _DEFAULT_RADIUS_KM
+        return DEFAULT_PLACE_SEARCH_RADIUS_KM
 
+<<<<<<< HEAD
     estimated_radius = conditions.max_travel_time * _WALKING_KM_PER_MINUTE
     return max(_MIN_RADIUS_KM, min(_MAX_RADIUS_KM, estimated_radius))
+=======
+    speed_km_per_min = (
+        WALKING_SPEED_KM_PER_MINUTE
+        if conditions.transport is Transport.WALK
+        else _OTHER_KM_PER_MIN
+    )
+    radius = speed_km_per_min * conditions.max_travel_time
+    return max(
+        MIN_PLACE_SEARCH_RADIUS_KM,
+        min(MAX_PLACE_SEARCH_RADIUS_KM, radius),
+    )
+>>>>>>> develop
 
 
 def to_weather_condition(context: RecommendationContext) -> str | None:

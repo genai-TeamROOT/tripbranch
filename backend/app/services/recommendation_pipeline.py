@@ -21,6 +21,12 @@ from app.domain.explanation import build_explanations
 from app.domain.models import ScoringCandidate, WeatherCondition
 from app.domain.scoring import RankedCandidate, ScoringResult, score_candidates
 from app.errors import AppError
+from app.recommendation_limits import (
+    DEFAULT_RECOMMENDATION_CANDIDATE_LIMIT,
+    DEFAULT_RECOMMENDATION_RESULT_LIMIT,
+    MAX_RECOMMENDATION_CANDIDATE_LIMIT,
+    MIN_RECOMMENDATION_LIMIT,
+)
 from app.schemas import (
     InterpretedConditions,
     RecommendationItem,
@@ -47,8 +53,6 @@ from app.tools.weather_forecast import (
 )
 
 _KST = ZoneInfo("Asia/Seoul")
-DEFAULT_RECOMMENDATION_LIMIT = 5
-DEFAULT_CANDIDATE_LIMIT = 10
 _JONGNO_AREA_CODE = "11"
 _JONGNO_DISTRICT_CODE = "11110"
 
@@ -68,17 +72,30 @@ class RecommendationPipelineRequest:
     visit_at: datetime
     shown_place_ids: frozenset[str] = frozenset()
     rejected_place_ids: frozenset[str] = frozenset()
-    recommendation_limit: int = DEFAULT_RECOMMENDATION_LIMIT
-    candidate_limit: int = DEFAULT_CANDIDATE_LIMIT
+    recommendation_limit: int = DEFAULT_RECOMMENDATION_RESULT_LIMIT
+    candidate_limit: int = DEFAULT_RECOMMENDATION_CANDIDATE_LIMIT
 
     def __post_init__(self) -> None:
         if not self.location_query.strip():
             raise ValueError("location_query는 비어 있을 수 없습니다.")
-        if not 1 <= self.recommendation_limit <= 20:
-            raise ValueError("recommendation_limit은 1 이상 20 이하여야 합니다.")
-        if not self.recommendation_limit <= self.candidate_limit <= 20:
+        if not (
+            MIN_RECOMMENDATION_LIMIT
+            <= self.recommendation_limit
+            <= MAX_RECOMMENDATION_CANDIDATE_LIMIT
+        ):
             raise ValueError(
-                "candidate_limit은 recommendation_limit 이상 20 이하여야 합니다."
+                "recommendation_limit은 "
+                f"{MIN_RECOMMENDATION_LIMIT} 이상 "
+                f"{MAX_RECOMMENDATION_CANDIDATE_LIMIT} 이하여야 합니다."
+            )
+        if not (
+            self.recommendation_limit
+            <= self.candidate_limit
+            <= MAX_RECOMMENDATION_CANDIDATE_LIMIT
+        ):
+            raise ValueError(
+                "candidate_limit은 recommendation_limit 이상 "
+                f"{MAX_RECOMMENDATION_CANDIDATE_LIMIT} 이하여야 합니다."
             )
 
 
@@ -115,8 +132,8 @@ def build_pipeline_request(
     shown_place_ids: list[str],
     *,
     clock: Clock | None = None,
-    recommendation_limit: int = DEFAULT_RECOMMENDATION_LIMIT,
-    candidate_limit: int = DEFAULT_CANDIDATE_LIMIT,
+    recommendation_limit: int = DEFAULT_RECOMMENDATION_RESULT_LIMIT,
+    candidate_limit: int = DEFAULT_RECOMMENDATION_CANDIDATE_LIMIT,
 ) -> RecommendationPipelineRequest:
     now = (clock or (lambda: datetime.now(_KST)))()
     if now.tzinfo is None:
@@ -238,7 +255,7 @@ async def run_recommendation_pipeline_from_context(
     search_radius_km: float,
     shown_place_ids: frozenset[str] = frozenset(),
     rejected_place_ids: frozenset[str] = frozenset(),
-    recommendation_limit: int = DEFAULT_RECOMMENDATION_LIMIT,
+    recommendation_limit: int = DEFAULT_RECOMMENDATION_RESULT_LIMIT,
     timer: Timer = perf_counter,
 ) -> RecommendationResponse:
     """A가 C에서 받은 RecommendationContext를 그대로 넘기면, D 내부(후보 변환→

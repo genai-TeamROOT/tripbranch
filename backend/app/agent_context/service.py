@@ -28,6 +28,16 @@ from app.agent_context.tool_rules import (
     ContextTool,
     build_tool_execution_plan,
 )
+from app.place_search_policy import (
+    DEFAULT_PLACE_SEARCH_RADIUS_KM,
+    MAX_PLACE_SEARCH_RADIUS_KM,
+    MIN_PLACE_SEARCH_RADIUS_KM,
+    WALKING_SPEED_KM_PER_MINUTE,
+)
+from app.recommendation_limits import (
+    MAX_RECOMMENDATION_CANDIDATE_LIMIT,
+    MIN_RECOMMENDATION_LIMIT,
+)
 from app.tools.contracts import ToolError, ToolStatus
 from app.tools.holiday import GetHolidaysTool, HolidayQuery
 from app.tools.nearby_place_details import (
@@ -48,9 +58,6 @@ from app.tools.weather_forecast import (
 _KST = ZoneInfo("Asia/Seoul")
 _CATEGORY_RULE_VERSION = "tour-category-v1"
 _SEARCH_RADIUS_RULE_VERSION = "walking-radius-v1"
-_WALKING_KM_PER_MINUTE = 0.07
-_MIN_SEARCH_RADIUS_KM = 0.3
-_MAX_SEARCH_RADIUS_KM = 20.0
 
 
 @dataclass(frozen=True)
@@ -70,10 +77,20 @@ class ContextService:
         self,
         tools: ContextTools,
         *,
+        candidate_limit: int,
         clock: Callable[[], datetime] | None = None,
-        search_radius_km: float = 2.0,
-        candidate_limit: int = 10,
+        search_radius_km: float = DEFAULT_PLACE_SEARCH_RADIUS_KM,
     ) -> None:
+        if not (
+            MIN_RECOMMENDATION_LIMIT
+            <= candidate_limit
+            <= MAX_RECOMMENDATION_CANDIDATE_LIMIT
+        ):
+            raise ValueError(
+                "candidate_limit은 "
+                f"{MIN_RECOMMENDATION_LIMIT} 이상 "
+                f"{MAX_RECOMMENDATION_CANDIDATE_LIMIT} 이하여야 합니다."
+            )
         self._tools = tools
         self._clock = clock or (lambda: datetime.now(_KST))
         self._search_radius_km = search_radius_km
@@ -203,10 +220,10 @@ def _resolve_search_radius_km(
 
     if max_travel_time is None:
         return default_radius_km
-    estimated_radius = max_travel_time * _WALKING_KM_PER_MINUTE
+    estimated_radius = max_travel_time * WALKING_SPEED_KM_PER_MINUTE
     return min(
-        max(estimated_radius, _MIN_SEARCH_RADIUS_KM),
-        _MAX_SEARCH_RADIUS_KM,
+        max(estimated_radius, MIN_PLACE_SEARCH_RADIUS_KM),
+        MAX_PLACE_SEARCH_RADIUS_KM,
     )
 
 

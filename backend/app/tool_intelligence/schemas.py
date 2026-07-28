@@ -8,7 +8,16 @@ from typing import Annotated, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
+from app.place_search_policy import (
+    DEFAULT_PLACE_SEARCH_RADIUS_KM,
+    MAX_PLACE_SEARCH_RADIUS_KM,
+)
 from app.providers.contracts import ProviderSource, ProviderStatus
+from app.recommendation_limits import (
+    DEFAULT_RECOMMENDATION_CANDIDATE_LIMIT,
+    MAX_RECOMMENDATION_CANDIDATE_LIMIT,
+    MIN_RECOMMENDATION_LIMIT,
+)
 
 
 class StrictModel(BaseModel):
@@ -53,8 +62,16 @@ class ResolveLocationParameters(StrictModel):
 
 class SearchNearbyPlacesParameters(StrictModel):
     location: Coordinates
-    radius_km: float = Field(default=2.0, gt=0, le=20)
-    limit: int = Field(default=10, ge=1, le=20)
+    radius_km: float = Field(
+        default=DEFAULT_PLACE_SEARCH_RADIUS_KM,
+        gt=0,
+        le=MAX_PLACE_SEARCH_RADIUS_KM,
+    )
+    limit: int = Field(
+        default=DEFAULT_RECOMMENDATION_CANDIDATE_LIMIT,
+        ge=MIN_RECOMMENDATION_LIMIT,
+        le=MAX_RECOMMENDATION_CANDIDATE_LIMIT,
+    )
     place_types: list[str] = Field(default_factory=list)
     place_tags: list[str] = Field(default_factory=list)
     excluded_place_ids: list[str] = Field(default_factory=list)

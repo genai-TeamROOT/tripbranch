@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import Field, field_validator, model_validator
 
 from app.agent_context.schemas import ContextError, ProviderMetadata, StrictModel
+from app.recommendation_limits import MAX_RECOMMENDATION_CANDIDATE_LIMIT
 
 
 class CandidateEnrichmentTarget(StrictModel):
@@ -32,7 +33,7 @@ class CandidateEnrichmentRequest(StrictModel):
     request_id: str = Field(min_length=1)
     candidates: list[CandidateEnrichmentTarget] = Field(
         min_length=1,
-        max_length=5,
+        max_length=MAX_RECOMMENDATION_CANDIDATE_LIMIT,
     )
     features: list[Literal["concentration"]] = Field(min_length=1, max_length=1)
 
@@ -92,7 +93,7 @@ class CandidateEnrichmentResponse(StrictModel):
     status: Literal["success", "partial", "no_data", "unavailable"]
     candidates: list[CandidateEnrichmentResult] = Field(
         min_length=1,
-        max_length=5,
+        max_length=MAX_RECOMMENDATION_CANDIDATE_LIMIT,
     )
 
     @model_validator(mode="after")

@@ -188,7 +188,8 @@ curl -X POST http://127.0.0.1:8000/api/recommendations \
 
 확인할 내용:
 
-- `recommendations`와 `unverified_recommendations`의 합이 최대 5개
+- `recommendations`와 `unverified_recommendations`의 합이 설정된 결과 상한 이내
+  (기본 `RECOMMENDATION_RESULT_LIMIT=5`)
 - 응답 최상위 `elapsed_ms`에 전체 추천 파이프라인 처리시간이 millisecond로 표시
 - 이미 표시한 장소는 `shown_place_ids`에 넣으면 다음 응답에서 제외
 - Real 모드는 거리순 후보 최대 10개의 상세정보를 API로 조회
