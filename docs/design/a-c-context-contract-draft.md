@@ -259,6 +259,173 @@ class ResponseMetadata(BaseModel):
 D가 1차 점수 계산 후 상위 후보와 필요한 보강 Feature를 선언하면, A가 이를 중계해
 C에 별도 후보 보강 요청을 보낸다. D는 C를 직접 호출하지 않는다.
 
+후보 보강 계약은 초기 Context 계약과 분리된
+`CandidateEnrichmentRequest`/`CandidateEnrichmentResponse`를 사용한다. 요청은
+D가 선정하고 A가 중계한 후보를 최대 5개까지 받으며, v1 지원 Feature는
+`concentration` 하나다. C는 요청 순서를 유지하고 후보별
+`success`/`no_data`/`unavailable`과 Provider metadata를 반환한다. 일부 후보만
+성공하거나 실패하면 전체 상태는 `partial`이며, 실패 후보도 목록에서 제거하지 않는다.
+
+#### 5.2.1 A → C 후보 보강 재요청
+
+D는 1차 점수 계산 후 보강할 상위 후보를 최대 5개까지 A에 반환한다. A는 Provider나
+지역 코드를 선택하지 않고 후보 식별정보와 필요한 Feature만 C에 전달한다.
+
+```python
+from app.agent_context.enrichment_schemas import (
+    CandidateEnrichmentRequest,
+    CandidateEnrichmentTarget,
+)
+
+
+enrichment_request = CandidateEnrichmentRequest(
+    request_id=new_trace_id(),
+    candidates=[
+        CandidateEnrichmentTarget(
+            place_id=candidate.place_id,
+            name=candidate.name,
+            latitude=candidate.latitude,
+            longitude=candidate.longitude,
+        )
+        for candidate in top_candidates[:5]
+    ],
+    features=["concentration"],
+)
+
+enrichment_response = await enrichment_provider.enrich(enrichment_request)
+```
+
+```json
+{
+  "request_id": "enrich-01",
+  "candidates": [
+    {
+      "place_id": "126508",
+      "name": "경복궁",
+      "latitude": 37.5796,
+      "longitude": 126.977
+    },
+    {
+      "place_id": "125759",
+      "name": "창덕궁",
+      "latitude": 37.5794,
+      "longitude": 126.991
+    }
+  ],
+  "features": ["concentration"]
+}
+```
+
+`request_id`는 A가 재요청마다 새로 생성한다. 초기 Context 요청 ID 또는 추천 실행
+ID와 로그에서 연관 지을 수는 있지만 같은 값일 필요는 없다. `features`는 v1에서
+`["concentration"]`만 허용한다.
+
+#### 5.2.2 C → A 후보 보강 응답
+
+```json
+{
+  "request_id": "enrich-01",
+  "status": "partial",
+  "candidates": [
+    {
+      "place_id": "126508",
+      "name": "경복궁",
+      "latitude": 37.5796,
+      "longitude": 126.977,
+      "status": "success",
+      "concentration": [
+        {
+          "place_name": "경복궁",
+          "forecast_date": "20260728",
+          "concentration_rate": 42.0
+        }
+      ],
+      "error": null,
+      "provider_metadata": [
+        {
+          "source": "tour_api_concentration",
+          "status": "success",
+          "retrieved_at": "2026-07-28T10:00:00+09:00"
+        }
+      ]
+    },
+    {
+      "place_id": "125759",
+      "name": "창덕궁",
+      "latitude": 37.5794,
+      "longitude": 126.991,
+      "status": "no_data",
+      "concentration": [],
+      "error": null,
+      "provider_metadata": [
+        {
+          "source": "tour_api_concentration",
+          "status": "no_data",
+          "retrieved_at": "2026-07-28T10:00:00+09:00"
+        }
+      ]
+    }
+  ]
+}
+```
+
+전체 상태는 후보별 상태를 다음 규칙으로 집계한다.
+
+| 후보별 상태 조합 | 전체 상태 |
+| --- | --- |
+| 모두 `success` | `success` |
+| 모두 `no_data` | `no_data` |
+| 모두 `unavailable` | `unavailable` |
+| 서로 다른 상태가 혼합됨 | `partial` |
+
+`no_data`와 `unavailable`은 후보 제외 사유가 아니다. C는 후보 순서를 변경하거나
+추천 결과를 제거하지 않는다.
+
+#### 5.2.3 A → D 전달 범위
+
+A는 C 응답을 추천 조건으로 재해석하거나 필터링하지 않고 D에 전달한다. D가 후보와
+보강 결과를 안정적으로 결합할 수 있도록 최소한 다음 필드를 보존한다.
+
+| 필드 | D의 사용 목적 | 필수 여부 |
+| --- | --- | --- |
+| 응답 `status` | 보강 전체 성공·부분 성공·실패 판단 | 필수 |
+| `candidate.place_id` | 기존 Scoring 후보와 결합하는 기준 키 | 필수 |
+| `candidate.status` | 해당 후보의 집중률 사용 가능 여부 판단 | 필수 |
+| `concentration[].forecast_date` | 방문 예정일과 맞는 예측값 선택 | 데이터가 있을 때 필수 |
+| `concentration[].concentration_rate` | 혼잡도 Feature 또는 설명 근거 | 데이터가 있을 때 필수 |
+| `error` | 장애 원인·재시도 판단 | `unavailable`일 때 필수 |
+| `provider_metadata` | 출처·상태·조회 시각 추적 및 Snapshot | 보존 필수 |
+| `name`, `latitude`, `longitude` | 디버깅·응답 검증용 원본 후보 정보 | 보존 권장 |
+
+권장 방식은 A가 `CandidateEnrichmentResponse` 전체를 D 계약의 보강 Context로
+전달하는 것이다. D는 `place_id`로 기존 후보와 결합하고, `status=success`인 후보의
+집중률만 계산에 사용한다. `no_data`나 `unavailable`인 후보에는 혼잡도 Feature를
+적용하지 않으며 기존 점수와 추천 자격은 유지한다. `provider_metadata`는 점수값은
+아니지만 추천 근거와 당시 외부 데이터 Snapshot을 재현하기 위해 삭제하지 않는다.
+
+```mermaid
+sequenceDiagram
+    participant A as A Runtime
+    participant C as C Context Service
+    participant D as D Recommendation
+
+    A->>D: 초기 Context와 조건 전달
+    D-->>A: 1차 점수 상위 후보(최대 5개)
+    A->>C: CandidateEnrichmentRequest
+    C-->>A: CandidateEnrichmentResponse
+    A->>D: 후보별 상태·집중률·metadata 전달
+    D-->>A: 보강 Feature를 반영한 최종 결과
+```
+
+현재 저장소에는 C의 요청·응답 Schema, Service, Tool·Provider 및 Factory까지만
+구현되어 있다. 위 A 재호출과 D 재전달 배선은 A–D 2단계 추천 계약이 확정된 뒤
+연결한다.
+
+초기 Context의 Tool 선택은 C의 `context-tool-plan-v1` Rule이 담당한다. 위치,
+장소, 공휴일은 추천 Context에 필요한 기본 Tool이며, `weather_intent=IGNORE`이면
+Weather 호출을 생략한다. 의도적으로 생략한 Tool은 실패나 부분 성공으로 계산하지
+않는다.
+
 후보 조회 과정에서 C는 위치·반경·장소 유형처럼 Provider 요청에 필요한 **조회 조건**을
 사용할 수 있다. 다만 이전 노출·거절 ID를 기준으로 후보를 제거하거나 최종 후보를
 선정하는 **추천 필터**는 적용하지 않는다.
