@@ -30,7 +30,6 @@ from app.tools.concentration import (
 from app.tools.contracts import ToolError, ToolStatus
 from app.tools.holiday import GetHolidaysTool, HolidayQuery
 from app.tools.nearby_place_details import (
-    EnrichedPlace,
     NearbyPlaceDetailsQuery,
     NearbyPlaceDetailsTool,
 )
@@ -208,10 +207,13 @@ async def run_recommendation_pipeline(
         holiday_result=holiday_result,
         concentrations=concentrations,
     )
+    details_missing_place_ids = frozenset(
+        item.candidate.place_id for item in places_result.places if item.details is None
+    )
     response = _build_response(
         ranked,
         candidates,
-        places_result.places,
+        details_missing_place_ids,
         request.visit_at,
     )
     response = response.model_copy(
@@ -326,17 +328,15 @@ def _aggregate_concentration_status(
 def _build_response(
     ranked: tuple[RankedCandidate, ...],
     candidates: tuple[ScoringCandidate, ...],
-    places: tuple[EnrichedPlace, ...],
+    details_missing_place_ids: frozenset[str],
     visit_at: datetime,
 ) -> RecommendationResponse:
     candidate_by_id = {item.place_id: item for item in candidates}
-    place_by_id = {item.candidate.place_id: item for item in places}
     verified: list[RecommendationItem] = []
     unverified: list[RecommendationItem] = []
 
     for ranked_item in ranked:
         candidate = candidate_by_id[ranked_item.place_id]
-        place = place_by_id[ranked_item.place_id]
         evidence = build_evidence(ranked_item)
         explanations = build_explanations(evidence)
         item = RecommendationItem(
@@ -349,7 +349,11 @@ def _build_response(
             recommendation_reason=_recommendation_reason(ranked_item),
             explanations=list(explanations),
             warnings=list(ranked_item.warnings)
-            + _extra_warnings(ranked_item, place, explanations),
+            + _extra_warnings(
+                ranked_item,
+                ranked_item.place_id in details_missing_place_ids,
+                explanations,
+            ),
             score=evidence.score,
             feature_scores={
                 contribution.feature: contribution.score
@@ -372,7 +376,7 @@ def _build_response(
 
 def _extra_warnings(
     ranked: RankedCandidate,
-    place: EnrichedPlace,
+    details_missing: bool,
     explanations: tuple[str, ...],
 ) -> list[str]:
     """운영시간 결측 외에, 지금까지 조용히 생략되던 두 케이스를 warning으로 보충한다.
@@ -381,10 +385,7 @@ def _extra_warnings(
     (2) Feature 점수가 있어도 전부 임계값 미만이라 explanations가 비는 경우
     """
     extra: list[str] = []
-    if (
-        place.details is None
-        and _OPERATING_HOURS_UNVERIFIED_WARNING not in ranked.warnings
-    ):
+    if details_missing and _OPERATING_HOURS_UNVERIFIED_WARNING not in ranked.warnings:
         extra.append(_DETAILS_MISSING_WARNING)
     if ranked.feature_scores.get("weather") is None:
         extra.append(_WEATHER_MISSING_WARNING)
