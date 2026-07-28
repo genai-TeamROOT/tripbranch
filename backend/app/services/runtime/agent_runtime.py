@@ -5,9 +5,8 @@
 직접 부르지 않고 항상 A(이 모듈)를 거쳐서만 결과를 주고받는다.
 입력: AgentRequest(user_input + session_id + device_location).
 출력: AgentResponse(LLMOutput + 병합된 State + 추천 결과).
-호출 시점: 아직 전용 HTTP 라우트는 없다. A–C 스키마는 확정됐고 실제 C Service와 D
-추천 계약이 연결되면 라우터를 추가한다. run_agent_flow()는 Protocol에만 의존하므로,
-run_agent()의 provider 조립 부분만 Fake에서 실제 구현으로 교체하면 된다.
+호출 시점: 아직 전용 HTTP 라우트는 없다. A–C 스키마, A–D RecommendationProvider
+계약([TECH-02]) 모두 확정되어 run_agent()가 Real Provider를 주입한다.
 """
 
 from __future__ import annotations
@@ -23,7 +22,6 @@ from app.services.interpret.session_orchestrator import ensure_current_context
 from app.services.interpret.state_transform import to_user_conditions, transform
 from app.services.runtime.context_transform import to_agent_context_request
 from app.services.runtime.protocols import RecommendationProvider, ToolProvider
-from app.services.runtime.stubs import FakeRecommendationProvider
 from app.state.schema import now_kst
 from app.state.service import (
     RecommendedPlace,
@@ -213,11 +211,13 @@ async def run_agent(request: AgentRequest) -> AgentResponse:
     """호출자가 쓰는 Fake/Real 공통 진입점.
 
     A는 조건 기반 ContextProvider 계약만 알고, C 내부 Tool·Provider 조립은
-    app.agent_context.factory에 위임한다. D는 계약 확정 전이라 Fake로 유지한다.
+    app.agent_context.factory에 위임한다. D 계약이 확정되어([TECH-02])
+    RealRecommendationProvider를 기본으로 주입한다.
     """
 
     from app.agent_context.factory import get_context_provider
     from app.providers.factory import get_llm_provider, get_weather_provider
+    from app.services.runtime.recommendation_provider import RealRecommendationProvider
 
     async with httpx.AsyncClient() as client:
         weather_provider = get_weather_provider(client)
@@ -226,7 +226,7 @@ async def run_agent(request: AgentRequest) -> AgentResponse:
             llm=get_llm_provider(),
             weather_provider=weather_provider,
             tool_provider=get_context_provider(client),
-            recommendation_provider=FakeRecommendationProvider(),
+            recommendation_provider=RealRecommendationProvider(),
         )
 
 

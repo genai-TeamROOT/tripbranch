@@ -6,10 +6,10 @@
 (A↔C)와 같은 원칙으로, 이 파일의 각 함수도 정확히 명시된 두 구간만 담당한다 —
 서로 다른 변환 지점을 섞지 않는다.
 D가 RecommendationContext를 받아 scoring→evidence→explanation까지 처리하는
-공개 진입점을 제공 예정(D 확인 대기 중) — 그래서 이
-파일은 D 내부(app.domain.*, app.services.recommendation_pipeline)를 전혀
-import하지 않는다. RealRecommendationProvider의 실제 D 호출 코드도 아직
-만들지 않는다.
+공개 진입점(`run_recommendation_pipeline_from_context()`)을 제공했다([TECH-02]).
+이 파일은 여전히 D 내부(app.domain.*, app.services.recommendation_pipeline)를
+import하지 않는다 — 실제 D 호출 코드는
+`app.services.runtime.recommendation_provider.RealRecommendationProvider`에 있다.
 """
 
 from __future__ import annotations

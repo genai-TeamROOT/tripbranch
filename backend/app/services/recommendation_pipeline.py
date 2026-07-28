@@ -140,6 +140,14 @@ async def run_recommendation_pipeline(
     *,
     timer: Timer = perf_counter,
 ) -> RecommendationPipelineResult:
+    """Tool(C)을 직접 호출하는 레거시 진입점.
+
+    `/api/recommendations`(`app/services/recommendations.py`)처럼 아직
+    `InterpretedConditions`(location_query 문자열 기반 구형 조건 모델)를 쓰는
+    호출자 전용이다. 조건 스키마가 `UserConditions`로 통합되기 전까지는 이
+    경로가 C Tool을 직접 호출하는 유일한 예외이며([TECH-02] 참고), 신규
+    호출자는 대신 `run_recommendation_pipeline_from_context()`를 사용해야 한다.
+    """
     started_at = timer()
     location_result = await tools.location.execute(
         ResolveLocationQuery(request.location_query)
@@ -241,10 +249,11 @@ async def run_recommendation_pipeline_from_context(
     recommendation_limit: int = DEFAULT_RECOMMENDATION_LIMIT,
     timer: Timer = perf_counter,
 ) -> RecommendationResponse:
-    """A가 C에서 받은 RecommendationContext를 그대로 넘기면, D 내부(후보 변환→
-    Scoring→Evidence→Explanation 조립)를 전부 처리해 RecommendationResponse만
-    반환하는 공개 진입점. `run_recommendation_pipeline()`(Tool 직접 호출 구조)과
-    별개로 공존하며, 기존 구조를 대체하지 않는다.
+    """D의 주력 공개 진입점. A가 C에서 받은 RecommendationContext를 그대로
+    넘기면, D 내부(후보 변환→Scoring→Evidence→Explanation 조립)를 전부 처리해
+    RecommendationResponse만 반환한다. C Tool을 직접 호출하지 않는다([TECH-02]).
+    `run_recommendation_pipeline()`(Tool 직접 호출 구조)은 조건 스키마 통합
+    전까지 레거시 라우터 전용으로 별개로 남아 있다.
 
     호출자 책임: `search_radius_km`은 C가 `context.places`를 조회할 때 실제로
     사용한 검색 반경과 동일해야 한다 — Scoring의 거리 점수 정규화
