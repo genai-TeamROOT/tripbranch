@@ -501,6 +501,14 @@
   함수만 재사용하면 조건 스키마와 무관하게 `RecommendationContext`를
   조립할 수 있다는 것을 확인했다. 따라서 별도 트랙 마이그레이션을
   앞당기지 않고도 완료 기준을 예외 없이 만족시킬 수 있었음
+- 추가 정리: 완료 후 재검증 과정에서 `app/domain/candidate_mapper.py`의
+  `map_places_to_scoring_candidates()`(D-01/D-02 시절, `NearbyPlaceDetailsResult`를
+  직접 받는 함수)가 `run_recommendation_pipeline()` 삭제로 production에서
+  전혀 쓰이지 않는 죽은 코드가 된 것을 발견했다. C Tool 결과 타입
+  (`app.tools.nearby_place_details.NearbyPlaceDetailsResult`) import가
+  D 도메인 코드에 남아있던 마지막 잔재라 이 함수와 전용 헬퍼
+  (`_operating_hours_for_visit()`), 관련 테스트 2개(`test_candidate_mapper.py`)까지
+  함께 삭제해 D 도메인 코드에서 C Tool 타입 의존을 완전히 제거했다
 
 | 항목 | 선택지/질문 | 상태 |
 | --- | --- | --- |
