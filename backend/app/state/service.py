@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from app.state import history as history_module
 from app.state import session as session_module
+from app.state import trace as trace_module
 from app.state.merge import merge_conditions
 from app.state.operations import IgnoredOperation, Operation, validate_all
 from app.state.schema import UserConditions, now_kst
@@ -125,6 +126,28 @@ class UpdateApiContextRequest(BaseModel):
 class UpdateApiContextResponse(BaseModel):
     session_id: str
     api_context: ApiContextView
+
+
+class RecordTraceRequest(BaseModel):
+    """실행 단계 기록 요청. (llmops-trace-contract-v1.md 4절)
+
+    prompt_version/scoring_version/variant_id/error_type은 호출자가 해석한
+    값을 그대로 받으며, B는 검증하지 않는다.
+    """
+
+    session_id: str
+    run_id: str
+    step: str
+    prompt_version: str | None = None
+    scoring_version: str | None = None
+    variant_id: str | None = None
+    latency_ms: int | None = None
+    token_usage: int | None = None
+    error_type: str | None = None
+
+
+class RecordTraceResponse(BaseModel):
+    trace_id: str
 
 
 # ================================================================ 헬퍼
@@ -366,3 +389,31 @@ def update_api_context(
         session_id=state.session_id,
         api_context=_build_api_context_view(state),
     )
+
+
+# ================================================================ LLMOps Trace
+
+def record_trace(
+    request: RecordTraceRequest,
+    store: StateStore | None = None,
+) -> RecordTraceResponse:
+    """실행 단계 1건을 기록한다. (llmops-trace-contract-v1.md 4절)
+
+    호출자(A/C/D)가 각 단계(LLM 호출/Tool 호출/Scoring 등)가 끝난 시점에
+    호출한다. B는 step 이름이나 버전 값의 의미를 판단하지 않고 그대로 저장한다.
+    """
+    store = store or get_store()
+
+    trace = trace_module.record(
+        store,
+        request.session_id,
+        request.run_id,
+        request.step,
+        prompt_version=request.prompt_version,
+        scoring_version=request.scoring_version,
+        variant_id=request.variant_id,
+        latency_ms=request.latency_ms,
+        token_usage=request.token_usage,
+        error_type=request.error_type,
+    )
+    return RecordTraceResponse(trace_id=trace.trace_id)
