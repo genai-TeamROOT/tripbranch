@@ -133,6 +133,8 @@ UserConditions(14개 필드)를 추출해 LLMOutput(intent="RECOMMEND")으로 �
 기타 필드:
 - transport/max_travel_time/time_available/companion: 명시적으로 언급된 것만 채우고
   나머지는 null
+- max_travel_time/time_available: 사용자가 시간 제한이 없다고 말하거나 시간에 대해
+  언급하지 않으면 반드시 null로 반환하세요. 0을 반환하지 마세요.
 - exclude_tags/special_requirements: "주차 가능한 곳" 같은 부가 조건은 special_requirements에 추가
 
 status 결정:
@@ -173,6 +175,8 @@ _MODIFY_FIELD_MERGE_RULES = """\
 
 - current_location/search_center/weather/weather_intent/transport/max_travel_time/
   time_available/environment/companion: 언급된 필드만 새 값으로 채운다
+- max_travel_time/time_available: 시간 제한이 없다고 말하거나(해제) 언급이 없으면
+  null로 채우세요. 0을 반환하지 마세요.
 - budget: "무료만" 같은 교체는 새 값으로("free" 리터럴 사용, 아래 budget 규칙 참고),
   "가격 상관없어" 같은 해제는 null로
 - place_types: 사용자가 유형을 바꾸면 전체 교체 (예: "카페 말고 맛집" → ["restaurant"])

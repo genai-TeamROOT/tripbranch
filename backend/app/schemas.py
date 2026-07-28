@@ -285,6 +285,20 @@ class UserConditions(BaseModel):
         stripped = value.strip()
         return stripped or None
 
+    @field_validator("max_travel_time", "time_available", mode="before")
+    @classmethod
+    def _zero_to_none(cls, value: object) -> object:
+        """0은 "시간 제한 없음"이 아니라 None으로 정규화한다.
+
+        "시간 제한 없음"은 max_travel_time=0이 아니라 None으로 표현하기로
+        확정됐다. mode="before"라 Field(ge=0) 검사보다 먼저 실행되므로,
+        음수는 이 함수를 그대로 통과해 여전히 ValidationError로 막힌다.
+        C(app.agent_context.schemas.UserConditions)의 max_travel_time/
+        time_available은 Field(gt=0)이라 0을 애초에 거부하는데, 이 정규화
+        덕분에 A에서 C로 0이 넘어갈 일 자체가 없어진다.
+        """
+        return None if value == 0 else value
+
 
 class RecommendPayload(BaseModel):
     conditions: UserConditions

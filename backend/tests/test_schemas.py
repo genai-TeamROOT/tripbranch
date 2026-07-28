@@ -1,12 +1,17 @@
-"""ModifyPayload의 changed_fields 불변식 검증.
+"""app.schemas의 UserConditions/ModifyPayload 검증 규칙 테스트.
 
-condition_changes에 changed_fields 밖 필드가 값을 갖고 있어도(예: 호출자가 폴루션된
-current_conditions를 실어 보내 LLM이 그 값을 그대로 carry-forward한 경우), 생성 시점에
-null/빈 배열로 정리되는지 확인한다. changed_fields 안의 필드(상대적 표현 계산값 포함)는
-절대 건드리지 않아야 한다.
+- ModifyPayload: condition_changes에 changed_fields 밖 필드가 값을 갖고 있어도(예:
+  호출자가 폴루션된 current_conditions를 실어 보내 LLM이 그 값을 그대로
+  carry-forward한 경우), 생성 시점에 null/빈 배열로 정리되는지 확인한다.
+  changed_fields 안의 필드(상대적 표현 계산값 포함)는 절대 건드리지 않아야 한다.
+- UserConditions: max_travel_time/time_available의 0→None 정규화와 음수 거부를
+  확인한다.
 """
 
 from __future__ import annotations
+
+import pytest
+from pydantic import ValidationError
 
 from app.schemas import ModifyPayload, ModifyType, UserConditions
 
@@ -74,3 +79,30 @@ def test_no_changes_needed_when_already_clean() -> None:
     )
 
     assert payload.condition_changes.budget == "free"
+
+
+def test_zero_max_travel_time_normalized_to_none() -> None:
+    """"시간 제한 없음"은 0이 아니라 None으로 표현하기로 확정됐다."""
+    conditions = UserConditions(max_travel_time=0)
+
+    assert conditions.max_travel_time is None
+
+
+def test_zero_time_available_normalized_to_none() -> None:
+    conditions = UserConditions(time_available=0)
+
+    assert conditions.time_available is None
+
+
+def test_positive_max_travel_time_preserved() -> None:
+    conditions = UserConditions(max_travel_time=30, time_available=120)
+
+    assert conditions.max_travel_time == 30
+    assert conditions.time_available == 120
+
+
+@pytest.mark.parametrize("field", ["max_travel_time", "time_available"])
+def test_negative_time_fields_still_rejected(field: str) -> None:
+    """0은 조용히 정규화되지만 음수는 여전히 ValidationError로 막힌다."""
+    with pytest.raises(ValidationError):
+        UserConditions(**{field: -5})
