@@ -19,9 +19,8 @@ from app.domain.explanation import build_explanations
 from app.domain.models import ScoringCandidate, WeatherCondition
 from app.domain.scoring import RankedCandidate, score_candidates
 from app.errors import AppError
+from app.recommendation_limits import DEFAULT_RECOMMENDATION_RESULT_LIMIT
 from app.schemas import RecommendationItem, RecommendationResponse
-
-DEFAULT_RECOMMENDATION_LIMIT = 5
 
 _OPERATING_HOURS_UNVERIFIED_WARNING = "방문 전에 운영 여부를 확인해주세요."
 _DETAILS_MISSING_WARNING = "장소 상세정보 일부를 확인하지 못했습니다."
@@ -40,7 +39,7 @@ async def run_recommendation_pipeline_from_context(
     search_radius_km: float,
     shown_place_ids: frozenset[str] = frozenset(),
     rejected_place_ids: frozenset[str] = frozenset(),
-    recommendation_limit: int = DEFAULT_RECOMMENDATION_LIMIT,
+    recommendation_limit: int = DEFAULT_RECOMMENDATION_RESULT_LIMIT,
     timer: Timer = perf_counter,
 ) -> RecommendationResponse:
     """D의 유일한 공개 진입점. A가 C에서 받은 RecommendationContext를 그대로

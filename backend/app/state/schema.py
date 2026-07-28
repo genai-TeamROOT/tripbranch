@@ -119,3 +119,23 @@ class ConditionChangeLog(BaseModel):
     after_value: Any = None
     reset_scope: str | None = None
     applied_at: datetime = Field(default_factory=now_kst)
+
+
+class TraceRecord(BaseModel):
+    """실행 단계 1건. append-only. (docs/package-b/llmops-trace-contract-v1.md 2절)
+
+    step/prompt_version/scoring_version/variant_id/error_type은 호출자(A/C/D)가
+    해석한 값을 그대로 저장하며 검증하지 않는다 — B는 값의 의미를 판단하지 않는다.
+    """
+
+    session_id: str
+    run_id: str
+    trace_id: str
+    step: str
+    prompt_version: str | None = None
+    scoring_version: str | None = None
+    variant_id: str | None = None
+    latency_ms: int | None = None
+    token_usage: int | None = None
+    error_type: str | None = None
+    recorded_at: datetime = Field(default_factory=now_kst)

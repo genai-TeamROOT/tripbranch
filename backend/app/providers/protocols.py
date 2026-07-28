@@ -22,6 +22,7 @@ from app.domain.models import (
     WeatherCondition,
     WeatherForecastResult,
 )
+from app.place_search_policy import DEFAULT_PLACE_PROVIDER_RESULT_LIMIT
 from app.providers.contracts import ProviderResult
 from app.schemas import (
     IntentClassificationResult,
@@ -116,7 +117,7 @@ class PlaceSearchProvider(Protocol):
         preferred_categories: list[str],
         search_radius_km: float,
         category_filter: PlaceCategoryFilter | None = None,
-        limit: int = 20,
+        limit: int = DEFAULT_PLACE_PROVIDER_RESULT_LIMIT,
     ) -> ProviderResult[list[PlaceCandidate]]:
         """주어진 좌표/조건으로 장소 후보 목록을 조회해 공통 모델로 반환한다."""
         ...
@@ -136,7 +137,7 @@ class PlaceProvider(PlaceSearchProvider, PlaceDetailsProvider, Protocol):
         keyword: str,
         region_code: str | None = None,
         district_code: str | None = None,
-        limit: int = 20,
+        limit: int = DEFAULT_PLACE_PROVIDER_RESULT_LIMIT,
     ) -> ProviderResult[list[PlaceCandidate]]:
         """장소명·키워드로 후보와 TourAPI content ID를 조회한다."""
         ...

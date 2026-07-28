@@ -12,6 +12,7 @@ from app.state.schema import (
     AgentState,
     ConditionChangeLog,
     RecommendationHistory,
+    TraceRecord,
 )
 
 
@@ -37,6 +38,10 @@ class StateStore(Protocol):
     def append_change_logs(self, logs: list[ConditionChangeLog]) -> None: ...
     def get_change_logs(self, session_id: str) -> list[ConditionChangeLog]: ...
 
+    # --- TraceRecord (append-only)
+    def append_traces(self, records: list[TraceRecord]) -> None: ...
+    def get_traces(self, session_id: str) -> list[TraceRecord]: ...
+
 
 class InMemoryStateStore:
     """프로세스 메모리 기반 구현. (Phase 1)
@@ -49,6 +54,7 @@ class InMemoryStateStore:
         self._states: dict[str, AgentState] = {}
         self._histories: dict[str, RecommendationHistory] = {}
         self._change_logs: dict[str, list[ConditionChangeLog]] = {}
+        self._traces: dict[str, list[TraceRecord]] = {}
 
     # ------------------------------------------------------------ State
 
@@ -87,6 +93,19 @@ class InMemoryStateStore:
         logs = self._change_logs.get(session_id, [])
         return [log.model_copy(deep=True) for log in logs]
 
+    # ------------------------------------------------------------ Trace
+
+    def append_traces(self, records: list[TraceRecord]) -> None:
+        """append-only. 기존 기록을 수정하거나 삭제하지 않는다."""
+        for record in records:
+            self._traces.setdefault(record.session_id, []).append(
+                record.model_copy(deep=True)
+            )
+
+    def get_traces(self, session_id: str) -> list[TraceRecord]:
+        records = self._traces.get(session_id, [])
+        return [record.model_copy(deep=True) for record in records]
+
     # ------------------------------------------------------------ 테스트용
 
     def clear(self) -> None:
@@ -94,6 +113,7 @@ class InMemoryStateStore:
         self._states.clear()
         self._histories.clear()
         self._change_logs.clear()
+        self._traces.clear()
 
     def session_ids(self) -> list[str]:
         """보관 중인 세션 목록. 디버깅·테스트용."""

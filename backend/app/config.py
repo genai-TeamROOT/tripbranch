@@ -11,10 +11,16 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.domain.models import WeatherCondition
+from app.recommendation_limits import (
+    DEFAULT_RECOMMENDATION_CANDIDATE_LIMIT,
+    DEFAULT_RECOMMENDATION_RESULT_LIMIT,
+    MAX_RECOMMENDATION_CANDIDATE_LIMIT,
+    MIN_RECOMMENDATION_LIMIT,
+)
 
 ProviderMode = Literal["fake", "real"]
 
@@ -55,8 +61,16 @@ class Settings(BaseSettings):
     external_api_retry_count: int = 2
 
     # Recommendation pipeline budgets
-    recommendation_result_limit: int = 5
-    recommendation_candidate_limit: int = 10
+    recommendation_result_limit: int = Field(
+        default=DEFAULT_RECOMMENDATION_RESULT_LIMIT,
+        ge=MIN_RECOMMENDATION_LIMIT,
+        le=MAX_RECOMMENDATION_CANDIDATE_LIMIT,
+    )
+    recommendation_candidate_limit: int = Field(
+        default=DEFAULT_RECOMMENDATION_CANDIDATE_LIMIT,
+        ge=MIN_RECOMMENDATION_LIMIT,
+        le=MAX_RECOMMENDATION_CANDIDATE_LIMIT,
+    )
 
     # Place synchronization policy.
     place_sync_page_size: int = 100
@@ -68,6 +82,15 @@ class Settings(BaseSettings):
     # Fake-provider-only knobs
     fake_weather_condition: WeatherCondition = WeatherCondition.NEUTRAL
     fake_current_datetime: str = "2026-07-15T14:00:00"
+
+    @model_validator(mode="after")
+    def validate_recommendation_limits(self) -> Settings:
+        if self.recommendation_result_limit > self.recommendation_candidate_limit:
+            raise ValueError(
+                "RECOMMENDATION_RESULT_LIMIT은 "
+                "RECOMMENDATION_CANDIDATE_LIMIT 이하여야 합니다."
+            )
+        return self
 
     @property
     def resolved_llm_provider(self) -> ProviderMode:

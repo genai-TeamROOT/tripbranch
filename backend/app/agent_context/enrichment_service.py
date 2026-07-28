@@ -14,6 +14,10 @@ from app.agent_context.enrichment_schemas import (
 )
 from app.agent_context.schemas import ContextError, ProviderMetadata
 from app.providers.contracts import ProviderMetadata as ProviderMetadataData
+from app.recommendation_limits import (
+    MAX_RECOMMENDATION_CANDIDATE_LIMIT,
+    MIN_RECOMMENDATION_LIMIT,
+)
 from app.tools.concentration import ConcentrationQuery, GetConcentrationTool
 from app.tools.contracts import ToolStatus
 
@@ -24,8 +28,24 @@ _JONGNO_DISTRICT_CODE = "11110"
 class CandidateEnrichmentService:
     """D의 상위 후보를 받아 C의 Concentration Tool로 보강한다."""
 
-    def __init__(self, concentration_tool: GetConcentrationTool) -> None:
+    def __init__(
+        self,
+        concentration_tool: GetConcentrationTool,
+        *,
+        candidate_limit: int,
+    ) -> None:
+        if not (
+            MIN_RECOMMENDATION_LIMIT
+            <= candidate_limit
+            <= MAX_RECOMMENDATION_CANDIDATE_LIMIT
+        ):
+            raise ValueError(
+                "candidate_limit은 "
+                f"{MIN_RECOMMENDATION_LIMIT} 이상 "
+                f"{MAX_RECOMMENDATION_CANDIDATE_LIMIT} 이하여야 합니다."
+            )
         self._concentration_tool = concentration_tool
+        self._candidate_limit = candidate_limit
 
     async def enrich(
         self,
@@ -33,6 +53,10 @@ class CandidateEnrichmentService:
     ) -> CandidateEnrichmentResponse:
         """후보 순서를 유지하며 Concentration 조회를 병렬 실행한다."""
 
+        if len(request.candidates) > self._candidate_limit:
+            raise ValueError(
+                f"보강 후보는 최대 {self._candidate_limit}개까지 요청할 수 있습니다."
+            )
         candidates = await asyncio.gather(
             *(self._enrich_candidate(candidate) for candidate in request.candidates)
         )

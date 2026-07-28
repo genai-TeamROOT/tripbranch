@@ -8,6 +8,7 @@ from typing import Any
 
 from app.agent_context.schemas import RecommendationContext
 from app.domain.models import OperatingHours, ScoringCandidate
+from app.place_search_policy import EARTH_RADIUS_KM
 
 _INDOOR_CATEGORIES = {"museum", "cafe", "gallery", "restaurant", "culture"}
 _OUTDOOR_CATEGORIES = {"park", "trail", "beach", "attraction"}
@@ -167,7 +168,6 @@ def _haversine_km(
     latitude_b: float,
     longitude_b: float,
 ) -> float:
-    radius_km = 6371.0
     latitude_delta = math.radians(latitude_b - latitude_a)
     longitude_delta = math.radians(longitude_b - longitude_a)
     value = (
@@ -176,4 +176,4 @@ def _haversine_km(
         * math.cos(math.radians(latitude_b))
         * math.sin(longitude_delta / 2) ** 2
     )
-    return round(radius_km * 2 * math.asin(math.sqrt(value)), 3)
+    return round(EARTH_RADIUS_KM * 2 * math.asin(math.sqrt(value)), 3)

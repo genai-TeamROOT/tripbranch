@@ -14,6 +14,7 @@ from app.agent_context.enrichment_schemas import (
 )
 from app.agent_context.enrichment_service import CandidateEnrichmentService
 from app.agent_context.factory import get_candidate_enrichment_service
+from app.config import settings
 from app.domain.models import ConcentrationForecast, ConcentrationResult
 from app.errors import AppError, ProviderTimeoutError
 from app.providers.concentration import FakeConcentrationProvider
@@ -80,7 +81,10 @@ def _provider_result(
 
 
 def _service(provider: _ScriptedConcentrationProvider) -> CandidateEnrichmentService:
-    return CandidateEnrichmentService(GetConcentrationTool(provider))
+    return CandidateEnrichmentService(
+        GetConcentrationTool(provider),
+        candidate_limit=5,
+    )
 
 
 class _ScriptedConcentrationProvider:
@@ -106,20 +110,31 @@ class _ScriptedConcentrationProvider:
         return outcome
 
 
-def test_request_accepts_at_most_five_candidates_and_concentration_only() -> None:
-    """후보 상한과 지원 feature를 계약 단계에서 거부한다."""
+def test_request_enforces_system_limit_and_concentration_only() -> None:
+    """Schema 절대 상한과 지원 feature를 계약 단계에서 거부한다."""
 
-    valid = _request(*(_target(index) for index in range(1, 6)))
+    valid = _request(*(_target(index) for index in range(1, 21)))
 
-    assert len(valid.candidates) == 5
+    assert len(valid.candidates) == 20
     with pytest.raises(ValidationError):
-        _request(*(_target(index) for index in range(1, 7)))
+        _request(*(_target(index) for index in range(1, 22)))
     with pytest.raises(ValidationError):
         CandidateEnrichmentRequest(
             request_id="request-unsupported",
             candidates=[_target(1)],
             features=["weather"],
         )
+
+
+@pytest.mark.asyncio
+async def test_service_enforces_configured_candidate_limit() -> None:
+    provider = _ScriptedConcentrationProvider({})
+    request = _request(*(_target(index) for index in range(1, 7)))
+
+    with pytest.raises(ValueError, match="최대 5개"):
+        await _service(provider).enrich(request)
+
+    assert provider.calls == []
 
 
 @pytest.mark.asyncio
@@ -247,7 +262,8 @@ async def test_fake_provider_uses_the_common_concentration_contract() -> None:
     """실제 서비스가 Fake ConcentrationProvider 공통 계약으로 동작한다."""
 
     response = await CandidateEnrichmentService(
-        GetConcentrationTool(FakeConcentrationProvider())
+        GetConcentrationTool(FakeConcentrationProvider()),
+        candidate_limit=5,
     ).enrich(_request(_target(1, name="경복궁")))
 
     assert response.status == "success"
@@ -266,3 +282,15 @@ async def test_factory_wires_configured_concentration_provider() -> None:
 
     assert response.status == "success"
     assert response.candidates[0].provider_metadata[0].source == "fake_concentration"
+
+
+@pytest.mark.asyncio
+async def test_factory_uses_recommendation_result_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "recommendation_result_limit", 1)
+
+    async with httpx.AsyncClient() as client:
+        service = get_candidate_enrichment_service(client)
+        with pytest.raises(ValueError, match="최대 1개"):
+            await service.enrich(_request(_target(1), _target(2)))
