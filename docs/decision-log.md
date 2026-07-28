@@ -431,6 +431,41 @@
   D 내부 함수 4개를 직접 조합하는 대신, 단일 공개 진입점을 통해 D 내부
   구현 변경에 영향받지 않도록 경계를 명확히 함
 
+### D-033 — Agent Runtime RecommendationProvider 실제 구현체 연결
+
+- 상태: `Implemented`
+- 결정: `run_recommendation_pipeline_from_context()`(D-032)를 Agent
+  Runtime의 `RecommendationProvider` Protocol(`app/services/runtime/
+  protocols.py`, A 소유)에 연결하는 실제 구현체 `RealRecommendationProvider`를
+  신설해 `run_agent()`의 기본 provider를 기존 `FakeRecommendationProvider`
+  대신 이걸로 교체한다(`package_D/[TECH-02] C-D 직접 의존 제거 및
+  RecommendationContext 경계 정리.txt`). Protocol 시그니처
+  (`recommend(conditions, context, excluded_place_ids)`)는 A가 이미
+  확정해둔 형태 그대로 사용했고 D 쪽에서 변경하지 않았다.
+- 구현: `backend/app/services/runtime/recommendation_provider.py` 신설.
+  `search_radius_km`은 A가 이미 구현해둔
+  `recommendation_transform.to_search_radius_km(conditions)`로 계산하고,
+  `visit_at`은 `now_kst()`(현재 시각)를 쓴다 — 사용자가 미래 방문 시각을
+  지정하는 입력 경로가 아직 없기 때문. `excluded_place_ids`는
+  `shown_place_ids`로 그대로 전달한다(현재 `score_candidates()`에서
+  `shown_place_ids`/`rejected_place_ids`는 둘 다 단순 제외로 동일하게
+  동작하므로 구분할 실익이 없음). `run_agent()`/`agent_runtime.py`
+  docstring, `stubs.py`/`protocols.py`의 "D 계약 확정 전" 관련 주석을
+  현재 상태에 맞게 갱신
+- 범위 제외: 레거시 `/api/recommendations` 라우터(`app/services/
+  recommendations.py`)와 그게 쓰는 `run_recommendation_pipeline()`(Tool
+  직접 호출 구조)은 이번 작업에서 손대지 않는다. 이 라우터는 아직
+  `InterpretedConditions`(location_query 문자열 기반 구형 조건 모델)를
+  쓰고 있고, 라우터 자체 코드에 "조건 스키마가 UserConditions로
+  통합되면 정리"라는 TODO가 이미 있어 별도 트랙의 마이그레이션 대상이기
+  때문이다. 따라서 "D 코드에서 C Tool을 직접 호출하지 않는다"는 완료
+  기준은 이 레거시 경로를 예외로 두고 만족한 것으로 판단했다 —
+  `run_recommendation_pipeline()`을 "레거시 라우터 전용" 함수로
+  docstring에 명시해 신규 호출자가 착각하지 않도록 했다
+- 이유: A의 `agent_runtime.py`/`recommendation_transform.py`가 이미 D의
+  진입점을 기다리는 상태로 배선까지 끝나 있었음(주석에 "D 확인 대기 중"
+  명시). D-032에서 만든 진입점을 실제로 연결하는 것이 A-D 계약을
+  "확정"하는 마지막 단계였음
 
 | 항목 | 선택지/질문 | 상태 |
 | --- | --- | --- |
@@ -438,7 +473,7 @@
 | Chat 계약 naming | Backend Python/JSON `snake_case` | `Accepted` |
 | Backend 상태 저장 | Supabase 테이블과 캐시 역할 | `TBD` |
 | Frontend 저장 | `sessionStorage` 유지 또는 `localStorage` 전환 | `TBD` |
-| Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); 응답 Evidence 노출·E2E 통합 `Implemented`(D-028); Explainability Layer v1 `Accepted`(D-029, A 협의 반영 완료); warning 커버리지 보완 `Implemented`(D-030); Explanation 문장 구체화 `Implemented`(D-031); RecommendationContext 진입점 `Implemented`(D-032) | 구현 완료 |
+| Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); 응답 Evidence 노출·E2E 통합 `Implemented`(D-028); Explainability Layer v1 `Accepted`(D-029, A 협의 반영 완료); warning 커버리지 보완 `Implemented`(D-030); Explanation 문장 구체화 `Implemented`(D-031); RecommendationContext 진입점 `Implemented`(D-032); Agent Runtime RecommendationProvider 연결 `Implemented`(D-033) | 구현 완료 |
 | 혼잡도 fallback | 장소 근접치, 구 단위, Feature 제외 | 현재 논의 중 |
 | 운영시간 파싱 | 기본 시간·월별·주간 휴무 구현, 공휴일·회차 예외 확대 | `부분 구현` |
 | 이동시간 | 지도 Provider 및 교통수단별 계산 | `TBD` |
@@ -474,3 +509,4 @@
 | 2026-07-27 | D-029 A 담당과 API Contract 협의 반영 완료, Explanation Rule 정의 문서(`docs/design/recommendation-explainability.md`) 추가 |
 | 2026-07-27 | D-031 Explanation 문장을 고정 텍스트에서 거리/남은 운영시간/날씨·환경 계산값 기반 사실 문장으로 구체화 |
 | 2026-07-28 | D-032 A 요청으로 `run_recommendation_pipeline_from_context()` 신규 진입점 추가, 기존 Tool 기반 파이프라인과 공존 |
+| 2026-07-28 | D-033 Agent Runtime `RecommendationProvider`에 `RealRecommendationProvider` 연결, `run_agent()` 기본 provider를 Fake에서 실제 구현으로 교체 |
