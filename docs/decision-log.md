@@ -452,20 +452,55 @@
   동작하므로 구분할 실익이 없음). `run_agent()`/`agent_runtime.py`
   docstring, `stubs.py`/`protocols.py`의 "D 계약 확정 전" 관련 주석을
   현재 상태에 맞게 갱신
-- 범위 제외: 레거시 `/api/recommendations` 라우터(`app/services/
-  recommendations.py`)와 그게 쓰는 `run_recommendation_pipeline()`(Tool
-  직접 호출 구조)은 이번 작업에서 손대지 않는다. 이 라우터는 아직
-  `InterpretedConditions`(location_query 문자열 기반 구형 조건 모델)를
-  쓰고 있고, 라우터 자체 코드에 "조건 스키마가 UserConditions로
-  통합되면 정리"라는 TODO가 이미 있어 별도 트랙의 마이그레이션 대상이기
-  때문이다. 따라서 "D 코드에서 C Tool을 직접 호출하지 않는다"는 완료
-  기준은 이 레거시 경로를 예외로 두고 만족한 것으로 판단했다 —
-  `run_recommendation_pipeline()`을 "레거시 라우터 전용" 함수로
-  docstring에 명시해 신규 호출자가 착각하지 않도록 했다
 - 이유: A의 `agent_runtime.py`/`recommendation_transform.py`가 이미 D의
   진입점을 기다리는 상태로 배선까지 끝나 있었음(주석에 "D 확인 대기 중"
   명시). D-032에서 만든 진입점을 실제로 연결하는 것이 A-D 계약을
   "확정"하는 마지막 단계였음
+
+### D-034 — Tool 직접 호출 파이프라인 완전 삭제 및 레거시 라우터 마이그레이션
+
+- 상태: `Implemented`
+- 결정: D-033에서 "레거시 라우터 전용으로 남긴다"고 판단했던
+  `run_recommendation_pipeline()`(Tool 직접 호출 구조)을 완전히
+  삭제하고, 그 유일한 호출자였던 `/api/recommendations` 라우터
+  (`app/services/recommendations.py`)를 `run_recommendation_pipeline_
+  from_context()` 기반으로 마이그레이션한다. "D 코드에서 C Tool
+  Intelligence를 직접 호출하지 않는다"는 완료 기준을 예외 없이 만족시키기
+  위함
+- 구현: `recommendations.py`가 여전히 위치·날씨·장소 Tool
+  (`ResolveLocationTool`/`GetWeatherForecastTool`/`NearbyPlaceDetailsTool`)을
+  직접 호출하지만, 이 호출은 D 코드(`recommendation_pipeline.py`)가 아니라
+  호출자 쪽(레거시 라우터 서비스)에서 일어난다 — Tool 결과를
+  `app.agent_context.mappers`의 `map_location_context()`/
+  `map_weather_context()`/`map_places_context()`(C가 실제
+  `ContextService`에서 쓰는 것과 동일한 순수 변환 함수)로 `RecommendationContext`에
+  조립한 뒤 D에 넘긴다. 위치 조회 실패 시 404/422/502로 세분화하던 기존
+  에러 매핑(`_location_error()`)은 그대로 `recommendations.py`로 옮겨
+  동일하게 유지했다 — Context 기반 진입점의 위치 실패 처리(일괄 502)에
+  맡기면 API 응답 status_code가 달라지는 회귀가 생기기 때문
+- 범위 축소: 혼잡도(concentration)·공휴일(holiday) Tool 호출은
+  라우터에서 제거했다. 기존에도 두 값 모두 `RecommendationPipelineResult.
+  context`/`.concentrations`에만 담기고 실제 `RecommendationResponse`
+  (`build_recommendations()`가 반환하는 값)에는 전혀 반영되지 않던 죽은
+  코드였음을 확인했다 — 기능 회귀 없이 제거
+- 함께 삭제: `RecommendationPipelineRequest`/`RecommendationTools`/
+  `RecommendationPipelineResult`/`build_pipeline_request()`/
+  `CandidateConcentration`/`_fetch_ranked_concentrations()`/
+  `_build_context()`/`_aggregate_concentration_status()`
+  (`recommendation_pipeline.py`), 이들만 참조하던
+  `app/domain/agent_context.py`(`AgentToolContext`, A-C 계약 이전의
+  중복 Context 모델)와 그 단위 테스트, Tool 직접 호출 전용 Fixture
+  (`tests/fixtures/recommendation_pipeline_fixture_v1.py`)와 그 테스트
+  (`test_recommendation_pipeline_fixture.py`). 하드 필터·이전 노출/거절
+  제외·날씨 결측 재분배 같은 D-03 완료 기준은 `test_scoring.py`(단위)와
+  `test_recommendation_pipeline.py`의 Context 기반 E2E 테스트(결정성,
+  shown_place_ids 제외 테스트 추가)로 계속 커버됨을 확인했다
+- 이유: 처음엔 조건 스키마(`InterpretedConditions`→`UserConditions`)
+  통합이 끝나야만 라우터를 옮길 수 있다고 판단했으나, 실제로는
+  `ContextService`/`UserConditions`를 거칠 필요 없이 C의 순수 매퍼
+  함수만 재사용하면 조건 스키마와 무관하게 `RecommendationContext`를
+  조립할 수 있다는 것을 확인했다. 따라서 별도 트랙 마이그레이션을
+  앞당기지 않고도 완료 기준을 예외 없이 만족시킬 수 있었음
 
 | 항목 | 선택지/질문 | 상태 |
 | --- | --- | --- |
@@ -473,7 +508,7 @@
 | Chat 계약 naming | Backend Python/JSON `snake_case` | `Accepted` |
 | Backend 상태 저장 | Supabase 테이블과 캐시 역할 | `TBD` |
 | Frontend 저장 | `sessionStorage` 유지 또는 `localStorage` 전환 | `TBD` |
-| Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); 응답 Evidence 노출·E2E 통합 `Implemented`(D-028); Explainability Layer v1 `Accepted`(D-029, A 협의 반영 완료); warning 커버리지 보완 `Implemented`(D-030); Explanation 문장 구체화 `Implemented`(D-031); RecommendationContext 진입점 `Implemented`(D-032); Agent Runtime RecommendationProvider 연결 `Implemented`(D-033) | 구현 완료 |
+| Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); 응답 Evidence 노출·E2E 통합 `Implemented`(D-028); Explainability Layer v1 `Accepted`(D-029, A 협의 반영 완료); warning 커버리지 보완 `Implemented`(D-030); Explanation 문장 구체화 `Implemented`(D-031); RecommendationContext 진입점 `Implemented`(D-032); Agent Runtime RecommendationProvider 연결 `Implemented`(D-033); Tool 직접 호출 파이프라인 삭제·레거시 라우터 마이그레이션 `Implemented`(D-034) | 구현 완료 |
 | 혼잡도 fallback | 장소 근접치, 구 단위, Feature 제외 | 현재 논의 중 |
 | 운영시간 파싱 | 기본 시간·월별·주간 휴무 구현, 공휴일·회차 예외 확대 | `부분 구현` |
 | 이동시간 | 지도 Provider 및 교통수단별 계산 | `TBD` |
@@ -510,3 +545,4 @@
 | 2026-07-27 | D-031 Explanation 문장을 고정 텍스트에서 거리/남은 운영시간/날씨·환경 계산값 기반 사실 문장으로 구체화 |
 | 2026-07-28 | D-032 A 요청으로 `run_recommendation_pipeline_from_context()` 신규 진입점 추가, 기존 Tool 기반 파이프라인과 공존 |
 | 2026-07-28 | D-033 Agent Runtime `RecommendationProvider`에 `RealRecommendationProvider` 연결, `run_agent()` 기본 provider를 Fake에서 실제 구현으로 교체 |
+| 2026-07-28 | D-034 `run_recommendation_pipeline()`(Tool 직접 호출) 완전 삭제, `/api/recommendations` 라우터를 `run_recommendation_pipeline_from_context()` 기반으로 마이그레이션 |
