@@ -5,11 +5,9 @@
 (B↔A)와 app.services.runtime.context_transform.to_agent_context_request()
 (A↔C)와 같은 원칙으로, 이 파일의 각 함수도 정확히 명시된 두 구간만 담당한다 —
 서로 다른 변환 지점을 섞지 않는다.
-D가 RecommendationContext를 받아 scoring→evidence→explanation까지 처리하는
-공개 진입점(`run_recommendation_pipeline_from_context()`)을 제공했다([TECH-02]).
-이 파일은 여전히 D 내부(app.domain.*, app.services.recommendation_pipeline)를
-import하지 않는다 — 실제 D 호출 코드는
-`app.services.runtime.recommendation_provider.RealRecommendationProvider`에 있다.
+이 파일은 D 내부(app.domain.*, app.services.recommendation_pipeline)를 전혀
+import하지 않는다 — D 호출은 app.services.runtime.real_recommendation_provider가
+담당한다.
 """
 
 from __future__ import annotations
@@ -24,18 +22,18 @@ from app.schemas import RecommendationResponse, Transport, UserConditions
 from app.services.runtime.context_schemas import RecommendationContext
 from app.state.service import RecommendedPlace, RecordRecommendationRequest
 
+# A가 D에 넘기는 search_radius_km은 C가 실제 후보를 조회한 반경과 일관돼야
+# 거리 점수 정규화가 어긋나지 않는다. 공통 기본값과 최소·최대 범위는
+# place_search_policy에서 함께 관리한다.
 _OTHER_KM_PER_MIN = 20 / 60  # 임시: 대중교통/자동차/미언급 공통 가정(20km/h)
 
 
 def to_search_radius_km(conditions: UserConditions) -> float:
-    """A의 UserConditions(max_travel_time + transport)를 검색 반경(km)으로 변환한다.
+    """A의 이동시간과 이동수단 조건을 검색 반경(km)으로 변환한다.
 
-    TODO(D님 확인 대기): 기본 반경(1.0km)과 이동수단별 속도 가정값이 확정되면
-    이 함수만 수정하면 된다. 지금은 도보 70m/min(0.07km/min), 그 외(대중교통/
-    자동차/미언급)는 임시로 20km/h 단일값을 쓴다. max_travel_time이 없으면
-    conditions-schema.md의 missing_conditions 정책대로 기본 반경(1.0km)을
-    그대로 쓴다. 결과는 Tool 제약(NearbyPlaceDetailsQuery: 0 < radius ≤ 20)에
-    맞춰 [0.1, 20.0] 구간으로 clamp한다.
+    max_travel_time이 없으면 공통 기본 반경을 사용한다. 도보는 70m/min,
+    그 외 이동수단과 미언급은 임시로 20km/h를 적용하고, 결과는 공통
+    최소·최대 검색 반경 구간으로 제한한다.
     """
     if conditions.max_travel_time is None:
         return DEFAULT_PLACE_SEARCH_RADIUS_KM

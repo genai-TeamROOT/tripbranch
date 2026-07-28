@@ -163,7 +163,7 @@ modify_type 판별:
 _MODIFY_RELATIVE_EXPRESSION_RULES = """\
 "더 ~한 곳" 상대적 표현 처리 (CHANGE_CONDITION일 때):
 - "더 가까운 곳": 현재 max_travel_time이 있으면 그 값의 50%로 축소(최소 5분), null이면
-  기본 반경 1km의 50%(0.5km에 해당하는 시간)로 축소
+  기본 반경 2km의 50%(1km에 해당하는 시간)로 축소
 - "더 먼 곳도 괜찮아": 현재 검색 반경에서 확대(최대 상한까지)
 - "더 싼 곳": budget을 한 단계 하향 조정
 """

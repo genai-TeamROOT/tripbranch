@@ -236,8 +236,8 @@ reset_scope(soft/history/full/null)를 명시적으로 판정하여 operations�
   → 현재값의 50%로 축소 (최소 5분)
   예) 30분 → 15분
 
-현재 max_travel_time이 null인 경우 (기본 반경 1km):
-  → 기본 반경의 50%로 축소 (0.5km)
+현재 max_travel_time이 null인 경우 (기본 반경 2km):
+  → 기본 반경의 50%로 축소 (1km)
 
 검색 반경이 이미 최소인 경우:
   → "현재 범위에서 가장 가까운 곳을 보여드리고 있어요" 안내
@@ -247,7 +247,7 @@ reset_scope(soft/history/full/null)를 명시적으로 판정하여 operations�
 
 ```
 현재 검색 반경에서 1km 확장
-  예) 1km → 2km → 3km (최대 5km)
+  예) 2km → 3km → 4km (최대 5km)
 ```
 
 ---

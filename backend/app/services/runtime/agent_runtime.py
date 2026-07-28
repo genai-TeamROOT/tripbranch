@@ -217,7 +217,7 @@ async def run_agent(request: AgentRequest) -> AgentResponse:
 
     from app.agent_context.factory import get_context_provider
     from app.providers.factory import get_llm_provider, get_weather_provider
-    from app.services.runtime.recommendation_provider import RealRecommendationProvider
+    from app.services.runtime.real_recommendation_provider import RealRecommendationProvider
 
     async with httpx.AsyncClient() as client:
         weather_provider = get_weather_provider(client)
