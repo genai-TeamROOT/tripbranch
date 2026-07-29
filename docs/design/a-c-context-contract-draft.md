@@ -277,10 +277,10 @@ D가 선정하고 A가 중계한 후보를 `RECOMMENDATION_RESULT_LIMIT`만큼 �
 
 | 집중률 범위 | `concentration_level` | `concentration_label` |
 | --- | --- | --- |
-| 50% 이하 | `relaxed` | 여유 |
-| 50% 초과 75% 이하 | `normal` | 보통 |
-| 75% 초과 100% 이하 | `slightly_crowded` | 약간 붐빔 |
-| 100% 초과 | `crowded` | 붐빔 |
+| 20% 미만 | `quiet` | 한적함 |
+| 20% 이상 50% 미만 | `normal` | 보통 |
+| 50% 이상 70% 미만 | `slightly_crowded` | 다소 혼잡 |
+| 70% 이상 | `crowded` | 혼잡 |
 
 음수·무한대·숫자 변환 불가 값은 `no_data`로 처리한다. 이 단계는 사용자 설명을 위한
 정규화이며 추천 점수를 다시 계산하거나 후보 순서를 변경하지 않는다.
@@ -358,8 +358,8 @@ ID와 로그에서 연관 지을 수는 있지만 같은 값일 필요는 없다
           "place_name": "경복궁",
           "forecast_date": "2026-07-28",
           "concentration_rate": 42.0,
-          "concentration_level": "relaxed",
-          "concentration_label": "여유"
+          "concentration_level": "normal",
+          "concentration_label": "보통"
         }
       ],
       "error": null,
