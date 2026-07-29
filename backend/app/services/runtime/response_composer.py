@@ -15,6 +15,7 @@ from __future__ import annotations
 from app.providers.protocols import LLMProvider
 from app.schemas import Intent, LLMOutput, OutputStatus, RecommendationItem, RecommendationResponse
 from app.services.runtime.context_schemas import Clarification
+from app.services.runtime.info_context_schemas import InfoContextResponse
 
 # C 단계에서 Recommendation으로 못 넘어가는 status. agent_runtime.py의
 # _TOOL_TERMINAL_STATUSES와 같은 집합이어야 한다 — 순환 import를 피하려고 별도로
@@ -55,8 +56,12 @@ _OUT_OF_SCOPE_TEMPLATES: dict[str, str] = {
 }
 
 # INFO/COMPARE: 답변할 실제 데이터·로직 자체가 아직 없다(별도 트랙, agent-response-
-# generation.md §3/§6 3차) — 임시 안내문.
+# generation.md §3/§6 3차) — 임시 안내문. question_type=concentration은 예외
+# (아래 compose_info_concentration_message).
 _NOT_YET_SUPPORTED_MESSAGE = "죄송해요, 이 기능은 아직 준비 중이에요."
+
+# concentration-conditions.md §7 데이터 한계와 응답 원칙.
+_CONCENTRATION_NO_DATA_MESSAGE = "이 장소 유형은 혼잡도 데이터가 없어요."
 
 
 def compose_recommendation_message(item: RecommendationItem) -> str:
@@ -74,12 +79,46 @@ def compose_recommendation_message(item: RecommendationItem) -> str:
     return " ".join(parts)
 
 
+def compose_info_concentration_message(response: InfoContextResponse) -> str:
+    """INFO(question_type=concentration) 응답 문구를 조립한다.
+
+    concentration-conditions.md §3.3/§7의 고지 규칙을 고정 로직으로 강제한다 —
+    LLM 스타일링이 아니라 정확성이 걸린 문제라서다. is_proxy=True면 반드시
+    "근처 [관광지] 기준" 문구를 넣고, 요청한 장소 자체의 값처럼 말하지 않는다.
+    """
+
+    if response.status == "needs_clarification":
+        code = response.clarification.code if response.clarification is not None else None
+        return _CLARIFICATION_TEMPLATES.get(code, _CLARIFICATION_FALLBACK_MESSAGE)
+    if response.status == "unsupported":
+        return _TOOL_UNSUPPORTED_MESSAGE
+    if response.status == "unavailable" or response.result is None:
+        return _TOOL_UNAVAILABLE_MESSAGE
+
+    result = response.result
+    if result.status == "unavailable":
+        return _TOOL_UNAVAILABLE_MESSAGE
+    if result.status == "no_data":
+        return _CONCENTRATION_NO_DATA_MESSAGE
+
+    label = result.concentration_label or "알 수 없음"
+    date_label = result.forecast_date or "해당 날짜"
+    if result.is_proxy:
+        return (
+            f"{result.requested_place_name} 자체의 혼잡도 데이터는 없지만, "
+            f"가장 가까운 관광지인 {result.resolved_place_name} 기준으로는 "
+            f"{date_label} {label}인 편이에요. 비슷한 수준일 가능성이 있어요."
+        )
+    return f"{result.resolved_place_name}은(는) {date_label} 기준 {label} 것으로 예측돼요."
+
+
 async def compose_chat_message(
     llm_output: LLMOutput,
     *,
     recommendations: RecommendationResponse | None = None,
     tool_status: str | None = None,
     tool_clarification: Clarification | None = None,
+    info_concentration_response: InfoContextResponse | None = None,
     llm: LLMProvider,
 ) -> str:
     """AgentResponse.message(챗봇 말풍선 텍스트)를 조립한다.
@@ -105,6 +144,9 @@ async def compose_chat_message(
         )
         return result.data
 
+    if llm_output.intent is Intent.INFO and info_concentration_response is not None:
+        return compose_info_concentration_message(info_concentration_response)
+
     if llm_output.intent in (Intent.RECOMMEND, Intent.MODIFY):
         if tool_status in _TOOL_TERMINAL_STATUSES:
             if tool_status == "needs_clarification":
@@ -127,4 +169,8 @@ async def compose_chat_message(
     return _NOT_YET_SUPPORTED_MESSAGE
 
 
-__all__ = ["compose_recommendation_message", "compose_chat_message"]
+__all__ = [
+    "compose_recommendation_message",
+    "compose_chat_message",
+    "compose_info_concentration_message",
+]

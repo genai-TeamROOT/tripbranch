@@ -19,8 +19,10 @@ from app.schemas import (
     Severity,
 )
 from app.services.runtime.context_schemas import Clarification
+from app.services.runtime.info_context_schemas import ConcentrationInfoResult, InfoContextResponse
 from app.services.runtime.response_composer import (
     compose_chat_message,
+    compose_info_concentration_message,
     compose_recommendation_message,
 )
 
@@ -219,5 +221,109 @@ class TestComposeChatMessageInfoCompare:
     @pytest.mark.asyncio
     async def test_not_yet_supported_placeholder(self, intent: Intent) -> None:
         llm_output = LLMOutput(intent=intent, status=OutputStatus.COMPLETE)
+        message = await compose_chat_message(llm_output, llm=_StubLLM())
+        assert "준비 중" in message
+
+
+class TestComposeInfoConcentrationMessage:
+    """concentration-conditions.md §3.3/§7의 고지 규칙 — is_proxy=True일 때만
+    "근처 [관광지] 기준" 문구가 나와야 하고, 절대 요청 장소 자체의 값처럼
+    말하지 않아야 한다."""
+
+    def test_direct_hit_uses_predictive_phrasing(self) -> None:
+        response = InfoContextResponse(
+            request_id="r1",
+            status="success",
+            result=ConcentrationInfoResult(
+                status="success",
+                is_proxy=False,
+                requested_place_name="경복궁",
+                resolved_place_name="경복궁",
+                forecast_date="2026-08-01",
+                concentration_rate=42.0,
+                concentration_level="normal",
+                concentration_label="보통",
+            ),
+        )
+        message = compose_info_concentration_message(response)
+        assert "경복궁" in message
+        assert "보통" in message
+        assert "것으로 예측돼요" in message
+        assert "지금" not in message  # 실시간 단정 표현 금지 (§7)
+
+    def test_proxy_discloses_nearest_attraction(self) -> None:
+        response = InfoContextResponse(
+            request_id="r2",
+            status="success",
+            result=ConcentrationInfoResult(
+                status="success",
+                is_proxy=True,
+                requested_place_name="인사동카페",
+                resolved_place_name="경복궁",
+                forecast_date="2026-08-01",
+                concentration_rate=58.0,
+                concentration_level="slightly_crowded",
+                concentration_label="다소 혼잡",
+            ),
+        )
+        message = compose_info_concentration_message(response)
+        assert "인사동카페 자체" in message
+        assert "가장 가까운 관광지인 경복궁" in message
+        assert "다소 혼잡" in message
+
+    def test_no_data_result_returns_fixed_message(self) -> None:
+        response = InfoContextResponse(
+            request_id="r3",
+            status="success",
+            result=ConcentrationInfoResult(status="no_data", requested_place_name="용리단길카페"),
+        )
+        message = compose_info_concentration_message(response)
+        assert message == "이 장소 유형은 혼잡도 데이터가 없어요."
+
+    def test_unavailable_result_returns_generic_error(self) -> None:
+        response = InfoContextResponse(
+            request_id="r4",
+            status="success",
+            result=ConcentrationInfoResult(status="unavailable"),
+        )
+        assert "잠시 후 다시" in compose_info_concentration_message(response)
+
+    def test_envelope_unavailable_without_result(self) -> None:
+        response = InfoContextResponse(request_id="r5", status="unavailable")
+        assert "잠시 후 다시" in compose_info_concentration_message(response)
+
+    def test_needs_clarification_uses_place_required_template(self) -> None:
+        response = InfoContextResponse(
+            request_id="r6",
+            status="needs_clarification",
+            clarification=Clarification(code="place_required", missing_fields=["place_name"]),
+        )
+        assert compose_info_concentration_message(response) == "어떤 장소에 대해 알고 싶으신가요?"
+
+    @pytest.mark.asyncio
+    async def test_compose_chat_message_dispatches_to_concentration_composer(self) -> None:
+        llm_output = LLMOutput(intent=Intent.INFO, status=OutputStatus.COMPLETE)
+        response = InfoContextResponse(
+            request_id="r7",
+            status="success",
+            result=ConcentrationInfoResult(
+                status="success",
+                is_proxy=False,
+                requested_place_name="창덕궁",
+                resolved_place_name="창덕궁",
+                forecast_date="2026-08-01",
+                concentration_rate=20.0,
+                concentration_level="quiet",
+                concentration_label="한적함",
+            ),
+        )
+        message = await compose_chat_message(
+            llm_output, info_concentration_response=response, llm=_StubLLM()
+        )
+        assert "한적함" in message
+
+    @pytest.mark.asyncio
+    async def test_info_without_concentration_response_falls_back_to_placeholder(self) -> None:
+        llm_output = LLMOutput(intent=Intent.INFO, status=OutputStatus.COMPLETE)
         message = await compose_chat_message(llm_output, llm=_StubLLM())
         assert "준비 중" in message

@@ -124,6 +124,18 @@ class WeatherIntent(StrEnum):
     IGNORE = "IGNORE"
 
 
+class ConcentrationIntent(StrEnum):
+    """weather_intent와 동일 패턴. concentration-conditions.md §2.1 참고.
+
+    null/IGNORE는 weather_intent와 달리 하드 필터에 관여하지 않으므로
+    needs_clarification을 유발하지 않는다.
+    """
+
+    AVOID = "AVOID"
+    SEEK = "SEEK"
+    IGNORE = "IGNORE"
+
+
 class StatedWeather(StrEnum):
     RAIN = "rain"
     SNOW = "snow"
@@ -190,6 +202,7 @@ class QuestionType(StrEnum):
     EVENT = "event"
     LOCATION_INFO = "location_info"
     GENERAL_INFO = "general_info"
+    CONCENTRATION = "concentration"
 
 
 class PlaceContext(StrEnum):
@@ -255,7 +268,7 @@ class PlaceTag(StrEnum):
 
 
 class UserConditions(BaseModel):
-    """conditions-schema.md §2의 14개 필드. LLM이 사용자 발화에서 추출한 값만 담는다."""
+    """conditions-schema.md §2의 15개 필드. LLM이 사용자 발화에서 추출한 값만 담는다."""
 
     current_location: str | None = None
     search_center: str | None = None
@@ -263,6 +276,7 @@ class UserConditions(BaseModel):
     place_tags: list[PlaceTag] = Field(default_factory=list)
     weather: StatedWeather | None = None
     weather_intent: WeatherIntent | None = None
+    concentration_intent: ConcentrationIntent | None = None
     transport: Transport | None = None
     max_travel_time: int | None = Field(default=None, ge=0)
     time_available: int | None = Field(default=None, ge=0)
@@ -309,6 +323,8 @@ class InfoPayload(BaseModel):
     place_context: PlaceContext
     question_type: QuestionType
     specific_question: str | None = None
+    visit_time: str | None = None
+    """YYYY-MM-DD. question_type == CONCENTRATION일 때만 사용 (concentration-conditions.md §3.2)."""
 
 
 class ModifyPayload(BaseModel):

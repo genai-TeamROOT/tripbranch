@@ -10,6 +10,8 @@ app/providers/gemini.py에 두고, 이 모듈은 프롬프트 텍스트만 담�
 
 from __future__ import annotations
 
+from datetime import date
+
 from app.schemas import GeneralTopic, UserConditions
 
 _INTENT_DEFINITIONS = """\
@@ -118,16 +120,27 @@ weather_intent 판별:
   weather_intent 항목을 채운다
 """
 
+_CONCENTRATION_INTENT_RULES = """\
+concentration_intent 판별:
+- AVOID: 혼잡한 곳을 피하고 싶음 ("조용한 공원 추천해줘", "한적한 곳 가고싶어", "사람 없는 데")
+- SEEK: 혼잡한(인기 있는) 곳을 원함 ("핫한 관광지 어디야", "인기 많은 곳 추천해줘", "북적이는 데")
+- IGNORE: 혼잡도 관련 언급이 없음
+- weather_intent와 달리 하드 필터(environment)에 관여하지 않는다. 판별이 애매해도
+  needs_clarification을 유발하지 않는다 — null로 두면 IGNORE와 동일하게 처리된다
+  (weather_intent 규칙을 여기 적용하지 말 것)
+"""
+
 
 def build_recommend_extraction_instruction() -> str:
     """int-01-recommend.md §5~9,12(위치 처리, place_types/tags, weather_intent) 기반."""
 
     return f"""당신은 TripBranch의 RECOMMEND 조건 추출기입니다. 사용자 발화 하나에서
-UserConditions(14개 필드)를 추출해 LLMOutput(intent="RECOMMEND")으로 반환하세요.
+UserConditions(15개 필드)를 추출해 LLMOutput(intent="RECOMMEND")으로 반환하세요.
 
 {_RECOMMEND_LOCATION_RULES}
 {_RECOMMEND_PLACE_TAG_RULES}
 {_WEATHER_INTENT_RULES}
+{_CONCENTRATION_INTENT_RULES}
 {_BUDGET_RULE}
 
 기타 필드:
@@ -226,6 +239,7 @@ question_type 판별:
 - event: 현재 진행 중인 전시/행사/프로그램
 - location_info: 위치/주소/찾아가는 법
 - general_info: 장소 개요/특징/일반 설명 (장소명만 단독으로 언급된 경우 포함)
+- concentration: 특정 장소/지역의 방문객 혼잡도 예측 ("사람 많아?", "붐빌까?", "혼잡해?")
 """
 
 _INFO_PLACE_CONTEXT_RULES = """\
@@ -237,15 +251,33 @@ place_context 판별:
 """
 
 
-def build_info_extraction_instruction(*, has_previous_recommendation: bool) -> str:
+def _build_visit_time_rules(reference_date: date) -> str:
+    """concentration-conditions.md §3.2. reference_date는 오늘(KST)."""
+
+    return f"""\
+visit_time 판별 (question_type이 concentration일 때만 채우고, 그 외에는 항상 null):
+- 기준일(오늘) = {reference_date.isoformat()}
+- "오늘" 또는 날짜 언급이 없으면 기준일 그대로
+- "내일"이면 기준일 + 1일
+- "이번 주말"이면 기준일 이후 가장 가까운 토요일(주말이 이미 지났으면 다음 토요일)
+- "8월 3일"처럼 특정 날짜가 언급되면 해당 날짜(연도 언급이 없으면 기준일과 같은 연도,
+  이미 지난 날짜면 다음 해)
+- 반드시 YYYY-MM-DD 형식 문자열로 채운다
+"""
+
+
+def build_info_extraction_instruction(
+    *, has_previous_recommendation: bool, reference_date: date
+) -> str:
     """int-02-info.md §4~7(InfoQuery, question_type, place_context) 기반."""
 
     return f"""당신은 TripBranch의 INFO 질의 추출기입니다. 사용자 발화 하나에서
-place_name/place_context/question_type/specific_question을 추출해
+place_name/place_context/question_type/specific_question/visit_time을 추출해
 LLMOutput(intent="INFO")으로 반환하세요.
 
 {_INFO_QUESTION_TYPE_RULES}
 {_INFO_PLACE_CONTEXT_RULES}
+{_build_visit_time_rules(reference_date)}
 
 컨텍스트: 이전 추천 이력 존재 여부 = {"있음" if has_previous_recommendation else "없음"}.
 이전 추천 이력이 "없음"인데 발화가 "첫 번째 거기" 같은 지시어를 쓰면 place_context를

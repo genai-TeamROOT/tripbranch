@@ -1,8 +1,10 @@
-"""to_search_radius_km/to_weather_condition/to_record_recommendation_request 단위 테스트."""
+"""to_search_radius_km/to_weather_condition/to_concentration_entries/
+to_record_recommendation_request 단위 테스트."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,6 +18,7 @@ from app.services.runtime.context_schemas import (
     WeatherForecast,
 )
 from app.services.runtime.recommendation_transform import (
+    to_concentration_entries,
     to_record_recommendation_request,
     to_search_radius_km,
     to_weather_condition,
@@ -119,6 +122,39 @@ class TestToWeatherCondition:
     def test_missing_weather_returns_none(self) -> None:
         context = RecommendationContext()
         assert to_weather_condition(context) is None
+
+
+class TestToConcentrationEntries:
+    """RecommendationContext는 아직 concentration 필드가 없다(C 미구현,
+    concentration-conditions.md §1.2). 필드가 생긴 뒤의 상태는 SimpleNamespace로
+    흉내 내고, 지금 상태(필드 자체가 없음)는 실제 RecommendationContext로 확인한다.
+    """
+
+    def test_field_missing_returns_none(self) -> None:
+        context = RecommendationContext()
+        assert to_concentration_entries(context) is None
+
+    def test_success_returns_entries(self) -> None:
+        entries = [{"place_name": "경복궁", "concentration_rate": 42.0}]
+        context = SimpleNamespace(concentration=SimpleNamespace(status="success", data=entries))
+        assert to_concentration_entries(context) == entries
+
+    def test_partial_returns_entries(self) -> None:
+        entries = [{"place_name": "창덕궁", "concentration_rate": 58.0}]
+        context = SimpleNamespace(concentration=SimpleNamespace(status="partial", data=entries))
+        assert to_concentration_entries(context) == entries
+
+    def test_no_data_returns_none(self) -> None:
+        context = SimpleNamespace(concentration=SimpleNamespace(status="no_data", data=None))
+        assert to_concentration_entries(context) is None
+
+    def test_unavailable_returns_none(self) -> None:
+        context = SimpleNamespace(concentration=SimpleNamespace(status="unavailable", data=None))
+        assert to_concentration_entries(context) is None
+
+    def test_concentration_none_returns_none(self) -> None:
+        context = SimpleNamespace(concentration=None)
+        assert to_concentration_entries(context) is None
 
 
 class TestToRecordRecommendationRequest:

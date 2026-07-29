@@ -9,6 +9,7 @@ TODO: provider가 늘어나면 오류 타입, 비동기 계약, 메타데이터 
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Protocol
 
 from app.domain.models import (
@@ -65,9 +66,17 @@ class LLMProvider(Protocol):
         ...
 
     async def extract_info_query(
-        self, user_input: str, *, has_previous_recommendation: bool
+        self,
+        user_input: str,
+        *,
+        has_previous_recommendation: bool,
+        reference_date: date,
     ) -> ProviderResult[LLMOutput]:
-        """INFO 발화에서 장소/질문 정보를 추출한다."""
+        """INFO 발화에서 장소/질문 정보를 추출한다.
+
+        reference_date: "오늘"/"내일"/"이번 주말" 등 concentration 질의의
+        visit_time을 실제 날짜로 환산하는 기준일(KST). concentration-conditions.md §3.2.
+        """
         ...
 
     async def extract_compare_request(
