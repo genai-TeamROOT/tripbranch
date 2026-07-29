@@ -222,20 +222,20 @@ async def test_service_keeps_only_today_and_prefers_matching_place_name() -> Non
     assert len(response.candidates[0].concentration) == 1
     assert response.candidates[0].concentration[0].forecast_date == "2026-07-29"
     assert response.candidates[0].concentration[0].concentration_rate == 55.5
-    assert response.candidates[0].concentration[0].concentration_level == "normal"
-    assert response.candidates[0].concentration[0].concentration_label == "보통"
+    assert response.candidates[0].concentration[0].concentration_level == "slightly_crowded"
+    assert response.candidates[0].concentration[0].concentration_label == "다소 혼잡"
 
 
 @pytest.mark.parametrize(
     ("rate", "expected_level", "expected_label"),
     [
-        (0.0, "relaxed", "여유"),
-        (50.0, "relaxed", "여유"),
-        (50.1, "normal", "보통"),
-        (75.0, "normal", "보통"),
-        (75.1, "slightly_crowded", "약간 붐빔"),
-        (100.0, "slightly_crowded", "약간 붐빔"),
-        (100.1, "crowded", "붐빔"),
+        (0.0, "quiet", "한적함"),
+        (19.9, "quiet", "한적함"),
+        (20.0, "normal", "보통"),
+        (49.9, "normal", "보통"),
+        (50.0, "slightly_crowded", "다소 혼잡"),
+        (69.9, "slightly_crowded", "다소 혼잡"),
+        (70.0, "crowded", "혼잡"),
     ],
 )
 def test_normalize_concentration_uses_agreed_boundaries(

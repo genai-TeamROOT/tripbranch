@@ -7,20 +7,20 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TypeGuard
 
-# 평시 대비 집중률이 50% 이하이면 사람이 적은 상태로 본다.
-CONCENTRATION_RELAXED_MAX = 50.0
+# 집중률이 20% 미만이면 한적한 상태로 본다.
+CONCENTRATION_QUIET_MAX_EXCLUSIVE = 20.0
 
-# 평시 대비 집중률이 75% 이하이면 평소와 비슷한 상태로 본다.
-CONCENTRATION_NORMAL_MAX = 75.0
+# 집중률이 50% 미만이면 보통 상태로 본다.
+CONCENTRATION_NORMAL_MAX_EXCLUSIVE = 50.0
 
-# 평시 대비 집중률이 100% 이하이면 평소보다 약간 붐비는 상태로 본다.
-CONCENTRATION_SLIGHTLY_CROWDED_MAX = 100.0
+# 집중률이 70% 미만이면 다소 혼잡한 상태로 본다.
+CONCENTRATION_SLIGHTLY_CROWDED_MAX_EXCLUSIVE = 70.0
 
 
 class ConcentrationLevel(StrEnum):
     """A–C 계약에서 사용하는 집중률 단계 코드."""
 
-    RELAXED = "relaxed"
+    QUIET = "quiet"
     NORMAL = "normal"
     SLIGHTLY_CROWDED = "slightly_crowded"
     CROWDED = "crowded"
@@ -29,10 +29,10 @@ class ConcentrationLevel(StrEnum):
 class ConcentrationLabel(StrEnum):
     """사용자 응답에 표시할 집중률 단계명."""
 
-    RELAXED = "여유"
+    QUIET = "한적함"
     NORMAL = "보통"
-    SLIGHTLY_CROWDED = "약간 붐빔"
-    CROWDED = "붐빔"
+    SLIGHTLY_CROWDED = "다소 혼잡"
+    CROWDED = "혼잡"
 
 
 @dataclass(frozen=True)
@@ -52,17 +52,17 @@ def normalize_concentration(rate: float) -> NormalizedConcentration:
 
     if not is_valid_concentration_rate(rate):
         raise ValueError("집중률은 음수가 아닌 유한 숫자여야 합니다.")
-    if rate <= CONCENTRATION_RELAXED_MAX:
+    if rate < CONCENTRATION_QUIET_MAX_EXCLUSIVE:
         return NormalizedConcentration(
-            ConcentrationLevel.RELAXED,
-            ConcentrationLabel.RELAXED,
+            ConcentrationLevel.QUIET,
+            ConcentrationLabel.QUIET,
         )
-    if rate <= CONCENTRATION_NORMAL_MAX:
+    if rate < CONCENTRATION_NORMAL_MAX_EXCLUSIVE:
         return NormalizedConcentration(
             ConcentrationLevel.NORMAL,
             ConcentrationLabel.NORMAL,
         )
-    if rate <= CONCENTRATION_SLIGHTLY_CROWDED_MAX:
+    if rate < CONCENTRATION_SLIGHTLY_CROWDED_MAX_EXCLUSIVE:
         return NormalizedConcentration(
             ConcentrationLevel.SLIGHTLY_CROWDED,
             ConcentrationLabel.SLIGHTLY_CROWDED,
@@ -74,9 +74,9 @@ def normalize_concentration(rate: float) -> NormalizedConcentration:
 
 
 __all__ = [
-    "CONCENTRATION_NORMAL_MAX",
-    "CONCENTRATION_RELAXED_MAX",
-    "CONCENTRATION_SLIGHTLY_CROWDED_MAX",
+    "CONCENTRATION_NORMAL_MAX_EXCLUSIVE",
+    "CONCENTRATION_QUIET_MAX_EXCLUSIVE",
+    "CONCENTRATION_SLIGHTLY_CROWDED_MAX_EXCLUSIVE",
     "ConcentrationLabel",
     "ConcentrationLevel",
     "NormalizedConcentration",
