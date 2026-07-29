@@ -387,7 +387,18 @@ message()`는 이 문장들의 **내용에 관여하지 않고** 순서·구분�
 
 ---
 
-## 6. 혼잡률(concentration) 보강 — 설계만, 미구현 (TODO)
+## 6. 혼잡률(concentration) 보강
+
+> **2026-07-29 갱신 — 방향 전환.** `concentration_intent`(RECOMMEND의 신규 조건,
+> [concentration-conditions.md §2](./concentration-conditions.md#2-recommend-확장--concentration_intent))가
+> D의 Scoring 가중치에 반영되어 **추천 순위 자체를 바꾸는** 것으로 결정되면서,
+> 아래 §6.2~§6.4가 설계했던 "D 1차 점수 계산 → 상위 후보만 C에 재조회 → D
+> 재호출" 흐름은 **채택하지 않는다.** 그 흐름은 D가 순위를 이미 확정한 뒤에
+> concentration 데이터가 도착하는 구조라, 애초에 "표시용 정보만 덧붙이고 순위는
+> 바꾸지 않는다"는 전제(§6.1, `a-c-context-contract-draft.md` §5.2.3의 기존 원칙)
+> 에서만 성립했다. 순위에 반영해야 하는 이번 요구에는 구조적으로 맞지 않아 폐기한다.
+> §6.2~§6.4는 "왜 이 방향으로 가지 않았는지" 기록으로 남기고, 실제 채택한 설계는
+> §6.5에 새로 적는다.
 
 ### 6.1 C가 이미 구현해둔 것
 
@@ -397,9 +408,11 @@ message()`는 이 문장들의 **내용에 관여하지 않고** 순서·구분�
 - `get_candidate_enrichment_service(client)` — `app/agent_context/factory.py`
 
 C 쪽은 스키마·서비스·Tool·Provider·Factory까지 전부 준비돼 있다. **A 쪽 연동 코드는
-아직 없다** — 아래는 설계 논의 결과이지 구현된 코드가 아니다.
+아직 없다.** 이 인프라 자체는 폐기하지 않는다 — "순위에는 반영하지 않고 설명에만
+쓰는" post-ranking 보강이 필요해지면 그대로 쓸 수 있는 경로다. 다만
+`concentration_intent`는 이 경로를 쓰지 않는다(§6.5).
 
-### 6.2 전체 흐름 (D 호출이 1회 → 2회로 늘어남)
+### 6.2 채택하지 않음 — 전체 흐름 (D 호출이 1회 → 2회로 늘어남)
 
 ```mermaid
 sequenceDiagram
@@ -418,7 +431,7 @@ sequenceDiagram
 지금 `run_agent_flow()`는 D를 한 번만 호출하는 구조다(§1.1, §4.3). 이 흐름을 넣으려면
 D 호출 자체가 1회에서 2회로 바뀌어야 한다.
 
-### 6.3 TODO — D 확인 대기
+### 6.3 채택하지 않음 — TODO였던 항목 (D 확인 대기 중 폐기)
 
 1. D의 1차 점수 계산 결과(상위 5개 후보)를 A에 반환하는 정확한 메서드/스키마.
 2. 그 후보를 A가 D에게 "집중률 포함해서 다시" 넘길 때 쓸 메서드/스키마 — 계약 문서
@@ -428,7 +441,7 @@ D 호출 자체가 1회에서 2회로 바뀌어야 한다.
 3. 혼잡도 보강이 매번 일어나는지, D가 "이번엔 필요 없음" 신호를 줄 수 있는지 — 신호가
    있다면 A가 C 재호출 자체를 스킵해야 하므로 오케스트레이션 분기에 영향을 준다.
 
-### 6.4 A가 설계해둔 것 (코드 없음, 계획만)
+### 6.4 채택하지 않음 — A가 설계해뒀던 것 (코드 없음, 계획만)
 
 - `EnrichmentProvider` Protocol을 `protocols.py`에 세 번째 Protocol로 추가 예정 —
   `async def enrich(self, request: CandidateEnrichmentRequest) -> CandidateEnrichmentResponse`.
@@ -439,6 +452,44 @@ D 호출 자체가 1회에서 2회로 바뀌어야 한다.
   목록)만 확정, 실제 입력 타입은 D 답변 후 채울 예정.
 - `run_agent_flow()`의 6단계(D 호출) 이후에 보강 분기가 들어갈 자리만 표시해 둘 예정 —
   분기 조건(§6.3 항목 3)이 안 정해져서 지금은 로직을 못 씀.
+
+### 6.5 채택 — 초기 Context 요청에 포함, D는 1회만 호출
+
+concentration은 weather와 동일하게 **초기 Context 요청·응답**(§1.1 6단계 이전,
+`to_agent_context_request()`/`AgentContextRequest`)에서 확보한다. 상세 배경과
+근거는 [concentration-conditions.md §2.2](./concentration-conditions.md#22-데이터-확보-시점--초기-context-요청으로-이동)
+참고.
+
+```mermaid
+sequenceDiagram
+    participant A as A Runtime
+    participant C as C Context Service
+    participant D as D Recommendation
+
+    A->>C: 초기 Context 요청 (conditions.concentration_intent 포함)
+    C-->>A: Context 응답 (location/weather/places/holidays + concentration*)
+    A->>D: Context + Conditions 전달 (1회)
+    D-->>A: concentration_score까지 반영된 최종 순위
+
+    Note over A,C: * concentration_intent가 AVOID/SEEK일 때만 C가 채워서 반환
+```
+
+- 별도 플래그·스키마가 필요 없다 — `conditions.concentration_intent`가 이미
+  `to_agent_context_request()`가 만드는 `AgentContextRequest.conditions`에 실려
+  간다. C는 이 값만 보고 concentration 포함 여부를 판단한다.
+- D는 여전히 **1회만** 호출된다(§1.1, §4.3 유지) — 다만 C 조회가 D 호출보다
+  먼저 끝나 있어야 하므로, "6단계(D 호출)" 앞에 concentration 데이터를 Context에서
+  꺼내 D 입력으로 변환하는 작업이 추가된다.
+- 새로 필요한 변환 함수: `to_weather_condition()`(C context→D)과 같은 자리에,
+  Context의 `concentration`을 D의 Scoring 입력으로 바꾸는 함수가 하나 더 필요하다
+  (가칭 `to_concentration_scores()`, `recommendation_transform.py`) — §7 표에 반영.
+- C 쪽 필요 작업: 초기 Context 응답 스키마에 `concentration` 필드 추가
+  ([a-c-context-contract-draft.md §5.2](./a-c-context-contract-draft.md), C 확인
+  필요). §6.1의 기존 `CandidateEnrichmentRequest`/`Response` 인프라는 이 작업에
+  재사용하지 않는다 — 완전히 새 필드다.
+- D 쪽 필요 작업: `score_candidates()`에 concentration 입력 파라미터 추가와
+  가중치 반영 — [recommendation-scoring.md §4.4/§5](./recommendation-scoring.md)
+  (A 제안, D 확인 필요).
 
 ---
 
@@ -456,8 +507,9 @@ D 호출 자체가 1회에서 2회로 바뀌어야 한다.
 | `compose_recommendation_message()` | `response_composer.py` | D→사용자 | 완료 |
 | `compose_chat_message()` | `response_composer.py` | A→사용자(챗봇 말풍선) | 완료(§5.4) |
 | `LLMProvider.generate_general_answer()` | `providers/gemini.py` | A→LLM(GENERAL 답변) | 완료(§5.4) |
-| `EnrichmentProvider`(Protocol) | 미정 | A↔C(보강) | TODO |
-| `to_candidate_enrichment_request()` | 미정 | D 후보→C | TODO |
+| `EnrichmentProvider`(Protocol) | 미정 | A↔C(보강) | 채택 안 함(§6.2~6.4, post-ranking 표시 전용 경로는 보류) |
+| `to_candidate_enrichment_request()` | 미정 | D 후보→C | 채택 안 함(§6.2~6.4) |
+| `to_concentration_scores()`(가칭) | `recommendation_transform.py` | C context→D | TODO (§6.5, A 제안) |
 
 ---
 
@@ -465,7 +517,8 @@ D 호출 자체가 1회에서 2회로 바뀌어야 한다.
 
 | 이슈 | 담당 | 상태 |
 | --- | --- | --- |
-| 혼잡률 2단계 D 호출 흐름 (§6) | D팀 | 확인 대기 |
+| 혼잡률 2단계 D 호출 흐름 (§6.2~6.4) | D팀 | 채택 안 함 — §6.5(초기 Context 포함, D 1회 호출)로 대체 |
+| 혼잡률 초기 Context 반영 (§6.5) — C의 Context 응답 스키마 확장, D의 Scoring 입력 확장 | C팀·D팀 | 확인 대기 |
 | GPS 최초 턴 심기 로직 중복(`app/routes/interpret.py` vs `agent_runtime.py`, 둘 다 `_valid_location()`을 독립적으로 가짐) (§2.5) | A(본인) | `run_agent()`가 라우터를 실제로 대체할 때 통합 예정 |
 | `to_record_recommendation_request()`가 작성됐지만 `run_agent_flow()` 7단계가 인라인 로직을 그대로 써서 미사용 상태 (§4.4) | A(본인) | 7단계를 이 함수 호출로 교체할지 결정 필요 |
 

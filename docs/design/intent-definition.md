@@ -128,7 +128,7 @@ RECOMMEND, MODIFY, REPLAN이 공유하는 조건은 3층 구조로 관리된다.
 
 상세 정의는 아래를 참조한다:
 
-- 14개 필드 정의(UserConditions), PlaceType/PlaceTag enum:
+- 15개 필드 정의(UserConditions), PlaceType/PlaceTag enum:
   [conditions-schema.md § 2. Conditions 필드 정의](./conditions-schema.md#2-conditions-필드-정의)
 - 3층 상태 구조와 병합 우선순위:
   [conditions-schema.md § 3. 상태 구조](./conditions-schema.md#3-상태-구조)
@@ -164,3 +164,4 @@ RECOMMEND, MODIFY, REPLAN이 공유하는 조건은 3층 구조로 관리된다.
 | v0.2 | 2026-07-22 | INT-06 OUT_OF_SCOPE 추가, 판별 우선순위 수정, 위치 필드 분리(current_location/search_center), preference_tags 제거 |
 | v0.3 | 2026-07-23 | Conditions 3층 구조 반영(6절), weather/current_location 필드 설명을 user_conditions/api_context 기준으로 수정(6·7절) |
 | v0.4 | 2026-07-23 | 소유권 기반 문서 정리: 6절(Conditions 스키마 전문), 7절(조건 부족 시 기본 정책 표)을 conditions-schema.md 참조 링크로 교체. Intent 판별 규칙(1~5절)은 이 문서가 계속 소유 |
+| v0.5 | 2026-07-29 | conditions-schema.md에 `concentration_intent` 필드 추가(14→15개)에 맞춰 6절 필드 수 표기 갱신 |

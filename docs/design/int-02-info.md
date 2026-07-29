@@ -57,6 +57,9 @@ interface InfoQuery {
   // 질문 내용
   question_type: QuestionType;
   specific_question: string | null;
+
+  // concentration 질의 전용 (question_type === "concentration"일 때만 사용)
+  visit_time: string | null;
 }
 ```
 
@@ -70,6 +73,7 @@ interface InfoQuery {
 | `place_context` | enum | 장소명이 어디서 왔는지 | `explicit`, `from_recommendation`, `from_conversation` |
 | `question_type` | QuestionType | 질문 유형 | `operating_hours`, `fee`, `parking` |
 | `specific_question` | string \| null | 사용자 원문 질문 (응답 생성 참고용) | "오늘 몇 시까지 해?", "주차 가능?" |
+| `visit_time` | string \| null | 혼잡도 조회 기준일 (`question_type === "concentration"` 전용, `YYYY-MM-DD`). 다른 question_type엔 쓰지 않음 | "이번 주말" → 돌아오는 토/일 |
 
 ---
 
@@ -95,7 +99,8 @@ type QuestionType =
   | "facility"         // 편의시설
   | "event"            // 현재 전시/행사
   | "location_info"    // 위치/찾아가는 법
-  | "general_info";    // 기타 일반 정보
+  | "general_info"     // 기타 일반 정보
+  | "concentration";   // 방문객 혼잡도 예측
 ```
 
 ### 상세 정의
@@ -109,6 +114,7 @@ type QuestionType =
 | `event` | 현재 진행 중인 전시/행사/프로그램 | "지금 전시 뭐 해?", "행사 있어?" | searchFestival2 + detailCommon2 |
 | `location_info` | 위치, 주소, 찾아가는 방법 | "어디에 있어?", "주소가 뭐야?", "어떻게 가?" | detailCommon2 (addr1, mapx, mapy) |
 | `general_info` | 장소 개요, 특징, 일반 설명 | "어떤 곳이야?", "뭐 하는 곳이야?" | detailCommon2 (overview) |
+| `concentration` | 특정 장소/지역의 방문객 혼잡도 예측 | "사람 많아?", "붐빌까?", "혼잡해?" | get_concentration (집중률 API). 상세는 [concentration-conditions.md §3](./concentration-conditions.md#3-info-확장--question_type-concentration) 참고 |
 
 ---
 
@@ -332,6 +338,7 @@ INFO 결과에 따라 자연스럽게 RECOMMEND로 이어질 수 있다.
 | "첫 번째 거기 몇 시에 닫아?" | null → 추천 1번 | from_recommendation | operating_hours | "몇 시에 닫아?" |
 | "두 번째 주차 돼?" | null → 추천 2번 | from_recommendation | parking | "주차 돼?" |
 | "경복궁" (단독 키워드) | "경복궁" | explicit | general_info | null |
+| "이번 주말 창덕궁 사람 많을까?" | "창덕궁" | explicit | concentration | "사람 많을까?" (`visit_time`=이번 주말) |
 
 ### 전체 JSON 예시
 
@@ -359,6 +366,19 @@ INFO 결과에 따라 자연스럽게 RECOMMEND로 이어질 수 있다.
 }
 ```
 
+```json
+{
+  "intent": "INFO",
+  "info_query": {
+    "place_name": "창덕궁",
+    "place_context": "explicit",
+    "question_type": "concentration",
+    "specific_question": "사람 많을까?",
+    "visit_time": "2026-08-01"
+  }
+}
+```
+
 ---
 
 ## 14. 경계 사례
@@ -373,6 +393,8 @@ INFO 결과에 따라 자연스럽게 RECOMMEND로 이어질 수 있다.
 | "경복궁 가려는데 비 오면 어쩌지?" | RECOMMEND | 대안 추천 의도 |
 | "경복궁이랑 창덕궁 중 어디가 좋아?" | COMPARE | 비교 요청 |
 | "경복궁 오늘 열어? 안 열면 다른 곳" | INFO (우선) | 복합 입력 → 첫 번째 의도 처리 후 결과에 따라 RECOMMEND 유도 |
+| "이번 주말 창덕궁 사람 많을까?" | INFO | 특정 장소의 방문객 혼잡도 예측 질문 (`question_type=concentration`) |
+| "인사동 카페 사람 많아?" | INFO | 혼잡도 질문이나, 카페 자체는 집중률 데이터가 없어 인근 관광지로 대체 조회 ([concentration-conditions.md §3.3](./concentration-conditions.md#33-목적지-인근-관광지-대체-조회-근접치-fallback)) |
 
 ---
 
@@ -385,7 +407,7 @@ INFO 결과에 따라 자연스럽게 RECOMMEND로 이어질 수 있다.
 - 휴게시간 (런치 브레이크 등)
 - 하루 여러 운영 구간
 - 자정을 넘기는 운영시간
-- 실시간 혼잡도
+- 실시간 혼잡도 (예측치 기반 `question_type=concentration`은 지원 — [concentration-conditions.md](./concentration-conditions.md) 참고. 여기서 제외하는 건 "지금 실시간" 값만 해당)
 - 예약 가능 여부
 - 리뷰/평점 정보
 
@@ -397,6 +419,7 @@ INFO 결과에 따라 자연스럽게 RECOMMEND로 이어질 수 있다.
 
 - [INT-01: RECOMMEND](./int-01-recommend.md) — INFO → RECOMMEND 연계 시 참조
 - [INT-03: MODIFY](./int-03-modify.md) — 조건 변경 및 재추천
+- [concentration-conditions.md](./concentration-conditions.md) — `question_type=concentration`, `visit_time`, 근접치 fallback 상세 설계
 
 ---
 
@@ -406,3 +429,4 @@ INFO 결과에 따라 자연스럽게 RECOMMEND로 이어질 수 있다.
 |------|------|-----------|
 | v0.1 | 2026-07-22 | 초안 작성 |
 | v0.2 | 2026-07-23 | 지시어("첫 번째" 등) 해석이 get_session_context의 shown_place_ids 기준임을 명시(7절) |
+| v0.3 | 2026-07-29 | `question_type=concentration`과 `visit_time` 필드 추가(3·4·6절), LLM 추출 예시(13절)·경계 사례(14절) 반영, 15절 "실시간 혼잡도" 제외 문구를 예측치 지원 범위와 구분되게 명확화. 상세 설계는 concentration-conditions.md |

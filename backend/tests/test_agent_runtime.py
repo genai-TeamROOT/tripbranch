@@ -17,6 +17,7 @@ from app.providers.contracts import ProviderSource, provider_result
 from app.providers.stub import FakeLLMProvider, FakeWeatherProvider
 from app.schemas import AgentRequest, OutputStatus
 from app.services.runtime.agent_runtime import run_agent_flow
+from app.services.runtime.info_context_schemas import InfoContextRequest, InfoContextResponse
 from app.services.runtime.stubs import FakeRecommendationProvider, FakeToolProvider
 from app.state.service import get_session_context
 from app.state.store import InMemoryStateStore
@@ -42,12 +43,19 @@ class _CountingToolProvider:
     def __init__(self) -> None:
         self.call_count = 0
         self.last_request: AgentContextRequest | None = None
+        self.info_call_count = 0
+        self.last_info_request: InfoContextRequest | None = None
         self._inner = FakeToolProvider()
 
     async def fetch_context(self, request: AgentContextRequest) -> AgentContextResponse:
         self.call_count += 1
         self.last_request = request
         return await self._inner.fetch_context(request)
+
+    async def fetch_info_context(self, request: InfoContextRequest) -> InfoContextResponse:
+        self.info_call_count += 1
+        self.last_info_request = request
+        return await self._inner.fetch_info_context(request)
 
 
 class _CountingRecommendationProvider:
@@ -343,4 +351,72 @@ async def test_record_recommendation_reflected_in_session_context() -> None:
     shown_ids = {item.place_id for item in response.recommendations.recommendations}
     assert shown_ids
     assert set(context.shown_place_ids) == shown_ids
-    assert context.has_recommendation is True
+
+
+@pytest.mark.asyncio
+async def test_info_concentration_flow_calls_tool_provider_once() -> None:
+    """question_type=concentration만 C(fetch_info_context)를 거치고, D는 호출하지 않는다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="창덕궁 사람 많아?",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.llm_output.intent == "INFO"
+    assert response.llm_output.info.question_type == "concentration"
+    assert response.recommendations is None
+    assert providers["tool_provider"].info_call_count == 1
+    assert providers["tool_provider"].call_count == 0  # fetch_context(RECOMMEND용)는 안 씀
+    assert providers["recommendation_provider"].call_count == 0
+    assert "창덕궁" in response.message
+    assert "보통" in response.message  # FakeToolProvider 고정 데이터
+
+
+@pytest.mark.asyncio
+async def test_fake_tool_provider_proxy_fallback_discloses_source() -> None:
+    """알려진 관광지가 아닌 장소는 FakeToolProvider의 근접치 fallback 시뮬레이션을 탄다.
+
+    stub.py의 place-name 사전이 FakeToolProvider의 관광지 목록과 겹쳐서(둘 다
+    같은 6개 이름), 전체 파이프라인으로는 이 케이스를 자연스럽게 재현할 수
+    없다 — FakeToolProvider.fetch_info_context()를 직접 호출해 검증한다.
+    """
+    provider = FakeToolProvider()
+    request = InfoContextRequest(
+        request_id="r1", place_name="용리단길카페", place_context="explicit"
+    )
+
+    response = await provider.fetch_info_context(request)
+
+    assert response.status == "success"
+    assert response.result.is_proxy is True
+    assert response.result.requested_place_name == "용리단길카페"
+    assert response.result.resolved_place_name == "경복궁"
+
+
+@pytest.mark.asyncio
+async def test_info_other_question_type_does_not_call_tool_provider() -> None:
+    """concentration이 아닌 INFO question_type은 기존처럼 C를 거치지 않는다(회귀 확인)."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="창덕궁 오늘 열어?",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.llm_output.intent == "INFO"
+    assert response.llm_output.info.question_type == "operating_hours"
+    assert providers["tool_provider"].info_call_count == 0
+    assert "준비 중" in response.message

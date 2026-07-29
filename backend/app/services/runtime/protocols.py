@@ -21,11 +21,21 @@ from app.agent_context.schemas import (
     RecommendationContext,
 )
 from app.schemas import RecommendationResponse, UserConditions
+from app.services.runtime.info_context_schemas import InfoContextRequest, InfoContextResponse
 
 
 class ToolProvider(Protocol):
     async def fetch_context(self, request: AgentContextRequest) -> AgentContextResponse:
         """조건에 맞는 위치·날씨·장소 후보 등을 공통 AgentContextResponse로 반환한다."""
+        ...
+
+    async def fetch_info_context(self, request: InfoContextRequest) -> InfoContextResponse:
+        """INFO의 혼잡도 질의(question_type=concentration)를 처리한다.
+
+        (A 제안, C 확인 필요 — info_context_schemas.py, concentration-conditions.md
+        §2.4/§3.3) 장소 해석·get_concentration 조회·근접치 fallback 오케스트레이션은
+        전부 C 내부 책임이다. A는 구조화된 결과만 받는다.
+        """
         ...
 
 

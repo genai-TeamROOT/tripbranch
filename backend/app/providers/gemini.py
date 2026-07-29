@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+from datetime import date
 from typing import TypeVar
 
 import httpx
@@ -98,10 +99,15 @@ class RealGeminiProvider:
         return provider_result(result, source=ProviderSource.GEMINI)
 
     async def extract_info_query(
-        self, user_input: str, *, has_previous_recommendation: bool
+        self,
+        user_input: str,
+        *,
+        has_previous_recommendation: bool,
+        reference_date: date,
     ) -> ProviderResult[LLMOutput]:
         instruction = gemini_prompts.build_info_extraction_instruction(
-            has_previous_recommendation=has_previous_recommendation
+            has_previous_recommendation=has_previous_recommendation,
+            reference_date=reference_date,
         )
         result = await self._call_structured(instruction, user_input, LLMOutput)
         return provider_result(result, source=ProviderSource.GEMINI)

@@ -49,9 +49,16 @@ B가 어떤 형식으로 되돌려주는지를 확정하는 것이 목적이다.
 값의 우선순위를 판단하는 행위이므로 패키지 A의 책임이다.
 B는 두 층을 분리해 저장하고 그대로 반환한다.
 
-### 1.2 user_conditions (14개 필드)
+### 1.2 user_conditions (14개 필드, 15번째 제안 중 — 아래 참고)
 
 `intent-definition.md` v0.2 및 `conditions-schema.md` 2절의 `Conditions`를 채택한다.
+
+> **(A 제안, 2026-07-29, B 확인 필요)** `conditions-schema.md` v0.5에서
+> `concentration_intent`를 15번째 필드로 추가했다. 아래 표의 15번 행이 그 제안이다
+> — 이 문서의 다른 곳(개요 표, 예시, 변경 이력 등)의 "14개" 표기는 B가 확인 후
+> 일괄 정리하는 걸 권장하며, 이번 제안에서는 표 2개(§1.2, §2.2)만 수정했다. 상세
+> 배경은 [concentration-conditions.md](../../../docs/design/concentration-conditions.md)
+> §2.1·§5.1 참고.
 
 | # | 필드명 | 타입 | 값 성격 | 설명 |
 | --- | --- | --- | --- | --- |
@@ -69,9 +76,10 @@ B는 두 층을 분리해 저장하고 그대로 반환한다.
 | 12 | `budget` | string \| null | 단일 | 예산 |
 | 13 | `exclude_tags` | list[string] | 복수 | 제외 태그 |
 | 14 | `special_requirements` | list[string] | 복수 | 특수 요구사항 |
+| 15 | `concentration_intent` (제안) | string \| null | 단일 | 혼잡도 대응 방향(`AVOID`/`SEEK`/`IGNORE`) — weather_intent와 동일 패턴 |
 
 - 복수 필드는 `place_types`, `place_tags`, `exclude_tags`, `special_requirements` 4개다.
-- **이 14개 필드는 사용자가 말한 값만 담는다.** API로 확보한 값은 `api_context`에 저장한다.
+- **이 필드들은 사용자가 말한 값만 담는다.** API로 확보한 값은 `api_context`에 저장한다.
 - **B는 각 필드의 허용값을 검증하지 않는다.** 허용값 목록은 패키지 A가 정의한다.
 
 **단위 주의**
@@ -234,6 +242,7 @@ time_available  : 분 단위
 | `place_tags` | 복수 | `Add` / `Update` / `Remove` | 해당 원소 제거 |
 | `weather` | 단일 | `Update` / `Remove` | `null` |
 | `weather_intent` | 단일 | `Update` / `Remove` | `null` |
+| `concentration_intent` (제안, B 확인 필요) | 단일 | `Update` / `Remove` | `null` |
 | `transport` | 단일 | `Update` / `Remove` | `null` |
 | `max_travel_time` | 단일 | `Update` / `Remove` | `null` |
 | `time_available` | 단일 | `Update` / `Remove` | `null` |
@@ -243,7 +252,8 @@ time_available  : 분 단위
 | `exclude_tags` | 복수 | `Add` / `Remove` | 해당 원소 제거 |
 | `special_requirements` | 복수 | `Add` / `Remove` | 해당 원소 제거 |
 
-**14개 필드 모두 `Remove`를 허용한다.**
+**14개 필드 모두 `Remove`를 허용한다** (제안 중인 `concentration_intent`도 동일
+정책 적용을 제안 — 위 표 참고).
 `conditions-schema.md` v0.3에서 `current_location`의 필수 지위가
 `api_context.gps_location`으로 이관되었으므로,
 `user_conditions`에는 해제 불가 필드가 없다.

@@ -22,7 +22,18 @@ from app.agent_context.schemas import (
     WeatherForecast,
 )
 from app.schemas import RecommendationItem, RecommendationResponse, UserConditions
+from app.services.runtime.info_context_schemas import (
+    ConcentrationInfoResult,
+    InfoContextRequest,
+    InfoContextResponse,
+)
 from app.state.schema import now_kst
+
+# concentration-conditions.md §3.3 근접치 fallback을 흉내 내는 고정 데이터.
+# "관광지" 계열 이름은 직접 조회 성공(is_proxy=False), 그 외(카페 등)는 근접치
+# fallback 성공(is_proxy=True)으로 시뮬레이션한다 — 실제 오케스트레이션은 C 구현.
+_FAKE_ATTRACTION_NAMES = ("경복궁", "창덕궁", "종묘", "인사동", "광화문", "북촌한옥마을")
+_FAKE_NEAREST_ATTRACTION = "경복궁"
 
 _FAKE_CANDIDATES = (
     PlaceCandidate(
@@ -85,6 +96,55 @@ class FakeToolProvider:
             warnings=[],
             error=None,
             metadata=metadata,
+        )
+
+    async def fetch_info_context(self, request: InfoContextRequest) -> InfoContextResponse:
+        """concentration-conditions.md §3.3 흐름을 고정 데이터로 흉내 낸다.
+
+        place_name이 없으면 needs_clarification, 알려진 관광지면 직접 성공,
+        그 외(카페 등)는 근접치 fallback 성공을 시뮬레이션한다. 실제 장소
+        해석·근접치 탐색 오케스트레이션은 C 내부 구현(A는 하지 않음).
+        """
+        if not request.place_name:
+            return InfoContextResponse(
+                request_id=request.request_id,
+                status="needs_clarification",
+                clarification=Clarification(
+                    code="place_required",
+                    missing_fields=["place_name"],
+                    candidates=[],
+                ),
+            )
+
+        if request.place_name in _FAKE_ATTRACTION_NAMES:
+            return InfoContextResponse(
+                request_id=request.request_id,
+                status="success",
+                result=ConcentrationInfoResult(
+                    status="success",
+                    is_proxy=False,
+                    requested_place_name=request.place_name,
+                    resolved_place_name=request.place_name,
+                    forecast_date=request.visit_time or now_kst().date().isoformat(),
+                    concentration_rate=42.0,
+                    concentration_level="normal",
+                    concentration_label="보통",
+                ),
+            )
+
+        return InfoContextResponse(
+            request_id=request.request_id,
+            status="success",
+            result=ConcentrationInfoResult(
+                status="success",
+                is_proxy=True,
+                requested_place_name=request.place_name,
+                resolved_place_name=_FAKE_NEAREST_ATTRACTION,
+                forecast_date=request.visit_time or now_kst().date().isoformat(),
+                concentration_rate=58.0,
+                concentration_level="slightly_crowded",
+                concentration_label="다소 혼잡",
+            ),
         )
 
 

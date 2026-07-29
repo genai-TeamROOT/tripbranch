@@ -220,6 +220,18 @@ class HolidayInfo(BaseModel):
     name: str
 
 
+# (제안, C 확인 필요 — concentration-conditions.md §2.2/§4)
+# concentration_intent가 AVOID/SEEK일 때만 채워지는 지역 단위 집중률 목록.
+# 후보별이 아니라 지역(종로구) 전체 관광지 예측치이며, A가 place_name으로
+# places와 매칭한다.
+class ConcentrationEntry(BaseModel):
+    place_name: str
+    forecast_date: str
+    concentration_rate: float
+    concentration_level: Literal["quiet", "normal", "slightly_crowded", "crowded"]
+    concentration_label: str
+
+
 T = TypeVar("T")
 
 
@@ -236,6 +248,8 @@ class RecommendationContext(BaseModel):
     weather: ContextValue[WeatherForecast] | None = None
     places: ContextValue[list[PlaceCandidate]] | None = None
     holidays: ContextValue[list[HolidayInfo]] | None = None
+    # (제안, C 확인 필요) conditions.concentration_intent가 AVOID/SEEK일 때만 채움
+    concentration: ContextValue[list[ConcentrationEntry]] | None = None
 
 
 class ResponseMetadata(BaseModel):
@@ -254,10 +268,25 @@ class ResponseMetadata(BaseModel):
 | `weather` | `good`/`neutral`/`bad` 예보와 예보 시각 | 날씨 Feature 계산 |
 | `places` | 후보 장소, 좌표, 분류, 원본·정규화 운영정보 | Candidate 생성·운영시간·거리 계산 |
 | `holidays` | 해당 시점의 공휴일 정보 | 후속 운영 판단 보조. v0 점수 반영은 TBD |
+| `concentration` (제안, C 확인 필요) | `conditions.concentration_intent`가 `AVOID`/`SEEK`일 때만, 지역(종로구) 단위 관광지 집중률 목록 | Scoring `concentration` Feature 계산 — **순위에 반영됨** ([recommendation-scoring.md §4.4](./recommendation-scoring.md), A 제안) |
 
-`concentration`은 C가 초기 후보 Context만 수집하는 v0 응답에는 포함하지 않는다.
-D가 1차 점수 계산 후 상위 후보와 필요한 보강 Feature를 선언하면, A가 이를 중계해
-C에 별도 후보 보강 요청을 보낸다. D는 C를 직접 호출하지 않는다.
+**(2026-07-29 추가, 제안 — C 확인 필요)** `concentration_intent`가 `AVOID`/`SEEK`이면
+`concentration`도 이 초기 응답에 함께 채워 반환한다. 후보별로 별도 조회하지 않고
+지역 코드 1회 호출로 해당 지역 관광지 전체의 예측치를 받아온다(place_name 생략,
+[tool-intelligence-contract-v1.md §6.5](./tool-intelligence-contract-v1.md#65-get_concentration)).
+A는 `places`의 각 후보 이름과 `concentration` 목록을 매칭해 D의 Scoring 입력으로
+쓴다. 이 경로로 받은 값은 **순위에 반영된다** — 아래 §5.2.1~§5.2.3이 설명하는
+후보 보강(post-ranking, 표시 전용) 경로와는 별개다. 상세 배경은
+[concentration-conditions.md §2.2](./concentration-conditions.md#22-데이터-확보-시점--초기-context-요청으로-이동)
+참고.
+
+---
+
+**아래 §5.2.1~§5.2.3의 후보 보강 계약은 위 `concentration` 필드와 별개의, 기존에
+설계된 다른 메커니즘이다** — D가 1차 점수 계산을 이미 마친 뒤 상위 후보만 골라
+표시용 정보를 덧붙이는 용도이며(§5.2.3), `concentration_intent` 경로는 이 계약을
+쓰지 않는다. 이 계약 자체는 폐기하지 않고, "순위에는 반영하지 않는 표시 전용
+보강"이 필요한 다른 상황을 위해 그대로 유지한다.
 
 후보 보강 계약은 초기 Context 계약과 분리된
 `CandidateEnrichmentRequest`/`CandidateEnrichmentResponse`를 사용한다. 요청은
@@ -422,8 +451,11 @@ A는 C 응답을 추천 조건으로 재해석하거나 후보 순서를 변경�
 | `name`, `latitude`, `longitude` | 디버깅·응답 검증용 원본 후보 정보 | 보존 권장 |
 
 A는 `place_id`로 기존 상위 추천 후보와 결합하고 `status=success`인 후보의 정규화된
-단계를 최종 설명에 사용한다. 집중률은 추천 점수를 다시 계산하거나 순위를 변경하지
-않는다. `no_data`나 `unavailable`인 후보도 기존 점수와 추천 자격을 유지한다.
+단계를 최종 설명에 사용한다. **이 후보 보강 경로로 받은** 집중률은 추천 점수를
+다시 계산하거나 순위를 변경하지 않는다 (`concentration_intent` 경로는 이 계약을
+쓰지 않고 §5.2의 초기 Context `concentration` 필드를 쓴다 — 그 경로는 순위에
+반영된다. 두 경로를 혼동하지 않도록 주의). `no_data`나 `unavailable`인 후보도
+기존 점수와 추천 자격을 유지한다.
 `provider_metadata`는 점수값은 아니지만 추천 근거와 당시 외부 데이터 Snapshot을
 재현하기 위해 삭제하지 않는다.
 
@@ -590,3 +622,6 @@ C는 `clarification`에 기계가 해석할 수 있는 사유 코드와 필요�
 ## 7. 협의 필요 항목
 
 1. `INFO`, `COMPARE`를 이 상위 Context 계약에 포함할 시점과 별도 payload 형태
+2. (제안, 2026-07-29) `RecommendationContext`에 추가한 `concentration` 필드
+   (§5.1/§5.2) — 지역 단위 목록 반환이 맞는지, A의 place_name 매칭 방식이
+   맞는지 C 확인 필요. 상세는 [concentration-conditions.md](./concentration-conditions.md)

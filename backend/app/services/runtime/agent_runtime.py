@@ -16,11 +16,19 @@ import logging
 import httpx
 
 from app.providers.protocols import LLMProvider, WeatherProvider
-from app.schemas import AgentRequest, AgentResponse, Intent, InterpretRequest, OutputStatus
+from app.schemas import (
+    AgentRequest,
+    AgentResponse,
+    Intent,
+    InterpretRequest,
+    OutputStatus,
+    QuestionType,
+)
 from app.services.interpret.orchestrator import build_interpretation
 from app.services.interpret.session_orchestrator import ensure_current_context
 from app.services.interpret.state_transform import to_user_conditions, transform
 from app.services.runtime.context_transform import to_agent_context_request
+from app.services.runtime.info_context_transform import to_info_context_request
 from app.services.runtime.protocols import RecommendationProvider, ToolProvider
 from app.services.runtime.response_composer import compose_chat_message
 from app.state.schema import now_kst
@@ -121,6 +129,25 @@ async def run_agent_flow(
                 gps_location_updated_at=now_kst(),
             ),
             store=store,
+        )
+
+    # 4-0) INFO의 혼잡도 질의(question_type=concentration)는 RECOMMEND/MODIFY와 별개로
+    #      C를 거친다(concentration-conditions.md §2.4/§3.3). 그 외 INFO question_type과
+    #      COMPARE/GENERAL은 그대로 4)의 일반 게이트로 빠진다 — Tool을 직접 호출하지
+    #      않는다는 기존 원칙(ToolProvider Protocol)을 그대로 따른다.
+    if (
+        llm_output.status is OutputStatus.COMPLETE
+        and llm_output.intent is Intent.INFO
+        and llm_output.info is not None
+        and llm_output.info.question_type is QuestionType.CONCENTRATION
+    ):
+        info_request = to_info_context_request(new_trace_id(), llm_output.info)
+        info_response = await tool_provider.fetch_info_context(info_request)
+        message = await compose_chat_message(
+            llm_output, info_concentration_response=info_response, llm=llm
+        )
+        return AgentResponse(
+            llm_output=llm_output, state=state_response, recommendations=None, message=message
         )
 
     # 4) 확인이 더 필요하거나(needs_clarification), RECOMMEND/MODIFY가 아니면(INFO/COMPARE/

@@ -49,6 +49,9 @@ interface Conditions {
   weather: "rain" | "snow" | "hot" | "cold" | "good" | null;
   weather_intent: "AVOID" | "ENJOY" | "IGNORE" | null;
 
+  // 혼잡도 (weather_intent와 동일 패턴 — 상세는 concentration-conditions.md 참고)
+  concentration_intent: "AVOID" | "SEEK" | "IGNORE" | null;
+
   // 이동
   transport: "walk" | "public" | "car" | null;
   max_travel_time: number | null;
@@ -207,6 +210,7 @@ LLM 답변 생성과 추천 엔진에 전달되며, B에는 저장하지 않는�
 | `place_types` | user_conditions | 선택 | 빈 배열이면 전체 유형 검색 |
 | `weather` / `api_weather` | 병합 | 선택 | 둘 다 없으면 가중치 제외 |
 | `weather_intent` | user_conditions | 선택 | 모호(null)하면 사용자에게 실내/야외 선호 추가 질문 |
+| `concentration_intent` | user_conditions | 선택 | 결측/null이면 `concentration` Scoring 가중치 제외, 추가 질문 없음 (하드 필터에 관여하지 않으므로 weather_intent와 다름 — [concentration-conditions.md §2.1](./concentration-conditions.md#21-필드-정의) 참고) |
 | `transport` | user_conditions | 선택 | 기본값 도보 기준 (default_transport: walk) |
 | `max_travel_time` | user_conditions | 선택 | 없으면 기본 2km, 있으면 MVP 도보 기준 `분 × 0.07km`를 후보 수집 반경으로 적용(최소 0.3km, 최대 20km) |
 | `budget` | user_conditions | 선택 | 예산 필터 미적용 |
@@ -251,6 +255,7 @@ missing_conditions 처리 흐름:
 | `place_tags` | 복수 | Add / Update / Remove | Remove → 빈 배열 |
 | `weather` | 단일 | Update | Remove → null |
 | `weather_intent` | 단일 | Update | Remove → null |
+| `concentration_intent` | 단일 | Update | Remove → null (가중치 제외) |
 | `transport` | 단일 | Update | Remove → null (기본값 walk 적용) |
 | `max_travel_time` | 단일 | Update | Remove → null (기본 반경 적용) |
 | `time_available` | 단일 | Update | Remove → null |
@@ -430,3 +435,4 @@ place_types 변경 시 → A가 소속 안 되는 place_tags에 대한 Remove �
 | v0.2 | 2026-07-23 | Conditions 3층 구조(user_conditions/api_context/answer_conditions) 반영, place_tags 자동 제거 서술을 A의 명시적 Remove로 수정, 용어 통일(current_conditions → user_conditions) |
 | v0.3 | 2026-07-23 | 소유권 기반 문서 정리: "조건 부족 시 기본 정책"을 이 문서(missing_conditions)로 통합, weather_intent/transport/max_travel_time/budget/companion 기본값 추가. 다른 문서는 이 절을 참조하도록 정리 |
 | v0.4 | 2026-07-27 | C 후보 수집 반경을 A 기준인 기본 2km 또는 `max_travel_time × 0.07km`로 정의하고 최소·최대 범위를 명시 |
+| v0.5 | 2026-07-29 | `concentration_intent` 필드 추가(15번째 필드, weather_intent와 동일 패턴). §2 필드 정의, §3 missing_conditions, §4 필드별 적용 방식에 반영. 상세 설계는 [concentration-conditions.md](./concentration-conditions.md) 참고 |

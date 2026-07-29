@@ -541,6 +541,24 @@
   `MIN_PLACE_SEARCH_RADIUS_KM`(0.1→0.3) 변경은 D 코드가 상수를 import해서
   쓰는 값이라 D 쪽 수정 없이 그대로 반영됐다
 
+### D-036 — 혼잡도 fallback: 장소 근접치 채택 (A 제안, 확인 필요)
+
+- 상태: `Proposed` (A 제안, C·D 확인 필요)
+- 결정: 카페·음식점처럼 집중률 API가 다루는 "관광지" 콘텐츠에 없는 장소를 물으면,
+  기존 미결이었던 세 선택지(장소 근접치·구 단위·Feature 제외) 중 **장소
+  근접치**를 채택한다 — 대상 장소 자체의 데이터가 없으면
+  `search_nearby_places`(`place_types=["attraction"]`)로 가장 가까운 관광지를
+  찾아 그 예측치를 "근처 관광지 기준 추정"이라고 명시하며 대체 제공한다
+- 이유: "데이터 없음"만 반환하는 것보다 사용자에게 참고할 만한 근사치를 주는
+  편이 유용하고, 이미 구현된 `NearbyPlaceDetailsTool`을 그대로 재사용할 수 있어
+  새 Provider 연동 없이 구현 가능하다. 구 단위 평균은 데이터를 왜곡할 소지가
+  크고, Feature 제외는 사용자 질문에 아예 답하지 못한다는 문제가 있어 제외했다
+- 범위: 이번 결정은 INFO(`question_type=concentration`)의 단일 장소 질의를
+  기준으로 한다. RECOMMEND의 `restaurant` 후보에도 동일하게 적용할지는 배치
+  조회 비용 문제로 별도 확정이 필요해 범위에서 제외했다
+- 상세 설계: [`docs/design/concentration-conditions.md`](./design/concentration-conditions.md) §3.3
+- TODO: 탐색 반경(제안값 1.0km) 확정, RECOMMEND 쪽 적용 여부 결정 — C·D 확인 대기
+
 | 항목 | 선택지/질문 | 상태 |
 | --- | --- | --- |
 | LLM Provider | 공급자, 모델, timeout, fallback | `TBD` |
@@ -548,7 +566,7 @@
 | Backend 상태 저장 | Supabase 테이블과 캐시 역할 | `TBD` |
 | Frontend 저장 | `sessionStorage` 유지 또는 `localStorage` 전환 | `TBD` |
 | Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); 응답 Evidence 노출·E2E 통합 `Implemented`(D-028); Explainability Layer v1 `Accepted`(D-029, A 협의 반영 완료); warning 커버리지 보완 `Implemented`(D-030); Explanation 문장 구체화 `Implemented`(D-031); RecommendationContext 진입점 `Implemented`(D-032); Agent Runtime RecommendationProvider 연결 `Implemented`(D-033); Tool 직접 호출 파이프라인 삭제·레거시 라우터 마이그레이션 `Implemented`(D-034); develop 재병합 시 RecommendationProvider 중복 정리 `Implemented`(D-035) | 구현 완료 |
-| 혼잡도 fallback | 장소 근접치, 구 단위, Feature 제외 | 현재 논의 중 |
+| 혼잡도 fallback | 장소 근접치, 구 단위, Feature 제외 | 장소 근접치로 A 제안(D-036), 확인 필요 |
 | 운영시간 파싱 | 기본 시간·월별·주간 휴무 구현, 공휴일·회차 예외 확대 | `부분 구현` |
 | 이동시간 | 지도 Provider 및 교통수단별 계산 | `TBD` |
 | 조건 완화 | 자동 완화 범위와 사용자 확인 UX | `TBD` |
