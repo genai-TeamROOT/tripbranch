@@ -98,7 +98,12 @@ test("debug mode shows condition debug message before recommendations", async ()
   vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "true");
   render(<App />);
 
-  await userEvent.type(screen.getByPlaceholderText(/경복궁 근처/), "비 오는 날 갈 곳");
+  await userEvent.type(
+    screen.getByPlaceholderText(
+      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+    ),
+    "비 오는 날 갈 곳",
+  );
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
 
   expect(await screen.findByText("개발용 입력 해석 결과")).toBeInTheDocument();
@@ -116,7 +121,12 @@ test("release mode hides debug message and requests recommendations automaticall
   vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "false");
   render(<App />);
 
-  await userEvent.type(screen.getByPlaceholderText(/경복궁 근처/), "비 오는 날 갈 곳");
+  await userEvent.type(
+    screen.getByPlaceholderText(
+      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+    ),
+    "비 오는 날 갈 곳",
+  );
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
 
   expect(await screen.findByText(/경복궁 근처에서/)).toBeInTheDocument();
