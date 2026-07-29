@@ -379,6 +379,39 @@ async def test_info_concentration_flow_calls_tool_provider_once() -> None:
     assert "보통" in response.message  # FakeToolProvider 고정 데이터
 
 
+class _ToolProviderWithoutInfoContext:
+    """fetch_info_context()가 아직 없는 C Real 구현체를 흉내 낸다(과도기 상태)."""
+
+    def __init__(self) -> None:
+        self._inner = FakeToolProvider()
+
+    async def fetch_context(self, request: AgentContextRequest) -> AgentContextResponse:
+        return await self._inner.fetch_context(request)
+
+
+@pytest.mark.asyncio
+async def test_info_concentration_falls_back_gracefully_without_fetch_info_context() -> None:
+    """C가 fetch_info_context()를 아직 구현하지 않아도 AttributeError로 죽지 않고
+    기존 '준비 중' 문구로 안전하게 낮아진다(실제 ContextService로 재현된 회귀)."""
+    store = InMemoryStateStore()
+    providers = _providers()
+    providers["tool_provider"] = _ToolProviderWithoutInfoContext()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="창덕궁 사람 많아?",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.llm_output.intent == "INFO"
+    assert response.llm_output.info.question_type == "concentration"
+    assert "준비 중" in response.message
+
+
 @pytest.mark.asyncio
 async def test_fake_tool_provider_proxy_fallback_discloses_source() -> None:
     """알려진 관광지가 아닌 장소는 FakeToolProvider의 근접치 fallback 시뮬레이션을 탄다.
