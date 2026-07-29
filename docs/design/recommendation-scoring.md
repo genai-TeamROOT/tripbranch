@@ -149,6 +149,28 @@ distance_score = clamp(1 - distance_km / max_distance_km, 0.0, 1.0)
 `max_distance_km`는 해당 실행의 검색 반경(`search_radius_km`)을 사용한다. 반경이
 0 이하인 방어적인 경우 `distance_km == 0`이면 1.0, 아니면 0.0으로 처리한다.
 
+### 4.4 혼잡도 (concentration_score) — A 제안 초안, D 확인 필요
+
+> 이 절과 §5.1·§5.2의 concentration 관련 내용은 **A(Agent Runtime)가 제안하는
+> 초안**이다. 이 문서의 소유자인 D가 확인하기 전까지는 미확정이며, 조사 근거와
+> 배경은 [concentration-conditions.md §2.3](./concentration-conditions.md#23-scoring-반영-개요)에
+> 있다.
+
+`concentration_intent`가 `null`/`IGNORE`면 이 Feature 자체를 계산하지 않고 §5.2의
+재분배 규칙을 적용한다(날씨·남은 운영시간과 동일한 경로). `AVOID`/`SEEK`일 때만
+계산하며, C의 후보 보강 응답이 반환하는 `concentration_rate`(0~100대 상대 비율,
+후보별로 `no_data`/`unavailable`일 수 있음 — 그 경우도 결측으로 처리)를 사용한다.
+
+```
+concentration_score (SEEK)  = clamp(concentration_rate / 100, 0.0, 1.0)
+concentration_score (AVOID) = clamp(1 - concentration_rate / 100, 0.0, 1.0)
+```
+
+선형 정규화안이다. 대안으로 `concentration_policy.py`의 4단계 구간(`quiet`/
+`normal`/`slightly_crowded`/`crowded`, 임계값 20/50/70%)을 그대로 점수 구간
+(예: 1.0/0.67/0.33/0.0)으로 매핑하는 방식도 있다 — 두 안 중 확정은 D와 함께
+한다.
+
 ## 5. 가중치
 
 ### 5.1 기본 가중치
@@ -162,6 +184,26 @@ distance_score = clamp(1 - distance_km / max_distance_km, 0.0, 1.0)
 날씨와 남은 운영시간을 동일 비중으로 두고, 거리는 그 절반 비중으로 둔다. 카테고리는
 1차 하드 필터가 처리한다고 보고 가중치 계산에서 제외한다(§1, §3).
 
+**혼잡도 추가 시 가중치(A 제안, D 확인 필요)**: `concentration`을 `DEFAULT_WEIGHTS`에
+넣고 §5.2의 기존 재분배 로직(`redistribute_weights()`)을 그대로 재사용하려면,
+아래처럼 처음부터 4개 Feature로 기본값을 잡는 방법이 가장 단순하다.
+
+| Feature | 기본 가중치 (4-Feature 안) |
+| --- | --- |
+| 날씨 | 0.35 |
+| 남은 운영시간 | 0.35 |
+| 거리 | 0.15 |
+| 혼잡도 | 0.15 |
+
+**주의**: `concentration_intent`가 `null`/`IGNORE`(다수 사용자가 여기 해당)이면
+`concentration`이 결측 처리되어 §5.2 재분배를 거치는데, 그 결과는 날씨
+0.4118/남은 운영시간 0.4118/거리 0.1765로 **기존 0.40/0.40/0.20과 정확히
+같지 않다** (0.35/0.85, 0.35/0.85, 0.15/0.85로 재정규화되기 때문). 즉 이 안은
+혼잡도에 관심 없는 대다수 실행에도 기존 기본 가중치를 미세하게 바꾼다 — 이
+변화를 받아들일지, 아니면 concentration을 재분배 메커니즘 밖에서 별도 보정치로
+얹는 방식(기존 3-Feature 점수에 곱연산/가산으로 반영)으로 설계를 바꿀지는 D가
+확정해야 한다.
+
 ### 5.2 결측 시 재분배
 
 날씨와 남은 운영시간은 각각 독립적으로 결측될 수 있다.
@@ -169,6 +211,10 @@ distance_score = clamp(1 - distance_km / max_distance_km, 0.0, 1.0)
 - 날씨: `weather_condition`이 `None`이면 해당 실행의 모든 후보에 공통으로 결측
 - 남은 운영시간: 후보별 `operating_hours`가 `None`(운영시간 미확인)이면 그
   후보에만 결측
+- **(A 제안, D 확인 필요) 혼잡도**: `concentration_intent`가 `null`/`IGNORE`면
+  해당 실행의 모든 후보에 공통으로 결측(날씨와 동일한 패턴). `AVOID`/`SEEK`여도
+  C의 후보 보강 응답이 `no_data`/`unavailable`인 후보는 그 후보에만 결측(남은
+  운영시간과 동일한 패턴) — 상세는 §4.4
 
 결측된 Feature(하나 또는 둘)를 제외하고, 그 가중치를 나머지 Feature에 **기존
 비중에 비례**하여 재분배한다. 일반식은 다음과 같다.
@@ -253,4 +299,5 @@ v1의 책임이 아니며 후속 업무(Response Generator)에서 `feature_score
 - [`docs/decision-log.md`](../decision-log.md) — D-008
 - [`docs/architecture.md`](../architecture.md) — Recommendation Engine 책임
 - [`docs/api-contracts.md`](../api-contracts.md) — `Candidate`/`RecommendationResult` 목표 계약
+- [`concentration-conditions.md`](./concentration-conditions.md) §2.3 — §4.4·§5.1·§5.2의 혼잡도 Feature 제안 배경 (A 제안, D 확인 필요)
 - [INT-01: RECOMMEND](./int-01-recommend.md) — Conditions/카테고리 배경
