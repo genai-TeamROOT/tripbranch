@@ -559,6 +559,44 @@
 - 상세 설계: [`docs/design/concentration-conditions.md`](./design/concentration-conditions.md) §3.3
 - TODO: 탐색 반경(제안값 1.0km) 확정, RECOMMEND 쪽 적용 여부 결정 — C·D 확인 대기
 
+### D-037 — 혼잡도 반영 방식 재검토: 초기 Context 확장 vs 1차 Scoring 후 상위 5개 보강 재계산 (A-C 협의, D 미확인)
+
+- 상태: `Proposed` (A-C 협의 완료, **D는 아직 확인하지 않음** — 최종 확정 아님)
+- 배경: D-036 이전에 확정해뒀던 안(concentration-conditions.md v0.4)은
+  "concentration을 초기 Context 요청 단계에서 지역 전체 한 번에 받아오고 D는
+  1회만 호출한다"였다. 세션 중 Real Provider로 직접 실측한 결과:
+  - 장소 후보 10개 검색(`NearbyPlaceDetailsTool`) — 약 3.0초
+  - 집중률 종로구 전체(113곳) 병렬 페이지 조회(20페이지) — 약 3.5초, 순차는
+    약 11.8초(`numOfRows=100` 하드코딩이라 페이지네이션 필수)
+  - 집중률 장소 1곳 `tAtsNm` 지정 개별 조회 — 약 0.12초
+
+  즉 이미 후보 검색에만 3초가 드는데 지역 전체 집중률까지 얹으면 6.5초 이상으로
+  늘어나 이득이 없었다. 반대로 좁혀진 소수 후보만 개별 조회하면 압도적으로 빠르다.
+- 제안: "1차 Scoring(10개 후보, concentration 없음 — 기존과 완전 동일) → 상위
+  5개 추출 → 그 5개만 기존 `CandidateEnrichmentRequest`/`Response`
+  (`CandidateEnrichmentService.enrich()`, 이미 C가 구현해둔 인프라)로 집중률
+  보강 조회 → 2차 Scoring(5개+concentration, D 신규 인터페이스)으로 재순위
+  계산 → 최종 3개만 사용자에게 노출"로 방향 전환을 제안한다.
+- D의 1차/2차 호출 모양(정밀하게 구분): 1차는 입력 10개·concentration 없음
+  (기존과 완전 동일, 새로 만들 것 없음). 2차는 입력이 **5개로 축소**되고
+  concentration이 추가되는 **신규 인터페이스** — `score_candidates()`는 현재
+  단일 호출만 지원해 이런 진입점 자체가 없다(0단계 확인 결과). **D가 이 2차
+  인터페이스를 만들어줄 수 있는지 확인이 이 제안의 핵심 블로커다.**
+- 참고 근거(develop 병합, 2026-07-30 발견): C가 `place_concentration_mappings`
+  테이블(커밋 `019709e`, [place-database-schema.md §6.1](./design/place-database-schema.md#61-place_concentration_mappings))을
+  이미 구축해뒀다 — `place_id` ↔ 집중률 API 대표명 매핑 100건(별칭 포함 101곳,
+  미매칭 12곳). 아직 런타임 코드엔 미연결이지만, 제안 흐름의 5단계(후보→집중률
+  이름 매칭)를 뒷받침하는 정황 근거다.
+- 영향 범위: `concentration_intent`가 `AVOID`/`SEEK`일 때만 적용된다.
+  `null`/`IGNORE`는 이 재검토와 무관하게 기존 그대로 D 1회 호출로 끝난다.
+- "최종 3개" 노출은 기존 `RECOMMENDATION_RESULT_LIMIT`(5, `.env`)와 다른 새
+  숫자다 — 기존 설정 어디에도 3을 만드는 상수가 없어 새 상수/자르기 단계가
+  필요하다(정확히 3으로 고정할지도 미확정).
+- 상세 설계: [`docs/design/concentration-conditions.md`](./design/concentration-conditions.md) §2.2,
+  [`docs/design/agent-runtime-contract.md`](./design/agent-runtime-contract.md) §6.5
+- TODO: D의 2차 Scoring 신규 인터페이스 확인(가장 중요), "최종 3개" 상수화 여부,
+  안 A(초기 Context 확장)와 안 B(이번 제안) 중 최종 택1 — **D 확인 대기**
+
 | 항목 | 선택지/질문 | 상태 |
 | --- | --- | --- |
 | LLM Provider | 공급자, 모델, timeout, fallback | `TBD` |
@@ -567,6 +605,7 @@
 | Frontend 저장 | `sessionStorage` 유지 또는 `localStorage` 전환 | `TBD` |
 | Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); 응답 Evidence 노출·E2E 통합 `Implemented`(D-028); Explainability Layer v1 `Accepted`(D-029, A 협의 반영 완료); warning 커버리지 보완 `Implemented`(D-030); Explanation 문장 구체화 `Implemented`(D-031); RecommendationContext 진입점 `Implemented`(D-032); Agent Runtime RecommendationProvider 연결 `Implemented`(D-033); Tool 직접 호출 파이프라인 삭제·레거시 라우터 마이그레이션 `Implemented`(D-034); develop 재병합 시 RecommendationProvider 중복 정리 `Implemented`(D-035) | 구현 완료 |
 | 혼잡도 fallback | 장소 근접치, 구 단위, Feature 제외 | 장소 근접치로 A 제안(D-036), 확인 필요 |
+| 혼잡도 반영 방식 | 초기 Context 확장(안 A) vs 1차 Scoring 후 상위 5개 보강 재계산(안 B) | 안 B를 A-C 협의로 제안(D-037), **D 확인 대기** |
 | 운영시간 파싱 | 기본 시간·월별·주간 휴무 구현, 공휴일·회차 예외 확대 | `부분 구현` |
 | 이동시간 | 지도 Provider 및 교통수단별 계산 | `TBD` |
 | 조건 완화 | 자동 완화 범위와 사용자 확인 UX | `TBD` |

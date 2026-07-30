@@ -38,6 +38,23 @@ B/C/D는 서로 직접 부르지 않고 항상 A를 거쳐서만 결과를 주�
   → A: 최종 응답 조립 (AgentResponse)
 ```
 
+> **🔶 제안 단계 (2026-07-30, C 협의 완료 / D 미확인, 최종 확정 아님) —
+> `concentration_intent`가 `AVOID`/`SEEK`일 때의 확장 흐름.** 위 다이어그램은
+> 그대로 두고, `concentration_intent`가 있을 때만 "A→D: 추천 실행" 한 줄이
+> 아래처럼 늘어난다는 게 제안 내용이다(상세는 §6.5).
+>
+> ```
+>       → [concentration_intent가 AVOID/SEEK일 때]
+>           → A→D: 1차 Scoring (10개, concentration 없음 — 기존과 동일)
+>           → A→C: 그 상위 5개만 혼잡도 조회 (CandidateEnrichmentRequest 재사용)
+>           → A→D: 2차 Scoring (5개+concentration — D 신규 인터페이스, D 미확인)
+>       → A→B: 노출 결과 기록 (record_recommendation) — 위치는 그대로, 다만
+>               기록 대상이 "1차 직후"가 아니라 "2차 재순위 이후, 최종 3개"로 바뀜
+> ```
+>
+> `concentration_intent`가 `null`/`IGNORE`이면 이 확장은 타지 않고 기존
+> 다이어그램 그대로 D 1회 호출로 끝난다.
+
 ### 1.2 변환 함수 공통 원칙
 
 경계마다 변환을 전담하는 지점을 정확히 하나만 둔다 — 서로 다른 경계의 변환을 섞지
@@ -287,6 +304,13 @@ D 내부(`candidate_mapper`/`scoring`/`evidence`/`explanation`)는 직접 import
   `@app.exception_handler(AppError)`가 전역 등록돼 있어 FastAPI가 처리한다. 이는
   기존 `run_recommendation_pipeline()`(Tool 직접 호출 버전)의 관례와도 일치한다.
 
+**🔶 2026-07-30 제안, D 미확인, 미구현**: `concentration_intent`가 `AVOID`/
+`SEEK`이면 이 메서드가 `recommend()`를 **두 번** 호출하는 구조로 바뀔 수 있다
+(§6.5.2) — 1차는 지금 이 코드 그대로(10개, `recommendation_limit=5`), 2차는
+1차 상위 5개 + concentration을 받아 재순위를 계산하는 새 호출(D에 아직 없는
+인터페이스). `null`/`IGNORE`는 지금 이 코드 그대로 1회만 호출된다. 이 메서드
+시그니처 자체를 바꿀지, 새 메서드를 추가할지는 D 확인 후 정해진다.
+
 ### 4.4 D→B: 노출 결과 기록
 
 `to_record_recommendation_request()`가 작성돼 있지만(§1.2), 실제 `run_agent_flow()`
@@ -399,6 +423,16 @@ message()`는 이 문장들의 **내용에 관여하지 않고** 순서·구분�
 > 에서만 성립했다. 순위에 반영해야 하는 이번 요구에는 구조적으로 맞지 않아 폐기한다.
 > §6.2~§6.4는 "왜 이 방향으로 가지 않았는지" 기록으로 남기고, 실제 채택한 설계는
 > §6.5에 새로 적는다.
+>
+> **🔶 2026-07-30 재검토 — C와 협의됨, D 미확인, 최종 확정 아님.** 실측 성능
+> 테스트 결과(§6.5 갱신분) §6.5가 "채택"이라고 적었던 초기 Context 확장 안이
+> 이득이 없다고 판단해, **§6.2~§6.4가 설계했던 "D 2회 호출" 구조가 다시
+> 제안으로 떠올랐다** — 다만 이번엔 D의 1차 호출은 기존과 완전히 동일(10개,
+> concentration 없음)하고 2차 호출만 5개+concentration으로 신규라는 점이
+> §6.2 당시 설계와 다르다. §6.2~§6.4를 "채택하지 않음"에서 되돌리지는 않되
+> (여전히 그 시점의 정확한 모양은 폐기 상태), §6.5를 재검토 중으로 갱신하고
+> 새 제안 내용을 아래에 반영한다. **C와는 §6.5 하단의 흐름을 협의했지만, D의
+> 2차 Scoring 신규 인터페이스는 아직 확인받지 않았다.**
 
 ### 6.1 C가 이미 구현해둔 것
 
@@ -409,8 +443,12 @@ message()`는 이 문장들의 **내용에 관여하지 않고** 순서·구분�
 
 C 쪽은 스키마·서비스·Tool·Provider·Factory까지 전부 준비돼 있다. **A 쪽 연동 코드는
 아직 없다.** 이 인프라 자체는 폐기하지 않는다 — "순위에는 반영하지 않고 설명에만
-쓰는" post-ranking 보강이 필요해지면 그대로 쓸 수 있는 경로다. 다만
-`concentration_intent`는 이 경로를 쓰지 않는다(§6.5).
+쓰는" post-ranking 보강이 필요해지면 그대로 쓸 수 있는 경로다.
+
+**🔶 2026-07-30 재검토**: `concentration_intent`가 이 경로를 쓰지 않는다는 위
+문장은 §6.5가 "초기 Context 확장"이던 시점 기준이다. 지금은 이 인프라를
+**그대로 재사용하는 쪽으로 방향 전환이 제안**됐다(C 협의 완료, D 미확인) —
+1차 Scoring 후 상위 5개만 이 서비스로 보강 조회하는 흐름. 상세는 §6.5.
 
 ### 6.2 채택하지 않음 — 전체 흐름 (D 호출이 1회 → 2회로 늘어남)
 
@@ -430,6 +468,14 @@ sequenceDiagram
 
 지금 `run_agent_flow()`는 D를 한 번만 호출하는 구조다(§1.1, §4.3). 이 흐름을 넣으려면
 D 호출 자체가 1회에서 2회로 바뀌어야 한다.
+
+> **🔶 2026-07-30 참고**: 이 mermaid 다이어그램의 구조("D 1차 → C 보강 → D
+> 2차")가 §6.5.2에서 다시 제안된 안 B와 뼈대가 거의 같다 — 다만 안 B는 1차
+> D 호출의 입력이 "초기 Context 전체"가 아니라 명확히 **10개**이고, 1차
+> 응답이 "상위 5개"라는 것과 2차 입력이 "그 5개+concentration"이라는 것을
+> §6.5.2가 더 구체적으로 못박았다는 차이가 있다. 이 다이어그램 자체는 여전히
+> "채택하지 않음"(당시 설계 그대로는 안 씀) 상태고, 실제 제안 내용은 §6.5.2를
+> 본다.
 
 ### 6.3 채택하지 않음 — TODO였던 항목 (D 확인 대기 중 폐기)
 
@@ -453,12 +499,16 @@ D 호출 자체가 1회에서 2회로 바뀌어야 한다.
 - `run_agent_flow()`의 6단계(D 호출) 이후에 보강 분기가 들어갈 자리만 표시해 둘 예정 —
   분기 조건(§6.3 항목 3)이 안 정해져서 지금은 로직을 못 씀.
 
-### 6.5 채택 — 초기 Context 요청에 포함, D는 1회만 호출
+### 6.5 🔶 재검토 중 (2026-07-30, C 협의 완료 / D 미확인) — 초기 Context 확장 vs 1차 Scoring 후 상위 5개 보강
 
-concentration은 weather와 동일하게 **초기 Context 요청·응답**(§1.1 6단계 이전,
-`to_agent_context_request()`/`AgentContextRequest`)에서 확보한다. 상세 배경과
-근거는 [concentration-conditions.md §2.2](./concentration-conditions.md#22-데이터-확보-시점--초기-context-요청으로-이동)
-참고.
+**이 절 전체가 최종 확정이 아니다.** 아래 6.5.1은 v0.4 시점 결론(여전히 유효할
+수 있는 대안), 6.5.2가 2026-07-30에 새로 제안된 안이다. 둘 중 어느 쪽으로
+갈지는 D 확인 후 정해진다.
+
+#### 6.5.1 안 A — 초기 Context 요청에 포함, D는 1회만 호출 (v0.4 결론, 재검토 대상)
+
+concentration을 weather와 동일하게 **초기 Context 요청·응답**(§1.1 6단계 이전,
+`to_agent_context_request()`/`AgentContextRequest`)에서 확보하는 안이다.
 
 ```mermaid
 sequenceDiagram
@@ -474,22 +524,58 @@ sequenceDiagram
     Note over A,C: * concentration_intent가 AVOID/SEEK일 때만 C가 채워서 반환
 ```
 
-- 별도 플래그·스키마가 필요 없다 — `conditions.concentration_intent`가 이미
-  `to_agent_context_request()`가 만드는 `AgentContextRequest.conditions`에 실려
-  간다. C는 이 값만 보고 concentration 포함 여부를 판단한다.
-- D는 여전히 **1회만** 호출된다(§1.1, §4.3 유지) — 다만 C 조회가 D 호출보다
-  먼저 끝나 있어야 하므로, "6단계(D 호출)" 앞에 concentration 데이터를 Context에서
-  꺼내 D 입력으로 변환하는 작업이 추가된다.
-- 새로 필요한 변환 함수: `to_weather_condition()`(C context→D)과 같은 자리에,
-  Context의 `concentration`을 D의 Scoring 입력으로 바꾸는 함수가 하나 더 필요하다
-  (가칭 `to_concentration_scores()`, `recommendation_transform.py`) — §7 표에 반영.
-- C 쪽 필요 작업: 초기 Context 응답 스키마에 `concentration` 필드 추가
-  ([a-c-context-contract-draft.md §5.2](./a-c-context-contract-draft.md), C 확인
-  필요). §6.1의 기존 `CandidateEnrichmentRequest`/`Response` 인프라는 이 작업에
-  재사용하지 않는다 — 완전히 새 필드다.
-- D 쪽 필요 작업: `score_candidates()`에 concentration 입력 파라미터 추가와
-  가중치 반영 — [recommendation-scoring.md §4.4/§5](./recommendation-scoring.md)
-  (A 제안, D 확인 필요).
+실측(6.5.2 참고) 결과 지역 전체 집중률을 미리 받아오는 비용이 커서 현재는
+6.5.2가 우선 제안이지만, D가 6.5.2의 2차 Scoring 인터페이스를 만들기 어렵다고
+하면 이 안으로 돌아갈 수 있다 — 폐기하지 않고 대안으로 유지한다.
+
+#### 6.5.2 안 B — 1차 Scoring 후 상위 5개만 보강 재계산 (2026-07-30 제안, C 협의 완료 / D 미확인)
+
+세션 중 실측(장소 검색 ~3.0초, 지역 전체 집중률 병렬 ~3.5초·순차 ~11.8초,
+개별 조회 ~0.12초 — [concentration-conditions.md §2.2.2](./concentration-conditions.md#222-재검토-배경--실측-성능-비교))
+결과, 안 A처럼 지역 전체를 미리 받는 것보다 **1차 추천을 기존 그대로 끝내고
+상위 5개만 개별로 집중률을 보강 조회**하는 쪽이 더 빠르다는 게 확인돼 이 안을
+제안한다. 상세 흐름·1차/2차 입력 모양·A→C 연결 계획은
+[concentration-conditions.md §2.2.3](./concentration-conditions.md#223-제안-흐름--9단계-c-협의됨--d-미확인)에
+전부 있다 — 여기서는 이 문서 소관인 호출 순서·변환 함수만 요약한다.
+
+```mermaid
+sequenceDiagram
+    participant A as A Runtime
+    participant C as C Context Service
+    participant D as D Recommendation
+
+    A->>D: 1차 Scoring (10개, concentration 없음 — 기존과 완전 동일)
+    D-->>A: 상위 5개 반환
+    A->>C: CandidateEnrichmentRequest (그 5개만, §6.1 기존 인프라 재사용)
+    C-->>A: CandidateEnrichmentResponse (5개의 집중률)
+    A->>D: 2차 Scoring (5개+concentration — D 신규 인터페이스, D 미확인)
+    D-->>A: 재순위 계산된 최종 결과
+```
+
+- **D는 이제 2회 호출된다** — §1.1/§4.3의 "D 1회 호출" 서술은
+  `concentration_intent`가 `AVOID`/`SEEK`일 때 한정으로 예외가 생긴다(§1.1
+  제안 단계 블록 참고). `null`/`IGNORE`는 여전히 1회.
+- 1차 호출은 새로 만들 게 없다(기존 `RealRecommendationProvider.recommend()`
+  그대로). 2차 호출용 D 신규 인터페이스가 이 안의 유일한 미해결 조각이다.
+- A→C 연결은 §6.1의 기존 `CandidateEnrichmentRequest`/`Response`/
+  `CandidateEnrichmentService.enrich()`/`get_candidate_enrichment_service()`를
+  그대로 재사용한다 — §6.4가 "채택 안 함"으로 남겨뒀던
+  `EnrichmentProvider` Protocol과 `to_candidate_enrichment_request()`도
+  이름 그대로 되살린다(제안).
+- 필요한 변환 함수 둘 중 (1)은 2026-07-30 코드 작성 완료, (2)는 여전히 미작성:
+  (1) D 1차 결과(`RecommendationResponse`, 위경도 없음)를 `context.places`와
+  재조인해 `CandidateEnrichmentTarget`을 만드는 함수 —
+  `to_candidate_enrichment_request()`(`enrichment_transform.py`, 제안 상태
+  그대로 코드만 먼저 연결, C 호출까지 실동작). (2) `CandidateEnrichmentResponse`를
+  D의 2차 Scoring 입력으로 바꾸는 함수 — 이건 D의 2차 인터페이스 모양이
+  확정돼야 만들 수 있어 여전히 미작성이다.
+- D 쪽 필요 작업: 이미 뽑힌 부분집합(5개)을 concentration 포함해서 다시
+  채점하는 신규 진입점 — `score_candidates()`는 현재 단일 호출만 지원해서
+  이 진입점 자체가 없다([recommendation-scoring.md §4.4/§5](./recommendation-scoring.md),
+  A 제안, **D 확인 필요**).
+- B(State)의 `record_recommendation()` 위치는 안 바뀐다 — 여전히 "Scoring
+  완료 직후, 최종 응답 조립 전"이지만, 그 "Scoring 완료"가 이제 2차 재순위
+  이후 시점이 된다(§1.1 제안 단계 블록 참고).
 
 ---
 
@@ -507,9 +593,10 @@ sequenceDiagram
 | `compose_recommendation_message()` | `response_composer.py` | D→사용자 | 완료 |
 | `compose_chat_message()` | `response_composer.py` | A→사용자(챗봇 말풍선) | 완료(§5.4) |
 | `LLMProvider.generate_general_answer()` | `providers/gemini.py` | A→LLM(GENERAL 답변) | 완료(§5.4) |
-| `EnrichmentProvider`(Protocol) | 미정 | A↔C(보강) | 채택 안 함(§6.2~6.4, post-ranking 표시 전용 경로는 보류) |
-| `to_candidate_enrichment_request()` | 미정 | D 후보→C | 채택 안 함(§6.2~6.4) |
-| `to_concentration_scores()`(가칭) | `recommendation_transform.py` | C context→D | TODO (§6.5, A 제안) |
+| `EnrichmentProvider`(Protocol) | `protocols.py` | A↔C(보강) | 완료(코드 작성, C 호출까지 실연결 — §6.5.2, 안 자체는 여전히 D 미확인) |
+| `to_candidate_enrichment_request()` | `enrichment_transform.py` | D 1차 결과→C | 완료(코드 작성 — §6.5.2, 안 자체는 여전히 D 미확인) |
+| `to_concentration_scores()`(가칭) | `recommendation_transform.py` | C context→D | 🔶 제안 — 안 A(§6.5.1) 채택 시에만 필요, D 미확인 |
+| (가칭) D 2차 Scoring 응답→D 2차 Scoring 입력 변환 함수 | 미정, 신규 | `CandidateEnrichmentResponse`→D | 🔶 제안 — 안 B(§6.5.2) 채택 시 필요, D 신규 인터페이스 확정 후 설계(D 미확인) |
 
 ---
 
@@ -517,8 +604,9 @@ sequenceDiagram
 
 | 이슈 | 담당 | 상태 |
 | --- | --- | --- |
-| 혼잡률 2단계 D 호출 흐름 (§6.2~6.4) | D팀 | 채택 안 함 — §6.5(초기 Context 포함, D 1회 호출)로 대체 |
-| 혼잡률 초기 Context 반영 (§6.5) — C의 Context 응답 스키마 확장, D의 Scoring 입력 확장 | C팀·D팀 | 확인 대기 |
+| 혼잡률 반영 방식 — 안 A(초기 Context 확장, §6.5.1) vs 안 B(1차 Scoring 후 상위 5개 보강 재계산, §6.5.2) 중 택1 | D팀 | 🔶 안 B를 2026-07-30 제안(C 협의 완료) — D 확인 대기, 최종 확정 아님 |
+| 안 B 채택 시: D의 2차 Scoring 신규 인터페이스(5개+concentration 재채점) | D팀 | 확인 대기 — 현재 `score_candidates()`는 단일 호출만 지원, 진입점 자체가 없음 |
+| "최종 3개만 노출"(§6.5.2 9단계) — `_CONCENTRATION_FINAL_LIMIT = 3`으로 코드 작성 완료(`agent_runtime.py`) | A(본인) | 🔶 코드는 있음 — 정확히 3으로 확정할지는 여전히 D/기획 확인 필요 |
 | GPS 최초 턴 심기 로직 중복(`app/routes/interpret.py` vs `agent_runtime.py`, 둘 다 `_valid_location()`을 독립적으로 가짐) (§2.5) | A(본인) | `run_agent()`가 라우터를 실제로 대체할 때 통합 예정 |
 | `to_record_recommendation_request()`가 작성됐지만 `run_agent_flow()` 7단계가 인라인 로직을 그대로 써서 미사용 상태 (§4.4) | A(본인) | 7단계를 이 함수 호출로 교체할지 결정 필요 |
 

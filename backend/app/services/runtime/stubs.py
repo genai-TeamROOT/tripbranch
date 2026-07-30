@@ -11,6 +11,12 @@ RealRecommendationProvider)를 기본 주입한다. 여기 두 Fake는 이제 �
 
 from __future__ import annotations
 
+from app.agent_context.enrichment_schemas import (
+    CandidateEnrichmentRequest,
+    CandidateEnrichmentResponse,
+    CandidateEnrichmentResult,
+    ConcentrationForecastData,
+)
 from app.agent_context.schemas import (
     AgentContextRequest,
     AgentContextResponse,
@@ -49,6 +55,20 @@ _FAKE_CANDIDATES = (
         category="cafe",
         location={"latitude": 37.5798, "longitude": 126.9772},
         operating_hours_raw="08:00-22:00",
+    ),
+    PlaceCandidate(
+        place_id="runtime-stub-park-1",
+        name="런타임 스텁 공원",
+        category="park",
+        location={"latitude": 37.5800, "longitude": 126.9774},
+        operating_hours_raw="00:00-24:00",
+    ),
+    PlaceCandidate(
+        place_id="runtime-stub-gallery-1",
+        name="런타임 스텁 갤러리",
+        category="gallery",
+        location={"latitude": 37.5802, "longitude": 126.9776},
+        operating_hours_raw="10:00-19:00",
     ),
 )
 
@@ -186,5 +206,58 @@ class FakeRecommendationProvider:
             elapsed_ms=0,
         )
 
+    async def rerank_with_concentration(
+        self,
+        conditions: UserConditions,
+        first_pass: RecommendationResponse,
+        concentration: CandidateEnrichmentResponse,
+    ) -> RecommendationResponse:
+        """(제안, D 미확인 — agent-runtime-contract.md §6.5.2) 1차 결과를 역순으로
+        재배열해 반환한다 — 실제 재채점이 아니라, 테스트에서 "2차 Scoring이
+        정말 호출돼서 순서가 바뀌었는지"를 1차 결과와 구분해 확인하기 위한
+        고정 로직이다.
+        """
+        items = [*first_pass.recommendations, *first_pass.unverified_recommendations]
+        return RecommendationResponse(
+            recommendations=list(reversed(items)),
+            unverified_recommendations=[],
+            elapsed_ms=0,
+        )
 
-__all__ = ["FakeToolProvider", "FakeRecommendationProvider"]
+
+class FakeEnrichmentProvider:
+    """CandidateEnrichmentService를 흉내 내는 가짜 보강 provider.
+
+    요청된 후보 전부에 고정 집중률(success, normal/보통)을 반환한다 —
+    concentration-conditions.md §2.2.3 안 B의 A→C 호출부(6-1단계)를 C/D 없이
+    테스트하기 위한 것.
+    """
+
+    async def enrich(self, request: CandidateEnrichmentRequest) -> CandidateEnrichmentResponse:
+        results = [
+            CandidateEnrichmentResult(
+                place_id=target.place_id,
+                name=target.name,
+                latitude=target.latitude,
+                longitude=target.longitude,
+                status="success",
+                concentration=[
+                    ConcentrationForecastData(
+                        place_name=target.name,
+                        forecast_date=now_kst().date().isoformat(),
+                        concentration_rate=42.0,
+                        concentration_level="normal",
+                        concentration_label="보통",
+                    )
+                ],
+            )
+            for target in request.candidates
+        ]
+        return CandidateEnrichmentResponse(
+            request_id=request.request_id,
+            status="success",
+            candidates=results,
+        )
+
+
+__all__ = ["FakeToolProvider", "FakeRecommendationProvider", "FakeEnrichmentProvider"]
