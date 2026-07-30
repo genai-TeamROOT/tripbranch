@@ -25,7 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.schemas import InterpretRequest, Intent, QuestionType
+from app.schemas import InterpretRequest
 from app.services.interpret.orchestrator import interpret_user_input
 
 REQUEST_INTERVAL_SECONDS = 2.5
@@ -49,7 +49,12 @@ CASES: list[TestCase] = [
     TestCase(2, "인기 많은 공원 추천해줘", "RECOMMEND", note="SEEK 기대"),
     TestCase(3, "조용한 곳 가고 싶어", "RECOMMEND", note="AVOID 기대"),
     TestCase(4, "사람 없는 한적한 데 추천해줘", "RECOMMEND", note="AVOID 기대"),
-    TestCase(5, "경복궁 근처 카페 추천해줘", "RECOMMEND", note="대조군: IGNORE 기대(혼잡도 무언급)"),
+    TestCase(
+        5,
+        "경복궁 근처 카페 추천해줘",
+        "RECOMMEND",
+        note="대조군: IGNORE 기대(혼잡도 무언급)",
+    ),
     # --- INFO: question_type=concentration, 사용자 제시 예시 4개 포함 (11) ---
     TestCase(
         6,
@@ -85,7 +90,13 @@ CASES: list[TestCase] = [
     TestCase(
         13, "다음주 화요일 롯데월드 사람 많아?", "INFO", "concentration", note="특정 요일 지정"
     ),
-    TestCase(14, "경복궁 붐빌까?", "INFO", "concentration", note="종로구 내 관광지, visit_time=오늘"),
+    TestCase(
+        14,
+        "경복궁 붐빌까?",
+        "INFO",
+        "concentration",
+        note="종로구 내 관광지, visit_time=오늘",
+    ),
     TestCase(
         15,
         "경복궁 오늘 열어?",
@@ -145,9 +156,7 @@ async def run() -> list[CaseResult]:
                 )
             )
             actual_intent = str(llm_output.intent)
-            question_type, concentration_intent, visit_time, place_name, _ = _summarize(
-                llm_output
-            )
+            question_type, concentration_intent, visit_time, place_name, _ = _summarize(llm_output)
             intent_matched = actual_intent == case.expected_intent
             qtype_matched = (
                 None
@@ -249,7 +258,12 @@ def write_summary_csv(results: list[CaseResult]) -> None:
         writer = csv.writer(fp)
         writer.writerow(["구분", "전체", "정답", "정확도"])
         writer.writerow(
-            ["Intent 판별", total, intent_correct, f"{intent_correct / total:.1%}" if total else "-"]
+            [
+                "Intent 판별",
+                total,
+                intent_correct,
+                f"{intent_correct / total:.1%}" if total else "-",
+            ]
         )
         writer.writerow(
             [
