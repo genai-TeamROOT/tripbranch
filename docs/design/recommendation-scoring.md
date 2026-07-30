@@ -153,8 +153,19 @@ distance_score = clamp(1 - distance_km / max_distance_km, 0.0, 1.0)
 
 > 이 절과 §5.1·§5.2의 concentration 관련 내용은 **A(Agent Runtime)가 제안하는
 > 초안**이다. 이 문서의 소유자인 D가 확인하기 전까지는 미확정이며, 조사 근거와
-> 배경은 [concentration-conditions.md §2.3](./concentration-conditions.md#23-scoring-반영-개요)에
+> 배경은 [concentration-conditions.md §2.3](./concentration-conditions.md#23-scoring-반영-개요--재검토-중-1차2차-구조-d-미확인)에
 > 있다.
+>
+> **🔶 2026-07-30 재검토 (제안, D 미확인, 최종 확정 아님)**: 아래 §4.4·§5.1·§5.2
+> 본문은 "concentration이 (다른 3개 Feature와 함께) 매번 시도되고, 없으면
+> `redistribute_weights()`로 재분배되는 단일 Scoring 호출" 모델을 전제로
+> 쓰였다(concentration-conditions.md 안 A). 그런데 이후 성능 실측으로 "1차
+> Scoring(10개, concentration 없음) → 상위 5개 → 2차 Scoring(5개+concentration)"
+> 안 B가 새로 제안됐다 — 이 안에서는 **1차 Scoring엔 concentration이라는 키
+> 자체가 존재하지 않는다**(결측이 아니라 "이 단계에서는 안 다룸"). 2차
+> Scoring(항상 concentration 포함, 5개 한정)에서만 아래 §5.2의 개별 결측·재분배
+> 로직이 의미를 갖는다. 안 A/안 B 중 어느 쪽으로 갈지 **D 확인 필요** —
+> 확정 전까지 아래 본문은 안 A 기준 서술로 남겨둔다.
 
 `concentration_intent`가 `null`/`IGNORE`면 이 Feature 자체를 계산하지 않고 §5.2의
 재분배 규칙을 적용한다(날씨·남은 운영시간과 동일한 경로). `AVOID`/`SEEK`일 때만
@@ -203,6 +214,13 @@ concentration_score (AVOID) = clamp(1 - concentration_rate / 100, 0.0, 1.0)
 변화를 받아들일지, 아니면 concentration을 재분배 메커니즘 밖에서 별도 보정치로
 얹는 방식(기존 3-Feature 점수에 곱연산/가산으로 반영)으로 설계를 바꿀지는 D가
 확정해야 한다.
+
+> **🔶 2026-07-30 각주(제안, D 미확인)**: 안 B(1차/2차 두 번 호출)가 채택되면
+> 위 표 자체가 "1차 가중치(날씨 0.40/남은 운영시간 0.40/거리 0.20, 기존 그대로
+> 무변경)"와 "2차 가중치(4-Feature, 아래 표는 그 초안)"로 완전히 나뉘어서, 위에서
+> 지적한 "무관심 실행에도 기본값이 미세하게 바뀌는" 문제 자체가 사라진다 — 1차엔
+> concentration이 아예 없으니 재분배가 일어날 일이 없다. 안 A/안 B 중 확정
+> 전까지는 이 표를 "안 A 채택 시의 4-Feature 초안"으로 읽는다.
 
 ### 5.2 결측 시 재분배
 

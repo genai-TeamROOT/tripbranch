@@ -15,6 +15,10 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from app.agent_context.enrichment_schemas import (
+    CandidateEnrichmentRequest,
+    CandidateEnrichmentResponse,
+)
 from app.agent_context.schemas import (
     AgentContextRequest,
     AgentContextResponse,
@@ -39,6 +43,17 @@ class ToolProvider(Protocol):
         ...
 
 
+class EnrichmentProvider(Protocol):
+    async def enrich(self, request: CandidateEnrichmentRequest) -> CandidateEnrichmentResponse:
+        """상위 추천 후보의 혼잡도를 후조회한다.
+
+        (concentration-conditions.md §2.2.3 안 B, agent-runtime-contract.md
+        §6.5.2 — C 협의 완료) C의 `CandidateEnrichmentService.enrich()`가 이미
+        이 시그니처를 만족하므로 Fake 없이 바로 연결 가능하다.
+        """
+        ...
+
+
 class RecommendationProvider(Protocol):
     async def recommend(
         self,
@@ -47,4 +62,20 @@ class RecommendationProvider(Protocol):
         excluded_place_ids: list[str],
     ) -> RecommendationResponse:
         """조건과 Tool 결과를 바탕으로 최종 추천 결과를 반환한다."""
+        ...
+
+    async def rerank_with_concentration(
+        self,
+        conditions: UserConditions,
+        first_pass: RecommendationResponse,
+        concentration: CandidateEnrichmentResponse,
+    ) -> RecommendationResponse:
+        """(제안, D 미확인 — agent-runtime-contract.md §6.5.2) 1차 추천 결과와
+        혼잡도 보강 데이터로 재순위를 계산한다.
+
+        D의 Real 구현체가 아직 이 메서드를 갖고 있지 않을 수 있다 — 호출부
+        (agent_runtime.py)는 `hasattr()`로 방어하고, 없으면 `first_pass`를
+        그대로 최종 결과로 쓴다. D가 이 메서드를 구현하면 자동으로 새 경로를
+        타기 시작한다.
+        """
         ...

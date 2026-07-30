@@ -5,9 +5,9 @@
 
 | 항목 | 값 |
 |------|-----|
-| 버전 | v0.4 |
-| 상태 | 초안 (Draft) |
-| 최종 수정 | 2026-07-29 |
+| 버전 | v0.5 |
+| 상태 | 초안 (Draft) — §2.2/§2.3 재검토 중 (C 협의, D 미확인) |
+| 최종 수정 | 2026-07-30 |
 | 소유 | A (Agent Runtime) |
 | 관련 코드 | `backend/app/concentration_policy.py`, `backend/app/domain/scoring.py`, `backend/app/agent_context/enrichment_service.py`, `backend/app/state/field_spec.py` |
 
@@ -60,66 +60,145 @@ concentration_intent: "AVOID" | "SEEK" | "IGNORE" | null;
 가중치만 제외하고 **추가 질문 없이 진행**한다 — concentration은 순위 조정용 Feature일
 뿐 후보군 자체를 바꾸지 않기 때문이다.
 
-### 2.2 데이터 확보 시점 — 초기 Context 요청으로 이동
+### 2.2 데이터 확보 시점 — 🔶 재검토 중 (2026-07-30, C 협의 완료 / D 미확인, 최종 확정 아님)
 
-**(초안 수정 — v0.3까지의 §2.2는 아래 내용으로 대체한다.)** concentration이
-Scoring 가중치에 반영되어 **순위 자체를 바꾸는** 이상(§2.3), 기존에 설계돼 있던
-"D가 1차 점수 계산 후 상위 후보만 C에 별도로 보강 요청"하는 방식
-([a-c-context-contract-draft.md §5.2](./a-c-context-contract-draft.md), 기존
-`CandidateEnrichmentRequest`/`Response` 계약)은 이번 용도에 맞지 않는다는 걸
-뒤늦게 확인했다 — 그 계약은 D가 순위를 이미 확정한 **뒤에** 상위 5개만 보강하도록
-설계됐고, 원래 "표시용 정보만 덧붙이고 순위는 바꾸지 않는다"는 전제였다
-([a-c-context-contract-draft.md §5.2.3](./a-c-context-contract-draft.md)). 순위
-계산 **전에** 데이터가 있어야 하는 이번 요구에는 그 경로가 구조적으로 맞지 않는다.
+> **이 절 전체는 제안이다.** C와는 흐름을 협의했지만 D는 아직 확인하지 않았다
+> (특히 2.2.3의 "2차 Scoring" 호출은 D에 없는 신규 인터페이스라 D 확인 없이는
+> 성립하지 않는다). 실제 구현 전까지 이 절의 어떤 문장도 "확정"으로 읽지 않는다.
 
-대신 concentration은 weather/places/holidays와 마찬가지로 **초기 Context 요청**
-단계에서 확보한다. 별도 플래그도 새로 필요 없다 — `conditions.concentration_intent`
-자체가 이미 초기 `AgentContextRequest.conditions`
-([a-c-context-contract-draft.md §4.1](./a-c-context-contract-draft.md#41-스키마))에
-실려 가므로, C는 이 값만 보고 concentration 포함 여부를 판단할 수 있다.
+#### 2.2.1 v0.4까지의 결론 (재검토 대상)
 
+v0.4는 "concentration이 순위에 반영되는 이상 post-ranking 보강(기존
+`CandidateEnrichmentRequest`/`Response`)은 못 쓰고, 초기 Context 요청 단계에서
+지역 전체를 한 번에 받아와야 하며 D는 1회만 호출된다"고 결론 냈었다. **이
+결론은 아래 2.2.2의 실측 결과로 재검토 중이다** — `concentration_intent`가
+`AVOID`/`SEEK`일 때 한정이며, `null`/`IGNORE`일 때는 이 재검토와 무관하게
+기존처럼 D 1회 호출로 끝난다(변경 없음).
+
+#### 2.2.2 재검토 배경 — 실측 성능 비교
+
+세션 중 실제 Real Provider로 직접 측정한 결과다.
+
+| 조회 방식 | 소요 시간 | 비고 |
+|---|---|---|
+| 장소 후보 10개 검색(`NearbyPlaceDetailsTool`) | **약 3.0초** | RECOMMEND가 이미 매 실행마다 하는 일 |
+| 집중률 — 종로구 전체(113곳) 병렬 페이지 조회 | **약 3.5초** | 20페이지, `asyncio.gather()` |
+| 집중률 — 종로구 전체 순차 페이지 조회 | **약 11.8초** | 20페이지 순차 — `numOfRows=100` 하드코딩이라 페이지네이션 필수 |
+| 집중률 — 장소 1곳 `tAtsNm` 지정 조회 | **약 0.12초** | TourAPI가 서버에서 필터링, payload 작음 |
+
+즉 "후보 검색 전에 지역 전체 집중률부터 미리 받아두자"는 v0.4 설계는 이미
+후보 검색에만 3초가 드는 실행에 지역 전체 조회(병렬이어도 3.5초)를 얹어 총
+6.5초 이상으로 늘린다 — 실측 결과 이득이 없었다. 반면 "이미 좁혀진 소수
+후보만 개별 조회"하면 건당 0.12초로 압도적으로 빠르다. 이게 아래 9단계
+제안의 근거다.
+
+#### 2.2.3 제안 흐름 — 9단계 (C 협의됨 / D 미확인)
+
+```mermaid
+sequenceDiagram
+    participant U as 사용자
+    participant A as A Runtime
+    participant B as B State
+    participant C as C Context
+    participant D as D Recommendation
+
+    U->>A: 발화 (concentration_intent = AVOID/SEEK)
+    Note over A,B: 세션 조회·조건 병합 — 기존과 완전히 동일, 생략 없음
+    A->>C: 1) 거리 기반 후보 10개 조회 (기존 NearbyPlaceDetailsTool, 혼잡도 없이)
+    C-->>A: 2) 후보 10개 반환
+    A->>D: 3) 1차 Scoring (거리+날씨+운영시간, concentration 없음 — 기존과 동일)
+    D-->>A: 4) 상위 5개 반환
+    A->>C: 5) 그 5개 장소만 혼잡도 조회 요청 (CandidateEnrichmentRequest 재사용)
+    C-->>A: 6) 5개의 혼잡도 데이터 반환
+    A->>D: 7) 2차 Scoring (입력 5개 + concentration 포함 — 신규 인터페이스, D 미확인)
+    D-->>A: 8) 재순위 계산된 결과 반환
+    Note over A,B: 노출 기록(record_recommendation) — 위치는 기존과 동일(Scoring 완료 직후),<br/>다만 "Scoring 완료" 시점 자체가 2차 이후로 늦춰짐
+    A-->>U: 9) 최종 3개만 노출
 ```
-concentration_intent가 AVOID/SEEK (초기 요청의 conditions에 이미 포함됨)
-  → C가 초기 Context 응답(location/weather/places/holidays)에
-    concentration을 추가로 담아 반환 (§4.1 — 지역 단위 1회 조회로 후보
-    전체를 커버, 후보별 재조회 불필요)
-  → A는 이 concentration 데이터를 그대로 D의 Scoring 호출에 전달
-  → D는 여전히 1회만 호출된다 (기존 run_agent_flow() 구조 유지, §1.1/§4.3)
-```
 
-**D는 여전히 1회만 호출된다는 결론은 같지만, 근거가 바뀌었다.** "D 호출 → 상위
-후보만 C 재조회"가 아니라 **"C 조회(1회, 확장된 초기 응답) → D 호출(1회)"로 순서
-자체가 바뀐다**는 점이 기존 [agent-runtime-contract.md §6](./agent-runtime-contract.md)
-2단계 호출 설계와의 핵심 차이다 (갱신 내용은 §6 참고).
+`concentration_intent`가 `null`/`IGNORE`일 때는 이 9단계를 타지 않고 기존
+그대로 **A→C→A→D→A**(D 1회 호출)로 끝난다 — 이 경우는 흐름이 전혀 안 바뀐다.
 
-**기존 `CandidateEnrichmentRequest`/`Response`(post-ranking, 상위 5개 한정, 표시
-전용)는 폐기하지 않는다.** "순위에는 반영하지 않고 설명에만 쓰는" 다른 보강
-Feature가 생기면 그대로 유효한 경로다. 이번 `concentration_intent` 경로는 그
-계약을 재사용하지 않고 초기 Context 응답 확장이라는 별도 경로를 쓴다는 뜻이다.
+**1차/2차 D 호출의 입력 모양 차이 (흐릿하게 쓰지 않는다)**:
 
-### 2.3 Scoring 반영 개요
+| | 입력 후보 수 | concentration 포함 여부 | 비고 |
+|---|---|---|---|
+| **1차 Scoring** | 10개 | 없음 | 기존 `RealRecommendationProvider.recommend()` → `score_candidates()`와 시그니처·동작 완전히 동일 — **새로 만들 것 없음** |
+| **2차 Scoring** | **5개**(1차 상위 결과) | **있음** | "같은 10개를 다시 채점"이 아니라 **후보 집합 자체가 5개로 좁혀진 뒤 새 Feature가 추가된 재채점** — D에 없는 신규 인터페이스, **D 확인 필요** |
 
-D의 Scoring(`backend/app/domain/scoring.py`)에 `concentration` Feature를 추가한다.
-가중치 값과 점수 변환 공식의 상세 설계는
-[recommendation-scoring.md](./recommendation-scoring.md)에 "A 제안 초안"으로 반영하고
-D 확인을 받는다(D 소유 문서). 이 절에서는 코드 조사로 확인한 재사용 지점만 남긴다.
+**B(State)의 위치는 기존 구조에서 벗어나지 않는다**: 실제
+`run_agent_flow()`의 순서(1.세션조회(B) 2.LLM 해석 3.조건병합(B) 4.게이트
+5.초기 후보조회(C) 6.Scoring(D) 7.노출 기록(B, `record_recommendation()`)
+8.최종 응답) 중 6)이 "6a.1차 Scoring(D) → 6b.집중률 조회(C) → 6c.2차
+Scoring(D)"로 늘어날 뿐, 7)의 위치·역할은 그대로다 — 다만 7)이 기록하는
+대상이 "1차 Scoring 직후"가 아니라 "6c 2차 재순위 계산이 끝난 뒤, 최종
+3개로 자른 결과"로 바뀐다. 1)~5)와 8)은 전혀 안 바뀐다.
 
-- 조사 결과 `DEFAULT_WEIGHTS`(`scoring.py:24`)와 `ScoringCandidate` 모델 어디에도
-  concentration 관련 키/필드가 없다 — 완전히 새로 추가하는 Feature다
-  (`scoring.py:13` docstring에도 "TODO: 혼잡도 Feature ... v2 이후"로 명시돼 있었음).
-- `concentration_intent`가 `null`/`IGNORE`면 계산하지 않는다 → `missing_features`에
-  `"concentration"`을 추가 → 기존 `redistribute_weights()`(`scoring.py:111`)가 그대로
-  나머지 가중치를 재분배한다. 이 함수는 Feature 이름에 무관하게 동작하는 범용
-  구현이라 weather/remaining_operating_time 결측과 동일한 경로를 재사용할 수 있다.
-- `concentration_intent`가 `AVOID`/`SEEK`면 C가 **초기 Context 응답**(§2.2)에
-  담아 돌려주는 `concentration_rate`(0~100대 상대 비율)를 0~1 점수로 변환한다.
-  방향은 AVOID면 낮을수록, SEEK면 높을수록 고득점. 점수 변환을
-  `concentration_policy.py`의 4단계(`quiet`/`normal`/`slightly_crowded`/`crowded`,
-  임계값 20/50/70%) 구간 기준으로 할지, `concentration_rate` 원본을 선형 정규화할지는
-  아직 미정 — recommendation-scoring.md에서 D와 함께 확정한다.
-- 후보별로 concentration 값이 없으면(해당 후보가 집중률 데이터셋에 없음)
-  weather/remaining_operating_time과 동일하게 **후보별 개별 결측**으로 처리한다
-  (해당 후보만 concentration 가중치 재분배, 전체 실행을 막지 않음).
+**A→C 연결 계획 — C가 이미 만들어둔 것 재사용 (제안, C 협의됨)**:
+
+C 쪽은 전부 이미 구현돼 있어 새로 만들 필요가 없다.
+
+1. `GetConcentrationTool`(`app/tools/concentration.py`) +
+   `RealConcentrationProvider`/`FakeConcentrationProvider`
+   (`app/providers/concentration.py`)
+2. `CandidateEnrichmentService.enrich(request)`
+   (`app/agent_context/enrichment_service.py`) — 이미 소수 후보를 병렬로
+   집중률 조회하는 서비스가 완성돼 있음
+3. `get_candidate_enrichment_service(client)`(`app/agent_context/factory.py`) —
+   위 서비스를 조립하는 팩토리, A가 이걸로 그대로 주입받으면 됨
+4. (신규, develop 병합분) `place_concentration_mappings` 테이블 — §4.4 참고,
+   아직 `enrichment_service.py`에는 연결 안 됨
+
+A가 새로 설계해야 하는 연결 지점(제안, 코드는 아직 안 만듦):
+
+1. D 1차 결과(`RankedCandidate`, `place_id`/`name`만 있고 위도·경도 없음)를
+   원본 `context.places`(위도·경도 있음)와 `place_id`로 재조인해서
+   `CandidateEnrichmentTarget` 리스트를 만드는 변환 함수 — 예전
+   [agent-runtime-contract.md §6.4](./agent-runtime-contract.md)에 이름만
+   미리 정해뒀던 `to_candidate_enrichment_request()`를 되살려 쓴다.
+2. `EnrichmentProvider` Protocol(§6.4에 이미 시그니처가 예정돼 있던
+   `async def enrich(request) -> CandidateEnrichmentResponse`) — C의
+   `CandidateEnrichmentService.enrich()`가 이미 이 모양을 만족하므로 A는 이
+   Protocol만 추가하면 바로 연결 가능.
+3. `CandidateEnrichmentResponse`(5개의 집중률 데이터)를 D의 2차 Scoring
+   입력 형태로 바꾸는 변환 함수(가칭, 신규) — **D의 2차 인터페이스 모양이
+   확정돼야 정확히 설계 가능**하므로 D 확인 후로 미룬다.
+
+**기존 `CandidateEnrichmentRequest`/`Response`(post-ranking, 상위 5개 한정)를
+"이번 용도에 안 맞는다"고 봤던 v0.4 판단은 재검토 대상이다.** 순위 계산
+*전에* 데이터가 있어야 한다는 전제 자체가, "순위 계산을 1차/2차로 나눈다"는
+이번 제안으로 바뀌었기 때문이다 — 이 계약을 그대로 재사용하는 쪽으로
+방향이 다시 옮겨가고 있다(C 협의, D 미확인).
+
+### 2.3 Scoring 반영 개요 — 🔶 재검토 중 (1차/2차 구조, D 미확인)
+
+D의 Scoring(`backend/app/domain/scoring.py`)에 `concentration` Feature를
+추가한다는 목표는 그대로다. 다만 **2.2의 재검토로 "언제 계산되는 Feature인지"가
+바뀌었다** — 상세 가중치 공식은 여전히
+[recommendation-scoring.md](./recommendation-scoring.md)에 "A 제안 초안"으로
+반영하고 D 확인을 받는다(D 소유 문서).
+
+- `concentration_intent`가 `null`/`IGNORE`면 애초에 2차 Scoring 자체를 실행하지
+  않는다(1차 결과를 그대로 최종 결과로 쓴다) — 기존 `redistribute_weights()`
+  결측 재분배 경로를 탈 필요조차 없다. **(제안, D 미확인)**
+- `concentration_intent`가 `AVOID`/`SEEK`면: 1차 Scoring(10개, 기존 3-Feature
+  그대로) → 상위 5개 추출 → 그 5개에 한해 2차 Scoring(5개, weather+
+  remaining_operating_time+distance+**concentration** 4-Feature)을 수행한다.
+  1차에는 concentration이 아예 존재하지 않는 Feature라는 점이 기존 weather/
+  remaining_operating_time(둘 다 매 실행 계산 시도)과 다르다 — **concentration만
+  "조건부로 2차에서만 계산되는 Feature"라는 걸 recommendation-scoring.md에도
+  구분해서 반영한다(§3 참고).**
+- C가 5단계 응답으로 돌려주는 `concentration_rate`(0~100대 상대 비율)를 0~1
+  점수로 변환하는 공식(4단계 구간 vs 선형 정규화)은 아직 미정 —
+  recommendation-scoring.md에서 D와 함께 확정한다.
+- 5개 중 일부 후보에 concentration 값이 없으면(집중률 데이터셋에 없음)
+  weather/remaining_operating_time과 동일하게 **후보별 개별 결측**으로
+  처리한다(해당 후보만 concentration 가중치 재분배).
+- **D 신규 인터페이스 필요 (0단계 확인 결과)**: `score_candidates()`는 현재
+  단일 호출만 지원하고(`recommendation_pipeline.py`가 정확히 1회 호출),
+  이미 뽑힌 부분집합을 다시 채점하는 진입점이 없다. 위 1차/2차 구조가
+  성립하려면 D가 이 2차 호출용 신규 진입점을 새로 설계해야 한다 — **A가
+  만들 수 없는 부분이라 D 확인이 필수다.**
 
 ---
 
@@ -272,6 +351,24 @@ INFO는 이 A↔C Context 계약(v0, RECOMMEND 전용 —
 발견하지 못했다. `place_name`은 이미 선택 필드로 존재하고, 페이지네이션/포맷
 파라미터(`pageNo`/`numOfRows`/`_type`)는 고정값이라 설계 대상이 아니다.
 
+### 4.4 `place_concentration_mappings` — C 기존 인프라 (신규 발견, 런타임 미연결)
+
+`develop` 병합(2026-07-30, 커밋 `019709e`)으로 C가 이미
+`place_concentration_mappings` 테이블([place-database-schema.md §6.1](./place-database-schema.md#61-place_concentration_mappings))을
+구축해뒀다는 걸 확인했다. `places.content_id` ↔ 집중률 API 대표명
+(`primary_concentration_name`)/별칭(`concentration_aliases`)을 매핑해두는
+테이블로, 2026-07-29 최초 적재 기준 매핑 100건(별칭 포함 101곳), 미매칭 12곳이다.
+
+이게 있으면 §2.2 제안 흐름의 5단계("그 5개 장소만 혼잡도 조회")에서 C가
+`place_id` → 집중률 이름을 추측(문자열 유사도 매칭 등)할 필요 없이 이 테이블로
+정확히 조회할 수 있다 — 제안 흐름의 실현 가능성을 뒷받침하는 근거로 참고한다.
+
+**단, 아직 런타임 코드(`enrichment_service.py`, `providers/concentration.py`
+등)에는 연결되지 않았다** — DB 테이블과 1회성 적재 스크립트
+(`scripts/import_concentration_mappings.py`)만 존재한다. 이 테이블을 실제
+조회 로직에 연결할지, 연결한다면 언제 할지는 A가 결정할 사안이 아니다 —
+**C 확인 필요** 항목으로만 남긴다.
+
 ---
 
 ## 5. B 저장 필드 추가
@@ -349,14 +446,20 @@ Context와 성격이 더 가깝다(`places`도 `api_context`에 캐싱하지 않
   관광지가 없으면 포기" 기준 — C/D 확인 필요
 - RECOMMEND의 `restaurant` 유형 후보에도 §3.3과 동일한 근접치 fallback을 적용할지
   — 배치 보강 흐름의 API 호출 비용 문제로 별도 결정 필요
-- 초기 Context 응답(`RecommendationContext`)에 `concentration`을 새 필드로 추가하는
-  정확한 스키마(지역 단위 목록 vs 후보별 매칭 결과) — C 확인 필요 (§2.2,
-  a-c-context-contract-draft.md §5.2)
 - `_select_current_forecast`(또는 동등 로직)를 RECOMMEND 전용 서비스 내부에 갇히지
   않도록 C가 공개 인터페이스로 노출해 INFO 경로에서도 재사용 — C 확인 필요 (§4.2)
 - `FakeConcentrationProvider`가 어제/오늘/내일 3일치만 반환해 실제 ~30일 범위를
   대표하지 못함 — `visit_time`이 오늘+2일 이상인 시나리오 테스트를 위해 Fake 확장
   또는 별도 Fixture 필요
+- **(2026-07-30 신규) §2.2 재검토 자체의 확정 여부** — D가 2차 Scoring
+  신규 인터페이스를 만들어줄 수 있는지, 만든다면 어떤 모양일지 확인 필요.
+  D가 이 방향을 받아들이지 않으면 v0.4의 "초기 Context 확장" 안으로 되돌아갈
+  수 있다 — 두 안 중 어느 쪽으로 갈지 아직 미확정
+- "최종 3개" 상수 — 기존 `.env`/`recommendation_limits.py`/
+  `real_recommendation_provider.py` 어디에도 3을 만드는 값이 없음(전부 5 또는
+  10). 새 상수/자르기 단계가 필요하며 정확히 3으로 고정할지도 확인 필요
+- §3.3 근접치 fallback의 이름 매칭을 `place_concentration_mappings`(§4.4)로
+  대체할지 — C 확인 필요
 
 ---
 
@@ -366,11 +469,12 @@ Context와 성격이 더 가깝다(`places`도 `api_context`에 캐싱하지 않
 - [int-01-recommend.md](./int-01-recommend.md) §8 — `weather_intent` 판별 패턴 참고
 - [int-02-info.md](./int-02-info.md) §6 — `question_type` enum 소유
 - [recommendation-scoring.md](./recommendation-scoring.md) — `concentration` Scoring Feature 상세 설계 (D 확인 필요)
-- [agent-runtime-contract.md](./agent-runtime-contract.md) §6 — 혼잡도 보강 흐름 (2단계 호출 방식 폐기, 조건부 1회 조회로 대체)
-- [a-c-context-contract-draft.md](./a-c-context-contract-draft.md) §4/§5.1/§5.2 — 초기 Context 응답에 `concentration` 필드 추가 (제안, C 확인 필요). 기존 §5.2의 `CandidateEnrichmentRequest`/`Response`(후보 보강 계약)는 이번 경로에서 쓰지 않고 원래 용도로 유지
-- `backend/docs/package-b/agent-state-contract-v1.md` §1.2/§2.2 — B 소유, `concentration_intent`/`api_context` 필드 추가 (제안, B 확인 필요)
+- [agent-runtime-contract.md](./agent-runtime-contract.md) §6 — 혼잡도 보강 흐름 (2026-07-30 재검토 중 — 2단계 D 호출 구조가 이번 제안으로 재부상, 최종 확정 아님)
+- [a-c-context-contract-draft.md](./a-c-context-contract-draft.md) §5.1/§5.2 — 초기 Context `concentration` 필드 확장안과 기존 `CandidateEnrichmentRequest`/`Response` 재사용안, 두 안 중 택1 필요 (제안, C 협의 완료 / D 미확인)
+- `backend/docs/package-b/agent-state-contract-v1.md` §1.2/§2.2 — B 소유, `concentration_intent`/`api_context` 필드 추가 (제안, B 확인 필요) — 이번 재검토와 무관, 변경 없음
 - [tool-intelligence-contract-v1.md §6.2](./tool-intelligence-contract-v1.md#62-search_nearby_places) — §3.3 대체 조회가 재사용하는 `search_nearby_places`/`NearbyPlaceDetailsTool` 계약
-- [`docs/decision-log.md`](../decision-log.md) D-036 — §3.3의 "혼잡도 fallback: 장소 근접치" 채택 결정 (A 제안, C·D 확인 필요)
+- [`docs/decision-log.md`](../decision-log.md) D-036 — §3.3의 "혼잡도 fallback: 장소 근접치" 채택 결정 (A 제안, C·D 확인 필요), D-037 — §2.2 재검토(1차 Scoring 후 상위 5개 보강 재계산 안) 제안 기록
+- [place-database-schema.md §6.1](./place-database-schema.md#61-place_concentration_mappings) — §4.4에서 참고하는 `place_concentration_mappings` 테이블(C, develop 병합분)
 
 ---
 
@@ -382,3 +486,4 @@ Context와 성격이 더 가깝다(`places`도 `api_context`에 캐싱하지 않
 | v0.2 | 2026-07-29 | §4 API 요청 필드 설계(지역 코드 종로구 고정 확인, `reference_date` 신규 필드 제안), §5 B 저장 필드 추가(`concentration_intent`, `api_context.concentration_reference_date`) 신설. §3.2 데이터 범위를 3일→약 30일로 정정. §6 경계 사례의 종로구 밖 예시(잠수교·용리단길)를 종로구 내 장소로 교체하고 범위 밖 사례를 별도 행으로 추가 |
 | v0.3 | 2026-07-29 | §3.3 "목적지 인근 관광지 대체 조회(장소 근접치 fallback)" 신설 — 카페·음식점 등 관광지 콘텐츠 밖 장소 질의 시 `search_nearby_places`로 가장 가까운 관광지를 찾아 대체 조회하는 흐름과 응답 원칙 추가. `decision-log.md`의 기존 "혼잡도 fallback" 미결 항목을 이 결정으로 해소 |
 | v0.4 | 2026-07-29 | **아키텍처 정정**: agent-runtime-contract.md §6을 쓰다가, concentration이 순위에 반영되는 이상(§2.3) 기존 post-ranking 후보 보강 계약(`CandidateEnrichmentRequest`/`Response`)으로는 데이터가 순위 계산 시점보다 늦게 도착해 구조적으로 맞지 않는다는 걸 뒤늦게 발견. §2.2를 "초기 Context 요청 단계에서 확보"로 다시 씀, §2.3 문구 정합, §4.2에서 `reference_date` 신규 필드 제안을 철회(RECOMMEND는 불필요, INFO만 `visit_time`으로 별도 경로), §5.2 `api_context` 추가 제안 철회. 기존 후보 보강 계약 자체는 폐기하지 않고 원래 용도(표시 전용)로 유지 |
+| v0.5 | 2026-07-30 | **재검토(제안, C 협의 완료 / D 미확인, 최종 확정 아님)**: 실측 성능 테스트(장소 검색 ~3.0초, 지역 전체 집중률 병렬 ~3.5초·순차 ~11.8초, 개별 조회 ~0.12초) 결과 v0.4의 "초기 Context 확장" 안이 이득이 없다고 판단해, "1차 Scoring(10개, 기존과 동일) → 상위 5개 → 그 5개만 집중률 보강 조회(기존 `CandidateEnrichmentRequest`/`Response` 재사용) → 2차 Scoring(5개+concentration, D 신규 인터페이스) → 최종 3개 노출"로 방향 전환을 제안. §2.2/§2.3 전면 재작성, D 1회 호출 결론을 재검토 각주로 전환. develop 병합으로 발견한 C의 `place_concentration_mappings` 테이블(§4.4 신설)을 제안 근거로 추가. B의 노출 기록 위치가 기존 구조에서 안 바뀐다는 것도 명시 |

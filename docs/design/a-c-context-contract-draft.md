@@ -277,16 +277,42 @@ class ResponseMetadata(BaseModel):
 A는 `places`의 각 후보 이름과 `concentration` 목록을 매칭해 D의 Scoring 입력으로
 쓴다. 이 경로로 받은 값은 **순위에 반영된다** — 아래 §5.2.1~§5.2.3이 설명하는
 후보 보강(post-ranking, 표시 전용) 경로와는 별개다. 상세 배경은
-[concentration-conditions.md §2.2](./concentration-conditions.md#22-데이터-확보-시점--초기-context-요청으로-이동)
+[concentration-conditions.md §2.2](./concentration-conditions.md#22-데이터-확보-시점--재검토-중-2026-07-30-c-협의-완료--d-미확인-최종-확정-아님)
 참고.
+
+> **🔶 2026-07-30 재검토(제안, C 협의 완료 / D 미확인)**: 위 `concentration`
+> 필드 확장안은 세션 중 실측(장소 검색 ~3.0초, 지역 전체 집중률 병렬 ~3.5초·
+> 순차 ~11.8초 vs 개별 조회 ~0.12초)으로 이득이 없다고 판단돼 재검토 중이다.
+> 대안으로 **바로 아래 §5.2.1~§5.2.3의 기존 후보 보강 계약을 그대로
+> 재사용**하는 안이 새로 제안됐다 — 이 필드 자체는 삭제하지 않지만, 실제
+> 채택될지는 불확실하다(두 안 중 택1, D 확인 필요). 상세는
+> [concentration-conditions.md §2.2.3](./concentration-conditions.md#223-제안-흐름--9단계-c-협의됨--d-미확인).
 
 ---
 
-**아래 §5.2.1~§5.2.3의 후보 보강 계약은 위 `concentration` 필드와 별개의, 기존에
-설계된 다른 메커니즘이다** — D가 1차 점수 계산을 이미 마친 뒤 상위 후보만 골라
-표시용 정보를 덧붙이는 용도이며(§5.2.3), `concentration_intent` 경로는 이 계약을
-쓰지 않는다. 이 계약 자체는 폐기하지 않고, "순위에는 반영하지 않는 표시 전용
-보강"이 필요한 다른 상황을 위해 그대로 유지한다.
+**(2026-07-30 재검토, 문구 정정)** 아래 §5.2.1~§5.2.3의 후보 보강 계약은 원래
+"D가 1차 점수 계산을 이미 마친 뒤 상위 후보만 골라 표시용 정보를 덧붙이는
+용도"(§5.2.3)로 설계됐고, v0.4 시점엔 `concentration_intent` 경로가 이 계약을
+쓰지 않는다고 판단했었다. **이 판단은 2026-07-30 재검토 중이다** — 실측 성능
+결과로 "1차 Scoring(10개, concentration 없음) → 상위 5개 → 그 5개만 이 계약으로
+보강 조회 → 2차 Scoring(5개+concentration)" 안이 새로 제안되면서, 오히려 **이
+계약을 그대로 재사용하는 쪽으로 방향이 다시 옮겨가고 있다**(C 협의 완료, D
+미확인 — D의 2차 Scoring 신규 인터페이스가 확정돼야 최종적으로 성립한다). 이
+계약 자체는 애초에 폐기한 적 없다 — "순위에는 반영하지 않는 표시 전용 보강"
+용도와 "순위에 반영되는 재채점" 용도, 두 가지로 쓰일 가능성이 생긴 상태다.
+
+**A가 이 계약을 호출하는 순서 (제안, C 협의됨)**: (1) D의 1차 Scoring 결과
+(`RankedCandidate`, `place_id`/`name`만 있고 위도·경도 없음)를 원본 `places`
+Context(위도·경도 있음)와 `place_id`로 재조인해서 아래 `CandidateEnrichmentTarget`
+리스트를 구성 → (2) `CandidateEnrichmentRequest`를 만들어 `enrich()` 호출 → (3)
+받은 `CandidateEnrichmentResponse`를 D의 2차 Scoring 입력으로 변환(D 인터페이스
+확정 후 설계). 상세는 [agent-runtime-contract.md §6.5.2](./agent-runtime-contract.md).
+
+**참고 (신규 발견, 런타임 미연결)**: develop 병합(2026-07-30)으로 C가 이미
+`place_id` ↔ 집중률 API 대표명을 매핑해두는 `place_concentration_mappings`
+테이블을 구축해뒀다([concentration-conditions.md §4.4](./concentration-conditions.md#44-place_concentration_mappings--c-기존-인프라-신규-발견-런타임-미연결)).
+이 계약의 `place_name` 매칭에 활용할 수 있는 기존 인프라이지만, 아직
+`enrichment_service.py`에는 연결돼 있지 않다 — 연결 여부는 C 확인 필요.
 
 후보 보강 계약은 초기 Context 계약과 분리된
 `CandidateEnrichmentRequest`/`CandidateEnrichmentResponse`를 사용한다. 요청은
@@ -451,11 +477,23 @@ A는 C 응답을 추천 조건으로 재해석하거나 후보 순서를 변경�
 | `name`, `latitude`, `longitude` | 디버깅·응답 검증용 원본 후보 정보 | 보존 권장 |
 
 A는 `place_id`로 기존 상위 추천 후보와 결합하고 `status=success`인 후보의 정규화된
-단계를 최종 설명에 사용한다. **이 후보 보강 경로로 받은** 집중률은 추천 점수를
-다시 계산하거나 순위를 변경하지 않는다 (`concentration_intent` 경로는 이 계약을
-쓰지 않고 §5.2의 초기 Context `concentration` 필드를 쓴다 — 그 경로는 순위에
-반영된다. 두 경로를 혼동하지 않도록 주의). `no_data`나 `unavailable`인 후보도
-기존 점수와 추천 자격을 유지한다.
+단계를 최종 설명에 사용한다. **이 후보 보강 경로로 받은** 집중률은 (이 문단이
+쓰인 시점 기준) 추천 점수를 다시 계산하거나 순위를 변경하지 않는다는 전제였다.
+
+> **🔶 2026-07-30 재검토 — 위 문장은 더 이상 정확하지 않을 수 있다(제안, D
+> 미확인).** v0.4 시점엔 `concentration_intent` 경로가 이 계약을 쓰지 않고
+> §5.2의 초기 Context `concentration` 필드를 쓰며, 그 경로만 순위에 반영된다고
+> 구분했었다. 그런데 2026-07-30 재검토로 **`concentration_intent` 경로가 이
+> 계약(§5.2.1~§5.2.3)을 그대로 재사용하는 안이 새로 제안**됐다(C 협의 완료) —
+> 그렇게 되면 이 경로로 받은 집중률도 D의 2차 Scoring을 통해 **순위에 반영된다**,
+> 즉 위 "순위를 변경하지 않는다"는 전제가 이 용도에 한해 깨진다. 다만 D의 2차
+> Scoring 신규 인터페이스가 확정되기 전까지는 미확정이다 — "순위에 반영 안
+> 함"이 필요한 다른 보강 용도에는 이 문단이 여전히 유효하다. 상세는
+> [concentration-conditions.md §2.2.3](./concentration-conditions.md#223-제안-흐름--9단계-c-협의됨--d-미확인).
+
+`no_data`나 `unavailable`인 후보도 기존 점수와 추천 자격을 유지한다(안 A
+채택 시 그대로 적용, 안 B 채택 시에도 2차 Scoring 결측 처리로 동일한 원칙 적용
+— [recommendation-scoring.md §5.2](./recommendation-scoring.md)).
 `provider_metadata`는 점수값은 아니지만 추천 근거와 당시 외부 데이터 Snapshot을
 재현하기 위해 삭제하지 않는다.
 
