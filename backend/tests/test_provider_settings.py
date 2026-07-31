@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -120,3 +122,18 @@ def test_validate_provider_config_flags_only_the_real_provider() -> None:
     message = str(error.value)
     assert "LLM_API_KEY" in message
     assert "WEATHER_API_KEY" not in message
+
+
+def test_env_file_is_resolved_relative_to_backend_package() -> None:
+    """실행 위치가 아니라 backend/.env를 절대경로로 가리켜야 한다.
+
+    상대경로면 저장소 루트에서 서버를 띄웠을 때 .env를 읽지 못하고 오류 없이
+    전 Provider가 fake로 뜬다(npm run dev가 그렇게 실행되던 회귀).
+    """
+    import app.config as config_module
+
+    env_file = Path(config_module.Settings.model_config["env_file"])
+
+    assert env_file.is_absolute()
+    assert env_file.name == ".env"
+    assert env_file.parent == Path(config_module.__file__).resolve().parent.parent
