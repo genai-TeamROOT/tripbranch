@@ -23,6 +23,7 @@ class ProviderSource(StrEnum):
     NAVER_GEOCODING = "naver_geocoding"
     KMA_ULTRA_SHORT_FORECAST = "kma_ultra_short_forecast"
     TOUR_API_PLACE = "tour_api_place"
+    SUPABASE_PLACES = "supabase_places"
     TOUR_API_CONCENTRATION = "tour_api_concentration"
     KASI_HOLIDAY = "kasi_holiday"
     GEMINI = "gemini"
@@ -39,10 +40,18 @@ class ProviderMetadata:
     source: ProviderSource
     status: ProviderStatus
     retrieved_at: datetime
+    # 미리 구축된 저장소에서 읽어온 경우, 그 데이터가 원본 API로부터 마지막으로
+    # 동기화된 시각. retrieved_at(이번 요청의 조회 시각)과 구분하기 위한 값이라
+    # 외부 API를 직접 호출하는 provider에서는 항상 None이다.
+    detail_fetched_at: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.retrieved_at.tzinfo is None:
             raise ValueError("retrieved_at은 timezone-aware datetime이어야 합니다.")
+        if self.detail_fetched_at is not None and self.detail_fetched_at.tzinfo is None:
+            raise ValueError(
+                "detail_fetched_at은 timezone-aware datetime이어야 합니다."
+            )
 
 
 T = TypeVar("T")
@@ -63,6 +72,7 @@ def provider_result(
     source: ProviderSource,
     status: ProviderStatus = ProviderStatus.SUCCESS,
     clock: Clock | None = None,
+    detail_fetched_at: datetime | None = None,
 ) -> ProviderResult[T]:
     """UTC 조회 시각을 포함한 정상 Provider 결과를 생성한다."""
 
@@ -75,5 +85,10 @@ def provider_result(
             source=source,
             status=status,
             retrieved_at=retrieved_at.astimezone(UTC),
+            detail_fetched_at=(
+                detail_fetched_at.astimezone(UTC)
+                if detail_fetched_at is not None and detail_fetched_at.tzinfo is not None
+                else detail_fetched_at
+            ),
         ),
     )

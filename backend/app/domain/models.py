@@ -168,6 +168,26 @@ class PlaceOperatingDetails:
 
 
 @dataclass(frozen=True)
+class StoredPlaceDetail:
+    """요청 시 저장소에서 읽어오는 장소 상세·운영정보 한 건.
+
+    운영시간은 정규화 결과가 아니라 TourAPI 원문(``*_raw``)을 그대로 담는다 —
+    소비 시점에 normalize_operating_schedule()로 다시 정규화하므로 TourAPI를
+    직접 호출하는 경로와 동일한 결과가 보장된다.
+    """
+
+    content_id: str
+    content_type_id: str
+    title: str | None
+    address: str | None
+    operating_hours_raw: str | None
+    rest_date_raw: str | None
+    detail_fetch_status: str
+    detail_fetched_at: datetime | None
+    source_modified_at: datetime | None
+
+
+@dataclass(frozen=True)
 class StoredPlaceState:
     """상세 재조회와 활성화 여부 판단에 필요한 기존 장소 상태."""
 

@@ -10,7 +10,7 @@ TODO: provider가 늘어나면 오류 타입, 비동기 계약, 메타데이터 
 from __future__ import annotations
 
 from datetime import date
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from app.domain.models import (
     ConcentrationResult,
@@ -148,6 +148,26 @@ class PlaceDetailsProvider(Protocol):
         self, content_id: str, content_type_id: str
     ) -> ProviderResult[PlaceDetails]:
         """장소 ID와 유형 ID로 정규화된 상세정보를 반환한다."""
+        ...
+
+
+@runtime_checkable
+class BatchPlaceDetailsProvider(Protocol):
+    """여러 장소의 상세정보를 한 번의 조회로 반환할 수 있는 provider.
+
+    미리 구축된 저장소를 읽는 provider만 구현한다. content_id별로 개별 호출이
+    필요한 외부 API provider는 기존 PlaceDetailsProvider만 만족하면 되고,
+    Tool이 런타임에 이 계약 지원 여부를 보고 조회 방식을 고른다.
+    """
+
+    async def get_details_batch(
+        self,
+        content_ids: list[str],
+    ) -> ProviderResult[dict[str, PlaceDetails]]:
+        """content_id 목록에 대한 상세정보를 content_id 기준 dict로 반환한다.
+
+        조회되지 않은 content_id는 결과에서 빠진다(호출자가 누락으로 처리한다).
+        """
         ...
 
 

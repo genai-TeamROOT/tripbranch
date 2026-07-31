@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
-from app.domain.models import StoredPlaceState, TourPlaceRecord
+from app.domain.models import StoredPlaceDetail, StoredPlaceState, TourPlaceRecord
 
 
 class PlaceRepository(Protocol):
@@ -33,6 +33,11 @@ class PlaceRepository(Protocol):
         area_code: str,
         district_code: str,
     ) -> dict[str, StoredPlaceState]: ...
+
+    async def get_active_place_details(
+        self,
+        content_ids: Sequence[str],
+    ) -> dict[str, StoredPlaceDetail]: ...
 
     async def upsert_place_list(
         self,

@@ -23,6 +23,9 @@ from app.recommendation_limits import (
 )
 
 ProviderMode = Literal["fake", "real"]
+# 장소 후보 "검색"은 항상 PLACE_PROVIDER를 따르고, 후보별 상세·운영정보만 이 값으로
+# 출처를 고른다. supabase는 미리 구축된 places 테이블, tour_api는 상세 API 직접 호출.
+PlaceDetailsSource = Literal["supabase", "tour_api"]
 
 
 class Settings(BaseSettings):
@@ -38,6 +41,10 @@ class Settings(BaseSettings):
     geocoding_provider: ProviderMode | None = None
     concentration_provider: ProviderMode | None = None
     holiday_provider: ProviderMode | None = None
+
+    # 상세·운영정보 조회 출처. PLACE_PROVIDER=fake이면 Fake Provider가 상세까지
+    # 담당하므로 이 값은 무시된다.
+    place_details_source: PlaceDetailsSource = "tour_api"
 
     # LLM_PROVIDER=real일 때 사용할 Gemini 모델명.
     llm_model_name: str = "gemini-2.5-flash"
@@ -115,6 +122,13 @@ class Settings(BaseSettings):
     @property
     def resolved_holiday_provider(self) -> ProviderMode:
         return self.holiday_provider or self.provider_mode
+
+    @property
+    def resolved_place_details_source(self) -> PlaceDetailsSource:
+        """fake 장소 모드에서는 상세도 Fake Provider가 담당한다."""
+        if self.resolved_place_provider == "fake":
+            return "tour_api"
+        return self.place_details_source
 
 
 settings = Settings()
