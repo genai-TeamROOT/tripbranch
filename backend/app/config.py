@@ -9,6 +9,7 @@ TODO: 실제 외부 API 연동 시 provider별 캐시 설정을 추가한다.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
 
 from pydantic import AliasChoices, Field, model_validator
@@ -28,8 +29,15 @@ ProviderMode = Literal["fake", "real"]
 PlaceDetailsSource = Literal["supabase", "tour_api"]
 
 
+# backend/.env. 상대경로로 두면 저장소 루트에서 서버를 띄웠을 때 .env를 찾지 못하고
+# 오류 없이 전 Provider가 fake로 뜨므로, 실행 위치와 무관하게 같은 파일을 읽는다.
+_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore", env_ignore_empty=True)
+    model_config = SettingsConfigDict(
+        env_file=_ENV_FILE, extra="ignore", env_ignore_empty=True
+    )
 
     app_env: str = "local"
 
