@@ -24,6 +24,12 @@ from app.schemas import RecommendationItem, RecommendationResponse
 
 _OPERATING_HOURS_UNVERIFIED_WARNING = "방문 전에 운영 여부를 확인해주세요."
 _DETAILS_MISSING_WARNING = "장소 상세정보 일부를 확인하지 못했습니다."
+# 날씨가 Scoring에 빠지는 이유는 두 가지이고, 사용자에게 같은 말로 알리면 안 된다.
+# (1) 조회 자체를 안 한 경우: weather_intent=IGNORE(= 발화에 날씨 언급 없음)면 C가
+#     Weather Tool을 실행하지 않는다(tool_rules.py). 정상 흐름이므로 오류처럼 알리지
+#     않는다. int-01-recommend.md §8의 IGNORE 정의 참고.
+# (2) 조회했으나 실패한 경우: 날씨 API 장애 등 — 이때만 "확인하지 못했다"가 사실이다.
+_WEATHER_IGNORED_WARNING = "날씨 조건을 따로 말씀하지 않으셔서 이번 추천에는 반영하지 않았어요."
 _WEATHER_MISSING_WARNING = "현재 날씨 정보를 확인하지 못해 이 조건은 반영되지 않았어요."
 _NO_NOTABLE_EXPLANATION_WARNING = (
     "이 장소는 특별히 강조할 만한 조건은 없지만, 조건에 맞아 추천했어요."
@@ -110,7 +116,15 @@ async def run_recommendation_pipeline_from_context(
         for place in (places.data or [])
         if place.operating_schedule is None
     )
-    response = _build_response(ranked, candidates, details_missing_place_ids, visit_at)
+    # context.weather가 아예 없으면 C가 Weather Tool을 실행하지 않았다는 뜻이다
+    # (weather_intent=IGNORE). 값이 있는데 status가 실패인 경우와 구분한다.
+    response = _build_response(
+        ranked,
+        candidates,
+        details_missing_place_ids,
+        visit_at,
+        weather_ignored=context.weather is None,
+    )
     return response.model_copy(
         update={"elapsed_ms": round((timer() - started_at) * 1000, 2)}
     )
@@ -130,6 +144,8 @@ def _build_response(
     candidates: tuple[ScoringCandidate, ...],
     details_missing_place_ids: frozenset[str],
     visit_at: datetime,
+    *,
+    weather_ignored: bool,
 ) -> RecommendationResponse:
     candidate_by_id = {item.place_id: item for item in candidates}
     verified: list[RecommendationItem] = []
@@ -153,6 +169,7 @@ def _build_response(
                 ranked_item,
                 ranked_item.place_id in details_missing_place_ids,
                 explanations,
+                weather_ignored=weather_ignored,
             ),
             score=evidence.score,
             feature_scores={
@@ -178,17 +195,22 @@ def _extra_warnings(
     ranked: RankedCandidate,
     details_missing: bool,
     explanations: tuple[str, ...],
+    *,
+    weather_ignored: bool,
 ) -> list[str]:
     """운영시간 결측 외에, 지금까지 조용히 생략되던 두 케이스를 warning으로 보충한다.
 
-    (1) 날씨 결측으로 weather Feature 점수가 없는 경우
+    (1) 날씨 결측으로 weather Feature 점수가 없는 경우 — 조회를 안 한 것(IGNORE)과
+        조회에 실패한 것을 구분해 서로 다른 문구를 쓴다.
     (2) Feature 점수가 있어도 전부 임계값 미만이라 explanations가 비는 경우
     """
     extra: list[str] = []
     if details_missing and _OPERATING_HOURS_UNVERIFIED_WARNING not in ranked.warnings:
         extra.append(_DETAILS_MISSING_WARNING)
     if ranked.feature_scores.get("weather") is None:
-        extra.append(_WEATHER_MISSING_WARNING)
+        extra.append(
+            _WEATHER_IGNORED_WARNING if weather_ignored else _WEATHER_MISSING_WARNING
+        )
     if not explanations:
         extra.append(_NO_NOTABLE_EXPLANATION_WARNING)
     return extra

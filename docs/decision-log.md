@@ -617,6 +617,37 @@
 | Weather 방문시각 선택 | visit_at 입력, forecast_for 선택, 범위 초과 처리 | 구현 완료 |
 | 배포 | Hosting, CI/CD, Secret 관리 | `TBD` |
 
+### D-038 — 날씨 warning 문구 분리(IGNORE vs 조회 실패) 및 날씨 조회 경로 이원화 정리
+
+- 상태: 문구 분리는 `Implemented`, 나머지 두 항목은 `TBD`
+- 배경: `"경복궁 근처 카페 추천해줘"`처럼 날씨 언급이 없는 발화는 LLM이
+  `weather_intent=IGNORE`로 판정하고([int-01-recommend.md §8](./design/int-01-recommend.md#8-weather_intent-판별)의
+  정의: "날씨 언급 없음"), C가 Weather Tool을 실행하지 않는다
+  (`tool_rules.py`). 정상 흐름인데도 사용자에게 "현재 날씨 정보를 확인하지
+  못해 이 조건은 반영되지 않았어요"라는 **조회 실패 문구**가 나갔다.
+- 결정 1 (`Implemented`): `recommendation_pipeline.py`의 날씨 warning을 두 개로
+  나눈다. `context.weather`가 `None`이면 조회를 시도하지 않은 것(IGNORE)이므로
+  `_WEATHER_IGNORED_WARNING`("날씨 조건을 따로 말씀하지 않으셔서 …"), 값이
+  있는데 status가 실패면 기존 `_WEATHER_MISSING_WARNING`을 쓴다. 개발 단계에서는
+  IGNORE로 처리됐다는 사실 자체를 보여줄 필요가 있어 warning을 없애지 않고
+  문구만 구분했다 — 사용자 노출용 문구 확정은 UX 논의가 필요하다.
+- TODO 1 (`TBD`) — **§10과 구현 불일치**:
+  [int-01-recommend.md §10](./design/int-01-recommend.md#10-날씨-정보-확보-순서)은
+  "② 사용자가 날씨를 입력하지 않음 → 날씨 API 호출"을 규정하지만, 현재 구현은
+  `IGNORE`면 ②를 건너뛰고 곧장 "④ 추천 계산에서 제외"로 간다. 문서를 구현에
+  맞출지(안 쓸 값은 호출하지 않는다), 구현을 문서에 맞출지(확보는 하되 가중치만
+  제외한다) 결정이 필요하다.
+- TODO 2 (`TBD`) — **날씨 조회 경로 이원화**: 같은 요청에서 날씨를 두 곳이
+  따로 조회하는데 한쪽은 소비자가 없다.
+  - B 세션 `api_context.api_weather`: GPS가 있으면 `ensure_current_context()`가
+    조회해 채운다(§10대로 동작). **현재 이 값을 읽는 곳이 없다.**
+  - C `context.weather`: `weather_intent != IGNORE`일 때만 조회한다. D Scoring이
+    `to_weather_condition()`으로 참조하는 것은 이쪽이다.
+  통합할지, 각자 역할을 문서로 고정할지 정리가 필요하다.
+- 확인 방법: `device_location`을 넣어도 `weather_intent=IGNORE`면
+  `feature_scores.weather`가 `null`이고 `weights_used`에서 날씨 0.4가 빠져
+  나머지에 재분배된다(정상). 실제 응답으로 확인함.
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -643,3 +674,4 @@
 | 2026-07-28 | D-033 Agent Runtime `RecommendationProvider`에 `RealRecommendationProvider` 연결, `run_agent()` 기본 provider를 Fake에서 실제 구현으로 교체 |
 | 2026-07-28 | D-034 `run_recommendation_pipeline()`(Tool 직접 호출) 완전 삭제, `/api/recommendations` 라우터를 `run_recommendation_pipeline_from_context()` 기반으로 마이그레이션 |
 | 2026-07-28 | D-035 develop 재병합 시 발견된 `RealRecommendationProvider` 중복 구현 정리, mintee의 `real_recommendation_provider.py`로 통합 |
+| 2026-07-31 | D-038 날씨 warning을 IGNORE(미언급)와 조회 실패로 분리, §10 불일치·날씨 조회 경로 이원화를 TODO로 기록 |

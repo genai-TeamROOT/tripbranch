@@ -15,6 +15,7 @@ from app.errors import AppError
 from app.services.recommendation_pipeline import run_recommendation_pipeline_from_context
 
 _WEATHER_MISSING_WARNING = "현재 날씨 정보를 확인하지 못해 이 조건은 반영되지 않았어요."
+_WEATHER_IGNORED_WARNING = "날씨 조건을 따로 말씀하지 않으셔서 이번 추천에는 반영하지 않았어요."
 _NO_NOTABLE_EXPLANATION_WARNING = (
     "이 장소는 특별히 강조할 만한 조건은 없지만, 조건에 맞아 추천했어요."
 )
@@ -75,7 +76,11 @@ async def test_pipeline_from_context_builds_recommendation_with_explanations() -
 
 
 @pytest.mark.asyncio
-async def test_pipeline_from_context_handles_missing_weather() -> None:
+async def test_pipeline_from_context_reports_weather_ignored_when_not_requested() -> None:
+    """weather_intent=IGNORE면 C가 Weather Tool을 아예 실행하지 않아 weather가 없다.
+
+    정상 흐름이므로 "확인하지 못했다"(조회 실패)와 다른 문구를 써야 한다.
+    """
     context = RecommendationContext(
         location=_context_location(),
         weather=None,
@@ -88,8 +93,35 @@ async def test_pipeline_from_context_handles_missing_weather() -> None:
         search_radius_km=2.0,
     )
 
-    assert response.recommendations
-    assert _WEATHER_MISSING_WARNING in response.recommendations[0].warnings
+    warnings = response.recommendations[0].warnings
+    assert _WEATHER_IGNORED_WARNING in warnings
+    assert _WEATHER_MISSING_WARNING not in warnings
+
+
+@pytest.mark.asyncio
+async def test_pipeline_from_context_reports_weather_failure_when_lookup_failed() -> None:
+    """조회를 시도했으나 실패한 경우에만 "확인하지 못했다"가 사실이다."""
+    context = RecommendationContext(
+        location=_context_location(),
+        weather=AgentContextValue(
+            status="unavailable",
+            data=None,
+            error=ContextError(
+                code="unavailable", message="날씨를 조회하지 못했습니다.", retryable=True
+            ),
+        ),
+        places=AgentContextValue(status="success", data=[_context_place()]),
+    )
+
+    response = await run_recommendation_pipeline_from_context(
+        context,
+        visit_at=_CONTEXT_VISIT_AT,
+        search_radius_km=2.0,
+    )
+
+    warnings = response.recommendations[0].warnings
+    assert _WEATHER_MISSING_WARNING in warnings
+    assert _WEATHER_IGNORED_WARNING not in warnings
 
 
 @pytest.mark.asyncio
