@@ -15,7 +15,11 @@ from app.place_search_policy import (
     MAX_PLACE_SEARCH_RADIUS_KM,
 )
 from app.providers.contracts import ProviderMetadata
-from app.providers.protocols import PlaceDetailsProvider, PlaceSearchProvider
+from app.providers.protocols import (
+    BatchPlaceDetailsProvider,
+    PlaceDetailsProvider,
+    PlaceSearchProvider,
+)
 from app.recommendation_limits import (
     DEFAULT_RECOMMENDATION_CANDIDATE_LIMIT,
     MAX_RECOMMENDATION_CANDIDATE_LIMIT,
@@ -145,6 +149,11 @@ class NearbyPlaceDetailsTool:
                 provider_metadata=(search_result.metadata,),
             )
 
+        if isinstance(self._details_provider, BatchPlaceDetailsProvider):
+            return await self._enrich_in_batch(
+                selected, search_result.metadata, started_at
+            )
+
         semaphore = asyncio.Semaphore(self._max_concurrency)
 
         async def enrich(
@@ -214,6 +223,96 @@ class NearbyPlaceDetailsTool:
             started_at=started_at,
             provider_metadata=provider_metadata,
         )
+
+    async def _enrich_in_batch(
+        self,
+        selected: tuple[PlaceCandidate, ...],
+        search_metadata: ProviderMetadata,
+        started_at: float,
+    ) -> NearbyPlaceDetailsResult:
+        """다건 조회를 지원하는 Provider로 후보 상세정보를 한 번에 가져온다.
+
+        후보 순서는 검색 결과(selected) 순회로 재조립해 보존한다.
+        """
+        # content_type_id가 없는 후보는 단건 경로와 동일하게 조회 대상에서 제외한다
+        # (원본인 TourAPI에 유형 정보가 없는 장소이므로 저장소에서도 신뢰하지 않는다).
+        target_ids = [
+            candidate.place_id for candidate in selected if candidate.content_type_id
+        ]
+
+        details_by_id: dict[str, PlaceDetails] = {}
+        details_metadata: ProviderMetadata | None = None
+        error_code: str | None = None
+        if target_ids:
+            try:
+                batch_result = await self._details_provider.get_details_batch(target_ids)
+                details_by_id = batch_result.data
+                details_metadata = batch_result.metadata
+            except AppError as exc:
+                error_code = exc.code
+
+        places: list[EnrichedPlace] = []
+        for candidate in selected:
+            if not candidate.content_type_id:
+                places.append(
+                    EnrichedPlace(
+                        candidate=candidate,
+                        details=None,
+                        detail_status=DetailStatus.NO_DATA,
+                        error_code="missing_content_type_id",
+                    )
+                )
+                continue
+            if error_code is not None:
+                places.append(
+                    EnrichedPlace(
+                        candidate=candidate,
+                        details=None,
+                        detail_status=DetailStatus.UNAVAILABLE,
+                        error_code=error_code,
+                    )
+                )
+                continue
+            details = details_by_id.get(candidate.place_id)
+            if details is None or not self._has_detail_data(details):
+                places.append(
+                    EnrichedPlace(
+                        candidate=candidate,
+                        details=None,
+                        detail_status=DetailStatus.NO_DATA,
+                        error_code="detail_no_data",
+                    )
+                )
+                continue
+            places.append(
+                EnrichedPlace(
+                    candidate=candidate,
+                    details=details,
+                    detail_status=DetailStatus.SUCCESS,
+                )
+            )
+
+        provider_metadata = (search_metadata,) + (
+            (details_metadata,) if details_metadata is not None else ()
+        )
+        return self._result(
+            places=tuple(places),
+            status=self._batch_status(tuple(places), unavailable=error_code is not None),
+            started_at=started_at,
+            provider_metadata=provider_metadata,
+        )
+
+    @staticmethod
+    def _batch_status(
+        places: tuple[EnrichedPlace, ...], *, unavailable: bool
+    ) -> ToolStatus:
+        if unavailable:
+            return ToolStatus.UNAVAILABLE
+        if all(item.detail_status is DetailStatus.SUCCESS for item in places):
+            return ToolStatus.SUCCESS
+        if all(item.detail_status is not DetailStatus.SUCCESS for item in places):
+            return ToolStatus.NO_DATA
+        return ToolStatus.PARTIAL
 
     @staticmethod
     def _has_detail_data(details: PlaceDetails) -> bool:

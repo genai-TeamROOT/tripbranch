@@ -19,12 +19,16 @@ from app.providers.protocols import (
     GeocodingProvider,
     HolidayProvider,
     LLMProvider,
+    PlaceDetailsProvider,
     PlaceProvider,
+    PlaceSearchProvider,
     WeatherProvider,
 )
 from app.providers.real_place import RealPlaceProvider
 from app.providers.stub import FakeLLMProvider, FakePlaceProvider, FakeWeatherProvider
+from app.providers.supabase_place_details import SupabasePlaceDetailsProvider
 from app.providers.weather import RealWeatherProvider
+from app.repositories.supabase_places import SupabasePlaceRepository
 
 
 def _require_key(value: str, variable_name: str) -> str:
@@ -73,6 +77,31 @@ def get_place_provider(client: httpx.AsyncClient) -> PlaceProvider:
         client=client,
         timeout_seconds=settings.external_api_timeout_seconds,
     )
+
+
+def get_place_search_provider(client: httpx.AsyncClient) -> PlaceSearchProvider:
+    """장소 후보 목록 검색 provider. 상세조회 출처와 무관하게 기존 경로를 유지한다."""
+    return get_place_provider(client)
+
+
+def get_place_details_provider(client: httpx.AsyncClient) -> PlaceDetailsProvider:
+    """후보별 상세·운영정보 provider를 PLACE_DETAILS_SOURCE에 따라 고른다.
+
+    supabase 모드는 요청 시 TourAPI fallback을 하지 않는다 — 저장소 장애는
+    Tool에서 unavailable로 그대로 노출된다.
+    """
+    if settings.resolved_place_details_source == "supabase":
+        return SupabasePlaceDetailsProvider(
+            SupabasePlaceRepository(
+                supabase_url=_require_key(settings.supabase_url, "SUPABASE_URL"),
+                secret_key=_require_key(
+                    settings.supabase_secret_key, "SUPABASE_SECRET_KEY"
+                ),
+                client=client,
+                timeout_seconds=settings.external_api_timeout_seconds,
+            )
+        )
+    return get_place_provider(client)
 
 
 def get_concentration_provider(client: httpx.AsyncClient) -> ConcentrationProvider:
@@ -143,3 +172,19 @@ def validate_provider_config(target: Settings | None = None) -> None:
         raise ValueError(
             "real provider 설정에 필요한 환경변수가 비어 있습니다: " + ", ".join(missing)
         )
+
+    # 상세조회 출처는 provider 모드와 축이 다르므로 별도로 검증한다.
+    if current.resolved_place_details_source == "supabase":
+        missing_supabase = [
+            variable_name
+            for variable_name, attribute in (
+                ("SUPABASE_URL", "supabase_url"),
+                ("SUPABASE_SECRET_KEY", "supabase_secret_key"),
+            )
+            if not getattr(current, attribute)
+        ]
+        if missing_supabase:
+            raise ValueError(
+                "PLACE_DETAILS_SOURCE=supabase에 필요한 환경변수가 비어 있습니다: "
+                + ", ".join(missing_supabase)
+            )
