@@ -116,7 +116,18 @@ def transform(
     if llm_output.intent is Intent.RECOMMEND and llm_output.recommend is not None:
         # 새 RECOMMEND는 조건을 재생성한다(conditions-schema.md §6) — soft는 조건만
         # 초기화하고 추천/거절 이력은 유지해, 이후 MODIFY("그거 말고")가 계속 동작한다.
-        reset_scope = "soft"
+        #
+        # 다만 직전 턴이 되묻기로 끝났다면 이번 발화는 "새 요청"이 아니라 그 되묻기에
+        # 답하며 같은 요청을 완성하는 중이다. 이때 초기화하면 앞 턴에서 이미 말한
+        # 조건(예: place_tags=["카페"])이 사라진다 — 초기화만 건너뛰고 연산은 그대로
+        # 쓴다. _full_replace_operations()가 값이 있는 필드만 Update로 만들기 때문에,
+        # 언급되지 않은 필드는 연산이 없어 자동으로 유지된다.
+        # 명시적 재시작 표현("처음부터 다시" 등)은 되묻기 중이라도 새 요청으로 본다.
+        answers_clarification = (
+            session_context.pending_clarification is not None
+            and not _has_explicit_reset_phrase(user_input)
+        )
+        reset_scope = None if answers_clarification else "soft"
         operations = _full_replace_operations(llm_output.recommend.conditions)
 
     elif llm_output.intent is Intent.MODIFY and llm_output.modify is not None:
@@ -255,6 +266,12 @@ def _rejected_from_shown(
         RejectedPlace(place_id=place_id, reason_code=reason_code)
         for place_id in session_context.shown_place_ids
     ]
+
+
+def _has_explicit_reset_phrase(user_input: str) -> bool:
+    """사용자가 조건 초기화를 명시적으로 요청했는지. (되묻기 답변보다 우선한다)"""
+
+    return any(phrase in user_input for phrase, _ in _RESET_SCOPE_PHRASES)
 
 
 def _detect_reset_scope(user_input: str, modify_type: ModifyType) -> str | None:

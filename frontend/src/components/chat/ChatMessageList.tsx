@@ -6,7 +6,7 @@
  * TODO: 메시지 타입이 늘어나면 타입별 렌더러를 별도 파일로 분리한다.
  */
 
-import type { ChatMessage, InterpretedConditions } from "../../types";
+import type { ChatMessage } from "../../types";
 import { ConditionDebugMessage } from "./ConditionDebugMessage";
 import { RecommendationResultMessage } from "./RecommendationResultMessage";
 
@@ -14,7 +14,6 @@ interface ChatMessageListProps {
   messages: ChatMessage[];
   showDebug: boolean;
   isLoading: boolean;
-  onConfirmDebug: (conditions: InterpretedConditions) => void;
   onRequestMore: () => void;
   onRelaxRadius: () => void;
 }
@@ -23,7 +22,6 @@ export function ChatMessageList({
   messages,
   showDebug,
   isLoading,
-  onConfirmDebug,
   onRequestMore,
   onRelaxRadius,
 }: ChatMessageListProps) {
@@ -60,9 +58,8 @@ export function ChatMessageList({
                 key={message.id}
                 userInput={message.userInput}
                 conditions={message.conditions}
+                mergedConditions={message.mergedConditions}
                 status={message.status}
-                isLoading={isLoading}
-                onConfirm={() => onConfirmDebug(message.conditions)}
               />
             );
           }
@@ -72,6 +69,8 @@ export function ChatMessageList({
               key={message.id}
               recommendations={message.recommendations}
               unverifiedRecommendations={message.unverified_recommendations}
+              elapsedMs={message.elapsed_ms}
+              serverElapsedMs={message.server_elapsed_ms}
               isLoading={isLoading}
               onRequestMore={onRequestMore}
               onRelaxRadius={onRelaxRadius}

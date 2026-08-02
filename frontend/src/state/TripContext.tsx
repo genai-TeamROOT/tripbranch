@@ -19,9 +19,11 @@ import {
 import type {
   ChatMessage,
   ChatPhase,
+  Intent,
   InterpretedConditions,
   RecommendationItem,
   RecommendationsResponse,
+  UserConditions,
 } from "../types";
 import { clearState, loadState, saveState } from "./storage";
 
@@ -34,6 +36,15 @@ export interface TripState {
   messages: ChatMessage[];
   phase: ChatPhase;
   error: string | null;
+  /* Agent(B)가 발급한 대화 세션. 후속 발화에서 그대로 돌려보낸다. */
+  session_id: string | null;
+  /*
+   * 직전 턴이 추천 없이 되묻기로 끝났는지. Agent는 "직전에 무엇을 되물었는지"를
+   * 다음 턴 Intent 분류에 넘기지 않아서, 사용자가 "경복궁"처럼 짧게 답하면 INFO로
+   * 분류돼 추천이 나오지 않는다. 입력창 placeholder로 더 온전한 문장을 유도한다.
+   * TODO: Agent가 되묻기 맥락을 이어받게 되면 이 우회는 제거한다.
+   */
+  awaiting_clarification: boolean;
 }
 
 const initialTripState: TripState = {
@@ -45,6 +56,8 @@ const initialTripState: TripState = {
   messages: [],
   phase: "idle",
   error: null,
+  session_id: null,
+  awaiting_clarification: false,
 };
 
 type TripAction =
@@ -53,10 +66,28 @@ type TripAction =
   | { type: "UPDATE_CONDITIONS"; payload: Partial<InterpretedConditions> }
   | { type: "MARK_DEBUG_CONFIRMED" }
   | { type: "START_RECOMMENDATIONS"; payload?: { conditions?: InterpretedConditions } }
-  | { type: "APPEND_RECOMMENDATIONS"; payload: RecommendationsResponse }
+  | {
+      type: "APPEND_RECOMMENDATIONS";
+      payload: RecommendationsResponse & { elapsed_ms_client: number };
+    }
+  | { type: "START_CHAT_TURN"; payload: { userInput: string } }
+  | { type: "APPEND_CHAT_TURN"; payload: ChatTurnPayload }
   | { type: "SET_ERROR"; payload: string }
   | { type: "CLEAR_ERROR" }
   | { type: "RESET" };
+
+/* /api/chat 한 번의 응답을 화면 메시지로 옮기기 위한 입력. */
+interface ChatTurnPayload {
+  userInput: string;
+  intent: Intent;
+  conditions: InterpretedConditions | null;
+  mergedConditions: UserConditions | null;
+  message: string;
+  recommendations: RecommendationsResponse | null;
+  sessionId: string | null;
+  showDebug: boolean;
+  elapsedMsClient: number;
+}
 
 interface InterpretedPayload {
   userInput: string;
@@ -100,6 +131,7 @@ function buildInterpretationMessages(payload: InterpretedPayload): ChatMessage[]
         type: "condition_debug",
         userInput: payload.userInput,
         conditions: payload.conditions,
+        mergedConditions: null,
         status: "pending",
       },
     ];
@@ -171,8 +203,70 @@ function tripReducer(state: TripState, action: TripAction): TripState {
             type: "recommendation_result",
             recommendations: action.payload.recommendations,
             unverified_recommendations: action.payload.unverified_recommendations,
+            elapsed_ms: action.payload.elapsed_ms_client,
+            server_elapsed_ms: action.payload.elapsed_ms,
           },
         ],
+        phase: "ready",
+        error: null,
+      };
+    }
+    case "START_CHAT_TURN":
+      return {
+        ...state,
+        user_input: action.payload.userInput,
+        phase: "recommending",
+        error: null,
+      };
+    case "APPEND_CHAT_TURN": {
+      const { conditions, intent, message, recommendations, showDebug } = action.payload;
+      const messages: ChatMessage[] = [
+        { id: createMessageId("user"), type: "user_text", text: action.payload.userInput },
+      ];
+      // 옵션 A: 조건 카드는 유지하되 확인 버튼은 없다 — Agent가 해석과 추천을 한 번에
+      // 끝내므로 중간에 사용자가 진행을 승인할 지점이 없다.
+      if (showDebug && conditions) {
+        messages.push({
+          id: createMessageId("debug"),
+          type: "condition_debug",
+          userInput: action.payload.userInput,
+          conditions,
+          mergedConditions: action.payload.mergedConditions,
+          status: "confirmed",
+        });
+      }
+      if (message) {
+        messages.push({ id: createMessageId("assistant"), type: "assistant_text", text: message });
+      }
+      if (recommendations) {
+        messages.push({
+          id: createMessageId("result"),
+          type: "recommendation_result",
+          recommendations: recommendations.recommendations,
+          unverified_recommendations: recommendations.unverified_recommendations,
+          elapsed_ms: action.payload.elapsedMsClient,
+          server_elapsed_ms: recommendations.elapsed_ms,
+        });
+      }
+
+      const shownIds = recommendations
+        ? [...recommendations.recommendations, ...recommendations.unverified_recommendations].map(
+            (item) => item.place_id,
+          )
+        : [];
+
+      return {
+        ...state,
+        interpreted_conditions: conditions ?? state.interpreted_conditions,
+        recommendations: recommendations?.recommendations ?? [],
+        unverified_recommendations: recommendations?.unverified_recommendations ?? [],
+        // 제외 목록의 단일 기준은 B다. 화면 표시용으로만 누적한다.
+        shown_place_ids: Array.from(new Set([...state.shown_place_ids, ...shownIds])),
+        session_id: action.payload.sessionId ?? state.session_id,
+        // 추천을 기대한 발화인데 결과가 없으면 Agent가 조건을 되물은 것으로 본다.
+        awaiting_clarification:
+          recommendations === null && (intent === "RECOMMEND" || intent === "MODIFY"),
+        messages: [...state.messages, ...messages],
         phase: "ready",
         error: null,
       };

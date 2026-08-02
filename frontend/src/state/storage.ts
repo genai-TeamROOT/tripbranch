@@ -10,7 +10,8 @@ import type { TripState } from "./TripContext";
 import type { ChatMessage, ChatPhase } from "../types";
 
 const STORAGE_KEY = "tripbranch_state";
-const STORAGE_VERSION = 2;
+// 3: recommendation_result 메시지에 소요시간(elapsed_ms) 추가.
+const STORAGE_VERSION = 3;
 
 interface StoredState {
   version: number;
@@ -63,7 +64,9 @@ function isChatMessage(value: unknown): value is ChatMessage {
   if (message.type === "recommendation_result") {
     return (
       Array.isArray(message.recommendations) &&
-      Array.isArray(message.unverified_recommendations)
+      Array.isArray(message.unverified_recommendations) &&
+      typeof message.elapsed_ms === "number" &&
+      typeof message.server_elapsed_ms === "number"
     );
   }
   return false;
