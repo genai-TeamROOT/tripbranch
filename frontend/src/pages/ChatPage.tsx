@@ -23,6 +23,11 @@ import { DEFAULT_DEVICE_LOCATION } from "../config/location";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 
 const REQUEST_MORE_PROMPT = "다른 곳 보여줘";
+/*
+ * Agent가 되묻기 맥락을 다음 턴에 넘기지 않아, "경복궁"처럼 짧은 답변은 INFO로
+ * 분류돼 추천이 나오지 않는다. 발화를 대신 만들어 보내지 않고 예시만 안내한다.
+ */
+const CLARIFICATION_PLACEHOLDER = "예: 경복궁 근처에서 찾아줘";
 const RELAX_RADIUS_PROMPT = "검색 범위를 넓혀서 다시 추천해줘";
 
 export function ChatPage() {
@@ -49,7 +54,9 @@ export function ChatPage() {
           type: "APPEND_CHAT_TURN",
           payload: {
             userInput: text,
+            intent: response.llm_output.intent,
             conditions: toDisplayConditions(response.llm_output),
+            mergedConditions: response.state.user_conditions,
             message: response.message,
             recommendations: response.recommendations,
             sessionId: response.state.session_id,
@@ -115,7 +122,11 @@ export function ChatPage() {
         onRelaxRadius={() => void send(RELAX_RADIUS_PROMPT)}
       />
 
-      <ChatComposer disabled={isLoading} onSubmit={handleFollowUp} />
+      <ChatComposer
+        disabled={isLoading}
+        onSubmit={handleFollowUp}
+        placeholder={state.awaiting_clarification ? CLARIFICATION_PLACEHOLDER : undefined}
+      />
     </main>
   );
 }

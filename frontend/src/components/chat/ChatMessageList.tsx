@@ -58,6 +58,7 @@ export function ChatMessageList({
                 key={message.id}
                 userInput={message.userInput}
                 conditions={message.conditions}
+                mergedConditions={message.mergedConditions}
                 status={message.status}
               />
             );

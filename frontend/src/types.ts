@@ -75,6 +75,11 @@ export type ChatMessage =
       type: "condition_debug";
       userInput: string;
       conditions: InterpretedConditions;
+      /*
+       * B가 병합한 누적 조건. 실제 추천에 쓰이는 값이며, 되묻기 턴에서는 이번 턴
+       * 추출분(conditions.raw_conditions)과 달라진다 — 앞 턴 조건이 살아 있기 때문.
+       */
+      mergedConditions: UserConditions | null;
       status: "pending" | "confirmed";
     }
   | {

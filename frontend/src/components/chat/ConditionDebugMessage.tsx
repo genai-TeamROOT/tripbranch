@@ -42,18 +42,33 @@ function formatValue(value: unknown): string {
 interface ConditionDebugMessageProps {
   userInput: string;
   conditions: InterpretedConditions;
+  mergedConditions: UserConditions | null;
   status: "pending" | "confirmed";
+}
+
+/* 이번 턴에 LLM이 실제로 값을 뽑은 필드만 "필드=값" 형태로 나열한다. */
+function extractedSummary(conditions: UserConditions | null | undefined) {
+  if (!conditions) return "없음";
+  const filled = CONDITION_LABELS.filter(([key]) => {
+    const value = conditions[key];
+    return Array.isArray(value) ? value.length > 0 : value !== null && value !== undefined;
+  }).map(([key, label]) => `${label}=${formatValue(conditions[key])}`);
+  return filled.length ? filled.join(" / ") : "없음";
 }
 
 export function ConditionDebugMessage({
   userInput,
   conditions,
+  mergedConditions,
   status,
 }: ConditionDebugMessageProps) {
+  // 실제 추천에 쓰이는 값은 B가 병합한 누적 조건이다. 되묻기 턴에서는 이번 턴
+  // 추출분에 앞 턴 조건이 남아 있지 않으므로 둘을 구분해서 보여준다.
+  const effective = mergedConditions ?? conditions.raw_conditions ?? null;
   return (
     <article className="mr-auto flex w-full max-w-xl flex-col gap-3 rounded-md border border-dashed border-amber-300 bg-amber-50 p-4 text-sm text-amber-950 dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-100">
       <div className="flex items-center justify-between gap-2">
-        <h2 className="font-semibold">개발용 입력 해석 결과</h2>
+        <h2 className="font-semibold">개발용 입력 해석 결과 (누적 조건)</h2>
         <span className="rounded bg-amber-200 px-2 py-0.5 text-xs text-amber-900 dark:bg-amber-800 dark:text-amber-100">
           {status === "confirmed" ? "적용됨" : "확인 대기"}
         </span>
@@ -64,16 +79,16 @@ export function ConditionDebugMessage({
           <dt className="font-medium">사용자 원문</dt>
           <dd>{userInput}</dd>
         </div>
-        {conditions.raw_conditions ? (
+        {effective ? (
           CONDITION_LABELS.map(([key, label]) => (
             <div key={key}>
               <dt className="font-medium">{label}</dt>
-              <dd>{formatValue(conditions.raw_conditions?.[key])}</dd>
+              <dd>{formatValue(effective[key])}</dd>
             </div>
           ))
         ) : (
           <div>
-            <dt className="font-medium">추출된 조건</dt>
+            <dt className="font-medium">누적 조건</dt>
             <dd>없음 (RECOMMEND 조건이 비어 있음)</dd>
           </div>
         )}
@@ -81,12 +96,8 @@ export function ConditionDebugMessage({
 
       <dl className="grid gap-2 border-t border-amber-300 pt-3 dark:border-amber-700">
         <div>
-          <dt className="font-medium">추천 요청에 실제로 전달되는 값</dt>
-          <dd className="text-xs">
-            위치 {conditions.location_query || "없음"} / 카테고리{" "}
-            {conditions.preferred_categories.join(", ") || "없음"} / 날씨{" "}
-            {conditions.weather_condition ?? "없음"} / 반경 {conditions.search_radius_km}km
-          </dd>
+          <dt className="font-medium">이번 턴에 추출된 조건</dt>
+          <dd className="text-xs">{extractedSummary(conditions.raw_conditions)}</dd>
         </div>
       </dl>
 

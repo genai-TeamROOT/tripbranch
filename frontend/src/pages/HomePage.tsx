@@ -52,7 +52,9 @@ export function HomePage() {
         type: "APPEND_CHAT_TURN",
         payload: {
           userInput: trimmed,
+          intent: response.llm_output.intent,
           conditions: toDisplayConditions(response.llm_output),
+          mergedConditions: response.state.user_conditions,
           message: response.message,
           recommendations: response.recommendations,
           sessionId: response.state.session_id,

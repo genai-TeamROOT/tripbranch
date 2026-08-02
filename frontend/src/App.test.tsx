@@ -107,7 +107,7 @@ test("debug mode shows condition card together with recommendations", async () =
   );
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
 
-  expect(await screen.findByText("개발용 입력 해석 결과")).toBeInTheDocument();
+  expect(await screen.findByText(/개발용 입력 해석 결과/)).toBeInTheDocument();
   expect(screen.getAllByText("비 오는 날 갈 곳").length).toBeGreaterThan(0);
   // Agent가 한 번에 끝내므로 중간 승인 버튼이 없고 추천이 함께 나온다.
   expect(screen.queryByRole("button", { name: "추천 진행" })).not.toBeInTheDocument();
@@ -128,7 +128,7 @@ test("release mode hides debug card and needs only one chat call", async () => {
   );
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
 
-  expect(screen.queryByText("개발용 입력 해석 결과")).not.toBeInTheDocument();
+  expect(screen.queryByText(/개발용 입력 해석 결과/)).not.toBeInTheDocument();
   expect(await screen.findByText("테스트 박물관")).toBeInTheDocument();
 
   const fetchMock = vi.mocked(fetch);
@@ -153,6 +153,30 @@ test("requesting more places sends a follow-up chat turn with the session id", a
   // 제외 목록은 B가 단일 기준이라 프론트가 보내지 않는다.
   expect(requestBody.session_id).toBe("sess_test");
   expect(requestBody.user_input).toBe("다른 곳 보여줘");
+});
+
+test("clarification turn hints a fuller phrasing in the composer placeholder", async () => {
+  vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "false");
+  // 위치를 말하지 않아 Agent가 되묻는 상황: 추천 없이 메시지만 온다.
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () =>
+      Response.json({
+        llm_output: { ...interpretResponse, recommend: null },
+        state: { session_id: "sess_test", run_id: "run_test" },
+        recommendations: null,
+        message: "어디 근처에서 찾아드릴까요? 현재 위치나 원하시는 지역을 알려주세요.",
+      }),
+    ),
+  );
+  render(<App />);
+
+  await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+
+  expect(await screen.findByText(/어디 근처에서 찾아드릴까요/)).toBeInTheDocument();
+  // 발화를 대신 만들어 보내지 않고, 입력창 안내 문구만 바꾼다.
+  expect(screen.getByPlaceholderText("예: 경복궁 근처에서 찾아줘")).toBeInTheDocument();
 });
 
 test("chat route redirects without stored state", async () => {
