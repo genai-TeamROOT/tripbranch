@@ -53,7 +53,10 @@ type TripAction =
   | { type: "UPDATE_CONDITIONS"; payload: Partial<InterpretedConditions> }
   | { type: "MARK_DEBUG_CONFIRMED" }
   | { type: "START_RECOMMENDATIONS"; payload?: { conditions?: InterpretedConditions } }
-  | { type: "APPEND_RECOMMENDATIONS"; payload: RecommendationsResponse }
+  | {
+      type: "APPEND_RECOMMENDATIONS";
+      payload: RecommendationsResponse & { elapsed_ms_client: number };
+    }
   | { type: "SET_ERROR"; payload: string }
   | { type: "CLEAR_ERROR" }
   | { type: "RESET" };
@@ -171,6 +174,8 @@ function tripReducer(state: TripState, action: TripAction): TripState {
             type: "recommendation_result",
             recommendations: action.payload.recommendations,
             unverified_recommendations: action.payload.unverified_recommendations,
+            elapsed_ms: action.payload.elapsed_ms_client,
+            server_elapsed_ms: action.payload.elapsed_ms,
           },
         ],
         phase: "ready",

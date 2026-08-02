@@ -82,6 +82,10 @@ export type ChatMessage =
       type: "recommendation_result";
       recommendations: RecommendationItem[];
       unverified_recommendations: RecommendationItem[];
+      /* 추천 요청 클릭부터 응답 수신까지의 클라이언트 실측 시간(ms). */
+      elapsed_ms: number;
+      /* 백엔드가 보고한 서버 처리 시간(ms). 네트워크·렌더 시간은 포함하지 않는다. */
+      server_elapsed_ms: number;
     };
 
 export interface ApiErrorBody {

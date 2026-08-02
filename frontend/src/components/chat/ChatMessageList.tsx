@@ -72,6 +72,8 @@ export function ChatMessageList({
               key={message.id}
               recommendations={message.recommendations}
               unverifiedRecommendations={message.unverified_recommendations}
+              elapsedMs={message.elapsed_ms}
+              serverElapsedMs={message.server_elapsed_ms}
               isLoading={isLoading}
               onRequestMore={onRequestMore}
               onRelaxRadius={onRelaxRadius}

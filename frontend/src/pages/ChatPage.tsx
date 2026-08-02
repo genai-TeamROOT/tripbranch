@@ -33,12 +33,17 @@ export function ChatPage() {
   const requestRecommendations = useCallback(
     async (conditions: InterpretedConditions, resetShown = false) => {
       dispatch({ type: "START_RECOMMENDATIONS", payload: { conditions } });
+      // 사용자가 버튼을 누른 시점부터 결과 메시지를 dispatch할 때까지를 잰다.
+      const startedAt = performance.now();
       try {
         const result = await getRecommendations({
           ...conditions,
           shown_place_ids: resetShown ? [] : state.shown_place_ids,
         });
-        dispatch({ type: "APPEND_RECOMMENDATIONS", payload: result });
+        dispatch({
+          type: "APPEND_RECOMMENDATIONS",
+          payload: { ...result, elapsed_ms_client: performance.now() - startedAt },
+        });
       } catch (error) {
         dispatch({
           type: "SET_ERROR",
