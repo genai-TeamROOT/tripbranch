@@ -23,6 +23,7 @@ from app.schemas import (
     ConcentrationIntent,
     Intent,
     InterpretRequest,
+    LLMOutput,
     OutputStatus,
     QuestionType,
     RecommendationResponse,
@@ -40,15 +41,44 @@ from app.state.schema import now_kst
 from app.state.service import (
     RecommendedPlace,
     RecordRecommendationRequest,
+    SetPendingClarificationRequest,
     UpdateApiContextRequest,
     apply,
     record_recommendation,
+    set_pending_clarification,
     update_api_context,
 )
 from app.state.session import new_trace_id
 from app.state.store import StateStore
 
 logger = logging.getLogger(__name__)
+
+
+def _llm_clarification_code(llm_output: LLMOutput) -> str | None:
+    """LLM 단계 되묻기를 단일 코드로 정규화한다.
+
+    LLM은 missing_fields/ambiguous_fields 목록으로, C는 location_required 같은 단일
+    코드로 되묻는다. B에는 한 가지 표현만 저장하므로 여기서 맞춘다 — 값 자체는
+    "무엇을 되물었는지" 기록용이고, 다음 턴의 판단은 "값이 있는지"만 본다.
+    """
+    clarification = llm_output.clarification
+    if clarification is None:
+        return "clarification_required"
+    if clarification.missing_fields:
+        return f"missing:{clarification.missing_fields[0].field}"
+    if clarification.ambiguous_fields:
+        return f"ambiguous:{clarification.ambiguous_fields[0].field}"
+    return "clarification_required"
+
+
+def _remember_clarification(session_id: str, code: str | None, store: StateStore | None) -> None:
+    """이번 턴이 되묻기로 끝났음을 B에 남긴다(추천까지 갔으면 호출하지 않는다).
+
+    다음 턴의 state_transform이 이 값을 보고 조건 초기화를 건너뛴다.
+    """
+    set_pending_clarification(
+        SetPendingClarificationRequest(session_id=session_id, code=code), store=store
+    )
 
 # C 단계에서 Recommendation으로 못 넘어가는 status. needs_clarification은 조건 재질문(사용자
 # 응답 필요), unsupported/unavailable은 그 자체로 안내만 하고 끝나는 상태다(계약 문서 §5.4).
@@ -207,6 +237,17 @@ async def run_agent_flow(
             store=store,
         )
 
+    # 3-2) 되묻기 플래그 소비. 조건을 건드리는 턴(RECOMMEND/MODIFY)만 지운다 —
+    #      transform()이 이미 session_context의 값을 읽어 병합 방식을 정했으므로,
+    #      여기서 지워도 이번 턴 판단에는 영향이 없다. 이번 턴이 또 되묻기로 끝나면
+    #      아래 4)/5-1)에서 새 값을 다시 심는다. INFO/GENERAL 같은 곁가지 대화는
+    #      조건을 바꾸지 않으므로 이전 되묻기를 그대로 살려둔다.
+    if (
+        session_context.pending_clarification is not None
+        and llm_output.intent in (Intent.RECOMMEND, Intent.MODIFY)
+    ):
+        _remember_clarification(state_response.session_id, None, store)
+
     # 4-0) INFO의 혼잡도 질의(question_type=concentration)는 RECOMMEND/MODIFY와 별개로
     #      C를 거친다(concentration-conditions.md §2.4/§3.3). 그 외 INFO question_type과
     #      COMPARE/GENERAL은 그대로 4)의 일반 게이트로 빠진다 — Tool을 직접 호출하지
@@ -237,6 +278,12 @@ async def run_agent_flow(
         Intent.RECOMMEND,
         Intent.MODIFY,
     ):
+        # LLM이 되물은 경우만 기록한다. INFO/GENERAL 같은 다른 Intent는 조건을 건드리지
+        # 않으므로, 이전 되묻기가 있었다면 그대로 살려둔다(곁가지 대화로 취급).
+        if llm_output.status is not OutputStatus.COMPLETE:
+            _remember_clarification(
+                state_response.session_id, _llm_clarification_code(llm_output), store
+            )
         message = await compose_chat_message(llm_output, llm=llm)
         return AgentResponse(
             llm_output=llm_output, state=state_response, recommendations=None, message=message
@@ -266,6 +313,13 @@ async def run_agent_flow(
                 tool_response.clarification,
                 tool_response.error,
             )
+        if tool_response.status == "needs_clarification":
+            code = (
+                tool_response.clarification.code
+                if tool_response.clarification is not None
+                else "clarification_required"
+            )
+            _remember_clarification(state_response.session_id, code, store)
         message = await compose_chat_message(
             llm_output,
             tool_status=tool_response.status,

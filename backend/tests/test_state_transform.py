@@ -25,6 +25,7 @@ def _context(
     session_id: str = "sess_1",
     shown_place_ids: list[str] | None = None,
     user_conditions: StateUserConditions | None = None,
+    pending_clarification: str | None = None,
 ) -> SessionContextResponse:
     return SessionContextResponse(
         session_id=session_id,
@@ -33,6 +34,7 @@ def _context(
         recommended_count=len(shown_place_ids or []),
         shown_place_ids=shown_place_ids or [],
         user_conditions=user_conditions or StateUserConditions(),
+        pending_clarification=pending_clarification,
     )
 
 
@@ -293,3 +295,51 @@ def test_non_recommend_non_modify_intents_have_no_operations() -> None:
         assert request.operations == []
         assert request.rejected_places == []
         assert request.reset_scope is None
+
+
+def _recommend(**conditions) -> LLMOutput:
+    return LLMOutput(
+        intent=Intent.RECOMMEND,
+        status=OutputStatus.COMPLETE,
+        recommend=RecommendPayload(conditions=UserConditions(**conditions)),
+    )
+
+
+def test_recommend_answering_clarification_keeps_previous_conditions() -> None:
+    """되묻기 답변은 새 요청이 아니므로 조건을 초기화하지 않는다.
+
+    1턴 "근처 카페나 박물관 추천해줘"(위치 없음) → C가 location_required로 되물음
+    2턴 "경복궁 근처" → 위치만 채워지고 place_tags는 유지되어야 한다.
+    """
+    request = transform(
+        _recommend(search_center="경복궁"),
+        _context(pending_clarification="location_required"),
+        "경복궁 근처",
+    )
+
+    assert request.reset_scope is None
+    ops = {(op.op, op.field): op.value for op in request.operations}
+    assert ops[("Update", "search_center")] == "경복궁"
+    # 언급하지 않은 필드는 Operation 자체가 없어 B에서 자동 유지된다.
+    assert ("Update", "place_tags") not in ops
+
+
+def test_recommend_without_pending_clarification_still_resets() -> None:
+    request = transform(
+        _recommend(search_center="경복궁"),
+        _context(pending_clarification=None),
+        "경복궁 근처",
+    )
+
+    assert request.reset_scope == "soft"
+
+
+def test_explicit_restart_overrides_pending_clarification() -> None:
+    """되묻기 중이라도 명시적 재시작 표현은 새 요청으로 본다."""
+    request = transform(
+        _recommend(search_center="경복궁"),
+        _context(pending_clarification="location_required"),
+        "처음부터 다시 추천해줘",
+    )
+
+    assert request.reset_scope == "soft"

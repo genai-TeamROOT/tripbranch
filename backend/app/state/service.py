@@ -88,6 +88,9 @@ class SessionContextResponse(BaseModel):
     excluded_place_ids: list[str] = Field(default_factory=list)
     last_recommended_run_id: str | None = None
     last_intent: str | None = None
+    # 직전 턴이 되묻기로 끝났다면 그 사유 코드. A가 이번 턴의 조건 병합 방식을
+    # 정할 때 읽는다.
+    pending_clarification: str | None = None
     user_conditions: UserConditions = Field(default_factory=UserConditions)
     api_context: ApiContextView = Field(default_factory=ApiContextView)
     condition_version: int = 0
@@ -126,6 +129,23 @@ class UpdateApiContextRequest(BaseModel):
 class UpdateApiContextResponse(BaseModel):
     session_id: str
     api_context: ApiContextView
+
+
+class SetPendingClarificationRequest(BaseModel):
+    """되묻기 사유 저장 요청.
+
+    A가 이번 턴이 되묻기로 끝났다고 판단했을 때만 호출한다. B는 code를 해석하지
+    않고 그대로 보관한다. api_context와 마찬가지로 조건 변경이 아니므로
+    condition_version을 올리지 않는다.
+    """
+
+    session_id: str
+    code: str | None = None
+
+
+class SetPendingClarificationResponse(BaseModel):
+    session_id: str
+    pending_clarification: str | None
 
 
 class RecordTraceRequest(BaseModel):
@@ -319,6 +339,7 @@ def get_session_context(
         excluded_place_ids=history_module.get_exclusion_place_ids(store, sid),
         last_recommended_run_id=history_module.get_last_recommended_run_id(store, sid),
         last_intent=state.last_intent,
+        pending_clarification=state.pending_clarification,
         user_conditions=state.user_conditions,
         api_context=_build_api_context_view(state),
         condition_version=state.condition_version,
@@ -388,6 +409,30 @@ def update_api_context(
     return UpdateApiContextResponse(
         session_id=state.session_id,
         api_context=_build_api_context_view(state),
+    )
+
+
+def set_pending_clarification(
+    request: SetPendingClarificationRequest,
+    store: StateStore | None = None,
+) -> SetPendingClarificationResponse | None:
+    """되묻기 사유를 저장하거나(code) 지운다(None). (api_context 갱신과 같은 성격)
+
+    세션이 없으면 None을 반환하며 세션을 생성하지 않는다.
+    """
+    store = store or get_store()
+
+    state = store.get_state(request.session_id)
+    if state is None:
+        return None
+
+    state.pending_clarification = request.code
+    session_module.touch(state)
+    store.save_state(state)
+
+    return SetPendingClarificationResponse(
+        session_id=state.session_id,
+        pending_clarification=state.pending_clarification,
     )
 
 

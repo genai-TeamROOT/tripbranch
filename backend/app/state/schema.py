@@ -64,6 +64,10 @@ class AgentState(BaseModel):
     condition_version: int = 0
     last_run_id: str | None = None
     last_intent: str | None = None
+    # 직전 턴이 되묻기로 끝났을 때 그 사유 코드(예: "location_required").
+    # B는 판단하지 않고 A가 준 값을 보관만 한다 — 되묻기 판정은 LLM과 C가 하고,
+    # 소비(부분 갱신 여부 결정)는 A의 state_transform이 한다.
+    pending_clarification: str | None = None
     status: Literal["active", "expired"] = "active"
     created_at: datetime = Field(default_factory=now_kst)
     updated_at: datetime = Field(default_factory=now_kst)

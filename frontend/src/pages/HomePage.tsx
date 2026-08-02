@@ -9,7 +9,8 @@
 import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
-import { interpretUserInput } from "../api/trip";
+import { sendChat, toDisplayConditions } from "../api/trip";
+import { DEFAULT_DEVICE_LOCATION } from "../config/location";
 import { AgentRuntimeDebugPanel } from "../components/AgentRuntimeDebugPanel";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { IntentDebugPanel } from "../components/IntentDebugPanel";
@@ -37,15 +38,28 @@ export function HomePage() {
     setIsLoading(true);
     setErrorMessage(null);
 
+    const startedAt = performance.now();
     try {
-      const conditions = await interpretUserInput(trimmed);
+      // 첫 발화도 /api/chat 한 번으로 해석과 추천을 함께 받는다 — ChatPage 도착 후
+      // 추가 호출 없이 바로 결과가 그려진다.
+      const response = await sendChat({
+        user_input: trimmed,
+        session_id: null,
+        device_location: DEFAULT_DEVICE_LOCATION,
+      });
       dispatch({ type: "RESET" });
       dispatch({
-        type: "ADD_INTERPRETATION",
+        type: "APPEND_CHAT_TURN",
         payload: {
           userInput: trimmed,
-          conditions,
+          intent: response.llm_output.intent,
+          conditions: toDisplayConditions(response.llm_output),
+          mergedConditions: response.state.user_conditions,
+          message: response.message,
+          recommendations: response.recommendations,
+          sessionId: response.state.session_id,
           showDebug: featureFlags.showInterpretationDebug,
+          elapsedMsClient: performance.now() - startedAt,
         },
       });
       navigate("/chat");
@@ -106,7 +120,7 @@ export function HomePage() {
           disabled={isLoading || !userInput.trim()}
           className="rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-gray-100 dark:text-gray-900"
         >
-          {isLoading ? "분석 중..." : "추천 시작하기"}
+          {isLoading ? "추천 찾는 중..." : "추천 시작하기"}
         </button>
       </form>
 

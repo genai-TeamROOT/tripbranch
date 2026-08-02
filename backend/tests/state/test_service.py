@@ -581,3 +581,69 @@ class TestMultiTurnScenario:
         run_ids = {log.run_id for log in logs}
 
         assert run_ids == {t1.run_id, t2.run_id}
+
+# ---------------------------------------------------------------- 되묻기 플래그
+
+def _session(store: InMemoryStateStore) -> str:
+    """조건 적용으로 세션 하나를 만든다."""
+    response = svc.apply(
+        svc.StateApplyRequest(intent="RECOMMEND", confirmed=True),
+        store=store,
+    )
+    return response.session_id
+
+
+def test_set_pending_clarification_stores_and_exposes_code() -> None:
+    store = InMemoryStateStore()
+    session_id = _session(store)
+
+    result = svc.set_pending_clarification(
+        svc.SetPendingClarificationRequest(session_id=session_id, code="location_required"),
+        store=store,
+    )
+
+    assert result is not None
+    assert result.pending_clarification == "location_required"
+    context = svc.get_session_context(session_id, store=store)
+    assert context.pending_clarification == "location_required"
+
+
+def test_set_pending_clarification_clears_with_none() -> None:
+    store = InMemoryStateStore()
+    session_id = _session(store)
+    svc.set_pending_clarification(
+        svc.SetPendingClarificationRequest(session_id=session_id, code="location_required"),
+        store=store,
+    )
+
+    svc.set_pending_clarification(
+        svc.SetPendingClarificationRequest(session_id=session_id, code=None), store=store
+    )
+
+    assert svc.get_session_context(session_id, store=store).pending_clarification is None
+
+
+def test_set_pending_clarification_does_not_touch_conditions() -> None:
+    """api_context 갱신과 같은 성격이라 조건 버전을 올리지 않는다."""
+    store = InMemoryStateStore()
+    session_id = _session(store)
+    before = svc.get_session_context(session_id, store=store).condition_version
+
+    svc.set_pending_clarification(
+        svc.SetPendingClarificationRequest(session_id=session_id, code="location_required"),
+        store=store,
+    )
+
+    after = svc.get_session_context(session_id, store=store)
+    assert after.condition_version == before
+    assert after.user_conditions == svc.get_session_context(session_id, store=store).user_conditions
+
+
+def test_set_pending_clarification_returns_none_for_missing_session() -> None:
+    store = InMemoryStateStore()
+
+    result = svc.set_pending_clarification(
+        svc.SetPendingClarificationRequest(session_id="sess_missing", code="x"), store=store
+    )
+
+    assert result is None
