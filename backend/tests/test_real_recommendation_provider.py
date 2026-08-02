@@ -9,8 +9,13 @@ from __future__ import annotations
 
 import pytest
 
+from app.agent_context.enrichment_schemas import (
+    CandidateEnrichmentResponse,
+    CandidateEnrichmentResult,
+)
+from app.agent_context.schemas import ContextError
 from app.errors import AppError
-from app.schemas import UserConditions
+from app.schemas import ConcentrationIntent, RecommendationResponse, UserConditions
 from app.services.runtime import real_recommendation_provider as module
 from app.services.runtime.context_schemas import (
     ContextValue,
@@ -103,3 +108,73 @@ async def test_search_radius_km_passed_to_pipeline_matches_to_search_radius_km(
 
     assert captured["search_radius_km"] == pytest.approx(module.to_search_radius_km(conditions))
     assert captured["visit_at"].tzinfo is not None
+
+
+def _empty_first_pass() -> RecommendationResponse:
+    return RecommendationResponse(recommendations=[], unverified_recommendations=[], elapsed_ms=0)
+
+
+def _unavailable_concentration() -> CandidateEnrichmentResponse:
+    return CandidateEnrichmentResponse(
+        request_id="req-1",
+        status="unavailable",
+        candidates=[
+            CandidateEnrichmentResult(
+                place_id="a",
+                name="장소-a",
+                latitude=37.58,
+                longitude=126.97,
+                status="unavailable",
+                error=ContextError(code="unavailable", message="실패", retryable=True),
+            )
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_rerank_with_concentration_derives_seek_true_from_intent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D-07: RealRecommendationProvider가 conditions.concentration_intent를
+    올바르게 seek(bool)로 변환해 recommendation_pipeline.rerank_with_concentration()에
+    넘기는지 확인한다(실제 재채점 로직은 test_recommendation_pipeline.py가 커버)."""
+    captured: dict[str, object] = {}
+
+    async def _fake_rerank(first_pass, context, concentration, *, seek):
+        captured["seek"] = seek
+        return first_pass
+
+    monkeypatch.setattr(module, "rerank_with_concentration", _fake_rerank)
+
+    provider = RealRecommendationProvider()
+    conditions = UserConditions(concentration_intent=ConcentrationIntent.SEEK)
+    context = _context(place_ids=["a"])
+
+    await provider.rerank_with_concentration(
+        conditions, context, _empty_first_pass(), _unavailable_concentration()
+    )
+
+    assert captured["seek"] is True
+
+
+@pytest.mark.asyncio
+async def test_rerank_with_concentration_derives_seek_false_from_avoid_intent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def _fake_rerank(first_pass, context, concentration, *, seek):
+        captured["seek"] = seek
+        return first_pass
+
+    monkeypatch.setattr(module, "rerank_with_concentration", _fake_rerank)
+
+    provider = RealRecommendationProvider()
+    conditions = UserConditions(concentration_intent=ConcentrationIntent.AVOID)
+    context = _context(place_ids=["a"])
+
+    await provider.rerank_with_concentration(
+        conditions, context, _empty_first_pass(), _unavailable_concentration()
+    )
+
+    assert captured["seek"] is False
