@@ -231,3 +231,11 @@ export interface AgentResponse {
   recommendations: RecommendationsResponse | null;
   message: string;
 }
+
+/*
+ * POST /api/chat 요청·응답. 현재 백엔드가 AgentRequest/AgentResponse를 그대로
+ * 사용하므로 별칭으로 둔다.
+ * TODO: 공개 계약이 좁혀지면(D-016) 이 타입을 독립 선언으로 바꾼다.
+ */
+export type ChatRequest = AgentDebugRequest;
+export type ChatResponse = AgentResponse;

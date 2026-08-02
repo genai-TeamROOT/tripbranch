@@ -3,46 +3,59 @@
  * 입력: TripContext의 메시지/조건/phase와 후속 입력 이벤트.
  * 출력: ChatMessageList, 오류 배너, 하단 ChatComposer.
  * 호출 시점: /chat 라우트가 활성화되고 대화 상태가 있을 때 호출된다.
- * TODO: 실제 세션 ID와 스트리밍 응답이 생기면 메시지 append 경로를 확장한다.
+ *
+ * 모든 발화는 /api/chat 한 번으로 처리된다 — Intent 분류·조건 병합·Tool 조회·
+ * Scoring·메시지 조립을 Agent Runtime이 전부 수행하므로, 화면은 응답을 메시지로
+ * 옮기기만 한다. "다른 장소 보기"/"검색 범위 넓히기"도 같은 경로로 자연어를 보낸다
+ * (MODIFY Intent). 제외 목록의 단일 기준은 세션(B)이라 프론트가 따로 넘기지 않는다.
+ * TODO: 스트리밍 응답이 생기면 메시지 append 경로를 확장한다.
  */
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
-import { getRecommendations, interpretUserInput } from "../api/trip";
+import { sendChat, toDisplayConditions } from "../api/trip";
 import { ChatComposer } from "../components/chat/ChatComposer";
 import { ChatMessageList } from "../components/chat/ChatMessageList";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { featureFlags } from "../config/features";
+import { DEFAULT_DEVICE_LOCATION } from "../config/location";
 import { useTripDispatch, useTripState } from "../state/TripContext";
-import type { InterpretedConditions } from "../types";
 
-const RADIUS_RELAXATION_STEP_KM = 0.5;
+const REQUEST_MORE_PROMPT = "다른 곳 보여줘";
+const RELAX_RADIUS_PROMPT = "검색 범위를 넓혀서 다시 추천해줘";
 
 export function ChatPage() {
   const state = useTripState();
   const dispatch = useTripDispatch();
   const navigate = useNavigate();
-  const autoRequestKeyRef = useRef<string | null>(null);
 
   const showDebug = featureFlags.showInterpretationDebug;
   const isLoading = state.phase === "interpreting" || state.phase === "recommending";
-  const hasConversation = state.messages.length > 0 && state.interpreted_conditions !== null;
-  const lastMessageType = state.messages.at(-1)?.type;
+  const hasConversation = state.messages.length > 0;
 
-  const requestRecommendations = useCallback(
-    async (conditions: InterpretedConditions, resetShown = false) => {
-      dispatch({ type: "START_RECOMMENDATIONS", payload: { conditions } });
-      // 사용자가 버튼을 누른 시점부터 결과 메시지를 dispatch할 때까지를 잰다.
+  const send = useCallback(
+    async (text: string) => {
+      dispatch({ type: "START_CHAT_TURN", payload: { userInput: text } });
+      // 사용자가 입력하거나 버튼을 누른 시점부터 결과를 dispatch할 때까지를 잰다.
       const startedAt = performance.now();
       try {
-        const result = await getRecommendations({
-          ...conditions,
-          shown_place_ids: resetShown ? [] : state.shown_place_ids,
+        const response = await sendChat({
+          user_input: text,
+          session_id: state.session_id,
+          device_location: DEFAULT_DEVICE_LOCATION,
         });
         dispatch({
-          type: "APPEND_RECOMMENDATIONS",
-          payload: { ...result, elapsed_ms_client: performance.now() - startedAt },
+          type: "APPEND_CHAT_TURN",
+          payload: {
+            userInput: text,
+            conditions: toDisplayConditions(response.llm_output),
+            message: response.message,
+            recommendations: response.recommendations,
+            sessionId: response.state.session_id,
+            showDebug,
+            elapsedMsClient: performance.now() - startedAt,
+          },
         });
       } catch (error) {
         dispatch({
@@ -54,33 +67,8 @@ export function ChatPage() {
         });
       }
     },
-    [dispatch, state.shown_place_ids],
+    [dispatch, showDebug, state.session_id],
   );
-
-  useEffect(() => {
-    if (
-      !hasConversation ||
-      showDebug ||
-      state.phase !== "recommending" ||
-      !state.interpreted_conditions ||
-      lastMessageType !== "interpretation_summary"
-    ) {
-      return;
-    }
-
-    const requestKey = `${state.messages.length}-${state.interpreted_conditions.location_query}`;
-    if (autoRequestKeyRef.current === requestKey) return;
-    autoRequestKeyRef.current = requestKey;
-    void requestRecommendations(state.interpreted_conditions);
-  }, [
-    hasConversation,
-    lastMessageType,
-    requestRecommendations,
-    showDebug,
-    state.interpreted_conditions,
-    state.messages.length,
-    state.phase,
-  ]);
 
   if (!hasConversation) {
     return <Navigate to="/" replace />;
@@ -88,49 +76,7 @@ export function ChatPage() {
 
   async function handleFollowUp(text: string) {
     if (isLoading) return;
-    dispatch({ type: "START_INTERPRETING" });
-    try {
-      const conditions = await interpretUserInput(text);
-      dispatch({
-        type: "ADD_INTERPRETATION",
-        payload: {
-          userInput: text,
-          conditions,
-          showDebug,
-        },
-      });
-    } catch (error) {
-      dispatch({
-        type: "SET_ERROR",
-        payload:
-          error instanceof ApiError
-            ? error.message
-            : "입력을 처리하지 못했어요. 다시 시도해주세요.",
-      });
-    }
-  }
-
-  function handleConfirmDebug(conditions: InterpretedConditions) {
-    dispatch({ type: "MARK_DEBUG_CONFIRMED" });
-    void requestRecommendations(conditions);
-  }
-
-  function handleRequestMore() {
-    if (!state.interpreted_conditions) return;
-    void requestRecommendations(state.interpreted_conditions);
-  }
-
-  function handleRelaxRadius() {
-    if (!state.interpreted_conditions) return;
-    const nextConditions = {
-      ...state.interpreted_conditions,
-      search_radius_km: state.interpreted_conditions.search_radius_km + RADIUS_RELAXATION_STEP_KM,
-    };
-    dispatch({
-      type: "UPDATE_CONDITIONS",
-      payload: { search_radius_km: nextConditions.search_radius_km },
-    });
-    void requestRecommendations(nextConditions, true);
+    await send(text);
   }
 
   return (
@@ -156,7 +102,7 @@ export function ChatPage() {
         <ErrorBanner
           message={state.error}
           onRetry={() => {
-            if (state.interpreted_conditions) void requestRecommendations(state.interpreted_conditions);
+            if (state.user_input) void send(state.user_input);
           }}
         />
       )}
@@ -165,9 +111,8 @@ export function ChatPage() {
         messages={state.messages}
         showDebug={showDebug}
         isLoading={isLoading}
-        onConfirmDebug={handleConfirmDebug}
-        onRequestMore={handleRequestMore}
-        onRelaxRadius={handleRelaxRadius}
+        onRequestMore={() => void send(REQUEST_MORE_PROMPT)}
+        onRelaxRadius={() => void send(RELAX_RADIUS_PROMPT)}
       />
 
       <ChatComposer disabled={isLoading} onSubmit={handleFollowUp} />

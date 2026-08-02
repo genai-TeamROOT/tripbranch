@@ -16,6 +16,8 @@ import { apiClient } from "./client";
 import type {
   AgentDebugRequest,
   AgentResponse,
+  ChatRequest,
+  ChatResponse,
   InterpretDebugRequest,
   InterpretResponse,
   InterpretedConditions,
@@ -45,6 +47,14 @@ const DEFAULT_LOCATION_QUERY = "경복궁";
  * place_search_policy.DEFAULT_PLACE_SEARCH_RADIUS_KM(2.0)과 맞춘다.
  */
 const DEFAULT_SEARCH_RADIUS_KM = 2.0;
+
+/*
+ * LLMOutput의 RECOMMEND 조건을 화면 표시용 InterpretedConditions로 옮긴다.
+ * /api/chat 전환 이후에는 추천 요청 본문이 아니라 조건 카드 표시에만 쓰인다.
+ */
+export function toDisplayConditions(output: LLMOutput): InterpretedConditions | null {
+  return output.recommend ? toLegacyConditions(output) : null;
+}
 
 function toLegacyConditions(output: LLMOutput): InterpretedConditions {
   const conditions = output.recommend?.conditions;
@@ -85,4 +95,14 @@ export function getRecommendations(
 
 export function runAgentDebug(request: AgentDebugRequest) {
   return apiClient.post<AgentResponse>("/agent-debug", request);
+}
+
+/*
+ * 실사용 흐름(HomePage/ChatPage)의 단일 진입점. Intent 분류 → 조건 병합 → Tool →
+ * Scoring → 챗봇 메시지까지 한 번의 호출로 끝난다.
+ * agent-debug와 응답 형태는 같지만 라우트가 다르다 — 개발용 패널과 실사용 경로를
+ * 섞지 않기 위함이다.
+ */
+export function sendChat(request: ChatRequest) {
+  return apiClient.post<ChatResponse>("/chat", request);
 }

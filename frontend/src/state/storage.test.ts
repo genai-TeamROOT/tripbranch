@@ -40,6 +40,7 @@ const state: TripState = {
     },
   ],
   phase: "waiting_for_debug_confirmation",
+  session_id: "sess_test",
   error: null,
 };
 

@@ -34,6 +34,8 @@ export interface TripState {
   messages: ChatMessage[];
   phase: ChatPhase;
   error: string | null;
+  /* Agent(B)가 발급한 대화 세션. 후속 발화에서 그대로 돌려보낸다. */
+  session_id: string | null;
 }
 
 const initialTripState: TripState = {
@@ -45,6 +47,7 @@ const initialTripState: TripState = {
   messages: [],
   phase: "idle",
   error: null,
+  session_id: null,
 };
 
 type TripAction =
@@ -57,9 +60,22 @@ type TripAction =
       type: "APPEND_RECOMMENDATIONS";
       payload: RecommendationsResponse & { elapsed_ms_client: number };
     }
+  | { type: "START_CHAT_TURN"; payload: { userInput: string } }
+  | { type: "APPEND_CHAT_TURN"; payload: ChatTurnPayload }
   | { type: "SET_ERROR"; payload: string }
   | { type: "CLEAR_ERROR" }
   | { type: "RESET" };
+
+/* /api/chat 한 번의 응답을 화면 메시지로 옮기기 위한 입력. */
+interface ChatTurnPayload {
+  userInput: string;
+  conditions: InterpretedConditions | null;
+  message: string;
+  recommendations: RecommendationsResponse | null;
+  sessionId: string | null;
+  showDebug: boolean;
+  elapsedMsClient: number;
+}
 
 interface InterpretedPayload {
   userInput: string;
@@ -178,6 +194,62 @@ function tripReducer(state: TripState, action: TripAction): TripState {
             server_elapsed_ms: action.payload.elapsed_ms,
           },
         ],
+        phase: "ready",
+        error: null,
+      };
+    }
+    case "START_CHAT_TURN":
+      return {
+        ...state,
+        user_input: action.payload.userInput,
+        phase: "recommending",
+        error: null,
+      };
+    case "APPEND_CHAT_TURN": {
+      const { conditions, message, recommendations, showDebug } = action.payload;
+      const messages: ChatMessage[] = [
+        { id: createMessageId("user"), type: "user_text", text: action.payload.userInput },
+      ];
+      // 옵션 A: 조건 카드는 유지하되 확인 버튼은 없다 — Agent가 해석과 추천을 한 번에
+      // 끝내므로 중간에 사용자가 진행을 승인할 지점이 없다.
+      if (showDebug && conditions) {
+        messages.push({
+          id: createMessageId("debug"),
+          type: "condition_debug",
+          userInput: action.payload.userInput,
+          conditions,
+          status: "confirmed",
+        });
+      }
+      if (message) {
+        messages.push({ id: createMessageId("assistant"), type: "assistant_text", text: message });
+      }
+      if (recommendations) {
+        messages.push({
+          id: createMessageId("result"),
+          type: "recommendation_result",
+          recommendations: recommendations.recommendations,
+          unverified_recommendations: recommendations.unverified_recommendations,
+          elapsed_ms: action.payload.elapsedMsClient,
+          server_elapsed_ms: recommendations.elapsed_ms,
+        });
+      }
+
+      const shownIds = recommendations
+        ? [...recommendations.recommendations, ...recommendations.unverified_recommendations].map(
+            (item) => item.place_id,
+          )
+        : [];
+
+      return {
+        ...state,
+        interpreted_conditions: conditions ?? state.interpreted_conditions,
+        recommendations: recommendations?.recommendations ?? [],
+        unverified_recommendations: recommendations?.unverified_recommendations ?? [],
+        // 제외 목록의 단일 기준은 B다. 화면 표시용으로만 누적한다.
+        shown_place_ids: Array.from(new Set([...state.shown_place_ids, ...shownIds])),
+        session_id: action.payload.sessionId ?? state.session_id,
+        messages: [...state.messages, ...messages],
         phase: "ready",
         error: null,
       };
