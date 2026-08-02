@@ -67,11 +67,17 @@ class RecommendationProvider(Protocol):
     async def rerank_with_concentration(
         self,
         conditions: UserConditions,
+        context: RecommendationContext,
         first_pass: RecommendationResponse,
         concentration: CandidateEnrichmentResponse,
     ) -> RecommendationResponse:
-        """(제안, D 미확인 — agent-runtime-contract.md §6.5.2) 1차 추천 결과와
-        혼잡도 보강 데이터로 재순위를 계산한다.
+        """(D-07 확정) 1차 추천 결과와 혼잡도 보강 데이터로 재순위를 계산한다.
+
+        `context`는 1차 `recommend()` 호출에 쓰인 것과 동일한
+        `RecommendationContext`다 — D가 근거 문장(explanations)을 1차와
+        동일한 방식으로 재구성하려면 `context.weather`의 원본
+        `WeatherCondition`이 필요하기 때문에 추가했다(agent-runtime-contract.md
+        §6.5.2 초안엔 없었고, D 구현 중 필요성이 확인되어 D가 요청함).
 
         D의 Real 구현체가 아직 이 메서드를 갖고 있지 않을 수 있다 — 호출부
         (agent_runtime.py)는 `hasattr()`로 방어하고, 없으면 `first_pass`를

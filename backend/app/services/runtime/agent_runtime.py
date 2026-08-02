@@ -133,7 +133,7 @@ async def _apply_concentration_rerank(
         return first_pass
 
     reranked = await recommendation_provider.rerank_with_concentration(
-        agent_conditions, first_pass, enrichment_response
+        agent_conditions, tool_context, first_pass, enrichment_response
     )
     shown = [*reranked.recommendations, *reranked.unverified_recommendations]
     return reranked.model_copy(

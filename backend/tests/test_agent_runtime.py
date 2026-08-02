@@ -104,11 +104,14 @@ class _CountingRecommendationProviderWithRerank(_CountingRecommendationProvider)
     async def rerank_with_concentration(
         self,
         conditions: UserConditions,
+        context: RecommendationContext,
         first_pass: RecommendationResponse,
         concentration: CandidateEnrichmentResponse,
     ) -> RecommendationResponse:
         self.rerank_call_count += 1
-        return await self._inner.rerank_with_concentration(conditions, first_pass, concentration)
+        return await self._inner.rerank_with_concentration(
+            conditions, context, first_pass, concentration
+        )
 
 
 class _CountingEnrichmentProvider:
