@@ -12,12 +12,20 @@ from datetime import datetime
 from time import perf_counter
 from typing import TypeAlias
 
+from app.agent_context.enrichment_schemas import CandidateEnrichmentResponse
 from app.agent_context.schemas import RecommendationContext
+from app.concentration_policy import ConcentrationLevel
 from app.domain.candidate_mapper import map_context_to_scoring_candidates
-from app.domain.evidence import build_evidence
+from app.domain.evidence import CONCENTRATION_FEATURE_ORDER, build_evidence
 from app.domain.explanation import build_explanations
 from app.domain.models import ScoringCandidate, WeatherCondition
-from app.domain.scoring import RankedCandidate, score_candidates
+from app.domain.scoring import (
+    CONCENTRATION_WEIGHTS,
+    RankedCandidate,
+    concentration_score,
+    redistribute_weights,
+    score_candidates,
+)
 from app.errors import AppError
 from app.recommendation_limits import DEFAULT_RECOMMENDATION_RESULT_LIMIT
 from app.schemas import RecommendationItem, RecommendationResponse
@@ -127,6 +135,152 @@ async def run_recommendation_pipeline_from_context(
     )
     return response.model_copy(
         update={"elapsed_ms": round((timer() - started_at) * 1000, 2)}
+    )
+
+
+async def rerank_with_concentration(
+    response: RecommendationResponse,
+    context: RecommendationContext,
+    concentration: CandidateEnrichmentResponse,
+    *,
+    seek: bool,
+    timer: Timer = perf_counter,
+) -> RecommendationResponse:
+    """D의 2차 Scoring 진입점(D-07, concentration_intent AVOID/SEEK 전용).
+
+    `response`는 1차 `run_recommendation_pipeline_from_context()` 결과(이미 상위
+    5개로 좁혀진 상태)다. 여기서 새 Candidate를 다시 만들지 않는다 —
+    `RecommendationItem.feature_scores`(weather/remaining_operating_time/distance)를
+    그대로 재사용한다. concentration과 무관하게 이 값들은 변하지 않기 때문이다.
+    `context`는 1차 호출과 동일한 것이어야 한다 — weather_condition을 1차와
+    동일한 방식으로 재계산해 근거 문장을 다시 조립하는 데만 쓰고, 점수 자체를
+    다시 계산하지는 않는다.
+
+    concentration 결측(C가 해당 후보에 no_data/unavailable을 반환) 처리는
+    weather/remaining_operating_time과 동일한 패턴이다 — 그 후보만
+    `redistribute_weights()`로 재분배한다.
+    """
+    started_at = timer()
+
+    weather_condition = _weather_condition_from_context(context)
+    concentration_by_place_id = {
+        result.place_id: result for result in concentration.candidates
+    }
+    unverified_place_ids = frozenset(
+        item.place_id for item in response.unverified_recommendations
+    )
+
+    items = [*response.recommendations, *response.unverified_recommendations]
+
+    order_key: list[tuple[float, float, str]] = []
+    rescoring_context: dict[
+        str,
+        tuple[
+            RecommendationItem,
+            dict[str, float | None],
+            dict[str, float],
+            ConcentrationLevel | None,
+        ],
+    ] = {}
+
+    for item in items:
+        result = concentration_by_place_id.get(item.place_id)
+        concentration_rate: float | None = None
+        concentration_level: ConcentrationLevel | None = None
+        if result is not None and result.status == "success" and result.concentration:
+            forecast = result.concentration[0]
+            concentration_rate = forecast.concentration_rate
+            concentration_level = forecast.concentration_level
+
+        feature_scores: dict[str, float | None] = dict(item.feature_scores)
+        feature_scores["concentration"] = (
+            None
+            if concentration_rate is None
+            else concentration_score(concentration_rate, seek=seek)
+        )
+
+        missing = [
+            feature for feature in CONCENTRATION_WEIGHTS if feature_scores.get(feature) is None
+        ]
+        weights_used = (
+            redistribute_weights(CONCENTRATION_WEIGHTS, missing)
+            if missing
+            else dict(CONCENTRATION_WEIGHTS)
+        )
+        score = round(
+            sum(
+                feature_scores[feature] * weight  # type: ignore[operator]
+                for feature, weight in weights_used.items()
+            ),
+            4,
+        )
+
+        order_key.append((score, item.distance_km, item.place_id))
+        # concentration_level은 근거 문장 조립에만 쓰고 정렬 키에는 관여하지 않는다.
+        rescoring_context[item.place_id] = (
+            item,
+            feature_scores,
+            weights_used,
+            concentration_level,
+        )
+
+    order_key.sort(key=lambda entry: (-entry[0], entry[1], entry[2]))
+
+    verified: list[RecommendationItem] = []
+    unverified: list[RecommendationItem] = []
+
+    for rank, (score, _distance_km, place_id) in enumerate(order_key, start=1):
+        item, feature_scores, weights_used, concentration_level = rescoring_context[place_id]
+        is_unverified = place_id in unverified_place_ids
+        candidate = RankedCandidate(
+            place_id=item.place_id,
+            name=item.name,
+            category=item.category,
+            rank=rank,
+            score=score,
+            feature_scores=feature_scores,
+            weights_used=weights_used,
+            is_unverified=is_unverified,
+            warnings=tuple(w for w in item.warnings if w != _NO_NOTABLE_EXPLANATION_WARNING),
+            distance_km=item.distance_km,
+            remaining_minutes=item.remaining_minutes,
+            weather_condition=weather_condition,
+            environment_type=item.environment_type,
+            concentration_level=concentration_level,
+        )
+        evidence = build_evidence(candidate, feature_order=CONCENTRATION_FEATURE_ORDER)
+        explanations = build_explanations(evidence)
+        warnings = list(candidate.warnings)
+        if not explanations:
+            warnings.append(_NO_NOTABLE_EXPLANATION_WARNING)
+
+        new_item = RecommendationItem(
+            place_id=item.place_id,
+            name=item.name,
+            category=item.category,
+            distance_km=item.distance_km,
+            remaining_minutes=item.remaining_minutes,
+            environment_type=item.environment_type,
+            recommendation_reason=_recommendation_reason(candidate),
+            explanations=list(explanations),
+            warnings=warnings,
+            score=evidence.score,
+            feature_scores={
+                contribution.feature: contribution.score
+                for contribution in evidence.contributions
+            },
+            weights_used={
+                contribution.feature: contribution.weight
+                for contribution in evidence.contributions
+                if contribution.weight is not None
+            },
+        )
+        (unverified if is_unverified else verified).append(new_item)
+
+    return RecommendationResponse(
+        recommendations=verified,
+        unverified_recommendations=unverified,
+        elapsed_ms=round((timer() - started_at) * 1000, 2),
     )
 
 
