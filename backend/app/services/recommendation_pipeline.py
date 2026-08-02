@@ -146,7 +146,7 @@ async def rerank_with_concentration(
     seek: bool,
     timer: Timer = perf_counter,
 ) -> RecommendationResponse:
-    """D의 2차 Scoring 진입점(D-07, concentration_intent AVOID/SEEK 전용).
+    """D의 2차 Scoring 진입점(D-039, concentration_intent AVOID/SEEK 전용).
 
     `response`는 1차 `run_recommendation_pipeline_from_context()` 결과(이미 상위
     5개로 좁혀진 상태)다. 여기서 새 Candidate를 다시 만들지 않는다 —

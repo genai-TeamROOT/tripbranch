@@ -135,7 +135,7 @@ def _unavailable_concentration() -> CandidateEnrichmentResponse:
 async def test_rerank_with_concentration_derives_seek_true_from_intent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """D-07: RealRecommendationProvider가 conditions.concentration_intent를
+    """D-039: RealRecommendationProvider가 conditions.concentration_intent를
     올바르게 seek(bool)로 변환해 recommendation_pipeline.rerank_with_concentration()에
     넘기는지 확인한다(실제 재채점 로직은 test_recommendation_pipeline.py가 커버)."""
     captured: dict[str, object] = {}

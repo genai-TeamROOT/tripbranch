@@ -213,7 +213,7 @@ class FakeRecommendationProvider:
         first_pass: RecommendationResponse,
         concentration: CandidateEnrichmentResponse,
     ) -> RecommendationResponse:
-        """(D-07 확정 — agent-runtime-contract.md §6.5.2) 1차 결과를 역순으로
+        """(D-039 확정 — agent-runtime-contract.md §6.5.2) 1차 결과를 역순으로
         재배열해 반환한다 — 실제 재채점이 아니라, 테스트에서 "2차 Scoring이
         정말 호출돼서 순서가 바뀌었는지"를 1차 결과와 구분해 확인하기 위한
         고정 로직이다.

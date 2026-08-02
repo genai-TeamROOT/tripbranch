@@ -71,7 +71,7 @@ class RecommendationProvider(Protocol):
         first_pass: RecommendationResponse,
         concentration: CandidateEnrichmentResponse,
     ) -> RecommendationResponse:
-        """(D-07 확정) 1차 추천 결과와 혼잡도 보강 데이터로 재순위를 계산한다.
+        """(D-039 확정) 1차 추천 결과와 혼잡도 보강 데이터로 재순위를 계산한다.
 
         `context`는 1차 `recommend()` 호출에 쓰인 것과 동일한
         `RecommendationContext`다 — D가 근거 문장(explanations)을 1차와
