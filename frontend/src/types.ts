@@ -15,6 +15,14 @@ export interface InterpretedConditions {
   preferred_categories: string[];
   weather_condition: WeatherCondition | null;
   search_radius_km: number;
+  /*
+   * 개발용 표시 전용. 위 4개 필드는 구형 계약이라 LLM이 추출한 14개 조건 중
+   * 일부만 담을 수 있어(weather_intent/environment 등이 유실된다), 원본을 그대로
+   * 실어 ConditionDebugMessage가 전부 보여줄 수 있게 한다.
+   * /api/recommendations 요청에는 보내지 않는다(trip.ts에서 제거).
+   * TODO: /api/chat 전환으로 LLMOutput을 직접 쓰게 되면 이 필드는 삭제한다.
+   */
+  raw_conditions?: UserConditions | null;
 }
 
 export interface RecommendationItem {
@@ -98,6 +106,7 @@ export interface UserConditions {
   place_tags: string[];
   weather: string | null;
   weather_intent: string | null;
+  concentration_intent?: string | null;
   transport: string | null;
   max_travel_time: number | null;
   time_available: number | null;
@@ -106,6 +115,11 @@ export interface UserConditions {
   budget: string | null;
   exclude_tags: string[];
   special_requirements: string[];
+  /*
+   * 백엔드 UserConditions에는 아직 없는 필드다. Agent가 반경을 산출해 내려주게 되면
+   * toLegacyConditions()가 이 값을 우선 사용하고, 없으면 기본값(2.0km)을 쓴다.
+   */
+  search_radius_km?: number | null;
 }
 
 export interface RecommendPayload {
@@ -156,6 +170,15 @@ export interface LLMOutput {
   general: GeneralPayload | null;
   out_of_scope: OutOfScopePayload | null;
   clarification: ClarificationPayload | null;
+}
+
+/*
+ * /api/interpret 응답은 LLMOutput 자체가 아니라 세션 상태와 함께 감싼 형태다
+ * (backend InterpretResponse). state는 현재 화면에서 쓰지 않아 좁게 선언한다.
+ */
+export interface InterpretResponse {
+  output: LLMOutput;
+  state: unknown;
 }
 
 export interface InterpretDebugRequest {

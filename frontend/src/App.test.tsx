@@ -10,8 +10,9 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
 
-// /api/interpret은 LLMOutput(intent + Intent별 조건)을 반환한다. interpretUserInput()이
-// RECOMMEND 결과를 옛 InterpretedConditions 형태로 변환하므로, 아래 값들이
+// /api/interpret은 LLMOutput을 state와 함께 감싼 InterpretResponse({ output, state })를
+// 반환한다. interpretUserInput()이 output을 벗겨 RECOMMEND 결과를
+// 옛 InterpretedConditions 형태로 변환하므로, 아래 값들이
 // location_query="경복궁"/preferred_categories=["museum","cafe"]/weather_condition="bad"로
 // 변환되어야 기존 화면 검증이 그대로 통과한다.
 const interpretResponse = {
@@ -74,7 +75,7 @@ function mockFetch() {
   return vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/interpret")) {
-      return Response.json(interpretResponse);
+      return Response.json({ output: interpretResponse, state: {} });
     }
     if (url.endsWith("/recommendations")) {
       return Response.json(recommendationsResponse);

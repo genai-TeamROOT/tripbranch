@@ -6,7 +6,35 @@
  * TODO: 조건 직접 수정이 필요해지면 이 컴포넌트 안에 편집 form을 추가한다.
  */
 
-import type { InterpretedConditions } from "../../types";
+import type { InterpretedConditions, UserConditions } from "../../types";
+
+/*
+ * LLM이 추출하는 조건 전체를 표시 순서대로 나열한다. 구형 4필드(location_query 등)만
+ * 보여주면 weather_intent/environment처럼 발화의 핵심이 화면에 드러나지 않는다.
+ */
+const CONDITION_LABELS: [keyof UserConditions, string][] = [
+  ["current_location", "현재 위치"],
+  ["search_center", "검색 중심"],
+  ["place_types", "장소 종류"],
+  ["place_tags", "장소 태그"],
+  ["weather", "날씨"],
+  ["weather_intent", "날씨 의도"],
+  ["concentration_intent", "혼잡도 의도"],
+  ["transport", "이동 수단"],
+  ["max_travel_time", "최대 이동 시간(분)"],
+  ["time_available", "가용 시간(분)"],
+  ["environment", "실내외"],
+  ["companion", "동행"],
+  ["budget", "예산"],
+  ["exclude_tags", "제외 태그"],
+  ["special_requirements", "특별 요구사항"],
+];
+
+function formatValue(value: unknown): string {
+  if (Array.isArray(value)) return value.length ? value.join(", ") : "없음";
+  if (value === null || value === undefined || value === "") return "없음";
+  return String(value);
+}
 
 interface ConditionDebugMessageProps {
   userInput: string;
@@ -37,21 +65,29 @@ export function ConditionDebugMessage({
           <dt className="font-medium">사용자 원문</dt>
           <dd>{userInput}</dd>
         </div>
+        {conditions.raw_conditions ? (
+          CONDITION_LABELS.map(([key, label]) => (
+            <div key={key}>
+              <dt className="font-medium">{label}</dt>
+              <dd>{formatValue(conditions.raw_conditions?.[key])}</dd>
+            </div>
+          ))
+        ) : (
+          <div>
+            <dt className="font-medium">추출된 조건</dt>
+            <dd>없음 (RECOMMEND 조건이 비어 있음)</dd>
+          </div>
+        )}
+      </dl>
+
+      <dl className="grid gap-2 border-t border-amber-300 pt-3 dark:border-amber-700">
         <div>
-          <dt className="font-medium">구조화된 위치</dt>
-          <dd>{conditions.location_query}</dd>
-        </div>
-        <div>
-          <dt className="font-medium">선호 카테고리</dt>
-          <dd>{conditions.preferred_categories.join(", ") || "없음"}</dd>
-        </div>
-        <div>
-          <dt className="font-medium">상황 또는 날씨 조건</dt>
-          <dd>{conditions.weather_condition ?? "없음"}</dd>
-        </div>
-        <div>
-          <dt className="font-medium">이동 가능 범위</dt>
-          <dd>{conditions.search_radius_km}km</dd>
+          <dt className="font-medium">추천 요청에 실제로 전달되는 값</dt>
+          <dd className="text-xs">
+            위치 {conditions.location_query || "없음"} / 카테고리{" "}
+            {conditions.preferred_categories.join(", ") || "없음"} / 날씨{" "}
+            {conditions.weather_condition ?? "없음"} / 반경 {conditions.search_radius_km}km
+          </dd>
         </div>
       </dl>
 
