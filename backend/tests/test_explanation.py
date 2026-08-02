@@ -17,10 +17,16 @@ from fixtures.scoring_fixture_v1 import (
     NOW,
 )
 
-from app.domain.evidence import build_evidence
+from app.concentration_policy import ConcentrationLevel
+from app.domain.evidence import CONCENTRATION_FEATURE_ORDER, build_evidence
 from app.domain.explanation import build_explanations
 from app.domain.models import OperatingHours, ScoringCandidate, WeatherCondition
-from app.domain.scoring import score_candidates
+from app.domain.scoring import (
+    CONCENTRATION_WEIGHTS,
+    RankedCandidate,
+    redistribute_weights,
+    score_candidates,
+)
 
 
 def _explanations_by_place_id(candidates, **kwargs) -> dict[str, tuple[str, ...]]:
@@ -259,3 +265,65 @@ def test_weather_environment_combinations_below_threshold_are_omitted() -> None:
     # 문장이 아예 생성되지 않는다.
     assert _weather_explanation(WeatherCondition.BAD, "outdoor") == ()
     assert _weather_explanation(WeatherCondition.BAD, "unknown") == ()
+
+
+# --- 혼잡도(concentration) 문장 (D-07, 2차 Scoring 전용) ----------------------
+# score_candidates()는 concentration을 전혀 모르므로(1차엔 키 자체가 없음),
+# 여기서는 RankedCandidate를 직접 구성해 build_evidence()에 CONCENTRATION_
+# FEATURE_ORDER를 명시적으로 넘긴다 — rerank_with_concentration()이 실제로
+# 하는 일과 동일한 경로다.
+
+
+def _concentration_ranked_candidate(
+    concentration_score_value: float | None,
+    concentration_level: ConcentrationLevel | None,
+) -> RankedCandidate:
+    feature_scores: dict[str, float | None] = {
+        "weather": None,
+        "remaining_operating_time": None,
+        "distance": 0.0,
+        "concentration": concentration_score_value,
+    }
+    missing = [f for f in CONCENTRATION_WEIGHTS if feature_scores.get(f) is None]
+    weights_used = redistribute_weights(CONCENTRATION_WEIGHTS, missing)
+    return RankedCandidate(
+        place_id="conc",
+        name="혼잡도테스트",
+        category="test",
+        rank=1,
+        score=0.0,
+        feature_scores=feature_scores,
+        weights_used=weights_used,
+        is_unverified=False,
+        warnings=(),
+        distance_km=0.0,
+        remaining_minutes=None,
+        weather_condition=None,
+        environment_type="unknown",
+        concentration_level=concentration_level,
+    )
+
+
+def test_concentration_sentence_by_level() -> None:
+    cases = [
+        (ConcentrationLevel.QUIET, "지금 이 근처는 한적한 편이에요."),
+        (ConcentrationLevel.NORMAL, "지금 이 근처는 보통 수준으로 붐벼요."),
+        (ConcentrationLevel.SLIGHTLY_CROWDED, "지금 이 근처는 다소 혼잡한 편이에요."),
+        (ConcentrationLevel.CROWDED, "지금 이 근처는 혼잡한 편이에요."),
+    ]
+    for level, expected_sentence in cases:
+        candidate = _concentration_ranked_candidate(0.9, level)
+        evidence = build_evidence(candidate, feature_order=CONCENTRATION_FEATURE_ORDER)
+        assert build_explanations(evidence) == (expected_sentence,)
+
+
+def test_concentration_below_threshold_is_omitted() -> None:
+    candidate = _concentration_ranked_candidate(0.5, ConcentrationLevel.NORMAL)
+    evidence = build_evidence(candidate, feature_order=CONCENTRATION_FEATURE_ORDER)
+    assert build_explanations(evidence) == ()
+
+
+def test_concentration_missing_is_omitted() -> None:
+    candidate = _concentration_ranked_candidate(None, None)
+    evidence = build_evidence(candidate, feature_order=CONCENTRATION_FEATURE_ORDER)
+    assert build_explanations(evidence) == ()
