@@ -683,3 +683,59 @@ async def test_concentration_ignore_skips_enrichment_call() -> None:
 
     assert response.llm_output.recommend.conditions.concentration_intent in (None, "IGNORE")
     assert providers["enrichment_provider"].call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_clarification_answer_keeps_conditions_from_previous_turn() -> None:
+    """되묻기 답변은 새 요청이 아니므로 앞 턴 조건이 유지되어야 한다.
+
+    1턴 "카페 추천해줘" → 위치가 없어 C가 needs_clarification.
+    2턴 "경복궁 근처 카페 추천해줘" → 위치가 채워지고 place_tags도 살아 있어야 한다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(user_input="카페 추천해줘", session_id=None, device_location=DEVICE_LOCATION),
+        store=store,
+        **providers,
+    )
+    session_id = first.state.session_id
+    assert first.recommendations is None
+    # 되묻기로 끝났으므로 B에 사유가 남는다.
+    assert get_session_context(session_id, store=store).pending_clarification is not None
+
+    second = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert second.state.user_conditions.search_center == "경복궁"
+    assert "카페" in second.state.user_conditions.place_tags
+    # 소비되어 지워진다.
+    assert get_session_context(session_id, store=store).pending_clarification is None
+
+
+@pytest.mark.asyncio
+async def test_successful_recommendation_leaves_no_pending_clarification() -> None:
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.recommendations is not None
+    context = get_session_context(response.state.session_id, store=store)
+    assert context.pending_clarification is None
