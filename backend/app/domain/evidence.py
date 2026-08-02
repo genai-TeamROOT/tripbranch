@@ -13,11 +13,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.concentration_policy import ConcentrationLevel
 from app.domain.models import WeatherCondition
 from app.domain.scoring import RankedCandidate, ScoringResult
 
-# feature_scores/weights_used에 항상 존재하는 Feature 순서 (scoring.py와 동일).
+# 1차 Scoring 결과의 Feature 순서 (scoring.py DEFAULT_WEIGHTS와 동일).
 _FEATURE_ORDER: tuple[str, ...] = ("weather", "remaining_operating_time", "distance")
+
+# 2차 Scoring(rerank_with_concentration(), D-07) 결과의 Feature 순서. concentration은
+# 1차 결과의 feature_scores에는 키 자체가 없다(결측이 아니라 "존재하지 않음" —
+# concentration-conditions.md §2.3) — 그래서 1차용 _FEATURE_ORDER에는 넣지 않고,
+# 이 상수를 별도로 둔다. build_evidence()에 feature_order를 명시적으로 넘기지 않으면
+# 항상 1차 3-Feature 순서를 쓴다.
+CONCENTRATION_FEATURE_ORDER: tuple[str, ...] = (*_FEATURE_ORDER, "concentration")
 
 
 @dataclass(frozen=True)
@@ -48,11 +56,17 @@ class RecommendationEvidence:
     remaining_minutes: float | None
     weather_condition: WeatherCondition | None
     environment_type: str
+    # D-07: 2차 Scoring에서만 채워진다(scoring.py::RankedCandidate.concentration_level
+    # 참고) — concentration_score(direction 반영됨)만으로는 실제 붐빔 정도를 알 수
+    # 없어서, 문장 조립에 원본 4단계 구간을 그대로 보존한다.
+    concentration_level: ConcentrationLevel | None = None
 
 
-def _build_contributions(candidate: RankedCandidate) -> tuple[FeatureContribution, ...]:
+def _build_contributions(
+    candidate: RankedCandidate, feature_order: tuple[str, ...]
+) -> tuple[FeatureContribution, ...]:
     contributions = []
-    for feature in _FEATURE_ORDER:
+    for feature in feature_order:
         score = candidate.feature_scores.get(feature)
         weight = candidate.weights_used.get(feature)
         contribution = score * weight if score is not None and weight is not None else None
@@ -67,21 +81,29 @@ def _build_contributions(candidate: RankedCandidate) -> tuple[FeatureContributio
     return tuple(contributions)
 
 
-def build_evidence(candidate: RankedCandidate) -> RecommendationEvidence:
-    """`RankedCandidate` 1건을 `RecommendationEvidence`로 변환한다."""
+def build_evidence(
+    candidate: RankedCandidate, *, feature_order: tuple[str, ...] = _FEATURE_ORDER
+) -> RecommendationEvidence:
+    """`RankedCandidate` 1건을 `RecommendationEvidence`로 변환한다.
+
+    `feature_order`는 기본값(1차 3-Feature)을 쓴다 — 2차 Scoring(D-07)이
+    `candidate.feature_scores`에 `"concentration"` 키를 추가로 채워 넣었을 때만
+    `CONCENTRATION_FEATURE_ORDER`를 명시적으로 넘긴다.
+    """
     return RecommendationEvidence(
         place_id=candidate.place_id,
         name=candidate.name,
         category=candidate.category,
         rank=candidate.rank,
         score=candidate.score,
-        contributions=_build_contributions(candidate),
+        contributions=_build_contributions(candidate, feature_order),
         is_unverified=candidate.is_unverified,
         warnings=candidate.warnings,
         distance_km=candidate.distance_km,
         remaining_minutes=candidate.remaining_minutes,
         weather_condition=candidate.weather_condition,
         environment_type=candidate.environment_type,
+        concentration_level=candidate.concentration_level,
     )
 
 

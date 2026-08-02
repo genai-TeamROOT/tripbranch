@@ -19,12 +19,23 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
+from app.concentration_policy import ConcentrationLevel
 from app.domain.models import OperatingHours, ScoringCandidate, WeatherCondition
 
 DEFAULT_WEIGHTS: Mapping[str, float] = {
     "weather": 0.4,
     "remaining_operating_time": 0.4,
     "distance": 0.2,
+}
+
+# D-07: concentration_intent가 AVOID/SEEK일 때만 쓰는 2차 Scoring 기본 가중치.
+# 1차 Scoring(DEFAULT_WEIGHTS)은 이 이름 자체를 모른다 — concentration은 1차에
+# "결측"이 아니라 "존재하지 않는 Feature"다(concentration-conditions.md §2.3).
+CONCENTRATION_WEIGHTS: Mapping[str, float] = {
+    "weather": 0.35,
+    "remaining_operating_time": 0.35,
+    "distance": 0.15,
+    "concentration": 0.15,
 }
 
 # 남은 운영시간이 이 값(분) 이상이면 만점(1.0)으로 취급한다.
@@ -65,6 +76,11 @@ class RankedCandidate:
     remaining_minutes: float | None
     weather_condition: WeatherCondition | None
     environment_type: str
+    # D-07: 2차 Scoring(rerank_with_concentration())에서만 채워진다. 1차 Scoring
+    # 결과는 concentration 자체를 모르므로 항상 None이다 — explanation.py가 문장을
+    # "한적함/보통/다소 혼잡/혼잡" 중 무엇으로 쓸지 고르는 데 필요하다(direction이
+    # 이미 반영된 concentration_score만으로는 실제 붐빔 정도를 알 수 없다).
+    concentration_level: ConcentrationLevel | None = None
 
 
 @dataclass(frozen=True)
@@ -106,6 +122,19 @@ def _distance_score(distance_km: float, max_distance_km: float) -> float:
     if max_distance_km <= 0:
         return 1.0 if distance_km <= 0 else 0.0
     return _clamp(1.0 - distance_km / max_distance_km, 0.0, 1.0)
+
+
+def concentration_score(concentration_rate: float, *, seek: bool) -> float:
+    """혼잡률(평시 대비 0~100대 상대 비율)을 0~1 점수로 선형 정규화한다.
+
+    `seek`(concentration_intent=SEEK, 붐비는 곳 선호)이면 혼잡률이 높을수록
+    점수가 높고, `seek=False`(AVOID, 한적한 곳 선호)면 그 반대다. distance/
+    remaining_operating_time과 같은 연속값 스타일을 따른다 — 4단계 구간
+    (quiet/normal/slightly_crowded/crowded) 매핑 대신 선형 정규화를 택해
+    정보 손실을 피한다.
+    """
+    normalized = _clamp(concentration_rate / 100.0, 0.0, 1.0)
+    return normalized if seek else 1.0 - normalized
 
 
 def redistribute_weights(

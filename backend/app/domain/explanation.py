@@ -2,9 +2,10 @@
 
 역할: `RecommendationEvidence.contributions`(Feature별 score/weight/contribution)로
 어떤 Feature를 문장화할지 고르고, 같은 Evidence가 들고 있는 원본 계산값
-(distance_km/remaining_minutes/weather_condition/environment_type)으로 실제
-수치가 들어간 한국어 문장을 조립한다. LLM을 호출하지 않는 Rule 기반·결정적
-구조라 동일 입력에는 항상 동일한 문장이 나온다.
+(distance_km/remaining_minutes/weather_condition/environment_type/
+concentration_level)으로 실제 수치가 들어간 한국어 문장을 조립한다. LLM을
+호출하지 않는 Rule 기반·결정적 구조라 동일 입력에는 항상 동일한 문장이 나온다.
+concentration은 2차 Scoring(D-07, rerank_with_concentration())에서만 등장한다.
 입력: `RecommendationEvidence` (`backend/app/domain/evidence.py`).
 출력: `tuple[str, ...]` (0~3개, Feature 점수가 임계값 이상인 것만 포함).
 호출 시점: 추천 파이프라인이 응답을 조립할 때 Evidence 계산 직후 호출한다.
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 
+from app.concentration_policy import ConcentrationLevel
 from app.domain.evidence import FeatureContribution, RecommendationEvidence
 from app.domain.models import WeatherCondition
 
@@ -92,10 +94,31 @@ def _weather_sentence(evidence: RecommendationEvidence) -> str:
     return f"{weather_label}에 적합한 {environment_label}장소예요."
 
 
+# concentration Feature(D-07, 2차 Scoring 전용)의 사실 문장. concentration_score
+# (scoring.py::concentration_score())는 SEEK/AVOID 방향이 이미 반영된 값이라
+# "notable하다"는 것만으로는 실제로 붐비는지 한적한지 알 수 없다 — 그래서
+# 방향과 무관한 원본 4단계 구간(evidence.concentration_level)으로 문장을 고른다.
+# 다른 Feature와 같은 원칙: 사실만 전달하고 "좋다/나쁘다" 평가는 붙이지 않는다
+# (SEEK인 사용자에게도 "혼잡한 편"이라고만 말하지 "붐벼서 좋아요"라고 하지 않음).
+_CONCENTRATION_SENTENCES: Mapping[ConcentrationLevel, str] = {
+    ConcentrationLevel.QUIET: "지금 이 근처는 한적한 편이에요.",
+    ConcentrationLevel.NORMAL: "지금 이 근처는 보통 수준으로 붐벼요.",
+    ConcentrationLevel.SLIGHTLY_CROWDED: "지금 이 근처는 다소 혼잡한 편이에요.",
+    ConcentrationLevel.CROWDED: "지금 이 근처는 혼잡한 편이에요.",
+}
+
+
+def _concentration_sentence(evidence: RecommendationEvidence) -> str:
+    # concentration Feature가 notable이면 concentration_level은 항상 값이 있다.
+    assert evidence.concentration_level is not None
+    return _CONCENTRATION_SENTENCES[evidence.concentration_level]
+
+
 _SENTENCE_BUILDERS: Mapping[str, Callable[[RecommendationEvidence], str]] = {
     "weather": _weather_sentence,
     "remaining_operating_time": _remaining_time_sentence,
     "distance": _distance_sentence,
+    "concentration": _concentration_sentence,
 }
 
 
