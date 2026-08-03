@@ -14,8 +14,12 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from app.schemas import RecommendationResponse, UserConditions
-from app.services.recommendation_pipeline import run_recommendation_pipeline_from_context
+from app.agent_context.enrichment_schemas import CandidateEnrichmentResponse
+from app.schemas import ConcentrationIntent, RecommendationResponse, UserConditions
+from app.services.recommendation_pipeline import (
+    rerank_with_concentration,
+    run_recommendation_pipeline_from_context,
+)
 from app.services.runtime.context_schemas import RecommendationContext
 from app.services.runtime.recommendation_transform import to_search_radius_km
 
@@ -39,6 +43,25 @@ class RealRecommendationProvider:
             search_radius_km=search_radius_km,
             shown_place_ids=frozenset(excluded_place_ids),
             recommendation_limit=_RECOMMENDATION_LIMIT,
+        )
+
+    async def rerank_with_concentration(
+        self,
+        conditions: UserConditions,
+        context: RecommendationContext,
+        first_pass: RecommendationResponse,
+        concentration: CandidateEnrichmentResponse,
+    ) -> RecommendationResponse:
+        """D-040: 2차 Scoring. A는 concentration_intent가 AVOID/SEEK일 때만 이
+        메서드를 호출한다(agent_runtime.py의 `_CONCENTRATION_RANK_INTENTS` 게이트) —
+        그 외 값이 들어오면 방향을 정할 수 없으므로 AVOID(한적한 곳 선호)로 취급한다.
+        """
+        seek = conditions.concentration_intent is ConcentrationIntent.SEEK
+        return await rerank_with_concentration(
+            first_pass,
+            context,
+            concentration,
+            seek=seek,
         )
 
 

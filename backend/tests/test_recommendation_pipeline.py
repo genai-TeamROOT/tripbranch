@@ -2,6 +2,11 @@ from datetime import UTC, datetime
 
 import pytest
 
+from app.agent_context.enrichment_schemas import (
+    CandidateEnrichmentResponse,
+    CandidateEnrichmentResult,
+    ConcentrationForecastData,
+)
 from app.agent_context.schemas import (
     ContextError,
     RecommendationContext,
@@ -11,8 +16,13 @@ from app.agent_context.schemas import (
 from app.agent_context.schemas import ContextValue as AgentContextValue
 from app.agent_context.schemas import Coordinates as AgentCoordinates
 from app.agent_context.schemas import PlaceCandidate as AgentPlaceCandidate
+from app.concentration_policy import normalize_concentration
 from app.errors import AppError
-from app.services.recommendation_pipeline import run_recommendation_pipeline_from_context
+from app.schemas import RecommendationItem, RecommendationResponse
+from app.services.recommendation_pipeline import (
+    rerank_with_concentration,
+    run_recommendation_pipeline_from_context,
+)
 
 _WEATHER_MISSING_WARNING = "현재 날씨 정보를 확인하지 못해 이 조건은 반영되지 않았어요."
 _WEATHER_IGNORED_WARNING = "날씨 조건을 따로 말씀하지 않으셔서 이번 추천에는 반영하지 않았어요."
@@ -245,3 +255,186 @@ async def test_pipeline_from_context_is_deterministic_for_identical_input() -> N
         ]
 
     assert _normalize(response_1) == _normalize(response_2)
+
+
+# --- rerank_with_concentration() (D-040, 2차 Scoring) ------------------------
+#
+# 1차 결과(RecommendationResponse, 이미 5개로 좁혀진 상태)에 concentration
+# Feature를 더해 재채점하는 D의 신규 진입점. weather/remaining_operating_time을
+# 둘 다 결측(None)으로 고정해 순수하게 "distance vs concentration"만으로
+# 재순위가 실제로 뒤집히는지 검증한다.
+
+_NO_WEATHER_CONTEXT = RecommendationContext(
+    location=_context_location(),
+    weather=None,
+    places=AgentContextValue(status="success", data=[]),
+)
+
+
+def _first_pass_item(
+    place_id: str, *, distance_km: float, distance_score: float
+) -> RecommendationItem:
+    return RecommendationItem(
+        place_id=place_id,
+        name=f"장소-{place_id}",
+        category="cafe",
+        distance_km=distance_km,
+        remaining_minutes=None,
+        environment_type="indoor",
+        recommendation_reason="테스트용 1차 추천입니다.",
+        explanations=[],
+        warnings=[],
+        score=distance_score,
+        feature_scores={
+            "weather": None,
+            "remaining_operating_time": None,
+            "distance": distance_score,
+        },
+        weights_used={"distance": 1.0},
+    )
+
+
+def _concentration_result(place_id: str, *, rate: float) -> CandidateEnrichmentResult:
+    normalized = normalize_concentration(rate)
+    return CandidateEnrichmentResult(
+        place_id=place_id,
+        name=f"장소-{place_id}",
+        latitude=37.58,
+        longitude=126.97,
+        status="success",
+        concentration=[
+            ConcentrationForecastData(
+                place_name=f"장소-{place_id}",
+                forecast_date=None,
+                concentration_rate=rate,
+                concentration_level=normalized.level,
+                concentration_label=normalized.label,
+            )
+        ],
+    )
+
+
+def _no_data_result(place_id: str) -> CandidateEnrichmentResult:
+    return CandidateEnrichmentResult(
+        place_id=place_id,
+        name=f"장소-{place_id}",
+        latitude=37.58,
+        longitude=126.97,
+        status="no_data",
+        concentration=[],
+    )
+
+
+@pytest.mark.asyncio
+async def test_rerank_with_concentration_avoid_prefers_quiet_place() -> None:
+    """place-1이 더 가깝지만(1차 1위) 훨씬 붐비고, place-2는 멀지만 한적하다.
+
+    AVOID(seek=False)면 2차 Scoring 후 순위가 뒤집혀야 한다.
+    """
+    first_pass = RecommendationResponse(
+        recommendations=[
+            _first_pass_item("place-1", distance_km=0.1, distance_score=0.95),
+            _first_pass_item("place-2", distance_km=1.2, distance_score=0.4),
+        ],
+        unverified_recommendations=[],
+        elapsed_ms=0,
+    )
+    concentration = CandidateEnrichmentResponse(
+        request_id="req-1",
+        status="success",
+        candidates=[
+            _concentration_result("place-1", rate=95.0),
+            _concentration_result("place-2", rate=5.0),
+        ],
+    )
+
+    result = await rerank_with_concentration(
+        first_pass, _NO_WEATHER_CONTEXT, concentration, seek=False
+    )
+
+    assert [item.place_id for item in result.recommendations] == ["place-2", "place-1"]
+    quiet_item = result.recommendations[0]
+    assert "지금 이 근처는 한적한 편이에요." in quiet_item.explanations
+
+
+@pytest.mark.asyncio
+async def test_rerank_with_concentration_seek_prefers_crowded_place() -> None:
+    first_pass = RecommendationResponse(
+        recommendations=[
+            _first_pass_item("place-1", distance_km=0.1, distance_score=0.95),
+            _first_pass_item("place-2", distance_km=1.2, distance_score=0.4),
+        ],
+        unverified_recommendations=[],
+        elapsed_ms=0,
+    )
+    concentration = CandidateEnrichmentResponse(
+        request_id="req-2",
+        status="success",
+        candidates=[
+            _concentration_result("place-1", rate=5.0),
+            _concentration_result("place-2", rate=95.0),
+        ],
+    )
+
+    result = await rerank_with_concentration(
+        first_pass, _NO_WEATHER_CONTEXT, concentration, seek=True
+    )
+
+    assert [item.place_id for item in result.recommendations] == ["place-2", "place-1"]
+
+
+@pytest.mark.asyncio
+async def test_rerank_with_concentration_handles_partial_no_data() -> None:
+    """concentration이 일부 후보만 결측(no_data)이어도 크래시 없이 개별 재분배된다."""
+    first_pass = RecommendationResponse(
+        recommendations=[
+            _first_pass_item("place-1", distance_km=0.1, distance_score=0.95),
+            _first_pass_item("place-2", distance_km=1.2, distance_score=0.4),
+        ],
+        unverified_recommendations=[],
+        elapsed_ms=0,
+    )
+    concentration = CandidateEnrichmentResponse(
+        request_id="req-3",
+        status="partial",
+        candidates=[
+            _concentration_result("place-1", rate=50.0),
+            _no_data_result("place-2"),
+        ],
+    )
+
+    result = await rerank_with_concentration(
+        first_pass, _NO_WEATHER_CONTEXT, concentration, seek=True
+    )
+
+    place_ids = {item.place_id for item in result.recommendations}
+    assert place_ids == {"place-1", "place-2"}
+    place_2 = next(item for item in result.recommendations if item.place_id == "place-2")
+    assert place_2.feature_scores.get("concentration") is None
+    assert "concentration" not in place_2.weights_used
+
+
+@pytest.mark.asyncio
+async def test_rerank_with_concentration_preserves_unverified_split() -> None:
+    first_pass = RecommendationResponse(
+        recommendations=[_first_pass_item("place-1", distance_km=0.1, distance_score=0.95)],
+        unverified_recommendations=[
+            _first_pass_item("place-2", distance_km=1.2, distance_score=0.4)
+        ],
+        elapsed_ms=0,
+    )
+    concentration = CandidateEnrichmentResponse(
+        request_id="req-4",
+        status="success",
+        candidates=[
+            _concentration_result("place-1", rate=50.0),
+            _concentration_result("place-2", rate=50.0),
+        ],
+    )
+
+    result = await rerank_with_concentration(
+        first_pass, _NO_WEATHER_CONTEXT, concentration, seek=True
+    )
+
+    assert [item.place_id for item in result.recommendations] == ["place-1"]
+    assert [item.place_id for item in result.unverified_recommendations] == ["place-2"]
