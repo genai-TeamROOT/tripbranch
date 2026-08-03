@@ -8,6 +8,7 @@ from app.errors import AppError
 from app.providers.concentration import RealConcentrationProvider
 from app.providers.geocoding import RealGeocodingProvider
 from app.providers.holiday import RealHolidayProvider
+from app.providers.local_search import RealLocalSearchProvider
 from app.providers.real_place import RealPlaceProvider
 from app.providers.weather import RealWeatherProvider
 
@@ -31,6 +32,8 @@ def test_settings_repr_and_dump_exclude_provider_secrets(
         "TOUR_API_SERVICE_KEY": "secret-tour",
         "NAVER_MAP_CLIENT_ID": "secret-naver-id",
         "NAVER_MAP_CLIENT_SECRET": "secret-naver-key",
+        "NAVER_LOCAL_SEARCH_CLIENT_ID": "secret-local-id",
+        "NAVER_LOCAL_SEARCH_CLIENT_SECRET": "secret-local-key",
         "SUPABASE_SECRET_KEY": "sb_secret_test",
     }
     for name, value in secrets.items():
@@ -60,6 +63,7 @@ async def test_provider_error_tracebacks_clear_request_secrets() -> None:
             RealConcentrationProvider(secret, client).get_forecast("11", "11110"),
             RealHolidayProvider(secret, client).get_holidays(2026),
             RealGeocodingProvider(secret, secret, client).geocode("서울역"),
+            RealLocalSearchProvider(secret, secret, client).search_places_by_name("쌈지길"),
         )
         for call in calls:
             with pytest.raises(AppError) as exc_info:

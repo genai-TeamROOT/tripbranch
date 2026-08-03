@@ -9,7 +9,12 @@ from uuid import UUID
 
 import httpx
 
-from app.domain.models import StoredPlaceDetail, StoredPlaceState, TourPlaceRecord
+from app.domain.models import (
+    StoredPlaceDetail,
+    StoredPlaceLocation,
+    StoredPlaceState,
+    TourPlaceRecord,
+)
 from app.errors import AppError
 
 _READ_PAGE_SIZE = 1000
@@ -27,6 +32,11 @@ _STATE_COLUMNS = ",".join(
         "inactive_reason",
     )
 )
+_LOCATION_COLUMNS = (
+    "content_id,title,address,latitude,longitude,"
+    "place_concentration_mappings(primary_concentration_name)"
+)
+
 _DETAIL_COLUMNS = ",".join(
     (
         "content_id",
@@ -70,6 +80,42 @@ def _parse_datetime(value: object, field: str) -> datetime | None:
         return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except ValueError:
         raise SupabaseRepositoryError(f"invalid {field}") from None
+
+
+def _map_place_locations(
+    rows: list[object], *, fallback_title: str
+) -> tuple[StoredPlaceLocation, ...]:
+    """places 조회 행을 StoredPlaceLocation으로 옮긴다. 좌표 없는 행은 버린다."""
+    locations: list[StoredPlaceLocation] = []
+    for raw in rows:
+        if not isinstance(raw, Mapping) or not raw.get("content_id"):
+            raise SupabaseRepositoryError("place location missing content_id")
+        try:
+            latitude = float(raw["latitude"])
+            longitude = float(raw["longitude"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        # places ↔ place_concentration_mappings는 1:1(FK가 PK)이라 PostgREST가 단일
+        # 객체로 내려준다. 관계 형태가 바뀌어 배열로 올 경우도 함께 받는다.
+        mapping = raw.get("place_concentration_mappings")
+        if isinstance(mapping, list):
+            mapping = mapping[0] if mapping else None
+        concentration_name = (
+            _optional_text(mapping.get("primary_concentration_name"))
+            if isinstance(mapping, Mapping)
+            else None
+        )
+        locations.append(
+            StoredPlaceLocation(
+                content_id=str(raw["content_id"]),
+                title=str(raw.get("title") or fallback_title),
+                address=_optional_text(raw.get("address")),
+                latitude=latitude,
+                longitude=longitude,
+                concentration_name=concentration_name,
+            )
+        )
+    return tuple(locations)
 
 
 def _optional_text(value: object) -> str | None:
@@ -278,6 +324,63 @@ class SupabasePlaceRepository:
                 ),
             )
         return states
+
+    async def find_active_places_by_name(
+        self, name: str
+    ) -> tuple[StoredPlaceLocation, ...]:
+        """TourAPI 기준 장소명을 정확히 일치시켜 검색 중심 좌표를 읽는다.
+
+        장소명 검색은 지오코딩보다 먼저 수행한다. 좌표가 없는 행은 검색 중심점으로
+        사용할 수 없으므로 반환하지 않는다. 별칭·부분 일치 정책은 상위 Tool이
+        별도 경로로 확장할 수 있도록 이 Repository는 정확 일치만 담당한다.
+        """
+        normalized_name = name.strip()
+        if not normalized_name:
+            return ()
+        response = await self._request(
+            "GET",
+            "/places",
+            params={
+                "select": _LOCATION_COLUMNS,
+                "title": f"eq.{normalized_name}",
+                "is_active": "eq.true",
+                "limit": "2",
+            },
+        )
+        rows = self._json(response)
+        if not isinstance(rows, list):
+            raise SupabaseRepositoryError("invalid place location response")
+
+        return _map_place_locations(rows, fallback_title=normalized_name)
+
+    async def find_concentration_mapped_places(self) -> tuple[StoredPlaceLocation, ...]:
+        """집중률 매핑이 있는 활성 장소를 좌표와 함께 모두 읽는다.
+
+        매핑에 있는 장소는 집중률 API에 데이터가 존재한다는 뜻이다. INFO 질의에서
+        대상 장소의 직접 데이터가 없을 때, 여기서 가장 가까운 곳을 대체 기준으로
+        쓰면 "가까운 곳을 골랐는데 집중률이 없더라"를 구조적으로 피할 수 있다.
+        PostgREST가 거리 정렬을 지원하지 않아 전체를 읽고 호출자가 계산한다 —
+        매핑은 100건 규모라 한 번에 받아도 부담이 없다.
+        """
+        response = await self._request(
+            "GET",
+            "/places",
+            params={
+                "select": _LOCATION_COLUMNS,
+                "is_active": "eq.true",
+                # 내부 조인으로 매핑이 있는 장소만 남긴다.
+                "place_concentration_mappings": "not.is.null",
+                "limit": str(_READ_PAGE_SIZE),
+            },
+        )
+        rows = self._json(response)
+        if not isinstance(rows, list):
+            raise SupabaseRepositoryError("invalid concentration mapping response")
+        return tuple(
+            location
+            for location in _map_place_locations(rows, fallback_title="")
+            if location.concentration_name
+        )
 
     async def get_active_place_details(
         self,

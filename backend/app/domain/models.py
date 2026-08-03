@@ -130,6 +130,20 @@ class PlaceDetails:
 
 
 @dataclass(frozen=True)
+class LocalSearchPlace:
+    """Naver Local Search가 반환한 장소·업체 후보 한 건."""
+
+    name: str
+    address: str | None
+    road_address: str | None
+    category: str | None
+    latitude: float | None
+    longitude: float | None
+
+
+
+
+@dataclass(frozen=True)
 class TourPlaceRecord:
     """TourAPI 지역 기반 목록의 장소 한 건."""
 
@@ -165,6 +179,18 @@ class PlaceOperatingDetails:
     content_type_id: str
     operating_hours_raw: str | None
     rest_date_raw: str | None
+
+
+@dataclass(frozen=True)
+class StoredPlaceLocation:
+    """저장된 TourAPI 장소의 검색 중심점 해석용 최소 정보."""
+
+    content_id: str
+    title: str
+    address: str | None
+    latitude: float
+    longitude: float
+    concentration_name: str | None = None
 
 
 @dataclass(frozen=True)

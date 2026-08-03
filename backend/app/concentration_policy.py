@@ -16,6 +16,15 @@ CONCENTRATION_NORMAL_MAX_EXCLUSIVE = 50.0
 # 집중률이 70% 미만이면 다소 혼잡한 상태로 본다.
 CONCENTRATION_SLIGHTLY_CROWDED_MAX_EXCLUSIVE = 70.0
 
+# INFO 단일 장소 질의에서만 쓰는 대체 관광지 탐색 반경이다. 추천 후보 수집의
+# 기본 반경과 구분하며, 실측 결과에 따라 조정할 수 있도록 정책 상수로 둔다.
+INFO_CONCENTRATION_FALLBACK_RADIUS_KM = 0.5
+
+# 대체 조회에서 순서대로 시도할 최대 장소 수다. 매핑에 이름이 있어도 집중률 API
+# 조회가 실패할 수 있어(표기 차이·API 갱신) 한 곳만 보고 포기하지 않는다.
+# 실측(2026-08-03): 매핑 100건 중 30건이 조회 실패, 안국역은 2번째 후보에서 성공.
+INFO_CONCENTRATION_FALLBACK_ATTEMPT_LIMIT = 3
+
 
 class ConcentrationLevel(StrEnum):
     """A–C 계약에서 사용하는 집중률 단계 코드."""
@@ -77,6 +86,7 @@ __all__ = [
     "CONCENTRATION_NORMAL_MAX_EXCLUSIVE",
     "CONCENTRATION_QUIET_MAX_EXCLUSIVE",
     "CONCENTRATION_SLIGHTLY_CROWDED_MAX_EXCLUSIVE",
+    "INFO_CONCENTRATION_FALLBACK_RADIUS_KM",
     "ConcentrationLabel",
     "ConcentrationLevel",
     "NormalizedConcentration",

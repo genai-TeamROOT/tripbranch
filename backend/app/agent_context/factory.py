@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import httpx
 
+from app.agent_context.concentration_proxy import ConcentrationMappingCache
 from app.agent_context.enrichment_service import CandidateEnrichmentService
 from app.agent_context.service import ContextService, ContextTools
 from app.config import settings
@@ -11,7 +12,9 @@ from app.providers.factory import (
     get_concentration_provider,
     get_geocoding_provider,
     get_holiday_provider,
+    get_local_search_provider,
     get_place_details_provider,
+    get_place_location_repository,
     get_place_search_provider,
     get_weather_provider,
 )
@@ -27,16 +30,30 @@ def get_context_provider(client: httpx.AsyncClient) -> ContextService:
 
     return ContextService(
         ContextTools(
-            location=ResolveLocationTool(get_geocoding_provider(client)),
+            location=ResolveLocationTool(
+                get_geocoding_provider(client),
+                place_repository=get_place_location_repository(client),
+                local_search_provider=get_local_search_provider(client),
+            ),
             places=NearbyPlaceDetailsTool(
                 search_provider=get_place_search_provider(client),
                 details_provider=get_place_details_provider(client),
             ),
             weather=GetWeatherForecastTool(get_weather_provider(client)),
             holidays=GetHolidaysTool(get_holiday_provider(client)),
+            concentration=GetConcentrationTool(get_concentration_provider(client)),
         ),
         candidate_limit=settings.recommendation_candidate_limit,
+        concentration_mapping_cache=_concentration_mapping_cache(client),
     )
+
+
+def _concentration_mapping_cache(
+    client: httpx.AsyncClient,
+) -> ConcentrationMappingCache | None:
+    """Supabase 설정이 없으면 INFO 대체 조회를 건너뛴다(기존 경로 유지)."""
+    repository = get_place_location_repository(client)
+    return None if repository is None else ConcentrationMappingCache(repository)
 
 
 def get_candidate_enrichment_service(

@@ -16,6 +16,7 @@ from app.domain.models import (
     ConcentrationResult,
     GeocodeResult,
     HolidayResult,
+    LocalSearchPlace,
     PlaceCategoryFilter,
     PlaceDetails,
     PlaceOperatingDetails,
@@ -114,6 +115,13 @@ class GeocodingProvider(Protocol):
         """장소 이름이나 주소를 정규화된 좌표 결과로 변환한다."""
         ...
 
+
+class LocalSearchProvider(Protocol):
+    async def search_places_by_name(
+        self, query: str, *, display: int = 5
+    ) -> ProviderResult[tuple[LocalSearchPlace, ...]]:
+        """상호명·시설명으로 Naver 지역 검색 후보를 반환한다."""
+        ...
 
 class WeatherProvider(Protocol):
     async def get_current_condition(

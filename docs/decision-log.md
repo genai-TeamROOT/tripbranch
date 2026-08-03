@@ -541,9 +541,9 @@
   `MIN_PLACE_SEARCH_RADIUS_KM`(0.1→0.3) 변경은 D 코드가 상수를 import해서
   쓰는 값이라 D 쪽 수정 없이 그대로 반영됐다
 
-### D-036 — 혼잡도 fallback: 장소 근접치 채택 (A 제안, 확인 필요)
+### D-036 — 혼잡도 fallback: 장소 근접치 채택 (INFO 전용)
 
-- 상태: `Proposed` (A 제안, C·D 확인 필요)
+- 상태: `Accepted` (INFO 전용)
 - 결정: 카페·음식점처럼 집중률 API가 다루는 "관광지" 콘텐츠에 없는 장소를 물으면,
   기존 미결이었던 세 선택지(장소 근접치·구 단위·Feature 제외) 중 **장소
   근접치**를 채택한다 — 대상 장소 자체의 데이터가 없으면
@@ -553,11 +553,13 @@
   편이 유용하고, 이미 구현된 `NearbyPlaceDetailsTool`을 그대로 재사용할 수 있어
   새 Provider 연동 없이 구현 가능하다. 구 단위 평균은 데이터를 왜곡할 소지가
   크고, Feature 제외는 사용자 질문에 아예 답하지 못한다는 문제가 있어 제외했다
-- 범위: 이번 결정은 INFO(`question_type=concentration`)의 단일 장소 질의를
-  기준으로 한다. RECOMMEND의 `restaurant` 후보에도 동일하게 적용할지는 배치
-  조회 비용 문제로 별도 확정이 필요해 범위에서 제외했다
+- 범위: INFO(`question_type=concentration`)의 단일 장소 질의에만 적용한다.
+  RECOMMEND 후보에는 직접 조회된 혼잡도만 사용하며, 근접치 fallback은 적용하지 않는다.
+  추후 혼잡도 데이터 부족으로 추천 품질 또는 결과 수에 문제가 확인될 때만, C·D 사전
+  협의 후 확장을 검토한다.
 - 상세 설계: [`docs/design/concentration-conditions.md`](./design/concentration-conditions.md) §3.3
-- TODO: 탐색 반경(제안값 1.0km) 확정, RECOMMEND 쪽 적용 여부 결정 — C·D 확인 대기
+- 탐색 반경: INFO fallback 전용 기본값을 0.5km로 적용한다. 실제 테스트 결과에 따라
+  조정할 수 있으며, 코드 단일 기준은 `INFO_CONCENTRATION_FALLBACK_RADIUS_KM`이다.
 
 ### D-037 — 혼잡도 반영 방식 재검토: 초기 Context 확장 vs 1차 Scoring 후 상위 5개 보강 재계산 (A-C 협의, D 미확인)
 
@@ -604,7 +606,7 @@
 | Backend 상태 저장 | Supabase 테이블과 캐시 역할 | `TBD` |
 | Frontend 저장 | `sessionStorage` 유지 또는 `localStorage` 전환 | `TBD` |
 | Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); 응답 Evidence 노출·E2E 통합 `Implemented`(D-028); Explainability Layer v1 `Accepted`(D-029, A 협의 반영 완료); warning 커버리지 보완 `Implemented`(D-030); Explanation 문장 구체화 `Implemented`(D-031); RecommendationContext 진입점 `Implemented`(D-032); Agent Runtime RecommendationProvider 연결 `Implemented`(D-033); Tool 직접 호출 파이프라인 삭제·레거시 라우터 마이그레이션 `Implemented`(D-034); develop 재병합 시 RecommendationProvider 중복 정리 `Implemented`(D-035); 혼잡도 2차 Scoring(`rerank_with_concentration()`) `Implemented`(D-040) | 구현 완료 |
-| 혼잡도 fallback | 장소 근접치, 구 단위, Feature 제외 | 장소 근접치로 A 제안(D-036), 확인 필요 |
+| 혼잡도 fallback | 장소 근접치, 구 단위, Feature 제외 | INFO 전용 장소 근접치 적용(D-036), RECOMMEND 확장은 후속 검토 |
 | 혼잡도 반영 방식 | 초기 Context 확장(안 A) vs 1차 Scoring 후 상위 5개 보강 재계산(안 B) | 안 B 채택, `rerank_with_concentration()` 구현 완료(D-040) |
 | 운영시간 파싱 | 기본 시간·월별·주간 휴무 구현, 공휴일·회차 예외 확대 | `부분 구현` |
 | 이동시간 | 지도 Provider 및 교통수단별 계산 | `TBD` |
@@ -728,6 +730,23 @@
   `tests/test_recommendation_pipeline.py`(AVOID/SEEK 재정렬 실제로 뒤집히는지,
   부분 결측, unverified 분리 유지), `tests/test_real_recommendation_provider.py`
   (Protocol 위임·seek 변환)로 검증. 전체 회귀(709 passed, 20 skipped) 확인.
+
+### D-041 — 장소명 위치 해석: `places` DB 우선 조회
+
+- 상태: `Implemented` (정확 일치 MVP 범위)
+- 결정: 장소명 입력을 Naver Geocoding에 바로 전달하지 않는다. `ResolveLocationTool`이
+  활성 `places` 행을 정확 일치로 먼저 조회해 TourAPI 기준 좌표를 사용하고, 미조회 시에만
+  기존 별칭·주소 Geocoding 경로로 진행한다.
+- 배경: Geocoding은 주소 중심 API라 `쌈지길` 같은 장소명은 `location_not_found`가 될 수
+  있지만, 해당 장소는 TourAPI `places` DB에 좌표가 존재한다.
+- 집중률: 장소 행에 `place_concentration_mappings`가 있으면 대표 집중률명을 함께 읽어
+  INFO 직접 조회에 사용한다. 직접 조회에 좌표가 필요 없더라도, 매핑이 없는 경우의 0.5km
+  fallback에는 같은 DB 좌표를 사용한다.
+- 안전장치: Fake Provider 모드에서는 실제 Supabase 조회를 주입하지 않아 일반 테스트가
+  외부 데이터에 의존하지 않는다.
+- 범위 제외: 별칭·부분 일치, Naver Local Search, DB 미등록 일반 상호명 처리, RECOMMEND
+  후보 보강의 매핑 연결은 후속 작업이다.
+
 
 ## 변경 이력
 

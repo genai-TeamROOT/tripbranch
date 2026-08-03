@@ -257,7 +257,7 @@ visit_time: string | null;  // YYYY-MM-DD, concentration 질의 전용
 2. get_concentration(place_name="OO카페", ...) 호출
 3. status == "success" → 그대로 응답
 4. status == "no_data" →
-   a. search_nearby_places(location=대상 좌표, place_types=["attraction"], radius_km=1.0, limit=1)
+   a. search_nearby_places(location=대상 좌표, place_types=["attraction"], radius_km=0.5, limit=1)
       로 가장 가까운 관광지 탐색 (기존 Tool 재사용 — `NearbyPlaceDetailsTool`,
       backend/app/tools/nearby_place_details.py, tool-intelligence-contract-v1.md §6.2)
    b. 결과 있음 → 그 관광지 이름으로 get_concentration 재호출
@@ -277,24 +277,18 @@ visit_time: string | null;  // YYYY-MM-DD, concentration 질의 전용
 절대 "OO카페가 혼잡해요"처럼 대상 장소 자체의 값인 것처럼 단정하지 않는다 — 항상
 "근처 [관광지] 기준" 문구를 포함한다.
 
-**탐색 반경(`radius_km`)**: 기본값 1.0km를 제안한다. `search_nearby_places`의
+**탐색 반경(`radius_km`)**: 기본값은 0.5km다. `search_nearby_places`의
 시스템 기본값(`place_search_policy.py`의 `DEFAULT_PLACE_SEARCH_RADIUS_KM`)은
 2.0km이지만, "근처 관광지"로 참고할 수 있는 신뢰도를 위해 이 fallback 전용으로는
-더 좁게 잡는 게 안전하다고 판단했다. 정확한 값과 "관광지가 너무 멀면 대체 조회
-자체를 포기할지"는 C/D와 함께 확정 필요(§8 TODO).
+더 좁게 잡는 게 안전하다고 판단했다. `concentration_policy.py`의
+`INFO_CONCENTRATION_FALLBACK_RADIUS_KM`을 단일 기준으로 사용하며, 실제 테스트 결과에
+따라 조정한다. "관광지가 너무 멀면 대체 조회 자체를 포기할지"는 C/D와 함께 확정 필요(§8 TODO).
 
 **✅ 2026-08-02 D 확인 완료 — RECOMMEND 쪽은 적용하지 않는다.** 이 절은
-**INFO(단일 장소 질의)로 범위를 한정**한다. RECOMMEND(D의 2차 Scoring)에서도
-`concentration_intent`가 있고 후보가 `restaurant`(카페·음식점) 유형이면 같은
-문제가 생기지만, (1) 후보가 최대 5개인 배치 보강 흐름에 근접치 조회를 얹으면
-후보당 API 호출이 최대 2배로 늘어나 안 B를 채택한 이유(§2.2.2, 속도)와
-배치되고, (2) 근접치 값이 여러 후보를 서로 비교·순위 매기는 근거로 쓰이면
-INFO의 "질문 하나에 답 하나"보다 오도 위험이 커지는데, 지금 D의 2차 Scoring
-Feature(`ConcentrationForecastData`)엔 `is_proxy`처럼 "추정치임을 표시"할
-방법이 없다. 두 이유로 D가 RECOMMEND 확장을 명시적으로 보류하기로 했다 —
-스키마·문장 로직을 새로 설계해야 다시 논의 가능. C 구현은 INFO의
-`ContextService.fetch_info_context()`에만 필요하고, D가 쓰는
-`enrichment_service.py::_enrich_candidate()`(RECOMMEND용)는 변경되지 않는다.
+**INFO(단일 장소 질의)로 범위를 한정**한다. RECOMMEND에서는 직접 조회된 혼잡도만 사용하며,
+근접치 fallback은 적용하지 않는다. 후보당 API 호출 증가와 추정치 순위 반영 위험 때문에
+D가 RECOMMEND 확장을 보류했다. C 구현은 INFO의 `ContextService.fetch_info_context()`에만
+필요하다.
 
 ---
 
@@ -363,7 +357,7 @@ INFO는 이 A↔C Context 계약(v0, RECOMMEND 전용 —
 발견하지 못했다. `place_name`은 이미 선택 필드로 존재하고, 페이지네이션/포맷
 파라미터(`pageNo`/`numOfRows`/`_type`)는 고정값이라 설계 대상이 아니다.
 
-### 4.4 `place_concentration_mappings` — C 기존 인프라 (신규 발견, 런타임 미연결)
+### 4.4 `place_concentration_mappings` — C 런타임 연결 (정확 장소명 경로)
 
 `develop` 병합(2026-07-30, 커밋 `019709e`)으로 C가 이미
 `place_concentration_mappings` 테이블([place-database-schema.md §6.1](./place-database-schema.md#61-place_concentration_mappings))을
@@ -375,11 +369,14 @@ INFO는 이 A↔C Context 계약(v0, RECOMMEND 전용 —
 `place_id` → 집중률 이름을 추측(문자열 유사도 매칭 등)할 필요 없이 이 테이블로
 정확히 조회할 수 있다 — 제안 흐름의 실현 가능성을 뒷받침하는 근거로 참고한다.
 
-**단, 아직 런타임 코드(`enrichment_service.py`, `providers/concentration.py`
-등)에는 연결되지 않았다** — DB 테이블과 1회성 적재 스크립트
-(`scripts/import_concentration_mappings.py`)만 존재한다. 이 테이블을 실제
-조회 로직에 연결할지, 연결한다면 언제 할지는 A가 결정할 사안이 아니다 —
-**C 확인 필요** 항목으로만 남긴다.
+**INFO 런타임에는 연결됐다.** `ResolveLocationTool`이 `places.title` 정확 일치
+장소를 지오코딩보다 먼저 조회하면서 같은 행의 매핑 대표명도 함께 읽는다.
+`ContextService.fetch_info_context()`는 이 대표명을 Concentration Tool에 전달하므로
+`쌈지길`처럼 주소 지오코딩이 실패하는 TourAPI 장소도 직접 조회할 수 있다.
+
+현재 범위는 정확 장소명 일치뿐이다. 검증된 별칭·부분 일치·DB에 없는 일반 상호명의
+Naver Local Search 보완은 공통 Location Resolver 후속 확장으로 남긴다. RECOMMEND
+후보 보강(`enrichment_service.py`)은 이번 변경 범위에 포함하지 않는다.
 
 ---
 
@@ -452,7 +449,9 @@ Context와 성격이 더 가깝다(`places`도 `api_context`에 캐싱하지 않
 
 - 서울시 실시간 혼잡도 API 연동(카페·음식점 등 업종별 실시간 데이터) — 이번 범위
   밖, 추후 별도 설계
-- §3.3 인근 관광지 대체 조회의 탐색 반경(`radius_km`, 제안값 1.0km)과 "반경 내
+- `concentration` Feature의 정확한 점수 변환 함수(4단계 구간 기준 vs 원본 비율
+  선형 정규화) — `recommendation-scoring.md`에서 D와 확정
+- §3.3 인근 관광지 대체 조회의 탐색 반경(`radius_km`, 현재 0.5km)과 "반경 내
   관광지가 없으면 포기" 기준 — C/D 확인 필요
 - `_select_current_forecast`(또는 동등 로직)를 RECOMMEND 전용 서비스 내부에 갇히지
   않도록 C가 공개 인터페이스로 노출해 INFO 경로에서도 재사용 — C 확인 필요 (§4.2)
