@@ -874,8 +874,9 @@ class _FixedStatusToolProvider:
         ("success", True),
         # partial은 "가능한 데이터로 계속"이라 D까지 간다(계약 §5.4).
         ("partial", True),
-        ("no_data", True),
-        # 아래 셋은 _TOOL_TERMINAL_STATUSES — 안내만 하고 끝난다.
+        # 아래 넷은 _TOOL_TERMINAL_STATUSES — 안내만 하고 끝난다.
+        # no_data는 넘길 후보가 없어 D를 부르지 않고 조건 조정을 되묻는다.
+        ("no_data", False),
         ("needs_clarification", False),
         ("unsupported", False),
         ("unavailable", False),
@@ -933,3 +934,71 @@ async def test_location_required_clarification_reaches_user_message() -> None:
 
     assert "어디 근처에서" in response.message
 
+
+@pytest.mark.asyncio
+async def test_no_data_asks_to_adjust_conditions_without_calling_recommendation() -> None:
+    """후보가 없으면 D를 부르지 않고 조건을 바꿔볼지 되묻는다.
+
+    빈 후보로 Scoring을 돌려도 결과가 같으므로 호출하지 않는다. 사용자에게 나가는
+    문구는 기존과 동일해야 한다 — 장애가 아니라 "조건에 맞는 곳이 없음"이다.
+    """
+    tool_provider = _FixedStatusToolProvider("no_data")
+    recommendation_provider = _CountingRecommendationProvider()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        weather_provider=FakeWeatherProvider(),
+        tool_provider=tool_provider,
+        recommendation_provider=recommendation_provider,
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=InMemoryStateStore(),
+    )
+
+    assert recommendation_provider.call_count == 0
+    assert response.recommendations is None
+    assert "조건에 맞는 곳을 찾지 못했어요" in response.message
+    # 일시적 장애 문구로 새면 안 된다.
+    assert "일시적으로" not in response.message
+
+
+@pytest.mark.asyncio
+async def test_no_data_marks_pending_clarification_so_next_turn_keeps_conditions() -> None:
+    """"범위를 넓혀볼까요?"에 대한 답변은 새 요청이 아니라 이번 요청의 연속이다.
+
+    표시해두지 않으면 다음 턴이 RECOMMEND로 분류되며 soft reset이 걸려 앞 턴 조건이
+    사라진다(D-039와 같은 이유).
+    """
+    store = InMemoryStateStore()
+    tool_provider = _FixedStatusToolProvider("no_data")
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        weather_provider=FakeWeatherProvider(),
+        tool_provider=tool_provider,
+        recommendation_provider=_CountingRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=store,
+    )
+
+    context = get_session_context(response.state.session_id, store=store)
+    assert context.pending_clarification == "no_candidate"
+
+
+def test_terminal_status_sets_match_between_runtime_and_composer() -> None:
+    """두 모듈이 같은 집합을 각자 들고 있다 — 어긋나면 메시지가 엉뚱한 분기로 샌다."""
+    from app.services.runtime.agent_runtime import _TOOL_TERMINAL_STATUSES as runtime_set
+    from app.services.runtime.response_composer import (
+        _TOOL_TERMINAL_STATUSES as composer_set,
+    )
+
+    assert runtime_set == composer_set
