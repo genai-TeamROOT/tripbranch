@@ -175,6 +175,7 @@ time_available  : 분 단위
   "condition_version": 0,
   "last_run_id": null,
   "last_intent": null,
+  "pending_clarification": null,
   "status": "active",
   "created_at": "2026-07-23T09:00:00+09:00",
   "updated_at": "2026-07-23T09:00:00+09:00",
@@ -190,6 +191,7 @@ time_available  : 분 단위
 | `condition_version` | `user_conditions` 변경 횟수. 동시 갱신 감지용 |
 | `last_run_id` | 이 상태를 마지막으로 갱신한 실행 식별자 |
 | `last_intent` | 직전 턴의 인텐트. A의 맥락 판정용으로 반환 |
+| `pending_clarification` | 직전 턴이 되묻기로 끝났다면 그 사유 코드. B는 값을 해석하지 않고 그대로 보관 |
 | `status` | `active` / `expired` |
 | `created_at` | 세션 생성 시각 |
 | `updated_at` | 조건이 마지막으로 변경된 시각 |
@@ -850,6 +852,7 @@ B는 전달받은 `reset_scope` 값에 따라 실행만 하며 발화를 해석�
 - `place_id` (TourAPI `contentid`)
 - 식별자 (`session_id`, `run_id`, `trace_id`)
 - `last_intent`
+- `pending_clarification` (되묻기 사유 코드)
 - 조건 변경 기록의 `before_value` / `after_value`
 - 실행 메타데이터 (지연 시간, 토큰 사용량, 오류 유형)
 - 버전 정보 (`prompt_version`, `scoring_version`, `variant_id`)
@@ -897,6 +900,7 @@ HTTP 엔드포인트 노출은 AF-05 Agent Runtime의 책임 범위다.
 | 6.3 세션 컨텍스트 조회 | A → B | 읽기 전용 |
 | 6.4 추천 결과 기록 | Runtime → B | 이력 기록 |
 | 6.5 api_context 갱신 | A 또는 Runtime → B | 외부 데이터 갱신 |
+| 6.6 되묻기 사유 저장 | A → B | 상태 변경 |
 
 **전체 호출 순서**
 
@@ -1021,6 +1025,7 @@ A가 인텐트를 분류하기 전에 필요한 정보를 제공한다.
   "excluded_place_ids": ["126508", "126509", "126510"],
   "last_recommended_run_id": "run_01J8XKQ5A1B2C3",
   "last_intent": "MODIFY",
+  "pending_clarification": null,
   "user_conditions": { "...14개 필드..." },
   "api_context": { "...4개 필드 + 만료 플래그..." },
   "condition_version": 5
@@ -1036,6 +1041,7 @@ A가 인텐트를 분류하기 전에 필요한 정보를 제공한다.
 | `excluded_place_ids` | list[string] | 누적 제외 목록 |
 | `last_recommended_run_id` | string \| null | 마지막 추천 실행 |
 | `last_intent` | string \| null | 직전 턴 인텐트. `INFO`의 장소 맥락 판정용 |
+| `pending_clarification` | string \| null | 직전 턴이 되묻기로 끝났다면 그 사유 코드. A가 이번 턴 조건 병합 방식을 정할 때 사용 |
 | `user_conditions` | object | 현재 조건. 상대 표현("더 가까운 곳") 계산용 |
 | `api_context` | object | 만료 여부 확인용 |
 | `condition_version` | int | 현재 조건 버전 |
@@ -1128,7 +1134,35 @@ GPS·날씨 API로 확보한 데이터를 저장한다.
 
 **호출 주체는 미확정이다.** (7절 P0-2)
 
-### 6.6 실패 처리 원칙
+### 6.6 되묻기 사유 저장 (A → B)
+
+직전 턴이 되묻기로 끝났을 때 그 사유를 저장한다. `api_context` 갱신(6.5절)과
+같은 성격 — 조건 변경이 아니므로 `condition_version`을 증가시키지 않는다.
+
+**요청**
+
+```json
+{ "session_id": "sess_01J8XKQ2M7N4P9", "code": "location_required" }
+```
+
+**응답**
+
+```json
+{ "session_id": "sess_01J8XKQ2M7N4P9", "pending_clarification": "location_required" }
+```
+
+**규칙**
+
+- 세션이 없으면 갱신하지 않고 `null`을 반환한다. 세션을 새로 생성하지 않는다.
+- `code`가 `null`이면 기존 값을 지운다 — 되묻기가 해소됐다는 신호.
+- `condition_version`을 증가시키지 않는다.
+- `updated_at`을 갱신하지 않는다. (`last_active_at`은 갱신)
+- `code` 값의 허용 목록은 B가 검증하지 않는다. 판정은 LLM(조건 모호)과
+  패키지 C(예: `location_required` 등 4종)가 하고, 패키지 A가 정규화해 전달한다.
+
+**호출 주체는 패키지 A다.**
+
+### 6.7 실패 처리 원칙
 
 | 실패 지점 | 추천 응답 | 처리 |
 | --- | --- | --- |
@@ -1140,7 +1174,7 @@ GPS·날씨 API로 확보한 데이터를 저장한다.
 
 기록성 작업의 실패는 사용자 응답 경로를 중단시키지 않는다.
 
-### 6.7 계약 범위 밖
+### 6.8 계약 범위 밖
 
 | 항목 | 담당 |
 | --- | --- |
@@ -1230,3 +1264,4 @@ GPS·날씨 API로 확보한 데이터를 저장한다.
 | 07-24 | 연산 종류 | **4종**(`Add`/`Update`/`Remove`/`Keep`)으로 재확정. 07-23 3종 결정을 대체 | A 재회신 |
 | 07-24 | `Remove` 허용 범위 | 14개 필드 전체. `current_location` 필수 지위가 `gps_location`으로 이관 | conditions-schema v0.3 |
 | 07-24 | 조건 필드 명칭 | `user_conditions`로 통일. `current_conditions` / `final_conditions` 표기를 대체 | conditions-schema v0.3 |
+| 08-02 | `pending_clarification` 필드 | `AgentState`에 되묻기 사유 코드 필드 추가. 판정은 LLM/C, B는 보관만. PR #64에서 C가 선반영, 이번에 계약 문서 반영 | PR #64 (C) |
