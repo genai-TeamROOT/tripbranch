@@ -19,10 +19,14 @@ from app.agent_context.enrichment_schemas import (
 from app.agent_context.schemas import (
     AgentContextRequest,
     AgentContextResponse,
+    Clarification,
+    ContextError,
     ContextValue,
     Coordinates,
     PlaceCandidate,
     RecommendationContext,
+    ResolvedLocation,
+    ResponseMetadata,
 )
 from app.providers.contracts import ProviderSource, provider_result
 from app.providers.stub import FakeLLMProvider, FakeWeatherProvider
@@ -824,3 +828,108 @@ async def test_modify_reject_all_calls_context_again() -> None:
 
     assert tool_provider.call_count == 2
     assert tool_provider.last_request.conditions.search_center == "경복궁"
+
+
+class _FixedStatusToolProvider:
+    """지정한 status만 돌려주는 C 대역. 상태 분기만 보기 위해 내용은 최소로 채운다."""
+
+    def __init__(self, status: str) -> None:
+        self._status = status
+        self.call_count = 0
+
+    async def fetch_context(self, request: AgentContextRequest) -> AgentContextResponse:
+        self.call_count += 1
+        payload: dict = {
+            "request_id": request.request_id,
+            "intent": "RECOMMEND",
+            "status": self._status,
+            "metadata": ResponseMetadata(),
+        }
+        if self._status in {"success", "partial", "no_data"}:
+            payload["context"] = RecommendationContext(
+                location=ContextValue(
+                    status="success",
+                    data=ResolvedLocation(
+                        requested_query="경복궁",
+                        resolved_name="경복궁",
+                        location=Coordinates(latitude=37.5788, longitude=126.9770),
+                    ),
+                ),
+                places=ContextValue(status=self._status, data=[]),
+            )
+        elif self._status == "needs_clarification":
+            payload["clarification"] = Clarification(
+                code="location_required", missing_fields=["current_location"]
+            )
+        else:
+            payload["error"] = ContextError(
+                code=self._status, message="테스트용 오류", retryable=False
+            )
+        return AgentContextResponse(**payload)
+
+
+@pytest.mark.parametrize(
+    ("tool_status", "reaches_recommendation"),
+    [
+        ("success", True),
+        # partial은 "가능한 데이터로 계속"이라 D까지 간다(계약 §5.4).
+        ("partial", True),
+        ("no_data", True),
+        # 아래 셋은 _TOOL_TERMINAL_STATUSES — 안내만 하고 끝난다.
+        ("needs_clarification", False),
+        ("unsupported", False),
+        ("unavailable", False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_tool_status_decides_whether_recommendation_runs(
+    tool_status: str, reaches_recommendation: bool
+) -> None:
+    """C의 6개 status가 D 호출 여부를 어떻게 가르는지 한곳에 고정한다.
+
+    개별 케이스는 다른 테스트에도 흩어져 있지만, 경계를 한 표로 모아두면 "partial은
+    어떻게 되지?"를 한눈에 답할 수 있고 정책이 바뀔 때 이 표만 고치면 된다.
+    """
+    tool_provider = _FixedStatusToolProvider(tool_status)
+    recommendation_provider = _CountingRecommendationProvider()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        weather_provider=FakeWeatherProvider(),
+        tool_provider=tool_provider,
+        recommendation_provider=recommendation_provider,
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=InMemoryStateStore(),
+    )
+
+    assert tool_provider.call_count == 1
+    assert recommendation_provider.call_count == (1 if reaches_recommendation else 0)
+    assert (response.recommendations is not None) is reaches_recommendation
+
+
+@pytest.mark.asyncio
+async def test_location_required_clarification_reaches_user_message() -> None:
+    """C의 clarification.code가 A를 거쳐 되묻기 문장까지 이어지는지 확인한다."""
+    tool_provider = _FixedStatusToolProvider("needs_clarification")
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        weather_provider=FakeWeatherProvider(),
+        tool_provider=tool_provider,
+        recommendation_provider=_CountingRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=InMemoryStateStore(),
+    )
+
+    assert "어디 근처에서" in response.message
+
