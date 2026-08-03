@@ -103,7 +103,12 @@ def get_or_create_session(
     다음 세 경우 모두 신규 세션을 발급하며, 오류를 반환하지 않는다.
       1. session_id가 없음
       2. 저장소에 존재하지 않음 (서버 재시작 등)
-      3. TTL 초과로 만료됨
+      3. session_id가 expired 상태임 (TTL 초과로 이미 만료 처리됐거나,
+         apply_reset(RESET_FULL)로 명시적으로 만료 처리된 경우 모두 포함)
+
+    status가 아직 active인데 TTL만 초과한 경우는 여기서 expired로 전환하고
+    함께 신규 발급한다 — peek_session()과 달리 이 함수는 판정과 동시에
+    상태를 확정 짓는 쓰기 경로이기 때문이다.
 
     Returns:
         (state, created) - created가 True면 신규 발급된 세션이다.
@@ -112,7 +117,7 @@ def get_or_create_session(
         return create_session(store), True
 
     state = store.get_state(session_id)
-    if state is None:
+    if state is None or state.status == "expired":
         return create_session(store), True
 
     if is_session_expired(state):
