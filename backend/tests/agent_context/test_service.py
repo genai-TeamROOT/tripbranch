@@ -21,6 +21,7 @@ from app.domain.models import (
     StoredPlaceLocation,
     WeatherForecastResult,
 )
+from app.errors import ProviderUnavailableError
 from app.place_search_policy import DEFAULT_PLACE_SEARCH_RADIUS_KM
 from app.providers.concentration import FakeConcentrationProvider
 from app.providers.contracts import (
@@ -679,3 +680,47 @@ async def test_info_concentration_fallback_stops_at_attempt_limit() -> None:
     assert response.status == "no_data"
     # 직접 조회 1회 + 대체 후보 INFO_CONCENTRATION_FALLBACK_ATTEMPT_LIMIT회.
     assert len(concentration_provider.calls) == 1 + INFO_CONCENTRATION_FALLBACK_ATTEMPT_LIMIT
+
+
+class _AlwaysFailingGeocodingProvider:
+    """항상 장애를 내는 Geocoding 대역."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def geocode(self, location_query: str, *, use_alias: bool = True):
+        self.calls.append(location_query)
+        raise ProviderUnavailableError("NaverGeocoding", detail="테스트 장애")
+
+
+@pytest.mark.asyncio
+async def test_real_provider_failure_surfaces_as_unavailable_without_fake_fallback() -> None:
+    """Real Provider가 실패해도 Fake 데이터로 대체하지 않는다(D-042).
+
+    조용히 Fake로 낮추면 "테스트 카페" 같은 stub이 정상 응답처럼 나가, 개발자도
+    사용자도 실데이터를 보고 있는지 알 수 없게 된다. 실패는 unavailable로 드러난다.
+    """
+    geocoding = _AlwaysFailingGeocodingProvider()
+    service = ContextService(
+        ContextTools(
+            location=ResolveLocationTool(geocoding),
+            places=NearbyPlaceDetailsTool(FakePlaceProvider(), FakePlaceProvider()),
+            weather=GetWeatherForecastTool(FakeWeatherProvider()),
+            holidays=GetHolidaysTool(FakeHolidayProvider()),
+        ),
+        candidate_limit=10,
+        clock=lambda: datetime.now(KST),
+    )
+
+    response = await service.fetch_context(_request(place_types=["restaurant"]))
+
+    assert geocoding.calls, "Geocoding을 실제로 호출했어야 한다"
+    assert response.status == "unavailable"
+    assert response.error is not None
+    # 실패 내역은 context에 남지만, Fake 좌표로 대체되지는 않는다.
+    assert response.context is not None
+    assert response.context.location is not None
+    assert response.context.location.status == "unavailable"
+    assert response.context.location.data is None
+    # 후속 Tool도 돌지 않아 Fake 후보가 섞이지 않는다.
+    assert response.context.places is None
