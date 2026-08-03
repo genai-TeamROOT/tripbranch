@@ -34,6 +34,7 @@ from app.place_search_policy import (
     MIN_PLACE_SEARCH_RADIUS_KM,
     WALKING_SPEED_KM_PER_MINUTE,
 )
+from app.providers.contracts import ProviderMetadata, ProviderSource, ProviderStatus
 from app.recommendation_limits import (
     MAX_RECOMMENDATION_CANDIDATE_LIMIT,
     MIN_RECOMMENDATION_LIMIT,
@@ -47,7 +48,11 @@ from app.tools.nearby_place_details import (
     NearbyPlaceDetailsTool,
 )
 from app.tools.resolve_location import (
+    ResolutionConfidence,
+    ResolutionMethod,
+    ResolvedLocation,
     ResolveLocationQuery,
+    ResolveLocationResult,
     ResolveLocationTool,
 )
 from app.tools.weather_forecast import (
@@ -103,7 +108,7 @@ class ContextService:
         conditions = request.conditions
         execution_plan = build_tool_execution_plan(conditions)
         location_query = conditions.search_center or conditions.current_location
-        if location_query is None:
+        if location_query is None and request.gps_location is None:
             return assemble_agent_context_response(
                 ContextAssemblyInput(request=request, location_result=None),
                 rule_versions=_rule_versions(),
@@ -116,7 +121,11 @@ class ContextService:
         if category_plan.has_unsupported_conditions or category_plan.has_conflicts:
             return _unsupported_category_response(request, category_plan)
 
-        location_result = await self._tools.location.execute(ResolveLocationQuery(location_query))
+        location_result = (
+            await self._tools.location.execute(ResolveLocationQuery(location_query))
+            if location_query is not None
+            else _gps_location_result(request, self._clock())
+        )
         if location_result.status is not ToolStatus.SUCCESS or location_result.location is None:
             return assemble_agent_context_response(
                 ContextAssemblyInput(
@@ -209,6 +218,36 @@ class ContextService:
             limit=self._candidate_limit,
             started_at=started_at,
         )
+
+
+def _gps_location_result(
+    request: AgentContextRequest, retrieved_at: datetime
+) -> ResolveLocationResult:
+    """장소명이 없을 때 A가 전달한 기기 GPS를 위치 Tool 성공 결과로 정규화한다."""
+
+    gps = request.gps_location
+    if gps is None:
+        raise ValueError("gps_location이 필요합니다.")
+    return ResolveLocationResult(
+        status=ToolStatus.SUCCESS,
+        location=ResolvedLocation(
+            requested_query="gps_location",
+            provider_query="device_gps",
+            resolved_name="기기 GPS 위치",
+            latitude=gps.latitude,
+            longitude=gps.longitude,
+            resolution_method=ResolutionMethod.DIRECT,
+            confidence=ResolutionConfidence.EXACT,
+        ),
+        error=None,
+        provider_metadata=(
+            ProviderMetadata(
+                source=ProviderSource.DEVICE_GPS,
+                status=ProviderStatus.SUCCESS,
+                retrieved_at=_as_kst(retrieved_at).astimezone(UTC),
+            ),
+        ),
+    )
 
 
 def _resolve_search_radius_km(

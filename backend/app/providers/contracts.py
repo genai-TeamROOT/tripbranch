@@ -21,6 +21,7 @@ class ProviderSource(StrEnum):
     """Provider 구현 클래스가 아닌 데이터 출처·기능 식별자."""
 
     NAVER_GEOCODING = "naver_geocoding"
+    DEVICE_GPS = "device_gps"
     KMA_ULTRA_SHORT_FORECAST = "kma_ultra_short_forecast"
     TOUR_API_PLACE = "tour_api_place"
     SUPABASE_PLACES = "supabase_places"

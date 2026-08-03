@@ -54,6 +54,8 @@ class SearchProvider:
     def __init__(self, candidates: list[PlaceCandidate]) -> None:
         self.candidates = candidates
         self.seen_limit: int | None = None
+        self.seen_region_code: str | None = None
+        self.seen_district_code: str | None = None
 
     async def search_places(
         self,
@@ -61,10 +63,14 @@ class SearchProvider:
         longitude: float,
         preferred_categories: list[str],
         search_radius_km: float,
+        region_code: str | None = None,
+        district_code: str | None = None,
         category_filter=None,
         limit: int = 20,
     ) -> ProviderResult[list[PlaceCandidate]]:
         self.seen_limit = limit
+        self.seen_region_code = region_code
+        self.seen_district_code = district_code
         return provider_result(
             self.candidates[:limit],
             source=ProviderSource.FAKE_PLACE,
@@ -110,6 +116,8 @@ async def test_tool_combines_separate_search_and_details_providers() -> None:
     assert result.retrieved_at.tzinfo is not None
     assert result.elapsed_ms >= 0
     assert len(result.provider_metadata) == 4
+    assert search.seen_region_code == "11"
+    assert search.seen_district_code == "110"
 
 
 @pytest.mark.asyncio

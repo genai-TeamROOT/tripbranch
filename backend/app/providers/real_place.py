@@ -231,6 +231,8 @@ class RealPlaceProvider:
         longitude: float,
         preferred_categories: list[str],
         search_radius_km: float,
+        region_code: str | None = None,
+        district_code: str | None = None,
         category_filter: PlaceCategoryFilter | None = None,
         limit: int = DEFAULT_PLACE_PROVIDER_RESULT_LIMIT,
     ) -> ProviderResult[list[PlaceCandidate]]:
@@ -247,6 +249,12 @@ class RealPlaceProvider:
             "numOfRows": max(1, min(limit, 100)),
             "pageNo": 1,
         }
+        if district_code and not region_code:
+            raise ValueError("district_code 사용 시 region_code가 필요합니다.")
+        if region_code:
+            params["lDongRegnCd"] = region_code
+        if district_code:
+            params["lDongSignguCd"] = district_code
         if category_filter is not None:
             optional_filters = {
                 "contentTypeId": category_filter.content_type_id,
