@@ -16,6 +16,10 @@ CONCENTRATION_NORMAL_MAX_EXCLUSIVE = 50.0
 # 집중률이 70% 미만이면 다소 혼잡한 상태로 본다.
 CONCENTRATION_SLIGHTLY_CROWDED_MAX_EXCLUSIVE = 70.0
 
+# INFO 단일 장소 질의에서만 쓰는 대체 관광지 탐색 반경이다. 추천 후보 수집의
+# 기본 반경과 구분하며, 실측 결과에 따라 조정할 수 있도록 정책 상수로 둔다.
+INFO_CONCENTRATION_FALLBACK_RADIUS_KM = 0.5
+
 
 class ConcentrationLevel(StrEnum):
     """A–C 계약에서 사용하는 집중률 단계 코드."""
@@ -77,6 +81,7 @@ __all__ = [
     "CONCENTRATION_NORMAL_MAX_EXCLUSIVE",
     "CONCENTRATION_QUIET_MAX_EXCLUSIVE",
     "CONCENTRATION_SLIGHTLY_CROWDED_MAX_EXCLUSIVE",
+    "INFO_CONCENTRATION_FALLBACK_RADIUS_KM",
     "ConcentrationLabel",
     "ConcentrationLevel",
     "NormalizedConcentration",

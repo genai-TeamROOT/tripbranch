@@ -252,7 +252,7 @@ visit_time: string | null;  // YYYY-MM-DD, concentration 질의 전용
 2. get_concentration(place_name="OO카페", ...) 호출
 3. status == "success" → 그대로 응답
 4. status == "no_data" →
-   a. search_nearby_places(location=대상 좌표, place_types=["attraction"], radius_km=1.0, limit=1)
+   a. search_nearby_places(location=대상 좌표, place_types=["attraction"], radius_km=0.5, limit=1)
       로 가장 가까운 관광지 탐색 (기존 Tool 재사용 — `NearbyPlaceDetailsTool`,
       backend/app/tools/nearby_place_details.py, tool-intelligence-contract-v1.md §6.2)
    b. 결과 있음 → 그 관광지 이름으로 get_concentration 재호출
@@ -272,17 +272,17 @@ visit_time: string | null;  // YYYY-MM-DD, concentration 질의 전용
 절대 "OO카페가 혼잡해요"처럼 대상 장소 자체의 값인 것처럼 단정하지 않는다 — 항상
 "근처 [관광지] 기준" 문구를 포함한다.
 
-**탐색 반경(`radius_km`)**: 기본값 1.0km를 제안한다. `search_nearby_places`의
+**탐색 반경(`radius_km`)**: 기본값은 0.5km다. `search_nearby_places`의
 시스템 기본값(`place_search_policy.py`의 `DEFAULT_PLACE_SEARCH_RADIUS_KM`)은
 2.0km이지만, "근처 관광지"로 참고할 수 있는 신뢰도를 위해 이 fallback 전용으로는
-더 좁게 잡는 게 안전하다고 판단했다. 정확한 값과 "관광지가 너무 멀면 대체 조회
-자체를 포기할지"는 C/D와 함께 확정 필요(§8 TODO).
+더 좁게 잡는 게 안전하다고 판단했다. `concentration_policy.py`의
+`INFO_CONCENTRATION_FALLBACK_RADIUS_KM`을 단일 기준으로 사용하며, 실제 테스트 결과에
+따라 조정한다. "관광지가 너무 멀면 대체 조회 자체를 포기할지"는 C/D와 함께 확정 필요(§8 TODO).
 
-**RECOMMEND 쪽 적용 여부는 별도 확정 필요**: 이 절은 INFO(단일 장소 질의) 기준으로
-설계했다. RECOMMEND에서도 `concentration_intent`가 있고 후보가 `restaurant`(카페·
-음식점) 유형이면 같은 문제가 생기지만, 후보가 최대 5개인 배치 보강 흐름에 근접치
-조회를 얹으면 후보당 API 호출이 최대 2배로 늘어난다. 이번 범위에 포함할지는 별도
-결정 필요(§8 TODO).
+**RECOMMEND에는 적용하지 않는다**: 이 절은 INFO(단일 장소 질의) 전용이다.
+RECOMMEND 후보에는 직접 조회된 혼잡도만 사용한다. 카페·음식점 후보에 같은 fallback을
+적용하면 후보당 API 호출이 최대 2배로 늘어나므로, 혼잡도 데이터 부족으로 추천 품질이나
+결과 수 문제가 실제로 확인될 때만 C·D 사전 협의 후 확장을 검토한다.
 
 ---
 
@@ -442,7 +442,7 @@ Context와 성격이 더 가깝다(`places`도 `api_context`에 캐싱하지 않
   밖, 추후 별도 설계
 - `concentration` Feature의 정확한 점수 변환 함수(4단계 구간 기준 vs 원본 비율
   선형 정규화) — `recommendation-scoring.md`에서 D와 확정
-- §3.3 인근 관광지 대체 조회의 탐색 반경(`radius_km`, 제안값 1.0km)과 "반경 내
+- §3.3 인근 관광지 대체 조회의 탐색 반경(`radius_km`, 현재 0.5km)과 "반경 내
   관광지가 없으면 포기" 기준 — C/D 확인 필요
 - RECOMMEND의 `restaurant` 유형 후보에도 §3.3과 동일한 근접치 fallback을 적용할지
   — 배치 보강 흐름의 API 호출 비용 문제로 별도 결정 필요

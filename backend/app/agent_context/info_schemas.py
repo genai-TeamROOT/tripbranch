@@ -11,7 +11,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.agent_context.schemas import Clarification, ContextError
+from app.agent_context.schemas import Clarification, ContextError, ResponseMetadata
 
 
 class InfoContextRequest(BaseModel):
@@ -82,6 +82,7 @@ class InfoContextResponse(BaseModel):
     result: ConcentrationInfoResult | None = None
     clarification: Clarification | None = None
     error: ContextError | None = None
+    metadata: ResponseMetadata = Field(default_factory=ResponseMetadata)
 
 
 __all__ = [
