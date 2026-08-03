@@ -117,7 +117,7 @@ async def test_does_not_fallback_after_provider_failure() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rejects_location_outside_jongno() -> None:
+async def test_resolves_search_center_outside_jongno_before_candidate_filtering() -> None:
     provider = SequenceGeocodingProvider(
         [_result(query="서울특별시 용산구 한강대로", district="용산구")]
     )
@@ -126,9 +126,9 @@ async def test_rejects_location_outside_jongno() -> None:
         ResolveLocationQuery("서울역")
     )
 
-    assert result.status is ResolveLocationStatus.UNSUPPORTED
-    assert result.error is not None
-    assert result.error.cause == "outside_supported_region"
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert result.location is not None
+    assert result.location.resolved_name == "서울특별시 용산구 한강대로"
     assert result.provider_metadata[0].source is ProviderSource.FAKE_GEOCODING
     assert result.provider_metadata[0].status is ProviderStatus.SUCCESS
     assert result.provider_metadata[0].retrieved_at.tzinfo is not None

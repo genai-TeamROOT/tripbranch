@@ -648,6 +648,39 @@
   `feature_scores.weather`가 `null`이고 `weights_used`에서 날씨 0.4가 빠져
   나머지에 재분배된다(정상). 실제 응답으로 확인함.
 
+### D-039 — 되묻기 답변은 새 요청이 아닌 기존 요청의 연속으로 처리
+
+- 상태: `Implemented` (PR #64)
+- 배경: 첫 요청에 위치가 없어 C가 `needs_clarification`을 반환한 뒤 사용자가
+  위치만 답하면, 두 번째 발화가 새 `RECOMMEND`로 분류되면서
+  `reset_scope="soft"`가 적용됐다. 이 과정에서 첫 요청의 카테고리·선호 조건이
+  초기화되어 사용자가 이미 말한 조건과 다른 후보가 추천될 수 있었다.
+- 결정: LLM 또는 C 단계의 되묻기로 끝난 턴은 B에
+  `pending_clarification`으로 기록한다. 다음 `RECOMMEND`/`MODIFY` 발화는 새 요청이
+  아니라 같은 요청을 완성하는 답변으로 보고 `reset_scope=None`을 사용한다.
+  답변에서 새로 추출된 조건만 Operation으로 전달하고, 언급되지 않은 기존 조건은
+  B가 유지한다.
+- 책임 분리:
+  - A는 LLM/C 응답을 보고 되묻기 여부와 저장할 사유 코드를 결정한다.
+  - B는 `pending_clarification`을 해석하지 않고 세션 상태에 저장·조회만 한다.
+  - `pending_clarification` 갱신은 사용자 조건 변경이 아니므로
+    `condition_version`을 증가시키지 않는다.
+- 소비 규칙: 조건을 처리하는 `RECOMMEND`/`MODIFY`에서만 기존 플래그를 소비한다.
+  `INFO`/`COMPARE`/`GENERAL` 같은 곁가지 발화는 이전 되묻기 상태를 유지한다. 같은
+  턴이 다시 되묻기로 끝나면 새로운 사유 코드로 다시 저장한다.
+- 예외: 사용자가 "처음부터 다시"처럼 명시적인 초기화 표현을 사용하면 되묻기
+  답변 중이어도 새 요청으로 보고 기존 `reset_scope="soft"` 규칙을 적용한다.
+- 구현: `AgentState`/`SessionContextResponse.pending_clarification`,
+  `set_pending_clarification()`, `state_transform.transform()`의 조건 병합 분기,
+  `agent_runtime.run_agent_flow()`의 LLM/C 되묻기 기록·소비 흐름.
+- 확인: 위치 없는 카페 추천 → `location_required` 되묻기 → "경복궁 근처" 답변
+  시 기존 `place_tags`가 유지되고 위치만 추가되는 흐름, 명시적 재시작 시 soft
+  reset이 적용되는 흐름, 성공 추천 후 플래그가 남지 않는 흐름을 테스트한다.
+- 제한사항: `pending_clarification`은 InMemory 상태에는 반영됐지만, 현재
+  `SupabaseStateStore`와 DB migration에는 컬럼·영속화 매핑이 없다. Supabase 모드에서
+  턴 간 되묻기 상태를 보존하려면 별도 migration과 store 매핑을 추가해야 한다. 단독 위치 답변이
+  `INFO`로 분류되는 문제는 프롬프트·Intent 분류의 별도 과제로 유지한다.
+
 ### D-040 — 혼잡도(concentration) 2차 Scoring 구현: 안 B 채택, D 신규 인터페이스 확정
 
 - 상태: `Implemented`
@@ -723,4 +756,5 @@
 | 2026-07-28 | D-034 `run_recommendation_pipeline()`(Tool 직접 호출) 완전 삭제, `/api/recommendations` 라우터를 `run_recommendation_pipeline_from_context()` 기반으로 마이그레이션 |
 | 2026-07-28 | D-035 develop 재병합 시 발견된 `RealRecommendationProvider` 중복 구현 정리, mintee의 `real_recommendation_provider.py`로 통합 |
 | 2026-07-31 | D-038 날씨 warning을 IGNORE(미언급)와 조회 실패로 분리, §10 불일치·날씨 조회 경로 이원화를 TODO로 기록 |
+| 2026-08-02 | D-039 되묻기 답변을 기존 요청의 연속으로 처리하고 조건 유지·플래그 저장 및 소비 규칙을 기록 |
 | 2026-08-01 | D-040 혼잡도 2차 Scoring 구현(안 B 채택), `rerank_with_concentration()` 신규 인터페이스와 concentration Feature를 Evidence/Explanation에 추가, A에 Protocol `context` 파라미터 추가 요청 |

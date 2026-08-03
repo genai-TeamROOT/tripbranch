@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from app.agent_context.factory import get_context_provider
-from app.agent_context.schemas import AgentContextRequest, UserConditions
+from app.agent_context.schemas import AgentContextRequest, Coordinates, UserConditions
 from app.agent_context.service import ContextService, ContextTools
 from app.config import settings
 from app.domain.models import PlaceCategoryFilter, WeatherForecastResult
@@ -49,10 +49,12 @@ def _request(
     place_tags: list[str] | None = None,
     max_travel_time: int | None = None,
     weather_intent: Literal["AVOID", "ENJOY", "IGNORE"] | None = None,
+    gps_location: Coordinates | None = None,
 ) -> AgentContextRequest:
     return AgentContextRequest(
         request_id="request-1",
         intent="RECOMMEND",
+        gps_location=gps_location,
         conditions=UserConditions(
             search_center=search_center,
             place_types=place_types or [],
@@ -90,6 +92,22 @@ async def test_missing_location_requests_clarification_without_calling_tools() -
     assert response.status == "needs_clarification"
     assert response.clarification is not None
     assert response.clarification.code == "location_required"
+
+
+@pytest.mark.asyncio
+async def test_gps_is_used_when_spoken_location_is_missing() -> None:
+    gps = Coordinates(latitude=37.5796, longitude=126.9770)
+
+    response = await _service().fetch_context(
+        _request(search_center=None, gps_location=gps)
+    )
+
+    assert response.status == "success"
+    assert response.context is not None
+    assert response.context.location is not None
+    assert response.context.location.data is not None
+    assert response.context.location.data.location == gps
+    assert response.context.location.provider_metadata[0].source == "device_gps"
 
 
 @pytest.mark.asyncio
@@ -166,6 +184,8 @@ class _RecordingPlaceProvider(FakePlaceProvider):
         longitude: float,
         preferred_categories: list[str],
         search_radius_km: float,
+        region_code: str | None = None,
+        district_code: str | None = None,
         category_filter: PlaceCategoryFilter | None = None,
         limit: int = 20,
     ) -> ProviderResult[list[PlaceCandidate]]:
@@ -175,6 +195,8 @@ class _RecordingPlaceProvider(FakePlaceProvider):
             longitude=longitude,
             preferred_categories=preferred_categories,
             search_radius_km=search_radius_km,
+            region_code=region_code,
+            district_code=district_code,
             category_filter=category_filter,
             limit=limit,
         )

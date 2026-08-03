@@ -48,3 +48,19 @@ class TestToAgentContextRequest:
 
         assert request.conditions.current_location is None
         assert request.conditions.place_types == []
+
+    def test_converts_gps_string_to_coordinates(self) -> None:
+        request = to_agent_context_request(
+            "req-4", UserConditions(), gps_location="37.5796,126.9770"
+        )
+
+        assert request.gps_location is not None
+        assert request.gps_location.latitude == 37.5796
+        assert request.gps_location.longitude == 126.9770
+
+    def test_invalid_gps_is_omitted(self) -> None:
+        request = to_agent_context_request(
+            "req-5", UserConditions(), gps_location="91.0,126.9770"
+        )
+
+        assert request.gps_location is None

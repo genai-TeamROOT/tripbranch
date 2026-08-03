@@ -35,6 +35,25 @@ def test_validates_recommend_context_request() -> None:
     assert request.conditions.weather == "rain"
 
 
+def test_accepts_optional_gps_coordinates() -> None:
+    payload = _request_payload()
+    payload["gps_location"] = {"latitude": 37.5796, "longitude": 126.9770}
+
+    request = AgentContextRequest.model_validate(payload)
+
+    assert request.gps_location is not None
+    assert request.gps_location.latitude == pytest.approx(37.5796)
+    assert request.gps_location.longitude == pytest.approx(126.9770)
+
+
+def test_rejects_out_of_range_gps_coordinates() -> None:
+    payload = _request_payload()
+    payload["gps_location"] = {"latitude": 91.0, "longitude": 126.9770}
+
+    with pytest.raises(ValidationError):
+        AgentContextRequest.model_validate(payload)
+
+
 def test_allows_missing_location_for_service_clarification() -> None:
     payload = _request_payload()
     conditions = payload["conditions"]

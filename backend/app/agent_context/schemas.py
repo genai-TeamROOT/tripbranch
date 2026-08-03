@@ -66,6 +66,8 @@ class AgentContextRequest(StrictModel):
     request_id: str = Field(min_length=1)
     intent: Literal["RECOMMEND"]
     conditions: UserConditions
+    # 사용자 발화 위치와 별도로, A가 검증한 기기 GPS를 좌표 객체로 전달한다.
+    gps_location: Coordinates | None = None
 
     @field_validator("request_id")
     @classmethod

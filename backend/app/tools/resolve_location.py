@@ -12,8 +12,6 @@ from app.providers.geocoding import get_jongno_landmark_alias
 from app.providers.protocols import GeocodingProvider
 from app.tools.contracts import ToolError, ToolStatus
 
-_SUPPORTED_DISTRICT = "종로구"
-
 ResolveLocationStatus = ToolStatus
 
 
@@ -144,15 +142,6 @@ class ResolveLocationTool:
         warnings: tuple[str, ...] = (),
         provider_metadata: tuple[ProviderMetadata, ...] = (),
     ) -> ResolveLocationResult:
-        if result.administrative_district != _SUPPORTED_DISTRICT:
-            return self._error_result(
-                status=ResolveLocationStatus.UNSUPPORTED,
-                code="unsupported",
-                cause="outside_supported_region",
-                retryable=False,
-                details={"supported_region": "서울특별시 종로구"},
-                provider_metadata=provider_metadata,
-            )
         if (
             method is not ResolutionMethod.ALIAS
             and result.candidate_count > 1

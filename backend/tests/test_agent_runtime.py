@@ -160,6 +160,9 @@ async def test_recommend_flow_reaches_recommendations() -> None:
     assert len(response.recommendations.recommendations) > 0
     assert providers["tool_provider"].call_count == 1
     assert providers["recommendation_provider"].call_count == 1
+    assert providers["tool_provider"].last_request.gps_location == Coordinates(
+        latitude=37.5788, longitude=126.9770
+    )
 
 
 @pytest.mark.asyncio
@@ -362,6 +365,9 @@ async def test_first_turn_gps_seeded_survives_to_next_turn() -> None:
         **providers,
     )
     assert first.state.api_context.gps_expired is True  # 최초 턴엔 아직 반영 전
+    assert providers["tool_provider"].last_request.gps_location == Coordinates(
+        latitude=37.5788, longitude=126.9770
+    )
 
     second = await run_agent_flow(
         AgentRequest(
@@ -373,11 +379,15 @@ async def test_first_turn_gps_seeded_survives_to_next_turn() -> None:
 
     assert second.state.api_context.gps_expired is False
     assert second.state.api_context.gps_location == DEVICE_LOCATION
+    assert providers["tool_provider"].last_request.gps_location == Coordinates(
+        latitude=37.5788, longitude=126.9770
+    )
 
 
 @pytest.mark.asyncio
-async def test_invalid_gps_format_skips_turn_without_error() -> None:
-    """잘못된 GPS 문자열은 예외 없이 이번 턴만 건너뛴다."""
+@pytest.mark.parametrize("invalid_gps", ["not-a-gps-string", "91.0,126.9770"])
+async def test_invalid_gps_format_skips_turn_without_error(invalid_gps: str) -> None:
+    """형식 또는 좌표 범위가 잘못된 GPS는 예외 없이 이번 턴만 건너뛴다."""
     store = InMemoryStateStore()
     providers = _providers()
 
@@ -385,7 +395,7 @@ async def test_invalid_gps_format_skips_turn_without_error() -> None:
         AgentRequest(
             user_input="경복궁 근처 카페 추천해줘",
             session_id=None,
-            device_location="not-a-gps-string",
+            device_location=invalid_gps,
         ),
         store=store,
         **providers,

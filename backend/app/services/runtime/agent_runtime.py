@@ -112,9 +112,11 @@ def _valid_location(device_location: str | None) -> str | None:
     if len(parts) != 2:
         return None
     try:
-        float(parts[0])
-        float(parts[1])
+        latitude = float(parts[0])
+        longitude = float(parts[1])
     except ValueError:
+        return None
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
         return None
     return device_location
 
@@ -295,11 +297,18 @@ async def run_agent_flow(
     # 5) A → C: Tool 결과 확보 (Protocol을 통해서만 — C의 구체 클래스는 여기서 모른다).
     #    B가 준 조건(순수 문자열)을 A의 enum 타입으로 바꾼 뒤 C 계약 형태로 변환한다.
     #    conditions.weather(5단계 rain/snow/hot/cold/good)만 넘기고, api_context.api_weather
-    #    (3단계 good/neutral/bad, Provider 정규화 값)는 여기 관여하지 않는다 — to_agent_
-    #    context_request()가 UserConditions만 받는 구조라 애초에 섞일 수 없다(계약 §5.2).
+    #    (3단계 good/neutral/bad, Provider 정규화 값)는 여기 관여하지 않는다. GPS는
+    #    사용자 조건과 별도 인자로 전달되어 Coordinates로 변환된다(계약 §5.2).
     agent_conditions = to_user_conditions(state_response.user_conditions)
+    # 이번 요청의 유효한 GPS를 우선하고, 없으면 B에 저장된 신선한 GPS를 재사용한다.
+    # 문자열은 A→C 변환 경계에서 Coordinates로 바뀌며 C는 원본 문자열을 알지 않는다.
+    context_gps = valid_gps
+    if context_gps is None and not state_response.api_context.gps_expired:
+        context_gps = state_response.api_context.gps_location
     context_request = to_agent_context_request(
-        request_id=new_trace_id(), conditions=agent_conditions
+        request_id=new_trace_id(),
+        conditions=agent_conditions,
+        gps_location=context_gps,
     )
     tool_response = await tool_provider.fetch_context(context_request)
 
