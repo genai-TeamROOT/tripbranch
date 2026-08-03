@@ -14,7 +14,10 @@ from pathlib import Path
 
 import pytest
 
-from app.agent_context.schemas import AgentContextResponse, RecommendationContext
+from app.agent_context.schemas import AgentContextResponse, RecommendationContext, ResolvedLocation
+from app.agent_context.schemas import ContextValue as AgentContextValue
+from app.agent_context.schemas import Coordinates as AgentCoordinates
+from app.agent_context.schemas import PlaceCandidate as AgentPlaceCandidate
 from app.domain.candidate_mapper import map_context_to_scoring_candidates
 from app.domain.evidence import build_evidence_list
 from app.domain.models import WeatherCondition
@@ -229,3 +232,92 @@ async def test_evidence_matches_final_score_and_ranking(case: ContextFixtureCase
                     f"{item.place_id}.{contribution.feature}: Evidence 기여 점수와 "
                     "최종 feature_scores 불일치"
                 )
+
+
+def _context_location() -> AgentContextValue:
+    """test_recommendation_pipeline.py와 동일한 위치 Fixture를 재사용한다."""
+
+    return AgentContextValue(
+        status="success",
+        data=ResolvedLocation(
+            requested_query="경복궁",
+            resolved_name="경복궁",
+            location=AgentCoordinates(latitude=37.5796, longitude=126.9770),
+        ),
+    )
+
+
+def _context_place(place_id: str, *, latitude: float, longitude: float) -> AgentPlaceCandidate:
+    return AgentPlaceCandidate(
+        place_id=place_id,
+        name=place_id,
+        category="cafe",
+        location=AgentCoordinates(latitude=latitude, longitude=longitude),
+        operating_schedule={"availability": "all_day", "time_ranges": [], "closure_rules": []},
+    )
+
+
+@pytest.mark.asyncio
+async def test_tie_break_survives_candidate_mapper_through_full_pipeline() -> None:
+    """완료 기준엔 없지만, candidate_mapper를 거쳐도 tie-break가 유지되는지 보강 검증한다.
+
+    scoring_fixture_v1.py의 tie-break 테스트는 손으로 만든 ScoringCandidate를
+    직접 넣어 candidate_mapper.py(거리 계산 등)를 거치지 않는다. 여기서는 C
+    Context 형태의 입력을 candidate_mapper까지 통과시켜도 동일한 규칙(점수
+    동점 시 거리 오름차순 → place_id 오름차순)이 유지되는지 확인한다.
+    """
+
+    same_coordinates = {"latitude": 37.5796, "longitude": 126.9770}
+    context = RecommendationContext(
+        location=_context_location(),
+        places=AgentContextValue(
+            status="success",
+            data=[
+                _context_place("zzz-place", **same_coordinates),
+                _context_place("aaa-place", **same_coordinates),
+            ],
+        ),
+    )
+
+    result = await run_recommendation_pipeline_from_context(
+        context,
+        visit_at=CONTEXT_FIXTURE_EXPECTATIONS[0].visit_at,
+        search_radius_km=2.0,
+    )
+
+    place_ids = [item.place_id for item in result.recommendations]
+    assert place_ids == ["aaa-place", "zzz-place"], (
+        "동점일 때 place_id 오름차순 tie-break가 candidate_mapper를 거친 뒤에도 유지돼야 한다"
+    )
+
+
+@pytest.mark.asyncio
+async def test_recommendation_limit_truncates_to_top_scored_candidates() -> None:
+    """완료 기준엔 없지만, recommendation_limit 초과 시 상위 점수만 남는지 보강 검증한다.
+
+    지금까지의 D-07 Fixture는 전부 후보가 3개 이하라 recommendation_limit(기본값)을
+    넘는 상황이 한 번도 발생하지 않았다. 여기서는 거리만 다른 후보 3개를 만들어
+    limit=2일 때 가장 가까운(=점수 높은) 2개만 남는지 확인한다.
+    """
+
+    context = RecommendationContext(
+        location=_context_location(),
+        places=AgentContextValue(
+            status="success",
+            data=[
+                _context_place("near", latitude=37.5796, longitude=126.9770),
+                _context_place("mid", latitude=37.5896, longitude=126.9770),
+                _context_place("far", latitude=37.5996, longitude=126.9770),
+            ],
+        ),
+    )
+
+    result = await run_recommendation_pipeline_from_context(
+        context,
+        visit_at=CONTEXT_FIXTURE_EXPECTATIONS[0].visit_at,
+        search_radius_km=5.0,
+        recommendation_limit=2,
+    )
+
+    all_ids = [item.place_id for item in result.recommendations + result.unverified_recommendations]
+    assert all_ids == ["near", "mid"], "가장 가까운(점수 높은) 상위 2개만 남아야 한다"
