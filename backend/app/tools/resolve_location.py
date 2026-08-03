@@ -44,6 +44,41 @@ def is_address_query(value: str) -> bool:
     )
 
 
+def _normalize_name(value: str) -> str:
+    return value.casefold().replace(" ", "")
+
+
+def _head_token(name: str) -> str:
+    """공백으로 구분된 첫 토큰. 정규화 전에 잘라야 토큰 경계가 남는다."""
+    tokens = name.split()
+    return _normalize_name(tokens[0] if tokens else name)
+
+
+def _select_local_search_candidate(
+    candidates: tuple[LocalSearchPlace, ...], requested_query: str
+) -> LocalSearchPlace | None:
+    """이름으로 유일하게 특정되는 후보만 고른다. 못 좁히면 None(재질문).
+
+    Local Search는 연관도 순으로 주변 상호까지 함께 반환하므로 순위를 판정에 쓰지
+    않는다 — 실제로 "쌈지길" 검색에서 정답이 3번째였다. 임의로 첫 후보를 고르면
+    엉뚱한 음식점이 검색 중심이 된다.
+    """
+    normalized_query = _normalize_name(requested_query)
+
+    # 1) 정확 일치. 동명 후보가 2건 이상이면 첫 토큰으로도 못 좁히므로 바로 재질문한다.
+    exact = tuple(item for item in candidates if _normalize_name(item.name) == normalized_query)
+    if exact:
+        return exact[0] if len(exact) == 1 else None
+
+    # 2) 첫 토큰 일치. "안국역 3호선"은 잡고 "안국역사거리"는 배제하기 위해
+    #    startswith가 아니라 토큰 단위로 비교한다.
+    head_matched = tuple(item for item in candidates if _head_token(item.name) == normalized_query)
+    if len(head_matched) == 1:
+        return head_matched[0]
+
+    return None
+
+
 class ResolutionMethod(StrEnum):
     DIRECT = "direct"
     ALIAS = "alias"
@@ -188,12 +223,8 @@ class ResolveLocationTool:
         )
         if not candidates:
             return None
-        normalized_query = requested_query.casefold().replace(" ", "")
-        exact = tuple(
-            item for item in candidates if item.name.casefold().replace(" ", "") == normalized_query
-        )
-        selected = exact if exact else candidates
-        if len(selected) != 1:
+        selected = _select_local_search_candidate(candidates, requested_query)
+        if selected is None:
             return self._error_result(
                 status=ResolveLocationStatus.NO_DATA,
                 code="no_data",
@@ -202,7 +233,7 @@ class ResolveLocationTool:
                 details={"reason": "ambiguous_location"},
                 provider_metadata=(result.metadata,),
             )
-        return self._local_search_success(requested_query, selected[0], result.metadata)
+        return self._local_search_success(requested_query, selected, result.metadata)
 
     @staticmethod
     def _local_search_success(

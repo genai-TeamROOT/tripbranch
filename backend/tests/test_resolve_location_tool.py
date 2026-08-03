@@ -301,3 +301,118 @@ async def test_unknown_location_is_no_data() -> None:
 def test_validates_query(value: str) -> None:
     with pytest.raises(ValueError):
         ResolveLocationQuery(value)
+
+
+def _local_place(name: str, *, category: str = "음식점>한식") -> LocalSearchPlace:
+    return LocalSearchPlace(
+        name=name,
+        address="서울특별시 종로구 관훈동 38",
+        road_address="서울특별시 종로구 인사동길 44",
+        category=category,
+        latitude=37.5743,
+        longitude=126.9848,
+    )
+
+
+async def _resolve_with_local_search(
+    places: tuple[LocalSearchPlace, ...], query: str
+):
+    local_search = MemoryLocalSearchProvider(places)
+    geocoding = SequenceGeocodingProvider([])
+    result = await ResolveLocationTool(
+        geocoding, MemoryPlaceLocationRepository(()), local_search
+    ).execute(ResolveLocationQuery(query))
+    return result, geocoding
+
+
+@pytest.mark.asyncio
+async def test_local_search_selects_head_token_match_among_nearby_shops() -> None:
+    """Local Search는 주변 상호까지 함께 준다. "안국역 3호선"만 역으로 인정한다.
+
+    실측(2026-08-03): "안국역" 조회 시 역 1건 + 주변 음식점 4건이 반환됐다.
+    """
+    result, geocoding = await _resolve_with_local_search(
+        (
+            _local_place("안국역 3호선", category="교통,운수>지하철,전철"),
+            _local_place("쿄와우동", category="음식점>일식>우동,소바"),
+            _local_place("익선끝집", category="한식>육류,고기요리"),
+        ),
+        "안국역",
+    )
+
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert result.location is not None
+    assert result.location.resolved_name == "안국역 3호선"
+    assert result.location.resolution_method is ResolutionMethod.LOCAL_SEARCH
+    # 이름으로 확정했으므로 Geocoding fallback까지 가지 않는다.
+    assert geocoding.calls == []
+
+
+@pytest.mark.asyncio
+async def test_local_search_does_not_pick_similar_prefix_name() -> None:
+    """"안국역사거리"는 "안국역"과 다른 장소다 — startswith였다면 잘못 선택된다."""
+    result, _ = await _resolve_with_local_search(
+        (_local_place("안국역사거리"),), "안국역"
+    )
+
+    assert result.status is ResolveLocationStatus.NO_DATA
+    assert result.error is not None
+    assert result.error.cause == "ambiguous_location"
+
+
+@pytest.mark.asyncio
+async def test_local_search_asks_again_when_head_token_matches_multiple() -> None:
+    """출구가 다르면 좌표도 다르므로 임의 선택하지 않는다."""
+    result, _ = await _resolve_with_local_search(
+        (
+            _local_place("안국역 3호선", category="교통,운수>지하철,전철"),
+            _local_place("안국역 2번출구", category="교통,운수>지하철,전철"),
+        ),
+        "안국역",
+    )
+
+    assert result.status is ResolveLocationStatus.NO_DATA
+    assert result.error is not None
+    assert result.error.cause == "ambiguous_location"
+
+
+@pytest.mark.asyncio
+async def test_local_search_asks_again_when_exact_name_duplicated() -> None:
+    """정확 일치가 여러 건이면 첫 토큰으로도 못 좁히므로 바로 재질문한다."""
+    result, _ = await _resolve_with_local_search(
+        (_local_place("쌈지길"), _local_place("쌈지길")), "쌈지길"
+    )
+
+    assert result.status is ResolveLocationStatus.NO_DATA
+    assert result.error is not None
+    assert result.error.cause == "ambiguous_location"
+
+
+@pytest.mark.asyncio
+async def test_local_search_prefers_exact_match_over_head_token() -> None:
+    """정확 일치가 있으면 첫 토큰 단계로 내려가지 않는다."""
+    result, _ = await _resolve_with_local_search(
+        (_local_place("안국역 3호선"), _local_place("안국역")), "안국역"
+    )
+
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert result.location is not None
+    assert result.location.resolved_name == "안국역"
+
+
+@pytest.mark.asyncio
+async def test_local_search_without_candidates_falls_back_to_geocoding() -> None:
+    """후보가 아예 없는 것과 좁히지 못한 것은 다르다.
+
+    없으면 Geocoding이 받아야 하고(행정동 등), 있는데 못 좁혔으면 재질문한다.
+    """
+    local_search = MemoryLocalSearchProvider(())
+    geocoding = SequenceGeocodingProvider([_result(query="청운효자동")])
+
+    result = await ResolveLocationTool(
+        geocoding, MemoryPlaceLocationRepository(()), local_search
+    ).execute(ResolveLocationQuery("청운효자동"))
+
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert local_search.calls == ["청운효자동"]
+    assert geocoding.calls != []

@@ -12,7 +12,11 @@ from app.domain.models import GeocodeResult, LocalSearchPlace
 from app.providers.contracts import ProviderResult
 from app.providers.factory import get_geocoding_provider, get_local_search_provider
 from app.providers.protocols import GeocodingProvider, LocalSearchProvider
-from app.tools.resolve_location import ResolveLocationQuery, ResolveLocationTool
+from app.tools.resolve_location import (
+    ResolvedLocation,
+    ResolveLocationQuery,
+    ResolveLocationTool,
+)
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -80,7 +84,7 @@ def _print_call_flow(
     query: str,
     geocoding: RecordingGeocodingProvider,
     local_search: RecordingLocalSearchProvider,
-    result_method: str | None,
+    location: ResolvedLocation | None,
     provider_sources: tuple[str, ...],
     status: str,
     error: dict[str, object] | None,
@@ -100,7 +104,14 @@ def _print_call_flow(
     print(f"provider_sources: {provider_sources}")
     print(f"status: {status}")
     print(f"error: {error}")
-    print(f"resolution_method: {result_method}")
+    print(f"resolution_method: {location.resolution_method if location else None}")
+    if location is not None:
+        # 후보가 여러 건일 때 실제로 무엇이 선택됐는지 추론 없이 확인한다.
+        print(
+            f"resolved: {location.resolved_name}"
+            f" ({location.latitude}, {location.longitude})"
+            f" | {location.address}"
+        )
 
 
 async def test_inspect_place_name_calls_local_search_before_geocoding() -> None:
@@ -120,7 +131,7 @@ async def test_inspect_place_name_calls_local_search_before_geocoding() -> None:
         query=os.getenv("INSPECTION_PLACE_QUERY", "안국역"),
         geocoding=geocoding,
         local_search=local_search,
-        result_method=result.location.resolution_method if result.location else None,
+        location=result.location,
         provider_sources=tuple(metadata.source.value for metadata in result.provider_metadata),
         status=result.status.value,
         error=(
@@ -157,7 +168,7 @@ async def test_inspect_address_calls_geocoding_directly() -> None:
         query=address,
         geocoding=geocoding,
         local_search=local_search,
-        result_method=result.location.resolution_method if result.location else None,
+        location=result.location,
         provider_sources=tuple(metadata.source.value for metadata in result.provider_metadata),
         status=result.status.value,
         error=(
