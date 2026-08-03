@@ -14,11 +14,13 @@ from app.providers.concentration import FakeConcentrationProvider, RealConcentra
 from app.providers.gemini import RealGeminiProvider
 from app.providers.geocoding import FakeGeocodingProvider, RealGeocodingProvider
 from app.providers.holiday import FakeHolidayProvider, RealHolidayProvider
+from app.providers.local_search import FakeLocalSearchProvider, RealLocalSearchProvider
 from app.providers.protocols import (
     ConcentrationProvider,
     GeocodingProvider,
     HolidayProvider,
     LLMProvider,
+    LocalSearchProvider,
     PlaceDetailsProvider,
     PlaceProvider,
     PlaceSearchProvider,
@@ -59,6 +61,22 @@ def get_geocoding_provider(client: httpx.AsyncClient) -> GeocodingProvider:
     )
 
 
+def get_local_search_provider(client: httpx.AsyncClient) -> LocalSearchProvider:
+    if settings.resolved_local_search_provider == "fake":
+        return FakeLocalSearchProvider()
+    return RealLocalSearchProvider(
+        api_key_id=_require_key(
+            settings.naver_local_search_client_id, "NAVER_LOCAL_SEARCH_CLIENT_ID"
+        ),
+        api_key=_require_key(
+            settings.naver_local_search_client_secret,
+            "NAVER_LOCAL_SEARCH_CLIENT_SECRET",
+        ),
+        client=client,
+        timeout_seconds=settings.external_api_timeout_seconds,
+    )
+
+
 def get_weather_provider(client: httpx.AsyncClient) -> WeatherProvider:
     if settings.resolved_weather_provider == "fake":
         return FakeWeatherProvider(settings.fake_weather_condition)
@@ -82,6 +100,27 @@ def get_place_provider(client: httpx.AsyncClient) -> PlaceProvider:
 def get_place_search_provider(client: httpx.AsyncClient) -> PlaceSearchProvider:
     """장소 후보 목록 검색 provider. 상세조회 출처와 무관하게 기존 경로를 유지한다."""
     return get_place_provider(client)
+
+
+def get_place_location_repository(
+    client: httpx.AsyncClient,
+) -> SupabasePlaceRepository | None:
+    """검색 중심점 해석에 사용할 places 저장소를 준비한다.
+
+    Supabase 설정이 없는 개발·테스트 환경은 기존 Geocoding 경로를 유지한다.
+    """
+    if (
+        settings.resolved_place_provider != "real"
+        or not settings.supabase_url.strip()
+        or not settings.supabase_secret_key.strip()
+    ):
+        return None
+    return SupabasePlaceRepository(
+        supabase_url=settings.supabase_url,
+        secret_key=settings.supabase_secret_key,
+        client=client,
+        timeout_seconds=settings.external_api_timeout_seconds,
+    )
 
 
 def get_place_details_provider(client: httpx.AsyncClient) -> PlaceDetailsProvider:
@@ -131,6 +170,10 @@ _REQUIRED_KEYS: dict[str, tuple[tuple[str, str], ...]] = {
     "PLACE_PROVIDER": (("TOUR_API_SERVICE_KEY", "tour_api_service_key"),),
     "CONCENTRATION_PROVIDER": (("TOUR_API_SERVICE_KEY", "tour_api_service_key"),),
     "HOLIDAY_PROVIDER": (("TOUR_API_SERVICE_KEY", "tour_api_service_key"),),
+    "LOCAL_SEARCH_PROVIDER": (
+        ("NAVER_LOCAL_SEARCH_CLIENT_ID", "naver_local_search_client_id"),
+        ("NAVER_LOCAL_SEARCH_CLIENT_SECRET", "naver_local_search_client_secret"),
+    ),
     "GEOCODING_PROVIDER": (
         ("NAVER_MAP_CLIENT_ID", "naver_map_client_id"),
         ("NAVER_MAP_CLIENT_SECRET", "naver_map_client_secret"),
@@ -144,6 +187,7 @@ _RESOLVED_ATTRS: dict[str, str] = {
     "CONCENTRATION_PROVIDER": "resolved_concentration_provider",
     "HOLIDAY_PROVIDER": "resolved_holiday_provider",
     "GEOCODING_PROVIDER": "resolved_geocoding_provider",
+    "LOCAL_SEARCH_PROVIDER": "resolved_local_search_provider",
 }
 
 

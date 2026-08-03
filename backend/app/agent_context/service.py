@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from time import perf_counter
+from typing import Literal, cast
 from zoneinfo import ZoneInfo
 
 from app.agent_context.assembler import (
@@ -219,7 +220,8 @@ class ContextService:
         인근 관광지를 재조회하는 D-036 fallback은 별도 단계에서 추가한다.
         """
 
-        if request.place_name is None:
+        place_name = request.place_name
+        if place_name is None:
             return InfoContextResponse(
                 request_id=request.request_id,
                 status="needs_clarification",
@@ -231,7 +233,7 @@ class ContextService:
             )
 
         location_result = await self._tools.location.execute(
-            ResolveLocationQuery(request.place_name)
+            ResolveLocationQuery(place_name)
         )
         if location_result.status is ToolStatus.NO_DATA:
             cause = location_result.error.cause if location_result.error else None
@@ -273,8 +275,24 @@ class ContextService:
                 provider_metadata=(location_result.provider_metadata,),
             )
 
+        resolved_location = location_result.location
+        if resolved_location is None:
+            # ResolveLocationTool 계약상 success에는 location이 있어야 한다.
+            # 예기치 않은 구현 불일치는 외부 연동 오류로 정규화한다.
+            return _info_error_response(
+                request,
+                status="unavailable",
+                error=ContextError(
+                    code="location_result_invalid",
+                    message="위치 정보를 확인하지 못했습니다.",
+                    retryable=True,
+                ),
+                provider_metadata=(location_result.provider_metadata,),
+            )
+
         reference_date = _info_reference_date(request.visit_time, self._clock())
-        if self._tools.concentration is None:
+        concentration_tool = self._tools.concentration
+        if concentration_tool is None:
             return _info_error_response(
                 request,
                 status="unavailable",
@@ -286,11 +304,14 @@ class ContextService:
                 provider_metadata=(location_result.provider_metadata,),
             )
 
-        concentration_result = await self._tools.concentration.execute(
+        concentration_place_name = (
+            resolved_location.concentration_name or place_name
+        )
+        concentration_result = await concentration_tool.execute(
             ConcentrationQuery(
                 area_code=JONGNO_CONCENTRATION_AREA_CODE,
                 district_code=JONGNO_CONCENTRATION_DISTRICT_CODE,
-                place_name=request.place_name,
+                place_name=concentration_place_name,
             )
         )
         if concentration_result.status is ToolStatus.UNAVAILABLE:
@@ -311,9 +332,10 @@ class ContextService:
         if concentration_result.status is ToolStatus.NO_DATA:
             return await self._fetch_info_concentration_fallback(
                 request,
-                latitude=location_result.location.latitude,
-                longitude=location_result.location.longitude,
+                latitude=resolved_location.latitude,
+                longitude=resolved_location.longitude,
                 reference_date=reference_date,
+                concentration_tool=concentration_tool,
                 provider_metadata=(
                     location_result.provider_metadata,
                     concentration_result.provider_metadata,
@@ -322,7 +344,7 @@ class ContextService:
 
         forecast = select_concentration_forecast(
             concentration_result.concentration,
-            candidate_name=request.place_name,
+            candidate_name=concentration_place_name,
             reference_date=reference_date,
         )
         rate = forecast.concentration_rate if forecast is not None else None
@@ -340,12 +362,15 @@ class ContextService:
             result=ConcentrationInfoResult(
                 status="success",
                 is_proxy=False,
-                requested_place_name=request.place_name,
+                requested_place_name=place_name,
                 resolved_place_name=forecast.place_name,
                 forecast_date=reference_date.isoformat(),
                 concentration_rate=rate,
-                concentration_level=normalized.level,
-                concentration_label=normalized.label,
+                concentration_level=cast(
+                    Literal["quiet", "normal", "slightly_crowded", "crowded"],
+                    normalized.level.value,
+                ),
+                concentration_label=normalized.label.value,
             ),
             metadata=_info_response_metadata(
                 location_result.provider_metadata,
@@ -360,6 +385,7 @@ class ContextService:
         latitude: float,
         longitude: float,
         reference_date: date,
+        concentration_tool: GetConcentrationTool,
         provider_metadata: tuple[tuple[ProviderMetadata, ...], ...],
     ) -> InfoContextResponse:
         """직접 데이터가 없는 INFO 장소를 인근 관광지 기준으로 대체 조회한다.
@@ -395,7 +421,7 @@ class ContextService:
             )
 
         proxy_place = nearby_result.places[0].candidate
-        proxy_result = await self._tools.concentration.execute(
+        proxy_result = await concentration_tool.execute(
             ConcentrationQuery(
                 area_code=JONGNO_CONCENTRATION_AREA_CODE,
                 district_code=JONGNO_CONCENTRATION_DISTRICT_CODE,
@@ -451,8 +477,11 @@ class ContextService:
                 resolved_place_name=forecast.place_name,
                 forecast_date=reference_date.isoformat(),
                 concentration_rate=rate,
-                concentration_level=normalized.level,
-                concentration_label=normalized.label,
+                concentration_level=cast(
+                    Literal["quiet", "normal", "slightly_crowded", "crowded"],
+                    normalized.level.value,
+                ),
+                concentration_label=normalized.label.value,
             ),
             metadata=_info_response_metadata(
                 *provider_metadata,
@@ -552,7 +581,7 @@ def _info_no_data_response(
 def _info_error_response(
     request: InfoContextRequest,
     *,
-    status: str,
+    status: Literal["unsupported", "unavailable"],
     error: ContextError,
     provider_metadata: tuple[tuple[ProviderMetadata, ...], ...] = (),
 ) -> InfoContextResponse:

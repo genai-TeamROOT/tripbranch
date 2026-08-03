@@ -135,7 +135,8 @@ cp frontend/.env.example frontend/.env
 ```
 
 Backend Provider는 `PROVIDER_MODE=fake|real`로 일괄 전환하며, 개별
-`*_PROVIDER` 값으로 재정의할 수 있습니다. 실제 Provider 사용 시 필요한 키는
+`*_PROVIDER` 값으로 재정의할 수 있습니다. 장소명 기반 좌표 보완을 위한
+Naver Local Search는 `LOCAL_SEARCH_PROVIDER=real`로 별도 활성화합니다. 실제 Provider 사용 시 필요한 키는
 다음과 같습니다.
 
 | 환경변수 | 용도 |
@@ -144,6 +145,8 @@ Backend Provider는 `PROVIDER_MODE=fake|real`로 일괄 전환하며, 개별
 | `TOUR_API_SERVICE_KEY` | TourAPI, 집중률, 공휴일 API |
 | `NAVER_MAP_CLIENT_ID` | Naver Geocoding Client ID |
 | `NAVER_MAP_CLIENT_SECRET` | Naver Geocoding Client Secret |
+| `NAVER_LOCAL_SEARCH_CLIENT_ID` | Naver API Hub Local Search API Key ID |
+| `NAVER_LOCAL_SEARCH_CLIENT_SECRET` | Naver API Hub Local Search API Key |
 | `LLM_API_KEY` | 예약 필드이며 현재 사용하지 않음 |
 | `DATABASE_URL` | 예약 필드이며 현재 사용하지 않음 |
 

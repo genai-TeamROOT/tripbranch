@@ -16,6 +16,7 @@ from app.domain.models import (
     ConcentrationForecast,
     ConcentrationResult,
     PlaceCategoryFilter,
+    StoredPlaceLocation,
     WeatherForecastResult,
 )
 from app.place_search_policy import DEFAULT_PLACE_SEARCH_RADIUS_KM
@@ -77,6 +78,20 @@ def _request(
             weather_intent=weather_intent,
         ),
     )
+
+
+class _StoredPlaceRepository:
+    """INFO 집중률 요청이 지오코딩 전 DB 매핑을 쓰는지 검증하는 더블."""
+
+    def __init__(self, place: StoredPlaceLocation) -> None:
+        self._place = place
+
+    async def find_active_places_by_name(
+        self, name: str
+    ) -> tuple[StoredPlaceLocation, ...]:
+        return (self._place,) if name == self._place.title else ()
+
+
 
 
 class _DirectNoDataConcentrationProvider:
@@ -303,6 +318,51 @@ async def test_info_concentration_returns_direct_normalized_result() -> None:
     assert response.result.concentration_rate == 58.0
     assert response.result.concentration_level == "slightly_crowded"
     assert response.result.concentration_label == "다소 혼잡"
+
+
+@pytest.mark.asyncio
+async def test_info_concentration_uses_stored_mapping_before_geocoding() -> None:
+    """쌈지길처럼 주소 지오코딩이 실패하는 상호명도 매핑된 집중률명을 사용한다."""
+    place_provider = FakePlaceProvider()
+    concentration_provider = _DirectNoDataConcentrationProvider()
+    service = ContextService(
+        ContextTools(
+            location=ResolveLocationTool(
+                FakeGeocodingProvider(),
+                _StoredPlaceRepository(
+                    StoredPlaceLocation(
+                        content_id="128553",
+                        title="쌈지길",
+                        address="서울특별시 종로구 인사동길 44",
+                        latitude=37.5743062352,
+                        longitude=126.9848674428,
+                        concentration_name="창덕궁",
+                    )
+                ),
+            ),
+            places=NearbyPlaceDetailsTool(place_provider, place_provider),
+            weather=GetWeatherForecastTool(FakeWeatherProvider()),
+            holidays=GetHolidaysTool(FakeHolidayProvider()),
+            concentration=GetConcentrationTool(concentration_provider),
+        ),
+        candidate_limit=10,
+        clock=lambda: datetime.now(KST),
+    )
+
+    response = await service.fetch_info_context(
+        InfoContextRequest(
+            request_id="info-stored-mapping",
+            place_name="쌈지길",
+            place_context="explicit",
+        )
+    )
+
+    assert response.status == "success"
+    assert response.result is not None
+    assert response.result.requested_place_name == "쌈지길"
+    assert response.result.resolved_place_name == "창덕궁"
+    assert concentration_provider.calls == ["창덕궁"]
+
 
 
 @pytest.mark.asyncio

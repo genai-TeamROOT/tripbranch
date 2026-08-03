@@ -18,15 +18,18 @@ from app.providers.factory import (
     get_concentration_provider,
     get_geocoding_provider,
     get_holiday_provider,
+    get_local_search_provider,
     get_place_provider,
     get_weather_provider,
 )
 from app.providers.geocoding import FakeGeocodingProvider, RealGeocodingProvider
 from app.providers.holiday import FakeHolidayProvider, RealHolidayProvider
+from app.providers.local_search import FakeLocalSearchProvider, RealLocalSearchProvider
 from app.providers.protocols import (
     ConcentrationProvider,
     GeocodingProvider,
     HolidayProvider,
+    LocalSearchProvider,
     PlaceProvider,
     WeatherProvider,
 )
@@ -36,6 +39,7 @@ from app.providers.weather import RealWeatherProvider
 
 _PROVIDER_SETTING_NAMES = (
     "geocoding_provider",
+    "local_search_provider",
     "weather_provider",
     "place_provider",
     "concentration_provider",
@@ -62,6 +66,13 @@ _PROVIDER_CASES = (
         FakeGeocodingProvider,
         RealGeocodingProvider,
         "geocoding_provider",
+    ),
+    ProviderParityCase(
+        "local_search",
+        LocalSearchProvider,
+        FakeLocalSearchProvider,
+        RealLocalSearchProvider,
+        "local_search_provider",
     ),
     ProviderParityCase(
         "weather",
@@ -133,15 +144,18 @@ def _configure_global_settings(
         )
     monkeypatch.setattr(settings, "naver_map_client_id", _SECRET)
     monkeypatch.setattr(settings, "naver_map_client_secret", _SECRET)
+    monkeypatch.setattr(settings, "naver_local_search_client_id", _SECRET)
+    monkeypatch.setattr(settings, "naver_local_search_client_secret", _SECRET)
     monkeypatch.setattr(settings, "weather_api_key", _SECRET)
     monkeypatch.setattr(settings, "tour_api_service_key", _SECRET)
 
 
 def _create_all_providers(client: httpx.AsyncClient) -> dict[str, object]:
-    """동일한 HTTP client로 Factory의 다섯 Provider를 생성한다."""
+    """동일한 HTTP client로 Factory의 Provider를 생성한다."""
 
     return {
         "geocoding": get_geocoding_provider(client),
+        "local_search": get_local_search_provider(client),
         "weather": get_weather_provider(client),
         "place": get_place_provider(client),
         "concentration": get_concentration_provider(client),
@@ -192,7 +206,7 @@ async def test_common_provider_mode_switches_all_five_providers_together(
     mode: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """공통 PROVIDER_MODE 하나로 다섯 Provider가 함께 전환되어야 한다."""
+    """공통 PROVIDER_MODE 하나로 Provider가 함께 전환되어야 한다."""
 
     network_calls: list[httpx.Request] = []
 

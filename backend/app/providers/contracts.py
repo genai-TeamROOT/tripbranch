@@ -21,6 +21,7 @@ class ProviderSource(StrEnum):
     """Provider 구현 클래스가 아닌 데이터 출처·기능 식별자."""
 
     NAVER_GEOCODING = "naver_geocoding"
+    NAVER_LOCAL_SEARCH = "naver_local_search"
     DEVICE_GPS = "device_gps"
     KMA_ULTRA_SHORT_FORECAST = "kma_ultra_short_forecast"
     TOUR_API_PLACE = "tour_api_place"
@@ -29,6 +30,7 @@ class ProviderSource(StrEnum):
     KASI_HOLIDAY = "kasi_holiday"
     GEMINI = "gemini"
     FAKE_GEOCODING = "fake_geocoding"
+    FAKE_LOCAL_SEARCH = "fake_local_search"
     FAKE_WEATHER = "fake_weather"
     FAKE_PLACE = "fake_place"
     FAKE_CONCENTRATION = "fake_concentration"

@@ -11,7 +11,9 @@ from app.providers.factory import (
     get_concentration_provider,
     get_geocoding_provider,
     get_holiday_provider,
+    get_local_search_provider,
     get_place_details_provider,
+    get_place_location_repository,
     get_place_search_provider,
     get_weather_provider,
 )
@@ -27,7 +29,11 @@ def get_context_provider(client: httpx.AsyncClient) -> ContextService:
 
     return ContextService(
         ContextTools(
-            location=ResolveLocationTool(get_geocoding_provider(client)),
+            location=ResolveLocationTool(
+                get_geocoding_provider(client),
+                place_repository=get_place_location_repository(client),
+                local_search_provider=get_local_search_provider(client),
+            ),
             places=NearbyPlaceDetailsTool(
                 search_provider=get_place_search_provider(client),
                 details_provider=get_place_details_provider(client),
