@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+from datetime import date
 from typing import TypeVar
 
 import httpx
@@ -23,9 +24,15 @@ from pydantic import BaseModel, ValidationError
 from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
 from app.providers import gemini_prompts
 from app.providers.contracts import ProviderResult, ProviderSource, provider_result
-from app.schemas import IntentClassificationResult, LLMOutput, UserConditions
+from app.schemas import GeneralTopic, IntentClassificationResult, LLMOutput, UserConditions
 
 T = TypeVar("T", bound=BaseModel)
+
+
+class _GeneralAnswer(BaseModel):
+    """generate_general_answer() 전용 구조화 출력 wire 모델. 다른 곳에서 쓰지 않는다."""
+
+    answer: str
 
 # 429(rate limit)와 5xx(서버 과부하/일시 장애)만 재시도 대상. 4xx(인증 실패, 잘못된 요청 등)는
 # 재시도해도 같은 결과이므로 즉시 실패시킨다.
@@ -92,10 +99,15 @@ class RealGeminiProvider:
         return provider_result(result, source=ProviderSource.GEMINI)
 
     async def extract_info_query(
-        self, user_input: str, *, has_previous_recommendation: bool
+        self,
+        user_input: str,
+        *,
+        has_previous_recommendation: bool,
+        reference_date: date,
     ) -> ProviderResult[LLMOutput]:
         instruction = gemini_prompts.build_info_extraction_instruction(
-            has_previous_recommendation=has_previous_recommendation
+            has_previous_recommendation=has_previous_recommendation,
+            reference_date=reference_date,
         )
         result = await self._call_structured(instruction, user_input, LLMOutput)
         return provider_result(result, source=ProviderSource.GEMINI)
@@ -115,6 +127,13 @@ class RealGeminiProvider:
         instruction = gemini_prompts.build_general_extraction_instruction()
         result = await self._call_structured(instruction, user_input, LLMOutput)
         return provider_result(result, source=ProviderSource.GEMINI)
+
+    async def generate_general_answer(
+        self, topic: GeneralTopic, original_question: str
+    ) -> ProviderResult[str]:
+        instruction = gemini_prompts.build_general_answer_instruction(topic)
+        result = await self._call_structured(instruction, original_question, _GeneralAnswer)
+        return provider_result(result.answer, source=ProviderSource.GEMINI)
 
     async def _call_structured(
         self,

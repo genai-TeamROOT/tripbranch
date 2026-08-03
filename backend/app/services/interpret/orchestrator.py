@@ -22,6 +22,7 @@ from app.schemas import (
     OutOfScopePayload,
     OutputStatus,
 )
+from app.state.schema import now_kst
 
 
 async def build_interpretation(
@@ -77,6 +78,7 @@ async def build_interpretation(
             await llm.extract_info_query(
                 request.user_input,
                 has_previous_recommendation=request.has_previous_recommendation,
+                reference_date=now_kst().date(),
             )
         ).data
 

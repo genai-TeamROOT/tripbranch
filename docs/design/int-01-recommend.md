@@ -289,7 +289,30 @@ LLM이 AVOID/ENJOY 판별 불가
 
 ---
 
-## 9. 날씨 정보 확보 순서
+## 9. concentration_intent 판별
+
+상세 필드 정의와 값별 의미는
+[concentration-conditions.md §2.1](./concentration-conditions.md#21-필드-정의)이 소유한다.
+이 절은 weather_intent와 다른 점만 요약한다.
+
+| 값 | 의미 | 예시 입력 |
+|----|------|-----------|
+| `AVOID` | 혼잡한 곳을 피하고 싶음 | "조용한 공원 추천해줘", "한적한 곳 가고싶어" |
+| `SEEK` | 혼잡한(인기 있는) 곳을 원함 | "핫한 관광지 어디야", "인기 많은 곳 추천해줘" |
+| `IGNORE` | 혼잡도 무관 | 언급 없음 |
+| `null` | 판별 불가 | 혼잡도 단어는 있으나 방향 모호 (드묾) |
+
+**weather_intent와의 차이**: `weather_intent`의 `null`은 environment 하드 필터를
+결정 못 해 사용자에게 추가 질문한다(§8). `concentration_intent`는 하드 필터에
+관여하지 않고 Scoring 가중치에만 영향을 주므로, `null`도 `IGNORE`와 동일하게
+가중치만 제외하고 **추가 질문 없이 진행**한다.
+
+`concentration_intent`가 `AVOID`/`SEEK`일 때만 C에 혼잡도 포함 조회를 요청한다
+([concentration-conditions.md §2.2](./concentration-conditions.md#22-c-조회-플래그)).
+
+---
+
+## 10. 날씨 정보 확보 순서
 
 ```
 ① 사용자 입력에 날씨 포함
@@ -311,14 +334,14 @@ LLM이 AVOID/ENJOY 판별 불가
 
 ---
 
-## 10. 조건 부족 시 기본 정책
+## 11. 조건 부족 시 기본 정책
 
 조건 미확보 시의 필수/선택 구분과 기본값 정책은
 [conditions-schema.md § missing_conditions](./conditions-schema.md#missing_conditions)를 따른다.
 
 ---
 
-## 11. 필드별 변경 규칙
+## 12. 필드별 변경 규칙
 
 필드별 허용 연산(Update/Add/Remove), place_types가 Update인 이유, place_tags가
 Add/Remove인 이유, place_types 교체 시 place_tags 정리 규칙은
@@ -326,7 +349,7 @@ Add/Remove인 이유, place_types 교체 시 place_tags 정리 규칙은
 
 ---
 
-## 12. LLM 추출 예시
+## 13. LLM 추출 예시
 
 ### 기본 추출
 
@@ -339,6 +362,8 @@ Add/Remove인 이유, place_types 교체 시 place_tags 정리 규칙은
 | "부모님과 걸어서 갈 카페" | GPS | null | ["restaurant"] | ["카페"] | companion=parent, transport=walk |
 | "30분 안에 갈 수 있는 무료 전시" | GPS | null | ["festival"] | ["전시회"] | max_travel_time=30, budget=free |
 | "종로 가려는데 근처 볼거리" | GPS | "종로" | ["attraction"] | [] | — |
+| "핫한 관광지 어디야" | GPS | null | ["attraction"] | [] | concentration_intent=SEEK |
+| "조용한 공원 추천해줘" | GPS | null | ["attraction"] | ["공원"] | concentration_intent=AVOID |
 
 ### 복수 유형 추출
 
@@ -362,6 +387,7 @@ Add/Remove인 이유, place_types 교체 시 place_tags 정리 규칙은
     "place_tags": ["박물관", "미술관", "카페"],
     "weather": "rain",
     "weather_intent": "AVOID",
+    "concentration_intent": null,
     "transport": "walk",
     "max_travel_time": 15,
     "time_available": null,
@@ -376,7 +402,7 @@ Add/Remove인 이유, place_types 교체 시 place_tags 정리 규칙은
 
 ---
 
-## 13. 추천 점수 카테고리 반영
+## 14. 추천 점수 카테고리 반영
 
 ### Hard Filter (추천 후보 제외)
 
@@ -413,7 +439,7 @@ place_types 빈 배열 (전체 검색) + place_tags 없음:
 
 ---
 
-## 14. 경계 사례
+## 15. 경계 사례
 
 | 입력 | 판정 | 이유 |
 |------|------|------|
@@ -427,11 +453,12 @@ place_types 빈 배열 (전체 검색) + place_tags 없음:
 
 ---
 
-## 15. 변경 이력
+## 16. 변경 이력
 
 | 버전 | 날짜 | 변경 내용 |
 |------|------|-----------|
 | v0.1 | 2026-07-22 | 초안 작성 |
 | v0.2 | 2026-07-23 | Conditions 3층 구조 명시(3절), preference_tags 필드 제거, weather 변경 규칙을 user_conditions/api_context 기준으로 수정, place_types 교체 시 place_tags 정리를 A의 명시적 Remove로 수정. (5·9·12절의 GPS↔api_context 위치 프레이밍은 후속 정리 예정) |
 | v0.3 | 2026-07-23 | 소유권 기반 문서 정리: Conditions 필드 정의(3·4절), PlaceType/PlaceTag enum(6·7절), 조건 부족 시 기본 정책(10절), 필드별 변경 규칙(11절)을 conditions-schema.md 참조 링크로 교체. 추천 처리 흐름·위치 처리·날씨 확보·점수 계산 등 RECOMMEND 고유 로직은 유지 |
+| v0.4 | 2026-07-29 | `concentration_intent` 판별 절 신설(신규 9절, weather_intent §8 패턴 요약) — 이후 9~15절을 10~16절로 순연. 13절(구 12절) LLM 추출 예시에 concentration 사례 2건 추가 |
 

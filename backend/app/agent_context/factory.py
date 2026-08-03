@@ -11,7 +11,8 @@ from app.providers.factory import (
     get_concentration_provider,
     get_geocoding_provider,
     get_holiday_provider,
-    get_place_provider,
+    get_place_details_provider,
+    get_place_search_provider,
     get_weather_provider,
 )
 from app.tools.concentration import GetConcentrationTool
@@ -24,11 +25,13 @@ from app.tools.weather_forecast import GetWeatherForecastTool
 def get_context_provider(client: httpx.AsyncClient) -> ContextService:
     """설정된 Fake/Real Provider로 A–C ContextProvider를 생성한다."""
 
-    place_provider = get_place_provider(client)
     return ContextService(
         ContextTools(
             location=ResolveLocationTool(get_geocoding_provider(client)),
-            places=NearbyPlaceDetailsTool(place_provider, place_provider),
+            places=NearbyPlaceDetailsTool(
+                search_provider=get_place_search_provider(client),
+                details_provider=get_place_details_provider(client),
+            ),
             weather=GetWeatherForecastTool(get_weather_provider(client)),
             holidays=GetHolidaysTool(get_holiday_provider(client)),
         ),

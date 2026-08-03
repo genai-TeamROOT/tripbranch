@@ -11,6 +11,12 @@ RealRecommendationProvider)를 기본 주입한다. 여기 두 Fake는 이제 �
 
 from __future__ import annotations
 
+from app.agent_context.enrichment_schemas import (
+    CandidateEnrichmentRequest,
+    CandidateEnrichmentResponse,
+    CandidateEnrichmentResult,
+    ConcentrationForecastData,
+)
 from app.agent_context.schemas import (
     AgentContextRequest,
     AgentContextResponse,
@@ -22,7 +28,18 @@ from app.agent_context.schemas import (
     WeatherForecast,
 )
 from app.schemas import RecommendationItem, RecommendationResponse, UserConditions
+from app.services.runtime.info_context_schemas import (
+    ConcentrationInfoResult,
+    InfoContextRequest,
+    InfoContextResponse,
+)
 from app.state.schema import now_kst
+
+# concentration-conditions.md §3.3 근접치 fallback을 흉내 내는 고정 데이터.
+# "관광지" 계열 이름은 직접 조회 성공(is_proxy=False), 그 외(카페 등)는 근접치
+# fallback 성공(is_proxy=True)으로 시뮬레이션한다 — 실제 오케스트레이션은 C 구현.
+_FAKE_ATTRACTION_NAMES = ("경복궁", "창덕궁", "종묘", "인사동", "광화문", "북촌한옥마을")
+_FAKE_NEAREST_ATTRACTION = "경복궁"
 
 _FAKE_CANDIDATES = (
     PlaceCandidate(
@@ -38,6 +55,20 @@ _FAKE_CANDIDATES = (
         category="cafe",
         location={"latitude": 37.5798, "longitude": 126.9772},
         operating_hours_raw="08:00-22:00",
+    ),
+    PlaceCandidate(
+        place_id="runtime-stub-park-1",
+        name="런타임 스텁 공원",
+        category="park",
+        location={"latitude": 37.5800, "longitude": 126.9774},
+        operating_hours_raw="00:00-24:00",
+    ),
+    PlaceCandidate(
+        place_id="runtime-stub-gallery-1",
+        name="런타임 스텁 갤러리",
+        category="gallery",
+        location={"latitude": 37.5802, "longitude": 126.9776},
+        operating_hours_raw="10:00-19:00",
     ),
 )
 
@@ -87,6 +118,55 @@ class FakeToolProvider:
             metadata=metadata,
         )
 
+    async def fetch_info_context(self, request: InfoContextRequest) -> InfoContextResponse:
+        """concentration-conditions.md §3.3 흐름을 고정 데이터로 흉내 낸다.
+
+        place_name이 없으면 needs_clarification, 알려진 관광지면 직접 성공,
+        그 외(카페 등)는 근접치 fallback 성공을 시뮬레이션한다. 실제 장소
+        해석·근접치 탐색 오케스트레이션은 C 내부 구현(A는 하지 않음).
+        """
+        if not request.place_name:
+            return InfoContextResponse(
+                request_id=request.request_id,
+                status="needs_clarification",
+                clarification=Clarification(
+                    code="place_required",
+                    missing_fields=["place_name"],
+                    candidates=[],
+                ),
+            )
+
+        if request.place_name in _FAKE_ATTRACTION_NAMES:
+            return InfoContextResponse(
+                request_id=request.request_id,
+                status="success",
+                result=ConcentrationInfoResult(
+                    status="success",
+                    is_proxy=False,
+                    requested_place_name=request.place_name,
+                    resolved_place_name=request.place_name,
+                    forecast_date=request.visit_time or now_kst().date().isoformat(),
+                    concentration_rate=42.0,
+                    concentration_level="normal",
+                    concentration_label="보통",
+                ),
+            )
+
+        return InfoContextResponse(
+            request_id=request.request_id,
+            status="success",
+            result=ConcentrationInfoResult(
+                status="success",
+                is_proxy=True,
+                requested_place_name=request.place_name,
+                resolved_place_name=_FAKE_NEAREST_ATTRACTION,
+                forecast_date=request.visit_time or now_kst().date().isoformat(),
+                concentration_rate=58.0,
+                concentration_level="slightly_crowded",
+                concentration_label="다소 혼잡",
+            ),
+        )
+
 
 class FakeRecommendationProvider:
     """RecommendationContext.places를 그대로 고정 추천 결과로 변환하는 가짜 provider.
@@ -126,5 +206,58 @@ class FakeRecommendationProvider:
             elapsed_ms=0,
         )
 
+    async def rerank_with_concentration(
+        self,
+        conditions: UserConditions,
+        first_pass: RecommendationResponse,
+        concentration: CandidateEnrichmentResponse,
+    ) -> RecommendationResponse:
+        """(제안, D 미확인 — agent-runtime-contract.md §6.5.2) 1차 결과를 역순으로
+        재배열해 반환한다 — 실제 재채점이 아니라, 테스트에서 "2차 Scoring이
+        정말 호출돼서 순서가 바뀌었는지"를 1차 결과와 구분해 확인하기 위한
+        고정 로직이다.
+        """
+        items = [*first_pass.recommendations, *first_pass.unverified_recommendations]
+        return RecommendationResponse(
+            recommendations=list(reversed(items)),
+            unverified_recommendations=[],
+            elapsed_ms=0,
+        )
 
-__all__ = ["FakeToolProvider", "FakeRecommendationProvider"]
+
+class FakeEnrichmentProvider:
+    """CandidateEnrichmentService를 흉내 내는 가짜 보강 provider.
+
+    요청된 후보 전부에 고정 집중률(success, normal/보통)을 반환한다 —
+    concentration-conditions.md §2.2.3 안 B의 A→C 호출부(6-1단계)를 C/D 없이
+    테스트하기 위한 것.
+    """
+
+    async def enrich(self, request: CandidateEnrichmentRequest) -> CandidateEnrichmentResponse:
+        results = [
+            CandidateEnrichmentResult(
+                place_id=target.place_id,
+                name=target.name,
+                latitude=target.latitude,
+                longitude=target.longitude,
+                status="success",
+                concentration=[
+                    ConcentrationForecastData(
+                        place_name=target.name,
+                        forecast_date=now_kst().date().isoformat(),
+                        concentration_rate=42.0,
+                        concentration_level="normal",
+                        concentration_label="보통",
+                    )
+                ],
+            )
+            for target in request.candidates
+        ]
+        return CandidateEnrichmentResponse(
+            request_id=request.request_id,
+            status="success",
+            candidates=results,
+        )
+
+
+__all__ = ["FakeToolProvider", "FakeRecommendationProvider", "FakeEnrichmentProvider"]

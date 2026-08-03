@@ -60,7 +60,7 @@ class ConcentrationForecastData(StrictModel):
 
     place_name: str
     forecast_date: str | None = None
-    concentration_rate: float | None = None
+    concentration_rate: float = Field(ge=0)
     concentration_level: ConcentrationLevel
     concentration_label: ConcentrationLabel
 

@@ -9,7 +9,8 @@ TODO: provider가 늘어나면 오류 타입, 비동기 계약, 메타데이터 
 
 from __future__ import annotations
 
-from typing import Protocol
+from datetime import date
+from typing import Protocol, runtime_checkable
 
 from app.domain.models import (
     ConcentrationResult,
@@ -25,6 +26,7 @@ from app.domain.models import (
 from app.place_search_policy import DEFAULT_PLACE_PROVIDER_RESULT_LIMIT
 from app.providers.contracts import ProviderResult
 from app.schemas import (
+    GeneralTopic,
     IntentClassificationResult,
     InterpretedConditions,
     LLMOutput,
@@ -64,9 +66,17 @@ class LLMProvider(Protocol):
         ...
 
     async def extract_info_query(
-        self, user_input: str, *, has_previous_recommendation: bool
+        self,
+        user_input: str,
+        *,
+        has_previous_recommendation: bool,
+        reference_date: date,
     ) -> ProviderResult[LLMOutput]:
-        """INFO 발화에서 장소/질문 정보를 추출한다."""
+        """INFO 발화에서 장소/질문 정보를 추출한다.
+
+        reference_date: "오늘"/"내일"/"이번 주말" 등 concentration 질의의
+        visit_time을 실제 날짜로 환산하는 기준일(KST). concentration-conditions.md §3.2.
+        """
         ...
 
     async def extract_compare_request(
@@ -79,6 +89,16 @@ class LLMProvider(Protocol):
         self, user_input: str
     ) -> ProviderResult[LLMOutput]:
         """GENERAL 발화의 주제를 분류한다."""
+        ...
+
+    async def generate_general_answer(
+        self, topic: GeneralTopic, original_question: str
+    ) -> ProviderResult[str]:
+        """GENERAL 발화에 실제로 답할 배경지식 문장을 생성한다.
+
+        다른 메서드와 달리 구조화 조건 추출이 아니라 자유 텍스트 답변이다 —
+        docs/design/agent-response-generation.md §3/§6의 유일한 LLM 신규 호출 지점.
+        """
         ...
 
 
@@ -128,6 +148,26 @@ class PlaceDetailsProvider(Protocol):
         self, content_id: str, content_type_id: str
     ) -> ProviderResult[PlaceDetails]:
         """장소 ID와 유형 ID로 정규화된 상세정보를 반환한다."""
+        ...
+
+
+@runtime_checkable
+class BatchPlaceDetailsProvider(Protocol):
+    """여러 장소의 상세정보를 한 번의 조회로 반환할 수 있는 provider.
+
+    미리 구축된 저장소를 읽는 provider만 구현한다. content_id별로 개별 호출이
+    필요한 외부 API provider는 기존 PlaceDetailsProvider만 만족하면 되고,
+    Tool이 런타임에 이 계약 지원 여부를 보고 조회 방식을 고른다.
+    """
+
+    async def get_details_batch(
+        self,
+        content_ids: list[str],
+    ) -> ProviderResult[dict[str, PlaceDetails]]:
+        """content_id 목록에 대한 상세정보를 content_id 기준 dict로 반환한다.
+
+        조회되지 않은 content_id는 결과에서 빠진다(호출자가 누락으로 처리한다).
+        """
         ...
 
 

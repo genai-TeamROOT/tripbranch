@@ -51,14 +51,15 @@ backend\.venv\Scripts\Activate.ps1
 | `CONCENTRATION_PROVIDER` | 빈 값 | Concentration 개별 Override |
 | `HOLIDAY_PROVIDER` | 빈 값 | Holiday 개별 Override |
 | `LLM_PROVIDER` | 빈 값 | Fake/Real LLM 개별 Override |
+| `PLACE_DETAILS_SOURCE` | `tour_api` | 장소 상세·운영정보 출처 (`supabase`/`tour_api`) |
 | `LLM_MODEL_NAME` | `gemini-2.5-flash` | Real Gemini 모델명 |
 | `NAVER_MAP_CLIENT_ID` | 빈 값 | Real Geocoding |
 | `NAVER_MAP_CLIENT_SECRET` | 빈 값 | Real Geocoding |
 | `WEATHER_API_KEY` | 빈 값 | Real Weather |
 | `TOUR_API_SERVICE_KEY` | 빈 값 | Place, Concentration, Holiday |
 | `LLM_API_KEY` | 빈 값 | Real Gemini |
-| `SUPABASE_URL` | 빈 값 | Place 동기화 저장소 |
-| `SUPABASE_SECRET_KEY` | 빈 값 | Place 동기화 저장소 |
+| `SUPABASE_URL` | 빈 값 | Place 동기화 저장소, `PLACE_DETAILS_SOURCE=supabase` |
+| `SUPABASE_SECRET_KEY` | 빈 값 | Place 동기화 저장소, `PLACE_DETAILS_SOURCE=supabase` |
 | `EXTERNAL_API_TIMEOUT_SECONDS` | `10` | Real Provider timeout |
 | `RECOMMENDATION_RESULT_LIMIT` | `5` | Scoring 후 반환할 최대 추천 수 |
 | `RECOMMENDATION_CANDIDATE_LIMIT` | `10` | 거리순으로 상세조회·평가할 후보 수 |
@@ -68,6 +69,16 @@ backend\.venv\Scripts\Activate.ps1
 
 `PROVIDER_MODE=real`이면 개별 값이 비어 있는 모든 Provider가 Real 모드가 됩니다.
 특정 Provider만 Fake로 유지하려면 예를 들어 `PLACE_PROVIDER=fake`를 지정합니다.
+
+`PLACE_DETAILS_SOURCE`는 Fake/Real과 축이 다릅니다. 장소 후보 **검색**은 언제나
+`PLACE_PROVIDER`를 따르고, 이 값은 후보별 **상세·운영정보**를 어디서 읽을지만
+고릅니다. `supabase`로 두면 후보마다 TourAPI 상세 API를 호출하는 대신 미리
+동기화된 `places` 테이블을 `content_id`로 한 번에 조회합니다(후보 10건 기준
+평균 18.0초 → 0.33초, `backend/scripts/compare_place_details_latency.py` 측정).
+`SUPABASE_URL`/`SUPABASE_SECRET_KEY`가 필요하며, 비어 있으면 부팅 단계에서
+실패합니다. 요청 도중 TourAPI로 자동 폴백하지 않으므로 저장소 장애는 그대로
+`unavailable`로 노출됩니다. `PLACE_PROVIDER=fake`이면 상세도 Fake Provider가
+담당하므로 이 값은 무시됩니다.
 
 `PROVIDER_MODE`와 `*_PROVIDER`에는 `fake`와 `real`만 허용됩니다. 오타나 옛 이름을
 넣으면 앱이 기동하지 않고 어떤 변수가 잘못됐는지 즉시 보고합니다. Real 모드에

@@ -14,7 +14,12 @@
 
 import { apiClient } from "./client";
 import type {
+  AgentDebugRequest,
+  AgentResponse,
+  ChatRequest,
+  ChatResponse,
   InterpretDebugRequest,
+  InterpretResponse,
   InterpretedConditions,
   LLMOutput,
   RecommendationsResponse,
@@ -29,30 +34,75 @@ function mapStatedWeatherToLegacy(weather: string | null | undefined): WeatherCo
   return null;
 }
 
+/*
+ * 위치를 말하지 않은 발화("비를 피할 실내 장소가 필요해")의 개발용 기본 위치.
+ * AgentRuntimeDebugPanel의 DEFAULT_DEVICE_LOCATION("37.5788,126.9770")과 같은
+ * 지점이다 — 좌표 문자열은 지오코딩되지 않으므로 같은 좌표로 해석되는 지명을 쓴다.
+ * TODO: 실제 기기 GPS를 쓰게 되면 이 기본값은 제거한다.
+ */
+const DEFAULT_LOCATION_QUERY = "경복궁";
+
+/*
+ * Agent가 반경을 주지 않을 때 쓰는 기본값. 백엔드
+ * place_search_policy.DEFAULT_PLACE_SEARCH_RADIUS_KM(2.0)과 맞춘다.
+ */
+const DEFAULT_SEARCH_RADIUS_KM = 2.0;
+
+/*
+ * LLMOutput의 RECOMMEND 조건을 화면 표시용 InterpretedConditions로 옮긴다.
+ * /api/chat 전환 이후에는 추천 요청 본문이 아니라 조건 카드 표시에만 쓰인다.
+ */
+export function toDisplayConditions(output: LLMOutput): InterpretedConditions | null {
+  return output.recommend ? toLegacyConditions(output) : null;
+}
+
 function toLegacyConditions(output: LLMOutput): InterpretedConditions {
   const conditions = output.recommend?.conditions;
   const categories = conditions?.place_tags.length
     ? conditions.place_tags
     : (conditions?.place_types ?? []);
   return {
-    location_query: conditions?.search_center ?? conditions?.current_location ?? "",
+    location_query:
+      conditions?.search_center ?? conditions?.current_location ?? DEFAULT_LOCATION_QUERY,
     preferred_categories: categories,
     weather_condition: mapStatedWeatherToLegacy(conditions?.weather),
-    search_radius_km: 1.0,
+    // 현재 UserConditions에는 반경 필드가 없어 항상 기본값이 쓰인다. Agent가 반경을
+    // 제공하게 되면 여기서 그 값을 우선 사용한다.
+    search_radius_km: conditions?.search_radius_km ?? DEFAULT_SEARCH_RADIUS_KM,
+    // 구형 4필드로 축소되면서 버려지는 나머지 조건을 개발용 표시를 위해 보존한다.
+    raw_conditions: conditions ?? null,
   };
 }
 
 export async function interpretUserInput(user_input: string) {
-  const output = await apiClient.post<LLMOutput>("/interpret", { user_input });
-  return toLegacyConditions(output);
+  const response = await apiClient.post<InterpretResponse>("/interpret", { user_input });
+  return toLegacyConditions(response.output);
 }
 
-export function interpretDebug(request: InterpretDebugRequest) {
-  return apiClient.post<LLMOutput>("/interpret", request);
+export async function interpretDebug(request: InterpretDebugRequest) {
+  const response = await apiClient.post<InterpretResponse>("/interpret", request);
+  return response.output;
 }
 
 export function getRecommendations(
   conditions: InterpretedConditions & { shown_place_ids: string[] },
 ) {
-  return apiClient.post<RecommendationsResponse>("/recommendations", conditions);
+  // raw_conditions는 개발용 표시 전용이라 요청 본문에서 제외한다.
+  const payload = { ...conditions };
+  delete payload.raw_conditions;
+  return apiClient.post<RecommendationsResponse>("/recommendations", payload);
+}
+
+export function runAgentDebug(request: AgentDebugRequest) {
+  return apiClient.post<AgentResponse>("/agent-debug", request);
+}
+
+/*
+ * 실사용 흐름(HomePage/ChatPage)의 단일 진입점. Intent 분류 → 조건 병합 → Tool →
+ * Scoring → 챗봇 메시지까지 한 번의 호출로 끝난다.
+ * agent-debug와 응답 형태는 같지만 라우트가 다르다 — 개발용 패널과 실사용 경로를
+ * 섞지 않기 위함이다.
+ */
+export function sendChat(request: ChatRequest) {
+  return apiClient.post<ChatResponse>("/chat", request);
 }

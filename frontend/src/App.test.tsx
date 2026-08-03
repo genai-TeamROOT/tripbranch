@@ -10,10 +10,9 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
 
-// /api/interpret은 LLMOutput(intent + Intent별 조건)을 반환한다. interpretUserInput()이
-// RECOMMEND 결과를 옛 InterpretedConditions 형태로 변환하므로, 아래 값들이
-// location_query="경복궁"/preferred_categories=["museum","cafe"]/weather_condition="bad"로
-// 변환되어야 기존 화면 검증이 그대로 통과한다.
+// 실사용 흐름은 /api/chat 한 번으로 해석과 추천을 함께 받는다(AgentResponse).
+// llm_output.recommend.conditions가 조건 카드 표시에 쓰이고, recommendations가
+// 그대로 결과 메시지가 된다.
 const interpretResponse = {
   intent: "RECOMMEND",
   status: "complete",
@@ -73,11 +72,13 @@ const recommendationsResponse = {
 function mockFetch() {
   return vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
-    if (url.endsWith("/interpret")) {
-      return Response.json(interpretResponse);
-    }
-    if (url.endsWith("/recommendations")) {
-      return Response.json(recommendationsResponse);
+    if (url.endsWith("/chat")) {
+      return Response.json({
+        llm_output: interpretResponse,
+        state: { session_id: "sess_test", run_id: "run_test" },
+        recommendations: { ...recommendationsResponse, elapsed_ms: 12.3 },
+        message: "조건에 맞는 장소를 찾아봤어요.",
+      });
     }
     return Response.json({ error: { message: "not found" } }, { status: 404 });
   });
@@ -94,42 +95,48 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-test("debug mode shows condition debug message before recommendations", async () => {
+test("debug mode shows condition card together with recommendations", async () => {
   vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "true");
   render(<App />);
 
-  await userEvent.type(screen.getByPlaceholderText(/경복궁 근처/), "비 오는 날 갈 곳");
+  await userEvent.type(
+    screen.getByPlaceholderText(
+      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+    ),
+    "비 오는 날 갈 곳",
+  );
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
 
-  expect(await screen.findByText("개발용 입력 해석 결과")).toBeInTheDocument();
+  expect(await screen.findByText(/개발용 입력 해석 결과/)).toBeInTheDocument();
   expect(screen.getAllByText("비 오는 날 갈 곳").length).toBeGreaterThan(0);
-  expect(screen.queryByText("테스트 박물관")).not.toBeInTheDocument();
-
-  await userEvent.click(screen.getByRole("button", { name: "추천 진행" }));
-
+  // Agent가 한 번에 끝내므로 중간 승인 버튼이 없고 추천이 함께 나온다.
+  expect(screen.queryByRole("button", { name: "추천 진행" })).not.toBeInTheDocument();
   expect(await screen.findByText("테스트 박물관")).toBeInTheDocument();
   expect(screen.getByText("운영시간 미확인 갤러리")).toBeInTheDocument();
   expect(screen.getByText("운영시간을 확인할 수 없는 장소")).toBeInTheDocument();
 });
 
-test("release mode hides debug message and requests recommendations automatically", async () => {
+test("release mode hides debug card and needs only one chat call", async () => {
   vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "false");
   render(<App />);
 
-  await userEvent.type(screen.getByPlaceholderText(/경복궁 근처/), "비 오는 날 갈 곳");
+  await userEvent.type(
+    screen.getByPlaceholderText(
+      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+    ),
+    "비 오는 날 갈 곳",
+  );
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
 
-  expect(await screen.findByText(/경복궁 근처에서/)).toBeInTheDocument();
-  expect(screen.queryByText("개발용 입력 해석 결과")).not.toBeInTheDocument();
+  expect(screen.queryByText(/개발용 입력 해석 결과/)).not.toBeInTheDocument();
   expect(await screen.findByText("테스트 박물관")).toBeInTheDocument();
 
   const fetchMock = vi.mocked(fetch);
-  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-  expect(String(fetchMock.mock.calls[0][0])).toContain("/interpret");
-  expect(String(fetchMock.mock.calls[1][0])).toContain("/recommendations");
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+  expect(String(fetchMock.mock.calls[0][0])).toContain("/chat");
 });
 
-test("requesting more places appends a new result message with shown ids", async () => {
+test("requesting more places sends a follow-up chat turn with the session id", async () => {
   vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "false");
   render(<App />);
 
@@ -141,8 +148,35 @@ test("requesting more places appends a new result message with shown ids", async
 
   await waitFor(() => expect(screen.getAllByText("테스트 박물관")).toHaveLength(2));
   const fetchMock = vi.mocked(fetch);
-  const requestBody = JSON.parse(String(fetchMock.mock.calls[2][1]?.body));
-  expect(requestBody.shown_place_ids).toEqual(["stub-museum-1", "stub-gallery-1"]);
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  const requestBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+  // 제외 목록은 B가 단일 기준이라 프론트가 보내지 않는다.
+  expect(requestBody.session_id).toBe("sess_test");
+  expect(requestBody.user_input).toBe("다른 곳 보여줘");
+});
+
+test("clarification turn hints a fuller phrasing in the composer placeholder", async () => {
+  vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "false");
+  // 위치를 말하지 않아 Agent가 되묻는 상황: 추천 없이 메시지만 온다.
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () =>
+      Response.json({
+        llm_output: { ...interpretResponse, recommend: null },
+        state: { session_id: "sess_test", run_id: "run_test" },
+        recommendations: null,
+        message: "어디 근처에서 찾아드릴까요? 현재 위치나 원하시는 지역을 알려주세요.",
+      }),
+    ),
+  );
+  render(<App />);
+
+  await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+
+  expect(await screen.findByText(/어디 근처에서 찾아드릴까요/)).toBeInTheDocument();
+  // 발화를 대신 만들어 보내지 않고, 입력창 안내 문구만 바꾼다.
+  expect(screen.getByPlaceholderText("예: 경복궁 근처에서 찾아줘")).toBeInTheDocument();
 });
 
 test("chat route redirects without stored state", async () => {

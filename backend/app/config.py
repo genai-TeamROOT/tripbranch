@@ -9,6 +9,7 @@ TODO: 실제 외부 API 연동 시 provider별 캐시 설정을 추가한다.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
 
 from pydantic import AliasChoices, Field, model_validator
@@ -23,10 +24,20 @@ from app.recommendation_limits import (
 )
 
 ProviderMode = Literal["fake", "real"]
+# 장소 후보 "검색"은 항상 PLACE_PROVIDER를 따르고, 후보별 상세·운영정보만 이 값으로
+# 출처를 고른다. supabase는 미리 구축된 places 테이블, tour_api는 상세 API 직접 호출.
+PlaceDetailsSource = Literal["supabase", "tour_api"]
+
+
+# backend/.env. 상대경로로 두면 저장소 루트에서 서버를 띄웠을 때 .env를 찾지 못하고
+# 오류 없이 전 Provider가 fake로 뜨므로, 실행 위치와 무관하게 같은 파일을 읽는다.
+_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore", env_ignore_empty=True)
+    model_config = SettingsConfigDict(
+        env_file=_ENV_FILE, extra="ignore", env_ignore_empty=True
+    )
 
     app_env: str = "local"
 
@@ -38,6 +49,10 @@ class Settings(BaseSettings):
     geocoding_provider: ProviderMode | None = None
     concentration_provider: ProviderMode | None = None
     holiday_provider: ProviderMode | None = None
+
+    # 상세·운영정보 조회 출처. PLACE_PROVIDER=fake이면 Fake Provider가 상세까지
+    # 담당하므로 이 값은 무시된다.
+    place_details_source: PlaceDetailsSource = "tour_api"
 
     # LLM_PROVIDER=real일 때 사용할 Gemini 모델명.
     llm_model_name: str = "gemini-2.5-flash"
@@ -115,6 +130,13 @@ class Settings(BaseSettings):
     @property
     def resolved_holiday_provider(self) -> ProviderMode:
         return self.holiday_provider or self.provider_mode
+
+    @property
+    def resolved_place_details_source(self) -> PlaceDetailsSource:
+        """fake 장소 모드에서는 상세도 Fake Provider가 담당한다."""
+        if self.resolved_place_provider == "fake":
+            return "tour_api"
+        return self.place_details_source
 
 
 settings = Settings()

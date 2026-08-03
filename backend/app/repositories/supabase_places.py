@@ -9,7 +9,7 @@ from uuid import UUID
 
 import httpx
 
-from app.domain.models import StoredPlaceState, TourPlaceRecord
+from app.domain.models import StoredPlaceDetail, StoredPlaceState, TourPlaceRecord
 from app.errors import AppError
 
 _READ_PAGE_SIZE = 1000
@@ -25,6 +25,19 @@ _STATE_COLUMNS = ",".join(
         "rest_date_raw",
         "is_active",
         "inactive_reason",
+    )
+)
+_DETAIL_COLUMNS = ",".join(
+    (
+        "content_id",
+        "content_type_id",
+        "title",
+        "address",
+        "operating_hours_raw",
+        "rest_date_raw",
+        "detail_fetch_status",
+        "detail_fetched_at",
+        "source_modified_at",
     )
 )
 _VALID_RUN_STATUSES = {"success", "partial_failure", "failed"}
@@ -57,6 +70,10 @@ def _parse_datetime(value: object, field: str) -> datetime | None:
         return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except ValueError:
         raise SupabaseRepositoryError(f"invalid {field}") from None
+
+
+def _optional_text(value: object) -> str | None:
+    return str(value) if value is not None else None
 
 
 def _chunks(values: Sequence[T], size: int) -> list[Sequence[T]]:
@@ -261,6 +278,54 @@ class SupabasePlaceRepository:
                 ),
             )
         return states
+
+    async def get_active_place_details(
+        self,
+        content_ids: Sequence[str],
+    ) -> dict[str, StoredPlaceDetail]:
+        """활성 상태인 장소들의 상세·운영정보를 content_id 기준으로 한 번에 읽는다.
+
+        조회되지 않은 content_id는 결과에 포함되지 않는다. content_id가 URL 길이
+        제한을 넘지 않도록 청크로 나눠 요청한다.
+        """
+        if not content_ids:
+            return {}
+
+        details: dict[str, StoredPlaceDetail] = {}
+        for chunk in _chunks(list(content_ids), _UPSERT_CHUNK_SIZE):
+            quoted_ids = ",".join(f'"{content_id}"' for content_id in chunk)
+            response = await self._request(
+                "GET",
+                "/places",
+                params={
+                    "select": _DETAIL_COLUMNS,
+                    "content_id": f"in.({quoted_ids})",
+                    "is_active": "eq.true",
+                },
+            )
+            rows = self._json(response)
+            if not isinstance(rows, list):
+                raise SupabaseRepositoryError("invalid place details response")
+            for raw in rows:
+                if not isinstance(raw, Mapping) or not raw.get("content_id"):
+                    raise SupabaseRepositoryError("place detail missing content_id")
+                content_id = str(raw["content_id"])
+                details[content_id] = StoredPlaceDetail(
+                    content_id=content_id,
+                    content_type_id=str(raw.get("content_type_id") or ""),
+                    title=_optional_text(raw.get("title")),
+                    address=_optional_text(raw.get("address")),
+                    operating_hours_raw=_optional_text(raw.get("operating_hours_raw")),
+                    rest_date_raw=_optional_text(raw.get("rest_date_raw")),
+                    detail_fetch_status=str(raw.get("detail_fetch_status") or ""),
+                    detail_fetched_at=_parse_datetime(
+                        raw.get("detail_fetched_at"), "detail_fetched_at"
+                    ),
+                    source_modified_at=_parse_datetime(
+                        raw.get("source_modified_at"), "source_modified_at"
+                    ),
+                )
+        return details
 
     async def upsert_place_list(
         self,

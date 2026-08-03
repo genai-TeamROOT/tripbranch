@@ -541,6 +541,62 @@
   `MIN_PLACE_SEARCH_RADIUS_KM`(0.1→0.3) 변경은 D 코드가 상수를 import해서
   쓰는 값이라 D 쪽 수정 없이 그대로 반영됐다
 
+### D-036 — 혼잡도 fallback: 장소 근접치 채택 (A 제안, 확인 필요)
+
+- 상태: `Proposed` (A 제안, C·D 확인 필요)
+- 결정: 카페·음식점처럼 집중률 API가 다루는 "관광지" 콘텐츠에 없는 장소를 물으면,
+  기존 미결이었던 세 선택지(장소 근접치·구 단위·Feature 제외) 중 **장소
+  근접치**를 채택한다 — 대상 장소 자체의 데이터가 없으면
+  `search_nearby_places`(`place_types=["attraction"]`)로 가장 가까운 관광지를
+  찾아 그 예측치를 "근처 관광지 기준 추정"이라고 명시하며 대체 제공한다
+- 이유: "데이터 없음"만 반환하는 것보다 사용자에게 참고할 만한 근사치를 주는
+  편이 유용하고, 이미 구현된 `NearbyPlaceDetailsTool`을 그대로 재사용할 수 있어
+  새 Provider 연동 없이 구현 가능하다. 구 단위 평균은 데이터를 왜곡할 소지가
+  크고, Feature 제외는 사용자 질문에 아예 답하지 못한다는 문제가 있어 제외했다
+- 범위: 이번 결정은 INFO(`question_type=concentration`)의 단일 장소 질의를
+  기준으로 한다. RECOMMEND의 `restaurant` 후보에도 동일하게 적용할지는 배치
+  조회 비용 문제로 별도 확정이 필요해 범위에서 제외했다
+- 상세 설계: [`docs/design/concentration-conditions.md`](./design/concentration-conditions.md) §3.3
+- TODO: 탐색 반경(제안값 1.0km) 확정, RECOMMEND 쪽 적용 여부 결정 — C·D 확인 대기
+
+### D-037 — 혼잡도 반영 방식 재검토: 초기 Context 확장 vs 1차 Scoring 후 상위 5개 보강 재계산 (A-C 협의, D 미확인)
+
+- 상태: `Proposed` (A-C 협의 완료, **D는 아직 확인하지 않음** — 최종 확정 아님)
+- 배경: D-036 이전에 확정해뒀던 안(concentration-conditions.md v0.4)은
+  "concentration을 초기 Context 요청 단계에서 지역 전체 한 번에 받아오고 D는
+  1회만 호출한다"였다. 세션 중 Real Provider로 직접 실측한 결과:
+  - 장소 후보 10개 검색(`NearbyPlaceDetailsTool`) — 약 3.0초
+  - 집중률 종로구 전체(113곳) 병렬 페이지 조회(20페이지) — 약 3.5초, 순차는
+    약 11.8초(`numOfRows=100` 하드코딩이라 페이지네이션 필수)
+  - 집중률 장소 1곳 `tAtsNm` 지정 개별 조회 — 약 0.12초
+
+  즉 이미 후보 검색에만 3초가 드는데 지역 전체 집중률까지 얹으면 6.5초 이상으로
+  늘어나 이득이 없었다. 반대로 좁혀진 소수 후보만 개별 조회하면 압도적으로 빠르다.
+- 제안: "1차 Scoring(10개 후보, concentration 없음 — 기존과 완전 동일) → 상위
+  5개 추출 → 그 5개만 기존 `CandidateEnrichmentRequest`/`Response`
+  (`CandidateEnrichmentService.enrich()`, 이미 C가 구현해둔 인프라)로 집중률
+  보강 조회 → 2차 Scoring(5개+concentration, D 신규 인터페이스)으로 재순위
+  계산 → 최종 3개만 사용자에게 노출"로 방향 전환을 제안한다.
+- D의 1차/2차 호출 모양(정밀하게 구분): 1차는 입력 10개·concentration 없음
+  (기존과 완전 동일, 새로 만들 것 없음). 2차는 입력이 **5개로 축소**되고
+  concentration이 추가되는 **신규 인터페이스** — `score_candidates()`는 현재
+  단일 호출만 지원해 이런 진입점 자체가 없다(0단계 확인 결과). **D가 이 2차
+  인터페이스를 만들어줄 수 있는지 확인이 이 제안의 핵심 블로커다.**
+- 참고 근거(develop 병합, 2026-07-30 발견): C가 `place_concentration_mappings`
+  테이블(커밋 `019709e`, [place-database-schema.md §6.1](./design/place-database-schema.md#61-place_concentration_mappings))을
+  이미 구축해뒀다 — `place_id` ↔ 집중률 API 대표명 매핑 100건(별칭 포함 101곳,
+  미매칭 12곳). 아직 런타임 코드엔 미연결이지만, 제안 흐름의 5단계(후보→집중률
+  이름 매칭)를 뒷받침하는 정황 근거다.
+- 영향 범위: `concentration_intent`가 `AVOID`/`SEEK`일 때만 적용된다.
+  `null`/`IGNORE`는 이 재검토와 무관하게 기존 그대로 D 1회 호출로 끝난다.
+- "최종 3개" 노출은 기존 `RECOMMENDATION_RESULT_LIMIT`(5, `.env`)와 다른 새
+  숫자다 — 기존 설정 어디에도 3을 만드는 상수가 없어 새 상수/자르기 단계가
+  필요하다(정확히 3으로 고정할지도 미확정).
+- 상세 설계: [`docs/design/concentration-conditions.md`](./design/concentration-conditions.md) §2.2,
+  [`docs/design/agent-runtime-contract.md`](./design/agent-runtime-contract.md) §6.5
+- TODO: D의 2차 Scoring 신규 인터페이스 확인(가장 중요), "최종 3개" 상수화 여부,
+  안 A(초기 Context 확장)와 안 B(이번 제안) 중 최종 택1 — **D 확인 대기**
+
 | 항목 | 선택지/질문 | 상태 |
 | --- | --- | --- |
 | LLM Provider | 공급자, 모델, timeout, fallback | `TBD` |
@@ -548,7 +604,8 @@
 | Backend 상태 저장 | Supabase 테이블과 캐시 역할 | `TBD` |
 | Frontend 저장 | `sessionStorage` 유지 또는 `localStorage` 전환 | `TBD` |
 | Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); 응답 Evidence 노출·E2E 통합 `Implemented`(D-028); Explainability Layer v1 `Accepted`(D-029, A 협의 반영 완료); warning 커버리지 보완 `Implemented`(D-030); Explanation 문장 구체화 `Implemented`(D-031); RecommendationContext 진입점 `Implemented`(D-032); Agent Runtime RecommendationProvider 연결 `Implemented`(D-033); Tool 직접 호출 파이프라인 삭제·레거시 라우터 마이그레이션 `Implemented`(D-034); develop 재병합 시 RecommendationProvider 중복 정리 `Implemented`(D-035) | 구현 완료 |
-| 혼잡도 fallback | 장소 근접치, 구 단위, Feature 제외 | 현재 논의 중 |
+| 혼잡도 fallback | 장소 근접치, 구 단위, Feature 제외 | 장소 근접치로 A 제안(D-036), 확인 필요 |
+| 혼잡도 반영 방식 | 초기 Context 확장(안 A) vs 1차 Scoring 후 상위 5개 보강 재계산(안 B) | 안 B를 A-C 협의로 제안(D-037), **D 확인 대기** |
 | 운영시간 파싱 | 기본 시간·월별·주간 휴무 구현, 공휴일·회차 예외 확대 | `부분 구현` |
 | 이동시간 | 지도 Provider 및 교통수단별 계산 | `TBD` |
 | 조건 완화 | 자동 완화 범위와 사용자 확인 UX | `TBD` |
@@ -559,6 +616,37 @@
 | ProviderError 구현 | 공통 오류 모델, sanitize, ToolError 변환 | 설계 확정/구현 `TBD` |
 | Weather 방문시각 선택 | visit_at 입력, forecast_for 선택, 범위 초과 처리 | 구현 완료 |
 | 배포 | Hosting, CI/CD, Secret 관리 | `TBD` |
+
+### D-038 — 날씨 warning 문구 분리(IGNORE vs 조회 실패) 및 날씨 조회 경로 이원화 정리
+
+- 상태: 문구 분리는 `Implemented`, 나머지 두 항목은 `TBD`
+- 배경: `"경복궁 근처 카페 추천해줘"`처럼 날씨 언급이 없는 발화는 LLM이
+  `weather_intent=IGNORE`로 판정하고([int-01-recommend.md §8](./design/int-01-recommend.md#8-weather_intent-판별)의
+  정의: "날씨 언급 없음"), C가 Weather Tool을 실행하지 않는다
+  (`tool_rules.py`). 정상 흐름인데도 사용자에게 "현재 날씨 정보를 확인하지
+  못해 이 조건은 반영되지 않았어요"라는 **조회 실패 문구**가 나갔다.
+- 결정 1 (`Implemented`): `recommendation_pipeline.py`의 날씨 warning을 두 개로
+  나눈다. `context.weather`가 `None`이면 조회를 시도하지 않은 것(IGNORE)이므로
+  `_WEATHER_IGNORED_WARNING`("날씨 조건을 따로 말씀하지 않으셔서 …"), 값이
+  있는데 status가 실패면 기존 `_WEATHER_MISSING_WARNING`을 쓴다. 개발 단계에서는
+  IGNORE로 처리됐다는 사실 자체를 보여줄 필요가 있어 warning을 없애지 않고
+  문구만 구분했다 — 사용자 노출용 문구 확정은 UX 논의가 필요하다.
+- TODO 1 (`TBD`) — **§10과 구현 불일치**:
+  [int-01-recommend.md §10](./design/int-01-recommend.md#10-날씨-정보-확보-순서)은
+  "② 사용자가 날씨를 입력하지 않음 → 날씨 API 호출"을 규정하지만, 현재 구현은
+  `IGNORE`면 ②를 건너뛰고 곧장 "④ 추천 계산에서 제외"로 간다. 문서를 구현에
+  맞출지(안 쓸 값은 호출하지 않는다), 구현을 문서에 맞출지(확보는 하되 가중치만
+  제외한다) 결정이 필요하다.
+- TODO 2 (`TBD`) — **날씨 조회 경로 이원화**: 같은 요청에서 날씨를 두 곳이
+  따로 조회하는데 한쪽은 소비자가 없다.
+  - B 세션 `api_context.api_weather`: GPS가 있으면 `ensure_current_context()`가
+    조회해 채운다(§10대로 동작). **현재 이 값을 읽는 곳이 없다.**
+  - C `context.weather`: `weather_intent != IGNORE`일 때만 조회한다. D Scoring이
+    `to_weather_condition()`으로 참조하는 것은 이쪽이다.
+  통합할지, 각자 역할을 문서로 고정할지 정리가 필요하다.
+- 확인 방법: `device_location`을 넣어도 `weather_intent=IGNORE`면
+  `feature_scores.weather`가 `null`이고 `weights_used`에서 날씨 0.4가 빠져
+  나머지에 재분배된다(정상). 실제 응답으로 확인함.
 
 ## 변경 이력
 
@@ -586,3 +674,4 @@
 | 2026-07-28 | D-033 Agent Runtime `RecommendationProvider`에 `RealRecommendationProvider` 연결, `run_agent()` 기본 provider를 Fake에서 실제 구현으로 교체 |
 | 2026-07-28 | D-034 `run_recommendation_pipeline()`(Tool 직접 호출) 완전 삭제, `/api/recommendations` 라우터를 `run_recommendation_pipeline_from_context()` 기반으로 마이그레이션 |
 | 2026-07-28 | D-035 develop 재병합 시 발견된 `RealRecommendationProvider` 중복 구현 정리, mintee의 `real_recommendation_provider.py`로 통합 |
+| 2026-07-31 | D-038 날씨 warning을 IGNORE(미언급)와 조회 실패로 분리, §10 불일치·날씨 조회 경로 이원화를 TODO로 기록 |

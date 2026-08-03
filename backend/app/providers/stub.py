@@ -9,7 +9,7 @@ TODO: 실제 provider(RealPlaceProvider 등)가 준비되면 팩토리에서 설
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from app.domain.models import (
@@ -32,6 +32,7 @@ from app.schemas import (
     ClarificationPayload,
     CompareCriteria,
     ComparePayload,
+    ConcentrationIntent,
     Environment,
     GeneralPayload,
     GeneralTopic,
@@ -117,6 +118,21 @@ _GENERAL_MARKERS = (
 
 def _find_known_place(user_input: str) -> str | None:
     return next((name for name in _KNOWN_PLACE_NAMES if name in user_input), None)
+
+
+def _stub_visit_time(user_input: str, reference_date: date) -> str:
+    """concentration-conditions.md §3.2 파싱 규칙의 최소 스텁 버전.
+
+    "오늘"/"내일"/"이번 주말" 정도만 구분하고, 그 외(명시적 날짜 등)는 기준일로
+    둔다 — 실제 자연어 날짜 파싱은 Real Gemini provider의 책임이다.
+    """
+    if "내일" in user_input:
+        return (reference_date + timedelta(days=1)).isoformat()
+    if "주말" in user_input:
+        days_until_saturday = (5 - reference_date.weekday()) % 7
+        days_ahead = days_until_saturday or 7
+        return (reference_date + timedelta(days=days_ahead)).isoformat()
+    return reference_date.isoformat()
 
 
 class FakeLLMProvider:
@@ -222,6 +238,11 @@ class FakeLLMProvider:
             conditions.weather_intent = WeatherIntent.AVOID
             conditions.environment = Environment.INDOOR
 
+        if any(marker in user_input for marker in ("조용", "한적", "사람 없")):
+            conditions.concentration_intent = ConcentrationIntent.AVOID
+        elif any(marker in user_input for marker in ("핫한", "인기", "북적")):
+            conditions.concentration_intent = ConcentrationIntent.SEEK
+
         result = LLMOutput(
             intent=Intent.RECOMMEND,
             status=status,
@@ -284,7 +305,11 @@ class FakeLLMProvider:
         return provider_result(result, source=ProviderSource.FAKE_LLM)
 
     async def extract_info_query(
-        self, user_input: str, *, has_previous_recommendation: bool
+        self,
+        user_input: str,
+        *,
+        has_previous_recommendation: bool,
+        reference_date: date,
     ) -> ProviderResult[LLMOutput]:
         place_name = _find_known_place(user_input)
         if place_name:
@@ -308,8 +333,16 @@ class FakeLLMProvider:
             question_type = QuestionType.EVENT
         elif "어디에 있" in user_input or "주소" in user_input:
             question_type = QuestionType.LOCATION_INFO
+        elif any(marker in user_input for marker in ("사람 많", "붐빌", "혼잡")):
+            question_type = QuestionType.CONCENTRATION
         else:
             question_type = QuestionType.GENERAL_INFO
+
+        visit_time = (
+            _stub_visit_time(user_input, reference_date)
+            if question_type is QuestionType.CONCENTRATION
+            else None
+        )
 
         result = LLMOutput(
             intent=Intent.INFO,
@@ -319,6 +352,7 @@ class FakeLLMProvider:
                 place_context=place_context,
                 question_type=question_type,
                 specific_question=user_input,
+                visit_time=visit_time,
             ),
         )
         return provider_result(result, source=ProviderSource.FAKE_LLM)

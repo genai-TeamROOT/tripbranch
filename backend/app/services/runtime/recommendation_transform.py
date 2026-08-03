@@ -64,6 +64,31 @@ def to_weather_condition(context: RecommendationContext) -> str | None:
     return weather.data.condition
 
 
+def to_concentration_entries(context: RecommendationContext) -> list[object] | None:
+    """C의 RecommendationContext.concentration을 D에 넘길 형태로 변환한다.
+
+    (A 제안, D/C 확인 필요 — concentration-conditions.md §2.3/§4.2) 반환 타입은
+    잠정이다: 원본 리스트를 그대로 넘길지, place_name으로 매핑한 dict로 바꿀지는
+    D의 Scoring 입력 형태에 맞춰 확정한다.
+
+    C가 아직 RecommendationContext에 concentration 필드를 추가하지 않은
+    과도기에는(a-c-context-contract-draft.md §5.1 제안 상태) getattr 기본값으로
+    안전하게 None을 반환한다 — 필드 자체가 없어도 AttributeError로 죽지 않는다.
+    C가 필드를 추가하면 이 함수는 코드 변경 없이 정상 동작하기 시작한다.
+
+    status가 "success"/"partial"일 때만 데이터를 반환한다. 그 외(no_data/
+    unavailable, concentration 자체가 없음)는 None을 반환해, D가
+    weather/remaining_operating_time 결측과 동일한 redistribute_weights()
+    경로로 concentration 가중치를 재분배하게 한다.
+    """
+    concentration = getattr(context, "concentration", None)
+    if concentration is None:
+        return None
+    if concentration.status not in ("success", "partial") or concentration.data is None:
+        return None
+    return list(concentration.data)
+
+
 def to_record_recommendation_request(
     session_id: str,
     run_id: str,
@@ -90,5 +115,6 @@ def to_record_recommendation_request(
 __all__ = [
     "to_search_radius_km",
     "to_weather_condition",
+    "to_concentration_entries",
     "to_record_recommendation_request",
 ]

@@ -10,12 +10,16 @@ app/providers/gemini.py에 두고, 이 모듈은 프롬프트 텍스트만 담�
 
 from __future__ import annotations
 
-from app.schemas import UserConditions
+from datetime import date
+
+from app.schemas import GeneralTopic, UserConditions
 
 _INTENT_DEFINITIONS = """\
 6개 Intent 정의:
 - RECOMMEND: 조건에 맞는 새 장소를 추천받고 싶음 ("추천해줘", "갈 만한 곳", 조건만 제시)
-- INFO: 특정 장소의 사실 정보(운영시간/요금/주차 등)를 알고 싶음
+- INFO: 특정 장소의 사실 정보(운영시간/요금/주차 등)를 알고 싶음. 특정 장소/지역의
+  방문객 혼잡도 예측("~ 사람 많아?", "~ 붐빌까?", "~ 혼잡해?")도 INFO다 — GENERAL의
+  "배경지식/상식"이 아니라 API로 조회 가능한 사실 정보 질문이다
 - MODIFY: 이전 추천 결과를 변경/거절하고 싶음 (이전 추천 이력 필수)
 - COMPARE: 이전 추천 결과 중 여러 후보를 비교하고 싶음 (이전 추천 2개 이상 필수)
 - GENERAL: API로 조회 불가능한 여행 배경지식/상식/팁 질문
@@ -50,6 +54,7 @@ _BOUNDARY_CASES = """\
 - "경복궁 같은 곳" → RECOMMEND (유사 장소 추천)
 - "경복궁 근처 카페" → RECOMMEND (경복궁은 검색 중심점 조건일 뿐)
 - "경복궁 오늘 열어?" → INFO (운영시간 질문)
+- "이번 주말 창덕궁 사람 많을까?" → INFO (방문객 혼잡도 예측 질문, API로 조회 가능)
 - "경복궁 역사 알려줘" → GENERAL (API로 조회 불가한 배경지식)
 - "서울 여행 팁" → GENERAL (일반 상식)
 - 욕설/비방 → OUT_OF_SCOPE (유해 발언)
@@ -118,16 +123,27 @@ weather_intent 판별:
   weather_intent 항목을 채운다
 """
 
+_CONCENTRATION_INTENT_RULES = """\
+concentration_intent 판별:
+- AVOID: 혼잡한 곳을 피하고 싶음 ("조용한 공원 추천해줘", "한적한 곳 가고싶어", "사람 없는 데")
+- SEEK: 혼잡한(인기 있는) 곳을 원함 ("핫한 관광지 어디야", "인기 많은 곳 추천해줘", "북적이는 데")
+- IGNORE: 혼잡도 관련 언급이 없음
+- weather_intent와 달리 하드 필터(environment)에 관여하지 않는다. 판별이 애매해도
+  needs_clarification을 유발하지 않는다 — null로 두면 IGNORE와 동일하게 처리된다
+  (weather_intent 규칙을 여기 적용하지 말 것)
+"""
+
 
 def build_recommend_extraction_instruction() -> str:
     """int-01-recommend.md §5~9,12(위치 처리, place_types/tags, weather_intent) 기반."""
 
     return f"""당신은 TripBranch의 RECOMMEND 조건 추출기입니다. 사용자 발화 하나에서
-UserConditions(14개 필드)를 추출해 LLMOutput(intent="RECOMMEND")으로 반환하세요.
+UserConditions(15개 필드)를 추출해 LLMOutput(intent="RECOMMEND")으로 반환하세요.
 
 {_RECOMMEND_LOCATION_RULES}
 {_RECOMMEND_PLACE_TAG_RULES}
 {_WEATHER_INTENT_RULES}
+{_CONCENTRATION_INTENT_RULES}
 {_BUDGET_RULE}
 
 기타 필드:
@@ -226,6 +242,7 @@ question_type 판별:
 - event: 현재 진행 중인 전시/행사/프로그램
 - location_info: 위치/주소/찾아가는 법
 - general_info: 장소 개요/특징/일반 설명 (장소명만 단독으로 언급된 경우 포함)
+- concentration: 특정 장소/지역의 방문객 혼잡도 예측 ("사람 많아?", "붐빌까?", "혼잡해?")
 """
 
 _INFO_PLACE_CONTEXT_RULES = """\
@@ -237,15 +254,33 @@ place_context 판별:
 """
 
 
-def build_info_extraction_instruction(*, has_previous_recommendation: bool) -> str:
+def _build_visit_time_rules(reference_date: date) -> str:
+    """concentration-conditions.md §3.2. reference_date는 오늘(KST)."""
+
+    return f"""\
+visit_time 판별 (question_type이 concentration일 때만 채우고, 그 외에는 항상 null):
+- 기준일(오늘) = {reference_date.isoformat()}
+- "오늘" 또는 날짜 언급이 없으면 기준일 그대로
+- "내일"이면 기준일 + 1일
+- "이번 주말"이면 기준일 이후 가장 가까운 토요일(주말이 이미 지났으면 다음 토요일)
+- "8월 3일"처럼 특정 날짜가 언급되면 해당 날짜(연도 언급이 없으면 기준일과 같은 연도,
+  이미 지난 날짜면 다음 해)
+- 반드시 YYYY-MM-DD 형식 문자열로 채운다
+"""
+
+
+def build_info_extraction_instruction(
+    *, has_previous_recommendation: bool, reference_date: date
+) -> str:
     """int-02-info.md §4~7(InfoQuery, question_type, place_context) 기반."""
 
     return f"""당신은 TripBranch의 INFO 질의 추출기입니다. 사용자 발화 하나에서
-place_name/place_context/question_type/specific_question을 추출해
+place_name/place_context/question_type/specific_question/visit_time을 추출해
 LLMOutput(intent="INFO")으로 반환하세요.
 
 {_INFO_QUESTION_TYPE_RULES}
 {_INFO_PLACE_CONTEXT_RULES}
+{_build_visit_time_rules(reference_date)}
 
 컨텍스트: 이전 추천 이력 존재 여부 = {"있음" if has_previous_recommendation else "없음"}.
 이전 추천 이력이 "없음"인데 발화가 "첫 번째 거기" 같은 지시어를 쓰면 place_context를
@@ -317,6 +352,25 @@ original_question에는 사용자 원문을 그대로 담으세요. GENERAL은 �
 반드시 general 필드를 채우고, recommend/info/modify/compare/out_of_scope는 null로 두세요."""
 
 
+def build_general_answer_instruction(topic: GeneralTopic) -> str:
+    """GENERAL 발화에 실제로 답하는 system instruction(docs/design/agent-response-
+    generation.md §3/§6 — 6개 Intent 중 실제 LLM 자유생성이 필요한 유일한 지점).
+
+    build_general_extraction_instruction()과 별개 호출이다 — 저건 topic만 분류하고,
+    이건 그 topic이 확정된 뒤 실제 답변 문장을 만든다.
+    """
+
+    return f"""당신은 TripBranch의 여행 배경지식 답변 챗봇입니다. 사용자의 질문(주제:
+{topic.value})에 친절하고 간결하게 답변하세요.
+
+답변 규칙:
+- 2~4문장 정도로 간결하게 답하세요.
+- 확실하지 않은 정보는 단정하지 말고, 일반적으로 알려진 내용 위주로 답하세요.
+- 존댓말을 쓰고, 장소 추천이나 예약처럼 TripBranch가 실제로 조회하는 기능인 것처럼
+  답하지 마세요 — 이건 배경지식/상식 질문에 대한 답변입니다.
+- 사용자 발화를 그대로 반복하지 말고 바로 답변을 시작하세요."""
+
+
 def format_validation_retry_note(error: Exception) -> str:
     """1차 구조화 출력이 검증에 실패했을 때 재시도 프롬프트에 덧붙이는 안내문."""
 
@@ -334,5 +388,6 @@ __all__ = [
     "build_info_extraction_instruction",
     "build_compare_extraction_instruction",
     "build_general_extraction_instruction",
+    "build_general_answer_instruction",
     "format_validation_retry_note",
 ]

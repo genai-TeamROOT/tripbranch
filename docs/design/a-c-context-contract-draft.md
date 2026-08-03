@@ -220,6 +220,18 @@ class HolidayInfo(BaseModel):
     name: str
 
 
+# (제안, C 확인 필요 — concentration-conditions.md §2.2/§4)
+# concentration_intent가 AVOID/SEEK일 때만 채워지는 지역 단위 집중률 목록.
+# 후보별이 아니라 지역(종로구) 전체 관광지 예측치이며, A가 place_name으로
+# places와 매칭한다.
+class ConcentrationEntry(BaseModel):
+    place_name: str
+    forecast_date: str
+    concentration_rate: float
+    concentration_level: Literal["quiet", "normal", "slightly_crowded", "crowded"]
+    concentration_label: str
+
+
 T = TypeVar("T")
 
 
@@ -236,6 +248,8 @@ class RecommendationContext(BaseModel):
     weather: ContextValue[WeatherForecast] | None = None
     places: ContextValue[list[PlaceCandidate]] | None = None
     holidays: ContextValue[list[HolidayInfo]] | None = None
+    # (제안, C 확인 필요) conditions.concentration_intent가 AVOID/SEEK일 때만 채움
+    concentration: ContextValue[list[ConcentrationEntry]] | None = None
 
 
 class ResponseMetadata(BaseModel):
@@ -254,10 +268,51 @@ class ResponseMetadata(BaseModel):
 | `weather` | `good`/`neutral`/`bad` 예보와 예보 시각 | 날씨 Feature 계산 |
 | `places` | 후보 장소, 좌표, 분류, 원본·정규화 운영정보 | Candidate 생성·운영시간·거리 계산 |
 | `holidays` | 해당 시점의 공휴일 정보 | 후속 운영 판단 보조. v0 점수 반영은 TBD |
+| `concentration` (제안, C 확인 필요) | `conditions.concentration_intent`가 `AVOID`/`SEEK`일 때만, 지역(종로구) 단위 관광지 집중률 목록 | Scoring `concentration` Feature 계산 — **순위에 반영됨** ([recommendation-scoring.md §4.4](./recommendation-scoring.md), A 제안) |
 
-`concentration`은 C가 초기 후보 Context만 수집하는 v0 응답에는 포함하지 않는다.
-D가 1차 점수 계산 후 상위 후보와 필요한 보강 Feature를 선언하면, A가 이를 중계해
-C에 별도 후보 보강 요청을 보낸다. D는 C를 직접 호출하지 않는다.
+**(2026-07-29 추가, 제안 — C 확인 필요)** `concentration_intent`가 `AVOID`/`SEEK`이면
+`concentration`도 이 초기 응답에 함께 채워 반환한다. 후보별로 별도 조회하지 않고
+지역 코드 1회 호출로 해당 지역 관광지 전체의 예측치를 받아온다(place_name 생략,
+[tool-intelligence-contract-v1.md §6.5](./tool-intelligence-contract-v1.md#65-get_concentration)).
+A는 `places`의 각 후보 이름과 `concentration` 목록을 매칭해 D의 Scoring 입력으로
+쓴다. 이 경로로 받은 값은 **순위에 반영된다** — 아래 §5.2.1~§5.2.3이 설명하는
+후보 보강(post-ranking, 표시 전용) 경로와는 별개다. 상세 배경은
+[concentration-conditions.md §2.2](./concentration-conditions.md#22-데이터-확보-시점--재검토-중-2026-07-30-c-협의-완료--d-미확인-최종-확정-아님)
+참고.
+
+> **🔶 2026-07-30 재검토(제안, C 협의 완료 / D 미확인)**: 위 `concentration`
+> 필드 확장안은 세션 중 실측(장소 검색 ~3.0초, 지역 전체 집중률 병렬 ~3.5초·
+> 순차 ~11.8초 vs 개별 조회 ~0.12초)으로 이득이 없다고 판단돼 재검토 중이다.
+> 대안으로 **바로 아래 §5.2.1~§5.2.3의 기존 후보 보강 계약을 그대로
+> 재사용**하는 안이 새로 제안됐다 — 이 필드 자체는 삭제하지 않지만, 실제
+> 채택될지는 불확실하다(두 안 중 택1, D 확인 필요). 상세는
+> [concentration-conditions.md §2.2.3](./concentration-conditions.md#223-제안-흐름--9단계-c-협의됨--d-미확인).
+
+---
+
+**(2026-07-30 재검토, 문구 정정)** 아래 §5.2.1~§5.2.3의 후보 보강 계약은 원래
+"D가 1차 점수 계산을 이미 마친 뒤 상위 후보만 골라 표시용 정보를 덧붙이는
+용도"(§5.2.3)로 설계됐고, v0.4 시점엔 `concentration_intent` 경로가 이 계약을
+쓰지 않는다고 판단했었다. **이 판단은 2026-07-30 재검토 중이다** — 실측 성능
+결과로 "1차 Scoring(10개, concentration 없음) → 상위 5개 → 그 5개만 이 계약으로
+보강 조회 → 2차 Scoring(5개+concentration)" 안이 새로 제안되면서, 오히려 **이
+계약을 그대로 재사용하는 쪽으로 방향이 다시 옮겨가고 있다**(C 협의 완료, D
+미확인 — D의 2차 Scoring 신규 인터페이스가 확정돼야 최종적으로 성립한다). 이
+계약 자체는 애초에 폐기한 적 없다 — "순위에는 반영하지 않는 표시 전용 보강"
+용도와 "순위에 반영되는 재채점" 용도, 두 가지로 쓰일 가능성이 생긴 상태다.
+
+**A가 이 계약을 호출하는 순서 (제안, C 협의됨)**: (1) D의 1차 Scoring 결과
+(`RankedCandidate`, `place_id`/`name`만 있고 위도·경도 없음)를 원본 `places`
+Context(위도·경도 있음)와 `place_id`로 재조인해서 아래 `CandidateEnrichmentTarget`
+리스트를 구성 → (2) `CandidateEnrichmentRequest`를 만들어 `enrich()` 호출 → (3)
+받은 `CandidateEnrichmentResponse`를 D의 2차 Scoring 입력으로 변환(D 인터페이스
+확정 후 설계). 상세는 [agent-runtime-contract.md §6.5.2](./agent-runtime-contract.md).
+
+**참고 (신규 발견, 런타임 미연결)**: develop 병합(2026-07-30)으로 C가 이미
+`place_id` ↔ 집중률 API 대표명을 매핑해두는 `place_concentration_mappings`
+테이블을 구축해뒀다([concentration-conditions.md §4.4](./concentration-conditions.md#44-place_concentration_mappings--c-기존-인프라-신규-발견-런타임-미연결)).
+이 계약의 `place_name` 매칭에 활용할 수 있는 기존 인프라이지만, 아직
+`enrichment_service.py`에는 연결돼 있지 않다 — 연결 여부는 C 확인 필요.
 
 후보 보강 계약은 초기 Context 계약과 분리된
 `CandidateEnrichmentRequest`/`CandidateEnrichmentResponse`를 사용한다. 요청은
@@ -277,10 +332,10 @@ D가 선정하고 A가 중계한 후보를 `RECOMMENDATION_RESULT_LIMIT`만큼 �
 
 | 집중률 범위 | `concentration_level` | `concentration_label` |
 | --- | --- | --- |
-| 50% 이하 | `relaxed` | 여유 |
-| 50% 초과 75% 이하 | `normal` | 보통 |
-| 75% 초과 100% 이하 | `slightly_crowded` | 약간 붐빔 |
-| 100% 초과 | `crowded` | 붐빔 |
+| 20% 미만 | `quiet` | 한적함 |
+| 20% 이상 50% 미만 | `normal` | 보통 |
+| 50% 이상 70% 미만 | `slightly_crowded` | 다소 혼잡 |
+| 70% 이상 | `crowded` | 혼잡 |
 
 음수·무한대·숫자 변환 불가 값은 `no_data`로 처리한다. 이 단계는 사용자 설명을 위한
 정규화이며 추천 점수를 다시 계산하거나 후보 순서를 변경하지 않는다.
@@ -358,8 +413,8 @@ ID와 로그에서 연관 지을 수는 있지만 같은 값일 필요는 없다
           "place_name": "경복궁",
           "forecast_date": "2026-07-28",
           "concentration_rate": 42.0,
-          "concentration_level": "relaxed",
-          "concentration_label": "여유"
+          "concentration_level": "normal",
+          "concentration_label": "보통"
         }
       ],
       "error": null,
@@ -422,8 +477,23 @@ A는 C 응답을 추천 조건으로 재해석하거나 후보 순서를 변경�
 | `name`, `latitude`, `longitude` | 디버깅·응답 검증용 원본 후보 정보 | 보존 권장 |
 
 A는 `place_id`로 기존 상위 추천 후보와 결합하고 `status=success`인 후보의 정규화된
-단계를 최종 설명에 사용한다. 집중률은 추천 점수를 다시 계산하거나 순위를 변경하지
-않는다. `no_data`나 `unavailable`인 후보도 기존 점수와 추천 자격을 유지한다.
+단계를 최종 설명에 사용한다. **이 후보 보강 경로로 받은** 집중률은 (이 문단이
+쓰인 시점 기준) 추천 점수를 다시 계산하거나 순위를 변경하지 않는다는 전제였다.
+
+> **🔶 2026-07-30 재검토 — 위 문장은 더 이상 정확하지 않을 수 있다(제안, D
+> 미확인).** v0.4 시점엔 `concentration_intent` 경로가 이 계약을 쓰지 않고
+> §5.2의 초기 Context `concentration` 필드를 쓰며, 그 경로만 순위에 반영된다고
+> 구분했었다. 그런데 2026-07-30 재검토로 **`concentration_intent` 경로가 이
+> 계약(§5.2.1~§5.2.3)을 그대로 재사용하는 안이 새로 제안**됐다(C 협의 완료) —
+> 그렇게 되면 이 경로로 받은 집중률도 D의 2차 Scoring을 통해 **순위에 반영된다**,
+> 즉 위 "순위를 변경하지 않는다"는 전제가 이 용도에 한해 깨진다. 다만 D의 2차
+> Scoring 신규 인터페이스가 확정되기 전까지는 미확정이다 — "순위에 반영 안
+> 함"이 필요한 다른 보강 용도에는 이 문단이 여전히 유효하다. 상세는
+> [concentration-conditions.md §2.2.3](./concentration-conditions.md#223-제안-흐름--9단계-c-협의됨--d-미확인).
+
+`no_data`나 `unavailable`인 후보도 기존 점수와 추천 자격을 유지한다(안 A
+채택 시 그대로 적용, 안 B 채택 시에도 2차 Scoring 결측 처리로 동일한 원칙 적용
+— [recommendation-scoring.md §5.2](./recommendation-scoring.md)).
 `provider_metadata`는 점수값은 아니지만 추천 근거와 당시 외부 데이터 Snapshot을
 재현하기 위해 삭제하지 않는다.
 
@@ -590,3 +660,6 @@ C는 `clarification`에 기계가 해석할 수 있는 사유 코드와 필요�
 ## 7. 협의 필요 항목
 
 1. `INFO`, `COMPARE`를 이 상위 Context 계약에 포함할 시점과 별도 payload 형태
+2. (제안, 2026-07-29) `RecommendationContext`에 추가한 `concentration` 필드
+   (§5.1/§5.2) — 지역 단위 목록 반환이 맞는지, A의 place_name 매칭 방식이
+   맞는지 C 확인 필요. 상세는 [concentration-conditions.md](./concentration-conditions.md)

@@ -14,14 +14,25 @@ const RADIUS_RELAXATION_STEP_KM = 0.5;
 interface RecommendationResultMessageProps {
   recommendations: RecommendationItem[];
   unverifiedRecommendations: RecommendationItem[];
+  elapsedMs: number;
+  serverElapsedMs: number;
   isLoading: boolean;
   onRequestMore: () => void;
   onRelaxRadius: () => void;
 }
 
+function formatDuration(milliseconds: number | undefined) {
+  if (typeof milliseconds !== "number" || !Number.isFinite(milliseconds)) return "-";
+  return milliseconds >= 1000
+    ? `${(milliseconds / 1000).toFixed(1)}초`
+    : `${Math.round(milliseconds)}ms`;
+}
+
 export function RecommendationResultMessage({
   recommendations,
   unverifiedRecommendations,
+  elapsedMs,
+  serverElapsedMs,
   isLoading,
   onRequestMore,
   onRelaxRadius,
@@ -30,9 +41,14 @@ export function RecommendationResultMessage({
 
   return (
     <article className="mr-auto flex w-full max-w-2xl flex-col gap-4 rounded-md border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-900">
-      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-        조건에 맞춰 이런 장소를 찾아봤어요.
-      </p>
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+          조건에 맞춰 이런 장소를 찾아봤어요.
+        </p>
+        <p className="text-xs text-gray-500 dark:text-gray-400">
+          {formatDuration(elapsedMs)} 소요 (서버 {formatDuration(serverElapsedMs)})
+        </p>
+      </div>
 
       {hasNoResults ? (
         <div className="flex flex-col gap-3 text-sm">

@@ -15,17 +15,42 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from app.agent_context.enrichment_schemas import (
+    CandidateEnrichmentRequest,
+    CandidateEnrichmentResponse,
+)
 from app.agent_context.schemas import (
     AgentContextRequest,
     AgentContextResponse,
     RecommendationContext,
 )
 from app.schemas import RecommendationResponse, UserConditions
+from app.services.runtime.info_context_schemas import InfoContextRequest, InfoContextResponse
 
 
 class ToolProvider(Protocol):
     async def fetch_context(self, request: AgentContextRequest) -> AgentContextResponse:
         """조건에 맞는 위치·날씨·장소 후보 등을 공통 AgentContextResponse로 반환한다."""
+        ...
+
+    async def fetch_info_context(self, request: InfoContextRequest) -> InfoContextResponse:
+        """INFO의 혼잡도 질의(question_type=concentration)를 처리한다.
+
+        (A 제안, C 확인 필요 — info_context_schemas.py, concentration-conditions.md
+        §2.4/§3.3) 장소 해석·get_concentration 조회·근접치 fallback 오케스트레이션은
+        전부 C 내부 책임이다. A는 구조화된 결과만 받는다.
+        """
+        ...
+
+
+class EnrichmentProvider(Protocol):
+    async def enrich(self, request: CandidateEnrichmentRequest) -> CandidateEnrichmentResponse:
+        """상위 추천 후보의 혼잡도를 후조회한다.
+
+        (concentration-conditions.md §2.2.3 안 B, agent-runtime-contract.md
+        §6.5.2 — C 협의 완료) C의 `CandidateEnrichmentService.enrich()`가 이미
+        이 시그니처를 만족하므로 Fake 없이 바로 연결 가능하다.
+        """
         ...
 
 
@@ -37,4 +62,20 @@ class RecommendationProvider(Protocol):
         excluded_place_ids: list[str],
     ) -> RecommendationResponse:
         """조건과 Tool 결과를 바탕으로 최종 추천 결과를 반환한다."""
+        ...
+
+    async def rerank_with_concentration(
+        self,
+        conditions: UserConditions,
+        first_pass: RecommendationResponse,
+        concentration: CandidateEnrichmentResponse,
+    ) -> RecommendationResponse:
+        """(제안, D 미확인 — agent-runtime-contract.md §6.5.2) 1차 추천 결과와
+        혼잡도 보강 데이터로 재순위를 계산한다.
+
+        D의 Real 구현체가 아직 이 메서드를 갖고 있지 않을 수 있다 — 호출부
+        (agent_runtime.py)는 `hasattr()`로 방어하고, 없으면 `first_pass`를
+        그대로 최종 결과로 쓴다. D가 이 메서드를 구현하면 자동으로 새 경로를
+        타기 시작한다.
+        """
         ...

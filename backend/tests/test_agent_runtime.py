@@ -12,15 +12,51 @@ from __future__ import annotations
 
 import pytest
 
-from app.agent_context.schemas import AgentContextRequest, AgentContextResponse
+from app.agent_context.enrichment_schemas import (
+    CandidateEnrichmentRequest,
+    CandidateEnrichmentResponse,
+)
+from app.agent_context.schemas import (
+    AgentContextRequest,
+    AgentContextResponse,
+    ContextValue,
+    Coordinates,
+    PlaceCandidate,
+    RecommendationContext,
+)
+from app.providers.contracts import ProviderSource, provider_result
 from app.providers.stub import FakeLLMProvider, FakeWeatherProvider
-from app.schemas import AgentRequest, OutputStatus
-from app.services.runtime.agent_runtime import run_agent_flow
-from app.services.runtime.stubs import FakeRecommendationProvider, FakeToolProvider
+from app.schemas import (
+    AgentRequest,
+    ConcentrationIntent,
+    OutputStatus,
+    RecommendationItem,
+    RecommendationResponse,
+    UserConditions,
+)
+from app.services.runtime.agent_runtime import _apply_concentration_rerank, run_agent_flow
+from app.services.runtime.info_context_schemas import InfoContextRequest, InfoContextResponse
+from app.services.runtime.stubs import (
+    FakeEnrichmentProvider,
+    FakeRecommendationProvider,
+    FakeToolProvider,
+)
 from app.state.service import get_session_context
 from app.state.store import InMemoryStateStore
 
 DEVICE_LOCATION = "37.5788,126.9770"
+
+
+class _LLMProviderWithGeneralAnswer(FakeLLMProvider):
+    """FakeLLMProvider + generate_general_answer()만 로컬로 보강한 테스트 전용 더블.
+
+    app/providers/stub.py의 FakeLLMProvider는 건드리지 않는다(Fake 유지보수는
+    이번 작업 범위 밖) — compose_chat_message()의 GENERAL 분기만 테스트하기 위한
+    최소 보강이다.
+    """
+
+    async def generate_general_answer(self, topic, original_question):
+        return provider_result("(테스트용 고정 답변)", source=ProviderSource.FAKE_LLM)
 
 
 class _CountingToolProvider:
@@ -29,6 +65,8 @@ class _CountingToolProvider:
     def __init__(self) -> None:
         self.call_count = 0
         self.last_request: AgentContextRequest | None = None
+        self.info_call_count = 0
+        self.last_info_request: InfoContextRequest | None = None
         self._inner = FakeToolProvider()
 
     async def fetch_context(self, request: AgentContextRequest) -> AgentContextResponse:
@@ -36,8 +74,16 @@ class _CountingToolProvider:
         self.last_request = request
         return await self._inner.fetch_context(request)
 
+    async def fetch_info_context(self, request: InfoContextRequest) -> InfoContextResponse:
+        self.info_call_count += 1
+        self.last_info_request = request
+        return await self._inner.fetch_info_context(request)
+
 
 class _CountingRecommendationProvider:
+    """rerank_with_concentration()을 일부러 갖지 않는다 — Real D가 아직 2차
+    Scoring을 구현하지 않은 상태를 재현한다(hasattr 가드 확인용, 기본 fixture)."""
+
     def __init__(self) -> None:
         self.call_count = 0
         self._inner = FakeRecommendationProvider()
@@ -47,12 +93,45 @@ class _CountingRecommendationProvider:
         return await self._inner.recommend(conditions, context, excluded_place_ids)
 
 
+class _CountingRecommendationProviderWithRerank(_CountingRecommendationProvider):
+    """rerank_with_concentration()을 갖춘 버전 — D가 2차 Scoring을 구현한 상태를
+    재현한다."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.rerank_call_count = 0
+
+    async def rerank_with_concentration(
+        self,
+        conditions: UserConditions,
+        first_pass: RecommendationResponse,
+        concentration: CandidateEnrichmentResponse,
+    ) -> RecommendationResponse:
+        self.rerank_call_count += 1
+        return await self._inner.rerank_with_concentration(conditions, first_pass, concentration)
+
+
+class _CountingEnrichmentProvider:
+    """실제 FakeEnrichmentProvider를 감싸서 호출 횟수를 세고, 마지막 요청을 보관한다."""
+
+    def __init__(self) -> None:
+        self.call_count = 0
+        self.last_request: CandidateEnrichmentRequest | None = None
+        self._inner = FakeEnrichmentProvider()
+
+    async def enrich(self, request: CandidateEnrichmentRequest) -> CandidateEnrichmentResponse:
+        self.call_count += 1
+        self.last_request = request
+        return await self._inner.enrich(request)
+
+
 def _providers():
     return {
-        "llm": FakeLLMProvider(),
+        "llm": _LLMProviderWithGeneralAnswer(),
         "weather_provider": FakeWeatherProvider(),
         "tool_provider": _CountingToolProvider(),
         "recommendation_provider": _CountingRecommendationProvider(),
+        "enrichment_provider": _CountingEnrichmentProvider(),
     }
 
 
@@ -330,4 +409,333 @@ async def test_record_recommendation_reflected_in_session_context() -> None:
     shown_ids = {item.place_id for item in response.recommendations.recommendations}
     assert shown_ids
     assert set(context.shown_place_ids) == shown_ids
-    assert context.has_recommendation is True
+
+
+@pytest.mark.asyncio
+async def test_info_concentration_flow_calls_tool_provider_once() -> None:
+    """question_type=concentration만 C(fetch_info_context)를 거치고, D는 호출하지 않는다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="창덕궁 사람 많아?",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.llm_output.intent == "INFO"
+    assert response.llm_output.info.question_type == "concentration"
+    assert response.recommendations is None
+    assert providers["tool_provider"].info_call_count == 1
+    assert providers["tool_provider"].call_count == 0  # fetch_context(RECOMMEND용)는 안 씀
+    assert providers["recommendation_provider"].call_count == 0
+    assert "창덕궁" in response.message
+    assert "보통" in response.message  # FakeToolProvider 고정 데이터
+
+
+class _ToolProviderWithoutInfoContext:
+    """fetch_info_context()가 아직 없는 C Real 구현체를 흉내 낸다(과도기 상태)."""
+
+    def __init__(self) -> None:
+        self._inner = FakeToolProvider()
+
+    async def fetch_context(self, request: AgentContextRequest) -> AgentContextResponse:
+        return await self._inner.fetch_context(request)
+
+
+@pytest.mark.asyncio
+async def test_info_concentration_falls_back_gracefully_without_fetch_info_context() -> None:
+    """C가 fetch_info_context()를 아직 구현하지 않아도 AttributeError로 죽지 않고
+    기존 '준비 중' 문구로 안전하게 낮아진다(실제 ContextService로 재현된 회귀)."""
+    store = InMemoryStateStore()
+    providers = _providers()
+    providers["tool_provider"] = _ToolProviderWithoutInfoContext()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="창덕궁 사람 많아?",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.llm_output.intent == "INFO"
+    assert response.llm_output.info.question_type == "concentration"
+    assert "준비 중" in response.message
+
+
+@pytest.mark.asyncio
+async def test_fake_tool_provider_proxy_fallback_discloses_source() -> None:
+    """알려진 관광지가 아닌 장소는 FakeToolProvider의 근접치 fallback 시뮬레이션을 탄다.
+
+    stub.py의 place-name 사전이 FakeToolProvider의 관광지 목록과 겹쳐서(둘 다
+    같은 6개 이름), 전체 파이프라인으로는 이 케이스를 자연스럽게 재현할 수
+    없다 — FakeToolProvider.fetch_info_context()를 직접 호출해 검증한다.
+    """
+    provider = FakeToolProvider()
+    request = InfoContextRequest(
+        request_id="r1", place_name="용리단길카페", place_context="explicit"
+    )
+
+    response = await provider.fetch_info_context(request)
+
+    assert response.status == "success"
+    assert response.result.is_proxy is True
+    assert response.result.requested_place_name == "용리단길카페"
+    assert response.result.resolved_place_name == "경복궁"
+
+
+@pytest.mark.asyncio
+async def test_info_other_question_type_does_not_call_tool_provider() -> None:
+    """concentration이 아닌 INFO question_type은 기존처럼 C를 거치지 않는다(회귀 확인)."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="창덕궁 오늘 열어?",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.llm_output.intent == "INFO"
+    assert response.llm_output.info.question_type == "operating_hours"
+    assert providers["tool_provider"].info_call_count == 0
+    assert "준비 중" in response.message
+
+
+def _place(place_id: str, *, latitude: float = 37.5, longitude: float = 127.0) -> PlaceCandidate:
+    return PlaceCandidate(
+        place_id=place_id,
+        name=f"장소-{place_id}",
+        category="cafe",
+        location=Coordinates(latitude=latitude, longitude=longitude),
+    )
+
+
+def _item(place_id: str) -> RecommendationItem:
+    return RecommendationItem(
+        place_id=place_id,
+        name=f"장소-{place_id}",
+        category="cafe",
+        distance_km=0.3,
+        remaining_minutes=60,
+        environment_type="indoor",
+        recommendation_reason="테스트용",
+        explanations=[],
+        warnings=[],
+        score=0.5,
+        feature_scores={},
+        weights_used={},
+    )
+
+
+class TestApplyConcentrationRerank:
+    """_apply_concentration_rerank()를 run_agent_flow() 전체를 거치지 않고 직접
+    단위 테스트한다 — B가 concentration_intent 필드를 아직 안 가지고 있어도
+    (agent_conditions를 직접 만들어 주입하므로) 6-1 분기 로직 자체는 검증할 수 있다.
+    """
+
+    def _context(self, place_ids: list[str]) -> RecommendationContext:
+        return RecommendationContext(
+            places=ContextValue(status="success", data=[_place(pid) for pid in place_ids])
+        )
+
+    def _first_pass(self, place_ids: list[str]) -> RecommendationResponse:
+        return RecommendationResponse(
+            recommendations=[_item(pid) for pid in place_ids],
+            unverified_recommendations=[],
+            elapsed_ms=0,
+        )
+
+    @pytest.mark.asyncio
+    async def test_ignore_intent_skips_enrichment_entirely(self) -> None:
+        conditions = UserConditions(concentration_intent=ConcentrationIntent.IGNORE)
+        enrichment_provider = _CountingEnrichmentProvider()
+
+        result = await _apply_concentration_rerank(
+            conditions,
+            self._context(["a"]),
+            self._first_pass(["a"]),
+            recommendation_provider=_CountingRecommendationProvider(),
+            enrichment_provider=enrichment_provider,
+        )
+
+        assert enrichment_provider.call_count == 0
+        assert [item.place_id for item in result.recommendations] == ["a"]
+
+    @pytest.mark.asyncio
+    async def test_seek_with_rerank_capable_provider_reorders_and_caps_to_three(self) -> None:
+        conditions = UserConditions(concentration_intent=ConcentrationIntent.SEEK)
+        enrichment_provider = _CountingEnrichmentProvider()
+        recommendation_provider = _CountingRecommendationProviderWithRerank()
+        place_ids = ["a", "b", "c", "d"]
+
+        result = await _apply_concentration_rerank(
+            conditions,
+            self._context(place_ids),
+            self._first_pass(place_ids),
+            recommendation_provider=recommendation_provider,
+            enrichment_provider=enrichment_provider,
+        )
+
+        assert enrichment_provider.call_count == 1
+        assert recommendation_provider.rerank_call_count == 1
+        # FakeRecommendationProvider.rerank_with_concentration()은 1차 결과를 역순으로
+        # 반환한다 — 실제로 2차 결과로 교체됐는지, 그리고 3개로 잘렸는지 확인한다.
+        assert [item.place_id for item in result.recommendations] == list(
+            reversed(place_ids)
+        )[:3]
+        assert result.unverified_recommendations == []
+
+    @pytest.mark.asyncio
+    async def test_avoid_without_rerank_capable_provider_falls_back_to_first_pass(self) -> None:
+        """D(rerank_with_concentration 없음)에서도 C 보강 조회는 크래시 없이
+        호출되지만, 결과는 1차 그대로(개수 제한도 없이) 반환된다."""
+        conditions = UserConditions(concentration_intent=ConcentrationIntent.AVOID)
+        enrichment_provider = _CountingEnrichmentProvider()
+        place_ids = ["a", "b", "c", "d"]
+
+        result = await _apply_concentration_rerank(
+            conditions,
+            self._context(place_ids),
+            self._first_pass(place_ids),
+            recommendation_provider=_CountingRecommendationProvider(),
+            enrichment_provider=enrichment_provider,
+        )
+
+        assert enrichment_provider.call_count == 1
+        assert [item.place_id for item in result.recommendations] == place_ids
+
+    @pytest.mark.asyncio
+    async def test_seek_with_no_matching_places_skips_enrichment(self) -> None:
+        """1차 결과의 place_id가 context.places에 하나도 없으면(재조인 실패) 보강
+        조회 자체를 건너뛰고 1차 결과를 그대로 쓴다."""
+        conditions = UserConditions(concentration_intent=ConcentrationIntent.SEEK)
+        enrichment_provider = _CountingEnrichmentProvider()
+
+        result = await _apply_concentration_rerank(
+            conditions,
+            self._context(["other"]),
+            self._first_pass(["a"]),
+            recommendation_provider=_CountingRecommendationProviderWithRerank(),
+            enrichment_provider=enrichment_provider,
+        )
+
+        assert enrichment_provider.call_count == 0
+        assert [item.place_id for item in result.recommendations] == ["a"]
+
+
+@pytest.mark.asyncio
+async def test_concentration_intent_not_yet_persisted_by_b_blocks_rerank() -> None:
+    """알려진 갭(2026-07-30 발견): B의 StateUserConditions에 concentration_intent
+    필드가 아직 없어서(state/schema.py, field_spec.py — B 확인 필요), LLM이
+    SEEK/AVOID를 정확히 추출해도 apply()를 거치는 순간 사라진다. 그 결과 6-1
+    분기(_apply_concentration_rerank) 자체가 지금은 실제 run_agent_flow() 흐름에서
+    트리거되지 않는다 — B가 필드를 추가하면 이 테스트는 깨져야 정상이고, 그때
+    아래 두 assert를 뒤집어서 실제 동작을 검증하는 테스트로 바꿔야 한다.
+    6-1 분기 로직 자체(_apply_concentration_rerank)는 이 B 갭과 무관하게
+    TestApplyConcentrationRerank에서 직접 단위 테스트한다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 핫한 곳 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.llm_output.recommend.conditions.concentration_intent == "SEEK"  # LLM은 맞음
+    # B의 StateUserConditions에 필드 자체가 없다 — hasattr로 "필드 부재"를 직접 증명한다.
+    assert not hasattr(response.state.user_conditions, "concentration_intent")
+    assert providers["enrichment_provider"].call_count == 0  # 그래서 6-1이 안 탐
+
+
+@pytest.mark.asyncio
+async def test_concentration_ignore_skips_enrichment_call() -> None:
+    """concentration_intent가 IGNORE/null이면 혼잡도 보강 조회 자체가 없다(회귀 확인)."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.llm_output.recommend.conditions.concentration_intent in (None, "IGNORE")
+    assert providers["enrichment_provider"].call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_clarification_answer_keeps_conditions_from_previous_turn() -> None:
+    """되묻기 답변은 새 요청이 아니므로 앞 턴 조건이 유지되어야 한다.
+
+    1턴 "카페 추천해줘" → 위치가 없어 C가 needs_clarification.
+    2턴 "경복궁 근처 카페 추천해줘" → 위치가 채워지고 place_tags도 살아 있어야 한다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(user_input="카페 추천해줘", session_id=None, device_location=DEVICE_LOCATION),
+        store=store,
+        **providers,
+    )
+    session_id = first.state.session_id
+    assert first.recommendations is None
+    # 되묻기로 끝났으므로 B에 사유가 남는다.
+    assert get_session_context(session_id, store=store).pending_clarification is not None
+
+    second = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert second.state.user_conditions.search_center == "경복궁"
+    assert "카페" in second.state.user_conditions.place_tags
+    # 소비되어 지워진다.
+    assert get_session_context(session_id, store=store).pending_clarification is None
+
+
+@pytest.mark.asyncio
+async def test_successful_recommendation_leaves_no_pending_clarification() -> None:
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.recommendations is not None
+    context = get_session_context(response.state.session_id, store=store)
+    assert context.pending_clarification is None

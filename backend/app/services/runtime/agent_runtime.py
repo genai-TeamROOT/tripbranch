@@ -15,20 +15,37 @@ import logging
 
 import httpx
 
+from app.agent_context.schemas import RecommendationContext
 from app.providers.protocols import LLMProvider, WeatherProvider
-from app.schemas import AgentRequest, AgentResponse, Intent, InterpretRequest, OutputStatus
+from app.schemas import (
+    AgentRequest,
+    AgentResponse,
+    ConcentrationIntent,
+    Intent,
+    InterpretRequest,
+    LLMOutput,
+    OutputStatus,
+    QuestionType,
+    RecommendationResponse,
+    UserConditions,
+)
 from app.services.interpret.orchestrator import build_interpretation
 from app.services.interpret.session_orchestrator import ensure_current_context
 from app.services.interpret.state_transform import to_user_conditions, transform
 from app.services.runtime.context_transform import to_agent_context_request
-from app.services.runtime.protocols import RecommendationProvider, ToolProvider
+from app.services.runtime.enrichment_transform import to_candidate_enrichment_request
+from app.services.runtime.info_context_transform import to_info_context_request
+from app.services.runtime.protocols import EnrichmentProvider, RecommendationProvider, ToolProvider
+from app.services.runtime.response_composer import compose_chat_message
 from app.state.schema import now_kst
 from app.state.service import (
     RecommendedPlace,
     RecordRecommendationRequest,
+    SetPendingClarificationRequest,
     UpdateApiContextRequest,
     apply,
     record_recommendation,
+    set_pending_clarification,
     update_api_context,
 )
 from app.state.session import new_trace_id
@@ -36,9 +53,48 @@ from app.state.store import StateStore
 
 logger = logging.getLogger(__name__)
 
+
+def _llm_clarification_code(llm_output: LLMOutput) -> str | None:
+    """LLM 단계 되묻기를 단일 코드로 정규화한다.
+
+    LLM은 missing_fields/ambiguous_fields 목록으로, C는 location_required 같은 단일
+    코드로 되묻는다. B에는 한 가지 표현만 저장하므로 여기서 맞춘다 — 값 자체는
+    "무엇을 되물었는지" 기록용이고, 다음 턴의 판단은 "값이 있는지"만 본다.
+    """
+    clarification = llm_output.clarification
+    if clarification is None:
+        return "clarification_required"
+    if clarification.missing_fields:
+        return f"missing:{clarification.missing_fields[0].field}"
+    if clarification.ambiguous_fields:
+        return f"ambiguous:{clarification.ambiguous_fields[0].field}"
+    return "clarification_required"
+
+
+def _remember_clarification(session_id: str, code: str | None, store: StateStore | None) -> None:
+    """이번 턴이 되묻기로 끝났음을 B에 남긴다(추천까지 갔으면 호출하지 않는다).
+
+    다음 턴의 state_transform이 이 값을 보고 조건 초기화를 건너뛴다.
+    """
+    set_pending_clarification(
+        SetPendingClarificationRequest(session_id=session_id, code=code), store=store
+    )
+
 # C 단계에서 Recommendation으로 못 넘어가는 status. needs_clarification은 조건 재질문(사용자
 # 응답 필요), unsupported/unavailable은 그 자체로 안내만 하고 끝나는 상태다(계약 문서 §5.4).
 _TOOL_TERMINAL_STATUSES = frozenset({"needs_clarification", "unsupported", "unavailable"})
+
+# concentration_intent가 AVOID/SEEK일 때만 혼잡도 보강 조회 대상이 되는 값.
+_CONCENTRATION_RANK_INTENTS = frozenset({ConcentrationIntent.AVOID, ConcentrationIntent.SEEK})
+
+# 2차 Scoring(재순위)이 실제로 실행됐을 때만 적용하는 최종 노출 개수.
+# (제안, D/기획 확인 필요 — concentration-conditions.md §2.2.3 9단계.
+# 재순위가 안 일어나면(D 미구현 등) 1차 결과를 그대로 쓰고 이 상수는 적용하지 않는다 —
+# 기능이 실제로 동작하지 않는데 결과 개수만 줄이는 걸 피하기 위함이다.)
+_CONCENTRATION_FINAL_LIMIT = 3
+
+# 보강 응답 전체가 이 상태면 2차 Scoring을 시도할 실익이 없다(재조회할 데이터가 없음).
+_ENRICHMENT_TERMINAL_STATUSES = frozenset({"no_data", "unavailable"})
 
 
 def _valid_location(device_location: str | None) -> str | None:
@@ -60,6 +116,64 @@ def _valid_location(device_location: str | None) -> str | None:
     return device_location
 
 
+async def _apply_concentration_rerank(
+    agent_conditions: UserConditions,
+    tool_context: RecommendationContext,
+    first_pass: RecommendationResponse,
+    *,
+    recommendation_provider: RecommendationProvider,
+    enrichment_provider: EnrichmentProvider,
+) -> RecommendationResponse:
+    """concentration_intent가 AVOID/SEEK일 때만 1차 결과를 혼잡도로 보강·재순위한다
+    (제안, D 미확인 — concentration-conditions.md §2.2.3, agent-runtime-contract.md
+    §6.5.2). 그 외에는 first_pass를 그대로 반환한다.
+
+    C 보강 조회(EnrichmentProvider.enrich())는 사용자 확인(2026-07-30)에 따라 이미
+    실제로 연결한다. D의 2차 Scoring(rerank_with_concentration())은 아직 없을 수
+    있어 hasattr로 방어한다 — Real D(RealRecommendationProvider)가 이 메서드를
+    구현하기 전까지는 C만 호출되고 결과는 1차 그대로 나간다. D가 메서드를 추가하면
+    자동으로 재순위 경로를 타기 시작한다.
+
+    run_agent_flow()에서 이 로직만 분리해둔 이유: B의 StateUserConditions에
+    concentration_intent 필드가 아직 없어(state/schema.py, field_spec.py 미반영 —
+    B 확인 필요) run_agent_flow() 전체를 통한 통합 테스트로는 이 분기를 exercise할
+    수 없다. agent_conditions(A의 enum 타입 UserConditions)만 있으면 이 함수는
+    독립적으로 단위 테스트할 수 있다.
+    """
+
+    if agent_conditions.concentration_intent not in _CONCENTRATION_RANK_INTENTS:
+        return first_pass
+
+    has_places = tool_context.places and tool_context.places.data
+    places = tool_context.places.data if has_places else []
+    enrichment_request = to_candidate_enrichment_request(new_trace_id(), first_pass, places)
+    if enrichment_request is None:
+        return first_pass
+
+    enrichment_response = await enrichment_provider.enrich(enrichment_request)
+    if enrichment_response.status in _ENRICHMENT_TERMINAL_STATUSES or not hasattr(
+        recommendation_provider, "rerank_with_concentration"
+    ):
+        logger.info(
+            "혼잡도 보강 조회는 성공했지만 D의 2차 Scoring이 아직 없어 1차 결과를 "
+            "그대로 씀: request_id=%s enrichment_status=%s",
+            enrichment_request.request_id,
+            enrichment_response.status,
+        )
+        return first_pass
+
+    reranked = await recommendation_provider.rerank_with_concentration(
+        agent_conditions, first_pass, enrichment_response
+    )
+    shown = [*reranked.recommendations, *reranked.unverified_recommendations]
+    return reranked.model_copy(
+        update={
+            "recommendations": shown[:_CONCENTRATION_FINAL_LIMIT],
+            "unverified_recommendations": [],
+        }
+    )
+
+
 async def run_agent_flow(
     request: AgentRequest,
     *,
@@ -67,6 +181,7 @@ async def run_agent_flow(
     weather_provider: WeatherProvider,
     tool_provider: ToolProvider,
     recommendation_provider: RecommendationProvider,
+    enrichment_provider: EnrichmentProvider,
     store: StateStore | None = None,
 ) -> AgentResponse:
     """Provider를 인자로 받는 테스트 가능한 본체.
@@ -122,13 +237,57 @@ async def run_agent_flow(
             store=store,
         )
 
+    # 3-2) 되묻기 플래그 소비. 조건을 건드리는 턴(RECOMMEND/MODIFY)만 지운다 —
+    #      transform()이 이미 session_context의 값을 읽어 병합 방식을 정했으므로,
+    #      여기서 지워도 이번 턴 판단에는 영향이 없다. 이번 턴이 또 되묻기로 끝나면
+    #      아래 4)/5-1)에서 새 값을 다시 심는다. INFO/GENERAL 같은 곁가지 대화는
+    #      조건을 바꾸지 않으므로 이전 되묻기를 그대로 살려둔다.
+    if (
+        session_context.pending_clarification is not None
+        and llm_output.intent in (Intent.RECOMMEND, Intent.MODIFY)
+    ):
+        _remember_clarification(state_response.session_id, None, store)
+
+    # 4-0) INFO의 혼잡도 질의(question_type=concentration)는 RECOMMEND/MODIFY와 별개로
+    #      C를 거친다(concentration-conditions.md §2.4/§3.3). 그 외 INFO question_type과
+    #      COMPARE/GENERAL은 그대로 4)의 일반 게이트로 빠진다 — Tool을 직접 호출하지
+    #      않는다는 기존 원칙(ToolProvider Protocol)을 그대로 따른다.
+    #      hasattr 체크: C의 Real ToolProvider(app.agent_context.factory.ContextService)가
+    #      fetch_info_context()를 아직 구현하지 않은 과도기(C 확인 필요, §2.4)에도
+    #      AttributeError로 요청 전체가 죽지 않고 기존 "준비 중" 문구로 안전하게
+    #      낮아지게 한다 — C가 메서드를 추가하면 자동으로 이 분기를 타기 시작한다.
+    if (
+        llm_output.status is OutputStatus.COMPLETE
+        and llm_output.intent is Intent.INFO
+        and llm_output.info is not None
+        and llm_output.info.question_type is QuestionType.CONCENTRATION
+        and hasattr(tool_provider, "fetch_info_context")
+    ):
+        info_request = to_info_context_request(new_trace_id(), llm_output.info)
+        info_response = await tool_provider.fetch_info_context(info_request)
+        message = await compose_chat_message(
+            llm_output, info_concentration_response=info_response, llm=llm
+        )
+        return AgentResponse(
+            llm_output=llm_output, state=state_response, recommendations=None, message=message
+        )
+
     # 4) 확인이 더 필요하거나(needs_clarification), RECOMMEND/MODIFY가 아니면(INFO/COMPARE/
     #    GENERAL/OUT_OF_SCOPE) 여기서 끝난다 — Tool/Recommendation은 부가 흐름이라 스킵한다.
     if llm_output.status is not OutputStatus.COMPLETE or llm_output.intent not in (
         Intent.RECOMMEND,
         Intent.MODIFY,
     ):
-        return AgentResponse(llm_output=llm_output, state=state_response, recommendations=None)
+        # LLM이 되물은 경우만 기록한다. INFO/GENERAL 같은 다른 Intent는 조건을 건드리지
+        # 않으므로, 이전 되묻기가 있었다면 그대로 살려둔다(곁가지 대화로 취급).
+        if llm_output.status is not OutputStatus.COMPLETE:
+            _remember_clarification(
+                state_response.session_id, _llm_clarification_code(llm_output), store
+            )
+        message = await compose_chat_message(llm_output, llm=llm)
+        return AgentResponse(
+            llm_output=llm_output, state=state_response, recommendations=None, message=message
+        )
 
     # 5) A → C: Tool 결과 확보 (Protocol을 통해서만 — C의 구체 클래스는 여기서 모른다).
     #    B가 준 조건(순수 문자열)을 A의 enum 타입으로 바꾼 뒤 C 계약 형태로 변환한다.
@@ -154,7 +313,22 @@ async def run_agent_flow(
                 tool_response.clarification,
                 tool_response.error,
             )
-        return AgentResponse(llm_output=llm_output, state=state_response, recommendations=None)
+        if tool_response.status == "needs_clarification":
+            code = (
+                tool_response.clarification.code
+                if tool_response.clarification is not None
+                else "clarification_required"
+            )
+            _remember_clarification(state_response.session_id, code, store)
+        message = await compose_chat_message(
+            llm_output,
+            tool_status=tool_response.status,
+            tool_clarification=tool_response.clarification,
+            llm=llm,
+        )
+        return AgentResponse(
+            llm_output=llm_output, state=state_response, recommendations=None, message=message
+        )
 
     # success/partial/no_data는 Recommendation 단계로 진행한다(경고가 있어도 가능한
     # 데이터로 계속 — 계약 문서 §5.4). 위에서 세 종료 상태를 걸렀으므로 context는 항상 있다.
@@ -170,17 +344,38 @@ async def run_agent_flow(
             tool_response.request_id,
             tool_response.status,
         )
+        message = await compose_chat_message(
+            llm_output, tool_status=tool_response.status, llm=llm
+        )
         return AgentResponse(
             llm_output=llm_output,
             state=state_response,
             recommendations=None,
+            message=message,
         )
 
-    # 6) A → D: 추천 결과 확보 (Protocol을 통해서만 — D의 구체 클래스는 여기서 모른다)
+    # 6) A → D: 1차 Scoring (Protocol을 통해서만 — D의 구체 클래스는 여기서 모른다).
+    #    concentration_intent 유무와 무관하게 항상 이 호출 하나만 한다 — 기존과 동일.
     recommendations = await recommendation_provider.recommend(
         agent_conditions,
         tool_context,
         state_response.excluded_place_ids,
+    )
+
+    # 6-1) concentration_intent가 AVOID/SEEK일 때만: 1차 상위 후보의 혼잡도를 C에
+    #      보강 조회하고, D가 2차 Scoring(재순위) 인터페이스를 구현했으면 그 결과로
+    #      교체한다(제안, D 미확인 — concentration-conditions.md §2.2.3,
+    #      agent-runtime-contract.md §6.5.2). 분기 로직은 _apply_concentration_rerank()
+    #      로 분리했다 — B의 StateUserConditions에 concentration_intent 필드가 아직
+    #      없어(§7 참고) run_agent_flow() 전체를 통한 통합 테스트로는 이 분기를 exercise
+    #      할 수 없기 때문에, agent_conditions만 있으면 독립적으로 단위 테스트할 수
+    #      있게 만들었다.
+    recommendations = await _apply_concentration_rerank(
+        agent_conditions,
+        tool_context,
+        recommendations,
+        recommendation_provider=recommendation_provider,
+        enrichment_provider=enrichment_provider,
     )
 
     # 7) A → B: 실제로 화면에 노출된 결과만 기록한다. recommendations와
@@ -202,8 +397,12 @@ async def run_agent_flow(
         )
 
     # 8) A: 최종 응답 조립
+    message = await compose_chat_message(llm_output, recommendations=recommendations, llm=llm)
     return AgentResponse(
-        llm_output=llm_output, state=state_response, recommendations=recommendations
+        llm_output=llm_output,
+        state=state_response,
+        recommendations=recommendations,
+        message=message,
     )
 
 
@@ -215,7 +414,7 @@ async def run_agent(request: AgentRequest) -> AgentResponse:
     RealRecommendationProvider를 기본으로 주입한다.
     """
 
-    from app.agent_context.factory import get_context_provider
+    from app.agent_context.factory import get_candidate_enrichment_service, get_context_provider
     from app.providers.factory import get_llm_provider, get_weather_provider
     from app.services.runtime.real_recommendation_provider import RealRecommendationProvider
 
@@ -227,6 +426,7 @@ async def run_agent(request: AgentRequest) -> AgentResponse:
             weather_provider=weather_provider,
             tool_provider=get_context_provider(client),
             recommendation_provider=RealRecommendationProvider(),
+            enrichment_provider=get_candidate_enrichment_service(client),
         )
 
 

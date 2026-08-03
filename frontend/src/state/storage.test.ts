@@ -36,10 +36,13 @@ const state: TripState = {
         weather_condition: "bad",
         search_radius_km: 1,
       },
+      mergedConditions: null,
       status: "pending",
     },
   ],
   phase: "waiting_for_debug_confirmation",
+  session_id: "sess_test",
+  awaiting_clarification: false,
   error: null,
 };
 
