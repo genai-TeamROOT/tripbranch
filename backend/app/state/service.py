@@ -6,14 +6,17 @@ Phase 1에서는 동일 프로세스 내 함수 호출로 제공한다.
 HTTP 엔드포인트는 AF-05 Agent Runtime의 책임이므로 여기서 정의하지 않는다.
 """
 
+import functools
 from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.errors import AppError
 from app.state import history as history_module
 from app.state import session as session_module
 from app.state import trace as trace_module
+from app.state.errors import StateStoreError
 from app.state.merge import merge_conditions
 from app.state.operations import IgnoredOperation, Operation, validate_all
 from app.state.schema import UserConditions, now_kst
@@ -186,8 +189,29 @@ def _build_api_context_view(state) -> ApiContextView:
     )
 
 
+def _wrap_store_errors(fn):
+    """저장소 호출 중 예상 못한 예외를 B 공통 오류(StateStoreError)로 감싼다.
+
+    이미 AppError인 경우(SupabaseRepositoryError 등)는 의미가 있으므로
+    그대로 전달한다. "세션 없음"은 예외가 아니라 정상 반환값이므로
+    영향받지 않는다 (계약 5.2/6.7절).
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except AppError:
+            raise
+        except Exception as exc:
+            raise StateStoreError(str(exc)) from exc
+
+    return wrapper
+
+
 # ================================================================ 6.1 / 6.2
 
+@_wrap_store_errors
 def apply(
     request: StateApplyRequest,
     store: StateStore | None = None,
@@ -306,6 +330,7 @@ def _build_response(
 
 # ================================================================ 6.3
 
+@_wrap_store_errors
 def get_session_context(
     session_id: str | None,
     store: StateStore | None = None,
@@ -348,6 +373,7 @@ def get_session_context(
 
 # ================================================================ 6.4
 
+@_wrap_store_errors
 def record_recommendation(
     request: RecordRecommendationRequest,
     store: StateStore | None = None,
@@ -370,6 +396,7 @@ def record_recommendation(
 
 # ================================================================ 6.5
 
+@_wrap_store_errors
 def update_api_context(
     request: UpdateApiContextRequest,
     store: StateStore | None = None,
@@ -412,6 +439,7 @@ def update_api_context(
     )
 
 
+@_wrap_store_errors
 def set_pending_clarification(
     request: SetPendingClarificationRequest,
     store: StateStore | None = None,
@@ -438,6 +466,7 @@ def set_pending_clarification(
 
 # ================================================================ LLMOps Trace
 
+@_wrap_store_errors
 def record_trace(
     request: RecordTraceRequest,
     store: StateStore | None = None,
