@@ -34,6 +34,27 @@ _ADMIN_ADDRESS_PATTERN = re.compile(
 )
 
 
+# 위치를 가리키는 수식어. 장소명 뒤에 붙어도 검색 대상은 앞의 장소다
+# ("안국역 근처" → "안국역"). 실측(2026-08-03): "안국역 근처"로 지역 검색하면
+# 엘리베이터·모텔·돈까스집이 나와 정답인 "안국역 3호선"이 후보에 없었다.
+# 이 목록은 보수적으로 유지한다 — 단어를 늘릴수록 실제 장소명을 잘라낼 위험이 커진다.
+_LOCATION_MODIFIER_TOKENS = frozenset({"근처", "주변", "인근", "부근"})
+
+
+def strip_location_modifiers(value: str) -> str:
+    """장소명 뒤의 위치 수식어를 떼어낸다. 남는 게 없으면 원문을 유지한다.
+
+    공백으로 구분된 토큰 단위로만 지운다 — "역근처식당"처럼 이름에 붙어 있는
+    경우는 건드리지 않는다. "근처 추천해줘"처럼 수식어만 있는 입력은 애초에
+    장소 조건이 비어 A가 이 Tool을 호출하지 않지만, 방어적으로 원문을 돌려준다.
+    """
+    tokens = value.split()
+    kept = [token for token in tokens if token not in _LOCATION_MODIFIER_TOKENS]
+    if not kept:
+        return value
+    return " ".join(kept)
+
+
 def is_address_query(value: str) -> bool:
     """주소 형태의 입력이면 장소명 검색보다 Geocoding을 먼저 사용한다."""
     normalized = " ".join(value.split())
@@ -143,7 +164,9 @@ class ResolveLocationTool:
         self._local_search_provider = local_search_provider
 
     async def execute(self, query: ResolveLocationQuery) -> ResolveLocationResult:
-        requested_query = query.location_query.strip()
+        # 수식어를 먼저 떼고 조회한다. 주소 판별도 정리된 값으로 해야 "인사동길 44
+        # 근처"가 주소로 잡힌다.
+        requested_query = strip_location_modifiers(query.location_query.strip())
         if is_address_query(requested_query):
             return await self._resolve_address(requested_query)
 

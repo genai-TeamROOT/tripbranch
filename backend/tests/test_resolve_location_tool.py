@@ -19,6 +19,7 @@ from app.tools.resolve_location import (
     ResolveLocationStatus,
     ResolveLocationTool,
     is_address_query,
+    strip_location_modifiers,
 )
 
 
@@ -416,3 +417,57 @@ async def test_local_search_without_candidates_falls_back_to_geocoding() -> None
     assert result.status is ResolveLocationStatus.SUCCESS
     assert local_search.calls == ["청운효자동"]
     assert geocoding.calls != []
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("안국역 근처", "안국역"),
+        ("경복궁 주변", "경복궁"),
+        ("쌈지길 인근", "쌈지길"),
+        ("서울역 부근", "서울역"),
+        # 수식어만 있는 입력은 잘라낼 게 없어 원문을 유지한다.
+        ("근처", "근처"),
+        # 이름에 붙어 있으면 건드리지 않는다.
+        ("역근처식당", "역근처식당"),
+        ("근처식당 근처", "근처식당"),
+    ],
+)
+def test_strip_location_modifiers(query: str, expected: str) -> None:
+    assert strip_location_modifiers(query) == expected
+
+
+@pytest.mark.asyncio
+async def test_place_name_lookup_ignores_trailing_modifier() -> None:
+    """A가 "안국역 근처"로 넘겨도 "안국역"으로 조회한다.
+
+    실측(2026-08-03): "안국역 근처"로 지역 검색하면 엘리베이터·모텔·돈까스집이
+    나와 정답인 "안국역 3호선"이 후보에 없었다.
+    """
+    local_search = MemoryLocalSearchProvider((_local_place("안국역 3호선"),))
+    geocoding = SequenceGeocodingProvider([])
+
+    result = await ResolveLocationTool(
+        geocoding, MemoryPlaceLocationRepository(()), local_search
+    ).execute(ResolveLocationQuery("안국역 근처"))
+
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert result.location is not None
+    assert result.location.resolved_name == "안국역 3호선"
+    # Provider에는 수식어를 뺀 값이 전달된다.
+    assert local_search.calls == ["안국역"]
+
+
+@pytest.mark.asyncio
+async def test_address_with_modifier_is_still_treated_as_address() -> None:
+    """"인사동길 44 근처"처럼 수식어가 붙은 주소도 Geocoding으로 보낸다."""
+    local_search = MemoryLocalSearchProvider(())
+    geocoding = SequenceGeocodingProvider([_result(query="서울특별시 종로구 인사동길 44")])
+
+    result = await ResolveLocationTool(
+        geocoding, MemoryPlaceLocationRepository(()), local_search
+    ).execute(ResolveLocationQuery("서울특별시 종로구 인사동길 44 근처"))
+
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert local_search.calls == []
+    assert geocoding.calls == [("서울특별시 종로구 인사동길 44", False)]
