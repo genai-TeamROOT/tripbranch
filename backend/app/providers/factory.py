@@ -84,6 +84,27 @@ def get_place_search_provider(client: httpx.AsyncClient) -> PlaceSearchProvider:
     return get_place_provider(client)
 
 
+def get_place_location_repository(
+    client: httpx.AsyncClient,
+) -> SupabasePlaceRepository | None:
+    """검색 중심점 해석에 사용할 places 저장소를 준비한다.
+
+    Supabase 설정이 없는 개발·테스트 환경은 기존 Geocoding 경로를 유지한다.
+    """
+    if (
+        settings.resolved_place_provider != "real"
+        or not settings.supabase_url.strip()
+        or not settings.supabase_secret_key.strip()
+    ):
+        return None
+    return SupabasePlaceRepository(
+        supabase_url=settings.supabase_url,
+        secret_key=settings.supabase_secret_key,
+        client=client,
+        timeout_seconds=settings.external_api_timeout_seconds,
+    )
+
+
 def get_place_details_provider(client: httpx.AsyncClient) -> PlaceDetailsProvider:
     """후보별 상세·운영정보 provider를 PLACE_DETAILS_SOURCE에 따라 고른다.
 

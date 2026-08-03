@@ -4,7 +4,7 @@ from collections.abc import Iterable
 
 import pytest
 
-from app.domain.models import GeocodeResult
+from app.domain.models import GeocodeResult, StoredPlaceLocation
 from app.errors import AppError
 from app.providers.contracts import (
     ProviderResult,
@@ -50,6 +50,48 @@ def _result(
         candidate_count=count,
         administrative_district=district,
     )
+
+
+class MemoryPlaceLocationRepository:
+    def __init__(self, matches: tuple[StoredPlaceLocation, ...]) -> None:
+        self._matches = matches
+        self.calls: list[str] = []
+
+    async def find_active_places_by_name(
+        self, name: str
+    ) -> tuple[StoredPlaceLocation, ...]:
+        self.calls.append(name)
+        return self._matches
+
+
+@pytest.mark.asyncio
+async def test_resolves_stored_tour_place_before_geocoding() -> None:
+    repository = MemoryPlaceLocationRepository(
+        (
+            StoredPlaceLocation(
+                content_id="128553",
+                title="쌈지길",
+                address="서울특별시 종로구 인사동길 44",
+                latitude=37.5743062352,
+                longitude=126.9848674428,
+                concentration_name="쌈지길",
+            ),
+        )
+    )
+    provider = SequenceGeocodingProvider([])
+
+    result = await ResolveLocationTool(provider, repository).execute(
+        ResolveLocationQuery("쌈지길")
+    )
+
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert result.location is not None
+    assert result.location.resolution_method is ResolutionMethod.DATABASE
+    assert result.location.place_id == "128553"
+    assert result.location.concentration_name == "쌈지길"
+    assert result.provider_metadata[0].source is ProviderSource.SUPABASE_PLACES
+    assert repository.calls == ["쌈지길"]
+    assert provider.calls == []
 
 
 @pytest.mark.asyncio

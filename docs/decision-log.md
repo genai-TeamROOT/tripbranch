@@ -731,6 +731,23 @@
   부분 결측, unverified 분리 유지), `tests/test_real_recommendation_provider.py`
   (Protocol 위임·seek 변환)로 검증. 전체 회귀(709 passed, 20 skipped) 확인.
 
+### D-041 — 장소명 위치 해석: `places` DB 우선 조회
+
+- 상태: `Implemented` (정확 일치 MVP 범위)
+- 결정: 장소명 입력을 Naver Geocoding에 바로 전달하지 않는다. `ResolveLocationTool`이
+  활성 `places` 행을 정확 일치로 먼저 조회해 TourAPI 기준 좌표를 사용하고, 미조회 시에만
+  기존 별칭·주소 Geocoding 경로로 진행한다.
+- 배경: Geocoding은 주소 중심 API라 `쌈지길` 같은 장소명은 `location_not_found`가 될 수
+  있지만, 해당 장소는 TourAPI `places` DB에 좌표가 존재한다.
+- 집중률: 장소 행에 `place_concentration_mappings`가 있으면 대표 집중률명을 함께 읽어
+  INFO 직접 조회에 사용한다. 직접 조회에 좌표가 필요 없더라도, 매핑이 없는 경우의 0.5km
+  fallback에는 같은 DB 좌표를 사용한다.
+- 안전장치: Fake Provider 모드에서는 실제 Supabase 조회를 주입하지 않아 일반 테스트가
+  외부 데이터에 의존하지 않는다.
+- 범위 제외: 별칭·부분 일치, Naver Local Search, DB 미등록 일반 상호명 처리, RECOMMEND
+  후보 보강의 매핑 연결은 후속 작업이다.
+
+
 ## 변경 이력
 
 | 날짜 | 변경 |

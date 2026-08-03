@@ -168,6 +168,18 @@ class PlaceOperatingDetails:
 
 
 @dataclass(frozen=True)
+class StoredPlaceLocation:
+    """저장된 TourAPI 장소의 검색 중심점 해석용 최소 정보."""
+
+    content_id: str
+    title: str
+    address: str | None
+    latitude: float
+    longitude: float
+    concentration_name: str | None = None
+
+
+@dataclass(frozen=True)
 class StoredPlaceDetail:
     """요청 시 저장소에서 읽어오는 장소 상세·운영정보 한 건.
 

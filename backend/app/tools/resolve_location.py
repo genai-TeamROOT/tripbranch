@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 
 from app.domain.models import GeocodeResult
 from app.errors import AppError
-from app.providers.contracts import ProviderMetadata
+from app.providers.contracts import (
+    ProviderMetadata,
+    ProviderSource,
+    ProviderStatus,
+)
 from app.providers.geocoding import get_jongno_landmark_alias
 from app.providers.protocols import GeocodingProvider
+from app.repositories.protocols import PlaceLocationRepository
 from app.tools.contracts import ToolError, ToolStatus
 
 ResolveLocationStatus = ToolStatus
@@ -19,6 +25,7 @@ class ResolutionMethod(StrEnum):
     DIRECT = "direct"
     ALIAS = "alias"
     FALLBACK = "fallback"
+    DATABASE = "database"
 
 
 class ResolutionConfidence(StrEnum):
@@ -48,6 +55,9 @@ class ResolvedLocation:
     longitude: float
     resolution_method: ResolutionMethod
     confidence: ResolutionConfidence
+    place_id: str | None = None
+    address: str | None = None
+    concentration_name: str | None = None
 
 
 ResolveLocationError = ToolError
@@ -63,11 +73,20 @@ class ResolveLocationResult:
 
 
 class ResolveLocationTool:
-    def __init__(self, provider: GeocodingProvider) -> None:
+    def __init__(
+        self,
+        provider: GeocodingProvider,
+        place_repository: PlaceLocationRepository | None = None,
+    ) -> None:
         self._provider = provider
+        self._place_repository = place_repository
 
     async def execute(self, query: ResolveLocationQuery) -> ResolveLocationResult:
         requested_query = query.location_query.strip()
+        stored_result = await self._lookup_stored_place(requested_query)
+        if stored_result is not None:
+            return stored_result
+
         alias = get_jongno_landmark_alias(requested_query)
 
         if alias:
@@ -106,6 +125,56 @@ class ResolveLocationTool:
             provider_query=requested_query,
             method=ResolutionMethod.DIRECT,
             provider_metadata=(direct_metadata,),
+        )
+
+    async def _lookup_stored_place(
+        self, requested_query: str
+    ) -> ResolveLocationResult | None:
+        """저장된 TourAPI 장소를 먼저 찾아 상호명 지오코딩 실패를 줄인다."""
+        if self._place_repository is None:
+            return None
+        try:
+            matches = await self._place_repository.find_active_places_by_name(
+                requested_query
+            )
+        except AppError:
+            # 저장소 장애만으로 주소 기반 지오코딩까지 막지는 않는다.
+            return None
+        if not matches:
+            return None
+        metadata = (
+            ProviderMetadata(
+                source=ProviderSource.SUPABASE_PLACES,
+                status=ProviderStatus.SUCCESS,
+                retrieved_at=datetime.now(UTC),
+            ),
+        )
+        if len(matches) > 1:
+            return self._error_result(
+                status=ResolveLocationStatus.NO_DATA,
+                code="no_data",
+                cause="ambiguous_location",
+                retryable=False,
+                details={"reason": "ambiguous_location"},
+                provider_metadata=metadata,
+            )
+        place = matches[0]
+        return ResolveLocationResult(
+            status=ResolveLocationStatus.SUCCESS,
+            location=ResolvedLocation(
+                requested_query=requested_query,
+                provider_query=place.title,
+                resolved_name=place.title,
+                latitude=place.latitude,
+                longitude=place.longitude,
+                resolution_method=ResolutionMethod.DATABASE,
+                confidence=ResolutionConfidence.EXACT,
+                place_id=place.content_id,
+                address=place.address,
+                concentration_name=place.concentration_name,
+            ),
+            error=None,
+            provider_metadata=metadata,
         )
 
     async def _lookup(
@@ -165,7 +234,7 @@ class ResolveLocationTool:
                 resolution_method=method,
                 confidence=(
                     ResolutionConfidence.EXACT
-                    if method is ResolutionMethod.ALIAS
+                    if method in (ResolutionMethod.ALIAS, ResolutionMethod.DATABASE)
                     else ResolutionConfidence.APPROXIMATE
                 ),
             ),

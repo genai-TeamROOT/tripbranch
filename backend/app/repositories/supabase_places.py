@@ -9,7 +9,12 @@ from uuid import UUID
 
 import httpx
 
-from app.domain.models import StoredPlaceDetail, StoredPlaceState, TourPlaceRecord
+from app.domain.models import (
+    StoredPlaceDetail,
+    StoredPlaceLocation,
+    StoredPlaceState,
+    TourPlaceRecord,
+)
 from app.errors import AppError
 
 _READ_PAGE_SIZE = 1000
@@ -27,6 +32,11 @@ _STATE_COLUMNS = ",".join(
         "inactive_reason",
     )
 )
+_LOCATION_COLUMNS = (
+    "content_id,title,address,latitude,longitude,"
+    "place_concentration_mappings(primary_concentration_name)"
+)
+
 _DETAIL_COLUMNS = ",".join(
     (
         "content_id",
@@ -278,6 +288,59 @@ class SupabasePlaceRepository:
                 ),
             )
         return states
+
+    async def find_active_places_by_name(
+        self, name: str
+    ) -> tuple[StoredPlaceLocation, ...]:
+        """TourAPI 기준 장소명을 정확히 일치시켜 검색 중심 좌표를 읽는다.
+
+        장소명 검색은 지오코딩보다 먼저 수행한다. 좌표가 없는 행은 검색 중심점으로
+        사용할 수 없으므로 반환하지 않는다. 별칭·부분 일치 정책은 상위 Tool이
+        별도 경로로 확장할 수 있도록 이 Repository는 정확 일치만 담당한다.
+        """
+        normalized_name = name.strip()
+        if not normalized_name:
+            return ()
+        response = await self._request(
+            "GET",
+            "/places",
+            params={
+                "select": _LOCATION_COLUMNS,
+                "title": f"eq.{normalized_name}",
+                "is_active": "eq.true",
+                "limit": "2",
+            },
+        )
+        rows = self._json(response)
+        if not isinstance(rows, list):
+            raise SupabaseRepositoryError("invalid place location response")
+
+        locations: list[StoredPlaceLocation] = []
+        for raw in rows:
+            if not isinstance(raw, Mapping) or not raw.get("content_id"):
+                raise SupabaseRepositoryError("place location missing content_id")
+            try:
+                latitude = float(raw["latitude"])
+                longitude = float(raw["longitude"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            mapping = raw.get("place_concentration_mappings")
+            concentration_name = None
+            if isinstance(mapping, list) and mapping and isinstance(mapping[0], Mapping):
+                concentration_name = _optional_text(
+                    mapping[0].get("primary_concentration_name")
+                )
+            locations.append(
+                StoredPlaceLocation(
+                    content_id=str(raw["content_id"]),
+                    title=str(raw.get("title") or normalized_name),
+                    address=_optional_text(raw.get("address")),
+                    latitude=latitude,
+                    longitude=longitude,
+                    concentration_name=concentration_name,
+                )
+            )
+        return tuple(locations)
 
     async def get_active_place_details(
         self,

@@ -94,6 +94,39 @@ async def test_lock_rpcs_send_exact_database_arguments() -> None:
 
 
 @pytest.mark.asyncio
+async def test_find_active_places_by_name_reads_coordinates_and_mapping() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/rest/v1/places"
+        assert request.url.params["title"] == "eq.쌈지길"
+        assert request.url.params["is_active"] == "eq.true"
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "content_id": "128553",
+                    "title": "쌈지길",
+                    "address": "서울특별시 종로구 인사동길 44",
+                    "latitude": 37.5743062352,
+                    "longitude": 126.9848674428,
+                    "place_concentration_mappings": [
+                        {"primary_concentration_name": "쌈지길"}
+                    ],
+                }
+            ],
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        locations = await _repository(transport, client).find_active_places_by_name(
+            "쌈지길"
+        )
+
+    assert len(locations) == 1
+    assert locations[0].content_id == "128553"
+    assert locations[0].concentration_name == "쌈지길"
+
+
+@pytest.mark.asyncio
 async def test_get_region_place_states_maps_rows() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.params["area_code"] == "eq.11"
