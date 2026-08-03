@@ -60,6 +60,7 @@ backend\.venv\Scripts\Activate.ps1
 | `LLM_API_KEY` | 빈 값 | Real Gemini |
 | `SUPABASE_URL` | 빈 값 | Place 동기화 저장소, `PLACE_DETAILS_SOURCE=supabase` |
 | `SUPABASE_SECRET_KEY` | 빈 값 | Place 동기화 저장소, `PLACE_DETAILS_SOURCE=supabase` |
+| `STATE_STORE_BACKEND` | `memory` | Package B State(세션·이력·트레이스) 저장소 (`memory`/`supabase`) |
 | `EXTERNAL_API_TIMEOUT_SECONDS` | `10` | Real Provider timeout |
 | `RECOMMENDATION_RESULT_LIMIT` | `5` | Scoring 후 반환할 최대 추천 수 |
 | `RECOMMENDATION_CANDIDATE_LIMIT` | `10` | 거리순으로 상세조회·평가할 후보 수 |
@@ -79,6 +80,11 @@ backend\.venv\Scripts\Activate.ps1
 실패합니다. 요청 도중 TourAPI로 자동 폴백하지 않으므로 저장소 장애는 그대로
 `unavailable`로 노출됩니다. `PLACE_PROVIDER=fake`이면 상세도 Fake Provider가
 담당하므로 이 값은 무시됩니다.
+
+`STATE_STORE_BACKEND`도 Fake/Real과 축이 다릅니다. Package B의 세션 상태·추천
+이력·트레이스를 어디에 저장할지만 고르며, `supabase`로 두면
+`SUPABASE_URL`/`SUPABASE_SECRET_KEY`가 필요하고 비어 있으면 부팅 단계에서
+실패합니다(`validate_provider_config()`가 함께 검증).
 
 `PROVIDER_MODE`와 `*_PROVIDER`에는 `fake`와 `real`만 허용됩니다. 오타나 옛 이름을
 넣으면 앱이 기동하지 않고 어떤 변수가 잘못됐는지 즉시 보고합니다. Real 모드에
