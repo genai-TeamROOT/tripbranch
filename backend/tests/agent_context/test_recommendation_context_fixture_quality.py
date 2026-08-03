@@ -14,7 +14,11 @@ from pathlib import Path
 
 import pytest
 
-from app.agent_context.schemas import AgentContextResponse
+from app.agent_context.schemas import AgentContextResponse, RecommendationContext
+from app.domain.candidate_mapper import map_context_to_scoring_candidates
+from app.domain.evidence import build_evidence_list
+from app.domain.models import WeatherCondition
+from app.domain.scoring import score_candidates
 from app.schemas import RecommendationItem, RecommendationResponse
 from app.services.recommendation_pipeline import run_recommendation_pipeline_from_context
 from tests.fixtures.recommendation_context_fixture_expectations import (
@@ -41,6 +45,20 @@ async def _run(case: ContextFixtureCase) -> RecommendationResponse:
         shown_place_ids=case.shown_place_ids,
         rejected_place_ids=case.rejected_place_ids,
     )
+
+
+def _weather_condition_from_context(context: RecommendationContext) -> WeatherCondition | None:
+    """recommendation_pipeline.py의 동일 이름 내부 함수를 독립적으로 재현한다.
+
+    Evidence 일치성 검증을 위해 파이프라인과 별도로 candidate_mapper→scoring→
+    evidence를 직접 조립해야 하는데, 공개 진입점 밖에서는 이 변환이 없어 그대로
+    옮겨왔다.
+    """
+
+    weather = context.weather
+    if weather is None or weather.status not in {"success", "partial"} or weather.data is None:
+        return None
+    return WeatherCondition(weather.data.condition)
 
 
 def _assert_item_matches(actual: RecommendationItem, expected: ExpectedItem) -> None:
@@ -148,3 +166,66 @@ async def test_context_fixture_is_deterministic_across_repeated_runs(
 
     assert first_result.recommendations == second_result.recommendations
     assert first_result.unverified_recommendations == second_result.unverified_recommendations
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    CONTEXT_FIXTURE_EXPECTATIONS,
+    ids=[case.name for case in CONTEXT_FIXTURE_EXPECTATIONS],
+)
+async def test_evidence_matches_final_score_and_ranking(case: ContextFixtureCase) -> None:
+    """완료 기준: Evidence가 실제 점수와 Ranking 근거에 부합한다.
+
+    공개 진입점(`run_recommendation_pipeline_from_context()`)이 반환한
+    `RecommendationItem`과는 별도로, `candidate_mapper→score_candidates→
+    build_evidence_list`를 직접 호출해 Evidence를 독립적으로 재구성한 뒤 서로
+    일치하는지 비교한다. `_build_response()`가 `evidence.score`/
+    `evidence.contributions`를 그대로 옮겨 담는다는 사실에만 기대지 않고,
+    같은 입력으로 Evidence를 별도로 다시 만들어서 실제로 일치하는지 확인한다.
+    """
+
+    response = _load_response(case.filename)
+    context = response.context
+    if context is None:
+        return
+
+    candidates = map_context_to_scoring_candidates(context, visit_at=case.visit_at)
+    scoring = score_candidates(
+        candidates,
+        now=case.visit_at,
+        weather_condition=_weather_condition_from_context(context),
+        max_distance_km=case.search_radius_km,
+        shown_place_ids=case.shown_place_ids,
+        rejected_place_ids=case.rejected_place_ids,
+    )
+    evidence_by_place_id = {
+        evidence.place_id: evidence for evidence in build_evidence_list(scoring)
+    }
+
+    result = await _run(case)
+
+    assert set(evidence_by_place_id) == {
+        item.place_id for item in [*result.recommendations, *result.unverified_recommendations]
+    }
+
+    for group in (result.recommendations, result.unverified_recommendations):
+        ranks_in_order = [evidence_by_place_id[item.place_id].rank for item in group]
+        assert ranks_in_order == sorted(ranks_in_order), (
+            "노출 순서가 Evidence의 rank 오름차순과 어긋난다"
+        )
+
+        for item in group:
+            evidence = evidence_by_place_id[item.place_id]
+
+            assert evidence.score == pytest.approx(item.score, abs=_SCORE_TOLERANCE), (
+                f"{item.place_id}: Evidence.score와 최종 score 불일치"
+            )
+            assert {c.feature for c in evidence.contributions} == set(item.feature_scores), (
+                f"{item.place_id}: Evidence의 Feature 집합과 feature_scores 불일치"
+            )
+            for contribution in evidence.contributions:
+                assert contribution.score == item.feature_scores[contribution.feature], (
+                    f"{item.place_id}.{contribution.feature}: Evidence 기여 점수와 "
+                    "최종 feature_scores 불일치"
+                )
