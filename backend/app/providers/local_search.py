@@ -22,9 +22,17 @@ def _clean_text(value: object | None) -> str | None:
     return cleaned or None
 
 
+# Local Search의 mapx/mapy는 WGS84 좌표에 10^7을 곱한 정수다(예: 안국역 위도
+# 375765389 → 37.5765389). Geocoding은 실수를 그대로 주므로 이 Provider에서만
+# 되돌린다 — 나누지 않으면 좌표계 검증(위도 ±90)에서 걸리거나 거리 계산이 깨진다.
+_LOCAL_SEARCH_COORDINATE_SCALE = 10**7
+
+
 def _coordinate(value: object | None) -> float | None:
+    if value in (None, ""):
+        return None
     try:
-        return float(str(value)) if value not in (None, "") else None
+        return float(str(value)) / _LOCAL_SEARCH_COORDINATE_SCALE
     except (TypeError, ValueError):
         return None
 
