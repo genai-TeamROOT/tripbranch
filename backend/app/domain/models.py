@@ -130,6 +130,20 @@ class PlaceDetails:
 
 
 @dataclass(frozen=True)
+class LocalSearchPlace:
+    """Naver Local Search가 반환한 장소·업체 후보 한 건."""
+
+    name: str
+    address: str | None
+    road_address: str | None
+    category: str | None
+    latitude: float | None
+    longitude: float | None
+
+
+
+
+@dataclass(frozen=True)
 class TourPlaceRecord:
     """TourAPI 지역 기반 목록의 장소 한 건."""
 

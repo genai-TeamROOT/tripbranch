@@ -46,6 +46,7 @@ backend\.venv\Scripts\Activate.ps1
 | `APP_ENV` | `local` | 설정값 보관 |
 | `PROVIDER_MODE` | `fake` | Provider 공통 Fake/Real 모드 |
 | `GEOCODING_PROVIDER` | 빈 값 | Geocoding 개별 Override |
+| `LOCAL_SEARCH_PROVIDER` | 빈 값 | Naver Local Search 개별 Override |
 | `WEATHER_PROVIDER` | 빈 값 | Weather 개별 Override |
 | `PLACE_PROVIDER` | 빈 값 | Place 개별 Override |
 | `CONCENTRATION_PROVIDER` | 빈 값 | Concentration 개별 Override |
@@ -55,6 +56,8 @@ backend\.venv\Scripts\Activate.ps1
 | `LLM_MODEL_NAME` | `gemini-2.5-flash` | Real Gemini 모델명 |
 | `NAVER_MAP_CLIENT_ID` | 빈 값 | Real Geocoding |
 | `NAVER_MAP_CLIENT_SECRET` | 빈 값 | Real Geocoding |
+| `NAVER_LOCAL_SEARCH_CLIENT_ID` | 빈 값 | Real Naver Local Search API Key ID |
+| `NAVER_LOCAL_SEARCH_CLIENT_SECRET` | 빈 값 | Real Naver Local Search API Key |
 | `WEATHER_API_KEY` | 빈 값 | Real Weather |
 | `TOUR_API_SERVICE_KEY` | 빈 값 | Place, Concentration, Holiday |
 | `LLM_API_KEY` | 빈 값 | Real Gemini |
@@ -70,6 +73,14 @@ backend\.venv\Scripts\Activate.ps1
 
 `PROVIDER_MODE=real`이면 개별 값이 비어 있는 모든 Provider가 Real 모드가 됩니다.
 특정 Provider만 Fake로 유지하려면 예를 들어 `PLACE_PROVIDER=fake`를 지정합니다.
+
+`LOCAL_SEARCH_PROVIDER=real`은 Naver Maps Geocoding과 별도의 Naver API Hub
+자격 증명(`NAVER_LOCAL_SEARCH_CLIENT_ID`, `NAVER_LOCAL_SEARCH_CLIENT_SECRET`)을
+사용합니다. 이 Provider는 저장된 `places`의 정확한 이름 매칭에 실패했을 때 장소명
+검색 결과를 좌표로 보완하며, 후보가 여러 개인 경우 임의 선택하지 않고 기존 위치 해석
+흐름으로 넘깁니다. 위치 해석은 도로명·지번 주소 패턴(예: `인사동길 44`,
+`관훈동 38`)이면 Geocoding을 먼저 호출하고, 그 외 장소명은 저장된 장소 정확 일치 →
+Local Search → Geocoding 순서로 처리합니다.
 
 `PLACE_DETAILS_SOURCE`는 Fake/Real과 축이 다릅니다. 장소 후보 **검색**은 언제나
 `PLACE_PROVIDER`를 따르고, 이 값은 후보별 **상세·운영정보**를 어디서 읽을지만
@@ -167,6 +178,21 @@ RUN_REAL_PROVIDER_TESTS=true python -m pytest -m smoke -v -s
 
 # 마스킹된 요청과 원본 응답 확인
 RUN_REAL_PROVIDER_INSPECTION=true python -m pytest -m inspection -v -s
+```
+
+장소명·주소별 위치 해석 Tool의 실제 호출 경로를 확인하려면 아래처럼 실행합니다.
+출력에는 호출된 Local Search/Geocoding 입력, Local Search 후보 수·이름,
+Provider source, 상태·오류 원인, 최종 해석 방식만 표시하며 인증 키와 원본 응답은
+표시하지 않습니다.
+
+```bash
+# 장소명: Local Search 호출 후 성공하면 Geocoding 미호출
+RUN_REAL_PROVIDER_INSPECTION=true LOCAL_SEARCH_PROVIDER=real \
+  python -m pytest tests/test_resolve_location_inspection.py::test_inspect_place_name_calls_local_search_before_geocoding -v -s
+
+# 주소: Geocoding만 직접 호출
+RUN_REAL_PROVIDER_INSPECTION=true GEOCODING_PROVIDER=real \
+  python -m pytest tests/test_resolve_location_inspection.py::test_inspect_address_calls_geocoding_directly -v -s
 ```
 
 특정 장소 상세정보 확인:

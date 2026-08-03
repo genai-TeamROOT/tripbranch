@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 
-from app.domain.models import GeocodeResult
+from app.domain.models import GeocodeResult, LocalSearchPlace
 from app.errors import AppError
 from app.providers.contracts import (
     ProviderMetadata,
@@ -14,11 +15,33 @@ from app.providers.contracts import (
     ProviderStatus,
 )
 from app.providers.geocoding import get_jongno_landmark_alias
-from app.providers.protocols import GeocodingProvider
+from app.providers.protocols import GeocodingProvider, LocalSearchProvider
 from app.repositories.protocols import PlaceLocationRepository
 from app.tools.contracts import ToolError, ToolStatus
 
 ResolveLocationStatus = ToolStatus
+
+# 도로명 주소와 지번 주소를 보수적으로 감지한다. 장소명에 "길"이 포함돼도
+# 번지수가 없으면 장소명 검색 흐름을 유지한다.
+_ROAD_ADDRESS_PATTERN = re.compile(r"(?:로|길)\s*\d+(?:-\d+)?(?:\s|$)")
+_LOT_ADDRESS_PATTERN = re.compile(r"(?:동|읍|면|리)\s*\d+(?:-\d+)?(?:\s|$)")
+_ADMIN_ADDRESS_PATTERN = re.compile(
+    r"(?:서울(?:특별시)?|부산(?:광역시)?|대구(?:광역시)?|인천(?:광역시)?|"
+    r"광주(?:광역시)?|대전(?:광역시)?|울산(?:광역시)?|세종(?:특별자치시)?|"
+    r"경기(?:도)?|강원(?:특별자치도|도)?|충북|충청북도|충남|충청남도|전북|"
+    r"전라북도|전남|전라남도|경북|경상북도|경남|경상남도|제주(?:특별자치도)?)"
+    r"\s+\S+(?:시|군|구)"
+)
+
+
+def is_address_query(value: str) -> bool:
+    """주소 형태의 입력이면 장소명 검색보다 Geocoding을 먼저 사용한다."""
+    normalized = " ".join(value.split())
+    return bool(
+        _ROAD_ADDRESS_PATTERN.search(normalized)
+        or _LOT_ADDRESS_PATTERN.search(normalized)
+        or _ADMIN_ADDRESS_PATTERN.search(normalized)
+    )
 
 
 class ResolutionMethod(StrEnum):
@@ -26,6 +49,7 @@ class ResolutionMethod(StrEnum):
     ALIAS = "alias"
     FALLBACK = "fallback"
     DATABASE = "database"
+    LOCAL_SEARCH = "local_search"
 
 
 class ResolutionConfidence(StrEnum):
@@ -77,15 +101,24 @@ class ResolveLocationTool:
         self,
         provider: GeocodingProvider,
         place_repository: PlaceLocationRepository | None = None,
+        local_search_provider: LocalSearchProvider | None = None,
     ) -> None:
         self._provider = provider
         self._place_repository = place_repository
+        self._local_search_provider = local_search_provider
 
     async def execute(self, query: ResolveLocationQuery) -> ResolveLocationResult:
         requested_query = query.location_query.strip()
+        if is_address_query(requested_query):
+            return await self._resolve_address(requested_query)
+
         stored_result = await self._lookup_stored_place(requested_query)
         if stored_result is not None:
             return stored_result
+
+        local_search_result = await self._lookup_local_search(requested_query)
+        if local_search_result is not None:
+            return local_search_result
 
         alias = get_jongno_landmark_alias(requested_query)
 
@@ -127,16 +160,81 @@ class ResolveLocationTool:
             provider_metadata=(direct_metadata,),
         )
 
-    async def _lookup_stored_place(
-        self, requested_query: str
-    ) -> ResolveLocationResult | None:
+    async def _resolve_address(self, requested_query: str) -> ResolveLocationResult:
+        """주소는 DB·지역 검색을 건너뛰고 Geocoding으로 바로 해석한다."""
+        direct = await self._lookup(requested_query, use_alias=False)
+        if isinstance(direct, ResolveLocationResult):
+            return direct
+        direct_data, direct_metadata = direct
+        return self._success_or_policy_result(
+            result=direct_data,
+            requested_query=requested_query,
+            provider_query=requested_query,
+            method=ResolutionMethod.DIRECT,
+            provider_metadata=(direct_metadata,),
+        )
+
+    async def _lookup_local_search(self, requested_query: str) -> ResolveLocationResult | None:
+        """DB에 없는 상호명은 지역 검색으로 좌표를 보완한다."""
+        if self._local_search_provider is None:
+            return None
+        try:
+            result = await self._local_search_provider.search_places_by_name(requested_query)
+        except AppError:
+            # Local Search 장애가 주소 Geocoding fallback을 막지 않게 한다.
+            return None
+        candidates = tuple(
+            item for item in result.data if item.latitude is not None and item.longitude is not None
+        )
+        if not candidates:
+            return None
+        normalized_query = requested_query.casefold().replace(" ", "")
+        exact = tuple(
+            item for item in candidates if item.name.casefold().replace(" ", "") == normalized_query
+        )
+        selected = exact if exact else candidates
+        if len(selected) != 1:
+            return self._error_result(
+                status=ResolveLocationStatus.NO_DATA,
+                code="no_data",
+                cause="ambiguous_location",
+                retryable=False,
+                details={"reason": "ambiguous_location"},
+                provider_metadata=(result.metadata,),
+            )
+        return self._local_search_success(requested_query, selected[0], result.metadata)
+
+    @staticmethod
+    def _local_search_success(
+        requested_query: str,
+        place: LocalSearchPlace,
+        metadata: ProviderMetadata,
+    ) -> ResolveLocationResult:
+        # candidates 단계에서 좌표 존재 여부를 확인했으므로 여기서는 확정값이다.
+        assert place.latitude is not None and place.longitude is not None
+        return ResolveLocationResult(
+            status=ResolveLocationStatus.SUCCESS,
+            location=ResolvedLocation(
+                requested_query=requested_query,
+                provider_query=requested_query,
+                resolved_name=place.name,
+                latitude=place.latitude,
+                longitude=place.longitude,
+                resolution_method=ResolutionMethod.LOCAL_SEARCH,
+                confidence=ResolutionConfidence.APPROXIMATE,
+                address=place.road_address or place.address,
+            ),
+            error=None,
+            warnings=("local_search_used",),
+            provider_metadata=(metadata,),
+        )
+
+    async def _lookup_stored_place(self, requested_query: str) -> ResolveLocationResult | None:
         """저장된 TourAPI 장소를 먼저 찾아 상호명 지오코딩 실패를 줄인다."""
         if self._place_repository is None:
             return None
         try:
-            matches = await self._place_repository.find_active_places_by_name(
-                requested_query
-            )
+            matches = await self._place_repository.find_active_places_by_name(requested_query)
         except AppError:
             # 저장소 장애만으로 주소 기반 지오코딩까지 막지는 않는다.
             return None
@@ -211,10 +309,7 @@ class ResolveLocationTool:
         warnings: tuple[str, ...] = (),
         provider_metadata: tuple[ProviderMetadata, ...] = (),
     ) -> ResolveLocationResult:
-        if (
-            method is not ResolutionMethod.ALIAS
-            and result.candidate_count > 1
-        ):
+        if method is not ResolutionMethod.ALIAS and result.candidate_count > 1:
             return self._error_result(
                 status=ResolveLocationStatus.NO_DATA,
                 code="no_data",

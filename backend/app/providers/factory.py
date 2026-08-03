@@ -14,11 +14,13 @@ from app.providers.concentration import FakeConcentrationProvider, RealConcentra
 from app.providers.gemini import RealGeminiProvider
 from app.providers.geocoding import FakeGeocodingProvider, RealGeocodingProvider
 from app.providers.holiday import FakeHolidayProvider, RealHolidayProvider
+from app.providers.local_search import FakeLocalSearchProvider, RealLocalSearchProvider
 from app.providers.protocols import (
     ConcentrationProvider,
     GeocodingProvider,
     HolidayProvider,
     LLMProvider,
+    LocalSearchProvider,
     PlaceDetailsProvider,
     PlaceProvider,
     PlaceSearchProvider,
@@ -54,6 +56,22 @@ def get_geocoding_provider(client: httpx.AsyncClient) -> GeocodingProvider:
     return RealGeocodingProvider(
         api_key_id=_require_key(settings.naver_map_client_id, "NAVER_MAP_CLIENT_ID"),
         api_key=_require_key(settings.naver_map_client_secret, "NAVER_MAP_CLIENT_SECRET"),
+        client=client,
+        timeout_seconds=settings.external_api_timeout_seconds,
+    )
+
+
+def get_local_search_provider(client: httpx.AsyncClient) -> LocalSearchProvider:
+    if settings.resolved_local_search_provider == "fake":
+        return FakeLocalSearchProvider()
+    return RealLocalSearchProvider(
+        api_key_id=_require_key(
+            settings.naver_local_search_client_id, "NAVER_LOCAL_SEARCH_CLIENT_ID"
+        ),
+        api_key=_require_key(
+            settings.naver_local_search_client_secret,
+            "NAVER_LOCAL_SEARCH_CLIENT_SECRET",
+        ),
         client=client,
         timeout_seconds=settings.external_api_timeout_seconds,
     )
@@ -152,6 +170,10 @@ _REQUIRED_KEYS: dict[str, tuple[tuple[str, str], ...]] = {
     "PLACE_PROVIDER": (("TOUR_API_SERVICE_KEY", "tour_api_service_key"),),
     "CONCENTRATION_PROVIDER": (("TOUR_API_SERVICE_KEY", "tour_api_service_key"),),
     "HOLIDAY_PROVIDER": (("TOUR_API_SERVICE_KEY", "tour_api_service_key"),),
+    "LOCAL_SEARCH_PROVIDER": (
+        ("NAVER_LOCAL_SEARCH_CLIENT_ID", "naver_local_search_client_id"),
+        ("NAVER_LOCAL_SEARCH_CLIENT_SECRET", "naver_local_search_client_secret"),
+    ),
     "GEOCODING_PROVIDER": (
         ("NAVER_MAP_CLIENT_ID", "naver_map_client_id"),
         ("NAVER_MAP_CLIENT_SECRET", "naver_map_client_secret"),
@@ -165,6 +187,7 @@ _RESOLVED_ATTRS: dict[str, str] = {
     "CONCENTRATION_PROVIDER": "resolved_concentration_provider",
     "HOLIDAY_PROVIDER": "resolved_holiday_provider",
     "GEOCODING_PROVIDER": "resolved_geocoding_provider",
+    "LOCAL_SEARCH_PROVIDER": "resolved_local_search_provider",
 }
 
 

@@ -4,7 +4,7 @@ from collections.abc import Iterable
 
 import pytest
 
-from app.domain.models import GeocodeResult, StoredPlaceLocation
+from app.domain.models import GeocodeResult, LocalSearchPlace, StoredPlaceLocation
 from app.errors import AppError
 from app.providers.contracts import (
     ProviderResult,
@@ -18,6 +18,7 @@ from app.tools.resolve_location import (
     ResolveLocationQuery,
     ResolveLocationStatus,
     ResolveLocationTool,
+    is_address_query,
 )
 
 
@@ -52,14 +53,24 @@ def _result(
     )
 
 
+class MemoryLocalSearchProvider:
+    def __init__(self, places: tuple[LocalSearchPlace, ...]) -> None:
+        self._places = places
+        self.calls: list[str] = []
+
+    async def search_places_by_name(
+        self, query: str, *, display: int = 5
+    ) -> ProviderResult[tuple[LocalSearchPlace, ...]]:
+        self.calls.append(query)
+        return provider_result(self._places, source=ProviderSource.FAKE_LOCAL_SEARCH)
+
+
 class MemoryPlaceLocationRepository:
     def __init__(self, matches: tuple[StoredPlaceLocation, ...]) -> None:
         self._matches = matches
         self.calls: list[str] = []
 
-    async def find_active_places_by_name(
-        self, name: str
-    ) -> tuple[StoredPlaceLocation, ...]:
+    async def find_active_places_by_name(self, name: str) -> tuple[StoredPlaceLocation, ...]:
         self.calls.append(name)
         return self._matches
 
@@ -80,9 +91,7 @@ async def test_resolves_stored_tour_place_before_geocoding() -> None:
     )
     provider = SequenceGeocodingProvider([])
 
-    result = await ResolveLocationTool(provider, repository).execute(
-        ResolveLocationQuery("쌈지길")
-    )
+    result = await ResolveLocationTool(provider, repository).execute(ResolveLocationQuery("쌈지길"))
 
     assert result.status is ResolveLocationStatus.SUCCESS
     assert result.location is not None
@@ -92,6 +101,96 @@ async def test_resolves_stored_tour_place_before_geocoding() -> None:
     assert result.provider_metadata[0].source is ProviderSource.SUPABASE_PLACES
     assert repository.calls == ["쌈지길"]
     assert provider.calls == []
+
+
+@pytest.mark.asyncio
+async def test_resolves_local_search_place_when_database_has_no_match() -> None:
+    local_search = MemoryLocalSearchProvider(
+        (
+            LocalSearchPlace(
+                name="쌈지길",
+                address="서울특별시 종로구 관훈동 38",
+                road_address="서울특별시 종로구 인사동길 44",
+                category="쇼핑",
+                latitude=37.5743062352,
+                longitude=126.9848674428,
+            ),
+        )
+    )
+    provider = SequenceGeocodingProvider([])
+
+    result = await ResolveLocationTool(
+        provider,
+        MemoryPlaceLocationRepository(()),
+        local_search,
+    ).execute(ResolveLocationQuery("쌈지길"))
+
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert result.location is not None
+    assert result.location.resolution_method is ResolutionMethod.LOCAL_SEARCH
+    assert result.location.address == "서울특별시 종로구 인사동길 44"
+    assert result.warnings == ("local_search_used",)
+    assert local_search.calls == ["쌈지길"]
+    assert provider.calls == []
+
+
+@pytest.mark.asyncio
+async def test_place_name_uses_local_search_before_geocoding() -> None:
+    local_search = MemoryLocalSearchProvider(
+        (
+            LocalSearchPlace(
+                name="쌈지길",
+                address="서울특별시 종로구 관훈동 38",
+                road_address="서울특별시 종로구 인사동길 44",
+                category="쇼핑",
+                latitude=37.5743062352,
+                longitude=126.9848674428,
+            ),
+        )
+    )
+    repository = MemoryPlaceLocationRepository(())
+    geocoding = SequenceGeocodingProvider([])
+
+    result = await ResolveLocationTool(geocoding, repository, local_search).execute(
+        ResolveLocationQuery("쌈지길")
+    )
+
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert result.location is not None
+    assert result.location.resolution_method is ResolutionMethod.LOCAL_SEARCH
+    assert repository.calls == ["쌈지길"]
+    assert local_search.calls == ["쌈지길"]
+    assert geocoding.calls == []
+
+
+@pytest.mark.asyncio
+async def test_address_uses_geocoding_without_place_name_lookups() -> None:
+    repository = MemoryPlaceLocationRepository(())
+    local_search = MemoryLocalSearchProvider(())
+    geocoding = SequenceGeocodingProvider([_result(query="서울특별시 종로구 인사동길 44")])
+
+    result = await ResolveLocationTool(geocoding, repository, local_search).execute(
+        ResolveLocationQuery("서울특별시 종로구 인사동길 44")
+    )
+
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert result.location is not None
+    assert result.location.resolution_method is ResolutionMethod.DIRECT
+    assert repository.calls == []
+    assert local_search.calls == []
+    assert geocoding.calls == [("서울특별시 종로구 인사동길 44", False)]
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("쌈지길", False),
+        ("서울특별시 종로구 인사동길 44", True),
+        ("서울특별시 종로구 관훈동 38", True),
+    ],
+)
+def test_detects_address_query_conservatively(query: str, expected: bool) -> None:
+    assert is_address_query(query) is expected
 
 
 @pytest.mark.asyncio
@@ -119,9 +218,7 @@ async def test_falls_back_to_original_only_after_alias_no_data() -> None:
         ]
     )
 
-    result = await ResolveLocationTool(provider).execute(
-        ResolveLocationQuery("경복궁")
-    )
+    result = await ResolveLocationTool(provider).execute(ResolveLocationQuery("경복궁"))
 
     assert result.status is ResolveLocationStatus.SUCCESS
     assert result.location is not None
@@ -147,9 +244,7 @@ async def test_does_not_fallback_after_provider_failure() -> None:
         ]
     )
 
-    result = await ResolveLocationTool(provider).execute(
-        ResolveLocationQuery("경복궁")
-    )
+    result = await ResolveLocationTool(provider).execute(ResolveLocationQuery("경복궁"))
 
     assert result.status is ResolveLocationStatus.UNAVAILABLE
     assert result.error is not None
@@ -164,9 +259,7 @@ async def test_resolves_search_center_outside_jongno_before_candidate_filtering(
         [_result(query="서울특별시 용산구 한강대로", district="용산구")]
     )
 
-    result = await ResolveLocationTool(provider).execute(
-        ResolveLocationQuery("서울역")
-    )
+    result = await ResolveLocationTool(provider).execute(ResolveLocationQuery("서울역"))
 
     assert result.status is ResolveLocationStatus.SUCCESS
     assert result.location is not None
@@ -180,9 +273,7 @@ async def test_resolves_search_center_outside_jongno_before_candidate_filtering(
 async def test_ambiguous_location_requires_clarification() -> None:
     provider = SequenceGeocodingProvider([_result(count=3)])
 
-    result = await ResolveLocationTool(provider).execute(
-        ResolveLocationQuery("인사동")
-    )
+    result = await ResolveLocationTool(provider).execute(ResolveLocationQuery("인사동"))
 
     assert result.status is ResolveLocationStatus.NO_DATA
     assert result.error is not None
@@ -199,9 +290,7 @@ async def test_unknown_location_is_no_data() -> None:
         [AppError(code="location_not_found", message="없음", status_code=404)]
     )
 
-    result = await ResolveLocationTool(provider).execute(
-        ResolveLocationQuery("알 수 없는 장소")
-    )
+    result = await ResolveLocationTool(provider).execute(ResolveLocationQuery("알 수 없는 장소"))
 
     assert result.status is ResolveLocationStatus.NO_DATA
     assert result.error is not None
