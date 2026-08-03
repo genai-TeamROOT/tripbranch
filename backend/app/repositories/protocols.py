@@ -23,6 +23,14 @@ class PlaceLocationRepository(Protocol):
     ) -> tuple[StoredPlaceLocation, ...]: ...
 
 
+class ConcentrationMappingRepository(Protocol):
+    """집중률 매핑이 있는 장소 목록을 읽는 읽기 전용 계약."""
+
+    async def find_concentration_mapped_places(
+        self,
+    ) -> tuple[StoredPlaceLocation, ...]: ...
+
+
 class PlaceRepository(Protocol):
     async def create_sync_run(self, area_code: str, district_code: str) -> UUID: ...
 

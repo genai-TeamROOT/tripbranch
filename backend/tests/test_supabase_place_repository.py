@@ -379,3 +379,76 @@ async def test_http_error_does_not_expose_secret_key() -> None:
     assert "sb_secret_test" not in str(exc_info.value)
     assert "sb_secret_test" not in repr(exc_info.value.details)
     assert exc_info.value.details == {"upstream_detail": "HTTP 401"}
+
+
+@pytest.mark.asyncio
+async def test_find_concentration_mapped_places_reads_single_object_embed() -> None:
+    """places ↔ mappings는 1:1이라 PostgREST가 배열이 아닌 단일 객체로 내려준다.
+
+    배열만 처리하던 파서 탓에 concentration_name이 항상 None이 되어 대체 조회가
+    후보를 하나도 찾지 못했다(2026-08-03).
+    """
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "content_id": "129501",
+                    "title": "낙산공원",
+                    "address": "서울특별시 종로구 낙산길 41",
+                    "latitude": 37.5805179476871,
+                    "longitude": 127.006496092905,
+                    "place_concentration_mappings": {"primary_concentration_name": "낙산공원"},
+                },
+                {
+                    "content_id": "129502",
+                    "title": "매핑없음",
+                    "address": None,
+                    "latitude": 37.58,
+                    "longitude": 127.0,
+                    "place_concentration_mappings": None,
+                },
+            ],
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        repository = SupabasePlaceRepository(
+            "https://project.supabase.co/", "sb_secret_test", client
+        )
+        places = await repository.find_concentration_mapped_places()
+
+    assert [place.concentration_name for place in places] == ["낙산공원"]
+    assert captured[0].url.params["is_active"] == "eq.true"
+
+
+@pytest.mark.asyncio
+async def test_find_concentration_mapped_places_also_reads_array_embed() -> None:
+    """관계 형태가 배열로 바뀌어도 같은 값을 읽는다."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "content_id": "129501",
+                    "title": "낙산공원",
+                    "address": None,
+                    "latitude": 37.58,
+                    "longitude": 127.0,
+                    "place_concentration_mappings": [
+                        {"primary_concentration_name": "낙산공원"}
+                    ],
+                }
+            ],
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        repository = SupabasePlaceRepository(
+            "https://project.supabase.co/", "sb_secret_test", client
+        )
+        places = await repository.find_concentration_mapped_places()
+
+    assert places[0].concentration_name == "낙산공원"
