@@ -603,9 +603,9 @@
 | Chat 계약 naming | Backend Python/JSON `snake_case` | `Accepted` |
 | Backend 상태 저장 | Supabase 테이블과 캐시 역할 | `TBD` |
 | Frontend 저장 | `sessionStorage` 유지 또는 `localStorage` 전환 | `TBD` |
-| Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); 응답 Evidence 노출·E2E 통합 `Implemented`(D-028); Explainability Layer v1 `Accepted`(D-029, A 협의 반영 완료); warning 커버리지 보완 `Implemented`(D-030); Explanation 문장 구체화 `Implemented`(D-031); RecommendationContext 진입점 `Implemented`(D-032); Agent Runtime RecommendationProvider 연결 `Implemented`(D-033); Tool 직접 호출 파이프라인 삭제·레거시 라우터 마이그레이션 `Implemented`(D-034); develop 재병합 시 RecommendationProvider 중복 정리 `Implemented`(D-035) | 구현 완료 |
+| Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); 응답 Evidence 노출·E2E 통합 `Implemented`(D-028); Explainability Layer v1 `Accepted`(D-029, A 협의 반영 완료); warning 커버리지 보완 `Implemented`(D-030); Explanation 문장 구체화 `Implemented`(D-031); RecommendationContext 진입점 `Implemented`(D-032); Agent Runtime RecommendationProvider 연결 `Implemented`(D-033); Tool 직접 호출 파이프라인 삭제·레거시 라우터 마이그레이션 `Implemented`(D-034); develop 재병합 시 RecommendationProvider 중복 정리 `Implemented`(D-035); 혼잡도 2차 Scoring(`rerank_with_concentration()`) `Implemented`(D-040) | 구현 완료 |
 | 혼잡도 fallback | 장소 근접치, 구 단위, Feature 제외 | 장소 근접치로 A 제안(D-036), 확인 필요 |
-| 혼잡도 반영 방식 | 초기 Context 확장(안 A) vs 1차 Scoring 후 상위 5개 보강 재계산(안 B) | 안 B를 A-C 협의로 제안(D-037), **D 확인 대기** |
+| 혼잡도 반영 방식 | 초기 Context 확장(안 A) vs 1차 Scoring 후 상위 5개 보강 재계산(안 B) | 안 B 채택, `rerank_with_concentration()` 구현 완료(D-040) |
 | 운영시간 파싱 | 기본 시간·월별·주간 휴무 구현, 공휴일·회차 예외 확대 | `부분 구현` |
 | 이동시간 | 지도 Provider 및 교통수단별 계산 | `TBD` |
 | 조건 완화 | 자동 완화 범위와 사용자 확인 UX | `TBD` |
@@ -681,6 +681,54 @@
   턴 간 되묻기 상태를 보존하려면 별도 migration과 store 매핑을 추가해야 한다. 단독 위치 답변이
   `INFO`로 분류되는 문제는 프롬프트·Intent 분류의 별도 과제로 유지한다.
 
+### D-040 — 혼잡도(concentration) 2차 Scoring 구현: 안 B 채택, D 신규 인터페이스 확정
+
+- 상태: `Implemented`
+- 결정: D-037이 제안한 안 B(1차 Scoring 후 상위 5개만 혼잡도 보강 재계산)를
+  D가 확인·채택한다. `RecommendationProvider.rerank_with_concentration()`(A가
+  `protocols.py`에 미리 배선해둔 메서드)을 `RealRecommendationProvider`에
+  실제로 구현했다.
+- **A에 Protocol 시그니처 변경 요청**: `rerank_with_concentration(conditions,
+  first_pass, concentration)`엔 원본 `RecommendationContext`가 없어 날씨
+  근거 문장을 1차와 동일하게 재구성할 방법이 없었다 — 4번째 파라미터
+  `context: RecommendationContext`를 추가해달라고 요청했고, `agent_runtime.py`의
+  `_apply_concentration_rerank()`가 이미 갖고 있던 `tool_context`를 그대로
+  전달하도록 배선을 바꿨다(`protocols.py`, `agent_runtime.py`, `stubs.py`의
+  Fake 구현체, `tests/test_agent_runtime.py`의 테스트 더블 모두 시그니처 갱신).
+- concentration_score 공식: 4단계 구간 매핑 대신 **선형 정규화**를 채택했다
+  (`concentration_score(rate, seek) = clamp(rate/100, 0, 1)`, AVOID는
+  `1 - rate/100`). distance/remaining_operating_time과 같은 연속값 스타일을
+  유지하고 정보 손실을 피하기 위함(`domain/scoring.py::concentration_score()`).
+- 가중치: A 제안값(`CONCENTRATION_WEIGHTS` — 날씨 0.35/운영시간 0.35/거리
+  0.15/혼잡도 0.15)을 그대로 채택했다. 이 상수는 2차 Scoring 전용이라 1차
+  `DEFAULT_WEIGHTS`(0.40/0.40/0.20)에는 영향이 없다 — D-037이 걱정했던
+  "혼잡도 무관심 실행에도 기존 가중치가 미세하게 바뀌는 문제"는 안 B 구조라
+  애초에 발생하지 않는다.
+- 구현 방식: 2차 Scoring은 새 `ScoringCandidate`를 다시 만들지 않고, 1차
+  `RecommendationItem.feature_scores`(weather/remaining_operating_time/distance,
+  concentration과 무관하게 불변)를 그대로 재사용해 concentration만 추가하고
+  `redistribute_weights()`(기존 함수 재사용)로 재분배한 뒤 재정렬한다.
+  결측(C가 `no_data`/`unavailable` 반환) 처리는 weather/remaining_operating_time과
+  동일한 개별 결측 패턴을 따른다.
+- Evidence/Explanation 확장: `evidence.py`의 `_FEATURE_ORDER`(1차, 3-Feature)는
+  그대로 두고 `CONCENTRATION_FEATURE_ORDER`(4-Feature)를 별도로 추가했다 —
+  `_FEATURE_ORDER`를 직접 확장하면 1차 결과의 `feature_scores`에도 `concentration:
+  null`이 항상 끼어들어 `test_scoring_fixture.py`의 `{c.feature for c in
+  evidence.contributions} == set(ranked.feature_scores)` 검증이 깨지는 걸
+  구현 중 발견해서 분리했다. `RankedCandidate`/`RecommendationEvidence`에
+  `concentration_level: ConcentrationLevel | None = None`(4단계 구간 원본)을
+  추가했다 — concentration_score는 이미 SEEK/AVOID 방향이 반영된 값이라
+  notable 여부만으로는 실제로 붐비는지 한적한지 알 수 없어서, 문장 조립에는
+  방향과 무관한 원본 구간을 따로 보존해야 했다.
+- 범위 제외: `_CONCENTRATION_FINAL_LIMIT`(최종 3개) 확정, 안 A(초기 Context
+  확장) 대비 이번 선택의 재검토는 A/기획 몫 — D는 2차 인터페이스 구현까지만
+  책임진다.
+- 확인 방법: `tests/test_scoring.py`(concentration_score·재분배 단위),
+  `tests/test_explanation.py`(4단계 구간별 문장·임계값·결측),
+  `tests/test_recommendation_pipeline.py`(AVOID/SEEK 재정렬 실제로 뒤집히는지,
+  부분 결측, unverified 분리 유지), `tests/test_real_recommendation_provider.py`
+  (Protocol 위임·seek 변환)로 검증. 전체 회귀(709 passed, 20 skipped) 확인.
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -709,3 +757,4 @@
 | 2026-07-28 | D-035 develop 재병합 시 발견된 `RealRecommendationProvider` 중복 구현 정리, mintee의 `real_recommendation_provider.py`로 통합 |
 | 2026-07-31 | D-038 날씨 warning을 IGNORE(미언급)와 조회 실패로 분리, §10 불일치·날씨 조회 경로 이원화를 TODO로 기록 |
 | 2026-08-02 | D-039 되묻기 답변을 기존 요청의 연속으로 처리하고 조건 유지·플래그 저장 및 소비 규칙을 기록 |
+| 2026-08-02 | D-040 혼잡도 2차 Scoring 구현(안 B 채택), `rerank_with_concentration()` 신규 인터페이스와 concentration Feature를 Evidence/Explanation에 추가, A에 Protocol `context` 파라미터 추가 요청 |

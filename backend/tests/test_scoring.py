@@ -17,7 +17,13 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from app.domain.models import OperatingHours, ScoringCandidate, WeatherCondition
-from app.domain.scoring import DEFAULT_WEIGHTS, score_candidates
+from app.domain.scoring import (
+    CONCENTRATION_WEIGHTS,
+    DEFAULT_WEIGHTS,
+    concentration_score,
+    redistribute_weights,
+    score_candidates,
+)
 
 # 고정 기준 시각 (모든 테스트가 공유): 14:00
 NOW = datetime(2026, 7, 23, 14, 0, 0)
@@ -220,3 +226,34 @@ def test_tie_break_uses_distance_then_place_id() -> None:
 
     # 동점(같은 feature 값)일 때 거리 오름차순 → place_id 오름차순으로 정렬된다.
     assert [item.place_id for item in result.ranked] == ["a-near", "z-near", "a-far"]
+
+
+# D-040: concentration_score()·CONCENTRATION_WEIGHTS (2차 Scoring 전용) 테스트.
+# 1차 score_candidates()는 concentration을 전혀 모르므로 위 테스트들과는 분리한다.
+
+
+def test_concentration_score_seek_rewards_high_rate() -> None:
+    assert concentration_score(90.0, seek=True) == pytest.approx(0.9)
+    assert concentration_score(10.0, seek=True) == pytest.approx(0.1)
+
+
+def test_concentration_score_avoid_rewards_low_rate() -> None:
+    assert concentration_score(90.0, seek=False) == pytest.approx(0.1)
+    assert concentration_score(10.0, seek=False) == pytest.approx(0.9)
+
+
+def test_concentration_score_clamps_out_of_range_rate() -> None:
+    assert concentration_score(150.0, seek=True) == pytest.approx(1.0)
+    assert concentration_score(150.0, seek=False) == pytest.approx(0.0)
+    assert concentration_score(0.0, seek=True) == pytest.approx(0.0)
+    assert concentration_score(0.0, seek=False) == pytest.approx(1.0)
+
+
+def test_concentration_weights_redistribute_when_missing() -> None:
+    # 5개 후보 중 1개만 concentration이 결측이면 그 후보만 재분배된다
+    # (weather/remaining_operating_time과 동일한 개별 결측 패턴).
+    weights_used = redistribute_weights(CONCENTRATION_WEIGHTS, ["concentration"])
+    assert set(weights_used) == {"weather", "remaining_operating_time", "distance"}
+    assert weights_used["weather"] == pytest.approx(0.35 / 0.85)
+    assert weights_used["distance"] == pytest.approx(0.15 / 0.85)
+    assert sum(weights_used.values()) == pytest.approx(1.0)

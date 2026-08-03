@@ -104,11 +104,14 @@ class _CountingRecommendationProviderWithRerank(_CountingRecommendationProvider)
     async def rerank_with_concentration(
         self,
         conditions: UserConditions,
+        context: RecommendationContext,
         first_pass: RecommendationResponse,
         concentration: CandidateEnrichmentResponse,
     ) -> RecommendationResponse:
         self.rerank_call_count += 1
-        return await self._inner.rerank_with_concentration(conditions, first_pass, concentration)
+        return await self._inner.rerank_with_concentration(
+            conditions, context, first_pass, concentration
+        )
 
 
 class _CountingEnrichmentProvider:
@@ -584,11 +587,13 @@ class TestApplyConcentrationRerank:
         assert [item.place_id for item in result.recommendations] == ["a"]
 
     @pytest.mark.asyncio
-    async def test_seek_with_rerank_capable_provider_reorders_and_caps_to_three(self) -> None:
+    async def test_seek_with_rerank_capable_provider_reorders_and_caps_to_five(self) -> None:
         conditions = UserConditions(concentration_intent=ConcentrationIntent.SEEK)
         enrichment_provider = _CountingEnrichmentProvider()
         recommendation_provider = _CountingRecommendationProviderWithRerank()
-        place_ids = ["a", "b", "c", "d"]
+        # 실제 1차 Scoring은 최대 5개까지만 넘기지만(_RECOMMENDATION_LIMIT), 이
+        # 슬라이싱 자체가 5개 초과 입력에서도 정확히 잘리는지 확인하려고 6개를 준다.
+        place_ids = ["a", "b", "c", "d", "e", "f"]
 
         result = await _apply_concentration_rerank(
             conditions,
@@ -601,10 +606,10 @@ class TestApplyConcentrationRerank:
         assert enrichment_provider.call_count == 1
         assert recommendation_provider.rerank_call_count == 1
         # FakeRecommendationProvider.rerank_with_concentration()은 1차 결과를 역순으로
-        # 반환한다 — 실제로 2차 결과로 교체됐는지, 그리고 3개로 잘렸는지 확인한다.
+        # 반환한다 — 실제로 2차 결과로 교체됐는지, 그리고 5개로 잘렸는지 확인한다.
         assert [item.place_id for item in result.recommendations] == list(
             reversed(place_ids)
-        )[:3]
+        )[:5]
         assert result.unverified_recommendations == []
 
     @pytest.mark.asyncio

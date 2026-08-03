@@ -5,8 +5,8 @@
 | 항목 | 값 |
 |------|-----|
 | 버전 | v1 |
-| 상태 | 초안 (Draft) |
-| 최종 수정 | 2026-07-23 |
+| 상태 | v1 확정, §4.4·§5.1·§5.2 혼잡도(D-040) 확정 반영 |
+| 최종 수정 | 2026-08-02 |
 | 관련 코드 | `backend/app/domain/models.py::ScoringCandidate`, `backend/app/domain/scoring.py` |
 
 이 문서는 [`docs/decision-log.md`](../decision-log.md)의 D-008(하드 필터 + 가중치 점수
@@ -149,38 +149,38 @@ distance_score = clamp(1 - distance_km / max_distance_km, 0.0, 1.0)
 `max_distance_km`는 해당 실행의 검색 반경(`search_radius_km`)을 사용한다. 반경이
 0 이하인 방어적인 경우 `distance_km == 0`이면 1.0, 아니면 0.0으로 처리한다.
 
-### 4.4 혼잡도 (concentration_score) — A 제안 초안, D 확인 필요
+### 4.4 혼잡도 (concentration_score) — D-040 확정
 
-> 이 절과 §5.1·§5.2의 concentration 관련 내용은 **A(Agent Runtime)가 제안하는
-> 초안**이다. 이 문서의 소유자인 D가 확인하기 전까지는 미확정이며, 조사 근거와
-> 배경은 [concentration-conditions.md §2.3](./concentration-conditions.md#23-scoring-반영-개요--재검토-중-1차2차-구조-d-미확인)에
+> **✅ 2026-08-02 D 확인 완료(D-040, `docs/decision-log.md` 참고)**: 안 B
+> (1차 Scoring 10개·concentration 없음 → 상위 5개 → 2차 Scoring 5개+concentration)
+> 채택. 이 절이 전제하던 "concentration이 매번 시도되고 없으면 재분배되는 단일
+> Scoring" 모델(안 A)은 대안으로만 유지하고 실채택하지 않았다 — **1차 Scoring엔
+> concentration 키 자체가 존재하지 않는다**(결측이 아니라 "이 단계에서는 안
+> 다룸", `domain/evidence.py`의 `_FEATURE_ORDER`가 3-Feature 그대로인 이유).
+> 아래 결측·계산 규칙은 **2차 Scoring(`rerank_with_concentration()`, 5개 한정)
+> 에서만** 적용된다. 구현은 `domain/scoring.py::concentration_score()`,
+> 배경은 [concentration-conditions.md §2.3](./concentration-conditions.md#23-scoring-반영-개요---d-039-확정-1차2차-구조)에
 > 있다.
->
-> **🔶 2026-07-30 재검토 (제안, D 미확인, 최종 확정 아님)**: 아래 §4.4·§5.1·§5.2
-> 본문은 "concentration이 (다른 3개 Feature와 함께) 매번 시도되고, 없으면
-> `redistribute_weights()`로 재분배되는 단일 Scoring 호출" 모델을 전제로
-> 쓰였다(concentration-conditions.md 안 A). 그런데 이후 성능 실측으로 "1차
-> Scoring(10개, concentration 없음) → 상위 5개 → 2차 Scoring(5개+concentration)"
-> 안 B가 새로 제안됐다 — 이 안에서는 **1차 Scoring엔 concentration이라는 키
-> 자체가 존재하지 않는다**(결측이 아니라 "이 단계에서는 안 다룸"). 2차
-> Scoring(항상 concentration 포함, 5개 한정)에서만 아래 §5.2의 개별 결측·재분배
-> 로직이 의미를 갖는다. 안 A/안 B 중 어느 쪽으로 갈지 **D 확인 필요** —
-> 확정 전까지 아래 본문은 안 A 기준 서술로 남겨둔다.
 
-`concentration_intent`가 `null`/`IGNORE`면 이 Feature 자체를 계산하지 않고 §5.2의
-재분배 규칙을 적용한다(날씨·남은 운영시간과 동일한 경로). `AVOID`/`SEEK`일 때만
+`concentration_intent`가 `null`/`IGNORE`면 2차 Scoring 자체가 호출되지 않는다
+(`agent_runtime.py`의 `_CONCENTRATION_RANK_INTENTS` 게이트). `AVOID`/`SEEK`일 때만
 계산하며, C의 후보 보강 응답이 반환하는 `concentration_rate`(0~100대 상대 비율,
-후보별로 `no_data`/`unavailable`일 수 있음 — 그 경우도 결측으로 처리)를 사용한다.
+후보별로 `no_data`/`unavailable`일 수 있음 — 그 경우 해당 후보만 §5.2의 개별
+결측·재분배 규칙을 탄다)를 사용한다.
 
 ```
 concentration_score (SEEK)  = clamp(concentration_rate / 100, 0.0, 1.0)
 concentration_score (AVOID) = clamp(1 - concentration_rate / 100, 0.0, 1.0)
 ```
 
-선형 정규화안이다. 대안으로 `concentration_policy.py`의 4단계 구간(`quiet`/
-`normal`/`slightly_crowded`/`crowded`, 임계값 20/50/70%)을 그대로 점수 구간
-(예: 1.0/0.67/0.33/0.0)으로 매핑하는 방식도 있다 — 두 안 중 확정은 D와 함께
-한다.
+**선형 정규화안을 채택했다.** 대안으로 검토했던 `concentration_policy.py`의
+4단계 구간(`quiet`/`normal`/`slightly_crowded`/`crowded`, 임계값 20/50/70%)을
+점수 구간(예: 1.0/0.67/0.33/0.0)으로 매핑하는 방식은, distance/
+remaining_operating_time과 같은 연속값 스타일을 유지하고 정보 손실을 피하기
+위해 채택하지 않았다. 다만 4단계 구간 자체(`ConcentrationLevel`)는 폐기되지
+않고 `RankedCandidate.concentration_level`에 원본 그대로 보존되어 근거 문장
+조립(`domain/explanation.py`)에 쓰인다 — concentration_score는 이미 SEEK/AVOID
+방향이 반영된 값이라 그것만으로는 실제 붐빔 정도를 알 수 없기 때문이다.
 
 ## 5. 가중치
 
@@ -195,32 +195,22 @@ concentration_score (AVOID) = clamp(1 - concentration_rate / 100, 0.0, 1.0)
 날씨와 남은 운영시간을 동일 비중으로 두고, 거리는 그 절반 비중으로 둔다. 카테고리는
 1차 하드 필터가 처리한다고 보고 가중치 계산에서 제외한다(§1, §3).
 
-**혼잡도 추가 시 가중치(A 제안, D 확인 필요)**: `concentration`을 `DEFAULT_WEIGHTS`에
-넣고 §5.2의 기존 재분배 로직(`redistribute_weights()`)을 그대로 재사용하려면,
-아래처럼 처음부터 4개 Feature로 기본값을 잡는 방법이 가장 단순하다.
+**혼잡도 가중치(D-040 확정)**: 위 3-Feature `DEFAULT_WEIGHTS`(날씨 0.40/남은
+운영시간 0.40/거리 0.20)는 **1차 Scoring 전용으로 그대로 유지**한다. 혼잡도는
+별도의 2차 전용 상수 `CONCENTRATION_WEIGHTS`(`domain/scoring.py`)로 관리한다.
 
-| Feature | 기본 가중치 (4-Feature 안) |
+| Feature | 2차 Scoring 가중치(`CONCENTRATION_WEIGHTS`) |
 | --- | --- |
 | 날씨 | 0.35 |
 | 남은 운영시간 | 0.35 |
 | 거리 | 0.15 |
 | 혼잡도 | 0.15 |
 
-**주의**: `concentration_intent`가 `null`/`IGNORE`(다수 사용자가 여기 해당)이면
-`concentration`이 결측 처리되어 §5.2 재분배를 거치는데, 그 결과는 날씨
-0.4118/남은 운영시간 0.4118/거리 0.1765로 **기존 0.40/0.40/0.20과 정확히
-같지 않다** (0.35/0.85, 0.35/0.85, 0.15/0.85로 재정규화되기 때문). 즉 이 안은
-혼잡도에 관심 없는 대다수 실행에도 기존 기본 가중치를 미세하게 바꾼다 — 이
-변화를 받아들일지, 아니면 concentration을 재분배 메커니즘 밖에서 별도 보정치로
-얹는 방식(기존 3-Feature 점수에 곱연산/가산으로 반영)으로 설계를 바꿀지는 D가
-확정해야 한다.
-
-> **🔶 2026-07-30 각주(제안, D 미확인)**: 안 B(1차/2차 두 번 호출)가 채택되면
-> 위 표 자체가 "1차 가중치(날씨 0.40/남은 운영시간 0.40/거리 0.20, 기존 그대로
-> 무변경)"와 "2차 가중치(4-Feature, 아래 표는 그 초안)"로 완전히 나뉘어서, 위에서
-> 지적한 "무관심 실행에도 기본값이 미세하게 바뀌는" 문제 자체가 사라진다 — 1차엔
-> concentration이 아예 없으니 재분배가 일어날 일이 없다. 안 A/안 B 중 확정
-> 전까지는 이 표를 "안 A 채택 시의 4-Feature 초안"으로 읽는다.
+`concentration_intent`가 `null`/`IGNORE`인 실행은 2차 Scoring 자체가 호출되지
+않으므로(§4.4) 1차 결과의 `DEFAULT_WEIGHTS` 배분(0.40/0.40/0.20)이 전혀 바뀌지
+않는다 — 안 A였다면 발생했을 "혼잡도 무관심 실행에도 기존 가중치가 미세하게
+바뀌는 문제"(날씨 0.4118/남은 운영시간 0.4118/거리 0.1765로 재정규화)가 안 B
+구조에서는 애초에 생기지 않는다.
 
 ### 5.2 결측 시 재분배
 
@@ -229,10 +219,10 @@ concentration_score (AVOID) = clamp(1 - concentration_rate / 100, 0.0, 1.0)
 - 날씨: `weather_condition`이 `None`이면 해당 실행의 모든 후보에 공통으로 결측
 - 남은 운영시간: 후보별 `operating_hours`가 `None`(운영시간 미확인)이면 그
   후보에만 결측
-- **(A 제안, D 확인 필요) 혼잡도**: `concentration_intent`가 `null`/`IGNORE`면
-  해당 실행의 모든 후보에 공통으로 결측(날씨와 동일한 패턴). `AVOID`/`SEEK`여도
-  C의 후보 보강 응답이 `no_data`/`unavailable`인 후보는 그 후보에만 결측(남은
-  운영시간과 동일한 패턴) — 상세는 §4.4
+- **(D-040 확정) 혼잡도**: `concentration_intent`가 `null`/`IGNORE`면 2차
+  Scoring 자체가 호출되지 않으므로 이 재분배 규칙과 무관하다(§4.4). `AVOID`/
+  `SEEK`인 2차 Scoring 안에서 C의 후보 보강 응답이 `no_data`/`unavailable`인
+  후보는 그 후보에만 결측(남은 운영시간과 동일한 패턴)
 
 결측된 Feature(하나 또는 둘)를 제외하고, 그 가중치를 나머지 Feature에 **기존
 비중에 비례**하여 재분배한다. 일반식은 다음과 같다.
@@ -317,5 +307,6 @@ v1의 책임이 아니며 후속 업무(Response Generator)에서 `feature_score
 - [`docs/decision-log.md`](../decision-log.md) — D-008
 - [`docs/architecture.md`](../architecture.md) — Recommendation Engine 책임
 - [`docs/api-contracts.md`](../api-contracts.md) — `Candidate`/`RecommendationResult` 목표 계약
-- [`concentration-conditions.md`](./concentration-conditions.md) §2.3 — §4.4·§5.1·§5.2의 혼잡도 Feature 제안 배경 (A 제안, D 확인 필요)
+- [`concentration-conditions.md`](./concentration-conditions.md) §2.3 — §4.4·§5.1·§5.2의 혼잡도 Feature 배경 (D-040 확정)
+- [`docs/decision-log.md`](../decision-log.md) D-040 — 혼잡도 2차 Scoring 구현 결정 기록
 - [INT-01: RECOMMEND](./int-01-recommend.md) — Conditions/카테고리 배경
