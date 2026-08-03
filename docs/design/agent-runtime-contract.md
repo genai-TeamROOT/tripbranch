@@ -179,13 +179,20 @@ GPS 형식 검증(`_valid_location()`)도 `run_agent_flow()`에 구현돼 있다
 ### 3.1 `to_agent_context_request()`
 
 ```python
-def to_agent_context_request(request_id: str, conditions: UserConditions) -> AgentContextRequest
+def to_agent_context_request(
+    request_id: str,
+    conditions: UserConditions,
+    gps_location: str | None = None,
+) -> AgentContextRequest
 ```
 
 `app/services/runtime/context_transform.py`. A의 `app.schemas.UserConditions`(enum
 타입)를 C의 `AgentContextRequest`(`app.agent_context.schemas`, Literal 타입)로 변환한다.
 필드 14개가 이름·값 동일해서 `model_dump()` → `model_validate()` 왕복으로 충분하다.
 `request_id`는 `app.state.session.new_trace_id()`로 호출마다 새로 생성한다.
+`gps_location`은 이번 요청의 유효한 `device_location`을 우선하고, 없으면 B에 저장된
+만료되지 않은 GPS를 사용한다. 변환 경계에서 `"위도,경도"` 문자열을 C 계약의
+`Coordinates` 객체로 바꾸며, 형식 또는 범위를 벗어난 값은 `None`으로 낮춘다.
 
 **`search_radius_km` 파라미터가 없다** — C는 이 값을 A에게 받지 않고
 `conditions.max_travel_time`으로부터 자체 계산한다(§4.1 참고).

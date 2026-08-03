@@ -13,6 +13,8 @@ from app.errors import AppError
 from app.place_search_policy import (
     DEFAULT_PLACE_SEARCH_RADIUS_KM,
     MAX_PLACE_SEARCH_RADIUS_KM,
+    PLACE_SEARCH_LDONG_DISTRICT_CODE,
+    PLACE_SEARCH_LDONG_REGION_CODE,
 )
 from app.providers.contracts import ProviderMetadata
 from app.providers.protocols import (
@@ -40,6 +42,8 @@ class NearbyPlaceDetailsQuery:
     latitude: float
     longitude: float
     search_radius_km: float = DEFAULT_PLACE_SEARCH_RADIUS_KM
+    region_code: str = PLACE_SEARCH_LDONG_REGION_CODE
+    district_code: str = PLACE_SEARCH_LDONG_DISTRICT_CODE
     limit: int = DEFAULT_RECOMMENDATION_CANDIDATE_LIMIT
     preferred_categories: tuple[str, ...] = ()
     category_filter: PlaceCategoryFilter | None = None
@@ -114,6 +118,8 @@ class NearbyPlaceDetailsTool:
                 longitude=query.longitude,
                 preferred_categories=list(query.preferred_categories),
                 search_radius_km=query.search_radius_km,
+                region_code=query.region_code,
+                district_code=query.district_code,
                 category_filter=query.category_filter,
                 limit=provider_limit,
             )

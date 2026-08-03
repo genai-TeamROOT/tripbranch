@@ -51,6 +51,8 @@ async def test_search_places_sends_tour_api_category_filters() -> None:
             longitude=126.9770,
             preferred_categories=["cafe"],
             search_radius_km=5.0,
+            region_code="11",
+            district_code="110",
             limit=10,
             category_filter=PlaceCategoryFilter(
                 content_type_id="39",
@@ -62,6 +64,8 @@ async def test_search_places_sends_tour_api_category_filters() -> None:
         result = result.data
 
     assert seen_params["contentTypeId"] == "39"
+    assert seen_params["lDongRegnCd"] == "11"
+    assert seen_params["lDongSignguCd"] == "110"
     assert seen_params["lclsSystm1"] == "FD"
     assert seen_params["lclsSystm2"] == "FD05"
     assert seen_params["lclsSystm3"] == "FD050100"

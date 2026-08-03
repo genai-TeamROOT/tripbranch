@@ -86,6 +86,7 @@ class AgentContextRequest(BaseModel):
     request_id: str
     intent: Literal["RECOMMEND"]
     conditions: UserConditions
+    gps_location: Coordinates | None = None
 ```
 
 ### 4.2 필드 설명
@@ -95,6 +96,7 @@ class AgentContextRequest(BaseModel):
 | `request_id` | 예 | A가 호출 1건마다 생성하는 추적 ID. 응답에 그대로 반환된다. |
 | `intent` | 예 | v0에서는 항상 `RECOMMEND`. C가 필요한 Context 수집 흐름을 선택하는 기준이다. |
 | `conditions` | 예 | LLM이 추출한 사용자 조건. A는 값을 임의로 Provider 형식으로 변환하지 않는다. |
+| `gps_location` | 아니오 | A가 전달하는 기기 GPS 좌표. 사용자 발화 위치와 분리하며 장소명이 없을 때 검색 중심 fallback으로 사용한다. |
 | `current_location` | 아니오 | 사용자가 말한 현재 위치. |
 | `search_center` | 아니오 | 추천 검색 중심 장소. |
 | `place_types`, `place_tags` | 아니오 | 사용자가 원하는 장소 유형·태그. C가 내부 분류 코드로 변환한다. |
@@ -106,6 +108,7 @@ class AgentContextRequest(BaseModel):
 {
   "request_id": "req_01JABC",
   "intent": "RECOMMEND",
+  "gps_location": {"latitude": 37.5796, "longitude": 126.9770},
   "conditions": {
     "current_location": "경복궁",
     "search_center": null,
@@ -128,6 +131,8 @@ class AgentContextRequest(BaseModel):
 ### 4.4 요청 결측 규칙
 
 - 사용자가 언급하지 않은 단일 조건은 `null`을 허용한다.
+- `gps_location`은 선택 필드다. 이번 요청의 유효한 기기 GPS를 우선하고, 없으면 B에 저장된 만료되지 않은 GPS를 사용한다. 둘 다 없으면 `null`이다.
+- `search_center`와 `current_location`은 사용자 발화에서 추출한 장소명이고, `gps_location`은 기기 좌표이므로 서로 대체 저장하지 않는다.
 - 복수 조건은 빈 배열 `[]`을 허용한다.
 - 빈 문자열과 공백 문자열은 허용하지 않는다.
 - `current_location`과 `search_center`가 모두 `null`이면 요청 형식 오류가 아니라,

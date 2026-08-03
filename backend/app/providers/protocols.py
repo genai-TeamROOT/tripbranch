@@ -136,6 +136,8 @@ class PlaceSearchProvider(Protocol):
         longitude: float,
         preferred_categories: list[str],
         search_radius_km: float,
+        region_code: str | None = None,
+        district_code: str | None = None,
         category_filter: PlaceCategoryFilter | None = None,
         limit: int = DEFAULT_PLACE_PROVIDER_RESULT_LIMIT,
     ) -> ProviderResult[list[PlaceCandidate]]:

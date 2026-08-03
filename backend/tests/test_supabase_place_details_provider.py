@@ -94,6 +94,8 @@ class SearchProvider:
         longitude: float,
         preferred_categories: list[str],
         search_radius_km: float,
+        region_code: str | None = None,
+        district_code: str | None = None,
         category_filter=None,
         limit: int = 10,
     ):
