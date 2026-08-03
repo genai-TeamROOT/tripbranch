@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import httpx
 
+from app.agent_context.concentration_proxy import ConcentrationMappingCache
 from app.agent_context.enrichment_service import CandidateEnrichmentService
 from app.agent_context.service import ContextService, ContextTools
 from app.config import settings
@@ -43,7 +44,16 @@ def get_context_provider(client: httpx.AsyncClient) -> ContextService:
             concentration=GetConcentrationTool(get_concentration_provider(client)),
         ),
         candidate_limit=settings.recommendation_candidate_limit,
+        concentration_mapping_cache=_concentration_mapping_cache(client),
     )
+
+
+def _concentration_mapping_cache(
+    client: httpx.AsyncClient,
+) -> ConcentrationMappingCache | None:
+    """Supabase 설정이 없으면 INFO 대체 조회를 건너뛴다(기존 경로 유지)."""
+    repository = get_place_location_repository(client)
+    return None if repository is None else ConcentrationMappingCache(repository)
 
 
 def get_candidate_enrichment_service(
