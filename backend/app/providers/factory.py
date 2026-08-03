@@ -188,3 +188,19 @@ def validate_provider_config(target: Settings | None = None) -> None:
                 "PLACE_DETAILS_SOURCE=supabase에 필요한 환경변수가 비어 있습니다: "
                 + ", ".join(missing_supabase)
             )
+
+    # Package B State 저장소 백엔드도 provider 모드와 축이 다른 별도 설정이다.
+    if current.state_store_backend == "supabase":
+        missing_state_store = [
+            variable_name
+            for variable_name, attribute in (
+                ("SUPABASE_URL", "supabase_url"),
+                ("SUPABASE_SECRET_KEY", "supabase_secret_key"),
+            )
+            if not getattr(current, attribute)
+        ]
+        if missing_state_store:
+            raise ValueError(
+                "STATE_STORE_BACKEND=supabase에 필요한 환경변수가 비어 있습니다: "
+                + ", ".join(missing_state_store)
+            )

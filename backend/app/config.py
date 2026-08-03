@@ -27,6 +27,10 @@ ProviderMode = Literal["fake", "real"]
 # 장소 후보 "검색"은 항상 PLACE_PROVIDER를 따르고, 후보별 상세·운영정보만 이 값으로
 # 출처를 고른다. supabase는 미리 구축된 places 테이블, tour_api는 상세 API 직접 호출.
 PlaceDetailsSource = Literal["supabase", "tour_api"]
+# Package B의 State 저장소 백엔드. memory는 Phase 1 인메모리, supabase는
+# Phase 2 DB 저장소(app/state/supabase_store.py). 서버 재시작 시 상태 보존이
+# 필요해지는 시점에 supabase로 전환한다.
+StateStoreBackend = Literal["memory", "supabase"]
 
 
 # backend/.env. 상대경로로 두면 저장소 루트에서 서버를 띄웠을 때 .env를 찾지 못하고
@@ -53,6 +57,9 @@ class Settings(BaseSettings):
     # 상세·운영정보 조회 출처. PLACE_PROVIDER=fake이면 Fake Provider가 상세까지
     # 담당하므로 이 값은 무시된다.
     place_details_source: PlaceDetailsSource = "tour_api"
+
+    # Package B State 저장소 백엔드. 기본값은 Phase 1 인메모리다.
+    state_store_backend: StateStoreBackend = "memory"
 
     # LLM_PROVIDER=real일 때 사용할 Gemini 모델명.
     llm_model_name: str = "gemini-2.5-flash"

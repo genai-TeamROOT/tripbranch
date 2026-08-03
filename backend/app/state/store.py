@@ -1,13 +1,19 @@
 """Package B - State 저장소.
 
 계약 문서: docs/package-b/agent-state-contract-v1.md (Phase 1 전제)
+설계 문서: docs/package-b/db-store-design-v2.md (Phase 2 Supabase 전환)
 
 Phase 1은 인메모리 구현을 사용한다. 프로토콜을 분리해 두어
 저장소를 교체할 때 상위 계층을 수정하지 않도록 한다.
+STATE_STORE_BACKEND 설정(memory/supabase)으로 get_store()가 반환하는
+구현체를 고른다 — 호출부(service.py 등)는 이 전환을 알 필요가 없다.
 """
 
 from typing import Protocol
 
+import httpx
+
+from app.config import settings
 from app.state.schema import (
     AgentState,
     ConditionChangeLog,
@@ -120,15 +126,50 @@ class InMemoryStateStore:
         return list(self._states.keys())
 
 
-# 프로세스 단위 기본 저장소.
-# 저장소 교체 시 이 변수의 대입만 바꾸면 된다.
+# 프로세스 단위 기본 저장소(Phase 1, memory 백엔드).
 _default_store = InMemoryStateStore()
+
+# Phase 2(supabase 백엔드) 지연 생성 캐시. STATE_STORE_BACKEND=memory인 환경
+# (테스트 등)에서는 한 번도 안 만들어진다 — Supabase 자격증명이 없어도
+# 이 모듈을 import할 수 있어야 하기 때문이다.
+_supabase_store: StateStore | None = None
+
+
+def _build_supabase_store() -> StateStore:
+    """SupabaseStateStore를 최초 호출 시 한 번만 만들어서 재사용한다.
+
+    httpx.Client는 프로세스 생애주기 동안 재사용한다(연결 재사용 방식은
+    설계 문서 db-store-design-v2.md 6절의 미결 사항 중 가장 단순한 선택 —
+    실제 부하 확인 후 조정 가능). timeout은 다른 real provider와 동일하게
+    EXTERNAL_API_TIMEOUT_SECONDS를 따른다.
+    """
+    global _supabase_store
+    if _supabase_store is None:
+        from app.state.supabase_store import SupabaseStateStore
+
+        client = httpx.Client()
+        _supabase_store = SupabaseStateStore(
+            supabase_url=settings.supabase_url,
+            secret_key=settings.supabase_secret_key,
+            client=client,
+            timeout_seconds=settings.external_api_timeout_seconds,
+        )
+    return _supabase_store
 
 
 def get_store() -> StateStore:
     """기본 저장소를 반환한다.
 
-    FastAPI 의존성 주입에서 이 함수를 사용하면,
-    테스트에서 다른 구현으로 교체하기 쉽다.
+    STATE_STORE_BACKEND 설정에 따라 InMemory(memory, 기본값) 또는
+    Supabase(supabase) 구현체를 고정 반환한다. FastAPI 의존성 주입에서
+    이 함수를 사용하면, 테스트에서 다른 구현으로 교체하기 쉽다.
     """
+    if settings.state_store_backend == "supabase":
+        return _build_supabase_store()
     return _default_store
+
+
+def _reset_supabase_store_for_tests() -> None:
+    """지연 생성된 Supabase 저장소 캐시를 초기화한다. 테스트에서만 사용한다."""
+    global _supabase_store
+    _supabase_store = None
