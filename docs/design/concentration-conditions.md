@@ -357,7 +357,7 @@ INFO는 이 A↔C Context 계약(v0, RECOMMEND 전용 —
 발견하지 못했다. `place_name`은 이미 선택 필드로 존재하고, 페이지네이션/포맷
 파라미터(`pageNo`/`numOfRows`/`_type`)는 고정값이라 설계 대상이 아니다.
 
-### 4.4 `place_concentration_mappings` — C 기존 인프라 (신규 발견, 런타임 미연결)
+### 4.4 `place_concentration_mappings` — C 런타임 연결 (정확 장소명 경로)
 
 `develop` 병합(2026-07-30, 커밋 `019709e`)으로 C가 이미
 `place_concentration_mappings` 테이블([place-database-schema.md §6.1](./place-database-schema.md#61-place_concentration_mappings))을
@@ -369,11 +369,14 @@ INFO는 이 A↔C Context 계약(v0, RECOMMEND 전용 —
 `place_id` → 집중률 이름을 추측(문자열 유사도 매칭 등)할 필요 없이 이 테이블로
 정확히 조회할 수 있다 — 제안 흐름의 실현 가능성을 뒷받침하는 근거로 참고한다.
 
-**단, 아직 런타임 코드(`enrichment_service.py`, `providers/concentration.py`
-등)에는 연결되지 않았다** — DB 테이블과 1회성 적재 스크립트
-(`scripts/import_concentration_mappings.py`)만 존재한다. 이 테이블을 실제
-조회 로직에 연결할지, 연결한다면 언제 할지는 A가 결정할 사안이 아니다 —
-**C 확인 필요** 항목으로만 남긴다.
+**INFO 런타임에는 연결됐다.** `ResolveLocationTool`이 `places.title` 정확 일치
+장소를 지오코딩보다 먼저 조회하면서 같은 행의 매핑 대표명도 함께 읽는다.
+`ContextService.fetch_info_context()`는 이 대표명을 Concentration Tool에 전달하므로
+`쌈지길`처럼 주소 지오코딩이 실패하는 TourAPI 장소도 직접 조회할 수 있다.
+
+현재 범위는 정확 장소명 일치뿐이다. 검증된 별칭·부분 일치·DB에 없는 일반 상호명의
+Naver Local Search 보완은 공통 Location Resolver 후속 확장으로 남긴다. RECOMMEND
+후보 보강(`enrichment_service.py`)은 이번 변경 범위에 포함하지 않는다.
 
 ---
 

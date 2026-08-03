@@ -7,15 +7,18 @@ from zoneinfo import ZoneInfo
 import httpx
 import pytest
 
+from app.agent_context.concentration_proxy import ConcentrationMappingCache
 from app.agent_context.factory import get_context_provider
 from app.agent_context.info_schemas import InfoContextRequest
 from app.agent_context.schemas import AgentContextRequest, Coordinates, UserConditions
 from app.agent_context.service import ContextService, ContextTools
+from app.concentration_policy import INFO_CONCENTRATION_FALLBACK_ATTEMPT_LIMIT
 from app.config import settings
 from app.domain.models import (
     ConcentrationForecast,
     ConcentrationResult,
     PlaceCategoryFilter,
+    StoredPlaceLocation,
     WeatherForecastResult,
 )
 from app.place_search_policy import DEFAULT_PLACE_SEARCH_RADIUS_KM
@@ -77,6 +80,20 @@ def _request(
             weather_intent=weather_intent,
         ),
     )
+
+
+class _StoredPlaceRepository:
+    """INFO 집중률 요청이 지오코딩 전 DB 매핑을 쓰는지 검증하는 더블."""
+
+    def __init__(self, place: StoredPlaceLocation) -> None:
+        self._place = place
+
+    async def find_active_places_by_name(
+        self, name: str
+    ) -> tuple[StoredPlaceLocation, ...]:
+        return (self._place,) if name == self._place.title else ()
+
+
 
 
 class _DirectNoDataConcentrationProvider:
@@ -162,9 +179,35 @@ class _NearbyAttractionPlaceProvider(FakePlaceProvider):
         )
 
 
+class _MemoryConcentrationMappingRepository:
+    """집중률 매핑이 있는 장소만 담은 저장소 대역."""
+
+    def __init__(self, places: tuple[StoredPlaceLocation, ...]) -> None:
+        self._places = places
+        self.calls = 0
+
+    async def find_concentration_mapped_places(self) -> tuple[StoredPlaceLocation, ...]:
+        self.calls += 1
+        return self._places
+
+
+def _mapped_place(
+    title: str, *, latitude: float, longitude: float, concentration_name: str | None = None
+) -> StoredPlaceLocation:
+    return StoredPlaceLocation(
+        content_id=f"content-{title}",
+        title=title,
+        address=None,
+        latitude=latitude,
+        longitude=longitude,
+        concentration_name=concentration_name or title,
+    )
+
+
 def _fallback_service(
     concentration_provider: _DirectNoDataConcentrationProvider,
     place_provider: _NearbyAttractionPlaceProvider,
+    mapping_repository: _MemoryConcentrationMappingRepository | None = None,
 ) -> ContextService:
     return ContextService(
         ContextTools(
@@ -176,6 +219,12 @@ def _fallback_service(
         ),
         candidate_limit=10,
         clock=lambda: datetime.now(KST),
+        concentration_mapping_cache=ConcentrationMappingCache(
+            mapping_repository
+            or _MemoryConcentrationMappingRepository(
+                (_mapped_place("창덕궁", latitude=37.5794, longitude=126.9770),)
+            )
+        ),
     )
 
 
@@ -306,6 +355,51 @@ async def test_info_concentration_returns_direct_normalized_result() -> None:
 
 
 @pytest.mark.asyncio
+async def test_info_concentration_uses_stored_mapping_before_geocoding() -> None:
+    """쌈지길처럼 주소 지오코딩이 실패하는 상호명도 매핑된 집중률명을 사용한다."""
+    place_provider = FakePlaceProvider()
+    concentration_provider = _DirectNoDataConcentrationProvider()
+    service = ContextService(
+        ContextTools(
+            location=ResolveLocationTool(
+                FakeGeocodingProvider(),
+                _StoredPlaceRepository(
+                    StoredPlaceLocation(
+                        content_id="128553",
+                        title="쌈지길",
+                        address="서울특별시 종로구 인사동길 44",
+                        latitude=37.5743062352,
+                        longitude=126.9848674428,
+                        concentration_name="창덕궁",
+                    )
+                ),
+            ),
+            places=NearbyPlaceDetailsTool(place_provider, place_provider),
+            weather=GetWeatherForecastTool(FakeWeatherProvider()),
+            holidays=GetHolidaysTool(FakeHolidayProvider()),
+            concentration=GetConcentrationTool(concentration_provider),
+        ),
+        candidate_limit=10,
+        clock=lambda: datetime.now(KST),
+    )
+
+    response = await service.fetch_info_context(
+        InfoContextRequest(
+            request_id="info-stored-mapping",
+            place_name="쌈지길",
+            place_context="explicit",
+        )
+    )
+
+    assert response.status == "success"
+    assert response.result is not None
+    assert response.result.requested_place_name == "쌈지길"
+    assert response.result.resolved_place_name == "창덕궁"
+    assert concentration_provider.calls == ["창덕궁"]
+
+
+
+@pytest.mark.asyncio
 async def test_info_concentration_returns_no_data_for_unavailable_forecast_date() -> None:
     """요청 날짜의 예측값이 없으면 다른 날짜로 바꾸지 않고 no_data를 반환한다."""
 
@@ -347,12 +441,11 @@ async def test_info_concentration_uses_nearby_attraction_only_after_direct_no_da
     assert response.result.resolved_place_name == "창덕궁"
     assert response.result.concentration_rate == 58.0
     assert concentration_provider.calls == ["경복궁", "창덕궁"]
-    assert place_provider.fallback_queries == [(0.5, PlaceCategoryFilter(content_type_id="12"))]
+    # 대체 장소는 집중률 매핑 테이블에서 고른다 — TourAPI 장소 검색을 쓰지 않는다.
+    assert place_provider.fallback_queries == []
     assert [item.source for item in response.metadata.provider_metadata] == [
         "fake_geocoding",
         "fake_concentration",
-        "fake_place",
-        "fake_place",
         "fake_concentration",
     ]
     assert response.metadata.provider_metadata[1].status == "no_data"
@@ -474,3 +567,115 @@ async def test_weather_ignore_returns_success_without_weather_context() -> None:
     assert response.context.weather is None
     assert weather_provider.forecast_calls == 0
     assert all(warning.code != "weather_missing" for warning in response.warnings)
+
+
+@pytest.mark.asyncio
+async def test_info_concentration_fallback_uses_mapped_concentration_name() -> None:
+    """집중률 조회에는 TourAPI 장소명이 아니라 매핑 테이블의 이름을 쓴다."""
+    concentration_provider = _DirectNoDataConcentrationProvider()
+    repository = _MemoryConcentrationMappingRepository(
+        (
+            _mapped_place(
+                "창덕궁과 창경궁",
+                latitude=37.5794,
+                longitude=126.9770,
+                concentration_name="창덕궁",
+            ),
+        )
+    )
+
+    response = await _fallback_service(
+        concentration_provider, _NearbyAttractionPlaceProvider(), repository
+    ).fetch_info_context(
+        InfoContextRequest(
+            request_id="info-mapped-name",
+            place_name="경복궁",
+            place_context="explicit",
+        )
+    )
+
+    assert response.status == "success"
+    assert concentration_provider.calls == ["경복궁", "창덕궁"]
+
+
+@pytest.mark.asyncio
+async def test_info_concentration_fallback_returns_no_data_outside_radius() -> None:
+    """반경 밖 매핑 장소는 대체 기준으로 쓰지 않는다."""
+    concentration_provider = _DirectNoDataConcentrationProvider()
+    repository = _MemoryConcentrationMappingRepository(
+        (_mapped_place("해운대", latitude=35.1587, longitude=129.1604),)
+    )
+
+    response = await _fallback_service(
+        concentration_provider, _NearbyAttractionPlaceProvider(), repository
+    ).fetch_info_context(
+        InfoContextRequest(
+            request_id="info-out-of-radius",
+            place_name="경복궁",
+            place_context="explicit",
+        )
+    )
+
+    assert response.status == "no_data"
+    # 대체 후보가 없으면 집중률을 다시 조회하지 않는다.
+    assert concentration_provider.calls == ["경복궁"]
+
+
+@pytest.mark.asyncio
+async def test_info_concentration_fallback_tries_next_place_when_nearest_has_no_data() -> None:
+    """매핑에 이름이 있어도 조회가 실패할 수 있다 — 다음으로 가까운 곳을 시도한다.
+
+    실측(2026-08-03): 안국역에서 가장 가까운 "서울 운현궁"이 이름 불일치로 no_data라
+    한 곳만 시도하던 기존 구현은 그대로 실패했다.
+    """
+    concentration_provider = _DirectNoDataConcentrationProvider()
+    repository = _MemoryConcentrationMappingRepository(
+        (
+            # 더 가깝지만 집중률 조회가 실패하는 장소.
+            _mapped_place("운현궁", latitude=37.5789, longitude=126.9771),
+            _mapped_place("창덕궁", latitude=37.5794, longitude=126.9770),
+        )
+    )
+
+    response = await _fallback_service(
+        concentration_provider, _NearbyAttractionPlaceProvider(), repository
+    ).fetch_info_context(
+        InfoContextRequest(
+            request_id="info-second-candidate",
+            place_name="경복궁",
+            place_context="explicit",
+        )
+    )
+
+    assert response.status == "success"
+    assert response.result is not None
+    assert response.result.is_proxy is True
+    assert response.result.resolved_place_name == "창덕궁"
+    # 직접 조회 → 1순위(실패) → 2순위(성공) 순으로 시도한다.
+    assert concentration_provider.calls == ["경복궁", "운현궁", "창덕궁"]
+
+
+@pytest.mark.asyncio
+async def test_info_concentration_fallback_stops_at_attempt_limit() -> None:
+    """상한을 넘겨 계속 시도하지 않는다 — 지연이 무한정 늘어나면 안 된다."""
+    concentration_provider = _DirectNoDataConcentrationProvider()
+    repository = _MemoryConcentrationMappingRepository(
+        tuple(
+            _mapped_place(f"실패장소{index}", latitude=37.5789, longitude=126.9771)
+            for index in range(5)
+        )
+    )
+
+    response = await _fallback_service(
+        concentration_provider, _NearbyAttractionPlaceProvider(), repository
+    ).fetch_info_context(
+        InfoContextRequest(
+            request_id="info-attempt-limit",
+            place_name="경복궁",
+            place_context="explicit",
+        )
+    )
+
+    assert response.status == "no_data"
+    # 직접 조회 1회 + 대체 후보 INFO_CONCENTRATION_FALLBACK_ATTEMPT_LIMIT회.
+    assert len(concentration_provider.calls) == 1 + INFO_CONCENTRATION_FALLBACK_ATTEMPT_LIMIT

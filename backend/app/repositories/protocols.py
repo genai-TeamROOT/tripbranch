@@ -7,7 +7,28 @@ from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
-from app.domain.models import StoredPlaceDetail, StoredPlaceState, TourPlaceRecord
+from app.domain.models import (
+    StoredPlaceDetail,
+    StoredPlaceLocation,
+    StoredPlaceState,
+    TourPlaceRecord,
+)
+
+
+class PlaceLocationRepository(Protocol):
+    """장소명으로 저장된 TourAPI 기준 위치를 찾는 읽기 전용 계약."""
+
+    async def find_active_places_by_name(
+        self, name: str
+    ) -> tuple[StoredPlaceLocation, ...]: ...
+
+
+class ConcentrationMappingRepository(Protocol):
+    """집중률 매핑이 있는 장소 목록을 읽는 읽기 전용 계약."""
+
+    async def find_concentration_mapped_places(
+        self,
+    ) -> tuple[StoredPlaceLocation, ...]: ...
 
 
 class PlaceRepository(Protocol):

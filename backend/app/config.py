@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     weather_provider: ProviderMode | None = None
     place_provider: ProviderMode | None = None
     geocoding_provider: ProviderMode | None = None
+    local_search_provider: ProviderMode | None = None
     concentration_provider: ProviderMode | None = None
     holiday_provider: ProviderMode | None = None
 
@@ -75,6 +76,8 @@ class Settings(BaseSettings):
     )
     naver_map_client_id: str = Field(default="", repr=False, exclude=True)
     naver_map_client_secret: str = Field(default="", repr=False, exclude=True)
+    naver_local_search_client_id: str = Field(default="", repr=False, exclude=True)
+    naver_local_search_client_secret: str = Field(default="", repr=False, exclude=True)
     supabase_url: str = ""
     supabase_secret_key: str = Field(default="", repr=False, exclude=True)
 
@@ -129,6 +132,10 @@ class Settings(BaseSettings):
     @property
     def resolved_geocoding_provider(self) -> ProviderMode:
         return self.geocoding_provider or self.provider_mode
+
+    @property
+    def resolved_local_search_provider(self) -> ProviderMode:
+        return self.local_search_provider or self.provider_mode
 
     @property
     def resolved_concentration_provider(self) -> ProviderMode:
