@@ -88,10 +88,13 @@ _TOOL_TERMINAL_STATUSES = frozenset({"needs_clarification", "unsupported", "unav
 _CONCENTRATION_RANK_INTENTS = frozenset({ConcentrationIntent.AVOID, ConcentrationIntent.SEEK})
 
 # 2차 Scoring(재순위)이 실제로 실행됐을 때만 적용하는 최종 노출 개수.
-# (제안, D/기획 확인 필요 — concentration-conditions.md §2.2.3 9단계.
+# (기획 확정, 2026-08-02 — concentration-conditions.md §2.2.3 9단계.
 # 재순위가 안 일어나면(D 미구현 등) 1차 결과를 그대로 쓰고 이 상수는 적용하지 않는다 —
-# 기능이 실제로 동작하지 않는데 결과 개수만 줄이는 걸 피하기 위함이다.)
-_CONCENTRATION_FINAL_LIMIT = 3
+# 기능이 실제로 동작하지 않는데 결과 개수만 줄이는 걸 피하기 위함이다. 1차 Scoring이
+# 애초에 최대 5개(_RECOMMENDATION_LIMIT, real_recommendation_provider.py)까지만
+# 넘기므로, 지금 이 슬라이싱은 사실상 no-op이다 — 1차 개수가 나중에 바뀔 경우를
+# 대비한 방어 코드로 유지한다.)
+_CONCENTRATION_FINAL_LIMIT = 5
 
 # 보강 응답 전체가 이 상태면 2차 Scoring을 시도할 실익이 없다(재조회할 데이터가 없음).
 _ENRICHMENT_TERMINAL_STATUSES = frozenset({"no_data", "unavailable"})
