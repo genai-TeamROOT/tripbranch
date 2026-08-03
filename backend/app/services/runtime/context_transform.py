@@ -9,12 +9,33 @@ app.services.interpret.state_transform.to_user_conditions()가 B↔A 변환을 �
 
 from __future__ import annotations
 
-from app.agent_context.schemas import AgentContextRequest
+from app.agent_context.schemas import AgentContextRequest, Coordinates
 from app.agent_context.schemas import UserConditions as ContextUserConditions
 from app.schemas import UserConditions
 
 
-def to_agent_context_request(request_id: str, conditions: UserConditions) -> AgentContextRequest:
+def _to_coordinates(gps_location: str | None) -> Coordinates | None:
+    """A/B의 위도,경도 문자열을 C 계약의 좌표 객체로 변환한다."""
+
+    if gps_location is None:
+        return None
+    parts = gps_location.split(",")
+    if len(parts) != 2:
+        return None
+    try:
+        latitude, longitude = (float(part.strip()) for part in parts)
+    except ValueError:
+        return None
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        return None
+    return Coordinates(latitude=latitude, longitude=longitude)
+
+
+def to_agent_context_request(
+    request_id: str,
+    conditions: UserConditions,
+    gps_location: str | None = None,
+) -> AgentContextRequest:
     """A의 UserConditions(app.schemas)를 C의 AgentContextRequest로 변환한다.
 
     필드 이름·개수가 같으면 dict 왕복으로 충분하다(A-C Context Contract v0
@@ -38,7 +59,10 @@ def to_agent_context_request(request_id: str, conditions: UserConditions) -> Age
     }
     context_conditions = ContextUserConditions.model_validate(payload)
     return AgentContextRequest(
-        request_id=request_id, intent="RECOMMEND", conditions=context_conditions
+        request_id=request_id,
+        intent="RECOMMEND",
+        conditions=context_conditions,
+        gps_location=_to_coordinates(gps_location),
     )
 
 
