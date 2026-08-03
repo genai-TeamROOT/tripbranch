@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from time import perf_counter
 from zoneinfo import ZoneInfo
 
@@ -17,9 +17,20 @@ from app.agent_context.category_rules import (
     CategoryQueryPlan,
     build_category_query_plan,
 )
+from app.agent_context.enrichment_service import (
+    JONGNO_CONCENTRATION_AREA_CODE,
+    JONGNO_CONCENTRATION_DISTRICT_CODE,
+    select_concentration_forecast,
+)
+from app.agent_context.info_schemas import (
+    ConcentrationInfoResult,
+    InfoContextRequest,
+    InfoContextResponse,
+)
 from app.agent_context.schemas import (
     AgentContextRequest,
     AgentContextResponse,
+    Clarification,
     ContextError,
     ResponseMetadata,
 )
@@ -28,6 +39,7 @@ from app.agent_context.tool_rules import (
     ContextTool,
     build_tool_execution_plan,
 )
+from app.concentration_policy import is_valid_concentration_rate, normalize_concentration
 from app.place_search_policy import (
     DEFAULT_PLACE_SEARCH_RADIUS_KM,
     MAX_PLACE_SEARCH_RADIUS_KM,
@@ -39,6 +51,7 @@ from app.recommendation_limits import (
     MAX_RECOMMENDATION_CANDIDATE_LIMIT,
     MIN_RECOMMENDATION_LIMIT,
 )
+from app.tools.concentration import ConcentrationQuery, GetConcentrationTool
 from app.tools.contracts import ToolError, ToolStatus
 from app.tools.holiday import GetHolidaysTool, HolidayQuery
 from app.tools.nearby_place_details import (
@@ -73,6 +86,9 @@ class ContextTools:
     places: NearbyPlaceDetailsTool
     weather: GetWeatherForecastTool
     holidays: GetHolidaysTool
+    # INFO 혼잡도는 RECOMMEND Context와 별도 경로다. 기존 RECOMMEND 조립 코드와
+    # 테스트의 호환을 위해 선택적으로 두고, Factory에서는 항상 실제 Tool을 주입한다.
+    concentration: GetConcentrationTool | None = None
 
 
 class ContextService:
@@ -187,6 +203,122 @@ class ContextService:
             rule_versions=_rule_versions(),
         )
 
+    async def fetch_info_context(
+        self,
+        request: InfoContextRequest,
+    ) -> InfoContextResponse:
+        """INFO 단일 장소의 직접 집중률을 조회해 공통 응답으로 반환한다.
+
+        이번 단계는 대상 장소의 직접 조회까지만 담당한다. 직접 데이터가 없을 때
+        인근 관광지를 재조회하는 D-036 fallback은 별도 단계에서 추가한다.
+        """
+
+        if request.place_name is None:
+            return InfoContextResponse(
+                request_id=request.request_id,
+                status="needs_clarification",
+                clarification=Clarification(
+                    code="place_required",
+                    missing_fields=["place_name"],
+                    candidates=[],
+                ),
+            )
+
+        location_result = await self._tools.location.execute(
+            ResolveLocationQuery(request.place_name)
+        )
+        if location_result.status is ToolStatus.NO_DATA:
+            cause = location_result.error.cause if location_result.error else None
+            if cause == "ambiguous_location":
+                return InfoContextResponse(
+                    request_id=request.request_id,
+                    status="needs_clarification",
+                    clarification=Clarification(
+                        code="place_ambiguous",
+                        missing_fields=[],
+                        candidates=[],
+                    ),
+                )
+            return _info_no_data_response(request)
+        if location_result.status is ToolStatus.UNSUPPORTED:
+            return _info_error_response(
+                request,
+                status="unsupported",
+                error=_context_error_from_tool(
+                    location_result.error,
+                    fallback_code="unsupported",
+                    fallback_message="현재 지원하지 않는 위치입니다.",
+                    retryable=False,
+                ),
+            )
+        if location_result.status is ToolStatus.UNAVAILABLE:
+            return _info_error_response(
+                request,
+                status="unavailable",
+                error=_context_error_from_tool(
+                    location_result.error,
+                    fallback_code="location_unavailable",
+                    fallback_message="위치 정보를 가져오지 못했습니다.",
+                    retryable=True,
+                ),
+            )
+
+        reference_date = _info_reference_date(request.visit_time, self._clock())
+        if self._tools.concentration is None:
+            return _info_error_response(
+                request,
+                status="unavailable",
+                error=ContextError(
+                    code="concentration_not_configured",
+                    message="집중률 조회 기능을 사용할 수 없습니다.",
+                    retryable=False,
+                ),
+            )
+
+        concentration_result = await self._tools.concentration.execute(
+            ConcentrationQuery(
+                area_code=JONGNO_CONCENTRATION_AREA_CODE,
+                district_code=JONGNO_CONCENTRATION_DISTRICT_CODE,
+                place_name=request.place_name,
+            )
+        )
+        if concentration_result.status is ToolStatus.UNAVAILABLE:
+            return _info_error_response(
+                request,
+                status="unavailable",
+                error=_context_error_from_tool(
+                    concentration_result.error,
+                    fallback_code="concentration_unavailable",
+                    fallback_message="집중률 정보를 가져오지 못했습니다.",
+                    retryable=True,
+                ),
+            )
+
+        forecast = select_concentration_forecast(
+            concentration_result.concentration,
+            candidate_name=request.place_name,
+            reference_date=reference_date,
+        )
+        rate = forecast.concentration_rate if forecast is not None else None
+        if forecast is None or not is_valid_concentration_rate(rate):
+            return _info_no_data_response(request)
+
+        normalized = normalize_concentration(rate)
+        return InfoContextResponse(
+            request_id=request.request_id,
+            status="success",
+            result=ConcentrationInfoResult(
+                status="success",
+                is_proxy=False,
+                requested_place_name=request.place_name,
+                resolved_place_name=forecast.place_name,
+                forecast_date=reference_date.isoformat(),
+                concentration_rate=rate,
+                concentration_level=normalized.level,
+                concentration_label=normalized.label,
+            ),
+        )
+
     async def _collect_places(
         self,
         plan: CategoryQueryPlan,
@@ -247,6 +379,56 @@ def _gps_location_result(
                 retrieved_at=_as_kst(retrieved_at).astimezone(UTC),
             ),
         ),
+    )
+
+
+def _info_reference_date(visit_time: str | None, clock_value: datetime) -> date:
+    """INFO 요청의 방문일이 없으면 C 조회 시각의 한국 날짜를 사용한다."""
+
+    if visit_time is not None:
+        return date.fromisoformat(visit_time)
+    return _as_kst(clock_value).date()
+
+
+def _info_no_data_response(request: InfoContextRequest) -> InfoContextResponse:
+    """직접 조회 결과가 없을 때의 INFO 응답을 한 형태로 유지한다."""
+
+    return InfoContextResponse(
+        request_id=request.request_id,
+        status="no_data",
+        result=ConcentrationInfoResult(
+            status="no_data",
+            requested_place_name=request.place_name,
+        ),
+    )
+
+
+def _info_error_response(
+    request: InfoContextRequest,
+    *,
+    status: str,
+    error: ContextError,
+) -> InfoContextResponse:
+    return InfoContextResponse(
+        request_id=request.request_id,
+        status=status,
+        error=error,
+    )
+
+
+def _context_error_from_tool(
+    error: ToolError | None,
+    *,
+    fallback_code: str,
+    fallback_message: str,
+    retryable: bool,
+) -> ContextError:
+    """Tool 오류 세부 정보는 유지하되 INFO 계약의 오류 모델로 변환한다."""
+
+    return ContextError(
+        code=error.code if error is not None else fallback_code,
+        message=error.message if error is not None else fallback_message,
+        retryable=error.retryable if error is not None else retryable,
     )
 
 

@@ -8,17 +8,20 @@ import httpx
 import pytest
 
 from app.agent_context.factory import get_context_provider
+from app.agent_context.info_schemas import InfoContextRequest
 from app.agent_context.schemas import AgentContextRequest, Coordinates, UserConditions
 from app.agent_context.service import ContextService, ContextTools
 from app.config import settings
 from app.domain.models import PlaceCategoryFilter, WeatherForecastResult
 from app.place_search_policy import DEFAULT_PLACE_SEARCH_RADIUS_KM
+from app.providers.concentration import FakeConcentrationProvider
 from app.providers.contracts import ProviderResult
 from app.providers.geocoding import FakeGeocodingProvider
 from app.providers.holiday import FakeHolidayProvider
 from app.providers.protocols import WeatherProvider
 from app.providers.stub import FakePlaceProvider, FakeWeatherProvider
 from app.schemas import PlaceCandidate
+from app.tools.concentration import GetConcentrationTool
 from app.tools.holiday import GetHolidaysTool
 from app.tools.nearby_place_details import NearbyPlaceDetailsTool
 from app.tools.resolve_location import ResolveLocationTool
@@ -35,6 +38,7 @@ def _service(weather_provider: WeatherProvider | None = None) -> ContextService:
             places=NearbyPlaceDetailsTool(place_provider, place_provider),
             weather=GetWeatherForecastTool(weather_provider or FakeWeatherProvider()),
             holidays=GetHolidaysTool(FakeHolidayProvider()),
+            concentration=GetConcentrationTool(FakeConcentrationProvider()),
         ),
         candidate_limit=10,
         # FakeWeatherProvider도 현재 시각 기준 슬롯을 생성하므로 같은 기준을 쓴다.
@@ -138,8 +142,16 @@ async def test_factory_wires_fake_providers_into_common_context() -> None:
     """설정 기반 Factory도 수동 조립과 동일한 A–C 응답 계약을 사용한다."""
 
     async with httpx.AsyncClient() as client:
-        response = await get_context_provider(client).fetch_context(
+        provider = get_context_provider(client)
+        response = await provider.fetch_context(
             _request(place_types=["restaurant"], place_tags=["카페"])
+        )
+        info_response = await provider.fetch_info_context(
+            InfoContextRequest(
+                request_id="factory-info-request",
+                place_name="경복궁",
+                place_context="explicit",
+            )
         )
 
     assert response.status == "success"
@@ -156,6 +168,50 @@ async def test_factory_wires_fake_providers_into_common_context() -> None:
         "fake_place",
         "fake_holiday",
     }
+    assert info_response.status == "success"
+    assert info_response.result is not None
+    assert info_response.result.concentration_rate == 58.0
+
+
+@pytest.mark.asyncio
+async def test_info_concentration_returns_direct_normalized_result() -> None:
+    """INFO는 장소를 먼저 확인한 뒤 직접 집중률 한 건을 정규화해 반환한다."""
+
+    response = await _service().fetch_info_context(
+        InfoContextRequest(
+            request_id="info-request-1",
+            place_name="경복궁",
+            place_context="explicit",
+        )
+    )
+
+    assert response.status == "success"
+    assert response.result is not None
+    assert response.result.is_proxy is False
+    assert response.result.requested_place_name == "경복궁"
+    assert response.result.resolved_place_name == "경복궁"
+    assert response.result.concentration_rate == 58.0
+    assert response.result.concentration_level == "slightly_crowded"
+    assert response.result.concentration_label == "다소 혼잡"
+
+
+@pytest.mark.asyncio
+async def test_info_concentration_returns_no_data_for_unavailable_forecast_date() -> None:
+    """요청 날짜의 예측값이 없으면 다른 날짜로 바꾸지 않고 no_data를 반환한다."""
+
+    response = await _service().fetch_info_context(
+        InfoContextRequest(
+            request_id="info-request-2",
+            place_name="경복궁",
+            place_context="explicit",
+            visit_time="2030-01-01",
+        )
+    )
+
+    assert response.status == "no_data"
+    assert response.result is not None
+    assert response.result.status == "no_data"
+    assert response.result.is_proxy is False
 
 
 @pytest.mark.asyncio

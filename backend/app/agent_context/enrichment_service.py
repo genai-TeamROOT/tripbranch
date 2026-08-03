@@ -30,8 +30,9 @@ from app.recommendation_limits import (
 from app.tools.concentration import ConcentrationQuery, GetConcentrationTool
 from app.tools.contracts import ToolStatus
 
-_JONGNO_AREA_CODE = "11"
-_JONGNO_DISTRICT_CODE = "11110"
+# 집중률 API의 종로구 행정 코드. INFO와 후보 보강이 같은 MVP 범위를 사용한다.
+JONGNO_CONCENTRATION_AREA_CODE = "11"
+JONGNO_CONCENTRATION_DISTRICT_CODE = "11110"
 _KST = ZoneInfo("Asia/Seoul")
 
 
@@ -93,8 +94,8 @@ class CandidateEnrichmentService:
     ) -> CandidateEnrichmentResult:
         tool_result = await self._concentration_tool.execute(
             ConcentrationQuery(
-                area_code=_JONGNO_AREA_CODE,
-                district_code=_JONGNO_DISTRICT_CODE,
+                area_code=JONGNO_CONCENTRATION_AREA_CODE,
+                district_code=JONGNO_CONCENTRATION_DISTRICT_CODE,
                 place_name=candidate.name,
             )
         )
@@ -114,7 +115,7 @@ class CandidateEnrichmentService:
                 ],
             )
 
-        forecast = _select_current_forecast(
+        forecast = select_concentration_forecast(
             tool_result.concentration,
             candidate_name=candidate.name,
             reference_date=reference_date,
@@ -160,7 +161,8 @@ def _as_kst_date(value: datetime) -> date:
     return value.astimezone(_KST).date()
 
 
-def _parse_forecast_date(value: str | None) -> date | None:
+def parse_concentration_forecast_date(value: str | None) -> date | None:
+    """Provider별 날짜 표기를 date로 통일한다."""
     if value is None:
         return None
     normalized = value.strip()
@@ -172,7 +174,7 @@ def _parse_forecast_date(value: str | None) -> date | None:
         return None
 
 
-def _select_current_forecast(
+def select_concentration_forecast(
     concentration: ConcentrationResult | None,
     *,
     candidate_name: str,
@@ -185,7 +187,7 @@ def _select_current_forecast(
     forecasts = [
         forecast
         for forecast in concentration.forecasts
-        if _parse_forecast_date(forecast.forecast_date) == reference_date
+        if parse_concentration_forecast_date(forecast.forecast_date) == reference_date
         and is_valid_concentration_rate(forecast.concentration_rate)
     ]
     if not forecasts:
@@ -200,4 +202,9 @@ def _select_current_forecast(
         forecasts[0],
     )
 
-__all__ = ["CandidateEnrichmentService"]
+__all__ = [
+    "CandidateEnrichmentService",
+    "JONGNO_CONCENTRATION_AREA_CODE",
+    "JONGNO_CONCENTRATION_DISTRICT_CODE",
+    "select_concentration_forecast",
+]

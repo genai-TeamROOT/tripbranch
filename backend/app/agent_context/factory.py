@@ -34,6 +34,7 @@ def get_context_provider(client: httpx.AsyncClient) -> ContextService:
             ),
             weather=GetWeatherForecastTool(get_weather_provider(client)),
             holidays=GetHolidaysTool(get_holiday_provider(client)),
+            concentration=GetConcentrationTool(get_concentration_provider(client)),
         ),
         candidate_limit=settings.recommendation_candidate_limit,
     )
