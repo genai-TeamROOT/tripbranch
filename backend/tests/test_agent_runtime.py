@@ -754,3 +754,73 @@ async def test_successful_recommendation_leaves_no_pending_clarification() -> No
     assert response.recommendations is not None
     context = get_session_context(response.state.session_id, store=store)
     assert context.pending_clarification is None
+
+
+@pytest.mark.asyncio
+async def test_modify_change_condition_calls_context_again_with_merged_conditions() -> None:
+    """MODIFY로 조건이 바뀌면 C를 다시 호출하고, 그 요청에 병합된 조건이 실려야 한다.
+
+    재호출하지 않으면 조건만 바뀌고 후보는 1턴 그대로 남는다. 횟수만 세면 "부르긴
+    했는데 옛 조건으로 불렀다"를 놓치므로 요청 내용까지 확인한다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+    tool_provider = providers["tool_provider"]
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘", session_id=None, device_location=DEVICE_LOCATION
+        ),
+        store=store,
+        **providers,
+    )
+    assert tool_provider.call_count == 1
+    assert tool_provider.last_request.conditions.budget is None
+
+    await run_agent_flow(
+        AgentRequest(
+            user_input="무료인 곳으로",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert tool_provider.call_count == 2
+    # 2턴 요청에는 병합 결과가 실린다 — 바뀐 budget과 유지된 search_center가 함께.
+    assert tool_provider.last_request.conditions.budget == "free"
+    assert tool_provider.last_request.conditions.search_center == "경복궁"
+
+
+@pytest.mark.asyncio
+async def test_modify_reject_all_calls_context_again() -> None:
+    """REJECT_ALL은 조건이 그대로라도 C를 다시 호출한다.
+
+    조건이 같다고 이전 Context를 재사용하면 제외 목록이 반영되지 않아 같은 장소가
+    다시 노출된다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+    tool_provider = providers["tool_provider"]
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘", session_id=None, device_location=DEVICE_LOCATION
+        ),
+        store=store,
+        **providers,
+    )
+
+    await run_agent_flow(
+        AgentRequest(
+            user_input="다른 곳 보여줘",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert tool_provider.call_count == 2
+    assert tool_provider.last_request.conditions.search_center == "경복궁"
