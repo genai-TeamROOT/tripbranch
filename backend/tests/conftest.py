@@ -24,3 +24,13 @@ def isolate_regular_tests_from_real_providers(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(settings, "place_provider", None)
     monkeypatch.setattr(settings, "concentration_provider", None)
     monkeypatch.setattr(settings, "holiday_provider", None)
+
+
+@pytest.fixture(autouse=True)
+def _reset_concentration_mapping_cache():
+    """매핑 캐시는 프로세스 단위라 테스트 간 데이터가 새지 않도록 매번 비운다."""
+    from app.agent_context.concentration_proxy import clear_concentration_mapping_cache
+
+    clear_concentration_mapping_cache()
+    yield
+    clear_concentration_mapping_cache()

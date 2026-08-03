@@ -18,6 +18,10 @@ from app.agent_context.category_rules import (
     CategoryQueryPlan,
     build_category_query_plan,
 )
+from app.agent_context.concentration_proxy import (
+    ConcentrationMappingCache,
+    select_nearest_mapped_places,
+)
 from app.agent_context.enrichment_service import (
     JONGNO_CONCENTRATION_AREA_CODE,
     JONGNO_CONCENTRATION_DISTRICT_CODE,
@@ -42,11 +46,12 @@ from app.agent_context.tool_rules import (
     build_tool_execution_plan,
 )
 from app.concentration_policy import (
+    INFO_CONCENTRATION_FALLBACK_ATTEMPT_LIMIT,
     INFO_CONCENTRATION_FALLBACK_RADIUS_KM,
     is_valid_concentration_rate,
     normalize_concentration,
 )
-from app.domain.models import PlaceCategoryFilter
+from app.errors import AppError
 from app.place_search_policy import (
     DEFAULT_PLACE_SEARCH_RADIUS_KM,
     MAX_PLACE_SEARCH_RADIUS_KM,
@@ -108,6 +113,7 @@ class ContextService:
         candidate_limit: int,
         clock: Callable[[], datetime] | None = None,
         search_radius_km: float = DEFAULT_PLACE_SEARCH_RADIUS_KM,
+        concentration_mapping_cache: ConcentrationMappingCache | None = None,
     ) -> None:
         if not (
             MIN_RECOMMENDATION_LIMIT
@@ -123,6 +129,8 @@ class ContextService:
         self._clock = clock or (lambda: datetime.now(_KST))
         self._search_radius_km = search_radius_km
         self._candidate_limit = candidate_limit
+        # 없으면 INFO fallback을 건너뛴다(기존 RECOMMEND 테스트 호환).
+        self._concentration_mapping_cache = concentration_mapping_cache
 
     async def fetch_context(
         self,
@@ -391,104 +399,98 @@ class ContextService:
         """직접 데이터가 없는 INFO 장소를 인근 관광지 기준으로 대체 조회한다.
 
         D-036의 INFO 전용 경로다. 추천 후보 보강에는 이 함수를 사용하지 않는다.
-        TourAPI 위치 기반 검색의 거리순 결과에서 가장 가까운 관광지 한 곳만 쓴다.
+        집중률 매핑이 있는 장소를 가까운 순으로 시도해 첫 성공을 채택한다 — 매핑에
+        이름이 있어도 조회가 실패할 수 있어(표기 차이·API 갱신) 한 곳만 보고
+        포기하지 않는다.
         """
 
-        nearby_result = await self._tools.places.execute(
-            NearbyPlaceDetailsQuery(
-                latitude=latitude,
-                longitude=longitude,
-                search_radius_km=INFO_CONCENTRATION_FALLBACK_RADIUS_KM,
-                limit=1,
-                category_filter=PlaceCategoryFilter(content_type_id="12"),
-            )
-        )
-        if nearby_result.status is ToolStatus.UNAVAILABLE:
+        if self._concentration_mapping_cache is None:
+            return _info_no_data_response(request, *provider_metadata)
+        try:
+            mapped_places = await self._concentration_mapping_cache.places()
+        except AppError as exc:
             return _info_error_response(
                 request,
                 status="unavailable",
-                error=_context_error_from_tool(
-                    nearby_result.error,
-                    fallback_code="nearby_attraction_unavailable",
-                    fallback_message="인근 관광지를 찾지 못했습니다.",
-                    retryable=True,
+                error=ContextError(
+                    code="concentration_mapping_unavailable",
+                    message="인근 관광지를 찾지 못했습니다.",
+                    retryable=exc.retryable,
                 ),
-                provider_metadata=(*provider_metadata, nearby_result.provider_metadata),
-            )
-        if not nearby_result.places:
-            return _info_no_data_response(
-                request, *provider_metadata, nearby_result.provider_metadata
+                provider_metadata=provider_metadata,
             )
 
-        proxy_place = nearby_result.places[0].candidate
-        proxy_result = await concentration_tool.execute(
-            ConcentrationQuery(
-                area_code=JONGNO_CONCENTRATION_AREA_CODE,
-                district_code=JONGNO_CONCENTRATION_DISTRICT_CODE,
-                place_name=proxy_place.name,
-            )
+        proxy_places = select_nearest_mapped_places(
+            mapped_places,
+            latitude=latitude,
+            longitude=longitude,
+            radius_km=INFO_CONCENTRATION_FALLBACK_RADIUS_KM,
+            limit=INFO_CONCENTRATION_FALLBACK_ATTEMPT_LIMIT,
         )
-        if proxy_result.status is ToolStatus.UNAVAILABLE:
-            return _info_error_response(
-                request,
-                status="unavailable",
-                error=_context_error_from_tool(
-                    proxy_result.error,
-                    fallback_code="concentration_unavailable",
-                    fallback_message="집중률 정보를 가져오지 못했습니다.",
-                    retryable=True,
-                ),
-                provider_metadata=(
-                    *provider_metadata,
-                    nearby_result.provider_metadata,
-                    proxy_result.provider_metadata,
-                ),
-            )
-        if proxy_result.status is ToolStatus.NO_DATA:
-            return _info_no_data_response(
-                request,
-                *provider_metadata,
-                nearby_result.provider_metadata,
-                proxy_result.provider_metadata,
-            )
+        if not proxy_places:
+            return _info_no_data_response(request, *provider_metadata)
 
-        forecast = select_concentration_forecast(
-            proxy_result.concentration,
-            candidate_name=proxy_place.name,
-            reference_date=reference_date,
-        )
-        rate = forecast.concentration_rate if forecast is not None else None
-        if forecast is None or not is_valid_concentration_rate(rate):
-            return _info_no_data_response(
-                request,
-                *provider_metadata,
-                nearby_result.provider_metadata,
-                proxy_result.provider_metadata,
+        attempted_metadata: list[tuple[ProviderMetadata, ...]] = []
+        for proxy_place in proxy_places:
+            # 매핑 테이블이 보유한 집중률 API 기준 이름을 그대로 쓴다 — TourAPI 장소명을
+            # 그대로 던지던 기존 방식은 이름이 달라 조회에 실패하는 경우가 있었다.
+            proxy_result = await concentration_tool.execute(
+                ConcentrationQuery(
+                    area_code=JONGNO_CONCENTRATION_AREA_CODE,
+                    district_code=JONGNO_CONCENTRATION_DISTRICT_CODE,
+                    place_name=proxy_place.concentration_name,
+                )
             )
+            attempted_metadata.append(proxy_result.provider_metadata)
 
-        normalized = normalize_concentration(rate)
-        return InfoContextResponse(
-            request_id=request.request_id,
-            status="success",
-            result=ConcentrationInfoResult(
+            if proxy_result.status is ToolStatus.UNAVAILABLE:
+                # 외부 장애는 다음 후보로 넘어가도 같은 결과일 가능성이 높다.
+                return _info_error_response(
+                    request,
+                    status="unavailable",
+                    error=_context_error_from_tool(
+                        proxy_result.error,
+                        fallback_code="concentration_unavailable",
+                        fallback_message="집중률 정보를 가져오지 못했습니다.",
+                        retryable=True,
+                    ),
+                    provider_metadata=(*provider_metadata, *attempted_metadata),
+                )
+
+            if proxy_result.status is ToolStatus.NO_DATA:
+                continue
+
+            forecast = select_concentration_forecast(
+                proxy_result.concentration,
+                candidate_name=proxy_place.concentration_name,
+                reference_date=reference_date,
+            )
+            rate = forecast.concentration_rate if forecast is not None else None
+            if forecast is None or not is_valid_concentration_rate(rate):
+                # 이 장소는 해당 날짜 예보가 없다 — 다음으로 가까운 곳을 시도한다.
+                continue
+
+            normalized = normalize_concentration(rate)
+            return InfoContextResponse(
+                request_id=request.request_id,
                 status="success",
-                is_proxy=True,
-                requested_place_name=request.place_name,
-                resolved_place_name=forecast.place_name,
-                forecast_date=reference_date.isoformat(),
-                concentration_rate=rate,
-                concentration_level=cast(
-                    Literal["quiet", "normal", "slightly_crowded", "crowded"],
-                    normalized.level.value,
+                result=ConcentrationInfoResult(
+                    status="success",
+                    is_proxy=True,
+                    requested_place_name=request.place_name,
+                    resolved_place_name=forecast.place_name,
+                    forecast_date=reference_date.isoformat(),
+                    concentration_rate=rate,
+                    concentration_level=cast(
+                        Literal["quiet", "normal", "slightly_crowded", "crowded"],
+                        normalized.level.value,
+                    ),
+                    concentration_label=normalized.label.value,
                 ),
-                concentration_label=normalized.label.value,
-            ),
-            metadata=_info_response_metadata(
-                *provider_metadata,
-                nearby_result.provider_metadata,
-                proxy_result.provider_metadata,
-            ),
-        )
+                metadata=_info_response_metadata(*provider_metadata, *attempted_metadata),
+            )
+
+        return _info_no_data_response(request, *provider_metadata, *attempted_metadata)
 
     async def _collect_places(
         self,
