@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from time import perf_counter
 from zoneinfo import ZoneInfo
 
@@ -17,17 +17,35 @@ from app.agent_context.category_rules import (
     CategoryQueryPlan,
     build_category_query_plan,
 )
+from app.agent_context.enrichment_service import (
+    JONGNO_CONCENTRATION_AREA_CODE,
+    JONGNO_CONCENTRATION_DISTRICT_CODE,
+    select_concentration_forecast,
+)
+from app.agent_context.info_schemas import (
+    ConcentrationInfoResult,
+    InfoContextRequest,
+    InfoContextResponse,
+)
 from app.agent_context.schemas import (
     AgentContextRequest,
     AgentContextResponse,
+    Clarification,
     ContextError,
     ResponseMetadata,
 )
+from app.agent_context.schemas import ProviderMetadata as ContextProviderMetadata
 from app.agent_context.tool_rules import (
     TOOL_EXECUTION_RULE_VERSION,
     ContextTool,
     build_tool_execution_plan,
 )
+from app.concentration_policy import (
+    INFO_CONCENTRATION_FALLBACK_RADIUS_KM,
+    is_valid_concentration_rate,
+    normalize_concentration,
+)
+from app.domain.models import PlaceCategoryFilter
 from app.place_search_policy import (
     DEFAULT_PLACE_SEARCH_RADIUS_KM,
     MAX_PLACE_SEARCH_RADIUS_KM,
@@ -39,6 +57,7 @@ from app.recommendation_limits import (
     MAX_RECOMMENDATION_CANDIDATE_LIMIT,
     MIN_RECOMMENDATION_LIMIT,
 )
+from app.tools.concentration import ConcentrationQuery, GetConcentrationTool
 from app.tools.contracts import ToolError, ToolStatus
 from app.tools.holiday import GetHolidaysTool, HolidayQuery
 from app.tools.nearby_place_details import (
@@ -73,6 +92,9 @@ class ContextTools:
     places: NearbyPlaceDetailsTool
     weather: GetWeatherForecastTool
     holidays: GetHolidaysTool
+    # INFO 혼잡도는 RECOMMEND Context와 별도 경로다. 기존 RECOMMEND 조립 코드와
+    # 테스트의 호환을 위해 선택적으로 두고, Factory에서는 항상 실제 Tool을 주입한다.
+    concentration: GetConcentrationTool | None = None
 
 
 class ContextService:
@@ -187,6 +209,258 @@ class ContextService:
             rule_versions=_rule_versions(),
         )
 
+    async def fetch_info_context(
+        self,
+        request: InfoContextRequest,
+    ) -> InfoContextResponse:
+        """INFO 단일 장소의 직접 집중률을 조회해 공통 응답으로 반환한다.
+
+        이번 단계는 대상 장소의 직접 조회까지만 담당한다. 직접 데이터가 없을 때
+        인근 관광지를 재조회하는 D-036 fallback은 별도 단계에서 추가한다.
+        """
+
+        if request.place_name is None:
+            return InfoContextResponse(
+                request_id=request.request_id,
+                status="needs_clarification",
+                clarification=Clarification(
+                    code="place_required",
+                    missing_fields=["place_name"],
+                    candidates=[],
+                ),
+            )
+
+        location_result = await self._tools.location.execute(
+            ResolveLocationQuery(request.place_name)
+        )
+        if location_result.status is ToolStatus.NO_DATA:
+            cause = location_result.error.cause if location_result.error else None
+            if cause == "ambiguous_location":
+                return InfoContextResponse(
+                    request_id=request.request_id,
+                    status="needs_clarification",
+                    clarification=Clarification(
+                        code="place_ambiguous",
+                        missing_fields=[],
+                        candidates=[],
+                    ),
+                )
+            return _info_no_data_response(
+                request, location_result.provider_metadata
+            )
+        if location_result.status is ToolStatus.UNSUPPORTED:
+            return _info_error_response(
+                request,
+                status="unsupported",
+                error=_context_error_from_tool(
+                    location_result.error,
+                    fallback_code="unsupported",
+                    fallback_message="현재 지원하지 않는 위치입니다.",
+                    retryable=False,
+                ),
+                provider_metadata=(location_result.provider_metadata,),
+            )
+        if location_result.status is ToolStatus.UNAVAILABLE:
+            return _info_error_response(
+                request,
+                status="unavailable",
+                error=_context_error_from_tool(
+                    location_result.error,
+                    fallback_code="location_unavailable",
+                    fallback_message="위치 정보를 가져오지 못했습니다.",
+                    retryable=True,
+                ),
+                provider_metadata=(location_result.provider_metadata,),
+            )
+
+        reference_date = _info_reference_date(request.visit_time, self._clock())
+        if self._tools.concentration is None:
+            return _info_error_response(
+                request,
+                status="unavailable",
+                error=ContextError(
+                    code="concentration_not_configured",
+                    message="집중률 조회 기능을 사용할 수 없습니다.",
+                    retryable=False,
+                ),
+                provider_metadata=(location_result.provider_metadata,),
+            )
+
+        concentration_result = await self._tools.concentration.execute(
+            ConcentrationQuery(
+                area_code=JONGNO_CONCENTRATION_AREA_CODE,
+                district_code=JONGNO_CONCENTRATION_DISTRICT_CODE,
+                place_name=request.place_name,
+            )
+        )
+        if concentration_result.status is ToolStatus.UNAVAILABLE:
+            return _info_error_response(
+                request,
+                status="unavailable",
+                error=_context_error_from_tool(
+                    concentration_result.error,
+                    fallback_code="concentration_unavailable",
+                    fallback_message="집중률 정보를 가져오지 못했습니다.",
+                    retryable=True,
+                ),
+                provider_metadata=(
+                    location_result.provider_metadata,
+                    concentration_result.provider_metadata,
+                ),
+            )
+        if concentration_result.status is ToolStatus.NO_DATA:
+            return await self._fetch_info_concentration_fallback(
+                request,
+                latitude=location_result.location.latitude,
+                longitude=location_result.location.longitude,
+                reference_date=reference_date,
+                provider_metadata=(
+                    location_result.provider_metadata,
+                    concentration_result.provider_metadata,
+                ),
+            )
+
+        forecast = select_concentration_forecast(
+            concentration_result.concentration,
+            candidate_name=request.place_name,
+            reference_date=reference_date,
+        )
+        rate = forecast.concentration_rate if forecast is not None else None
+        if forecast is None or not is_valid_concentration_rate(rate):
+            return _info_no_data_response(
+                request,
+                location_result.provider_metadata,
+                concentration_result.provider_metadata,
+            )
+
+        normalized = normalize_concentration(rate)
+        return InfoContextResponse(
+            request_id=request.request_id,
+            status="success",
+            result=ConcentrationInfoResult(
+                status="success",
+                is_proxy=False,
+                requested_place_name=request.place_name,
+                resolved_place_name=forecast.place_name,
+                forecast_date=reference_date.isoformat(),
+                concentration_rate=rate,
+                concentration_level=normalized.level,
+                concentration_label=normalized.label,
+            ),
+            metadata=_info_response_metadata(
+                location_result.provider_metadata,
+                concentration_result.provider_metadata,
+            ),
+        )
+
+    async def _fetch_info_concentration_fallback(
+        self,
+        request: InfoContextRequest,
+        *,
+        latitude: float,
+        longitude: float,
+        reference_date: date,
+        provider_metadata: tuple[tuple[ProviderMetadata, ...], ...],
+    ) -> InfoContextResponse:
+        """직접 데이터가 없는 INFO 장소를 인근 관광지 기준으로 대체 조회한다.
+
+        D-036의 INFO 전용 경로다. 추천 후보 보강에는 이 함수를 사용하지 않는다.
+        TourAPI 위치 기반 검색의 거리순 결과에서 가장 가까운 관광지 한 곳만 쓴다.
+        """
+
+        nearby_result = await self._tools.places.execute(
+            NearbyPlaceDetailsQuery(
+                latitude=latitude,
+                longitude=longitude,
+                search_radius_km=INFO_CONCENTRATION_FALLBACK_RADIUS_KM,
+                limit=1,
+                category_filter=PlaceCategoryFilter(content_type_id="12"),
+            )
+        )
+        if nearby_result.status is ToolStatus.UNAVAILABLE:
+            return _info_error_response(
+                request,
+                status="unavailable",
+                error=_context_error_from_tool(
+                    nearby_result.error,
+                    fallback_code="nearby_attraction_unavailable",
+                    fallback_message="인근 관광지를 찾지 못했습니다.",
+                    retryable=True,
+                ),
+                provider_metadata=(*provider_metadata, nearby_result.provider_metadata),
+            )
+        if not nearby_result.places:
+            return _info_no_data_response(
+                request, *provider_metadata, nearby_result.provider_metadata
+            )
+
+        proxy_place = nearby_result.places[0].candidate
+        proxy_result = await self._tools.concentration.execute(
+            ConcentrationQuery(
+                area_code=JONGNO_CONCENTRATION_AREA_CODE,
+                district_code=JONGNO_CONCENTRATION_DISTRICT_CODE,
+                place_name=proxy_place.name,
+            )
+        )
+        if proxy_result.status is ToolStatus.UNAVAILABLE:
+            return _info_error_response(
+                request,
+                status="unavailable",
+                error=_context_error_from_tool(
+                    proxy_result.error,
+                    fallback_code="concentration_unavailable",
+                    fallback_message="집중률 정보를 가져오지 못했습니다.",
+                    retryable=True,
+                ),
+                provider_metadata=(
+                    *provider_metadata,
+                    nearby_result.provider_metadata,
+                    proxy_result.provider_metadata,
+                ),
+            )
+        if proxy_result.status is ToolStatus.NO_DATA:
+            return _info_no_data_response(
+                request,
+                *provider_metadata,
+                nearby_result.provider_metadata,
+                proxy_result.provider_metadata,
+            )
+
+        forecast = select_concentration_forecast(
+            proxy_result.concentration,
+            candidate_name=proxy_place.name,
+            reference_date=reference_date,
+        )
+        rate = forecast.concentration_rate if forecast is not None else None
+        if forecast is None or not is_valid_concentration_rate(rate):
+            return _info_no_data_response(
+                request,
+                *provider_metadata,
+                nearby_result.provider_metadata,
+                proxy_result.provider_metadata,
+            )
+
+        normalized = normalize_concentration(rate)
+        return InfoContextResponse(
+            request_id=request.request_id,
+            status="success",
+            result=ConcentrationInfoResult(
+                status="success",
+                is_proxy=True,
+                requested_place_name=request.place_name,
+                resolved_place_name=forecast.place_name,
+                forecast_date=reference_date.isoformat(),
+                concentration_rate=rate,
+                concentration_level=normalized.level,
+                concentration_label=normalized.label,
+            ),
+            metadata=_info_response_metadata(
+                *provider_metadata,
+                nearby_result.provider_metadata,
+                proxy_result.provider_metadata,
+            ),
+        )
+
     async def _collect_places(
         self,
         plan: CategoryQueryPlan,
@@ -247,6 +521,80 @@ def _gps_location_result(
                 retrieved_at=_as_kst(retrieved_at).astimezone(UTC),
             ),
         ),
+    )
+
+
+def _info_reference_date(visit_time: str | None, clock_value: datetime) -> date:
+    """INFO 요청의 방문일이 없으면 C 조회 시각의 한국 날짜를 사용한다."""
+
+    if visit_time is not None:
+        return date.fromisoformat(visit_time)
+    return _as_kst(clock_value).date()
+
+
+def _info_no_data_response(
+    request: InfoContextRequest,
+    *provider_metadata: tuple[ProviderMetadata, ...],
+) -> InfoContextResponse:
+    """직접 조회 결과가 없을 때의 INFO 응답을 한 형태로 유지한다."""
+
+    return InfoContextResponse(
+        request_id=request.request_id,
+        status="no_data",
+        result=ConcentrationInfoResult(
+            status="no_data",
+            requested_place_name=request.place_name,
+        ),
+        metadata=_info_response_metadata(*provider_metadata),
+    )
+
+
+def _info_error_response(
+    request: InfoContextRequest,
+    *,
+    status: str,
+    error: ContextError,
+    provider_metadata: tuple[tuple[ProviderMetadata, ...], ...] = (),
+) -> InfoContextResponse:
+    return InfoContextResponse(
+        request_id=request.request_id,
+        status=status,
+        error=error,
+        metadata=_info_response_metadata(*provider_metadata),
+    )
+
+
+def _context_error_from_tool(
+    error: ToolError | None,
+    *,
+    fallback_code: str,
+    fallback_message: str,
+    retryable: bool,
+) -> ContextError:
+    """Tool 오류 세부 정보는 유지하되 INFO 계약의 오류 모델로 변환한다."""
+
+    return ContextError(
+        code=error.code if error is not None else fallback_code,
+        message=error.message if error is not None else fallback_message,
+        retryable=error.retryable if error is not None else retryable,
+    )
+
+
+def _info_response_metadata(
+    *provider_metadata_groups: tuple[ProviderMetadata, ...],
+) -> ResponseMetadata:
+    """INFO의 직접·대체 조회 전 과정을 A가 추적할 수 있게 누적한다."""
+
+    return ResponseMetadata(
+        provider_metadata=[
+            ContextProviderMetadata(
+                source=item.source.value,
+                status=item.status.value,
+                retrieved_at=item.retrieved_at,
+            )
+            for group in provider_metadata_groups
+            for item in group
+        ]
     )
 
 
