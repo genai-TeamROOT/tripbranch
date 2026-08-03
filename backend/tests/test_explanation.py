@@ -267,7 +267,7 @@ def test_weather_environment_combinations_below_threshold_are_omitted() -> None:
     assert _weather_explanation(WeatherCondition.BAD, "unknown") == ()
 
 
-# --- 혼잡도(concentration) 문장 (D-039, 2차 Scoring 전용) ----------------------
+# --- 혼잡도(concentration) 문장 (D-040, 2차 Scoring 전용) ----------------------
 # score_candidates()는 concentration을 전혀 모르므로(1차엔 키 자체가 없음),
 # 여기서는 RankedCandidate를 직접 구성해 build_evidence()에 CONCENTRATION_
 # FEATURE_ORDER를 명시적으로 넘긴다 — rerank_with_concentration()이 실제로

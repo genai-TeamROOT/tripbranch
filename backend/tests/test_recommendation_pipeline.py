@@ -257,7 +257,7 @@ async def test_pipeline_from_context_is_deterministic_for_identical_input() -> N
     assert _normalize(response_1) == _normalize(response_2)
 
 
-# --- rerank_with_concentration() (D-039, 2차 Scoring) ------------------------
+# --- rerank_with_concentration() (D-040, 2차 Scoring) ------------------------
 #
 # 1차 결과(RecommendationResponse, 이미 5개로 좁혀진 상태)에 concentration
 # Feature를 더해 재채점하는 D의 신규 진입점. weather/remaining_operating_time을

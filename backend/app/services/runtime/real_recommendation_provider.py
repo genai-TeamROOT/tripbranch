@@ -52,7 +52,7 @@ class RealRecommendationProvider:
         first_pass: RecommendationResponse,
         concentration: CandidateEnrichmentResponse,
     ) -> RecommendationResponse:
-        """D-039: 2차 Scoring. A는 concentration_intent가 AVOID/SEEK일 때만 이
+        """D-040: 2차 Scoring. A는 concentration_intent가 AVOID/SEEK일 때만 이
         메서드를 호출한다(agent_runtime.py의 `_CONCENTRATION_RANK_INTENTS` 게이트) —
         그 외 값이 들어오면 방향을 정할 수 없으므로 AVOID(한적한 곳 선호)로 취급한다.
         """

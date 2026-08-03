@@ -5,7 +5,7 @@
 | 항목 | 값 |
 |------|-----|
 | 버전 | v1 |
-| 상태 | Draft (§6 혼잡률 보강은 D-039로 안 B 채택·구현 완료. B의 `concentration_intent` 필드 연결만 잔여) |
+| 상태 | Draft (§6 혼잡률 보강은 D-040로 안 B 채택·구현 완료. B의 `concentration_intent` 필드 연결만 잔여) |
 | 최종 수정 | 2026-08-02 |
 | 관련 코드 | `backend/app/services/runtime/`, `backend/app/services/interpret/state_transform.py`, `backend/app/state/service.py`, `backend/app/services/recommendation_pipeline.py` |
 
@@ -38,7 +38,7 @@ B/C/D는 서로 직접 부르지 않고 항상 A를 거쳐서만 결과를 주�
   → A: 최종 응답 조립 (AgentResponse)
 ```
 
-> **✅ 2026-08-02 D 확인 완료(D-039) — `concentration_intent`가
+> **✅ 2026-08-02 D 확인 완료(D-040) — `concentration_intent`가
 > `AVOID`/`SEEK`일 때의 확장 흐름.** 위 다이어그램은 그대로 두고,
 > `concentration_intent`가 있을 때만 "A→D: 추천 실행" 한 줄이 아래처럼
 > 늘어난다(구현 완료, 상세는 §6.5.2).
@@ -308,7 +308,7 @@ D 내부(`candidate_mapper`/`scoring`/`evidence`/`explanation`)는 직접 import
   `@app.exception_handler(AppError)`가 전역 등록돼 있어 FastAPI가 처리한다. 이는
   기존 `run_recommendation_pipeline()`(Tool 직접 호출 버전)의 관례와도 일치한다.
 
-**✅ 2026-08-02 D 확인 완료·구현 완료(D-039)**: `concentration_intent`가
+**✅ 2026-08-02 D 확인 완료·구현 완료(D-040)**: `concentration_intent`가
 `AVOID`/`SEEK`이면 `recommend()` 시그니처는 그대로 두고, 별도 신규 메서드
 `RecommendationProvider.rerank_with_concentration(conditions, context, first_pass,
 concentration)`를 추가로 호출하는 구조로 확정됐다(§6.5.2) — 1차는 이 `recommend()`
@@ -429,7 +429,7 @@ message()`는 이 문장들의 **내용에 관여하지 않고** 순서·구분�
 > §6.2~§6.4는 "왜 이 방향으로 가지 않았는지" 기록으로 남기고, 실제 채택한 설계는
 > §6.5에 새로 적는다.
 >
-> **✅ 2026-08-02 D 확인 완료·구현 완료(D-039).** 실측 성능 테스트
+> **✅ 2026-08-02 D 확인 완료·구현 완료(D-040).** 실측 성능 테스트
 > 결과(§6.5 갱신분) §6.5가 "채택"이라고 적었던 초기 Context 확장 안이 이득이
 > 없다고 판단해, **§6.2~§6.4가 설계했던 "D 2회 호출" 구조가 안 B로 다시
 > 채택됐다** — 다만 이번엔 D의 1차 호출은 기존과 완전히 동일(10개,
@@ -503,7 +503,7 @@ D 호출 자체가 1회에서 2회로 바뀌어야 한다.
 - `run_agent_flow()`의 6단계(D 호출) 이후에 보강 분기가 들어갈 자리만 표시해 둘 예정 —
   분기 조건(§6.3 항목 3)이 안 정해져서 지금은 로직을 못 씀.
 
-### 6.5 ✅ D-039 확정 — 초기 Context 확장 vs 1차 Scoring 후 상위 5개 보강
+### 6.5 ✅ D-040 확정 — 초기 Context 확장 vs 1차 Scoring 후 상위 5개 보강
 
 **2026-08-02 D 확인 완료: 6.5.2(안 B)를 채택했다.** 아래 6.5.1은 v0.4 시점
 결론으로, 폐기하지 않고 대안으로 유지한다(6.5.2 본문 참고).
@@ -531,7 +531,7 @@ sequenceDiagram
 채택했지만, 2차 Scoring 인터페이스가 감당하기 어려워지는 상황이 생기면 이
 안으로 돌아갈 수 있다 — 폐기하지 않고 대안으로 유지한다.
 
-#### 6.5.2 안 B — 1차 Scoring 후 상위 5개만 보강 재계산 (D-039 확정, 구현 완료)
+#### 6.5.2 안 B — 1차 Scoring 후 상위 5개만 보강 재계산 (D-040 확정, 구현 완료)
 
 세션 중 실측(장소 검색 ~3.0초, 지역 전체 집중률 병렬 ~3.5초·순차 ~11.8초,
 개별 조회 ~0.12초 — [concentration-conditions.md §2.2.2](./concentration-conditions.md#222-재검토-배경--실측-성능-비교))
@@ -605,7 +605,7 @@ sequenceDiagram
 | `LLMProvider.generate_general_answer()` | `providers/gemini.py` | A→LLM(GENERAL 답변) | 완료(§5.4) |
 | `EnrichmentProvider`(Protocol) | `protocols.py` | A↔C(보강) | 완료(§6.5.2 안 B 채택·구현 완료) |
 | `to_candidate_enrichment_request()` | `enrichment_transform.py` | D 1차 결과→C | 완료(§6.5.2 안 B 채택·구현 완료) |
-| `RecommendationProvider.rerank_with_concentration()` | `protocols.py` / `real_recommendation_provider.py` | A→D 2차 호출 | 완료(D-039, §6.5.2) |
+| `RecommendationProvider.rerank_with_concentration()` | `protocols.py` / `real_recommendation_provider.py` | A→D 2차 호출 | 완료(D-040, §6.5.2) |
 | `to_concentration_scores()`(가칭) | `recommendation_transform.py` | C context→D | 채택 안 함 — 안 A(§6.5.1)는 대안으로만 유지, 미채택이라 불필요 |
 
 ---
@@ -614,8 +614,8 @@ sequenceDiagram
 
 | 이슈 | 담당 | 상태 |
 | --- | --- | --- |
-| 혼잡률 반영 방식 — 안 A(초기 Context 확장, §6.5.1) vs 안 B(1차 Scoring 후 상위 5개 보강 재계산, §6.5.2) 중 택1 | D팀 | ✅ 2026-08-02 D 확인 완료 — 안 B 채택(D-039) |
-| 안 B 채택 시: D의 2차 Scoring 신규 인터페이스(5개+concentration 재채점) | D팀 | ✅ 구현 완료 — `rerank_with_concentration()`(D-039) |
+| 혼잡률 반영 방식 — 안 A(초기 Context 확장, §6.5.1) vs 안 B(1차 Scoring 후 상위 5개 보강 재계산, §6.5.2) 중 택1 | D팀 | ✅ 2026-08-02 D 확인 완료 — 안 B 채택(D-040) |
+| 안 B 채택 시: D의 2차 Scoring 신규 인터페이스(5개+concentration 재채점) | D팀 | ✅ 구현 완료 — `rerank_with_concentration()`(D-040) |
 | "최종 노출 개수"(§6.5.2 9단계) — `_CONCENTRATION_FINAL_LIMIT`(`agent_runtime.py`) | A(본인)/기획 | ✅ 2026-08-02 기획 확정 — 3에서 5로 변경(1차가 최대 5개까지만 넘겨 슬라이싱은 현재 no-op) |
 | B(State)의 `StateUserConditions`에 `concentration_intent` 필드 없음 — 있어도 실제 저장이 안 돼 위 안 B 분기가 실서비스에서 아직 한 번도 실행되지 않음(§1.1 참고) | B팀 | 확인 대기 — `field_spec.py`에 필드 추가 필요 |
 | GPS 최초 턴 심기 로직 중복(`app/routes/interpret.py` vs `agent_runtime.py`, 둘 다 `_valid_location()`을 독립적으로 가짐) (§2.5) | A(본인) | `run_agent()`가 라우터를 실제로 대체할 때 통합 예정 |

@@ -5,7 +5,7 @@
 | 항목 | 값 |
 |------|-----|
 | 버전 | v1 |
-| 상태 | v1 확정, §4.4·§5.1·§5.2 혼잡도(D-039) 확정 반영 |
+| 상태 | v1 확정, §4.4·§5.1·§5.2 혼잡도(D-040) 확정 반영 |
 | 최종 수정 | 2026-08-02 |
 | 관련 코드 | `backend/app/domain/models.py::ScoringCandidate`, `backend/app/domain/scoring.py` |
 
@@ -149,9 +149,9 @@ distance_score = clamp(1 - distance_km / max_distance_km, 0.0, 1.0)
 `max_distance_km`는 해당 실행의 검색 반경(`search_radius_km`)을 사용한다. 반경이
 0 이하인 방어적인 경우 `distance_km == 0`이면 1.0, 아니면 0.0으로 처리한다.
 
-### 4.4 혼잡도 (concentration_score) — D-039 확정
+### 4.4 혼잡도 (concentration_score) — D-040 확정
 
-> **✅ 2026-08-02 D 확인 완료(D-039, `docs/decision-log.md` 참고)**: 안 B
+> **✅ 2026-08-02 D 확인 완료(D-040, `docs/decision-log.md` 참고)**: 안 B
 > (1차 Scoring 10개·concentration 없음 → 상위 5개 → 2차 Scoring 5개+concentration)
 > 채택. 이 절이 전제하던 "concentration이 매번 시도되고 없으면 재분배되는 단일
 > Scoring" 모델(안 A)은 대안으로만 유지하고 실채택하지 않았다 — **1차 Scoring엔
@@ -195,7 +195,7 @@ remaining_operating_time과 같은 연속값 스타일을 유지하고 정보 �
 날씨와 남은 운영시간을 동일 비중으로 두고, 거리는 그 절반 비중으로 둔다. 카테고리는
 1차 하드 필터가 처리한다고 보고 가중치 계산에서 제외한다(§1, §3).
 
-**혼잡도 가중치(D-039 확정)**: 위 3-Feature `DEFAULT_WEIGHTS`(날씨 0.40/남은
+**혼잡도 가중치(D-040 확정)**: 위 3-Feature `DEFAULT_WEIGHTS`(날씨 0.40/남은
 운영시간 0.40/거리 0.20)는 **1차 Scoring 전용으로 그대로 유지**한다. 혼잡도는
 별도의 2차 전용 상수 `CONCENTRATION_WEIGHTS`(`domain/scoring.py`)로 관리한다.
 
@@ -219,7 +219,7 @@ remaining_operating_time과 같은 연속값 스타일을 유지하고 정보 �
 - 날씨: `weather_condition`이 `None`이면 해당 실행의 모든 후보에 공통으로 결측
 - 남은 운영시간: 후보별 `operating_hours`가 `None`(운영시간 미확인)이면 그
   후보에만 결측
-- **(D-039 확정) 혼잡도**: `concentration_intent`가 `null`/`IGNORE`면 2차
+- **(D-040 확정) 혼잡도**: `concentration_intent`가 `null`/`IGNORE`면 2차
   Scoring 자체가 호출되지 않으므로 이 재분배 규칙과 무관하다(§4.4). `AVOID`/
   `SEEK`인 2차 Scoring 안에서 C의 후보 보강 응답이 `no_data`/`unavailable`인
   후보는 그 후보에만 결측(남은 운영시간과 동일한 패턴)
@@ -307,6 +307,6 @@ v1의 책임이 아니며 후속 업무(Response Generator)에서 `feature_score
 - [`docs/decision-log.md`](../decision-log.md) — D-008
 - [`docs/architecture.md`](../architecture.md) — Recommendation Engine 책임
 - [`docs/api-contracts.md`](../api-contracts.md) — `Candidate`/`RecommendationResult` 목표 계약
-- [`concentration-conditions.md`](./concentration-conditions.md) §2.3 — §4.4·§5.1·§5.2의 혼잡도 Feature 배경 (D-039 확정)
-- [`docs/decision-log.md`](../decision-log.md) D-039 — 혼잡도 2차 Scoring 구현 결정 기록
+- [`concentration-conditions.md`](./concentration-conditions.md) §2.3 — §4.4·§5.1·§5.2의 혼잡도 Feature 배경 (D-040 확정)
+- [`docs/decision-log.md`](../decision-log.md) D-040 — 혼잡도 2차 Scoring 구현 결정 기록
 - [INT-01: RECOMMEND](./int-01-recommend.md) — Conditions/카테고리 배경

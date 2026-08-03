@@ -603,9 +603,9 @@
 | Chat 계약 naming | Backend Python/JSON `snake_case` | `Accepted` |
 | Backend 상태 저장 | Supabase 테이블과 캐시 역할 | `TBD` |
 | Frontend 저장 | `sessionStorage` 유지 또는 `localStorage` 전환 | `TBD` |
-| Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); 응답 Evidence 노출·E2E 통합 `Implemented`(D-028); Explainability Layer v1 `Accepted`(D-029, A 협의 반영 완료); warning 커버리지 보완 `Implemented`(D-030); Explanation 문장 구체화 `Implemented`(D-031); RecommendationContext 진입점 `Implemented`(D-032); Agent Runtime RecommendationProvider 연결 `Implemented`(D-033); Tool 직접 호출 파이프라인 삭제·레거시 라우터 마이그레이션 `Implemented`(D-034); develop 재병합 시 RecommendationProvider 중복 정리 `Implemented`(D-035); 혼잡도 2차 Scoring(`rerank_with_concentration()`) `Implemented`(D-039) | 구현 완료 |
+| Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); 응답 Evidence 노출·E2E 통합 `Implemented`(D-028); Explainability Layer v1 `Accepted`(D-029, A 협의 반영 완료); warning 커버리지 보완 `Implemented`(D-030); Explanation 문장 구체화 `Implemented`(D-031); RecommendationContext 진입점 `Implemented`(D-032); Agent Runtime RecommendationProvider 연결 `Implemented`(D-033); Tool 직접 호출 파이프라인 삭제·레거시 라우터 마이그레이션 `Implemented`(D-034); develop 재병합 시 RecommendationProvider 중복 정리 `Implemented`(D-035); 혼잡도 2차 Scoring(`rerank_with_concentration()`) `Implemented`(D-040) | 구현 완료 |
 | 혼잡도 fallback | 장소 근접치, 구 단위, Feature 제외 | 장소 근접치로 A 제안(D-036), 확인 필요 |
-| 혼잡도 반영 방식 | 초기 Context 확장(안 A) vs 1차 Scoring 후 상위 5개 보강 재계산(안 B) | 안 B 채택, `rerank_with_concentration()` 구현 완료(D-039) |
+| 혼잡도 반영 방식 | 초기 Context 확장(안 A) vs 1차 Scoring 후 상위 5개 보강 재계산(안 B) | 안 B 채택, `rerank_with_concentration()` 구현 완료(D-040) |
 | 운영시간 파싱 | 기본 시간·월별·주간 휴무 구현, 공휴일·회차 예외 확대 | `부분 구현` |
 | 이동시간 | 지도 Provider 및 교통수단별 계산 | `TBD` |
 | 조건 완화 | 자동 완화 범위와 사용자 확인 UX | `TBD` |
@@ -648,7 +648,7 @@
   `feature_scores.weather`가 `null`이고 `weights_used`에서 날씨 0.4가 빠져
   나머지에 재분배된다(정상). 실제 응답으로 확인함.
 
-### D-039 — 혼잡도(concentration) 2차 Scoring 구현: 안 B 채택, D 신규 인터페이스 확정
+### D-040 — 혼잡도(concentration) 2차 Scoring 구현: 안 B 채택, D 신규 인터페이스 확정
 
 - 상태: `Implemented`
 - 결정: D-037이 제안한 안 B(1차 Scoring 후 상위 5개만 혼잡도 보강 재계산)를
@@ -723,4 +723,4 @@
 | 2026-07-28 | D-034 `run_recommendation_pipeline()`(Tool 직접 호출) 완전 삭제, `/api/recommendations` 라우터를 `run_recommendation_pipeline_from_context()` 기반으로 마이그레이션 |
 | 2026-07-28 | D-035 develop 재병합 시 발견된 `RealRecommendationProvider` 중복 구현 정리, mintee의 `real_recommendation_provider.py`로 통합 |
 | 2026-07-31 | D-038 날씨 warning을 IGNORE(미언급)와 조회 실패로 분리, §10 불일치·날씨 조회 경로 이원화를 TODO로 기록 |
-| 2026-08-01 | D-039 혼잡도 2차 Scoring 구현(안 B 채택), `rerank_with_concentration()` 신규 인터페이스와 concentration Feature를 Evidence/Explanation에 추가, A에 Protocol `context` 파라미터 추가 요청 |
+| 2026-08-01 | D-040 혼잡도 2차 Scoring 구현(안 B 채택), `rerank_with_concentration()` 신규 인터페이스와 concentration Feature를 Evidence/Explanation에 추가, A에 Protocol `context` 파라미터 추가 요청 |

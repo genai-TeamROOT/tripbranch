@@ -5,7 +5,7 @@
 (distance_km/remaining_minutes/weather_condition/environment_type/
 concentration_level)으로 실제 수치가 들어간 한국어 문장을 조립한다. LLM을
 호출하지 않는 Rule 기반·결정적 구조라 동일 입력에는 항상 동일한 문장이 나온다.
-concentration은 2차 Scoring(D-039, rerank_with_concentration())에서만 등장한다.
+concentration은 2차 Scoring(D-040, rerank_with_concentration())에서만 등장한다.
 입력: `RecommendationEvidence` (`backend/app/domain/evidence.py`).
 출력: `tuple[str, ...]` (0~3개, Feature 점수가 임계값 이상인 것만 포함).
 호출 시점: 추천 파이프라인이 응답을 조립할 때 Evidence 계산 직후 호출한다.
@@ -94,7 +94,7 @@ def _weather_sentence(evidence: RecommendationEvidence) -> str:
     return f"{weather_label}에 적합한 {environment_label}장소예요."
 
 
-# concentration Feature(D-039, 2차 Scoring 전용)의 사실 문장. concentration_score
+# concentration Feature(D-040, 2차 Scoring 전용)의 사실 문장. concentration_score
 # (scoring.py::concentration_score())는 SEEK/AVOID 방향이 이미 반영된 값이라
 # "notable하다"는 것만으로는 실제로 붐비는지 한적한지 알 수 없다 — 그래서
 # 방향과 무관한 원본 4단계 구간(evidence.concentration_level)으로 문장을 고른다.

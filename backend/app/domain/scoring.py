@@ -28,7 +28,7 @@ DEFAULT_WEIGHTS: Mapping[str, float] = {
     "distance": 0.2,
 }
 
-# D-039: concentration_intent가 AVOID/SEEK일 때만 쓰는 2차 Scoring 기본 가중치.
+# D-040: concentration_intent가 AVOID/SEEK일 때만 쓰는 2차 Scoring 기본 가중치.
 # 1차 Scoring(DEFAULT_WEIGHTS)은 이 이름 자체를 모른다 — concentration은 1차에
 # "결측"이 아니라 "존재하지 않는 Feature"다(concentration-conditions.md §2.3).
 CONCENTRATION_WEIGHTS: Mapping[str, float] = {
@@ -76,7 +76,7 @@ class RankedCandidate:
     remaining_minutes: float | None
     weather_condition: WeatherCondition | None
     environment_type: str
-    # D-039: 2차 Scoring(rerank_with_concentration())에서만 채워진다. 1차 Scoring
+    # D-040: 2차 Scoring(rerank_with_concentration())에서만 채워진다. 1차 Scoring
     # 결과는 concentration 자체를 모르므로 항상 None이다 — explanation.py가 문장을
     # "한적함/보통/다소 혼잡/혼잡" 중 무엇으로 쓸지 고르는 데 필요하다(direction이
     # 이미 반영된 concentration_score만으로는 실제 붐빔 정도를 알 수 없다).

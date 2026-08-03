@@ -228,7 +228,7 @@ def test_tie_break_uses_distance_then_place_id() -> None:
     assert [item.place_id for item in result.ranked] == ["a-near", "z-near", "a-far"]
 
 
-# D-039: concentration_score()·CONCENTRATION_WEIGHTS (2차 Scoring 전용) 테스트.
+# D-040: concentration_score()·CONCENTRATION_WEIGHTS (2차 Scoring 전용) 테스트.
 # 1차 score_candidates()는 concentration을 전혀 모르므로 위 테스트들과는 분리한다.
 
 
