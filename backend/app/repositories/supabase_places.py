@@ -333,16 +333,29 @@ class SupabasePlaceRepository:
         장소명 검색은 지오코딩보다 먼저 수행한다. 좌표가 없는 행은 검색 중심점으로
         사용할 수 없으므로 반환하지 않는다. 별칭·부분 일치 정책은 상위 Tool이
         별도 경로로 확장할 수 있도록 이 Repository는 정확 일치만 담당한다.
+
+        다만 공백 유무는 표기 차이로 본다. 지역 검색은 "북촌 한옥마을"을 주는데
+        저장소에는 "북촌한옥마을"로 들어 있어, 정확 일치만 보면 같은 장소를 놓친다.
         """
         normalized_name = name.strip()
         if not normalized_name:
             return ()
+        rows = await self._query_places_by_title(f"eq.{normalized_name}")
+        if not rows and any(character.isspace() for character in normalized_name):
+            # 공백 자리에 와일드카드를 넣어 "북촌 한옥마을" → "북촌한옥마을"을 잇는다.
+            # PostgREST는 ilike의 `*`를 `%`로 바꿔 주므로 인코딩 문제가 없다.
+            pattern = "*".join(normalized_name.split())
+            rows = await self._query_places_by_title(f"ilike.{pattern}")
+
+        return _map_place_locations(rows, fallback_title=normalized_name)
+
+    async def _query_places_by_title(self, title_filter: str) -> list[object]:
         response = await self._request(
             "GET",
             "/places",
             params={
                 "select": _LOCATION_COLUMNS,
-                "title": f"eq.{normalized_name}",
+                "title": title_filter,
                 "is_active": "eq.true",
                 "limit": "2",
             },
@@ -350,8 +363,7 @@ class SupabasePlaceRepository:
         rows = self._json(response)
         if not isinstance(rows, list):
             raise SupabaseRepositoryError("invalid place location response")
-
-        return _map_place_locations(rows, fallback_title=normalized_name)
+        return rows
 
     async def find_concentration_mapped_places(self) -> tuple[StoredPlaceLocation, ...]:
         """집중률 매핑이 있는 활성 장소를 좌표와 함께 모두 읽는다.

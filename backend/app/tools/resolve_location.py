@@ -256,6 +256,13 @@ class ResolveLocationTool:
                 details={"reason": "ambiguous_location"},
                 provider_metadata=(result.metadata,),
             )
+        # 지역 검색이 알아낸 정식 상호명으로 저장소를 다시 찾는다. "북촌"은 저장소에
+        # 없지만 지역 검색이 "북촌 한옥마을"을 주므로, 여기서 다시 찾으면 집중률
+        # 매핑까지 이어진다. 재조회가 실패해도 지역 검색 결과는 그대로 쓴다.
+        if selected.name.strip() != requested_query.strip():
+            stored = await self._lookup_stored_place(requested_query, lookup_name=selected.name)
+            if stored is not None and stored.status is ResolveLocationStatus.SUCCESS:
+                return stored
         return self._local_search_success(requested_query, selected, result.metadata)
 
     @staticmethod
@@ -283,12 +290,20 @@ class ResolveLocationTool:
             provider_metadata=(metadata,),
         )
 
-    async def _lookup_stored_place(self, requested_query: str) -> ResolveLocationResult | None:
-        """저장된 TourAPI 장소를 먼저 찾아 상호명 지오코딩 실패를 줄인다."""
+    async def _lookup_stored_place(
+        self, requested_query: str, *, lookup_name: str | None = None
+    ) -> ResolveLocationResult | None:
+        """저장된 TourAPI 장소를 먼저 찾아 상호명 지오코딩 실패를 줄인다.
+
+        lookup_name을 주면 그 이름으로 조회하되 요청 원문은 그대로 보고한다 — 지역
+        검색이 알아낸 상호명으로 재조회할 때 쓴다.
+        """
         if self._place_repository is None:
             return None
         try:
-            matches = await self._place_repository.find_active_places_by_name(requested_query)
+            matches = await self._place_repository.find_active_places_by_name(
+                lookup_name or requested_query
+            )
         except AppError:
             # 저장소 장애만으로 주소 기반 지오코딩까지 막지는 않는다.
             return None
@@ -296,7 +311,12 @@ class ResolveLocationTool:
             return None
         metadata = (
             ProviderMetadata(
-                source=ProviderSource.SUPABASE_PLACES,
+                # fake 저장소가 실저장소로 보이면 안 된다(D-042).
+                source=getattr(
+                    self._place_repository,
+                    "provider_source",
+                    ProviderSource.SUPABASE_PLACES,
+                ),
                 status=ProviderStatus.SUCCESS,
                 retrieved_at=datetime.now(UTC),
             ),
