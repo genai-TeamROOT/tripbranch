@@ -1,13 +1,13 @@
 """장소 Tool 결과를 ScoringCandidate로 변환한다.
 
 Provider 응답 형태(Real/Fake)에는 독립적이다. 다만 environment_type 세분화
-(D-045)를 위해 TourCategoryRegistry(JSON 파일을 프로세스 시작 시 한 번 로드해
+(D-046)를 위해 TourCategoryRegistry(JSON 파일을 프로세스 시작 시 한 번 로드해
 조회만 하는 정적 참조 테이블, 부작용·외부 호출 없음)는 예외적으로 참조한다.
 TECH-02가 없앤 건 "D가 실행 중에 C의 Tool(날씨·장소 조회 등)을 직접 호출"하는
 런타임 의존이고, 이 조회는 그와 성격이 달라 TECH-02 위반이 아니라고 판단했다
 (C도 5a3dacc 커밋 메시지에서 이 조회 방식을 직접 지정함). 이 판단 자체를 C에게
 확인 요청했고 승인받았다(2026-08-04) — package_D/feature-environment-type-classification.md,
-docs/decision-log.md D-045 참고.
+docs/decision-log.md D-046 참고.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from app.providers.tour_category_registry import get_tour_category_registry
 
 # 대분류(category)만으로는 실내외를 가릴 수 없어(관광지에 고궁과 체험관이, 쇼핑에
 # 면세점과 시장이 함께 있다) lcls_systm3(소분류)로 TourCategoryRegistry를 조회해
-# (content_type_id, lcls_systm2) 중분류 단위로 판정한다 — D-045.
+# (content_type_id, lcls_systm2) 중분류 단위로 판정한다 — D-046.
 # 판정 근거: package_D/feature-environment-type-classification.md
 _INDOOR_CATEGORIES = {"cultural_facility", "restaurant"}
 _OUTDOOR_CATEGORIES = {"attraction"}

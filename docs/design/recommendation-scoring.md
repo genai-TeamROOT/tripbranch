@@ -121,7 +121,7 @@ remaining_operating_time_score = clamp(remaining_minutes / 120, 0.0, 1.0)
 "곧 닫음"이나 "폐점"을 의미하지 않기 때문이다(폐점과 구분되는 이유와 동일).
 
 `environment_type` 매핑은 TourAPI 3단계 분류(대·중·소분류) 기준으로 판정한다
-(D-045, `app/domain/candidate_mapper.py::_environment_type()`). 대분류
+(D-046, `app/domain/candidate_mapper.py::_environment_type()`). 대분류
 (`category`)만으로는 실내외를 정확히 가릴 수 없다 — 관광지(대분류)에 고궁(실외)과
 체험관(실내)이, 쇼핑(대분류)에 면세점(실내)과 시장(실외)이 함께 섞여 있다.
 
