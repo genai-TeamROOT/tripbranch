@@ -102,6 +102,9 @@ def map_places_context(
             place_id=item.candidate.place_id,
             name=item.candidate.name,
             category=item.candidate.category,
+            lcls_systm1=item.candidate.lcls_systm1,
+            lcls_systm2=item.candidate.lcls_systm2,
+            lcls_systm3=item.candidate.lcls_systm3,
             location=Coordinates(
                 latitude=item.candidate.latitude,
                 longitude=item.candidate.longitude,
