@@ -171,6 +171,49 @@ async def test_recommend_flow_reaches_recommendations() -> None:
 
 
 @pytest.mark.asyncio
+async def test_recommend_flow_records_traces_for_llm_tool_and_scoring() -> None:
+    """B-07: LLM/Tool/Scoring 3단계가 같은 run_id로 기록되는지 확인한다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    traces = store.get_traces(response.state.session_id)
+    steps = [trace.step for trace in traces]
+    assert steps == ["llm_interpret", "tool_fetch", "scoring"]
+    assert all(trace.run_id == response.state.run_id for trace in traces)
+    assert all(trace.latency_ms is not None and trace.latency_ms >= 0 for trace in traces)
+    assert all(trace.prompt_version is None for trace in traces)
+
+
+@pytest.mark.asyncio
+async def test_needs_clarification_records_only_llm_trace() -> None:
+    """LLM이 되물으면 Tool/Scoring은 호출 자체가 안 되니 trace도 llm_interpret만 남는다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="눈 오는데 카페 추천해줘", session_id=None, device_location=DEVICE_LOCATION
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.llm_output.status is OutputStatus.NEEDS_CLARIFICATION
+    traces = store.get_traces(response.state.session_id)
+    assert [trace.step for trace in traces] == ["llm_interpret"]
+
+
+@pytest.mark.asyncio
 async def test_keep_flow_conditions_persist_and_reject_all_excludes_shown() -> None:
     """1턴 RECOMMEND → 2턴 REJECT_ALL: 조건은 KEEP, 1턴에서 노출된 장소는 제외된다."""
     store = InMemoryStateStore()
