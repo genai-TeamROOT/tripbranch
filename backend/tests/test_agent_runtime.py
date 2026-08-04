@@ -656,15 +656,10 @@ class TestApplyConcentrationRerank:
 
 
 @pytest.mark.asyncio
-async def test_concentration_intent_not_yet_persisted_by_b_blocks_rerank() -> None:
-    """알려진 갭(2026-07-30 발견): B의 StateUserConditions에 concentration_intent
-    필드가 아직 없어서(state/schema.py, field_spec.py — B 확인 필요), LLM이
-    SEEK/AVOID를 정확히 추출해도 apply()를 거치는 순간 사라진다. 그 결과 6-1
-    분기(_apply_concentration_rerank) 자체가 지금은 실제 run_agent_flow() 흐름에서
-    트리거되지 않는다 — B가 필드를 추가하면 이 테스트는 깨져야 정상이고, 그때
-    아래 두 assert를 뒤집어서 실제 동작을 검증하는 테스트로 바꿔야 한다.
-    6-1 분기 로직 자체(_apply_concentration_rerank)는 이 B 갭과 무관하게
-    TestApplyConcentrationRerank에서 직접 단위 테스트한다.
+async def test_concentration_intent_persisted_by_b_triggers_rerank() -> None:
+    """B-06으로 concentration_intent 필드가 추가된 뒤: LLM이 추출한 SEEK/AVOID가
+    B의 State까지 정상적으로 저장되고, 그 결과 6-1 분기(_apply_concentration_rerank)가
+    실제 run_agent_flow() 흐름에서 트리거된다.
     """
     store = InMemoryStateStore()
     providers = _providers()
@@ -679,10 +674,9 @@ async def test_concentration_intent_not_yet_persisted_by_b_blocks_rerank() -> No
         **providers,
     )
 
-    assert response.llm_output.recommend.conditions.concentration_intent == "SEEK"  # LLM은 맞음
-    # B의 StateUserConditions에 필드 자체가 없다 — hasattr로 "필드 부재"를 직접 증명한다.
-    assert not hasattr(response.state.user_conditions, "concentration_intent")
-    assert providers["enrichment_provider"].call_count == 0  # 그래서 6-1이 안 탐
+    assert response.llm_output.recommend.conditions.concentration_intent == "SEEK"
+    assert response.state.user_conditions.concentration_intent == "SEEK"
+    assert providers["enrichment_provider"].call_count == 1
 
 
 @pytest.mark.asyncio

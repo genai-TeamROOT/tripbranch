@@ -76,6 +76,21 @@ class TestContractExamples:
         assert result.conditions.environment == "any"
         assert result.changed is True
 
+    def test_concentration_intent_설정과_해제(self):
+        before = UserConditions()
+        result, _ = merge(
+            before,
+            [{"op": "Update", "field": "concentration_intent", "value": "SEEK"}],
+        )
+        assert result.conditions.concentration_intent == "SEEK"
+        assert result.changed is True
+
+        result2, _ = merge(
+            result.conditions,
+            [{"op": "Remove", "field": "concentration_intent"}],
+        )
+        assert result2.conditions.concentration_intent is None
+
     def test_예시4_변경_없는_재추천(self):
         """완료 기준 2번: 조건 변경 없는 재추천에서 기존 조건이 유지된다.
 

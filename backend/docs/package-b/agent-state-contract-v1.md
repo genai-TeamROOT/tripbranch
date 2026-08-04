@@ -32,7 +32,7 @@ B가 어떤 형식으로 되돌려주는지를 확정하는 것이 목적이다.
 
 | 층 | 내용 | B 저장 | 생성 주체 |
 | --- | --- | --- | --- |
-| `user_conditions` | 사용자 발화에서 추출한 조건 14개 | O | A (Structured Output) |
+| `user_conditions` | 사용자 발화에서 추출한 조건 15개 | O | A (Structured Output) |
 | `api_context` | GPS·날씨 API로 확보한 외부 데이터 | O | A 또는 Runtime |
 | `answer_conditions` | 위 둘을 병합한 최종 조건 | **X** | A |
 
@@ -49,16 +49,9 @@ B가 어떤 형식으로 되돌려주는지를 확정하는 것이 목적이다.
 값의 우선순위를 판단하는 행위이므로 패키지 A의 책임이다.
 B는 두 층을 분리해 저장하고 그대로 반환한다.
 
-### 1.2 user_conditions (14개 필드, 15번째 제안 중 — 아래 참고)
+### 1.2 user_conditions (15개 필드)
 
 `intent-definition.md` v0.2 및 `conditions-schema.md` 2절의 `Conditions`를 채택한다.
-
-> **(A 제안, 2026-07-29, B 확인 필요)** `conditions-schema.md` v0.5에서
-> `concentration_intent`를 15번째 필드로 추가했다. 아래 표의 15번 행이 그 제안이다
-> — 이 문서의 다른 곳(개요 표, 예시, 변경 이력 등)의 "14개" 표기는 B가 확인 후
-> 일괄 정리하는 걸 권장하며, 이번 제안에서는 표 2개(§1.2, §2.2)만 수정했다. 상세
-> 배경은 [concentration-conditions.md](../../../docs/design/concentration-conditions.md)
-> §2.1·§5.1 참고.
 
 | # | 필드명 | 타입 | 값 성격 | 설명 |
 | --- | --- | --- | --- | --- |
@@ -76,7 +69,7 @@ B는 두 층을 분리해 저장하고 그대로 반환한다.
 | 12 | `budget` | string \| null | 단일 | 예산 |
 | 13 | `exclude_tags` | list[string] | 복수 | 제외 태그 |
 | 14 | `special_requirements` | list[string] | 복수 | 특수 요구사항 |
-| 15 | `concentration_intent` (제안) | string \| null | 단일 | 혼잡도 대응 방향(`AVOID`/`SEEK`/`IGNORE`) — weather_intent와 동일 패턴 |
+| 15 | `concentration_intent` | string \| null | 단일 | 혼잡도 대응 방향(`AVOID`/`SEEK`/`IGNORE`) — weather_intent와 동일 패턴 |
 
 - 복수 필드는 `place_types`, `place_tags`, `exclude_tags`, `special_requirements` 4개다.
 - **이 필드들은 사용자가 말한 값만 담는다.** API로 확보한 값은 `api_context`에 저장한다.
@@ -186,7 +179,7 @@ time_available  : 분 단위
 | 필드 | 설명 |
 | --- | --- |
 | `session_id` | 대화 단위 식별자 (4절) |
-| `user_conditions` | 사용자 발화에서 추출된 현재 조건 14개 |
+| `user_conditions` | 사용자 발화에서 추출된 현재 조건 15개 |
 | `api_context` | 외부 확보 데이터 4개 |
 | `condition_version` | `user_conditions` 변경 횟수. 동시 갱신 감지용 |
 | `last_run_id` | 이 상태를 마지막으로 갱신한 실행 식별자 |
@@ -222,7 +215,7 @@ time_available  : 분 단위
 | 키 | 타입 | 설명 |
 | --- | --- | --- |
 | `op` | string | `Add` / `Update` / `Remove` / `Keep` |
-| `field` | string | 1.2절 `user_conditions` 14개 필드 중 하나 |
+| `field` | string | 1.2절 `user_conditions` 15개 필드 중 하나 |
 | `value` | any \| null | 적용할 값. `Remove`·`Keep`은 생략 가능 |
 
 - 연산은 **4종**이다.
@@ -244,7 +237,7 @@ time_available  : 분 단위
 | `place_tags` | 복수 | `Add` / `Update` / `Remove` | 해당 원소 제거 |
 | `weather` | 단일 | `Update` / `Remove` | `null` |
 | `weather_intent` | 단일 | `Update` / `Remove` | `null` |
-| `concentration_intent` (제안, B 확인 필요) | 단일 | `Update` / `Remove` | `null` |
+| `concentration_intent` | 단일 | `Update` / `Remove` | `null` |
 | `transport` | 단일 | `Update` / `Remove` | `null` |
 | `max_travel_time` | 단일 | `Update` / `Remove` | `null` |
 | `time_available` | 단일 | `Update` / `Remove` | `null` |
@@ -254,8 +247,7 @@ time_available  : 분 단위
 | `exclude_tags` | 복수 | `Add` / `Remove` | 해당 원소 제거 |
 | `special_requirements` | 복수 | `Add` / `Remove` | 해당 원소 제거 |
 
-**14개 필드 모두 `Remove`를 허용한다** (제안 중인 `concentration_intent`도 동일
-정책 적용을 제안 — 위 표 참고).
+**15개 필드 모두 `Remove`를 허용한다.**
 `conditions-schema.md` v0.3에서 `current_location`의 필수 지위가
 `api_context.gps_location`으로 이관되었으므로,
 `user_conditions`에는 해제 불가 필드가 없다.
@@ -847,7 +839,7 @@ B는 전달받은 `reset_scope` 값에 따라 실행만 하며 발화를 해석�
 
 **저장한다**
 
-- `user_conditions` 14개 필드 (구조화된 조건값)
+- `user_conditions` 15개 필드 (구조화된 조건값)
 - `api_context` 4개 필드 (외부 확보 데이터 + 확보 시각)
 - `place_id` (TourAPI `contentid`)
 - 식별자 (`session_id`, `run_id`, `trace_id`)
@@ -964,7 +956,7 @@ HTTP 엔드포인트 노출은 AF-05 Agent Runtime의 책임 범위다.
   "session_id": "sess_01J8XKQ2M7N4P9",
   "run_id": "run_01J8XKQ5A1B2C3",
   "session_created": false,
-  "user_conditions": { "...14개 필드..." },
+  "user_conditions": { "...15개 필드..." },
   "api_context": {
     "gps_location": "37.5565,126.9236",
     "api_weather": "rain",
@@ -988,7 +980,7 @@ HTTP 엔드포인트 노출은 AF-05 Agent Runtime의 책임 범위다.
 | `session_id` | string | 신규·기존 무관하게 항상 포함 |
 | `run_id` | string | 이번 실행 식별자 |
 | `session_created` | bool | 세션 신규 발급 여부 |
-| `user_conditions` | object | 병합 완료된 현재 조건 14개 전체 |
+| `user_conditions` | object | 병합 완료된 현재 조건 15개 전체 |
 | `api_context` | object | 외부 데이터 + 만료 플래그 |
 | `condition_version` | int | 병합 후 조건 버전 |
 | `condition_changed` | bool | 이번 요청으로 조건이 실제 변경됐는지 |
@@ -1026,7 +1018,7 @@ A가 인텐트를 분류하기 전에 필요한 정보를 제공한다.
   "last_recommended_run_id": "run_01J8XKQ5A1B2C3",
   "last_intent": "MODIFY",
   "pending_clarification": null,
-  "user_conditions": { "...14개 필드..." },
+  "user_conditions": { "...15개 필드..." },
   "api_context": { "...4개 필드 + 만료 플래그..." },
   "condition_version": 5
 }
@@ -1265,3 +1257,4 @@ GPS·날씨 API로 확보한 데이터를 저장한다.
 | 07-24 | `Remove` 허용 범위 | 14개 필드 전체. `current_location` 필수 지위가 `gps_location`으로 이관 | conditions-schema v0.3 |
 | 07-24 | 조건 필드 명칭 | `user_conditions`로 통일. `current_conditions` / `final_conditions` 표기를 대체 | conditions-schema v0.3 |
 | 08-02 | `pending_clarification` 필드 | `AgentState`에 되묻기 사유 코드 필드 추가. 판정은 LLM/C, B는 보관만. PR #64에서 C가 선반영, 이번에 계약 문서 반영 | PR #64 (C) |
+| 08-04 | `concentration_intent` 필드 확정 | 15번째 조건 필드로 정식 반영. `field_spec.py`에 `weather_intent`와 동일 스펙(`Update`/`Remove`)으로 등록, 다중 턴 유지·Reset 대상 포함 | B-06 |
