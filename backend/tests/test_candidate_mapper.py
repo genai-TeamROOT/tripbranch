@@ -16,7 +16,8 @@ from app.domain.candidate_mapper import map_context_to_scoring_candidates
 def _context(
     *,
     schedule: dict | None,
-    category: str = "cafe",
+    # TourAPI contenttypeid에서 나올 수 있는 값만 쓴다("cafe"는 실제 경로에 없다).
+    category: str = "restaurant",
 ) -> RecommendationContext:
     return RecommendationContext(
         location=ContextValue(

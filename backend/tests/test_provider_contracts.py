@@ -46,7 +46,7 @@ async def test_fake_place_provider_uses_common_candidate() -> None:
     result = await FakePlaceProvider().search_places(
         latitude=37.5796,
         longitude=126.9770,
-        preferred_categories=["museum"],
+        preferred_categories=["cultural_facility"],
         search_radius_km=1.0,
     )
 
@@ -57,7 +57,7 @@ async def test_fake_place_provider_uses_common_candidate() -> None:
     cafe_result = await FakePlaceProvider().search_places(
         latitude=37.5796,
         longitude=126.9770,
-        preferred_categories=["cafe"],
+        preferred_categories=["restaurant"],
         search_radius_km=1.0,
         category_filter=PlaceCategoryFilter(
             content_type_id="39",
@@ -87,9 +87,12 @@ async def test_fake_place_provider_uses_common_candidate() -> None:
     ("preferred_categories", "expected_ids"),
     [
         ([], ["fake-museum-1", "fake-cafe-1"]),
-        (["museum"], ["fake-museum-1"]),
-        (["  CAFE  "], ["fake-cafe-1"]),
-        (["museum", "cafe", "museum"], ["fake-museum-1", "fake-cafe-1"]),
+        (["cultural_facility"], ["fake-museum-1"]),
+        (["  RESTAURANT  "], ["fake-cafe-1"]),
+        (
+            ["cultural_facility", "restaurant", "cultural_facility"],
+            ["fake-museum-1", "fake-cafe-1"],
+        ),
         (["cultural_facility"], ["fake-museum-1"]),
         (["restaurant"], ["fake-cafe-1"]),
         (["unsupported"], []),
@@ -116,7 +119,7 @@ async def test_fake_place_provider_category_filter_takes_precedence() -> None:
     result = await FakePlaceProvider().search_places(
         latitude=37.5796,
         longitude=126.9770,
-        preferred_categories=["museum"],
+        preferred_categories=["cultural_facility"],
         search_radius_km=1.0,
         category_filter=PlaceCategoryFilter(content_type_id="39"),
     )

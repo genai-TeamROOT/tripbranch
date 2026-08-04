@@ -5,24 +5,27 @@
 출력: PlaceCandidate 모델.
 호출 시점: RealPlaceProvider가 API 응답을 순회하며 각 item에 대해 호출한다.
 TODO: detailIntro2 연동 후 operating_hours를 실제 값으로 채운다.
-      contenttypeid → category 매핑을 세분화한다 (지금은 대분류만 반영).
 """
 
 from __future__ import annotations
 
-from app.schemas import PlaceCandidate
+from app.schemas import PlaceCandidate, PlaceType
 
-# TourAPI contenttypeid → 내부 카테고리 매핑 (대략치, 추후 세분화 필요)
+# TourAPI contenttypeid → PlaceType. LLM이 조건으로 내려보내는 어휘와 같아야 조회와
+# 응답의 왕복이 맞는다. 역방향은 category_rules.PLACE_TYPE_TO_CONTENT_TYPE_ID에 있다.
 _CONTENT_TYPE_TO_CATEGORY = {
-    "12": "attraction",   # 관광지
-    "14": "museum",       # 문화시설 (미술관/박물관 등 포함)
-    "15": "event",        # 축제공연행사
-    "25": "course",       # 여행코스
-    "28": "activity",     # 레포츠
-    "32": "lodging",      # 숙박
-    "38": "shopping",     # 쇼핑
-    "39": "restaurant",   # 음식점
+    "12": PlaceType.ATTRACTION.value,          # 관광지
+    "14": PlaceType.CULTURAL_FACILITY.value,   # 문화시설
+    "15": PlaceType.FESTIVAL.value,            # 축제공연행사
+    "28": PlaceType.LEISURE.value,             # 레포츠
+    "38": PlaceType.SHOPPING.value,            # 쇼핑
+    "39": PlaceType.RESTAURANT.value,          # 음식점
 }
+
+# LLM이 요청할 수 없는 유형이라 추천 후보로 쓰지 않는다. 유형·태그 조건이 있으면
+# contentTypeId로 걸러져 애초에 오지 않지만, 조건 없는 무분류 조회에는 섞여 들어온다
+# (0802 종로구 스냅샷 기준 숙박 88건, 여행코스 0건).
+_UNSUPPORTED_CONTENT_TYPE_IDS = frozenset({"25", "32"})
 
 
 def map_tour_api_item(item: dict) -> PlaceCandidate | None:
@@ -42,6 +45,8 @@ def map_tour_api_item(item: dict) -> PlaceCandidate | None:
         return None
 
     content_type_id = str(item.get("contenttypeid", ""))
+    if content_type_id in _UNSUPPORTED_CONTENT_TYPE_IDS:
+        return None
     category = _CONTENT_TYPE_TO_CATEGORY.get(content_type_id, "unknown")
 
     address = item.get("addr1") or None
