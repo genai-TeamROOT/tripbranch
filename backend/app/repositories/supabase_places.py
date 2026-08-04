@@ -34,7 +34,7 @@ _STATE_COLUMNS = ",".join(
 )
 _LOCATION_COLUMNS = (
     "content_id,title,address,latitude,longitude,"
-    "place_concentration_mappings(primary_concentration_name)"
+    "place_concentration_mappings(primary_concentration_name,concentration_search_key)"
 )
 
 _DETAIL_COLUMNS = ",".join(
@@ -105,6 +105,12 @@ def _map_place_locations(
             if isinstance(mapping, Mapping)
             else None
         )
+        # tAtsNm은 공백이 든 값에 0건을 돌려주므로 조회용 검색어를 따로 둔다.
+        concentration_search_key = (
+            _optional_text(mapping.get("concentration_search_key"))
+            if isinstance(mapping, Mapping)
+            else None
+        )
         locations.append(
             StoredPlaceLocation(
                 content_id=str(raw["content_id"]),
@@ -113,6 +119,7 @@ def _map_place_locations(
                 latitude=latitude,
                 longitude=longitude,
                 concentration_name=concentration_name,
+                concentration_search_key=concentration_search_key,
             )
         )
     return tuple(locations)

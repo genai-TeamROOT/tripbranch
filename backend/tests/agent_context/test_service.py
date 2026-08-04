@@ -141,6 +141,51 @@ class _DirectNoDataConcentrationProvider:
         )
 
 
+class _MixedPlaceConcentrationProvider:
+    """한 번의 조회에 여러 장소가 섞여 오는 상황을 재현하는 더블.
+
+    tAtsNm이 부분 일치라 "종묘"로 조회하면 "종묘광장공원"도 함께 온다(2026-08-04 실측).
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[str | None] = []
+
+    async def get_forecast(
+        self,
+        area_code: str,
+        district_code: str,
+        place_name: str | None = None,
+    ) -> ProviderResult[ConcentrationResult]:
+        self.calls.append(place_name)
+        today = datetime.now(KST).strftime("%Y%m%d")
+        forecasts = (
+            # 응답 순서상 먼저 오는 쪽이 의도한 장소가 아니다.
+            ConcentrationForecast(
+                place_name="종묘광장공원",
+                forecast_date=today,
+                concentration_rate=35.28,
+                raw_data={},
+            ),
+            ConcentrationForecast(
+                place_name="종묘 [유네스코 세계유산]",
+                forecast_date=today,
+                concentration_rate=67.69,
+                raw_data={},
+            ),
+        )
+        return provider_result(
+            ConcentrationResult(
+                area_code=area_code,
+                district_code=district_code,
+                requested_place_name=place_name,
+                forecasts=forecasts,
+                provider="test_concentration",
+            ),
+            source=ProviderSource.FAKE_CONCENTRATION,
+            status=ProviderStatus.SUCCESS,
+        )
+
+
 class _NearbyAttractionPlaceProvider(FakePlaceProvider):
     """INFO fallback의 관광지 검색 반경·유형을 검증하는 테스트용 Place Provider."""
 
@@ -411,6 +456,57 @@ async def test_info_concentration_uses_stored_mapping_before_geocoding() -> None
     assert response.result.requested_place_name == "쌈지길"
     assert response.result.resolved_place_name == "창덕궁"
     assert concentration_provider.calls == ["창덕궁"]
+
+
+@pytest.mark.asyncio
+async def test_info_concentration_queries_with_search_key_and_matches_by_name() -> None:
+    """조회는 검색어로, 대조는 정식 명칭으로 한다(D-043).
+
+    tAtsNm은 공백이 든 값에 0건을 돌려주므로 "종묘 [유네스코 세계유산]"은 "종묘"로
+    조회해야 한다. 대신 그 응답에는 "종묘광장공원"도 섞여 오므로, 고를 때는 정식
+    명칭으로 대조해야 엉뚱한 장소의 값을 답하지 않는다.
+    """
+    place_provider = FakePlaceProvider()
+    concentration_provider = _MixedPlaceConcentrationProvider()
+    service = ContextService(
+        ContextTools(
+            location=ResolveLocationTool(
+                FakeGeocodingProvider(),
+                _StoredPlaceRepository(
+                    StoredPlaceLocation(
+                        content_id="126510",
+                        title="종묘",
+                        address="서울특별시 종로구 종로 157",
+                        latitude=37.5739,
+                        longitude=126.9945,
+                        concentration_name="종묘 [유네스코 세계유산]",
+                        concentration_search_key="종묘",
+                    )
+                ),
+            ),
+            places=NearbyPlaceDetailsTool(place_provider, place_provider),
+            weather=GetWeatherForecastTool(FakeWeatherProvider()),
+            holidays=GetHolidaysTool(FakeHolidayProvider()),
+            concentration=GetConcentrationTool(concentration_provider),
+        ),
+        candidate_limit=10,
+        clock=lambda: datetime.now(KST),
+    )
+
+    response = await service.fetch_info_context(
+        InfoContextRequest(
+            request_id="info-search-key",
+            place_name="종묘",
+            place_context="explicit",
+        )
+    )
+
+    assert concentration_provider.calls == ["종묘"]
+    assert response.status == "success"
+    assert response.result is not None
+    assert response.result.is_proxy is False
+    # 함께 온 종묘광장공원(35.28)이 아니라 정식 명칭과 일치하는 값을 쓴다.
+    assert response.result.concentration_rate == 67.69
 
 
 @pytest.mark.asyncio

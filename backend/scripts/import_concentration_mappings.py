@@ -99,6 +99,14 @@ def load_mapping_payloads(
         if primary_name in aliases:
             raise ValueError(f"{content_id}: 대표명이 aliases에 중복됐습니다.")
 
+        # tAtsNm은 공백이 든 값을 넘기면 0건이 오므로(2026-08-04 실측) 조회용 검색어를
+        # 따로 싣는다. 비어 있으면 호출자가 정식 명칭을 그대로 쓴다.
+        search_key = (row.get("concentration_search_key") or "").strip() or None
+        if search_key is not None and any(c.isspace() for c in search_key):
+            raise ValueError(
+                f"{content_id}: concentration_search_key에 공백이 있으면 조회가 0건이 됩니다."
+            )
+
         match_method = (row.get("match_method") or "").strip()
         if match_method not in _VALID_MATCH_METHODS:
             raise ValueError(f"{content_id}: 지원하지 않는 match_method입니다.")
@@ -111,6 +119,7 @@ def load_mapping_payloads(
             {
                 "content_id": content_id,
                 "primary_concentration_name": primary_name,
+                "concentration_search_key": search_key,
                 "concentration_aliases": aliases,
                 "match_method": match_method,
                 "confidence_score": confidence,
