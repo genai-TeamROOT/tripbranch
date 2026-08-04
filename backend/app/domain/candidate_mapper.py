@@ -13,7 +13,7 @@ from app.providers.tour_category_registry import get_tour_category_registry
 
 # 대분류(category)만으로는 실내외를 가릴 수 없어(관광지에 고궁과 체험관이, 쇼핑에
 # 면세점과 시장이 함께 있다) lcls_systm3(소분류)로 TourCategoryRegistry를 조회해
-# (content_type_id, lcls_systm2) 중분류 단위로 판정한다 — D-044.
+# (content_type_id, lcls_systm2) 중분류 단위로 판정한다 — D-045.
 # 판정 근거: package_D/feature-environment-type-classification.md
 _INDOOR_CATEGORIES = {"cultural_facility", "restaurant"}
 _OUTDOOR_CATEGORIES = {"attraction"}

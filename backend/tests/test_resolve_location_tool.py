@@ -136,6 +136,81 @@ async def test_resolves_local_search_place_when_database_has_no_match() -> None:
 
 
 @pytest.mark.asyncio
+async def test_local_search_result_outside_service_area_is_unsupported() -> None:
+    """지원 지역 밖은 unsupported로 알린다(D-044).
+
+    좌표만 얻고 지역을 확인하지 않으면 종로구로 고정된 장소 검색과 교집합이 0건이 되어
+    "조건에 맞는 곳을 찾지 못했어요. 검색 범위를 넓혀볼까요?"가 나간다. 넓혀도 영영
+    나오지 않는 안내라 사용자를 헛돌게 한다.
+    """
+    local_search = MemoryLocalSearchProvider(
+        (
+            LocalSearchPlace(
+                name="망원역",
+                address="서울특별시 마포구 망원동",
+                road_address="서울특별시 마포구 월드컵로 137",
+                category="지하철역",
+                latitude=37.556068,
+                longitude=126.9101053,
+            ),
+        )
+    )
+    provider = SequenceGeocodingProvider([])
+
+    result = await ResolveLocationTool(
+        provider,
+        MemoryPlaceLocationRepository(()),
+        local_search,
+    ).execute(ResolveLocationQuery("망원역"))
+
+    assert result.status is ResolveLocationStatus.UNSUPPORTED
+    assert result.location is None
+    assert result.error is not None
+    assert result.error.code == "unsupported_region"
+    assert result.error.cause == "outside_supported_region"
+    # 지역 문제를 확인했으면 지오코딩까지 갈 이유가 없다.
+    assert provider.calls == []
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_local_search_outside_area_reports_region_not_clarification() -> None:
+    """후보를 못 좁혔어도 전부 지역 밖이면 되묻지 않는다.
+
+    "부산 해운대"에 "종로구 안에서 어느 장소인지 알려주세요"라고 되물으면 안 된다.
+    """
+    local_search = MemoryLocalSearchProvider(
+        (
+            LocalSearchPlace(
+                name="해운대해수욕장",
+                address="부산광역시 해운대구 우동",
+                road_address=None,
+                category="해수욕장",
+                latitude=35.1587,
+                longitude=129.1604,
+            ),
+            LocalSearchPlace(
+                name="해운대시장",
+                address="부산광역시 해운대구 중동",
+                road_address=None,
+                category="시장",
+                latitude=35.1631,
+                longitude=129.1633,
+            ),
+        )
+    )
+
+    result = await ResolveLocationTool(
+        SequenceGeocodingProvider([]),
+        MemoryPlaceLocationRepository(()),
+        local_search,
+    ).execute(ResolveLocationQuery("해운대"))
+
+    assert result.status is ResolveLocationStatus.UNSUPPORTED
+    assert result.error is not None
+    assert result.error.cause == "outside_supported_region"
+
+
+@pytest.mark.asyncio
 async def test_place_name_uses_local_search_before_geocoding() -> None:
     local_search = MemoryLocalSearchProvider(
         (

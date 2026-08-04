@@ -17,6 +17,7 @@ from app.providers.contracts import (
 from app.providers.geocoding import get_jongno_landmark_alias
 from app.providers.protocols import GeocodingProvider, LocalSearchProvider
 from app.repositories.protocols import PlaceLocationRepository
+from app.service_area import is_within_service_area
 from app.tools.contracts import ToolError, ToolStatus
 
 ResolveLocationStatus = ToolStatus
@@ -251,6 +252,21 @@ class ResolveLocationTool:
             return None
         selected = _select_local_search_candidate(candidates, requested_query)
         if selected is None:
+            # 후보를 못 좁혔는데 찾은 것이 전부 지역 밖이면 되묻기가 아니라 지역 문제다.
+            # "부산 해운대"에 "종로구 안에서 어느 장소인지" 되묻는 일을 막는다.
+            if not any(
+                is_within_service_area(item.latitude, item.longitude)
+                for item in candidates
+                if item.latitude is not None and item.longitude is not None
+            ):
+                return self._error_result(
+                    status=ResolveLocationStatus.UNSUPPORTED,
+                    code="unsupported_region",
+                    cause="outside_supported_region",
+                    retryable=False,
+                    details={"reason": "outside_supported_region"},
+                    provider_metadata=(result.metadata,),
+                )
             return self._error_result(
                 status=ResolveLocationStatus.NO_DATA,
                 code="no_data",
@@ -262,6 +278,12 @@ class ResolveLocationTool:
         # 지역 검색이 알아낸 정식 상호명으로 저장소를 다시 찾는다. "북촌"은 저장소에
         # 없지만 지역 검색이 "북촌 한옥마을"을 주므로, 여기서 다시 찾으면 집중률
         # 매핑까지 이어진다. 재조회가 실패해도 지역 검색 결과는 그대로 쓴다.
+        if selected.latitude is not None and selected.longitude is not None:
+            outside = self._outside_service_area_result(
+                selected.latitude, selected.longitude, (result.metadata,)
+            )
+            if outside is not None:
+                return outside
         if selected.name.strip() != requested_query.strip():
             stored = await self._lookup_stored_place(requested_query, lookup_name=selected.name)
             if stored is not None and stored.status is ResolveLocationStatus.SUCCESS:
@@ -387,6 +409,12 @@ class ResolveLocationTool:
         warnings: tuple[str, ...] = (),
         provider_metadata: tuple[ProviderMetadata, ...] = (),
     ) -> ResolveLocationResult:
+        # 지역 판정을 먼저 한다 - 지원 범위 밖이면 "어느 장소인지" 되물어도 소용없다.
+        outside = self._outside_service_area_result(
+            result.latitude, result.longitude, provider_metadata
+        )
+        if outside is not None:
+            return outside
         if method is not ResolutionMethod.ALIAS and result.candidate_count > 1:
             return self._error_result(
                 status=ResolveLocationStatus.NO_DATA,
@@ -413,6 +441,29 @@ class ResolveLocationTool:
             ),
             error=None,
             warnings=warnings,
+            provider_metadata=provider_metadata,
+        )
+
+    @classmethod
+    def _outside_service_area_result(
+        cls,
+        latitude: float,
+        longitude: float,
+        provider_metadata: tuple[ProviderMetadata, ...],
+    ) -> ResolveLocationResult | None:
+        """지원 지역 밖이면 unsupported, 안이면 None.
+
+        저장소에서 해석된 장소에는 쓰지 않는다 — 이미 종로구 장소로 등록된 것이라
+        경계선에 붙어 있어도 지원 대상이 맞다(D-044).
+        """
+        if is_within_service_area(latitude, longitude):
+            return None
+        return cls._error_result(
+            status=ResolveLocationStatus.UNSUPPORTED,
+            code="unsupported_region",
+            cause="outside_supported_region",
+            retryable=False,
+            details={"reason": "outside_supported_region"},
             provider_metadata=provider_metadata,
         )
 

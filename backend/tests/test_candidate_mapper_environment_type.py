@@ -1,6 +1,6 @@
 """candidate_mapper._environment_type()의 중분류(lcls_systm2) 판정표를 고정한다.
 
-판정 근거: package_D/feature-environment-type-classification.md §2 (D-044).
+판정 근거: package_D/feature-environment-type-classification.md §2 (D-045).
 D가 다루는 6개 content_type(12/14/15/28/38/39)의 48개 중분류 전부를 대표
 소분류(lcls_systm3) 1건씩으로 조회해 기대 environment_type과 비교한다. 이
 표가 바뀌면(indoor/outdoor 재분류, 중분류 추가/삭제) 이 테스트가 실패로 잡는다.
