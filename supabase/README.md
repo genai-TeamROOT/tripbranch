@@ -9,14 +9,19 @@
   `202607240002_add_place_sync_locks.sql`
 - 집중률 매핑 마이그레이션:
   `20260729104209_create_place_concentration_mappings.sql`
-- 실제 DB 적용일: 2026-07-24, 2026-07-29
+- 집중률 검색어 컬럼 마이그레이션:
+  `202608040001_add_concentration_search_key.sql`
+  (원격 이력에는 `20260804055402_add_concentration_search_key`로 기록됨 — MCP가
+  적용 시각으로 버전을 붙여 파일명과 다르다)
+- 실제 DB 적용일: 2026-07-24, 2026-07-29, 2026-08-04
 - 적용 방법: Supabase Dashboard SQL Editor 및 Supabase MCP `apply_migration`
 - 적용 결과: `places`, `place_enrichments`, `place_sync_runs`,
   `place_sync_locks`, `place_concentration_mappings` 및 잠금 RPC 생성 완료
 
 SQL Editor로 실행했기 때문에 실제 스키마는 생성됐지만 Supabase CLI의 원격
 마이그레이션 이력에는 `202607240001`, `202607240002`가 아직 기록되지 않았다.
-`20260729104209`는 Supabase MCP로 적용해 원격 마이그레이션 이력에 기록됐다.
+`20260729104209`와 `20260804055402`는 Supabase MCP로 적용해 원격 마이그레이션 이력에
+기록됐다.
 
 ## Supabase CLI 최초 도입 시 필수 작업
 
