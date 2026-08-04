@@ -19,8 +19,10 @@ from app.services.runtime.info_context_schemas import InfoContextResponse
 
 # C 단계에서 Recommendation으로 못 넘어가는 status. agent_runtime.py의
 # _TOOL_TERMINAL_STATUSES와 같은 집합이어야 한다 — 순환 import를 피하려고 별도로
-# 둔다(둘 다 3개 문자열 리터럴이라 값이 바뀔 일이 거의 없다).
-_TOOL_TERMINAL_STATUSES = frozenset({"needs_clarification", "unsupported", "unavailable"})
+# 둔다. 두 집합이 어긋나면 메시지가 엉뚱한 분기로 새므로 테스트로 일치를 고정한다.
+_TOOL_TERMINAL_STATUSES = frozenset(
+    {"needs_clarification", "no_data", "unsupported", "unavailable"}
+)
 
 _RECOMMEND_WRAPPER_MESSAGE = "이런 곳들을 찾아봤어요:"
 
@@ -154,6 +156,10 @@ async def compose_chat_message(
                 return _CLARIFICATION_TEMPLATES.get(code, _CLARIFICATION_FALLBACK_MESSAGE)
             if tool_status == "unsupported":
                 return _TOOL_UNSUPPORTED_MESSAGE
+            # no_data는 장애가 아니라 "조건에 맞는 후보가 없음"이다. 명시하지 않으면
+            # 아래 unavailable 문구로 새어 사용자에게 오류처럼 보인다.
+            if tool_status == "no_data":
+                return _NO_DATA_MESSAGE
             return _TOOL_UNAVAILABLE_MESSAGE
 
         shown = (

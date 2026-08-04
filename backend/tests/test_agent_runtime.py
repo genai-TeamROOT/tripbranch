@@ -19,10 +19,14 @@ from app.agent_context.enrichment_schemas import (
 from app.agent_context.schemas import (
     AgentContextRequest,
     AgentContextResponse,
+    Clarification,
+    ContextError,
     ContextValue,
     Coordinates,
     PlaceCandidate,
     RecommendationContext,
+    ResolvedLocation,
+    ResponseMetadata,
 )
 from app.providers.contracts import ProviderSource, provider_result
 from app.providers.stub import FakeLLMProvider, FakeWeatherProvider
@@ -36,6 +40,7 @@ from app.schemas import (
 )
 from app.services.runtime.agent_runtime import _apply_concentration_rerank, run_agent_flow
 from app.services.runtime.info_context_schemas import InfoContextRequest, InfoContextResponse
+from app.services.runtime.real_recommendation_provider import RealRecommendationProvider
 from app.services.runtime.stubs import (
     FakeEnrichmentProvider,
     FakeRecommendationProvider,
@@ -651,15 +656,10 @@ class TestApplyConcentrationRerank:
 
 
 @pytest.mark.asyncio
-async def test_concentration_intent_not_yet_persisted_by_b_blocks_rerank() -> None:
-    """알려진 갭(2026-07-30 발견): B의 StateUserConditions에 concentration_intent
-    필드가 아직 없어서(state/schema.py, field_spec.py — B 확인 필요), LLM이
-    SEEK/AVOID를 정확히 추출해도 apply()를 거치는 순간 사라진다. 그 결과 6-1
-    분기(_apply_concentration_rerank) 자체가 지금은 실제 run_agent_flow() 흐름에서
-    트리거되지 않는다 — B가 필드를 추가하면 이 테스트는 깨져야 정상이고, 그때
-    아래 두 assert를 뒤집어서 실제 동작을 검증하는 테스트로 바꿔야 한다.
-    6-1 분기 로직 자체(_apply_concentration_rerank)는 이 B 갭과 무관하게
-    TestApplyConcentrationRerank에서 직접 단위 테스트한다.
+async def test_concentration_intent_persisted_by_b_triggers_rerank() -> None:
+    """B-06으로 concentration_intent 필드가 추가된 뒤: LLM이 추출한 SEEK/AVOID가
+    B의 State까지 정상적으로 저장되고, 그 결과 6-1 분기(_apply_concentration_rerank)가
+    실제 run_agent_flow() 흐름에서 트리거된다.
     """
     store = InMemoryStateStore()
     providers = _providers()
@@ -674,10 +674,9 @@ async def test_concentration_intent_not_yet_persisted_by_b_blocks_rerank() -> No
         **providers,
     )
 
-    assert response.llm_output.recommend.conditions.concentration_intent == "SEEK"  # LLM은 맞음
-    # B의 StateUserConditions에 필드 자체가 없다 — hasattr로 "필드 부재"를 직접 증명한다.
-    assert not hasattr(response.state.user_conditions, "concentration_intent")
-    assert providers["enrichment_provider"].call_count == 0  # 그래서 6-1이 안 탐
+    assert response.llm_output.recommend.conditions.concentration_intent == "SEEK"
+    assert response.state.user_conditions.concentration_intent == "SEEK"
+    assert providers["enrichment_provider"].call_count == 1
 
 
 @pytest.mark.asyncio
@@ -754,3 +753,375 @@ async def test_successful_recommendation_leaves_no_pending_clarification() -> No
     assert response.recommendations is not None
     context = get_session_context(response.state.session_id, store=store)
     assert context.pending_clarification is None
+
+
+@pytest.mark.asyncio
+async def test_modify_change_condition_calls_context_again_with_merged_conditions() -> None:
+    """MODIFY로 조건이 바뀌면 C를 다시 호출하고, 그 요청에 병합된 조건이 실려야 한다.
+
+    재호출하지 않으면 조건만 바뀌고 후보는 1턴 그대로 남는다. 횟수만 세면 "부르긴
+    했는데 옛 조건으로 불렀다"를 놓치므로 요청 내용까지 확인한다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+    tool_provider = providers["tool_provider"]
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘", session_id=None, device_location=DEVICE_LOCATION
+        ),
+        store=store,
+        **providers,
+    )
+    assert tool_provider.call_count == 1
+    assert tool_provider.last_request.conditions.budget is None
+
+    await run_agent_flow(
+        AgentRequest(
+            user_input="무료인 곳으로",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert tool_provider.call_count == 2
+    # 2턴 요청에는 병합 결과가 실린다 — 바뀐 budget과 유지된 search_center가 함께.
+    assert tool_provider.last_request.conditions.budget == "free"
+    assert tool_provider.last_request.conditions.search_center == "경복궁"
+
+
+@pytest.mark.asyncio
+async def test_modify_reject_all_calls_context_again() -> None:
+    """REJECT_ALL은 조건이 그대로라도 C를 다시 호출한다.
+
+    조건이 같다고 이전 Context를 재사용하면 제외 목록이 반영되지 않아 같은 장소가
+    다시 노출된다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+    tool_provider = providers["tool_provider"]
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘", session_id=None, device_location=DEVICE_LOCATION
+        ),
+        store=store,
+        **providers,
+    )
+
+    await run_agent_flow(
+        AgentRequest(
+            user_input="다른 곳 보여줘",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert tool_provider.call_count == 2
+    assert tool_provider.last_request.conditions.search_center == "경복궁"
+
+
+class _FixedStatusToolProvider:
+    """지정한 status만 돌려주는 C 대역. 상태 분기만 보기 위해 내용은 최소로 채운다."""
+
+    def __init__(self, status: str) -> None:
+        self._status = status
+        self.call_count = 0
+
+    async def fetch_context(self, request: AgentContextRequest) -> AgentContextResponse:
+        self.call_count += 1
+        payload: dict = {
+            "request_id": request.request_id,
+            "intent": "RECOMMEND",
+            "status": self._status,
+            "metadata": ResponseMetadata(),
+        }
+        if self._status in {"success", "partial", "no_data"}:
+            payload["context"] = RecommendationContext(
+                location=ContextValue(
+                    status="success",
+                    data=ResolvedLocation(
+                        requested_query="경복궁",
+                        resolved_name="경복궁",
+                        location=Coordinates(latitude=37.5788, longitude=126.9770),
+                    ),
+                ),
+                places=ContextValue(status=self._status, data=[]),
+            )
+        elif self._status == "needs_clarification":
+            payload["clarification"] = Clarification(
+                code="location_required", missing_fields=["current_location"]
+            )
+        else:
+            payload["error"] = ContextError(
+                code=self._status, message="테스트용 오류", retryable=False
+            )
+        return AgentContextResponse(**payload)
+
+
+@pytest.mark.parametrize(
+    ("tool_status", "reaches_recommendation"),
+    [
+        ("success", True),
+        # partial은 "가능한 데이터로 계속"이라 D까지 간다(계약 §5.4).
+        ("partial", True),
+        # 아래 넷은 _TOOL_TERMINAL_STATUSES — 안내만 하고 끝난다.
+        # no_data는 넘길 후보가 없어 D를 부르지 않고 조건 조정을 되묻는다.
+        ("no_data", False),
+        ("needs_clarification", False),
+        ("unsupported", False),
+        ("unavailable", False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_tool_status_decides_whether_recommendation_runs(
+    tool_status: str, reaches_recommendation: bool
+) -> None:
+    """C의 6개 status가 D 호출 여부를 어떻게 가르는지 한곳에 고정한다.
+
+    개별 케이스는 다른 테스트에도 흩어져 있지만, 경계를 한 표로 모아두면 "partial은
+    어떻게 되지?"를 한눈에 답할 수 있고 정책이 바뀔 때 이 표만 고치면 된다.
+    """
+    tool_provider = _FixedStatusToolProvider(tool_status)
+    recommendation_provider = _CountingRecommendationProvider()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        weather_provider=FakeWeatherProvider(),
+        tool_provider=tool_provider,
+        recommendation_provider=recommendation_provider,
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=InMemoryStateStore(),
+    )
+
+    assert tool_provider.call_count == 1
+    assert recommendation_provider.call_count == (1 if reaches_recommendation else 0)
+    assert (response.recommendations is not None) is reaches_recommendation
+
+
+@pytest.mark.asyncio
+async def test_location_required_clarification_reaches_user_message() -> None:
+    """C의 clarification.code가 A를 거쳐 되묻기 문장까지 이어지는지 확인한다."""
+    tool_provider = _FixedStatusToolProvider("needs_clarification")
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        weather_provider=FakeWeatherProvider(),
+        tool_provider=tool_provider,
+        recommendation_provider=_CountingRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=InMemoryStateStore(),
+    )
+
+    assert "어디 근처에서" in response.message
+
+
+@pytest.mark.asyncio
+async def test_no_data_asks_to_adjust_conditions_without_calling_recommendation() -> None:
+    """후보가 없으면 D를 부르지 않고 조건을 바꿔볼지 되묻는다.
+
+    빈 후보로 Scoring을 돌려도 결과가 같으므로 호출하지 않는다. 사용자에게 나가는
+    문구는 기존과 동일해야 한다 — 장애가 아니라 "조건에 맞는 곳이 없음"이다.
+    """
+    tool_provider = _FixedStatusToolProvider("no_data")
+    recommendation_provider = _CountingRecommendationProvider()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        weather_provider=FakeWeatherProvider(),
+        tool_provider=tool_provider,
+        recommendation_provider=recommendation_provider,
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=InMemoryStateStore(),
+    )
+
+    assert recommendation_provider.call_count == 0
+    assert response.recommendations is None
+    assert "조건에 맞는 곳을 찾지 못했어요" in response.message
+    # 일시적 장애 문구로 새면 안 된다.
+    assert "일시적으로" not in response.message
+
+
+@pytest.mark.asyncio
+async def test_no_data_marks_pending_clarification_so_next_turn_keeps_conditions() -> None:
+    """"범위를 넓혀볼까요?"에 대한 답변은 새 요청이 아니라 이번 요청의 연속이다.
+
+    표시해두지 않으면 다음 턴이 RECOMMEND로 분류되며 soft reset이 걸려 앞 턴 조건이
+    사라진다(D-039와 같은 이유).
+    """
+    store = InMemoryStateStore()
+    tool_provider = _FixedStatusToolProvider("no_data")
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        weather_provider=FakeWeatherProvider(),
+        tool_provider=tool_provider,
+        recommendation_provider=_CountingRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=store,
+    )
+
+    context = get_session_context(response.state.session_id, store=store)
+    assert context.pending_clarification == "no_candidate"
+
+
+def test_terminal_status_sets_match_between_runtime_and_composer() -> None:
+    """두 모듈이 같은 집합을 각자 들고 있다 — 어긋나면 메시지가 엉뚱한 분기로 샌다."""
+    from app.services.runtime.agent_runtime import _TOOL_TERMINAL_STATUSES as runtime_set
+    from app.services.runtime.response_composer import (
+        _TOOL_TERMINAL_STATUSES as composer_set,
+    )
+
+    assert runtime_set == composer_set
+
+
+# C가 내려주는 operating_schedule 직렬화 형태. 24시간 열려 있어 Scoring이 폐점으로
+# 걸러내지 않는 값으로 둔다 — 여기서 보려는 건 운영시간 유무에 따른 분류다.
+_OPEN_ALL_DAY_SCHEDULE = {
+    "availability": "scheduled",
+    "rules": [
+        {
+            "months": None,
+            "weekdays": None,
+            "time_ranges": [
+                {"open_time": "00:00", "close_time": "23:59", "crosses_midnight": False}
+            ],
+        }
+    ],
+    "time_ranges": [
+        {"open_time": "00:00", "close_time": "23:59", "crosses_midnight": False}
+    ],
+    "closure_rules": [],
+    "parse_status": "parsed",
+    "assumption_reason": None,
+    "warnings": [],
+}
+
+
+def _context_place(place_id: str, *, with_schedule: bool) -> PlaceCandidate:
+    return PlaceCandidate(
+        place_id=place_id,
+        name=f"장소-{place_id}",
+        category="cafe",
+        location=Coordinates(latitude=37.5790, longitude=126.9772),
+        operating_hours_raw="09:00~22:00" if with_schedule else None,
+        operating_schedule=_OPEN_ALL_DAY_SCHEDULE if with_schedule else None,
+    )
+
+
+class _PartialPlacesToolProvider:
+    """운영정보가 일부만 채워진 partial Context를 돌려주는 C 대역."""
+
+    def __init__(self, places: list[PlaceCandidate]) -> None:
+        self._places = places
+
+    async def fetch_context(self, request: AgentContextRequest) -> AgentContextResponse:
+        return AgentContextResponse(
+            request_id=request.request_id,
+            intent="RECOMMEND",
+            status="partial",
+            context=RecommendationContext(
+                location=ContextValue(
+                    status="success",
+                    data=ResolvedLocation(
+                        requested_query="경복궁",
+                        resolved_name="경복궁",
+                        location=Coordinates(latitude=37.5788, longitude=126.9770),
+                    ),
+                ),
+                places=ContextValue(status="partial", data=self._places),
+            ),
+            metadata=ResponseMetadata(),
+        )
+
+
+async def _run_with_partial_places(places: list[PlaceCandidate]):
+    """실제 D(RealRecommendationProvider)까지 태워 A→C→D 전파를 확인한다.
+
+    _CountingRecommendationProvider는 호출 횟수만 세는 stub이라 분류 로직을 타지
+    않는다. 통합 검증에는 실제 구현을 주입해야 한다.
+    """
+    return await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        weather_provider=FakeWeatherProvider(),
+        tool_provider=_PartialPlacesToolProvider(places),
+        recommendation_provider=RealRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=InMemoryStateStore(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_partial_context_keeps_all_candidates_and_splits_unverified() -> None:
+    """partial Context의 후보가 누락 없이 D까지 가고, 운영정보 유무로 나뉜다.
+
+    Supabase 상세조회로 전환한 뒤 DB에 없는 장소는 운영정보가 비는데(detail no_data),
+    그 후보가 중간에 사라지면 추천 수가 조용히 줄고, 잘못 분류되면 운영시간을 모르는
+    곳을 확정 추천하게 된다.
+    """
+    response = await _run_with_partial_places(
+        [
+            _context_place("with-1", with_schedule=True),
+            _context_place("without-1", with_schedule=False),
+            _context_place("without-2", with_schedule=False),
+        ]
+    )
+
+    assert response.recommendations is not None
+    verified = [item.place_id for item in response.recommendations.recommendations]
+    unverified = [
+        item.place_id for item in response.recommendations.unverified_recommendations
+    ]
+
+    # C가 준 3건이 그대로 유지된다.
+    assert len(verified) + len(unverified) == 3
+    assert verified == ["with-1"]
+    assert sorted(unverified) == ["without-1", "without-2"]
+
+
+@pytest.mark.asyncio
+async def test_partial_context_with_no_operating_hours_returns_only_unverified() -> None:
+    """전건 운영정보가 없으면 확정 추천은 비고 unverified만 남는다.
+
+    현재는 이 경우에도 "이런 곳들을 찾아봤어요:"가 나간다 — 첫 문장에서 미확인임을
+    알리는 편이 나을 수 있으나, 메시지 정책은 별도 판단 대상이라 현 동작을 고정한다.
+    """
+    response = await _run_with_partial_places(
+        [
+            _context_place("without-1", with_schedule=False),
+            _context_place("without-2", with_schedule=False),
+        ]
+    )
+
+    assert response.recommendations is not None
+    assert response.recommendations.recommendations == []
+    assert len(response.recommendations.unverified_recommendations) == 2

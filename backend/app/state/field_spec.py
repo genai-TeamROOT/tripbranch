@@ -42,8 +42,8 @@ def _multi(name: str, *ops: str) -> FieldSpec:
     return FieldSpec(name, True, frozenset(ops), list)
 
 
-# TODO(P0-1): Remove 허용 범위 확정 대기.
-# conditions-schema.md v0.3 4절 기준. 14개 필드 모두 Remove를 허용한다.
+# P0-1 확정(07-24, agent-state-contract-v1.md 1216·1265행 참고):
+# conditions-schema.md v0.3 4절 기준. 15개 필드 모두 Remove를 허용한다.
 # v0.3에서 current_location의 필수 지위가 api_context.gps_location으로 이관되었다.
 FIELD_SPECS: dict[str, FieldSpec] = {
     # 위치
@@ -57,6 +57,8 @@ FIELD_SPECS: dict[str, FieldSpec] = {
     # 날씨
     "weather":              _single("weather", str, OP_UPDATE, OP_REMOVE),
     "weather_intent":       _single("weather_intent", str, OP_UPDATE, OP_REMOVE),
+
+    "concentration_intent": _single("concentration_intent", str, OP_UPDATE, OP_REMOVE),
 
     # 이동
     "transport":            _single("transport", str, OP_UPDATE, OP_REMOVE),

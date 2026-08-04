@@ -19,7 +19,7 @@ def now_kst() -> datetime:
 # ---------------------------------------------------------------- 조건
 
 class UserConditions(BaseModel):
-    """사용자 발화에서 추출된 조건 14개. (계약 1.2절)
+    """사용자 발화에서 추출된 조건 15개. (계약 1.2절)
 
     B는 각 필드의 허용값을 검증하지 않는다. 허용값 정의는 Package A의 책임이다.
     """
@@ -30,6 +30,7 @@ class UserConditions(BaseModel):
     place_tags: list[str] = Field(default_factory=list)
     weather: str | None = None
     weather_intent: str | None = None
+    concentration_intent: str | None = None
     transport: str | None = None
     max_travel_time: int | None = None   # 분
     time_available: int | None = None    # 분

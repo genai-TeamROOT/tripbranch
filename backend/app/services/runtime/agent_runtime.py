@@ -82,7 +82,11 @@ def _remember_clarification(session_id: str, code: str | None, store: StateStore
 
 # C 단계에서 Recommendation으로 못 넘어가는 status. needs_clarification은 조건 재질문(사용자
 # 응답 필요), unsupported/unavailable은 그 자체로 안내만 하고 끝나는 상태다(계약 문서 §5.4).
-_TOOL_TERMINAL_STATUSES = frozenset({"needs_clarification", "unsupported", "unavailable"})
+# no_data도 후보가 없어 D에 넘길 것이 없다 — 빈 후보로 Scoring을 돌려도 결과는 같으므로
+# 호출하지 않고, 대신 조건을 바꿔볼지 사용자에게 되묻는다(int-03-modify.md §11).
+_TOOL_TERMINAL_STATUSES = frozenset(
+    {"needs_clarification", "no_data", "unsupported", "unavailable"}
+)
 
 # concentration_intent가 AVOID/SEEK일 때만 혼잡도 보강 조회 대상이 되는 값.
 _CONCENTRATION_RANK_INTENTS = frozenset({ConcentrationIntent.AVOID, ConcentrationIntent.SEEK})
@@ -332,6 +336,11 @@ async def run_agent_flow(
                 else "clarification_required"
             )
             _remember_clarification(state_response.session_id, code, store)
+        elif tool_response.status == "no_data":
+            # "검색 범위를 넓혀볼까요?"에 대한 답변은 새 요청이 아니라 이번 요청을
+            # 이어가는 발화다. 표시해두지 않으면 다음 턴이 RECOMMEND로 분류되면서
+            # soft reset이 걸려 앞 턴 조건(장소·태그)이 사라진다(D-039와 같은 이유).
+            _remember_clarification(state_response.session_id, "no_candidate", store)
         message = await compose_chat_message(
             llm_output,
             tool_status=tool_response.status,
@@ -342,8 +351,8 @@ async def run_agent_flow(
             llm_output=llm_output, state=state_response, recommendations=None, message=message
         )
 
-    # success/partial/no_data는 Recommendation 단계로 진행한다(경고가 있어도 가능한
-    # 데이터로 계속 — 계약 문서 §5.4). 위에서 세 종료 상태를 걸렀으므로 context는 항상 있다.
+    # success/partial은 Recommendation 단계로 진행한다(경고가 있어도 가능한 데이터로
+    # 계속 — 계약 문서 §5.4). 위에서 종료 상태를 걸렀으므로 context는 항상 있다.
     # AgentContextResponse.warnings(최상위)만 지금은 보고 넘어간다.
     # TODO(자연어 응답 생성 단계): RecommendationContext의 항목별 ContextValue.warnings
     # (예: weather.warnings)까지 합쳐서 사용자에게 보여줄지 다시 검토한다.
