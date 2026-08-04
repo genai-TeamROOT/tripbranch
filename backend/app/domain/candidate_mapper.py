@@ -9,12 +9,57 @@ from typing import Any
 from app.agent_context.schemas import RecommendationContext
 from app.domain.models import OperatingHours, ScoringCandidate
 from app.place_search_policy import EARTH_RADIUS_KM
+from app.providers.tour_category_registry import get_tour_category_registry
 
-# PlaceType 어휘로 맞춘 잠정 판정. 대분류만으로는 정확히 가릴 수 없어(관광지에 고궁과
-# 체험관이, 쇼핑에 면세점과 시장이 함께 있다) lcls_systm 기반 세분 규칙은 D가 정한다.
-# 그때까지 회귀를 막는 최소 매핑이다 — D-044 참고.
+# 대분류(category)만으로는 실내외를 가릴 수 없어(관광지에 고궁과 체험관이, 쇼핑에
+# 면세점과 시장이 함께 있다) lcls_systm3(소분류)로 TourCategoryRegistry를 조회해
+# (content_type_id, lcls_systm2) 중분류 단위로 판정한다 — D-044.
+# 판정 근거: package_D/feature-environment-type-classification.md
 _INDOOR_CATEGORIES = {"cultural_facility", "restaurant"}
 _OUTDOOR_CATEGORIES = {"attraction"}
+
+_MIDDLE_CATEGORY_ENVIRONMENT: dict[tuple[str, str], str] = {
+    # content_type=12 (attraction)
+    ("12", "EX02"): "indoor",  # 공예체험
+    ("12", "EX03"): "outdoor",  # 농.산.어촌 체험
+    ("12", "EX05"): "indoor",  # 웰니스관광
+    ("12", "EX06"): "indoor",  # 산업관광
+    ("12", "HS01"): "outdoor",  # 역사유적지
+    ("12", "HS02"): "outdoor",  # 역사유물
+    ("12", "HS04"): "outdoor",  # 안보관광지
+    ("12", "NA01"): "outdoor",  # 자연경관(산)
+    ("12", "NA02"): "outdoor",  # 자연경관(하천‧해양)
+    ("12", "NA03"): "outdoor",  # 자연생태
+    ("12", "NA04"): "outdoor",  # 자연공원
+    ("12", "NA05"): "outdoor",  # 기타자연관광
+    ("12", "VE01"): "outdoor",  # 랜드마크관광
+    ("12", "VE03"): "outdoor",  # 도시공원
+    ("12", "VE04"): "outdoor",  # 도시.지역문화관광
+    # content_type=14 (cultural_facility) — 전부 indoor
+    ("14", "VE06"): "indoor",  # 공연시설
+    ("14", "VE07"): "indoor",  # 전시시설
+    ("14", "VE08"): "indoor",  # 행사시설
+    ("14", "VE09"): "indoor",  # 교육시설
+    ("14", "VE12"): "indoor",  # 기타문화관광지(서점 등)
+    # content_type=28 (leisure)
+    ("28", "AC05"): "outdoor",  # 캠핑
+    ("28", "LS02"): "outdoor",  # 수상레저스포츠
+    ("28", "LS03"): "outdoor",  # 항공레저스포츠
+    ("28", "VE12"): "indoor",  # 기타문화관광지(카지노)
+    # content_type=38 (shopping)
+    ("38", "SH01"): "indoor",  # 백화점
+    ("38", "SH03"): "indoor",  # 대형마트
+    ("38", "SH04"): "indoor",  # 면세점
+    ("38", "SH05"): "indoor",  # 전문매장/상가
+    ("38", "SH06"): "outdoor",  # 시장
+    ("38", "SH07"): "indoor",  # 기타쇼핑시설
+    # content_type=39 (restaurant) — 전부 indoor
+    ("39", "FD01"): "indoor",  # 한식
+    ("39", "FD02"): "indoor",  # 외국식
+    ("39", "FD03"): "indoor",  # 간이음식
+    ("39", "FD04"): "indoor",  # 주점
+    ("39", "FD05"): "indoor",  # 카페/찻집
+}
 _WEEKDAY_NAMES = (
     "monday",
     "tuesday",
@@ -58,7 +103,7 @@ def map_context_to_scoring_candidates(
             place_id=place.place_id,
             name=place.name,
             category=place.category,
-            environment_type=_environment_type(place.category),
+            environment_type=_environment_type(place.category, place.lcls_systm3),
             distance_km=_haversine_km(
                 origin.latitude,
                 origin.longitude,
@@ -75,7 +120,16 @@ def map_context_to_scoring_candidates(
     )
 
 
-def _environment_type(category: str) -> str:
+def _environment_type(category: str, lcls_systm3: str | None) -> str:
+    """중분류(lcls_systm2) 기준으로 판정하고, 소분류 코드가 없거나 Registry에
+    없으면(과거 fixture 등) 대분류(category) 기준 최소 매핑으로 폴백한다."""
+    if lcls_systm3:
+        found = get_tour_category_registry().get_by_small_code(lcls_systm3)
+        if found is not None:
+            return _MIDDLE_CATEGORY_ENVIRONMENT.get(
+                (found.content_type_id, found.lcls_systm2), "unknown"
+            )
+
     normalized = category.strip().lower()
     if normalized in _INDOOR_CATEGORIES:
         return "indoor"
