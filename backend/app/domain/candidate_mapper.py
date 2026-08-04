@@ -6,7 +6,8 @@ Provider 응답 형태(Real/Fake)에는 독립적이다. 다만 environment_type
 TECH-02가 없앤 건 "D가 실행 중에 C의 Tool(날씨·장소 조회 등)을 직접 호출"하는
 런타임 의존이고, 이 조회는 그와 성격이 달라 TECH-02 위반이 아니라고 판단했다
 (C도 5a3dacc 커밋 메시지에서 이 조회 방식을 직접 지정함). 이 판단 자체를 C에게
-확인 요청한 상태 — package_D/feature-environment-type-classification.md 참고.
+확인 요청했고 승인받았다(2026-08-04) — package_D/feature-environment-type-classification.md,
+docs/decision-log.md D-045 참고.
 """
 
 from __future__ import annotations
