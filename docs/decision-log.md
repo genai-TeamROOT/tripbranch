@@ -748,6 +748,26 @@
   후보 보강의 매핑 연결은 후속 작업이다.
 
 
+### D-042 — Real Provider 실패 시 Fake로 자동 전환하지 않는다
+
+- 상태: `Accepted`, 코드에 이미 반영됨(요청 중 Provider를 교체하는 경로가 없음)
+- 결정: Provider는 부팅 시점에 설정(`PROVIDER_MODE`, `*_PROVIDER`)으로 한 번 정해지고,
+  요청 처리 중 Real → Fake 전환은 하지 않는다. 실패는 `unavailable`로 드러내거나 같은
+  성격의 다른 Real 경로로 넘어간다.
+- 이유: 조용한 폴백은 "실데이터를 보고 있는지"를 판단 불가능하게 만든다. 잘못된 데이터가
+  정상 응답처럼 나가면 사용자도 개발자도 문제를 인지하지 못한다.
+- 근거 사례: `npm run dev`가 `backend/.env`를 읽지 못해 전 Provider가 fake로 뜬 사건
+  (커밋 `f201f0b`). 오류 없이 `"테스트 카페"`가 추천됐고, 실행 위치 문제임을 찾는 데
+  시간이 걸렸다. 이후 `env_file`을 절대경로로 고정하고 부팅 시 Provider 모드를 로그로
+  남기도록 했다.
+- 이미 이 원칙에서 나온 결정들:
+  - `validate_provider_config()` — real 모드에 키가 없으면 첫 요청이 아니라 **부팅에서** 실패
+  - Supabase 상세조회 실패 시 요청 중 TourAPI fallback 없음(D-041 관련)
+  - Local Search 장애 시 Geocoding으로 진행 — Fake가 아니라 다른 Real이라 위배 아님(D-041)
+- 범위 밖: 재시도(retry)와 서킷 브레이커는 이 결정과 별개다. 같은 Real Provider를 다시
+  부르는 것은 허용된다.
+
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -777,3 +797,4 @@
 | 2026-07-31 | D-038 날씨 warning을 IGNORE(미언급)와 조회 실패로 분리, §10 불일치·날씨 조회 경로 이원화를 TODO로 기록 |
 | 2026-08-02 | D-039 되묻기 답변을 기존 요청의 연속으로 처리하고 조건 유지·플래그 저장 및 소비 규칙을 기록 |
 | 2026-08-02 | D-040 혼잡도 2차 Scoring 구현(안 B 채택), `rerank_with_concentration()` 신규 인터페이스와 concentration Feature를 Evidence/Explanation에 추가, A에 Protocol `context` 파라미터 추가 요청 |
+| 2026-08-03 | D-042 Real Provider 실패 시 Fake 자동 전환을 하지 않는 공통 정책을 명시 |

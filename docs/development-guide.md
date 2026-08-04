@@ -103,6 +103,28 @@ Local Search → Geocoding 순서로 처리합니다.
 키를 한 번에 모아서 알려줍니다(`app/providers/factory.py`의
 `validate_provider_config()`가 `app/main.py` lifespan에서 실행됩니다).
 
+#### Real Provider 실패 시 Fake로 전환하지 않는다
+
+Real Provider 호출이 실패해도 요청 도중 Fake Provider로 낮추지 않습니다. 실패는
+`unavailable` 상태로 사용자에게 드러나거나, 같은 성격의 다른 **Real** 경로로 넘어갑니다.
+Fake는 `PROVIDER_MODE=fake` 또는 `*_PROVIDER=fake`로 **명시적으로 선택했을 때만**
+사용됩니다(D-042).
+
+조용한 폴백을 넣지 않는 이유는, 그러면 개발자도 사용자도 "지금 보고 있는 게 실데이터인지"
+알 수 없기 때문입니다. 실제로 `npm run dev`가 `backend/.env`를 읽지 못해 전 Provider가
+fake로 뜬 적이 있는데, 오류 없이 "테스트 카페"가 추천돼 원인을 찾는 데 시간이 걸렸습니다.
+같은 이유로 부팅 시 자격증명을 검증하고, Provider 모드를 로그로 남깁니다.
+
+| 상황 | 처리 | 이유 |
+|------|------|------|
+| Naver Local Search 실패 | Geocoding으로 진행 | Fake가 아니라 다른 Real Provider |
+| Supabase 상세조회 실패 | `unavailable` 반환 | 요청 중 TourAPI fallback을 하지 않기로 결정 |
+| 기상청 실패 | 날씨 없이 `partial` | 날씨는 선택 정보 |
+| Geocoding 실패 | `unavailable` | 검색 중심점이 없으면 추천 자체가 불가 |
+
+즉 "Real → 다른 Real"이나 "실패를 드러낸 채 진행"은 허용되고, "Real → Fake"만 금지됩니다.
+재시도는 이 정책과 별개로, 같은 Real Provider를 다시 부르는 것은 허용됩니다.
+
 API 키는 채팅, 로그, 테스트 traceback, 커밋에 포함하지 않습니다. 새 키 환경변수를
 도입할 때는 `app/config.py`, `.env.example`, 실제 로컬 `.env`의 변수명을 함께
 정리하되 `.env`의 값은 공유하지 않습니다.
