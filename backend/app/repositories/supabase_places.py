@@ -37,6 +37,11 @@ _LOCATION_COLUMNS = (
     "place_concentration_mappings(primary_concentration_name,concentration_search_key)"
 )
 
+# 별칭 조회는 매핑이 있는 장소로만 좁혀야 해서 inner join이 필요하다.
+_LOCATION_COLUMNS_INNER = _LOCATION_COLUMNS.replace(
+    "place_concentration_mappings(", "place_concentration_mappings!inner("
+)
+
 _DETAIL_COLUMNS = ",".join(
     (
         "content_id",
@@ -123,6 +128,22 @@ def _map_place_locations(
             )
         )
     return tuple(locations)
+
+
+def _title_filters(name: str) -> list[str]:
+    """장소명 조회에 쓸 PostgREST 필터를 좁은 것부터 나열한다.
+
+    부분 일치로 넓히지 않는다 - "종묘*"로 찾으면 종묘광장공원·종묘대제까지 걸려
+    엉뚱한 장소가 검색 중심이 된다. 이름 뒤에 괄호 부기만 붙은 형태로 한정한다.
+    PostgREST는 ilike의 `*`를 `%`로 바꿔 주므로 인코딩 문제가 없다.
+    """
+    filters = [f"eq.{name}"]
+    if any(character.isspace() for character in name):
+        # "북촌 한옥마을" → "북촌한옥마을"
+        filters.append("ilike." + "*".join(name.split()))
+    # "종묘" → "종묘 [유네스코 세계유산]", "세검정 터" → "세검정 터 (구 세검정)"
+    filters.extend([f"ilike.{name} [*", f"ilike.{name} (*"])
+    return filters
 
 
 def _optional_text(value: object) -> str | None:
@@ -341,20 +362,38 @@ class SupabasePlaceRepository:
         사용할 수 없으므로 반환하지 않는다. 별칭·부분 일치 정책은 상위 Tool이
         별도 경로로 확장할 수 있도록 이 Repository는 정확 일치만 담당한다.
 
-        다만 공백 유무는 표기 차이로 본다. 지역 검색은 "북촌 한옥마을"을 주는데
-        저장소에는 "북촌한옥마을"로 들어 있어, 정확 일치만 보면 같은 장소를 놓친다.
+        다만 공백 유무와 괄호 부기는 표기 차이로 본다. 지역 검색은 "북촌 한옥마을"을
+        주는데 저장소에는 "북촌한옥마을"로 들어 있고, 사용자는 "종묘"라고 하는데
+        저장소 제목은 "종묘 [유네스코 세계유산]"이다. 정확 일치만 보면 모두 놓친다.
         """
         normalized_name = name.strip()
         if not normalized_name:
             return ()
-        rows = await self._query_places_by_title(f"eq.{normalized_name}")
-        if not rows and any(character.isspace() for character in normalized_name):
-            # 공백 자리에 와일드카드를 넣어 "북촌 한옥마을" → "북촌한옥마을"을 잇는다.
-            # PostgREST는 ilike의 `*`를 `%`로 바꿔 주므로 인코딩 문제가 없다.
-            pattern = "*".join(normalized_name.split())
-            rows = await self._query_places_by_title(f"ilike.{pattern}")
-
+        for title_filter in _title_filters(normalized_name):
+            rows = await self._query_places_by_title(title_filter)
+            if rows:
+                return _map_place_locations(rows, fallback_title=normalized_name)
+        # 제목으로 못 찾으면 사람이 지정한 별칭을 본다. "창덕궁"은 저장소 제목이
+        # "창덕궁과 후원 [유네스코 세계유산]"이라 어떤 제목 규칙으로도 닿지 않는다.
+        rows = await self._query_places_by_alias(normalized_name)
         return _map_place_locations(rows, fallback_title=normalized_name)
+
+    async def _query_places_by_alias(self, alias: str) -> list[object]:
+        """매핑 별칭으로 장소를 찾는다. 별칭이 없는 장소는 조인에서 빠진다."""
+        response = await self._request(
+            "GET",
+            "/places",
+            params={
+                "select": _LOCATION_COLUMNS_INNER,
+                "is_active": "eq.true",
+                "place_concentration_mappings.concentration_aliases": f"cs.{{{alias}}}",
+                "limit": "2",
+            },
+        )
+        rows = self._json(response)
+        if not isinstance(rows, list):
+            raise SupabaseRepositoryError("invalid place location response")
+        return rows
 
     async def _query_places_by_title(self, title_filter: str) -> list[object]:
         response = await self._request(

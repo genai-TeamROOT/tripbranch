@@ -127,6 +127,96 @@ async def test_find_active_places_by_name_reads_coordinates_and_mapping() -> Non
 
 
 @pytest.mark.asyncio
+async def test_find_active_places_by_name_falls_back_through_title_variants() -> None:
+    """정확 일치 → 공백 무시 → 괄호 부기 → 별칭 순으로 넓힌다(D-043).
+
+    지역 검색은 "북촌 한옥마을"을 주는데 저장소는 "북촌한옥마을"이고, 사용자는
+    "종묘"라고 하는데 저장소 제목은 "종묘 [유네스코 세계유산]"이다.
+    """
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        title = request.url.params.get("title")
+        alias = request.url.params.get(
+            "place_concentration_mappings.concentration_aliases"
+        )
+        seen.append(title if title is not None else f"alias:{alias}")
+        if title == "ilike.종묘 [*":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "content_id": "126510",
+                        "title": "종묘 [유네스코 세계유산]",
+                        "address": None,
+                        "latitude": 37.5739,
+                        "longitude": 126.9945,
+                        "place_concentration_mappings": {
+                            "primary_concentration_name": "종묘 [유네스코 세계유산]",
+                            "concentration_search_key": "종묘",
+                        },
+                    }
+                ],
+            )
+        return httpx.Response(200, json=[])
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        locations = await _repository(transport, client).find_active_places_by_name("종묘")
+
+    assert seen == ["eq.종묘", "ilike.종묘 [*"]
+    assert len(locations) == 1
+    assert locations[0].concentration_name == "종묘 [유네스코 세계유산]"
+    # 조회는 검색어로, 대조는 정식 명칭으로 해야 종묘광장공원과 섞이지 않는다.
+    assert locations[0].concentration_search_key == "종묘"
+
+
+@pytest.mark.asyncio
+async def test_find_active_places_by_name_uses_mapping_alias_as_last_resort() -> None:
+    """"창덕궁"은 저장소 제목이 "창덕궁과 후원 [유네스코 세계유산]"이라 제목 규칙으로
+    닿지 않는다. 접두 매칭으로 넓히면 창덕궁 낙선재·약다방까지 걸리므로 사람이 지정한
+    별칭으로만 잇는다.
+    """
+    alias_filters: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        alias = request.url.params.get(
+            "place_concentration_mappings.concentration_aliases"
+        )
+        if alias is None:
+            return httpx.Response(200, json=[])
+        alias_filters.append(alias)
+        assert "!inner" in request.url.params["select"]
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "content_id": "127642",
+                    "title": "창덕궁과 후원 [유네스코 세계유산]",
+                    "address": None,
+                    "latitude": 37.5794,
+                    "longitude": 126.9910,
+                    "place_concentration_mappings": {
+                        "primary_concentration_name": "창덕궁과 후원 [유네스코 세계유산]",
+                        "concentration_search_key": "창덕궁과",
+                    },
+                }
+            ],
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        locations = await _repository(transport, client).find_active_places_by_name(
+            "창덕궁"
+        )
+
+    assert alias_filters == ["cs.{창덕궁}"]
+    assert len(locations) == 1
+    assert locations[0].title == "창덕궁과 후원 [유네스코 세계유산]"
+    assert locations[0].concentration_search_key == "창덕궁과"
+
+
+@pytest.mark.asyncio
 async def test_get_region_place_states_maps_rows() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.params["area_code"] == "eq.11"

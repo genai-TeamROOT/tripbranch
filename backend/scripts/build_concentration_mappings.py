@@ -349,7 +349,7 @@ def match_places(
 
     for place in deduped:
         override = overrides.get(place.title)
-        aliases = _available_aliases(override, available)
+        aliases = _override_aliases(override)
 
         if override is not None and override.primary is not None:
             if override.primary not in available:
@@ -388,13 +388,17 @@ def match_places(
     return matched, unmatched + duplicates, leftover
 
 
-def _available_aliases(
-    override: ManualOverride | None, available: set[str]
-) -> tuple[str, ...]:
-    """집중률 API에 실제로 있는 별칭만 남긴다 — 없는 이름은 조회에 쓸 수 없다."""
+def _override_aliases(override: ManualOverride | None) -> tuple[str, ...]:
+    """사람이 지정한 별칭을 그대로 싣는다.
+
+    "이 장소를 가리키는 다른 이름"이라는 뜻이라 집중률 API에 있을 필요가 없다.
+    사용자는 "창덕궁"이라고 하지만 저장소 제목은 "창덕궁과 후원 [유네스코 세계유산]"
+    이고 집중률 목록에도 그 이름뿐이다. 조회는 concentration_search_key가 맡으므로
+    별칭을 집중률 목록으로 거를 이유가 없다.
+    """
     if override is None:
         return ()
-    return tuple(alias for alias in override.aliases if alias in available)
+    return override.aliases
 
 
 def write_mapping_csv(rows: Sequence[MappingRow], path: Path) -> None:
