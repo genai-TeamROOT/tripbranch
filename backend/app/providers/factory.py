@@ -30,6 +30,7 @@ from app.providers.real_place import RealPlaceProvider
 from app.providers.stub import FakeLLMProvider, FakePlaceProvider, FakeWeatherProvider
 from app.providers.supabase_place_details import SupabasePlaceDetailsProvider
 from app.providers.weather import RealWeatherProvider
+from app.repositories.fake_places import FakePlaceLocationRepository
 from app.repositories.supabase_places import SupabasePlaceRepository
 
 
@@ -104,17 +105,19 @@ def get_place_search_provider(client: httpx.AsyncClient) -> PlaceSearchProvider:
 
 def get_place_location_repository(
     client: httpx.AsyncClient,
-) -> SupabasePlaceRepository | None:
+) -> SupabasePlaceRepository | FakePlaceLocationRepository | None:
     """검색 중심점 해석에 사용할 places 저장소를 준비한다.
 
-    Supabase 설정이 없는 개발·테스트 환경은 기존 Geocoding 경로를 유지한다.
+    Supabase 설정이 없는 개발·테스트 환경은 종로구 대표 장소를 담은 fake 저장소를
+    쓴다. 집중률 조회는 매핑된 장소명으로만 나가므로(D-043) 저장소가 없으면 INFO
+    혼잡도가 전부 no_data로 떨어져 fake 환경에서 경로 확인이 불가능해진다.
     """
     if (
         settings.resolved_place_provider != "real"
         or not settings.supabase_url.strip()
         or not settings.supabase_secret_key.strip()
     ):
-        return None
+        return FakePlaceLocationRepository()
     return SupabasePlaceRepository(
         supabase_url=settings.supabase_url,
         secret_key=settings.supabase_secret_key,

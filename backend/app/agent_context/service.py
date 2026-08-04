@@ -312,9 +312,20 @@ class ContextService:
                 provider_metadata=(location_result.provider_metadata,),
             )
 
-        concentration_place_name = (
-            resolved_location.concentration_name or place_name
-        )
+        concentration_place_name = resolved_location.concentration_name
+        if concentration_place_name is None:
+            # 매핑이 없는 이름을 tAtsNm에 그대로 넣으면 안 된다. 부분 일치 검색이라
+            # "종로"가 낙지볶음 골목·세종로공원·대학천 책방거리를 함께 끌어와, 그중
+            # 하나의 값을 "종로의 혼잡도"로 답하게 된다(2026-08-04 실측). 활성 장소
+            # 847건 중 매핑은 100건뿐이라 이 경로가 다수다.
+            return await self._fetch_info_concentration_fallback(
+                request,
+                latitude=resolved_location.latitude,
+                longitude=resolved_location.longitude,
+                reference_date=reference_date,
+                concentration_tool=concentration_tool,
+                provider_metadata=(location_result.provider_metadata,),
+            )
         concentration_result = await concentration_tool.execute(
             ConcentrationQuery(
                 area_code=JONGNO_CONCENTRATION_AREA_CODE,
@@ -357,10 +368,18 @@ class ContextService:
         )
         rate = forecast.concentration_rate if forecast is not None else None
         if forecast is None or not is_valid_concentration_rate(rate):
-            return _info_no_data_response(
+            # 매핑된 장소인데도 쓸 값이 없다 — 여러 장소가 섞여 와 특정하지 못했거나
+            # 해당 날짜 예보가 없는 경우다. 인근 장소로 답할 수 있으면 답한다.
+            return await self._fetch_info_concentration_fallback(
                 request,
-                location_result.provider_metadata,
-                concentration_result.provider_metadata,
+                latitude=resolved_location.latitude,
+                longitude=resolved_location.longitude,
+                reference_date=reference_date,
+                concentration_tool=concentration_tool,
+                provider_metadata=(
+                    location_result.provider_metadata,
+                    concentration_result.provider_metadata,
+                ),
             )
 
         normalized = normalize_concentration(rate)
