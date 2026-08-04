@@ -406,6 +406,7 @@ async def run_agent_flow(
             llm_output,
             tool_status=tool_response.status,
             tool_clarification=tool_response.clarification,
+            tool_error_code=tool_response.error.code if tool_response.error else None,
             llm=llm,
         )
         return AgentResponse(

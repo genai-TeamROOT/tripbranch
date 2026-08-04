@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.agent_context.schemas import ContextError
 from app.providers.contracts import ProviderSource, provider_result
 from app.schemas import (
     ClarificationPayload,
@@ -208,6 +209,21 @@ class TestComposeChatMessageRecommendAndModify:
         assert message == "죄송하지만 아직 지원하지 않는 요청이에요."
 
     @pytest.mark.asyncio
+    async def test_tool_stage_unsupported_region_names_the_service_area(self) -> None:
+        """지원 지역 밖은 무엇이 문제인지 알려야 한다(D-044).
+
+        "아직 지원하지 않는 요청"이라고만 하면 조건을 바꿔 다시 시도하게 된다.
+        """
+        llm_output = LLMOutput(intent=Intent.RECOMMEND, status=OutputStatus.COMPLETE)
+        message = await compose_chat_message(
+            llm_output,
+            tool_status="unsupported",
+            tool_error_code="unsupported_region",
+            llm=_StubLLM(),
+        )
+        assert message == "지금은 서울 종로구 안의 장소만 안내할 수 있어요."
+
+    @pytest.mark.asyncio
     async def test_tool_stage_unavailable(self) -> None:
         llm_output = LLMOutput(intent=Intent.RECOMMEND, status=OutputStatus.COMPLETE)
         message = await compose_chat_message(
@@ -279,6 +295,20 @@ class TestComposeInfoConcentrationMessage:
         )
         message = compose_info_concentration_message(response)
         assert message == "이 장소 유형은 혼잡도 데이터가 없어요."
+
+    def test_unsupported_region_names_the_service_area(self) -> None:
+        """"혼잡도 데이터가 없다"고 하면 다른 날 다시 물어보게 된다(D-044)."""
+        response = InfoContextResponse(
+            request_id="r5",
+            status="unsupported",
+            error=ContextError(
+                code="unsupported_region",
+                message="현재는 서울특별시 종로구 내 장소만 지원합니다.",
+                retryable=False,
+            ),
+        )
+        message = compose_info_concentration_message(response)
+        assert message == "지금은 서울 종로구 안의 장소만 안내할 수 있어요."
 
     def test_unavailable_result_returns_generic_error(self) -> None:
         response = InfoContextResponse(
