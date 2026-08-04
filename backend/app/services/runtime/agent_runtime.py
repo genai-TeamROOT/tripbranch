@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 import httpx
 
@@ -41,10 +42,12 @@ from app.state.schema import now_kst
 from app.state.service import (
     RecommendedPlace,
     RecordRecommendationRequest,
+    RecordTraceRequest,
     SetPendingClarificationRequest,
     UpdateApiContextRequest,
     apply,
     record_recommendation,
+    record_trace,
     set_pending_clarification,
     update_api_context,
 )
@@ -69,6 +72,41 @@ def _llm_clarification_code(llm_output: LLMOutput) -> str | None:
     if clarification.ambiguous_fields:
         return f"ambiguous:{clarification.ambiguous_fields[0].field}"
     return "clarification_required"
+
+
+def _record_trace_safely(
+    *,
+    session_id: str,
+    run_id: str,
+    step: str,
+    latency_ms: int,
+    error_type: str | None = None,
+    store: StateStore | None,
+) -> None:
+    """실행 단계 1건을 B에 기록한다. (llmops-trace-contract-v1.md AF-12, B-07)
+
+    prompt_version/scoring_version/variant_id는 A/D가 아직 값을 안 줘서 None으로
+    둔다. 기록 실패가 사용자 응답까지 막으면 안 되므로 예외를 여기서 흡수한다.
+    """
+    try:
+        record_trace(
+            RecordTraceRequest(
+                session_id=session_id,
+                run_id=run_id,
+                step=step,
+                latency_ms=latency_ms,
+                error_type=error_type,
+            ),
+            store=store,
+        )
+    except Exception:
+        logger.warning(
+            "Trace 기록 실패(응답 흐름에는 영향 없음): step=%s session_id=%s run_id=%s",
+            step,
+            session_id,
+            run_id,
+            exc_info=True,
+        )
 
 
 def _remember_clarification(session_id: str, code: str | None, store: StateStore | None) -> None:
@@ -223,7 +261,9 @@ async def run_agent_flow(
         shown_place_count=len(session_context.shown_place_ids),
         current_conditions=current_conditions,
     )
+    llm_started_at = time.monotonic()
     llm_output = await build_interpretation(interpret_request, llm)
+    llm_latency_ms = int((time.monotonic() - llm_started_at) * 1000)
 
     # 3) A → B: 조건 병합. confirmed=False(= status가 complete가 아님)면 B가 State를
     #    바꾸지 않고 현재 상태만 돌려주도록 이미 구현되어 있다(계약 2.6절) — 따로 걸러서
@@ -231,6 +271,16 @@ async def run_agent_flow(
     #    없는) state가 항상 채워진다.
     apply_request = transform(llm_output, session_context, request.user_input)
     state_response = apply(apply_request, store=store)
+
+    # 2단계(LLM 호출) trace는 여기서 기록한다 — run_id/session_id가 apply() 안에서
+    # 발급되므로 2단계 시점엔 아직 없다. latency만 미리 재뒀다가 여기서 기록.
+    _record_trace_safely(
+        session_id=state_response.session_id,
+        run_id=state_response.run_id,
+        step="llm_interpret",
+        latency_ms=llm_latency_ms,
+        store=store,
+    )
 
     # 3-1) 최초 턴이면 방금 생성된 세션에 GPS를 심는다. ensure_current_context()(1번)는
     #      세션이 이미 있을 때만 GPS를 갱신한다(B 계약상 read-only, 세션은 apply()만
@@ -314,7 +364,18 @@ async def run_agent_flow(
         conditions=agent_conditions,
         gps_location=context_gps,
     )
+    tool_started_at = time.monotonic()
     tool_response = await tool_provider.fetch_context(context_request)
+    _record_trace_safely(
+        session_id=state_response.session_id,
+        run_id=state_response.run_id,
+        step="tool_fetch",
+        latency_ms=int((time.monotonic() - tool_started_at) * 1000),
+        error_type=(
+            tool_response.status if tool_response.status in _TOOL_TERMINAL_STATUSES else None
+        ),
+        store=store,
+    )
 
     # 5-1) C 단계 자체의 needs_clarification/unsupported/unavailable — LLM 단계
     #      needs_clarification(4번)과 같은 방식으로 여기서 바로 응답을 끝낸다.
@@ -378,10 +439,18 @@ async def run_agent_flow(
 
     # 6) A → D: 1차 Scoring (Protocol을 통해서만 — D의 구체 클래스는 여기서 모른다).
     #    concentration_intent 유무와 무관하게 항상 이 호출 하나만 한다 — 기존과 동일.
+    scoring_started_at = time.monotonic()
     recommendations = await recommendation_provider.recommend(
         agent_conditions,
         tool_context,
         state_response.excluded_place_ids,
+    )
+    _record_trace_safely(
+        session_id=state_response.session_id,
+        run_id=state_response.run_id,
+        step="scoring",
+        latency_ms=int((time.monotonic() - scoring_started_at) * 1000),
+        store=store,
     )
 
     # 6-1) concentration_intent가 AVOID/SEEK일 때만: 1차 상위 후보의 혼잡도를 C에
