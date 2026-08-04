@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import csv
 import json
 from collections.abc import Sequence
 from dataclasses import asdict
+from datetime import datetime
+from pathlib import Path
 
 import httpx
 
 from app.config import Settings
+from app.domain.models import TourPlacePage, TourPlaceRecord
 from app.providers.real_place import RealPlaceProvider
 from app.repositories.supabase_places import SupabasePlaceRepository
 from app.services.place_sync import PlaceSyncService
@@ -35,7 +39,81 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="수정 시각과 TTL에 관계없이 상세정보를 다시 조회",
     )
+    parser.add_argument(
+        "--from-snapshot",
+        type=Path,
+        help=(
+            "장소 목록을 TourAPI 대신 스냅샷 CSV에서 읽는다. snapshot_places.py가 저장한 "
+            "파일을 넘기면 같은 날 목록 API를 두 번 호출하지 않는다(상세조회는 그대로 API 사용)."
+        ),
+    )
     return parser
+
+
+class SnapshotAreaPlaceProvider:
+    """목록만 스냅샷에서 읽고 상세조회는 실제 Provider에 위임한다.
+
+    대조에 쓴 목록과 DB에 반영하는 목록이 같은 데이터임을 보장한다 — 두 번 조회하면
+    그 사이 원본이 바뀌어 대조 결과와 실제 반영분이 어긋날 수 있다.
+    """
+
+    def __init__(self, snapshot_path: Path, inner: RealPlaceProvider) -> None:
+        self._records = _load_snapshot_records(snapshot_path)
+        self._inner = inner
+
+    async def list_places_by_area(
+        self,
+        area_code: str,
+        district_code: str,
+        page_no: int,
+        num_of_rows: int = 100,
+    ) -> TourPlacePage:
+        start = (page_no - 1) * num_of_rows
+        return TourPlacePage(
+            page_no=page_no,
+            num_of_rows=num_of_rows,
+            total_count=len(self._records),
+            places=tuple(self._records[start : start + num_of_rows]),
+        )
+
+    async def get_operating_details(self, content_id: str, content_type_id: str):
+        return await self._inner.get_operating_details(content_id, content_type_id)
+
+
+def _optional(value: str) -> str | None:
+    stripped = value.strip()
+    return stripped or None
+
+
+def _load_snapshot_records(path: Path) -> list[TourPlaceRecord]:
+    with path.open(encoding="utf-8-sig") as fp:
+        rows = list(csv.DictReader(fp))
+    records: list[TourPlaceRecord] = []
+    for row in rows:
+        modified_at = _optional(row.get("source_modified_at", ""))
+        records.append(
+            TourPlaceRecord(
+                content_id=row["content_id"].strip(),
+                content_type_id=row["content_type_id"].strip(),
+                title=row["title"].strip(),
+                address=_optional(row.get("address", "")),
+                latitude=float(row["latitude"]) if _optional(row.get("latitude", "")) else None,
+                longitude=float(row["longitude"]) if _optional(row.get("longitude", "")) else None,
+                area_code=row["area_code"].strip(),
+                district_code=row["district_code"].strip(),
+                lcls_systm1=_optional(row.get("lcls_systm1", "")),
+                lcls_systm2=_optional(row.get("lcls_systm2", "")),
+                lcls_systm3=_optional(row.get("lcls_systm3", "")),
+                source_modified_at=(
+                    datetime.fromisoformat(modified_at.replace("Z", "+00:00"))
+                    if modified_at
+                    else None
+                ),
+            )
+        )
+    # 스냅샷 정렬과 무관하게 페이지 경계가 안정적이도록 고정 순서를 준다.
+    records.sort(key=lambda record: record.content_id)
+    return records
 
 
 async def run(args: argparse.Namespace, settings: Settings) -> int:
@@ -60,8 +138,13 @@ async def run(args: argparse.Namespace, settings: Settings) -> int:
             client=client,
             timeout_seconds=settings.external_api_timeout_seconds,
         )
+        list_provider = (
+            SnapshotAreaPlaceProvider(args.from_snapshot, provider)
+            if args.from_snapshot is not None
+            else provider
+        )
         service = PlaceSyncService(
-            provider,
+            list_provider,
             repository,
             page_size=settings.place_sync_page_size,
             detail_concurrency=settings.place_sync_detail_concurrency,
