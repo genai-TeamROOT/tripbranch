@@ -16,12 +16,21 @@ from app.config import Settings
 
 _VALID_MATCH_METHODS = {"exact", "normalized", "manual", "exact_with_alias"}
 _UPSERT_CHUNK_SIZE = 100
-_DEFAULT_CSV_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "supabase"
-    / "data"
-    / "concentration_place_mapping.csv"
-)
+_DATA_DIR = Path(__file__).resolve().parents[2] / "supabase" / "data"
+_MAPPING_CSV_GLOB = "concentration_place_mapping_*.csv"
+
+
+def latest_mapping_csv(data_dir: Path = _DATA_DIR) -> Path | None:
+    """가장 최근 매핑 CSV. 파일명이 날짜라 이름 정렬로 최신을 고른다.
+
+    build_concentration_mappings.py가 실행일로 파일을 남기므로 기본값을 고정
+    파일명으로 두면 재생성할 때마다 어긋난다.
+    """
+    candidates = sorted(data_dir.glob(_MAPPING_CSV_GLOB))
+    return candidates[-1] if candidates else None
+
+
+_DEFAULT_CSV_PATH = latest_mapping_csv()
 
 
 @dataclass(frozen=True)
@@ -39,7 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--csv",
         type=Path,
         default=_DEFAULT_CSV_PATH,
-        help="집중률 장소 매핑 CSV 경로",
+        required=_DEFAULT_CSV_PATH is None,
+        help="집중률 장소 매핑 CSV 경로(기본값: supabase/data의 최신 매핑 CSV)",
     )
     parser.add_argument(
         "--dry-run",
@@ -99,6 +109,14 @@ def load_mapping_payloads(
         if primary_name in aliases:
             raise ValueError(f"{content_id}: 대표명이 aliases에 중복됐습니다.")
 
+        # tAtsNm은 공백이 든 값을 넘기면 0건이 오므로(2026-08-04 실측) 조회용 검색어를
+        # 따로 싣는다. 비어 있으면 호출자가 정식 명칭을 그대로 쓴다.
+        search_key = (row.get("concentration_search_key") or "").strip() or None
+        if search_key is not None and any(c.isspace() for c in search_key):
+            raise ValueError(
+                f"{content_id}: concentration_search_key에 공백이 있으면 조회가 0건이 됩니다."
+            )
+
         match_method = (row.get("match_method") or "").strip()
         if match_method not in _VALID_MATCH_METHODS:
             raise ValueError(f"{content_id}: 지원하지 않는 match_method입니다.")
@@ -111,6 +129,7 @@ def load_mapping_payloads(
             {
                 "content_id": content_id,
                 "primary_concentration_name": primary_name,
+                "concentration_search_key": search_key,
                 "concentration_aliases": aliases,
                 "match_method": match_method,
                 "confidence_score": confidence,

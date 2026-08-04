@@ -180,7 +180,16 @@ def select_concentration_forecast(
     candidate_name: str,
     reference_date: date,
 ) -> ConcentrationForecast | None:
-    """오늘 날짜의 유효값 중 요청 후보와 이름이 같은 예측을 우선한다."""
+    """오늘 날짜의 유효값 중 요청 후보와 이름이 같은 예측을 고른다.
+
+    집중률 API의 tAtsNm은 부분 일치 검색이라 한 번에 여러 장소가 딸려 온다("종묘"로
+    조회하면 "종묘광장공원"도 함께 온다). 이름이 안 맞는데 첫 예보로 폴백하면 엉뚱한
+    장소의 혼잡도를 정상 응답처럼 답하게 되므로, 여러 장소가 섞여 왔는데 일치하는
+    이름이 없으면 답을 포기한다. 틀린 값보다 "정보 없음"이 낫다.
+
+    한 곳만 온 경우에는 표기가 달라도(예: 요청 "운현궁" ↔ 응답 "서울 운현궁") 그
+    장소가 맞으므로 그대로 쓴다.
+    """
 
     if concentration is None:
         return None
@@ -193,14 +202,19 @@ def select_concentration_forecast(
     if not forecasts:
         return None
     normalized_name = candidate_name.strip()
-    return next(
+    matched = next(
         (
             forecast
             for forecast in forecasts
             if forecast.place_name.strip() == normalized_name
         ),
-        forecasts[0],
+        None,
     )
+    if matched is not None:
+        return matched
+    if len({forecast.place_name.strip() for forecast in forecasts}) > 1:
+        return None
+    return forecasts[0]
 
 __all__ = [
     "CandidateEnrichmentService",

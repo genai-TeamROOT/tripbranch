@@ -190,7 +190,10 @@ class StoredPlaceLocation:
     address: str | None
     latitude: float
     longitude: float
+    # 집중률 응답에서 장소를 골라낼 때 대조할 정식 명칭.
     concentration_name: str | None = None
+    # tAtsNm에 넣을 검색어. 비어 있으면 concentration_name을 그대로 쓴다.
+    concentration_search_key: str | None = None
 
 
 @dataclass(frozen=True)
