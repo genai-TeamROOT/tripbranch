@@ -1,4 +1,13 @@
-"""장소 Tool 결과를 Provider 독립적인 ScoringCandidate로 변환한다."""
+"""장소 Tool 결과를 ScoringCandidate로 변환한다.
+
+Provider 응답 형태(Real/Fake)에는 독립적이다. 다만 environment_type 세분화
+(D-045)를 위해 TourCategoryRegistry(JSON 파일을 프로세스 시작 시 한 번 로드해
+조회만 하는 정적 참조 테이블, 부작용·외부 호출 없음)는 예외적으로 참조한다.
+TECH-02가 없앤 건 "D가 실행 중에 C의 Tool(날씨·장소 조회 등)을 직접 호출"하는
+런타임 의존이고, 이 조회는 그와 성격이 달라 TECH-02 위반이 아니라고 판단했다
+(C도 5a3dacc 커밋 메시지에서 이 조회 방식을 직접 지정함). 이 판단 자체를 C에게
+확인 요청한 상태 — package_D/feature-environment-type-classification.md 참고.
+"""
 
 from __future__ import annotations
 
