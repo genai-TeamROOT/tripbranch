@@ -9,8 +9,8 @@
     "places": {
       "status": "partial",
       "data": [
-        {"place_id": "partial-detail-known-1", "name": "운영정보 확인 장소", "category": "museum", "location": {"latitude": 37.5802, "longitude": 126.9777}, "operating_hours_raw": "09:00~18:00", "rest_date_raw": "월요일", "operating_schedule": {"availability": "scheduled", "time_ranges": [{"open_time": "09:00", "close_time": "18:00", "crosses_midnight": false}], "closure_rules": [{"weekdays": ["monday"]}], "parse_status": "parsed"}},
-        {"place_id": "partial-detail-missing-1", "name": "운영정보 미확인 장소", "category": "cafe", "location": {"latitude": 37.5810, "longitude": 126.9785}, "operating_hours_raw": null, "rest_date_raw": null, "operating_schedule": null}
+        {"place_id": "partial-detail-known-1", "name": "운영정보 확인 장소", "category": "cultural_facility", "location": {"latitude": 37.5802, "longitude": 126.9777}, "operating_hours_raw": "09:00~18:00", "rest_date_raw": "월요일", "operating_schedule": {"availability": "scheduled", "time_ranges": [{"open_time": "09:00", "close_time": "18:00", "crosses_midnight": false}], "closure_rules": [{"weekdays": ["monday"]}], "parse_status": "parsed"}},
+        {"place_id": "partial-detail-missing-1", "name": "운영정보 미확인 장소", "category": "restaurant", "location": {"latitude": 37.5810, "longitude": 126.9785}, "operating_hours_raw": null, "rest_date_raw": null, "operating_schedule": null}
       ],
       "error": null,
       "warnings": [{"code": "place_details_missing", "message": "일부 장소의 운영정보를 확인하지 못했습니다."}],

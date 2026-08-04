@@ -9,8 +9,8 @@
     "places": {
       "status": "partial",
       "data": [
-        {"place_id": "hours-missing-museum-1", "name": "운영시간 미확인 박물관", "category": "museum", "location": {"latitude": 37.5802, "longitude": 126.9778}, "operating_hours_raw": null, "rest_date_raw": null, "operating_schedule": null},
-        {"place_id": "hours-missing-cafe-1", "name": "운영시간 미확인 카페", "category": "cafe", "location": {"latitude": 37.5810, "longitude": 126.9785}, "operating_hours_raw": null, "rest_date_raw": null, "operating_schedule": null}
+        {"place_id": "hours-missing-museum-1", "name": "운영시간 미확인 박물관", "category": "cultural_facility", "location": {"latitude": 37.5802, "longitude": 126.9778}, "operating_hours_raw": null, "rest_date_raw": null, "operating_schedule": null},
+        {"place_id": "hours-missing-cafe-1", "name": "운영시간 미확인 카페", "category": "restaurant", "location": {"latitude": 37.5810, "longitude": 126.9785}, "operating_hours_raw": null, "rest_date_raw": null, "operating_schedule": null}
       ],
       "error": null,
       "warnings": [{"code": "operating_hours_missing", "message": "모든 후보의 운영시간을 확인하지 못했습니다."}],

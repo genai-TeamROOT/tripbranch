@@ -67,11 +67,14 @@ CONTEXT_FIXTURE_EXPECTATIONS: tuple[ContextFixtureCase, ...] = (
                 },
                 weights_used=_DEFAULT_WEIGHTS,
             ),
+            # 국립민속박물관은 cultural_facility(실내)다. 이전에는 candidate_mapper가
+            # 이 값을 몰라 environment_type=unknown으로 떨어져 날씨 점수가 0.85였다.
+            # 실내로 정상 판정되면서 맑은 날 적합도가 0.7로 내려간다(순위는 그대로).
             ExpectedItem(
                 place_id="130100",
-                score=0.9115,
+                score=0.8515,
                 feature_scores={
-                    "weather": 0.85,
+                    "weather": 0.7,
                     "remaining_operating_time": 1.0,
                     "distance": 0.8575,
                 },

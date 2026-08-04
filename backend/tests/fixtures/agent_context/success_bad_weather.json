@@ -24,7 +24,7 @@
         {
           "place_id": "bad-weather-museum-1",
           "name": "비오는날 박물관",
-          "category": "museum",
+          "category": "cultural_facility",
           "location": {"latitude": 37.5811, "longitude": 126.9781},
           "operating_hours_raw": "09:00~18:00",
           "rest_date_raw": "월요일",
@@ -33,7 +33,7 @@
         {
           "place_id": "bad-weather-park-1",
           "name": "비오는날 공원",
-          "category": "park",
+          "category": "attraction",
           "location": {"latitude": 37.5830, "longitude": 126.9800},
           "operating_hours_raw": "상시 개방",
           "rest_date_raw": "연중무휴",
