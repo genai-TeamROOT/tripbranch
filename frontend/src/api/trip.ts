@@ -35,14 +35,6 @@ function mapStatedWeatherToLegacy(weather: string | null | undefined): WeatherCo
 }
 
 /*
- * 위치를 말하지 않은 발화("비를 피할 실내 장소가 필요해")의 개발용 기본 위치.
- * AgentRuntimeDebugPanel의 DEFAULT_DEVICE_LOCATION("37.5788,126.9770")과 같은
- * 지점이다 — 좌표 문자열은 지오코딩되지 않으므로 같은 좌표로 해석되는 지명을 쓴다.
- * TODO: 실제 기기 GPS를 쓰게 되면 이 기본값은 제거한다.
- */
-const DEFAULT_LOCATION_QUERY = "경복궁";
-
-/*
  * Agent가 반경을 주지 않을 때 쓰는 기본값. 백엔드
  * place_search_policy.DEFAULT_PLACE_SEARCH_RADIUS_KM(2.0)과 맞춘다.
  */
@@ -62,8 +54,9 @@ function toLegacyConditions(output: LLMOutput): InterpretedConditions {
     ? conditions.place_tags
     : (conditions?.place_types ?? []);
   return {
-    location_query:
-      conditions?.search_center ?? conditions?.current_location ?? DEFAULT_LOCATION_QUERY,
+    // 사용자가 위치를 말하지 않았으면 비워 둔다. 임의의 지명을 채우면 말한 적 없는
+    // 장소를 조건 카드와 안내 문구에 그대로 보여주게 된다.
+    location_query: conditions?.search_center ?? conditions?.current_location ?? "",
     preferred_categories: categories,
     weather_condition: mapStatedWeatherToLegacy(conditions?.weather),
     // 현재 UserConditions에는 반경 필드가 없어 항상 기본값이 쓰인다. Agent가 반경을

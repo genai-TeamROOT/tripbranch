@@ -10,7 +10,6 @@ import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
 import { sendChat, toDisplayConditions } from "../api/trip";
-import { DEFAULT_DEVICE_LOCATION } from "../config/location";
 import { AgentRuntimeDebugPanel } from "../components/AgentRuntimeDebugPanel";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { IntentDebugPanel } from "../components/IntentDebugPanel";
@@ -45,7 +44,6 @@ export function HomePage() {
       const response = await sendChat({
         user_input: trimmed,
         session_id: null,
-        device_location: DEFAULT_DEVICE_LOCATION,
       });
       dispatch({ type: "RESET" });
       dispatch({

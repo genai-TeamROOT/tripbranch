@@ -113,7 +113,9 @@ function buildInterpretationSummary(conditions: InterpretedConditions) {
       : conditions.weather_condition === "good"
         ? "걷기 좋은 날씨를 고려해서"
         : "";
-  return `${conditions.location_query} 근처에서 ${weather} ${categories} 찾아볼게요.`;
+  // 위치를 말하지 않았으면 장소를 지어내지 않는다. 백엔드가 어디서 찾을지 되묻는다.
+  const place = conditions.location_query ? `${conditions.location_query} 근처에서 ` : "";
+  return `${place}${weather} ${categories} 찾아볼게요.`;
 }
 
 function buildInterpretationMessages(payload: InterpretedPayload): ChatMessage[] {

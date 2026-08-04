@@ -19,7 +19,6 @@ import { ChatComposer } from "../components/chat/ChatComposer";
 import { ChatMessageList } from "../components/chat/ChatMessageList";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { featureFlags } from "../config/features";
-import { DEFAULT_DEVICE_LOCATION } from "../config/location";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 
 const REQUEST_MORE_PROMPT = "다른 곳 보여줘";
@@ -48,7 +47,6 @@ export function ChatPage() {
         const response = await sendChat({
           user_input: text,
           session_id: state.session_id,
-          device_location: DEFAULT_DEVICE_LOCATION,
         });
         dispatch({
           type: "APPEND_CHAT_TURN",
