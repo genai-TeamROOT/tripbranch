@@ -34,6 +34,7 @@ from app.providers.geocoding import FakeGeocodingProvider
 from app.providers.holiday import FakeHolidayProvider
 from app.providers.protocols import WeatherProvider
 from app.providers.stub import FakePlaceProvider, FakeWeatherProvider
+from app.repositories.fake_places import FakePlaceLocationRepository
 from app.schemas import PlaceCandidate
 from app.tools.concentration import GetConcentrationTool
 from app.tools.holiday import GetHolidaysTool
@@ -48,7 +49,12 @@ def _service(weather_provider: WeatherProvider | None = None) -> ContextService:
     place_provider = FakePlaceProvider()
     return ContextService(
         ContextTools(
-            location=ResolveLocationTool(FakeGeocodingProvider()),
+            # 집중률 조회는 매핑된 장소명으로만 나가므로(D-043) 저장소가 필요하다.
+            # Factory의 fake 구성과 같은 저장소를 쓴다.
+            location=ResolveLocationTool(
+                FakeGeocodingProvider(),
+                place_repository=FakePlaceLocationRepository(),
+            ),
             places=NearbyPlaceDetailsTool(place_provider, place_provider),
             weather=GetWeatherForecastTool(weather_provider or FakeWeatherProvider()),
             holidays=GetHolidaysTool(FakeHolidayProvider()),
@@ -135,6 +141,51 @@ class _DirectNoDataConcentrationProvider:
         )
 
 
+class _MixedPlaceConcentrationProvider:
+    """한 번의 조회에 여러 장소가 섞여 오는 상황을 재현하는 더블.
+
+    tAtsNm이 부분 일치라 "종묘"로 조회하면 "종묘광장공원"도 함께 온다(2026-08-04 실측).
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[str | None] = []
+
+    async def get_forecast(
+        self,
+        area_code: str,
+        district_code: str,
+        place_name: str | None = None,
+    ) -> ProviderResult[ConcentrationResult]:
+        self.calls.append(place_name)
+        today = datetime.now(KST).strftime("%Y%m%d")
+        forecasts = (
+            # 응답 순서상 먼저 오는 쪽이 의도한 장소가 아니다.
+            ConcentrationForecast(
+                place_name="종묘광장공원",
+                forecast_date=today,
+                concentration_rate=35.28,
+                raw_data={},
+            ),
+            ConcentrationForecast(
+                place_name="종묘 [유네스코 세계유산]",
+                forecast_date=today,
+                concentration_rate=67.69,
+                raw_data={},
+            ),
+        )
+        return provider_result(
+            ConcentrationResult(
+                area_code=area_code,
+                district_code=district_code,
+                requested_place_name=place_name,
+                forecasts=forecasts,
+                provider="test_concentration",
+            ),
+            source=ProviderSource.FAKE_CONCENTRATION,
+            status=ProviderStatus.SUCCESS,
+        )
+
+
 class _NearbyAttractionPlaceProvider(FakePlaceProvider):
     """INFO fallback의 관광지 검색 반경·유형을 검증하는 테스트용 Place Provider."""
 
@@ -210,9 +261,16 @@ def _fallback_service(
     place_provider: _NearbyAttractionPlaceProvider,
     mapping_repository: _MemoryConcentrationMappingRepository | None = None,
 ) -> ContextService:
+    # 요청 장소(경복궁)에 집중률 매핑이 있어야 직접 조회가 일어난다. 매핑이 없으면
+    # 원문을 tAtsNm에 넣지 않고 곧장 인근 대체로 넘어간다.
     return ContextService(
         ContextTools(
-            location=ResolveLocationTool(FakeGeocodingProvider()),
+            location=ResolveLocationTool(
+                FakeGeocodingProvider(),
+                place_repository=_StoredPlaceRepository(
+                    _mapped_place("경복궁", latitude=37.5788, longitude=126.9770)
+                ),
+            ),
             places=NearbyPlaceDetailsTool(place_provider, place_provider),
             weather=GetWeatherForecastTool(FakeWeatherProvider()),
             holidays=GetHolidaysTool(FakeHolidayProvider()),
@@ -323,7 +381,8 @@ async def test_factory_wires_fake_providers_into_common_context() -> None:
     assert {
         metadata.source for metadata in response.metadata.provider_metadata
     } == {
-        "fake_geocoding",
+        # 장소명은 fake 저장소에서 해석된다 — 지오코딩까지 가지 않는다.
+        "fake_places",
         "fake_weather",
         "fake_place",
         "fake_holiday",
@@ -399,6 +458,111 @@ async def test_info_concentration_uses_stored_mapping_before_geocoding() -> None
     assert concentration_provider.calls == ["창덕궁"]
 
 
+@pytest.mark.asyncio
+async def test_info_concentration_queries_with_search_key_and_matches_by_name() -> None:
+    """조회는 검색어로, 대조는 정식 명칭으로 한다(D-043).
+
+    tAtsNm은 공백이 든 값에 0건을 돌려주므로 "종묘 [유네스코 세계유산]"은 "종묘"로
+    조회해야 한다. 대신 그 응답에는 "종묘광장공원"도 섞여 오므로, 고를 때는 정식
+    명칭으로 대조해야 엉뚱한 장소의 값을 답하지 않는다.
+    """
+    place_provider = FakePlaceProvider()
+    concentration_provider = _MixedPlaceConcentrationProvider()
+    service = ContextService(
+        ContextTools(
+            location=ResolveLocationTool(
+                FakeGeocodingProvider(),
+                _StoredPlaceRepository(
+                    StoredPlaceLocation(
+                        content_id="126510",
+                        title="종묘",
+                        address="서울특별시 종로구 종로 157",
+                        latitude=37.5739,
+                        longitude=126.9945,
+                        concentration_name="종묘 [유네스코 세계유산]",
+                        concentration_search_key="종묘",
+                    )
+                ),
+            ),
+            places=NearbyPlaceDetailsTool(place_provider, place_provider),
+            weather=GetWeatherForecastTool(FakeWeatherProvider()),
+            holidays=GetHolidaysTool(FakeHolidayProvider()),
+            concentration=GetConcentrationTool(concentration_provider),
+        ),
+        candidate_limit=10,
+        clock=lambda: datetime.now(KST),
+    )
+
+    response = await service.fetch_info_context(
+        InfoContextRequest(
+            request_id="info-search-key",
+            place_name="종묘",
+            place_context="explicit",
+        )
+    )
+
+    assert concentration_provider.calls == ["종묘"]
+    assert response.status == "success"
+    assert response.result is not None
+    assert response.result.is_proxy is False
+    # 함께 온 종묘광장공원(35.28)이 아니라 정식 명칭과 일치하는 값을 쓴다.
+    assert response.result.concentration_rate == 67.69
+
+
+@pytest.mark.asyncio
+async def test_info_concentration_never_queries_unmapped_name() -> None:
+    """매핑이 없으면 원문을 tAtsNm에 넣지 않고 인근 대체로 넘어간다(D-043).
+
+    tAtsNm은 부분 일치 검색이라 "종로"를 그대로 넣으면 낙지볶음 골목·세종로공원·
+    대학천 책방거리가 함께 걸리고, 그중 하나의 값이 "종로의 혼잡도"로 나간다
+    (2026-08-04 실측). 활성 장소 847건 중 매핑은 100건뿐이라 이 경로가 다수다.
+    """
+    place_provider = FakePlaceProvider()
+    concentration_provider = _DirectNoDataConcentrationProvider()
+    service = ContextService(
+        ContextTools(
+            location=ResolveLocationTool(
+                FakeGeocodingProvider(),
+                _StoredPlaceRepository(
+                    StoredPlaceLocation(
+                        content_id="264337",
+                        title="쌈지길",
+                        address="서울특별시 종로구 인사동길 44",
+                        latitude=37.5743062352,
+                        longitude=126.9848674428,
+                        concentration_name=None,
+                    )
+                ),
+            ),
+            places=NearbyPlaceDetailsTool(place_provider, place_provider),
+            weather=GetWeatherForecastTool(FakeWeatherProvider()),
+            holidays=GetHolidaysTool(FakeHolidayProvider()),
+            concentration=GetConcentrationTool(concentration_provider),
+        ),
+        candidate_limit=10,
+        clock=lambda: datetime.now(KST),
+        concentration_mapping_cache=ConcentrationMappingCache(
+            _MemoryConcentrationMappingRepository(
+                (_mapped_place("창덕궁", latitude=37.5744, longitude=126.9849),)
+            )
+        ),
+    )
+
+    response = await service.fetch_info_context(
+        InfoContextRequest(
+            request_id="info-unmapped",
+            place_name="쌈지길",
+            place_context="explicit",
+        )
+    )
+
+    assert response.status == "success"
+    assert response.result is not None
+    assert response.result.is_proxy is True
+    assert response.result.resolved_place_name == "창덕궁"
+    # 원문("쌈지길")으로는 한 번도 조회하지 않는다.
+    assert concentration_provider.calls == ["창덕궁"]
+
 
 @pytest.mark.asyncio
 async def test_info_concentration_returns_no_data_for_unavailable_forecast_date() -> None:
@@ -445,7 +609,7 @@ async def test_info_concentration_uses_nearby_attraction_only_after_direct_no_da
     # 대체 장소는 집중률 매핑 테이블에서 고른다 — TourAPI 장소 검색을 쓰지 않는다.
     assert place_provider.fallback_queries == []
     assert [item.source for item in response.metadata.provider_metadata] == [
-        "fake_geocoding",
+        "supabase_places",
         "fake_concentration",
         "fake_concentration",
     ]

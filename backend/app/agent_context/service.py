@@ -312,14 +312,30 @@ class ContextService:
                 provider_metadata=(location_result.provider_metadata,),
             )
 
-        concentration_place_name = (
-            resolved_location.concentration_name or place_name
-        )
+        concentration_place_name = resolved_location.concentration_name
+        if concentration_place_name is None:
+            # 매핑이 없는 이름을 tAtsNm에 그대로 넣으면 안 된다. 부분 일치 검색이라
+            # "종로"가 낙지볶음 골목·세종로공원·대학천 책방거리를 함께 끌어와, 그중
+            # 하나의 값을 "종로의 혼잡도"로 답하게 된다(2026-08-04 실측). 활성 장소
+            # 847건 중 매핑은 100건뿐이라 이 경로가 다수다.
+            return await self._fetch_info_concentration_fallback(
+                request,
+                latitude=resolved_location.latitude,
+                longitude=resolved_location.longitude,
+                reference_date=reference_date,
+                concentration_tool=concentration_tool,
+                provider_metadata=(location_result.provider_metadata,),
+            )
+        # 조회는 검색어로, 대조는 정식 명칭으로 한다. tAtsNm은 공백이 든 값에 0건을
+        # 돌려주므로 "종묘 [유네스코 세계유산]"은 "종묘"로 조회해야 한다. 대신 그
+        # 응답에는 "종묘광장공원"도 섞여 오므로 고를 때는 정식 명칭을 써야 한다.
         concentration_result = await concentration_tool.execute(
             ConcentrationQuery(
                 area_code=JONGNO_CONCENTRATION_AREA_CODE,
                 district_code=JONGNO_CONCENTRATION_DISTRICT_CODE,
-                place_name=concentration_place_name,
+                place_name=(
+                    resolved_location.concentration_search_key or concentration_place_name
+                ),
             )
         )
         if concentration_result.status is ToolStatus.UNAVAILABLE:
@@ -357,10 +373,18 @@ class ContextService:
         )
         rate = forecast.concentration_rate if forecast is not None else None
         if forecast is None or not is_valid_concentration_rate(rate):
-            return _info_no_data_response(
+            # 매핑된 장소인데도 쓸 값이 없다 — 여러 장소가 섞여 와 특정하지 못했거나
+            # 해당 날짜 예보가 없는 경우다. 인근 장소로 답할 수 있으면 답한다.
+            return await self._fetch_info_concentration_fallback(
                 request,
-                location_result.provider_metadata,
-                concentration_result.provider_metadata,
+                latitude=resolved_location.latitude,
+                longitude=resolved_location.longitude,
+                reference_date=reference_date,
+                concentration_tool=concentration_tool,
+                provider_metadata=(
+                    location_result.provider_metadata,
+                    concentration_result.provider_metadata,
+                ),
             )
 
         normalized = normalize_concentration(rate)
@@ -432,13 +456,17 @@ class ContextService:
 
         attempted_metadata: list[tuple[ProviderMetadata, ...]] = []
         for proxy_place in proxy_places:
-            # 매핑 테이블이 보유한 집중률 API 기준 이름을 그대로 쓴다 — TourAPI 장소명을
+            # 매핑 테이블이 보유한 집중률 API 기준 이름을 쓴다 — TourAPI 장소명을
             # 그대로 던지던 기존 방식은 이름이 달라 조회에 실패하는 경우가 있었다.
+            # 직접 조회와 같이 조회는 검색어로, 대조는 정식 명칭으로 한다.
             proxy_result = await concentration_tool.execute(
                 ConcentrationQuery(
                     area_code=JONGNO_CONCENTRATION_AREA_CODE,
                     district_code=JONGNO_CONCENTRATION_DISTRICT_CODE,
-                    place_name=proxy_place.concentration_name,
+                    place_name=(
+                        proxy_place.concentration_search_key
+                        or proxy_place.concentration_name
+                    ),
                 )
             )
             attempted_metadata.append(proxy_result.provider_metadata)
