@@ -22,6 +22,14 @@ from datetime import datetime
 from app.concentration_policy import ConcentrationLevel
 from app.domain.models import OperatingHours, ScoringCandidate, WeatherCondition
 
+# B의 LLMOps Trace(record_trace(scoring_version=...))에 넘길 값 —
+# backend/docs/package-b/llmops-trace-contract-v1.md §7 Q2. B는 이 값의 의미를
+# 해석하지 않고 문자열로만 저장한다(B-01 경계 원칙). operating_hours.py의
+# OPERATING_PARSER_VERSION과 동일한 semver 패턴. 점수 산출에 영향을 주는 변경
+# (가중치, Feature 추가/제거, environment_type 판정표 등) 시 버전을 올린다 —
+# 사소한 리팩터링·주석 변경은 올리지 않는다.
+SCORING_VERSION = "recommendation-scoring-1.0.0"
+
 DEFAULT_WEIGHTS: Mapping[str, float] = {
     "weather": 0.4,
     "remaining_operating_time": 0.4,
