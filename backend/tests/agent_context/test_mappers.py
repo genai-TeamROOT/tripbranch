@@ -215,11 +215,42 @@ def _candidate(place_id: str = "126508") -> PlaceCandidate:
     return PlaceCandidate(
         place_id=place_id,
         content_type_id="12",
+        lcls_systm1="HS",
+        lcls_systm2="HS01",
+        lcls_systm3="HS010100",
         name="경복궁",
         category="attraction",
         latitude=37.5796,
         longitude=126.977,
         raw_source="tour_api",
+    )
+
+
+def test_세분류_코드가_C에서_A로_전달된다() -> None:
+    """D가 실내외를 판정하려면 대분류만으로는 부족하다."""
+    result = NearbyPlaceDetailsResult(
+        places=(
+            EnrichedPlace(
+                candidate=_candidate(),
+                details=None,
+                detail_status=DetailStatus.NO_DATA,
+            ),
+        ),
+        status=ToolStatus.SUCCESS,
+        source="nearby_place_details_tool",
+        retrieved_at=RETRIEVED_AT,
+        elapsed_ms=10,
+        provider_metadata=(_metadata(ProviderSource.TOUR_API_PLACE),),
+    )
+
+    context = map_places_context(result)
+
+    assert context.data is not None
+    place = context.data[0]
+    assert (place.lcls_systm1, place.lcls_systm2, place.lcls_systm3) == (
+        "HS",
+        "HS01",
+        "HS010100",
     )
 
 

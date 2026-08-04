@@ -150,6 +150,11 @@ class PlaceCandidate(StrictModel):
     place_id: str
     name: str
     category: str
+    # TourAPI 3단계 분류. category(대분류)만으로는 실내외를 가릴 수 없어 D가 판정에
+    # 쓴다 — 관광지(12)에 고궁과 체험관이, 쇼핑(38)에 면세점과 시장이 함께 들어온다.
+    lcls_systm1: str | None = None
+    lcls_systm2: str | None = None
+    lcls_systm3: str | None = None
     location: Coordinates
     operating_hours_raw: str | None = None
     rest_date_raw: str | None = None

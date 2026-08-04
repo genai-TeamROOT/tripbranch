@@ -443,11 +443,14 @@ class FakeWeatherProvider:
 class FakePlaceProvider:
     """장소 검색 결과를 고정 후보 목록으로 대체하는 fake provider."""
 
+    # 후보 category는 실 Provider와 같은 PlaceType 어휘를 쓴다. Fake로 검증한 동작이
+    # 실 경로에서 달라지지 않게 하려는 것이다. 호출자는 place_types(영문 PlaceType)와
+    # place_tags(한글)를 함께 넘기므로 양쪽을 모두 받는다.
     _CATEGORY_ALIASES = {
-        "museum": frozenset({"museum"}),
-        "cultural_facility": frozenset({"museum"}),
-        "cafe": frozenset({"cafe"}),
-        "restaurant": frozenset({"cafe"}),
+        "cultural_facility": frozenset({"cultural_facility"}),
+        "restaurant": frozenset({"restaurant"}),
+        "박물관": frozenset({"cultural_facility"}),
+        "카페": frozenset({"restaurant"}),
     }
 
     async def search_places(
@@ -469,7 +472,7 @@ class FakePlaceProvider:
                 lcls_systm2="VE07",
                 lcls_systm3="VE070100",
                 name="테스트 박물관",
-                category="museum",
+                category="cultural_facility",
                 latitude=latitude,
                 longitude=longitude,
                 address="서울 종로구 어딘가",
@@ -483,7 +486,7 @@ class FakePlaceProvider:
                 lcls_systm2="FD05",
                 lcls_systm3="FD050100",
                 name="테스트 카페",
-                category="cafe",
+                category="restaurant",
                 latitude=latitude + 0.001,
                 longitude=longitude + 0.001,
                 address="서울 종로구 어딘가",
@@ -547,7 +550,7 @@ class FakePlaceProvider:
         operating_hours = candidate.operating_hours if candidate else None
         rest_date = (
             "매주 월요일"
-            if candidate and candidate.category == "museum"
+            if candidate and candidate.category == "cultural_facility"
             else "연중무휴"
             if candidate
             else None

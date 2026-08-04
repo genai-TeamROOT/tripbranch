@@ -10,8 +10,11 @@ from app.agent_context.schemas import RecommendationContext
 from app.domain.models import OperatingHours, ScoringCandidate
 from app.place_search_policy import EARTH_RADIUS_KM
 
-_INDOOR_CATEGORIES = {"museum", "cafe", "gallery", "restaurant", "culture"}
-_OUTDOOR_CATEGORIES = {"park", "trail", "beach", "attraction"}
+# PlaceType 어휘로 맞춘 잠정 판정. 대분류만으로는 정확히 가릴 수 없어(관광지에 고궁과
+# 체험관이, 쇼핑에 면세점과 시장이 함께 있다) lcls_systm 기반 세분 규칙은 D가 정한다.
+# 그때까지 회귀를 막는 최소 매핑이다 — D-044 참고.
+_INDOOR_CATEGORIES = {"cultural_facility", "restaurant"}
+_OUTDOOR_CATEGORIES = {"attraction"}
 _WEEKDAY_NAMES = (
     "monday",
     "tuesday",

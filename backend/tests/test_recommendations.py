@@ -43,7 +43,7 @@ def _request(
             "/api/recommendations",
             json={
                 "location_query": "경복궁",
-                "preferred_categories": preferred_categories or ["museum", "cafe"],
+                "preferred_categories": preferred_categories or ["cultural_facility", "restaurant"],
                 "weather_condition": "bad",
                 "search_radius_km": 1.0,
                 "shown_place_ids": shown_place_ids or [],
@@ -75,7 +75,7 @@ def test_recommendations_filter_shown_place_ids() -> None:
 
 
 def test_recommendations_apply_category_filter() -> None:
-    body = _request(preferred_categories=["cafe"])
+    body = _request(preferred_categories=["restaurant"])
 
     assert [item["place_id"] for item in body["recommendations"]] == [
         "fake-cafe-1"
@@ -96,7 +96,7 @@ def test_recommendations_return_empty_when_requested_category_is_closed() -> Non
     monday_noon = datetime(2026, 7, 27, 12, 0, tzinfo=KST)
 
     body = _request(
-        preferred_categories=["museum"],
+        preferred_categories=["cultural_facility"],
         visit_at=monday_noon,
     )
 
