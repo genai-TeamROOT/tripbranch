@@ -18,6 +18,7 @@ def _context(
     schedule: dict | None,
     # TourAPI contenttypeid에서 나올 수 있는 값만 쓴다("cafe"는 실제 경로에 없다).
     category: str = "restaurant",
+    lcls_systm3: str | None = None,
 ) -> RecommendationContext:
     return RecommendationContext(
         location=ContextValue(
@@ -35,6 +36,7 @@ def _context(
                     place_id="place-1",
                     name="후보 장소",
                     category=category,
+                    lcls_systm3=lcls_systm3,
                     location=Coordinates(latitude=37.5806, longitude=126.9770),
                     operating_schedule=schedule,
                 )
@@ -119,6 +121,48 @@ def test_context_mapper_keeps_unknown_hours_unverified() -> None:
 
     assert candidate.operating_hours is None
     assert candidate.environment_type == "unknown"
+
+
+def test_environment_type_uses_middle_category_when_lcls_systm3_available() -> None:
+    """대분류(category=shopping)만으로는 옛 매핑에 없어 unknown이었지만, 소분류
+    (SH040100=면세점, 중분류 SH04)로 조회하면 indoor로 정확히 판정된다."""
+    candidate = map_context_to_scoring_candidates(
+        _context(schedule=None, category="shopping", lcls_systm3="SH040100"),
+        visit_at=datetime(2026, 7, 24, 12, 0),
+    )[0]
+
+    assert candidate.environment_type == "indoor"
+
+
+def test_environment_type_prefers_middle_category_over_coarse_category() -> None:
+    """category=attraction은 옛 매핑에서 outdoor였지만, 소분류가 종교성지(HS03,
+    unknown 판정)를 가리키면 대분류로 새지 않고 unknown을 반환해야 한다."""
+    candidate = map_context_to_scoring_candidates(
+        _context(schedule=None, category="attraction", lcls_systm3="HS030100"),
+        visit_at=datetime(2026, 7, 24, 12, 0),
+    )[0]
+
+    assert candidate.environment_type == "unknown"
+
+
+def test_environment_type_falls_back_to_category_when_lcls_systm3_missing() -> None:
+    """lcls_systm3가 없으면(과거 fixture 등) 대분류 기준 최소 매핑으로 폴백한다."""
+    candidate = map_context_to_scoring_candidates(
+        _context(schedule=None, category="restaurant", lcls_systm3=None),
+        visit_at=datetime(2026, 7, 24, 12, 0),
+    )[0]
+
+    assert candidate.environment_type == "indoor"
+
+
+def test_environment_type_falls_back_when_lcls_systm3_not_in_registry() -> None:
+    """Registry에 없는(신규/오탈자) 소분류 코드는 대분류 기준으로 폴백한다."""
+    candidate = map_context_to_scoring_candidates(
+        _context(schedule=None, category="restaurant", lcls_systm3="ZZ999999"),
+        visit_at=datetime(2026, 7, 24, 12, 0),
+    )[0]
+
+    assert candidate.environment_type == "indoor"
 
 
 def test_context_mapper_returns_empty_without_usable_location_or_places() -> None:
