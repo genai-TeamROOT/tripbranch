@@ -49,6 +49,9 @@
           "place_id": "126508",
           "name": "경복궁",
           "category": "attraction",
+          "lcls_systm1": "HS",
+          "lcls_systm2": "HS01",
+          "lcls_systm3": "HS010100",
           "location": {
             "latitude": 37.579617,
             "longitude": 126.977041
@@ -78,6 +81,9 @@
           "place_id": "130100",
           "name": "국립민속박물관",
           "category": "cultural_facility",
+          "lcls_systm1": "VE",
+          "lcls_systm2": "VE07",
+          "lcls_systm3": "VE070100",
           "location": {
             "latitude": 37.581661,
             "longitude": 126.978984

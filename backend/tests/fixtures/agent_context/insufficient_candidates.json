@@ -8,7 +8,7 @@
     "weather": {"status": "success", "data": {"condition": "neutral", "forecast_for": "2026-08-15T11:00:00+09:00", "temperature_celsius": 26.0}, "error": null, "warnings": [], "provider_metadata": [{"source": "kma_ultra_short_forecast", "status": "success", "retrieved_at": "2026-08-14T09:00:00+09:00"}]},
     "places": {
       "status": "partial",
-      "data": [{"place_id": "only-candidate-1", "name": "유일한 정상 후보", "category": "cultural_facility", "location": {"latitude": 37.5802, "longitude": 126.9778}, "operating_hours_raw": "09:00~18:00", "rest_date_raw": "월요일", "operating_schedule": {"availability": "scheduled", "time_ranges": [{"open_time": "09:00", "close_time": "18:00", "crosses_midnight": false}], "closure_rules": [{"weekdays": ["monday"]}], "parse_status": "parsed"}}],
+      "data": [{"place_id": "only-candidate-1", "name": "유일한 정상 후보", "category": "cultural_facility", "lcls_systm1": "VE", "lcls_systm2": "VE07", "lcls_systm3": "VE070100", "location": {"latitude": 37.5802, "longitude": 126.9778}, "operating_hours_raw": "09:00~18:00", "rest_date_raw": "월요일", "operating_schedule": {"availability": "scheduled", "time_ranges": [{"open_time": "09:00", "close_time": "18:00", "crosses_midnight": false}], "closure_rules": [{"weekdays": ["monday"]}], "parse_status": "parsed"}}],
       "error": null,
       "warnings": [{"code": "insufficient_candidates", "message": "조건을 만족하는 후보가 1개뿐입니다."}],
       "provider_metadata": [{"source": "tour_api_place", "status": "partial", "retrieved_at": "2026-08-14T09:00:00+09:00"}]
