@@ -14,25 +14,10 @@
 from __future__ import annotations
 
 import asyncio
-import math
 
 from app.domain.models import StoredPlaceLocation
-from app.place_search_policy import EARTH_RADIUS_KM
+from app.geo import haversine_km
 from app.repositories.protocols import ConcentrationMappingRepository
-
-
-def haversine_km(
-    latitude: float, longitude: float, other_latitude: float, other_longitude: float
-) -> float:
-    """두 좌표 사이의 대권 거리(km)."""
-    lat1, lon1, lat2, lon2 = map(
-        math.radians, (latitude, longitude, other_latitude, other_longitude)
-    )
-    sin_lat = math.sin((lat2 - lat1) / 2) ** 2
-    sin_lon = math.sin((lon2 - lon1) / 2) ** 2
-    inner = sin_lat + math.cos(lat1) * math.cos(lat2) * sin_lon
-    return 2 * EARTH_RADIUS_KM * math.asin(math.sqrt(inner))
-
 
 # 매핑 목록은 프로세스 단위로 공유한다. Repository는 요청마다 새 httpx 클라이언트로
 # 만들어지므로 인스턴스에 캐시를 두면 매 요청 다시 읽게 된다. 조회 결과만 모듈 수준에

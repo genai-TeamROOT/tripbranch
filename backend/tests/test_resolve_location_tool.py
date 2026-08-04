@@ -379,14 +379,20 @@ def test_validates_query(value: str) -> None:
         ResolveLocationQuery(value)
 
 
-def _local_place(name: str, *, category: str = "음식점>한식") -> LocalSearchPlace:
+def _local_place(
+    name: str,
+    *,
+    category: str = "음식점>한식",
+    latitude: float = 37.5743,
+    longitude: float = 126.9848,
+) -> LocalSearchPlace:
     return LocalSearchPlace(
         name=name,
         address="서울특별시 종로구 관훈동 38",
         road_address="서울특별시 종로구 인사동길 44",
         category=category,
-        latitude=37.5743,
-        longitude=126.9848,
+        latitude=latitude,
+        longitude=longitude,
     )
 
 
@@ -437,14 +443,81 @@ async def test_local_search_does_not_pick_similar_prefix_name() -> None:
 
 
 @pytest.mark.asyncio
-async def test_local_search_asks_again_when_head_token_matches_multiple() -> None:
-    """출구가 다르면 좌표도 다르므로 임의 선택하지 않는다."""
+async def test_local_search_groups_transit_candidates_of_one_station() -> None:
+    """같은 역의 노선별 후보는 하나로 본다(D-045).
+
+    지역 검색은 "종로3가역"에 1·3·5호선을 각각 돌려준다. 몇 호선인지 되물어도 카페를
+    찾는 사용자에게는 답이 될 수 없고, 검색 반경이 2km라 어느 출입구를 골라도 결과가
+    같다. 실측 최대 거리는 청량리역 381m다.
+    """
     result, _ = await _resolve_with_local_search(
         (
-            _local_place("안국역 3호선", category="교통,운수>지하철,전철"),
-            _local_place("안국역 2번출구", category="교통,운수>지하철,전철"),
+            _local_place(
+                "종로3가역 3호선",
+                category="교통,운수>지하철,전철",
+                latitude=37.5714,
+                longitude=126.9920,
+            ),
+            _local_place(
+                "종로3가역 1호선",
+                category="교통,운수>지하철,전철",
+                latitude=37.5703,
+                longitude=126.9918,
+            ),
+            _local_place(
+                "종로3가역 5호선",
+                category="교통,운수>지하철,전철",
+                latitude=37.5710,
+                longitude=126.9945,
+            ),
         ),
-        "안국역",
+        "종로3가역",
+    )
+
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert result.location is not None
+    assert result.location.resolved_name == "종로3가역 3호선"
+
+
+@pytest.mark.asyncio
+async def test_local_search_asks_again_when_transit_candidates_are_far_apart() -> None:
+    """교통 시설이어도 멀리 떨어져 있으면 같은 역이 아니다."""
+    result, _ = await _resolve_with_local_search(
+        (
+            _local_place(
+                "OO역 3호선",
+                category="교통,운수>지하철,전철",
+                latitude=37.5743,
+                longitude=126.9848,
+            ),
+            _local_place(
+                "OO역 1호선",
+                category="교통,운수>지하철,전철",
+                latitude=37.5900,
+                longitude=126.9848,
+            ),
+        ),
+        "OO역",
+    )
+
+    assert result.status is ResolveLocationStatus.NO_DATA
+    assert result.error is not None
+    assert result.error.cause == "ambiguous_location"
+
+
+@pytest.mark.asyncio
+async def test_local_search_does_not_group_when_a_shop_shares_the_name() -> None:
+    """상호가 하나라도 섞이면 묶지 않는다.
+
+    거리만 보면 "종각역 김밥천국"처럼 역명을 그대로 앞에 붙인 상호가 함께 묶여, 첫
+    후보를 임의로 고르지 않는다는 원칙이 깨진다.
+    """
+    result, _ = await _resolve_with_local_search(
+        (
+            _local_place("종각역 1호선", category="교통,운수>지하철,전철"),
+            _local_place("종각역 김밥천국", category="음식점>한식"),
+        ),
+        "종각역",
     )
 
     assert result.status is ResolveLocationStatus.NO_DATA

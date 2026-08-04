@@ -6,9 +6,11 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from itertools import combinations
 
 from app.domain.models import GeocodeResult, LocalSearchPlace
 from app.errors import AppError
+from app.geo import haversine_km
 from app.providers.contracts import (
     ProviderMetadata,
     ProviderSource,
@@ -40,6 +42,24 @@ _ADMIN_ADDRESS_PATTERN = re.compile(
 # 엘리베이터·모텔·돈까스집이 나와 정답인 "안국역 3호선"이 후보에 없었다.
 # 이 목록은 보수적으로 유지한다 — 단어를 늘릴수록 실제 장소명을 잘라낼 위험이 커진다.
 _LOCATION_MODIFIER_TOKENS = frozenset({"근처", "주변", "인근", "부근"})
+
+
+# 같은 역을 노선별로 나눠 반환하는 경우를 한 장소로 묶기 위한 기준.
+#
+# 지역 검색은 "종로3가역"에 1·3·5호선을 각각 돌려준다. 이름이 달라 정확 일치가 안 되고
+# 첫 토큰은 셋 다 같아 못 좁히므로 되묻기로 빠지는데, 사용자에게 몇 호선인지 물어도
+# 답이 될 수 없다 — 카페를 찾는 사람에게 무의미하고, 검색 반경이 2km라 어느 출입구를
+# 골라도 결과가 같다.
+#
+# 실측(2026-08-04) 역별 후보 간 최대 거리: 청량리역 381m, 서울역 341m, 종로3가역 291m,
+# 시청역 267m, 김포공항역 248m, 공덕역 187m, 왕십리역 137m, 충무로역 47m. 노선 수가
+# 아니라 역사 구조가 거리를 결정한다(5개 노선인 왕십리역이 가장 좁다).
+_SAME_PLACE_RADIUS_KM = 0.5
+
+# 카테고리도 함께 본다. 거리만 보면 "종각역 김밥천국"처럼 역명을 그대로 앞에 붙인 상호가
+# 섞여도 묶이고, 그러면 "첫 후보를 임의로 고르지 않는다"는 원칙이 깨진다(쌈지길 검색에서
+# 정답이 3번째였다). 실측한 표기는 4종이었다 — 지하철·전철·기차역·정차역.
+_TRANSIT_CATEGORY_MARKERS = ("지하철", "전철", "기차", "철도", "정차역")
 
 
 def strip_location_modifiers(value: str) -> str:
@@ -98,7 +118,36 @@ def _select_local_search_candidate(
     if len(head_matched) == 1:
         return head_matched[0]
 
+    # 3) 같은 역의 노선별 후보라면 하나로 본다. 전부 교통 시설이고 서로 붙어 있을 때만
+    #    묶으므로, 상호가 하나라도 섞이면 여기서 걸러져 재질문으로 남는다.
+    if len(head_matched) > 1 and _is_same_transit_place(head_matched):
+        return head_matched[0]
+
     return None
+
+
+def _is_transit_place(place: LocalSearchPlace) -> bool:
+    category = place.category or ""
+    return any(marker in category for marker in _TRANSIT_CATEGORY_MARKERS)
+
+
+def _is_same_transit_place(places: tuple[LocalSearchPlace, ...]) -> bool:
+    """모든 후보가 교통 시설이고 서로 _SAME_PLACE_RADIUS_KM 안이면 True."""
+    if not all(_is_transit_place(place) for place in places):
+        return False
+    located = [
+        place
+        for place in places
+        if place.latitude is not None and place.longitude is not None
+    ]
+    if len(located) != len(places):
+        # 좌표가 없으면 거리를 확인할 수 없다. 묶지 않고 재질문한다.
+        return False
+    return all(
+        haversine_km(first.latitude, first.longitude, second.latitude, second.longitude)
+        <= _SAME_PLACE_RADIUS_KM
+        for first, second in combinations(located, 2)
+    )
 
 
 class ResolutionMethod(StrEnum):
