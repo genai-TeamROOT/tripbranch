@@ -46,6 +46,16 @@ _CLARIFICATION_TEMPLATES: dict[str, str] = {
 _CLARIFICATION_FALLBACK_MESSAGE = "조건을 조금 더 자세히 알려주시겠어요?"
 
 _TOOL_UNSUPPORTED_MESSAGE = "죄송하지만 아직 지원하지 않는 요청이에요."
+
+# unsupported는 이유가 여러 가지다. 지원 지역 밖인데 "아직 지원하지 않는 요청"이라고만
+# 하면 무엇을 바꿔야 할지 알 수 없다(D-044).
+_TOOL_UNSUPPORTED_TEMPLATES: dict[str, str] = {
+    "unsupported_region": "지금은 서울 종로구 안의 장소만 안내할 수 있어요.",
+}
+
+
+def _unsupported_message(error_code: str | None) -> str:
+    return _TOOL_UNSUPPORTED_TEMPLATES.get(error_code or "", _TOOL_UNSUPPORTED_MESSAGE)
 _TOOL_UNAVAILABLE_MESSAGE = "일시적으로 요청을 처리하지 못했어요. 잠시 후 다시 시도해주세요."
 
 _OUT_OF_SCOPE_TEMPLATES: dict[str, str] = {
@@ -93,7 +103,7 @@ def compose_info_concentration_message(response: InfoContextResponse) -> str:
         code = response.clarification.code if response.clarification is not None else None
         return _CLARIFICATION_TEMPLATES.get(code, _CLARIFICATION_FALLBACK_MESSAGE)
     if response.status == "unsupported":
-        return _TOOL_UNSUPPORTED_MESSAGE
+        return _unsupported_message(response.error.code if response.error else None)
     if response.status == "unavailable" or response.result is None:
         return _TOOL_UNAVAILABLE_MESSAGE
 
@@ -120,6 +130,7 @@ async def compose_chat_message(
     recommendations: RecommendationResponse | None = None,
     tool_status: str | None = None,
     tool_clarification: Clarification | None = None,
+    tool_error_code: str | None = None,
     info_concentration_response: InfoContextResponse | None = None,
     llm: LLMProvider,
 ) -> str:
@@ -155,7 +166,7 @@ async def compose_chat_message(
                 code = tool_clarification.code if tool_clarification is not None else None
                 return _CLARIFICATION_TEMPLATES.get(code, _CLARIFICATION_FALLBACK_MESSAGE)
             if tool_status == "unsupported":
-                return _TOOL_UNSUPPORTED_MESSAGE
+                return _unsupported_message(tool_error_code)
             # no_data는 장애가 아니라 "조건에 맞는 후보가 없음"이다. 명시하지 않으면
             # 아래 unavailable 문구로 새어 사용자에게 오류처럼 보인다.
             if tool_status == "no_data":

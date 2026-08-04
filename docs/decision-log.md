@@ -871,10 +871,11 @@
   "부산 해운대"에 "종로구 안에서 어느 장소인지"라고 되묻지 않기 위해서다.
 - 구현 후 실측(2026-08-04): 망원역·서울역·부산 해운대·강남역·제주도가 모두
   `unsupported`, 경복궁·북촌·내자상회·창덕궁·인사동길 44는 그대로 `success`.
-- A 요청 사항: `response_composer._TOOL_UNSUPPORTED_MESSAGE`가 "죄송하지만 아직 지원하지
-  않는 요청이에요"로 고정이라 지역 문제인지 드러나지 않는다. `error.code`
-  (`unsupported_region`)로 문구를 갈라 주면 좋겠다. C는 이미 "현재는 서울특별시 종로구 내
-  장소만 지원합니다."를 실어 보낸다.
+- A 응답 문구도 함께 고쳤다. `_TOOL_UNSUPPORTED_MESSAGE`가 "죄송하지만 아직 지원하지 않는
+  요청이에요"로 고정이라 무엇을 바꿔야 할지 알 수 없었다. `error.code`별 템플릿을 두고
+  `unsupported_region`이면 "지금은 서울 종로구 안의 장소만 안내할 수 있어요."를 보낸다.
+  RECOMMEND 경로는 코드를 받지 못하고 있어 `compose_chat_message(tool_error_code=...)`를
+  추가했다. **A 담당 부재(2026-08-04)로 C에서 대신 수정했으므로 복귀 후 공유가 필요하다.**
 - 경계 데이터 갱신: 행정구역 개편 시 `backend/resources/boundaries/README.md` 절차를 따른다.
 
 ## 변경 이력
