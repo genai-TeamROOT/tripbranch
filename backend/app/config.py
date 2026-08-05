@@ -62,8 +62,13 @@ class Settings(BaseSettings):
     # Package B State 저장소 백엔드. 기본값은 Phase 1 인메모리다.
     state_store_backend: StateStoreBackend = "memory"
 
-    # LLM_PROVIDER=real일 때 사용할 Gemini 모델명.
+    # LLM_PROVIDER=real일 때 1순위로 사용할 Gemini 모델명.
     llm_model_name: str = "gemini-2.5-flash"
+
+    # 1순위 모델의 재시도가 모두 소진됐을 때 순서대로 시도할 대체 모델(쉼표 구분).
+    # 비어 있으면(기본값) 폴백 없이 기존과 동일하게 단일 모델만 사용한다.
+    # 예: LLM_FALLBACK_MODEL_NAMES=gemini-2.0-flash,gemini-1.5-flash
+    llm_fallback_model_names: str = ""
 
     # Only required when the corresponding *_provider above is set to "real".
     llm_api_key: str = Field(default="", repr=False, exclude=True)
@@ -120,6 +125,14 @@ class Settings(BaseSettings):
     @property
     def resolved_llm_provider(self) -> ProviderMode:
         return self.llm_provider or self.provider_mode
+
+    @property
+    def resolved_llm_models(self) -> list[str]:
+        """1순위 모델을 포함한 시도 순서 전체 목록. 폴백 미설정 시 길이 1."""
+        fallbacks = [
+            name.strip() for name in self.llm_fallback_model_names.split(",") if name.strip()
+        ]
+        return [self.llm_model_name, *fallbacks]
 
     @property
     def resolved_weather_provider(self) -> ProviderMode:

@@ -59,14 +59,31 @@ def test_weather_intent_absent_still_fetches_weather() -> None:
     assert plan.requires(ContextTool.GET_WEATHER)
 
 
-def test_weather_avoid_and_enjoy_skip_weather_tool() -> None:
-    """방향이 있는 의도는 C가 발화 기반으로 처리하므로 API 조회를 생략한다."""
+def test_weather_avoid_and_enjoy_skip_weather_tool_when_stated() -> None:
+    """발화에서 날씨 값을 뽑았으면 API를 부를 이유가 없다. D가 그 값으로 판정한다."""
     for intent in ("AVOID", "ENJOY"):
-        plan = build_tool_execution_plan(UserConditions(weather_intent=intent))
+        plan = build_tool_execution_plan(
+            UserConditions(weather_intent=intent, weather="rain")
+        )
         assert not plan.requires(ContextTool.GET_WEATHER), intent
         assert plan.requires(ContextTool.RESOLVE_LOCATION), intent
         assert plan.requires(ContextTool.SEARCH_PLACES), intent
         assert plan.requires(ContextTool.GET_HOLIDAYS), intent
+
+
+def test_weather_avoid_and_enjoy_fetch_weather_when_value_missing() -> None:
+    """의도만 있고 날씨 값이 없으면 조회해서 채운다.
+
+    5단계(rain/snow/hot/cold/good)로 표현되지 않는 발화가 있다 — 실측(2026-08-05)에서
+    "날씨 안 좋으니까 실내로", "바람 많이 부는데" 등 6건 중 3건이 AVOID인데 weather가
+    비어 있었다. 조회하지 않으면 날씨를 분명히 말한 사용자에게만 날씨 Feature가
+    빠지고 가중치 0.4가 다른 항목으로 재분배된다.
+    """
+    for intent in ("AVOID", "ENJOY"):
+        plan = build_tool_execution_plan(
+            UserConditions(weather_intent=intent, weather=None)
+        )
+        assert plan.requires(ContextTool.GET_WEATHER), intent
 
 
 def test_initial_plan_never_fetches_concentration() -> None:
