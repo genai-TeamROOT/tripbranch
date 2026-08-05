@@ -382,6 +382,13 @@ Naver Local Search 보완은 공통 Location Resolver 후속 확장으로 남긴
 
 ## 5. B 저장 필드 추가
 
+> **✅ 2026-08-05 B 확인 완료(B-06, [PR #78](https://github.com/genai-TeamROOT/tripbranch/pull/78)).**
+> 아래 §5.1 제안대로 `concentration_intent`가 `field_spec.py`의 `FIELD_SPECS`에
+> `weather_intent`와 동일 스펙(`_single(str, OP_UPDATE, OP_REMOVE)`)으로 등록됐다.
+> `backend/docs/package-b/agent-state-contract-v1.md` §1.2/§2.2도 B가 직접
+> 15개 필드 기준으로 갱신 완료(더 이상 "제안" 표시 없음). 이 절 이하 §5.1/5.2는
+> 제안 당시 기록으로 남겨둔다.
+
 `backend/app/state/field_spec.py`(코드)와 그 계약 문서
 `backend/docs/package-b/agent-state-contract-v1.md`(B 소유 — 이번 조사에서 새로
 발견했고, 기존 6개 수정 대상 목록에는 없던 문서)를 함께 확인했다. B의 조건 저장
@@ -480,7 +487,7 @@ Context와 성격이 더 가깝다(`places`도 `api_context`에 캐싱하지 않
 - [recommendation-scoring.md](./recommendation-scoring.md) — `concentration` Scoring Feature 상세 설계 (D-040 확정)
 - [agent-runtime-contract.md](./agent-runtime-contract.md) §6 — 혼잡도 보강 흐름 (D-040로 안 B 확정·구현 완료)
 - [a-c-context-contract-draft.md](./a-c-context-contract-draft.md) §5.1/§5.2 — 초기 Context `concentration` 필드 확장안(안 A, 대안 유지)과 기존 `CandidateEnrichmentRequest`/`Response` 재사용안(안 B, 확정·구현 완료) 중 안 B로 확정
-- `backend/docs/package-b/agent-state-contract-v1.md` §1.2/§2.2 — B 소유, `concentration_intent`/`api_context` 필드 추가 (제안, B 확인 필요) — 이번 재검토와 무관, 변경 없음
+- `backend/docs/package-b/agent-state-contract-v1.md` §1.2/§2.2 — B 소유. `concentration_intent` 필드 추가는 2026-08-05 B 확인 완료(B-06, PR #78). `api_context` 필드 추가는 §5.2에서 보류(근거 소멸)로 정리돼 애초에 대상 아님 — 이번 재검토와 무관, 변경 없음
 - [tool-intelligence-contract-v1.md §6.2](./tool-intelligence-contract-v1.md#62-search_nearby_places) — §3.3 대체 조회가 재사용하는 `search_nearby_places`/`NearbyPlaceDetailsTool` 계약
 - [`docs/decision-log.md`](../decision-log.md) D-036 — §3.3의 "혼잡도 fallback: 장소 근접치" 채택 결정, RECOMMEND 미적용·INFO 전용으로 D 확인 완료(2026-08-02), C의 `fetch_info_context()` 구현만 남음. D-037 — §2.2 재검토(1차 Scoring 후 상위 5개 보강 재계산 안) 제안 기록, D-040 — D-037 제안을 D가 확인·채택하고 2차 Scoring 신규 인터페이스를 구현 완료한 기록
 - [place-database-schema.md §6.1](./place-database-schema.md#61-place_concentration_mappings) — §4.4에서 참고하는 `place_concentration_mappings` 테이블(C, develop 병합분)

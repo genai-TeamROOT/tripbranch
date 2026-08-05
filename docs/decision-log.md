@@ -1046,6 +1046,38 @@
   필요한 별도 스코프의 작업이라, 이번 세션의 계약 위반 수정(1a 유형)과 섞으면
   리뷰 범위가 커진다. 이번 세션은 발견 사실을 기록만 한다.
 
+### D-049 — `conditions.weather`(사용자 발화 기반 5단계 날씨 값)가 죽은 필드로 보임 (발견만, 미확정)
+
+- 상태: `Observed`(발견만 기록, 코드 미변경 — 원 설계 의도 확인 필요)
+- 배경: D-038(`api_context.api_weather` 죽은 코드 제거) 이후, "사용자가 '비 온다'고
+  직접 말한 값과 기상청 API 값이 다르면 어떻게 되는지" 질문에 답하려고
+  `conditions.weather`(LLM이 발화에서 추출하는 5단계 값 — rain/snow/hot/cold/good,
+  `weather_intent`와는 별개 필드)의 실제 소비처를 grep으로 재확인했다.
+- 발견: `conditions.weather`는 `to_agent_context_request()`를 통해 C의 요청
+  페이로드에는 실리지만(`app/services/runtime/context_transform.py`), **C도 D도
+  이 값을 읽는 코드가 없다** — `app/agent_context/*.py`, `app/domain/scoring.py`,
+  `app/domain/candidate_mapper.py`, `app/services/runtime/response_composer.py`,
+  `app/state/*.py` 전수 grep 결과 전무. 실제 Scoring의 날씨 Feature(가중치 0.40,
+  `domain/scoring.py::_weather_fit_score()`)는 오직 `context.weather`(C가 기상청
+  API로 직접 조회한 3단계 값, `weather_intent != IGNORE`일 때만 호출)만 사용한다.
+  `environment`(indoor/outdoor 하드 필터) 역시 `weather_intent`(AVOID/ENJOY)를 보고
+  LLM이 발화 시점에 직접 정하는 값이라, API 결과나 `conditions.weather`와는
+  무관하게 이미 확정된다.
+- 결과적으로 사용자가 "비 온다"고 말한 그 원문 판정값 자체는 필터에도 점수에도
+  전혀 반영되지 않는다 — 하드 필터는 `weather_intent`(발화 즉시 판별)가, 연속
+  점수는 `context.weather`(API 실측)가 각각 담당하고, 둘이 서로 다를 때 감지하거나
+  사용자에게 알리는 로직은 존재하지 않는다.
+- D-038의 `api_weather`(B 소유, 조회는 하되 아무도 안 읽음)와 증상은 비슷하지만
+  원인 층위가 다르다 — `api_weather`는 "조회했지만 안 읽힘"이었고, 이건 "LLM이
+  추출은 하지만(B에도 저장됨) 하류(C/D) 어디서도 안 읽힘"이다.
+- 이번 세션에서 결정하지 않는 것: `conditions.weather`가 (1) 애초에 미완성으로
+  남은 필드인지(예: "사용자 말과 API가 다르면 사용자 말을 우선하거나 재확인한다"
+  같은 기능을 염두에 두고 만들어졌으나 그 소비 로직이 아직 없는 경우),
+  (2) 이제는 불필요해진 필드인지(정보는 `weather_intent`/`environment`로 이미
+  충분히 반영되므로) — 원 설계자(A/D) 확인이 먼저 필요해 코드는 건드리지 않는다.
+- 확인 필요: `conditions.weather` 필드의 원래 설계 의도, 그리고 필요하다면
+  "사용자 발화와 API 값이 다를 때" 처리 방침(무시/재확인/사용자 발화 우선) 결정.
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -1083,3 +1115,4 @@
 | 2026-08-04 | D-046 environment_type을 TourAPI 중분류(lcls_systm2) 기반으로 세분화 구현 반영(indoor 19/outdoor 16/unknown 13), 판정표 고정 테스트 추가 |
 | 2026-08-05 | D-047 D-040 리뷰 후 A에 `rerank_with_concentration()` 시그니처 축소(`RecommendationContext` → `WeatherCondition`) 역제안, D 확인 필요 사항으로 필터 기준 명시 |
 | 2026-08-05 | B 리뷰 반영: `_serialize()` int→str 버그·RECOMMEND `exclude_tags`/`special_requirements` Update→Add 수정, `api_context.api_weather` 죽은 코드 제거, `PROMPT_VERSION` 신설(record_trace·StateApplyRequest 양쪽 연결) 및 D-040의 `SCORING_VERSION` 최초 연결. D-048로 MODIFY 경로의 동일 계약 위반은 제안만 기록 |
+| 2026-08-05 | D-049 `conditions.weather`(발화 기반 5단계 값)가 C/D 어디서도 안 읽히는 죽은 필드로 보인다는 발견을 기록(코드 미변경, 원 설계 의도 확인 필요) |

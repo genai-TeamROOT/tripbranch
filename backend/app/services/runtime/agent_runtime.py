@@ -186,11 +186,12 @@ async def _apply_concentration_rerank(
     가드는 이제 "D가 아직 없을 수 있어서"가 아니라, 테스트 더블 등 이 메서드를
     갖추지 않은 구현체가 주입됐을 때도 안전하게 낮아지도록 남겨둔 방어 코드다.
 
-    run_agent_flow()에서 이 로직만 분리해둔 이유: B의 StateUserConditions에
-    concentration_intent 필드가 아직 없어(state/schema.py, field_spec.py 미반영 —
-    B 확인 필요) run_agent_flow() 전체를 통한 통합 테스트로는 이 분기를 exercise할
-    수 없다. agent_conditions(A의 enum 타입 UserConditions)만 있으면 이 함수는
-    독립적으로 단위 테스트할 수 있다.
+    (2026-08-05, B-06 완료 — PR #78) B의 StateUserConditions에 concentration_intent
+    필드가 등록되어, 이제 run_agent_flow() 전체 통합 테스트로도 이 분기가 실제
+    트리거된다(test_concentration_intent_persisted_by_b_triggers_rerank 참고).
+    run_agent_flow()에서 이 로직을 분리해둔 건 그 갭을 우회하기 위함이었지만,
+    agent_conditions(A의 enum 타입 UserConditions)만으로 독립 단위 테스트가
+    가능하다는 이점은 여전히 유효해 구조는 그대로 유지한다.
     """
 
     if agent_conditions.concentration_intent not in _CONCENTRATION_RANK_INTENTS:
@@ -466,13 +467,12 @@ async def run_agent_flow(
     )
 
     # 6-1) concentration_intent가 AVOID/SEEK일 때만: 1차 상위 후보의 혼잡도를 C에
-    #      보강 조회하고, D가 2차 Scoring(재순위) 인터페이스를 구현했으면 그 결과로
-    #      교체한다(제안, D 미확인 — concentration-conditions.md §2.2.3,
-    #      agent-runtime-contract.md §6.5.2). 분기 로직은 _apply_concentration_rerank()
-    #      로 분리했다 — B의 StateUserConditions에 concentration_intent 필드가 아직
-    #      없어(§7 참고) run_agent_flow() 전체를 통한 통합 테스트로는 이 분기를 exercise
-    #      할 수 없기 때문에, agent_conditions만 있으면 독립적으로 단위 테스트할 수
-    #      있게 만들었다.
+    #      보강 조회하고, D의 2차 Scoring(재순위)으로 그 결과를 교체한다(D-040 확정 —
+    #      concentration-conditions.md §2.2.3, agent-runtime-contract.md §6.5.2).
+    #      분기 로직은 _apply_concentration_rerank()로 분리했다 — B의
+    #      concentration_intent 필드 등록 완료(2026-08-05, B-06, PR #78) 이후로는
+    #      run_agent_flow() 전체 통합 테스트로도 exercise되지만(§7 참고), agent_
+    #      conditions만으로 독립 단위 테스트할 수 있는 이점이 있어 구조는 유지한다.
     recommendations = await _apply_concentration_rerank(
         agent_conditions,
         tool_context,

@@ -5,8 +5,8 @@
 | 항목 | 값 |
 |------|-----|
 | 버전 | v1 |
-| 상태 | Draft (§6 혼잡률 보강은 D-040로 안 B 채택·구현 완료. B의 `concentration_intent` 필드 연결만 잔여) |
-| 최종 수정 | 2026-08-02 |
+| 상태 | Draft (§6 혼잡률 보강은 D-040로 안 B 채택·구현 완료, B의 `concentration_intent` 필드 연결도 B-06으로 완료) |
+| 최종 수정 | 2026-08-05 |
 | 관련 코드 | `backend/app/services/runtime/`, `backend/app/services/interpret/state_transform.py`, `backend/app/state/service.py`, `backend/app/services/recommendation_pipeline.py` |
 
 이 문서는 Agent Runtime(A)이 B(Agent State)/C(Tool Intelligence)/D(Recommendation)와
@@ -54,10 +54,13 @@ B/C/D는 서로 직접 부르지 않고 항상 A를 거쳐서만 결과를 주�
 > ```
 >
 > `concentration_intent`가 `null`/`IGNORE`이면 이 확장은 타지 않고 기존
-> 다이어그램 그대로 D 1회 호출로 끝난다. 단, B(State)의 `StateUserConditions`에
-> `concentration_intent` 필드가 아직 없어(B 확인 필요) `run_agent_flow()` 전체
-> 통합 테스트로는 이 분기를 아직 exercise할 수 없다 — `_apply_concentration_rerank()`
-> 단위 테스트로만 검증된 상태.
+> 다이어그램 그대로 D 1회 호출로 끝난다.
+>
+> **✅ 2026-08-05 B 확인 완료(B-06, [PR #78](https://github.com/genai-TeamROOT/tripbranch/pull/78))
+> — B(State)의 `StateUserConditions`에 `concentration_intent` 필드가 등록됐다.**
+> 이제 `run_agent_flow()` 전체 통합 테스트로도 이 분기가 실제 트리거된다
+> (`test_concentration_intent_persisted_by_b_triggers_rerank` 참고,
+> `enrichment_provider.call_count == 1`로 검증).
 
 ### 1.2 변환 함수 공통 원칙
 
@@ -597,9 +600,9 @@ sequenceDiagram
   ([recommendation-scoring.md §4.4/§5](./recommendation-scoring.md) 참고).
 - B(State)의 `record_recommendation()` 위치는 안 바뀐다 — 여전히 "Scoring
   완료 직후, 최종 응답 조립 전"이지만, 그 "Scoring 완료"가 이제 2차 재순위
-  이후 시점이 된다(§1.1 제안 단계 블록 참고). **잔여 이슈**: B의
-  `StateUserConditions`에 `concentration_intent` 필드가 아직 없어(B 확인
-  필요) 이 분기가 `run_agent_flow()` 통합 테스트로는 아직 exercise되지 않는다.
+  이후 시점이 된다(§1.1 제안 단계 블록 참고). B의 `StateUserConditions`에
+  `concentration_intent` 필드도 등록 완료(2026-08-05, B-06)돼 이 분기가
+  `run_agent_flow()` 통합 테스트로 실제 exercise된다.
 
 ---
 
@@ -631,7 +634,6 @@ sequenceDiagram
 | 혼잡률 반영 방식 — 안 A(초기 Context 확장, §6.5.1) vs 안 B(1차 Scoring 후 상위 5개 보강 재계산, §6.5.2) 중 택1 | D팀 | ✅ 2026-08-02 D 확인 완료 — 안 B 채택(D-040) |
 | 안 B 채택 시: D의 2차 Scoring 신규 인터페이스(5개+concentration 재채점) | D팀 | ✅ 구현 완료 — `rerank_with_concentration()`(D-040) |
 | "최종 노출 개수"(§6.5.2 9단계) — `_CONCENTRATION_FINAL_LIMIT`(`agent_runtime.py`) | A(본인)/기획 | ✅ 2026-08-02 기획 확정 — 3에서 5로 변경(1차가 최대 5개까지만 넘겨 슬라이싱은 현재 no-op) |
-| B(State)의 `StateUserConditions`에 `concentration_intent` 필드 없음 — 있어도 실제 저장이 안 돼 위 안 B 분기가 실서비스에서 아직 한 번도 실행되지 않음(§1.1 참고) | B팀 | 확인 대기 — `field_spec.py`에 필드 추가 필요 |
 | GPS 최초 턴 심기 로직 중복(`app/routes/interpret.py` vs `agent_runtime.py`, 둘 다 `_valid_location()`을 독립적으로 가짐) (§2.5) | A(본인) | `run_agent()`가 라우터를 실제로 대체할 때 통합 예정 |
 | `to_record_recommendation_request()`가 작성됐지만 `run_agent_flow()` 7단계가 인라인 로직을 그대로 써서 미사용 상태 (§4.4) | A(본인) | 7단계를 이 함수 호출로 교체할지 결정 필요 |
 | `rerank_with_concentration()` 시그니처 축소 — `context: RecommendationContext` 전체 대신 실제로 쓰는 `WeatherCondition` 값만 받도록 좁히자는 A의 역제안(D-047) | D팀 | ✅ 2026-08-05 구현 완료(커밋 `baf4051`) — 필터 기준 `{"success","partial"}`로 확정 |
@@ -643,3 +645,4 @@ sequenceDiagram
 | 기본 반경 2.0km 공유 상수화(A/C 각자 하드코딩) | 2026-07-28 | `app/place_search_policy.py` 공유 모듈로 통합(§4.1) |
 | `RealRecommendationProvider` → `run_agent()` 실제 연결 | 2026-07-28 | `run_agent()`가 기본으로 `RealRecommendationProvider()` 사용(§4.5) |
 | B의 영구 제외 문제(`recommended ∪ rejected`) | 2026-07-27 | §2.3 참고 |
+| B(State)의 `StateUserConditions`에 `concentration_intent` 필드 없음 — 있어도 실제 저장이 안 돼 안 B 분기가 실서비스에서 한 번도 실행 안 됨 | 2026-08-05 | B-06(PR #78) — `field_spec.py` 등록 완료, `test_concentration_intent_persisted_by_b_triggers_rerank`로 검증 |
