@@ -18,7 +18,13 @@ from app.agent_context.schemas import Coordinates as AgentCoordinates
 from app.agent_context.schemas import PlaceCandidate as AgentPlaceCandidate
 from app.concentration_policy import normalize_concentration
 from app.errors import AppError
-from app.schemas import RecommendationItem, RecommendationResponse
+from app.schemas import (
+    RecommendationItem,
+    RecommendationResponse,
+    StatedWeather,
+    UserConditions,
+    WeatherIntent,
+)
 from app.services.recommendation_pipeline import (
     rerank_with_concentration,
     run_recommendation_pipeline_from_context,
@@ -106,6 +112,35 @@ async def test_pipeline_from_context_reports_weather_ignored_when_not_requested(
     warnings = response.recommendations[0].warnings
     assert _WEATHER_IGNORED_WARNING in warnings
     assert _WEATHER_MISSING_WARNING not in warnings
+
+
+@pytest.mark.asyncio
+async def test_pipeline_accepts_conditions_without_using_them_yet() -> None:
+    """A가 넘긴 conditions를 받되 아직 날씨 판정에는 쓰지 않는다.
+
+    D가 conditions.weather와 weather_intent로 판정하도록 바꿀 때 쓸 입력이다(D-051).
+    지금은 전달 경로만 열어두고, 넘겨도 기존 동작(context.weather 사용)이 바뀌지
+    않는 것을 고정한다.
+    """
+    context = RecommendationContext(
+        location=_context_location(),
+        weather=None,
+        places=AgentContextValue(status="success", data=[_context_place()]),
+    )
+
+    response = await run_recommendation_pipeline_from_context(
+        context,
+        conditions=UserConditions(
+            weather_intent=WeatherIntent.AVOID, weather=StatedWeather.RAIN
+        ),
+        visit_at=_CONTEXT_VISIT_AT,
+        search_radius_km=2.0,
+    )
+
+    # context.weather가 없으므로 날씨 Feature는 빠진다 — 발화 값을 쓰지 않는다.
+    item = response.recommendations[0]
+    assert item.feature_scores["weather"] is None
+    assert "weather" not in item.weights_used
 
 
 @pytest.mark.asyncio
