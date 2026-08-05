@@ -37,6 +37,38 @@ def test_individual_provider_overrides_common_mode() -> None:
     assert settings.resolved_llm_provider == "fake"
 
 
+def test_resolved_llm_models_defaults_to_single_primary_model() -> None:
+    """LLM_FALLBACK_MODEL_NAMES 미설정 시 1순위 모델 하나짜리 리스트 — 기존 동작과 동일."""
+    settings = Settings(_env_file=None, llm_model_name="gemini-2.5-flash")
+
+    assert settings.resolved_llm_models == ["gemini-2.5-flash"]
+
+
+def test_resolved_llm_models_appends_fallbacks_in_order() -> None:
+    settings = Settings(
+        _env_file=None,
+        llm_model_name="gemini-2.5-flash",
+        llm_fallback_model_names="gemini-2.0-flash, gemini-1.5-flash",
+    )
+
+    assert settings.resolved_llm_models == [
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+    ]
+
+
+def test_resolved_llm_models_drops_blank_entries() -> None:
+    """트레일링 콤마·빈 항목은 방어적으로 무시한다."""
+    settings = Settings(
+        _env_file=None,
+        llm_model_name="gemini-2.5-flash",
+        llm_fallback_model_names="gemini-2.0-flash,,  ,",
+    )
+
+    assert settings.resolved_llm_models == ["gemini-2.5-flash", "gemini-2.0-flash"]
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
@@ -122,6 +154,47 @@ def test_validate_provider_config_flags_only_the_real_provider() -> None:
     message = str(error.value)
     assert "LLM_API_KEY" in message
     assert "WEATHER_API_KEY" not in message
+
+
+def test_validate_provider_config_rejects_duplicate_fallback_model() -> None:
+    """LLM_FALLBACK_MODEL_NAMES에 LLM_MODEL_NAME과 같은 이름이 들어가면 부팅 시
+    막는다 — 폴백처럼 보이지만 실제로는 같은 모델만 계속 재시도하게 되기 때문."""
+    settings = Settings(
+        _env_file=None,
+        provider_mode="real",
+        llm_api_key="present",
+        weather_api_key="present",
+        TOUR_API_SERVICE_KEY="present",
+        naver_map_client_id="present",
+        naver_map_client_secret="present",
+        naver_local_search_client_id="present",
+        naver_local_search_client_secret="present",
+        llm_model_name="gemini-2.5-flash",
+        llm_fallback_model_names="gemini-2.0-flash,gemini-2.5-flash",
+    )
+
+    with pytest.raises(ValueError) as error:
+        validate_provider_config(settings)
+
+    assert "gemini-2.5-flash" in str(error.value)
+
+
+def test_validate_provider_config_allows_distinct_fallback_models() -> None:
+    settings = Settings(
+        _env_file=None,
+        provider_mode="real",
+        llm_api_key="present",
+        weather_api_key="present",
+        TOUR_API_SERVICE_KEY="present",
+        naver_map_client_id="present",
+        naver_map_client_secret="present",
+        naver_local_search_client_id="present",
+        naver_local_search_client_secret="present",
+        llm_model_name="gemini-2.5-flash",
+        llm_fallback_model_names="gemini-2.0-flash",
+    )
+
+    validate_provider_config(settings)
 
 
 def test_env_file_is_resolved_relative_to_backend_package() -> None:

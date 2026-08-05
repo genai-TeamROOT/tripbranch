@@ -45,7 +45,7 @@ def get_llm_provider() -> LLMProvider:
         return FakeLLMProvider()
     return RealGeminiProvider(
         api_key=_require_key(settings.llm_api_key, "LLM_API_KEY"),
-        model_name=settings.llm_model_name,
+        model_names=settings.resolved_llm_models,
         timeout_seconds=settings.external_api_timeout_seconds,
         max_retries=settings.external_api_retry_count,
     )
@@ -219,6 +219,16 @@ def validate_provider_config(target: Settings | None = None) -> None:
         raise ValueError(
             "real provider 설정에 필요한 환경변수가 비어 있습니다: " + ", ".join(missing)
         )
+
+    # LLM_FALLBACK_MODEL_NAMES에 LLM_MODEL_NAME과 같은 이름이 중복되면 폴백처럼
+    # 보이지만 실제로는 같은 모델을 또 재시도하는 것뿐이라 부팅 시점에 막는다.
+    if current.resolved_llm_provider == "real":
+        models = current.resolved_llm_models
+        if len(models) != len(set(models)):
+            raise ValueError(
+                "LLM_FALLBACK_MODEL_NAMES에 LLM_MODEL_NAME과 중복되는 모델이 있습니다: "
+                + ", ".join(models)
+            )
 
     # 상세조회 출처는 provider 모드와 축이 다르므로 별도로 검증한다.
     if current.resolved_place_details_source == "supabase":
