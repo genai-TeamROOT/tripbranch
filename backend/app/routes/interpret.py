@@ -9,7 +9,6 @@ TODO: 인증, rate limit이 필요해지면 라우터 밖 의존성으로 연결
 """
 from __future__ import annotations
 
-import httpx
 from fastapi import APIRouter
 
 from app.schemas import (
@@ -29,34 +28,30 @@ router = APIRouter(tags=["interpret"])
 
 @router.post("/interpret", response_model=InterpretResponse)
 async def interpret(request: InterpretRequest) -> InterpretResponse:
-    from app.providers.factory import get_weather_provider
+    # 1) 세션 컨텍스트 확보 + GPS 최신화
+    #    GPS 형식이 잘못되면 이번 턴만 건너뛴다. 대화 자체는 계속되어야 하고,
+    #    사용자가 위치를 직접 말하면 user_conditions.current_location으로 확보된다.
+    context = await ensure_current_context(
+        request.session_id,
+        _valid_location(request.device_location),
+    )
 
-    async with httpx.AsyncClient() as client:
-        # 1) 세션 컨텍스트 확보 + GPS·날씨 최신화
-        #    GPS 형식이 잘못되면 이번 턴만 건너뛴다. 대화 자체는 계속되어야 하고,
-        #    사용자가 위치를 직접 말하면 user_conditions.current_location으로 확보된다.
-        context = await ensure_current_context(
-            request.session_id,
-            _valid_location(request.device_location),
-            get_weather_provider(client),
+    # 2) 세션이 있으면 B가 조건·이력의 단일 기준이다. (계약 6.2절)
+    #    세션이 없으면 호출자가 실어 보낸 컨텍스트를 그대로 신뢰한다.
+    #    (InterpretRequest의 세 필드는 세션 도입 전 하위 호환 경로다)
+    if context.session_exists:
+        llm_request = request.model_copy(
+            update={
+                "has_previous_recommendation": context.has_recommendation,
+                "shown_place_count": len(context.shown_place_ids),
+                "current_conditions": _to_llm_conditions(context),
+            }
         )
+    else:
+        llm_request = request
 
-        # 2) 세션이 있으면 B가 조건·이력의 단일 기준이다. (계약 6.2절)
-        #    세션이 없으면 호출자가 실어 보낸 컨텍스트를 그대로 신뢰한다.
-        #    (InterpretRequest의 세 필드는 세션 도입 전 하위 호환 경로다)
-        if context.session_exists:
-            llm_request = request.model_copy(
-                update={
-                    "has_previous_recommendation": context.has_recommendation,
-                    "shown_place_count": len(context.shown_place_ids),
-                    "current_conditions": _to_llm_conditions(context),
-                }
-            )
-        else:
-            llm_request = request
-
-        # 3) 자연어 해석 (2단계 LLM 호출)
-        llm_output = await interpret_user_input(llm_request)
+    # 3) 자연어 해석 (2단계 LLM 호출)
+    llm_output = await interpret_user_input(llm_request)
 
     # 4) LLMOutput → StateApplyRequest 변환 (A의 책임)
     apply_request = transform(llm_output, context, request.user_input)

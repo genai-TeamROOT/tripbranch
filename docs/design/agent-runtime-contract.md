@@ -627,6 +627,7 @@ sequenceDiagram
 | B(State)의 `StateUserConditions`에 `concentration_intent` 필드 없음 — 있어도 실제 저장이 안 돼 위 안 B 분기가 실서비스에서 아직 한 번도 실행되지 않음(§1.1 참고) | B팀 | 확인 대기 — `field_spec.py`에 필드 추가 필요 |
 | GPS 최초 턴 심기 로직 중복(`app/routes/interpret.py` vs `agent_runtime.py`, 둘 다 `_valid_location()`을 독립적으로 가짐) (§2.5) | A(본인) | `run_agent()`가 라우터를 실제로 대체할 때 통합 예정 |
 | `to_record_recommendation_request()`가 작성됐지만 `run_agent_flow()` 7단계가 인라인 로직을 그대로 써서 미사용 상태 (§4.4) | A(본인) | 7단계를 이 함수 호출로 교체할지 결정 필요 |
+| `rerank_with_concentration()` 시그니처 축소 — `context: RecommendationContext` 전체 대신 실제로 쓰는 `WeatherCondition` 값만 받도록 좁히자는 A의 역제안(D-047) | D팀 | ✅ 2026-08-05 구현 완료(커밋 `baf4051`) — 필터 기준 `{"success","partial"}`로 확정 |
 
 ### 해결된 이슈
 

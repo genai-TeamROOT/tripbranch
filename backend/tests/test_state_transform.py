@@ -6,6 +6,7 @@ docs/design/test-cases.md의 TC-07~09와 conditions-schema.md §5 예시5(place_
 
 from __future__ import annotations
 
+from app.providers.gemini_prompts import PROMPT_VERSION
 from app.schemas import (
     Intent,
     LLMOutput,
@@ -60,6 +61,74 @@ def test_recommend_resets_soft_and_updates_all_set_fields() -> None:
     assert ops[("Update", "place_tags")] == ["카페"]
     assert request.confirmed is True
     assert request.intent == "RECOMMEND"
+    assert request.prompt_version == PROMPT_VERSION
+
+
+def test_recommend_serializes_int_fields_as_int_not_str() -> None:
+    """_serialize() 회귀: max_travel_time/time_available은 str()로 감싸지지 않는다.
+
+    B(agent-state-contract-v1.md §2.2)가 int 타입을 기대하므로, str "30"으로
+    가면 type_mismatch로 조용히 드롭된다("가까운 곳으로"가 반영 안 되던 버그).
+    """
+    llm_output = LLMOutput(
+        intent=Intent.RECOMMEND,
+        status=OutputStatus.COMPLETE,
+        recommend=RecommendPayload(
+            conditions=UserConditions(
+                search_center="경복궁", max_travel_time=30, time_available=120
+            )
+        ),
+    )
+
+    request = transform(llm_output, _context(), "가까운 곳으로")
+
+    ops = {(op.op, op.field): op.value for op in request.operations}
+    assert ops[("Update", "max_travel_time")] == 30
+    assert isinstance(ops[("Update", "max_travel_time")], int)
+    assert ops[("Update", "time_available")] == 120
+    assert isinstance(ops[("Update", "time_available")], int)
+
+
+def test_recommend_uses_add_for_exclude_tags_and_special_requirements() -> None:
+    """exclude_tags/special_requirements는 Add/Remove만 허용되므로(§2.2) Update가
+    아니라 Add로 나가야 한다 — 안 그러면 unsupported_operation으로 드롭된다."""
+    llm_output = LLMOutput(
+        intent=Intent.RECOMMEND,
+        status=OutputStatus.COMPLETE,
+        recommend=RecommendPayload(
+            conditions=UserConditions(
+                search_center="경복궁",
+                exclude_tags=["박물관"],
+                special_requirements=["주차"],
+            )
+        ),
+    )
+
+    request = transform(llm_output, _context(), "박물관 제외하고 카페 추천해줘")
+
+    ops = {(op.op, op.field): op.value for op in request.operations}
+    assert ops[("Add", "exclude_tags")] == ["박물관"]
+    assert ops[("Add", "special_requirements")] == ["주차"]
+    assert ("Update", "exclude_tags") not in ops
+    assert ("Update", "special_requirements") not in ops
+
+
+def test_recommend_still_uses_update_for_place_types_and_place_tags() -> None:
+    """place_types(Update/Remove만 허용)·place_tags(Add/Update/Remove 허용)는
+    exclude_tags/special_requirements 수정에 휩쓸려 Add로 바뀌면 안 된다."""
+    llm_output = LLMOutput(
+        intent=Intent.RECOMMEND,
+        status=OutputStatus.COMPLETE,
+        recommend=RecommendPayload(
+            conditions=UserConditions(place_types=["restaurant"], place_tags=["카페"])
+        ),
+    )
+
+    request = transform(llm_output, _context(), "카페 추천해줘")
+
+    ops = {(op.op, op.field): op.value for op in request.operations}
+    assert ops[("Update", "place_types")] == ["restaurant"]
+    assert ops[("Update", "place_tags")] == ["카페"]
 
 
 def test_recommend_skips_null_and_empty_fields() -> None:

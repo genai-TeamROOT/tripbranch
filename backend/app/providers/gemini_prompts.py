@@ -14,6 +14,16 @@ from datetime import date
 
 from app.schemas import GeneralTopic, UserConditions
 
+# B의 LLMOps Trace(record_trace(prompt_version=...))와 StateApplyRequest.prompt_version에
+# 넘길 값 — backend/docs/package-b/llmops-trace-contract-v1.md §7 Q2. B는 이 값의 의미를
+# 해석하지 않고 문자열로만 저장한다(B-01 경계 원칙). app/domain/scoring.py의
+# SCORING_VERSION과 동일한 semver 패턴. record_trace(step="llm_interpret", ...)는 턴당
+# 한 번만 호출되고(agent_runtime.py) 이 모듈의 6개 build_*_instruction() 함수 중 어느 게
+# 쓰였는지와 무관하게 단일 값으로 취급한다 — 함수별 개별 버전은 만들지 않는다. 판별·추출
+# 규칙에 영향을 주는 변경(6개 함수 중 하나라도) 시 버전을 올린다 — 사소한 문구·주석
+# 변경은 올리지 않는다.
+PROMPT_VERSION = "agent-interpret-prompts-1.0.0"
+
 _INTENT_DEFINITIONS = """\
 6개 Intent 정의:
 - RECOMMEND: 조건에 맞는 새 장소를 추천받고 싶음 ("추천해줘", "갈 만한 곳", 조건만 제시)
@@ -382,6 +392,7 @@ def format_validation_retry_note(error: Exception) -> str:
 
 
 __all__ = [
+    "PROMPT_VERSION",
     "build_intent_classification_instruction",
     "build_recommend_extraction_instruction",
     "build_modify_extraction_instruction",

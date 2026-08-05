@@ -621,7 +621,7 @@
 
 ### D-038 — 날씨 warning 문구 분리(IGNORE vs 조회 실패) 및 날씨 조회 경로 이원화 정리
 
-- 상태: 문구 분리는 `Implemented`, 나머지 두 항목은 `TBD`
+- 상태: `Implemented` (2026-08-05, TODO 1/2 해결 완료 — 아래 참고)
 - 배경: `"경복궁 근처 카페 추천해줘"`처럼 날씨 언급이 없는 발화는 LLM이
   `weather_intent=IGNORE`로 판정하고([int-01-recommend.md §8](./design/int-01-recommend.md#8-weather_intent-판별)의
   정의: "날씨 언급 없음"), C가 Weather Tool을 실행하지 않는다
@@ -633,22 +633,29 @@
   있는데 status가 실패면 기존 `_WEATHER_MISSING_WARNING`을 쓴다. 개발 단계에서는
   IGNORE로 처리됐다는 사실 자체를 보여줄 필요가 있어 warning을 없애지 않고
   문구만 구분했다 — 사용자 노출용 문구 확정은 UX 논의가 필요하다.
-- TODO 1 (`TBD`) — **§10과 구현 불일치**:
-  [int-01-recommend.md §10](./design/int-01-recommend.md#10-날씨-정보-확보-순서)은
-  "② 사용자가 날씨를 입력하지 않음 → 날씨 API 호출"을 규정하지만, 현재 구현은
-  `IGNORE`면 ②를 건너뛰고 곧장 "④ 추천 계산에서 제외"로 간다. 문서를 구현에
-  맞출지(안 쓸 값은 호출하지 않는다), 구현을 문서에 맞출지(확보는 하되 가중치만
-  제외한다) 결정이 필요하다.
-- TODO 2 (`TBD`) — **날씨 조회 경로 이원화**: 같은 요청에서 날씨를 두 곳이
-  따로 조회하는데 한쪽은 소비자가 없다.
-  - B 세션 `api_context.api_weather`: GPS가 있으면 `ensure_current_context()`가
-    조회해 채운다(§10대로 동작). **현재 이 값을 읽는 곳이 없다.**
-  - C `context.weather`: `weather_intent != IGNORE`일 때만 조회한다. D Scoring이
-    `to_weather_condition()`으로 참조하는 것은 이쪽이다.
-  통합할지, 각자 역할을 문서로 고정할지 정리가 필요하다.
+- TODO 1 (`Implemented`, 2026-08-05) — **§10과 구현 불일치 해결**: B(이태화)의
+  리뷰를 계기로 재조사한 결과, "구현이 맞고 문서가 틀렸다"로 결론냈다 —
+  `weather_intent=IGNORE`면 API 호출 자체를 안 하는 현재 구현이 의도된 동작이고
+  (안 쓸 값을 굳이 조회할 이유가 없다), [int-01-recommend.md
+  §10](./design/int-01-recommend.md#10-날씨-정보-확보-순서)을 이 실제 동작에
+  맞게 재작성했다.
+- TODO 2 (`Implemented`, 2026-08-05) — **날씨 조회 경로 이원화 해결**: 직접
+  재검증한 결과 B 세션 `api_context.api_weather`를 실제로 읽는 소비자가
+  backend/frontend 어디에도 없음을 확인했다(패스스루 복사와 TTL 타임스탬프
+  판정만 있고, 값 자체를 쓰는 로직은 전무) — 실제 RECOMMEND 날씨 Feature는
+  D가 `to_weather_condition()`으로 참조하는 C `context.weather` 경로 하나뿐이었다.
+  `api_weather`를 채우던 A 소유 코드(`session_orchestrator.py::_refresh_weather()`
+  와 그 호출부, `weather_provider` 파라미터 일체)를 제거해 조회 경로를 C
+  하나로 통합했다. B 소유 스키마(`ApiContext.api_weather`/
+  `api_weather_updated_at`/`weather_expired`, `is_weather_expired()`)는
+  건드리지 않았다 — 값이 영구히 비게 될 뿐 깨지는 소비자가 없어서다. B가
+  원하면 이 필드들을 스키마에서 정리(deprecate)하는 것도 가능하다는 걸
+  제안으로 남긴다.
 - 확인 방법: `device_location`을 넣어도 `weather_intent=IGNORE`면
   `feature_scores.weather`가 `null`이고 `weights_used`에서 날씨 0.4가 빠져
-  나머지에 재분배된다(정상). 실제 응답으로 확인함.
+  나머지에 재분배된다(정상). 실제 응답으로 확인함. TODO 1/2 해결은 전체
+  pytest 회귀(회귀 없음)와 `api_context.api_weather`가 항상 `None`으로
+  응답에 남는지로 확인.
 
 ### D-039 — 되묻기 답변은 새 요청이 아닌 기존 요청의 연속으로 처리
 
@@ -952,6 +959,93 @@
 - 범위 제한: 2차 Scoring(혼잡도, D-040)에는 영향 없음 — `environment_type`은 1차
   Scoring의 날씨 Feature 계산에만 쓰인다.
 
+### D-047 — `rerank_with_concentration()` 시그니처 축소 제안: `RecommendationContext` → `WeatherCondition`
+
+- 상태: `Implemented`(2026-08-05, 커밋 `baf4051`)
+- 배경: D-040 구현 중 D가 요청해 `rerank_with_concentration()`에
+  `context: RecommendationContext` 전체를 4번째 파라미터로 추가했다(날씨 근거
+  문장을 1차와 동일하게 재구성하려면 원본 `WeatherCondition`이 필요하다는 이유).
+  이후 D가 코드 리뷰 중 재확인한 결과, `services/recommendation_pipeline.py::
+  rerank_with_concentration()`(141-282행) 안에서 `context`는 165행
+  `_weather_condition_from_context(context)` 호출 **한 곳에서만** 쓰이고
+  `location`/`places`/`concentration` 등 다른 필드는 전혀 참조하지 않는다는 걸
+  확인했다 — "1차 호출과 반드시 동일한 context여야 한다"는 암묵적 전제를 없애기
+  위해 시그니처를 `WeatherCondition` 값 하나로 좁히자고 A에 역제안했다.
+- 제안 시그니처: `rerank_with_concentration(conditions, weather_condition:
+  WeatherCondition | None, first_pass, concentration)` — 2번째 파라미터(현재
+  `context`) 자리를 유지한 채 타입만 `RecommendationContext` → `WeatherCondition
+  | None`로 좁힌다.
+- **D 확인 필요 — 값 도출 필터 기준**: D 내부의 `_weather_condition_from_context()`
+  (같은 파일 287-293행)는 `weather.status`가 `{"success", "partial"}`일 때 값을
+  반환한다. A가 이미 갖고 있던 `to_weather_condition()`
+  (`app/services/runtime/recommendation_transform.py:53-64`, 현재 프로덕션 어디서도
+  호출되지 않는 dead code — 자체 테스트에서만 참조됨)은 `"success"`일 때만 값을
+  반환해 필터 기준이 다르다. 시그니처를 좁히면서 A가 새 값을 도출할 때 D의 기존
+  `{"success", "partial"}` 필터를 그대로 따라야 동작이 안 바뀐다 — A의 기존
+  `to_weather_condition()`을 그대로 재사용하면 `"partial"` 상태일 때 결과가 조용히
+  달라진다. 이 필터 기준을 D가 명시적으로 확인해달라.
+- 변경 대상 파일: A 소유 — `app/services/runtime/protocols.py`(Protocol 선언),
+  `app/services/runtime/agent_runtime.py`(`_apply_concentration_rerank()` 호출부),
+  `app/services/runtime/stubs.py`(`FakeRecommendationProvider`, 내부에서
+  `context`/`conditions` 둘 다 안 쓰므로 기계적 변경). D 소유 —
+  `app/services/runtime/real_recommendation_provider.py`(48-58행, `context`를
+  그대로 전달하던 부분), `app/services/recommendation_pipeline.py`(141-148행,
+  실제 로직). 테스트 3파일(`test_agent_runtime.py`,
+  `test_real_recommendation_provider.py`, `test_recommendation_pipeline.py`)
+  총 12개 함수가 이 시그니처를 만든다.
+- **왜 A가 지금 코드를 안 바꾸는지**: `protocols.py`의 Protocol 선언은 A 소유지만,
+  Real 구현체(`RealRecommendationProvider`/`recommendation_pipeline.py`, D 소유)가
+  같은 순간에 같이 안 바뀌면 실제 SEEK/AVOID 요청에서 D 코드가 `context.weather`를
+  호출하려다 `WeatherCondition` 값 객체에 그 속성이 없어 `AttributeError`로 깨진다.
+  D-040은 현재 정상 동작 중이므로, A 혼자 반영해서 이걸 망가뜨리지 않는다 — D가 위
+  필터 기준을 확인하면 A/D 양쪽 파일을 같은 타이밍에 반영한다.
+- 확인 방법(채택 시): 위 12개 테스트 함수 전부 시그니처 갱신 후 통과 확인, 특히
+  `test_recommendation_pipeline.py`의 partial-weather 케이스로 필터 기준 회귀가
+  없는지 확인.
+- **구현 완료 메모(2026-08-05, 커밋 `baf4051`)**: 위에서 확인을 요청했던 필터
+  기준은 D의 `{"success", "partial"}`로 확정됐다 — `to_weather_condition()`
+  (`recommendation_transform.py`)의 필터를 `"success"` 단독에서
+  `{"success", "partial"}`로 넓히고 반환 타입도 `WeatherCondition | None`로
+  바꿔 그대로 재사용했다. `protocols.py`/`real_recommendation_provider.py`/
+  `recommendation_pipeline.py`/`stubs.py`와 관련 테스트가 모두 이 커밋에서
+  같은 타이밍에 반영됐다.
+
+### D-048 — MODIFY 경로 exclude_tags/special_requirements Add/Remove 정합화 (제안, 범위 확정 필요)
+
+- 상태: `Proposed`(A 제안, 구현 전 범위 확정 필요)
+- 배경: B(이태화)가 티켓 댓글로 보고한 `_serialize()` int→str 버그를 고치면서,
+  같은 세션에서 `_full_replace_operations()`(RECOMMEND 경로)의
+  `exclude_tags`/`special_requirements`가 B의 field_spec.py(Add/Remove만 허용,
+  Update 없음 — agent-state-contract-v1.md §2.2)와 안 맞아 `unsupported_operation`
+  으로 조용히 드롭되던 버그도 함께 발견해 고쳤다(RECOMMEND는 `Add`로 변경
+  완료). 그런데 `_changed_field_operations()`(MODIFY/CHANGE_CONDITION 경로,
+  `state_transform.py:207-226`)는 `changed_fields`에 포함된 모든 필드에 동일하게
+  `Update`를 쓴다 — `exclude_tags`/`special_requirements`가 MODIFY로 바뀔 때도
+  똑같이 `unsupported_operation`으로 드롭된다(1a와 같은 계약 위반 패턴이 MODIFY
+  경로에도 남아 있음).
+- 왜 RECOMMEND와 같은 방식(무조건 `Add`)으로 못 고치는지: RECOMMEND는
+  `reset_scope="soft"`로 baseline이 항상 비어 있어 `Add`-with-full-list가
+  replace와 동치이지만, MODIFY는 incremental이라 기존 `exclude_tags`/
+  `special_requirements`가 비어있지 않다. LLM이 전체 교체 리스트를 돌려줬을 때
+  그대로 `Add`하면 새 값이 append+dedupe되어 기존 제외 목록과 합쳐질 뿐
+  교체되지 않는다 — "이제 이것만 제외해줘"처럼 사용자가 치환을 의도했을 때
+  의미가 달라진다.
+- 제안(설계는 후속 세션): diff 기반으로 (LLM이 준 새 값 − 기존 값)은 `Add`,
+  (기존 값 − LLM이 준 새 값)은 `Remove`로 나눠 보내는 방식이 필요해 보인다.
+  다만 diff 대상이 되는 "기존 값"을 어디서 가져올지(`session_context.
+  user_conditions` 재사용 가능해 보임), LLM이 항상 전체 교체 리스트를 주는지
+  아니면 증분만 주는지(조건 추출 프롬프트 계약 재확인 필요)는 이번 세션에서
+  답을 내지 않는다.
+- 확인 필요: 이 diff 로직을 스코핑할 다음 세션에서 (1) LLM 프롬프트가
+  exclude_tags/special_requirements를 항상 전체 리스트로 주는지 증분으로
+  주는지, (2) diff 계산에 쓸 "기존 값" 소스가 `session_context.user_conditions`
+  로 충분한지 확인한다.
+- 변경 대상 파일(후속): `backend/app/services/interpret/state_transform.py`
+  (`_changed_field_operations()`), `backend/tests/test_state_transform.py`.
+- 왜 지금 구현하지 않는지: diff 알고리즘 설계와 LLM 프롬프트 계약 확인이 먼저
+  필요한 별도 스코프의 작업이라, 이번 세션의 계약 위반 수정(1a 유형)과 섞으면
+  리뷰 범위가 커진다. 이번 세션은 발견 사실을 기록만 한다.
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -987,3 +1081,5 @@
 | 2026-08-04 | D-044 지원 지역 밖 위치를 해석 단계에서 `unsupported`로 끊도록 구현, 종로구 경계 폴리곤 리소스 추가 |
 | 2026-08-04 | D-045 같은 역의 노선별 후보를 한 장소로 묶어 환승역 재질문을 없앰, `haversine_km`을 `app/geo.py`로 통합 |
 | 2026-08-04 | D-046 environment_type을 TourAPI 중분류(lcls_systm2) 기반으로 세분화 구현 반영(indoor 19/outdoor 16/unknown 13), 판정표 고정 테스트 추가 |
+| 2026-08-05 | D-047 D-040 리뷰 후 A에 `rerank_with_concentration()` 시그니처 축소(`RecommendationContext` → `WeatherCondition`) 역제안, D 확인 필요 사항으로 필터 기준 명시 |
+| 2026-08-05 | B 리뷰 반영: `_serialize()` int→str 버그·RECOMMEND `exclude_tags`/`special_requirements` Update→Add 수정, `api_context.api_weather` 죽은 코드 제거, `PROMPT_VERSION` 신설(record_trace·StateApplyRequest 양쪽 연결) 및 D-040의 `SCORING_VERSION` 최초 연결. D-048로 MODIFY 경로의 동일 계약 위반은 제안만 기록 |

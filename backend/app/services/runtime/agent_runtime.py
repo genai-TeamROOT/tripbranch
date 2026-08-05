@@ -17,7 +17,9 @@ import time
 import httpx
 
 from app.agent_context.schemas import RecommendationContext
-from app.providers.protocols import LLMProvider, WeatherProvider
+from app.domain.scoring import SCORING_VERSION
+from app.providers.gemini_prompts import PROMPT_VERSION
+from app.providers.protocols import LLMProvider
 from app.schemas import (
     AgentRequest,
     AgentResponse,
@@ -81,12 +83,14 @@ def _record_trace_safely(
     step: str,
     latency_ms: int,
     error_type: str | None = None,
+    prompt_version: str | None = None,
+    scoring_version: str | None = None,
     store: StateStore | None,
 ) -> None:
     """실행 단계 1건을 B에 기록한다. (llmops-trace-contract-v1.md AF-12, B-07)
 
-    prompt_version/scoring_version/variant_id는 A/D가 아직 값을 안 줘서 None으로
-    둔다. 기록 실패가 사용자 응답까지 막으면 안 되므로 예외를 여기서 흡수한다.
+    variant_id는 아직 값을 안 줘서 None으로 둔다. 기록 실패가 사용자 응답까지
+    막으면 안 되므로 예외를 여기서 흡수한다.
     """
     try:
         record_trace(
@@ -96,6 +100,8 @@ def _record_trace_safely(
                 step=step,
                 latency_ms=latency_ms,
                 error_type=error_type,
+                prompt_version=prompt_version,
+                scoring_version=scoring_version,
             ),
             store=store,
         )
@@ -172,14 +178,13 @@ async def _apply_concentration_rerank(
     enrichment_provider: EnrichmentProvider,
 ) -> RecommendationResponse:
     """concentration_intent가 AVOID/SEEK일 때만 1차 결과를 혼잡도로 보강·재순위한다
-    (제안, D 미확인 — concentration-conditions.md §2.2.3, agent-runtime-contract.md
+    (D-040 확정 — concentration-conditions.md §2.2.3, agent-runtime-contract.md
     §6.5.2). 그 외에는 first_pass를 그대로 반환한다.
 
-    C 보강 조회(EnrichmentProvider.enrich())는 사용자 확인(2026-07-30)에 따라 이미
-    실제로 연결한다. D의 2차 Scoring(rerank_with_concentration())은 아직 없을 수
-    있어 hasattr로 방어한다 — Real D(RealRecommendationProvider)가 이 메서드를
-    구현하기 전까지는 C만 호출되고 결과는 1차 그대로 나간다. D가 메서드를 추가하면
-    자동으로 재순위 경로를 타기 시작한다.
+    C 보강 조회(EnrichmentProvider.enrich())와 D의 2차 Scoring
+    (rerank_with_concentration())은 모두 실제로 연결·구현 완료됐다(D-040). hasattr
+    가드는 이제 "D가 아직 없을 수 있어서"가 아니라, 테스트 더블 등 이 메서드를
+    갖추지 않은 구현체가 주입됐을 때도 안전하게 낮아지도록 남겨둔 방어 코드다.
 
     run_agent_flow()에서 이 로직만 분리해둔 이유: B의 StateUserConditions에
     concentration_intent 필드가 아직 없어(state/schema.py, field_spec.py 미반영 —
@@ -231,7 +236,6 @@ async def run_agent_flow(
     request: AgentRequest,
     *,
     llm: LLMProvider,
-    weather_provider: WeatherProvider,
     tool_provider: ToolProvider,
     recommendation_provider: RecommendationProvider,
     enrichment_provider: EnrichmentProvider,
@@ -247,11 +251,11 @@ async def run_agent_flow(
     D를 건너뛴다 — LLM 단계의 needs_clarification과는 별개 레이어다(계약 문서 §5.4).
     """
 
-    # 1) A → B: GPS·날씨 세션 컨텍스트 최신화. GPS 형식이 잘못되면 이번 턴만 건너뛴다 —
+    # 1) A → B: GPS 세션 컨텍스트 최신화. GPS 형식이 잘못되면 이번 턴만 건너뛴다 —
     #    잘못된 GPS 문자열이 파싱 예외로 대화를 중단시키지 않아야 한다.
     valid_gps = _valid_location(request.device_location)
     session_context = await ensure_current_context(
-        request.session_id, valid_gps, weather_provider, store=store
+        request.session_id, valid_gps, store=store
     )
 
     # 2) A: LLMOutput 생성 (Intent 분류 + Intent별 조건 추출). B가 준 현재 조건(순수 문자열)을
@@ -285,6 +289,7 @@ async def run_agent_flow(
         run_id=state_response.run_id,
         step="llm_interpret",
         latency_ms=llm_latency_ms,
+        prompt_version=PROMPT_VERSION,
         store=store,
     )
 
@@ -456,6 +461,7 @@ async def run_agent_flow(
         run_id=state_response.run_id,
         step="scoring",
         latency_ms=int((time.monotonic() - scoring_started_at) * 1000),
+        scoring_version=SCORING_VERSION,
         store=store,
     )
 
@@ -512,15 +518,13 @@ async def run_agent(request: AgentRequest) -> AgentResponse:
     """
 
     from app.agent_context.factory import get_candidate_enrichment_service, get_context_provider
-    from app.providers.factory import get_llm_provider, get_weather_provider
+    from app.providers.factory import get_llm_provider
     from app.services.runtime.real_recommendation_provider import RealRecommendationProvider
 
     async with httpx.AsyncClient() as client:
-        weather_provider = get_weather_provider(client)
         return await run_agent_flow(
             request,
             llm=get_llm_provider(),
-            weather_provider=weather_provider,
             tool_provider=get_context_provider(client),
             recommendation_provider=RealRecommendationProvider(),
             enrichment_provider=get_candidate_enrichment_service(client),
