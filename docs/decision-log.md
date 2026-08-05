@@ -1165,6 +1165,17 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 - 테스트: `tests/test_weather_judgment.py`(판정 함수 전수), `tests/test_recommendation_pipeline.py`
   (사실/발화/ENJOY 반전/IGNORE-vs-실패 케이스), Context Fixture 4종에 `precipitation`/
   `sky` 보강.
+- **근거 문장이 원인(비/눈/폭염/한파)까지 정확히 말하게 수정**(2026-08-05 검수에서
+  발견). `explanation.py`가 `weather_condition`만 보고 라벨을 골랐는데, 이러면
+  ENJOY 반전으로 비인데 GOOD이 된 경우 "맑은 날씨"라고 말하고, 폭염/한파로 BAD가
+  된 경우도 전부 "비 예보"라고 말하는 사실-근거 불일치가 있었다(온도가 판정에
+  없던 시절엔 BAD=강수뿐이라 문제없었지만, 이번에 온도를 판정에 추가하면서
+  새로 생겼다). 판정 함수가 `(WeatherCondition, WeatherReason)` 튜플을 반환하도록
+  바꾸고(`WeatherReason` = rain/snow/heat/cold — 강수는 sleet/shower를 rain으로
+  뭉치고 snow만 구분), `scoring.py::RankedCandidate`/`evidence.py::RecommendationEvidence`에
+  `weather_reason`을 실어 `explanation.py`까지 관통시켰다. reason이 있으면 그걸로
+  라벨을 고르고(비/눈/폭염/한파 예보), 없으면(맑음/흐림, 발화 GOOD) 기존
+  `weather_condition` 기반 라벨로 폴백한다.
 
 #### 남은 것 (`Proposed`)
 
@@ -1173,7 +1184,10 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   따로 계산해서 넘긴다. D가 `resolve_weather_condition()`을 public으로 열어뒀으니,
   A가 이 함수를 1차와 동일한 `context`/`conditions`로 호출해 재사용하면 정리된다.
   지금은 두 값이 우연히 같은 경우가 많지만, ENJOY 반전이나 폭염/한파 케이스에서는
-  1차/2차 설명이 어긋날 수 있다.
+  1차/2차 설명이 어긋날 수 있다. `rerank_with_concentration()`은 `weather_reason`도
+  키워드 전용 기본값 `None`으로 이미 받게 해뒀다 — A가 넘기기 전까지는 2차 근거
+  문장이 `weather_condition` 기반 라벨로 폴백된다(동작은 유지, 문구만 아직 원인
+  미반영).
 - **`WeatherForecast.condition` 필드 제거** — D가 더 이상 안 읽지만, C가 아직 필드
   자체를 지우지 않았다(하위호환 유지 중으로 추정, C 확인 필요). `to_weather_condition()`
   (구버전)도 이때 함께 정리 대상.
@@ -1280,3 +1294,4 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-05 | D-051 날씨 사실/판정 분리 — C의 사실 전달과 `NO_MENTION` 수용 구현, 판정 이관은 D 확인 대기 |
 | 2026-08-05 | D-052 Gemini 동일 벤더 내 모델 fallback(`LLM_FALLBACK_MODEL_NAMES`) 구현 + AppError 전파 경로 로깅 추가(무로그 502 문제 해결) |
 | 2026-08-05 | D-051 판정 이관 구현 완료 — `weather_judgment.py` 신설(사실/발화 기반 판정 + 의도 재해석), `recommendation_pipeline.py`가 PR #102의 `conditions` 파라미터를 받아 사실 우선·발화 폴백으로 배선, `resolve_weather_condition()` public 전환(2차 Scoring 재사용용), `weather_ignored` 판별을 IGNORE 전용으로 정정. 2차 Scoring 배선 통일과 `condition` 필드 제거는 남은 것으로 기록 |
+| 2026-08-05 | D-051 근거 문장 정확도 수정 — 판정 함수가 `WeatherReason`(rain/snow/heat/cold)을 함께 반환하도록 바꾸고 `scoring.py`/`evidence.py`/`explanation.py`까지 관통시켜, "폭염인데 비 예보"·"ENJOY로 GOOD인데 맑은 날씨"라고 말하던 사실-근거 불일치를 해소 |
