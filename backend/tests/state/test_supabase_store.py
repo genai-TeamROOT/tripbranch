@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -39,6 +41,7 @@ def test_get_state_parses_row_into_agent_state() -> None:
         "condition_version": 2,
         "last_run_id": "run-1",
         "last_intent": "RECOMMEND",
+        "pending_clarification": "location_required",
         "status": "active",
         "created_at": "2026-07-28T00:00:00+09:00",
         "updated_at": "2026-07-28T00:00:00+09:00",
@@ -50,6 +53,25 @@ def test_get_state_parses_row_into_agent_state() -> None:
     assert state.session_id == SESSION_ID
     assert state.user_conditions.weather == "sunny"
     assert state.condition_version == 2
+    assert state.pending_clarification == "location_required"
+
+
+def test_get_state_defaults_pending_clarification_when_column_absent() -> None:
+    """08-03 마이그레이션 이전 행(컬럼 없음)을 읽어도 깨지지 않아야 한다."""
+    row = {
+        "session_id": SESSION_ID,
+        "user_conditions": {},
+        "api_context": {},
+        "condition_version": 0,
+        "status": "active",
+        "created_at": "2026-07-28T00:00:00+09:00",
+        "updated_at": "2026-07-28T00:00:00+09:00",
+        "last_active_at": "2026-07-28T00:00:00+09:00",
+    }
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=[row]))
+    state = _store(transport).get_state(SESSION_ID)
+    assert state is not None
+    assert state.pending_clarification is None
 
 
 def test_get_state_uses_secret_key_and_filter() -> None:
@@ -85,6 +107,27 @@ def test_save_state_upserts_with_on_conflict_session_id() -> None:
     assert request.method == "POST"
     assert request.url.params["on_conflict"] == "session_id"
     assert request.headers["prefer"] == "resolution=merge-duplicates,return=minimal"
+
+def test_save_state_includes_pending_clarification_in_body() -> None:
+    """save_state가 model_dump()를 그대로 보내므로, 값이 있으면 body에 실려야 한다."""
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["request"] = request
+        return httpx.Response(201)
+
+    transport = httpx.MockTransport(handler)
+    state = AgentState(
+        session_id=SESSION_ID,
+        user_conditions=UserConditions(),
+        pending_clarification="location_required",
+    )
+    _store(transport).save_state(state)
+
+    request = seen["request"]
+    assert isinstance(request, httpx.Request)
+    body = json.loads(request.content)
+    assert body["pending_clarification"] == "location_required"
 
 
 def test_delete_state_filters_by_session_id() -> None:
