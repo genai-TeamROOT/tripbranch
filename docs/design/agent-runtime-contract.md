@@ -208,11 +208,8 @@ def to_agent_context_request(
 
 `conditions.weather`(A→C 요청)는 사용자가 말한 5단계(`rain`/`snow`/`hot`/`cold`/`good`)이고,
 `RecommendationContext.weather.data.condition`(C→A 응답)은 C가 Provider 결과를 정규화한
-3단계(`good`/`neutral`/`bad`)다. A는 `weather_intent`에 따라 D 입력을 선택한다:
-
-- `AVOID`/`ENJOY`: 사용자 발화 `conditions.weather`를 D 점수 입력으로 사용
-- `NO_MENTION`: C가 조회한 `context.weather.condition` 사용
-- `IGNORE`: 날씨 점수를 제외(가중치 재분배)
+3단계(`good`/`neutral`/`bad`)다. A는 `conditions`를 C에 전달하고, C가 자신의 규칙에 따라
+D에서 쓸 날씨 정보를 `context.weather`에 담아 반환한다. A는 이 값을 그대로 D에 전달한다.
 
 ### 3.3 C 응답(`AgentContextResponse`) status별 처리
 

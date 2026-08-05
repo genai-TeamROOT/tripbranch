@@ -322,8 +322,7 @@ LLM이 AVOID/ENJOY 판별 불가
 ① 사용자 입력에 날씨 포함(weather_intent in {AVOID, ENJOY})
   → LLM이 weather + weather_intent 추출
   → C는 날씨 API를 호출하지 않는다
-  → D가 사용자 발화 weather(5단계: rain/snow/hot/cold/good)를 점수 계산에 사용
-    (Scoring 입력용 3단계로 정규화)
+  → C가 사용자 발화 weather와 intent를 바탕으로 D 입력 날씨를 결정한다
 
 ② 사용자가 날씨를 전혀 언급하지 않음(weather_intent == NO_MENTION)
   → C가 GPS 좌표 기준으로 날씨 API 호출

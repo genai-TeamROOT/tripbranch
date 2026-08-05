@@ -38,6 +38,8 @@ def test_weather_no_mention_fetches_weather_tool() -> None:
     assert plan.requires(ContextTool.RESOLVE_LOCATION)
     assert plan.requires(ContextTool.SEARCH_PLACES)
     assert plan.requires(ContextTool.GET_HOLIDAYS)
+
+
 def test_contract_accepts_no_mention_before_a_starts_sending_it() -> None:
     """C가 A보다 먼저 값을 받아들여야 한다.
 
@@ -57,17 +59,11 @@ def test_weather_intent_absent_still_fetches_weather() -> None:
     assert plan.requires(ContextTool.GET_WEATHER)
 
 
-def test_weather_avoid_and_enjoy_skip_fetch_and_use_stated_weather() -> None:
-    """사용자가 날씨를 말했으면 조회하지 않는다.
-
-    AVOID/ENJOY는 발화에 날씨가 있다는 뜻이라 API를 부를 이유가 없다. 그 값은 A가
-    `run_recommendation_pipeline_from_context(weather_condition=...)`으로 D에 직접
-    넘긴다(PR #99) — C가 조회를 생략해도 날씨가 점수에서 빠지지 않는다.
-    """
+def test_weather_avoid_and_enjoy_skip_weather_tool() -> None:
+    """방향이 있는 의도는 C가 발화 기반으로 처리하므로 API 조회를 생략한다."""
     for intent in ("AVOID", "ENJOY"):
         plan = build_tool_execution_plan(UserConditions(weather_intent=intent))
         assert not plan.requires(ContextTool.GET_WEATHER), intent
-        # 날씨만 생략하고 나머지는 그대로다.
         assert plan.requires(ContextTool.RESOLVE_LOCATION), intent
         assert plan.requires(ContextTool.SEARCH_PLACES), intent
         assert plan.requires(ContextTool.GET_HOLIDAYS), intent

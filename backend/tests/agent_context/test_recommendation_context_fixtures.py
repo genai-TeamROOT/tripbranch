@@ -9,7 +9,11 @@ from pathlib import Path
 import pytest
 
 from app.agent_context.schemas import AgentContextResponse
-from app.services.recommendation_pipeline import run_recommendation_pipeline_from_context
+from app.services.recommendation_pipeline import (
+    _WEATHER_IGNORED_WARNING,
+    _WEATHER_MISSING_WARNING,
+    run_recommendation_pipeline_from_context,
+)
 
 _FIXTURE_DIRECTORY = Path(__file__).parents[1] / "fixtures" / "agent_context"
 _VISIT_AT = datetime.fromisoformat("2026-08-15T11:00:00+09:00")
@@ -118,5 +122,7 @@ async def test_missing_weather_fixture_is_distinct_from_provider_failure() -> No
 
     ignored_warnings = ignored_result.recommendations[0].warnings
     failed_warnings = failed_result.recommendations[0].warnings
-    assert any("말씀하지 않으셔서" in warning for warning in ignored_warnings)
-    assert any("확인하지 못해" in warning for warning in failed_warnings)
+    # 문구 자체가 아니라 "두 경고가 서로 다른 상수"라는 사실을 검증한다 —
+    # 문구는 UX 논의로 바뀔 수 있고(D-038 결정 1), 그때마다 테스트가 깨지면 안 된다.
+    assert _WEATHER_IGNORED_WARNING in ignored_warnings
+    assert _WEATHER_MISSING_WARNING in failed_warnings
