@@ -20,13 +20,19 @@ from typing import Literal
 from app.domain.models import WeatherCondition
 from app.schemas import StatedWeather, WeatherIntent
 
-# 기상청 폭염주의보(33°C)·한파주의보(아침 최저기온 -12°C 이하) 기준을 차용했다.
-# 공식 기준은 체감온도·2일 이상 지속을 요구하지만, 여기서는 단일 예보 시점의
-# 기온만 본다 — 단순화라는 걸 인지하고 있어야 한다. 두 임계값 사이는 완충
-# NEUTRAL 구간을 두지 않는다 — 근거 없는 값(예: 28°C/0°C)을 새로 만들지 않기
-# 위해서다. 대신 그 구간은 하늘 상태로 판정한다(_classify_from_facts 참고).
-_HEAT_BAD_THRESHOLD_CELSIUS = 33.0
-_COLD_BAD_THRESHOLD_CELSIUS = -12.0
+# 기상청 특보 기준(2026-08-05 확인)을 그대로 차용했다 — 주의보/경보 두 단계 모두
+# 공식 경계다. 공식 기준은 체감온도·2일 이상 지속을 요구하지만, 여기서는 단일
+# 예보 시점의 기온만 본다 — 단순화라는 걸 인지하고 있어야 한다.
+#   폭염주의보 33°C 이상 / 폭염경보 35°C 이상(중대경보 38°C+는 BAD에 흡수 —
+#   WeatherCondition에 4번째 값이 없다)
+#   한파주의보 -12°C 이하 / 한파경보 -15°C 이하(중대경보 단계 없음)
+# 주의보~경보 사이는 NEUTRAL이다 — 이전엔 이 구간에 완충값을 안 두었는데
+# (28°C/0°C가 근거 없는 임의값이라 뺐었다), 이번엔 두 경계 모두 공식 등급이라
+# "근거 없는 완충"이 아니다.
+_HEAT_ADVISORY_THRESHOLD_CELSIUS = 33.0
+_HEAT_WARNING_THRESHOLD_CELSIUS = 35.0
+_COLD_ADVISORY_THRESHOLD_CELSIUS = -12.0
+_COLD_WARNING_THRESHOLD_CELSIUS = -15.0
 
 # C가 기상청 PTY 코드를 옮긴 강수형태(WeatherForecast.precipitation)와 동일한 값.
 # C의 스키마 클래스는 import하지 않는다 — 값 타입만 공유하고 코드 의존은 없다.
@@ -59,17 +65,21 @@ def _classify_from_facts(
 
     강수 > 기온(폭염/한파) > 하늘 순으로 확인한다 — 비가 오면서 기온도
     극단적이어도 강수 쪽이 체감에 더 크게 영향을 준다고 보고 강수를 우선한다.
-    폭염·한파 기준을 넘지 않는 기온(예: 30°C, -5°C)은 그 자체로는 판정하지
-    않고 하늘 상태로 넘어간다 — 근거 없는 "꽤 덥다/춥다" 구간을 만들지 않기
-    위해서다.
+    기온은 경보 이상이면 BAD, 주의보 이상~경보 미만이면 NEUTRAL, 주의보 미만이면
+    그 자체로는 판정하지 않고 하늘 상태로 넘어간다.
     """
     if precipitation is not None and precipitation != "none":
         return WeatherCondition.BAD, ("snow" if precipitation == "snow" else "rain")
 
-    if temperature_celsius is not None and temperature_celsius >= _HEAT_BAD_THRESHOLD_CELSIUS:
-        return WeatherCondition.BAD, "heat"
-    if temperature_celsius is not None and temperature_celsius <= _COLD_BAD_THRESHOLD_CELSIUS:
-        return WeatherCondition.BAD, "cold"
+    if temperature_celsius is not None:
+        if temperature_celsius >= _HEAT_WARNING_THRESHOLD_CELSIUS:
+            return WeatherCondition.BAD, "heat"
+        if temperature_celsius >= _HEAT_ADVISORY_THRESHOLD_CELSIUS:
+            return WeatherCondition.NEUTRAL, "heat"
+        if temperature_celsius <= _COLD_WARNING_THRESHOLD_CELSIUS:
+            return WeatherCondition.BAD, "cold"
+        if temperature_celsius <= _COLD_ADVISORY_THRESHOLD_CELSIUS:
+            return WeatherCondition.NEUTRAL, "cold"
 
     if sky == "clear":
         return WeatherCondition.GOOD, None
