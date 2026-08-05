@@ -21,10 +21,8 @@ from app.place_search_policy import (
 )
 from app.schemas import (
     RecommendationResponse,
-    StatedWeather,
     Transport,
     UserConditions,
-    WeatherIntent,
 )
 from app.services.runtime.context_schemas import RecommendationContext
 from app.state.service import RecommendedPlace, RecordRecommendationRequest
@@ -33,13 +31,6 @@ from app.state.service import RecommendedPlace, RecordRecommendationRequest
 # 거리 점수 정규화가 어긋나지 않는다. 공통 기본값과 최소·최대 범위는
 # place_search_policy에서 함께 관리한다.
 _OTHER_KM_PER_MIN = 20 / 60  # 임시: 대중교통/자동차/미언급 공통 가정(20km/h)
-_STATED_WEATHER_TO_CONDITION: dict[StatedWeather, WeatherCondition] = {
-    StatedWeather.RAIN: WeatherCondition.BAD,
-    StatedWeather.SNOW: WeatherCondition.BAD,
-    StatedWeather.HOT: WeatherCondition.BAD,
-    StatedWeather.COLD: WeatherCondition.BAD,
-    StatedWeather.GOOD: WeatherCondition.GOOD,
-}
 
 
 def to_search_radius_km(conditions: UserConditions) -> float:
@@ -76,26 +67,6 @@ def to_weather_condition(context: RecommendationContext) -> WeatherCondition | N
     if weather is None or weather.status not in {"success", "partial"} or weather.data is None:
         return None
     return WeatherCondition(weather.data.condition)
-
-
-def to_scoring_weather_condition(
-    conditions: UserConditions,
-    context: RecommendationContext,
-) -> WeatherCondition | None:
-    """1차 Scoring에 사용할 날씨 조건을 결정한다.
-
-    - weather_intent가 AVOID/ENJOY이고 사용자 weather가 있으면 그 값을 우선 사용
-    - weather_intent가 NO_MENTION(또는 과도기 null)이면 C의 API weather를 사용
-    - weather_intent가 IGNORE면 날씨 Feature를 제외한다
-    """
-    if (
-        conditions.weather_intent in (WeatherIntent.AVOID, WeatherIntent.ENJOY)
-        and conditions.weather is not None
-    ):
-        return _STATED_WEATHER_TO_CONDITION[conditions.weather]
-    if conditions.weather_intent is WeatherIntent.IGNORE:
-        return None
-    return to_weather_condition(context)
 
 
 def to_concentration_entries(context: RecommendationContext) -> list[object] | None:
@@ -149,7 +120,6 @@ def to_record_recommendation_request(
 __all__ = [
     "to_search_radius_km",
     "to_weather_condition",
-    "to_scoring_weather_condition",
     "to_concentration_entries",
     "to_record_recommendation_request",
 ]

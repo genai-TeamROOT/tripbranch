@@ -38,6 +38,8 @@ def test_weather_no_mention_fetches_weather_tool() -> None:
     assert plan.requires(ContextTool.RESOLVE_LOCATION)
     assert plan.requires(ContextTool.SEARCH_PLACES)
     assert plan.requires(ContextTool.GET_HOLIDAYS)
+
+
 def test_contract_accepts_no_mention_before_a_starts_sending_it() -> None:
     """C가 A보다 먼저 값을 받아들여야 한다.
 
@@ -68,11 +70,11 @@ def test_weather_intent_absent_still_fetches_weather() -> None:
     assert plan.requires(ContextTool.GET_WEATHER)
 
 
-def test_weather_avoid_and_enjoy_both_fetch_weather() -> None:
-    """방향이 있는 의도는 둘 다 조회한다. 방향 자체는 D가 점수에서 반영한다."""
+def test_weather_avoid_and_enjoy_skip_weather_tool() -> None:
+    """방향이 있는 의도는 C가 발화 기반으로 처리하므로 API 조회를 생략한다."""
     for intent in ("AVOID", "ENJOY"):
         plan = build_tool_execution_plan(UserConditions(weather_intent=intent))
-        assert plan.requires(ContextTool.GET_WEATHER), intent
+        assert not plan.requires(ContextTool.GET_WEATHER), intent
 
 
 def test_initial_plan_never_fetches_concentration() -> None:
