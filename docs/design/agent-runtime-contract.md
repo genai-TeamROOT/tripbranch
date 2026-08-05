@@ -261,12 +261,13 @@ transform.py`)와 C(`agent_context/service.py`)가 **같은 상수를 import**�
 ### 4.2 `to_weather_condition()`
 
 ```python
-def to_weather_condition(context: RecommendationContext) -> str | None
+def to_weather_condition(context: RecommendationContext) -> WeatherCondition | None
 ```
 
-`context.weather.status == "success"`일 때만 `condition` 값을 반환한다. 그 외(결측,
-`weather` 자체가 없음)는 `None` — D의 `explanation.py`가 날씨 결측을 이미 warnings로
-반영하므로 A는 결측 여부를 따로 판단하지 않는다.
+`context.weather.status in {"success", "partial"}`일 때 `condition` 값을
+`WeatherCondition`으로 변환해 반환한다. 그 외(결측, `weather` 자체가 없음)는
+`None` — D의 `explanation.py`가 날씨 결측을 이미 warnings로 반영하므로 A는 결측
+여부를 따로 판단하지 않는다.
 
 ### 4.3 `RealRecommendationProvider`
 
@@ -610,7 +611,7 @@ sequenceDiagram
 | `transform()` | `state_transform.py` | A→B | 완료 |
 | `to_agent_context_request()` | `context_transform.py` | A→C | 완료 |
 | `to_search_radius_km()` | `recommendation_transform.py` | A→D | 완료 |
-| `to_weather_condition()` | `recommendation_transform.py` | C context→D | 완료 |
+| `to_weather_condition()` | `recommendation_transform.py` | C context→D | 완료(`WeatherCondition \| None`, `success/partial` 기준) |
 | `to_record_recommendation_request()` | `recommendation_transform.py` | D→B | 완료(미사용, §4.4) |
 | `RealRecommendationProvider.recommend()` | `real_recommendation_provider.py` | A→D 호출 | 완료(연결 완료, §4.5) |
 | `compose_recommendation_message()` | `response_composer.py` | D→사용자 | 완료 |
