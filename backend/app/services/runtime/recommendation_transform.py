@@ -12,6 +12,7 @@ import하지 않는다 — D 호출은 app.services.runtime.real_recommendation_
 
 from __future__ import annotations
 
+from app.domain.models import WeatherCondition
 from app.place_search_policy import (
     DEFAULT_PLACE_SEARCH_RADIUS_KM,
     MAX_PLACE_SEARCH_RADIUS_KM,
@@ -50,18 +51,18 @@ def to_search_radius_km(conditions: UserConditions) -> float:
     )
 
 
-def to_weather_condition(context: RecommendationContext) -> str | None:
-    """C의 RecommendationContext.weather를 D에 넘길 날씨 조건 문자열로 변환한다.
+def to_weather_condition(context: RecommendationContext) -> WeatherCondition | None:
+    """C의 RecommendationContext.weather를 D에 넘길 WeatherCondition으로 변환한다.
 
-    status가 "success"일 때만 condition 값(good/neutral/bad)을 반환한다. 그 외
-    (no_data/partial/unsupported/unavailable, weather 자체가 없음)는 None을
-    반환한다 — D의 explanation.py가 날씨 결측을 이미 warnings로 반영하므로,
-    A는 결측 여부를 따로 판단하지 않고 그대로 None을 넘기기만 하면 된다.
+    status가 "success"/"partial"일 때만 condition 값(good/neutral/bad)을
+    반환한다. 그 외(no_data/unsupported/unavailable, weather 자체가 없음)는
+    None을 반환한다 — D의 explanation.py가 날씨 결측을 warnings로 반영하므로,
+    A는 결측 여부를 따로 판단하지 않고 그대로 None만 넘긴다.
     """
     weather = context.weather
-    if weather is None or weather.status != "success" or weather.data is None:
+    if weather is None or weather.status not in {"success", "partial"} or weather.data is None:
         return None
-    return weather.data.condition
+    return WeatherCondition(weather.data.condition)
 
 
 def to_concentration_entries(context: RecommendationContext) -> list[object] | None:

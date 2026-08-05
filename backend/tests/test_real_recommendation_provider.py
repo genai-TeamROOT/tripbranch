@@ -148,9 +148,10 @@ async def test_rerank_with_concentration_derives_seek_true_from_intent(
 
     provider = RealRecommendationProvider()
     conditions = UserConditions(concentration_intent=ConcentrationIntent.SEEK)
+    weather_condition = None
 
     await provider.rerank_with_concentration(
-        conditions, None, _empty_first_pass(), _unavailable_concentration()
+        conditions, weather_condition, _empty_first_pass(), _unavailable_concentration()
     )
 
     assert captured["seek"] is True
@@ -170,9 +171,10 @@ async def test_rerank_with_concentration_derives_seek_false_from_avoid_intent(
 
     provider = RealRecommendationProvider()
     conditions = UserConditions(concentration_intent=ConcentrationIntent.AVOID)
+    weather_condition = None
 
     await provider.rerank_with_concentration(
-        conditions, None, _empty_first_pass(), _unavailable_concentration()
+        conditions, weather_condition, _empty_first_pass(), _unavailable_concentration()
     )
 
     assert captured["seek"] is False
