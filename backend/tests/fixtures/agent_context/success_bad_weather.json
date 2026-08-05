@@ -13,7 +13,7 @@
     },
     "weather": {
       "status": "success",
-      "data": {"condition": "bad", "forecast_for": "2026-08-15T11:00:00+09:00", "temperature_celsius": 24.0},
+      "data": {"condition": "bad", "forecast_for": "2026-08-15T11:00:00+09:00", "temperature_celsius": 24.0, "precipitation": "rain", "sky": "overcast"},
       "error": null,
       "warnings": [],
       "provider_metadata": [{"source": "kma_ultra_short_forecast", "status": "success", "retrieved_at": "2026-08-14T09:00:00+09:00"}]
