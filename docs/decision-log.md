@@ -1092,6 +1092,86 @@
 - 확인 필요: `RecommendedPlace`에 세부 Feature 값을 남길 실익이 있는지, 있다면
   B의 저장 계약(`agent-state-contract-v1.md`) 확장이 필요한지 결정.
 
+### D-051 — 날씨는 C가 사실을, D가 판정을 맡는다
+
+- 상태: 사실 전달과 `NO_MENTION` 수용은 `Implemented`(2026-08-05, PR #97),
+  판정 이관과 발화 우선 사용은 `Proposed`(D 확인 중)
+- 배경: D-049(`conditions.weather` 미사용)를 확인하다가 날씨 처리 전반을 훑었고,
+  서로 얽힌 문제 다섯 개가 나왔다. 하나씩 고치면 다른 하나가 어긋나는 구조라 함께
+  정리한다.
+
+#### 확인된 문제
+
+1. **`ENJOY`일 때 결과가 반대로 나온다.** `weather_intent`를 읽는 곳은
+   `tool_rules.py:47` 한 줄뿐이고 조회 여부만 정한다. `AVOID`와 `ENJOY`가 완전히
+   동일하게 처리되어, "비 오는 날 산책하고 싶어"에 실내가 만점(BAD+indoor=1.00),
+   야외가 최하점(BAD+outdoor=0.30)이 된다.
+2. **기온이 판정에 없다.** `T1H`가 파싱 필터에서 제외돼 계약의
+   `temperature_celsius`가 항상 `null`이었다. 폭염 35도에 SKY=맑음이면 `GOOD`이 되어
+   야외를 우대한다.
+3. **비와 눈이 구분되지 않는다.** PTY는 값과 무관하게 전부 `BAD`로 뭉개진다.
+4. **`IGNORE`가 두 의미를 겸한다.** "언급 없음"과 "무관하다고 명시함"의 동작이
+   반대인데 값이 하나다. `int-01-recommend.md §10`과 구현이 서로 반대다(D-038 TODO 1).
+5. **`conditions.environment`도 소비처가 없다.** `app/` 전수 확인 결과 `stub.py`뿐이다.
+   D-049는 이 필드를 "indoor/outdoor 하드 필터"로 서술했지만 **실제로 필터하는 코드는
+   없다** — Scoring의 하드 필터는 영업시간뿐이다. 해당 서술은 정정이 필요하다.
+
+#### 결정 — 역할 분리
+
+```
+C   기상청 조회 → 벤더 코드를 도메인 용어로 번역 → 사실만 전달
+D   사실 + weather_intent → good/neutral/bad 판정 → 점수 계산
+```
+
+판정에는 사용자 의도가 필요하고, 그 값을 가진 쪽은 D다
+(`RecommendationProvider.recommend(conditions, context, excluded_place_ids)`).
+**A→D 계약 변경 없이** 의도를 쓸 수 있다.
+
+C가 판정을 맡으면 `WeatherCondition`의 의미가 "날씨 상태"에서 "이 사용자에게 좋은가"로
+바뀌어, `explanation.py:94`가 비 오는 날 "좋은 날씨에 적합한 야외 장소예요"라고 말하게
+된다. 사실과 판단을 나누면 그 문제가 생기지 않는다.
+
+기상청 코드(PTY/SKY)는 그대로 넘기지 않는다. 코드 체계가 D까지 새면 기상 API를 바꿀 때
+D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
+
+#### 완료된 것 (`Implemented`, PR #97)
+
+- 계약에 사실 3종 추가: `precipitation`(none/rain/snow/sleet/shower),
+  `sky`(clear/cloudy/overcast), `temperature_celsius`
+- `T1H` 파싱을 Provider부터 계약까지 연결 (문제 2)
+- PTY 코드 번역으로 비·눈 구분 가능 (문제 3)
+- `NO_MENTION` 수용과 게이팅 명시화 (문제 4의 C 몫)
+
+**추가만 했다.** `condition`을 그대로 둬서 A의 `to_weather_condition()`, D의 Scoring,
+Fixture 7개가 하나도 바뀌지 않았다. 순서를 나누지 않으면 교착이 생긴다 — C가
+`condition`을 빼면 D가 깨지고, D가 판정하려면 C가 사실을 보내야 한다.
+
+#### 남은 것 (`Proposed`)
+
+- **D가 사실 기반 판정으로 전환** → 그 후 C가 `condition` 제거 (문제 1 해소)
+- **조회 게이팅 3분기**
+
+  | 상황 | C 조회 | D 날씨 점수 |
+  | --- | --- | --- |
+  | 발화에 날씨 있음 | 안 함 | 발화 값으로 계산 |
+  | 발화에 날씨 없음(`NO_MENTION`) | 조회 | API 값으로 계산 |
+  | "상관없어" 명시(`IGNORE`) | 안 함 | 제외 → 가중치 재분배 |
+
+  첫 줄이 D-049의 미결(`conditions.weather` 미사용)에 역할을 준다. 다만 **C만 먼저
+  적용하면 안 된다** — 조회를 생략하면 `context.weather`가 `null`이 되어 D가 날씨를
+  계산에서 빼고, "날씨 조건을 따로 말씀하지 않으셔서 반영하지 않았어요"라는 잘못된
+  안내가 나간다(`recommendation_pipeline.py:349-350`). D가 `conditions.weather`를 읽는
+  것과 한 묶음으로 가야 한다.
+- **`conditions.environment` 처리 방침** (문제 5) — 살릴지 제거할지 미정
+- **`tool_intelligence` 계약의 `precipitation_type`** — 기상청 코드가 원문으로 노출돼
+  있다. 이번 범위에 넣지 않았다.
+
+#### 확인 필요
+
+- D: 판정 이관 동의 여부, 의도별 판정 규칙, 기온 임계값·구간
+- A: 발화 우선 사용 시 "사용자 말과 API 값이 다를 때" 방침(D-049 미결 질문).
+  3분기를 채택하면 "발화가 있으면 발화 우선"으로 자연히 정해진다
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -1131,3 +1211,4 @@
 | 2026-08-05 | B 리뷰 반영: `_serialize()` int→str 버그·RECOMMEND `exclude_tags`/`special_requirements` Update→Add 수정, `api_context.api_weather` 죽은 코드 제거, `PROMPT_VERSION` 신설(record_trace·StateApplyRequest 양쪽 연결) 및 D-040의 `SCORING_VERSION` 최초 연결. D-048로 MODIFY 경로의 동일 계약 위반은 제안만 기록 |
 | 2026-08-05 | D-049 `conditions.weather`(발화 기반 5단계 값)가 C/D 어디서도 안 읽히는 죽은 필드로 보인다는 발견을 기록(코드 미변경, 원 설계 의도 확인 필요) |
 | 2026-08-05 | 혼잡도 실서버 E2E 검증 문서(`concentration-e2e-verification.md`) 작성. D-050으로 혼잡도 2차 Scoring 결과의 순서만 B에 저장되고 점수/등급 값은 저장 안 됨을 기록(코드 미변경) |
+| 2026-08-05 | D-051 날씨 사실/판정 분리 — C의 사실 전달과 `NO_MENTION` 수용 구현, 판정 이관은 D 확인 대기 |

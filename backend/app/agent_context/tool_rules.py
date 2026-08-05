@@ -9,6 +9,9 @@ from app.agent_context.schemas import UserConditions
 
 TOOL_EXECUTION_RULE_VERSION = "context-tool-plan-v1"
 
+# 날씨 조회를 생략하는 weather_intent 값. "상관없다고 명시함"만 해당한다.
+_WEATHER_SKIP_INTENTS = frozenset({"IGNORE"})
+
 
 class ContextTool(StrEnum):
     """초기 추천 Context 수집 단계에서 선택할 수 있는 Tool."""
@@ -49,6 +52,20 @@ def build_tool_execution_plan(conditions: UserConditions) -> ToolExecutionPlan:
     if conditions.weather_intent in (None, "NO_MENTION"):
         tools.add(ContextTool.GET_WEATHER)
     return ToolExecutionPlan(tools=frozenset(tools))
+
+
+def _requires_weather(weather_intent: str | None) -> bool:
+    """날씨를 조회할지 판단한다.
+
+    "상관없다"고 명시한 요청만 생략한다. 언급이 없는 경우(NO_MENTION)는 조회한다 —
+    사용자가 말하지 않았다고 날씨를 무시하면, 비 오는 날 야외 장소를 그대로 추천하게
+    된다(int-01-recommend.md §10).
+
+    IGNORE는 원래 "언급 없음"과 "무관하다고 명시함"을 겸했다. 둘의 동작이 반대라 A가
+    NO_MENTION을 분리했다. 값 하나를 제외하는 형태로 두면 값이 늘 때마다 우연히
+    맞기를 기대하게 되므로, 생략 대상을 명시적으로 나열한다.
+    """
+    return weather_intent not in _WEATHER_SKIP_INTENTS
 
 
 __all__ = [

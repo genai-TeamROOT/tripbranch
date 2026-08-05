@@ -26,6 +26,10 @@ class UserConditions(StrictModel):
     place_types: list[str] = Field(default_factory=list)
     place_tags: list[str] = Field(default_factory=list)
     weather: Literal["rain", "snow", "hot", "cold", "good"] | None = None
+    # NO_MENTION은 "날씨 언급이 없음", IGNORE는 "상관없다고 명시함"이다. 둘의 동작이
+    # 반대라(전자는 조회, 후자는 생략) 한 값으로 겸할 수 없어 A가 분리했다.
+    # C는 A보다 먼저 값을 받아들여야 한다 — Literal에 없으면 A 배포 시점에
+    # ValidationError로 요청 전체가 깨진다.
     weather_intent: Literal["AVOID", "ENJOY", "NO_MENTION", "IGNORE"] | None = None
     transport: Literal["walk", "public", "car"] | None = None
     max_travel_time: int | None = Field(default=None, gt=0)
@@ -134,8 +138,17 @@ class ResolvedLocation(StrictModel):
 
 
 class WeatherForecast(StrictModel):
+    # condition은 C가 내린 3단계 판정이다. 사용자 의도(AVOID/ENJOY)를 반영하지 못해
+    # D가 사실 기반으로 다시 판정하기로 했다 — 그 전환이 끝나면 제거한다.
     condition: Literal["good", "neutral", "bad"]
     forecast_for: datetime
+    # 아래 세 필드가 판정 없는 날씨 사실이다. 기상청 코드(PTY/SKY)를 그대로 넘기지
+    # 않고 C가 도메인 용어로 옮긴다 — 코드 체계가 D까지 새면 기상 API를 바꿀 때
+    # D도 함께 고쳐야 한다.
+    precipitation: (
+        Literal["none", "rain", "snow", "sleet", "shower"] | None
+    ) = None
+    sky: Literal["clear", "cloudy", "overcast"] | None = None
     temperature_celsius: float | None = None
 
     @field_validator("forecast_for")

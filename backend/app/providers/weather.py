@@ -47,6 +47,16 @@ def resolve_base_date_time(now: datetime) -> tuple[str, str]:
     return base_dt.strftime("%Y%m%d"), base_dt.strftime("%H30")
 
 
+def _optional_float(value: str | None) -> float | None:
+    """T1H(기온)는 숫자 문자열로 온다. 결측·비정상 값은 버린다."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
 def map_sky_pty_to_condition(sky: str | None, pty: str | None) -> WeatherCondition:
     if pty is not None and pty in _PRECIPITATION_PTY_CODES:
         return WeatherCondition.BAD
@@ -69,7 +79,7 @@ def map_items_to_forecast_slots(items: list[dict]) -> tuple[WeatherForecastSlot,
         forecast_time = item.get("fcstTime")
         value = item.get("fcstValue")
         if (
-            category not in {"SKY", "PTY"}
+            category not in {"SKY", "PTY", "T1H"}
             or not forecast_date
             or not forecast_time
             or value is None
@@ -97,6 +107,7 @@ def map_items_to_forecast_slots(items: list[dict]) -> tuple[WeatherForecastSlot,
                 condition=condition,
                 sky_code=values.get("SKY"),
                 precipitation_type=values.get("PTY"),
+                temperature_celsius=_optional_float(values.get("T1H")),
             )
         )
     return tuple(slots)

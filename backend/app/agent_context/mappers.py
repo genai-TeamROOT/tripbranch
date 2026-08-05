@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 from app.agent_context.schemas import (
     ContextError,
@@ -69,6 +69,34 @@ def map_location_context(
     )
 
 
+# 계약 필드와 같은 Literal로 둔다. dict 값 타입을 명시하지 않으면 str로 추론돼
+# 타입 검사기가 대입을 거부한다(런타임은 Pydantic이 검증하므로 통과하지만
+# 에디터에서 걸린다).
+_Precipitation = Literal["none", "rain", "snow", "sleet", "shower"]
+_Sky = Literal["clear", "cloudy", "overcast"]
+
+# 기상청 PTY(강수형태)·SKY(하늘상태) 코드를 도메인 용어로 옮긴다. D가 기상청 코드표를
+# 알지 않아도 되도록 C에서 번역한다 — 판정("좋다/나쁘다")은 하지 않는다.
+#
+# PTY는 세기까지 나누지만(빗방울/눈날림 등) 추천 판정에 그 정도 해상도는 필요 없어
+# 비·눈·진눈깨비·소나기로 합친다. 구분이 필요해지면 여기만 늘리면 된다.
+_PRECIPITATION_BY_PTY_CODE: dict[str, _Precipitation] = {
+    "0": "none",
+    "1": "rain",
+    "2": "sleet",
+    "3": "snow",
+    "4": "shower",
+    "5": "rain",  # 빗방울
+    "6": "sleet",  # 빗방울눈날림
+    "7": "snow",  # 눈날림
+}
+_SKY_BY_CODE: dict[str, _Sky] = {
+    "1": "clear",
+    "3": "cloudy",
+    "4": "overcast",
+}
+
+
 def map_weather_context(
     result: WeatherForecastToolResult,
 ) -> ContextValue[WeatherForecast]:
@@ -76,11 +104,13 @@ def map_weather_context(
 
     data = None
     if result.forecast is not None:
+        forecast = result.forecast
         data = WeatherForecast(
-            condition=result.forecast.condition.value,
-            forecast_for=result.forecast.forecast_for,
-            # 현재 Weather Tool은 기온을 결과 모델에 포함하지 않는다.
-            temperature_celsius=None,
+            condition=forecast.condition.value,
+            forecast_for=forecast.forecast_for,
+            precipitation=_PRECIPITATION_BY_PTY_CODE.get(forecast.precipitation_type or ""),
+            sky=_SKY_BY_CODE.get(forecast.sky_code or ""),
+            temperature_celsius=forecast.temperature_celsius,
         )
     return _context_value(
         status=result.status,
