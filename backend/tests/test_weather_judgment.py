@@ -68,11 +68,30 @@ def test_facts_extreme_cold_is_bad_and_enjoy_does_not_flip(
 
 
 @pytest.mark.parametrize("temperature_celsius", [28.0, 30.0, 33.0 - 0.01, -12.0 + 0.01, 0.0])
-def test_facts_uncomfortable_temperature_band_is_neutral(temperature_celsius: float) -> None:
+def test_facts_below_threshold_temperature_is_not_bad(temperature_celsius: float) -> None:
+    """폭염·한파 기준 미만 기온은 그 자체로 BAD를 만들지 않는다 — 완충 NEUTRAL
+    구간(예: 28°C)을 별도로 두지 않기로 했다(근거 없는 임의값 배제)."""
     result = judge_weather_condition_from_facts(
         "none", "clear", temperature_celsius, WeatherIntent.AVOID
     )
-    assert result is WeatherCondition.NEUTRAL
+    assert result is not WeatherCondition.BAD
+
+
+@pytest.mark.parametrize("temperature_celsius", [28.0, 30.0, -5.0, 0.0])
+def test_facts_below_threshold_temperature_follows_sky(temperature_celsius: float) -> None:
+    """폭염·한파 기준에 못 미치면 기온은 판정에서 빠지고 하늘 상태로 결정된다."""
+    assert (
+        judge_weather_condition_from_facts(
+            "none", "clear", temperature_celsius, WeatherIntent.AVOID
+        )
+        is WeatherCondition.GOOD
+    )
+    assert (
+        judge_weather_condition_from_facts(
+            "none", "overcast", temperature_celsius, WeatherIntent.AVOID
+        )
+        is WeatherCondition.NEUTRAL
+    )
 
 
 def test_facts_heat_threshold_boundary_is_bad() -> None:
