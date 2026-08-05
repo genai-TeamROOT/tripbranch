@@ -209,8 +209,14 @@ async def _apply_concentration_rerank(
         )
         return first_pass
 
+    from app.services.runtime.recommendation_transform import to_weather_condition
+
+    weather_condition = to_weather_condition(tool_context)
     reranked = await recommendation_provider.rerank_with_concentration(
-        agent_conditions, tool_context, first_pass, enrichment_response
+        agent_conditions,
+        weather_condition,
+        first_pass,
+        enrichment_response,
     )
     shown = [*reranked.recommendations, *reranked.unverified_recommendations]
     return reranked.model_copy(

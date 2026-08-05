@@ -15,6 +15,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from app.agent_context.enrichment_schemas import CandidateEnrichmentResponse
+from app.domain.models import WeatherCondition
 from app.schemas import ConcentrationIntent, RecommendationResponse, UserConditions
 from app.services.recommendation_pipeline import (
     rerank_with_concentration,
@@ -48,7 +49,7 @@ class RealRecommendationProvider:
     async def rerank_with_concentration(
         self,
         conditions: UserConditions,
-        context: RecommendationContext,
+        weather_condition: WeatherCondition | None,
         first_pass: RecommendationResponse,
         concentration: CandidateEnrichmentResponse,
     ) -> RecommendationResponse:
@@ -59,7 +60,7 @@ class RealRecommendationProvider:
         seek = conditions.concentration_intent is ConcentrationIntent.SEEK
         return await rerank_with_concentration(
             first_pass,
-            context,
+            weather_condition,
             concentration,
             seek=seek,
         )

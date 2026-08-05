@@ -106,6 +106,15 @@ class TestToWeatherCondition:
         )
         assert to_weather_condition(context) == "good"
 
+    def test_partial_returns_condition(self) -> None:
+        context = RecommendationContext(
+            weather=ContextValue(
+                status="partial",
+                data=WeatherForecast(condition="neutral", forecast_for=datetime.now(UTC)),
+            )
+        )
+        assert to_weather_condition(context) == "neutral"
+
     def test_unavailable_returns_none(self) -> None:
         context = RecommendationContext(
             weather=ContextValue(
