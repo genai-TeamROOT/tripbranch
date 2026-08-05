@@ -81,6 +81,38 @@ def test_maps_items_to_time_aware_forecast_slots() -> None:
     assert slots[1].precipitation_type == "1"
 
 
+def test_parses_temperature_into_forecast_slots() -> None:
+    """T1H(기온)를 버리지 않는다.
+
+    폭염일 때 SKY=맑음이면 condition은 GOOD이 되어 야외가 우대된다. 기온을 함께
+    넘겨야 D가 그 경우를 판정할 수 있다(D-051 제안).
+    """
+    slots = map_items_to_forecast_slots(
+        [
+            _fcst_item("SKY", "1100", "1"),
+            _fcst_item("PTY", "1100", "0"),
+            _fcst_item("T1H", "1100", "35.0"),
+        ]
+    )
+
+    assert len(slots) == 1
+    assert slots[0].temperature_celsius == 35.0
+
+
+def test_ignores_non_numeric_temperature() -> None:
+    """결측·비정상 값이 와도 슬롯 자체를 버리지 않는다."""
+    slots = map_items_to_forecast_slots(
+        [
+            _fcst_item("SKY", "1100", "1"),
+            _fcst_item("PTY", "1100", "0"),
+            _fcst_item("T1H", "1100", "-"),
+        ]
+    )
+
+    assert len(slots) == 1
+    assert slots[0].temperature_celsius is None
+
+
 @pytest.mark.asyncio
 async def test_real_weather_provider_picks_earliest_forecast_slot() -> None:
     items = [

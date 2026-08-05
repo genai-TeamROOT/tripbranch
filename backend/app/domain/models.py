@@ -29,6 +29,7 @@ class WeatherForecastSlot:
     condition: WeatherCondition
     sky_code: str | None
     precipitation_type: str | None
+    temperature_celsius: float | None = None
 
 
 @dataclass(frozen=True)

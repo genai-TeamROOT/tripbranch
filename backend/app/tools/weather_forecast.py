@@ -55,6 +55,8 @@ class SelectedWeatherForecast:
     timezone: str
     timezone_assumed: bool
     selection_method: ForecastSelectionMethod
+    # 기존 호출부(테스트 포함)를 깨지 않도록 기본값을 둔다.
+    temperature_celsius: float | None = None
 
 
 WeatherToolError = ToolError
@@ -149,6 +151,7 @@ class GetWeatherForecastTool:
                 condition=selected.condition,
                 sky_code=selected.sky_code,
                 precipitation_type=selected.precipitation_type,
+                temperature_celsius=selected.temperature_celsius,
                 data_type="forecast",
                 observed_at=None,
                 retrieved_at=_as_utc(self._clock()),

@@ -31,6 +31,43 @@ def test_weather_ignore_skips_only_weather_tool() -> None:
     assert plan.requires(ContextTool.GET_HOLIDAYS)
 
 
+def test_contract_accepts_no_mention_before_a_starts_sending_it() -> None:
+    """C가 A보다 먼저 값을 받아들여야 한다.
+
+    C의 UserConditions는 Literal이라 모르는 값이 오면 ValidationError로 요청 전체가
+    깨진다. A가 NO_MENTION을 보내기 시작하는 시점에 C가 준비돼 있지 않으면 배포 순서에
+    따라 서비스가 멈춘다(concentration_intent 때 같은 과도기가 있었다).
+    """
+    conditions = UserConditions(weather_intent="NO_MENTION")
+
+    assert conditions.weather_intent == "NO_MENTION"
+
+
+def test_weather_no_mention_still_fetches_weather() -> None:
+    """언급이 없는 것과 상관없다고 말한 것은 다르다.
+
+    IGNORE가 둘을 겸하던 시절에는 날씨를 말하지 않은 사용자에게 날씨가 아예 반영되지
+    않았다 — 비 오는 날 야외 장소를 그대로 추천하게 된다(int-01-recommend.md §10).
+    """
+    plan = build_tool_execution_plan(UserConditions(weather_intent="NO_MENTION"))
+
+    assert plan.requires(ContextTool.GET_WEATHER)
+
+
+def test_weather_intent_absent_still_fetches_weather() -> None:
+    """A가 NO_MENTION을 보내기 전(과도기)에도 조회는 유지된다."""
+    plan = build_tool_execution_plan(UserConditions(weather_intent=None))
+
+    assert plan.requires(ContextTool.GET_WEATHER)
+
+
+def test_weather_avoid_and_enjoy_both_fetch_weather() -> None:
+    """방향이 있는 의도는 둘 다 조회한다. 방향 자체는 D가 점수에서 반영한다."""
+    for intent in ("AVOID", "ENJOY"):
+        plan = build_tool_execution_plan(UserConditions(weather_intent=intent))
+        assert plan.requires(ContextTool.GET_WEATHER), intent
+
+
 def test_initial_plan_never_fetches_concentration() -> None:
     plan = build_tool_execution_plan(
         UserConditions(
