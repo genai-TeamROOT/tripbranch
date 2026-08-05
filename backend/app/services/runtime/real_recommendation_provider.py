@@ -22,10 +22,7 @@ from app.services.recommendation_pipeline import (
     run_recommendation_pipeline_from_context,
 )
 from app.services.runtime.context_schemas import RecommendationContext
-from app.services.runtime.recommendation_transform import (
-    to_scoring_weather_condition,
-    to_search_radius_km,
-)
+from app.services.runtime.recommendation_transform import to_search_radius_km
 
 _KST = ZoneInfo("Asia/Seoul")
 _RECOMMENDATION_LIMIT = 5
@@ -41,16 +38,10 @@ class RealRecommendationProvider:
         excluded_place_ids: list[str],
     ) -> RecommendationResponse:
         search_radius_km = to_search_radius_km(conditions)
-        weather_condition = (
-            to_scoring_weather_condition(conditions, context)
-            if context is not None
-            else None
-        )
         return await run_recommendation_pipeline_from_context(
             context,
             visit_at=datetime.now(_KST),
             search_radius_km=search_radius_km,
-            weather_condition=weather_condition,
             shown_place_ids=frozenset(excluded_place_ids),
             recommendation_limit=_RECOMMENDATION_LIMIT,
         )

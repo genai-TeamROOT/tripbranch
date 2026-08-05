@@ -25,7 +25,7 @@ from app.services.recommendation_pipeline import (
 )
 
 _WEATHER_MISSING_WARNING = "현재 날씨 정보를 확인하지 못해 이 조건은 반영되지 않았어요."
-_WEATHER_IGNORED_WARNING = "날씨 조건을 따로 말씀하지 않으셔서 이번 추천에는 반영하지 않았어요."
+_WEATHER_IGNORED_WARNING = "날씨 조건을 반영하지 않기로 하셔서 이번 추천에는 제외했어요."
 _NO_NOTABLE_EXPLANATION_WARNING = (
     "이 장소는 특별히 강조할 만한 조건은 없지만, 조건에 맞아 추천했어요."
 )
