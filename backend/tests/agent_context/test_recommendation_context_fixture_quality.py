@@ -20,11 +20,12 @@ from app.agent_context.schemas import Coordinates as AgentCoordinates
 from app.agent_context.schemas import PlaceCandidate as AgentPlaceCandidate
 from app.domain.candidate_mapper import map_context_to_scoring_candidates
 from app.domain.evidence import build_evidence_list
-from app.domain.models import WeatherCondition
 from app.domain.scoring import score_candidates
-from app.domain.weather_judgment import judge_weather_condition_from_facts
 from app.schemas import RecommendationItem, RecommendationResponse
-from app.services.recommendation_pipeline import run_recommendation_pipeline_from_context
+from app.services.recommendation_pipeline import (
+    resolve_weather_condition,
+    run_recommendation_pipeline_from_context,
+)
 from tests.fixtures.recommendation_context_fixture_expectations import (
     CONTEXT_FIXTURE_EXPECTATIONS,
     ContextFixtureCase,
@@ -48,24 +49,6 @@ async def _run(case: ContextFixtureCase) -> RecommendationResponse:
         search_radius_km=case.search_radius_km,
         shown_place_ids=case.shown_place_ids,
         rejected_place_ids=case.rejected_place_ids,
-    )
-
-
-def _weather_condition_from_context(context: RecommendationContext) -> WeatherCondition | None:
-    """recommendation_pipeline.py의 동일 이름 내부 함수를 독립적으로 재현한다.
-
-    Evidence 일치성 검증을 위해 파이프라인과 별도로 candidate_mapper→scoring→
-    evidence를 직접 조립해야 하는데, 공개 진입점 밖에서는 이 변환이 없어 그대로
-    옮겨왔다. 이 파일의 `_run()`은 `conditions`를 넘기지 않으므로 `weather_intent`는
-    항상 `None`이다 — 실제 파이프라인과 동일하게 맞춘다.
-    """
-
-    weather = context.weather
-    if weather is None or weather.status not in {"success", "partial"} or weather.data is None:
-        return None
-    data = weather.data
-    return judge_weather_condition_from_facts(
-        data.precipitation, data.sky, data.temperature_celsius, None
     )
 
 
@@ -202,7 +185,7 @@ async def test_evidence_matches_final_score_and_ranking(case: ContextFixtureCase
     scoring = score_candidates(
         candidates,
         now=case.visit_at,
-        weather_condition=_weather_condition_from_context(context),
+        weather_condition=resolve_weather_condition(context, None),
         max_distance_km=case.search_radius_km,
         shown_place_ids=case.shown_place_ids,
         rejected_place_ids=case.rejected_place_ids,

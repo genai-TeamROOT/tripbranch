@@ -59,7 +59,7 @@ async def run_recommendation_pipeline_from_context(
     context: RecommendationContext | None,
     *,
     # A가 넘기는 사용자 발화 조건. weather_intent와 발화 날씨(conditions.weather)를
-    # _weather_condition_from_context()에 전달해 D-051 판정(사실+의도)에 쓴다.
+    # resolve_weather_condition()에 전달해 D-051 판정(사실+의도)에 쓴다.
     # AVOID/ENJOY면 C가 날씨를 조회하지 않을 수 있어 그때는 발화 값으로 대신 판정한다.
     conditions: UserConditions | None = None,
     visit_at: datetime,
@@ -116,7 +116,7 @@ async def run_recommendation_pipeline_from_context(
         )
 
     candidates = map_context_to_scoring_candidates(context, visit_at=visit_at)
-    resolved_weather_condition = _weather_condition_from_context(context, conditions)
+    resolved_weather_condition = resolve_weather_condition(context, conditions)
 
     scoring = score_candidates(
         candidates,
@@ -155,9 +155,12 @@ async def rerank_with_concentration(
     5개로 좁혀진 상태)다. 여기서 새 Candidate를 다시 만들지 않는다 —
     `RecommendationItem.feature_scores`(weather/remaining_operating_time/distance)를
     그대로 재사용한다. concentration과 무관하게 이 값들은 변하지 않기 때문이다.
-    `weather_condition`은 1차 호출과 동일한 기준(`_weather_condition_from_context()`,
-    status `{"success","partial"}`)으로 도출된 값이어야 한다 — 근거 문장을
-    다시 조립하는 데만 쓰고, 점수 자체를 다시 계산하지는 않는다.
+    `weather_condition`은 1차 호출과 같은 입력(`context`, `conditions`)으로
+    `resolve_weather_condition()`을 호출해 얻은 값이어야 한다 — 근거 문장을 다시
+    조립하는 데만 쓰고, 점수 자체를 다시 계산하지는 않는다. 호출자가 직접 판정
+    로직을 다시 구현하면(예: 옛 `to_weather_condition()`을 계속 쓰면) 1차와
+    2차의 판정이 갈라질 수 있다 — 반드시 `resolve_weather_condition()`을 통해
+    같은 값을 재사용해야 한다.
 
     concentration 결측(C가 해당 후보에 no_data/unavailable을 반환) 처리는
     weather/remaining_operating_time과 동일한 패턴이다 — 그 후보만
@@ -281,7 +284,7 @@ async def rerank_with_concentration(
     )
 
 
-def _weather_condition_from_context(
+def resolve_weather_condition(
     context: RecommendationContext,
     conditions: UserConditions | None,
 ) -> WeatherCondition | None:
@@ -294,6 +297,11 @@ def _weather_condition_from_context(
 
     `context.weather`가 없으면(AVOID/ENJOY라 조회를 생략하고 발화 값을 뽑은 경우)
     `conditions.weather`로 대신 판정한다.
+
+    `run_recommendation_pipeline_from_context()`(1차)가 내부에서 쓰는 것과 동일한
+    함수를 `rerank_with_concentration()`(2차) 호출자도 그대로 써야 한다 — 같은
+    `context`/`conditions`에 대해 두 판정이 서로 다른 로직으로 갈라지면 1차 설명과
+    2차 설명이 어긋난다. public으로 둔 이유가 이것이다(D-051 "남은 것" 참고).
     """
     weather_intent = conditions.weather_intent if conditions is not None else None
 
