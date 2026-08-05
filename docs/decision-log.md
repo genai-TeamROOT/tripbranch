@@ -1078,6 +1078,30 @@
 - 확인 필요: `conditions.weather` 필드의 원래 설계 의도, 그리고 필요하다면
   "사용자 발화와 API 값이 다를 때" 처리 방침(무시/재확인/사용자 발화 우선) 결정.
 
+### D-050 — 혼잡도 2차 Scoring 결과: "순서"는 B에 남지만 "값"은 안 남음 (발견만, 미확정)
+
+- 상태: `Observed`(발견만 기록, 코드 미변경 — 필요 여부 확인 필요)
+- 배경: `concentration-e2e-verification.md` 작성 중 "혼잡도까지 포함한 답변 내용이
+  저장되는지" 질문에 답하려고 `agent_runtime.py`의 노출 기록 경로(7단계)를
+  재확인했다.
+- 발견: `recommendations` 변수가 6-1단계(`_apply_concentration_rerank()`)에서
+  재순위 결과로 재할당된 뒤 7단계 `record_recommendation()`에 그대로 쓰이므로,
+  B에 기록되는 노출 이력의 **순서(rank)는 혼잡도 반영 이후 최종 순서**가 맞다.
+  다만 `RecommendedPlace`(`app/state/service.py:102-106`)는 `place_id`/`rank`
+  두 필드만 가진 스키마라, 혼잡도 점수(`concentration_rate`)·등급(`혼잡`/`보통`/
+  `한산`)·`feature_scores`/`weights_used` 같은 세부 근거 값은 그 턴의 HTTP 응답
+  에만 존재하고 B에는 전혀 남지 않는다. 나중에 "그때 왜 이 순서였는지"를 다시
+  보고 싶어도 저장된 건 순서뿐이다.
+- 참고: 이건 혼잡도에만 국한된 문제가 아니라 날씨·운영시간·거리 등 1차 Scoring의
+  다른 Feature 값도 마찬가지로 저장 안 된다 — `RecommendedPlace`가 원래부터
+  순서만 기록하는 설계였다. 혼잡도 검증 과정에서 다시 확인된 것일 뿐 새로 생긴
+  문제는 아니다.
+- 이번 세션에서 결정하지 않는 것: 이 세부 근거 값들을 B에 남길 필요가 있는지
+  (예: 추후 분석/디버깅/사용자에게 "왜 이 순서인지" 재설명 등의 용도) — 필요성
+  자체가 불확실해 원 설계 의도·B팀 확인 없이 스키마를 확장하지 않는다.
+- 확인 필요: `RecommendedPlace`에 세부 Feature 값을 남길 실익이 있는지, 있다면
+  B의 저장 계약(`agent-state-contract-v1.md`) 확장이 필요한지 결정.
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -1116,3 +1140,4 @@
 | 2026-08-05 | D-047 D-040 리뷰 후 A에 `rerank_with_concentration()` 시그니처 축소(`RecommendationContext` → `WeatherCondition`) 역제안, D 확인 필요 사항으로 필터 기준 명시 |
 | 2026-08-05 | B 리뷰 반영: `_serialize()` int→str 버그·RECOMMEND `exclude_tags`/`special_requirements` Update→Add 수정, `api_context.api_weather` 죽은 코드 제거, `PROMPT_VERSION` 신설(record_trace·StateApplyRequest 양쪽 연결) 및 D-040의 `SCORING_VERSION` 최초 연결. D-048로 MODIFY 경로의 동일 계약 위반은 제안만 기록 |
 | 2026-08-05 | D-049 `conditions.weather`(발화 기반 5단계 값)가 C/D 어디서도 안 읽히는 죽은 필드로 보인다는 발견을 기록(코드 미변경, 원 설계 의도 확인 필요) |
+| 2026-08-05 | 혼잡도 실서버 E2E 검증 문서(`concentration-e2e-verification.md`) 작성. D-050으로 혼잡도 2차 Scoring 결과의 순서만 B에 저장되고 점수/등급 값은 저장 안 됨을 기록(코드 미변경) |
