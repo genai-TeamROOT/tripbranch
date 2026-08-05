@@ -29,11 +29,8 @@ _SINGLE_FIELDS = (
     "search_center",
     "weather",
     "weather_intent",
-    # concentration_intent: B의 FIELD_SPECS(app/state/field_spec.py)에 아직
-    # 없다(agent-state-contract-v1.md에 A가 제안만 해둔 상태). B가 추가하기
-    # 전까지 이 Operation은 REASON_UNKNOWN_FIELD로 조용히 무시된다(operations.py:65)
-    # — 크래시 없이 안전하게 무동작이며, B가 필드를 추가하면 자동으로 반영되기
-    # 시작한다.
+    # (2026-08-05, B-06 완료 — PR #78) B의 FIELD_SPECS(app/state/field_spec.py)에
+    # weather_intent와 동일 스펙(_single(str, OP_UPDATE, OP_REMOVE))으로 등록됐다.
     "concentration_intent",
     "transport",
     "max_travel_time",
