@@ -16,6 +16,8 @@ import pytest
 
 from app.domain.models import WeatherCondition
 from app.domain.weather_judgment import (
+    Precipitation,
+    Sky,
     judge_weather_condition_from_facts,
     judge_weather_condition_from_stated,
 )
@@ -40,7 +42,9 @@ def test_facts_rain_is_bad_regardless_of_intent_except_enjoy(
     ("precipitation", "expected_reason"),
     [("rain", "rain"), ("sleet", "rain"), ("shower", "rain"), ("snow", "snow")],
 )
-def test_enjoy_precipitation_bad_flips_to_good(precipitation: str, expected_reason: str) -> None:
+def test_enjoy_precipitation_bad_flips_to_good(
+    precipitation: Precipitation, expected_reason: str
+) -> None:
     """D-051 문제 1의 회귀 테스트: "비 오는 날 산책하고 싶어"(ENJOY)가
     outdoor를 우대해야 한다 — BAD가 아니라 GOOD으로 판정돼야 한다.
 
@@ -82,18 +86,21 @@ def test_facts_extreme_cold_is_bad_and_enjoy_does_not_flip(
 
 
 @pytest.mark.parametrize("temperature_celsius", [28.0, 30.0, 33.0 - 0.01, -12.0 + 0.01, 0.0])
-def test_facts_below_threshold_temperature_is_not_bad(temperature_celsius: float) -> None:
-    """폭염·한파 기준 미만 기온은 그 자체로 BAD를 만들지 않는다 — 완충 NEUTRAL
-    구간(예: 28°C)을 별도로 두지 않기로 했다(근거 없는 임의값 배제)."""
-    condition, _reason = judge_weather_condition_from_facts(
+def test_facts_below_advisory_temperature_is_not_bad_or_neutral_from_temperature(
+    temperature_celsius: float,
+) -> None:
+    """주의보 미만 기온은 그 자체로 BAD도 NEUTRAL도 만들지 않는다 — 하늘 상태로
+    넘어간다(맑으면 GOOD)."""
+    condition, reason = judge_weather_condition_from_facts(
         "none", "clear", temperature_celsius, WeatherIntent.AVOID
     )
-    assert condition is not WeatherCondition.BAD
+    assert condition is WeatherCondition.GOOD
+    assert reason is None
 
 
 @pytest.mark.parametrize("temperature_celsius", [28.0, 30.0, -5.0, 0.0])
-def test_facts_below_threshold_temperature_follows_sky(temperature_celsius: float) -> None:
-    """폭염·한파 기준에 못 미치면 기온은 판정에서 빠지고 하늘 상태로 결정된다."""
+def test_facts_below_advisory_temperature_follows_sky(temperature_celsius: float) -> None:
+    """주의보 기준에 못 미치면 기온은 판정에서 빠지고 하늘 상태로 결정된다."""
     clear_condition, clear_reason = judge_weather_condition_from_facts(
         "none", "clear", temperature_celsius, WeatherIntent.AVOID
     )
@@ -107,20 +114,51 @@ def test_facts_below_threshold_temperature_follows_sky(temperature_celsius: floa
     assert overcast_reason is None
 
 
-def test_facts_heat_threshold_boundary_is_bad() -> None:
+@pytest.mark.parametrize("temperature_celsius", [33.0, 34.0, 35.0 - 0.01])
+def test_facts_heat_advisory_band_is_neutral(temperature_celsius: float) -> None:
+    """폭염주의보(33°C) 이상 ~ 폭염경보(35°C) 미만은 NEUTRAL이다 — 맑아도(clear)
+    기온이 하늘보다 우선한다."""
     condition, reason = judge_weather_condition_from_facts(
-        "none", "clear", 33.0, WeatherIntent.AVOID
+        "none", "clear", temperature_celsius, WeatherIntent.AVOID
     )
-    assert condition is WeatherCondition.BAD
+    assert condition is WeatherCondition.NEUTRAL
     assert reason == "heat"
 
 
-def test_facts_cold_threshold_boundary_is_bad() -> None:
+@pytest.mark.parametrize("temperature_celsius", [-12.0, -13.5, -15.0 + 0.01])
+def test_facts_cold_advisory_band_is_neutral(temperature_celsius: float) -> None:
+    """한파주의보(-12°C) 이하 ~ 한파경보(-15°C) 초과는 NEUTRAL이다."""
     condition, reason = judge_weather_condition_from_facts(
-        "none", "clear", -12.0, WeatherIntent.AVOID
+        "none", "clear", temperature_celsius, WeatherIntent.AVOID
     )
-    assert condition is WeatherCondition.BAD
+    assert condition is WeatherCondition.NEUTRAL
     assert reason == "cold"
+
+
+def test_facts_heat_warning_boundary_is_bad() -> None:
+    """폭염경보(35°C) 이상만 BAD다 — 34.99°C는 아직 NEUTRAL(주의보 수준)."""
+    below, below_reason = judge_weather_condition_from_facts(
+        "none", "clear", 35.0 - 0.01, WeatherIntent.AVOID
+    )
+    assert below is WeatherCondition.NEUTRAL
+    assert below_reason == "heat"
+
+    at, at_reason = judge_weather_condition_from_facts("none", "clear", 35.0, WeatherIntent.AVOID)
+    assert at is WeatherCondition.BAD
+    assert at_reason == "heat"
+
+
+def test_facts_cold_warning_boundary_is_bad() -> None:
+    """한파경보(-15°C) 이하만 BAD다 — -14.99°C는 아직 NEUTRAL(주의보 수준)."""
+    above, above_reason = judge_weather_condition_from_facts(
+        "none", "clear", -15.0 + 0.01, WeatherIntent.AVOID
+    )
+    assert above is WeatherCondition.NEUTRAL
+    assert above_reason == "cold"
+
+    at, at_reason = judge_weather_condition_from_facts("none", "clear", -15.0, WeatherIntent.AVOID)
+    assert at is WeatherCondition.BAD
+    assert at_reason == "cold"
 
 
 def test_facts_clear_sky_comfortable_temperature_is_good() -> None:
@@ -132,7 +170,7 @@ def test_facts_clear_sky_comfortable_temperature_is_good() -> None:
 
 
 @pytest.mark.parametrize("sky", ["cloudy", "overcast"])
-def test_facts_cloudy_or_overcast_comfortable_temperature_is_neutral(sky: str) -> None:
+def test_facts_cloudy_or_overcast_comfortable_temperature_is_neutral(sky: Sky) -> None:
     condition, reason = judge_weather_condition_from_facts("none", sky, 15.0, WeatherIntent.AVOID)
     assert condition is WeatherCondition.NEUTRAL
     assert reason is None
