@@ -264,12 +264,6 @@ async def test_pipeline_from_context_is_deterministic_for_identical_input() -> N
 # 둘 다 결측(None)으로 고정해 순수하게 "distance vs concentration"만으로
 # 재순위가 실제로 뒤집히는지 검증한다.
 
-_NO_WEATHER_CONTEXT = RecommendationContext(
-    location=_context_location(),
-    weather=None,
-    places=AgentContextValue(status="success", data=[]),
-)
-
 
 def _first_pass_item(
     place_id: str, *, distance_km: float, distance_score: float
@@ -348,9 +342,7 @@ async def test_rerank_with_concentration_avoid_prefers_quiet_place() -> None:
         ],
     )
 
-    result = await rerank_with_concentration(
-        first_pass, _NO_WEATHER_CONTEXT, concentration, seek=False
-    )
+    result = await rerank_with_concentration(first_pass, None, concentration, seek=False)
 
     assert [item.place_id for item in result.recommendations] == ["place-2", "place-1"]
     quiet_item = result.recommendations[0]
@@ -376,9 +368,7 @@ async def test_rerank_with_concentration_seek_prefers_crowded_place() -> None:
         ],
     )
 
-    result = await rerank_with_concentration(
-        first_pass, _NO_WEATHER_CONTEXT, concentration, seek=True
-    )
+    result = await rerank_with_concentration(first_pass, None, concentration, seek=True)
 
     assert [item.place_id for item in result.recommendations] == ["place-2", "place-1"]
 
@@ -403,9 +393,7 @@ async def test_rerank_with_concentration_handles_partial_no_data() -> None:
         ],
     )
 
-    result = await rerank_with_concentration(
-        first_pass, _NO_WEATHER_CONTEXT, concentration, seek=True
-    )
+    result = await rerank_with_concentration(first_pass, None, concentration, seek=True)
 
     place_ids = {item.place_id for item in result.recommendations}
     assert place_ids == {"place-1", "place-2"}
@@ -432,9 +420,7 @@ async def test_rerank_with_concentration_preserves_unverified_split() -> None:
         ],
     )
 
-    result = await rerank_with_concentration(
-        first_pass, _NO_WEATHER_CONTEXT, concentration, seek=True
-    )
+    result = await rerank_with_concentration(first_pass, None, concentration, seek=True)
 
     assert [item.place_id for item in result.recommendations] == ["place-1"]
     assert [item.place_id for item in result.unverified_recommendations] == ["place-2"]
