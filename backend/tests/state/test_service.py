@@ -411,6 +411,29 @@ class TestRecordRecommendation:
         assert res.recorded == 0
 
 
+# ================================================================ 세션 삭제
+
+class TestDeleteSession:
+    def test_세션_상태와_이력을_삭제한다(self, store):
+        first = apply(store, session_id=None, operations=[])
+        sid = first.session_id
+        record(store, sid, first.run_id, [("A", 1)])
+
+        res = svc.delete_session(sid, store=store)
+
+        assert res.session_id == sid
+        assert res.deleted is True
+        assert store.get_state(sid) is None
+        assert store.get_history(sid) is None
+        assert svc.get_session_context(sid, store=store).session_exists is False
+
+    def test_없는_세션_삭제는_오류가_아니다(self, store):
+        res = svc.delete_session("sess_없음", store=store)
+
+        assert res.session_id == "sess_없음"
+        assert res.deleted is False
+
+
 # ================================================================ 6.5
 
 class TestUpdateApiContext:

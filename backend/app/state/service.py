@@ -99,6 +99,16 @@ class SessionContextResponse(BaseModel):
     condition_version: int = 0
 
 
+class DeleteSessionResponse(BaseModel):
+    """세션 삭제 응답.
+
+    session_id에 해당하는 상태/이력을 삭제했는지 여부를 반환한다.
+    """
+
+    session_id: str
+    deleted: bool
+
+
 class RecommendedPlace(BaseModel):
     """노출된 장소 1건. (계약 6.4절)"""
 
@@ -392,6 +402,25 @@ def record_recommendation(
         [(p.place_id, p.rank) for p in request.recommended],
     )
     return RecordRecommendationResponse(recorded=recorded)
+
+
+# ================================================================ 세션 삭제
+
+@_wrap_store_errors
+def delete_session(
+    session_id: str,
+    store: StateStore | None = None,
+) -> DeleteSessionResponse:
+    """세션 상태와 추천 이력을 삭제한다.
+
+    세션이 없어도 오류를 내지 않고 deleted=False를 반환한다.
+    """
+    store = store or get_store()
+
+    existed = store.get_state(session_id) is not None or store.get_history(session_id) is not None
+    store.delete_state(session_id)
+    store.delete_history(session_id)
+    return DeleteSessionResponse(session_id=session_id, deleted=existed)
 
 
 # ================================================================ 6.5

@@ -95,7 +95,7 @@ TripBranch/
 │   │   ├── config.py            # 환경변수 설정
 │   │   ├── schemas.py           # 현재 공개 API Pydantic 모델
 │   │   ├── domain/models.py     # Provider 공통 도메인 모델
-│   │   ├── routes/              # health, interpret, recommendations
+│   │   ├── routes/              # health, interpret, recommendations, chat, state
 │   │   ├── agent_context/       # A–C 계약, Category Rule, Context Service
 │   │   ├── services/            # Interpret/Runtime/추천 파이프라인
 │   │   ├── state/               # Backend 세션 조건·이력 병합

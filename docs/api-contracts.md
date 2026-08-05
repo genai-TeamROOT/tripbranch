@@ -16,6 +16,39 @@
 type HealthResponse = { status: string };
 ```
 
+### `GET /api/state/{session_id}`
+
+```ts
+type SessionContextResponse = {
+  session_id: string | null;
+  session_exists: boolean;
+  has_recommendation: boolean;
+  recommended_count: number;
+  shown_place_ids: string[];
+  excluded_place_ids: string[];
+  last_recommended_run_id: string | null;
+  last_intent: string | null;
+  pending_clarification: string | null;
+  user_conditions: UserConditions;
+  api_context: {
+    gps_location: string | null;
+    api_weather: string | null;
+    gps_expired: boolean;
+    weather_expired: boolean;
+  };
+  condition_version: number;
+};
+```
+
+### `DELETE /api/state/{session_id}`
+
+```ts
+type DeleteSessionResponse = {
+  session_id: string;
+  deleted: boolean;
+};
+```
+
 ### `POST /api/interpret`
 
 ```ts
