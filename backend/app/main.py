@@ -82,6 +82,16 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(AppError)
     async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
+        # AppError는 provider/도메인 오류가 모두 거쳐가는 단일 지점이다 — 여기서
+        # 로그를 남기지 않으면 502 등이 클라이언트 응답만 나가고 서버 로그엔 아무
+        # 흔적도 안 남는다(D-052에서 발견).
+        logger.error(
+            "AppError: code=%s provider=%s status=%s path=%s",
+            exc.code,
+            exc.provider,
+            exc.status_code,
+            request.url.path,
+        )
         details: dict[str, object] | None = None
         if exc.provider or exc.details:
             details = {"provider": exc.provider, "upstream": exc.details}

@@ -601,7 +601,7 @@
 
 | 항목 | 선택지/질문 | 상태 |
 | --- | --- | --- |
-| LLM Provider | 공급자, 모델, timeout, fallback | `TBD` |
+| LLM Provider | 공급자, 모델, timeout, fallback | 모델 fallback `Accepted`(D-052, 구현 완료). 공급자 전환·timeout 정책 자체는 여전히 `TBD` |
 | Chat 계약 naming | Backend Python/JSON `snake_case` | `Accepted` |
 | Backend 상태 저장 | Supabase 테이블과 캐시 역할 | `TBD` |
 | Frontend 저장 | `sessionStorage` 유지 또는 `localStorage` 전환 | `TBD` |
@@ -1172,6 +1172,57 @@ Fixture 7개가 하나도 바뀌지 않았다. 순서를 나누지 않으면 교
 - A: 발화 우선 사용 시 "사용자 말과 API 값이 다를 때" 방침(D-049 미결 질문).
   3분기를 채택하면 "발화가 있으면 발화 우선"으로 자연히 정해진다
 
+### D-052 — Gemini 동일 벤더 내 모델 fallback (`LLM_FALLBACK_MODEL_NAMES`)
+
+- 상태: `Accepted`, 구현 완료
+- 배경: 멀티턴 대화("비오는날 실내 추천해줘" → "더 추천해줘" → "반경 넓혀서
+  추천해줘") 3번째 턴에서 502(`Gemini 연동에 문제가 발생했어요`)가 발생했는데,
+  서버 로그가 한 줄도 없었다. 조사 결과 원인은 두 가지였다.
+  1. `RealGeminiProvider._generate()`부터 `handle_app_error`(`main.py`)까지
+     `AppError`가 전파되는 경로 전체에 `logger.error`/`warning` 호출이 전혀
+     없었다 — Gemini 전용 문제가 아니라 어떤 Provider든 502가 나면 조용히
+     사라졌다.
+  2. Gemini 5xx/타임아웃 재시도는 이미 있었지만(지수 백오프, `max_retries`회)
+     항상 같은 모델만 재시도했다. 턴마다 Gemini를 2회씩 호출하므로(Intent 분류 +
+     조건 추출) 턴이 누적될수록 일시적 5xx를 만날 누적 확률이 올라가고, 재시도
+     예산이 소진될 가능성도 커진다 — "3번째 턴에서 유독 실패"는 프롬프트가
+     커져서가 아니라(확인함 — `current_conditions`는 매턴 새로 덮어써서 누적
+     안 됨) 호출 횟수 누적 문제로 보인다.
+- 결정: `RealGeminiProvider`가 `LLM_MODEL_NAME`(1순위) 재시도 소진 후
+  `LLM_FALLBACK_MODEL_NAMES`(쉼표 구분, 선택 사항)에 지정된 모델을 순서대로
+  시도한다. 각 모델의 재시도 예산(`EXTERNAL_API_RETRY_COUNT`)은 폴백 목록
+  길이와 무관하게 기존과 동일하게 유지한다 — 두 설정을 서로 독립적으로
+  유지하기 위함이며, 대신 모델 수 × 재시도 수만큼 최악 지연이 늘어나는 건
+  감수한다. 4xx 등 비재시도 오류는 모델을 바꿔도 결과가 같으므로 폴백하지
+  않는다(`_try_model()`에서 즉시 raise, `_RetryableExhaustedError`로 감싸지
+  않음). 폴백 전환 시 `logger.warning`, 전 모델 소진 시 `logger.error`로 어떤
+  모델이 실패했고 어떤 모델로 넘어갔는지, 최종적으로 어떤 모델이 응답했는지
+  남긴다. 추가로 `main.py`의 `handle_app_error`(모든 `AppError`가 거쳐가는
+  단일 지점)에도 `logger.error` 한 줄을 추가해, Gemini 외 다른 Provider의 502도
+  같이 로그에 남도록 했다.
+- D-042와의 관계: D-042(Real Provider 실패 시 Fake로 자동 전환하지 않는다)는
+  Real→Fake 조용한 전환만 범위로 하며, "같은 성격의 다른 Real 경로로 넘어가는
+  것"과 재시도/서킷 브레이커는 명시적으로 범위 밖이라고 밝히고 있다. 같은
+  벤더(Gemini)의 다른 모델로 넘어가는 이번 결정은 D-042 위반이 아니다. 다만
+  D-042의 취지("조용한 폴백 금지")를 지키기 위해 폴백 발생을 반드시 로그로
+  남긴다 — 로그 없는 폴백은 D-042가 경계하는 것과 본질적으로 같은 문제다.
+- 기본값: `LLM_FALLBACK_MODEL_NAMES`가 비어 있으면(기본값) 기존과 동일하게
+  단일 모델만 사용한다. 기존 `.env`는 변경 없이 그대로 동작한다.
+- 구현: `app/config.py`(`llm_fallback_model_names`, `resolved_llm_models`),
+  `app/providers/gemini.py`(`RealGeminiProvider._generate()`을 모델 목록 순회
+  + `_try_model()`로 분리, `_RetryableExhaustedError` 내부 신호로 재시도-소진과
+  비재시도-오류를 구분), `app/providers/factory.py`(배선 + 부팅 시 중복 모델명
+  거부), `app/main.py`(`handle_app_error` 로깅). 테스트는
+  `tests/test_gemini_provider.py`(폴백 성공/전체 소진/4xx 무폴백/로깅 확인)와
+  `tests/test_provider_settings.py`(`resolved_llm_models` 파싱, 중복 모델명
+  거부)에 추가했다.
+- 범위 밖(후속 검토 필요): 서로 다른 LLM 공급사(Anthropic/OpenAI 등) 간
+  fallback, timeout 정책 자체의 재검토, 모델별 비용/품질 차이를 고려한 라우팅.
+  이 결정은 "같은 Gemini 계정 내 모델 fallback"으로 범위를 좁힌다.
+- 확인 방법: `tests/test_gemini_provider.py`(신규 5건: 1순위 성공/폴백 성공/전
+  모델 소진/4xx 무폴백/로깅), `tests/test_provider_settings.py`(신규 5건).
+  전체 회귀(1020+ passed) 확인.
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -1212,3 +1263,4 @@ Fixture 7개가 하나도 바뀌지 않았다. 순서를 나누지 않으면 교
 | 2026-08-05 | D-049 `conditions.weather`(발화 기반 5단계 값)가 C/D 어디서도 안 읽히는 죽은 필드로 보인다는 발견을 기록(코드 미변경, 원 설계 의도 확인 필요) |
 | 2026-08-05 | 혼잡도 실서버 E2E 검증 문서(`concentration-e2e-verification.md`) 작성. D-050으로 혼잡도 2차 Scoring 결과의 순서만 B에 저장되고 점수/등급 값은 저장 안 됨을 기록(코드 미변경) |
 | 2026-08-05 | D-051 날씨 사실/판정 분리 — C의 사실 전달과 `NO_MENTION` 수용 구현, 판정 이관은 D 확인 대기 |
+| 2026-08-05 | D-052 Gemini 동일 벤더 내 모델 fallback(`LLM_FALLBACK_MODEL_NAMES`) 구현 + AppError 전파 경로 로깅 추가(무로그 502 문제 해결) |

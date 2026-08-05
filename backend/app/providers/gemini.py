@@ -11,6 +11,7 @@ docs/design/intent-definition.md, docs/design/llm-output-schema.md 참고). 구�
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 from datetime import date
 from typing import TypeVar
@@ -27,6 +28,8 @@ from app.providers.contracts import ProviderResult, ProviderSource, provider_res
 from app.schemas import GeneralTopic, IntentClassificationResult, LLMOutput, UserConditions
 
 T = TypeVar("T", bound=BaseModel)
+
+logger = logging.getLogger(__name__)
 
 
 class _GeneralAnswer(BaseModel):
@@ -45,6 +48,16 @@ def _backoff_seconds(attempt: int) -> float:
     return _BACKOFF_BASE_SECONDS * (2**attempt) + random.uniform(0, 0.25)
 
 
+class _RetryableExhaustedError(Exception):
+    """한 모델의 재시도 예산이 소진됐다는 내부 신호(폴백 대상) — 사용자에게 그대로
+    노출되지 않는다. _generate()가 이 예외를 잡아 다음 모델로 넘어가거나, 마지막
+    모델이면 감싸고 있는 원본 오류를 그대로 raise한다. 4xx 같은 비재시도 오류는 이
+    래퍼 없이 ProviderUnavailableError를 바로 던져 폴백 없이 즉시 실패한다."""
+
+    def __init__(self, original: ProviderTimeoutError | ProviderUnavailableError) -> None:
+        self.original = original
+
+
 class RealGeminiProvider:
     """google-genai SDK로 Gemini 구조화 출력을 호출하는 실제 구현.
 
@@ -55,15 +68,17 @@ class RealGeminiProvider:
     def __init__(
         self,
         api_key: str,
-        model_name: str,
+        model_names: list[str],
         timeout_seconds: float = 10.0,
         max_retries: int = 2,
     ) -> None:
+        if not model_names:
+            raise ValueError("model_names는 최소 1개 이상이어야 합니다.")
         self._client = genai.Client(
             api_key=api_key,
             http_options=genai_types.HttpOptions(timeout=int(timeout_seconds * 1000)),
         )
-        self._model_name = model_name
+        self._model_names = model_names
         self._max_retries = max_retries
 
     async def classify_intent(
@@ -165,12 +180,67 @@ class RealGeminiProvider:
         user_input: str,
         response_model: type[T],
     ) -> T:
-        """타임아웃/429/5xx는 지수 백오프로 최대 self._max_retries회 재시도한다."""
+        """1순위 모델부터 순서대로 시도한다(D-052). 각 모델에서 타임아웃/429/5xx는
+        _try_model()이 지수 백오프로 재시도하고, 그 예산이 소진되면 다음 모델로
+        넘어간다. 마지막 모델까지 소진되면 오늘과 동일하게 ProviderTimeoutError/
+        ProviderUnavailableError를 던진다. 4xx 등 비재시도 오류는 모델을 바꿔도
+        결과가 같으므로 _try_model()에서 폴백 없이 즉시 실패한다(아래로 그대로
+        전파됨 — 이 메서드는 잡지 않는다).
+        """
+
+        last_error: ProviderTimeoutError | ProviderUnavailableError | None = None
+
+        for model_index, model_name in enumerate(self._model_names):
+            try:
+                result = await self._try_model(
+                    model_name, system_instruction, user_input, response_model
+                )
+            except _RetryableExhaustedError as exc:
+                last_error = exc.original
+                is_last_model = model_index == len(self._model_names) - 1
+                if is_last_model:
+                    logger.error(
+                        "Gemini 전 모델 소진, 최종 실패 (models=%s): %s",
+                        self._model_names,
+                        last_error,
+                    )
+                    raise last_error from None
+                logger.warning(
+                    "Gemini 모델 %s 재시도 소진, %s로 폴백: %s",
+                    model_name,
+                    self._model_names[model_index + 1],
+                    last_error,
+                )
+                continue
+
+            if model_index > 0:
+                logger.warning(
+                    "Gemini 폴백 모델로 응답 성공 (served_by=%s, primary=%s)",
+                    model_name,
+                    self._model_names[0],
+                )
+            return result
+
+        raise AssertionError("unreachable: model loop exited without returning or raising")
+
+    async def _try_model(
+        self,
+        model_name: str,
+        system_instruction: str,
+        user_input: str,
+        response_model: type[T],
+    ) -> T:
+        """모델 하나에 대해서만 타임아웃/429/5xx를 지수 백오프로 최대
+        self._max_retries회 재시도한다. 재시도가 소진되면 _RetryableExhaustedError로
+        감싸 던져 호출부(_generate)가 다음 모델로 넘어갈지 판단하게 한다. 4xx 등
+        비재시도 오류는 감싸지 않고 ProviderUnavailableError를 바로 던진다 —
+        모델을 바꿔도 같은 이유로 실패할 것이므로 폴백 대상이 아니다.
+        """
 
         for attempt in range(self._max_retries + 1):
             try:
                 response = await self._client.aio.models.generate_content(
-                    model=self._model_name,
+                    model=model_name,
                     contents=user_input,
                     config=genai_types.GenerateContentConfig(
                         system_instruction=system_instruction,
@@ -181,15 +251,18 @@ class RealGeminiProvider:
                 )
             except httpx.TimeoutException:
                 if attempt >= self._max_retries:
-                    raise ProviderTimeoutError("Gemini") from None
+                    raise _RetryableExhaustedError(ProviderTimeoutError("Gemini")) from None
             except genai_errors.APIError as exc:
-                if exc.code not in _RETRYABLE_STATUS_CODES or attempt >= self._max_retries:
+                if exc.code not in _RETRYABLE_STATUS_CODES:
                     status = f" {exc.status}" if hasattr(exc, "status") else ""
-                    retry_note = (
-                        f" (재시도 {attempt}회 소진)" if attempt > 0 else " (첫 시도부터 실패)"
-                    )
-                    detail = f"{exc.code}{status}{retry_note}"
+                    detail = f"{exc.code}{status} (첫 시도부터 실패)"
                     raise ProviderUnavailableError("Gemini", detail=detail) from None
+                if attempt >= self._max_retries:
+                    status = f" {exc.status}" if hasattr(exc, "status") else ""
+                    detail = f"{exc.code}{status} (재시도 {attempt}회 소진)"
+                    raise _RetryableExhaustedError(
+                        ProviderUnavailableError("Gemini", detail=detail)
+                    ) from None
             else:
                 if response.parsed is not None:
                     return response_model.model_validate(response.parsed)
