@@ -18,7 +18,9 @@ from app.errors import AppError
 from app.schemas import (
     ConcentrationIntent,
     RecommendationResponse,
+    StatedWeather,
     UserConditions,
+    WeatherIntent,
 )
 from app.services.runtime import real_recommendation_provider as module
 from app.services.runtime.context_schemas import (
@@ -112,6 +114,35 @@ async def test_search_radius_km_passed_to_pipeline_matches_to_search_radius_km(
 
     assert captured["search_radius_km"] == pytest.approx(module.to_search_radius_km(conditions))
     assert captured["visit_at"].tzinfo is not None
+
+
+@pytest.mark.asyncio
+async def test_conditions_are_passed_to_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A는 발화 조건을 줄이지 않고 그대로 D에 넘긴다.
+
+    AVOID/ENJOY면 C가 날씨를 조회하지 않으므로 D는 conditions.weather로 날씨를
+    판정한다. 여기서 A가 3단계로 미리 줄이면 의도와 발화 값이 함께 사라져 D가 다시
+    판단할 수 없다(D-051).
+    """
+    captured: dict[str, object] = {}
+    original = module.run_recommendation_pipeline_from_context
+
+    async def _capture(context, **kwargs):
+        captured.update(kwargs)
+        return await original(context, **kwargs)
+
+    monkeypatch.setattr(module, "run_recommendation_pipeline_from_context", _capture)
+
+    provider = RealRecommendationProvider()
+    conditions = UserConditions(
+        weather_intent=WeatherIntent.AVOID, weather=StatedWeather.RAIN
+    )
+
+    await provider.recommend(conditions, _context(place_ids=["a"]), excluded_place_ids=[])
+
+    assert captured["conditions"] is conditions
 
 
 def _empty_first_pass() -> RecommendationResponse:

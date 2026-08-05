@@ -28,7 +28,11 @@ from app.domain.scoring import (
 )
 from app.errors import AppError
 from app.recommendation_limits import DEFAULT_RECOMMENDATION_RESULT_LIMIT
-from app.schemas import RecommendationItem, RecommendationResponse
+from app.schemas import (
+    RecommendationItem,
+    RecommendationResponse,
+    UserConditions,
+)
 
 _OPERATING_HOURS_UNVERIFIED_WARNING = "방문 전에 운영 여부를 확인해주세요."
 _DETAILS_MISSING_WARNING = "장소 상세정보 일부를 확인하지 못했습니다."
@@ -49,6 +53,11 @@ Timer: TypeAlias = Callable[[], float]
 async def run_recommendation_pipeline_from_context(
     context: RecommendationContext | None,
     *,
+    # A가 넘기는 사용자 발화 조건. 아직 이 파이프라인은 사용하지 않는다 — 날씨는
+    # context.weather(C가 판정한 3단계)만 쓴다. AVOID/ENJOY면 C가 조회하지 않아
+    # 날씨가 비므로, D가 conditions.weather와 weather_intent로 판정하도록 바꿀 때
+    # 쓸 입력이다(D-051).
+    conditions: UserConditions | None = None,
     visit_at: datetime,
     search_radius_km: float,
     shown_place_ids: frozenset[str] = frozenset(),

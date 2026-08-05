@@ -11,6 +11,8 @@ TOOL_EXECUTION_RULE_VERSION = "context-tool-plan-v1"
 
 # 날씨 조회를 생략하는 weather_intent 값. "상관없다고 명시함"만 해당한다.
 _WEATHER_SKIP_INTENTS = frozenset({"IGNORE"})
+# 발화에 날씨가 있다는 뜻인 값. 그 값이 실제로 채워졌을 때만 조회를 생략한다.
+_WEATHER_STATED_INTENTS = frozenset({"AVOID", "ENJOY"})
 
 
 class ContextTool(StrEnum):
@@ -37,11 +39,9 @@ class ToolExecutionPlan:
 def build_tool_execution_plan(conditions: UserConditions) -> ToolExecutionPlan:
     """MVP 조건에 따라 초기 Context 수집 Tool을 선택한다.
 
-    위치·장소·공휴일은 추천과 운영정보 판단에 항상 필요하다. 날씨는
-    weather_intent가 NO_MENTION(미언급)일 때만 조회한다 — AVOID/ENJOY는
-    사용자 발화 weather를 직접 쓰고, IGNORE는 명시적 무관 요청이므로 조회를
-    생략한다. Concentration은 D가 선정한 상위 후보를 보강하는 후조회이므로
-    초기 계획에 포함하지 않는다.
+    위치·장소·공휴일은 추천과 운영정보 판단에 항상 필요하다. 날씨는 쓸 값이 없을
+    때만 조회한다 — 자세한 기준은 _requires_weather() 참고. Concentration은 D가
+    선정한 상위 후보를 보강하는 후조회이므로 초기 계획에 포함하지 않는다.
     """
 
     tools = {
@@ -49,23 +49,27 @@ def build_tool_execution_plan(conditions: UserConditions) -> ToolExecutionPlan:
         ContextTool.SEARCH_PLACES,
         ContextTool.GET_HOLIDAYS,
     }
-    if conditions.weather_intent in (None, "NO_MENTION"):
+    if _requires_weather(conditions):
         tools.add(ContextTool.GET_WEATHER)
     return ToolExecutionPlan(tools=frozenset(tools))
 
 
-def _requires_weather(weather_intent: str | None) -> bool:
+def _requires_weather(conditions: UserConditions) -> bool:
     """날씨를 조회할지 판단한다.
 
-    "상관없다"고 명시한 요청만 생략한다. 언급이 없는 경우(NO_MENTION)는 조회한다 —
-    사용자가 말하지 않았다고 날씨를 무시하면, 비 오는 날 야외 장소를 그대로 추천하게
-    된다(int-01-recommend.md §10).
-
-    IGNORE는 원래 "언급 없음"과 "무관하다고 명시함"을 겸했다. 둘의 동작이 반대라 A가
-    NO_MENTION을 분리했다. 값 하나를 제외하는 형태로 두면 값이 늘 때마다 우연히
-    맞기를 기대하게 되므로, 생략 대상을 명시적으로 나열한다.
+    - IGNORE("날씨 상관없어" 명시): 쓰지 않을 값이라 조회하지 않는다.
+    - AVOID/ENJOY: 사용자가 말한 날씨를 D가 쓴다. 다만 발화에서 5단계 값을 뽑지
+      못하는 경우가 있어(실측 2026-08-05: "날씨 안 좋으니까 실내로", "바람 많이
+      부는데" 등 6건 중 3건이 weather=null) 그때는 조회해서 채운다. 조회하지 않으면
+      날씨를 분명히 말한 사용자에게만 날씨가 빠지는 결과가 된다.
+    - NO_MENTION(또는 과도기 null): 언급이 없어도 조회한다. 말하지 않았다고 무시하면
+      비 오는 날 야외 장소를 그대로 추천하게 된다(int-01-recommend.md §10).
     """
-    return weather_intent not in _WEATHER_SKIP_INTENTS
+    if conditions.weather_intent in _WEATHER_SKIP_INTENTS:
+        return False
+    if conditions.weather_intent in _WEATHER_STATED_INTENTS:
+        return conditions.weather is None
+    return True
 
 
 __all__ = [
