@@ -71,7 +71,7 @@ class UserConditions(BaseModel):
     place_types: list[str] = Field(default_factory=list)
     place_tags: list[str] = Field(default_factory=list)
     weather: Literal["rain", "snow", "hot", "cold", "good"] | None = None
-    weather_intent: Literal["AVOID", "ENJOY", "IGNORE"] | None = None
+    weather_intent: Literal["AVOID", "ENJOY", "NO_MENTION", "IGNORE"] | None = None
     transport: Literal["walk", "public", "car"] | None = None
     max_travel_time: int | None = None
     time_available: int | None = None
@@ -520,9 +520,10 @@ sequenceDiagram
 응답에 결합하는 배선은 A 영역의 후속 작업이다.
 
 초기 Context의 Tool 선택은 C의 `context-tool-plan-v1` Rule이 담당한다. 위치,
-장소, 공휴일은 추천 Context에 필요한 기본 Tool이며, `weather_intent=IGNORE`이면
-Weather 호출을 생략한다. 의도적으로 생략한 Tool은 실패나 부분 성공으로 계산하지
-않는다.
+장소, 공휴일은 추천 Context에 필요한 기본 Tool이며, 날씨는
+`weather_intent=NO_MENTION`일 때만 조회한다. `AVOID`/`ENJOY`는 사용자 발화
+weather를 직접 쓰고, `IGNORE`는 명시적 무관 요청이라 Weather 호출을 생략한다.
+의도적으로 생략한 Tool은 실패나 부분 성공으로 계산하지 않는다.
 
 후보 조회 과정에서 C는 위치·반경·장소 유형처럼 Provider 요청에 필요한 **조회 조건**을
 사용할 수 있다. 다만 이전 노출·거절 ID를 기준으로 후보를 제거하거나 최종 후보를

@@ -372,6 +372,7 @@ class ModifyType(str, Enum):
 class WeatherIntent(str, Enum):
     AVOID = "AVOID"
     ENJOY = "ENJOY"
+    NO_MENTION = "NO_MENTION"
     IGNORE = "IGNORE"
 
 

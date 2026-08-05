@@ -127,7 +127,8 @@ _WEATHER_INTENT_RULES = """\
 weather_intent 판별:
 - AVOID: 날씨를 피하고 싶음 ("비 오는데 갈 곳", "더운데 시원한 곳") → environment도 indoor로
 - ENJOY: 날씨를 즐기고 싶음 ("눈 오는 거리 걷고 싶어", "단풍 보러") → environment도 outdoor로
-- IGNORE: 날씨 언급이 없거나 무관함
+- NO_MENTION: 날씨 언급이 없음 ("경복궁 근처 카페 추천해줘")
+- IGNORE: "날씨 상관없어"처럼 무관함을 명시
 - 판별이 애매하면(예: "눈 오는데 추천" — 피하고 싶은지 즐기고 싶은지 불명확) weather_intent를
   null로 두고 status를 needs_clarification으로, clarification.ambiguous_fields에
   weather_intent 항목을 채운다

@@ -9,8 +9,16 @@ from types import SimpleNamespace
 import pytest
 
 from app.agent_context.service import _resolve_search_radius_km as _c_resolve_search_radius_km
+from app.domain.models import WeatherCondition
 from app.place_search_policy import DEFAULT_PLACE_SEARCH_RADIUS_KM
-from app.schemas import RecommendationItem, RecommendationResponse, Transport, UserConditions
+from app.schemas import (
+    RecommendationItem,
+    RecommendationResponse,
+    StatedWeather,
+    Transport,
+    UserConditions,
+    WeatherIntent,
+)
 from app.services.runtime.context_schemas import (
     ContextError,
     ContextValue,
@@ -20,6 +28,7 @@ from app.services.runtime.context_schemas import (
 from app.services.runtime.recommendation_transform import (
     to_concentration_entries,
     to_record_recommendation_request,
+    to_scoring_weather_condition,
     to_search_radius_km,
     to_weather_condition,
 )
@@ -131,6 +140,36 @@ class TestToWeatherCondition:
     def test_missing_weather_returns_none(self) -> None:
         context = RecommendationContext()
         assert to_weather_condition(context) is None
+
+
+class TestToScoringWeatherCondition:
+    def test_weather_mentioned_uses_user_stated_weather(self) -> None:
+        context = RecommendationContext()
+        conditions = UserConditions(
+            weather=StatedWeather.RAIN,
+            weather_intent=WeatherIntent.AVOID,
+        )
+        assert to_scoring_weather_condition(conditions, context) is WeatherCondition.BAD
+
+    def test_no_mention_uses_context_weather(self) -> None:
+        context = RecommendationContext(
+            weather=ContextValue(
+                status="success",
+                data=WeatherForecast(condition="neutral", forecast_for=datetime.now(UTC)),
+            )
+        )
+        conditions = UserConditions(weather_intent=WeatherIntent.NO_MENTION)
+        assert to_scoring_weather_condition(conditions, context) is WeatherCondition.NEUTRAL
+
+    def test_ignore_disables_weather_feature(self) -> None:
+        context = RecommendationContext(
+            weather=ContextValue(
+                status="success",
+                data=WeatherForecast(condition="good", forecast_for=datetime.now(UTC)),
+            )
+        )
+        conditions = UserConditions(weather_intent=WeatherIntent.IGNORE)
+        assert to_scoring_weather_condition(conditions, context) is None
 
 
 class TestToConcentrationEntries:

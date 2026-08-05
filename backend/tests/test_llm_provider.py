@@ -91,6 +91,7 @@ async def test_extract_recommend_conditions_tc04_no_conditions() -> None:
     assert conditions.search_center is None
     assert conditions.place_types == []
     assert conditions.place_tags == []
+    assert conditions.weather_intent is WeatherIntent.NO_MENTION
 
 
 @pytest.mark.asyncio

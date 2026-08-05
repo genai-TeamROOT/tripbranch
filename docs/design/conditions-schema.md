@@ -47,7 +47,7 @@ interface Conditions {
 
   // 날씨 (사용자 발화 기준 — API로 보충한 값은 api_context.api_weather에 별도 저장)
   weather: "rain" | "snow" | "hot" | "cold" | "good" | null;
-  weather_intent: "AVOID" | "ENJOY" | "IGNORE" | null;
+  weather_intent: "AVOID" | "ENJOY" | "NO_MENTION" | "IGNORE" | null;
 
   // 혼잡도 (weather_intent와 동일 패턴 — 상세는 concentration-conditions.md 참고)
   concentration_intent: "AVOID" | "SEEK" | "IGNORE" | null;
@@ -117,7 +117,7 @@ Conditions는 3층 구조로 분리되어 관리된다. B는 `user_conditions`�
   "place_types": ["restaurant"],
   "place_tags": ["카페"],
   "weather": null,
-  "weather_intent": null,
+  "weather_intent": "NO_MENTION",
   "transport": "walk",
   "max_travel_time": null,
   "time_available": null,
@@ -209,7 +209,7 @@ LLM 답변 생성과 추천 엔진에 전달되며, B에는 저장하지 않는�
 | `search_center` | user_conditions | 선택 | null이면 answer_conditions에서 gps_location 사용 |
 | `place_types` | user_conditions | 선택 | 빈 배열이면 전체 유형 검색 |
 | `weather` / `api_weather` | 병합 | 선택 | 둘 다 없으면 가중치 제외 |
-| `weather_intent` | user_conditions | 선택 | 모호(null)하면 사용자에게 실내/야외 선호 추가 질문 |
+| `weather_intent` | user_conditions | 선택 | 미언급은 `NO_MENTION`, 무관 명시는 `IGNORE`, 모호(null)하면 사용자에게 실내/야외 선호 추가 질문 |
 | `concentration_intent` | user_conditions | 선택 | 결측/null이면 `concentration` Scoring 가중치 제외, 추가 질문 없음 (하드 필터에 관여하지 않으므로 weather_intent와 다름 — [concentration-conditions.md §2.1](./concentration-conditions.md#21-필드-정의) 참고) |
 | `transport` | user_conditions | 선택 | 기본값 도보 기준 (default_transport: walk) |
 | `max_travel_time` | user_conditions | 선택 | 없으면 기본 2km, 있으면 MVP 도보 기준 `분 × 0.07km`를 후보 수집 반경으로 적용(최소 0.3km, 최대 20km) |

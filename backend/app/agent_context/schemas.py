@@ -26,7 +26,7 @@ class UserConditions(StrictModel):
     place_types: list[str] = Field(default_factory=list)
     place_tags: list[str] = Field(default_factory=list)
     weather: Literal["rain", "snow", "hot", "cold", "good"] | None = None
-    weather_intent: Literal["AVOID", "ENJOY", "IGNORE"] | None = None
+    weather_intent: Literal["AVOID", "ENJOY", "NO_MENTION", "IGNORE"] | None = None
     transport: Literal["walk", "public", "car"] | None = None
     max_travel_time: int | None = Field(default=None, gt=0)
     time_available: int | None = Field(default=None, gt=0)

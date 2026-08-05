@@ -4,9 +4,9 @@
 
 | 항목 | 값 |
 |------|-----|
-| 버전 | v0.3 |
+| 버전 | v0.5 |
 | 상태 | 초안 (Draft) |
-| 최종 수정 | 2026-07-23 |
+| 최종 수정 | 2026-08-05 |
 
 ---
 
@@ -39,7 +39,7 @@ LLM Structured Output → Conditions 추출
     ↓
 사용자 확인/수정
     ↓
-API 호출 (장소 + 날씨, 병렬)
+API 호출 (장소 + 날씨(조건부), 병렬)
     ↓
 Hard Filter (필수 조건 미충족 제외)
     ↓
@@ -113,7 +113,7 @@ search_center 결정:
 |------|-----------|
 | `locationBasedList2` (mapX, mapY, radius) | search_center 좌표 (null이면 current_location) |
 | 거리 계산 (후보까지의 거리) | search_center 좌표 (null이면 current_location) |
-| 날씨 API 호출 | current_location 좌표 |
+| 날씨 API 호출 | `weather_intent=NO_MENTION`일 때만 current_location 좌표 |
 
 ### 좌표 변환
 
@@ -275,7 +275,8 @@ enum 목록(MVP)은 [conditions-schema.md § 2. Conditions 필드 정의](./cond
 |----|------|-----------|-----------|
 | `AVOID` | 날씨를 피하고 싶음 | "비 오는데 갈 곳", "더운데 시원한 곳" | environment=indoor 설정 |
 | `ENJOY` | 날씨를 즐기고 싶음 | "눈 오는 거리 걷고 싶어", "단풍 보러" | environment=outdoor 설정 |
-| `IGNORE` | 날씨 무관 | 날씨 언급 없음 | 날씨 가중치 제외 |
+| `NO_MENTION` | 날씨 언급 없음 | "경복궁 근처 카페 추천해줘" | 날씨 API 호출 후 API 값으로 계산 |
+| `IGNORE` | 날씨 무관을 명시 | "날씨 상관없이 추천해줘" | 날씨 API 미호출, 날씨 가중치 제외 |
 | `null` | 판별 불가 | "눈 오는데 추천" (의도 모호) | 사용자에게 추가 질문 |
 
 **모호한 경우 처리:**
@@ -314,21 +315,26 @@ LLM이 AVOID/ENJOY 판별 불가
 
 ## 10. 날씨 정보 확보 순서
 
-(2026-08-05, decision-log.md D-038 TODO 1 — 구현에 맞춰 재작성. 과거엔 "사용자가
-날씨를 입력 안 해도 API를 호출한다"고 규정했지만, 실제 구현·의도된 동작은
-아래 쪽이었다.)
+(2026-08-05, A 수정) `weather_intent`의 "언급 없음"과 "무관 명시"를 분리했다.
+`NO_MENTION`은 API 조회, `IGNORE`는 조회 생략으로 동작을 분리한다.
 
 ```
-① 사용자 입력에 날씨 포함(weather_intent != IGNORE)
+① 사용자 입력에 날씨 포함(weather_intent in {AVOID, ENJOY})
   → LLM이 weather + weather_intent 추출
-  → C가 GPS 좌표 기준으로 날씨 API 호출 → conditions.weather 채움
+  → C는 날씨 API를 호출하지 않는다
+  → D가 사용자 발화 weather(5단계: rain/snow/hot/cold/good)를 점수 계산에 사용
+    (Scoring 입력용 3단계로 정규화)
 
-② 사용자가 날씨를 전혀 언급하지 않음(weather_intent == IGNORE)
-  → 날씨 API를 호출하지 않는다(안 쓸 값을 조회할 이유가 없음, tool_rules.py)
+② 사용자가 날씨를 전혀 언급하지 않음(weather_intent == NO_MENTION)
+  → C가 GPS 좌표 기준으로 날씨 API 호출
+  → API 값(3단계: good/neutral/bad)으로 날씨 점수 계산
+
+③ 사용자가 날씨 무관을 명시(weather_intent == IGNORE)
+  → 날씨 API를 호출하지 않는다
   → 날씨 항목을 추천 계산에서 제외
   → 나머지 가중치 재정규화
 
-③ 날씨 API 실패(①에서 호출은 했으나 실패)
+④ 날씨 API 실패(②에서 호출은 했으나 실패)
   → 날씨 항목을 추천 계산에서 제외, 나머지 가중치 재정규화
   → "확인하지 못했다"와 "언급이 없어 반영 안 함"은 사용자에게 다른 문구로
     안내한다(D-038 결정 1)
@@ -469,4 +475,4 @@ place_types 빈 배열 (전체 검색) + place_tags 없음:
 | v0.2 | 2026-07-23 | Conditions 3층 구조 명시(3절), preference_tags 필드 제거, weather 변경 규칙을 user_conditions/api_context 기준으로 수정, place_types 교체 시 place_tags 정리를 A의 명시적 Remove로 수정. (5·9·12절의 GPS↔api_context 위치 프레이밍은 후속 정리 예정) |
 | v0.3 | 2026-07-23 | 소유권 기반 문서 정리: Conditions 필드 정의(3·4절), PlaceType/PlaceTag enum(6·7절), 조건 부족 시 기본 정책(10절), 필드별 변경 규칙(11절)을 conditions-schema.md 참조 링크로 교체. 추천 처리 흐름·위치 처리·날씨 확보·점수 계산 등 RECOMMEND 고유 로직은 유지 |
 | v0.4 | 2026-07-29 | `concentration_intent` 판별 절 신설(신규 9절, weather_intent §8 패턴 요약) — 이후 9~15절을 10~16절로 순연. 13절(구 12절) LLM 추출 예시에 concentration 사례 2건 추가 |
-
+| v0.5 | 2026-08-05 | `weather_intent`에 `NO_MENTION` 추가. §8에서 `NO_MENTION`(언급 없음)과 `IGNORE`(무관 명시) 의미를 분리하고, §10 날씨 확보 순서를 "발화 날씨는 사용자 값 사용 / `NO_MENTION`만 API 조회"로 갱신 |

@@ -208,9 +208,11 @@ def to_agent_context_request(
 
 `conditions.weather`(A→C 요청)는 사용자가 말한 5단계(`rain`/`snow`/`hot`/`cold`/`good`)이고,
 `RecommendationContext.weather.data.condition`(C→A 응답)은 C가 Provider 결과를 정규화한
-3단계(`good`/`neutral`/`bad`)다. 두 값은 역할이 다르므로 서로 직접 대입하지 않는다 — A↔C
-계약 문서(`docs/design/a-c-context-contract-draft.md` §5.2)의 명시 원칙이며, `to_agent_
-context_request()`가 `conditions`만 받는 구조라 애초에 섞일 수 없다.
+3단계(`good`/`neutral`/`bad`)다. A는 `weather_intent`에 따라 D 입력을 선택한다:
+
+- `AVOID`/`ENJOY`: 사용자 발화 `conditions.weather`를 D 점수 입력으로 사용
+- `NO_MENTION`: C가 조회한 `context.weather.condition` 사용
+- `IGNORE`: 날씨 점수를 제외(가중치 재분배)
 
 ### 3.3 C 응답(`AgentContextResponse`) status별 처리
 
@@ -366,9 +368,10 @@ MODIFY(CHANGE_CONDITION) → INFO 4개 시나리오를 실제 Gemini + 실제 C 
 | "무료인 곳으로" | MODIFY(CHANGE_CONDITION) | 21.81s | `search_center` 유지, `budget=free`만 반영 확인 |
 | "경복궁 오늘 열어?" | INFO | 4.63s | Tool/Recommendation 스킵 확인(`recommendations=None`) |
 
-부수 확인: 네 시나리오 전부 `weather_intent=IGNORE`(날씨 미언급)라 C가 날씨 Tool 호출
-자체를 생략했다 — 계약 문서(§5.4 계열 규칙: "weather_intent=IGNORE면 Weather 호출을
-생략한다") 그대로 동작함을 실제 응답의 날씨 결측 warning으로 확인했다.
+부수 확인: 당시 시나리오는 전부 날씨 미언급 케이스였고, 현재 계약 기준에선
+`weather_intent=NO_MENTION`으로 분류되어 C가 날씨 Tool을 호출한다. `IGNORE`는
+"날씨 상관없어"를 명시한 경우로만 사용하며 이때만 Weather 호출을 생략한다
+(관련 결정: `docs/decision-log.md` D-049).
 
 ---
 

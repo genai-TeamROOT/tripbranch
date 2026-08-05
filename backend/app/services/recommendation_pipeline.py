@@ -33,7 +33,7 @@ from app.schemas import RecommendationItem, RecommendationResponse
 _OPERATING_HOURS_UNVERIFIED_WARNING = "방문 전에 운영 여부를 확인해주세요."
 _DETAILS_MISSING_WARNING = "장소 상세정보 일부를 확인하지 못했습니다."
 # 날씨가 Scoring에 빠지는 이유는 두 가지이고, 사용자에게 같은 말로 알리면 안 된다.
-# (1) 조회 자체를 안 한 경우: weather_intent=IGNORE(= 발화에 날씨 언급 없음)면 C가
+# (1) 조회 자체를 안 한 경우: weather_intent=IGNORE(= "날씨 상관없어" 명시)면 C가
 #     Weather Tool을 실행하지 않는다(tool_rules.py). 정상 흐름이므로 오류처럼 알리지
 #     않는다. int-01-recommend.md §8의 IGNORE 정의 참고.
 # (2) 조회했으나 실패한 경우: 날씨 API 장애 등 — 이때만 "확인하지 못했다"가 사실이다.
@@ -51,6 +51,7 @@ async def run_recommendation_pipeline_from_context(
     *,
     visit_at: datetime,
     search_radius_km: float,
+    weather_condition: WeatherCondition | None = None,
     shown_place_ids: frozenset[str] = frozenset(),
     rejected_place_ids: frozenset[str] = frozenset(),
     recommendation_limit: int = DEFAULT_RECOMMENDATION_RESULT_LIMIT,
@@ -65,6 +66,8 @@ async def run_recommendation_pipeline_from_context(
     (`max_distance_km`)가 이 값을 그대로 재사용하기 때문이다
     (`docs/design/recommendation-scoring.md` 참고). 값이 어긋나면 거리 점수가
     실제 후보 풀 범위와 안 맞게 계산된다.
+    `weather_condition`을 넘기면 C weather보다 우선 적용한다(예: 사용자 발화
+    날씨를 직접 점수에 반영하는 A 경로).
 
     Context 상태 처리: `context` 자체가 `None`이거나(예: A의
     `AgentContextResponse.status`가 `needs_clarification`/`unsupported`/
@@ -103,12 +106,16 @@ async def run_recommendation_pipeline_from_context(
         )
 
     candidates = map_context_to_scoring_candidates(context, visit_at=visit_at)
-    weather_condition = _weather_condition_from_context(context)
+    resolved_weather_condition = (
+        weather_condition
+        if weather_condition is not None
+        else _weather_condition_from_context(context)
+    )
 
     scoring = score_candidates(
         candidates,
         now=visit_at,
-        weather_condition=weather_condition,
+        weather_condition=resolved_weather_condition,
         max_distance_km=search_radius_km,
         shown_place_ids=shown_place_ids,
         rejected_place_ids=rejected_place_ids,
