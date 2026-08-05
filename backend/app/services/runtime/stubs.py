@@ -17,7 +17,6 @@ from app.agent_context.enrichment_schemas import (
     CandidateEnrichmentResult,
     ConcentrationForecastData,
 )
-from app.domain.models import WeatherCondition
 from app.agent_context.schemas import (
     AgentContextRequest,
     AgentContextResponse,
@@ -28,6 +27,7 @@ from app.agent_context.schemas import (
     ResponseMetadata,
     WeatherForecast,
 )
+from app.domain.models import WeatherCondition
 from app.schemas import RecommendationItem, RecommendationResponse, UserConditions
 from app.services.runtime.info_context_schemas import (
     ConcentrationInfoResult,
