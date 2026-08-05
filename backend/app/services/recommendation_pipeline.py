@@ -26,12 +26,18 @@ from app.domain.scoring import (
     redistribute_weights,
     score_candidates,
 )
+from app.domain.weather_judgment import (
+    WeatherReason,
+    judge_weather_condition_from_facts,
+    judge_weather_condition_from_stated,
+)
 from app.errors import AppError
 from app.recommendation_limits import DEFAULT_RECOMMENDATION_RESULT_LIMIT
 from app.schemas import (
     RecommendationItem,
     RecommendationResponse,
     UserConditions,
+    WeatherIntent,
 )
 
 _OPERATING_HOURS_UNVERIFIED_WARNING = "방문 전에 운영 여부를 확인해주세요."
@@ -53,10 +59,9 @@ Timer: TypeAlias = Callable[[], float]
 async def run_recommendation_pipeline_from_context(
     context: RecommendationContext | None,
     *,
-    # A가 넘기는 사용자 발화 조건. 아직 이 파이프라인은 사용하지 않는다 — 날씨는
-    # context.weather(C가 판정한 3단계)만 쓴다. AVOID/ENJOY면 C가 조회하지 않아
-    # 날씨가 비므로, D가 conditions.weather와 weather_intent로 판정하도록 바꿀 때
-    # 쓸 입력이다(D-051).
+    # A가 넘기는 사용자 발화 조건. weather_intent와 발화 날씨(conditions.weather)를
+    # resolve_weather_condition()에 전달해 D-051 판정(사실+의도)에 쓴다.
+    # AVOID/ENJOY면 C가 날씨를 조회하지 않을 수 있어 그때는 발화 값으로 대신 판정한다.
     conditions: UserConditions | None = None,
     visit_at: datetime,
     search_radius_km: float,
@@ -112,12 +117,13 @@ async def run_recommendation_pipeline_from_context(
         )
 
     candidates = map_context_to_scoring_candidates(context, visit_at=visit_at)
-    resolved_weather_condition = _weather_condition_from_context(context)
+    resolved_weather_condition, weather_reason = resolve_weather_condition(context, conditions)
 
     scoring = score_candidates(
         candidates,
         now=visit_at,
         weather_condition=resolved_weather_condition,
+        weather_reason=weather_reason,
         max_distance_km=search_radius_km,
         shown_place_ids=shown_place_ids,
         rejected_place_ids=rejected_place_ids,
@@ -127,14 +133,12 @@ async def run_recommendation_pipeline_from_context(
     details_missing_place_ids = frozenset(
         place.place_id for place in (places.data or []) if place.operating_schedule is None
     )
-    # context.weather가 아예 없으면 C가 Weather Tool을 실행하지 않았다는 뜻이다
-    # (weather_intent=IGNORE). 값이 있는데 status가 실패인 경우와 구분한다.
     response = _build_response(
         ranked,
         candidates,
         details_missing_place_ids,
         visit_at,
-        weather_ignored=context.weather is None,
+        weather_ignored=_is_weather_explicitly_ignored(context, conditions),
     )
     return response.model_copy(update={"elapsed_ms": round((timer() - started_at) * 1000, 2)})
 
@@ -145,6 +149,7 @@ async def rerank_with_concentration(
     concentration: CandidateEnrichmentResponse,
     *,
     seek: bool,
+    weather_reason: WeatherReason = None,
     timer: Timer = perf_counter,
 ) -> RecommendationResponse:
     """D의 2차 Scoring 진입점(D-040, concentration_intent AVOID/SEEK 전용).
@@ -153,9 +158,15 @@ async def rerank_with_concentration(
     5개로 좁혀진 상태)다. 여기서 새 Candidate를 다시 만들지 않는다 —
     `RecommendationItem.feature_scores`(weather/remaining_operating_time/distance)를
     그대로 재사용한다. concentration과 무관하게 이 값들은 변하지 않기 때문이다.
-    `weather_condition`은 1차 호출과 동일한 기준(`_weather_condition_from_context()`,
-    status `{"success","partial"}`)으로 도출된 값이어야 한다 — 근거 문장을
-    다시 조립하는 데만 쓰고, 점수 자체를 다시 계산하지는 않는다.
+    `weather_condition`/`weather_reason`은 1차 호출과 같은 입력(`context`,
+    `conditions`)으로 `resolve_weather_condition()`을 호출해 얻은 값이어야 한다 —
+    근거 문장을 다시 조립하는 데만 쓰고, 점수 자체를 다시 계산하지는 않는다.
+    호출자가 직접 판정 로직을 다시 구현하면(예: 옛 `to_weather_condition()`을
+    계속 쓰면) 1차와 2차의 판정이 갈라질 수 있다 — 반드시
+    `resolve_weather_condition()`을 통해 같은 값을 재사용해야 한다.
+    `weather_reason`은 기본값 `None`이라, 호출자가 아직 안 넘겨도(현재
+    `agent_runtime.py`가 그렇다) 동작은 그대로 유지되고 근거 문장만
+    `weather_condition` 기반 라벨로 폴백한다.
 
     concentration 결측(C가 해당 후보에 no_data/unavailable을 반환) 처리는
     weather/remaining_operating_time과 동일한 패턴이다 — 그 후보만
@@ -241,6 +252,7 @@ async def rerank_with_concentration(
             distance_km=item.distance_km,
             remaining_minutes=item.remaining_minutes,
             weather_condition=weather_condition,
+            weather_reason=weather_reason,
             environment_type=item.environment_type,
             concentration_level=concentration_level,
         )
@@ -279,13 +291,64 @@ async def rerank_with_concentration(
     )
 
 
-def _weather_condition_from_context(
+def resolve_weather_condition(
     context: RecommendationContext,
-) -> WeatherCondition | None:
+    conditions: UserConditions | None,
+) -> tuple[WeatherCondition | None, WeatherReason]:
+    """D-051: 사실(C 조회) 우선, 없으면 발화 값으로 판정한다.
+
+    `context.weather`가 있으면 그게 C가 실제로 조회한 사실이므로 우선 쓴다 —
+    NO_MENTION 경로뿐 아니라, AVOID/ENJOY인데 발화에서 5단계 값을 못 뽑아 C가
+    대신 조회한 경우(PR #102)도 여기 해당한다. `weather_intent`를 그대로 넘겨서
+    ENJOY의 강수 반전 등 의도 재해석이 두 경로 모두에 적용되게 한다.
+
+    `context.weather`가 없으면(AVOID/ENJOY라 조회를 생략하고 발화 값을 뽑은 경우)
+    `conditions.weather`로 대신 판정한다.
+
+    반환하는 두 번째 값(`WeatherReason`)은 판정 원인(비/눈/폭염/한파)이다 —
+    `WeatherCondition`만으로는 explanation.py가 "왜"를 알 수 없어서 근거 문장
+    조립에 따로 필요하다(scoring.py::RankedCandidate.weather_reason 참고).
+
+    `run_recommendation_pipeline_from_context()`(1차)가 내부에서 쓰는 것과 동일한
+    함수를 `rerank_with_concentration()`(2차) 호출자도 그대로 써야 한다 — 같은
+    `context`/`conditions`에 대해 두 판정이 서로 다른 로직으로 갈라지면 1차 설명과
+    2차 설명이 어긋난다. public으로 둔 이유가 이것이다(D-051 "남은 것" 참고).
+    """
+    weather_intent = conditions.weather_intent if conditions is not None else None
+
     weather = context.weather
-    if weather is None or weather.status not in {"success", "partial"} or weather.data is None:
-        return None
-    return WeatherCondition(weather.data.condition)
+    if weather is not None and weather.status in {"success", "partial"}:
+        data = weather.data
+        if data is not None:
+            return judge_weather_condition_from_facts(
+                data.precipitation, data.sky, data.temperature_celsius, weather_intent
+            )
+
+    if (
+        conditions is not None
+        and conditions.weather_intent in (WeatherIntent.AVOID, WeatherIntent.ENJOY)
+        and conditions.weather is not None
+    ):
+        return judge_weather_condition_from_stated(conditions.weather, conditions.weather_intent)
+
+    return None, None
+
+
+def _is_weather_explicitly_ignored(
+    context: RecommendationContext,
+    conditions: UserConditions | None,
+) -> bool:
+    """weather Feature가 빠졌을 때 "제외했어요"와 "확인 못 했어요" 중 뭘 보여줄지 정한다.
+
+    `conditions`가 있으면 `IGNORE`(상관없다고 명시)만 진짜 opt-out이다. 그 외에
+    weather가 빠졌다면(AVOID/ENJOY인데 발화·조회 둘 다 실패 등) 사용자 선택이
+    아니라 실패이므로 "확인 못 했어요" 쪽이 맞다. `conditions`가 없는 레거시
+    호출자는 그런 구분을 할 수 없어 기존 동작(`context.weather is None`)을 그대로
+    쓴다.
+    """
+    if conditions is not None:
+        return conditions.weather_intent is WeatherIntent.IGNORE
+    return context.weather is None
 
 
 def _build_response(

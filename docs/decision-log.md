@@ -1095,7 +1095,8 @@
 ### D-051 — 날씨는 C가 사실을, D가 판정을 맡는다
 
 - 상태: 사실 전달과 `NO_MENTION` 수용은 `Implemented`(2026-08-05, PR #97),
-  판정 이관과 발화 우선 사용은 `Proposed`(D 확인 중)
+  판정 이관(사실 기반 + 발화 우선)은 `Implemented`(2026-08-05, D). 2차 Scoring
+  배선 정리와 `condition` 필드 제거는 `Proposed`(A/C 확인 중, 아래 "남은 것" 참고)
 - 배경: D-049(`conditions.weather` 미사용)를 확인하다가 날씨 처리 전반을 훑었고,
   서로 얽힌 문제 다섯 개가 나왔다. 하나씩 고치면 다른 하나가 어긋나는 구조라 함께
   정리한다.
@@ -1134,7 +1135,7 @@ C가 판정을 맡으면 `WeatherCondition`의 의미가 "날씨 상태"에서 "
 기상청 코드(PTY/SKY)는 그대로 넘기지 않는다. 코드 체계가 D까지 새면 기상 API를 바꿀 때
 D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 
-#### 완료된 것 (`Implemented`, PR #97)
+#### 완료된 것 (`Implemented`, PR #97, C)
 
 - 계약에 사실 3종 추가: `precipitation`(none/rain/snow/sleet/shower),
   `sky`(clear/cloudy/overcast), `temperature_celsius`
@@ -1142,35 +1143,75 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 - PTY 코드 번역으로 비·눈 구분 가능 (문제 3)
 - `NO_MENTION` 수용과 게이팅 명시화 (문제 4의 C 몫)
 
-**추가만 했다.** `condition`을 그대로 둬서 A의 `to_weather_condition()`, D의 Scoring,
-Fixture 7개가 하나도 바뀌지 않았다. 순서를 나누지 않으면 교착이 생긴다 — C가
-`condition`을 빼면 D가 깨지고, D가 판정하려면 C가 사실을 보내야 한다.
+#### 완료된 것 (`Implemented`, 2026-08-05, D)
+
+- `app/domain/weather_judgment.py` 신설: `judge_weather_condition_from_facts()`
+  (사실 기반, 강수 > 기온 > 하늘 순 판정 + 원인 태깅), `judge_weather_condition_from_stated()`
+  (발화 5단계 기반), 공용 `_apply_intent()`(ENJOY는 원인이 강수(비/눈)인 BAD만
+  GOOD으로 뒤집음 — 문제 1 해소, 기온이 원인인 BAD는 안 뒤집음).
+- PR #102(C)가 `run_recommendation_pipeline_from_context()`에 연 `conditions`
+  파라미터를 받아, `resolve_weather_condition()`(구 `_weather_condition_from_context()`,
+  public으로 전환)이 `context.weather`(사실)를 우선 쓰고 없으면 `conditions.weather`
+  (발화값)로 대체하도록 배선(`recommendation_pipeline.py`). AVOID/ENJOY에서 발화
+  날씨가 조용히 빠지던 문제(PR #102가 부분 해결)가 완전히 해소된다.
+- `weather_ignored` 판별도 함께 정리: `conditions`가 있으면 `IGNORE`만 "제외했어요"
+  문구를 쓰고, 그 외 날씨 결측은 전부 "확인 못 했어요"로.
+- `resolve_weather_condition(context, conditions)`을 **public 함수로 노출**했다 —
+  1차 Scoring 내부에서만 쓰던 걸 2차 Scoring 호출자(A, `agent_runtime.py`)도 같은
+  판정을 재사용할 수 있게 하려는 목적이다(아래 "남은 것" 참고). Fixture 검증
+  테스트(`test_recommendation_context_fixture_quality.py`)도 이 함수를 직접
+  import해서 쓰도록 정리해, 판정 로직 중복을 없앴다.
+- 테스트: `tests/test_weather_judgment.py`(판정 함수 전수), `tests/test_recommendation_pipeline.py`
+  (사실/발화/ENJOY 반전/IGNORE-vs-실패 케이스), Context Fixture 4종에 `precipitation`/
+  `sky` 보강.
+- **근거 문장이 원인(비/눈/폭염/한파)까지 정확히 말하게 수정**(2026-08-05 검수에서
+  발견). `explanation.py`가 `weather_condition`만 보고 라벨을 골랐는데, 이러면
+  ENJOY 반전으로 비인데 GOOD이 된 경우 "맑은 날씨"라고 말하고, 폭염/한파로 BAD가
+  된 경우도 전부 "비 예보"라고 말하는 사실-근거 불일치가 있었다(온도가 판정에
+  없던 시절엔 BAD=강수뿐이라 문제없었지만, 이번에 온도를 판정에 추가하면서
+  새로 생겼다). 판정 함수가 `(WeatherCondition, WeatherReason)` 튜플을 반환하도록
+  바꾸고(`WeatherReason` = rain/snow/heat/cold — 강수는 sleet/shower를 rain으로
+  뭉치고 snow만 구분), `scoring.py::RankedCandidate`/`evidence.py::RecommendationEvidence`에
+  `weather_reason`을 실어 `explanation.py`까지 관통시켰다. reason이 있으면 그걸로
+  라벨을 고르고(비/눈/폭염/한파 예보), 없으면(맑음/흐림, 발화 GOOD) 기존
+  `weather_condition` 기반 라벨로 폴백한다.
+- **기온 판정을 주의보/경보 2단계로 재설계**(2026-08-05). 원래는 폭염주의보/
+  한파주의보 기준(33°C/-12°C) 하나만 넘으면 BAD, 아니면 곧바로 하늘 상태로
+  판정했다 — 그 사이 완충 NEUTRAL 구간을 안 뒀는데, 처음엔 28°C/0°C 같은 근거
+  없는 값을 새로 만들지 않으려는 선택이었다. 재검수하면서 기상청 실제 특보
+  단계(폭염주의보 33°C/경보 35°C, 한파주의보 -12°C/경보 -15°C)를 확인했고, 이
+  경계를 그대로 가져와 3단계로 나눴다: 주의보 미만은 기존처럼 하늘 상태로 판정,
+  주의보 이상~경보 미만은 NEUTRAL, 경보 이상만 BAD. 두 경계 모두 임의값이
+  아니라 공식 등급이라 "근거 없는 완충"이라는 원래 문제를 재현하지 않는다.
+  다만 이 변경은 부분적이다 — 30~32°C처럼 주의보 미만인 "그냥 더운 날"은
+  여전히 하늘 상태로만 판정되어 맑으면 GOOD이다. 그 구간까지 다루려면 다시
+  근거 없는 임의값이 필요해지므로 의도적으로 남겨뒀다(날씨 Feature 가중치가
+  40%로 가장 크고 GOOD/BAD 낙차가 outdoor 기준 0.7점이라, 이 트레이드오프가
+  순위에 미치는 영향은 결코 작지 않다는 걸 인지하고 있다).
 
 #### 남은 것 (`Proposed`)
 
-- **D가 사실 기반 판정으로 전환** → 그 후 C가 `condition` 제거 (문제 1 해소)
-- **조회 게이팅 3분기**
-
-  | 상황 | C 조회 | D 날씨 점수 |
-  | --- | --- | --- |
-  | 발화에 날씨 있음 | 안 함 | 발화 값으로 계산 |
-  | 발화에 날씨 없음(`NO_MENTION`) | 조회 | API 값으로 계산 |
-  | "상관없어" 명시(`IGNORE`) | 안 함 | 제외 → 가중치 재분배 |
-
-  첫 줄이 D-049의 미결(`conditions.weather` 미사용)에 역할을 준다. 다만 **C만 먼저
-  적용하면 안 된다** — 조회를 생략하면 `context.weather`가 `null`이 되어 D가 날씨를
-  계산에서 빼고, "날씨 조건을 따로 말씀하지 않으셔서 반영하지 않았어요"라는 잘못된
-  안내가 나간다(`recommendation_pipeline.py:349-350`). D가 `conditions.weather`를 읽는
-  것과 한 묶음으로 가야 한다.
+- **2차 Scoring(`rerank_with_concentration()`) 배선 불일치** — `agent_runtime.py:218-223`
+  (A 소유)이 여전히 구버전 `to_weather_condition()`(condition 필드만 읽음)으로 값을
+  따로 계산해서 넘긴다. D가 `resolve_weather_condition()`을 public으로 열어뒀으니,
+  A가 이 함수를 1차와 동일한 `context`/`conditions`로 호출해 재사용하면 정리된다.
+  지금은 두 값이 우연히 같은 경우가 많지만, ENJOY 반전이나 폭염/한파 케이스에서는
+  1차/2차 설명이 어긋날 수 있다. `rerank_with_concentration()`은 `weather_reason`도
+  키워드 전용 기본값 `None`으로 이미 받게 해뒀다 — A가 넘기기 전까지는 2차 근거
+  문장이 `weather_condition` 기반 라벨로 폴백된다(동작은 유지, 문구만 아직 원인
+  미반영).
+- **`WeatherForecast.condition` 필드 제거** — D가 더 이상 안 읽지만, C가 아직 필드
+  자체를 지우지 않았다(하위호환 유지 중으로 추정, C 확인 필요). `to_weather_condition()`
+  (구버전)도 이때 함께 정리 대상.
 - **`conditions.environment` 처리 방침** (문제 5) — 살릴지 제거할지 미정
 - **`tool_intelligence` 계약의 `precipitation_type`** — 기상청 코드가 원문으로 노출돼
   있다. 이번 범위에 넣지 않았다.
 
 #### 확인 필요
 
-- D: 판정 이관 동의 여부, 의도별 판정 규칙, 기온 임계값·구간
-- A: 발화 우선 사용 시 "사용자 말과 API 값이 다를 때" 방침(D-049 미결 질문).
-  3분기를 채택하면 "발화가 있으면 발화 우선"으로 자연히 정해진다
+- A: 2차 Scoring의 `weather_condition` 계산을 `resolve_weather_condition()` 재사용으로
+  통일할지
+- C: `WeatherForecast.condition` 필드를 지금 제거해도 되는지(다른 소비처 남았는지)
 
 ### D-052 — Gemini 동일 벤더 내 모델 fallback (`LLM_FALLBACK_MODEL_NAMES`)
 
@@ -1264,3 +1305,6 @@ Fixture 7개가 하나도 바뀌지 않았다. 순서를 나누지 않으면 교
 | 2026-08-05 | 혼잡도 실서버 E2E 검증 문서(`concentration-e2e-verification.md`) 작성. D-050으로 혼잡도 2차 Scoring 결과의 순서만 B에 저장되고 점수/등급 값은 저장 안 됨을 기록(코드 미변경) |
 | 2026-08-05 | D-051 날씨 사실/판정 분리 — C의 사실 전달과 `NO_MENTION` 수용 구현, 판정 이관은 D 확인 대기 |
 | 2026-08-05 | D-052 Gemini 동일 벤더 내 모델 fallback(`LLM_FALLBACK_MODEL_NAMES`) 구현 + AppError 전파 경로 로깅 추가(무로그 502 문제 해결) |
+| 2026-08-05 | D-051 판정 이관 구현 완료 — `weather_judgment.py` 신설(사실/발화 기반 판정 + 의도 재해석), `recommendation_pipeline.py`가 PR #102의 `conditions` 파라미터를 받아 사실 우선·발화 폴백으로 배선, `resolve_weather_condition()` public 전환(2차 Scoring 재사용용), `weather_ignored` 판별을 IGNORE 전용으로 정정. 2차 Scoring 배선 통일과 `condition` 필드 제거는 남은 것으로 기록 |
+| 2026-08-05 | D-051 근거 문장 정확도 수정 — 판정 함수가 `WeatherReason`(rain/snow/heat/cold)을 함께 반환하도록 바꾸고 `scoring.py`/`evidence.py`/`explanation.py`까지 관통시켜, "폭염인데 비 예보"·"ENJOY로 GOOD인데 맑은 날씨"라고 말하던 사실-근거 불일치를 해소 |
+| 2026-08-05 | D-051 기온 판정을 기상청 주의보/경보 2단계(33·35°C, -12·-15°C)로 재설계 — 주의보~경보 사이를 NEUTRAL로 두어 근거 있는 완충 구간 확보. 30~32°C 등 주의보 미만 구간은 의도적으로 미해결로 남김 |

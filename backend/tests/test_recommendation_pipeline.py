@@ -75,7 +75,11 @@ async def test_pipeline_from_context_builds_recommendation_with_explanations() -
         location=_context_location(),
         weather=AgentContextValue(
             status="success",
-            data=WeatherForecast(condition="bad", forecast_for=_CONTEXT_VISIT_AT),
+            data=WeatherForecast(
+                condition="bad",
+                forecast_for=_CONTEXT_VISIT_AT,
+                precipitation="rain",
+            ),
         ),
         places=AgentContextValue(status="success", data=[_context_place()]),
     )
@@ -115,12 +119,12 @@ async def test_pipeline_from_context_reports_weather_ignored_when_not_requested(
 
 
 @pytest.mark.asyncio
-async def test_pipeline_accepts_conditions_without_using_them_yet() -> None:
-    """A가 넘긴 conditions를 받되 아직 날씨 판정에는 쓰지 않는다.
+async def test_pipeline_uses_stated_weather_when_context_weather_missing() -> None:
+    """context.weather가 없어도(AVOID/ENJOY라 C가 조회를 생략) 발화 값으로 판정한다.
 
-    D가 conditions.weather와 weather_intent로 판정하도록 바꿀 때 쓸 입력이다(D-051).
-    지금은 전달 경로만 열어두고, 넘겨도 기존 동작(context.weather 사용)이 바뀌지
-    않는 것을 고정한다.
+    D-051 판정 이관: RAIN + AVOID는 그대로 BAD, 카페(environment_type=unknown)라
+    weather Feature는 BAD/unknown 조합 점수(0.60)가 된다(scoring.py
+    `_WEATHER_FIT_TABLE`).
     """
     context = RecommendationContext(
         location=_context_location(),
@@ -130,17 +134,76 @@ async def test_pipeline_accepts_conditions_without_using_them_yet() -> None:
 
     response = await run_recommendation_pipeline_from_context(
         context,
-        conditions=UserConditions(
-            weather_intent=WeatherIntent.AVOID, weather=StatedWeather.RAIN
-        ),
+        conditions=UserConditions(weather_intent=WeatherIntent.AVOID, weather=StatedWeather.RAIN),
         visit_at=_CONTEXT_VISIT_AT,
         search_radius_km=2.0,
     )
 
-    # context.weather가 없으므로 날씨 Feature는 빠진다 — 발화 값을 쓰지 않는다.
     item = response.recommendations[0]
-    assert item.feature_scores["weather"] is None
-    assert "weather" not in item.weights_used
+    assert item.feature_scores["weather"] == 0.60
+    assert item.weights_used["weather"] > 0
+
+
+@pytest.mark.asyncio
+async def test_pipeline_enjoy_flips_rain_to_good() -> None:
+    """ENJOY + RAIN은 D-051 의도 재해석으로 GOOD이 된다("비 오는 날 산책하고 싶어")."""
+    context = RecommendationContext(
+        location=_context_location(),
+        weather=None,
+        places=AgentContextValue(status="success", data=[_context_place()]),
+    )
+
+    response = await run_recommendation_pipeline_from_context(
+        context,
+        conditions=UserConditions(weather_intent=WeatherIntent.ENJOY, weather=StatedWeather.RAIN),
+        visit_at=_CONTEXT_VISIT_AT,
+        search_radius_km=2.0,
+    )
+
+    item = response.recommendations[0]
+    assert item.feature_scores["weather"] == 0.85  # GOOD + unknown
+
+
+@pytest.mark.asyncio
+async def test_pipeline_avoid_without_stated_or_fetched_weather_reports_failure() -> None:
+    """AVOID인데 발화도 못 뽑고 폴백 조회도 실패하면 opt-out이 아니라 실패다."""
+    context = RecommendationContext(
+        location=_context_location(),
+        weather=None,
+        places=AgentContextValue(status="success", data=[_context_place()]),
+    )
+
+    response = await run_recommendation_pipeline_from_context(
+        context,
+        conditions=UserConditions(weather_intent=WeatherIntent.AVOID, weather=None),
+        visit_at=_CONTEXT_VISIT_AT,
+        search_radius_km=2.0,
+    )
+
+    warnings = response.recommendations[0].warnings
+    assert _WEATHER_MISSING_WARNING in warnings
+    assert _WEATHER_IGNORED_WARNING not in warnings
+
+
+@pytest.mark.asyncio
+async def test_pipeline_reports_ignored_when_conditions_say_ignore() -> None:
+    """conditions가 있을 때는 IGNORE만 "제외했어요" 문구를 쓴다."""
+    context = RecommendationContext(
+        location=_context_location(),
+        weather=None,
+        places=AgentContextValue(status="success", data=[_context_place()]),
+    )
+
+    response = await run_recommendation_pipeline_from_context(
+        context,
+        conditions=UserConditions(weather_intent=WeatherIntent.IGNORE),
+        visit_at=_CONTEXT_VISIT_AT,
+        search_radius_km=2.0,
+    )
+
+    warnings = response.recommendations[0].warnings
+    assert _WEATHER_IGNORED_WARNING in warnings
+    assert _WEATHER_MISSING_WARNING not in warnings
 
 
 @pytest.mark.asyncio
@@ -265,7 +328,12 @@ async def test_pipeline_from_context_is_deterministic_for_identical_input() -> N
         location=_context_location(),
         weather=AgentContextValue(
             status="success",
-            data=WeatherForecast(condition="good", forecast_for=_CONTEXT_VISIT_AT),
+            data=WeatherForecast(
+                condition="good",
+                forecast_for=_CONTEXT_VISIT_AT,
+                precipitation="none",
+                sky="clear",
+            ),
         ),
         places=AgentContextValue(
             status="success",

@@ -30,7 +30,9 @@
       "data": {
         "condition": "good",
         "forecast_for": "2026-08-15T11:00:00+09:00",
-        "temperature_celsius": 28.0
+        "temperature_celsius": 28.0,
+        "precipitation": "none",
+        "sky": "clear"
       },
       "error": null,
       "warnings": [],
