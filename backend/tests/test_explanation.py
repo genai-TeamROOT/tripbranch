@@ -31,16 +31,14 @@ from app.domain.scoring import (
 
 def _explanations_by_place_id(candidates, **kwargs) -> dict[str, tuple[str, ...]]:
     result = score_candidates(candidates, now=NOW, **kwargs)
-    return {
-        ranked.place_id: build_explanations(build_evidence(ranked))
-        for ranked in result.ranked
-    }
+    return {ranked.place_id: build_explanations(build_evidence(ranked)) for ranked in result.ranked}
 
 
 def test_baseline_all_features_present_explanations() -> None:
     explanations = _explanations_by_place_id(
         (_MUSEUM_OPEN, _CAFE_CLOSING_SOON, _RESTAURANT_FAR),
         weather_condition=WeatherCondition.BAD,
+        weather_reason="rain",
         max_distance_km=1.5,
     )
 
@@ -96,9 +94,7 @@ def test_operating_hours_unknown_orders_by_contribution() -> None:
 
 def test_explanations_are_deterministic_for_identical_input() -> None:
     kwargs = dict(weather_condition=WeatherCondition.BAD, max_distance_km=1.5)
-    first = _explanations_by_place_id(
-        (_MUSEUM_OPEN, _CAFE_CLOSING_SOON, _RESTAURANT_FAR), **kwargs
-    )
+    first = _explanations_by_place_id((_MUSEUM_OPEN, _CAFE_CLOSING_SOON, _RESTAURANT_FAR), **kwargs)
     second = _explanations_by_place_id(
         (_MUSEUM_OPEN, _CAFE_CLOSING_SOON, _RESTAURANT_FAR), **kwargs
     )
@@ -226,11 +222,14 @@ def _single_weather_candidate(environment_type: str) -> ScoringCandidate:
 
 
 def _weather_explanation(
-    weather_condition: WeatherCondition, environment_type: str
+    weather_condition: WeatherCondition,
+    environment_type: str,
+    weather_reason: str | None = None,
 ) -> tuple[str, ...]:
     explanations = _explanations_by_place_id(
         (_single_weather_candidate(environment_type),),
         weather_condition=weather_condition,
+        weather_reason=weather_reason,
         max_distance_km=1.0,
     )
     return explanations["weather"]
@@ -255,7 +254,7 @@ def test_weather_environment_combinations_at_or_above_threshold() -> None:
     assert _weather_explanation(WeatherCondition.NEUTRAL, "unknown") == (
         "무난한 날씨에 적합한 장소예요.",
     )
-    assert _weather_explanation(WeatherCondition.BAD, "indoor") == (
+    assert _weather_explanation(WeatherCondition.BAD, "indoor", "rain") == (
         "비 예보에 적합한 실내 장소예요.",
     )
 
@@ -263,8 +262,32 @@ def test_weather_environment_combinations_at_or_above_threshold() -> None:
 def test_weather_environment_combinations_below_threshold_are_omitted() -> None:
     # BAD+outdoor(0.30), BAD+unknown(0.60) 둘 다 임계값(0.7) 미만이라
     # 문장이 아예 생성되지 않는다.
-    assert _weather_explanation(WeatherCondition.BAD, "outdoor") == ()
-    assert _weather_explanation(WeatherCondition.BAD, "unknown") == ()
+    assert _weather_explanation(WeatherCondition.BAD, "outdoor", "rain") == ()
+    assert _weather_explanation(WeatherCondition.BAD, "unknown", "rain") == ()
+
+
+def test_weather_reason_picks_label_over_condition() -> None:
+    """weather_reason이 있으면 weather_condition 라벨 대신 원인별 문구를 쓴다.
+
+    2026-08-05 검수에서 발견한 문제의 회귀 테스트: weather_condition만 보면
+    ENJOY로 GOOD이 된 비/눈도 "맑은 날씨"라고 말했고, 폭염/한파로 BAD가 된
+    경우도 전부 "비 예보"라고 말했다 — 둘 다 사실과 어긋난다.
+    """
+    # ENJOY로 GOOD이 됐어도 원래 원인(비)을 그대로 말한다 — "맑은 날씨" 아님.
+    assert _weather_explanation(WeatherCondition.GOOD, "outdoor", "rain") == (
+        "비 예보에 적합한 야외 장소예요.",
+    )
+    # 눈은 비와 다른 낱말을 쓴다.
+    assert _weather_explanation(WeatherCondition.BAD, "indoor", "snow") == (
+        "눈 예보에 적합한 실내 장소예요.",
+    )
+    # 폭염/한파로 인한 BAD는 "비 예보"가 아니라 각각 다른 문구를 쓴다.
+    assert _weather_explanation(WeatherCondition.BAD, "indoor", "heat") == (
+        "폭염 예보에 적합한 실내 장소예요.",
+    )
+    assert _weather_explanation(WeatherCondition.BAD, "indoor", "cold") == (
+        "한파 예보에 적합한 실내 장소예요.",
+    )
 
 
 # --- 혼잡도(concentration) 문장 (D-040, 2차 Scoring 전용) ----------------------

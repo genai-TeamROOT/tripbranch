@@ -182,10 +182,12 @@ async def test_evidence_matches_final_score_and_ranking(case: ContextFixtureCase
         return
 
     candidates = map_context_to_scoring_candidates(context, visit_at=case.visit_at)
+    weather_condition, weather_reason = resolve_weather_condition(context, None)
     scoring = score_candidates(
         candidates,
         now=case.visit_at,
-        weather_condition=resolve_weather_condition(context, None),
+        weather_condition=weather_condition,
+        weather_reason=weather_reason,
         max_distance_km=case.search_radius_km,
         shown_place_ids=case.shown_place_ids,
         rejected_place_ids=case.rejected_place_ids,
