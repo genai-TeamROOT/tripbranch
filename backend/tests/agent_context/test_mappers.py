@@ -170,8 +170,83 @@ def test_maps_weather_success_without_inventing_temperature() -> None:
     assert context.status == "success"
     assert context.data is not None
     assert context.data.condition == "neutral"
+    # Tool 결과에 기온이 없으면 만들어내지 않는다.
     assert context.data.temperature_celsius is None
     assert context.data.forecast_for == RETRIEVED_AT
+    # 기상청 코드를 그대로 넘기지 않고 도메인 용어로 옮긴다(D-051 제안).
+    assert context.data.precipitation == "none"
+    assert context.data.sky == "cloudy"
+
+
+def test_maps_weather_facts_without_judging_them() -> None:
+    """C는 사실만 옮기고 좋다/나쁘다 판정은 하지 않는다.
+
+    비(PTY=1)는 지금 condition=bad로도 오지만, 사용자가 비를 즐기려는 경우
+    (weather_intent=ENJOY) 그 판정이 뒤집혀야 한다. 판정 근거가 되는 사실을 D가
+    받아야 그 전환이 가능하다.
+    """
+    result = WeatherForecastToolResult(
+        status=ToolStatus.SUCCESS,
+        forecast=SelectedWeatherForecast(
+            latitude=37.5796,
+            longitude=126.977,
+            grid_x=60,
+            grid_y=127,
+            requested_visit_at=RETRIEVED_AT,
+            forecast_for=RETRIEVED_AT,
+            condition=WeatherCondition.BAD,
+            sky_code="1",
+            precipitation_type="1",
+            data_type="forecast",
+            observed_at=None,
+            retrieved_at=RETRIEVED_AT,
+            timezone="Asia/Seoul",
+            timezone_assumed=False,
+            selection_method=ForecastSelectionMethod.NEAREST,
+            temperature_celsius=35.0,
+        ),
+        error=None,
+        provider_metadata=(_metadata(ProviderSource.KMA_ULTRA_SHORT_FORECAST),),
+    )
+
+    context = map_weather_context(result)
+
+    assert context.data is not None
+    assert context.data.precipitation == "rain"
+    assert context.data.sky == "clear"
+    assert context.data.temperature_celsius == 35.0
+
+
+def test_maps_unknown_weather_codes_to_none() -> None:
+    """기상청이 새 코드를 추가해도 ValidationError로 요청을 깨지 않는다."""
+    result = WeatherForecastToolResult(
+        status=ToolStatus.SUCCESS,
+        forecast=SelectedWeatherForecast(
+            latitude=37.5796,
+            longitude=126.977,
+            grid_x=60,
+            grid_y=127,
+            requested_visit_at=RETRIEVED_AT,
+            forecast_for=RETRIEVED_AT,
+            condition=WeatherCondition.NEUTRAL,
+            sky_code="9",
+            precipitation_type="9",
+            data_type="forecast",
+            observed_at=None,
+            retrieved_at=RETRIEVED_AT,
+            timezone="Asia/Seoul",
+            timezone_assumed=False,
+            selection_method=ForecastSelectionMethod.NEAREST,
+        ),
+        error=None,
+        provider_metadata=(_metadata(ProviderSource.KMA_ULTRA_SHORT_FORECAST),),
+    )
+
+    context = map_weather_context(result)
+
+    assert context.data is not None
+    assert context.data.precipitation is None
+    assert context.data.sky is None
 
 
 def test_maps_weather_timeout_to_non_blocking_context_error() -> None:
