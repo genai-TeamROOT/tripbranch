@@ -26,12 +26,17 @@ from app.domain.scoring import (
     redistribute_weights,
     score_candidates,
 )
+from app.domain.weather_judgment import (
+    judge_weather_condition_from_facts,
+    judge_weather_condition_from_stated,
+)
 from app.errors import AppError
 from app.recommendation_limits import DEFAULT_RECOMMENDATION_RESULT_LIMIT
 from app.schemas import (
     RecommendationItem,
     RecommendationResponse,
     UserConditions,
+    WeatherIntent,
 )
 
 _OPERATING_HOURS_UNVERIFIED_WARNING = "방문 전에 운영 여부를 확인해주세요."
@@ -53,10 +58,9 @@ Timer: TypeAlias = Callable[[], float]
 async def run_recommendation_pipeline_from_context(
     context: RecommendationContext | None,
     *,
-    # A가 넘기는 사용자 발화 조건. 아직 이 파이프라인은 사용하지 않는다 — 날씨는
-    # context.weather(C가 판정한 3단계)만 쓴다. AVOID/ENJOY면 C가 조회하지 않아
-    # 날씨가 비므로, D가 conditions.weather와 weather_intent로 판정하도록 바꿀 때
-    # 쓸 입력이다(D-051).
+    # A가 넘기는 사용자 발화 조건. weather_intent와 발화 날씨(conditions.weather)를
+    # _weather_condition_from_context()에 전달해 D-051 판정(사실+의도)에 쓴다.
+    # AVOID/ENJOY면 C가 날씨를 조회하지 않을 수 있어 그때는 발화 값으로 대신 판정한다.
     conditions: UserConditions | None = None,
     visit_at: datetime,
     search_radius_km: float,
@@ -112,7 +116,7 @@ async def run_recommendation_pipeline_from_context(
         )
 
     candidates = map_context_to_scoring_candidates(context, visit_at=visit_at)
-    resolved_weather_condition = _weather_condition_from_context(context)
+    resolved_weather_condition = _weather_condition_from_context(context, conditions)
 
     scoring = score_candidates(
         candidates,
@@ -127,14 +131,12 @@ async def run_recommendation_pipeline_from_context(
     details_missing_place_ids = frozenset(
         place.place_id for place in (places.data or []) if place.operating_schedule is None
     )
-    # context.weather가 아예 없으면 C가 Weather Tool을 실행하지 않았다는 뜻이다
-    # (weather_intent=IGNORE). 값이 있는데 status가 실패인 경우와 구분한다.
     response = _build_response(
         ranked,
         candidates,
         details_missing_place_ids,
         visit_at,
-        weather_ignored=context.weather is None,
+        weather_ignored=_is_weather_explicitly_ignored(context, conditions),
     )
     return response.model_copy(update={"elapsed_ms": round((timer() - started_at) * 1000, 2)})
 
@@ -281,11 +283,57 @@ async def rerank_with_concentration(
 
 def _weather_condition_from_context(
     context: RecommendationContext,
+    conditions: UserConditions | None,
 ) -> WeatherCondition | None:
+    """D-051: 사실(C 조회) 우선, 없으면 발화 값으로 판정한다.
+
+    `context.weather`가 있으면 그게 C가 실제로 조회한 사실이므로 우선 쓴다 —
+    NO_MENTION 경로뿐 아니라, AVOID/ENJOY인데 발화에서 5단계 값을 못 뽑아 C가
+    대신 조회한 경우(PR #102)도 여기 해당한다. `weather_intent`를 그대로 넘겨서
+    ENJOY의 강수 반전 등 의도 재해석이 두 경로 모두에 적용되게 한다.
+
+    `context.weather`가 없으면(AVOID/ENJOY라 조회를 생략하고 발화 값을 뽑은 경우)
+    `conditions.weather`로 대신 판정한다.
+    """
+    weather_intent = conditions.weather_intent if conditions is not None else None
+
     weather = context.weather
-    if weather is None or weather.status not in {"success", "partial"} or weather.data is None:
-        return None
-    return WeatherCondition(weather.data.condition)
+    weather_available = (
+        weather is not None
+        and weather.status in {"success", "partial"}
+        and weather.data is not None
+    )
+    if weather_available:
+        data = weather.data
+        return judge_weather_condition_from_facts(
+            data.precipitation, data.sky, data.temperature_celsius, weather_intent
+        )
+
+    if (
+        conditions is not None
+        and conditions.weather_intent in (WeatherIntent.AVOID, WeatherIntent.ENJOY)
+        and conditions.weather is not None
+    ):
+        return judge_weather_condition_from_stated(conditions.weather, conditions.weather_intent)
+
+    return None
+
+
+def _is_weather_explicitly_ignored(
+    context: RecommendationContext,
+    conditions: UserConditions | None,
+) -> bool:
+    """weather Feature가 빠졌을 때 "제외했어요"와 "확인 못 했어요" 중 뭘 보여줄지 정한다.
+
+    `conditions`가 있으면 `IGNORE`(상관없다고 명시)만 진짜 opt-out이다. 그 외에
+    weather가 빠졌다면(AVOID/ENJOY인데 발화·조회 둘 다 실패 등) 사용자 선택이
+    아니라 실패이므로 "확인 못 했어요" 쪽이 맞다. `conditions`가 없는 레거시
+    호출자는 그런 구분을 할 수 없어 기존 동작(`context.weather is None`)을 그대로
+    쓴다.
+    """
+    if conditions is not None:
+        return conditions.weather_intent is WeatherIntent.IGNORE
+    return context.weather is None
 
 
 def _build_response(
