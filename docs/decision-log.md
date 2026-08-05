@@ -1147,9 +1147,8 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 
 - `app/domain/weather_judgment.py` 신설: `judge_weather_condition_from_facts()`
   (사실 기반, 강수 > 기온 > 하늘 순 판정 + 원인 태깅), `judge_weather_condition_from_stated()`
-  (발화 5단계 기반), 공용 `_apply_intent()`(ENJOY는 원인이 `precipitation`인 BAD만
-  GOOD으로 뒤집음 — 문제 1 해소). 기온 임계값은 폭염주의보/한파주의보 기준(33°C/
-  -12°C)만 쓰고 근거 없는 완충 구간은 두지 않는다.
+  (발화 5단계 기반), 공용 `_apply_intent()`(ENJOY는 원인이 강수(비/눈)인 BAD만
+  GOOD으로 뒤집음 — 문제 1 해소, 기온이 원인인 BAD는 안 뒤집음).
 - PR #102(C)가 `run_recommendation_pipeline_from_context()`에 연 `conditions`
   파라미터를 받아, `resolve_weather_condition()`(구 `_weather_condition_from_context()`,
   public으로 전환)이 `context.weather`(사실)를 우선 쓰고 없으면 `conditions.weather`
@@ -1176,6 +1175,19 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `weather_reason`을 실어 `explanation.py`까지 관통시켰다. reason이 있으면 그걸로
   라벨을 고르고(비/눈/폭염/한파 예보), 없으면(맑음/흐림, 발화 GOOD) 기존
   `weather_condition` 기반 라벨로 폴백한다.
+- **기온 판정을 주의보/경보 2단계로 재설계**(2026-08-05). 원래는 폭염주의보/
+  한파주의보 기준(33°C/-12°C) 하나만 넘으면 BAD, 아니면 곧바로 하늘 상태로
+  위임했다 — 그 사이 완충 NEUTRAL 구간을 안 뒀는데, 처음엔 28°C/0°C 같은 근거
+  없는 값을 새로 만들지 않으려는 선택이었다. 재검수하면서 기상청 실제 특보
+  단계(폭염주의보 33°C/경보 35°C, 한파주의보 -12°C/경보 -15°C)를 확인했고, 이
+  경계를 그대로 가져와 3단계로 나눴다: 주의보 미만은 기존처럼 하늘에 위임,
+  주의보 이상~경보 미만은 NEUTRAL, 경보 이상만 BAD. 두 경계 모두 임의값이
+  아니라 공식 등급이라 "근거 없는 완충"이라는 원래 문제를 재현하지 않는다.
+  다만 이 변경은 부분적이다 — 30~32°C처럼 주의보 미만인 "그냥 더운 날"은
+  여전히 하늘 상태로만 판정되어 맑으면 GOOD이다. 그 구간까지 다루려면 다시
+  근거 없는 임의값이 필요해지므로 의도적으로 남겨뒀다(날씨 Feature 가중치가
+  40%로 가장 크고 GOOD/BAD 낙차가 outdoor 기준 0.7점이라, 이 트레이드오프가
+  순위에 미치는 영향은 결코 작지 않다는 걸 인지하고 있다).
 
 #### 남은 것 (`Proposed`)
 
@@ -1295,3 +1307,4 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-05 | D-052 Gemini 동일 벤더 내 모델 fallback(`LLM_FALLBACK_MODEL_NAMES`) 구현 + AppError 전파 경로 로깅 추가(무로그 502 문제 해결) |
 | 2026-08-05 | D-051 판정 이관 구현 완료 — `weather_judgment.py` 신설(사실/발화 기반 판정 + 의도 재해석), `recommendation_pipeline.py`가 PR #102의 `conditions` 파라미터를 받아 사실 우선·발화 폴백으로 배선, `resolve_weather_condition()` public 전환(2차 Scoring 재사용용), `weather_ignored` 판별을 IGNORE 전용으로 정정. 2차 Scoring 배선 통일과 `condition` 필드 제거는 남은 것으로 기록 |
 | 2026-08-05 | D-051 근거 문장 정확도 수정 — 판정 함수가 `WeatherReason`(rain/snow/heat/cold)을 함께 반환하도록 바꾸고 `scoring.py`/`evidence.py`/`explanation.py`까지 관통시켜, "폭염인데 비 예보"·"ENJOY로 GOOD인데 맑은 날씨"라고 말하던 사실-근거 불일치를 해소 |
+| 2026-08-05 | D-051 기온 판정을 기상청 주의보/경보 2단계(33·35°C, -12·-15°C)로 재설계 — 주의보~경보 사이를 NEUTRAL로 두어 근거 있는 완충 구간 확보. 30~32°C 등 주의보 미만 구간은 의도적으로 미해결로 남김 |
