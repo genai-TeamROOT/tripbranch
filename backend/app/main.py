@@ -27,6 +27,7 @@ from app.routes.chat import router as chat_router
 from app.routes.health import router as health_router
 from app.routes.interpret import router as interpret_router
 from app.routes.recommendations import router as recommendations_router
+from app.routes.state import router as state_router
 
 # uvicorn이 핸들러를 붙여둔 logger를 그대로 쓴다 — 앱 전용 logger를 만들면 별도
 # 로깅 설정 없이는 서버 콘솔에 아무것도 보이지 않는다.
@@ -110,6 +111,7 @@ def create_app() -> FastAPI:
     app.include_router(recommendations_router, prefix="/api")
     app.include_router(agent_router, prefix="/api")
     app.include_router(chat_router, prefix="/api")
+    app.include_router(state_router, prefix="/api")
     return app
 
 
