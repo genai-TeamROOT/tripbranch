@@ -264,6 +264,7 @@ async def test_pipeline_from_context_is_deterministic_for_identical_input() -> N
 # 둘 다 결측(None)으로 고정해 순수하게 "distance vs concentration"만으로
 # 재순위가 실제로 뒤집히는지 검증한다.
 
+
 def _first_pass_item(
     place_id: str, *, distance_km: float, distance_score: float
 ) -> RecommendationItem:

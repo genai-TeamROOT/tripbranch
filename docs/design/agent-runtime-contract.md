@@ -317,11 +317,14 @@ D 내부(`candidate_mapper`/`scoring`/`evidence`/`explanation`)는 직접 import
 
 **✅ 2026-08-02 D 확인 완료·구현 완료(D-040)**: `concentration_intent`가
 `AVOID`/`SEEK`이면 `recommend()` 시그니처는 그대로 두고, 별도 신규 메서드
-`RecommendationProvider.rerank_with_concentration(conditions, context, first_pass,
+`RecommendationProvider.rerank_with_concentration(conditions, weather_condition, first_pass,
 concentration)`를 추가로 호출하는 구조로 확정됐다(§6.5.2) — 1차는 이 `recommend()`
 그대로(10개, `recommendation_limit=5`), 2차는 `rerank_with_concentration()`이
 1차 상위 5개 + concentration을 받아 재순위를 계산한다(`real_recommendation_provider.py`
-구현 완료). `null`/`IGNORE`는 여전히 `recommend()` 1회만 호출된다.
+구현 완료). `null`/`IGNORE`는 여전히 `recommend()` 1회만 호출된다. 2번째 파라미터는
+처음엔 `context: RecommendationContext` 전체였으나, 함수 내부에서 실제로 쓰는 값이
+`weather_condition` 하나뿐이라 D가 `weather_condition: WeatherCondition | None`으로
+좁혔다(D 구현 완료, A 쪽 반영은 §6.5.2 참고).
 
 ### 4.4 D→B: 노출 결과 기록
 
@@ -567,10 +570,13 @@ sequenceDiagram
   제안 단계 블록 참고). `null`/`IGNORE`는 여전히 1회.
 - 1차 호출은 새로 만들 게 없다(기존 `RealRecommendationProvider.recommend()`
   그대로). 2차 호출용 D 신규 인터페이스 `rerank_with_concentration(conditions,
-  context, first_pass, concentration)`은 구현 완료됐다 — `context` 파라미터는
-  D가 A에 추가 요청해서 붙었다(날씨 근거 문장을 1차와 동일하게 재구성하기
-  위함, `protocols.py`/`real_recommendation_provider.py`/`stubs.py`/
-  `agent_runtime.py` 전부 반영).
+  weather_condition, first_pass, concentration)`은 구현 완료됐다 — 처음엔
+  `context` 전체를 받았다(날씨 근거 문장을 1차와 동일하게 재구성하기 위해
+  D가 A에 추가 요청해서 붙었다). 실제로 내부에서 쓰는 값이 `weather_condition`
+  하나뿐이라, D가 `weather_condition: WeatherCondition | None`으로 좁혔다
+  (`recommendation_pipeline.py`/`real_recommendation_provider.py` 구현·테스트
+  완료). A 쪽(`protocols.py`/`stubs.py`/`agent_runtime.py`) 대응 반영은 진행
+  중 — 런타임이 깨지지 않으려면 양쪽이 같은 타이밍에 병합돼야 한다.
 - A→C 연결은 §6.1의 기존 `CandidateEnrichmentRequest`/`Response`/
   `CandidateEnrichmentService.enrich()`/`get_candidate_enrichment_service()`를
   그대로 재사용한다 — §6.4가 "채택 안 함"으로 남겨뒀던

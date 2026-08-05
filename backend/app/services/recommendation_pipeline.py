@@ -84,11 +84,7 @@ async def run_recommendation_pipeline_from_context(
         )
 
     location = context.location
-    if (
-        location is None
-        or location.status not in {"success", "partial"}
-        or location.data is None
-    ):
+    if location is None or location.status not in {"success", "partial"} or location.data is None:
         raise AppError(
             code="location_unavailable",
             message="위치 정보를 확인할 수 없습니다.",
@@ -120,9 +116,7 @@ async def run_recommendation_pipeline_from_context(
     ranked = scoring.ranked[:recommendation_limit]
 
     details_missing_place_ids = frozenset(
-        place.place_id
-        for place in (places.data or [])
-        if place.operating_schedule is None
+        place.place_id for place in (places.data or []) if place.operating_schedule is None
     )
     # context.weather가 아예 없으면 C가 Weather Tool을 실행하지 않았다는 뜻이다
     # (weather_intent=IGNORE). 값이 있는데 status가 실패인 경우와 구분한다.
@@ -133,9 +127,7 @@ async def run_recommendation_pipeline_from_context(
         visit_at,
         weather_ignored=context.weather is None,
     )
-    return response.model_copy(
-        update={"elapsed_ms": round((timer() - started_at) * 1000, 2)}
-    )
+    return response.model_copy(update={"elapsed_ms": round((timer() - started_at) * 1000, 2)})
 
 
 async def rerank_with_concentration(
@@ -152,8 +144,9 @@ async def rerank_with_concentration(
     5개로 좁혀진 상태)다. 여기서 새 Candidate를 다시 만들지 않는다 —
     `RecommendationItem.feature_scores`(weather/remaining_operating_time/distance)를
     그대로 재사용한다. concentration과 무관하게 이 값들은 변하지 않기 때문이다.
-    `weather_condition`은 1차 Scoring에서 사용한 값과 동일해야 한다 — 점수
-    재계산이 아니라 근거 문장 재조립에서만 사용한다.
+    `weather_condition`은 1차 호출과 동일한 기준(`_weather_condition_from_context()`,
+    status `{"success","partial"}`)으로 도출된 값이어야 한다 — 근거 문장을
+    다시 조립하는 데만 쓰고, 점수 자체를 다시 계산하지는 않는다.
 
     concentration 결측(C가 해당 후보에 no_data/unavailable을 반환) 처리는
     weather/remaining_operating_time과 동일한 패턴이다 — 그 후보만
@@ -161,12 +154,8 @@ async def rerank_with_concentration(
     """
     started_at = timer()
 
-    concentration_by_place_id = {
-        result.place_id: result for result in concentration.candidates
-    }
-    unverified_place_ids = frozenset(
-        item.place_id for item in response.unverified_recommendations
-    )
+    concentration_by_place_id = {result.place_id: result for result in concentration.candidates}
+    unverified_place_ids = frozenset(item.place_id for item in response.unverified_recommendations)
 
     items = [*response.recommendations, *response.unverified_recommendations]
 
@@ -264,8 +253,7 @@ async def rerank_with_concentration(
             warnings=warnings,
             score=evidence.score,
             feature_scores={
-                contribution.feature: contribution.score
-                for contribution in evidence.contributions
+                contribution.feature: contribution.score for contribution in evidence.contributions
             },
             weights_used={
                 contribution.feature: contribution.weight
@@ -325,8 +313,7 @@ def _build_response(
             ),
             score=evidence.score,
             feature_scores={
-                contribution.feature: contribution.score
-                for contribution in evidence.contributions
+                contribution.feature: contribution.score for contribution in evidence.contributions
             },
             weights_used={
                 contribution.feature: contribution.weight
@@ -360,9 +347,7 @@ def _extra_warnings(
     if details_missing and _OPERATING_HOURS_UNVERIFIED_WARNING not in ranked.warnings:
         extra.append(_DETAILS_MISSING_WARNING)
     if ranked.feature_scores.get("weather") is None:
-        extra.append(
-            _WEATHER_IGNORED_WARNING if weather_ignored else _WEATHER_MISSING_WARNING
-        )
+        extra.append(_WEATHER_IGNORED_WARNING if weather_ignored else _WEATHER_MISSING_WARNING)
     if not explanations:
         extra.append(_NO_NOTABLE_EXPLANATION_WARNING)
     return extra
@@ -384,6 +369,4 @@ def _remaining_minutes(
 
 
 def _recommendation_reason(ranked: RankedCandidate) -> str:
-    return (
-        f"거리·날씨·운영시간 조건을 종합한 {ranked.rank}순위 추천이에요."
-    )
+    return f"거리·날씨·운영시간 조건을 종합한 {ranked.rank}순위 추천이에요."
