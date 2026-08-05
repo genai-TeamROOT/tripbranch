@@ -120,14 +120,27 @@ remaining_operating_time_score = clamp(remaining_minutes / 120, 0.0, 1.0)
 §5의 재분배 규칙을 적용한다. 미확인을 0점으로 두지 않는 이유는, 미확인이
 "곧 닫음"이나 "폐점"을 의미하지 않기 때문이다(폐점과 구분되는 이유와 동일).
 
-`environment_type` 매핑은 카테고리 기준으로 잠정 분류한다 (현재
-`services/recommendations.py`의 `_INDOOR_CATEGORIES`/`_OUTDOOR_CATEGORIES`와 동일 기준):
+`environment_type` 매핑은 TourAPI 3단계 분류(대·중·소분류) 기준으로 판정한다
+(D-046, `app/domain/candidate_mapper.py::_environment_type()`). 대분류
+(`category`)만으로는 실내외를 정확히 가릴 수 없다 — 관광지(대분류)에 고궁(실외)과
+체험관(실내)이, 쇼핑(대분류)에 면세점(실내)과 시장(실외)이 함께 섞여 있다.
+
+판정 순서:
+
+1. 후보의 소분류 코드(`lcls_systm3`)가 있으면 `TourCategoryRegistry.get_by_small_code()`
+   로 조회해 `(content_type_id, lcls_systm2)` 중분류 조합을 얻는다.
+2. 이 조합을 D가 정한 중분류 판정표와 비교한다 — 근거와 전체 48개 중분류
+   판정 내역은 `package_D/feature-environment-type-classification.md` 참고.
+   요약: indoor 19개, outdoor 16개, unknown 13개(축제·공연 등 장소마다
+   실내외가 갈리는 중분류는 `unknown` 유지).
+3. 소분류 코드가 없거나(과거 데이터 등) Registry에 없는 코드면, 대분류
+   (`category`) 기준 최소 매핑으로 폴백한다:
 
 | environment_type | category 예시 |
 | --- | --- |
-| `indoor` | museum, cafe, gallery, restaurant |
-| `outdoor` | park, trail, beach |
-| `unknown` | 그 외 |
+| `indoor` | cultural_facility, restaurant |
+| `outdoor` | attraction |
+| `unknown` | 그 외 (festival, leisure, shopping 등 미확정) |
 
 ### 4.2 날씨 적합도 (weather_fit_score)
 

@@ -82,11 +82,12 @@ CONTEXT_FIXTURE_EXPECTATIONS: tuple[ContextFixtureCase, ...] = (
             ),
         ),
         note=(
-            "130100(국립민속박물관, category=cultural_facility)은 candidate_mapper.py"
-            "의 _environment_type()이 cultural_facility를 인식하지 못해 "
-            "environment_type=unknown으로 처리된 결과다(알려진 이슈, [D-07] 문서 기록 "
-            "참고, 미수정). 순위 자체(126508 우선)는 이 이슈와 무관하게 유지되지만, "
-            "weather=0.85/score=0.9115는 이 버그가 고쳐지면 바뀔 수 있는 값이다."
+            "130100(국립민속박물관, category=cultural_facility)은 candidate_mapper.py의 "
+            "_environment_type()이 cultural_facility를 정상 인식해(2026-08-04, C의 "
+            "bde29a3+4d37713로 해결) environment_type=indoor로 처리된다. 맑은 날 "
+            "적합도는 GOOD+indoor=0.7이라 score=0.8515다. 순위(126508 우선)는 해결 "
+            "전후 항상 동일했다. 해결 전에는 environment_type=unknown이라 weather=0.85/"
+            "score=0.9115였다([D-07] 문서 기록 참고)."
         ),
     ),
     ContextFixtureCase(

@@ -917,6 +917,41 @@
   참조가 되고(agent_context가 tools를 쓴다), 같은 공식의 세 번째 사본을 만들지 않기
   위해서다. `app/domain/candidate_mapper.py`의 사본은 D 범위라 그대로 뒀다.
 
+### D-046 — environment_type을 TourAPI 중분류(lcls_systm2) 기반으로 세분화
+
+- 상태: `Implemented` (`app/domain/candidate_mapper.py::_environment_type()`)
+- 배경: `environment_type`은 날씨 적합도(가중치 0.40)에 쓰이는데, 대분류(`category`)
+  만으로는 실내외를 정확히 가릴 수 없다 — C의 실측 기준(2026-08-04 종로구 스냅샷) 관광지
+  150건에 고궁·공원(실외)과 체험관(실내)이, 쇼핑 211건에 면세점 189건(실내)과 시장
+  9건(실외)이 섞여 있다. C가 `bde29a3`(카테고리 어휘를 `PlaceType`으로 통일)·`5a3dacc`
+  (C→A 계약에 `lcls_systm1/2/3` 3단계 분류 코드 추가)로 재료를 제공했고, 세분 판정
+  규칙은 D가 정하기로 했다.
+- 결정: 후보의 소분류 코드(`lcls_systm3`)를 `TourCategoryRegistry.get_by_small_code()`
+  로 조회해 `(content_type_id, lcls_systm2)` 중분류 조합을 얻고, D가 정한 판정표와
+  비교한다. 소분류 코드가 없거나 Registry에 없는 코드(과거 데이터 등)면 기존 대분류
+  기반 최소 매핑(`_INDOOR_CATEGORIES`/`_OUTDOOR_CATEGORIES`)으로 폴백한다.
+- 판정 기준: (1) 날씨를 실제로 막아주는 지붕·벽이 있는가를 핵심 질문으로 삼는다.
+  (2) 중분류 안 소분류가 한쪽으로 쏠리면 그쪽으로, 진짜 애매하면 `unknown` 유지.
+  (3) 같은 중분류 코드가 content_type에 따라 다른 뜻일 수 있어(`VE12`: 문화시설=서점,
+  레포츠=카지노) `content_type_id`와 조합해서만 조회한다. (4) 확신 없으면 `unknown`
+  유지 — 이미 안전한 중간값 폴백(맑음 0.85/보통 0.80/나쁨 0.60)이 있다.
+- 결과: D가 다루는 6개 content_type(12/14/15/28/38/39)의 중분류 48개를 전수 검토해
+  indoor 19개·outdoor 16개·unknown 13개로 판정했다(축제·공연·시장 일부 등 장소마다
+  실내외가 갈리는 항목은 `unknown` 유지). 상세 판정 근거와 표는
+  `package_D/feature-environment-type-classification.md` 참고(개인 기록, gitignored).
+- 테스트: `tests/test_candidate_mapper_environment_type.py`에 48개 중분류 판정을
+  고정하는 파라미터화 테스트, `tests/test_candidate_mapper.py`에 소분류 우선순위·폴백
+  동작 검증 테스트를 추가했다.
+- 경계 판단: `app/domain/`이 `app/providers/`(`TourCategoryRegistry`)를 직접 import하는
+  첫 사례다. TECH-02가 없앤 건 "D가 실행 중에 C의 Tool을 직접 호출"하는 런타임 의존인데,
+  이 조회는 JSON 파일을 프로세스 시작 시 한 번 로드해 참조만 하는 정적 테이블(부작용
+  없음)이라 성격이 다르다고 보고 TECH-02 위반이 아니라고 판단했다. C도 `5a3dacc`에서 이
+  조회 방식을 직접 지정했지만, 이 "정적 참조 vs 런타임 호출" 구분 자체는 C 확인 없이
+  D가 내린 판단이라 별도로 확인 요청했다 — **C 승인 완료(2026-08-04): D의 판단대로
+  진행하면 된다고 확인받음.**
+- 범위 제한: 2차 Scoring(혼잡도, D-040)에는 영향 없음 — `environment_type`은 1차
+  Scoring의 날씨 Feature 계산에만 쓰인다.
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -951,3 +986,4 @@
 | 2026-08-04 | D-043 구현 완료 — `concentration_search_key` 컬럼 추가, 매핑 101건 적재, 저장소 이름 조회를 부기·별칭까지 확장 |
 | 2026-08-04 | D-044 지원 지역 밖 위치를 해석 단계에서 `unsupported`로 끊도록 구현, 종로구 경계 폴리곤 리소스 추가 |
 | 2026-08-04 | D-045 같은 역의 노선별 후보를 한 장소로 묶어 환승역 재질문을 없앰, `haversine_km`을 `app/geo.py`로 통합 |
+| 2026-08-04 | D-046 environment_type을 TourAPI 중분류(lcls_systm2) 기반으로 세분화 구현 반영(indoor 19/outdoor 16/unknown 13), 판정표 고정 테스트 추가 |
