@@ -1059,8 +1059,8 @@
     - `NO_MENTION`: 날씨 언급 없음(기본) → C가 날씨 API 조회
     - `IGNORE`: "날씨 상관없어" 명시 → API 미조회 + 날씨 가중치 제외
     - `AVOID`/`ENJOY`: 날씨 언급 있음 → API 미조회, 사용자 발화 weather를 사용
-  - 사용자 발화 weather(5단계: rain/snow/hot/cold/good)는 A에서 Scoring 입력용
-    3단계(`WeatherCondition`)로 정규화해 D에 전달한다.
+  - 사용자 발화 weather(5단계: rain/snow/hot/cold/good)의 D 입력 변환/판단은
+    C가 담당하고, A는 기존처럼 조건을 C에 전달한다.
 - 효과:
   - `conditions.weather`가 실제 1차 Scoring 날씨 Feature에 반영된다.
   - "언급 없음"과 "무관 명시"가 분리되어, 조회 게이팅과 문서/구현 불일치가 해소된다.
