@@ -10,6 +10,7 @@ payload를 읽고 operations/rejected_places/reset_scope로 바꾸는 건 해석
 
 from __future__ import annotations
 
+from app.providers.gemini_prompts import PROMPT_VERSION
 from app.schemas import (
     Intent,
     LLMOutput,
@@ -41,7 +42,12 @@ _SINGLE_FIELDS = (
     "companion",
     "budget",
 )
-_MULTI_FIELDS = ("place_types", "place_tags", "exclude_tags", "special_requirements")
+# agent-state-contract-v1.md §2.2: place_types는 Update/Remove만, place_tags는
+# Add/Update/Remove 다 허용 — 둘 다 Update로 둔다. exclude_tags/special_requirements는
+# Add/Remove만 허용해 Update를 보내면 unsupported_operation으로 조용히 드롭된다.
+_MULTI_FIELDS_UPDATE = ("place_types", "place_tags")
+_MULTI_FIELDS_ADD = ("exclude_tags", "special_requirements")
+_MULTI_FIELDS = _MULTI_FIELDS_UPDATE + _MULTI_FIELDS_ADD  # _KNOWN_FIELDS 계산용
 _KNOWN_FIELDS = frozenset(_SINGLE_FIELDS) | frozenset(_MULTI_FIELDS)
 
 # int-01-recommend.md §7 place_tag → place_type 매핑 (39개, conditions-schema.md §2 전문 기준).
@@ -158,7 +164,7 @@ def transform(
         reset_scope=reset_scope,
         operations=operations,
         rejected_places=rejected_places,
-        prompt_version=None,  # TODO: 프롬프트 버전 값이 확정되면 채운다.
+        prompt_version=PROMPT_VERSION,
     )
 
 
@@ -179,28 +185,43 @@ def to_user_conditions(state_conditions: StateUserConditions) -> UserConditions:
 
 
 def _serialize(value: object) -> object:
-    """StrEnum(PlaceTag 등)을 순수 str/list[str]로 변환한다.
+    """StrEnum(PlaceTag 등)을 순수 str/list[str]로 변환한다. int(max_travel_time/
+    time_available)는 그대로 통과시킨다 — B(agent-state-contract-v1.md §2.2)가
+    실제 int 타입을 기대하므로 str()로 감싸면 type_mismatch로 거부된다.
 
     StrEnum은 str 서브클래스라 B의 matches_type()는 이미 통과하지만, 로그·JSON 직렬화가
     항상 순수 문자열이 되도록 방어적으로 변환한다.
     """
     if isinstance(value, list):
         return [str(item) for item in value]
+    if isinstance(value, int):
+        return value
     return str(value)
 
 
 def _full_replace_operations(conditions: UserConditions) -> list[Operation]:
-    """RECOMMEND: conditions의 non-null/non-empty 필드 전부를 Update로 변환한다."""
+    """RECOMMEND: conditions의 non-null/non-empty 필드 전부를 변환한다.
+
+    exclude_tags/special_requirements는 B의 field_spec.py상 Add/Remove만 허용되고
+    Update는 없다(agent-state-contract-v1.md §2.2) — soft reset으로 baseline이 항상
+    비어 있는 RECOMMEND 경로 한정으로 Add를 replace와 동치로 쓴다. MODIFY 경로
+    (_changed_field_operations())는 baseline이 비어있지 않아 이 등가성이 깨지므로
+    별도로 취급한다(decision-log.md 참고).
+    """
 
     operations: list[Operation] = []
     for field in _SINGLE_FIELDS:
         value = getattr(conditions, field)
         if value is not None:
             operations.append(Operation(op="Update", field=field, value=_serialize(value)))
-    for field in _MULTI_FIELDS:
+    for field in _MULTI_FIELDS_UPDATE:
         value = getattr(conditions, field)
         if value:
             operations.append(Operation(op="Update", field=field, value=_serialize(value)))
+    for field in _MULTI_FIELDS_ADD:
+        value = getattr(conditions, field)
+        if value:
+            operations.append(Operation(op="Add", field=field, value=_serialize(value)))
     return operations
 
 

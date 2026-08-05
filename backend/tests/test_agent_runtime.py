@@ -1,6 +1,6 @@
 """Agent Runtime(run_agent_flow)의 A→B→A→C→A→D→A→B 흐름 통합 테스트.
 
-FakeLLMProvider/FakeWeatherProvider/FakeToolProvider/FakeRecommendationProvider와 B의
+FakeLLMProvider/FakeToolProvider/FakeRecommendationProvider와 B의
 실제 apply()/get_session_context()를 조합해서 검증한다(팩토리는 거치지 않음 —
 test_state_integration.py와 같은 스타일).
 FakeToolProvider는 A-C Context Contract v0(docs/design/a-c-context-contract-draft.md)를
@@ -28,8 +28,10 @@ from app.agent_context.schemas import (
     ResolvedLocation,
     ResponseMetadata,
 )
+from app.domain.scoring import SCORING_VERSION
 from app.providers.contracts import ProviderSource, provider_result
-from app.providers.stub import FakeLLMProvider, FakeWeatherProvider
+from app.providers.gemini_prompts import PROMPT_VERSION
+from app.providers.stub import FakeLLMProvider
 from app.schemas import (
     AgentRequest,
     ConcentrationIntent,
@@ -136,7 +138,6 @@ class _CountingEnrichmentProvider:
 def _providers():
     return {
         "llm": _LLMProviderWithGeneralAnswer(),
-        "weather_provider": FakeWeatherProvider(),
         "tool_provider": _CountingToolProvider(),
         "recommendation_provider": _CountingRecommendationProvider(),
         "enrichment_provider": _CountingEnrichmentProvider(),
@@ -191,7 +192,14 @@ async def test_recommend_flow_records_traces_for_llm_tool_and_scoring() -> None:
     assert steps == ["llm_interpret", "tool_fetch", "scoring"]
     assert all(trace.run_id == response.state.run_id for trace in traces)
     assert all(trace.latency_ms is not None and trace.latency_ms >= 0 for trace in traces)
-    assert all(trace.prompt_version is None for trace in traces)
+
+    by_step = {trace.step: trace for trace in traces}
+    assert by_step["llm_interpret"].prompt_version == PROMPT_VERSION
+    assert by_step["llm_interpret"].scoring_version is None
+    assert by_step["tool_fetch"].prompt_version is None
+    assert by_step["tool_fetch"].scoring_version is None
+    assert by_step["scoring"].prompt_version is None
+    assert by_step["scoring"].scoring_version == SCORING_VERSION
 
 
 @pytest.mark.asyncio
@@ -330,16 +338,14 @@ async def test_tool_needs_clarification_skips_recommendation() -> None:
 
 @pytest.mark.asyncio
 async def test_agent_context_request_weather_not_mixed_with_provider_weather() -> None:
-    """conditions.weather(5단계 사용자-명시)와 api_weather(3단계 Provider-정규화)가
-    섞이지 않는지 검증한다(A-C Context Contract v0 §5.2).
+    """conditions.weather(5단계 사용자-명시)가 api_weather(B의 옛 3단계 Provider
+    필드)와 섞이지 않는지 검증한다(A-C Context Contract v0 §5.2).
 
-    FakeWeatherProvider는 기본값으로 3단계 "neutral"을 돌려준다. 사용자가 "비"를
-    언급하면 5단계 UserConditions.weather는 "rain"이 돼야 하고, 이는 "neutral"과
-    다른 값이므로 둘이 뒤섞였다면(예: api_weather를 그대로 conditions.weather에
-    대입) 이 테스트가 실패한다.
-    2턴으로 나눈 이유: 세션이 아직 없는 최초 턴에는 GPS를 심을 세션이 없어
-    api_weather가 항상 None으로 남는 알려진 한계가 있다(session_orchestrator.py
-    모듈 docstring 참고) — 2턴째부터 GPS·날씨가 실제로 채워진다.
+    사용자가 "비"를 언급하면 5단계 UserConditions.weather는 "rain"이 돼야 한다.
+    (2026-08-05, D-038) api_weather를 채우던 session_orchestrator.py의 날씨 조회
+    경로는 제거했다 — 이 값을 읽는 소비자가 없어서다(decision-log.md D-038).
+    그래서 api_weather는 이제 영구히 None이다 — 이 테스트는 "혹시 conditions.weather
+    계산에 api_weather 같은 다른 소스가 섞여 들어가지 않는지"를 여전히 지킨다.
     """
     store = InMemoryStateStore()
     providers = _providers()
@@ -367,8 +373,8 @@ async def test_agent_context_request_weather_not_mixed_with_provider_weather() -
     assert tool_provider.last_request is not None
     # C에 보낸 요청의 conditions.weather는 사용자가 말한 5단계 값이다.
     assert tool_provider.last_request.conditions.weather == "rain"
-    # B에 저장된 api_context.api_weather는 Provider가 정규화한 3단계 값으로, 위 값과 다르다.
-    assert second.state.api_context.api_weather == "neutral"
+    # api_weather는 더 이상 채워지지 않는다(제거됨) — conditions.weather와 섞이지 않는다.
+    assert second.state.api_context.api_weather is None
     assert second.state.user_conditions.weather == "rain"
 
 
@@ -939,7 +945,6 @@ async def test_tool_status_decides_whether_recommendation_runs(
             device_location=DEVICE_LOCATION,
         ),
         llm=_LLMProviderWithGeneralAnswer(),
-        weather_provider=FakeWeatherProvider(),
         tool_provider=tool_provider,
         recommendation_provider=recommendation_provider,
         enrichment_provider=_CountingEnrichmentProvider(),
@@ -963,7 +968,6 @@ async def test_location_required_clarification_reaches_user_message() -> None:
             device_location=DEVICE_LOCATION,
         ),
         llm=_LLMProviderWithGeneralAnswer(),
-        weather_provider=FakeWeatherProvider(),
         tool_provider=tool_provider,
         recommendation_provider=_CountingRecommendationProvider(),
         enrichment_provider=_CountingEnrichmentProvider(),
@@ -990,7 +994,6 @@ async def test_no_data_asks_to_adjust_conditions_without_calling_recommendation(
             device_location=DEVICE_LOCATION,
         ),
         llm=_LLMProviderWithGeneralAnswer(),
-        weather_provider=FakeWeatherProvider(),
         tool_provider=tool_provider,
         recommendation_provider=recommendation_provider,
         enrichment_provider=_CountingEnrichmentProvider(),
@@ -1021,7 +1024,6 @@ async def test_no_data_marks_pending_clarification_so_next_turn_keeps_conditions
             device_location=DEVICE_LOCATION,
         ),
         llm=_LLMProviderWithGeneralAnswer(),
-        weather_provider=FakeWeatherProvider(),
         tool_provider=tool_provider,
         recommendation_provider=_CountingRecommendationProvider(),
         enrichment_provider=_CountingEnrichmentProvider(),
@@ -1115,7 +1117,6 @@ async def _run_with_partial_places(places: list[PlaceCandidate]):
             device_location=DEVICE_LOCATION,
         ),
         llm=_LLMProviderWithGeneralAnswer(),
-        weather_provider=FakeWeatherProvider(),
         tool_provider=_PartialPlacesToolProvider(places),
         recommendation_provider=RealRecommendationProvider(),
         enrichment_provider=_CountingEnrichmentProvider(),
