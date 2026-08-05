@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from app.concentration_policy import ConcentrationLevel
 from app.domain.models import WeatherCondition
 from app.domain.scoring import RankedCandidate, ScoringResult
+from app.domain.weather_judgment import WeatherReason
 
 # 1차 Scoring 결과의 Feature 순서 (scoring.py DEFAULT_WEIGHTS와 동일).
 _FEATURE_ORDER: tuple[str, ...] = ("weather", "remaining_operating_time", "distance")
@@ -60,6 +61,9 @@ class RecommendationEvidence:
     # 참고) — concentration_score(direction 반영됨)만으로는 실제 붐빔 정도를 알 수
     # 없어서, 문장 조립에 원본 4단계 구간을 그대로 보존한다.
     concentration_level: ConcentrationLevel | None = None
+    # weather_condition만으로는 "왜"(비/눈/폭염/한파)를 알 수 없어서 문장 조립에
+    # 따로 필요하다(scoring.py::RankedCandidate.weather_reason 참고).
+    weather_reason: WeatherReason = None
 
 
 def _build_contributions(
@@ -104,6 +108,7 @@ def build_evidence(
         weather_condition=candidate.weather_condition,
         environment_type=candidate.environment_type,
         concentration_level=candidate.concentration_level,
+        weather_reason=candidate.weather_reason,
     )
 
 

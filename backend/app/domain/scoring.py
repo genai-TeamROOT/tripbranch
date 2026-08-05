@@ -21,6 +21,7 @@ from datetime import datetime
 
 from app.concentration_policy import ConcentrationLevel
 from app.domain.models import OperatingHours, ScoringCandidate, WeatherCondition
+from app.domain.weather_judgment import WeatherReason
 
 # B의 LLMOps Trace(record_trace(scoring_version=...))에 넘길 값 —
 # backend/docs/package-b/llmops-trace-contract-v1.md §7 Q2. B는 이 값의 의미를
@@ -89,6 +90,9 @@ class RankedCandidate:
     # "한적함/보통/다소 혼잡/혼잡" 중 무엇으로 쓸지 고르는 데 필요하다(direction이
     # 이미 반영된 concentration_score만으로는 실제 붐빔 정도를 알 수 없다).
     concentration_level: ConcentrationLevel | None = None
+    # WeatherCondition만으로는 "왜"(비/눈/폭염/한파 중 무엇 때문)를 알 수 없어서
+    # 근거 문장(explanation.py) 조립에 따로 필요하다 — 점수 계산에는 안 쓰인다.
+    weather_reason: WeatherReason = None
 
 
 @dataclass(frozen=True)
@@ -183,6 +187,7 @@ def score_candidates(
     shown_place_ids: Iterable[str] = (),
     rejected_place_ids: Iterable[str] = (),
     weights: Mapping[str, float] | None = None,
+    weather_reason: WeatherReason = None,
 ) -> ScoringResult:
     """Candidate 목록에 하드 필터와 가중치 점수를 적용해 정렬한다.
 
@@ -273,6 +278,7 @@ def score_candidates(
             distance_km=candidate.distance_km,
             remaining_minutes=remaining_minutes,
             weather_condition=weather_condition,
+            weather_reason=weather_reason,
             environment_type=candidate.environment_type,
         )
         for index, (

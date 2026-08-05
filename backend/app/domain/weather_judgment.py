@@ -6,8 +6,11 @@ precipitation/sky/temperature_celsius), 판정("이 날씨가 좋은가")은 D�
 
 핵심 원칙: WeatherCondition(GOOD/NEUTRAL/BAD)은 "객관적으로 좋은 날씨"가 아니라
 "이 사용자의 목적에 맞는 날씨"다. 그래서 같은 강수라도 AVOID면 BAD, ENJOY면
-GOOD으로 판정될 수 있다. `_WEATHER_FIT_TABLE`(scoring.py)과 explanation.py의
-라벨 텍스트는 이 모듈이 만든 WeatherCondition 값만 소비하므로 그대로 재사용된다.
+GOOD으로 판정될 수 있다. `_WEATHER_FIT_TABLE`(scoring.py)의 점수는 WeatherCondition
+값만 소비하므로 그대로 재사용된다. 다만 explanation.py의 근거 문장은 WeatherCondition
+만으로는 "왜"(비/눈/폭염/한파 중 무엇 때문인지)를 알 수 없어서 `WeatherReason`도 함께
+반환한다 — GOOD/BAD 값 하나로 뭉뚱그리면 "폭염인데 '비 예보'라고 말하는" 식의
+근거-사실 불일치가 생긴다(2026-08-05 검수에서 발견).
 """
 
 from __future__ import annotations
@@ -30,15 +33,19 @@ _COLD_BAD_THRESHOLD_CELSIUS = -12.0
 Precipitation = Literal["none", "rain", "snow", "sleet", "shower"]
 Sky = Literal["clear", "cloudy", "overcast"]
 
-# 판정이 왜 그렇게 나왔는지(원인)를 함께 들고 다닌다 — ENJOY가 "강수라서 BAD"만
-# 뒤집고 "기온이라서 BAD"는 그대로 두기 때문에, 판정값만으로는 이 재해석을 할 수 없다.
-_Reason = Literal["precipitation", "temperature"] | None
+# 판정이 왜 그렇게 나왔는지(원인)를 함께 들고 다닌다. 두 용도로 쓰인다.
+#   1) ENJOY 재해석: 강수(rain/snow)가 원인인 BAD만 뒤집고, 기온(heat/cold)이
+#      원인인 BAD는 그대로 둔다.
+#   2) 근거 문장(explanation.py): "비 예보"/"눈 예보"/"폭염 예보"/"한파 예보"를
+#      구분해서 말해야 사실과 어긋나지 않는다. sleet/shower는 rain으로 뭉뚱그린다 —
+#      snow만 한국어로 명확히 다른 낱말(비/눈)이라 최소한으로 구분한다.
+WeatherReason = Literal["rain", "snow", "heat", "cold"] | None
 
-_STATED_WEATHER_BASELINE: dict[StatedWeather, tuple[WeatherCondition, _Reason]] = {
-    StatedWeather.RAIN: (WeatherCondition.BAD, "precipitation"),
-    StatedWeather.SNOW: (WeatherCondition.BAD, "precipitation"),
-    StatedWeather.HOT: (WeatherCondition.BAD, "temperature"),
-    StatedWeather.COLD: (WeatherCondition.BAD, "temperature"),
+_STATED_WEATHER_BASELINE: dict[StatedWeather, tuple[WeatherCondition, WeatherReason]] = {
+    StatedWeather.RAIN: (WeatherCondition.BAD, "rain"),
+    StatedWeather.SNOW: (WeatherCondition.BAD, "snow"),
+    StatedWeather.HOT: (WeatherCondition.BAD, "heat"),
+    StatedWeather.COLD: (WeatherCondition.BAD, "cold"),
     StatedWeather.GOOD: (WeatherCondition.GOOD, None),
 }
 
@@ -47,7 +54,7 @@ def _classify_from_facts(
     precipitation: Precipitation | None,
     sky: Sky | None,
     temperature_celsius: float | None,
-) -> tuple[WeatherCondition, _Reason]:
+) -> tuple[WeatherCondition, WeatherReason]:
     """의도와 무관한 사실 기반 판정 + 원인 태깅.
 
     강수 > 기온(폭염/한파) > 하늘 순으로 확인한다 — 비가 오면서 기온도
@@ -57,13 +64,12 @@ def _classify_from_facts(
     위해서다.
     """
     if precipitation is not None and precipitation != "none":
-        return WeatherCondition.BAD, "precipitation"
+        return WeatherCondition.BAD, ("snow" if precipitation == "snow" else "rain")
 
-    if temperature_celsius is not None and (
-        temperature_celsius >= _HEAT_BAD_THRESHOLD_CELSIUS
-        or temperature_celsius <= _COLD_BAD_THRESHOLD_CELSIUS
-    ):
-        return WeatherCondition.BAD, "temperature"
+    if temperature_celsius is not None and temperature_celsius >= _HEAT_BAD_THRESHOLD_CELSIUS:
+        return WeatherCondition.BAD, "heat"
+    if temperature_celsius is not None and temperature_celsius <= _COLD_BAD_THRESHOLD_CELSIUS:
+        return WeatherCondition.BAD, "cold"
 
     if sky == "clear":
         return WeatherCondition.GOOD, None
@@ -75,22 +81,22 @@ def _classify_from_facts(
     return WeatherCondition.NEUTRAL, None
 
 
-def _classify_from_stated(stated: StatedWeather) -> tuple[WeatherCondition, _Reason]:
+def _classify_from_stated(stated: StatedWeather) -> tuple[WeatherCondition, WeatherReason]:
     return _STATED_WEATHER_BASELINE[stated]
 
 
 def _apply_intent(
     condition: WeatherCondition,
-    reason: _Reason,
+    reason: WeatherReason,
     weather_intent: WeatherIntent | None,
 ) -> WeatherCondition:
-    """AVOID/NO_MENTION/None은 기본 판정을 그대로 쓰고, ENJOY는 강수가 원인인
-    BAD만 GOOD으로 뒤집는다. 기온이 원인인 BAD는 1차 범위에서 뒤집지 않는다 —
-    "더워서 즐기고 싶다"류 케이스는 실제 사례가 나오면 확장 검토한다.
+    """AVOID/NO_MENTION/None은 기본 판정을 그대로 쓰고, ENJOY는 강수(비/눈)가
+    원인인 BAD만 GOOD으로 뒤집는다. 기온(폭염/한파)이 원인인 BAD는 1차 범위에서
+    뒤집지 않는다 — "더워서 즐기고 싶다"류 케이스는 실제 사례가 나오면 확장 검토한다.
     """
     if (
         weather_intent is WeatherIntent.ENJOY
-        and reason == "precipitation"
+        and reason in ("rain", "snow")
         and condition is WeatherCondition.BAD
     ):
         return WeatherCondition.GOOD
@@ -102,30 +108,39 @@ def judge_weather_condition_from_facts(
     sky: Sky | None,
     temperature_celsius: float | None,
     weather_intent: WeatherIntent | None,
-) -> WeatherCondition:
+) -> tuple[WeatherCondition, WeatherReason]:
     """C가 조회한 날씨 사실(`WeatherForecast.precipitation`/`sky`/`temperature_celsius`)로
-    WeatherCondition을 판정한다. weather_intent가 NO_MENTION/None일 때 쓰인다 —
-    AVOID/ENJOY는 사용자가 이미 발화에서 날씨를 말했다고 보고
-    `judge_weather_condition_from_stated()`를 대신 쓴다(호출부 책임).
+    WeatherCondition을 판정한다. 반환하는 `WeatherReason`은 의도 재해석 후에도
+    원래 원인(비/눈/폭염/한파)을 그대로 유지한다 — ENJOY로 GOOD이 됐어도 근거
+    문장은 "왜 원래 나빴는지"를 말해야 하기 때문이다(예: "비 예보에 적합한 야외").
+
+    weather_intent가 NO_MENTION/None일 때뿐 아니라, AVOID/ENJOY인데 발화에서 5단계
+    값을 못 뽑아 C가 대신 조회한 경우(PR #102 폴백)에도 쓰인다 — 그때도 사실이
+    존재하면 사실을 우선한다(`resolve_weather_condition()` 참고). AVOID/ENJOY가
+    발화 값을 직접 말한 경우에만 `judge_weather_condition_from_stated()`를 대신
+    쓴다(호출부 책임). weather_intent 값 자체는 두 진입점 모두 `_apply_intent()`로
+    똑같이 재해석되므로, 어느 경로로 오든 ENJOY 반전 등은 동일하게 적용된다.
     """
     condition, reason = _classify_from_facts(precipitation, sky, temperature_celsius)
-    return _apply_intent(condition, reason, weather_intent)
+    return _apply_intent(condition, reason, weather_intent), reason
 
 
 def judge_weather_condition_from_stated(
     stated_weather: StatedWeather,
     weather_intent: WeatherIntent | None,
-) -> WeatherCondition:
+) -> tuple[WeatherCondition, WeatherReason]:
     """사용자가 발화에서 직접 말한 날씨(`StatedWeather`)로 WeatherCondition을
-    판정한다. weather_intent가 AVOID/ENJOY일 때 쓰인다.
+    판정한다. weather_intent가 AVOID/ENJOY일 때 쓰인다. 반환하는 `WeatherReason`은
+    `judge_weather_condition_from_facts()`와 같은 용도다.
     """
     condition, reason = _classify_from_stated(stated_weather)
-    return _apply_intent(condition, reason, weather_intent)
+    return _apply_intent(condition, reason, weather_intent), reason
 
 
 __all__ = [
     "Precipitation",
     "Sky",
+    "WeatherReason",
     "judge_weather_condition_from_facts",
     "judge_weather_condition_from_stated",
 ]
