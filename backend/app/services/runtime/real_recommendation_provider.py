@@ -15,6 +15,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from app.agent_context.enrichment_schemas import CandidateEnrichmentResponse
+from app.domain.models import WeatherCondition
 from app.schemas import ConcentrationIntent, RecommendationResponse, UserConditions
 from app.services.recommendation_pipeline import (
     rerank_with_concentration,
@@ -48,18 +49,20 @@ class RealRecommendationProvider:
     async def rerank_with_concentration(
         self,
         conditions: UserConditions,
-        context: RecommendationContext,
+        weather_condition: WeatherCondition | None,
         first_pass: RecommendationResponse,
         concentration: CandidateEnrichmentResponse,
     ) -> RecommendationResponse:
         """D-040: 2차 Scoring. A는 concentration_intent가 AVOID/SEEK일 때만 이
         메서드를 호출한다(agent_runtime.py의 `_CONCENTRATION_RANK_INTENTS` 게이트) —
         그 외 값이 들어오면 방향을 정할 수 없으므로 AVOID(한적한 곳 선호)로 취급한다.
+        `weather_condition`은 1차 호출과 동일한 기준(status `{"success","partial"}`)으로
+        도출된 값이어야 한다.
         """
         seek = conditions.concentration_intent is ConcentrationIntent.SEEK
         return await rerank_with_concentration(
             first_pass,
-            context,
+            weather_condition,
             concentration,
             seek=seek,
         )
