@@ -52,19 +52,8 @@ def test_contract_accepts_no_mention_before_a_starts_sending_it() -> None:
     assert conditions.weather_intent == "NO_MENTION"
 
 
-def test_weather_no_mention_still_fetches_weather() -> None:
-    """언급이 없는 것과 상관없다고 말한 것은 다르다.
-
-    IGNORE가 둘을 겸하던 시절에는 날씨를 말하지 않은 사용자에게 날씨가 아예 반영되지
-    않았다 — 비 오는 날 야외 장소를 그대로 추천하게 된다(int-01-recommend.md §10).
-    """
-    plan = build_tool_execution_plan(UserConditions(weather_intent="NO_MENTION"))
-
-    assert plan.requires(ContextTool.GET_WEATHER)
-
-
 def test_weather_intent_absent_still_fetches_weather() -> None:
-    """A가 NO_MENTION을 보내기 전(과도기)에도 조회는 유지된다."""
+    """값이 없으면 언급이 없는 것으로 본다 — NO_MENTION과 같게 조회한다."""
     plan = build_tool_execution_plan(UserConditions(weather_intent=None))
 
     assert plan.requires(ContextTool.GET_WEATHER)
