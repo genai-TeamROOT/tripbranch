@@ -317,16 +317,12 @@ def resolve_weather_condition(
     weather_intent = conditions.weather_intent if conditions is not None else None
 
     weather = context.weather
-    weather_available = (
-        weather is not None
-        and weather.status in {"success", "partial"}
-        and weather.data is not None
-    )
-    if weather_available:
+    if weather is not None and weather.status in {"success", "partial"}:
         data = weather.data
-        return judge_weather_condition_from_facts(
-            data.precipitation, data.sky, data.temperature_celsius, weather_intent
-        )
+        if data is not None:
+            return judge_weather_condition_from_facts(
+                data.precipitation, data.sky, data.temperature_celsius, weather_intent
+            )
 
     if (
         conditions is not None
