@@ -622,6 +622,9 @@
 ### D-038 — 날씨 warning 문구 분리(IGNORE vs 조회 실패) 및 날씨 조회 경로 이원화 정리
 
 - 상태: `Implemented` (2026-08-05, TODO 1/2 해결 완료 — 아래 참고)
+- 주의: 이후 D-049(2026-08-05)에서 `weather_intent`에 `NO_MENTION`을 도입하면서
+  "언급 없음=IGNORE" 전제가 해소됐다. 이 항목의 IGNORE 서술은 당시 구현 기준의
+  배경 설명이며, 현재 동작 기준은 D-049를 따른다.
 - 배경: `"경복궁 근처 카페 추천해줘"`처럼 날씨 언급이 없는 발화는 LLM이
   `weather_intent=IGNORE`로 판정하고([int-01-recommend.md §8](./design/int-01-recommend.md#8-weather_intent-판별)의
   정의: "날씨 언급 없음"), C가 Weather Tool을 실행하지 않는다
@@ -1046,37 +1049,24 @@
   필요한 별도 스코프의 작업이라, 이번 세션의 계약 위반 수정(1a 유형)과 섞으면
   리뷰 범위가 커진다. 이번 세션은 발견 사실을 기록만 한다.
 
-### D-049 — `conditions.weather`(사용자 발화 기반 5단계 날씨 값)가 죽은 필드로 보임 (발견만, 미확정)
+### D-049 — `conditions.weather`(사용자 발화 5단계 날씨 값) 소비 경로 복구
 
-- 상태: `Observed`(발견만 기록, 코드 미변경 — 원 설계 의도 확인 필요)
-- 배경: D-038(`api_context.api_weather` 죽은 코드 제거) 이후, "사용자가 '비 온다'고
-  직접 말한 값과 기상청 API 값이 다르면 어떻게 되는지" 질문에 답하려고
-  `conditions.weather`(LLM이 발화에서 추출하는 5단계 값 — rain/snow/hot/cold/good,
-  `weather_intent`와는 별개 필드)의 실제 소비처를 grep으로 재확인했다.
-- 발견: `conditions.weather`는 `to_agent_context_request()`를 통해 C의 요청
-  페이로드에는 실리지만(`app/services/runtime/context_transform.py`), **C도 D도
-  이 값을 읽는 코드가 없다** — `app/agent_context/*.py`, `app/domain/scoring.py`,
-  `app/domain/candidate_mapper.py`, `app/services/runtime/response_composer.py`,
-  `app/state/*.py` 전수 grep 결과 전무. 실제 Scoring의 날씨 Feature(가중치 0.40,
-  `domain/scoring.py::_weather_fit_score()`)는 오직 `context.weather`(C가 기상청
-  API로 직접 조회한 3단계 값, `weather_intent != IGNORE`일 때만 호출)만 사용한다.
-  `environment`(indoor/outdoor 하드 필터) 역시 `weather_intent`(AVOID/ENJOY)를 보고
-  LLM이 발화 시점에 직접 정하는 값이라, API 결과나 `conditions.weather`와는
-  무관하게 이미 확정된다.
-- 결과적으로 사용자가 "비 온다"고 말한 그 원문 판정값 자체는 필터에도 점수에도
-  전혀 반영되지 않는다 — 하드 필터는 `weather_intent`(발화 즉시 판별)가, 연속
-  점수는 `context.weather`(API 실측)가 각각 담당하고, 둘이 서로 다를 때 감지하거나
-  사용자에게 알리는 로직은 존재하지 않는다.
-- D-038의 `api_weather`(B 소유, 조회는 하되 아무도 안 읽음)와 증상은 비슷하지만
-  원인 층위가 다르다 — `api_weather`는 "조회했지만 안 읽힘"이었고, 이건 "LLM이
-  추출은 하지만(B에도 저장됨) 하류(C/D) 어디서도 안 읽힘"이다.
-- 이번 세션에서 결정하지 않는 것: `conditions.weather`가 (1) 애초에 미완성으로
-  남은 필드인지(예: "사용자 말과 API가 다르면 사용자 말을 우선하거나 재확인한다"
-  같은 기능을 염두에 두고 만들어졌으나 그 소비 로직이 아직 없는 경우),
-  (2) 이제는 불필요해진 필드인지(정보는 `weather_intent`/`environment`로 이미
-  충분히 반영되므로) — 원 설계자(A/D) 확인이 먼저 필요해 코드는 건드리지 않는다.
-- 확인 필요: `conditions.weather` 필드의 원래 설계 의도, 그리고 필요하다면
-  "사용자 발화와 API 값이 다를 때" 처리 방침(무시/재확인/사용자 발화 우선) 결정.
+- 상태: `Implemented` (2026-08-05)
+- 배경: D-049 발견 시점에는 `conditions.weather`가 C 요청 페이로드에만 실리고
+  실제 Scoring에서는 전혀 읽히지 않아 죽은 필드처럼 보였다.
+- 결정:
+  - `weather_intent` 의미를 분리한다.
+    - `NO_MENTION`: 날씨 언급 없음(기본) → C가 날씨 API 조회
+    - `IGNORE`: "날씨 상관없어" 명시 → API 미조회 + 날씨 가중치 제외
+    - `AVOID`/`ENJOY`: 날씨 언급 있음 → API 미조회, 사용자 발화 weather를 사용
+  - 사용자 발화 weather(5단계: rain/snow/hot/cold/good)는 A에서 Scoring 입력용
+    3단계(`WeatherCondition`)로 정규화해 D에 전달한다.
+- 효과:
+  - `conditions.weather`가 실제 1차 Scoring 날씨 Feature에 반영된다.
+  - "언급 없음"과 "무관 명시"가 분리되어, 조회 게이팅과 문서/구현 불일치가 해소된다.
+  - 날씨 API 호출은 `NO_MENTION` 경로에서만 일어난다.
+- 후속 확인:
+  - `AVOID/ENJOY` 방향(선호 반영) 자체는 별도 판정 로직 개선 범위로 유지한다.
 
 ### D-050 — 혼잡도 2차 Scoring 결과: "순서"는 B에 남지만 "값"은 안 남음 (발견만, 미확정)
 

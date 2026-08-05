@@ -30,7 +30,7 @@ class UserConditions(StrictModel):
     # 반대라(전자는 조회, 후자는 생략) 한 값으로 겸할 수 없어 A가 분리했다.
     # C는 A보다 먼저 값을 받아들여야 한다 — Literal에 없으면 A 배포 시점에
     # ValidationError로 요청 전체가 깨진다.
-    weather_intent: Literal["AVOID", "ENJOY", "IGNORE", "NO_MENTION"] | None = None
+    weather_intent: Literal["AVOID", "ENJOY", "NO_MENTION", "IGNORE"] | None = None
     transport: Literal["walk", "public", "car"] | None = None
     max_travel_time: int | None = Field(default=None, gt=0)
     time_available: int | None = Field(default=None, gt=0)

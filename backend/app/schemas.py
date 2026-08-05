@@ -121,6 +121,7 @@ class ModifyType(StrEnum):
 class WeatherIntent(StrEnum):
     AVOID = "AVOID"
     ENJOY = "ENJOY"
+    NO_MENTION = "NO_MENTION"
     IGNORE = "IGNORE"
 
 

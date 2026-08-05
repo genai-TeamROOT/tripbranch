@@ -212,12 +212,16 @@ class FakeLLMProvider:
             conditions.place_types.append(PlaceType.CULTURAL_FACILITY)
             conditions.place_tags.append(PlaceTag.MUSEUM)
 
+        # 날씨를 언급하지 않았으면 기본값은 NO_MENTION이다.
+        conditions.weather_intent = WeatherIntent.NO_MENTION
+
         status = OutputStatus.COMPLETE
         clarification = None
         if "눈" in user_input and not any(
             marker in user_input for marker in ("피해", "피하고", "실내", "즐기고", "보고 싶")
         ):
             conditions.weather = StatedWeather.SNOW
+            conditions.weather_intent = None
             status = OutputStatus.NEEDS_CLARIFICATION
             clarification = ClarificationPayload(
                 ambiguous_fields=[
@@ -237,6 +241,8 @@ class FakeLLMProvider:
             conditions.weather = StatedWeather.RAIN
             conditions.weather_intent = WeatherIntent.AVOID
             conditions.environment = Environment.INDOOR
+        elif any(marker in user_input for marker in ("날씨 상관없", "날씨는 상관없", "아무 날씨")):
+            conditions.weather_intent = WeatherIntent.IGNORE
 
         if any(marker in user_input for marker in ("조용", "한적", "사람 없")):
             conditions.concentration_intent = ConcentrationIntent.AVOID

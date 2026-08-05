@@ -7,6 +7,8 @@ run_recommendation_pipeline_from_context() 경로만 쓰므로 외부 API 없이
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
 from app.agent_context.enrichment_schemas import (
@@ -14,8 +16,15 @@ from app.agent_context.enrichment_schemas import (
     CandidateEnrichmentResult,
 )
 from app.agent_context.schemas import ContextError
+from app.domain.models import WeatherCondition
 from app.errors import AppError
-from app.schemas import ConcentrationIntent, RecommendationResponse, UserConditions
+from app.schemas import (
+    ConcentrationIntent,
+    RecommendationResponse,
+    StatedWeather,
+    UserConditions,
+    WeatherIntent,
+)
 from app.services.runtime import real_recommendation_provider as module
 from app.services.runtime.context_schemas import (
     ContextValue,
@@ -23,6 +32,7 @@ from app.services.runtime.context_schemas import (
     PlaceCandidate,
     RecommendationContext,
     ResolvedLocation,
+    WeatherForecast,
 )
 from app.services.runtime.real_recommendation_provider import RealRecommendationProvider
 
@@ -50,6 +60,20 @@ def _context(*, place_ids: list[str]) -> RecommendationContext:
                 for place_id in place_ids
             ],
         ),
+    )
+
+
+def _context_with_weather(*, place_ids: list[str], condition: str) -> RecommendationContext:
+    return _context(place_ids=place_ids).model_copy(
+        update={
+            "weather": ContextValue(
+                status="success",
+                data=WeatherForecast(
+                    condition=condition,
+                    forecast_for=datetime.now(UTC),
+                ),
+            )
+        }
     )
 
 
@@ -108,6 +132,75 @@ async def test_search_radius_km_passed_to_pipeline_matches_to_search_radius_km(
 
     assert captured["search_radius_km"] == pytest.approx(module.to_search_radius_km(conditions))
     assert captured["visit_at"].tzinfo is not None
+
+
+@pytest.mark.asyncio
+async def test_recommend_uses_user_stated_weather_when_weather_is_mentioned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    original = module.run_recommendation_pipeline_from_context
+
+    async def _capture(context, **kwargs):
+        captured.update(kwargs)
+        return await original(context, **kwargs)
+
+    monkeypatch.setattr(module, "run_recommendation_pipeline_from_context", _capture)
+
+    provider = RealRecommendationProvider()
+    conditions = UserConditions(
+        weather=StatedWeather.RAIN,
+        weather_intent=WeatherIntent.AVOID,
+    )
+    context = _context(place_ids=["a"])
+
+    await provider.recommend(conditions, context, excluded_place_ids=[])
+
+    assert captured["weather_condition"] is WeatherCondition.BAD
+
+
+@pytest.mark.asyncio
+async def test_recommend_uses_api_weather_when_no_mention(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    original = module.run_recommendation_pipeline_from_context
+
+    async def _capture(context, **kwargs):
+        captured.update(kwargs)
+        return await original(context, **kwargs)
+
+    monkeypatch.setattr(module, "run_recommendation_pipeline_from_context", _capture)
+
+    provider = RealRecommendationProvider()
+    conditions = UserConditions(weather_intent=WeatherIntent.NO_MENTION)
+    context = _context_with_weather(place_ids=["a"], condition="neutral")
+
+    await provider.recommend(conditions, context, excluded_place_ids=[])
+
+    assert captured["weather_condition"] is WeatherCondition.NEUTRAL
+
+
+@pytest.mark.asyncio
+async def test_recommend_ignores_weather_when_user_marks_irrelevant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    original = module.run_recommendation_pipeline_from_context
+
+    async def _capture(context, **kwargs):
+        captured.update(kwargs)
+        return await original(context, **kwargs)
+
+    monkeypatch.setattr(module, "run_recommendation_pipeline_from_context", _capture)
+
+    provider = RealRecommendationProvider()
+    conditions = UserConditions(weather_intent=WeatherIntent.IGNORE)
+    context = _context_with_weather(place_ids=["a"], condition="good")
+
+    await provider.recommend(conditions, context, excluded_place_ids=[])
+
+    assert captured["weather_condition"] is None
 
 
 def _empty_first_pass() -> RecommendationResponse:

@@ -31,6 +31,13 @@ def test_weather_ignore_skips_only_weather_tool() -> None:
     assert plan.requires(ContextTool.GET_HOLIDAYS)
 
 
+def test_weather_no_mention_fetches_weather_tool() -> None:
+    plan = build_tool_execution_plan(UserConditions(weather_intent="NO_MENTION"))
+
+    assert plan.requires(ContextTool.GET_WEATHER)
+    assert plan.requires(ContextTool.RESOLVE_LOCATION)
+    assert plan.requires(ContextTool.SEARCH_PLACES)
+    assert plan.requires(ContextTool.GET_HOLIDAYS)
 def test_contract_accepts_no_mention_before_a_starts_sending_it() -> None:
     """C가 A보다 먼저 값을 받아들여야 한다.
 

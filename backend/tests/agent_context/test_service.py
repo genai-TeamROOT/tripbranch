@@ -72,7 +72,7 @@ def _request(
     place_types: list[str] | None = None,
     place_tags: list[str] | None = None,
     max_travel_time: int | None = None,
-    weather_intent: Literal["AVOID", "ENJOY", "IGNORE"] | None = None,
+    weather_intent: Literal["AVOID", "ENJOY", "NO_MENTION", "IGNORE"] | None = None,
     gps_location: Coordinates | None = None,
 ) -> AgentContextRequest:
     return AgentContextRequest(
