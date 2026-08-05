@@ -2,7 +2,7 @@
 
 - 작성자: 이태화
 - 작성일: 2026-07-28
-- 상태: Draft (팀 협의 전)
+- 상태: Implemented (2026-08-05, B-07 반영 완료 — Q1~Q3 해결, 7절 참고)
 - 협의 대상: Package A, Package D
 - 적용 범위: AF-12 중 Trace·버전 기록만 (A/B 집계·재현성은 범위 밖 — 7절 참고)
 
@@ -132,20 +132,37 @@ B-01 5.6절과 동일한 원칙을 따른다.
 
 ---
 
-## 7. 확인 필요 (A·D에게)
+## 7. 확인 필요 (A·D에게) — 2026-08-05 해결됨
 
 ```
 Q1  step 이름을 누가 정하나 — B가 enum으로 강제할지, 호출자가 임의 문자열로
     넘기게 할지. (B-01 경계 원칙상 B가 값의 의미를 모르므로 자유 문자열이
     맞다고 보는데, 그러면 오타로 같은 단계가 다른 이름으로 쌓일 위험이 있어
     A/D와 미리 이름을 맞춰두는 게 나을 수 있음)
+    → 해결: A 확인 완료. "llm_interpret"/"tool_fetch"/"scoring" 그대로 사용.
+      바꾸고 싶은 이름 없음(A 회신). enum 강제 없이 자유 문자열로 확정.
+
 Q2  prompt_version/scoring_version/variant_id를 실제로 누가 언제 채워서
     보낼 준비가 됐는지 — A는 Prompt 버전을 어떻게 관리 중인지, D는 Scoring
     버전을 어떻게 매기고 있는지
+    → 해결(prompt_version/scoring_version): A가 `app.providers.gemini_prompts.
+      PROMPT_VERSION`("agent-interpret-prompts-1.0.0"), D가 `app.domain.
+      scoring.SCORING_VERSION`("recommendation-scoring-1.0.0")을 각각 모듈-semver
+      패턴으로 신설. agent_runtime.py의 llm_interpret/scoring 단계 호출부에
+      연결 완료(커밋 9ef8295, PR #92).
+    → 미해결(variant_id): 아직 아무도 값을 채울 준비가 안 됨. A/B 실험이
+      실제로 필요해지기 전까지 None으로 유지(6절 "이번 범위 밖"과 동일한
+      YAGNI 판단 — 실험 설계 없이 값만 미리 채우지 않는다).
+
 Q3  이 trace 기록을 실제 HTTP 흐름 어디에 꽂을지 — run_agent_flow() 안에
     자연스러운 자리(LLM 호출 직후, Tool 호출 직후, Scoring 직후)가 있어
     보이는데, run_agent()가 아직 라우터에 안 물려 있는 상태(B-03 참고)라
     지금 넣어도 실제로 쌓이진 않음. A와 연결 시점 조율 필요
+    → 해결: B-07 착수 시점엔 run_agent()가 이미 라우터에 연결돼 있어서
+      더 이상 유효한 블로커가 아니었음(B-03에서 해소됨). run_agent_flow()를
+      직접 읽어 LLM(2단계)/Tool(5단계)/Scoring(6단계) 호출 지점이 코드
+      구조상 이미 명확히 분리돼 있음을 확인하고 B가 직접 판단해 배선함 —
+      A/D 확인 없이도 코드로 풀리는 질문이었음.
 ```
 
 ---
@@ -155,3 +172,4 @@ Q3  이 trace 기록을 실제 HTTP 흐름 어디에 꽂을지 — run_agent_flo
 | 일자 | 변경 |
 | --- | --- |
 | 07-28 | 초안 작성 (AF-12 시작) |
+| 08-05 | B-07 완료 반영: record_trace()를 run_agent_flow() 3단계(llm_interpret/tool_fetch/scoring)에 배선. 7절 Q1(step 이름)·Q2(prompt_version/scoring_version, variant_id는 미해결로 유지)·Q3(연결 지점) 해결 상태 반영. 상태 Draft → Implemented |
