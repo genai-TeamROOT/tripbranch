@@ -140,7 +140,7 @@ async def run_recommendation_pipeline_from_context(
 
 async def rerank_with_concentration(
     response: RecommendationResponse,
-    context: RecommendationContext,
+    weather_condition: WeatherCondition | None,
     concentration: CandidateEnrichmentResponse,
     *,
     seek: bool,
@@ -152,9 +152,8 @@ async def rerank_with_concentration(
     5개로 좁혀진 상태)다. 여기서 새 Candidate를 다시 만들지 않는다 —
     `RecommendationItem.feature_scores`(weather/remaining_operating_time/distance)를
     그대로 재사용한다. concentration과 무관하게 이 값들은 변하지 않기 때문이다.
-    `context`는 1차 호출과 동일한 것이어야 한다 — weather_condition을 1차와
-    동일한 방식으로 재계산해 근거 문장을 다시 조립하는 데만 쓰고, 점수 자체를
-    다시 계산하지는 않는다.
+    `weather_condition`은 1차 Scoring에서 사용한 값과 동일해야 한다 — 점수
+    재계산이 아니라 근거 문장 재조립에서만 사용한다.
 
     concentration 결측(C가 해당 후보에 no_data/unavailable을 반환) 처리는
     weather/remaining_operating_time과 동일한 패턴이다 — 그 후보만
@@ -162,7 +161,6 @@ async def rerank_with_concentration(
     """
     started_at = timer()
 
-    weather_condition = _weather_condition_from_context(context)
     concentration_by_place_id = {
         result.place_id: result for result in concentration.candidates
     }

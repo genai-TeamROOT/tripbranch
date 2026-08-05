@@ -17,6 +17,7 @@ from app.agent_context.enrichment_schemas import (
     CandidateEnrichmentResult,
     ConcentrationForecastData,
 )
+from app.domain.models import WeatherCondition
 from app.agent_context.schemas import (
     AgentContextRequest,
     AgentContextResponse,
@@ -221,7 +222,7 @@ class FakeRecommendationProvider:
     async def rerank_with_concentration(
         self,
         conditions: UserConditions,
-        context: RecommendationContext,
+        weather_condition: WeatherCondition | None,
         first_pass: RecommendationResponse,
         concentration: CandidateEnrichmentResponse,
     ) -> RecommendationResponse:
