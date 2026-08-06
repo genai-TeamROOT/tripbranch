@@ -288,6 +288,42 @@ async def test_modify_change_condition_flow_reaches_recommendations() -> None:
 
 
 @pytest.mark.asyncio
+async def test_location_only_turn_after_recommend_is_modify_and_keeps_prior_conditions() -> None:
+    """TP-67: 이전 추천 뒤 위치만 바꾸는 발화는 soft reset 없이 기존 조건을 유지한다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="비 오는데 경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+    assert first.state.user_conditions.weather == "rain"
+    assert first.state.user_conditions.weather_intent == "AVOID"
+    assert first.state.user_conditions.environment == "indoor"
+
+    second = await run_agent_flow(
+        AgentRequest(
+            user_input="광화문 근처에서",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert second.llm_output.intent == "MODIFY"
+    assert second.state.user_conditions.search_center == "광화문"
+    assert second.state.user_conditions.weather == "rain"
+    assert second.state.user_conditions.weather_intent == "AVOID"
+    assert second.state.user_conditions.environment == "indoor"
+
+
+@pytest.mark.asyncio
 async def test_needs_clarification_skips_tool_and_recommendation() -> None:
     """LLM 단계 needs_clarification(눈/weather_intent 모호) — C 호출 자체를 안 한다."""
     store = InMemoryStateStore()

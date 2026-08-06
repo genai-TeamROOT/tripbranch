@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from app.providers.gemini_prompts import PROMPT_VERSION
 from app.schemas import (
+    ConcentrationIntent,
     Intent,
     LLMOutput,
     ModifyType,
@@ -19,6 +20,7 @@ from app.schemas import (
     PlaceTag,
     PlaceType,
     UserConditions,
+    WeatherIntent,
 )
 from app.state.operations import Operation
 from app.state.schema import UserConditions as StateUserConditions
@@ -46,6 +48,14 @@ _MULTI_FIELDS_UPDATE = ("place_types", "place_tags")
 _MULTI_FIELDS_ADD = ("exclude_tags", "special_requirements")
 _MULTI_FIELDS = _MULTI_FIELDS_UPDATE + _MULTI_FIELDS_ADD  # _KNOWN_FIELDS 계산용
 _KNOWN_FIELDS = frozenset(_SINGLE_FIELDS) | frozenset(_MULTI_FIELDS)
+
+# 위치 되묻기 답변은 보통 새 검색 중심점만 제공한다. 이때 LLM의 기본값
+# NO_MENTION/IGNORE는 "기존 조건을 해제"가 아니라 "이번 턴에 언급하지 않음"이므로
+# 앞 턴의 날씨·혼잡도 의도를 덮어쓰면 안 된다.
+_CLARIFICATION_DEFAULT_FIELDS = {
+    "weather_intent": WeatherIntent.NO_MENTION,
+    "concentration_intent": ConcentrationIntent.IGNORE,
+}
 
 # int-01-recommend.md §7 place_tag → place_type 매핑 (39개, conditions-schema.md §2 전문 기준).
 _TAG_TO_TYPE: dict[PlaceTag, PlaceType] = {
@@ -131,7 +141,10 @@ def transform(
             and not _has_explicit_reset_phrase(user_input)
         )
         reset_scope = None if answers_clarification else "soft"
-        operations = _full_replace_operations(llm_output.recommend.conditions)
+        operations = _full_replace_operations(
+            llm_output.recommend.conditions,
+            preserve_clarification_defaults=answers_clarification,
+        )
 
     elif llm_output.intent is Intent.MODIFY and llm_output.modify is not None:
         modify = llm_output.modify
@@ -196,7 +209,11 @@ def _serialize(value: object) -> object:
     return str(value)
 
 
-def _full_replace_operations(conditions: UserConditions) -> list[Operation]:
+def _full_replace_operations(
+    conditions: UserConditions,
+    *,
+    preserve_clarification_defaults: bool = False,
+) -> list[Operation]:
     """RECOMMEND: conditions의 non-null/non-empty 필드 전부를 변환한다.
 
     exclude_tags/special_requirements는 B의 field_spec.py상 Add/Remove만 허용되고
@@ -209,6 +226,11 @@ def _full_replace_operations(conditions: UserConditions) -> list[Operation]:
     operations: list[Operation] = []
     for field in _SINGLE_FIELDS:
         value = getattr(conditions, field)
+        if (
+            preserve_clarification_defaults
+            and _CLARIFICATION_DEFAULT_FIELDS.get(field) == value
+        ):
+            continue
         if value is not None:
             operations.append(Operation(op="Update", field=field, value=_serialize(value)))
     for field in _MULTI_FIELDS_UPDATE:

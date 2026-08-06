@@ -124,6 +124,67 @@ async def test_classify_intent_modify_requires_previous_recommendation() -> None
     assert without_history.data.intent is Intent.RECOMMEND
 
 
+@pytest.mark.parametrize(
+    "user_input",
+    [
+        "광화문 근처에서",
+        "광화문 근처",
+        "광화문 근처 어때?",
+        "종로3가역 근처에서",
+        "북촌 근처에서",
+        "광화문",
+    ],
+)
+@pytest.mark.asyncio
+async def test_classify_intent_location_only_with_history_is_modify(user_input: str) -> None:
+    """TP-67: 이전 추천 뒤 위치만 제시하면 새 추천이 아니라 조건 변경이다."""
+    provider = FakeLLMProvider()
+
+    result = await provider.classify_intent(
+        user_input, has_previous_recommendation=True, shown_place_count=5
+    )
+
+    assert result.data.intent is Intent.MODIFY
+
+
+@pytest.mark.parametrize(
+    "user_input",
+    [
+        "광화문 근처에서",
+        "광화문 근처",
+        "광화문 근처 어때?",
+        "종로3가역 근처에서",
+        "북촌 근처에서",
+    ],
+)
+@pytest.mark.asyncio
+async def test_classify_intent_location_only_without_history_is_recommend(user_input: str) -> None:
+    provider = FakeLLMProvider()
+
+    result = await provider.classify_intent(
+        user_input, has_previous_recommendation=False, shown_place_count=0
+    )
+
+    assert result.data.intent is Intent.RECOMMEND
+
+
+@pytest.mark.asyncio
+async def test_extract_modify_conditions_location_only_changes_search_center() -> None:
+    provider = FakeLLMProvider()
+    current = UserConditions(
+        search_center="경복궁",
+        weather=StatedWeather.RAIN,
+        weather_intent=WeatherIntent.AVOID,
+        environment=Environment.INDOOR,
+    )
+
+    output = (await provider.extract_modify_conditions("광화문 근처에서", current)).data
+
+    assert output.modify.modify_type is ModifyType.CHANGE_CONDITION
+    assert output.modify.condition_changes.search_center == "광화문"
+    assert output.modify.changed_fields == ["search_center"]
+
+
 @pytest.mark.asyncio
 async def test_extract_modify_conditions_tc07_reject_all() -> None:
     provider = FakeLLMProvider()
