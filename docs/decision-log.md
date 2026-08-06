@@ -1097,9 +1097,12 @@
 - 상태: 사실 전달과 `NO_MENTION` 수용은 `Implemented`(2026-08-05, PR #97),
   판정 이관(사실 기반 + 발화 우선)은 `Implemented`(2026-08-05, D). 2차 Scoring
   배선 정리(A)와 `WeatherForecast.condition` 필드 제거(C)도 `Implemented`
-  (2026-08-06). 사실/판정 분리는 이로써 완결됐다 — 남은 항목(도메인 모델의
-  `condition`, `conditions.environment`, `tool_intelligence`의 벤더 코드 노출)은
-  아래 "남은 것" 참고
+  (2026-08-06). 도메인 모델 `WeatherForecastSlot.condition`과 그 연쇄
+  (`SelectedWeatherForecast.condition`, `map_sky_pty_to_condition()`,
+  `tool_intelligence` 계약, `fake_weather_condition` 설정)도 `Implemented`
+  (2026-08-06, C가 D 소유 파일 1줄을 포함해 처리). 사실/판정 분리는 이로써
+  완결됐다 — 남은 항목(`conditions.environment`, `tool_intelligence`의 벤더 코드
+  노출)은 아래 "남은 것" 참고
 - 배경: D-049(`conditions.weather` 미사용)를 확인하다가 날씨 처리 전반을 훑었고,
   서로 얽힌 문제 다섯 개가 나왔다. 하나씩 고치면 다른 하나가 어긋나는 구조라 함께
   정리한다.
@@ -1213,11 +1216,6 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 
 #### 남은 것 (`Proposed`)
 
-- **`WeatherForecastSlot.condition`(D 소유 도메인 모델)** — A–C 계약에서는 빠졌지만
-  도메인 모델에는 필수 필드로 남아 있어, C가 `map_sky_pty_to_condition()`으로 계속
-  채운다. 이 필드를 지우면 `SelectedWeatherForecast.condition`(C) →
-  `tool_intelligence/mappers.py`(소유 불명)까지 연쇄하므로 아래 항목과 함께 다뤄야
-  한다.
 - **`conditions.environment` 처리 방침** (문제 5) — 살릴지 제거할지 미정
 - **`tool_intelligence` 계약의 `precipitation_type`** — 기상청 코드가 원문으로 노출돼
   있다. 이번 범위에 넣지 않았다. 이 디렉터리는 `package_work_breakdown.md`의 A/B/C/D
@@ -1318,3 +1316,4 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-05 | D-051 판정 이관 구현 완료 — `weather_judgment.py` 신설(사실/발화 기반 판정 + 의도 재해석), `recommendation_pipeline.py`가 PR #102의 `conditions` 파라미터를 받아 사실 우선·발화 폴백으로 배선, `resolve_weather_condition()` public 전환(2차 Scoring 재사용용), `weather_ignored` 판별을 IGNORE 전용으로 정정. 2차 Scoring 배선 통일과 `condition` 필드 제거는 남은 것으로 기록 |
 | 2026-08-05 | D-051 근거 문장 정확도 수정 — 판정 함수가 `WeatherReason`(rain/snow/heat/cold)을 함께 반환하도록 바꾸고 `scoring.py`/`evidence.py`/`explanation.py`까지 관통시켜, "폭염인데 비 예보"·"ENJOY로 GOOD인데 맑은 날씨"라고 말하던 사실-근거 불일치를 해소 |
 | 2026-08-05 | D-051 기온 판정을 기상청 주의보/경보 2단계(33·35°C, -12·-15°C)로 재설계 — 주의보~경보 사이를 NEUTRAL로 두어 근거 있는 완충 구간 확보. 30~32°C 등 주의보 미만 구간은 의도적으로 미해결로 남김 |
+| 2026-08-06 | D-051 `condition` 전면 제거 — `WeatherForecastSlot.condition`(D 소유)부터 `SelectedWeatherForecast.condition`, `map_sky_pty_to_condition()`, `tool_intelligence` 계약, `fake_weather_condition` 설정까지 걷어냄. `tool-intelligence-contract-v1.md`의 `TI-09`를 `Superseded`로, §9 `api_weather` 매핑을 D-038 무효로 반영 |

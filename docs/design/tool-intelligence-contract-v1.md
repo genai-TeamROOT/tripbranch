@@ -8,7 +8,7 @@
 | 버전 | v1.0 |
 | 상태 | **확정 — v1 구현 기준** |
 | 작성 범위 | A(Agent Runtime) ↔ C(Tool Intelligence) 요청·응답 경계 |
-| 최종 수정 | 2026-07-24 |
+| 최종 수정 | 2026-08-06 |
 
 > 이 문서는 A Runtime과 C Tool Intelligence 사이의 v1 요청·응답 형식과
 > 책임 경계를 정의한다. 아직 v1 범위에 포함되지 않은 정책은 `후속 결정`으로
@@ -68,7 +68,7 @@
 | `TI-06` | 응답 payload | Tool별 필드 / 공통 `data` | 공통 `data` | `Contract` |
 | `TI-07` | metadata | 단일 객체 / 배열 | 복합 Tool을 위해 배열 | `Contract` |
 | `TI-08` | A↔C 위치 표현 | 문자열 / 좌표 객체 | 좌표 객체 | `Accepted` |
-| `TI-09` | 날씨 enum | A의 5개 / C의 기존 3개 | `good/neutral/bad` 유지 | `Accepted` |
+| `TI-09` | 날씨 enum | A의 5개 / C의 기존 3개 | ~~`good/neutral/bad` 유지~~ → 판정 자체를 D로 이관 | `Superseded` (D-038·D-051) |
 | `TI-10` | 알 수 없는 입력 필드 | 허용 / 거부 | strict validation | `Contract` |
 
 이 표는 현재 구현 및 A·C 협의 결과를 반영한 v1 기준이다.
@@ -647,15 +647,12 @@ Provider 진단용 `raw_common`과 `raw_intro`는 A 응답에서 제외한다.
 ### 8.4 `get_weather_forecast`
 
 ```ts
-type WeatherCondition = "good" | "neutral" | "bad";
-
 type GetWeatherForecastData = {
   location: Coordinates;
   grid: {
     x: number;
     y: number;
   };
-  condition: WeatherCondition;
   sky_code: string | null;
   precipitation_type: string | null;
   data_type: "forecast";
@@ -668,6 +665,11 @@ type GetWeatherForecastData = {
   selection_method: "nearest" | "earliest_available";
 };
 ```
+
+`condition`(`good | neutral | bad`)은 **D-051로 제거됐다.** 날씨는 C가 사실을,
+D가 판정을 맡는다 — C는 `sky_code`와 `precipitation_type`만 넘기고, 사용자
+`weather_intent`와 합친 3단계 판정은 D의 `judge_weather_condition_from_facts()`가
+한다. C가 판정값을 미리 채우면 같은 사실에 대해 두 개의 판정이 생긴다.
 
 현재 Weather Provider는 온도와 습도를 반환하지 않는다. 따라서 A 응답에도
 `temperature`, `humidity`를 임의로 추가하지 않는다.
@@ -686,7 +688,6 @@ type GetWeatherForecastData = {
       "x": 60,
       "y": 127
     },
-    "condition": "bad",
     "sky_code": "4",
     "precipitation_type": "1",
     "data_type": "forecast",
@@ -757,15 +758,18 @@ C는 `ApiContext` 자체를 생성하거나 B State를 갱신하지 않는다. �
 | --- | --- | --- |
 | `gps_location` | `resolve_location.data.location` | A |
 | `gps_location_updated_at` | `resolve_location.data.retrieved_at` | A |
-| `api_weather` | `get_weather_forecast.data.condition` | A |
-| `api_weather_updated_at` | `get_weather_forecast.data.retrieved_at` | A |
+
+`api_weather` / `api_weather_updated_at`은 **D-038로 무효가 됐다.** 날씨를
+세션 컨텍스트에 조회·저장하던 `session_orchestrator`의 경로가 사라져
+`api_context.api_weather`는 이제 항상 `null`이다. C Response에서 이 값으로
+변환되는 항목은 없다.
 
 A↔C Tool Interface의 위치는 `Coordinates` 객체로 확정했다. 장소명은 A가
 `resolve_location`으로 좌표 변환을 요청하고, 성공 응답의 좌표를 후속 Tool에
 전달한다.
 
-A의 `api_weather`는 C의 기존 `good | neutral | bad`를 그대로 사용하는 것으로
-확정했다. `rain | snow | hot | cold | good` 변환은 이번 계약에 포함하지 않는다.
+`TI-09`(A의 `api_weather`가 C의 `good | neutral | bad`를 그대로 사용)는
+D-038·D-051로 무효다. C는 3단계 판정값을 만들지 않고, A도 이 값을 받지 않는다.
 
 ## 10. 오류 응답 예시 (`Contract`)
 
@@ -873,6 +877,7 @@ A는 `resolve_location` 결과의 좌표를 장소와 날씨 요청에 전달할
 | 2026-07-24 | `TI-09` | 날씨는 `good/neutral/bad` 유지 | A·C·D | 기존 C Scoring 호환 유지 |
 | 2026-07-24 | 운영시간 | 원문과 정규화된 시간 구간 모두 반환 | A·C | 원본 보존과 계산 지원 |
 | 2026-07-24 | metadata | `retrieved_at`은 실제 외부 조회·정규화 완료 시각 | A·C | 데이터 최신성 의미 유지 |
+| 2026-08-06 | `TI-09` 무효화 | `get_weather_forecast.data.condition` 제거, §9의 `api_weather` 매핑 삭제 | C | D-038로 `api_weather` 경로가, D-051로 C의 날씨 판정이 각각 사라짐 |
 
 ## 16. 구현 및 후속 작업
 

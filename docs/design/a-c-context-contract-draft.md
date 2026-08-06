@@ -205,8 +205,12 @@ class ResolvedLocation(BaseModel):
 
 
 class WeatherForecast(BaseModel):
-    condition: Literal["good", "neutral", "bad"]
     forecast_for: datetime
+    # D-051: 판정 없는 날씨 "사실"만 싣는다. 기상청 코드(SKY/PTY)를 그대로
+    # 넘기지 않고 C가 도메인 용어로 옮긴다 — 코드 체계가 D까지 새면 기상 API를
+    # 바꿀 때 D도 함께 고쳐야 한다.
+    precipitation: Literal["none", "rain", "snow", "sleet", "shower"] | None = None
+    sky: Literal["clear", "cloudy", "overcast"] | None = None
     temperature_celsius: float | None = None
 
 
@@ -270,7 +274,7 @@ class ResponseMetadata(BaseModel):
 | Context | C가 반환하는 내용 | D Recommendation의 사용 예 |
 | --- | --- | --- |
 | `location` | 해석된 장소명·좌표·주소 | 검색 중심과 거리 계산 기준 |
-| `weather` | `good`/`neutral`/`bad` 예보와 예보 시각 | 날씨 Feature 계산 |
+| `weather` | 예보 시각과 날씨 사실(`precipitation`/`sky`/`temperature_celsius`) | 사용자 의도와 합쳐 3종 판정을 내린 뒤 날씨 Feature 계산 |
 | `places` | 후보 장소, 좌표, 분류, 원본·정규화 운영정보 | Candidate 생성·운영시간·거리 계산 |
 | `holidays` | 해당 시점의 공휴일 정보 | 후속 운영 판단 보조. v0 점수 반영은 TBD |
 | `concentration` (제안, C 확인 필요) | `conditions.concentration_intent`가 `AVOID`/`SEEK`일 때만, 지역(종로구) 단위 관광지 집중률 목록 | Scoring `concentration` Feature 계산 — **순위에 반영됨** ([recommendation-scoring.md §4.4](./recommendation-scoring.md), A 제안) |
@@ -520,9 +524,16 @@ sequenceDiagram
 응답에 결합하는 배선은 A 영역의 후속 작업이다.
 
 초기 Context의 Tool 선택은 C의 `context-tool-plan-v1` Rule이 담당한다. 위치,
-장소, 공휴일은 추천 Context에 필요한 기본 Tool이며, 날씨는
-`weather_intent=NO_MENTION`일 때만 조회한다. `AVOID`/`ENJOY`는 사용자 발화
-weather를 직접 쓰고, `IGNORE`는 명시적 무관 요청이라 Weather 호출을 생략한다.
+장소, 공휴일은 추천 Context에 필요한 기본 Tool이며, 날씨 조회 여부는
+`weather_intent`로 갈린다(D-051):
+
+- `IGNORE`("날씨 상관없어" 명시) — 쓰지 않을 값이라 조회하지 않는다.
+- `AVOID`/`ENJOY` — 사용자 발화 weather를 쓰되, 발화에서 5단계 값을 뽑지 못한
+  경우(`conditions.weather`가 `null`)에는 조회해서 채운다.
+- `NO_MENTION`(또는 과도기 `null`) — 언급이 없어도 조회한다. 말하지 않았다고
+  무시하면 비 오는 날 야외 장소를 그대로 추천하게 된다
+  ([int-01-recommend.md §10](./int-01-recommend.md)).
+
 의도적으로 생략한 Tool은 실패나 부분 성공으로 계산하지 않는다.
 
 후보 조회 과정에서 C는 위치·반경·장소 유형처럼 Provider 요청에 필요한 **조회 조건**을
@@ -530,9 +541,15 @@ weather를 직접 쓰고, `IGNORE`는 명시적 무관 요청이라 Weather 호�
 선정하는 **추천 필터**는 적용하지 않는다.
 
 요청의 `conditions.weather`는 사용자가 언급한 5종 날씨 조건(`rain`, `snow`,
-`hot`, `cold`, `good`)이고, 응답의 `weather.condition`은 C가 Provider 결과를
-정규화한 3종 날씨(`good`, `neutral`, `bad`)다. 두 값은 역할이 다르므로 서로
-직접 대입하지 않는다.
+`hot`, `cold`, `good`)이고, 응답의 `weather`는 C가 Provider 결과를 정규화한
+**사실**(`precipitation`, `sky`, `temperature_celsius`)이다. 두 값은 역할이
+다르므로 서로 직접 대입하지 않는다.
+
+**C는 3종 판정(`good`/`neutral`/`bad`)을 내리지 않는다(D-051).** 판정에는
+사용자 의도(`weather_intent`의 `AVOID`/`ENJOY`)가 필요한데 그 값을 가진 쪽은
+D이고, C가 미리 판정하면 같은 사실에 두 개의 판정이 생긴다. 응답에 있던
+`weather.condition` 필드는 그래서 제거됐고, 판정은 D의
+`resolve_weather_condition()`이 수행한다.
 
 ### 5.3 응답 예시
 
