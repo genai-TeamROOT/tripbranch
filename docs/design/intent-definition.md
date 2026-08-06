@@ -4,7 +4,7 @@
 
 | 항목 | 값 |
 |------|-----|
-| 버전 | v0.4 |
+| 버전 | v0.6 |
 | 상태 | 초안 (Draft) |
 | 브랜치 | `docs/intent-definition` |
 | 경로 | `docs/design/intent-definition.md` |
@@ -30,11 +30,12 @@
 
 ---
 
-## 2. MVP Intent 목록 (6개)
+## 2. MVP Intent 목록 (7개)
 
 | ID | Intent | 정의 | 후속 처리 | 대표 질문 |
 |----|--------|------|-----------|-----------|
 | INT-01 | `RECOMMEND` | 조건에 맞는 장소를 추천받고 싶음 | 조건 추출 → 필터링 → 점수 계산 → 추천 | 비 오는데 갈 만한 곳 추천, 부모님과 갈 카페 추천 |
+| INT-07 | `SCHEDULE` | 여러 장소를 시간 순서로 묶은 일정·코스를 받고 싶음 | **1차 구현:** Intent 분류·안내만. 후보 조회·일정 편성은 후속 | 오늘 오후 일정 짜줘, 반나절 코스 만들어줘 |
 | INT-02 | `INFO` | 특정 장소의 정보를 알고 싶음 | 장소 식별 → API 조회 → 정보 응답 | 경복궁 오늘 열어?, 주차 가능해? |
 | INT-03 | `MODIFY` | 기존 추천을 변경하고 싶음 | 변경 조건 추출 → 기존 상태 병합 → 재추천 | 다른 곳 추천해줘, 더 가까운 곳으로 |
 | INT-04 | `COMPARE` | 추천받은 장소들을 비교하고 싶음 | 비교 대상 식별 → 항목별 비교 → 설명 | A랑 B 중 어디가 좋아?, 어디가 더 가까워? |
@@ -45,7 +46,6 @@
 
 | ID | Intent | 정의 | 대표 질문 |
 |----|--------|------|-----------|
-| INT-07 | `REPLAN` | 여러 장소를 조합하거나 기존 일정을 재구성 | 추천해준 곳 포함해서 일정 짜줘, 2시간 코스 만들어줘 |
 | INT-08 | `IMAGE` | 현장 사진을 분석 | 이 안내문 뭐라고 써있어?, 휴관이야? |
 
 ---
@@ -57,6 +57,7 @@
 | Intent | 상세 문서 |
 |--------|-----------|
 | RECOMMEND | [int-01-recommend.md](./int-01-recommend.md) |
+| SCHEDULE | [int-07-schedule.md](./int-07-schedule.md) |
 | INFO | [int-02-info.md](./int-02-info.md) |
 | MODIFY | [int-03-modify.md](./int-03-modify.md) |
 | COMPARE | [int-04-compare.md](./int-04-compare.md) |
@@ -72,11 +73,11 @@
 ```
 1. OUT_OF_SCOPE → 유해 발언 / 서비스 범위 외 (즉시 차단)
 2. IMAGE        → 이미지 첨부 여부 (즉시 판별) - 심화
-3. MODIFY       → 이전 추천 이력 존재 + 변경/거절 표현
-4. COMPARE      → 이전 추천 이력 존재 + 비교 표현
-5. INFO         → 특정 장소명 + 정보성 질문
-6. RECOMMEND    → 장소 추천 요청 (명시적 또는 조건 제시)
-7. REPLAN       → 일정/코스/시간 재구성 표현 - 심화
+3. SCHEDULE     → 일정/코스/방문 순서 요청
+4. MODIFY       → 이전 추천 이력 존재 + 변경/거절 표현
+5. COMPARE      → 이전 추천 이력 존재 + 비교 표현
+6. INFO         → 특정 장소명 + 정보성 질문
+7. RECOMMEND    → 장소 추천 요청 (명시적 또는 조건 제시)
 8. GENERAL      → 여행 관련 배경지식/상식
 ```
 
@@ -94,14 +95,20 @@
 | INFO 응답 직후 | "거기 근처 카페는?" | RECOMMEND | 위치 기준 새 추천 |
 | 추천 이력 있음 | "카페 말고 맛집" | MODIFY | 조건 변경 |
 | 추천 이력 없음 | "카페 말고 맛집" | RECOMMEND | place_type=restaurant |
+| 추천 이력 무관 | "오늘 오후 일정 짜줘" | SCHEDULE | 시간 순서의 복수 장소 계획 요청 |
+| 추천 이력 있음 | "광화문 근처에서" (지명 + 근처/조사) | MODIFY | search_center만 변경 (D-053) |
+| 추천 이력 없음 | "광화문 근처에서" | RECOMMEND | search_center 조건으로 처리 |
+| 추천 이력 있음 | "광화문" (지명 단독) | INFO | 위치 변경이 아니라 그 장소를 지목한 질문 (D-053) |
 
 ### 경계 사례
 
 | 입력 | 판정 | 이유 |
 |------|------|------|
-| "경복궁" (단독) | INFO | 정보 조회 의도 |
+| "경복궁" (단독) | INFO | 정보 조회 의도 (추천 이력이 있어도 INFO — D-053) |
 | "경복궁 같은 곳" | RECOMMEND | 유사 장소 추천 |
-| "경복궁 근처 카페" | RECOMMEND | 경복궁은 search_center 조건 |
+| "오늘 오후 종로 반나절 코스 짜줘" | SCHEDULE | 시간 순서의 복수 장소 계획 요청 |
+| "오늘 갈 만한 곳 추천해줘" | RECOMMEND | 일정/코스/순서 맥락 없는 단순 추천 |
+| "경복궁 근처 카페" | RECOMMEND | 경복궁은 search_center 조건 (추천 이력이 있으면 조건 변경이므로 MODIFY) |
 | "경복궁 오늘 열어?" | INFO | 운영시간 질문 |
 | "경복궁 오늘 열어? 안 열면 다른 곳" | INFO (우선) | 복합 입력 → 첫 번째 의도 처리 후 결과에 따라 다음 턴 유도 |
 | "첫 번째 괜찮아, 거기 몇 시까지 해?" | INFO | 장소 선택 + 정보 질문 |
@@ -117,7 +124,7 @@
 
 ## 6. Conditions 공통 스키마
 
-RECOMMEND, MODIFY, REPLAN이 공유하는 조건은 3층 구조로 관리된다.
+RECOMMEND, MODIFY, SCHEDULE가 공유할 조건은 3층 구조로 관리된다.
 조건 스키마의 전체 정의는 [conditions-schema.md](./conditions-schema.md)가 소유한다.
 
 ```
@@ -151,7 +158,7 @@ RECOMMEND, MODIFY, REPLAN이 공유하는 조건은 3층 구조로 관리된다.
 
 | Intent | 추출 대상 | 비고 |
 |--------|-----------|------|
-| `REPLAN` | 포함 장소, 시간 제약, 이동 수단, 우선순위 | Conditions 공통 스키마 재사용 |
+| `SCHEDULE` | 포함 장소, 시간 제약, 이동 수단, 우선순위 | 1차는 분류만 구현. 후속 단계에서 Conditions 공통 스키마 재사용 |
 | `IMAGE` | 이미지 데이터, 질문 유형 (OCR/장소식별/상태확인) | 별도 처리 파이프라인 |
 
 ---
@@ -165,3 +172,4 @@ RECOMMEND, MODIFY, REPLAN이 공유하는 조건은 3층 구조로 관리된다.
 | v0.3 | 2026-07-23 | Conditions 3층 구조 반영(6절), weather/current_location 필드 설명을 user_conditions/api_context 기준으로 수정(6·7절) |
 | v0.4 | 2026-07-23 | 소유권 기반 문서 정리: 6절(Conditions 스키마 전문), 7절(조건 부족 시 기본 정책 표)을 conditions-schema.md 참조 링크로 교체. Intent 판별 규칙(1~5절)은 이 문서가 계속 소유 |
 | v0.5 | 2026-07-29 | conditions-schema.md에 `concentration_intent` 필드 추가(14→15개)에 맞춰 6절 필드 수 표기 갱신 |
+| v0.6 | 2026-08-06 | INT-07 이름을 기존 REPLAN에서 SCHEDULE로 통일. 일정·코스·방문 순서 요청의 1차 Intent 분류 도입 및 후속 일정 편성 범위 명시 |

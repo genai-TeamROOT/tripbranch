@@ -9,6 +9,7 @@ from __future__ import annotations
 from app.providers.gemini_prompts import PROMPT_VERSION
 from app.schemas import (
     ConcentrationIntent,
+    Environment,
     Intent,
     LLMOutput,
     ModifyPayload,
@@ -396,12 +397,17 @@ def test_recommend_answering_clarification_keeps_previous_conditions() -> None:
 
 
 def test_recommend_answering_clarification_keeps_prior_intents_on_default_values() -> None:
-    """위치 되묻기 답변의 NO_MENTION/IGNORE는 기존 의도를 해제하지 않는다."""
+    """위치 되묻기 답변의 NO_MENTION/IGNORE/ANY는 기존 의도를 해제하지 않는다.
+
+    environment는 Environment에 NO_MENTION 상당 값이 없어 "언급 안 함"이 ANY로 오는데,
+    이걸 그대로 Update하면 앞 턴의 indoor(비를 피하려던 조건)가 사라진다.
+    """
     request = transform(
         _recommend(
             search_center="경복궁",
             weather_intent=WeatherIntent.NO_MENTION,
             concentration_intent=ConcentrationIntent.IGNORE,
+            environment=Environment.ANY,
         ),
         _context(pending_clarification="location_required"),
         "경복궁 근처에서",
@@ -411,6 +417,19 @@ def test_recommend_answering_clarification_keeps_prior_intents_on_default_values
     assert ops[("Update", "search_center")] == "경복궁"
     assert ("Update", "weather_intent") not in ops
     assert ("Update", "concentration_intent") not in ops
+    assert ("Update", "environment") not in ops
+
+
+def test_recommend_answering_clarification_still_applies_explicit_environment() -> None:
+    """되묻기 답변이라도 실내/실외를 명시하면 그 값은 적용한다."""
+    request = transform(
+        _recommend(search_center="경복궁", environment=Environment.OUTDOOR),
+        _context(pending_clarification="location_required"),
+        "경복궁 근처 야외로",
+    )
+
+    ops = {(op.op, op.field): op.value for op in request.operations}
+    assert ops[("Update", "environment")] == "outdoor"
 
 
 def test_recommend_without_pending_clarification_still_resets() -> None:

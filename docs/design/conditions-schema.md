@@ -60,6 +60,8 @@ interface Conditions {
   time_available: number | null;
 
   // 환경
+  // 언급이 없으면 null. "any"는 "실내외 상관없어"처럼 무관함을 명시했을 때만 쓴다
+  // — 미언급을 "any"로 표현하면 되묻기 답변 턴에서 앞 턴의 indoor를 덮어쓴다(D-053).
   environment: "indoor" | "outdoor" | "any" | null;
 
   // 동행

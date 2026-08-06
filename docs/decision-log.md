@@ -690,8 +690,9 @@
   reset이 적용되는 흐름, 성공 추천 후 플래그가 남지 않는 흐름을 테스트한다.
 - 제한사항: `pending_clarification`은 InMemory 상태에는 반영됐지만, 현재
   `SupabaseStateStore`와 DB migration에는 컬럼·영속화 매핑이 없다. Supabase 모드에서
-  턴 간 되묻기 상태를 보존하려면 별도 migration과 store 매핑을 추가해야 한다. 단독 위치 답변이
-  `INFO`로 분류되는 문제는 프롬프트·Intent 분류의 별도 과제로 유지한다.
+  턴 간 되묻기 상태를 보존하려면 별도 migration과 store 매핑을 추가해야 한다. 단독 위치 답변의
+  분류 문제는 TP-67(PR #113)과 D-053에서 결론이 났다 — 지명에 근처/조사가 붙은 발화는 이전
+  추천이 있으면 `MODIFY`로 분류하고, 지명 단독은 정보 조회 의도로 보아 `INFO`를 유지한다.
 
 ### D-040 — 혼잡도(concentration) 2차 Scoring 구현: 안 B 채택, D 신규 인터페이스 확정
 
@@ -1272,6 +1273,83 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   모델 소진/4xx 무폴백/로깅), `tests/test_provider_settings.py`(신규 5건).
   전체 회귀(1020+ passed) 확인.
 
+### D-053 — 위치 변경 판정에서 지명 단독은 제외하고, `environment` 미언급은 조건을 해제하지 않는다
+
+- 상태: `Accepted`, 구현 완료
+- 배경: TP-67(PR #113)에서 "이전 추천 뒤 위치만 바꾸는 발화가 RECOMMEND로 분류되어
+  soft reset으로 앞 턴 조건이 사라지는" 문제를 프롬프트·Fake·되묻기 경로에서 고쳤다.
+  그 결과를 재검증하면서 두 가지가 남아 있는 걸 확인했다.
+  1. `environment`가 여전히 소실된다. 되묻기 답변 경로는 `reset_scope=None`이라 조건이
+     유지되지만, LLM이 미언급을 `ANY`로 표현해 보내면 `_full_replace_operations()`가
+     `Update`를 만들어 앞 턴의 `indoor`(비를 피하려던 조건)를 덮어쓴다. TP-67에서
+     `weather_intent=NO_MENTION`·`concentration_intent=IGNORE`는 막았지만
+     `environment`는 목록에 없었다 — 원 증상(`environment: indoor → any`)의 절반이
+     남아 있던 셈이다.
+  2. 지명 단독(`"경복궁"`)까지 위치 변경 MODIFY로 분류됐다. 추천을 받은 뒤 지명 하나로
+     그 장소를 묻는 흐름(경계 사례 `"경복궁" (단독) → INFO`)이 위치 변경에 가려진다.
+- 결정 1 (지명 단독은 INFO): 위치 변경 판정은 **지명에 근처/주변 또는 조사·어미가 붙은
+  발화**("광화문 근처에서", "광화문 근처", "광화문으로")로 한정한다. 지명 단독은 이전
+  추천 이력이 있어도 INFO로 둔다 — 위치를 바꾸려는 사용자는 보통 조사나 근처 표현을
+  함께 쓰고, 지명만 던지는 건 그 장소를 지목한 질문으로 보는 쪽이 실제 발화에 가깝다.
+  `"경복궁 오늘 열어?"`처럼 질문 형태는 원래부터 INFO라 영향이 없다.
+- 결정 2 (`environment` 미언급): 추출 프롬프트에 "언급이 없으면 null, `any`는 무관함을
+  명시했을 때만"이라는 규칙을 명시하고(근본), 되묻기 답변 경로의
+  `_CLARIFICATION_DEFAULT_FIELDS`에 `environment: ANY`를 추가한다(안전망). `ANY`를
+  미언급으로 보는 게 안전한 이유는 되묻기 답변에 실내외 무관 선언이 함께 오는 경우가
+  드물기 때문이고, 실내/실외를 명시한 값(`indoor`/`outdoor`)은 그대로 적용된다.
+- 한계: `WeatherIntent`에는 `NO_MENTION`과 `IGNORE`가 나뉘어 있지만 `Environment`에는
+  `ANY` 하나뿐이라 "언급 안 함"과 "실내외 상관없음"을 타입으로 구분할 수 없다. 그래서
+  구분을 프롬프트 규칙에 의존하고, 되묻기 경로에서는 미언급 쪽으로 해석한다. 스키마에
+  `NO_MENTION` 상당 값을 추가하는 건 A-C/B 계약이 함께 움직여야 해 별건으로 남긴다.
+- 범위 밖: 일반 RECOMMEND의 soft reset은 그대로 둔다(conditions-schema.md §6의 의도된
+  설계). 프롬프트를 고쳐도 LLM 분류는 확률적이라 간헐적으로 RECOMMEND로 오분류되면 그
+  턴의 조건은 여전히 소실되는데, 상태 레벨 방어(RECOMMEND의 soft reset 예외 확대)는
+  `_full_replace_operations()`의 "Add == replace" 등가성 가정을 깨뜨려
+  `exclude_tags`/`special_requirements` 처리까지 함께 손봐야 하므로 채택하지 않았다.
+  실서버 반복 측정에서 오분류가 잔존하면 그때 별건으로 다룬다.
+- 구현: `app/providers/gemini_prompts.py`(맥락 의존 규칙에서 지명 단독 제외 + 경계
+  사례 원복 + `environment` 추출 규칙 추가, `PROMPT_VERSION` 1.0.2),
+  `app/providers/stub.py`(`_is_location_only_change()`가 지명 단독을 False로),
+  `app/services/interpret/state_transform.py`(`_CLARIFICATION_DEFAULT_FIELDS`).
+- 확인 방법: `tests/test_llm_provider.py`(지명 단독이 이력 유무 무관하게 INFO),
+  `tests/test_state_transform.py`(되묻기 답변의 `ANY`는 Operation 미생성, 명시된
+  `outdoor`는 적용), `tests/test_agent_runtime.py`(되묻기 E2E에서 `weather`·
+  `environment` 유지). 전체 회귀 1137 passed / 22 skipped, ruff 통과.
+- 실 Gemini 측정(2026-08-06, `gemini-2.5-flash`, 프롬프트 1.0.2,
+  `has_previous_recommendation=True`/`shown_place_count=5`): TP-67 리포트의 발화 11종을
+  3회씩 재측정해 전부 의도한 값으로 고정됐다. 오분류 4종("광화문 근처에서", "광화문 근처",
+  "광화문 근처 어때?", "종로3가역 근처에서")이 모두 `MODIFY` 3/3, 지명 단독("광화문")은
+  `INFO` 3/3, 원래 정상이던 6종도 `MODIFY` 3/3을 유지했다. 리포트에서 5회 중 1회만
+  `MODIFY`였던 "북촌 근처에서"는 5회 반복에서 `MODIFY` 5/5로 흔들림이 사라졌다. 반대
+  방향 회귀도 확인했다 — 이력 없음 + "광화문 근처에서"는 `RECOMMEND` 5/5, "경복궁 오늘
+  열어?"는 `INFO` 5/5, "다른 곳 보여줘"는 `MODIFY` 5/5.
+- Fake와 실 Gemini의 판정 정렬(2026-08-06 해소): "경복궁 근처 카페 추천해줘"는 이전
+  추천이 있을 때 실 Gemini가 `MODIFY` 5/5로 분류한다(위치·카테고리를 바꾸는 조건 변경으로
+  보는 쪽이 맞다고 확인함). `FakeLLMProvider`는 `_is_location_only_change()`가 "카페"라는
+  잔여 조건 때문에 False가 되어 fallback인 `RECOMMEND`로 떨어졌는데, 이 차이를 없앴다 —
+  Fake는 회귀 테스트가 실제 설계를 반영해야 하는 물건이라(stub.py docstring, PR #113 방침)
+  갈리는 지점을 남겨둘 이유가 없다.
+  - `_is_location_scoped_change()`를 새로 두고 `_is_location_only_change()`는 그대로
+    뒀다. 전자는 "지명 바로 뒤에 근처/주변이 붙는가"만 보므로 잔여 조건이 있어도 통과하고,
+    지명 단독은 뒤에 근처/주변이 없어 자연히 빠져 결정 1(지명 단독은 `INFO`)이 유지된다.
+    정보/일반 질문 어휘(`_INFO_QUESTION_MARKERS`/`_GENERAL_MARKERS`)가 섞이면 빠지게 해
+    "경복궁 근처에 화장실 있어?"가 `INFO`, "경복궁 근처 동네는 어때?"가 `GENERAL`로 남는다.
+    두 함수를 합치지 않은 건 잔여 조건 화이트리스트(`_LOCATION_ONLY_REMAINDERS`)가
+    "광화문으로"·"광화문에서"처럼 근처/주변 없이 조사만 붙는 발화를 계속 맡아야 해서다.
+  - `extract_modify_conditions()`에 날씨 처리를 추가했다 — "비"면
+    `weather=RAIN`/`weather_intent=AVOID`/`environment=INDOOR`를 `changed_fields`와 함께
+    채운다. `extract_recommend_conditions()`의 기존 비 처리와 같은 결이다. `search_center`
+    갱신 조건에도 새 판정을 함께 물렸다.
+  - 이 차이에 기대던 `test_agent_runtime.py`의
+    `test_agent_context_request_weather_not_mixed_with_provider_weather`는 2턴째가 이제
+    `MODIFY` 경로를 타므로 그 전제를 명시(`intent == "MODIFY"` 단언)하도록 고치고,
+    원래 검증하려던 RECOMMEND 경로는 이력 없는 단일 턴으로 같은 발화를 태우는
+    `test_agent_recommend_path_weather_not_mixed_with_provider_weather`로 분리해 남겼다.
+  - 확인 방법: `tests/test_llm_provider.py`(지명+근처+다른 조건이 이력 있으면 `MODIFY`,
+    이력 없으면 `RECOMMEND`, 정보/일반 질문은 안 가려짐, MODIFY 경로 비 처리),
+    `tests/test_agent_runtime.py`(위 두 E2E). 전체 회귀 1145 passed / 22 skipped,
+    ruff 통과.
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -1317,3 +1395,4 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-05 | D-051 근거 문장 정확도 수정 — 판정 함수가 `WeatherReason`(rain/snow/heat/cold)을 함께 반환하도록 바꾸고 `scoring.py`/`evidence.py`/`explanation.py`까지 관통시켜, "폭염인데 비 예보"·"ENJOY로 GOOD인데 맑은 날씨"라고 말하던 사실-근거 불일치를 해소 |
 | 2026-08-05 | D-051 기온 판정을 기상청 주의보/경보 2단계(33·35°C, -12·-15°C)로 재설계 — 주의보~경보 사이를 NEUTRAL로 두어 근거 있는 완충 구간 확보. 30~32°C 등 주의보 미만 구간은 의도적으로 미해결로 남김 |
 | 2026-08-06 | D-051 `condition` 전면 제거 — `WeatherForecastSlot.condition`(D 소유)부터 `SelectedWeatherForecast.condition`, `map_sky_pty_to_condition()`, `tool_intelligence` 계약, `fake_weather_condition` 설정까지 걷어냄. `tool-intelligence-contract-v1.md`의 `TI-09`를 `Superseded`로, §9 `api_weather` 매핑을 D-038 무효로 반영 |
+| 2026-08-06 | D-053 신설 — TP-67(PR #113) 후속으로 위치 변경 판정에서 지명 단독을 제외해 `INFO`(정보 조회) 흐름을 지키고, `environment` 미언급(`ANY`)이 되묻기 답변에서 앞 턴의 `indoor`를 덮어쓰던 갭을 프롬프트 규칙 + 보존 목록으로 막음. `PROMPT_VERSION` 1.0.2 |

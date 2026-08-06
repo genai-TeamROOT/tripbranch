@@ -13,6 +13,7 @@ from __future__ import annotations
 from app.providers.gemini_prompts import PROMPT_VERSION
 from app.schemas import (
     ConcentrationIntent,
+    Environment,
     Intent,
     LLMOutput,
     ModifyType,
@@ -52,9 +53,16 @@ _KNOWN_FIELDS = frozenset(_SINGLE_FIELDS) | frozenset(_MULTI_FIELDS)
 # 위치 되묻기 답변은 보통 새 검색 중심점만 제공한다. 이때 LLM의 기본값
 # NO_MENTION/IGNORE는 "기존 조건을 해제"가 아니라 "이번 턴에 언급하지 않음"이므로
 # 앞 턴의 날씨·혼잡도 의도를 덮어쓰면 안 된다.
+#
+# environment도 같은 이유로 넣는다 — Environment에는 WeatherIntent의 NO_MENTION에
+# 해당하는 값이 없어 "언급 안 함"과 "실내외 상관없음"이 둘 다 ANY로 뭉개진다. 되묻기
+# 답변에 실내외 무관 선언이 함께 오는 경우는 드물어, ANY를 미언급으로 보는 쪽이 앞 턴의
+# indoor/outdoor를 지키는 데 안전하다. 근본 방지는 추출 프롬프트가 미언급 시 null을
+# 내도록 지시하는 쪽이고(gemini_prompts.py), 여기는 LLM이 그 규칙을 어겼을 때의 안전망이다.
 _CLARIFICATION_DEFAULT_FIELDS = {
     "weather_intent": WeatherIntent.NO_MENTION,
     "concentration_intent": ConcentrationIntent.IGNORE,
+    "environment": Environment.ANY,
 }
 
 # int-01-recommend.md §7 place_tag → place_type 매핑 (39개, conditions-schema.md §2 전문 기준).
@@ -165,7 +173,7 @@ def transform(
             # (거절 이력은 그대로 유지되므로 REJECT_ALL의 not_interested는 영향 없음.)
         reset_scope = _detect_reset_scope(user_input, modify.modify_type)
 
-    # INFO/COMPARE/GENERAL/OUT_OF_SCOPE: operations=[], rejected_places=[], reset_scope=None.
+    # SCHEDULE/INFO/COMPARE/GENERAL/OUT_OF_SCOPE: operations/rejected_places/reset_scope는 비운다.
 
     return StateApplyRequest(
         session_id=session_context.session_id,
