@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from app.domain.models import PlaceDetails, WeatherCondition
+from app.domain.models import PlaceDetails
 from app.domain.operating_hours import normalize_operating_schedule
 from app.place_search_policy import DEFAULT_PLACE_SEARCH_RADIUS_KM
 from app.providers.contracts import (
@@ -118,10 +118,12 @@ def test_resolve_location_response_returns_coordinates_and_retrieved_at() -> Non
     assert response.provider_metadata[0].retrieved_at == FIXED_RETRIEVED_AT
 
 
-@pytest.mark.parametrize("condition", list(WeatherCondition))
-def test_weather_response_preserves_existing_three_conditions(
-    condition: WeatherCondition,
-) -> None:
+def test_weather_response_carries_facts_without_judgment() -> None:
+    """D-051: 계약에서 3단계 판정(condition)을 걷어냈다.
+
+    `TI-09`(A의 `api_weather`가 C의 good/neutral/bad를 그대로 쓴다)는 무효다.
+    C는 기상청 코드만 옮기고, 판정은 사용자 의도를 가진 D가 내린다.
+    """
     result = WeatherForecastToolResult(
         status=ToolStatus.SUCCESS,
         forecast=SelectedWeatherForecast(
@@ -131,7 +133,6 @@ def test_weather_response_preserves_existing_three_conditions(
             grid_y=127,
             requested_visit_at=datetime(2026, 7, 24, 15, 0, tzinfo=UTC),
             forecast_for=datetime(2026, 7, 24, 15, 0, tzinfo=UTC),
-            condition=condition,
             sky_code="1",
             precipitation_type="0",
             data_type="forecast",
@@ -149,7 +150,9 @@ def test_weather_response_preserves_existing_three_conditions(
 
     assert response.status is ResponseStatus.SUCCESS
     assert response.data is not None
-    assert response.data.condition == condition.value
+    assert not hasattr(response.data, "condition")
+    assert response.data.sky_code == "1"
+    assert response.data.precipitation_type == "0"
     assert response.data.retrieved_at == FIXED_RETRIEVED_AT
 
 

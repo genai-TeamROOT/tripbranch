@@ -11,7 +11,6 @@ from app.domain.models import (
     HolidayEntry,
     HolidayResult,
     PlaceDetails,
-    WeatherCondition,
 )
 from app.providers.contracts import (
     ProviderMetadata,
@@ -119,7 +118,6 @@ def _weather(
                 grid_y=127,
                 requested_visit_at=RETRIEVED_AT,
                 forecast_for=RETRIEVED_AT,
-                condition=WeatherCondition.GOOD,
                 sky_code="1",
                 precipitation_type="0",
                 data_type="forecast",

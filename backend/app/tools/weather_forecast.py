@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from zoneinfo import ZoneInfo
 
-from app.domain.models import WeatherCondition, WeatherForecastSlot
+from app.domain.models import WeatherForecastSlot
 from app.errors import AppError
 from app.providers.contracts import ProviderMetadata
 from app.providers.protocols import WeatherProvider
@@ -49,7 +49,6 @@ class SelectedWeatherForecast:
     grid_y: int
     requested_visit_at: datetime
     forecast_for: datetime
-    condition: WeatherCondition
     sky_code: str | None
     precipitation_type: str | None
     data_type: str
@@ -158,7 +157,6 @@ class GetWeatherForecastTool:
                 grid_y=result.grid_y,
                 requested_visit_at=requested_visit_at,
                 forecast_for=selected.forecast_for,
-                condition=selected.condition,
                 sky_code=selected.sky_code,
                 precipitation_type=selected.precipitation_type,
                 temperature_celsius=selected.temperature_celsius,

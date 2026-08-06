@@ -89,7 +89,6 @@ def map_weather_response(
             ),
             grid_x=forecast.grid_x,
             grid_y=forecast.grid_y,
-            condition=forecast.condition.value,
             sky_code=forecast.sky_code,
             precipitation_type=forecast.precipitation_type,
             data_type="forecast",

@@ -94,12 +94,13 @@ async def test_kma_weather_real_smoke() -> None:
 
     assert result.status is WeatherToolStatus.SUCCESS
     assert result.forecast is not None
-    assert result.forecast.condition.value in {"good", "neutral", "bad"}
     assert result.forecast.data_type == "forecast"
     assert result.forecast.observed_at is None
     print(
         "KMA Weather: "
-        f"condition={result.forecast.condition.value}, "
+        f"sky_code={result.forecast.sky_code}, "
+        f"pty={result.forecast.precipitation_type}, "
+        f"temperature={result.forecast.temperature_celsius}, "
         f"forecast_for={result.forecast.forecast_for.isoformat()}"
     )
 

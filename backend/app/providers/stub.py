@@ -15,7 +15,6 @@ from zoneinfo import ZoneInfo
 from app.domain.models import (
     PlaceCategoryFilter,
     PlaceDetails,
-    WeatherCondition,
     WeatherForecastResult,
     WeatherForecastSlot,
 )
@@ -406,37 +405,35 @@ class FakeLLMProvider:
         return provider_result(result, source=ProviderSource.FAKE_LLM)
 
 
-# WeatherCondition을 기상청 SKY·PTY 코드로 되돌린다. fake도 실제 provider와 같은
-# "사실"을 내려줘야 한다 — D는 condition이 아니라 사실 3종(precipitation/sky/
-# temperature)으로 판정하므로(D-051), 코드를 비워두면 D 입력이 전부 None이 되어
-# condition을 BAD로 설정해도 판정은 NEUTRAL로 나온다. 값은 각각
-# map_sky_pty_to_condition()에 넣었을 때 원래 condition이 그대로 나오는 것들이다.
-_FAKE_SKY_PTY_BY_CONDITION: dict[WeatherCondition, tuple[str, str]] = {
-    WeatherCondition.GOOD: ("1", "0"),  # 맑음, 강수 없음
-    WeatherCondition.NEUTRAL: ("4", "0"),  # 흐림, 강수 없음
-    WeatherCondition.BAD: ("4", "1"),  # 흐림, 비
-}
+# SKY(하늘상태) 4 흐림, PTY(강수형태) 0 강수 없음 — 판정을 어느 쪽으로도 밀지 않는
+# 중립 조합이다. fake도 실제 provider와 같은 "사실"을 내려줘야 한다: D는 사실
+# 3종(precipitation/sky/temperature)으로 판정하므로(D-051) 코드를 비워두면 D
+# 입력이 전부 None이 되어 어떤 날씨 시나리오도 재현되지 않는다.
+_FAKE_DEFAULT_SKY_CODE = "4"
+_FAKE_DEFAULT_PRECIPITATION_TYPE = "0"
 
 # 폭염(33°C)·한파(-12°C) 경계에서 먼 값을 기본으로 둔다 — 기본 기온이 판정을
-# 흔들면 condition 인자의 의미가 흐려진다. 폭염·한파 시나리오는 생성자에
+# 흔들면 sky·pty 인자의 의미가 흐려진다. 폭염·한파 시나리오는 생성자에
 # temperature_celsius를 직접 넘겨서 만든다.
 _FAKE_DEFAULT_TEMPERATURE_CELSIUS = 22.0
 
 
 class FakeWeatherProvider:
-    """설정한 공통 날씨 상태를 반환하는 가짜 구현.
+    """설정한 공통 날씨 사실을 반환하는 가짜 구현.
 
-    condition은 강수·하늘 상태로 풀어서 내보내고, 기온은 따로 받는다 — 폭염/한파는
-    condition 3단계로 표현할 수 없기 때문이다(둘 다 BAD지만 원인이 다르고, D는
-    원인까지 구분해서 근거 문장을 만든다).
+    D-051 이후 Provider는 판정을 하지 않으므로 fake도 사실만 받는다. 기상청 코드를
+    그대로 받는 이유는 실제 provider와 같은 모양이어야 D 판정 경로가 실제로
+    실행되기 때문이다 — 맑음은 `("1", "0")`, 비는 `("4", "1")`.
     """
 
     def __init__(
         self,
-        condition: WeatherCondition = WeatherCondition.NEUTRAL,
+        sky_code: str | None = _FAKE_DEFAULT_SKY_CODE,
+        precipitation_type: str | None = _FAKE_DEFAULT_PRECIPITATION_TYPE,
         temperature_celsius: float | None = _FAKE_DEFAULT_TEMPERATURE_CELSIUS,
     ) -> None:
-        self._condition = condition
+        self._sky_code = sky_code
+        self._precipitation_type = precipitation_type
         self._temperature_celsius = temperature_celsius
 
     async def get_forecast_slots(
@@ -447,7 +444,6 @@ class FakeWeatherProvider:
             second=0,
             microsecond=0,
         )
-        sky_code, precipitation_type = _FAKE_SKY_PTY_BY_CONDITION[self._condition]
         return provider_result(
             WeatherForecastResult(
                 latitude=latitude,
@@ -457,9 +453,8 @@ class FakeWeatherProvider:
                 slots=tuple(
                     WeatherForecastSlot(
                         forecast_for=now + timedelta(hours=offset),
-                        condition=self._condition,
-                        sky_code=sky_code,
-                        precipitation_type=precipitation_type,
+                        sky_code=self._sky_code,
+                        precipitation_type=self._precipitation_type,
                         temperature_celsius=self._temperature_celsius,
                     )
                     for offset in range(6)

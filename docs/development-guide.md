@@ -68,7 +68,8 @@ backend\.venv\Scripts\Activate.ps1
 | `RECOMMENDATION_RESULT_LIMIT` | `5` | Scoring 후 반환할 최대 추천 수 |
 | `RECOMMENDATION_CANDIDATE_LIMIT` | `10` | 거리순으로 상세조회·평가할 후보 수 |
 | `EXTERNAL_API_RETRY_COUNT` | `2` | 설정은 있으나 재시도 로직 미구현 |
-| `FAKE_WEATHER_CONDITION` | `neutral` | Fake Weather 결과 (`good`/`neutral`/`bad`) |
+| `FAKE_WEATHER_SKY_CODE` | `4` | Fake Weather의 기상청 SKY 코드 (`1` 맑음/`3` 구름많음/`4` 흐림) |
+| `FAKE_WEATHER_PRECIPITATION_TYPE` | `0` | Fake Weather의 기상청 PTY 코드 (`0` 없음/`1` 비/`2` 비눈/`3` 눈) |
 | `FAKE_CURRENT_DATETIME` | 고정 ISO 시각 | 예약값; 현재 추천 로직에서 미사용 |
 
 `PROVIDER_MODE=real`이면 개별 값이 비어 있는 모든 Provider가 Real 모드가 됩니다.

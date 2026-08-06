@@ -4,7 +4,6 @@ import pytest
 from pydantic import ValidationError
 
 from app.config import Settings
-from app.domain.models import WeatherCondition
 from app.providers.factory import validate_provider_config
 
 
@@ -76,7 +75,6 @@ def test_resolved_llm_models_drops_blank_entries() -> None:
         {"provider_mode": "stub"},
         {"provider_mode": "ral"},
         {"place_provider": "reall"},
-        {"fake_weather_condition": "sunny"},
     ],
 )
 def test_invalid_provider_settings_fail_at_construction(overrides: dict[str, str]) -> None:
@@ -85,10 +83,21 @@ def test_invalid_provider_settings_fail_at_construction(overrides: dict[str, str
         Settings(_env_file=None, **overrides)
 
 
-def test_fake_weather_condition_is_parsed_as_enum() -> None:
-    settings = Settings(_env_file=None, fake_weather_condition="bad")
+def test_fake_weather_settings_hold_kma_codes() -> None:
+    """D-051: 설정도 판정(good/neutral/bad)이 아니라 기상청 코드를 받는다.
 
-    assert settings.fake_weather_condition is WeatherCondition.BAD
+    이 값이 실제로 fake의 사실을 움직이는지는
+    `test_provider_contracts.py::test_fake_weather_provider_emits_facts_d_can_judge`가
+    확인한다.
+    """
+    settings = Settings(
+        _env_file=None,
+        fake_weather_sky_code="4",
+        fake_weather_precipitation_type="1",
+    )
+
+    assert settings.fake_weather_sky_code == "4"
+    assert settings.fake_weather_precipitation_type == "1"
 
 
 @pytest.mark.parametrize(

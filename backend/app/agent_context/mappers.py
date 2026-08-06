@@ -104,9 +104,8 @@ def map_weather_context(
 
     D-051 이후 C는 판정을 내리지 않는다 — 강수/하늘/기온 사실만 넘기고
     good/neutral/bad 판정은 D의 resolve_weather_condition()이 사용자 의도까지
-    반영해 수행한다. Tool 결과(`SelectedWeatherForecast`)에는 아직 레거시
-    `condition`이 남아 있지만(D 소유 도메인 모델이 필수로 요구), A–C 계약에는
-    싣지 않는다.
+    반영해 수행한다. Tool 결과(`SelectedWeatherForecast`)에 남아 있던 레거시
+    `condition`도 제거돼, 이제 판정값은 C 경로 어디에도 없다.
     """
 
     data = None

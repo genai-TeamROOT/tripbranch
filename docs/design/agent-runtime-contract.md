@@ -72,7 +72,7 @@ B/C/D는 서로 직접 부르지 않고 항상 A를 거쳐서만 결과를 주�
 | B→A | `to_user_conditions()` | `app/services/interpret/state_transform.py` |
 | A→B | `transform()` | `app/services/interpret/state_transform.py` |
 | A→C | `to_agent_context_request()` | `app/services/runtime/context_transform.py` |
-| A→D | `to_search_radius_km()`, `to_weather_condition()` | `app/services/runtime/recommendation_transform.py` |
+| A→D | `to_search_radius_km()` | `app/services/runtime/recommendation_transform.py` |
 | D→B | `to_record_recommendation_request()`(*) | `app/services/runtime/recommendation_transform.py` |
 | D→사용자 | `compose_recommendation_message()` | `app/services/runtime/response_composer.py` |
 
@@ -204,12 +204,17 @@ def to_agent_context_request(
 **`search_radius_km` 파라미터가 없다** — C는 이 값을 A에게 받지 않고
 `conditions.max_travel_time`으로부터 자체 계산한다(§4.1 참고).
 
-### 3.2 5단계 vs 3단계 날씨 구분
+### 3.2 발화 5단계 vs C의 날씨 사실
 
 `conditions.weather`(A→C 요청)는 사용자가 말한 5단계(`rain`/`snow`/`hot`/`cold`/`good`)이고,
-`RecommendationContext.weather.data.condition`(C→A 응답)은 C가 Provider 결과를 정규화한
-3단계(`good`/`neutral`/`bad`)다. A는 `conditions`를 C에 전달하고, C가 자신의 규칙에 따라
-D에서 쓸 날씨 정보를 `context.weather`에 담아 반환한다. A는 이 값을 그대로 D에 전달한다.
+`RecommendationContext.weather.data`(C→A 응답)는 C가 Provider 결과를 정규화한
+**사실**(`precipitation`/`sky`/`temperature_celsius`)이다. A는 `conditions`를 C에
+전달하고, C가 자신의 규칙에 따라 D에서 쓸 날씨 정보를 `context.weather`에 담아
+반환한다. A는 이 값을 **판정하지 않고 그대로** D에 전달한다.
+
+3단계(`good`/`neutral`/`bad`) 판정은 D-051로 D에 이관됐다 — 판정에는 사용자 의도
+(`weather_intent`의 `AVOID`/`ENJOY`)가 필요하고 그 값을 가진 쪽이 D다. A와 C 어느
+쪽도 판정값을 만들거나 중계하지 않는다.
 
 ### 3.3 C 응답(`AgentContextResponse`) status별 처리
 
@@ -260,16 +265,16 @@ transform.py`)와 C(`agent_context/service.py`)가 **같은 상수를 import**�
 `tests/test_recommendation_transform.py::test_matches_c_formula`가 C의
 `_resolve_search_radius_km()`와의 일치를 계속 자동 검증한다.
 
-### 4.2 `to_weather_condition()`
+### 4.2 `to_weather_condition()` — 제거됨 (D-051)
 
-```python
-def to_weather_condition(context: RecommendationContext) -> WeatherCondition | None
-```
+A가 C 응답을 `WeatherCondition`으로 변환하던 함수로, **더 이상 존재하지 않는다.**
+판정에 사용자 의도가 필요하다는 이유로 D에 이관됐고, 지금은 D의
+`resolve_weather_condition()`이 `recommendation_pipeline.py`에서 사실과
+`weather_intent`를 함께 보고 판정한다.
 
-`context.weather.status in {"success", "partial"}`일 때 `condition` 값을
-`WeatherCondition`으로 변환해 반환한다. 그 외(결측, `weather` 자체가 없음)는
-`None` — D의 `explanation.py`가 날씨 결측을 이미 warnings로 반영하므로 A는 결측
-여부를 따로 판단하지 않는다.
+A는 `context.weather`를 그대로 D에 넘기기만 한다. 결측 처리도 그대로여서, D의
+`explanation.py`가 날씨 결측을 warnings로 반영하므로 A는 결측 여부를 따로
+판단하지 않는다.
 
 ### 4.3 `RealRecommendationProvider`
 
@@ -320,14 +325,16 @@ D 내부(`candidate_mapper`/`scoring`/`evidence`/`explanation`)는 직접 import
 
 **✅ 2026-08-02 D 확인 완료·구현 완료(D-040)**: `concentration_intent`가
 `AVOID`/`SEEK`이면 `recommend()` 시그니처는 그대로 두고, 별도 신규 메서드
-`RecommendationProvider.rerank_with_concentration(conditions, weather_condition, first_pass,
+`RecommendationProvider.rerank_with_concentration(conditions, context, first_pass,
 concentration)`를 추가로 호출하는 구조로 확정됐다(§6.5.2) — 1차는 이 `recommend()`
 그대로(10개, `recommendation_limit=5`), 2차는 `rerank_with_concentration()`이
 1차 상위 5개 + concentration을 받아 재순위를 계산한다(`real_recommendation_provider.py`
-구현 완료). `null`/`IGNORE`는 여전히 `recommend()` 1회만 호출된다. 2번째 파라미터는
-처음엔 `context: RecommendationContext` 전체였으나, 함수 내부에서 실제로 쓰는 값이
-`weather_condition` 하나뿐이라 D가 `weather_condition: WeatherCondition | None`으로
-좁혔다(D 구현 완료, A 쪽 반영은 §6.5.2 참고).
+구현 완료). `null`/`IGNORE`는 여전히 `recommend()` 1회만 호출된다.
+
+2번째 파라미터는 한때 `weather_condition: WeatherCondition | None`으로 좁혔다가
+`context: RecommendationContext`로 되돌렸다(D-051 2차 Scoring 배선 통일). 판정이
+D로 이관되면서 A가 넘길 판정값 자체가 없어졌고, D가 1차와 동일하게
+`resolve_weather_condition()`으로 직접 판정해야 두 차수의 근거 문장이 갈리지 않는다.
 
 ### 4.4 D→B: 노출 결과 기록
 
@@ -573,14 +580,13 @@ sequenceDiagram
   `concentration_intent`가 `AVOID`/`SEEK`일 때 한정으로 예외가 생긴다(§1.1
   제안 단계 블록 참고). `null`/`IGNORE`는 여전히 1회.
 - 1차 호출은 새로 만들 게 없다(기존 `RealRecommendationProvider.recommend()`
-  그대로). 2차 호출용 D 신규 인터페이스 `rerank_with_concentration(conditions,
-  weather_condition, first_pass, concentration)`은 구현 완료됐다 — 처음엔
-  `context` 전체를 받았다(날씨 근거 문장을 1차와 동일하게 재구성하기 위해
-  D가 A에 추가 요청해서 붙었다). 실제로 내부에서 쓰는 값이 `weather_condition`
-  하나뿐이라, D가 `weather_condition: WeatherCondition | None`으로 좁혔다
-  (`recommendation_pipeline.py`/`real_recommendation_provider.py` 구현·테스트
-  완료). A 쪽(`protocols.py`/`stubs.py`/`agent_runtime.py`) 대응 반영은 진행
-  중 — 런타임이 깨지지 않으려면 양쪽이 같은 타이밍에 병합돼야 한다.
+  그대로). 2차 호출용 D 인터페이스는
+  `rerank_with_concentration(conditions, context, first_pass, concentration)`으로
+  확정됐고, A 쪽(`protocols.py`/`stubs.py`/`agent_runtime.py`)까지 반영 완료다.
+  중간에 2번째 파라미터를 `weather_condition: WeatherCondition | None`으로 좁힌
+  적이 있으나 D-051로 되돌렸다 — 판정이 D로 이관되면서 A가 넘길 판정값이
+  없어졌고, D가 `context`를 받아 1차와 같은 `resolve_weather_condition()`으로
+  판정해야 두 차수의 근거 문장이 갈리지 않는다.
 - A→C 연결은 §6.1의 기존 `CandidateEnrichmentRequest`/`Response`/
   `CandidateEnrichmentService.enrich()`/`get_candidate_enrichment_service()`를
   그대로 재사용한다 — §6.4가 "채택 안 함"으로 남겨뒀던
@@ -614,7 +620,7 @@ sequenceDiagram
 | `transform()` | `state_transform.py` | A→B | 완료 |
 | `to_agent_context_request()` | `context_transform.py` | A→C | 완료 |
 | `to_search_radius_km()` | `recommendation_transform.py` | A→D | 완료 |
-| `to_weather_condition()` | `recommendation_transform.py` | C context→D | 완료(`WeatherCondition \| None`, `success/partial` 기준) |
+| ~~`to_weather_condition()`~~ | — | C context→D | 제거됨 — 판정이 D로 이관돼 `resolve_weather_condition()`이 대신한다(D-051, §4.2) |
 | `to_record_recommendation_request()` | `recommendation_transform.py` | D→B | 완료(미사용, §4.4) |
 | `RealRecommendationProvider.recommend()` | `real_recommendation_provider.py` | A→D 호출 | 완료(연결 완료, §4.5) |
 | `compose_recommendation_message()` | `response_composer.py` | D→사용자 | 완료 |
