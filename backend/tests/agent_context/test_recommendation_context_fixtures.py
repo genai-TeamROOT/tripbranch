@@ -126,3 +126,34 @@ async def test_missing_weather_fixture_is_distinct_from_provider_failure() -> No
     # 문구는 UX 논의로 바뀔 수 있고(D-038 결정 1), 그때마다 테스트가 깨지면 안 된다.
     assert _WEATHER_IGNORED_WARNING in ignored_warnings
     assert _WEATHER_MISSING_WARNING in failed_warnings
+
+
+# _D_FIXTURE_CASES가 아니라 디렉터리 전체를 훑는다 — 나중에 추가되는 픽스처도
+# 목록에 손대지 않고 자동으로 검사 대상이 된다.
+@pytest.mark.parametrize(
+    "filename",
+    sorted(path.name for path in _FIXTURE_DIRECTORY.glob("*.json")),
+)
+def test_weather_fixtures_carry_the_facts_d_judges_on(filename: str) -> None:
+    """날씨 데이터가 있는 픽스처는 판정 재료 3종을 모두 들고 있어야 한다.
+
+    C 매퍼는 forecast가 있으면 PTY/SKY를 항상 함께 옮기고(mappers.py), 초단기예보는
+    SKY·PTY·T1H를 한 묶음으로 준다 — 그래서 "success인데 기온만 있는 Context"는
+    C가 만들 수 없는 모양이다. 그런 픽스처를 두면 D가 판정 로직 대신 "근거 전무"
+    폴백을 타면서 조용히 NEUTRAL로 굳어, 테스트가 통과해도 아무것도 검증하지 못한다
+    (precipitation/sky 추가 시 픽스처 3건을 갱신하지 않아 실제로 그랬다).
+
+    condition은 곧 제거될 레거시라 여기서 검증하지 않는다 — 사실 3종만 본다.
+    """
+    # 되물음 응답(needs_location_clarification)은 context 자체가 없다.
+    context = _load_response(filename).context
+    if context is None:
+        return
+
+    weather = context.weather
+    if weather is None or weather.status not in {"success", "partial"} or weather.data is None:
+        return
+
+    assert weather.data.precipitation is not None
+    assert weather.data.sky is not None
+    assert weather.data.temperature_celsius is not None

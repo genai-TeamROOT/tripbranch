@@ -122,7 +122,15 @@ class FakeToolProvider:
             context=RecommendationContext(
                 weather=ContextValue(
                     status="success",
-                    data=WeatherForecast(condition="neutral", forecast_for=now_kst()),
+                    # condition만 채우면 D 입력이 전부 결측이라 판정이 무조건
+                    # NEUTRAL로 굳는다 — 실제 C가 내보내는 사실 3종을 함께 채운다.
+                    data=WeatherForecast(
+                        condition="neutral",
+                        forecast_for=now_kst(),
+                        precipitation="none",
+                        sky="overcast",
+                        temperature_celsius=22.0,
+                    ),
                 ),
                 places=ContextValue(status="success", data=list(_FAKE_CANDIDATES)),
             ),
