@@ -202,9 +202,9 @@ def _build_api_context_view(state) -> ApiContextView:
 def _wrap_store_errors(fn):
     """저장소 호출 중 예상 못한 예외를 B 공통 오류(StateStoreError)로 감싼다.
 
-    이미 AppError인 경우(SupabaseRepositoryError 등)는 의미가 있으므로
-    그대로 전달한다. "세션 없음"은 예외가 아니라 정상 반환값이므로
-    영향받지 않는다 (계약 5.2/6.7절).
+    이미 AppError인 경우(SupabaseStateStore가 HTTP 실패 시 이미 StateStoreError로
+    직접 던지는 경우 등)는 의미가 있으므로 그대로 전달한다. "세션 없음"은 예외가
+    아니라 정상 반환값이므로 영향받지 않는다 (계약 5.2/6.7절).
     """
 
     @functools.wraps(fn)

@@ -25,6 +25,12 @@ def isolate_regular_tests_from_real_providers(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(settings, "concentration_provider", None)
     monkeypatch.setattr(settings, "holiday_provider", None)
 
+    # Package B의 STATE_STORE_BACKEND는 provider_mode와 별개 축이라 위 patch로는
+    # 안 잡힌다. .env에 STATE_STORE_BACKEND=supabase가 남아있으면(실사용 전환 중
+    # 흔히 발생) 일반 테스트가 실제 네트워크를 타거나 InMemory 전용 메서드(clear()
+    # 등)를 호출하는 테스트가 깨진다 — 여기서도 강제로 memory로 고정한다.
+    monkeypatch.setattr(settings, "state_store_backend", "memory")
+
 
 @pytest.fixture(autouse=True)
 def _reset_concentration_mapping_cache():
