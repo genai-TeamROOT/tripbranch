@@ -61,6 +61,13 @@ function isChatMessage(value: unknown): value is ChatMessage {
       (message.status === "pending" || message.status === "confirmed")
     );
   }
+  /* 로컬 테스트용 "/status" 결과. 복원돼도 화면 표시 외의 영향은 없다. */
+  if (message.type === "session_status") {
+    return (
+      (message.status === null || typeof message.status === "object") &&
+      (message.error === null || typeof message.error === "string")
+    );
+  }
   if (message.type === "recommendation_result") {
     return (
       Array.isArray(message.recommendations) &&

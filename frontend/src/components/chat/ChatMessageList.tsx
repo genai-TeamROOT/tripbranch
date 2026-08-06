@@ -9,6 +9,7 @@
 import type { ChatMessage } from "../../types";
 import { ConditionDebugMessage } from "./ConditionDebugMessage";
 import { RecommendationResultMessage } from "./RecommendationResultMessage";
+import { SessionStatusMessage } from "./SessionStatusMessage";
 
 interface ChatMessageListProps {
   messages: ChatMessage[];
@@ -60,6 +61,16 @@ export function ChatMessageList({
                 conditions={message.conditions}
                 mergedConditions={message.mergedConditions}
                 status={message.status}
+              />
+            );
+          }
+
+          if (message.type === "session_status") {
+            return (
+              <SessionStatusMessage
+                key={message.id}
+                status={message.status}
+                error={message.error}
               />
             );
           }
