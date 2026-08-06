@@ -42,6 +42,7 @@ const state: TripState = {
   ],
   phase: "waiting_for_debug_confirmation",
   session_id: "sess_test",
+  device_location: "37.5788,126.9770",
   awaiting_clarification: false,
   error: null,
 };

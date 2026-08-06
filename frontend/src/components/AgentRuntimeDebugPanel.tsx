@@ -15,6 +15,7 @@ import { useState } from "react";
 import { ApiError } from "../api/client";
 import { runAgentDebug } from "../api/trip";
 import type { AgentResponse } from "../types";
+import { getBrowserDeviceLocation } from "../utils/geolocation";
 
 interface Preset {
   label: string;
@@ -53,33 +54,16 @@ export function AgentRuntimeDebugPanel() {
     setError(null);
   }
 
-  function useBrowserLocation() {
-    if (!("geolocation" in navigator)) {
-      setLocationError("이 브라우저는 위치 조회를 지원하지 않아요.");
-      return;
-    }
-
+  async function useBrowserLocation() {
     setIsLocating(true);
     setLocationError(null);
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const { latitude, longitude } = position.coords;
-        setDeviceLocation(`${latitude},${longitude}`);
-        setIsLocating(false);
-      },
-      (geoError) => {
-        setLocationError(
-          geoError.code === geoError.TIMEOUT
-            ? "위치 조회 시간이 초과됐어요. macOS 설정 > 개인정보 보호 및 보안 > 위치 서비스에서" +
-                " 브라우저 권한이 켜져 있는지 확인해주세요."
-            : `위치를 가져오지 못했어요: ${geoError.message}`,
-        );
-        setIsLocating(false);
-      },
-      // 데스크톱은 GPS 칩이 없어 enableHighAccuracy=true일 때 타임아웃이 잦다 —
-      // Wi-Fi/IP 기반 저정밀 위치로 낮추고 대기 시간을 넉넉히 둔다.
-      { enableHighAccuracy: false, timeout: 20000, maximumAge: 60000 },
-    );
+    try {
+      setDeviceLocation(await getBrowserDeviceLocation());
+    } catch (error) {
+      setLocationError(error instanceof Error ? error.message : "위치를 가져오지 못했어요.");
+    } finally {
+      setIsLocating(false);
+    }
   }
 
   async function handleSend() {
