@@ -82,6 +82,16 @@ export type ChatMessage =
       mergedConditions: UserConditions | null;
       status: "pending" | "confirmed";
     }
+  /*
+   * 로컬 테스트용 "/status" 명령의 결과. 서버 호출 없이 화면에만 쌓이며,
+   * 조회에 실패하면 error에 사유가 담긴다.
+   */
+  | {
+      id: string;
+      type: "session_status";
+      status: SessionContextResponse | null;
+      error: string | null;
+    }
   | {
       id: string;
       type: "recommendation_result";
@@ -228,6 +238,29 @@ export interface StateApplyResponse {
   condition_changed: boolean;
   excluded_place_ids: string[];
   reset_applied: string | null;
+}
+
+/* GET /api/state/{session_id} 응답(계약 6.3절). 로컬 "/status" 표시에 쓴다. */
+export interface ApiContextView {
+  gps_location: string | null;
+  api_weather: string | null;
+  gps_expired: boolean;
+  weather_expired: boolean;
+}
+
+export interface SessionContextResponse {
+  session_id: string | null;
+  session_exists: boolean;
+  has_recommendation: boolean;
+  recommended_count: number;
+  shown_place_ids: string[];
+  excluded_place_ids: string[];
+  last_recommended_run_id: string | null;
+  last_intent: string | null;
+  pending_clarification: string | null;
+  user_conditions: UserConditions;
+  api_context: ApiContextView;
+  condition_version: number;
 }
 
 export interface AgentResponse {

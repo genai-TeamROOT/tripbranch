@@ -14,7 +14,7 @@
 import { useCallback } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
-import { sendChat, toDisplayConditions } from "../api/trip";
+import { fetchSessionState, sendChat, toDisplayConditions } from "../api/trip";
 import { ChatComposer } from "../components/chat/ChatComposer";
 import { ChatMessageList } from "../components/chat/ChatMessageList";
 import { ErrorBanner } from "../components/ErrorBanner";
@@ -28,6 +28,11 @@ const REQUEST_MORE_PROMPT = "다른 곳 보여줘";
  */
 const CLARIFICATION_PLACEHOLDER = "예: 경복궁 근처에서 찾아줘";
 const RELAX_RADIUS_PROMPT = "검색 범위를 넓혀서 다시 추천해줘";
+/*
+ * 로컬 테스트용 슬래시 명령. Agent에 보내지 않고 GET /api/state/{session_id}로
+ * 현재 누적 조건을 조회해 화면에만 표시한다. 커밋하지 않는 확인용 경로다.
+ */
+const STATUS_COMMAND = "/status";
 
 export function ChatPage() {
   const state = useTripState();
@@ -37,6 +42,39 @@ export function ChatPage() {
   const showDebug = featureFlags.showInterpretationDebug;
   const isLoading = state.phase === "interpreting" || state.phase === "recommending";
   const hasConversation = state.messages.length > 0;
+
+  const showStatus = useCallback(
+    async (text: string) => {
+      if (!state.session_id) {
+        dispatch({
+          type: "APPEND_SESSION_STATUS",
+          payload: {
+            userInput: text,
+            status: null,
+            error: "아직 세션이 없어요. 발화를 한 번 보낸 뒤에 다시 시도해주세요.",
+          },
+        });
+        return;
+      }
+      try {
+        const status = await fetchSessionState(state.session_id);
+        dispatch({
+          type: "APPEND_SESSION_STATUS",
+          payload: { userInput: text, status, error: null },
+        });
+      } catch (error) {
+        dispatch({
+          type: "APPEND_SESSION_STATUS",
+          payload: {
+            userInput: text,
+            status: null,
+            error: error instanceof ApiError ? error.message : "세션 상태를 불러오지 못했어요.",
+          },
+        });
+      }
+    },
+    [dispatch, state.session_id],
+  );
 
   const send = useCallback(
     async (text: string) => {
@@ -81,6 +119,10 @@ export function ChatPage() {
 
   async function handleFollowUp(text: string) {
     if (isLoading) return;
+    if (text.trim() === STATUS_COMMAND) {
+      await showStatus(text.trim());
+      return;
+    }
     await send(text);
   }
 

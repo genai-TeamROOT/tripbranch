@@ -23,6 +23,7 @@ import type {
   InterpretedConditions,
   LLMOutput,
   RecommendationsResponse,
+  SessionContextResponse,
   WeatherCondition,
 } from "../types";
 
@@ -98,4 +99,12 @@ export function runAgentDebug(request: AgentDebugRequest) {
  */
 export function sendChat(request: ChatRequest) {
   return apiClient.post<ChatResponse>("/chat", request);
+}
+
+/*
+ * 로컬 테스트용 "/status" 명령이 읽는 세션 상태 조회(GET /api/state/{session_id}).
+ * 추천 흐름을 건드리지 않고 B가 보관 중인 누적 조건을 그대로 확인한다.
+ */
+export function fetchSessionState(sessionId: string) {
+  return apiClient.get<SessionContextResponse>(`/state/${encodeURIComponent(sessionId)}`);
 }

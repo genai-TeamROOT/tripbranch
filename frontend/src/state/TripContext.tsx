@@ -23,6 +23,7 @@ import type {
   InterpretedConditions,
   RecommendationItem,
   RecommendationsResponse,
+  SessionContextResponse,
   UserConditions,
 } from "../types";
 import { clearState, loadState, saveState } from "./storage";
@@ -72,6 +73,11 @@ type TripAction =
     }
   | { type: "START_CHAT_TURN"; payload: { userInput: string } }
   | { type: "APPEND_CHAT_TURN"; payload: ChatTurnPayload }
+  /* 로컬 테스트용 "/status" 결과. 대화 상태는 바꾸지 않고 메시지만 덧붙인다. */
+  | {
+      type: "APPEND_SESSION_STATUS";
+      payload: { userInput: string; status: SessionContextResponse | null; error: string | null };
+    }
   | { type: "SET_ERROR"; payload: string }
   | { type: "CLEAR_ERROR" }
   | { type: "RESET" };
@@ -273,6 +279,20 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         error: null,
       };
     }
+    case "APPEND_SESSION_STATUS":
+      return {
+        ...state,
+        messages: [
+          ...state.messages,
+          { id: createMessageId("user"), type: "user_text", text: action.payload.userInput },
+          {
+            id: createMessageId("status"),
+            type: "session_status",
+            status: action.payload.status,
+            error: action.payload.error,
+          },
+        ],
+      };
     case "SET_ERROR":
       return { ...state, phase: "error", error: action.payload };
     case "CLEAR_ERROR":
