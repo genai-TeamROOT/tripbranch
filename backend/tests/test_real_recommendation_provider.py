@@ -176,7 +176,9 @@ async def test_rerank_with_concentration_derives_seek_true_from_intent(
     넘기는지 확인한다(실제 재채점 로직은 test_recommendation_pipeline.py가 커버)."""
     captured: dict[str, object] = {}
 
-    async def _fake_rerank(first_pass, weather_condition, concentration, *, seek, weather_reason=None):
+    async def _fake_rerank(
+        first_pass, weather_condition, concentration, *, seek, weather_reason=None
+    ):
         captured["seek"] = seek
         return first_pass
 
@@ -199,7 +201,9 @@ async def test_rerank_with_concentration_derives_seek_false_from_avoid_intent(
 ) -> None:
     captured: dict[str, object] = {}
 
-    async def _fake_rerank(first_pass, weather_condition, concentration, *, seek, weather_reason=None):
+    async def _fake_rerank(
+        first_pass, weather_condition, concentration, *, seek, weather_reason=None
+    ):
         captured["seek"] = seek
         return first_pass
 
@@ -228,7 +232,9 @@ async def test_rerank_with_concentration_uses_resolve_weather_condition(
     """
     captured: dict[str, object] = {}
 
-    async def _fake_rerank(first_pass, weather_condition, concentration, *, seek, weather_reason=None):
+    async def _fake_rerank(
+        first_pass, weather_condition, concentration, *, seek, weather_reason=None
+    ):
         captured["weather_condition"] = weather_condition
         captured["weather_reason"] = weather_reason
         return first_pass
