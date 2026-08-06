@@ -75,7 +75,20 @@ def map_sky_pty_to_condition(sky: str | None, pty: str | None) -> WeatherConditi
 
 
 def map_items_to_forecast_slots(items: list[dict]) -> tuple[WeatherForecastSlot, ...]:
-    """KMA 항목을 예보 대상 시각별 SKY·PTY slot으로 묶는다."""
+    """KMA 항목을 예보 대상 시각별 SKY·PTY slot으로 묶는다.
+
+    아래 루프는 `map_sky_pty_to_condition()`이 실패하면(SKY·PTY 둘 다 결측·미지의
+    코드) slot 자체를 버린다. 초단기예보는 예보시각 하나에 카테고리 10종을 한
+    묶음으로 주므로 SKY·PTY·T1H가 항상 함께 오고, numOfRows=100이 실제 항목
+    수(10×6)보다 커서 페이지가 잘리지도 않는다 — 그래서 지금은 "판정 불가"와
+    "데이터 없음"이 같은 말이다.
+
+    예보 범위를 넓히려고 단기예보(getVilageFcst)를 붙이면 이 가정이 깨진다:
+    거기선 TMP가 1시간 단위인데 SKY·PTY는 3시간 단위라 기온만 있는 시각이 대부분이다
+    (초단기실황 getUltraSrtNcst도 SKY가 아예 없다). D는 기온만으로도 폭염·한파를
+    판정하므로(D-051) 그때는 slot을 버리는 대신 condition을 NEUTRAL로 두고
+    temperature_celsius를 살려 보내야 한다.
+    """
     grouped: dict[tuple[str, str], dict[str, str]] = {}
     for item in items:
         category = item.get("category")

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import pytest
 
+from app.agent_context.mappers import _PRECIPITATION_BY_PTY_CODE, _SKY_BY_CODE
 from app.domain.models import GeocodeResult, PlaceCategoryFilter, WeatherCondition
+from app.domain.weather_judgment import judge_weather_condition_from_facts
 from app.providers.concentration import FakeConcentrationProvider
 from app.providers.contracts import ProviderSource, ProviderStatus
 from app.providers.geocoding import FakeGeocodingProvider
@@ -39,6 +41,65 @@ async def test_fake_weather_provider_uses_common_condition() -> None:
     assert all(
         slot.condition is WeatherCondition.BAD for slot in forecast.data.slots
     )
+
+
+@pytest.mark.parametrize(
+    ("condition", "expected_precipitation", "expected_sky"),
+    [
+        (WeatherCondition.GOOD, "none", "clear"),
+        (WeatherCondition.NEUTRAL, "none", "overcast"),
+        (WeatherCondition.BAD, "rain", "overcast"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_fake_weather_provider_emits_facts_d_can_judge(
+    condition: WeatherCondition,
+    expected_precipitation: str,
+    expected_sky: str,
+) -> None:
+    """fake도 판정 재료(강수/하늘/기온)를 내려준다.
+
+    condition만 채우면 C 매퍼를 통과한 뒤 D 입력이 전부 None이 되어, 무엇을
+    설정하든 판정이 NEUTRAL로 굳는다 — fake로는 우천 시나리오를 재현할 수 없었다.
+    """
+    forecast = await FakeWeatherProvider(condition).get_forecast_slots(
+        37.5796, 126.9770
+    )
+    slot = forecast.data.slots[0]
+
+    # C가 D에 넘기는 형태(도메인 용어)까지 확인한다 — 코드만 맞고 매핑이 빠지면
+    # D 입장에선 여전히 결측이다.
+    assert _PRECIPITATION_BY_PTY_CODE[slot.precipitation_type or ""] == (
+        expected_precipitation
+    )
+    assert _SKY_BY_CODE[slot.sky_code or ""] == expected_sky
+    assert slot.temperature_celsius is not None
+
+    judged, _reason = judge_weather_condition_from_facts(
+        _PRECIPITATION_BY_PTY_CODE[slot.precipitation_type or ""],
+        _SKY_BY_CODE[slot.sky_code or ""],
+        slot.temperature_celsius,
+        None,
+    )
+    assert judged is condition
+
+
+@pytest.mark.asyncio
+async def test_fake_weather_provider_temperature_drives_heat_judgment() -> None:
+    """폭염·한파는 condition 3단계로 표현할 수 없어 기온으로 직접 만든다."""
+    forecast = await FakeWeatherProvider(
+        WeatherCondition.GOOD, temperature_celsius=36.0
+    ).get_forecast_slots(37.5796, 126.9770)
+    slot = forecast.data.slots[0]
+
+    judged, reason = judge_weather_condition_from_facts(
+        _PRECIPITATION_BY_PTY_CODE[slot.precipitation_type or ""],
+        _SKY_BY_CODE[slot.sky_code or ""],
+        slot.temperature_celsius,
+        None,
+    )
+    assert judged is WeatherCondition.BAD
+    assert reason == "heat"
 
 
 @pytest.mark.asyncio
