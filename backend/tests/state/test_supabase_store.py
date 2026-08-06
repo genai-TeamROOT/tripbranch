@@ -5,13 +5,14 @@ import json
 import httpx
 import pytest
 
+from app.state.errors import StateStoreError
 from app.state.schema import (
     AgentState,
     ConditionChangeLog,
     RecommendationHistory,
     UserConditions,
 )
-from app.state.supabase_store import SupabaseRepositoryError, SupabaseStateStore
+from app.state.supabase_store import SupabaseStateStore
 
 SESSION_ID = "session-1"
 
@@ -274,9 +275,15 @@ def test_get_traces_parses_rows_into_trace_records() -> None:
 # ------------------------------------------------------------ 에러 처리
 
 
-def test_http_error_raises_supabase_repository_error() -> None:
+def test_http_error_raises_state_store_error() -> None:
+    """B의 SupabaseStateStore는 B 소유 오류(StateStoreError)로 실패를 알린다.
+
+    이전에는 app.repositories.supabase_places.SupabaseRepositoryError(장소 동기화
+    기능 쪽 예외, 메시지가 "장소 데이터 저장 중...")를 빌려 썼는데, B의 세션 상태
+    저장 실패에 엉뚱한 메시지가 나가는 문제가 있어 B 소유 StateStoreError로 교체했다.
+    """
     transport = httpx.MockTransport(
         lambda request: httpx.Response(500, json={"message": "boom"})
     )
-    with pytest.raises(SupabaseRepositoryError):
+    with pytest.raises(StateStoreError):
         _store(transport).get_state(SESSION_ID)

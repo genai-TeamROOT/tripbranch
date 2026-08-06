@@ -18,7 +18,7 @@ from collections.abc import Mapping
 
 import httpx
 
-from app.repositories.supabase_places import SupabaseRepositoryError
+from app.state.errors import StateStoreError
 from app.state.schema import (
     AgentState,
     ConditionChangeLog,
@@ -84,7 +84,7 @@ class SupabaseStateStore:
             response.raise_for_status()
             return response
         except httpx.TimeoutException:
-            raise SupabaseRepositoryError("request timeout") from None
+            raise StateStoreError("request timeout") from None
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
             detail = f"HTTP {status_code}"
@@ -98,26 +98,26 @@ class SupabaseStateStore:
                         detail = f"{detail}: {' - '.join(safe_parts)}"
             except ValueError:
                 pass
-            raise SupabaseRepositoryError(detail) from None
+            raise StateStoreError(detail) from None
         except httpx.HTTPError:
-            raise SupabaseRepositoryError("request failed") from None
+            raise StateStoreError("request failed") from None
 
     @staticmethod
     def _json(response: httpx.Response) -> object:
         try:
             return response.json()
         except ValueError:
-            raise SupabaseRepositoryError("non-JSON response") from None
+            raise StateStoreError("non-JSON response") from None
 
     @staticmethod
     def _one_or_none(payload: object) -> Mapping[str, object] | None:
         if not isinstance(payload, list):
-            raise SupabaseRepositoryError("invalid list response")
+            raise StateStoreError("invalid list response")
         if not payload:
             return None
         row = payload[0]
         if not isinstance(row, Mapping):
-            raise SupabaseRepositoryError("invalid row shape")
+            raise StateStoreError("invalid row shape")
         return row
 
     # ------------------------------------------------------------ AgentState
@@ -134,7 +134,7 @@ class SupabaseStateStore:
         try:
             return AgentState.model_validate(row)
         except Exception:
-            raise SupabaseRepositoryError("invalid agent_states row") from None
+            raise StateStoreError("invalid agent_states row") from None
 
     def save_state(self, state: AgentState) -> None:
         self._request(
@@ -167,7 +167,7 @@ class SupabaseStateStore:
         try:
             return RecommendationHistory.model_validate(row)
         except Exception:
-            raise SupabaseRepositoryError(
+            raise StateStoreError(
                 "invalid recommendation_histories row"
             ) from None
 
@@ -213,11 +213,11 @@ class SupabaseStateStore:
         )
         payload = self._json(response)
         if not isinstance(payload, list):
-            raise SupabaseRepositoryError("invalid condition_change_logs response")
+            raise StateStoreError("invalid condition_change_logs response")
         try:
             return [ConditionChangeLog.model_validate(row) for row in payload]
         except Exception:
-            raise SupabaseRepositoryError(
+            raise StateStoreError(
                 "invalid condition_change_logs row"
             ) from None
 
@@ -246,8 +246,8 @@ class SupabaseStateStore:
         )
         payload = self._json(response)
         if not isinstance(payload, list):
-            raise SupabaseRepositoryError("invalid trace_records response")
+            raise StateStoreError("invalid trace_records response")
         try:
             return [TraceRecord.model_validate(row) for row in payload]
         except Exception:
-            raise SupabaseRepositoryError("invalid trace_records row") from None
+            raise StateStoreError("invalid trace_records row") from None
