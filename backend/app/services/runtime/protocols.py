@@ -24,7 +24,6 @@ from app.agent_context.schemas import (
     AgentContextResponse,
     RecommendationContext,
 )
-from app.domain.models import WeatherCondition
 from app.schemas import RecommendationResponse, UserConditions
 from app.services.runtime.info_context_schemas import InfoContextRequest, InfoContextResponse
 
@@ -68,16 +67,17 @@ class RecommendationProvider(Protocol):
     async def rerank_with_concentration(
         self,
         conditions: UserConditions,
-        weather_condition: WeatherCondition | None,
+        context: RecommendationContext,
         first_pass: RecommendationResponse,
         concentration: CandidateEnrichmentResponse,
     ) -> RecommendationResponse:
-        """(D-040 확정) 1차 추천 결과와 혼잡도 보강 데이터로 재순위를 계산한다.
+        """(D-040 확정, D-051 2차 Scoring 배선 통일) 1차 추천 결과와 혼잡도 보강
+        데이터로 재순위를 계산한다.
 
-        `weather_condition`은 1차 `recommend()`에서 사용한 날씨 값과 동일한
-        `WeatherCondition`이다. 2차 Scoring은 1차 feature_scores를 재사용하고
-        혼잡도만 보강해 재채점하므로, 근거 문장(explanations) 재조립을 위해
-        필요한 최소 입력만 명시적으로 전달한다.
+        `context`/`conditions`는 1차 `recommend()`에 넘긴 것과 동일해야 한다 —
+        구현체가 내부에서 `resolve_weather_condition(context, conditions)`으로
+        날씨 판정을 다시 얻어야 1차와 2차의 판정이 갈라지지 않는다(사전에 계산한
+        `WeatherCondition`을 그대로 받는 옛 방식은 폐기 — D-051 "남은 것" 해소).
 
         D의 Real 구현체가 아직 이 메서드를 갖고 있지 않을 수 있다 — 호출부
         (agent_runtime.py)는 `hasattr()`로 방어하고, 없으면 `first_pass`를

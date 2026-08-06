@@ -14,6 +14,7 @@ from app.agent_context.enrichment_schemas import (
     CandidateEnrichmentResult,
 )
 from app.agent_context.schemas import ContextError
+from app.domain.models import WeatherCondition
 from app.errors import AppError
 from app.schemas import (
     ConcentrationIntent,
@@ -175,7 +176,7 @@ async def test_rerank_with_concentration_derives_seek_true_from_intent(
     넘기는지 확인한다(실제 재채점 로직은 test_recommendation_pipeline.py가 커버)."""
     captured: dict[str, object] = {}
 
-    async def _fake_rerank(first_pass, weather_condition, concentration, *, seek):
+    async def _fake_rerank(first_pass, weather_condition, concentration, *, seek, weather_reason=None):
         captured["seek"] = seek
         return first_pass
 
@@ -183,10 +184,10 @@ async def test_rerank_with_concentration_derives_seek_true_from_intent(
 
     provider = RealRecommendationProvider()
     conditions = UserConditions(concentration_intent=ConcentrationIntent.SEEK)
-    weather_condition = None
+    context = _context(place_ids=["a"])
 
     await provider.rerank_with_concentration(
-        conditions, weather_condition, _empty_first_pass(), _unavailable_concentration()
+        conditions, context, _empty_first_pass(), _unavailable_concentration()
     )
 
     assert captured["seek"] is True
@@ -198,7 +199,7 @@ async def test_rerank_with_concentration_derives_seek_false_from_avoid_intent(
 ) -> None:
     captured: dict[str, object] = {}
 
-    async def _fake_rerank(first_pass, weather_condition, concentration, *, seek):
+    async def _fake_rerank(first_pass, weather_condition, concentration, *, seek, weather_reason=None):
         captured["seek"] = seek
         return first_pass
 
@@ -206,10 +207,46 @@ async def test_rerank_with_concentration_derives_seek_false_from_avoid_intent(
 
     provider = RealRecommendationProvider()
     conditions = UserConditions(concentration_intent=ConcentrationIntent.AVOID)
-    weather_condition = None
+    context = _context(place_ids=["a"])
 
     await provider.rerank_with_concentration(
-        conditions, weather_condition, _empty_first_pass(), _unavailable_concentration()
+        conditions, context, _empty_first_pass(), _unavailable_concentration()
     )
 
     assert captured["seek"] is False
+
+
+@pytest.mark.asyncio
+async def test_rerank_with_concentration_uses_resolve_weather_condition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D-051: 2차 Scoring도 1차와 동일하게 resolve_weather_condition()으로 날씨를
+    판정해야 한다. 옛 to_weather_condition()(C가 조회 당시 내린 3단계 condition을
+    그대로 읽는 방식)은 weather_intent(AVOID/ENJOY) 재해석을 반영하지 못했다 —
+    여기서는 ENJOY + 비 예보가 GOOD으로 반전되는지로 그 재해석이 실제로 적용됐는지
+    확인한다(그대로 BAD가 나오면 옛 방식으로 되돌아간 것).
+    """
+    captured: dict[str, object] = {}
+
+    async def _fake_rerank(first_pass, weather_condition, concentration, *, seek, weather_reason=None):
+        captured["weather_condition"] = weather_condition
+        captured["weather_reason"] = weather_reason
+        return first_pass
+
+    monkeypatch.setattr(module, "rerank_with_concentration", _fake_rerank)
+
+    provider = RealRecommendationProvider()
+    # context.weather는 비워둔다 — AVOID/ENJOY라 C가 조회를 생략하고 발화 값을 쓴
+    # 상황(tool_rules.py)을 재현한다. resolve_weather_condition()은 이때
+    # conditions.weather로 대신 판정해야 한다.
+    conditions = UserConditions(
+        weather_intent=WeatherIntent.ENJOY, weather=StatedWeather.RAIN
+    )
+    context = _context(place_ids=["a"])
+
+    await provider.rerank_with_concentration(
+        conditions, context, _empty_first_pass(), _unavailable_concentration()
+    )
+
+    assert captured["weather_condition"] == WeatherCondition.GOOD
+    assert captured["weather_reason"] == "rain"
