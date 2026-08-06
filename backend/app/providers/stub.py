@@ -71,7 +71,16 @@ from app.schemas import (
 #     def interpret(self, user_input: str) -> InterpretedConditions:
 #         return interpret_user_input(user_input)
 
-_KNOWN_PLACE_NAMES = ("경복궁", "창덕궁", "종묘", "인사동", "광화문", "북촌한옥마을")
+_KNOWN_PLACE_NAMES = (
+    "경복궁",
+    "창덕궁",
+    "종묘",
+    "인사동",
+    "광화문",
+    "북촌한옥마을",
+    "북촌",
+    "종로3가역",
+)
 _HARMFUL_MARKERS = ("바보", "미친", "죽어", "씨발", "개새끼")
 _OFF_TOPIC_MARKERS = ("주식", "수학 문제", "코드 짜줘", "파이썬 코드")
 _PROMPT_INJECTION_MARKERS = ("시스템 프롬프트", "프롬프트를 보여줘", "무시하고")
@@ -113,10 +122,47 @@ _GENERAL_MARKERS = (
     "막차",
     "동선",
 )
+_LOCATION_ONLY_REMAINDERS = frozenset(
+    {
+        "",
+        "근처",
+        "근처는",
+        "근처에서",
+        "근처로",
+        "근처어때",
+        "주변",
+        "주변은",
+        "주변에서",
+        "주변으로",
+        "주변어때",
+        "에서",
+        "으로",
+        "로",
+        "은",
+        "는",
+        "어때",
+    }
+)
 
 
 def _find_known_place(user_input: str) -> str | None:
     return next((name for name in _KNOWN_PLACE_NAMES if name in user_input), None)
+
+
+def _is_location_only_change(user_input: str) -> bool:
+    """이전 추천 이력 뒤 검색 중심점만 바꾸는 짧은 발화인지 판정한다."""
+
+    place_name = _find_known_place(user_input)
+    if place_name is None:
+        return False
+
+    remainder = user_input.replace(place_name, "", 1).strip()
+    for prefix in ("그럼", "그러면", "아니"):
+        if remainder.startswith(prefix):
+            remainder = remainder[len(prefix) :].strip()
+            break
+    normalized = remainder.replace(" ", "").rstrip("?!.")
+    return normalized in _LOCATION_ONLY_REMAINDERS
 
 
 def _stub_visit_time(user_input: str, reference_date: date) -> str:
@@ -168,8 +214,9 @@ class FakeLLMProvider:
                 out_of_scope_category=OutOfScopeCategory.UNRELATED,
                 out_of_scope_severity=Severity.LOW,
             )
-        elif has_previous_recommendation and any(
-            marker in user_input for marker in _REJECT_ALL_MARKERS + _MODIFY_CHANGE_MARKERS
+        elif has_previous_recommendation and (
+            any(marker in user_input for marker in _REJECT_ALL_MARKERS + _MODIFY_CHANGE_MARKERS)
+            or _is_location_only_change(user_input)
         ):
             result = IntentClassificationResult(intent=Intent.MODIFY)
         elif shown_place_count >= 2 and any(
@@ -294,7 +341,7 @@ class FakeLLMProvider:
             changed.place_tags = [t for t in changed.place_tags if t != PlaceTag.CAFE]
             changed_fields.extend(["place_types", "place_tags"])
         new_place = _find_known_place(user_input)
-        if new_place and "근처로 바꿔" in user_input:
+        if new_place and ("근처로 바꿔" in user_input or _is_location_only_change(user_input)):
             changed.search_center = new_place
             changed_fields.append("search_center")
 

@@ -234,6 +234,7 @@ function tripReducer(state: TripState, action: TripAction): TripState {
           userInput: action.payload.userInput,
           conditions,
           mergedConditions: action.payload.mergedConditions,
+          intent,
           status: "confirmed",
         });
       }

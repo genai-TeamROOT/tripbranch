@@ -22,7 +22,7 @@ from app.schemas import GeneralTopic, UserConditions
 # 쓰였는지와 무관하게 단일 값으로 취급한다 — 함수별 개별 버전은 만들지 않는다. 판별·추출
 # 규칙에 영향을 주는 변경(6개 함수 중 하나라도) 시 버전을 올린다 — 사소한 문구·주석
 # 변경은 올리지 않는다.
-PROMPT_VERSION = "agent-interpret-prompts-1.0.0"
+PROMPT_VERSION = "agent-interpret-prompts-1.0.1"
 
 _INTENT_DEFINITIONS = """\
 6개 Intent 정의:
@@ -56,13 +56,16 @@ _CONTEXT_DEPENDENT_RULES = """\
 - 이전 추천 없음 + "카페 말고 맛집" → RECOMMEND (place_types=["restaurant"])
 - 이전 추천 있음 + "더 가까운 곳" → MODIFY
 - 이전 추천 없음 + "더 가까운 곳" → RECOMMEND
+- 이전 추천 있음 + 위치만 제시하는 발화("광화문 근처에서", "광화문 근처", "광화문 근처 어때?",
+  "광화문") → MODIFY (검색 중심점만 바꾸려는 말로 본다. 조사/어미/물음표는 판정에 영향 없음)
+- 이전 추천 없음 + 위치만 제시하는 발화("광화문 근처에서", "광화문 근처") → RECOMMEND
 """
 
 _BOUNDARY_CASES = """\
 경계 사례:
-- "경복궁" (단독) → INFO (정보 조회 의도)
+- "경복궁" (단독) → INFO (정보 조회 의도. 단, 이전 추천 이력이 있으면 위치 변경 MODIFY)
 - "경복궁 같은 곳" → RECOMMEND (유사 장소 추천)
-- "경복궁 근처 카페" → RECOMMEND (경복궁은 검색 중심점 조건일 뿐)
+- "경복궁 근처 카페" → RECOMMEND (이전 추천 이력이 없을 때. 경복궁은 검색 중심점 조건일 뿐)
 - "경복궁 오늘 열어?" → INFO (운영시간 질문)
 - "이번 주말 창덕궁 사람 많을까?" → INFO (방문객 혼잡도 예측 질문, API로 조회 가능)
 - "경복궁 역사 알려줘" → GENERAL (API로 조회 불가한 배경지식)
