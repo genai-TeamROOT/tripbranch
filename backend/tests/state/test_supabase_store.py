@@ -5,13 +5,13 @@ import json
 import httpx
 import pytest
 
+from app.state.errors import StateStoreError
 from app.state.schema import (
     AgentState,
     ConditionChangeLog,
     RecommendationHistory,
     UserConditions,
 )
-from app.state.errors import StateStoreError
 from app.state.supabase_store import SupabaseStateStore
 
 SESSION_ID = "session-1"
