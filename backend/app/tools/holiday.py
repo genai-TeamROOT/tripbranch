@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from app.domain.models import HolidayResult
@@ -9,6 +10,8 @@ from app.errors import AppError
 from app.providers.contracts import ProviderMetadata, ProviderStatus
 from app.providers.protocols import HolidayProvider
 from app.tools.contracts import ToolError, ToolStatus
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -40,6 +43,13 @@ class GetHolidaysTool:
         try:
             result = await self._provider.get_holidays(query.year, query.month)
         except AppError as exc:
+            # 여기서 삼킨 오류는 200 응답으로 나가므로 로그가 유일한 흔적이다.
+            logger.warning(
+                "공휴일 정보 없이 진행 (code=%s, provider=%s, details=%s)",
+                exc.code,
+                exc.provider,
+                exc.details,
+            )
             return HolidayToolResult(
                 status=ToolStatus.UNAVAILABLE,
                 holidays=None,

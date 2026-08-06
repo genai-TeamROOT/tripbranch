@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -13,6 +14,8 @@ from app.errors import AppError
 from app.providers.contracts import ProviderMetadata
 from app.providers.protocols import WeatherProvider
 from app.tools.contracts import ToolError, ToolStatus
+
+logger = logging.getLogger(__name__)
 
 _KST = ZoneInfo("Asia/Seoul")
 
@@ -104,6 +107,13 @@ class GetWeatherForecastTool:
                     "forecast_not_found",
                     False,
                 )
+            # 여기서 삼킨 오류는 200 응답으로 나가므로 로그가 유일한 흔적이다.
+            logger.warning(
+                "날씨 정보 없이 진행 (code=%s, provider=%s, details=%s)",
+                exc.code,
+                exc.provider,
+                exc.details,
+            )
             return _error_result(
                 WeatherToolStatus.UNAVAILABLE,
                 "unavailable",

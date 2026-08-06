@@ -34,6 +34,42 @@ from app.routes.state import router as state_router
 logger = logging.getLogger("uvicorn.error")
 
 
+_APP_LOG_FORMAT = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
+
+
+def _running_under_uvicorn() -> bool:
+    """uvicorn이 로깅 설정을 마친 상태인지 확인한다.
+
+    uvicorn 기본 설정은 uvicorn.error에 level만 주고 핸들러는 부모인 uvicorn에
+    두므로 두 곳을 함께 본다. root까지 올라가면 pytest가 붙인 핸들러를 uvicorn의
+    것으로 오인해 테스트 로깅을 건드리게 되므로 root는 보지 않는다.
+    """
+    return any(
+        logging.getLogger(name).handlers for name in ("uvicorn.error", "uvicorn")
+    )
+
+
+def _configure_app_logging() -> None:
+    """app.* logger에 타임스탬프가 붙는 핸들러를 붙인다.
+
+    uvicorn은 uvicorn/uvicorn.error/uvicorn.access에만 핸들러를 붙이고 root에는
+    붙이지 않는다. 그래서 app.providers.* 로그는 표준 lastResort 핸들러로 떨어져
+    레벨 표시 없이 맨 문자열로 나온다. 게다가 uvicorn 기본 포매터에는 시각이 없어
+    핸들러를 그대로 빌려와도 "새벽 몇 시에 났는지"를 알 수 없다 — provider 장애
+    추적에는 그게 핵심이라 시각을 포함한 자체 포매터를 쓴다.
+    """
+    app_logger = logging.getLogger("app")
+    if app_logger.handlers or not _running_under_uvicorn():
+        # uvicorn 없이 임포트된 경우(테스트 등)엔 기존 동작을 그대로 둔다.
+        return
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter(_APP_LOG_FORMAT))
+    app_logger.addHandler(handler)
+    app_logger.setLevel(logging.INFO)
+    # root로 다시 올려보내면 같은 줄이 두 번 찍힐 수 있다.
+    app_logger.propagate = False
+
+
 def _log_provider_modes() -> None:
     """부팅 시 각 Provider의 Fake/Real 모드를 남긴다.
 
@@ -63,6 +99,8 @@ def _log_provider_modes() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    # uvicorn의 로깅 설정이 끝난 뒤여야 핸들러를 빌려올 수 있다.
+    _configure_app_logging()
     # 오설정을 첫 요청의 익명 500이 아니라 부팅 실패로 드러낸다.
     validate_provider_config()
     _log_provider_modes()
@@ -86,11 +124,12 @@ def create_app() -> FastAPI:
         # 로그를 남기지 않으면 502 등이 클라이언트 응답만 나가고 서버 로그엔 아무
         # 흔적도 안 남는다(D-052에서 발견).
         logger.error(
-            "AppError: code=%s provider=%s status=%s path=%s",
+            "AppError: code=%s provider=%s status=%s path=%s details=%s",
             exc.code,
             exc.provider,
             exc.status_code,
             request.url.path,
+            exc.details,
         )
         details: dict[str, object] | None = None
         if exc.provider or exc.details:

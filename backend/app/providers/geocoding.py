@@ -8,11 +8,16 @@ AppError(code="location_not_found")를 던진다. 검색 결과가 여러 건이
 
 from __future__ import annotations
 
+import logging
+
 import httpx
 
 from app.domain.models import GeocodeResult
 from app.errors import AppError
 from app.providers.contracts import ProviderResult, ProviderSource, provider_result
+from app.providers.upstream_errors import upstream_error_detail
+
+logger = logging.getLogger(__name__)
 
 _GEOCODE_URL = "https://maps.apigw.ntruss.com/map-geocode/v2/geocode"
 
@@ -160,10 +165,25 @@ class RealGeocodingProvider:
             )
             response.raise_for_status()
             payload = response.json()
-        except (httpx.HTTPError, ValueError):
+        except httpx.HTTPStatusError as exc:
+            # Naver는 인증 실패를 errorCode/errorMessage로 내려준다.
+            logger.error(
+                "Naver Geocoding 호출 실패 (http_status=%s, %s)",
+                exc.response.status_code,
+                upstream_error_detail(exc.response),
+            )
+            request_headers.clear()
+            raise AppError(
+                code="geocoding_unavailable",
+                message="위치 검색 서비스를 사용할 수 없습니다.",
+                status_code=502,
+                retryable=True,
+            ) from None
+        except (httpx.HTTPError, ValueError) as exc:
             # httpx 원인 예외에는 인증 헤더가 포함된 요청 정보가 남을 수 있다.
             request_headers.clear()
             response = None
+            logger.error("Naver Geocoding 호출 실패 (%s)", type(exc).__name__)
             raise AppError(
                 code="geocoding_unavailable",
                 message="위치 검색 서비스를 사용할 수 없습니다.",
@@ -172,6 +192,11 @@ class RealGeocodingProvider:
             ) from None
 
         if payload.get("status") != "OK":
+            logger.error(
+                "Naver Geocoding 응답 오류 (status=%s, errorMessage=%s)",
+                payload.get("status"),
+                payload.get("errorMessage"),
+            )
             raise AppError(
                 code="geocoding_unavailable",
                 message="위치 검색 서비스를 사용할 수 없습니다.",

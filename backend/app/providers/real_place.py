@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -28,7 +29,10 @@ from app.providers.contracts import (
     provider_result,
 )
 from app.providers.mappers import map_tour_api_response
+from app.providers.upstream_errors import upstream_error_detail
 from app.schemas import PlaceCandidate
+
+logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://apis.data.go.kr/B551011/KorService2"
 _AREA_BASED_LIST_PATH = "/areaBasedList2"
@@ -196,22 +200,27 @@ class RealPlaceProvider:
             # httpx 예외와 traceback에는 ServiceKey가 포함된 전체 URL이 남을 수 있다.
             request_params.clear()
             response = None
+            logger.error("TourAPI 호출 타임아웃 (path=%s)", path)
             raise ProviderTimeoutError("TourAPI") from None
         except httpx.HTTPStatusError as exc:
-            status_code = exc.response.status_code
+            # 상태 코드만으로는 인증 실패·쿼터 초과·기간 만료가 구분되지 않는다.
+            detail = f"HTTP {exc.response.status_code}, {upstream_error_detail(exc.response)}"
             request_params.clear()
             response = None
             exc = None
-            raise ProviderUnavailableError(
-                "TourAPI", detail=f"HTTP {status_code}"
-            ) from None
-        except httpx.HTTPError:
+            logger.error("TourAPI 호출 실패 (%s, path=%s)", detail, path)
+            raise ProviderUnavailableError("TourAPI", detail=detail) from None
+        except httpx.HTTPError as exc:
             request_params.clear()
             response = None
+            logger.error(
+                "TourAPI 호출 실패 (%s, path=%s)", type(exc).__name__, path
+            )
             raise ProviderUnavailableError("TourAPI") from None
         except ValueError:
             request_params.clear()
             response = None
+            logger.error("TourAPI 호출 실패 (non-JSON response, path=%s)", path)
             raise ProviderUnavailableError(
                 "TourAPI", detail="non-JSON response"
             ) from None
@@ -219,6 +228,12 @@ class RealPlaceProvider:
         header = payload.get("response", {}).get("header", {})
         result_code = str(header.get("resultCode", ""))
         if result_code not in {"", "00", "0000"}:
+            logger.error(
+                "TourAPI 응답 오류 (resultCode=%s, resultMsg=%s, path=%s)",
+                result_code,
+                header.get("resultMsg", ""),
+                path,
+            )
             raise ProviderUnavailableError(
                 "TourAPI",
                 detail=f"{result_code}: {header.get('resultMsg', '')}",

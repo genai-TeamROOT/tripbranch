@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import logging
 import re
 
 import httpx
@@ -10,6 +11,9 @@ import httpx
 from app.domain.models import LocalSearchPlace
 from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
 from app.providers.contracts import ProviderResult, ProviderSource, ProviderStatus, provider_result
+from app.providers.upstream_errors import upstream_error_detail
+
+logger = logging.getLogger(__name__)
 
 _LOCAL_SEARCH_URL = "https://naverapihub.apigw.ntruss.com/search/v1/local"
 _HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
@@ -111,9 +115,18 @@ class RealLocalSearchProvider:
             payload = response.json()
         except httpx.TimeoutException:
             headers.clear()
+            logger.error("Naver Local Search 호출 타임아웃")
             raise ProviderTimeoutError("Naver Local Search") from None
-        except (httpx.HTTPError, ValueError):
+        except httpx.HTTPStatusError as exc:
+            detail = f"HTTP {exc.response.status_code}, {upstream_error_detail(exc.response)}"
             headers.clear()
+            logger.error("Naver Local Search 호출 실패 (%s)", detail)
+            raise ProviderUnavailableError(
+                "Naver Local Search", detail=detail
+            ) from None
+        except (httpx.HTTPError, ValueError) as exc:
+            headers.clear()
+            logger.error("Naver Local Search 호출 실패 (%s)", type(exc).__name__)
             raise ProviderUnavailableError("Naver Local Search") from None
 
         raw_items = payload.get("items", []) if isinstance(payload, dict) else []

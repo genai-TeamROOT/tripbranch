@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from xml.etree import ElementTree
 
 import httpx
@@ -14,6 +15,9 @@ from app.providers.contracts import (
     ProviderStatus,
     provider_result,
 )
+from app.providers.upstream_errors import upstream_error_detail
+
+logger = logging.getLogger(__name__)
 
 _HOLIDAY_URL = (
     "https://apis.data.go.kr/B090041/openapi/service/SpcdeInfoService/"
@@ -145,10 +149,32 @@ class RealHolidayProvider:
             # httpx 예외 문자열에는 ServiceKey가 포함된 전체 URL이 들어갈 수 있다.
             request_params.clear()
             response = None
+            logger.error("KASI Holiday 호출 타임아웃 (year=%s, month=%s)", year, month)
             raise ProviderTimeoutError("KASI Holiday") from None
-        except ProviderUnavailableError:
+        except ProviderUnavailableError as exc:
+            # map_holiday_xml이 resultCode를 보고 던진 경우 — detail에 사유가 있다.
+            logger.error(
+                "KASI Holiday 응답 오류 (%s, year=%s, month=%s)",
+                exc.details,
+                year,
+                month,
+            )
             raise
-        except (httpx.HTTPError, ElementTree.ParseError):
+        except httpx.HTTPStatusError as exc:
+            detail = f"HTTP {exc.response.status_code}, {upstream_error_detail(exc.response)}"
             request_params.clear()
             response = None
+            logger.error(
+                "KASI Holiday 호출 실패 (%s, year=%s, month=%s)", detail, year, month
+            )
+            raise ProviderUnavailableError("KASI Holiday", detail=detail) from None
+        except (httpx.HTTPError, ElementTree.ParseError) as exc:
+            request_params.clear()
+            response = None
+            logger.error(
+                "KASI Holiday 호출 실패 (%s, year=%s, month=%s)",
+                type(exc).__name__,
+                year,
+                month,
+            )
             raise ProviderUnavailableError("KASI Holiday") from None
