@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -20,6 +21,9 @@ from app.domain.models import (
 from app.errors import AppError
 from app.providers.contracts import ProviderResult, ProviderSource, provider_result
 from app.providers.kma_grid import latlon_to_grid
+from app.providers.upstream_errors import upstream_error_detail
+
+logger = logging.getLogger(__name__)
 
 _KST = ZoneInfo("Asia/Seoul")
 _ULTRA_SRT_FCST_URL = (
@@ -170,10 +174,35 @@ class RealWeatherProvider:
             )
             response.raise_for_status()
             payload = response.json()
-        except (httpx.HTTPError, ValueError):
+        except httpx.HTTPStatusError as exc:
+            # 4xx는 게이트웨이 인증·쿼터 거절이라 본문의 errMsg 없이는 원인을 못 가린다.
+            logger.error(
+                "KMA 호출 실패 (http_status=%s, %s, grid=%s/%s, base=%s %s)",
+                exc.response.status_code,
+                upstream_error_detail(exc.response),
+                nx,
+                ny,
+                base_date,
+                base_time,
+            )
+            request_params.clear()
+            raise AppError(
+                code="weather_unavailable",
+                message="날씨 정보를 가져오지 못했습니다.",
+                status_code=502,
+                retryable=True,
+            ) from None
+        except (httpx.HTTPError, ValueError) as exc:
             # httpx 원인 예외에는 ServiceKey가 포함된 요청 정보가 남을 수 있다.
             request_params.clear()
-            response = None
+            logger.error(
+                "KMA 호출 실패 (%s, grid=%s/%s, base=%s %s)",
+                type(exc).__name__,
+                nx,
+                ny,
+                base_date,
+                base_time,
+            )
             raise AppError(
                 code="weather_unavailable",
                 message="날씨 정보를 가져오지 못했습니다.",
@@ -183,6 +212,15 @@ class RealWeatherProvider:
 
         header = payload.get("response", {}).get("header", {})
         if header.get("resultCode") != "00":
+            logger.error(
+                "KMA 응답 오류 (resultCode=%s, resultMsg=%s, grid=%s/%s, base=%s %s)",
+                header.get("resultCode"),
+                header.get("resultMsg"),
+                nx,
+                ny,
+                base_date,
+                base_time,
+            )
             raise AppError(
                 code="weather_unavailable",
                 message=header.get("resultMsg", "날씨 정보를 가져오지 못했습니다."),

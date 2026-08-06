@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from app.domain.models import ConcentrationResult
@@ -9,6 +10,8 @@ from app.errors import AppError
 from app.providers.contracts import ProviderMetadata, ProviderStatus
 from app.providers.protocols import ConcentrationProvider
 from app.tools.contracts import ToolError, ToolStatus
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -43,6 +46,13 @@ class GetConcentrationTool:
                 query.place_name.strip() if query.place_name else None,
             )
         except AppError as exc:
+            # 여기서 삼킨 오류는 200 응답으로 나가므로 로그가 유일한 흔적이다.
+            logger.warning(
+                "집중률 정보 없이 진행 (code=%s, provider=%s, details=%s)",
+                exc.code,
+                exc.provider,
+                exc.details,
+            )
             return ConcentrationToolResult(
                 status=ToolStatus.UNAVAILABLE,
                 concentration=None,

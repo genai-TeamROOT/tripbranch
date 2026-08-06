@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -16,6 +17,9 @@ from app.providers.contracts import (
     ProviderStatus,
     provider_result,
 )
+from app.providers.upstream_errors import upstream_error_detail
+
+logger = logging.getLogger(__name__)
 
 _CONCENTRATION_URL = (
     "https://apis.data.go.kr/B551011/TatsCnctrRateService/tatsCnctrRatedList"
@@ -174,16 +178,40 @@ class RealConcentrationProvider:
             # httpx 원인 예외에는 ServiceKey가 포함된 요청 정보가 남을 수 있다.
             request_params.clear()
             response = None
+            logger.error("TourAPI Concentration 호출 타임아웃 (area=%s)", area_code)
             raise ProviderTimeoutError("TourAPI Concentration") from None
-        except (httpx.HTTPError, ValueError):
+        except httpx.HTTPStatusError as exc:
+            # 4xx는 인증·쿼터 거절이라 본문 errMsg 없이는 원인을 못 가린다.
+            detail = f"HTTP {exc.response.status_code}, {upstream_error_detail(exc.response)}"
             request_params.clear()
             response = None
+            logger.error(
+                "TourAPI Concentration 호출 실패 (%s, area=%s)", detail, area_code
+            )
+            raise ProviderUnavailableError(
+                "TourAPI Concentration", detail=detail
+            ) from None
+        except (httpx.HTTPError, ValueError) as exc:
+            request_params.clear()
+            response = None
+            logger.error(
+                "TourAPI Concentration 호출 실패 (%s, area=%s)",
+                type(exc).__name__,
+                area_code,
+            )
             raise ProviderUnavailableError("TourAPI Concentration") from None
 
         response_node = payload.get("response", {})
         header = response_node.get("header", {}) if isinstance(response_node, dict) else {}
         result_code = str(header.get("resultCode", ""))
         if result_code not in {"", "00", "0000"}:
+            # HTTP 200으로 내려오는 오류(쿼터 초과 등)는 이 분기로 온다.
+            logger.error(
+                "TourAPI Concentration 응답 오류 (resultCode=%s, resultMsg=%s, area=%s)",
+                result_code,
+                header.get("resultMsg", ""),
+                area_code,
+            )
             raise ProviderUnavailableError(
                 "TourAPI Concentration",
                 detail=f"{result_code}: {header.get('resultMsg', '')}",

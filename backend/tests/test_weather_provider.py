@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 import httpx
@@ -210,3 +211,65 @@ async def test_real_weather_provider_does_not_chain_sensitive_request() -> None:
 
     assert exc_info.value.code == "weather_unavailable"
     assert exc_info.value.__cause__ is None
+
+
+@pytest.mark.asyncio
+async def test_real_weather_provider_logs_gateway_reason_code(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """403은 인증·기간만료·쿼터를 모두 뭉뚱그리므로 errMsg가 로그에 남아야 한다."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            json={
+                "OpenAPI_ServiceResponse": {
+                    "cmmMsgHeader": {
+                        "errMsg": "SERVICE_KEY_IS_NOT_REGISTERED_ERROR",
+                        "returnAuthMsg": "등록되지 않은 서비스키",
+                        "returnReasonCode": "30",
+                    }
+                }
+            },
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = RealWeatherProvider(api_key="sensitive-key", client=client)
+        with caplog.at_level(logging.ERROR, logger="app.providers.weather"):
+            with pytest.raises(AppError):
+                await provider.get_current_condition(37.5636, 126.9976)
+
+    logged = caplog.text
+    assert "http_status=403" in logged
+    assert "SERVICE_KEY_IS_NOT_REGISTERED_ERROR" in logged
+    assert "returnReasonCode=30" in logged
+    assert "sensitive-key" not in logged
+
+
+@pytest.mark.asyncio
+async def test_real_weather_provider_logs_result_code_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "response": {
+                    "header": {
+                        "resultCode": "22",
+                        "resultMsg": "LIMITED_NUMBER_OF_SERVICE_REQUESTS_EXCEEDS_ERROR",
+                    },
+                    "body": {},
+                }
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = RealWeatherProvider(api_key="sensitive-key", client=client)
+        with caplog.at_level(logging.ERROR, logger="app.providers.weather"):
+            with pytest.raises(AppError):
+                await provider.get_current_condition(37.5636, 126.9976)
+
+    assert "resultCode=22" in caplog.text
+    assert "LIMITED_NUMBER_OF_SERVICE_REQUESTS_EXCEEDS_ERROR" in caplog.text
