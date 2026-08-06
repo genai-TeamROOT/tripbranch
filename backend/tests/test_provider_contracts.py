@@ -30,14 +30,11 @@ async def test_fake_geocoding_provider_uses_common_result() -> None:
 @pytest.mark.asyncio
 async def test_fake_weather_provider_uses_common_condition() -> None:
     provider = FakeWeatherProvider(WeatherCondition.BAD)
-    result = await provider.get_current_condition(
-        37.5796, 126.9770
-    )
     forecast = await provider.get_forecast_slots(37.5796, 126.9770)
 
-    assert result.data is WeatherCondition.BAD
-    assert result.metadata.source is ProviderSource.FAKE_WEATHER
+    assert forecast.metadata.source is ProviderSource.FAKE_WEATHER
     assert forecast.data.slots
+    assert forecast.data.slots[0].condition is WeatherCondition.BAD
     assert all(
         slot.condition is WeatherCondition.BAD for slot in forecast.data.slots
     )

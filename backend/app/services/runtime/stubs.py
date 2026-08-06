@@ -121,10 +121,10 @@ class FakeToolProvider:
             context=RecommendationContext(
                 weather=ContextValue(
                     status="success",
-                    # condition만 채우면 D 입력이 전부 결측이라 판정이 무조건
-                    # NEUTRAL로 굳는다 — 실제 C가 내보내는 사실 3종을 함께 채운다.
+                    # D-051: 실제 C가 내보내는 사실 3종(강수/하늘/기온)을 채운다.
+                    # 하나라도 비면 D의 판정 입력이 결측이라 NEUTRAL로 굳어,
+                    # 검증하려던 판정 로직이 한 줄도 실행되지 않는다.
                     data=WeatherForecast(
-                        condition="neutral",
                         forecast_for=now_kst(),
                         precipitation="none",
                         sky="overcast",

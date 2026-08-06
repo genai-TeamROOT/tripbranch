@@ -21,7 +21,6 @@ from app.domain.models import (
     PlaceDetails,
     PlaceOperatingDetails,
     TourPlacePage,
-    WeatherCondition,
     WeatherForecastResult,
 )
 from app.place_search_policy import DEFAULT_PLACE_PROVIDER_RESULT_LIMIT
@@ -124,12 +123,6 @@ class LocalSearchProvider(Protocol):
         ...
 
 class WeatherProvider(Protocol):
-    async def get_current_condition(
-        self, latitude: float, longitude: float
-    ) -> ProviderResult[WeatherCondition]:
-        """좌표의 현재 날씨를 공통 상태로 반환한다."""
-        ...
-
     async def get_forecast_slots(
         self, latitude: float, longitude: float
     ) -> ProviderResult[WeatherForecastResult]:

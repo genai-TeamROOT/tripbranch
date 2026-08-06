@@ -46,14 +46,6 @@ class ForecastProvider:
         self.slots = slots
         self.error = error
 
-    async def get_current_condition(
-        self, latitude: float, longitude: float
-    ) -> ProviderResult[WeatherCondition]:
-        return provider_result(
-            self.slots[0].condition,
-            source=ProviderSource.FAKE_WEATHER,
-        )
-
     async def get_forecast_slots(
         self, latitude: float, longitude: float
     ) -> ProviderResult[WeatherForecastResult]:

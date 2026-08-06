@@ -100,13 +100,19 @@ _SKY_BY_CODE: dict[str, _Sky] = {
 def map_weather_context(
     result: WeatherForecastToolResult,
 ) -> ContextValue[WeatherForecast]:
-    """선택된 초단기예보를 A–C의 3단계 날씨 Context로 변환한다."""
+    """선택된 초단기예보를 A–C의 날씨 사실 Context로 변환한다.
+
+    D-051 이후 C는 판정을 내리지 않는다 — 강수/하늘/기온 사실만 넘기고
+    good/neutral/bad 판정은 D의 resolve_weather_condition()이 사용자 의도까지
+    반영해 수행한다. Tool 결과(`SelectedWeatherForecast`)에는 아직 레거시
+    `condition`이 남아 있지만(D 소유 도메인 모델이 필수로 요구), A–C 계약에는
+    싣지 않는다.
+    """
 
     data = None
     if result.forecast is not None:
         forecast = result.forecast
         data = WeatherForecast(
-            condition=forecast.condition.value,
             forecast_for=forecast.forecast_for,
             precipitation=_PRECIPITATION_BY_PTY_CODE.get(forecast.precipitation_type or ""),
             sky=_SKY_BY_CODE.get(forecast.sky_code or ""),

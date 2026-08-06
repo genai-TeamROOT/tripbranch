@@ -138,9 +138,9 @@ class ResolvedLocation(StrictModel):
 
 
 class WeatherForecast(StrictModel):
-    # condition은 C가 내린 3단계 판정이다. 사용자 의도(AVOID/ENJOY)를 반영하지 못해
-    # D가 사실 기반으로 다시 판정하기로 했다 — 그 전환이 끝나면 제거한다.
-    condition: Literal["good", "neutral", "bad"]
+    # D-051: C는 사실만 싣고 판정하지 않는다. 예전엔 여기 3단계 판정(condition)이
+    # 있었지만, 사용자 의도(AVOID/ENJOY)를 반영하지 못해 D의
+    # resolve_weather_condition()으로 이관하고 필드를 제거했다.
     forecast_for: datetime
     # 아래 세 필드가 판정 없는 날씨 사실이다. 기상청 코드(PTY/SKY)를 그대로 넘기지
     # 않고 C가 도메인 용어로 옮긴다 — 코드 체계가 D까지 새면 기상 API를 바꿀 때

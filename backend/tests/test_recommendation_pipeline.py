@@ -76,7 +76,6 @@ async def test_pipeline_from_context_builds_recommendation_with_explanations() -
         weather=AgentContextValue(
             status="success",
             data=WeatherForecast(
-                condition="bad",
                 forecast_for=_CONTEXT_VISIT_AT,
                 precipitation="rain",
             ),
@@ -329,7 +328,6 @@ async def test_pipeline_from_context_is_deterministic_for_identical_input() -> N
         weather=AgentContextValue(
             status="success",
             data=WeatherForecast(
-                condition="good",
                 forecast_for=_CONTEXT_VISIT_AT,
                 precipitation="none",
                 sky="clear",
