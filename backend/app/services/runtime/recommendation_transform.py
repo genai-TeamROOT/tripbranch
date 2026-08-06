@@ -1,4 +1,7 @@
-"""A → D / A → B 변환 함수 모음(부분): 검색 반경 계산, 날씨 조건 추출, 노출 기록 변환.
+"""A → D / A → B 변환 함수 모음(부분): 검색 반경 계산, 혼잡도 항목 변환, 노출 기록 변환.
+
+날씨 조건 변환(옛 `to_weather_condition()`)은 D-051로 D에 이관돼 제거됐다 — D가
+`resolve_weather_condition()`으로 직접 판정한다(services/recommendation_pipeline.py).
 
 역할: A가 D(Recommendation)에 넘길 값과 B(State)에 기록할 값을 만드는 변환
 함수를 모아둔다. app.services.interpret.state_transform.to_user_conditions()
@@ -12,7 +15,6 @@ import하지 않는다 — D 호출은 app.services.runtime.real_recommendation_
 
 from __future__ import annotations
 
-from app.domain.models import WeatherCondition
 from app.place_search_policy import (
     DEFAULT_PLACE_SEARCH_RADIUS_KM,
     MAX_PLACE_SEARCH_RADIUS_KM,
@@ -53,20 +55,6 @@ def to_search_radius_km(conditions: UserConditions) -> float:
         MIN_PLACE_SEARCH_RADIUS_KM,
         min(MAX_PLACE_SEARCH_RADIUS_KM, radius),
     )
-
-
-def to_weather_condition(context: RecommendationContext) -> WeatherCondition | None:
-    """C의 RecommendationContext.weather를 D에 넘길 WeatherCondition으로 변환한다.
-
-    status가 "success"/"partial"일 때만 condition 값(good/neutral/bad)을
-    반환한다. 그 외(no_data/unsupported/unavailable, weather 자체가 없음)는
-    None을 반환한다 — D의 explanation.py가 날씨 결측을 warnings로 반영하므로,
-    A는 결측 여부를 따로 판단하지 않고 그대로 None만 넘긴다.
-    """
-    weather = context.weather
-    if weather is None or weather.status not in {"success", "partial"} or weather.data is None:
-        return None
-    return WeatherCondition(weather.data.condition)
 
 
 def to_concentration_entries(context: RecommendationContext) -> list[object] | None:
@@ -119,7 +107,6 @@ def to_record_recommendation_request(
 
 __all__ = [
     "to_search_radius_km",
-    "to_weather_condition",
     "to_concentration_entries",
     "to_record_recommendation_request",
 ]

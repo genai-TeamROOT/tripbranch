@@ -1,9 +1,13 @@
-"""to_search_radius_km/to_weather_condition/to_concentration_entries/
-to_record_recommendation_request 단위 테스트."""
+"""to_search_radius_km/to_concentration_entries/to_record_recommendation_request
+단위 테스트.
+
+날씨 조건 변환(옛 to_weather_condition())은 D-051로 D에 이관돼 제거됐다 —
+resolve_weather_condition()에 대한 검증은 test_real_recommendation_provider.py와
+test_recommendation_pipeline.py가 담당한다.
+"""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -16,17 +20,11 @@ from app.schemas import (
     Transport,
     UserConditions,
 )
-from app.services.runtime.context_schemas import (
-    ContextError,
-    ContextValue,
-    RecommendationContext,
-    WeatherForecast,
-)
+from app.services.runtime.context_schemas import RecommendationContext
 from app.services.runtime.recommendation_transform import (
     to_concentration_entries,
     to_record_recommendation_request,
     to_search_radius_km,
-    to_weather_condition,
 )
 
 
@@ -99,43 +97,6 @@ class TestToSearchRadiusKm:
             default_radius_km=DEFAULT_PLACE_SEARCH_RADIUS_KM,
         )
         assert to_search_radius_km(conditions) == pytest.approx(expected)
-
-
-class TestToWeatherCondition:
-    def test_success_returns_condition(self) -> None:
-        context = RecommendationContext(
-            weather=ContextValue(
-                status="success",
-                data=WeatherForecast(condition="good", forecast_for=datetime.now(UTC)),
-            )
-        )
-        assert to_weather_condition(context) == "good"
-
-    def test_partial_returns_condition(self) -> None:
-        context = RecommendationContext(
-            weather=ContextValue(
-                status="partial",
-                data=WeatherForecast(condition="neutral", forecast_for=datetime.now(UTC)),
-            )
-        )
-        assert to_weather_condition(context) == "neutral"
-
-    def test_unavailable_returns_none(self) -> None:
-        context = RecommendationContext(
-            weather=ContextValue(
-                status="unavailable",
-                error=ContextError(code="weather_unavailable", message="실패", retryable=True),
-            )
-        )
-        assert to_weather_condition(context) is None
-
-    def test_no_data_returns_none(self) -> None:
-        context = RecommendationContext(weather=ContextValue(status="no_data"))
-        assert to_weather_condition(context) is None
-
-    def test_missing_weather_returns_none(self) -> None:
-        context = RecommendationContext()
-        assert to_weather_condition(context) is None
 
 
 class TestToConcentrationEntries:
