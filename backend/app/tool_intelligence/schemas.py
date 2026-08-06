@@ -242,7 +242,6 @@ class WeatherForecastData(StrictModel):
     location: Coordinates
     grid_x: int
     grid_y: int
-    condition: Literal["good", "neutral", "bad"]
     sky_code: str | None
     precipitation_type: str | None
     data_type: Literal["forecast"]

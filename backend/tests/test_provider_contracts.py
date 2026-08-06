@@ -28,40 +28,42 @@ async def test_fake_geocoding_provider_uses_common_result() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fake_weather_provider_uses_common_condition() -> None:
-    provider = FakeWeatherProvider(WeatherCondition.BAD)
+async def test_fake_weather_provider_uses_common_facts() -> None:
+    provider = FakeWeatherProvider("4", "1")
     forecast = await provider.get_forecast_slots(37.5796, 126.9770)
 
     assert forecast.metadata.source is ProviderSource.FAKE_WEATHER
     assert forecast.data.slots
-    assert forecast.data.slots[0].condition is WeatherCondition.BAD
     assert all(
-        slot.condition is WeatherCondition.BAD for slot in forecast.data.slots
+        slot.sky_code == "4" and slot.precipitation_type == "1"
+        for slot in forecast.data.slots
     )
 
 
 @pytest.mark.parametrize(
-    ("condition", "expected_precipitation", "expected_sky"),
+    ("sky_code", "precipitation_type", "expected_precipitation", "expected_sky", "expected"),
     [
-        (WeatherCondition.GOOD, "none", "clear"),
-        (WeatherCondition.NEUTRAL, "none", "overcast"),
-        (WeatherCondition.BAD, "rain", "overcast"),
+        ("1", "0", "none", "clear", WeatherCondition.GOOD),
+        ("4", "0", "none", "overcast", WeatherCondition.NEUTRAL),
+        ("4", "1", "rain", "overcast", WeatherCondition.BAD),
     ],
 )
 @pytest.mark.asyncio
 async def test_fake_weather_provider_emits_facts_d_can_judge(
-    condition: WeatherCondition,
+    sky_code: str,
+    precipitation_type: str,
     expected_precipitation: str,
     expected_sky: str,
+    expected: WeatherCondition,
 ) -> None:
     """fake도 판정 재료(강수/하늘/기온)를 내려준다.
 
-    condition만 채우면 C 매퍼를 통과한 뒤 D 입력이 전부 None이 되어, 무엇을
+    코드를 비워두면 C 매퍼를 통과한 뒤 D 입력이 전부 None이 되어, 무엇을
     설정하든 판정이 NEUTRAL로 굳는다 — fake로는 우천 시나리오를 재현할 수 없었다.
     """
-    forecast = await FakeWeatherProvider(condition).get_forecast_slots(
-        37.5796, 126.9770
-    )
+    forecast = await FakeWeatherProvider(
+        sky_code, precipitation_type
+    ).get_forecast_slots(37.5796, 126.9770)
     slot = forecast.data.slots[0]
 
     # C가 D에 넘기는 형태(도메인 용어)까지 확인한다 — 코드만 맞고 매핑이 빠지면
@@ -78,14 +80,14 @@ async def test_fake_weather_provider_emits_facts_d_can_judge(
         slot.temperature_celsius,
         None,
     )
-    assert judged is condition
+    assert judged is expected
 
 
 @pytest.mark.asyncio
 async def test_fake_weather_provider_temperature_drives_heat_judgment() -> None:
-    """폭염·한파는 condition 3단계로 표현할 수 없어 기온으로 직접 만든다."""
+    """폭염·한파는 SKY·PTY로 표현할 수 없어 기온으로 직접 만든다."""
     forecast = await FakeWeatherProvider(
-        WeatherCondition.GOOD, temperature_celsius=36.0
+        "1", "0", temperature_celsius=36.0
     ).get_forecast_slots(37.5796, 126.9770)
     slot = forecast.data.slots[0]
 

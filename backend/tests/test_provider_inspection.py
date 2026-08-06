@@ -218,9 +218,9 @@ async def test_inspect_kma_weather_request_and_response() -> None:
 
     forecast = result.forecast
     summary = {
-        "condition": forecast.condition.value if forecast else None,
         "sky_code": forecast.sky_code if forecast else None,
         "precipitation_type": forecast.precipitation_type if forecast else None,
+        "temperature_celsius": forecast.temperature_celsius if forecast else None,
         "requested_visit_at": (
             forecast.requested_visit_at.isoformat() if forecast else None
         ),

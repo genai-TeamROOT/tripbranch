@@ -5,11 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from app.domain.models import (
-    WeatherCondition,
-    WeatherForecastResult,
-    WeatherForecastSlot,
-)
+from app.domain.models import WeatherForecastResult, WeatherForecastSlot
 from app.errors import AppError, ProviderTimeoutError
 from app.providers.contracts import (
     ProviderResult,
@@ -28,12 +24,12 @@ KST = ZoneInfo("Asia/Seoul")
 FIXED_NOW = datetime(2026, 7, 23, 6, 20, tzinfo=UTC)
 
 
-def _slot(hour: int, condition: WeatherCondition) -> WeatherForecastSlot:
+def _slot(hour: int, sky_code: str = "1", precipitation_type: str = "0") -> WeatherForecastSlot:
+    """기상청 코드 그대로 만든다 — D-051 이후 slot에는 판정값이 없다."""
     return WeatherForecastSlot(
         forecast_for=datetime(2026, 7, 23, hour, tzinfo=KST),
-        condition=condition,
-        sky_code="1" if condition is WeatherCondition.GOOD else "4",
-        precipitation_type="1" if condition is WeatherCondition.BAD else "0",
+        sky_code=sky_code,
+        precipitation_type=precipitation_type,
     )
 
 
@@ -68,9 +64,9 @@ class ForecastProvider:
 async def test_selects_nearest_forecast_and_assumes_kst_for_naive_visit_at() -> None:
     provider = ForecastProvider(
         (
-            _slot(14, WeatherCondition.GOOD),
-            _slot(15, WeatherCondition.NEUTRAL),
-            _slot(16, WeatherCondition.BAD),
+            _slot(14),
+            _slot(15, sky_code="4"),
+            _slot(16, sky_code="4", precipitation_type="1"),
         )
     )
     tool = GetWeatherForecastTool(provider, clock=lambda: FIXED_NOW)
@@ -98,8 +94,8 @@ async def test_selects_nearest_forecast_and_assumes_kst_for_naive_visit_at() -> 
 async def test_tie_prefers_future_forecast() -> None:
     provider = ForecastProvider(
         (
-            _slot(15, WeatherCondition.GOOD),
-            _slot(16, WeatherCondition.BAD),
+            _slot(15),
+            _slot(16, sky_code="4", precipitation_type="1"),
         )
     )
 
@@ -123,8 +119,8 @@ async def test_tie_prefers_future_forecast() -> None:
 async def test_immediate_visit_uses_earliest_future_slot() -> None:
     provider = ForecastProvider(
         (
-            _slot(16, WeatherCondition.GOOD),
-            _slot(17, WeatherCondition.BAD),
+            _slot(16),
+            _slot(17, sky_code="4", precipitation_type="1"),
         )
     )
 
@@ -145,7 +141,7 @@ async def test_immediate_visit_uses_earliest_future_slot() -> None:
 @pytest.mark.asyncio
 async def test_explicit_visit_outside_forecast_range_is_unsupported() -> None:
     result = await GetWeatherForecastTool(
-        ForecastProvider((_slot(15, WeatherCondition.GOOD),)),
+        ForecastProvider((_slot(15),)),
         clock=lambda: FIXED_NOW,
     ).execute(
         WeatherForecastQuery(

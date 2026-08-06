@@ -13,7 +13,6 @@ from app.domain.models import (
     HolidayEntry,
     HolidayResult,
     PlaceDetails,
-    WeatherCondition,
 )
 from app.domain.operating_hours import normalize_operating_schedule
 from app.providers.contracts import (
@@ -151,7 +150,6 @@ def test_maps_weather_success_without_inventing_temperature() -> None:
             grid_y=127,
             requested_visit_at=RETRIEVED_AT,
             forecast_for=RETRIEVED_AT,
-            condition=WeatherCondition.NEUTRAL,
             sky_code="3",
             precipitation_type="0",
             data_type="forecast",
@@ -199,7 +197,6 @@ def test_maps_weather_facts_without_judging_them() -> None:
             grid_y=127,
             requested_visit_at=RETRIEVED_AT,
             forecast_for=RETRIEVED_AT,
-            condition=WeatherCondition.BAD,
             sky_code="1",
             precipitation_type="1",
             data_type="forecast",
@@ -233,7 +230,6 @@ def test_maps_unknown_weather_codes_to_none() -> None:
             grid_y=127,
             requested_visit_at=RETRIEVED_AT,
             forecast_for=RETRIEVED_AT,
-            condition=WeatherCondition.NEUTRAL,
             sky_code="9",
             precipitation_type="9",
             data_type="forecast",

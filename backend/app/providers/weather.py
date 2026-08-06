@@ -13,11 +13,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from app.domain.models import (
-    WeatherCondition,
-    WeatherForecastResult,
-    WeatherForecastSlot,
-)
+from app.domain.models import WeatherForecastResult, WeatherForecastSlot
 from app.errors import AppError
 from app.providers.contracts import ProviderResult, ProviderSource, provider_result
 from app.providers.kma_grid import latlon_to_grid
@@ -30,15 +26,11 @@ _ULTRA_SRT_FCST_URL = (
     "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getUltraSrtFcst"
 )
 
-# PTY(강수형태): 0 없음 외에는 모두 강수 상황 -> bad로 취급.
+# PTY(강수형태): 0 없음 외에는 모두 강수 상황.
 _PRECIPITATION_PTY_CODES = {"1", "2", "3", "4", "5", "6", "7"}
 
-# SKY(하늘상태): 1 맑음, 3 구름많음, 4 흐림. 흐림은 강수는 아니므로 neutral로 취급.
-_SKY_TO_CONDITION = {
-    "1": WeatherCondition.GOOD,
-    "3": WeatherCondition.NEUTRAL,
-    "4": WeatherCondition.NEUTRAL,
-}
+# SKY(하늘상태): 1 맑음, 3 구름많음, 4 흐림.
+_KNOWN_SKY_CODES = {"1", "3", "4"}
 
 
 def resolve_base_date_time(now: datetime) -> tuple[str, str]:
@@ -61,30 +53,17 @@ def _optional_float(value: str | None) -> float | None:
         return None
 
 
-def map_sky_pty_to_condition(sky: str | None, pty: str | None) -> WeatherCondition:
-    if pty is not None and pty in _PRECIPITATION_PTY_CODES:
-        return WeatherCondition.BAD
-    if sky is not None and sky in _SKY_TO_CONDITION:
-        return _SKY_TO_CONDITION[sky]
-    raise AppError(
-        code="weather_no_data",
-        message="해당 좌표의 날씨 데이터가 제공되지 않습니다.",
-        status_code=502,
-        retryable=True,
-    )
-
-
 def has_usable_sky_or_precipitation(sky: str | None, pty: str | None) -> bool:
     """SKY·PTY 중 최소 하나가 알려진 코드인지 — slot을 살릴지 판정한다.
 
     D-051 전에는 이 판단이 `map_sky_pty_to_condition()`의 예외로만 표현돼 있었다.
-    그 함수는 레거시 3단계 판정용이라 언젠가 사라지는데, "판정이 안 된다"와
+    그 함수는 레거시 3단계 판정용이라 사라질 예정이었는데, "판정이 안 된다"와
     "slot을 버린다"가 한 함수에 얽혀 있으면 판정을 걷어낼 때 필터까지 조용히
-    같이 사라진다. 규칙을 별도 함수로 분리해 그 사고를 막는다.
+    같이 사라진다. 미리 별도 함수로 분리해 뒀고, 실제로 그 제거가 이뤄졌다.
     """
     if pty is not None and pty in _PRECIPITATION_PTY_CODES:
         return True
-    return sky is not None and sky in _SKY_TO_CONDITION
+    return sky is not None and sky in _KNOWN_SKY_CODES
 
 
 def map_items_to_forecast_slots(items: list[dict]) -> tuple[WeatherForecastSlot, ...]:
@@ -99,8 +78,8 @@ def map_items_to_forecast_slots(items: list[dict]) -> tuple[WeatherForecastSlot,
     예보 범위를 넓히려고 단기예보(getVilageFcst)를 붙이면 이 가정이 깨진다:
     거기선 TMP가 1시간 단위인데 SKY·PTY는 3시간 단위라 기온만 있는 시각이 대부분이다
     (초단기실황 getUltraSrtNcst도 SKY가 아예 없다). D는 기온만으로도 폭염·한파를
-    판정하므로(D-051) 그때는 slot을 버리는 대신 condition을 NEUTRAL로 두고
-    temperature_celsius를 살려 보내야 한다.
+    판정하므로(D-051) 그때는 slot을 버리는 대신 sky_code·precipitation_type을
+    None으로 두고 temperature_celsius를 살려 보내야 한다.
     """
     grouped: dict[tuple[str, str], dict[str, str]] = {}
     for item in items:
@@ -129,15 +108,9 @@ def map_items_to_forecast_slots(items: list[dict]) -> tuple[WeatherForecastSlot,
             ).replace(tzinfo=_KST)
         except ValueError:
             continue
-        # WeatherForecastSlot.condition은 D 소유 도메인 모델의 필수 필드라 아직
-        # 채운다. A–C 계약(WeatherForecast.condition)에서는 이미 빠졌고, D가
-        # 이 필드를 정리하면 map_sky_pty_to_condition()도 함께 사라진다.
-        # 위 유효성 검사를 통과했으므로 여기서 예외가 나지 않는다.
-        condition = map_sky_pty_to_condition(values.get("SKY"), values.get("PTY"))
         slots.append(
             WeatherForecastSlot(
                 forecast_for=forecast_for,
-                condition=condition,
                 sky_code=values.get("SKY"),
                 precipitation_type=values.get("PTY"),
                 temperature_celsius=_optional_float(values.get("T1H")),

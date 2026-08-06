@@ -15,7 +15,6 @@ from typing import Literal
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from app.domain.models import WeatherCondition
 from app.recommendation_limits import (
     DEFAULT_RECOMMENDATION_CANDIDATE_LIMIT,
     DEFAULT_RECOMMENDATION_RESULT_LIMIT,
@@ -110,7 +109,9 @@ class Settings(BaseSettings):
     place_sync_district_code: str = "110"
 
     # Fake-provider-only knobs
-    fake_weather_condition: WeatherCondition = WeatherCondition.NEUTRAL
+    # 기상청 코드 그대로 받는다(D-051) — 4 흐림 / 0 강수 없음이 중립 조합이다.
+    fake_weather_sky_code: str = "4"
+    fake_weather_precipitation_type: str = "0"
     fake_current_datetime: str = "2026-07-15T14:00:00"
 
     @model_validator(mode="after")

@@ -80,7 +80,10 @@ def get_local_search_provider(client: httpx.AsyncClient) -> LocalSearchProvider:
 
 def get_weather_provider(client: httpx.AsyncClient) -> WeatherProvider:
     if settings.resolved_weather_provider == "fake":
-        return FakeWeatherProvider(settings.fake_weather_condition)
+        return FakeWeatherProvider(
+            settings.fake_weather_sky_code,
+            settings.fake_weather_precipitation_type,
+        )
     return RealWeatherProvider(
         api_key=_require_key(settings.weather_api_key, "WEATHER_API_KEY"),
         client=client,

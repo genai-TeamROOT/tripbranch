@@ -26,7 +26,6 @@ class WeatherCondition(StrEnum):
 @dataclass(frozen=True)
 class WeatherForecastSlot:
     forecast_for: datetime
-    condition: WeatherCondition
     sky_code: str | None
     precipitation_type: str | None
     temperature_celsius: float | None = None

@@ -6,13 +6,11 @@ from datetime import datetime
 import httpx
 import pytest
 
-from app.domain.models import WeatherCondition
 from app.errors import AppError
 from app.providers.weather import (
     RealWeatherProvider,
     has_usable_sky_or_precipitation,
     map_items_to_forecast_slots,
-    map_sky_pty_to_condition,
     resolve_base_date_time,
 )
 
@@ -30,26 +28,6 @@ def test_resolve_base_date_time_after_45_uses_current_hour() -> None:
 def test_resolve_base_date_time_crosses_midnight() -> None:
     now = datetime(2026, 7, 22, 0, 10)
     assert resolve_base_date_time(now) == ("20260721", "2330")
-
-
-@pytest.mark.parametrize(
-    ("sky", "pty", "expected"),
-    [
-        ("1", "0", WeatherCondition.GOOD),
-        ("3", "0", WeatherCondition.NEUTRAL),
-        ("4", "0", WeatherCondition.NEUTRAL),
-        ("1", "1", WeatherCondition.BAD),
-        ("1", "3", WeatherCondition.BAD),
-    ],
-)
-def test_map_sky_pty_to_condition(sky: str, pty: str, expected: WeatherCondition) -> None:
-    assert map_sky_pty_to_condition(sky, pty) == expected
-
-
-def test_map_sky_pty_to_condition_missing_data_raises_weather_no_data() -> None:
-    with pytest.raises(AppError) as exc_info:
-        map_sky_pty_to_condition(None, None)
-    assert exc_info.value.code == "weather_no_data"
 
 
 def _fcst_item(category: str, fcst_time: str, value: str) -> dict:
@@ -77,8 +55,8 @@ def test_maps_items_to_time_aware_forecast_slots() -> None:
 
     assert [slot.forecast_for.hour for slot in slots] == [11, 12]
     assert slots[0].forecast_for.tzinfo is not None
-    assert slots[0].condition is WeatherCondition.GOOD
-    assert slots[1].condition is WeatherCondition.BAD
+    assert slots[0].sky_code == "1"
+    assert slots[0].precipitation_type == "0"
     assert slots[1].sky_code == "4"
     assert slots[1].precipitation_type == "1"
 
@@ -86,8 +64,8 @@ def test_maps_items_to_time_aware_forecast_slots() -> None:
 def test_parses_temperature_into_forecast_slots() -> None:
     """T1H(기온)를 버리지 않는다.
 
-    폭염일 때 SKY=맑음이면 condition은 GOOD이 되어 야외가 우대된다. 기온을 함께
-    넘겨야 D가 그 경우를 판정할 수 있다(D-051 제안).
+    SKY=맑음만 보면 폭염도 좋은 날씨로 읽힌다. 기온을 함께 넘겨야 D가 그 경우를
+    판정할 수 있다(D-051).
     """
     slots = map_items_to_forecast_slots(
         [
@@ -133,10 +111,9 @@ def test_has_usable_sky_or_precipitation(sky: str | None, pty: str | None, expec
 def test_drops_slots_without_usable_sky_or_precipitation() -> None:
     """SKY·PTY가 모두 쓸 수 없으면 그 시각 slot을 버린다.
 
-    D-051로 레거시 condition 판정을 걷어내는 중인데, 이 드롭 규칙은 원래
-    map_sky_pty_to_condition()의 예외로만 표현돼 있었다. 판정을 마저 제거할 때
-    필터까지 함께 사라지면 사실이 하나도 없는 빈 slot이 D로 흘러간다 — 그걸
-    막으려고 규칙을 여기 못 박는다.
+    이 드롭 규칙은 원래 map_sky_pty_to_condition()의 예외로만 표현돼 있었다.
+    D-051로 그 판정 함수를 제거할 때 필터까지 함께 사라지면 사실이 하나도 없는
+    빈 slot이 D로 흘러간다 — 그걸 막으려고 규칙을 여기 못 박는다.
     """
     slots = map_items_to_forecast_slots(
         [
@@ -178,7 +155,8 @@ async def test_real_weather_provider_picks_earliest_forecast_slot() -> None:
 
     slots = (await provider.get_forecast_slots(37.5636, 126.9976)).data.slots
 
-    assert slots[0].condition == WeatherCondition.GOOD
+    assert slots[0].sky_code == "1"
+    assert slots[0].precipitation_type == "0"
     await client.aclose()
 
 
