@@ -59,7 +59,7 @@ async def test_provider_error_tracebacks_clear_request_secrets() -> None:
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         calls = (
             RealPlaceProvider(secret, client).search_places(37.5, 127.0, [], 1.0),
-            RealWeatherProvider(secret, client).get_current_condition(37.5, 127.0),
+            RealWeatherProvider(secret, client).get_forecast_slots(37.5, 127.0),
             RealConcentrationProvider(secret, client).get_forecast("11", "11110"),
             RealHolidayProvider(secret, client).get_holidays(2026),
             RealGeocodingProvider(secret, secret, client).geocode("서울역"),

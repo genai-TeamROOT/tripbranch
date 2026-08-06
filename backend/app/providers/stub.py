@@ -439,11 +439,6 @@ class FakeWeatherProvider:
         self._condition = condition
         self._temperature_celsius = temperature_celsius
 
-    async def get_current_condition(
-        self, latitude: float, longitude: float
-    ) -> ProviderResult[WeatherCondition]:
-        return provider_result(self._condition, source=ProviderSource.FAKE_WEATHER)
-
     async def get_forecast_slots(
         self, latitude: float, longitude: float
     ) -> ProviderResult[WeatherForecastResult]:

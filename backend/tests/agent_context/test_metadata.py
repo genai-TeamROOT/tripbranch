@@ -54,7 +54,6 @@ def _recommendation_context(
         weather=ContextValue[WeatherForecast](
             status="success",
             data=WeatherForecast(
-                condition="good",
                 forecast_for=datetime(2026, 8, 15, 2, tzinfo=UTC),
             ),
             provider_metadata=weather_metadata or [],

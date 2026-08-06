@@ -74,11 +74,24 @@ def map_sky_pty_to_condition(sky: str | None, pty: str | None) -> WeatherConditi
     )
 
 
+def has_usable_sky_or_precipitation(sky: str | None, pty: str | None) -> bool:
+    """SKY·PTY 중 최소 하나가 알려진 코드인지 — slot을 살릴지 판정한다.
+
+    D-051 전에는 이 판단이 `map_sky_pty_to_condition()`의 예외로만 표현돼 있었다.
+    그 함수는 레거시 3단계 판정용이라 언젠가 사라지는데, "판정이 안 된다"와
+    "slot을 버린다"가 한 함수에 얽혀 있으면 판정을 걷어낼 때 필터까지 조용히
+    같이 사라진다. 규칙을 별도 함수로 분리해 그 사고를 막는다.
+    """
+    if pty is not None and pty in _PRECIPITATION_PTY_CODES:
+        return True
+    return sky is not None and sky in _SKY_TO_CONDITION
+
+
 def map_items_to_forecast_slots(items: list[dict]) -> tuple[WeatherForecastSlot, ...]:
     """KMA 항목을 예보 대상 시각별 SKY·PTY slot으로 묶는다.
 
-    아래 루프는 `map_sky_pty_to_condition()`이 실패하면(SKY·PTY 둘 다 결측·미지의
-    코드) slot 자체를 버린다. 초단기예보는 예보시각 하나에 카테고리 10종을 한
+    아래 루프는 `has_usable_sky_or_precipitation()`이 False면(SKY·PTY 둘 다 결측·
+    미지의 코드) slot 자체를 버린다. 초단기예보는 예보시각 하나에 카테고리 10종을 한
     묶음으로 주므로 SKY·PTY·T1H가 항상 함께 오고, numOfRows=100이 실제 항목
     수(10×6)보다 커서 페이지가 잘리지도 않는다 — 그래서 지금은 "판정 불가"와
     "데이터 없음"이 같은 말이다.
@@ -108,16 +121,19 @@ def map_items_to_forecast_slots(items: list[dict]) -> tuple[WeatherForecastSlot,
 
     slots: list[WeatherForecastSlot] = []
     for (forecast_date, forecast_time), values in sorted(grouped.items()):
+        if not has_usable_sky_or_precipitation(values.get("SKY"), values.get("PTY")):
+            continue
         try:
             forecast_for = datetime.strptime(
                 f"{forecast_date}{forecast_time}", "%Y%m%d%H%M"
             ).replace(tzinfo=_KST)
-            condition = map_sky_pty_to_condition(
-                values.get("SKY"),
-                values.get("PTY"),
-            )
-        except (AppError, ValueError):
+        except ValueError:
             continue
+        # WeatherForecastSlot.condition은 D 소유 도메인 모델의 필수 필드라 아직
+        # 채운다. A–C 계약(WeatherForecast.condition)에서는 이미 빠졌고, D가
+        # 이 필드를 정리하면 map_sky_pty_to_condition()도 함께 사라진다.
+        # 위 유효성 검사를 통과했으므로 여기서 예외가 나지 않는다.
+        condition = map_sky_pty_to_condition(values.get("SKY"), values.get("PTY"))
         slots.append(
             WeatherForecastSlot(
                 forecast_for=forecast_for,
@@ -134,7 +150,7 @@ class RealWeatherProvider:
     """KMA 단기예보 조회서비스(getUltraSrtFcst)를 사용하는 실제 구현.
 
     초단기실황(getUltraSrtNcst)과 달리 SKY(하늘상태)와 PTY(강수형태)를 한 번의
-    호출로 함께 제공해서 good/neutral/bad 판정에 필요한 값을 모두 얻을 수 있다.
+    호출로 함께 제공해서, D가 판정에 쓸 사실을 한 번에 모두 얻을 수 있다(D-051).
     """
 
     def __init__(
@@ -146,21 +162,6 @@ class RealWeatherProvider:
         self._api_key = api_key
         self._client = client
         self._timeout_seconds = timeout_seconds
-
-    async def get_current_condition(
-        self, latitude: float, longitude: float
-    ) -> ProviderResult[WeatherCondition]:
-        result = (await self.get_forecast_slots(latitude, longitude)).data
-        if not result.slots:
-            raise AppError(
-                code="weather_no_data",
-                message="해당 좌표의 날씨 데이터가 제공되지 않습니다.",
-                status_code=404,
-            )
-        return provider_result(
-            result.slots[0].condition,
-            source=ProviderSource.KMA_ULTRA_SHORT_FORECAST,
-        )
 
     async def get_forecast_slots(
         self, latitude: float, longitude: float

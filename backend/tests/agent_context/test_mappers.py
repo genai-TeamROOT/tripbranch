@@ -169,7 +169,12 @@ def test_maps_weather_success_without_inventing_temperature() -> None:
 
     assert context.status == "success"
     assert context.data is not None
-    assert context.data.condition == "neutral"
+    # D-051: Tool 결과에 condition이 있어도 C는 A–C 계약에 판정을 싣지 않는다.
+    # 사실(precipitation/sky/temperature)만 넘기고 판정은 D가 사용자 의도까지
+    # 반영해 다시 내린다.
+    assert not hasattr(context.data, "condition")
+    assert context.data.sky == "cloudy"
+    assert context.data.precipitation == "none"
     # Tool 결과에 기온이 없으면 만들어내지 않는다.
     assert context.data.temperature_celsius is None
     assert context.data.forecast_for == RETRIEVED_AT

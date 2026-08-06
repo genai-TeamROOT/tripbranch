@@ -10,6 +10,7 @@ from app.domain.models import WeatherCondition
 from app.errors import AppError
 from app.providers.weather import (
     RealWeatherProvider,
+    has_usable_sky_or_precipitation,
     map_items_to_forecast_slots,
     map_sky_pty_to_condition,
     resolve_base_date_time,
@@ -114,6 +115,44 @@ def test_ignores_non_numeric_temperature() -> None:
     assert slots[0].temperature_celsius is None
 
 
+@pytest.mark.parametrize(
+    ("sky", "pty", "expected"),
+    [
+        ("1", "0", True),  # 둘 다 알려진 코드
+        (None, "1", True),  # PTY만 있어도 살린다
+        ("4", None, True),  # SKY만 있어도 살린다
+        (None, None, False),  # 둘 다 결측
+        ("9", "9", False),  # 둘 다 미지의 코드
+        ("9", "0", False),  # PTY=0(없음)은 강수 코드가 아니라 판정 재료가 못 된다
+    ],
+)
+def test_has_usable_sky_or_precipitation(sky: str | None, pty: str | None, expected: bool) -> None:
+    assert has_usable_sky_or_precipitation(sky, pty) is expected
+
+
+def test_drops_slots_without_usable_sky_or_precipitation() -> None:
+    """SKY·PTY가 모두 쓸 수 없으면 그 시각 slot을 버린다.
+
+    D-051로 레거시 condition 판정을 걷어내는 중인데, 이 드롭 규칙은 원래
+    map_sky_pty_to_condition()의 예외로만 표현돼 있었다. 판정을 마저 제거할 때
+    필터까지 함께 사라지면 사실이 하나도 없는 빈 slot이 D로 흘러간다 — 그걸
+    막으려고 규칙을 여기 못 박는다.
+    """
+    slots = map_items_to_forecast_slots(
+        [
+            _fcst_item("SKY", "1100", "1"),
+            _fcst_item("PTY", "1100", "0"),
+            # 1200은 기온만 있고 SKY·PTY가 없다.
+            _fcst_item("T1H", "1200", "28.0"),
+            # 1300은 SKY·PTY가 둘 다 미지의 코드다.
+            _fcst_item("SKY", "1300", "9"),
+            _fcst_item("PTY", "1300", "9"),
+        ]
+    )
+
+    assert [slot.forecast_for.hour for slot in slots] == [11]
+
+
 @pytest.mark.asyncio
 async def test_real_weather_provider_picks_earliest_forecast_slot() -> None:
     items = [
@@ -137,9 +176,9 @@ async def test_real_weather_provider_picks_earliest_forecast_slot() -> None:
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     provider = RealWeatherProvider(api_key="dummy", client=client)
 
-    condition = (await provider.get_current_condition(37.5636, 126.9976)).data
+    slots = (await provider.get_forecast_slots(37.5636, 126.9976)).data.slots
 
-    assert condition == WeatherCondition.GOOD
+    assert slots[0].condition == WeatherCondition.GOOD
     await client.aclose()
 
 
@@ -193,7 +232,7 @@ async def test_real_weather_provider_raises_on_failed_result_code() -> None:
     provider = RealWeatherProvider(api_key="dummy", client=client)
 
     with pytest.raises(AppError) as exc_info:
-        await provider.get_current_condition(37.5636, 126.9976)
+        await provider.get_forecast_slots(37.5636, 126.9976)
 
     assert exc_info.value.code == "weather_unavailable"
     await client.aclose()
@@ -207,7 +246,7 @@ async def test_real_weather_provider_does_not_chain_sensitive_request() -> None:
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         provider = RealWeatherProvider(api_key="sensitive-key", client=client)
         with pytest.raises(AppError) as exc_info:
-            await provider.get_current_condition(37.5636, 126.9976)
+            await provider.get_forecast_slots(37.5636, 126.9976)
 
     assert exc_info.value.code == "weather_unavailable"
     assert exc_info.value.__cause__ is None
@@ -238,7 +277,7 @@ async def test_real_weather_provider_logs_gateway_reason_code(
         provider = RealWeatherProvider(api_key="sensitive-key", client=client)
         with caplog.at_level(logging.ERROR, logger="app.providers.weather"):
             with pytest.raises(AppError):
-                await provider.get_current_condition(37.5636, 126.9976)
+                await provider.get_forecast_slots(37.5636, 126.9976)
 
     logged = caplog.text
     assert "http_status=403" in logged
@@ -269,7 +308,7 @@ async def test_real_weather_provider_logs_result_code_error(
         provider = RealWeatherProvider(api_key="sensitive-key", client=client)
         with caplog.at_level(logging.ERROR, logger="app.providers.weather"):
             with pytest.raises(AppError):
-                await provider.get_current_condition(37.5636, 126.9976)
+                await provider.get_forecast_slots(37.5636, 126.9976)
 
     assert "resultCode=22" in caplog.text
     assert "LIMITED_NUMBER_OF_SERVICE_REQUESTS_EXCEEDS_ERROR" in caplog.text

@@ -128,7 +128,11 @@ def test_success_fixture_contains_all_required_context(
     }
 
     weather = payload["context"]["weather"]["data"]
-    assert weather["condition"] in {"good", "neutral", "bad"}
+    # D-051: C는 판정(condition)을 싣지 않고 사실만 넘긴다. 판정 재료가 비면
+    # D가 무조건 NEUTRAL로 굳으므로, 픽스처가 사실을 담고 있는지 못 박는다.
+    assert "condition" not in weather
+    assert weather["precipitation"] is not None
+    assert weather["sky"] is not None
     _assert_timezone_aware(weather["forecast_for"])
 
     places = payload["context"]["places"]["data"]

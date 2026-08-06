@@ -1096,7 +1096,10 @@
 
 - 상태: 사실 전달과 `NO_MENTION` 수용은 `Implemented`(2026-08-05, PR #97),
   판정 이관(사실 기반 + 발화 우선)은 `Implemented`(2026-08-05, D). 2차 Scoring
-  배선 정리와 `condition` 필드 제거는 `Proposed`(A/C 확인 중, 아래 "남은 것" 참고)
+  배선 정리(A)와 `WeatherForecast.condition` 필드 제거(C)도 `Implemented`
+  (2026-08-06). 사실/판정 분리는 이로써 완결됐다 — 남은 항목(도메인 모델의
+  `condition`, `conditions.environment`, `tool_intelligence`의 벤더 코드 노출)은
+  아래 "남은 것" 참고
 - 배경: D-049(`conditions.weather` 미사용)를 확인하다가 날씨 처리 전반을 훑었고,
   서로 얽힌 문제 다섯 개가 나왔다. 하나씩 고치면 다른 하나가 어긋나는 구조라 함께
   정리한다.
@@ -1189,29 +1192,36 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   40%로 가장 크고 GOOD/BAD 낙차가 outdoor 기준 0.7점이라, 이 트레이드오프가
   순위에 미치는 영향은 결코 작지 않다는 걸 인지하고 있다).
 
+#### 해결됨 (2026-08-06)
+
+- **2차 Scoring(`rerank_with_concentration()`) 배선 불일치** — A가 정리했다(커밋
+  `dc0de63`). `rerank_with_concentration()`이 사전 계산된 `weather_condition` 대신
+  `context`를 받고, `RealRecommendationProvider`가 내부에서 `resolve_weather_condition()`을
+  호출해 `weather_condition`/`weather_reason`을 함께 넘긴다. 구버전
+  `to_weather_condition()`은 삭제됐다.
+- **`WeatherForecast.condition` 필드 제거** — C가 정리했다. 제거 전에 소비처를 전수
+  확인한 결과, 값을 읽어 판정에 쓰는 곳은 A의 `to_weather_condition()`이 마지막이었고
+  위 커밋으로 사라졌다. 나머지는 전부 쓰기 전용(mapper가 채우고 아무도 안 읽음)이었다.
+  `StrictModel(extra="forbid")`이라 A의 `services/runtime/stubs.py`가 넘기던
+  `condition="neutral"` 한 줄을 함께 지웠고, Context Fixture 7종의 `condition` 키도
+  제거했다(안 지우면 파싱 자체가 거부된다).
+  - 함께 정리: `WeatherProvider.get_current_condition()` — 앱 코드에서 아무도 호출하지
+    않고 테스트에서만 쓰이던 죽은 경로였다(protocol/Real/Fake 3곳 제거).
+  - 함께 정리: `has_usable_sky_or_precipitation()` 분리. slot 폐기 규칙이 원래
+    `map_sky_pty_to_condition()`이 던지는 예외로만 표현돼 있어서, 판정을 걷어낼 때
+    필터까지 같이 사라질 자리였다. 규칙을 별도 함수로 빼고 테스트로 못 박았다.
+
 #### 남은 것 (`Proposed`)
 
-- **2차 Scoring(`rerank_with_concentration()`) 배선 불일치** — `agent_runtime.py:218-223`
-  (A 소유)이 여전히 구버전 `to_weather_condition()`(condition 필드만 읽음)으로 값을
-  따로 계산해서 넘긴다. D가 `resolve_weather_condition()`을 public으로 열어뒀으니,
-  A가 이 함수를 1차와 동일한 `context`/`conditions`로 호출해 재사용하면 정리된다.
-  지금은 두 값이 우연히 같은 경우가 많지만, ENJOY 반전이나 폭염/한파 케이스에서는
-  1차/2차 설명이 어긋날 수 있다. `rerank_with_concentration()`은 `weather_reason`도
-  키워드 전용 기본값 `None`으로 이미 받게 해뒀다 — A가 넘기기 전까지는 2차 근거
-  문장이 `weather_condition` 기반 라벨로 폴백된다(동작은 유지, 문구만 아직 원인
-  미반영).
-- **`WeatherForecast.condition` 필드 제거** — D가 더 이상 안 읽지만, C가 아직 필드
-  자체를 지우지 않았다(하위호환 유지 중으로 추정, C 확인 필요). `to_weather_condition()`
-  (구버전)도 이때 함께 정리 대상.
+- **`WeatherForecastSlot.condition`(D 소유 도메인 모델)** — A–C 계약에서는 빠졌지만
+  도메인 모델에는 필수 필드로 남아 있어, C가 `map_sky_pty_to_condition()`으로 계속
+  채운다. 이 필드를 지우면 `SelectedWeatherForecast.condition`(C) →
+  `tool_intelligence/mappers.py`(소유 불명)까지 연쇄하므로 아래 항목과 함께 다뤄야
+  한다.
 - **`conditions.environment` 처리 방침** (문제 5) — 살릴지 제거할지 미정
 - **`tool_intelligence` 계약의 `precipitation_type`** — 기상청 코드가 원문으로 노출돼
-  있다. 이번 범위에 넣지 않았다.
-
-#### 확인 필요
-
-- A: 2차 Scoring의 `weather_condition` 계산을 `resolve_weather_condition()` 재사용으로
-  통일할지
-- C: `WeatherForecast.condition` 필드를 지금 제거해도 되는지(다른 소비처 남았는지)
+  있다. 이번 범위에 넣지 않았다. 이 디렉터리는 `package_work_breakdown.md`의 A/B/C/D
+  어느 목록에도 없어 소유자 확인이 선행돼야 한다.
 
 ### D-052 — Gemini 동일 벤더 내 모델 fallback (`LLM_FALLBACK_MODEL_NAMES`)
 

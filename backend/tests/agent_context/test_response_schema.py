@@ -141,14 +141,27 @@ def test_rejects_naive_provider_retrieved_at() -> None:
 
 
 def test_request_weather_and_response_weather_have_separate_vocabularies() -> None:
+    """응답 날씨는 사실 어휘만 쓴다 — 요청 어휘도, 판정도 싣지 않는다.
+
+    요청의 `conditions.weather`는 사용자 발화 5단계(rain/snow/hot/cold/good)이고,
+    응답은 C가 벤더 코드를 옮긴 사실(precipitation/sky/temperature)이다. D-051로
+    3단계 판정(condition)은 D가 사용자 의도까지 보고 내리게 이관돼 응답에서 빠졌다.
+    """
     forecast = WeatherForecast(
-        condition="neutral",
         forecast_for=RETRIEVED_AT,
+        precipitation="rain",
+        sky="overcast",
+        temperature_celsius=24.0,
     )
 
-    assert forecast.condition == "neutral"
+    assert forecast.precipitation == "rain"
+    # 판정 필드는 계약에 없다(StrictModel이라 넘기면 거부된다).
+    assert not hasattr(forecast, "condition")
     with pytest.raises(ValidationError):
-        WeatherForecast(condition="rain", forecast_for=RETRIEVED_AT)
+        WeatherForecast(condition="neutral", forecast_for=RETRIEVED_AT)
+    # 요청 어휘(발화 5단계)를 사실 필드에 넣는 것도 거부한다.
+    with pytest.raises(ValidationError):
+        WeatherForecast(forecast_for=RETRIEVED_AT, precipitation="hot")
 
 
 def test_rejects_invalid_top_level_state_combinations() -> None:
