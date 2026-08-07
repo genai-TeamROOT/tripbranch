@@ -7,6 +7,7 @@ from app.agent_context.enrichment_schemas import (
     CandidateEnrichmentResult,
     ConcentrationForecastData,
 )
+from app.agent_context.mappers import _operating_schedule
 from app.agent_context.schemas import (
     ContextError,
     RecommendationContext,
@@ -17,6 +18,7 @@ from app.agent_context.schemas import ContextValue as AgentContextValue
 from app.agent_context.schemas import Coordinates as AgentCoordinates
 from app.agent_context.schemas import PlaceCandidate as AgentPlaceCandidate
 from app.concentration_policy import normalize_concentration
+from app.domain.operating_hours import normalize_operating_schedule
 from app.errors import AppError
 from app.schemas import (
     RecommendationItem,
@@ -231,38 +233,53 @@ async def test_pipeline_from_context_reports_weather_failure_when_lookup_failed(
     assert _WEATHER_IGNORED_WARNING not in warnings
 
 
-@pytest.mark.asyncio
-async def test_operating_hours_display_shows_applied_range() -> None:
-    """프론트가 "09:00~18:00 (N시간 남음)"을 그릴 수 있도록 당일 구간을 내려준다.
+def _place_from_operating_hours_raw(raw: str) -> AgentPlaceCandidate:
+    """운영시간 원문을 C의 실제 경로(파서 → 직렬화)에 그대로 태워 후보를 만든다.
 
-    remaining_minutes만으로는 "언제부터"를 알 수 없어 추가된 필드다.
+    operating_schedule dict를 손으로 써서 검증하면 C가 실제로는 만들지 않는 입력
+    형태를 통과시켜, 프로덕션에서만 깨지는 결함을 놓친다 — `_operating_schedule()`이
+    close_time을 "%H:%M"으로 자르는 탓에 자정 마감 표식(time.max)이 지워지는 게
+    그 예다. 원문은 Supabase places.operating_hours_raw에 실제로 있는 값들이다.
     """
-    place = AgentPlaceCandidate(
+    schedule = normalize_operating_schedule(
+        content_type_id="12", operating_hours=raw, rest_date=None
+    )
+    return AgentPlaceCandidate(
         place_id="place-1",
         name="근처 카페",
         category="cafe",
         location=AgentCoordinates(latitude=37.5806, longitude=126.9770),
-        operating_schedule={
-            "availability": "scheduled",
-            "rules": [
-                {
-                    "months": None,
-                    "weekdays": None,
-                    "time_ranges": [
-                        {
-                            "open_time": "09:00",
-                            "close_time": "18:00",
-                            "crosses_midnight": False,
-                        }
-                    ],
-                }
-            ],
-            "closure_rules": [],
-        },
+        operating_schedule=_operating_schedule(schedule),
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("operating_hours_raw", "expected"),
+    [
+        # 프론트가 "09:00~18:00 (N시간 남음)"을 그릴 수 있도록 당일 구간을 내려준다.
+        # remaining_minutes만으로는 "언제부터"를 알 수 없어 추가된 필드다.
+        ("09:00~18:00", "09:00~18:00"),
+        ("09:00-18:00", "09:00~18:00"),
+        ("09:00~18:00 (입장 마감 17:30)", "09:00~18:00"),
+        # 24시간 개방을 "00:00~23:59"로 쓰면 마감이 임박한 것처럼 읽힌다.
+        ("상시 개방", "24시간"),
+        ("00:00~24:00", "24시간"),
+        # 원문의 24:00을 "23:59"로 쓰면 1분 일찍 닫는 것처럼 읽힌다.
+        ("10:30~24:00", "10:30~24:00"),
+        ("01:00~24:00", "01:00~24:00"),
+        # 계절별 규칙에서는 방문 월(7월)에 해당하는 구간을 고른다.
+        ("[2월~5월] 09:00~18:00<br>\n[6월~8월] 09:00~18:30", "09:00~18:30"),
+    ],
+)
+async def test_operating_hours_display_matches_source_text(
+    operating_hours_raw: str, expected: str
+) -> None:
     context = RecommendationContext(
         location=_context_location(),
-        places=AgentContextValue(status="success", data=[place]),
+        places=AgentContextValue(
+            status="success", data=[_place_from_operating_hours_raw(operating_hours_raw)]
+        ),
     )
 
     response = await run_recommendation_pipeline_from_context(
@@ -271,18 +288,20 @@ async def test_operating_hours_display_shows_applied_range() -> None:
         search_radius_km=2.0,
     )
 
-    assert response.recommendations[0].operating_hours_display == "09:00~18:00"
+    assert response.recommendations[0].operating_hours_display == expected
 
 
 @pytest.mark.asyncio
-async def test_operating_hours_display_marks_all_day_instead_of_raw_range() -> None:
-    """24시간 영업은 time.min~time.max로 들어온다.
-
-    그대로 포맷하면 "00:00~23:59"가 되어 마감이 임박한 것처럼 읽힌다.
-    """
+@pytest.mark.parametrize("operating_hours_raw", ["점포 별로 상이함", "15:00"])
+async def test_operating_hours_display_is_none_when_text_is_unparsable(
+    operating_hours_raw: str,
+) -> None:
+    """해석 못 한 원문은 unknown이라 unverified로 빠지고 표시할 구간도 없다."""
     context = RecommendationContext(
         location=_context_location(),
-        places=AgentContextValue(status="success", data=[_context_place()]),
+        places=AgentContextValue(
+            status="success", data=[_place_from_operating_hours_raw(operating_hours_raw)]
+        ),
     )
 
     response = await run_recommendation_pipeline_from_context(
@@ -291,55 +310,13 @@ async def test_operating_hours_display_marks_all_day_instead_of_raw_range() -> N
         search_radius_km=2.0,
     )
 
-    assert response.recommendations[0].operating_hours_display == "24시간"
+    assert response.recommendations == []
+    assert response.unverified_recommendations[0].operating_hours_display is None
 
 
 @pytest.mark.asyncio
-async def test_operating_hours_display_keeps_midnight_close_as_24() -> None:
-    """원문 "09:00~24:00"의 종료는 파서가 time.max로 담는다(operating_hours.py).
-
-    그대로 strftime하면 "23:59"가 되어 1분 일찍 닫는 것처럼 보인다.
-    """
-    place = AgentPlaceCandidate(
-        place_id="place-1",
-        name="근처 카페",
-        category="cafe",
-        location=AgentCoordinates(latitude=37.5806, longitude=126.9770),
-        operating_schedule={
-            "availability": "scheduled",
-            "rules": [
-                {
-                    "months": None,
-                    "weekdays": None,
-                    "time_ranges": [
-                        {
-                            "open_time": "09:00",
-                            "close_time": "23:59:59.999999",
-                            "crosses_midnight": False,
-                        }
-                    ],
-                }
-            ],
-            "closure_rules": [],
-        },
-    )
-    context = RecommendationContext(
-        location=_context_location(),
-        places=AgentContextValue(status="success", data=[place]),
-    )
-
-    response = await run_recommendation_pipeline_from_context(
-        context,
-        visit_at=_CONTEXT_VISIT_AT,
-        search_radius_km=2.0,
-    )
-
-    assert response.recommendations[0].operating_hours_display == "09:00~24:00"
-
-
-@pytest.mark.asyncio
-async def test_operating_hours_display_is_none_when_schedule_unknown() -> None:
-    """운영시간 미확인 후보는 unverified로 빠지고 표시할 구간도 없다."""
+async def test_operating_hours_display_is_none_when_schedule_missing() -> None:
+    """운영시간 자체가 안 넘어온 후보도 표시할 구간이 없다."""
     place = AgentPlaceCandidate(
         place_id="place-1",
         name="근처 카페",
