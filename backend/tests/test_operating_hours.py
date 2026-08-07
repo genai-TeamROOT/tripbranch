@@ -69,15 +69,44 @@ def test_parses_multiple_and_cross_midnight_ranges() -> None:
     assert schedule.rules[0].time_ranges[1].crosses_midnight is True
 
 
-def test_accepts_midnight_written_as_24_00() -> None:
+def test_24_00_is_end_of_day_not_a_midnight_crossing() -> None:
+    """24:00은 당일 종료이므로 자정 통과로 표시하지 않는다.
+
+    time(0)으로 두면 end <= start가 되어 자정 통과로 오분류되고, 당일 구간만
+    소비하는 candidate_mapper에서 구간이 통째로 버려진다.
+    """
     schedule = normalize_operating_schedule(
         content_type_id="39",
         operating_hours="09:00~24:00",
         rest_date=None,
     )
 
-    assert schedule.rules[0].time_ranges[0].end == time(0)
-    assert schedule.rules[0].time_ranges[0].crosses_midnight is True
+    assert schedule.rules[0].time_ranges[0].end == time.max
+    assert schedule.rules[0].time_ranges[0].crosses_midnight is False
+
+
+def test_always_open_text_is_all_day() -> None:
+    schedule = normalize_operating_schedule(
+        content_type_id="12",
+        operating_hours="상시 개방※ 우천 시, 안전상의 이유로 출입통제될 수 있음",
+        rest_date=None,
+    )
+
+    assert schedule.availability is OperatingAvailability.ALL_DAY
+    assert schedule.parse_status is OperatingParseStatus.PARSED
+    assert schedule.rules == ()
+
+
+def test_always_open_does_not_override_parsed_time_ranges() -> None:
+    """부속 시설 시간이 함께 적힌 원문을 통째로 24시간으로 넓히지 않는다."""
+    schedule = normalize_operating_schedule(
+        content_type_id="12",
+        operating_hours="상시 개방 ※ 낙산 전시관 09:00~17:00",
+        rest_date=None,
+    )
+
+    assert schedule.availability is OperatingAvailability.SCHEDULED
+    assert schedule.rules[0].time_ranges[0].end == time(17, 0)
 
 
 def test_unrecognized_hours_are_partial_and_raw_value_is_preserved() -> None:
