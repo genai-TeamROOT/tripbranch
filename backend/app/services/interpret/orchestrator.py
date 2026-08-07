@@ -48,6 +48,11 @@ async def build_interpretation(
             ),
         )
 
+    # 일정의 세부 조건 추출·후보 조회·편성은 INT-07 후속 단계에서 붙인다. 1차에서는
+    # "일정 요청"을 일반 RECOMMEND와 분리하고, 안전한 완료 응답으로 끝낸다.
+    if classification.intent is Intent.SCHEDULE:
+        return LLMOutput(intent=Intent.SCHEDULE, status=OutputStatus.COMPLETE)
+
     if classification.intent is Intent.RECOMMEND:
         return (await llm.extract_recommend_conditions(request.user_input)).data
 

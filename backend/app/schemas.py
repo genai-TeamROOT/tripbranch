@@ -101,6 +101,7 @@ class PlaceCandidate(BaseModel):
 
 class Intent(StrEnum):
     RECOMMEND = "RECOMMEND"
+    SCHEDULE = "SCHEDULE"
     INFO = "INFO"
     MODIFY = "MODIFY"
     COMPARE = "COMPARE"

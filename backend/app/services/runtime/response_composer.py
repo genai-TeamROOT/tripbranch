@@ -50,7 +50,10 @@ _TOOL_UNSUPPORTED_MESSAGE = "죄송하지만 아직 지원하지 않는 요청�
 # unsupported는 이유가 여러 가지다. 지원 지역 밖인데 "아직 지원하지 않는 요청"이라고만
 # 하면 무엇을 바꿔야 할지 알 수 없다(D-044).
 _TOOL_UNSUPPORTED_TEMPLATES: dict[str, str] = {
-    "unsupported_region": "지금은 서울 종로구 안의 장소만 안내할 수 있어요.",
+    "unsupported_region": (
+        "현재는 베타 서비스로 종로구의 장소 추천만 가능해요. "
+        "종로에서 가고 싶은 위치를 말씀해주세요."
+    ),
 }
 
 
@@ -71,6 +74,7 @@ _OUT_OF_SCOPE_TEMPLATES: dict[str, str] = {
 # generation.md §3/§6 3차) — 임시 안내문. question_type=concentration은 예외
 # (아래 compose_info_concentration_message).
 _NOT_YET_SUPPORTED_MESSAGE = "죄송해요, 이 기능은 아직 준비 중이에요."
+_SCHEDULE_NOT_YET_SUPPORTED_MESSAGE = "일정 추천 기능은 아직 준비 중이에요."
 
 # concentration-conditions.md §7 데이터 한계와 응답 원칙.
 _CONCENTRATION_NO_DATA_MESSAGE = "이 장소 유형은 혼잡도 데이터가 없어요."
@@ -159,6 +163,9 @@ async def compose_chat_message(
 
     if llm_output.intent is Intent.INFO and info_concentration_response is not None:
         return compose_info_concentration_message(info_concentration_response)
+
+    if llm_output.intent is Intent.SCHEDULE:
+        return _SCHEDULE_NOT_YET_SUPPORTED_MESSAGE
 
     if llm_output.intent in (Intent.RECOMMEND, Intent.MODIFY):
         if tool_status in _TOOL_TERMINAL_STATUSES:
