@@ -296,6 +296,36 @@ export interface AgentResponse {
   recommendations: RecommendationsResponse | null;
   message: string;
   llm_execution?: LLMExecutionMetadata | null;
+  tool_execution?: ToolExecutionDebug | null;
+}
+
+export interface ToolProviderDebug {
+  source: string;
+  status: string;
+  retrieved_at: string | null;
+}
+
+/** fetched=false는 C가 그 항목을 조회하지 않았다는 뜻 — 조회 후 실패와 구분된다. */
+export interface ToolContextItemDebug {
+  key: string;
+  fetched: boolean;
+  status: string | null;
+  error_code: string | null;
+  warning_codes: string[];
+  item_count: number | null;
+}
+
+export interface ToolExecutionDebug {
+  request_id: string;
+  status: string;
+  latency_ms: number | null;
+  providers: ToolProviderDebug[];
+  context_items: ToolContextItemDebug[];
+  rule_versions: Record<string, string>;
+  resolved_location_name: string | null;
+  resolved_location_address: string | null;
+  error_code: string | null;
+  clarification_code: string | null;
 }
 
 export interface LLMCallMetadata {

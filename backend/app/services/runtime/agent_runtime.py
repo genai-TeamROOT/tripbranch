@@ -48,6 +48,7 @@ from app.services.runtime.llm_execution import (
 )
 from app.services.runtime.protocols import EnrichmentProvider, RecommendationProvider, ToolProvider
 from app.services.runtime.response_composer import compose_chat_message
+from app.services.runtime.tool_debug import build_tool_execution_debug
 from app.state.schema import now_kst
 from app.state.service import (
     RecommendedPlace,
@@ -439,11 +440,15 @@ async def run_agent_flow(
     )
     tool_started_at = time.monotonic()
     tool_response = await tool_provider.fetch_context(context_request)
+    tool_latency_ms = int((time.monotonic() - tool_started_at) * 1000)
+    # 개발자용 Audit 표시 정보. 아래 어느 경로로 응답이 끝나든 C를 호출한 사실은
+    # 남아야 하므로 여기서 한 번만 만들어 모든 return에 함께 싣는다.
+    tool_execution = build_tool_execution_debug(tool_response, latency_ms=tool_latency_ms)
     _record_trace_safely(
         session_id=state_response.session_id,
         run_id=state_response.run_id,
         step="tool_fetch",
-        latency_ms=int((time.monotonic() - tool_started_at) * 1000),
+        latency_ms=tool_latency_ms,
         error_type=(
             tool_response.status if tool_response.status in _TOOL_TERMINAL_STATUSES else None
         ),
@@ -488,6 +493,7 @@ async def run_agent_flow(
             recommendations=None,
             message=message,
             llm_execution=get_llm_execution_metadata(),
+            tool_execution=tool_execution,
         )
 
     # success/partial은 Recommendation 단계로 진행한다(경고가 있어도 가능한 데이터로
@@ -513,6 +519,7 @@ async def run_agent_flow(
             recommendations=None,
             message=message,
             llm_execution=get_llm_execution_metadata(),
+            tool_execution=tool_execution,
         )
 
     is_schedule = llm_output.intent is Intent.SCHEDULE
@@ -603,6 +610,7 @@ async def run_agent_flow(
             schedule=schedule_result,
             message=message,
             llm_execution=get_llm_execution_metadata(),
+            tool_execution=tool_execution,
         )
 
     # 7) A → B: 실제로 화면에 노출된 결과만 기록한다. recommendations와
@@ -631,6 +639,7 @@ async def run_agent_flow(
         recommendations=recommendations,
         message=message,
         llm_execution=get_llm_execution_metadata(),
+        tool_execution=tool_execution,
     )
 
 

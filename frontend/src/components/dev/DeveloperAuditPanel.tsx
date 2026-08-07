@@ -10,6 +10,9 @@ import type {
   DeveloperAuditTurn,
   LLMExecutionMetadata,
   RecommendationItem,
+  ToolContextItemDebug,
+  ToolExecutionDebug,
+  ToolProviderDebug,
   UserConditions,
 } from "../../types";
 
@@ -140,6 +143,128 @@ function LlmExecutionCards({ execution }: { execution: LLMExecutionMetadata | nu
           </section>
         );
       })}
+    </div>
+  );
+}
+
+const CONTEXT_ITEM_LABELS: Record<string, string> = {
+  location: "위치 해석",
+  weather: "날씨",
+  places: "장소 후보",
+  holidays: "공휴일",
+};
+
+/** Provider 이름에 stub/fake가 들어가면 실제 외부 API가 아니라는 뜻이다.
+ * D-042(Real 실패 시 Fake로 자동 전환하지 않는다)를 화면에서 바로 확인하기 위해
+ * 다른 색으로 구분한다 — "테스트 카페"가 조용히 추천되는 상황을 눈으로 잡는다. */
+function isFakeSource(source: string) {
+  const normalized = source.toLowerCase();
+  return normalized.includes("stub") || normalized.includes("fake");
+}
+
+function ToolProviderCards({ providers }: { providers: ToolProviderDebug[] }) {
+  if (!providers.length) {
+    return (
+      <p className="rounded-md bg-amber-50 p-3 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+        Provider 호출 기록이 없습니다. C가 모든 항목을 캐시로 처리했거나 조회 전에 종료된 요청일
+        수 있습니다.
+      </p>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-2">
+      {providers.map((provider, index) => (
+        <section
+          key={`${provider.source}-${provider.status}-${index}`}
+          className={
+            isFakeSource(provider.source)
+              ? "rounded-md border border-amber-300 bg-amber-50 p-3 dark:border-amber-700 dark:bg-amber-950/30"
+              : "rounded-md border border-gray-200 bg-white p-3 dark:border-gray-800 dark:bg-gray-900"
+          }
+        >
+          <p className="text-xs font-semibold text-gray-900 dark:text-gray-100">
+            {provider.source}
+            {isFakeSource(provider.source) ? " · 실제 API 아님" : ""}
+          </p>
+          <p className="mt-1 text-xs text-gray-700 dark:text-gray-300">
+            상태: {provider.status} · 조회 시각: {provider.retrieved_at ?? "없음"}
+          </p>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function ToolContextItemRows({ items }: { items: ToolContextItemDebug[] }) {
+  return (
+    <div className="flex flex-col gap-2">
+      {items.map((item) => (
+        <section
+          key={item.key}
+          className="rounded-md border border-gray-200 p-3 dark:border-gray-800"
+        >
+          <p className="text-xs font-semibold text-gray-900 dark:text-gray-100">
+            {CONTEXT_ITEM_LABELS[item.key] ?? item.key}
+          </p>
+          <p className="mt-1 text-xs text-gray-700 dark:text-gray-300">
+            {item.fetched
+              ? `상태: ${item.status ?? "-"}${
+                  item.item_count !== null ? ` · ${item.item_count}건` : ""
+                }`
+              : "조회하지 않음"}
+          </p>
+          {item.error_code && (
+            <p className="mt-1 text-xs text-red-600 dark:text-red-400">오류: {item.error_code}</p>
+          )}
+          {item.warning_codes.length > 0 && (
+            <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+              경고: {item.warning_codes.join(", ")}
+            </p>
+          )}
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function ToolExecutionSection({ execution }: { execution: ToolExecutionDebug | null }) {
+  if (!execution) {
+    return (
+      <p className="rounded-md bg-amber-50 p-3 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+        C 실행 정보가 없습니다. C 호출 전에 끝난 요청이거나, tool_execution 필드가 추가되기 전의
+        이전 응답일 수 있습니다.
+      </p>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-3">
+      <dl className="grid grid-cols-2 gap-2">
+        <DetailRow label="C 응답 상태" value={execution.status} />
+        <DetailRow label="C 소요 시간" value={formatDuration(execution.latency_ms)} />
+        <DetailRow label="해석된 위치" value={execution.resolved_location_name} />
+        <DetailRow label="해석된 주소" value={execution.resolved_location_address} />
+        {execution.error_code && <DetailRow label="오류 코드" value={execution.error_code} />}
+        {execution.clarification_code && (
+          <DetailRow label="되묻기 코드" value={execution.clarification_code} />
+        )}
+      </dl>
+
+      <h4 className="text-xs font-semibold text-gray-500 dark:text-gray-400">호출한 Provider</h4>
+      <ToolProviderCards providers={execution.providers} />
+
+      <h4 className="text-xs font-semibold text-gray-500 dark:text-gray-400">Context 항목별 상태</h4>
+      <ToolContextItemRows items={execution.context_items} />
+
+      {Object.keys(execution.rule_versions).length > 0 && (
+        <>
+          <h4 className="text-xs font-semibold text-gray-500 dark:text-gray-400">규칙 버전</h4>
+          <dl className="grid grid-cols-2 gap-2">
+            {Object.entries(execution.rule_versions).map(([name, version]) => (
+              <DetailRow key={name} label={name} value={version} />
+            ))}
+          </dl>
+        </>
+      )}
     </div>
   );
 }
@@ -370,10 +495,7 @@ export function DeveloperAuditPanel({
                     }
                   />
                 </dl>
-                <p className="rounded-md bg-amber-50 p-3 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
-                  C의 원본 Tool 호출 목록과 raw 후보 수는 현재 AgentResponse에 포함되지 않아
-                  표시하지 않습니다. 백엔드 debug 필드가 추가되면 이 탭에 바로 붙일 수 있습니다.
-                </p>
+                <ToolExecutionSection execution={selectedTurn.response.tool_execution ?? null} />
               </div> : <p className="rounded-md border border-dashed border-gray-300 p-4 text-sm text-gray-500 dark:border-gray-700">LLM 단계에서 실패해 C Tool은 호출되지 않았습니다.</p>
             )}
 
