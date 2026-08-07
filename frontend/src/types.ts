@@ -46,6 +46,23 @@ export interface RecommendationsResponse {
   elapsed_ms: number;
 }
 
+export interface ScheduleItem {
+  order: number;
+  place_id: string;
+  place_name: string;
+  estimated_arrival: string;
+  estimated_duration_min: number;
+  travel_to_next_min: number | null;
+  reason: string;
+}
+
+export interface ScheduleResult {
+  items: ScheduleItem[];
+  total_duration_min: number;
+  route_summary: string;
+  basis_note: string;
+}
+
 export type ChatPhase =
   | "idle"
   | "interpreting"
@@ -105,6 +122,11 @@ export type ChatMessage =
       elapsed_ms: number;
       /* 백엔드가 보고한 서버 처리 시간(ms). 네트워크·렌더 시간은 포함하지 않는다. */
       server_elapsed_ms: number;
+    }
+  | {
+      id: string;
+      type: "schedule_result";
+      schedule: ScheduleResult;
     };
 
 export interface ApiErrorBody {
@@ -294,6 +316,7 @@ export interface AgentResponse {
   llm_output: LLMOutput;
   state: StateApplyResponse;
   recommendations: RecommendationsResponse | null;
+  schedule?: ScheduleResult | null;
   message: string;
   llm_execution?: LLMExecutionMetadata | null;
 }
