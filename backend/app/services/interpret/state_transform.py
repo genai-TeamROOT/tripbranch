@@ -134,7 +134,15 @@ def transform(
     rejected_places: list[RejectedPlace] = []
     reset_scope: str | None = None
 
-    if llm_output.intent is Intent.RECOMMEND and llm_output.recommend is not None:
+    if (
+        llm_output.intent in (Intent.RECOMMEND, Intent.SCHEDULE)
+        and llm_output.recommend is not None
+    ):
+        # SCHEDULE도 RECOMMEND와 동일하게 취급한다 — orchestrator.py가 SCHEDULE일 때도
+        # extract_recommend_conditions()를 재사용해 llm_output.recommend를 채워주므로
+        # (intent 필드만 SCHEDULE로 바꿔치기됨), 조건 병합 로직은 그대로 공유해도 된다
+        # (docs/design/int-07-schedule.md 4절 "A→B: 조건 병합 (기존과 동일)").
+        #
         # 새 RECOMMEND는 조건을 재생성한다(conditions-schema.md §6) — soft는 조건만
         # 초기화하고 추천/거절 이력은 유지해, 이후 MODIFY("그거 말고")가 계속 동작한다.
         #
@@ -173,7 +181,8 @@ def transform(
             # (거절 이력은 그대로 유지되므로 REJECT_ALL의 not_interested는 영향 없음.)
         reset_scope = _detect_reset_scope(user_input, modify.modify_type)
 
-    # SCHEDULE/INFO/COMPARE/GENERAL/OUT_OF_SCOPE: operations/rejected_places/reset_scope는 비운다.
+    # INFO/COMPARE/GENERAL/OUT_OF_SCOPE: operations/rejected_places/reset_scope는 비운다.
+    # SCHEDULE은 위 RECOMMEND 분기에서 이미 처리된다.
 
     return StateApplyRequest(
         session_id=session_context.session_id,

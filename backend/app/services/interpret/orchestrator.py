@@ -48,10 +48,14 @@ async def build_interpretation(
             ),
         )
 
-    # 일정의 세부 조건 추출·후보 조회·편성은 INT-07 후속 단계에서 붙인다. 1차에서는
-    # "일정 요청"을 일반 RECOMMEND와 분리하고, 안전한 완료 응답으로 끝낸다.
+    # SCHEDULE도 RECOMMEND와 같은 15개 조건(time_available, place_tags 등)을 쓴다
+    # (docs/design/int-07-schedule.md 6.1절) — 별도 추출 메서드를 새로 만들지 않고
+    # extract_recommend_conditions()를 그대로 재사용한 뒤 intent만 SCHEDULE로
+    # 바꿔치기한다. status(complete/needs_clarification)와 clarification은 그대로
+    # 유지된다 — RECOMMEND와 동일한 되묻기 흐름을 탄다.
     if classification.intent is Intent.SCHEDULE:
-        return LLMOutput(intent=Intent.SCHEDULE, status=OutputStatus.COMPLETE)
+        result = (await llm.extract_recommend_conditions(request.user_input)).data
+        return result.model_copy(update={"intent": Intent.SCHEDULE})
 
     if classification.intent is Intent.RECOMMEND:
         return (await llm.extract_recommend_conditions(request.user_input)).data

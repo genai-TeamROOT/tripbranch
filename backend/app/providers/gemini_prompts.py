@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from datetime import date
 
+from app.schedule.schemas import SchedulePlanningRequest
 from app.schemas import GeneralTopic, UserConditions
 
 # B의 LLMOps Trace(record_trace(prompt_version=...))와 StateApplyRequest.prompt_version에
@@ -401,6 +402,69 @@ def build_general_answer_instruction(topic: GeneralTopic) -> str:
 - 사용자 발화를 그대로 반복하지 말고 바로 답변을 시작하세요."""
 
 
+def build_schedule_planning_instruction() -> str:
+    """INT-07 SCHEDULE 일정 편성 system instruction.
+    (docs/design/int-07-schedule.md 6.1~6.2절)
+
+    format_schedule_planning_context()가 만드는 텍스트가 contents로 같이
+    전달된다는 전제로 규칙만 담는다 — 다른 build_*_instruction()과 달리 원문
+    사용자 발화가 아니라 구조화된 후보/조건/거리 데이터가 입력이기 때문이다.
+    """
+
+    return """당신은 TripBranch의 일정 편성기입니다. 함께 전달된 후보 목록 중
+시간·동선 효율을 고려해 3~5개를 선택하고 방문 순서를 정해 반환하세요.
+
+규칙:
+- 후보 중 3~5개만 선택합니다. 나머지는 자동 제외됩니다.
+- 후보 간 거리 정보를 근거로 이동 동선이 비효율적이지 않게 순서를 정하세요
+  (가까운 곳끼리 묶는 것을 우선 고려).
+- 조건에 활동 가능 시간(time_available, 분)이 있으면 총 소요 시간이 그 안에
+  들어오게 하세요. 없으면 3~4시간 내외로 구성하세요.
+- 각 장소의 estimated_duration_min은 장소 성격에 맞게 합리적으로 추정하세요
+  (카페 60분, 관광지 90분 등).
+- estimated_arrival은 "HH:MM" 형식이며, 전달된 시작 시각부터 순서대로
+  체류시간+이동시간을 누적해 계산하세요.
+- travel_to_next_min은 전달된 거리 정보를 도보/대중교통 기준으로 환산한
+  추정값입니다(분). 마지막 장소는 null입니다.
+- reason은 그 장소를 그 순서에 배치한 이유를 1~2문장으로 씁니다(거리·시간·조건
+  근거를 포함하세요).
+- route_summary는 전체 동선을 1~2문장으로 요약합니다.
+- total_duration_min은 첫 장소 도착부터 마지막 장소 체류 종료까지 총 시간(분)입니다."""
+
+
+def format_schedule_planning_context(request: SchedulePlanningRequest, start_time: str) -> str:
+    """SchedulePlanningRequest를 LLM에 전달할 contents 텍스트로 직렬화한다.
+
+    build_schedule_planning_instruction()이 규칙(system instruction)을 담당하고,
+    이 함수가 실제 후보/조건/거리 데이터(contents)를 담당한다. start_time은
+    호출부(app.schedule.planner)가 request.visit_datetime의 fallback까지
+    반영해 미리 "HH:MM"으로 계산해 넘긴다.
+    """
+
+    candidate_lines = "\n".join(
+        f"- {c.place_id} | {c.name} | {c.category} | score={c.score:.2f} | "
+        f"{c.recommendation_reason}"
+        for c in request.candidates
+    )
+    distance_lines = "\n".join(
+        f"- {a}-{b}: {distance_km:.2f}km"
+        for (a, b), distance_km in request.pairwise_distances_km.items()
+    )
+    condition_lines = request.conditions.model_dump_json(exclude_none=True)
+
+    return f"""[시작 시각]
+{start_time}
+
+[후보 목록]
+{candidate_lines}
+
+[후보 간 거리]
+{distance_lines}
+
+[사용자 조건]
+{condition_lines}"""
+
+
 def format_validation_retry_note(error: Exception) -> str:
     """1차 구조화 출력이 검증에 실패했을 때 재시도 프롬프트에 덧붙이는 안내문."""
 
@@ -420,5 +484,7 @@ __all__ = [
     "build_compare_extraction_instruction",
     "build_general_extraction_instruction",
     "build_general_answer_instruction",
+    "build_schedule_planning_instruction",
+    "format_schedule_planning_context",
     "format_validation_retry_note",
 ]

@@ -25,6 +25,7 @@ from pydantic import BaseModel, ValidationError
 from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
 from app.providers import gemini_prompts
 from app.providers.contracts import ProviderResult, ProviderSource, provider_result
+from app.schedule.schemas import ScheduleLLMPlan, SchedulePlanningRequest
 from app.schemas import GeneralTopic, IntentClassificationResult, LLMOutput, UserConditions
 from app.services.runtime.llm_execution import record_llm_call
 
@@ -183,6 +184,23 @@ class RealGeminiProvider:
             operation="generate_general_answer",
         )
         return provider_result(result.answer, source=ProviderSource.GEMINI)
+
+    async def generate_schedule_plan(
+        self, request: SchedulePlanningRequest
+    ) -> ProviderResult[ScheduleLLMPlan]:
+        # visit_datetime은 app.schedule.planner가 fallback(현재 시각)까지 반영해서
+        # 넘겨준다 — 여기서는 이미 값이 있다고 가정하고 표시 형식만 맞춘다.
+        assert request.visit_datetime is not None
+        start_time = request.visit_datetime.strftime("%H:%M")
+        instruction = gemini_prompts.build_schedule_planning_instruction()
+        context = gemini_prompts.format_schedule_planning_context(request, start_time)
+        result = await self._call_structured(
+            instruction,
+            context,
+            ScheduleLLMPlan,
+            operation="generate_schedule_plan",
+        )
+        return provider_result(result, source=ProviderSource.GEMINI)
 
     async def _call_structured(
         self,

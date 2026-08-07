@@ -67,6 +67,28 @@ def test_recommend_resets_soft_and_updates_all_set_fields() -> None:
     assert request.prompt_version == PROMPT_VERSION
 
 
+def test_schedule_merges_conditions_same_as_recommend() -> None:
+    """SCHEDULE-04: orchestrator.py가 SCHEDULE에도 llm_output.recommend를 채워주므로
+    (docs/design/int-07-schedule.md 4절 "조건 병합 (기존과 동일)"), RECOMMEND와
+    같은 분기를 타야 한다 — 137번째 줄 조건에 SCHEDULE도 포함됐는지 확인."""
+    llm_output = LLMOutput(
+        intent=Intent.SCHEDULE,
+        status=OutputStatus.COMPLETE,
+        recommend=RecommendPayload(
+            conditions=UserConditions(search_center="경복궁", place_tags=["카페"])
+        ),
+    )
+
+    request = transform(llm_output, _context(), "경복궁 근처에서 반나절 코스 짜줘")
+
+    assert request.intent == "SCHEDULE"
+    ops = {(op.op, op.field): op.value for op in request.operations}
+    assert ops[("Update", "search_center")] == "경복궁"
+    assert ops[("Update", "place_tags")] == ["카페"]
+    assert request.reset_scope == "soft"
+    assert request.confirmed is True
+
+
 def test_recommend_serializes_int_fields_as_int_not_str() -> None:
     """_serialize() 회귀: max_travel_time/time_available은 str()로 감싸지지 않는다.
 

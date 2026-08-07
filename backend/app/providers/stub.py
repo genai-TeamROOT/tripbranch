@@ -27,6 +27,7 @@ from app.providers.contracts import (
     ProviderStatus,
     provider_result,
 )
+from app.schedule.schemas import ScheduleLLMPlan, SchedulePlanningRequest
 from app.schemas import (
     ClarificationPayload,
     CompareCriteria,
@@ -49,6 +50,7 @@ from app.schemas import (
     PlaceType,
     QuestionType,
     RecommendPayload,
+    ScheduleItem,
     Severity,
     StatedWeather,
     UserConditions,
@@ -503,6 +505,32 @@ class FakeLLMProvider:
             intent=Intent.GENERAL,
             status=OutputStatus.COMPLETE,
             general=GeneralPayload(topic=topic, original_question=user_input),
+        )
+        return provider_result(result, source=ProviderSource.FAKE_LLM)
+
+    async def generate_schedule_plan(
+        self, request: SchedulePlanningRequest
+    ) -> ProviderResult[ScheduleLLMPlan]:
+        """실제 Gemini 호출 없이 candidates 앞쪽 최대 3개를 순서대로 배치한
+        고정 일정을 반환한다 — 회귀 테스트용, 실제 편성 판단이 아니다."""
+        selected = request.candidates[:3]
+        items = [
+            ScheduleItem(
+                order=index + 1,
+                place_id=candidate.place_id,
+                place_name=candidate.name,
+                estimated_arrival=f"{14 + index}:00",
+                estimated_duration_min=60,
+                travel_to_next_min=15 if index < len(selected) - 1 else None,
+                reason="Agent Runtime 골격 검증용 고정 일정입니다.",
+            )
+            for index, candidate in enumerate(selected)
+        ]
+        total_duration = 60 * len(items) + 15 * max(len(items) - 1, 0)
+        result = ScheduleLLMPlan(
+            items=items,
+            total_duration_min=total_duration,
+            route_summary="고정 스텁 동선입니다.",
         )
         return provider_result(result, source=ProviderSource.FAKE_LLM)
 
