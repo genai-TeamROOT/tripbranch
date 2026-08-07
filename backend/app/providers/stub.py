@@ -595,6 +595,31 @@ class FakeWeatherProvider:
         )
 
 
+def _fake_intro(content_type_id: str) -> dict[str, object]:
+    """detailIntro2 응답을 유형별 필드명까지 흉내 낸다.
+
+    이 값을 비워두면 INFO 상세 질의(요금·주차·편의시설)의 필드 추출이 한 줄도
+    실행되지 않은 채 테스트가 통과한다 — raw_intro가 빈 dict면 추출 결과도 항상
+    빈 dict라서 "값이 없다"와 "로직이 안 돌았다"를 구분할 수 없다. 실 Provider와
+    같은 키 이름을 쓰는 것이 핵심이다(문화시설 14는 usefee/parkingculture,
+    음식점 39는 parkingfood).
+    """
+
+    if content_type_id == "39":
+        return {
+            "parkingfood": "가능(10대)",
+            "chkcreditcardfood": "가능",
+            "opentimefood": "08:00-22:00",
+        }
+    return {
+        "usefee": "어른 3,000원 / 어린이 1,500원",
+        "parkingculture": "주차 가능(무료)",
+        "chkbabycarriageculture": "가능",
+        "chkpetculture": "불가",
+        "chkcreditcardculture": "가능",
+    }
+
+
 class FakePlaceProvider:
     """장소 검색 결과를 고정 후보 목록으로 대체하는 fake provider."""
 
@@ -717,12 +742,12 @@ class FakePlaceProvider:
                 title=candidate.name if candidate else None,
                 address=candidate.address if candidate else None,
                 overview="Fake Provider의 장소 상세정보입니다.",
-                homepage=None,
-                telephone=None,
+                homepage="https://example.test/fake-place",
+                telephone="02-000-0000",
                 operating_hours=operating_hours,
                 rest_date=rest_date,
                 raw_common={},
-                raw_intro={},
+                raw_intro=_fake_intro(content_type_id) if candidate else {},
                 provider="fake_place",
                 operating_schedule=normalize_operating_schedule(
                     content_type_id=content_type_id,
