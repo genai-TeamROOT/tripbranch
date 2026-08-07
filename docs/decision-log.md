@@ -1374,7 +1374,7 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   답할 수 있지만, 그러려면 한 Tool이 질문 유형에 따라 두 출처를 오가야 한다. 호출
   1회를 아끼려고 경로를 둘로 만드는 것보다 단순한 쪽을 택했다 — 필요해지면
   `operating_hours`만 캐시로 빼는 건 나중에도 가능하다.
-- 범위 밖: `event`는 `searchFestival2`를 따로 연동해야 해 `unsupported`로 명시한다.
+- 범위 밖: `event`는 같은 날 D-055로 별도 처리했다(최초에는 `unsupported`로 두었다).
   동기화 파이프라인에 `overview`/요금/주차 컬럼을 추가하는 근본 해결은 DB 마이그레이션
   + 847건 재동기화가 필요하고 TourAPI 일일 한도에 묶여 있어 별건으로 남긴다.
 - 조용한 fake 방지: `FakePlaceProvider.get_details()`의 `raw_intro`가 빈 dict라
@@ -1429,6 +1429,61 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   composer.py`(추천 요약 호출 및 fallback), `tests/test_gemini_provider.py`(요약 입력에서
   내부 scoring 필드 제외).
 
+### D-055 — INFO `event`는 지역 행사 목록 + 좌표 근접으로 답한다
+
+- 상태: `Accepted`, C 구현 완료 (A 배선 대기)
+- 배경: D-054에서 `event`만 `unsupported`로 남겼다가, 실제로 답할 데이터가 있는지
+  실측했다(2026-08-07). 처음 조회에서 "종로구에 진행 중인 행사 0건"이 나와 미지원이
+  타당해 보였는데, 필터를 바꾸자 결론이 뒤집혔다.
+- **발견 1 — `sigunguCode` 필터가 함정이다.** `searchFestival2` 응답 항목의 상당수가
+  `areacode`/`sigungucode`를 빈 문자열로 내려주고, 그 항목들은 서버 필터에서 통째로
+  탈락한다. 같은 종로구를 두 방식으로 조회한 결과:
+
+  | 필터 | 결과 | 오늘 진행 중 |
+  | --- | --- | --- |
+  | `sigunguCode=23` | 14건 (전부 2025년) | **0건** |
+  | `lDongRegnCd=11` + `lDongSignguCd=110` | 25건 | **6건** |
+
+  장소 검색이 이미 같은 이유로 법정동 코드를 쓰고 있었다
+  (`place_search_policy.PLACE_SEARCH_LDONG_*`, 2026-08-03). 같은 함정을 두 번째로
+  밟은 셈이라 provider 모듈 docstring에 근거를 남겼다.
+- **발견 2 — 장소명 매칭은 안 붙지만 좌표는 100% 있다.** `eventplace`는
+  `"광화문광장&세종로공원"`, `"청와대 사랑채 1층"`, `"서울 전역"`처럼 우리 `places.title`과
+  형태가 다르다. 2026-08-07 진행 중 6건 중 이름이 붙는 건 0건이었다. 반면 목록 응답의
+  `mapx`/`mapy`는 전 항목에 채워져 있다.
+- 결정: `event`를 **"그 장소에서 열리는 행사"가 아니라 "그 장소 근처에서 진행 중인 행사"**로
+  답한다. 종로구(법정동 110) 행사를 받아 기준일에 진행 중인 것만 남기고, 대상 장소
+  좌표에서 가까운 순으로 정렬해 최대 5건을 싣는다. 제목에 장소명이 들어간 행사
+  (`"경복궁 별빛야행"`)만 `is_direct_match=True`로 올려 먼저 보여준다.
+- INFO 명세는 바꾸지 않는다: `place_name`이 여전히 앵커이고, 답변만 근접 의미로 나간다.
+  이건 집중률의 D-036 인근 대체 조회와 같은 패턴이다 — 직접 데이터가 없으면 인근
+  기준으로 답하되 반드시 고지한다. `EventItem.is_direct_match`/`distance_km`이
+  `ConcentrationInfoResult.is_proxy`에 대응한다. **A는 이 구분을 문구에 반드시 반영해야
+  한다** — 요청한 장소의 행사인 것처럼 말하면 사실과 다르다.
+- 반경 컷오프를 두지 않은 이유: 조회가 이미 종로구로 한정돼 지역 필터가 반경 역할을
+  한다. 여기서 임의 반경을 하나 더 두면 근거 없는 숫자가 늘어난다. 대신 건수 상한
+  (`INFO_EVENT_RESULT_LIMIT = 5`)만 둔다.
+- `eventplace`를 안 쓴 이유: 목록 응답에 없고 행사마다 `detailIntro2`를 열어야 한다(N+1).
+  제목 매칭으로 직접/근접을 가르는 선에서 멈췄다. 정확도가 문제가 되면 상위 몇 건만
+  상세를 여는 방식으로 넓힐 수 있다.
+- 계약: `EventInfoResult`/`EventItem`을 신설하고 `InfoContextResponse.result` union에
+  추가했다. 행사가 다건이라 `PlaceInfoResult.fields`(`dict[str, str]`)로는 표현할 수 없다.
+- 조용한 fake 방지: `FakeFestivalProvider`의 좌표·기간·명칭을 실측 응답에서 가져왔고,
+  진행 중/종료/예정과 직접 매칭/근접이 모두 섞이도록 구성했다. Fake가 전부 직접
+  매칭이면 근접 경로가 한 번도 실행되지 않는다
+  (`tests/agent_context/test_info_event.py::TestFakeProviderShape`).
+- 구현: `app/providers/festival.py`(신설), `app/providers/protocols.py`(`FestivalProvider`),
+  `app/providers/contracts.py`(`TOUR_API_FESTIVAL`/`FAKE_FESTIVAL`),
+  `app/tools/festival.py`(신설), `app/agent_context/info_schemas.py`,
+  `app/agent_context/service.py`(`_fetch_event_info()`), 양쪽 factory.
+- 확인 방법: `tests/test_festival_provider.py`(12건), `tests/agent_context/test_info_event.py`
+  (14건). 전체 회귀 1276 passed / 22 skipped, ruff 통과. 실 TourAPI 실측으로 경복궁
+  기준 5건(0.21~0.86km), 북촌한옥마을 기준 5건(0.69~1.23km)이 거리순으로 나오는 것을
+  확인했다.
+- 한계: 오늘 기준 진행 중 6건 전부가 근접 매칭이다(직접 매칭 0건). 사용자에게는 "경복궁
+  근처에서 진행 중인 행사"로 나가므로 질문이 "경복궁에서 뭐 해?"였다면 기대와 다를 수
+  있다. 종로구 등록 행사 자체가 25건뿐이라 표본이 작다는 점도 함께 둔다.
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -1474,6 +1529,7 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-05 | D-051 근거 문장 정확도 수정 — 판정 함수가 `WeatherReason`(rain/snow/heat/cold)을 함께 반환하도록 바꾸고 `scoring.py`/`evidence.py`/`explanation.py`까지 관통시켜, "폭염인데 비 예보"·"ENJOY로 GOOD인데 맑은 날씨"라고 말하던 사실-근거 불일치를 해소 |
 | 2026-08-05 | D-051 기온 판정을 기상청 주의보/경보 2단계(33·35°C, -12·-15°C)로 재설계 — 주의보~경보 사이를 NEUTRAL로 두어 근거 있는 완충 구간 확보. 30~32°C 등 주의보 미만 구간은 의도적으로 미해결로 남김 |
 | 2026-08-06 | D-051 `condition` 전면 제거 — `WeatherForecastSlot.condition`(D 소유)부터 `SelectedWeatherForecast.condition`, `map_sky_pty_to_condition()`, `tool_intelligence` 계약, `fake_weather_condition` 설정까지 걷어냄. `tool-intelligence-contract-v1.md`의 `TI-09`를 `Superseded`로, §9 `api_weather` 매핑을 D-038 무효로 반영 |
+| 2026-08-07 | D-055 신설 — INFO `event` 지원(C). `sigunguCode` 필터가 응답 다수를 탈락시키는 것을 실측으로 확인해 법정동 코드로 전환하고, 장소명 매칭 대신 좌표 근접으로 "근처 진행 중 행사"를 답하도록 결정. `EventInfoResult` 신설 |
 | 2026-08-07 | D-054 신설 — INFO `question_type` 8종으로 확장(C). 상세 질의는 Supabase 캐시에 데이터가 없어 TourAPI를 직접 조회하도록 결정하고 `GetPlaceDetailTool`·`info_field_rules` 신설. `event`는 `unsupported`, A 배선 3건은 별도 카드 |
 | 2026-08-06 | D-053 신설 — TP-67(PR #113) 후속으로 위치 변경 판정에서 지명 단독을 제외해 `INFO`(정보 조회) 흐름을 지키고, `environment` 미언급(`ANY`)이 되묻기 답변에서 앞 턴의 `indoor`를 덮어쓰던 갭을 프롬프트 규칙 + 보존 목록으로 막음. `PROMPT_VERSION` 1.0.2 |
 | 2026-08-07 | D-054 트리비 페르소나와 `GENERAL(service_identity)`, RECOMMEND/MODIFY 추천 결과 요약 LLM 추가. 요약 입력에서 내부 scoring 필드는 제외 |

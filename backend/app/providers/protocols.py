@@ -25,6 +25,7 @@ from app.domain.models import (
 )
 from app.place_search_policy import DEFAULT_PLACE_PROVIDER_RESULT_LIMIT
 from app.providers.contracts import ProviderResult
+from app.providers.festival import FestivalEvent
 from app.schedule.schemas import ScheduleLLMPlan, SchedulePlanningRequest
 from app.schemas import (
     GeneralTopic,
@@ -235,6 +236,22 @@ class TourAreaPlaceProvider(Protocol):
         content_type_id: str,
     ) -> PlaceOperatingDetails:
         """소개 상세 조회만 사용해 운영시간과 휴무일 원문을 반환한다."""
+        ...
+
+
+class FestivalProvider(Protocol):
+    async def search_festivals(
+        self,
+        region_code: str,
+        district_code: str,
+        reference_date: date,
+        limit: int = 100,
+    ) -> ProviderResult[list[FestivalEvent]]:
+        """법정동 코드 기준 지역의 행사 목록을 반환한다.
+
+        진행 중 판정은 호출자가 reference_date로 다시 한다 — provider는 기간이
+        해석 가능한 행사를 모아 돌려주기만 한다.
+        """
         ...
 
 

@@ -227,13 +227,17 @@ class TestLocationInfo:
 
 class TestEvent:
     @pytest.mark.asyncio
-    async def test_event는_unsupported다(self) -> None:
-        # searchFestival2 연동 전까지는 명시적으로 지원하지 않는다고 알린다.
-        response = await _service().fetch_info_context(_request("event"))
+    async def test_event는_행사_경로로_빠진다(self) -> None:
+        # 상세 조회 경로가 아니라 별도 행사 경로를 탄다(자세한 검증은
+        # test_info_event.py). Tool이 없으면 unavailable로 알린다.
+        provider = RecordingPlaceProvider(_details())
 
-        assert response.status == "unsupported"
+        response = await _service(provider).fetch_info_context(_request("event"))
+
+        assert response.status == "unavailable"
         assert response.error is not None
-        assert response.error.code == "question_type_unsupported"
+        assert response.error.code == "festival_not_configured"
+        assert provider.requested_names == []
 
 
 class TestFailures:

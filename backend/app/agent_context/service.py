@@ -32,6 +32,8 @@ from app.agent_context.enrichment_service import (
 from app.agent_context.info_field_rules import extract_info_fields
 from app.agent_context.info_schemas import (
     ConcentrationInfoResult,
+    EventInfoResult,
+    EventItem,
     InfoContextRequest,
     InfoContextResponse,
     PlaceInfoResult,
@@ -56,6 +58,7 @@ from app.concentration_policy import (
     normalize_concentration,
 )
 from app.errors import AppError
+from app.geo import haversine_km
 from app.place_search_policy import (
     DEFAULT_PLACE_SEARCH_RADIUS_KM,
     MAX_PLACE_SEARCH_RADIUS_KM,
@@ -63,12 +66,14 @@ from app.place_search_policy import (
     WALKING_SPEED_KM_PER_MINUTE,
 )
 from app.providers.contracts import ProviderMetadata, ProviderSource, ProviderStatus
+from app.providers.festival import FestivalEvent
 from app.recommendation_limits import (
     MAX_RECOMMENDATION_CANDIDATE_LIMIT,
     MIN_RECOMMENDATION_LIMIT,
 )
 from app.tools.concentration import ConcentrationQuery, GetConcentrationTool
 from app.tools.contracts import ToolError, ToolStatus
+from app.tools.festival import FestivalQuery, GetFestivalsTool
 from app.tools.holiday import GetHolidaysTool, HolidayQuery
 from app.tools.nearby_place_details import (
     EnrichedPlace,
@@ -97,6 +102,9 @@ _KST = ZoneInfo("Asia/Seoul")
 _CATEGORY_RULE_VERSION = "tour-category-v1"
 _SEARCH_RADIUS_RULE_VERSION = "walking-radius-v1"
 
+# INFO 행사 응답에 싣는 최대 건수. 챗봇 말풍선 한 번에 읽히는 분량으로 제한한다.
+INFO_EVENT_RESULT_LIMIT = 5
+
 
 @dataclass(frozen=True)
 class ContextTools:
@@ -111,6 +119,8 @@ class ContextTools:
     concentration: GetConcentrationTool | None = None
     # INFO 상세 질의(concentration 외) 전용. 위와 같은 이유로 선택적이다.
     place_detail: GetPlaceDetailTool | None = None
+    # INFO 행사 질의(question_type=event) 전용. 위와 같은 이유로 선택적이다.
+    festivals: GetFestivalsTool | None = None
 
 
 class ContextService:
@@ -255,20 +265,6 @@ class ContextService:
                 ),
             )
 
-        if request.question_type == "event":
-            # 진행 중인 전시·행사는 searchFestival2를 따로 연동해야 한다
-            # (int-02-info.md §6). 장소 상세(detailIntro2)로는 답할 수 없다.
-            return _info_error_response(
-                request,
-                status="unsupported",
-                error=ContextError(
-                    code="question_type_unsupported",
-                    message="행사·전시 정보는 아직 제공하지 않습니다.",
-                    retryable=False,
-                ),
-                provider_metadata=(),
-            )
-
         location_result = await self._tools.location.execute(
             ResolveLocationQuery(place_name)
         )
@@ -325,6 +321,14 @@ class ContextService:
                     retryable=True,
                 ),
                 provider_metadata=(location_result.provider_metadata,),
+            )
+
+        if request.question_type == "event":
+            return await self._fetch_event_info(
+                request,
+                place_name=place_name,
+                resolved_location=resolved_location,
+                location_metadata=location_result.provider_metadata,
             )
 
         if request.question_type != "concentration":
@@ -657,6 +661,75 @@ class ContextService:
             provider_metadata=(location_metadata, detail_result.provider_metadata),
         )
 
+    async def _fetch_event_info(
+        self,
+        request: InfoContextRequest,
+        *,
+        place_name: str,
+        resolved_location: ResolvedLocation,
+        location_metadata: tuple[ProviderMetadata, ...],
+    ) -> InfoContextResponse:
+        """INFO 행사 질의를 지역 행사 목록 + 좌표 근접으로 처리한다(D-055).
+
+        TourAPI에 장소별 행사 조회가 없어, 종로구 행사를 받아 진행 중인 것만
+        남기고 대상 장소에서 가까운 순으로 정렬한다. 대부분은 그 장소의 행사가
+        아니라 근처 행사이므로 is_direct_match/distance_km으로 구분을 넘긴다 —
+        집중률의 is_proxy와 같은 취지다(D-036).
+        """
+
+        festival_tool = self._tools.festivals
+        if festival_tool is None:
+            return _info_error_response(
+                request,
+                status="unavailable",
+                error=ContextError(
+                    code="festival_not_configured",
+                    message="행사 조회 기능을 사용할 수 없습니다.",
+                    retryable=False,
+                ),
+                provider_metadata=(location_metadata,),
+            )
+
+        reference_date = _info_reference_date(request.visit_time, self._clock())
+        festival_result = await festival_tool.execute(
+            FestivalQuery(reference_date=reference_date)
+        )
+        if festival_result.status is ToolStatus.UNAVAILABLE:
+            return _info_error_response(
+                request,
+                status="unavailable",
+                error=_context_error_from_tool(
+                    festival_result.error,
+                    fallback_code="festival_unavailable",
+                    fallback_message="행사 정보를 가져오지 못했습니다.",
+                    retryable=True,
+                ),
+                provider_metadata=(location_metadata, festival_result.provider_metadata),
+            )
+
+        events = _to_event_items(
+            festival_result.events,
+            resolved_name=resolved_location.resolved_name,
+            latitude=resolved_location.latitude,
+            longitude=resolved_location.longitude,
+        )
+        status: Literal["success", "no_data"] = "success" if events else "no_data"
+        return InfoContextResponse(
+            request_id=request.request_id,
+            status=status,
+            result=EventInfoResult(
+                status=status,
+                requested_place_name=place_name,
+                resolved_place_name=resolved_location.resolved_name,
+                reference_date=reference_date.isoformat(),
+                events=events,
+                has_direct_match=any(item.is_direct_match for item in events),
+            ),
+            metadata=_info_response_metadata(
+                location_metadata, festival_result.provider_metadata
+            ),
+        )
+
     async def _collect_places(
         self,
         plan: CategoryQueryPlan,
@@ -745,6 +818,54 @@ def _info_no_data_response(
         ),
         metadata=_info_response_metadata(*provider_metadata),
     )
+
+
+def _to_event_items(
+    events: tuple[FestivalEvent, ...],
+    *,
+    resolved_name: str,
+    latitude: float,
+    longitude: float,
+) -> list[EventItem]:
+    """행사를 대상 장소 기준으로 정렬해 계약 모델로 옮긴다.
+
+    정렬은 (직접 매칭 우선, 가까운 순)이다. 좌표가 없는 행사는 거리 없이 뒤로
+    보낸다 — 목록에서 빼면 "행사가 없다"로 잘못 보일 수 있어 남긴다.
+
+    반경으로 자르지 않는 이유: 조회 자체가 이미 종로구(법정동 110)로 한정돼
+    있어 지역 필터가 반경 역할을 한다. 여기서 임의 반경을 하나 더 두면 근거
+    없는 숫자가 늘어난다. 대신 개수만 상한을 둔다.
+    """
+
+    def distance_of(event: FestivalEvent) -> float | None:
+        if event.latitude is None or event.longitude is None:
+            return None
+        return haversine_km(latitude, longitude, event.latitude, event.longitude)
+
+    def is_direct(event: FestivalEvent) -> bool:
+        # "경복궁 별빛야행"처럼 제목이 장소를 지목하는 경우만 직접 매칭으로 본다.
+        # eventplace를 보려면 행사마다 detailIntro2를 열어야 해(N+1) 이번 단계는
+        # 제목 매칭까지만 한다.
+        return resolved_name in event.title
+
+    scored = [(event, distance_of(event), is_direct(event)) for event in events]
+    scored.sort(
+        key=lambda entry: (
+            not entry[2],  # 직접 매칭 먼저
+            entry[1] if entry[1] is not None else float("inf"),
+        )
+    )
+    return [
+        EventItem(
+            title=event.title,
+            start_date=event.start_date.isoformat(),
+            end_date=event.end_date.isoformat(),
+            address=event.address,
+            distance_km=round(distance, 2) if distance is not None else None,
+            is_direct_match=direct,
+        )
+        for event, distance, direct in scored[:INFO_EVENT_RESULT_LIMIT]
+    ]
 
 
 def _place_info_response(
