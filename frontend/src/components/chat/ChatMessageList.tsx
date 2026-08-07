@@ -7,6 +7,7 @@
  */
 
 import type { ChatMessage } from "../../types";
+import { AgentProgressMessage } from "./AgentProgressMessage";
 import { ConditionDebugMessage } from "./ConditionDebugMessage";
 import { RecommendationResultMessage } from "./RecommendationResultMessage";
 import { SessionStatusMessage } from "./SessionStatusMessage";
@@ -15,6 +16,8 @@ interface ChatMessageListProps {
   messages: ChatMessage[];
   showDebug: boolean;
   isLoading: boolean;
+  hasDeviceLocation: boolean;
+  deviceLocation: string | null;
   onRequestMore: () => void;
   onRelaxRadius: () => void;
 }
@@ -23,6 +26,8 @@ export function ChatMessageList({
   messages,
   showDebug,
   isLoading,
+  hasDeviceLocation,
+  deviceLocation,
   onRequestMore,
   onRelaxRadius,
 }: ChatMessageListProps) {
@@ -60,6 +65,8 @@ export function ChatMessageList({
                 userInput={message.userInput}
                 conditions={message.conditions}
                 mergedConditions={message.mergedConditions}
+                deviceLocation={deviceLocation}
+                intent={message.intent ?? null}
                 status={message.status}
               />
             );
@@ -88,6 +95,7 @@ export function ChatMessageList({
             />
           );
         })}
+      {isLoading && <AgentProgressMessage hasDeviceLocation={hasDeviceLocation} />}
     </div>
   );
 }

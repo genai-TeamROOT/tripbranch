@@ -85,6 +85,7 @@ export function ChatPage() {
         const response = await sendChat({
           user_input: text,
           session_id: state.session_id,
+          device_location: state.device_location,
         });
         dispatch({
           type: "APPEND_CHAT_TURN",
@@ -110,7 +111,7 @@ export function ChatPage() {
         });
       }
     },
-    [dispatch, showDebug, state.session_id],
+    [dispatch, showDebug, state.device_location, state.session_id],
   );
 
   if (!hasConversation) {
@@ -158,6 +159,8 @@ export function ChatPage() {
         messages={state.messages}
         showDebug={showDebug}
         isLoading={isLoading}
+        hasDeviceLocation={Boolean(state.device_location)}
+        deviceLocation={state.device_location}
         onRequestMore={() => void send(REQUEST_MORE_PROMPT)}
         onRelaxRadius={() => void send(RELAX_RADIUS_PROMPT)}
       />

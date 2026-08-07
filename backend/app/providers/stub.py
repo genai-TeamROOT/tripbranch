@@ -71,7 +71,16 @@ from app.schemas import (
 #     def interpret(self, user_input: str) -> InterpretedConditions:
 #         return interpret_user_input(user_input)
 
-_KNOWN_PLACE_NAMES = ("경복궁", "창덕궁", "종묘", "인사동", "광화문", "북촌한옥마을")
+_KNOWN_PLACE_NAMES = (
+    "경복궁",
+    "창덕궁",
+    "종묘",
+    "인사동",
+    "광화문",
+    "북촌한옥마을",
+    "북촌",
+    "종로3가역",
+)
 _HARMFUL_MARKERS = ("바보", "미친", "죽어", "씨발", "개새끼")
 _OFF_TOPIC_MARKERS = ("주식", "수학 문제", "코드 짜줘", "파이썬 코드")
 _PROMPT_INJECTION_MARKERS = ("시스템 프롬프트", "프롬프트를 보여줘", "무시하고")
@@ -90,6 +99,18 @@ _MODIFY_CHANGE_MARKERS = (
     "근처로 바꿔",
 )
 _COMPARE_MARKERS = ("가까워", "오래 열어", "어디가 좋아", "뭐가 나아", "비교해")
+_SCHEDULE_MARKERS = (
+    "일정 짜",
+    "일정 만들어",
+    "일정 만들",
+    "코스 짜",
+    "코스 만들어",
+    "코스 만들",
+    "루트 만들어",
+    "루트 만들",
+    "순서 알려",
+    "어디부터 갈",
+)
 _INFO_QUESTION_MARKERS = (
     "열어",
     "몇 시",
@@ -113,10 +134,74 @@ _GENERAL_MARKERS = (
     "막차",
     "동선",
 )
+_LOCATION_ONLY_REMAINDERS = frozenset(
+    {
+        "근처",
+        "근처는",
+        "근처에서",
+        "근처로",
+        "근처어때",
+        "주변",
+        "주변은",
+        "주변에서",
+        "주변으로",
+        "주변어때",
+        "에서",
+        "으로",
+        "로",
+        "은",
+        "는",
+        "어때",
+    }
+)
 
 
 def _find_known_place(user_input: str) -> str | None:
     return next((name for name in _KNOWN_PLACE_NAMES if name in user_input), None)
+
+
+def _is_location_only_change(user_input: str) -> bool:
+    """이전 추천 이력 뒤 검색 중심점만 바꾸는 짧은 발화인지 판정한다.
+
+    지명 단독("광화문")은 제외한다 — 추천을 받은 뒤 지명만 던지는 건 검색 위치 변경이
+    아니라 그 장소를 지목한 정보 질문이라, INFO 경계 사례로 남긴다(intent-definition.md §5).
+    """
+
+    place_name = _find_known_place(user_input)
+    if place_name is None:
+        return False
+
+    remainder = user_input.replace(place_name, "", 1).strip()
+    if not remainder:
+        return False
+    for prefix in ("그럼", "그러면", "아니"):
+        if remainder.startswith(prefix):
+            remainder = remainder[len(prefix) :].strip()
+            break
+    normalized = remainder.replace(" ", "").rstrip("?!.")
+    return normalized in _LOCATION_ONLY_REMAINDERS
+
+
+def _is_location_scoped_change(user_input: str) -> bool:
+    """이전 추천 이력 뒤 "지명 + 근처/주변"으로 검색 범위를 옮기는 발화인지 판정한다.
+
+    `_is_location_only_change()`가 잔여 조건이 전혀 없는 발화만 받는 데 비해, 이쪽은
+    "경복궁 근처 카페 추천해줘"처럼 위치와 함께 다른 조건(카테고리 등)이 붙은 발화까지
+    받는다 — 실 Gemini(프롬프트 1.0.2)가 이런 발화를 MODIFY로 분류하는 것과 맞추기
+    위해서다(D-053). 지명 단독은 여기서도 제외되고(뒤에 근처/주변이 없다), 정보/일반
+    질문 어휘가 섞이면 INFO·GENERAL 판정을 가리지 않도록 빠진다.
+    """
+
+    place_name = _find_known_place(user_input)
+    if place_name is None:
+        return False
+
+    tail = user_input[user_input.find(place_name) + len(place_name) :]
+    if not tail.strip().replace(" ", "").startswith(("근처", "주변")):
+        return False
+    return not any(
+        marker in user_input for marker in _INFO_QUESTION_MARKERS + _GENERAL_MARKERS
+    )
 
 
 def _stub_visit_time(user_input: str, reference_date: date) -> str:
@@ -168,8 +253,12 @@ class FakeLLMProvider:
                 out_of_scope_category=OutOfScopeCategory.UNRELATED,
                 out_of_scope_severity=Severity.LOW,
             )
-        elif has_previous_recommendation and any(
-            marker in user_input for marker in _REJECT_ALL_MARKERS + _MODIFY_CHANGE_MARKERS
+        elif any(marker in user_input for marker in _SCHEDULE_MARKERS):
+            result = IntentClassificationResult(intent=Intent.SCHEDULE)
+        elif has_previous_recommendation and (
+            any(marker in user_input for marker in _REJECT_ALL_MARKERS + _MODIFY_CHANGE_MARKERS)
+            or _is_location_only_change(user_input)
+            or _is_location_scoped_change(user_input)
         ):
             result = IntentClassificationResult(intent=Intent.MODIFY)
         elif shown_place_count >= 2 and any(
@@ -293,8 +382,21 @@ class FakeLLMProvider:
             changed.place_types = [PlaceType.RESTAURANT]
             changed.place_tags = [t for t in changed.place_tags if t != PlaceTag.CAFE]
             changed_fields.extend(["place_types", "place_tags"])
+        # 날씨는 RECOMMEND 추출과 같은 결로 맞춘다(stub.py의 extract_recommend_conditions):
+        # "비"는 피하고 싶은 날씨로 보고 실내로 좁힌다. MODIFY 경로에도 날씨가 필요한 건
+        # "비 오는데 ~ 근처 카페" 같은 발화가 이제 MODIFY로 분류되기 때문이다(D-053).
+        if "비" in user_input:
+            changed.weather = StatedWeather.RAIN
+            changed.weather_intent = WeatherIntent.AVOID
+            changed.environment = Environment.INDOOR
+            changed_fields.extend(["weather", "weather_intent", "environment"])
+
         new_place = _find_known_place(user_input)
-        if new_place and "근처로 바꿔" in user_input:
+        if new_place and (
+            "근처로 바꿔" in user_input
+            or _is_location_only_change(user_input)
+            or _is_location_scoped_change(user_input)
+        ):
             changed.search_center = new_place
             changed_fields.append("search_center")
 

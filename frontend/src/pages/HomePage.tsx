@@ -15,6 +15,7 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { IntentDebugPanel } from "../components/IntentDebugPanel";
 import { featureFlags } from "../config/features";
 import { useTripDispatch } from "../state/TripContext";
+import { getBrowserDeviceLocation } from "../utils/geolocation";
 
 const QUICK_PROMPTS = [
   "비를 피할 실내 장소가 필요해",
@@ -37,15 +38,32 @@ export function HomePage() {
     setIsLoading(true);
     setErrorMessage(null);
 
+    let deviceLocation: string;
+    try {
+      // 사용자 동작 직후 호출해야 브라우저가 위치 권한 팝업을 정상적으로 표시한다.
+      deviceLocation = await getBrowserDeviceLocation();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "위치를 가져오지 못했어요.");
+      setIsLoading(false);
+      return;
+    }
+
+    // 위치 확보 직후 채팅 화면으로 이동한다. 응답을 기다리는 동안 A→B→C→D 처리
+    // 단계를 동적으로 보여주고, /api/chat 완료 시 실제 결과로 교체한다.
+    dispatch({ type: "RESET" });
+    dispatch({
+      type: "START_CHAT_TURN",
+      payload: { userInput: trimmed, deviceLocation },
+    });
+    navigate("/chat");
+
     const startedAt = performance.now();
     try {
-      // 첫 발화도 /api/chat 한 번으로 해석과 추천을 함께 받는다 — ChatPage 도착 후
-      // 추가 호출 없이 바로 결과가 그려진다.
       const response = await sendChat({
         user_input: trimmed,
         session_id: null,
+        device_location: deviceLocation,
       });
-      dispatch({ type: "RESET" });
       dispatch({
         type: "APPEND_CHAT_TURN",
         payload: {
@@ -60,13 +78,14 @@ export function HomePage() {
           elapsedMsClient: performance.now() - startedAt,
         },
       });
-      navigate("/chat");
     } catch (error) {
-      setErrorMessage(
-        error instanceof ApiError ? error.message : "입력을 처리하지 못했어요. 다시 시도해주세요.",
-      );
-    } finally {
-      setIsLoading(false);
+      dispatch({
+        type: "SET_ERROR",
+        payload:
+          error instanceof ApiError
+            ? error.message
+            : "입력을 처리하지 못했어요. 다시 시도해주세요.",
+      });
     }
   }
 
@@ -85,7 +104,8 @@ export function HomePage() {
       </div>
 
       <section className="rounded-md border border-gray-200 p-3 text-sm text-gray-700 dark:border-gray-700 dark:text-gray-300">
-        현재 위치: 브라우저 위치 권한 연결 전, 입력한 장소를 기준으로 추천합니다.
+        추천 시작 시 브라우저가 위치 권한을 요청합니다. 허용한 위치는 현재 채팅 세션의
+        장소 탐색 기준으로 사용됩니다.
       </section>
 
       <div className="flex flex-wrap gap-2">
@@ -118,7 +138,7 @@ export function HomePage() {
           disabled={isLoading || !userInput.trim()}
           className="rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-gray-100 dark:text-gray-900"
         >
-          {isLoading ? "추천 찾는 중..." : "추천 시작하기"}
+          {isLoading ? "현재 위치 확인 중..." : "추천 시작하기"}
         </button>
       </form>
 

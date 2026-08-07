@@ -9,7 +9,7 @@
  * TODO: 조건 직접 수정이 필요해지면 이 컴포넌트 안에 편집 form을 추가한다.
  */
 
-import type { InterpretedConditions, UserConditions } from "../../types";
+import type { Intent, InterpretedConditions, UserConditions } from "../../types";
 
 /*
  * LLM이 추출하는 조건 전체를 표시 순서대로 나열한다. 구형 4필드(location_query 등)만
@@ -43,6 +43,8 @@ interface ConditionDebugMessageProps {
   userInput: string;
   conditions: InterpretedConditions;
   mergedConditions: UserConditions | null;
+  deviceLocation: string | null;
+  intent: Intent | null;
   status: "pending" | "confirmed";
 }
 
@@ -60,6 +62,8 @@ export function ConditionDebugMessage({
   userInput,
   conditions,
   mergedConditions,
+  deviceLocation,
+  intent,
   status,
 }: ConditionDebugMessageProps) {
   // 실제 추천에 쓰이는 값은 B가 병합한 누적 조건이다. 되묻기 턴에서는 이번 턴
@@ -69,15 +73,26 @@ export function ConditionDebugMessage({
     <article className="mr-auto flex w-full max-w-xl flex-col gap-3 rounded-md border border-dashed border-amber-300 bg-amber-50 p-4 text-sm text-amber-950 dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-100">
       <div className="flex items-center justify-between gap-2">
         <h2 className="font-semibold">개발용 입력 해석 결과 (누적 조건)</h2>
-        <span className="rounded bg-amber-200 px-2 py-0.5 text-xs text-amber-900 dark:bg-amber-800 dark:text-amber-100">
-          {status === "confirmed" ? "적용됨" : "확인 대기"}
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="rounded bg-amber-200 px-2 py-0.5 text-xs font-semibold text-amber-900 dark:bg-amber-800 dark:text-amber-100">
+            Intent: {intent ?? "미확인"}
+          </span>
+          <span className="rounded bg-amber-200 px-2 py-0.5 text-xs text-amber-900 dark:bg-amber-800 dark:text-amber-100">
+            {status === "confirmed" ? "적용됨" : "확인 대기"}
+          </span>
+        </div>
       </div>
 
       <dl className="grid gap-2">
         <div>
           <dt className="font-medium">사용자 원문</dt>
           <dd>{userInput}</dd>
+        </div>
+        <div>
+          <dt className="font-medium">기기 GPS (위도,경도)</dt>
+          <dd>
+            {deviceLocation ? `${deviceLocation} · 장소 검색 기준으로 사용` : "미사용"}
+          </dd>
         </div>
         {effective ? (
           CONDITION_LABELS.map(([key, label]) => (

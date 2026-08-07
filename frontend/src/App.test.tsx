@@ -87,6 +87,16 @@ function mockFetch() {
 beforeEach(() => {
   sessionStorage.clear();
   window.history.pushState({}, "", "/");
+  vi.stubGlobal("navigator", {
+    geolocation: {
+      getCurrentPosition: vi.fn((success: PositionCallback) =>
+        success({
+          coords: { latitude: 37.5788, longitude: 126.977 },
+          timestamp: Date.now(),
+        } as GeolocationPosition),
+      ),
+    },
+  });
   vi.stubGlobal("fetch", mockFetch());
 });
 
@@ -108,6 +118,7 @@ test("debug mode shows condition card together with recommendations", async () =
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
 
   expect(await screen.findByText(/개발용 입력 해석 결과/)).toBeInTheDocument();
+  expect(screen.getByText(/37\.5788,126\.977 · 장소 검색 기준으로 사용/)).toBeInTheDocument();
   expect(screen.getAllByText("비 오는 날 갈 곳").length).toBeGreaterThan(0);
   // Agent가 한 번에 끝내므로 중간 승인 버튼이 없고 추천이 함께 나온다.
   expect(screen.queryByRole("button", { name: "추천 진행" })).not.toBeInTheDocument();
@@ -134,6 +145,64 @@ test("release mode hides debug card and needs only one chat call", async () => {
   const fetchMock = vi.mocked(fetch);
   await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
   expect(String(fetchMock.mock.calls[0][0])).toContain("/chat");
+  const requestBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+  expect(requestBody.device_location).toBe("37.5788,126.977");
+});
+
+test("main recommendation requests location permission before opening chat", async () => {
+  vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "false");
+  let resolveFetch: ((response: Response) => void) | undefined;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveFetch = resolve;
+        }),
+    ),
+  );
+  render(<App />);
+
+  await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+
+  expect(navigator.geolocation.getCurrentPosition).toHaveBeenCalledTimes(1);
+  expect(await screen.findByText("요청 의도와 조건 파악 중")).toBeInTheDocument();
+  expect(screen.getByText("기기 위치 확인 완료")).toBeInTheDocument();
+
+  resolveFetch?.(
+    Response.json({
+      llm_output: interpretResponse,
+      state: { session_id: "sess_test", run_id: "run_test", user_conditions: null },
+      recommendations: { ...recommendationsResponse, elapsed_ms: 12.3 },
+      message: "조건에 맞는 장소를 찾아봤어요.",
+    }),
+  );
+  expect(await screen.findByText("테스트 박물관")).toBeInTheDocument();
+});
+
+test("location permission denial stays on home and shows guidance", async () => {
+  vi.stubGlobal("navigator", {
+    geolocation: {
+      getCurrentPosition: vi.fn((_success: PositionCallback, error: PositionErrorCallback) =>
+        error({
+          code: 1,
+          message: "User denied Geolocation",
+          PERMISSION_DENIED: 1,
+          POSITION_UNAVAILABLE: 2,
+          TIMEOUT: 3,
+        }),
+      ),
+    },
+  });
+  render(<App />);
+
+  await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+
+  expect(await screen.findByText(/위치 권한이 필요해요/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "추천 시작하기" })).toBeInTheDocument();
+  expect(fetch).not.toHaveBeenCalled();
 });
 
 test("requesting more places sends a follow-up chat turn with the session id", async () => {

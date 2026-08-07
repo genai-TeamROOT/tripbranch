@@ -288,6 +288,42 @@ async def test_modify_change_condition_flow_reaches_recommendations() -> None:
 
 
 @pytest.mark.asyncio
+async def test_location_only_turn_after_recommend_is_modify_and_keeps_prior_conditions() -> None:
+    """TP-67: 이전 추천 뒤 위치만 바꾸는 발화는 soft reset 없이 기존 조건을 유지한다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="비 오는데 경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+    assert first.state.user_conditions.weather == "rain"
+    assert first.state.user_conditions.weather_intent == "AVOID"
+    assert first.state.user_conditions.environment == "indoor"
+
+    second = await run_agent_flow(
+        AgentRequest(
+            user_input="광화문 근처에서",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert second.llm_output.intent == "MODIFY"
+    assert second.state.user_conditions.search_center == "광화문"
+    assert second.state.user_conditions.weather == "rain"
+    assert second.state.user_conditions.weather_intent == "AVOID"
+    assert second.state.user_conditions.environment == "indoor"
+
+
+@pytest.mark.asyncio
 async def test_needs_clarification_skips_tool_and_recommendation() -> None:
     """LLM 단계 needs_clarification(눈/weather_intent 모호) — C 호출 자체를 안 한다."""
     store = InMemoryStateStore()
@@ -346,6 +382,11 @@ async def test_agent_context_request_weather_not_mixed_with_provider_weather() -
     경로는 제거했다 — 이 값을 읽는 소비자가 없어서다(decision-log.md D-038).
     그래서 api_weather는 이제 영구히 None이다 — 이 테스트는 "혹시 conditions.weather
     계산에 api_weather 같은 다른 소스가 섞여 들어가지 않는지"를 여전히 지킨다.
+
+    (2026-08-06, D-053 후속) 2턴째는 이제 MODIFY 경로를 탄다 — 이전 추천이 있는 상태의
+    "지명 + 근처 + 다른 조건" 발화를 Fake도 실 Gemini처럼 MODIFY로 분류하게 맞췄기
+    때문이다. 같은 검증의 RECOMMEND 경로 판은
+    `test_agent_recommend_path_weather_not_mixed_with_provider_weather`가 맡는다.
     """
     store = InMemoryStateStore()
     providers = _providers()
@@ -371,11 +412,41 @@ async def test_agent_context_request_weather_not_mixed_with_provider_weather() -
 
     tool_provider = providers["tool_provider"]
     assert tool_provider.last_request is not None
+    assert second.llm_output.intent == "MODIFY"
     # C에 보낸 요청의 conditions.weather는 사용자가 말한 5단계 값이다.
     assert tool_provider.last_request.conditions.weather == "rain"
     # api_weather는 더 이상 채워지지 않는다(제거됨) — conditions.weather와 섞이지 않는다.
     assert second.state.api_context.api_weather is None
     assert second.state.user_conditions.weather == "rain"
+
+
+@pytest.mark.asyncio
+async def test_agent_recommend_path_weather_not_mixed_with_provider_weather() -> None:
+    """위 테스트의 RECOMMEND 경로 판.
+
+    이전 추천이 없으면 같은 발화가 RECOMMEND로 분류된다(D-053에서 맞춘 Fake 분류의
+    반대 방향 회귀). 이 경로에서도 conditions.weather는 사용자가 말한 값이어야 하고
+    api_weather가 섞여 들어오지 않아야 한다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="비 오는데 경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    tool_provider = providers["tool_provider"]
+    assert response.llm_output.intent == "RECOMMEND"
+    assert tool_provider.last_request is not None
+    assert tool_provider.last_request.conditions.weather == "rain"
+    assert response.state.api_context.api_weather is None
+    assert response.state.user_conditions.weather == "rain"
 
 
 @pytest.mark.parametrize(
@@ -396,6 +467,31 @@ async def test_non_recommend_modify_intents_skip_tool_and_recommendation(user_in
 
     assert response.llm_output.intent not in ("RECOMMEND", "MODIFY")
     assert response.recommendations is None
+    assert providers["tool_provider"].call_count == 0
+    assert providers["recommendation_provider"].call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_schedule_intent_skips_tool_and_recommendation_until_planner_is_implemented() -> None:
+    """INT-07 1차는 분류만 한다 — C/D 호출과 조건 변경 없이 임시 안내로 끝난다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="오늘 오후 종로 반나절 코스 짜줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.llm_output.intent == "SCHEDULE"
+    assert response.llm_output.status is OutputStatus.COMPLETE
+    assert response.recommendations is None
+    assert response.message == "일정 추천 기능은 아직 준비 중이에요."
+    assert response.state.condition_changed is False
     assert providers["tool_provider"].call_count == 0
     assert providers["recommendation_provider"].call_count == 0
 
@@ -782,6 +878,45 @@ async def test_clarification_answer_keeps_conditions_from_previous_turn() -> Non
     assert "카페" in second.state.user_conditions.place_tags
     # 소비되어 지워진다.
     assert get_session_context(session_id, store=store).pending_clarification is None
+
+
+@pytest.mark.asyncio
+async def test_clarification_answer_keeps_weather_and_environment() -> None:
+    """되묻기 답변에 위치만 담겨도 앞 턴의 비 회피·실내 조건이 살아 있어야 한다.
+
+    1턴 "비 오는데 카페 추천해줘"(위치 없음) → 되묻기.
+    2턴 "경복궁 근처에서" → search_center만 채워지고 weather/environment는 유지.
+    이 턴은 RECOMMEND로 분류되지만 pending_clarification 덕에 soft reset을 건너뛴다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="비 오는데 카페 추천해줘", session_id=None, device_location=DEVICE_LOCATION
+        ),
+        store=store,
+        **providers,
+    )
+    session_id = first.state.session_id
+    assert first.state.user_conditions.weather == "rain"
+    assert first.state.user_conditions.environment == "indoor"
+    assert get_session_context(session_id, store=store).pending_clarification is not None
+
+    second = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처에서",
+            session_id=session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert second.state.user_conditions.search_center == "경복궁"
+    assert second.state.user_conditions.weather == "rain"
+    assert second.state.user_conditions.weather_intent == "AVOID"
+    assert second.state.user_conditions.environment == "indoor"
 
 
 @pytest.mark.asyncio

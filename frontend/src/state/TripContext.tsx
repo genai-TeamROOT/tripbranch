@@ -39,6 +39,8 @@ export interface TripState {
   error: string | null;
   /* Agent(B)가 발급한 대화 세션. 후속 발화에서 그대로 돌려보낸다. */
   session_id: string | null;
+  /* 최초 추천 시작 시 허용받은 브라우저 위치. 같은 세션의 후속 요청에도 재사용한다. */
+  device_location: string | null;
   /*
    * 직전 턴이 추천 없이 되묻기로 끝났는지. Agent는 "직전에 무엇을 되물었는지"를
    * 다음 턴 Intent 분류에 넘기지 않아서, 사용자가 "경복궁"처럼 짧게 답하면 INFO로
@@ -58,6 +60,7 @@ const initialTripState: TripState = {
   phase: "idle",
   error: null,
   session_id: null,
+  device_location: null,
   awaiting_clarification: false,
 };
 
@@ -71,7 +74,10 @@ type TripAction =
       type: "APPEND_RECOMMENDATIONS";
       payload: RecommendationsResponse & { elapsed_ms_client: number };
     }
-  | { type: "START_CHAT_TURN"; payload: { userInput: string } }
+  | {
+      type: "START_CHAT_TURN";
+      payload: { userInput: string; deviceLocation?: string | null };
+    }
   | { type: "APPEND_CHAT_TURN"; payload: ChatTurnPayload }
   /* 로컬 테스트용 "/status" 결과. 대화 상태는 바꾸지 않고 메시지만 덧붙인다. */
   | {
@@ -223,14 +229,17 @@ function tripReducer(state: TripState, action: TripAction): TripState {
       return {
         ...state,
         user_input: action.payload.userInput,
+        device_location: action.payload.deviceLocation ?? state.device_location,
+        messages: [
+          ...state.messages,
+          { id: createMessageId("user"), type: "user_text", text: action.payload.userInput },
+        ],
         phase: "recommending",
         error: null,
       };
     case "APPEND_CHAT_TURN": {
       const { conditions, intent, message, recommendations, showDebug } = action.payload;
-      const messages: ChatMessage[] = [
-        { id: createMessageId("user"), type: "user_text", text: action.payload.userInput },
-      ];
+      const messages: ChatMessage[] = [];
       // 옵션 A: 조건 카드는 유지하되 확인 버튼은 없다 — Agent가 해석과 추천을 한 번에
       // 끝내므로 중간에 사용자가 진행을 승인할 지점이 없다.
       if (showDebug && conditions) {
@@ -240,6 +249,7 @@ function tripReducer(state: TripState, action: TripAction): TripState {
           userInput: action.payload.userInput,
           conditions,
           mergedConditions: action.payload.mergedConditions,
+          intent,
           status: "confirmed",
         });
       }

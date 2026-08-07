@@ -221,7 +221,10 @@ class TestComposeChatMessageRecommendAndModify:
             tool_error_code="unsupported_region",
             llm=_StubLLM(),
         )
-        assert message == "지금은 서울 종로구 안의 장소만 안내할 수 있어요."
+        assert message == (
+            "현재는 베타 서비스로 종로구의 장소 추천만 가능해요. "
+            "종로에서 가고 싶은 위치를 말씀해주세요."
+        )
 
     @pytest.mark.asyncio
     async def test_tool_stage_unavailable(self) -> None:
@@ -239,6 +242,15 @@ class TestComposeChatMessageInfoCompare:
         llm_output = LLMOutput(intent=intent, status=OutputStatus.COMPLETE)
         message = await compose_chat_message(llm_output, llm=_StubLLM())
         assert "준비 중" in message
+
+
+@pytest.mark.asyncio
+async def test_schedule_uses_dedicated_temporary_message() -> None:
+    llm_output = LLMOutput(intent=Intent.SCHEDULE, status=OutputStatus.COMPLETE)
+
+    message = await compose_chat_message(llm_output, llm=_StubLLM())
+
+    assert message == "일정 추천 기능은 아직 준비 중이에요."
 
 
 class TestComposeInfoConcentrationMessage:
@@ -308,7 +320,10 @@ class TestComposeInfoConcentrationMessage:
             ),
         )
         message = compose_info_concentration_message(response)
-        assert message == "지금은 서울 종로구 안의 장소만 안내할 수 있어요."
+        assert message == (
+            "현재는 베타 서비스로 종로구의 장소 추천만 가능해요. "
+            "종로에서 가고 싶은 위치를 말씀해주세요."
+        )
 
     def test_unavailable_result_returns_generic_error(self) -> None:
         response = InfoContextResponse(
