@@ -160,7 +160,7 @@ def transform(
             rejected_places = _rejected_from_shown(session_context, "not_interested")
         elif modify.condition_changes is not None:
             operations = _changed_field_operations(
-                modify.condition_changes, modify.changed_fields
+                modify.condition_changes, modify.changed_fields, session_context
             )
             operations.extend(
                 _place_tag_cleanup_operations(
@@ -253,7 +253,9 @@ def _full_replace_operations(
 
 
 def _changed_field_operations(
-    condition_changes: UserConditions, changed_fields: list[str]
+    condition_changes: UserConditions,
+    changed_fields: list[str],
+    session_context: SessionContextResponse,
 ) -> list[Operation]:
     """MODIFY/CHANGE_CONDITION: changed_fields에 있는 필드만 Operation으로 만든다.
 
@@ -269,8 +271,38 @@ def _changed_field_operations(
         if value is None or value == []:
             # Update에 value=None은 B에서 null_value 오류로 거부되므로 Remove를 쓴다.
             operations.append(Operation(op="Remove", field=field))
+        elif field in _MULTI_FIELDS_ADD:
+            operations.extend(
+                _list_diff_operations(field, value, session_context)
+            )
         else:
             operations.append(Operation(op="Update", field=field, value=_serialize(value)))
+    return operations
+
+
+def _list_diff_operations(
+    field: str, final_value: list[str], session_context: SessionContextResponse
+) -> list[Operation]:
+    """exclude_tags/special_requirements의 최종 목록을 Remove+Add 차분으로 바꾼다.
+
+    이 두 필드는 B의 field_spec상 Add/Remove만 허용된다(agent-state-contract-v1.md §2.2).
+    LLM은 "추가/제거를 반영한 최종 목록"을 주는데(gemini_prompts의 MODIFY 병합 규칙),
+    최종 목록을 그대로 Update로 보내면 unsupported_operation으로 통째로 드롭돼
+    "박물관도 다시 포함해줘" 같은 부분 해제가 조용히 무시된다. 현재 값과 비교해
+    빠진 항목은 Remove, 새로 든 항목은 Add로 나눠 보낸다.
+    """
+
+    current = list(getattr(session_context.user_conditions, field))
+    final = [str(item) for item in final_value]
+
+    removed = [item for item in current if item not in final]
+    added = [item for item in final if item not in current]
+
+    operations: list[Operation] = []
+    if removed:
+        operations.append(Operation(op="Remove", field=field, value=removed))
+    if added:
+        operations.append(Operation(op="Add", field=field, value=added))
     return operations
 
 
