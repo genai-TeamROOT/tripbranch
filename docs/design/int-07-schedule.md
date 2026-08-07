@@ -1,6 +1,19 @@
-**문서 버전:** v1.3
+**문서 버전:** v2.0
 **작성일:** 2026-08-06
 **관련 인텐트:** INT-01 RECOMMEND (파생), 신규 INT-07 SCHEDULE
+
+**v2.0 변경 이력 (A의 1차 구현과 병합, v1.3 대비)**
+- A(mintee)가 이 문서와 같은 경로로 독립적으로 작성한 1차 구현 설계(v0.1,
+  PR #113/#114, 커밋 `da9f4cc`)가 이미 develop에 병합돼 있던 것을 발견 —
+  두 문서를 하나로 합침
+- "0. 구현 현황" 절 신설 — 이미 배포된 범위(Intent 분류 + 안전한 안내
+  메시지)를 명시
+- 3절 판별 경계 표를 A가 만든 구체적 예시 표로 교체(더 명확함)
+- 8절 영향 파일 표 정정 — `Intent.SCHEDULE`은 이미 존재(추가 아님),
+  `response_composer.py`는 기존 스텁 분기를 교체하는 작업으로 정정,
+  A만 알던 `orchestrator.py`(조기 반환 로직)를 신규 항목으로 추가
+- 9절에 "A에게 D 협의 결과 공유 필요" 항목 추가 — A의 원문서는 아직
+  top_k/혼잡도 재계산을 "D 협의 후 결정"으로 미해결로 남겨둔 상태였음
 
 **v1.1 변경 이력 (v1.0 대비)**
 - 일정 편성 LLM 호출 주체를 B(Agent State)에서 신규 독립 모듈로 변경 — B는 코드 변경 없음
@@ -25,6 +38,27 @@
 - (신규) 1차 점수·근거 문장이 단일 `visit_at` 기준이라 뒷 순서 스탑에는
   부정확할 수 있다는 문제를 D가 발견 — `ScheduleResult.basis_note` 고정
   안내 문구로 대응하기로 결정 (6.2.1절 신설)
+
+---
+
+## 0. 구현 현황
+
+아래는 A가 이미 develop에 배포한 1차 구현이다(PR #113/#114, 커밋
+`da9f4cc`). 이 문서의 나머지 절(1~10)은 이 위에 이어 붙일 후속 구현
+설계다 — 아래 항목을 다시 만들 필요는 없다.
+
+- `backend/app/schemas.py`: `Intent` enum에 `SCHEDULE` 이미 존재
+- `backend/app/services/interpret/orchestrator.py`: `intent is
+  Intent.SCHEDULE`이면 조건 추출 없이 즉시
+  `LLMOutput(intent=Intent.SCHEDULE, status=OutputStatus.COMPLETE)`로
+  조기 반환 — 후속 구현에서 이 조기 반환을 제거·확장해야 조건 추출·D
+  호출·일정 편성 모듈로 이어진다
+- `backend/app/services/runtime/response_composer.py`: `intent is
+  Intent.SCHEDULE`이면 고정 문구 `"일정 추천 기능은 아직 준비
+  중이에요."`만 반환 — 후속 구현(6.2절)의 `compose_schedule_message()`가
+  이 분기를 **교체**한다(추가 아님)
+- 목적: 일정 요청이 RECOMMEND로 오분류돼 단일 장소 추천으로 잘못
+  처리되는 걸 막는 안전장치. B/C/D 쪽은 전혀 건드리지 않음
 
 ---
 
@@ -59,15 +93,19 @@
 
 ## 3. 인텐트 분류 기준 (INT-07 판별)
 
-LLM이 아래 표현을 감지하면 SCHEDULE로 분류한다.
+A가 1차 구현(0절)에서 이미 확정·배포한 판별 기준(아래 표)을 그대로 따른다.
 
-```
-* "일정 짜줘 / 코스 짜줘 / 루트 만들어줘"
-* "하루 / 반나절 / 오전+오후 / N시간" + 복수 활동 암시
-* "어디어디 가고 싶은데 순서 알려줘"
-```
+| 발화 | Intent |
+| --- | --- |
+| "오늘 오후 종로 반나절 코스 짜줘" | `SCHEDULE` |
+| "경복궁, 인사동 가고 싶은데 어디부터 갈까?" | `SCHEDULE` |
+| "오늘 갈 만한 곳 추천해줘" | `RECOMMEND` |
+| "경복궁 오늘 열어?" | `INFO` |
+| "다른 곳 보여줘" | 이전 추천 이력이 있을 때 `MODIFY` |
 
-단순 "추천해줘" 표현에 일정 맥락이 없으면 RECOMMEND로 유지한다.
+일반적으로는 "일정/코스/루트 짜줘", "하루/반나절/N시간" + 복수 활동 암시,
+"어디부터 갈지 순서" 같은 표현이 SCHEDULE로 분류된다. 단순 "추천해줘"
+표현에 일정 맥락이 없으면 RECOMMEND로 유지한다.
 
 ---
 
@@ -287,7 +325,8 @@ LLM이 제외한 후보 5~7개는 기록되지 않아 이후 일반 RECOMMEND �
 
 | 파일 | 변경 종류 |
 |------|---------|
-| `backend/app/schemas.py` | `Intent`에 `SCHEDULE` 추가; `AgentResponse`에 `schedule` 필드 추가 |
+| `backend/app/schemas.py` | `Intent.SCHEDULE`은 **이미 존재**(0절, PR #114) — 추가 작업은 `AgentResponse`에 `schedule` 필드 추가뿐 |
+| `backend/app/services/interpret/orchestrator.py` | (신규 항목, A만 알던 파일) `intent is Intent.SCHEDULE`일 때의 조기 반환(0절)을 제거·확장해 조건 추출로 이어지게 함 |
 | `backend/app/schedule/schemas.py` (신규) | `SchedulePlanningRequest`, `ScheduleResult`, `ScheduleItem` |
 | `backend/app/schedule/planner.py` (신규) | 일정 편성 로직 — LLM 호출, candidates/conditions → ScheduleResult. 상태 비접근 |
 | `backend/app/services/runtime/protocols.py` | `RecommendationProvider.recommend()`에 `limit` 파라미터 추가 |
@@ -296,9 +335,9 @@ LLM이 제외한 후보 5~7개는 기록되지 않아 이후 일반 RECOMMEND �
 | `backend/tests/test_agent_runtime.py` 등 | `RecommendationProvider` Protocol을 구현하는 테스트 더블 시그니처 갱신 |
 | `backend/app/providers/protocols.py`, `gemini.py`, `stub.py` | `LLMProvider`에 일정 편성용 메서드 추가 (Real+Fake 동시 구현) |
 | `backend/app/services/runtime/agent_runtime.py` | SCHEDULE 분기 추가; D 호출 후 일정 편성 모듈 호출; B의 기존 `record_recommendation` 재사용 |
-| `backend/app/services/runtime/response_composer.py` | `compose_schedule_message()` 추가 |
+| `backend/app/services/runtime/response_composer.py` | `intent is Intent.SCHEDULE`일 때 고정 문구를 반환하던 기존 분기(0절)를 `compose_schedule_message()` 호출로 **교체**(추가 아님) — `tests/test_response_composer.py`의 관련 테스트도 갱신 필요 |
 | `docs/design/package_work_breakdown.md` | 일정 편성 기능 담당자 정보 한 줄 추가 — 새 패키지 letter 아님 |
-| `docs/design/int-07-schedule.md` | 본 문서 |
+| `docs/design/int-07-schedule.md` | 본 문서 — A의 1차 구현 설계(v0.1)와 병합됨(v2.0) |
 
 `backend/app/state/service.py`, `backend/app/domain/scoring.py`,
 `backend/app/services/runtime/recommendation_transform.py`는 **변경 없음**
@@ -308,8 +347,10 @@ LLM이 제외한 후보 5~7개는 기록되지 않아 이후 일반 RECOMMEND �
 
 ## 9. 미결 사항
 
-* INT-07 트리거 표현 목록 LLM 프롬프트에 반영 필요 — `int-01-recommend.md`와
-  유사하게 INT-07 전용 분류 기준 문서 작성 선행 필요.
+* **A에게 D 협의 결과 공유 필요.** A의 원 문서(0절, v0.1)에는 top_k
+  5→10 확장과 혼잡도 2차 Scoring 처리를 아직 "D 협의 후 결정"으로
+  남겨뒀는데, 이미 D와 합의 완료됨(top_k 10, 혼잡도 10개 전부 재계산,
+  4·5절 참고) — A가 조건 추출·후속 구현에 들어가기 전에 알려줘야 함.
 * `estimated_arrival`은 `visit_datetime`이 없을 때 현재 시각 기준으로 계산할지,
   LLM이 상대적 표현("1번째 방문", "약 1시간 후")만 반환하도록 할지 결정 필요.
 * `travel_to_next_min`은 현재 TBD인 `estimate_travel_time` Tool과 연동
@@ -321,6 +362,11 @@ LLM이 제외한 후보 5~7개는 기록되지 않아 이후 일반 RECOMMEND �
   없어 해당 턴 응답이 끝나면 사라진다 — D-050(혼잡도 세부 근거 미저장)과
   같은 패턴의 알려진 한계로 남겨둔다. 지금 당장 조치는 불필요.
 * FE 타임라인 UI 컴포넌트는 별도 이슈로 관리.
+
+**해소된 항목(v2.0 → A의 1차 구현과 병합하며 확인)**
+* INT-07 트리거 표현·분류 기준 문서화: 별도로 새로 쓸 필요 없음 — A가
+  이미 판별 표를 만들어 구현·배포까지 끝냄(0절, 3절 참고).
+* `Intent.SCHEDULE` 추가: 이미 완료(0절, PR #114) — 추가 작업 불필요.
 
 **해소된 항목(v1.3 → D 협의 완료)**
 * top_k 5→10 확장: D 확인 완료, `recommend()`에 `limit` 파라미터 추가(기본값
