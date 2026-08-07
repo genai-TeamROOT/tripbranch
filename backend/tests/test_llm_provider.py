@@ -6,9 +6,13 @@ TC-12/13 OUT_OF_SCOPE)와 llm-output-schema.md §7의 needs_clarification 예시
 
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import pytest
 
 from app.providers.stub import FakeLLMProvider
+from app.schedule.schemas import SchedulePlanningRequest
 from app.schemas import (
     Environment,
     Intent,
@@ -17,6 +21,7 @@ from app.schemas import (
     OutputStatus,
     PlaceTag,
     PlaceType,
+    RecommendationItem,
     StatedWeather,
     UserConditions,
     WeatherIntent,
@@ -395,3 +400,46 @@ async def test_classify_intent_tc13_out_of_scope_unrelated() -> None:
 
     assert result.data.intent is Intent.OUT_OF_SCOPE
     assert result.data.out_of_scope_category is OutOfScopeCategory.UNRELATED
+
+
+def _fake_recommendation_item(place_id: str, name: str) -> RecommendationItem:
+    return RecommendationItem(
+        place_id=place_id,
+        name=name,
+        category="attraction",
+        distance_km=0.3,
+        remaining_minutes=120,
+        environment_type="indoor",
+        recommendation_reason="테스트용 고정 후보입니다.",
+        explanations=[],
+        warnings=[],
+        score=0.5,
+        feature_scores={},
+        weights_used={},
+    )
+
+
+@pytest.mark.asyncio
+async def test_generate_schedule_plan_selects_up_to_three_candidates() -> None:
+    """SCHEDULE-04: 실제 Gemini 없이 candidates 앞쪽 최대 3개로 고정 일정을 만든다."""
+    provider = FakeLLMProvider()
+    candidates = [
+        _fake_recommendation_item(f"place-{i}", f"장소 {i}") for i in range(5)
+    ]
+    request = SchedulePlanningRequest(
+        candidates=candidates,
+        conditions=UserConditions(),
+        visit_datetime=datetime(2026, 8, 7, 15, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+        pairwise_distances_km={},
+    )
+
+    result = (await provider.generate_schedule_plan(request)).data
+
+    assert len(result.items) == 3
+    assert [item.place_id for item in result.items] == ["place-0", "place-1", "place-2"]
+    assert result.items[-1].travel_to_next_min is None
+    assert all(
+        item.travel_to_next_min is not None for item in result.items[:-1]
+    )
+    assert result.total_duration_min > 0
+    assert result.route_summary

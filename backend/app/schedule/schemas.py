@@ -15,7 +15,7 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
-from app.schemas import RecommendationItem, UserConditions
+from app.schemas import RecommendationItem, ScheduleItem, UserConditions
 
 
 class SchedulePlanningRequest(BaseModel):
@@ -39,4 +39,18 @@ class SchedulePlanningRequest(BaseModel):
     # JSON으로 직렬화되지 않으므로 튜플 키를 그대로 써도 된다.
 
 
-__all__ = ["SchedulePlanningRequest"]
+class ScheduleLLMPlan(BaseModel):
+    """generate_schedule_plan() 구조화 출력 전용 모델.
+
+    app.schemas.ScheduleResult에서 basis_note만 뺀 형태다. basis_note는 LLM이
+    생성하지 않고 app.schedule.planner가 visit_datetime 값으로 결정적으로
+    채운다(docs/design/int-07-schedule.md 6.2.1절) — 이 모델은 LLM 응답 검증에만
+    쓰이고 AgentResponse에는 직접 실리지 않는다.
+    """
+
+    items: list[ScheduleItem]
+    total_duration_min: int
+    route_summary: str
+
+
+__all__ = ["SchedulePlanningRequest", "ScheduleLLMPlan"]

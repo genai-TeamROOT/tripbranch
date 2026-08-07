@@ -17,6 +17,8 @@ from app.schemas import (
     OutputStatus,
     RecommendationItem,
     RecommendationResponse,
+    ScheduleItem,
+    ScheduleResult,
     Severity,
 )
 from app.services.runtime.context_schemas import Clarification
@@ -25,6 +27,7 @@ from app.services.runtime.response_composer import (
     compose_chat_message,
     compose_info_concentration_message,
     compose_recommendation_message,
+    compose_schedule_message,
 )
 
 
@@ -245,12 +248,66 @@ class TestComposeChatMessageInfoCompare:
 
 
 @pytest.mark.asyncio
-async def test_schedule_uses_dedicated_temporary_message() -> None:
+async def test_schedule_without_result_falls_back_to_placeholder() -> None:
+    """schedule을 안 넘기면(배선 전 방어적 호출 등) 안내 문구로 안전하게 낮아진다."""
     llm_output = LLMOutput(intent=Intent.SCHEDULE, status=OutputStatus.COMPLETE)
 
     message = await compose_chat_message(llm_output, llm=_StubLLM())
 
     assert message == "일정 추천 기능은 아직 준비 중이에요."
+
+
+@pytest.mark.asyncio
+async def test_schedule_with_result_uses_schedule_summary() -> None:
+    llm_output = LLMOutput(intent=Intent.SCHEDULE, status=OutputStatus.COMPLETE)
+    schedule = ScheduleResult(
+        items=[
+            ScheduleItem(
+                order=1,
+                place_id="p1",
+                place_name="연남동 카페 A",
+                estimated_arrival="15:00",
+                estimated_duration_min=60,
+                travel_to_next_min=15,
+                reason="도보 이동 시작점에 가까워요.",
+            )
+        ],
+        total_duration_min=90,
+        route_summary="연남동 카페 A에서 시작해요.",
+        basis_note="이 정보는 15:00 기준으로 계산됐어요.",
+    )
+
+    message = await compose_chat_message(llm_output, schedule=schedule, llm=_StubLLM())
+
+    assert message == compose_schedule_message(schedule)
+    assert "1시간 30분" in message
+    assert "연남동 카페 A에서 시작해요." in message
+
+
+class TestComposeScheduleMessage:
+    def test_formats_hours_and_minutes(self) -> None:
+        schedule = ScheduleResult(
+            items=[],
+            total_duration_min=125,
+            route_summary="동선 요약입니다.",
+            basis_note="기준 시각 안내",
+        )
+
+        message = compose_schedule_message(schedule)
+
+        assert message == "2시간 5분 코스를 짜봤어요. 동선 요약입니다."
+
+    def test_formats_minutes_only_when_under_an_hour(self) -> None:
+        schedule = ScheduleResult(
+            items=[],
+            total_duration_min=45,
+            route_summary="짧은 코스예요.",
+            basis_note="기준 시각 안내",
+        )
+
+        message = compose_schedule_message(schedule)
+
+        assert message == "45분 코스를 짜봤어요. 짧은 코스예요."
 
 
 class TestComposeInfoConcentrationMessage:

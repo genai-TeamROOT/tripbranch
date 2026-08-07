@@ -25,6 +25,7 @@ from app.domain.models import (
 )
 from app.place_search_policy import DEFAULT_PLACE_PROVIDER_RESULT_LIMIT
 from app.providers.contracts import ProviderResult
+from app.schedule.schemas import ScheduleLLMPlan, SchedulePlanningRequest
 from app.schemas import (
     GeneralTopic,
     IntentClassificationResult,
@@ -98,6 +99,17 @@ class LLMProvider(Protocol):
 
         다른 메서드와 달리 구조화 조건 추출이 아니라 자유 텍스트 답변이다 —
         docs/design/agent-response-generation.md §3/§6의 유일한 LLM 신규 호출 지점.
+        """
+        ...
+
+    async def generate_schedule_plan(
+        self, request: SchedulePlanningRequest
+    ) -> ProviderResult[ScheduleLLMPlan]:
+        """INT-07 SCHEDULE: 후보 중 3~5개를 선택해 방문 순서를 정한다.
+
+        basis_note는 포함하지 않는다 — LLM이 생성하지 않고
+        app.schedule.planner.plan_schedule()이 결정적으로 채운다
+        (docs/design/int-07-schedule.md 6.2.1절).
         """
         ...
 
