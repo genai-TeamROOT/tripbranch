@@ -1395,6 +1395,40 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `agent_runtime.py`의 게이트가 `CONCENTRATION`으로 한정돼 있으며,
   `response_composer`에 상세 응답 렌더 경로가 없다. 셋 다 A 소유라 별도 카드로 넘긴다.
 
+### D-055 — 트리비 페르소나와 추천 결과 요약 LLM 추가
+
+- 상태: Implemented
+- 배경: `RECOMMEND`/`MODIFY` 성공 응답의 `AgentResponse.message`가 고정 문구
+  `"이런 곳들을 찾아봤어요:"`만 반환해 국내 여행 챗봇의 정체성과 대화감이 약했다.
+  또한 "넌 누구야?", "이름이 뭐야?", "뭘 할 수 있어?" 같은 서비스 정체성 질문을
+  안정적으로 처리할 별도 topic이 없었다.
+- 결정:
+  - 챗봇 이름은 **트리비**로 정한다.
+  - 서비스 정체성 질문은 `build_interpretation()`에서 LLM 1차 분류 전에
+    `GENERAL(service_identity)`로 선처리하고, 트리비가
+    TripBranch의 국내 여행 챗봇이며 위치·날씨·운영시간·거리·혼잡도 선호를 함께
+    고려해 장소 추천을 돕는다고 답한다.
+  - `RECOMMEND`/`MODIFY` 성공 경로에는 `generate_recommendation_summary()` LLM 호출을
+    추가해 추천 카드들을 감싸는 1~2문장 요약을 만든다.
+- 안전장치:
+  - 추천 요약 LLM 입력은 `name`, `category`, `distance_km`, `remaining_minutes`,
+    `recommendation_reason`, `explanations`로 제한한다.
+  - `warnings`, `score`, `feature_scores`, `weights_used`는 넘기지 않는다. 사용자에게
+    "날씨 점수 제외", "가중치 재분배", "API 실패" 같은 내부 계산 사정을 말하지 않게
+    하기 위한 경계다.
+  - 요약 LLM 호출이 실패하면 추천 카드 응답은 유지하고 기존 고정 wrapper로 fallback한다.
+  - "넌 누구야?", "이름이 뭐야?"는 Gemini가 `role_request`/`OUT_OF_SCOPE`로 오분류할
+    수 있으므로 프롬프트만 믿지 않고 A 오케스트레이터에서 deterministic하게 처리한다.
+- 구현: `app/schemas.py`(`GeneralTopic.SERVICE_IDENTITY`),
+  `app/providers/gemini_prompts.py`(트리비 페르소나, service_identity 분류/답변 규칙,
+  추천 요약 프롬프트, `PROMPT_VERSION` 1.0.5), `app/providers/gemini.py`/
+  `app/providers/stub.py`(`generate_recommendation_summary()`),
+  `app/services/interpret/orchestrator.py`(service_identity 선처리),
+  `response_composer.py`(추천 성공 메시지에서 요약 LLM 호출).
+- 확인 방법: `tests/test_llm_provider.py`(정체성 질문 분류/답변), `tests/test_response_
+  composer.py`(추천 요약 호출 및 fallback), `tests/test_gemini_provider.py`(요약 입력에서
+  내부 scoring 필드 제외).
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -1442,3 +1476,4 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-06 | D-051 `condition` 전면 제거 — `WeatherForecastSlot.condition`(D 소유)부터 `SelectedWeatherForecast.condition`, `map_sky_pty_to_condition()`, `tool_intelligence` 계약, `fake_weather_condition` 설정까지 걷어냄. `tool-intelligence-contract-v1.md`의 `TI-09`를 `Superseded`로, §9 `api_weather` 매핑을 D-038 무효로 반영 |
 | 2026-08-07 | D-054 신설 — INFO `question_type` 8종으로 확장(C). 상세 질의는 Supabase 캐시에 데이터가 없어 TourAPI를 직접 조회하도록 결정하고 `GetPlaceDetailTool`·`info_field_rules` 신설. `event`는 `unsupported`, A 배선 3건은 별도 카드 |
 | 2026-08-06 | D-053 신설 — TP-67(PR #113) 후속으로 위치 변경 판정에서 지명 단독을 제외해 `INFO`(정보 조회) 흐름을 지키고, `environment` 미언급(`ANY`)이 되묻기 답변에서 앞 턴의 `indoor`를 덮어쓰던 갭을 프롬프트 규칙 + 보존 목록으로 막음. `PROMPT_VERSION` 1.0.2 |
+| 2026-08-07 | D-054 트리비 페르소나와 `GENERAL(service_identity)`, RECOMMEND/MODIFY 추천 결과 요약 LLM 추가. 요약 입력에서 내부 scoring 필드는 제외 |

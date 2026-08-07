@@ -28,6 +28,7 @@ from app.providers.contracts import ProviderResult
 from app.schedule.schemas import ScheduleLLMPlan, SchedulePlanningRequest
 from app.schemas import (
     GeneralTopic,
+    Intent,
     IntentClassificationResult,
     InterpretedConditions,
     LLMOutput,
@@ -99,6 +100,16 @@ class LLMProvider(Protocol):
 
         다른 메서드와 달리 구조화 조건 추출이 아니라 자유 텍스트 답변이다 —
         docs/design/agent-response-generation.md §3/§6의 유일한 LLM 신규 호출 지점.
+        """
+        ...
+
+    async def generate_recommendation_summary(
+        self, intent: Intent, recommendations: RecommendationResponse
+    ) -> ProviderResult[str]:
+        """추천 카드 목록을 감싸는 짧은 챗봇 말풍선 문장을 생성한다.
+
+        카드에 없는 사실, 내부 점수/가중치/feature_scores/warnings는 말하지 않는다.
+        실패해도 추천 카드 응답 자체는 유지되어야 하므로 호출부는 템플릿으로 fallback한다.
         """
         ...
 

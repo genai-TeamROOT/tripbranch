@@ -15,6 +15,7 @@ from app.providers.stub import FakeLLMProvider
 from app.schedule.schemas import SchedulePlanningRequest
 from app.schemas import (
     Environment,
+    GeneralTopic,
     Intent,
     ModifyType,
     OutOfScopeCategory,
@@ -75,6 +76,41 @@ async def test_classify_intent_plain_recommendation_is_not_schedule() -> None:
     )
 
     assert result.data.intent is Intent.RECOMMEND
+
+
+@pytest.mark.parametrize("user_input", ["넌 누구야?", "이름이 뭐야?", "뭘 할 수 있어?"])
+@pytest.mark.asyncio
+async def test_classify_intent_service_identity_question_is_general(user_input: str) -> None:
+    provider = FakeLLMProvider()
+
+    result = await provider.classify_intent(
+        user_input, has_previous_recommendation=False, shown_place_count=0
+    )
+
+    assert result.data.intent is Intent.GENERAL
+
+
+@pytest.mark.asyncio
+async def test_extract_general_request_service_identity_topic() -> None:
+    provider = FakeLLMProvider()
+
+    output = (await provider.extract_general_request("넌 누구야?")).data
+
+    assert output.intent is Intent.GENERAL
+    assert output.general is not None
+    assert output.general.topic is GeneralTopic.SERVICE_IDENTITY
+
+
+@pytest.mark.asyncio
+async def test_generate_general_answer_service_identity_mentions_trivy() -> None:
+    provider = FakeLLMProvider()
+
+    result = await provider.generate_general_answer(
+        GeneralTopic.SERVICE_IDENTITY, "넌 누구야?"
+    )
+
+    assert "트리비" in result.data
+    assert "국내 여행" in result.data
 
 
 @pytest.mark.asyncio

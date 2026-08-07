@@ -14,17 +14,63 @@ from google.genai import errors as genai_errors
 
 from app.errors import AppError, ProviderUnavailableError
 from app.providers.gemini import RealGeminiProvider
-from app.schemas import Intent, IntentClassificationResult
+from app.schemas import (
+    Intent,
+    IntentClassificationResult,
+    RecommendationItem,
+    RecommendationResponse,
+)
 
 
 def _api_error(status_code: int, status: str) -> genai_errors.APIError:
     return genai_errors.APIError(status_code, {"error": {"message": status, "status": status}})
 
 
+def _recommendation_item() -> RecommendationItem:
+    return RecommendationItem(
+        place_id="p1",
+        name="테스트 장소",
+        category="attraction",
+        distance_km=0.4,
+        remaining_minutes=120,
+        environment_type="indoor",
+        recommendation_reason="조건을 종합한 추천이에요.",
+        explanations=["현재 위치에서 가까운 장소예요."],
+        warnings=["현재 날씨 정보를 확인하지 못해 이 조건은 반영되지 않았어요."],
+        score=0.9,
+        feature_scores={"weather": None, "distance": 0.8},
+        weights_used={"distance": 1.0},
+    )
+
+
 class _FakeResponse:
     def __init__(self, parsed: IntentClassificationResult) -> None:
         self.parsed = parsed
         self.text = None
+
+
+def test_recommendation_summary_item_excludes_internal_scoring_fields() -> None:
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    response = RecommendationResponse(
+        recommendations=[_recommendation_item()],
+        unverified_recommendations=[],
+        elapsed_ms=0,
+    )
+
+    item = provider._recommendation_summary_item(response.recommendations[0])
+
+    assert item == {
+        "name": "테스트 장소",
+        "category": "attraction",
+        "distance_km": 0.4,
+        "remaining_minutes": 120,
+        "recommendation_reason": "조건을 종합한 추천이에요.",
+        "explanations": ["현재 위치에서 가까운 장소예요."],
+    }
+    assert "warnings" not in item
+    assert "score" not in item
+    assert "feature_scores" not in item
+    assert "weights_used" not in item
 
 
 @pytest.mark.asyncio
