@@ -475,6 +475,29 @@ async def test_rerank_with_concentration_seek_prefers_crowded_place() -> None:
 
 
 @pytest.mark.asyncio
+async def test_rerank_with_concentration_handles_ten_candidates() -> None:
+    """SCHEDULE-03: 10개로 넘어온 1차 결과도 2차 Scoring이 전부 처리해야 한다
+    (하드코딩된 5개 제한이 없는지 확인)."""
+    first_pass = RecommendationResponse(
+        recommendations=[
+            _first_pass_item(f"place-{i}", distance_km=0.1 * i, distance_score=0.9 - 0.05 * i)
+            for i in range(10)
+        ],
+        unverified_recommendations=[],
+        elapsed_ms=0,
+    )
+    concentration = CandidateEnrichmentResponse(
+        request_id="req-10",
+        status="success",
+        candidates=[_concentration_result(f"place-{i}", rate=50.0) for i in range(10)],
+    )
+
+    result = await rerank_with_concentration(first_pass, None, concentration, seek=False)
+
+    assert len(result.recommendations) == 10
+
+
+@pytest.mark.asyncio
 async def test_rerank_with_concentration_handles_partial_no_data() -> None:
     """concentration이 일부 후보만 결측(no_data)이어도 크래시 없이 개별 재분배된다."""
     first_pass = RecommendationResponse(

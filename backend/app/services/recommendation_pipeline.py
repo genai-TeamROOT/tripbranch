@@ -154,8 +154,9 @@ async def rerank_with_concentration(
 ) -> RecommendationResponse:
     """D의 2차 Scoring 진입점(D-040, concentration_intent AVOID/SEEK 전용).
 
-    `response`는 1차 `run_recommendation_pipeline_from_context()` 결과(이미 상위
-    5개로 좁혀진 상태)다. 여기서 새 Candidate를 다시 만들지 않는다 —
+    `response`는 1차 `run_recommendation_pipeline_from_context()` 결과(이미
+    호출자가 지정한 개수로 좁혀진 상태 — RECOMMEND는 5개, SCHEDULE은 10개)다.
+    여기서 새 Candidate를 다시 만들지 않는다 —
     `RecommendationItem.feature_scores`(weather/remaining_operating_time/distance)를
     그대로 재사용한다. concentration과 무관하게 이 값들은 변하지 않기 때문이다.
     `weather_condition`/`weather_reason`은 1차 호출과 같은 입력(`context`,
