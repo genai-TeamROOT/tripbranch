@@ -64,6 +64,8 @@ export type ChatMessage =
       id: string;
       type: "assistant_text";
       text: string;
+      intent?: Intent;
+      status?: LLMOutputStatus;
     }
   | {
       id: string;
@@ -116,7 +118,14 @@ export interface ApiErrorBody {
 // backend/app/schemas.py의 LLMOutput 계약을 그대로 옮긴 개발용 디버그 타입.
 // 화면 표시에 필요한 최소한만 좁혀서 선언하며, enum 값은 string으로 느슨하게 받는다.
 
-export type Intent = "RECOMMEND" | "INFO" | "MODIFY" | "COMPARE" | "GENERAL" | "OUT_OF_SCOPE";
+export type Intent =
+  | "RECOMMEND"
+  | "INFO"
+  | "MODIFY"
+  | "COMPARE"
+  | "GENERAL"
+  | "OUT_OF_SCOPE"
+  | "SCHEDULE";
 
 export type LLMOutputStatus = "complete" | "needs_clarification";
 
@@ -236,10 +245,26 @@ export interface StateApplyResponse {
   run_id: string;
   session_created: boolean;
   user_conditions: UserConditions;
+  api_context?: ApiContextView;
   condition_version: number;
   condition_changed: boolean;
+  applied_operations?: StateOperation[];
+  ignored_operations?: IgnoredStateOperation[];
   excluded_place_ids: string[];
   reset_applied: string | null;
+}
+
+export interface StateOperation {
+  op: string;
+  field: string | null;
+  before_value?: unknown;
+  after_value?: unknown;
+  value?: unknown;
+}
+
+export interface IgnoredStateOperation {
+  operation: StateOperation;
+  reason: string;
 }
 
 /* GET /api/state/{session_id} 응답(계약 6.3절). 로컬 "/status" 표시에 쓴다. */
@@ -270,6 +295,43 @@ export interface AgentResponse {
   state: StateApplyResponse;
   recommendations: RecommendationsResponse | null;
   message: string;
+  llm_execution?: LLMExecutionMetadata | null;
+}
+
+export interface LLMCallMetadata {
+  operation: string;
+  attempted_models: string[];
+  served_model: string | null;
+}
+
+export interface LLMExecutionMetadata {
+  calls: LLMCallMetadata[];
+}
+
+export interface DeveloperAuditFailure {
+  code: string;
+  message: string;
+  retryable: boolean;
+  details: unknown;
+}
+
+export interface DeveloperAuditTurn {
+  id: string;
+  userInput: string;
+  intent: Intent | "ERROR";
+  status: LLMOutputStatus | "error";
+  message: string;
+  sessionId: string | null;
+  runId: string | null;
+  deviceLocation: string | null;
+  elapsedMsClient: number;
+  serverElapsedMs: number | null;
+  extractedConditions: InterpretedConditions | null;
+  beforeConditions: UserConditions | null;
+  afterConditions: UserConditions | null;
+  recommendations: RecommendationsResponse | null;
+  response: AgentResponse | null;
+  failure: DeveloperAuditFailure | null;
 }
 
 /*

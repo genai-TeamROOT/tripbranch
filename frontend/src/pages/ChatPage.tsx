@@ -97,6 +97,8 @@ export function ChatPage() {
             message: response.message,
             recommendations: response.recommendations,
             sessionId: response.state.session_id,
+            status: response.llm_output.status,
+            agentResponse: response,
             showDebug,
             elapsedMsClient: performance.now() - startedAt,
           },
@@ -134,16 +136,25 @@ export function ChatPage() {
           <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">TripBranch</h1>
           <p className="text-sm text-gray-500 dark:text-gray-400">대화형 대체 장소 추천</p>
         </div>
-        <button
-          type="button"
-          onClick={() => {
-            dispatch({ type: "RESET" });
-            navigate("/");
-          }}
-          className="rounded-md border border-gray-300 px-3 py-1.5 text-sm dark:border-gray-700"
-        >
-          처음부터
-        </button>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => navigate("/dev-chat")}
+            className="rounded-md border border-gray-300 px-3 py-1.5 text-sm dark:border-gray-700"
+          >
+            개발자용 보기
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              dispatch({ type: "RESET" });
+              navigate("/");
+            }}
+            className="rounded-md border border-gray-300 px-3 py-1.5 text-sm dark:border-gray-700"
+          >
+            처음부터
+          </button>
+        </div>
       </header>
 
       {state.error && (

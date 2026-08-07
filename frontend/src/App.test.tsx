@@ -181,6 +181,39 @@ test("main recommendation requests location permission before opening chat", asy
   expect(await screen.findByText("테스트 박물관")).toBeInTheDocument();
 });
 
+test("developer start opens dev chat with audit panel", async () => {
+  vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "false");
+  render(<App />);
+
+  await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
+  await userEvent.click(screen.getByRole("button", { name: "개발자용으로 시작" }));
+
+  expect(await screen.findByText("Agent Runtime Audit")).toBeInTheDocument();
+  expect(await screen.findByText(/Intent: RECOMMEND/)).toBeInTheDocument();
+  expect(screen.getByText("TripBranch Developer Console")).toBeInTheDocument();
+  expect(screen.getAllByText(/비를 피할 실내 장소가 필요해/).length).toBeGreaterThan(1);
+});
+
+test("developer audit turn cards remain selectable after multiple turns", async () => {
+  vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "false");
+  render(<App />);
+
+  await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
+  await userEvent.click(screen.getByRole("button", { name: "개발자용으로 시작" }));
+  expect(await screen.findByText("Agent Runtime Audit")).toBeInTheDocument();
+
+  await userEvent.type(screen.getByPlaceholderText("추가 조건을 입력해 주세요"), "광화문 근처에서");
+  await userEvent.click(screen.getByRole("button", { name: "보내기" }));
+  expect(await screen.findByText(/2\. 광화문 근처에서/)).toBeInTheDocument();
+
+  await userEvent.click(screen.getByRole("button", { name: /1\. 비를 피할 실내 장소가 필요해/ }));
+
+  const firstTurnCard = screen.getByRole("button", {
+    name: /1\. 비를 피할 실내 장소가 필요해/,
+  });
+  expect(firstTurnCard.className).toContain("border-emerald-500");
+});
+
 test("location permission denial stays on home and shows guidance", async () => {
   vi.stubGlobal("navigator", {
     geolocation: {

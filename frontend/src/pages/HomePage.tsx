@@ -10,9 +10,7 @@ import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
 import { sendChat, toDisplayConditions } from "../api/trip";
-import { AgentRuntimeDebugPanel } from "../components/AgentRuntimeDebugPanel";
 import { ErrorBanner } from "../components/ErrorBanner";
-import { IntentDebugPanel } from "../components/IntentDebugPanel";
 import { featureFlags } from "../config/features";
 import { useTripDispatch } from "../state/TripContext";
 import { getBrowserDeviceLocation } from "../utils/geolocation";
@@ -31,7 +29,7 @@ export function HomePage() {
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  async function startChat(input: string) {
+  async function startChat(input: string, targetPath = "/chat") {
     const trimmed = input.trim();
     if (!trimmed || isLoading) return;
 
@@ -55,7 +53,7 @@ export function HomePage() {
       type: "START_CHAT_TURN",
       payload: { userInput: trimmed, deviceLocation },
     });
-    navigate("/chat");
+    navigate(targetPath);
 
     const startedAt = performance.now();
     try {
@@ -74,6 +72,8 @@ export function HomePage() {
           message: response.message,
           recommendations: response.recommendations,
           sessionId: response.state.session_id,
+          status: response.llm_output.status,
+          agentResponse: response,
           showDebug: featureFlags.showInterpretationDebug,
           elapsedMsClient: performance.now() - startedAt,
         },
@@ -140,10 +140,16 @@ export function HomePage() {
         >
           {isLoading ? "현재 위치 확인 중..." : "추천 시작하기"}
         </button>
+        <button
+          type="button"
+          disabled={isLoading || !userInput.trim()}
+          onClick={() => void startChat(userInput, "/dev-chat")}
+          className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-800 disabled:opacity-50 dark:border-gray-700 dark:text-gray-100"
+        >
+          개발자용으로 시작
+        </button>
       </form>
 
-      <IntentDebugPanel />
-      <AgentRuntimeDebugPanel />
     </main>
   );
 }

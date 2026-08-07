@@ -20,6 +20,7 @@ const state: TripState = {
   recommendations: [],
   unverified_recommendations: [],
   shown_place_ids: [],
+  auditTurns: [],
   messages: [
     {
       id: "message-1",

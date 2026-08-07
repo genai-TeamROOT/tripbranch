@@ -10,8 +10,8 @@ import type { TripState } from "./TripContext";
 import type { ChatMessage, ChatPhase } from "../types";
 
 const STORAGE_KEY = "tripbranch_state";
-// 4: 최초 허용받은 device_location을 후속 채팅에서도 재사용.
-const STORAGE_VERSION = 4;
+// 5: 개발자용 발화별 감사 기록(auditTurns)을 함께 저장.
+const STORAGE_VERSION = 5;
 
 interface StoredState {
   version: number;
@@ -27,6 +27,7 @@ function isTripState(value: unknown): value is TripState {
     Array.isArray(state.unverified_recommendations) &&
     Array.isArray(state.shown_place_ids) &&
     Array.isArray(state.messages) &&
+    Array.isArray(state.auditTurns) &&
     state.messages.every(isChatMessage) &&
     isChatPhase(state.phase) &&
     (state.device_location === null || typeof state.device_location === "string") &&

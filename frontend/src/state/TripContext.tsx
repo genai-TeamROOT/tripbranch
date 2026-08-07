@@ -17,10 +17,13 @@ import {
   type ReactNode,
 } from "react";
 import type {
+  AgentResponse,
   ChatMessage,
   ChatPhase,
+  DeveloperAuditTurn,
   Intent,
   InterpretedConditions,
+  LLMOutputStatus,
   RecommendationItem,
   RecommendationsResponse,
   SessionContextResponse,
@@ -35,6 +38,7 @@ export interface TripState {
   unverified_recommendations: RecommendationItem[];
   shown_place_ids: string[];
   messages: ChatMessage[];
+  auditTurns: DeveloperAuditTurn[];
   phase: ChatPhase;
   error: string | null;
   /* Agent(B)가 발급한 대화 세션. 후속 발화에서 그대로 돌려보낸다. */
@@ -57,6 +61,7 @@ const initialTripState: TripState = {
   unverified_recommendations: [],
   shown_place_ids: [],
   messages: [],
+  auditTurns: [],
   phase: "idle",
   error: null,
   session_id: null,
@@ -79,6 +84,17 @@ type TripAction =
       payload: { userInput: string; deviceLocation?: string | null };
     }
   | { type: "APPEND_CHAT_TURN"; payload: ChatTurnPayload }
+  | {
+      type: "APPEND_FAILED_CHAT_TURN";
+      payload: {
+        userInput: string;
+        message: string;
+        code: string;
+        retryable: boolean;
+        details: unknown;
+        elapsedMsClient: number;
+      };
+    }
   /* 로컬 테스트용 "/status" 결과. 대화 상태는 바꾸지 않고 메시지만 덧붙인다. */
   | {
       type: "APPEND_SESSION_STATUS";
@@ -97,6 +113,8 @@ interface ChatTurnPayload {
   message: string;
   recommendations: RecommendationsResponse | null;
   sessionId: string | null;
+  status: LLMOutputStatus;
+  agentResponse: AgentResponse;
   showDebug: boolean;
   elapsedMsClient: number;
 }
@@ -254,7 +272,13 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         });
       }
       if (message) {
-        messages.push({ id: createMessageId("assistant"), type: "assistant_text", text: message });
+        messages.push({
+          id: createMessageId("assistant"),
+          type: "assistant_text",
+          text: message,
+          intent,
+          status: action.payload.status,
+        });
       }
       if (recommendations) {
         messages.push({
@@ -272,6 +296,24 @@ function tripReducer(state: TripState, action: TripAction): TripState {
             (item) => item.place_id,
           )
         : [];
+      const auditTurn: DeveloperAuditTurn = {
+        id: createMessageId("audit"),
+        userInput: action.payload.userInput,
+        intent,
+        status: action.payload.status,
+        message,
+        sessionId: action.payload.sessionId,
+        runId: action.payload.agentResponse.state.run_id ?? null,
+        deviceLocation: state.device_location,
+        elapsedMsClient: action.payload.elapsedMsClient,
+        serverElapsedMs: recommendations?.elapsed_ms ?? null,
+        extractedConditions: conditions,
+        beforeConditions: state.auditTurns.at(-1)?.afterConditions ?? null,
+        afterConditions: action.payload.agentResponse.state.user_conditions ?? null,
+        recommendations,
+        response: action.payload.agentResponse,
+        failure: null,
+      };
 
       return {
         ...state,
@@ -285,8 +327,40 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         awaiting_clarification:
           recommendations === null && (intent === "RECOMMEND" || intent === "MODIFY"),
         messages: [...state.messages, ...messages],
+        auditTurns: [...state.auditTurns, auditTurn],
         phase: "ready",
         error: null,
+      };
+    }
+    case "APPEND_FAILED_CHAT_TURN": {
+      const auditTurn: DeveloperAuditTurn = {
+        id: createMessageId("audit-error"),
+        userInput: action.payload.userInput,
+        intent: "ERROR",
+        status: "error",
+        message: action.payload.message,
+        sessionId: state.session_id,
+        runId: null,
+        deviceLocation: state.device_location,
+        elapsedMsClient: action.payload.elapsedMsClient,
+        serverElapsedMs: null,
+        extractedConditions: null,
+        beforeConditions: state.auditTurns.at(-1)?.afterConditions ?? null,
+        afterConditions: state.auditTurns.at(-1)?.afterConditions ?? null,
+        recommendations: null,
+        response: null,
+        failure: {
+          code: action.payload.code,
+          message: action.payload.message,
+          retryable: action.payload.retryable,
+          details: action.payload.details,
+        },
+      };
+      return {
+        ...state,
+        auditTurns: [...state.auditTurns, auditTurn],
+        phase: "error",
+        error: action.payload.message,
       };
     }
     case "APPEND_SESSION_STATUS":

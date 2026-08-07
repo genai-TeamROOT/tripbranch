@@ -45,7 +45,7 @@ async def test_generate_retries_on_transient_5xx_then_succeeds() -> None:
         patch.object(provider._client.aio.models, "generate_content", side_effect=flaky),
         patch("app.providers.gemini.asyncio.sleep", new=AsyncMock()) as mock_sleep,
     ):
-        result = await provider._generate("sys", "user", IntentClassificationResult)
+        result = await provider._generate("sys", "user", IntentClassificationResult, "test")
 
     assert result.intent is Intent.RECOMMEND
     assert call_count == 3
@@ -68,7 +68,7 @@ async def test_generate_raises_after_exhausting_retries_on_persistent_5xx() -> N
         patch("app.providers.gemini.asyncio.sleep", new=AsyncMock()) as mock_sleep,
         pytest.raises(ProviderUnavailableError) as exc_info,
     ):
-        await provider._generate("sys", "user", IntentClassificationResult)
+        await provider._generate("sys", "user", IntentClassificationResult, "test")
 
     assert exc_info.value.status_code == 502
     assert mock_sleep.call_count == 2
@@ -91,7 +91,7 @@ async def test_generate_does_not_retry_non_retryable_4xx() -> None:
         patch("app.providers.gemini.asyncio.sleep", new=AsyncMock()) as mock_sleep,
         pytest.raises(ProviderUnavailableError),
     ):
-        await provider._generate("sys", "user", IntentClassificationResult)
+        await provider._generate("sys", "user", IntentClassificationResult, "test")
 
     assert call_count == 1
     assert mock_sleep.call_count == 0
@@ -104,7 +104,7 @@ async def test_call_structured_retries_once_on_validation_error_then_raises() ->
     call_count = 0
 
     async def invalid_then_invalid(
-        system_instruction: str, user_input: str, response_model: type
+        system_instruction: str, user_input: str, response_model: type, operation: str
     ) -> IntentClassificationResult:
         nonlocal call_count
         call_count += 1
@@ -112,7 +112,9 @@ async def test_call_structured_retries_once_on_validation_error_then_raises() ->
 
     with patch.object(provider, "_generate", side_effect=invalid_then_invalid):
         with pytest.raises(AppError) as exc_info:
-            await provider._call_structured("sys", "user", IntentClassificationResult)
+            await provider._call_structured(
+                "sys", "user", IntentClassificationResult, operation="test"
+            )
 
     assert exc_info.value.code == "llm_output_invalid"
     assert call_count == 2  # 최초 시도 + 1회 재시도
@@ -137,7 +139,7 @@ async def test_generate_succeeds_on_primary_no_fallback_triggered() -> None:
         return _FakeResponse(IntentClassificationResult(intent=Intent.RECOMMEND))
 
     with patch.object(provider._client.aio.models, "generate_content", side_effect=succeed):
-        result = await provider._generate("sys", "user", IntentClassificationResult)
+        result = await provider._generate("sys", "user", IntentClassificationResult, "test")
 
     assert result.intent is Intent.RECOMMEND
     assert calls == ["primary"]
@@ -165,7 +167,7 @@ async def test_generate_falls_back_to_second_model_after_primary_exhausts_retrie
         patch.object(provider._client.aio.models, "generate_content", side_effect=flaky),
         patch("app.providers.gemini.asyncio.sleep", new=AsyncMock()),
     ):
-        result = await provider._generate("sys", "user", IntentClassificationResult)
+        result = await provider._generate("sys", "user", IntentClassificationResult, "test")
 
     assert result.intent is Intent.RECOMMEND
     # primary: max_retries+1(=2)회 소진, secondary: 1회 성공
@@ -195,7 +197,7 @@ async def test_generate_raises_after_all_models_exhausted() -> None:
         patch("app.providers.gemini.asyncio.sleep", new=AsyncMock()),
         pytest.raises(ProviderUnavailableError) as exc_info,
     ):
-        await provider._generate("sys", "user", IntentClassificationResult)
+        await provider._generate("sys", "user", IntentClassificationResult, "test")
 
     assert exc_info.value.status_code == 502
     # 두 모델 각각 max_retries+1(=2)회씩 소진.
@@ -222,7 +224,7 @@ async def test_generate_does_not_fall_back_on_non_retryable_4xx() -> None:
         patch("app.providers.gemini.asyncio.sleep", new=AsyncMock()) as mock_sleep,
         pytest.raises(ProviderUnavailableError),
     ):
-        await provider._generate("sys", "user", IntentClassificationResult)
+        await provider._generate("sys", "user", IntentClassificationResult, "test")
 
     assert calls == ["primary"]
     assert mock_sleep.call_count == 0
@@ -250,7 +252,7 @@ async def test_generate_logs_fallback_transition_and_exhaustion(caplog) -> None:
         caplog.at_level("WARNING", logger="app.providers.gemini"),
         pytest.raises(ProviderUnavailableError),
     ):
-        await provider._generate("sys", "user", IntentClassificationResult)
+        await provider._generate("sys", "user", IntentClassificationResult, "test")
 
     warning_records = [r for r in caplog.records if r.levelname == "WARNING"]
     error_records = [r for r in caplog.records if r.levelname == "ERROR"]

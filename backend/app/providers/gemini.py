@@ -26,6 +26,7 @@ from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
 from app.providers import gemini_prompts
 from app.providers.contracts import ProviderResult, ProviderSource, provider_result
 from app.schemas import GeneralTopic, IntentClassificationResult, LLMOutput, UserConditions
+from app.services.runtime.llm_execution import record_llm_call
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -93,7 +94,10 @@ class RealGeminiProvider:
             shown_place_count=shown_place_count,
         )
         result = await self._call_structured(
-            instruction, user_input, IntentClassificationResult
+            instruction,
+            user_input,
+            IntentClassificationResult,
+            operation="classify_intent",
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 
@@ -101,7 +105,12 @@ class RealGeminiProvider:
         self, user_input: str
     ) -> ProviderResult[LLMOutput]:
         instruction = gemini_prompts.build_recommend_extraction_instruction()
-        result = await self._call_structured(instruction, user_input, LLMOutput)
+        result = await self._call_structured(
+            instruction,
+            user_input,
+            LLMOutput,
+            operation="extract_recommend_conditions",
+        )
         return provider_result(result, source=ProviderSource.GEMINI)
 
     async def extract_modify_conditions(
@@ -110,7 +119,12 @@ class RealGeminiProvider:
         instruction = gemini_prompts.build_modify_extraction_instruction(
             current_conditions
         )
-        result = await self._call_structured(instruction, user_input, LLMOutput)
+        result = await self._call_structured(
+            instruction,
+            user_input,
+            LLMOutput,
+            operation="extract_modify_conditions",
+        )
         return provider_result(result, source=ProviderSource.GEMINI)
 
     async def extract_info_query(
@@ -124,7 +138,12 @@ class RealGeminiProvider:
             has_previous_recommendation=has_previous_recommendation,
             reference_date=reference_date,
         )
-        result = await self._call_structured(instruction, user_input, LLMOutput)
+        result = await self._call_structured(
+            instruction,
+            user_input,
+            LLMOutput,
+            operation="extract_info_query",
+        )
         return provider_result(result, source=ProviderSource.GEMINI)
 
     async def extract_compare_request(
@@ -133,21 +152,36 @@ class RealGeminiProvider:
         instruction = gemini_prompts.build_compare_extraction_instruction(
             shown_place_count=shown_place_count
         )
-        result = await self._call_structured(instruction, user_input, LLMOutput)
+        result = await self._call_structured(
+            instruction,
+            user_input,
+            LLMOutput,
+            operation="extract_compare_request",
+        )
         return provider_result(result, source=ProviderSource.GEMINI)
 
     async def extract_general_request(
         self, user_input: str
     ) -> ProviderResult[LLMOutput]:
         instruction = gemini_prompts.build_general_extraction_instruction()
-        result = await self._call_structured(instruction, user_input, LLMOutput)
+        result = await self._call_structured(
+            instruction,
+            user_input,
+            LLMOutput,
+            operation="extract_general_request",
+        )
         return provider_result(result, source=ProviderSource.GEMINI)
 
     async def generate_general_answer(
         self, topic: GeneralTopic, original_question: str
     ) -> ProviderResult[str]:
         instruction = gemini_prompts.build_general_answer_instruction(topic)
-        result = await self._call_structured(instruction, original_question, _GeneralAnswer)
+        result = await self._call_structured(
+            instruction,
+            original_question,
+            _GeneralAnswer,
+            operation="generate_general_answer",
+        )
         return provider_result(result.answer, source=ProviderSource.GEMINI)
 
     async def _call_structured(
@@ -155,15 +189,19 @@ class RealGeminiProvider:
         system_instruction: str,
         user_input: str,
         response_model: type[T],
+        *,
+        operation: str,
     ) -> T:
         try:
-            return await self._generate(system_instruction, user_input, response_model)
+            return await self._generate(system_instruction, user_input, response_model, operation)
         except ValidationError as exc:
             retry_instruction = system_instruction + gemini_prompts.format_validation_retry_note(
                 exc
             )
             try:
-                return await self._generate(retry_instruction, user_input, response_model)
+                return await self._generate(
+                    retry_instruction, user_input, response_model, operation
+                )
             except ValidationError as retry_exc:
                 raise AppError(
                     code="llm_output_invalid",
@@ -179,6 +217,7 @@ class RealGeminiProvider:
         system_instruction: str,
         user_input: str,
         response_model: type[T],
+        operation: str,
     ) -> T:
         """1순위 모델부터 순서대로 시도한다(D-052). 각 모델에서 타임아웃/429/5xx는
         _try_model()이 지수 백오프로 재시도하고, 그 예산이 소진되면 다음 모델로
@@ -190,7 +229,9 @@ class RealGeminiProvider:
 
         last_error: ProviderTimeoutError | ProviderUnavailableError | None = None
 
+        attempted_models: list[str] = []
         for model_index, model_name in enumerate(self._model_names):
+            attempted_models.append(model_name)
             try:
                 result = await self._try_model(
                     model_name, system_instruction, user_input, response_model
@@ -199,6 +240,11 @@ class RealGeminiProvider:
                 last_error = exc.original
                 is_last_model = model_index == len(self._model_names) - 1
                 if is_last_model:
+                    record_llm_call(
+                        operation=operation,
+                        attempted_models=attempted_models,
+                        served_model=None,
+                    )
                     logger.error(
                         "Gemini 전 모델 소진, 최종 실패 (models=%s): %s",
                         self._model_names,
@@ -212,7 +258,29 @@ class RealGeminiProvider:
                     last_error,
                 )
                 continue
+            except ProviderUnavailableError:
+                # 4xx 등 비재시도 오류는 모델을 바꿔도 해결되지 않아 즉시 끝난다.
+                record_llm_call(
+                    operation=operation,
+                    attempted_models=attempted_models,
+                    served_model=None,
+                )
+                raise
+            except ValidationError:
+                # Gemini는 응답했지만 구조화 스키마 검증에 실패한 경우다. 뒤의
+                # _call_structured() 보정 재시도와 구분할 수 있게 모델을 남긴다.
+                record_llm_call(
+                    operation=operation,
+                    attempted_models=attempted_models,
+                    served_model=model_name,
+                )
+                raise
 
+            record_llm_call(
+                operation=operation,
+                attempted_models=attempted_models,
+                served_model=model_name,
+            )
             if model_index > 0:
                 logger.warning(
                     "Gemini 폴백 모델로 응답 성공 (served_by=%s, primary=%s)",
