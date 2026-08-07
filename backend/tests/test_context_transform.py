@@ -105,6 +105,20 @@ class TestToAgentContextRequest:
 
         assert request.gps_location is None
 
+    def test_excluded_place_ids_reach_context_request(self) -> None:
+        """소진분이 C까지 가야 추가 추천이 성립한다 — D에만 넘기면 후보가 안 바뀐다."""
+
+        request = to_agent_context_request(
+            "req-6", UserConditions(), excluded_place_ids=["p1", "p2"]
+        )
+
+        assert request.excluded_place_ids == ["p1", "p2"]
+
+    def test_excluded_place_ids_default_to_empty(self) -> None:
+        request = to_agent_context_request("req-7", UserConditions())
+
+        assert request.excluded_place_ids == []
+
 
 class TestConditionFieldCoverage:
     """B에서 병합된 조건이 C 요청까지 누락 없이 전달되는지 확인한다."""

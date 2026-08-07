@@ -75,11 +75,13 @@ def _request(
     weather_intent: Literal["AVOID", "ENJOY", "NO_MENTION", "IGNORE"] | None = None,
     gps_location: Coordinates | None = None,
     exclude_tags: list[str] | None = None,
+    excluded_place_ids: list[str] | None = None,
 ) -> AgentContextRequest:
     return AgentContextRequest(
         request_id="request-1",
         intent="RECOMMEND",
         gps_location=gps_location,
+        excluded_place_ids=excluded_place_ids or [],
         conditions=UserConditions(
             search_center=search_center,
             place_types=place_types or [],
@@ -378,6 +380,52 @@ async def test_exclude_tags_drop_matching_candidates() -> None:
     assert after.context is not None
     assert after.context.places is not None
     assert [item.place_id for item in after.context.places.data or []] == ["fake-cafe-1"]
+
+
+@pytest.mark.asyncio
+async def test_excluded_place_ids_drop_already_consumed_candidates() -> None:
+    """소진분이 후보에서 빠진다 — 계약 필드만 받고 무시하면 이 테스트가 깨진다.
+
+    이게 안 되면 "다른 곳 보여줘"에 같은 후보가 다시 와서 D가 전부 걸러내고
+    추천이 0건이 된다.
+    """
+
+    request = _request(place_types=["cultural_facility", "restaurant"])
+    before = await _service().fetch_context(request)
+    assert before.context is not None
+    assert before.context.places is not None
+    assert [item.place_id for item in before.context.places.data or []] == [
+        "fake-museum-1",
+        "fake-cafe-1",
+    ]
+
+    after = await _service().fetch_context(
+        _request(
+            place_types=["cultural_facility", "restaurant"],
+            excluded_place_ids=["fake-museum-1"],
+        )
+    )
+
+    assert after.context is not None
+    assert after.context.places is not None
+    assert [item.place_id for item in after.context.places.data or []] == ["fake-cafe-1"]
+
+
+@pytest.mark.asyncio
+async def test_all_candidates_excluded_by_id_is_no_data_not_unavailable() -> None:
+    """소진분으로 후보가 다 빠져도 장애가 아니라 "더 없음"이다."""
+
+    response = await _service().fetch_context(
+        _request(
+            place_types=["cultural_facility", "restaurant"],
+            excluded_place_ids=["fake-museum-1", "fake-cafe-1"],
+        )
+    )
+
+    assert response.context is not None
+    assert response.context.places is not None
+    assert response.context.places.status == "no_data"
+    assert response.context.places.error is None
 
 
 @pytest.mark.asyncio

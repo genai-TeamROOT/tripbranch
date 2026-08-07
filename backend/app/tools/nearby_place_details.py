@@ -30,6 +30,12 @@ from app.recommendation_limits import (
 from app.schemas import PlaceCandidate
 from app.tools.contracts import ToolError, ToolStatus
 
+# TourAPI locationBasedList2가 한 페이지에 허용하는 최대 행 수.
+MAX_PLACE_PROVIDER_ROWS = 100
+
+# 제외분이 많아 상한(MAX_PLACE_PROVIDER_ROWS)까지 받고도 새 후보를 다 채우지 못했다.
+CANDIDATE_POOL_TRUNCATED_WARNING = "candidate_pool_truncated"
+
 
 class DetailStatus(StrEnum):
     SUCCESS = "success"
@@ -108,10 +114,15 @@ class NearbyPlaceDetailsTool:
         self, query: NearbyPlaceDetailsQuery
     ) -> NearbyPlaceDetailsResult:
         started_at = perf_counter()
-        provider_limit = min(
-            100,
-            query.limit + len(query.excluded_place_ids),
-        )
+        # 제외분만큼 더 받아야 새 후보가 limit만큼 남는다. 장소 검색은 거리순 고정
+        # 정렬이라 행 수만 늘리면 이전 결과의 상위집합이 와서 페이지 번호가 필요 없다.
+        requested_rows = query.limit + len(query.excluded_place_ids)
+        provider_limit = min(MAX_PLACE_PROVIDER_ROWS, requested_rows)
+        # 상한에 걸리면 제외분을 다 건너뛰지 못해 새 후보가 limit보다 적게 남는다.
+        # 이때의 빈 결과는 "이 근처에 더 없음"이 아니라 "더 받아올 수 없음"이므로
+        # 소비 측이 구분할 수 있게 표시한다 — 아직 후보가 남았는데 소진됐다고
+        # 답하는 걸 막기 위함이다.
+        truncated = requested_rows > MAX_PLACE_PROVIDER_ROWS
         try:
             search_result = await self._search_provider.search_places(
                 latitude=query.latitude,
@@ -153,11 +164,12 @@ class NearbyPlaceDetailsTool:
                 status=ToolStatus.NO_DATA,
                 started_at=started_at,
                 provider_metadata=(search_result.metadata,),
+                truncated=truncated,
             )
 
         if isinstance(self._details_provider, BatchPlaceDetailsProvider):
             return await self._enrich_in_batch(
-                selected, search_result.metadata, started_at
+                selected, search_result.metadata, started_at, truncated=truncated
             )
 
         semaphore = asyncio.Semaphore(self._max_concurrency)
@@ -228,6 +240,7 @@ class NearbyPlaceDetailsTool:
             status=status,
             started_at=started_at,
             provider_metadata=provider_metadata,
+            truncated=truncated,
         )
 
     async def _enrich_in_batch(
@@ -235,6 +248,8 @@ class NearbyPlaceDetailsTool:
         selected: tuple[PlaceCandidate, ...],
         search_metadata: ProviderMetadata,
         started_at: float,
+        *,
+        truncated: bool = False,
     ) -> NearbyPlaceDetailsResult:
         """다건 조회를 지원하는 Provider로 후보 상세정보를 한 번에 가져온다.
 
@@ -306,6 +321,7 @@ class NearbyPlaceDetailsTool:
             status=self._batch_status(tuple(places), unavailable=error_code is not None),
             started_at=started_at,
             provider_metadata=provider_metadata,
+            truncated=truncated,
         )
 
     @staticmethod
@@ -343,7 +359,11 @@ class NearbyPlaceDetailsTool:
         started_at: float,
         provider_metadata: tuple[ProviderMetadata, ...],
         error: ToolError | None = None,
+        truncated: bool = False,
     ) -> NearbyPlaceDetailsResult:
+        warnings = ("partial_data",) if status is ToolStatus.PARTIAL else ()
+        if truncated:
+            warnings = (*warnings, CANDIDATE_POOL_TRUNCATED_WARNING)
         return NearbyPlaceDetailsResult(
             places=places,
             status=status,
@@ -351,6 +371,6 @@ class NearbyPlaceDetailsTool:
             retrieved_at=datetime.now(UTC),
             elapsed_ms=(perf_counter() - started_at) * 1000,
             error=error,
-            warnings=("partial_data",) if status is ToolStatus.PARTIAL else (),
+            warnings=warnings,
             provider_metadata=provider_metadata,
         )

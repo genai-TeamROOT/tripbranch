@@ -589,6 +589,46 @@ async def test_record_recommendation_reflected_in_session_context() -> None:
 
 
 @pytest.mark.asyncio
+async def test_second_turn_sends_consumed_place_ids_to_context_provider() -> None:
+    """"다른 곳 보여줘"의 2회차에는 1회차 노출분이 C 요청에 실려야 한다.
+
+    D에만 넘기고 C에는 안 넘기면, C가 같은 앞쪽 후보를 다시 가져오고 D가 그걸
+    전부 걸러내 추천이 0건이 된다. 계약 필드가 배선에서 빠지는 걸 여기서 잡는다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+    tool_provider = providers["tool_provider"]
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert tool_provider.last_request is not None
+    assert tool_provider.last_request.excluded_place_ids == []
+    shown_ids = {item.place_id for item in first.recommendations.recommendations}
+    assert shown_ids
+
+    await run_agent_flow(
+        AgentRequest(
+            user_input="다른 곳 보여줘",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert tool_provider.last_request is not None
+    assert set(tool_provider.last_request.excluded_place_ids) == shown_ids
+
+
+@pytest.mark.asyncio
 async def test_info_concentration_flow_calls_tool_provider_once() -> None:
     """question_type=concentration만 C(fetch_info_context)를 거치고, D는 호출하지 않는다."""
     store = InMemoryStateStore()

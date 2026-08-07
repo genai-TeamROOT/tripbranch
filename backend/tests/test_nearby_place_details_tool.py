@@ -14,6 +14,8 @@ from app.providers.contracts import (
 )
 from app.schemas import PlaceCandidate
 from app.tools.nearby_place_details import (
+    CANDIDATE_POOL_TRUNCATED_WARNING,
+    MAX_PLACE_PROVIDER_ROWS,
     DetailStatus,
     NearbyPlaceDetailsQuery,
     NearbyPlaceDetailsTool,
@@ -144,6 +146,45 @@ async def test_tool_applies_exclusions_limit_and_concurrency() -> None:
         "place-6",
     ]
     assert details.max_active <= 3
+
+
+@pytest.mark.asyncio
+async def test_tool_warns_when_row_cap_blocks_new_candidates() -> None:
+    """상한에 걸린 빈 결과는 "더 없음"이 아니라 "더 못 받아옴"이다.
+
+    이 경고가 없으면 반경 안에 후보가 남았는데도 소진됐다고 답하게 된다.
+    """
+
+    excluded = frozenset(f"place-{index}" for index in range(MAX_PLACE_PROVIDER_ROWS))
+    search = SearchProvider(
+        [_candidate(index) for index in range(MAX_PLACE_PROVIDER_ROWS)]
+    )
+    tool = NearbyPlaceDetailsTool(search, DetailsProvider())
+
+    result = await tool.execute(
+        NearbyPlaceDetailsQuery(37.5, 127.0, limit=5, excluded_place_ids=excluded)
+    )
+
+    # 5 + 100 = 105를 요청했지만 상한이 100이라 새 후보가 하나도 안 남는다.
+    assert search.seen_limit == MAX_PLACE_PROVIDER_ROWS
+    assert result.status is ToolStatus.NO_DATA
+    assert CANDIDATE_POOL_TRUNCATED_WARNING in result.warnings
+
+
+@pytest.mark.asyncio
+async def test_tool_does_not_warn_when_row_cap_is_not_reached() -> None:
+    """상한 아래에서는 경고를 붙이지 않는다 — 정상 소진과 구분돼야 한다."""
+
+    search = SearchProvider([_candidate(index) for index in range(10)])
+    tool = NearbyPlaceDetailsTool(search, DetailsProvider())
+
+    result = await tool.execute(
+        NearbyPlaceDetailsQuery(
+            37.5, 127.0, limit=5, excluded_place_ids=frozenset({"place-0"})
+        )
+    )
+
+    assert CANDIDATE_POOL_TRUNCATED_WARNING not in result.warnings
 
 
 @pytest.mark.asyncio
