@@ -6,12 +6,15 @@
    "다만~"으로 마지막)로 이어붙인다. 문장 내용 자체는 재작문하지 않고 D가 만든
    그대로 쓴다.
 2) compose_chat_message(): 카드들을 감싸는 챗봇 말풍선 텍스트(AgentResponse.message).
-   Intent/status별로 고정 템플릿을 고르거나(대부분), GENERAL만 유일하게 LLM을
-   호출해 실제 배경지식 답변을 생성한다.
+   Intent/status별로 고정 템플릿을 고르거나, GENERAL 답변과 RECOMMEND/MODIFY 추천
+   요약에는 LLM을 호출한다. 추천 요약 LLM은 카드의 공개 필드만 보고 짧게 소개한다.
 """
 
 from __future__ import annotations
 
+import logging
+
+from app.errors import AppError
 from app.providers.protocols import LLMProvider
 from app.schemas import Intent, LLMOutput, OutputStatus, RecommendationItem, RecommendationResponse
 from app.services.runtime.context_schemas import Clarification
@@ -79,6 +82,8 @@ _SCHEDULE_NOT_YET_SUPPORTED_MESSAGE = "일정 추천 기능은 아직 준비 중
 # concentration-conditions.md §7 데이터 한계와 응답 원칙.
 _CONCENTRATION_NO_DATA_MESSAGE = "이 장소 유형은 혼잡도 데이터가 없어요."
 
+logger = logging.getLogger(__name__)
+
 
 def compose_recommendation_message(item: RecommendationItem) -> str:
     """explanations를 먼저, warnings는 "다만, ~" 형태로 마지막에 붙인다.
@@ -140,9 +145,9 @@ async def compose_chat_message(
 ) -> str:
     """AgentResponse.message(챗봇 말풍선 텍스트)를 조립한다.
 
-    docs/design/agent-response-generation.md의 잠정 결정을 그대로 구현한다 —
-    GENERAL만 실제 LLM 호출이고 나머지는 전부 규칙 기반 템플릿이다. 카드
-    (recommendations)의 상세 내용은 여기서 다시 풀어쓰지 않는다.
+    docs/design/agent-response-generation.md의 결정을 구현한다. GENERAL은 답변
+    본문을, RECOMMEND/MODIFY 성공 경로는 추천 카드 wrapper를 LLM으로 생성한다.
+    추천 카드의 상세 내용은 여기서 길게 다시 풀어쓰지 않는다.
     """
 
     if llm_output.status is OutputStatus.NEEDS_CLARIFICATION:
@@ -187,7 +192,16 @@ async def compose_chat_message(
         )
         if not shown:
             return _NO_DATA_MESSAGE
-        return _RECOMMEND_WRAPPER_MESSAGE
+        try:
+            result = await llm.generate_recommendation_summary(llm_output.intent, recommendations)
+        except AppError:
+            logger.warning(
+                "추천 요약 LLM 생성 실패, 기본 템플릿으로 fallback: intent=%s",
+                llm_output.intent.value,
+                exc_info=True,
+            )
+            return _RECOMMEND_WRAPPER_MESSAGE
+        return result.data
 
     # INFO/COMPARE — 별도 트랙(agent-response-generation.md §3/§6 3차), 지금은 안내만.
     return _NOT_YET_SUPPORTED_MESSAGE

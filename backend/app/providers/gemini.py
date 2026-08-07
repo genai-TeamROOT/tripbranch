@@ -11,6 +11,7 @@ docs/design/intent-definition.md, docs/design/llm-output-schema.md 참고). 구�
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 from datetime import date
@@ -25,7 +26,15 @@ from pydantic import BaseModel, ValidationError
 from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
 from app.providers import gemini_prompts
 from app.providers.contracts import ProviderResult, ProviderSource, provider_result
-from app.schemas import GeneralTopic, IntentClassificationResult, LLMOutput, UserConditions
+from app.schemas import (
+    GeneralTopic,
+    Intent,
+    IntentClassificationResult,
+    LLMOutput,
+    RecommendationItem,
+    RecommendationResponse,
+    UserConditions,
+)
 from app.services.runtime.llm_execution import record_llm_call
 
 T = TypeVar("T", bound=BaseModel)
@@ -37,6 +46,13 @@ class _GeneralAnswer(BaseModel):
     """generate_general_answer() 전용 구조화 출력 wire 모델. 다른 곳에서 쓰지 않는다."""
 
     answer: str
+
+
+class _RecommendationSummary(BaseModel):
+    """generate_recommendation_summary() 전용 wire 모델."""
+
+    message: str
+
 
 # 429(rate limit)와 5xx(서버 과부하/일시 장애)만 재시도 대상. 4xx(인증 실패, 잘못된 요청 등)는
 # 재시도해도 같은 결과이므로 즉시 실패시킨다.
@@ -183,6 +199,40 @@ class RealGeminiProvider:
             operation="generate_general_answer",
         )
         return provider_result(result.answer, source=ProviderSource.GEMINI)
+
+    async def generate_recommendation_summary(
+        self, intent: Intent, recommendations: RecommendationResponse
+    ) -> ProviderResult[str]:
+        instruction = gemini_prompts.build_recommendation_summary_instruction(intent)
+        payload = {
+            "recommendations": [
+                self._recommendation_summary_item(item)
+                for item in [
+                    *recommendations.recommendations,
+                    *recommendations.unverified_recommendations,
+                ]
+            ]
+        }
+        result = await self._call_structured(
+            instruction,
+            json.dumps(payload, ensure_ascii=False),
+            _RecommendationSummary,
+            operation="generate_recommendation_summary",
+        )
+        return provider_result(result.message, source=ProviderSource.GEMINI)
+
+    @staticmethod
+    def _recommendation_summary_item(item: RecommendationItem) -> dict[str, object]:
+        """추천 요약 LLM에 넘겨도 되는 사용자-facing 필드만 남긴다."""
+
+        return {
+            "name": item.name,
+            "category": item.category,
+            "distance_km": item.distance_km,
+            "remaining_minutes": item.remaining_minutes,
+            "recommendation_reason": item.recommendation_reason,
+            "explanations": item.explanations,
+        }
 
     async def _call_structured(
         self,
