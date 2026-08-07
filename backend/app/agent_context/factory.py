@@ -15,12 +15,14 @@ from app.providers.factory import (
     get_local_search_provider,
     get_place_details_provider,
     get_place_location_repository,
+    get_place_provider,
     get_place_search_provider,
     get_weather_provider,
 )
 from app.tools.concentration import GetConcentrationTool
 from app.tools.holiday import GetHolidaysTool
 from app.tools.nearby_place_details import NearbyPlaceDetailsTool
+from app.tools.place_detail import GetPlaceDetailTool
 from app.tools.resolve_location import ResolveLocationTool
 from app.tools.weather_forecast import GetWeatherForecastTool
 
@@ -42,6 +44,9 @@ def get_context_provider(client: httpx.AsyncClient) -> ContextService:
             weather=GetWeatherForecastTool(get_weather_provider(client)),
             holidays=GetHolidaysTool(get_holiday_provider(client)),
             concentration=GetConcentrationTool(get_concentration_provider(client)),
+            # 상세 캐시(PLACE_DETAILS_SOURCE)가 아니라 PlaceProvider를 넘긴다 —
+            # 이유는 place_detail.py 모듈 docstring 참고.
+            place_detail=GetPlaceDetailTool(get_place_provider(client)),
         ),
         candidate_limit=settings.recommendation_candidate_limit,
         concentration_mapping_cache=_concentration_mapping_cache(client),
