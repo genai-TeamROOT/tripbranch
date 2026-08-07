@@ -116,6 +116,43 @@ class CategoryQueryPlan:
         return bool(self.conflicting_place_tags)
 
 
+@dataclass(frozen=True)
+class ExcludedCategoryPlan:
+    """제외 태그를 후보에서 걸러낼 소분류 코드 집합으로 바꾼 결과."""
+
+    small_codes: frozenset[str] = frozenset()
+    unmapped_tags: tuple[str, ...] = ()
+
+    @property
+    def has_unmapped_tags(self) -> bool:
+        return bool(self.unmapped_tags)
+
+
+def build_excluded_category_plan(
+    exclude_tags: list[str] | tuple[str, ...],
+) -> ExcludedCategoryPlan:
+    """제외 태그를 TourAPI 소분류 코드 집합으로 변환한다.
+
+    TourAPI는 "이 분류를 빼고 조회"를 표현할 수 없으므로 조회 후 후보에서 걸러낸다.
+    매핑이 없는 태그는 조용히 무시하지 않고 unmapped_tags로 돌려준다 — 걸러진 척하고
+    넘어가면 "박물관 빼줘"가 무시된 걸 아무도 모르게 된다.
+    """
+
+    normalized = _unique_normalized(exclude_tags, casefold=False)
+    codes: set[str] = set()
+    unmapped: list[str] = []
+    for tag in normalized:
+        tag_codes = PLACE_TAG_TO_SMALL_CODES.get(tag)
+        if tag_codes is None:
+            unmapped.append(tag)
+        else:
+            codes.update(tag_codes)
+    return ExcludedCategoryPlan(
+        small_codes=frozenset(codes),
+        unmapped_tags=tuple(unmapped),
+    )
+
+
 def build_category_query_plan(
     place_types: list[str] | tuple[str, ...],
     place_tags: list[str] | tuple[str, ...],

@@ -16,7 +16,9 @@ from app.agent_context.assembler import (
 )
 from app.agent_context.category_rules import (
     CategoryQueryPlan,
+    ExcludedCategoryPlan,
     build_category_query_plan,
+    build_excluded_category_plan,
 )
 from app.agent_context.concentration_proxy import (
     ConcentrationMappingCache,
@@ -193,6 +195,7 @@ class ContextService:
         places_task = asyncio.create_task(
             self._collect_places(
                 category_plan,
+                excluded_plan=build_excluded_category_plan(conditions.exclude_tags),
                 latitude=location.latitude,
                 longitude=location.longitude,
                 search_radius_km=_resolve_search_radius_km(
@@ -524,11 +527,12 @@ class ContextService:
         self,
         plan: CategoryQueryPlan,
         *,
+        excluded_plan: ExcludedCategoryPlan,
         latitude: float,
         longitude: float,
         search_radius_km: float,
     ) -> NearbyPlaceDetailsResult:
-        """분류별 장소 조회를 병렬 실행하고 중복 후보를 제거해 한 결과로 합친다."""
+        """분류별 장소 조회를 병렬 실행하고 중복·제외 후보를 걸러 한 결과로 합친다."""
 
         started_at = perf_counter()
         results = await asyncio.gather(
@@ -550,6 +554,7 @@ class ContextService:
             results,
             limit=self._candidate_limit,
             started_at=started_at,
+            excluded_plan=excluded_plan,
         )
 
 
@@ -673,12 +678,39 @@ def _resolve_search_radius_km(
     )
 
 
+def _is_excluded(place: EnrichedPlace, excluded_small_codes: frozenset[str]) -> bool:
+    """후보의 TourAPI 소분류가 제외 태그에 걸리는지.
+
+    소분류(lcls_systm3)가 비어 있는 후보는 제외 여부를 판단할 근거가 없으므로
+    남긴다 — 판단 못 하는 것을 제외로 취급하면 후보가 조용히 사라진다.
+    """
+
+    if not excluded_small_codes:
+        return False
+    small_code = place.candidate.lcls_systm3
+    return small_code is not None and small_code.strip() in excluded_small_codes
+
+
+def _place_warnings(
+    status: ToolStatus, excluded_plan: ExcludedCategoryPlan
+) -> tuple[str, ...]:
+    warnings: list[str] = []
+    if status is ToolStatus.PARTIAL:
+        warnings.append("partial_data")
+    if excluded_plan.has_unmapped_tags:
+        # 분류 매핑이 없어 걸러내지 못한 제외 태그가 있다는 걸 A/D가 알 수 있게 남긴다.
+        warnings.append("exclude_tags_unmapped")
+    return tuple(warnings)
+
+
 def _merge_place_results(
     results: list[NearbyPlaceDetailsResult],
     *,
     limit: int,
     started_at: float,
+    excluded_plan: ExcludedCategoryPlan | None = None,
 ) -> NearbyPlaceDetailsResult:
+    excluded_plan = excluded_plan or ExcludedCategoryPlan()
     if not results:
         return NearbyPlaceDetailsResult(
             places=(),
@@ -696,14 +728,21 @@ def _merge_place_results(
 
     places: list[EnrichedPlace] = []
     seen_place_ids: set[str] = set()
+    excluded_count = 0
     for result in results:
         for place in result.places:
             place_id = place.candidate.place_id
-            if place_id not in seen_place_ids:
-                seen_place_ids.add(place_id)
-                places.append(place)
-                if len(places) == limit:
-                    break
+            if place_id in seen_place_ids:
+                continue
+            seen_place_ids.add(place_id)
+            # 제외는 limit을 적용하기 전에 건다 — 나중에 걸러내면 제외될 후보가
+            # 먼저 정원을 차지해 실제 추천 가능한 후보가 줄어든다.
+            if _is_excluded(place, excluded_plan.small_codes):
+                excluded_count += 1
+                continue
+            places.append(place)
+            if len(places) == limit:
+                break
         if len(places) == limit:
             break
 
@@ -715,7 +754,9 @@ def _merge_place_results(
             else ToolStatus.SUCCESS
         )
         error = None
-    elif all(item is ToolStatus.NO_DATA for item in statuses):
+    elif excluded_count or all(item is ToolStatus.NO_DATA for item in statuses):
+        # 조회는 됐지만 전부 제외 태그에 걸린 경우도 "조건에 맞는 후보 없음"이다.
+        # 장애(unavailable)로 떨어뜨리면 사용자에게 오류처럼 보인다.
         status = ToolStatus.NO_DATA
         error = None
     elif all(item is ToolStatus.UNSUPPORTED for item in statuses):
@@ -732,7 +773,7 @@ def _merge_place_results(
         retrieved_at=max(result.retrieved_at for result in results),
         elapsed_ms=(perf_counter() - started_at) * 1000,
         error=error,
-        warnings=("partial_data",) if status is ToolStatus.PARTIAL else (),
+        warnings=_place_warnings(status, excluded_plan),
         provider_metadata=tuple(
             metadata for result in results for metadata in result.provider_metadata
         ),

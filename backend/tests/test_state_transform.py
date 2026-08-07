@@ -451,3 +451,60 @@ def test_explicit_restart_overrides_pending_clarification() -> None:
     )
 
     assert request.reset_scope == "soft"
+
+
+def _modify_exclude_tags(final: list[str], current: list[str]) -> list[tuple]:
+    """exclude_tags 최종 목록을 넘겼을 때 만들어지는 operations를 (op, field, value)로."""
+
+    request = transform(
+        LLMOutput(
+            intent=Intent.MODIFY,
+            status=OutputStatus.COMPLETE,
+            modify=ModifyPayload(
+                modify_type=ModifyType.CHANGE_CONDITION,
+                changed_fields=["exclude_tags"],
+                condition_changes=UserConditions(exclude_tags=final),
+            ),
+        ),
+        _context(user_conditions=StateUserConditions(exclude_tags=current)),
+        "박물관도 포함해줘",
+    )
+    return [
+        (op.op, op.field, op.value if op.has_value else None)
+        for op in request.operations
+    ]
+
+
+def test_exclude_tags_partial_removal_becomes_remove_operation() -> None:
+    """"박물관도 포함해줘" — Update로 보내면 B가 드롭하므로 Remove 차분을 만든다."""
+
+    assert _modify_exclude_tags(["카페"], ["박물관", "카페"]) == [
+        ("Remove", "exclude_tags", ["박물관"])
+    ]
+
+
+def test_exclude_tags_addition_becomes_add_operation() -> None:
+    assert _modify_exclude_tags(["박물관", "카페"], ["박물관"]) == [
+        ("Add", "exclude_tags", ["카페"])
+    ]
+
+
+def test_exclude_tags_swap_produces_remove_and_add() -> None:
+    assert _modify_exclude_tags(["카페"], ["박물관"]) == [
+        ("Remove", "exclude_tags", ["박물관"]),
+        ("Add", "exclude_tags", ["카페"]),
+    ]
+
+
+def test_exclude_tags_unchanged_produces_no_operation() -> None:
+    """값이 그대로면 연산을 만들지 않는다 — 불필요한 조건 변경 기록을 남기지 않는다."""
+
+    assert _modify_exclude_tags(["박물관"], ["박물관"]) == []
+
+
+def test_exclude_tags_cleared_still_uses_valueless_remove() -> None:
+    """전체 해제는 기존 동작(값 없는 Remove)을 그대로 유지한다."""
+
+    assert _modify_exclude_tags([], ["박물관", "카페"]) == [
+        ("Remove", "exclude_tags", None)
+    ]

@@ -1,6 +1,9 @@
 """A 장소 조건을 C의 TourAPI 분류 조회 계획으로 바꾸는 룰을 검증한다."""
 
-from app.agent_context.category_rules import build_category_query_plan
+from app.agent_context.category_rules import (
+    build_category_query_plan,
+    build_excluded_category_plan,
+)
 
 
 def test_empty_categories_plan_unfiltered_search() -> None:
@@ -93,3 +96,34 @@ def test_tag_filters_take_priority_over_broad_type_filter() -> None:
         "FD050100",
         "VE070100",
     ]
+
+
+def test_no_exclude_tags_plans_nothing_to_filter() -> None:
+    plan = build_excluded_category_plan([])
+
+    assert plan.small_codes == frozenset()
+    assert plan.unmapped_tags == ()
+    assert plan.has_unmapped_tags is False
+
+
+def test_exclude_tags_resolve_to_small_codes() -> None:
+    plan = build_excluded_category_plan(["박물관", "카페"])
+
+    assert plan.small_codes == frozenset({"VE070100", "FD050100"})
+    assert plan.unmapped_tags == ()
+
+
+def test_exclude_tag_with_multiple_codes_collects_all() -> None:
+    plan = build_excluded_category_plan(["공원"])
+
+    assert plan.small_codes == frozenset(
+        {"VE030100", "VE030200", "VE030300", "VE030400", "VE030500"}
+    )
+
+
+def test_unmapped_exclude_tag_is_reported_not_dropped() -> None:
+    plan = build_excluded_category_plan(["박물관", "없는태그"])
+
+    assert plan.small_codes == frozenset({"VE070100"})
+    assert plan.unmapped_tags == ("없는태그",)
+    assert plan.has_unmapped_tags is True
