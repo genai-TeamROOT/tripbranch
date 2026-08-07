@@ -67,6 +67,28 @@ def test_recommend_resets_soft_and_updates_all_set_fields() -> None:
     assert request.prompt_version == PROMPT_VERSION
 
 
+def test_schedule_merges_conditions_same_as_recommend() -> None:
+    """SCHEDULE-04: orchestrator.py가 SCHEDULE에도 llm_output.recommend를 채워주므로
+    (docs/design/int-07-schedule.md 4절 "조건 병합 (기존과 동일)"), RECOMMEND와
+    같은 분기를 타야 한다 — 137번째 줄 조건에 SCHEDULE도 포함됐는지 확인."""
+    llm_output = LLMOutput(
+        intent=Intent.SCHEDULE,
+        status=OutputStatus.COMPLETE,
+        recommend=RecommendPayload(
+            conditions=UserConditions(search_center="경복궁", place_tags=["카페"])
+        ),
+    )
+
+    request = transform(llm_output, _context(), "경복궁 근처에서 반나절 코스 짜줘")
+
+    assert request.intent == "SCHEDULE"
+    ops = {(op.op, op.field): op.value for op in request.operations}
+    assert ops[("Update", "search_center")] == "경복궁"
+    assert ops[("Update", "place_tags")] == ["카페"]
+    assert request.reset_scope == "soft"
+    assert request.confirmed is True
+
+
 def test_recommend_serializes_int_fields_as_int_not_str() -> None:
     """_serialize() 회귀: max_travel_time/time_available은 str()로 감싸지지 않는다.
 
@@ -451,3 +473,60 @@ def test_explicit_restart_overrides_pending_clarification() -> None:
     )
 
     assert request.reset_scope == "soft"
+
+
+def _modify_exclude_tags(final: list[str], current: list[str]) -> list[tuple]:
+    """exclude_tags 최종 목록을 넘겼을 때 만들어지는 operations를 (op, field, value)로."""
+
+    request = transform(
+        LLMOutput(
+            intent=Intent.MODIFY,
+            status=OutputStatus.COMPLETE,
+            modify=ModifyPayload(
+                modify_type=ModifyType.CHANGE_CONDITION,
+                changed_fields=["exclude_tags"],
+                condition_changes=UserConditions(exclude_tags=final),
+            ),
+        ),
+        _context(user_conditions=StateUserConditions(exclude_tags=current)),
+        "박물관도 포함해줘",
+    )
+    return [
+        (op.op, op.field, op.value if op.has_value else None)
+        for op in request.operations
+    ]
+
+
+def test_exclude_tags_partial_removal_becomes_remove_operation() -> None:
+    """"박물관도 포함해줘" — Update로 보내면 B가 드롭하므로 Remove 차분을 만든다."""
+
+    assert _modify_exclude_tags(["카페"], ["박물관", "카페"]) == [
+        ("Remove", "exclude_tags", ["박물관"])
+    ]
+
+
+def test_exclude_tags_addition_becomes_add_operation() -> None:
+    assert _modify_exclude_tags(["박물관", "카페"], ["박물관"]) == [
+        ("Add", "exclude_tags", ["카페"])
+    ]
+
+
+def test_exclude_tags_swap_produces_remove_and_add() -> None:
+    assert _modify_exclude_tags(["카페"], ["박물관"]) == [
+        ("Remove", "exclude_tags", ["박물관"]),
+        ("Add", "exclude_tags", ["카페"]),
+    ]
+
+
+def test_exclude_tags_unchanged_produces_no_operation() -> None:
+    """값이 그대로면 연산을 만들지 않는다 — 불필요한 조건 변경 기록을 남기지 않는다."""
+
+    assert _modify_exclude_tags(["박물관"], ["박물관"]) == []
+
+
+def test_exclude_tags_cleared_still_uses_valueless_remove() -> None:
+    """전체 해제는 기존 동작(값 없는 Remove)을 그대로 유지한다."""
+
+    assert _modify_exclude_tags([], ["박물관", "카페"]) == [
+        ("Remove", "exclude_tags", None)
+    ]

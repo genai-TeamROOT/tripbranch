@@ -16,10 +16,13 @@ import time
 
 import httpx
 
-from app.agent_context.schemas import RecommendationContext
+from app.agent_context.schemas import PlaceCandidate, RecommendationContext
 from app.domain.scoring import SCORING_VERSION
+from app.geo import haversine_km
 from app.providers.gemini_prompts import PROMPT_VERSION
 from app.providers.protocols import LLMProvider
+from app.schedule.planner import plan_schedule
+from app.schedule.schemas import SchedulePlanningRequest
 from app.schemas import (
     AgentRequest,
     AgentResponse,
@@ -29,6 +32,7 @@ from app.schemas import (
     LLMOutput,
     OutputStatus,
     QuestionType,
+    RecommendationItem,
     RecommendationResponse,
     UserConditions,
 )
@@ -44,6 +48,7 @@ from app.services.runtime.llm_execution import (
 )
 from app.services.runtime.protocols import EnrichmentProvider, RecommendationProvider, ToolProvider
 from app.services.runtime.response_composer import compose_chat_message
+from app.services.runtime.tool_debug import build_tool_execution_debug
 from app.state.schema import now_kst
 from app.state.service import (
     RecommendedPlace,
@@ -139,17 +144,56 @@ _TOOL_TERMINAL_STATUSES = frozenset(
 # concentration_intent가 AVOID/SEEK일 때만 혼잡도 보강 조회 대상이 되는 값.
 _CONCENTRATION_RANK_INTENTS = frozenset({ConcentrationIntent.AVOID, ConcentrationIntent.SEEK})
 
-# 2차 Scoring(재순위)이 실제로 실행됐을 때만 적용하는 최종 노출 개수.
-# (기획 확정, 2026-08-02 — concentration-conditions.md §2.2.3 9단계.
+# 2차 Scoring(재순위)이 실제로 실행됐을 때만 적용하는 최종 노출 개수 — RECOMMEND/MODIFY
+# 기본값. (기획 확정, 2026-08-02 — concentration-conditions.md §2.2.3 9단계.
 # 재순위가 안 일어나면(D 미구현 등) 1차 결과를 그대로 쓰고 이 상수는 적용하지 않는다 —
-# 기능이 실제로 동작하지 않는데 결과 개수만 줄이는 걸 피하기 위함이다. 1차 Scoring이
-# 애초에 최대 5개(_RECOMMENDATION_LIMIT, real_recommendation_provider.py)까지만
-# 넘기므로, 지금 이 슬라이싱은 사실상 no-op이다 — 1차 개수가 나중에 바뀔 경우를
-# 대비한 방어 코드로 유지한다.)
+# 기능이 실제로 동작하지 않는데 결과 개수만 줄이는 걸 피하기 위함이다.)
+#
+# SCHEDULE은 이 값을 쓰지 않는다 — _SCHEDULE_RECOMMENDATION_LIMIT(10)을 대신 넘긴다.
+# (주의) 예전엔 1차 Scoring이 항상 5개까지만 넘겨서 이 슬라이싱이 사실상 no-op이라고
+# 적혀 있었는데, SCHEDULE 도입으로 1차가 10개를 넘길 수 있게 되면서 더 이상 no-op이
+# 아니다 — _apply_concentration_rerank() 호출부가 반드시 알맞은 limit을 넘겨야 한다.
 _CONCENTRATION_FINAL_LIMIT = 5
+
+# SCHEDULE의 1차 Scoring/2차 재순위 최종 노출 개수(D 협의 완료 — docs/design/
+# int-07-schedule.md 2절/4절). RECOMMEND/MODIFY의 5개보다 많이 받아 LLM이 그중
+# 3~5개를 골라 일정을 편성한다.
+_SCHEDULE_RECOMMENDATION_LIMIT = 10
 
 # 보강 응답 전체가 이 상태면 2차 Scoring을 시도할 실익이 없다(재조회할 데이터가 없음).
 _ENRICHMENT_TERMINAL_STATUSES = frozenset({"no_data", "unavailable"})
+
+
+def _build_pairwise_distances_km(
+    candidates: list[RecommendationItem],
+    places: list[PlaceCandidate],
+) -> dict[tuple[str, str], float]:
+    """SCHEDULE 전용 — 후보 쌍 사이의 직선거리(km)를 계산한다.
+
+    RecommendationItem에는 위경도가 없다(distance_km는 검색 중심 기준 거리라
+    후보 간 거리를 못 구한다) — C가 준 PlaceCandidate(위경도 보유)를 place_id로
+    매칭해 haversine_km()로 계산한다(docs/design/int-07-schedule.md 6.1절).
+    C 응답에 없는 place_id(매칭 실패)는 조용히 건너뛴다 — pairwise_distances_km는
+    LLM에 참고 근거로만 쓰이므로 일부 누락되어도 편성 자체가 막히지 않는다.
+    """
+
+    coordinates_by_place_id = {place.place_id: place.location for place in places}
+    distances: dict[tuple[str, str], float] = {}
+    for index, first in enumerate(candidates):
+        first_location = coordinates_by_place_id.get(first.place_id)
+        if first_location is None:
+            continue
+        for second in candidates[index + 1 :]:
+            second_location = coordinates_by_place_id.get(second.place_id)
+            if second_location is None:
+                continue
+            distances[(first.place_id, second.place_id)] = haversine_km(
+                first_location.latitude,
+                first_location.longitude,
+                second_location.latitude,
+                second_location.longitude,
+            )
+    return distances
 
 
 def _valid_location(device_location: str | None) -> str | None:
@@ -180,10 +224,15 @@ async def _apply_concentration_rerank(
     *,
     recommendation_provider: RecommendationProvider,
     enrichment_provider: EnrichmentProvider,
+    final_limit: int = _CONCENTRATION_FINAL_LIMIT,
 ) -> RecommendationResponse:
     """concentration_intent가 AVOID/SEEK일 때만 1차 결과를 혼잡도로 보강·재순위한다
     (D-040 확정 — concentration-conditions.md §2.2.3, agent-runtime-contract.md
     §6.5.2). 그 외에는 first_pass를 그대로 반환한다.
+
+    final_limit: 재순위 후 최종 노출 개수. 호출부가 1차 Scoring에 넘긴 limit과
+    일치시켜야 한다 — RECOMMEND/MODIFY는 기본값 5, SCHEDULE은 10
+    (_SCHEDULE_RECOMMENDATION_LIMIT, docs/design/int-07-schedule.md 4절).
 
     C 보강 조회(EnrichmentProvider.enrich())와 D의 2차 Scoring
     (rerank_with_concentration())은 모두 실제로 연결·구현 완료됐다(D-040). hasattr
@@ -228,7 +277,7 @@ async def _apply_concentration_rerank(
     shown = [*reranked.recommendations, *reranked.unverified_recommendations]
     return reranked.model_copy(
         update={
-            "recommendations": shown[:_CONCENTRATION_FINAL_LIMIT],
+            "recommendations": shown[:final_limit],
             "unverified_recommendations": [],
         }
     )
@@ -349,11 +398,14 @@ async def run_agent_flow(
             llm_execution=get_llm_execution_metadata(),
         )
 
-    # 4) 확인이 더 필요하거나(needs_clarification), RECOMMEND/MODIFY가 아니면(INFO/COMPARE/
-    #    GENERAL/OUT_OF_SCOPE) 여기서 끝난다 — Tool/Recommendation은 부가 흐름이라 스킵한다.
+    # 4) 확인이 더 필요하거나(needs_clarification), RECOMMEND/MODIFY/SCHEDULE이 아니면
+    #    (INFO/COMPARE/GENERAL/OUT_OF_SCOPE) 여기서 끝난다 — Tool/Recommendation은
+    #    부가 흐름이라 스킵한다. SCHEDULE도 D 호출까지 이어져야 하므로 포함한다
+    #    (docs/design/int-07-schedule.md 4절).
     if llm_output.status is not OutputStatus.COMPLETE or llm_output.intent not in (
         Intent.RECOMMEND,
         Intent.MODIFY,
+        Intent.SCHEDULE,
     ):
         # LLM이 되물은 경우만 기록한다. INFO/GENERAL 같은 다른 Intent는 조건을 건드리지
         # 않으므로, 이전 되묻기가 있었다면 그대로 살려둔다(곁가지 대화로 취급).
@@ -388,11 +440,15 @@ async def run_agent_flow(
     )
     tool_started_at = time.monotonic()
     tool_response = await tool_provider.fetch_context(context_request)
+    tool_latency_ms = int((time.monotonic() - tool_started_at) * 1000)
+    # 개발자용 Audit 표시 정보. 아래 어느 경로로 응답이 끝나든 C를 호출한 사실은
+    # 남아야 하므로 여기서 한 번만 만들어 모든 return에 함께 싣는다.
+    tool_execution = build_tool_execution_debug(tool_response, latency_ms=tool_latency_ms)
     _record_trace_safely(
         session_id=state_response.session_id,
         run_id=state_response.run_id,
         step="tool_fetch",
-        latency_ms=int((time.monotonic() - tool_started_at) * 1000),
+        latency_ms=tool_latency_ms,
         error_type=(
             tool_response.status if tool_response.status in _TOOL_TERMINAL_STATUSES else None
         ),
@@ -437,6 +493,7 @@ async def run_agent_flow(
             recommendations=None,
             message=message,
             llm_execution=get_llm_execution_metadata(),
+            tool_execution=tool_execution,
         )
 
     # success/partial은 Recommendation 단계로 진행한다(경고가 있어도 가능한 데이터로
@@ -462,15 +519,22 @@ async def run_agent_flow(
             recommendations=None,
             message=message,
             llm_execution=get_llm_execution_metadata(),
+            tool_execution=tool_execution,
         )
+
+    is_schedule = llm_output.intent is Intent.SCHEDULE
 
     # 6) A → D: 1차 Scoring (Protocol을 통해서만 — D의 구체 클래스는 여기서 모른다).
     #    concentration_intent 유무와 무관하게 항상 이 호출 하나만 한다 — 기존과 동일.
+    #    SCHEDULE은 10개, RECOMMEND/MODIFY는 기존과 동일하게 5개를 받는다
+    #    (docs/design/int-07-schedule.md 2절/5절, D 협의 완료).
+    recommendation_limit = _SCHEDULE_RECOMMENDATION_LIMIT if is_schedule else 5
     scoring_started_at = time.monotonic()
     recommendations = await recommendation_provider.recommend(
         agent_conditions,
         tool_context,
         state_response.excluded_place_ids,
+        limit=recommendation_limit,
     )
     _record_trace_safely(
         session_id=state_response.session_id,
@@ -488,13 +552,66 @@ async def run_agent_flow(
     #      concentration_intent 필드 등록 완료(2026-08-05, B-06, PR #78) 이후로는
     #      run_agent_flow() 전체 통합 테스트로도 exercise되지만(§7 참고), agent_
     #      conditions만으로 독립 단위 테스트할 수 있는 이점이 있어 구조는 유지한다.
+    #      final_limit을 recommendation_limit과 맞춰야 SCHEDULE의 10개가 재순위 후
+    #      5개로 조용히 잘리지 않는다.
     recommendations = await _apply_concentration_rerank(
         agent_conditions,
         tool_context,
         recommendations,
         recommendation_provider=recommendation_provider,
         enrichment_provider=enrichment_provider,
+        final_limit=recommendation_limit,
     )
+
+    if is_schedule:
+        # 6-2) A: C의 AgentContextResponse.places(위경도)를 place_id로 매칭해
+        #      pairwise_distances_km 계산 → 일정 편성 모듈 호출(docs/design/
+        #      int-07-schedule.md 4절/6절). 상태 저장소 비접근 — D를 부르는 것과
+        #      동일한 방식.
+        schedule_candidates = [
+            *recommendations.recommendations,
+            *recommendations.unverified_recommendations,
+        ]
+        places = (
+            tool_context.places.data
+            if tool_context.places and tool_context.places.data
+            else []
+        )
+        schedule_request = SchedulePlanningRequest(
+            candidates=schedule_candidates,
+            conditions=agent_conditions,
+            visit_datetime=None,
+            pairwise_distances_km=_build_pairwise_distances_km(schedule_candidates, places),
+        )
+        schedule_result = await plan_schedule(schedule_request, llm)
+
+        # 7) A → B: 일정에 실제로 포함된 장소만 기록한다(6.3절) — LLM이 제외한
+        #    후보는 기록하지 않아 이후 RECOMMEND 요청에서 재노출될 수 있다.
+        if schedule_result.items:
+            record_recommendation(
+                RecordRecommendationRequest(
+                    session_id=state_response.session_id,
+                    run_id=state_response.run_id,
+                    recommended=[
+                        RecommendedPlace(place_id=item.place_id, rank=item.order)
+                        for item in schedule_result.items
+                    ],
+                ),
+                store=store,
+            )
+
+        # 8) A: 최종 응답 조립. recommendations는 채우지 않는다(AgentResponse
+        #    docstring — schedule과 동시에 채워지지 않음).
+        message = await compose_chat_message(llm_output, schedule=schedule_result, llm=llm)
+        return AgentResponse(
+            llm_output=llm_output,
+            state=state_response,
+            recommendations=None,
+            schedule=schedule_result,
+            message=message,
+            llm_execution=get_llm_execution_metadata(),
+            tool_execution=tool_execution,
+        )
 
     # 7) A → B: 실제로 화면에 노출된 결과만 기록한다. recommendations와
     #    unverified_recommendations 둘 다 프론트에 렌더링되므로(운영시간 미검증 섹션으로
@@ -522,6 +639,7 @@ async def run_agent_flow(
         recommendations=recommendations,
         message=message,
         llm_execution=get_llm_execution_metadata(),
+        tool_execution=tool_execution,
     )
 
 

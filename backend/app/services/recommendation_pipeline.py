@@ -8,7 +8,7 @@ D는 C Tool을 직접 호출하지 않는다([TECH-02]). Tool 조회는 호출�
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, time
 from time import perf_counter
 from typing import TypeAlias
 
@@ -52,6 +52,12 @@ _WEATHER_MISSING_WARNING = "현재 날씨 정보를 확인하지 못해 이 조�
 _NO_NOTABLE_EXPLANATION_WARNING = (
     "이 장소는 특별히 강조할 만한 조건은 없지만, 조건에 맞아 추천했어요."
 )
+# 24시간 영업은 운영 구간이 time.min~time.max로 들어온다. 그대로 포맷하면
+# "00:00~23:59"가 되어 마감이 임박한 것처럼 읽힌다.
+_ALL_DAY_OPERATING_HOURS_DISPLAY = "24시간"
+# 원문 "09:00~24:00"의 종료도 time.max로 들어온다(operating_hours.py). 원문이 24:00인데
+# "23:59"로 보이면 1분 일찍 닫는 것처럼 읽히므로 원문 표기를 되살린다.
+_MIDNIGHT_CLOSE_DISPLAY = "24:00"
 
 Timer: TypeAlias = Callable[[], float]
 
@@ -154,8 +160,9 @@ async def rerank_with_concentration(
 ) -> RecommendationResponse:
     """D의 2차 Scoring 진입점(D-040, concentration_intent AVOID/SEEK 전용).
 
-    `response`는 1차 `run_recommendation_pipeline_from_context()` 결과(이미 상위
-    5개로 좁혀진 상태)다. 여기서 새 Candidate를 다시 만들지 않는다 —
+    `response`는 1차 `run_recommendation_pipeline_from_context()` 결과(이미
+    호출자가 지정한 개수로 좁혀진 상태 — RECOMMEND는 5개, SCHEDULE은 10개)다.
+    여기서 새 Candidate를 다시 만들지 않는다 —
     `RecommendationItem.feature_scores`(weather/remaining_operating_time/distance)를
     그대로 재사용한다. concentration과 무관하게 이 값들은 변하지 않기 때문이다.
     `weather_condition`/`weather_reason`은 1차 호출과 같은 입력(`context`,
@@ -268,6 +275,10 @@ async def rerank_with_concentration(
             category=item.category,
             distance_km=item.distance_km,
             remaining_minutes=item.remaining_minutes,
+            # 2차는 후보를 다시 만들지 않고 1차 값을 재사용한다 — 운영 구간도
+            # 혼잡도와 무관하게 변하지 않으므로 그대로 가져온다. 여기서 빠뜨리면
+            # 혼잡도 재순위를 탄 요청만 이 필드가 조용히 사라진다.
+            operating_hours_display=item.operating_hours_display,
             environment_type=item.environment_type,
             recommendation_reason=_recommendation_reason(candidate),
             explanations=list(explanations),
@@ -373,6 +384,7 @@ def _build_response(
             category=candidate.category,
             distance_km=round(candidate.distance_km, 2),
             remaining_minutes=_remaining_minutes(candidate, visit_at),
+            operating_hours_display=_operating_hours_display(candidate),
             environment_type=candidate.environment_type,
             recommendation_reason=_recommendation_reason(ranked_item),
             explanations=list(explanations),
@@ -423,6 +435,33 @@ def _extra_warnings(
     if not explanations:
         extra.append(_NO_NOTABLE_EXPLANATION_WARNING)
     return extra
+
+
+def _operating_hours_display(candidate: ScoringCandidate) -> str | None:
+    """그 후보에 적용된 당일 운영 구간을 "09:00~18:00" 형태로 만든다.
+
+    `candidate.operating_hours`는 `_operating_hours_from_context()`가 방문 시각에
+    맞춰 이미 고른 값이라 여기서 요일·휴무를 다시 따지지 않는다. 영업 중이 아닌
+    후보는 `_is_closed()`가 Scoring 단계에서 이미 걸러내므로, 여기 도달한 값은
+    실제로 지금 적용 중인 구간이다.
+
+    `time.max`는 두 가지 뜻으로 들어오므로 `open_time`까지 함께 봐야 한다
+    (`operating_hours.py`, `candidate_mapper.py`):
+    - `time.min ~ time.max`: 24시간 영업 → "00:00~23:59"로 쓰면 엉뚱하다.
+    - `09:00 ~ time.max`: 원문의 "09:00~24:00"(당일 자정 종료). `strftime`을 그대로
+      쓰면 "23:59"가 되어 실제보다 1분 일찍 닫는 것처럼 보인다.
+    """
+    hours = candidate.operating_hours
+    if hours is None:
+        return None
+    if hours.open_time == time.min and hours.close_time == time.max:
+        return _ALL_DAY_OPERATING_HOURS_DISPLAY
+    close_display = (
+        _MIDNIGHT_CLOSE_DISPLAY
+        if hours.close_time == time.max
+        else hours.close_time.strftime("%H:%M")
+    )
+    return f"{hours.open_time.strftime('%H:%M')}~{close_display}"
 
 
 def _remaining_minutes(

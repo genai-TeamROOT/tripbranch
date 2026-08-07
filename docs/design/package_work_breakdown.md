@@ -260,6 +260,18 @@ Tool Planner / Tool Registry·Factory / Geocoding Tool / Weather Tool / Place Se
 
 ---
 
+## 참고: 패키지 외 신규 기능 — 일정 편성(SCHEDULE)
+
+- **내용**: INT-07 SCHEDULE 인텐트의 일정 편성 로직(`app/schedule/`). 후보+조건을
+  입력받아 LLM으로 방문 순서·시간 배분을 판단해 반환하는 상태 비의존 모듈.
+- **패키지 A/B/C/D와 나란한 지위(별도 letter)를 부여하지 않는다** — 기능 하나만을
+  위한 모듈이라 그 정도 무게가 필요하지 않음. 설계 근거는
+  `docs/design/int-07-schedule.md` 6.0절 참고.
+- 상태 저장소에 접근하지 않고 A가 호출하는 방식은 D 호출과 동일한 구조(입력→계산된
+  출력)를 따른다. B 코드·계약 문서는 이 기능으로 인해 변경되지 않는다.
+
+---
+
 ## 참고: 경계 관계 요약
 
 - **A → B**: A가 해석한 조건 변경 연산(ADD/REPLACE/REMOVE)을 B가 실제 State에 반영

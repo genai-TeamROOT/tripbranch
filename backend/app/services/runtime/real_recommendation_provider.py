@@ -36,19 +36,16 @@ class RealRecommendationProvider:
         conditions: UserConditions,
         context: RecommendationContext,
         excluded_place_ids: list[str],
+        limit: int = _RECOMMENDATION_LIMIT,
     ) -> RecommendationResponse:
         search_radius_km = to_search_radius_km(conditions)
         return await run_recommendation_pipeline_from_context(
             context,
-            # 사용자 발화 조건을 그대로 넘긴다. AVOID/ENJOY면 C가 날씨를 조회하지
-            # 않으므로(tool_rules) context.weather가 비고, D는 conditions.weather로
-            # 날씨를 판정한다. 여기서 A가 3단계로 미리 줄이면 의도(AVOID/ENJOY)와
-            # 발화 값(rain/snow/hot/cold)이 함께 사라져 D가 다시 판단할 수 없다.
             conditions=conditions,
             visit_at=datetime.now(_KST),
             search_radius_km=search_radius_km,
             shown_place_ids=frozenset(excluded_place_ids),
-            recommendation_limit=_RECOMMENDATION_LIMIT,
+            recommendation_limit=limit,
         )
 
     async def rerank_with_concentration(

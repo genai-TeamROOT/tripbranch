@@ -85,6 +85,32 @@ async def test_recommend_excludes_given_place_ids() -> None:
 
 
 @pytest.mark.asyncio
+async def test_recommend_respects_limit_parameter() -> None:
+    """SCHEDULE-03: limit을 넘기면 그 개수만큼만 반환돼야 한다."""
+    provider = RealRecommendationProvider()
+    conditions = UserConditions()
+    context = _context(place_ids=[f"p{i}" for i in range(10)])
+
+    result = await provider.recommend(conditions, context, excluded_place_ids=[], limit=10)
+
+    all_items = [*result.recommendations, *result.unverified_recommendations]
+    assert len(all_items) == 10
+
+
+@pytest.mark.asyncio
+async def test_recommend_defaults_to_five_when_limit_not_given() -> None:
+    """limit을 안 넘기면 기존 RECOMMEND 흐름과 동일하게 5개로 제한돼야 한다."""
+    provider = RealRecommendationProvider()
+    conditions = UserConditions()
+    context = _context(place_ids=[f"p{i}" for i in range(10)])
+
+    result = await provider.recommend(conditions, context, excluded_place_ids=[])
+
+    all_items = [*result.recommendations, *result.unverified_recommendations]
+    assert len(all_items) == 5
+
+
+@pytest.mark.asyncio
 async def test_recommend_raises_app_error_when_context_is_none() -> None:
     provider = RealRecommendationProvider()
     conditions = UserConditions()

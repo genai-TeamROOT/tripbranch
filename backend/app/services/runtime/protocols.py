@@ -60,8 +60,13 @@ class RecommendationProvider(Protocol):
         conditions: UserConditions,
         context: RecommendationContext,
         excluded_place_ids: list[str],
+        limit: int = 5,
     ) -> RecommendationResponse:
-        """조건과 Tool 결과를 바탕으로 최종 추천 결과를 반환한다."""
+        """조건과 Tool 결과를 바탕으로 최종 추천 결과를 반환한다.
+
+        limit은 반환할 최대 개수다. 기본값 5는 RECOMMEND 흐름과 동일하게
+        유지하고, SCHEDULE처럼 더 많은 후보가 필요한 흐름은 호출 시 지정한다.
+        """
         ...
 
     async def rerank_with_concentration(

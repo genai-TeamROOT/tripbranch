@@ -134,7 +134,15 @@ def transform(
     rejected_places: list[RejectedPlace] = []
     reset_scope: str | None = None
 
-    if llm_output.intent is Intent.RECOMMEND and llm_output.recommend is not None:
+    if (
+        llm_output.intent in (Intent.RECOMMEND, Intent.SCHEDULE)
+        and llm_output.recommend is not None
+    ):
+        # SCHEDULE도 RECOMMEND와 동일하게 취급한다 — orchestrator.py가 SCHEDULE일 때도
+        # extract_recommend_conditions()를 재사용해 llm_output.recommend를 채워주므로
+        # (intent 필드만 SCHEDULE로 바꿔치기됨), 조건 병합 로직은 그대로 공유해도 된다
+        # (docs/design/int-07-schedule.md 4절 "A→B: 조건 병합 (기존과 동일)").
+        #
         # 새 RECOMMEND는 조건을 재생성한다(conditions-schema.md §6) — soft는 조건만
         # 초기화하고 추천/거절 이력은 유지해, 이후 MODIFY("그거 말고")가 계속 동작한다.
         #
@@ -160,7 +168,7 @@ def transform(
             rejected_places = _rejected_from_shown(session_context, "not_interested")
         elif modify.condition_changes is not None:
             operations = _changed_field_operations(
-                modify.condition_changes, modify.changed_fields
+                modify.condition_changes, modify.changed_fields, session_context
             )
             operations.extend(
                 _place_tag_cleanup_operations(
@@ -173,7 +181,8 @@ def transform(
             # (거절 이력은 그대로 유지되므로 REJECT_ALL의 not_interested는 영향 없음.)
         reset_scope = _detect_reset_scope(user_input, modify.modify_type)
 
-    # SCHEDULE/INFO/COMPARE/GENERAL/OUT_OF_SCOPE: operations/rejected_places/reset_scope는 비운다.
+    # INFO/COMPARE/GENERAL/OUT_OF_SCOPE: operations/rejected_places/reset_scope는 비운다.
+    # SCHEDULE은 위 RECOMMEND 분기에서 이미 처리된다.
 
     return StateApplyRequest(
         session_id=session_context.session_id,
@@ -253,7 +262,9 @@ def _full_replace_operations(
 
 
 def _changed_field_operations(
-    condition_changes: UserConditions, changed_fields: list[str]
+    condition_changes: UserConditions,
+    changed_fields: list[str],
+    session_context: SessionContextResponse,
 ) -> list[Operation]:
     """MODIFY/CHANGE_CONDITION: changed_fields에 있는 필드만 Operation으로 만든다.
 
@@ -269,8 +280,38 @@ def _changed_field_operations(
         if value is None or value == []:
             # Update에 value=None은 B에서 null_value 오류로 거부되므로 Remove를 쓴다.
             operations.append(Operation(op="Remove", field=field))
+        elif field in _MULTI_FIELDS_ADD:
+            operations.extend(
+                _list_diff_operations(field, value, session_context)
+            )
         else:
             operations.append(Operation(op="Update", field=field, value=_serialize(value)))
+    return operations
+
+
+def _list_diff_operations(
+    field: str, final_value: list[str], session_context: SessionContextResponse
+) -> list[Operation]:
+    """exclude_tags/special_requirements의 최종 목록을 Remove+Add 차분으로 바꾼다.
+
+    이 두 필드는 B의 field_spec상 Add/Remove만 허용된다(agent-state-contract-v1.md §2.2).
+    LLM은 "추가/제거를 반영한 최종 목록"을 주는데(gemini_prompts의 MODIFY 병합 규칙),
+    최종 목록을 그대로 Update로 보내면 unsupported_operation으로 통째로 드롭돼
+    "박물관도 다시 포함해줘" 같은 부분 해제가 조용히 무시된다. 현재 값과 비교해
+    빠진 항목은 Remove, 새로 든 항목은 Add로 나눠 보낸다.
+    """
+
+    current = list(getattr(session_context.user_conditions, field))
+    final = [str(item) for item in final_value]
+
+    removed = [item for item in current if item not in final]
+    added = [item for item in final if item not in current]
+
+    operations: list[Operation] = []
+    if removed:
+        operations.append(Operation(op="Remove", field=field, value=removed))
+    if added:
+        operations.append(Operation(op="Add", field=field, value=added))
     return operations
 
 

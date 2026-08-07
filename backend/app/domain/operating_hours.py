@@ -9,7 +9,7 @@ from enum import StrEnum
 from html.parser import HTMLParser
 
 _COURSE_CONTENT_TYPE_ID = "25"
-OPERATING_PARSER_VERSION = "operating-hours-1.0.0"
+OPERATING_PARSER_VERSION = "operating-hours-1.1.0"
 _WEEKDAY_INDEX = {
     "월": 0,
     "화": 1,
@@ -36,6 +36,9 @@ _MONTH_RANGE_PATTERN = re.compile(
 _WEEKLY_CLOSURE_PATTERN = re.compile(
     r"매주\s*(?P<weekdays>(?:[월화수목금토일](?:요일)?(?:\s*[,·/및과와]\s*)?)+)"
 )
+# TourAPI 관광지·자연 원문에서 "24시간"만큼 흔한 상시 개방 표기. D-024와 같은 이유로
+# 시간 구간을 못 읽었다는 이유만으로 후보를 운영 미확인으로 떨어뜨리지 않는다.
+_ALWAYS_OPEN_PATTERN = re.compile(r"상시\s*(?:개방|운영|이용|출입)?")
 
 
 class OperatingParseStatus(StrEnum):
@@ -185,6 +188,26 @@ def normalize_operating_schedule(
             warnings=warnings,
         )
 
+    # 구간을 하나라도 읽었으면 그 구간을 신뢰한다. "상시 개방 ※ 낙산 전시관
+    # 09:00~17:00"처럼 부속 시설 시간이 함께 적힌 원문을 통째로 24시간으로
+    # 넓히지 않기 위해, 상시 개방 판정은 구간을 못 읽은 경우로 한정한다.
+    if cleaned_hours and _ALWAYS_OPEN_PATTERN.search(cleaned_hours):
+        return OperatingSchedule(
+            raw_operating_hours=operating_hours,
+            raw_rest_date=rest_date,
+            cleaned_operating_hours=cleaned_hours,
+            cleaned_rest_date=cleaned_rest,
+            availability=OperatingAvailability.ALL_DAY,
+            rules=(),
+            closure_rules=closure_rules,
+            parse_status=OperatingParseStatus.PARSED,
+            # 원문에 시각이 없어 마감을 자정으로 잡은 근거를 남긴다. Provider 명시값이라
+            # parse_status는 PARSED지만, "24시간"처럼 시각이 적힌 표기와는 구분해야
+            # 소비 측이 잔여시간 만점의 출처를 설명할 수 있다.
+            assumption_reason="always_open_text",
+            warnings=(),
+        )
+
     warnings = ()
     status = OperatingParseStatus.UNKNOWN
     if cleaned_hours or closure_rules:
@@ -278,8 +301,11 @@ def _try_time_range(match: re.Match[str]) -> TimeRange | None:
     start = _try_time(match.group("start_hour"), match.group("start_minute"))
     end_hour = match.group("end_hour")
     end_minute = match.group("end_minute")
+    # "09:00~24:00"의 24:00은 자정 통과가 아니라 당일 종료다. time(0)으로 두면
+    # end <= start가 되어 자정 통과로 오분류되고, 당일 구간만 다루는 소비 측
+    # (`candidate_mapper`)에서 통째로 버려져 운영 미확인이 된다.
     end = (
-        time(0)
+        time.max
         if end_hour == "24" and end_minute == "00"
         else _try_time(end_hour, end_minute)
     )

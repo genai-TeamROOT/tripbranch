@@ -16,7 +16,9 @@ from app.agent_context.assembler import (
 )
 from app.agent_context.category_rules import (
     CategoryQueryPlan,
+    ExcludedCategoryPlan,
     build_category_query_plan,
+    build_excluded_category_plan,
 )
 from app.agent_context.concentration_proxy import (
     ConcentrationMappingCache,
@@ -27,10 +29,12 @@ from app.agent_context.enrichment_service import (
     JONGNO_CONCENTRATION_DISTRICT_CODE,
     select_concentration_forecast,
 )
+from app.agent_context.info_field_rules import extract_info_fields
 from app.agent_context.info_schemas import (
     ConcentrationInfoResult,
     InfoContextRequest,
     InfoContextResponse,
+    PlaceInfoResult,
 )
 from app.agent_context.schemas import (
     AgentContextRequest,
@@ -72,6 +76,10 @@ from app.tools.nearby_place_details import (
     NearbyPlaceDetailsResult,
     NearbyPlaceDetailsTool,
 )
+from app.tools.place_detail import (
+    GetPlaceDetailTool,
+    PlaceDetailQuery,
+)
 from app.tools.resolve_location import (
     ResolutionConfidence,
     ResolutionMethod,
@@ -101,6 +109,8 @@ class ContextTools:
     # INFO 혼잡도는 RECOMMEND Context와 별도 경로다. 기존 RECOMMEND 조립 코드와
     # 테스트의 호환을 위해 선택적으로 두고, Factory에서는 항상 실제 Tool을 주입한다.
     concentration: GetConcentrationTool | None = None
+    # INFO 상세 질의(concentration 외) 전용. 위와 같은 이유로 선택적이다.
+    place_detail: GetPlaceDetailTool | None = None
 
 
 class ContextService:
@@ -193,6 +203,7 @@ class ContextService:
         places_task = asyncio.create_task(
             self._collect_places(
                 category_plan,
+                excluded_plan=build_excluded_category_plan(conditions.exclude_tags),
                 latitude=location.latitude,
                 longitude=location.longitude,
                 search_radius_km=_resolve_search_radius_km(
@@ -222,10 +233,14 @@ class ContextService:
         self,
         request: InfoContextRequest,
     ) -> InfoContextResponse:
-        """INFO 단일 장소의 직접 집중률을 조회해 공통 응답으로 반환한다.
+        """INFO 단일 장소 질의를 question_type에 맞는 경로로 처리한다.
 
-        이번 단계는 대상 장소의 직접 조회까지만 담당한다. 직접 데이터가 없을 때
-        인근 관광지를 재조회하는 D-036 fallback은 별도 단계에서 추가한다.
+        장소 식별(ResolveLocationTool)까지는 모든 question_type이 공통이고, 그
+        뒤가 갈린다.
+
+        - ``concentration`` → 집중률 API + D-036 인근 대체 조회
+        - ``event`` → searchFestival2 연동이 없어 unsupported
+        - 그 외 → 장소 상세 조회(TourAPI detailCommon2/detailIntro2)
         """
 
         place_name = request.place_name
@@ -238,6 +253,20 @@ class ContextService:
                     missing_fields=["place_name"],
                     candidates=[],
                 ),
+            )
+
+        if request.question_type == "event":
+            # 진행 중인 전시·행사는 searchFestival2를 따로 연동해야 한다
+            # (int-02-info.md §6). 장소 상세(detailIntro2)로는 답할 수 없다.
+            return _info_error_response(
+                request,
+                status="unsupported",
+                error=ContextError(
+                    code="question_type_unsupported",
+                    message="행사·전시 정보는 아직 제공하지 않습니다.",
+                    retryable=False,
+                ),
+                provider_metadata=(),
             )
 
         location_result = await self._tools.location.execute(
@@ -298,6 +327,34 @@ class ContextService:
                 provider_metadata=(location_result.provider_metadata,),
             )
 
+        if request.question_type != "concentration":
+            return await self._fetch_place_detail_info(
+                request,
+                place_name=place_name,
+                resolved_location=resolved_location,
+                location_metadata=location_result.provider_metadata,
+            )
+
+        return await self._fetch_concentration_info(
+            request,
+            place_name=place_name,
+            resolved_location=resolved_location,
+            location_metadata=location_result.provider_metadata,
+        )
+
+    async def _fetch_concentration_info(
+        self,
+        request: InfoContextRequest,
+        *,
+        place_name: str,
+        resolved_location: ResolvedLocation,
+        location_metadata: tuple[ProviderMetadata, ...],
+    ) -> InfoContextResponse:
+        """INFO 혼잡도 질의를 집중률 API로 처리한다(기존 경로 그대로).
+
+        직접 조회가 안 되면 D-036 인근 관광지 대체 조회로 낮춘다.
+        """
+
         reference_date = _info_reference_date(request.visit_time, self._clock())
         concentration_tool = self._tools.concentration
         if concentration_tool is None:
@@ -309,7 +366,7 @@ class ContextService:
                     message="집중률 조회 기능을 사용할 수 없습니다.",
                     retryable=False,
                 ),
-                provider_metadata=(location_result.provider_metadata,),
+                provider_metadata=(location_metadata,),
             )
 
         concentration_place_name = resolved_location.concentration_name
@@ -324,7 +381,7 @@ class ContextService:
                 longitude=resolved_location.longitude,
                 reference_date=reference_date,
                 concentration_tool=concentration_tool,
-                provider_metadata=(location_result.provider_metadata,),
+                provider_metadata=(location_metadata,),
             )
         # 조회는 검색어로, 대조는 정식 명칭으로 한다. tAtsNm은 공백이 든 값에 0건을
         # 돌려주므로 "종묘 [유네스코 세계유산]"은 "종묘"로 조회해야 한다. 대신 그
@@ -349,7 +406,7 @@ class ContextService:
                     retryable=True,
                 ),
                 provider_metadata=(
-                    location_result.provider_metadata,
+                    location_metadata,
                     concentration_result.provider_metadata,
                 ),
             )
@@ -361,7 +418,7 @@ class ContextService:
                 reference_date=reference_date,
                 concentration_tool=concentration_tool,
                 provider_metadata=(
-                    location_result.provider_metadata,
+                    location_metadata,
                     concentration_result.provider_metadata,
                 ),
             )
@@ -382,7 +439,7 @@ class ContextService:
                 reference_date=reference_date,
                 concentration_tool=concentration_tool,
                 provider_metadata=(
-                    location_result.provider_metadata,
+                    location_metadata,
                     concentration_result.provider_metadata,
                 ),
             )
@@ -405,7 +462,7 @@ class ContextService:
                 concentration_label=normalized.label.value,
             ),
             metadata=_info_response_metadata(
-                location_result.provider_metadata,
+                location_metadata,
                 concentration_result.provider_metadata,
             ),
         )
@@ -520,15 +577,96 @@ class ContextService:
 
         return _info_no_data_response(request, *provider_metadata, *attempted_metadata)
 
+    async def _fetch_place_detail_info(
+        self,
+        request: InfoContextRequest,
+        *,
+        place_name: str,
+        resolved_location: ResolvedLocation,
+        location_metadata: tuple[ProviderMetadata, ...],
+    ) -> InfoContextResponse:
+        """INFO 상세 질의(concentration 외)를 장소 상세 조회로 처리한다.
+
+        location_info는 장소 해석 결과만으로 답할 수 있어 상세 API를 호출하지
+        않는다 — 주소는 ResolveLocationTool이 이미 들고 나온다. 전화번호까지
+        필요하면 상세 조회가 필요하지만, 주소만으로 질문이 성립하므로 외부 호출을
+        한 번 아끼는 쪽을 택했다.
+        """
+
+        if request.question_type == "location_info":
+            fields: dict[str, str] = {}
+            if resolved_location.address:
+                fields["address"] = resolved_location.address
+            return _place_info_response(
+                request,
+                requested_place_name=place_name,
+                resolved_place_name=resolved_location.resolved_name,
+                place_id=resolved_location.place_id,
+                fields=fields,
+                provider_metadata=(location_metadata,),
+            )
+
+        detail_tool = self._tools.place_detail
+        if detail_tool is None:
+            return _info_error_response(
+                request,
+                status="unavailable",
+                error=ContextError(
+                    code="place_detail_not_configured",
+                    message="장소 상세 조회 기능을 사용할 수 없습니다.",
+                    retryable=False,
+                ),
+                provider_metadata=(location_metadata,),
+            )
+
+        # 사용자 발화가 아니라 해석된 정식 명칭으로 조회한다 — provider가 이름
+        # 정확 일치로 후보를 고르기 때문이다("종묘" → "종묘 [유네스코 세계유산]").
+        detail_result = await detail_tool.execute(
+            PlaceDetailQuery(place_name=resolved_location.resolved_name)
+        )
+        if detail_result.status is ToolStatus.UNAVAILABLE:
+            return _info_error_response(
+                request,
+                status="unavailable",
+                error=_context_error_from_tool(
+                    detail_result.error,
+                    fallback_code="place_detail_unavailable",
+                    fallback_message="장소 상세정보를 가져오지 못했습니다.",
+                    retryable=True,
+                ),
+                provider_metadata=(location_metadata, detail_result.provider_metadata),
+            )
+        if detail_result.status is ToolStatus.NO_DATA or detail_result.details is None:
+            return _place_info_response(
+                request,
+                requested_place_name=place_name,
+                resolved_place_name=resolved_location.resolved_name,
+                place_id=resolved_location.place_id,
+                fields={},
+                provider_metadata=(location_metadata, detail_result.provider_metadata),
+            )
+
+        return _place_info_response(
+            request,
+            requested_place_name=place_name,
+            resolved_place_name=(
+                detail_result.details.title or resolved_location.resolved_name
+            ),
+            place_id=detail_result.details.content_id or resolved_location.place_id,
+            fields=extract_info_fields(request.question_type, detail_result.details),
+            provider_metadata=(location_metadata, detail_result.provider_metadata),
+        )
+
     async def _collect_places(
         self,
         plan: CategoryQueryPlan,
         *,
+        excluded_plan: ExcludedCategoryPlan,
         latitude: float,
         longitude: float,
         search_radius_km: float,
     ) -> NearbyPlaceDetailsResult:
-        """분류별 장소 조회를 병렬 실행하고 중복 후보를 제거해 한 결과로 합친다."""
+        """분류별 장소 조회를 병렬 실행하고 중복·제외 후보를 걸러 한 결과로 합친다."""
 
         started_at = perf_counter()
         results = await asyncio.gather(
@@ -550,6 +688,7 @@ class ContextService:
             results,
             limit=self._candidate_limit,
             started_at=started_at,
+            excluded_plan=excluded_plan,
         )
 
 
@@ -603,6 +742,38 @@ def _info_no_data_response(
         result=ConcentrationInfoResult(
             status="no_data",
             requested_place_name=request.place_name,
+        ),
+        metadata=_info_response_metadata(*provider_metadata),
+    )
+
+
+def _place_info_response(
+    request: InfoContextRequest,
+    *,
+    requested_place_name: str,
+    resolved_place_name: str,
+    place_id: str | None,
+    fields: dict[str, str],
+    provider_metadata: tuple[tuple[ProviderMetadata, ...], ...] = (),
+) -> InfoContextResponse:
+    """장소 상세 INFO 응답을 한 형태로 유지한다.
+
+    뽑아낸 필드가 하나도 없으면 no_data다 — 장소는 찾았지만 그 질문에 답할 값이
+    TourAPI에 없는 경우다. 이때도 resolved_place_name은 채워 보낸다(A가 "OO의
+    주차 정보는 없어요"처럼 장소를 짚어 안내할 수 있게).
+    """
+
+    status: Literal["success", "no_data"] = "success" if fields else "no_data"
+    return InfoContextResponse(
+        request_id=request.request_id,
+        status=status,
+        result=PlaceInfoResult(
+            status=status,
+            question_type=request.question_type,
+            requested_place_name=requested_place_name,
+            resolved_place_name=resolved_place_name,
+            place_id=place_id,
+            fields=fields,
         ),
         metadata=_info_response_metadata(*provider_metadata),
     )
@@ -673,12 +844,39 @@ def _resolve_search_radius_km(
     )
 
 
+def _is_excluded(place: EnrichedPlace, excluded_small_codes: frozenset[str]) -> bool:
+    """후보의 TourAPI 소분류가 제외 태그에 걸리는지.
+
+    소분류(lcls_systm3)가 비어 있는 후보는 제외 여부를 판단할 근거가 없으므로
+    남긴다 — 판단 못 하는 것을 제외로 취급하면 후보가 조용히 사라진다.
+    """
+
+    if not excluded_small_codes:
+        return False
+    small_code = place.candidate.lcls_systm3
+    return small_code is not None and small_code.strip() in excluded_small_codes
+
+
+def _place_warnings(
+    status: ToolStatus, excluded_plan: ExcludedCategoryPlan
+) -> tuple[str, ...]:
+    warnings: list[str] = []
+    if status is ToolStatus.PARTIAL:
+        warnings.append("partial_data")
+    if excluded_plan.has_unmapped_tags:
+        # 분류 매핑이 없어 걸러내지 못한 제외 태그가 있다는 걸 A/D가 알 수 있게 남긴다.
+        warnings.append("exclude_tags_unmapped")
+    return tuple(warnings)
+
+
 def _merge_place_results(
     results: list[NearbyPlaceDetailsResult],
     *,
     limit: int,
     started_at: float,
+    excluded_plan: ExcludedCategoryPlan | None = None,
 ) -> NearbyPlaceDetailsResult:
+    excluded_plan = excluded_plan or ExcludedCategoryPlan()
     if not results:
         return NearbyPlaceDetailsResult(
             places=(),
@@ -696,14 +894,21 @@ def _merge_place_results(
 
     places: list[EnrichedPlace] = []
     seen_place_ids: set[str] = set()
+    excluded_count = 0
     for result in results:
         for place in result.places:
             place_id = place.candidate.place_id
-            if place_id not in seen_place_ids:
-                seen_place_ids.add(place_id)
-                places.append(place)
-                if len(places) == limit:
-                    break
+            if place_id in seen_place_ids:
+                continue
+            seen_place_ids.add(place_id)
+            # 제외는 limit을 적용하기 전에 건다 — 나중에 걸러내면 제외될 후보가
+            # 먼저 정원을 차지해 실제 추천 가능한 후보가 줄어든다.
+            if _is_excluded(place, excluded_plan.small_codes):
+                excluded_count += 1
+                continue
+            places.append(place)
+            if len(places) == limit:
+                break
         if len(places) == limit:
             break
 
@@ -715,7 +920,9 @@ def _merge_place_results(
             else ToolStatus.SUCCESS
         )
         error = None
-    elif all(item is ToolStatus.NO_DATA for item in statuses):
+    elif excluded_count or all(item is ToolStatus.NO_DATA for item in statuses):
+        # 조회는 됐지만 전부 제외 태그에 걸린 경우도 "조건에 맞는 후보 없음"이다.
+        # 장애(unavailable)로 떨어뜨리면 사용자에게 오류처럼 보인다.
         status = ToolStatus.NO_DATA
         error = None
     elif all(item is ToolStatus.UNSUPPORTED for item in statuses):
@@ -732,7 +939,7 @@ def _merge_place_results(
         retrieved_at=max(result.retrieved_at for result in results),
         elapsed_ms=(perf_counter() - started_at) * 1000,
         error=error,
-        warnings=("partial_data",) if status is ToolStatus.PARTIAL else (),
+        warnings=_place_warnings(status, excluded_plan),
         provider_metadata=tuple(
             metadata for result in results for metadata in result.provider_metadata
         ),

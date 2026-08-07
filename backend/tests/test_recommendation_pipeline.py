@@ -232,6 +232,137 @@ async def test_pipeline_from_context_reports_weather_failure_when_lookup_failed(
 
 
 @pytest.mark.asyncio
+async def test_operating_hours_display_shows_applied_range() -> None:
+    """프론트가 "09:00~18:00 (N시간 남음)"을 그릴 수 있도록 당일 구간을 내려준다.
+
+    remaining_minutes만으로는 "언제부터"를 알 수 없어 추가된 필드다.
+    """
+    place = AgentPlaceCandidate(
+        place_id="place-1",
+        name="근처 카페",
+        category="cafe",
+        location=AgentCoordinates(latitude=37.5806, longitude=126.9770),
+        operating_schedule={
+            "availability": "scheduled",
+            "rules": [
+                {
+                    "months": None,
+                    "weekdays": None,
+                    "time_ranges": [
+                        {
+                            "open_time": "09:00",
+                            "close_time": "18:00",
+                            "crosses_midnight": False,
+                        }
+                    ],
+                }
+            ],
+            "closure_rules": [],
+        },
+    )
+    context = RecommendationContext(
+        location=_context_location(),
+        places=AgentContextValue(status="success", data=[place]),
+    )
+
+    response = await run_recommendation_pipeline_from_context(
+        context,
+        visit_at=_CONTEXT_VISIT_AT,
+        search_radius_km=2.0,
+    )
+
+    assert response.recommendations[0].operating_hours_display == "09:00~18:00"
+
+
+@pytest.mark.asyncio
+async def test_operating_hours_display_marks_all_day_instead_of_raw_range() -> None:
+    """24시간 영업은 time.min~time.max로 들어온다.
+
+    그대로 포맷하면 "00:00~23:59"가 되어 마감이 임박한 것처럼 읽힌다.
+    """
+    context = RecommendationContext(
+        location=_context_location(),
+        places=AgentContextValue(status="success", data=[_context_place()]),
+    )
+
+    response = await run_recommendation_pipeline_from_context(
+        context,
+        visit_at=_CONTEXT_VISIT_AT,
+        search_radius_km=2.0,
+    )
+
+    assert response.recommendations[0].operating_hours_display == "24시간"
+
+
+@pytest.mark.asyncio
+async def test_operating_hours_display_keeps_midnight_close_as_24() -> None:
+    """원문 "09:00~24:00"의 종료는 파서가 time.max로 담는다(operating_hours.py).
+
+    그대로 strftime하면 "23:59"가 되어 1분 일찍 닫는 것처럼 보인다.
+    """
+    place = AgentPlaceCandidate(
+        place_id="place-1",
+        name="근처 카페",
+        category="cafe",
+        location=AgentCoordinates(latitude=37.5806, longitude=126.9770),
+        operating_schedule={
+            "availability": "scheduled",
+            "rules": [
+                {
+                    "months": None,
+                    "weekdays": None,
+                    "time_ranges": [
+                        {
+                            "open_time": "09:00",
+                            "close_time": "23:59:59.999999",
+                            "crosses_midnight": False,
+                        }
+                    ],
+                }
+            ],
+            "closure_rules": [],
+        },
+    )
+    context = RecommendationContext(
+        location=_context_location(),
+        places=AgentContextValue(status="success", data=[place]),
+    )
+
+    response = await run_recommendation_pipeline_from_context(
+        context,
+        visit_at=_CONTEXT_VISIT_AT,
+        search_radius_km=2.0,
+    )
+
+    assert response.recommendations[0].operating_hours_display == "09:00~24:00"
+
+
+@pytest.mark.asyncio
+async def test_operating_hours_display_is_none_when_schedule_unknown() -> None:
+    """운영시간 미확인 후보는 unverified로 빠지고 표시할 구간도 없다."""
+    place = AgentPlaceCandidate(
+        place_id="place-1",
+        name="근처 카페",
+        category="cafe",
+        location=AgentCoordinates(latitude=37.5806, longitude=126.9770),
+        operating_schedule=None,
+    )
+    context = RecommendationContext(
+        location=_context_location(),
+        places=AgentContextValue(status="success", data=[place]),
+    )
+
+    response = await run_recommendation_pipeline_from_context(
+        context,
+        visit_at=_CONTEXT_VISIT_AT,
+        search_radius_km=2.0,
+    )
+
+    assert response.recommendations == []
+    assert response.unverified_recommendations[0].operating_hours_display is None
+
+
+@pytest.mark.asyncio
 async def test_pipeline_from_context_returns_empty_when_places_have_no_data() -> None:
     context = RecommendationContext(
         location=_context_location(),
@@ -367,7 +498,11 @@ async def test_pipeline_from_context_is_deterministic_for_identical_input() -> N
 
 
 def _first_pass_item(
-    place_id: str, *, distance_km: float, distance_score: float
+    place_id: str,
+    *,
+    distance_km: float,
+    distance_score: float,
+    operating_hours_display: str | None = None,
 ) -> RecommendationItem:
     return RecommendationItem(
         place_id=place_id,
@@ -375,6 +510,7 @@ def _first_pass_item(
         category="cafe",
         distance_km=distance_km,
         remaining_minutes=None,
+        operating_hours_display=operating_hours_display,
         environment_type="indoor",
         recommendation_reason="테스트용 1차 추천입니다.",
         explanations=[],
@@ -475,6 +611,29 @@ async def test_rerank_with_concentration_seek_prefers_crowded_place() -> None:
 
 
 @pytest.mark.asyncio
+async def test_rerank_with_concentration_handles_ten_candidates() -> None:
+    """SCHEDULE-03: 10개로 넘어온 1차 결과도 2차 Scoring이 전부 처리해야 한다
+    (하드코딩된 5개 제한이 없는지 확인)."""
+    first_pass = RecommendationResponse(
+        recommendations=[
+            _first_pass_item(f"place-{i}", distance_km=0.1 * i, distance_score=0.9 - 0.05 * i)
+            for i in range(10)
+        ],
+        unverified_recommendations=[],
+        elapsed_ms=0,
+    )
+    concentration = CandidateEnrichmentResponse(
+        request_id="req-10",
+        status="success",
+        candidates=[_concentration_result(f"place-{i}", rate=50.0) for i in range(10)],
+    )
+
+    result = await rerank_with_concentration(first_pass, None, concentration, seek=False)
+
+    assert len(result.recommendations) == 10
+
+
+@pytest.mark.asyncio
 async def test_rerank_with_concentration_handles_partial_no_data() -> None:
     """concentration이 일부 후보만 결측(no_data)이어도 크래시 없이 개별 재분배된다."""
     first_pass = RecommendationResponse(
@@ -525,3 +684,31 @@ async def test_rerank_with_concentration_preserves_unverified_split() -> None:
 
     assert [item.place_id for item in result.recommendations] == ["place-1"]
     assert [item.place_id for item in result.unverified_recommendations] == ["place-2"]
+
+
+@pytest.mark.asyncio
+async def test_rerank_with_concentration_preserves_operating_hours_display() -> None:
+    """2차는 RecommendationItem을 새로 만든다 — 운영 구간을 옮겨 담지 않으면
+    혼잡도 재순위를 탄 요청에서만 이 필드가 조용히 사라진다.
+    """
+    first_pass = RecommendationResponse(
+        recommendations=[
+            _first_pass_item(
+                "place-1",
+                distance_km=0.1,
+                distance_score=0.95,
+                operating_hours_display="09:00~18:00",
+            )
+        ],
+        unverified_recommendations=[],
+        elapsed_ms=0,
+    )
+    concentration = CandidateEnrichmentResponse(
+        request_id="req-5",
+        status="success",
+        candidates=[_concentration_result("place-1", rate=50.0)],
+    )
+
+    result = await rerank_with_concentration(first_pass, None, concentration, seek=True)
+
+    assert result.recommendations[0].operating_hours_display == "09:00~18:00"

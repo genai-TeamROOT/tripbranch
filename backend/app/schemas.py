@@ -52,6 +52,10 @@ class RecommendationItem(BaseModel):
     category: str
     distance_km: float
     remaining_minutes: int | None
+    # 그 후보에 실제로 적용된 당일 운영 구간("09:00~18:00"). 프론트가
+    # remaining_minutes만으로는 "언제부터"를 표시할 수 없어 함께 내려준다.
+    # 운영시간 미확인 후보는 None이다.
+    operating_hours_display: str | None = None
     environment_type: str
     recommendation_reason: str
     explanations: list[str]
@@ -68,6 +72,34 @@ class RecommendationResponse(BaseModel):
         ge=0,
         description="추천 파이프라인 시작부터 응답 조립 완료까지의 총 처리시간(ms)",
     )
+
+
+class ScheduleItem(BaseModel):
+    """일정에 포함된 장소 1건. (docs/design/int-07-schedule.md 6.2절)"""
+
+    order: int
+    place_id: str
+    place_name: str
+    estimated_arrival: str
+    estimated_duration_min: int
+    travel_to_next_min: int | None
+    reason: str
+
+
+class ScheduleResult(BaseModel):
+    """일정 편성 모듈(app.schedule)의 최종 출력. AgentResponse.schedule에 실린다.
+
+    basis_note는 LLM이 생성하지 않고 A/일정편성모듈이 visit_at 값을 넣어
+    고정 템플릿으로 채운다 — 근거 데이터(운영시간·날씨)가 단일 시각 기준이라
+    뒷 순서 스탑에는 부정확할 수 있다는 걸 사용자에게 알리는 안내 문구다.
+    (docs/design/int-07-schedule.md 6.2.1절)
+    """
+
+    items: list[ScheduleItem]
+    total_duration_min: int
+    route_summary: str
+    basis_note: str
+
 
 class PlaceCandidate(BaseModel):
     """장소 API 원본 응답을 정규화한 공통 후보 모델.
@@ -506,19 +538,70 @@ class LLMExecutionMetadata(BaseModel):
     calls: list[LLMCallMetadata] = Field(default_factory=list)
 
 
+class ToolProviderDebug(BaseModel):
+    """C가 한 번의 Context 수집에서 실제로 호출한 Provider 하나의 기록."""
+
+    source: str
+    status: str
+    retrieved_at: str | None = None
+
+
+class ToolContextItemDebug(BaseModel):
+    """RecommendationContext의 항목(location/weather/places/holidays) 하나의 상태.
+
+    fetched=False는 C가 그 항목을 아예 조회하지 않았다는 뜻이다(예: 발화에 날씨가
+    이미 있어 조회를 생략한 경우). 조회했는데 실패한 것과 구분된다.
+    """
+
+    key: str
+    fetched: bool
+    status: str | None = None
+    error_code: str | None = None
+    warning_codes: list[str] = Field(default_factory=list)
+    item_count: int | None = None
+
+
+class ToolExecutionDebug(BaseModel):
+    """개발자용 Audit 전용: A→C 한 번의 Context 수집이 실제로 무엇을 했는지.
+
+    llm_execution과 같은 성격의 관측 전용 필드다 — 추천 판정에는 쓰이지 않으며,
+    이 값이 없다고 해서 흐름이 달라지지 않는다. 특히 providers[].source는 실제로
+    응답을 만든 Provider가 Real인지 Stub인지 드러내므로, D-042(Real 실패 시 Fake로
+    자동 전환하지 않는다)가 지켜지고 있는지 화면에서 바로 확인하는 수단이 된다.
+    """
+
+    request_id: str
+    status: str
+    latency_ms: int | None = None
+    providers: list[ToolProviderDebug] = Field(default_factory=list)
+    context_items: list[ToolContextItemDebug] = Field(default_factory=list)
+    rule_versions: dict[str, str] = Field(default_factory=dict)
+    resolved_location_name: str | None = None
+    resolved_location_address: str | None = None
+    error_code: str | None = None
+    clarification_code: str | None = None
+
+
 class AgentResponse(BaseModel):
     """TODO(D 계약 확정 시 필드 변경 가능): Agent Runtime의 임시 최종 응답.
 
     recommendations는 RECOMMEND/MODIFY이고 status가 complete일 때만 채워진다(그 외에는
     None — Tool/Recommendation 단계 자체를 건너뛰었다는 뜻).
+    schedule은 SCHEDULE이고 status가 complete일 때만 채워진다(docs/design/
+    int-07-schedule.md 7절) — recommendations와 동시에 채워지지 않는다.
     message는 사용자에게 보여줄 챗봇 말풍선 텍스트다(docs/design/agent-response-
-    generation.md 참고) — 카드(recommendations) 상세는 이 문장에 다시 풀어쓰지 않는다.
+    generation.md 참고) — 카드(recommendations)·일정(schedule) 상세는 이 문장에
+    다시 풀어쓰지 않는다.
     """
 
     llm_output: LLMOutput
     state: StateApplyResponse
     recommendations: RecommendationResponse | None = None
+    schedule: ScheduleResult | None = None
     message: str
     # 개발자용 Audit에서 1차 Intent/2차 추출 호출의 실제 Gemini 모델·폴백 경로를
     # 확인한다. Fake LLM 등 실행 메타데이터를 제공하지 않는 구현체에서는 None이다.
     llm_execution: LLMExecutionMetadata | None = None
+    # 개발자용 Audit에서 C가 실제로 호출한 Provider·항목별 상태를 확인한다.
+    # C 단계에 도달하지 못한 요청(LLM 실패, needs_clarification 등)에서는 None이다.
+    tool_execution: ToolExecutionDebug | None = None

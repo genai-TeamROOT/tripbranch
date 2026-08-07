@@ -1350,7 +1350,52 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
     `tests/test_agent_runtime.py`(위 두 E2E). 전체 회귀 1145 passed / 22 skipped,
     ruff 통과.
 
-### D-054 — 트리비 페르소나와 추천 결과 요약 LLM 추가
+### D-054 — INFO 상세 질의는 Supabase 상세 캐시가 아니라 TourAPI를 직접 조회한다
+
+- 상태: `Accepted`, C 구현 완료 (A 배선 대기)
+- 배경: INT-02(INFO)의 `question_type` 8종 중 실제로 동작하는 건 `concentration`
+  하나뿐이었다. 나머지를 채우려고 상세 데이터 출처를 확인하다가, 운영 설정
+  (`PLACE_DETAILS_SOURCE=supabase`)에서는 답할 데이터가 아예 없다는 걸 발견했다 —
+  `SupabasePlaceDetailsProvider._to_place_details()`가 `overview`/`homepage`/
+  `telephone`을 `None`으로, `raw_common`/`raw_intro`를 빈 dict로 채운다. places
+  테이블의 동기화 대상이 `operating_hours_raw`/`rest_date_raw`뿐이기 때문이다.
+- 결정: INFO 상세 질의는 `PLACE_DETAILS_SOURCE`와 무관하게 `PlaceProvider`(TourAPI)를
+  직접 호출한다. 전용 Tool(`tools/place_detail.py::GetPlaceDetailTool`)을 두고
+  Factory가 `get_place_provider()`를 주입한다.
+- 근거: Supabase 캐시를 도입한 이유는 추천 후보 N건의 상세조회를 없애는 것이었다
+  (18.0초 → 0.33초). INFO는 대상이 장소 1건이라 그 근거가 적용되지 않는다. 반대로
+  캐시를 쓰면 `fee`/`parking`/`facility`/`general_info` 4종이 **조용히** 빈 응답으로
+  떨어진다 — 오류가 아니라 "정보 없음"으로 보이므로 발견도 늦다. 이 저장소가 D-042를
+  만든 사건과 같은 성격이다.
+- 예외 하나: `location_info`는 `ResolveLocationTool`이 주소를 이미 들고 나오므로
+  상세 조회를 아예 하지 않는다.
+- `operating_hours`는 지금도 이 경로를 함께 탄다. 값 자체는 provider가 유형별 키를
+  정규화해둔 `PlaceDetails.operating_hours`/`rest_date`에서 읽으므로 Supabase 캐시로도
+  답할 수 있지만, 그러려면 한 Tool이 질문 유형에 따라 두 출처를 오가야 한다. 호출
+  1회를 아끼려고 경로를 둘로 만드는 것보다 단순한 쪽을 택했다 — 필요해지면
+  `operating_hours`만 캐시로 빼는 건 나중에도 가능하다.
+- 범위 밖: `event`는 `searchFestival2`를 따로 연동해야 해 `unsupported`로 명시한다.
+  동기화 파이프라인에 `overview`/요금/주차 컬럼을 추가하는 근본 해결은 DB 마이그레이션
+  + 847건 재동기화가 필요하고 TourAPI 일일 한도에 묶여 있어 별건으로 남긴다.
+- 조용한 fake 방지: `FakePlaceProvider.get_details()`의 `raw_intro`가 빈 dict라
+  필드 추출 로직이 한 줄도 안 돈 채 테스트가 통과하는 상태였다. 실 detailIntro2와
+  같은 키 이름(`usefee`/`parkingculture`/`parkingfood` …)으로 채우고,
+  `tests/agent_context/test_info_field_rules.py::TestFakeProviderCarriesIntro`가
+  Fake로도 추출 결과가 비지 않는지 고정한다.
+- 구현: `app/agent_context/info_schemas.py`(`question_type` 8종 확장,
+  `specific_question` 추가, `result`를 `ConcentrationInfoResult | PlaceInfoResult`
+  union으로), `app/agent_context/info_field_rules.py`(신설),
+  `app/tools/place_detail.py`(신설), `app/agent_context/service.py`
+  (`fetch_info_context()` 분기 + 기존 집중률 흐름을 `_fetch_concentration_info()`로
+  추출, 로직 변경 없음), `app/agent_context/factory.py`, `app/providers/stub.py`.
+- 확인 방법: `tests/agent_context/test_info_field_rules.py`(23건),
+  `tests/agent_context/test_info_place_detail.py`(15건). 전체 회귀 1231 passed /
+  22 skipped, ruff 통과.
+- A 배선 필요: `to_info_context_request()`가 `question_type`을 넘기지 않고,
+  `agent_runtime.py`의 게이트가 `CONCENTRATION`으로 한정돼 있으며,
+  `response_composer`에 상세 응답 렌더 경로가 없다. 셋 다 A 소유라 별도 카드로 넘긴다.
+
+### D-055 — 트리비 페르소나와 추천 결과 요약 LLM 추가
 
 - 상태: Implemented
 - 배경: `RECOMMEND`/`MODIFY` 성공 응답의 `AgentResponse.message`가 고정 문구
@@ -1429,5 +1474,6 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-05 | D-051 근거 문장 정확도 수정 — 판정 함수가 `WeatherReason`(rain/snow/heat/cold)을 함께 반환하도록 바꾸고 `scoring.py`/`evidence.py`/`explanation.py`까지 관통시켜, "폭염인데 비 예보"·"ENJOY로 GOOD인데 맑은 날씨"라고 말하던 사실-근거 불일치를 해소 |
 | 2026-08-05 | D-051 기온 판정을 기상청 주의보/경보 2단계(33·35°C, -12·-15°C)로 재설계 — 주의보~경보 사이를 NEUTRAL로 두어 근거 있는 완충 구간 확보. 30~32°C 등 주의보 미만 구간은 의도적으로 미해결로 남김 |
 | 2026-08-06 | D-051 `condition` 전면 제거 — `WeatherForecastSlot.condition`(D 소유)부터 `SelectedWeatherForecast.condition`, `map_sky_pty_to_condition()`, `tool_intelligence` 계약, `fake_weather_condition` 설정까지 걷어냄. `tool-intelligence-contract-v1.md`의 `TI-09`를 `Superseded`로, §9 `api_weather` 매핑을 D-038 무효로 반영 |
+| 2026-08-07 | D-054 신설 — INFO `question_type` 8종으로 확장(C). 상세 질의는 Supabase 캐시에 데이터가 없어 TourAPI를 직접 조회하도록 결정하고 `GetPlaceDetailTool`·`info_field_rules` 신설. `event`는 `unsupported`, A 배선 3건은 별도 카드 |
 | 2026-08-06 | D-053 신설 — TP-67(PR #113) 후속으로 위치 변경 판정에서 지명 단독을 제외해 `INFO`(정보 조회) 흐름을 지키고, `environment` 미언급(`ANY`)이 되묻기 답변에서 앞 턴의 `indoor`를 덮어쓰던 갭을 프롬프트 규칙 + 보존 목록으로 막음. `PROMPT_VERSION` 1.0.2 |
 | 2026-08-07 | D-054 트리비 페르소나와 `GENERAL(service_identity)`, RECOMMEND/MODIFY 추천 결과 요약 LLM 추가. 요약 입력에서 내부 scoring 필드는 제외 |

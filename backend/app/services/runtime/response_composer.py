@@ -16,7 +16,14 @@ import logging
 
 from app.errors import AppError
 from app.providers.protocols import LLMProvider
-from app.schemas import Intent, LLMOutput, OutputStatus, RecommendationItem, RecommendationResponse
+from app.schemas import (
+    Intent,
+    LLMOutput,
+    OutputStatus,
+    RecommendationItem,
+    RecommendationResponse,
+    ScheduleResult,
+)
 from app.services.runtime.context_schemas import Clarification
 from app.services.runtime.info_context_schemas import InfoContextResponse
 
@@ -133,10 +140,24 @@ def compose_info_concentration_message(response: InfoContextResponse) -> str:
     return f"{result.resolved_place_name}은(는) {date_label} 기준 {label} 것으로 예측돼요."
 
 
+def compose_schedule_message(schedule: ScheduleResult) -> str:
+    """SCHEDULE 응답 말풍선 텍스트를 조립한다.
+
+    장소별 도착 시각·이유 같은 상세는 여기서 다시 풀어쓰지 않는다 —
+    AgentResponse.schedule이 이미 그 정보를 갖고 있다(문서 docstring 원칙과
+    동일하게 message는 요약만 맡는다).
+    """
+
+    hours, minutes = divmod(schedule.total_duration_min, 60)
+    duration_label = f"{hours}시간 {minutes}분" if hours else f"{minutes}분"
+    return f"{duration_label} 코스를 짜봤어요. {schedule.route_summary}"
+
+
 async def compose_chat_message(
     llm_output: LLMOutput,
     *,
     recommendations: RecommendationResponse | None = None,
+    schedule: ScheduleResult | None = None,
     tool_status: str | None = None,
     tool_clarification: Clarification | None = None,
     tool_error_code: str | None = None,
@@ -169,10 +190,7 @@ async def compose_chat_message(
     if llm_output.intent is Intent.INFO and info_concentration_response is not None:
         return compose_info_concentration_message(info_concentration_response)
 
-    if llm_output.intent is Intent.SCHEDULE:
-        return _SCHEDULE_NOT_YET_SUPPORTED_MESSAGE
-
-    if llm_output.intent in (Intent.RECOMMEND, Intent.MODIFY):
+    if llm_output.intent in (Intent.RECOMMEND, Intent.MODIFY, Intent.SCHEDULE):
         if tool_status in _TOOL_TERMINAL_STATUSES:
             if tool_status == "needs_clarification":
                 code = tool_clarification.code if tool_clarification is not None else None
@@ -184,6 +202,14 @@ async def compose_chat_message(
             if tool_status == "no_data":
                 return _NO_DATA_MESSAGE
             return _TOOL_UNAVAILABLE_MESSAGE
+
+        if llm_output.intent is Intent.SCHEDULE:
+            # schedule이 아직 None이면(예: 이번 호출부가 배선 전이거나 방어적 호출)
+            # 안내 문구로 안전하게 낮춘다 — 정상 경로는 agent_runtime.py가 항상
+            # schedule을 채워서 넘긴다.
+            if schedule is None:
+                return _SCHEDULE_NOT_YET_SUPPORTED_MESSAGE
+            return compose_schedule_message(schedule)
 
         shown = (
             [*recommendations.recommendations, *recommendations.unverified_recommendations]
@@ -211,4 +237,5 @@ __all__ = [
     "compose_recommendation_message",
     "compose_chat_message",
     "compose_info_concentration_message",
+    "compose_schedule_message",
 ]

@@ -74,6 +74,7 @@ def _request(
     max_travel_time: int | None = None,
     weather_intent: Literal["AVOID", "ENJOY", "NO_MENTION", "IGNORE"] | None = None,
     gps_location: Coordinates | None = None,
+    exclude_tags: list[str] | None = None,
 ) -> AgentContextRequest:
     return AgentContextRequest(
         request_id="request-1",
@@ -85,6 +86,7 @@ def _request(
             place_tags=place_tags or [],
             max_travel_time=max_travel_time,
             weather_intent=weather_intent,
+            exclude_tags=exclude_tags or [],
         ),
     )
 
@@ -353,6 +355,62 @@ async def test_multiple_categories_are_merged_without_duplicate_places() -> None
         "fake-museum-1",
         "fake-cafe-1",
     ]
+
+
+@pytest.mark.asyncio
+async def test_exclude_tags_drop_matching_candidates() -> None:
+    """제외 태그가 실제로 후보를 줄인다 — 저장만 되고 무시되면 이 테스트가 깨진다."""
+
+    request = _request(place_types=["cultural_facility", "restaurant"])
+    before = await _service().fetch_context(request)
+    assert before.context is not None
+    assert before.context.places is not None
+    assert [item.place_id for item in before.context.places.data or []] == [
+        "fake-museum-1",
+        "fake-cafe-1",
+    ]
+
+    after = await _service().fetch_context(
+        _request(place_types=["cultural_facility", "restaurant"], exclude_tags=["박물관"])
+    )
+
+    assert after.status == "success"
+    assert after.context is not None
+    assert after.context.places is not None
+    assert [item.place_id for item in after.context.places.data or []] == ["fake-cafe-1"]
+
+
+@pytest.mark.asyncio
+async def test_all_candidates_excluded_is_no_data_not_unavailable() -> None:
+    """전부 제외되면 장애가 아니라 "조건에 맞는 후보 없음"이다."""
+
+    response = await _service().fetch_context(
+        _request(
+            place_types=["cultural_facility", "restaurant"],
+            exclude_tags=["박물관", "카페"],
+        )
+    )
+
+    assert response.context is not None
+    assert response.context.places is not None
+    assert response.context.places.status == "no_data"
+    assert response.context.places.error is None
+
+
+@pytest.mark.asyncio
+async def test_unmapped_exclude_tag_warns_instead_of_silently_passing() -> None:
+    """분류 매핑이 없는 제외 태그는 걸러진 척하지 않고 경고로 드러난다."""
+
+    response = await _service().fetch_context(
+        _request(place_types=["restaurant"], exclude_tags=["없는태그"])
+    )
+
+    assert response.context is not None
+    assert response.context.places is not None
+    assert [item.place_id for item in response.context.places.data or []] == ["fake-cafe-1"]
+    assert "exclude_tags_unmapped" in {
+        warning.code for warning in response.context.places.warnings
+    }
 
 
 @pytest.mark.asyncio

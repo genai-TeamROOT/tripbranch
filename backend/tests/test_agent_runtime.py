@@ -93,11 +93,13 @@ class _CountingRecommendationProvider:
 
     def __init__(self) -> None:
         self.call_count = 0
+        self.last_limit: int | None = None
         self._inner = FakeRecommendationProvider()
 
-    async def recommend(self, conditions, context, excluded_place_ids):
+    async def recommend(self, conditions, context, excluded_place_ids, limit=5):
         self.call_count += 1
-        return await self._inner.recommend(conditions, context, excluded_place_ids)
+        self.last_limit = limit
+        return await self._inner.recommend(conditions, context, excluded_place_ids, limit)
 
 
 class _CountingRecommendationProviderWithRerank(_CountingRecommendationProvider):
@@ -472,14 +474,15 @@ async def test_non_recommend_modify_intents_skip_tool_and_recommendation(user_in
 
 
 @pytest.mark.asyncio
-async def test_schedule_intent_skips_tool_and_recommendation_until_planner_is_implemented() -> None:
-    """INT-07 1차는 분류만 한다 — C/D 호출과 조건 변경 없이 임시 안내로 끝난다."""
+async def test_schedule_intent_reaches_planner_and_returns_schedule() -> None:
+    """SCHEDULE-04: 조건 추출 → C/D 호출(D는 limit=10) → 일정 편성 모듈까지 실제로
+    이어진다(docs/design/int-07-schedule.md 4절)."""
     store = InMemoryStateStore()
     providers = _providers()
 
     response = await run_agent_flow(
         AgentRequest(
-            user_input="오늘 오후 종로 반나절 코스 짜줘",
+            user_input="경복궁 근처에서 반나절 코스 짜줘",
             session_id=None,
             device_location=DEVICE_LOCATION,
         ),
@@ -489,11 +492,22 @@ async def test_schedule_intent_skips_tool_and_recommendation_until_planner_is_im
 
     assert response.llm_output.intent == "SCHEDULE"
     assert response.llm_output.status is OutputStatus.COMPLETE
+    assert response.state.user_conditions.search_center == "경복궁"
+
+    assert providers["tool_provider"].call_count == 1
+    assert providers["recommendation_provider"].call_count == 1
+    assert providers["recommendation_provider"].last_limit == 10
+
     assert response.recommendations is None
-    assert response.message == "일정 추천 기능은 아직 준비 중이에요."
-    assert response.state.condition_changed is False
-    assert providers["tool_provider"].call_count == 0
-    assert providers["recommendation_provider"].call_count == 0
+    assert response.schedule is not None
+    assert 1 <= len(response.schedule.items) <= 5
+    assert response.schedule.basis_note
+    assert "코스를 짜봤어요" in response.message
+
+    context = get_session_context(response.state.session_id, store=store)
+    schedule_ids = {item.place_id for item in response.schedule.items}
+    assert schedule_ids
+    assert set(context.shown_place_ids) == schedule_ids
 
 
 @pytest.mark.asyncio
@@ -763,6 +777,34 @@ class TestApplyConcentrationRerank:
         assert result.unverified_recommendations == []
 
     @pytest.mark.asyncio
+    async def test_final_limit_defaults_to_five_but_schedule_can_request_ten(self) -> None:
+        """SCHEDULE-04 회귀: final_limit을 안 넘기면 기존과 동일하게 5개로 잘리지만,
+        SCHEDULE처럼 10을 명시하면 재순위 후에도 10개가 그대로 유지돼야 한다 —
+        예전에는 _CONCENTRATION_FINAL_LIMIT=5가 무조건 적용돼 SCHEDULE의 10개가
+        조용히 5개로 잘리는 버그가 있었다."""
+        conditions = UserConditions(concentration_intent=ConcentrationIntent.SEEK)
+        place_ids = [f"p{i}" for i in range(10)]
+
+        default_result = await _apply_concentration_rerank(
+            conditions,
+            self._context(place_ids),
+            self._first_pass(place_ids),
+            recommendation_provider=_CountingRecommendationProviderWithRerank(),
+            enrichment_provider=_CountingEnrichmentProvider(),
+        )
+        assert len(default_result.recommendations) == 5
+
+        schedule_result = await _apply_concentration_rerank(
+            conditions,
+            self._context(place_ids),
+            self._first_pass(place_ids),
+            recommendation_provider=_CountingRecommendationProviderWithRerank(),
+            enrichment_provider=_CountingEnrichmentProvider(),
+            final_limit=10,
+        )
+        assert len(schedule_result.recommendations) == 10
+
+    @pytest.mark.asyncio
     async def test_avoid_without_rerank_capable_provider_falls_back_to_first_pass(self) -> None:
         """D(rerank_with_concentration 없음)에서도 C 보강 조회는 크래시 없이
         호출되지만, 결과는 1차 그대로(개수 제한도 없이) 반환된다."""
@@ -937,6 +979,32 @@ async def test_successful_recommendation_leaves_no_pending_clarification() -> No
     assert response.recommendations is not None
     context = get_session_context(response.state.session_id, store=store)
     assert context.pending_clarification is None
+
+
+@pytest.mark.asyncio
+async def test_추천_응답에_C_실행_정보가_실린다() -> None:
+    """AgentResponse.tool_execution은 감사 표시 전용이지만, 비어 있으면 /dev-chat의
+    C Tool 탭이 다시 추측만 하게 된다. 실제 값이 실리는지 확인한다."""
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=InMemoryStateStore(),
+        **_providers(),
+    )
+
+    assert response.tool_execution is not None
+    assert response.tool_execution.status == "success"
+    assert response.tool_execution.latency_ms is not None
+    assert [item.key for item in response.tool_execution.context_items] == [
+        "location",
+        "weather",
+        "places",
+        "holidays",
+    ]
 
 
 @pytest.mark.asyncio

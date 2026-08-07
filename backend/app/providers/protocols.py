@@ -25,6 +25,7 @@ from app.domain.models import (
 )
 from app.place_search_policy import DEFAULT_PLACE_PROVIDER_RESULT_LIMIT
 from app.providers.contracts import ProviderResult
+from app.schedule.schemas import ScheduleLLMPlan, SchedulePlanningRequest
 from app.schemas import (
     GeneralTopic,
     Intent,
@@ -109,6 +110,17 @@ class LLMProvider(Protocol):
 
         카드에 없는 사실, 내부 점수/가중치/feature_scores/warnings는 말하지 않는다.
         실패해도 추천 카드 응답 자체는 유지되어야 하므로 호출부는 템플릿으로 fallback한다.
+        """
+        ...
+
+    async def generate_schedule_plan(
+        self, request: SchedulePlanningRequest
+    ) -> ProviderResult[ScheduleLLMPlan]:
+        """INT-07 SCHEDULE: 후보 중 3~5개를 선택해 방문 순서를 정한다.
+
+        basis_note는 포함하지 않는다 — LLM이 생성하지 않고
+        app.schedule.planner.plan_schedule()이 결정적으로 채운다
+        (docs/design/int-07-schedule.md 6.2.1절).
         """
         ...
 
