@@ -76,6 +76,7 @@ from app.tools.contracts import ToolError, ToolStatus
 from app.tools.festival import FestivalQuery, GetFestivalsTool
 from app.tools.holiday import GetHolidaysTool, HolidayQuery
 from app.tools.nearby_place_details import (
+    CANDIDATE_POOL_TRUNCATED_WARNING,
     EnrichedPlace,
     NearbyPlaceDetailsQuery,
     NearbyPlaceDetailsResult,
@@ -220,6 +221,7 @@ class ContextService:
                     conditions.max_travel_time,
                     default_radius_km=self._search_radius_km,
                 ),
+                excluded_place_ids=frozenset(request.excluded_place_ids),
             )
         )
         weather_result = await weather_task if weather_task is not None else None
@@ -738,8 +740,13 @@ class ContextService:
         latitude: float,
         longitude: float,
         search_radius_km: float,
+        excluded_place_ids: frozenset[str] = frozenset(),
     ) -> NearbyPlaceDetailsResult:
-        """분류별 장소 조회를 병렬 실행하고 중복·제외 후보를 걸러 한 결과로 합친다."""
+        """분류별 장소 조회를 병렬 실행하고 중복·제외 후보를 걸러 한 결과로 합친다.
+
+        `excluded_place_ids`는 분류별 조회 각각에 같은 집합으로 넘긴다 — 분류마다
+        결과 집합이 다르므로 "앞에서 몇 건"이 아니라 id로 걸러야 맞다.
+        """
 
         started_at = perf_counter()
         results = await asyncio.gather(
@@ -752,6 +759,7 @@ class ContextService:
                         limit=self._candidate_limit,
                         preferred_categories=plan.resolved_place_tags,
                         category_filter=category_filter,
+                        excluded_place_ids=excluded_place_ids,
                     )
                 )
                 for category_filter in plan.filters
@@ -979,7 +987,10 @@ def _is_excluded(place: EnrichedPlace, excluded_small_codes: frozenset[str]) -> 
 
 
 def _place_warnings(
-    status: ToolStatus, excluded_plan: ExcludedCategoryPlan
+    status: ToolStatus,
+    excluded_plan: ExcludedCategoryPlan,
+    *,
+    truncated: bool = False,
 ) -> tuple[str, ...]:
     warnings: list[str] = []
     if status is ToolStatus.PARTIAL:
@@ -987,6 +998,10 @@ def _place_warnings(
     if excluded_plan.has_unmapped_tags:
         # 분류 매핑이 없어 걸러내지 못한 제외 태그가 있다는 걸 A/D가 알 수 있게 남긴다.
         warnings.append("exclude_tags_unmapped")
+    if truncated:
+        # 분류 조회 중 하나라도 Provider 행 상한에 걸렸다. 합쳐진 결과가 비어도
+        # "더 없음"이 아니라 "더 못 받아옴"이라는 뜻이라 A가 구분해야 한다.
+        warnings.append(CANDIDATE_POOL_TRUNCATED_WARNING)
     return tuple(warnings)
 
 
@@ -1060,7 +1075,13 @@ def _merge_place_results(
         retrieved_at=max(result.retrieved_at for result in results),
         elapsed_ms=(perf_counter() - started_at) * 1000,
         error=error,
-        warnings=_place_warnings(status, excluded_plan),
+        warnings=_place_warnings(
+            status,
+            excluded_plan,
+            truncated=any(
+                CANDIDATE_POOL_TRUNCATED_WARNING in result.warnings for result in results
+            ),
+        ),
         provider_metadata=tuple(
             metadata for result in results for metadata in result.provider_metadata
         ),

@@ -25,6 +25,12 @@ A는 Provider 이름, API endpoint, API Key, TourAPI 분류 코드, Provider별 
 C는 외부 데이터 조회와 정규화만 담당하며, 이전 노출·거절 후보 제외, 하드 필터,
 점수 계산, 최종 추천 개수 결정은 D Recommendation의 책임이다.
 
+다만 A는 소진분(`excluded_place_ids`)을 C에도 함께 전달한다. 이는 위 원칙의
+예외가 아니라 **수집 범위 결정에 필요한 입력**이다 — 장소 검색이 거리순 고정
+정렬이라, C가 소진분을 모르면 같은 조건에 매번 같은 앞쪽 N건을 돌려주고 D가
+그걸 전부 제외해 추천이 0건이 된다. C는 이 목록으로 "추천할지 말지"를 판정하지
+않고 "몇 건을 더 받아올지"만 정한다. 판정은 여전히 D에서 한 번만 일어난다.
+
 ## 3. 범위와 확장 원칙
 
 v0는 `RECOMMEND`의 추천 Context 수집만 다룬다. `INFO`와 `COMPARE`는 대상 장소
@@ -87,6 +93,7 @@ class AgentContextRequest(BaseModel):
     intent: Literal["RECOMMEND"]
     conditions: UserConditions
     gps_location: Coordinates | None = None
+    excluded_place_ids: list[str] = Field(default_factory=list)
 ```
 
 ### 4.2 필드 설명
@@ -97,6 +104,7 @@ class AgentContextRequest(BaseModel):
 | `intent` | 예 | v0에서는 항상 `RECOMMEND`. C가 필요한 Context 수집 흐름을 선택하는 기준이다. |
 | `conditions` | 예 | LLM이 추출한 사용자 조건. A는 값을 임의로 Provider 형식으로 변환하지 않는다. |
 | `gps_location` | 아니오 | A가 전달하는 기기 GPS 좌표. 사용자 발화 위치와 분리하며 장소명이 없을 때 검색 중심 fallback으로 사용한다. |
+| `excluded_place_ids` | 아니오 | 이미 소진된 후보 id(노출분 ∪ 거절분). C는 이걸로 추천 여부를 판정하지 않고, 그만큼 후보를 더 받아와 새 후보가 요청 개수만큼 남게 하는 데만 쓴다. 2절의 "제외 판정은 D 책임"은 그대로다 — 아래 설명 참고. |
 | `current_location` | 아니오 | 사용자가 말한 현재 위치. |
 | `search_center` | 아니오 | 추천 검색 중심 장소. |
 | `place_types`, `place_tags` | 아니오 | 사용자가 원하는 장소 유형·태그. C가 내부 분류 코드로 변환한다. |

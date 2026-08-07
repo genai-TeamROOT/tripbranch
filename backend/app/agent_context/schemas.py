@@ -72,6 +72,14 @@ class AgentContextRequest(StrictModel):
     conditions: UserConditions
     # 사용자 발화 위치와 별도로, A가 검증한 기기 GPS를 좌표 객체로 전달한다.
     gps_location: Coordinates | None = None
+    # 이미 소진된 후보 id(노출분 ∪ 거절분). C는 이 목록으로 추천 여부를 판정하지 않고
+    # "수집 범위를 어디까지 넓힐지"에만 쓴다 — 제외 판정 자체는 여전히 D 몫이다
+    # (a-c-context-contract-draft.md §2).
+    #
+    # 이 필드가 없으면 추가 추천이 성립하지 않는다. 장소 검색은 거리순 고정 정렬이라
+    # 같은 조건으로 다시 부르면 같은 앞쪽 N건이 오고, D가 그걸 전부 제외해 0건이 된다.
+    # C가 소진분을 알아야 그만큼 더 받아와서 새 후보를 채울 수 있다.
+    excluded_place_ids: list[str] = Field(default_factory=list)
 
     @field_validator("request_id")
     @classmethod
@@ -79,6 +87,15 @@ class AgentContextRequest(StrictModel):
         normalized = value.strip()
         if not normalized:
             raise ValueError("request_id는 공백일 수 없습니다.")
+        return normalized
+
+    @field_validator("excluded_place_ids")
+    @classmethod
+    def normalize_excluded_place_ids(cls, values: list[str]) -> list[str]:
+        """공백 id는 거른다 — 중복은 그대로 두고 소비 측에서 frozenset으로 받는다."""
+        normalized = [value.strip() for value in values]
+        if any(not value for value in normalized):
+            raise ValueError("excluded_place_ids에는 빈 문자열을 포함할 수 없습니다.")
         return normalized
 
 
