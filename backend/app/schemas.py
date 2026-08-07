@@ -69,6 +69,34 @@ class RecommendationResponse(BaseModel):
         description="추천 파이프라인 시작부터 응답 조립 완료까지의 총 처리시간(ms)",
     )
 
+
+class ScheduleItem(BaseModel):
+    """일정에 포함된 장소 1건. (docs/design/int-07-schedule.md 6.2절)"""
+
+    order: int
+    place_id: str
+    place_name: str
+    estimated_arrival: str
+    estimated_duration_min: int
+    travel_to_next_min: int | None
+    reason: str
+
+
+class ScheduleResult(BaseModel):
+    """일정 편성 모듈(app.schedule)의 최종 출력. AgentResponse.schedule에 실린다.
+
+    basis_note는 LLM이 생성하지 않고 A/일정편성모듈이 visit_at 값을 넣어
+    고정 템플릿으로 채운다 — 근거 데이터(운영시간·날씨)가 단일 시각 기준이라
+    뒷 순서 스탑에는 부정확할 수 있다는 걸 사용자에게 알리는 안내 문구다.
+    (docs/design/int-07-schedule.md 6.2.1절)
+    """
+
+    items: list[ScheduleItem]
+    total_duration_min: int
+    route_summary: str
+    basis_note: str
+
+
 class PlaceCandidate(BaseModel):
     """장소 API 원본 응답을 정규화한 공통 후보 모델.
 
@@ -492,11 +520,15 @@ class AgentResponse(BaseModel):
 
     recommendations는 RECOMMEND/MODIFY이고 status가 complete일 때만 채워진다(그 외에는
     None — Tool/Recommendation 단계 자체를 건너뛰었다는 뜻).
+    schedule은 SCHEDULE이고 status가 complete일 때만 채워진다(docs/design/
+    int-07-schedule.md 7절) — recommendations와 동시에 채워지지 않는다.
     message는 사용자에게 보여줄 챗봇 말풍선 텍스트다(docs/design/agent-response-
-    generation.md 참고) — 카드(recommendations) 상세는 이 문장에 다시 풀어쓰지 않는다.
+    generation.md 참고) — 카드(recommendations)·일정(schedule) 상세는 이 문장에
+    다시 풀어쓰지 않는다.
     """
 
     llm_output: LLMOutput
     state: StateApplyResponse
     recommendations: RecommendationResponse | None = None
+    schedule: ScheduleResult | None = None
     message: str
