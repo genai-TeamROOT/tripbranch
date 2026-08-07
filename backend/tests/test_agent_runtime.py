@@ -95,9 +95,9 @@ class _CountingRecommendationProvider:
         self.call_count = 0
         self._inner = FakeRecommendationProvider()
 
-    async def recommend(self, conditions, context, excluded_place_ids):
+    async def recommend(self, conditions, context, excluded_place_ids, limit=5):
         self.call_count += 1
-        return await self._inner.recommend(conditions, context, excluded_place_ids)
+        return await self._inner.recommend(conditions, context, excluded_place_ids, limit)
 
 
 class _CountingRecommendationProviderWithRerank(_CountingRecommendationProvider):

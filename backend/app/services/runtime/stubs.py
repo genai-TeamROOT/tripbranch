@@ -199,6 +199,7 @@ class FakeRecommendationProvider:
         conditions: UserConditions,
         context: RecommendationContext,
         excluded_place_ids: list[str],
+        limit: int = 5,
     ) -> RecommendationResponse:
         excluded = set(excluded_place_ids)
         candidates = context.places.data if context.places and context.places.data else []
@@ -221,7 +222,7 @@ class FakeRecommendationProvider:
             if candidate.place_id not in excluded
         ]
         return RecommendationResponse(
-            recommendations=items,
+            recommendations=items[:limit],
             unverified_recommendations=[],
             elapsed_ms=0,
         )
