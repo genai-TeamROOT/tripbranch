@@ -10,8 +10,8 @@ import type { TripState } from "./TripContext";
 import type { ChatMessage, ChatPhase } from "../types";
 
 const STORAGE_KEY = "tripbranch_state";
-// 3: recommendation_result 메시지에 소요시간(elapsed_ms) 추가.
-const STORAGE_VERSION = 3;
+// 4: 최초 허용받은 device_location을 후속 채팅에서도 재사용.
+const STORAGE_VERSION = 4;
 
 interface StoredState {
   version: number;
@@ -29,6 +29,7 @@ function isTripState(value: unknown): value is TripState {
     Array.isArray(state.messages) &&
     state.messages.every(isChatMessage) &&
     isChatPhase(state.phase) &&
+    (state.device_location === null || typeof state.device_location === "string") &&
     (state.error === null || typeof state.error === "string")
   );
 }

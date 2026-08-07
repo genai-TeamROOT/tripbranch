@@ -36,6 +36,42 @@ async def test_classify_intent_tc01_recommend() -> None:
     assert result.data.intent is Intent.RECOMMEND
 
 
+@pytest.mark.parametrize(
+    "user_input",
+    [
+        "오늘 오후 종로 일정 짜줘",
+        "반나절 코스 만들어줘",
+        "경복궁, 인사동 가고 싶은데 어디부터 갈까?",
+    ],
+)
+@pytest.mark.parametrize("has_previous_recommendation", [False, True])
+@pytest.mark.asyncio
+async def test_classify_intent_schedule_regardless_of_recommendation_history(
+    user_input: str, has_previous_recommendation: bool
+) -> None:
+    """명시적인 일정·코스·방문 순서는 이전 추천 이력과 무관하게 SCHEDULE다."""
+    provider = FakeLLMProvider()
+
+    result = await provider.classify_intent(
+        user_input,
+        has_previous_recommendation=has_previous_recommendation,
+        shown_place_count=5 if has_previous_recommendation else 0,
+    )
+
+    assert result.data.intent is Intent.SCHEDULE
+
+
+@pytest.mark.asyncio
+async def test_classify_intent_plain_recommendation_is_not_schedule() -> None:
+    provider = FakeLLMProvider()
+
+    result = await provider.classify_intent(
+        "오늘 갈 만한 곳 추천해줘", has_previous_recommendation=False, shown_place_count=0
+    )
+
+    assert result.data.intent is Intent.RECOMMEND
+
+
 @pytest.mark.asyncio
 async def test_extract_recommend_conditions_tc01_search_center_and_tags() -> None:
     provider = FakeLLMProvider()
@@ -132,7 +168,8 @@ async def test_classify_intent_modify_requires_previous_recommendation() -> None
         "광화문 근처 어때?",
         "종로3가역 근처에서",
         "북촌 근처에서",
-        "광화문",
+        "광화문으로",
+        "광화문에서",
     ],
 )
 @pytest.mark.asyncio
@@ -166,6 +203,100 @@ async def test_classify_intent_location_only_without_history_is_recommend(user_i
     )
 
     assert result.data.intent is Intent.RECOMMEND
+
+
+@pytest.mark.parametrize("user_input", ["광화문", "경복궁"])
+@pytest.mark.parametrize("has_previous_recommendation", [True, False])
+@pytest.mark.asyncio
+async def test_classify_intent_bare_place_name_is_info_regardless_of_history(
+    user_input: str, has_previous_recommendation: bool
+) -> None:
+    """지명 단독은 이전 추천이 있어도 위치 변경이 아니라 정보 조회다.
+
+    추천을 받은 뒤 "경복궁" 한 마디로 그 장소를 묻는 흐름을 위치 변경이 가리지 않도록,
+    위치 변경 판정은 근처/주변이나 조사·어미가 붙은 경우로 한정한다.
+    """
+    provider = FakeLLMProvider()
+
+    result = await provider.classify_intent(
+        user_input,
+        has_previous_recommendation=has_previous_recommendation,
+        shown_place_count=5 if has_previous_recommendation else 0,
+    )
+
+    assert result.data.intent is Intent.INFO
+
+
+@pytest.mark.parametrize(
+    "user_input",
+    [
+        "경복궁 근처 카페 추천해줘",
+        "비 오는데 경복궁 근처 카페 추천해줘",
+        "북촌 주변 박물관 보여줘",
+    ],
+)
+@pytest.mark.asyncio
+async def test_classify_intent_location_with_other_conditions_is_modify(user_input: str) -> None:
+    """D-053: 지명+근처에 다른 조건이 붙어도 이전 추천이 있으면 조건 변경이다.
+
+    실 Gemini(gemini-2.5-flash, 프롬프트 1.0.2)가 "경복궁 근처 카페 추천해줘"를
+    MODIFY 5/5로 분류하는 것과 Fake를 맞춘 것이다 — 잔여 조건("카페") 때문에
+    RECOMMEND fallback으로 떨어지던 차이를 없앤다.
+    """
+    provider = FakeLLMProvider()
+
+    result = await provider.classify_intent(
+        user_input, has_previous_recommendation=True, shown_place_count=5
+    )
+
+    assert result.data.intent is Intent.MODIFY
+
+
+@pytest.mark.parametrize(
+    ("user_input", "expected"),
+    [
+        ("경복궁 근처 카페 추천해줘", Intent.RECOMMEND),
+        ("경복궁 근처에 화장실 있어?", Intent.INFO),
+        ("경복궁 근처 동네는 어때?", Intent.GENERAL),
+    ],
+)
+@pytest.mark.asyncio
+async def test_classify_intent_location_with_other_conditions_boundaries(
+    user_input: str, expected: Intent
+) -> None:
+    """반대 방향 회귀: 이력이 없으면 RECOMMEND고, 정보/일반 질문은 가려지지 않는다."""
+    provider = FakeLLMProvider()
+
+    result = await provider.classify_intent(
+        user_input,
+        has_previous_recommendation=expected is not Intent.RECOMMEND,
+        shown_place_count=5 if expected is not Intent.RECOMMEND else 0,
+    )
+
+    assert result.data.intent is expected
+
+
+@pytest.mark.asyncio
+async def test_extract_modify_conditions_rain_avoids_and_moves_indoor() -> None:
+    """MODIFY 경로의 날씨 처리는 extract_recommend_conditions와 같은 결이다."""
+    provider = FakeLLMProvider()
+    current = UserConditions(search_center="북촌")
+
+    output = (
+        await provider.extract_modify_conditions("비 오는데 경복궁 근처 카페 추천해줘", current)
+    ).data
+
+    changes = output.modify.condition_changes
+    assert changes.weather is StatedWeather.RAIN
+    assert changes.weather_intent is WeatherIntent.AVOID
+    assert changes.environment is Environment.INDOOR
+    assert changes.search_center == "경복궁"
+    assert set(output.modify.changed_fields) == {
+        "weather",
+        "weather_intent",
+        "environment",
+        "search_center",
+    }
 
 
 @pytest.mark.asyncio
