@@ -11,9 +11,11 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from app.providers.gemini_prompts import build_modify_extraction_instruction
 from app.providers.stub import FakeLLMProvider
 from app.schedule.schemas import SchedulePlanningRequest
 from app.schemas import (
+    ConcentrationIntent,
     Environment,
     Intent,
     ModifyType,
@@ -319,6 +321,34 @@ async def test_extract_modify_conditions_location_only_changes_search_center() -
     assert output.modify.modify_type is ModifyType.CHANGE_CONDITION
     assert output.modify.condition_changes.search_center == "광화문"
     assert output.modify.changed_fields == ["search_center"]
+
+
+@pytest.mark.asyncio
+async def test_extract_modify_conditions_quiet_place_avoids_concentration() -> None:
+    """MODIFY에서도 '조용한'은 혼잡도 회피(AVOID)로 추출해야 한다.
+
+    RECOMMEND 프롬프트에만 있던 concentration_intent 규칙이 MODIFY에서 빠져
+    실제 Gemini가 SEEK를 반환했던 회귀를 막는다.
+    """
+    provider = FakeLLMProvider()
+    current = UserConditions(
+        search_center="창경궁",
+        concentration_intent=ConcentrationIntent.IGNORE,
+    )
+
+    output = (await provider.extract_modify_conditions("좀 조용한 공원 가고싶어", current)).data
+
+    assert output.modify.condition_changes.concentration_intent is ConcentrationIntent.AVOID
+    assert output.modify.changed_fields == ["concentration_intent"]
+
+
+def test_modify_instruction_includes_concentration_avoid_rule() -> None:
+    """Real Gemini MODIFY 프롬프트에도 조용한 곳→AVOID 규칙을 반드시 넣는다."""
+    instruction = build_modify_extraction_instruction(UserConditions(search_center="창경궁"))
+
+    assert "concentration_intent 판별:" in instruction
+    assert '"조용한 공원 추천해줘"' in instruction
+    assert "concentration_intent/transport" in instruction
 
 
 @pytest.mark.asyncio

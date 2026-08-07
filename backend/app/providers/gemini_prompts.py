@@ -23,7 +23,7 @@ from app.schemas import GeneralTopic, UserConditions
 # 쓰였는지와 무관하게 단일 값으로 취급한다 — 함수별 개별 버전은 만들지 않는다. 판별·추출
 # 규칙에 영향을 주는 변경(6개 함수 중 하나라도) 시 버전을 올린다 — 사소한 문구·주석
 # 변경은 올리지 않는다.
-PROMPT_VERSION = "agent-interpret-prompts-1.0.3"
+PROMPT_VERSION = "agent-interpret-prompts-1.0.4"
 
 _INTENT_DEFINITIONS = """\
 7개 Intent 정의:
@@ -220,8 +220,8 @@ _MODIFY_FIELD_MERGE_RULES = """\
 그 외 모든 필드는 null(목록형 필드는 빈 배열)로 두세요. 현재 조건 값을 복사해서 채우지
 마세요 — 바뀌지 않은 필드는 서버가 별도로 유지하므로, 여기서 다시 채울 필요가 없습니다.
 
-- current_location/search_center/weather/weather_intent/transport/max_travel_time/
-  time_available/environment/companion: 언급된 필드만 새 값으로 채운다
+- current_location/search_center/weather/weather_intent/concentration_intent/transport/
+  max_travel_time/time_available/environment/companion: 언급된 필드만 새 값으로 채운다
 - max_travel_time/time_available: 시간 제한이 없다고 말하거나(해제) 언급이 없으면
   null로 채우세요. 0을 반환하지 마세요.
 - budget: "무료만" 같은 교체는 새 값으로("free" 리터럴 사용, 아래 budget 규칙 참고),
@@ -254,6 +254,7 @@ modify_type과 condition_changes를 추출해 LLMOutput(intent="MODIFY")으로 �
 {_MODIFY_TYPE_RULES}
 {_MODIFY_RELATIVE_EXPRESSION_RULES}
 {_MODIFY_FIELD_MERGE_RULES}
+{_CONCENTRATION_INTENT_RULES}
 {_BUDGET_RULE}
 
 status 결정:

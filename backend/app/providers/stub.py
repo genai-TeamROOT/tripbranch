@@ -393,6 +393,16 @@ class FakeLLMProvider:
             changed.environment = Environment.INDOOR
             changed_fields.extend(["weather", "weather_intent", "environment"])
 
+        # MODIFY도 RECOMMEND와 같은 혼잡도 의도 규칙을 적용한다. 이전 조건을 복사한
+        # changed 객체를 쓰므로, 이 발화에서 혼잡도를 언급하지 않으면 changed_fields에
+        # 넣지 않아 기존 concentration_intent가 그대로 유지된다.
+        if any(marker in user_input for marker in ("조용", "한적", "사람 없")):
+            changed.concentration_intent = ConcentrationIntent.AVOID
+            changed_fields.append("concentration_intent")
+        elif any(marker in user_input for marker in ("핫한", "인기", "북적")):
+            changed.concentration_intent = ConcentrationIntent.SEEK
+            changed_fields.append("concentration_intent")
+
         new_place = _find_known_place(user_input)
         if new_place and (
             "근처로 바꿔" in user_input
