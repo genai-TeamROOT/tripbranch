@@ -537,6 +537,50 @@ class LLMExecutionMetadata(BaseModel):
     calls: list[LLMCallMetadata] = Field(default_factory=list)
 
 
+class ToolProviderDebug(BaseModel):
+    """C가 한 번의 Context 수집에서 실제로 호출한 Provider 하나의 기록."""
+
+    source: str
+    status: str
+    retrieved_at: str | None = None
+
+
+class ToolContextItemDebug(BaseModel):
+    """RecommendationContext의 항목(location/weather/places/holidays) 하나의 상태.
+
+    fetched=False는 C가 그 항목을 아예 조회하지 않았다는 뜻이다(예: 발화에 날씨가
+    이미 있어 조회를 생략한 경우). 조회했는데 실패한 것과 구분된다.
+    """
+
+    key: str
+    fetched: bool
+    status: str | None = None
+    error_code: str | None = None
+    warning_codes: list[str] = Field(default_factory=list)
+    item_count: int | None = None
+
+
+class ToolExecutionDebug(BaseModel):
+    """개발자용 Audit 전용: A→C 한 번의 Context 수집이 실제로 무엇을 했는지.
+
+    llm_execution과 같은 성격의 관측 전용 필드다 — 추천 판정에는 쓰이지 않으며,
+    이 값이 없다고 해서 흐름이 달라지지 않는다. 특히 providers[].source는 실제로
+    응답을 만든 Provider가 Real인지 Stub인지 드러내므로, D-042(Real 실패 시 Fake로
+    자동 전환하지 않는다)가 지켜지고 있는지 화면에서 바로 확인하는 수단이 된다.
+    """
+
+    request_id: str
+    status: str
+    latency_ms: int | None = None
+    providers: list[ToolProviderDebug] = Field(default_factory=list)
+    context_items: list[ToolContextItemDebug] = Field(default_factory=list)
+    rule_versions: dict[str, str] = Field(default_factory=dict)
+    resolved_location_name: str | None = None
+    resolved_location_address: str | None = None
+    error_code: str | None = None
+    clarification_code: str | None = None
+
+
 class AgentResponse(BaseModel):
     """TODO(D 계약 확정 시 필드 변경 가능): Agent Runtime의 임시 최종 응답.
 
@@ -557,3 +601,6 @@ class AgentResponse(BaseModel):
     # 개발자용 Audit에서 1차 Intent/2차 추출 호출의 실제 Gemini 모델·폴백 경로를
     # 확인한다. Fake LLM 등 실행 메타데이터를 제공하지 않는 구현체에서는 None이다.
     llm_execution: LLMExecutionMetadata | None = None
+    # 개발자용 Audit에서 C가 실제로 호출한 Provider·항목별 상태를 확인한다.
+    # C 단계에 도달하지 못한 요청(LLM 실패, needs_clarification 등)에서는 None이다.
+    tool_execution: ToolExecutionDebug | None = None

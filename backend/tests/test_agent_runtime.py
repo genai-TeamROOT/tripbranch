@@ -982,6 +982,32 @@ async def test_successful_recommendation_leaves_no_pending_clarification() -> No
 
 
 @pytest.mark.asyncio
+async def test_추천_응답에_C_실행_정보가_실린다() -> None:
+    """AgentResponse.tool_execution은 감사 표시 전용이지만, 비어 있으면 /dev-chat의
+    C Tool 탭이 다시 추측만 하게 된다. 실제 값이 실리는지 확인한다."""
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=InMemoryStateStore(),
+        **_providers(),
+    )
+
+    assert response.tool_execution is not None
+    assert response.tool_execution.status == "success"
+    assert response.tool_execution.latency_ms is not None
+    assert [item.key for item in response.tool_execution.context_items] == [
+        "location",
+        "weather",
+        "places",
+        "holidays",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_modify_change_condition_calls_context_again_with_merged_conditions() -> None:
     """MODIFY로 조건이 바뀌면 C를 다시 호출하고, 그 요청에 병합된 조건이 실려야 한다.
 
