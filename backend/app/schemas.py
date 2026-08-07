@@ -52,6 +52,10 @@ class RecommendationItem(BaseModel):
     category: str
     distance_km: float
     remaining_minutes: int | None
+    # 그 후보에 실제로 적용된 당일 운영 구간("09:00~18:00"). 프론트가
+    # remaining_minutes만으로는 "언제부터"를 표시할 수 없어 함께 내려준다.
+    # 운영시간 미확인 후보는 None이다.
+    operating_hours_display: str | None = None
     environment_type: str
     recommendation_reason: str
     explanations: list[str]
