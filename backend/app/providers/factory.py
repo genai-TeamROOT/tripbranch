@@ -11,12 +11,14 @@ import httpx
 
 from app.config import Settings, settings
 from app.providers.concentration import FakeConcentrationProvider, RealConcentrationProvider
+from app.providers.festival import FakeFestivalProvider, RealFestivalProvider
 from app.providers.gemini import RealGeminiProvider
 from app.providers.geocoding import FakeGeocodingProvider, RealGeocodingProvider
 from app.providers.holiday import FakeHolidayProvider, RealHolidayProvider
 from app.providers.local_search import FakeLocalSearchProvider, RealLocalSearchProvider
 from app.providers.protocols import (
     ConcentrationProvider,
+    FestivalProvider,
     GeocodingProvider,
     HolidayProvider,
     LLMProvider,
@@ -147,6 +149,17 @@ def get_place_details_provider(client: httpx.AsyncClient) -> PlaceDetailsProvide
             )
         )
     return get_place_provider(client)
+
+
+def get_festival_provider(client: httpx.AsyncClient) -> FestivalProvider:
+    """행사 조회 provider. 장소 provider와 같은 PLACE_PROVIDER 설정을 따른다."""
+    if settings.resolved_place_provider == "fake":
+        return FakeFestivalProvider()
+    return RealFestivalProvider(
+        api_key=_require_key(settings.tour_api_service_key, "TOUR_API_SERVICE_KEY"),
+        client=client,
+        timeout_seconds=settings.external_api_timeout_seconds,
+    )
 
 
 def get_concentration_provider(client: httpx.AsyncClient) -> ConcentrationProvider:

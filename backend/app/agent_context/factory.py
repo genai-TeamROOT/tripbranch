@@ -10,6 +10,7 @@ from app.agent_context.service import ContextService, ContextTools
 from app.config import settings
 from app.providers.factory import (
     get_concentration_provider,
+    get_festival_provider,
     get_geocoding_provider,
     get_holiday_provider,
     get_local_search_provider,
@@ -20,6 +21,7 @@ from app.providers.factory import (
     get_weather_provider,
 )
 from app.tools.concentration import GetConcentrationTool
+from app.tools.festival import GetFestivalsTool
 from app.tools.holiday import GetHolidaysTool
 from app.tools.nearby_place_details import NearbyPlaceDetailsTool
 from app.tools.place_detail import GetPlaceDetailTool
@@ -47,6 +49,7 @@ def get_context_provider(client: httpx.AsyncClient) -> ContextService:
             # 상세 캐시(PLACE_DETAILS_SOURCE)가 아니라 PlaceProvider를 넘긴다 —
             # 이유는 place_detail.py 모듈 docstring 참고.
             place_detail=GetPlaceDetailTool(get_place_provider(client)),
+            festivals=GetFestivalsTool(get_festival_provider(client)),
         ),
         candidate_limit=settings.recommendation_candidate_limit,
         concentration_mapping_cache=_concentration_mapping_cache(client),

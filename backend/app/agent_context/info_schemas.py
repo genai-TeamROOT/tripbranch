@@ -6,9 +6,10 @@ INFO 질의는 RECOMMEND Context와 입력·응답 형태가 달라 별도 모�
 question_type은 두 갈래로 나뉜다(int-02-info.md §6).
 
 - ``concentration`` — 집중률 API 경로. ConcentrationInfoResult를 돌려준다.
+- ``event`` — 지역 행사 조회 경로. EventInfoResult를 돌려준다.
 - 그 외 — 장소 상세 경로. PlaceInfoResult를 돌려준다.
 
-두 결과는 채우는 필드가 전혀 겹치지 않아 하나로 합치면 대부분이 None인 모델이
+세 결과는 채우는 필드가 전혀 겹치지 않아 하나로 합치면 대부분이 None인 모델이
 된다. 소비 측(A의 response_composer)이 어느 필드를 읽어야 하는지 result의 타입만
 보고 알 수 있도록 union으로 둔다.
 """
@@ -116,6 +117,39 @@ class PlaceInfoResult(BaseModel):
     error: ContextError | None = None
 
 
+class EventItem(BaseModel):
+    """진행 중인 행사 한 건."""
+
+    title: str
+    start_date: str
+    end_date: str
+    address: str | None = None
+    distance_km: float | None = Field(default=None, ge=0)
+    # 행사 제목에 대상 장소명이 들어 있는 경우(예: "경복궁 별빛야행"). False면 그
+    # 장소의 행사가 아니라 근처에서 열리는 행사다 — A는 이 구분을 반드시 문구에
+    # 반영해야 한다(집중률 is_proxy와 같은 취지).
+    is_direct_match: bool = False
+
+
+class EventInfoResult(BaseModel):
+    """C가 반환하는 INFO 행사 질의 결과(question_type=event).
+
+    TourAPI에는 장소별 행사 조회가 없어 지역(종로구) 단위로 받아 좌표로 거리를
+    매긴다. 그래서 events 대부분은 대상 장소 "근처"의 행사다 — 요청한 장소에서
+    열리는 행사인 것처럼 말하지 않도록 is_direct_match와 distance_km을 함께
+    내려준다.
+    """
+
+    status: Literal["success", "no_data", "unavailable"]
+    question_type: Literal["event"] = "event"
+    requested_place_name: str | None = None
+    resolved_place_name: str | None = None
+    reference_date: str | None = None
+    events: list[EventItem] = Field(default_factory=list)
+    has_direct_match: bool = False
+    error: ContextError | None = None
+
+
 class InfoContextResponse(BaseModel):
     """C가 반환하는 INFO 질의 응답."""
 
@@ -125,7 +159,7 @@ class InfoContextResponse(BaseModel):
     status: Literal[
         "success", "no_data", "needs_clarification", "unsupported", "unavailable"
     ]
-    result: ConcentrationInfoResult | PlaceInfoResult | None = None
+    result: ConcentrationInfoResult | PlaceInfoResult | EventInfoResult | None = None
     clarification: Clarification | None = None
     error: ContextError | None = None
     metadata: ResponseMetadata = Field(default_factory=ResponseMetadata)
@@ -133,6 +167,8 @@ class InfoContextResponse(BaseModel):
 
 __all__ = [
     "ConcentrationInfoResult",
+    "EventInfoResult",
+    "EventItem",
     "InfoContextRequest",
     "InfoContextResponse",
     "InfoQuestionType",
