@@ -58,6 +58,12 @@ _ALL_DAY_OPERATING_HOURS_DISPLAY = "24시간"
 # 원문 "09:00~24:00"의 종료도 time.max로 들어온다(operating_hours.py). 원문이 24:00인데
 # "23:59"로 보이면 1분 일찍 닫는 것처럼 읽히므로 원문 표기를 되살린다.
 _MIDNIGHT_CLOSE_DISPLAY = "24:00"
+# 다만 C의 직렬화(agent_context/mappers.py::_operating_schedule)가 close_time을
+# "%H:%M"으로 자르는 탓에 time.max(23:59:59.999999)는 D까지 "23:59"로 도착한다 —
+# 자정 마감이라는 표식이 도중에 지워진다. 그래서 23:59도 자정 마감으로 함께 본다.
+# 종로구 데이터에 23:59 마감 원문은 0건이고(전부 "24:00" 표기) 설령 생기더라도
+# 표기가 1분 어긋날 뿐이라, C의 직렬화를 바꾸는 것보다 이쪽이 비용이 작다.
+_MIDNIGHT_CLOSE_TIMES = (time.max, time(hour=23, minute=59))
 
 Timer: TypeAlias = Callable[[], float]
 
@@ -445,21 +451,20 @@ def _operating_hours_display(candidate: ScoringCandidate) -> str | None:
     후보는 `_is_closed()`가 Scoring 단계에서 이미 걸러내므로, 여기 도달한 값은
     실제로 지금 적용 중인 구간이다.
 
-    `time.max`는 두 가지 뜻으로 들어오므로 `open_time`까지 함께 봐야 한다
+    자정 마감은 두 가지 뜻으로 들어오므로 `open_time`까지 함께 봐야 한다
     (`operating_hours.py`, `candidate_mapper.py`):
-    - `time.min ~ time.max`: 24시간 영업 → "00:00~23:59"로 쓰면 엉뚱하다.
-    - `09:00 ~ time.max`: 원문의 "09:00~24:00"(당일 자정 종료). `strftime`을 그대로
+    - `time.min ~ 자정`: 24시간 영업 → "00:00~23:59"로 쓰면 엉뚱하다.
+    - `09:00 ~ 자정`: 원문의 "09:00~24:00"(당일 자정 종료). `strftime`을 그대로
       쓰면 "23:59"가 되어 실제보다 1분 일찍 닫는 것처럼 보인다.
     """
     hours = candidate.operating_hours
     if hours is None:
         return None
-    if hours.open_time == time.min and hours.close_time == time.max:
+    closes_at_midnight = hours.close_time in _MIDNIGHT_CLOSE_TIMES
+    if hours.open_time == time.min and closes_at_midnight:
         return _ALL_DAY_OPERATING_HOURS_DISPLAY
     close_display = (
-        _MIDNIGHT_CLOSE_DISPLAY
-        if hours.close_time == time.max
-        else hours.close_time.strftime("%H:%M")
+        _MIDNIGHT_CLOSE_DISPLAY if closes_at_midnight else hours.close_time.strftime("%H:%M")
     )
     return f"{hours.open_time.strftime('%H:%M')}~{close_display}"
 
