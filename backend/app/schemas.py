@@ -487,6 +487,24 @@ class AgentRequest(BaseModel):
     device_location: str | None = None  # "위도,경도" 문자열, api_context.gps_location과 동일 포맷
 
 
+class LLMCallMetadata(BaseModel):
+    """한 번의 Gemini 호출에서 실제로 시도·응답한 모델 기록.
+
+    개발자용 Agent Runtime Audit에서만 실행 경로를 확인하는 용도다. 사용자 발화나
+    프롬프트 본문은 포함하지 않아, 관측용 메타데이터가 입력 내용을 추가 노출하지 않는다.
+    """
+
+    operation: str
+    attempted_models: list[str]
+    served_model: str | None = None
+
+
+class LLMExecutionMetadata(BaseModel):
+    """한 Agent 요청 안에서 발생한 LLM 호출들의 모델 사용 이력."""
+
+    calls: list[LLMCallMetadata] = Field(default_factory=list)
+
+
 class AgentResponse(BaseModel):
     """TODO(D 계약 확정 시 필드 변경 가능): Agent Runtime의 임시 최종 응답.
 
@@ -500,3 +518,6 @@ class AgentResponse(BaseModel):
     state: StateApplyResponse
     recommendations: RecommendationResponse | None = None
     message: str
+    # 개발자용 Audit에서 1차 Intent/2차 추출 호출의 실제 Gemini 모델·폴백 경로를
+    # 확인한다. Fake LLM 등 실행 메타데이터를 제공하지 않는 구현체에서는 None이다.
+    llm_execution: LLMExecutionMetadata | None = None

@@ -18,6 +18,7 @@ interface ChatMessageListProps {
   isLoading: boolean;
   hasDeviceLocation: boolean;
   deviceLocation: string | null;
+  showIntentBadges?: boolean;
   onRequestMore: () => void;
   onRelaxRadius: () => void;
 }
@@ -28,6 +29,7 @@ export function ChatMessageList({
   isLoading,
   hasDeviceLocation,
   deviceLocation,
+  showIntentBadges = false,
   onRequestMore,
   onRelaxRadius,
 }: ChatMessageListProps) {
@@ -49,12 +51,24 @@ export function ChatMessageList({
 
           if (message.type === "assistant_text" || message.type === "interpretation_summary") {
             return (
-              <p
+              <div
                 key={message.id}
-                className="mr-auto max-w-xl rounded-md bg-gray-100 px-4 py-3 text-sm text-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                className="mr-auto flex max-w-xl flex-col gap-2 rounded-md bg-gray-100 px-4 py-3 text-sm text-gray-800 dark:bg-gray-800 dark:text-gray-100"
               >
-                {message.text}
-              </p>
+                {showIntentBadges && message.type === "assistant_text" && message.intent && (
+                  <div className="flex flex-wrap gap-2 text-xs">
+                    <span className="rounded bg-gray-900 px-2 py-0.5 font-semibold text-white dark:bg-gray-100 dark:text-gray-900">
+                      Intent: {message.intent}
+                    </span>
+                    {message.status && (
+                      <span className="rounded border border-gray-300 px-2 py-0.5 text-gray-600 dark:border-gray-700 dark:text-gray-300">
+                        {message.status}
+                      </span>
+                    )}
+                  </div>
+                )}
+                <p>{message.text}</p>
+              </div>
             );
           }
 

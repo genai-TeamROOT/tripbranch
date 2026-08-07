@@ -38,6 +38,10 @@ from app.services.interpret.state_transform import to_user_conditions, transform
 from app.services.runtime.context_transform import to_agent_context_request
 from app.services.runtime.enrichment_transform import to_candidate_enrichment_request
 from app.services.runtime.info_context_transform import to_info_context_request
+from app.services.runtime.llm_execution import (
+    get_llm_execution_metadata,
+    reset_llm_execution_metadata,
+)
 from app.services.runtime.protocols import EnrichmentProvider, RecommendationProvider, ToolProvider
 from app.services.runtime.response_composer import compose_chat_message
 from app.state.schema import now_kst
@@ -251,6 +255,7 @@ async def run_agent_flow(
 
     # 1) A → B: GPS 세션 컨텍스트 최신화. GPS 형식이 잘못되면 이번 턴만 건너뛴다 —
     #    잘못된 GPS 문자열이 파싱 예외로 대화를 중단시키지 않아야 한다.
+    reset_llm_execution_metadata()
     valid_gps = _valid_location(request.device_location)
     session_context = await ensure_current_context(
         request.session_id, valid_gps, store=store
@@ -337,7 +342,11 @@ async def run_agent_flow(
             llm_output, info_concentration_response=info_response, llm=llm
         )
         return AgentResponse(
-            llm_output=llm_output, state=state_response, recommendations=None, message=message
+            llm_output=llm_output,
+            state=state_response,
+            recommendations=None,
+            message=message,
+            llm_execution=get_llm_execution_metadata(),
         )
 
     # 4) 확인이 더 필요하거나(needs_clarification), RECOMMEND/MODIFY가 아니면(INFO/COMPARE/
@@ -354,7 +363,11 @@ async def run_agent_flow(
             )
         message = await compose_chat_message(llm_output, llm=llm)
         return AgentResponse(
-            llm_output=llm_output, state=state_response, recommendations=None, message=message
+            llm_output=llm_output,
+            state=state_response,
+            recommendations=None,
+            message=message,
+            llm_execution=get_llm_execution_metadata(),
         )
 
     # 5) A → C: Tool 결과 확보 (Protocol을 통해서만 — C의 구체 클래스는 여기서 모른다).
@@ -419,7 +432,11 @@ async def run_agent_flow(
             llm=llm,
         )
         return AgentResponse(
-            llm_output=llm_output, state=state_response, recommendations=None, message=message
+            llm_output=llm_output,
+            state=state_response,
+            recommendations=None,
+            message=message,
+            llm_execution=get_llm_execution_metadata(),
         )
 
     # success/partial은 Recommendation 단계로 진행한다(경고가 있어도 가능한 데이터로
@@ -444,6 +461,7 @@ async def run_agent_flow(
             state=state_response,
             recommendations=None,
             message=message,
+            llm_execution=get_llm_execution_metadata(),
         )
 
     # 6) A → D: 1차 Scoring (Protocol을 통해서만 — D의 구체 클래스는 여기서 모른다).
@@ -503,6 +521,7 @@ async def run_agent_flow(
         state=state_response,
         recommendations=recommendations,
         message=message,
+        llm_execution=get_llm_execution_metadata(),
     )
 
 

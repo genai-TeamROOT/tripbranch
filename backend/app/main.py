@@ -28,6 +28,7 @@ from app.routes.health import router as health_router
 from app.routes.interpret import router as interpret_router
 from app.routes.recommendations import router as recommendations_router
 from app.routes.state import router as state_router
+from app.services.runtime.llm_execution import get_llm_execution_metadata
 
 # uvicorn이 핸들러를 붙여둔 logger를 그대로 쓴다 — 앱 전용 logger를 만들면 별도
 # 로깅 설정 없이는 서버 콘솔에 아무것도 보이지 않는다.
@@ -134,6 +135,11 @@ def create_app() -> FastAPI:
         details: dict[str, object] | None = None
         if exc.provider or exc.details:
             details = {"provider": exc.provider, "upstream": exc.details}
+        llm_execution = get_llm_execution_metadata()
+        if llm_execution is not None:
+            if details is None:
+                details = {}
+            details["llm_execution"] = llm_execution.model_dump()
         return _error_response(
             exc.code, exc.message, exc.status_code, exc.retryable, details=details
         )
