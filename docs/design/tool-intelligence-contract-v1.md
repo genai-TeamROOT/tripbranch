@@ -8,7 +8,7 @@
 | 버전 | v1.0 |
 | 상태 | **확정 — v1 구현 기준** |
 | 작성 범위 | A(Agent Runtime) ↔ C(Tool Intelligence) 요청·응답 경계 |
-| 최종 수정 | 2026-08-06 |
+| 최종 수정 | 2026-08-08 |
 
 > 이 문서는 A Runtime과 C Tool Intelligence 사이의 v1 요청·응답 형식과
 > 책임 경계를 정의한다. 아직 v1 범위에 포함되지 않은 정책은 `후속 결정`으로
@@ -48,7 +48,7 @@
 | A 조건 상태 | `ApiContext`에 GPS·날씨와 갱신 시각 저장 | `llm-output-schema.md` |
 | C 내부 Tool 공통 필드 | `status`, `error`, `warnings`, `provider_metadata` | `backend/app/tools/contracts.py` |
 | Provider metadata | `source`, `status`, `retrieved_at` | `backend/app/providers/contracts.py` |
-| C Tool | 위치, 날씨, 주변 장소 상세, 집중률, 공휴일 Tool 구현 | `backend/app/tools/` |
+| C Tool | 위치, 날씨, 주변 장소 상세, 장소 상세 단건, 행사, 집중률, 공휴일 Tool 구현 | `backend/app/tools/` |
 | A↔C 공통 요청 DTO | `ToolRequest` discriminated union | `backend/app/tool_intelligence/schemas.py` |
 | A↔C 공통 응답 DTO | `ToolResponse[T]` | `backend/app/tool_intelligence/schemas.py` |
 
@@ -849,24 +849,61 @@ A는 `resolve_location` 결과의 좌표를 장소와 날씨 요청에 전달할
 
 ## 13. 현재 구현 매핑 (`Existing`)
 
+### 13.1 이 문서의 envelope은 실행 경로에 배선돼 있지 않다
+
+**이 계약을 구현한 `app/tool_intelligence/`(`schemas.py`·`service.py`·`mappers.py`)는
+`app/` 안 어디에서도 import되지 않는다.** 참조하는 것은
+`backend/tests/test_tool_intelligence_contract.py` 하나뿐이다(2026-08-08 확인).
+
+실제 A→C 호출은 이 `ToolRequest`/`ToolResponse` envelope이 아니라
+`app/agent_context/service.py`의 Context 단위 인터페이스를 지난다 — 추천은
+`RecommendationContext`, INFO는 `InfoContextRequest`/`InfoContextResponse`다.
+아래 표의 "구현됨"은 **C 내부 Tool 자체가 동작한다는 뜻이며, 그 tool_type으로
+호출이 들어오고 있다는 뜻이 아니다.**
+
+envelope을 실제로 쓸지, 아니면 Context 인터페이스로 일원화하고 이 계약을
+`Superseded`로 내릴지는 A와 함께 정할 사항이라 여기서 결정하지 않는다.
+
+### 13.2 tool_type별 매핑
+
 | `tool_type` | C 내부 구현 | 상태 |
 | --- | --- | --- |
-| `resolve_location` | `ResolveLocationTool` | 구현됨 |
-| `search_nearby_places` | `NearbyPlaceDetailsTool` | 구현됨, A 요청 Mapper 필요 |
-| `get_place_details` | `PlaceDetailsProvider` 기반 단건 Tool | 공개 Tool envelope는 `TBD` |
-| `get_weather_forecast` | `GetWeatherForecastTool` | 구현됨 |
-| `get_concentration` | `GetConcentrationTool` | 구현됨 |
-| `get_holidays` | `GetHolidaysTool` | 구현됨 |
+| `resolve_location` | `ResolveLocationTool` | Tool 구현됨 |
+| `search_nearby_places` | `NearbyPlaceDetailsTool` | Tool 구현됨, A 요청 Mapper 필요 |
+| `get_place_details` | envelope에 연결된 Tool 없음 | **`unsupported`를 반환한다** (`mappers.py::unsupported_place_details_response`). 장소 상세 단건 조회 자체는 13.3의 `GetPlaceDetailTool`이 담당 |
+| `get_weather_forecast` | `GetWeatherForecastTool` | Tool 구현됨 |
+| `get_concentration` | `GetConcentrationTool` | Tool 구현됨 |
+| `get_holidays` | `GetHolidaysTool` | Tool 구현됨 |
+
+### 13.3 envelope에 없는 Tool
+
+INFO(`question_type`) 확장으로 추가된 다음 두 Tool은 `ToolType`에 없고 Context
+인터페이스로만 호출된다. envelope에 편입할지는 13.1의 결정에 딸린 문제다.
+
+| C 내부 Tool | 용도 | 근거 |
+| --- | --- | --- |
+| `GetPlaceDetailTool` (`tools/place_detail.py`) | 이미 특정된 장소 1건의 상세정보를 이름으로 조회. `NearbyPlaceDetailsTool`과 달리 후보 검색을 하지 않는다 | D-054 |
+| `GetFestivalsTool` (`tools/festival.py`) | 지역 행사 목록을 받아 기준일에 진행 중인 것만 남긴다. 장소와의 연결은 좌표를 가진 상위 Service가 판단 | D-055 |
+
+`GetPlaceDetailTool`은 `PLACE_DETAILS_SOURCE`와 무관하게 항상
+`PlaceProvider`(TourAPI)를 쓴다. Supabase 상세 캐시는 동기화 대상이
+운영시간·휴무일 원문뿐이라 `overview`·편의시설이 비어 있고, 캐시를 둔 근거(후보
+N건의 상세조회 제거)가 장소 1건인 INFO에는 적용되지 않기 때문이다. 여기서
+캐시를 쓰면 질문 유형 대부분이 조용히 `no_data`로 떨어진다.
 
 ## 14. 후속 결정 항목
 
 다음 항목은 현재 v1 envelope와 확정 필드를 변경하지 않는 후속 협의 대상이다.
 
-1. `recommendation_run_id`를 Tool envelope에 추가할지
-2. `get_place_details` 호출 시 C가 `content_type_id`를 Context에서 복원하는 방법
-3. 계절별·요일별 복수 운영시간을 A가 소비할 최종 구조
-4. `partial`, `unknown`, `assumed` 운영시간을 A가 처리하는 정책
-5. A가 Provider metadata를 State Snapshot에 그대로 보존할지
+1. **이 envelope을 존속시킬지 (13.1)** — 실행 경로가 Context 인터페이스로 굳었다.
+   envelope을 A 호출 경로로 되살릴지, Context 인터페이스로 일원화하고 이 계약을
+   `Superseded`로 내릴지 A와 결정한다. 다른 항목은 이 결정에 딸려 있다.
+2. `recommendation_run_id`를 Tool envelope에 추가할지
+3. `get_place_details` 호출 시 C가 `content_type_id`를 Context에서 복원하는 방법
+4. `GetPlaceDetailTool`·`GetFestivalsTool`을 `ToolType`에 편입할지 (13.3)
+5. 계절별·요일별 복수 운영시간을 A가 소비할 최종 구조
+6. `partial`, `unknown`, `assumed` 운영시간을 A가 처리하는 정책
+7. A가 Provider metadata를 State Snapshot에 그대로 보존할지
 
 ## 15. 결정 기록
 
@@ -878,6 +915,7 @@ A는 `resolve_location` 결과의 좌표를 장소와 날씨 요청에 전달할
 | 2026-07-24 | 운영시간 | 원문과 정규화된 시간 구간 모두 반환 | A·C | 원본 보존과 계산 지원 |
 | 2026-07-24 | metadata | `retrieved_at`은 실제 외부 조회·정규화 완료 시각 | A·C | 데이터 최신성 의미 유지 |
 | 2026-08-06 | `TI-09` 무효화 | `get_weather_forecast.data.condition` 제거, §9의 `api_weather` 매핑 삭제 | C | D-038로 `api_weather` 경로가, D-051로 C의 날씨 판정이 각각 사라짐 |
+| 2026-08-08 | 구현 현황 정정 | §13에 envelope 미배선 사실과 envelope 밖 Tool 2종을 기록 | C | 문서가 "구현됨"으로 읽히던 상태와 실제 호출 경로가 달랐음. envelope 존속 여부는 §14-1로 넘김 |
 
 ## 16. 구현 및 후속 작업
 

@@ -452,7 +452,7 @@ def _override_aliases(override: ManualOverride | None) -> tuple[str, ...]:
 
     "이 장소를 가리키는 다른 이름"이라는 뜻이라 집중률 API에 있을 필요가 없다.
     사용자는 "창덕궁"이라고 하지만 저장소 제목은 "창덕궁과 후원 [유네스코 세계유산]"
-    이고 집중률 목록에도 그 이름뿐이다. 조회는 concentration_search_key가 맡으므로
+    이고 집중률 목록에도 그 이름뿐이다. 조회는 concentration_search_keys가 맡으므로
     별칭을 집중률 목록으로 거를 이유가 없다.
     """
     if override is None:
