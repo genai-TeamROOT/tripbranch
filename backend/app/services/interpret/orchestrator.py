@@ -16,6 +16,8 @@ from __future__ import annotations
 from app.providers.protocols import LLMProvider
 from app.schemas import (
     ClarificationPayload,
+    GeneralPayload,
+    GeneralTopic,
     Intent,
     InterpretRequest,
     LLMOutput,
@@ -24,11 +26,45 @@ from app.schemas import (
 )
 from app.state.schema import now_kst
 
+_SERVICE_IDENTITY_MARKERS = (
+    "넌 누구",
+    "너 누구",
+    "너는 누구",
+    "이름이 뭐",
+    "이름 뭐",
+    "뭘 할 수",
+    "뭐 할 수",
+    "무엇을 할 수",
+    "트리비",
+    "TripBranch",
+    "tripbranch",
+)
+
+
+def _is_service_identity_question(user_input: str) -> bool:
+    """챗봇/서비스 정체성 질문은 LLM 1차 분류 전에 GENERAL로 고정한다.
+
+    Gemini가 "넌 누구야?"를 role_request/OUT_OF_SCOPE로 밀 수 있어 생기는
+    회귀를 막는다. int-06-outofscope.md §12도 서비스 소개 요청은 GENERAL로 둔다.
+    """
+
+    return any(marker in user_input for marker in _SERVICE_IDENTITY_MARKERS)
+
 
 async def build_interpretation(
     request: InterpretRequest, llm: LLMProvider
 ) -> LLMOutput:
     """Fake/Real LLMProvider를 인자로 받는 테스트 가능한 본체."""
+
+    if _is_service_identity_question(request.user_input):
+        return LLMOutput(
+            intent=Intent.GENERAL,
+            status=OutputStatus.COMPLETE,
+            general=GeneralPayload(
+                topic=GeneralTopic.SERVICE_IDENTITY,
+                original_question=request.user_input,
+            ),
+        )
 
     classification = (
         await llm.classify_intent(

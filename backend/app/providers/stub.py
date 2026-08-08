@@ -49,6 +49,7 @@ from app.schemas import (
     PlaceTag,
     PlaceType,
     QuestionType,
+    RecommendationResponse,
     RecommendPayload,
     ScheduleItem,
     Severity,
@@ -135,6 +136,16 @@ _GENERAL_MARKERS = (
     "에티켓",
     "막차",
     "동선",
+)
+_SERVICE_IDENTITY_MARKERS = (
+    "넌 누구",
+    "너 누구",
+    "이름이 뭐",
+    "뭘 할 수",
+    "뭐 할 수",
+    "트리비",
+    "TripBranch",
+    "tripbranch",
 )
 _LOCATION_ONLY_REMAINDERS = frozenset(
     {
@@ -267,7 +278,7 @@ class FakeLLMProvider:
             marker in user_input for marker in _COMPARE_MARKERS
         ):
             result = IntentClassificationResult(intent=Intent.COMPARE)
-        elif any(marker in user_input for marker in _GENERAL_MARKERS):
+        elif any(marker in user_input for marker in _GENERAL_MARKERS + _SERVICE_IDENTITY_MARKERS):
             result = IntentClassificationResult(intent=Intent.GENERAL)
         elif _find_known_place(user_input) and any(
             marker in user_input for marker in _INFO_QUESTION_MARKERS
@@ -496,7 +507,9 @@ class FakeLLMProvider:
     async def extract_general_request(
         self, user_input: str
     ) -> ProviderResult[LLMOutput]:
-        if "역사" in user_input or "언제 지어졌" in user_input:
+        if any(marker in user_input for marker in _SERVICE_IDENTITY_MARKERS):
+            topic = GeneralTopic.SERVICE_IDENTITY
+        elif "역사" in user_input or "언제 지어졌" in user_input:
             topic = GeneralTopic.PLACE_KNOWLEDGE
         elif "언제 피어" in user_input:
             topic = GeneralTopic.SEASON_INFO
@@ -517,6 +530,33 @@ class FakeLLMProvider:
             general=GeneralPayload(topic=topic, original_question=user_input),
         )
         return provider_result(result, source=ProviderSource.FAKE_LLM)
+
+    async def generate_general_answer(
+        self, topic: GeneralTopic, original_question: str
+    ) -> ProviderResult[str]:
+        if topic is GeneralTopic.SERVICE_IDENTITY:
+            answer = (
+                "저는 TripBranch의 국내 여행 챗봇 트리비예요. "
+                "원하는 지역이나 현재 위치를 기준으로 날씨, 운영시간, 거리, "
+                "혼잡도 선호를 함께 보고 갈 만한 곳을 추천해드릴 수 있어요."
+            )
+        else:
+            answer = "국내 여행에 참고할 만한 정보를 간단히 알려드릴게요."
+        return provider_result(answer, source=ProviderSource.FAKE_LLM)
+
+    async def generate_recommendation_summary(
+        self, intent: Intent, recommendations: RecommendationResponse
+    ) -> ProviderResult[str]:
+        shown = [*recommendations.recommendations, *recommendations.unverified_recommendations]
+        if not shown:
+            return provider_result(
+                "조건에 맞는 곳을 찾지 못했어요.", source=ProviderSource.FAKE_LLM
+            )
+        first = shown[0]
+        return provider_result(
+            f"{first.name}을(를) 중심으로 지금 가볼 만한 곳을 골라봤어요.",
+            source=ProviderSource.FAKE_LLM,
+        )
 
     async def generate_schedule_plan(
         self, request: SchedulePlanningRequest
@@ -603,6 +643,31 @@ class FakeWeatherProvider:
             ),
             source=ProviderSource.FAKE_WEATHER,
         )
+
+
+def _fake_intro(content_type_id: str) -> dict[str, object]:
+    """detailIntro2 응답을 유형별 필드명까지 흉내 낸다.
+
+    이 값을 비워두면 INFO 상세 질의(요금·주차·편의시설)의 필드 추출이 한 줄도
+    실행되지 않은 채 테스트가 통과한다 — raw_intro가 빈 dict면 추출 결과도 항상
+    빈 dict라서 "값이 없다"와 "로직이 안 돌았다"를 구분할 수 없다. 실 Provider와
+    같은 키 이름을 쓰는 것이 핵심이다(문화시설 14는 usefee/parkingculture,
+    음식점 39는 parkingfood).
+    """
+
+    if content_type_id == "39":
+        return {
+            "parkingfood": "가능(10대)",
+            "chkcreditcardfood": "가능",
+            "opentimefood": "08:00-22:00",
+        }
+    return {
+        "usefee": "어른 3,000원 / 어린이 1,500원",
+        "parkingculture": "주차 가능(무료)",
+        "chkbabycarriageculture": "가능",
+        "chkpetculture": "불가",
+        "chkcreditcardculture": "가능",
+    }
 
 
 class FakePlaceProvider:
@@ -727,12 +792,12 @@ class FakePlaceProvider:
                 title=candidate.name if candidate else None,
                 address=candidate.address if candidate else None,
                 overview="Fake Provider의 장소 상세정보입니다.",
-                homepage=None,
-                telephone=None,
+                homepage="https://example.test/fake-place",
+                telephone="02-000-0000",
                 operating_hours=operating_hours,
                 rest_date=rest_date,
                 raw_common={},
-                raw_intro={},
+                raw_intro=_fake_intro(content_type_id) if candidate else {},
                 provider="fake_place",
                 operating_schedule=normalize_operating_schedule(
                     content_type_id=content_type_id,

@@ -26,6 +26,7 @@ import type {
   LLMOutputStatus,
   RecommendationItem,
   RecommendationsResponse,
+  ScheduleResult,
   SessionContextResponse,
   UserConditions,
 } from "../types";
@@ -112,6 +113,7 @@ interface ChatTurnPayload {
   mergedConditions: UserConditions | null;
   message: string;
   recommendations: RecommendationsResponse | null;
+  schedule?: ScheduleResult | null;
   sessionId: string | null;
   status: LLMOutputStatus;
   agentResponse: AgentResponse;
@@ -256,7 +258,7 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         error: null,
       };
     case "APPEND_CHAT_TURN": {
-      const { conditions, intent, message, recommendations, showDebug } = action.payload;
+      const { conditions, intent, message, recommendations, schedule, showDebug } = action.payload;
       const messages: ChatMessage[] = [];
       // 옵션 A: 조건 카드는 유지하되 확인 버튼은 없다 — Agent가 해석과 추천을 한 번에
       // 끝내므로 중간에 사용자가 진행을 승인할 지점이 없다.
@@ -288,6 +290,13 @@ function tripReducer(state: TripState, action: TripAction): TripState {
           unverified_recommendations: recommendations.unverified_recommendations,
           elapsed_ms: action.payload.elapsedMsClient,
           server_elapsed_ms: recommendations.elapsed_ms,
+        });
+      }
+      if (schedule) {
+        messages.push({
+          id: createMessageId("schedule"),
+          type: "schedule_result",
+          schedule,
         });
       }
 
@@ -323,9 +332,11 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         // 제외 목록의 단일 기준은 B다. 화면 표시용으로만 누적한다.
         shown_place_ids: Array.from(new Set([...state.shown_place_ids, ...shownIds])),
         session_id: action.payload.sessionId ?? state.session_id,
-        // 추천을 기대한 발화인데 결과가 없으면 Agent가 조건을 되물은 것으로 본다.
+        // 추천/일정을 기대한 발화인데 결과가 없으면 Agent가 조건을 되물은 것으로 본다.
         awaiting_clarification:
-          recommendations === null && (intent === "RECOMMEND" || intent === "MODIFY"),
+          recommendations === null &&
+          !schedule &&
+          (intent === "RECOMMEND" || intent === "MODIFY" || intent === "SCHEDULE"),
         messages: [...state.messages, ...messages],
         auditTurns: [...state.auditTurns, auditTurn],
         phase: "ready",

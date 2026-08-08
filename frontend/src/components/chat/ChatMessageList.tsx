@@ -10,6 +10,7 @@ import type { ChatMessage } from "../../types";
 import { AgentProgressMessage } from "./AgentProgressMessage";
 import { ConditionDebugMessage } from "./ConditionDebugMessage";
 import { RecommendationResultMessage } from "./RecommendationResultMessage";
+import { ScheduleResultMessage } from "./ScheduleResultMessage";
 import { SessionStatusMessage } from "./SessionStatusMessage";
 
 interface ChatMessageListProps {
@@ -94,6 +95,10 @@ export function ChatMessageList({
                 error={message.error}
               />
             );
+          }
+
+          if (message.type === "schedule_result") {
+            return <ScheduleResultMessage key={message.id} schedule={message.schedule} />;
           }
 
           return (
