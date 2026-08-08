@@ -153,7 +153,7 @@ async def test_find_active_places_by_name_falls_back_through_title_variants() ->
                         "longitude": 126.9945,
                         "place_concentration_mappings": {
                             "primary_concentration_name": "종묘 [유네스코 세계유산]",
-                            "concentration_search_key": "종묘",
+                            "concentration_search_keys": ["종묘"],
                         },
                     }
                 ],
@@ -168,7 +168,7 @@ async def test_find_active_places_by_name_falls_back_through_title_variants() ->
     assert len(locations) == 1
     assert locations[0].concentration_name == "종묘 [유네스코 세계유산]"
     # 조회는 검색어로, 대조는 정식 명칭으로 해야 종묘광장공원과 섞이지 않는다.
-    assert locations[0].concentration_search_key == "종묘"
+    assert locations[0].concentration_search_keys == ("종묘",)
 
 
 @pytest.mark.asyncio
@@ -198,7 +198,7 @@ async def test_find_active_places_by_name_uses_mapping_alias_as_last_resort() ->
                     "longitude": 126.9910,
                     "place_concentration_mappings": {
                         "primary_concentration_name": "창덕궁과 후원 [유네스코 세계유산]",
-                        "concentration_search_key": "창덕궁과",
+                        "concentration_search_keys": ["창덕궁과", "후원"],
                     },
                 }
             ],
@@ -213,7 +213,7 @@ async def test_find_active_places_by_name_uses_mapping_alias_as_last_resort() ->
     assert alias_filters == ["cs.{창덕궁}"]
     assert len(locations) == 1
     assert locations[0].title == "창덕궁과 후원 [유네스코 세계유산]"
-    assert locations[0].concentration_search_key == "창덕궁과"
+    assert locations[0].concentration_search_keys == ("창덕궁과", "후원")
 
 
 @pytest.mark.asyncio

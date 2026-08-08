@@ -19,6 +19,13 @@
   (D-056. `places`에 `parking_info_raw`, `parking_fee_raw`, `use_fee_raw`,
   `discount_info_raw`, `first_image_url`, `thumbnail_url` 추가. 값 적재는
   provider·place_sync 배선 후)
+- 집중률 검색어 목록 마이그레이션:
+  `202608080002_add_concentration_search_keys.sql`
+  (원격 이력에는 `20260808064030_add_concentration_search_keys`로 기록됨)
+  (D-057. `concentration_search_keys text[]` 추가·backfill 후 단수 컬럼
+  `concentration_search_key`를 삭제한다. 두 컬럼을 병행하면 진실의 원천이 둘이 되므로
+  한 마이그레이션에서 끝낸다. 체크 제약에는 서브쿼리를 쓸 수 없어 공백 검사를
+  `array_to_string(keys, ',') !~ '\s'`로 우회한다)
 - 실제 DB 적용일: 2026-07-24, 2026-07-29, 2026-08-04, 2026-08-08
 - 적용 방법: Supabase Dashboard SQL Editor 및 Supabase MCP `apply_migration`
 - 적용 결과: `places`, `place_enrichments`, `place_sync_runs`,

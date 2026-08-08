@@ -202,8 +202,9 @@ class StoredPlaceLocation:
     longitude: float
     # 집중률 응답에서 장소를 골라낼 때 대조할 정식 명칭.
     concentration_name: str | None = None
-    # tAtsNm에 넣을 검색어. 비어 있으면 concentration_name을 그대로 쓴다.
-    concentration_search_key: str | None = None
+    # tAtsNm에 넣을 검색어 목록. 앞에서부터 시도하고 결과가 나오면 멈춘다(D-057).
+    # 비어 있으면 concentration_name을 그대로 쓴다.
+    concentration_search_keys: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

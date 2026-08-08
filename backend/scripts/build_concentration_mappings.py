@@ -214,6 +214,59 @@ def derive_search_key(canonical: str, names: Sequence[str]) -> tuple[str, str]:
     return canonical, "no_unique_token"
 
 
+def _candidate_tokens(canonical: str) -> list[str]:
+    """검색어 후보를 순서대로 만든다. derive_search_key와 같은 기준을 쓴다.
+
+    긴 토큰 우선, 길이가 같으면 뒤쪽을 먼저 둔다. 부기를 뗀 형태와 원본 양쪽에서
+    토큰을 모으되 중복은 앞선 것을 남긴다.
+    """
+    base = _PAREN_PATTERN.sub("", _BRACKET_PATTERN.sub("", canonical)).strip() or canonical
+    tokens: list[str] = []
+    for source in (base, canonical):
+        parts = source.split()
+        tokens.extend(
+            parts[index]
+            for index in sorted(range(len(parts)), key=lambda i: (-len(parts[i]), -i))
+        )
+    ordered: list[str] = []
+    for token in tokens:
+        if not token or _WHITESPACE_PATTERN.search(token) or token in ordered:
+            continue
+        # 원본에서 자른 토큰에는 부기 조각이 섞인다("종묘 [유네스코 세계유산]" →
+        # "[유네스코", "세계유산]"). 괄호가 한쪽만 붙은 값은 장소명이 아니라 잘린
+        # 부기이므로 검색어로 쓰지 않는다.
+        if any(char in token for char in "[]()"):
+            continue
+        ordered.append(token)
+    return ordered
+
+
+def derive_search_keys(
+    canonical: str, names: Sequence[str], primary: str | None
+) -> list[str]:
+    """조회에 순서대로 시도할 검색어 목록을 만든다(D-057).
+
+    1순위는 기존 검색어다. 지금 값들이 전부 정상 조회되는 것이 확인됐으므로
+    휴리스틱으로 재계산해 회귀를 만들지 않는다 — 토큰 추가는 능력 추가로만 둔다.
+
+    나머지는 `_candidate_tokens()` 순서를 따르되, 집중률 목록의 어떤 이름에도
+    걸리지 않는 토큰은 뺀다. 호출해도 0건이라 시도할 값어치가 없다.
+
+    목적은 정식 명칭과 어긋나는 발화를 받아내는 것이다 — "닭한마리 골목 혼잡해?"는
+    '서울 동대문 닭한마리 골목'과 문자열이 다르지만 '닭한마리'로는 찾아진다.
+    """
+    keys: list[str] = []
+    first = (primary or canonical).strip()
+    if first and not _WHITESPACE_PATTERN.search(first):
+        keys.append(first)
+    for token in _candidate_tokens(canonical):
+        if token in keys:
+            continue
+        if any(token in name for name in names):
+            keys.append(token)
+    return keys
+
+
 def apply_search_keys(
     rows: Sequence[MappingRow], names: Sequence[str]
 ) -> tuple[list[MappingRow], list[MappingRow]]:
@@ -230,13 +283,17 @@ def apply_search_keys(
     unresolved: list[MappingRow] = []
     for row in rows:
         key, reason = derive_search_key(row.concentration_title, names)
+        search_key = None if key == row.concentration_title else key
         resolved = MappingRow(
             row.content_id,
             row.place_title,
             row.concentration_title,
             row.match_method,
             row.aliases,
-            search_key=None if key == row.concentration_title else key,
+            search_key=search_key,
+            search_keys=tuple(
+                derive_search_keys(row.concentration_title, names, search_key)
+            ),
         )
         applied.append(resolved)
         if reason in ("no_unique_token", "token_ambiguous"):
@@ -316,6 +373,8 @@ class MappingRow:
     aliases: tuple[str, ...] = ()
     # tAtsNm에 넣을 검색어. 정식 명칭 그대로 조회되면 비워 둔다.
     search_key: str | None = None
+    # 순서대로 시도할 검색어 목록. 1순위는 search_key(없으면 정식 명칭)다(D-057).
+    search_keys: tuple[str, ...] = ()
 
 
 def match_places(
@@ -411,6 +470,7 @@ def write_mapping_csv(rows: Sequence[MappingRow], path: Path) -> None:
                 "place_title",
                 "concentration_title",
                 "concentration_search_key",
+                "concentration_search_keys",
                 "concentration_aliases",
                 "match_status",
                 "match_method",
@@ -425,6 +485,7 @@ def write_mapping_csv(rows: Sequence[MappingRow], path: Path) -> None:
                     row.place_title,
                     row.concentration_title,
                     row.search_key or "",
+                    json.dumps(list(row.search_keys), ensure_ascii=False),
                     json.dumps(list(row.aliases), ensure_ascii=False),
                     "matched",
                     row.match_method,

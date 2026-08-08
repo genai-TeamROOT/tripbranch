@@ -34,7 +34,7 @@ _STATE_COLUMNS = ",".join(
 )
 _LOCATION_COLUMNS = (
     "content_id,title,address,latitude,longitude,"
-    "place_concentration_mappings(primary_concentration_name,concentration_search_key)"
+    "place_concentration_mappings(primary_concentration_name,concentration_search_keys)"
 )
 
 # 별칭 조회는 매핑이 있는 장소로만 좁혀야 해서 inner join이 필요하다.
@@ -111,10 +111,9 @@ def _map_place_locations(
             else None
         )
         # tAtsNm은 공백이 든 값에 0건을 돌려주므로 조회용 검색어를 따로 둔다.
-        concentration_search_key = (
-            _optional_text(mapping.get("concentration_search_key"))
-            if isinstance(mapping, Mapping)
-            else None
+        # 목록으로 받아 앞에서부터 시도한다(D-057).
+        concentration_search_keys = _search_keys(
+            mapping.get("concentration_search_keys") if isinstance(mapping, Mapping) else None
         )
         locations.append(
             StoredPlaceLocation(
@@ -124,7 +123,7 @@ def _map_place_locations(
                 latitude=latitude,
                 longitude=longitude,
                 concentration_name=concentration_name,
-                concentration_search_key=concentration_search_key,
+                concentration_search_keys=concentration_search_keys,
             )
         )
     return tuple(locations)
@@ -148,6 +147,25 @@ def _title_filters(name: str) -> list[str]:
 
 def _optional_text(value: object) -> str | None:
     return str(value) if value is not None else None
+
+
+def _search_keys(value: object) -> tuple[str, ...]:
+    """집중률 검색어 목록을 순서 그대로 읽는다(D-057).
+
+    공백이 든 값은 tAtsNm에 넣으면 무엇을 넣든 0건이 돌아오므로 여기서 버린다.
+    DB 제약이 같은 것을 막고 있지만, 저장소를 거치지 않고 들어온 값이나 제약이
+    없던 시절의 행이 조용히 0건 조회를 만들지 않도록 읽는 쪽에서도 막는다.
+    """
+    if not isinstance(value, list):
+        return ()
+    keys: list[str] = []
+    for item in value:
+        if item is None:
+            continue
+        text = str(item).strip()
+        if text and not any(character.isspace() for character in text):
+            keys.append(text)
+    return tuple(keys)
 
 
 def _chunks(values: Sequence[T], size: int) -> list[Sequence[T]]:
