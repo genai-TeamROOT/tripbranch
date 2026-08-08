@@ -11,6 +11,7 @@ from app.agent_context.schemas import (
 )
 from app.domain.candidate_mapper import map_context_to_scoring_candidates
 from app.domain.operating_hours import (
+    DERIVED_CLOSURE_SOURCE_TEXT,
     OperatingAvailability,
     OperatingParseStatus,
     clean_operating_text,
@@ -333,3 +334,58 @@ def test_weekday_scope_keeps_remaining_time_from_the_right_range() -> None:
 
     assert candidate.operating_hours is not None
     assert candidate.operating_hours.close_time == time(20, 30)
+
+
+def test_weekday_not_listed_in_operating_hours_is_derived_as_closure() -> None:
+    """요일을 열거한 원문에서 빠진 요일은 정기 휴무로 유도한다.
+
+    북촌문화센터 원문 — 휴무 필드가 비어 있고 월요일만 열거에서 빠져 있다.
+    """
+    schedule = normalize_operating_schedule(
+        content_type_id="12",
+        operating_hours=(
+            "- 화요일 / 목요일~금요일 09:00~18:00<br>"
+            "- 수요일 09:00~20:00<br>"
+            "- 토요일~일요일 09:00~17:00"
+        ),
+        rest_date=None,
+    )
+
+    assert len(schedule.closure_rules) == 1
+    assert schedule.closure_rules[0].weekdays == frozenset({0})
+    assert schedule.closure_rules[0].source_text == DERIVED_CLOSURE_SOURCE_TEXT
+
+
+def test_derived_closure_excludes_the_candidate_for_scoring() -> None:
+    """유도한 휴무가 소비 측 폐점 판정까지 이어진다."""
+    candidate = _scoring_candidate_at(
+        "- 화요일 / 목요일~금요일 09:00~18:00<br>- 수요일 09:00~20:00<br>"
+        "- 토요일~일요일 09:00~17:00",
+        datetime(2026, 8, 3, 10, 0),
+    )
+
+    assert candidate.operating_hours is not None
+    assert candidate.operating_hours.open_time == time.min
+    assert candidate.operating_hours.close_time == time.min
+
+
+def test_no_closure_is_derived_when_a_rule_covers_every_weekday() -> None:
+    """요일 없는 규칙이 하나라도 있으면 전 요일을 덮으므로 유도하지 않는다."""
+    schedule = normalize_operating_schedule(
+        content_type_id="12",
+        operating_hours="[열람실]<br>- 주말 09:00~17:00<br>[자율학습실]<br>- 07:00~22:00",
+        rest_date=None,
+    )
+
+    assert schedule.closure_rules == ()
+
+
+def test_derived_closure_does_not_duplicate_declared_rest_date() -> None:
+    schedule = normalize_operating_schedule(
+        content_type_id="12",
+        operating_hours="- 월요일~금요일 07:00~20:00<br>- 토요일 10:00~14:00",
+        rest_date="매주 일요일",
+    )
+
+    assert [rule.weekdays for rule in schedule.closure_rules] == [frozenset({6})]
+    assert schedule.closure_rules[0].source_text == "매주 일요일"

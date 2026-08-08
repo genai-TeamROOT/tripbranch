@@ -10,6 +10,8 @@ from html.parser import HTMLParser
 
 _COURSE_CONTENT_TYPE_ID = "25"
 OPERATING_PARSER_VERSION = "operating-hours-1.2.0"
+# 원문에 적힌 휴무와 구분하기 위한 유도 휴무 표식. `_derive_unlisted_weekday_closures()` 참고.
+DERIVED_CLOSURE_SOURCE_TEXT = "운영시간에 열거되지 않은 요일"
 _WEEKDAY_INDEX = {
     "월": 0,
     "화": 1,
@@ -232,7 +234,8 @@ def normalize_operating_schedule(
             cleaned_rest_date=cleaned_rest,
             availability=OperatingAvailability.SCHEDULED,
             rules=rules,
-            closure_rules=closure_rules,
+            closure_rules=closure_rules
+            + _derive_unlisted_weekday_closures(rules, closure_rules),
             parse_status=status,
             assumption_reason=None,
             warnings=warnings,
@@ -416,6 +419,38 @@ def _parse_closures(value: str | None) -> tuple[ClosureRule, ...]:
         if weekdays:
             rules.append(ClosureRule(weekdays=weekdays, source_text=line))
     return tuple(rules)
+
+
+def _derive_unlisted_weekday_closures(
+    rules: tuple[OperatingRule, ...],
+    closure_rules: tuple[ClosureRule, ...],
+) -> tuple[ClosureRule, ...]:
+    """운영시간이 요일을 열거했을 때, 빠진 요일을 정기 휴무로 유도한다(D-058).
+
+    유도의 근거는 원문 자체다 — 활성 장소 844건 중 요일을 열거하고도 빠진 요일이
+    있는 39건에서, 38건은 그 요일이 휴무 원문에 이미 명시돼 있었다. 남은 1건
+    (북촌문화센터)은 규칙의 반례가 아니라 휴무 필드가 비어 있는 원본 결함이고,
+    실제로도 그 요일에 문을 닫는다.
+
+    이 유도는 소비 측에서 하드 필터(폐점)로 이어지므로, 원문에 적힌 휴무와
+    구분할 수 있게 `source_text`에 근거를 남긴다. 요일 범위를 하나라도 잘못
+    읽으면 후보가 점수 손해가 아니라 통째로 사라진다는 뜻이기도 하다.
+    """
+    listed: set[int] = set()
+    for rule in rules:
+        # 요일 없는 규칙이 하나라도 있으면 그 규칙이 전 요일을 덮으므로
+        # "빠진 요일"이라는 개념 자체가 성립하지 않는다.
+        if rule.weekdays is None:
+            return ()
+        listed |= rule.weekdays
+    for closure in closure_rules:
+        listed |= closure.weekdays
+    unlisted = frozenset(range(7)) - listed
+    if not unlisted:
+        return ()
+    return (
+        ClosureRule(weekdays=unlisted, source_text=DERIVED_CLOSURE_SOURCE_TEXT),
+    )
 
 
 def _has_complex_closure_exception(value: str) -> bool:
