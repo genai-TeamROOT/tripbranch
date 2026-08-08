@@ -609,6 +609,9 @@ async def test_info_concentration_flow_calls_tool_provider_once() -> None:
     assert response.recommendations is None
     assert providers["tool_provider"].info_call_count == 1
     assert providers["tool_provider"].call_count == 0  # fetch_context(RECOMMEND용)는 안 씀
+    assert [execution.operation for execution in response.tool_executions] == [
+        "info_concentration"
+    ]
     assert providers["recommendation_provider"].call_count == 0
     assert "창덕궁" in response.message
     assert "보통" in response.message  # FakeToolProvider 고정 데이터
@@ -864,6 +867,11 @@ async def test_concentration_intent_persisted_by_b_triggers_rerank() -> None:
     assert response.llm_output.recommend.conditions.concentration_intent == "SEEK"
     assert response.state.user_conditions.concentration_intent == "SEEK"
     assert providers["enrichment_provider"].call_count == 1
+    assert [execution.operation for execution in response.tool_executions] == [
+        "context_fetch",
+        "candidate_enrichment",
+    ]
+    assert response.tool_executions[1].candidate_status_counts == {"success": 4}
 
 
 @pytest.mark.asyncio
@@ -999,6 +1007,7 @@ async def test_추천_응답에_C_실행_정보가_실린다() -> None:
     assert response.tool_execution is not None
     assert response.tool_execution.status == "success"
     assert response.tool_execution.latency_ms is not None
+    assert [execution.operation for execution in response.tool_executions] == ["context_fetch"]
     assert [item.key for item in response.tool_execution.context_items] == [
         "location",
         "weather",

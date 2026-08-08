@@ -297,6 +297,7 @@ export interface AgentResponse {
   message: string;
   llm_execution?: LLMExecutionMetadata | null;
   tool_execution?: ToolExecutionDebug | null;
+  tool_executions?: ToolExecutionDebug[];
 }
 
 export interface ToolProviderDebug {
@@ -316,6 +317,7 @@ export interface ToolContextItemDebug {
 }
 
 export interface ToolExecutionDebug {
+  operation?: "context_fetch" | "info_concentration" | "candidate_enrichment";
   request_id: string;
   status: string;
   latency_ms: number | null;
@@ -326,6 +328,8 @@ export interface ToolExecutionDebug {
   resolved_location_address: string | null;
   error_code: string | null;
   clarification_code: string | null;
+  is_proxy: boolean | null;
+  candidate_status_counts: Record<string, number>;
 }
 
 export interface LLMCallMetadata {

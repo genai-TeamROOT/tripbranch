@@ -561,7 +561,7 @@ class ToolContextItemDebug(BaseModel):
 
 
 class ToolExecutionDebug(BaseModel):
-    """개발자용 Audit 전용: A→C 한 번의 Context 수집이 실제로 무엇을 했는지.
+    """개발자용 Audit 전용: A→C 호출 한 단계가 실제로 무엇을 했는지.
 
     llm_execution과 같은 성격의 관측 전용 필드다 — 추천 판정에는 쓰이지 않으며,
     이 값이 없다고 해서 흐름이 달라지지 않는다. 특히 providers[].source는 실제로
@@ -569,6 +569,9 @@ class ToolExecutionDebug(BaseModel):
     자동 전환하지 않는다)가 지켜지고 있는지 화면에서 바로 확인하는 수단이 된다.
     """
 
+    operation: Literal["context_fetch", "info_concentration", "candidate_enrichment"] = (
+        "context_fetch"
+    )
     request_id: str
     status: str
     latency_ms: int | None = None
@@ -579,6 +582,8 @@ class ToolExecutionDebug(BaseModel):
     resolved_location_address: str | None = None
     error_code: str | None = None
     clarification_code: str | None = None
+    is_proxy: bool | None = None
+    candidate_status_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class AgentResponse(BaseModel):
@@ -604,3 +609,6 @@ class AgentResponse(BaseModel):
     # 개발자용 Audit에서 C가 실제로 호출한 Provider·항목별 상태를 확인한다.
     # C 단계에 도달하지 못한 요청(LLM 실패, needs_clarification 등)에서는 None이다.
     tool_execution: ToolExecutionDebug | None = None
+    # 한 요청 안에서 C가 여러 번 호출될 수 있으므로, 감사 패널은 이 목록을 우선 사용한다.
+    # tool_execution은 이전 개발자 클라이언트 호환을 위해 첫/주요 호출을 계속 제공한다.
+    tool_executions: list[ToolExecutionDebug] = Field(default_factory=list)
