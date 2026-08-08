@@ -114,6 +114,16 @@ _SCHEDULE_MARKERS = (
     "순서 알려",
     "어디부터 갈",
 )
+# state_transform._RESET_SCOPE_PHRASES와 같은 문구를 미러링한다(D-059) — SCHEDULE
+# 되묻기를 이어가는 도중에도 사용자가 명시적으로 재시작을 말하면 이어가기로 강제하지
+# 않는다. Fake는 프로덕션 상태 모듈에 의존하지 않는 레이어 분리를 유지하므로 별도 상수로
+# 둔다(문구 4개뿐이라 중복 비용이 적다).
+_EXPLICIT_RESTART_MARKERS = (
+    "처음부터 다시",
+    "조건 다시 정할게",
+    "조건 다시 정하고 싶어",
+    "새로 시작",
+)
 _INFO_QUESTION_MARKERS = (
     "열어",
     "몇 시",
@@ -247,6 +257,8 @@ class FakeLLMProvider:
         *,
         has_previous_recommendation: bool,
         shown_place_count: int,
+        pending_clarification: str | None = None,
+        last_intent: str | None = None,
     ) -> ProviderResult[IntentClassificationResult]:
         if any(marker in user_input for marker in _PROMPT_INJECTION_MARKERS):
             result = IntentClassificationResult(
@@ -267,6 +279,15 @@ class FakeLLMProvider:
                 out_of_scope_severity=Severity.LOW,
             )
         elif any(marker in user_input for marker in _SCHEDULE_MARKERS):
+            result = IntentClassificationResult(intent=Intent.SCHEDULE)
+        elif (
+            last_intent == Intent.SCHEDULE.value
+            and pending_clarification is not None
+            and not any(phrase in user_input for phrase in _EXPLICIT_RESTART_MARKERS)
+        ):
+            # D-059: 직전 턴이 SCHEDULE 되묻기로 끝났으면, 지명만 던지거나 조건만
+            # 보충하는 짧은 답변도 새 MODIFY 요청이 아니라 그 SCHEDULE을 이어가는
+            # 중이다. MODIFY 분기(바로 아래)보다 먼저 검사해 우선순위를 준다.
             result = IntentClassificationResult(intent=Intent.SCHEDULE)
         elif has_previous_recommendation and (
             any(marker in user_input for marker in _REJECT_ALL_MARKERS + _MODIFY_CHANGE_MARKERS)

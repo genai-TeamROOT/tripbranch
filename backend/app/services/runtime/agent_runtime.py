@@ -335,6 +335,8 @@ async def run_agent_flow(
         has_previous_recommendation=session_context.has_recommendation,
         shown_place_count=len(session_context.shown_place_ids),
         current_conditions=current_conditions,
+        pending_clarification=session_context.pending_clarification,
+        last_intent=session_context.last_intent,
     )
     llm_started_at = time.monotonic()
     llm_output = await build_interpretation(interpret_request, llm)
@@ -372,14 +374,16 @@ async def run_agent_flow(
             store=store,
         )
 
-    # 3-2) 되묻기 플래그 소비. 조건을 건드리는 턴(RECOMMEND/MODIFY)만 지운다 —
+    # 3-2) 되묻기 플래그 소비. 조건을 건드리는 턴(RECOMMEND/MODIFY/SCHEDULE)만 지운다 —
     #      transform()이 이미 session_context의 값을 읽어 병합 방식을 정했으므로,
     #      여기서 지워도 이번 턴 판단에는 영향이 없다. 이번 턴이 또 되묻기로 끝나면
     #      아래 4)/5-1)에서 새 값을 다시 심는다. INFO/GENERAL 같은 곁가지 대화는
-    #      조건을 바꾸지 않으므로 이전 되묻기를 그대로 살려둔다.
+    #      조건을 바꾸지 않으므로 이전 되묻기를 그대로 살려둔다. SCHEDULE도 RECOMMEND와
+    #      동일하게 조건을 건드리는 턴이라 목록에 포함한다(D-059) — 빠뜨리면 SCHEDULE
+    #      되묻기가 옳게 이어져도 플래그가 계속 남아 다음 턴 판단에 잘못 영향을 준다.
     if (
         session_context.pending_clarification is not None
-        and llm_output.intent in (Intent.RECOMMEND, Intent.MODIFY)
+        and llm_output.intent in (Intent.RECOMMEND, Intent.MODIFY, Intent.SCHEDULE)
     ):
         _remember_clarification(state_response.session_id, None, store)
 

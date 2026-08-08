@@ -971,6 +971,46 @@ async def test_clarification_answer_keeps_conditions_from_previous_turn() -> Non
 
 
 @pytest.mark.asyncio
+async def test_schedule_clarification_answer_stays_schedule() -> None:
+    """D-059: SCHEDULE 되묻기에 지명만 답하면 MODIFY가 아니라 SCHEDULE을 유지해야 한다.
+
+    1턴 "일정 짜줘"(위치 없음) → C가 needs_clarification(location_required).
+    2턴 "광화문 근처로" → 되묻기 답변인데도 MODIFY로 오분류되면(수정 전 버그) 바꿀
+    이전 추천 결과가 없어 흐름이 깨진다. SCHEDULE로 이어지고 pending_clarification도
+    소비되어 사라져야 한다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(user_input="일정 짜줘", session_id=None, device_location=DEVICE_LOCATION),
+        store=store,
+        **providers,
+    )
+    session_id = first.state.session_id
+    assert first.llm_output.intent == "SCHEDULE"
+    assert first.recommendations is None
+    session_context = get_session_context(session_id, store=store)
+    assert session_context.pending_clarification is not None
+    assert session_context.last_intent == "SCHEDULE"
+
+    second = await run_agent_flow(
+        AgentRequest(
+            user_input="광화문 근처로",
+            session_id=session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert second.llm_output.intent == "SCHEDULE"
+    assert second.state.user_conditions.search_center == "광화문"
+    # 소비되어 지워진다(수정 전에는 SCHEDULE이 되묻기 소비 화이트리스트에 없어 안 지워졌다).
+    assert get_session_context(session_id, store=store).pending_clarification is None
+
+
+@pytest.mark.asyncio
 async def test_clarification_answer_keeps_weather_and_environment() -> None:
     """되묻기 답변에 위치만 담겨도 앞 턴의 비 회피·실내 조건이 살아 있어야 한다.
 

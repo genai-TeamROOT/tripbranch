@@ -23,7 +23,7 @@ from app.schemas import GeneralTopic, Intent, UserConditions
 # 쓰였는지와 무관하게 단일 값으로 취급한다 — 함수별 개별 버전은 만들지 않는다. 판별·추출
 # 규칙에 영향을 주는 변경(6개 함수 중 하나라도) 시 버전을 올린다 — 사소한 문구·주석
 # 변경은 올리지 않는다.
-PROMPT_VERSION = "agent-interpret-prompts-1.0.6"
+PROMPT_VERSION = "agent-interpret-prompts-1.0.7"
 
 CHATBOT_NAME = "트리비"
 CHATBOT_PERSONA = """\
@@ -82,6 +82,10 @@ _CONTEXT_DEPENDENT_RULES = """\
 - 이전 추천 있음 + 지명 단독("광화문", "경복궁") → MODIFY가 아니라 INFO (아래 경계 사례 참고 —
   추천을 받은 뒤 특정 장소를 지목해 정보를 묻는 발화다)
 - 이전 추천 없음 + 지명에 근처/주변이 붙은 발화("광화문 근처에서", "광화문 근처") → RECOMMEND
+- 직전 턴이 SCHEDULE 되묻기(장소/조건 모호)로 끝났고 이번 발화가 그 답변으로 보이면
+  (지명만 던지거나 조건만 보충하는 짧은 응답) → SCHEDULE 유지 (새 요청이 아니라 이전
+  일정 요청을 이어서 완성하는 중이다. 위의 "지명+조사는 MODIFY" 규칙보다 이 규칙이
+  우선한다 — 바꿀 이전 추천 결과 자체가 없으므로 MODIFY 전제조건도 충족하지 않는다)
 """
 
 _BOUNDARY_CASES = """\
@@ -91,6 +95,8 @@ _BOUNDARY_CASES = """\
 - "경복궁 같은 곳" → RECOMMEND (유사 장소 추천)
 - "오늘 오후 종로 반나절 코스 짜줘" → SCHEDULE (시간 순서의 복수 장소 일정 요청)
 - "경복궁, 인사동 가고 싶은데 어디부터 갈까?" → SCHEDULE (방문 순서 요청)
+- "광화문으로 알려줘" (직전 SCHEDULE 되묻기 상태) → SCHEDULE (일정 요청 이어가기,
+  MODIFY 아님 — 바꿀 이전 추천 결과가 없다)
 - "오늘 갈 만한 곳 추천해줘" → RECOMMEND (일정/코스/순서 맥락 없는 단순 추천)
 - "경복궁 근처 카페" → RECOMMEND (이전 추천 이력이 없을 때. 경복궁은 검색 중심점 조건일 뿐)
 - "경복궁 오늘 열어?" → INFO (운영시간 질문)
@@ -105,9 +111,22 @@ _BOUNDARY_CASES = """\
 
 
 def build_intent_classification_instruction(
-    *, has_previous_recommendation: bool, shown_place_count: int
+    *,
+    has_previous_recommendation: bool,
+    shown_place_count: int,
+    pending_clarification: str | None = None,
+    last_intent: str | None = None,
 ) -> str:
     """intent-definition.md §5(판별 우선순위·맥락 의존 판별·경계 사례) 기반 system instruction."""
+
+    # SCHEDULE 외 다른 last_intent는 이번 규칙(D-059) 범위 밖이라 프롬프트에 노출하지
+    # 않는다 — 불필요한 정보로 프롬프트를 비대하게 만들지 않기 위함.
+    schedule_clarification_pending = (
+        last_intent == "SCHEDULE" and pending_clarification is not None
+    )
+    clarification_status = (
+        "예 (직전 SCHEDULE 요청의 되묻기)" if schedule_clarification_pending else "아니오"
+    )
 
     return f"""당신은 국내 여행 추천 서비스 TripBranch의 Intent 분류기입니다.
 사용자 발화 하나를 읽고 아래 7개 Intent 중 정확히 하나로 분류하세요.
@@ -120,6 +139,7 @@ def build_intent_classification_instruction(
 현재 대화 컨텍스트:
 - 이전 추천 이력 존재 여부: {"있음" if has_previous_recommendation else "없음"}
 - 현재까지 노출된 추천 장소 수: {shown_place_count}
+- 직전 턴이 되묻기로 끝났는지: {clarification_status}
 
 이 컨텍스트를 위 "맥락 의존 판별" 규칙에 반드시 반영해서 판정하세요. 예를 들어 이전
 추천 이력이 "없음"인데 사용자가 "다른 곳 보여줘"라고 하면 MODIFY가 아니라 RECOMMEND로

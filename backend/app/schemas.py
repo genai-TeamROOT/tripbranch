@@ -496,11 +496,18 @@ class InterpretRequest(BaseModel):
     # 브라우저에서 확보한 "위도,경도". api_context.gps_location과 동일 포맷.
     device_location: str | None = None
 
-    # 아래 3개는 라우터가 B의 세션 컨텍스트로 채운다.
+    # 아래 5개는 라우터가 B의 세션 컨텍스트로 채운다.
     # 호출자가 보낸 값은 무시되며, 하위 호환을 위해 필드만 유지한다.
     has_previous_recommendation: bool = False
     shown_place_count: int = Field(default=0, ge=0)
     current_conditions: UserConditions | None = None
+    # 직전 턴이 되묻기로 끝났는지(B의 SessionContextResponse.pending_clarification 그대로)와
+    # 그 되묻기가 어떤 Intent의 턴이었는지(SessionContextResponse.last_intent). SCHEDULE
+    # 되묻기 답변이 새 MODIFY 요청으로 오분류되는 걸 막기 위해 classify_intent()까지
+    # 전달한다(D-059) — RECOMMEND는 우선순위 fallback이라 이 정보 없이도 대체로 맞지만,
+    # SCHEDULE은 키워드가 있어야만 선택되는 명시적 분류라 fallback이 없다.
+    pending_clarification: str | None = None
+    last_intent: str | None = None
 
 
 # === Agent Runtime (A-03) ===
