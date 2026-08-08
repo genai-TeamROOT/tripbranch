@@ -43,6 +43,20 @@ function formatClosingTime(remainingMinutes: number): string {
   return `운영 종료 예정 ${time} (${formatRemainingDuration(remainingMinutes)})`;
 }
 
+function formatOperatingHours(item: RecommendationItem): string {
+  if (item.remaining_minutes === null) {
+    return "확인 불가";
+  }
+
+  // D가 제공하는 당일 적용 운영 구간을 우선 표시한다. 이전 응답 또는 구간을
+  // 판별할 수 없는 후보는 기존의 종료 예정 시각 표기로 자연스럽게 폴백한다.
+  if (item.operating_hours_display) {
+    return `${item.operating_hours_display} (${formatRemainingDuration(item.remaining_minutes)})`;
+  }
+
+  return formatClosingTime(item.remaining_minutes);
+}
+
 export function PlaceCard({ item, unverifiedHours = false }: PlaceCardProps) {
   return (
     <li className="flex flex-col gap-2 rounded-lg border border-gray-200 p-4 shadow-sm dark:border-gray-700">
@@ -63,9 +77,7 @@ export function PlaceCard({ item, unverifiedHours = false }: PlaceCardProps) {
         <div className="flex gap-1">
           <dt className="text-gray-400">운영시간</dt>
           <dd>
-            {unverifiedHours || item.remaining_minutes === null
-              ? "확인 불가"
-              : formatClosingTime(item.remaining_minutes)}
+            {unverifiedHours ? "확인 불가" : formatOperatingHours(item)}
           </dd>
         </div>
       </dl>

@@ -31,6 +31,8 @@ export interface RecommendationItem {
   category: string;
   distance_km: number;
   remaining_minutes: number | null;
+  /** D가 현재 적용한 당일 운영 구간으로 만든 표기값. 예: "09:00~18:00" */
+  operating_hours_display?: string | null;
   environment_type: EnvironmentType;
   recommendation_reason: string;
   explanations: string[];
