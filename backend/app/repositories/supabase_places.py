@@ -34,7 +34,7 @@ _STATE_COLUMNS = ",".join(
 )
 _LOCATION_COLUMNS = (
     "content_id,title,address,latitude,longitude,"
-    "place_concentration_mappings(primary_concentration_name,concentration_search_key)"
+    "place_concentration_mappings(primary_concentration_name,concentration_search_keys)"
 )
 
 # 별칭 조회는 매핑이 있는 장소로만 좁혀야 해서 inner join이 필요하다.
@@ -111,10 +111,9 @@ def _map_place_locations(
             else None
         )
         # tAtsNm은 공백이 든 값에 0건을 돌려주므로 조회용 검색어를 따로 둔다.
-        concentration_search_key = (
-            _optional_text(mapping.get("concentration_search_key"))
-            if isinstance(mapping, Mapping)
-            else None
+        # 목록으로 받아 앞에서부터 시도한다(D-057).
+        concentration_search_keys = _search_keys(
+            mapping.get("concentration_search_keys") if isinstance(mapping, Mapping) else None
         )
         locations.append(
             StoredPlaceLocation(
@@ -124,7 +123,7 @@ def _map_place_locations(
                 latitude=latitude,
                 longitude=longitude,
                 concentration_name=concentration_name,
-                concentration_search_key=concentration_search_key,
+                concentration_search_keys=concentration_search_keys,
             )
         )
     return tuple(locations)
@@ -148,6 +147,25 @@ def _title_filters(name: str) -> list[str]:
 
 def _optional_text(value: object) -> str | None:
     return str(value) if value is not None else None
+
+
+def _search_keys(value: object) -> tuple[str, ...]:
+    """집중률 검색어 목록을 순서 그대로 읽는다(D-057).
+
+    공백이 든 값은 tAtsNm에 넣으면 무엇을 넣든 0건이 돌아오므로 여기서 버린다.
+    DB 제약이 같은 것을 막고 있지만, 저장소를 거치지 않고 들어온 값이나 제약이
+    없던 시절의 행이 조용히 0건 조회를 만들지 않도록 읽는 쪽에서도 막는다.
+    """
+    if not isinstance(value, list):
+        return ()
+    keys: list[str] = []
+    for item in value:
+        if item is None:
+            continue
+        text = str(item).strip()
+        if text and not any(character.isspace() for character in text):
+            keys.append(text)
+    return tuple(keys)
 
 
 def _chunks(values: Sequence[T], size: int) -> list[Sequence[T]]:
@@ -511,6 +529,9 @@ class SupabasePlaceRepository:
                 "lcls_systm2": place.lcls_systm2,
                 "lcls_systm3": place.lcls_systm3,
                 "source_modified_at": _iso(place.source_modified_at),
+                # 이미지는 목록 응답에서 오므로 상세조회 성패와 무관하게 갱신된다(D-056).
+                "first_image_url": place.first_image_url,
+                "thumbnail_url": place.thumbnail_url,
                 "list_fetched_at": fetched_at_text,
                 "last_seen_at": fetched_at_text,
                 "last_sync_run_id": str(sync_run_id),
@@ -552,9 +573,16 @@ class SupabasePlaceRepository:
         parse_status: str,
         parser_version: str,
         fetched_at: datetime,
+        parking_info_raw: str | None = None,
+        parking_fee_raw: str | None = None,
+        use_fee_raw: str | None = None,
+        discount_info_raw: str | None = None,
     ) -> None:
         if parse_status not in _VALID_PARSE_STATUSES:
             raise ValueError("유효하지 않은 parse_status입니다.")
+        # detail_fetch_status 판정에는 주차·요금을 넣지 않는다. 넣으면 운영시간이 없고
+        # 주차만 있는 장소가 empty에서 success로 바뀌어 재조회 주기가 달라진다 —
+        # 이 컬럼은 운영정보 확보 여부를 뜻하므로 기존 의미를 유지한다(D-056).
         detail_status = (
             "empty"
             if operating_hours_raw is None and rest_date_raw is None
@@ -567,6 +595,10 @@ class SupabasePlaceRepository:
             json={
                 "operating_hours_raw": operating_hours_raw,
                 "rest_date_raw": rest_date_raw,
+                "parking_info_raw": parking_info_raw,
+                "parking_fee_raw": parking_fee_raw,
+                "use_fee_raw": use_fee_raw,
+                "discount_info_raw": discount_info_raw,
                 "operating_schedule": operating_schedule,
                 "operating_parse_status": parse_status,
                 "operating_parser_version": parser_version,

@@ -542,4 +542,8 @@ class PlaceSyncService:
                 outcome.parse_status,
                 OPERATING_PARSER_VERSION,
                 fetched_at,
+                parking_info_raw=details.parking_info_raw,
+                parking_fee_raw=details.parking_fee_raw,
+                use_fee_raw=details.use_fee_raw,
+                discount_info_raw=details.discount_info_raw,
             )

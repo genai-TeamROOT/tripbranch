@@ -586,7 +586,7 @@ async def test_info_concentration_queries_with_search_key_and_matches_by_name() 
                         latitude=37.5739,
                         longitude=126.9945,
                         concentration_name="종묘 [유네스코 세계유산]",
-                        concentration_search_key="종묘",
+                        concentration_search_keys=("종묘",),
                     )
                 ),
             ),
@@ -994,3 +994,136 @@ async def test_real_provider_failure_surfaces_as_unavailable_without_fake_fallba
     assert response.context.location.data is None
     # 후속 Tool도 돌지 않아 Fake 후보가 섞이지 않는다.
     assert response.context.places is None
+
+
+class _KeyOrderConcentrationProvider:
+    """지정한 검색어에만 응답하고 나머지는 0건을 돌려주는 더블(D-057).
+
+    tAtsNm은 이름이 안 맞으면 오류가 아니라 빈 목록을 준다. 검색어 목록을 순서대로
+    시도하는지, 결과가 나온 뒤에는 멈추는지를 호출 기록으로 확인한다.
+    """
+
+    def __init__(self, answering_key: str, place_name: str) -> None:
+        self.answering_key = answering_key
+        self.place_name = place_name
+        self.calls: list[str | None] = []
+
+    async def get_forecast(
+        self,
+        area_code: str,
+        district_code: str,
+        place_name: str | None = None,
+    ) -> ProviderResult[ConcentrationResult]:
+        self.calls.append(place_name)
+        if place_name != self.answering_key:
+            return provider_result(
+                ConcentrationResult(
+                    area_code=area_code,
+                    district_code=district_code,
+                    requested_place_name=place_name,
+                    forecasts=(),
+                    provider="test_concentration",
+                ),
+                source=ProviderSource.FAKE_CONCENTRATION,
+                status=ProviderStatus.NO_DATA,
+            )
+        return provider_result(
+            ConcentrationResult(
+                area_code=area_code,
+                district_code=district_code,
+                requested_place_name=place_name,
+                forecasts=(
+                    ConcentrationForecast(
+                        place_name=self.place_name,
+                        forecast_date=datetime.now(KST).strftime("%Y%m%d"),
+                        concentration_rate=41.5,
+                        raw_data={},
+                    ),
+                ),
+                provider="test_concentration",
+            ),
+            source=ProviderSource.FAKE_CONCENTRATION,
+            status=ProviderStatus.SUCCESS,
+        )
+
+
+def _concentration_service(provider: object, location: StoredPlaceLocation) -> ContextService:
+    place_provider = FakePlaceProvider()
+    return ContextService(
+        ContextTools(
+            location=ResolveLocationTool(
+                FakeGeocodingProvider(), _StoredPlaceRepository(location)
+            ),
+            places=NearbyPlaceDetailsTool(place_provider, place_provider),
+            weather=GetWeatherForecastTool(FakeWeatherProvider()),
+            holidays=GetHolidaysTool(FakeHolidayProvider()),
+            concentration=GetConcentrationTool(provider),
+        ),
+        candidate_limit=10,
+        clock=lambda: datetime.now(KST),
+    )
+
+
+@pytest.mark.asyncio
+async def test_info_concentration_stops_at_first_key_that_answers() -> None:
+    """첫 검색어가 답하면 뒤 토큰은 호출하지 않는다 — 평상시 호출 수가 늘면 안 된다."""
+    provider = _KeyOrderConcentrationProvider(
+        "닭한마리", "서울 동대문 닭한마리 골목"
+    )
+    service = _concentration_service(
+        provider,
+        StoredPlaceLocation(
+            content_id="704507",
+            title="서울 동대문 닭한마리 골목",
+            address="서울특별시 종로구 종로40가길",
+            latitude=37.5706,
+            longitude=127.0092,
+            concentration_name="서울 동대문 닭한마리 골목",
+            concentration_search_keys=("닭한마리", "동대문", "골목", "서울"),
+        ),
+    )
+
+    response = await service.fetch_info_context(
+        InfoContextRequest(
+            request_id="req-keys-1",
+            # 이름 해석은 이 테스트의 관심사가 아니다 — 더블이 정식 명칭으로만
+            # 조회되므로 그대로 넣고, 검증 대상은 검색어 호출 순서다.
+            place_name="서울 동대문 닭한마리 골목",
+            place_context="explicit",
+        )
+    )
+
+    assert response.status == "success"
+    assert provider.calls == ["닭한마리"]
+
+
+@pytest.mark.asyncio
+async def test_info_concentration_falls_through_to_later_key() -> None:
+    """앞 검색어가 0건이면 다음 토큰으로 넘어간다.
+
+    검색어를 하나만 두던 때는 여기서 그대로 no_data가 됐다(D-057).
+    """
+    provider = _KeyOrderConcentrationProvider("청와대", "청와대 앞길")
+    service = _concentration_service(
+        provider,
+        StoredPlaceLocation(
+            content_id="126533",
+            title="청와대 앞길",
+            address="서울특별시 종로구 청와대로",
+            latitude=37.5866,
+            longitude=126.9748,
+            concentration_name="청와대 앞길",
+            concentration_search_keys=("앞길", "청와대"),
+        ),
+    )
+
+    response = await service.fetch_info_context(
+        InfoContextRequest(
+            request_id="req-keys-2",
+            place_name="청와대 앞길",
+            place_context="explicit",
+        )
+    )
+
+    assert response.status == "success"
+    assert provider.calls == ["앞길", "청와대"]

@@ -189,8 +189,9 @@ class ResolvedLocation:
     address: str | None = None
     # 집중률 응답에서 장소를 골라낼 때 대조할 정식 명칭.
     concentration_name: str | None = None
-    # tAtsNm에 넣을 검색어. 비어 있으면 concentration_name을 그대로 쓴다.
-    concentration_search_key: str | None = None
+    # tAtsNm에 넣을 검색어 목록. 앞에서부터 시도한다. 비어 있으면
+    # concentration_name을 그대로 쓴다(D-057).
+    concentration_search_keys: tuple[str, ...] = ()
 
 
 ResolveLocationError = ToolError
@@ -418,7 +419,7 @@ class ResolveLocationTool:
                 place_id=place.content_id,
                 address=place.address,
                 concentration_name=place.concentration_name,
-                concentration_search_key=place.concentration_search_key,
+                concentration_search_keys=place.concentration_search_keys,
             ),
             error=None,
             provider_metadata=metadata,

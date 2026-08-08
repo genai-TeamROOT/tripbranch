@@ -31,7 +31,16 @@ from app.providers.real_place import RealPlaceProvider
 
 _KST = ZoneInfo("Asia/Seoul")
 _DATA_DIR = Path(__file__).resolve().parent.parent.parent / "supabase" / "data"
-_PAGE_SIZE = 100
+# TourAPI 목록 조회는 numOfRows 1000까지 그대로 받는다. 종로구 전량(약 845건)이
+# 한 번에 들어오므로 호출이 9회에서 1회로 준다 — areaBasedList2는 오퍼레이션 단위로
+# 일일 한도가 걸려 있어(2026-08-07 소진 사례) 호출 수 자체를 줄이는 게 중요하다.
+# 페이지가 하나면 중간에 끊겨 받아둔 페이지를 통째로 버리는 일도 없다.
+_PAGE_SIZE = 1000
+
+# 1000건 응답은 100건일 때보다 훨씬 크고 느리다. 요청 경로용 공통 타임아웃
+# (external_api_timeout_seconds)은 챗봇 응답 지연을 막으려고 짧게 잡혀 있어 여기서는
+# 부족하다. 수동 CLI라 오래 기다려도 되므로 따로 넉넉히 준다.
+_FETCH_TIMEOUT_SECONDS = 120.0
 
 # 스냅샷 CSV 열. 기존 places_api_snapshot_*.csv와 같은 순서를 유지해 과거 파일과
 # 그대로 비교할 수 있게 한다.
@@ -48,6 +57,8 @@ _SNAPSHOT_COLUMNS = (
     "lcls_systm2",
     "lcls_systm3",
     "source_modified_at",
+    "first_image_url",
+    "thumbnail_url",
     "list_fetched_at",
 )
 
@@ -95,10 +106,27 @@ def _normalize(value: object) -> str:
         return text
 
 
-def _changed_columns(before: dict[str, str], after: dict[str, str]) -> list[str]:
+def comparable_columns(baseline_columns: Sequence[str]) -> tuple[str, ...]:
+    """기준 스냅샷에 실제로 있는 열만 비교 대상으로 남긴다.
+
+    열을 새로 추가하면(D-056의 이미지 2열처럼) 과거 스냅샷에는 그 열이 없다. 없는 열을
+    빈 값으로 보고 비교하면 값이 하나도 안 변한 장소까지 전부 updated로 잡혀 대조
+    결과가 무의미해진다.
+
+    건너뛴 열은 호출자가 반드시 출력한다 — 조용히 빼면 "안 바뀌었다"와 "안 봤다"가
+    결과 파일에서 구분되지 않는다.
+    """
+    return tuple(column for column in _COMPARED_COLUMNS if column in baseline_columns)
+
+
+def _changed_columns(
+    before: dict[str, str],
+    after: dict[str, str],
+    compared: Sequence[str] = _COMPARED_COLUMNS,
+) -> list[str]:
     return [
         column
-        for column in _COMPARED_COLUMNS
+        for column in compared
         if _normalize(before.get(column)) != _normalize(after.get(column))
     ]
 
@@ -123,7 +151,7 @@ async def fetch_places(
         provider = RealPlaceProvider(
             api_key=settings.tour_api_service_key,
             client=client,
-            timeout_seconds=settings.external_api_timeout_seconds,
+            timeout_seconds=_FETCH_TIMEOUT_SECONDS,
         )
         places: dict[str, dict[str, str]] = {}
         page_no = 1
@@ -160,6 +188,7 @@ def write_snapshot(places: dict[str, dict[str, str]], path: Path) -> None:
 def build_reconciliation_rows(
     baseline: dict[str, dict[str, str]],
     current: dict[str, dict[str, str]],
+    compared: Sequence[str] = _COMPARED_COLUMNS,
 ) -> list[dict[str, object]]:
     """added / removed / updated 세 종류로 변경분을 만든다."""
     rows: list[dict[str, object]] = []
@@ -189,7 +218,7 @@ def build_reconciliation_rows(
             }
         )
     for content_id in sorted(set(baseline) & set(current)):
-        columns = _changed_columns(baseline[content_id], current[content_id])
+        columns = _changed_columns(baseline[content_id], current[content_id], compared)
         if not columns:
             continue
         rows.append(
@@ -262,7 +291,16 @@ async def run(args: argparse.Namespace, settings: Settings) -> int:
         return 0
 
     baseline = load_snapshot(args.baseline)
-    rows = build_reconciliation_rows(baseline, current)
+    baseline_columns = next(iter(baseline.values()), {}).keys()
+    compared = comparable_columns(list(baseline_columns))
+    skipped = [column for column in _COMPARED_COLUMNS if column not in compared]
+    if skipped:
+        # 조용히 빼지 않는다. 이 줄이 없으면 "안 바뀌었다"와 "안 봤다"가 결과에서
+        # 구분되지 않는다.
+        print(
+            f"기준 스냅샷에 없는 열은 비교하지 않습니다: {', '.join(skipped)}"
+        )
+    rows = build_reconciliation_rows(baseline, current, compared)
     reconciliation_path = args.output_dir / f"places_reconciliation_{now:%Y%m%d}.csv"
     write_reconciliation(
         rows,
