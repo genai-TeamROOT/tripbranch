@@ -18,7 +18,6 @@ import { fetchSessionState, sendChat, toDisplayConditions } from "../api/trip";
 import { ChatComposer } from "../components/chat/ChatComposer";
 import { ChatMessageList } from "../components/chat/ChatMessageList";
 import { ErrorBanner } from "../components/ErrorBanner";
-import { featureFlags } from "../config/features";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 
 const REQUEST_MORE_PROMPT = "다른 곳 보여줘";
@@ -39,7 +38,6 @@ export function ChatPage() {
   const dispatch = useTripDispatch();
   const navigate = useNavigate();
 
-  const showDebug = featureFlags.showInterpretationDebug;
   const isLoading = state.phase === "interpreting" || state.phase === "recommending";
   const hasConversation = state.messages.length > 0;
 
@@ -99,7 +97,7 @@ export function ChatPage() {
             sessionId: response.state.session_id,
             status: response.llm_output.status,
             agentResponse: response,
-            showDebug,
+            showDebug: false,
             elapsedMsClient: performance.now() - startedAt,
           },
         });
@@ -113,7 +111,7 @@ export function ChatPage() {
         });
       }
     },
-    [dispatch, showDebug, state.device_location, state.session_id],
+    [dispatch, state.device_location, state.session_id],
   );
 
   if (!hasConversation) {
@@ -168,7 +166,7 @@ export function ChatPage() {
 
       <ChatMessageList
         messages={state.messages}
-        showDebug={showDebug}
+        showDebug={false}
         isLoading={isLoading}
         hasDeviceLocation={Boolean(state.device_location)}
         deviceLocation={state.device_location}

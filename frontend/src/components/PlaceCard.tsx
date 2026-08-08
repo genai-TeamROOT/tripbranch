@@ -8,9 +8,39 @@
 
 import type { RecommendationItem } from "../types";
 
+/*
+ * 신호 대기·혼잡·길 찾기 여유를 포함한 보수적 보행 속도. 성인 여성의 일반적인
+ * 보행 속도보다 낮은 3.6km/h(1km 약 17분)로 잡아 실제 이동시간을 낙관적으로
+ * 안내하지 않는다.
+ */
+const SAFE_WALKING_SPEED_KMH = 3.6;
+
 interface PlaceCardProps {
   item: RecommendationItem;
   unverifiedHours?: boolean;
+}
+
+function formatWalkingMinutes(distanceKm: number): string {
+  const minutes = Math.max(1, Math.ceil((distanceKm / SAFE_WALKING_SPEED_KMH) * 60));
+  return `약 ${minutes}분`;
+}
+
+function formatRemainingDuration(remainingMinutes: number): string {
+  // 카드에서는 분 단위 정밀도보다 빠른 비교가 중요하므로, 가장 가까운 시간으로
+  // 반올림한다. 운영 종료가 임박한 경우 0시간으로 보이지 않도록 최소 1시간이다.
+  const hours = Math.max(1, Math.round(remainingMinutes / 60));
+  return `${hours}시간 남음`;
+}
+
+function formatClosingTime(remainingMinutes: number): string {
+  const closesAt = new Date(Date.now() + remainingMinutes * 60 * 1000);
+  const time = new Intl.DateTimeFormat("ko-KR", {
+    timeZone: "Asia/Seoul",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(closesAt);
+  return `운영 종료 예정 ${time} (${formatRemainingDuration(remainingMinutes)})`;
 }
 
 export function PlaceCard({ item, unverifiedHours = false }: PlaceCardProps) {
@@ -27,15 +57,15 @@ export function PlaceCard({ item, unverifiedHours = false }: PlaceCardProps) {
 
       <dl className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-700 dark:text-gray-300">
         <div className="flex gap-1">
-          <dt className="text-gray-400">직선거리</dt>
-          <dd>{item.distance_km.toFixed(2)}km</dd>
+          <dt className="text-gray-400">도보 이동</dt>
+          <dd>{formatWalkingMinutes(item.distance_km)}</dd>
         </div>
         <div className="flex gap-1">
-          <dt className="text-gray-400">남은 운영시간</dt>
+          <dt className="text-gray-400">운영시간</dt>
           <dd>
             {unverifiedHours || item.remaining_minutes === null
               ? "확인 불가"
-              : `${item.remaining_minutes}분`}
+              : formatClosingTime(item.remaining_minutes)}
           </dd>
         </div>
       </dl>
