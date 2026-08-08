@@ -35,6 +35,7 @@ def to_agent_context_request(
     request_id: str,
     conditions: UserConditions,
     gps_location: str | None = None,
+    excluded_place_ids: list[str] | None = None,
 ) -> AgentContextRequest:
     """A의 UserConditions(app.schemas)를 C의 AgentContextRequest로 변환한다.
 
@@ -51,6 +52,10 @@ def to_agent_context_request(
     §2.1 — C가 필드를 추가하기 전까지의 상태). C가 아는 필드만 골라 넘겨서 이 과도기를
     안전하게 넘긴다 — C가 필드를 추가하면 자동으로 함께 전달되기 시작하므로, 그 시점에
     이 함수를 다시 고칠 필요는 없다.
+
+    `excluded_place_ids`는 B가 계산한 소진분(노출분 ∪ 거절분)이다. D에 넘기는 것과
+    같은 목록을 C에도 넘겨야 "다른 곳 보여줘"가 성립한다 — C가 모르면 같은 앞쪽
+    후보를 다시 가져오고 D가 그걸 전부 걸러 0건이 된다.
     """
 
     known_fields = ContextUserConditions.model_fields.keys()
@@ -63,6 +68,7 @@ def to_agent_context_request(
         intent="RECOMMEND",
         conditions=context_conditions,
         gps_location=_to_coordinates(gps_location),
+        excluded_place_ids=list(excluded_place_ids or []),
     )
 
 

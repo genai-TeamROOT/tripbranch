@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from time import perf_counter
@@ -32,6 +32,8 @@ from app.agent_context.enrichment_service import (
 from app.agent_context.info_field_rules import extract_info_fields
 from app.agent_context.info_schemas import (
     ConcentrationInfoResult,
+    EventInfoResult,
+    EventItem,
     InfoContextRequest,
     InfoContextResponse,
     PlaceInfoResult,
@@ -56,6 +58,7 @@ from app.concentration_policy import (
     normalize_concentration,
 )
 from app.errors import AppError
+from app.geo import haversine_km
 from app.place_search_policy import (
     DEFAULT_PLACE_SEARCH_RADIUS_KM,
     MAX_PLACE_SEARCH_RADIUS_KM,
@@ -63,14 +66,21 @@ from app.place_search_policy import (
     WALKING_SPEED_KM_PER_MINUTE,
 )
 from app.providers.contracts import ProviderMetadata, ProviderSource, ProviderStatus
+from app.providers.festival import FestivalEvent
 from app.recommendation_limits import (
     MAX_RECOMMENDATION_CANDIDATE_LIMIT,
     MIN_RECOMMENDATION_LIMIT,
 )
-from app.tools.concentration import ConcentrationQuery, GetConcentrationTool
+from app.tools.concentration import (
+    ConcentrationQuery,
+    ConcentrationToolResult,
+    GetConcentrationTool,
+)
 from app.tools.contracts import ToolError, ToolStatus
+from app.tools.festival import FestivalQuery, GetFestivalsTool
 from app.tools.holiday import GetHolidaysTool, HolidayQuery
 from app.tools.nearby_place_details import (
+    CANDIDATE_POOL_TRUNCATED_WARNING,
     EnrichedPlace,
     NearbyPlaceDetailsQuery,
     NearbyPlaceDetailsResult,
@@ -97,6 +107,9 @@ _KST = ZoneInfo("Asia/Seoul")
 _CATEGORY_RULE_VERSION = "tour-category-v1"
 _SEARCH_RADIUS_RULE_VERSION = "walking-radius-v1"
 
+# INFO 행사 응답에 싣는 최대 건수. 챗봇 말풍선 한 번에 읽히는 분량으로 제한한다.
+INFO_EVENT_RESULT_LIMIT = 5
+
 
 @dataclass(frozen=True)
 class ContextTools:
@@ -111,6 +124,8 @@ class ContextTools:
     concentration: GetConcentrationTool | None = None
     # INFO 상세 질의(concentration 외) 전용. 위와 같은 이유로 선택적이다.
     place_detail: GetPlaceDetailTool | None = None
+    # INFO 행사 질의(question_type=event) 전용. 위와 같은 이유로 선택적이다.
+    festivals: GetFestivalsTool | None = None
 
 
 class ContextService:
@@ -210,6 +225,7 @@ class ContextService:
                     conditions.max_travel_time,
                     default_radius_km=self._search_radius_km,
                 ),
+                excluded_place_ids=frozenset(request.excluded_place_ids),
             )
         )
         weather_result = await weather_task if weather_task is not None else None
@@ -253,20 +269,6 @@ class ContextService:
                     missing_fields=["place_name"],
                     candidates=[],
                 ),
-            )
-
-        if request.question_type == "event":
-            # 진행 중인 전시·행사는 searchFestival2를 따로 연동해야 한다
-            # (int-02-info.md §6). 장소 상세(detailIntro2)로는 답할 수 없다.
-            return _info_error_response(
-                request,
-                status="unsupported",
-                error=ContextError(
-                    code="question_type_unsupported",
-                    message="행사·전시 정보는 아직 제공하지 않습니다.",
-                    retryable=False,
-                ),
-                provider_metadata=(),
             )
 
         location_result = await self._tools.location.execute(
@@ -325,6 +327,14 @@ class ContextService:
                     retryable=True,
                 ),
                 provider_metadata=(location_result.provider_metadata,),
+            )
+
+        if request.question_type == "event":
+            return await self._fetch_event_info(
+                request,
+                place_name=place_name,
+                resolved_location=resolved_location,
+                location_metadata=location_result.provider_metadata,
             )
 
         if request.question_type != "concentration":
@@ -386,14 +396,10 @@ class ContextService:
         # 조회는 검색어로, 대조는 정식 명칭으로 한다. tAtsNm은 공백이 든 값에 0건을
         # 돌려주므로 "종묘 [유네스코 세계유산]"은 "종묘"로 조회해야 한다. 대신 그
         # 응답에는 "종묘광장공원"도 섞여 오므로 고를 때는 정식 명칭을 써야 한다.
-        concentration_result = await concentration_tool.execute(
-            ConcentrationQuery(
-                area_code=JONGNO_CONCENTRATION_AREA_CODE,
-                district_code=JONGNO_CONCENTRATION_DISTRICT_CODE,
-                place_name=(
-                    resolved_location.concentration_search_key or concentration_place_name
-                ),
-            )
+        concentration_result = await _execute_concentration(
+            concentration_tool,
+            search_keys=resolved_location.concentration_search_keys,
+            canonical_name=concentration_place_name,
         )
         if concentration_result.status is ToolStatus.UNAVAILABLE:
             return _info_error_response(
@@ -516,15 +522,10 @@ class ContextService:
             # 매핑 테이블이 보유한 집중률 API 기준 이름을 쓴다 — TourAPI 장소명을
             # 그대로 던지던 기존 방식은 이름이 달라 조회에 실패하는 경우가 있었다.
             # 직접 조회와 같이 조회는 검색어로, 대조는 정식 명칭으로 한다.
-            proxy_result = await concentration_tool.execute(
-                ConcentrationQuery(
-                    area_code=JONGNO_CONCENTRATION_AREA_CODE,
-                    district_code=JONGNO_CONCENTRATION_DISTRICT_CODE,
-                    place_name=(
-                        proxy_place.concentration_search_key
-                        or proxy_place.concentration_name
-                    ),
-                )
+            proxy_result = await _execute_concentration(
+                concentration_tool,
+                search_keys=proxy_place.concentration_search_keys,
+                canonical_name=proxy_place.concentration_name,
             )
             attempted_metadata.append(proxy_result.provider_metadata)
 
@@ -657,6 +658,75 @@ class ContextService:
             provider_metadata=(location_metadata, detail_result.provider_metadata),
         )
 
+    async def _fetch_event_info(
+        self,
+        request: InfoContextRequest,
+        *,
+        place_name: str,
+        resolved_location: ResolvedLocation,
+        location_metadata: tuple[ProviderMetadata, ...],
+    ) -> InfoContextResponse:
+        """INFO 행사 질의를 지역 행사 목록 + 좌표 근접으로 처리한다(D-055).
+
+        TourAPI에 장소별 행사 조회가 없어, 종로구 행사를 받아 진행 중인 것만
+        남기고 대상 장소에서 가까운 순으로 정렬한다. 대부분은 그 장소의 행사가
+        아니라 근처 행사이므로 is_direct_match/distance_km으로 구분을 넘긴다 —
+        집중률의 is_proxy와 같은 취지다(D-036).
+        """
+
+        festival_tool = self._tools.festivals
+        if festival_tool is None:
+            return _info_error_response(
+                request,
+                status="unavailable",
+                error=ContextError(
+                    code="festival_not_configured",
+                    message="행사 조회 기능을 사용할 수 없습니다.",
+                    retryable=False,
+                ),
+                provider_metadata=(location_metadata,),
+            )
+
+        reference_date = _info_reference_date(request.visit_time, self._clock())
+        festival_result = await festival_tool.execute(
+            FestivalQuery(reference_date=reference_date)
+        )
+        if festival_result.status is ToolStatus.UNAVAILABLE:
+            return _info_error_response(
+                request,
+                status="unavailable",
+                error=_context_error_from_tool(
+                    festival_result.error,
+                    fallback_code="festival_unavailable",
+                    fallback_message="행사 정보를 가져오지 못했습니다.",
+                    retryable=True,
+                ),
+                provider_metadata=(location_metadata, festival_result.provider_metadata),
+            )
+
+        events = _to_event_items(
+            festival_result.events,
+            resolved_name=resolved_location.resolved_name,
+            latitude=resolved_location.latitude,
+            longitude=resolved_location.longitude,
+        )
+        status: Literal["success", "no_data"] = "success" if events else "no_data"
+        return InfoContextResponse(
+            request_id=request.request_id,
+            status=status,
+            result=EventInfoResult(
+                status=status,
+                requested_place_name=place_name,
+                resolved_place_name=resolved_location.resolved_name,
+                reference_date=reference_date.isoformat(),
+                events=events,
+                has_direct_match=any(item.is_direct_match for item in events),
+            ),
+            metadata=_info_response_metadata(
+                location_metadata, festival_result.provider_metadata
+            ),
+        )
+
     async def _collect_places(
         self,
         plan: CategoryQueryPlan,
@@ -665,8 +735,13 @@ class ContextService:
         latitude: float,
         longitude: float,
         search_radius_km: float,
+        excluded_place_ids: frozenset[str] = frozenset(),
     ) -> NearbyPlaceDetailsResult:
-        """분류별 장소 조회를 병렬 실행하고 중복·제외 후보를 걸러 한 결과로 합친다."""
+        """분류별 장소 조회를 병렬 실행하고 중복·제외 후보를 걸러 한 결과로 합친다.
+
+        `excluded_place_ids`는 분류별 조회 각각에 같은 집합으로 넘긴다 — 분류마다
+        결과 집합이 다르므로 "앞에서 몇 건"이 아니라 id로 걸러야 맞다.
+        """
 
         started_at = perf_counter()
         results = await asyncio.gather(
@@ -679,6 +754,7 @@ class ContextService:
                         limit=self._candidate_limit,
                         preferred_categories=plan.resolved_place_tags,
                         category_filter=category_filter,
+                        excluded_place_ids=excluded_place_ids,
                     )
                 )
                 for category_filter in plan.filters
@@ -747,6 +823,54 @@ def _info_no_data_response(
     )
 
 
+def _to_event_items(
+    events: tuple[FestivalEvent, ...],
+    *,
+    resolved_name: str,
+    latitude: float,
+    longitude: float,
+) -> list[EventItem]:
+    """행사를 대상 장소 기준으로 정렬해 계약 모델로 옮긴다.
+
+    정렬은 (직접 매칭 우선, 가까운 순)이다. 좌표가 없는 행사는 거리 없이 뒤로
+    보낸다 — 목록에서 빼면 "행사가 없다"로 잘못 보일 수 있어 남긴다.
+
+    반경으로 자르지 않는 이유: 조회 자체가 이미 종로구(법정동 110)로 한정돼
+    있어 지역 필터가 반경 역할을 한다. 여기서 임의 반경을 하나 더 두면 근거
+    없는 숫자가 늘어난다. 대신 개수만 상한을 둔다.
+    """
+
+    def distance_of(event: FestivalEvent) -> float | None:
+        if event.latitude is None or event.longitude is None:
+            return None
+        return haversine_km(latitude, longitude, event.latitude, event.longitude)
+
+    def is_direct(event: FestivalEvent) -> bool:
+        # "경복궁 별빛야행"처럼 제목이 장소를 지목하는 경우만 직접 매칭으로 본다.
+        # eventplace를 보려면 행사마다 detailIntro2를 열어야 해(N+1) 이번 단계는
+        # 제목 매칭까지만 한다.
+        return resolved_name in event.title
+
+    scored = [(event, distance_of(event), is_direct(event)) for event in events]
+    scored.sort(
+        key=lambda entry: (
+            not entry[2],  # 직접 매칭 먼저
+            entry[1] if entry[1] is not None else float("inf"),
+        )
+    )
+    return [
+        EventItem(
+            title=event.title,
+            start_date=event.start_date.isoformat(),
+            end_date=event.end_date.isoformat(),
+            address=event.address,
+            distance_km=round(distance, 2) if distance is not None else None,
+            is_direct_match=direct,
+        )
+        for event, distance, direct in scored[:INFO_EVENT_RESULT_LIMIT]
+    ]
+
+
 def _place_info_response(
     request: InfoContextRequest,
     *,
@@ -777,6 +901,39 @@ def _place_info_response(
         ),
         metadata=_info_response_metadata(*provider_metadata),
     )
+
+
+async def _execute_concentration(
+    concentration_tool: GetConcentrationTool,
+    *,
+    search_keys: Sequence[str],
+    canonical_name: str,
+) -> ConcentrationToolResult:
+    """검색어를 순서대로 시도하고 결과가 나오면 멈춘다(D-057).
+
+    tAtsNm은 공백이 든 값에 0건을 돌려주므로 정식 명칭을 그대로 못 쓰는 이름이 많다.
+    검색어를 하나만 두면 '서울 동대문 닭한마리 골목'이 '닭한마리'로만 조회돼, 사용자가
+    다른 표현으로 물으면 못 찾는다. 목록을 앞에서부터 시도해 폭을 넓힌다.
+
+    1순위는 이관 전 단일 검색어와 같은 값이라 기존 동작이 그대로 유지된다. 뒤 토큰은
+    앞에서 결과가 나오면 호출되지 않으므로 평상시 호출 수도 늘지 않는다.
+
+    UNAVAILABLE은 즉시 반환한다 — 외부 장애는 다음 검색어로 바꿔도 같은 결과다.
+    """
+    candidates = [key for key in search_keys if key] or [canonical_name]
+    result = None
+    for candidate in candidates:
+        result = await concentration_tool.execute(
+            ConcentrationQuery(
+                area_code=JONGNO_CONCENTRATION_AREA_CODE,
+                district_code=JONGNO_CONCENTRATION_DISTRICT_CODE,
+                place_name=candidate,
+            )
+        )
+        if result.status is not ToolStatus.NO_DATA:
+            return result
+    assert result is not None  # candidates는 항상 하나 이상이다
+    return result
 
 
 def _info_error_response(
@@ -858,7 +1015,10 @@ def _is_excluded(place: EnrichedPlace, excluded_small_codes: frozenset[str]) -> 
 
 
 def _place_warnings(
-    status: ToolStatus, excluded_plan: ExcludedCategoryPlan
+    status: ToolStatus,
+    excluded_plan: ExcludedCategoryPlan,
+    *,
+    truncated: bool = False,
 ) -> tuple[str, ...]:
     warnings: list[str] = []
     if status is ToolStatus.PARTIAL:
@@ -866,6 +1026,10 @@ def _place_warnings(
     if excluded_plan.has_unmapped_tags:
         # 분류 매핑이 없어 걸러내지 못한 제외 태그가 있다는 걸 A/D가 알 수 있게 남긴다.
         warnings.append("exclude_tags_unmapped")
+    if truncated:
+        # 분류 조회 중 하나라도 Provider 행 상한에 걸렸다. 합쳐진 결과가 비어도
+        # "더 없음"이 아니라 "더 못 받아옴"이라는 뜻이라 A가 구분해야 한다.
+        warnings.append(CANDIDATE_POOL_TRUNCATED_WARNING)
     return tuple(warnings)
 
 
@@ -939,7 +1103,13 @@ def _merge_place_results(
         retrieved_at=max(result.retrieved_at for result in results),
         elapsed_ms=(perf_counter() - started_at) * 1000,
         error=error,
-        warnings=_place_warnings(status, excluded_plan),
+        warnings=_place_warnings(
+            status,
+            excluded_plan,
+            truncated=any(
+                CANDIDATE_POOL_TRUNCATED_WARNING in result.warnings for result in results
+            ),
+        ),
         provider_metadata=tuple(
             metadata for result in results for metadata in result.provider_metadata
         ),

@@ -11,6 +11,7 @@ from app.providers.contracts import (
     ProviderSource,
     ProviderStatus,
 )
+from app.recommendation_limits import DEFAULT_RECOMMENDATION_CANDIDATE_LIMIT
 from app.schemas import PlaceCandidate
 from app.tool_intelligence.mappers import (
     map_nearby_places_response,
@@ -234,4 +235,6 @@ def test_request_models_keep_request_id_and_tool_type() -> None:
 
     assert location_request.request_id == "location-1"
     assert places_request.parameters.radius_km == DEFAULT_PLACE_SEARCH_RADIUS_KM
-    assert places_request.parameters.limit == 10
+    # 값 자체가 아니라 "기본값이 그대로 흘러온다"를 확인하는 자리다. 리터럴로 박아두면
+    # 후보 수집 정책이 바뀔 때마다 여기가 함께 깨진다(바로 위 radius와 같은 방식).
+    assert places_request.parameters.limit == DEFAULT_RECOMMENDATION_CANDIDATE_LIMIT

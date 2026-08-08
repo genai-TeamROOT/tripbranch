@@ -457,6 +457,10 @@ async def run_agent_flow(
         request_id=new_trace_id(),
         conditions=agent_conditions,
         gps_location=context_gps,
+        # D에 넘기는 것과 같은 소진분을 C에도 넘긴다. C는 이걸로 판정하지 않고
+        # 수집 범위를 그만큼 넓히는 데만 쓴다 — 안 넘기면 "다른 곳 보여줘"에
+        # 같은 후보가 다시 와서 D가 전부 걸러내고 0건이 된다.
+        excluded_place_ids=state_response.excluded_place_ids,
     )
     tool_started_at = time.monotonic()
     tool_response = await tool_provider.fetch_context(context_request)

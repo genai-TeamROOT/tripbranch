@@ -24,12 +24,14 @@ def test_current_mapping_csv_builds_unique_matched_payloads() -> None:
     assert csv_row_count == len(payloads) + unmatched_count
     # content_id가 PK라 중복이 있으면 적재가 실패한다.
     assert len({str(payload["content_id"]) for payload in payloads}) == len(payloads)
-    # 검색어는 공백이 있으면 조회가 0건이 된다(D-043).
+    # 검색어는 공백이 있으면 조회가 0건이 된다(D-043). 목록의 모든 원소에 적용된다(D-057).
     assert all(
-        not any(character.isspace() for character in str(payload["concentration_search_key"]))
+        not any(character.isspace() for character in str(key))
         for payload in payloads
-        if payload["concentration_search_key"]
+        for key in payload["concentration_search_keys"]
     )
+    # 조회할 값이 하나도 없으면 매핑이 있어도 혼잡도를 못 받는다.
+    assert all(payload["concentration_search_keys"] for payload in payloads)
 
     blue_house = next(
         payload for payload in payloads if payload["content_id"] == "126533"
@@ -42,10 +44,10 @@ def test_current_mapping_csv_builds_unique_matched_payloads() -> None:
 def test_duplicate_matched_content_id_is_rejected(tmp_path: Path) -> None:
     csv_path = tmp_path / "duplicate.csv"
     csv_path.write_text(
-        "content_id,place_title,concentration_title,concentration_aliases,"
-        "match_status,match_method,confidence_score,verified_at\n"
-        '1,장소,집중률 장소,[],matched,exact,1.0000,\n'
-        '1,장소,별칭 장소,[],matched,manual,0.8000,\n',
+        "content_id,place_title,concentration_title,concentration_search_keys,"
+        "concentration_aliases,match_status,match_method,confidence_score,verified_at\n"
+        '1,장소,집중률 장소,"[""집중률""]",[],matched,exact,1.0000,\n'
+        '1,장소,별칭 장소,"[""별칭""]",[],matched,manual,0.8000,\n',
         encoding="utf-8",
     )
 
@@ -56,9 +58,9 @@ def test_duplicate_matched_content_id_is_rejected(tmp_path: Path) -> None:
 def test_blank_alias_is_rejected(tmp_path: Path) -> None:
     csv_path = tmp_path / "blank-alias.csv"
     csv_path.write_text(
-        "content_id,place_title,concentration_title,concentration_aliases,"
-        "match_status,match_method,confidence_score,verified_at\n"
-        '1,장소,집중률 장소,"["" ""]",matched,exact_with_alias,1.0000,\n',
+        "content_id,place_title,concentration_title,concentration_search_keys,"
+        "concentration_aliases,match_status,match_method,confidence_score,verified_at\n"
+        '1,장소,집중률 장소,"[""집중률""]","["" ""]",matched,exact_with_alias,1.0000,\n',
         encoding="utf-8",
     )
 

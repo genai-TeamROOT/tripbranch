@@ -181,7 +181,18 @@ class PlaceOperatingDetails:
     content_type_id: str
     operating_hours_raw: str | None
     rest_date_raw: str | None
+    # D-056. 같은 detailIntro2 응답에서 오므로 추가 호출은 없다.
+    parking_info_raw: str | None = None
+    parking_fee_raw: str | None = None
+    use_fee_raw: str | None = None
+    discount_info_raw: str | None = None
 ```
+
+주차·요금·할인 원문은 운영시간과 같은 `detailIntro2` 응답에서 읽는다(D-056).
+`contenttypeid`별 필드명 차이와 커버리지 한계는
+[장소 데이터베이스 설계 §5](./place-database-schema.md)를 본다. 대표 이미지
+(`first_image_url`)와 썸네일(`thumbnail_url`)은 상세가 아니라 `areaBasedList2`
+목록 응답에서 오므로 이 모델이 아니라 목록 처리 경로에서 저장한다.
 
 ### `StoredPlaceState`
 
@@ -260,6 +271,10 @@ Prefer: resolution=merge-duplicates,return=minimal
 ```text
 operating_hours_raw
 rest_date_raw
+parking_info_raw
+parking_fee_raw
+use_fee_raw
+discount_info_raw
 operating_schedule
 operating_parse_status
 operating_parser_version
@@ -270,6 +285,10 @@ detail_error_code=null
 
 `operating_hours_raw`과 `rest_date_raw`가 모두 없으면 HTTP 요청은 성공했더라도
 `detail_fetch_status=empty`로 기록한다.
+
+**이 판정에는 주차·요금을 넣지 않는다(D-056).** 넣으면 운영시간이 없고 주차만
+있는 장소가 `empty`에서 `success`로 바뀌어 재조회 주기가 달라진다. 이 컬럼은
+"운영정보를 확보했는가"를 뜻하므로 기존 의미를 유지한다.
 
 실패:
 
@@ -624,6 +643,10 @@ anon/authenticated 직접 접근 불가 유지
 2026-07-24에 서울 종로구 법정동 코드 `11/110`을 대상으로 최초 전체 적재를
 실행했다. 최종 성공 실행 ID는
 `9fe817b4-a60d-4ea0-8f88-0623954b32f0`이다.
+
+> **이 절은 2026-07-24 실행 시점의 기록이며 현재값이 아니다.** 이후 정기 동기화로
+> 목록에서 사라진 장소가 비활성화되어 **2026-08-08 기준 활성 장소는 844건**이다
+> (D-056·D-058의 실측 기준). 아래 수치를 현재 규모로 인용하지 않는다.
 
 ### 장소 및 실행 결과
 

@@ -8,7 +8,7 @@
 | 기준 브랜치 | `docs/provider-spec-v1` |
 | 기준 코드 | `backend/app/providers`, `backend/app/domain/models.py` |
 | 문서 상태 | 구현 기준 명세 |
-| 대상 Provider | Geocoding, Weather, Place, Concentration, Holiday |
+| 대상 Provider | Geocoding, LocalSearch, Weather, Place, Festival, Concentration, Holiday |
 
 실행 명령과 키 설정은 [Provider 테스트 가이드](./provider-test-guide.md), 실제 응답
 확인 기록은 [API 샘플](./api-samples.md)을 참고합니다.
@@ -62,10 +62,22 @@ Recommendation Pipeline / Tool
 | Provider | Protocol | Fake | Real | 외부 시스템 | 현재 추천 서비스 연결 |
 | --- | --- | --- | --- | --- | --- |
 | Geocoding | `GeocodingProvider` | `FakeGeocodingProvider` | `RealGeocodingProvider` | Naver Geocoding | 연결됨 |
+| LocalSearch | `LocalSearchProvider` | `FakeLocalSearchProvider` | `RealLocalSearchProvider` | Naver 지역 검색 | `resolve_location`이 상호·시설명을 먼저 조회 |
 | Weather | `WeatherProvider` | `FakeWeatherProvider` | `RealWeatherProvider` | 기상청 초단기예보 | 연결됨 |
 | Place | `PlaceProvider` | `FakePlaceProvider` | `RealPlaceProvider` | TourAPI KorService2 | 연결됨 |
+| Festival | `FestivalProvider` | `FakeFestivalProvider` | `RealFestivalProvider` | TourAPI `searchFestival2` | INFO `question_type=event` 전용 |
 | Concentration | `ConcentrationProvider` | `FakeConcentrationProvider` | `RealConcentrationProvider` | TourAPI 집중률 예측 | Scoring 상위 후보 후조회 |
 | Holiday | `HolidayProvider` | `FakeHolidayProvider` | `RealHolidayProvider` | 한국천문연구원 특일 정보 | 조회·Context 연결, 운영판정 미사용 |
+
+Place 계열 Protocol은 용도별로 나뉘어 있습니다. `PlaceProvider`는
+`PlaceSearchProvider`(후보 검색)와 `PlaceDetailsProvider`(상세 조회)를 합친
+것이고, 그 밖에 동기화용 `TourAreaPlaceProvider`와 다건 상세용
+`BatchPlaceDetailsProvider`가 있습니다.
+
+`FestivalProvider`는 전용 설정을 두지 않고 `PLACE_PROVIDER` 값을 따릅니다 —
+같은 TourAPI 키를 쓰므로 장소는 Real인데 행사만 Fake인 조합을 만들 이유가
+없습니다. `search_festivals()`는 기간이 해석 가능한 행사를 모아 돌려주기만 하고,
+진행 중 판정은 호출자가 `reference_date`로 다시 합니다.
 
 `InterpretProvider`와 `RecommendationProvider` Protocol도 같은 파일에 남아 있지만
 현재 실행 경로에서는 사용하지 않는 레거시 계약입니다. LLM은 `LLMProvider`, Runtime
@@ -76,7 +88,7 @@ Recommendation Pipeline / Tool
 
 ### 5.1 비동기 계약
 
-외부 I/O가 가능한 다섯 Provider의 공개 메서드는 모두 `async`입니다. Fake도 Real과
+외부 I/O가 가능한 Provider의 공개 메서드는 모두 `async`입니다. Fake도 Real과
 같은 호출 형태를 유지합니다.
 
 ### 5.2 의존성 주입
@@ -137,18 +149,35 @@ API에 노출할지는 별도로 결정합니다.
 `source`는 구현 클래스명이 아니라 데이터의 실제 출처와 기능을 식별합니다. v1은
 임의 문자열 대신 다음 폐쇄 목록을 사용합니다.
 
-| 값 | 생성 Provider |
+폐쇄 목록의 정의는 `providers/contracts.py::ProviderSource`입니다.
+
+| 값 | 생성 주체 |
 | --- | --- |
 | `naver_geocoding` | `RealGeocodingProvider` |
+| `naver_local_search` | `RealLocalSearchProvider` |
 | `kma_ultra_short_forecast` | `RealWeatherProvider` |
 | `tour_api_place` | `RealPlaceProvider` |
+| `tour_api_festival` | `RealFestivalProvider` |
 | `tour_api_concentration` | `RealConcentrationProvider` |
 | `kasi_holiday` | `RealHolidayProvider` |
+| `gemini` | `RealGeminiProvider` |
 | `fake_geocoding` | `FakeGeocodingProvider` |
+| `fake_local_search` | `FakeLocalSearchProvider` |
 | `fake_weather` | `FakeWeatherProvider` |
 | `fake_place` | `FakePlaceProvider` |
+| `fake_festival` | `FakeFestivalProvider` |
 | `fake_concentration` | `FakeConcentrationProvider` |
 | `fake_holiday` | `FakeHolidayProvider` |
+
+다음 세 값은 외부 API Provider가 아니라 저장소·기기 입력이 출처입니다. 같은
+`ProviderMetadata` 계약을 쓰는 이유는 소비 측이 출처와 `retrieved_at`을 구분 없이
+읽을 수 있게 하기 위해서입니다.
+
+| 값 | 생성 주체 |
+| --- | --- |
+| `supabase_places` | `SupabasePlaceDetailsProvider`, `SupabasePlaceRepository` |
+| `fake_places` | `FakePlaceLocationRepository` |
+| `device_gps` | 프론트가 보낸 좌표를 `agent_context/service.py`가 그대로 실을 때 |
 
 한 Provider가 여러 엔드포인트를 호출하더라도 v1에서는 기능 단위 source 하나를
 사용합니다. Place의 `searchKeyword2`, `detailCommon2`, `detailIntro2`는 모두
@@ -273,17 +302,21 @@ ProviderError의 `details`와 예외 문자열에는 API 키, 인증 헤더, 전
 
 ### 6.1 모드 결정
 
-`PROVIDER_MODE`는 다섯 Provider의 공통 기본값입니다. 개별 설정이 비어 있으면 공통
-값을 사용합니다.
+`PROVIDER_MODE`는 개별 Provider 설정의 공통 기본값입니다. 개별 설정이 비어 있으면
+공통 값을 사용합니다.
 
 ```env
 PROVIDER_MODE=fake
 GEOCODING_PROVIDER=
+LOCAL_SEARCH_PROVIDER=
 WEATHER_PROVIDER=
 PLACE_PROVIDER=
 CONCENTRATION_PROVIDER=
 HOLIDAY_PROVIDER=
+LLM_PROVIDER=
 ```
+
+Festival에는 전용 변수가 없습니다. `PLACE_PROVIDER`를 따릅니다.
 
 예를 들어 전체를 Real로 실행하되 Place만 Fake로 유지할 수 있습니다.
 
@@ -300,10 +333,13 @@ PLACE_PROVIDER=fake
 | Provider | 선택 변수 | Real 인증 변수 |
 | --- | --- | --- |
 | Geocoding | `GEOCODING_PROVIDER` | `NAVER_MAP_CLIENT_ID`, `NAVER_MAP_CLIENT_SECRET` |
+| LocalSearch | `LOCAL_SEARCH_PROVIDER` | `NAVER_LOCAL_SEARCH_CLIENT_ID`, `NAVER_LOCAL_SEARCH_CLIENT_SECRET` |
 | Weather | `WEATHER_PROVIDER` | `WEATHER_API_KEY` |
 | Place | `PLACE_PROVIDER` | `TOUR_API_SERVICE_KEY` |
+| Festival | (`PLACE_PROVIDER` 공유) | `TOUR_API_SERVICE_KEY` |
 | Concentration | `CONCENTRATION_PROVIDER` | `TOUR_API_SERVICE_KEY` |
 | Holiday | `HOLIDAY_PROVIDER` | `TOUR_API_SERVICE_KEY` |
+| LLM | `LLM_PROVIDER` | `LLM_API_KEY` |
 
 `TOUR_API_SERVICE_KEY`는 공공데이터포털 인증키로 Place, Concentration, Holiday가
 공유합니다. 이전 변수명 `PLACE_API_KEY`는 `Settings`의 호환 alias로만 남아 있으며

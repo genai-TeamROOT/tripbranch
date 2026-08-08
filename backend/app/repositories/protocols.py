@@ -77,6 +77,10 @@ class PlaceRepository(Protocol):
         parse_status: str,
         parser_version: str,
         fetched_at: datetime,
+        parking_info_raw: str | None = None,
+        parking_fee_raw: str | None = None,
+        use_fee_raw: str | None = None,
+        discount_info_raw: str | None = None,
     ) -> None: ...
 
     async def update_parsed_schedule(
