@@ -109,6 +109,10 @@ def _load_snapshot_records(path: Path) -> list[TourPlaceRecord]:
                     if modified_at
                     else None
                 ),
+                # 이미지 2열은 D-056에서 추가됐다. 그 이전 스냅샷에는 열 자체가 없으므로
+                # get의 기본값으로 None이 되어 옛 파일도 그대로 읽힌다.
+                first_image_url=_optional(row.get("first_image_url", "")),
+                thumbnail_url=_optional(row.get("thumbnail_url", "")),
             )
         )
     # 스냅샷 정렬과 무관하게 페이지 경계가 안정적이도록 고정 순서를 준다.

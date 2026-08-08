@@ -511,6 +511,9 @@ class SupabasePlaceRepository:
                 "lcls_systm2": place.lcls_systm2,
                 "lcls_systm3": place.lcls_systm3,
                 "source_modified_at": _iso(place.source_modified_at),
+                # 이미지는 목록 응답에서 오므로 상세조회 성패와 무관하게 갱신된다(D-056).
+                "first_image_url": place.first_image_url,
+                "thumbnail_url": place.thumbnail_url,
                 "list_fetched_at": fetched_at_text,
                 "last_seen_at": fetched_at_text,
                 "last_sync_run_id": str(sync_run_id),
@@ -552,9 +555,16 @@ class SupabasePlaceRepository:
         parse_status: str,
         parser_version: str,
         fetched_at: datetime,
+        parking_info_raw: str | None = None,
+        parking_fee_raw: str | None = None,
+        use_fee_raw: str | None = None,
+        discount_info_raw: str | None = None,
     ) -> None:
         if parse_status not in _VALID_PARSE_STATUSES:
             raise ValueError("유효하지 않은 parse_status입니다.")
+        # detail_fetch_status 판정에는 주차·요금을 넣지 않는다. 넣으면 운영시간이 없고
+        # 주차만 있는 장소가 empty에서 success로 바뀌어 재조회 주기가 달라진다 —
+        # 이 컬럼은 운영정보 확보 여부를 뜻하므로 기존 의미를 유지한다(D-056).
         detail_status = (
             "empty"
             if operating_hours_raw is None and rest_date_raw is None
@@ -567,6 +577,10 @@ class SupabasePlaceRepository:
             json={
                 "operating_hours_raw": operating_hours_raw,
                 "rest_date_raw": rest_date_raw,
+                "parking_info_raw": parking_info_raw,
+                "parking_fee_raw": parking_fee_raw,
+                "use_fee_raw": use_fee_raw,
+                "discount_info_raw": discount_info_raw,
                 "operating_schedule": operating_schedule,
                 "operating_parse_status": parse_status,
                 "operating_parser_version": parser_version,

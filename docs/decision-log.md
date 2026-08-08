@@ -1484,6 +1484,35 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   근처에서 진행 중인 행사"로 나가므로 질문이 "경복궁에서 뭐 해?"였다면 기대와 다를 수
   있다. 종로구 등록 행사 자체가 25건뿐이라 표본이 작다는 점도 함께 둔다.
 
+### D-056 — TourAPI 주차·요금·이미지 원문은 `places`에 직접 둔다
+
+- 상태: `Accepted`, 마이그레이션 작성 완료 (DB 적용·코드 배선 대기)
+- 배경: 추천 카드에 주차·요금·썸네일을 노출하려는데, 저장 위치를 `places` 컬럼 추가와
+  별도 테이블 분리 중 어디로 할지 정해야 했다.
+- 결정: `places`에 컬럼 6개를 추가한다 — `parking_info_raw`, `parking_fee_raw`,
+  `use_fee_raw`, `discount_info_raw`, `first_image_url`, `thumbnail_url`.
+- 근거: 출처(`detailIntro2`)·관계(1:1)·갱신 주기(`detail_fetched_at` TTL)가
+  기존 `operating_hours_raw`와 동일하다. 분리하면 수명주기 컬럼(`detail_fetch_status`,
+  `detail_fetched_at`)을 복제하거나 두 테이블의 신선도가 어긋난다. `place_enrichments`도
+  아니다 — 그쪽 `source_type`은 `manual_research`/`external_data`/`derived`로 제한된
+  사람 조사·파생값이고, TourAPI 원문은 성격이 다르다.
+- 외부 호출은 늘지 않는다: `place_sync`가 이미 장소마다 `detailIntro2`를 부르고
+  있고(운영시간·휴무일 용도) 같은 응답에서 더 읽기만 한다. 이미지 2개는
+  `areaBasedList2` 목록 응답에 이미 들어 있어 상세조회조차 필요 없다.
+- **함정 — 축제(15)의 이용요금 필드명은 `usetimefestival`이다.** 이름은 시간처럼
+  보이지만 내용은 요금이다. `real_place.py`의 `_OPERATING_HOURS_KEYS`가 이 키를 일부러
+  제외하고 축제는 `playtime`을 쓰는 이유이므로, 요금 매핑을 추가할 때 그 구분을 깨면
+  영업시간 자리에 "5,000원"이 들어간다.
+- 커버리지 한계(2026-08-08 실측, 종로구 844건):
+  - 주차 806건(95%) — 축제(15) 38건에는 주차 필드가 아예 없다.
+  - 이용요금 204건(24%) — 14·15·28에만 있다. 12 관광지·32 숙박·38 쇼핑은 요금이
+    `detailCommon2`의 `overview` 산문에 섞여 있어 별도 파싱이나 수동 보강이 필요하다.
+  - 우선 있는 값으로 카드를 채우고, 누락분은 이후 `place_enrichments`로 보강한다.
+- 이미지 2개는 `detail_fetched_at`이 아니라 `list_fetched_at` 주기를 따른다. 상세조회가
+  실패한 장소에서도 이미지는 최신일 수 있다.
+- 구현: `supabase/migrations/202608080001_add_place_parking_fee_image_columns.sql`.
+  provider 매핑(`real_place.py`)과 `place_sync.py` 저장 반영은 후속 작업.
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -1533,3 +1562,4 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-07 | D-054 신설 — INFO `question_type` 8종으로 확장(C). 상세 질의는 Supabase 캐시에 데이터가 없어 TourAPI를 직접 조회하도록 결정하고 `GetPlaceDetailTool`·`info_field_rules` 신설. `event`는 `unsupported`, A 배선 3건은 별도 카드 |
 | 2026-08-06 | D-053 신설 — TP-67(PR #113) 후속으로 위치 변경 판정에서 지명 단독을 제외해 `INFO`(정보 조회) 흐름을 지키고, `environment` 미언급(`ANY`)이 되묻기 답변에서 앞 턴의 `indoor`를 덮어쓰던 갭을 프롬프트 규칙 + 보존 목록으로 막음. `PROMPT_VERSION` 1.0.2 |
 | 2026-08-07 | D-054 트리비 페르소나와 `GENERAL(service_identity)`, RECOMMEND/MODIFY 추천 결과 요약 LLM 추가. 요약 입력에서 내부 scoring 필드는 제외 |
+| 2026-08-08 | D-056 신설 — TourAPI 주차·요금·이미지 원문을 `places` 컬럼 6개로 추가(C). 별도 테이블 분리 대신 컬럼 추가를 택한 근거와 축제 `usetimefestival` 함정, 커버리지 한계(주차 95%/요금 24%)를 기록 |

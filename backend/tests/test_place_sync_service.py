@@ -107,6 +107,10 @@ class FakeAreaProvider:
             content_type_id=content_type_id,
             operating_hours_raw="09:00~18:00",
             rest_date_raw="매주 화요일",
+            parking_info_raw="가능 (54대)",
+            parking_fee_raw="무료",
+            use_fee_raw="3,000원",
+            discount_info_raw="경로 50%",
         )
 
 
@@ -123,6 +127,9 @@ class FakePlaceRepository:
         self.released = 0
         self.upserted: list[TourPlaceRecord] = []
         self.detail_updates: list[str] = []
+        self.detail_extras: dict[
+            str, tuple[str | None, str | None, str | None, str | None]
+        ] = {}
         self.detail_failures: list[tuple[str, str]] = []
         self.parsed_updates: list[str] = []
         self.deactivate_calls = 0
@@ -170,8 +177,20 @@ class FakePlaceRepository:
         parse_status: str,
         parser_version: str,
         fetched_at: datetime,
+        parking_info_raw: str | None = None,
+        parking_fee_raw: str | None = None,
+        use_fee_raw: str | None = None,
+        discount_info_raw: str | None = None,
     ) -> None:
         self.detail_updates.append(content_id)
+        # 받은 값을 버리면 provider가 채운 주차·요금이 저장 경로까지 실제로 오는지
+        # 검증할 수 없다.
+        self.detail_extras[content_id] = (
+            parking_info_raw,
+            parking_fee_raw,
+            use_fee_raw,
+            discount_info_raw,
+        )
 
     async def update_parsed_schedule(
         self,
@@ -374,3 +393,23 @@ async def test_incomplete_list_never_upserts_or_deactivates() -> None:
         "INCOMPLETE_PLACE_LIST": 1
     }
     assert repository.released == 1
+
+
+@pytest.mark.asyncio
+async def test_detail_sync_persists_parking_and_fee_fields() -> None:
+    """provider가 채운 주차·요금이 저장 호출까지 그대로 도달하는지 못 박는다.
+
+    Fake 저장소가 인자를 받기만 하고 버리면 D-056 배선이 끊겨도 테스트가 통과한다.
+    """
+    provider = FakeAreaProvider([_place(1)])
+    repository = FakePlaceRepository()
+    service = PlaceSyncService(provider, repository, now=lambda: NOW)
+
+    await service.sync("11", "110")
+
+    assert repository.detail_extras["1"] == (
+        "가능 (54대)",
+        "무료",
+        "3,000원",
+        "경로 50%",
+    )
