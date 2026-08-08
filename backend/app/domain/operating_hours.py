@@ -9,7 +9,7 @@ from enum import StrEnum
 from html.parser import HTMLParser
 
 _COURSE_CONTENT_TYPE_ID = "25"
-OPERATING_PARSER_VERSION = "operating-hours-1.1.0"
+OPERATING_PARSER_VERSION = "operating-hours-1.2.0"
 _WEEKDAY_INDEX = {
     "월": 0,
     "화": 1,
@@ -33,9 +33,59 @@ _MONTH_RANGE_PATTERN = re.compile(
     r"(?P<start>\d{1,2})\s*월\s*(?:~|∼|～|–|—|-)\s*"
     r"(?P<end>\d{1,2})\s*월"
 )
-_WEEKLY_CLOSURE_PATTERN = re.compile(
-    r"매주\s*(?P<weekdays>(?:[월화수목금토일](?:요일)?(?:\s*[,·/및과와]\s*)?)+)"
+_WEEKDAY_ALIASES = {
+    "평일": frozenset({0, 1, 2, 3, 4}),
+    "주중": frozenset({0, 1, 2, 3, 4}),
+    "주말": frozenset({5, 6}),
+}
+# 범위 표기(`월요일~금요일`)와 나열 표기(`금요일, 토요일`)는 전개 규칙이 다르다 —
+# 범위는 사이 요일을 채우고 나열은 적힌 요일만 쓴다. 구분자를 하나로 합쳐 읽으면
+# `월요일~금요일`이 [월, 금]이 되어 사이 요일이 조용히 빠진다.
+_WEEKDAY_RANGE_SEPARATORS = "~∼～–—-"
+_WEEKDAY_SEPARATOR_CLASS = r"[,·/및과와~∼～–—-]"
+_WEEKDAY_TOKEN = r"[월화수목금토일]요일|평일|주중|주말"
+_WEEKDAY_SCAN_PATTERN = re.compile(
+    rf"{_WEEKDAY_TOKEN}|[월화수목금토일]|[{_WEEKDAY_RANGE_SEPARATORS}]"
 )
+_WEEKLY_CLOSURE_PATTERN = re.compile(
+    r"매주\s*(?P<weekdays>(?:[월화수목금토일](?:요일)?"
+    rf"(?:\s*{_WEEKDAY_SEPARATOR_CLASS}\s*)?)+)"
+)
+# 운영시간 원문에서 뒤따르는 시간 구간의 적용 요일을 선언하는 표기.
+# `1월~2월`이나 `평일미사 월 07:00`의 한 글자 표기를 요일로 오독하지 않도록
+# `요일` 접미사가 붙은 형태와 평일·주중·주말만 범위 선언으로 인정한다.
+_WEEKDAY_SCOPE_PATTERN = re.compile(
+    rf"(?:{_WEEKDAY_TOKEN})(?:\s*{_WEEKDAY_SEPARATOR_CLASS}\s*(?:{_WEEKDAY_TOKEN}))*"
+)
+# 요일 표기가 적용 범위가 아니라 휴무 안내나 부속 시간(준비시간·미사)인 경우.
+# `휴일`은 넣지 않는다 — `일요일 및 공휴일 10:00~17:00`의 `공휴일`에 걸려
+# 일요일 구간이 통째로 앞 요일 범위에 붙는다.
+_WEEKDAY_SCOPE_SUFFIX_BLOCKERS = (
+    "휴관",
+    "휴무",
+    "휴장",
+    "휴업",
+    "미사",
+    "브레이크",
+    "준비시간",
+    "휴게시간",
+)
+# `매주 화요일 휴관`·`매월 마지막 수요일`처럼 되풀이 예외를 가리키는 표기.
+_WEEKDAY_SCOPE_PREFIX_BLOCKERS = (
+    "매주",
+    "매월",
+    "첫째",
+    "둘째",
+    "셋째",
+    "넷째",
+    "마지막",
+    "다음",
+)
+_WEEKDAY_SCOPE_CONTEXT_WINDOW = 8
+# `[인문사회자연과학실]` 같은 시설 구획 표기. 요일이 아닌 대괄호 구획이 나오면
+# 앞 구획의 적용 요일을 물려주지 않는다 — 물려주면 요일 표기가 없는 뒤 구획
+# (`[자율학습실] 하절기 07:00~22:00`)이 앞 구획의 `주말` 전용으로 좁혀진다.
+_BRACKET_SECTION_PATTERN = re.compile(r"\[[^\]]*\]")
 # TourAPI 관광지·자연 원문에서 "24시간"만큼 흔한 상시 개방 표기. D-024와 같은 이유로
 # 시간 구간을 못 읽었다는 이유만으로 후보를 운영 미확인으로 떨어뜨리지 않는다.
 _ALWAYS_OPEN_PATTERN = re.compile(r"상시\s*(?:개방|운영|이용|출입)?")
@@ -231,32 +281,114 @@ def _parse_operating_rules(value: str | None) -> tuple[OperatingRule, ...]:
     if value is None:
         return ()
     rules: list[OperatingRule] = []
+    # 요일 선언과 시간 구간이 다른 줄에 오는 원문(`[평일]<br>- 10:00~17:00`)이
+    # 흔해, 적용 요일은 줄을 넘겨 다음 선언이 나올 때까지 유지한다.
+    current_weekdays: frozenset[int] | None = None
     for line in value.splitlines():
-        time_ranges = tuple(
-            parsed
-            for match in _TIME_RANGE_PATTERN.finditer(line)
-            if (parsed := _try_time_range(match)) is not None
-        )
-        if not time_ranges:
-            continue
-        admission_match = _LAST_ADMISSION_PATTERN.search(line)
-        rules.append(
-            OperatingRule(
-                months=_parse_months(line),
-                weekdays=None,
-                time_ranges=time_ranges,
-                last_admission=(
-                    _try_time(
-                        admission_match.group("hour"),
-                        admission_match.group("minute"),
-                    )
-                    if admission_match
-                    else None
-                ),
-                source_text=line,
+        for weekdays, segment in _split_weekday_segments(line, current_weekdays):
+            current_weekdays = weekdays
+            time_ranges = tuple(
+                parsed
+                for match in _TIME_RANGE_PATTERN.finditer(segment)
+                if (parsed := _try_time_range(match)) is not None
             )
-        )
+            if not time_ranges:
+                continue
+            admission_match = _LAST_ADMISSION_PATTERN.search(segment)
+            rules.append(
+                OperatingRule(
+                    months=_parse_months(segment) or _parse_months(line),
+                    weekdays=weekdays,
+                    time_ranges=time_ranges,
+                    last_admission=(
+                        _try_time(
+                            admission_match.group("hour"),
+                            admission_match.group("minute"),
+                        )
+                        if admission_match
+                        else None
+                    ),
+                    source_text=segment,
+                )
+            )
     return tuple(rules)
+
+
+def _split_weekday_segments(
+    line: str, inherited: frozenset[int] | None
+) -> list[tuple[frozenset[int] | None, str]]:
+    """요일 선언을 경계로 한 줄을 적용 요일이 같은 구간들로 나눈다.
+
+    `[일요일~금요일] 09:00~18:00 [토요일] 09:00~13:00`처럼 요일마다 시간이 다른
+    원문을 요일 구분 없는 규칙들로 평탄화하면, 소비 측(`candidate_mapper`)이
+    방문 시각을 포함하는 첫 구간을 고르면서 토요일 14:00에 09:00~18:00을 잡아
+    이미 닫은 장소를 운영 중으로 판정한다.
+    """
+    # `※` 뒤는 예외 안내라 적용 요일을 바꾸지 않는다. 시간 구간은 그대로 읽되
+    # 요일 선언만 무시해야 `09:00~18:00 ※ 매주 화요일 휴관`이 화요일 전용으로
+    # 뒤집히지 않는다.
+    note_start = line.find("※")
+    scope_limit = len(line) if note_start < 0 else note_start
+    markers: list[tuple[int, int, frozenset[int] | None]] = [
+        (match.start(), match.end(), _expand_weekdays(match.group()) or None)
+        for match in _WEEKDAY_SCOPE_PATTERN.finditer(line)
+        if match.start() < scope_limit and _is_weekday_scope(line, match)
+    ]
+    markers.extend(
+        (match.start(), match.end(), None)
+        for match in _BRACKET_SECTION_PATTERN.finditer(line)
+        if match.start() < scope_limit and not _WEEKDAY_SCOPE_PATTERN.search(match.group())
+    )
+    if not markers:
+        return [(inherited, line)]
+    markers.sort(key=lambda marker: marker[:2])
+    segments: list[tuple[frozenset[int] | None, str]] = []
+    if markers[0][0] > 0:
+        segments.append((inherited, line[: markers[0][0]]))
+    for index, (_, marker_end, weekdays) in enumerate(markers):
+        end = markers[index + 1][0] if index + 1 < len(markers) else len(line)
+        segments.append((weekdays, line[marker_end:end]))
+    return segments
+
+
+def _is_weekday_scope(line: str, match: re.Match[str]) -> bool:
+    prefix = line[max(0, match.start() - _WEEKDAY_SCOPE_CONTEXT_WINDOW) : match.start()]
+    suffix = line[match.end() : match.end() + _WEEKDAY_SCOPE_CONTEXT_WINDOW]
+    return not any(
+        token in prefix for token in _WEEKDAY_SCOPE_PREFIX_BLOCKERS
+    ) and not any(token in suffix for token in _WEEKDAY_SCOPE_SUFFIX_BLOCKERS)
+
+
+def _expand_weekdays(text: str) -> frozenset[int]:
+    """요일 표기를 인덱스 집합으로 전개한다 — 범위 표기는 사이 요일까지 채운다."""
+    result: set[int] = set()
+    previous: int | None = None
+    pending_range = False
+    for token in _WEEKDAY_SCAN_PATTERN.findall(text):
+        if token in _WEEKDAY_RANGE_SEPARATORS:
+            pending_range = previous is not None
+            continue
+        alias = _WEEKDAY_ALIASES.get(token)
+        if alias is not None:
+            result.update(alias)
+            previous = None
+            pending_range = False
+            continue
+        index = _WEEKDAY_INDEX[token.replace("요일", "")]
+        if pending_range and previous is not None:
+            result.update(_weekday_span(previous, index))
+        else:
+            result.add(index)
+        previous = index
+        pending_range = False
+    return frozenset(result)
+
+
+def _weekday_span(start: int, end: int) -> set[int]:
+    if start <= end:
+        return set(range(start, end + 1))
+    # `토요일~월요일`처럼 주 경계를 넘는 범위.
+    return {*range(start, 7), *range(0, end + 1)}
 
 
 def _parse_months(value: str) -> frozenset[int] | None:
@@ -280,11 +412,7 @@ def _parse_closures(value: str | None) -> tuple[ClosureRule, ...]:
         match = _WEEKLY_CLOSURE_PATTERN.search(line)
         if match is None:
             continue
-        weekday_text = match.group("weekdays").replace("요일", "")
-        weekdays = frozenset(
-            _WEEKDAY_INDEX[token]
-            for token in re.findall(r"[월화수목금토일]", weekday_text)
-        )
+        weekdays = _expand_weekdays(match.group("weekdays"))
         if weekdays:
             rules.append(ClosureRule(weekdays=weekdays, source_text=line))
     return tuple(rules)

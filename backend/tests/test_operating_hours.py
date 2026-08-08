@@ -1,5 +1,15 @@
-from datetime import time
+from datetime import UTC, datetime, time
 
+from app.agent_context.mappers import _operating_schedule as serialize_operating_schedule
+from app.agent_context.schemas import (
+    ContextValue,
+    Coordinates,
+    PlaceCandidate,
+    ProviderMetadata,
+    RecommendationContext,
+    ResolvedLocation,
+)
+from app.domain.candidate_mapper import map_context_to_scoring_candidates
 from app.domain.operating_hours import (
     OperatingAvailability,
     OperatingParseStatus,
@@ -120,3 +130,206 @@ def test_unrecognized_hours_are_partial_and_raw_value_is_preserved() -> None:
     assert schedule.parse_status is OperatingParseStatus.PARTIAL
     assert schedule.availability is OperatingAvailability.UNKNOWN
     assert schedule.warnings
+
+
+def test_weekly_closure_expands_tilde_weekday_range() -> None:
+    """`매주 월요일~목요일`의 사이 요일까지 휴무로 읽는다.
+
+    구분자에 `~`가 없으면 [월]만 남고, 있더라도 나열로 읽으면 [월, 목]이 되어
+    화·수요일이 조용히 빠진다.
+    """
+    schedule = normalize_operating_schedule(
+        content_type_id="12",
+        operating_hours="09:00~18:00",
+        rest_date="매주 월요일~목요일",
+    )
+
+    assert schedule.closure_rules[0].weekdays == frozenset({0, 1, 2, 3})
+
+
+def test_weekly_closure_expands_range_across_week_boundary() -> None:
+    schedule = normalize_operating_schedule(
+        content_type_id="12",
+        operating_hours="09:00~18:00",
+        rest_date="매주 토요일~월요일",
+    )
+
+    assert schedule.closure_rules[0].weekdays == frozenset({5, 6, 0})
+
+
+def test_weekly_closure_ignores_trailing_holiday_text() -> None:
+    """`공휴일`의 `일`을 요일로 읽지 않는다."""
+    schedule = normalize_operating_schedule(
+        content_type_id="12",
+        operating_hours="09:00~18:00",
+        rest_date="매주 토요일~일요일 / 법정공휴일",
+    )
+
+    assert schedule.closure_rules[0].weekdays == frozenset({5, 6})
+
+
+def test_operating_rules_are_split_by_weekday_scope() -> None:
+    schedule = normalize_operating_schedule(
+        content_type_id="12",
+        operating_hours="[일요일~금요일]09:00~18:00[토요일]09:00~13:00",
+        rest_date=None,
+    )
+
+    assert [rule.weekdays for rule in schedule.rules] == [
+        frozenset({6, 0, 1, 2, 3, 4}),
+        frozenset({5}),
+    ]
+    assert schedule.rules[1].time_ranges[0].end == time(13, 0)
+
+
+def test_weekday_scope_carries_across_lines_until_next_declaration() -> None:
+    """요일 선언과 시간 구간이 다른 줄에 오는 원문을 이어서 읽는다."""
+    schedule = normalize_operating_schedule(
+        content_type_id="12",
+        operating_hours="[평일]<br>- 10:00~17:00<br>[토요일]<br>- 10:00~14:00",
+        rest_date=None,
+    )
+
+    assert [rule.weekdays for rule in schedule.rules] == [
+        frozenset({0, 1, 2, 3, 4}),
+        frozenset({5}),
+    ]
+
+
+def test_weekday_scope_resets_at_non_weekday_bracket_section() -> None:
+    """시설 구획이 바뀌면 앞 구획의 적용 요일을 물려주지 않는다."""
+    schedule = normalize_operating_schedule(
+        content_type_id="12",
+        operating_hours=(
+            "[열람실]<br>- 주말 09:00~17:00<br>[자율학습실]<br>- 07:00~22:00"
+        ),
+        rest_date=None,
+    )
+
+    assert schedule.rules[0].weekdays == frozenset({5, 6})
+    assert schedule.rules[1].weekdays is None
+
+
+def test_weekday_in_closure_note_does_not_scope_time_range() -> None:
+    """`※` 뒤 휴관 안내의 요일을 운영 요일로 뒤집지 않는다."""
+    schedule = normalize_operating_schedule(
+        content_type_id="12",
+        operating_hours="- 09:00~18:00※ 매주 화요일 휴관",
+        rest_date=None,
+    )
+
+    assert schedule.rules[0].weekdays is None
+
+
+def test_weekday_in_break_time_note_does_not_scope_time_range() -> None:
+    schedule = normalize_operating_schedule(
+        content_type_id="12",
+        operating_hours=(
+            "11:20~21:00 (주중 브레이크타임 15:00~17:00 / 토요일 브레이크타임 15:30~17:00)"
+        ),
+        rest_date=None,
+    )
+
+    assert [rule.weekdays for rule in schedule.rules] == [None]
+
+
+def test_sunday_scope_survives_adjacent_public_holiday_text() -> None:
+    """`일요일 및 공휴일`의 `공휴일`을 휴무 안내로 오인해 일요일 구간을 잃지 않는다."""
+    schedule = normalize_operating_schedule(
+        content_type_id="12",
+        operating_hours="- 월요일~토요일 10:00~18:00<br>- 일요일 및 공휴일 10:00~17:00",
+        rest_date=None,
+    )
+
+    assert schedule.rules[1].weekdays == frozenset({6})
+    assert schedule.rules[1].time_ranges[0].end == time(17, 0)
+
+
+def test_month_range_scope_is_preserved_without_weekday_declaration() -> None:
+    schedule = normalize_operating_schedule(
+        content_type_id="12",
+        operating_hours="[1월~2월] 09:00~17:00<br>[3월~5월] 09:00~18:00",
+        rest_date=None,
+    )
+
+    assert [rule.months for rule in schedule.rules] == [
+        frozenset({1, 2}),
+        frozenset({3, 4, 5}),
+    ]
+    assert [rule.weekdays for rule in schedule.rules] == [None, None]
+
+
+def _scoring_candidate_at(operating_hours: str, visit_at: datetime):
+    """정규화 결과가 D의 운영 판정을 실제로 움직이는지 공개 경로로 확인한다."""
+    schedule = normalize_operating_schedule(
+        content_type_id="12",
+        operating_hours=operating_hours,
+        rest_date=None,
+    )
+    context = RecommendationContext(
+        location=ContextValue(
+            status="success",
+            data=ResolvedLocation(
+                requested_query="경복궁",
+                resolved_name="경복궁",
+                location=Coordinates(latitude=37.5796, longitude=126.9770),
+            ),
+        ),
+        places=ContextValue(
+            status="success",
+            data=[
+                PlaceCandidate(
+                    place_id="place-1",
+                    name="후보 장소",
+                    category="restaurant",
+                    location=Coordinates(latitude=37.5806, longitude=126.9770),
+                    operating_schedule=serialize_operating_schedule(schedule),
+                )
+            ],
+            provider_metadata=[
+                ProviderMetadata(
+                    source="fake_place",
+                    status="success",
+                    retrieved_at=datetime(2026, 7, 24, tzinfo=UTC),
+                )
+            ],
+        ),
+    )
+    return map_context_to_scoring_candidates(context, visit_at=visit_at)[0]
+
+
+def test_saturday_short_hours_close_the_candidate_for_scoring() -> None:
+    """토요일 13:00에 닫는 장소가 토요일 14:00 추천에서 폐점으로 걸러진다.
+
+    요일을 분리하지 않으면 소비 측이 09:00~18:00 구간을 골라 잔여 240분(운영점수
+    만점)으로 추천한다.
+    """
+    candidate = _scoring_candidate_at(
+        "[일요일~금요일]09:00~18:00[토요일]09:00~13:00",
+        datetime(2026, 8, 8, 14, 0),
+    )
+
+    assert candidate.operating_hours is not None
+    assert candidate.operating_hours.open_time == time.min
+    assert candidate.operating_hours.close_time == time.min
+
+
+def test_saturday_short_hours_stay_open_before_closing() -> None:
+    candidate = _scoring_candidate_at(
+        "[일요일~금요일]09:00~18:00[토요일]09:00~13:00",
+        datetime(2026, 8, 8, 10, 0),
+    )
+
+    assert candidate.operating_hours is not None
+    assert candidate.operating_hours.close_time == time(13, 0)
+
+
+def test_weekday_scope_keeps_remaining_time_from_the_right_range() -> None:
+    """월요일 전용 구간이 토요일 잔여시간을 30분으로 깎지 않는다."""
+    candidate = _scoring_candidate_at(
+        "- 월요일 11:00~15:00- 화요일~일요일 11:00~20:30",
+        datetime(2026, 8, 8, 14, 30),
+    )
+
+    assert candidate.operating_hours is not None
+    assert candidate.operating_hours.close_time == time(20, 30)
