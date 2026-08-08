@@ -5,19 +5,23 @@
 이 문서는 Phase 1-A의 목표 아키텍처와 현재 저장소 구현을 함께 설명합니다.
 다이어그램의 일부 계층은 목표 구조이며 아직 코드로 존재하지 않습니다.
 
+최종 확인: 2026-08-08.
+
 | 구분 | 상태 |
 | --- | --- |
-| React Frontend, 분리된 Interpret/Recommendations API | 구현됨 |
-| Fake/Real Provider와 일부 외부 API 연동 | 구현됨 |
-| 통합 Chat API | 미구현 (`TBD`) |
+| React Frontend | 구현됨 |
+| 통합 Chat API (`POST /api/chat`) | 구현됨. 프론트 실사용 경로 |
+| 분리된 Interpret/Recommendations API | 구현됨. 현재는 디버그 패널 전용 |
+| Fake/Real Provider와 외부 API 연동 | 구현됨 |
 | Interpret Orchestrator, Backend Context Merge, Agent Runtime 본체 | 구현됨 |
-| Agent Runtime의 D 실제 추천 연결 | 미구현 (`TBD`) |
-| Tool | 위치·날씨·장소·집중률·공휴일 Tool 구현, 이동시간 등은 `TBD` |
-| 가중치 Engine (Scoring v1) | Recommendations API 파이프라인에 연결됨 |
-| Recommendation Request Builder | 미구현 (`TBD`) |
+| Agent Runtime의 D 실제 추천 연결 | 구현됨 (D-033) |
+| Tool | 위치·날씨·장소·장소 상세 단건·행사·집중률·공휴일 Tool 구현, 이동시간 등은 `TBD` |
+| 가중치 Engine (Scoring v1) | 추천 파이프라인에 연결됨 |
+| Recommendation Request Builder | 별도 계층으로는 미구현. 조건 결합은 파이프라인 내부에서 처리 |
 | Fake/Real LLM Interpret | 구현됨 |
-| Response Generator | 미구현 (`TBD`) |
-| Supabase Persistence | 미구현 (`TBD`) |
+| Response Generator | 구현됨 (D-054). Rule 기반 조립 + 요약·GENERAL 답변에 LLM 호출 |
+| Supabase Persistence — 장소 데이터 | 구현됨. 9개 테이블 운영 중 |
+| Supabase Persistence — 세션 상태 | 구현됨. 단 기본값은 프로세스 내 메모리(`STATE_STORE_BACKEND=memory`) |
 
 ## 2. 전체 시스템 흐름
 
@@ -39,10 +43,18 @@ flowchart LR
     CHAT --> FE
 ```
 
-현재 공개 API는 `Frontend → /api/interpret`와 `/api/recommendations`로 분리되어
-있습니다. 추천 API는 Geocoding·Weather·Place·Holiday를 수집하고 Scoring 후 상위
-후보에 Concentration을 후조회합니다. `Agent Runtime`은 A→B→C 호출까지 실제
-구현을 사용하지만 D는 아직 Runtime 전용 Fake 구현을 사용합니다.
+**프론트 실사용 경로는 `Frontend → POST /api/chat` 하나입니다.** 이 라우트가
+`run_agent()`에 그대로 위임하고, Intent 분류부터 B/C/D 조정과 챗봇 메시지
+조립까지가 한 번의 호출로 끝납니다.
+
+`/api/interpret`과 `/api/recommendations`도 여전히 등록돼 있지만 현재는 개발용
+디버그 패널(`IntentDebugPanel`, `AgentRuntimeDebugPanel`)이 호출합니다. 추천
+API는 Geocoding·Weather·Place·Holiday를 수집하고 Scoring 후 상위 후보에
+Concentration을 후조회합니다.
+
+`Agent Runtime`은 A→B→C→D 전 구간에 실제 구현을 사용합니다. `run_agent()`의 기본
+주입이 `RealRecommendationProvider`입니다(D-033). `services/runtime/stubs.py`의
+Fake는 테스트에서 Provider를 갈아끼울 때만 씁니다.
 
 ## 3. 계층별 책임
 
@@ -51,20 +63,26 @@ flowchart LR
 - 담당: 사용자 입력, 메시지·추천 결과 렌더링, API 호출, UI 상태 관리
 - 현재: `TripContext`와 `sessionStorage`에 같은 탭의 대화를 저장
 - 하지 않음: LLM/외부 Provider 직접 호출, API 키 보관, 추천 점수 계산
-- 목표: 새 채팅에서 `chat_session_id` 생성
+- 세션 식별자는 Backend가 생성합니다. 프론트는 `/api/chat` 응답으로 받은
+  `session_id`를 이후 발화에 실어 보냅니다
 
 ### Chat API
 
-- 담당: `ChatRequest` 검증, Orchestrator 호출, 공개 `ChatResponse` 반환
+- 담당: 요청 검증, `run_agent()` 호출, 공개 응답 반환
 - 하지 않음: Provider 원본 응답 직접 조작, 추천 점수 직접 계산
-- 상태: 미구현. 현재는 `/api/interpret`, `/api/recommendations`로 분리됨
+- 상태: `POST /api/chat`으로 구현됨(`routes/chat.py`). `/api/agent-debug`와 같은
+  구현을 공유하되 용도가 다릅니다 — 전자가 실사용, 후자가 개발 패널 전용입니다
+- 남은 것: 지금은 프론트 전환 비용을 줄이려고 `AgentResponse`를 그대로
+  내보내므로 `llm_output` 전체와 B의 내부 state까지 공개 계약에 노출됩니다.
+  필요한 필드만 남기는 축소는 D-016 확정 대기 중입니다(`routes/chat.py` TODO)
 
 ### Orchestrator
 
 - 담당: Intent에 따른 실행 순서, Tool 호출, fallback, 실행 ID 및 로그 연결
 - 하지 않음: 외부 API별 필드 파싱, 도메인 점수식 자체 구현
-- 상태: Interpret Orchestrator와 HTTP 라우트 없는 `Agent Runtime` 본체 구현.
-  C까지 실제 연결됐으며 D 실제 구현과 통합 Chat API 연결은 `TBD`
+- 상태: Interpret Orchestrator와 `Agent Runtime` 본체 구현. A→B→C→D 전 구간이
+  실제 구현으로 연결됐고, `/api/chat`·`/api/agent-debug` 두 라우트가
+  `run_agent()`를 호출합니다
 
 ### Interpret
 
@@ -81,24 +99,40 @@ flowchart LR
 ### Tool
 
 - 담당: 추천 파이프라인이 사용하는 업무 단위 기능 제공
-- 예: `resolve_location`, `search_nearby_places`, `get_place_details`,
-  `estimate_travel_time`, `get_weather_forecast`, `get_congestion`,
-  `search_place_feature_evidence`
 - 하지 않음: 특정 외부 API 응답 형식을 호출자에게 노출
-- 상태: 위치·날씨·장소·집중률·공휴일 Tool 구현. 이동시간 등은 `TBD`
+- 구현된 Tool (`backend/app/tools/`)
+
+  | Tool | 용도 |
+  | --- | --- |
+  | `ResolveLocationTool` | 위치 해석 |
+  | `NearbyPlaceDetailsTool` | 좌표 주변 후보 검색 + 상세 보강 |
+  | `GetPlaceDetailTool` | 이미 특정된 장소 1건의 상세 조회 (D-054) |
+  | `GetFestivalsTool` | 지역 행사 중 기준일에 진행 중인 것 (D-055) |
+  | `GetWeatherForecastTool` | 방문 시각 초단기예보 |
+  | `GetConcentrationTool` | 집중률 예측 |
+  | `GetHolidaysTool` | 공휴일 |
+
+- 미구현: 이동시간(`estimate_travel_time`), 블로그 근거
+  (`search_place_feature_evidence`)
 
 ### Provider
 
 - 담당: 외부 API 호출, 인증, timeout, 응답 파싱, 내부 모델 정규화
 - 하지 않음: 사용자 의도 판단, 추천 정책 결정
-- 현재: Geocoding, Weather, Place, Concentration, Holiday의 Fake/Real 구현 존재
+- 현재: Geocoding, LocalSearch, Weather, Place, Festival, Concentration,
+  Holiday의 Fake/Real 구현 존재. 상세는
+  [Provider Contract v1](../backend/docs/provider-contract-v1.md)
+- Real 실패 시 Fake로 자동 전환하지 않습니다(D-042). 실패는 첫 요청이 아니라
+  부팅에서 드러나야 하므로 `validate_provider_config()`가 기동 시 검사합니다
 
 ### Recommendation Request Builder
 
 - 담당: 병합된 조건을 검증하고 Provider/Tool 결과를 결합해 내부
   `RecommendationRequest` 생성
 - 하지 않음: 프론트 공개 계약으로 노출, 원문 발화를 그대로 점수기로 전달
-- 상태: `TBD`
+- 상태: 독립 계층으로는 미구현. 조건 결합은
+  `services/recommendation_pipeline.py`와 `agent_context/`가 나눠 처리하고
+  있으며, 별도 Builder를 세울지는 결정되지 않았습니다
 
 ### Recommendation Engine
 
@@ -145,17 +179,38 @@ flowchart LR
 
 - 담당: 추천 결과와 근거·경고를 사용자에게 읽기 쉬운 자연어로 변환
 - 하지 않음: 추천 순위 재결정 또는 검증되지 않은 사실 생성
-- 상태: `TBD`; 현재는 정적인 `recommendation_reason` 문자열 사용. Feature별
-  숫자 근거(`score`/`feature_scores`/`weights_used`)는 API 응답에 그대로
-  노출되고 있고(D-028), Rule 기반 문장(`explanations`)도 추가됐으나(D-029),
-  LLM으로 이를 자연스럽게 다듬거나 요약하는 로직은 아직 없음
+- 상태: 구현됨(`services/runtime/response_composer.py`, D-054). 두 계층입니다.
+  - `compose_recommendation_message()` — 장소 카드 1건의 문장. D가 만든
+    `explanations`/`warnings`를 협의된 순서(근거 먼저, 경고는 "다만~"으로
+    마지막)로 이어붙이며 **문장 내용은 재작문하지 않습니다**
+  - `compose_chat_message()` — 카드를 감싸는 말풍선(`AgentResponse.message`).
+    Intent/status별 고정 템플릿을 고르되, GENERAL 답변과 RECOMMEND/MODIFY 추천
+    요약에는 LLM(트리비 페르소나)을 호출합니다. 요약 입력에서 내부 scoring
+    필드는 제외합니다
+- 상세는 [Agent 응답 생성 설계](./design/agent-response-generation.md) 참고
 
 ### Persistence / Supabase
 
 - 담당 목표: 세션 메타데이터, 정규화 조건, 추천 실행·결과·외부 데이터 스냅샷 저장
 - 사용자 자연어 원문은 영구 저장하지 않는 것이 원칙
-- 실제 테이블, 보존기간, 접근정책: `TBD`
-- 현재 저장소에 Supabase 연동 코드는 없음
+- 현재 9개 테이블이 운영 중이며 세 그룹으로 나뉩니다.
+
+  | 그룹 | 테이블 | 소유 |
+  | --- | --- | --- |
+  | 장소 데이터 | `places`, `place_enrichments`, `place_concentration_mappings` | C |
+  | 동기화 관리 | `place_sync_runs`, `place_sync_locks` | C |
+  | 세션 상태 | `agent_states`, `condition_change_logs`, `recommendation_histories`, `trace_records` | B |
+
+- 장소 영역 스키마는
+  [장소 데이터베이스 설계](./design/place-database-schema.md), 세션 상태는
+  [Agent State Contract v1](../backend/docs/package-b/agent-state-contract-v1.md)
+- **연동 코드가 있다는 것과 기본으로 쓴다는 것은 다릅니다.**
+  - 세션 상태: `SupabaseStateStore`가 있으나 기본값은 프로세스 내 메모리입니다
+    (`STATE_STORE_BACKEND=memory`). Supabase로 붙이려면 명시 설정이 필요합니다
+  - 장소 상세: 기본값이 `PLACE_DETAILS_SOURCE=tour_api`라 요청 시점에 TourAPI를
+    호출합니다. `supabase`로 두면 사전 동기화한 `places`에서 일괄 조회합니다
+- 보존기간과 접근정책: RLS는 활성화돼 있고 `anon`/`authenticated`에 직접 쓰기
+  정책을 두지 않습니다. 보존기간은 `TBD`
 
 ### localStorage
 
@@ -194,13 +249,18 @@ Provider/Mapper가 `PlaceCandidate`, `PlaceDetails`, `WeatherCondition` 등의 �
 
 - Frontend: 입력 중 상태, 렌더링 메시지, 로컬 복원 데이터
 - Backend: 정규화 조건, 실행 상태, 외부 데이터 스냅샷, 추천 결과와 로그
-- 현재 Backend는 프로세스 내 State Store에 세션 조건·이력을 저장하며,
-  영속화는 미구현입니다. Frontend는 `sessionStorage`를 사용합니다.
+- 현재 Backend는 기본 설정에서 프로세스 내 State Store에 세션 조건·이력을
+  저장합니다. Supabase 영속화 구현체(`state/supabase_store.py`)는 있으나
+  `STATE_STORE_BACKEND=supabase`일 때만 쓰입니다. Frontend는 `sessionStorage`를
+  사용합니다.
 
 ### 식별자 생성 위치
 
-- 현재 `session_id`와 `run_id`는 Backend State Service가 생성합니다.
-- 목표 공개 계약의 `chat_session_id` 생성 주체와 현재 `session_id`의 통합 방식은 `TBD`
+- `session_id`와 `run_id`는 Backend State Service가 생성합니다.
+- `POST /api/chat`은 `session_id`를 선택 필드로 받습니다. 없으면 Backend가
+  새로 만들고, 프론트는 응답으로 받은 값을 이후 발화에 실어 보냅니다.
+- 초기 설계의 `chat_session_id`라는 별도 식별자는 도입하지 않았고 `session_id`로
+  일원화했습니다.
 - `recommendation_run_id`에 해당하는 현재 `run_id`는 추천 실행·상태 변경을 연결합니다.
 - 세션 ID는 사용자 인증 ID가 아닙니다.
 
@@ -238,7 +298,7 @@ Weather Snapshot은 `data_type=forecast`, `retrieved_at`, `forecast_for`,
 | Concentration 실패 | 순위 확정 후 후조회만 생략하고 기존 추천 유지 | 구현됨 |
 | Blog 근거 실패 | 분위기/조용함 Feature를 미확인 처리 | 제안, `TBD` |
 | 하드 필터 후 후보 없음 | 완화 가능한 조건을 설명하고 사용자 확인 요청 | `TBD` |
-| LLM 실패 | 재시도 또는 구조화 입력 UI 제공 | `TBD` |
+| LLM 실패 | 같은 벤더 내 대체 모델로 fallback 후 재시도 | 구현됨 (D-052, `LLM_FALLBACK_MODEL_NAMES`) |
 
 전체 실패와 부분 추천의 기준은 다음 원칙으로 구분합니다.
 
