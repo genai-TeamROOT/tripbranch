@@ -9,6 +9,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from app.agent_context.enrichment_schemas import (
+    CandidateEnrichmentResponse,
+    CandidateEnrichmentResult,
+)
+from app.agent_context.info_schemas import ConcentrationInfoResult, InfoContextResponse
 from app.agent_context.schemas import (
     AgentContextResponse,
     Clarification,
@@ -23,7 +28,11 @@ from app.agent_context.schemas import (
     ResponseMetadata,
     WeatherForecast,
 )
-from app.services.runtime.tool_debug import build_tool_execution_debug
+from app.services.runtime.tool_debug import (
+    build_candidate_enrichment_execution_debug,
+    build_info_concentration_execution_debug,
+    build_tool_execution_debug,
+)
 
 RETRIEVED_AT = datetime(2026, 8, 7, 3, 0, tzinfo=UTC)
 
@@ -156,3 +165,66 @@ def test_되묻기_응답의_코드를_남긴다() -> None:
     assert debug.error_code is None
     # context가 없어도 항목 목록은 "조회 안 함"으로 채워진다.
     assert all(item.fetched is False for item in debug.context_items)
+
+
+def test_info_혼잡도_조회도_독립_감사_단계로_변환한다() -> None:
+    response = InfoContextResponse(
+        request_id="info-1",
+        status="success",
+        result=ConcentrationInfoResult(
+            status="success",
+            is_proxy=True,
+            requested_place_name="카페",
+            resolved_place_name="경복궁",
+        ),
+        metadata=ResponseMetadata(
+            provider_metadata=[
+                ProviderMetadata(source="tour_api", status="success", retrieved_at=RETRIEVED_AT)
+            ]
+        ),
+    )
+
+    debug = build_info_concentration_execution_debug(response, latency_ms=120)
+
+    assert debug is not None
+    assert debug.operation == "info_concentration"
+    assert debug.is_proxy is True
+    assert debug.resolved_location_name == "경복궁"
+    assert debug.context_items[0].key == "concentration"
+    assert {provider.source for provider in debug.providers} == {"tour_api"}
+
+
+def test_후보_보강_조회는_후보별_상태_집계를_남긴다() -> None:
+    response = CandidateEnrichmentResponse(
+        request_id="enrich-1",
+        status="partial",
+        candidates=[
+            CandidateEnrichmentResult(
+                place_id="1",
+                name="경복궁",
+                latitude=37.57,
+                longitude=126.97,
+                status="no_data",
+                concentration=[],
+                provider_metadata=[
+                    ProviderMetadata(source="tour_api", status="success", retrieved_at=RETRIEVED_AT)
+                ],
+            ),
+            CandidateEnrichmentResult(
+                place_id="2",
+                name="카페",
+                latitude=37.58,
+                longitude=126.98,
+                status="unavailable",
+                error=ContextError(code="upstream_timeout", message="시간 초과", retryable=True),
+            ),
+        ],
+    )
+
+    debug = build_candidate_enrichment_execution_debug(response, latency_ms=220)
+
+    assert debug is not None
+    assert debug.operation == "candidate_enrichment"
+    assert debug.candidate_status_counts == {"no_data": 1, "unavailable": 1}
+    assert debug.context_items[0].item_count == 2
+    assert debug.error_code == "upstream_timeout"

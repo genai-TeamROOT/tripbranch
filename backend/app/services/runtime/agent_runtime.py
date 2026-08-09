@@ -34,6 +34,7 @@ from app.schemas import (
     QuestionType,
     RecommendationItem,
     RecommendationResponse,
+    ToolExecutionDebug,
     UserConditions,
 )
 from app.services.interpret.orchestrator import build_interpretation
@@ -48,7 +49,11 @@ from app.services.runtime.llm_execution import (
 )
 from app.services.runtime.protocols import EnrichmentProvider, RecommendationProvider, ToolProvider
 from app.services.runtime.response_composer import compose_chat_message
-from app.services.runtime.tool_debug import build_tool_execution_debug
+from app.services.runtime.tool_debug import (
+    build_candidate_enrichment_execution_debug,
+    build_info_concentration_execution_debug,
+    build_tool_execution_debug,
+)
 from app.state.schema import now_kst
 from app.state.service import (
     RecommendedPlace,
@@ -225,6 +230,7 @@ async def _apply_concentration_rerank(
     recommendation_provider: RecommendationProvider,
     enrichment_provider: EnrichmentProvider,
     final_limit: int = _CONCENTRATION_FINAL_LIMIT,
+    execution_collector: list[ToolExecutionDebug] | None = None,
 ) -> RecommendationResponse:
     """concentration_intent가 AVOID/SEEK일 때만 1차 결과를 혼잡도로 보강·재순위한다
     (D-040 확정 — concentration-conditions.md §2.2.3, agent-runtime-contract.md
@@ -256,7 +262,14 @@ async def _apply_concentration_rerank(
     if enrichment_request is None:
         return first_pass
 
+    enrichment_started_at = time.monotonic()
     enrichment_response = await enrichment_provider.enrich(enrichment_request)
+    enrichment_execution = build_candidate_enrichment_execution_debug(
+        enrichment_response,
+        latency_ms=int((time.monotonic() - enrichment_started_at) * 1000),
+    )
+    if execution_collector is not None and enrichment_execution is not None:
+        execution_collector.append(enrichment_execution)
     if enrichment_response.status in _ENRICHMENT_TERMINAL_STATUSES or not hasattr(
         recommendation_provider, "rerank_with_concentration"
     ):
@@ -322,6 +335,8 @@ async def run_agent_flow(
         has_previous_recommendation=session_context.has_recommendation,
         shown_place_count=len(session_context.shown_place_ids),
         current_conditions=current_conditions,
+        pending_clarification=session_context.pending_clarification,
+        last_intent=session_context.last_intent,
     )
     llm_started_at = time.monotonic()
     llm_output = await build_interpretation(interpret_request, llm)
@@ -359,14 +374,16 @@ async def run_agent_flow(
             store=store,
         )
 
-    # 3-2) 되묻기 플래그 소비. 조건을 건드리는 턴(RECOMMEND/MODIFY)만 지운다 —
+    # 3-2) 되묻기 플래그 소비. 조건을 건드리는 턴(RECOMMEND/MODIFY/SCHEDULE)만 지운다 —
     #      transform()이 이미 session_context의 값을 읽어 병합 방식을 정했으므로,
     #      여기서 지워도 이번 턴 판단에는 영향이 없다. 이번 턴이 또 되묻기로 끝나면
     #      아래 4)/5-1)에서 새 값을 다시 심는다. INFO/GENERAL 같은 곁가지 대화는
-    #      조건을 바꾸지 않으므로 이전 되묻기를 그대로 살려둔다.
+    #      조건을 바꾸지 않으므로 이전 되묻기를 그대로 살려둔다. SCHEDULE도 RECOMMEND와
+    #      동일하게 조건을 건드리는 턴이라 목록에 포함한다(D-059) — 빠뜨리면 SCHEDULE
+    #      되묻기가 옳게 이어져도 플래그가 계속 남아 다음 턴 판단에 잘못 영향을 준다.
     if (
         session_context.pending_clarification is not None
-        and llm_output.intent in (Intent.RECOMMEND, Intent.MODIFY)
+        and llm_output.intent in (Intent.RECOMMEND, Intent.MODIFY, Intent.SCHEDULE)
     ):
         _remember_clarification(state_response.session_id, None, store)
 
@@ -386,7 +403,12 @@ async def run_agent_flow(
         and hasattr(tool_provider, "fetch_info_context")
     ):
         info_request = to_info_context_request(new_trace_id(), llm_output.info)
+        info_started_at = time.monotonic()
         info_response = await tool_provider.fetch_info_context(info_request)
+        info_execution = build_info_concentration_execution_debug(
+            info_response,
+            latency_ms=int((time.monotonic() - info_started_at) * 1000),
+        )
         message = await compose_chat_message(
             llm_output, info_concentration_response=info_response, llm=llm
         )
@@ -396,6 +418,8 @@ async def run_agent_flow(
             recommendations=None,
             message=message,
             llm_execution=get_llm_execution_metadata(),
+            tool_execution=info_execution,
+            tool_executions=[info_execution] if info_execution is not None else [],
         )
 
     # 4) 확인이 더 필요하거나(needs_clarification), RECOMMEND/MODIFY/SCHEDULE이 아니면
@@ -448,6 +472,7 @@ async def run_agent_flow(
     # 개발자용 Audit 표시 정보. 아래 어느 경로로 응답이 끝나든 C를 호출한 사실은
     # 남아야 하므로 여기서 한 번만 만들어 모든 return에 함께 싣는다.
     tool_execution = build_tool_execution_debug(tool_response, latency_ms=tool_latency_ms)
+    tool_executions = [tool_execution] if tool_execution is not None else []
     _record_trace_safely(
         session_id=state_response.session_id,
         run_id=state_response.run_id,
@@ -498,6 +523,7 @@ async def run_agent_flow(
             message=message,
             llm_execution=get_llm_execution_metadata(),
             tool_execution=tool_execution,
+            tool_executions=tool_executions,
         )
 
     # success/partial은 Recommendation 단계로 진행한다(경고가 있어도 가능한 데이터로
@@ -524,6 +550,7 @@ async def run_agent_flow(
             message=message,
             llm_execution=get_llm_execution_metadata(),
             tool_execution=tool_execution,
+            tool_executions=tool_executions,
         )
 
     is_schedule = llm_output.intent is Intent.SCHEDULE
@@ -565,6 +592,7 @@ async def run_agent_flow(
         recommendation_provider=recommendation_provider,
         enrichment_provider=enrichment_provider,
         final_limit=recommendation_limit,
+        execution_collector=tool_executions,
     )
 
     if is_schedule:
@@ -615,6 +643,7 @@ async def run_agent_flow(
             message=message,
             llm_execution=get_llm_execution_metadata(),
             tool_execution=tool_execution,
+            tool_executions=tool_executions,
         )
 
     # 7) A → B: 실제로 화면에 노출된 결과만 기록한다. recommendations와
@@ -644,6 +673,7 @@ async def run_agent_flow(
         message=message,
         llm_execution=get_llm_execution_metadata(),
         tool_execution=tool_execution,
+        tool_executions=tool_executions,
     )
 
 

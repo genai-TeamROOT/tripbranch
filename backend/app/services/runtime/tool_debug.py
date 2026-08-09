@@ -4,7 +4,7 @@
 옮긴다. context_transform이 A→C 변환을 전담하는 것과 같은 원칙으로, 이 모듈은
 C→Audit 변환만 전담한다.
 
-이 변환은 판정에 관여하지 않는다 — 여기서 만든 값은 AgentResponse.tool_execution에
+이 변환은 판정에 관여하지 않는다 — 여기서 만든 값은 AgentResponse.tool_executions에
 실려 /dev-chat 감사 패널에 표시될 뿐이고, 추천 결과나 응답 문장을 바꾸지 않는다.
 그래서 실패해도 요청을 중단시키지 않는다(build_tool_execution_debug()의 예외 처리).
 """
@@ -12,7 +12,10 @@ C→Audit 변환만 전담한다.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 
+from app.agent_context.enrichment_schemas import CandidateEnrichmentResponse
+from app.agent_context.info_schemas import InfoContextResponse
 from app.agent_context.schemas import (
     AgentContextResponse,
     ContextValue,
@@ -37,7 +40,22 @@ def _to_provider_debug(metadata: ProviderMetadata) -> ToolProviderDebug:
     )
 
 
-def _collect_providers(response: AgentContextResponse) -> list[ToolProviderDebug]:
+def _dedupe_providers(collected: list[ProviderMetadata]) -> list[ToolProviderDebug]:
+    """Provider metadata를 표시용으로 옮기고 중복을 제거한다."""
+
+    seen: set[tuple[str, str, str]] = set()
+    providers: list[ToolProviderDebug] = []
+    for metadata in collected:
+        debug = _to_provider_debug(metadata)
+        marker = (debug.source, debug.status, debug.retrieved_at or "")
+        if marker in seen:
+            continue
+        seen.add(marker)
+        providers.append(debug)
+    return providers
+
+
+def _collect_context_providers(response: AgentContextResponse) -> list[ToolProviderDebug]:
     """최상위 metadata와 항목별 provider_metadata를 합쳐 중복을 제거한다.
 
     C는 같은 Provider 기록을 두 곳에 모두 담을 수 있어서, 어느 한쪽만 보면
@@ -52,16 +70,7 @@ def _collect_providers(response: AgentContextResponse) -> list[ToolProviderDebug
             if value is not None:
                 collected.extend(value.provider_metadata)
 
-    seen: set[tuple[str, str, str]] = set()
-    providers: list[ToolProviderDebug] = []
-    for metadata in collected:
-        debug = _to_provider_debug(metadata)
-        marker = (debug.source, debug.status, debug.retrieved_at or "")
-        if marker in seen:
-            continue
-        seen.add(marker)
-        providers.append(debug)
-    return providers
+    return _dedupe_providers(collected)
 
 
 def _item_count(value: ContextValue[object]) -> int | None:
@@ -109,10 +118,11 @@ def build_tool_execution_debug(
         context = response.context
         location = _resolved_location(context)
         return ToolExecutionDebug(
+            operation="context_fetch",
             request_id=response.request_id,
             status=response.status,
             latency_ms=latency_ms,
-            providers=_collect_providers(response),
+            providers=_collect_context_providers(response),
             context_items=[
                 _to_item_debug(key, getattr(context, key, None) if context else None)
                 for key in _CONTEXT_ITEM_KEYS
@@ -127,4 +137,83 @@ def build_tool_execution_debug(
         )
     except Exception:  # noqa: BLE001 - 표시 정보 때문에 요청을 실패시키지 않는다.
         logger.warning("C 응답에서 Audit 표시 정보를 만들지 못함", exc_info=True)
+        return None
+
+
+def build_info_concentration_execution_debug(
+    response: InfoContextResponse,
+    *,
+    latency_ms: int | None = None,
+) -> ToolExecutionDebug | None:
+    """INFO 혼잡도 단일 장소 조회를 감사용 단계 정보로 변환한다."""
+
+    try:
+        result = response.result
+        error = result.error if result is not None and result.error is not None else response.error
+        return ToolExecutionDebug(
+            operation="info_concentration",
+            request_id=response.request_id,
+            status=response.status,
+            latency_ms=latency_ms,
+            providers=_dedupe_providers(list(response.metadata.provider_metadata)),
+            context_items=[
+                ToolContextItemDebug(
+                    key="concentration",
+                    fetched=True,
+                    status=result.status if result is not None else response.status,
+                    error_code=error.code if error is not None else None,
+                    item_count=1 if result is not None else None,
+                )
+            ],
+            rule_versions=dict(response.metadata.rule_versions),
+            resolved_location_name=result.resolved_place_name if result is not None else None,
+            error_code=error.code if error is not None else None,
+            clarification_code=(
+                response.clarification.code if response.clarification is not None else None
+            ),
+            is_proxy=result.is_proxy if result is not None else None,
+        )
+    except Exception:  # noqa: BLE001 - 표시 정보 때문에 요청을 실패시키지 않는다.
+        logger.warning("INFO 혼잡도 응답에서 Audit 표시 정보를 만들지 못함", exc_info=True)
+        return None
+
+
+def build_candidate_enrichment_execution_debug(
+    response: CandidateEnrichmentResponse,
+    *,
+    latency_ms: int | None = None,
+) -> ToolExecutionDebug | None:
+    """추천 후보 혼잡도 보강 조회를 감사용 단계 정보로 변환한다."""
+
+    try:
+        status_counts = dict(Counter(candidate.status for candidate in response.candidates))
+        first_error = next(
+            (candidate.error for candidate in response.candidates if candidate.error is not None),
+            None,
+        )
+        metadata = [
+            item
+            for candidate in response.candidates
+            for item in candidate.provider_metadata
+        ]
+        return ToolExecutionDebug(
+            operation="candidate_enrichment",
+            request_id=response.request_id,
+            status=response.status,
+            latency_ms=latency_ms,
+            providers=_dedupe_providers(metadata),
+            context_items=[
+                ToolContextItemDebug(
+                    key="concentration_candidates",
+                    fetched=True,
+                    status=response.status,
+                    error_code=first_error.code if first_error is not None else None,
+                    item_count=len(response.candidates),
+                )
+            ],
+            error_code=first_error.code if first_error is not None else None,
+            candidate_status_counts=status_counts,
+        )
+    except Exception:  # noqa: BLE001 - 표시 정보 때문에 요청을 실패시키지 않는다.
+        logger.warning("후보 혼잡도 보강 응답에서 Audit 표시 정보를 만들지 못함", exc_info=True)
         return None

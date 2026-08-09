@@ -105,7 +105,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-test("debug mode shows condition card together with recommendations", async () => {
+test("user chat hides condition debug card and shows recommendations", async () => {
   vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "true");
   render(<App />);
 
@@ -117,8 +117,7 @@ test("debug mode shows condition card together with recommendations", async () =
   );
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
 
-  expect(await screen.findByText(/개발용 입력 해석 결과/)).toBeInTheDocument();
-  expect(screen.getByText(/37\.5788,126\.977 · 장소 검색 기준으로 사용/)).toBeInTheDocument();
+  expect(screen.queryByText(/개발용 입력 해석 결과/)).not.toBeInTheDocument();
   expect(screen.getAllByText("비 오는 날 갈 곳").length).toBeGreaterThan(0);
   // Agent가 한 번에 끝내므로 중간 승인 버튼이 없고 추천이 함께 나온다.
   expect(screen.queryByRole("button", { name: "추천 진행" })).not.toBeInTheDocument();
@@ -127,7 +126,7 @@ test("debug mode shows condition card together with recommendations", async () =
   expect(screen.getByText("운영시간을 확인할 수 없는 장소")).toBeInTheDocument();
 });
 
-test("release mode hides debug card and needs only one chat call", async () => {
+test("user chat needs only one chat call", async () => {
   vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "false");
   render(<App />);
 

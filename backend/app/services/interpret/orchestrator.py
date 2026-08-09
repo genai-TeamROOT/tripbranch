@@ -71,6 +71,8 @@ async def build_interpretation(
             request.user_input,
             has_previous_recommendation=request.has_previous_recommendation,
             shown_place_count=request.shown_place_count,
+            pending_clarification=request.pending_clarification,
+            last_intent=request.last_intent,
         )
     ).data
 

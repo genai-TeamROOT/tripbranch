@@ -11,7 +11,6 @@ import { useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
 import { sendChat, toDisplayConditions } from "../api/trip";
 import { ErrorBanner } from "../components/ErrorBanner";
-import { featureFlags } from "../config/features";
 import { useTripDispatch } from "../state/TripContext";
 import { getBrowserDeviceLocation } from "../utils/geolocation";
 
@@ -74,7 +73,7 @@ export function HomePage() {
           sessionId: response.state.session_id,
           status: response.llm_output.status,
           agentResponse: response,
-          showDebug: featureFlags.showInterpretationDebug,
+          showDebug: false,
           elapsedMsClient: performance.now() - startedAt,
         },
       });
