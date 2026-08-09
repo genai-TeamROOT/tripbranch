@@ -162,11 +162,27 @@ def _clean_jobs():
 
 @pytest.fixture
 def _real_place(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "provider_mode", "real")
+    """동기화 실행 조건(PLACE_PROVIDER=real)만 만든다.
+
+    provider_mode 자체를 real로 올리면 llm·weather·geocoding·local_search까지
+    real이 되어 부팅 검증(validate_provider_config)이 그 키들을 전부 요구한다.
+    로컬에는 backend/.env에 값이 있고 CI에는 없어 CI에서만 깨진다. 아래에서 real
+    전용 키를 명시적으로 비워 로컬에서도 CI와 같은 조건으로 돌게 한다.
+    """
+    monkeypatch.setattr(settings, "provider_mode", "fake")
     monkeypatch.setattr(settings, "place_provider", "real")
     monkeypatch.setattr(settings, "tour_api_service_key", "tour-key")
     monkeypatch.setattr(settings, "supabase_url", "https://project.supabase.co")
     monkeypatch.setattr(settings, "supabase_secret_key", "sb_secret_test")
+    for attribute in (
+        "llm_api_key",
+        "weather_api_key",
+        "naver_map_client_id",
+        "naver_map_client_secret",
+        "naver_local_search_client_id",
+        "naver_local_search_client_secret",
+    ):
+        monkeypatch.setattr(settings, attribute, "")
 
 
 def _snapshot_row(content_id: str, **overrides: str) -> dict[str, str]:
