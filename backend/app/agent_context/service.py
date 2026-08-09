@@ -88,6 +88,7 @@ from app.tools.place_detail import (
     PlaceDetailQuery,
 )
 from app.tools.resolve_location import (
+    LocationPurpose,
     ResolutionConfidence,
     ResolutionMethod,
     ResolvedLocation,
@@ -175,7 +176,13 @@ class ContextService:
             return _unsupported_category_response(request, category_plan)
 
         location_result = (
-            await self._tools.location.execute(ResolveLocationQuery(location_query))
+            await self._tools.location.execute(
+                # 추천은 반경 검색의 기준 좌표만 필요하다. 저장소 정체성 확정은
+                # 후보 보강 단계가 place_id로 따로 한다(enrichment_service).
+                ResolveLocationQuery(
+                    location_query, purpose=LocationPurpose.SEARCH_CENTER
+                )
+            )
             if location_query is not None
             else _gps_location_result(request, self._clock())
         )
@@ -269,7 +276,8 @@ class ContextService:
             )
 
         location_result = await self._tools.location.execute(
-            ResolveLocationQuery(place_name)
+            # INFO는 좌표가 아니라 "집중률 매핑이 걸린 그 장소"를 확정해야 한다(D-043).
+            ResolveLocationQuery(place_name, purpose=LocationPurpose.PLACE_IDENTITY)
         )
         if location_result.status is ToolStatus.NO_DATA:
             cause = location_result.error.cause if location_result.error else None
