@@ -63,6 +63,18 @@ class ConcentrationForecastData(StrictModel):
     concentration_rate: float = Field(ge=0)
     concentration_level: ConcentrationLevel
     concentration_label: ConcentrationLabel
+    # 후보 본인의 값이 아니라 인근 매핑 장소에서 빌려온 값이라는 표시(D-036과 같은
+    # 취지, INFO의 ConcentrationInfoResult.is_proxy와 같은 의미다). 활성 844건 중
+    # 집중률 매핑은 100건뿐이라 매핑 없는 후보가 다수이고, 그런 후보는 이 값이
+    # 없으면 혼잡도 판정에서 통째로 빠진다.
+    #
+    # 근사치는 후보 본인의 값과 신뢰도가 다르다. 점수에 어떻게 반영할지(D)와
+    # 사용자에게 밝힐지(A)는 각 소유자가 정한다 — C는 사실만 실어 보낸다.
+    is_proxy: bool = False
+    # 값을 빌려온 실제 장소. is_proxy=False면 place_name과 같다.
+    proxy_place_name: str | None = None
+    # 후보에서 그 장소까지의 거리(km). 근사치를 얼마나 믿을지 판단하는 근거다.
+    proxy_distance_km: float | None = Field(default=None, ge=0)
 
 
 class CandidateEnrichmentResult(StrictModel):

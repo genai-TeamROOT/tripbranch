@@ -7,7 +7,10 @@ from collections.abc import Callable, Sequence
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from app.agent_context.concentration_proxy import ConcentrationMappingCache
+from app.agent_context.concentration_proxy import (
+    ConcentrationMappingCache,
+    select_nearest_mapped_places,
+)
 from app.agent_context.enrichment_schemas import (
     CandidateEnrichmentRequest,
     CandidateEnrichmentResponse,
@@ -19,6 +22,8 @@ from app.agent_context.enrichment_schemas import (
 )
 from app.agent_context.schemas import ContextError, ProviderMetadata
 from app.concentration_policy import (
+    INFO_CONCENTRATION_FALLBACK_ATTEMPT_LIMIT,
+    INFO_CONCENTRATION_FALLBACK_RADIUS_KM,
     is_valid_concentration_rate,
     normalize_concentration,
 )
@@ -27,6 +32,7 @@ from app.domain.models import (
     ConcentrationResult,
     StoredPlaceLocation,
 )
+from app.geo import haversine_km
 from app.providers.contracts import ProviderMetadata as ProviderMetadataData
 from app.recommendation_limits import (
     MAX_RECOMMENDATION_CANDIDATE_LIMIT,
@@ -43,6 +49,37 @@ from app.tools.contracts import ToolStatus
 JONGNO_CONCENTRATION_AREA_CODE = "11"
 JONGNO_CONCENTRATION_DISTRICT_CODE = "11110"
 _KST = ZoneInfo("Asia/Seoul")
+
+
+class _ConcentrationLookupMemo:
+    """요청 한 번 안에서 같은 장소를 두 번 조회하지 않게 한다.
+
+    후보 5개는 서로 2km 안에 몰려 있고 대체 조회 반경은 0.5km라, 여러 후보가 같은
+    인근 장소를 가리키는 일이 흔하다. 메모 없이 후보마다 최대 3곳을 시도하면 한
+    요청에 최대 15회가 나가는데, 집중률 API는 오퍼레이션 단위 일일 한도가 있다.
+
+    후보들이 asyncio.gather로 동시에 도는데, Task를 캐시하므로 먼저 도착한 쪽이
+    만든 조회를 나머지가 함께 기다린다(같은 조회가 병렬로 두 번 나가지 않는다).
+    """
+
+    def __init__(self, tool: GetConcentrationTool) -> None:
+        self._tool = tool
+        self._tasks: dict[str, asyncio.Task[ConcentrationToolResult]] = {}
+
+    async def lookup(
+        self, *, search_keys: Sequence[str], canonical_name: str
+    ) -> ConcentrationToolResult:
+        task = self._tasks.get(canonical_name)
+        if task is None:
+            task = asyncio.create_task(
+                execute_concentration_by_search_keys(
+                    self._tool,
+                    search_keys=search_keys,
+                    canonical_name=canonical_name,
+                )
+            )
+            self._tasks[canonical_name] = task
+        return await task
 
 
 class CandidateEnrichmentService:
@@ -83,14 +120,21 @@ class CandidateEnrichmentService:
                 f"보강 후보는 최대 {self._candidate_limit}개까지 요청할 수 있습니다."
             )
         reference_date = _as_kst_date(self._clock())
-        mappings = await self._mappings_by_place_id()
+        mapped_places = await self._mapped_places()
+        mappings = (
+            {place.content_id: place for place in mapped_places}
+            if mapped_places is not None
+            else None
+        )
+        memo = _ConcentrationLookupMemo(self._concentration_tool)
         candidates = await asyncio.gather(
             *(
                 self._enrich_candidate(
                     candidate,
                     reference_date=reference_date,
                     mapping=mappings.get(candidate.place_id) if mappings is not None else None,
-                    mappings_available=mappings is not None,
+                    mapped_places=mapped_places,
+                    memo=memo,
                 )
                 for candidate in request.candidates
             )
@@ -104,13 +148,12 @@ class CandidateEnrichmentService:
             candidates=candidates,
         )
 
-    async def _mappings_by_place_id(self) -> dict[str, StoredPlaceLocation] | None:
-        """집중률 매핑을 content_id로 색인한다. 캐시가 없으면 None(기존 경로)."""
+    async def _mapped_places(self) -> tuple[StoredPlaceLocation, ...] | None:
+        """집중률 매핑 장소 목록. 캐시가 없으면 None(기존 경로)."""
 
         if self._mapping_cache is None:
             return None
-        places = await self._mapping_cache.places()
-        return {place.content_id: place for place in places}
+        return await self._mapping_cache.places()
 
     async def _enrich_candidate(
         self,
@@ -118,7 +161,8 @@ class CandidateEnrichmentService:
         *,
         reference_date: date,
         mapping: StoredPlaceLocation | None,
-        mappings_available: bool,
+        mapped_places: tuple[StoredPlaceLocation, ...] | None,
+        memo: _ConcentrationLookupMemo,
     ) -> CandidateEnrichmentResult:
         """후보 1건의 집중률을 조회한다.
 
@@ -128,17 +172,18 @@ class CandidateEnrichmentService:
         다르면 대조에서 탈락한다. 2026-08-09 기준 매핑 101건 중 원문으로 조회가
         통하는 건 67건뿐이었다.
 
-        매핑이 없는 후보는 **호출하지 않고** no_data로 끝낸다. 매핑은 집중률 API에
-        데이터가 존재하는 장소의 목록이므로, 없다는 것은 조회해도 안 나온다는 뜻이다
-        (활성 844건 중 매핑 101건, 음식점 191건은 0건).
+        매핑이 없는 후보는 자기 이름으로 조회하지 않는다 — 매핑은 집중률 API에
+        데이터가 있는 장소의 목록이라 없으면 조회해도 0건이다. 대신 INFO와 같은
+        방식으로 인근 매핑 장소의 값을 빌려 `is_proxy=True`로 표시한다. 활성 844건
+        중 매핑은 100건뿐이라, 빌려오지 않으면 다수 후보가 혼잡도 판정에서 통째로
+        빠진다(안국역 2km 내 711건 중 매핑 70건, 최근접 15건 중 1건).
         """
-        if mappings_available and mapping is None:
-            return CandidateEnrichmentResult(
-                **candidate.model_dump(),
-                status="no_data",
-                concentration=[],
-                error=None,
-                provider_metadata=[],
+        if mapped_places is not None and mapping is None:
+            return await self._enrich_by_proxy(
+                candidate,
+                reference_date=reference_date,
+                mapped_places=mapped_places,
+                memo=memo,
             )
 
         canonical_name = (
@@ -147,10 +192,8 @@ class CandidateEnrichmentService:
             else candidate.name
         )
         search_keys = mapping.concentration_search_keys if mapping is not None else ()
-        tool_result = await execute_concentration_by_search_keys(
-            self._concentration_tool,
-            search_keys=search_keys,
-            canonical_name=canonical_name,
+        tool_result = await memo.lookup(
+            search_keys=search_keys, canonical_name=canonical_name
         )
         if tool_result.status is ToolStatus.UNAVAILABLE:
             error = tool_result.error
@@ -193,6 +236,107 @@ class CandidateEnrichmentService:
             concentration=forecasts,
             error=None,
             provider_metadata=metadata,
+        )
+
+    async def _enrich_by_proxy(
+        self,
+        candidate: CandidateEnrichmentTarget,
+        *,
+        reference_date: date,
+        mapped_places: tuple[StoredPlaceLocation, ...],
+        memo: _ConcentrationLookupMemo,
+    ) -> CandidateEnrichmentResult:
+        """매핑 없는 후보에 인근 매핑 장소의 값을 빌려 채운다(INFO와 같은 방식).
+
+        반경·시도 횟수는 INFO 대체 조회와 같은 값을 쓴다. 같은 사용자가 "여기
+        혼잡해?"와 "한산한 곳 추천해줘"에서 다른 기준을 보면 곤란하다.
+
+        가까운 순서로 시도하고 값이 나오는 첫 장소에서 멈춘다. 어느 장소에서
+        빌렸는지와 거리를 함께 실어 보낸다 — 근사치를 얼마나 믿을지는 값을 쓰는
+        쪽(D)이 정할 문제이고, C는 판단 근거만 제공한다.
+        """
+        proxy_places = select_nearest_mapped_places(
+            mapped_places,
+            latitude=candidate.latitude,
+            longitude=candidate.longitude,
+            radius_km=INFO_CONCENTRATION_FALLBACK_RADIUS_KM,
+            limit=INFO_CONCENTRATION_FALLBACK_ATTEMPT_LIMIT,
+        )
+        attempted_metadata: list[ProviderMetadata] = []
+        for proxy_place in proxy_places:
+            if not proxy_place.concentration_name:
+                continue
+            proxy_result = await memo.lookup(
+                search_keys=proxy_place.concentration_search_keys,
+                canonical_name=proxy_place.concentration_name,
+            )
+            attempted_metadata.extend(
+                _map_provider_metadata(item)
+                for item in proxy_result.provider_metadata
+            )
+            if proxy_result.status is ToolStatus.UNAVAILABLE:
+                # 외부 장애는 다음 후보로 넘어가도 같은 결과다(INFO와 동일 판단).
+                error = proxy_result.error
+                return CandidateEnrichmentResult(
+                    **candidate.model_dump(),
+                    status="unavailable",
+                    concentration=None,
+                    error=ContextError(
+                        code=error.code if error else "unavailable",
+                        message=(
+                            error.message
+                            if error
+                            else "집중률 정보를 가져오지 못했습니다."
+                        ),
+                        retryable=error.retryable if error else True,
+                    ),
+                    provider_metadata=attempted_metadata,
+                )
+
+            forecast = select_concentration_forecast(
+                proxy_result.concentration,
+                candidate_name=proxy_place.concentration_name,
+                reference_date=reference_date,
+            )
+            rate = forecast.concentration_rate if forecast is not None else None
+            if forecast is None or not is_valid_concentration_rate(rate):
+                # 이 장소는 해당 날짜 예보가 없다 — 다음으로 가까운 곳을 시도한다.
+                continue
+
+            normalized = normalize_concentration(rate)
+            return CandidateEnrichmentResult(
+                **candidate.model_dump(),
+                status="success",
+                concentration=[
+                    ConcentrationForecastData(
+                        place_name=forecast.place_name,
+                        forecast_date=reference_date.isoformat(),
+                        concentration_rate=rate,
+                        concentration_level=normalized.level,
+                        concentration_label=normalized.label,
+                        is_proxy=True,
+                        proxy_place_name=forecast.place_name,
+                        proxy_distance_km=round(
+                            haversine_km(
+                                candidate.latitude,
+                                candidate.longitude,
+                                proxy_place.latitude,
+                                proxy_place.longitude,
+                            ),
+                            3,
+                        ),
+                    )
+                ],
+                error=None,
+                provider_metadata=attempted_metadata,
+            )
+
+        return CandidateEnrichmentResult(
+            **candidate.model_dump(),
+            status="no_data",
+            concentration=[],
+            error=None,
+            provider_metadata=attempted_metadata,
         )
 
 
