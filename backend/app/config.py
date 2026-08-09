@@ -89,6 +89,12 @@ class Settings(BaseSettings):
     external_api_timeout_seconds: float = 10.0
     external_api_retry_count: int = 2
 
+    # 관측용 일일 호출 한도. data.go.kr은 오퍼레이션 단위로 한도가 걸리므로
+    # (2026-08-07 areaBasedList2 소진) 게이지도 오퍼레이션별로 이 값과 대조한다.
+    # 호출을 막는 값이 아니라 개발자 패널 게이지의 기준선이다.
+    tour_api_daily_call_limit: int = 1000
+    concentration_daily_call_limit: int = 1000
+
     # Recommendation pipeline budgets
     recommendation_result_limit: int = Field(
         default=DEFAULT_RECOMMENDATION_RESULT_LIMIT,

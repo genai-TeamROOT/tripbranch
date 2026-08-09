@@ -149,6 +149,13 @@ export function DeveloperChatPage() {
           <div className="flex gap-2">
             <button
               type="button"
+              onClick={() => navigate("/dev-ops")}
+              className="rounded-md border border-gray-300 px-3 py-1.5 text-sm dark:border-gray-700"
+            >
+              Ops 패널
+            </button>
+            <button
+              type="button"
               onClick={() => navigate("/chat")}
               className="rounded-md border border-gray-300 px-3 py-1.5 text-sm dark:border-gray-700"
             >
