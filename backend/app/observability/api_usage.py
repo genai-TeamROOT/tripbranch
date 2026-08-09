@@ -311,28 +311,42 @@ class MeteredTransport(httpx.AsyncBaseTransport):
         self._inner = inner
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        from app.observability import api_exchanges
+
         provider, operation = classify(request.url.host, request.url.path)
+        exchange = api_exchanges.begin(request)
         started = time.perf_counter()
         try:
             response = await self._inner.handle_async_request(request)
         except Exception as exc:
+            elapsed_ms = (time.perf_counter() - started) * 1000
             _registry.record(
                 provider,
                 operation,
                 ok=False,
-                latency_ms=(time.perf_counter() - started) * 1000,
+                latency_ms=elapsed_ms,
                 # 예외 문자열에는 ServiceKey가 포함된 URL이 들어갈 수 있어
                 # 타입 이름만 남긴다.
                 status=type(exc).__name__,
             )
+            api_exchanges.finish_error(exchange, exc, elapsed_ms)
             raise
+        elapsed_ms = (time.perf_counter() - started) * 1000
         _registry.record(
             provider,
             operation,
             ok=response.status_code < 400,
-            latency_ms=(time.perf_counter() - started) * 1000,
+            latency_ms=elapsed_ms,
             status=str(response.status_code),
         )
+        if exchange is not None:
+            # 본문을 여기서 읽어 버퍼에 올린다. Response.aread()는 두 번째부터
+            # 캐시된 값을 돌려주므로 이후 httpx Client가 다시 읽어도 같은 내용이
+            # 온다. app/ 어디에도 스트리밍 요청(client.stream 등)이 없어 미리 읽어도
+            # 끊기는 경로가 없다 — 스트리밍이 생기면 이 가정이 깨진다.
+            api_exchanges.finish_ok(
+                exchange, response, await response.aread(), elapsed_ms
+            )
         return response
 
     async def aclose(self) -> None:

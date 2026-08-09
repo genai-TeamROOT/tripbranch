@@ -85,6 +85,47 @@ export type DbStatus = {
   detail_ttl_days: number;
 };
 
+export type ApiExchange = {
+  id: string;
+  started_at: string;
+  provider: string;
+  operation: string;
+  method: string;
+  /** 쿼리스트링이 제거된 URL. 원문 URL에는 serviceKey가 들어간다. */
+  url: string;
+  query: Record<string, string>;
+  request_headers: Record<string, string>;
+  request_body: string | null;
+  request_body_truncated: boolean;
+  status: string;
+  ok: boolean;
+  latency_ms: number;
+  response_headers: Record<string, string>;
+  response_body: string | null;
+  response_body_truncated: boolean;
+  response_bytes: number;
+  error: string | null;
+};
+
+export type ApiExchangeSnapshot = {
+  enabled: boolean;
+  capacity: number;
+  max_body_bytes: number;
+  items: ApiExchange[];
+};
+
+export function fetchExchanges() {
+  return apiClient.get<ApiExchangeSnapshot>("/dev/exchanges");
+}
+
+export function setExchangeCapture(enabled: boolean) {
+  return apiClient.post<ApiExchangeSnapshot>("/dev/exchanges/capture", { enabled });
+}
+
+export function clearExchanges() {
+  return apiClient.post<ApiExchangeSnapshot>("/dev/exchanges/clear", {});
+}
+
 export function fetchApiUsage() {
   return apiClient.get<ApiUsageSnapshot>("/dev/api-usage");
 }

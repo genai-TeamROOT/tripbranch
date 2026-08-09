@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 from app.config import settings
 from app.domain.models import TourPlacePage
 from app.errors import AppError
+from app.observability.api_exchanges import get_recorder
 from app.observability.api_usage import (
     create_external_client,
     get_usage_snapshot,
@@ -102,6 +103,35 @@ async def get_api_usage() -> dict[str, Any]:
 async def post_api_usage_reset() -> dict[str, Any]:
     reset_usage()
     return get_usage_snapshot()
+
+
+class CaptureRequest(BaseModel):
+    enabled: bool
+
+
+@router.get("/exchanges")
+async def get_exchanges() -> dict[str, Any]:
+    """최근 외부 API 요청·응답 원문(자격증명은 마스킹된 상태)."""
+    return get_recorder().snapshot()
+
+
+@router.post("/exchanges/capture")
+async def post_exchange_capture(request: CaptureRequest) -> dict[str, Any]:
+    """캡처를 켜고 끈다.
+
+    기본은 꺼짐이고, 이 라우터가 APP_ENV=local에서만 등록되므로 배포 환경에서는
+    켤 방법이 없다 — 응답 본문 버퍼링이 운영 메모리를 먹지 않게 하는 장치다.
+    """
+    recorder = get_recorder()
+    recorder.set_enabled(request.enabled)
+    return recorder.snapshot()
+
+
+@router.post("/exchanges/clear")
+async def post_exchange_clear() -> dict[str, Any]:
+    recorder = get_recorder()
+    recorder.clear()
+    return recorder.snapshot()
 
 
 @router.get("/db-status")
