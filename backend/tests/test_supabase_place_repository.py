@@ -542,3 +542,110 @@ async def test_find_concentration_mapped_places_also_reads_array_embed() -> None
         places = await repository.find_concentration_mapped_places()
 
     assert places[0].concentration_name == "낙산공원"
+
+
+@pytest.mark.asyncio
+async def test_count_rows_reads_content_range_total() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, headers={"Content-Range": "*/844"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        repository = SupabasePlaceRepository(
+            "https://project.supabase.co/", "sb_secret_test", client
+        )
+        total = await repository.count_rows("place_enrichments")
+
+    assert total == 844
+    assert captured[0].method == "HEAD"
+    assert captured[0].headers["prefer"] == "count=exact"
+
+
+@pytest.mark.asyncio
+async def test_count_rows_rejects_missing_content_range() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        repository = SupabasePlaceRepository(
+            "https://project.supabase.co/", "sb_secret_test", client
+        )
+        with pytest.raises(SupabaseRepositoryError):
+            await repository.count_rows("places")
+
+
+@pytest.mark.asyncio
+async def test_get_region_place_summary_counts_status_distribution() -> None:
+    rows = [
+        {
+            "is_active": True,
+            "detail_fetch_status": "succeeded",
+            "operating_parse_status": "parsed",
+            "operating_parser_version": "operating-hours-1.0.0",
+            "detail_fetched_at": "2026-08-08T05:00:00+00:00",
+        },
+        {
+            "is_active": True,
+            "detail_fetch_status": "failed",
+            "operating_parse_status": "unknown",
+            "operating_parser_version": "operating-hours-1.0.0",
+            "detail_fetched_at": "2026-08-09T05:00:00+00:00",
+        },
+        {
+            "is_active": False,
+            "detail_fetch_status": "pending",
+            "operating_parse_status": "unknown",
+            "operating_parser_version": "operating-hours-0.9.0",
+            "detail_fetched_at": None,
+        },
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=rows)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        repository = SupabasePlaceRepository(
+            "https://project.supabase.co/", "sb_secret_test", client
+        )
+        summary = await repository.get_region_place_summary("11", "110")
+
+    assert summary["total"] == 3
+    assert summary["active"] == 2
+    assert summary["inactive"] == 1
+    assert summary["detail_fetch_status"] == {
+        "succeeded": 1,
+        "failed": 1,
+        "pending": 1,
+    }
+    assert summary["operating_parse_status"] == {"parsed": 1, "unknown": 2}
+    # 파서 버전이 섞여 있으면 다음 동기화에서 재파싱 대상이 생긴다는 신호다.
+    assert summary["operating_parser_version"] == {
+        "operating-hours-1.0.0": 2,
+        "operating-hours-0.9.0": 1,
+    }
+    assert summary["latest_detail_fetched_at"] == "2026-08-09T05:00:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_list_sync_locks_keeps_expired_rows() -> None:
+    """만료된 잠금을 저장소에서 걸러내면 '잠금 없음'과 구분되지 않는다."""
+    expired = {
+        "area_code": "11",
+        "district_code": "110",
+        "sync_run_id": str(RUN_ID),
+        "acquired_at": "2026-08-01T00:00:00+00:00",
+        "expires_at": "2026-08-01T02:00:00+00:00",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[expired])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        repository = SupabasePlaceRepository(
+            "https://project.supabase.co/", "sb_secret_test", client
+        )
+        locks = await repository.list_sync_locks()
+
+    assert locks == [expired]

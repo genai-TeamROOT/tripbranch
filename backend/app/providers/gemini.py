@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import random
+import time
 from datetime import date
 from typing import TypeVar
 
@@ -24,6 +25,7 @@ from google.genai import types as genai_types
 from pydantic import BaseModel, ValidationError
 
 from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
+from app.observability.api_usage import record_call
 from app.providers import gemini_prompts
 from app.providers.contracts import ProviderResult, ProviderSource, provider_result
 from app.schedule.schemas import ScheduleLLMPlan, SchedulePlanningRequest
@@ -64,6 +66,19 @@ _BACKOFF_BASE_SECONDS = 0.5
 def _backoff_seconds(attempt: int) -> float:
     """지수 백오프 + 지터. attempt=0이 첫 번째 재시도 전 대기시간."""
     return _BACKOFF_BASE_SECONDS * (2**attempt) + random.uniform(0, 0.25)
+
+
+def _record_gemini_call(
+    model_name: str, started: float, *, ok: bool, status: str
+) -> None:
+    """Gemini 호출 한 번을 관측 집계에 남긴다(추천 판정과 무관)."""
+    record_call(
+        "gemini",
+        model_name,
+        ok=ok,
+        latency_ms=(time.perf_counter() - started) * 1000,
+        status=status,
+    )
 
 
 class _RetryableExhaustedError(Exception):
@@ -378,6 +393,9 @@ class RealGeminiProvider:
         """
 
         for attempt in range(self._max_retries + 1):
+            # google-genai는 자체 전송 계층을 써서 MeteredTransport를 거치지 않는다.
+            # 재시도 한 번도 별개의 과금·쿼터 소모라 시도 단위로 센다.
+            started = time.perf_counter()
             try:
                 response = await self._client.aio.models.generate_content(
                     model=model_name,
@@ -390,9 +408,11 @@ class RealGeminiProvider:
                     ),
                 )
             except httpx.TimeoutException:
+                _record_gemini_call(model_name, started, ok=False, status="timeout")
                 if attempt >= self._max_retries:
                     raise _RetryableExhaustedError(ProviderTimeoutError("Gemini")) from None
             except genai_errors.APIError as exc:
+                _record_gemini_call(model_name, started, ok=False, status=str(exc.code))
                 if exc.code not in _RETRYABLE_STATUS_CODES:
                     status = f" {exc.status}" if hasattr(exc, "status") else ""
                     detail = f"{exc.code}{status} (첫 시도부터 실패)"
@@ -404,6 +424,7 @@ class RealGeminiProvider:
                         ProviderUnavailableError("Gemini", detail=detail)
                     ) from None
             else:
+                _record_gemini_call(model_name, started, ok=True, status="ok")
                 if response.parsed is not None:
                     return response_model.model_validate(response.parsed)
                 # response_schema가 SDK 자동 파싱을 못 한 경우(빈 응답 등)

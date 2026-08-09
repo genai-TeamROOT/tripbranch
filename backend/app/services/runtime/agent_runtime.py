@@ -14,11 +14,10 @@ from __future__ import annotations
 import logging
 import time
 
-import httpx
-
 from app.agent_context.schemas import PlaceCandidate, RecommendationContext
 from app.domain.scoring import SCORING_VERSION
 from app.geo import haversine_km
+from app.observability.api_usage import create_external_client
 from app.providers.gemini_prompts import PROMPT_VERSION
 from app.providers.protocols import LLMProvider
 from app.schedule.planner import plan_schedule
@@ -689,7 +688,7 @@ async def run_agent(request: AgentRequest) -> AgentResponse:
     from app.providers.factory import get_llm_provider
     from app.services.runtime.real_recommendation_provider import RealRecommendationProvider
 
-    async with httpx.AsyncClient() as client:
+    async with create_external_client() as client:
         return await run_agent_flow(
             request,
             llm=get_llm_provider(),

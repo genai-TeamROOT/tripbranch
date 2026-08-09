@@ -14,8 +14,6 @@ import asyncio
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-import httpx
-
 from app.agent_context.mappers import (
     map_location_context,
     map_places_context,
@@ -24,6 +22,7 @@ from app.agent_context.mappers import (
 from app.agent_context.schemas import RecommendationContext
 from app.config import settings
 from app.errors import AppError
+from app.observability.api_usage import create_external_client
 from app.providers.protocols import GeocodingProvider, PlaceProvider, WeatherProvider
 from app.schemas import InterpretedConditions, RecommendationResponse
 from app.services.recommendation_pipeline import run_recommendation_pipeline_from_context
@@ -114,7 +113,7 @@ async def get_recommendations(
         get_weather_provider,
     )
 
-    async with httpx.AsyncClient() as client:
+    async with create_external_client() as client:
         return await build_recommendations(
             conditions,
             shown_place_ids,
