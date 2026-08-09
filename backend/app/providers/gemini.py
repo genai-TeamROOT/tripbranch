@@ -105,10 +105,14 @@ class RealGeminiProvider:
         *,
         has_previous_recommendation: bool,
         shown_place_count: int,
+        pending_clarification: str | None = None,
+        last_intent: str | None = None,
     ) -> ProviderResult[IntentClassificationResult]:
         instruction = gemini_prompts.build_intent_classification_instruction(
             has_previous_recommendation=has_previous_recommendation,
             shown_place_count=shown_place_count,
+            pending_clarification=pending_clarification,
+            last_intent=last_intent,
         )
         result = await self._call_structured(
             instruction,

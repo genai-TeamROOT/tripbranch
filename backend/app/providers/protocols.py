@@ -52,8 +52,15 @@ class LLMProvider(Protocol):
         *,
         has_previous_recommendation: bool,
         shown_place_count: int,
+        pending_clarification: str | None = None,
+        last_intent: str | None = None,
     ) -> ProviderResult[IntentClassificationResult]:
-        """사용자 발화의 Intent를 1단계로 판정한다."""
+        """사용자 발화의 Intent를 1단계로 판정한다.
+
+        pending_clarification/last_intent는 직전 턴이 되묻기로 끝났는지와 그 되묻기가
+        어떤 Intent의 턴이었는지를 알려준다 — SCHEDULE 되묻기 답변이 새 MODIFY 요청으로
+        오분류되는 걸 막는 데 쓰인다(D-059).
+        """
         ...
 
     async def extract_recommend_conditions(

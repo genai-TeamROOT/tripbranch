@@ -1623,6 +1623,61 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 - 남는 것: `준비시간`·`브레이크타임` 구간이 운영 구간으로 파싱된다. 지금은 앞 구간이
   먼저 매칭돼 실질 피해가 없어 범위 밖으로 둔다.
 
+### D-059 — SCHEDULE 되묻기 답변은 프롬프트 컨텍스트로 이어간다(상태 레벨 override 아님)
+
+- 상태: `Accepted`, 구현 완료
+- 배경: 1턴 "주말에 종로에서 일정 짜줘" → Intent=SCHEDULE, 장소가 여러 곳으로 해석돼
+  Tool(C) 레벨 `location_ambiguous` 되묻기로 끝남. 2턴 "광화문으로 알려줘" → Intent=MODIFY로
+  오분류되어 일정 편성이 아니라 장소 추천/변경 응답이 나갔다.
+- 원인 조사 결과 3가지: (1) `build_interpretation()`이 `classify_intent()`를 호출할 때
+  `has_previous_recommendation`/`shown_place_count`만 넘기고 "직전 턴이 되묻기로
+  끝났는지/그 되묻기가 어떤 Intent였는지"는 전혀 전달하지 않았다. RECOMMEND는
+  `_INTENT_PRIORITY`의 fallback 기본값이라 이런 상황에서도 대개 자연스럽게 RECOMMEND로
+  떨어지지만, SCHEDULE은 "일정/코스/순서" 키워드가 있어야만 선택되는 명시적 분류라
+  fallback이 없다 — "광화문으로"는 오히려 `_CONTEXT_DEPENDENT_RULES`의 MODIFY 예시
+  패턴("지명+조사")과 정확히 일치해 그쪽으로 끌린다. (2) 되묻기 플래그 소비
+  화이트리스트(`agent_runtime.py`)가 `(RECOMMEND, MODIFY)`뿐이라, 설령 SCHEDULE로 옳게
+  분류되더라도 `pending_clarification` 플래그가 지워지지 않았다. (3)
+  `state_transform.transform()`은 이미 SCHEDULE을 RECOMMEND와 동일하게 취급해 되묻기
+  답변 시 soft reset을 건너뛰는 로직을 갖추고 있었다 — 분류만 SCHEDULE로 바로잡으면
+  나머지(조건 병합)는 이미 정상 동작하는 상태였다.
+- 결정: D-053("단독 지명은 정보 조회")과 같은 방향 — **상태 레벨 결정적 override가 아니라
+  `classify_intent`에 필요한 컨텍스트를 넘기고 프롬프트 규칙만 추가**해 LLM 판단을
+  바로잡는다. `InterpretRequest`에 `pending_clarification`/`last_intent`
+  (B의 `SessionContextResponse`에서 그대로 채움)를 추가하고, `classify_intent()`
+  시그니처(Protocol/Real/Fake 3곳)에 동일 키워드 인자를 추가해 `orchestrator.py`가
+  그대로 전달한다. 실 Gemini 프롬프트(`_CONTEXT_DEPENDENT_RULES`/`_BOUNDARY_CASES`)에
+  "직전 턴이 SCHEDULE 되묻기로 끝났고 이번 발화가 그 답변으로 보이면 SCHEDULE 유지"
+  규칙을 추가하고, "현재 대화 컨텍스트" 블록에 되묻기 여부를 한 줄 노출한다(SCHEDULE
+  외 다른 `last_intent`는 이번 범위 밖이라 노출하지 않음 — 프롬프트 비대화 방지).
+  `PROMPT_VERSION` 1.0.6 → 1.0.7.
+- Fake(`FakeLLMProvider`)도 동일한 정보를 받아 미러링한다 — `_SCHEDULE_MARKERS` 매칭
+  분기 바로 뒤, `has_previous_recommendation` MODIFY 분기보다 먼저 "직전 SCHEDULE
+  되묻기 + 명시적 재시작 표현 아님" 조건을 검사해 SCHEDULE로 분류한다. 재시작 표현
+  목록은 `state_transform._RESET_SCOPE_PHRASES`와 같은 문구를 stub.py 로컬 상수로
+  미러링한다 — Fake는 프로덕션 상태 모듈에 의존하지 않는 기존 레이어 분리를 유지한다.
+- 부가 수정: `agent_runtime.py`의 되묻기 플래그 소비 화이트리스트에 `Intent.SCHEDULE`
+  추가 — 옳게 SCHEDULE로 이어져도 플래그가 안 지워지던 문제를 함께 고쳤다.
+- 대안(state-level override)을 채택하지 않은 이유: classify_intent 호출 자체를 건너뛰고
+  "직전이 SCHEDULE 되묻기면 무조건 SCHEDULE로 강제"하는 방식도 검토했으나, LLM이
+  OUT_OF_SCOPE/GENERAL 등으로 정확히 분류해야 하는 경우(되묻기 답변에 욕설이나 완전히
+  무관한 질문이 온 경우)까지 SCHEDULE로 덮어써 버릴 위험이 있다. 프롬프트 규칙은 LLM의
+  판단을 계속 신뢰하면서 이 특정 경계(되묻기 이어가기 vs MODIFY)만 바로잡는다 — D-053이
+  이미 이 방향을 팀 방침으로 확정했다.
+- 범위 밖: SCHEDULE 외 다른 Intent(INFO, COMPARE 등)가 되묻기로 끝나는 경우의 이어가기는
+  이번 재현 범위가 아니다. 필요성이 확인되면 같은 패턴(컨텍스트 전달 + 프롬프트 규칙)을
+  확장한다. `MODIFY`가 `current_conditions is None`일 때의 기존 자체 되묻기 처리
+  (`orchestrator.py` 별도 분기)는 이번 버그와 무관해 손대지 않았다.
+- 구현: `app/schemas.py`(`InterpretRequest`), `app/services/runtime/agent_runtime.py`
+  (컨텍스트 전달, 소비 화이트리스트), `app/services/interpret/orchestrator.py`
+  (`classify_intent()` 호출부), `app/providers/protocols.py`/`gemini.py`/`stub.py`
+  (시그니처), `app/providers/gemini_prompts.py`(프롬프트 규칙 + 버전).
+- 확인 방법: `tests/test_llm_provider.py`(SCHEDULE 되묻기 이어가기가 MODIFY 패턴보다
+  우선함, 명시적 재시작 표현은 강제되지 않음, 컨텍스트 없을 때 기존 동작 회귀 없음,
+  프롬프트 텍스트에 규칙·컨텍스트 줄 반영 확인), `tests/test_agent_runtime.py`
+  (SCHEDULE 되묻기 E2E — intent 유지 + 플래그 소비 확인). 전체 회귀 1333 passed / 22
+  skipped, ruff 통과.
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -1675,3 +1730,4 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-08 | D-056 신설 — TourAPI 주차·요금·이미지 원문을 `places` 컬럼 6개로 추가(C). 별도 테이블 분리 대신 컬럼 추가를 택한 근거와 축제 `usetimefestival` 함정, 커버리지 한계(주차 95%/요금 24%)를 기록 |
 | 2026-08-08 | D-057 신설 — 집중률 검색어를 단일 값에서 공백 토큰 전부로 바꾸고, 코퍼스 등장 빈도 오름차순으로 조회하도록 결정하고 구현(C). 손으로 쓴 불용어 목록 대신 희소성 기준을 쓰는 근거를 실측(종로구 113개 이름)으로 기록하고, 대조 유사도 임계값 0.9를 유사도 매칭 금지 방침의 조건부 예외로 명시 |
 | 2026-08-08 | D-058 신설 — 운영시간 요일 파싱 수정(C). `매주 월요일~화요일`의 물결표 요일 범위 전개와 요일별 운영시간 분리를 구현하고, 요일을 열거한 원문에서 빠진 요일을 정기 휴무로 유도하도록 결정. 유도 근거는 활성 844건 중 39건 실측(38건이 휴무 원문과 일치). 활성 97건의 운영 판정이 달라짐. `OPERATING_PARSER_VERSION` 1.2.0 |
+| 2026-08-08 | D-059 신설 — SCHEDULE 되묻기 답변이 MODIFY로 오분류되던 문제 수정(A). `classify_intent()`에 `pending_clarification`/`last_intent` 컨텍스트를 전달하고 프롬프트 규칙만 추가(상태 레벨 override 채택 안 함, D-053과 같은 방향). 되묻기 플래그 소비 화이트리스트에 SCHEDULE 누락도 함께 수정. `PROMPT_VERSION` 1.0.7 |

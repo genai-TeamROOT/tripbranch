@@ -11,9 +11,14 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from app.providers.gemini_prompts import (
+    build_intent_classification_instruction,
+    build_modify_extraction_instruction,
+)
 from app.providers.stub import FakeLLMProvider
 from app.schedule.schemas import SchedulePlanningRequest
 from app.schemas import (
+    ConcentrationIntent,
     Environment,
     GeneralTopic,
     Intent,
@@ -76,6 +81,83 @@ async def test_classify_intent_plain_recommendation_is_not_schedule() -> None:
     )
 
     assert result.data.intent is Intent.RECOMMEND
+
+
+@pytest.mark.parametrize(
+    "user_input",
+    ["광화문으로 알려줘", "광화문으로", "종로 대신 광화문", "광화문 근처로"],
+)
+@pytest.mark.asyncio
+async def test_classify_intent_schedule_clarification_answer_stays_schedule(
+    user_input: str,
+) -> None:
+    """D-059: 직전 SCHEDULE 되묻기(장소 모호)에 지명만 답하면 MODIFY가 아니라 SCHEDULE을
+    유지해야 한다 — 바꿀 이전 추천 결과 자체가 없다."""
+    provider = FakeLLMProvider()
+
+    result = await provider.classify_intent(
+        user_input,
+        has_previous_recommendation=False,
+        shown_place_count=0,
+        pending_clarification="location_ambiguous",
+        last_intent="SCHEDULE",
+    )
+
+    assert result.data.intent is Intent.SCHEDULE
+
+
+@pytest.mark.asyncio
+async def test_classify_intent_schedule_clarification_explicit_restart_not_forced() -> None:
+    """되묻기 이어가기 규칙이 명시적 재시작 표현까지 SCHEDULE로 강제하면 안 된다 — 이
+    분기를 건너뛰고 나머지 규칙(여기서는 RECOMMEND)이 그대로 판정한다."""
+    provider = FakeLLMProvider()
+
+    without_context = await provider.classify_intent(
+        "처음부터 다시 짜줘", has_previous_recommendation=False, shown_place_count=0
+    )
+    with_schedule_clarification = await provider.classify_intent(
+        "처음부터 다시 짜줘",
+        has_previous_recommendation=False,
+        shown_place_count=0,
+        pending_clarification="location_ambiguous",
+        last_intent="SCHEDULE",
+    )
+
+    assert with_schedule_clarification.data.intent is without_context.data.intent
+
+
+@pytest.mark.asyncio
+async def test_classify_intent_location_modify_unaffected_without_schedule_clarification() -> (
+    None
+):
+    """기존 회귀 확인: SCHEDULE 되묻기 컨텍스트가 없으면 "지명+근처/주변" 답변은 그대로
+    MODIFY다(D-053)."""
+    provider = FakeLLMProvider()
+
+    result = await provider.classify_intent(
+        "광화문 근처로",
+        has_previous_recommendation=True,
+        shown_place_count=5,
+    )
+
+    assert result.data.intent is Intent.MODIFY
+
+
+@pytest.mark.asyncio
+async def test_classify_intent_schedule_clarification_wins_over_modify_pattern() -> None:
+    """has_previous_recommendation=True라 "지명+근처" MODIFY 조건도 동시에 충족되는
+    상황에서, SCHEDULE 되묻기 이어가기 규칙이 우선해야 한다(실제 버그 재현 조건과 동일)."""
+    provider = FakeLLMProvider()
+
+    result = await provider.classify_intent(
+        "광화문 근처로",
+        has_previous_recommendation=True,
+        shown_place_count=5,
+        pending_clarification="location_ambiguous",
+        last_intent="SCHEDULE",
+    )
+
+    assert result.data.intent is Intent.SCHEDULE
 
 
 @pytest.mark.parametrize("user_input", ["넌 누구야?", "이름이 뭐야?", "뭘 할 수 있어?"])
@@ -355,6 +437,55 @@ async def test_extract_modify_conditions_location_only_changes_search_center() -
     assert output.modify.modify_type is ModifyType.CHANGE_CONDITION
     assert output.modify.condition_changes.search_center == "광화문"
     assert output.modify.changed_fields == ["search_center"]
+
+
+@pytest.mark.asyncio
+async def test_extract_modify_conditions_quiet_place_avoids_concentration() -> None:
+    """MODIFY에서도 '조용한'은 혼잡도 회피(AVOID)로 추출해야 한다.
+
+    RECOMMEND 프롬프트에만 있던 concentration_intent 규칙이 MODIFY에서 빠져
+    실제 Gemini가 SEEK를 반환했던 회귀를 막는다.
+    """
+    provider = FakeLLMProvider()
+    current = UserConditions(
+        search_center="창경궁",
+        concentration_intent=ConcentrationIntent.IGNORE,
+    )
+
+    output = (await provider.extract_modify_conditions("좀 조용한 공원 가고싶어", current)).data
+
+    assert output.modify.condition_changes.concentration_intent is ConcentrationIntent.AVOID
+    assert output.modify.changed_fields == ["concentration_intent"]
+
+
+def test_modify_instruction_includes_concentration_avoid_rule() -> None:
+    """Real Gemini MODIFY 프롬프트에도 조용한 곳→AVOID 규칙을 반드시 넣는다."""
+    instruction = build_modify_extraction_instruction(UserConditions(search_center="창경궁"))
+
+    assert "concentration_intent 판별:" in instruction
+    assert '"조용한 공원 추천해줘"' in instruction
+    assert "concentration_intent/transport" in instruction
+
+
+def test_intent_instruction_includes_schedule_clarification_rule() -> None:
+    """D-059: SCHEDULE 되묻기 이어가기 규칙과 컨텍스트 플래그가 프롬프트에 반영된다."""
+    instruction = build_intent_classification_instruction(
+        has_previous_recommendation=False,
+        shown_place_count=0,
+        pending_clarification="location_ambiguous",
+        last_intent="SCHEDULE",
+    )
+
+    assert "SCHEDULE 되묻기" in instruction
+    assert "직전 턴이 되묻기로 끝났는지: 예" in instruction
+
+
+def test_intent_instruction_hides_clarification_flag_when_absent() -> None:
+    instruction = build_intent_classification_instruction(
+        has_previous_recommendation=False, shown_place_count=0
+    )
+
+    assert "직전 턴이 되묻기로 끝났는지: 아니오" in instruction
 
 
 @pytest.mark.asyncio

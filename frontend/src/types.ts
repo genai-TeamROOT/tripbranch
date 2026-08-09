@@ -31,6 +31,8 @@ export interface RecommendationItem {
   category: string;
   distance_km: number;
   remaining_minutes: number | null;
+  /** D가 현재 적용한 당일 운영 구간으로 만든 표기값. 예: "09:00~18:00" */
+  operating_hours_display?: string | null;
   environment_type: EnvironmentType;
   recommendation_reason: string;
   explanations: string[];
@@ -320,6 +322,7 @@ export interface AgentResponse {
   message: string;
   llm_execution?: LLMExecutionMetadata | null;
   tool_execution?: ToolExecutionDebug | null;
+  tool_executions?: ToolExecutionDebug[];
 }
 
 export interface ToolProviderDebug {
@@ -339,6 +342,7 @@ export interface ToolContextItemDebug {
 }
 
 export interface ToolExecutionDebug {
+  operation?: "context_fetch" | "info_concentration" | "candidate_enrichment";
   request_id: string;
   status: string;
   latency_ms: number | null;
@@ -349,6 +353,8 @@ export interface ToolExecutionDebug {
   resolved_location_address: string | null;
   error_code: string | null;
   clarification_code: string | null;
+  is_proxy: boolean | null;
+  candidate_status_counts: Record<string, number>;
 }
 
 export interface LLMCallMetadata {

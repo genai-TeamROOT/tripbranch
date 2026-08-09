@@ -496,11 +496,18 @@ class InterpretRequest(BaseModel):
     # 브라우저에서 확보한 "위도,경도". api_context.gps_location과 동일 포맷.
     device_location: str | None = None
 
-    # 아래 3개는 라우터가 B의 세션 컨텍스트로 채운다.
+    # 아래 5개는 라우터가 B의 세션 컨텍스트로 채운다.
     # 호출자가 보낸 값은 무시되며, 하위 호환을 위해 필드만 유지한다.
     has_previous_recommendation: bool = False
     shown_place_count: int = Field(default=0, ge=0)
     current_conditions: UserConditions | None = None
+    # 직전 턴이 되묻기로 끝났는지(B의 SessionContextResponse.pending_clarification 그대로)와
+    # 그 되묻기가 어떤 Intent의 턴이었는지(SessionContextResponse.last_intent). SCHEDULE
+    # 되묻기 답변이 새 MODIFY 요청으로 오분류되는 걸 막기 위해 classify_intent()까지
+    # 전달한다(D-059) — RECOMMEND는 우선순위 fallback이라 이 정보 없이도 대체로 맞지만,
+    # SCHEDULE은 키워드가 있어야만 선택되는 명시적 분류라 fallback이 없다.
+    pending_clarification: str | None = None
+    last_intent: str | None = None
 
 
 # === Agent Runtime (A-03) ===
@@ -562,7 +569,7 @@ class ToolContextItemDebug(BaseModel):
 
 
 class ToolExecutionDebug(BaseModel):
-    """개발자용 Audit 전용: A→C 한 번의 Context 수집이 실제로 무엇을 했는지.
+    """개발자용 Audit 전용: A→C 호출 한 단계가 실제로 무엇을 했는지.
 
     llm_execution과 같은 성격의 관측 전용 필드다 — 추천 판정에는 쓰이지 않으며,
     이 값이 없다고 해서 흐름이 달라지지 않는다. 특히 providers[].source는 실제로
@@ -570,6 +577,9 @@ class ToolExecutionDebug(BaseModel):
     자동 전환하지 않는다)가 지켜지고 있는지 화면에서 바로 확인하는 수단이 된다.
     """
 
+    operation: Literal["context_fetch", "info_concentration", "candidate_enrichment"] = (
+        "context_fetch"
+    )
     request_id: str
     status: str
     latency_ms: int | None = None
@@ -580,6 +590,8 @@ class ToolExecutionDebug(BaseModel):
     resolved_location_address: str | None = None
     error_code: str | None = None
     clarification_code: str | None = None
+    is_proxy: bool | None = None
+    candidate_status_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class AgentResponse(BaseModel):
@@ -605,3 +617,6 @@ class AgentResponse(BaseModel):
     # 개발자용 Audit에서 C가 실제로 호출한 Provider·항목별 상태를 확인한다.
     # C 단계에 도달하지 못한 요청(LLM 실패, needs_clarification 등)에서는 None이다.
     tool_execution: ToolExecutionDebug | None = None
+    # 한 요청 안에서 C가 여러 번 호출될 수 있으므로, 감사 패널은 이 목록을 우선 사용한다.
+    # tool_execution은 이전 개발자 클라이언트 호환을 위해 첫/주요 호출을 계속 제공한다.
+    tool_executions: list[ToolExecutionDebug] = Field(default_factory=list)
