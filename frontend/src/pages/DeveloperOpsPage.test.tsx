@@ -6,6 +6,7 @@
  */
 
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { DeveloperOpsPage } from "./DeveloperOpsPage";
 
@@ -113,7 +114,8 @@ it("호출량 표와 일일 한도 게이지를 보여준다", async () => {
 
   renderPage();
 
-  expect(await screen.findByText("detailIntro2")).toBeInTheDocument();
+  // detailIntro2는 호출량 표와 DB 갱신 패널의 한도 경고 문구 양쪽에 나온다.
+  expect((await screen.findAllByText("detailIntro2")).length).toBeGreaterThan(0);
   expect(screen.getByText("512 / 1000")).toBeInTheDocument();
   // 누적 호출과 오늘 호출 두 카드에 같은 값이 뜬다.
   expect(screen.getAllByText("517")).toHaveLength(2);
@@ -176,4 +178,145 @@ it("라우터가 없는 서버(404)에는 APP_ENV 확인을 안내한다", async
   await waitFor(() => {
     expect(screen.getAllByText(/APP_ENV=local/).length).toBeGreaterThan(0);
   });
+});
+
+const reconcileResult = {
+  area_code: "11",
+  district_code: "110",
+  snapshot: "places_api_snapshot_20260809.csv",
+  snapshot_count: 844,
+  baseline: "places_api_snapshot_20260808.csv",
+  baseline_count: 844,
+  reconciliation: "places_reconciliation_20260809.csv",
+  skipped_columns: [],
+  counts: { added: 1, removed: 1, updated: 2 },
+  detail_content_ids: ["3", "4"],
+  detail_excluded_ids: ["1"],
+  rows: [
+    {
+      content_id: "4",
+      title: "새 장소",
+      content_type_id: "12",
+      change_type: "added" as const,
+      changed_columns: [],
+      previous: {},
+      current: {},
+    },
+    {
+      content_id: "1",
+      title: "좌표만 바뀐 장소",
+      content_type_id: "12",
+      change_type: "updated" as const,
+      changed_columns: ["latitude", "longitude"],
+      previous: {},
+      current: {},
+    },
+  ],
+};
+
+const runningJob = {
+  job_id: "job-1",
+  params: {
+    area_code: "11",
+    district_code: "110",
+    snapshot: "places_api_snapshot_20260809.csv",
+    dry_run: true,
+    detail_target_count: 2,
+    added_count: 1,
+  },
+  status: "running",
+  started_at: "2026-08-09T19:00:00+09:00",
+  finished_at: null,
+  phase: "details",
+  processed: 1,
+  total: 2,
+  result: null,
+  error: null,
+  unmapped_new_place_ids: [],
+};
+
+function mockSyncFetch() {
+  const posted: { url: string; body: unknown }[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "POST") {
+        posted.push({ url, body: JSON.parse(String(init.body)) });
+      }
+      const body = url.includes("api-usage")
+        ? usageSnapshot
+        : url.includes("reconcile")
+          ? reconcileResult
+          : url.includes("place-sync/apply") || url.includes("place-sync/jobs")
+            ? runningJob
+            : dbStatus;
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }),
+  );
+  return posted;
+}
+
+it("대조 결과와 상세조회 대상 건수를 보여준다", async () => {
+  mockSyncFetch();
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.click(await screen.findByRole("button", { name: "1. 스냅샷 대조" }));
+
+  expect(await screen.findByText("새 장소")).toBeInTheDocument();
+  expect(screen.getByText("예상 외부 호출: 목록 0회 + 상세조회 2회")).toBeInTheDocument();
+  // 수정시각이 안 바뀐 건은 상세조회에서 빠지되 조용히 사라지지 않아야 한다.
+  expect(screen.getByText(/상세조회 제외 1건/)).toBeInTheDocument();
+});
+
+it("확인 문자열을 정확히 입력해야 반영이 시작된다", async () => {
+  const posted = mockSyncFetch();
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.click(await screen.findByRole("button", { name: "1. 스냅샷 대조" }));
+  await user.click(await screen.findByRole("button", { name: "2. 반영 실행" }));
+
+  const execute = screen.getByRole("button", { name: "실행" });
+  expect(execute).toBeDisabled();
+
+  await user.type(screen.getByRole("textbox"), "11-999");
+  expect(execute).toBeDisabled();
+
+  await user.clear(screen.getByRole("textbox"));
+  await user.type(screen.getByRole("textbox"), "11-110");
+  await user.click(execute);
+
+  const applyCall = posted.find((call) => call.url.includes("place-sync/apply"));
+  expect(applyCall?.body).toEqual({
+    snapshot: "places_api_snapshot_20260809.csv",
+    detail_content_ids: ["3", "4"],
+    // 신규 장소는 반영 후 집중률 매핑 유무를 확인하는 데 쓰인다.
+    added_content_ids: ["4"],
+    dry_run: true,
+    confirm: "11-110",
+  });
+});
+
+it("제외된 건을 포함하도록 체크하면 상세조회 대상에 들어간다", async () => {
+  const posted = mockSyncFetch();
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.click(await screen.findByRole("button", { name: "1. 스냅샷 대조" }));
+  await user.click(await screen.findByRole("checkbox", { name: /상세조회 제외 1건/ }));
+  expect(
+    screen.getByText("예상 외부 호출: 목록 0회 + 상세조회 3회"),
+  ).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "2. 반영 실행" }));
+  await user.type(screen.getByRole("textbox"), "11-110");
+  await user.click(screen.getByRole("button", { name: "실행" }));
+
+  const applyCall = posted.find((call) => call.url.includes("place-sync/apply"));
+  expect(applyCall?.body).toMatchObject({ detail_content_ids: ["3", "4", "1"] });
 });

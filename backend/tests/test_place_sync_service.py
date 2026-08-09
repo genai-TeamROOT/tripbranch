@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
@@ -413,3 +413,110 @@ async def test_detail_sync_persists_parking_and_fee_fields() -> None:
         "3,000원",
         "경로 50%",
     )
+
+
+@pytest.mark.asyncio
+async def test_detail_content_ids_limits_calls_to_snapshot_diff() -> None:
+    """스냅샷 대조가 정한 변경분만 상세조회한다.
+
+    TTL(기본 30일)이 지나면 기존 규칙은 안 바뀐 장소까지 전부 재조회 대상으로
+    삼는다. 종로구 844건이 통째로 나가는 상황이라 대조 결과로 대상을 고정한다.
+    """
+    provider = FakeAreaProvider([_place(index) for index in range(5)])
+    # 마지막 상세조회가 TTL(30일)을 훨씬 넘긴 상태 — 기존 규칙이면 5건 전부 대상이다.
+    stale = NOW - timedelta(days=90)
+    repository = FakePlaceRepository(
+        {
+            str(index): StoredPlaceState(
+                content_id=str(index),
+                source_modified_at=NOW,
+                detail_fetched_at=stale,
+                detail_fetch_status="success",
+                operating_parser_version=OPERATING_PARSER_VERSION,
+                operating_hours_raw="09:00~18:00",
+                rest_date_raw="매주 화요일",
+                is_active=True,
+                inactive_reason=None,
+            )
+            for index in range(5)
+        }
+    )
+    service = PlaceSyncService(provider, repository, retry_count=0, now=lambda: NOW)
+
+    result = await service.sync("11", "110", detail_content_ids=frozenset({"2"}))
+
+    assert provider.detail_calls == ["2"]
+    assert result.detail_target_count == 1
+
+
+@pytest.mark.asyncio
+async def test_detail_content_ids_still_retries_pending_and_failed() -> None:
+    """지난 실행에서 못 채운 건은 대조 결과에 없어도 다시 시도한다.
+
+    빼면 pending·failed가 영영 그대로 남는다.
+    """
+    provider = FakeAreaProvider([_place(1), _place(2)])
+    repository = FakePlaceRepository(
+        {
+            "1": _state("1", detail_status="failed"),
+            "2": _state("2", detail_status="success"),
+        }
+    )
+    service = PlaceSyncService(provider, repository, retry_count=0, now=lambda: NOW)
+
+    result = await service.sync("11", "110", detail_content_ids=frozenset())
+
+    assert provider.detail_calls == ["1"]
+    assert result.detail_target_count == 1
+
+
+@pytest.mark.asyncio
+async def test_detail_content_ids_none_keeps_existing_ttl_rule() -> None:
+    """인자를 안 주면 기존 동작 그대로 — CLI 경로는 바뀌지 않는다."""
+    provider = FakeAreaProvider([_place(1)])
+    stale = NOW - timedelta(days=90)
+    repository = FakePlaceRepository(
+        {
+            "1": StoredPlaceState(
+                content_id="1",
+                source_modified_at=NOW,
+                detail_fetched_at=stale,
+                detail_fetch_status="success",
+                operating_parser_version=OPERATING_PARSER_VERSION,
+                operating_hours_raw="09:00~18:00",
+                rest_date_raw="매주 화요일",
+                is_active=True,
+                inactive_reason=None,
+            )
+        }
+    )
+    service = PlaceSyncService(provider, repository, retry_count=0, now=lambda: NOW)
+
+    result = await service.sync("11", "110")
+
+    assert provider.detail_calls == ["1"]
+    assert result.detail_target_count == 1
+
+
+@pytest.mark.asyncio
+async def test_on_progress_reports_detail_completion() -> None:
+    """place_sync_runs 행은 시작·종료만 남으므로 진행률은 콜백으로만 알 수 있다."""
+    provider = FakeAreaProvider([_place(index) for index in range(3)])
+    repository = FakePlaceRepository()
+    service = PlaceSyncService(provider, repository, retry_count=0, now=lambda: NOW)
+    seen: list[tuple[str, int, int]] = []
+
+    await service.sync(
+        "11",
+        "110",
+        on_progress=lambda progress: seen.append(
+            (progress.phase, progress.processed, progress.total)
+        ),
+    )
+
+    phases = [phase for phase, _, _ in seen]
+    assert phases[0] == "list"
+    assert phases[-1] == "done"
+    detail_progress = [item for item in seen if item[0] == "details"]
+    assert detail_progress[0] == ("details", 0, 3)
+    assert detail_progress[-1] == ("details", 3, 3)

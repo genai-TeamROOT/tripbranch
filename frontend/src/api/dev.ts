@@ -93,6 +93,94 @@ export function resetApiUsage() {
   return apiClient.post<ApiUsageSnapshot>("/dev/api-usage/reset", {});
 }
 
+export type ReconcileRow = {
+  content_id: string;
+  title: string;
+  content_type_id: string;
+  change_type: "added" | "removed" | "updated";
+  changed_columns: string[];
+  previous: Record<string, string>;
+  current: Record<string, string>;
+};
+
+export type ReconcileResult = {
+  area_code: string;
+  district_code: string;
+  snapshot: string;
+  snapshot_count: number;
+  baseline: string | null;
+  baseline_count?: number;
+  reconciliation?: string;
+  skipped_columns: string[];
+  counts: { added: number; removed: number; updated: number };
+  detail_content_ids: string[];
+  detail_excluded_ids: string[];
+  rows: ReconcileRow[];
+  message?: string;
+};
+
+export type SyncJob = {
+  job_id: string;
+  params: {
+    area_code: string;
+    district_code: string;
+    snapshot: string;
+    dry_run: boolean;
+    detail_target_count: number;
+    added_count: number;
+  };
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+  phase: string;
+  processed: number;
+  total: number;
+  result: {
+    status: string;
+    dry_run: boolean;
+    sync_run_id: string | null;
+    processed_count: number;
+    success_count: number;
+    failed_count: number;
+    new_count: number;
+    updated_count: number;
+    deactivated_count: number;
+    detail_target_count: number;
+    detail_attempted_count: number;
+    reparse_count: number;
+    error_summary: Record<string, number>;
+  } | null;
+  error: string | null;
+  /** 새로 들어왔는데 집중률 매핑이 없는 장소. 매핑이 없으면 혼잡도 조회가 생략된다. */
+  unmapped_new_place_ids: string[];
+};
+
+export function reconcilePlaces(baseline?: string) {
+  return apiClient.post<ReconcileResult>("/dev/place-sync/reconcile", {
+    baseline: baseline ?? null,
+  });
+}
+
+export function applyPlaceSync(input: {
+  snapshot: string;
+  detailContentIds: string[];
+  addedContentIds: string[];
+  dryRun: boolean;
+  confirm: string;
+}) {
+  return apiClient.post<SyncJob>("/dev/place-sync/apply", {
+    snapshot: input.snapshot,
+    detail_content_ids: input.detailContentIds,
+    added_content_ids: input.addedContentIds,
+    dry_run: input.dryRun,
+    confirm: input.confirm,
+  });
+}
+
+export function fetchSyncJob(jobId: string) {
+  return apiClient.get<SyncJob>(`/dev/place-sync/jobs/${jobId}`);
+}
+
 export function fetchDbStatus(areaCode?: string, districtCode?: string) {
   const params = new URLSearchParams();
   if (areaCode) params.set("area_code", areaCode);

@@ -649,3 +649,31 @@ async def test_list_sync_locks_keeps_expired_rows() -> None:
         locks = await repository.list_sync_locks()
 
     assert locks == [expired]
+
+
+@pytest.mark.asyncio
+async def test_find_missing_concentration_mappings_returns_unmapped_ids() -> None:
+    """매핑 없는 장소는 혼잡도 조회를 아예 건너뛰므로 누가 빠졌는지 알아야 한다."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[{"content_id": "2"}])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        repository = SupabasePlaceRepository(
+            "https://project.supabase.co/", "sb_secret_test", client
+        )
+        missing = await repository.find_missing_concentration_mappings(["1", "2", "3"])
+
+    assert missing == ["1", "3"]
+
+
+@pytest.mark.asyncio
+async def test_find_missing_concentration_mappings_skips_request_when_empty() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("빈 목록에는 요청을 보내지 않아야 한다")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        repository = SupabasePlaceRepository(
+            "https://project.supabase.co/", "sb_secret_test", client
+        )
+        assert await repository.find_missing_concentration_mappings([]) == []

@@ -12,16 +12,23 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
 import {
+  applyPlaceSync,
   fetchApiUsage,
   fetchDbStatus,
+  fetchSyncJob,
+  reconcilePlaces,
   resetApiUsage,
   type ApiUsageSnapshot,
   type DbStatus,
+  type ReconcileResult,
+  type SyncJob,
 } from "../api/dev";
 import { ApiUsagePanel } from "../components/dev/ApiUsagePanel";
 import { DbStatusPanel } from "../components/dev/DbStatusPanel";
+import { PlaceSyncPanel } from "../components/dev/PlaceSyncPanel";
 
 const AUTO_REFRESH_INTERVAL_MS = 3000;
+const JOB_POLL_INTERVAL_MS = 1000;
 
 function toMessage(error: unknown, fallback: string) {
   if (error instanceof ApiError) {
@@ -65,6 +72,51 @@ export function DeveloperOpsPage() {
     }
   }, []);
 
+  const [reconcile, setReconcile] = useState<ReconcileResult | null>(null);
+  const [job, setJob] = useState<SyncJob | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [reconciling, setReconciling] = useState(false);
+  const [applying, setApplying] = useState(false);
+
+  const handleReconcile = useCallback(async () => {
+    setReconciling(true);
+    try {
+      setReconcile(await reconcilePlaces());
+      setSyncError(null);
+    } catch (error) {
+      setSyncError(toMessage(error, "대조에 실패했어요."));
+    } finally {
+      setReconciling(false);
+    }
+  }, []);
+
+  const handleApply = useCallback(
+    async (input: { dryRun: boolean; confirm: string; includeExcluded: boolean }) => {
+      if (!reconcile) return;
+      setApplying(true);
+      try {
+        const started = await applyPlaceSync({
+          snapshot: reconcile.snapshot,
+          detailContentIds: input.includeExcluded
+            ? [...reconcile.detail_content_ids, ...reconcile.detail_excluded_ids]
+            : reconcile.detail_content_ids,
+          addedContentIds: reconcile.rows
+            .filter((row) => row.change_type === "added")
+            .map((row) => row.content_id),
+          dryRun: input.dryRun,
+          confirm: input.confirm,
+        });
+        setJob(started);
+        setSyncError(null);
+      } catch (error) {
+        setSyncError(toMessage(error, "반영을 시작하지 못했어요."));
+      } finally {
+        setApplying(false);
+      }
+    },
+    [reconcile],
+  );
+
   const handleReset = useCallback(async () => {
     try {
       setUsage(await resetApiUsage());
@@ -90,6 +142,34 @@ export function DeveloperOpsPage() {
     }, AUTO_REFRESH_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [autoRefresh]);
+
+  // 실행 중인 job은 1초마다 확인한다. 진행률은 서버 메모리에만 있어(place_sync_runs
+  // 행은 시작·종료만 남는다) 폴링 말고는 알 방법이 없다.
+  const jobId = job?.status === "running" ? job.job_id : null;
+  useEffect(() => {
+    if (!jobId) return;
+    const timer = window.setInterval(async () => {
+      try {
+        const next = await fetchSyncJob(jobId);
+        setJob(next);
+        if (next.status !== "running") {
+          // 끝났으면 DB 상태를 다시 읽어 반영 결과를 화면에 맞춘다.
+          void loadDbStatus();
+        }
+      } catch (error) {
+        setSyncError(toMessage(error, "job 상태를 불러오지 못했어요."));
+      }
+    }, JOB_POLL_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [jobId, loadDbStatus]);
+
+  // 반영 다이얼로그에 참고용으로 넘길 detailIntro2 관측 사용량. 잔여를 계산하지
+  // 않는 이유: 이 집계는 프로세스 메모리라 재시작 전 호출과 backend/scripts
+  // 실행분이 빠져 있다. 한도에서 빼면 실제보다 여유가 있는 것처럼 보인다.
+  const detailUsedSinceStart =
+    usage?.entries.find(
+      (entry) => entry.provider === "tour_api" && entry.operation === "detailIntro2",
+    )?.today_count ?? null;
 
   return (
     <main className="min-h-screen bg-gray-50 text-gray-950 dark:bg-gray-950 dark:text-gray-50">
@@ -126,6 +206,16 @@ export function DeveloperOpsPage() {
           onToggleAutoRefresh={setAutoRefresh}
           onRefresh={() => void loadUsage()}
           onReset={() => void handleReset()}
+        />
+        <PlaceSyncPanel
+          reconcile={reconcile}
+          job={job}
+          error={syncError}
+          reconciling={reconciling}
+          applying={applying}
+          detailUsedSinceStart={detailUsedSinceStart}
+          onReconcile={() => void handleReconcile()}
+          onApply={(input) => void handleApply(input)}
         />
         <DbStatusPanel
           status={dbStatus}

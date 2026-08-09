@@ -172,7 +172,7 @@ export function ApiUsagePanel({
                     <th className="py-1.5 pr-2 font-medium">오퍼레이션</th>
                     <th className="py-1.5 pr-2 text-right font-medium">누적</th>
                     <th className="py-1.5 pr-2 text-right font-medium">실패</th>
-                    <th className="py-1.5 pr-2 font-medium">오늘 / 일일 한도</th>
+                    <th className="py-1.5 pr-2 font-medium">오늘 관측 / 한도</th>
                     <th className="py-1.5 pr-2 text-right font-medium">평균</th>
                     <th className="py-1.5 pr-2 text-right font-medium">최대</th>
                     <th className="py-1.5 pr-2 font-medium">마지막</th>
@@ -219,7 +219,9 @@ export function ApiUsagePanel({
           <p className="mt-2 text-[11px] text-gray-500 dark:text-gray-400">
             이 서버 프로세스가 보낸 호출만 셉니다. backend/scripts/* 는 별도
             프로세스라 여기 안 잡히지만 일일 한도는 똑같이 소모해요. 서버를
-            재시작하면 카운터가 0으로 돌아갑니다.
+            재시작하면 카운터가 0으로 돌아갑니다. 따라서 한도 게이지는 실제 소진량이
+            아니라 <strong>하한</strong>이에요 — 남은 호출은 표시된 것보다 적을 수
+            있습니다.
           </p>
         </>
       )}

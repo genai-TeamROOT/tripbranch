@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from scripts.snapshot_places import (
-    _COMPARED_COLUMNS,
+from app.services.place_snapshot import (
+    COMPARED_COLUMNS as _COMPARED_COLUMNS,
+)
+from app.services.place_snapshot import (
     build_reconciliation_rows,
     comparable_columns,
 )
@@ -92,12 +94,11 @@ def test_snapshot_csv_round_trips_image_columns(tmp_path) -> None:
     쓰기만 고치고 읽기를 빼면 CSV에는 값이 있는데 DB는 계속 비어 있다(2026-08-08에
     실제로 발생). 왕복으로 묶어 한쪽만 고치는 실수를 막는다.
     """
-    from scripts.snapshot_places import write_snapshot
-    from scripts.sync_places import _load_snapshot_records
+    from app.services.place_snapshot import records_from_snapshot, write_snapshot
 
     path = tmp_path / "snapshot.csv"
     write_snapshot({"1": _row()}, path)
-    records = _load_snapshot_records(path)
+    records = records_from_snapshot(path)
 
     assert records[0].first_image_url == "https://example.test/a.jpg"
     assert records[0].thumbnail_url == "https://example.test/a_thumb.jpg"
@@ -107,7 +108,7 @@ def test_loader_accepts_old_snapshot_without_image_columns(tmp_path) -> None:
     """이미지 열이 없던 옛 스냅샷도 그대로 읽힌다(값은 None)."""
     import csv as _csv
 
-    from scripts.sync_places import _load_snapshot_records
+    from app.services.place_snapshot import records_from_snapshot
 
     row = _row()
     del row["first_image_url"]
@@ -118,7 +119,7 @@ def test_loader_accepts_old_snapshot_without_image_columns(tmp_path) -> None:
         writer.writeheader()
         writer.writerow(row)
 
-    records = _load_snapshot_records(path)
+    records = records_from_snapshot(path)
 
     assert records[0].first_image_url is None
     assert records[0].thumbnail_url is None

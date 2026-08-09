@@ -40,6 +40,23 @@ class IncompletePlaceListError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class SyncProgress:
+    """진행 상황 한 조각. 관측 전용이라 동기화 판정에는 쓰이지 않는다.
+
+    place_sync_runs 행은 시작과 종료에만 쓰이므로, 실행 중 진행률은 DB에서 읽을
+    방법이 없다. 종로구 상세조회는 수백 건이라 그동안 "running"만 보이면 화면이
+    무의미해진다.
+    """
+
+    phase: str
+    processed: int
+    total: int
+
+
+ProgressCallback = Callable[[SyncProgress], None]
+
+
+@dataclass(frozen=True)
 class PlaceSyncResult:
     status: str
     dry_run: bool
@@ -147,7 +164,16 @@ class PlaceSyncService:
         dry_run: bool = False,
         details_limit: int | None = None,
         force_details: bool = False,
+        detail_content_ids: frozenset[str] | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> PlaceSyncResult:
+        """지역 장소 목록과 상세정보를 DB에 반영한다.
+
+        detail_content_ids를 주면 상세조회 대상을 그 집합으로 고정한다. 스냅샷
+        대조가 이미 "무엇이 바뀌었는가"를 정한 경우에 쓴다 — TTL 만료로 안 바뀐
+        장소까지 다시 부르는 일을 막는다(종로구 기준 844건 전량). None이면 기존
+        규칙(신규·수정시각 변경·TTL 만료)을 그대로 쓴다.
+        """
         if not area_code.strip() or not district_code.strip():
             raise ValueError("area_code와 district_code가 필요합니다.")
         if details_limit is not None and details_limit < 1:
@@ -161,6 +187,8 @@ class PlaceSyncService:
                 dry_run=True,
                 details_limit=details_limit,
                 force_details=force_details,
+                detail_content_ids=detail_content_ids,
+                on_progress=on_progress,
             )
 
         sync_run_id = await self._repository.create_sync_run(area_code, district_code)
@@ -207,6 +235,8 @@ class PlaceSyncService:
                 dry_run=False,
                 details_limit=details_limit,
                 force_details=force_details,
+                detail_content_ids=detail_content_ids,
+                on_progress=on_progress,
             )
         except Exception:
             await self._repository.complete_sync_run(
@@ -237,8 +267,15 @@ class PlaceSyncService:
         dry_run: bool,
         details_limit: int | None,
         force_details: bool,
+        detail_content_ids: frozenset[str] | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> PlaceSyncResult:
+        def report(phase: str, processed: int, total: int) -> None:
+            if on_progress is not None:
+                on_progress(SyncProgress(phase=phase, processed=processed, total=total))
+
         started_at = self._now()
+        report("list", 0, 0)
         try:
             places, api_total_count = await self._collect_complete_list(
                 area_code, district_code
@@ -275,6 +312,8 @@ class PlaceSyncService:
                 error_summary={"INCOMPLETE_PLACE_LIST": 1},
             )
 
+        report("list", len(places), len(places))
+
         existing = await self._repository.get_region_place_states(
             area_code, district_code
         )
@@ -285,6 +324,7 @@ class PlaceSyncService:
             existing,
             now=started_at,
             force_details=force_details,
+            detail_content_ids=detail_content_ids,
         )
         attempted_targets = (
             detail_targets[:details_limit]
@@ -293,15 +333,18 @@ class PlaceSyncService:
         )
 
         if sync_run_id is not None:
+            report("upsert", 0, len(places))
             await self._repository.upsert_place_list(
                 places, existing, sync_run_id, started_at
             )
+            report("upsert", len(places), len(places))
 
         content_types = {
             place.content_id: place.content_type_id for place in places
         }
         reparse_failures: Counter[str] = Counter()
-        for state in reparse_targets:
+        report("reparse", 0, len(reparse_targets))
+        for reparsed, state in enumerate(reparse_targets, start=1):
             try:
                 schedule = normalize_operating_schedule(
                     content_type_id=content_types[state.content_id],
@@ -317,8 +360,9 @@ class PlaceSyncService:
                     )
             except Exception:
                 reparse_failures["OPERATING_REPARSE_FAILED"] += 1
+            report("reparse", reparsed, len(reparse_targets))
 
-        outcomes = await self._fetch_details(attempted_targets)
+        outcomes = await self._fetch_details(attempted_targets, report)
         detail_failures: Counter[str] = Counter(
             outcome.error_code
             for outcome in outcomes
@@ -339,14 +383,17 @@ class PlaceSyncService:
             and details_limit is None
             and not dry_run
         ):
+            report("deactivate", 0, 0)
             deactivated_count = await self._repository.deactivate_unseen_places(
                 area_code,
                 district_code,
                 sync_run_id,
                 self._now(),
             )
+            report("deactivate", deactivated_count, deactivated_count)
 
         status = "partial_failure" if error_summary else "success"
+        report("done", len(places), len(places))
         if sync_run_id is not None:
             await self._repository.complete_sync_run(
                 sync_run_id,
@@ -429,6 +476,7 @@ class PlaceSyncService:
         *,
         now: datetime,
         force_details: bool,
+        detail_content_ids: frozenset[str] | None = None,
     ) -> tuple[list[TourPlaceRecord], list[StoredPlaceState]]:
         detail_targets: list[TourPlaceRecord] = []
         reparse_targets: list[StoredPlaceState] = []
@@ -436,19 +484,29 @@ class PlaceSyncService:
             state = existing.get(place.content_id)
             needs_detail = force_details or state is None
             if state is not None and not needs_detail:
-                source_changed = (
-                    place.source_modified_at is not None
-                    and place.source_modified_at != state.source_modified_at
-                )
-                ttl_expired = (
-                    state.detail_fetched_at is None
-                    or now - state.detail_fetched_at >= self._detail_ttl
-                )
-                needs_detail = (
-                    state.detail_fetch_status in {"pending", "failed"}
-                    or source_changed
-                    or ttl_expired
-                )
+                if detail_content_ids is not None:
+                    # 스냅샷 대조가 이미 변경분을 정했다. TTL과 수정시각을 다시
+                    # 보면 안 바뀐 장소까지 끌려 들어와 대조 결과와 실제 호출
+                    # 건수가 어긋난다. 다만 지난 실행에서 못 채운 건은 남긴다 —
+                    # 빼면 pending·failed가 영영 그대로 남는다.
+                    needs_detail = (
+                        place.content_id in detail_content_ids
+                        or state.detail_fetch_status in {"pending", "failed"}
+                    )
+                else:
+                    source_changed = (
+                        place.source_modified_at is not None
+                        and place.source_modified_at != state.source_modified_at
+                    )
+                    ttl_expired = (
+                        state.detail_fetched_at is None
+                        or now - state.detail_fetched_at >= self._detail_ttl
+                    )
+                    needs_detail = (
+                        state.detail_fetch_status in {"pending", "failed"}
+                        or source_changed
+                        or ttl_expired
+                    )
             if needs_detail:
                 detail_targets.append(place)
             elif (
@@ -461,12 +519,22 @@ class PlaceSyncService:
     async def _fetch_details(
         self,
         targets: Sequence[TourPlaceRecord],
+        report: Callable[[str, int, int], None] | None = None,
     ) -> list[_DetailOutcome]:
         semaphore = asyncio.Semaphore(self._detail_concurrency)
+        completed = 0
+        total = len(targets)
+        if report is not None:
+            report("details", 0, total)
 
         async def fetch(place: TourPlaceRecord) -> _DetailOutcome:
+            nonlocal completed
             async with semaphore:
-                return await self._fetch_detail_with_retry(place)
+                outcome = await self._fetch_detail_with_retry(place)
+            completed += 1
+            if report is not None:
+                report("details", completed, total)
+            return outcome
 
         return list(await asyncio.gather(*(fetch(place) for place in targets)))
 

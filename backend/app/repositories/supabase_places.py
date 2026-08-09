@@ -837,6 +837,35 @@ class SupabasePlaceRepository:
             raise SupabaseRepositoryError("invalid sync run list response")
         return [dict(row) for row in payload if isinstance(row, Mapping)]
 
+    async def find_missing_concentration_mappings(
+        self, content_ids: Sequence[str]
+    ) -> list[str]:
+        """집중률 매핑이 없는 content_id를 가려낸다.
+
+        매핑이 없는 장소는 혼잡도 조회를 **아예 하지 않고** no_data로 끝난다
+        (`enrichment_service._enrich_candidate`). 동기화로 새로 들어온 장소는
+        매핑이 당연히 없으므로, 알리지 않으면 그 장소만 조용히 혼잡도 판정에서
+        빠진 채로 남는다. 매핑 적재는 별도 스크립트 소관이라 여기서는 사실만
+        확인한다.
+        """
+        if not content_ids:
+            return []
+        found: set[str] = set()
+        for chunk in _chunks(list(content_ids), _UPSERT_CHUNK_SIZE):
+            quoted = ",".join(f'"{content_id}"' for content_id in chunk)
+            response = await self._request(
+                "GET",
+                "/place_concentration_mappings",
+                params={"select": "content_id", "content_id": f"in.({quoted})"},
+            )
+            payload = self._json(response)
+            if not isinstance(payload, list):
+                raise SupabaseRepositoryError("invalid concentration mapping response")
+            for row in payload:
+                if isinstance(row, Mapping) and row.get("content_id"):
+                    found.add(str(row["content_id"]))
+        return [content_id for content_id in content_ids if content_id not in found]
+
     async def list_sync_locks(self) -> list[dict[str, object]]:
         """현재 잡혀 있는 동기화 잠금. 만료된 행도 그대로 보여준다.
 
