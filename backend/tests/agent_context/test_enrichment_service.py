@@ -8,6 +8,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
+from app.agent_context.concentration_proxy import ConcentrationMappingCache
 from app.agent_context.enrichment_schemas import (
     CandidateEnrichmentRequest,
     CandidateEnrichmentTarget,
@@ -15,7 +16,11 @@ from app.agent_context.enrichment_schemas import (
 from app.agent_context.enrichment_service import CandidateEnrichmentService
 from app.concentration_policy import normalize_concentration
 from app.config import settings
-from app.domain.models import ConcentrationForecast, ConcentrationResult
+from app.domain.models import (
+    ConcentrationForecast,
+    ConcentrationResult,
+    StoredPlaceLocation,
+)
 from app.errors import AppError, ProviderTimeoutError
 from app.providers.concentration import FakeConcentrationProvider
 from app.providers.contracts import (
@@ -389,13 +394,24 @@ async def test_fake_provider_uses_the_common_concentration_contract() -> None:
 
 @pytest.mark.asyncio
 async def test_factory_wires_configured_concentration_provider() -> None:
-    """Factory가 설정된 Provider를 Tool 경계 안에서 보강 서비스에 연결한다."""
+    """Factory가 설정된 Provider를 Tool 경계 안에서 보강 서비스에 연결한다.
+
+    place_id는 fake 저장소의 content_id를 쓴다 — 매핑에 없는 후보는 조회 자체를
+    건너뛰므로(D-057 이관) 임의 id로는 Provider까지 도달하지 않는다.
+    """
 
     from app.agent_context.factory import get_candidate_enrichment_service
 
     async with httpx.AsyncClient() as client:
         response = await get_candidate_enrichment_service(client).enrich(
-            _request(_target(1, name="경복궁"))
+            _request(
+                CandidateEnrichmentTarget(
+                    place_id="126508",  # fake 저장소의 경복궁
+                    name="경복궁",
+                    latitude=37.5788,
+                    longitude=126.9770,
+                )
+            )
         )
 
     assert response.status == "success"
@@ -414,3 +430,194 @@ async def test_factory_uses_recommendation_result_limit(
         service = get_candidate_enrichment_service(client)
         with pytest.raises(ValueError, match="최대 1개"):
             await service.enrich(_request(_target(1), _target(2)))
+
+
+class _StubMappingRepository:
+    """집중률 매핑 저장소 fake. 캐시가 읽는 목록만 돌려준다."""
+
+    def __init__(self, places: tuple[StoredPlaceLocation, ...]) -> None:
+        self._places = places
+
+    async def find_concentration_mapped_places(self) -> tuple[StoredPlaceLocation, ...]:
+        return self._places
+
+
+def _mapped_place(
+    content_id: str,
+    *,
+    title: str,
+    concentration_name: str,
+    search_keys: tuple[str, ...],
+) -> StoredPlaceLocation:
+    return StoredPlaceLocation(
+        content_id=content_id,
+        title=title,
+        address=None,
+        latitude=37.5739,
+        longitude=126.9945,
+        concentration_name=concentration_name,
+        concentration_search_keys=search_keys,
+    )
+
+
+def _mapped_service(
+    provider: _ScriptedConcentrationProvider,
+    places: tuple[StoredPlaceLocation, ...],
+) -> CandidateEnrichmentService:
+    return CandidateEnrichmentService(
+        GetConcentrationTool(provider),
+        candidate_limit=5,
+        clock=lambda: REFERENCE_TIME,
+        mapping_cache=ConcentrationMappingCache(_StubMappingRepository(places)),
+    )
+
+
+@pytest.mark.asyncio
+async def test_mapped_candidate_queries_by_search_key_and_matches_canonical_name() -> None:
+    """조회는 검색어로, 대조는 정식 명칭으로 한다(D-057).
+
+    후보 이름('종묘')을 tAtsNm에 그대로 넣던 기존 방식은 응답에 섞여 오는
+    '종묘광장공원'과 구분하지 못한다. 검색어로 조회하고 매핑의 정식 명칭으로
+    골라야 올바른 장소가 선택된다.
+    """
+
+    canonical = "종묘 [유네스코 세계유산]"
+    provider = _ScriptedConcentrationProvider(
+        {
+            "종묘": ProviderResult(
+                data=ConcentrationResult(
+                    area_code="11",
+                    district_code="11110",
+                    requested_place_name="종묘",
+                    forecasts=(
+                        ConcentrationForecast(
+                            place_name="종묘광장공원",
+                            forecast_date="20260729",
+                            concentration_rate=35.28,
+                            raw_data={},
+                        ),
+                        ConcentrationForecast(
+                            place_name=canonical,
+                            forecast_date="20260729",
+                            concentration_rate=61.97,
+                            raw_data={},
+                        ),
+                    ),
+                    provider="test_concentration",
+                ),
+                metadata=ProviderMetadata(
+                    source=ProviderSource.TOUR_API_CONCENTRATION,
+                    status=ProviderStatus.SUCCESS,
+                    retrieved_at=RETRIEVED_AT,
+                ),
+            )
+        }
+    )
+    service = _mapped_service(
+        provider,
+        (
+            _mapped_place(
+                "126510",
+                title="종묘",
+                concentration_name=canonical,
+                search_keys=("종묘",),
+            ),
+        ),
+    )
+
+    response = await service.enrich(
+        _request(
+            CandidateEnrichmentTarget(
+                place_id="126510",
+                name="종묘",
+                latitude=37.5739,
+                longitude=126.9945,
+            )
+        )
+    )
+
+    assert provider.calls == [("11", "11110", "종묘")]
+    candidate = response.candidates[0]
+    assert candidate.status == "success"
+    assert candidate.concentration is not None
+    # 첫 행(종묘광장공원 35.28)이 아니라 정식 명칭의 값을 골라야 한다.
+    assert candidate.concentration[0].place_name == canonical
+    assert candidate.concentration[0].concentration_rate == 61.97
+
+
+@pytest.mark.asyncio
+async def test_unmapped_candidate_skips_provider_call() -> None:
+    """매핑이 없는 후보는 호출하지 않고 no_data로 끝낸다.
+
+    매핑은 집중률 API에 데이터가 있는 장소 목록이라, 없으면 조회해도 안 나온다.
+    활성 844건 중 매핑은 101건이고 음식점 191건은 0건이라(2026-08-09 실측) 이
+    건너뛰기가 대부분의 헛호출을 없앤다.
+    """
+
+    provider = _ScriptedConcentrationProvider({})
+    service = _mapped_service(
+        provider,
+        (
+            _mapped_place(
+                "126510",
+                title="종묘",
+                concentration_name="종묘 [유네스코 세계유산]",
+                search_keys=("종묘",),
+            ),
+        ),
+    )
+
+    response = await service.enrich(
+        _request(
+            CandidateEnrichmentTarget(
+                place_id="999999",
+                name="스타벅스 종로점",
+                latitude=37.5700,
+                longitude=126.9900,
+            )
+        )
+    )
+
+    assert provider.calls == []
+    assert response.candidates[0].status == "no_data"
+    assert response.candidates[0].concentration == []
+
+
+@pytest.mark.asyncio
+async def test_search_keys_are_tried_in_order_until_data_found() -> None:
+    """앞 검색어가 0건이면 다음 검색어로 넘어간다(D-057)."""
+
+    provider = _ScriptedConcentrationProvider(
+        {
+            # 실 Provider는 forecasts가 비면 NO_DATA를 낸다(concentration.py:133).
+            "서울": _provider_result(
+                "서울", status=ProviderStatus.NO_DATA, has_data=False
+            ),
+            "운현궁": _provider_result("서울 운현궁"),
+        }
+    )
+    service = _mapped_service(
+        provider,
+        (
+            _mapped_place(
+                "126520",
+                title="운현궁",
+                concentration_name="서울 운현궁",
+                search_keys=("서울", "운현궁"),
+            ),
+        ),
+    )
+
+    response = await service.enrich(
+        _request(
+            CandidateEnrichmentTarget(
+                place_id="126520",
+                name="운현궁",
+                latitude=37.5745,
+                longitude=126.9855,
+            )
+        )
+    )
+
+    assert [call[2] for call in provider.calls] == ["서울", "운현궁"]
+    assert response.candidates[0].status == "success"

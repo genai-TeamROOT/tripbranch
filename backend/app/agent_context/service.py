@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from time import perf_counter
@@ -25,8 +25,7 @@ from app.agent_context.concentration_proxy import (
     select_nearest_mapped_places,
 )
 from app.agent_context.enrichment_service import (
-    JONGNO_CONCENTRATION_AREA_CODE,
-    JONGNO_CONCENTRATION_DISTRICT_CODE,
+    execute_concentration_by_search_keys,
     select_concentration_forecast,
 )
 from app.agent_context.info_field_rules import extract_info_fields
@@ -72,8 +71,6 @@ from app.recommendation_limits import (
     MIN_RECOMMENDATION_LIMIT,
 )
 from app.tools.concentration import (
-    ConcentrationQuery,
-    ConcentrationToolResult,
     GetConcentrationTool,
 )
 from app.tools.contracts import ToolError, ToolStatus
@@ -396,7 +393,7 @@ class ContextService:
         # 조회는 검색어로, 대조는 정식 명칭으로 한다. tAtsNm은 공백이 든 값에 0건을
         # 돌려주므로 "종묘 [유네스코 세계유산]"은 "종묘"로 조회해야 한다. 대신 그
         # 응답에는 "종묘광장공원"도 섞여 오므로 고를 때는 정식 명칭을 써야 한다.
-        concentration_result = await _execute_concentration(
+        concentration_result = await execute_concentration_by_search_keys(
             concentration_tool,
             search_keys=resolved_location.concentration_search_keys,
             canonical_name=concentration_place_name,
@@ -522,7 +519,7 @@ class ContextService:
             # 매핑 테이블이 보유한 집중률 API 기준 이름을 쓴다 — TourAPI 장소명을
             # 그대로 던지던 기존 방식은 이름이 달라 조회에 실패하는 경우가 있었다.
             # 직접 조회와 같이 조회는 검색어로, 대조는 정식 명칭으로 한다.
-            proxy_result = await _execute_concentration(
+            proxy_result = await execute_concentration_by_search_keys(
                 concentration_tool,
                 search_keys=proxy_place.concentration_search_keys,
                 canonical_name=proxy_place.concentration_name,
@@ -901,39 +898,6 @@ def _place_info_response(
         ),
         metadata=_info_response_metadata(*provider_metadata),
     )
-
-
-async def _execute_concentration(
-    concentration_tool: GetConcentrationTool,
-    *,
-    search_keys: Sequence[str],
-    canonical_name: str,
-) -> ConcentrationToolResult:
-    """검색어를 순서대로 시도하고 결과가 나오면 멈춘다(D-057).
-
-    tAtsNm은 공백이 든 값에 0건을 돌려주므로 정식 명칭을 그대로 못 쓰는 이름이 많다.
-    검색어를 하나만 두면 '서울 동대문 닭한마리 골목'이 '닭한마리'로만 조회돼, 사용자가
-    다른 표현으로 물으면 못 찾는다. 목록을 앞에서부터 시도해 폭을 넓힌다.
-
-    1순위는 이관 전 단일 검색어와 같은 값이라 기존 동작이 그대로 유지된다. 뒤 토큰은
-    앞에서 결과가 나오면 호출되지 않으므로 평상시 호출 수도 늘지 않는다.
-
-    UNAVAILABLE은 즉시 반환한다 — 외부 장애는 다음 검색어로 바꿔도 같은 결과다.
-    """
-    candidates = [key for key in search_keys if key] or [canonical_name]
-    result = None
-    for candidate in candidates:
-        result = await concentration_tool.execute(
-            ConcentrationQuery(
-                area_code=JONGNO_CONCENTRATION_AREA_CODE,
-                district_code=JONGNO_CONCENTRATION_DISTRICT_CODE,
-                place_name=candidate,
-            )
-        )
-        if result.status is not ToolStatus.NO_DATA:
-            return result
-    assert result is not None  # candidates는 항상 하나 이상이다
-    return result
 
 
 def _info_error_response(

@@ -72,6 +72,8 @@ def get_candidate_enrichment_service(
     return CandidateEnrichmentService(
         GetConcentrationTool(get_concentration_provider(client)),
         candidate_limit=settings.recommendation_result_limit,
+        # 조회는 검색어로, 대조는 정식 명칭으로 하기 위해 매핑을 함께 넘긴다(D-057).
+        mapping_cache=_concentration_mapping_cache(client),
     )
 
 
