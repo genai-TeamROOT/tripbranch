@@ -568,6 +568,23 @@ class ToolContextItemDebug(BaseModel):
     item_count: int | None = None
 
 
+class CandidateConcentrationDebug(BaseModel):
+    """개발자용 Audit 전용: 후보 한 건의 혼잡도가 어디서 온 값인지.
+
+    건수만 세면 "5건 중 3건이 근사치"까지만 알고 어느 후보가 어디서 빌렸는지는
+    모른다. 근사치의 타당성은 "어느 장소에서 얼마나 떨어진 값인가"로 판단하므로
+    후보별로 남긴다.
+    """
+
+    place_id: str
+    name: str
+    status: str
+    is_proxy: bool = False
+    # 값을 빌려온 실제 장소와 후보로부터의 거리. is_proxy=False면 둘 다 None.
+    proxy_place_name: str | None = None
+    proxy_distance_km: float | None = None
+
+
 class ToolExecutionDebug(BaseModel):
     """개발자용 Audit 전용: A→C 호출 한 단계가 실제로 무엇을 했는지.
 
@@ -592,6 +609,13 @@ class ToolExecutionDebug(BaseModel):
     clarification_code: str | None = None
     is_proxy: bool | None = None
     candidate_status_counts: dict[str, int] = Field(default_factory=dict)
+    # candidate_enrichment 전용. 매핑 없는 후보가 다수라(활성 844건 중 매핑 100건)
+    # 근사치가 섞이는 게 정상 상태인데, 상태 집계만 보면 직접 조회한 값과 빌려온
+    # 값이 "success 5건"으로 같아 보인다. 건수는 이 목록에서 세면 되므로 따로
+    # 두지 않는다 — 같은 사실의 출처가 둘이면 어긋난다.
+    candidate_concentration: list[CandidateConcentrationDebug] = Field(
+        default_factory=list
+    )
 
 
 class AgentResponse(BaseModel):

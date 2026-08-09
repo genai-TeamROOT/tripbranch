@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from app.agent_context.enrichment_schemas import (
     CandidateEnrichmentResponse,
     CandidateEnrichmentResult,
+    ConcentrationForecastData,
 )
 from app.agent_context.info_schemas import ConcentrationInfoResult, InfoContextResponse
 from app.agent_context.schemas import (
@@ -228,3 +229,67 @@ def test_후보_보강_조회는_후보별_상태_집계를_남긴다() -> None:
     assert debug.candidate_status_counts == {"no_data": 1, "unavailable": 1}
     assert debug.context_items[0].item_count == 2
     assert debug.error_code == "upstream_timeout"
+    # 값이 아예 없는 후보도 목록에는 남아야 어느 후보가 비었는지 보인다.
+    assert [(item.name, item.status, item.is_proxy) for item in debug.candidate_concentration] == [
+        ("경복궁", "no_data", False),
+        ("카페", "unavailable", False),
+    ]
+
+
+def test_후보_보강_조회는_후보별로_값의_출처를_남긴다() -> None:
+    """직접 조회한 값과 인근에서 빌려온 값이 화면에서 같아 보이면 안 된다.
+
+    상태 집계만 보면 둘 다 "success"라 구분이 안 된다. 근사치의 타당성은 "어느
+    장소에서 얼마나 떨어진 값인가"로 판단하므로 후보별로 출처를 남긴다.
+    """
+    response = CandidateEnrichmentResponse(
+        request_id="enrich-2",
+        status="success",
+        candidates=[
+            CandidateEnrichmentResult(
+                place_id="1",
+                name="종묘",
+                latitude=37.5739,
+                longitude=126.9945,
+                status="success",
+                concentration=[
+                    ConcentrationForecastData(
+                        place_name="종묘 [유네스코 세계유산]",
+                        forecast_date="2026-08-09",
+                        concentration_rate=42.0,
+                        concentration_level="normal",
+                        concentration_label="보통",
+                    )
+                ],
+            ),
+            CandidateEnrichmentResult(
+                place_id="2",
+                name="이름없는 카페",
+                latitude=37.5748,
+                longitude=126.9955,
+                status="success",
+                concentration=[
+                    ConcentrationForecastData(
+                        place_name="종묘 [유네스코 세계유산]",
+                        forecast_date="2026-08-09",
+                        concentration_rate=42.0,
+                        concentration_level="normal",
+                        concentration_label="보통",
+                        is_proxy=True,
+                        proxy_place_name="종묘 [유네스코 세계유산]",
+                        proxy_distance_km=0.15,
+                    )
+                ],
+            ),
+        ],
+    )
+
+    debug = build_candidate_enrichment_execution_debug(response, latency_ms=180)
+
+    assert debug is not None
+    assert debug.candidate_status_counts == {"success": 2}
+    direct, proxied = debug.candidate_concentration
+    assert (direct.name, direct.is_proxy, direct.proxy_place_name) == ("종묘", False, None)
+    assert (proxied.name, proxied.is_proxy) == ("이름없는 카페", True)
+    assert proxied.proxy_place_name == "종묘 [유네스코 세계유산]"
+    assert proxied.proxy_distance_km == 0.15
