@@ -31,6 +31,20 @@ class ConcentrationMappingRepository(Protocol):
     ) -> tuple[StoredPlaceLocation, ...]: ...
 
 
+class PlaceDetailsReadRepository(Protocol):
+    """content_id로 상세 행만 읽는 읽기 전용 계약.
+
+    동기화용 PlaceRepository와 분리한 이유는 소비자가 읽기만 하기 때문이다 —
+    카드 조립처럼 조회만 하는 쪽이 동기화 메서드 전부를 구현한 저장소를 요구하면
+    fake를 만들 때 쓰지도 않는 메서드를 채워야 한다.
+    """
+
+    async def get_active_place_details(
+        self,
+        content_ids: Sequence[str],
+    ) -> dict[str, StoredPlaceDetail]: ...
+
+
 class PlaceRepository(Protocol):
     async def create_sync_run(self, area_code: str, district_code: str) -> UUID: ...
 

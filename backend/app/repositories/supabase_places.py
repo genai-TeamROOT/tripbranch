@@ -53,6 +53,16 @@ _DETAIL_COLUMNS = ",".join(
         "detail_fetch_status",
         "detail_fetched_at",
         "source_modified_at",
+        # 추천 카드용 컬럼(D-056). 분류 코드는 카테고리 라벨, 주차·이미지는 배지와
+        # 썸네일에 쓴다. 상세 배치 조회는 이미 장소당 1행이라 컬럼을 늘려도
+        # 요청 수는 그대로다.
+        "lcls_systm1",
+        "lcls_systm2",
+        "lcls_systm3",
+        "parking_info_raw",
+        "parking_fee_raw",
+        "first_image_url",
+        "thumbnail_url",
     )
 )
 _VALID_RUN_STATUSES = {"success", "partial_failure", "failed"}
@@ -503,6 +513,13 @@ class SupabasePlaceRepository:
                     source_modified_at=_parse_datetime(
                         raw.get("source_modified_at"), "source_modified_at"
                     ),
+                    lcls_systm1=_optional_text(raw.get("lcls_systm1")),
+                    lcls_systm2=_optional_text(raw.get("lcls_systm2")),
+                    lcls_systm3=_optional_text(raw.get("lcls_systm3")),
+                    parking_info_raw=_optional_text(raw.get("parking_info_raw")),
+                    parking_fee_raw=_optional_text(raw.get("parking_fee_raw")),
+                    first_image_url=_optional_text(raw.get("first_image_url")),
+                    thumbnail_url=_optional_text(raw.get("thumbnail_url")),
                 )
         return details
 

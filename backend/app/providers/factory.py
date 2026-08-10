@@ -32,8 +32,12 @@ from app.providers.real_place import RealPlaceProvider
 from app.providers.stub import FakeLLMProvider, FakePlaceProvider, FakeWeatherProvider
 from app.providers.supabase_place_details import SupabasePlaceDetailsProvider
 from app.providers.weather import RealWeatherProvider
-from app.repositories.fake_places import FakePlaceLocationRepository
+from app.repositories.fake_places import (
+    FakePlaceDetailsRepository,
+    FakePlaceLocationRepository,
+)
 from app.repositories.supabase_places import SupabasePlaceRepository
+from app.tools.recommendation_cards import RecommendationCardTool
 
 
 def _require_key(value: str, variable_name: str) -> str:
@@ -149,6 +153,27 @@ def get_place_details_provider(client: httpx.AsyncClient) -> PlaceDetailsProvide
             )
         )
     return get_place_provider(client)
+
+
+def get_recommendation_card_tool(
+    client: httpx.AsyncClient,
+) -> RecommendationCardTool:
+    """추천 카드 조립 Tool을 places 저장소와 함께 준비한다.
+
+    카드 정보는 전부 동기화된 places 행에서 오므로 PLACE_DETAILS_SOURCE가 아니라
+    Supabase 설정 유무로만 갈린다 — TourAPI 직접 조회 경로에는 대응 데이터가 없다.
+    설정이 없는 개발·테스트 환경은 fake 저장소를 쓴다.
+    """
+    if not settings.supabase_url.strip() or not settings.supabase_secret_key.strip():
+        return RecommendationCardTool(FakePlaceDetailsRepository())
+    return RecommendationCardTool(
+        SupabasePlaceRepository(
+            supabase_url=settings.supabase_url,
+            secret_key=settings.supabase_secret_key,
+            client=client,
+            timeout_seconds=settings.external_api_timeout_seconds,
+        )
+    )
 
 
 def get_festival_provider(client: httpx.AsyncClient) -> FestivalProvider:

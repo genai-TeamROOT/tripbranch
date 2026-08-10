@@ -225,6 +225,17 @@ class StoredPlaceDetail:
     detail_fetch_status: str
     detail_fetched_at: datetime | None
     source_modified_at: datetime | None
+    # 아래 필드는 추천 카드 조립(app.tools.recommendation_cards)이 쓴다. 분류 코드는
+    # 카테고리 라벨을, 주차·이미지는 카드 배지와 썸네일을 채운다(D-056).
+    lcls_systm1: str | None = None
+    lcls_systm2: str | None = None
+    lcls_systm3: str | None = None
+    parking_info_raw: str | None = None
+    parking_fee_raw: str | None = None
+    # 이미지는 detail_fetched_at이 아니라 list_fetched_at 주기를 따른다 — 상세조회가
+    # 실패한 장소에서도 채워져 있을 수 있다.
+    first_image_url: str | None = None
+    thumbnail_url: str | None = None
 
 
 @dataclass(frozen=True)
