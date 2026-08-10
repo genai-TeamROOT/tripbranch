@@ -30,8 +30,11 @@ from app.agent_context.schemas import (
 from app.schemas import RecommendationItem, RecommendationResponse, UserConditions
 from app.services.runtime.info_context_schemas import (
     ConcentrationInfoResult,
+    EventInfoResult,
+    EventItem,
     InfoContextRequest,
     InfoContextResponse,
+    PlaceInfoResult,
 )
 from app.state.schema import now_kst
 
@@ -40,6 +43,20 @@ from app.state.schema import now_kst
 # fallback 성공(is_proxy=True)으로 시뮬레이션한다 — 실제 오케스트레이션은 C 구현.
 _FAKE_ATTRACTION_NAMES = ("경복궁", "창덕궁", "종묘", "인사동", "광화문", "북촌한옥마을")
 _FAKE_NEAREST_ATTRACTION = "경복궁"
+
+# concentration 외 question_type(D-054)의 고정 fields — 키는
+# info-question-types-handoff.md의 question_type별 fields 표를 그대로 따른다.
+_FAKE_PLACE_FIELDS_BY_QUESTION_TYPE: dict[str, dict[str, str]] = {
+    "operating_hours": {"operating_hours": "09:00~18:00", "rest_date": "매주 월요일"},
+    "fee": {"fee": "성인 3,000원"},
+    "parking": {"parking": "가능", "parking_fee": "무료"},
+    "facility": {"baby_carriage": "가능", "restroom": "있음"},
+    "location_info": {"address": "서울특별시 종로구 사직로 161"},
+    "general_info": {
+        "overview": "조선 왕조의 법궁으로 1395년에 창건된 궁궐이다.",
+        "homepage": "http://www.royalpalace.go.kr",
+    },
+}
 
 _FAKE_CANDIDATES = (
     PlaceCandidate(
@@ -168,6 +185,12 @@ class FakeToolProvider:
         place_name이 없으면 needs_clarification, 알려진 관광지면 직접 성공,
         그 외(카페 등)는 근접치 fallback 성공을 시뮬레이션한다. 실제 장소
         해석·근접치 탐색 오케스트레이션은 C 내부 구현(A는 하지 않음).
+
+        question_type=concentration은 위 흐름 그대로다. 그 외 7종(D-054/D-055,
+        backend/docs/package-a/info-question-types-handoff.md)은 알려진
+        관광지면 고정 fields/event를 채운 성공 응답을, 그 외는 no_data를
+        반환한다 — C처럼 근접치 fallback을 흉내 내지는 않는다(그 오케스트레이션
+        자체가 C 내부 책임이라 A 쪽 Fake에서 재현할 필요가 없다).
         """
         if not request.place_name:
             return InfoContextResponse(
@@ -179,6 +202,11 @@ class FakeToolProvider:
                     candidates=[],
                 ),
             )
+
+        if request.question_type == "event":
+            return self._fake_event_info(request)
+        if request.question_type != "concentration":
+            return self._fake_place_info(request)
 
         if request.place_name in _FAKE_ATTRACTION_NAMES:
             return InfoContextResponse(
@@ -208,6 +236,77 @@ class FakeToolProvider:
                 concentration_rate=58.0,
                 concentration_level="slightly_crowded",
                 concentration_label="다소 혼잡",
+            ),
+        )
+
+    def _fake_place_info(self, request: InfoContextRequest) -> InfoContextResponse:
+        if request.place_name not in _FAKE_ATTRACTION_NAMES:
+            return InfoContextResponse(
+                request_id=request.request_id,
+                status="success",
+                result=PlaceInfoResult(
+                    status="no_data",
+                    question_type=request.question_type,
+                    requested_place_name=request.place_name,
+                    resolved_place_name=request.place_name,
+                    fields={},
+                ),
+            )
+
+        fields = _FAKE_PLACE_FIELDS_BY_QUESTION_TYPE.get(request.question_type, {})
+        return InfoContextResponse(
+            request_id=request.request_id,
+            status="success",
+            result=PlaceInfoResult(
+                status="success",
+                question_type=request.question_type,
+                requested_place_name=request.place_name,
+                resolved_place_name=request.place_name,
+                place_id="fake-place-id",
+                fields=dict(fields),
+            ),
+        )
+
+    def _fake_event_info(self, request: InfoContextRequest) -> InfoContextResponse:
+        if request.place_name not in _FAKE_ATTRACTION_NAMES:
+            return InfoContextResponse(
+                request_id=request.request_id,
+                status="success",
+                result=EventInfoResult(
+                    status="no_data",
+                    requested_place_name=request.place_name,
+                    resolved_place_name=request.place_name,
+                    reference_date=request.visit_time or now_kst().date().isoformat(),
+                ),
+            )
+
+        return InfoContextResponse(
+            request_id=request.request_id,
+            status="success",
+            result=EventInfoResult(
+                status="success",
+                requested_place_name=request.place_name,
+                resolved_place_name=request.place_name,
+                reference_date=request.visit_time or now_kst().date().isoformat(),
+                events=[
+                    EventItem(
+                        title=f"{request.place_name} 별빛야행",
+                        start_date="2026-08-01",
+                        end_date="2026-08-31",
+                        address=f"서울특별시 종로구 {request.place_name}",
+                        distance_km=0.0,
+                        is_direct_match=True,
+                    ),
+                    EventItem(
+                        title="종로구 전통문화행사",
+                        start_date="2026-08-01",
+                        end_date="2026-08-10",
+                        address="서울특별시 종로구",
+                        distance_km=0.21,
+                        is_direct_match=False,
+                    ),
+                ],
+                has_direct_match=True,
             ),
         )
 

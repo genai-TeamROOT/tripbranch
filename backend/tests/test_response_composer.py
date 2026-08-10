@@ -23,10 +23,18 @@ from app.schemas import (
     Severity,
 )
 from app.services.runtime.context_schemas import Clarification
-from app.services.runtime.info_context_schemas import ConcentrationInfoResult, InfoContextResponse
+from app.services.runtime.info_context_schemas import (
+    ConcentrationInfoResult,
+    EventInfoResult,
+    EventItem,
+    InfoContextResponse,
+    PlaceInfoResult,
+)
 from app.services.runtime.response_composer import (
     compose_chat_message,
+    compose_event_info_message,
     compose_info_concentration_message,
+    compose_place_info_message,
     compose_recommendation_message,
     compose_schedule_message,
 )
@@ -476,9 +484,7 @@ class TestComposeInfoConcentrationMessage:
                 concentration_label="한적함",
             ),
         )
-        message = await compose_chat_message(
-            llm_output, info_concentration_response=response, llm=_StubLLM()
-        )
+        message = await compose_chat_message(llm_output, info_response=response, llm=_StubLLM())
         assert "한적함" in message
 
     @pytest.mark.asyncio
@@ -486,3 +492,278 @@ class TestComposeInfoConcentrationMessage:
         llm_output = LLMOutput(intent=Intent.INFO, status=OutputStatus.COMPLETE)
         message = await compose_chat_message(llm_output, llm=_StubLLM())
         assert "준비 중" in message
+
+
+class TestComposePlaceInfoMessage:
+    """D-054 A 배선 — concentration/event를 제외한 6종 question_type."""
+
+    def test_success_renders_fields_with_labels(self) -> None:
+        response = InfoContextResponse(
+            request_id="r8",
+            status="success",
+            result=PlaceInfoResult(
+                status="success",
+                question_type="operating_hours",
+                requested_place_name="경복궁",
+                resolved_place_name="경복궁",
+                fields={"operating_hours": "09:00~18:00", "rest_date": "매주 화요일"},
+            ),
+        )
+        message = compose_place_info_message(response)
+        assert "09:00~18:00" in message
+        assert "매주 화요일" in message
+        assert "경복궁" in message
+
+    def test_operating_hours_is_a_natural_sentence_not_label_value(self) -> None:
+        response = InfoContextResponse(
+            request_id="r8b",
+            status="success",
+            result=PlaceInfoResult(
+                status="success",
+                question_type="operating_hours",
+                requested_place_name="경복궁",
+                resolved_place_name="경복궁",
+                fields={"operating_hours": "09:00~18:00", "rest_date": "매주 화요일"},
+            ),
+        )
+        message = compose_place_info_message(response)
+        assert message == "경복궁 운영시간은 09:00~18:00예요. 휴무일은 매주 화요일예요."
+        assert "운영시간:" not in message
+
+    def test_fee_is_a_natural_sentence(self) -> None:
+        response = InfoContextResponse(
+            request_id="r8c",
+            status="success",
+            result=PlaceInfoResult(
+                status="success",
+                question_type="fee",
+                requested_place_name="경복궁",
+                resolved_place_name="경복궁",
+                fields={"fee": "성인 3,000원"},
+            ),
+        )
+        message = compose_place_info_message(response)
+        assert message == "경복궁 입장료는 성인 3,000원예요."
+
+    def test_parking_is_a_natural_sentence_value_untouched(self) -> None:
+        """값 자체("가능 (승용차 240대 / 버스 50대)")는 파싱하지 않고 그대로 감싼다."""
+        response = InfoContextResponse(
+            request_id="r8d",
+            status="success",
+            result=PlaceInfoResult(
+                status="success",
+                question_type="parking",
+                requested_place_name="경복궁",
+                resolved_place_name="경복궁",
+                fields={
+                    "parking": "가능 (승용차 240대 / 버스 50대)",
+                    "parking_fee": "무료",
+                },
+            ),
+        )
+        message = compose_place_info_message(response)
+        assert message == (
+            "경복궁 주차는 가능 (승용차 240대 / 버스 50대)이에요. 주차 요금은 무료예요."
+        )
+
+    def test_facility_joins_present_fields_into_one_sentence(self) -> None:
+        response = InfoContextResponse(
+            request_id="r8e",
+            status="success",
+            result=PlaceInfoResult(
+                status="success",
+                question_type="facility",
+                requested_place_name="경복궁",
+                resolved_place_name="경복궁",
+                fields={"baby_carriage": "가능", "restroom": "있음"},
+            ),
+        )
+        message = compose_place_info_message(response)
+        assert message == "경복궁의 편의시설이에요. 유모차 대여는 가능, 화장실은 있음예요."
+
+    def test_location_info_is_a_natural_sentence(self) -> None:
+        response = InfoContextResponse(
+            request_id="r8f",
+            status="success",
+            result=PlaceInfoResult(
+                status="success",
+                question_type="location_info",
+                requested_place_name="종묘",
+                resolved_place_name="종묘",
+                fields={"address": "서울특별시 종로구 종로 157"},
+            ),
+        )
+        message = compose_place_info_message(response)
+        assert message == "종묘 주소는 서울특별시 종로구 종로 157예요."
+
+    def test_general_info_shows_overview_raw_without_summarizing(self) -> None:
+        """사용자 결정: overview는 LLM 요약 없이 원문 그대로 노출한다."""
+        overview = "조선 왕조의 법궁으로 1395년에 창건된 궁궐이다." * 3
+        response = InfoContextResponse(
+            request_id="r9",
+            status="success",
+            result=PlaceInfoResult(
+                status="success",
+                question_type="general_info",
+                requested_place_name="경복궁",
+                resolved_place_name="경복궁",
+                fields={"overview": overview, "homepage": "http://www.royalpalace.go.kr"},
+            ),
+        )
+        message = compose_place_info_message(response)
+        assert overview in message
+        assert "http://www.royalpalace.go.kr" in message
+        assert message.startswith("경복궁 소개예요. ")
+        assert message.endswith("홈페이지는 http://www.royalpalace.go.kr예요.")
+
+    def test_no_data_names_the_question_type_not_generic_unavailable(self) -> None:
+        response = InfoContextResponse(
+            request_id="r10",
+            status="success",
+            result=PlaceInfoResult(
+                status="no_data",
+                question_type="parking",
+                requested_place_name="경복궁",
+                resolved_place_name="경복궁",
+                fields={},
+            ),
+        )
+        message = compose_place_info_message(response)
+        assert "경복궁" in message
+        assert "주차" in message
+
+    def test_unavailable_uses_shared_unavailable_message(self) -> None:
+        response = InfoContextResponse(request_id="r11", status="unavailable")
+        message = compose_place_info_message(response)
+        assert "잠시 후 다시" in message
+
+    def test_needs_clarification_reuses_place_required_template(self) -> None:
+        response = InfoContextResponse(
+            request_id="r12",
+            status="needs_clarification",
+            clarification=Clarification(code="place_required", missing_fields=["place_name"]),
+        )
+        assert compose_place_info_message(response) == "어떤 장소에 대해 알고 싶으신가요?"
+
+    @pytest.mark.asyncio
+    async def test_compose_chat_message_dispatches_to_place_composer(self) -> None:
+        llm_output = LLMOutput(intent=Intent.INFO, status=OutputStatus.COMPLETE)
+        response = InfoContextResponse(
+            request_id="r13",
+            status="success",
+            result=PlaceInfoResult(
+                status="success",
+                question_type="fee",
+                requested_place_name="경복궁",
+                resolved_place_name="경복궁",
+                fields={"fee": "성인 3,000원"},
+            ),
+        )
+        message = await compose_chat_message(llm_output, info_response=response, llm=_StubLLM())
+        assert "성인 3,000원" in message
+
+
+class TestComposeEventInfoMessage:
+    """D-055 A 배선 — is_direct_match=False인 행사를 그 장소의 행사로 말하지 않는다."""
+
+    def test_direct_match_and_nearby_are_worded_differently(self) -> None:
+        response = InfoContextResponse(
+            request_id="r14",
+            status="success",
+            result=EventInfoResult(
+                status="success",
+                requested_place_name="경복궁",
+                resolved_place_name="경복궁",
+                reference_date="2026-08-10",
+                events=[
+                    EventItem(
+                        title="경복궁 별빛야행",
+                        start_date="2026-08-01",
+                        end_date="2026-08-31",
+                        distance_km=0.0,
+                        is_direct_match=True,
+                    ),
+                    EventItem(
+                        title="종로구 전통문화행사",
+                        start_date="2026-08-01",
+                        end_date="2026-08-10",
+                        distance_km=0.21,
+                        is_direct_match=False,
+                    ),
+                ],
+                has_direct_match=True,
+            ),
+        )
+        message = compose_event_info_message(response)
+        assert "경복궁에서 진행 중인 행사예요. 경복궁 별빛야행" in message
+        assert "경복궁 근처에서 진행 중인 행사예요. 종로구 전통문화행사(0.21km)" in message
+        # 근처 행사를 그 장소의 행사처럼 말하지 않는다(D-055 필수 규칙).
+        assert "경복궁에서 진행 중인 행사예요. 종로구 전통문화행사" not in message
+
+    def test_only_nearby_events_never_claims_direct(self) -> None:
+        response = InfoContextResponse(
+            request_id="r15",
+            status="success",
+            result=EventInfoResult(
+                status="success",
+                requested_place_name="경복궁",
+                resolved_place_name="경복궁",
+                events=[
+                    EventItem(
+                        title="종로구 전통문화행사",
+                        start_date="2026-08-01",
+                        end_date="2026-08-10",
+                        distance_km=0.21,
+                        is_direct_match=False,
+                    ),
+                ],
+                has_direct_match=False,
+            ),
+        )
+        message = compose_event_info_message(response)
+        assert "근처에서 진행 중인 행사예요" in message
+        assert "경복궁에서 진행 중인 행사예요" not in message
+
+    def test_no_events_says_none_in_progress(self) -> None:
+        response = InfoContextResponse(
+            request_id="r16",
+            status="success",
+            result=EventInfoResult(
+                status="no_data",
+                requested_place_name="경복궁",
+                resolved_place_name="경복궁",
+                events=[],
+            ),
+        )
+        message = compose_event_info_message(response)
+        assert "행사가 없어요" in message
+
+    def test_unavailable_uses_shared_unavailable_message(self) -> None:
+        response = InfoContextResponse(request_id="r17", status="unavailable")
+        message = compose_event_info_message(response)
+        assert "잠시 후 다시" in message
+
+    @pytest.mark.asyncio
+    async def test_compose_chat_message_dispatches_to_event_composer(self) -> None:
+        llm_output = LLMOutput(intent=Intent.INFO, status=OutputStatus.COMPLETE)
+        response = InfoContextResponse(
+            request_id="r18",
+            status="success",
+            result=EventInfoResult(
+                status="success",
+                requested_place_name="경복궁",
+                resolved_place_name="경복궁",
+                events=[
+                    EventItem(
+                        title="경복궁 별빛야행",
+                        start_date="2026-08-01",
+                        end_date="2026-08-31",
+                        distance_km=0.0,
+                        is_direct_match=True,
+                    ),
+                ],
+                has_direct_match=True,
+            ),
+        )
+        message = await compose_chat_message(llm_output, info_response=response, llm=_StubLLM())
+        assert "경복궁 별빛야행" in message
