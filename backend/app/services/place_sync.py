@@ -9,6 +9,7 @@ from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from time import monotonic
 from uuid import UUID
 
 from app.domain.models import (
@@ -26,10 +27,13 @@ from app.domain.operating_hours import (
 )
 from app.errors import ProviderTimeoutError, ProviderUnavailableError
 from app.providers.protocols import TourAreaPlaceProvider
+from app.providers.upstream_errors import is_daily_quota_exceeded
 from app.repositories.protocols import PlaceRepository
 
 _ERROR_TIMEOUT = "TOUR_DETAIL_TIMEOUT"
 _ERROR_RATE_LIMITED = "TOUR_DETAIL_RATE_LIMITED"
+# 일일 한도는 초당 한도와 대응이 반대다 — 재시도해도 그날 안에는 성공하지 않는다.
+_ERROR_QUOTA_EXCEEDED = "TOUR_DETAIL_QUOTA_EXCEEDED"
 _ERROR_UNAVAILABLE = "TOUR_DETAIL_UNAVAILABLE"
 _ERROR_INVALID_RESPONSE = "TOUR_DETAIL_INVALID_RESPONSE"
 _ERROR_UNKNOWN = "TOUR_DETAIL_UNKNOWN"
@@ -37,6 +41,19 @@ _ERROR_UNKNOWN = "TOUR_DETAIL_UNKNOWN"
 
 class IncompletePlaceListError(RuntimeError):
     """지역 목록의 페이지·건수·식별자 완전성 검증이 실패했다."""
+
+
+class DailyQuotaExceededError(RuntimeError):
+    """상세조회 중 외부 API의 일일 요청 한도가 소진됐다.
+
+    남은 대상은 시도조차 하지 않고 중단한다. 아직 부르지 않은 장소를 실패로 기록하면
+    "그 장소의 상세정보가 없다"와 "오늘 못 불렀다"가 구분되지 않는다 — 기존 상태를
+    그대로 두면 다음 실행에서 같은 규칙으로 다시 대상이 된다.
+    """
+
+    def __init__(self, content_id: str) -> None:
+        super().__init__(f"일일 요청 한도 소진 (content_id={content_id})")
+        self.content_id = content_id
 
 
 @dataclass(frozen=True)
@@ -135,6 +152,7 @@ class PlaceSyncService:
         page_size: int = 100,
         detail_concurrency: int = 5,
         detail_ttl_days: int = 30,
+        detail_min_interval_seconds: float = 0.0,
         retry_count: int = 2,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         now: Callable[[], datetime] | None = None,
@@ -145,6 +163,8 @@ class PlaceSyncService:
             raise ValueError("detail_concurrency는 1 이상이어야 합니다.")
         if detail_ttl_days < 1:
             raise ValueError("detail_ttl_days는 1 이상이어야 합니다.")
+        if detail_min_interval_seconds < 0:
+            raise ValueError("detail_min_interval_seconds는 0 이상이어야 합니다.")
         if retry_count < 0:
             raise ValueError("retry_count는 0 이상이어야 합니다.")
         self._provider = provider
@@ -152,6 +172,7 @@ class PlaceSyncService:
         self._page_size = page_size
         self._detail_concurrency = detail_concurrency
         self._detail_ttl = timedelta(days=detail_ttl_days)
+        self._detail_min_interval = detail_min_interval_seconds
         self._retry_count = retry_count
         self._sleep = sleep
         self._now = now or (lambda: datetime.now(UTC))
@@ -420,7 +441,8 @@ class PlaceSyncService:
             updated_count=updated_count,
             deactivated_count=deactivated_count,
             detail_target_count=len(detail_targets),
-            detail_attempted_count=len(attempted_targets),
+            # 계획한 수가 아니라 실제로 부른 수다 — 일일 한도로 중단하면 적다.
+            detail_attempted_count=len(outcomes),
             reparse_count=len(reparse_targets),
             error_summary=dict(error_summary),
         )
@@ -521,22 +543,59 @@ class PlaceSyncService:
         targets: Sequence[TourPlaceRecord],
         report: Callable[[str, int, int], None] | None = None,
     ) -> list[_DetailOutcome]:
+        """상세조회 결과를 모은다. 시도하지 않은 장소는 결과에 넣지 않는다.
+
+        일일 한도가 소진되면 남은 장소를 부르지 않고 건너뛴다 — 결과 개수가 대상
+        개수보다 적은 것이 "오늘 여기까지 했다"는 표시다. 건너뛴 장소를 실패로
+        기록하지 않으므로 기존 상태가 유지되고, 다음 실행에서 같은 규칙으로 다시
+        대상이 된다.
+        """
         semaphore = asyncio.Semaphore(self._detail_concurrency)
+        throttle_lock = asyncio.Lock()
         completed = 0
         total = len(targets)
+        next_allowed = 0.0
+        quota_exhausted = False
         if report is not None:
             report("details", 0, total)
 
-        async def fetch(place: TourPlaceRecord) -> _DetailOutcome:
-            nonlocal completed
+        async def throttle() -> None:
+            """호출 간 최소 간격을 지킨다.
+
+            동시성만으로는 속도를 잡을 수 없다 — 응답이 100ms대라 동시성 1에서도
+            초당 8회쯤 나간다(2026-08-10 실측). 간격이 0이면 아무것도 하지 않아
+            기존 동작 그대로다.
+            """
+            nonlocal next_allowed
+            if self._detail_min_interval <= 0:
+                return
+            async with throttle_lock:
+                now = monotonic()
+                wait = next_allowed - now
+                if wait > 0:
+                    await self._sleep(wait)
+                next_allowed = max(now, next_allowed) + self._detail_min_interval
+
+        async def fetch(place: TourPlaceRecord) -> _DetailOutcome | None:
+            nonlocal completed, quota_exhausted
             async with semaphore:
-                outcome = await self._fetch_detail_with_retry(place)
+                if quota_exhausted:
+                    return None
+                await throttle()
+                try:
+                    outcome = await self._fetch_detail_with_retry(place)
+                except DailyQuotaExceededError:
+                    quota_exhausted = True
+                    outcome = _DetailOutcome(
+                        place.content_id, None, None, None, _ERROR_QUOTA_EXCEEDED
+                    )
             completed += 1
             if report is not None:
                 report("details", completed, total)
             return outcome
 
-        return list(await asyncio.gather(*(fetch(place) for place in targets)))
+        results = await asyncio.gather(*(fetch(place) for place in targets))
+        return [outcome for outcome in results if outcome is not None]
 
     async def _fetch_detail_with_retry(
         self,
@@ -563,6 +622,10 @@ class PlaceSyncService:
                 error_code = _ERROR_TIMEOUT
             except ProviderUnavailableError as exc:
                 detail = str(exc.details or "")
+                if is_daily_quota_exceeded(detail):
+                    # 재시도하지 않고 즉시 올린다. 그날 안에는 무엇을 해도 실패하는데,
+                    # 계속 던지면 남은 대상까지 같은 실패를 반복하며 한도만 더 태운다.
+                    raise DailyQuotaExceededError(place.content_id) from None
                 error_code = (
                     _ERROR_RATE_LIMITED if "429" in detail else _ERROR_UNAVAILABLE
                 )

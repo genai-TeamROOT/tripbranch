@@ -110,6 +110,10 @@ class Settings(BaseSettings):
     # Place synchronization policy.
     place_sync_page_size: int = 100
     place_sync_detail_concurrency: int = 5
+    # 상세조회 호출 간 최소 간격(초). 0이면 간격을 두지 않는다(기존 동작).
+    # TourAPI는 초당 한도와 일일 한도를 따로 두는데, detailIntro2 응답이 100ms대라
+    # 동시성만으로는 초당 속도를 잡을 수 없다 — 대량 재조회 때만 올려 쓴다.
+    place_sync_detail_min_interval_seconds: float = 0.0
     place_sync_detail_ttl_days: int = 30
     place_sync_area_code: str = "11"
     place_sync_district_code: str = "110"

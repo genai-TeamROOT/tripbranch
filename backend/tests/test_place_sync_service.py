@@ -14,7 +14,7 @@ from app.domain.models import (
     TourPlaceRecord,
 )
 from app.domain.operating_hours import OPERATING_PARSER_VERSION
-from app.errors import ProviderTimeoutError
+from app.errors import ProviderTimeoutError, ProviderUnavailableError
 from app.services.place_sync import PlaceSyncService
 
 RUN_ID = UUID("11111111-1111-4111-8111-111111111111")
@@ -540,3 +540,157 @@ async def test_on_progress_reports_detail_completion() -> None:
     detail_progress = [item for item in seen if item[0] == "details"]
     assert detail_progress[0] == ("details", 0, 3)
     assert detail_progress[-1] == ("details", 3, 3)
+
+
+class QuotaExhaustedProvider(FakeAreaProvider):
+    """N번째 상세조회부터 일일 한도 소진 응답을 돌려주는 provider.
+
+    TourAPI는 초당 한도(23)와 일일 한도(22)를 같은 HTTP 429로 내리고 본문
+    returnReasonCode로만 구분한다(2026-08-10 실측).
+    """
+
+    def __init__(self, places, *, fail_from: int) -> None:
+        super().__init__(places)
+        self._fail_from = fail_from
+
+    async def get_operating_details(self, content_id: str, content_type_id: str):
+        if len(self.detail_calls) >= self._fail_from:
+            self.detail_calls.append(content_id)
+            raise ProviderUnavailableError(
+                "TourAPI",
+                detail=(
+                    "HTTP 429, errMsg=LIMITED_NUMBER_OF_SERVICE_REQUESTS_EXCEEDS_ERROR,"
+                    " returnReasonCode=22, returnAuthMsg=일일 서비스 요청제한 횟수 초과 에러"
+                ),
+            )
+        return await super().get_operating_details(content_id, content_type_id)
+
+
+@pytest.mark.asyncio
+async def test_일일_한도를_만나면_남은_대상을_부르지_않는다() -> None:
+    """소진된 뒤에도 계속 던지면 한도만 더 태운다.
+
+    2026-08-10에 이 구분이 없어 142건을 재시도까지 3회씩 던졌다.
+    """
+    provider = QuotaExhaustedProvider([_place(i) for i in range(10)], fail_from=3)
+    repository = FakePlaceRepository()
+    service = PlaceSyncService(provider, repository, detail_concurrency=1, now=lambda: NOW)
+
+    result = await service.sync("11", "110")
+
+    # 4번째에서 소진 — 그 뒤로는 호출하지 않는다.
+    assert len(provider.detail_calls) == 4
+    assert result.detail_target_count == 10
+    assert result.detail_attempted_count == 4
+    assert result.error_summary == {"TOUR_DETAIL_QUOTA_EXCEEDED": 1}
+
+
+@pytest.mark.asyncio
+async def test_일일_한도로_건너뛴_장소는_실패로_기록하지_않는다() -> None:
+    """아직 부르지도 않은 장소를 failed로 남기면 "정보가 없다"와 구분되지 않는다."""
+    provider = QuotaExhaustedProvider([_place(i) for i in range(10)], fail_from=3)
+    repository = FakePlaceRepository()
+    service = PlaceSyncService(provider, repository, detail_concurrency=1, now=lambda: NOW)
+
+    await service.sync("11", "110")
+
+    # 소진을 만난 그 한 건만 실패로 남는다.
+    assert [content_id for content_id, _ in repository.detail_failures] == ["3"]
+
+
+@pytest.mark.asyncio
+async def test_일일_한도는_재시도하지_않는다() -> None:
+    """초당 한도와 달리 재시도가 무의미하다."""
+    provider = QuotaExhaustedProvider([_place(0)], fail_from=0)
+    service = PlaceSyncService(
+        provider, FakePlaceRepository(), retry_count=2, now=lambda: NOW
+    )
+
+    await service.sync("11", "110")
+
+    assert len(provider.detail_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_초당_한도는_기존대로_재시도한다() -> None:
+    """reasonCode 23은 쉬었다 부르면 성공하므로 구분해서 다뤄야 한다."""
+
+    class PerSecondLimitProvider(FakeAreaProvider):
+        async def get_operating_details(self, content_id: str, content_type_id: str):
+            self.detail_calls.append(content_id)
+            raise ProviderUnavailableError(
+                "TourAPI",
+                detail=(
+                    "HTTP 429, errMsg=LIMITED_NUMBER_OF_SERVICE_REQUESTS_PER_SECOND"
+                    "_EXCEEDS_ERROR, returnReasonCode=23"
+                ),
+            )
+
+    provider = PerSecondLimitProvider([_place(0)])
+    service = PlaceSyncService(
+        provider,
+        FakePlaceRepository(),
+        retry_count=2,
+        sleep=_no_sleep,
+        now=lambda: NOW,
+    )
+
+    result = await service.sync("11", "110")
+
+    assert len(provider.detail_calls) == 3
+    assert result.error_summary == {"TOUR_DETAIL_RATE_LIMITED": 1}
+
+
+@pytest.mark.asyncio
+async def test_최소_간격을_두면_호출_사이에_대기한다() -> None:
+    """동시성만으로는 초당 속도를 잡을 수 없다 — 응답이 빠르면 그만큼 빨리 나간다."""
+    slept: list[float] = []
+
+    async def record_sleep(delay: float) -> None:
+        slept.append(delay)
+
+    provider = FakeAreaProvider([_place(i) for i in range(3)])
+    service = PlaceSyncService(
+        provider,
+        FakePlaceRepository(),
+        detail_concurrency=1,
+        detail_min_interval_seconds=0.5,
+        sleep=record_sleep,
+        now=lambda: NOW,
+    )
+
+    await service.sync("11", "110")
+
+    # 첫 호출은 대기 없이 나가고, 이후 호출마다 간격을 지킨다.
+    assert len(slept) == 2
+    assert all(delay > 0 for delay in slept)
+
+
+@pytest.mark.asyncio
+async def test_간격이_0이면_대기하지_않는다() -> None:
+    """기본값이라 남의 실행 속도를 늦추지 않는다."""
+    slept: list[float] = []
+
+    async def record_sleep(delay: float) -> None:
+        slept.append(delay)
+
+    service = PlaceSyncService(
+        FakeAreaProvider([_place(i) for i in range(3)]),
+        FakePlaceRepository(),
+        detail_concurrency=1,
+        sleep=record_sleep,
+        now=lambda: NOW,
+    )
+
+    await service.sync("11", "110")
+
+    assert slept == []
+
+
+def test_음수_간격은_거부한다() -> None:
+    with pytest.raises(ValueError):
+        PlaceSyncService(
+            FakeAreaProvider([]),
+            FakePlaceRepository(),
+            detail_min_interval_seconds=-0.1,
+        )
