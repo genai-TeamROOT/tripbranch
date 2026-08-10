@@ -33,6 +33,34 @@ _ERROR_KEYS = (
 )
 _MAX_FALLBACK_CHARS = 200
 
+# data.go.kr이 트래픽 초과를 두 종류로 나눠 내려준다. 둘 다 HTTP 429라 상태 코드로는
+# 구분되지 않는다(2026-08-10 실측).
+#   22 LIMITED_NUMBER_OF_SERVICE_REQUESTS_EXCEEDS_ERROR            일일 한도
+#   23 LIMITED_NUMBER_OF_SERVICE_REQUESTS_PER_SECOND_EXCEEDS_ERROR 초당 한도
+# 구분이 중요한 이유는 대응이 반대이기 때문이다 — 초당 한도는 쉬었다 다시 부르면
+# 성공하지만, 일일 한도는 그날 안에는 무엇을 해도 실패한다. 뭉뚱그리면 소진된 뒤에도
+# 재시도를 계속 던져 한도를 더 빨리 태운다.
+DAILY_QUOTA_REASON_CODE = "22"
+PER_SECOND_LIMIT_REASON_CODE = "23"
+_REASON_CODE_PATTERN = re.compile(r'[<"]returnReasonCode[>"]\s*:?\s*"?(\d+)')
+
+
+def upstream_reason_code(detail: str) -> str | None:
+    """`upstream_error_detail()`이 만든 문자열에서 returnReasonCode만 되찾는다.
+
+    provider가 예외를 던질 때 이미 detail 문자열로 눌러 담기 때문에, 소비 측은
+    응답 객체가 아니라 그 문자열에서 코드를 읽어야 한다.
+    """
+    match = _REASON_CODE_PATTERN.search(detail) or re.search(
+        r"returnReasonCode=(\d+)", detail
+    )
+    return match.group(1) if match else None
+
+
+def is_daily_quota_exceeded(detail: str) -> bool:
+    """일일 한도 소진인지 판정한다. 초당 한도(23)와 구분한다."""
+    return upstream_reason_code(detail) == DAILY_QUOTA_REASON_CODE
+
 
 def upstream_error_detail(response: httpx.Response) -> str:
     """거절 응답에서 알려진 에러 필드만 뽑아 한 줄로 만든다."""

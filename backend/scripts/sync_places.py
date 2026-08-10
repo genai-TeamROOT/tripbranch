@@ -111,6 +111,9 @@ async def run(args: argparse.Namespace, settings: Settings) -> int:
             repository,
             page_size=settings.place_sync_page_size,
             detail_concurrency=settings.place_sync_detail_concurrency,
+            detail_min_interval_seconds=(
+                settings.place_sync_detail_min_interval_seconds
+            ),
             detail_ttl_days=settings.place_sync_detail_ttl_days,
             retry_count=settings.external_api_retry_count,
         )
