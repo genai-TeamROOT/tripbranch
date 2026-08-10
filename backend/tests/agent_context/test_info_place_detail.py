@@ -78,6 +78,8 @@ def _details(
     operating_hours: str | None = None,
     rest_date: str | None = None,
     raw_intro: dict[str, object] | None = None,
+    parking: str | None = None,
+    fee: str | None = None,
 ) -> PlaceDetails:
     return PlaceDetails(
         content_id="126508",
@@ -92,6 +94,8 @@ def _details(
         raw_common={},
         raw_intro=raw_intro or {},
         provider="tour_api",
+        parking=parking,
+        fee=fee,
     )
 
 
@@ -172,9 +176,9 @@ class TestOperatingHours:
 
 class TestFee:
     @pytest.mark.asyncio
-    async def test_요금을_raw_intro에서_뽑는다(self) -> None:
+    async def test_요금을_정규화_필드에서_뽑는다(self) -> None:
         provider = RecordingPlaceProvider(
-            _details(raw_intro={"usefee": "어른 3,000원 / 어린이 1,500원"})
+            _details(fee="어른 3,000원 / 어린이 1,500원")
         )
 
         response = await _service(provider).fetch_info_context(_request("fee"))
@@ -187,7 +191,7 @@ class TestFee:
     @pytest.mark.asyncio
     async def test_요금_정보가_없으면_no_data이고_장소는_남는다(self) -> None:
         # A가 "경복궁의 요금 정보는 없어요"처럼 장소를 짚어 안내할 수 있어야 한다.
-        provider = RecordingPlaceProvider(_details(raw_intro={"parkingculture": "가능"}))
+        provider = RecordingPlaceProvider(_details(parking="가능"))
 
         response = await _service(provider).fetch_info_context(_request("fee"))
 

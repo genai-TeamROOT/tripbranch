@@ -15,6 +15,7 @@ from app.providers.festival import FakeFestivalProvider, RealFestivalProvider
 from app.providers.gemini import RealGeminiProvider
 from app.providers.geocoding import FakeGeocodingProvider, RealGeocodingProvider
 from app.providers.holiday import FakeHolidayProvider, RealHolidayProvider
+from app.providers.hybrid_place_details import HybridPlaceDetailsProvider
 from app.providers.local_search import FakeLocalSearchProvider, RealLocalSearchProvider
 from app.providers.protocols import (
     ConcentrationProvider,
@@ -23,6 +24,7 @@ from app.providers.protocols import (
     HolidayProvider,
     LLMProvider,
     LocalSearchProvider,
+    PlaceDetailByNameProvider,
     PlaceDetailsProvider,
     PlaceProvider,
     PlaceSearchProvider,
@@ -32,8 +34,12 @@ from app.providers.real_place import RealPlaceProvider
 from app.providers.stub import FakeLLMProvider, FakePlaceProvider, FakeWeatherProvider
 from app.providers.supabase_place_details import SupabasePlaceDetailsProvider
 from app.providers.weather import RealWeatherProvider
-from app.repositories.fake_places import FakePlaceLocationRepository
+from app.repositories.fake_places import (
+    FakePlaceDetailsRepository,
+    FakePlaceLocationRepository,
+)
 from app.repositories.supabase_places import SupabasePlaceRepository
+from app.tools.recommendation_cards import RecommendationCardTool
 
 
 def _require_key(value: str, variable_name: str) -> str:
@@ -149,6 +155,57 @@ def get_place_details_provider(client: httpx.AsyncClient) -> PlaceDetailsProvide
             )
         )
     return get_place_provider(client)
+
+
+def get_info_place_detail_provider(
+    client: httpx.AsyncClient,
+) -> PlaceDetailByNameProvider:
+    """INFO 상세 질의(장소 1건)가 쓸 provider를 준비한다.
+
+    places 캐시가 INFO가 답해야 할 값(운영시간·주차·요금·안내처·편의시설)을 전부
+    들고 있어 하이브리드 경로만 남긴다 — 설정으로 고르지 않는다. TourAPI 직접
+    조회와 답할 수 있는 질문이 같아지면서 고를 이유가 없어졌다(D-060).
+
+    외부 호출은 3회(searchKeyword2 + detailCommon2 + detailIntro2)에서 1회
+    (detailCommon2)로 준다. overview·homepage는 캐시에 없어 그 1회가 남는다.
+    """
+    if settings.resolved_place_provider == "fake":
+        return get_place_provider(client)
+
+    repository = SupabasePlaceRepository(
+        supabase_url=_require_key(settings.supabase_url, "SUPABASE_URL"),
+        secret_key=_require_key(settings.supabase_secret_key, "SUPABASE_SECRET_KEY"),
+        client=client,
+        timeout_seconds=settings.external_api_timeout_seconds,
+    )
+    return HybridPlaceDetailsProvider(
+        location_repository=repository,
+        details_repository=repository,
+        # overview·homepage는 캐시에 없어 TourAPI가 계속 필요하다. fake 모드는 위에서
+        # tour_api로 빠지므로 여기 도달하면 항상 실 provider다.
+        common_provider=get_place_provider(client),
+    )
+
+
+def get_recommendation_card_tool(
+    client: httpx.AsyncClient,
+) -> RecommendationCardTool:
+    """추천 카드 조립 Tool을 places 저장소와 함께 준비한다.
+
+    카드 정보는 전부 동기화된 places 행에서 오므로 PLACE_DETAILS_SOURCE가 아니라
+    Supabase 설정 유무로만 갈린다 — TourAPI 직접 조회 경로에는 대응 데이터가 없다.
+    설정이 없는 개발·테스트 환경은 fake 저장소를 쓴다.
+    """
+    if not settings.supabase_url.strip() or not settings.supabase_secret_key.strip():
+        return RecommendationCardTool(FakePlaceDetailsRepository())
+    return RecommendationCardTool(
+        SupabasePlaceRepository(
+            supabase_url=settings.supabase_url,
+            secret_key=settings.supabase_secret_key,
+            client=client,
+            timeout_seconds=settings.external_api_timeout_seconds,
+        )
+    )
 
 
 def get_festival_provider(client: httpx.AsyncClient) -> FestivalProvider:

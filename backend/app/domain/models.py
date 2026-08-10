@@ -127,6 +127,19 @@ class PlaceDetails:
     raw_intro: Mapping[str, object]
     provider: str
     operating_schedule: OperatingSchedule | None = None
+    # 주차·요금은 operating_hours와 같은 취급이다 — provider가 contenttypeid별 키를
+    # 이미 훑어 하나로 정규화해둔다. 소비 측(info_field_rules)은 raw_intro에서
+    # 원본 키를 다시 찾지 않고 이 필드를 읽는다.
+    #
+    # raw_intro에서 읽던 옛 경로는 남기지 않았다. 두 경로를 함께 두면 같은 질문이
+    # provider에 따라 다르게 답한다.
+    parking: str | None = None
+    parking_fee: str | None = None
+    fee: str | None = None
+    baby_carriage: str | None = None
+    pet: str | None = None
+    credit_card: str | None = None
+    restroom: str | None = None
 
 
 @dataclass(frozen=True)
@@ -189,6 +202,29 @@ class PlaceOperatingDetails:
     parking_fee_raw: str | None = None
     use_fee_raw: str | None = None
     discount_info_raw: str | None = None
+    # 안내처 원문. 전화번호의 실제 출처는 detailCommon2의 tel이 아니라 이쪽이다 —
+    # tel은 축제(15)에만 채워진다. 축제는 여기가 비고 tel이 채워진다.
+    info_center_raw: str | None = None
+    # 편의시설. `없음`은 빈 값과 다르다 — "없다고 답한" 것이므로 그대로 담는다.
+    baby_carriage_raw: str | None = None
+    pet_raw: str | None = None
+    credit_card_raw: str | None = None
+    restroom_raw: str | None = None
+
+
+@dataclass(frozen=True)
+class PlaceCommonDetails:
+    """detailCommon2에서만 얻을 수 있는 값. places 동기화 대상이 아니다.
+
+    overview는 표본 35건 실측(2026-08-10)에서 100%(평균 326자), homepage는 63%
+    채워진다. telephone(`tel`)은 축제(15)에만 있고 나머지 유형은 detailIntro2의
+    안내처가 출처다 — 그쪽은 places가 캐시한다.
+    """
+
+    content_id: str
+    overview: str | None
+    homepage: str | None
+    telephone: str | None
 
 
 @dataclass(frozen=True)
@@ -225,6 +261,24 @@ class StoredPlaceDetail:
     detail_fetch_status: str
     detail_fetched_at: datetime | None
     source_modified_at: datetime | None
+    # 아래 필드는 추천 카드 조립(app.tools.recommendation_cards)이 쓴다. 분류 코드는
+    # 카테고리 라벨을, 주차·이미지는 카드 배지와 썸네일을 채운다(D-056).
+    lcls_systm1: str | None = None
+    lcls_systm2: str | None = None
+    lcls_systm3: str | None = None
+    parking_info_raw: str | None = None
+    parking_fee_raw: str | None = None
+    # 이미지는 detail_fetched_at이 아니라 list_fetched_at 주기를 따른다 — 상세조회가
+    # 실패한 장소에서도 채워져 있을 수 있다.
+    first_image_url: str | None = None
+    thumbnail_url: str | None = None
+    # INFO 상세 질의가 캐시만으로 요금·전화번호·편의시설을 답하기 위한 원문.
+    use_fee_raw: str | None = None
+    info_center_raw: str | None = None
+    baby_carriage_raw: str | None = None
+    pet_raw: str | None = None
+    credit_card_raw: str | None = None
+    restroom_raw: str | None = None
 
 
 @dataclass(frozen=True)

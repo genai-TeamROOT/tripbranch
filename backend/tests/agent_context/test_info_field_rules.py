@@ -23,6 +23,13 @@ def _details(
     operating_hours: str | None = None,
     rest_date: str | None = None,
     raw_intro: dict[str, object] | None = None,
+    parking: str | None = None,
+    parking_fee: str | None = None,
+    fee: str | None = None,
+    baby_carriage: str | None = None,
+    pet: str | None = None,
+    credit_card: str | None = None,
+    restroom: str | None = None,
 ) -> PlaceDetails:
     return PlaceDetails(
         content_id="126508",
@@ -37,6 +44,13 @@ def _details(
         raw_common={},
         raw_intro=raw_intro or {},
         provider="tour_api",
+        parking=parking,
+        parking_fee=parking_fee,
+        fee=fee,
+        baby_carriage=baby_carriage,
+        pet=pet,
+        credit_card=credit_card,
+        restroom=restroom,
     )
 
 
@@ -61,59 +75,94 @@ class TestOperatingHours:
 
 
 class TestFee:
-    def test_문화시설은_usefee에서_뽑는다(self) -> None:
-        details = _details(raw_intro={"usefee": "어른 3,000원"})
+    """요금은 provider가 정규화해둔 PlaceDetails.fee에서 읽는다.
+
+    contenttypeid별 키(usefee/usefeeleports/usetimefestival)를 어느 것으로 골랐는지는
+    provider의 책임이라 여기서 검증하지 않는다 —
+    test_place_details_normalized_fields.py가 그쪽을 덮는다.
+    """
+
+    def test_정규화된_요금을_계약_키로_옮긴다(self) -> None:
+        details = _details(fee="어른 3,000원")
 
         assert extract_info_fields("fee", details) == {"fee": "어른 3,000원"}
 
-    def test_레포츠는_usefeeleports에서_뽑는다(self) -> None:
-        details = _details(content_type_id="28", raw_intro={"usefeeleports": "5,000원"})
+    def test_요금_값이_없으면_빈_dict다(self) -> None:
+        details = _details(parking="가능")
 
-        assert extract_info_fields("fee", details) == {"fee": "5,000원"}
+        assert extract_info_fields("fee", details) == {}
 
-    def test_요금_키가_없으면_빈_dict다(self) -> None:
-        details = _details(raw_intro={"parkingculture": "가능"})
+    def test_raw_intro만_있으면_뽑지_않는다(self) -> None:
+        """옛 경로를 지웠는지 못 박는다.
+
+        두 경로가 함께 살아 있으면 같은 질문이 provider에 따라 다르게 답한다.
+        """
+        details = _details(raw_intro={"usefee": "어른 3,000원"})
 
         assert extract_info_fields("fee", details) == {}
 
 
 class TestParking:
-    def test_유형별_주차_키와_주차요금을_각각_뽑는다(self) -> None:
-        details = _details(
-            raw_intro={"parkingculture": "주차 가능", "parkingfee": "무료"}
-        )
+    def test_주차와_주차요금을_각각_뽑는다(self) -> None:
+        details = _details(parking="주차 가능", parking_fee="무료")
 
         assert extract_info_fields("parking", details) == {
             "parking": "주차 가능",
             "parking_fee": "무료",
         }
 
-    def test_음식점_유형의_주차_키도_인식한다(self) -> None:
-        details = _details(content_type_id="39", raw_intro={"parkingfood": "10대 가능"})
+    def test_주차요금만_없으면_주차만_뽑는다(self) -> None:
+        details = _details(parking="10대 가능")
 
         assert extract_info_fields("parking", details) == {"parking": "10대 가능"}
 
+    def test_HTML이_섞인_원문도_정리한다(self) -> None:
+        details = _details(parking="가능<br>요금 (30분 1,500원)")
+
+        assert extract_info_fields("parking", details) == {
+            "parking": "가능 요금 (30분 1,500원)"
+        }
+
+    def test_raw_intro만_있으면_뽑지_않는다(self) -> None:
+        details = _details(raw_intro={"parkingculture": "주차 가능"})
+
+        assert extract_info_fields("parking", details) == {}
+
 
 class TestFacility:
+    """편의시설도 provider 정규화 필드에서 읽는다(D-060).
+
+    유형별 키(chkbabycarriageculture/chkcreditcardfood 등) 선택은 provider 책임이라
+    test_place_details_normalized_fields.py가 덮는다.
+    """
+
     def test_편의시설_항목을_모두_뽑는다(self) -> None:
         details = _details(
-            raw_intro={
-                "chkbabycarriageculture": "가능",
-                "chkpetculture": "불가",
-                "chkcreditcardculture": "가능",
-            }
+            baby_carriage="가능", pet="불가", credit_card="가능", restroom="있음"
         )
 
         assert extract_info_fields("facility", details) == {
             "baby_carriage": "가능",
             "pet": "불가",
             "credit_card": "가능",
+            "restroom": "있음",
         }
 
     def test_일부만_있으면_있는_것만_뽑는다(self) -> None:
-        details = _details(raw_intro={"chkpet": "불가"})
+        details = _details(pet="불가")
 
         assert extract_info_fields("facility", details) == {"pet": "불가"}
+
+    def test_없음도_값으로_낸다(self) -> None:
+        """`없음`은 빈 값과 다르다 — "정보가 없다"가 아니라 "없다고 답했다"다."""
+        details = _details(baby_carriage="없음")
+
+        assert extract_info_fields("facility", details) == {"baby_carriage": "없음"}
+
+    def test_raw_intro만_있으면_뽑지_않는다(self) -> None:
+        details = _details(raw_intro={"chkpetculture": "불가"})
+
+        assert extract_info_fields("facility", details) == {}
 
 
 class TestLocationInfo:
