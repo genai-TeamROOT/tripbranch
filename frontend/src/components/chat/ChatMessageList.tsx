@@ -98,7 +98,15 @@ export function ChatMessageList({
           }
 
           if (message.type === "schedule_result") {
-            return <ScheduleResultMessage key={message.id} schedule={message.schedule} />;
+            return (
+              <ScheduleResultMessage
+                key={message.id}
+                schedule={message.schedule}
+                isLoading={isLoading}
+                onRequestMore={onRequestMore}
+                onRelaxRadius={onRelaxRadius}
+              />
+            );
           }
 
           return (
