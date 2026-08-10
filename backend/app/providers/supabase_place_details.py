@@ -133,6 +133,7 @@ def _to_place_details(row: StoredPlaceDetail) -> PlaceDetails:
         pet=row.pet_raw,
         credit_card=row.credit_card_raw,
         restroom=row.restroom_raw,
+        thumbnail_url=row.thumbnail_url or row.first_image_url,
         operating_schedule=normalize_operating_schedule(
             content_type_id=row.content_type_id,
             operating_hours=row.operating_hours_raw,

@@ -895,6 +895,9 @@ class FakePlaceProvider:
                 pet=_first_intro_text(intro, PET_KEYS),
                 credit_card=_first_intro_text(intro, CREDIT_CARD_KEYS),
                 restroom=_first_intro_text(intro, RESTROOM_KEYS),
+                thumbnail_url=(
+                    f"https://example.test/{content_id}-thumb.jpg" if candidate else None
+                ),
             ),
             source=ProviderSource.FAKE_PLACE,
         )

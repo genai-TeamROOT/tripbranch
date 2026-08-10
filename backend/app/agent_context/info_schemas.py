@@ -96,6 +96,40 @@ class ConcentrationInfoResult(BaseModel):
     error: ContextError | None = None
 
 
+class PlaceCard(BaseModel):
+    """장소 상세 카드가 펼쳐질 때 표시할 전체 묶음.
+
+    ``fields``와 목적이 다르다. ``fields``는 "물어본 질문에 답이 있었나"를 나타내고
+    (그래서 status 판정의 근거다), 이 모델은 "그 장소에 대해 보여줄 수 있는 것
+    전부"다. 질문 유형과 무관하게 같은 모양으로 채운다.
+
+    두 값을 합치지 않는 이유: ``fields``에 전부 담으면 overview가 거의 항상 있어
+    빈 dict가 나오지 않고, 그러면 "주차 정보는 없어요" 같은 안내의 근거가 사라진다.
+
+    값이 없는 항목은 None이다 — 빈 문자열이나 "정보 없음" 문구를 C가 지어내지
+    않는다. 소비 측이 None인 항목을 숨긴다.
+
+    편의시설은 하나로 합치지 않고 네 항목을 그대로 둔다. 합치면 어느 항목이 빠졌는지
+    구분되지 않고, ``없음``처럼 "없다고 답한" 값과 "정보가 없는" 값도 섞인다.
+    """
+
+    place_id: str | None = None
+    place_name: str | None = None
+    # 실측 844건 중 169건(20%)은 이미지가 없다. 소비 측은 이미지 영역을 숨긴다.
+    thumbnail_url: str | None = None
+    overview: str | None = None
+    operating_hours: str | None = None
+    rest_date: str | None = None
+    parking: str | None = None
+    parking_fee: str | None = None
+    fee: str | None = None
+    baby_carriage: str | None = None
+    pet: str | None = None
+    credit_card: str | None = None
+    restroom: str | None = None
+    homepage: str | None = None
+
+
 class PlaceInfoResult(BaseModel):
     """C가 반환하는 장소 상세 조회 결과 한 건(concentration 외 question_type).
 
@@ -106,6 +140,10 @@ class PlaceInfoResult(BaseModel):
 
     값이 하나도 없으면 status="no_data"이고 fields는 빈 dict다 — 빈 문자열이나
     "정보 없음" 같은 문구를 C가 지어내지 않는다.
+
+    ``place_card``는 그 판정과 무관하게 채운다. 챗봇 말풍선은 ``fields``로 쓰고
+    (그래서 "주차 정보는 없어요"가 정확히 나가고), 그 아래 펼쳐지는 카드는
+    ``place_card``로 그린다.
     """
 
     status: Literal["success", "no_data", "unavailable"]
@@ -114,6 +152,8 @@ class PlaceInfoResult(BaseModel):
     resolved_place_name: str | None = None
     place_id: str | None = None
     fields: dict[str, str] = Field(default_factory=dict)
+    # 상세 조회를 하지 않는 경로(location_info 등)에서는 None이다.
+    place_card: PlaceCard | None = None
     error: ContextError | None = None
 
 
@@ -172,5 +212,6 @@ __all__ = [
     "InfoContextRequest",
     "InfoContextResponse",
     "InfoQuestionType",
+    "PlaceCard",
     "PlaceInfoResult",
 ]

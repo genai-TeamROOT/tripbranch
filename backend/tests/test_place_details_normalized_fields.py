@@ -66,6 +66,8 @@ def _row(**overrides: object) -> StoredPlaceDetail:
         "pet_raw": "불가",
         "credit_card_raw": "가능",
         "restroom_raw": "있음",
+        "thumbnail_url": "https://example.test/thumb.jpg",
+        "first_image_url": "https://example.test/first.jpg",
     }
     base.update(overrides)
     return StoredPlaceDetail(**base)  # type: ignore[arg-type]
@@ -148,6 +150,17 @@ class TestTourApiProvider:
         assert details.telephone == "0507-1409-8780"
 
     @pytest.mark.asyncio
+    async def test_썸네일은_common의_firstimage2에서_온다(self) -> None:
+        """TourAPI 직접 경로도 캐시 경로와 같은 키를 쓴다."""
+        async with _tour_api_client(
+            {"title": "장소", "firstimage2": "https://example.test/c-thumb.jpg"}, {}
+        ) as client:
+            provider = RealPlaceProvider(api_key="k", client=client)
+            details = (await provider.get_details("126508", "12")).data
+
+        assert details.thumbnail_url == "https://example.test/c-thumb.jpg"
+
+    @pytest.mark.asyncio
     async def test_축제는_common의_tel을_쓴다(self) -> None:
         """축제(15)는 infocenter 계열이 없고 common의 tel만 채워진다."""
         async with _tour_api_client({"tel": "02-3210-1645"}, {}) as client:
@@ -188,6 +201,25 @@ class TestSupabaseProvider:
             "credit_card": "가능",
             "restroom": "있음",
         }
+
+    @pytest.mark.asyncio
+    async def test_썸네일이_실린다(self) -> None:
+        """카드에 쓸 이미지가 캐시 경로에서 PlaceDetails까지 오는지 본다."""
+        provider = SupabasePlaceDetailsProvider(_Repository(_row()))
+
+        details = (await provider.get_details("126508", "14")).data
+
+        assert details.thumbnail_url == "https://example.test/thumb.jpg"
+
+    @pytest.mark.asyncio
+    async def test_썸네일이_없으면_목록_이미지로_대체한다(self) -> None:
+        provider = SupabasePlaceDetailsProvider(
+            _Repository(_row(thumbnail_url=None))
+        )
+
+        details = (await provider.get_details("126508", "14")).data
+
+        assert details.thumbnail_url == "https://example.test/first.jpg"
 
     @pytest.mark.asyncio
     async def test_안내처가_전화번호로_실린다(self) -> None:
