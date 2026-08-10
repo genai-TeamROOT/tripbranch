@@ -3,12 +3,18 @@
 NearbyPlaceDetailsTool과 나누는 이유는 조회 대상이 다르기 때문이다 — 그쪽은
 좌표 주변 후보 N건을 검색해 상세를 보강하고, 이쪽은 이미 특정된 장소 1건만 본다.
 
-**PLACE_DETAILS_SOURCE와 무관하게 PlaceProvider(TourAPI)를 쓴다(D-054).** Supabase 상세
-캐시는 동기화 대상이 operating_hours_raw/rest_date_raw뿐이라 overview·요금·주차·
-편의시설이 전부 비어 있다(supabase_place_details.py의 _to_place_details 참고).
-캐시를 둔 이유는 추천 후보 N건의 상세조회를 없애려는 것이었고, INFO는 장소 1건이라
-그 근거가 적용되지 않는다. 여기서 캐시를 쓰면 질문 유형 대부분이 조용히 no_data로
-떨어진다.
+**추천 후보용 PLACE_DETAILS_SOURCE를 따르지 않는다(D-060).** 경로가 달라서다 —
+그쪽은 후보 N건 배치라 외부 호출이 0회여야 의미가 있고, 이쪽은 1건이지만 overview가
+필요해 detailCommon2를 한 번은 불러야 한다.
+
+HybridPlaceDetailsProvider가 places 캐시로 이름·운영시간·주차·요금·안내처·편의시설을
+채우고 overview·homepage만 detailCommon2로 가져온다. 외부 호출이 3회
+(searchKeyword2 + detailCommon2 + detailIntro2)에서 1회로 준다.
+
+**D-054를 대체한다.** 그 결정은 "캐시에는 INFO가 답할 데이터가 없다"가 전제였고,
+당시 동기화 대상은 operating_hours_raw/rest_date_raw뿐이었다. D-056(주차·요금)과
+D-060(안내처·편의시설)으로 캐시가 question_type 전부를 덮게 되면서 전제가 사라졌다.
+출처를 고르는 설정도 두지 않는다 — 두 경로가 같은 질문에 답하므로 고를 이유가 없다.
 """
 
 from __future__ import annotations
@@ -23,7 +29,7 @@ from app.place_search_policy import (
     PLACE_SEARCH_LDONG_REGION_CODE,
 )
 from app.providers.contracts import ProviderMetadata, ProviderStatus
-from app.providers.protocols import PlaceProvider
+from app.providers.protocols import PlaceDetailByNameProvider
 from app.tools.contracts import ToolError, ToolStatus
 
 logger = logging.getLogger(__name__)
@@ -57,7 +63,7 @@ class PlaceDetailResult:
 class GetPlaceDetailTool:
     """장소명으로 상세정보 1건을 조회하고 실패를 ToolStatus로 정규화한다."""
 
-    def __init__(self, place_provider: PlaceProvider) -> None:
+    def __init__(self, place_provider: PlaceDetailByNameProvider) -> None:
         self._place_provider = place_provider
 
     async def execute(self, query: PlaceDetailQuery) -> PlaceDetailResult:

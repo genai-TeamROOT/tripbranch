@@ -15,6 +15,7 @@ from app.providers.festival import FakeFestivalProvider, RealFestivalProvider
 from app.providers.gemini import RealGeminiProvider
 from app.providers.geocoding import FakeGeocodingProvider, RealGeocodingProvider
 from app.providers.holiday import FakeHolidayProvider, RealHolidayProvider
+from app.providers.hybrid_place_details import HybridPlaceDetailsProvider
 from app.providers.local_search import FakeLocalSearchProvider, RealLocalSearchProvider
 from app.providers.protocols import (
     ConcentrationProvider,
@@ -23,6 +24,7 @@ from app.providers.protocols import (
     HolidayProvider,
     LLMProvider,
     LocalSearchProvider,
+    PlaceDetailByNameProvider,
     PlaceDetailsProvider,
     PlaceProvider,
     PlaceSearchProvider,
@@ -153,6 +155,36 @@ def get_place_details_provider(client: httpx.AsyncClient) -> PlaceDetailsProvide
             )
         )
     return get_place_provider(client)
+
+
+def get_info_place_detail_provider(
+    client: httpx.AsyncClient,
+) -> PlaceDetailByNameProvider:
+    """INFO 상세 질의(장소 1건)가 쓸 provider를 준비한다.
+
+    places 캐시가 INFO가 답해야 할 값(운영시간·주차·요금·안내처·편의시설)을 전부
+    들고 있어 하이브리드 경로만 남긴다 — 설정으로 고르지 않는다. TourAPI 직접
+    조회와 답할 수 있는 질문이 같아지면서 고를 이유가 없어졌다(D-060).
+
+    외부 호출은 3회(searchKeyword2 + detailCommon2 + detailIntro2)에서 1회
+    (detailCommon2)로 준다. overview·homepage는 캐시에 없어 그 1회가 남는다.
+    """
+    if settings.resolved_place_provider == "fake":
+        return get_place_provider(client)
+
+    repository = SupabasePlaceRepository(
+        supabase_url=_require_key(settings.supabase_url, "SUPABASE_URL"),
+        secret_key=_require_key(settings.supabase_secret_key, "SUPABASE_SECRET_KEY"),
+        client=client,
+        timeout_seconds=settings.external_api_timeout_seconds,
+    )
+    return HybridPlaceDetailsProvider(
+        location_repository=repository,
+        details_repository=repository,
+        # overview·homepage는 캐시에 없어 TourAPI가 계속 필요하다. fake 모드는 위에서
+        # tour_api로 빠지므로 여기 도달하면 항상 실 provider다.
+        common_provider=get_place_provider(client),
+    )
 
 
 def get_recommendation_card_tool(

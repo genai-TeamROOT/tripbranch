@@ -213,6 +213,21 @@ class PlaceOperatingDetails:
 
 
 @dataclass(frozen=True)
+class PlaceCommonDetails:
+    """detailCommon2에서만 얻을 수 있는 값. places 동기화 대상이 아니다.
+
+    overview는 표본 35건 실측(2026-08-10)에서 100%(평균 326자), homepage는 63%
+    채워진다. telephone(`tel`)은 축제(15)에만 있고 나머지 유형은 detailIntro2의
+    안내처가 출처다 — 그쪽은 places가 캐시한다.
+    """
+
+    content_id: str
+    overview: str | None
+    homepage: str | None
+    telephone: str | None
+
+
+@dataclass(frozen=True)
 class StoredPlaceLocation:
     """저장된 TourAPI 장소의 검색 중심점 해석용 최소 정보."""
 

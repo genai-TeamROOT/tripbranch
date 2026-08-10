@@ -18,6 +18,7 @@ from app.domain.models import (
     HolidayResult,
     LocalSearchPlace,
     PlaceCategoryFilter,
+    PlaceCommonDetails,
     PlaceDetails,
     PlaceOperatingDetails,
     TourPlacePage,
@@ -215,6 +216,31 @@ class PlaceProvider(PlaceSearchProvider, PlaceDetailsProvider, Protocol):
     ) -> ProviderResult[list[PlaceCandidate]]:
         """장소명·키워드로 후보와 TourAPI content ID를 조회한다."""
         ...
+
+    async def find_details_by_name(
+        self,
+        name: str,
+        region_code: str | None = None,
+        district_code: str | None = None,
+    ) -> ProviderResult[PlaceDetails]:
+        """장소명으로 정확히 일치하는 후보를 찾아 상세정보까지 반환한다."""
+        ...
+
+
+class PlaceCommonDetailsProvider(Protocol):
+    async def get_common_details(
+        self, content_id: str
+    ) -> ProviderResult[PlaceCommonDetails]:
+        """detailCommon2만 호출해 overview·homepage·tel을 반환한다."""
+        ...
+
+
+class PlaceDetailByNameProvider(Protocol):
+    """장소명으로 상세 1건을 찾는 최소 계약.
+
+    GetPlaceDetailTool이 실제로 쓰는 메서드는 이것 하나뿐이다. 넓은 PlaceProvider를
+    요구하면 저장소 기반 provider가 쓰지도 않는 검색 메서드를 구현해야 한다.
+    """
 
     async def find_details_by_name(
         self,

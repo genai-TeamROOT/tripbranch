@@ -11,6 +11,7 @@ import httpx
 
 from app.domain.models import (
     PlaceCategoryFilter,
+    PlaceCommonDetails,
     PlaceDetails,
     PlaceOperatingDetails,
     TourPlacePage,
@@ -404,6 +405,37 @@ class RealPlaceProvider:
             candidates,
             source=ProviderSource.TOUR_API_PLACE,
             status=ProviderStatus.SUCCESS if candidates else ProviderStatus.NO_DATA,
+        )
+
+    async def get_common_details(
+        self, content_id: str
+    ) -> ProviderResult[PlaceCommonDetails]:
+        """detailCommon2만 호출한다. contentTypeId가 필요 없는 유일한 상세 엔드포인트다.
+
+        운영시간·주차·요금은 detailIntro2 쪽이라 여기서 얻을 수 없다. places 캐시가
+        그 값을 이미 들고 있는 경로(HybridPlaceDetailsProvider)가 호출 1회로 나머지를
+        채우려고 쓴다.
+        """
+        normalized_content_id = content_id.strip()
+        if not normalized_content_id:
+            raise ValueError("content_id가 필요합니다.")
+
+        payload = await self._request_json(
+            _DETAIL_COMMON_PATH,
+            {**self._base_params(), "contentId": normalized_content_id},
+        )
+        common = _first_item(payload)
+        details = PlaceCommonDetails(
+            content_id=normalized_content_id,
+            overview=_first_text(common, ("overview",)),
+            homepage=_first_text(common, ("homepage",)),
+            telephone=_first_text(common, ("tel",)),
+        )
+        has_data = any((details.overview, details.homepage, details.telephone))
+        return provider_result(
+            details,
+            source=ProviderSource.TOUR_API_PLACE,
+            status=ProviderStatus.SUCCESS if has_data else ProviderStatus.NO_DATA,
         )
 
     async def get_details(
