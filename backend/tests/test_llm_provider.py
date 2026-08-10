@@ -328,23 +328,57 @@ async def test_classify_intent_location_only_without_history_is_recommend(user_i
     assert result.data.intent is Intent.RECOMMEND
 
 
-@pytest.mark.parametrize("user_input", ["광화문", "경복궁"])
-@pytest.mark.parametrize("has_previous_recommendation", [True, False])
+@pytest.mark.parametrize(
+    ("has_previous_recommendation", "expected"),
+    [(False, Intent.RECOMMEND), (True, Intent.MODIFY)],
+)
+@pytest.mark.parametrize("user_input", ["광화문", "경복궁", "경복궁이요"])
 @pytest.mark.asyncio
-async def test_classify_intent_bare_place_name_is_info_regardless_of_history(
-    user_input: str, has_previous_recommendation: bool
+async def test_classify_intent_bare_place_name_means_nearby_recommendation(
+    user_input: str, has_previous_recommendation: bool, expected: Intent
 ) -> None:
-    """지명 단독은 이전 추천이 있어도 위치 변경이 아니라 정보 조회다.
-
-    추천을 받은 뒤 "경복궁" 한 마디로 그 장소를 묻는 흐름을 위치 변경이 가리지 않도록,
-    위치 변경 판정은 근처/주변이나 조사·어미가 붙은 경우로 한정한다.
-    """
+    """단순 지명은 정보 질문으로 가정하지 않고 해당 장소 근처 추천으로 처리한다."""
     provider = FakeLLMProvider()
 
     result = await provider.classify_intent(
         user_input,
         has_previous_recommendation=has_previous_recommendation,
         shown_place_count=5 if has_previous_recommendation else 0,
+    )
+
+    assert result.data.intent is expected
+
+
+@pytest.mark.parametrize("user_input", ["광화문", "경복궁", "경복궁이요"])
+@pytest.mark.asyncio
+async def test_classify_intent_bare_place_after_location_clarification_is_modify(
+    user_input: str,
+) -> None:
+    """위치를 물은 직후의 단순 지명은 INFO가 아니라 기존 요청의 위치 답변이다."""
+    provider = FakeLLMProvider()
+
+    result = await provider.classify_intent(
+        user_input,
+        has_previous_recommendation=False,
+        shown_place_count=0,
+        pending_clarification="location_required",
+        last_intent="RECOMMEND",
+    )
+
+    assert result.data.intent is Intent.MODIFY
+
+
+@pytest.mark.asyncio
+async def test_classify_intent_bare_place_with_question_stays_info_after_clarification() -> None:
+    """위치 되묻기 상태여도 정보 질문까지 MODIFY로 가리면 안 된다."""
+    provider = FakeLLMProvider()
+
+    result = await provider.classify_intent(
+        "경복궁 오늘 열어?",
+        has_previous_recommendation=False,
+        shown_place_count=0,
+        pending_clarification="location_required",
+        last_intent="RECOMMEND",
     )
 
     assert result.data.intent is Intent.INFO
@@ -440,6 +474,28 @@ async def test_extract_modify_conditions_location_only_changes_search_center() -
 
 
 @pytest.mark.asyncio
+async def test_extract_modify_conditions_bare_place_changes_search_center() -> None:
+    """이전 추천 뒤 단순 지명도 해당 장소 근처 추천으로 이어진다."""
+    provider = FakeLLMProvider()
+    current = UserConditions(search_center="경복궁", place_tags=[PlaceTag.CAFE])
+
+    output = (await provider.extract_modify_conditions("광화문", current)).data
+
+    assert output.modify.condition_changes.search_center == "광화문"
+    assert output.modify.changed_fields == ["search_center"]
+
+
+@pytest.mark.asyncio
+async def test_extract_recommend_conditions_bare_place_sets_search_center() -> None:
+    """첫 턴의 단순 지명도 주변 추천의 검색 중심으로 추출한다."""
+    provider = FakeLLMProvider()
+
+    output = (await provider.extract_recommend_conditions("경복궁")).data
+
+    assert output.recommend.conditions.search_center == "경복궁"
+
+
+@pytest.mark.asyncio
 async def test_extract_modify_conditions_quiet_place_avoids_concentration() -> None:
     """MODIFY에서도 '조용한'은 혼잡도 회피(AVOID)로 추출해야 한다.
 
@@ -467,6 +523,16 @@ def test_modify_instruction_includes_concentration_avoid_rule() -> None:
     assert "concentration_intent/transport" in instruction
 
 
+def test_modify_instruction_marks_location_clarification_answer() -> None:
+    instruction = build_modify_extraction_instruction(
+        UserConditions(place_tags=[PlaceTag.CAFE]),
+        pending_clarification="location_required",
+    )
+
+    assert "직전 위치 되묻기 답변 여부: 예" in instruction
+    assert 'changed_fields에는 "search_center"만' in instruction
+
+
 def test_intent_instruction_includes_schedule_clarification_rule() -> None:
     """D-059: SCHEDULE 되묻기 이어가기 규칙과 컨텍스트 플래그가 프롬프트에 반영된다."""
     instruction = build_intent_classification_instruction(
@@ -478,6 +544,18 @@ def test_intent_instruction_includes_schedule_clarification_rule() -> None:
 
     assert "SCHEDULE 되묻기" in instruction
     assert "직전 턴이 되묻기로 끝났는지: 예" in instruction
+
+
+def test_intent_instruction_includes_recommend_location_clarification_rule() -> None:
+    instruction = build_intent_classification_instruction(
+        has_previous_recommendation=False,
+        shown_place_count=0,
+        pending_clarification="location_required",
+        last_intent="RECOMMEND",
+    )
+
+    assert "단순 지명 답변" in instruction
+    assert "직전 RECOMMEND/MODIFY 요청의 위치 되묻기" in instruction
 
 
 def test_intent_instruction_hides_clarification_flag_when_absent() -> None:

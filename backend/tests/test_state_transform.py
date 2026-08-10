@@ -169,6 +169,39 @@ def test_recommend_skips_null_and_empty_fields() -> None:
     assert request.reset_scope == "soft"
 
 
+def test_recommend_without_new_location_preserves_existing_search_center() -> None:
+    """새 추천에서 장소 유형만 바꿔도 기존 목적지는 soft reset 뒤 복원한다."""
+    llm_output = LLMOutput(
+        intent=Intent.RECOMMEND,
+        status=OutputStatus.COMPLETE,
+        recommend=RecommendPayload(
+            conditions=UserConditions(place_types=["restaurant"], place_tags=["카페"])
+        ),
+    )
+    context = _context(user_conditions=StateUserConditions(search_center="대학로"))
+
+    request = transform(llm_output, context, "카페 추천해줘")
+
+    ops = {(op.op, op.field): op.value for op in request.operations}
+    assert request.reset_scope == "soft"
+    assert ops[("Update", "search_center")] == "대학로"
+    assert ops[("Update", "place_tags")] == ["카페"]
+
+
+def test_recommend_with_new_search_center_does_not_restore_previous_center() -> None:
+    llm_output = LLMOutput(
+        intent=Intent.RECOMMEND,
+        status=OutputStatus.COMPLETE,
+        recommend=RecommendPayload(conditions=UserConditions(search_center="광화문")),
+    )
+    context = _context(user_conditions=StateUserConditions(search_center="대학로"))
+
+    request = transform(llm_output, context, "광화문 근처 추천해줘")
+
+    ops = {(op.op, op.field): op.value for op in request.operations}
+    assert ops[("Update", "search_center")] == "광화문"
+
+
 def test_tc07_reject_all_has_no_operations_and_marks_not_interested() -> None:
     llm_output = LLMOutput(
         intent=Intent.MODIFY,

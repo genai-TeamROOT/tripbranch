@@ -70,9 +70,17 @@ class LLMProvider(Protocol):
         ...
 
     async def extract_modify_conditions(
-        self, user_input: str, current_conditions: UserConditions
+        self,
+        user_input: str,
+        current_conditions: UserConditions,
+        *,
+        pending_clarification: str | None = None,
     ) -> ProviderResult[LLMOutput]:
-        """MODIFY 발화에서 modify_type과 condition_changes를 추출한다."""
+        """MODIFY 발화에서 modify_type과 condition_changes를 추출한다.
+
+        위치 되묻기 답변이면 pending_clarification이 전달돼, 단순 지명을
+        search_center 변경으로 해석한다.
+        """
         ...
 
     async def extract_info_query(

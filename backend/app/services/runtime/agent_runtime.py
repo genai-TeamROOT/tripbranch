@@ -324,9 +324,16 @@ async def run_agent_flow(
 
     # 2) A: LLMOutput 생성 (Intent 분류 + Intent별 조건 추출). B가 준 현재 조건(순수 문자열)을
     #    A 쪽 enum 타입으로 변환해서 넘긴다 — MODIFY 추출이 이 타입을 요구한다.
+    # 위치 되묻기 직후에는 아직 추천 결과가 없을 수 있어도, 첫 턴에서 저장된 조건을
+    # MODIFY 추출에 제공해야 한다. 그렇지 않으면 "경복궁"이 MODIFY로 올바르게
+    # 분류돼도 current_conditions 없음 되묻기로 다시 빠진다.
+    location_clarification_pending = session_context.pending_clarification in {
+        "location_required",
+        "location_ambiguous",
+    }
     current_conditions = (
         to_user_conditions(session_context.user_conditions)
-        if session_context.has_recommendation
+        if session_context.has_recommendation or location_clarification_pending
         else None
     )
     interpret_request = InterpretRequest(

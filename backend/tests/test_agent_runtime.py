@@ -971,6 +971,70 @@ async def test_clarification_answer_keeps_conditions_from_previous_turn() -> Non
 
 
 @pytest.mark.asyncio
+async def test_bare_place_after_location_clarification_becomes_modify_and_sets_center() -> None:
+    """TP-67: 위치 되묻기 다음 '경복궁'은 INFO가 아닌 MODIFY로 이어져야 한다.
+
+    아직 추천 결과가 없는 첫 요청에서도 B에 저장된 앞 턴 조건을 MODIFY 추출기에
+    전달해, search_center만 추가한 뒤 추천을 이어간다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(user_input="근처 갈곳 추천해줘", session_id=None, device_location=None),
+        store=store,
+        **providers,
+    )
+    session_id = first.state.session_id
+    assert first.llm_output.intent == "RECOMMEND"
+    assert get_session_context(session_id, store=store).pending_clarification == "location_required"
+
+    second = await run_agent_flow(
+        AgentRequest(user_input="경복궁", session_id=session_id, device_location=None),
+        store=store,
+        **providers,
+    )
+
+    assert second.llm_output.intent == "MODIFY"
+    assert second.llm_output.modify.changed_fields == ["search_center"]
+    assert second.state.user_conditions.search_center == "경복궁"
+    assert second.recommendations is not None
+    assert get_session_context(session_id, store=store).pending_clarification is None
+
+
+@pytest.mark.asyncio
+async def test_new_recommendation_without_location_keeps_previous_search_center() -> None:
+    """TP-67: 목적지 뒤 새 RECOMMEND가 와도 목적지를 다시 묻지 않는다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    second = await run_agent_flow(
+        AgentRequest(
+            user_input="박물관 추천해줘",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert second.llm_output.intent == "RECOMMEND"
+    assert second.state.user_conditions.search_center == "경복궁"
+    assert "박물관" in second.state.user_conditions.place_tags
+    assert second.recommendations is not None
+
+
+@pytest.mark.asyncio
 async def test_schedule_clarification_answer_stays_schedule() -> None:
     """D-059: SCHEDULE 되묻기에 지명만 답하면 MODIFY가 아니라 SCHEDULE을 유지해야 한다.
 
@@ -1324,6 +1388,37 @@ async def test_no_data_marks_pending_clarification_so_next_turn_keeps_conditions
 
     context = get_session_context(response.state.session_id, store=store)
     assert context.pending_clarification == "no_candidate"
+
+
+@pytest.mark.asyncio
+async def test_bare_place_after_no_data_restarts_search_around_that_place() -> None:
+    """후보 없음 뒤 단순 지명은 INFO가 아니라 해당 장소 주변 재추천 요청이다."""
+    store = InMemoryStateStore()
+
+    first = await run_agent_flow(
+        AgentRequest(user_input="카페 추천해줘", session_id=None, device_location=DEVICE_LOCATION),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=_FixedStatusToolProvider("no_data"),
+        recommendation_provider=_CountingRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=store,
+    )
+    session_id = first.state.session_id
+    assert get_session_context(session_id, store=store).pending_clarification == "no_candidate"
+
+    second = await run_agent_flow(
+        AgentRequest(user_input="광화문", session_id=session_id, device_location=DEVICE_LOCATION),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=FakeToolProvider(),
+        recommendation_provider=_CountingRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=store,
+    )
+
+    assert second.llm_output.intent == "RECOMMEND"
+    assert second.state.user_conditions.search_center == "광화문"
+    assert "카페" in second.state.user_conditions.place_tags
+    assert second.recommendations is not None
 
 
 def test_terminal_status_sets_match_between_runtime_and_composer() -> None:
