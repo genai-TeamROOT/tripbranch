@@ -546,12 +546,12 @@ async def test_mapped_candidate_queries_by_search_key_and_matches_canonical_name
 
 
 @pytest.mark.asyncio
-async def test_unmapped_candidate_skips_provider_call() -> None:
-    """매핑이 없는 후보는 호출하지 않고 no_data로 끝낸다.
+async def test_unmapped_candidate_without_nearby_mapping_skips_provider_call() -> None:
+    """매핑도 없고 인근 대체 장소도 반경 밖이면 호출하지 않고 no_data로 끝낸다.
 
-    매핑은 집중률 API에 데이터가 있는 장소 목록이라, 없으면 조회해도 안 나온다.
-    활성 844건 중 매핑은 101건이고 음식점 191건은 0건이라(2026-08-09 실측) 이
-    건너뛰기가 대부분의 헛호출을 없앤다.
+    매핑은 집중률 API에 데이터가 있는 장소 목록이라, 후보 이름으로 조회해도 안
+    나온다. 여기서는 유일한 매핑 장소가 0.588km 떨어져 있어 대체 조회 반경
+    (0.5km) 밖이므로 빌려올 곳도 없다.
     """
 
     provider = _ScriptedConcentrationProvider({})
@@ -621,3 +621,181 @@ async def test_search_keys_are_tried_in_order_until_data_found() -> None:
 
     assert [call[2] for call in provider.calls] == ["서울", "운현궁"]
     assert response.candidates[0].status == "success"
+
+
+@pytest.mark.asyncio
+async def test_unmapped_candidate_borrows_nearby_concentration_with_proxy_flag() -> None:
+    """매핑 없는 후보는 인근 매핑 장소의 값을 빌리고 근사치임을 표시한다.
+
+    활성 844건 중 매핑은 100건뿐이라, 빌려오지 않으면 다수 후보가 혼잡도 판정에서
+    통째로 빠진다(안국역 2km 내 711건 중 매핑 70건). INFO 대체 조회와 같은 반경·
+    시도 횟수를 쓴다 — 같은 사용자가 "여기 혼잡해?"와 "한산한 곳 추천해줘"에서
+    다른 기준을 보면 곤란하다.
+    """
+
+    provider = _ScriptedConcentrationProvider(
+        {"종묘": _provider_result("종묘 [유네스코 세계유산]")}
+    )
+    service = _mapped_service(
+        provider,
+        (
+            _mapped_place(
+                "126510",
+                title="종묘",
+                concentration_name="종묘 [유네스코 세계유산]",
+                search_keys=("종묘",),
+            ),
+        ),
+    )
+
+    response = await service.enrich(
+        _request(
+            CandidateEnrichmentTarget(
+                place_id="999999",
+                name="이름없는 카페",
+                # 매핑 장소에서 약 0.15km — 대체 조회 반경(0.5km) 안이다.
+                latitude=37.5748,
+                longitude=126.9955,
+            )
+        )
+    )
+
+    candidate = response.candidates[0]
+    assert candidate.status == "success"
+    assert candidate.concentration is not None
+    forecast = candidate.concentration[0]
+    assert forecast.concentration_rate == 42.0
+    # 후보 본인의 값이 아니라는 사실이 반드시 드러나야 한다.
+    assert forecast.is_proxy is True
+    assert forecast.proxy_place_name == "종묘 [유네스코 세계유산]"
+    assert forecast.proxy_distance_km is not None
+    assert 0 < forecast.proxy_distance_km <= 0.5
+    # 조회는 매핑의 검색어로 나간다 — 후보 이름을 tAtsNm에 넣지 않는다.
+    assert [call[2] for call in provider.calls] == ["종묘"]
+
+
+@pytest.mark.asyncio
+async def test_mapped_candidate_is_not_marked_as_proxy() -> None:
+    """자기 매핑으로 조회한 값은 근사치가 아니다."""
+
+    provider = _ScriptedConcentrationProvider(
+        {"종묘": _provider_result("종묘 [유네스코 세계유산]")}
+    )
+    service = _mapped_service(
+        provider,
+        (
+            _mapped_place(
+                "126510",
+                title="종묘",
+                concentration_name="종묘 [유네스코 세계유산]",
+                search_keys=("종묘",),
+            ),
+        ),
+    )
+
+    response = await service.enrich(
+        _request(
+            CandidateEnrichmentTarget(
+                place_id="126510",
+                name="종묘",
+                latitude=37.5739,
+                longitude=126.9945,
+            )
+        )
+    )
+
+    forecast = response.candidates[0].concentration[0]
+    assert forecast.is_proxy is False
+    assert forecast.proxy_place_name is None
+    assert forecast.proxy_distance_km is None
+
+
+@pytest.mark.asyncio
+async def test_candidates_sharing_a_proxy_place_query_it_once() -> None:
+    """같은 인근 장소를 가리키는 후보들은 조회를 한 번만 나눠 쓴다.
+
+    후보 5개가 각자 최대 3곳을 시도하면 한 요청에 최대 15회다. 집중률 API는
+    오퍼레이션 단위 일일 한도가 있어(1,000회) 중복을 그대로 두면 안 된다.
+    """
+
+    provider = _ScriptedConcentrationProvider(
+        {"종묘": _provider_result("종묘 [유네스코 세계유산]")}
+    )
+    service = _mapped_service(
+        provider,
+        (
+            _mapped_place(
+                "126510",
+                title="종묘",
+                concentration_name="종묘 [유네스코 세계유산]",
+                search_keys=("종묘",),
+            ),
+        ),
+    )
+
+    response = await service.enrich(
+        _request(
+            CandidateEnrichmentTarget(
+                place_id="999998",
+                name="카페 A",
+                latitude=37.5748,
+                longitude=126.9955,
+            ),
+            CandidateEnrichmentTarget(
+                place_id="999999",
+                name="카페 B",
+                latitude=37.5742,
+                longitude=126.9950,
+            ),
+        )
+    )
+
+    assert response.status == "success"
+    assert all(item.concentration[0].is_proxy for item in response.candidates)
+    # 후보는 2건인데 외부 호출은 1회다.
+    assert len(provider.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_proxy_flag_survives_into_the_response_d_receives() -> None:
+    """C가 실은 플래그를 D가 그대로 받는다.
+
+    D의 2차 Scoring은 CandidateEnrichmentResponse를 통째로 받고
+    `result.concentration[0]`을 손에 쥔다. 값을 어떻게 쓸지는 D가 정하지만,
+    판단 근거가 도달하는 것까지는 C가 보장한다.
+    """
+
+    provider = _ScriptedConcentrationProvider(
+        {"종묘": _provider_result("종묘 [유네스코 세계유산]")}
+    )
+    service = _mapped_service(
+        provider,
+        (
+            _mapped_place(
+                "126510",
+                title="종묘",
+                concentration_name="종묘 [유네스코 세계유산]",
+                search_keys=("종묘",),
+            ),
+        ),
+    )
+
+    response = await service.enrich(
+        _request(
+            CandidateEnrichmentTarget(
+                place_id="999999",
+                name="이름없는 카페",
+                latitude=37.5748,
+                longitude=126.9955,
+            )
+        )
+    )
+
+    # D가 하는 것과 같은 방식으로 꺼내 본다.
+    by_place_id = {item.place_id: item for item in response.candidates}
+    forecast = by_place_id["999999"].concentration[0]
+    assert (forecast.is_proxy, forecast.proxy_place_name) == (
+        True,
+        "종묘 [유네스코 세계유산]",
+    )
+    assert forecast.concentration_level is not None

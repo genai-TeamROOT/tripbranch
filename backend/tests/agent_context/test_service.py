@@ -21,7 +21,7 @@ from app.domain.models import (
     StoredPlaceLocation,
     WeatherForecastResult,
 )
-from app.errors import ProviderUnavailableError
+from app.errors import AppError, ProviderUnavailableError
 from app.place_search_policy import DEFAULT_PLACE_SEARCH_RADIUS_KM
 from app.providers.concentration import FakeConcentrationProvider
 from app.providers.contracts import (
@@ -487,8 +487,9 @@ async def test_factory_wires_fake_providers_into_common_context() -> None:
     assert {
         metadata.source for metadata in response.metadata.provider_metadata
     } == {
-        # 장소명은 fake 저장소에서 해석된다 — 지오코딩까지 가지 않는다.
-        "fake_places",
+        # 검색 중심점은 좌표만 필요하므로 저장소를 거치지 않고 지오코딩으로 간다
+        # (LocationPurpose.SEARCH_CENTER). 저장소 정체성 확정은 INFO 혼잡도 전용이다.
+        "fake_geocoding",
         "fake_weather",
         "fake_place",
         "fake_holiday",
@@ -1127,3 +1128,101 @@ async def test_info_concentration_falls_through_to_later_key() -> None:
 
     assert response.status == "success"
     assert provider.calls == ["앞길", "청와대"]
+
+
+class _CountingPlaceLocationRepository:
+    """조회 횟수를 세는 저장소. 이름은 무엇을 물어도 맞다고 답한다."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def find_active_places_by_name(self, name: str):
+        self.calls.append(name)
+        return (
+            StoredPlaceLocation(
+                content_id="128553",
+                title=name,
+                address="서울특별시 종로구",
+                latitude=37.5788,
+                longitude=126.9770,
+                concentration_name=name,
+            ),
+        )
+
+
+class _EmptyLocalSearchProvider:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def search_places_by_name(self, query: str, *, display: int = 5):
+        self.calls.append(query)
+        return provider_result((), source=ProviderSource.FAKE_LOCAL_SEARCH)
+
+
+class _FailingGeocodingProvider:
+    """찾지 못한 경우. 실제 Provider와 같은 code를 써야 NO_DATA로 매핑된다."""
+
+    async def geocode(self, query: str, *, use_alias: bool = True):
+        raise AppError(
+            code="location_not_found", message="찾지 못했어요.", status_code=404
+        )
+
+
+def _search_center_service(
+    repository: _CountingPlaceLocationRepository,
+    local_search: _EmptyLocalSearchProvider,
+) -> ContextService:
+    place_provider = FakePlaceProvider()
+    return ContextService(
+        ContextTools(
+            location=ResolveLocationTool(
+                _FailingGeocodingProvider(),
+                place_repository=repository,
+                local_search_provider=local_search,
+            ),
+            places=NearbyPlaceDetailsTool(place_provider, place_provider),
+            weather=GetWeatherForecastTool(FakeWeatherProvider()),
+            holidays=GetHolidaysTool(FakeHolidayProvider()),
+            concentration=GetConcentrationTool(FakeConcentrationProvider()),
+        ),
+        candidate_limit=10,
+        clock=lambda: datetime.now(KST),
+    )
+
+
+@pytest.mark.asyncio
+async def test_recommend_never_touches_place_repository_for_search_center() -> None:
+    """추천의 검색 중심점 해석은 저장소를 거치지 않는다.
+
+    저장소가 무엇을 물어도 맞다고 답하는데도 호출이 0이어야 한다 — 사다리가
+    공용이던 시절에는 코퍼스에 없는 이름에 `places`를 4번 뒤졌다("안국역" 실측).
+    """
+    repository = _CountingPlaceLocationRepository()
+    local_search = _EmptyLocalSearchProvider()
+
+    response = await _search_center_service(repository, local_search).fetch_context(
+        _request(search_center="안국역")
+    )
+
+    assert repository.calls == []
+    assert local_search.calls == ["안국역"]
+    assert response.status == "needs_clarification"
+
+
+@pytest.mark.asyncio
+async def test_search_center_failure_asks_user_for_a_location() -> None:
+    """지역검색·지오코딩이 모두 못 찾으면 저장소로 되돌아가지 않고 되묻는다.
+
+    폴백을 두지 않기로 했으므로(사다리를 가른 의미가 사라진다) 위치를 못 찾았다는
+    사실을 그대로 올려 사용자에게 구체적인 위치를 요청한다.
+    """
+    repository = _CountingPlaceLocationRepository()
+
+    response = await _search_center_service(
+        repository, _EmptyLocalSearchProvider()
+    ).fetch_context(_request(search_center="없는장소이름"))
+
+    assert response.status == "needs_clarification"
+    assert response.clarification is not None
+    assert response.clarification.code == "location_required"
+    assert repository.calls == []

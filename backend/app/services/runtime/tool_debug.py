@@ -14,7 +14,10 @@ from __future__ import annotations
 import logging
 from collections import Counter
 
-from app.agent_context.enrichment_schemas import CandidateEnrichmentResponse
+from app.agent_context.enrichment_schemas import (
+    CandidateEnrichmentResponse,
+    CandidateEnrichmentResult,
+)
 from app.agent_context.info_schemas import InfoContextResponse
 from app.agent_context.schemas import (
     AgentContextResponse,
@@ -23,7 +26,12 @@ from app.agent_context.schemas import (
     RecommendationContext,
     ResolvedLocation,
 )
-from app.schemas import ToolContextItemDebug, ToolExecutionDebug, ToolProviderDebug
+from app.schemas import (
+    CandidateConcentrationDebug,
+    ToolContextItemDebug,
+    ToolExecutionDebug,
+    ToolProviderDebug,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +186,25 @@ def build_info_concentration_execution_debug(
         return None
 
 
+def _candidate_concentration_debug(
+    candidate: CandidateEnrichmentResult,
+) -> CandidateConcentrationDebug:
+    """후보 한 건의 혼잡도 출처를 감사용으로 옮긴다.
+
+    한 후보의 concentration은 오늘 예보 한 건이라 첫 항목만 본다
+    (select_concentration_forecast가 날짜·장소로 이미 한 건으로 좁힌다).
+    """
+    forecast = candidate.concentration[0] if candidate.concentration else None
+    return CandidateConcentrationDebug(
+        place_id=candidate.place_id,
+        name=candidate.name,
+        status=candidate.status,
+        is_proxy=bool(forecast is not None and forecast.is_proxy),
+        proxy_place_name=forecast.proxy_place_name if forecast is not None else None,
+        proxy_distance_km=forecast.proxy_distance_km if forecast is not None else None,
+    )
+
+
 def build_candidate_enrichment_execution_debug(
     response: CandidateEnrichmentResponse,
     *,
@@ -213,6 +240,10 @@ def build_candidate_enrichment_execution_debug(
             ],
             error_code=first_error.code if first_error is not None else None,
             candidate_status_counts=status_counts,
+            candidate_concentration=[
+                _candidate_concentration_debug(candidate)
+                for candidate in response.candidates
+            ],
         )
     except Exception:  # noqa: BLE001 - 표시 정보 때문에 요청을 실패시키지 않는다.
         logger.warning("후보 혼잡도 보강 응답에서 Audit 표시 정보를 만들지 못함", exc_info=True)

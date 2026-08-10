@@ -7,6 +7,7 @@
 
 import { useMemo, useState } from "react";
 import type {
+  CandidateConcentrationDebug,
   DeveloperAuditTurn,
   LLMExecutionMetadata,
   RecommendationItem,
@@ -353,6 +354,50 @@ function ToolProviderCards({ providers }: { providers: ToolProviderDebug[] }) {
   );
 }
 
+function CandidateConcentrationRows({ rows }: { rows: CandidateConcentrationDebug[] }) {
+  const proxyCount = rows.filter((row) => row.is_proxy).length;
+  return (
+    <>
+      <h4 className="text-xs font-semibold text-gray-500 dark:text-gray-400">
+        후보별 혼잡도 출처
+      </h4>
+      <p className="text-xs text-gray-500 dark:text-gray-400">
+        {proxyCount > 0
+          ? `근사치 ${proxyCount}건 — 집중률 매핑이 없어 인근 매핑 장소의 값을 빌렸어요. 후보 본인의 혼잡도가 아니에요.`
+          : "값이 있는 후보는 모두 자기 매핑으로 직접 조회했어요."}
+      </p>
+      <div className="flex flex-col gap-1.5">
+        {rows.map((row) => (
+          <div
+            key={row.place_id}
+            className={`rounded-md border p-2 text-xs ${
+              row.is_proxy
+                ? "border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/30"
+                : "border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900"
+            }`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-medium text-gray-900 dark:text-gray-100">{row.name}</span>
+              <span className="text-[11px] text-gray-500">{row.status}</span>
+            </div>
+            <p className="mt-0.5 text-[11px] text-gray-600 dark:text-gray-300">
+              {row.is_proxy
+                ? `근사치 ← ${row.proxy_place_name ?? "알 수 없음"}${
+                    row.proxy_distance_km !== null
+                      ? ` (${row.proxy_distance_km.toFixed(2)}km)`
+                      : ""
+                  }`
+                : row.status === "success"
+                  ? "직접 조회"
+                  : "값 없음"}
+            </p>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
 function ToolContextItemRows({ items }: { items: ToolContextItemDebug[] }) {
   return (
     <div className="flex flex-col gap-2">
@@ -391,8 +436,14 @@ function ToolExecutionDetails({ execution }: { execution: ToolExecutionDebug }) 
       <dl className="grid grid-cols-2 gap-2">
         <DetailRow label="C 응답 상태" value={execution.status} />
         <DetailRow label="C 소요 시간" value={formatDuration(execution.latency_ms)} />
-        <DetailRow label="해석된 위치" value={execution.resolved_location_name} />
-        <DetailRow label="해석된 주소" value={execution.resolved_location_address} />
+        {/* 후보 보강은 후보가 여럿이라 "해석된 위치" 한 칸으로 표현되지 않는다.
+            빈 칸으로 두면 채워져야 하는데 빠진 것처럼 보인다. */}
+        {execution.operation !== "candidate_enrichment" && (
+          <>
+            <DetailRow label="해석된 위치" value={execution.resolved_location_name} />
+            <DetailRow label="해석된 주소" value={execution.resolved_location_address} />
+          </>
+        )}
         {execution.is_proxy !== null && (
           <DetailRow label="근접 관광지 대체" value={execution.is_proxy ? "사용" : "미사용"} />
         )}
@@ -411,6 +462,10 @@ function ToolExecutionDetails({ execution }: { execution: ToolExecutionDebug }) 
             ))}
           </dl>
         </>
+      )}
+
+      {execution.candidate_concentration && execution.candidate_concentration.length > 0 && (
+        <CandidateConcentrationRows rows={execution.candidate_concentration} />
       )}
 
       <h4 className="text-xs font-semibold text-gray-500 dark:text-gray-400">호출한 Provider</h4>

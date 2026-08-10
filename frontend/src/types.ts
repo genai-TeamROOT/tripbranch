@@ -341,6 +341,16 @@ export interface ToolContextItemDebug {
   item_count: number | null;
 }
 
+export interface CandidateConcentrationDebug {
+  place_id: string;
+  name: string;
+  status: string;
+  is_proxy: boolean;
+  /** 값을 빌려온 실제 장소와 후보로부터의 거리. is_proxy=false면 둘 다 null. */
+  proxy_place_name: string | null;
+  proxy_distance_km: number | null;
+}
+
 export interface ToolExecutionDebug {
   operation?: "context_fetch" | "info_concentration" | "candidate_enrichment";
   request_id: string;
@@ -355,6 +365,8 @@ export interface ToolExecutionDebug {
   clarification_code: string | null;
   is_proxy: boolean | null;
   candidate_status_counts: Record<string, number>;
+  /** candidate_enrichment 전용: 후보별로 혼잡도가 어디서 온 값인지. */
+  candidate_concentration?: CandidateConcentrationDebug[];
 }
 
 export interface LLMCallMetadata {
