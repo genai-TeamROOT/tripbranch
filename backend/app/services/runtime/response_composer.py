@@ -25,7 +25,11 @@ from app.schemas import (
     ScheduleResult,
 )
 from app.services.runtime.context_schemas import Clarification
-from app.services.runtime.info_context_schemas import InfoContextResponse
+from app.services.runtime.info_context_schemas import (
+    EventInfoResult,
+    InfoContextResponse,
+    PlaceInfoResult,
+)
 
 # C 단계에서 Recommendation으로 못 넘어가는 status. agent_runtime.py의
 # _TOOL_TERMINAL_STATUSES와 같은 집합이어야 한다 — 순환 import를 피하려고 별도로
@@ -89,6 +93,43 @@ _SCHEDULE_NOT_YET_SUPPORTED_MESSAGE = "일정 추천 기능은 아직 준비 중
 # concentration-conditions.md §7 데이터 한계와 응답 원칙.
 _CONCENTRATION_NO_DATA_MESSAGE = "이 장소 유형은 혼잡도 데이터가 없어요."
 
+# INFO question_type(concentration 제외 7종) 한글 라벨 — PlaceInfoResult.fields의
+# 키와 no_data 문구 조립에 함께 쓴다(backend/docs/package-a/
+# info-question-types-handoff.md). C가 fields에 값이 있는 키만 채워 보내므로,
+# 이 라벨 맵은 "그 키가 있으면 이렇게 부른다"는 표시 규칙일 뿐이다.
+_INFO_FIELD_LABELS: dict[str, str] = {
+    "operating_hours": "운영시간",
+    "rest_date": "휴무일",
+    "fee": "요금",
+    "parking": "주차",
+    "parking_fee": "주차 요금",
+    "baby_carriage": "유모차 대여",
+    "pet": "반려동물 동반",
+    "credit_card": "카드 결제",
+    "restroom": "화장실",
+    "address": "주소",
+    "general_info": "장소 개요",
+    "location_info": "위치",
+    "overview": "개요",
+    "homepage": "홈페이지",
+}
+_INFO_QUESTION_TYPE_LABELS: dict[str, str] = {
+    "operating_hours": "운영시간",
+    "fee": "요금",
+    "parking": "주차",
+    "facility": "편의시설",
+    "location_info": "위치",
+    "general_info": "개요",
+}
+# facility의 하위 필드 4개는 라벨이 고정이라 은/는을 미리 붙여둔다(값의 받침에
+# 좌우되지 않게 "라벨+조사"까지 고정하고, 뒤에 값만 이어붙인다).
+_FACILITY_FIELD_PHRASES: dict[str, str] = {
+    "baby_carriage": "유모차 대여는",
+    "pet": "반려동물 동반은",
+    "credit_card": "카드 결제는",
+    "restroom": "화장실은",
+}
+
 logger = logging.getLogger(__name__)
 
 
@@ -140,6 +181,139 @@ def compose_info_concentration_message(response: InfoContextResponse) -> str:
     return f"{result.resolved_place_name}은(는) {date_label} 기준 {label} 것으로 예측돼요."
 
 
+def compose_place_info_message(response: InfoContextResponse) -> str:
+    """INFO(question_type=concentration/event 제외 6종) 응답 문구를 조립한다.
+
+    C가 fields에 값이 있는 키만 채워 보내므로(info-question-types-handoff.md),
+    여기서 없는 값을 지어내지 않고 fields를 그대로 나열한다. general_info의
+    overview는 원문 그대로 싣는다 — LLM 요약 없이 고정 템플릿으로 두는 쪽이
+    concentration과 같은 "정확성이 걸린 문제는 스타일링하지 않는다" 원칙과
+    일관된다.
+    """
+
+    if response.status == "needs_clarification":
+        code = response.clarification.code if response.clarification is not None else None
+        return _CLARIFICATION_TEMPLATES.get(code, _CLARIFICATION_FALLBACK_MESSAGE)
+    if response.status == "unsupported":
+        return _unsupported_message(response.error.code if response.error else None)
+    if response.status == "unavailable" or response.result is None:
+        return _TOOL_UNAVAILABLE_MESSAGE
+
+    result = response.result
+    assert isinstance(result, PlaceInfoResult)
+    if result.status == "unavailable":
+        return _TOOL_UNAVAILABLE_MESSAGE
+
+    place_label = result.resolved_place_name or result.requested_place_name or "그 장소"
+    if result.status == "no_data":
+        type_label = _INFO_QUESTION_TYPE_LABELS.get(result.question_type, "그 질문")
+        return f"{place_label}의 {type_label} 정보는 확인할 수 없어요."
+
+    return _compose_place_info_sentence(place_label, result.question_type, result.fields)
+
+
+def _compose_place_info_sentence(
+    place_label: str, question_type: str, fields: dict[str, str]
+) -> str:
+    """question_type별로 자연스러운 한국어 문장을 만든다.
+
+    fields의 값(C가 TourAPI 원문에서 뽑은 자유 텍스트)은 절대 파싱·재구성하지
+    않는다 — 값을 감싸는 문장 커넥터만 question_type에 맞춰 고른다. 값을 안
+    건드리므로 라벨:값 나열보다 자연스러우면서도 사실을 지어낼 위험은 없다.
+    """
+
+    if question_type == "operating_hours" and "operating_hours" in fields:
+        sentence = f"{place_label} 운영시간은 {fields['operating_hours']}예요."
+        if "rest_date" in fields:
+            sentence += f" 휴무일은 {fields['rest_date']}예요."
+        return sentence
+
+    if question_type == "fee" and "fee" in fields:
+        return f"{place_label} 입장료는 {fields['fee']}예요."
+
+    if question_type == "parking" and "parking" in fields:
+        sentence = f"{place_label} 주차는 {fields['parking']}이에요."
+        if "parking_fee" in fields:
+            sentence += f" 주차 요금은 {fields['parking_fee']}예요."
+        return sentence
+
+    if question_type == "facility":
+        # 라벨 4개가 고정이라 은/는을 직접 붙인다(받침 유무로 자동 판정하지 않음).
+        parts = [
+            f"{_FACILITY_FIELD_PHRASES[key]} {fields[key]}"
+            for key in ("baby_carriage", "pet", "credit_card", "restroom")
+            if key in fields
+        ]
+        if parts:
+            return f"{place_label}의 편의시설이에요. " + ", ".join(parts) + "예요."
+
+    if question_type == "location_info" and "address" in fields:
+        return f"{place_label} 주소는 {fields['address']}예요."
+
+    if question_type == "general_info" and "overview" in fields:
+        sentence = f"{place_label} 소개예요. {fields['overview']}"
+        if "homepage" in fields:
+            sentence += f" 홈페이지는 {fields['homepage']}예요."
+        return sentence
+
+    # 8종 외 새 question_type이 생기거나 예상 밖 필드 조합이면 라벨:값 나열로
+    # 안전하게 낮아진다 — 크래시 대신 최소한의 정보는 전달한다.
+    homepage = fields.get("homepage")
+    parts = [
+        f"{_INFO_FIELD_LABELS.get(key, key)}: {value}"
+        for key, value in fields.items()
+        if key != "homepage"
+    ]
+    sentence = f"{place_label} — " + ", ".join(parts) if parts else f"{place_label} 정보예요."
+    if homepage:
+        sentence += f" 홈페이지: {homepage}"
+    return sentence
+
+
+def compose_event_info_message(response: InfoContextResponse) -> str:
+    """INFO(question_type=event) 응답 문구를 조립한다.
+
+    D-055/info-question-types-handoff.md의 필수 규칙: is_direct_match=False인
+    행사를 그 장소의 행사처럼 말하지 않는다 — TourAPI에 장소별 행사 조회가
+    없어 지역 단위로 받아 좌표 거리로 근접 매칭하기 때문이다. 직접 매칭 행사와
+    근처 행사를 문장에서 분리해 고지한다.
+    """
+
+    if response.status == "needs_clarification":
+        code = response.clarification.code if response.clarification is not None else None
+        return _CLARIFICATION_TEMPLATES.get(code, _CLARIFICATION_FALLBACK_MESSAGE)
+    if response.status == "unsupported":
+        return _unsupported_message(response.error.code if response.error else None)
+    if response.status == "unavailable" or response.result is None:
+        return _TOOL_UNAVAILABLE_MESSAGE
+
+    result = response.result
+    assert isinstance(result, EventInfoResult)
+    if result.status == "unavailable":
+        return _TOOL_UNAVAILABLE_MESSAGE
+
+    place_label = result.resolved_place_name or result.requested_place_name or "그 장소"
+    if result.status == "no_data" or not result.events:
+        return f"{place_label} 근처에 지금 진행 중인 행사가 없어요."
+
+    direct = [event for event in result.events if event.is_direct_match]
+    nearby = [event for event in result.events if not event.is_direct_match]
+
+    sentences: list[str] = []
+    if direct:
+        titles = ", ".join(event.title for event in direct)
+        sentences.append(f"{place_label}에서 진행 중인 행사예요. {titles}.")
+    if nearby:
+        items = ", ".join(
+            f"{event.title}({event.distance_km:.2f}km)"
+            if event.distance_km is not None
+            else event.title
+            for event in nearby
+        )
+        sentences.append(f"{place_label} 근처에서 진행 중인 행사예요. {items}.")
+    return " ".join(sentences)
+
+
 def compose_schedule_message(schedule: ScheduleResult) -> str:
     """SCHEDULE 응답 말풍선 텍스트를 조립한다.
 
@@ -161,7 +335,7 @@ async def compose_chat_message(
     tool_status: str | None = None,
     tool_clarification: Clarification | None = None,
     tool_error_code: str | None = None,
-    info_concentration_response: InfoContextResponse | None = None,
+    info_response: InfoContextResponse | None = None,
     llm: LLMProvider,
 ) -> str:
     """AgentResponse.message(챗봇 말풍선 텍스트)를 조립한다.
@@ -187,8 +361,12 @@ async def compose_chat_message(
         )
         return result.data
 
-    if llm_output.intent is Intent.INFO and info_concentration_response is not None:
-        return compose_info_concentration_message(info_concentration_response)
+    if llm_output.intent is Intent.INFO and info_response is not None:
+        if isinstance(info_response.result, EventInfoResult):
+            return compose_event_info_message(info_response)
+        if isinstance(info_response.result, PlaceInfoResult):
+            return compose_place_info_message(info_response)
+        return compose_info_concentration_message(info_response)
 
     if llm_output.intent in (Intent.RECOMMEND, Intent.MODIFY, Intent.SCHEDULE):
         if tool_status in _TOOL_TERMINAL_STATUSES:
@@ -237,5 +415,7 @@ __all__ = [
     "compose_recommendation_message",
     "compose_chat_message",
     "compose_info_concentration_message",
+    "compose_place_info_message",
+    "compose_event_info_message",
     "compose_schedule_message",
 ]

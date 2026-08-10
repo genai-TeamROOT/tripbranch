@@ -30,7 +30,6 @@ from app.schemas import (
     InterpretRequest,
     LLMOutput,
     OutputStatus,
-    QuestionType,
     RecommendationItem,
     RecommendationResponse,
     ToolExecutionDebug,
@@ -393,19 +392,17 @@ async def run_agent_flow(
     ):
         _remember_clarification(state_response.session_id, None, store)
 
-    # 4-0) INFO의 혼잡도 질의(question_type=concentration)는 RECOMMEND/MODIFY와 별개로
-    #      C를 거친다(concentration-conditions.md §2.4/§3.3). 그 외 INFO question_type과
+    # 4-0) INFO는 question_type 8종 모두 RECOMMEND/MODIFY와 별개로 C를 거친다
+    #      (D-054/D-055, backend/docs/package-a/info-question-types-handoff.md).
     #      COMPARE/GENERAL은 그대로 4)의 일반 게이트로 빠진다 — Tool을 직접 호출하지
     #      않는다는 기존 원칙(ToolProvider Protocol)을 그대로 따른다.
-    #      hasattr 체크: C의 Real ToolProvider(app.agent_context.factory.ContextService)가
-    #      fetch_info_context()를 아직 구현하지 않은 과도기(C 확인 필요, §2.4)에도
+    #      hasattr 체크: Fake 등 fetch_info_context()를 구현하지 않은 ToolProvider에도
     #      AttributeError로 요청 전체가 죽지 않고 기존 "준비 중" 문구로 안전하게
-    #      낮아지게 한다 — C가 메서드를 추가하면 자동으로 이 분기를 타기 시작한다.
+    #      낮아지게 한다.
     if (
         llm_output.status is OutputStatus.COMPLETE
         and llm_output.intent is Intent.INFO
         and llm_output.info is not None
-        and llm_output.info.question_type is QuestionType.CONCENTRATION
         and hasattr(tool_provider, "fetch_info_context")
     ):
         info_request = to_info_context_request(new_trace_id(), llm_output.info)
@@ -416,7 +413,7 @@ async def run_agent_flow(
             latency_ms=int((time.monotonic() - info_started_at) * 1000),
         )
         message = await compose_chat_message(
-            llm_output, info_concentration_response=info_response, llm=llm
+            llm_output, info_response=info_response, llm=llm
         )
         return AgentResponse(
             llm_output=llm_output,

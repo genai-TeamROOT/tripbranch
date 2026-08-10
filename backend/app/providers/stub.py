@@ -139,6 +139,7 @@ _INFO_QUESTION_MARKERS = (
     "사람 많",
     "붐빌",
     "혼잡",
+    "개요",
 )
 _GENERAL_MARKERS = (
     "역사",

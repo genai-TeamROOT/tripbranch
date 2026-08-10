@@ -712,8 +712,8 @@ async def test_fake_tool_provider_proxy_fallback_discloses_source() -> None:
 
 
 @pytest.mark.asyncio
-async def test_info_other_question_type_does_not_call_tool_provider() -> None:
-    """concentration이 아닌 INFO question_type은 기존처럼 C를 거치지 않는다(회귀 확인)."""
+async def test_info_operating_hours_question_type_calls_tool_provider() -> None:
+    """D-054/D-059: concentration 외 question_type도 이제 C를 거쳐 실제 응답을 받는다."""
     store = InMemoryStateStore()
     providers = _providers()
 
@@ -729,8 +729,54 @@ async def test_info_other_question_type_does_not_call_tool_provider() -> None:
 
     assert response.llm_output.intent == "INFO"
     assert response.llm_output.info.question_type == "operating_hours"
-    assert providers["tool_provider"].info_call_count == 0
-    assert "준비 중" in response.message
+    assert providers["tool_provider"].info_call_count == 1
+    assert "준비 중" not in response.message
+    assert "09:00~18:00" in response.message
+
+
+@pytest.mark.asyncio
+async def test_info_general_info_question_type_shows_overview_raw() -> None:
+    """general_info는 LLM 요약 없이 overview 원문을 그대로 보여준다(사용자 결정)."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 개요 알려줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.llm_output.intent == "INFO"
+    assert response.llm_output.info.question_type == "general_info"
+    assert providers["tool_provider"].info_call_count == 1
+    assert "조선 왕조의 법궁" in response.message
+
+
+@pytest.mark.asyncio
+async def test_info_event_question_type_distinguishes_direct_and_nearby() -> None:
+    """D-055: is_direct_match=False인 행사를 그 장소의 행사로 말하지 않는다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 오늘 행사 있어?",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.llm_output.intent == "INFO"
+    assert response.llm_output.info.question_type == "event"
+    assert providers["tool_provider"].info_call_count == 1
+    assert "경복궁에서 진행 중인 행사예요. 경복궁 별빛야행" in response.message
+    assert "경복궁 근처에서 진행 중인 행사예요. 종로구 전통문화행사" in response.message
 
 
 def _place(place_id: str, *, latitude: float = 37.5, longitude: float = 127.0) -> PlaceCandidate:

@@ -11,12 +11,18 @@ CompareContextRequest)의 첫 실제 구현이다.
 
 from app.agent_context.info_schemas import (
     ConcentrationInfoResult,
+    EventInfoResult,
+    EventItem,
     InfoContextRequest,
     InfoContextResponse,
+    PlaceInfoResult,
 )
 
 __all__ = [
     "ConcentrationInfoResult",
+    "EventInfoResult",
+    "EventItem",
     "InfoContextRequest",
     "InfoContextResponse",
+    "PlaceInfoResult",
 ]

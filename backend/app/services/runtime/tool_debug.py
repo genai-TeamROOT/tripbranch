@@ -153,7 +153,13 @@ def build_info_concentration_execution_debug(
     *,
     latency_ms: int | None = None,
 ) -> ToolExecutionDebug | None:
-    """INFO 혼잡도 단일 장소 조회를 감사용 단계 정보로 변환한다."""
+    """INFO 단일 장소 조회를 감사용 단계 정보로 변환한다.
+
+    이름은 concentration이지만 question_type 8종 전체가 이 함수를 거친다
+    (D-054/D-055 A 배선). is_proxy는 ConcentrationInfoResult 전용 필드라
+    PlaceInfoResult/EventInfoResult에는 없으므로 getattr로 방어한다 —
+    없으면 AttributeError로 감사 기록 전체가 조용히 사라진다.
+    """
 
     try:
         result = response.result
@@ -179,10 +185,10 @@ def build_info_concentration_execution_debug(
             clarification_code=(
                 response.clarification.code if response.clarification is not None else None
             ),
-            is_proxy=result.is_proxy if result is not None else None,
+            is_proxy=getattr(result, "is_proxy", None) if result is not None else None,
         )
     except Exception:  # noqa: BLE001 - 표시 정보 때문에 요청을 실패시키지 않는다.
-        logger.warning("INFO 혼잡도 응답에서 Audit 표시 정보를 만들지 못함", exc_info=True)
+        logger.warning("INFO 응답에서 Audit 표시 정보를 만들지 못함", exc_info=True)
         return None
 
 
