@@ -393,6 +393,25 @@ async def run_agent_flow(
     ):
         _remember_clarification(state_response.session_id, None, store)
 
+    # 3-3) SCHEDULE 재조정 감지(SCHEDULE-06). 직전 턴이 SCHEDULE로 완료됐는데
+    #      (last_intent="SCHEDULE", 되묻기 없이 끝남 — pending_clarification=None)
+    #      이번 턴이 조건을 바꾸는 MODIFY로 분류됐다면 "일정 재조정" 요청으로
+    #      본다. session_context는 이번 턴 처리 전에 조회한 값이라 직전 턴
+    #      정보를 그대로 담고 있다(1번 참고). 조건 병합(3번)은 이미 원래
+    #      MODIFY 페이로드(llm_output.modify)로 정상적으로 끝났으므로 그 결과는
+    #      손대지 않고, intent 라벨만 SCHEDULE로 바꿔 아래 6)~8) 단계가 기존
+    #      SCHEDULE 분기(D 10개 호출·편성 모듈 호출)를 그대로 타게 한다.
+    #      classify_intent 프롬프트나 extract_modify_conditions는 건드리지
+    #      않는다 — last_intent는 B가 이미 매 턴 저장해온 값을 여기서 처음
+    #      읽는 것뿐이다(docs/design/int-07-schedule.md 3절 참고, A 공유 완료).
+    if (
+        llm_output.intent is Intent.MODIFY
+        and llm_output.status is OutputStatus.COMPLETE
+        and session_context.last_intent == Intent.SCHEDULE.value
+        and session_context.pending_clarification is None
+    ):
+        llm_output = llm_output.model_copy(update={"intent": Intent.SCHEDULE})
+
     # 4-0) INFO의 혼잡도 질의(question_type=concentration)는 RECOMMEND/MODIFY와 별개로
     #      C를 거친다(concentration-conditions.md §2.4/§3.3). 그 외 INFO question_type과
     #      COMPARE/GENERAL은 그대로 4)의 일반 게이트로 빠진다 — Tool을 직접 호출하지
@@ -631,7 +650,14 @@ async def run_agent_flow(
                     session_id=state_response.session_id,
                     run_id=state_response.run_id,
                     recommended=[
-                        RecommendedPlace(place_id=item.place_id, rank=item.order)
+                        RecommendedPlace(
+                            place_id=item.place_id,
+                            rank=item.order,
+                            estimated_arrival=item.estimated_arrival,
+                            estimated_duration_min=item.estimated_duration_min,
+                            travel_to_next_min=item.travel_to_next_min,
+                            reason=item.reason,
+                        )
                         for item in schedule_result.items
                     ],
                 ),

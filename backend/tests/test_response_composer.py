@@ -314,10 +314,22 @@ async def test_schedule_with_result_uses_schedule_summary() -> None:
     assert "연남동 카페 A에서 시작해요." in message
 
 
+def _schedule_item(place_id: str = "p1") -> ScheduleItem:
+    return ScheduleItem(
+        order=1,
+        place_id=place_id,
+        place_name=f"장소 {place_id}",
+        estimated_arrival="15:00",
+        estimated_duration_min=60,
+        travel_to_next_min=None,
+        reason="테스트 이유",
+    )
+
+
 class TestComposeScheduleMessage:
     def test_formats_hours_and_minutes(self) -> None:
         schedule = ScheduleResult(
-            items=[],
+            items=[_schedule_item()],
             total_duration_min=125,
             route_summary="동선 요약입니다.",
             basis_note="기준 시각 안내",
@@ -329,7 +341,7 @@ class TestComposeScheduleMessage:
 
     def test_formats_minutes_only_when_under_an_hour(self) -> None:
         schedule = ScheduleResult(
-            items=[],
+            items=[_schedule_item()],
             total_duration_min=45,
             route_summary="짧은 코스예요.",
             basis_note="기준 시각 안내",
@@ -338,6 +350,21 @@ class TestComposeScheduleMessage:
         message = compose_schedule_message(schedule)
 
         assert message == "45분 코스를 짜봤어요. 짧은 코스예요."
+
+    def test_empty_items_returns_route_summary_without_duration_prefix(self) -> None:
+        """items가 비면(후보 부족 등) planner.py가 route_summary를 안내 문구로
+        정규화해서 넘긴다 — 여기서는 "0분 코스를 짜봤어요" 같은 어색한 접두사 없이
+        그 문구를 그대로 반환하기만 한다(SCHEDULE-06 후속 수정)."""
+        schedule = ScheduleResult(
+            items=[],
+            total_duration_min=0,
+            route_summary="조건에 맞는 곳을 충분히 찾지 못해 일정을 만들지 못했어요.",
+            basis_note="기준 시각 안내",
+        )
+
+        message = compose_schedule_message(schedule)
+
+        assert message == "조건에 맞는 곳을 충분히 찾지 못해 일정을 만들지 못했어요."
 
 
 class TestComposeInfoConcentrationMessage:

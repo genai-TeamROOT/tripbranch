@@ -511,6 +511,138 @@ async def test_schedule_intent_reaches_planner_and_returns_schedule() -> None:
 
 
 @pytest.mark.asyncio
+async def test_schedule_then_reject_all_modify_reroutes_to_new_schedule() -> None:
+    """SCHEDULE-06: SCHEDULE 다음 턴 "다른 곳 보여줘"는 classify_intent()에서
+    여전히 MODIFY로 분류되지만(docs/design/int-07-schedule.md 3.1절), 직전
+    턴이 SCHEDULE로 완료됐다면 agent_runtime이 B의 last_intent를 보고 일정
+    재편성으로 재라우팅한다. classify_intent/extract_modify_conditions는
+    수정하지 않았다 — REJECT_ALL로 직전 일정 장소가 rejected에 들어가 새
+    일정에서 자동 제외되는지까지 함께 확인한다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처에서 반나절 코스 짜줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+    assert first.llm_output.intent == "SCHEDULE"
+    first_ids = {item.place_id for item in first.schedule.items}
+    assert first_ids
+
+    second = await run_agent_flow(
+        AgentRequest(
+            user_input="다른 곳 보여줘",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    # A가 실제로 분류했을 raw intent는 MODIFY다 — agent_runtime이 결과 라벨만
+    # SCHEDULE로 바꿔치기했다는 걸 응답으로 간접 확인한다(recommendations가
+    # 아니라 schedule이 채워짐).
+    assert second.llm_output.intent == "SCHEDULE"
+    assert second.recommendations is None
+    assert second.schedule is not None
+    second_ids = {item.place_id for item in second.schedule.items}
+    assert second_ids
+    assert second_ids.isdisjoint(first_ids)
+
+    context = get_session_context(second.state.session_id, store=store)
+    assert set(context.shown_place_ids) == second_ids
+
+
+@pytest.mark.asyncio
+async def test_schedule_modify_reroute_skipped_when_pending_clarification() -> None:
+    """SCHEDULE-06 안전장치: 직전 턴이 SCHEDULE였어도(last_intent="SCHEDULE")
+    되묻기가 아직 안 끝났다면(pending_clarification이 남아있음) 재조정
+    오버라이드가 걸리지 않는다 — 완료되지 않은 SCHEDULE을 재편성 대상으로
+    오인하면 안 된다.
+
+    develop 머지로 들어온 D-059(app/providers/stub.py의 FakeLLMProvider.
+    classify_intent)는 last_intent="SCHEDULE" + pending_clarification 존재 시
+    단순 후속 발화를 곧바로 SCHEDULE로 분류해 그 되묻기를 이어간다 — 이건 그
+    자체로 올바른 동작이라 이 시나리오에서는 이 테스트가 검증하려는 override
+    분기(llm_output.intent is Intent.MODIFY 조건)를 아예 타지 않는다. 그래서
+    명시적 재시작 문구("처음부터 다시")로 D-059 분기를 우회하고 REJECT_ALL
+    문구("다른 곳")로 MODIFY 분류를 유도해, override가 실제로 검사되는 경로를
+    직접 태운다."""
+    from app.state import session as session_module
+    from app.state.history import record_recommended
+    from app.state.schema import RecommendedItemInput
+
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    state, _ = session_module.get_or_create_session(store, None)
+    state.last_intent = "SCHEDULE"
+    state.pending_clarification = "ambiguous:weather_intent"
+    store.save_state(state)
+    record_recommended(
+        store,
+        state.session_id,
+        "run_seed",
+        [RecommendedItemInput(place_id="runtime-stub-museum-1", rank=1)],
+    )
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="처음부터 다시 다른 곳 보여줘",
+            session_id=state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.llm_output.intent == "MODIFY"
+    assert response.schedule is None
+
+
+@pytest.mark.asyncio
+async def test_schedule_continuation_during_pending_clarification_does_not_build_schedule() -> None:
+    """D-059 분기(직전 SCHEDULE 되묻기 중 후속 발화를 SCHEDULE로 이어 분류)를 탄
+    경우에도, 되묻기가 안 끝났으므로 실제 일정 편성은 이번 턴에 실행되지
+    않는다 — intent 라벨과 무관하게 지켜져야 하는 안전 속성이다."""
+    from app.state import session as session_module
+    from app.state.history import record_recommended
+    from app.state.schema import RecommendedItemInput
+
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    state, _ = session_module.get_or_create_session(store, None)
+    state.last_intent = "SCHEDULE"
+    state.pending_clarification = "ambiguous:weather_intent"
+    store.save_state(state)
+    record_recommended(
+        store,
+        state.session_id,
+        "run_seed",
+        [RecommendedItemInput(place_id="runtime-stub-museum-1", rank=1)],
+    )
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="다른 곳 보여줘",
+            session_id=state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.llm_output.intent == "SCHEDULE"
+    assert response.schedule is None
+
+
+@pytest.mark.asyncio
 async def test_first_turn_gps_seeded_survives_to_next_turn() -> None:
     """ensure_current_context()는 세션을 만들 수 없어 최초 턴에는 GPS를 못 심는다.
 
@@ -911,7 +1043,9 @@ async def test_concentration_intent_persisted_by_b_triggers_rerank() -> None:
         "context_fetch",
         "candidate_enrichment",
     ]
-    assert response.tool_executions[1].candidate_status_counts == {"success": 4}
+    # RECOMMEND 기본 limit=5. _FAKE_CANDIDATES가 SCHEDULE-07에서 6개로 늘어(재조정
+    # 테스트가 3개 미만 가드에 걸리지 않도록) 5개로 잘려 enrichment 대상이 된다.
+    assert response.tool_executions[1].candidate_status_counts == {"success": 5}
 
 
 @pytest.mark.asyncio

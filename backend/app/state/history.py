@@ -3,12 +3,15 @@
 계약 문서: docs/package-b/agent-state-contract-v1.md (3절)
 
 이력은 append-only이며 기존 항목을 수정하지 않는다.
-B는 place_id만 저장하고 장소 상세 정보를 보관하지 않는다.
+B는 place_id만 저장하고 장소 상세 정보를 보관하지 않는다 — 단, SCHEDULE
+재조정(SCHEDULE-06)을 위해 일정 세부 필드(도착시각/체류시간/이동시간/이유)만
+예외적으로 저장한다. RecommendedItem 참고.
 """
 
 from app.state.schema import (
     RecommendationHistory,
     RecommendedItem,
+    RecommendedItemInput,
     RejectedItem,
     now_kst,
 )
@@ -29,25 +32,29 @@ def record_recommended(
     store: StateStore,
     session_id: str,
     run_id: str,
-    items: list[tuple[str, int]],
+    items: list[RecommendedItemInput],
 ) -> int:
     """추천 결과를 기록한다. (계약 6.4절)
 
-    items는 (place_id, rank) 목록이며, 실제로 노출이 확정된 것만 전달받는다.
-    노출 여부를 아는 주체는 Agent Runtime이므로 호출도 Runtime이 담당한다.
+    items는 실제로 노출이 확정된 것만 전달받는다. 노출 여부를 아는 주체는
+    Agent Runtime이므로 호출도 Runtime이 담당한다.
 
     중복 place_id도 오류로 처리하지 않고 추가한다. (계약 3.5절)
     """
     history = get_or_create(store, session_id)
     shown_at = now_kst()
 
-    for place_id, rank in items:
+    for item in items:
         history.recommended.append(
             RecommendedItem(
-                place_id=place_id,
+                place_id=item.place_id,
                 run_id=run_id,
-                rank=rank,
+                rank=item.rank,
                 shown_at=shown_at,
+                estimated_arrival=item.estimated_arrival,
+                estimated_duration_min=item.estimated_duration_min,
+                travel_to_next_min=item.travel_to_next_min,
+                reason=item.reason,
             )
         )
 
