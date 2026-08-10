@@ -146,7 +146,14 @@ def compose_schedule_message(schedule: ScheduleResult) -> str:
     장소별 도착 시각·이유 같은 상세는 여기서 다시 풀어쓰지 않는다 —
     AgentResponse.schedule이 이미 그 정보를 갖고 있다(문서 docstring 원칙과
     동일하게 message는 요약만 맡는다).
+
+    items가 비어있으면(후보 부족 등으로 일정을 못 짠 경우, app/schedule/
+    planner.py가 route_summary를 안내 문구로 정규화해서 넘겨준다) "0분 코스를
+    짜봤어요" 같은 어색한 접두사 없이 route_summary만 그대로 반환한다.
     """
+
+    if not schedule.items:
+        return schedule.route_summary
 
     hours, minutes = divmod(schedule.total_duration_min, 60)
     duration_label = f"{hours}시간 {minutes}분" if hours else f"{minutes}분"
