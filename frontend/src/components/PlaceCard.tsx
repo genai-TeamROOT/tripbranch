@@ -43,6 +43,17 @@ function formatClosingTime(remainingMinutes: number): string {
   return `운영 종료 예정 ${time} (${formatRemainingDuration(remainingMinutes)})`;
 }
 
+function isAlwaysOpen(operatingHours: string): boolean {
+  const normalized = operatingHours.replaceAll(/\s/g, "").toLowerCase();
+  return (
+    normalized.includes("24시간") ||
+    normalized.includes("상시개방") ||
+    normalized.includes("연중무휴") ||
+    normalized === "00:00~24:00" ||
+    normalized === "00:00-24:00"
+  );
+}
+
 function formatOperatingHours(item: RecommendationItem): string {
   if (item.remaining_minutes === null) {
     return "확인 불가";
@@ -51,6 +62,9 @@ function formatOperatingHours(item: RecommendationItem): string {
   // D가 제공하는 당일 적용 운영 구간을 우선 표시한다. 이전 응답 또는 구간을
   // 판별할 수 없는 후보는 기존의 종료 예정 시각 표기로 자연스럽게 폴백한다.
   if (item.operating_hours_display) {
+    if (isAlwaysOpen(item.operating_hours_display)) {
+      return item.operating_hours_display;
+    }
     return `${item.operating_hours_display} (${formatRemainingDuration(item.remaining_minutes)})`;
   }
 

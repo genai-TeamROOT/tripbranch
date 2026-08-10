@@ -9,6 +9,7 @@
 import type { ChatMessage } from "../../types";
 import { AgentProgressMessage } from "./AgentProgressMessage";
 import { ConditionDebugMessage } from "./ConditionDebugMessage";
+import { PlaceInfoCard } from "./PlaceInfoCard";
 import { RecommendationResultMessage } from "./RecommendationResultMessage";
 import { ScheduleResultMessage } from "./ScheduleResultMessage";
 import { SessionStatusMessage } from "./SessionStatusMessage";
@@ -107,6 +108,10 @@ export function ChatMessageList({
                 onRelaxRadius={onRelaxRadius}
               />
             );
+          }
+
+          if (message.type === "place_info_result") {
+            return <PlaceInfoCard key={message.id} card={message.card} />;
           }
 
           return (

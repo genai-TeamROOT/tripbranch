@@ -618,6 +618,32 @@ class ToolExecutionDebug(BaseModel):
     )
 
 
+class InfoPlaceCard(BaseModel):
+    """INFO 장소 상세 카드용 A의 최종 응답 모델.
+
+    C의 ``PlaceInfoResult.fields``는 사용자가 물어본 정보가 실제로 있었는지를
+    판정하는 용도이고, 이 모델은 그와 별개로 펼쳐서 보여줄 장소 전체 정보다.
+    따라서 ``answer_fields``를 카드의 상세 필드와 합치지 않는다.
+    """
+
+    question_type: QuestionType
+    answer_fields: dict[str, str] = Field(default_factory=dict)
+    place_id: str | None = None
+    place_name: str | None = None
+    thumbnail_url: str | None = None
+    overview: str | None = None
+    operating_hours: str | None = None
+    rest_date: str | None = None
+    parking: str | None = None
+    parking_fee: str | None = None
+    fee: str | None = None
+    baby_carriage: str | None = None
+    pet: str | None = None
+    credit_card: str | None = None
+    restroom: str | None = None
+    homepage: str | None = None
+
+
 class AgentResponse(BaseModel):
     """TODO(D 계약 확정 시 필드 변경 가능): Agent Runtime의 임시 최종 응답.
 
@@ -634,6 +660,9 @@ class AgentResponse(BaseModel):
     state: StateApplyResponse
     recommendations: RecommendationResponse | None = None
     schedule: ScheduleResult | None = None
+    # INFO의 장소 상세 질의에서만 채운다. 질문 답변(fields)과 펼침 카드 정보는
+    # 목적이 달라 InfoPlaceCard.answer_fields와 카드 상세를 분리해 보존한다.
+    info_place_card: InfoPlaceCard | None = None
     message: str
     # 개발자용 Audit에서 1차 Intent/2차 추출 호출의 실제 Gemini 모델·폴백 경로를
     # 확인한다. Fake LLM 등 실행 메타데이터를 제공하지 않는 구현체에서는 None이다.

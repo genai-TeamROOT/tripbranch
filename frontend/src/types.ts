@@ -65,6 +65,27 @@ export interface ScheduleResult {
   basis_note: string;
 }
 
+/** INFO 장소 질의에 함께 내려오는 펼침형 상세 카드 데이터. */
+export interface InfoPlaceCard {
+  question_type: string;
+  /** 사용자가 물어본 항목의 실제 답. 카드 전체 정보와 섞지 않는다. */
+  answer_fields: Record<string, string>;
+  place_id: string | null;
+  place_name: string | null;
+  thumbnail_url: string | null;
+  overview: string | null;
+  operating_hours: string | null;
+  rest_date: string | null;
+  parking: string | null;
+  parking_fee: string | null;
+  fee: string | null;
+  baby_carriage: string | null;
+  pet: string | null;
+  credit_card: string | null;
+  restroom: string | null;
+  homepage: string | null;
+}
+
 export type ChatPhase =
   | "idle"
   | "interpreting"
@@ -129,6 +150,11 @@ export type ChatMessage =
       id: string;
       type: "schedule_result";
       schedule: ScheduleResult;
+    }
+  | {
+      id: string;
+      type: "place_info_result";
+      card: InfoPlaceCard;
     };
 
 export interface ApiErrorBody {
@@ -319,6 +345,7 @@ export interface AgentResponse {
   state: StateApplyResponse;
   recommendations: RecommendationsResponse | null;
   schedule?: ScheduleResult | null;
+  info_place_card?: InfoPlaceCard | null;
   message: string;
   llm_execution?: LLMExecutionMetadata | null;
   tool_execution?: ToolExecutionDebug | null;

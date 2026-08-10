@@ -259,6 +259,7 @@ function tripReducer(state: TripState, action: TripAction): TripState {
       };
     case "APPEND_CHAT_TURN": {
       const { conditions, intent, message, recommendations, schedule, showDebug } = action.payload;
+      const infoPlaceCard = action.payload.agentResponse.info_place_card ?? null;
       const messages: ChatMessage[] = [];
       // 옵션 A: 조건 카드는 유지하되 확인 버튼은 없다 — Agent가 해석과 추천을 한 번에
       // 끝내므로 중간에 사용자가 진행을 승인할 지점이 없다.
@@ -297,6 +298,13 @@ function tripReducer(state: TripState, action: TripAction): TripState {
           id: createMessageId("schedule"),
           type: "schedule_result",
           schedule,
+        });
+      }
+      if (infoPlaceCard) {
+        messages.push({
+          id: createMessageId("info-place"),
+          type: "place_info_result",
+          card: infoPlaceCard,
         });
       }
 

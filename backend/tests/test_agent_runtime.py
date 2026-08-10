@@ -904,6 +904,9 @@ async def test_info_operating_hours_question_type_calls_tool_provider() -> None:
     assert providers["tool_provider"].info_call_count == 1
     assert "준비 중" not in response.message
     assert "09:00~18:00" in response.message
+    assert response.info_place_card is not None
+    assert response.info_place_card.answer_fields["operating_hours"] == "09:00~18:00"
+    assert response.info_place_card.overview == "조선 왕조의 법궁으로 1395년에 창건된 궁궐이다."
 
 
 @pytest.mark.asyncio
