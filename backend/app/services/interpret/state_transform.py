@@ -161,6 +161,32 @@ def transform(
             llm_output.recommend.conditions,
             preserve_clarification_defaults=answers_clarification,
         )
+        # 새 RECOMMEND가 목적지·현재 위치를 전혀 언급하지 않으면, soft reset 뒤에도
+        # 직전 검색 중심을 다시 적용한다. "대학로 근처" → "카페 추천해줘"처럼
+        # 유형만 새로 말한 경우까지 목적지를 다시 묻게 되는 것을 막는다.
+        #
+        # 반대로 새 search_center/current_location을 말했거나, 명시적으로 새로 시작한
+        # 발화면 기존 중심을 복원하지 않는다. search_center가 C 위치 해석에서
+        # current_location보다 우선하므로, 현재 위치를 새로 말한 경우도 복원 대상에서
+        # 제외해야 한다.
+        existing_search_center = session_context.user_conditions.search_center
+        has_new_location = (
+            llm_output.recommend.conditions.search_center is not None
+            or llm_output.recommend.conditions.current_location is not None
+        )
+        if (
+            reset_scope == "soft"
+            and existing_search_center is not None
+            and not has_new_location
+            and not _has_explicit_reset_phrase(user_input)
+        ):
+            operations.append(
+                Operation(
+                    op="Update",
+                    field="search_center",
+                    value=existing_search_center,
+                )
+            )
 
     elif llm_output.intent is Intent.MODIFY and llm_output.modify is not None:
         modify = llm_output.modify

@@ -23,7 +23,7 @@ from app.schemas import GeneralTopic, Intent, UserConditions
 # 쓰였는지와 무관하게 단일 값으로 취급한다 — 함수별 개별 버전은 만들지 않는다. 판별·추출
 # 규칙에 영향을 주는 변경(6개 함수 중 하나라도) 시 버전을 올린다 — 사소한 문구·주석
 # 변경은 올리지 않는다.
-PROMPT_VERSION = "agent-interpret-prompts-1.0.7"
+PROMPT_VERSION = "agent-interpret-prompts-1.0.9"
 
 CHATBOT_NAME = "트리비"
 CHATBOT_PERSONA = """\
@@ -79,9 +79,14 @@ _CONTEXT_DEPENDENT_RULES = """\
 - 이전 추천 있음 + 지명에 근처/주변 또는 조사·어미가 붙은 발화("광화문 근처에서",
   "광화문 근처", "광화문 근처 어때?", "광화문으로", "광화문에서") → MODIFY (검색 중심점만
   바꾸려는 말로 본다. 조사/어미/물음표의 차이는 판정에 영향 없음)
-- 이전 추천 있음 + 지명 단독("광화문", "경복궁") → MODIFY가 아니라 INFO (아래 경계 사례 참고 —
-  추천을 받은 뒤 특정 장소를 지목해 정보를 묻는 발화다)
+- 이전 추천 있음 + 지명 단독("광화문", "경복궁") → MODIFY (검색 중심점만 바꾸려는 말로
+  본다. 해당 장소 근처 추천을 이어간다)
 - 이전 추천 없음 + 지명에 근처/주변이 붙은 발화("광화문 근처에서", "광화문 근처") → RECOMMEND
+- 이전 추천 없음 + 지명 단독("광화문", "경복궁") → RECOMMEND (해당 장소 근처 추천)
+- 단, 직전 RECOMMEND/MODIFY 요청이 위치 되묻기(location_required/location_ambiguous)로
+  끝난 상태 + 단순 지명 답변("경복궁", "광화문") → MODIFY. 이때 단순 지명은 장소 정보
+  질문이 아니라 방금 요청한 검색 중심점의 답변이다. "경복궁 오늘 열어?"처럼 정보 질문이
+  붙으면 INFO로 처리한다.
 - 직전 턴이 SCHEDULE 되묻기(장소/조건 모호)로 끝났고 이번 발화가 그 답변으로 보이면
   (지명만 던지거나 조건만 보충하는 짧은 응답) → SCHEDULE 유지 (새 요청이 아니라 이전
   일정 요청을 이어서 완성하는 중이다. 위의 "지명+조사는 MODIFY" 규칙보다 이 규칙이
@@ -90,8 +95,7 @@ _CONTEXT_DEPENDENT_RULES = """\
 
 _BOUNDARY_CASES = """\
 경계 사례:
-- "경복궁" (단독) → INFO (정보 조회 의도. 이전 추천 이력이 있어도 INFO다 — 지명만 던지는 건
-  검색 위치 변경이 아니라 그 장소를 지목한 질문으로 본다)
+- "경복궁" (단독) → RECOMMEND (경복궁 근처 추천. 이전 추천 이력이 있으면 MODIFY)
 - "경복궁 같은 곳" → RECOMMEND (유사 장소 추천)
 - "오늘 오후 종로 반나절 코스 짜줘" → SCHEDULE (시간 순서의 복수 장소 일정 요청)
 - "경복궁, 인사동 가고 싶은데 어디부터 갈까?" → SCHEDULE (방문 순서 요청)
@@ -119,13 +123,19 @@ def build_intent_classification_instruction(
 ) -> str:
     """intent-definition.md §5(판별 우선순위·맥락 의존 판별·경계 사례) 기반 system instruction."""
 
-    # SCHEDULE 외 다른 last_intent는 이번 규칙(D-059) 범위 밖이라 프롬프트에 노출하지
-    # 않는다 — 불필요한 정보로 프롬프트를 비대하게 만들지 않기 위함.
     schedule_clarification_pending = (
         last_intent == "SCHEDULE" and pending_clarification is not None
     )
+    location_clarification_pending = (
+        last_intent in {"RECOMMEND", "MODIFY"}
+        and pending_clarification in {"location_required", "location_ambiguous"}
+    )
     clarification_status = (
-        "예 (직전 SCHEDULE 요청의 되묻기)" if schedule_clarification_pending else "아니오"
+        "예 (직전 SCHEDULE 요청의 되묻기)"
+        if schedule_clarification_pending
+        else "예 (직전 RECOMMEND/MODIFY 요청의 위치 되묻기)"
+        if location_clarification_pending
+        else "아니오"
     )
 
     return f"""당신은 국내 여행 추천 서비스 TripBranch의 Intent 분류기입니다.
@@ -154,8 +164,9 @@ _RECOMMEND_LOCATION_RULES = """\
 위치 필드 규칙:
 - current_location: 사용자가 "나 지금 ~~야"처럼 현재 위치를 직접 밝힌 경우만 채움. 그 외엔 null
   (GPS로 보충되는 값이므로 언급 없으면 비워둔다)
-- search_center: 사용자가 "~~ 근처", "~~ 주변", "~~ 가려는데"로 목적지를 밝히면 그 장소.
-  목적지 언급이 없으면 null
+- search_center: 사용자가 "~~ 근처", "~~ 주변", "~~ 가려는데" 또는 지명만 단독으로
+  목적지를 밝히면 그 장소. 목적지 언급이 없으면 null. 단순 지명은 해당 장소의 정보 질문이
+  아니라 그 장소 근처 추천 요청으로 취급한다 — 정보성 질문은 Intent 분류 단계에서만 INFO다.
 - 값이 빈 문자열이거나 공백만 있으면 null로 반환하세요("" 또는 "   " 금지, 값이 없으면 null)
 """
 
@@ -273,10 +284,19 @@ condition_changes에서 값을 채운 필드와 changed_fields의 목록은 항�
 """
 
 
-def build_modify_extraction_instruction(current_conditions: UserConditions) -> str:
+def build_modify_extraction_instruction(
+    current_conditions: UserConditions,
+    *,
+    pending_clarification: str | None = None,
+) -> str:
     """int-03-modify.md §6,7,9,12(REJECT_ALL/CHANGE_CONDITION, 병합, "더 ~한 곳") 기반."""
 
     current_json = current_conditions.model_dump_json(indent=2)
+    location_clarification_answer = (
+        "예"
+        if pending_clarification in {"location_required", "location_ambiguous"}
+        else "아니오"
+    )
     return f"""당신은 TripBranch의 MODIFY 요청 추출기입니다. 사용자 발화 하나에서
 modify_type과 condition_changes를 추출해 LLMOutput(intent="MODIFY")으로 반환하세요.
 
@@ -284,6 +304,12 @@ modify_type과 condition_changes를 추출해 LLMOutput(intent="MODIFY")으로 �
 ```json
 {current_json}
 ```
+
+직전 위치 되묻기 답변 여부: {location_clarification_answer}
+위 값이 "예"이고 사용자가 단순 지명만 답했다면, 그 지명을 search_center에 채우고
+changed_fields에는 "search_center"만 넣으세요. 기존 조건은 변경하지 않습니다.
+위치 되묻기 상태가 아니어도, 이전 추천 뒤 사용자가 단순 지명만 말하면 해당 지명을
+search_center에 채우고 changed_fields에는 "search_center"만 넣으세요.
 
 {_MODIFY_TYPE_RULES}
 {_MODIFY_RELATIVE_EXPRESSION_RULES}
