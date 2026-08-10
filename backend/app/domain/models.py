@@ -140,6 +140,10 @@ class PlaceDetails:
     pet: str | None = None
     credit_card: str | None = None
     restroom: str | None = None
+    # 장소 카드 썸네일. TourAPI 경로는 detailCommon2의 firstimage2, 캐시 경로는
+    # 목록 동기화가 저장해둔 값에서 온다. 실측 844건 중 169건(20%)은 이미지가 없어
+    # None이 정상 값이다 — 소비 측이 이미지 영역을 숨기는 근거다.
+    thumbnail_url: str | None = None
 
 
 @dataclass(frozen=True)

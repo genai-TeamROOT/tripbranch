@@ -245,6 +245,15 @@ async def test_편의시설도_캐시에서_답한다() -> None:
 
 
 @pytest.mark.asyncio
+async def test_썸네일이_카드용으로_실린다() -> None:
+    provider, _ = _provider()
+
+    details = (await provider.find_details_by_name("경복궁")).data
+
+    assert details.thumbnail_url == "https://example.test/thumb.jpg"
+
+
+@pytest.mark.asyncio
 async def test_이름이_없으면_404를_던진다() -> None:
     """RealPlaceProvider와 같은 코드·상태여야 Tool이 no_data로 낮춘다."""
     provider, _ = _provider(matches=())

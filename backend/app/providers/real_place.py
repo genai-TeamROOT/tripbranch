@@ -485,6 +485,8 @@ class RealPlaceProvider:
             pet=_first_text(intro, PET_KEYS),
             credit_card=_first_text(intro, CREDIT_CARD_KEYS),
             restroom=_first_text(intro, RESTROOM_KEYS),
+            # 목록 동기화가 places에 담는 값과 같은 키다(firstimage2 → firstimage).
+            thumbnail_url=_first_text(common, ("firstimage2", "firstimage")),
             operating_hours=operating_hours,
             rest_date=rest_date,
             raw_common=common,

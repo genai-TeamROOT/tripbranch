@@ -28,13 +28,14 @@ from app.agent_context.enrichment_service import (
     execute_concentration_by_search_keys,
     select_concentration_forecast,
 )
-from app.agent_context.info_field_rules import extract_info_fields
+from app.agent_context.info_field_rules import clean_text, extract_info_fields
 from app.agent_context.info_schemas import (
     ConcentrationInfoResult,
     EventInfoResult,
     EventItem,
     InfoContextRequest,
     InfoContextResponse,
+    PlaceCard,
     PlaceInfoResult,
 )
 from app.agent_context.schemas import (
@@ -56,6 +57,7 @@ from app.concentration_policy import (
     is_valid_concentration_rate,
     normalize_concentration,
 )
+from app.domain.models import PlaceDetails
 from app.errors import AppError
 from app.geo import haversine_km
 from app.place_search_policy import (
@@ -660,6 +662,10 @@ class ContextService:
             ),
             place_id=detail_result.details.content_id or resolved_location.place_id,
             fields=extract_info_fields(request.question_type, detail_result.details),
+            # 카드는 질문 유형과 무관하게 채운다. status는 위 fields로만 정해진다.
+            place_card=_to_place_card(
+                detail_result.details, resolved_location.place_id
+            ),
             provider_metadata=(location_metadata, detail_result.provider_metadata),
         )
 
@@ -883,6 +889,7 @@ def _place_info_response(
     resolved_place_name: str,
     place_id: str | None,
     fields: dict[str, str],
+    place_card: PlaceCard | None = None,
     provider_metadata: tuple[tuple[ProviderMetadata, ...], ...] = (),
 ) -> InfoContextResponse:
     """장소 상세 INFO 응답을 한 형태로 유지한다.
@@ -890,6 +897,10 @@ def _place_info_response(
     뽑아낸 필드가 하나도 없으면 no_data다 — 장소는 찾았지만 그 질문에 답할 값이
     TourAPI에 없는 경우다. 이때도 resolved_place_name은 채워 보낸다(A가 "OO의
     주차 정보는 없어요"처럼 장소를 짚어 안내할 수 있게).
+
+    **status 판정에는 fields만 쓴다.** place_card는 질문과 무관하게 채우므로
+    판정에 넣으면 "주차 정보는 없어요"가 영영 나오지 않는다 — overview가 거의
+    항상 있어 카드가 비는 일이 없기 때문이다.
     """
 
     status: Literal["success", "no_data"] = "success" if fields else "no_data"
@@ -903,8 +914,33 @@ def _place_info_response(
             resolved_place_name=resolved_place_name,
             place_id=place_id,
             fields=fields,
+            place_card=place_card,
         ),
         metadata=_info_response_metadata(*provider_metadata),
+    )
+
+
+def _to_place_card(details: PlaceDetails, place_id: str | None) -> PlaceCard:
+    """상세 조회 결과를 카드 표시용 묶음으로 옮긴다.
+
+    fields와 같은 clean_text를 태워 HTML·엔티티 정리 결과가 두 곳에서 갈리지 않게
+    한다. 값이 없으면 None으로 두고 문구를 지어내지 않는다.
+    """
+    return PlaceCard(
+        place_id=details.content_id or place_id,
+        place_name=clean_text(details.title),
+        thumbnail_url=details.thumbnail_url,
+        overview=clean_text(details.overview),
+        operating_hours=clean_text(details.operating_hours),
+        rest_date=clean_text(details.rest_date),
+        parking=clean_text(details.parking),
+        parking_fee=clean_text(details.parking_fee),
+        fee=clean_text(details.fee),
+        baby_carriage=clean_text(details.baby_carriage),
+        pet=clean_text(details.pet),
+        credit_card=clean_text(details.credit_card),
+        restroom=clean_text(details.restroom),
+        homepage=clean_text(details.homepage),
     )
 
 

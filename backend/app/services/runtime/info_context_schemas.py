@@ -15,6 +15,7 @@ from app.agent_context.info_schemas import (
     EventItem,
     InfoContextRequest,
     InfoContextResponse,
+    PlaceCard,
     PlaceInfoResult,
 )
 
@@ -24,5 +25,6 @@ __all__ = [
     "EventItem",
     "InfoContextRequest",
     "InfoContextResponse",
+    "PlaceCard",
     "PlaceInfoResult",
 ]

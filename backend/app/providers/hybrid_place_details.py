@@ -133,6 +133,7 @@ def _to_place_details(
         pet=row.pet_raw,
         credit_card=row.credit_card_raw,
         restroom=row.restroom_raw,
+        thumbnail_url=row.thumbnail_url or row.first_image_url,
     )
 
 
