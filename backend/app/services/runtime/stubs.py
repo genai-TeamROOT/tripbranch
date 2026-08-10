@@ -34,6 +34,7 @@ from app.services.runtime.info_context_schemas import (
     EventItem,
     InfoContextRequest,
     InfoContextResponse,
+    PlaceCard,
     PlaceInfoResult,
 )
 from app.state.schema import now_kst
@@ -57,6 +58,23 @@ _FAKE_PLACE_FIELDS_BY_QUESTION_TYPE: dict[str, dict[str, str]] = {
         "homepage": "http://www.royalpalace.go.kr",
     },
 }
+
+_FAKE_PLACE_CARD = PlaceCard(
+    place_id="fake-place-id",
+    place_name="경복궁",
+    thumbnail_url="https://images.example.test/gyeongbokgung.jpg",
+    overview="조선 왕조의 법궁으로 1395년에 창건된 궁궐이다.",
+    operating_hours="09:00~18:00",
+    rest_date="매주 월요일",
+    parking="가능",
+    parking_fee="무료",
+    fee="성인 3,000원",
+    baby_carriage="가능",
+    pet="불가",
+    credit_card="가능",
+    restroom="있음",
+    homepage="http://www.royalpalace.go.kr",
+)
 
 _FAKE_CANDIDATES = (
     PlaceCandidate(
@@ -264,6 +282,9 @@ class FakeToolProvider:
                 resolved_place_name=request.place_name,
                 place_id="fake-place-id",
                 fields=dict(fields),
+                place_card=_FAKE_PLACE_CARD.model_copy(
+                    update={"place_name": request.place_name}
+                ),
             ),
         )
 

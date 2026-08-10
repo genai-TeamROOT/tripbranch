@@ -41,6 +41,7 @@ from app.services.interpret.state_transform import to_user_conditions, transform
 from app.services.runtime.context_transform import to_agent_context_request
 from app.services.runtime.enrichment_transform import to_candidate_enrichment_request
 from app.services.runtime.info_context_transform import to_info_context_request
+from app.services.runtime.info_response_transform import to_info_place_card
 from app.services.runtime.llm_execution import (
     get_llm_execution_metadata,
     reset_llm_execution_metadata,
@@ -438,6 +439,7 @@ async def run_agent_flow(
             llm_output=llm_output,
             state=state_response,
             recommendations=None,
+            info_place_card=to_info_place_card(info_response),
             message=message,
             llm_execution=get_llm_execution_metadata(),
             tool_execution=info_execution,
