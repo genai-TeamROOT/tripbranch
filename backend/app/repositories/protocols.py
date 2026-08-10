@@ -95,6 +95,11 @@ class PlaceRepository(Protocol):
         parking_fee_raw: str | None = None,
         use_fee_raw: str | None = None,
         discount_info_raw: str | None = None,
+        info_center_raw: str | None = None,
+        baby_carriage_raw: str | None = None,
+        pet_raw: str | None = None,
+        credit_card_raw: str | None = None,
+        restroom_raw: str | None = None,
     ) -> None: ...
 
     async def update_parsed_schedule(

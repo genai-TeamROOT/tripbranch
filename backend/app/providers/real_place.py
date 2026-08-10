@@ -29,6 +29,19 @@ from app.providers.contracts import (
     provider_result,
 )
 from app.providers.mappers import map_tour_api_response
+from app.providers.tour_intro_keys import (
+    BABY_CARRIAGE_KEYS,
+    CREDIT_CARD_KEYS,
+    DISCOUNT_INFO_KEYS,
+    INFO_CENTER_KEYS,
+    OPERATING_HOURS_KEYS,
+    PARKING_FEE_KEYS,
+    PARKING_KEYS,
+    PET_KEYS,
+    REST_DATE_KEYS,
+    RESTROOM_KEYS,
+    USE_FEE_KEYS,
+)
 from app.providers.upstream_errors import upstream_error_detail
 from app.schemas import PlaceCandidate
 
@@ -43,54 +56,6 @@ _DETAIL_INTRO_PATH = "/detailIntro2"
 
 # 목록 조회 numOfRows 상한. TourAPI가 실제로 받아주는 값이다.
 _MAX_LIST_ROWS = 1000
-_OPERATING_HOURS_KEYS = (
-    "usetime",
-    "usetimeculture",
-    "playtime",
-    "usetimeleports",
-    "opentime",
-    "opentimefood",
-    "checkintime",
-    "openperiod",
-)
-_REST_DATE_KEYS = (
-    "restdate",
-    "restdateculture",
-    "restdateleports",
-    "restdateshopping",
-    "restdatefood",
-)
-
-# 아래 네 묶음은 detailIntro2의 주차·요금 필드다(D-056, 2026-08-08 실측).
-# contenttypeid마다 이름이 달라 _first_text로 먼저 걸리는 값을 쓴다.
-#
-# 축제(15)에는 주차 필드 자체가 없다. 종로구 844건 중 38건이 해당한다.
-_PARKING_KEYS = (
-    "parking",  # 12 관광지
-    "parkingculture",  # 14 문화시설
-    "parkinglodging",  # 32 숙박
-    "parkingshopping",  # 38 쇼핑
-    "parkingfood",  # 39 음식점
-    "parkingleports",  # 28 레포츠
-)
-_PARKING_FEE_KEYS = (
-    "parkingfee",  # 14 문화시설
-    "parkingfeeleports",  # 28 레포츠
-)
-
-# 축제의 이용요금 필드명이 usetimefestival이다. 이름은 시간처럼 보이지만 내용은
-# 요금이라, 이 키를 _OPERATING_HOURS_KEYS에 넣으면 영업시간 자리에 "5,000원"이
-# 들어간다. 축제 운영시간은 playtime이 담당한다 — 두 목록을 섞지 않는다.
-_USE_FEE_KEYS = (
-    "usefee",  # 14 문화시설
-    "usefeeleports",  # 28 레포츠
-    "usetimefestival",  # 15 축제 (이름과 달리 요금)
-)
-_DISCOUNT_INFO_KEYS = (
-    "discountinfo",  # 14 문화시설
-    "discountinfofestival",  # 15 축제
-    "discountinfofood",  # 39 음식점
-)
 _TOUR_API_TIMEZONE = ZoneInfo("Asia/Seoul")
 
 
@@ -395,12 +360,17 @@ class RealPlaceProvider:
         return PlaceOperatingDetails(
             content_id=normalized_content_id,
             content_type_id=normalized_content_type_id,
-            operating_hours_raw=_first_text(intro, _OPERATING_HOURS_KEYS),
-            rest_date_raw=_first_text(intro, _REST_DATE_KEYS),
-            parking_info_raw=_first_text(intro, _PARKING_KEYS),
-            parking_fee_raw=_first_text(intro, _PARKING_FEE_KEYS),
-            use_fee_raw=_first_text(intro, _USE_FEE_KEYS),
-            discount_info_raw=_first_text(intro, _DISCOUNT_INFO_KEYS),
+            operating_hours_raw=_first_text(intro, OPERATING_HOURS_KEYS),
+            rest_date_raw=_first_text(intro, REST_DATE_KEYS),
+            parking_info_raw=_first_text(intro, PARKING_KEYS),
+            parking_fee_raw=_first_text(intro, PARKING_FEE_KEYS),
+            use_fee_raw=_first_text(intro, USE_FEE_KEYS),
+            discount_info_raw=_first_text(intro, DISCOUNT_INFO_KEYS),
+            info_center_raw=_first_text(intro, INFO_CENTER_KEYS),
+            baby_carriage_raw=_first_text(intro, BABY_CARRIAGE_KEYS),
+            pet_raw=_first_text(intro, PET_KEYS),
+            credit_card_raw=_first_text(intro, CREDIT_CARD_KEYS),
+            restroom_raw=_first_text(intro, RESTROOM_KEYS),
         )
 
     async def search_by_keyword(
@@ -459,8 +429,8 @@ class RealPlaceProvider:
         address_parts = [common.get("addr1"), common.get("addr2")]
         address = " ".join(str(part) for part in address_parts if part) or None
 
-        operating_hours = _first_text(intro, _OPERATING_HOURS_KEYS)
-        rest_date = _first_text(intro, _REST_DATE_KEYS)
+        operating_hours = _first_text(intro, OPERATING_HOURS_KEYS)
+        rest_date = _first_text(intro, REST_DATE_KEYS)
         details = PlaceDetails(
             content_id=content_id,
             content_type_id=content_type_id,
@@ -468,7 +438,21 @@ class RealPlaceProvider:
             address=address,
             overview=_first_text(common, ("overview",)),
             homepage=_first_text(common, ("homepage",)),
-            telephone=_first_text(common, ("tel",)) or _first_text(intro, ("infocenter",)),
+            # common의 tel은 축제(15)에만 채워진다. 나머지 유형은 intro의 안내처가
+            # 실제 출처라 유형별 키를 모두 훑는다 — 예전에는 `infocenter` 하나만 봐서
+            # 문화시설·숙박·쇼핑·음식점의 전화번호가 누락됐다.
+            telephone=(
+                _first_text(common, ("tel",)) or _first_text(intro, INFO_CENTER_KEYS)
+            ),
+            # 주차·요금도 유형별 키를 여기서 정규화한다. 소비 측이 raw_intro에서
+            # 원본 키를 다시 찾지 않도록 동기화 경로와 같은 상수를 쓴다.
+            parking=_first_text(intro, PARKING_KEYS),
+            parking_fee=_first_text(intro, PARKING_FEE_KEYS),
+            fee=_first_text(intro, USE_FEE_KEYS),
+            baby_carriage=_first_text(intro, BABY_CARRIAGE_KEYS),
+            pet=_first_text(intro, PET_KEYS),
+            credit_card=_first_text(intro, CREDIT_CARD_KEYS),
+            restroom=_first_text(intro, RESTROOM_KEYS),
             operating_hours=operating_hours,
             rest_date=rest_date,
             raw_common=common,

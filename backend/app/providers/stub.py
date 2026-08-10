@@ -9,6 +9,7 @@ TODO: 실제 provider(RealPlaceProvider 등)가 준비되면 팩토리에서 설
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -26,6 +27,15 @@ from app.providers.contracts import (
     ProviderSource,
     ProviderStatus,
     provider_result,
+)
+from app.providers.tour_intro_keys import (
+    BABY_CARRIAGE_KEYS,
+    CREDIT_CARD_KEYS,
+    PARKING_FEE_KEYS,
+    PARKING_KEYS,
+    PET_KEYS,
+    RESTROOM_KEYS,
+    USE_FEE_KEYS,
 )
 from app.schedule.schemas import ScheduleLLMPlan, SchedulePlanningRequest
 from app.schemas import (
@@ -666,14 +676,28 @@ class FakeWeatherProvider:
         )
 
 
+def _first_intro_text(
+    intro: Mapping[str, object], keys: tuple[str, ...]
+) -> str | None:
+    """실 provider의 _first_text와 같은 규칙으로 첫 값을 고른다."""
+    for key in keys:
+        value = intro.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 def _fake_intro(content_type_id: str) -> dict[str, object]:
     """detailIntro2 응답을 유형별 필드명까지 흉내 낸다.
 
     이 값을 비워두면 INFO 상세 질의(요금·주차·편의시설)의 필드 추출이 한 줄도
-    실행되지 않은 채 테스트가 통과한다 — raw_intro가 빈 dict면 추출 결과도 항상
-    빈 dict라서 "값이 없다"와 "로직이 안 돌았다"를 구분할 수 없다. 실 Provider와
-    같은 키 이름을 쓰는 것이 핵심이다(문화시설 14는 usefee/parkingculture,
-    음식점 39는 parkingfood).
+    실행되지 않은 채 테스트가 통과한다 — "값이 없다"와 "로직이 안 돌았다"를 구분할
+    수 없어진다. 소비 측은 이제 raw_intro가 아니라 정규화 필드를 읽지만(D-060),
+    get_details()가 그 필드를 여기서 뽑아 채우므로 이 dict가 비면 결과는 같다.
+
+    **실 Provider와 같은 키 이름을 쓰는 것이 핵심이다**(문화시설 14는 usefee/
+    parkingculture, 음식점 39는 parkingfood). 키 선택도 tour_intro_keys의 같은
+    목록으로 하므로 fake가 실 응답과 어긋나면 테스트에서 드러난다.
     """
 
     if content_type_id == "39":
@@ -798,6 +822,7 @@ class FakePlaceProvider:
     ) -> ProviderResult[PlaceDetails]:
         candidates = (await self.search_places(37.5796, 126.9770, [], 1.0)).data
         candidate = next((item for item in candidates if item.place_id == content_id), None)
+        intro = _fake_intro(content_type_id) if candidate else {}
         operating_hours = candidate.operating_hours if candidate else None
         rest_date = (
             "매주 월요일"
@@ -818,13 +843,22 @@ class FakePlaceProvider:
                 operating_hours=operating_hours,
                 rest_date=rest_date,
                 raw_common={},
-                raw_intro=_fake_intro(content_type_id) if candidate else {},
+                raw_intro=intro,
                 provider="fake_place",
                 operating_schedule=normalize_operating_schedule(
                     content_type_id=content_type_id,
                     operating_hours=operating_hours,
                     rest_date=rest_date,
                 ),
+                # 정규화 필드도 실 provider와 같은 키 목록으로 뽑는다. 손으로 값을
+                # 적어 넣으면 fake가 raw_intro와 어긋나도 아무도 모른다.
+                parking=_first_intro_text(intro, PARKING_KEYS),
+                parking_fee=_first_intro_text(intro, PARKING_FEE_KEYS),
+                fee=_first_intro_text(intro, USE_FEE_KEYS),
+                baby_carriage=_first_intro_text(intro, BABY_CARRIAGE_KEYS),
+                pet=_first_intro_text(intro, PET_KEYS),
+                credit_card=_first_intro_text(intro, CREDIT_CARD_KEYS),
+                restroom=_first_intro_text(intro, RESTROOM_KEYS),
             ),
             source=ProviderSource.FAKE_PLACE,
         )

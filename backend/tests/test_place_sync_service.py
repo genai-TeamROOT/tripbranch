@@ -111,6 +111,11 @@ class FakeAreaProvider:
             parking_fee_raw="무료",
             use_fee_raw="3,000원",
             discount_info_raw="경로 50%",
+            info_center_raw="02-123-4567",
+            baby_carriage_raw="없음",
+            pet_raw="불가",
+            credit_card_raw="가능",
+            restroom_raw="있음",
         )
 
 
@@ -181,15 +186,25 @@ class FakePlaceRepository:
         parking_fee_raw: str | None = None,
         use_fee_raw: str | None = None,
         discount_info_raw: str | None = None,
+        info_center_raw: str | None = None,
+        baby_carriage_raw: str | None = None,
+        pet_raw: str | None = None,
+        credit_card_raw: str | None = None,
+        restroom_raw: str | None = None,
     ) -> None:
         self.detail_updates.append(content_id)
-        # 받은 값을 버리면 provider가 채운 주차·요금이 저장 경로까지 실제로 오는지
-        # 검증할 수 없다.
+        # 받은 값을 버리면 provider가 채운 주차·요금·안내처가 저장 경로까지 실제로
+        # 오는지 검증할 수 없다.
         self.detail_extras[content_id] = (
             parking_info_raw,
             parking_fee_raw,
             use_fee_raw,
             discount_info_raw,
+            info_center_raw,
+            baby_carriage_raw,
+            pet_raw,
+            credit_card_raw,
+            restroom_raw,
         )
 
     async def update_parsed_schedule(
@@ -412,6 +427,11 @@ async def test_detail_sync_persists_parking_and_fee_fields() -> None:
         "무료",
         "3,000원",
         "경로 50%",
+        "02-123-4567",
+        "없음",
+        "불가",
+        "가능",
+        "있음",
     )
 
 

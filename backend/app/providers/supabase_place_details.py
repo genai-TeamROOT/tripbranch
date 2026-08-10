@@ -114,15 +114,25 @@ def _to_place_details(row: StoredPlaceDetail) -> PlaceDetails:
         content_type_id=row.content_type_id,
         title=row.title,
         address=row.address,
-        # overview/homepage/telephone은 동기화 대상이 아니라 저장소에 없다.
+        # overview/homepage는 detailCommon2에서만 오고 동기화 대상이 아니라 저장소에
+        # 없다. 두 값이 필요한 경로는 HybridPlaceDetailsProvider가 담당한다.
         overview=None,
         homepage=None,
-        telephone=None,
+        telephone=row.info_center_raw,
         operating_hours=row.operating_hours_raw,
         rest_date=row.rest_date_raw,
+        # raw_intro는 채우지 않는다. 저장소는 유형별 키를 이미 하나로 눌러 담았기
+        # 때문에 원본 키를 복원할 수 없다 — 아래 정규화 필드가 그 값을 대신 나른다.
         raw_common={},
         raw_intro={},
         provider=_PROVIDER_NAME,
+        parking=row.parking_info_raw,
+        parking_fee=row.parking_fee_raw,
+        fee=row.use_fee_raw,
+        baby_carriage=row.baby_carriage_raw,
+        pet=row.pet_raw,
+        credit_card=row.credit_card_raw,
+        restroom=row.restroom_raw,
         operating_schedule=normalize_operating_schedule(
             content_type_id=row.content_type_id,
             operating_hours=row.operating_hours_raw,
