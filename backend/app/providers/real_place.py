@@ -40,6 +40,9 @@ _LOCATION_BASED_LIST_PATH = "/locationBasedList2"
 _SEARCH_KEYWORD_PATH = "/searchKeyword2"
 _DETAIL_COMMON_PATH = "/detailCommon2"
 _DETAIL_INTRO_PATH = "/detailIntro2"
+
+# 목록 조회 numOfRows 상한. TourAPI가 실제로 받아주는 값이다.
+_MAX_LIST_ROWS = 1000
 _OPERATING_HOURS_KEYS = (
     "usetime",
     "usetimeculture",
@@ -56,6 +59,37 @@ _REST_DATE_KEYS = (
     "restdateleports",
     "restdateshopping",
     "restdatefood",
+)
+
+# 아래 네 묶음은 detailIntro2의 주차·요금 필드다(D-056, 2026-08-08 실측).
+# contenttypeid마다 이름이 달라 _first_text로 먼저 걸리는 값을 쓴다.
+#
+# 축제(15)에는 주차 필드 자체가 없다. 종로구 844건 중 38건이 해당한다.
+_PARKING_KEYS = (
+    "parking",  # 12 관광지
+    "parkingculture",  # 14 문화시설
+    "parkinglodging",  # 32 숙박
+    "parkingshopping",  # 38 쇼핑
+    "parkingfood",  # 39 음식점
+    "parkingleports",  # 28 레포츠
+)
+_PARKING_FEE_KEYS = (
+    "parkingfee",  # 14 문화시설
+    "parkingfeeleports",  # 28 레포츠
+)
+
+# 축제의 이용요금 필드명이 usetimefestival이다. 이름은 시간처럼 보이지만 내용은
+# 요금이라, 이 키를 _OPERATING_HOURS_KEYS에 넣으면 영업시간 자리에 "5,000원"이
+# 들어간다. 축제 운영시간은 playtime이 담당한다 — 두 목록을 섞지 않는다.
+_USE_FEE_KEYS = (
+    "usefee",  # 14 문화시설
+    "usefeeleports",  # 28 레포츠
+    "usetimefestival",  # 15 축제 (이름과 달리 요금)
+)
+_DISCOUNT_INFO_KEYS = (
+    "discountinfo",  # 14 문화시설
+    "discountinfofestival",  # 15 축제
+    "discountinfofood",  # 39 음식점
 )
 _TOUR_API_TIMEZONE = ZoneInfo("Asia/Seoul")
 
@@ -165,6 +199,8 @@ def _map_area_place(
         lcls_systm2=_first_text(item, ("lclsSystm2",)),
         lcls_systm3=_first_text(item, ("lclsSystm3",)),
         source_modified_at=_optional_modified_at(item.get("modifiedtime")),
+        first_image_url=_first_text(item, ("firstimage",)),
+        thumbnail_url=_first_text(item, ("firstimage2",)),
     )
 
 
@@ -305,8 +341,11 @@ class RealPlaceProvider:
             raise ValueError("area_code와 district_code가 필요합니다.")
         if page_no < 1:
             raise ValueError("page_no는 1 이상이어야 합니다.")
-        if not 1 <= num_of_rows <= 100:
-            raise ValueError("num_of_rows는 1 이상 100 이하여야 합니다.")
+        # TourAPI 목록 조회는 numOfRows 1000까지 그대로 반환한다(2026-08-08 확인).
+        # 상한을 100으로 두면 종로구 전량 스냅샷에 9회가 필요한데, areaBasedList2는
+        # 오퍼레이션 단위 일일 한도가 있어 호출 수를 줄일 수 있어야 한다.
+        if not 1 <= num_of_rows <= _MAX_LIST_ROWS:
+            raise ValueError(f"num_of_rows는 1 이상 {_MAX_LIST_ROWS} 이하여야 합니다.")
 
         payload = await self._request_json(
             _AREA_BASED_LIST_PATH,
@@ -358,6 +397,10 @@ class RealPlaceProvider:
             content_type_id=normalized_content_type_id,
             operating_hours_raw=_first_text(intro, _OPERATING_HOURS_KEYS),
             rest_date_raw=_first_text(intro, _REST_DATE_KEYS),
+            parking_info_raw=_first_text(intro, _PARKING_KEYS),
+            parking_fee_raw=_first_text(intro, _PARKING_FEE_KEYS),
+            use_fee_raw=_first_text(intro, _USE_FEE_KEYS),
+            discount_info_raw=_first_text(intro, _DISCOUNT_INFO_KEYS),
         )
 
     async def search_by_keyword(

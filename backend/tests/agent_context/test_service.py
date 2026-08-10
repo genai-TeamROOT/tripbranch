@@ -21,7 +21,7 @@ from app.domain.models import (
     StoredPlaceLocation,
     WeatherForecastResult,
 )
-from app.errors import ProviderUnavailableError
+from app.errors import AppError, ProviderUnavailableError
 from app.place_search_policy import DEFAULT_PLACE_SEARCH_RADIUS_KM
 from app.providers.concentration import FakeConcentrationProvider
 from app.providers.contracts import (
@@ -75,11 +75,13 @@ def _request(
     weather_intent: Literal["AVOID", "ENJOY", "NO_MENTION", "IGNORE"] | None = None,
     gps_location: Coordinates | None = None,
     exclude_tags: list[str] | None = None,
+    excluded_place_ids: list[str] | None = None,
 ) -> AgentContextRequest:
     return AgentContextRequest(
         request_id="request-1",
         intent="RECOMMEND",
         gps_location=gps_location,
+        excluded_place_ids=excluded_place_ids or [],
         conditions=UserConditions(
             search_center=search_center,
             place_types=place_types or [],
@@ -381,6 +383,52 @@ async def test_exclude_tags_drop_matching_candidates() -> None:
 
 
 @pytest.mark.asyncio
+async def test_excluded_place_ids_drop_already_consumed_candidates() -> None:
+    """소진분이 후보에서 빠진다 — 계약 필드만 받고 무시하면 이 테스트가 깨진다.
+
+    이게 안 되면 "다른 곳 보여줘"에 같은 후보가 다시 와서 D가 전부 걸러내고
+    추천이 0건이 된다.
+    """
+
+    request = _request(place_types=["cultural_facility", "restaurant"])
+    before = await _service().fetch_context(request)
+    assert before.context is not None
+    assert before.context.places is not None
+    assert [item.place_id for item in before.context.places.data or []] == [
+        "fake-museum-1",
+        "fake-cafe-1",
+    ]
+
+    after = await _service().fetch_context(
+        _request(
+            place_types=["cultural_facility", "restaurant"],
+            excluded_place_ids=["fake-museum-1"],
+        )
+    )
+
+    assert after.context is not None
+    assert after.context.places is not None
+    assert [item.place_id for item in after.context.places.data or []] == ["fake-cafe-1"]
+
+
+@pytest.mark.asyncio
+async def test_all_candidates_excluded_by_id_is_no_data_not_unavailable() -> None:
+    """소진분으로 후보가 다 빠져도 장애가 아니라 "더 없음"이다."""
+
+    response = await _service().fetch_context(
+        _request(
+            place_types=["cultural_facility", "restaurant"],
+            excluded_place_ids=["fake-museum-1", "fake-cafe-1"],
+        )
+    )
+
+    assert response.context is not None
+    assert response.context.places is not None
+    assert response.context.places.status == "no_data"
+    assert response.context.places.error is None
+
+
+@pytest.mark.asyncio
 async def test_all_candidates_excluded_is_no_data_not_unavailable() -> None:
     """전부 제외되면 장애가 아니라 "조건에 맞는 후보 없음"이다."""
 
@@ -439,8 +487,9 @@ async def test_factory_wires_fake_providers_into_common_context() -> None:
     assert {
         metadata.source for metadata in response.metadata.provider_metadata
     } == {
-        # 장소명은 fake 저장소에서 해석된다 — 지오코딩까지 가지 않는다.
-        "fake_places",
+        # 검색 중심점은 좌표만 필요하므로 저장소를 거치지 않고 지오코딩으로 간다
+        # (LocationPurpose.SEARCH_CENTER). 저장소 정체성 확정은 INFO 혼잡도 전용이다.
+        "fake_geocoding",
         "fake_weather",
         "fake_place",
         "fake_holiday",
@@ -538,7 +587,7 @@ async def test_info_concentration_queries_with_search_key_and_matches_by_name() 
                         latitude=37.5739,
                         longitude=126.9945,
                         concentration_name="종묘 [유네스코 세계유산]",
-                        concentration_search_key="종묘",
+                        concentration_search_keys=("종묘",),
                     )
                 ),
             ),
@@ -946,3 +995,234 @@ async def test_real_provider_failure_surfaces_as_unavailable_without_fake_fallba
     assert response.context.location.data is None
     # 후속 Tool도 돌지 않아 Fake 후보가 섞이지 않는다.
     assert response.context.places is None
+
+
+class _KeyOrderConcentrationProvider:
+    """지정한 검색어에만 응답하고 나머지는 0건을 돌려주는 더블(D-057).
+
+    tAtsNm은 이름이 안 맞으면 오류가 아니라 빈 목록을 준다. 검색어 목록을 순서대로
+    시도하는지, 결과가 나온 뒤에는 멈추는지를 호출 기록으로 확인한다.
+    """
+
+    def __init__(self, answering_key: str, place_name: str) -> None:
+        self.answering_key = answering_key
+        self.place_name = place_name
+        self.calls: list[str | None] = []
+
+    async def get_forecast(
+        self,
+        area_code: str,
+        district_code: str,
+        place_name: str | None = None,
+    ) -> ProviderResult[ConcentrationResult]:
+        self.calls.append(place_name)
+        if place_name != self.answering_key:
+            return provider_result(
+                ConcentrationResult(
+                    area_code=area_code,
+                    district_code=district_code,
+                    requested_place_name=place_name,
+                    forecasts=(),
+                    provider="test_concentration",
+                ),
+                source=ProviderSource.FAKE_CONCENTRATION,
+                status=ProviderStatus.NO_DATA,
+            )
+        return provider_result(
+            ConcentrationResult(
+                area_code=area_code,
+                district_code=district_code,
+                requested_place_name=place_name,
+                forecasts=(
+                    ConcentrationForecast(
+                        place_name=self.place_name,
+                        forecast_date=datetime.now(KST).strftime("%Y%m%d"),
+                        concentration_rate=41.5,
+                        raw_data={},
+                    ),
+                ),
+                provider="test_concentration",
+            ),
+            source=ProviderSource.FAKE_CONCENTRATION,
+            status=ProviderStatus.SUCCESS,
+        )
+
+
+def _concentration_service(provider: object, location: StoredPlaceLocation) -> ContextService:
+    place_provider = FakePlaceProvider()
+    return ContextService(
+        ContextTools(
+            location=ResolveLocationTool(
+                FakeGeocodingProvider(), _StoredPlaceRepository(location)
+            ),
+            places=NearbyPlaceDetailsTool(place_provider, place_provider),
+            weather=GetWeatherForecastTool(FakeWeatherProvider()),
+            holidays=GetHolidaysTool(FakeHolidayProvider()),
+            concentration=GetConcentrationTool(provider),
+        ),
+        candidate_limit=10,
+        clock=lambda: datetime.now(KST),
+    )
+
+
+@pytest.mark.asyncio
+async def test_info_concentration_stops_at_first_key_that_answers() -> None:
+    """첫 검색어가 답하면 뒤 토큰은 호출하지 않는다 — 평상시 호출 수가 늘면 안 된다."""
+    provider = _KeyOrderConcentrationProvider(
+        "닭한마리", "서울 동대문 닭한마리 골목"
+    )
+    service = _concentration_service(
+        provider,
+        StoredPlaceLocation(
+            content_id="704507",
+            title="서울 동대문 닭한마리 골목",
+            address="서울특별시 종로구 종로40가길",
+            latitude=37.5706,
+            longitude=127.0092,
+            concentration_name="서울 동대문 닭한마리 골목",
+            concentration_search_keys=("닭한마리", "동대문", "골목", "서울"),
+        ),
+    )
+
+    response = await service.fetch_info_context(
+        InfoContextRequest(
+            request_id="req-keys-1",
+            # 이름 해석은 이 테스트의 관심사가 아니다 — 더블이 정식 명칭으로만
+            # 조회되므로 그대로 넣고, 검증 대상은 검색어 호출 순서다.
+            place_name="서울 동대문 닭한마리 골목",
+            place_context="explicit",
+        )
+    )
+
+    assert response.status == "success"
+    assert provider.calls == ["닭한마리"]
+
+
+@pytest.mark.asyncio
+async def test_info_concentration_falls_through_to_later_key() -> None:
+    """앞 검색어가 0건이면 다음 토큰으로 넘어간다.
+
+    검색어를 하나만 두던 때는 여기서 그대로 no_data가 됐다(D-057).
+    """
+    provider = _KeyOrderConcentrationProvider("청와대", "청와대 앞길")
+    service = _concentration_service(
+        provider,
+        StoredPlaceLocation(
+            content_id="126533",
+            title="청와대 앞길",
+            address="서울특별시 종로구 청와대로",
+            latitude=37.5866,
+            longitude=126.9748,
+            concentration_name="청와대 앞길",
+            concentration_search_keys=("앞길", "청와대"),
+        ),
+    )
+
+    response = await service.fetch_info_context(
+        InfoContextRequest(
+            request_id="req-keys-2",
+            place_name="청와대 앞길",
+            place_context="explicit",
+        )
+    )
+
+    assert response.status == "success"
+    assert provider.calls == ["앞길", "청와대"]
+
+
+class _CountingPlaceLocationRepository:
+    """조회 횟수를 세는 저장소. 이름은 무엇을 물어도 맞다고 답한다."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def find_active_places_by_name(self, name: str):
+        self.calls.append(name)
+        return (
+            StoredPlaceLocation(
+                content_id="128553",
+                title=name,
+                address="서울특별시 종로구",
+                latitude=37.5788,
+                longitude=126.9770,
+                concentration_name=name,
+            ),
+        )
+
+
+class _EmptyLocalSearchProvider:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def search_places_by_name(self, query: str, *, display: int = 5):
+        self.calls.append(query)
+        return provider_result((), source=ProviderSource.FAKE_LOCAL_SEARCH)
+
+
+class _FailingGeocodingProvider:
+    """찾지 못한 경우. 실제 Provider와 같은 code를 써야 NO_DATA로 매핑된다."""
+
+    async def geocode(self, query: str, *, use_alias: bool = True):
+        raise AppError(
+            code="location_not_found", message="찾지 못했어요.", status_code=404
+        )
+
+
+def _search_center_service(
+    repository: _CountingPlaceLocationRepository,
+    local_search: _EmptyLocalSearchProvider,
+) -> ContextService:
+    place_provider = FakePlaceProvider()
+    return ContextService(
+        ContextTools(
+            location=ResolveLocationTool(
+                _FailingGeocodingProvider(),
+                place_repository=repository,
+                local_search_provider=local_search,
+            ),
+            places=NearbyPlaceDetailsTool(place_provider, place_provider),
+            weather=GetWeatherForecastTool(FakeWeatherProvider()),
+            holidays=GetHolidaysTool(FakeHolidayProvider()),
+            concentration=GetConcentrationTool(FakeConcentrationProvider()),
+        ),
+        candidate_limit=10,
+        clock=lambda: datetime.now(KST),
+    )
+
+
+@pytest.mark.asyncio
+async def test_recommend_never_touches_place_repository_for_search_center() -> None:
+    """추천의 검색 중심점 해석은 저장소를 거치지 않는다.
+
+    저장소가 무엇을 물어도 맞다고 답하는데도 호출이 0이어야 한다 — 사다리가
+    공용이던 시절에는 코퍼스에 없는 이름에 `places`를 4번 뒤졌다("안국역" 실측).
+    """
+    repository = _CountingPlaceLocationRepository()
+    local_search = _EmptyLocalSearchProvider()
+
+    response = await _search_center_service(repository, local_search).fetch_context(
+        _request(search_center="안국역")
+    )
+
+    assert repository.calls == []
+    assert local_search.calls == ["안국역"]
+    assert response.status == "needs_clarification"
+
+
+@pytest.mark.asyncio
+async def test_search_center_failure_asks_user_for_a_location() -> None:
+    """지역검색·지오코딩이 모두 못 찾으면 저장소로 되돌아가지 않고 되묻는다.
+
+    폴백을 두지 않기로 했으므로(사다리를 가른 의미가 사라진다) 위치를 못 찾았다는
+    사실을 그대로 올려 사용자에게 구체적인 위치를 요청한다.
+    """
+    repository = _CountingPlaceLocationRepository()
+
+    response = await _search_center_service(
+        repository, _EmptyLocalSearchProvider()
+    ).fetch_context(_request(search_center="없는장소이름"))
+
+    assert response.status == "needs_clarification"
+    assert response.clarification is not None
+    assert response.clarification.code == "location_required"
+    assert repository.calls == []

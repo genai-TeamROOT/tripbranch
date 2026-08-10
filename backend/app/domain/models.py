@@ -159,6 +159,10 @@ class TourPlaceRecord:
     lcls_systm2: str | None
     lcls_systm3: str | None
     source_modified_at: datetime | None
+    # 목록 응답이 그대로 주는 이미지 URL(firstimage/firstimage2). 상세조회가 없어도
+    # 채워지므로 detail_fetched_at이 아니라 list_fetched_at 주기를 따른다(D-056).
+    first_image_url: str | None = None
+    thumbnail_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -173,12 +177,18 @@ class TourPlacePage:
 
 @dataclass(frozen=True)
 class PlaceOperatingDetails:
-    """TourAPI 소개 상세 응답에서 가져온 운영시간·휴무일 원문."""
+    """TourAPI 소개 상세 응답에서 가져온 운영시간·휴무일·주차·요금 원문."""
 
     content_id: str
     content_type_id: str
     operating_hours_raw: str | None
     rest_date_raw: str | None
+    # 주차·요금은 운영시간과 같은 detailIntro2 응답에서 온다(D-056). 추가 호출은 없다.
+    # 축제(15)에는 주차 필드가 없고, 요금 필드는 14·15·28에만 있어 대부분 None이다.
+    parking_info_raw: str | None = None
+    parking_fee_raw: str | None = None
+    use_fee_raw: str | None = None
+    discount_info_raw: str | None = None
 
 
 @dataclass(frozen=True)
@@ -192,8 +202,9 @@ class StoredPlaceLocation:
     longitude: float
     # 집중률 응답에서 장소를 골라낼 때 대조할 정식 명칭.
     concentration_name: str | None = None
-    # tAtsNm에 넣을 검색어. 비어 있으면 concentration_name을 그대로 쓴다.
-    concentration_search_key: str | None = None
+    # tAtsNm에 넣을 검색어 목록. 앞에서부터 시도하고 결과가 나오면 멈춘다(D-057).
+    # 비어 있으면 concentration_name을 그대로 쓴다.
+    concentration_search_keys: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

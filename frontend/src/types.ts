@@ -31,6 +31,8 @@ export interface RecommendationItem {
   category: string;
   distance_km: number;
   remaining_minutes: number | null;
+  /** D가 현재 적용한 당일 운영 구간으로 만든 표기값. 예: "09:00~18:00" */
+  operating_hours_display?: string | null;
   environment_type: EnvironmentType;
   recommendation_reason: string;
   explanations: string[];
@@ -319,6 +321,52 @@ export interface AgentResponse {
   schedule?: ScheduleResult | null;
   message: string;
   llm_execution?: LLMExecutionMetadata | null;
+  tool_execution?: ToolExecutionDebug | null;
+  tool_executions?: ToolExecutionDebug[];
+}
+
+export interface ToolProviderDebug {
+  source: string;
+  status: string;
+  retrieved_at: string | null;
+}
+
+/** fetched=false는 C가 그 항목을 조회하지 않았다는 뜻 — 조회 후 실패와 구분된다. */
+export interface ToolContextItemDebug {
+  key: string;
+  fetched: boolean;
+  status: string | null;
+  error_code: string | null;
+  warning_codes: string[];
+  item_count: number | null;
+}
+
+export interface CandidateConcentrationDebug {
+  place_id: string;
+  name: string;
+  status: string;
+  is_proxy: boolean;
+  /** 값을 빌려온 실제 장소와 후보로부터의 거리. is_proxy=false면 둘 다 null. */
+  proxy_place_name: string | null;
+  proxy_distance_km: number | null;
+}
+
+export interface ToolExecutionDebug {
+  operation?: "context_fetch" | "info_concentration" | "candidate_enrichment";
+  request_id: string;
+  status: string;
+  latency_ms: number | null;
+  providers: ToolProviderDebug[];
+  context_items: ToolContextItemDebug[];
+  rule_versions: Record<string, string>;
+  resolved_location_name: string | null;
+  resolved_location_address: string | null;
+  error_code: string | null;
+  clarification_code: string | null;
+  is_proxy: boolean | null;
+  candidate_status_counts: Record<string, number>;
+  /** candidate_enrichment 전용: 후보별로 혼잡도가 어디서 온 값인지. */
+  candidate_concentration?: CandidateConcentrationDebug[];
 }
 
 export interface LLMCallMetadata {

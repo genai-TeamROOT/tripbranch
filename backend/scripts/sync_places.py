@@ -4,19 +4,18 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import csv
 import json
 from collections.abc import Sequence
 from dataclasses import asdict
-from datetime import datetime
 from pathlib import Path
 
 import httpx
 
 from app.config import Settings
-from app.domain.models import TourPlacePage, TourPlaceRecord
+from app.domain.models import TourPlacePage
 from app.providers.real_place import RealPlaceProvider
 from app.repositories.supabase_places import SupabasePlaceRepository
+from app.services.place_snapshot import records_from_snapshot
 from app.services.place_sync import PlaceSyncService
 
 
@@ -58,7 +57,7 @@ class SnapshotAreaPlaceProvider:
     """
 
     def __init__(self, snapshot_path: Path, inner: RealPlaceProvider) -> None:
-        self._records = _load_snapshot_records(snapshot_path)
+        self._records = records_from_snapshot(snapshot_path)
         self._inner = inner
 
     async def list_places_by_area(
@@ -78,42 +77,6 @@ class SnapshotAreaPlaceProvider:
 
     async def get_operating_details(self, content_id: str, content_type_id: str):
         return await self._inner.get_operating_details(content_id, content_type_id)
-
-
-def _optional(value: str) -> str | None:
-    stripped = value.strip()
-    return stripped or None
-
-
-def _load_snapshot_records(path: Path) -> list[TourPlaceRecord]:
-    with path.open(encoding="utf-8-sig") as fp:
-        rows = list(csv.DictReader(fp))
-    records: list[TourPlaceRecord] = []
-    for row in rows:
-        modified_at = _optional(row.get("source_modified_at", ""))
-        records.append(
-            TourPlaceRecord(
-                content_id=row["content_id"].strip(),
-                content_type_id=row["content_type_id"].strip(),
-                title=row["title"].strip(),
-                address=_optional(row.get("address", "")),
-                latitude=float(row["latitude"]) if _optional(row.get("latitude", "")) else None,
-                longitude=float(row["longitude"]) if _optional(row.get("longitude", "")) else None,
-                area_code=row["area_code"].strip(),
-                district_code=row["district_code"].strip(),
-                lcls_systm1=_optional(row.get("lcls_systm1", "")),
-                lcls_systm2=_optional(row.get("lcls_systm2", "")),
-                lcls_systm3=_optional(row.get("lcls_systm3", "")),
-                source_modified_at=(
-                    datetime.fromisoformat(modified_at.replace("Z", "+00:00"))
-                    if modified_at
-                    else None
-                ),
-            )
-        )
-    # 스냅샷 정렬과 무관하게 페이지 경계가 안정적이도록 고정 순서를 준다.
-    records.sort(key=lambda record: record.content_id)
-    return records
 
 
 async def run(args: argparse.Namespace, settings: Settings) -> int:

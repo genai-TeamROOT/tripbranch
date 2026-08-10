@@ -10,7 +10,7 @@
 
 - 엔드포인트: `GET https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getUltraSrtFcst`
 - 필수 쿼리 파라미터: `serviceKey`(디코딩 키), `pageNo`, `numOfRows`, `dataType=JSON`, `base_date`(YYYYMMDD), `base_time`(HHMM, 매시 30분 발표·40분부터 조회 가능), `nx`, `ny`
-- 초단기실황(getUltraSrtNcst)과 달리 SKY(하늘상태)를 PTY(강수형태)와 함께 제공하므로, good/neutral/bad 판정에 필요한 두 값을 한 번의 호출로 얻을 수 있다.
+- 초단기실황(getUltraSrtNcst)과 달리 SKY(하늘상태)를 PTY(강수형태)와 함께 제공하므로, 날씨 판정에 필요한 두 값을 한 번의 호출로 얻을 수 있다. (작성 당시에는 C가 이 두 값으로 `good/neutral/bad`를 판정했으나, D-051에서 판정을 D로 이관하고 D-056에서 `condition` 필드를 제거했다. 지금 C는 SKY·PTY 사실만 전달한다.)
 
 응답(일부, 카테고리당 6시간치 시간별 값이 반복됨):
 

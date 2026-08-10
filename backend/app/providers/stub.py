@@ -49,6 +49,7 @@ from app.schemas import (
     PlaceTag,
     PlaceType,
     QuestionType,
+    RecommendationResponse,
     RecommendPayload,
     ScheduleItem,
     Severity,
@@ -113,6 +114,16 @@ _SCHEDULE_MARKERS = (
     "순서 알려",
     "어디부터 갈",
 )
+# state_transform._RESET_SCOPE_PHRASES와 같은 문구를 미러링한다(D-059) — SCHEDULE
+# 되묻기를 이어가는 도중에도 사용자가 명시적으로 재시작을 말하면 이어가기로 강제하지
+# 않는다. Fake는 프로덕션 상태 모듈에 의존하지 않는 레이어 분리를 유지하므로 별도 상수로
+# 둔다(문구 4개뿐이라 중복 비용이 적다).
+_EXPLICIT_RESTART_MARKERS = (
+    "처음부터 다시",
+    "조건 다시 정할게",
+    "조건 다시 정하고 싶어",
+    "새로 시작",
+)
 _INFO_QUESTION_MARKERS = (
     "열어",
     "몇 시",
@@ -125,6 +136,9 @@ _INFO_QUESTION_MARKERS = (
     "행사",
     "어디에 있",
     "주소",
+    "사람 많",
+    "붐빌",
+    "혼잡",
 )
 _GENERAL_MARKERS = (
     "역사",
@@ -135,6 +149,16 @@ _GENERAL_MARKERS = (
     "에티켓",
     "막차",
     "동선",
+)
+_SERVICE_IDENTITY_MARKERS = (
+    "넌 누구",
+    "너 누구",
+    "이름이 뭐",
+    "뭘 할 수",
+    "뭐 할 수",
+    "트리비",
+    "TripBranch",
+    "tripbranch",
 )
 _LOCATION_ONLY_REMAINDERS = frozenset(
     {
@@ -156,6 +180,8 @@ _LOCATION_ONLY_REMAINDERS = frozenset(
         "어때",
     }
 )
+_LOCATION_ANSWER_REMAINDERS = frozenset({"", "요", "이요", "입니다", "이에요"})
+_LOCATION_CLARIFICATION_CODES = frozenset({"location_required", "location_ambiguous"})
 
 
 def _find_known_place(user_input: str) -> str | None:
@@ -182,6 +208,16 @@ def _is_location_only_change(user_input: str) -> bool:
             break
     normalized = remainder.replace(" ", "").rstrip("?!.")
     return normalized in _LOCATION_ONLY_REMAINDERS
+
+
+def _is_simple_location_answer(user_input: str) -> bool:
+    """위치 되묻기에 답한 지명 단독/짧은 존댓말 답변인지 판정한다."""
+
+    place_name = _find_known_place(user_input)
+    if place_name is None:
+        return False
+    remainder = user_input.replace(place_name, "", 1).strip().replace(" ", "").rstrip("?!.")
+    return remainder in _LOCATION_ANSWER_REMAINDERS
 
 
 def _is_location_scoped_change(user_input: str) -> bool:
@@ -236,6 +272,8 @@ class FakeLLMProvider:
         *,
         has_previous_recommendation: bool,
         shown_place_count: int,
+        pending_clarification: str | None = None,
+        last_intent: str | None = None,
     ) -> ProviderResult[IntentClassificationResult]:
         if any(marker in user_input for marker in _PROMPT_INJECTION_MARKERS):
             result = IntentClassificationResult(
@@ -257,6 +295,24 @@ class FakeLLMProvider:
             )
         elif any(marker in user_input for marker in _SCHEDULE_MARKERS):
             result = IntentClassificationResult(intent=Intent.SCHEDULE)
+        elif (
+            last_intent == Intent.SCHEDULE.value
+            and pending_clarification is not None
+            and not any(phrase in user_input for phrase in _EXPLICIT_RESTART_MARKERS)
+        ):
+            # D-059: 직전 턴이 SCHEDULE 되묻기로 끝났으면, 지명만 던지거나 조건만
+            # 보충하는 짧은 답변도 새 MODIFY 요청이 아니라 그 SCHEDULE을 이어가는
+            # 중이다. MODIFY 분기(바로 아래)보다 먼저 검사해 우선순위를 준다.
+            result = IntentClassificationResult(intent=Intent.SCHEDULE)
+        elif (
+            last_intent in (Intent.RECOMMEND.value, Intent.MODIFY.value)
+            and pending_clarification in _LOCATION_CLARIFICATION_CODES
+            and _is_simple_location_answer(user_input)
+        ):
+            # 위치를 물어본 직후의 단순 지명은 INFO가 아니라, 기존 조건에 검색 중심을
+            # 보충하는 MODIFY다. "경복궁 오늘 열어?"처럼 질문이 붙으면 이 조건을
+            # 통과하지 않아 아래 INFO 규칙으로 간다.
+            result = IntentClassificationResult(intent=Intent.MODIFY)
         elif has_previous_recommendation and (
             any(marker in user_input for marker in _REJECT_ALL_MARKERS + _MODIFY_CHANGE_MARKERS)
             or _is_location_only_change(user_input)
@@ -267,16 +323,16 @@ class FakeLLMProvider:
             marker in user_input for marker in _COMPARE_MARKERS
         ):
             result = IntentClassificationResult(intent=Intent.COMPARE)
-        elif any(marker in user_input for marker in _GENERAL_MARKERS):
+        elif any(marker in user_input for marker in _GENERAL_MARKERS + _SERVICE_IDENTITY_MARKERS):
             result = IntentClassificationResult(intent=Intent.GENERAL)
         elif _find_known_place(user_input) and any(
             marker in user_input for marker in _INFO_QUESTION_MARKERS
         ):
             result = IntentClassificationResult(intent=Intent.INFO)
-        elif _find_known_place(user_input) and not any(
-            marker in user_input for marker in ("근처", "주변", "같은 곳")
-        ):
-            result = IntentClassificationResult(intent=Intent.INFO)
+        elif _is_simple_location_answer(user_input):
+            result = IntentClassificationResult(
+                intent=Intent.MODIFY if has_previous_recommendation else Intent.RECOMMEND
+            )
         else:
             result = IntentClassificationResult(intent=Intent.RECOMMEND)
         return provider_result(result, source=ProviderSource.FAKE_LLM)
@@ -286,7 +342,9 @@ class FakeLLMProvider:
     ) -> ProviderResult[LLMOutput]:
         conditions = UserConditions()
         place_name = _find_known_place(user_input)
-        if place_name and ("근처" in user_input or "주변" in user_input):
+        if place_name and (
+            "근처" in user_input or "주변" in user_input or _is_simple_location_answer(user_input)
+        ):
             conditions.search_center = place_name
         if "나 지금" in user_input and place_name:
             conditions.current_location = place_name
@@ -348,7 +406,11 @@ class FakeLLMProvider:
         return provider_result(result, source=ProviderSource.FAKE_LLM)
 
     async def extract_modify_conditions(
-        self, user_input: str, current_conditions: UserConditions
+        self,
+        user_input: str,
+        current_conditions: UserConditions,
+        *,
+        pending_clarification: str | None = None,
     ) -> ProviderResult[LLMOutput]:
         if any(marker in user_input for marker in _REJECT_ALL_MARKERS):
             result = LLMOutput(
@@ -393,11 +455,26 @@ class FakeLLMProvider:
             changed.environment = Environment.INDOOR
             changed_fields.extend(["weather", "weather_intent", "environment"])
 
+        # MODIFY도 RECOMMEND와 같은 혼잡도 의도 규칙을 적용한다. 이전 조건을 복사한
+        # changed 객체를 쓰므로, 이 발화에서 혼잡도를 언급하지 않으면 changed_fields에
+        # 넣지 않아 기존 concentration_intent가 그대로 유지된다.
+        if any(marker in user_input for marker in ("조용", "한적", "사람 없")):
+            changed.concentration_intent = ConcentrationIntent.AVOID
+            changed_fields.append("concentration_intent")
+        elif any(marker in user_input for marker in ("핫한", "인기", "북적")):
+            changed.concentration_intent = ConcentrationIntent.SEEK
+            changed_fields.append("concentration_intent")
+
         new_place = _find_known_place(user_input)
         if new_place and (
             "근처로 바꿔" in user_input
             or _is_location_only_change(user_input)
             or _is_location_scoped_change(user_input)
+            or _is_simple_location_answer(user_input)
+            or (
+                pending_clarification in _LOCATION_CLARIFICATION_CODES
+                and _is_simple_location_answer(user_input)
+            )
         ):
             changed.search_center = new_place
             changed_fields.append("search_center")
@@ -486,7 +563,9 @@ class FakeLLMProvider:
     async def extract_general_request(
         self, user_input: str
     ) -> ProviderResult[LLMOutput]:
-        if "역사" in user_input or "언제 지어졌" in user_input:
+        if any(marker in user_input for marker in _SERVICE_IDENTITY_MARKERS):
+            topic = GeneralTopic.SERVICE_IDENTITY
+        elif "역사" in user_input or "언제 지어졌" in user_input:
             topic = GeneralTopic.PLACE_KNOWLEDGE
         elif "언제 피어" in user_input:
             topic = GeneralTopic.SEASON_INFO
@@ -507,6 +586,33 @@ class FakeLLMProvider:
             general=GeneralPayload(topic=topic, original_question=user_input),
         )
         return provider_result(result, source=ProviderSource.FAKE_LLM)
+
+    async def generate_general_answer(
+        self, topic: GeneralTopic, original_question: str
+    ) -> ProviderResult[str]:
+        if topic is GeneralTopic.SERVICE_IDENTITY:
+            answer = (
+                "저는 TripBranch의 국내 여행 챗봇 트리비예요. "
+                "원하는 지역이나 현재 위치를 기준으로 날씨, 운영시간, 거리, "
+                "혼잡도 선호를 함께 보고 갈 만한 곳을 추천해드릴 수 있어요."
+            )
+        else:
+            answer = "국내 여행에 참고할 만한 정보를 간단히 알려드릴게요."
+        return provider_result(answer, source=ProviderSource.FAKE_LLM)
+
+    async def generate_recommendation_summary(
+        self, intent: Intent, recommendations: RecommendationResponse
+    ) -> ProviderResult[str]:
+        shown = [*recommendations.recommendations, *recommendations.unverified_recommendations]
+        if not shown:
+            return provider_result(
+                "조건에 맞는 곳을 찾지 못했어요.", source=ProviderSource.FAKE_LLM
+            )
+        first = shown[0]
+        return provider_result(
+            f"{first.name}을(를) 중심으로 지금 가볼 만한 곳을 골라봤어요.",
+            source=ProviderSource.FAKE_LLM,
+        )
 
     async def generate_schedule_plan(
         self, request: SchedulePlanningRequest
@@ -593,6 +699,31 @@ class FakeWeatherProvider:
             ),
             source=ProviderSource.FAKE_WEATHER,
         )
+
+
+def _fake_intro(content_type_id: str) -> dict[str, object]:
+    """detailIntro2 응답을 유형별 필드명까지 흉내 낸다.
+
+    이 값을 비워두면 INFO 상세 질의(요금·주차·편의시설)의 필드 추출이 한 줄도
+    실행되지 않은 채 테스트가 통과한다 — raw_intro가 빈 dict면 추출 결과도 항상
+    빈 dict라서 "값이 없다"와 "로직이 안 돌았다"를 구분할 수 없다. 실 Provider와
+    같은 키 이름을 쓰는 것이 핵심이다(문화시설 14는 usefee/parkingculture,
+    음식점 39는 parkingfood).
+    """
+
+    if content_type_id == "39":
+        return {
+            "parkingfood": "가능(10대)",
+            "chkcreditcardfood": "가능",
+            "opentimefood": "08:00-22:00",
+        }
+    return {
+        "usefee": "어른 3,000원 / 어린이 1,500원",
+        "parkingculture": "주차 가능(무료)",
+        "chkbabycarriageculture": "가능",
+        "chkpetculture": "불가",
+        "chkcreditcardculture": "가능",
+    }
 
 
 class FakePlaceProvider:
@@ -717,12 +848,12 @@ class FakePlaceProvider:
                 title=candidate.name if candidate else None,
                 address=candidate.address if candidate else None,
                 overview="Fake Provider의 장소 상세정보입니다.",
-                homepage=None,
-                telephone=None,
+                homepage="https://example.test/fake-place",
+                telephone="02-000-0000",
                 operating_hours=operating_hours,
                 rest_date=rest_date,
                 raw_common={},
-                raw_intro={},
+                raw_intro=_fake_intro(content_type_id) if candidate else {},
                 provider="fake_place",
                 operating_schedule=normalize_operating_schedule(
                     content_type_id=content_type_id,

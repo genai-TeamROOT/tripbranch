@@ -30,6 +30,10 @@ _WARNING_MESSAGES = {
     "partial_data": "일부 데이터를 확인하지 못했습니다.",
     "stale_data": "최신성이 보장되지 않는 데이터를 사용했습니다.",
     "fallback_used": "대체 조회 방식으로 결과를 찾았습니다.",
+    "exclude_tags_unmapped": "제외 조건 일부를 분류로 옮기지 못해 반영하지 못했습니다.",
+    "candidate_pool_truncated": (
+        "이미 본 장소가 많아 새 후보를 더 받아오지 못했습니다."
+    ),
 }
 _WEEKDAY_NAMES = (
     "monday",

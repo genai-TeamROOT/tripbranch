@@ -25,9 +25,11 @@ from app.domain.models import (
 )
 from app.place_search_policy import DEFAULT_PLACE_PROVIDER_RESULT_LIMIT
 from app.providers.contracts import ProviderResult
+from app.providers.festival import FestivalEvent
 from app.schedule.schemas import ScheduleLLMPlan, SchedulePlanningRequest
 from app.schemas import (
     GeneralTopic,
+    Intent,
     IntentClassificationResult,
     InterpretedConditions,
     LLMOutput,
@@ -50,8 +52,15 @@ class LLMProvider(Protocol):
         *,
         has_previous_recommendation: bool,
         shown_place_count: int,
+        pending_clarification: str | None = None,
+        last_intent: str | None = None,
     ) -> ProviderResult[IntentClassificationResult]:
-        """사용자 발화의 Intent를 1단계로 판정한다."""
+        """사용자 발화의 Intent를 1단계로 판정한다.
+
+        pending_clarification/last_intent는 직전 턴이 되묻기로 끝났는지와 그 되묻기가
+        어떤 Intent의 턴이었는지를 알려준다 — SCHEDULE 되묻기 답변이 새 MODIFY 요청으로
+        오분류되는 걸 막는 데 쓰인다(D-059).
+        """
         ...
 
     async def extract_recommend_conditions(
@@ -61,9 +70,17 @@ class LLMProvider(Protocol):
         ...
 
     async def extract_modify_conditions(
-        self, user_input: str, current_conditions: UserConditions
+        self,
+        user_input: str,
+        current_conditions: UserConditions,
+        *,
+        pending_clarification: str | None = None,
     ) -> ProviderResult[LLMOutput]:
-        """MODIFY 발화에서 modify_type과 condition_changes를 추출한다."""
+        """MODIFY 발화에서 modify_type과 condition_changes를 추출한다.
+
+        위치 되묻기 답변이면 pending_clarification이 전달돼, 단순 지명을
+        search_center 변경으로 해석한다.
+        """
         ...
 
     async def extract_info_query(
@@ -99,6 +116,16 @@ class LLMProvider(Protocol):
 
         다른 메서드와 달리 구조화 조건 추출이 아니라 자유 텍스트 답변이다 —
         docs/design/agent-response-generation.md §3/§6의 유일한 LLM 신규 호출 지점.
+        """
+        ...
+
+    async def generate_recommendation_summary(
+        self, intent: Intent, recommendations: RecommendationResponse
+    ) -> ProviderResult[str]:
+        """추천 카드 목록을 감싸는 짧은 챗봇 말풍선 문장을 생성한다.
+
+        카드에 없는 사실, 내부 점수/가중치/feature_scores/warnings는 말하지 않는다.
+        실패해도 추천 카드 응답 자체는 유지되어야 하므로 호출부는 템플릿으로 fallback한다.
         """
         ...
 
@@ -224,6 +251,22 @@ class TourAreaPlaceProvider(Protocol):
         content_type_id: str,
     ) -> PlaceOperatingDetails:
         """소개 상세 조회만 사용해 운영시간과 휴무일 원문을 반환한다."""
+        ...
+
+
+class FestivalProvider(Protocol):
+    async def search_festivals(
+        self,
+        region_code: str,
+        district_code: str,
+        reference_date: date,
+        limit: int = 100,
+    ) -> ProviderResult[list[FestivalEvent]]:
+        """법정동 코드 기준 지역의 행사 목록을 반환한다.
+
+        진행 중 판정은 호출자가 reference_date로 다시 한다 — provider는 기간이
+        해석 가능한 행사를 모아 돌려주기만 한다.
+        """
         ...
 
 

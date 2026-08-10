@@ -608,7 +608,7 @@
 | Scoring v1 | Feature/가중치/tie-break `Implemented`(D-008); Evidence·평가 Fixture `Implemented`(D-027); 응답 Evidence 노출·E2E 통합 `Implemented`(D-028); Explainability Layer v1 `Accepted`(D-029, A 협의 반영 완료); warning 커버리지 보완 `Implemented`(D-030); Explanation 문장 구체화 `Implemented`(D-031); RecommendationContext 진입점 `Implemented`(D-032); Agent Runtime RecommendationProvider 연결 `Implemented`(D-033); Tool 직접 호출 파이프라인 삭제·레거시 라우터 마이그레이션 `Implemented`(D-034); develop 재병합 시 RecommendationProvider 중복 정리 `Implemented`(D-035); 혼잡도 2차 Scoring(`rerank_with_concentration()`) `Implemented`(D-040) | 구현 완료 |
 | 혼잡도 fallback | 장소 근접치, 구 단위, Feature 제외 | INFO 전용 장소 근접치 적용(D-036), RECOMMEND 확장은 후속 검토 |
 | 혼잡도 반영 방식 | 초기 Context 확장(안 A) vs 1차 Scoring 후 상위 5개 보강 재계산(안 B) | 안 B 채택, `rerank_with_concentration()` 구현 완료(D-040) |
-| 운영시간 파싱 | 기본 시간·월별·주간 휴무 구현, 공휴일·회차 예외 확대 | `부분 구현` |
+| 운영시간 파싱 | 기본 시간·월별·주간 휴무 구현, 요일 범위 전개·요일별 구간 분리·미열거 요일 휴무 유도 `Implemented`(D-058), 공휴일·회차 예외 확대 | `부분 구현` |
 | 이동시간 | 지도 Provider 및 교통수단별 계산 | `TBD` |
 | 조건 완화 | 자동 완화 범위와 사용자 확인 UX | `TBD` |
 | 관측성 | 구조화 로그, tracing, 보존기간 | `TBD` |
@@ -1350,6 +1350,334 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
     `tests/test_agent_runtime.py`(위 두 E2E). 전체 회귀 1145 passed / 22 skipped,
     ruff 통과.
 
+### D-054 — INFO 상세 질의는 Supabase 상세 캐시가 아니라 TourAPI를 직접 조회한다
+
+- 상태: `Accepted`, C 구현 완료 (A 배선 대기)
+- 배경: INT-02(INFO)의 `question_type` 8종 중 실제로 동작하는 건 `concentration`
+  하나뿐이었다. 나머지를 채우려고 상세 데이터 출처를 확인하다가, 운영 설정
+  (`PLACE_DETAILS_SOURCE=supabase`)에서는 답할 데이터가 아예 없다는 걸 발견했다 —
+  `SupabasePlaceDetailsProvider._to_place_details()`가 `overview`/`homepage`/
+  `telephone`을 `None`으로, `raw_common`/`raw_intro`를 빈 dict로 채운다. places
+  테이블의 동기화 대상이 `operating_hours_raw`/`rest_date_raw`뿐이기 때문이다.
+- 결정: INFO 상세 질의는 `PLACE_DETAILS_SOURCE`와 무관하게 `PlaceProvider`(TourAPI)를
+  직접 호출한다. 전용 Tool(`tools/place_detail.py::GetPlaceDetailTool`)을 두고
+  Factory가 `get_place_provider()`를 주입한다.
+- 근거: Supabase 캐시를 도입한 이유는 추천 후보 N건의 상세조회를 없애는 것이었다
+  (18.0초 → 0.33초). INFO는 대상이 장소 1건이라 그 근거가 적용되지 않는다. 반대로
+  캐시를 쓰면 `fee`/`parking`/`facility`/`general_info` 4종이 **조용히** 빈 응답으로
+  떨어진다 — 오류가 아니라 "정보 없음"으로 보이므로 발견도 늦다. 이 저장소가 D-042를
+  만든 사건과 같은 성격이다.
+- 예외 하나: `location_info`는 `ResolveLocationTool`이 주소를 이미 들고 나오므로
+  상세 조회를 아예 하지 않는다.
+- `operating_hours`는 지금도 이 경로를 함께 탄다. 값 자체는 provider가 유형별 키를
+  정규화해둔 `PlaceDetails.operating_hours`/`rest_date`에서 읽으므로 Supabase 캐시로도
+  답할 수 있지만, 그러려면 한 Tool이 질문 유형에 따라 두 출처를 오가야 한다. 호출
+  1회를 아끼려고 경로를 둘로 만드는 것보다 단순한 쪽을 택했다 — 필요해지면
+  `operating_hours`만 캐시로 빼는 건 나중에도 가능하다.
+- 범위 밖: `event`는 같은 날 D-055로 별도 처리했다(최초에는 `unsupported`로 두었다).
+  동기화 파이프라인에 `overview`/요금/주차 컬럼을 추가하는 근본 해결은 DB 마이그레이션
+  + 847건 재동기화가 필요하고 TourAPI 일일 한도에 묶여 있어 별건으로 남긴다.
+- 조용한 fake 방지: `FakePlaceProvider.get_details()`의 `raw_intro`가 빈 dict라
+  필드 추출 로직이 한 줄도 안 돈 채 테스트가 통과하는 상태였다. 실 detailIntro2와
+  같은 키 이름(`usefee`/`parkingculture`/`parkingfood` …)으로 채우고,
+  `tests/agent_context/test_info_field_rules.py::TestFakeProviderCarriesIntro`가
+  Fake로도 추출 결과가 비지 않는지 고정한다.
+- 구현: `app/agent_context/info_schemas.py`(`question_type` 8종 확장,
+  `specific_question` 추가, `result`를 `ConcentrationInfoResult | PlaceInfoResult`
+  union으로), `app/agent_context/info_field_rules.py`(신설),
+  `app/tools/place_detail.py`(신설), `app/agent_context/service.py`
+  (`fetch_info_context()` 분기 + 기존 집중률 흐름을 `_fetch_concentration_info()`로
+  추출, 로직 변경 없음), `app/agent_context/factory.py`, `app/providers/stub.py`.
+- 확인 방법: `tests/agent_context/test_info_field_rules.py`(23건),
+  `tests/agent_context/test_info_place_detail.py`(15건). 전체 회귀 1231 passed /
+  22 skipped, ruff 통과.
+- A 배선 필요: `to_info_context_request()`가 `question_type`을 넘기지 않고,
+  `agent_runtime.py`의 게이트가 `CONCENTRATION`으로 한정돼 있으며,
+  `response_composer`에 상세 응답 렌더 경로가 없다. 셋 다 A 소유라 별도 카드로 넘긴다.
+
+### D-055 — 트리비 페르소나와 추천 결과 요약 LLM 추가
+
+- 상태: Implemented
+- 배경: `RECOMMEND`/`MODIFY` 성공 응답의 `AgentResponse.message`가 고정 문구
+  `"이런 곳들을 찾아봤어요:"`만 반환해 국내 여행 챗봇의 정체성과 대화감이 약했다.
+  또한 "넌 누구야?", "이름이 뭐야?", "뭘 할 수 있어?" 같은 서비스 정체성 질문을
+  안정적으로 처리할 별도 topic이 없었다.
+- 결정:
+  - 챗봇 이름은 **트리비**로 정한다.
+  - 서비스 정체성 질문은 `build_interpretation()`에서 LLM 1차 분류 전에
+    `GENERAL(service_identity)`로 선처리하고, 트리비가
+    TripBranch의 국내 여행 챗봇이며 위치·날씨·운영시간·거리·혼잡도 선호를 함께
+    고려해 장소 추천을 돕는다고 답한다.
+  - `RECOMMEND`/`MODIFY` 성공 경로에는 `generate_recommendation_summary()` LLM 호출을
+    추가해 추천 카드들을 감싸는 1~2문장 요약을 만든다.
+- 안전장치:
+  - 추천 요약 LLM 입력은 `name`, `category`, `distance_km`, `remaining_minutes`,
+    `recommendation_reason`, `explanations`로 제한한다.
+  - `warnings`, `score`, `feature_scores`, `weights_used`는 넘기지 않는다. 사용자에게
+    "날씨 점수 제외", "가중치 재분배", "API 실패" 같은 내부 계산 사정을 말하지 않게
+    하기 위한 경계다.
+  - 요약 LLM 호출이 실패하면 추천 카드 응답은 유지하고 기존 고정 wrapper로 fallback한다.
+  - "넌 누구야?", "이름이 뭐야?"는 Gemini가 `role_request`/`OUT_OF_SCOPE`로 오분류할
+    수 있으므로 프롬프트만 믿지 않고 A 오케스트레이터에서 deterministic하게 처리한다.
+- 구현: `app/schemas.py`(`GeneralTopic.SERVICE_IDENTITY`),
+  `app/providers/gemini_prompts.py`(트리비 페르소나, service_identity 분류/답변 규칙,
+  추천 요약 프롬프트, `PROMPT_VERSION` 1.0.5), `app/providers/gemini.py`/
+  `app/providers/stub.py`(`generate_recommendation_summary()`),
+  `app/services/interpret/orchestrator.py`(service_identity 선처리),
+  `response_composer.py`(추천 성공 메시지에서 요약 LLM 호출).
+- 확인 방법: `tests/test_llm_provider.py`(정체성 질문 분류/답변), `tests/test_response_
+  composer.py`(추천 요약 호출 및 fallback), `tests/test_gemini_provider.py`(요약 입력에서
+  내부 scoring 필드 제외).
+
+### D-055 — INFO `event`는 지역 행사 목록 + 좌표 근접으로 답한다
+
+- 상태: `Accepted`, C 구현 완료 (A 배선 대기)
+- 배경: D-054에서 `event`만 `unsupported`로 남겼다가, 실제로 답할 데이터가 있는지
+  실측했다(2026-08-07). 처음 조회에서 "종로구에 진행 중인 행사 0건"이 나와 미지원이
+  타당해 보였는데, 필터를 바꾸자 결론이 뒤집혔다.
+- **발견 1 — `sigunguCode` 필터가 함정이다.** `searchFestival2` 응답 항목의 상당수가
+  `areacode`/`sigungucode`를 빈 문자열로 내려주고, 그 항목들은 서버 필터에서 통째로
+  탈락한다. 같은 종로구를 두 방식으로 조회한 결과:
+
+  | 필터 | 결과 | 오늘 진행 중 |
+  | --- | --- | --- |
+  | `sigunguCode=23` | 14건 (전부 2025년) | **0건** |
+  | `lDongRegnCd=11` + `lDongSignguCd=110` | 25건 | **6건** |
+
+  장소 검색이 이미 같은 이유로 법정동 코드를 쓰고 있었다
+  (`place_search_policy.PLACE_SEARCH_LDONG_*`, 2026-08-03). 같은 함정을 두 번째로
+  밟은 셈이라 provider 모듈 docstring에 근거를 남겼다.
+- **발견 2 — 장소명 매칭은 안 붙지만 좌표는 100% 있다.** `eventplace`는
+  `"광화문광장&세종로공원"`, `"청와대 사랑채 1층"`, `"서울 전역"`처럼 우리 `places.title`과
+  형태가 다르다. 2026-08-07 진행 중 6건 중 이름이 붙는 건 0건이었다. 반면 목록 응답의
+  `mapx`/`mapy`는 전 항목에 채워져 있다.
+- 결정: `event`를 **"그 장소에서 열리는 행사"가 아니라 "그 장소 근처에서 진행 중인 행사"**로
+  답한다. 종로구(법정동 110) 행사를 받아 기준일에 진행 중인 것만 남기고, 대상 장소
+  좌표에서 가까운 순으로 정렬해 최대 5건을 싣는다. 제목에 장소명이 들어간 행사
+  (`"경복궁 별빛야행"`)만 `is_direct_match=True`로 올려 먼저 보여준다.
+- INFO 명세는 바꾸지 않는다: `place_name`이 여전히 앵커이고, 답변만 근접 의미로 나간다.
+  이건 집중률의 D-036 인근 대체 조회와 같은 패턴이다 — 직접 데이터가 없으면 인근
+  기준으로 답하되 반드시 고지한다. `EventItem.is_direct_match`/`distance_km`이
+  `ConcentrationInfoResult.is_proxy`에 대응한다. **A는 이 구분을 문구에 반드시 반영해야
+  한다** — 요청한 장소의 행사인 것처럼 말하면 사실과 다르다.
+- 반경 컷오프를 두지 않은 이유: 조회가 이미 종로구로 한정돼 지역 필터가 반경 역할을
+  한다. 여기서 임의 반경을 하나 더 두면 근거 없는 숫자가 늘어난다. 대신 건수 상한
+  (`INFO_EVENT_RESULT_LIMIT = 5`)만 둔다.
+- `eventplace`를 안 쓴 이유: 목록 응답에 없고 행사마다 `detailIntro2`를 열어야 한다(N+1).
+  제목 매칭으로 직접/근접을 가르는 선에서 멈췄다. 정확도가 문제가 되면 상위 몇 건만
+  상세를 여는 방식으로 넓힐 수 있다.
+- 계약: `EventInfoResult`/`EventItem`을 신설하고 `InfoContextResponse.result` union에
+  추가했다. 행사가 다건이라 `PlaceInfoResult.fields`(`dict[str, str]`)로는 표현할 수 없다.
+- 조용한 fake 방지: `FakeFestivalProvider`의 좌표·기간·명칭을 실측 응답에서 가져왔고,
+  진행 중/종료/예정과 직접 매칭/근접이 모두 섞이도록 구성했다. Fake가 전부 직접
+  매칭이면 근접 경로가 한 번도 실행되지 않는다
+  (`tests/agent_context/test_info_event.py::TestFakeProviderShape`).
+- 구현: `app/providers/festival.py`(신설), `app/providers/protocols.py`(`FestivalProvider`),
+  `app/providers/contracts.py`(`TOUR_API_FESTIVAL`/`FAKE_FESTIVAL`),
+  `app/tools/festival.py`(신설), `app/agent_context/info_schemas.py`,
+  `app/agent_context/service.py`(`_fetch_event_info()`), 양쪽 factory.
+- 확인 방법: `tests/test_festival_provider.py`(12건), `tests/agent_context/test_info_event.py`
+  (14건). 전체 회귀 1276 passed / 22 skipped, ruff 통과. 실 TourAPI 실측으로 경복궁
+  기준 5건(0.21~0.86km), 북촌한옥마을 기준 5건(0.69~1.23km)이 거리순으로 나오는 것을
+  확인했다.
+- 한계: 오늘 기준 진행 중 6건 전부가 근접 매칭이다(직접 매칭 0건). 사용자에게는 "경복궁
+  근처에서 진행 중인 행사"로 나가므로 질문이 "경복궁에서 뭐 해?"였다면 기대와 다를 수
+  있다. 종로구 등록 행사 자체가 25건뿐이라 표본이 작다는 점도 함께 둔다.
+
+### D-056 — TourAPI 주차·요금·이미지 원문은 `places`에 직접 둔다
+
+- 상태: `Accepted`, 마이그레이션 작성 완료 (DB 적용·코드 배선 대기)
+- 배경: 추천 카드에 주차·요금·썸네일을 노출하려는데, 저장 위치를 `places` 컬럼 추가와
+  별도 테이블 분리 중 어디로 할지 정해야 했다.
+- 결정: `places`에 컬럼 6개를 추가한다 — `parking_info_raw`, `parking_fee_raw`,
+  `use_fee_raw`, `discount_info_raw`, `first_image_url`, `thumbnail_url`.
+- 근거: 출처(`detailIntro2`)·관계(1:1)·갱신 주기(`detail_fetched_at` TTL)가
+  기존 `operating_hours_raw`와 동일하다. 분리하면 수명주기 컬럼(`detail_fetch_status`,
+  `detail_fetched_at`)을 복제하거나 두 테이블의 신선도가 어긋난다. `place_enrichments`도
+  아니다 — 그쪽 `source_type`은 `manual_research`/`external_data`/`derived`로 제한된
+  사람 조사·파생값이고, TourAPI 원문은 성격이 다르다.
+- 외부 호출은 늘지 않는다: `place_sync`가 이미 장소마다 `detailIntro2`를 부르고
+  있고(운영시간·휴무일 용도) 같은 응답에서 더 읽기만 한다. 이미지 2개는
+  `areaBasedList2` 목록 응답에 이미 들어 있어 상세조회조차 필요 없다.
+- **함정 — 축제(15)의 이용요금 필드명은 `usetimefestival`이다.** 이름은 시간처럼
+  보이지만 내용은 요금이다. `real_place.py`의 `_OPERATING_HOURS_KEYS`가 이 키를 일부러
+  제외하고 축제는 `playtime`을 쓰는 이유이므로, 요금 매핑을 추가할 때 그 구분을 깨면
+  영업시간 자리에 "5,000원"이 들어간다.
+- 커버리지 한계(2026-08-08 실측, 종로구 844건):
+  - 주차 806건(95%) — 축제(15) 38건에는 주차 필드가 아예 없다.
+  - 이용요금 204건(24%) — 14·15·28에만 있다. 12 관광지·32 숙박·38 쇼핑은 요금이
+    `detailCommon2`의 `overview` 산문에 섞여 있어 별도 파싱이나 수동 보강이 필요하다.
+  - 우선 있는 값으로 카드를 채우고, 누락분은 이후 `place_enrichments`로 보강한다.
+- 이미지 2개는 `detail_fetched_at`이 아니라 `list_fetched_at` 주기를 따른다. 상세조회가
+  실패한 장소에서도 이미지는 최신일 수 있다.
+- 구현: `supabase/migrations/202608080001_add_place_parking_fee_image_columns.sql`.
+  provider 매핑(`real_place.py`)과 `place_sync.py` 저장 반영은 후속 작업.
+
+### D-057 — 집중률 검색어는 토큰 전부를 희소성 순으로 쓰고, 대조는 임계값 0.9를 둔다
+
+- 상태: `Accepted`, 구현 완료
+- 배경: `concentration_search_key`(D-051 계열 결정)는 장소당 검색어를 **하나만** 둔다.
+  공백이 든 값을 넘기면 0건이 돌아오기 때문에 이름을 잘라 하나를 골랐는데, 그 결과
+  변별력 없는 토큰이 검색어가 된 사례가 남았다 — `'청와대 앞길'` → `'앞길'`,
+  `'한국교회 100주년 기념관'` → `'100주년'`, `'창덕궁과 후원'` → `'창덕궁과'`.
+- 결정:
+  1. **검색어는 공백 토큰 전부를 저장한다.** 하나만 고르지 않는다.
+  2. **호출 순서는 ① 기존 `concentration_search_key`가 있으면 그것을 1순위로 고정,
+     ② 나머지 토큰은 코퍼스 등장 빈도 오름차순, 동률이면 긴 토큰 우선**으로 한다.
+     결과가 나오면 멈춰 호출 수를 아낀다.
+  3. **대조는 양쪽 공백을 모두 제거한 뒤** 수행한다. 지금은 `.strip()`만 해서
+     `'서울 운현궁'`과 `'운현궁'`이 다른 문자열로 취급된다.
+  4. **채택은 정확 일치 > 유사도 0.9 이상 최고값 > `no_data`** 순이다.
+- **기존 검색어를 1순위로 고정하는 이유 — 희소성만으로는 순서가 정해지지 않는다.**
+  종로구 이름 113개는 토큰 대부분이 1회만 등장해 동률이 쏟아진다. 빈도만으로 정렬하면
+  현재 검색어 24건 중 **10건의 1순위가 바뀌고**, 그중 다수가 더 나빠진다(2026-08-08 실측):
+  `'서울 문묘와 성균관'` `성균관`→`문묘와`, `'홍지문 및 탕춘대성'` `탕춘대성`→`홍지문`,
+  `'아름다운 차박물관'` `차박물관`→`아름다운`, `'낙원동 아구찜 거리'` `아구찜`→`낙원동`.
+  현재 24건은 전부 정상 조회되는 것이 확인됐으므로, 검증된 값을 휴리스틱으로 재계산해
+  회귀를 만들 이유가 없다. 토큰 추가는 **순수한 능력 추가**로만 둔다.
+- **적용 범위는 INFO 질의 경로다.** 그 경로는 발화에서 장소를 뽑아 매핑 테이블과
+  대조한 뒤 검색어로 **1회** 호출한다. 목적은 `'닭한마리 골목 혼잡해?'`처럼 정식 명칭
+  (`서울 동대문 닭한마리 골목`)과 어긋나는 발화를 찾아내는 것이다.
+- **추천 경로의 호출 수 문제는 이 결정에 포함하지 않는다(보류).**
+  `enrichment_service._enrich_candidate()`는 후보마다 1회씩 호출한다. `tAtsNm` 없이
+  종로구 전량을 4회에 받을 수 있음을 확인했으나(3,390행 = 113장소 × 30일,
+  `baseYmd` 20260808~20260906), 이는 검색어 설계와 무관한 별개의 최적화다. INFO
+  경로는 요청당 1회라 전량 수집이 오히려 손해이므로 함께 묶지 않는다.
+- **손으로 쓴 불용어 목록을 두지 않는다.** 처음에 `서울`·`골목`·`거리`와 함께
+  `닭한마리`·`낙지볶음` 같은 음식명을 불용어 후보로 묶었는데, 실측하니 정반대였다
+  (2026-08-08, 종로구 113개 이름):
+  - 2회 이상 등장하는 토큰은 7개뿐 — `서울`(9), `동대문`·`터`·`골목`·`쌈지길`·
+    `[유네스코`·`세계유산]`(각 2).
+  - `닭한마리`·`낙지볶음`·`아구찜`·`앞길`·`전망대`는 모두 **1회**로, 코퍼스에서 가장
+    변별력이 높다.
+  즉 기준은 품사나 의미가 아니라 **코퍼스 내 희소성**이다. 빈도 정렬 하나로 `서울`은
+  자동으로 뒤로 밀리고, "닭한마리 골목 혼잡해?"는 `닭한마리`로 바로 찾아진다.
+  데이터가 바뀌면 빈도도 따라 바뀌므로 목록을 손보지 않아도 된다.
+- **임계값 0.9는 유사도 매칭 금지 방침의 조건부 예외다.**
+  `build_concentration_mappings.py`는 "편집거리 같은 유사도 매칭은 쓰지 않는다 —
+  이름이 크게 다른 장소를 잘못 붙이면 엉뚱한 곳의 혼잡도를 답한다"는 이유로 보수적
+  매칭만 해왔다. 그 취지를 유지하려면 바닥 없는 `max()`를 쓰면 안 된다 — 찾는 장소가
+  응답에 없어도 가장 덜 틀린 것이 정답인 척 나가고, 지금 `None`을 반환하며 포기하는
+  자리([`enrichment_service.py`의 `select_concentration_forecast()`])가 조용한 오답으로
+  바뀐다. 0.9는 사실상 표기 차이만 흡수하는 값이다. 낮추는 것은 실측 결과를 보고
+  판단한다.
+- 실측으로 확인한 전제(2026-08-08):
+  - `tAtsNm`은 부분 일치이며 **`areaCd`/`signguCd`로 좁혀진 뒤** 적용된다.
+    `'전망대'`가 종로구에서 고유 이름 1건(`채석장 전망대`), 강남구에서 0건이다.
+    전국을 훑지 않으므로 종로구 코퍼스 기준 빈도가 올바른 척도다.
+  - `'닭한마리'` 단독 검색은 `서울 동대문 닭한마리 골목` 하나만 반환한다.
+  - `'서울'`은 고유 이름 4건으로 갈린다.
+  - 집중률 API의 `signguCd`는 `11110`으로, TourAPI 목록의 `lDongSignguCd`(`110`)와
+    체계가 다르다. 코드를 섞으면 조용히 0건이 돌아온다.
+- 남는 한계: 집중률 API에만 있고 `places`에 짝이 없는 이름 12건은 이 변경으로
+  풀리지 않는다(`돈의문박물관마을`, `부엉이박물관`, `화정박물관` 등). 수동 오버라이드가
+  따로 필요하다.
+- 구현 예정 범위(C): `app/providers/concentration.py`,
+  `app/agent_context/enrichment_service.py`, `scripts/build_concentration_mappings.py`,
+  `place_concentration_mappings` 스키마(검색어 복수 저장).
+- 구현: 마이그레이션 `202608080002_add_concentration_search_keys.sql`이 배열 컬럼
+  추가·backfill·단수 컬럼 삭제를 한 번에 처리하고, 코드도 같은 PR에서 전부
+  이관했다. 단수 컬럼을 남겨 병행하지 않은 이유는 목록의 1순위가 기존 검색어와
+  같은 값이라 진실의 원천이 둘이 되기 때문이다(저장소에서 반복된 "레거시 필드의
+  이중 경로" 유형). 스키마 문서는
+  [place-database-schema.md §6.1](./design/place-database-schema.md)에 반영했다.
+
+### D-058 — 운영시간이 요일을 열거했으면 빠진 요일은 휴무로 유도한다
+
+- 상태: `Accepted`, 구현 완료 (D 리뷰 대기 — D-008 경계를 옮기는 결정이라 소유자 확인 필요)
+- 배경: 운영시간 파서가 요일별 시간을 분리하지 못해 두 가지가 조용히 통과하고 있었다.
+  `_WEEKLY_CLOSURE_PATTERN`의 구분자에 `~`가 없어 `매주 월요일~화요일`이 `[월]`만
+  남겼고(활성 33건), `_parse_operating_rules()`가 `weekdays=None` 고정이라 요일마다
+  시간이 다른 원문이 요일 구분 없는 규칙들로 평탄화됐다(활성 88건). 둘 다
+  `parse_status=parsed`에 warning도 없었다.
+- 요일 분리를 구현하고 나니 남는 질문이 하나 생겼다 — **원문이 요일을 열거했는데 어떤
+  요일이 빠져 있으면, 그 요일은 휴무인가 미확인인가.** D-008은 "운영시간 미확인은
+  폐점이 아니다"라 미확인이면 하드 필터를 통과하고 가중치만 재분배된다.
+- 결정: **빠진 요일을 정기 휴무로 유도해 `ClosureRule`로 내보낸다.** 단, 요일 없는
+  규칙(`weekdays=None`)이 하나라도 있으면 그 규칙이 7요일 전부를 덮으므로 유도하지
+  않는다.
+- 근거(2026-08-08 실측, 활성 844건): 요일을 열거하고도 빠진 요일이 있는 장소가 39건인데,
+  그중 **38건은 그 빠진 요일이 휴무 원문에 이미 명시**돼 있었다. 원문 자체가 규칙을
+  38번 교차검증해준 셈이다. 남은 1건(북촌문화센터, `130903`)은 반례가 아니라 휴무
+  필드가 비어 있는 원본 결함이고, 실제로도 월요일에 문을 닫는다.
+- **원문 휴무와 유도 휴무는 `source_text`로만 구분한다** — 유도분은
+  `DERIVED_CLOSURE_SOURCE_TEXT`("운영시간에 열거되지 않은 요일")를 갖는다. `place_sync`가
+  `source_text`를 직렬화하므로 DB에서도 골라낼 수 있다. D 판정 자체는 원문 휴무와 같다.
+- **파싱 실수의 대가가 커진다.** 요일 범위를 하나 잘못 읽으면 결과가 "점수가 틀림"이
+  아니라 "후보가 하드 필터로 사라짐"이 된다. 복구 경로가 없다. 현재 코퍼스에서 유도가
+  붙는 장소는 1건뿐이라 노출이 작지만, **종로구 밖으로 데이터를 넓히면 유도가 붙는
+  장소 수부터 다시 재야 한다.**
+- 회귀 범위(구/신 파서를 7일 × 6개 시각으로 대조): 활성 844건 중 **97건**의 운영 판정이
+  달라졌다 — 열림→닫힘 335건, 구간변경 404건(그중 운영점수가 실제로 달라진 것 61건,
+  최대 ±0.75점 → 가중치 0.4 기준 총점 0.3점). `parse_status` 분포는 바뀌지 않는다.
+  이번 변경은 "몇 건을 읽었나"가 아니라 "읽은 내용이 맞나"를 고친 것이다.
+- 구현: `app/domain/operating_hours.py` — `_split_weekday_segments()`(요일 선언 단위
+  분할, 줄 경계를 넘어 유지), `_expand_weekdays()`(범위 전개, 주 경계 포함),
+  `_derive_unlisted_weekday_closures()`. 소비 측(`candidate_mapper.py`)의
+  `_rule_applies()`·`_is_regular_closure()`가 이미 요일을 읽고 있어 D 코드 변경은 없다.
+  `OPERATING_PARSER_VERSION` `1.1.0` → `1.2.0`(저장분 재파싱 트리거).
+- 함께 잡은 오독 3종: 요일 선언과 시간 구간이 다른 줄에 오는 원문(`[평일]<br>-
+  10:00~17:00`), 시설 구획이 바뀔 때 앞 구획 요일이 새어나가는 문제(`[자율학습실]
+  07:00~22:00`이 앞의 `주말` 전용이 됨), 요일이 범위가 아닌 안내인 경우
+  (`※ 매주 화요일 휴관`, `주중 브레이크타임`, `토요일 미사`, `매월 마지막 수요일`).
+- 남는 것: `준비시간`·`브레이크타임` 구간이 운영 구간으로 파싱된다. 지금은 앞 구간이
+  먼저 매칭돼 실질 피해가 없어 범위 밖으로 둔다.
+
+### D-059 — SCHEDULE 되묻기 답변은 프롬프트 컨텍스트로 이어간다(상태 레벨 override 아님)
+
+- 상태: `Accepted`, 구현 완료
+- 배경: 1턴 "주말에 종로에서 일정 짜줘" → Intent=SCHEDULE, 장소가 여러 곳으로 해석돼
+  Tool(C) 레벨 `location_ambiguous` 되묻기로 끝남. 2턴 "광화문으로 알려줘" → Intent=MODIFY로
+  오분류되어 일정 편성이 아니라 장소 추천/변경 응답이 나갔다.
+- 원인 조사 결과 3가지: (1) `build_interpretation()`이 `classify_intent()`를 호출할 때
+  `has_previous_recommendation`/`shown_place_count`만 넘기고 "직전 턴이 되묻기로
+  끝났는지/그 되묻기가 어떤 Intent였는지"는 전혀 전달하지 않았다. RECOMMEND는
+  `_INTENT_PRIORITY`의 fallback 기본값이라 이런 상황에서도 대개 자연스럽게 RECOMMEND로
+  떨어지지만, SCHEDULE은 "일정/코스/순서" 키워드가 있어야만 선택되는 명시적 분류라
+  fallback이 없다 — "광화문으로"는 오히려 `_CONTEXT_DEPENDENT_RULES`의 MODIFY 예시
+  패턴("지명+조사")과 정확히 일치해 그쪽으로 끌린다. (2) 되묻기 플래그 소비
+  화이트리스트(`agent_runtime.py`)가 `(RECOMMEND, MODIFY)`뿐이라, 설령 SCHEDULE로 옳게
+  분류되더라도 `pending_clarification` 플래그가 지워지지 않았다. (3)
+  `state_transform.transform()`은 이미 SCHEDULE을 RECOMMEND와 동일하게 취급해 되묻기
+  답변 시 soft reset을 건너뛰는 로직을 갖추고 있었다 — 분류만 SCHEDULE로 바로잡으면
+  나머지(조건 병합)는 이미 정상 동작하는 상태였다.
+- 결정: D-053("단독 지명은 정보 조회")과 같은 방향 — **상태 레벨 결정적 override가 아니라
+  `classify_intent`에 필요한 컨텍스트를 넘기고 프롬프트 규칙만 추가**해 LLM 판단을
+  바로잡는다. `InterpretRequest`에 `pending_clarification`/`last_intent`
+  (B의 `SessionContextResponse`에서 그대로 채움)를 추가하고, `classify_intent()`
+  시그니처(Protocol/Real/Fake 3곳)에 동일 키워드 인자를 추가해 `orchestrator.py`가
+  그대로 전달한다. 실 Gemini 프롬프트(`_CONTEXT_DEPENDENT_RULES`/`_BOUNDARY_CASES`)에
+  "직전 턴이 SCHEDULE 되묻기로 끝났고 이번 발화가 그 답변으로 보이면 SCHEDULE 유지"
+  규칙을 추가하고, "현재 대화 컨텍스트" 블록에 되묻기 여부를 한 줄 노출한다(SCHEDULE
+  외 다른 `last_intent`는 이번 범위 밖이라 노출하지 않음 — 프롬프트 비대화 방지).
+  `PROMPT_VERSION` 1.0.6 → 1.0.7.
+- Fake(`FakeLLMProvider`)도 동일한 정보를 받아 미러링한다 — `_SCHEDULE_MARKERS` 매칭
+  분기 바로 뒤, `has_previous_recommendation` MODIFY 분기보다 먼저 "직전 SCHEDULE
+  되묻기 + 명시적 재시작 표현 아님" 조건을 검사해 SCHEDULE로 분류한다. 재시작 표현
+  목록은 `state_transform._RESET_SCOPE_PHRASES`와 같은 문구를 stub.py 로컬 상수로
+  미러링한다 — Fake는 프로덕션 상태 모듈에 의존하지 않는 기존 레이어 분리를 유지한다.
+- 부가 수정: `agent_runtime.py`의 되묻기 플래그 소비 화이트리스트에 `Intent.SCHEDULE`
+  추가 — 옳게 SCHEDULE로 이어져도 플래그가 안 지워지던 문제를 함께 고쳤다.
+- 대안(state-level override)을 채택하지 않은 이유: classify_intent 호출 자체를 건너뛰고
+  "직전이 SCHEDULE 되묻기면 무조건 SCHEDULE로 강제"하는 방식도 검토했으나, LLM이
+  OUT_OF_SCOPE/GENERAL 등으로 정확히 분류해야 하는 경우(되묻기 답변에 욕설이나 완전히
+  무관한 질문이 온 경우)까지 SCHEDULE로 덮어써 버릴 위험이 있다. 프롬프트 규칙은 LLM의
+  판단을 계속 신뢰하면서 이 특정 경계(되묻기 이어가기 vs MODIFY)만 바로잡는다 — D-053이
+  이미 이 방향을 팀 방침으로 확정했다.
+- 범위 밖: SCHEDULE 외 다른 Intent(INFO, COMPARE 등)가 되묻기로 끝나는 경우의 이어가기는
+  이번 재현 범위가 아니다. 필요성이 확인되면 같은 패턴(컨텍스트 전달 + 프롬프트 규칙)을
+  확장한다. `MODIFY`가 `current_conditions is None`일 때의 기존 자체 되묻기 처리
+  (`orchestrator.py` 별도 분기)는 이번 버그와 무관해 손대지 않았다.
+- 구현: `app/schemas.py`(`InterpretRequest`), `app/services/runtime/agent_runtime.py`
+  (컨텍스트 전달, 소비 화이트리스트), `app/services/interpret/orchestrator.py`
+  (`classify_intent()` 호출부), `app/providers/protocols.py`/`gemini.py`/`stub.py`
+  (시그니처), `app/providers/gemini_prompts.py`(프롬프트 규칙 + 버전).
+- 확인 방법: `tests/test_llm_provider.py`(SCHEDULE 되묻기 이어가기가 MODIFY 패턴보다
+  우선함, 명시적 재시작 표현은 강제되지 않음, 컨텍스트 없을 때 기존 동작 회귀 없음,
+  프롬프트 텍스트에 규칙·컨텍스트 줄 반영 확인), `tests/test_agent_runtime.py`
+  (SCHEDULE 되묻기 E2E — intent 유지 + 플래그 소비 확인). 전체 회귀 1333 passed / 22
+  skipped, ruff 통과.
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -1395,4 +1723,11 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-05 | D-051 근거 문장 정확도 수정 — 판정 함수가 `WeatherReason`(rain/snow/heat/cold)을 함께 반환하도록 바꾸고 `scoring.py`/`evidence.py`/`explanation.py`까지 관통시켜, "폭염인데 비 예보"·"ENJOY로 GOOD인데 맑은 날씨"라고 말하던 사실-근거 불일치를 해소 |
 | 2026-08-05 | D-051 기온 판정을 기상청 주의보/경보 2단계(33·35°C, -12·-15°C)로 재설계 — 주의보~경보 사이를 NEUTRAL로 두어 근거 있는 완충 구간 확보. 30~32°C 등 주의보 미만 구간은 의도적으로 미해결로 남김 |
 | 2026-08-06 | D-051 `condition` 전면 제거 — `WeatherForecastSlot.condition`(D 소유)부터 `SelectedWeatherForecast.condition`, `map_sky_pty_to_condition()`, `tool_intelligence` 계약, `fake_weather_condition` 설정까지 걷어냄. `tool-intelligence-contract-v1.md`의 `TI-09`를 `Superseded`로, §9 `api_weather` 매핑을 D-038 무효로 반영 |
+| 2026-08-07 | D-055 신설 — INFO `event` 지원(C). `sigunguCode` 필터가 응답 다수를 탈락시키는 것을 실측으로 확인해 법정동 코드로 전환하고, 장소명 매칭 대신 좌표 근접으로 "근처 진행 중 행사"를 답하도록 결정. `EventInfoResult` 신설 |
+| 2026-08-07 | D-054 신설 — INFO `question_type` 8종으로 확장(C). 상세 질의는 Supabase 캐시에 데이터가 없어 TourAPI를 직접 조회하도록 결정하고 `GetPlaceDetailTool`·`info_field_rules` 신설. `event`는 `unsupported`, A 배선 3건은 별도 카드 |
 | 2026-08-06 | D-053 신설 — TP-67(PR #113) 후속으로 위치 변경 판정에서 지명 단독을 제외해 `INFO`(정보 조회) 흐름을 지키고, `environment` 미언급(`ANY`)이 되묻기 답변에서 앞 턴의 `indoor`를 덮어쓰던 갭을 프롬프트 규칙 + 보존 목록으로 막음. `PROMPT_VERSION` 1.0.2 |
+| 2026-08-07 | D-054 트리비 페르소나와 `GENERAL(service_identity)`, RECOMMEND/MODIFY 추천 결과 요약 LLM 추가. 요약 입력에서 내부 scoring 필드는 제외 |
+| 2026-08-08 | D-056 신설 — TourAPI 주차·요금·이미지 원문을 `places` 컬럼 6개로 추가(C). 별도 테이블 분리 대신 컬럼 추가를 택한 근거와 축제 `usetimefestival` 함정, 커버리지 한계(주차 95%/요금 24%)를 기록 |
+| 2026-08-08 | D-057 신설 — 집중률 검색어를 단일 값에서 공백 토큰 전부로 바꾸고, 코퍼스 등장 빈도 오름차순으로 조회하도록 결정하고 구현(C). 손으로 쓴 불용어 목록 대신 희소성 기준을 쓰는 근거를 실측(종로구 113개 이름)으로 기록하고, 대조 유사도 임계값 0.9를 유사도 매칭 금지 방침의 조건부 예외로 명시 |
+| 2026-08-08 | D-058 신설 — 운영시간 요일 파싱 수정(C). `매주 월요일~화요일`의 물결표 요일 범위 전개와 요일별 운영시간 분리를 구현하고, 요일을 열거한 원문에서 빠진 요일을 정기 휴무로 유도하도록 결정. 유도 근거는 활성 844건 중 39건 실측(38건이 휴무 원문과 일치). 활성 97건의 운영 판정이 달라짐. `OPERATING_PARSER_VERSION` 1.2.0 |
+| 2026-08-08 | D-059 신설 — SCHEDULE 되묻기 답변이 MODIFY로 오분류되던 문제 수정(A). `classify_intent()`에 `pending_clarification`/`last_intent` 컨텍스트를 전달하고 프롬프트 규칙만 추가(상태 레벨 override 채택 안 함, D-053과 같은 방향). 되묻기 플래그 소비 화이트리스트에 SCHEDULE 누락도 함께 수정. `PROMPT_VERSION` 1.0.7 |

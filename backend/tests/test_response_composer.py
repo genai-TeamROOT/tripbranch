@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app.agent_context.schemas import ContextError
+from app.errors import ProviderUnavailableError
 from app.providers.contracts import ProviderSource, provider_result
 from app.schemas import (
     ClarificationPayload,
@@ -32,15 +33,31 @@ from app.services.runtime.response_composer import (
 
 
 class _StubLLM:
-    """compose_chat_message()의 GENERAL 분기만 검증하기 위한 최소 테스트 더블."""
+    """compose_chat_message()의 LLM 생성 분기를 검증하기 위한 최소 테스트 더블."""
 
-    def __init__(self, answer: str = "고정된 배경지식 답변입니다.") -> None:
+    def __init__(
+        self,
+        answer: str = "고정된 배경지식 답변입니다.",
+        recommendation_summary: str = "테스트 장소를 중심으로 골라봤어요.",
+        fail_recommendation_summary: bool = False,
+    ) -> None:
         self.answer = answer
+        self.recommendation_summary = recommendation_summary
+        self.fail_recommendation_summary = fail_recommendation_summary
         self.received: tuple[GeneralTopic, str] | None = None
+        self.summary_received: tuple[Intent, RecommendationResponse] | None = None
 
     async def generate_general_answer(self, topic: GeneralTopic, original_question: str):
         self.received = (topic, original_question)
         return provider_result(self.answer, source=ProviderSource.FAKE_LLM)
+
+    async def generate_recommendation_summary(
+        self, intent: Intent, recommendations: RecommendationResponse
+    ):
+        self.summary_received = (intent, recommendations)
+        if self.fail_recommendation_summary:
+            raise ProviderUnavailableError("Gemini")
+        return provider_result(self.recommendation_summary, source=ProviderSource.FAKE_LLM)
 
 
 def _item(*, explanations: list[str], warnings: list[str]) -> RecommendationItem:
@@ -162,10 +179,23 @@ class TestComposeChatMessageGeneral:
 class TestComposeChatMessageRecommendAndModify:
     @pytest.mark.parametrize("intent", [Intent.RECOMMEND, Intent.MODIFY])
     @pytest.mark.asyncio
-    async def test_wrapper_message_when_recommendations_present(self, intent: Intent) -> None:
+    async def test_generates_summary_when_recommendations_present(self, intent: Intent) -> None:
         llm_output = LLMOutput(intent=intent, status=OutputStatus.COMPLETE)
+        stub = _StubLLM(recommendation_summary="테스트 장소를 중심으로 골라봤어요.")
         message = await compose_chat_message(
-            llm_output, recommendations=_response(place_ids=["a", "b"]), llm=_StubLLM()
+            llm_output, recommendations=_response(place_ids=["a", "b"]), llm=stub
+        )
+        assert message == "테스트 장소를 중심으로 골라봤어요."
+        assert stub.summary_received is not None
+        assert stub.summary_received[0] is intent
+
+    @pytest.mark.asyncio
+    async def test_recommendation_summary_failure_falls_back_to_template(self) -> None:
+        llm_output = LLMOutput(intent=Intent.RECOMMEND, status=OutputStatus.COMPLETE)
+        message = await compose_chat_message(
+            llm_output,
+            recommendations=_response(place_ids=["a", "b"]),
+            llm=_StubLLM(fail_recommendation_summary=True),
         )
         assert message == "이런 곳들을 찾아봤어요:"
 

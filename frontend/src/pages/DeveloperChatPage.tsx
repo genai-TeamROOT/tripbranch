@@ -8,9 +8,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
+import {
+  clearExchanges,
+  fetchExchanges,
+  setExchangeCapture,
+  type ApiExchangeSnapshot,
+} from "../api/dev";
 import { fetchSessionState, sendChat, toDisplayConditions } from "../api/trip";
 import { ChatComposer } from "../components/chat/ChatComposer";
 import { ChatMessageList } from "../components/chat/ChatMessageList";
+import { ApiExchangePanel } from "../components/dev/ApiExchangePanel";
 import { DeveloperAuditPanel } from "../components/dev/DeveloperAuditPanel";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { useTripDispatch, useTripState } from "../state/TripContext";
@@ -26,8 +33,35 @@ export function DeveloperChatPage() {
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const previousAuditTurnCountRef = useRef(0);
   const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null);
+  const [exchanges, setExchanges] = useState<ApiExchangeSnapshot | null>(null);
+  const [exchangeError, setExchangeError] = useState<string | null>(null);
 
   const isLoading = state.phase === "interpreting" || state.phase === "recommending";
+
+  const withExchangeErrors = useCallback(
+    async (load: () => Promise<ApiExchangeSnapshot>) => {
+      try {
+        setExchanges(await load());
+        setExchangeError(null);
+      } catch (error) {
+        setExchangeError(
+          error instanceof ApiError
+            ? error.message
+            : "API 캡처 정보를 불러오지 못했어요.",
+        );
+      }
+    },
+    [],
+  );
+
+  const loadExchanges = useCallback(
+    () => withExchangeErrors(fetchExchanges),
+    [withExchangeErrors],
+  );
+
+  useEffect(() => {
+    void loadExchanges();
+  }, [loadExchanges]);
 
   useEffect(() => {
     const latestTurn = state.auditTurns.at(-1);
@@ -122,9 +156,13 @@ export function DeveloperChatPage() {
             elapsedMsClient: performance.now() - startedAt,
           },
         });
+      } finally {
+        // 외부 호출은 이 턴에서 발생하므로 턴이 끝난 직후에만 다시 읽는다.
+        // 주기 폴링을 걸면 아무 일도 없는 동안 요청만 늘어난다.
+        void loadExchanges();
       }
     },
-    [dispatch, state.device_location, state.session_id],
+    [dispatch, loadExchanges, state.device_location, state.session_id],
   );
 
   async function handleFollowUp(text: string) {
@@ -137,7 +175,17 @@ export function DeveloperChatPage() {
   }
 
   return (
-    <main className="grid h-screen grid-cols-[minmax(0,1fr)_480px] overflow-hidden bg-white text-gray-950 dark:bg-gray-950 dark:text-gray-50">
+    <main className="grid h-screen grid-cols-[380px_minmax(0,1fr)_480px] overflow-hidden bg-white text-gray-950 dark:bg-gray-950 dark:text-gray-50">
+      <ApiExchangePanel
+        snapshot={exchanges}
+        error={exchangeError}
+        onToggleCapture={(enabled) =>
+          void withExchangeErrors(() => setExchangeCapture(enabled))
+        }
+        onClear={() => void withExchangeErrors(clearExchanges)}
+        onRefresh={() => void loadExchanges()}
+      />
+
       <section className="flex min-h-0 min-w-0 flex-col overflow-hidden">
         <header className="flex items-center justify-between gap-3 border-b border-gray-200 px-5 py-4 dark:border-gray-800">
           <div>
@@ -147,6 +195,13 @@ export function DeveloperChatPage() {
             </p>
           </div>
           <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => navigate("/dev-ops")}
+              className="rounded-md border border-gray-300 px-3 py-1.5 text-sm dark:border-gray-700"
+            >
+              Ops 패널
+            </button>
             <button
               type="button"
               onClick={() => navigate("/chat")}

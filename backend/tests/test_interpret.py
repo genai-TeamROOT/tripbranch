@@ -122,6 +122,17 @@ def test_interpret_tc11_general() -> None:
     assert body["general"]["topic"] == "place_knowledge"
 
 
+def test_interpret_service_identity_question_is_general() -> None:
+    client = TestClient(app)
+
+    response = client.post("/api/interpret", json={"user_input": "넌 누구야?"})
+
+    body = response.json()["output"]
+    assert body["intent"] == "GENERAL"
+    assert body["general"]["topic"] == "service_identity"
+    assert body["out_of_scope"] is None
+
+
 def test_interpret_tc13_out_of_scope() -> None:
     client = TestClient(app)
 

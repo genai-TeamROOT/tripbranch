@@ -11,6 +11,7 @@ import { TripProvider } from "./state/TripContext";
 import { HomePage } from "./pages/HomePage";
 import { ChatPage } from "./pages/ChatPage";
 import { DeveloperChatPage } from "./pages/DeveloperChatPage";
+import { DeveloperOpsPage } from "./pages/DeveloperOpsPage";
 
 function App() {
   return (
@@ -20,6 +21,7 @@ function App() {
           <Route path="/" element={<HomePage />} />
           <Route path="/chat" element={<ChatPage />} />
           <Route path="/dev-chat" element={<DeveloperChatPage />} />
+          <Route path="/dev-ops" element={<DeveloperOpsPage />} />
           <Route path="/confirm" element={<Navigate to="/chat" replace />} />
           <Route path="/results" element={<Navigate to="/chat" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />

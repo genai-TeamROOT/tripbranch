@@ -396,6 +396,7 @@ class Severity(str, Enum):
 
 
 class GeneralTopic(str, Enum):
+    SERVICE_IDENTITY = "service_identity"
     TRAVEL_TIP = "travel_tip"
     SEASON_INFO = "season_info"
     AREA_INFO = "area_info"

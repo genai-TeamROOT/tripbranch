@@ -3,12 +3,63 @@
 ## 1. 계약 구분
 
 - **현재 공개 API**: 저장소에서 실제로 실행되는 FastAPI 계약
-- **목표 공개 API**: Phase 1-A에서 도입할 통합 Chat 계약이며 아직 미구현
 - **내부 계약**: Backend 모듈 사이에서만 사용하며 Frontend에 노출하지 않음
 
-필드가 확정되지 않은 목표 계약은 `TBD`로 표시합니다.
+확정되지 않은 항목은 `TBD`로 표시합니다.
+
+최종 확인: 2026-08-08.
 
 ## 2. 현재 공개 API
+
+| 경로 | 용도 |
+| --- | --- |
+| `POST /api/chat` | **프론트 실사용 진입점.** 해석·추천·응답 조립을 한 번에 |
+| `POST /api/agent-debug` | `/api/chat`과 같은 구현, 개발 패널 전용 |
+| `POST /api/interpret` | Intent 분류·조건 추출만. 개발 패널 전용 |
+| `POST /api/recommendations` | 추천 파이프라인만. 개발 패널 전용 |
+| `GET /api/state/{session_id}` | 세션 상태 조회 |
+| `DELETE /api/state/{session_id}` | 세션 삭제 |
+| `GET /api/health` | 헬스체크 |
+
+### `POST /api/chat`
+
+프론트 실사용 진입점입니다. Intent 분류·조건 병합·Tool 조회·Scoring·응답 조립이
+한 번의 호출로 끝나며, 라우터는 `run_agent()`에 그대로 위임합니다.
+
+```ts
+type AgentRequest = {
+  user_input: string;      // 최소 길이 1
+  session_id?: string;     // 없으면 Backend가 생성해 응답에 실어 보냄
+  device_location?: string; // "위도,경도"
+};
+
+type AgentResponse = {
+  llm_output: LLMOutput;
+  state: StateApplyResponse;
+  message: string;                          // 챗봇 말풍선 텍스트
+  recommendations?: RecommendationResponse; // RECOMMEND/MODIFY + complete일 때만
+  schedule?: ScheduleResult;                // SCHEDULE + complete일 때만
+  llm_execution?: LLMExecutionMetadata;     // 개발자 Audit용
+  tool_execution?: ToolExecutionDebug;      // 개발자 Audit용
+};
+```
+
+- `recommendations`와 `schedule`은 동시에 채워지지 않습니다.
+- `message`에 카드·일정 상세를 다시 풀어쓰지 않습니다. 상세는
+  [Agent 응답 생성 설계](./design/agent-response-generation.md) 참고.
+- 상세 필드는 `backend/app/schemas.py`의 `AgentRequest`, `AgentResponse`를
+  기준으로 합니다.
+
+> **이 응답 형상은 아직 확정 계약이 아닙니다.** 지금은 프론트 전환 비용을 줄이려고
+> `AgentResponse`를 그대로 내보내고 있어 `llm_output` 전체와 B의 내부 state까지
+> 노출됩니다. 필요한 필드만 남기는 축소는 D-016 확정 대기 중입니다
+> (`routes/chat.py` TODO). **외부에 고정 계약으로 인용하지 마십시오.**
+
+### `POST /api/agent-debug`
+
+`/api/chat`과 같은 구현(`run_agent()`)을 공유하며 요청·응답 형식도 같습니다.
+용도만 다릅니다 — 개발자 패널(`AgentRuntimeDebugPanel`)이 Intent 분류부터 최종
+메시지 생성까지를 단계별로 확인할 때 씁니다.
 
 ### `GET /api/health`
 
@@ -51,6 +102,9 @@ type DeleteSessionResponse = {
 
 ### `POST /api/interpret`
 
+> 현재 프론트에서는 `IntentDebugPanel`만 호출합니다. 실사용 발화는 `/api/chat`을
+> 지납니다.
+
 ```ts
 type InterpretRequest = {
   user_input: string; // 최소 길이 1
@@ -75,9 +129,11 @@ type InterpretResponse = {
 
 ### `POST /api/recommendations`
 
-현재 공개 요청 모델의 이름이 `RecommendationRequest`이지만, 목표 아키텍처에서
-동일 이름은 Backend 내부 추천 입력으로 사용할 예정입니다. 통합 Chat API 도입 시
-공개 모델 이름 변경 여부는 `TBD`입니다.
+> 현재 프론트에서는 디버그 경로로만 호출합니다. 실사용 추천은 `/api/chat`이
+> 내부적으로 같은 파이프라인을 지납니다.
+
+공개 요청 모델의 이름이 `RecommendationRequest`이지만 §3의 내부 추천 입력과
+이름이 겹칩니다. 공개 모델 이름 변경 여부는 `TBD`입니다.
 
 ```ts
 type CurrentRecommendationRequest = InterpretedConditions & {
@@ -157,72 +213,15 @@ type ErrorResponse = {
 `provider_timeout`, `provider_unavailable`, `place_not_found`,
 `internal_server_error`입니다.
 
-## 3. 목표 공개 Chat API (`TBD`)
-
-### `ChatRequest`
-
-```ts
-type ChatRequest = {
-  chat_session_id: string;
-  message: string;
-  context?: ChatContext;
-  debug?: boolean;
-};
-
-type ChatContext = {
-  current_place_id?: string;
-  current_location?: {
-    latitude: number;
-    longitude: number;
-  };
-  // Frontend가 전달할 수 있는 추가 UI 컨텍스트는 TBD
-};
-```
-
-- `chat_session_id`는 Frontend가 새 채팅 생성 시 생성합니다.
-- `message` 원문은 Backend 영구 저장 대상이 아닙니다.
-- `context`는 신뢰 가능한 서버 상태를 대체하지 않으며 검증이 필요합니다.
-- Backend Python과 JSON 필드는 프로젝트 공통 규칙에 따라 `snake_case`를 사용합니다.
-
-### `ChatResponse`
-
-```ts
-type ChatResponse = {
-  chat_session_id: string;
-  recommendation_run_id?: string;
-  intent: Intent;
-  message: string;
-  recommendations?: RecommendationResult[];
-  clarification?: ClarificationRequest;
-  warnings?: string[];
-  debug?: ChatDebugInfo;
-};
-
-type Intent =
-  | "RECOMMEND"
-  | "INFO"
-  | "MODIFY"
-  | "COMPARE"
-  | "GENERAL"
-  | "OUT_OF_SCOPE";
-
-type ClarificationRequest = {
-  field: string;
-  question: string;
-  options?: string[];
-};
-```
-
-`RecommendationResult`, `ChatDebugInfo`, HTTP status별 오류 매핑은 현재 논의 중이며
-`TBD`입니다. `debug`에는 API 키, 전체 Provider 원본, 내부 프롬프트를 포함하지
-않습니다.
-
-## 4. Backend 내부 계약
+## 3. Backend 내부 계약
 
 ### Interpret 결과
 
-현재 구현 모델은 `InterpretedConditions`입니다. 목표 모델은 Intent, 변경 연산,
-명시 조건과 신뢰도/근거를 표현해야 하지만 최종 스키마는 `TBD`입니다.
+현재 구현 모델은 `LLMOutput`입니다(`backend/app/schemas.py`). Intent와 Intent별
+payload, `status`, 되묻기 정보를 담습니다. `InterpretedConditions`는
+`/api/recommendations`의 공개 요청 모델로만 남아 있습니다.
+
+아래는 초기 설계의 초안이며, 신뢰도/근거 표현은 아직 도입되지 않았습니다.
 
 ```ts
 type InterpretResultDraft = {
@@ -241,7 +240,7 @@ Interpret 결과는 추천 장소나 Provider 원본 데이터를 포함하지 �
 
 ```ts
 type RecommendationRequest = {
-  chat_session_id: string;
+  session_id: string;
   recommendation_run_id: string;
   origin: ResolvedLocation;
   conditions: NormalizedConditions;
@@ -358,19 +357,20 @@ type RecommendationResult = {
 ```
 
 점수 공개 범위, Feature 설명 형식, Snapshot 상세 스키마는 `TBD`입니다. 참고로
-현재 REST `/api/recommendations`의 `RecommendationItem`(§2)은 이미
-`score`/`feature_scores`/`weights_used`를 노출하고 있어(D-028), 통합 Chat API
-설계 시 이를 그대로 재사용할 수 있는지 우선 검토합니다.
+`/api/recommendations`의 `RecommendationItem`(§2)은 이미
+`score`/`feature_scores`/`weights_used`를 노출하고 있고(D-028), `/api/chat`도
+`recommendations`에 같은 `RecommendationResponse`를 그대로 싣습니다.
 
 D-029(Explainability Layer v1)에서 Rule 기반 `explanations: string[]`도
 추가됐습니다. A(Agent Runtime) 담당과 협의한 결과, `reason: string`(단일
 문장) 자리에 합치지 않고 **별도 필드로 유지**하기로 확정했습니다 — 상세
 근거는 [추천 Explainability Layer 설계](./design/recommendation-explainability.md)
-§3.1 참고. `RecommendationResult`에도 이 통합 Chat API 설계 시 `explanations:
-string[]` 필드가 별도로 추가될 예정이며, Rule 기반 문장은 있는 그대로
-노출하고 포맷팅만 Runtime 재량으로 둡니다(§3.2).
+§3.1 참고. Rule 기반 문장은 있는 그대로 노출하고 포맷팅만 Runtime 재량으로
+둡니다(같은 문서 §3.2). `/api/chat`에서는
+`response_composer.py::compose_recommendation_message()`가 이 원칙에 따라
+`explanations`/`warnings`를 재작문 없이 이어붙입니다(D-054).
 
-## 5. Provider 계약
+## 4. Provider 계약
 
 모든 Provider 메서드는 외부 I/O를 고려해 비동기이며 Fake/Real 구현이 같은 계약을
 따릅니다.
@@ -486,23 +486,36 @@ type WeatherMetadata = ProviderMetadata & {
 metadata를 반환합니다. 공통 `ProviderMetadata` wrapper가 Fake/Real Provider에
 적용되어 Tool Context로 전달됩니다.
 
-## 6. Tool 계약 초안
+## 5. Tool 계약 초안
 
-`ResolveLocationTool`, `GetWeatherForecastTool`, `NearbyPlaceDetailsTool`,
-`GetConcentrationTool`, `GetHolidaysTool`은 코드로 구현되어 있습니다. 각 Tool은
-업무별 payload를 유지하되 `status`, `error`, `warnings`, `provider_metadata`
-필드를 공통으로 제공하며 `ToolResult<T>` Protocol을 만족합니다.
+각 Tool은 업무별 payload를 유지하되 `status`, `error`, `warnings`,
+`provider_metadata` 필드를 공통으로 제공하며 `ToolResult<T>` Protocol을
+만족합니다.
+
+구현된 Tool (`backend/app/tools/`):
+
+| Tool | 책임 | Provider |
+| --- | --- | --- |
+| `ResolveLocationTool` | 장소명/주소를 좌표로 해석 | LocalSearch + Geocoding |
+| `NearbyPlaceDetailsTool` | 주변 후보 수집 후 제한된 동시성으로 다건 상세조회 | Place Search + Place Details |
+| `GetPlaceDetailTool` | 이미 특정된 장소 1건의 상세 조회 (D-054) | Place |
+| `GetFestivalsTool` | 지역 행사 중 기준일에 진행 중인 것 (D-055) | Festival |
+| `GetWeatherForecastTool` | 방문 예정 시각의 초단기예보 선택 | Weather |
+| `GetConcentrationTool` | 장소/지역 혼잡도 조회 | Concentration |
+| `GetHolidaysTool` | 공휴일 조회 | Holiday |
+
+미구현:
 
 | Tool | 책임 | 예상 Provider |
 | --- | --- | --- |
-| `resolve_location` | 장소명/주소를 좌표로 해석 | Geocoding |
-| `search_nearby_places` | 기준 좌표 주변 후보 수집 | Place |
-| `get_place_details` | 특정 장소 식별 및 상세정보 조회 | Place |
-| `get_nearby_place_details` | 주변 후보 수집 후 제한된 동시성으로 다건 상세조회 | Place Search + Place Details |
-| `estimate_travel_time` | 이동수단별 예상 시간 계산 | 지도/위치 Provider TBD |
-| `get_weather_forecast` | 방문 예정 시각의 초단기예보 선택 | Weather |
-| `get_congestion` | 장소/지역 혼잡도 조회 | Concentration |
-| `search_place_feature_evidence` | 조용함·분위기 근거 수집 | Naver Blog Search TBD |
+| `estimate_travel_time` | 이동수단별 예상 시간 계산 | 지도/위치 Provider `TBD` |
+| `search_place_feature_evidence` | 조용함·분위기 근거 수집 | Naver Blog Search `TBD` |
+
+A↔C 공통 요청·응답 envelope(`tool_type` 기반)은
+[Tool Intelligence Contract v1](./design/tool-intelligence-contract-v1.md)에
+있습니다. 단, 그 envelope은 현재 실행 경로에 배선돼 있지 않습니다 — 실제 A→C
+호출은 `agent_context/service.py`의 Context 단위 인터페이스를 지납니다(같은
+문서 §13.1).
 
 ### `resolve_location` 구현 계약
 
@@ -684,14 +697,19 @@ HTTP 200이더라도 응답 schema가 깨져 파싱할 수 없으면 `no_data`�
 명시적 필수 조건을 자동으로 완화하지 않습니다. Tool은 오류를 분류하고,
 중단·부분 진행·재질문의 최종 결정은 Orchestrator가 담당합니다.
 
-## 7. 세션과 실행 식별자
+## 6. 세션과 실행 식별자
 
 | 필드 | 생성 주체 | 역할 | 현재 구현 |
 | --- | --- | --- | --- |
 | `session_id` | Backend State Service | 현재 채팅 세션 식별, 사용자 ID 아님 | 구현 |
 | `run_id` | Backend State Service | 조건 변경·추천 이력 실행 연결 | 구현 |
-| `chat_session_id` | Frontend 또는 Backend (`TBD`) | 목표 Chat API의 채팅 식별자 | 명칭·생성 주체 협의 필요 |
-| `recommendation_run_id` | Backend | 목표 Snapshot·로그 식별자 | 현재 `run_id`와 통합 방식 `TBD` |
+| `recommendation_run_id` | Backend | Snapshot·로그 식별자 | 현재 `run_id`와 통합 방식 `TBD` |
 
-현재 `session_id`와 `run_id`는 UUID 기반 문자열입니다. 목표 공개 계약의 명칭,
-영속 저장 위치, 중복·재시도 정책은 `TBD`입니다.
+`session_id`와 `run_id`는 UUID 기반 문자열입니다.
+
+`POST /api/chat`은 `session_id`를 선택 필드로 받습니다. 없으면 Backend가 새로
+만들고 프론트는 응답으로 받은 값을 이후 발화에 실어 보냅니다. **초기 설계에
+있던 별도 식별자 `chat_session_id`는 도입하지 않았고 `session_id`로
+일원화했습니다.**
+
+영속 저장 위치와 중복·재시도 정책은 `TBD`입니다.

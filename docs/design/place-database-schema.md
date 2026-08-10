@@ -138,6 +138,12 @@ release_place_sync_lock(...)
 | `lcls_systm3` | `text` | 선택 | TourAPI 신분류 소분류 코드 |
 | `operating_hours_raw` | `text` | 선택 | 유형별 운영시간 원문 |
 | `rest_date_raw` | `text` | 선택 | 유형별 휴무일 원문 |
+| `parking_info_raw` | `text` | 선택 | 유형별 주차 안내 원문 |
+| `parking_fee_raw` | `text` | 선택 | 주차 요금 원문 |
+| `use_fee_raw` | `text` | 선택 | 이용요금 원문 |
+| `discount_info_raw` | `text` | 선택 | 할인정보 원문 |
+| `first_image_url` | `text` | 선택 | 목록 API `firstimage`, 대표 이미지 URL |
+| `thumbnail_url` | `text` | 선택 | 목록 API `firstimage2`, 썸네일 이미지 URL |
 | `operating_schedule` | `jsonb` | 선택 | 현재 파서가 만든 정규화 결과 |
 | `operating_parse_status` | `text` | 필수 | `parsed`, `partial`, `unknown`, `assumed` |
 | `operating_parser_version` | `text` | 필수 | 정규화 코드 버전 |
@@ -153,6 +159,34 @@ release_place_sync_lock(...)
 | `last_sync_run_id` | `uuid` | 선택 | 마지막 처리 실행 FK |
 | `created_at` | `timestamptz` | 필수 | 최초 생성 시각 |
 | `updated_at` | `timestamptz` | 필수 | 마지막 DB 갱신 시각 |
+
+### 주차·요금·이미지 원문 (D-056)
+
+추천 카드에 주차·요금·썸네일을 노출하기 위해 추가한 컬럼이며 외부 호출은 늘지
+않는다. 주차·요금·할인은 이미 부르고 있는 `detailIntro2` 응답에서 더 읽기만 하고,
+이미지 두 개는 `areaBasedList2` 목록 응답에 들어 있어 상세조회조차 필요 없다.
+운영정보와 출처·관계·갱신 주기가 같아 별도 테이블로 분리하지 않았다.
+
+`detailIntro2`의 필드명은 `contenttypeid`마다 다르므로 하나의 컬럼으로 모은다.
+
+| 컬럼 | TourAPI 원본 필드 | 종로구 활성 844건 커버리지 |
+| --- | --- | ---: |
+| `parking_info_raw` | `parking`(12) / `parkingculture`(14) / `parkingleports`(28) / `parkinglodging`(32) / `parkingshopping`(38) / `parkingfood`(39) | 최대 806건 (축제 38건은 필드 없음) |
+| `parking_fee_raw` | `parkingfee`(14) / `parkingfeeleports`(28) | 문화시설·레포츠만 |
+| `use_fee_raw` | `usefee`(14) / `usefeeleports`(28) / `usetimefestival`(15) | 204건(24%) |
+| `discount_info_raw` | `discountinfo`(14) / `discountinfofestival`(15) / `discountinfofood`(39) | 해당 유형만 |
+
+- 축제(15)의 요금 필드명은 `usetimefestival`이다. **이름은 시간처럼 보이지만
+  내용은 요금이므로 운영시간으로 읽으면 영업시간 자리에 `5,000원`이 들어간다.**
+  `real_place.py`의 `_OPERATING_HOURS_KEYS`가 이 키를 제외하고 축제는 `playtime`을
+  쓰는 이유이며, 요금 매핑을 손볼 때 이 구분을 깨지 않아야 한다.
+- 주차비와 이용요금은 성격이 달라 한 컬럼에 합치지 않는다. 같은 장소에서 주차비
+  `무료`, 입장료 `3,000원`이 동시에 나온다.
+- 관광지(12)·숙박(32)·쇼핑(38)에는 요금 필드가 없다. 요금이 `detailCommon2`의
+  `overview` 산문에 섞여 있어 별도 파싱이나 수동 보강이 필요하다.
+- 이미지 두 컬럼은 다른 컬럼과 달리 `detail_fetched_at`이 아니라
+  `list_fetched_at` 주기를 따른다. 상세조회가 실패한 장소에서도 이미지는 최신일
+  수 있다.
 
 ### 운영정보 JSON 계약
 
@@ -267,18 +301,45 @@ TourAPI에 없거나 추천에 바로 사용하기 어려운 TripBranch 자체 �
 | 컬럼 | PostgreSQL 형식 | 필수 | 설명 |
 | --- | --- | --- | --- |
 | `content_id` | `text` | 필수 | PK이자 `places.content_id` FK |
-| `primary_concentration_name` | `text` | 필수 | 집중률 조회 시 우선 사용할 대표명 |
-| `concentration_aliases` | `text[]` | 필수 | 대표명 조회 실패 시 사용할 별칭 |
+| `primary_concentration_name` | `text` | 필수 | 응답 대조에 쓰는 정식 명칭 |
+| `concentration_search_keys` | `text[]` | 필수 | `tAtsNm`에 넣을 검색어 목록, 기본값 빈 배열 |
+| `concentration_aliases` | `text[]` | 필수 | 이 장소를 가리키는 다른 표기 |
 | `match_method` | `text` | 필수 | `exact`, `normalized`, `manual`, `exact_with_alias` |
 | `confidence_score` | `numeric(5,4)` | 선택 | `0` 이상 `1` 이하의 매핑 신뢰도 |
 | `verified_at` | `timestamptz` | 선택 | 수동 검증 시각 |
 | `created_at` | `timestamptz` | 필수 | 최초 생성 시각 |
 | `updated_at` | `timestamptz` | 필수 | 마지막 수정 시각 |
 
-대표명과 별칭이 모두 응답에 있으면 대표명의 집중률을 우선한다. 예를 들어
-`content_id=126533`은 `청와대 앞길`을 대표명으로, `청와대`를 별칭으로 사용한다.
-장소가 물리 삭제되면 매핑도 `ON DELETE CASCADE`로 제거되지만,
+조회에 쓰는 값과 응답을 대조할 값은 서로 다르다. 집중률 API의 `tAtsNm`은 부분
+일치 검색인데 **공백이 든 값을 넘기면 무엇을 넣든 0건이 돌아오기 때문이다**
+(2026-08-04 실측: `운현궁` 30건, `서울 운현궁` 0건). 그래서 조회는
+`concentration_search_keys`가, 응답 대조는 `primary_concentration_name`이 맡는다.
+
+`concentration_search_keys` 규칙 (D-057):
+
+- 앞에서부터 순서대로 시도하고 결과가 나오면 멈춘다.
+- 원소는 원래 이름을 공백으로 자른 토큰 전부이며, **종로구 코퍼스 내 등장 빈도
+  오름차순**으로 정렬한다. 희소한 토큰일수록 변별력이 높다는 기준이라 손으로 쓴
+  불용어 목록이 필요 없고, 데이터가 바뀌면 순서도 따라 바뀐다.
+- 응답 대조는 유사도 임계값 `0.9`를 둔다. 바닥 없는 `max()`를 쓰면 찾는 장소가
+  응답에 없어도 가장 덜 틀린 것이 정답인 척 나가므로, 사실상 표기 차이만
+  흡수하는 값으로 제한한다.
+- DB 제약: 원소에 `NULL`·빈 문자열·공백이 없어야 하고 `cardinality > 0`이다.
+  조회할 값이 하나도 없는 매핑은 존재 의미가 없다.
+
+이전에는 검색어를 `concentration_search_key` 단수 컬럼에 하나만 두었으나,
+`서울 동대문 닭한마리 골목`의 검색어가 `닭한마리` 하나로 고정돼 사용자가 다른
+표현으로 물으면 찾지 못하는 문제가 있었다. 단수 컬럼은
+`202608080002`에서 backfill 후 삭제했고 병행하지 않는다 — 목록의 1순위가 기존
+검색어와 같은 값이라 진실의 원천이 둘이 되기 때문이다.
+
+별칭은 "이 장소를 가리키는 다른 이름"이라는 뜻이며 집중률 목록에 있을 필요가
+없다. 예를 들어 `content_id=126533`은 `청와대 앞길`을 정식 명칭으로, `청와대`를
+별칭으로 사용한다. 장소가 물리 삭제되면 매핑도 `ON DELETE CASCADE`로 제거되지만,
 `is_active=false`인 장소는 매핑 입력 대상에서 제외한다.
+
+집중률 API의 `signguCd`는 `11110`으로 TourAPI 목록의 `lDongSignguCd`(`110`)와
+체계가 다르다. 코드를 섞으면 오류 없이 0건이 돌아온다.
 
 2026-07-29 최초 적재 기준은 다음과 같다.
 
@@ -391,15 +452,30 @@ API 일시 오류로 전체 장소가 비활성화되는 것을 막기 위해 �
   후 30일 이상 지난 장소를 대상으로 갱신한다.
 - 비활성 장소는 삭제하지 않고 사유와 비활성 시각을 기록해 계속 보존한다.
 
+### v0.1 이후 변경
+
+- **D-043 / D-057 — 집중률 조회용 검색어를 정식 명칭과 분리한다.** `tAtsNm`이
+  공백에 0건을 돌려주는 문제로 조회용 값에 전용 컬럼을 두었고(D-043), 이후
+  검색어 하나로는 표현이 다른 질문을 놓쳐 순서 있는 목록으로 교체했다(D-057).
+- **D-056 — 주차·요금·할인·이미지 원문 6개를 `places`에 추가한다.** 별도 테이블로
+  분리하지 않고 컬럼을 추가했다.
+- **D-058 — 파서 버전이 `operating-hours-1.2.0`이다.** 요일 범위 전개와 요일별
+  운영시간 분리를 반영했으며, 저장된 원문 재파싱이 트리거된다.
+
 ### 적용 상태
 
-- 최초 마이그레이션은
-  `supabase/migrations/202607240001_create_place_tables.sql`이며 2026-07-24에
-  Supabase SQL Editor로 적용했다.
-- 동기화 잠금은
-  `supabase/migrations/202607240002_add_place_sync_locks.sql`로 같은 날 적용했다.
-- SQL Editor 적용으로 원격 마이그레이션 이력은 생성되지 않았으므로, Supabase CLI
-  최초 도입 시 `supabase/README.md`의 이력 복구 절차를 먼저 수행한다.
-- 집중률 매핑은
-  `supabase/migrations/20260729104209_create_place_concentration_mappings.sql`로
-  2026-07-29 Supabase MCP를 통해 적용했다.
+장소 영역 마이그레이션은 다음과 같다. `supabase/migrations/` 아래에는 이 목록
+외에 B(Agent State) 소유 테이블의 마이그레이션도 함께 있다.
+
+| 마이그레이션 | 적용일 | 내용 |
+| --- | --- | --- |
+| `202607240001_create_place_tables.sql` | 2026-07-24 | `places`, `place_enrichments`, `place_sync_runs` 생성 |
+| `202607240002_add_place_sync_locks.sql` | 2026-07-24 | `place_sync_locks`와 잠금 RPC 추가 |
+| `20260729104209_create_place_concentration_mappings.sql` | 2026-07-29 | `place_concentration_mappings` 생성 |
+| `202608040001_add_concentration_search_key.sql` | 2026-08-04 | 조회용 검색어 단수 컬럼 추가 (D-043) |
+| `202608080001_add_place_parking_fee_image_columns.sql` | 2026-08-08 | `places`에 주차·요금·할인·이미지 6개 컬럼 추가 (D-056) |
+| `202608080002_add_concentration_search_keys.sql` | 2026-08-08 | 검색어를 순서 있는 목록으로 교체하고 단수 컬럼 삭제 (D-057) |
+
+- 최초 두 건은 Supabase SQL Editor로 적용해 원격 마이그레이션 이력이 생성되지
+  않았다. Supabase CLI 최초 도입 시 `supabase/README.md`의 이력 복구 절차를 먼저
+  수행한다. 이후 마이그레이션은 Supabase MCP를 통해 적용했다.

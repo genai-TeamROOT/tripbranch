@@ -11,8 +11,10 @@ docs/design/intent-definition.md, docs/design/llm-output-schema.md 참고). 구�
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
+import time
 from datetime import date
 from typing import TypeVar
 
@@ -23,10 +25,19 @@ from google.genai import types as genai_types
 from pydantic import BaseModel, ValidationError
 
 from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
+from app.observability.api_usage import record_call
 from app.providers import gemini_prompts
 from app.providers.contracts import ProviderResult, ProviderSource, provider_result
 from app.schedule.schemas import ScheduleLLMPlan, SchedulePlanningRequest
-from app.schemas import GeneralTopic, IntentClassificationResult, LLMOutput, UserConditions
+from app.schemas import (
+    GeneralTopic,
+    Intent,
+    IntentClassificationResult,
+    LLMOutput,
+    RecommendationItem,
+    RecommendationResponse,
+    UserConditions,
+)
 from app.services.runtime.llm_execution import record_llm_call
 
 T = TypeVar("T", bound=BaseModel)
@@ -39,6 +50,13 @@ class _GeneralAnswer(BaseModel):
 
     answer: str
 
+
+class _RecommendationSummary(BaseModel):
+    """generate_recommendation_summary() 전용 wire 모델."""
+
+    message: str
+
+
 # 429(rate limit)와 5xx(서버 과부하/일시 장애)만 재시도 대상. 4xx(인증 실패, 잘못된 요청 등)는
 # 재시도해도 같은 결과이므로 즉시 실패시킨다.
 _RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
@@ -48,6 +66,19 @@ _BACKOFF_BASE_SECONDS = 0.5
 def _backoff_seconds(attempt: int) -> float:
     """지수 백오프 + 지터. attempt=0이 첫 번째 재시도 전 대기시간."""
     return _BACKOFF_BASE_SECONDS * (2**attempt) + random.uniform(0, 0.25)
+
+
+def _record_gemini_call(
+    model_name: str, started: float, *, ok: bool, status: str
+) -> None:
+    """Gemini 호출 한 번을 관측 집계에 남긴다(추천 판정과 무관)."""
+    record_call(
+        "gemini",
+        model_name,
+        ok=ok,
+        latency_ms=(time.perf_counter() - started) * 1000,
+        status=status,
+    )
 
 
 class _RetryableExhaustedError(Exception):
@@ -89,10 +120,14 @@ class RealGeminiProvider:
         *,
         has_previous_recommendation: bool,
         shown_place_count: int,
+        pending_clarification: str | None = None,
+        last_intent: str | None = None,
     ) -> ProviderResult[IntentClassificationResult]:
         instruction = gemini_prompts.build_intent_classification_instruction(
             has_previous_recommendation=has_previous_recommendation,
             shown_place_count=shown_place_count,
+            pending_clarification=pending_clarification,
+            last_intent=last_intent,
         )
         result = await self._call_structured(
             instruction,
@@ -115,10 +150,15 @@ class RealGeminiProvider:
         return provider_result(result, source=ProviderSource.GEMINI)
 
     async def extract_modify_conditions(
-        self, user_input: str, current_conditions: UserConditions
+        self,
+        user_input: str,
+        current_conditions: UserConditions,
+        *,
+        pending_clarification: str | None = None,
     ) -> ProviderResult[LLMOutput]:
         instruction = gemini_prompts.build_modify_extraction_instruction(
-            current_conditions
+            current_conditions,
+            pending_clarification=pending_clarification,
         )
         result = await self._call_structured(
             instruction,
@@ -184,6 +224,40 @@ class RealGeminiProvider:
             operation="generate_general_answer",
         )
         return provider_result(result.answer, source=ProviderSource.GEMINI)
+
+    async def generate_recommendation_summary(
+        self, intent: Intent, recommendations: RecommendationResponse
+    ) -> ProviderResult[str]:
+        instruction = gemini_prompts.build_recommendation_summary_instruction(intent)
+        payload = {
+            "recommendations": [
+                self._recommendation_summary_item(item)
+                for item in [
+                    *recommendations.recommendations,
+                    *recommendations.unverified_recommendations,
+                ]
+            ]
+        }
+        result = await self._call_structured(
+            instruction,
+            json.dumps(payload, ensure_ascii=False),
+            _RecommendationSummary,
+            operation="generate_recommendation_summary",
+        )
+        return provider_result(result.message, source=ProviderSource.GEMINI)
+
+    @staticmethod
+    def _recommendation_summary_item(item: RecommendationItem) -> dict[str, object]:
+        """추천 요약 LLM에 넘겨도 되는 사용자-facing 필드만 남긴다."""
+
+        return {
+            "name": item.name,
+            "category": item.category,
+            "distance_km": item.distance_km,
+            "remaining_minutes": item.remaining_minutes,
+            "recommendation_reason": item.recommendation_reason,
+            "explanations": item.explanations,
+        }
 
     async def generate_schedule_plan(
         self, request: SchedulePlanningRequest
@@ -324,6 +398,9 @@ class RealGeminiProvider:
         """
 
         for attempt in range(self._max_retries + 1):
+            # google-genai는 자체 전송 계층을 써서 MeteredTransport를 거치지 않는다.
+            # 재시도 한 번도 별개의 과금·쿼터 소모라 시도 단위로 센다.
+            started = time.perf_counter()
             try:
                 response = await self._client.aio.models.generate_content(
                     model=model_name,
@@ -336,9 +413,11 @@ class RealGeminiProvider:
                     ),
                 )
             except httpx.TimeoutException:
+                _record_gemini_call(model_name, started, ok=False, status="timeout")
                 if attempt >= self._max_retries:
                     raise _RetryableExhaustedError(ProviderTimeoutError("Gemini")) from None
             except genai_errors.APIError as exc:
+                _record_gemini_call(model_name, started, ok=False, status=str(exc.code))
                 if exc.code not in _RETRYABLE_STATUS_CODES:
                     status = f" {exc.status}" if hasattr(exc, "status") else ""
                     detail = f"{exc.code}{status} (첫 시도부터 실패)"
@@ -350,6 +429,7 @@ class RealGeminiProvider:
                         ProviderUnavailableError("Gemini", detail=detail)
                     ) from None
             else:
+                _record_gemini_call(model_name, started, ok=True, status="ok")
                 if response.parsed is not None:
                     return response_model.model_validate(response.parsed)
                 # response_schema가 SDK 자동 파싱을 못 한 경우(빈 응답 등)

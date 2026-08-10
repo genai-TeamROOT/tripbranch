@@ -159,6 +159,34 @@ concentration_intent가 AVOID/SEEK인 경우 D-040 분기(1차 10개 → C 혼�
 
 ---
 
+## 4.1 되묻기(clarification) 흐름 (D-059)
+
+SCHEDULE도 RECOMMEND와 같은 조건 병합 경로를 타므로(4절), 위치가 여러 곳으로
+해석되는 등 Tool(C) 레벨에서 `needs_clarification`이 나면 RECOMMEND와 동일하게
+`pending_clarification` 플래그가 B에 저장되고, `state_transform.transform()`도
+SCHEDULE을 RECOMMEND와 동일하게 취급해 되묻기 답변 시 soft reset을 건너뛴다(§6
+조건 병합은 손대지 않음).
+
+**분류(Intent 판별) 단계는 SCHEDULE 전용 처리가 필요했다.** RECOMMEND는
+`_INTENT_PRIORITY`의 fallback 기본값이라 되묻기 답변("광화문으로" 같은 짧은
+지명 응답)이 별다른 신호 없이도 대개 자연스럽게 RECOMMEND로 분류되지만,
+SCHEDULE은 "일정/코스/순서" 키워드가 있어야만 선택되는 명시적 분류라 fallback이
+없다 — 되묻기 답변은 오히려 MODIFY의 "지명+조사" 예시 패턴과 겹쳐 잘못
+분류되기 쉽다.
+
+그래서 `classify_intent()` 호출에 `pending_clarification`/`last_intent`
+(B의 `SessionContextResponse`에서 그대로 옴)를 추가로 넘기고, 프롬프트에 "직전
+턴이 SCHEDULE 되묻기로 끝났고 이번 발화가 그 답변으로 보이면 SCHEDULE 유지"
+규칙을 추가했다. `Fake`도 같은 컨텍스트를 받아 동일 규칙을 미러링한다. 상태
+레벨에서 Intent를 강제로 덮어쓰는 방식은 채택하지 않았다 — 되묻기 답변에
+욕설이나 완전히 무관한 질문이 온 경우까지 SCHEDULE로 덮어써 버릴 위험이 있기
+때문이다(자세한 원인·대안 비교는 decision-log.md D-059 참고).
+
+SCHEDULE 외 다른 Intent(INFO, COMPARE 등)가 되묻기로 끝나는 경우의 이어가기는
+아직 이 프로젝트 범위 밖이다 — 필요성이 확인되면 같은 패턴을 확장한다.
+
+---
+
 ## 5. D(추천 엔진) 변경
 
 현재 D는 `RealRecommendationProvider.recommend()` 안에 `_RECOMMENDATION_LIMIT

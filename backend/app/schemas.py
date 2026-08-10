@@ -219,6 +219,7 @@ class Severity(StrEnum):
 
 
 class GeneralTopic(StrEnum):
+    SERVICE_IDENTITY = "service_identity"
     TRAVEL_TIP = "travel_tip"
     SEASON_INFO = "season_info"
     AREA_INFO = "area_info"
@@ -495,11 +496,18 @@ class InterpretRequest(BaseModel):
     # 브라우저에서 확보한 "위도,경도". api_context.gps_location과 동일 포맷.
     device_location: str | None = None
 
-    # 아래 3개는 라우터가 B의 세션 컨텍스트로 채운다.
+    # 아래 5개는 라우터가 B의 세션 컨텍스트로 채운다.
     # 호출자가 보낸 값은 무시되며, 하위 호환을 위해 필드만 유지한다.
     has_previous_recommendation: bool = False
     shown_place_count: int = Field(default=0, ge=0)
     current_conditions: UserConditions | None = None
+    # 직전 턴이 되묻기로 끝났는지(B의 SessionContextResponse.pending_clarification 그대로)와
+    # 그 되묻기가 어떤 Intent의 턴이었는지(SessionContextResponse.last_intent). SCHEDULE
+    # 되묻기 답변이 새 MODIFY 요청으로 오분류되는 걸 막기 위해 classify_intent()까지
+    # 전달한다(D-059) — RECOMMEND는 우선순위 fallback이라 이 정보 없이도 대체로 맞지만,
+    # SCHEDULE은 키워드가 있어야만 선택되는 명시적 분류라 fallback이 없다.
+    pending_clarification: str | None = None
+    last_intent: str | None = None
 
 
 # === Agent Runtime (A-03) ===
@@ -537,6 +545,79 @@ class LLMExecutionMetadata(BaseModel):
     calls: list[LLMCallMetadata] = Field(default_factory=list)
 
 
+class ToolProviderDebug(BaseModel):
+    """C가 한 번의 Context 수집에서 실제로 호출한 Provider 하나의 기록."""
+
+    source: str
+    status: str
+    retrieved_at: str | None = None
+
+
+class ToolContextItemDebug(BaseModel):
+    """RecommendationContext의 항목(location/weather/places/holidays) 하나의 상태.
+
+    fetched=False는 C가 그 항목을 아예 조회하지 않았다는 뜻이다(예: 발화에 날씨가
+    이미 있어 조회를 생략한 경우). 조회했는데 실패한 것과 구분된다.
+    """
+
+    key: str
+    fetched: bool
+    status: str | None = None
+    error_code: str | None = None
+    warning_codes: list[str] = Field(default_factory=list)
+    item_count: int | None = None
+
+
+class CandidateConcentrationDebug(BaseModel):
+    """개발자용 Audit 전용: 후보 한 건의 혼잡도가 어디서 온 값인지.
+
+    건수만 세면 "5건 중 3건이 근사치"까지만 알고 어느 후보가 어디서 빌렸는지는
+    모른다. 근사치의 타당성은 "어느 장소에서 얼마나 떨어진 값인가"로 판단하므로
+    후보별로 남긴다.
+    """
+
+    place_id: str
+    name: str
+    status: str
+    is_proxy: bool = False
+    # 값을 빌려온 실제 장소와 후보로부터의 거리. is_proxy=False면 둘 다 None.
+    proxy_place_name: str | None = None
+    proxy_distance_km: float | None = None
+
+
+class ToolExecutionDebug(BaseModel):
+    """개발자용 Audit 전용: A→C 호출 한 단계가 실제로 무엇을 했는지.
+
+    llm_execution과 같은 성격의 관측 전용 필드다 — 추천 판정에는 쓰이지 않으며,
+    이 값이 없다고 해서 흐름이 달라지지 않는다. 특히 providers[].source는 실제로
+    응답을 만든 Provider가 Real인지 Stub인지 드러내므로, D-042(Real 실패 시 Fake로
+    자동 전환하지 않는다)가 지켜지고 있는지 화면에서 바로 확인하는 수단이 된다.
+    """
+
+    operation: Literal["context_fetch", "info_concentration", "candidate_enrichment"] = (
+        "context_fetch"
+    )
+    request_id: str
+    status: str
+    latency_ms: int | None = None
+    providers: list[ToolProviderDebug] = Field(default_factory=list)
+    context_items: list[ToolContextItemDebug] = Field(default_factory=list)
+    rule_versions: dict[str, str] = Field(default_factory=dict)
+    resolved_location_name: str | None = None
+    resolved_location_address: str | None = None
+    error_code: str | None = None
+    clarification_code: str | None = None
+    is_proxy: bool | None = None
+    candidate_status_counts: dict[str, int] = Field(default_factory=dict)
+    # candidate_enrichment 전용. 매핑 없는 후보가 다수라(활성 844건 중 매핑 100건)
+    # 근사치가 섞이는 게 정상 상태인데, 상태 집계만 보면 직접 조회한 값과 빌려온
+    # 값이 "success 5건"으로 같아 보인다. 건수는 이 목록에서 세면 되므로 따로
+    # 두지 않는다 — 같은 사실의 출처가 둘이면 어긋난다.
+    candidate_concentration: list[CandidateConcentrationDebug] = Field(
+        default_factory=list
+    )
+
+
 class AgentResponse(BaseModel):
     """TODO(D 계약 확정 시 필드 변경 가능): Agent Runtime의 임시 최종 응답.
 
@@ -557,3 +638,9 @@ class AgentResponse(BaseModel):
     # 개발자용 Audit에서 1차 Intent/2차 추출 호출의 실제 Gemini 모델·폴백 경로를
     # 확인한다. Fake LLM 등 실행 메타데이터를 제공하지 않는 구현체에서는 None이다.
     llm_execution: LLMExecutionMetadata | None = None
+    # 개발자용 Audit에서 C가 실제로 호출한 Provider·항목별 상태를 확인한다.
+    # C 단계에 도달하지 못한 요청(LLM 실패, needs_clarification 등)에서는 None이다.
+    tool_execution: ToolExecutionDebug | None = None
+    # 한 요청 안에서 C가 여러 번 호출될 수 있으므로, 감사 패널은 이 목록을 우선 사용한다.
+    # tool_execution은 이전 개발자 클라이언트 호환을 위해 첫/주요 호출을 계속 제공한다.
+    tool_executions: list[ToolExecutionDebug] = Field(default_factory=list)

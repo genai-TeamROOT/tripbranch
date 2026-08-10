@@ -13,6 +13,7 @@ from app.providers.contracts import (
     provider_result,
 )
 from app.tools.resolve_location import (
+    LocationPurpose,
     ResolutionConfidence,
     ResolutionMethod,
     ResolveLocationQuery,
@@ -619,3 +620,147 @@ async def test_address_with_modifier_is_still_treated_as_address() -> None:
     assert result.status is ResolveLocationStatus.SUCCESS
     assert local_search.calls == []
     assert geocoding.calls == [("서울특별시 종로구 인사동길 44", False)]
+
+
+@pytest.mark.asyncio
+async def test_search_center_skips_repository_entirely() -> None:
+    """검색 중심점은 좌표만 필요하므로 저장소를 아예 조회하지 않는다.
+
+    코퍼스에 없는 이름(역명·상호·지명)은 저장소 조회가 반드시 실패하는데, 사다리가
+    공용이던 시절에는 그 실패에 `places` 4회를 썼다("안국역" 실측).
+    """
+    repository = MemoryPlaceLocationRepository(
+        (
+            StoredPlaceLocation(
+                content_id="128553",
+                title="쌈지길",
+                address="서울특별시 종로구 인사동길 44",
+                latitude=37.5743062352,
+                longitude=126.9848674428,
+                concentration_name="쌈지길",
+            ),
+        )
+    )
+    local_search = MemoryLocalSearchProvider(
+        (
+            LocalSearchPlace(
+                name="쌈지길",
+                address="서울특별시 종로구 관훈동 38",
+                road_address="서울특별시 종로구 인사동길 44",
+                category="쇼핑",
+                latitude=37.5743062352,
+                longitude=126.9848674428,
+            ),
+        )
+    )
+    provider = SequenceGeocodingProvider([])
+
+    result = await ResolveLocationTool(provider, repository, local_search).execute(
+        ResolveLocationQuery("쌈지길", purpose=LocationPurpose.SEARCH_CENTER)
+    )
+
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert result.location is not None
+    # 저장소에 정확히 같은 이름이 있어도 거치지 않는다.
+    assert repository.calls == []
+    assert result.location.resolution_method is ResolutionMethod.LOCAL_SEARCH
+
+
+@pytest.mark.asyncio
+async def test_search_center_does_not_requery_repository_after_local_search() -> None:
+    """지역 검색이 다른 이름을 줘도 재조회하지 않는다.
+
+    재조회는 집중률 매핑을 붙이기 위한 것인데, 검색 중심점은 그 필드를 쓰지 않는다.
+    """
+    repository = MemoryPlaceLocationRepository(())
+    local_search = MemoryLocalSearchProvider(
+        (
+            # 첫 토큰("북촌")이 질의와 같아야 셀렉터가 유일 후보로 고른다(D-045).
+            LocalSearchPlace(
+                name="북촌 한옥마을",
+                address="서울특별시 종로구 계동길 37",
+                road_address="서울특별시 종로구 계동길 37",
+                category="관광,명소",
+                latitude=37.5826,
+                longitude=126.9831,
+            ),
+        )
+    )
+    provider = SequenceGeocodingProvider([])
+
+    result = await ResolveLocationTool(provider, repository, local_search).execute(
+        ResolveLocationQuery("북촌", purpose=LocationPurpose.SEARCH_CENTER)
+    )
+
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert repository.calls == []
+    assert result.location is not None
+    assert result.location.concentration_name is None
+
+
+@pytest.mark.asyncio
+async def test_place_identity_keeps_repository_first() -> None:
+    """INFO 혼잡도는 D-043 그대로 — 저장소 정체성 확정이 먼저다."""
+    repository = MemoryPlaceLocationRepository(
+        (
+            StoredPlaceLocation(
+                content_id="128553",
+                title="쌈지길",
+                address="서울특별시 종로구 인사동길 44",
+                latitude=37.5743062352,
+                longitude=126.9848674428,
+                concentration_name="쌈지길",
+            ),
+        )
+    )
+    local_search = MemoryLocalSearchProvider(())
+    provider = SequenceGeocodingProvider([])
+
+    result = await ResolveLocationTool(provider, repository, local_search).execute(
+        ResolveLocationQuery("쌈지길", purpose=LocationPurpose.PLACE_IDENTITY)
+    )
+
+    assert repository.calls == ["쌈지길"]
+    assert local_search.calls == []
+    assert result.location is not None
+    assert result.location.concentration_name == "쌈지길"
+
+
+@pytest.mark.asyncio
+async def test_purpose_defaults_to_place_identity() -> None:
+    """인자를 안 주면 기존 동작 그대로다 — 기존 호출부가 바뀌지 않는다."""
+    assert (
+        ResolveLocationQuery("쌈지길").purpose is LocationPurpose.PLACE_IDENTITY
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_center_returns_no_data_without_falling_back_to_repository() -> None:
+    """지역 검색·지오코딩이 모두 못 찾으면 저장소로 되돌아가지 않고 no_data로 끝낸다.
+
+    폴백을 두면 사다리를 가른 의미가 없어진다. 위치를 못 찾았다는 사실을 그대로
+    돌려주어 상위에서 사용자에게 구체적인 위치를 되묻게 한다.
+    """
+    repository = MemoryPlaceLocationRepository(
+        (
+            StoredPlaceLocation(
+                content_id="128553",
+                title="없는역",
+                address="서울특별시 종로구",
+                latitude=37.57,
+                longitude=126.98,
+                concentration_name="없는역",
+            ),
+        )
+    )
+    local_search = MemoryLocalSearchProvider(())
+    provider = SequenceGeocodingProvider(
+        [AppError(code="no_data", message="찾지 못했어요.", status_code=404)]
+    )
+
+    result = await ResolveLocationTool(provider, repository, local_search).execute(
+        ResolveLocationQuery("없는역", purpose=LocationPurpose.SEARCH_CENTER)
+    )
+
+    assert result.status is not ResolveLocationStatus.SUCCESS
+    assert repository.calls == []

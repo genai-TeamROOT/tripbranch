@@ -15,6 +15,25 @@ import httpx
 from app.config import Settings
 
 _VALID_MATCH_METHODS = {"exact", "normalized", "manual", "exact_with_alias"}
+
+
+def _parse_search_keys(value: object) -> list[str]:
+    """CSV의 concentration_search_keys 열(JSON 배열)을 순서 그대로 읽는다.
+
+    순서가 곧 조회 우선순위라 set으로 걷거나 정렬하지 않는다(D-057).
+    """
+    text = str(value or "").strip()
+    if not text:
+        return []
+    parsed = json.loads(text)
+    if not isinstance(parsed, list):
+        raise ValueError("concentration_search_keys는 JSON 배열이어야 합니다.")
+    keys: list[str] = []
+    for item in parsed:
+        key = str(item).strip()
+        if key and key not in keys:
+            keys.append(key)
+    return keys
 _UPSERT_CHUNK_SIZE = 100
 _DATA_DIR = Path(__file__).resolve().parents[2] / "supabase" / "data"
 _MAPPING_CSV_GLOB = "concentration_place_mapping_*.csv"
@@ -110,12 +129,21 @@ def load_mapping_payloads(
             raise ValueError(f"{content_id}: 대표명이 aliases에 중복됐습니다.")
 
         # tAtsNm은 공백이 든 값을 넘기면 0건이 오므로(2026-08-04 실측) 조회용 검색어를
-        # 따로 싣는다. 비어 있으면 호출자가 정식 명칭을 그대로 쓴다.
-        search_key = (row.get("concentration_search_key") or "").strip() or None
-        if search_key is not None and any(c.isspace() for c in search_key):
-            raise ValueError(
-                f"{content_id}: concentration_search_key에 공백이 있으면 조회가 0건이 됩니다."
-            )
+        # 따로 싣는다. 앞에서부터 시도할 목록이며 1순위가 기존 단일 검색어다(D-057).
+        search_keys = _parse_search_keys(row.get("concentration_search_keys"))
+        for key in search_keys:
+            if any(c.isspace() for c in key):
+                raise ValueError(
+                    f"{content_id}: concentration_search_keys에 공백이 있으면 조회가 0건이 됩니다."
+                )
+        if not search_keys:
+            # 조회할 값이 없으면 매핑이 있어도 혼잡도를 못 받는다. 정식 명칭이 공백을
+            # 포함하면 그것마저 0건이므로 CSV 생성 단계의 문제로 보고 끊는다.
+            if any(c.isspace() for c in primary_name):
+                raise ValueError(
+                    f"{content_id}: 검색어가 없고 정식 명칭에 공백이 있어 조회할 수 없습니다."
+                )
+            search_keys = [primary_name]
 
         match_method = (row.get("match_method") or "").strip()
         if match_method not in _VALID_MATCH_METHODS:
@@ -129,7 +157,7 @@ def load_mapping_payloads(
             {
                 "content_id": content_id,
                 "primary_concentration_name": primary_name,
-                "concentration_search_key": search_key,
+                "concentration_search_keys": search_keys,
                 "concentration_aliases": aliases,
                 "match_method": match_method,
                 "confidence_score": confidence,

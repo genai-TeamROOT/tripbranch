@@ -164,9 +164,32 @@ class ResolutionConfidence(StrEnum):
     UNKNOWN = "unknown"
 
 
+class LocationPurpose(StrEnum):
+    """이 해석이 무엇에 쓰이는지. 사다리 순서를 가른다.
+
+    두 목적이 필요로 하는 것이 다르다.
+
+    - SEARCH_CENTER: 반경 검색의 기준 좌표만 있으면 된다. 사용자가 말한 곳이
+      우리 코퍼스의 어느 장소인지는 알 필요가 없다.
+    - PLACE_IDENTITY: "여기 혼잡해?"에 답하려면 좌표가 아니라 **집중률 매핑이
+      걸린 그 장소**를 확정해야 한다. 좌표 최근접으로 고르면 틀린다 — 북촌
+      한옥마을 좌표의 최근접은 가회민화박물관(27m)이고 정작 북촌한옥마을은
+      293m로 밀린다(D-043 실측).
+
+    같은 사다리를 쓰면 SEARCH_CENTER가 필요하지도 않은 저장소 조회를 먼저
+    치른다. 종로구 코퍼스에 없는 이름(역명·상호·지명)은 그 조회가 반드시
+    실패하므로 왕복만 버린다("안국역" 기준 `places` 4회).
+    """
+
+    SEARCH_CENTER = "search_center"
+    PLACE_IDENTITY = "place_identity"
+
+
 @dataclass(frozen=True)
 class ResolveLocationQuery:
     location_query: str
+    # 기존 호출부와 CLI가 그대로 동작하도록 정체성 확정을 기본으로 둔다.
+    purpose: LocationPurpose = LocationPurpose.PLACE_IDENTITY
 
     def __post_init__(self) -> None:
         normalized = self.location_query.strip()
@@ -189,8 +212,9 @@ class ResolvedLocation:
     address: str | None = None
     # 집중률 응답에서 장소를 골라낼 때 대조할 정식 명칭.
     concentration_name: str | None = None
-    # tAtsNm에 넣을 검색어. 비어 있으면 concentration_name을 그대로 쓴다.
-    concentration_search_key: str | None = None
+    # tAtsNm에 넣을 검색어 목록. 앞에서부터 시도한다. 비어 있으면
+    # concentration_name을 그대로 쓴다(D-057).
+    concentration_search_keys: tuple[str, ...] = ()
 
 
 ResolveLocationError = ToolError
@@ -223,11 +247,15 @@ class ResolveLocationTool:
         if is_address_query(requested_query):
             return await self._resolve_address(requested_query)
 
-        stored_result = await self._lookup_stored_place(requested_query)
-        if stored_result is not None:
-            return stored_result
+        # 검색 중심점은 좌표만 필요하다. 저장소 조회는 정체성 확정용이라 건너뛴다.
+        if query.purpose is LocationPurpose.PLACE_IDENTITY:
+            stored_result = await self._lookup_stored_place(requested_query)
+            if stored_result is not None:
+                return stored_result
 
-        local_search_result = await self._lookup_local_search(requested_query)
+        local_search_result = await self._lookup_local_search(
+            requested_query, purpose=query.purpose
+        )
         if local_search_result is not None:
             return local_search_result
 
@@ -285,7 +313,12 @@ class ResolveLocationTool:
             provider_metadata=(direct_metadata,),
         )
 
-    async def _lookup_local_search(self, requested_query: str) -> ResolveLocationResult | None:
+    async def _lookup_local_search(
+        self,
+        requested_query: str,
+        *,
+        purpose: LocationPurpose = LocationPurpose.PLACE_IDENTITY,
+    ) -> ResolveLocationResult | None:
         """DB에 없는 상호명은 지역 검색으로 좌표를 보완한다."""
         if self._local_search_provider is None:
             return None
@@ -333,7 +366,12 @@ class ResolveLocationTool:
             )
             if outside is not None:
                 return outside
-        if selected.name.strip() != requested_query.strip():
+        # 재조회는 집중률 매핑을 붙이기 위한 것이다. 검색 중심점에는 그 필드가
+        # 쓰이지 않으므로(consumer는 service.py의 INFO 혼잡도 한 곳뿐) 건너뛴다.
+        if (
+            purpose is LocationPurpose.PLACE_IDENTITY
+            and selected.name.strip() != requested_query.strip()
+        ):
             stored = await self._lookup_stored_place(requested_query, lookup_name=selected.name)
             if stored is not None and stored.status is ResolveLocationStatus.SUCCESS:
                 return stored
@@ -418,7 +456,7 @@ class ResolveLocationTool:
                 place_id=place.content_id,
                 address=place.address,
                 concentration_name=place.concentration_name,
-                concentration_search_key=place.concentration_search_key,
+                concentration_search_keys=place.concentration_search_keys,
             ),
             error=None,
             provider_metadata=metadata,

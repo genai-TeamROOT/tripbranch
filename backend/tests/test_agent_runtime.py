@@ -675,6 +675,46 @@ async def test_record_recommendation_reflected_in_session_context() -> None:
 
 
 @pytest.mark.asyncio
+async def test_second_turn_sends_consumed_place_ids_to_context_provider() -> None:
+    """"다른 곳 보여줘"의 2회차에는 1회차 노출분이 C 요청에 실려야 한다.
+
+    D에만 넘기고 C에는 안 넘기면, C가 같은 앞쪽 후보를 다시 가져오고 D가 그걸
+    전부 걸러내 추천이 0건이 된다. 계약 필드가 배선에서 빠지는 걸 여기서 잡는다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+    tool_provider = providers["tool_provider"]
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert tool_provider.last_request is not None
+    assert tool_provider.last_request.excluded_place_ids == []
+    shown_ids = {item.place_id for item in first.recommendations.recommendations}
+    assert shown_ids
+
+    await run_agent_flow(
+        AgentRequest(
+            user_input="다른 곳 보여줘",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert tool_provider.last_request is not None
+    assert set(tool_provider.last_request.excluded_place_ids) == shown_ids
+
+
+@pytest.mark.asyncio
 async def test_info_concentration_flow_calls_tool_provider_once() -> None:
     """question_type=concentration만 C(fetch_info_context)를 거치고, D는 호출하지 않는다."""
     store = InMemoryStateStore()
@@ -695,6 +735,9 @@ async def test_info_concentration_flow_calls_tool_provider_once() -> None:
     assert response.recommendations is None
     assert providers["tool_provider"].info_call_count == 1
     assert providers["tool_provider"].call_count == 0  # fetch_context(RECOMMEND용)는 안 씀
+    assert [execution.operation for execution in response.tool_executions] == [
+        "info_concentration"
+    ]
     assert providers["recommendation_provider"].call_count == 0
     assert "창덕궁" in response.message
     assert "보통" in response.message  # FakeToolProvider 고정 데이터
@@ -950,6 +993,11 @@ async def test_concentration_intent_persisted_by_b_triggers_rerank() -> None:
     assert response.llm_output.recommend.conditions.concentration_intent == "SEEK"
     assert response.state.user_conditions.concentration_intent == "SEEK"
     assert providers["enrichment_provider"].call_count == 1
+    assert [execution.operation for execution in response.tool_executions] == [
+        "context_fetch",
+        "candidate_enrichment",
+    ]
+    assert response.tool_executions[1].candidate_status_counts == {"success": 4}
 
 
 @pytest.mark.asyncio
@@ -1005,6 +1053,110 @@ async def test_clarification_answer_keeps_conditions_from_previous_turn() -> Non
     assert second.state.user_conditions.search_center == "경복궁"
     assert "카페" in second.state.user_conditions.place_tags
     # 소비되어 지워진다.
+    assert get_session_context(session_id, store=store).pending_clarification is None
+
+
+@pytest.mark.asyncio
+async def test_bare_place_after_location_clarification_becomes_modify_and_sets_center() -> None:
+    """TP-67: 위치 되묻기 다음 '경복궁'은 INFO가 아닌 MODIFY로 이어져야 한다.
+
+    아직 추천 결과가 없는 첫 요청에서도 B에 저장된 앞 턴 조건을 MODIFY 추출기에
+    전달해, search_center만 추가한 뒤 추천을 이어간다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(user_input="근처 갈곳 추천해줘", session_id=None, device_location=None),
+        store=store,
+        **providers,
+    )
+    session_id = first.state.session_id
+    assert first.llm_output.intent == "RECOMMEND"
+    assert get_session_context(session_id, store=store).pending_clarification == "location_required"
+
+    second = await run_agent_flow(
+        AgentRequest(user_input="경복궁", session_id=session_id, device_location=None),
+        store=store,
+        **providers,
+    )
+
+    assert second.llm_output.intent == "MODIFY"
+    assert second.llm_output.modify.changed_fields == ["search_center"]
+    assert second.state.user_conditions.search_center == "경복궁"
+    assert second.recommendations is not None
+    assert get_session_context(session_id, store=store).pending_clarification is None
+
+
+@pytest.mark.asyncio
+async def test_new_recommendation_without_location_keeps_previous_search_center() -> None:
+    """TP-67: 목적지 뒤 새 RECOMMEND가 와도 목적지를 다시 묻지 않는다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    second = await run_agent_flow(
+        AgentRequest(
+            user_input="박물관 추천해줘",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert second.llm_output.intent == "RECOMMEND"
+    assert second.state.user_conditions.search_center == "경복궁"
+    assert "박물관" in second.state.user_conditions.place_tags
+    assert second.recommendations is not None
+
+
+@pytest.mark.asyncio
+async def test_schedule_clarification_answer_stays_schedule() -> None:
+    """D-059: SCHEDULE 되묻기에 지명만 답하면 MODIFY가 아니라 SCHEDULE을 유지해야 한다.
+
+    1턴 "일정 짜줘"(위치 없음) → C가 needs_clarification(location_required).
+    2턴 "광화문 근처로" → 되묻기 답변인데도 MODIFY로 오분류되면(수정 전 버그) 바꿀
+    이전 추천 결과가 없어 흐름이 깨진다. SCHEDULE로 이어지고 pending_clarification도
+    소비되어 사라져야 한다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(user_input="일정 짜줘", session_id=None, device_location=DEVICE_LOCATION),
+        store=store,
+        **providers,
+    )
+    session_id = first.state.session_id
+    assert first.llm_output.intent == "SCHEDULE"
+    assert first.recommendations is None
+    session_context = get_session_context(session_id, store=store)
+    assert session_context.pending_clarification is not None
+    assert session_context.last_intent == "SCHEDULE"
+
+    second = await run_agent_flow(
+        AgentRequest(
+            user_input="광화문 근처로",
+            session_id=session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert second.llm_output.intent == "SCHEDULE"
+    assert second.state.user_conditions.search_center == "광화문"
+    # 소비되어 지워진다(수정 전에는 SCHEDULE이 되묻기 소비 화이트리스트에 없어 안 지워졌다).
     assert get_session_context(session_id, store=store).pending_clarification is None
 
 
@@ -1065,6 +1217,33 @@ async def test_successful_recommendation_leaves_no_pending_clarification() -> No
     assert response.recommendations is not None
     context = get_session_context(response.state.session_id, store=store)
     assert context.pending_clarification is None
+
+
+@pytest.mark.asyncio
+async def test_추천_응답에_C_실행_정보가_실린다() -> None:
+    """AgentResponse.tool_execution은 감사 표시 전용이지만, 비어 있으면 /dev-chat의
+    C Tool 탭이 다시 추측만 하게 된다. 실제 값이 실리는지 확인한다."""
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=InMemoryStateStore(),
+        **_providers(),
+    )
+
+    assert response.tool_execution is not None
+    assert response.tool_execution.status == "success"
+    assert response.tool_execution.latency_ms is not None
+    assert [execution.operation for execution in response.tool_executions] == ["context_fetch"]
+    assert [item.key for item in response.tool_execution.context_items] == [
+        "location",
+        "weather",
+        "places",
+        "holidays",
+    ]
 
 
 @pytest.mark.asyncio
@@ -1295,6 +1474,37 @@ async def test_no_data_marks_pending_clarification_so_next_turn_keeps_conditions
 
     context = get_session_context(response.state.session_id, store=store)
     assert context.pending_clarification == "no_candidate"
+
+
+@pytest.mark.asyncio
+async def test_bare_place_after_no_data_restarts_search_around_that_place() -> None:
+    """후보 없음 뒤 단순 지명은 INFO가 아니라 해당 장소 주변 재추천 요청이다."""
+    store = InMemoryStateStore()
+
+    first = await run_agent_flow(
+        AgentRequest(user_input="카페 추천해줘", session_id=None, device_location=DEVICE_LOCATION),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=_FixedStatusToolProvider("no_data"),
+        recommendation_provider=_CountingRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=store,
+    )
+    session_id = first.state.session_id
+    assert get_session_context(session_id, store=store).pending_clarification == "no_candidate"
+
+    second = await run_agent_flow(
+        AgentRequest(user_input="광화문", session_id=session_id, device_location=DEVICE_LOCATION),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=FakeToolProvider(),
+        recommendation_provider=_CountingRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=store,
+    )
+
+    assert second.llm_output.intent == "RECOMMEND"
+    assert second.state.user_conditions.search_center == "광화문"
+    assert "카페" in second.state.user_conditions.place_tags
+    assert second.recommendations is not None
 
 
 def test_terminal_status_sets_match_between_runtime_and_composer() -> None:
