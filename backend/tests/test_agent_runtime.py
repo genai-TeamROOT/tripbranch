@@ -559,6 +559,46 @@ async def test_schedule_then_reject_all_modify_reroutes_to_new_schedule() -> Non
 
 
 @pytest.mark.asyncio
+async def test_schedule_then_change_condition_modify_merges_before_rerouting() -> None:
+    """SCHEDULE-06 PR 리뷰에서 A가 요청한 시나리오: REJECT_ALL이 아니라
+    CHANGE_CONDITION("실내 위주로 바꿔줘")도 조건이 먼저 B에 병합된 뒤에만
+    일정 재편성으로 재라우팅돼야 한다 — llm_output.intent를 조건 병합 전에
+    SCHEDULE로 바꿔치기하면 modify.condition_changes(environment=INDOOR)가
+    반영되지 않을 수 있다는 우려였다. agent_runtime.py의 override는 이미
+    apply()/transform() 뒤에 위치해 이 순서를 지키고 있음을 확인한다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처에서 반나절 코스 짜줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+    assert first.llm_output.intent == "SCHEDULE"
+
+    second = await run_agent_flow(
+        AgentRequest(
+            user_input="실내로 바꿔줘",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    # raw 분류는 MODIFY(CHANGE_CONDITION)였다는 걸 간접 확인 — REJECT_ALL과
+    # 달리 이번엔 이전 일정 장소를 배제하는 게 아니라 조건만 바뀐다.
+    assert second.llm_output.intent == "SCHEDULE"
+    assert second.schedule is not None
+    # 조건 병합이 relabel보다 먼저 일어났다는 증거: 병합된 State에 반영됨
+    assert second.state.user_conditions.environment == "indoor"
+
+
+@pytest.mark.asyncio
 async def test_schedule_modify_reroute_skipped_when_pending_clarification() -> None:
     """SCHEDULE-06 안전장치: 직전 턴이 SCHEDULE였어도(last_intent="SCHEDULE")
     되묻기가 아직 안 끝났다면(pending_clarification이 남아있음) 재조정
