@@ -107,6 +107,27 @@ A가 1차 구현(0절)에서 이미 확정·배포한 판별 기준(아래 표)�
 "어디부터 갈지 순서" 같은 표현이 SCHEDULE로 분류된다. 단순 "추천해줘"
 표현에 일정 맥락이 없으면 RECOMMEND로 유지한다.
 
+### 3.1 SCHEDULE 다음 턴의 조건 변경 발화 (SCHEDULE-06)
+
+위 표의 "다른 곳 보여줘" 판별 기준(이전 추천 이력이 있을 때 `MODIFY`)은 그대로
+유지한다 — `classify_intent()`는 여전히 이런 발화를 MODIFY로 분류한다.
+
+다만 SCHEDULE 응답을 받은 바로 다음 턴에 이런 MODIFY 발화가 오면, 사용자는
+방금 받은 "일정"을 바꿔달라는 것이므로 일반 RECOMMEND 재추천이 아니라 일정
+재편성으로 처리해야 한다. 이건 A의 프롬프트/분류 로직을 바꾸는 대신, Agent
+Runtime(`agent_runtime.py`)이 B가 이미 세션마다 저장해온 `last_intent` 값을
+읽어 라우팅 단계에서만 처리한다:
+
+- 직전 턴이 SCHEDULE로 완료됐고(`last_intent == "SCHEDULE"`, 되묻기 없이
+  끝남 — `pending_clarification is None`) 이번 턴이 MODIFY로 분류되면,
+  조건 병합은 원래 MODIFY 페이로드(`llm_output.modify`)로 정상 처리한 뒤
+  `llm_output.intent`만 SCHEDULE로 바꿔치기해 기존 SCHEDULE 분기(D 10개 호출
+  · 편성 모듈 호출)로 재진입시킨다.
+- REJECT_ALL(그냥 "다른 데로")이면 직전 일정의 장소들이 `rejected`로
+  기록되어 새 일정에서 자동 제외된다(기존 MODIFY 로직 그대로 재사용, B
+  스키마 변경 불필요).
+- classify_intent 프롬프트, `extract_modify_conditions()`는 변경하지 않는다.
+
 ---
 
 ## 4. 처리 흐름
@@ -257,15 +278,20 @@ D가 발견한 문제: 후보 10개의 1차 점수·근거 문장(운영시간·
 LLM은 10개 후보 중 시간·동선 효율을 고려해 **3~5개**를 선택하고 방문
 순서를 결정한다. 나머지는 자동 제외된다.
 
-`estimated_duration_min`/`travel_to_next_min`/`reason`은 이번 턴의 응답에만
-쓰이고 B 히스토리에는 저장되지 않는다(6.3 참고, 알려진 한계는 9절).
+`estimated_duration_min`/`travel_to_next_min`/`reason`은 SCHEDULE-06부터
+B 히스토리에 함께 저장된다(6.3절 갱신 참고. SCHEDULE-04~05 시점에는 저장되지
+않았다 — 해당 시점 알려진 한계는 9절 "해소된 항목" 참고).
 
-### 6.3 B 기록 — 기존 함수 그대로 재사용
+### 6.3 B 기록 — SCHEDULE-06부터 일정 세부 필드도 함께 저장
 
 일정에 **포함된 장소만** B의 `record_recommendation()`을 그대로 호출해
-기록한다. `RecordRecommendationRequest.recommended`는 이미 `(place_id,
-rank)` 목록만 받으므로, `ScheduleItem.order`를 `rank`로 매핑해서 넘기면
-끝난다 — **B 쪽 스키마나 코드 변경이 필요 없다.**
+기록한다. `ScheduleItem.order`는 `rank`로 매핑한다.
+
+(SCHEDULE-06) `RecommendedPlace`/`RecommendedItem`에 `estimated_arrival`/
+`estimated_duration_min`/`travel_to_next_min`/`reason` 선택 필드가 추가되어,
+SCHEDULE 항목은 이 값들도 함께 저장한다 — SCHEDULE 재조정 시 직전 일정
+내용을 참고하기 위함이다. RECOMMEND/MODIFY 흐름은 이 필드들을 생략하면
+되고(항상 None), 기존 동작에 영향 없다.
 
 LLM이 제외한 후보 5~7개는 기록되지 않아 이후 일반 RECOMMEND 요청에서
 재노출 가능하다.
@@ -357,11 +383,19 @@ LLM이 제외한 후보 5~7개는 기록되지 않아 이후 일반 RECOMMEND �
   가능. Tool 미구현 상태이므로 1차에서는 LLM 추정값을 쓰되, 근거 없는
   추측이 되지 않도록 `pairwise_distances_km`(haversine 기반)을 프롬프트에
   반드시 함께 제공한다. Tool 구현 완료 시 실측값으로 교체.
-* `ScheduleItem`의 세부 근거(도착 시각·체류 시간·이유 문장)는 B의 히스토리
-  스키마(`RecommendedItem`: place_id/run_id/rank/shown_at)에 저장 공간이
-  없어 해당 턴 응답이 끝나면 사라진다 — D-050(혼잡도 세부 근거 미저장)과
-  같은 패턴의 알려진 한계로 남겨둔다. 지금 당장 조치는 불필요.
 * FE 타임라인 UI 컴포넌트는 별도 이슈로 관리.
+* SCHEDULE 다음 턴에 D 후보가 3개 미만이면 편성 동작이 정의돼 있지 않다
+  (`ScheduleLLMPlan.items`에 `min_length=3` 제약을 걸면 하드 실패만
+  늘어나므로 단순 제약 추가보다 신중한 설계 필요). SCHEDULE-06에는
+  포함되지 않음, 후속 과제로 남김.
+
+**해소된 항목(SCHEDULE-06)**
+* `ScheduleItem`의 세부 근거(도착 시각·체류 시간·이유 문장)가 B 히스토리에
+  저장되지 않던 문제: `RecommendedItem`에 선택 필드로 추가해 해소(6.3절
+  참고). RECOMMEND/MODIFY 흐름은 영향 없음.
+* SCHEDULE 다음 턴의 조건 변경 발화("다른 데로 바꿔줘")가 MODIFY로
+  오분류되어 잘못 응답하던 문제: 라우팅 단계(agent_runtime.py)에서 B의
+  `last_intent`를 읽어 해소(3.1절 참고). classify_intent는 변경 없음.
 
 **해소된 항목(v2.0 → A의 1차 구현과 병합하며 확인)**
 * INT-07 트리거 표현·분류 기준 문서화: 별도로 새로 쓸 필요 없음 — A가
