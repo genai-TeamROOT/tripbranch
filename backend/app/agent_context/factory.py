@@ -13,10 +13,10 @@ from app.providers.factory import (
     get_festival_provider,
     get_geocoding_provider,
     get_holiday_provider,
+    get_info_place_detail_provider,
     get_local_search_provider,
     get_place_details_provider,
     get_place_location_repository,
-    get_place_provider,
     get_place_search_provider,
     get_weather_provider,
 )
@@ -46,9 +46,9 @@ def get_context_provider(client: httpx.AsyncClient) -> ContextService:
             weather=GetWeatherForecastTool(get_weather_provider(client)),
             holidays=GetHolidaysTool(get_holiday_provider(client)),
             concentration=GetConcentrationTool(get_concentration_provider(client)),
-            # 상세 캐시(PLACE_DETAILS_SOURCE)가 아니라 PlaceProvider를 넘긴다 —
-            # 이유는 place_detail.py 모듈 docstring 참고.
-            place_detail=GetPlaceDetailTool(get_place_provider(client)),
+            # 추천 후보 상세 캐시(PLACE_DETAILS_SOURCE)와 별개로 INFO 전용 설정을
+            # 따른다 — 이유는 place_detail.py 모듈 docstring 참고.
+            place_detail=GetPlaceDetailTool(get_info_place_detail_provider(client)),
             festivals=GetFestivalsTool(get_festival_provider(client)),
         ),
         candidate_limit=settings.recommendation_candidate_limit,

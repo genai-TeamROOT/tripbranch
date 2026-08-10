@@ -410,6 +410,49 @@ class TestRecordRecommendation:
         res = record(store, r.session_id, r.run_id, [])
         assert res.recorded == 0
 
+    def test_일정_세부_필드가_함께_저장된다(self, store):
+        """SCHEDULE-06: RecommendedPlace의 SCHEDULE 전용 선택 필드가
+        RecommendedItem까지 그대로 전달·저장되는지 확인한다."""
+        r = apply(store, session_id=None, operations=[])
+        svc.record_recommendation(
+            svc.RecordRecommendationRequest(
+                session_id=r.session_id,
+                run_id=r.run_id,
+                recommended=[
+                    svc.RecommendedPlace(
+                        place_id="A",
+                        rank=1,
+                        estimated_arrival="14:00",
+                        estimated_duration_min=60,
+                        travel_to_next_min=15,
+                        reason="테스트용 배치 이유",
+                    )
+                ],
+            ),
+            store=store,
+        )
+
+        history = store.get_history(r.session_id)
+        assert history is not None
+        item = history.recommended[-1]
+        assert item.place_id == "A"
+        assert item.estimated_arrival == "14:00"
+        assert item.estimated_duration_min == 60
+        assert item.travel_to_next_min == 15
+        assert item.reason == "테스트용 배치 이유"
+
+    def test_필드를_생략하면_None으로_저장된다(self, store):
+        """기존 RECOMMEND/MODIFY 호출(필드 생략)은 회귀 없이 그대로 동작한다."""
+        r = apply(store, session_id=None, operations=[])
+        record(store, r.session_id, r.run_id, [("A", 1)])
+
+        history = store.get_history(r.session_id)
+        item = history.recommended[-1]
+        assert item.estimated_arrival is None
+        assert item.estimated_duration_min is None
+        assert item.travel_to_next_min is None
+        assert item.reason is None
+
 
 # ================================================================ 세션 삭제
 

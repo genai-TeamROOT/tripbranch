@@ -1678,6 +1678,73 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   (SCHEDULE 되묻기 E2E — intent 유지 + 플래그 소비 확인). 전체 회귀 1333 passed / 22
   skipped, ruff 통과.
 
+### D-060 — INFO 상세 질의는 정규화 필드로 읽고, 출처는 캐시로 단일화한다
+
+- 상태: `Accepted`, C 구현 완료 (마이그레이션 적용 완료, 값 적재 대기)
+- 배경: 추천 카드에 이어 INFO 상세 질의도 places 캐시로 답하려 했는데 세 가지가
+  막혔다. (1) `extract_info_fields()`가 요금·주차·편의시설을 `PlaceDetails.raw_intro`
+  에서 TourAPI 원본 키로 찾는데, 저장소는 유형별 키를 한 컬럼으로 눌러 담아 원본
+  키를 복원할 수 없다. (2) 전화번호의 출처가 불분명했다. (3) 편의시설은 캐시에
+  대응 컬럼이 아예 없었다.
+- 결정 1 — **요금·주차·편의시설을 정규화 필드로 옮긴다.** `PlaceDetails`에 `fee`/
+  `parking`/`parking_fee`/`baby_carriage`/`pet`/`credit_card`/`restroom`을 추가하고
+  provider가 contenttypeid별 키를 훑어 채운다. `extract_info_fields()`는 이 필드를
+  읽고, **`raw_intro`를 읽던 옛 경로는 전부 지웠다.**
+- 근거: `operating_hours`가 진작부터 이 방식이었다("provider가 이미 유형별 키를 훑어
+  정규화해둔 값이 있다"). 대안으로 하이브리드가 `raw_intro`를 합성 dict로 되돌려
+  채우는 방식도 검토했으나, 키 몇 개짜리 합성 dict는 "없는 키"와 "그 장소에 없는
+  정보"를 구분할 수 없어 같은 조용한 실패를 다시 만든다. 두 경로를 함께 두는
+  선택지는 버렸다 — 같은 질문이 provider에 따라 다르게 답한다.
+- 결정 2 — **전화번호는 `detailIntro2`의 안내처가 출처다.** `places.info_center_raw`를
+  추가하고 동기화가 채운다.
+- 근거(2026-08-10 실측, 표본 35건): `detailCommon2`의 `tel`이 채워진 것은 축제(15)
+  5/5뿐이고 12·14·28·32·38·39는 전부 0/5였다. 같은 표본의 `detailIntro2`
+  `infocenter*` 계열은 33건 중 32건(97%)이 채워져 있다. 축제는 `infocenter` 계열이
+  없어 `tel`을 쓰므로 두 출처를 순서대로 본다(안내처 → tel).
+- 결정 3 — **편의시설도 컬럼 4개로 캐시한다.** `baby_carriage_raw`/`pet_raw`/
+  `credit_card_raw`/`restroom_raw`. jsonb 하나로 합치지 않는다 — 소비 측이 키 이름을
+  알아야 하고 "키가 없다"와 "정보가 없다"가 구분되지 않아 결정 1이 걷어낸 문제를
+  되살린다. 이름은 A에게 나가는 계약 키와 1:1로 맞춘다.
+- 근거(2026-08-10 실측, facility 필드가 존재하는 유형 5종에서 55건): 값이 하나라도
+  있는 장소가 22/55(40%)다. 카드결제 19/55(쇼핑 12/12·음식점 6/12·관광지 1/12),
+  화장실 12/55(쇼핑 12/12), 유모차 4/55(값은 모두 `없음`), 반려동물 0/55.
+  **쇼핑에 몰려 있다는 점이 결정적이다** — 인사동·광장시장 같은 곳의 "화장실 있어?"를
+  캐시만으로 답하려면 이 컬럼이 필요하다.
+  (조사 초기에 "표본 33건 중 1~4건"으로 과소평가했는데, 그 표본에는 facility 필드가
+  아예 없는 축제(15)·숙박(32)이 섞여 있어 비율이 희석된 것이었다.)
+- 결정 4 — **INFO 상세 출처를 고르는 설정을 두지 않는다.** 하이브리드 경로만 남긴다.
+  캐시가 `question_type` 전부를 덮게 되면서 TourAPI 직접 조회와 답할 수 있는 질문이
+  같아졌고, 고를 이유가 사라졌다. 검토 단계에서 `INFO_PLACE_DETAIL_SOURCE`를 도입했다가
+  편의시설 공백이 메워지면서 철회했다. 설정을 남겨두면 두 경로의 동작이 갈리는지
+  계속 확인해야 한다.
+- 외부 호출: INFO 상세 질의가 3회(searchKeyword2 + detailCommon2 + detailIntro2)에서
+  **1회**(detailCommon2)로 준다. `overview`(표본 35건에서 100%, 평균 326자)와
+  `homepage`(63%)는 캐시에 없어 그 1회가 남는다.
+- D-054를 대체한다. 그 결정은 "캐시에는 INFO가 답할 데이터가 없다"가 전제였고, 당시
+  동기화 대상은 `operating_hours_raw`/`rest_date_raw`뿐이었다. D-056(주차·요금)과
+  이번 안내처·편의시설로 전제가 사라졌다.
+- 미완결: `info_center_raw`와 편의시설 4개 컬럼은 마이그레이션만 적용됐고 값은 비어
+  있다. 동기화를 다시 돌려야 채워진다. 그때까지 INFO 전화번호·편의시설은 빈 응답이다.
+- 별건으로 남긴 것: `location_info`는 `_fetch_place_detail_info()`에서 상세조회 전에
+  early return 하므로(주소만으로 답이 성립한다는 판단) `extract_info_fields()`의
+  `location_info` 분기가 서비스에서 도달하지 않는다. 캐시에 전화번호가 생기면서
+  "외부 호출 한 번을 아낀다"는 그 근거가 사라졌으므로 early return을 재검토해야
+  전화번호가 실제로 쓰인다.
+- 조용한 실패 방지: 정규화 필드를 provider가 안 채워도 규칙 테스트는 통과한다. 그래서
+  `tests/test_place_details_normalized_fields.py`가 **provider를 직접 태우고**
+  `extract_info_fields()` 출력이 비지 않는지 단언한다. `_to_place_details`에서
+  `parking=None`·`restroom=None`으로 배선을 끊으면 실제로 실패하는 것을 확인했다.
+  `app/providers/tour_intro_keys.py`를 분리해 실 provider와 fake가 같은 키 목록을
+  쓰도록 구조로 고정했다.
+- 구현: `supabase/migrations/202608100001_add_place_info_center_column.sql`,
+  `202608100002_add_place_facility_columns.sql`,
+  `app/providers/hybrid_place_details.py`, `app/providers/tour_intro_keys.py`,
+  `app/domain/models.py`, `app/providers/real_place.py`/`stub.py`/
+  `supabase_place_details.py`/`factory.py`/`protocols.py`,
+  `app/agent_context/info_field_rules.py`/`factory.py`,
+  `app/repositories/supabase_places.py`/`protocols.py`, `app/services/place_sync.py`,
+  `app/tools/place_detail.py`.
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -1731,3 +1798,4 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-08 | D-057 신설 — 집중률 검색어를 단일 값에서 공백 토큰 전부로 바꾸고, 코퍼스 등장 빈도 오름차순으로 조회하도록 결정하고 구현(C). 손으로 쓴 불용어 목록 대신 희소성 기준을 쓰는 근거를 실측(종로구 113개 이름)으로 기록하고, 대조 유사도 임계값 0.9를 유사도 매칭 금지 방침의 조건부 예외로 명시 |
 | 2026-08-08 | D-058 신설 — 운영시간 요일 파싱 수정(C). `매주 월요일~화요일`의 물결표 요일 범위 전개와 요일별 운영시간 분리를 구현하고, 요일을 열거한 원문에서 빠진 요일을 정기 휴무로 유도하도록 결정. 유도 근거는 활성 844건 중 39건 실측(38건이 휴무 원문과 일치). 활성 97건의 운영 판정이 달라짐. `OPERATING_PARSER_VERSION` 1.2.0 |
 | 2026-08-08 | D-059 신설 — SCHEDULE 되묻기 답변이 MODIFY로 오분류되던 문제 수정(A). `classify_intent()`에 `pending_clarification`/`last_intent` 컨텍스트를 전달하고 프롬프트 규칙만 추가(상태 레벨 override 채택 안 함, D-053과 같은 방향). 되묻기 플래그 소비 화이트리스트에 SCHEDULE 누락도 함께 수정. `PROMPT_VERSION` 1.0.7 |
+| 2026-08-10 | D-060 신설 — INFO 상세 질의의 요금·주차·편의시설을 `raw_intro` 원본 키 조회에서 `PlaceDetails` 정규화 필드로 이관하고 옛 경로를 삭제(C). 전화번호 출처를 `detailCommon2` `tel`(축제만 5/5)이 아니라 `detailIntro2` 안내처(33건 중 32건)로 확정하고 `places`에 `info_center_raw` + 편의시설 컬럼 4개를 신설(편의시설은 대상 유형 55건 중 22건, 쇼핑은 카드결제·화장실 12/12). 캐시가 `question_type` 전부를 덮게 되어 INFO 상세 출처는 하이브리드로 단일화하고 선택 설정을 두지 않는다 — 외부 호출 3회 → 1회. D-054 대체 |

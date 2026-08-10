@@ -78,12 +78,37 @@ class AgentState(BaseModel):
 # ---------------------------------------------------------------- 이력
 
 class RecommendedItem(BaseModel):
-    """노출된 장소 1건. (계약 3.2절)"""
+    """노출된 장소 1건. (계약 3.2절)
+
+    estimated_arrival 이하 4개 필드는 SCHEDULE 전용 선택 필드다(SCHEDULE-06).
+    RECOMMEND/MODIFY 흐름에서는 항상 None이며, "B는 place_id만 저장하고 장소
+    상세 정보를 보관하지 않는다"는 원칙(history.py 참고)의 유일한 예외다 —
+    목적은 SCHEDULE 재조정 시 직전 일정 내용을 참고하는 것. rank가 이미 방문
+    순서(ScheduleItem.order)를 담으므로 별도 order 필드는 두지 않는다.
+    """
 
     place_id: str
     run_id: str
     rank: int
     shown_at: datetime = Field(default_factory=now_kst)
+    estimated_arrival: str | None = None
+    estimated_duration_min: int | None = None
+    travel_to_next_min: int | None = None
+    reason: str | None = None
+
+
+class RecommendedItemInput(BaseModel):
+    """history.record_recommended() 호출 시 넘기는 입력 1건.
+
+    place_id/rank는 필수, 나머지는 SCHEDULE 전용 선택 필드(SCHEDULE-06).
+    """
+
+    place_id: str
+    rank: int
+    estimated_arrival: str | None = None
+    estimated_duration_min: int | None = None
+    travel_to_next_min: int | None = None
+    reason: str | None = None
 
 
 class RejectedItem(BaseModel):

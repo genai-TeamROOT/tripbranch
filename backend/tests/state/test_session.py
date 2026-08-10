@@ -13,7 +13,7 @@ from datetime import timedelta
 import pytest
 
 from app.state.history import record_recommended, record_rejected
-from app.state.schema import AgentState, now_kst
+from app.state.schema import AgentState, RecommendedItemInput, now_kst
 from app.state.session import (
     RESET_FULL,
     RESET_HISTORY,
@@ -253,7 +253,9 @@ class TestApplyReset:
 
     def test_history는_추천만_비우고_거절은_유지한다(self, store):
         state = create_session(store)
-        record_recommended(store, state.session_id, "run_1", [("p1", 1)])
+        record_recommended(
+            store, state.session_id, "run_1", [RecommendedItemInput(place_id="p1", rank=1)]
+        )
         record_rejected(store, state.session_id, "run_1", [("p2", None)])
 
         result, created = apply_reset(store, state, RESET_HISTORY)
@@ -270,7 +272,9 @@ class TestApplyReset:
 
     def test_full은_기존_세션을_expired_처리하고_신규_발급한다(self, store):
         state = create_session(store)
-        record_recommended(store, state.session_id, "run_1", [("p1", 1)])
+        record_recommended(
+            store, state.session_id, "run_1", [RecommendedItemInput(place_id="p1", rank=1)]
+        )
         record_rejected(store, state.session_id, "run_1", [("p2", None)])
 
         result, created = apply_reset(store, state, RESET_FULL)
@@ -281,7 +285,9 @@ class TestApplyReset:
 
     def test_full은_이전_세션의_이력도_모두_지운다(self, store):
         state = create_session(store)
-        record_recommended(store, state.session_id, "run_1", [("p1", 1)])
+        record_recommended(
+            store, state.session_id, "run_1", [RecommendedItemInput(place_id="p1", rank=1)]
+        )
 
         apply_reset(store, state, RESET_FULL)
 

@@ -70,6 +70,7 @@ export function HomePage() {
           mergedConditions: response.state.user_conditions,
           message: response.message,
           recommendations: response.recommendations,
+          schedule: response.schedule,
           sessionId: response.state.session_id,
           status: response.llm_output.status,
           agentResponse: response,

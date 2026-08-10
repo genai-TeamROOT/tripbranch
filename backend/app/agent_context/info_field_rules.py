@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import html
 import re
-from collections.abc import Mapping
 
 from app.agent_context.info_schemas import InfoQuestionType
 from app.domain.models import PlaceDetails
@@ -39,47 +38,13 @@ INFO_FIELD_KEYS = {
     "homepage": "homepage",
 }
 
-# (정규화 키, detailIntro2 후보 키들). 앞에서부터 값이 있는 첫 키를 채택한다.
-_FEE_KEYS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("fee", ("usefee", "usefeeleports", "usetimefestival")),
-)
-_PARKING_KEYS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    (
-        "parking",
-        (
-            "parking",
-            "parkingculture",
-            "parkingleports",
-            "parkingshopping",
-            "parkingfood",
-            "parkinglodging",
-        ),
-    ),
-    ("parking_fee", ("parkingfee", "parkingfeeleports", "parkingfeeculture")),
-)
-_FACILITY_KEYS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    (
-        "baby_carriage",
-        (
-            "chkbabycarriage",
-            "chkbabycarriageculture",
-            "chkbabycarriageleports",
-            "chkbabycarriageshopping",
-        ),
-    ),
-    ("pet", ("chkpet", "chkpetculture", "chkpetleports", "chkpetshopping")),
-    (
-        "credit_card",
-        (
-            "chkcreditcard",
-            "chkcreditcardculture",
-            "chkcreditcardleports",
-            "chkcreditcardshopping",
-            "chkcreditcardfood",
-        ),
-    ),
-    ("restroom", ("restroom",)),
-)
+# **이 모듈은 raw_intro를 더 이상 읽지 않는다.** provider가 contenttypeid별 키를 이미
+# 정규화해 PlaceDetails의 fee/parking/parking_fee/baby_carriage/pet/credit_card/
+# restroom에 담아두기 때문이다 — operating_hours가 진작부터 쓰던 방식이다.
+#
+# Supabase 캐시는 유형별 키를 한 컬럼으로 눌러 담아 raw_intro를 복원할 수 없다.
+# 그 경로에서 값이 조용히 비는 것이 D-054의 원인이었고, D-060에서 이관했다.
+# 옛 경로를 함께 두지 않는다 — 같은 질문이 provider에 따라 다르게 답한다.
 
 _TAG_PATTERN = re.compile(r"<[^>]+>")
 _WHITESPACE_PATTERN = re.compile(r"\s+")
@@ -98,25 +63,13 @@ def clean_text(value: object) -> str | None:
     return normalized or None
 
 
-def _first_present(
-    source: Mapping[str, object], candidate_keys: tuple[str, ...]
-) -> str | None:
-    for key in candidate_keys:
-        cleaned = clean_text(source.get(key))
-        if cleaned is not None:
-            return cleaned
-    return None
-
-
-def _collect(
-    source: Mapping[str, object],
-    rules: tuple[tuple[str, tuple[str, ...]], ...],
-) -> dict[str, str]:
+def _normalized(*pairs: tuple[str, str | None]) -> dict[str, str]:
+    """provider가 이미 정규화해둔 값을 계약 키로 옮긴다. 빈 값은 키 자체를 뺀다."""
     fields: dict[str, str] = {}
-    for normalized_key, candidate_keys in rules:
-        value = _first_present(source, candidate_keys)
-        if value is not None:
-            fields[normalized_key] = value
+    for normalized_key, value in pairs:
+        cleaned = clean_text(value)
+        if cleaned is not None:
+            fields[normalized_key] = cleaned
     return fields
 
 
@@ -142,13 +95,22 @@ def extract_info_fields(
         return fields
 
     if question_type == "fee":
-        return _collect(details.raw_intro, _FEE_KEYS)
+        return _normalized(("fee", details.fee))
 
     if question_type == "parking":
-        return _collect(details.raw_intro, _PARKING_KEYS)
+        return _normalized(
+            ("parking", details.parking),
+            ("parking_fee", details.parking_fee),
+        )
 
     if question_type == "facility":
-        return _collect(details.raw_intro, _FACILITY_KEYS)
+        # `없음`도 값이다 — "정보가 없다"가 아니라 "없다고 답했다"이므로 그대로 낸다.
+        return _normalized(
+            ("baby_carriage", details.baby_carriage),
+            ("pet", details.pet),
+            ("credit_card", details.credit_card),
+            ("restroom", details.restroom),
+        )
 
     if question_type == "location_info":
         fields = {}

@@ -19,7 +19,7 @@ from app.state import trace as trace_module
 from app.state.errors import StateStoreError
 from app.state.merge import merge_conditions
 from app.state.operations import IgnoredOperation, Operation, validate_all
-from app.state.schema import UserConditions, now_kst
+from app.state.schema import RecommendedItemInput, UserConditions, now_kst
 from app.state.store import StateStore, get_store
 
 # ================================================================ 요청·응답
@@ -110,10 +110,18 @@ class DeleteSessionResponse(BaseModel):
 
 
 class RecommendedPlace(BaseModel):
-    """노출된 장소 1건. (계약 6.4절)"""
+    """노출된 장소 1건. (계약 6.4절)
+
+    estimated_arrival 이하는 SCHEDULE 전용 선택 필드(SCHEDULE-06) — RECOMMEND/
+    MODIFY 호출은 생략하면 된다.
+    """
 
     place_id: str
     rank: int
+    estimated_arrival: str | None = None
+    estimated_duration_min: int | None = None
+    travel_to_next_min: int | None = None
+    reason: str | None = None
 
 
 class RecordRecommendationRequest(BaseModel):
@@ -399,7 +407,17 @@ def record_recommendation(
         store,
         request.session_id,
         request.run_id,
-        [(p.place_id, p.rank) for p in request.recommended],
+        [
+            RecommendedItemInput(
+                place_id=p.place_id,
+                rank=p.rank,
+                estimated_arrival=p.estimated_arrival,
+                estimated_duration_min=p.estimated_duration_min,
+                travel_to_next_min=p.travel_to_next_min,
+                reason=p.reason,
+            )
+            for p in request.recommended
+        ],
     )
     return RecordRecommendationResponse(recorded=recorded)
 

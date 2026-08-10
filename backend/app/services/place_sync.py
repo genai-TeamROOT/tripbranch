@@ -614,4 +614,9 @@ class PlaceSyncService:
                 parking_fee_raw=details.parking_fee_raw,
                 use_fee_raw=details.use_fee_raw,
                 discount_info_raw=details.discount_info_raw,
+                info_center_raw=details.info_center_raw,
+                baby_carriage_raw=details.baby_carriage_raw,
+                pet_raw=details.pet_raw,
+                credit_card_raw=details.credit_card_raw,
+                restroom_raw=details.restroom_raw,
             )

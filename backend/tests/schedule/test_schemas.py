@@ -5,7 +5,10 @@
 
 from __future__ import annotations
 
-from app.schedule.schemas import SchedulePlanningRequest
+import pytest
+from pydantic import ValidationError
+
+from app.schedule.schemas import ScheduleLLMPlan, SchedulePlanningRequest
 from app.schemas import (
     AgentResponse,
     Intent,
@@ -19,6 +22,18 @@ from app.schemas import (
 )
 from app.state.schema import UserConditions as StateUserConditions
 from app.state.service import ApiContextView, StateApplyResponse
+
+
+def _schedule_item(place_id: str, order: int) -> ScheduleItem:
+    return ScheduleItem(
+        order=order,
+        place_id=place_id,
+        place_name=f"장소 {place_id}",
+        estimated_arrival="15:00",
+        estimated_duration_min=60,
+        travel_to_next_min=None,
+        reason="테스트 이유",
+    )
 
 
 def _sample_recommendation_item(place_id: str = "place-1") -> RecommendationItem:
@@ -138,3 +153,45 @@ class TestSchedulePlanningRequestSchema:
             pairwise_distances_km={},
         )
         assert request.visit_datetime is None
+
+
+class TestScheduleLLMPlanItemsCountConstraint:
+    """SCHEDULE-07: items는 3~5개여야 한다(9절 "3~5개 선택 지시 미준수" 미결
+    사항 해소). app.schedule.planner.plan_schedule()이 후보 3개 미만이면 LLM을
+    아예 안 부르므로, 실제 호출되는 경로에서는 이 범위가 항상 만족 가능하다."""
+
+    def test_정확히_3개면_통과한다(self):
+        plan = ScheduleLLMPlan(
+            items=[_schedule_item(f"place-{i}", i) for i in range(1, 4)],
+            total_duration_min=180,
+            route_summary="테스트 동선",
+        )
+        assert len(plan.items) == 3
+
+    def test_정확히_5개면_통과한다(self):
+        plan = ScheduleLLMPlan(
+            items=[_schedule_item(f"place-{i}", i) for i in range(1, 6)],
+            total_duration_min=300,
+            route_summary="테스트 동선",
+        )
+        assert len(plan.items) == 5
+
+    def test_2개면_검증에_실패한다(self):
+        with pytest.raises(ValidationError):
+            ScheduleLLMPlan(
+                items=[_schedule_item(f"place-{i}", i) for i in range(1, 3)],
+                total_duration_min=120,
+                route_summary="테스트 동선",
+            )
+
+    def test_0개면_검증에_실패한다(self):
+        with pytest.raises(ValidationError):
+            ScheduleLLMPlan(items=[], total_duration_min=0, route_summary="")
+
+    def test_6개면_검증에_실패한다(self):
+        with pytest.raises(ValidationError):
+            ScheduleLLMPlan(
+                items=[_schedule_item(f"place-{i}", i) for i in range(1, 7)],
+                total_duration_min=360,
+                route_summary="테스트 동선",
+            )

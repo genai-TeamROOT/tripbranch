@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.schemas import RecommendationItem, ScheduleItem, UserConditions
 
@@ -46,9 +46,17 @@ class ScheduleLLMPlan(BaseModel):
     생성하지 않고 app.schedule.planner가 visit_datetime 값으로 결정적으로
     채운다(docs/design/int-07-schedule.md 6.2.1절) — 이 모델은 LLM 응답 검증에만
     쓰이고 AgentResponse에는 직접 실리지 않는다.
+
+    items에 min_length=3/max_length=5 제약을 건다(SCHEDULE-07, 9절 "3~5개 선택
+    지시 미준수" 미결 사항 해소). 이전에는 "후보가 3개 미만이면 매번 검증 실패로
+    대화가 끊긴다"는 우려로 제약을 피했지만, app.schedule.planner.plan_schedule()이
+    이제 후보 3개 미만이면 LLM을 아예 호출하지 않아 이 제약은 실제로 호출되는
+    경로에서는 항상 만족 가능하다. 검증 실패 시 app.providers.gemini.py의
+    _call_structured()가 이미 한 번 자동 재시도(오류 안내를 붙여 재요청)하므로
+    LLM이 첫 시도에 정확히 지키지 못해도 완전히 하드 실패로 이어지진 않는다.
     """
 
-    items: list[ScheduleItem]
+    items: list[ScheduleItem] = Field(min_length=3, max_length=5)
     total_duration_min: int
     route_summary: str
 

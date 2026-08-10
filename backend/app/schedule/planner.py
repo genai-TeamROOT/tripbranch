@@ -16,6 +16,18 @@ from app.schedule.schemas import SchedulePlanningRequest
 from app.schemas import ScheduleResult
 from app.state.schema import now_kst
 
+_NO_CANDIDATES_ROUTE_SUMMARY = (
+    "조건에 맞는 곳을 충분히 찾지 못해 일정을 만들지 못했어요. "
+    "다른 지역이나 다른 종류의 장소로 다시 요청해볼까요?"
+)
+
+# ScheduleLLMPlan.items에 min_length=3 제약을 걸어둔 상태라(app/schedule/schemas.py),
+# 후보가 3개 미만이면 LLM이 애초에 그 제약을 만족시킬 방법이 없다 — 재시도를 줘도
+# 똑같이 실패해 llm_output_invalid(502)만 두 번 반복하고 끝난다. 그래서 이 경우엔
+# LLM을 아예 부르지 않고 여기서 바로 정규화된 안내로 반환한다(SCHEDULE-07, 9절
+# "D 후보 3개 미만" 미결 사항 해소).
+_MIN_CANDIDATES_FOR_SCHEDULE = 3
+
 
 def _build_basis_note(visit_datetime: datetime) -> str:
     """D 피드백 반영 — 근거 데이터(운영시간·날씨)가 단일 시각 기준이라 뒷 순서
@@ -44,6 +56,18 @@ async def plan_schedule(
     """
 
     effective_visit_datetime = request.visit_datetime or now_kst()
+
+    # 후보가 3개 미만이면 LLM을 부르지 않는다 — ScheduleLLMPlan.items의
+    # min_length=3 제약을 애초에 만족시킬 수 없어 호출해도 재시도까지 실패로
+    # 끝날 뿐이다(SCHEDULE-07).
+    if len(request.candidates) < _MIN_CANDIDATES_FOR_SCHEDULE:
+        return ScheduleResult(
+            items=[],
+            total_duration_min=0,
+            route_summary=_NO_CANDIDATES_ROUTE_SUMMARY,
+            basis_note=_build_basis_note(effective_visit_datetime),
+        )
+
     resolved_request = (
         request
         if request.visit_datetime is not None
@@ -51,6 +75,21 @@ async def plan_schedule(
     )
 
     plan = (await llm.generate_schedule_plan(resolved_request)).data
+
+    # LLM이 items는 빈 배열로 주면서 total_duration_min/route_summary는 그럴듯한
+    # 문장으로 채워 보내는 비일관 응답이 실제로 관측됐다(2026-08-10 real Gemini
+    # 수동 테스트, SCHEDULE-06 후속). SCHEDULE-07부터 ScheduleLLMPlan.items에
+    # min_length=3 제약이 걸려 있어 실제 Gemini 경로에서는 이 분기가 원칙적으로
+    # 발생하지 않지만(검증 실패 시 gemini.py의 재시도 후에도 실패하면 예외로
+    # 올라간다), FakeLLMProvider 등 스키마 검증을 안 거치는 테스트 더블까지
+    # 방어하기 위해 남겨둔다.
+    if not plan.items:
+        return ScheduleResult(
+            items=[],
+            total_duration_min=0,
+            route_summary=_NO_CANDIDATES_ROUTE_SUMMARY,
+            basis_note=_build_basis_note(effective_visit_datetime),
+        )
 
     return ScheduleResult(
         items=plan.items,

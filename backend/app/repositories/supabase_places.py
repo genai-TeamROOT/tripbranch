@@ -53,6 +53,23 @@ _DETAIL_COLUMNS = ",".join(
         "detail_fetch_status",
         "detail_fetched_at",
         "source_modified_at",
+        # 추천 카드용 컬럼(D-056). 분류 코드는 카테고리 라벨, 주차·이미지는 배지와
+        # 썸네일에 쓴다. 상세 배치 조회는 이미 장소당 1행이라 컬럼을 늘려도
+        # 요청 수는 그대로다.
+        "lcls_systm1",
+        "lcls_systm2",
+        "lcls_systm3",
+        "parking_info_raw",
+        "parking_fee_raw",
+        "first_image_url",
+        "thumbnail_url",
+        # INFO 상세 질의(요금·전화번호)를 캐시만으로 답하기 위한 컬럼.
+        "use_fee_raw",
+        "info_center_raw",
+        "baby_carriage_raw",
+        "pet_raw",
+        "credit_card_raw",
+        "restroom_raw",
     )
 )
 _VALID_RUN_STATUSES = {"success", "partial_failure", "failed"}
@@ -503,6 +520,19 @@ class SupabasePlaceRepository:
                     source_modified_at=_parse_datetime(
                         raw.get("source_modified_at"), "source_modified_at"
                     ),
+                    lcls_systm1=_optional_text(raw.get("lcls_systm1")),
+                    lcls_systm2=_optional_text(raw.get("lcls_systm2")),
+                    lcls_systm3=_optional_text(raw.get("lcls_systm3")),
+                    parking_info_raw=_optional_text(raw.get("parking_info_raw")),
+                    parking_fee_raw=_optional_text(raw.get("parking_fee_raw")),
+                    first_image_url=_optional_text(raw.get("first_image_url")),
+                    thumbnail_url=_optional_text(raw.get("thumbnail_url")),
+                    use_fee_raw=_optional_text(raw.get("use_fee_raw")),
+                    info_center_raw=_optional_text(raw.get("info_center_raw")),
+                    baby_carriage_raw=_optional_text(raw.get("baby_carriage_raw")),
+                    pet_raw=_optional_text(raw.get("pet_raw")),
+                    credit_card_raw=_optional_text(raw.get("credit_card_raw")),
+                    restroom_raw=_optional_text(raw.get("restroom_raw")),
                 )
         return details
 
@@ -577,11 +607,16 @@ class SupabasePlaceRepository:
         parking_fee_raw: str | None = None,
         use_fee_raw: str | None = None,
         discount_info_raw: str | None = None,
+        info_center_raw: str | None = None,
+        baby_carriage_raw: str | None = None,
+        pet_raw: str | None = None,
+        credit_card_raw: str | None = None,
+        restroom_raw: str | None = None,
     ) -> None:
         if parse_status not in _VALID_PARSE_STATUSES:
             raise ValueError("유효하지 않은 parse_status입니다.")
-        # detail_fetch_status 판정에는 주차·요금을 넣지 않는다. 넣으면 운영시간이 없고
-        # 주차만 있는 장소가 empty에서 success로 바뀌어 재조회 주기가 달라진다 —
+        # detail_fetch_status 판정에는 주차·요금·안내처를 넣지 않는다. 넣으면 운영시간이
+        # 없고 주차만 있는 장소가 empty에서 success로 바뀌어 재조회 주기가 달라진다 —
         # 이 컬럼은 운영정보 확보 여부를 뜻하므로 기존 의미를 유지한다(D-056).
         detail_status = (
             "empty"
@@ -599,6 +634,11 @@ class SupabasePlaceRepository:
                 "parking_fee_raw": parking_fee_raw,
                 "use_fee_raw": use_fee_raw,
                 "discount_info_raw": discount_info_raw,
+                "info_center_raw": info_center_raw,
+                "baby_carriage_raw": baby_carriage_raw,
+                "pet_raw": pet_raw,
+                "credit_card_raw": credit_card_raw,
+                "restroom_raw": restroom_raw,
                 "operating_schedule": operating_schedule,
                 "operating_parse_status": parse_status,
                 "operating_parser_version": parser_version,

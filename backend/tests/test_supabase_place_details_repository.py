@@ -28,7 +28,46 @@ def _row(content_id: str) -> dict[str, object]:
         "detail_fetch_status": "success",
         "detail_fetched_at": "2026-07-20T03:00:00+00:00",
         "source_modified_at": None,
+        "lcls_systm1": "HS",
+        "lcls_systm2": "HS01",
+        "lcls_systm3": "HS010100",
+        "parking_info_raw": "가능 (승용차 240대 / 버스 50대)",
+        "parking_fee_raw": None,
+        "first_image_url": "https://example.test/first.jpg",
+        "thumbnail_url": "https://example.test/thumb.jpg",
     }
+
+
+@pytest.mark.asyncio
+async def test_card_columns_are_selected_and_mapped() -> None:
+    """추천 카드용 컬럼이 select에서 빠지면 조립 측이 조용히 전부 None을 받는다."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=[_row("a")])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        repository = SupabasePlaceRepository(_URL, _SECRET, client)
+        rows = await repository.get_active_place_details(["a"])
+
+    selected = seen[0].url.params["select"].split(",")
+    for column in (
+        "lcls_systm1",
+        "lcls_systm2",
+        "lcls_systm3",
+        "parking_info_raw",
+        "parking_fee_raw",
+        "first_image_url",
+        "thumbnail_url",
+    ):
+        assert column in selected
+
+    row = rows["a"]
+    assert row.lcls_systm3 == "HS010100"
+    assert row.parking_info_raw == "가능 (승용차 240대 / 버스 50대)"
+    assert row.thumbnail_url == "https://example.test/thumb.jpg"
+    assert row.first_image_url == "https://example.test/first.jpg"
 
 
 @pytest.mark.asyncio
