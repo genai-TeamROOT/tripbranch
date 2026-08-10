@@ -116,7 +116,9 @@ async def build_interpretation(
             )
         return (
             await llm.extract_modify_conditions(
-                request.user_input, request.current_conditions
+                request.user_input,
+                request.current_conditions,
+                pending_clarification=request.pending_clarification,
             )
         ).data
 

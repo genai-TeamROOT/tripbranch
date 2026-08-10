@@ -136,6 +136,9 @@ _INFO_QUESTION_MARKERS = (
     "행사",
     "어디에 있",
     "주소",
+    "사람 많",
+    "붐빌",
+    "혼잡",
 )
 _GENERAL_MARKERS = (
     "역사",
@@ -177,6 +180,8 @@ _LOCATION_ONLY_REMAINDERS = frozenset(
         "어때",
     }
 )
+_LOCATION_ANSWER_REMAINDERS = frozenset({"", "요", "이요", "입니다", "이에요"})
+_LOCATION_CLARIFICATION_CODES = frozenset({"location_required", "location_ambiguous"})
 
 
 def _find_known_place(user_input: str) -> str | None:
@@ -203,6 +208,16 @@ def _is_location_only_change(user_input: str) -> bool:
             break
     normalized = remainder.replace(" ", "").rstrip("?!.")
     return normalized in _LOCATION_ONLY_REMAINDERS
+
+
+def _is_simple_location_answer(user_input: str) -> bool:
+    """위치 되묻기에 답한 지명 단독/짧은 존댓말 답변인지 판정한다."""
+
+    place_name = _find_known_place(user_input)
+    if place_name is None:
+        return False
+    remainder = user_input.replace(place_name, "", 1).strip().replace(" ", "").rstrip("?!.")
+    return remainder in _LOCATION_ANSWER_REMAINDERS
 
 
 def _is_location_scoped_change(user_input: str) -> bool:
@@ -289,6 +304,15 @@ class FakeLLMProvider:
             # 보충하는 짧은 답변도 새 MODIFY 요청이 아니라 그 SCHEDULE을 이어가는
             # 중이다. MODIFY 분기(바로 아래)보다 먼저 검사해 우선순위를 준다.
             result = IntentClassificationResult(intent=Intent.SCHEDULE)
+        elif (
+            last_intent in (Intent.RECOMMEND.value, Intent.MODIFY.value)
+            and pending_clarification in _LOCATION_CLARIFICATION_CODES
+            and _is_simple_location_answer(user_input)
+        ):
+            # 위치를 물어본 직후의 단순 지명은 INFO가 아니라, 기존 조건에 검색 중심을
+            # 보충하는 MODIFY다. "경복궁 오늘 열어?"처럼 질문이 붙으면 이 조건을
+            # 통과하지 않아 아래 INFO 규칙으로 간다.
+            result = IntentClassificationResult(intent=Intent.MODIFY)
         elif has_previous_recommendation and (
             any(marker in user_input for marker in _REJECT_ALL_MARKERS + _MODIFY_CHANGE_MARKERS)
             or _is_location_only_change(user_input)
@@ -305,10 +329,10 @@ class FakeLLMProvider:
             marker in user_input for marker in _INFO_QUESTION_MARKERS
         ):
             result = IntentClassificationResult(intent=Intent.INFO)
-        elif _find_known_place(user_input) and not any(
-            marker in user_input for marker in ("근처", "주변", "같은 곳")
-        ):
-            result = IntentClassificationResult(intent=Intent.INFO)
+        elif _is_simple_location_answer(user_input):
+            result = IntentClassificationResult(
+                intent=Intent.MODIFY if has_previous_recommendation else Intent.RECOMMEND
+            )
         else:
             result = IntentClassificationResult(intent=Intent.RECOMMEND)
         return provider_result(result, source=ProviderSource.FAKE_LLM)
@@ -318,7 +342,9 @@ class FakeLLMProvider:
     ) -> ProviderResult[LLMOutput]:
         conditions = UserConditions()
         place_name = _find_known_place(user_input)
-        if place_name and ("근처" in user_input or "주변" in user_input):
+        if place_name and (
+            "근처" in user_input or "주변" in user_input or _is_simple_location_answer(user_input)
+        ):
             conditions.search_center = place_name
         if "나 지금" in user_input and place_name:
             conditions.current_location = place_name
@@ -380,7 +406,11 @@ class FakeLLMProvider:
         return provider_result(result, source=ProviderSource.FAKE_LLM)
 
     async def extract_modify_conditions(
-        self, user_input: str, current_conditions: UserConditions
+        self,
+        user_input: str,
+        current_conditions: UserConditions,
+        *,
+        pending_clarification: str | None = None,
     ) -> ProviderResult[LLMOutput]:
         if any(marker in user_input for marker in _REJECT_ALL_MARKERS):
             result = LLMOutput(
@@ -440,6 +470,11 @@ class FakeLLMProvider:
             "근처로 바꿔" in user_input
             or _is_location_only_change(user_input)
             or _is_location_scoped_change(user_input)
+            or _is_simple_location_answer(user_input)
+            or (
+                pending_clarification in _LOCATION_CLARIFICATION_CODES
+                and _is_simple_location_answer(user_input)
+            )
         ):
             changed.search_center = new_place
             changed_fields.append("search_center")

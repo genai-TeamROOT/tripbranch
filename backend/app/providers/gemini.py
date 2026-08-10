@@ -150,10 +150,15 @@ class RealGeminiProvider:
         return provider_result(result, source=ProviderSource.GEMINI)
 
     async def extract_modify_conditions(
-        self, user_input: str, current_conditions: UserConditions
+        self,
+        user_input: str,
+        current_conditions: UserConditions,
+        *,
+        pending_clarification: str | None = None,
     ) -> ProviderResult[LLMOutput]:
         instruction = gemini_prompts.build_modify_extraction_instruction(
-            current_conditions
+            current_conditions,
+            pending_clarification=pending_clarification,
         )
         result = await self._call_structured(
             instruction,
