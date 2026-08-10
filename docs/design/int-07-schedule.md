@@ -310,6 +310,23 @@ LLM은 10개 후보 중 시간·동선 효율을 고려해 **3~5개**를 선택�
 B 히스토리에 함께 저장된다(6.3절 갱신 참고. SCHEDULE-04~05 시점에는 저장되지
 않았다 — 해당 시점 알려진 한계는 9절 "해소된 항목" 참고).
 
+#### 6.2.2 후보 부족 처리 및 선택 개수 하드 검증 (SCHEDULE-07)
+
+`app.schedule.planner.plan_schedule()`은 `SchedulePlanningRequest.candidates`가
+3개 미만이면 LLM을 아예 호출하지 않고, `ScheduleResult(items=[], ...)`를
+고정 안내 문구(SCHEDULE-06 후속에서 만든 `_NO_CANDIDATES_ROUTE_SUMMARY`)와
+함께 즉시 반환한다. `ScheduleLLMPlan.items`에는 `min_length=3`/`max_length=5`
+제약을 걸어뒀는데, 이 순서(후보 수 체크 → 그 다음에만 제약이 걸린 LLM
+호출) 덕분에 실제로 LLM이 불릴 때는 후보가 항상 3개 이상이라 제약이 항상
+만족 가능하다.
+
+LLM이 그래도 개수를 못 지키면(예: 후보 5개 중 2개만 선택) Pydantic 검증이
+실패하는데, `app.providers.gemini.RealGeminiProvider._call_structured()`가
+이미 갖고 있던 공용 재시도 경로(검증 오류 안내를 프롬프트에 덧붙여 1회
+재호출)를 다른 구조화 출력(`IntentClassificationResult` 등)과 동일하게
+그대로 탄다. 재시도까지 실패하면 `llm_output_invalid`(502, retryable)로
+명시적으로 실패한다 — 개수를 어긴 일정을 조용히 그대로 반환하지 않는다.
+
 ### 6.3 B 기록 — SCHEDULE-06부터 일정 세부 필드도 함께 저장
 
 일정에 **포함된 장소만** B의 `record_recommendation()`을 그대로 호출해
@@ -405,17 +422,30 @@ LLM이 제외한 후보 5~7개는 기록되지 않아 이후 일반 RECOMMEND �
   5→10 확장과 혼잡도 2차 Scoring 처리를 아직 "D 협의 후 결정"으로
   남겨뒀는데, 이미 D와 합의 완료됨(top_k 10, 혼잡도 10개 전부 재계산,
   4·5절 참고) — A가 조건 추출·후속 구현에 들어가기 전에 알려줘야 함.
-* `estimated_arrival`은 `visit_datetime`이 없을 때 현재 시각 기준으로 계산할지,
-  LLM이 상대적 표현("1번째 방문", "약 1시간 후")만 반환하도록 할지 결정 필요.
 * `travel_to_next_min`은 현재 TBD인 `estimate_travel_time` Tool과 연동
   가능. Tool 미구현 상태이므로 1차에서는 LLM 추정값을 쓰되, 근거 없는
   추측이 되지 않도록 `pairwise_distances_km`(haversine 기반)을 프롬프트에
   반드시 함께 제공한다. Tool 구현 완료 시 실측값으로 교체.
 * FE 타임라인 UI 컴포넌트는 별도 이슈로 관리.
-* SCHEDULE 다음 턴에 D 후보가 3개 미만이면 편성 동작이 정의돼 있지 않다
-  (`ScheduleLLMPlan.items`에 `min_length=3` 제약을 걸면 하드 실패만
-  늘어나므로 단순 제약 추가보다 신중한 설계 필요). SCHEDULE-06에는
-  포함되지 않음, 후속 과제로 남김.
+
+**해소된 항목(SCHEDULE-07)**
+* SCHEDULE 다음 턴(및 최초 요청)에 D 후보가 3개 미만이면 편성 동작이
+  정의돼 있지 않던 문제: `plan_schedule()`이 후보가 3개 미만이면 LLM을
+  아예 호출하지 않고 정규화된 안내(`_NO_CANDIDATES_ROUTE_SUMMARY`)로
+  바로 반환하도록 해소. `ScheduleLLMPlan.items`에는 이제 `min_length=3`
+  제약을 걸었는데, 이 가드 덕분에 LLM이 실제로 불릴 때는 항상 후보가
+  3개 이상이라 제약이 항상 만족 가능하다 — 이전에 우려했던 "제약을 걸면
+  하드 실패만 늘어난다"는 문제는 이 순서(가드 먼저, 제약은 그 다음)로
+  해소됨.
+* LLM이 프롬프트의 "3~5개 선택" 지시를 가끔 안 지키던 문제(후보 10개가
+  있어도 2개만 선택한 사례 확인, SCHEDULE-04 수동 테스트 중 발견): 위
+  `min_length=3`/`max_length=5` 스키마 제약으로 하드 검증하도록 변경.
+  `app.providers.gemini.RealGeminiProvider._call_structured()`가 이미
+  갖고 있던 "검증 실패 시 오류 안내를 붙여 1회 자동 재시도" 경로를
+  다른 구조화 출력과 동일하게 그대로 탄다 — 재시도까지 실패하면
+  `llm_output_invalid`(502)로 명시적으로 실패하고, 조용히 개수를 어긴
+  일정을 반환하지 않는다. 프롬프트 문구도 "반드시 3~5개" 식으로 더
+  단호하게 보강해 재시도 빈도 자체를 줄이는 보조 조치를 함께 함.
 
 **해소된 항목(SCHEDULE-06)**
 * `ScheduleItem`의 세부 근거(도착 시각·체류 시간·이유 문장)가 B 히스토리에
@@ -424,6 +454,19 @@ LLM이 제외한 후보 5~7개는 기록되지 않아 이후 일반 RECOMMEND �
 * SCHEDULE 다음 턴의 조건 변경 발화("다른 데로 바꿔줘")가 MODIFY로
   오분류되어 잘못 응답하던 문제: 라우팅 단계(agent_runtime.py)에서 B의
   `last_intent`를 읽어 해소(3.1절 참고). classify_intent는 변경 없음.
+* 실제 Gemini 수동 테스트(2026-08-10)에서 `items`는 빈 배열로 오면서
+  `route_summary`/`total_duration_min`은 그럴듯한 문장으로 채워 보내는
+  비일관 응답이 관측됨 — planner.py의 `plan_schedule()`이 `items`가 비면
+  나머지 필드도 결정적으로 정규화(고정 안내 문구, `total_duration_min=0`)
+  하도록 수정. `compose_schedule_message()`도 이 경우 "0분 코스를
+  짜봤어요" 같은 어색한 접두사 없이 안내 문구만 반환하도록 함께 수정.
+
+**해소된 항목(SCHEDULE-04, 문서 정리 누락 반영)**
+* `estimated_arrival`은 `visit_datetime`이 없을 때 현재 시각 기준으로 계산할지,
+  LLM이 상대적 표현만 반환하도록 할지 결정 필요했던 항목: `planner.py`의
+  `plan_schedule()`이 `visit_datetime`이 없으면 현재 시각(KST)을 결정적으로
+  채우고 LLM 호출·`basis_note` 둘 다 같은 값을 쓰도록 이미 SCHEDULE-04에서
+  구현 완료. 9절 목록에서 지우는 걸 SCHEDULE-07 때까지 누락했던 것을 정리.
 
 **해소된 항목(v2.0 → A의 1차 구현과 병합하며 확인)**
 * INT-07 트리거 표현·분류 기준 문서화: 별도로 새로 쓸 필요 없음 — A가

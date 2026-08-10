@@ -82,6 +82,30 @@ _FAKE_CANDIDATES = (
         location={"latitude": 37.5802, "longitude": 126.9776},
         operating_hours_raw="10:00-19:00",
     ),
+    # SCHEDULE-07부터 ScheduleLLMPlan.items가 min_length=3이라, 일정 재조정
+    # 테스트(SCHEDULE-06)가 첫 턴에서 3곳을 제외한 뒤에도 두 번째 일정을 짤 만큼
+    # 후보가 남아 있어야 한다. 4개로는 재조정 시 1개만 남아 planner.py의
+    # "후보 3개 미만이면 LLM 미호출" 가드에 걸려버려 6개로 늘렸다.
+    PlaceCandidate(
+        place_id="runtime-stub-restaurant-1",
+        name="런타임 스텁 식당",
+        category="restaurant",
+        lcls_systm1="FD",
+        lcls_systm2="FD01",
+        lcls_systm3="FD010100",
+        location={"latitude": 37.5804, "longitude": 126.9778},
+        operating_hours_raw="11:00-21:00",
+    ),
+    PlaceCandidate(
+        place_id="runtime-stub-market-1",
+        name="런타임 스텁 시장",
+        category="attraction",
+        lcls_systm1="VE",
+        lcls_systm2="VE03",
+        lcls_systm3="VE030300",
+        location={"latitude": 37.5806, "longitude": 126.9780},
+        operating_hours_raw="09:00-20:00",
+    ),
 )
 
 

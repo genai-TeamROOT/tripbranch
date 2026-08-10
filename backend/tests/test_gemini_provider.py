@@ -14,12 +14,25 @@ from google.genai import errors as genai_errors
 
 from app.errors import AppError, ProviderUnavailableError
 from app.providers.gemini import RealGeminiProvider
+from app.schedule.schemas import ScheduleLLMPlan
 from app.schemas import (
     Intent,
     IntentClassificationResult,
     RecommendationItem,
     RecommendationResponse,
 )
+
+
+def _schedule_item_dict(place_id: str, order: int) -> dict:
+    return {
+        "order": order,
+        "place_id": place_id,
+        "place_name": f"장소 {place_id}",
+        "estimated_arrival": "15:00",
+        "estimated_duration_min": 60,
+        "travel_to_next_min": None,
+        "reason": "테스트 이유",
+    }
 
 
 def _api_error(status_code: int, status: str) -> genai_errors.APIError:
@@ -164,6 +177,74 @@ async def test_call_structured_retries_once_on_validation_error_then_raises() ->
 
     assert exc_info.value.code == "llm_output_invalid"
     assert call_count == 2  # 최초 시도 + 1회 재시도
+
+
+@pytest.mark.asyncio
+async def test_schedule_plan_retries_once_when_items_count_out_of_range_then_succeeds() -> None:
+    """SCHEDULE-07: ScheduleLLMPlan.items의 min_length=3/max_length=5 제약도
+    IntentClassificationResult와 같은 공용 _call_structured() 재시도 경로를 탄다.
+    1차 시도가 2개만 선택해 검증에 실패해도, 재시도에서 3개를 채우면 성공한다."""
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    call_count = 0
+
+    async def too_few_then_valid(
+        system_instruction: str, user_input: str, response_model: type, operation: str
+    ) -> ScheduleLLMPlan:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return response_model.model_validate(
+                {
+                    "items": [_schedule_item_dict("p1", 1), _schedule_item_dict("p2", 2)],
+                    "total_duration_min": 120,
+                    "route_summary": "테스트 동선",
+                }
+            )
+        return response_model.model_validate(
+            {
+                "items": [
+                    _schedule_item_dict("p1", 1),
+                    _schedule_item_dict("p2", 2),
+                    _schedule_item_dict("p3", 3),
+                ],
+                "total_duration_min": 180,
+                "route_summary": "테스트 동선",
+            }
+        )
+
+    with patch.object(provider, "_generate", side_effect=too_few_then_valid):
+        result = await provider._call_structured(
+            "sys", "user", ScheduleLLMPlan, operation="generate_schedule_plan"
+        )
+
+    assert len(result.items) == 3
+    assert call_count == 2  # 최초 시도(2개, 검증 실패) + 1회 재시도(3개, 성공)
+
+
+@pytest.mark.asyncio
+async def test_schedule_plan_raises_when_items_count_still_out_of_range_after_retry() -> None:
+    """1차·재시도 둘 다 개수를 못 지키면 다른 구조화 출력과 동일하게
+    llm_output_invalid(502)로 실패한다 — 조용히 잘못된 일정을 반환하지 않는다."""
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+
+    async def always_too_many(
+        system_instruction: str, user_input: str, response_model: type, operation: str
+    ) -> ScheduleLLMPlan:
+        return response_model.model_validate(
+            {
+                "items": [_schedule_item_dict(f"p{i}", i) for i in range(1, 7)],
+                "total_duration_min": 360,
+                "route_summary": "테스트 동선",
+            }
+        )
+
+    with patch.object(provider, "_generate", side_effect=always_too_many):
+        with pytest.raises(AppError) as exc_info:
+            await provider._call_structured(
+                "sys", "user", ScheduleLLMPlan, operation="generate_schedule_plan"
+            )
+
+    assert exc_info.value.code == "llm_output_invalid"
 
 
 # --- D-052: 모델 fallback ---

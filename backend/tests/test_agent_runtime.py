@@ -563,7 +563,53 @@ async def test_schedule_modify_reroute_skipped_when_pending_clarification() -> N
     """SCHEDULE-06 안전장치: 직전 턴이 SCHEDULE였어도(last_intent="SCHEDULE")
     되묻기가 아직 안 끝났다면(pending_clarification이 남아있음) 재조정
     오버라이드가 걸리지 않는다 — 완료되지 않은 SCHEDULE을 재편성 대상으로
-    오인하면 안 된다."""
+    오인하면 안 된다.
+
+    develop 머지로 들어온 D-059(app/providers/stub.py의 FakeLLMProvider.
+    classify_intent)는 last_intent="SCHEDULE" + pending_clarification 존재 시
+    단순 후속 발화를 곧바로 SCHEDULE로 분류해 그 되묻기를 이어간다 — 이건 그
+    자체로 올바른 동작이라 이 시나리오에서는 이 테스트가 검증하려는 override
+    분기(llm_output.intent is Intent.MODIFY 조건)를 아예 타지 않는다. 그래서
+    명시적 재시작 문구("처음부터 다시")로 D-059 분기를 우회하고 REJECT_ALL
+    문구("다른 곳")로 MODIFY 분류를 유도해, override가 실제로 검사되는 경로를
+    직접 태운다."""
+    from app.state import session as session_module
+    from app.state.history import record_recommended
+    from app.state.schema import RecommendedItemInput
+
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    state, _ = session_module.get_or_create_session(store, None)
+    state.last_intent = "SCHEDULE"
+    state.pending_clarification = "ambiguous:weather_intent"
+    store.save_state(state)
+    record_recommended(
+        store,
+        state.session_id,
+        "run_seed",
+        [RecommendedItemInput(place_id="runtime-stub-museum-1", rank=1)],
+    )
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="처음부터 다시 다른 곳 보여줘",
+            session_id=state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.llm_output.intent == "MODIFY"
+    assert response.schedule is None
+
+
+@pytest.mark.asyncio
+async def test_schedule_continuation_during_pending_clarification_does_not_build_schedule() -> None:
+    """D-059 분기(직전 SCHEDULE 되묻기 중 후속 발화를 SCHEDULE로 이어 분류)를 탄
+    경우에도, 되묻기가 안 끝났으므로 실제 일정 편성은 이번 턴에 실행되지
+    않는다 — intent 라벨과 무관하게 지켜져야 하는 안전 속성이다."""
     from app.state import session as session_module
     from app.state.history import record_recommended
     from app.state.schema import RecommendedItemInput
@@ -592,7 +638,7 @@ async def test_schedule_modify_reroute_skipped_when_pending_clarification() -> N
         **providers,
     )
 
-    assert response.llm_output.intent == "MODIFY"
+    assert response.llm_output.intent == "SCHEDULE"
     assert response.schedule is None
 
 
@@ -997,7 +1043,9 @@ async def test_concentration_intent_persisted_by_b_triggers_rerank() -> None:
         "context_fetch",
         "candidate_enrichment",
     ]
-    assert response.tool_executions[1].candidate_status_counts == {"success": 4}
+    # RECOMMEND 기본 limit=5. _FAKE_CANDIDATES가 SCHEDULE-07에서 6개로 늘어(재조정
+    # 테스트가 3개 미만 가드에 걸리지 않도록) 5개로 잘려 enrichment 대상이 된다.
+    assert response.tool_executions[1].candidate_status_counts == {"success": 5}
 
 
 @pytest.mark.asyncio
