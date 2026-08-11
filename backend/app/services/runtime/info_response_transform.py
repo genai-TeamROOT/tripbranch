@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from app.agent_context.info_schemas import InfoContextResponse, PlaceInfoResult
 from app.schemas import InfoPlaceCard, QuestionType
+from app.services.runtime.info_display import format_parking_for_display
 
 
 def to_info_place_card(response: InfoContextResponse) -> InfoPlaceCard | None:
@@ -21,14 +22,17 @@ def to_info_place_card(response: InfoContextResponse) -> InfoPlaceCard | None:
     card = result.place_card
     return InfoPlaceCard(
         question_type=QuestionType(result.question_type),
-        answer_fields=dict(result.fields),
+        answer_fields={
+            key: format_parking_for_display(value) if key == "parking" else value
+            for key, value in result.fields.items()
+        },
         place_id=card.place_id,
         place_name=card.place_name,
         thumbnail_url=card.thumbnail_url,
         overview=card.overview,
         operating_hours=card.operating_hours,
         rest_date=card.rest_date,
-        parking=card.parking,
+        parking=format_parking_for_display(card.parking),
         parking_fee=card.parking_fee,
         fee=card.fee,
         baby_carriage=card.baby_carriage,

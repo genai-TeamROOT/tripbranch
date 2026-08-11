@@ -9,6 +9,7 @@ TODO: 실제 provider(RealPlaceProvider 등)가 준비되면 팩토리에서 설
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -636,14 +637,33 @@ class FakeLLMProvider:
         """
 
         items = comparison.items
-        first = items[0]
-        lines = [f"{first.place_name}을(를) 기준으로 비교해봤어요."]
+        if comparison.criteria is CompareCriteria.DISTANCE:
+            candidates = [item for item in items if item.distance_km is not None]
+            recommended = (
+                min(candidates, key=lambda item: item.distance_km or 0)
+                if candidates
+                else items[0]
+            )
+        elif comparison.criteria is CompareCriteria.TIME:
+            candidates = [item for item in items if item.remaining_minutes is not None]
+            recommended = (
+                max(candidates, key=lambda item: item.remaining_minutes or 0)
+                if candidates
+                else items[0]
+            )
+        else:
+            recommended = items[0]
+        lines = [
+            f"{recommended.place_name}{_object_particle(recommended.place_name)} 추천드려요."
+        ]
         for item in items[:3]:
             details: list[str] = []
             if item.distance_km is not None:
-                details.append(f"거리 {item.distance_km:.1f}km")
+                minutes = max(1, math.ceil(item.distance_km * 60 / 3.6))
+                details.append(f"도보 약 {minutes}분")
             if item.remaining_minutes is not None:
-                details.append(f"남은 운영시간 {item.remaining_minutes}분")
+                hours = max(1, math.floor(item.remaining_minutes / 60 + 0.5))
+                details.append(f"약 {hours}시간 남음")
             if item.environment_type is not None:
                 details.append(f"{item.environment_type} 환경")
             value = ", ".join(details) if details else "비교 정보 확인 필요"
@@ -677,6 +697,14 @@ class FakeLLMProvider:
             route_summary="고정 스텁 동선입니다.",
         )
         return provider_result(result, source=ProviderSource.FAKE_LLM)
+
+
+def _object_particle(value: str) -> str:
+    """Fake 응답도 실제 화면처럼 자연스러운 목적격 조사를 쓴다."""
+
+    last = value[-1] if value else ""
+    is_hangul = "가" <= last <= "힣"
+    return "을" if is_hangul and (ord(last) - ord("가")) % 28 else "를"
 
 
 # SKY(하늘상태) 4 흐림, PTY(강수형태) 0 강수 없음 — 판정을 어느 쪽으로도 밀지 않는
