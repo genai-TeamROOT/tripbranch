@@ -41,6 +41,10 @@ from app.schemas import (
     UserConditions,
 )
 from app.services.runtime.agent_runtime import _apply_concentration_rerank, run_agent_flow
+from app.services.runtime.compare_context_schemas import (
+    CompareContextRequest,
+    CompareContextResponse,
+)
 from app.services.runtime.info_context_schemas import InfoContextRequest, InfoContextResponse
 from app.services.runtime.real_recommendation_provider import RealRecommendationProvider
 from app.services.runtime.stubs import (
@@ -74,6 +78,8 @@ class _CountingToolProvider:
         self.last_request: AgentContextRequest | None = None
         self.info_call_count = 0
         self.last_info_request: InfoContextRequest | None = None
+        self.compare_call_count = 0
+        self.last_compare_request: CompareContextRequest | None = None
         self._inner = FakeToolProvider()
 
     async def fetch_context(self, request: AgentContextRequest) -> AgentContextResponse:
@@ -85,6 +91,13 @@ class _CountingToolProvider:
         self.info_call_count += 1
         self.last_info_request = request
         return await self._inner.fetch_info_context(request)
+
+    async def fetch_compare_context(
+        self, request: CompareContextRequest
+    ) -> CompareContextResponse:
+        self.compare_call_count += 1
+        self.last_compare_request = request
+        return await self._inner.fetch_compare_context(request)
 
 
 class _CountingRecommendationProvider:
@@ -784,6 +797,45 @@ async def test_record_recommendation_carries_compare_feature_snapshot() -> None:
         assert stored.distance_km == item.distance_km
         assert stored.remaining_minutes == item.remaining_minutes
         assert stored.environment_type == item.environment_type
+
+
+@pytest.mark.asyncio
+async def test_compare_flow_uses_last_recommendation_snapshots_and_returns_summary() -> None:
+    """COMPARE는 새 후보 검색 없이 B의 마지막 추천 스냅샷만 C에 전달한다."""
+
+    store = InMemoryStateStore()
+    providers = _providers()
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    compared = await run_agent_flow(
+        AgentRequest(
+            user_input="어디가 더 가까워?",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    tool_provider = providers["tool_provider"]
+    assert compared.llm_output.intent == "COMPARE"
+    assert compared.comparison is not None
+    assert compared.comparison.criteria == "distance"
+    assert tool_provider.call_count == 1  # 첫 RECOMMEND의 일반 Context 조회만 수행
+    assert tool_provider.compare_call_count == 1
+    assert tool_provider.last_compare_request is not None
+    assert [item.rank for item in tool_provider.last_compare_request.candidates] == [1, 2, 3, 4, 5]
+    assert "런타임 스텁" in compared.message
+    assert compared.tool_execution is not None
+    assert compared.tool_execution.operation == "compare_fetch"
 
 
 @pytest.mark.asyncio

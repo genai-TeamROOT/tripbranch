@@ -61,6 +61,12 @@ _FAKE_COMPARE_PLACE_NAMES: dict[str, str] = {
     "fake-place-1": "경복궁",
     "fake-place-2": "창덕궁",
     "fake-place-3": "북촌한옥마을",
+    "runtime-stub-museum-1": "런타임 스텁 박물관",
+    "runtime-stub-cafe-1": "런타임 스텁 카페",
+    "runtime-stub-park-1": "런타임 스텁 공원",
+    "runtime-stub-gallery-1": "런타임 스텁 갤러리",
+    "runtime-stub-restaurant-1": "런타임 스텁 식당",
+    "runtime-stub-market-1": "런타임 스텁 시장",
 }
 # 비교가 성립하는 최소 후보 수. C(agent_context.service)의 _MIN_COMPARE_ITEMS와 같다.
 _FAKE_MIN_COMPARE_ITEMS = 2

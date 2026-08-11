@@ -622,7 +622,9 @@ class ToolExecutionDebug(BaseModel):
     자동 전환하지 않는다)가 지켜지고 있는지 화면에서 바로 확인하는 수단이 된다.
     """
 
-    operation: Literal["context_fetch", "info_concentration", "candidate_enrichment"] = (
+    operation: Literal[
+        "context_fetch", "info_concentration", "candidate_enrichment", "compare_fetch"
+    ] = (
         "context_fetch"
     )
     request_id: str
@@ -688,6 +690,9 @@ class AgentResponse(BaseModel):
     state: StateApplyResponse
     recommendations: RecommendationResponse | None = None
     schedule: ScheduleResult | None = None
+    # COMPARE에서 C가 이름으로 보강한 추천 시점 Feature 스냅샷. 사용자 말풍선은
+    # 이를 바탕으로 A의 LLM이 만들며, 개발자 Audit은 원본 비교 사실도 확인할 수 있다.
+    comparison: ComparisonResult | None = None
     # INFO의 장소 상세 질의에서만 채운다. 질문 답변(fields)과 펼침 카드 정보는
     # 목적이 달라 InfoPlaceCard.answer_fields와 카드 상세를 분리해 보존한다.
     info_place_card: InfoPlaceCard | None = None
