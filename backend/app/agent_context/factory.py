@@ -18,6 +18,7 @@ from app.providers.factory import (
     get_place_details_provider,
     get_place_location_repository,
     get_place_search_provider,
+    get_recommendation_card_tool,
     get_weather_provider,
 )
 from app.tools.concentration import GetConcentrationTool
@@ -50,6 +51,8 @@ def get_context_provider(client: httpx.AsyncClient) -> ContextService:
             # 따른다 — 이유는 place_detail.py 모듈 docstring 참고.
             place_detail=GetPlaceDetailTool(get_info_place_detail_provider(client)),
             festivals=GetFestivalsTool(get_festival_provider(client)),
+            # COMPARE의 place_id → 장소명 해석. 추천 카드와 같은 Tool을 공유한다.
+            cards=get_recommendation_card_tool(client),
         ),
         candidate_limit=settings.recommendation_candidate_limit,
         concentration_mapping_cache=_concentration_mapping_cache(client),

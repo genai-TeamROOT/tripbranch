@@ -20,6 +20,10 @@ from app.agent_context.category_rules import (
     build_category_query_plan,
     build_excluded_category_plan,
 )
+from app.agent_context.compare_schemas import (
+    CompareContextRequest,
+    CompareContextResponse,
+)
 from app.agent_context.concentration_proxy import (
     ConcentrationMappingCache,
     select_nearest_mapped_places,
@@ -72,6 +76,7 @@ from app.recommendation_limits import (
     MAX_RECOMMENDATION_CANDIDATE_LIMIT,
     MIN_RECOMMENDATION_LIMIT,
 )
+from app.schemas import CompareCriteria, ComparisonItem
 from app.tools.concentration import (
     GetConcentrationTool,
 )
@@ -89,6 +94,7 @@ from app.tools.place_detail import (
     GetPlaceDetailTool,
     PlaceDetailQuery,
 )
+from app.tools.recommendation_cards import RecommendationCardTool
 from app.tools.resolve_location import (
     LocationPurpose,
     ResolutionConfidence,
@@ -106,6 +112,16 @@ from app.tools.weather_forecast import (
 _KST = ZoneInfo("Asia/Seoul")
 _CATEGORY_RULE_VERSION = "tour-category-v1"
 _SEARCH_RADIUS_RULE_VERSION = "walking-radius-v1"
+
+# 비교가 성립하는 최소 후보 수. 1건이 남으면 비교가 아니라 단일 안내다.
+_MIN_COMPARE_ITEMS = 2
+
+# criteria별로 "이 값이 없으면 비교할 게 없는" 필드. overall은 세 값을 함께 설명하는
+# 방식이라(A 확정) 특정 필드를 요구하지 않는다.
+_COMPARE_CRITERIA_FIELDS: dict[CompareCriteria, str] = {
+    CompareCriteria.DISTANCE: "distance_km",
+    CompareCriteria.TIME: "remaining_minutes",
+}
 
 # INFO 행사 응답에 싣는 최대 건수. 챗봇 말풍선 한 번에 읽히는 분량으로 제한한다.
 INFO_EVENT_RESULT_LIMIT = 5
@@ -126,6 +142,9 @@ class ContextTools:
     place_detail: GetPlaceDetailTool | None = None
     # INFO 행사 질의(question_type=event) 전용. 위와 같은 이유로 선택적이다.
     festivals: GetFestivalsTool | None = None
+    # COMPARE의 place_id → 장소명 해석 전용. 추천 카드와 같은 Tool을 쓴다 —
+    # 같은 places 행에서 같은 이름을 읽어야 카드와 비교 답변이 어긋나지 않는다.
+    cards: RecommendationCardTool | None = None
 
 
 class ContextService:
@@ -249,6 +268,92 @@ class ContextService:
                 holidays_requested=execution_plan.requires(ContextTool.GET_HOLIDAYS),
             ),
             rule_versions=_rule_versions(),
+        )
+
+    async def fetch_compare_context(
+        self,
+        request: CompareContextRequest,
+    ) -> CompareContextResponse:
+        """비교 후보의 place_id를 장소명으로 해석해 비교 사실을 조립한다.
+
+        수치(거리·남은 운영시간·실내외)는 B가 보관한 추천 시점 스냅샷이므로 다시
+        조회하지 않고 그대로 통과시킨다 — 사용자가 카드에서 본 값과 어긋나면 안 된다
+        (D-050). C는 우열을 판정하지 않는다. 그건 A의 LLM 요약 몫이다.
+        """
+
+        card_tool = self._tools.cards
+        if card_tool is None:
+            return _compare_error_response(
+                request,
+                status="unavailable",
+                error=ContextError(
+                    code="place_lookup_not_configured",
+                    message="비교에 필요한 장소 정보를 조회할 수 없습니다.",
+                    retryable=False,
+                ),
+            )
+
+        candidates = sorted(request.candidates, key=lambda item: item.rank)
+        card_result = await card_tool.get_cards(
+            [candidate.place_id for candidate in candidates]
+        )
+        if card_result.status is ToolStatus.UNAVAILABLE:
+            return _compare_error_response(
+                request,
+                status="unavailable",
+                error=_context_error_from_tool(
+                    card_result.error,
+                    fallback_code="unavailable",
+                    fallback_message="비교에 필요한 장소 정보를 불러오지 못했습니다.",
+                    retryable=True,
+                ),
+            )
+
+        names = {
+            card.content_id: card.name
+            for card in card_result.cards
+            if card.name is not None
+        }
+        items = [
+            ComparisonItem(
+                place_id=candidate.place_id,
+                place_name=names[candidate.place_id],
+                rank=candidate.rank,
+                distance_km=candidate.distance_km,
+                remaining_minutes=candidate.remaining_minutes,
+                environment_type=candidate.environment_type,
+            )
+            for candidate in candidates
+            if candidate.place_id in names
+        ]
+        missing = [
+            candidate.place_id
+            for candidate in candidates
+            if candidate.place_id not in names
+        ]
+
+        # 이름을 못 찾은 후보는 빼고 진행하되, 남은 수가 비교를 이루지 못하면
+        # no_data다 — 한 곳만 남겨두고 "비교"라고 답할 수는 없다.
+        if len(items) < _MIN_COMPARE_ITEMS:
+            return _compare_error_response(
+                request, status="no_data", missing_place_ids=missing
+            )
+
+        # 기준에 해당하는 값이 전원 비어 있으면 비교할 사실이 없다. 그대로 넘기면
+        # A의 LLM이 빈 값에서 뭔가 지어낼 여지가 생긴다(프롬프트가 "C가 준 값만
+        # 쓰라"고 제한하는 취지와도 어긋난다).
+        field = _COMPARE_CRITERIA_FIELDS.get(request.criteria)
+        if field is not None and all(getattr(item, field) is None for item in items):
+            return _compare_error_response(
+                request, status="no_data", missing_place_ids=missing
+            )
+
+        return CompareContextResponse(
+            request_id=request.request_id,
+            status="partial" if missing else "success",
+            criteria=request.criteria,
+            items=items,
+            missing_place_ids=missing,
         )
 
     async def fetch_info_context(
@@ -956,6 +1061,25 @@ def _info_error_response(
         status=status,
         error=error,
         metadata=_info_response_metadata(*provider_metadata),
+    )
+
+
+def _compare_error_response(
+    request: CompareContextRequest,
+    *,
+    status: Literal["no_data", "unavailable"],
+    missing_place_ids: list[str] | None = None,
+    error: ContextError | None = None,
+) -> CompareContextResponse:
+    """비교를 진행할 수 없을 때의 응답을 한 형태로 유지한다."""
+
+    return CompareContextResponse(
+        request_id=request.request_id,
+        status=status,
+        criteria=request.criteria,
+        items=[],
+        missing_place_ids=missing_place_ids or [],
+        error=error,
     )
 
 
