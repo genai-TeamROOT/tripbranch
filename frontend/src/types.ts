@@ -65,6 +65,20 @@ export interface ScheduleResult {
   basis_note: string;
 }
 
+export interface ComparisonItem {
+  place_id: string;
+  place_name: string;
+  rank: number;
+  distance_km: number | null;
+  remaining_minutes: number | null;
+  environment_type: string | null;
+}
+
+export interface ComparisonResult {
+  criteria: "distance" | "time" | "overall";
+  items: ComparisonItem[];
+}
+
 /** INFO 장소 질의에 함께 내려오는 펼침형 상세 카드 데이터. */
 export interface InfoPlaceCard {
   question_type: string;
@@ -345,6 +359,7 @@ export interface AgentResponse {
   state: StateApplyResponse;
   recommendations: RecommendationsResponse | null;
   schedule?: ScheduleResult | null;
+  comparison?: ComparisonResult | null;
   info_place_card?: InfoPlaceCard | null;
   message: string;
   llm_execution?: LLMExecutionMetadata | null;
@@ -379,7 +394,7 @@ export interface CandidateConcentrationDebug {
 }
 
 export interface ToolExecutionDebug {
-  operation?: "context_fetch" | "info_concentration" | "candidate_enrichment";
+  operation?: "context_fetch" | "info_concentration" | "candidate_enrichment" | "compare_fetch";
   request_id: string;
   status: string;
   latency_ms: number | null;
