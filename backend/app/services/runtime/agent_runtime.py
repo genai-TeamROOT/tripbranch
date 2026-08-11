@@ -679,6 +679,9 @@ async def run_agent_flow(
     #    unverified_recommendations 둘 다 프론트에 렌더링되므로(운영시간 미검증 섹션으로
     #    구분되어 보일 뿐 노출 자체는 됨) 함께 기록한다 — 계산만 하고 안 보여준 건 넣지
     #    않아야 "다른 곳 보여줘"의 제외 목록이 정확해진다.
+    #    distance_km/remaining_minutes/environment_type도 함께 기록한다 —
+    #    COMPARE가 "추천 시 이미 계산된 데이터"를 그대로 쓸 수 있게 하는
+    #    Feature 스냅샷이다(COMPARE 데이터 출처 A안, 2026-08-11).
     shown = [*recommendations.recommendations, *recommendations.unverified_recommendations]
     if shown:
         record_recommendation(
@@ -686,7 +689,13 @@ async def run_agent_flow(
                 session_id=state_response.session_id,
                 run_id=state_response.run_id,
                 recommended=[
-                    RecommendedPlace(place_id=item.place_id, rank=index + 1)
+                    RecommendedPlace(
+                        place_id=item.place_id,
+                        rank=index + 1,
+                        distance_km=item.distance_km,
+                        remaining_minutes=item.remaining_minutes,
+                        environment_type=item.environment_type,
+                    )
                     for index, item in enumerate(shown)
                 ],
             ),

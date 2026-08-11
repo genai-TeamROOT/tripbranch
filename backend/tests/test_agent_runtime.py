@@ -761,6 +761,32 @@ async def test_record_recommendation_reflected_in_session_context() -> None:
 
 
 @pytest.mark.asyncio
+async def test_record_recommendation_carries_compare_feature_snapshot() -> None:
+    """COMPARE 데이터 출처 A안(2026-08-11): agent_runtime이 record_recommendation을
+    호출할 때 distance_km/remaining_minutes/environment_type을 함께 넘겨,
+    B의 이력에 그대로 저장되는지 확인한다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘", session_id=None, device_location=DEVICE_LOCATION
+        ),
+        store=store,
+        **providers,
+    )
+
+    context = get_session_context(response.state.session_id, store=store)
+    assert context.shown_recommendations
+    by_id = {item.place_id: item for item in context.shown_recommendations}
+    for item in response.recommendations.recommendations:
+        stored = by_id[item.place_id]
+        assert stored.distance_km == item.distance_km
+        assert stored.remaining_minutes == item.remaining_minutes
+        assert stored.environment_type == item.environment_type
+
+
+@pytest.mark.asyncio
 async def test_second_turn_sends_consumed_place_ids_to_context_provider() -> None:
     """"다른 곳 보여줘"의 2회차에는 1회차 노출분이 C 요청에 실려야 한다.
 

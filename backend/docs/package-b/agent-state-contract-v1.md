@@ -463,6 +463,12 @@ Phase 1에서는 제외 목적으로 동일하게 사용하지만,
 | `run_id` | string | 이 추천이 발생한 실행 식별자 |
 | `rank` | int | 해당 실행에서의 노출 순위(1부터). 패키지 D가 결정한 값을 그대로 저장 |
 | `shown_at` | string | 노출 시각 (ISO 8601) |
+| `distance_km` | float \| null | (COMPARE 전용, 2026-08-11) 추천 시점에 계산된 직선거리 스냅샷 |
+| `remaining_minutes` | int \| null | (COMPARE 전용, 2026-08-11) 추천 시점에 계산된 남은 운영시간 스냅샷 |
+| `environment_type` | string \| null | (COMPARE 전용, 2026-08-11) 추천 시점의 실내/실외 분류 스냅샷 |
+
+**COMPARE 전용 3개 필드는 3.7절 "B는 place_id만 저장" 원칙의 예외다.**
+자세한 사유와 원칙 충돌이 없는 이유는 3.7절 참고.
 
 **rejected 항목**
 
@@ -558,6 +564,30 @@ B는 다음을 수행하지 않는다.
 **B는 `place_id`만 저장하며 장소 상세 정보를 보관하지 않는다.**
 외부 장소 정보는 시점에 따라 변경될 수 있으므로,
 B가 보관한 과거 정보가 현재 정보로 오인되는 상황을 방지한다.
+
+**예외: COMPARE 데이터 출처 (2026-08-11, D-050 확정)**
+
+`recommended` 항목에 `distance_km` / `remaining_minutes` / `environment_type`
+3개 필드를 추가로 저장한다(3.2절). 위 원칙과 배치되는 것처럼 보이지만 성격이
+다르다.
+
+- 이름·주소·좌표 같은 일반 장소 상세는 여전히 저장하지 않으며 패키지 C의
+  책임이다.
+- 이 3개 필드는 장소의 "현재 상태"가 아니라 **추천 시점에 D가 계산한
+  Feature 값의 스냅샷**이다. `int-04-compare.md` §13은 COMPARE가 "추천 시
+  이미 계산된 데이터"만으로 동작해야 한다고 정의한다 — 최신값으로 다시
+  계산하면(예: C안 — C가 place_id로 재조회) 명세가 달라진다. 3시간 남았던
+  운영시간이 비교 시점엔 2시간으로 바뀌는 것처럼, 시간이 지나 실제 값과
+  달라지는 것이 오히려 의도된 동작이다.
+- 이 값을 "현재 상태"인 것처럼 다시 읽는 소비자가 없다. 오직 "그때 보여준
+  비교 데이터"로만 쓰인다는 점이 "과거 정보가 현재 정보로 오인되는" 상황을
+  막으려는 원 원칙과 충돌하지 않는 이유다.
+- (검토했던 대안) A가 세션에 마지막 추천 응답을 별도 캐시로 보관하는 방식은
+  B의 이력 메커니즘을 그대로 쓰지 않아, INFO/GENERAL/되묻기가 낀 경우나
+  추천 0건 응답 시 이전 정상 목록이 덮어써질 위험이 있어 채택하지 않았다.
+  B의 기존 `recommended` 이력(3.2절, 3.4절)은 이미 이런 상황에 안전하게
+  대응하도록 설계돼 있다 — RECOMMEND 응답이 0건이면 애초에 `record_recommendation`
+  자체가 호출되지 않아 직전 정상 목록이 유지된다.
 
 ## 4. 세션·실행 식별자 정의
 
@@ -842,6 +872,8 @@ B는 전달받은 `reset_scope` 값에 따라 실행만 하며 발화를 해석�
 - `user_conditions` 15개 필드 (구조화된 조건값)
 - `api_context` 4개 필드 (외부 확보 데이터 + 확보 시각)
 - `place_id` (TourAPI `contentid`)
+- `distance_km` / `remaining_minutes` / `environment_type` — COMPARE 전용
+  Feature 스냅샷 (3.2절, 3.7절 예외 참고). 일반 장소 상세와는 성격이 다르다.
 - 식별자 (`session_id`, `run_id`, `trace_id`)
 - `last_intent`
 - `pending_clarification` (되묻기 사유 코드)
@@ -1014,6 +1046,12 @@ A가 인텐트를 분류하기 전에 필요한 정보를 제공한다.
   "has_recommendation": true,
   "recommended_count": 6,
   "shown_place_ids": ["126511", "126512", "126513"],
+  "shown_recommendations": [
+    { "place_id": "126511", "rank": 1, "distance_km": 0.42,
+      "remaining_minutes": 75, "environment_type": "indoor" },
+    { "place_id": "126512", "rank": 2, "distance_km": 1.1,
+      "remaining_minutes": null, "environment_type": "outdoor" }
+  ],
   "excluded_place_ids": ["126508", "126509", "126510"],
   "last_recommended_run_id": "run_01J8XKQ5A1B2C3",
   "last_intent": "MODIFY",
@@ -1030,6 +1068,7 @@ A가 인텐트를 분류하기 전에 필요한 정보를 제공한다.
 | `has_recommendation` | bool | `MODIFY` / `COMPARE` 전제 조건 판정 |
 | `recommended_count` | int | 누적 노출 장소 수 |
 | `shown_place_ids` | list[string] | **마지막 실행** 노출 목록(rank 순). `COMPARE` 지시어 해석용 |
+| `shown_recommendations` | list[object] | (2026-08-11) `shown_place_ids`와 동일 범위·정렬의 전체 항목. `distance_km`/`remaining_minutes`/`environment_type` 포함 — `COMPARE`가 "추천 시 이미 계산된 데이터"를 그대로 쓸 때 사용 |
 | `excluded_place_ids` | list[string] | 누적 제외 목록 |
 | `last_recommended_run_id` | string \| null | 마지막 추천 실행 |
 | `last_intent` | string \| null | 직전 턴 인텐트. `INFO`의 장소 맥락 판정용 |
@@ -1065,8 +1104,10 @@ A가 인텐트를 분류하기 전에 필요한 정보를 제공한다.
   "session_id": "sess_01J8XKQ2M7N4P9",
   "run_id": "run_01J8XKQ5A1B2C3",
   "recommended": [
-    { "place_id": "126511", "rank": 1 },
-    { "place_id": "126512", "rank": 2 }
+    { "place_id": "126511", "rank": 1,
+      "distance_km": 0.42, "remaining_minutes": 75, "environment_type": "indoor" },
+    { "place_id": "126512", "rank": 2,
+      "distance_km": 1.1, "remaining_minutes": null, "environment_type": "outdoor" }
   ]
 }
 ```
@@ -1083,6 +1124,10 @@ AF-05 Agent Runtime이 추천 응답을 조립한 직후 호출한다.
 노출이 확정된 결과만 이력에 기록한다.
 
 `run_id`는 6.1 요청에서 발급된 값을 그대로 사용한다.
+
+`distance_km`/`remaining_minutes`/`environment_type`은 COMPARE 전용 선택
+필드다(2026-08-11). RECOMMEND 흐름은 D가 계산한 값을 그대로 전달하고,
+SCHEDULE 흐름은 생략하면 된다(3.7절 예외 참고).
 
 ### 6.5 api_context 갱신 (A 또는 Runtime → B)
 
@@ -1258,3 +1303,4 @@ GPS·날씨 API로 확보한 데이터를 저장한다.
 | 07-24 | 조건 필드 명칭 | `user_conditions`로 통일. `current_conditions` / `final_conditions` 표기를 대체 | conditions-schema v0.3 |
 | 08-02 | `pending_clarification` 필드 | `AgentState`에 되묻기 사유 코드 필드 추가. 판정은 LLM/C, B는 보관만. PR #64에서 C가 선반영, 이번에 계약 문서 반영 | PR #64 (C) |
 | 08-04 | `concentration_intent` 필드 확정 | 15번째 조건 필드로 정식 반영. `field_spec.py`에 `weather_intent`와 동일 스펙(`Update`/`Remove`)으로 등록, 다중 턴 유지·Reset 대상 포함 | B-06 |
+| 08-11 | COMPARE 데이터 출처 (D-050 확정) | A안 채택 — `recommended` 항목에 `distance_km`/`remaining_minutes`/`environment_type` 3개 필드 추가. B안(A가 세션에 마지막 응답 캐시)은 되묻기·0건 응답 시 이전 목록 덮어쓰기 위험이 있어 기각. C안(C가 재계산)은 §13의 "이미 계산된 데이터" 정의와 어긋나 기각. Supabase 마이그레이션 불필요(`recommended` 컬럼이 jsonb) | C 문서 §1, A 댓글 |
