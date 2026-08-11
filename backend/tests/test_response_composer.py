@@ -337,7 +337,10 @@ class TestComposeCompareMessage:
         lines = message.splitlines()
         assert 3 <= len(lines) <= 6
         assert "국립현대미술관 서울" in message
-        assert "거리 0.3km" in message
+        assert "도보 약 5분" in message
+        assert "약 3시간 남음" in message
+        assert "0.3km" not in message
+        assert "180분" not in message
         assert "점수" not in message
 
 

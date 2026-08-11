@@ -13,11 +13,13 @@
 from __future__ import annotations
 
 import logging
+import math
 
 from app.errors import AppError
 from app.providers.protocols import LLMProvider
 from app.schemas import (
     CompareCriteria,
+    ComparisonItem,
     ComparisonResult,
     Intent,
     LLMOutput,
@@ -391,20 +393,24 @@ async def compose_compare_message(comparison: ComparisonResult, llm: LLMProvider
 
 
 def _compose_compare_fallback(comparison: ComparisonResult) -> str:
-    """LLM 장애 시 C의 사실 데이터만으로 만드는 최소 비교 문구."""
+    """LLM 장애 시 C의 사실 데이터만으로 만드는 사용자 표시용 비교 문구."""
 
     criterion_label = {
         CompareCriteria.DISTANCE: "거리",
         CompareCriteria.TIME: "운영시간",
         CompareCriteria.OVERALL: "거리·운영시간·환경",
     }[comparison.criteria]
-    lines = [f"요청하신 {criterion_label} 기준으로 {len(comparison.items)}곳을 비교했어요."]
+    recommended = _select_compare_recommendation(comparison)
+    lines = [
+        f"요청하신 {criterion_label} 기준으로 보면, "
+        f"{recommended.place_name}{_object_particle(recommended.place_name)} 추천드려요."
+    ]
     for item in comparison.items[:4]:
         details: list[str] = []
         if item.distance_km is not None:
-            details.append(f"거리 {item.distance_km:.1f}km")
+            details.append(_format_compare_walking_time(item.distance_km))
         if item.remaining_minutes is not None:
-            details.append(f"남은 운영시간 {item.remaining_minutes}분")
+            details.append(_format_compare_remaining_time(item.remaining_minutes))
         if item.environment_type is not None:
             details.append(f"{item.environment_type} 환경")
         value = ", ".join(details) if details else "비교 정보 확인 필요"
@@ -412,6 +418,44 @@ def _compose_compare_fallback(comparison: ComparisonResult) -> str:
     while len(lines) < 3:
         lines.append("확인된 정보를 바탕으로 방문 목적에 맞는 곳을 선택해보세요.")
     return "\n".join(lines[:6])
+
+
+def _select_compare_recommendation(comparison: ComparisonResult) -> ComparisonItem:
+    """LLM fallback에서도 질문 기준과 맞는 한 곳을 분명히 고른다."""
+
+    if comparison.criteria is CompareCriteria.DISTANCE:
+        with_distance = [item for item in comparison.items if item.distance_km is not None]
+        if with_distance:
+            return min(with_distance, key=lambda item: item.distance_km or 0)
+    elif comparison.criteria is CompareCriteria.TIME:
+        with_time = [item for item in comparison.items if item.remaining_minutes is not None]
+        if with_time:
+            return max(with_time, key=lambda item: item.remaining_minutes or 0)
+    # overall은 D가 직전에 정렬해 노출한 1번을 기준으로, 추가 점수 계산 없이 고른다.
+    return comparison.items[0]
+
+
+def _object_particle(value: str) -> str:
+    """한글 장소명 뒤에 자연스러운 목적격 조사(을/를)를 붙인다."""
+
+    last = value[-1] if value else ""
+    is_hangul = "가" <= last <= "힣"
+    return "을" if is_hangul and (ord(last) - ord("가")) % 28 else "를"
+
+
+def _format_compare_walking_time(distance_km: float) -> str:
+    """추천 카드와 같은 보수적 보행 속도로 거리 스냅샷을 표시한다."""
+
+    minutes = max(1, math.ceil(distance_km * 60 / 3.6))
+    return f"도보 약 {minutes}분"
+
+
+def _format_compare_remaining_time(remaining_minutes: int) -> str:
+    """분 단위 스냅샷을 카드와 같은 시간 단위 표시로 바꾼다."""
+
+    # JavaScript 카드의 Math.round()와 동일하게 .5는 올림 처리한다.
+    hours = max(1, math.floor(remaining_minutes / 60 + 0.5))
+    return f"약 {hours}시간 남음"
 
 
 def compose_schedule_message(schedule: ScheduleResult) -> str:
