@@ -671,6 +671,7 @@ class FakeLLMProvider:
         while len(lines) < 3:
             lines.append("제공된 비교 정보를 바탕으로 선택해보세요.")
         return provider_result("\n".join(lines[:6]), source=ProviderSource.FAKE_LLM)
+
     async def generate_schedule_plan(
         self, request: SchedulePlanningRequest
     ) -> ProviderResult[ScheduleLLMPlan]:
