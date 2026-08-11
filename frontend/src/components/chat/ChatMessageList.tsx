@@ -69,7 +69,7 @@ export function ChatMessageList({
                     )}
                   </div>
                 )}
-                <p>{message.text}</p>
+                <p className="whitespace-pre-line leading-6">{message.text}</p>
               </div>
             );
           }

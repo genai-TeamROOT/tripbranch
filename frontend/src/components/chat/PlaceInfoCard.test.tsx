@@ -49,3 +49,36 @@ it("없는 값은 카드에 임의 문구나 빈 이미지로 표시하지 않�
   expect(screen.queryByRole("img")).not.toBeInTheDocument();
   expect(screen.queryByText("정보 없음")).not.toBeInTheDocument();
 });
+
+it("요금 항목과 ※ 안내를 각각 줄바꿈해 표시한다", async () => {
+  const user = userEvent.setup();
+  const fee = "- 성인 10,000원 - 학생 7,000원 ※ 무료: 장애인";
+  render(<PlaceInfoCard card={{ ...card, answer_fields: { fee }, fee }} />);
+
+  expect(screen.getByText("- 성인 10,000원 - 학생 7,000원 ※ 무료: 장애인")).toHaveClass(
+    "whitespace-pre-line",
+  );
+
+  await user.click(screen.getByRole("button", { name: /경복궁.*상세 정보 보기/i }));
+
+  expect(screen.getByText("- 성인 10,000원 - 학생 7,000원 ※ 무료: 장애인")).toHaveClass(
+    "whitespace-pre-line",
+  );
+});
+
+it("붙어 있는 월별 운영시간을 기간별 카드로 나눈다", async () => {
+  const user = userEvent.setup();
+  const operatingHours =
+    "[1월~2월/11월~12월]09:00~17:00 (입장마감 16:00)[3월~5월/9월~10월]09:00~18:00 (입장마감 17:00)[6월~8월]09:00~18:30 (입장마감 17:30)";
+  render(<PlaceInfoCard card={{ ...card, answer_fields: { operating_hours: operatingHours }, operating_hours: operatingHours }} />);
+
+  expect(screen.getByText("1월~2월 · 11월~12월")).toBeInTheDocument();
+  expect(screen.getByText("09:00–17:00 · 입장 마감 16:00")).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: /경복궁.*상세 정보 보기/i }));
+
+  expect(screen.getByText("1월~2월 · 11월~12월")).toBeInTheDocument();
+  expect(screen.getByText("09:00–17:00 · 입장 마감 16:00")).toBeInTheDocument();
+  expect(screen.getByText("6월~8월")).toBeInTheDocument();
+  expect(screen.getByText("09:00–18:30 · 입장 마감 17:30")).toBeInTheDocument();
+});

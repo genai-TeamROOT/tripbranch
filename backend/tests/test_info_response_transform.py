@@ -41,6 +41,20 @@ def test_transforms_answer_fields_and_full_card_separately() -> None:
     assert card.thumbnail_url == "https://example.test/gyeongbokgung.jpg"
 
 
+def test_parking_hides_bus_capacity_from_answer_and_card() -> None:
+    response = _response(fields={"parking": "가능 (승용차 240대 / 버스 50대)"})
+    result = response.result
+    assert isinstance(result, PlaceInfoResult)
+    assert result.place_card is not None
+    result.place_card.parking = "가능 (승용차 240대 / 버스 50대)"
+
+    card = to_info_place_card(response)
+
+    assert card is not None
+    assert card.answer_fields["parking"] == "가능 (승용차 240대)"
+    assert card.parking == "가능 (승용차 240대)"
+
+
 def test_keeps_card_when_requested_field_has_no_data() -> None:
     """질문한 주차 정보가 없더라도 개요 등이 있으면 카드는 보여줄 수 있다."""
     card = to_info_place_card(_response(status="no_data"))

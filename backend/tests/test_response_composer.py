@@ -575,9 +575,10 @@ class TestComposePlaceInfoMessage:
             ),
         )
         message = compose_place_info_message(response)
-        assert "09:00~18:00" in message
-        assert "매주 화요일" in message
-        assert "경복궁" in message
+        assert message == (
+            "경복궁 운영시간을 확인했어요. "
+            "아래에서 월별 운영시간과 휴무일을 확인하세요."
+        )
 
     def test_operating_hours_is_a_natural_sentence_not_label_value(self) -> None:
         response = InfoContextResponse(
@@ -592,8 +593,11 @@ class TestComposePlaceInfoMessage:
             ),
         )
         message = compose_place_info_message(response)
-        assert message == "경복궁 운영시간은 09:00~18:00예요. 휴무일은 매주 화요일예요."
-        assert "운영시간:" not in message
+        assert message == (
+            "경복궁 운영시간을 확인했어요. "
+            "아래에서 월별 운영시간과 휴무일을 확인하세요."
+        )
+        assert "09:00~18:00" not in message
 
     def test_fee_is_a_natural_sentence(self) -> None:
         response = InfoContextResponse(
@@ -608,10 +612,36 @@ class TestComposePlaceInfoMessage:
             ),
         )
         message = compose_place_info_message(response)
-        assert message == "경복궁 입장료는 성인 3,000원예요."
+        assert message == (
+            "경복궁 입장료는 성인 기준 3,000원이에요. "
+            "아래에서 상세 요금 정보를 확인해보세요!"
+        )
 
-    def test_parking_is_a_natural_sentence_value_untouched(self) -> None:
-        """값 자체("가능 (승용차 240대 / 버스 50대)")는 파싱하지 않고 그대로 감싼다."""
+    def test_rest_date_keeps_notice_on_a_separate_line(self) -> None:
+        response = InfoContextResponse(
+            request_id="r8c-rest",
+            status="success",
+            result=PlaceInfoResult(
+                status="success",
+                question_type="operating_hours",
+                requested_place_name="경복궁",
+                resolved_place_name="경복궁",
+                fields={
+                    "operating_hours": "09:00~18:00",
+                    "rest_date": "매주 화요일 ※ 공휴일이면 개방",
+                },
+            ),
+        )
+
+        message = compose_place_info_message(response, specific_question="경복궁 휴무일 언제야?")
+
+        assert message == (
+            "경복궁 휴무일은 매주 화요일입니다.\n※ 공휴일이면 개방\n\n"
+            "아래에서 자세한 운영시간을 확인하세요."
+        )
+
+    def test_parking_shows_only_car_capacity(self) -> None:
+        """일반 사용자용 메시지에서는 버스 수용 대수를 숨긴다."""
         response = InfoContextResponse(
             request_id="r8d",
             status="success",
@@ -627,9 +657,7 @@ class TestComposePlaceInfoMessage:
             ),
         )
         message = compose_place_info_message(response)
-        assert message == (
-            "경복궁 주차는 가능 (승용차 240대 / 버스 50대)이에요. 주차 요금은 무료예요."
-        )
+        assert message == "경복궁 주차는 가능해요. 아래 주차 상세 내용을 확인해보세요."
 
     def test_facility_joins_present_fields_into_one_sentence(self) -> None:
         response = InfoContextResponse(
@@ -725,7 +753,7 @@ class TestComposePlaceInfoMessage:
             ),
         )
         message = await compose_chat_message(llm_output, info_response=response, llm=_StubLLM())
-        assert "성인 3,000원" in message
+        assert "성인 기준 3,000원" in message
 
 
 class TestComposeEventInfoMessage:

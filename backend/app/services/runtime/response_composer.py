@@ -183,14 +183,15 @@ def compose_info_concentration_message(response: InfoContextResponse) -> str:
     return f"{result.resolved_place_name}은(는) {date_label} 기준 {label} 것으로 예측돼요."
 
 
-def compose_place_info_message(response: InfoContextResponse) -> str:
+def compose_place_info_message(
+    response: InfoContextResponse, *, specific_question: str | None = None
+) -> str:
     """INFO(question_type=concentration/event 제외 6종) 응답 문구를 조립한다.
 
     C가 fields에 값이 있는 키만 채워 보내므로(info-question-types-handoff.md),
-    여기서 없는 값을 지어내지 않고 fields를 그대로 나열한다. general_info의
-    overview는 원문 그대로 싣는다 — LLM 요약 없이 고정 템플릿으로 두는 쪽이
-    concentration과 같은 "정확성이 걸린 문제는 스타일링하지 않는다" 원칙과
-    일관된다.
+    여기서 없는 값을 지어내지 않는다. 긴 원문(운영시간·요금·개요)은 말풍선에
+    다시 싣지 않고 아래 장소 카드에서 보여준다. 사실값을 재서술하는 LLM 호출은
+    추가하지 않고 질문 유형별 고정 템플릿으로 짧게 안내한다.
     """
 
     if response.status == "needs_clarification":
@@ -211,33 +212,51 @@ def compose_place_info_message(response: InfoContextResponse) -> str:
         type_label = _INFO_QUESTION_TYPE_LABELS.get(result.question_type, "그 질문")
         return f"{place_label}의 {type_label} 정보는 확인할 수 없어요."
 
-    return _compose_place_info_sentence(place_label, result.question_type, result.fields)
+    return _compose_place_info_sentence(
+        place_label,
+        result.question_type,
+        result.fields,
+        specific_question=specific_question,
+    )
 
 
 def _compose_place_info_sentence(
-    place_label: str, question_type: str, fields: dict[str, str]
+    place_label: str,
+    question_type: str,
+    fields: dict[str, str],
+    *,
+    specific_question: str | None,
 ) -> str:
-    """question_type별로 자연스러운 한국어 문장을 만든다.
+    """질문 유형별 짧은 말풍선 안내를 만든다.
 
-    fields의 값(C가 TourAPI 원문에서 뽑은 자유 텍스트)은 절대 파싱·재구성하지
-    않는다 — 값을 감싸는 문장 커넥터만 question_type에 맞춰 고른다. 값을 안
-    건드리므로 라벨:값 나열보다 자연스러우면서도 사실을 지어낼 위험은 없다.
+    세부 사실은 같은 응답의 ``info_place_card``가 담당한다. 단, 휴무일과 성인
+    입장료처럼 사용자가 즉시 알고 싶어 하는 1차 결론만 원문에서 안전하게 꺼낸다.
     """
 
     if question_type == "operating_hours" and "operating_hours" in fields:
-        sentence = f"{place_label} 운영시간은 {fields['operating_hours']}예요."
-        if "rest_date" in fields:
-            sentence += f" 휴무일은 {fields['rest_date']}예요."
-        return sentence
+        rest_date = fields.get("rest_date")
+        if rest_date and _asks_rest_date(specific_question):
+            main, notices = _split_notices(rest_date)
+            sentence = f"{place_label} 휴무일은 {main}입니다."
+            if notices:
+                sentence += "\n" + "\n".join(notices)
+            return sentence + "\n\n아래에서 자세한 운영시간을 확인하세요."
+        return f"{place_label} 운영시간을 확인했어요. 아래에서 월별 운영시간과 휴무일을 확인하세요."
 
     if question_type == "fee" and "fee" in fields:
-        return f"{place_label} 입장료는 {fields['fee']}예요."
+        summary = _fee_summary(fields["fee"])
+        if summary:
+            return (
+                f"{place_label} 입장료는 {summary}이에요. "
+                "아래에서 상세 요금 정보를 확인해보세요!"
+            )
+        return f"{place_label} 입장료 정보를 찾았어요. 아래에서 상세 요금 정보를 확인해보세요!"
 
     if question_type == "parking" and "parking" in fields:
-        sentence = f"{place_label} 주차는 {fields['parking']}이에요."
-        if "parking_fee" in fields:
-            sentence += f" 주차 요금은 {fields['parking_fee']}예요."
-        return sentence
+        return (
+            f"{place_label} 주차는 {_parking_status(fields['parking'])}해요. "
+            "아래 주차 상세 내용을 확인해보세요."
+        )
 
     if question_type == "facility":
         # 라벨 4개가 고정이라 은/는을 직접 붙인다(받침 유무로 자동 판정하지 않음).
@@ -270,6 +289,42 @@ def _compose_place_info_sentence(
     if homepage:
         sentence += f" 홈페이지: {homepage}"
     return sentence
+
+
+def _asks_rest_date(question: str | None) -> bool:
+    """운영시간 유형 안에서 휴무일을 직접 물은 경우만 구분한다."""
+
+    normalized = (question or "").replace(" ", "")
+    return any(token in normalized for token in ("휴무", "쉬는날", "휴관"))
+
+
+def _split_notices(value: str) -> tuple[str, list[str]]:
+    """``※`` 뒤 안내를 별도 줄로 분리한다."""
+
+    parts = [part.strip() for part in value.split("※")]
+    main = parts[0]
+    notices = [f"※ {part}" for part in parts[1:] if part]
+    return main, notices
+
+
+def _fee_summary(value: str) -> str | None:
+    """요금 원문 첫 항목에서 성인 기준의 짧은 결론만 뽑는다."""
+
+    before_notice = value.split("※", maxsplit=1)[0]
+    items = [item.strip() for item in before_notice.split("-") if item.strip()]
+    if not items:
+        return None
+    first = items[0]
+    if first.startswith("성인 "):
+        return "성인 기준 " + first.removeprefix("성인 ")
+    return first
+
+
+def _parking_status(value: str) -> str:
+    """수용 대수보다 먼저 읽히는 주차 가능 여부만 말풍선에 쓴다."""
+
+    status = value.split("(", maxsplit=1)[0].strip()
+    return {"가능": "가능", "불가": "불가능"}.get(status, status or "확인 가능")
 
 
 def compose_event_info_message(response: InfoContextResponse) -> str:
@@ -417,7 +472,12 @@ async def compose_chat_message(
         if isinstance(info_response.result, EventInfoResult):
             return compose_event_info_message(info_response)
         if isinstance(info_response.result, PlaceInfoResult):
-            return compose_place_info_message(info_response)
+            return compose_place_info_message(
+                info_response,
+                specific_question=(
+                    llm_output.info.specific_question if llm_output.info is not None else None
+                ),
+            )
         return compose_info_concentration_message(info_response)
 
     if llm_output.intent in (Intent.RECOMMEND, Intent.MODIFY, Intent.SCHEDULE):
