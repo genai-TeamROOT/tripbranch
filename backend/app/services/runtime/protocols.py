@@ -25,6 +25,10 @@ from app.agent_context.schemas import (
     RecommendationContext,
 )
 from app.schemas import RecommendationResponse, UserConditions
+from app.services.runtime.compare_context_schemas import (
+    CompareContextRequest,
+    CompareContextResponse,
+)
 from app.services.runtime.info_context_schemas import InfoContextRequest, InfoContextResponse
 
 
@@ -39,6 +43,24 @@ class ToolProvider(Protocol):
         (A 제안, C 확인 필요 — info_context_schemas.py, concentration-conditions.md
         §2.4/§3.3) 장소 해석·get_concentration 조회·근접치 fallback 오케스트레이션은
         전부 C 내부 책임이다. A는 구조화된 결과만 받는다.
+        """
+        ...
+
+    async def fetch_compare_context(
+        self, request: CompareContextRequest
+    ) -> CompareContextResponse:
+        """COMPARE 비교 대상의 place_id를 장소명으로 해석해 비교 사실을 반환한다.
+
+        (C 구현 — compare_context_schemas.py, int-04-compare.md) A는 targets
+        ("all" / [1, 2] 같은 지시 표현)를 shown_place_ids로 이미 푼 뒤, B가 보관한
+        추천 시점 Feature 스냅샷과 함께 넘긴다. C는 place_id → 장소명 해석만 하고
+        우열을 판정하지 않는다 — 비교 문장 생성은 A의 LLM 요약 몫이다.
+
+        수치(거리·남은 운영시간·실내외)는 재조회하지 않고 그대로 통과한다. 사용자가
+        카드에서 본 값과 비교 답변의 값이 어긋나면 안 되기 때문이다(D-050).
+
+        fetch_info_context와 달리 호출부에 hasattr 방어가 필요 없다 — 실제 C
+        (ContextService)와 FakeToolProvider 양쪽에 구현이 있다.
         """
         ...
 
