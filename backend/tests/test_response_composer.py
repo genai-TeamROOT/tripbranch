@@ -9,6 +9,9 @@ from app.errors import ProviderUnavailableError
 from app.providers.contracts import ProviderSource, provider_result
 from app.schemas import (
     ClarificationPayload,
+    CompareCriteria,
+    ComparisonItem,
+    ComparisonResult,
     GeneralPayload,
     GeneralTopic,
     Intent,
@@ -32,6 +35,7 @@ from app.services.runtime.info_context_schemas import (
 )
 from app.services.runtime.response_composer import (
     compose_chat_message,
+    compose_compare_message,
     compose_event_info_message,
     compose_info_concentration_message,
     compose_place_info_message,
@@ -48,12 +52,19 @@ class _StubLLM:
         answer: str = "고정된 배경지식 답변입니다.",
         recommendation_summary: str = "테스트 장소를 중심으로 골라봤어요.",
         fail_recommendation_summary: bool = False,
+        compare_summary: str = (
+            "첫 번째 비교 문장입니다.\n두 번째 비교 문장입니다.\n세 번째 비교 문장입니다."
+        ),
+        fail_compare_summary: bool = False,
     ) -> None:
         self.answer = answer
         self.recommendation_summary = recommendation_summary
         self.fail_recommendation_summary = fail_recommendation_summary
+        self.compare_summary = compare_summary
+        self.fail_compare_summary = fail_compare_summary
         self.received: tuple[GeneralTopic, str] | None = None
         self.summary_received: tuple[Intent, RecommendationResponse] | None = None
+        self.compare_received: ComparisonResult | None = None
 
     async def generate_general_answer(self, topic: GeneralTopic, original_question: str):
         self.received = (topic, original_question)
@@ -66,6 +77,12 @@ class _StubLLM:
         if self.fail_recommendation_summary:
             raise ProviderUnavailableError("Gemini")
         return provider_result(self.recommendation_summary, source=ProviderSource.FAKE_LLM)
+
+    async def generate_compare_summary(self, comparison: ComparisonResult):
+        self.compare_received = comparison
+        if self.fail_compare_summary:
+            raise ProviderUnavailableError("Gemini")
+        return provider_result(self.compare_summary, source=ProviderSource.FAKE_LLM)
 
 
 def _item(*, explanations: list[str], warnings: list[str]) -> RecommendationItem:
@@ -274,6 +291,54 @@ class TestComposeChatMessageRecommendAndModify:
             llm_output, tool_status="unavailable", llm=_StubLLM()
         )
         assert "잠시 후 다시 시도" in message
+
+
+def _comparison() -> ComparisonResult:
+    return ComparisonResult(
+        criteria=CompareCriteria.OVERALL,
+        items=[
+            ComparisonItem(
+                place_id="p1",
+                place_name="국립현대미술관 서울",
+                rank=1,
+                distance_km=0.3,
+                remaining_minutes=180,
+                environment_type="indoor",
+            ),
+            ComparisonItem(
+                place_id="p2",
+                place_name="창덕궁",
+                rank=2,
+                distance_km=0.8,
+                remaining_minutes=90,
+                environment_type="outdoor",
+            ),
+        ],
+    )
+
+
+class TestComposeCompareMessage:
+    @pytest.mark.asyncio
+    async def test_calls_llm_with_only_comparison_facts(self) -> None:
+        comparison = _comparison()
+        stub = _StubLLM(compare_summary="첫째 줄\n둘째 줄\n셋째 줄")
+
+        message = await compose_compare_message(comparison, stub)
+
+        assert message == "첫째 줄\n둘째 줄\n셋째 줄"
+        assert stub.compare_received == comparison
+
+    @pytest.mark.asyncio
+    async def test_llm_failure_falls_back_to_fact_only_template(self) -> None:
+        message = await compose_compare_message(
+            _comparison(), _StubLLM(fail_compare_summary=True)
+        )
+
+        lines = message.splitlines()
+        assert 3 <= len(lines) <= 6
+        assert "국립현대미술관 서울" in message
+        assert "거리 0.3km" in message
+        assert "점수" not in message
 
 
 class TestComposeChatMessageInfoCompare:

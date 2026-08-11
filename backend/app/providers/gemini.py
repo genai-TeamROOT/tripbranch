@@ -22,7 +22,7 @@ import httpx
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types as genai_types
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
 from app.observability.api_usage import record_call
@@ -30,6 +30,7 @@ from app.providers import gemini_prompts
 from app.providers.contracts import ProviderResult, ProviderSource, provider_result
 from app.schedule.schemas import ScheduleLLMPlan, SchedulePlanningRequest
 from app.schemas import (
+    ComparisonResult,
     GeneralTopic,
     Intent,
     IntentClassificationResult,
@@ -55,6 +56,16 @@ class _RecommendationSummary(BaseModel):
     """generate_recommendation_summary() 전용 wire 모델."""
 
     message: str
+
+
+class _ComparisonSummary(BaseModel):
+    """generate_compare_summary() 전용 wire 모델.
+
+    줄 수를 구조화 출력 단계에서 제한해, 프롬프트 지시만으로는 보장되지 않는
+    3~6줄 요구사항을 실제 응답 계약으로 강제한다.
+    """
+
+    lines: list[str] = Field(min_length=3, max_length=6)
 
 
 # 429(rate limit)와 5xx(서버 과부하/일시 장애)만 재시도 대상. 4xx(인증 실패, 잘못된 요청 등)는
@@ -245,6 +256,20 @@ class RealGeminiProvider:
             operation="generate_recommendation_summary",
         )
         return provider_result(result.message, source=ProviderSource.GEMINI)
+
+    async def generate_compare_summary(
+        self, comparison: ComparisonResult
+    ) -> ProviderResult[str]:
+        """C가 반환한 공개 비교 사실만 Gemini에 전달해 설명 문장을 생성한다."""
+
+        instruction = gemini_prompts.build_compare_summary_instruction(comparison.criteria)
+        result = await self._call_structured(
+            instruction,
+            comparison.model_dump_json(exclude_none=True),
+            _ComparisonSummary,
+            operation="generate_compare_summary",
+        )
+        return provider_result("\n".join(result.lines), source=ProviderSource.GEMINI)
 
     @staticmethod
     def _recommendation_summary_item(item: RecommendationItem) -> dict[str, object]:

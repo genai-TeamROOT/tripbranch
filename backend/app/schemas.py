@@ -409,6 +409,34 @@ class ComparePayload(BaseModel):
     criteria: CompareCriteria
 
 
+class ComparisonItem(BaseModel):
+    """C의 비교 결과를 A가 LLM 요약·응답 표시용으로 정규화한 항목.
+
+    추천 시점 Feature 스냅샷의 수치 자체는 B가 보관하고, C가 place_id를 사람이
+    읽을 수 있는 장소명으로 해석해 이 모델로 반환한다. 이 모델은 C의 Tool 계약을
+    중복 정의하려는 것이 아니라, A가 LLM에 넘길 수 있는 공개 비교 사실의 최소
+    집합이다.
+    """
+
+    place_id: str
+    place_name: str
+    rank: int = Field(ge=1)
+    distance_km: float | None = Field(default=None, ge=0)
+    remaining_minutes: int | None = Field(default=None, ge=0)
+    environment_type: str | None = None
+
+
+class ComparisonResult(BaseModel):
+    """COMPARE 답변 생성에 쓰는 검증된 사실 데이터.
+
+    LLM은 이 모델에 담긴 값만 문장으로 바꾸며, 순위·점수·운영 상태를 새로
+    계산하거나 추정하지 않는다.
+    """
+
+    criteria: CompareCriteria
+    items: list[ComparisonItem] = Field(min_length=1)
+
+
 class GeneralPayload(BaseModel):
     topic: GeneralTopic
     original_question: str
