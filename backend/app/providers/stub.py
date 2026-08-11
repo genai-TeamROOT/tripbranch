@@ -42,6 +42,7 @@ from app.schemas import (
     ClarificationPayload,
     CompareCriteria,
     ComparePayload,
+    ComparisonResult,
     ConcentrationIntent,
     Environment,
     GeneralPayload,
@@ -624,6 +625,32 @@ class FakeLLMProvider:
             f"{first.name}을(를) 중심으로 지금 가볼 만한 곳을 골라봤어요.",
             source=ProviderSource.FAKE_LLM,
         )
+
+    async def generate_compare_summary(
+        self, comparison: ComparisonResult
+    ) -> ProviderResult[str]:
+        """COMPARE LLM 요약의 테스트용 결정적 대체 구현.
+
+        실제 Gemini와 달리 문체 다양화는 하지 않되, 3줄 이상이라는 출력 계약과
+        전달된 사실만 쓴다는 원칙을 회귀 테스트에서 확인할 수 있게 한다.
+        """
+
+        items = comparison.items
+        first = items[0]
+        lines = [f"{first.place_name}을(를) 기준으로 비교해봤어요."]
+        for item in items[:3]:
+            details: list[str] = []
+            if item.distance_km is not None:
+                details.append(f"거리 {item.distance_km:.1f}km")
+            if item.remaining_minutes is not None:
+                details.append(f"남은 운영시간 {item.remaining_minutes}분")
+            if item.environment_type is not None:
+                details.append(f"{item.environment_type} 환경")
+            value = ", ".join(details) if details else "비교 정보 확인 필요"
+            lines.append(f"{item.rank}번 {item.place_name}은 {value}이에요.")
+        while len(lines) < 3:
+            lines.append("제공된 비교 정보를 바탕으로 선택해보세요.")
+        return provider_result("\n".join(lines[:6]), source=ProviderSource.FAKE_LLM)
 
     async def generate_schedule_plan(
         self, request: SchedulePlanningRequest

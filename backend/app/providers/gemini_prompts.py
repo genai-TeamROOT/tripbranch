@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import date
 
 from app.schedule.schemas import SchedulePlanningRequest
-from app.schemas import GeneralTopic, Intent, UserConditions
+from app.schemas import CompareCriteria, GeneralTopic, Intent, UserConditions
 
 # B의 LLMOps Trace(record_trace(prompt_version=...))와 StateApplyRequest.prompt_version에
 # 넘길 값 — backend/docs/package-b/llmops-trace-contract-v1.md §7 Q2. B는 이 값의 의미를
@@ -23,7 +23,7 @@ from app.schemas import GeneralTopic, Intent, UserConditions
 # 쓰였는지와 무관하게 단일 값으로 취급한다 — 함수별 개별 버전은 만들지 않는다. 판별·추출
 # 규칙에 영향을 주는 변경(6개 함수 중 하나라도) 시 버전을 올린다 — 사소한 문구·주석
 # 변경은 올리지 않는다.
-PROMPT_VERSION = "agent-interpret-prompts-1.0.9"
+PROMPT_VERSION = "agent-interpret-prompts-1.0.10"
 
 CHATBOT_NAME = "트리비"
 CHATBOT_PERSONA = """\
@@ -492,6 +492,31 @@ def build_recommendation_summary_instruction(intent: Intent) -> str:
 - 존댓말을 쓰고, 사용자 발화를 그대로 반복하지 말고 바로 답변을 시작하세요."""
 
 
+def build_compare_summary_instruction(criteria: CompareCriteria) -> str:
+    """C의 검증된 COMPARE 결과를 사용자용 문장으로 바꾸는 system instruction."""
+
+    return f"""당신은 TripBranch의 국내 여행 챗봇 \"{CHATBOT_NAME}\"입니다.
+
+{CHATBOT_PERSONA}
+
+아래 JSON은 이미 검증된 장소 비교 사실입니다. 비교 기준은 {criteria.value}입니다.
+JSON의 items에 있는 사실만 사용해 3~6줄의 비교 설명을 작성하세요.
+
+답변 규칙:
+- 각 줄은 완결된 한 문장으로 작성하세요. 제목·마크다운 목록·인사말은 쓰지 마세요.
+- 장소명, 거리, 남은 운영시간, 실내외 정보는 JSON에 값이 있을 때만 언급하세요.
+- null인 값은 추정하지 말고, 해당 정보가 확인되지 않았다고만 짧게 안내하세요.
+- criteria가 distance면 거리 차이와 가까운 장소를, time이면 남은 운영시간 차이를
+  우선 설명하세요.
+- criteria가 overall이면 점수·가중치·새 순위를 만들지 말고, 거리·운영시간·환경의
+  장단점을 함께 비교하세요.
+- 제공되지 않은 요금·시설·혼잡도·운영 상태를 만들지 마세요.
+- 내부 점수, 가중치, feature_scores, Tool·Provider·API·데이터 저장 구조는 절대
+  언급하지 마세요.
+- 존댓말을 쓰고, JSON 값을 그대로 기계적으로 나열하지 말고 사용자의 선택을 돕는
+  자연스러운 비교로 답하세요."""
+
+
 def build_schedule_planning_instruction() -> str:
     """INT-07 SCHEDULE 일정 편성 system instruction.
     (docs/design/int-07-schedule.md 6.1~6.2절)
@@ -578,6 +603,7 @@ __all__ = [
     "build_general_extraction_instruction",
     "build_general_answer_instruction",
     "build_recommendation_summary_instruction",
+    "build_compare_summary_instruction",
     "build_schedule_planning_instruction",
     "format_schedule_planning_context",
     "format_validation_retry_note",

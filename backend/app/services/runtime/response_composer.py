@@ -17,6 +17,8 @@ import logging
 from app.errors import AppError
 from app.providers.protocols import LLMProvider
 from app.schemas import (
+    CompareCriteria,
+    ComparisonResult,
     Intent,
     LLMOutput,
     OutputStatus,
@@ -314,6 +316,49 @@ def compose_event_info_message(response: InfoContextResponse) -> str:
     return " ".join(sentences)
 
 
+async def compose_compare_message(comparison: ComparisonResult, llm: LLMProvider) -> str:
+    """COMPARE 사실 데이터를 3~6줄 LLM 설명으로 바꾼다.
+
+    C가 반환할 ComparisonResult는 이미 추천 시점 Feature 스냅샷을 기준으로 한
+    검증된 데이터다. LLM은 문장을 다듬는 역할만 하며, 호출이 실패해도 비교 요청
+    전체를 실패시키지 않고 고정 템플릿으로 안전하게 낮춘다.
+    """
+
+    try:
+        return (await llm.generate_compare_summary(comparison)).data
+    except AppError:
+        logger.warning(
+            "COMPARE 요약 LLM 생성 실패, 기본 템플릿으로 fallback: criteria=%s",
+            comparison.criteria.value,
+            exc_info=True,
+        )
+        return _compose_compare_fallback(comparison)
+
+
+def _compose_compare_fallback(comparison: ComparisonResult) -> str:
+    """LLM 장애 시 C의 사실 데이터만으로 만드는 최소 비교 문구."""
+
+    criterion_label = {
+        CompareCriteria.DISTANCE: "거리",
+        CompareCriteria.TIME: "운영시간",
+        CompareCriteria.OVERALL: "거리·운영시간·환경",
+    }[comparison.criteria]
+    lines = [f"요청하신 {criterion_label} 기준으로 {len(comparison.items)}곳을 비교했어요."]
+    for item in comparison.items[:4]:
+        details: list[str] = []
+        if item.distance_km is not None:
+            details.append(f"거리 {item.distance_km:.1f}km")
+        if item.remaining_minutes is not None:
+            details.append(f"남은 운영시간 {item.remaining_minutes}분")
+        if item.environment_type is not None:
+            details.append(f"{item.environment_type} 환경")
+        value = ", ".join(details) if details else "비교 정보 확인 필요"
+        lines.append(f"{item.rank}번 {item.place_name}은 {value}이에요.")
+    while len(lines) < 3:
+        lines.append("확인된 정보를 바탕으로 방문 목적에 맞는 곳을 선택해보세요.")
+    return "\n".join(lines[:6])
+
+
 def compose_schedule_message(schedule: ScheduleResult) -> str:
     """SCHEDULE 응답 말풍선 텍스트를 조립한다.
 
@@ -424,5 +469,6 @@ __all__ = [
     "compose_info_concentration_message",
     "compose_place_info_message",
     "compose_event_info_message",
+    "compose_compare_message",
     "compose_schedule_message",
 ]
