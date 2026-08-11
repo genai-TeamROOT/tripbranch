@@ -367,6 +367,57 @@ class TestSessionContext:
         assert ctx.shown_place_ids == ["D", "E"]
         assert ctx.excluded_place_ids == ["A", "B", "C", "D", "E"]
 
+    def test_shown_recommendations도_마지막_실행_기준_전체_항목이다(self, store):
+        """COMPARE 데이터 출처 A안(2026-08-11): shown_place_ids와 같은 기준
+        (마지막 run_id, rank 순)으로 distance_km 등 전체 Feature 스냅샷을
+        함께 반환한다."""
+        first = apply(store, session_id=None, operations=[])
+        sid = first.session_id
+        svc.record_recommendation(
+            svc.RecordRecommendationRequest(
+                session_id=sid,
+                run_id=first.run_id,
+                recommended=[
+                    svc.RecommendedPlace(
+                        place_id="A", rank=1, distance_km=0.5,
+                        remaining_minutes=30, environment_type="indoor",
+                    ),
+                ],
+            ),
+            store=store,
+        )
+
+        second = apply(store, session_id=sid, operations=[])
+        svc.record_recommendation(
+            svc.RecordRecommendationRequest(
+                session_id=sid,
+                run_id=second.run_id,
+                recommended=[
+                    svc.RecommendedPlace(
+                        place_id="D", rank=1, distance_km=1.2,
+                        remaining_minutes=90, environment_type="outdoor",
+                    ),
+                    svc.RecommendedPlace(
+                        place_id="E", rank=2, distance_km=2.4,
+                        remaining_minutes=None, environment_type="unknown",
+                    ),
+                ],
+            ),
+            store=store,
+        )
+
+        ctx = svc.get_session_context(sid, store=store)
+
+        assert [item.place_id for item in ctx.shown_recommendations] == ["D", "E"]
+        first_item = ctx.shown_recommendations[0]
+        assert first_item.distance_km == 1.2
+        assert first_item.remaining_minutes == 90
+        assert first_item.environment_type == "outdoor"
+        second_item = ctx.shown_recommendations[1]
+        assert second_item.distance_km == 2.4
+        assert second_item.remaining_minutes is None
+        assert second_item.environment_type == "unknown"
+
     def test_현재_조건을_반환한다(self, store):
         """A가 "더 가까운 곳"의 절대값을 계산하려면 현재값이 필요하다."""
         r = apply(
@@ -452,6 +503,38 @@ class TestRecordRecommendation:
         assert item.estimated_duration_min is None
         assert item.travel_to_next_min is None
         assert item.reason is None
+        assert item.distance_km is None
+        assert item.remaining_minutes is None
+        assert item.environment_type is None
+
+    def test_COMPARE_Feature_스냅샷이_함께_저장된다(self, store):
+        """COMPARE 데이터 출처 A안(2026-08-11): RecommendedPlace의 COMPARE 전용
+        선택 필드가 RecommendedItem까지 그대로 전달·저장되는지 확인한다."""
+        r = apply(store, session_id=None, operations=[])
+        svc.record_recommendation(
+            svc.RecordRecommendationRequest(
+                session_id=r.session_id,
+                run_id=r.run_id,
+                recommended=[
+                    svc.RecommendedPlace(
+                        place_id="A",
+                        rank=1,
+                        distance_km=0.42,
+                        remaining_minutes=75,
+                        environment_type="indoor",
+                    )
+                ],
+            ),
+            store=store,
+        )
+
+        history = store.get_history(r.session_id)
+        assert history is not None
+        item = history.recommended[-1]
+        assert item.place_id == "A"
+        assert item.distance_km == 0.42
+        assert item.remaining_minutes == 75
+        assert item.environment_type == "indoor"
 
 
 # ================================================================ 세션 삭제

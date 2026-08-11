@@ -99,7 +99,13 @@ def to_record_recommendation_request(
         session_id=session_id,
         run_id=run_id,
         recommended=[
-            RecommendedPlace(place_id=item.place_id, rank=index + 1)
+            RecommendedPlace(
+                place_id=item.place_id,
+                rank=index + 1,
+                distance_km=item.distance_km,
+                remaining_minutes=item.remaining_minutes,
+                environment_type=item.environment_type,
+            )
             for index, item in enumerate(shown)
         ],
     )

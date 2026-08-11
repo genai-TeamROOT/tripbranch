@@ -19,7 +19,7 @@ from app.state import trace as trace_module
 from app.state.errors import StateStoreError
 from app.state.merge import merge_conditions
 from app.state.operations import IgnoredOperation, Operation, validate_all
-from app.state.schema import RecommendedItemInput, UserConditions, now_kst
+from app.state.schema import RecommendedItem, RecommendedItemInput, UserConditions, now_kst
 from app.state.store import StateStore, get_store
 
 # ================================================================ 요청·응답
@@ -88,6 +88,11 @@ class SessionContextResponse(BaseModel):
     has_recommendation: bool
     recommended_count: int
     shown_place_ids: list[str] = Field(default_factory=list)
+    # COMPARE가 "추천 시 이미 계산된 데이터"(int-04-compare.md §13)를 그대로
+    # 쓸 수 있도록 마지막 실행의 전체 항목(거리/남은 운영시간/환경유형 포함)을
+    # 함께 반환한다. shown_place_ids와 범위·정렬 기준은 동일(마지막 run_id,
+    # rank 순)하다 — COMPARE 데이터 출처 A안, 2026-08-11.
+    shown_recommendations: list[RecommendedItem] = Field(default_factory=list)
     excluded_place_ids: list[str] = Field(default_factory=list)
     last_recommended_run_id: str | None = None
     last_intent: str | None = None
@@ -112,8 +117,10 @@ class DeleteSessionResponse(BaseModel):
 class RecommendedPlace(BaseModel):
     """노출된 장소 1건. (계약 6.4절)
 
-    estimated_arrival 이하는 SCHEDULE 전용 선택 필드(SCHEDULE-06) — RECOMMEND/
-    MODIFY 호출은 생략하면 된다.
+    estimated_arrival~reason은 SCHEDULE 전용 선택 필드(SCHEDULE-06) —
+    RECOMMEND/MODIFY 호출은 생략하면 된다. distance_km~environment_type은
+    COMPARE 전용 선택 필드(COMPARE 데이터 출처 A안, 2026-08-11) — 추천 시점에
+    계산된 Feature 스냅샷을 그대로 넘긴다. SCHEDULE 호출은 생략하면 된다.
     """
 
     place_id: str
@@ -122,6 +129,9 @@ class RecommendedPlace(BaseModel):
     estimated_duration_min: int | None = None
     travel_to_next_min: int | None = None
     reason: str | None = None
+    distance_km: float | None = None
+    remaining_minutes: int | None = None
+    environment_type: str | None = None
 
 
 class RecordRecommendationRequest(BaseModel):
@@ -379,6 +389,7 @@ def get_session_context(
         has_recommendation=history_module.has_recommendation(store, sid),
         recommended_count=history_module.count_recommended(store, sid),
         shown_place_ids=history_module.get_shown_place_ids(store, sid),
+        shown_recommendations=history_module.get_last_recommended_items(store, sid),
         excluded_place_ids=history_module.get_exclusion_place_ids(store, sid),
         last_recommended_run_id=history_module.get_last_recommended_run_id(store, sid),
         last_intent=state.last_intent,
@@ -415,6 +426,9 @@ def record_recommendation(
                 estimated_duration_min=p.estimated_duration_min,
                 travel_to_next_min=p.travel_to_next_min,
                 reason=p.reason,
+                distance_km=p.distance_km,
+                remaining_minutes=p.remaining_minutes,
+                environment_type=p.environment_type,
             )
             for p in request.recommended
         ],

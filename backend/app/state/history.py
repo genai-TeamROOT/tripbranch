@@ -4,8 +4,9 @@
 
 이력은 append-only이며 기존 항목을 수정하지 않는다.
 B는 place_id만 저장하고 장소 상세 정보를 보관하지 않는다 — 단, SCHEDULE
-재조정(SCHEDULE-06)을 위해 일정 세부 필드(도착시각/체류시간/이동시간/이유)만
-예외적으로 저장한다. RecommendedItem 참고.
+재조정(SCHEDULE-06)을 위해 일정 세부 필드(도착시각/체류시간/이동시간/이유)와,
+COMPARE 데이터 출처(2026-08-11)를 위해 추천 시점 Feature 스냅샷
+(거리/남은 운영시간/환경유형)만 예외적으로 저장한다. RecommendedItem 참고.
 """
 
 from app.state.schema import (
@@ -55,6 +56,9 @@ def record_recommended(
                 estimated_duration_min=item.estimated_duration_min,
                 travel_to_next_min=item.travel_to_next_min,
                 reason=item.reason,
+                distance_km=item.distance_km,
+                remaining_minutes=item.remaining_minutes,
+                environment_type=item.environment_type,
             )
         )
 
@@ -139,6 +143,25 @@ def get_shown_place_ids(store: StateStore, session_id: str) -> list[str]:
     items.sort(key=lambda x: x.rank)
 
     return [item.place_id for item in items]
+
+
+def get_last_recommended_items(store: StateStore, session_id: str) -> list[RecommendedItem]:
+    """마지막 실행에서 노출된 장소의 전체 항목. rank 순. (COMPARE 데이터 출처 A안, 2026-08-11)
+
+    get_shown_place_ids()와 같은 기준(마지막 run_id)이지만 place_id만이
+    아니라 distance_km/remaining_minutes/environment_type을 포함한 전체
+    RecommendedItem을 반환한다. COMPARE가 "추천 시 이미 계산된 데이터"
+    (int-04-compare.md §13)를 그대로 쓸 수 있게 하려는 목적이다.
+    """
+    history = store.get_history(session_id)
+    if history is None or not history.recommended:
+        return []
+
+    last_run_id = history.recommended[-1].run_id
+    items = [item for item in history.recommended if item.run_id == last_run_id]
+    items.sort(key=lambda x: x.rank)
+
+    return items
 
 
 def get_last_recommended_run_id(store: StateStore, session_id: str) -> str | None:

@@ -80,11 +80,21 @@ class AgentState(BaseModel):
 class RecommendedItem(BaseModel):
     """노출된 장소 1건. (계약 3.2절)
 
-    estimated_arrival 이하 4개 필드는 SCHEDULE 전용 선택 필드다(SCHEDULE-06).
-    RECOMMEND/MODIFY 흐름에서는 항상 None이며, "B는 place_id만 저장하고 장소
-    상세 정보를 보관하지 않는다"는 원칙(history.py 참고)의 유일한 예외다 —
-    목적은 SCHEDULE 재조정 시 직전 일정 내용을 참고하는 것. rank가 이미 방문
-    순서(ScheduleItem.order)를 담으므로 별도 order 필드는 두지 않는다.
+    estimated_arrival~reason 4개 필드는 SCHEDULE 전용 선택 필드다(SCHEDULE-06).
+    distance_km~environment_type 3개 필드는 COMPARE 전용 선택 필드다
+    (COMPARE 데이터 출처 A안, 2026-08-11). 둘 다 RECOMMEND-only 흐름에서는
+    관련 없는 필드가 None으로 남는다.
+
+    "B는 place_id만 저장하고 장소 상세 정보를 보관하지 않는다"는 원칙
+    (history.py 참고)의 두 가지 예외다 — 일반 장소 상세(이름·주소·좌표)는
+    여전히 C의 책임이고 B가 저장하지 않는다. 여기 저장하는 값은 그 자체가
+    "추천 시점에 계산된 Feature 스냅샷"이라, 시간이 지나 실제 값과 달라져도
+    문제가 되지 않는다 — 오히려 COMPARE는 최신값이 아니라 이 스냅샷을 써야
+    한다(int-04-compare.md §13). "과거 정보가 현재 정보로 오인되는" 상황을
+    막으려는 원 원칙과 배치되지 않는 이유는, 이 값을 "현재 상태"로 다시
+    쓰는 소비자가 없고 오직 "그때 보여준 비교 데이터"로만 쓰이기 때문이다.
+    rank가 이미 방문 순서(ScheduleItem.order)를 담으므로 별도 order
+    필드는 두지 않는다.
     """
 
     place_id: str
@@ -95,12 +105,16 @@ class RecommendedItem(BaseModel):
     estimated_duration_min: int | None = None
     travel_to_next_min: int | None = None
     reason: str | None = None
+    distance_km: float | None = None
+    remaining_minutes: int | None = None
+    environment_type: str | None = None
 
 
 class RecommendedItemInput(BaseModel):
     """history.record_recommended() 호출 시 넘기는 입력 1건.
 
-    place_id/rank는 필수, 나머지는 SCHEDULE 전용 선택 필드(SCHEDULE-06).
+    place_id/rank는 필수, 나머지는 SCHEDULE 전용(SCHEDULE-06) 또는
+    COMPARE 전용(2026-08-11) 선택 필드다.
     """
 
     place_id: str
@@ -109,6 +123,9 @@ class RecommendedItemInput(BaseModel):
     estimated_duration_min: int | None = None
     travel_to_next_min: int | None = None
     reason: str | None = None
+    distance_km: float | None = None
+    remaining_minutes: int | None = None
+    environment_type: str | None = None
 
 
 class RejectedItem(BaseModel):
