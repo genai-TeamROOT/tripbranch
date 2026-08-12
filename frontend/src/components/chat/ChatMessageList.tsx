@@ -199,8 +199,11 @@ export function ChatMessageList({
             />
           );
         })}
-      {isLoading && progress?.stage !== "composing_message" && (
-        <AgentProgressMessage hasDeviceLocation={hasDeviceLocation} progress={progress} />
+      {isLoading && (
+        <AgentProgressMessage
+          hasDeviceLocation={hasDeviceLocation}
+          schedulePlanning={progress?.stage === "scheduling"}
+        />
       )}
     </div>
   );

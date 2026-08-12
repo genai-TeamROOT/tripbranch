@@ -1,4 +1,4 @@
-import type { AgentProgressEvent } from "../../types";
+import { useEffect, useState } from "react";
 
 const AGENT_STAGES = [
   { stage: "interpreting", label: "요청 의도와 조건 파악", detail: "Gemini가 Intent와 사용자 조건을 해석하고 있어요." },
@@ -8,20 +8,44 @@ const AGENT_STAGES = [
   { stage: "composing_message", label: "답변 정리", detail: "추천 결과를 안내하고 있어요." },
 ] as const;
 
+const SCHEDULE_STAGE = {
+  stage: "scheduling",
+  label: "일정 편성",
+  detail: "장소 순서와 머무는 시간을 구성하고 있어요.",
+} as const;
+
+// 실제 서버 단계는 응답이 끝난 뒤 개발자 Audit의 소요시간 탭에서 정확히 확인한다.
+// 채팅 로딩 UI는 특정 외부 호출(특히 LLM)에서 수 초간 멈춘 인상을 주지 않도록
+// 순차적으로 움직인다. 모든 단계를 한 번 보여준 뒤에는 마지막 단계에 머문다.
+const STAGE_ROTATION_INTERVAL_MS = 1_700;
+const ELAPSED_REFRESH_INTERVAL_MS = 100;
+
 export function AgentProgressMessage({
   hasDeviceLocation,
-  progress,
+  schedulePlanning = false,
 }: {
   hasDeviceLocation: boolean;
-  progress: AgentProgressEvent | null;
+  /** 실제 SCHEDULE 플래너 호출 이벤트를 받은 뒤에만 일정 단계를 목록에 넣는다. */
+  schedulePlanning?: boolean;
 }) {
-  const stageIndex = Math.max(
-    0,
-    AGENT_STAGES.findIndex((stage) => stage.stage === progress?.stage),
+  const [elapsedMs, setElapsedMs] = useState(0);
+
+  useEffect(() => {
+    const startedAt = performance.now();
+    const timer = window.setInterval(() => {
+      setElapsedMs(performance.now() - startedAt);
+    }, ELAPSED_REFRESH_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const stages = schedulePlanning
+    ? [...AGENT_STAGES.slice(0, -1), SCHEDULE_STAGE, AGENT_STAGES.at(-1)!]
+    : AGENT_STAGES;
+  const stageIndex = Math.min(
+    Math.floor(elapsedMs / STAGE_ROTATION_INTERVAL_MS),
+    stages.length - 1,
   );
-  const current = progress
-    ? { label: AGENT_STAGES[stageIndex]?.label ?? "요청 처리", detail: progress.message }
-    : AGENT_STAGES[0];
+  const current = stages[stageIndex];
 
   return (
     <section
@@ -37,7 +61,9 @@ export function AgentProgressMessage({
         <div>
           <p className="font-semibold">{current.label} 중</p>
           <p className="mt-0.5 text-xs text-indigo-700 dark:text-indigo-300">{current.detail}</p>
-          {progress && <p className="mt-0.5 text-xs text-indigo-600 dark:text-indigo-400">{(progress.elapsed_ms / 1000).toFixed(1)}초 경과</p>}
+          <p className="mt-0.5 text-xs text-indigo-600 dark:text-indigo-400">
+            {(elapsedMs / 1000).toFixed(1)}초 경과
+          </p>
         </div>
       </div>
 
@@ -46,7 +72,7 @@ export function AgentProgressMessage({
           <span aria-hidden="true">✓</span>
           {hasDeviceLocation ? "기기 위치 확인 완료" : "입력 위치 기준으로 진행"}
         </li>
-        {AGENT_STAGES.map((stage, index) => {
+        {stages.map((stage, index) => {
           const complete = index < stageIndex;
           const active = index === stageIndex;
           return (

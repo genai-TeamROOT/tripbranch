@@ -36,6 +36,10 @@ export function DeveloperChatPage() {
   const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null);
   const [exchanges, setExchanges] = useState<ApiExchangeSnapshot | null>(null);
   const [exchangeError, setExchangeError] = useState<string | null>(null);
+  // 개발자 채팅 전용 디버그 스위치. 켜두면 이후 모든 턴이 폐점 후보도 채점에
+  // 포함한다 — no_data_closed 되묻기를 재현/우회하려고 매번 버튼을 누르지
+  // 않아도 된다(실사용 피드백, 2026-08-13).
+  const [debugIgnoreOperatingHours, setDebugIgnoreOperatingHours] = useState(false);
 
   const isLoading = state.phase === "interpreting" || state.phase === "recommending";
 
@@ -134,6 +138,7 @@ export function DeveloperChatPage() {
             session_id: state.session_id,
             device_location: state.device_location,
             clarification_choice: clarificationChoice ?? null,
+            debug_ignore_operating_hours: debugIgnoreOperatingHours,
           },
           (event) => {
             if (event.type === "progress") {
@@ -194,6 +199,15 @@ export function DeveloperChatPage() {
                 agentResponse: response,
                 showDebug: false,
                 elapsedMsClient,
+                ...(progressEvents.length > 0
+                  ? {
+                      serverElapsedMs: event.data.elapsed_ms,
+                      stageTimings: buildAgentStageTimings(progressEvents, event.data.elapsed_ms, {
+                        messageStartElapsedMs,
+                        firstMessageDeltaElapsedMs,
+                      }),
+                    }
+                  : {}),
               },
             });
           },
@@ -217,7 +231,7 @@ export function DeveloperChatPage() {
         void loadExchanges();
       }
     },
-    [dispatch, loadExchanges, state.device_location, state.session_id],
+    [dispatch, loadExchanges, state.device_location, state.session_id, debugIgnoreOperatingHours],
   );
 
   async function handleFollowUp(text: string) {
@@ -322,6 +336,8 @@ export function DeveloperChatPage() {
         turns={state.auditTurns}
         selectedTurnId={selectedTurnId}
         onSelectTurn={setSelectedTurnId}
+        debugIgnoreOperatingHours={debugIgnoreOperatingHours}
+        onToggleDebugIgnoreOperatingHours={setDebugIgnoreOperatingHours}
       />
     </main>
   );

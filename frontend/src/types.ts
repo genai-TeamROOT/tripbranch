@@ -316,6 +316,12 @@ export interface AgentDebugRequest {
    * label을 채워 보내되(채팅 이력 표시용) 라우팅은 이 필드만으로 결정된다.
    */
   clarification_choice?: string | null;
+  /*
+   * 개발자용 채팅(/dev-chat) 전용 디버그 스위치. true면 이번 턴은 폐점 후보도
+   * 항상 채점에 포함한다 — no_data_closed 되묻기를 매번 누르지 않고 강제로
+   * 켤 수 있다.
+   */
+  debug_ignore_operating_hours?: boolean;
 }
 
 export interface SessionState {
@@ -399,6 +405,7 @@ export type AgentProgressStage =
   | "merging_conditions"
   | "fetching_context"
   | "scoring"
+  | "scheduling"
   | "composing_message";
 
 export interface AgentProgressEvent {

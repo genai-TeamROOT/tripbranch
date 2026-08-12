@@ -69,6 +69,10 @@ class AgentState(BaseModel):
     # B는 판단하지 않고 A가 준 값을 보관만 한다 — 되묻기 판정은 LLM과 C가 하고,
     # 소비(부분 갱신 여부 결정)는 A의 state_transform이 한다.
     pending_clarification: str | None = None
+    # "운영 중이 아닌 곳도 볼게요"를 한 번 선택하면 이 시각까지는 매 턴 다시
+    # 묻지 않고 폐점 후보도 계속 포함한다(실사용 피드백, 2026-08-13 — 매 턴
+    # 버튼을 다시 눌러야 하는 게 불편하다는 지적).
+    ignore_operating_hours_until: datetime | None = None
     status: Literal["active", "expired"] = "active"
     created_at: datetime = Field(default_factory=now_kst)
     updated_at: datetime = Field(default_factory=now_kst)

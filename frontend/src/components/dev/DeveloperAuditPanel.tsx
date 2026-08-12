@@ -61,6 +61,7 @@ const STAGE_PRESENTATION: Record<AgentStageTiming["stage"], { label: string; own
   merging_conditions: { label: "세션 상태 병합", owner: "A → B" },
   fetching_context: { label: "장소·정보 조회", owner: "A → C" },
   scoring: { label: "추천 순위 계산", owner: "A → D" },
+  scheduling: { label: "일정 편성", owner: "A → 일정 플래너·Gemini" },
   composing_message: { label: "답변 생성·정리", owner: "A → Gemini" },
 };
 
@@ -571,6 +572,12 @@ function TimingCard({
             (call) =>
               call.operation.startsWith("generate_") || call.operation.startsWith("stream_"),
           )
+        : timing.stage === "scheduling"
+          ? llmCalls.filter(
+              (call) =>
+                call.operation === "generate_schedule_plan" ||
+                call.operation === "generate_schedule_fill",
+            )
         : [];
 
   return (
@@ -600,7 +607,8 @@ function TimingCard({
           {relevantLlmCalls.map((call) => (
             <p key={call.operation} className="mt-1 text-gray-700 dark:text-gray-200">
               {call.operation} · {call.served_model ?? "응답 실패"}
-              {timing.stage === "interpreting" && call.latency_ms != null
+              {(timing.stage === "interpreting" || timing.stage === "scheduling") &&
+              call.latency_ms != null
                 ? ` · ${formatDuration(call.latency_ms)}`
                 : ""}
             </p>
@@ -706,12 +714,16 @@ interface DeveloperAuditPanelProps {
   turns: DeveloperAuditTurn[];
   selectedTurnId: string | null;
   onSelectTurn: (turnId: string) => void;
+  debugIgnoreOperatingHours: boolean;
+  onToggleDebugIgnoreOperatingHours: (enabled: boolean) => void;
 }
 
 export function DeveloperAuditPanel({
   turns,
   selectedTurnId,
   onSelectTurn,
+  debugIgnoreOperatingHours,
+  onToggleDebugIgnoreOperatingHours,
 }: DeveloperAuditPanelProps) {
   const [activeTab, setActiveTab] = useState<AuditTab>("summary");
   const selectedTurn = turns.find((turn) => turn.id === selectedTurnId) ?? turns.at(-1) ?? null;
@@ -731,12 +743,31 @@ export function DeveloperAuditPanel({
   return (
     <aside className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden border-l border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-gray-950">
       <header className="border-b border-gray-200 px-5 py-4 dark:border-gray-800">
-        <p className="text-xs font-semibold uppercase tracking-widest text-emerald-700 dark:text-emerald-400">
-          TripBranch Developer Console
-        </p>
-        <h2 className="mt-1 text-lg font-bold text-gray-950 dark:text-gray-50">
-          Agent Runtime Audit
-        </h2>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-widest text-emerald-700 dark:text-emerald-400">
+              TripBranch Developer Console
+            </p>
+            <h2 className="mt-1 text-lg font-bold text-gray-950 dark:text-gray-50">
+              Agent Runtime Audit
+            </h2>
+          </div>
+          <label
+            className={`flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] ${
+              debugIgnoreOperatingHours
+                ? "border-amber-400 bg-amber-50 text-amber-900 dark:border-amber-600 dark:bg-amber-950/40 dark:text-amber-100"
+                : "border-gray-300 dark:border-gray-700"
+            }`}
+            title="켜두면 이후 발화가 폐점 후보도 항상 채점에 포함해요 — no_data_closed 되묻기를 매번 누르지 않아도 재현/우회할 수 있어요."
+          >
+            <input
+              type="checkbox"
+              checked={debugIgnoreOperatingHours}
+              onChange={(event) => onToggleDebugIgnoreOperatingHours(event.target.checked)}
+            />
+            운영시간 무시
+          </label>
+        </div>
       </header>
 
       <div className="min-h-0 flex-1 overflow-auto px-5 py-4">
@@ -794,6 +825,28 @@ export function DeveloperAuditPanel({
 
         {selectedTurn && (
           <section className="mt-5 flex flex-col gap-4">
+            {selectedTurn.failure && (
+              <div className="rounded-md border border-red-300 bg-red-50 p-3 dark:border-red-800 dark:bg-red-950/40">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-red-700 dark:text-red-300">
+                      오류 발생 · {selectedTurn.failure.code}
+                    </p>
+                    <p className="mt-1 break-words text-sm text-red-900 dark:text-red-100">
+                      {selectedTurn.failure.message}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("raw")}
+                    className="shrink-0 rounded-md border border-red-400 bg-white px-2.5 py-1.5 text-xs font-medium text-red-800 hover:bg-red-100 dark:border-red-700 dark:bg-red-950 dark:text-red-100 dark:hover:bg-red-900"
+                  >
+                    오류 상세 확인
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div className="flex flex-wrap gap-2">
               {TABS.map((tab) => (
                 <button

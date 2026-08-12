@@ -610,6 +610,10 @@ async def test_schedule_intent_reaches_planner_and_returns_schedule() -> None:
     이어진다(docs/design/int-07-schedule.md 4절)."""
     store = InMemoryStateStore()
     providers = _providers()
+    events: list[tuple[str, dict[str, object]]] = []
+
+    async def sink(event: str, payload: dict[str, object]) -> None:
+        events.append((event, payload))
 
     response = await run_agent_flow(
         AgentRequest(
@@ -618,6 +622,7 @@ async def test_schedule_intent_reaches_planner_and_returns_schedule() -> None:
             device_location=DEVICE_LOCATION,
         ),
         store=store,
+        stream_event_sink=sink,
         **providers,
     )
 
@@ -634,6 +639,11 @@ async def test_schedule_intent_reaches_planner_and_returns_schedule() -> None:
     assert 1 <= len(response.schedule.items) <= 5
     assert response.schedule.basis_note
     assert "코스를 짜봤어요" in response.message
+
+    progress_stages = [payload["stage"] for event, payload in events if event == "progress"]
+    assert "scheduling" in progress_stages
+    assert progress_stages.index("scoring") < progress_stages.index("scheduling")
+    assert progress_stages.index("scheduling") < progress_stages.index("composing_message")
 
     context = get_session_context(response.state.session_id, store=store)
     schedule_ids = {item.place_id for item in response.schedule.items}
@@ -3270,6 +3280,56 @@ async def test_clarification_choice_show_closed_reruns_ignoring_operating_hours(
     assert context.pending_clarification is None
 
 
+@pytest.mark.asyncio
+async def test_show_closed_choice_keeps_ignoring_operating_hours_on_later_turns() -> None:
+    """실사용 피드백(2026-08-13): "운영 중이 아닌 곳도 볼게요"를 한 번 누르면,
+    이후 버튼을 다시 누르지 않은 새 RECOMMEND 요청에서도 TTL 동안은 계속
+    폐점 후보를 포함해야 한다 — 매 턴 다시 물으면 안 된다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+    provider = _ClosedOnlyRecommendationProvider()
+    providers["recommendation_provider"] = provider
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+    resolved = await run_agent_flow(
+        AgentRequest(
+            user_input="운영 중이 아닌 곳도 볼게요",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+            clarification_choice="show_closed",
+        ),
+        store=store,
+        **providers,
+    )
+    assert resolved.llm_output.status == OutputStatus.COMPLETE
+
+    later = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 박물관도 추천해줘",
+            session_id=resolved.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert later.llm_output.status == OutputStatus.COMPLETE
+    assert later.llm_output.clarification is None
+    assert later.recommendations is not None
+    assert len(later.recommendations.unverified_recommendations) == 1
+    assert provider.calls == [False, True, True]
+    context = get_session_context(later.state.session_id, store=store)
+    assert context.ignore_operating_hours_until is not None
+
+
 class _ExhaustedNoDataToolProvider:
     """C 대역 — TourAPI raw candidates는 있었지만 excluded_place_ids로 전부
     소진된 상황(원인2)을 흉내 낸다. places.status는 "no_data"지만
@@ -3455,3 +3515,111 @@ async def test_clarification_choice_no_data_empty_widen_radius_reruns_search() -
     assert resolved.state.user_conditions.max_travel_time == _WIDEN_RADIUS_MAX_TRAVEL_TIME
     context = get_session_context(resolved.state.session_id, store=store)
     assert context.pending_clarification is None
+
+
+class _TwoCandidateRecommendationProvider:
+    """D 대역 — SCHEDULE-10 최소 개수(3개, time_available>=210분)보다 적은 2개만
+    돌려준다. planner.py의 `len(request.candidates) < min_items` 가드가 걸려
+    plan_schedule()이 LLM 호출 없이 바로 빈 ScheduleResult를 반환한다."""
+
+    def __init__(self) -> None:
+        self.calls: list[UserConditions] = []
+
+    async def recommend(
+        self,
+        conditions: UserConditions,
+        context: RecommendationContext,
+        excluded_place_ids: list[str],
+        limit: int = 5,
+        ignore_operating_hours: bool = False,
+    ) -> RecommendationResponse:
+        self.calls.append(conditions)
+        return RecommendationResponse(
+            recommendations=[_item("p1"), _item("p2")],
+            unverified_recommendations=[],
+            elapsed_ms=0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_clarification_choice_schedule_no_candidates_stays_schedule_intent() -> None:
+    """실사용 버그(2026-08-13): SCHEDULE 후보 부족 되묻기의 "다른 종류의 장소도
+    포함해서 찾기"를 누르면, 조건 병합이 MODIFY/CHANGE_CONDITION 경로를 타더라도
+    최종 라벨은 SCHEDULE로 유지돼야 한다 — 그래야 다시 일정 편성을 시도하지,
+    RECOMMEND 결과로 새지 않는다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+    provider = _TwoCandidateRecommendationProvider()
+    providers["recommendation_provider"] = provider
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처에서 2시간 코스 짜줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+    assert first.llm_output.intent == "SCHEDULE"
+    assert first.llm_output.status == OutputStatus.NEEDS_CLARIFICATION
+    assert first.llm_output.clarification is not None
+    assert first.llm_output.clarification.code == "schedule_no_candidates"
+    option_ids = {option.id for option in first.llm_output.clarification.options}
+    assert option_ids == {"schedule_relax_area", "schedule_relax_category"}
+    assert all(
+        option.resolved_intent == "SCHEDULE" for option in first.llm_output.clarification.options
+    )
+
+    resolved = await run_agent_flow(
+        AgentRequest(
+            user_input="다른 종류의 장소도 포함해서 찾기",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+            clarification_choice="schedule_relax_category",
+        ),
+        store=store,
+        **providers,
+    )
+
+    # 후보는 여전히 2개뿐이라 이번에도 편성엔 실패하지만, 핵심 회귀 포인트는
+    # intent가 MODIFY로 새지 않고 SCHEDULE로 유지되는지다.
+    assert resolved.llm_output.intent == "SCHEDULE"
+    assert resolved.llm_output.status == OutputStatus.NEEDS_CLARIFICATION
+    assert resolved.recommendations is None
+    assert resolved.state.user_conditions.place_types == []
+    assert resolved.state.user_conditions.place_tags == []
+    context = get_session_context(resolved.state.session_id, store=store)
+    assert context.last_intent == "SCHEDULE"
+
+
+@pytest.mark.asyncio
+async def test_schedule_offers_show_closed_before_no_candidates_loop() -> None:
+    """실사용 버그(2026-08-13): "경복궁 반나절 코스 짜줘"가 심야라 전부 폐점 후보뿐이면,
+    SCHEDULE도 RECOMMEND/MODIFY와 동일하게 "운영 중이 아닌 곳도 볼게요"를 먼저
+    제안해야 한다. 그렇지 않으면 실제 원인(운영시간)과 무관한 지역/카테고리 변경
+    버튼(schedule_no_candidates)만 계속 돌아 무한 되묻기가 된다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+    providers["recommendation_provider"] = _ClosedOnlyRecommendationProvider()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처에서 반나절 코스 짜줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.llm_output.intent == "SCHEDULE"
+    assert response.llm_output.status == OutputStatus.NEEDS_CLARIFICATION
+    clarification = response.llm_output.clarification
+    assert clarification is not None
+    assert clarification.code == "no_data_closed"
+    option_ids = {option.id for option in clarification.options}
+    assert option_ids == {"show_closed"}
+    assert clarification.options[0].resolved_intent == "SCHEDULE"
+    context = get_session_context(response.state.session_id, store=store)
+    assert context.pending_clarification == "no_data_closed"

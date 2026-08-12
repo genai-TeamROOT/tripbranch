@@ -140,6 +140,9 @@ interface ChatTurnPayload {
   agentResponse: AgentResponse;
   showDebug: boolean;
   elapsedMsClient: number;
+  /** SSE progress 이벤트가 있는 응답은 카드 스트림 여부와 무관하게 단계 시간을 보존한다. */
+  serverElapsedMs?: number;
+  stageTimings?: AgentStageTiming[];
 }
 
 interface InterpretedPayload {
@@ -513,8 +516,9 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         runId: action.payload.agentResponse.state.run_id ?? null,
         deviceLocation: state.device_location,
         elapsedMsClient: action.payload.elapsedMsClient,
-        serverElapsedMs: recommendations?.elapsed_ms ?? schedule?.elapsed_ms ?? null,
-        stageTimings: [],
+        serverElapsedMs:
+          action.payload.serverElapsedMs ?? recommendations?.elapsed_ms ?? schedule?.elapsed_ms ?? null,
+        stageTimings: action.payload.stageTimings ?? [],
         extractedConditions: conditions,
         beforeConditions: state.auditTurns.at(-1)?.afterConditions ?? null,
         afterConditions: action.payload.agentResponse.state.user_conditions ?? null,

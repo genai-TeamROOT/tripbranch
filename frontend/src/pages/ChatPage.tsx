@@ -154,6 +154,15 @@ export function ChatPage() {
                 agentResponse: response,
                 showDebug: false,
                 elapsedMsClient,
+                ...(progressEvents.length > 0
+                  ? {
+                      serverElapsedMs: event.data.elapsed_ms,
+                      stageTimings: buildAgentStageTimings(progressEvents, event.data.elapsed_ms, {
+                        messageStartElapsedMs,
+                        firstMessageDeltaElapsedMs,
+                      }),
+                    }
+                  : {}),
               },
             });
           },

@@ -152,12 +152,17 @@ def _operating_hours_from_context(
     schedule: dict[str, Any] | None,
     visit_at: datetime,
 ) -> OperatingHours | None:
-    """직렬화된 운영 규칙에서 방문 시각에 적용되는 당일 구간을 선택한다."""
+    """직렬화된 운영 규칙에서 방문일의 대표 구간을 선택한다.
+
+    지금 영업 중인 구간이 없더라도 실제 시간 구간은 보존한다. 이전에는 폐점/정기
+    휴무를 ``00:00~00:00`` 내부 표식으로 바꿨는데, Scoring 이후 추천 카드가 이
+    표식을 그대로 표시해 "00:00~00:00 (현재 운영시간 아님)"으로 보였다. 폐점
+    여부는 ``_remaining_minutes() is None``으로 이미 판별하므로, 표식으로 시간을
+    지울 필요가 없다.
+    """
 
     if not schedule or schedule.get("availability") == "unknown":
         return None
-    if _is_regular_closure(schedule, visit_at):
-        return OperatingHours(open_time=time.min, close_time=time.min)
     if schedule.get("availability") == "all_day":
         return OperatingHours(open_time=time.min, close_time=time.max)
 
@@ -167,14 +172,15 @@ def _operating_hours_from_context(
         if isinstance(raw_rules, list) and raw_rules
         else [{"months": None, "weekdays": None, "time_ranges": schedule.get("time_ranges")}]
     )
-    found_supported_range = False
+    fallback_range: tuple[time, time] | None = None
     for rule in rules:
         if not isinstance(rule, dict) or not _rule_applies(rule, visit_at):
             continue
         ranges = _context_time_ranges(rule.get("time_ranges"))
         if not ranges:
             continue
-        found_supported_range = True
+        if fallback_range is None:
+            fallback_range = ranges[0]
         current_time = visit_at.time()
         active = next(
             (
@@ -186,22 +192,13 @@ def _operating_hours_from_context(
         )
         if active is not None:
             return OperatingHours(open_time=active[0], close_time=active[1])
-    if found_supported_range:
-        return OperatingHours(open_time=time.min, close_time=time.min)
+
+    # 정기 휴무·영업 전·영업 종료 후에도 카드에는 실제 운영 구간을 표시한다.
+    # Scoring은 이 구간에서 remaining_minutes가 None인 것을 보고 기존과 똑같이
+    # 폐점 필터 또는 "운영시간 무시" 경고 처리를 한다.
+    if fallback_range is not None:
+        return OperatingHours(open_time=fallback_range[0], close_time=fallback_range[1])
     return None
-
-
-def _is_regular_closure(schedule: dict[str, Any], visit_at: datetime) -> bool:
-    weekday = _WEEKDAY_NAMES[visit_at.weekday()]
-    closure_rules = schedule.get("closure_rules")
-    if not isinstance(closure_rules, list):
-        return False
-    return any(
-        isinstance(rule, dict)
-        and isinstance(rule.get("weekdays"), list)
-        and weekday in rule["weekdays"]
-        for rule in closure_rules
-    )
 
 
 def _rule_applies(rule: dict[str, Any], visit_at: datetime) -> bool:

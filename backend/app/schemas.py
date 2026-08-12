@@ -592,6 +592,12 @@ class AgentRequest(BaseModel):
     # label을 채워 보내되(채팅 이력 표시용) 라우팅은 이 필드만으로 결정한다 —
     # classify_intent()를 다시 태우지 않는다(docs/design/clarification-options.md 3절).
     clarification_choice: str | None = None
+    # 개발자용 채팅(/dev-chat) 전용 디버그 스위치. True면 이번 턴은 폐점 후보도
+    # 항상 채점에 포함한다 — no_data_closed 되묻기 자체를 재현/우회하려고 매번
+    # 버튼을 누르지 않고 강제로 켤 수 있게 한다(실사용 피드백, 2026-08-13).
+    # 세션 상태(ignore_operating_hours_until)는 건드리지 않는다 — 이 턴에만
+    # 적용되는 일회성 오버라이드다.
+    debug_ignore_operating_hours: bool = False
 
 
 class LLMCallMetadata(BaseModel):

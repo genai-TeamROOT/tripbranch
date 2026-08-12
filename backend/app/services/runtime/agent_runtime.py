@@ -16,6 +16,7 @@ import math
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import timedelta
 
 from app.agent_context.schemas import PlaceCandidate, RecommendationContext
 from app.domain.scoring import SCORING_VERSION
@@ -83,12 +84,15 @@ from app.state.service import (
     RecordRecommendationRequest,
     RecordTraceRequest,
     SessionContextResponse,
+    SetIgnoreOperatingHoursRequest,
     SetLastIntentRequest,
     SetPendingClarificationRequest,
+    StateApplyResponse,
     UpdateApiContextRequest,
     apply,
     record_recommendation,
     record_trace,
+    set_ignore_operating_hours_until,
     set_last_intent,
     set_pending_clarification,
     update_api_context,
@@ -198,6 +202,21 @@ def _remember_clarification(session_id: str, code: str | None, store: StateStore
     )
 
 
+# no_data_closed 되묻기의 "운영 중이 아닌 곳도 볼게요"를 한 번 선택하면 이 시간
+# 동안은 매 턴 다시 묻지 않는다(실사용 피드백, 2026-08-13).
+_IGNORE_OPERATING_HOURS_TTL = timedelta(hours=1)
+
+
+def _remember_ignore_operating_hours(session_id: str, store: StateStore | None) -> None:
+    """"운영 중이 아닌 곳도 볼게요" 선택을 TTL 동안 B에 남긴다."""
+    set_ignore_operating_hours_until(
+        SetIgnoreOperatingHoursRequest(
+            session_id=session_id, until=now_kst() + _IGNORE_OPERATING_HOURS_TTL
+        ),
+        store=store,
+    )
+
+
 # SCHEDULE 완료 직후 CHANGE_CONDITION MODIFY가 "일정 재조정"인지 "그냥 추천"인지 글자로는
 # 구분 안 되는 경우를 감지한다(docs/design/clarification-options.md 5절). 일정 키워드가
 # 전혀 없는데 추천체 어미가 있으면 재조정이라 단정할 근거가 없다.
@@ -256,7 +275,9 @@ _LOCATION_REQUIRED_QUICK_PICKS = ("경복궁", "인사동", "광화문", "북촌
 _LOCATION_REQUIRED_RESOLVABLE_INTENTS = frozenset({Intent.RECOMMEND.value, Intent.SCHEDULE.value})
 # no_data_closed는 SCHEDULE 이전(1차 Scoring 직후)에만 발생하므로 SCHEDULE은 대상이
 # 아니다 — RECOMMEND/MODIFY만 재조회 대상이 될 수 있다.
-_NO_DATA_CLOSED_RESOLVABLE_INTENTS = frozenset({Intent.RECOMMEND.value, Intent.MODIFY.value})
+_NO_DATA_CLOSED_RESOLVABLE_INTENTS = frozenset(
+    {Intent.RECOMMEND.value, Intent.MODIFY.value, Intent.SCHEDULE.value}
+)
 
 # compare_single_shown 되묻기 버튼(PR 3, 케이스 3). "다른 곳도 보여주세요"는 REJECT_ALL로
 # 재조회하는 이미 검증된 경로를 그대로 탄다.
@@ -277,6 +298,53 @@ _NO_DATA_CLOSED_MESSAGE = (
     "지금 운영 중인 곳이 없어 검색이 어려워요. 운영 중이 아닌 곳도 확인하시겠어요?"
 )
 _NO_DATA_CLOSED_SHOW_CLOSED = "show_closed"
+
+
+async def _respond_no_data_closed(
+    llm_output: LLMOutput,
+    state_response: StateApplyResponse,
+    *,
+    store: StateStore | None,
+    llm: LLMProvider,
+    tool_execution: object,
+    tool_executions: object,
+) -> AgentResponse:
+    """"운영 중이 아닌 곳도 볼게요" 되묻기 응답을 조립한다.
+
+    RECOMMEND/MODIFY 경로와 SCHEDULE 경로 둘 다에서 쓴다 — SCHEDULE도 원인이
+    "폐점 후보뿐"이면 "후보가 부족하니 지역/카테고리를 바꿔달라"는 일반 되묻기
+    대신 이 되묻기를 먼저 띄워야 한다. 그렇지 않으면 실제 원인(운영시간)과
+    무관한 지역/카테고리 변경만 계속 유도하게 되어 무한 되묻기로 이어진다
+    (실사용 재현, 2026-08-13 — "경복궁 반나절 코스" 심야 요청).
+    """
+    clarified = llm_output.model_copy(
+        update={
+            "status": OutputStatus.NEEDS_CLARIFICATION,
+            "clarification": ClarificationPayload(
+                code="no_data_closed",
+                message=_NO_DATA_CLOSED_MESSAGE,
+                options=[
+                    ClarificationOption(
+                        id=_NO_DATA_CLOSED_SHOW_CLOSED,
+                        label="운영 중이 아닌 곳도 볼게요",
+                        resolved_intent=llm_output.intent,
+                    ),
+                ],
+            ),
+        }
+    )
+    _remember_clarification(state_response.session_id, "no_data_closed", store)
+    message = await compose_chat_message(clarified, llm=llm)
+    return AgentResponse(
+        llm_output=clarified,
+        state=state_response,
+        recommendations=None,
+        message=message,
+        llm_execution=get_llm_execution_metadata(),
+        tool_execution=tool_execution,
+        tool_executions=tool_executions,
+    )
+
 
 # no_data_empty/no_data_exhausted 되묻기(원인1+3/원인2, 실사용 피드백 후속 조사,
 # 2026-08-13). C가 장소 검색 자체에서 0건(status="no_data")을 돌려줄 때, 그 원인이
@@ -339,6 +407,59 @@ class _ClarificationResolution:
     # True면 D 재조회 시 폐점 후보도 제외하지 않는다 — no_data_closed 되묻기의
     # "운영중이 아닌 곳도 볼게요" 선택지에서만 켠다.
     ignore_operating_hours: bool = False
+    # True면 조건 병합(MODIFY/CHANGE_CONDITION)이 끝난 뒤 intent 라벨을 SCHEDULE로
+    # 바꿔 아래 6)~8) 단계가 일정 편성 분기를 타게 한다 — schedule_no_candidates
+    # 되묻기의 "다른 지역/종류로 찾기" 선택지에서만 켠다. 조건을 실제로 지우려면
+    # MODIFY/CHANGE_CONDITION 경로(_clear_conditions_llm_output)가 필요한데(RECOMMEND/
+    # SCHEDULE 경로는 빈 값을 "언급 안 함"으로 봐서 안 지워진다), SCHEDULE-06의
+    # pending_clarification is None 게이트는 되묻기 해소 turn엔 안 맞아 자동으로
+    # relabel되지 않는다 — 그래서 여기서 명시적으로 신호를 준다.
+    force_schedule: bool = False
+
+
+# no_data_empty/no_data_exhausted의 "다른 종류도 보기"/"다른 지역에서 찾기"/
+# "날씨 상관없이 보기"가 공유하는 값 — 조건을 명시적으로 지울 때 각 필드에 넣을
+# "없음"에 해당하는 값이다.
+_CLEARED_CONDITION_VALUES: dict[str, object] = {
+    "place_types": [],
+    "place_tags": [],
+    "search_center": None,
+    "current_location": None,
+    "weather_intent": None,
+}
+
+# SCHEDULE 실패(후보 부족) 시 되묻기 버튼 ID 및 텍스트.
+_SCHEDULE_RELAX_AREA = "schedule_relax_area"
+_SCHEDULE_RELAX_CATEGORY = "schedule_relax_category"
+_SCHEDULE_NO_CANDIDATES_MESSAGE = (
+    "조건에 맞는 곳을 충분히 찾지 못해 일정을 만들지 못했어요. "
+    "다른 지역이나 다른 종류의 장소로 다시 요청해볼까요?"
+)
+_SCHEDULE_NO_CANDIDATES_OPTIONS = (
+    (_SCHEDULE_RELAX_AREA, "다른 지역에서 찾기"),
+    (_SCHEDULE_RELAX_CATEGORY, "다른 종류의 장소도 포함해서 찾기"),
+)
+
+
+def _clear_conditions_llm_output(fields: tuple[str, ...]) -> LLMOutput:
+    """지정한 필드만 명시적으로 지우는 MODIFY/CHANGE_CONDITION을 만든다.
+
+    RECOMMEND 경로(RecommendPayload)는 값이 없는 필드를 "언급 안 함"으로 보고
+    기존 값을 그대로 유지한다(state_transform._full_replace_operations) — 그래서
+    필드를 실제로 비우려면 changed_fields로 Remove를 명시하는 MODIFY 경로가
+    필요하다(state_transform._changed_field_operations).
+    """
+    return LLMOutput(
+        intent=Intent.MODIFY,
+        status=OutputStatus.COMPLETE,
+        modify=ModifyPayload(
+            modify_type=ModifyType.CHANGE_CONDITION,
+            condition_changes=UserConditions(
+                **{field: _CLEARED_CONDITION_VALUES[field] for field in fields}
+            ),
+            changed_fields=list(fields),
+        ),
+    )
 
 
 def _resolve_clarification_choice(
@@ -428,17 +549,18 @@ def _resolve_clarification_choice(
             updated = conditions.model_copy(
                 update={"max_travel_time": _WIDEN_RADIUS_MAX_TRAVEL_TIME}
             )
-        elif choice_id == _WIDEN_CATEGORY:
-            updated = conditions.model_copy(update={"place_types": [], "place_tags": []})
-        else:
-            return None
-        return _ClarificationResolution(
-            llm_output=LLMOutput(
-                intent=Intent(session_context.last_intent),
-                status=OutputStatus.COMPLETE,
-                recommend=RecommendPayload(conditions=updated),
+            return _ClarificationResolution(
+                llm_output=LLMOutput(
+                    intent=Intent(session_context.last_intent),
+                    status=OutputStatus.COMPLETE,
+                    recommend=RecommendPayload(conditions=updated),
+                )
             )
-        )
+        if choice_id == _WIDEN_CATEGORY:
+            return _ClarificationResolution(
+                llm_output=_clear_conditions_llm_output(("place_types", "place_tags"))
+            )
+        return None
 
     if code == "no_data_exhausted":
         # 원인2(이전 노출/거절로 소진). "제외 이력을 다시 보여달라"는 선택지는
@@ -456,26 +578,45 @@ def _resolve_clarification_choice(
                 terminal_message=_NO_DATA_EXHAUSTED_CUSTOM_MESSAGE,
             )
         if choice_id == _WIDEN_CATEGORY:
-            updated = conditions.model_copy(update={"place_types": [], "place_tags": []})
-        elif choice_id == _WIDEN_RADIUS:
+            return _ClarificationResolution(
+                llm_output=_clear_conditions_llm_output(("place_types", "place_tags"))
+            )
+        if choice_id == _IGNORE_WEATHER:
+            return _ClarificationResolution(
+                llm_output=_clear_conditions_llm_output(("weather_intent",))
+            )
+        if choice_id == _DIFFERENT_AREA:
+            return _ClarificationResolution(
+                llm_output=_clear_conditions_llm_output(("search_center", "current_location"))
+            )
+        if choice_id == _WIDEN_RADIUS:
             updated = conditions.model_copy(
                 update={"max_travel_time": _WIDEN_RADIUS_MAX_TRAVEL_TIME}
             )
-        elif choice_id == _DIFFERENT_AREA:
-            updated = conditions.model_copy(
-                update={"search_center": None, "current_location": None}
+            return _ClarificationResolution(
+                llm_output=LLMOutput(
+                    intent=Intent(session_context.last_intent),
+                    status=OutputStatus.COMPLETE,
+                    recommend=RecommendPayload(conditions=updated),
+                )
             )
-        elif choice_id == _IGNORE_WEATHER:
-            updated = conditions.model_copy(update={"weather_intent": None})
-        else:
+        return None
+
+    if code == "schedule_no_candidates":
+        # SCHEDULE 실패(후보 부족) 시 조건을 완화해 다시 시도한다.
+        if session_context.last_intent not in _NO_DATA_RESOLVABLE_INTENTS:
             return None
-        return _ClarificationResolution(
-            llm_output=LLMOutput(
-                intent=Intent(session_context.last_intent),
-                status=OutputStatus.COMPLETE,
-                recommend=RecommendPayload(conditions=updated),
+        if choice_id == _SCHEDULE_RELAX_AREA:
+            return _ClarificationResolution(
+                llm_output=_clear_conditions_llm_output(("search_center", "current_location")),
+                force_schedule=True,
             )
-        )
+        if choice_id == _SCHEDULE_RELAX_CATEGORY:
+            return _ClarificationResolution(
+                llm_output=_clear_conditions_llm_output(("place_types", "place_tags")),
+                force_schedule=True,
+            )
+        return None
 
     if code == "compare_single_shown":
         if choice_id == _COMPARE_SINGLE_SHOWN_SHOW_MORE:
@@ -785,6 +926,20 @@ async def run_agent_flow(
         if request.clarification_choice is not None
         else None
     )
+    # 이번 턴에 막 선택했거나(clarification_resolution), 직전에 선택해서 아직
+    # TTL 안이거나(session_context), 개발자 채팅의 일회성 디버그 스위치가
+    # 켜졌으면 폐점 후보도 계속 포함한다.
+    clicked_show_closed = (
+        clarification_resolution is not None and clarification_resolution.ignore_operating_hours
+    )
+    effective_ignore_operating_hours = bool(
+        request.debug_ignore_operating_hours
+        or clicked_show_closed
+        or (
+            session_context.ignore_operating_hours_until is not None
+            and session_context.ignore_operating_hours_until > now_kst()
+        )
+    )
 
     llm_started_at = time.monotonic()
     if clarification_resolution is not None:
@@ -825,6 +980,9 @@ async def run_agent_flow(
     )
     apply_request = transform(llm_output, session_context, request.user_input)
     state_response = apply(apply_request, store=store)
+
+    if clarification_resolution is not None and clarification_resolution.ignore_operating_hours:
+        _remember_ignore_operating_hours(state_response.session_id, store)
 
     # 2단계(LLM 호출) trace는 여기서 기록한다 — run_id/session_id가 apply() 안에서
     # 발급되므로 2단계 시점엔 아직 없다. latency만 미리 재뒀다가 여기서 기록.
@@ -960,6 +1118,23 @@ async def run_agent_flow(
         # REJECT_SPECIFIC → REJECT_SPECIFIC처럼 재조정이 연속될 때 두 번째부터
         # 이 감지 자체가 실패한다(2026-08-11 실사용 재현, D-061). 화면상 라벨과
         # 저장된 last_intent를 다시 맞춘다.
+        set_last_intent(
+            SetLastIntentRequest(
+                session_id=state_response.session_id, intent=Intent.SCHEDULE.value
+            ),
+            store=store,
+        )
+
+    # 3-4) schedule_no_candidates 되묻기 해소(force_schedule). 되묻기 해소 turn은
+    #      session_context.pending_clarification이 "schedule_no_candidates"라서
+    #      바로 위 3-3)의 게이트(pending_clarification is None)를 못 타 자동
+    #      relabel이 안 된다 — 여기서 명시적으로 같은 relabel을 반복한다.
+    if (
+        clarification_resolution is not None
+        and clarification_resolution.force_schedule
+        and llm_output.intent is not Intent.SCHEDULE
+    ):
+        llm_output = llm_output.model_copy(update={"intent": Intent.SCHEDULE})
         set_last_intent(
             SetLastIntentRequest(
                 session_id=state_response.session_id, intent=Intent.SCHEDULE.value
@@ -1396,10 +1571,7 @@ async def run_agent_flow(
         tool_context,
         state_response.excluded_place_ids,
         limit=recommendation_limit,
-        ignore_operating_hours=bool(
-            clarification_resolution is not None
-            and clarification_resolution.ignore_operating_hours
-        ),
+        ignore_operating_hours=effective_ignore_operating_hours,
     )
     _record_trace_safely(
         session_id=state_response.session_id,
@@ -1438,6 +1610,24 @@ async def run_agent_flow(
             *recommendations.recommendations,
             *recommendations.unverified_recommendations,
         ]
+        # 후보가 전부 폐점 때문에 제외됐으면(D가 excluded_all_closed로 표시) 일정을
+        # 못 짠 진짜 원인이 "지역/카테고리 부족"이 아니라 "운영시간"이다 — 그런데도
+        # 아래 schedule_no_candidates로 넘어가면 지역/카테고리를 아무리 바꿔도 같은
+        # 이유로 계속 실패해 무한 되묻기가 된다(실사용 재현, 2026-08-13). RECOMMEND/
+        # MODIFY 경로와 동일하게 "운영 중이 아닌 곳도 볼게요"를 먼저 제안한다.
+        if (
+            not schedule_candidates
+            and recommendations.excluded_all_closed
+            and not effective_ignore_operating_hours
+        ):
+            return await _respond_no_data_closed(
+                llm_output,
+                state_response,
+                store=store,
+                llm=llm,
+                tool_execution=tool_execution,
+                tool_executions=tool_executions,
+            )
         places = (
             tool_context.places.data if tool_context.places and tool_context.places.data else []
         )
@@ -1490,6 +1680,11 @@ async def run_agent_flow(
                 visit_datetime=None,
                 pairwise_distances_km=_build_pairwise_distances_km(schedule_candidates, places),
             )
+            await _emit_progress(
+                stream_event_sink,
+                "scheduling",
+                "기존 일정은 유지하고 바꿀 장소를 다시 편성하고 있어요.",
+            )
             schedule_result = await plan_partial_schedule(partial_request, llm)
         else:
             schedule_request = SchedulePlanningRequest(
@@ -1498,7 +1693,18 @@ async def run_agent_flow(
                 visit_datetime=None,
                 pairwise_distances_km=_build_pairwise_distances_km(schedule_candidates, places),
             )
+            await _emit_progress(
+                stream_event_sink,
+                "scheduling",
+                "장소 순서와 머무는 시간을 구성하고 있어요.",
+            )
             schedule_result = await plan_schedule(schedule_request, llm)
+
+        await _emit_progress(
+            stream_event_sink,
+            "composing_message",
+            "일정 결과를 정리하고 있어요.",
+        )
 
         # 7) A → B: 일정에 실제로 포함된 장소만 기록한다(6.3절) — LLM이 제외한
         #    후보는 기록하지 않아 이후 RECOMMEND 요청에서 재노출될 수 있다.
@@ -1521,6 +1727,40 @@ async def run_agent_flow(
                     ],
                 ),
                 store=store,
+            )
+        else:
+            # 후보가 부족해서 일정을 못 짠 경우, route_summary 메시지만 반환하지 말고
+            # 명시적 되묻기로 사용자에게 선택지를 준다(실사용 피드백, 2026-08-13).
+            # 버튼 클릭이 SCHEDULE intent로 올바르게 라우팅되어야 다시 SCHEDULE을 시도하지,
+            # 프론트가 텍스트 파싱으로 버튼을 만들면 LLM 분류가 틀린다.
+            llm_output = llm_output.model_copy(
+                update={
+                    "status": OutputStatus.NEEDS_CLARIFICATION,
+                    "clarification": ClarificationPayload(
+                        code="schedule_no_candidates",
+                        message=_SCHEDULE_NO_CANDIDATES_MESSAGE,
+                        options=[
+                            ClarificationOption(
+                                id=option_id,
+                                label=label,
+                                resolved_intent=Intent.SCHEDULE,
+                            )
+                            for option_id, label in _SCHEDULE_NO_CANDIDATES_OPTIONS
+                        ],
+                    ),
+                }
+            )
+            _remember_clarification(state_response.session_id, "schedule_no_candidates", store)
+            message = await compose_chat_message(llm_output, llm=llm)
+            return AgentResponse(
+                llm_output=llm_output,
+                state=state_response,
+                recommendations=None,
+                schedule=None,
+                message=message,
+                llm_execution=get_llm_execution_metadata(),
+                tool_execution=tool_execution,
+                tool_executions=tool_executions,
             )
 
         # 8) A: 최종 응답 조립. recommendations는 채우지 않는다(AgentResponse
@@ -1552,36 +1792,15 @@ async def run_agent_flow(
     shown = [*recommendations.recommendations, *recommendations.unverified_recommendations]
     # 결과 0건이 전부 폐점 후보 제외 때문이면(D가 excluded_all_closed로 표시)
     # 일반 _NO_DATA_MESSAGE 대신 "운영중이 아닌 곳도 볼래요" 되묻기를 띄운다.
-    # 이미 그 선택지로 재조회했는데도 여전히 0건이면(ignore_operating_hours=True인데
-    # excluded_all_closed) 무한 되묻기를 피하려고 다시 띄우지 않고 그대로 진행한다.
-    already_ignoring_hours = bool(
-        clarification_resolution is not None and clarification_resolution.ignore_operating_hours
-    )
-    if not shown and recommendations.excluded_all_closed and not already_ignoring_hours:
-        llm_output = llm_output.model_copy(
-            update={
-                "status": OutputStatus.NEEDS_CLARIFICATION,
-                "clarification": ClarificationPayload(
-                    code="no_data_closed",
-                    message=_NO_DATA_CLOSED_MESSAGE,
-                    options=[
-                        ClarificationOption(
-                            id=_NO_DATA_CLOSED_SHOW_CLOSED,
-                            label="운영 중이 아닌 곳도 볼게요",
-                            resolved_intent=llm_output.intent,
-                        ),
-                    ],
-                ),
-            }
-        )
-        _remember_clarification(state_response.session_id, "no_data_closed", store)
-        message = await compose_chat_message(llm_output, llm=llm)
-        return AgentResponse(
-            llm_output=llm_output,
-            state=state_response,
-            recommendations=None,
-            message=message,
-            llm_execution=get_llm_execution_metadata(),
+    # 이미 그 선택지로 재조회했거나 TTL 안이라 계속 무시 중인데도 여전히
+    # 0건이면(ignore_operating_hours=True인데 excluded_all_closed) 무한
+    # 되묻기를 피하려고 다시 띄우지 않고 그대로 진행한다.
+    if not shown and recommendations.excluded_all_closed and not effective_ignore_operating_hours:
+        return await _respond_no_data_closed(
+            llm_output,
+            state_response,
+            store=store,
+            llm=llm,
             tool_execution=tool_execution,
             tool_executions=tool_executions,
         )

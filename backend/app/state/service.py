@@ -99,6 +99,9 @@ class SessionContextResponse(BaseModel):
     # 직전 턴이 되묻기로 끝났다면 그 사유 코드. A가 이번 턴의 조건 병합 방식을
     # 정할 때 읽는다.
     pending_clarification: str | None = None
+    # "운영 중이 아닌 곳도 볼게요"가 유효한 만료 시각. A가 now와 비교해서
+    # 이번 턴에도 폐점 후보를 계속 포함할지 판정한다(state.py는 판단하지 않음).
+    ignore_operating_hours_until: datetime | None = None
     user_conditions: UserConditions = Field(default_factory=UserConditions)
     api_context: ApiContextView = Field(default_factory=ApiContextView)
     condition_version: int = 0
@@ -182,6 +185,23 @@ class SetPendingClarificationRequest(BaseModel):
 class SetPendingClarificationResponse(BaseModel):
     session_id: str
     pending_clarification: str | None
+
+
+class SetIgnoreOperatingHoursRequest(BaseModel):
+    """"운영 중이 아닌 곳도 볼게요" 선택을 일정 시간 기억하는 요청.
+
+    A가 no_data_closed 되묻기의 "운영 중이 아닌 곳도 볼게요"를 해소할 때만
+    호출한다. until을 None으로 보내면 즉시 해제한다(수동 초기화용, 현재는
+    호출부 없음 — 자연 만료는 조회 시점에 A가 now와 비교해서 판정한다).
+    """
+
+    session_id: str
+    until: datetime | None = None
+
+
+class SetIgnoreOperatingHoursResponse(BaseModel):
+    session_id: str
+    ignore_operating_hours_until: datetime | None
 
 
 class SetLastIntentRequest(BaseModel):
@@ -417,6 +437,7 @@ def get_session_context(
         last_recommended_run_id=history_module.get_last_recommended_run_id(store, sid),
         last_intent=state.last_intent,
         pending_clarification=state.pending_clarification,
+        ignore_operating_hours_until=state.ignore_operating_hours_until,
         user_conditions=state.user_conditions,
         api_context=_build_api_context_view(state),
         condition_version=state.condition_version,
@@ -546,6 +567,32 @@ def set_pending_clarification(
     return SetPendingClarificationResponse(
         session_id=state.session_id,
         pending_clarification=state.pending_clarification,
+    )
+
+
+@_wrap_store_errors
+def set_ignore_operating_hours_until(
+    request: SetIgnoreOperatingHoursRequest,
+    store: StateStore | None = None,
+) -> SetIgnoreOperatingHoursResponse | None:
+    """"운영 중이 아닌 곳도 볼게요" 만료 시각을 저장하거나(until) 지운다(None).
+
+    세션이 없으면 None을 반환하며 세션을 생성하지 않는다(api_context/
+    pending_clarification 갱신 함수들과 같은 방어 패턴).
+    """
+    store = store or get_store()
+
+    state = store.get_state(request.session_id)
+    if state is None:
+        return None
+
+    state.ignore_operating_hours_until = request.until
+    session_module.touch(state)
+    store.save_state(state)
+
+    return SetIgnoreOperatingHoursResponse(
+        session_id=state.session_id,
+        ignore_operating_hours_until=state.ignore_operating_hours_until,
     )
 
 
