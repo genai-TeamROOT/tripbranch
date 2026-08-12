@@ -54,7 +54,10 @@ def get_llm_provider() -> LLMProvider:
     return RealGeminiProvider(
         api_key=_require_key(settings.llm_api_key, "LLM_API_KEY"),
         model_names=settings.resolved_llm_models,
-        timeout_seconds=settings.external_api_timeout_seconds,
+        # Tool/DB 호출과 분리된 LLM 전용 타임아웃(설정 없으면 EXTERNAL_API_TIMEOUT_SECONDS로
+        # 폴백) — EXTERNAL_API_TIMEOUT_SECONDS를 Gemini 지연 때문에 올리면 TourAPI/Naver/
+        # Supabase까지 같은 값을 물려받는 문제가 있어 분리했다(2026-08-11).
+        timeout_seconds=settings.resolved_llm_timeout_seconds,
         max_retries=settings.external_api_retry_count,
     )
 

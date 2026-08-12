@@ -181,13 +181,16 @@ async def test_call_structured_retries_once_on_validation_error_then_raises() ->
 
 @pytest.mark.asyncio
 async def test_schedule_plan_retries_once_when_items_count_out_of_range_then_succeeds() -> None:
-    """SCHEDULE-07: ScheduleLLMPlan.items의 min_length=3/max_length=5 제약도
+    """SCHEDULE-10: ScheduleLLMPlan.items의 min_length=1/max_length=5 제약도
     IntentClassificationResult와 같은 공용 _call_structured() 재시도 경로를 탄다.
-    1차 시도가 2개만 선택해 검증에 실패해도, 재시도에서 3개를 채우면 성공한다."""
+    1차 시도가 6개를 선택해(max_length=5 위반) 검증에 실패해도, 재시도에서
+    5개로 줄이면 성공한다(SCHEDULE-07에서는 2개 미달을 예시로 썼지만, 이제
+    2개는 구조적으로 유효해 더 이상 검증 실패 예시가 아니다 — 상한 위반으로
+    바꿔 같은 재시도 경로를 계속 검증한다)."""
     provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
     call_count = 0
 
-    async def too_few_then_valid(
+    async def too_many_then_valid(
         system_instruction: str, user_input: str, response_model: type, operation: str
     ) -> ScheduleLLMPlan:
         nonlocal call_count
@@ -195,8 +198,10 @@ async def test_schedule_plan_retries_once_when_items_count_out_of_range_then_suc
         if call_count == 1:
             return response_model.model_validate(
                 {
-                    "items": [_schedule_item_dict("p1", 1), _schedule_item_dict("p2", 2)],
-                    "total_duration_min": 120,
+                    "items": [
+                        _schedule_item_dict(f"p{i}", i) for i in range(1, 7)
+                    ],
+                    "total_duration_min": 360,
                     "route_summary": "테스트 동선",
                 }
             )
@@ -212,13 +217,13 @@ async def test_schedule_plan_retries_once_when_items_count_out_of_range_then_suc
             }
         )
 
-    with patch.object(provider, "_generate", side_effect=too_few_then_valid):
+    with patch.object(provider, "_generate", side_effect=too_many_then_valid):
         result = await provider._call_structured(
             "sys", "user", ScheduleLLMPlan, operation="generate_schedule_plan"
         )
 
     assert len(result.items) == 3
-    assert call_count == 2  # 최초 시도(2개, 검증 실패) + 1회 재시도(3개, 성공)
+    assert call_count == 2  # 최초 시도(6개, 검증 실패) + 1회 재시도(3개, 성공)
 
 
 @pytest.mark.asyncio

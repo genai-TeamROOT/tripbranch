@@ -14,7 +14,7 @@ import pytest
 
 from app.errors import AppError
 from app.providers.contracts import ProviderSource, provider_result
-from app.schedule.planner import plan_partial_schedule, plan_schedule
+from app.schedule.planner import _round_up_arrival, plan_partial_schedule, plan_schedule
 from app.schedule.schemas import (
     ScheduleLLMPlan,
     SchedulePartialFillRequest,
@@ -57,12 +57,14 @@ class _RecordingLLM:
         return provider_result(self._plan, source=ProviderSource.FAKE_LLM)
 
 
-def _sample_item(place_id: str, order: int) -> ScheduleItem:
+def _sample_item(
+    place_id: str, order: int, *, estimated_arrival: str = "15:00"
+) -> ScheduleItem:
     return ScheduleItem(
         order=order,
         place_id=place_id,
         place_name=f"장소 {place_id}",
-        estimated_arrival="15:00",
+        estimated_arrival=estimated_arrival,
         estimated_duration_min=60,
         travel_to_next_min=None,
         reason="테스트 이유",
@@ -134,10 +136,10 @@ async def test_plan_schedule_normalizes_inconsistent_empty_plan() -> None:
     문장으로 채워 보내는 비일관 응답을 실제로 준 적이 있다(2026-08-10 real Gemini
     수동 테스트). items가 비면 나머지 필드도 결정적으로 덮어써야 한다.
 
-    SCHEDULE-07부터 ScheduleLLMPlan.items에 min_length=3이 걸려 있어 일반적인
-    생성 경로로는 이런 객체를 더 이상 만들 수 없다(검증 실패 → 재시도 → 그래도
-    실패하면 예외). 이 테스트는 검증을 우회하는 model_construct()로 "어떤 경로로든
-    비일관 객체가 들어왔을 때"의 방어 로직 자체를 계속 검증한다."""
+    ScheduleLLMPlan.items에는 min_length=1이 걸려 있어(SCHEDULE-10) 일반적인
+    생성 경로로는 이런 객체(items=[])를 더 이상 만들 수 없다(검증 실패 → 재시도
+    → 그래도 실패하면 예외). 이 테스트는 검증을 우회하는 model_construct()로
+    "어떤 경로로든 비일관 객체가 들어왔을 때"의 방어 로직 자체를 계속 검증한다."""
     inconsistent_plan = ScheduleLLMPlan.model_construct(
         items=[],
         total_duration_min=180,
@@ -184,6 +186,69 @@ async def test_plan_schedule_passes_candidates_and_distances_through_untouched()
     assert llm.received_request.pairwise_distances_km == {("place-1", "place-2"): 1.2}
 
 
+class TestPlanScheduleRoundsArrivalUpToTenMinutes:
+    """SCHEDULE-11(팀 제안, 2026-08-12): 도착시각(estimated_arrival)만 10분 단위로
+    올림한다. 체류시간(estimated_duration_min)·이동시간(travel_to_next_min)은
+    LLM 추정치를 그대로 보여준다 — 반올림 대상이 아니다."""
+
+    @pytest.mark.asyncio
+    async def test_어중간한_도착시각을_10분_단위로_올린다(self) -> None:
+        plan = ScheduleLLMPlan(
+            items=[
+                _sample_item("place-1", 1, estimated_arrival="11:59"),
+                _sample_item("place-2", 2, estimated_arrival="14:14"),
+                _sample_item("place-3", 3, estimated_arrival="15:30"),
+            ],
+            total_duration_min=180,
+            route_summary="테스트 동선 요약",
+        )
+        llm = _RecordingLLM(plan)
+        request = SchedulePlanningRequest(
+            candidates=_three_candidates(),
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 7, 10, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, llm)
+
+        assert [item.estimated_arrival for item in result.items] == [
+            "12:00",
+            "14:20",
+            "15:30",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_체류시간과_이동시간은_건드리지_않는다(self) -> None:
+        item = ScheduleItem(
+            order=1,
+            place_id="place-1",
+            place_name="장소 place-1",
+            estimated_arrival="11:59",
+            estimated_duration_min=37,
+            travel_to_next_min=13,
+            reason="테스트 이유",
+        )
+        plan = ScheduleLLMPlan(
+            items=[item, _sample_item("place-2", 2), _sample_item("place-3", 3)],
+            total_duration_min=180,
+            route_summary="테스트 동선 요약",
+        )
+        llm = _RecordingLLM(plan)
+        request = SchedulePlanningRequest(
+            candidates=_three_candidates(),
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 7, 10, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, llm)
+
+        assert result.items[0].estimated_arrival == "12:00"
+        assert result.items[0].estimated_duration_min == 37
+        assert result.items[0].travel_to_next_min == 13
+
+
 class TestPlanScheduleSkipsLLMWhenCandidatesTooFew:
     """SCHEDULE-07: 후보가 3개 미만이면 LLM을 아예 부르지 않는다 — 9절 "D 후보
     3개 미만" 미결 사항 해소. ScheduleLLMPlan.items의 min_length=3 제약을 애초에
@@ -228,6 +293,63 @@ class TestPlanScheduleSkipsLLMWhenCandidatesTooFew:
         assert llm.call_count == 1
 
 
+class TestPlanScheduleCandidateGuardIsDynamic:
+    """SCHEDULE-10: 후보 부족 가드의 최솟값이 고정 3이 아니라 target_item_range()가
+    계산한 값을 쓴다 — time_available이 짧으면(예: 90분) 최솟값이 1로 낮아져,
+    후보가 3개 미만이어도 LLM을 정상 호출해야 한다."""
+
+    @pytest.mark.asyncio
+    async def test_짧은_시간이면_후보_한개로도_LLM을_부른다(self) -> None:
+        one_item_plan = ScheduleLLMPlan(
+            items=[_sample_item("place-1", 1)],
+            total_duration_min=60,
+            route_summary="테스트 동선 요약",
+        )
+        llm = _RecordingLLM(one_item_plan)
+        request = SchedulePlanningRequest(
+            candidates=[_candidate("place-1")],
+            conditions=UserConditions(time_available=90),
+            visit_datetime=datetime(2026, 8, 7, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, llm)
+
+        assert llm.call_count == 1
+        assert len(result.items) == 1
+
+    @pytest.mark.asyncio
+    async def test_짧은_시간이어도_후보가_아예_없으면_여전히_스킵한다(self) -> None:
+        llm = _RecordingLLM(_sample_plan())
+        request = SchedulePlanningRequest(
+            candidates=[],
+            conditions=UserConditions(time_available=90),
+            visit_datetime=datetime(2026, 8, 7, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, llm)
+
+        assert llm.call_count == 0
+        assert result.items == []
+
+    @pytest.mark.asyncio
+    async def test_시간_제한이_없으면_여전히_3개_미만에서_스킵한다(self) -> None:
+        """기존 SCHEDULE-07 동작(시간 제한 없을 때 최소 3개) 회귀 방지."""
+        llm = _RecordingLLM(_sample_plan())
+        request = SchedulePlanningRequest(
+            candidates=[_candidate("place-1"), _candidate("place-2")],
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 7, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, llm)
+
+        assert llm.call_count == 0
+        assert result.items == []
+
+
 class _RecordingFillLLM:
     """generate_schedule_fill()에 실제로 어떤 request가 넘어오는지 기록하는 더블."""
 
@@ -242,12 +364,12 @@ class _RecordingFillLLM:
         return provider_result(self._plan, source=ProviderSource.FAKE_LLM)
 
 
-def _pinned(place_id: str, order: int) -> ScheduleItem:
+def _pinned(place_id: str, order: int, *, estimated_arrival: str = "14:00") -> ScheduleItem:
     return ScheduleItem(
         order=order,
         place_id=place_id,
         place_name=f"장소 {place_id}",
-        estimated_arrival="14:00",
+        estimated_arrival=estimated_arrival,
         estimated_duration_min=60,
         travel_to_next_min=15,
         reason="기존 일정 유지",
@@ -342,3 +464,67 @@ class TestPlanPartialSchedule:
 
         assert llm.call_count == 0
         assert [item.place_id for item in result.items] == ["place-1", "place-2"]
+
+
+class TestPlanPartialScheduleRoundsArrivalUpToTenMinutes:
+    """SCHEDULE-11(팀 제안, 2026-08-12): pinned 항목·새로 채운 항목 모두 최종
+    결과에서는 도착시각이 10분 단위로 올림돼 있어야 한다."""
+
+    @pytest.mark.asyncio
+    async def test_pinned과_새_항목_도착시각_모두_올림한다(self) -> None:
+        pinned = [_pinned("place-1", 1, estimated_arrival="13:52")]
+        new_item = _sample_item("place-2", 2, estimated_arrival="15:07")
+        llm = _RecordingFillLLM(SchedulePartialLLMPlan(new_items=[new_item]))
+        request = SchedulePartialFillRequest(
+            pinned_items=pinned,
+            target_orders=[2],
+            candidates=[_candidate("place-2")],
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 11, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_partial_schedule(request, llm)
+
+        assert [item.estimated_arrival for item in result.items] == ["14:00", "15:10"]
+
+    @pytest.mark.asyncio
+    async def test_대체_후보가_없어_pinned만_유지할_때도_올림한다(self) -> None:
+        pinned = [_pinned("place-1", 1, estimated_arrival="13:52")]
+        llm = _RecordingFillLLM(SchedulePartialLLMPlan(new_items=[]))
+        request = SchedulePartialFillRequest(
+            pinned_items=pinned,
+            target_orders=[2],
+            candidates=[],
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 11, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_partial_schedule(request, llm)
+
+        assert [item.estimated_arrival for item in result.items] == ["14:00"]
+
+
+class TestRoundUpArrival:
+    """_round_up_arrival()의 경계값 — plan_schedule()/plan_partial_schedule() 통합
+    테스트로는 다루기 번거로운 자정 넘김·이미 정각·잘못된 형식 케이스만 단위로 확인한다."""
+
+    @pytest.mark.parametrize(
+        ("given", "expected"),
+        [
+            ("11:59", "12:00"),
+            ("14:14", "14:20"),
+            ("15:30", "15:30"),  # 이미 10분 단위면 그대로
+            ("00:00", "00:00"),
+            ("09:01", "09:10"),
+        ],
+    )
+    def test_10분_단위로_올림한다(self, given: str, expected: str) -> None:
+        assert _round_up_arrival(given) == expected
+
+    def test_자정을_넘기면_다음날_00시대로_감싼다(self) -> None:
+        assert _round_up_arrival("23:55") == "00:00"
+
+    def test_형식이_깨진_값은_그대로_돌려준다(self) -> None:
+        assert _round_up_arrival("점심시간") == "점심시간"
