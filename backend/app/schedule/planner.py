@@ -13,7 +13,11 @@ from datetime import datetime
 
 from app.errors import AppError
 from app.providers.protocols import LLMProvider
-from app.schedule.schemas import SchedulePartialFillRequest, SchedulePlanningRequest
+from app.schedule.schemas import (
+    SchedulePartialFillRequest,
+    SchedulePlanningRequest,
+    target_item_range,
+)
 from app.schemas import ScheduleItem, ScheduleResult
 from app.state.schema import now_kst
 
@@ -22,12 +26,14 @@ _NO_CANDIDATES_ROUTE_SUMMARY = (
     "다른 지역이나 다른 종류의 장소로 다시 요청해볼까요?"
 )
 
-# ScheduleLLMPlan.items에 min_length=3 제약을 걸어둔 상태라(app/schedule/schemas.py),
-# 후보가 3개 미만이면 LLM이 애초에 그 제약을 만족시킬 방법이 없다 — 재시도를 줘도
-# 똑같이 실패해 llm_output_invalid(502)만 두 번 반복하고 끝난다. 그래서 이 경우엔
-# LLM을 아예 부르지 않고 여기서 바로 정규화된 안내로 반환한다(SCHEDULE-07, 9절
-# "D 후보 3개 미만" 미결 사항 해소).
-_MIN_CANDIDATES_FOR_SCHEDULE = 3
+# ScheduleLLMPlan.items의 최소 개수가 이번 요청의 time_available에 따라 달라지므로
+# (target_item_range(), SCHEDULE-10) 후보 부족 가드도 고정 3이 아니라 그 최솟값을
+# 쓴다 — 예를 들어 "2시간 코스 짜줘"는 최소 1개면 충분한데, 후보가 2개뿐이라고
+# 무조건 "충분히 찾지 못했다"고 안내하면 실제로는 만들 수 있는 일정도 막힌다.
+# 후보가 이 최솟값보다 적으면 LLM이 애초에 그 개수를 만족시킬 방법이 없다 —
+# 재시도를 줘도 똑같이 실패해 llm_output_invalid(502)만 두 번 반복하고 끝난다.
+# 그래서 이 경우엔 LLM을 아예 부르지 않고 여기서 바로 정규화된 안내로 반환한다
+# (SCHEDULE-07, 9절 "D 후보 3개 미만" 미결 사항 해소).
 
 
 def _build_basis_note(visit_datetime: datetime) -> str:
@@ -58,10 +64,12 @@ async def plan_schedule(
 
     effective_visit_datetime = request.visit_datetime or now_kst()
 
-    # 후보가 3개 미만이면 LLM을 부르지 않는다 — ScheduleLLMPlan.items의
-    # min_length=3 제약을 애초에 만족시킬 수 없어 호출해도 재시도까지 실패로
-    # 끝날 뿐이다(SCHEDULE-07).
-    if len(request.candidates) < _MIN_CANDIDATES_FOR_SCHEDULE:
+    # 이번 요청의 time_available에 맞는 최소 개수를 구해서 후보 수와 비교한다
+    # (SCHEDULE-10). 후보가 그 최솟값보다 적으면 LLM을 부르지 않는다 —
+    # ScheduleLLMPlan.items가 그 개수를 애초에 만족시킬 수 없어 호출해도
+    # 재시도까지 실패로 끝날 뿐이다(SCHEDULE-07의 가드를 동적 최솟값으로 확장).
+    min_items, _max_items = target_item_range(request.conditions.time_available)
+    if len(request.candidates) < min_items:
         return ScheduleResult(
             items=[],
             total_duration_min=0,

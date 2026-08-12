@@ -14,6 +14,7 @@ import pytest
 from app.providers.gemini_prompts import (
     build_intent_classification_instruction,
     build_modify_extraction_instruction,
+    build_schedule_planning_instruction,
 )
 from app.providers.stub import FakeLLMProvider
 from app.schedule.schemas import SchedulePlanningRequest
@@ -986,3 +987,35 @@ async def test_generate_schedule_plan_selects_up_to_three_candidates() -> None:
     )
     assert result.total_duration_min > 0
     assert result.route_summary
+
+
+class TestBuildSchedulePlanningInstructionDynamicCount:
+    """SCHEDULE-10: 활동 가능 시간(time_available_min)에 따라 프롬프트의 목표
+    개수 지시가 달라진다 — 짧은 시간에도 3~5개를 고정 지시하던 문제 해소."""
+
+    def test_시간_제한이_없으면_기존_3에서_5개_문구를_쓴다(self):
+        instruction = build_schedule_planning_instruction(time_available_min=None)
+        assert "3~5개" in instruction
+        assert "3개 이상 5개 이하" in instruction
+        assert "3~4시간 내외로 구성" in instruction
+
+    def test_두시간_미만이면_한두개_문구를_쓴다(self):
+        instruction = build_schedule_planning_instruction(time_available_min=90)
+        assert "1~2개" in instruction
+        assert "1개 이상 2개 이하" in instruction
+        assert "3~5개" not in instruction
+        assert "활동 가능 시간이 90분" in instruction
+
+    def test_두시간_이상_세시간반_미만이면_두네개_문구를_쓴다(self):
+        instruction = build_schedule_planning_instruction(time_available_min=180)
+        assert "2~4개" in instruction
+        assert "2개 이상 4개 이하" in instruction
+
+    def test_세시간반_이상이면_다시_3에서_5개_문구를_쓴다(self):
+        instruction = build_schedule_planning_instruction(time_available_min=240)
+        assert "3~5개" in instruction
+        assert "활동 가능 시간이 240분" in instruction
+
+    def test_짧은_시간에는_체류시간_비현실적_단축_경고_문구가_있다(self):
+        instruction = build_schedule_planning_instruction(time_available_min=90)
+        assert "비현실적으로 짧게" in instruction

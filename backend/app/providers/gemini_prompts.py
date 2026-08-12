@@ -12,9 +12,11 @@ from __future__ import annotations
 
 from datetime import date
 
-from app.schedule.schemas import SchedulePartialFillRequest, SchedulePlanningRequest
-from app.schemas import GeneralTopic, Intent, UserConditions
-from app.schedule.schemas import SchedulePlanningRequest
+from app.schedule.schemas import (
+    SchedulePartialFillRequest,
+    SchedulePlanningRequest,
+    target_item_range,
+)
 from app.schemas import CompareCriteria, GeneralTopic, Intent, UserConditions
 
 # B의 LLMOps Trace(record_trace(prompt_version=...))와 StateApplyRequest.prompt_version에
@@ -609,29 +611,51 @@ JSON의 items에 있는 사실만 사용해 3~6줄의 비교 설명을 작성하
   근거를 짧게 붙인 자연스러운 추천 결론을 포함하세요."""
 
 
-def build_schedule_planning_instruction() -> str:
+def build_schedule_planning_instruction(time_available_min: int | None = None) -> str:
     """INT-07 SCHEDULE 일정 편성 system instruction.
     (docs/design/int-07-schedule.md 6.1~6.2절)
 
     format_schedule_planning_context()가 만드는 텍스트가 contents로 같이
     전달된다는 전제로 규칙만 담는다 — 다른 build_*_instruction()과 달리 원문
     사용자 발화가 아니라 구조화된 후보/조건/거리 데이터가 입력이기 때문이다.
+
+    time_available_min으로 이번 요청에 맞는 목표 개수 범위를 계산해(target_item_range())
+    프롬프트에 직접 반영한다(SCHEDULE-10). 이전에는 항상 "3~5개"로 고정 지시해서,
+    활동 가능 시간이 짧은 요청(예: "2시간 코스 짜줘")에서 LLM이 체류시간을
+    비현실적으로 줄이거나 개수 지시 자체를 못 맞춰 검증 실패로 이어지는 문제가
+    있었다 — 요청마다 실제로 달성 가능한 개수를 알려주는 쪽으로 바꿨다.
     """
 
-    return """당신은 TripBranch의 일정 편성기입니다. 함께 전달된 후보 목록 중
-시간·동선 효율을 고려해 3~5개를 선택하고 방문 순서를 정해 반환하세요.
+    min_items, max_items = target_item_range(time_available_min)
+    count_phrase = f"{min_items}개" if min_items == max_items else f"{min_items}~{max_items}개"
+
+    if time_available_min is None:
+        duration_rule = (
+            "조건에 활동 가능 시간(time_available, 분)이 없으면 3~4시간 내외로 "
+            "구성하세요."
+        )
+    else:
+        duration_rule = (
+            f"활동 가능 시간이 {time_available_min}분이니 총 소요 시간이 그 안에 "
+            "들어오게 하세요. 시간이 짧다면 무리하게 채우려 하지 말고 개수를 "
+            "줄이세요."
+        )
+
+    return f"""당신은 TripBranch의 일정 편성기입니다. 함께 전달된 후보 목록 중
+시간·동선 효율을 고려해 {count_phrase}를 선택하고 방문 순서를 정해 반환하세요.
 
 규칙:
-- items는 반드시 3개 이상 5개 이하여야 합니다. 이 범위를 벗어나면 잘못된
-  응답으로 처리되어 거부됩니다 — 후보가 몇 개든(항상 3개 이상 전달됩니다)
-  이 규칙을 지켜야 합니다.
-- 후보 중 3~5개만 선택합니다. 나머지는 자동 제외됩니다.
+- items는 반드시 {min_items}개 이상 {max_items}개 이하여야 합니다. 이 범위를
+  벗어나면 잘못된 응답으로 처리되어 거부됩니다 — 후보가 몇 개든(항상 {min_items}개
+  이상 전달됩니다) 이 규칙을 지켜야 합니다.
+- 후보 중 {count_phrase}만 선택합니다. 나머지는 자동 제외됩니다.
 - 후보 간 거리 정보를 근거로 이동 동선이 비효율적이지 않게 순서를 정하세요
   (가까운 곳끼리 묶는 것을 우선 고려).
-- 조건에 활동 가능 시간(time_available, 분)이 있으면 총 소요 시간이 그 안에
-  들어오게 하세요. 없으면 3~4시간 내외로 구성하세요.
+- {duration_rule}
 - 각 장소의 estimated_duration_min은 장소 성격에 맞게 합리적으로 추정하세요
-  (카페 60분, 관광지 90분 등).
+  (카페 60분, 관광지 90분 등). 활동 가능 시간이 짧다면 그 안에서 현실적으로
+  줄여서 잡으세요 — 개수를 맞추겠다고 체류시간을 비현실적으로 짧게(예: 카페
+  10분) 잡지 마세요.
 - estimated_arrival은 "HH:MM" 형식이며, 전달된 시작 시각부터 순서대로
   체류시간+이동시간을 누적해 계산하세요.
 - travel_to_next_min은 전달된 거리 정보를 도보/대중교통 기준으로 환산한

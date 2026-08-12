@@ -134,10 +134,10 @@ async def test_plan_schedule_normalizes_inconsistent_empty_plan() -> None:
     문장으로 채워 보내는 비일관 응답을 실제로 준 적이 있다(2026-08-10 real Gemini
     수동 테스트). items가 비면 나머지 필드도 결정적으로 덮어써야 한다.
 
-    SCHEDULE-07부터 ScheduleLLMPlan.items에 min_length=3이 걸려 있어 일반적인
-    생성 경로로는 이런 객체를 더 이상 만들 수 없다(검증 실패 → 재시도 → 그래도
-    실패하면 예외). 이 테스트는 검증을 우회하는 model_construct()로 "어떤 경로로든
-    비일관 객체가 들어왔을 때"의 방어 로직 자체를 계속 검증한다."""
+    ScheduleLLMPlan.items에는 min_length=1이 걸려 있어(SCHEDULE-10) 일반적인
+    생성 경로로는 이런 객체(items=[])를 더 이상 만들 수 없다(검증 실패 → 재시도
+    → 그래도 실패하면 예외). 이 테스트는 검증을 우회하는 model_construct()로
+    "어떤 경로로든 비일관 객체가 들어왔을 때"의 방어 로직 자체를 계속 검증한다."""
     inconsistent_plan = ScheduleLLMPlan.model_construct(
         items=[],
         total_duration_min=180,
@@ -226,6 +226,63 @@ class TestPlanScheduleSkipsLLMWhenCandidatesTooFew:
         await plan_schedule(request, llm)
 
         assert llm.call_count == 1
+
+
+class TestPlanScheduleCandidateGuardIsDynamic:
+    """SCHEDULE-10: 후보 부족 가드의 최솟값이 고정 3이 아니라 target_item_range()가
+    계산한 값을 쓴다 — time_available이 짧으면(예: 90분) 최솟값이 1로 낮아져,
+    후보가 3개 미만이어도 LLM을 정상 호출해야 한다."""
+
+    @pytest.mark.asyncio
+    async def test_짧은_시간이면_후보_한개로도_LLM을_부른다(self) -> None:
+        one_item_plan = ScheduleLLMPlan(
+            items=[_sample_item("place-1", 1)],
+            total_duration_min=60,
+            route_summary="테스트 동선 요약",
+        )
+        llm = _RecordingLLM(one_item_plan)
+        request = SchedulePlanningRequest(
+            candidates=[_candidate("place-1")],
+            conditions=UserConditions(time_available=90),
+            visit_datetime=datetime(2026, 8, 7, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, llm)
+
+        assert llm.call_count == 1
+        assert len(result.items) == 1
+
+    @pytest.mark.asyncio
+    async def test_짧은_시간이어도_후보가_아예_없으면_여전히_스킵한다(self) -> None:
+        llm = _RecordingLLM(_sample_plan())
+        request = SchedulePlanningRequest(
+            candidates=[],
+            conditions=UserConditions(time_available=90),
+            visit_datetime=datetime(2026, 8, 7, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, llm)
+
+        assert llm.call_count == 0
+        assert result.items == []
+
+    @pytest.mark.asyncio
+    async def test_시간_제한이_없으면_여전히_3개_미만에서_스킵한다(self) -> None:
+        """기존 SCHEDULE-07 동작(시간 제한 없을 때 최소 3개) 회귀 방지."""
+        llm = _RecordingLLM(_sample_plan())
+        request = SchedulePlanningRequest(
+            candidates=[_candidate("place-1"), _candidate("place-2")],
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 7, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, llm)
+
+        assert llm.call_count == 0
+        assert result.items == []
 
 
 class _RecordingFillLLM:
