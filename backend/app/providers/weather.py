@@ -32,6 +32,9 @@ _PRECIPITATION_PTY_CODES = {"1", "2", "3", "4", "5", "6", "7"}
 # SKY(하늘상태): 1 맑음, 3 구름많음, 4 흐림.
 _KNOWN_SKY_CODES = {"1", "3", "4"}
 
+# resultCode 03(NODATA_ERROR): 요청은 정상이나 그 격자·발표시각에 자료가 없다.
+_NO_DATA_RESULT_CODE = "03"
+
 
 def resolve_base_date_time(now: datetime) -> tuple[str, str]:
     """주어진 시각 기준으로 조회 가능한 가장 최신 초단기예보 base_date/base_time을 구한다.
@@ -198,16 +201,28 @@ class RealWeatherProvider:
             ) from None
 
         header = payload.get("response", {}).get("header", {})
-        if header.get("resultCode") != "00":
+        result_code = header.get("resultCode")
+        if result_code != "00":
             logger.error(
                 "KMA 응답 오류 (resultCode=%s, resultMsg=%s, grid=%s/%s, base=%s %s)",
-                header.get("resultCode"),
+                result_code,
                 header.get("resultMsg"),
                 nx,
                 ny,
                 base_date,
                 base_time,
             )
+            # 03은 업스트림이 정상 처리한 끝에 "그 격자·발표시각에 자료가 없다"고
+            # 답한 것이라, 서비스키 미등록(30)이나 호출 한도 초과(22)와 성격이
+            # 다르다. 즉시 재시도해도 결과가 같으므로 결측으로 구분해 올린다 -
+            # 한 코드로 뭉뚱그리면 로그에서 설정 사고와 정상 결측이 안 갈린다.
+            if result_code == _NO_DATA_RESULT_CODE:
+                raise AppError(
+                    code="weather_no_data",
+                    message="사용 가능한 날씨 예보가 없습니다.",
+                    status_code=502,
+                    retryable=False,
+                )
             raise AppError(
                 code="weather_unavailable",
                 message=header.get("resultMsg", "날씨 정보를 가져오지 못했습니다."),
