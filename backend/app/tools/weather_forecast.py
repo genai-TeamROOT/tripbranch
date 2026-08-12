@@ -130,9 +130,16 @@ class GetWeatherForecastTool:
                 provider_metadata=(provider_result.metadata,),
             )
 
-        if query.visit_at is not None and not (
-            slots[0].forecast_for <= requested_visit_at <= slots[-1].forecast_for
-        ):
+        # 범위 밖 판정은 뒤쪽(예보 마지막 시각 초과)에만 적용한다. 앞쪽으로 벗어나는
+        # 건 초단기예보가 발표시각+1시간부터 시작하는 데서 오는 정상 상황이라,
+        # 가장 이른 slot으로 대체하면 답할 수 있다 - 막을 이유가 없다.
+        #
+        # 매시 45분이 넘으면 이번 시각 발표분(HH30)으로 갈아타는데(resolve_base_date_time),
+        # 그 발표분의 첫 예보시각은 (HH+1):00이다. 그래서 visit_at=현재 시각으로
+        # 조회하는 호출부(agent_context)는 매시 45~59분 사이 항상 앞쪽으로 벗어났고,
+        # 아래 EARLIEST_AVAILABLE 폴백은 visit_at이 None일 때만 걸려서 그 15분 동안
+        # 날씨가 통째로 unsupported로 나갔다.
+        if query.visit_at is not None and requested_visit_at > slots[-1].forecast_for:
             return _error_result(
                 WeatherToolStatus.UNSUPPORTED,
                 "unsupported",
@@ -142,7 +149,7 @@ class GetWeatherForecastTool:
             )
 
         selection_method = ForecastSelectionMethod.NEAREST
-        if query.visit_at is None and requested_visit_at < slots[0].forecast_for:
+        if requested_visit_at < slots[0].forecast_for:
             selected = slots[0]
             selection_method = ForecastSelectionMethod.EARLIEST_AVAILABLE
         else:

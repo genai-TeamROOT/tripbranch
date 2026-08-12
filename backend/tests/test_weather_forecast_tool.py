@@ -139,6 +139,33 @@ async def test_immediate_visit_uses_earliest_future_slot() -> None:
 
 
 @pytest.mark.asyncio
+async def test_explicit_now_before_first_slot_uses_earliest_available() -> None:
+    """visit_at이 첫 예보시각보다 일러도 unsupported로 막지 않는다.
+
+    초단기예보는 발표시각+1시간부터 시작한다. 매시 45분이 넘으면 provider가
+    이번 시각 발표분(HH30)으로 갈아타므로 첫 예보시각이 (HH+1):00이 되고,
+    visit_at=현재 시각으로 조회하는 agent_context 경로는 매시 45~59분 사이
+    항상 첫 slot보다 이른 시각을 요청하게 된다. 이때 가장 이른 slot으로
+    답할 수 있는데도 outside_forecast_range로 막혀서 그 15분 동안 날씨가
+    통째로 빠졌다 — 뒤쪽 초과와 달리 앞쪽은 막을 이유가 없다.
+    """
+    now = datetime(2026, 7, 23, 15, 50, tzinfo=KST)
+    provider = ForecastProvider((_slot(16), _slot(17, sky_code="4")))
+
+    result = await GetWeatherForecastTool(provider, clock=lambda: now).execute(
+        WeatherForecastQuery(37.5788, 126.9770, visit_at=now)
+    )
+
+    assert result.status is WeatherToolStatus.SUCCESS
+    assert result.forecast is not None
+    assert result.forecast.forecast_for.hour == 16
+    assert (
+        result.forecast.selection_method
+        is ForecastSelectionMethod.EARLIEST_AVAILABLE
+    )
+
+
+@pytest.mark.asyncio
 async def test_explicit_visit_outside_forecast_range_is_unsupported() -> None:
     result = await GetWeatherForecastTool(
         ForecastProvider((_slot(15),)),
@@ -172,6 +199,32 @@ async def test_empty_slots_are_no_data() -> None:
     assert result.provider_metadata[0].source is ProviderSource.FAKE_WEATHER
     assert result.provider_metadata[0].status is ProviderStatus.SUCCESS
     assert result.provider_metadata[0].retrieved_at.tzinfo is not None
+
+
+@pytest.mark.asyncio
+async def test_provider_no_data_error_is_no_data_not_unavailable() -> None:
+    """provider가 weather_no_data를 올리면 결측으로 내려간다.
+
+    이 분기는 오래 죽어 있었다 — provider가 KMA resultCode를 전부
+    weather_unavailable로 뭉뚱그려서 weather_no_data를 던지는 곳이 없었고,
+    NODATA가 재시도 가능한 장애로 둔갑했다.
+    """
+    result = await GetWeatherForecastTool(
+        ForecastProvider(
+            error=AppError(
+                code="weather_no_data",
+                message="사용 가능한 날씨 예보가 없습니다.",
+                status_code=502,
+                retryable=False,
+            )
+        ),
+        clock=lambda: FIXED_NOW,
+    ).execute(WeatherForecastQuery(37.5788, 126.9770))
+
+    assert result.status is WeatherToolStatus.NO_DATA
+    assert result.error is not None
+    assert result.error.cause == "forecast_not_found"
+    assert result.error.retryable is False
 
 
 @pytest.mark.asyncio

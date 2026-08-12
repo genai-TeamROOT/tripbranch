@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import datetime
 
 import httpx
@@ -193,27 +194,58 @@ async def test_real_weather_provider_returns_all_forecast_slots() -> None:
     assert result.provider == "kma_ultra_short_forecast"
 
 
-@pytest.mark.asyncio
-async def test_real_weather_provider_raises_on_failed_result_code() -> None:
+def _result_code_handler(
+    result_code: str, result_msg: str
+) -> Callable[[httpx.Request], httpx.Response]:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
             json={
                 "response": {
-                    "header": {"resultCode": "03", "resultMsg": "NODATA_ERROR"},
+                    "header": {"resultCode": result_code, "resultMsg": result_msg},
                     "body": {},
                 }
             },
         )
 
-    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    provider = RealWeatherProvider(api_key="dummy", client=client)
+    return handler
 
-    with pytest.raises(AppError) as exc_info:
-        await provider.get_forecast_slots(37.5636, 126.9976)
+
+@pytest.mark.asyncio
+async def test_real_weather_provider_raises_no_data_on_nodata_result_code() -> None:
+    """03(NODATA_ERROR)은 결측이지 장애가 아니다.
+
+    업스트림이 정상 처리한 끝에 "그 격자·발표시각에 자료가 없다"고 답한 것이라
+    즉시 재시도해도 결과가 같다. weather_unavailable로 뭉뚱그리면 소비 측이
+    재시도 가능한 장애로 읽고, 로그에서도 서비스키 사고와 안 갈린다.
+    """
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_result_code_handler("03", "NODATA_ERROR"))
+    ) as client:
+        provider = RealWeatherProvider(api_key="dummy", client=client)
+        with pytest.raises(AppError) as exc_info:
+            await provider.get_forecast_slots(37.5636, 126.9976)
+
+    assert exc_info.value.code == "weather_no_data"
+    assert exc_info.value.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_real_weather_provider_raises_unavailable_on_other_result_codes() -> None:
+    """03 이외의 실패 코드는 장애로 남긴다 — 결측 분기가 전부를 삼키지 않게."""
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            _result_code_handler(
+                "22", "LIMITED_NUMBER_OF_SERVICE_REQUESTS_EXCEEDS_ERROR"
+            )
+        )
+    ) as client:
+        provider = RealWeatherProvider(api_key="dummy", client=client)
+        with pytest.raises(AppError) as exc_info:
+            await provider.get_forecast_slots(37.5636, 126.9976)
 
     assert exc_info.value.code == "weather_unavailable"
-    await client.aclose()
+    assert exc_info.value.retryable is True
 
 
 @pytest.mark.asyncio

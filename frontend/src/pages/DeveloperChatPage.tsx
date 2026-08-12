@@ -137,6 +137,7 @@ export function DeveloperChatPage() {
             mergedConditions: response.state.user_conditions,
             message: response.message,
             recommendations: response.recommendations,
+            schedule: response.schedule,
             sessionId: response.state.session_id,
             agentResponse: response,
             showDebug: false,
