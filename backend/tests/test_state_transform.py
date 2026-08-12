@@ -221,6 +221,53 @@ def test_tc07_reject_all_has_no_operations_and_marks_not_interested() -> None:
     assert request.reset_scope is None
 
 
+def test_reject_specific_only_marks_targeted_index_as_rejected() -> None:
+    """SCHEDULE-09 2단계: REJECT_ALL과 달리 target_indices가 가리키는 자리만
+    거절로 기록하고, 나머지(유지 대상)는 손대지 않는다."""
+    llm_output = LLMOutput(
+        intent=Intent.MODIFY,
+        status=OutputStatus.COMPLETE,
+        modify=ModifyPayload(modify_type=ModifyType.REJECT_SPECIFIC, target_indices=[2]),
+    )
+    context = _context(shown_place_ids=["A", "B", "C"])
+
+    request = transform(llm_output, context, "두 번째는 별로야")
+
+    assert request.operations == []
+    assert [(r.place_id, r.reason_code) for r in request.rejected_places] == [
+        ("B", "not_interested"),
+    ]
+    assert request.reset_scope is None
+
+
+def test_reject_specific_multiple_indices_marks_all_targeted() -> None:
+    llm_output = LLMOutput(
+        intent=Intent.MODIFY,
+        status=OutputStatus.COMPLETE,
+        modify=ModifyPayload(modify_type=ModifyType.REJECT_SPECIFIC, target_indices=[1, 3]),
+    )
+    context = _context(shown_place_ids=["A", "B", "C"])
+
+    request = transform(llm_output, context, "첫 번째랑 세 번째 다 별로야")
+
+    assert {r.place_id for r in request.rejected_places} == {"A", "C"}
+
+
+def test_reject_specific_out_of_range_index_is_ignored_defensively() -> None:
+    """파싱 단계가 이미 needs_clarification으로 걸러내지만, 방어적으로
+    범위를 벗어나는 순번은 조용히 무시한다."""
+    llm_output = LLMOutput(
+        intent=Intent.MODIFY,
+        status=OutputStatus.COMPLETE,
+        modify=ModifyPayload(modify_type=ModifyType.REJECT_SPECIFIC, target_indices=[5]),
+    )
+    context = _context(shown_place_ids=["A", "B", "C"])
+
+    request = transform(llm_output, context, "다섯 번째는 별로야")
+
+    assert request.rejected_places == []
+
+
 def test_tc08_change_condition_budget_update_triggers_reset_scope_history() -> None:
     """CHANGE_CONDITION은 직전 노출분을 rejected로 영구 제외하지 않는다.
 

@@ -39,6 +39,42 @@ class SchedulePlanningRequest(BaseModel):
     # JSON으로 직렬화되지 않으므로 튜플 키를 그대로 써도 된다.
 
 
+class SchedulePartialFillRequest(BaseModel):
+    """일부 슬롯만 새로 채우는 부분 재편성 입력. (SCHEDULE-09 2단계,
+    SCHEDULE-부분수정-해결방향-설계안.md 3-3절)
+
+    REJECT_SPECIFIC 처리 전용 — pinned_items(유지할 기존 항목, order 포함)는
+    그대로 최종 결과에 들어가고, target_orders에 해당하는 자리만 LLM이 새로
+    고른 항목으로 채운다. LLM에게 pinned_items를 그대로 돌려달라고 요청하지
+    않는다 — echo를 신뢰하는 대신 planner.py가 구조적으로 병합해 pinned
+    항목이 유실·변형될 위험을 원천 차단한다(SCHEDULE-07이 개수 제약을 하드
+    검증으로 옮긴 것과 같은 철학 — LLM 지시 준수보다 구조적 보장을 우선한다).
+    """
+
+    pinned_items: list[ScheduleItem]
+    target_orders: list[int]
+    candidates: list[RecommendationItem]
+    conditions: UserConditions
+    visit_datetime: datetime | None = None
+    pairwise_distances_km: dict[tuple[str, str], float]
+
+
+class SchedulePartialLLMPlan(BaseModel):
+    """generate_schedule_fill() 구조화 출력 전용 모델.
+
+    new_items 개수는 요청마다 다른 target_orders 길이에 달려 있어 Pydantic
+    Field로 정적 강제할 수 없다(ScheduleLLMPlan.items의 min_length=3/
+    max_length=5와 달리 고정 범위가 아니다) — planner.py가 응답 직후
+    "new_items의 order 집합 == target_orders 집합"을 직접 검증한다.
+    불일치 시 llm_output_invalid로 실패 처리한다 — 다만
+    ScheduleLLMPlan과 달리 provider 레벨 자동 재시도는 적용하지 않는다
+    (실패 빈도가 낮을 것으로 보고 V1은 단순 실패로 처리, 필요성이 확인되면
+    나중에 추가한다).
+    """
+
+    new_items: list[ScheduleItem]
+
+
 class ScheduleLLMPlan(BaseModel):
     """generate_schedule_plan() 구조화 출력 전용 모델.
 
@@ -61,4 +97,9 @@ class ScheduleLLMPlan(BaseModel):
     route_summary: str
 
 
-__all__ = ["SchedulePlanningRequest", "ScheduleLLMPlan"]
+__all__ = [
+    "SchedulePlanningRequest",
+    "ScheduleLLMPlan",
+    "SchedulePartialFillRequest",
+    "SchedulePartialLLMPlan",
+]

@@ -148,6 +148,7 @@ class OutputStatus(StrEnum):
 
 class ModifyType(StrEnum):
     REJECT_ALL = "REJECT_ALL"
+    REJECT_SPECIFIC = "REJECT_SPECIFIC"
     CHANGE_CONDITION = "CHANGE_CONDITION"
 
 
@@ -375,11 +376,17 @@ class ModifyPayload(BaseModel):
     changed_fields 밖 필드에 값을 채워 보내도(예: 호출자가 current_conditions에 실제
     null이 아닌 값을 실어 보내서 LLM이 그 값을 그대로 carry-forward한 경우) 여기서
     null/빈 배열로 정리되므로, 이 필드를 나중에 직접 읽는 소비자가 생겨도 안전하다.
+
+    `target_indices`는 SCHEDULE-09(부분 수정)에서 추가됐다. `modify_type ==
+    REJECT_SPECIFIC`일 때만 의미가 있으며, COMPARE의 `ComparePayload.targets`와
+    같은 1-indexed 순번 표현이다("all" 같은 전체 지정은 없다 — 전체 거절은
+    REJECT_ALL이 이미 담당한다). REJECT_ALL/CHANGE_CONDITION일 때는 빈 배열이다.
     """
 
     modify_type: ModifyType
     condition_changes: UserConditions | None = None
     changed_fields: list[str] = Field(default_factory=list)
+    target_indices: list[int] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _clear_unlisted_fields(self) -> ModifyPayload:
@@ -536,6 +543,11 @@ class InterpretRequest(BaseModel):
     # SCHEDULE은 키워드가 있어야만 선택되는 명시적 분류라 fallback이 없다.
     pending_clarification: str | None = None
     last_intent: str | None = None
+    # SCHEDULE-09 후속(이름 지목): 현재 노출된 항목의 이름을 rank 순으로 담는다.
+    # "두가헌 레스토랑은 빼줘"처럼 순번이 아니라 이름으로 REJECT_SPECIFIC 대상을
+    # 지목할 때 MODIFY 추출기가 이름→순번을 매칭하는 데 쓴다. 이름이 없는 항목은
+    # 빈 문자열로 채워 인덱스(=순번-1)가 어긋나지 않게 한다.
+    shown_place_names: list[str] = Field(default_factory=list)
 
 
 # === Agent Runtime (A-03) ===

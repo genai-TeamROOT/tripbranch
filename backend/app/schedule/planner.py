@@ -11,9 +11,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from app.errors import AppError
 from app.providers.protocols import LLMProvider
-from app.schedule.schemas import SchedulePlanningRequest
-from app.schemas import ScheduleResult
+from app.schedule.schemas import SchedulePartialFillRequest, SchedulePlanningRequest
+from app.schemas import ScheduleItem, ScheduleResult
 from app.state.schema import now_kst
 
 _NO_CANDIDATES_ROUTE_SUMMARY = (
@@ -99,4 +100,105 @@ async def plan_schedule(
     )
 
 
-__all__ = ["plan_schedule"]
+# SCHEDULE-09 2단계 — 부분 재편성(REJECT_SPECIFIC) 전용.
+_NO_FILL_CANDIDATES_ROUTE_SUMMARY = (
+    "대체할 새로운 곳을 찾지 못해 나머지 일정은 그대로 유지했어요. "
+    "조건을 조금 넓혀서 다시 요청해볼까요?"
+)
+
+
+def _total_duration_from_items(items: list[ScheduleItem]) -> int:
+    """items의 체류시간 합 + 마지막을 제외한 이동시간 합.
+
+    LLM이 부분 재편성에서는 전체 route 관점의 total_duration_min을 직접
+    계산해주지 않으므로(new_items만 보고 있어 pinned_items를 포함한 전체를
+    모른다) planner.py가 병합 후 항목 값만으로 직접 계산한다.
+    """
+    duration_sum = sum(item.estimated_duration_min for item in items)
+    travel_sum = sum(
+        item.travel_to_next_min for item in items if item.travel_to_next_min is not None
+    )
+    return duration_sum + travel_sum
+
+
+def _pinned_only_result(
+    pinned_items: list[ScheduleItem], visit_datetime: datetime, route_summary: str
+) -> ScheduleResult:
+    ordered = sorted(pinned_items, key=lambda item: item.order)
+    return ScheduleResult(
+        items=ordered,
+        total_duration_min=_total_duration_from_items(ordered) if ordered else 0,
+        route_summary=route_summary,
+        basis_note=_build_basis_note(visit_datetime),
+    )
+
+
+async def plan_partial_schedule(
+    request: SchedulePartialFillRequest, llm: LLMProvider
+) -> ScheduleResult:
+    """SchedulePartialFillRequest로 일부 슬롯만 새로 채운 ScheduleResult를 만든다.
+
+    (SCHEDULE-09 2단계, SCHEDULE-부분수정-해결방향-설계안.md 3절)
+
+    pinned_items는 LLM에 echo를 요청하지 않고 이 함수가 구조적으로 최종
+    결과에 병합한다 — LLM은 target_orders 자리에 들어갈 new_items만
+    반환한다. 응답의 order 집합이 target_orders와 정확히 일치하는지 여기서
+    직접 검증하고, 불일치하면 llm_output_invalid로 실패 처리한다(개수가
+    요청마다 달라 ScheduleLLMPlan처럼 Pydantic Field로 정적 강제할 수 없다 —
+    SchedulePartialLLMPlan 참고).
+    """
+
+    effective_visit_datetime = request.visit_datetime or now_kst()
+
+    if not request.target_orders:
+        # 파싱 단계(SCHEDULE-09 1단계)가 REJECT_SPECIFIC일 때 항상 target_indices를
+        # 채우므로 정상 흐름에서는 발생하지 않는다 — 방어적으로만 처리한다.
+        return _pinned_only_result(
+            request.pinned_items, effective_visit_datetime, _NO_FILL_CANDIDATES_ROUTE_SUMMARY
+        )
+
+    if not request.candidates:
+        # 유지 대상(pinned)과 거절 대상을 제외하고 나니 채울 수 있는 새 후보가
+        # 아예 없다 — "일정 전체 실패"가 아니라 "일부만 대체 실패"이므로 pinned은
+        # 그대로 살리고 실패 사실만 안내한다(전체 재구성으로 덮어쓰지 않음).
+        return _pinned_only_result(
+            request.pinned_items, effective_visit_datetime, _NO_FILL_CANDIDATES_ROUTE_SUMMARY
+        )
+
+    resolved_request = (
+        request
+        if request.visit_datetime is not None
+        else request.model_copy(update={"visit_datetime": effective_visit_datetime})
+    )
+
+    plan = (await llm.generate_schedule_fill(resolved_request)).data
+
+    expected_orders = set(request.target_orders)
+    actual_orders = {item.order for item in plan.new_items}
+    if actual_orders != expected_orders or len(plan.new_items) != len(request.target_orders):
+        raise AppError(
+            code="llm_output_invalid",
+            message="일정 재구성 응답을 해석하지 못했습니다.",
+            status_code=502,
+            retryable=True,
+            provider="Gemini",
+            details={
+                "expected_orders": sorted(expected_orders),
+                "actual_orders": sorted(actual_orders),
+            },
+        )
+
+    merged = sorted([*request.pinned_items, *plan.new_items], key=lambda item: item.order)
+    kept = len(request.pinned_items)
+    replaced = len(plan.new_items)
+    route_summary = f"{kept}곳은 그대로 유지하고 {replaced}곳을 새로운 장소로 바꿨어요."
+
+    return ScheduleResult(
+        items=merged,
+        total_duration_min=_total_duration_from_items(merged),
+        route_summary=route_summary,
+        basis_note=_build_basis_note(effective_visit_datetime),
+    )
+
+
+__all__ = ["plan_schedule", "plan_partial_schedule"]

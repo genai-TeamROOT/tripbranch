@@ -52,6 +52,7 @@ def record_recommended(
                 run_id=run_id,
                 rank=item.rank,
                 shown_at=shown_at,
+                name=item.name,
                 estimated_arrival=item.estimated_arrival,
                 estimated_duration_min=item.estimated_duration_min,
                 travel_to_next_min=item.travel_to_next_min,

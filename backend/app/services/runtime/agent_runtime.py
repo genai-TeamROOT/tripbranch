@@ -20,8 +20,8 @@ from app.geo import haversine_km
 from app.observability.api_usage import create_external_client
 from app.providers.gemini_prompts import PROMPT_VERSION
 from app.providers.protocols import LLMProvider
-from app.schedule.planner import plan_schedule
-from app.schedule.schemas import SchedulePlanningRequest
+from app.schedule.planner import plan_partial_schedule, plan_schedule
+from app.schedule.schemas import SchedulePartialFillRequest, SchedulePlanningRequest
 from app.schemas import (
     AgentRequest,
     AgentResponse,
@@ -30,9 +30,11 @@ from app.schemas import (
     Intent,
     InterpretRequest,
     LLMOutput,
+    ModifyType,
     OutputStatus,
     RecommendationItem,
     RecommendationResponse,
+    ScheduleItem,
     ToolExecutionDebug,
     UserConditions,
 )
@@ -64,11 +66,13 @@ from app.state.service import (
     RecommendedPlace,
     RecordRecommendationRequest,
     RecordTraceRequest,
+    SetLastIntentRequest,
     SetPendingClarificationRequest,
     UpdateApiContextRequest,
     apply,
     record_recommendation,
     record_trace,
+    set_last_intent,
     set_pending_clarification,
     update_api_context,
 )
@@ -349,6 +353,10 @@ async def run_agent_flow(
         current_conditions=current_conditions,
         pending_clarification=session_context.pending_clarification,
         last_intent=session_context.last_intent,
+        # rank 순으로 채운다 — shown_recommendations는 이미 rank 정렬되어
+        # 있으므로(history.get_last_recommended_items) 그대로 옮기면 된다.
+        # 이름이 없는 항목(name 저장 이전의 과거 세션 등)은 빈 문자열로 채운다.
+        shown_place_names=[item.name or "" for item in session_context.shown_recommendations],
     )
     llm_started_at = time.monotonic()
     llm_output = await build_interpretation(interpret_request, llm)
@@ -417,6 +425,18 @@ async def run_agent_flow(
         and session_context.pending_clarification is None
     ):
         llm_output = llm_output.model_copy(update={"intent": Intent.SCHEDULE})
+        # apply()(3번)는 이미 이 턴의 원본 intent(MODIFY)로 last_intent를 저장했다
+        # — 그 호출 시점엔 아직 이 relabel이 일어나기 전이었기 때문이다. 그대로
+        # 두면 다음 턴이 이번 턴을 last_intent="MODIFY"로 보게 되어, SCHEDULE →
+        # REJECT_SPECIFIC → REJECT_SPECIFIC처럼 재조정이 연속될 때 두 번째부터
+        # 이 감지 자체가 실패한다(2026-08-11 실사용 재현, D-061). 화면상 라벨과
+        # 저장된 last_intent를 다시 맞춘다.
+        set_last_intent(
+            SetLastIntentRequest(
+                session_id=state_response.session_id, intent=Intent.SCHEDULE.value
+            ),
+            store=store,
+        )
 
     # 4-0) INFO는 question_type 8종 모두 RECOMMEND/MODIFY와 별개로 C를 거친다
     #      (D-054/D-055, backend/docs/package-a/info-question-types-handoff.md)
@@ -706,13 +726,64 @@ async def run_agent_flow(
             if tool_context.places and tool_context.places.data
             else []
         )
-        schedule_request = SchedulePlanningRequest(
-            candidates=schedule_candidates,
-            conditions=agent_conditions,
-            visit_datetime=None,
-            pairwise_distances_km=_build_pairwise_distances_km(schedule_candidates, places),
-        )
-        schedule_result = await plan_schedule(schedule_request, llm)
+
+        # 6-2-1) SCHEDULE-09 2단계: REJECT_SPECIFIC으로 재라우팅된 턴이면 통째로
+        #        새로 짜지 않고, target_indices가 가리키는 자리만 새로 채운다.
+        #        session_context는 이번 턴 처리 전에 조회한 값이라 직전 SCHEDULE
+        #        턴의 shown_recommendations(순서·도착시각 등 포함)를 그대로 담고
+        #        있다(3-3절과 동일한 전제). pinned 대상의 place_name은 이번 턴
+        #        C 응답에서 다시 매칭하지 않고 B에 저장된 값을 그대로 쓴다 —
+        #        원래는 재매칭하도록 짰다가, "경복궁"류 지명 검색이 호출마다
+        #        다른 좌표로 resolve돼 이번 턴 주변 후보가 매번 통째로 달라지는
+        #        사례가 실사용 테스트에서 확인됐다(2026-08-11). 그러면 이전
+        #        place_id가 이번 후보에 전혀 안 잡혀 pinned 유지가 매번 실패하고
+        #        REJECT_ALL처럼 조용히 전체 재편성으로 폴백됐다. B가 추천 시점에
+        #        이름도 함께 저장해두면(schema.RecommendedItem.name, SCHEDULE-09
+        #        2단계 예외) 이 재검색에 의존하지 않아 안정적이다.
+        pinned_items: list[ScheduleItem] = []
+        if (
+            llm_output.modify is not None
+            and llm_output.modify.modify_type is ModifyType.REJECT_SPECIFIC
+        ):
+            target_orders = set(llm_output.modify.target_indices)
+            for prev in session_context.shown_recommendations:
+                if prev.rank in target_orders:
+                    continue
+                if prev.name is None or prev.estimated_arrival is None:
+                    # 방어적 폴백 — SCHEDULE-09 2단계 도입 이전에 기록된 세션처럼
+                    # name이 없는 과거 데이터일 때만 해당하며, 이 항목만 새 후보로
+                    # 채워지고 나머지는 정상적으로 유지된다.
+                    continue
+                pinned_items.append(
+                    ScheduleItem(
+                        order=prev.rank,
+                        place_id=prev.place_id,
+                        place_name=prev.name,
+                        estimated_arrival=prev.estimated_arrival,
+                        estimated_duration_min=prev.estimated_duration_min or 0,
+                        travel_to_next_min=prev.travel_to_next_min,
+                        reason=prev.reason or "",
+                    )
+                )
+
+        if pinned_items and llm_output.modify is not None:
+            partial_request = SchedulePartialFillRequest(
+                pinned_items=pinned_items,
+                target_orders=sorted(set(llm_output.modify.target_indices)),
+                candidates=schedule_candidates,
+                conditions=agent_conditions,
+                visit_datetime=None,
+                pairwise_distances_km=_build_pairwise_distances_km(schedule_candidates, places),
+            )
+            schedule_result = await plan_partial_schedule(partial_request, llm)
+        else:
+            schedule_request = SchedulePlanningRequest(
+                candidates=schedule_candidates,
+                conditions=agent_conditions,
+                visit_datetime=None,
+                pairwise_distances_km=_build_pairwise_distances_km(schedule_candidates, places),
+            )
+            schedule_result = await plan_schedule(schedule_request, llm)
 
         # 7) A → B: 일정에 실제로 포함된 장소만 기록한다(6.3절) — LLM이 제외한
         #    후보는 기록하지 않아 이후 RECOMMEND 요청에서 재노출될 수 있다.
@@ -725,6 +796,7 @@ async def run_agent_flow(
                         RecommendedPlace(
                             place_id=item.place_id,
                             rank=item.order,
+                            name=item.place_name,
                             estimated_arrival=item.estimated_arrival,
                             estimated_duration_min=item.estimated_duration_min,
                             travel_to_next_min=item.travel_to_next_min,
@@ -767,6 +839,7 @@ async def run_agent_flow(
                     RecommendedPlace(
                         place_id=item.place_id,
                         rank=index + 1,
+                        name=item.name,
                         distance_km=item.distance_km,
                         remaining_minutes=item.remaining_minutes,
                         environment_type=item.environment_type,

@@ -12,9 +12,15 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from app.errors import AppError
 from app.providers.contracts import ProviderSource, provider_result
-from app.schedule.planner import plan_schedule
-from app.schedule.schemas import ScheduleLLMPlan, SchedulePlanningRequest
+from app.schedule.planner import plan_partial_schedule, plan_schedule
+from app.schedule.schemas import (
+    ScheduleLLMPlan,
+    SchedulePartialFillRequest,
+    SchedulePartialLLMPlan,
+    SchedulePlanningRequest,
+)
 from app.schemas import RecommendationItem, ScheduleItem, UserConditions
 
 _KST = ZoneInfo("Asia/Seoul")
@@ -220,3 +226,119 @@ class TestPlanScheduleSkipsLLMWhenCandidatesTooFew:
         await plan_schedule(request, llm)
 
         assert llm.call_count == 1
+
+
+class _RecordingFillLLM:
+    """generate_schedule_fill()에 실제로 어떤 request가 넘어오는지 기록하는 더블."""
+
+    def __init__(self, plan: SchedulePartialLLMPlan) -> None:
+        self._plan = plan
+        self.received_request: SchedulePartialFillRequest | None = None
+        self.call_count = 0
+
+    async def generate_schedule_fill(self, request: SchedulePartialFillRequest):
+        self.received_request = request
+        self.call_count += 1
+        return provider_result(self._plan, source=ProviderSource.FAKE_LLM)
+
+
+def _pinned(place_id: str, order: int) -> ScheduleItem:
+    return ScheduleItem(
+        order=order,
+        place_id=place_id,
+        place_name=f"장소 {place_id}",
+        estimated_arrival="14:00",
+        estimated_duration_min=60,
+        travel_to_next_min=15,
+        reason="기존 일정 유지",
+    )
+
+
+class TestPlanPartialSchedule:
+    """SCHEDULE-09 2단계: 일부 자리만 새로 채우는 plan_partial_schedule() 회귀 테스트.
+
+    (SCHEDULE-부분수정-해결방향-설계안.md 3절)
+    """
+
+    @pytest.mark.asyncio
+    async def test_merges_pinned_and_new_items_in_order(self) -> None:
+        pinned = [_pinned("place-1", 1), _pinned("place-3", 3)]
+        new_item = _sample_item("place-2", 2)
+        llm = _RecordingFillLLM(SchedulePartialLLMPlan(new_items=[new_item]))
+        request = SchedulePartialFillRequest(
+            pinned_items=pinned,
+            target_orders=[2],
+            candidates=[_candidate("place-2")],
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 11, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_partial_schedule(request, llm)
+
+        assert [item.place_id for item in result.items] == ["place-1", "place-2", "place-3"]
+        assert [item.order for item in result.items] == [1, 2, 3]
+        assert result.route_summary == "2곳은 그대로 유지하고 1곳을 새로운 장소로 바꿨어요."
+        # 체류시간 합(60*3) + 마지막을 제외한 이동시간 합(travel_to_next_min: 15+None+15)
+        assert result.total_duration_min == 60 * 3 + 15 + 15
+        assert "15:00 기준" in result.basis_note
+
+    @pytest.mark.asyncio
+    async def test_no_fresh_candidates_keeps_pinned_only(self) -> None:
+        """대체할 새 후보가 없으면 "일정 전체 실패"가 아니라 pinned만 그대로 유지한다."""
+        pinned = [_pinned("place-1", 1), _pinned("place-3", 3)]
+        llm = _RecordingFillLLM(SchedulePartialLLMPlan(new_items=[]))
+        request = SchedulePartialFillRequest(
+            pinned_items=pinned,
+            target_orders=[2],
+            candidates=[],
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 11, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_partial_schedule(request, llm)
+
+        assert llm.call_count == 0
+        assert [item.place_id for item in result.items] == ["place-1", "place-3"]
+        assert "그대로 유지" in result.route_summary
+
+    @pytest.mark.asyncio
+    async def test_raises_when_llm_returns_wrong_orders(self) -> None:
+        """LLM이 target_orders와 다른 order를 반환하면(개수 불일치 포함)
+        pinned를 신뢰할 수 없는 상태로 병합하지 않고 명확히 실패시킨다."""
+        pinned = [_pinned("place-1", 1), _pinned("place-3", 3)]
+        wrong_item = _sample_item("place-2", 99)  # target_orders=[2]와 불일치
+        llm = _RecordingFillLLM(SchedulePartialLLMPlan(new_items=[wrong_item]))
+        request = SchedulePartialFillRequest(
+            pinned_items=pinned,
+            target_orders=[2],
+            candidates=[_candidate("place-2")],
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 11, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        with pytest.raises(AppError) as exc_info:
+            await plan_partial_schedule(request, llm)
+
+        assert exc_info.value.code == "llm_output_invalid"
+
+    @pytest.mark.asyncio
+    async def test_empty_target_orders_returns_pinned_unchanged(self) -> None:
+        """방어적 분기 — 정상 흐름(REJECT_SPECIFIC 파싱)에서는 발생하지 않는다."""
+        pinned = [_pinned("place-1", 1), _pinned("place-2", 2)]
+        llm = _RecordingFillLLM(SchedulePartialLLMPlan(new_items=[]))
+        request = SchedulePartialFillRequest(
+            pinned_items=pinned,
+            target_orders=[],
+            candidates=[_candidate("place-3")],
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 11, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_partial_schedule(request, llm)
+
+        assert llm.call_count == 0
+        assert [item.place_id for item in result.items] == ["place-1", "place-2"]

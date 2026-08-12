@@ -121,10 +121,15 @@ class RecommendedPlace(BaseModel):
     RECOMMEND/MODIFY 호출은 생략하면 된다. distance_km~environment_type은
     COMPARE 전용 선택 필드(COMPARE 데이터 출처 A안, 2026-08-11) — 추천 시점에
     계산된 Feature 스냅샷을 그대로 넘긴다. SCHEDULE 호출은 생략하면 된다.
+    name은 SCHEDULE-09 2단계 전용 선택 필드(2026-08-11) — 부분 재편성에서
+    지명 검색 좌표가 매 턴 흔들려도 이전 장소 이름을 안정적으로 재사용하기
+    위한 것이다(schema.RecommendedItem 문서 참고). 항상 넘길 수 있으면
+    넘기는 게 좋다.
     """
 
     place_id: str
     rank: int
+    name: str | None = None
     estimated_arrival: str | None = None
     estimated_duration_min: int | None = None
     travel_to_next_min: int | None = None
@@ -177,6 +182,24 @@ class SetPendingClarificationRequest(BaseModel):
 class SetPendingClarificationResponse(BaseModel):
     session_id: str
     pending_clarification: str | None
+
+
+class SetLastIntentRequest(BaseModel):
+    """`last_intent` 덮어쓰기 요청 (2026-08-11, D-061).
+
+    apply()는 매 턴 `state.last_intent`를 그 턴의 "원본" intent로 저장한다
+    (transform() 호출 시점 값). 그런데 Agent Runtime의 SCHEDULE 재조정 감지
+    (3-3절)는 apply() 이후에 "화면상 라벨"만 SCHEDULE로 바꿔치기하므로,
+    apply()가 이미 저장한 원본 intent(예: MODIFY)와 실제 처리 결과(SCHEDULE)가
+    어긋난다. REJECT_SPECIFIC 부분 재편성이 연속으로 이어질 때(SCHEDULE →
+    REJECT_SPECIFIC → REJECT_SPECIFIC) 두 번째 REJECT_SPECIFIC 턴이 직전 턴을
+    last_intent="SCHEDULE"로 인식하지 못해 재조정 감지 자체가 실패하는 버그로
+    이어졌다(2026-08-11 실사용 재현). apply() 직후 이 함수로 라벨을 다시
+    맞춰준다 — condition_version/updated_at 등 다른 필드는 건드리지 않는다.
+    """
+
+    session_id: str
+    intent: str
 
 
 class RecordTraceRequest(BaseModel):
@@ -422,6 +445,7 @@ def record_recommendation(
             RecommendedItemInput(
                 place_id=p.place_id,
                 rank=p.rank,
+                name=p.name,
                 estimated_arrival=p.estimated_arrival,
                 estimated_duration_min=p.estimated_duration_min,
                 travel_to_next_min=p.travel_to_next_min,
@@ -523,6 +547,27 @@ def set_pending_clarification(
         session_id=state.session_id,
         pending_clarification=state.pending_clarification,
     )
+
+
+@_wrap_store_errors
+def set_last_intent(
+    request: SetLastIntentRequest,
+    store: StateStore | None = None,
+) -> None:
+    """`last_intent`를 덮어쓴다 (SetLastIntentRequest 문서 참고).
+
+    세션이 없으면 조용히 아무것도 하지 않는다 — apply()가 방금 만든 세션이
+    사라졌을 리 없지만, api_context/pending_clarification 갱신 함수들과
+    같은 방어 패턴을 따른다.
+    """
+    store = store or get_store()
+
+    state = store.get_state(request.session_id)
+    if state is None:
+        return
+
+    state.last_intent = request.intent
+    store.save_state(state)
 
 
 # ================================================================ LLMOps Trace

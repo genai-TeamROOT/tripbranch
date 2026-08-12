@@ -82,17 +82,28 @@ class RecommendedItem(BaseModel):
 
     estimated_arrival~reason 4개 필드는 SCHEDULE 전용 선택 필드다(SCHEDULE-06).
     distance_km~environment_type 3개 필드는 COMPARE 전용 선택 필드다
-    (COMPARE 데이터 출처 A안, 2026-08-11). 둘 다 RECOMMEND-only 흐름에서는
-    관련 없는 필드가 None으로 남는다.
+    (COMPARE 데이터 출처 A안, 2026-08-11). name은 SCHEDULE-09 2단계 전용
+    선택 필드다(2026-08-11, D-060 — 아래 설명 참고). 셋 다 RECOMMEND-only
+    흐름에서는 관련 없는 필드가 None으로 남는다.
 
     "B는 place_id만 저장하고 장소 상세 정보를 보관하지 않는다"는 원칙
-    (history.py 참고)의 두 가지 예외다 — 일반 장소 상세(이름·주소·좌표)는
+    (history.py 참고)의 세 가지 예외다 — 일반 장소 상세(주소·좌표 등)는
     여전히 C의 책임이고 B가 저장하지 않는다. 여기 저장하는 값은 그 자체가
     "추천 시점에 계산된 Feature 스냅샷"이라, 시간이 지나 실제 값과 달라져도
     문제가 되지 않는다 — 오히려 COMPARE는 최신값이 아니라 이 스냅샷을 써야
     한다(int-04-compare.md §13). "과거 정보가 현재 정보로 오인되는" 상황을
     막으려는 원 원칙과 배치되지 않는 이유는, 이 값을 "현재 상태"로 다시
     쓰는 소비자가 없고 오직 "그때 보여준 비교 데이터"로만 쓰이기 때문이다.
+
+    name(장소 이름)은 원래 이 예외에 넣지 않고 SCHEDULE-09 2단계에서 매 턴
+    C의 새 응답에서 다시 매칭해 채우도록 설계했다. 그런데 실사용 테스트에서
+    "경복궁" 같은 지명 검색이 호출마다 조금씩 다른 좌표로 resolve돼(Naver
+    local search fallback) 이번 턴 주변 후보 목록이 매번 완전히 달라지는
+    사례가 확인됐다 — 그러면 이전 턴에 고른 place_id가 이번 턴 후보에
+    전혀 안 잡혀 이름을 못 채우고, pinned 유지가 통째로 실패해 REJECT_ALL처럼
+    전체 재편성으로 조용히 폴백된다(2026-08-11 실사용 재현). name도 여기
+    저장해두면 이 재검색에 의존하지 않아 안정적이다.
+
     rank가 이미 방문 순서(ScheduleItem.order)를 담으므로 별도 order
     필드는 두지 않는다.
     """
@@ -101,6 +112,7 @@ class RecommendedItem(BaseModel):
     run_id: str
     rank: int
     shown_at: datetime = Field(default_factory=now_kst)
+    name: str | None = None
     estimated_arrival: str | None = None
     estimated_duration_min: int | None = None
     travel_to_next_min: int | None = None
@@ -113,12 +125,14 @@ class RecommendedItem(BaseModel):
 class RecommendedItemInput(BaseModel):
     """history.record_recommended() 호출 시 넘기는 입력 1건.
 
-    place_id/rank는 필수, 나머지는 SCHEDULE 전용(SCHEDULE-06) 또는
-    COMPARE 전용(2026-08-11) 선택 필드다.
+    place_id/rank는 필수, 나머지는 SCHEDULE 전용(SCHEDULE-06),
+    COMPARE 전용(2026-08-11) 또는 SCHEDULE-09 2단계 전용(2026-08-11,
+    name) 선택 필드다.
     """
 
     place_id: str
     rank: int
+    name: str | None = None
     estimated_arrival: str | None = None
     estimated_duration_min: int | None = None
     travel_to_next_min: int | None = None
