@@ -202,6 +202,32 @@ async def test_empty_slots_are_no_data() -> None:
 
 
 @pytest.mark.asyncio
+async def test_provider_no_data_error_is_no_data_not_unavailable() -> None:
+    """provider가 weather_no_data를 올리면 결측으로 내려간다.
+
+    이 분기는 오래 죽어 있었다 — provider가 KMA resultCode를 전부
+    weather_unavailable로 뭉뚱그려서 weather_no_data를 던지는 곳이 없었고,
+    NODATA가 재시도 가능한 장애로 둔갑했다.
+    """
+    result = await GetWeatherForecastTool(
+        ForecastProvider(
+            error=AppError(
+                code="weather_no_data",
+                message="사용 가능한 날씨 예보가 없습니다.",
+                status_code=502,
+                retryable=False,
+            )
+        ),
+        clock=lambda: FIXED_NOW,
+    ).execute(WeatherForecastQuery(37.5788, 126.9770))
+
+    assert result.status is WeatherToolStatus.NO_DATA
+    assert result.error is not None
+    assert result.error.cause == "forecast_not_found"
+    assert result.error.retryable is False
+
+
+@pytest.mark.asyncio
 async def test_provider_timeout_is_unavailable() -> None:
     result = await GetWeatherForecastTool(
         ForecastProvider(error=ProviderTimeoutError("KMA")),
