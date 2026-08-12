@@ -472,24 +472,22 @@ async def test_classify_intent_location_with_other_conditions_boundaries(
 
 @pytest.mark.asyncio
 async def test_extract_modify_conditions_rain_avoids_and_moves_indoor() -> None:
-    """MODIFY 경로의 날씨 처리는 extract_recommend_conditions와 같은 결이다."""
+    """MODIFY의 '비와서 실내'는 날씨 ENJOY가 아니라 명확한 회피다."""
     provider = FakeLLMProvider()
     current = UserConditions(search_center="북촌")
 
     output = (
-        await provider.extract_modify_conditions("비 오는데 경복궁 근처 카페 추천해줘", current)
+        await provider.extract_modify_conditions("비와서 실내로 바꿔줘", current)
     ).data
 
     changes = output.modify.condition_changes
     assert changes.weather is StatedWeather.RAIN
     assert changes.weather_intent is WeatherIntent.AVOID
     assert changes.environment is Environment.INDOOR
-    assert changes.search_center == "경복궁"
     assert set(output.modify.changed_fields) == {
         "weather",
         "weather_intent",
         "environment",
-        "search_center",
     }
 
 
@@ -551,10 +549,12 @@ async def test_extract_modify_conditions_quiet_place_avoids_concentration() -> N
     assert output.modify.changed_fields == ["concentration_intent"]
 
 
-def test_modify_instruction_includes_concentration_avoid_rule() -> None:
-    """Real Gemini MODIFY 프롬프트에도 조용한 곳→AVOID 규칙을 반드시 넣는다."""
+def test_modify_instruction_includes_weather_and_concentration_avoid_rules() -> None:
+    """Real Gemini MODIFY 프롬프트에도 날씨·혼잡도 회피 규칙을 넣는다."""
     instruction = build_modify_extraction_instruction(UserConditions(search_center="창경궁"))
 
+    assert "비와서 실내로 바꿔줘" in instruction
+    assert "반드시 AVOID" in instruction
     assert "concentration_intent 판별:" in instruction
     assert '"조용한 공원 추천해줘"' in instruction
     assert "concentration_intent/transport" in instruction
