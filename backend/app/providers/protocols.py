@@ -27,7 +27,12 @@ from app.domain.models import (
 from app.place_search_policy import DEFAULT_PLACE_PROVIDER_RESULT_LIMIT
 from app.providers.contracts import ProviderResult
 from app.providers.festival import FestivalEvent
-from app.schedule.schemas import ScheduleLLMPlan, SchedulePlanningRequest
+from app.schedule.schemas import (
+    ScheduleLLMPlan,
+    SchedulePartialFillRequest,
+    SchedulePartialLLMPlan,
+    SchedulePlanningRequest,
+)
 from app.schemas import (
     GeneralTopic,
     Intent,
@@ -55,12 +60,16 @@ class LLMProvider(Protocol):
         shown_place_count: int,
         pending_clarification: str | None = None,
         last_intent: str | None = None,
+        shown_place_names: list[str] | None = None,
     ) -> ProviderResult[IntentClassificationResult]:
         """사용자 발화의 Intent를 1단계로 판정한다.
 
         pending_clarification/last_intent는 직전 턴이 되묻기로 끝났는지와 그 되묻기가
         어떤 Intent의 턴이었는지를 알려준다 — SCHEDULE 되묻기 답변이 새 MODIFY 요청으로
         오분류되는 걸 막는 데 쓰인다(D-059).
+        shown_place_names는 SCHEDULE-09 후속(이름 지목)에서 추가됐다 — "두가헌
+        레스토랑은 빼줘"처럼 순번 없이 노출된 항목 이름만으로 특정 대상을 지목해도
+        MODIFY로 판정할 근거가 된다.
         """
         ...
 
@@ -76,11 +85,18 @@ class LLMProvider(Protocol):
         current_conditions: UserConditions,
         *,
         pending_clarification: str | None = None,
+        shown_place_count: int = 0,
+        shown_place_names: list[str] | None = None,
     ) -> ProviderResult[LLMOutput]:
         """MODIFY 발화에서 modify_type과 condition_changes를 추출한다.
 
         위치 되묻기 답변이면 pending_clarification이 전달돼, 단순 지명을
         search_center 변경으로 해석한다.
+        shown_place_count는 SCHEDULE-09(부분 수정)에서 추가됐다 —
+        REJECT_SPECIFIC의 target_indices가 노출 범위를 벗어나는지 판별한다.
+        shown_place_names는 SCHEDULE-09 후속(이름 지목)에서 추가됐다 — rank 순
+        이름 목록으로, "두가헌 레스토랑은 빼줘"처럼 순번이 아니라 이름으로
+        지목했을 때 target_indices를 이름→순번으로 매칭한다.
         """
         ...
 
@@ -138,6 +154,17 @@ class LLMProvider(Protocol):
         basis_note는 포함하지 않는다 — LLM이 생성하지 않고
         app.schedule.planner.plan_schedule()이 결정적으로 채운다
         (docs/design/int-07-schedule.md 6.2.1절).
+        """
+        ...
+
+    async def generate_schedule_fill(
+        self, request: SchedulePartialFillRequest
+    ) -> ProviderResult[SchedulePartialLLMPlan]:
+        """SCHEDULE-09(부분 수정) 2단계: 기존 일정 중 일부 자리만 새로 채운다.
+
+        pinned_items는 결과에 echo하지 않는다 — target_orders 자리에 들어갈
+        new_items만 반환한다. 개수·순번 일치 여부는 app.schedule.planner가
+        검증한다(SchedulePartialLLMPlan 참고).
         """
         ...
 

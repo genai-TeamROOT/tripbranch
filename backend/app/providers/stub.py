@@ -37,7 +37,12 @@ from app.providers.tour_intro_keys import (
     RESTROOM_KEYS,
     USE_FEE_KEYS,
 )
-from app.schedule.schemas import ScheduleLLMPlan, SchedulePlanningRequest
+from app.schedule.schemas import (
+    ScheduleLLMPlan,
+    SchedulePartialFillRequest,
+    SchedulePartialLLMPlan,
+    SchedulePlanningRequest,
+)
 from app.schemas import (
     ClarificationPayload,
     CompareCriteria,
@@ -98,6 +103,45 @@ _HARMFUL_MARKERS = ("바보", "미친", "죽어", "씨발", "개새끼")
 _OFF_TOPIC_MARKERS = ("주식", "수학 문제", "코드 짜줘", "파이썬 코드")
 _PROMPT_INJECTION_MARKERS = ("시스템 프롬프트", "프롬프트를 보여줘", "무시하고")
 _REJECT_ALL_MARKERS = ("다른 곳", "다른 거", "전부 별로", "다 마음에 안", "다른거")
+# SCHEDULE-09: 순번 언급("두 번째는 별로야") → REJECT_SPECIFIC 판별용.
+# ComparePayload.targets 파싱과 달리 여기서는 실제로 순번을 파싱해 target_indices를
+# 채운다 — REJECT_SPECIFIC 자체가 이번에 신설된 값이라 테스트가 파싱 결과에 의존한다.
+_ORDINAL_TO_INDEX = {
+    "첫 번째": 1, "첫번째": 1,
+    "두 번째": 2, "두번째": 2,
+    "세 번째": 3, "세번째": 3,
+    "네 번째": 4, "네번째": 4,
+    "다섯 번째": 5, "다섯번째": 5,
+}
+_REJECT_SPECIFIC_CUE_MARKERS = ("별로", "빼줘", "빼줄래", "빼고", "다른 데로", "다른 곳으로")
+# SCHEDULE-09 후속: "두 번째 말고는 다 마음에 안 들어"처럼 남길 자리를 지목하고
+# 나머지 전부를 거부하는 표현 — target_indices를 "언급된 순번의 여집합"으로
+# 계산해야 한다(직접 지목과 정반대 방향). "말고"는 이미 _MODIFY_CHANGE_MARKERS에
+# 있어 classify_intent()의 MODIFY 라우팅은 별도 수정 없이 그대로 통과한다.
+_EXCLUSION_MARKERS = ("말고는", "말고")
+
+
+def _is_reject_specific_utterance(user_input: str) -> bool:
+    """"두 번째는 별로야"처럼 순번 언급과 거절 신호가 함께 있으면 True.
+
+    classify_intent()(1단계, MODIFY로 라우팅 여부)와 extract_modify_conditions()
+    (2단계, REJECT_SPECIFIC 판별)가 같은 기준을 쓰도록 공유한다 — 기준이
+    갈리면 1단계는 MODIFY로 안 보내는데 2단계는 REJECT_SPECIFIC을 반환하려는
+    (또는 그 반대) 모순이 생길 수 있다.
+    """
+    has_ordinal = any(marker in user_input for marker in _ORDINAL_TO_INDEX)
+    has_cue = any(marker in user_input for marker in _REJECT_SPECIFIC_CUE_MARKERS)
+    return has_ordinal and has_cue
+
+
+def _mentions_shown_place_by_name(
+    user_input: str, shown_place_names: list[str] | None
+) -> bool:
+    """SCHEDULE-09 후속(이름 지목): 노출된 항목 이름이 발화에 그대로 들어있으면 True.
+
+    빈 문자열(이름 미저장 과거 세션)은 건너뛴다.
+    """
+    return any(name and name in user_input for name in (shown_place_names or []))
 _MODIFY_CHANGE_MARKERS = (
     "말고",
     "빼고",
@@ -285,6 +329,7 @@ class FakeLLMProvider:
         shown_place_count: int,
         pending_clarification: str | None = None,
         last_intent: str | None = None,
+        shown_place_names: list[str] | None = None,
     ) -> ProviderResult[IntentClassificationResult]:
         if any(marker in user_input for marker in _PROMPT_INJECTION_MARKERS):
             result = IntentClassificationResult(
@@ -328,6 +373,14 @@ class FakeLLMProvider:
             any(marker in user_input for marker in _REJECT_ALL_MARKERS + _MODIFY_CHANGE_MARKERS)
             or _is_location_only_change(user_input)
             or _is_location_scoped_change(user_input)
+            or _is_reject_specific_utterance(user_input)
+            or (
+                _mentions_shown_place_by_name(user_input, shown_place_names)
+                and any(
+                    marker in user_input
+                    for marker in _REJECT_SPECIFIC_CUE_MARKERS + _EXCLUSION_MARKERS
+                )
+            )
         ):
             result = IntentClassificationResult(intent=Intent.MODIFY)
         elif shown_place_count >= 2 and any(
@@ -422,7 +475,80 @@ class FakeLLMProvider:
         current_conditions: UserConditions,
         *,
         pending_clarification: str | None = None,
+        shown_place_count: int = 0,
+        shown_place_names: list[str] | None = None,
     ) -> ProviderResult[LLMOutput]:
+        ordinal_indices = {
+            index for marker, index in _ORDINAL_TO_INDEX.items() if marker in user_input
+        }
+        # SCHEDULE-09 후속(이름 지목): "두가헌 레스토랑은 빼줘"처럼 순번 대신
+        # 노출된 항목 이름을 그대로 언급해도 같은 순번으로 매칭한다. 1-indexed —
+        # shown_place_names[0]이 1번이다. 빈 문자열(이름 미저장 과거 세션)은
+        # 건너뛴다 — 빈 문자열이 user_input에 항상 포함되어 오매칭나는 것을 막는다.
+        name_indices = {
+            rank
+            for rank, name in enumerate(shown_place_names or [], start=1)
+            if name and name in user_input
+        }
+        mentioned_indices = sorted(ordinal_indices | name_indices)
+
+        if mentioned_indices and any(
+            marker in user_input for marker in _EXCLUSION_MARKERS
+        ):
+            # "두 번째 말고는 다 마음에 안 들어" — 언급된 순번은 남기고 나머지
+            # 전부를 거부한다. 아래 직접 지목 분기와 target_indices의 의미가
+            # 정반대이므로(여집합) 먼저 검사한다 — 순서를 바꾸면 이 분기가
+            # 죽는다.
+            out_of_range = [i for i in mentioned_indices if i > shown_place_count]
+            if out_of_range:
+                result = LLMOutput(
+                    intent=Intent.MODIFY,
+                    status=OutputStatus.NEEDS_CLARIFICATION,
+                    clarification=ClarificationPayload(
+                        message=f"일정에는 {shown_place_count}개 항목만 있어요. "
+                        "몇 번째를 남겨드릴까요?",
+                    ),
+                )
+                return provider_result(result, source=ProviderSource.FAKE_LLM)
+
+            target_indices = [
+                i for i in range(1, shown_place_count + 1) if i not in mentioned_indices
+            ]
+            result = LLMOutput(
+                intent=Intent.MODIFY,
+                status=OutputStatus.COMPLETE,
+                modify=ModifyPayload(
+                    modify_type=ModifyType.REJECT_SPECIFIC,
+                    target_indices=target_indices,
+                ),
+            )
+            return provider_result(result, source=ProviderSource.FAKE_LLM)
+
+        if mentioned_indices and any(
+            marker in user_input for marker in _REJECT_SPECIFIC_CUE_MARKERS
+        ):
+            out_of_range = [i for i in mentioned_indices if i > shown_place_count]
+            if out_of_range:
+                result = LLMOutput(
+                    intent=Intent.MODIFY,
+                    status=OutputStatus.NEEDS_CLARIFICATION,
+                    clarification=ClarificationPayload(
+                        message=f"일정에는 {shown_place_count}개 항목만 있어요. "
+                        "몇 번째를 바꿔드릴까요?",
+                    ),
+                )
+                return provider_result(result, source=ProviderSource.FAKE_LLM)
+
+            result = LLMOutput(
+                intent=Intent.MODIFY,
+                status=OutputStatus.COMPLETE,
+                modify=ModifyPayload(
+                    modify_type=ModifyType.REJECT_SPECIFIC,
+                    target_indices=mentioned_indices,
+                ),
+            )
+            return provider_result(result, source=ProviderSource.FAKE_LLM)
+
         if any(marker in user_input for marker in _REJECT_ALL_MARKERS):
             result = LLMOutput(
                 intent=Intent.MODIFY,
@@ -649,6 +775,34 @@ class FakeLLMProvider:
             total_duration_min=total_duration,
             route_summary="고정 스텁 동선입니다.",
         )
+        return provider_result(result, source=ProviderSource.FAKE_LLM)
+
+    async def generate_schedule_fill(
+        self, request: SchedulePartialFillRequest
+    ) -> ProviderResult[SchedulePartialLLMPlan]:
+        """실제 Gemini 호출 없이 candidates 앞쪽에서 필요한 개수만큼 순서대로
+        target_orders에 배정한다 — SCHEDULE-09 2단계 회귀 테스트용, 실제
+        편성 판단이 아니다.
+
+        candidates가 target_orders보다 적으면(strict=False) new_items 개수가
+        모자란 채로 반환된다 — 의도적이다. planner.py의 사후 검증(order 집합
+        일치 확인)이 이 불일치를 잡아내는 경로를 테스트할 수 있게 한다.
+        """
+        orders = sorted(request.target_orders)
+        selected = request.candidates[: len(orders)]
+        new_items = [
+            ScheduleItem(
+                order=order,
+                place_id=candidate.place_id,
+                place_name=candidate.name,
+                estimated_arrival=f"{15 + index}:00",
+                estimated_duration_min=60,
+                travel_to_next_min=15,
+                reason="Agent Runtime 골격 검증용 고정 대체 항목입니다.",
+            )
+            for index, (order, candidate) in enumerate(zip(orders, selected, strict=False))
+        ]
+        result = SchedulePartialLLMPlan(new_items=new_items)
         return provider_result(result, source=ProviderSource.FAKE_LLM)
 
 

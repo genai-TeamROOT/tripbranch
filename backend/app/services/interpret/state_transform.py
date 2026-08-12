@@ -192,6 +192,14 @@ def transform(
         modify = llm_output.modify
         if modify.modify_type is ModifyType.REJECT_ALL:
             rejected_places = _rejected_from_shown(session_context, "not_interested")
+        elif modify.modify_type is ModifyType.REJECT_SPECIFIC:
+            # SCHEDULE-09 2단계: target_indices가 가리키는 자리만 거절로
+            # 기록한다 — REJECT_ALL과 달리 나머지(유지 대상)는 손대지 않는다.
+            # 후보 재구성(pinned 병합·빈 슬롯 채우기)은 agent_runtime.py가
+            # target_indices를 직접 읽어 처리한다.
+            rejected_places = _rejected_from_indices(
+                session_context, modify.target_indices, "not_interested"
+            )
         elif modify.condition_changes is not None:
             operations = _changed_field_operations(
                 modify.condition_changes, modify.changed_fields, session_context
@@ -380,6 +388,24 @@ def _rejected_from_shown(
     return [
         RejectedPlace(place_id=place_id, reason_code=reason_code)
         for place_id in session_context.shown_place_ids
+    ]
+
+
+def _rejected_from_indices(
+    session_context: SessionContextResponse, target_indices: list[int], reason_code: str
+) -> list[RejectedPlace]:
+    """1-indexed target_indices가 가리키는 place_id만 거절로 기록한다.
+
+    (SCHEDULE-09 2단계) shown_place_ids는 마지막 실행 rank 순 목록이라
+    ScheduleItem.order와 같은 체계다(history.py RecommendedItem 참고). 범위를
+    벗어나는 순번은 이미 파싱 단계(gemini_prompts._MODIFY_TARGET_RULES)가
+    needs_clarification으로 걸러내지만, 방어적으로 여기서도 조용히 무시한다.
+    """
+    shown = session_context.shown_place_ids
+    return [
+        RejectedPlace(place_id=shown[index - 1], reason_code=reason_code)
+        for index in target_indices
+        if 1 <= index <= len(shown)
     ]
 
 

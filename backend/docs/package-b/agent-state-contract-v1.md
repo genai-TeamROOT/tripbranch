@@ -466,9 +466,11 @@ Phase 1에서는 제외 목적으로 동일하게 사용하지만,
 | `distance_km` | float \| null | (COMPARE 전용, 2026-08-11) 추천 시점에 계산된 직선거리 스냅샷 |
 | `remaining_minutes` | int \| null | (COMPARE 전용, 2026-08-11) 추천 시점에 계산된 남은 운영시간 스냅샷 |
 | `environment_type` | string \| null | (COMPARE 전용, 2026-08-11) 추천 시점의 실내/실외 분류 스냅샷 |
+| `name` | string \| null | (SCHEDULE 부분 재편성 전용, 2026-08-11 D-060) 추천 시점에 보여준 장소 이름 스냅샷 |
 
-**COMPARE 전용 3개 필드는 3.7절 "B는 place_id만 저장" 원칙의 예외다.**
-자세한 사유와 원칙 충돌이 없는 이유는 3.7절 참고.
+**COMPARE 전용 3개 필드 + SCHEDULE 부분 재편성 전용 `name`은 3.7절
+"B는 place_id만 저장" 원칙의 예외다.** 자세한 사유와 원칙 충돌이 없는
+이유는 3.7절 참고.
 
 **rejected 항목**
 
@@ -588,6 +590,29 @@ B가 보관한 과거 정보가 현재 정보로 오인되는 상황을 방지�
   B의 기존 `recommended` 이력(3.2절, 3.4절)은 이미 이런 상황에 안전하게
   대응하도록 설계돼 있다 — RECOMMEND 응답이 0건이면 애초에 `record_recommendation`
   자체가 호출되지 않아 직전 정상 목록이 유지된다.
+
+**예외: SCHEDULE 부분 재편성 장소 이름 (2026-08-11, D-060 실사용 재현)**
+
+`recommended` 항목에 `name`(장소 이름) 필드도 추가로 저장한다(3.2절). 위
+"이름·주소·좌표는 저장하지 않는다" 원칙의 세 번째 예외다.
+
+- SCHEDULE-09 2단계(REJECT_SPECIFIC 부분 재편성)는 원래 이름을 저장하지 않고,
+  지목되지 않은 자리(pinned)의 이름을 매 턴 C의 새 응답에서 다시 매칭해
+  채우도록 설계했다 — "이름은 C 책임"이라는 원 원칙을 지키려 한 것이다.
+- 그런데 실사용 테스트에서 "경복궁"류 지명 검색이 호출마다 살짝 다른 좌표로
+  resolve되는 사례가 확인됐다(Naver local search fallback). 그 결과 이번 턴
+  주변 후보 목록이 매 턴 완전히 달라져(실측: 겹치는 장소 0개), 직전 턴에
+  고른 place_id가 이번 후보에 전혀 안 잡히는 일이 발생했다. pinned 유지가
+  통째로 실패하면서 REJECT_SPECIFIC이 REJECT_ALL처럼 조용히 전체 재편성으로
+  폴백되는 버그로 이어졌다.
+- name은 COMPARE의 3개 필드와 같은 성격이다 — "현재 장소 상태"가 아니라
+  **추천 시점에 실제로 보여준 이름의 스냅샷**이며, 이 값을 "현재 정보"인 것처럼
+  다시 읽는 소비자가 없다. pinned 항목을 화면에 그대로 다시 보여줄 때만
+  쓰인다.
+- (검토했던 대안) C의 지명→좌표 resolve를 안정화하는 근본 수정은 패키지 C
+  영역이라 이번 수정 범위에서 제외했다 — B 자체 저장으로 해결하면 C의 검색
+  안정성과 무관하게 즉시 정확해지고, 이미 두 차례 있었던 예외 패턴을 그대로
+  따르므로 팀 조정 비용도 낮다.
 
 ## 4. 세션·실행 식별자 정의
 
@@ -874,6 +899,8 @@ B는 전달받은 `reset_scope` 값에 따라 실행만 하며 발화를 해석�
 - `place_id` (TourAPI `contentid`)
 - `distance_km` / `remaining_minutes` / `environment_type` — COMPARE 전용
   Feature 스냅샷 (3.2절, 3.7절 예외 참고). 일반 장소 상세와는 성격이 다르다.
+- `name` — SCHEDULE 부분 재편성 전용 이름 스냅샷 (3.2절, 3.7절 예외 참고,
+  2026-08-11 D-060).
 - 식별자 (`session_id`, `run_id`, `trace_id`)
 - `last_intent`
 - `pending_clarification` (되묻기 사유 코드)
@@ -1047,9 +1074,9 @@ A가 인텐트를 분류하기 전에 필요한 정보를 제공한다.
   "recommended_count": 6,
   "shown_place_ids": ["126511", "126512", "126513"],
   "shown_recommendations": [
-    { "place_id": "126511", "rank": 1, "distance_km": 0.42,
+    { "place_id": "126511", "rank": 1, "name": "경복궁", "distance_km": 0.42,
       "remaining_minutes": 75, "environment_type": "indoor" },
-    { "place_id": "126512", "rank": 2, "distance_km": 1.1,
+    { "place_id": "126512", "rank": 2, "name": "국립고궁박물관", "distance_km": 1.1,
       "remaining_minutes": null, "environment_type": "outdoor" }
   ],
   "excluded_place_ids": ["126508", "126509", "126510"],
@@ -1068,7 +1095,7 @@ A가 인텐트를 분류하기 전에 필요한 정보를 제공한다.
 | `has_recommendation` | bool | `MODIFY` / `COMPARE` 전제 조건 판정 |
 | `recommended_count` | int | 누적 노출 장소 수 |
 | `shown_place_ids` | list[string] | **마지막 실행** 노출 목록(rank 순). `COMPARE` 지시어 해석용 |
-| `shown_recommendations` | list[object] | (2026-08-11) `shown_place_ids`와 동일 범위·정렬의 전체 항목. `distance_km`/`remaining_minutes`/`environment_type` 포함 — `COMPARE`가 "추천 시 이미 계산된 데이터"를 그대로 쓸 때 사용 |
+| `shown_recommendations` | list[object] | (2026-08-11) `shown_place_ids`와 동일 범위·정렬의 전체 항목. `distance_km`/`remaining_minutes`/`environment_type`(COMPARE 전용) 및 `name`(SCHEDULE 부분 재편성 전용, D-060) 포함 |
 | `excluded_place_ids` | list[string] | 누적 제외 목록 |
 | `last_recommended_run_id` | string \| null | 마지막 추천 실행 |
 | `last_intent` | string \| null | 직전 턴 인텐트. `INFO`의 장소 맥락 판정용 |
@@ -1104,9 +1131,9 @@ A가 인텐트를 분류하기 전에 필요한 정보를 제공한다.
   "session_id": "sess_01J8XKQ2M7N4P9",
   "run_id": "run_01J8XKQ5A1B2C3",
   "recommended": [
-    { "place_id": "126511", "rank": 1,
+    { "place_id": "126511", "rank": 1, "name": "경복궁",
       "distance_km": 0.42, "remaining_minutes": 75, "environment_type": "indoor" },
-    { "place_id": "126512", "rank": 2,
+    { "place_id": "126512", "rank": 2, "name": "국립고궁박물관",
       "distance_km": 1.1, "remaining_minutes": null, "environment_type": "outdoor" }
   ]
 }
@@ -1127,7 +1154,9 @@ AF-05 Agent Runtime이 추천 응답을 조립한 직후 호출한다.
 
 `distance_km`/`remaining_minutes`/`environment_type`은 COMPARE 전용 선택
 필드다(2026-08-11). RECOMMEND 흐름은 D가 계산한 값을 그대로 전달하고,
-SCHEDULE 흐름은 생략하면 된다(3.7절 예외 참고).
+SCHEDULE 흐름은 생략하면 된다(3.7절 예외 참고). `name`은 SCHEDULE 부분
+재편성 전용 선택 필드다(2026-08-11, D-060) — 있으면 항상 넘기는 것을
+권장한다. 자세한 사유는 3.7절 예외 참고.
 
 ### 6.5 api_context 갱신 (A 또는 Runtime → B)
 
@@ -1304,3 +1333,5 @@ GPS·날씨 API로 확보한 데이터를 저장한다.
 | 08-02 | `pending_clarification` 필드 | `AgentState`에 되묻기 사유 코드 필드 추가. 판정은 LLM/C, B는 보관만. PR #64에서 C가 선반영, 이번에 계약 문서 반영 | PR #64 (C) |
 | 08-04 | `concentration_intent` 필드 확정 | 15번째 조건 필드로 정식 반영. `field_spec.py`에 `weather_intent`와 동일 스펙(`Update`/`Remove`)으로 등록, 다중 턴 유지·Reset 대상 포함 | B-06 |
 | 08-11 | COMPARE 데이터 출처 (D-050 확정) | A안 채택 — `recommended` 항목에 `distance_km`/`remaining_minutes`/`environment_type` 3개 필드 추가. B안(A가 세션에 마지막 응답 캐시)은 되묻기·0건 응답 시 이전 목록 덮어쓰기 위험이 있어 기각. C안(C가 재계산)은 §13의 "이미 계산된 데이터" 정의와 어긋나 기각. Supabase 마이그레이션 불필요(`recommended` 컬럼이 jsonb) | C 문서 §1, A 댓글 |
+| 08-11 | SCHEDULE 부분 재편성 장소 이름 (D-060) | `recommended` 항목에 `name` 필드 추가. 원래는 pinned 자리 이름을 매 턴 C 응답에서 재매칭하도록 설계했으나, "경복궁" 지명 검색이 호출마다 다른 좌표로 resolve돼(Naver local search fallback) 이번 턴 후보가 매번 완전히 달라지는 사례가 실사용 테스트로 확인됨 — pinned 유지가 매번 실패해 REJECT_SPECIFIC이 REJECT_ALL처럼 전체 재편성으로 조용히 폴백되는 버그로 이어짐. C의 지명 resolve 안정화(근본 수정)는 범위 밖이라 B 자체 저장으로 해결 | 실사용 재현 (session sess_1786433109...) |
+| 08-11 | `last_intent` relabel 동기화 (D-061) | `set_last_intent()` 서비스 함수 추가. Agent Runtime의 SCHEDULE 재조정 감지(3-3절)는 apply() 이후에 intent 라벨만 SCHEDULE로 바꿔치기하는데, apply()는 이미 그 이전(원본 MODIFY) 값으로 `last_intent`를 저장해버려 실제 저장값과 어긋났다. SCHEDULE → REJECT_SPECIFIC → REJECT_SPECIFIC처럼 재조정이 연속될 때 두 번째부터 재조정 감지 자체가 실패해 전체가 새로 짜이는 버그로 이어짐 — relabel 직후 `last_intent`를 다시 SCHEDULE로 덮어써 해결 | 실사용 재현 (3턴 연속 REJECT_SPECIFIC) |

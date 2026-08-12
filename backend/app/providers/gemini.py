@@ -28,7 +28,12 @@ from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
 from app.observability.api_usage import record_call
 from app.providers import gemini_prompts
 from app.providers.contracts import ProviderResult, ProviderSource, provider_result
-from app.schedule.schemas import ScheduleLLMPlan, SchedulePlanningRequest
+from app.schedule.schemas import (
+    ScheduleLLMPlan,
+    SchedulePartialFillRequest,
+    SchedulePartialLLMPlan,
+    SchedulePlanningRequest,
+)
 from app.schemas import (
     GeneralTopic,
     Intent,
@@ -122,12 +127,14 @@ class RealGeminiProvider:
         shown_place_count: int,
         pending_clarification: str | None = None,
         last_intent: str | None = None,
+        shown_place_names: list[str] | None = None,
     ) -> ProviderResult[IntentClassificationResult]:
         instruction = gemini_prompts.build_intent_classification_instruction(
             has_previous_recommendation=has_previous_recommendation,
             shown_place_count=shown_place_count,
             pending_clarification=pending_clarification,
             last_intent=last_intent,
+            shown_place_names=shown_place_names,
         )
         result = await self._call_structured(
             instruction,
@@ -155,10 +162,14 @@ class RealGeminiProvider:
         current_conditions: UserConditions,
         *,
         pending_clarification: str | None = None,
+        shown_place_count: int = 0,
+        shown_place_names: list[str] | None = None,
     ) -> ProviderResult[LLMOutput]:
         instruction = gemini_prompts.build_modify_extraction_instruction(
             current_conditions,
             pending_clarification=pending_clarification,
+            shown_place_count=shown_place_count,
+            shown_place_names=shown_place_names,
         )
         result = await self._call_structured(
             instruction,
@@ -273,6 +284,21 @@ class RealGeminiProvider:
             context,
             ScheduleLLMPlan,
             operation="generate_schedule_plan",
+        )
+        return provider_result(result, source=ProviderSource.GEMINI)
+
+    async def generate_schedule_fill(
+        self, request: SchedulePartialFillRequest
+    ) -> ProviderResult[SchedulePartialLLMPlan]:
+        assert request.visit_datetime is not None
+        start_time = request.visit_datetime.strftime("%H:%M")
+        instruction = gemini_prompts.build_schedule_fill_instruction()
+        context = gemini_prompts.format_schedule_fill_context(request, start_time)
+        result = await self._call_structured(
+            instruction,
+            context,
+            SchedulePartialLLMPlan,
+            operation="generate_schedule_fill",
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 

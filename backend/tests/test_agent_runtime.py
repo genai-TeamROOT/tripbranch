@@ -599,6 +599,231 @@ async def test_schedule_then_change_condition_modify_merges_before_rerouting() -
 
 
 @pytest.mark.asyncio
+async def test_schedule_then_reject_specific_modify_keeps_other_items() -> None:
+    """SCHEDULE-09 2단계: "두 번째는 별로야"는 REJECT_ALL과 달리 지목한 자리만
+    갈아끼운다. classify_intent()가 순번+거절 신호 조합을 MODIFY로 분류하고
+    (D-059 갭 수정분), extract_modify_conditions()가 target_indices=[2]를
+    뽑아내면, agent_runtime이 이전 shown_recommendations에서 1·3번은 그대로
+    pinned_items로 옮기고 plan_partial_schedule()이 2번 자리만 D의 새 후보로
+    채운다 — 통째로 새 일정을 짜는 REJECT_ALL 경로(위 테스트)와 대비된다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처에서 반나절 코스 짜줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+    assert first.llm_output.intent == "SCHEDULE"
+    assert first.schedule is not None
+    assert len(first.schedule.items) == 3
+    first_by_order = {item.order: item.place_id for item in first.schedule.items}
+
+    second = await run_agent_flow(
+        AgentRequest(
+            user_input="두 번째는 별로야",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    # raw 분류는 MODIFY(REJECT_SPECIFIC)였다는 걸 간접 확인 — relabel로
+    # intent만 SCHEDULE로 바뀌었을 뿐, recommendations가 아니라 schedule이
+    # 채워진다.
+    assert second.llm_output.intent == "SCHEDULE"
+    assert second.recommendations is None
+    assert second.schedule is not None
+    second_by_order = {item.order: item.place_id for item in second.schedule.items}
+    assert set(second_by_order) == {1, 2, 3}
+
+    # 1번·3번은 그대로 유지, 2번만 새 장소로 교체.
+    assert second_by_order[1] == first_by_order[1]
+    assert second_by_order[3] == first_by_order[3]
+    assert second_by_order[2] != first_by_order[2]
+    assert second_by_order[2] not in first_by_order.values()
+
+    context = get_session_context(second.state.session_id, store=store)
+    assert set(context.shown_place_ids) == set(second_by_order.values())
+
+    # B의 rejected 이력에는 지목된 2번 장소만 들어가야 한다 — 1번·3번은
+    # REJECT_ALL과 달리 거절 처리되지 않는다.
+    history = store.get_history(second.state.session_id)
+    assert history is not None
+    rejected_ids = {item.place_id for item in history.rejected}
+    assert rejected_ids == {first_by_order[2]}
+
+
+@pytest.mark.asyncio
+async def test_schedule_reject_specific_chains_across_consecutive_turns() -> None:
+    """SCHEDULE-09 후속(D-061): REJECT_SPECIFIC 재조정이 연속으로 이어질 때도
+    매번 부분 재편성이 걸려야 한다. apply()는 매 턴 relabel 이전의 원본
+    intent(MODIFY)로 last_intent를 저장하는데, 3-3절 relabel 직후 그 값을
+    다시 SCHEDULE로 맞춰주지 않으면(set_last_intent) 두 번째 REJECT_SPECIFIC
+    턴이 직전 턴을 last_intent="MODIFY"로 보게 되어 재조정 감지 자체가
+    실패한다 — 실사용 테스트에서 "두 번째는 별로야" 다음에 "세 번째 장소
+    별로야"를 보내면 전체가 새로 짜이는 것으로 재현됐다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처에서 반나절 코스 짜줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+    assert first.llm_output.intent == "SCHEDULE"
+    first_by_order = {item.order: item.place_id for item in first.schedule.items}
+
+    second = await run_agent_flow(
+        AgentRequest(
+            user_input="두 번째는 별로야",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+    assert second.llm_output.intent == "SCHEDULE"
+    assert second.schedule is not None
+    second_by_order = {item.order: item.place_id for item in second.schedule.items}
+    assert second_by_order[1] == first_by_order[1]
+    assert second_by_order[3] == first_by_order[3]
+
+    # 두 번째 재조정 턴: 이번엔 3번을 지목한다. 직전 턴(SCHEDULE로 relabel된
+    # MODIFY)이 last_intent="SCHEDULE"로 올바르게 저장돼 있어야 재조정
+    # 감지가 걸린다 — 실패하면 intent가 MODIFY로 남고 recommendations가
+    # 채워진다(위 다른 테스트들과 동일한 증거 패턴).
+    third = await run_agent_flow(
+        AgentRequest(
+            user_input="세 번째 장소 별로야",
+            session_id=second.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert third.llm_output.intent == "SCHEDULE"
+    assert third.recommendations is None
+    assert third.schedule is not None
+    third_by_order = {item.order: item.place_id for item in third.schedule.items}
+    assert set(third_by_order) == {1, 2, 3}
+
+    # 1번(첫 턴부터 유지)·2번(직전 턴에서 새로 채워짐)은 그대로, 3번만 교체.
+    assert third_by_order[1] == first_by_order[1]
+    assert third_by_order[2] == second_by_order[2]
+    assert third_by_order[3] != second_by_order[3]
+    assert third_by_order[3] not in second_by_order.values()
+
+    history = store.get_history(third.state.session_id)
+    assert history is not None
+    rejected_ids = {item.place_id for item in history.rejected}
+    assert rejected_ids == {first_by_order[2], second_by_order[3]}
+
+
+@pytest.mark.asyncio
+async def test_schedule_then_reject_specific_exclusion_pattern_keeps_only_mentioned() -> None:
+    """SCHEDULE-09 후속: "두 번째 말고는 다 마음에 안 들어"는 지목한 자리만
+    직접 거부하는 것과 정반대다 — 2번만 남기고 1·3번을 새 장소로 채운다.
+    표면상 REJECT_ALL 예문("다 마음에 안 들어")과 겹치지만, "말고는"으로
+    특정 순번을 예외 처리했으므로 REJECT_SPECIFIC(여집합)이어야 한다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처에서 반나절 코스 짜줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+    assert first.llm_output.intent == "SCHEDULE"
+    first_by_order = {item.order: item.place_id for item in first.schedule.items}
+
+    second = await run_agent_flow(
+        AgentRequest(
+            user_input="두 번째 말고는 다 마음에 안 들어",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert second.llm_output.intent == "SCHEDULE"
+    assert second.recommendations is None
+    assert second.schedule is not None
+    second_by_order = {item.order: item.place_id for item in second.schedule.items}
+    assert set(second_by_order) == {1, 2, 3}
+
+    # 2번만 유지, 1번·3번은 새 장소로 교체.
+    assert second_by_order[2] == first_by_order[2]
+    assert second_by_order[1] != first_by_order[1]
+    assert second_by_order[3] != first_by_order[3]
+    assert second_by_order[1] not in first_by_order.values()
+    assert second_by_order[3] not in first_by_order.values()
+
+    history = store.get_history(second.state.session_id)
+    assert history is not None
+    rejected_ids = {item.place_id for item in history.rejected}
+    assert rejected_ids == {first_by_order[1], first_by_order[3]}
+
+
+@pytest.mark.asyncio
+async def test_schedule_then_reject_by_name_keeps_other_items() -> None:
+    """SCHEDULE-09 후속(이름 지목): 순번이 아니라 장소 이름으로 "OO는 빼줘"라고
+    해도 그 자리만 교체돼야 한다 — B가 이제 이름도 저장하므로(SCHEDULE-09 후속),
+    agent_runtime이 InterpretRequest.shown_place_names로 이름 목록을 전달하고
+    FakeLLMProvider가 이름→순번 매칭까지 해낸다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처에서 반나절 코스 짜줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+    assert first.llm_output.intent == "SCHEDULE"
+    first_by_order = {item.order: item.place_id for item in first.schedule.items}
+    target_name = first.schedule.items[1].place_name  # order=2
+
+    second = await run_agent_flow(
+        AgentRequest(
+            user_input=f"{target_name}은 빼줘",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert second.llm_output.intent == "SCHEDULE"
+    assert second.recommendations is None
+    assert second.schedule is not None
+    second_by_order = {item.order: item.place_id for item in second.schedule.items}
+
+    # 1번·3번은 그대로, 이름으로 지목한 2번만 새 장소로 교체.
+    assert second_by_order[1] == first_by_order[1]
+    assert second_by_order[3] == first_by_order[3]
+    assert second_by_order[2] != first_by_order[2]
+
+
+@pytest.mark.asyncio
 async def test_schedule_modify_reroute_skipped_when_pending_clarification() -> None:
     """SCHEDULE-06 안전장치: 직전 턴이 SCHEDULE였어도(last_intent="SCHEDULE")
     되묻기가 아직 안 끝났다면(pending_clarification이 남아있음) 재조정

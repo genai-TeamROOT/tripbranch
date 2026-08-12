@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from app.schedule.schemas import SchedulePlanningRequest
+from app.schedule.schemas import SchedulePartialFillRequest, SchedulePlanningRequest
 from app.schemas import GeneralTopic, Intent, UserConditions
 
 # B의 LLMOps Trace(record_trace(prompt_version=...))와 StateApplyRequest.prompt_version에
@@ -23,7 +23,7 @@ from app.schemas import GeneralTopic, Intent, UserConditions
 # 쓰였는지와 무관하게 단일 값으로 취급한다 — 함수별 개별 버전은 만들지 않는다. 판별·추출
 # 규칙에 영향을 주는 변경(6개 함수 중 하나라도) 시 버전을 올린다 — 사소한 문구·주석
 # 변경은 올리지 않는다.
-PROMPT_VERSION = "agent-interpret-prompts-1.0.9"
+PROMPT_VERSION = "agent-interpret-prompts-1.0.11"
 
 CHATBOT_NAME = "트리비"
 CHATBOT_PERSONA = """\
@@ -120,8 +120,14 @@ def build_intent_classification_instruction(
     shown_place_count: int,
     pending_clarification: str | None = None,
     last_intent: str | None = None,
+    shown_place_names: list[str] | None = None,
 ) -> str:
-    """intent-definition.md §5(판별 우선순위·맥락 의존 판별·경계 사례) 기반 system instruction."""
+    """intent-definition.md §5(판별 우선순위·맥락 의존 판별·경계 사례) 기반 system instruction.
+
+    shown_place_names는 SCHEDULE-09 후속(이름 지목)에서 추가됐다 — "두가헌
+    레스토랑은 빼줘"처럼 순번 없이 노출된 항목 이름만 언급해도 MODIFY로 판단할
+    근거를 준다. 없으면(이름 미저장 과거 세션 등) 이 블록은 생략된다.
+    """
 
     schedule_clarification_pending = (
         last_intent == "SCHEDULE" and pending_clarification is not None
@@ -137,6 +143,10 @@ def build_intent_classification_instruction(
         if location_clarification_pending
         else "아니오"
     )
+    shown_names_line = ""
+    if shown_place_names and any(name for name in shown_place_names):
+        joined = ", ".join(name for name in shown_place_names if name)
+        shown_names_line = f"\n- 현재 노출된 항목 이름: {joined}"
 
     return f"""당신은 국내 여행 추천 서비스 TripBranch의 Intent 분류기입니다.
 사용자 발화 하나를 읽고 아래 7개 Intent 중 정확히 하나로 분류하세요.
@@ -149,11 +159,13 @@ def build_intent_classification_instruction(
 현재 대화 컨텍스트:
 - 이전 추천 이력 존재 여부: {"있음" if has_previous_recommendation else "없음"}
 - 현재까지 노출된 추천 장소 수: {shown_place_count}
-- 직전 턴이 되묻기로 끝났는지: {clarification_status}
+- 직전 턴이 되묻기로 끝났는지: {clarification_status}{shown_names_line}
 
 이 컨텍스트를 위 "맥락 의존 판별" 규칙에 반드시 반영해서 판정하세요. 예를 들어 이전
 추천 이력이 "없음"인데 사용자가 "다른 곳 보여줘"라고 하면 MODIFY가 아니라 RECOMMEND로
-판정해야 합니다.
+판정해야 합니다. "현재 노출된 항목 이름"에 있는 장소를 언급하며 빼거나 바꾸자는 의도가
+있으면("두가헌 레스토랑은 빼줘") 새로운 검색(RECOMMEND)이 아니라 MODIFY입니다 — 단순히
+정보를 묻는 경우("두가헌 레스토랑 몇 시까지 해?")는 INFO이므로 혼동하지 마세요.
 
 intent가 OUT_OF_SCOPE인 경우에만 out_of_scope_category(harmful/unrelated/role_request/
 prompt_injection)와 out_of_scope_severity(high/medium/low)를 함께 채우세요. 그 외
@@ -244,12 +256,48 @@ out_of_scope는 null로 두세요."""
 
 _MODIFY_TYPE_RULES = """\
 modify_type 판별:
-- REJECT_ALL: 이전 추천 전체를 거부하고 다른 결과를 원함
+- REJECT_ALL: 이전 추천 전체를 거부하고 다른 결과를 원함. 특정 순번을 예외로
+  남기겠다는 언급이 전혀 없는 경우만 해당한다
   ("다른 곳 보여줘", "전부 별로야", "다른 거 없어?", "다 마음에 안 들어")
-  → condition_changes는 null, changed_fields는 빈 배열
+  → condition_changes는 null, changed_fields는 빈 배열, target_indices는 빈 배열
+- REJECT_SPECIFIC: 이전 추천 중 일부만 거부하고 그 자리만 다른 곳으로 바꾸고
+  싶음. 순번("두 번째")이 아니라 "아래 노출된 항목 목록"에 있는 장소 이름을
+  직접 언급해도 동일하게 REJECT_SPECIFIC이다(예: "두가헌 레스토랑은 빼줘").
+  아래 두 방향 모두 REJECT_SPECIFIC이며 target_indices의 의미가 정반대이므로
+  혼동하지 않는다(자세한 계산은 target_indices 판별 규칙 참고):
+  1) 바꿀 자리를 직접 지목 ("두 번째는 별로야", "세 번째만 다른 데로", "첫 번째 빼줘",
+     "두가헌 레스토랑은 빼줘")
+  2) 남길 자리를 지목하고 그 외 전부를 거부 ("두 번째 말고는 다 마음에 안 들어",
+     "세 번째만 남기고 나머지는 바꿔줘", "두가헌 레스토랑만 빼고 다 별로야") —
+     표면상 "다 마음에 안 들어"처럼 REJECT_ALL 예문과 겹쳐 보여도, "N번째/이름
+     말고는·빼고는"으로 특정 항목을 예외 처리했다면 REJECT_ALL이 아니라
+     REJECT_SPECIFIC이다
+  → 두 경우 모두 condition_changes는 null, changed_fields는 빈 배열
 - CHANGE_CONDITION: 추천 조건 자체를 바꾸고 싶음
   ("더 가까운 곳", "무료인 곳으로", "실내로 바꿔줘", "카페 말고 맛집")
-  → condition_changes에 병합 후 최종 값을 채우고, changed_fields에 실제로 바뀐 필드명을 나열
+  → condition_changes에 병합 후 최종 값을 채우고, changed_fields에 실제로 바뀐 필드명을 나열,
+    target_indices는 빈 배열
+"""
+
+_MODIFY_TARGET_RULES = """\
+target_indices 판별 (modify_type이 REJECT_SPECIFIC일 때만 채운다):
+- 바꿀 자리를 순번으로 직접 지목하면 그 순번(들)을 그대로 담는다
+  (예: "두 번째는 별로야" → [2], "두 번째랑 세 번째 다 별로야" → [2, 3])
+- 바꿀 자리를 "아래 노출된 항목 목록"의 장소 이름으로 지목해도 동일하게
+  처리한다 — 그 이름의 순번을 target_indices에 담는다(예: 목록이 "1. 경복궁
+  2. 두가헌 레스토랑 3. 갤러리조선"일 때 "두가헌 레스토랑은 빼줘" → [2]).
+  이름 일부만 언급해도(예: "두가헌"만) 목록에서 유일하게 식별되면 그 항목으로
+  판단한다. 순번과 이름을 섞어 언급해도(예: "두 번째랑 갤러리조선") 모두
+  담는다. 노출 목록에 없는 이름을 언급하면(오타·다른 장소) 이 규칙을 적용하지
+  않는다 — REJECT_ALL/CHANGE_CONDITION 등 다른 규칙으로 판단한다
+- 남길 자리를 지목하고("N번째/이름 말고는", "N번째/이름만 남기고", "N번째/이름
+  빼고는") 나머지를 거부하면, 아래 "현재 노출된 일정/추천 항목 수" 중 언급된
+  순번(이름은 위 규칙으로 순번 변환 후)을 제외한 나머지 전체를 담는다 —
+  언급된 순번 자체는 절대 넣지 않는다
+  (예: 3개 노출 중 "두 번째 말고는 다 마음에 안 들어" → [1, 3].
+       5개 노출 중 "세 번째만 남기고 나머지는 바꿔줘" → [1, 2, 4, 5].
+       "두가헌 레스토랑 말고는 다 별로야"이고 두가헌이 2번이면 → [1, 3])
+- 순번·이름 언급 없이 전체를 거부하면 REJECT_ALL이고 target_indices는 빈 배열
 """
 
 _MODIFY_RELATIVE_EXPRESSION_RULES = """\
@@ -288,8 +336,21 @@ def build_modify_extraction_instruction(
     current_conditions: UserConditions,
     *,
     pending_clarification: str | None = None,
+    shown_place_count: int = 0,
+    shown_place_names: list[str] | None = None,
 ) -> str:
-    """int-03-modify.md §6,7,9,12(REJECT_ALL/CHANGE_CONDITION, 병합, "더 ~한 곳") 기반."""
+    """int-03-modify.md §6,7,9,12(REJECT_ALL/CHANGE_CONDITION, 병합, "더 ~한 곳") 기반.
+
+    shown_place_count는 SCHEDULE-09(부분 수정)에서 추가됐다. REJECT_SPECIFIC의
+    target_indices가 실제 노출 범위를 벗어나는지 판별하는 데 쓰인다 —
+    build_compare_extraction_instruction의 shown_place_count와 같은 역할이다.
+    shown_place_names는 SCHEDULE-09 후속(이름 지목)에서 추가됐다 — rank 순
+    이름 목록을 "1. 이름\\n2. 이름..." 형태로 프롬프트에 포함해 "두가헌
+    레스토랑은 빼줘"처럼 이름으로 지목한 경우도 target_indices로 변환하게
+    한다. 이름이 없거나(과거 세션) 전달되지 않으면 이 블록은 생략된다 —
+    Gemini가 목록 없이 이름 매칭을 시도해 엉뚱한 순번을 만들어내는 것을
+    막는다.
+    """
 
     current_json = current_conditions.model_dump_json(indent=2)
     location_clarification_answer = (
@@ -297,6 +358,17 @@ def build_modify_extraction_instruction(
         if pending_clarification in {"location_required", "location_ambiguous"}
         else "아니오"
     )
+    shown_list_block = ""
+    if shown_place_names and any(name for name in shown_place_names):
+        numbered = "\n".join(
+            f"{index}. {name}"
+            for index, name in enumerate(shown_place_names, start=1)
+            if name
+        )
+        shown_list_block = f"""
+아래 노출된 항목 목록 (순번. 이름):
+{numbered}
+"""
     return f"""당신은 TripBranch의 MODIFY 요청 추출기입니다. 사용자 발화 하나에서
 modify_type과 condition_changes를 추출해 LLMOutput(intent="MODIFY")으로 반환하세요.
 
@@ -310,8 +382,14 @@ modify_type과 condition_changes를 추출해 LLMOutput(intent="MODIFY")으로 �
 changed_fields에는 "search_center"만 넣으세요. 기존 조건은 변경하지 않습니다.
 위치 되묻기 상태가 아니어도, 이전 추천 뒤 사용자가 단순 지명만 말하면 해당 지명을
 search_center에 채우고 changed_fields에는 "search_center"만 넣으세요.
-
+{shown_list_block}
 {_MODIFY_TYPE_RULES}
+{_MODIFY_TARGET_RULES}
+현재 노출된 일정/추천 항목 수: {shown_place_count}. modify_type이 REJECT_SPECIFIC인데
+사용자가 이 범위를 벗어나는 순번을 언급하면(예: 2개만 노출됐는데 "세 번째") status를
+needs_clarification으로 두고 clarification.message에 몇 번까지 있는지 안내하는
+문구를 채우세요. 이름 언급이 노출 목록의 어느 항목과도 일치하지 않으면(오타 등)
+needs_clarification 대신 다른 규칙(REJECT_ALL/CHANGE_CONDITION)을 우선 검토하세요.
 {_MODIFY_RELATIVE_EXPRESSION_RULES}
 {_MODIFY_FIELD_MERGE_RULES}
 {_CONCENTRATION_INTENT_RULES}
@@ -558,6 +636,77 @@ def format_schedule_planning_context(request: SchedulePlanningRequest, start_tim
 {condition_lines}"""
 
 
+def build_schedule_fill_instruction() -> str:
+    """SCHEDULE-09(부분 수정) 2단계 — 기존 일정 중 일부 자리만 새로 채우는
+    system instruction. (SCHEDULE-부분수정-해결방향-설계안.md 3-3절)
+
+    build_schedule_planning_instruction()과 달리 pinned_items를 결과에 다시
+    담아 달라고 요청하지 않는다 — 유지 항목은 이미 확정돼 있으므로 LLM은
+    비어있는 자리(target_orders)에 들어갈 항목만 새로 고르면 된다. echo를
+    신뢰하지 않고 Python이 병합을 구조적으로 보장한다.
+    """
+
+    return """당신은 TripBranch의 일정 편성기입니다. 이미 확정된 일정(pinned_items) 중
+일부 자리가 비어 있습니다. 함께 전달된 후보 목록에서 그 자리에 들어갈 장소를
+새로 골라 반환하세요.
+
+규칙:
+- new_items의 개수는 target_orders의 개수와 정확히 같아야 합니다. 각 항목의
+  order는 target_orders에 있는 값 중 정확히 하나씩과 일치해야 하며, 중복이나
+  누락이 없어야 합니다.
+- pinned_items는 이미 확정된 항목입니다. new_items에 다시 포함하지 마세요 —
+  pinned_items에 있는 place_id를 다시 고르지 마세요.
+- pinned_items의 order·estimated_arrival을 참고해서, 새 항목이 전체 동선에서
+  자연스럽게 이어지도록 순서·시각을 계산하세요(예: order가 인접한 pinned
+  항목의 도착 시각+체류시간 이후로 새 항목의 estimated_arrival을 잡으세요).
+- 후보 간 거리 정보를 근거로 이동 동선이 비효율적이지 않은 장소를 고르세요.
+- estimated_duration_min은 장소 성격에 맞게 합리적으로 추정하세요
+  (카페 60분, 관광지 90분 등).
+- estimated_arrival은 "HH:MM" 형식입니다.
+- travel_to_next_min은 다음 순서(pinned 포함) 장소까지의 이동 시간 추정값입니다
+  (분). 전체 일정에서 가장 마지막 순서라면 null입니다.
+- reason은 그 장소를 그 자리에 배치한 이유를 1~2문장으로 씁니다(거리·시간·조건
+  근거를 포함하세요)."""
+
+
+def format_schedule_fill_context(request: SchedulePartialFillRequest, start_time: str) -> str:
+    """SchedulePartialFillRequest를 LLM에 전달할 contents 텍스트로 직렬화한다."""
+
+    pinned_lines = "\n".join(
+        f"- order={p.order} | {p.place_id} | {p.place_name} | "
+        f"도착={p.estimated_arrival} | 체류={p.estimated_duration_min}분"
+        for p in request.pinned_items
+    ) or "(없음)"
+    candidate_lines = "\n".join(
+        f"- {c.place_id} | {c.name} | {c.category} | score={c.score:.2f} | "
+        f"{c.recommendation_reason}"
+        for c in request.candidates
+    )
+    distance_lines = "\n".join(
+        f"- {a}-{b}: {distance_km:.2f}km"
+        for (a, b), distance_km in request.pairwise_distances_km.items()
+    )
+    condition_lines = request.conditions.model_dump_json(exclude_none=True)
+
+    return f"""[시작 시각]
+{start_time}
+
+[이미 확정된 일정 (pinned_items — 그대로 유지, 다시 고르지 마세요)]
+{pinned_lines}
+
+[채워야 할 자리 (target_orders)]
+{request.target_orders}
+
+[새로 고를 후보 목록]
+{candidate_lines}
+
+[후보 간 거리]
+{distance_lines}
+
+[사용자 조건]
+{condition_lines}"""
+
+
 def format_validation_retry_note(error: Exception) -> str:
     """1차 구조화 출력이 검증에 실패했을 때 재시도 프롬프트에 덧붙이는 안내문."""
 
@@ -580,5 +729,7 @@ __all__ = [
     "build_recommendation_summary_instruction",
     "build_schedule_planning_instruction",
     "format_schedule_planning_context",
+    "build_schedule_fill_instruction",
+    "format_schedule_fill_context",
     "format_validation_retry_note",
 ]

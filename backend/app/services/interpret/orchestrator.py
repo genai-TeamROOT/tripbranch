@@ -73,6 +73,7 @@ async def build_interpretation(
             shown_place_count=request.shown_place_count,
             pending_clarification=request.pending_clarification,
             last_intent=request.last_intent,
+            shown_place_names=request.shown_place_names,
         )
     ).data
 
@@ -119,6 +120,8 @@ async def build_interpretation(
                 request.user_input,
                 request.current_conditions,
                 pending_clarification=request.pending_clarification,
+                shown_place_count=request.shown_place_count,
+                shown_place_names=request.shown_place_names,
             )
         ).data
 

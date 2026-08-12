@@ -579,6 +579,267 @@ async def test_extract_modify_conditions_tc07_reject_all() -> None:
     assert output.modify.modify_type is ModifyType.REJECT_ALL
     assert output.modify.condition_changes is None
     assert output.modify.changed_fields == []
+    assert output.modify.target_indices == []
+
+
+@pytest.mark.asyncio
+async def test_extract_modify_conditions_reject_specific_single_target() -> None:
+    """SCHEDULE-09: 순번 하나 + 거절 신호가 함께 있으면 REJECT_SPECIFIC."""
+    provider = FakeLLMProvider()
+
+    output = (
+        await provider.extract_modify_conditions(
+            "두 번째는 별로야",
+            UserConditions(search_center="경복궁"),
+            shown_place_count=3,
+        )
+    ).data
+
+    assert output.status is OutputStatus.COMPLETE
+    assert output.modify.modify_type is ModifyType.REJECT_SPECIFIC
+    assert output.modify.target_indices == [2]
+    assert output.modify.condition_changes is None
+
+
+@pytest.mark.asyncio
+async def test_extract_modify_conditions_reject_specific_multiple_targets() -> None:
+    """SCHEDULE-09: 순번을 여러 개 언급하면 모두 담는다."""
+    provider = FakeLLMProvider()
+
+    output = (
+        await provider.extract_modify_conditions(
+            "두 번째랑 세 번째 다 별로야",
+            UserConditions(search_center="경복궁"),
+            shown_place_count=3,
+        )
+    ).data
+
+    assert output.modify.modify_type is ModifyType.REJECT_SPECIFIC
+    assert output.modify.target_indices == [2, 3]
+
+
+@pytest.mark.asyncio
+async def test_extract_modify_conditions_reject_specific_out_of_range_asks_clarification() -> None:
+    """SCHEDULE-09: 노출된 항목 수를 벗어나는 순번이면 needs_clarification.
+
+    COMPARE의 shown_place_count 범위 검증과 동일한 패턴이다.
+    """
+    provider = FakeLLMProvider()
+
+    output = (
+        await provider.extract_modify_conditions(
+            "세 번째는 별로야",
+            UserConditions(search_center="경복궁"),
+            shown_place_count=2,
+        )
+    ).data
+
+    assert output.status is OutputStatus.NEEDS_CLARIFICATION
+    assert output.modify is None
+    assert output.clarification is not None
+    assert "2개" in output.clarification.message
+
+
+@pytest.mark.asyncio
+async def test_extract_modify_conditions_exclusion_pattern_keeps_mentioned_index() -> None:
+    """SCHEDULE-09 후속: "N번째 말고는 다 ~"는 언급된 순번을 남기고 나머지
+    전부를 거부한다 — target_indices는 언급된 순번의 여집합이다(직접 지목과
+    정반대 방향)."""
+    provider = FakeLLMProvider()
+
+    output = (
+        await provider.extract_modify_conditions(
+            "두 번째 말고는 다 마음에 안 들어",
+            UserConditions(search_center="경복궁"),
+            shown_place_count=3,
+        )
+    ).data
+
+    assert output.status is OutputStatus.COMPLETE
+    assert output.modify.modify_type is ModifyType.REJECT_SPECIFIC
+    assert output.modify.target_indices == [1, 3]
+    assert output.modify.condition_changes is None
+
+
+@pytest.mark.asyncio
+async def test_extract_modify_conditions_exclusion_pattern_multiple_kept() -> None:
+    """SCHEDULE-09 후속: 남길 순번을 여러 개 언급해도 나머지 전부가 여집합이 된다."""
+    provider = FakeLLMProvider()
+
+    output = (
+        await provider.extract_modify_conditions(
+            "두 번째랑 세 번째 말고는 다 별로야",
+            UserConditions(search_center="경복궁"),
+            shown_place_count=5,
+        )
+    ).data
+
+    assert output.modify.modify_type is ModifyType.REJECT_SPECIFIC
+    assert output.modify.target_indices == [1, 4, 5]
+
+
+@pytest.mark.asyncio
+async def test_extract_modify_conditions_exclusion_pattern_out_of_range() -> None:
+    """SCHEDULE-09 후속: 남기겠다는 순번 자체가 노출 범위를 벗어나면 되묻는다."""
+    provider = FakeLLMProvider()
+
+    output = (
+        await provider.extract_modify_conditions(
+            "세 번째 말고는 다 별로야",
+            UserConditions(search_center="경복궁"),
+            shown_place_count=2,
+        )
+    ).data
+
+    assert output.status is OutputStatus.NEEDS_CLARIFICATION
+    assert output.modify is None
+    assert output.clarification is not None
+    assert "2개" in output.clarification.message
+
+
+@pytest.mark.asyncio
+async def test_extract_modify_conditions_name_reference_direct() -> None:
+    """SCHEDULE-09 후속(이름 지목): 순번 대신 노출된 항목 이름을 직접 언급해도
+    같은 순번으로 매칭돼야 한다."""
+    provider = FakeLLMProvider()
+
+    output = (
+        await provider.extract_modify_conditions(
+            "두가헌 레스토랑은 빼줘",
+            UserConditions(search_center="경복궁"),
+            shown_place_count=3,
+            shown_place_names=["경복궁", "두가헌 레스토랑", "갤러리조선"],
+        )
+    ).data
+
+    assert output.status is OutputStatus.COMPLETE
+    assert output.modify.modify_type is ModifyType.REJECT_SPECIFIC
+    assert output.modify.target_indices == [2]
+
+
+@pytest.mark.asyncio
+async def test_extract_modify_conditions_name_reference_exclusion() -> None:
+    """SCHEDULE-09 후속(이름 지목): "N 말고는 다 별로야"도 이름으로 지목할 수
+    있다 — 여집합 규칙과 결합된다."""
+    provider = FakeLLMProvider()
+
+    output = (
+        await provider.extract_modify_conditions(
+            "두가헌 레스토랑 말고는 다 별로야",
+            UserConditions(search_center="경복궁"),
+            shown_place_count=3,
+            shown_place_names=["경복궁", "두가헌 레스토랑", "갤러리조선"],
+        )
+    ).data
+
+    assert output.modify.modify_type is ModifyType.REJECT_SPECIFIC
+    assert output.modify.target_indices == [1, 3]
+
+
+@pytest.mark.asyncio
+async def test_extract_modify_conditions_name_and_ordinal_combined() -> None:
+    """SCHEDULE-09 후속(이름 지목): 순번과 이름을 섞어 언급해도 모두 담긴다."""
+    provider = FakeLLMProvider()
+
+    output = (
+        await provider.extract_modify_conditions(
+            "첫 번째랑 갤러리조선 빼줘",
+            UserConditions(search_center="경복궁"),
+            shown_place_count=3,
+            shown_place_names=["경복궁", "두가헌 레스토랑", "갤러리조선"],
+        )
+    ).data
+
+    assert output.modify.modify_type is ModifyType.REJECT_SPECIFIC
+    assert output.modify.target_indices == [1, 3]
+
+
+@pytest.mark.asyncio
+async def test_extract_modify_conditions_missing_names_falls_back_to_ordinal_only() -> None:
+    """SCHEDULE-09 후속(이름 지목): shown_place_names가 없으면(과거 세션 등)
+    기존 순번 기반 동작만 그대로 유지된다 — 새 기능이 하위 호환을 깨지 않는다."""
+    provider = FakeLLMProvider()
+
+    output = (
+        await provider.extract_modify_conditions(
+            "두 번째는 별로야",
+            UserConditions(search_center="경복궁"),
+            shown_place_count=3,
+        )
+    ).data
+
+    assert output.modify.modify_type is ModifyType.REJECT_SPECIFIC
+    assert output.modify.target_indices == [2]
+
+
+def test_modify_instruction_includes_shown_place_names_when_provided() -> None:
+    """SCHEDULE-09 후속(이름 지목): 이름 목록이 있으면 프롬프트에 번호 매긴
+    목록으로 포함된다."""
+    instruction = build_modify_extraction_instruction(
+        UserConditions(search_center="경복궁"),
+        shown_place_count=3,
+        shown_place_names=["경복궁", "두가헌 레스토랑", "갤러리조선"],
+    )
+
+    assert "1. 경복궁" in instruction
+    assert "2. 두가헌 레스토랑" in instruction
+    assert "3. 갤러리조선" in instruction
+
+
+def test_modify_instruction_omits_shown_place_names_block_when_absent() -> None:
+    """이름이 없으면 목록 블록 자체가 생략된다 — Gemini가 없는 이름으로
+    엉뚱하게 매칭 시도하는 걸 막는다."""
+    instruction = build_modify_extraction_instruction(
+        UserConditions(search_center="경복궁"), shown_place_count=3
+    )
+
+    assert "노출된 항목 목록 (순번. 이름)" not in instruction
+
+
+@pytest.mark.asyncio
+async def test_classify_intent_name_reference_routes_to_modify() -> None:
+    """SCHEDULE-09 후속(이름 지목): 순번 없이 이름 + 거절 신호만 있어도
+    classify_intent()가 MODIFY로 분류해야 extract_modify_conditions()까지
+    도달한다."""
+    provider = FakeLLMProvider()
+
+    result = (
+        await provider.classify_intent(
+            "두가헌 레스토랑은 빼줘",
+            has_previous_recommendation=True,
+            shown_place_count=3,
+            shown_place_names=["경복궁", "두가헌 레스토랑", "갤러리조선"],
+        )
+    ).data
+
+    assert result.intent is Intent.MODIFY
+
+
+@pytest.mark.asyncio
+async def test_extract_modify_conditions_ordinal_without_reject_cue_stays_reject_all() -> None:
+    """SCHEDULE-09: 순번 언급이 있어도 거절 신호가 없으면 REJECT_SPECIFIC로 오분류하지 않는다."""
+    provider = FakeLLMProvider()
+
+    output = (
+        await provider.extract_modify_conditions(
+            "다른 곳 보여줘", UserConditions(search_center="경복궁"), shown_place_count=3
+        )
+    ).data
+
+    assert output.modify.modify_type is ModifyType.REJECT_ALL
+    assert output.modify.target_indices == []
+
+
+def test_modify_instruction_includes_reject_specific_rule_and_shown_count() -> None:
+    """SCHEDULE-09: Real Gemini MODIFY 프롬프트에도 REJECT_SPECIFIC/target_indices
+    판별 규칙과 노출 항목 수가 반드시 들어간다."""
+    instruction = build_modify_extraction_instruction(
+        UserConditions(search_center="창경궁"), shown_place_count=3
+    )
+
+    assert "REJECT_SPECIFIC" in instruction
+    assert "target_indices" in instruction
+    assert "현재 노출된 일정/추천 항목 수: 3" in instruction
 
 
 @pytest.mark.asyncio
