@@ -64,10 +64,11 @@ backend\.venv\Scripts\Activate.ps1
 | `SUPABASE_URL` | 빈 값 | Place 동기화 저장소, `PLACE_DETAILS_SOURCE=supabase` |
 | `SUPABASE_SECRET_KEY` | 빈 값 | Place 동기화 저장소, `PLACE_DETAILS_SOURCE=supabase` |
 | `STATE_STORE_BACKEND` | `memory` | Package B State(세션·이력·트레이스) 저장소 (`memory`/`supabase`) |
-| `EXTERNAL_API_TIMEOUT_SECONDS` | `10` | Real Provider timeout |
+| `EXTERNAL_API_TIMEOUT_SECONDS` | `10` | Real Provider(TourAPI/Naver/Supabase 등, LLM 제외) timeout |
+| `LLM_API_TIMEOUT_SECONDS` | 빈 값(EXTERNAL_API_TIMEOUT_SECONDS로 폴백) | Gemini 전용 timeout — Tool/DB와 분리(2026-08-11, EXTERNAL_API_TIMEOUT_SECONDS를 Gemini 지연 대응으로 올리면 TourAPI/Naver/Supabase까지 같이 오래 기다리는 문제로 분리) |
 | `RECOMMENDATION_RESULT_LIMIT` | `5` | Scoring 후 반환할 최대 추천 수 |
 | `RECOMMENDATION_CANDIDATE_LIMIT` | `10` | 거리순으로 상세조회·평가할 후보 수 |
-| `EXTERNAL_API_RETRY_COUNT` | `2` | 설정은 있으나 재시도 로직 미구현 |
+| `EXTERNAL_API_RETRY_COUNT` | `2` | Gemini 호출에만 적용(재시도 루프 소비). 그 외 Real Provider는 이 값을 안 쓴다 |
 | `FAKE_WEATHER_SKY_CODE` | `4` | Fake Weather의 기상청 SKY 코드 (`1` 맑음/`3` 구름많음/`4` 흐림) |
 | `FAKE_WEATHER_PRECIPITATION_TYPE` | `0` | Fake Weather의 기상청 PTY 코드 (`0` 없음/`1` 비/`2` 비눈/`3` 눈) |
 | `FAKE_CURRENT_DATETIME` | 고정 ISO 시각 | 예약값; 현재 추천 로직에서 미사용 |
