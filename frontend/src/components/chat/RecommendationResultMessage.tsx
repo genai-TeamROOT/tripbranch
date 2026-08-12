@@ -4,6 +4,10 @@
  * 출력: 추천 결과 메시지, PlaceCard 목록, 다른 장소 보기/반경 확대 버튼.
  * 호출 시점: ChatPage가 recommendation_result 메시지를 렌더링할 때 호출된다.
  * TODO: 지도/동선/저장 액션이 생기면 PlaceCard 주변 액션으로 확장한다.
+ *
+ * showElapsedTime이 false면(실사용자 화면) 지연시간(elapsedMs/serverElapsedMs)을
+ * 아예 렌더링하지 않는다 — 개발자 확인용 숫자가 실서비스 화면에 새던 걸 정리함.
+ * /dev-chat(ChatMessageList의 isDeveloperView)에서만 true로 넘어온다.
  */
 
 import type { RecommendationItem } from "../../types";
@@ -16,6 +20,7 @@ interface RecommendationResultMessageProps {
   unverifiedRecommendations: RecommendationItem[];
   elapsedMs: number;
   serverElapsedMs: number;
+  showElapsedTime?: boolean;
   isLoading: boolean;
   onRequestMore: () => void;
   onRelaxRadius: () => void;
@@ -33,6 +38,7 @@ export function RecommendationResultMessage({
   unverifiedRecommendations,
   elapsedMs,
   serverElapsedMs,
+  showElapsedTime = false,
   isLoading,
   onRequestMore,
   onRelaxRadius,
@@ -45,9 +51,11 @@ export function RecommendationResultMessage({
         <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
           조건에 맞춰 이런 장소를 찾아봤어요.
         </p>
-        <p className="text-xs text-gray-500 dark:text-gray-400">
-          {formatDuration(elapsedMs)} 소요 (서버 {formatDuration(serverElapsedMs)})
-        </p>
+        {showElapsedTime && (
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            {formatDuration(elapsedMs)} 소요 (서버 {formatDuration(serverElapsedMs)})
+          </p>
+        )}
       </div>
 
       {hasNoResults ? (

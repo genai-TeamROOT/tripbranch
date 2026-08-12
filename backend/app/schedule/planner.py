@@ -9,7 +9,10 @@ A(agent_runtime.py)가 D(RecommendationProvider)를 호출하는 것과 동일�
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
+from time import perf_counter
+from typing import TypeAlias
 
 from app.errors import AppError
 from app.providers.protocols import LLMProvider
@@ -20,6 +23,8 @@ from app.schedule.schemas import (
 )
 from app.schemas import ScheduleItem, ScheduleResult
 from app.state.schema import now_kst
+
+Timer: TypeAlias = Callable[[], float]
 
 _NO_CANDIDATES_ROUTE_SUMMARY = (
     "조건에 맞는 곳을 충분히 찾지 못해 일정을 만들지 못했어요. "
@@ -86,7 +91,7 @@ def _build_basis_note(visit_datetime: datetime) -> str:
 
 
 async def plan_schedule(
-    request: SchedulePlanningRequest, llm: LLMProvider
+    request: SchedulePlanningRequest, llm: LLMProvider, *, timer: Timer = perf_counter
 ) -> ScheduleResult:
     """SchedulePlanningRequest로 LLM을 호출해 ScheduleResult를 만든다.
 
@@ -94,8 +99,15 @@ async def plan_schedule(
     basis_note 둘 다 같은 시각을 쓰도록 여기서 한 번만 결정한다(design doc 9절
     "estimated_arrival 기준 시각" 미결 사항 해소: 상대 표현 대신 항상 구체적인
     시작 시각을 LLM에 준다).
+
+    elapsed_ms는 이 함수 진입부터 결과 조립까지의 처리시간이다 —
+    RecommendationResponse.elapsed_ms(app/services/recommendation_pipeline.py)와
+    같은 패턴으로 재서, 개발자 화면(카드·감사 패널)이 RECOMMEND와 동일하게
+    SCHEDULE의 서버 소요시간도 보여줄 수 있게 한다(RECOMMEND는 이 값이 있는데
+    SCHEDULE만 없어 "서버 소요"가 항상 빈 값으로 보이던 걸 정리함).
     """
 
+    started_at = timer()
     effective_visit_datetime = request.visit_datetime or now_kst()
 
     # 이번 요청의 time_available에 맞는 최소 개수를 구해서 후보 수와 비교한다
@@ -109,6 +121,7 @@ async def plan_schedule(
             total_duration_min=0,
             route_summary=_NO_CANDIDATES_ROUTE_SUMMARY,
             basis_note=_build_basis_note(effective_visit_datetime),
+            elapsed_ms=round((timer() - started_at) * 1000, 2),
         )
 
     resolved_request = (
@@ -132,6 +145,7 @@ async def plan_schedule(
             total_duration_min=0,
             route_summary=_NO_CANDIDATES_ROUTE_SUMMARY,
             basis_note=_build_basis_note(effective_visit_datetime),
+            elapsed_ms=round((timer() - started_at) * 1000, 2),
         )
 
     return ScheduleResult(
@@ -139,6 +153,7 @@ async def plan_schedule(
         total_duration_min=plan.total_duration_min,
         route_summary=plan.route_summary,
         basis_note=_build_basis_note(effective_visit_datetime),
+        elapsed_ms=round((timer() - started_at) * 1000, 2),
     )
 
 
@@ -164,7 +179,10 @@ def _total_duration_from_items(items: list[ScheduleItem]) -> int:
 
 
 def _pinned_only_result(
-    pinned_items: list[ScheduleItem], visit_datetime: datetime, route_summary: str
+    pinned_items: list[ScheduleItem],
+    visit_datetime: datetime,
+    route_summary: str,
+    elapsed_ms: float,
 ) -> ScheduleResult:
     ordered = sorted(pinned_items, key=lambda item: item.order)
     return ScheduleResult(
@@ -172,11 +190,12 @@ def _pinned_only_result(
         total_duration_min=_total_duration_from_items(ordered) if ordered else 0,
         route_summary=route_summary,
         basis_note=_build_basis_note(visit_datetime),
+        elapsed_ms=elapsed_ms,
     )
 
 
 async def plan_partial_schedule(
-    request: SchedulePartialFillRequest, llm: LLMProvider
+    request: SchedulePartialFillRequest, llm: LLMProvider, *, timer: Timer = perf_counter
 ) -> ScheduleResult:
     """SchedulePartialFillRequest로 일부 슬롯만 새로 채운 ScheduleResult를 만든다.
 
@@ -188,15 +207,22 @@ async def plan_partial_schedule(
     직접 검증하고, 불일치하면 llm_output_invalid로 실패 처리한다(개수가
     요청마다 달라 ScheduleLLMPlan처럼 Pydantic Field로 정적 강제할 수 없다 —
     SchedulePartialLLMPlan 참고).
+
+    elapsed_ms는 plan_schedule()과 같은 방식으로 이 함수 진입부터 결과 조립까지
+    잰다(SCHEDULE-10 후속, RECOMMEND와 서버 소요시간 표시 방식을 맞춘다).
     """
 
+    started_at = timer()
     effective_visit_datetime = request.visit_datetime or now_kst()
 
     if not request.target_orders:
         # 파싱 단계(SCHEDULE-09 1단계)가 REJECT_SPECIFIC일 때 항상 target_indices를
         # 채우므로 정상 흐름에서는 발생하지 않는다 — 방어적으로만 처리한다.
         return _pinned_only_result(
-            request.pinned_items, effective_visit_datetime, _NO_FILL_CANDIDATES_ROUTE_SUMMARY
+            request.pinned_items,
+            effective_visit_datetime,
+            _NO_FILL_CANDIDATES_ROUTE_SUMMARY,
+            round((timer() - started_at) * 1000, 2),
         )
 
     if not request.candidates:
@@ -204,7 +230,10 @@ async def plan_partial_schedule(
         # 아예 없다 — "일정 전체 실패"가 아니라 "일부만 대체 실패"이므로 pinned은
         # 그대로 살리고 실패 사실만 안내한다(전체 재구성으로 덮어쓰지 않음).
         return _pinned_only_result(
-            request.pinned_items, effective_visit_datetime, _NO_FILL_CANDIDATES_ROUTE_SUMMARY
+            request.pinned_items,
+            effective_visit_datetime,
+            _NO_FILL_CANDIDATES_ROUTE_SUMMARY,
+            round((timer() - started_at) * 1000, 2),
         )
 
     resolved_request = (
@@ -240,6 +269,7 @@ async def plan_partial_schedule(
         total_duration_min=_total_duration_from_items(merged),
         route_summary=route_summary,
         basis_note=_build_basis_note(effective_visit_datetime),
+        elapsed_ms=round((timer() - started_at) * 1000, 2),
     )
 
 

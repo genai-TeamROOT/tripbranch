@@ -88,6 +88,14 @@ _CONTEXT_DEPENDENT_RULES = """\
   바꾸려는 말로 본다. 조사/어미/물음표의 차이는 판정에 영향 없음)
 - 이전 추천 있음 + 지명 단독("광화문", "경복궁") → MODIFY (검색 중심점만 바꾸려는 말로
   본다. 해당 장소 근처 추천을 이어간다)
+- 단, 직전 턴 Intent가 SCHEDULE이고(정상 완료, 되묻기 아님) 이번 발화가 "지명+근처/주변"에
+  카테고리 등 조건만 덧붙인 새 요청이면(예: "경복궁 근처 카페 추천해줘") 위의 "지명+근처는
+  MODIFY" 규칙을 적용하지 않고 RECOMMEND로 판정한다 — 직전이 일정(SCHEDULE)이었을 땐 검색
+  중심점을 바꾸는 게 아니라 새 추천 목록을 원하는 것으로 본다("기존 일정을 고쳐줘"가 아니라
+  "카페 목록을 새로 보여줘"). "바꿔줘"/"빼고"/"말고"/"전부 별로"처럼 명시적으로 조정·거절하는
+  표현이 함께 있으면 이 예외를 적용하지 않고 원래대로 MODIFY다 — 그건 진짜 일정 재조정
+  요청이다. 발화 자체에 일정/코스/순서 표현이 있으면(예: "카페들을 추천해서 일정 다시
+  짜줘") 이 규칙보다 SCHEDULE 판정이 항상 우선한다(판별 우선순위 2번 참고).
 - 이전 추천 없음 + 지명에 근처/주변이 붙은 발화("광화문 근처에서", "광화문 근처") → RECOMMEND
 - 이전 추천 없음 + 지명 단독("광화문", "경복궁") → RECOMMEND (해당 장소 근처 추천)
 - 단, 직전 RECOMMEND/MODIFY 요청이 위치 되묻기(location_required/location_ambiguous)로
@@ -110,6 +118,12 @@ _BOUNDARY_CASES = """\
   MODIFY 아님 — 바꿀 이전 추천 결과가 없다)
 - "오늘 갈 만한 곳 추천해줘" → RECOMMEND (일정/코스/순서 맥락 없는 단순 추천)
 - "경복궁 근처 카페" → RECOMMEND (이전 추천 이력이 없을 때. 경복궁은 검색 중심점 조건일 뿐)
+- "경복궁 근처 카페 추천해줘" (직전 턴 Intent가 SCHEDULE로 정상 완료된 상태) → RECOMMEND
+  (조정·거절 표현 없는 새 추천 요청. 일정을 고치자는 말이 아니다)
+- "경복궁 근처 카페 말고 맛집으로 바꿔줘" (직전 턴 Intent가 SCHEDULE로 정상 완료된 상태)
+  → MODIFY ("말고"/"바꿔줘"로 명시적 조정을 요청했으므로 위 예외가 적용되지 않는다)
+- "카페들을 추천해서 일정 다시 짜줘" (직전 턴 Intent가 SCHEDULE로 정상 완료된 상태) →
+  SCHEDULE (일정 재구성을 명시적으로 요청했으므로 판별 우선순위 2번이 앞선다)
 - "경복궁 오늘 열어?" → INFO (운영시간 질문)
 - "이번 주말 창덕궁 사람 많을까?" → INFO (방문객 혼잡도 예측 질문, API로 조회 가능)
 - "경복궁 역사 알려줘" → GENERAL (API로 조회 불가한 배경지식)
@@ -134,6 +148,14 @@ def build_intent_classification_instruction(
     shown_place_names는 SCHEDULE-09 후속(이름 지목)에서 추가됐다 — "두가헌
     레스토랑은 빼줘"처럼 순번 없이 노출된 항목 이름만 언급해도 MODIFY로 판단할
     근거를 준다. 없으면(이름 미저장 과거 세션 등) 이 블록은 생략된다.
+
+    "직전 턴 Intent" 컨텍스트 줄(SCHEDULE-10 후속)은 last_intent를 LLM에게 그대로
+    노출한다 — 이게 없으면 "이전 추천 이력 있음"만 보고 "지명+근처는 MODIFY" 규칙을
+    적용해버려서, 직전 SCHEDULE 직후의 순수 추천 요청("경복궁 근처 카페 추천해줘")까지
+    MODIFY로 오분류되고, agent_runtime.py의 SCHEDULE-06 재조정 감지가 이를 다시
+    SCHEDULE로 라벨링해 일정 전체가 불필요하게 재편성되던 문제가 있었다
+    (2026-08-12 실사용 재현). _CONTEXT_DEPENDENT_RULES의 SCHEDULE 예외 규칙과 짝을
+    이룬다.
     """
 
     schedule_clarification_pending = (
@@ -166,13 +188,17 @@ def build_intent_classification_instruction(
 현재 대화 컨텍스트:
 - 이전 추천 이력 존재 여부: {"있음" if has_previous_recommendation else "없음"}
 - 현재까지 노출된 추천 장소 수: {shown_place_count}
+- 직전 턴 Intent: {last_intent or "없음"}
 - 직전 턴이 되묻기로 끝났는지: {clarification_status}{shown_names_line}
 
 이 컨텍스트를 위 "맥락 의존 판별" 규칙에 반드시 반영해서 판정하세요. 예를 들어 이전
 추천 이력이 "없음"인데 사용자가 "다른 곳 보여줘"라고 하면 MODIFY가 아니라 RECOMMEND로
 판정해야 합니다. "현재 노출된 항목 이름"에 있는 장소를 언급하며 빼거나 바꾸자는 의도가
 있으면("두가헌 레스토랑은 빼줘") 새로운 검색(RECOMMEND)이 아니라 MODIFY입니다 — 단순히
-정보를 묻는 경우("두가헌 레스토랑 몇 시까지 해?")는 INFO이므로 혼동하지 마세요.
+정보를 묻는 경우("두가헌 레스토랑 몇 시까지 해?")는 INFO이므로 혼동하지 마세요. "직전 턴
+Intent"가 SCHEDULE이면(정상 완료 상태) 특히 주의하세요 — 조정·거절 표현 없이 "~추천해줘"로
+새 추천만 요청하는 발화를 "지명+근처는 MODIFY"라는 일반 규칙으로 잘못 묶지 마세요(위
+"맥락 의존 판별"의 SCHEDULE 예외 규칙 참고).
 
 intent가 OUT_OF_SCOPE인 경우에만 out_of_scope_category(harmful/unrelated/role_request/
 prompt_injection)와 out_of_scope_severity(high/medium/low)를 함께 채우세요. 그 외

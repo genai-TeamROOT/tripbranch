@@ -247,7 +247,7 @@ export function DeveloperChatPage() {
             <ChatMessageList
               messages={state.messages}
               showDebug={false}
-              showIntentBadges
+              isDeveloperView
               isLoading={isLoading}
               hasDeviceLocation={Boolean(state.device_location)}
               deviceLocation={state.device_location}

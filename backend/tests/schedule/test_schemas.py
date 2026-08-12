@@ -84,6 +84,7 @@ class TestScheduleResultSchema:
             total_duration_min=180,
             route_summary="연남동 순으로 이동 거리를 최소화했어요.",
             basis_note="이 정보는 15:00 기준으로 계산됐어요.",
+            elapsed_ms=100.0,
         )
         assert result.basis_note == "이 정보는 15:00 기준으로 계산됐어요."
         assert result.items[0].order == 1
@@ -102,7 +103,9 @@ class TestAgentResponseScheduleField:
         assert response.schedule is None
 
     def test_schedule_필드에_ScheduleResult를_담을_수_있다(self):
-        result = ScheduleResult(items=[], total_duration_min=0, route_summary="", basis_note="")
+        result = ScheduleResult(
+            items=[], total_duration_min=0, route_summary="", basis_note="", elapsed_ms=0.0
+        )
         response = AgentResponse(
             llm_output=LLMOutput(intent=Intent.SCHEDULE, status=OutputStatus.COMPLETE),
             state=_sample_state_response(),

@@ -458,7 +458,26 @@ def _format_compare_remaining_time(remaining_minutes: int) -> str:
     return f"약 {hours}시간 남음"
 
 
-def compose_schedule_message(schedule: ScheduleResult) -> str:
+# 요청 시간과 실제 편성 시간의 차이가 이 값(분) 이내면 문구에 실제 계산값 대신
+# 사용자가 요청한 시간을 그대로 보여준다 — "2시간 짜줘"에 "1시간 52분 코스를
+# 짜봤어요"처럼 어색하게 어긋나 보이는 걸 막는다. 차이가 크면(후보 부족 등으로
+# 실제 편성이 요청과 크게 벌어진 경우) 사용자를 오도하지 않도록 실제 계산값을
+# 그대로 보여준다.
+_DURATION_MATCH_TOLERANCE_MIN = 15
+
+
+def _format_duration_label(total_minutes: int) -> str:
+    hours, minutes = divmod(total_minutes, 60)
+    if hours and minutes:
+        return f"{hours}시간 {minutes}분"
+    if hours:
+        return f"{hours}시간"
+    return f"{minutes}분"
+
+
+def compose_schedule_message(
+    schedule: ScheduleResult, *, time_available_min: int | None = None
+) -> str:
     """SCHEDULE 응답 말풍선 텍스트를 조립한다.
 
     장소별 도착 시각·이유 같은 상세는 여기서 다시 풀어쓰지 않는다 —
@@ -468,13 +487,24 @@ def compose_schedule_message(schedule: ScheduleResult) -> str:
     items가 비어있으면(후보 부족 등으로 일정을 못 짠 경우, app/schedule/
     planner.py가 route_summary를 안내 문구로 정규화해서 넘겨준다) "0분 코스를
     짜봤어요" 같은 어색한 접두사 없이 route_summary만 그대로 반환한다.
+
+    time_available_min(사용자가 요청한 시간, 분)이 주어지고 실제
+    total_duration_min과의 차이가 _DURATION_MATCH_TOLERANCE_MIN 이내면 요청
+    시간을 그대로 보여준다("2시간 짜줘" → "2시간 코스를 짜봤어요"). 차이가 크면
+    실제 편성 결과가 요청과 동떨어졌다는 뜻이므로 실제 계산값을 보여준다.
     """
 
     if not schedule.items:
         return schedule.route_summary
 
-    hours, minutes = divmod(schedule.total_duration_min, 60)
-    duration_label = f"{hours}시간 {minutes}분" if hours else f"{minutes}분"
+    if (
+        time_available_min is not None
+        and abs(time_available_min - schedule.total_duration_min)
+        <= _DURATION_MATCH_TOLERANCE_MIN
+    ):
+        duration_label = _format_duration_label(time_available_min)
+    else:
+        duration_label = _format_duration_label(schedule.total_duration_min)
     return f"{duration_label} 코스를 짜봤어요. {schedule.route_summary}"
 
 
@@ -483,6 +513,7 @@ async def compose_chat_message(
     *,
     recommendations: RecommendationResponse | None = None,
     schedule: ScheduleResult | None = None,
+    schedule_time_available_min: int | None = None,
     tool_status: str | None = None,
     tool_clarification: Clarification | None = None,
     tool_error_code: str | None = None,
@@ -494,6 +525,10 @@ async def compose_chat_message(
     docs/design/agent-response-generation.md의 결정을 구현한다. GENERAL은 답변
     본문을, RECOMMEND/MODIFY 성공 경로는 추천 카드 wrapper를 LLM으로 생성한다.
     추천 카드의 상세 내용은 여기서 길게 다시 풀어쓰지 않는다.
+
+    schedule_time_available_min은 SCHEDULE 경로에서만 쓰인다(사용자가 요청한
+    활동 가능 시간, 분) — compose_schedule_message에 그대로 전달해 "요청한
+    시간대로" 문구를 만드는 데 쓴다.
     """
 
     if llm_output.status is OutputStatus.NEEDS_CLARIFICATION:
@@ -543,7 +578,9 @@ async def compose_chat_message(
             # schedule을 채워서 넘긴다.
             if schedule is None:
                 return _SCHEDULE_NOT_YET_SUPPORTED_MESSAGE
-            return compose_schedule_message(schedule)
+            return compose_schedule_message(
+                schedule, time_available_min=schedule_time_available_min
+            )
 
         shown = (
             [*recommendations.recommendations, *recommendations.unverified_recommendations]

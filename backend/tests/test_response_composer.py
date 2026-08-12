@@ -381,6 +381,7 @@ async def test_schedule_with_result_uses_schedule_summary() -> None:
         total_duration_min=90,
         route_summary="연남동 카페 A에서 시작해요.",
         basis_note="이 정보는 15:00 기준으로 계산됐어요.",
+        elapsed_ms=100.0,
     )
 
     message = await compose_chat_message(llm_output, schedule=schedule, llm=_StubLLM())
@@ -388,6 +389,29 @@ async def test_schedule_with_result_uses_schedule_summary() -> None:
     assert message == compose_schedule_message(schedule)
     assert "1시간 30분" in message
     assert "연남동 카페 A에서 시작해요." in message
+
+
+@pytest.mark.asyncio
+async def test_schedule_with_time_available_passes_through_to_message() -> None:
+    """agent_runtime.py가 schedule_time_available_min을 넘기면 compose_schedule_message에
+    그대로 전달돼 요청 시간 기준 문구가 나온다(오차 15분 이내인 케이스)."""
+    llm_output = LLMOutput(intent=Intent.SCHEDULE, status=OutputStatus.COMPLETE)
+    schedule = ScheduleResult(
+        items=[_schedule_item()],
+        total_duration_min=112,
+        route_summary="경복궁 근처 코스예요.",
+        basis_note="기준 시각 안내",
+        elapsed_ms=100.0,
+    )
+
+    message = await compose_chat_message(
+        llm_output,
+        schedule=schedule,
+        schedule_time_available_min=120,
+        llm=_StubLLM(),
+    )
+
+    assert message == "2시간 코스를 짜봤어요. 경복궁 근처 코스예요."
 
 
 def _schedule_item(place_id: str = "p1") -> ScheduleItem:
@@ -409,6 +433,7 @@ class TestComposeScheduleMessage:
             total_duration_min=125,
             route_summary="동선 요약입니다.",
             basis_note="기준 시각 안내",
+            elapsed_ms=100.0,
         )
 
         message = compose_schedule_message(schedule)
@@ -421,11 +446,70 @@ class TestComposeScheduleMessage:
             total_duration_min=45,
             route_summary="짧은 코스예요.",
             basis_note="기준 시각 안내",
+            elapsed_ms=100.0,
         )
 
         message = compose_schedule_message(schedule)
 
         assert message == "45분 코스를 짜봤어요. 짧은 코스예요."
+
+    def test_uses_requested_time_when_close_to_actual(self) -> None:
+        """실제 편성 시간(112분)이 요청 시간(120분)과 15분 이내로 가까우면
+        어색한 "1시간 52분" 대신 요청한 "2시간"을 그대로 보여준다."""
+        schedule = ScheduleResult(
+            items=[_schedule_item()],
+            total_duration_min=112,
+            route_summary="동선 요약입니다.",
+            basis_note="기준 시각 안내",
+            elapsed_ms=100.0,
+        )
+
+        message = compose_schedule_message(schedule, time_available_min=120)
+
+        assert message == "2시간 코스를 짜봤어요. 동선 요약입니다."
+
+    def test_boundary_exactly_at_tolerance_uses_requested_time(self) -> None:
+        schedule = ScheduleResult(
+            items=[_schedule_item()],
+            total_duration_min=105,
+            route_summary="동선 요약입니다.",
+            basis_note="기준 시각 안내",
+            elapsed_ms=100.0,
+        )
+
+        message = compose_schedule_message(schedule, time_available_min=120)
+
+        assert message == "2시간 코스를 짜봤어요. 동선 요약입니다."
+
+    def test_uses_actual_duration_when_far_from_requested_time(self) -> None:
+        """후보 부족 등으로 실제 편성이 요청과 크게 어긋나면(16분 초과 차이)
+        요청 시간을 그대로 보여주지 않고 실제 계산값을 정직하게 보여준다."""
+        schedule = ScheduleResult(
+            items=[_schedule_item()],
+            total_duration_min=60,
+            route_summary="동선 요약입니다.",
+            basis_note="기준 시각 안내",
+            elapsed_ms=100.0,
+        )
+
+        message = compose_schedule_message(schedule, time_available_min=300)
+
+        assert message == "1시간 코스를 짜봤어요. 동선 요약입니다."
+
+    def test_no_time_available_falls_back_to_actual_duration(self) -> None:
+        """time_available_min을 안 넘기면(사용자가 시간을 명시하지 않은 요청)
+        기존과 동일하게 실제 계산값을 보여준다."""
+        schedule = ScheduleResult(
+            items=[_schedule_item()],
+            total_duration_min=125,
+            route_summary="동선 요약입니다.",
+            basis_note="기준 시각 안내",
+            elapsed_ms=100.0,
+        )
+
+        message = compose_schedule_message(schedule)
+
+        assert message == "2시간 5분 코스를 짜봤어요. 동선 요약입니다."
 
     def test_empty_items_returns_route_summary_without_duration_prefix(self) -> None:
         """items가 비면(후보 부족 등) planner.py가 route_summary를 안내 문구로
@@ -436,6 +520,7 @@ class TestComposeScheduleMessage:
             total_duration_min=0,
             route_summary="조건에 맞는 곳을 충분히 찾지 못해 일정을 만들지 못했어요.",
             basis_note="기준 시각 안내",
+            elapsed_ms=100.0,
         )
 
         message = compose_schedule_message(schedule)
