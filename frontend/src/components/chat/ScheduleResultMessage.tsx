@@ -2,9 +2,13 @@
  * 역할: 일정 편성 API 응답을 채팅 메시지 안에서 세로 타임라인으로 렌더링한다.
  * 입력: ScheduleResult(items/route_summary/total_duration_min/basis_note),
  *   재조정·검색 범위 확대 콜백, 로딩 상태.
- * 출력: 동선 요약, 총 소요 시간, 정류장(ScheduleCard)과 이동 구간
- *   (ScheduleTravelSegment)이 번갈아 이어지는 타임라인, 근거 시각 안내,
- *   "다른 코스 보기"/"검색 범위 넓혀서 다시 찾기" 버튼.
+ * 출력: 정류장(ScheduleCard)과 이동 구간(ScheduleTravelSegment)이 번갈아
+ *   이어지는 타임라인, 근거 시각 안내, "다른 코스 보기"/"검색 범위 넓혀서
+ *   다시 찾기" 버튼. 총 소요 시간·동선 요약 문구는 여기서 만들지 않는다 —
+ *   바로 위 assistant_text 말풍선(백엔드 compose_schedule_message)이 이미
+ *   보여주고 있어서 중복 렌더링이었다(SCHEDULE-10 후속: 요청 시간과 실제
+ *   편성 시간이 다를 때 "N분 코스를 짜봤어요"가 어색해 보이는 문제를 고치며
+ *   같은 문구가 말풍선·카드 두 곳에서 각자 계산되고 있던 걸 발견해 정리함).
  * 호출 시점: ChatPage가 schedule_result 메시지를 렌더링할 때 호출된다.
  *
  * 재조정 버튼은 새 기능이 아니라 RECOMMEND가 이미 쓰던 것과 같은 문구를
@@ -12,29 +16,36 @@
  * 범위를 넓혀서 다시 추천해줘") — SCHEDULE-06이 last_intent="SCHEDULE"일 때
  * 이 문구들을 이미 재편성 경로로 라우팅하므로 백엔드 변경 없이 버튼만 잇는다
  * (SCHEDULE-08).
+ *
+ * showElapsedTime이 true면(개발자 화면) 지연시간을 보여준다 — RecommendationResultMessage와
+ * 같은 방식이다. ScheduleResult.elapsed_ms(planner.py plan_schedule()/
+ * plan_partial_schedule()이 측정)를 서버 소요로, elapsedMs를 클라이언트 소요로 쓴다.
  */
 
 import type { ScheduleResult } from "../../types";
 import { ScheduleCard } from "../ScheduleCard";
 import { ScheduleTravelSegment } from "../ScheduleTravelSegment";
 
+function formatDuration(milliseconds: number | undefined) {
+  if (typeof milliseconds !== "number" || !Number.isFinite(milliseconds)) return "-";
+  return milliseconds >= 1000
+    ? `${(milliseconds / 1000).toFixed(1)}초`
+    : `${Math.round(milliseconds)}ms`;
+}
+
 interface ScheduleResultMessageProps {
   schedule: ScheduleResult;
+  elapsedMs?: number;
+  showElapsedTime?: boolean;
   isLoading: boolean;
   onRequestMore: () => void;
   onRelaxRadius: () => void;
 }
 
-function formatTotalDuration(totalMinutes: number) {
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  if (hours <= 0) return `${minutes}분`;
-  if (minutes <= 0) return `${hours}시간`;
-  return `${hours}시간 ${minutes}분`;
-}
-
 export function ScheduleResultMessage({
   schedule,
+  elapsedMs,
+  showElapsedTime = false,
   isLoading,
   onRequestMore,
   onRelaxRadius,
@@ -43,15 +54,13 @@ export function ScheduleResultMessage({
 
   return (
     <article className="mr-auto flex w-full max-w-2xl flex-col gap-4 rounded-md border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-900">
-      <div className="flex flex-col gap-1">
-        {hasItems && (
-          <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-            {formatTotalDuration(schedule.total_duration_min)} 코스를 짜봤어요.
-          </p>
-        )}
-        <p className="text-sm text-gray-600 dark:text-gray-400">{schedule.route_summary}</p>
-      </div>
-
+      {/* 총 소요 시간·동선 요약은 바로 위 assistant_text 말풍선(compose_schedule_message)이
+          이미 보여주므로 여기서 다시 반복하지 않는다 — 카드는 타임라인/액션만 맡는다. */}
+      {showElapsedTime && (
+        <p className="text-right text-xs text-gray-500 dark:text-gray-400">
+          {formatDuration(elapsedMs)} 소요 (서버 {formatDuration(schedule.elapsed_ms)})
+        </p>
+      )}
       {hasItems ? (
         <>
           <section className="flex flex-col gap-3">

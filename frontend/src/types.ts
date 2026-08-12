@@ -63,6 +63,9 @@ export interface ScheduleResult {
   total_duration_min: number;
   route_summary: string;
   basis_note: string;
+  /* 백엔드가 보고한 일정 편성 파이프라인 처리 시간(ms). RecommendationResult의
+     server_elapsed_ms와 같은 역할이다(SCHEDULE-10 후속). */
+  elapsed_ms: number;
 }
 
 export interface ComparisonItem {
@@ -164,6 +167,9 @@ export type ChatMessage =
       id: string;
       type: "schedule_result";
       schedule: ScheduleResult;
+      /* 일정 요청 클릭부터 응답 수신까지의 클라이언트 실측 시간(ms).
+         recommendation_result의 elapsed_ms와 같은 역할이다. */
+      elapsed_ms: number;
     }
   | {
       id: string;

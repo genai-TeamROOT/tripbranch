@@ -4,6 +4,11 @@
  * 출력: 사용자/assistant/디버그/추천 결과 메시지 UI.
  * 호출 시점: ChatPage가 대화 본문을 그릴 때 호출된다.
  * TODO: 메시지 타입이 늘어나면 타입별 렌더러를 별도 파일로 분리한다.
+ *
+ * isDeveloperView는 /dev-chat에서만 true다(DeveloperChatPage). Intent 배지뿐
+ * 아니라 추천 결과의 지연시간(elapsed_ms/server_elapsed_ms) 노출도 이 플래그로
+ * 통일한다 — 실사용자 화면(ChatPage/HomePage)에는 내부 지연시간 숫자를 보여줄
+ * 이유가 없다(개발자용 정보가 실서비스 화면에 새던 문제를 정리함).
  */
 
 import type { ChatMessage } from "../../types";
@@ -20,7 +25,7 @@ interface ChatMessageListProps {
   isLoading: boolean;
   hasDeviceLocation: boolean;
   deviceLocation: string | null;
-  showIntentBadges?: boolean;
+  isDeveloperView?: boolean;
   onRequestMore: () => void;
   onRelaxRadius: () => void;
 }
@@ -31,7 +36,7 @@ export function ChatMessageList({
   isLoading,
   hasDeviceLocation,
   deviceLocation,
-  showIntentBadges = false,
+  isDeveloperView = false,
   onRequestMore,
   onRelaxRadius,
 }: ChatMessageListProps) {
@@ -57,7 +62,7 @@ export function ChatMessageList({
                 key={message.id}
                 className="mr-auto flex max-w-xl flex-col gap-2 rounded-md bg-gray-100 px-4 py-3 text-sm text-gray-800 dark:bg-gray-800 dark:text-gray-100"
               >
-                {showIntentBadges && message.type === "assistant_text" && message.intent && (
+                {isDeveloperView && message.type === "assistant_text" && message.intent && (
                   <div className="flex flex-wrap gap-2 text-xs">
                     <span className="rounded bg-gray-900 px-2 py-0.5 font-semibold text-white dark:bg-gray-100 dark:text-gray-900">
                       Intent: {message.intent}
@@ -103,6 +108,8 @@ export function ChatMessageList({
               <ScheduleResultMessage
                 key={message.id}
                 schedule={message.schedule}
+                elapsedMs={message.elapsed_ms}
+                showElapsedTime={isDeveloperView}
                 isLoading={isLoading}
                 onRequestMore={onRequestMore}
                 onRelaxRadius={onRelaxRadius}
@@ -121,6 +128,7 @@ export function ChatMessageList({
               unverifiedRecommendations={message.unverified_recommendations}
               elapsedMs={message.elapsed_ms}
               serverElapsedMs={message.server_elapsed_ms}
+              showElapsedTime={isDeveloperView}
               isLoading={isLoading}
               onRequestMore={onRequestMore}
               onRelaxRadius={onRelaxRadius}

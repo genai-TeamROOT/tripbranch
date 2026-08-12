@@ -111,6 +111,25 @@ async def test_plan_schedule_fills_basis_note_from_visit_datetime() -> None:
 
 
 @pytest.mark.asyncio
+async def test_plan_schedule_measures_elapsed_ms() -> None:
+    """RecommendationResponse.elapsed_ms(recommendation_pipeline.py)와 같은 패턴으로
+    plan_schedule() 진입부터 결과 조립까지의 처리시간을 잰다 — 개발자 화면이
+    SCHEDULE도 RECOMMEND처럼 "서버 소요"를 보여줄 수 있게 한다."""
+    llm = _RecordingLLM(_sample_plan())
+    request = SchedulePlanningRequest(
+        candidates=_three_candidates(),
+        conditions=UserConditions(),
+        visit_datetime=datetime(2026, 8, 7, 15, 30, tzinfo=_KST),
+        pairwise_distances_km={},
+    )
+    fake_ticks = iter([0.0, 0.25])
+
+    result = await plan_schedule(request, llm, timer=lambda: next(fake_ticks))
+
+    assert result.elapsed_ms == 250.0
+
+
+@pytest.mark.asyncio
 async def test_plan_schedule_falls_back_to_now_when_visit_datetime_missing() -> None:
     """visit_datetime이 없으면 현재 시각(KST)을 기준으로 LLM 호출과 basis_note 둘
     다에 일관되게 쓴다(9절 미결 사항 해소)."""
@@ -163,6 +182,7 @@ async def test_plan_schedule_normalizes_inconsistent_empty_plan() -> None:
     )
     # basis_note는 items 유무와 무관하게 계속 채워진다
     assert "15:00 기준" in result.basis_note
+    assert result.elapsed_ms >= 0
 
 
 @pytest.mark.asyncio
@@ -275,6 +295,7 @@ class TestPlanScheduleSkipsLLMWhenCandidatesTooFew:
             "조건에 맞는 곳을 충분히 찾지 못해 일정을 만들지 못했어요. "
             "다른 지역이나 다른 종류의 장소로 다시 요청해볼까요?"
         )
+        assert result.elapsed_ms >= 0
         assert "15:00 기준" in result.basis_note
 
     @pytest.mark.asyncio
@@ -404,6 +425,27 @@ class TestPlanPartialSchedule:
         # 체류시간 합(60*3) + 마지막을 제외한 이동시간 합(travel_to_next_min: 15+None+15)
         assert result.total_duration_min == 60 * 3 + 15 + 15
         assert "15:00 기준" in result.basis_note
+        assert result.elapsed_ms >= 0
+
+    @pytest.mark.asyncio
+    async def test_measures_elapsed_ms(self) -> None:
+        """plan_schedule()과 같은 패턴으로 timer 주입값을 그대로 반영한다."""
+        pinned = [_pinned("place-1", 1), _pinned("place-3", 3)]
+        new_item = _sample_item("place-2", 2)
+        llm = _RecordingFillLLM(SchedulePartialLLMPlan(new_items=[new_item]))
+        request = SchedulePartialFillRequest(
+            pinned_items=pinned,
+            target_orders=[2],
+            candidates=[_candidate("place-2")],
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 11, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+        fake_ticks = iter([0.0, 0.1])
+
+        result = await plan_partial_schedule(request, llm, timer=lambda: next(fake_ticks))
+
+        assert result.elapsed_ms == 100.0
 
     @pytest.mark.asyncio
     async def test_no_fresh_candidates_keeps_pinned_only(self) -> None:
@@ -424,6 +466,7 @@ class TestPlanPartialSchedule:
         assert llm.call_count == 0
         assert [item.place_id for item in result.items] == ["place-1", "place-3"]
         assert "그대로 유지" in result.route_summary
+        assert result.elapsed_ms >= 0
 
     @pytest.mark.asyncio
     async def test_raises_when_llm_returns_wrong_orders(self) -> None:
