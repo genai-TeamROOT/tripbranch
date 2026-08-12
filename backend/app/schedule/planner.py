@@ -36,6 +36,40 @@ _NO_CANDIDATES_ROUTE_SUMMARY = (
 # (SCHEDULE-07, 9절 "D 후보 3개 미만" 미결 사항 해소).
 
 
+def _round_up_arrival(hhmm: str) -> str:
+    """estimated_arrival("HH:MM")을 다음 10분 단위로 올림한다(예: "11:59" -> "12:00").
+
+    도착시각은 LLM이 시작 시각부터 체류·이동시간을 누적해 계산한 추정치일
+    뿐이라(estimated_duration_min/travel_to_next_min 둘 다 아직 실측 Tool이
+    없는 LLM 추정값 — travel_to_next_min도 마찬가지다), 11:59처럼 딱 떨어지지
+    않는 값보다 10분 단위로 보여주는 게 사용자에게 더 자연스럽게 읽힌다(팀 제안,
+    2026-08-12). estimated_duration_min/travel_to_next_min은 세부 소요시간
+    정보라 그대로 둔다 — 반올림 대상은 "도착 체크포인트"인 estimated_arrival뿐이다.
+
+    이미 24시(1440분)를 넘기며 자정을 넘어가는 경우 다음날 00:xx로 감싼다.
+    형식이 "HH:MM"이 아니면(LLM이 지시를 안 지킨 방어적 상황) 원본을 그대로
+    돌려준다 — 화면 표시용 후처리가 튼튼한 값까지 망가뜨리면 안 된다.
+    """
+
+    try:
+        hour_str, minute_str = hhmm.split(":", 1)
+        total_minutes = int(hour_str) * 60 + int(minute_str)
+    except (ValueError, AttributeError):
+        return hhmm
+    rounded = -(-total_minutes // 10) * 10
+    rounded %= 24 * 60
+    return f"{rounded // 60:02d}:{rounded % 60:02d}"
+
+
+def _round_up_items_arrival(items: list[ScheduleItem]) -> list[ScheduleItem]:
+    """items 각 항목의 estimated_arrival만 10분 단위로 올림한 새 리스트를 만든다."""
+
+    return [
+        item.model_copy(update={"estimated_arrival": _round_up_arrival(item.estimated_arrival)})
+        for item in items
+    ]
+
+
 def _build_basis_note(visit_datetime: datetime) -> str:
     """D 피드백 반영 — 근거 데이터(운영시간·날씨)가 단일 시각 기준이라 뒷 순서
     스탑에는 부정확할 수 있다는 걸 사용자에게 알리는 고정 안내 문구.
@@ -101,7 +135,7 @@ async def plan_schedule(
         )
 
     return ScheduleResult(
-        items=plan.items,
+        items=_round_up_items_arrival(plan.items),
         total_duration_min=plan.total_duration_min,
         route_summary=plan.route_summary,
         basis_note=_build_basis_note(effective_visit_datetime),
@@ -134,7 +168,7 @@ def _pinned_only_result(
 ) -> ScheduleResult:
     ordered = sorted(pinned_items, key=lambda item: item.order)
     return ScheduleResult(
-        items=ordered,
+        items=_round_up_items_arrival(ordered),
         total_duration_min=_total_duration_from_items(ordered) if ordered else 0,
         route_summary=route_summary,
         basis_note=_build_basis_note(visit_datetime),
@@ -202,7 +236,7 @@ async def plan_partial_schedule(
     route_summary = f"{kept}곳은 그대로 유지하고 {replaced}곳을 새로운 장소로 바꿨어요."
 
     return ScheduleResult(
-        items=merged,
+        items=_round_up_items_arrival(merged),
         total_duration_min=_total_duration_from_items(merged),
         route_summary=route_summary,
         basis_note=_build_basis_note(effective_visit_datetime),
