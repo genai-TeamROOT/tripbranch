@@ -78,6 +78,34 @@ class _ComparisonSummary(BaseModel):
 _RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
 _BACKOFF_BASE_SECONDS = 0.5
 
+# 인텐트 분류에 한해 모델별 thinking(내부 추론) 예산을 싣는다. 값이 서로 반대인 것은
+# 실측 결과다(D-061) — 1순위 flash는 예산을 줘도 정확도가 그대로인데 지연만 2.4배 늘고
+# 504를 내는 반면, 폴백 flash-lite는 thinking이 기본 꺼져 있어 예산을 줘야 대화 맥락에
+# 의존하는 판정(MODIFY/COMPARE/되묻기)이 산다.
+_INTENT_THINKING_BUDGETS: dict[str, int] = {
+    "gemini-2.5-flash": 0,
+    "gemini-2.5-flash-lite": 512,
+}
+
+# 예산은 classify_intent에서만 측정했다. 조건 추출·일정 편성은 성격이 다른 호출이라
+# 같은 값이 최적이라는 근거가 없어 적용 대상에서 뺀다(D-061).
+_THINKING_BUDGET_OPERATION = "classify_intent"
+
+
+def _thinking_config_for(model_name: str, operation: str) -> genai_types.ThinkingConfig | None:
+    """이 호출에 실을 thinking 설정. 잰 적 없는 조합에는 아무것도 싣지 않는다.
+
+    목록에 없는 모델은 `None`을 돌려 모델 기본값에 맡긴다. `.env`로 모델을 바꾸는
+    일이 실제로 있어(2026-08-11 폴백 모델명 교체), 다른 모델에서 잰 값을 강제하면
+    조용히 다른 품질로 도는 쪽이 된다.
+    """
+    if operation != _THINKING_BUDGET_OPERATION:
+        return None
+    budget = _INTENT_THINKING_BUDGETS.get(model_name)
+    if budget is None:
+        return None
+    return genai_types.ThinkingConfig(thinking_budget=budget)
+
 
 def _backoff_seconds(attempt: int) -> float:
     """지수 백오프 + 지터. attempt=0이 첫 번째 재시도 전 대기시간."""
@@ -379,7 +407,7 @@ class RealGeminiProvider:
             attempted_models.append(model_name)
             try:
                 result = await self._try_model(
-                    model_name, system_instruction, user_input, response_model
+                    model_name, system_instruction, user_input, response_model, operation
                 )
             except _RetryableExhaustedError as exc:
                 last_error = exc.original
@@ -442,6 +470,7 @@ class RealGeminiProvider:
         system_instruction: str,
         user_input: str,
         response_model: type[T],
+        operation: str,
     ) -> T:
         """모델 하나에 대해서만 타임아웃/429/5xx를 지수 백오프로 최대
         self._max_retries회 재시도한다. 재시도가 소진되면 _RetryableExhaustedError로
@@ -463,6 +492,7 @@ class RealGeminiProvider:
                         response_mime_type="application/json",
                         response_schema=response_model,
                         temperature=0.0,
+                        thinking_config=_thinking_config_for(model_name, operation),
                     ),
                 )
             except httpx.TimeoutException:

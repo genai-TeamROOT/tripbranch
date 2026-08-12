@@ -392,3 +392,93 @@ async def test_generate_logs_fallback_transition_and_exhaustion(caplog) -> None:
         "primary" in r.getMessage() and "secondary" in r.getMessage() for r in warning_records
     )
     assert any("전 모델 소진" in r.getMessage() for r in error_records)
+
+
+async def _capture_thinking(
+    provider: RealGeminiProvider, operation: str
+) -> list[tuple[str, object]]:
+    """generate_content에 실제로 실린 (모델명, thinking_config)를 모아 돌려준다."""
+    captured: list[tuple[str, object]] = []
+
+    async def succeed(*args: object, **kwargs: object) -> _FakeResponse:
+        captured.append((kwargs["model"], kwargs["config"].thinking_config))
+        return _FakeResponse(IntentClassificationResult(intent=Intent.RECOMMEND))
+
+    with patch.object(provider._client.aio.models, "generate_content", side_effect=succeed):
+        await provider._generate("sys", "user", IntentClassificationResult, operation)
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_intent_classification_carries_model_specific_thinking_budget() -> None:
+    """인텐트 분류는 모델마다 다른 thinking 예산을 싣는다(D-061).
+
+    상수만 두고 config에 싣는 배선을 빠뜨려도 아무도 모르는 자리라, 실제로 실리는지를
+    호출 인자에서 확인한다.
+    """
+    flash = RealGeminiProvider(
+        api_key="dummy", model_names=["gemini-2.5-flash"], timeout_seconds=1.0
+    )
+    lite = RealGeminiProvider(
+        api_key="dummy", model_names=["gemini-2.5-flash-lite"], timeout_seconds=1.0
+    )
+
+    [(_, flash_config)] = await _capture_thinking(flash, "classify_intent")
+    [(_, lite_config)] = await _capture_thinking(lite, "classify_intent")
+
+    assert flash_config is not None and flash_config.thinking_budget == 0
+    assert lite_config is not None and lite_config.thinking_budget == 512
+
+
+@pytest.mark.asyncio
+async def test_thinking_budget_not_applied_outside_intent_classification() -> None:
+    """조건 추출·일정 편성 등은 예산을 재지 않았으므로 아무것도 싣지 않는다(D-061)."""
+    provider = RealGeminiProvider(
+        api_key="dummy", model_names=["gemini-2.5-flash"], timeout_seconds=1.0
+    )
+
+    [(_, config)] = await _capture_thinking(provider, "extract_recommend_conditions")
+
+    assert config is None
+
+
+@pytest.mark.asyncio
+async def test_thinking_budget_not_applied_to_unmeasured_model() -> None:
+    """목록에 없는 모델에는 예산을 강제하지 않고 모델 기본값에 맡긴다(D-061)."""
+    provider = RealGeminiProvider(api_key="dummy", model_names=["gemini-9.9-unknown"])
+
+    [(_, config)] = await _capture_thinking(provider, "classify_intent")
+
+    assert config is None
+
+
+@pytest.mark.asyncio
+async def test_fallback_model_gets_its_own_thinking_budget() -> None:
+    """폴백으로 넘어가면 그 모델의 예산으로 바뀐다.
+
+    한 번의 _generate 안에서 모델마다 예산이 갈리는지를 못 박는다 — 호출 단위로
+    한 번만 정하면 폴백 경로가 1순위 예산(0)으로 돌아 맥락 판정이 무너진다.
+    """
+    provider = RealGeminiProvider(
+        api_key="dummy",
+        model_names=["gemini-2.5-flash", "gemini-2.5-flash-lite"],
+        timeout_seconds=1.0,
+        max_retries=0,
+    )
+    captured: list[tuple[str, object]] = []
+
+    async def flaky(*args: object, **kwargs: object) -> _FakeResponse:
+        model = kwargs["model"]
+        captured.append((model, kwargs["config"].thinking_config))
+        if model == "gemini-2.5-flash":
+            raise _api_error(503, "UNAVAILABLE")
+        return _FakeResponse(IntentClassificationResult(intent=Intent.RECOMMEND))
+
+    with (
+        patch.object(provider._client.aio.models, "generate_content", side_effect=flaky),
+        patch("app.providers.gemini.asyncio.sleep", new=AsyncMock()),
+    ):
+        await provider._generate("sys", "user", IntentClassificationResult, "classify_intent")
+
+    assert [model for model, _ in captured] == ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+    assert [config.thinking_budget for _, config in captured] == [0, 512]
