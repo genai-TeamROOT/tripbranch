@@ -13,8 +13,6 @@ from __future__ import annotations
 from datetime import date
 
 from app.schedule.schemas import SchedulePartialFillRequest, SchedulePlanningRequest
-from app.schemas import GeneralTopic, Intent, UserConditions
-from app.schedule.schemas import SchedulePlanningRequest
 from app.schemas import CompareCriteria, GeneralTopic, Intent, UserConditions
 
 # B의 LLMOps Trace(record_trace(prompt_version=...))와 StateApplyRequest.prompt_version에

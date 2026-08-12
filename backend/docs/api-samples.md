@@ -34,7 +34,7 @@
 ```
 
 - 카테고리: `SKY`(1 맑음/3 구름많음/4 흐림), `PTY`(0 없음/1 비/2 비·눈/3 눈/4 소나기/5 빗방울/6 빗방울눈날림/7 눈날림), `LGT`(낙뢰), `RN1`(1시간 강수량, 숫자가 아닌 "강수없음"/"1mm 미만" 같은 문자열도 옴 - 현재 매퍼는 SKY/PTY만 사용).
-- 실패 시 `response.header.resultCode`가 `"00"`이 아님(예: `"03"` NODATA_ERROR) → `WeatherProvider`는 이 경우 `AppError(code="weather_unavailable")`.
+- 실패 시 `response.header.resultCode`가 `"00"`이 아님. `"03"`(NODATA_ERROR)은 요청 자체는 정상이고 해당 격자·발표시각에 자료만 없는 경우라 `AppError(code="weather_no_data", retryable=False)`, 그 밖의 코드(예: `"22"` 호출 한도 초과, `"30"` 서비스키 미등록)는 `AppError(code="weather_unavailable", retryable=True)`.
 - SKY/PTY 어느 한쪽도 응답에 없는 좌표(관측 범위 밖 등) → `AppError(code="weather_no_data")`.
 
 구현: [`app/providers/weather.py`](../app/providers/weather.py), [`app/providers/kma_grid.py`](../app/providers/kma_grid.py)(위경도→nx,ny 변환).
