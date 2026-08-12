@@ -126,9 +126,38 @@ def _select_local_search_candidate(
     return None
 
 
+# 되묻기 버튼 개수를 UI에서 감당할 만큼으로 제한한다(A2 종로구 대표 스팟 버튼도
+# 4개 — docs/design/clarification-options.md 7절과 결을 맞춘다).
+_MAX_LOCATION_CANDIDATES = 4
+
+
+def _join_candidate_names(names: object) -> str:
+    """되묻기 버튼용 후보 이름을 "|" 구분 문자열로 합친다.
+
+    ToolError.details가 dict[str, str]라 리스트를 그대로 못 담아, agent_context/
+    assembler.py가 다시 split("|")로 푼다. 중복은 순서를 지키며 제거하고 최대
+    _MAX_LOCATION_CANDIDATES개까지만 남긴다.
+    """
+    return "|".join(list(dict.fromkeys(names))[:_MAX_LOCATION_CANDIDATES])
+
+
 def _is_transit_place(place: LocalSearchPlace) -> bool:
     category = place.category or ""
     return any(marker in category for marker in _TRANSIT_CATEGORY_MARKERS)
+
+
+# 되묻기 후보로는 지하철역/명소류만 적절하다 — 지역 검색은 주변 상호(식당·카페 등)도
+# 같이 돌려주는데, "종각"에 "숙썽수산 종로본점"/"어망집" 같은 식당이 위치 후보로
+# 뜨면 사용자가 혼란스럽다(실사용 피드백, 2026-08-13). 사용자가 실제로 궁금한 건
+# 지역/랜드마크 이름이지 특정 가게가 아니다.
+_LANDMARK_CATEGORY_MARKERS = ("관광", "명소")
+
+
+def _is_location_pickable(place: LocalSearchPlace) -> bool:
+    category = place.category or ""
+    return _is_transit_place(place) or any(
+        marker in category for marker in _LANDMARK_CATEGORY_MARKERS
+    )
 
 
 def _is_same_transit_place(places: tuple[LocalSearchPlace, ...]) -> bool:
@@ -349,12 +378,29 @@ class ResolveLocationTool:
                     details={"reason": "outside_supported_region"},
                     provider_metadata=(result.metadata,),
                 )
+            in_area = [
+                item
+                for item in candidates
+                if item.latitude is not None
+                and item.longitude is not None
+                and is_within_service_area(item.latitude, item.longitude)
+            ]
+            # 지하철역/명소류로만 좁힌다. 식당·상점은 위치 후보로 부적절하니 안
+            # 좁혀진 전체로 폴백하지 않는다 — 여기서 비어 있으면(전부 식당·상점뿐)
+            # agent_runtime.py가 A2 종로구 대표 스팟 고정 버튼으로 대신한다
+            # (실사용 피드백, 2026-08-13: "그냥 지하철역으로만 가자").
+            names_source = [item for item in in_area if _is_location_pickable(item)]
             return self._error_result(
                 status=ResolveLocationStatus.NO_DATA,
                 code="no_data",
                 cause="ambiguous_location",
                 retryable=False,
-                details={"reason": "ambiguous_location"},
+                details={
+                    "reason": "ambiguous_location",
+                    "candidate_names": _join_candidate_names(
+                        item.name for item in names_source
+                    ),
+                },
                 provider_metadata=(result.metadata,),
             )
         # 지역 검색이 알아낸 정식 상호명으로 저장소를 다시 찾는다. "북촌"은 저장소에
@@ -439,7 +485,10 @@ class ResolveLocationTool:
                 code="no_data",
                 cause="ambiguous_location",
                 retryable=False,
-                details={"reason": "ambiguous_location"},
+                details={
+                    "reason": "ambiguous_location",
+                    "candidate_names": _join_candidate_names(place.title for place in matches),
+                },
                 provider_metadata=metadata,
             )
         place = matches[0]

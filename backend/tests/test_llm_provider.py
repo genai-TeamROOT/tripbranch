@@ -546,7 +546,65 @@ async def test_extract_modify_conditions_quiet_place_avoids_concentration() -> N
     output = (await provider.extract_modify_conditions("좀 조용한 공원 가고싶어", current)).data
 
     assert output.modify.condition_changes.concentration_intent is ConcentrationIntent.AVOID
-    assert output.modify.changed_fields == ["concentration_intent"]
+    assert output.modify.condition_changes.place_types == [PlaceType.ATTRACTION]
+    assert output.modify.condition_changes.place_tags == [PlaceTag.PARK]
+    assert output.modify.changed_fields == [
+        "place_types",
+        "place_tags",
+        "concentration_intent",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_extract_modify_conditions_category_request_replaces_previous_category() -> None:
+    """'공원도 추천'의 도는 추가가 아니라 새 추천 유형 강조로 본다."""
+
+    provider = FakeLLMProvider()
+    current = UserConditions(place_types=[PlaceType.RESTAURANT], place_tags=[PlaceTag.CAFE])
+
+    output = (await provider.extract_modify_conditions("공원도 추천해줘", current)).data
+
+    assert output.modify.condition_changes.place_types == [PlaceType.ATTRACTION]
+    assert output.modify.condition_changes.place_tags == [PlaceTag.PARK]
+    assert output.modify.changed_fields == ["place_types", "place_tags"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("user_input", "expected_types", "expected_tags"),
+    [
+        (
+            "공원도 포함해줘",
+            [PlaceType.RESTAURANT, PlaceType.ATTRACTION],
+            [PlaceTag.CAFE, PlaceTag.PARK],
+        ),
+        (
+            "카페와 공원 같이 추천해줘",
+            [PlaceType.RESTAURANT, PlaceType.ATTRACTION],
+            [PlaceTag.CAFE, PlaceTag.PARK],
+        ),
+        (
+            "카페나 공원 추천해줘",
+            [PlaceType.RESTAURANT, PlaceType.ATTRACTION],
+            [PlaceTag.CAFE, PlaceTag.PARK],
+        ),
+    ],
+)
+async def test_extract_modify_conditions_explicit_category_combination_keeps_both(
+    user_input: str,
+    expected_types: list[PlaceType],
+    expected_tags: list[PlaceTag],
+) -> None:
+    """명시적으로 함께·포함·선택지를 말할 때만 교차 유형을 함께 검색한다."""
+
+    provider = FakeLLMProvider()
+    current = UserConditions(place_types=[PlaceType.RESTAURANT], place_tags=[PlaceTag.CAFE])
+
+    output = (await provider.extract_modify_conditions(user_input, current)).data
+
+    assert output.modify.condition_changes.place_types == expected_types
+    assert output.modify.condition_changes.place_tags == expected_tags
+    assert output.modify.changed_fields == ["place_types", "place_tags"]
 
 
 def test_modify_instruction_includes_weather_and_concentration_avoid_rules() -> None:
@@ -558,6 +616,17 @@ def test_modify_instruction_includes_weather_and_concentration_avoid_rules() -> 
     assert "concentration_intent 판별:" in instruction
     assert '"조용한 공원 추천해줘"' in instruction
     assert "concentration_intent/transport" in instruction
+
+
+def test_modify_instruction_distinguishes_category_replacement_and_explicit_addition() -> None:
+    instruction = build_modify_extraction_instruction(
+        UserConditions(place_types=[PlaceType.RESTAURANT], place_tags=[PlaceTag.CAFE])
+    )
+
+    assert '"공원도 추천해줘"' in instruction
+    assert '"공원도 포함해줘"' in instruction
+    assert '"카페와 공원 같이 추천해줘"' in instruction
+    assert 'changed_fields에도 둘 다' in instruction
 
 
 def test_modify_instruction_marks_location_clarification_answer() -> None:

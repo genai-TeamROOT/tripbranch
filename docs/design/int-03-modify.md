@@ -126,7 +126,7 @@ type ModifyType =
 | `current_location` | Update | user_conditions 내 사용자 발화 반영 기준 — "나 지금 홍대야" → 위치 변경 (GPS 보충값은 api_context.gps_location 별도 관리) |
 | `search_center` | Update | "경복궁 말고 인사동 근처로" |
 | `place_types` | 전체 교체 | "카페 말고 맛집" → ["restaurant"] |
-| `place_tags` | Add: 기존에 추가 / Remove: 기존에서 제거 | "박물관도 포함" → 추가 |
+| `place_tags` | 최종 목록으로 교체, 명시적 추가/제거 시만 누적·제거 | "공원도 추천" → 교체 / "공원도 포함" → 추가 |
 | `weather` | Update | user_conditions 내 사용자 발화 반영 기준 — "비 그쳤어" → weather 변경 (API 갱신값은 api_context.api_weather 별도 관리) |
 | `weather_intent` | Update | "야외도 괜찮아" → IGNORE |
 | `transport` | Update | "차로 갈게" → car |

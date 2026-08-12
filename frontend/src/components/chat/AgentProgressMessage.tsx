@@ -1,26 +1,27 @@
-import { useEffect, useState } from "react";
+import type { AgentProgressEvent } from "../../types";
 
 const AGENT_STAGES = [
-  { label: "요청 의도와 조건 파악", detail: "Gemini가 Intent와 사용자 조건을 해석하고 있어요." },
-  { label: "대화 조건 병합", detail: "이전 대화와 이번 요청의 조건을 합치고 있어요." },
-  { label: "장소 정보 조회", detail: "위치·날씨·운영시간에 맞는 후보를 찾고 있어요." },
-  { label: "추천 순위 계산", detail: "조건별 점수를 계산해 장소의 순서를 정하고 있어요." },
-  { label: "답변 정리", detail: "추천 결과와 안내 문구를 정리하고 있어요." },
+  { stage: "interpreting", label: "요청 의도와 조건 파악", detail: "Gemini가 Intent와 사용자 조건을 해석하고 있어요." },
+  { stage: "merging_conditions", label: "대화 조건 병합", detail: "이전 대화 조건을 반영하고 있어요." },
+  { stage: "fetching_context", label: "장소 정보 조회", detail: "장소·운영시간·날씨 정보를 찾고 있어요." },
+  { stage: "scoring", label: "추천 순위 계산", detail: "조건에 맞게 장소 순위를 계산하고 있어요." },
+  { stage: "composing_message", label: "답변 정리", detail: "추천 결과를 안내하고 있어요." },
 ] as const;
 
-const STAGE_INTERVAL_MS = 1800;
-
-export function AgentProgressMessage({ hasDeviceLocation }: { hasDeviceLocation: boolean }) {
-  const [stageIndex, setStageIndex] = useState(0);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      setStageIndex((current) => Math.min(current + 1, AGENT_STAGES.length - 1));
-    }, STAGE_INTERVAL_MS);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  const current = AGENT_STAGES[stageIndex];
+export function AgentProgressMessage({
+  hasDeviceLocation,
+  progress,
+}: {
+  hasDeviceLocation: boolean;
+  progress: AgentProgressEvent | null;
+}) {
+  const stageIndex = Math.max(
+    0,
+    AGENT_STAGES.findIndex((stage) => stage.stage === progress?.stage),
+  );
+  const current = progress
+    ? { label: AGENT_STAGES[stageIndex]?.label ?? "요청 처리", detail: progress.message }
+    : AGENT_STAGES[0];
 
   return (
     <section
@@ -36,6 +37,7 @@ export function AgentProgressMessage({ hasDeviceLocation }: { hasDeviceLocation:
         <div>
           <p className="font-semibold">{current.label} 중</p>
           <p className="mt-0.5 text-xs text-indigo-700 dark:text-indigo-300">{current.detail}</p>
+          {progress && <p className="mt-0.5 text-xs text-indigo-600 dark:text-indigo-400">{(progress.elapsed_ms / 1000).toFixed(1)}초 경과</p>}
         </div>
       </div>
 

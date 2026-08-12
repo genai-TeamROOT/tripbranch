@@ -23,7 +23,7 @@ from app.schemas import CompareCriteria, GeneralTopic, Intent, UserConditions
 # 쓰였는지와 무관하게 단일 값으로 취급한다 — 함수별 개별 버전은 만들지 않는다. 판별·추출
 # 규칙에 영향을 주는 변경(6개 함수 중 하나라도) 시 버전을 올린다 — 사소한 문구·주석
 # 변경은 올리지 않는다.
-PROMPT_VERSION = "agent-interpret-prompts-1.0.11"
+PROMPT_VERSION = "agent-interpret-prompts-1.0.12"
 
 CHATBOT_NAME = "트리비"
 CHATBOT_PERSONA = """\
@@ -327,10 +327,19 @@ _MODIFY_FIELD_MERGE_RULES = """\
   null로 채우세요. 0을 반환하지 마세요.
 - budget: "무료만" 같은 교체는 새 값으로("free" 리터럴 사용, 아래 budget 규칙 참고),
   "가격 상관없어" 같은 해제는 null로
-- place_types: 사용자가 유형을 바꾸면 전체 교체 (예: "카페 말고 맛집" → ["restaurant"])
-- place_tags: 사용자가 추가/제거를 말하면 "현재 조건"에 제시된 place_tags를 참고해서
-  그 변경을 반영한 최종 목록을 채운다 (예: 현재 ["카페"]에서 "박물관도 포함" →
-  ["카페", "박물관"]) — place_tags 자체는 바뀌었으므로 채우는 것이 맞다
+- 장소 유형·태그를 새로 요청하면 place_types와 place_tags를 반드시 함께 채운다.
+  두 필드는 각각 최종 목록으로 전체 교체되며, changed_fields에도 둘 다 넣는다.
+- 단순한 새 유형 요청은 기존 유형을 대체한다. 조사 "도"만으로는 추가가 아니다.
+  예: 현재 place_types=["restaurant"], place_tags=["카페"]에서 "공원도 추천해줘" →
+  place_types=["attraction"], place_tags=["공원"],
+  changed_fields=["place_types", "place_tags"].
+- 복수 유형을 함께 원한다는 표현("카페와 공원 같이 추천해줘", "카페나 공원",
+  "카페와 공원 모두")은 발화에서 언급한 유형을 모두 최종 목록에 넣는다. 예:
+  place_types=["restaurant", "attraction"], place_tags=["카페", "공원"].
+- 기존 조건에 새 유형을 명시적으로 더하는 표현("공원도 포함해줘", "공원도 함께 넣어줘")은
+  현재 목록과 새 유형을 합친 최종 목록을 채운다. 예: 현재 ["카페"]에서 "공원도 포함" →
+  place_types=["restaurant", "attraction"], place_tags=["카페", "공원"].
+- "카페 말고 공원"처럼 제외·대체를 명시한 경우에도 새 유형만 최종 목록에 넣는다.
 - exclude_tags/special_requirements: 추가/제거를 반영한 최종 목록
 - "더 가까운 곳"처럼 상대적 표현은 "현재 조건"의 값을 참고해서 계산한 새 값을 채운다
   (예: 현재 max_travel_time=30 → 15). 이 경우도 값이 실제로 바뀌는 것이므로 채운다
@@ -557,6 +566,23 @@ def build_general_answer_instruction(topic: GeneralTopic) -> str:
 - 사용자 발화를 그대로 반복하지 말고 바로 답변을 시작하세요."""
 
 
+def build_info_answer_instruction(question_type: str) -> str:
+    """검증된 INFO fields만 사용자용 안내문으로 바꾸는 system instruction."""
+
+    return f"""당신은 TripBranch의 국내 여행 챗봇 \"{CHATBOT_NAME}\"입니다.
+
+{CHATBOT_PERSONA}
+
+사용자가 특정 장소의 {question_type} 정보를 물었습니다. 아래 JSON의 place_name,
+specific_question, fields만 근거로 2~4문장의 한국어 답변을 작성하세요.
+
+답변 규칙:
+- 첫 문장에 질문의 핵심 답을 바로 말하세요.
+- 긴 원문과 세부 항목은 아래 상세 카드에서 확인할 수 있다고 자연스럽게 안내하세요.
+- JSON에 없는 사실, 추측, API·캐시·점수·내부 구현 설명은 절대 추가하지 마세요.
+- 마크다운 표·제목은 쓰지 말고, 사용자 발화를 그대로 반복하지 말고 바로 답변을 시작하세요."""
+
+
 def build_recommendation_summary_instruction(intent: Intent) -> str:
     """RECOMMEND/MODIFY 결과를 감싸는 짧은 말풍선 생성 system instruction."""
 
@@ -769,6 +795,7 @@ __all__ = [
     "build_compare_extraction_instruction",
     "build_general_extraction_instruction",
     "build_general_answer_instruction",
+    "build_info_answer_instruction",
     "build_recommendation_summary_instruction",
     "build_compare_summary_instruction",
     "build_schedule_planning_instruction",

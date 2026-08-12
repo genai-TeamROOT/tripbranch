@@ -69,16 +69,63 @@ const recommendationsResponse = {
   ],
 };
 
+function chatResponse() {
+  return {
+    llm_output: interpretResponse,
+    state: { session_id: "sess_test", run_id: "run_test", user_conditions: null },
+    recommendations: { ...recommendationsResponse, elapsed_ms: 12.3 },
+    message: "조건에 맞는 장소를 찾아봤어요.",
+  };
+}
+
+function streamResponse(
+  response: {
+    llm_output: { intent: string; [key: string]: unknown };
+    state: unknown;
+    recommendations: unknown;
+    message: string;
+  } = chatResponse(),
+) {
+  const events: Array<{ event: string; data: unknown }> = [
+    { event: "progress", data: { stage: "interpreting", message: "조건을 파악하고 있어요.", elapsed_ms: 1 } },
+  ];
+  if (response.recommendations) {
+    events.push(
+      {
+        event: "message_start",
+        data: { intent: response.llm_output.intent, elapsed_ms: 2 },
+      },
+      { event: "message_delta", data: { text: response.message, elapsed_ms: 3 } },
+      {
+        event: "result",
+        data: {
+          llm_output: response.llm_output,
+          state: response.state,
+          recommendations: response.recommendations,
+          elapsed_ms: 4,
+        },
+      },
+    );
+  }
+  events.push({ event: "done", data: { response, elapsed_ms: 5 } });
+  const payload = events
+    .map(({ event, data }) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+    .join("");
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(payload));
+      controller.close();
+    },
+  });
+  return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
+}
+
 function mockFetch() {
   return vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
+    if (url.endsWith("/chat/stream")) return streamResponse();
     if (url.endsWith("/chat")) {
-      return Response.json({
-        llm_output: interpretResponse,
-        state: { session_id: "sess_test", run_id: "run_test" },
-        recommendations: { ...recommendationsResponse, elapsed_ms: 12.3 },
-        message: "조건에 맞는 장소를 찾아봤어요.",
-      });
+      return Response.json(chatResponse());
     }
     return Response.json({ error: { message: "not found" } }, { status: 404 });
   });
@@ -87,6 +134,8 @@ function mockFetch() {
 beforeEach(() => {
   sessionStorage.clear();
   window.history.pushState({}, "", "/");
+  // 로컬 .env의 Codex 테스트 좌표가 브라우저 권한 회귀 테스트에 영향을 주지 않게 한다.
+  vi.stubEnv("VITE_TEST_DEVICE_LOCATION", "");
   vi.stubGlobal("navigator", {
     geolocation: {
       getCurrentPosition: vi.fn((success: PositionCallback) =>
@@ -126,6 +175,17 @@ test("user chat hides condition debug card and shows recommendations", async () 
   expect(screen.getByText("운영시간을 확인할 수 없는 장소")).toBeInTheDocument();
 });
 
+test("streamed recommendation renders the answer before its cards", async () => {
+  render(<App />);
+
+  await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+
+  const answer = await screen.findByText("조건에 맞는 장소를 찾아봤어요.");
+  const firstCard = screen.getByText("테스트 박물관");
+  expect(answer.compareDocumentPosition(firstCard) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+});
+
 test("user chat needs only one chat call", async () => {
   vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "false");
   render(<App />);
@@ -146,6 +206,35 @@ test("user chat needs only one chat call", async () => {
   expect(String(fetchMock.mock.calls[0][0])).toContain("/chat");
   const requestBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
   expect(requestBody.device_location).toBe("37.5788,126.977");
+});
+
+test("falls back to the existing chat endpoint when the SSE route is unavailable", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/chat/stream")) {
+        return Response.json(
+          {
+            error: {
+              code: "not_found",
+              message: "not found",
+              retryable: false,
+              details: null,
+            },
+          },
+          { status: 404 },
+        );
+      }
+      return Response.json(chatResponse());
+    }),
+  );
+  render(<App />);
+
+  await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+
+  expect(await screen.findByText("테스트 박물관")).toBeInTheDocument();
+  expect(fetch).toHaveBeenCalledTimes(2);
 });
 
 test("main recommendation requests location permission before opening chat", async () => {
@@ -169,14 +258,7 @@ test("main recommendation requests location permission before opening chat", asy
   expect(await screen.findByText("요청 의도와 조건 파악 중")).toBeInTheDocument();
   expect(screen.getByText("기기 위치 확인 완료")).toBeInTheDocument();
 
-  resolveFetch?.(
-    Response.json({
-      llm_output: interpretResponse,
-      state: { session_id: "sess_test", run_id: "run_test", user_conditions: null },
-      recommendations: { ...recommendationsResponse, elapsed_ms: 12.3 },
-      message: "조건에 맞는 장소를 찾아봤어요.",
-    }),
-  );
+  resolveFetch?.(streamResponse());
   expect(await screen.findByText("테스트 박물관")).toBeInTheDocument();
 });
 
@@ -262,7 +344,7 @@ test("clarification turn hints a fuller phrasing in the composer placeholder", a
   vi.stubGlobal(
     "fetch",
     vi.fn(async () =>
-      Response.json({
+      streamResponse({
         llm_output: { ...interpretResponse, recommend: null },
         state: { session_id: "sess_test", run_id: "run_test" },
         recommendations: null,

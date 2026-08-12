@@ -120,6 +120,8 @@ export type ChatMessage =
       text: string;
       intent?: Intent;
       status?: LLMOutputStatus;
+      /** SSE로 요약 문장을 받는 중인 말풍선이다. */
+      streaming?: boolean;
     }
   | {
       id: string;
@@ -169,6 +171,12 @@ export type ChatMessage =
       id: string;
       type: "place_info_result";
       card: InfoPlaceCard;
+    }
+  | {
+      id: string;
+      type: "clarification";
+      text: string;
+      options: ClarificationOption[];
     };
 
 export interface ApiErrorBody {
@@ -248,10 +256,18 @@ export interface OutOfScopePayload {
   severity: string;
 }
 
+/** 되묻기에 붙는 버튼 하나. 클릭 시 id를 그대로 clarification_choice로 돌려보낸다. */
+export interface ClarificationOption {
+  id: string;
+  label: string;
+  resolved_intent: Intent;
+}
+
 export interface ClarificationPayload {
   missing_fields: { field: string; reason: string }[];
   ambiguous_fields: { field: string; user_input: string; candidates: string[]; reason: string }[];
   message: string;
+  options: ClarificationOption[];
 }
 
 export interface LLMOutput {
@@ -289,6 +305,11 @@ export interface AgentDebugRequest {
   user_input: string;
   session_id?: string | null;
   device_location?: string | null;
+  /*
+   * 되묻기 버튼 클릭 시 ClarificationOption.id를 그대로 echo. user_input에는 버튼
+   * label을 채워 보내되(채팅 이력 표시용) 라우팅은 이 필드만으로 결정된다.
+   */
+  clarification_choice?: string | null;
 }
 
 export interface SessionState {
@@ -367,6 +388,64 @@ export interface AgentResponse {
   tool_executions?: ToolExecutionDebug[];
 }
 
+export type AgentProgressStage =
+  | "interpreting"
+  | "merging_conditions"
+  | "fetching_context"
+  | "scoring"
+  | "composing_message";
+
+export interface AgentProgressEvent {
+  stage: AgentProgressStage;
+  message: string;
+  elapsed_ms: number;
+}
+
+/** SSE 서버 경과 시간을 바탕으로 계산한 Agent 단계별 실행 구간. */
+export interface AgentStageTiming {
+  stage: AgentProgressStage;
+  message: string;
+  started_at_ms: number;
+  duration_ms: number;
+  /** 답변 스트림의 message_start부터 첫 message_delta까지 걸린 시간(TTFT). */
+  time_to_first_token_ms?: number;
+}
+
+export interface AgentStreamResultEvent {
+  elapsed_ms: number;
+  llm_output: LLMOutput;
+  state: StateApplyResponse;
+  recommendations: RecommendationsResponse;
+}
+
+export interface AgentStreamMessageDeltaEvent {
+  elapsed_ms: number;
+  text: string;
+}
+
+/** 카드 없이 LLM 본문을 먼저 표시할 때 로딩 말풍선을 연다. */
+export interface AgentStreamMessageStartEvent {
+  elapsed_ms: number;
+  intent: Intent;
+}
+
+export interface AgentStreamDoneEvent {
+  elapsed_ms: number;
+  response: AgentResponse;
+}
+
+export interface AgentStreamErrorEvent extends ApiErrorBody {
+  elapsed_ms: number;
+}
+
+export type AgentStreamEvent =
+  | { type: "progress"; data: AgentProgressEvent }
+  | { type: "result"; data: AgentStreamResultEvent }
+  | { type: "message_start"; data: AgentStreamMessageStartEvent }
+  | { type: "message_delta"; data: AgentStreamMessageDeltaEvent }
+  | { type: "done"; data: AgentStreamDoneEvent }
+  | { type: "error"; data: AgentStreamErrorEvent };
+
 export interface ToolProviderDebug {
   source: string;
   status: string;
@@ -415,6 +494,8 @@ export interface LLMCallMetadata {
   operation: string;
   attempted_models: string[];
   served_model: string | null;
+  /** 구조화 LLM 호출 전체 경과 시간(ms). 이전 실행 이력에는 없을 수 있다. */
+  latency_ms?: number | null;
 }
 
 export interface LLMExecutionMetadata {
@@ -439,6 +520,7 @@ export interface DeveloperAuditTurn {
   deviceLocation: string | null;
   elapsedMsClient: number;
   serverElapsedMs: number | null;
+  stageTimings: AgentStageTiming[];
   extractedConditions: InterpretedConditions | null;
   beforeConditions: UserConditions | null;
   afterConditions: UserConditions | null;

@@ -6,13 +6,54 @@
  * TODO: 메시지 타입이 늘어나면 타입별 렌더러를 별도 파일로 분리한다.
  */
 
-import type { ChatMessage } from "../../types";
+import { useEffect, useState } from "react";
+import type { AgentProgressEvent, ChatMessage } from "../../types";
 import { AgentProgressMessage } from "./AgentProgressMessage";
+import { ClarificationMessage } from "./ClarificationMessage";
 import { ConditionDebugMessage } from "./ConditionDebugMessage";
 import { PlaceInfoCard } from "./PlaceInfoCard";
 import { RecommendationResultMessage } from "./RecommendationResultMessage";
 import { ScheduleResultMessage } from "./ScheduleResultMessage";
 import { SessionStatusMessage } from "./SessionStatusMessage";
+
+function StreamingDots() {
+  return (
+    <span className="flex h-6 items-center gap-1.5" aria-label="답변 생성 중" role="status">
+      {[0, 1, 2].map((index) => (
+        <span
+          key={index}
+          aria-hidden="true"
+          className="h-2 w-2 animate-bounce rounded-full bg-gray-400 dark:bg-gray-500"
+          style={{ animationDelay: `${index * 150}ms`, animationDuration: "900ms" }}
+        />
+      ))}
+      <span className="sr-only">답변 생성 중</span>
+    </span>
+  );
+}
+
+function StreamingText({ text, streaming }: { text: string; streaming: boolean }) {
+  // Gemini는 단어·문장 단위 청크를 보내기도 한다. 화면에서는 청크 크기와 무관하게
+  // 한 글자씩 이어 보여, 첫 텍스트가 도착한 뒤에도 생성 중이라는 감각을 유지한다.
+  const [visibleText, setVisibleText] = useState(() => (streaming ? "" : text));
+
+  useEffect(() => {
+    if (!text.startsWith(visibleText)) {
+      setVisibleText(streaming ? "" : text);
+      return;
+    }
+    if (visibleText.length >= text.length) return;
+
+    const timer = window.setInterval(() => {
+      setVisibleText((current) =>
+        current.length < text.length ? text.slice(0, current.length + 1) : current,
+      );
+    }, 18);
+    return () => window.clearInterval(timer);
+  }, [streaming, text, visibleText]);
+
+  return <p className="whitespace-pre-line leading-6">{visibleText}</p>;
+}
 
 interface ChatMessageListProps {
   messages: ChatMessage[];
@@ -23,6 +64,8 @@ interface ChatMessageListProps {
   showIntentBadges?: boolean;
   onRequestMore: () => void;
   onRelaxRadius: () => void;
+  onSelectClarificationOption: (optionId: string, label: string) => void;
+  progress: AgentProgressEvent | null;
 }
 
 export function ChatMessageList({
@@ -34,6 +77,8 @@ export function ChatMessageList({
   showIntentBadges = false,
   onRequestMore,
   onRelaxRadius,
+  onSelectClarificationOption,
+  progress,
 }: ChatMessageListProps) {
   return (
     <div className="flex flex-1 flex-col gap-4">
@@ -69,7 +114,14 @@ export function ChatMessageList({
                     )}
                   </div>
                 )}
-                <p className="whitespace-pre-line leading-6">{message.text}</p>
+                {message.type === "assistant_text" && message.streaming && message.text === "…" ? (
+                  <StreamingDots />
+                ) : (
+                  <StreamingText
+                    text={message.text}
+                    streaming={message.type === "assistant_text" && Boolean(message.streaming)}
+                  />
+                )}
               </div>
             );
           }
@@ -114,6 +166,18 @@ export function ChatMessageList({
             return <PlaceInfoCard key={message.id} card={message.card} />;
           }
 
+          if (message.type === "clarification") {
+            return (
+              <ClarificationMessage
+                key={message.id}
+                text={message.text}
+                options={message.options}
+                isLoading={isLoading}
+                onSelectOption={onSelectClarificationOption}
+              />
+            );
+          }
+
           return (
             <RecommendationResultMessage
               key={message.id}
@@ -127,7 +191,9 @@ export function ChatMessageList({
             />
           );
         })}
-      {isLoading && <AgentProgressMessage hasDeviceLocation={hasDeviceLocation} />}
+      {isLoading && progress?.stage !== "composing_message" && (
+        <AgentProgressMessage hasDeviceLocation={hasDeviceLocation} progress={progress} />
+      )}
     </div>
   );
 }

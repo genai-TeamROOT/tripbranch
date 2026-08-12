@@ -430,6 +430,7 @@ class FakeRecommendationProvider:
         context: RecommendationContext,
         excluded_place_ids: list[str],
         limit: int = 5,
+        ignore_operating_hours: bool = False,
     ) -> RecommendationResponse:
         excluded = set(excluded_place_ids)
         candidates = context.places.data if context.places and context.places.data else []

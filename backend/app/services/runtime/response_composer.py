@@ -6,14 +6,16 @@
    "다만~"으로 마지막)로 이어붙인다. 문장 내용 자체는 재작문하지 않고 D가 만든
    그대로 쓴다.
 2) compose_chat_message(): 카드들을 감싸는 챗봇 말풍선 텍스트(AgentResponse.message).
-   Intent/status별로 고정 템플릿을 고르거나, GENERAL 답변과 RECOMMEND/MODIFY 추천
-   요약에는 LLM을 호출한다. 추천 요약 LLM은 카드의 공개 필드만 보고 짧게 소개한다.
+   Intent/status별로 고정 템플릿을 고르거나 GENERAL·INFO·COMPARE처럼 문장 생성 가치가
+   큰 응답에만 LLM을 호출한다. RECOMMEND/MODIFY의 카드 소개는 고정 템플릿으로 즉시
+   반환해, 이미 완성된 추천 결과를 위해 추가 LLM 대기 시간을 만들지 않는다.
 """
 
 from __future__ import annotations
 
 import logging
 import math
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 from app.errors import AppError
 from app.providers.protocols import LLMProvider
@@ -34,6 +36,7 @@ from app.services.runtime.info_context_schemas import (
     InfoContextResponse,
     PlaceInfoResult,
 )
+from app.services.runtime.info_display import format_parking_for_display
 
 # C 단계에서 Recommendation으로 못 넘어가는 status. agent_runtime.py의
 # _TOOL_TERMINAL_STATUSES와 같은 집합이어야 한다 — 순환 import를 피하려고 별도로
@@ -43,6 +46,8 @@ _TOOL_TERMINAL_STATUSES = frozenset(
 )
 
 _RECOMMEND_WRAPPER_MESSAGE = "이런 곳들을 찾아봤어요:"
+
+MessageDeltaCallback = Callable[[str], Awaitable[None]]
 
 # int-03-modify.md §11 "후보 부족 처리" 정책 그대로 재사용 — 시스템이 임의로 조건을
 # 완화하지 않고, 사용자에게 선택지를 제시한다.
@@ -63,6 +68,16 @@ _CLARIFICATION_TEMPLATES: dict[str, str] = {
 }
 _CLARIFICATION_FALLBACK_MESSAGE = "조건을 조금 더 자세히 알려주시겠어요?"
 
+
+def tool_clarification_message(code: str | None) -> str:
+    """C 단계 되묻기 code를 사용자 문구로 바꾼다.
+
+    agent_runtime이 되묻기에 버튼을 붙일 때(예: location_required) 같은 문구를
+    재사용하려고 노출한다 — 이 모듈 안의 compose_chat_message()도 내부적으로
+    같은 테이블을 쓴다.
+    """
+    return _CLARIFICATION_TEMPLATES.get(code or "", _CLARIFICATION_FALLBACK_MESSAGE)
+
 _TOOL_UNSUPPORTED_MESSAGE = "죄송하지만 아직 지원하지 않는 요청이에요."
 
 # unsupported는 이유가 여러 가지다. 지원 지역 밖인데 "아직 지원하지 않는 요청"이라고만
@@ -77,6 +92,8 @@ _TOOL_UNSUPPORTED_TEMPLATES: dict[str, str] = {
 
 def _unsupported_message(error_code: str | None) -> str:
     return _TOOL_UNSUPPORTED_TEMPLATES.get(error_code or "", _TOOL_UNSUPPORTED_MESSAGE)
+
+
 _TOOL_UNAVAILABLE_MESSAGE = "일시적으로 요청을 처리하지 못했어요. 잠시 후 다시 시도해주세요."
 
 _OUT_OF_SCOPE_TEMPLATES: dict[str, str] = {
@@ -135,6 +152,20 @@ _FACILITY_FIELD_PHRASES: dict[str, str] = {
 }
 
 logger = logging.getLogger(__name__)
+
+
+async def _collect_message_stream(
+    stream: AsyncIterator[str], on_message_delta: MessageDeltaCallback
+) -> str:
+    """LLM 텍스트 스트림을 말풍선 이벤트로 전달하면서 최종 문장도 조립한다."""
+
+    chunks: list[str] = []
+    async for delta in stream:
+        if not delta:
+            continue
+        chunks.append(delta)
+        await on_message_delta(delta)
+    return "".join(chunks).strip()
 
 
 def compose_recommendation_message(item: RecommendationItem) -> str:
@@ -249,8 +280,7 @@ def _compose_place_info_sentence(
         summary = _fee_summary(fields["fee"])
         if summary:
             return (
-                f"{place_label} 입장료는 {summary}이에요. "
-                "아래에서 상세 요금 정보를 확인해보세요!"
+                f"{place_label} 입장료는 {summary}이에요. 아래에서 상세 요금 정보를 확인해보세요!"
             )
         return f"{place_label} 입장료 정보를 찾았어요. 아래에서 상세 요금 정보를 확인해보세요!"
 
@@ -488,12 +518,14 @@ async def compose_chat_message(
     tool_error_code: str | None = None,
     info_response: InfoContextResponse | None = None,
     llm: LLMProvider,
+    on_message_delta: MessageDeltaCallback | None = None,
 ) -> str:
     """AgentResponse.message(챗봇 말풍선 텍스트)를 조립한다.
 
-    docs/design/agent-response-generation.md의 결정을 구현한다. GENERAL은 답변
-    본문을, RECOMMEND/MODIFY 성공 경로는 추천 카드 wrapper를 LLM으로 생성한다.
-    추천 카드의 상세 내용은 여기서 길게 다시 풀어쓰지 않는다.
+    docs/design/agent-response-generation.md의 결정을 구현한다. GENERAL·INFO·COMPARE는
+    필요할 때 LLM으로 답변 본문을 생성하고, RECOMMEND/MODIFY 성공 경로는 추천 카드
+    wrapper를 고정 템플릿으로 즉시 반환한다. 추천 카드의 상세 내용은 여기서 길게
+    다시 풀어쓰지 않는다.
     """
 
     if llm_output.status is OutputStatus.NEEDS_CLARIFICATION:
@@ -507,21 +539,71 @@ async def compose_chat_message(
 
     if llm_output.intent is Intent.GENERAL:
         assert llm_output.general is not None
+        if on_message_delta is not None:
+            try:
+                message = await _collect_message_stream(
+                    llm.stream_general_answer(
+                        llm_output.general.topic, llm_output.general.original_question
+                    ),
+                    on_message_delta,
+                )
+                if message:
+                    return message
+            except AppError:
+                logger.warning("GENERAL 답변 스트리밍 실패, 단발 호출로 fallback", exc_info=True)
         result = await llm.generate_general_answer(
             llm_output.general.topic, llm_output.general.original_question
         )
+        if on_message_delta is not None:
+            await on_message_delta(result.data)
         return result.data
 
     if llm_output.intent is Intent.INFO and info_response is not None:
         if isinstance(info_response.result, EventInfoResult):
             return compose_event_info_message(info_response)
         if isinstance(info_response.result, PlaceInfoResult):
-            return compose_place_info_message(
+            fallback_message = compose_place_info_message(
                 info_response,
                 specific_question=(
                     llm_output.info.specific_question if llm_output.info is not None else None
                 ),
             )
+            result = info_response.result
+            if (
+                on_message_delta is not None
+                and result.status == "success"
+                and bool(result.fields)
+            ):
+                place_name = result.resolved_place_name or result.requested_place_name or "그 장소"
+                # 말풍선도 카드의 질문 답변과 같은 정제 규칙을 따른다. 예를 들어
+                # 주차 원문에는 버스 수용 대수가 있어도 일반 사용자용 화면은 승용차
+                # 정보만 노출한다.
+                display_fields = {
+                    key: format_parking_for_display(value) if key == "parking" else value
+                    for key, value in result.fields.items()
+                }
+                try:
+                    message = await _collect_message_stream(
+                        llm.stream_info_answer(
+                            place_name=place_name,
+                            question_type=result.question_type,
+                            specific_question=(
+                                llm_output.info.specific_question
+                                if llm_output.info is not None
+                                else None
+                            ),
+                            fields=display_fields,
+                        ),
+                        on_message_delta,
+                    )
+                    if message:
+                        return message
+                except AppError:
+                    logger.warning(
+                        "INFO 답변 스트리밍 실패, 고정 안내문으로 fallback", exc_info=True
+                    )
+                await on_message_delta(fallback_message)
+            return fallback_message
         return compose_info_concentration_message(info_response)
 
     if llm_output.intent in (Intent.RECOMMEND, Intent.MODIFY, Intent.SCHEDULE):
@@ -552,16 +634,9 @@ async def compose_chat_message(
         )
         if not shown:
             return _NO_DATA_MESSAGE
-        try:
-            result = await llm.generate_recommendation_summary(llm_output.intent, recommendations)
-        except AppError:
-            logger.warning(
-                "추천 요약 LLM 생성 실패, 기본 템플릿으로 fallback: intent=%s",
-                llm_output.intent.value,
-                exc_info=True,
-            )
-            return _RECOMMEND_WRAPPER_MESSAGE
-        return result.data
+        if on_message_delta is not None:
+            await on_message_delta(_RECOMMEND_WRAPPER_MESSAGE)
+        return _RECOMMEND_WRAPPER_MESSAGE
 
     # INFO/COMPARE — 별도 트랙(agent-response-generation.md §3/§6 3차), 지금은 안내만.
     return _NOT_YET_SUPPORTED_MESSAGE

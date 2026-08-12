@@ -10,7 +10,7 @@ TODO: 실제 provider(RealPlaceProvider 등)가 준비되면 팩토리에서 설
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -109,11 +109,16 @@ _REJECT_ALL_MARKERS = ("다른 곳", "다른 거", "전부 별로", "다 마음�
 # ComparePayload.targets 파싱과 달리 여기서는 실제로 순번을 파싱해 target_indices를
 # 채운다 — REJECT_SPECIFIC 자체가 이번에 신설된 값이라 테스트가 파싱 결과에 의존한다.
 _ORDINAL_TO_INDEX = {
-    "첫 번째": 1, "첫번째": 1,
-    "두 번째": 2, "두번째": 2,
-    "세 번째": 3, "세번째": 3,
-    "네 번째": 4, "네번째": 4,
-    "다섯 번째": 5, "다섯번째": 5,
+    "첫 번째": 1,
+    "첫번째": 1,
+    "두 번째": 2,
+    "두번째": 2,
+    "세 번째": 3,
+    "세번째": 3,
+    "네 번째": 4,
+    "네번째": 4,
+    "다섯 번째": 5,
+    "다섯번째": 5,
 }
 _REJECT_SPECIFIC_CUE_MARKERS = ("별로", "빼줘", "빼줄래", "빼고", "다른 데로", "다른 곳으로")
 # SCHEDULE-09 후속: "두 번째 말고는 다 마음에 안 들어"처럼 남길 자리를 지목하고
@@ -124,7 +129,7 @@ _EXCLUSION_MARKERS = ("말고는", "말고")
 
 
 def _is_reject_specific_utterance(user_input: str) -> bool:
-    """"두 번째는 별로야"처럼 순번 언급과 거절 신호가 함께 있으면 True.
+    """ "두 번째는 별로야"처럼 순번 언급과 거절 신호가 함께 있으면 True.
 
     classify_intent()(1단계, MODIFY로 라우팅 여부)와 extract_modify_conditions()
     (2단계, REJECT_SPECIFIC 판별)가 같은 기준을 쓰도록 공유한다 — 기준이
@@ -136,14 +141,14 @@ def _is_reject_specific_utterance(user_input: str) -> bool:
     return has_ordinal and has_cue
 
 
-def _mentions_shown_place_by_name(
-    user_input: str, shown_place_names: list[str] | None
-) -> bool:
+def _mentions_shown_place_by_name(user_input: str, shown_place_names: list[str] | None) -> bool:
     """SCHEDULE-09 후속(이름 지목): 노출된 항목 이름이 발화에 그대로 들어있으면 True.
 
     빈 문자열(이름 미저장 과거 세션)은 건너뛴다.
     """
     return any(name and name in user_input for name in (shown_place_names or []))
+
+
 _MODIFY_CHANGE_MARKERS = (
     "말고",
     "빼고",
@@ -157,6 +162,15 @@ _MODIFY_CHANGE_MARKERS = (
     "주차",
     "근처로 바꿔",
 )
+
+# Fake도 Real Gemini 프롬프트의 MODIFY 장소 유형 교체/병합 규칙을 재현한다. 테스트
+# 환경에서 "공원도 추천"이 카페+공원 누적으로 오인되면 Real 경로와 다른 C 분류 충돌을
+# 놓칠 수 있으므로, 대표적인 교차 유형 태그를 명시한다.
+_MODIFY_CATEGORY_TAGS = (
+    ("카페", PlaceTag.CAFE, PlaceType.RESTAURANT),
+    ("공원", PlaceTag.PARK, PlaceType.ATTRACTION),
+)
+_EXPLICIT_CATEGORY_ADD_MARKERS = ("포함", "함께 넣", "같이 넣")
 _COMPARE_MARKERS = ("가까워", "오래 열어", "어디가 좋아", "뭐가 나아", "비교해")
 _SCHEDULE_MARKERS = (
     "일정 짜",
@@ -294,9 +308,7 @@ def _is_location_scoped_change(user_input: str) -> bool:
     tail = user_input[user_input.find(place_name) + len(place_name) :]
     if not tail.strip().replace(" ", "").startswith(("근처", "주변")):
         return False
-    return not any(
-        marker in user_input for marker in _INFO_QUESTION_MARKERS + _GENERAL_MARKERS
-    )
+    return not any(marker in user_input for marker in _INFO_QUESTION_MARKERS + _GENERAL_MARKERS)
 
 
 def _stub_visit_time(user_input: str, reference_date: date) -> str:
@@ -385,9 +397,7 @@ class FakeLLMProvider:
             )
         ):
             result = IntentClassificationResult(intent=Intent.MODIFY)
-        elif shown_place_count >= 2 and any(
-            marker in user_input for marker in _COMPARE_MARKERS
-        ):
+        elif shown_place_count >= 2 and any(marker in user_input for marker in _COMPARE_MARKERS):
             result = IntentClassificationResult(intent=Intent.COMPARE)
         elif any(marker in user_input for marker in _GENERAL_MARKERS + _SERVICE_IDENTITY_MARKERS):
             result = IntentClassificationResult(intent=Intent.GENERAL)
@@ -403,9 +413,7 @@ class FakeLLMProvider:
             result = IntentClassificationResult(intent=Intent.RECOMMEND)
         return provider_result(result, source=ProviderSource.FAKE_LLM)
 
-    async def extract_recommend_conditions(
-        self, user_input: str
-    ) -> ProviderResult[LLMOutput]:
+    async def extract_recommend_conditions(self, user_input: str) -> ProviderResult[LLMOutput]:
         conditions = UserConditions()
         place_name = _find_known_place(user_input)
         if place_name and (
@@ -494,9 +502,7 @@ class FakeLLMProvider:
         }
         mentioned_indices = sorted(ordinal_indices | name_indices)
 
-        if mentioned_indices and any(
-            marker in user_input for marker in _EXCLUSION_MARKERS
-        ):
+        if mentioned_indices and any(marker in user_input for marker in _EXCLUSION_MARKERS):
             # "두 번째 말고는 다 마음에 안 들어" — 언급된 순번은 남기고 나머지
             # 전부를 거부한다. 아래 직접 지목 분기와 target_indices의 의미가
             # 정반대이므로(여집합) 먼저 검사한다 — 순서를 바꾸면 이 분기가
@@ -581,9 +587,44 @@ class FakeLLMProvider:
         if "주차" in user_input:
             changed.special_requirements = [*changed.special_requirements, "주차"]
             changed_fields.append("special_requirements")
-        if "말고" in user_input and "카페" in user_input:
+        mentioned_categories = [
+            category for category in _MODIFY_CATEGORY_TAGS if category[0] in user_input
+        ]
+        replacement_categories = [
+            category
+            for category in mentioned_categories
+            if "말고" in user_input and user_input.index(category[0]) > user_input.index("말고")
+        ]
+        if replacement_categories:
+            changed.place_tags = [tag for _, tag, _ in replacement_categories]
+            changed.place_types = [place_type for _, _, place_type in replacement_categories]
+            changed_fields.extend(["place_types", "place_tags"])
+        elif "말고" in user_input and "카페" in user_input:
             changed.place_types = [PlaceType.RESTAURANT]
             changed.place_tags = [t for t in changed.place_tags if t != PlaceTag.CAFE]
+            changed_fields.extend(["place_types", "place_tags"])
+        elif mentioned_categories:
+            # "공원도 추천"의 '도'는 선택지를 늘린다는 뜻이 아니라 자연스러운 강조로
+            # 취급한다. '포함'처럼 명시적인 추가일 때만 기존 목록과 합친다.
+            if any(marker in user_input for marker in _EXPLICIT_CATEGORY_ADD_MARKERS):
+                changed.place_tags = list(
+                    dict.fromkeys(
+                        [*changed.place_tags, *(tag for _, tag, _ in mentioned_categories)]
+                    )
+                )
+                changed.place_types = list(
+                    dict.fromkeys(
+                        [
+                            *changed.place_types,
+                            *(place_type for _, _, place_type in mentioned_categories),
+                        ]
+                    )
+                )
+            else:
+                # "카페와 공원 같이", "카페나 공원"처럼 발화에 둘 이상을 나열한 경우는
+                # 둘 다 유지하고, 한 유형만 말하면 그 유형으로 교체한다.
+                changed.place_tags = [tag for _, tag, _ in mentioned_categories]
+                changed.place_types = [place_type for _, _, place_type in mentioned_categories]
             changed_fields.extend(["place_types", "place_tags"])
         # 날씨는 RECOMMEND 추출과 같은 결로 맞춘다(stub.py의 extract_recommend_conditions):
         # "비"는 피하고 싶은 날씨로 보고 실내로 좁힌다. MODIFY 경로에도 날씨가 필요한 건
@@ -699,9 +740,7 @@ class FakeLLMProvider:
         )
         return provider_result(result, source=ProviderSource.FAKE_LLM)
 
-    async def extract_general_request(
-        self, user_input: str
-    ) -> ProviderResult[LLMOutput]:
+    async def extract_general_request(self, user_input: str) -> ProviderResult[LLMOutput]:
         if any(marker in user_input for marker in _SERVICE_IDENTITY_MARKERS):
             topic = GeneralTopic.SERVICE_IDENTITY
         elif "역사" in user_input or "언제 지어졌" in user_input:
@@ -753,9 +792,49 @@ class FakeLLMProvider:
             source=ProviderSource.FAKE_LLM,
         )
 
-    async def generate_compare_summary(
-        self, comparison: ComparisonResult
-    ) -> ProviderResult[str]:
+    async def stream_recommendation_summary(
+        self, intent: Intent, recommendations: RecommendationResponse
+    ) -> AsyncIterator[str]:
+        """SSE 테스트용: 결정적 요약을 두 조각으로 나눈다."""
+
+        summary = await self.generate_recommendation_summary(intent, recommendations)
+        text = summary.data
+        midpoint = max(1, len(text) // 2)
+        yield text[:midpoint]
+        yield text[midpoint:]
+
+    async def stream_general_answer(
+        self, topic: GeneralTopic, original_question: str
+    ) -> AsyncIterator[str]:
+        """SSE 테스트용 GENERAL 답변을 결정적으로 두 조각으로 나눈다."""
+
+        answer = await self.generate_general_answer(topic, original_question)
+        text = answer.data
+        midpoint = max(1, len(text) // 2)
+        yield text[:midpoint]
+        yield text[midpoint:]
+
+    async def stream_info_answer(
+        self,
+        *,
+        place_name: str,
+        question_type: str,
+        specific_question: str | None,
+        fields: dict[str, str],
+    ) -> AsyncIterator[str]:
+        """SSE 테스트용 INFO 답변. 전달된 C fields 밖의 사실은 만들지 않는다."""
+
+        del specific_question
+        value = next(iter(fields.values()), "정보")
+        text = (
+            f"{place_name}의 {question_type} 정보를 확인했어요. "
+            f"{value} 자세한 내용은 아래 상세 카드에서 확인해보세요."
+        )
+        midpoint = max(1, len(text) // 2)
+        yield text[:midpoint]
+        yield text[midpoint:]
+
+    async def generate_compare_summary(self, comparison: ComparisonResult) -> ProviderResult[str]:
         """COMPARE LLM 요약의 테스트용 결정적 대체 구현.
 
         실제 Gemini와 달리 문체 다양화는 하지 않되, 3줄 이상이라는 출력 계약과
@@ -766,9 +845,7 @@ class FakeLLMProvider:
         if comparison.criteria is CompareCriteria.DISTANCE:
             candidates = [item for item in items if item.distance_km is not None]
             recommended = (
-                min(candidates, key=lambda item: item.distance_km or 0)
-                if candidates
-                else items[0]
+                min(candidates, key=lambda item: item.distance_km or 0) if candidates else items[0]
             )
         elif comparison.criteria is CompareCriteria.TIME:
             candidates = [item for item in items if item.remaining_minutes is not None]
@@ -779,9 +856,7 @@ class FakeLLMProvider:
             )
         else:
             recommended = items[0]
-        lines = [
-            f"{recommended.place_name}{_object_particle(recommended.place_name)} 추천드려요."
-        ]
+        lines = [f"{recommended.place_name}{_object_particle(recommended.place_name)} 추천드려요."]
         for item in items[:3]:
             details: list[str] = []
             if item.distance_km is not None:
@@ -921,9 +996,7 @@ class FakeWeatherProvider:
         )
 
 
-def _first_intro_text(
-    intro: Mapping[str, object], keys: tuple[str, ...]
-) -> str | None:
+def _first_intro_text(intro: Mapping[str, object], keys: tuple[str, ...]) -> str | None:
     """실 provider의 _first_text와 같은 규칙으로 첫 값을 고른다."""
     for key in keys:
         value = intro.get(key)
@@ -1023,9 +1096,7 @@ class FakePlaceProvider:
         elif preferred_categories:
             # 명시적인 TourAPI 분류 필터가 없을 때만 레거시 선호 카테고리를 적용한다.
             normalized_categories = {
-                category.strip().casefold()
-                for category in preferred_categories
-                if category.strip()
+                category.strip().casefold() for category in preferred_categories if category.strip()
             }
             accepted_categories = {
                 candidate_category
@@ -1033,9 +1104,7 @@ class FakePlaceProvider:
                 for candidate_category in self._CATEGORY_ALIASES.get(category, ())
             }
             candidates = [
-                candidate
-                for candidate in candidates
-                if candidate.category in accepted_categories
+                candidate for candidate in candidates if candidate.category in accepted_categories
             ]
         selected = candidates[: max(1, min(limit, 100))]
         return provider_result(
@@ -1118,9 +1187,9 @@ class FakePlaceProvider:
         district_code: str | None = None,
     ) -> ProviderResult[PlaceDetails]:
         normalized_name = name.strip()
-        candidates = (await self.search_by_keyword(
-            normalized_name, region_code, district_code, limit=100
-        )).data
+        candidates = (
+            await self.search_by_keyword(normalized_name, region_code, district_code, limit=100)
+        ).data
         exact = next(
             (
                 candidate

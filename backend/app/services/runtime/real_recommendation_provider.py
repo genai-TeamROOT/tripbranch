@@ -37,6 +37,7 @@ class RealRecommendationProvider:
         context: RecommendationContext,
         excluded_place_ids: list[str],
         limit: int = _RECOMMENDATION_LIMIT,
+        ignore_operating_hours: bool = False,
     ) -> RecommendationResponse:
         search_radius_km = to_search_radius_km(conditions)
         return await run_recommendation_pipeline_from_context(
@@ -46,6 +47,7 @@ class RealRecommendationProvider:
             search_radius_km=search_radius_km,
             shown_place_ids=frozenset(excluded_place_ids),
             recommendation_limit=limit,
+            ignore_operating_hours=ignore_operating_hours,
         )
 
     async def rerank_with_concentration(

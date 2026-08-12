@@ -15,14 +15,126 @@ TODO: 응답을 공개용으로 좁힌다. 지금은 프론트 전환 비용을 
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+import asyncio
+import json
+import logging
+import time
+from collections.abc import AsyncIterator
 
+from fastapi import APIRouter, Request
+from sse_starlette import EventSourceResponse, ServerSentEvent
+
+from app.errors import AppError
 from app.schemas import AgentRequest, AgentResponse
 from app.services.runtime.agent_runtime import run_agent
 
 router = APIRouter(tags=["chat"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/chat", response_model=AgentResponse)
 async def chat(request: AgentRequest) -> AgentResponse:
     return await run_agent(request)
+
+
+@router.post("/chat/stream")
+async def chat_stream(request: AgentRequest, http_request: Request) -> EventSourceResponse:
+    """Agent의 진행 상태와 스트리밍 가능한 LLM 답변을 SSE로 순서대로 전달한다.
+
+    기존 /chat 단발 JSON 계약은 유지한다. 스트리밍 도중에는 HTTP 예외 핸들러가 이미
+    응답을 시작한 뒤라 상태 코드를 바꿀 수 없으므로, AppError는 error 이벤트의 기존
+    code/message/retryable 형태로 전달한다.
+    """
+
+    async def event_stream() -> AsyncIterator[ServerSentEvent]:
+        queue: asyncio.Queue[tuple[str, dict[str, object]]] = asyncio.Queue()
+        started_at = time.monotonic()
+
+        async def emit(event: str, payload: dict[str, object]) -> None:
+            await queue.put(
+                (
+                    event,
+                    {
+                        "elapsed_ms": int((time.monotonic() - started_at) * 1000),
+                        **payload,
+                    },
+                )
+            )
+
+        task = asyncio.create_task(
+            run_agent(
+                request,
+                stream_event_sink=emit,
+                stream_recommendation_summary=True,
+            )
+        )
+        try:
+            while not task.done() or not queue.empty():
+                if await http_request.is_disconnected():
+                    task.cancel()
+                    return
+                try:
+                    event, payload = await asyncio.wait_for(queue.get(), timeout=0.1)
+                except TimeoutError:
+                    continue
+                yield ServerSentEvent(event=event, data=json.dumps(payload, ensure_ascii=False))
+
+            try:
+                response = await task
+            except AppError as exc:
+                yield ServerSentEvent(
+                    event="error",
+                    data=json.dumps(
+                        {
+                            "elapsed_ms": int((time.monotonic() - started_at) * 1000),
+                            "code": exc.code,
+                            "message": exc.message,
+                            "retryable": exc.retryable,
+                            "details": {"provider": exc.provider, "upstream": exc.details},
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+                return
+            except Exception:
+                # SSE는 이미 200 응답을 시작했으므로 전역 예외 핸들러가 JSON 오류로
+                # 바꿀 수 없다. 서버 로그에는 원인을 남기고, 프론트에는 기존 공통
+                # 오류 계약과 같은 형태의 error 이벤트를 보낸다.
+                logger.exception("스트리밍 채팅 처리 실패")
+                yield ServerSentEvent(
+                    event="error",
+                    data=json.dumps(
+                        {
+                            "elapsed_ms": int((time.monotonic() - started_at) * 1000),
+                            "code": "internal_server_error",
+                            "message": "요청을 처리하지 못했어요. 잠시 후 다시 시도해주세요.",
+                            "retryable": True,
+                            "details": None,
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+                return
+
+            yield ServerSentEvent(
+                event="done",
+                data=json.dumps(
+                    {
+                        "elapsed_ms": int((time.monotonic() - started_at) * 1000),
+                        "response": response.model_dump(mode="json"),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        finally:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+    return EventSourceResponse(
+        event_stream(),
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

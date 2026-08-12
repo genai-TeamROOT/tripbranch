@@ -132,6 +132,49 @@ def test_unknown_hours_is_distinct_from_closed() -> None:
     assert gallery.weights_used["distance"] == pytest.approx(0.2 / 0.6)
 
 
+def test_closed_place_is_tracked_in_excluded_closed_place_ids() -> None:
+    result = score_candidates(
+        [MUSEUM_OPEN, PARK_CLOSED],
+        now=NOW,
+        weather_condition=WeatherCondition.GOOD,
+        max_distance_km=1.5,
+    )
+
+    assert result.excluded_closed_place_ids == ("p3",)
+
+
+def test_shown_place_is_not_counted_as_closed_exclusion() -> None:
+    result = score_candidates(
+        [MUSEUM_OPEN, PARK_CLOSED],
+        now=NOW,
+        weather_condition=WeatherCondition.GOOD,
+        max_distance_km=1.5,
+        shown_place_ids=["p3"],
+    )
+
+    # p3는 폐점이기도 하지만 이미 노출된 후보라, "폐점 때문에 제외됨" 집계에는
+    # 넣지 않는다 — 결과 0건의 원인 판정이 이 집계를 근거로 하므로 이중 집계를
+    # 막아야 "전부 폐점 탓"을 잘못 True로 판정하지 않는다.
+    assert result.excluded_closed_place_ids == ()
+
+
+def test_ignore_operating_hours_includes_closed_place_with_warning() -> None:
+    result = score_candidates(
+        [PARK_CLOSED],
+        now=NOW,
+        weather_condition=WeatherCondition.GOOD,
+        max_distance_km=1.5,
+        ignore_operating_hours=True,
+    )
+
+    assert [item.place_id for item in result.ranked] == ["p3"]
+    ranked = result.ranked[0]
+    assert ranked.is_unverified is True
+    assert ranked.warnings == ("지금은 운영시간이 아니에요. 방문 전에 다시 확인해주세요.",)
+    assert ranked.feature_scores["remaining_operating_time"] is None
+    assert result.excluded_closed_place_ids == ()
+
+
 def test_shown_and_rejected_ids_are_excluded() -> None:
     result = score_candidates(
         [MUSEUM_OPEN, CAFE_CLOSING_SOON],

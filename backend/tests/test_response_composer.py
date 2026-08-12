@@ -65,6 +65,7 @@ class _StubLLM:
         self.received: tuple[GeneralTopic, str] | None = None
         self.summary_received: tuple[Intent, RecommendationResponse] | None = None
         self.compare_received: ComparisonResult | None = None
+        self.info_received: dict[str, str] | None = None
 
     async def generate_general_answer(self, topic: GeneralTopic, original_question: str):
         self.received = (topic, original_question)
@@ -77,6 +78,37 @@ class _StubLLM:
         if self.fail_recommendation_summary:
             raise ProviderUnavailableError("Gemini")
         return provider_result(self.recommendation_summary, source=ProviderSource.FAKE_LLM)
+
+    async def stream_recommendation_summary(
+        self, intent: Intent, recommendations: RecommendationResponse
+    ):
+        """SSE 경로 검증용: 같은 요약 문장을 두 조각으로 나눈다."""
+
+        result = await self.generate_recommendation_summary(intent, recommendations)
+        midpoint = max(1, len(result.data) // 2)
+        yield result.data[:midpoint]
+        yield result.data[midpoint:]
+
+    async def stream_general_answer(self, topic: GeneralTopic, original_question: str):
+        result = await self.generate_general_answer(topic, original_question)
+        midpoint = max(1, len(result.data) // 2)
+        yield result.data[:midpoint]
+        yield result.data[midpoint:]
+
+    async def stream_info_answer(
+        self,
+        *,
+        place_name: str,
+        question_type: str,
+        specific_question: str | None,
+        fields: dict[str, str],
+    ):
+        del place_name, question_type, specific_question
+        self.info_received = fields
+        text = "카드 기반 INFO 스트리밍 답변입니다."
+        midpoint = max(1, len(text) // 2)
+        yield text[:midpoint]
+        yield text[midpoint:]
 
     async def generate_compare_summary(self, comparison: ComparisonResult):
         self.compare_received = comparison
@@ -144,9 +176,7 @@ def test_both_empty_returns_empty_string() -> None:
 
 def _response(*, place_ids: list[str]) -> RecommendationResponse:
     return RecommendationResponse(
-        recommendations=[
-            _item(explanations=[f"{pid} 근거"], warnings=[]) for pid in place_ids
-        ],
+        recommendations=[_item(explanations=[f"{pid} 근거"], warnings=[]) for pid in place_ids],
         unverified_recommendations=[],
         elapsed_ms=0,
     )
@@ -200,28 +230,70 @@ class TestComposeChatMessageGeneral:
         assert message == "경복궁은 조선 왕조의 정궁이에요."
         assert stub.received == (GeneralTopic.PLACE_KNOWLEDGE, "경복궁 역사 알려줘")
 
+    @pytest.mark.asyncio
+    async def test_streams_general_answer_chunks_when_callback_is_provided(self) -> None:
+        llm_output = LLMOutput(
+            intent=Intent.GENERAL,
+            status=OutputStatus.COMPLETE,
+            general=GeneralPayload(
+                topic=GeneralTopic.PLACE_KNOWLEDGE, original_question="경복궁 역사"
+            ),
+        )
+        received: list[str] = []
+
+        async def on_delta(text: str) -> None:
+            received.append(text)
+
+        message = await compose_chat_message(llm_output, llm=_StubLLM(), on_message_delta=on_delta)
+
+        assert len(received) == 2
+        assert message == "".join(received)
+
 
 class TestComposeChatMessageRecommendAndModify:
     @pytest.mark.parametrize("intent", [Intent.RECOMMEND, Intent.MODIFY])
     @pytest.mark.asyncio
-    async def test_generates_summary_when_recommendations_present(self, intent: Intent) -> None:
+    async def test_uses_immediate_template_when_recommendations_present(
+        self, intent: Intent
+    ) -> None:
         llm_output = LLMOutput(intent=intent, status=OutputStatus.COMPLETE)
         stub = _StubLLM(recommendation_summary="테스트 장소를 중심으로 골라봤어요.")
         message = await compose_chat_message(
             llm_output, recommendations=_response(place_ids=["a", "b"]), llm=stub
         )
-        assert message == "테스트 장소를 중심으로 골라봤어요."
-        assert stub.summary_received is not None
-        assert stub.summary_received[0] is intent
+        assert message == "이런 곳들을 찾아봤어요:"
+        assert stub.summary_received is None
 
     @pytest.mark.asyncio
-    async def test_recommendation_summary_failure_falls_back_to_template(self) -> None:
+    async def test_template_does_not_depend_on_recommendation_summary_llm(self) -> None:
         llm_output = LLMOutput(intent=Intent.RECOMMEND, status=OutputStatus.COMPLETE)
+        stub = _StubLLM(fail_recommendation_summary=True)
         message = await compose_chat_message(
             llm_output,
             recommendations=_response(place_ids=["a", "b"]),
-            llm=_StubLLM(fail_recommendation_summary=True),
+            llm=stub,
         )
+        assert message == "이런 곳들을 찾아봤어요:"
+        assert stub.summary_received is None
+
+    @pytest.mark.asyncio
+    async def test_streams_template_once_when_callback_is_provided(self) -> None:
+        """추천 카드 wrapper는 LLM 호출 없이 한 번에 스트림으로 보낸다."""
+
+        llm_output = LLMOutput(intent=Intent.RECOMMEND, status=OutputStatus.COMPLETE)
+        received: list[str] = []
+
+        async def on_delta(text: str) -> None:
+            received.append(text)
+
+        message = await compose_chat_message(
+            llm_output,
+            recommendations=_response(place_ids=["a", "b"]),
+            llm=_StubLLM(recommendation_summary="테스트 장소를 중심으로 골라봤어요."),
+            on_message_delta=on_delta,
+        )
+
+        assert received == ["이런 곳들을 찾아봤어요:"]
         assert message == "이런 곳들을 찾아봤어요:"
 
     @pytest.mark.asyncio
@@ -261,9 +333,7 @@ class TestComposeChatMessageRecommendAndModify:
     @pytest.mark.asyncio
     async def test_tool_stage_unsupported(self) -> None:
         llm_output = LLMOutput(intent=Intent.MODIFY, status=OutputStatus.COMPLETE)
-        message = await compose_chat_message(
-            llm_output, tool_status="unsupported", llm=_StubLLM()
-        )
+        message = await compose_chat_message(llm_output, tool_status="unsupported", llm=_StubLLM())
         assert message == "죄송하지만 아직 지원하지 않는 요청이에요."
 
     @pytest.mark.asyncio
@@ -287,9 +357,7 @@ class TestComposeChatMessageRecommendAndModify:
     @pytest.mark.asyncio
     async def test_tool_stage_unavailable(self) -> None:
         llm_output = LLMOutput(intent=Intent.RECOMMEND, status=OutputStatus.COMPLETE)
-        message = await compose_chat_message(
-            llm_output, tool_status="unavailable", llm=_StubLLM()
-        )
+        message = await compose_chat_message(llm_output, tool_status="unavailable", llm=_StubLLM())
         assert "잠시 후 다시 시도" in message
 
 
@@ -330,9 +398,7 @@ class TestComposeCompareMessage:
 
     @pytest.mark.asyncio
     async def test_llm_failure_falls_back_to_fact_only_template(self) -> None:
-        message = await compose_compare_message(
-            _comparison(), _StubLLM(fail_compare_summary=True)
-        )
+        message = await compose_compare_message(_comparison(), _StubLLM(fail_compare_summary=True))
 
         lines = message.splitlines()
         assert 3 <= len(lines) <= 6
@@ -499,7 +565,7 @@ class TestComposeInfoConcentrationMessage:
         assert message == "이 장소 유형은 혼잡도 데이터가 없어요."
 
     def test_unsupported_region_names_the_service_area(self) -> None:
-        """"혼잡도 데이터가 없다"고 하면 다른 날 다시 물어보게 된다(D-044)."""
+        """ "혼잡도 데이터가 없다"고 하면 다른 날 다시 물어보게 된다(D-044)."""
         response = InfoContextResponse(
             request_id="r5",
             status="unsupported",
@@ -565,6 +631,36 @@ class TestComposeInfoConcentrationMessage:
 class TestComposePlaceInfoMessage:
     """D-054 A 배선 — concentration/event를 제외한 6종 question_type."""
 
+    @pytest.mark.asyncio
+    async def test_streams_success_place_info_answer_when_callback_is_provided(self) -> None:
+        response = InfoContextResponse(
+            request_id="r8-stream",
+            status="success",
+            result=PlaceInfoResult(
+                status="success",
+                question_type="parking",
+                requested_place_name="경복궁",
+                resolved_place_name="경복궁",
+                fields={"parking": "가능 (승용차 240대 / 버스 50대)"},
+            ),
+        )
+        received: list[str] = []
+
+        async def on_delta(text: str) -> None:
+            received.append(text)
+
+        stub = _StubLLM()
+        message = await compose_chat_message(
+            LLMOutput(intent=Intent.INFO, status=OutputStatus.COMPLETE),
+            info_response=response,
+            llm=stub,
+            on_message_delta=on_delta,
+        )
+
+        assert len(received) == 2
+        assert message == "".join(received)
+        assert stub.info_received == {"parking": "가능 (승용차 240대)"}
+
     def test_success_renders_fields_with_labels(self) -> None:
         response = InfoContextResponse(
             request_id="r8",
@@ -579,8 +675,7 @@ class TestComposePlaceInfoMessage:
         )
         message = compose_place_info_message(response)
         assert message == (
-            "경복궁 운영시간을 확인했어요. "
-            "아래에서 월별 운영시간과 휴무일을 확인하세요."
+            "경복궁 운영시간을 확인했어요. 아래에서 월별 운영시간과 휴무일을 확인하세요."
         )
 
     def test_operating_hours_is_a_natural_sentence_not_label_value(self) -> None:
@@ -597,8 +692,7 @@ class TestComposePlaceInfoMessage:
         )
         message = compose_place_info_message(response)
         assert message == (
-            "경복궁 운영시간을 확인했어요. "
-            "아래에서 월별 운영시간과 휴무일을 확인하세요."
+            "경복궁 운영시간을 확인했어요. 아래에서 월별 운영시간과 휴무일을 확인하세요."
         )
         assert "09:00~18:00" not in message
 
@@ -616,8 +710,7 @@ class TestComposePlaceInfoMessage:
         )
         message = compose_place_info_message(response)
         assert message == (
-            "경복궁 입장료는 성인 기준 3,000원이에요. "
-            "아래에서 상세 요금 정보를 확인해보세요!"
+            "경복궁 입장료는 성인 기준 3,000원이에요. 아래에서 상세 요금 정보를 확인해보세요!"
         )
 
     def test_rest_date_keeps_notice_on_a_separate_line(self) -> None:

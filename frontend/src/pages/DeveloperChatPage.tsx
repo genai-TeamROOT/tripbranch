@@ -14,13 +14,14 @@ import {
   setExchangeCapture,
   type ApiExchangeSnapshot,
 } from "../api/dev";
-import { fetchSessionState, sendChat, toDisplayConditions } from "../api/trip";
+import { fetchSessionState, streamChat, toDisplayConditions } from "../api/trip";
 import { ChatComposer } from "../components/chat/ChatComposer";
 import { ChatMessageList } from "../components/chat/ChatMessageList";
 import { ApiExchangePanel } from "../components/dev/ApiExchangePanel";
 import { DeveloperAuditPanel } from "../components/dev/DeveloperAuditPanel";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { useTripDispatch, useTripState } from "../state/TripContext";
+import { buildAgentStageTimings } from "../utils/agentTiming";
 
 const REQUEST_MORE_PROMPT = "다른 곳 보여줘";
 const RELAX_RADIUS_PROMPT = "검색 범위를 넓혀서 다시 추천해줘";
@@ -118,32 +119,85 @@ export function DeveloperChatPage() {
   );
 
   const send = useCallback(
-    async (text: string) => {
+    async (text: string, clarificationChoice?: string) => {
       dispatch({ type: "START_CHAT_TURN", payload: { userInput: text } });
       const startedAt = performance.now();
+      const progressEvents = [] as import("../types").AgentProgressEvent[];
+      let messageStartElapsedMs: number | null = null;
+      let firstMessageDeltaElapsedMs: number | null = null;
+      let receivedStreamResult = false;
+      let receivedStreamMessage = false;
       try {
-        const response = await sendChat({
-          user_input: text,
-          session_id: state.session_id,
-          device_location: state.device_location,
-        });
-        dispatch({
-          type: "APPEND_CHAT_TURN",
-          payload: {
-            userInput: text,
-            intent: response.llm_output.intent,
-            status: response.llm_output.status,
-            conditions: toDisplayConditions(response.llm_output),
-            mergedConditions: response.state.user_conditions,
-            message: response.message,
-            recommendations: response.recommendations,
-            schedule: response.schedule,
-            sessionId: response.state.session_id,
-            agentResponse: response,
-            showDebug: false,
-            elapsedMsClient: performance.now() - startedAt,
+        await streamChat(
+          {
+            user_input: text,
+            session_id: state.session_id,
+            device_location: state.device_location,
+            clarification_choice: clarificationChoice ?? null,
           },
-        });
+          (event) => {
+            if (event.type === "progress") {
+              progressEvents.push(event.data);
+              dispatch({ type: "SET_AGENT_PROGRESS", payload: event.data });
+              return;
+            }
+            if (event.type === "result") {
+              receivedStreamResult = true;
+              dispatch({
+                type: "APPEND_STREAM_RESULT",
+                payload: { ...event.data, elapsedMsClient: performance.now() - startedAt },
+              });
+              return;
+            }
+            if (event.type === "message_start") {
+              receivedStreamMessage = true;
+              messageStartElapsedMs = event.data.elapsed_ms;
+              dispatch({ type: "START_STREAM_MESSAGE", payload: { intent: event.data.intent } });
+              return;
+            }
+            if (event.type === "message_delta") {
+              firstMessageDeltaElapsedMs ??= event.data.elapsed_ms;
+              dispatch({ type: "APPEND_STREAM_MESSAGE_DELTA", payload: { text: event.data.text } });
+              return;
+            }
+            if (event.type === "error") throw new ApiError(event.data);
+            const response = event.data.response;
+            const elapsedMsClient = performance.now() - startedAt;
+            if (receivedStreamResult || receivedStreamMessage) {
+              dispatch({
+                type: "COMPLETE_STREAM_CHAT_TURN",
+                payload: {
+                  response,
+                  elapsedMsClient,
+                  serverElapsedMs: event.data.elapsed_ms,
+                  stageTimings: buildAgentStageTimings(progressEvents, event.data.elapsed_ms, {
+                    messageStartElapsedMs,
+                    firstMessageDeltaElapsedMs,
+                  }),
+                  conditions: toDisplayConditions(response.llm_output),
+                },
+              });
+              return;
+            }
+            dispatch({
+              type: "APPEND_CHAT_TURN",
+              payload: {
+                userInput: text,
+                intent: response.llm_output.intent,
+                status: response.llm_output.status,
+                conditions: toDisplayConditions(response.llm_output),
+                mergedConditions: response.state.user_conditions,
+                message: response.message,
+                recommendations: response.recommendations,
+                schedule: response.schedule,
+                sessionId: response.state.session_id,
+                agentResponse: response,
+                showDebug: false,
+                elapsedMsClient,
+              },
+            });
+          },
+        );
       } catch (error) {
         const apiError = error instanceof ApiError ? error : null;
         dispatch({
@@ -253,6 +307,8 @@ export function DeveloperChatPage() {
               deviceLocation={state.device_location}
               onRequestMore={() => void send(REQUEST_MORE_PROMPT)}
               onRelaxRadius={() => void send(RELAX_RADIUS_PROMPT)}
+              onSelectClarificationOption={(optionId, label) => void send(label, optionId)}
+              progress={state.agentProgress}
             />
           )}
         </div>

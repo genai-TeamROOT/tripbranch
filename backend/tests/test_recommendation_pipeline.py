@@ -354,6 +354,50 @@ async def test_pipeline_from_context_returns_empty_when_places_have_no_data() ->
 
     assert response.recommendations == []
     assert response.unverified_recommendations == []
+    assert response.excluded_all_closed is False
+
+
+@pytest.mark.asyncio
+async def test_pipeline_from_context_reports_excluded_all_closed_when_only_closed_places() -> None:
+    # _CONTEXT_VISIT_AT은 15:00. 09:00~14:00 영업은 이 시각엔 이미 마감이라
+    # 결과가 0건이 되고, 유일한 제외 사유가 폐점이라 excluded_all_closed=True다.
+    context = RecommendationContext(
+        location=_context_location(),
+        places=AgentContextValue(
+            status="success", data=[_place_from_operating_hours_raw("09:00~14:00")]
+        ),
+    )
+
+    response = await run_recommendation_pipeline_from_context(
+        context,
+        visit_at=_CONTEXT_VISIT_AT,
+        search_radius_km=2.0,
+    )
+
+    assert response.recommendations == []
+    assert response.unverified_recommendations == []
+    assert response.excluded_all_closed is True
+
+
+@pytest.mark.asyncio
+async def test_pipeline_from_context_ignore_operating_hours_includes_closed_places() -> None:
+    context = RecommendationContext(
+        location=_context_location(),
+        places=AgentContextValue(
+            status="success", data=[_place_from_operating_hours_raw("09:00~14:00")]
+        ),
+    )
+
+    response = await run_recommendation_pipeline_from_context(
+        context,
+        visit_at=_CONTEXT_VISIT_AT,
+        search_radius_km=2.0,
+        ignore_operating_hours=True,
+    )
+
+    assert len(response.unverified_recommendations) == 1
+    assert response.recommendations == []
+    assert response.excluded_all_closed is False
 
 
 @pytest.mark.asyncio

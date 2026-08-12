@@ -10,6 +10,32 @@ const GEOLOCATION_OPTIONS: PositionOptions = {
   maximumAge: 60000,
 };
 
+/**
+ * 로컬 Vite 개발 서버에서만 쓸 수 있는 고정 좌표다. Codex 같은 자동화 브라우저는
+ * macOS 위치 권한 팝업을 승인할 수 없는 경우가 있어, 명시적으로 설정했을 때만
+ * 브라우저 Geolocation API 호출을 건너뛴다. 배포 빌드에서는 항상 null이다.
+ */
+function testDeviceLocation(): string | null {
+  if (!import.meta.env.DEV) return null;
+  const value = import.meta.env.VITE_TEST_DEVICE_LOCATION?.trim();
+  if (!value) return null;
+
+  const [latitude, longitude, ...rest] = value.split(",").map(Number);
+  if (
+    rest.length > 0 ||
+    !Number.isFinite(latitude) ||
+    !Number.isFinite(longitude) ||
+    latitude < -90 ||
+    latitude > 90 ||
+    longitude < -180 ||
+    longitude > 180
+  ) {
+    console.warn("VITE_TEST_DEVICE_LOCATION 형식이 올바르지 않아 브라우저 위치를 사용합니다.");
+    return null;
+  }
+  return `${latitude},${longitude}`;
+}
+
 function locationErrorMessage(error: GeolocationPositionError) {
   if (error.code === error.TIMEOUT) {
     return (
@@ -24,6 +50,9 @@ function locationErrorMessage(error: GeolocationPositionError) {
 }
 
 export function getBrowserDeviceLocation(): Promise<string> {
+  const testLocation = testDeviceLocation();
+  if (testLocation) return Promise.resolve(testLocation);
+
   if (!("geolocation" in navigator)) {
     return Promise.reject(new Error("이 브라우저는 위치 조회를 지원하지 않아요."));
   }

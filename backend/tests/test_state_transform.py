@@ -89,6 +89,35 @@ def test_schedule_merges_conditions_same_as_recommend() -> None:
     assert request.confirmed is True
 
 
+def test_modify_category_replacement_updates_place_types_and_tags_together() -> None:
+    """새 유형 추천은 기존 카테고리를 남기지 않아 C의 분류 충돌을 막는다."""
+
+    request = transform(
+        LLMOutput(
+            intent=Intent.MODIFY,
+            status=OutputStatus.COMPLETE,
+            modify=ModifyPayload(
+                modify_type=ModifyType.CHANGE_CONDITION,
+                condition_changes=UserConditions(place_types=["attraction"], place_tags=["공원"]),
+                changed_fields=["place_types", "place_tags"],
+            ),
+        ),
+        _context(
+            user_conditions=StateUserConditions(
+                place_types=["restaurant"], place_tags=["카페"]
+            )
+        ),
+        "공원도 추천해줘",
+    )
+
+    operations = {
+        (operation.op, operation.field): operation.value
+        for operation in request.operations
+    }
+    assert operations[("Update", "place_types")] == ["attraction"]
+    assert operations[("Update", "place_tags")] == ["공원"]
+
+
 def test_recommend_serializes_int_fields_as_int_not_str() -> None:
     """_serialize() 회귀: max_travel_time/time_available은 str()로 감싸지지 않는다.
 

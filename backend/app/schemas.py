@@ -72,6 +72,9 @@ class RecommendationResponse(BaseModel):
         ge=0,
         description="추천 파이프라인 시작부터 응답 조립 완료까지의 총 처리시간(ms)",
     )
+    # 결과가 0건이고 그 이유가 전부 폐점 후보 제외였을 때만 True. A가 이 값으로
+    # "운영중이 아닌 곳도 볼래요" 되묻기를 띄울지 판단한다(recommendation_pipeline.py).
+    excluded_all_closed: bool = False
 
 
 class ScheduleItem(BaseModel):
@@ -466,10 +469,26 @@ class AmbiguousField(BaseModel):
     reason: str
 
 
+class ClarificationOption(BaseModel):
+    """되묻기에 붙는 버튼 하나. 프론트가 그대로 렌더링하고, 클릭 시 id를 그대로
+    돌려보내면 서버가 결정적으로 처리한다(clarification_choice) — classify_intent()를
+    다시 태우지 않는다. docs/design/clarification-options.md 3절."""
+
+    id: str
+    label: str
+    resolved_intent: Intent
+
+
 class ClarificationPayload(BaseModel):
     missing_fields: list[MissingField] = Field(default_factory=list)
     ambiguous_fields: list[AmbiguousField] = Field(default_factory=list)
     message: str
+    options: list[ClarificationOption] = Field(default_factory=list)
+    # 오케스트레이터가 분류 이전에 선제 차단으로 만드는 되묻기(예: 케이스 4/5의
+    # "처음부터 다시")는 missing_fields/ambiguous_fields가 비어 있어 agent_runtime의
+    # _llm_clarification_code()가 세션에 남길 코드를 이 값으로 명시한다. None이면
+    # 기존처럼 missing/ambiguous_fields에서 코드를 유도한다(하위 호환).
+    code: str | None = None
 
 
 class LLMOutput(BaseModel):
@@ -565,6 +584,10 @@ class AgentRequest(BaseModel):
     user_input: str = Field(..., min_length=1)
     session_id: str | None = None
     device_location: str | None = None  # "위도,경도" 문자열, api_context.gps_location과 동일 포맷
+    # 되묻기 버튼 클릭 시 ClarificationOption.id를 그대로 echo. user_input에는 버튼
+    # label을 채워 보내되(채팅 이력 표시용) 라우팅은 이 필드만으로 결정한다 —
+    # classify_intent()를 다시 태우지 않는다(docs/design/clarification-options.md 3절).
+    clarification_choice: str | None = None
 
 
 class LLMCallMetadata(BaseModel):
@@ -577,6 +600,9 @@ class LLMCallMetadata(BaseModel):
     operation: str
     attempted_models: list[str]
     served_model: str | None = None
+    # 개발자용 Audit에서 Intent 분류·조건 추출 호출별 지연을 보여주기 위한 값이다.
+    # 기존에 저장된 실행 이력과의 호환을 위해 누락 가능하게 둔다.
+    latency_ms: int | None = None
 
 
 class LLMExecutionMetadata(BaseModel):

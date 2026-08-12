@@ -80,6 +80,9 @@ async def run_recommendation_pipeline_from_context(
     shown_place_ids: frozenset[str] = frozenset(),
     rejected_place_ids: frozenset[str] = frozenset(),
     recommendation_limit: int = DEFAULT_RECOMMENDATION_RESULT_LIMIT,
+    # True면 폐점 후보도 채점에 포함한다 — "운영중이 아닌 곳도 볼래요"(no_data_closed
+    # 되묻기) 해소 턴에서만 A가 켠다.
+    ignore_operating_hours: bool = False,
     timer: Timer = perf_counter,
 ) -> RecommendationResponse:
     """D의 유일한 공개 진입점. A가 C에서 받은 RecommendationContext를 그대로
@@ -139,8 +142,16 @@ async def run_recommendation_pipeline_from_context(
         max_distance_km=search_radius_km,
         shown_place_ids=shown_place_ids,
         rejected_place_ids=rejected_place_ids,
+        ignore_operating_hours=ignore_operating_hours,
     )
     ranked = scoring.ranked[:recommendation_limit]
+    # 결과가 0건이고, 그 이유가 전부 폐점 후보 제외였다면(다른 이유로 제외된 후보가
+    # 없었다면) A가 "운영중이 아닌 곳도 볼래요" 되묻기를 띄울 수 있게 표시한다.
+    excluded_all_closed = (
+        not ranked
+        and bool(scoring.excluded_closed_place_ids)
+        and len(scoring.excluded_closed_place_ids) == len(scoring.excluded_place_ids)
+    )
 
     details_missing_place_ids = frozenset(
         place.place_id for place in (places.data or []) if place.operating_schedule is None
@@ -151,6 +162,7 @@ async def run_recommendation_pipeline_from_context(
         details_missing_place_ids,
         visit_at,
         weather_ignored=_is_weather_explicitly_ignored(context, conditions),
+        excluded_all_closed=excluded_all_closed,
     )
     return response.model_copy(update={"elapsed_ms": round((timer() - started_at) * 1000, 2)})
 
@@ -375,6 +387,7 @@ def _build_response(
     visit_at: datetime,
     *,
     weather_ignored: bool,
+    excluded_all_closed: bool = False,
 ) -> RecommendationResponse:
     candidate_by_id = {item.place_id: item for item in candidates}
     verified: list[RecommendationItem] = []
@@ -417,6 +430,7 @@ def _build_response(
         recommendations=verified,
         unverified_recommendations=unverified,
         elapsed_ms=0,
+        excluded_all_closed=excluded_all_closed,
     )
 
 
