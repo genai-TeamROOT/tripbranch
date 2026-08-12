@@ -78,6 +78,33 @@ function isChatMessage(value: unknown): value is ChatMessage {
       typeof message.server_elapsed_ms === "number"
     );
   }
+  /* SCHEDULE-10 후속: 이 케이스가 없으면 schedule_result 메시지가 하나라도 있는
+     세션은 isTripState()가 messages.every(isChatMessage)에서 걸려 세션 전체가
+     복원 실패로 버려진다(place_info_result도 마찬가지였다) — 새로고침하면 SCHEDULE/INFO
+     질문을 한 번이라도 한 대화가 통째로 사라지던 버그. */
+  if (message.type === "schedule_result") {
+    const schedule = message.schedule as Record<string, unknown> | null | undefined;
+    return (
+      typeof message.elapsed_ms === "number" &&
+      !!schedule &&
+      typeof schedule === "object" &&
+      Array.isArray(schedule.items) &&
+      typeof schedule.total_duration_min === "number" &&
+      typeof schedule.route_summary === "string" &&
+      typeof schedule.basis_note === "string" &&
+      typeof schedule.elapsed_ms === "number"
+    );
+  }
+  if (message.type === "place_info_result") {
+    const card = message.card as Record<string, unknown> | null | undefined;
+    return (
+      !!card &&
+      typeof card === "object" &&
+      typeof card.question_type === "string" &&
+      typeof card.answer_fields === "object" &&
+      card.answer_fields !== null
+    );
+  }
   return false;
 }
 

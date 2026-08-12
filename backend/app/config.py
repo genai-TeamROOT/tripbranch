@@ -89,6 +89,15 @@ class Settings(BaseSettings):
     external_api_timeout_seconds: float = 10.0
     external_api_retry_count: int = 2
 
+    # LLM(Gemini) 호출 전용 타임아웃(초). 비어 있으면(기본값) EXTERNAL_API_TIMEOUT_SECONDS를
+    # 그대로 쓴다(하위 호환) — 팀이 Gemini 호출 지연 때문에 EXTERNAL_API_TIMEOUT_SECONDS를
+    # 25로 올렸다가, TourAPI/Naver/Supabase(장소 상세·상태 저장소 등)까지 같은 값을
+    # 물려받아 실패 시 사용자가 그만큼 오래 기다리게 된다는 문제가 논의로 나와 분리했다
+    # (2026-08-11). LLM은 구조화 출력 생성 특성상 원래도 오래 걸릴 수 있고 재시도·모델
+    # 폴백까지 있어 더 긴 값이 자연스럽지만, Tool/DB 조회는 원래 짧게 끝나야 해서 같은
+    # 값을 강제하면 안 된다.
+    llm_api_timeout_seconds: float | None = None
+
     # 관측용 일일 호출 한도. data.go.kr은 오퍼레이션 단위로 한도가 걸리므로
     # (2026-08-07 areaBasedList2 소진) 게이지도 오퍼레이션별로 이 값과 대조한다.
     # 호출을 막는 값이 아니라 개발자 패널 게이지의 기준선이다.
@@ -136,6 +145,13 @@ class Settings(BaseSettings):
     @property
     def resolved_llm_provider(self) -> ProviderMode:
         return self.llm_provider or self.provider_mode
+
+    @property
+    def resolved_llm_timeout_seconds(self) -> float:
+        """LLM_API_TIMEOUT_SECONDS가 없으면 EXTERNAL_API_TIMEOUT_SECONDS로 폴백한다
+        (하위 호환 — 기존에 EXTERNAL_API_TIMEOUT_SECONDS만 설정해 쓰던 환경도 그대로
+        동작한다)."""
+        return self.llm_api_timeout_seconds or self.external_api_timeout_seconds
 
     @property
     def resolved_llm_models(self) -> list[str]:

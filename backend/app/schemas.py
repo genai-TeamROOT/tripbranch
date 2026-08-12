@@ -102,6 +102,10 @@ class ScheduleResult(BaseModel):
     total_duration_min: int
     route_summary: str
     basis_note: str
+    elapsed_ms: float = Field(
+        ge=0,
+        description="일정 편성 파이프라인 시작부터 응답 조립 완료까지의 총 처리시간(ms)",
+    )
 
 
 class PlaceCandidate(BaseModel):

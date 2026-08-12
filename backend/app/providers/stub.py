@@ -383,6 +383,26 @@ class FakeLLMProvider:
             # 보충하는 MODIFY다. "경복궁 오늘 열어?"처럼 질문이 붙으면 이 조건을
             # 통과하지 않아 아래 INFO 규칙으로 간다.
             result = IntentClassificationResult(intent=Intent.MODIFY)
+        elif (
+            last_intent == Intent.SCHEDULE.value
+            and pending_clarification is None
+            and (_is_location_only_change(user_input) or _is_location_scoped_change(user_input))
+            and not any(
+                marker in user_input for marker in _REJECT_ALL_MARKERS + _MODIFY_CHANGE_MARKERS
+            )
+            and not _is_reject_specific_utterance(user_input)
+            and not _mentions_shown_place_by_name(user_input, shown_place_names)
+        ):
+            # 직전 턴이 SCHEDULE로 정상 완료된 상태(되묻기 아님)에서는 "지명+근처
+            # (+조건)" 패턴을 검색 중심점 변경(MODIFY)이 아니라 새 RECOMMEND
+            # 요청으로 본다 — "경복궁 근처 카페 추천해줘"는 "기존 일정을 고쳐줘"가
+            # 아니라 "카페 목록을 새로 보여줘"라는 뜻이다. 이 판정을 안 두면
+            # agent_runtime.py의 SCHEDULE-06 재조정 감지가 MODIFY를 SCHEDULE로
+            # 다시 라벨링해서, 단순 추천 요청인데 일정 전체가 재편성돼 버린다
+            # (2026-08-12 실사용 재현). 단, "바꿔줘"/"빼고"/"말고"/"전부 별로" 같은
+            # 명시적 조정·거절 표현이 함께 있으면 이 규칙을 적용하지 않는다 — 그건
+            # 진짜 일정 재조정 요청이므로 아래 MODIFY 분기로 그대로 보낸다.
+            result = IntentClassificationResult(intent=Intent.RECOMMEND)
         elif has_previous_recommendation and (
             any(marker in user_input for marker in _REJECT_ALL_MARKERS + _MODIFY_CHANGE_MARKERS)
             or _is_location_only_change(user_input)

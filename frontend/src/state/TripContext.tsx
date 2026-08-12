@@ -487,6 +487,7 @@ function tripReducer(state: TripState, action: TripAction): TripState {
           id: createMessageId("schedule"),
           type: "schedule_result",
           schedule,
+          elapsed_ms: action.payload.elapsedMsClient,
         });
       }
       if (infoPlaceCard) {
@@ -512,7 +513,7 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         runId: action.payload.agentResponse.state.run_id ?? null,
         deviceLocation: state.device_location,
         elapsedMsClient: action.payload.elapsedMsClient,
-        serverElapsedMs: recommendations?.elapsed_ms ?? null,
+        serverElapsedMs: recommendations?.elapsed_ms ?? schedule?.elapsed_ms ?? null,
         stageTimings: [],
         extractedConditions: conditions,
         beforeConditions: state.auditTurns.at(-1)?.afterConditions ?? null,

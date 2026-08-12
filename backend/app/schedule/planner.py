@@ -9,25 +9,70 @@ A(agent_runtime.py)가 D(RecommendationProvider)를 호출하는 것과 동일�
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
+from time import perf_counter
+from typing import TypeAlias
 
 from app.errors import AppError
 from app.providers.protocols import LLMProvider
-from app.schedule.schemas import SchedulePartialFillRequest, SchedulePlanningRequest
+from app.schedule.schemas import (
+    SchedulePartialFillRequest,
+    SchedulePlanningRequest,
+    target_item_range,
+)
 from app.schemas import ScheduleItem, ScheduleResult
 from app.state.schema import now_kst
+
+Timer: TypeAlias = Callable[[], float]
 
 _NO_CANDIDATES_ROUTE_SUMMARY = (
     "조건에 맞는 곳을 충분히 찾지 못해 일정을 만들지 못했어요. "
     "다른 지역이나 다른 종류의 장소로 다시 요청해볼까요?"
 )
 
-# ScheduleLLMPlan.items에 min_length=3 제약을 걸어둔 상태라(app/schedule/schemas.py),
-# 후보가 3개 미만이면 LLM이 애초에 그 제약을 만족시킬 방법이 없다 — 재시도를 줘도
-# 똑같이 실패해 llm_output_invalid(502)만 두 번 반복하고 끝난다. 그래서 이 경우엔
-# LLM을 아예 부르지 않고 여기서 바로 정규화된 안내로 반환한다(SCHEDULE-07, 9절
-# "D 후보 3개 미만" 미결 사항 해소).
-_MIN_CANDIDATES_FOR_SCHEDULE = 3
+# ScheduleLLMPlan.items의 최소 개수가 이번 요청의 time_available에 따라 달라지므로
+# (target_item_range(), SCHEDULE-10) 후보 부족 가드도 고정 3이 아니라 그 최솟값을
+# 쓴다 — 예를 들어 "2시간 코스 짜줘"는 최소 1개면 충분한데, 후보가 2개뿐이라고
+# 무조건 "충분히 찾지 못했다"고 안내하면 실제로는 만들 수 있는 일정도 막힌다.
+# 후보가 이 최솟값보다 적으면 LLM이 애초에 그 개수를 만족시킬 방법이 없다 —
+# 재시도를 줘도 똑같이 실패해 llm_output_invalid(502)만 두 번 반복하고 끝난다.
+# 그래서 이 경우엔 LLM을 아예 부르지 않고 여기서 바로 정규화된 안내로 반환한다
+# (SCHEDULE-07, 9절 "D 후보 3개 미만" 미결 사항 해소).
+
+
+def _round_up_arrival(hhmm: str) -> str:
+    """estimated_arrival("HH:MM")을 다음 10분 단위로 올림한다(예: "11:59" -> "12:00").
+
+    도착시각은 LLM이 시작 시각부터 체류·이동시간을 누적해 계산한 추정치일
+    뿐이라(estimated_duration_min/travel_to_next_min 둘 다 아직 실측 Tool이
+    없는 LLM 추정값 — travel_to_next_min도 마찬가지다), 11:59처럼 딱 떨어지지
+    않는 값보다 10분 단위로 보여주는 게 사용자에게 더 자연스럽게 읽힌다(팀 제안,
+    2026-08-12). estimated_duration_min/travel_to_next_min은 세부 소요시간
+    정보라 그대로 둔다 — 반올림 대상은 "도착 체크포인트"인 estimated_arrival뿐이다.
+
+    이미 24시(1440분)를 넘기며 자정을 넘어가는 경우 다음날 00:xx로 감싼다.
+    형식이 "HH:MM"이 아니면(LLM이 지시를 안 지킨 방어적 상황) 원본을 그대로
+    돌려준다 — 화면 표시용 후처리가 튼튼한 값까지 망가뜨리면 안 된다.
+    """
+
+    try:
+        hour_str, minute_str = hhmm.split(":", 1)
+        total_minutes = int(hour_str) * 60 + int(minute_str)
+    except (ValueError, AttributeError):
+        return hhmm
+    rounded = -(-total_minutes // 10) * 10
+    rounded %= 24 * 60
+    return f"{rounded // 60:02d}:{rounded % 60:02d}"
+
+
+def _round_up_items_arrival(items: list[ScheduleItem]) -> list[ScheduleItem]:
+    """items 각 항목의 estimated_arrival만 10분 단위로 올림한 새 리스트를 만든다."""
+
+    return [
+        item.model_copy(update={"estimated_arrival": _round_up_arrival(item.estimated_arrival)})
+        for item in items
+    ]
 
 
 def _build_basis_note(visit_datetime: datetime) -> str:
@@ -46,7 +91,7 @@ def _build_basis_note(visit_datetime: datetime) -> str:
 
 
 async def plan_schedule(
-    request: SchedulePlanningRequest, llm: LLMProvider
+    request: SchedulePlanningRequest, llm: LLMProvider, *, timer: Timer = perf_counter
 ) -> ScheduleResult:
     """SchedulePlanningRequest로 LLM을 호출해 ScheduleResult를 만든다.
 
@@ -54,19 +99,29 @@ async def plan_schedule(
     basis_note 둘 다 같은 시각을 쓰도록 여기서 한 번만 결정한다(design doc 9절
     "estimated_arrival 기준 시각" 미결 사항 해소: 상대 표현 대신 항상 구체적인
     시작 시각을 LLM에 준다).
+
+    elapsed_ms는 이 함수 진입부터 결과 조립까지의 처리시간이다 —
+    RecommendationResponse.elapsed_ms(app/services/recommendation_pipeline.py)와
+    같은 패턴으로 재서, 개발자 화면(카드·감사 패널)이 RECOMMEND와 동일하게
+    SCHEDULE의 서버 소요시간도 보여줄 수 있게 한다(RECOMMEND는 이 값이 있는데
+    SCHEDULE만 없어 "서버 소요"가 항상 빈 값으로 보이던 걸 정리함).
     """
 
+    started_at = timer()
     effective_visit_datetime = request.visit_datetime or now_kst()
 
-    # 후보가 3개 미만이면 LLM을 부르지 않는다 — ScheduleLLMPlan.items의
-    # min_length=3 제약을 애초에 만족시킬 수 없어 호출해도 재시도까지 실패로
-    # 끝날 뿐이다(SCHEDULE-07).
-    if len(request.candidates) < _MIN_CANDIDATES_FOR_SCHEDULE:
+    # 이번 요청의 time_available에 맞는 최소 개수를 구해서 후보 수와 비교한다
+    # (SCHEDULE-10). 후보가 그 최솟값보다 적으면 LLM을 부르지 않는다 —
+    # ScheduleLLMPlan.items가 그 개수를 애초에 만족시킬 수 없어 호출해도
+    # 재시도까지 실패로 끝날 뿐이다(SCHEDULE-07의 가드를 동적 최솟값으로 확장).
+    min_items, _max_items = target_item_range(request.conditions.time_available)
+    if len(request.candidates) < min_items:
         return ScheduleResult(
             items=[],
             total_duration_min=0,
             route_summary=_NO_CANDIDATES_ROUTE_SUMMARY,
             basis_note=_build_basis_note(effective_visit_datetime),
+            elapsed_ms=round((timer() - started_at) * 1000, 2),
         )
 
     resolved_request = (
@@ -90,13 +145,15 @@ async def plan_schedule(
             total_duration_min=0,
             route_summary=_NO_CANDIDATES_ROUTE_SUMMARY,
             basis_note=_build_basis_note(effective_visit_datetime),
+            elapsed_ms=round((timer() - started_at) * 1000, 2),
         )
 
     return ScheduleResult(
-        items=plan.items,
+        items=_round_up_items_arrival(plan.items),
         total_duration_min=plan.total_duration_min,
         route_summary=plan.route_summary,
         basis_note=_build_basis_note(effective_visit_datetime),
+        elapsed_ms=round((timer() - started_at) * 1000, 2),
     )
 
 
@@ -122,19 +179,23 @@ def _total_duration_from_items(items: list[ScheduleItem]) -> int:
 
 
 def _pinned_only_result(
-    pinned_items: list[ScheduleItem], visit_datetime: datetime, route_summary: str
+    pinned_items: list[ScheduleItem],
+    visit_datetime: datetime,
+    route_summary: str,
+    elapsed_ms: float,
 ) -> ScheduleResult:
     ordered = sorted(pinned_items, key=lambda item: item.order)
     return ScheduleResult(
-        items=ordered,
+        items=_round_up_items_arrival(ordered),
         total_duration_min=_total_duration_from_items(ordered) if ordered else 0,
         route_summary=route_summary,
         basis_note=_build_basis_note(visit_datetime),
+        elapsed_ms=elapsed_ms,
     )
 
 
 async def plan_partial_schedule(
-    request: SchedulePartialFillRequest, llm: LLMProvider
+    request: SchedulePartialFillRequest, llm: LLMProvider, *, timer: Timer = perf_counter
 ) -> ScheduleResult:
     """SchedulePartialFillRequest로 일부 슬롯만 새로 채운 ScheduleResult를 만든다.
 
@@ -146,15 +207,22 @@ async def plan_partial_schedule(
     직접 검증하고, 불일치하면 llm_output_invalid로 실패 처리한다(개수가
     요청마다 달라 ScheduleLLMPlan처럼 Pydantic Field로 정적 강제할 수 없다 —
     SchedulePartialLLMPlan 참고).
+
+    elapsed_ms는 plan_schedule()과 같은 방식으로 이 함수 진입부터 결과 조립까지
+    잰다(SCHEDULE-10 후속, RECOMMEND와 서버 소요시간 표시 방식을 맞춘다).
     """
 
+    started_at = timer()
     effective_visit_datetime = request.visit_datetime or now_kst()
 
     if not request.target_orders:
         # 파싱 단계(SCHEDULE-09 1단계)가 REJECT_SPECIFIC일 때 항상 target_indices를
         # 채우므로 정상 흐름에서는 발생하지 않는다 — 방어적으로만 처리한다.
         return _pinned_only_result(
-            request.pinned_items, effective_visit_datetime, _NO_FILL_CANDIDATES_ROUTE_SUMMARY
+            request.pinned_items,
+            effective_visit_datetime,
+            _NO_FILL_CANDIDATES_ROUTE_SUMMARY,
+            round((timer() - started_at) * 1000, 2),
         )
 
     if not request.candidates:
@@ -162,7 +230,10 @@ async def plan_partial_schedule(
         # 아예 없다 — "일정 전체 실패"가 아니라 "일부만 대체 실패"이므로 pinned은
         # 그대로 살리고 실패 사실만 안내한다(전체 재구성으로 덮어쓰지 않음).
         return _pinned_only_result(
-            request.pinned_items, effective_visit_datetime, _NO_FILL_CANDIDATES_ROUTE_SUMMARY
+            request.pinned_items,
+            effective_visit_datetime,
+            _NO_FILL_CANDIDATES_ROUTE_SUMMARY,
+            round((timer() - started_at) * 1000, 2),
         )
 
     resolved_request = (
@@ -194,10 +265,11 @@ async def plan_partial_schedule(
     route_summary = f"{kept}곳은 그대로 유지하고 {replaced}곳을 새로운 장소로 바꿨어요."
 
     return ScheduleResult(
-        items=merged,
+        items=_round_up_items_arrival(merged),
         total_duration_min=_total_duration_from_items(merged),
         route_summary=route_summary,
         basis_note=_build_basis_note(effective_visit_datetime),
+        elapsed_ms=round((timer() - started_at) * 1000, 2),
     )
 
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from app.schedule.schemas import ScheduleLLMPlan, SchedulePlanningRequest
+from app.schedule.schemas import ScheduleLLMPlan, SchedulePlanningRequest, target_item_range
 from app.schemas import (
     AgentResponse,
     Intent,
@@ -84,6 +84,7 @@ class TestScheduleResultSchema:
             total_duration_min=180,
             route_summary="연남동 순으로 이동 거리를 최소화했어요.",
             basis_note="이 정보는 15:00 기준으로 계산됐어요.",
+            elapsed_ms=100.0,
         )
         assert result.basis_note == "이 정보는 15:00 기준으로 계산됐어요."
         assert result.items[0].order == 1
@@ -102,7 +103,9 @@ class TestAgentResponseScheduleField:
         assert response.schedule is None
 
     def test_schedule_필드에_ScheduleResult를_담을_수_있다(self):
-        result = ScheduleResult(items=[], total_duration_min=0, route_summary="", basis_note="")
+        result = ScheduleResult(
+            items=[], total_duration_min=0, route_summary="", basis_note="", elapsed_ms=0.0
+        )
         response = AgentResponse(
             llm_output=LLMOutput(intent=Intent.SCHEDULE, status=OutputStatus.COMPLETE),
             state=_sample_state_response(),
@@ -156,9 +159,21 @@ class TestSchedulePlanningRequestSchema:
 
 
 class TestScheduleLLMPlanItemsCountConstraint:
-    """SCHEDULE-07: items는 3~5개여야 한다(9절 "3~5개 선택 지시 미준수" 미결
-    사항 해소). app.schedule.planner.plan_schedule()이 후보 3개 미만이면 LLM을
-    아예 안 부르므로, 실제 호출되는 경로에서는 이 범위가 항상 만족 가능하다."""
+    """SCHEDULE-10: items의 구조적 제약은 min_length=1/max_length=5뿐이다.
+
+    SCHEDULE-07 때는 항상 min_length=3을 걸었지만, 활동 가능 시간이 짧은
+    요청("2시간 코스 짜줘")에서는 3개 고정 하한이 비현실적이라는 게 확인돼
+    "이번 요청에 맞는" 목표 개수(1~5 사이)는 target_item_range()가 계산해
+    프롬프트로만 지시하고, 이 모델은 "0개도 6개 이상도 아니다"라는 구조적
+    최소한만 검증한다."""
+
+    def test_1개면_통과한다(self):
+        plan = ScheduleLLMPlan(
+            items=[_schedule_item("place-1", 1)],
+            total_duration_min=60,
+            route_summary="테스트 동선",
+        )
+        assert len(plan.items) == 1
 
     def test_정확히_3개면_통과한다(self):
         plan = ScheduleLLMPlan(
@@ -176,13 +191,16 @@ class TestScheduleLLMPlanItemsCountConstraint:
         )
         assert len(plan.items) == 5
 
-    def test_2개면_검증에_실패한다(self):
-        with pytest.raises(ValidationError):
-            ScheduleLLMPlan(
-                items=[_schedule_item(f"place-{i}", i) for i in range(1, 3)],
-                total_duration_min=120,
-                route_summary="테스트 동선",
-            )
+    def test_2개도_이제는_통과한다(self):
+        """SCHEDULE-07 때는 검증 실패였지만, SCHEDULE-10부터는 구조적으로
+        허용된다 — 2개가 적절한지는 target_item_range()/프롬프트가 판단할
+        몫이지 이 스키마가 판단할 몫이 아니다."""
+        plan = ScheduleLLMPlan(
+            items=[_schedule_item(f"place-{i}", i) for i in range(1, 3)],
+            total_duration_min=120,
+            route_summary="테스트 동선",
+        )
+        assert len(plan.items) == 2
 
     def test_0개면_검증에_실패한다(self):
         with pytest.raises(ValidationError):
@@ -195,3 +213,23 @@ class TestScheduleLLMPlanItemsCountConstraint:
                 total_duration_min=360,
                 route_summary="테스트 동선",
             )
+
+
+class TestTargetItemRange:
+    """SCHEDULE-10: 활동 가능 시간(time_available, 분)에 맞는 목표 개수 범위."""
+
+    def test_시간_제한이_없으면_기존_정책(self):
+        assert target_item_range(None) == (3, 5)
+
+    def test_두시간_미만이면_한두개(self):
+        assert target_item_range(60) == (1, 2)
+        assert target_item_range(119) == (1, 2)
+
+    def test_두시간_이상_세시간반_미만이면_두세네개(self):
+        assert target_item_range(120) == (2, 4)
+        assert target_item_range(180) == (2, 4)
+        assert target_item_range(209) == (2, 4)
+
+    def test_세시간반_이상이면_기존_정책(self):
+        assert target_item_range(210) == (3, 5)
+        assert target_item_range(300) == (3, 5)

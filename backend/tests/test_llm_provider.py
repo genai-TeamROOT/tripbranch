@@ -14,6 +14,7 @@ import pytest
 from app.providers.gemini_prompts import (
     build_intent_classification_instruction,
     build_modify_extraction_instruction,
+    build_schedule_planning_instruction,
 )
 from app.providers.stub import FakeLLMProvider
 from app.schedule.schemas import SchedulePlanningRequest
@@ -471,6 +472,64 @@ async def test_classify_intent_location_with_other_conditions_boundaries(
 
 
 @pytest.mark.asyncio
+async def test_classify_intent_pure_recommend_after_schedule_is_recommend() -> None:
+    """2026-08-12 실사용 재현: 직전 턴이 SCHEDULE로 정상 완료된 상태에서 "지명+근처"에
+    조건만 붙인 순수 추천 요청은 MODIFY가 아니라 RECOMMEND다.
+
+    D-053(test_classify_intent_location_with_other_conditions_is_modify)과 대조된다 —
+    last_intent가 SCHEDULE이 아니면(일반 RECOMMEND 맥락) 그 테스트처럼 여전히 MODIFY다.
+    이 예외를 안 두면 agent_runtime.py의 SCHEDULE-06 재조정 감지가 MODIFY를 SCHEDULE로
+    다시 라벨링해서, 단순 추천 요청인데 일정 전체가 재편성돼 버린다.
+    """
+    provider = FakeLLMProvider()
+
+    result = await provider.classify_intent(
+        "경복궁 근처 카페 추천해줘",
+        has_previous_recommendation=True,
+        shown_place_count=2,
+        pending_clarification=None,
+        last_intent="SCHEDULE",
+    )
+
+    assert result.data.intent is Intent.RECOMMEND
+
+
+@pytest.mark.asyncio
+async def test_classify_intent_explicit_adjustment_after_schedule_stays_modify() -> None:
+    """"말고"/"바꿔줘" 같은 명시적 조정 표현이 있으면 SCHEDULE 직후여도 예외를 적용하지
+    않는다 — 그건 순수 추천이 아니라 진짜 일정 재조정 요청이라 MODIFY(→ SCHEDULE-06이
+    SCHEDULE로 재라벨링)로 그대로 흘러가야 한다."""
+    provider = FakeLLMProvider()
+
+    result = await provider.classify_intent(
+        "경복궁 근처 카페 말고 맛집",
+        has_previous_recommendation=True,
+        shown_place_count=2,
+        pending_clarification=None,
+        last_intent="SCHEDULE",
+    )
+
+    assert result.data.intent is Intent.MODIFY
+
+
+@pytest.mark.asyncio
+async def test_classify_intent_explicit_schedule_request_after_schedule_stays_schedule() -> None:
+    """발화 자체에 일정/코스 표현이 있으면 직전 턴이 SCHEDULE여도 RECOMMEND 예외보다
+    SCHEDULE 판정이 우선한다(판별 우선순위 2번)."""
+    provider = FakeLLMProvider()
+
+    result = await provider.classify_intent(
+        "경복궁 근처 카페로 일정 짜줘",
+        has_previous_recommendation=True,
+        shown_place_count=2,
+        pending_clarification=None,
+        last_intent="SCHEDULE",
+    )
+
+    assert result.data.intent is Intent.SCHEDULE
+
+
+@pytest.mark.asyncio
 async def test_extract_modify_conditions_rain_avoids_and_moves_indoor() -> None:
     """MODIFY의 '비와서 실내'는 날씨 ENJOY가 아니라 명확한 회피다."""
     provider = FakeLLMProvider()
@@ -670,6 +729,33 @@ def test_intent_instruction_hides_clarification_flag_when_absent() -> None:
     )
 
     assert "직전 턴이 되묻기로 끝났는지: 아니오" in instruction
+
+
+def test_intent_instruction_exposes_last_intent() -> None:
+    """2026-08-12 후속: last_intent가 컨텍스트 블록에 직접 노출돼야 LLM이 "직전이
+    SCHEDULE였다"를 알고 SCHEDULE 예외 규칙을 적용할 수 있다 — "이전 추천 이력
+    있음"만으로는 SCHEDULE과 RECOMMEND/MODIFY 이력을 구분할 수 없었다."""
+    with_schedule = build_intent_classification_instruction(
+        has_previous_recommendation=True, shown_place_count=2, last_intent="SCHEDULE"
+    )
+    without_last_intent = build_intent_classification_instruction(
+        has_previous_recommendation=False, shown_place_count=0
+    )
+
+    assert "직전 턴 Intent: SCHEDULE" in with_schedule
+    assert "직전 턴 Intent: 없음" in without_last_intent
+
+
+def test_intent_instruction_includes_pure_recommend_after_schedule_exception() -> None:
+    """SCHEDULE 직후 순수 추천 요청을 MODIFY로 잘못 묶지 않도록 안내하는 예외 규칙과
+    경계 사례가 프롬프트에 들어있는지 확인한다."""
+    instruction = build_intent_classification_instruction(
+        has_previous_recommendation=True, shown_place_count=2, last_intent="SCHEDULE"
+    )
+
+    assert "직전 턴 Intent가 SCHEDULE이고" in instruction
+    assert "경복궁 근처 카페 추천해줘" in instruction
+    assert "카페들을 추천해서 일정 다시 짜줘" in instruction
 
 
 @pytest.mark.asyncio
@@ -1055,3 +1141,35 @@ async def test_generate_schedule_plan_selects_up_to_three_candidates() -> None:
     )
     assert result.total_duration_min > 0
     assert result.route_summary
+
+
+class TestBuildSchedulePlanningInstructionDynamicCount:
+    """SCHEDULE-10: 활동 가능 시간(time_available_min)에 따라 프롬프트의 목표
+    개수 지시가 달라진다 — 짧은 시간에도 3~5개를 고정 지시하던 문제 해소."""
+
+    def test_시간_제한이_없으면_기존_3에서_5개_문구를_쓴다(self):
+        instruction = build_schedule_planning_instruction(time_available_min=None)
+        assert "3~5개" in instruction
+        assert "3개 이상 5개 이하" in instruction
+        assert "3~4시간 내외로 구성" in instruction
+
+    def test_두시간_미만이면_한두개_문구를_쓴다(self):
+        instruction = build_schedule_planning_instruction(time_available_min=90)
+        assert "1~2개" in instruction
+        assert "1개 이상 2개 이하" in instruction
+        assert "3~5개" not in instruction
+        assert "활동 가능 시간이 90분" in instruction
+
+    def test_두시간_이상_세시간반_미만이면_두네개_문구를_쓴다(self):
+        instruction = build_schedule_planning_instruction(time_available_min=180)
+        assert "2~4개" in instruction
+        assert "2개 이상 4개 이하" in instruction
+
+    def test_세시간반_이상이면_다시_3에서_5개_문구를_쓴다(self):
+        instruction = build_schedule_planning_instruction(time_available_min=240)
+        assert "3~5개" in instruction
+        assert "활동 가능 시간이 240분" in instruction
+
+    def test_짧은_시간에는_체류시간_비현실적_단축_경고_문구가_있다(self):
+        instruction = build_schedule_planning_instruction(time_available_min=90)
+        assert "비현실적으로 짧게" in instruction

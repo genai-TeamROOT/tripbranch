@@ -12,6 +12,7 @@ import type {
   LLMExecutionMetadata,
   AgentStageTiming,
   RecommendationItem,
+  ScheduleItem,
   ToolContextItemDebug,
   ToolExecutionDebug,
   ToolProviderDebug,
@@ -80,6 +81,23 @@ function getRecommendationItems(turn: DeveloperAuditTurn): RecommendationItem[] 
     ...turn.recommendations.recommendations,
     ...turn.recommendations.unverified_recommendations,
   ];
+}
+
+/** SCHEDULE 응답은 recommendations가 아니라 response.schedule로 온다
+ * (agent_runtime.py가 SCHEDULE일 때 recommendations를 null로 보낸다) —
+ * getRecommendationItems()만 쓰면 SCHEDULE 턴은 항상 0건으로 보인다. */
+function getScheduleItems(turn: DeveloperAuditTurn): ScheduleItem[] {
+  return turn.response?.schedule?.items ?? [];
+}
+
+function isScheduleTurn(turn: DeveloperAuditTurn): boolean {
+  return turn.intent === "SCHEDULE";
+}
+
+function getResultCountLabel(turn: DeveloperAuditTurn): string {
+  return isScheduleTurn(turn)
+    ? `일정 ${getScheduleItems(turn).length}곳`
+    : `추천 ${getRecommendationItems(turn).length}건`;
 }
 
 function getConditionChanges(before: UserConditions | null, after: UserConditions | null) {
@@ -764,8 +782,8 @@ export function DeveloperAuditPanel({
                       </span>
                     </div>
                     <p className="mt-2 text-xs text-gray-500">
-                      {turn.status} · {formatDuration(turn.elapsedMsClient)} · 추천{" "}
-                      {getRecommendationItems(turn).length}건
+                      {turn.status} · {formatDuration(turn.elapsedMsClient)} ·{" "}
+                      {getResultCountLabel(turn)}
                     </p>
                   </button>
                 );
@@ -807,6 +825,34 @@ export function DeveloperAuditPanel({
                   entries={mergedConditions}
                   emptyMessage="저장된 사용자 조건이 없습니다."
                 />
+                {selectedTurn.response?.schedule && (
+                  <section className="rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-800 dark:bg-gray-900">
+                    <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                      SCHEDULE 결과
+                    </h3>
+                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      {selectedTurn.response.schedule.route_summary}
+                    </p>
+                    <dl className="mt-3 flex flex-wrap gap-2">
+                      <div className="rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-2 dark:border-emerald-900 dark:bg-emerald-950/40">
+                        <dt className="text-[11px] font-medium text-emerald-800 dark:text-emerald-200">
+                          선택된 장소
+                        </dt>
+                        <dd className="mt-0.5 text-xs font-semibold text-emerald-950 dark:text-emerald-50">
+                          {selectedTurn.response.schedule.items.length}곳
+                        </dd>
+                      </div>
+                      <div className="rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-2 dark:border-emerald-900 dark:bg-emerald-950/40">
+                        <dt className="text-[11px] font-medium text-emerald-800 dark:text-emerald-200">
+                          총 소요 시간
+                        </dt>
+                        <dd className="mt-0.5 text-xs font-semibold text-emerald-950 dark:text-emerald-50">
+                          {selectedTurn.response.schedule.total_duration_min}분
+                        </dd>
+                      </div>
+                    </dl>
+                  </section>
+                )}
                 <dl className="grid grid-cols-2 gap-2">
                   <DetailRow label="Intent" value={selectedTurn.intent} />
                   <DetailRow label="Status" value={selectedTurn.status} />
@@ -815,7 +861,14 @@ export function DeveloperAuditPanel({
                   <DetailRow label="기기 GPS" value={selectedTurn.deviceLocation} />
                   <DetailRow label="클라이언트 소요" value={formatDuration(selectedTurn.elapsedMsClient)} />
                   <DetailRow label="서버 소요" value={formatDuration(selectedTurn.serverElapsedMs)} />
-                  <DetailRow label="추천 결과" value={`${getRecommendationItems(selectedTurn).length}건`} />
+                  <DetailRow
+                    label={isScheduleTurn(selectedTurn) ? "일정 결과" : "추천 결과"}
+                    value={
+                      isScheduleTurn(selectedTurn)
+                        ? `${getScheduleItems(selectedTurn).length}곳`
+                        : `${getRecommendationItems(selectedTurn).length}건`
+                    }
+                  />
                   <DetailRow
                     label="LLM 응답 모델"
                     value={llmExecution?.calls.map((call) => call.served_model ?? "실패").join(", ")}
@@ -925,7 +978,47 @@ export function DeveloperAuditPanel({
               </div> : <p className="rounded-md border border-dashed border-gray-300 p-4 text-sm text-gray-500 dark:border-gray-700">LLM 단계에서 실패해 C Tool은 호출되지 않았습니다.</p>
             )}
 
-            {activeTab === "scoring" && (
+            {activeTab === "scoring" && isScheduleTurn(selectedTurn) && (
+              <div className="flex flex-col gap-3">
+                {getScheduleItems(selectedTurn).length === 0 ? (
+                  <p className="rounded-md border border-dashed border-gray-300 p-4 text-sm text-gray-500 dark:border-gray-700">
+                    선택된 일정 항목이 없습니다. 후보가 부족했거나 활동 가능 시간이 너무 짧아
+                    plan_schedule()이 LLM을 아예 부르지 않았을 수 있습니다.
+                  </p>
+                ) : (
+                  <>
+                    <p className="rounded-md bg-amber-50 p-3 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+                      SCHEDULE 응답은 recommendations가 아니라 schedule 필드로 옵니다. D가 채점한
+                      feature_scores·weights_used 같은 세부 내역은 이 응답에 포함되지 않고, LLM이
+                      최종 선택한 장소와 배치 이유만 아래에 표시됩니다.
+                    </p>
+                    {getScheduleItems(selectedTurn).map((item) => (
+                      <section
+                        key={item.place_id}
+                        className="rounded-md border border-gray-200 bg-white p-3 dark:border-gray-800 dark:bg-gray-900"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <h4 className="text-sm font-semibold text-gray-950 dark:text-gray-50">
+                            {item.order}. {item.place_name}
+                          </h4>
+                          <span className="shrink-0 rounded bg-gray-900 px-2 py-0.5 text-xs font-semibold text-white dark:bg-gray-100 dark:text-gray-900">
+                            {item.estimated_arrival} 도착
+                          </span>
+                        </div>
+                        <p className="mt-1 text-xs text-gray-500">
+                          머무는 시간 {item.estimated_duration_min}분
+                          {item.travel_to_next_min !== null &&
+                            ` · 다음 장소까지 이동 약 ${item.travel_to_next_min}분`}
+                        </p>
+                        <p className="mt-1 text-xs text-gray-700 dark:text-gray-300">{item.reason}</p>
+                      </section>
+                    ))}
+                  </>
+                )}
+              </div>
+            )}
+
+            {activeTab === "scoring" && !isScheduleTurn(selectedTurn) && (
               <div className="flex flex-col gap-3">
                 {getRecommendationItems(selectedTurn).length === 0 ? (
                   <p className="rounded-md border border-dashed border-gray-300 p-4 text-sm text-gray-500 dark:border-gray-700">

@@ -36,6 +36,30 @@ def test_individual_provider_overrides_common_mode() -> None:
     assert settings.resolved_llm_provider == "fake"
 
 
+def test_resolved_llm_timeout_falls_back_to_external_api_timeout() -> None:
+    """LLM_API_TIMEOUT_SECONDS 미설정 시 EXTERNAL_API_TIMEOUT_SECONDS를 그대로 쓴다
+    (하위 호환 — 기존에 EXTERNAL_API_TIMEOUT_SECONDS만 설정해 쓰던 환경도 그대로
+    동작해야 한다)."""
+    settings = Settings(_env_file=None, external_api_timeout_seconds=25.0)
+
+    assert settings.llm_api_timeout_seconds is None
+    assert settings.resolved_llm_timeout_seconds == 25.0
+
+
+def test_resolved_llm_timeout_uses_dedicated_value_when_set() -> None:
+    """LLM_API_TIMEOUT_SECONDS를 설정하면 EXTERNAL_API_TIMEOUT_SECONDS와 분리된다
+    (2026-08-11 — Gemini 지연 대응으로 EXTERNAL_API_TIMEOUT_SECONDS를 올리면
+    TourAPI/Naver/Supabase까지 같은 값을 물려받는 문제로 분리)."""
+    settings = Settings(
+        _env_file=None,
+        external_api_timeout_seconds=10.0,
+        llm_api_timeout_seconds=25.0,
+    )
+
+    assert settings.resolved_llm_timeout_seconds == 25.0
+    assert settings.external_api_timeout_seconds == 10.0
+
+
 def test_resolved_llm_models_defaults_to_single_primary_model() -> None:
     """LLM_FALLBACK_MODEL_NAMES 미설정 시 1순위 모델 하나짜리 리스트 — 기존 동작과 동일."""
     settings = Settings(_env_file=None, llm_model_name="gemini-2.5-flash")

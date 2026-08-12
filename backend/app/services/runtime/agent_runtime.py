@@ -1525,7 +1525,12 @@ async def run_agent_flow(
 
         # 8) A: 최종 응답 조립. recommendations는 채우지 않는다(AgentResponse
         #    docstring — schedule과 동시에 채워지지 않음).
-        message = await compose_chat_message(llm_output, schedule=schedule_result, llm=llm)
+        message = await compose_chat_message(
+            llm_output,
+            schedule=schedule_result,
+            schedule_time_available_min=agent_conditions.time_available,
+            llm=llm,
+        )
         return AgentResponse(
             llm_output=llm_output,
             state=state_response,

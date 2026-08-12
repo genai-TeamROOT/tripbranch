@@ -65,3 +65,65 @@ test("ignores invalid storage", () => {
 
   expect(loadState()).toBeNull();
 });
+
+test("restores a session that contains a schedule_result message", () => {
+  // isChatMessage()가 schedule_result를 몰라서 이 타입이 하나라도 있으면
+  // messages.every(isChatMessage)가 실패해 세션 전체가 버려지던 회귀 테스트.
+  const stateWithSchedule: TripState = {
+    ...state,
+    messages: [
+      ...state.messages,
+      {
+        id: "message-3",
+        type: "schedule_result",
+        elapsed_ms: 812,
+        schedule: {
+          items: [],
+          total_duration_min: 90,
+          route_summary: "경복궁 근처 코스예요.",
+          basis_note: "기준 시각 안내",
+          elapsed_ms: 45.5,
+        },
+      },
+    ],
+  };
+
+  saveState(stateWithSchedule);
+
+  expect(loadState()).toEqual(stateWithSchedule);
+});
+
+test("restores a session that contains a place_info_result message", () => {
+  const stateWithPlaceInfo: TripState = {
+    ...state,
+    messages: [
+      ...state.messages,
+      {
+        id: "message-3",
+        type: "place_info_result",
+        card: {
+          question_type: "operating_hours",
+          answer_fields: { operating_hours: "09:00~18:00" },
+          place_id: "p1",
+          place_name: "경복궁",
+          thumbnail_url: null,
+          overview: null,
+          operating_hours: "09:00~18:00",
+          rest_date: null,
+          parking: null,
+          parking_fee: null,
+          fee: null,
+          baby_carriage: null,
+          pet: null,
+          credit_card: null,
+          restroom: null,
+          homepage: null,
+        },
+      },
+    ],
+  };
+
+  saveState(stateWithPlaceInfo);
+
+  expect(loadState()).toEqual(stateWithPlaceInfo);
+});

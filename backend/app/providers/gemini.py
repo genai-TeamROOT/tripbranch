@@ -430,7 +430,9 @@ class RealGeminiProvider:
         # 넘겨준다 — 여기서는 이미 값이 있다고 가정하고 표시 형식만 맞춘다.
         assert request.visit_datetime is not None
         start_time = request.visit_datetime.strftime("%H:%M")
-        instruction = gemini_prompts.build_schedule_planning_instruction()
+        instruction = gemini_prompts.build_schedule_planning_instruction(
+            time_available_min=request.conditions.time_available
+        )
         context = gemini_prompts.format_schedule_planning_context(request, start_time)
         result = await self._call_structured(
             instruction,
