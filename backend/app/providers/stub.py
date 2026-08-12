@@ -9,6 +9,7 @@ TODO: 실제 provider(RealPlaceProvider 등)가 준비되면 팩토리에서 설
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -47,6 +48,7 @@ from app.schemas import (
     ClarificationPayload,
     CompareCriteria,
     ComparePayload,
+    ComparisonResult,
     ConcentrationIntent,
     Environment,
     GeneralPayload,
@@ -751,6 +753,51 @@ class FakeLLMProvider:
             source=ProviderSource.FAKE_LLM,
         )
 
+    async def generate_compare_summary(
+        self, comparison: ComparisonResult
+    ) -> ProviderResult[str]:
+        """COMPARE LLM 요약의 테스트용 결정적 대체 구현.
+
+        실제 Gemini와 달리 문체 다양화는 하지 않되, 3줄 이상이라는 출력 계약과
+        전달된 사실만 쓴다는 원칙을 회귀 테스트에서 확인할 수 있게 한다.
+        """
+
+        items = comparison.items
+        if comparison.criteria is CompareCriteria.DISTANCE:
+            candidates = [item for item in items if item.distance_km is not None]
+            recommended = (
+                min(candidates, key=lambda item: item.distance_km or 0)
+                if candidates
+                else items[0]
+            )
+        elif comparison.criteria is CompareCriteria.TIME:
+            candidates = [item for item in items if item.remaining_minutes is not None]
+            recommended = (
+                max(candidates, key=lambda item: item.remaining_minutes or 0)
+                if candidates
+                else items[0]
+            )
+        else:
+            recommended = items[0]
+        lines = [
+            f"{recommended.place_name}{_object_particle(recommended.place_name)} 추천드려요."
+        ]
+        for item in items[:3]:
+            details: list[str] = []
+            if item.distance_km is not None:
+                minutes = max(1, math.ceil(item.distance_km * 60 / 3.6))
+                details.append(f"도보 약 {minutes}분")
+            if item.remaining_minutes is not None:
+                hours = max(1, math.floor(item.remaining_minutes / 60 + 0.5))
+                details.append(f"약 {hours}시간 남음")
+            if item.environment_type is not None:
+                details.append(f"{item.environment_type} 환경")
+            value = ", ".join(details) if details else "비교 정보 확인 필요"
+            lines.append(f"{item.rank}번 {item.place_name}은 {value}이에요.")
+        while len(lines) < 3:
+            lines.append("제공된 비교 정보를 바탕으로 선택해보세요.")
+        return provider_result("\n".join(lines[:6]), source=ProviderSource.FAKE_LLM)
+
     async def generate_schedule_plan(
         self, request: SchedulePlanningRequest
     ) -> ProviderResult[ScheduleLLMPlan]:
@@ -804,6 +851,14 @@ class FakeLLMProvider:
         ]
         result = SchedulePartialLLMPlan(new_items=new_items)
         return provider_result(result, source=ProviderSource.FAKE_LLM)
+
+
+def _object_particle(value: str) -> str:
+    """Fake 응답도 실제 화면처럼 자연스러운 목적격 조사를 쓴다."""
+
+    last = value[-1] if value else ""
+    is_hangul = "가" <= last <= "힣"
+    return "을" if is_hangul and (ord(last) - ord("가")) % 28 else "를"
 
 
 # SKY(하늘상태) 4 흐림, PTY(강수형태) 0 강수 없음 — 판정을 어느 쪽으로도 밀지 않는

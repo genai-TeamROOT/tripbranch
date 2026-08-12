@@ -27,7 +27,17 @@ from app.agent_context.schemas import (
     ResponseMetadata,
     WeatherForecast,
 )
-from app.schemas import RecommendationItem, RecommendationResponse, UserConditions
+from app.schemas import (
+    CompareCriteria,
+    ComparisonItem,
+    RecommendationItem,
+    RecommendationResponse,
+    UserConditions,
+)
+from app.services.runtime.compare_context_schemas import (
+    CompareContextRequest,
+    CompareContextResponse,
+)
 from app.services.runtime.info_context_schemas import (
     ConcentrationInfoResult,
     EventInfoResult,
@@ -44,6 +54,28 @@ from app.state.schema import now_kst
 # fallback 성공(is_proxy=True)으로 시뮬레이션한다 — 실제 오케스트레이션은 C 구현.
 _FAKE_ATTRACTION_NAMES = ("경복궁", "창덕궁", "종묘", "인사동", "광화문", "북촌한옥마을")
 _FAKE_NEAREST_ATTRACTION = "경복궁"
+
+# COMPARE가 해석할 수 있는 place_id → 장소명. 여기 없는 id는 실제 C에서 "저장소에
+# 없거나 비활성"인 경우에 해당한다 — 미조회 경로를 A가 테스트할 수 있게 남겨둔다.
+_FAKE_COMPARE_PLACE_NAMES: dict[str, str] = {
+    "fake-place-1": "경복궁",
+    "fake-place-2": "창덕궁",
+    "fake-place-3": "북촌한옥마을",
+    "runtime-stub-museum-1": "런타임 스텁 박물관",
+    "runtime-stub-cafe-1": "런타임 스텁 카페",
+    "runtime-stub-park-1": "런타임 스텁 공원",
+    "runtime-stub-gallery-1": "런타임 스텁 갤러리",
+    "runtime-stub-restaurant-1": "런타임 스텁 식당",
+    "runtime-stub-market-1": "런타임 스텁 시장",
+}
+# 비교가 성립하는 최소 후보 수. C(agent_context.service)의 _MIN_COMPARE_ITEMS와 같다.
+_FAKE_MIN_COMPARE_ITEMS = 2
+# criteria별로 "이 값이 없으면 비교할 게 없는" 필드. overall은 세 값을 함께 설명하는
+# 방식이라 특정 필드를 요구하지 않는다.
+_FAKE_COMPARE_CRITERIA_FIELDS: dict[CompareCriteria, str] = {
+    CompareCriteria.DISTANCE: "distance_km",
+    CompareCriteria.TIME: "remaining_minutes",
+}
 
 # concentration 외 question_type(D-054)의 고정 fields — 키는
 # info-question-types-handoff.md의 question_type별 fields 표를 그대로 따른다.
@@ -195,6 +227,60 @@ class FakeToolProvider:
             warnings=[],
             error=None,
             metadata=metadata,
+        )
+
+    async def fetch_compare_context(
+        self, request: CompareContextRequest
+    ) -> CompareContextResponse:
+        """C의 비교 컨텍스트 조립을 고정 데이터로 흉내 낸다.
+
+        place_id를 장소명으로 바꾸는 것만 가짜로 하고, 판정 규칙은 실제 C와 같게
+        맞춘다 — 이름을 못 찾은 후보는 빼고 partial, 남은 수가 2건 미만이면 no_data,
+        criteria에 해당하는 스냅샷이 전원 비어 있으면 no_data. 여기를 헐겁게 두면
+        A의 Runtime 테스트가 실제 경로에서는 나지 않는 조합을 통과시킨다.
+
+        스냅샷(거리·남은 운영시간·실내외)은 B가 준 값을 그대로 통과시킨다. C가
+        재계산하지 않는 것과 같다(D-050).
+        """
+
+        candidates = sorted(request.candidates, key=lambda item: item.rank)
+        items = [
+            ComparisonItem(
+                place_id=candidate.place_id,
+                place_name=_FAKE_COMPARE_PLACE_NAMES[candidate.place_id],
+                rank=candidate.rank,
+                distance_km=candidate.distance_km,
+                remaining_minutes=candidate.remaining_minutes,
+                environment_type=candidate.environment_type,
+            )
+            for candidate in candidates
+            if candidate.place_id in _FAKE_COMPARE_PLACE_NAMES
+        ]
+        missing = [
+            candidate.place_id
+            for candidate in candidates
+            if candidate.place_id not in _FAKE_COMPARE_PLACE_NAMES
+        ]
+
+        criteria_field = _FAKE_COMPARE_CRITERIA_FIELDS.get(request.criteria)
+        no_facts = criteria_field is not None and all(
+            getattr(item, criteria_field) is None for item in items
+        )
+        if len(items) < _FAKE_MIN_COMPARE_ITEMS or no_facts:
+            return CompareContextResponse(
+                request_id=request.request_id,
+                status="no_data",
+                criteria=request.criteria,
+                items=[],
+                missing_place_ids=missing,
+            )
+
+        return CompareContextResponse(
+            request_id=request.request_id,
+            status="partial" if missing else "success",
+            criteria=request.criteria,
+            items=items,
+            missing_place_ids=missing,
         )
 
     async def fetch_info_context(self, request: InfoContextRequest) -> InfoContextResponse:

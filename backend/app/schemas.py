@@ -416,6 +416,34 @@ class ComparePayload(BaseModel):
     criteria: CompareCriteria
 
 
+class ComparisonItem(BaseModel):
+    """C의 비교 결과를 A가 LLM 요약·응답 표시용으로 정규화한 항목.
+
+    추천 시점 Feature 스냅샷의 수치 자체는 B가 보관하고, C가 place_id를 사람이
+    읽을 수 있는 장소명으로 해석해 이 모델로 반환한다. 이 모델은 C의 Tool 계약을
+    중복 정의하려는 것이 아니라, A가 LLM에 넘길 수 있는 공개 비교 사실의 최소
+    집합이다.
+    """
+
+    place_id: str
+    place_name: str
+    rank: int = Field(ge=1)
+    distance_km: float | None = Field(default=None, ge=0)
+    remaining_minutes: int | None = Field(default=None, ge=0)
+    environment_type: str | None = None
+
+
+class ComparisonResult(BaseModel):
+    """COMPARE 답변 생성에 쓰는 검증된 사실 데이터.
+
+    LLM은 이 모델에 담긴 값만 문장으로 바꾸며, 순위·점수·운영 상태를 새로
+    계산하거나 추정하지 않는다.
+    """
+
+    criteria: CompareCriteria
+    items: list[ComparisonItem] = Field(min_length=1)
+
+
 class GeneralPayload(BaseModel):
     topic: GeneralTopic
     original_question: str
@@ -606,7 +634,9 @@ class ToolExecutionDebug(BaseModel):
     자동 전환하지 않는다)가 지켜지고 있는지 화면에서 바로 확인하는 수단이 된다.
     """
 
-    operation: Literal["context_fetch", "info_concentration", "candidate_enrichment"] = (
+    operation: Literal[
+        "context_fetch", "info_concentration", "candidate_enrichment", "compare_fetch"
+    ] = (
         "context_fetch"
     )
     request_id: str
@@ -672,6 +702,9 @@ class AgentResponse(BaseModel):
     state: StateApplyResponse
     recommendations: RecommendationResponse | None = None
     schedule: ScheduleResult | None = None
+    # COMPARE에서 C가 이름으로 보강한 추천 시점 Feature 스냅샷. 사용자 말풍선은
+    # 이를 바탕으로 A의 LLM이 만들며, 개발자 Audit은 원본 비교 사실도 확인할 수 있다.
+    comparison: ComparisonResult | None = None
     # INFO의 장소 상세 질의에서만 채운다. 질문 답변(fields)과 펼침 카드 정보는
     # 목적이 달라 InfoPlaceCard.answer_fields와 카드 상세를 분리해 보존한다.
     info_place_card: InfoPlaceCard | None = None

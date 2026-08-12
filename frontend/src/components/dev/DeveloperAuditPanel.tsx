@@ -305,12 +305,14 @@ const CONTEXT_ITEM_LABELS: Record<string, string> = {
   holidays: "공휴일",
   concentration: "혼잡도 조회",
   concentration_candidates: "후보 혼잡도 보강",
+  comparison_candidates: "비교 후보",
 };
 
 const TOOL_OPERATION_LABELS: Record<NonNullable<ToolExecutionDebug["operation"]>, string> = {
   context_fetch: "기본 Context 조회",
   info_concentration: "INFO 혼잡도 조회",
   candidate_enrichment: "후보 혼잡도 보강",
+  compare_fetch: "COMPARE 후보 조회",
 };
 
 /** Provider 이름에 stub/fake가 들어가면 실제 외부 API가 아니라는 뜻이다.

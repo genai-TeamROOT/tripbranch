@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from collections import Counter
 
+from app.agent_context.compare_schemas import CompareContextResponse
 from app.agent_context.enrichment_schemas import (
     CandidateEnrichmentResponse,
     CandidateEnrichmentResult,
@@ -189,6 +190,39 @@ def build_info_concentration_execution_debug(
         )
     except Exception:  # noqa: BLE001 - 표시 정보 때문에 요청을 실패시키지 않는다.
         logger.warning("INFO 응답에서 Audit 표시 정보를 만들지 못함", exc_info=True)
+        return None
+
+
+def build_compare_execution_debug(
+    response: CompareContextResponse,
+    *,
+    latency_ms: int | None = None,
+) -> ToolExecutionDebug | None:
+    """COMPARE 장소명 보강 조회를 개발자 Audit 단계 정보로 변환한다."""
+
+    try:
+        return ToolExecutionDebug(
+            operation="compare_fetch",
+            request_id=response.request_id,
+            status=response.status,
+            latency_ms=latency_ms,
+            # Compare 계약은 장소명·추천 시점 Feature 스냅샷만 반환한다. 일반
+            # Context처럼 Provider metadata/rule_versions를 싣지 않으므로, Audit도
+            # 빈 값으로 두고 존재하지 않는 필드를 읽지 않는다.
+            providers=[],
+            context_items=[
+                ToolContextItemDebug(
+                    key="comparison_candidates",
+                    fetched=True,
+                    status=response.status,
+                    error_code=response.error.code if response.error is not None else None,
+                    item_count=len(response.items),
+                )
+            ],
+            error_code=response.error.code if response.error is not None else None,
+        )
+    except Exception:  # noqa: BLE001 - Audit 때문에 COMPARE 응답을 실패시키지 않는다.
+        logger.warning("COMPARE 응답에서 Audit 표시 정보를 만들지 못함", exc_info=True)
         return None
 
 

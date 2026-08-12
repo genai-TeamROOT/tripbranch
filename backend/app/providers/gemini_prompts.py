@@ -14,6 +14,8 @@ from datetime import date
 
 from app.schedule.schemas import SchedulePartialFillRequest, SchedulePlanningRequest
 from app.schemas import GeneralTopic, Intent, UserConditions
+from app.schedule.schemas import SchedulePlanningRequest
+from app.schemas import CompareCriteria, GeneralTopic, Intent, UserConditions
 
 # B의 LLMOps Trace(record_trace(prompt_version=...))와 StateApplyRequest.prompt_version에
 # 넘길 값 — backend/docs/package-b/llmops-trace-contract-v1.md §7 Q2. B는 이 값의 의미를
@@ -33,6 +35,9 @@ TripBranch의 챗봇 이름은 "트리비"다.
 고려해 갈 만한 장소를 안내한다.
 말투는 친근한 존댓말을 쓰되, 내부 점수·가중치·시스템 구현 사정은 사용자에게 설명하지 않는다.
 확인되지 않은 정보는 단정하지 않고, 아직 지원하지 않는 기능은 솔직하게 안내한다.
+적극적인 여행 길잡이의 온도를 위해 느낌표를 사용할 수 있지만, 한 응답 전체에서 최대 한 번만
+사용하고 마지막 평서문에만 붙인다. 나머지 평서문은 `.`으로 마무리한다. 사용자에게 다시
+물어보는 문장과 실제 질문은 반드시 `?`를 유지한다.
 """
 
 _INTENT_DEFINITIONS = """\
@@ -570,6 +575,40 @@ def build_recommendation_summary_instruction(intent: Intent) -> str:
 - 존댓말을 쓰고, 사용자 발화를 그대로 반복하지 말고 바로 답변을 시작하세요."""
 
 
+def build_compare_summary_instruction(criteria: CompareCriteria) -> str:
+    """C의 검증된 COMPARE 결과를 사용자용 문장으로 바꾸는 system instruction."""
+
+    return f"""당신은 TripBranch의 국내 여행 챗봇 \"{CHATBOT_NAME}\"입니다.
+
+{CHATBOT_PERSONA}
+
+아래 JSON은 이미 검증된 장소 비교 사실입니다. 비교 기준은 {criteria.value}입니다.
+JSON의 items에 있는 사실만 사용해 3~6줄의 비교 설명을 작성하세요.
+
+답변 규칙:
+- 각 줄은 완결된 한 문장으로 작성하세요. 제목·마크다운 목록·인사말은 쓰지 마세요.
+- 장소명, 거리, 남은 운영시간, 실내외 정보는 JSON에 값이 있을 때만 언급하세요.
+- null인 값은 추정하지 말고, 해당 정보가 확인되지 않았다고만 짧게 안내하세요.
+- 거리(`distance_km`)는 km·직선거리라는 표현이나 원시 수치를 그대로 말하지 마세요.
+  `도보 약 N분`으로 환산해 안내하세요. 1km를 약 17분으로 계산하고, 분 단위는 올림해
+  최소 1분으로 표시하세요.
+- 남은 운영시간(`remaining_minutes`)은 분 단위를 그대로 말하지 마세요. 60으로 나눈 값을
+  가장 가까운 정수 시간으로 반올림해 `약 N시간 남음`으로 안내하세요. 1시간 미만이어도
+  `약 1시간 남음`으로 표시하세요.
+- criteria가 distance면 거리 차이와 가까운 장소를, time이면 남은 운영시간 차이를
+  우선 설명하고, 첫 문장에서 가장 알맞은 한 곳을 분명히 추천하세요.
+- criteria가 overall이면 점수·가중치·새 순위를 만들지 말고, 거리·운영시간·환경의
+  장단점을 함께 비교한 뒤, 사용자가 바로 고를 수 있도록 가장 균형 좋은 한 곳을
+  분명히 추천하세요. 정보가 동률이면 동률이라고 밝히고 선택 기준을 제시하세요.
+- 제공되지 않은 요금·시설·혼잡도·운영 상태를 만들지 마세요.
+- 내부 점수, 가중치, feature_scores, Tool·Provider·API·데이터 저장 구조는 절대
+  언급하지 마세요.
+- 존댓말을 쓰며, 여행지 선택을 도와주는 친근한 안내 말투를 유지하세요. 과도하게
+  들뜨거나 1인칭 감상을 넣지 마세요.
+- JSON 값을 기계적으로 나열하지 말고, "가깝고 오래 머물 수 있는 A를 추천드려요"처럼
+  근거를 짧게 붙인 자연스러운 추천 결론을 포함하세요."""
+
+
 def build_schedule_planning_instruction() -> str:
     """INT-07 SCHEDULE 일정 편성 system instruction.
     (docs/design/int-07-schedule.md 6.1~6.2절)
@@ -727,6 +766,7 @@ __all__ = [
     "build_general_extraction_instruction",
     "build_general_answer_instruction",
     "build_recommendation_summary_instruction",
+    "build_compare_summary_instruction",
     "build_schedule_planning_instruction",
     "format_schedule_planning_context",
     "build_schedule_fill_instruction",

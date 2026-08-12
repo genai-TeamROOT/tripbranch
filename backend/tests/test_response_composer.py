@@ -9,6 +9,9 @@ from app.errors import ProviderUnavailableError
 from app.providers.contracts import ProviderSource, provider_result
 from app.schemas import (
     ClarificationPayload,
+    CompareCriteria,
+    ComparisonItem,
+    ComparisonResult,
     GeneralPayload,
     GeneralTopic,
     Intent,
@@ -32,6 +35,7 @@ from app.services.runtime.info_context_schemas import (
 )
 from app.services.runtime.response_composer import (
     compose_chat_message,
+    compose_compare_message,
     compose_event_info_message,
     compose_info_concentration_message,
     compose_place_info_message,
@@ -48,12 +52,19 @@ class _StubLLM:
         answer: str = "고정된 배경지식 답변입니다.",
         recommendation_summary: str = "테스트 장소를 중심으로 골라봤어요.",
         fail_recommendation_summary: bool = False,
+        compare_summary: str = (
+            "첫 번째 비교 문장입니다.\n두 번째 비교 문장입니다.\n세 번째 비교 문장입니다."
+        ),
+        fail_compare_summary: bool = False,
     ) -> None:
         self.answer = answer
         self.recommendation_summary = recommendation_summary
         self.fail_recommendation_summary = fail_recommendation_summary
+        self.compare_summary = compare_summary
+        self.fail_compare_summary = fail_compare_summary
         self.received: tuple[GeneralTopic, str] | None = None
         self.summary_received: tuple[Intent, RecommendationResponse] | None = None
+        self.compare_received: ComparisonResult | None = None
 
     async def generate_general_answer(self, topic: GeneralTopic, original_question: str):
         self.received = (topic, original_question)
@@ -66,6 +77,12 @@ class _StubLLM:
         if self.fail_recommendation_summary:
             raise ProviderUnavailableError("Gemini")
         return provider_result(self.recommendation_summary, source=ProviderSource.FAKE_LLM)
+
+    async def generate_compare_summary(self, comparison: ComparisonResult):
+        self.compare_received = comparison
+        if self.fail_compare_summary:
+            raise ProviderUnavailableError("Gemini")
+        return provider_result(self.compare_summary, source=ProviderSource.FAKE_LLM)
 
 
 def _item(*, explanations: list[str], warnings: list[str]) -> RecommendationItem:
@@ -274,6 +291,57 @@ class TestComposeChatMessageRecommendAndModify:
             llm_output, tool_status="unavailable", llm=_StubLLM()
         )
         assert "잠시 후 다시 시도" in message
+
+
+def _comparison() -> ComparisonResult:
+    return ComparisonResult(
+        criteria=CompareCriteria.OVERALL,
+        items=[
+            ComparisonItem(
+                place_id="p1",
+                place_name="국립현대미술관 서울",
+                rank=1,
+                distance_km=0.3,
+                remaining_minutes=180,
+                environment_type="indoor",
+            ),
+            ComparisonItem(
+                place_id="p2",
+                place_name="창덕궁",
+                rank=2,
+                distance_km=0.8,
+                remaining_minutes=90,
+                environment_type="outdoor",
+            ),
+        ],
+    )
+
+
+class TestComposeCompareMessage:
+    @pytest.mark.asyncio
+    async def test_calls_llm_with_only_comparison_facts(self) -> None:
+        comparison = _comparison()
+        stub = _StubLLM(compare_summary="첫째 줄\n둘째 줄\n셋째 줄")
+
+        message = await compose_compare_message(comparison, stub)
+
+        assert message == "첫째 줄\n둘째 줄\n셋째 줄"
+        assert stub.compare_received == comparison
+
+    @pytest.mark.asyncio
+    async def test_llm_failure_falls_back_to_fact_only_template(self) -> None:
+        message = await compose_compare_message(
+            _comparison(), _StubLLM(fail_compare_summary=True)
+        )
+
+        lines = message.splitlines()
+        assert 3 <= len(lines) <= 6
+        assert "국립현대미술관 서울" in message
+        assert "도보 약 5분" in message
+        assert "약 3시간 남음" in message
+        assert "0.3km" not in message
+        assert "180분" not in message
+        assert "점수" not in message
 
 
 class TestComposeChatMessageInfoCompare:
@@ -510,9 +578,10 @@ class TestComposePlaceInfoMessage:
             ),
         )
         message = compose_place_info_message(response)
-        assert "09:00~18:00" in message
-        assert "매주 화요일" in message
-        assert "경복궁" in message
+        assert message == (
+            "경복궁 운영시간을 확인했어요. "
+            "아래에서 월별 운영시간과 휴무일을 확인하세요."
+        )
 
     def test_operating_hours_is_a_natural_sentence_not_label_value(self) -> None:
         response = InfoContextResponse(
@@ -527,8 +596,11 @@ class TestComposePlaceInfoMessage:
             ),
         )
         message = compose_place_info_message(response)
-        assert message == "경복궁 운영시간은 09:00~18:00예요. 휴무일은 매주 화요일예요."
-        assert "운영시간:" not in message
+        assert message == (
+            "경복궁 운영시간을 확인했어요. "
+            "아래에서 월별 운영시간과 휴무일을 확인하세요."
+        )
+        assert "09:00~18:00" not in message
 
     def test_fee_is_a_natural_sentence(self) -> None:
         response = InfoContextResponse(
@@ -543,10 +615,36 @@ class TestComposePlaceInfoMessage:
             ),
         )
         message = compose_place_info_message(response)
-        assert message == "경복궁 입장료는 성인 3,000원예요."
+        assert message == (
+            "경복궁 입장료는 성인 기준 3,000원이에요. "
+            "아래에서 상세 요금 정보를 확인해보세요!"
+        )
 
-    def test_parking_is_a_natural_sentence_value_untouched(self) -> None:
-        """값 자체("가능 (승용차 240대 / 버스 50대)")는 파싱하지 않고 그대로 감싼다."""
+    def test_rest_date_keeps_notice_on_a_separate_line(self) -> None:
+        response = InfoContextResponse(
+            request_id="r8c-rest",
+            status="success",
+            result=PlaceInfoResult(
+                status="success",
+                question_type="operating_hours",
+                requested_place_name="경복궁",
+                resolved_place_name="경복궁",
+                fields={
+                    "operating_hours": "09:00~18:00",
+                    "rest_date": "매주 화요일 ※ 공휴일이면 개방",
+                },
+            ),
+        )
+
+        message = compose_place_info_message(response, specific_question="경복궁 휴무일 언제야?")
+
+        assert message == (
+            "경복궁 휴무일은 매주 화요일입니다.\n※ 공휴일이면 개방\n\n"
+            "아래에서 자세한 운영시간을 확인하세요."
+        )
+
+    def test_parking_shows_only_car_capacity(self) -> None:
+        """일반 사용자용 메시지에서는 버스 수용 대수를 숨긴다."""
         response = InfoContextResponse(
             request_id="r8d",
             status="success",
@@ -562,9 +660,7 @@ class TestComposePlaceInfoMessage:
             ),
         )
         message = compose_place_info_message(response)
-        assert message == (
-            "경복궁 주차는 가능 (승용차 240대 / 버스 50대)이에요. 주차 요금은 무료예요."
-        )
+        assert message == "경복궁 주차는 가능해요. 아래 주차 상세 내용을 확인해보세요."
 
     def test_facility_joins_present_fields_into_one_sentence(self) -> None:
         response = InfoContextResponse(
@@ -660,7 +756,7 @@ class TestComposePlaceInfoMessage:
             ),
         )
         message = await compose_chat_message(llm_output, info_response=response, llm=_StubLLM())
-        assert "성인 3,000원" in message
+        assert "성인 기준 3,000원" in message
 
 
 class TestComposeEventInfoMessage:

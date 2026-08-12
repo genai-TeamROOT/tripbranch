@@ -34,6 +34,7 @@ from app.schedule.schemas import (
     SchedulePlanningRequest,
 )
 from app.schemas import (
+    ComparisonResult,
     GeneralTopic,
     Intent,
     IntentClassificationResult,
@@ -143,6 +144,16 @@ class LLMProvider(Protocol):
 
         카드에 없는 사실, 내부 점수/가중치/feature_scores/warnings는 말하지 않는다.
         실패해도 추천 카드 응답 자체는 유지되어야 하므로 호출부는 템플릿으로 fallback한다.
+        """
+        ...
+
+    async def generate_compare_summary(
+        self, comparison: ComparisonResult
+    ) -> ProviderResult[str]:
+        """C가 반환한 비교 사실을 3~6줄의 사용자용 설명으로 바꾼다.
+
+        comparison 밖의 사실·점수·순위를 만들지 않는다. 호출부는 LLM 장애 시
+        고정 템플릿으로 fallback해 비교 데이터 응답 자체를 유지해야 한다.
         """
         ...
 

@@ -18,6 +18,9 @@ from app.providers.gemini_prompts import (
 from app.providers.stub import FakeLLMProvider
 from app.schedule.schemas import SchedulePlanningRequest
 from app.schemas import (
+    CompareCriteria,
+    ComparisonItem,
+    ComparisonResult,
     ConcentrationIntent,
     Environment,
     GeneralTopic,
@@ -193,6 +196,40 @@ async def test_generate_general_answer_service_identity_mentions_trivy() -> None
 
     assert "트리비" in result.data
     assert "국내 여행" in result.data
+
+
+@pytest.mark.asyncio
+async def test_generate_compare_summary_uses_three_to_six_fact_only_lines() -> None:
+    provider = FakeLLMProvider()
+    comparison = ComparisonResult(
+        criteria=CompareCriteria.DISTANCE,
+        items=[
+            ComparisonItem(
+                place_id="p1",
+                place_name="경복궁",
+                rank=1,
+                distance_km=0.2,
+                remaining_minutes=120,
+                environment_type="outdoor",
+            ),
+            ComparisonItem(
+                place_id="p2",
+                place_name="국립민속박물관",
+                rank=2,
+                distance_km=0.5,
+                remaining_minutes=180,
+                environment_type="indoor",
+            ),
+        ],
+    )
+
+    result = await provider.generate_compare_summary(comparison)
+
+    assert 3 <= len(result.data.splitlines()) <= 6
+    assert "경복궁" in result.data
+    # 0.2km를 3.6km/h로 환산해 올림한 값이다(추천 카드와 같은 표기 규칙).
+    assert "도보 약 4분" in result.data
+    assert "점수" not in result.data
 
 
 @pytest.mark.asyncio

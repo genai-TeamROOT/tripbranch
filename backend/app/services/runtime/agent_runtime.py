@@ -25,6 +25,7 @@ from app.schedule.schemas import SchedulePartialFillRequest, SchedulePlanningReq
 from app.schemas import (
     AgentRequest,
     AgentResponse,
+    ComparisonResult,
     ConcentrationIntent,
     Intent,
     InterpretRequest,
@@ -40,6 +41,10 @@ from app.schemas import (
 from app.services.interpret.orchestrator import build_interpretation
 from app.services.interpret.session_orchestrator import ensure_current_context
 from app.services.interpret.state_transform import to_user_conditions, transform
+from app.services.runtime.compare_transform import (
+    to_compare_context_request,
+    to_comparison_result,
+)
 from app.services.runtime.context_transform import to_agent_context_request
 from app.services.runtime.enrichment_transform import to_candidate_enrichment_request
 from app.services.runtime.info_context_transform import to_info_context_request
@@ -49,9 +54,10 @@ from app.services.runtime.llm_execution import (
     reset_llm_execution_metadata,
 )
 from app.services.runtime.protocols import EnrichmentProvider, RecommendationProvider, ToolProvider
-from app.services.runtime.response_composer import compose_chat_message
+from app.services.runtime.response_composer import compose_chat_message, compose_compare_message
 from app.services.runtime.tool_debug import (
     build_candidate_enrichment_execution_debug,
+    build_compare_execution_debug,
     build_info_concentration_execution_debug,
     build_tool_execution_debug,
 )
@@ -464,6 +470,73 @@ async def run_agent_flow(
             llm_execution=get_llm_execution_metadata(),
             tool_execution=info_execution,
             tool_executions=[info_execution] if info_execution is not None else [],
+        )
+
+    # 4-1) COMPARE는 마지막 추천 이력의 Feature 스냅샷을 A가 targets로 해석해
+    #      C에 넘기고, C가 place_id를 장소명으로 보강한 사실만 LLM 요약에 사용한다.
+    #      새 추천 후보 검색·D 재점수화는 하지 않는다(D-050, int-04-compare.md §13).
+    if (
+        llm_output.status is OutputStatus.COMPLETE
+        and llm_output.intent is Intent.COMPARE
+        and llm_output.compare is not None
+    ):
+        resolution = to_compare_context_request(
+            new_trace_id(), llm_output.compare, session_context.shown_recommendations
+        )
+        if resolution.request is None:
+            return AgentResponse(
+                llm_output=llm_output,
+                state=state_response,
+                recommendations=None,
+                message=resolution.message or "비교할 장소를 확인할 수 없어요.",
+                llm_execution=get_llm_execution_metadata(),
+            )
+
+        compare_started_at = time.monotonic()
+        compare_response = await tool_provider.fetch_compare_context(resolution.request)
+        compare_latency_ms = int((time.monotonic() - compare_started_at) * 1000)
+        compare_execution = build_compare_execution_debug(
+            compare_response, latency_ms=compare_latency_ms
+        )
+        _record_trace_safely(
+            session_id=state_response.session_id,
+            run_id=state_response.run_id,
+            step="tool_fetch",
+            latency_ms=compare_latency_ms,
+            error_type=(
+                compare_response.status
+                if compare_response.status in {"no_data", "unavailable"}
+                else None
+            ),
+            store=store,
+        )
+        comparison: ComparisonResult | None = to_comparison_result(compare_response)
+        if comparison is None:
+            message = (
+                "비교에 필요한 장소 정보가 부족해요. 다른 추천을 볼까요?"
+                if compare_response.status == "no_data"
+                else "일시적으로 비교 정보를 확인하지 못했어요. 잠시 후 다시 시도해주세요."
+            )
+            return AgentResponse(
+                llm_output=llm_output,
+                state=state_response,
+                recommendations=None,
+                message=message,
+                llm_execution=get_llm_execution_metadata(),
+                tool_execution=compare_execution,
+                tool_executions=[compare_execution] if compare_execution is not None else [],
+            )
+
+        message = await compose_compare_message(comparison, llm)
+        return AgentResponse(
+            llm_output=llm_output,
+            state=state_response,
+            recommendations=None,
+            comparison=comparison,
+            message=message,
+            llm_execution=get_llm_execution_metadata(),
+            tool_execution=compare_execution,
+            tool_executions=[compare_execution] if compare_execution is not None else [],
         )
 
     # 4) 확인이 더 필요하거나(needs_clarification), RECOMMEND/MODIFY/SCHEDULE이 아니면
