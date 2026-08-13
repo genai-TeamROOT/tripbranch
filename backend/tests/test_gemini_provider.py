@@ -7,19 +7,22 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from unittest.mock import AsyncMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 from google.genai import errors as genai_errors
 
 from app.errors import AppError, ProviderUnavailableError
 from app.providers.gemini import RealGeminiProvider
-from app.schedule.schemas import ScheduleLLMPlan
+from app.schedule.schemas import ScheduleLLMPlan, SchedulePlanningRequest
 from app.schemas import (
     Intent,
     IntentClassificationResult,
     RecommendationItem,
     RecommendationResponse,
+    UserConditions,
 )
 
 
@@ -163,7 +166,12 @@ async def test_call_structured_retries_once_on_validation_error_then_raises() ->
     call_count = 0
 
     async def invalid_then_invalid(
-        system_instruction: str, user_input: str, response_model: type, operation: str
+        system_instruction: str,
+        user_input: str,
+        response_model: type,
+        operation: str,
+        *,
+        thinking_budget: int | None = None,
     ) -> IntentClassificationResult:
         nonlocal call_count
         call_count += 1
@@ -191,7 +199,12 @@ async def test_schedule_plan_retries_once_when_items_count_out_of_range_then_suc
     call_count = 0
 
     async def too_many_then_valid(
-        system_instruction: str, user_input: str, response_model: type, operation: str
+        system_instruction: str,
+        user_input: str,
+        response_model: type,
+        operation: str,
+        *,
+        thinking_budget: int | None = None,
     ) -> ScheduleLLMPlan:
         nonlocal call_count
         call_count += 1
@@ -233,7 +246,12 @@ async def test_schedule_plan_raises_when_items_count_still_out_of_range_after_re
     provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
 
     async def always_too_many(
-        system_instruction: str, user_input: str, response_model: type, operation: str
+        system_instruction: str,
+        user_input: str,
+        response_model: type,
+        operation: str,
+        *,
+        thinking_budget: int | None = None,
     ) -> ScheduleLLMPlan:
         return response_model.model_validate(
             {
@@ -250,6 +268,87 @@ async def test_schedule_plan_raises_when_items_count_still_out_of_range_after_re
             )
 
     assert exc_info.value.code == "llm_output_invalid"
+
+
+# --- thinking_budget 배선(SCHEDULE 지연시간 개선, 2026-08-13) ---
+
+
+@pytest.mark.asyncio
+async def test_try_model_omits_thinking_config_when_budget_not_given() -> None:
+    """thinking_budget을 안 넘기는 기존 9개 호출부는 동작이 그대로여야 한다 —
+    GenerateContentConfig.thinking_config가 None으로 유지된다."""
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    captured_config: list[object] = []
+
+    async def capture(*args: object, **kwargs: object) -> _FakeResponse:
+        captured_config.append(kwargs["config"])
+        return _FakeResponse(IntentClassificationResult(intent=Intent.RECOMMEND))
+
+    with patch.object(provider._client.aio.models, "generate_content", side_effect=capture):
+        await provider._generate("sys", "user", IntentClassificationResult, "test")
+
+    assert captured_config[0].thinking_config is None
+
+
+@pytest.mark.asyncio
+async def test_try_model_applies_thinking_budget_when_given() -> None:
+    """thinking_budget=0을 넘기면 GenerateContentConfig.thinking_config에 그대로
+    실린다 — SCHEDULE 호출부가 실제로 이 값을 받는지 확인하는 배선 테스트."""
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    captured_config: list[object] = []
+
+    async def capture(*args: object, **kwargs: object) -> _FakeResponse:
+        captured_config.append(kwargs["config"])
+        return _FakeResponse(IntentClassificationResult(intent=Intent.RECOMMEND))
+
+    with patch.object(provider._client.aio.models, "generate_content", side_effect=capture):
+        await provider._generate(
+            "sys", "user", IntentClassificationResult, "test", thinking_budget=0
+        )
+
+    assert captured_config[0].thinking_config is not None
+    assert captured_config[0].thinking_config.thinking_budget == 0
+
+
+@pytest.mark.asyncio
+async def test_generate_schedule_plan_uses_thinking_budget_zero() -> None:
+    """generate_schedule_plan()이 실제로 thinking_budget=0을 끝까지 전달하는지
+    end-to-end로 확인한다(다른 8개 구조화 출력 호출부는 영향 없어야 한다는 게
+    위 두 테스트로 이미 확인됨 — 이 테스트는 SCHEDULE이 그 예외 경로를 실제로
+    타는지만 본다)."""
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    captured_config: list[object] = []
+    plan = ScheduleLLMPlan(
+        items=[
+            {
+                "order": 1,
+                "place_id": "p1",
+                "place_name": "장소 p1",
+                "estimated_arrival": "15:00",
+                "estimated_duration_min": 60,
+                "travel_to_next_min": None,
+                "reason": "테스트 이유",
+            }
+        ],
+        total_duration_min=60,
+        route_summary="테스트 동선",
+    )
+
+    async def capture(*args: object, **kwargs: object) -> _FakeResponse:
+        captured_config.append(kwargs["config"])
+        return _FakeResponse(plan)
+
+    request = SchedulePlanningRequest(
+        candidates=[_recommendation_item()],
+        conditions=UserConditions(),
+        visit_datetime=datetime(2026, 8, 13, 15, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+        pairwise_distances_km={},
+    )
+
+    with patch.object(provider._client.aio.models, "generate_content", side_effect=capture):
+        await provider.generate_schedule_plan(request)
+
+    assert captured_config[0].thinking_config.thinking_budget == 0
 
 
 # --- D-052: 모델 fallback ---
