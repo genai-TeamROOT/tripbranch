@@ -146,21 +146,32 @@ class RealGeminiProvider:
             last_intent=last_intent,
             shown_place_names=shown_place_names,
         )
+        # thinking_budget=0 — SCHEDULE(generate_schedule_plan/fill)에 적용한 것과 같은
+        # 이유. classify_intent는 정해진 스키마 중 하나를 고르는 얕은 판단이라 thinking
+        # 없이도 규칙 기반 판별이 가능하다고 보고 실측(2026-08-13, 10개 대표 질문×2회,
+        # scripts/compare_classify_extract_thinking_budget.py)으로 확인했다 — 평균
+        # 3609ms→1561ms(2.3배), 정확도는 90%(18/20)로 thinking_on과 동일하게 유지됨
+        # (유일한 오답 케이스도 thinking_on/off 양쪽에서 똑같이 틀려 이 변경과 무관한
+        # 기존 프롬프트 이슈로 확인). 결과: test_results/classify_extract_thinking_budget.csv.
         result = await self._call_structured(
             instruction,
             user_input,
             IntentClassificationResult,
             operation="classify_intent",
+            thinking_budget=0,
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 
     async def extract_recommend_conditions(self, user_input: str) -> ProviderResult[LLMOutput]:
         instruction = gemini_prompts.build_recommend_extraction_instruction()
+        # thinking_budget=0 — classify_intent()와 같은 이유로 실측 확인
+        # (평균 3122ms→1745ms, 1.8배, search_center 추출 정확도 4/4로 동일 유지).
         result = await self._call_structured(
             instruction,
             user_input,
             LLMOutput,
             operation="extract_recommend_conditions",
+            thinking_budget=0,
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 
