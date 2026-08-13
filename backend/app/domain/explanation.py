@@ -113,6 +113,19 @@ def _weather_sentence(evidence: RecommendationEvidence) -> str:
     return f"{weather_label}에 적합한 {environment_label}장소예요."
 
 
+def _environment_sentence(evidence: RecommendationEvidence) -> str:
+    """요청 환경으로 채점된 실행 전용 문장.
+
+    이 실행에는 날씨가 점수에 들어가지 않았으므로 날씨를 근거로 말하지 않는다 —
+    `_weather_sentence()`를 그대로 쓰면 맑은 날에 "궂은 날씨에 적합한 실내
+    장소예요" 같은 사실과 다른 문장이 나간다.
+    """
+    environment_label = _ENVIRONMENT_LABELS.get(
+        evidence.environment_type, _ENVIRONMENT_LABEL_DEFAULT
+    )
+    return f"요청하신 {environment_label}장소예요."
+
+
 # concentration Feature(D-040, 2차 Scoring 전용)의 사실 문장. concentration_score
 # (scoring.py::concentration_score())는 SEEK/AVOID 방향이 이미 반영된 값이라
 # "notable하다"는 것만으로는 실제로 붐비는지 한적한지 알 수 없다 — 그래서
@@ -135,6 +148,7 @@ def _concentration_sentence(evidence: RecommendationEvidence) -> str:
 
 _SENTENCE_BUILDERS: Mapping[str, Callable[[RecommendationEvidence], str]] = {
     "weather": _weather_sentence,
+    "environment": _environment_sentence,
     "remaining_operating_time": _remaining_time_sentence,
     "distance": _distance_sentence,
     "concentration": _concentration_sentence,

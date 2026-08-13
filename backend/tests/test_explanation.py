@@ -350,3 +350,46 @@ def test_concentration_missing_is_omitted() -> None:
     candidate = _concentration_ranked_candidate(None, None)
     evidence = build_evidence(candidate, feature_order=CONCENTRATION_FEATURE_ORDER)
     assert build_explanations(evidence) == ()
+
+
+# --- 요청 환경(conditions.environment)으로 채점된 실행의 근거 문장 ------------
+
+
+def test_requested_environment_sentence_does_not_mention_weather() -> None:
+    """맑은 날 "실내로"를 요청한 실행에서 날씨를 근거로 말하면 사실과 어긋난다.
+
+    이 실행에는 날씨가 점수에 들어가지 않았으므로 요청 자체를 근거로 말한다.
+    """
+    result = score_candidates(
+        (_MUSEUM_OPEN,),
+        now=NOW,
+        weather_condition=WeatherCondition.GOOD,
+        max_distance_km=1.5,
+        requested_environment="indoor",
+    )
+    explanations = build_explanations(build_evidence(result.ranked[0]))
+
+    assert "요청하신 실내 장소예요." in explanations
+    assert not any("날씨" in sentence for sentence in explanations)
+
+
+def test_mismatched_environment_is_below_threshold() -> None:
+    """요청과 어긋난 환경(0.30)은 임계값 미만이라 근거 문장으로 나오지 않는다."""
+    outdoor = ScoringCandidate(
+        place_id="outdoor-1",
+        name="야외공원",
+        category="park",
+        environment_type="outdoor",
+        distance_km=0.5,
+        operating_hours=OperatingHours(time(9, 0), time(18, 0)),
+    )
+    result = score_candidates(
+        (outdoor,),
+        now=NOW,
+        weather_condition=WeatherCondition.GOOD,
+        max_distance_km=1.5,
+        requested_environment="indoor",
+    )
+    explanations = build_explanations(build_evidence(result.ranked[0]))
+
+    assert not any("요청하신" in sentence for sentence in explanations)
