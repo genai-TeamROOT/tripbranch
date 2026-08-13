@@ -19,8 +19,10 @@ from app.agent_context.schemas import Coordinates as AgentCoordinates
 from app.agent_context.schemas import PlaceCandidate as AgentPlaceCandidate
 from app.concentration_policy import normalize_concentration
 from app.domain.operating_hours import normalize_operating_schedule
+from app.domain.scoring import CONCENTRATION_WEIGHTS
 from app.errors import AppError
 from app.schemas import (
+    Environment,
     RecommendationItem,
     RecommendationResponse,
     StatedWeather,
@@ -29,6 +31,7 @@ from app.schemas import (
 )
 from app.services.recommendation_pipeline import (
     rerank_with_concentration,
+    resolve_requested_environment,
     run_recommendation_pipeline_from_context,
 )
 
@@ -733,3 +736,105 @@ async def test_rerank_with_concentration_preserves_operating_hours_display() -> 
     result = await rerank_with_concentration(first_pass, None, concentration, seek=True)
 
     assert result.recommendations[0].operating_hours_display == "09:00~18:00"
+
+
+# --- resolve_requested_environment() ---------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("environment", "weather_intent", "expected"),
+    [
+        (Environment.INDOOR, WeatherIntent.NO_MENTION, "indoor"),
+        (Environment.OUTDOOR, WeatherIntent.NO_MENTION, "outdoor"),
+        (Environment.INDOOR, WeatherIntent.IGNORE, "indoor"),
+        (Environment.ANY, WeatherIntent.NO_MENTION, "any"),
+        (None, WeatherIntent.NO_MENTION, None),
+        # 날씨를 함께 언급한 경로는 기존 날씨 판정이 이미 실내/실외를 반영한다.
+        (Environment.INDOOR, WeatherIntent.AVOID, None),
+        (Environment.OUTDOOR, WeatherIntent.ENJOY, None),
+    ],
+)
+def test_resolve_requested_environment_precedence(
+    environment: Environment | None,
+    weather_intent: WeatherIntent,
+    expected: str | None,
+) -> None:
+    conditions = UserConditions(environment=environment, weather_intent=weather_intent)
+    assert resolve_requested_environment(conditions) == expected
+
+
+def test_resolve_requested_environment_without_conditions() -> None:
+    assert resolve_requested_environment(None) is None
+
+
+@pytest.mark.asyncio
+async def test_requested_environment_run_has_no_weather_warning() -> None:
+    """요청 환경으로 채점한 실행에는 weather 키 자체가 없다.
+
+    이걸 결측으로 읽으면 날씨를 조회했는데도 "확인하지 못했다"는 warning이
+    붙는다 — 존재하지 않는 Feature와 결측을 구분해야 한다.
+    """
+    context = RecommendationContext(
+        location=_context_location(),
+        weather=AgentContextValue(
+            status="success",
+            data=WeatherForecast(forecast_for=_CONTEXT_VISIT_AT, sky="clear"),
+        ),
+        places=AgentContextValue(status="success", data=[_context_place()]),
+    )
+
+    response = await run_recommendation_pipeline_from_context(
+        context,
+        visit_at=_CONTEXT_VISIT_AT,
+        search_radius_km=2.0,
+        conditions=UserConditions(
+            environment=Environment.INDOOR, weather_intent=WeatherIntent.NO_MENTION
+        ),
+    )
+
+    item = response.recommendations[0]
+    assert "environment" in item.feature_scores
+    assert "weather" not in item.feature_scores
+    assert _WEATHER_MISSING_WARNING not in item.warnings
+    assert _WEATHER_IGNORED_WARNING not in item.warnings
+
+
+@pytest.mark.asyncio
+async def test_rerank_keeps_environment_feature_in_second_pass() -> None:
+    """1차가 요청 환경으로 채점했으면 2차 가중치도 그 키를 따라가야 한다.
+
+    안 맞추면 environment 점수가 합산에서 통째로 빠지고, 존재하지도 않는
+    weather가 결측으로 잡혀 재분배까지 일어난다.
+    """
+    environment_item = _first_pass_item("place-1", distance_km=0.1, distance_score=0.95)
+    environment_item = environment_item.model_copy(
+        update={
+            # remaining_minutes와 그 Feature 점수는 함께 있거나 함께 없어야 한다
+            # (explanation.py가 그 짝을 전제로 문장을 만든다).
+            "remaining_minutes": 240.0,
+            "feature_scores": {
+                "environment": 1.0,
+                "remaining_operating_time": 1.0,
+                "distance": 0.95,
+            },
+        }
+    )
+    first_pass = RecommendationResponse(
+        recommendations=[environment_item],
+        unverified_recommendations=[],
+        elapsed_ms=0,
+    )
+    concentration = CandidateEnrichmentResponse(
+        request_id="req-env",
+        status="success",
+        candidates=[_concentration_result("place-1", rate=5.0)],
+    )
+
+    result = await rerank_with_concentration(first_pass, None, concentration, seek=False)
+
+    item = result.recommendations[0]
+    assert item.feature_scores["environment"] == 1.0
+    assert "weather" not in item.weights_used
+    assert item.weights_used["environment"] == CONCENTRATION_WEIGHTS["weather"]
+    assert sum(item.weights_used.values()) == pytest.approx(1.0)
+    assert "요청하신 실내 장소예요." in item.explanations

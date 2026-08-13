@@ -11,6 +11,7 @@ Response Generator(LLM) 영역이며 D-02 범위 밖이다.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from app.concentration_policy import ConcentrationLevel
@@ -21,12 +22,40 @@ from app.domain.weather_judgment import WeatherReason
 # 1차 Scoring 결과의 Feature 순서 (scoring.py DEFAULT_WEIGHTS와 동일).
 _FEATURE_ORDER: tuple[str, ...] = ("weather", "remaining_operating_time", "distance")
 
+# 요청 환경으로 채점된 실행(scoring.py::uses_environment_feature)의 순서. 날씨와
+# 환경은 같은 자리를 나눠 쓰므로 Feature 개수는 그대로 3개다.
+_ENVIRONMENT_FEATURE_ORDER: tuple[str, ...] = (
+    "environment",
+    "remaining_operating_time",
+    "distance",
+)
+
 # 2차 Scoring(rerank_with_concentration(), D-040) 결과의 Feature 순서. concentration은
 # 1차 결과의 feature_scores에는 키 자체가 없다(결측이 아니라 "존재하지 않음" —
 # concentration-conditions.md §2.3) — 그래서 1차용 _FEATURE_ORDER에는 넣지 않고,
-# 이 상수를 별도로 둔다. build_evidence()에 feature_order를 명시적으로 넘기지 않으면
-# 항상 1차 3-Feature 순서를 쓴다.
+# 이 상수를 별도로 둔다.
 CONCENTRATION_FEATURE_ORDER: tuple[str, ...] = (*_FEATURE_ORDER, "concentration")
+ENVIRONMENT_CONCENTRATION_FEATURE_ORDER: tuple[str, ...] = (
+    *_ENVIRONMENT_FEATURE_ORDER,
+    "concentration",
+)
+
+
+def resolve_feature_order(feature_scores: Mapping[str, float | None]) -> tuple[str, ...]:
+    """실제로 채점된 Feature 키를 보고 순서를 고른다.
+
+    날씨/환경 중 어느 쪽으로 채점됐는지는 호출부가 다시 판단하지 않는다 —
+    `feature_scores`에 들어 있는 키가 그대로 답이다.
+    """
+    environment_driven = "environment" in feature_scores
+    with_concentration = "concentration" in feature_scores
+    if environment_driven:
+        return (
+            ENVIRONMENT_CONCENTRATION_FEATURE_ORDER
+            if with_concentration
+            else _ENVIRONMENT_FEATURE_ORDER
+        )
+    return CONCENTRATION_FEATURE_ORDER if with_concentration else _FEATURE_ORDER
 
 
 @dataclass(frozen=True)
@@ -86,21 +115,22 @@ def _build_contributions(
 
 
 def build_evidence(
-    candidate: RankedCandidate, *, feature_order: tuple[str, ...] = _FEATURE_ORDER
+    candidate: RankedCandidate, *, feature_order: tuple[str, ...] | None = None
 ) -> RecommendationEvidence:
     """`RankedCandidate` 1건을 `RecommendationEvidence`로 변환한다.
 
-    `feature_order`는 기본값(1차 3-Feature)을 쓴다 — 2차 Scoring(D-040)이
-    `candidate.feature_scores`에 `"concentration"` 키를 추가로 채워 넣었을 때만
-    `CONCENTRATION_FEATURE_ORDER`를 명시적으로 넘긴다.
+    `feature_order`를 생략하면 `candidate.feature_scores`에 실제로 들어 있는
+    키로 순서를 정한다(`resolve_feature_order()`) — 2차 Scoring(D-040)의
+    `"concentration"`과 요청 환경 채점의 `"environment"`가 모두 여기서 갈린다.
     """
+    resolved_order = feature_order or resolve_feature_order(candidate.feature_scores)
     return RecommendationEvidence(
         place_id=candidate.place_id,
         name=candidate.name,
         category=candidate.category,
         rank=candidate.rank,
         score=candidate.score,
-        contributions=_build_contributions(candidate, feature_order),
+        contributions=_build_contributions(candidate, resolved_order),
         is_unverified=candidate.is_unverified,
         warnings=candidate.warnings,
         distance_km=candidate.distance_km,
