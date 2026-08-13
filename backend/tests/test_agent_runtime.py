@@ -10,6 +10,7 @@ FakeToolProvider는 A-C Context Contract v0(docs/design/a-c-context-contract-dra
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 
 import pytest
@@ -3623,3 +3624,77 @@ async def test_schedule_offers_show_closed_before_no_candidates_loop() -> None:
     assert clarification.options[0].resolved_intent == "SCHEDULE"
     context = get_session_context(response.state.session_id, store=store)
     assert context.pending_clarification == "no_data_closed"
+
+
+class _SlowSchedulePlanLLM(_LLMProviderWithGeneralAnswer):
+    """generate_schedule_plan()이 heartbeat 간격보다 오래 걸리는 상황을 흉내 낸다.
+
+    실사용 피드백(2026-08-13): SCHEDULE 편성 호출이 수십 초씩 걸리는데 로딩
+    화면이 그동안 "장소 순서와 머무는 시간을 구성하고 있어요." 문구 하나로
+    멈춰 보인다 — _await_with_heartbeat()가 이 구간에도 progress 이벤트를
+    주기적으로 흘려보내는지 검증한다.
+    """
+
+    async def generate_schedule_plan(self, request):
+        await asyncio.sleep(0.05)
+        return await super().generate_schedule_plan(request)
+
+
+@pytest.mark.asyncio
+async def test_schedule_heartbeat_emits_progress_during_slow_planning() -> None:
+    store = InMemoryStateStore()
+    providers = _providers()
+    providers["llm"] = _SlowSchedulePlanLLM()
+    events: list[tuple[str, dict[str, object]]] = []
+
+    async def sink(event: str, payload: dict[str, object]) -> None:
+        events.append((event, payload))
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처에서 반나절 코스 짜줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        stream_event_sink=sink,
+        **providers,
+    )
+
+    assert response.llm_output.intent == "SCHEDULE"
+    scheduling_events = [
+        payload
+        for event, payload in events
+        if event == "progress" and payload["stage"] == "scheduling"
+    ]
+    # 최초 1건("장소 순서와...")은 항상 있다. heartbeat 간격(6초)보다 훨씬 짧게 재웠으니
+    # 추가 heartbeat는 안 왔어야 정상 — 이 테스트는 "느릴 때 최소 1건은 보장된다"만
+    # 확인하고, 실제 heartbeat 반복은 아래 단위 테스트가 별도로 검증한다.
+    assert len(scheduling_events) >= 1
+
+
+@pytest.mark.asyncio
+async def test_await_with_heartbeat_emits_progress_until_task_completes() -> None:
+    from app.services.runtime.agent_runtime import _await_with_heartbeat
+
+    events: list[tuple[str, dict[str, object]]] = []
+
+    async def sink(event: str, payload: dict[str, object]) -> None:
+        events.append((event, payload))
+
+    async def slow_task() -> str:
+        await asyncio.sleep(0.05)
+        return "done"
+
+    result = await _await_with_heartbeat(
+        slow_task(),
+        sink=sink,
+        stage="scheduling",
+        messages=("계속 진행 중이에요.",),
+        interval_seconds=0.01,
+    )
+
+    assert result == "done"
+    scheduling_events = [p for e, p in events if e == "progress" and p["stage"] == "scheduling"]
+    assert len(scheduling_events) >= 2
+    assert all(p["message"] == "계속 진행 중이에요." for p in scheduling_events)

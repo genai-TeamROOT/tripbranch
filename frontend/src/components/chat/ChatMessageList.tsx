@@ -203,6 +203,7 @@ export function ChatMessageList({
         <AgentProgressMessage
           hasDeviceLocation={hasDeviceLocation}
           schedulePlanning={progress?.stage === "scheduling"}
+          progress={progress}
         />
       )}
     </div>

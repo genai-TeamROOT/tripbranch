@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { AgentProgressEvent } from "../../types";
 
 const AGENT_STAGES = [
   { stage: "interpreting", label: "요청 의도와 조건 파악", detail: "Gemini가 Intent와 사용자 조건을 해석하고 있어요." },
@@ -23,10 +24,20 @@ const ELAPSED_REFRESH_INTERVAL_MS = 100;
 export function AgentProgressMessage({
   hasDeviceLocation,
   schedulePlanning = false,
+  progress = null,
 }: {
   hasDeviceLocation: boolean;
   /** 실제 SCHEDULE 플래너 호출 이벤트를 받은 뒤에만 일정 단계를 목록에 넣는다. */
   schedulePlanning?: boolean;
+  /**
+   * 실제 SSE progress 이벤트. 값이 있으면 이걸 우선 써서 단계·문구를 그대로
+   * 보여준다 — SCHEDULE 편성처럼 한 단계가 오래 걸릴 때 서버가 흘려보내는
+   * heartbeat 문구(예: "이동 동선을 정리하고 있어요.")가 그대로 반영된다.
+   * 이벤트가 아직 없거나(스트리밍 시작 직전) SSE를 못 쓰는 환경(구버전 배포·
+   * 프록시라 단발 POST /chat로 폴백한 경우, trip.ts 참고)엔 null로 유지되고,
+   * 그때만 기존처럼 경과 시간 기반의 가상 단계 회전으로 대체한다.
+   */
+  progress?: AgentProgressEvent | null;
 }) {
   const [elapsedMs, setElapsedMs] = useState(0);
 
@@ -41,11 +52,17 @@ export function AgentProgressMessage({
   const stages = schedulePlanning
     ? [...AGENT_STAGES.slice(0, -1), SCHEDULE_STAGE, AGENT_STAGES.at(-1)!]
     : AGENT_STAGES;
-  const stageIndex = Math.min(
-    Math.floor(elapsedMs / STAGE_ROTATION_INTERVAL_MS),
-    stages.length - 1,
-  );
-  const current = stages[stageIndex];
+  const liveStageIndex = progress
+    ? stages.findIndex((stage) => stage.stage === progress.stage)
+    : -1;
+  const stageIndex =
+    liveStageIndex >= 0
+      ? liveStageIndex
+      : Math.min(Math.floor(elapsedMs / STAGE_ROTATION_INTERVAL_MS), stages.length - 1);
+  const current =
+    liveStageIndex >= 0
+      ? { ...stages[liveStageIndex], detail: progress!.message }
+      : stages[stageIndex];
 
   return (
     <section
