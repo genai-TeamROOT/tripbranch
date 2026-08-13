@@ -16,7 +16,7 @@ from app.agent_context.enrichment_schemas import CandidateEnrichmentResponse
 from app.agent_context.schemas import RecommendationContext
 from app.concentration_policy import ConcentrationLevel
 from app.domain.candidate_mapper import map_context_to_scoring_candidates
-from app.domain.evidence import CONCENTRATION_FEATURE_ORDER, build_evidence
+from app.domain.evidence import build_evidence
 from app.domain.explanation import build_explanations
 from app.domain.models import ScoringCandidate, WeatherCondition
 from app.domain.scoring import (
@@ -25,6 +25,7 @@ from app.domain.scoring import (
     concentration_score,
     redistribute_weights,
     score_candidates,
+    weights_for_feature_scores,
 )
 from app.domain.weather_judgment import (
     WeatherReason,
@@ -143,6 +144,7 @@ async def run_recommendation_pipeline_from_context(
         shown_place_ids=shown_place_ids,
         rejected_place_ids=rejected_place_ids,
         ignore_operating_hours=ignore_operating_hours,
+        requested_environment=resolve_requested_environment(conditions),
     )
     ranked = scoring.ranked[:recommendation_limit]
     # 결과가 0건이고, 그 이유가 전부 폐점 후보 제외였다면(다른 이유로 제외된 후보가
@@ -231,13 +233,13 @@ async def rerank_with_concentration(
             else concentration_score(concentration_rate, seek=seek)
         )
 
-        missing = [
-            feature for feature in CONCENTRATION_WEIGHTS if feature_scores.get(feature) is None
-        ]
+        # 1차가 날씨 대신 요청 환경으로 채점했다면 2차 가중치도 같은 키를 써야
+        # 한다 — 안 맞추면 environment 점수가 합산에서 통째로 빠지고, 없는
+        # weather가 결측으로 잡혀 재분배까지 일어난다.
+        base_weights = weights_for_feature_scores(CONCENTRATION_WEIGHTS, feature_scores)
+        missing = [feature for feature in base_weights if feature_scores.get(feature) is None]
         weights_used = (
-            redistribute_weights(CONCENTRATION_WEIGHTS, missing)
-            if missing
-            else dict(CONCENTRATION_WEIGHTS)
+            redistribute_weights(base_weights, missing) if missing else dict(base_weights)
         )
         score = round(
             sum(
@@ -281,7 +283,9 @@ async def rerank_with_concentration(
             environment_type=item.environment_type,
             concentration_level=concentration_level,
         )
-        evidence = build_evidence(candidate, feature_order=CONCENTRATION_FEATURE_ORDER)
+        # feature_order를 넘기지 않는다 — build_evidence()가 feature_scores의 키로
+        # concentration 포함 여부와 날씨/환경 중 어느 쪽인지를 함께 판단한다.
+        evidence = build_evidence(candidate)
         explanations = build_explanations(evidence)
         warnings = list(candidate.warnings)
         if not explanations:
@@ -361,6 +365,24 @@ def resolve_weather_condition(
         return judge_weather_condition_from_stated(conditions.weather, conditions.weather_intent)
 
     return None, None
+
+
+def resolve_requested_environment(conditions: UserConditions | None) -> str | None:
+    """날씨 언급이 없을 때만 사용자가 명시한 실내/실외를 Scoring에 넘긴다.
+
+    `weather_intent`가 AVOID/ENJOY면 발화에 날씨가 있는 것이고(D-049), 그 경로는
+    이미 날씨 판정이 실내/실외를 의도대로 반영한다("비 오는데 실내로" →
+    BAD/indoor=1.00). 여기서 환경으로 갈아타면 같은 조건을 두 번 세는 셈이라
+    기존 날씨 판정을 그대로 둔다.
+
+    `any`(실내외 무관)는 `scoring.uses_environment_feature()`가 걸러낸다 —
+    되묻기 기본값이 ANY라(D-053) 그 구분이 필요하다.
+    """
+    if conditions is None or conditions.environment is None:
+        return None
+    if conditions.weather_intent in (WeatherIntent.AVOID, WeatherIntent.ENJOY):
+        return None
+    return conditions.environment.value
 
 
 def _is_weather_explicitly_ignored(
@@ -450,7 +472,9 @@ def _extra_warnings(
     extra: list[str] = []
     if details_missing and _OPERATING_HOURS_UNVERIFIED_WARNING not in ranked.warnings:
         extra.append(_DETAILS_MISSING_WARNING)
-    if ranked.feature_scores.get("weather") is None:
+    # 요청 환경으로 채점한 실행에는 weather 키 자체가 없다. 그건 결측이 아니라
+    # "이번 실행에 존재하지 않는 Feature"이므로 날씨 warning을 붙이지 않는다.
+    if "weather" in ranked.feature_scores and ranked.feature_scores["weather"] is None:
         extra.append(_WEATHER_IGNORED_WARNING if weather_ignored else _WEATHER_MISSING_WARNING)
     if not explanations:
         extra.append(_NO_NOTABLE_EXPLANATION_WARNING)

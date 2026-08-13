@@ -321,8 +321,18 @@ class UserConditions(BaseModel):
     weather_intent: WeatherIntent | None = None
     concentration_intent: ConcentrationIntent | None = None
     transport: Transport | None = None
-    max_travel_time: int | None = Field(default=None, ge=0)
-    time_available: int | None = Field(default=None, ge=0)
+    max_travel_time: int | None = Field(
+        default=None,
+        ge=0,
+        description="분(minute) 단위 정수. 사용자가 시간(hour) 단위로 말했으면 60을 곱해 "
+        "환산한 값을 넣는다(예: '5시간' -> 300). 숫자만 그대로 옮기지 않는다.",
+    )
+    time_available: int | None = Field(
+        default=None,
+        ge=0,
+        description="분(minute) 단위 정수. 사용자가 시간(hour) 단위로 말했으면 60을 곱해 "
+        "환산한 값을 넣는다(예: '5시간' -> 300). 숫자만 그대로 옮기지 않는다.",
+    )
     environment: Environment | None = None
     companion: Companion | None = None
     budget: str | None = None

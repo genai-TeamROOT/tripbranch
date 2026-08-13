@@ -41,6 +41,25 @@ _NO_CANDIDATES_ROUTE_SUMMARY = (
 # (SCHEDULE-07, 9절 "D 후보 3개 미만" 미결 사항 해소).
 
 
+def _parse_hhmm_minutes(hhmm: str) -> int | None:
+    """estimated_arrival("HH:MM")을 자정 기준 분 단위 정수로 파싱한다.
+
+    형식이 안 맞으면(LLM이 지시를 안 지킨 방어적 상황) None을 돌려준다 —
+    호출부가 이 경우 재계산을 포기하고 원본 값을 그대로 두도록 한다.
+    """
+
+    try:
+        hour_str, minute_str = hhmm.split(":", 1)
+        return int(hour_str) * 60 + int(minute_str)
+    except (ValueError, AttributeError):
+        return None
+
+
+def _format_minutes_hhmm(total_minutes: int) -> str:
+    wrapped = total_minutes % (24 * 60)
+    return f"{wrapped // 60:02d}:{wrapped % 60:02d}"
+
+
 def _round_up_arrival(hhmm: str) -> str:
     """estimated_arrival("HH:MM")을 다음 10분 단위로 올림한다(예: "11:59" -> "12:00").
 
@@ -178,6 +197,60 @@ def _total_duration_from_items(items: list[ScheduleItem]) -> int:
     return duration_sum + travel_sum
 
 
+def _resync_downstream_arrivals(
+    merged: list[ScheduleItem], expected_orders: set[int]
+) -> list[ScheduleItem]:
+    """교체된 자리(new_items) 뒤에 이어지는 pinned 항목들의 estimated_arrival을
+    실제 duration/travel 체인 기준으로 다시 계산한다.
+
+    pinned 항목의 estimated_arrival은 "직전 전체/부분 편성 때 그 앞자리에 있던
+    장소" 기준으로 계산된 값이라, 그 앞자리가 이번 REJECT_SPECIFIC으로 새 장소로
+    바뀌면(새 장소의 체류·이동 시간이 원래 있던 장소와 다를 수 있으므로) 더 이상
+    맞지 않을 수 있다 — travel_to_next_min이 stale해지는 것과 같은 원인이다
+    (실사용 리뷰로 발견, 2026-08-13. 관련 수정: 교체 직전 pinned 항목의
+    travel_to_next_min 무효화).
+
+    순서대로 훑으면서, 이번에 새로 채워진 자리(new_items)는 LLM이 이미
+    pinned 이웃의 도착 시각을 근거로 직접 계산해준 값이니 그대로 앵커로
+    신뢰한다(다시 계산하지 않음 — LLM 출력을 임의로 덮어쓰지 않는다). 그 다음에
+    오는 pinned 항목들은 앵커의 도착 시각에 앵커 자신의 duration·travel_to_next_min을
+    누적해 다시 계산한다. 이 anchor가 실은 그 앞자리부터 안 바뀐 pinned
+    항목이라도(즉 이번에 아무것도 안 바뀐 구간) 같은 값·같은 공식으로 다시
+    계산하는 것이라 결과가 그대로 재현된다 — 안전하다.
+
+    파싱 실패(anchor의 estimated_arrival이 "HH:MM"이 아닌 방어적 상황)가
+    생기면 그 시점부터는 재계산을 포기하고 남은 항목을 원본 그대로 둔다 —
+    화면 표시용 후처리가 이미 있는 값까지 망가뜨리면 안 된다는 기존 원칙과
+    동일하다.
+    """
+
+    result: list[ScheduleItem] = []
+    running_minutes: int | None = None
+    prev_duration = 0
+    prev_travel = 0
+
+    for item in merged:
+        is_anchor = not result or item.order in expected_orders
+        if is_anchor:
+            resolved_item = item
+            running_minutes = _parse_hhmm_minutes(item.estimated_arrival)
+        elif running_minutes is None:
+            # 이전 앵커 파싱이 실패했다 — 더 이상 신뢰할 기준점이 없으니 원본 유지.
+            resolved_item = item
+        else:
+            running_minutes += prev_duration + prev_travel
+            resolved_item = item.model_copy(
+                update={"estimated_arrival": _format_minutes_hhmm(running_minutes)}
+            )
+            running_minutes = _parse_hhmm_minutes(resolved_item.estimated_arrival)
+
+        result.append(resolved_item)
+        prev_duration = resolved_item.estimated_duration_min
+        prev_travel = resolved_item.travel_to_next_min or 0
+
+    return result
+
+
 def _pinned_only_result(
     pinned_items: list[ScheduleItem],
     visit_datetime: datetime,
@@ -260,6 +333,31 @@ async def plan_partial_schedule(
         )
 
     merged = sorted([*request.pinned_items, *plan.new_items], key=lambda item: item.order)
+
+    # 교체된 자리(new_items) 뒤에 이어지는 pinned 항목들의 도착 시각이 새 장소의
+    # 실제 체류·이동 시간과 안 맞을 수 있다 — travel_to_next_min 무효화와 같은
+    # 원인으로 발견된 별도 증상이다. travel_to_next_min을 아직 무효화하기 전인
+    # 지금(원본 값 그대로) 재계산해야 앵커 이후 체인의 누적 합산이 정확하다.
+    merged = _resync_downstream_arrivals(merged, expected_orders)
+
+    # pinned 항목의 travel_to_next_min은 "직전 전체/부분 편성 때 그 다음 자리에
+    # 있던 장소까지의 이동시간"을 그대로 들고 있다(agent_runtime.py가
+    # session_context.shown_recommendations에서 재계산 없이 복사). 이번
+    # target_orders 교체로 바로 다음 자리(order+1)가 새 장소로 바뀌었다면 그
+    # 값은 더 이상 맞지 않는 이웃을 가리키는 stale 값이다 — LLM은 pinned
+    # 항목을 다시 보지 않으므로(에코 신뢰 안 함 원칙) 이 함수가 재계산할 수
+    # 없고, 재계산 없이 그대로 두면 잘못된 이동시간이 total_duration_min과
+    # 프론트 표시에 그대로 섞여 들어간다. 새 값을 추정하기보다 모른다는 걸
+    # 명시적으로 드러내는 게 "구조적 보장 우선" 원칙에 맞아 None으로 무효화한다
+    # (실사용 리뷰로 발견, 2026-08-13).
+    pinned_orders = {item.order for item in request.pinned_items}
+    merged = [
+        item.model_copy(update={"travel_to_next_min": None})
+        if item.order in pinned_orders and (item.order + 1) in expected_orders
+        else item
+        for item in merged
+    ]
+
     kept = len(request.pinned_items)
     replaced = len(plan.new_items)
     route_summary = f"{kept}곳은 그대로 유지하고 {replaced}곳을 새로운 장소로 바꿨어요."

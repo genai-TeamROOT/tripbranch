@@ -12,8 +12,10 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from app.providers.gemini_prompts import (
+    build_compare_extraction_instruction,
     build_intent_classification_instruction,
     build_modify_extraction_instruction,
+    build_recommend_extraction_instruction,
     build_schedule_planning_instruction,
 )
 from app.providers.stub import FakeLLMProvider
@@ -985,6 +987,27 @@ def test_modify_instruction_includes_reject_specific_rule_and_shown_count() -> N
     assert "현재 노출된 일정/추천 항목 수: 3" in instruction
 
 
+def test_recommend_instruction_includes_time_unit_conversion_rule() -> None:
+    """time_available/max_travel_time이 분 단위임을 명시하지 않아 LLM이 "5시간"을
+    그대로 5로 뽑는 실사용 오류가 확인됨(2026-08-13) — 프롬프트에 환산 규칙을
+    명시적으로 넣었는지 확인한다."""
+    instruction = build_recommend_extraction_instruction()
+
+    assert "분(minute) 단위 정수" in instruction
+    assert "60을 곱해" in instruction
+    assert "5시간" in instruction and "300" in instruction
+
+
+def test_modify_instruction_includes_time_unit_conversion_rule() -> None:
+    """위와 같은 이유로 MODIFY(조건 변경) 프롬프트에도 같은 환산 규칙이 있어야 한다 —
+    "이번엔 5시간으로 다시 짜줘"처럼 SCHEDULE 다음 턴 조건 변경이 이 경로를 탄다."""
+    instruction = build_modify_extraction_instruction(UserConditions(search_center="경복궁"))
+
+    assert "분(minute) 단위 정수" in instruction
+    assert "60을 곱해" in instruction
+    assert "5시간" in instruction and "300" in instruction
+
+
 @pytest.mark.asyncio
 async def test_extract_modify_conditions_tc08_change_condition_budget() -> None:
     provider = FakeLLMProvider()
@@ -1124,3 +1147,123 @@ class TestBuildSchedulePlanningInstructionDynamicCount:
     def test_짧은_시간에는_체류시간_비현실적_단축_경고_문구가_있다(self):
         instruction = build_schedule_planning_instruction(time_available_min=90)
         assert "비현실적으로 짧게" in instruction
+
+
+# --- COMPARE targets 이름 지목 ---------------------------------------------
+#
+# 이름으로 비교 대상을 지목하면 그 이름의 순번만 targets에 담긴다. 개수만 알던
+# 때는 이름과 순번의 대응을 알 수 없어 "all"이나 임의의 번호가 나왔고, 사용자가
+# 지목하지 않은 장소가 비교 대상에 섞였다.
+
+_SHOWN_PLACES = ["가회민화박물관", "오설록 티하우스 북촌점", "백인제가옥"]
+
+
+@pytest.mark.asyncio
+async def test_extract_compare_request_resolves_place_names_to_ranks() -> None:
+    provider = FakeLLMProvider()
+
+    output = (
+        await provider.extract_compare_request(
+            "백인제가옥이랑 가회민화박물관 비교해줘",
+            shown_place_count=3,
+            shown_place_names=_SHOWN_PLACES,
+        )
+    ).data
+
+    assert output.compare is not None
+    assert output.compare.targets == [1, 3]
+
+
+@pytest.mark.asyncio
+async def test_extract_compare_request_mixes_ordinal_and_name() -> None:
+    provider = FakeLLMProvider()
+
+    output = (
+        await provider.extract_compare_request(
+            "첫 번째랑 백인제가옥 중에 어디가 더 가까워?",
+            shown_place_count=3,
+            shown_place_names=_SHOWN_PLACES,
+        )
+    ).data
+
+    assert output.compare is not None
+    assert output.compare.targets == [1, 3]
+    assert output.compare.criteria is CompareCriteria.DISTANCE
+
+
+@pytest.mark.asyncio
+async def test_extract_compare_request_without_names_falls_back_to_all() -> None:
+    """이름 목록이 없으면(과거 세션 등) 이름 지목을 해석할 근거가 없다.
+
+    근거 없이 순번을 지어내지 않고 기존 동작("all")을 유지한다.
+    """
+    provider = FakeLLMProvider()
+
+    output = (
+        await provider.extract_compare_request(
+            "백인제가옥이랑 가회민화박물관 비교해줘",
+            shown_place_count=3,
+        )
+    ).data
+
+    assert output.compare is not None
+    assert output.compare.targets == "all"
+
+
+@pytest.mark.asyncio
+async def test_extract_compare_request_unmentioned_places_stay_all() -> None:
+    """순번도 이름도 지목하지 않으면 종전대로 전체 비교다."""
+    provider = FakeLLMProvider()
+
+    output = (
+        await provider.extract_compare_request(
+            "어디가 좋아?",
+            shown_place_count=3,
+            shown_place_names=_SHOWN_PLACES,
+        )
+    ).data
+
+    assert output.compare is not None
+    assert output.compare.targets == "all"
+
+
+@pytest.mark.asyncio
+async def test_extract_compare_request_out_of_range_ordinal_asks_clarification() -> None:
+    provider = FakeLLMProvider()
+
+    output = (
+        await provider.extract_compare_request(
+            "세 번째랑 첫 번째 비교해줘",
+            shown_place_count=2,
+            shown_place_names=_SHOWN_PLACES[:2],
+        )
+    ).data
+
+    assert output.status is OutputStatus.NEEDS_CLARIFICATION
+    assert output.compare is None
+    assert output.clarification is not None
+    assert "2개" in output.clarification.message
+
+
+def test_compare_prompt_includes_numbered_place_names() -> None:
+    instruction = build_compare_extraction_instruction(
+        shown_place_count=3, shown_place_names=_SHOWN_PLACES
+    )
+
+    assert "아래 노출된 항목 목록 (순번. 이름):" in instruction
+    assert "1. 가회민화박물관" in instruction
+    assert "3. 백인제가옥" in instruction
+
+
+def test_compare_prompt_omits_list_block_when_names_missing() -> None:
+    """이름이 전부 비어 있으면 목록 블록을 넣지 않는다 — 빈 목록을 주면
+    모델이 그 형식을 흉내 내며 없는 순번을 만들어낸다.
+
+    규칙 본문에도 "아래 노출된 항목 목록"이라는 표현이 나오므로, 블록의 머리글을
+    통째로 대조해야 헛통과하지 않는다.
+    """
+    instruction = build_compare_extraction_instruction(
+        shown_place_count=2, shown_place_names=["", ""]
+    )
+
+    assert "아래 노출된 항목 목록 (순번. 이름):" not in instruction

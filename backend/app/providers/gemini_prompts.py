@@ -248,6 +248,9 @@ UserConditions(15개 필드)를 추출해 LLMOutput(intent="RECOMMEND")으로 �
   나머지는 null
 - max_travel_time/time_available: 사용자가 시간 제한이 없다고 말하거나 시간에 대해
   언급하지 않으면 반드시 null로 반환하세요. 0을 반환하지 마세요.
+- max_travel_time/time_available은 **분(minute) 단위 정수**입니다. "시간(hour)"으로
+  말했으면 60을 곱해 분으로 환산하세요 — 숫자만 그대로 옮기지 마세요
+  (예: "5시간" → 300, "2시간 30분" → 150, "30분" → 30(환산 불필요)).
 - environment: 실내/실외를 명시했거나 weather_intent가 AVOID/ENJOY로 확정된 경우에만
   채웁니다. 언급이 없으면 반드시 null로 두세요 — "any"는 "실내외 상관없어"처럼 무관함을
   명시했을 때만 씁니다("언급 없음"을 any로 표현하지 마세요).
@@ -329,6 +332,9 @@ _MODIFY_FIELD_MERGE_RULES = """\
   max_travel_time/time_available/environment/companion: 언급된 필드만 새 값으로 채운다
 - max_travel_time/time_available: 시간 제한이 없다고 말하거나(해제) 언급이 없으면
   null로 채우세요. 0을 반환하지 마세요.
+- max_travel_time/time_available은 **분(minute) 단위 정수**입니다. "시간(hour)"으로
+  말했으면 60을 곱해 분으로 환산하세요 — 숫자만 그대로 옮기지 마세요
+  (예: "5시간" → 300, "2시간 30분" → 150, "30분" → 30(환산 불필요)).
 - budget: "무료만" 같은 교체는 새 값으로("free" 리터럴 사용, 아래 budget 규칙 참고),
   "가격 상관없어" 같은 해제는 null로
 - 장소 유형·태그를 새로 요청하면 place_types와 place_tags를 반드시 함께 채운다.
@@ -350,6 +356,24 @@ _MODIFY_FIELD_MERGE_RULES = """\
 
 changed_fields에는 이번 발화로 값을 채운 UserConditions 필드명만 정확히 나열하세요.
 condition_changes에서 값을 채운 필드와 changed_fields의 목록은 항상 일치해야 합니다.
+"""
+
+
+def _shown_place_list_block(shown_place_names: list[str] | None) -> str:
+    """rank 순 이름 목록을 "1. 이름" 형태의 프롬프트 블록으로 만든다.
+
+    이름이 하나도 없으면(과거 세션이라 저장이 안 됐거나 호출부가 안 넘김) 빈
+    문자열을 돌려준다 — 목록 없이 이름 매칭을 시키면 모델이 근거 없이 순번을
+    지어낸다. MODIFY와 COMPARE가 같은 형식을 쓰도록 한 곳에 둔다.
+    """
+    if not shown_place_names or not any(name for name in shown_place_names):
+        return ""
+    numbered = "\n".join(
+        f"{index}. {name}" for index, name in enumerate(shown_place_names, start=1) if name
+    )
+    return f"""
+아래 노출된 항목 목록 (순번. 이름):
+{numbered}
 """
 
 
@@ -379,17 +403,7 @@ def build_modify_extraction_instruction(
         if pending_clarification in {"location_required", "location_ambiguous"}
         else "아니오"
     )
-    shown_list_block = ""
-    if shown_place_names and any(name for name in shown_place_names):
-        numbered = "\n".join(
-            f"{index}. {name}"
-            for index, name in enumerate(shown_place_names, start=1)
-            if name
-        )
-        shown_list_block = f"""
-아래 노출된 항목 목록 (순번. 이름):
-{numbered}
-"""
+    shown_list_block = _shown_place_list_block(shown_place_names)
     return f"""당신은 TripBranch의 MODIFY 요청 추출기입니다. 사용자 발화 하나에서
 modify_type과 condition_changes를 추출해 LLMOutput(intent="MODIFY")으로 반환하세요.
 
@@ -490,8 +504,14 @@ status 결정:
 
 _COMPARE_TARGET_RULES = """\
 targets 판별:
-- 번호를 명시하지 않았으면 "all" (예: "어디가 좋아?", "뭐가 나아?")
 - "첫 번째랑 두 번째"처럼 순번을 명시하면 1-indexed 번호 배열 (예: [1, 2])
+- "아래 노출된 항목 목록"의 장소 이름으로 지목해도 동일하게 처리한다 — 그 이름의
+  순번을 targets에 담는다(예: 목록이 "1. 경복궁 2. 두가헌 레스토랑 3. 갤러리조선"일
+  때 "갤러리조선이랑 경복궁 비교해줘" → [3, 1]).
+  이름 일부만 언급해도(예: "두가헌 레스토랑"을 "두가헌"으로) 목록에서 유일하게
+  식별되면 그 항목으로 판단한다. 순번과 이름을 섞어 언급해도(예: "첫 번째랑
+  갤러리조선") 모두 담는다. 노출 목록에 없는 이름을 언급하면 이 규칙을 적용하지 않는다
+- 순번도 이름도 지목하지 않았으면 "all" (예: "어디가 좋아?", "뭐가 나아?")
 """
 
 _COMPARE_CRITERIA_RULES = """\
@@ -502,12 +522,24 @@ criteria 판별:
 """
 
 
-def build_compare_extraction_instruction(*, shown_place_count: int) -> str:
-    """int-04-compare.md §5~7(targets, criteria) 기반."""
+def build_compare_extraction_instruction(
+    *,
+    shown_place_count: int,
+    shown_place_names: list[str] | None = None,
+) -> str:
+    """int-04-compare.md §5~7(targets, criteria) 기반.
 
+    shown_place_names는 이름 지목("백인제가옥이랑 가회민화박물관 비교해줘")을
+    순번으로 옮기기 위해 필요하다. 개수만 주던 때는 모델이 이름과 순번의 대응을
+    알 방법이 없어 임의로 "all"이나 [1, 2]를 만들어냈고, 그래서 사용자가 지목한
+    적 없는 장소가 비교 대상에 섞였다. MODIFY의 target_indices가 같은 이유로
+    이미 이 목록을 받고 있다(SCHEDULE-09 후속).
+    """
+
+    shown_list_block = _shown_place_list_block(shown_place_names)
     return f"""당신은 TripBranch의 COMPARE 요청 추출기입니다. 사용자 발화 하나에서
 targets와 criteria를 추출해 LLMOutput(intent="COMPARE")으로 반환하세요.
-
+{shown_list_block}
 {_COMPARE_TARGET_RULES}
 {_COMPARE_CRITERIA_RULES}
 
