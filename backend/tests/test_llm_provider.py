@@ -14,6 +14,7 @@ import pytest
 from app.providers.gemini_prompts import (
     build_intent_classification_instruction,
     build_modify_extraction_instruction,
+    build_recommend_extraction_instruction,
     build_schedule_planning_instruction,
 )
 from app.providers.stub import FakeLLMProvider
@@ -983,6 +984,27 @@ def test_modify_instruction_includes_reject_specific_rule_and_shown_count() -> N
     assert "REJECT_SPECIFIC" in instruction
     assert "target_indices" in instruction
     assert "현재 노출된 일정/추천 항목 수: 3" in instruction
+
+
+def test_recommend_instruction_includes_time_unit_conversion_rule() -> None:
+    """time_available/max_travel_time이 분 단위임을 명시하지 않아 LLM이 "5시간"을
+    그대로 5로 뽑는 실사용 오류가 확인됨(2026-08-13) — 프롬프트에 환산 규칙을
+    명시적으로 넣었는지 확인한다."""
+    instruction = build_recommend_extraction_instruction()
+
+    assert "분(minute) 단위 정수" in instruction
+    assert "60을 곱해" in instruction
+    assert "5시간" in instruction and "300" in instruction
+
+
+def test_modify_instruction_includes_time_unit_conversion_rule() -> None:
+    """위와 같은 이유로 MODIFY(조건 변경) 프롬프트에도 같은 환산 규칙이 있어야 한다 —
+    "이번엔 5시간으로 다시 짜줘"처럼 SCHEDULE 다음 턴 조건 변경이 이 경로를 탄다."""
+    instruction = build_modify_extraction_instruction(UserConditions(search_center="경복궁"))
+
+    assert "분(minute) 단위 정수" in instruction
+    assert "60을 곱해" in instruction
+    assert "5시간" in instruction and "300" in instruction
 
 
 @pytest.mark.asyncio

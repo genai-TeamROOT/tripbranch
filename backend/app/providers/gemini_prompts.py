@@ -248,6 +248,9 @@ UserConditions(15개 필드)를 추출해 LLMOutput(intent="RECOMMEND")으로 �
   나머지는 null
 - max_travel_time/time_available: 사용자가 시간 제한이 없다고 말하거나 시간에 대해
   언급하지 않으면 반드시 null로 반환하세요. 0을 반환하지 마세요.
+- max_travel_time/time_available은 **분(minute) 단위 정수**입니다. "시간(hour)"으로
+  말했으면 60을 곱해 분으로 환산하세요 — 숫자만 그대로 옮기지 마세요
+  (예: "5시간" → 300, "2시간 30분" → 150, "30분" → 30(환산 불필요)).
 - environment: 실내/실외를 명시했거나 weather_intent가 AVOID/ENJOY로 확정된 경우에만
   채웁니다. 언급이 없으면 반드시 null로 두세요 — "any"는 "실내외 상관없어"처럼 무관함을
   명시했을 때만 씁니다("언급 없음"을 any로 표현하지 마세요).
@@ -329,6 +332,9 @@ _MODIFY_FIELD_MERGE_RULES = """\
   max_travel_time/time_available/environment/companion: 언급된 필드만 새 값으로 채운다
 - max_travel_time/time_available: 시간 제한이 없다고 말하거나(해제) 언급이 없으면
   null로 채우세요. 0을 반환하지 마세요.
+- max_travel_time/time_available은 **분(minute) 단위 정수**입니다. "시간(hour)"으로
+  말했으면 60을 곱해 분으로 환산하세요 — 숫자만 그대로 옮기지 마세요
+  (예: "5시간" → 300, "2시간 30분" → 150, "30분" → 30(환산 불필요)).
 - budget: "무료만" 같은 교체는 새 값으로("free" 리터럴 사용, 아래 budget 규칙 참고),
   "가격 상관없어" 같은 해제는 null로
 - 장소 유형·태그를 새로 요청하면 place_types와 place_tags를 반드시 함께 채운다.
