@@ -524,6 +524,50 @@ async def test_local_search_does_not_group_when_a_shop_shares_the_name() -> None
     assert result.status is ResolveLocationStatus.NO_DATA
     assert result.error is not None
     assert result.error.cause == "ambiguous_location"
+    # 되묻기 버튼용 후보 이름을 실제로 찾아낸 후보에서 채우되, 식당류는 위치 후보로
+    # 부적절해 제외한다(docs/design/clarification-options.md 7절 확장, 실사용
+    # 피드백 2026-08-13) — 지하철역만 남는다.
+    assert result.error.details["candidate_names"] == "종각역 1호선"
+
+
+@pytest.mark.asyncio
+async def test_local_search_ambiguous_candidates_exclude_restaurants() -> None:
+    """지역 검색이 식당·상점까지 함께 돌려줘도(주변 상호 포함), 되묻기 버튼은
+    지하철역/명소류만 남긴다 — "종각" 검색에서 식당이 위치 후보로 뜨면 사용자가
+    혼란스럽다는 실사용 피드백을 반영했다(2026-08-13). 넷 다 첫 토큰이 "종각"과
+    정확히 안 맞아 전부 원본 후보 그대로 애매 판정으로 떨어진다(실사용 재현)."""
+    result, _ = await _resolve_with_local_search(
+        (
+            _local_place("종각역 1호선", category="교통,운수>지하철,전철"),
+            _local_place("종각타워", category="관광,명소"),
+            _local_place("숙썽수산 종로본점", category="음식점>수산물"),
+            _local_place("어망집", category="음식점>한식"),
+        ),
+        "종각",
+    )
+
+    assert result.status is ResolveLocationStatus.NO_DATA
+    assert result.error is not None
+    assert result.error.details["candidate_names"] == "종각역 1호선|종각타워"
+
+
+@pytest.mark.asyncio
+async def test_local_search_ambiguous_yields_no_candidate_names_when_all_are_shops() -> None:
+    """후보가 전부 식당·상점뿐이면(지하철역/명소가 하나도 없으면) candidate_names를
+    비운다 — 식당을 위치 후보로 보여주지 않는다(실사용 피드백, 2026-08-13: "그냥
+    지하철역으로만 가자"). 이때 agent_runtime.py가 A2 종로구 대표 스팟 고정
+    버튼으로 대신한다."""
+    result, _ = await _resolve_with_local_search(
+        (
+            _local_place("종각 스타벅스", category="음식점>카페"),
+            _local_place("종각 노브랜드버거", category="음식점>패스트푸드"),
+        ),
+        "종각",
+    )
+
+    assert result.status is ResolveLocationStatus.NO_DATA
+    assert result.error is not None
+    assert result.error.details["candidate_names"] == ""
 
 
 @pytest.mark.asyncio

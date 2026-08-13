@@ -9,6 +9,7 @@ TODO: provider가 늘어나면 오류 타입, 비동기 계약, 메타데이터 
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from datetime import date
 from typing import Protocol, runtime_checkable
 
@@ -74,9 +75,7 @@ class LLMProvider(Protocol):
         """
         ...
 
-    async def extract_recommend_conditions(
-        self, user_input: str
-    ) -> ProviderResult[LLMOutput]:
+    async def extract_recommend_conditions(self, user_input: str) -> ProviderResult[LLMOutput]:
         """RECOMMEND 발화에서 UserConditions를 추출한다."""
         ...
 
@@ -121,9 +120,7 @@ class LLMProvider(Protocol):
         """COMPARE 발화에서 비교 대상과 기준을 추출한다."""
         ...
 
-    async def extract_general_request(
-        self, user_input: str
-    ) -> ProviderResult[LLMOutput]:
+    async def extract_general_request(self, user_input: str) -> ProviderResult[LLMOutput]:
         """GENERAL 발화의 주제를 분류한다."""
         ...
 
@@ -147,9 +144,38 @@ class LLMProvider(Protocol):
         """
         ...
 
-    async def generate_compare_summary(
-        self, comparison: ComparisonResult
-    ) -> ProviderResult[str]:
+    def stream_recommendation_summary(
+        self, intent: Intent, recommendations: RecommendationResponse
+    ) -> AsyncIterator[str]:
+        """추천 요약 문장을 Gemini 조각 단위로 전달한다.
+
+        SSE 경로에서만 사용한다. 카드 데이터는 이미 확정되어 있으므로 이 스트림이
+        실패해도 호출자는 고정 템플릿으로 안전하게 마무리할 수 있어야 한다.
+        """
+        ...
+
+    def stream_general_answer(
+        self, topic: GeneralTopic, original_question: str
+    ) -> AsyncIterator[str]:
+        """GENERAL 답변을 텍스트 조각으로 전달한다.
+
+        SSE 경로에서만 사용한다. 자유 답변은 추천 카드처럼 별도 결과가 없으므로,
+        호출자는 첫 조각 전에 로딩 말풍선을 먼저 열어야 한다.
+        """
+        ...
+
+    def stream_info_answer(
+        self,
+        *,
+        place_name: str,
+        question_type: str,
+        specific_question: str | None,
+        fields: dict[str, str],
+    ) -> AsyncIterator[str]:
+        """검증된 INFO 필드만 근거로 한 안내 답변을 텍스트 조각으로 전달한다."""
+        ...
+
+    async def generate_compare_summary(self, comparison: ComparisonResult) -> ProviderResult[str]:
         """C가 반환한 비교 사실을 3~6줄의 사용자용 설명으로 바꾼다.
 
         comparison 밖의 사실·점수·순위를 만들지 않는다. 호출부는 LLM 장애 시
@@ -185,6 +211,7 @@ class RecommendationProvider(Protocol):
         """Return place recommendations, excluding already shown IDs."""
         ...
 
+
 class GeocodingProvider(Protocol):
     async def geocode(
         self, location_query: str, *, use_alias: bool = True
@@ -199,6 +226,7 @@ class LocalSearchProvider(Protocol):
     ) -> ProviderResult[tuple[LocalSearchPlace, ...]]:
         """상호명·시설명으로 Naver 지역 검색 후보를 반환한다."""
         ...
+
 
 class WeatherProvider(Protocol):
     async def get_forecast_slots(
@@ -274,9 +302,7 @@ class PlaceProvider(PlaceSearchProvider, PlaceDetailsProvider, Protocol):
 
 
 class PlaceCommonDetailsProvider(Protocol):
-    async def get_common_details(
-        self, content_id: str
-    ) -> ProviderResult[PlaceCommonDetails]:
+    async def get_common_details(self, content_id: str) -> ProviderResult[PlaceCommonDetails]:
         """detailCommon2만 호출해 overview·homepage·tel을 반환한다."""
         ...
 

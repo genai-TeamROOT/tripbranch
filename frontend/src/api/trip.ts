@@ -12,10 +12,11 @@
  * 대체된다. Intent 분류·조건 추출 자체를 확인하려면 interpretDebug()를 대신 사용한다.
  */
 
-import { apiClient } from "./client";
+import { apiClient, streamPost } from "./client";
 import type {
   AgentDebugRequest,
   AgentResponse,
+  AgentStreamEvent,
   ChatRequest,
   ChatResponse,
   InterpretDebugRequest,
@@ -99,6 +100,34 @@ export function runAgentDebug(request: AgentDebugRequest) {
  */
 export function sendChat(request: ChatRequest) {
   return apiClient.post<ChatResponse>("/chat", request);
+}
+
+/** 실제 진행 상태·추천 카드·요약 문장을 순차 수신하는 SSE 채팅 경로. */
+export function streamChat(
+  request: ChatRequest,
+  onEvent: (event: AgentStreamEvent) => void,
+) {
+  let receivedEvent = false;
+  return streamPost<unknown>("/chat/stream", request, (event, data) => {
+    if (
+      event === "progress" ||
+      event === "result" ||
+      event === "message_start" ||
+      event === "message_delta" ||
+      event === "done" ||
+      event === "error"
+    ) {
+      receivedEvent = true;
+      onEvent({ type: event, data } as AgentStreamEvent);
+    }
+  }).catch(async (error: unknown) => {
+    // SSE endpoint 자체를 사용할 수 없는 구버전 배포·프록시 환경만 기존 단발 API로
+    // 낮춘다. progress/result를 하나라도 받은 뒤의 오류는 이미 일부 화면이 그려진
+    // 상태라, 중복 실행을 피하기 위해 호출자에게 그대로 전달한다.
+    if (receivedEvent) throw error;
+    const response = await sendChat(request);
+    onEvent({ type: "done", data: { elapsed_ms: 0, response } });
+  });
 }
 
 /*

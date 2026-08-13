@@ -1,6 +1,6 @@
 /*
  * 역할: 추천 장소 하나를 카드 형태로 렌더링한다.
- * 입력: RecommendationItem 데이터와 운영시간 미확인 표시 여부.
+ * 입력: RecommendationItem 데이터.
  * 출력: 장소명, 카테고리, 추천 이유, 주소, 검증 상태 UI.
  * 호출 시점: RecommendationResultMessage가 추천 목록과 검증 불가 목록을 표시할 때 호출된다.
  * TODO: 지도 링크, 저장/제외 액션, 실시간 영업 정보가 생기면 하위 UI를 확장한다.
@@ -17,7 +17,6 @@ const SAFE_WALKING_SPEED_KMH = 3.6;
 
 interface PlaceCardProps {
   item: RecommendationItem;
-  unverifiedHours?: boolean;
 }
 
 function formatWalkingMinutes(distanceKm: number): string {
@@ -55,23 +54,29 @@ function isAlwaysOpen(operatingHours: string): boolean {
 }
 
 function formatOperatingHours(item: RecommendationItem): string {
-  if (item.remaining_minutes === null) {
-    return "확인 불가";
-  }
-
   // D가 제공하는 당일 적용 운영 구간을 우선 표시한다. 이전 응답 또는 구간을
   // 판별할 수 없는 후보는 기존의 종료 예정 시각 표기로 자연스럽게 폴백한다.
+  // 운영시간 무시로 폐점 후보를 함께 보여주는 경우에도 이 값은 남아 있다. 이때
+  // remaining_minutes만 null이라는 이유로 "확인 불가"로 덮어쓰면 실제 운영시간을
+  // 알고도 숨기게 되므로, 구간과 현재 폐점 상태를 함께 표시한다.
   if (item.operating_hours_display) {
     if (isAlwaysOpen(item.operating_hours_display)) {
       return item.operating_hours_display;
     }
+    if (item.remaining_minutes === null) {
+      return `${item.operating_hours_display} (현재 운영시간 아님)`;
+    }
     return `${item.operating_hours_display} (${formatRemainingDuration(item.remaining_minutes)})`;
+  }
+
+  if (item.remaining_minutes === null) {
+    return "확인 불가";
   }
 
   return formatClosingTime(item.remaining_minutes);
 }
 
-export function PlaceCard({ item, unverifiedHours = false }: PlaceCardProps) {
+export function PlaceCard({ item }: PlaceCardProps) {
   return (
     <li className="flex flex-col gap-2 rounded-lg border border-gray-200 p-4 shadow-sm dark:border-gray-700">
       <div className="flex items-start justify-between gap-2">
@@ -90,9 +95,7 @@ export function PlaceCard({ item, unverifiedHours = false }: PlaceCardProps) {
         </div>
         <div className="flex gap-1">
           <dt className="text-gray-400">운영시간</dt>
-          <dd>
-            {unverifiedHours ? "확인 불가" : formatOperatingHours(item)}
-          </dd>
+          <dd>{formatOperatingHours(item)}</dd>
         </div>
       </dl>
 

@@ -15,6 +15,10 @@ import tailwindcss from "@tailwindcss/vite";
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
+    // PORT가 지정되면 그대로 따른다 — 안 지키면 5173이 이미 쓰이고 있을 때 Vite가
+    // 조용히 다른 포트로 넘어가버려서, 이 포트를 기대하는 프리뷰 도구와 어긋난다.
+    port: process.env.PORT ? Number(process.env.PORT) : 5173,
+    strictPort: Boolean(process.env.PORT),
     proxy: {
       "/api": {
         target: "http://localhost:8000",

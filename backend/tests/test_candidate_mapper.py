@@ -88,7 +88,7 @@ def test_maps_public_context_to_scoring_candidate() -> None:
     assert candidate.raw_source == "fake_place"
 
 
-def test_context_mapper_marks_regular_closure_for_scoring_filter() -> None:
+def test_context_mapper_keeps_regular_closure_hours_for_card_display() -> None:
     context = _context(
         schedule={
             "availability": "scheduled",
@@ -110,7 +110,36 @@ def test_context_mapper_marks_regular_closure_for_scoring_filter() -> None:
     )[0]
 
     assert candidate.operating_hours is not None
-    assert candidate.operating_hours.open_time == candidate.operating_hours.close_time
+    # 폐점 여부는 Scoring이 remaining_minutes=None으로 판별한다. 여기서는 카드가
+    # 실제 시간대를 보여 줄 수 있도록 00:00~00:00 표식으로 덮어쓰지 않는다.
+    assert candidate.operating_hours.open_time.isoformat() == "09:00:00"
+    assert candidate.operating_hours.close_time.isoformat() == "18:00:00"
+
+
+def test_context_mapper_keeps_closed_hours_for_card_display() -> None:
+    context = _context(
+        schedule={
+            "availability": "scheduled",
+            "rules": [],
+            "time_ranges": [
+                {
+                    "open_time": "11:00",
+                    "close_time": "21:00",
+                    "crosses_midnight": False,
+                }
+            ],
+            "closure_rules": [],
+        }
+    )
+
+    candidate = map_context_to_scoring_candidates(
+        context,
+        visit_at=datetime(2026, 7, 24, 22, 0),
+    )[0]
+
+    assert candidate.operating_hours is not None
+    assert candidate.operating_hours.open_time.isoformat() == "11:00:00"
+    assert candidate.operating_hours.close_time.isoformat() == "21:00:00"
 
 
 def test_context_mapper_keeps_unknown_hours_unverified() -> None:

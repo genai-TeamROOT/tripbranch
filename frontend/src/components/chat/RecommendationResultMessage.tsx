@@ -43,7 +43,20 @@ export function RecommendationResultMessage({
   onRequestMore,
   onRelaxRadius,
 }: RecommendationResultMessageProps) {
-  const hasNoResults = recommendations.length === 0 && unverifiedRecommendations.length === 0;
+  // D는 운영시간을 무시한 재검색에서 "현재는 폐점"인 후보도 unverified 목록에
+  // 담는다. 하지만 이 후보는 운영시간 원문 자체가 없는 것이 아니다. 카드에서
+  // 실제 구간을 보여 줄 수 있도록, display가 있는 폐점 후보와 진짜 결측 후보를
+  // 분리한다.
+  const closedRecommendations = unverifiedRecommendations.filter(
+    (item) => item.operating_hours_display,
+  );
+  const unknownHoursRecommendations = unverifiedRecommendations.filter(
+    (item) => !item.operating_hours_display,
+  );
+  const hasNoResults =
+    recommendations.length === 0 &&
+    closedRecommendations.length === 0 &&
+    unknownHoursRecommendations.length === 0;
 
   return (
     <article className="mr-auto flex w-full max-w-2xl flex-col gap-4 rounded-md border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-900">
@@ -83,14 +96,27 @@ export function RecommendationResultMessage({
             </section>
           )}
 
-          {unverifiedRecommendations.length > 0 && (
+          {closedRecommendations.length > 0 && (
+            <section className="flex flex-col gap-3">
+              <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400">
+                현재 운영시간이 아닌 장소
+              </h3>
+              <ul className="flex flex-col gap-3">
+                {closedRecommendations.map((item) => (
+                  <PlaceCard key={item.place_id} item={item} />
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {unknownHoursRecommendations.length > 0 && (
             <section className="flex flex-col gap-3">
               <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400">
                 운영시간을 확인할 수 없는 장소
               </h3>
               <ul className="flex flex-col gap-3">
-                {unverifiedRecommendations.map((item) => (
-                  <PlaceCard key={item.place_id} item={item} unverifiedHours />
+                {unknownHoursRecommendations.map((item) => (
+                  <PlaceCard key={item.place_id} item={item} />
                 ))}
               </ul>
             </section>

@@ -45,6 +45,8 @@ const state: TripState = {
   session_id: "sess_test",
   device_location: "37.5788,126.9770",
   awaiting_clarification: false,
+  agentProgress: null,
+  streamingIntent: null,
   error: null,
 };
 

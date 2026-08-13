@@ -64,6 +64,7 @@ _WEATHER_FIT_TABLE: Mapping[tuple[WeatherCondition, str], float] = {
 _WEATHER_FIT_DEFAULT = 0.80
 
 _UNVERIFIED_WARNING = "방문 전에 운영 여부를 확인해주세요."
+_CLOSED_NOW_WARNING = "지금은 운영시간이 아니에요. 방문 전에 다시 확인해주세요."
 
 
 @dataclass(frozen=True)
@@ -101,6 +102,9 @@ class ScoringResult:
 
     ranked: tuple[RankedCandidate, ...]
     excluded_place_ids: tuple[str, ...]
+    # 폐점이라 제외된 후보만 별도로 센다(이전 노출/거절 제외와 구분) — 호출부가
+    # "결과가 0건인 이유가 전부 폐점인가"를 판단하는 데 쓴다.
+    excluded_closed_place_ids: tuple[str, ...] = ()
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -108,7 +112,14 @@ def _clamp(value: float, low: float, high: float) -> float:
 
 
 def _remaining_minutes(now: datetime, hours: OperatingHours) -> float | None:
-    """`now`가 영업시간 안이면 마감까지 남은 분을, 밖이면 `None`(폐점)을 반환한다."""
+    """`now`가 영업시간 안이면 마감까지 남은 분을, 밖이면 `None`(폐점)을 반환한다.
+
+    정기 휴무일은 구간 안이어도 `None`이다 — `hours`가 그날 실제로 여는 시간이
+    아니라 평소 구간이기 때문이다. 이 한 곳에서 걸러 두면 폐점 판정·잔여시간
+    Feature·"운영시간 무시" 경고가 모두 같은 기준을 따른다.
+    """
+    if hours.is_regular_closure:
+        return None
     current_time = now.time()
     if not (hours.open_time <= current_time < hours.close_time):
         return None
@@ -172,8 +183,10 @@ def _is_excluded(
     now: datetime,
     shown_place_ids: frozenset[str],
     rejected_place_ids: frozenset[str],
+    *,
+    ignore_operating_hours: bool,
 ) -> bool:
-    if _is_closed(candidate, now):
+    if not ignore_operating_hours and _is_closed(candidate, now):
         return True
     return candidate.place_id in shown_place_ids or candidate.place_id in rejected_place_ids
 
@@ -188,11 +201,16 @@ def score_candidates(
     rejected_place_ids: Iterable[str] = (),
     weights: Mapping[str, float] | None = None,
     weather_reason: WeatherReason = None,
+    # True면 폐점 후보를 제외하지 않고 그대로 채점한다 — "운영중이 아닌 곳도
+    # 볼래요"(no_data_closed 되묻기) 해소 시에만 호출부가 켠다. 기본은 False로,
+    # 기존 하드 필터 동작을 그대로 유지한다.
+    ignore_operating_hours: bool = False,
 ) -> ScoringResult:
     """Candidate 목록에 하드 필터와 가중치 점수를 적용해 정렬한다.
 
     1. 이전 노출/거절 후보 제외, 운영 유무 최종 판정으로 폐점 후보 제외
-       (운영시간 미확인은 폐점과 달리 제외하지 않음)
+       (운영시간 미확인은 폐점과 달리 제외하지 않음. ignore_operating_hours=True면
+       폐점도 제외하지 않고 경고만 붙여 채점한다)
     2. 후보별로 날씨·남은 운영시간 결측 여부를 확인해 기본 가중치 또는
        재분배 가중치를 적용 (두 Feature 모두 결측일 수도 있음)
     3. Feature별 점수 계산 후 가중합 (날씨, 남은 운영시간, 거리)
@@ -203,6 +221,7 @@ def score_candidates(
     rejected = frozenset(rejected_place_ids)
 
     excluded_ids: list[str] = []
+    excluded_closed_ids: list[str] = []
     scored: list[
         tuple[
             ScoringCandidate,
@@ -211,12 +230,21 @@ def score_candidates(
             dict[str, float],
             bool,
             float | None,
+            tuple[str, ...],
         ]
     ] = []
 
     for candidate in candidates:
-        if _is_excluded(candidate, now, shown, rejected):
+        if _is_excluded(
+            candidate, now, shown, rejected, ignore_operating_hours=ignore_operating_hours
+        ):
             excluded_ids.append(candidate.place_id)
+            if (
+                candidate.place_id not in shown
+                and candidate.place_id not in rejected
+                and _is_closed(candidate, now)
+            ):
+                excluded_closed_ids.append(candidate.place_id)
             continue
 
         missing_features: list[str] = []
@@ -257,9 +285,25 @@ def score_candidates(
             for feature, weight in weights_used.items()
         )
 
-        is_unverified = candidate.operating_hours is None
+        is_closed_override = (
+            ignore_operating_hours
+            and candidate.operating_hours is not None
+            and remaining_minutes is None
+        )
+        is_unverified = candidate.operating_hours is None or is_closed_override
+        warnings = (
+            (_CLOSED_NOW_WARNING,) if is_closed_override else (_UNVERIFIED_WARNING,)
+        ) if is_unverified else ()
         scored.append(
-            (candidate, score, feature_scores, weights_used, is_unverified, remaining_minutes)
+            (
+                candidate,
+                score,
+                feature_scores,
+                weights_used,
+                is_unverified,
+                remaining_minutes,
+                warnings,
+            )
         )
 
     scored.sort(key=lambda entry: (-entry[1], entry[0].distance_km, entry[0].place_id))
@@ -274,7 +318,7 @@ def score_candidates(
             feature_scores=feature_scores,
             weights_used=weights_used,
             is_unverified=is_unverified,
-            warnings=(_UNVERIFIED_WARNING,) if is_unverified else (),
+            warnings=warnings,
             distance_km=candidate.distance_km,
             remaining_minutes=remaining_minutes,
             weather_condition=weather_condition,
@@ -288,10 +332,12 @@ def score_candidates(
             weights_used,
             is_unverified,
             remaining_minutes,
+            warnings,
         ) in enumerate(scored)
     )
 
     return ScoringResult(
         ranked=ranked,
         excluded_place_ids=tuple(excluded_ids),
+        excluded_closed_place_ids=tuple(excluded_closed_ids),
     )

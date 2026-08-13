@@ -62,10 +62,19 @@ def assemble_agent_context_response(
 
     if location_result.status is ToolStatus.NO_DATA:
         cause = location_result.error.cause if location_result.error else None
+        candidate_names = (
+            location_result.error.details.get("candidate_names", "")
+            if location_result.error and cause == "ambiguous_location"
+            else ""
+        )
         return _clarification_response(
             request,
             code=("location_ambiguous" if cause == "ambiguous_location" else "location_required"),
             missing_fields=[] if cause == "ambiguous_location" else ["current_location"],
+            # "|" 구분 문자열로 온다 — ToolError.details가 dict[str, str]라 리스트를
+            # 직접 못 담는다(resolve_location.py). 지오코딩 경로(후보 개수만 아는
+            # GeocodeResult)는 이름이 없어 빈 문자열이 온다 — 그때는 빈 리스트가 된다.
+            candidates=[name for name in candidate_names.split("|") if name],
             metadata_context=location_only,
             rule_versions=rule_versions,
         )
@@ -289,6 +298,7 @@ def _clarification_response(
         "place_ambiguous",
     ],
     missing_fields: list[str],
+    candidates: list[str] | None = None,
     metadata_context: RecommendationContext | None = None,
     rule_versions: dict[str, str] | None = None,
 ) -> AgentContextResponse:
@@ -300,7 +310,7 @@ def _clarification_response(
         clarification=Clarification(
             code=code,
             missing_fields=missing_fields,
-            candidates=[],
+            candidates=candidates or [],
         ),
         error=None,
         metadata=build_response_metadata(

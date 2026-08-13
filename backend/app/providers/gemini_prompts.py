@@ -27,7 +27,7 @@ from app.schemas import CompareCriteria, GeneralTopic, Intent, UserConditions
 # 쓰였는지와 무관하게 단일 값으로 취급한다 — 함수별 개별 버전은 만들지 않는다. 판별·추출
 # 규칙에 영향을 주는 변경(6개 함수 중 하나라도) 시 버전을 올린다 — 사소한 문구·주석
 # 변경은 올리지 않는다.
-PROMPT_VERSION = "agent-interpret-prompts-1.0.11"
+PROMPT_VERSION = "agent-interpret-prompts-1.0.12"
 
 CHATBOT_NAME = "트리비"
 CHATBOT_PERSONA = """\
@@ -88,14 +88,6 @@ _CONTEXT_DEPENDENT_RULES = """\
   바꾸려는 말로 본다. 조사/어미/물음표의 차이는 판정에 영향 없음)
 - 이전 추천 있음 + 지명 단독("광화문", "경복궁") → MODIFY (검색 중심점만 바꾸려는 말로
   본다. 해당 장소 근처 추천을 이어간다)
-- 단, 직전 턴 Intent가 SCHEDULE이고(정상 완료, 되묻기 아님) 이번 발화가 "지명+근처/주변"에
-  카테고리 등 조건만 덧붙인 새 요청이면(예: "경복궁 근처 카페 추천해줘") 위의 "지명+근처는
-  MODIFY" 규칙을 적용하지 않고 RECOMMEND로 판정한다 — 직전이 일정(SCHEDULE)이었을 땐 검색
-  중심점을 바꾸는 게 아니라 새 추천 목록을 원하는 것으로 본다("기존 일정을 고쳐줘"가 아니라
-  "카페 목록을 새로 보여줘"). "바꿔줘"/"빼고"/"말고"/"전부 별로"처럼 명시적으로 조정·거절하는
-  표현이 함께 있으면 이 예외를 적용하지 않고 원래대로 MODIFY다 — 그건 진짜 일정 재조정
-  요청이다. 발화 자체에 일정/코스/순서 표현이 있으면(예: "카페들을 추천해서 일정 다시
-  짜줘") 이 규칙보다 SCHEDULE 판정이 항상 우선한다(판별 우선순위 2번 참고).
 - 이전 추천 없음 + 지명에 근처/주변이 붙은 발화("광화문 근처에서", "광화문 근처") → RECOMMEND
 - 이전 추천 없음 + 지명 단독("광화문", "경복궁") → RECOMMEND (해당 장소 근처 추천)
 - 단, 직전 RECOMMEND/MODIFY 요청이 위치 되묻기(location_required/location_ambiguous)로
@@ -118,12 +110,6 @@ _BOUNDARY_CASES = """\
   MODIFY 아님 — 바꿀 이전 추천 결과가 없다)
 - "오늘 갈 만한 곳 추천해줘" → RECOMMEND (일정/코스/순서 맥락 없는 단순 추천)
 - "경복궁 근처 카페" → RECOMMEND (이전 추천 이력이 없을 때. 경복궁은 검색 중심점 조건일 뿐)
-- "경복궁 근처 카페 추천해줘" (직전 턴 Intent가 SCHEDULE로 정상 완료된 상태) → RECOMMEND
-  (조정·거절 표현 없는 새 추천 요청. 일정을 고치자는 말이 아니다)
-- "경복궁 근처 카페 말고 맛집으로 바꿔줘" (직전 턴 Intent가 SCHEDULE로 정상 완료된 상태)
-  → MODIFY ("말고"/"바꿔줘"로 명시적 조정을 요청했으므로 위 예외가 적용되지 않는다)
-- "카페들을 추천해서 일정 다시 짜줘" (직전 턴 Intent가 SCHEDULE로 정상 완료된 상태) →
-  SCHEDULE (일정 재구성을 명시적으로 요청했으므로 판별 우선순위 2번이 앞선다)
 - "경복궁 오늘 열어?" → INFO (운영시간 질문)
 - "이번 주말 창덕궁 사람 많을까?" → INFO (방문객 혼잡도 예측 질문, API로 조회 가능)
 - "경복궁 역사 알려줘" → GENERAL (API로 조회 불가한 배경지식)
@@ -148,14 +134,6 @@ def build_intent_classification_instruction(
     shown_place_names는 SCHEDULE-09 후속(이름 지목)에서 추가됐다 — "두가헌
     레스토랑은 빼줘"처럼 순번 없이 노출된 항목 이름만 언급해도 MODIFY로 판단할
     근거를 준다. 없으면(이름 미저장 과거 세션 등) 이 블록은 생략된다.
-
-    "직전 턴 Intent" 컨텍스트 줄(SCHEDULE-10 후속)은 last_intent를 LLM에게 그대로
-    노출한다 — 이게 없으면 "이전 추천 이력 있음"만 보고 "지명+근처는 MODIFY" 규칙을
-    적용해버려서, 직전 SCHEDULE 직후의 순수 추천 요청("경복궁 근처 카페 추천해줘")까지
-    MODIFY로 오분류되고, agent_runtime.py의 SCHEDULE-06 재조정 감지가 이를 다시
-    SCHEDULE로 라벨링해 일정 전체가 불필요하게 재편성되던 문제가 있었다
-    (2026-08-12 실사용 재현). _CONTEXT_DEPENDENT_RULES의 SCHEDULE 예외 규칙과 짝을
-    이룬다.
     """
 
     schedule_clarification_pending = (
@@ -188,17 +166,13 @@ def build_intent_classification_instruction(
 현재 대화 컨텍스트:
 - 이전 추천 이력 존재 여부: {"있음" if has_previous_recommendation else "없음"}
 - 현재까지 노출된 추천 장소 수: {shown_place_count}
-- 직전 턴 Intent: {last_intent or "없음"}
 - 직전 턴이 되묻기로 끝났는지: {clarification_status}{shown_names_line}
 
 이 컨텍스트를 위 "맥락 의존 판별" 규칙에 반드시 반영해서 판정하세요. 예를 들어 이전
 추천 이력이 "없음"인데 사용자가 "다른 곳 보여줘"라고 하면 MODIFY가 아니라 RECOMMEND로
 판정해야 합니다. "현재 노출된 항목 이름"에 있는 장소를 언급하며 빼거나 바꾸자는 의도가
 있으면("두가헌 레스토랑은 빼줘") 새로운 검색(RECOMMEND)이 아니라 MODIFY입니다 — 단순히
-정보를 묻는 경우("두가헌 레스토랑 몇 시까지 해?")는 INFO이므로 혼동하지 마세요. "직전 턴
-Intent"가 SCHEDULE이면(정상 완료 상태) 특히 주의하세요 — 조정·거절 표현 없이 "~추천해줘"로
-새 추천만 요청하는 발화를 "지명+근처는 MODIFY"라는 일반 규칙으로 잘못 묶지 마세요(위
-"맥락 의존 판별"의 SCHEDULE 예외 규칙 참고).
+정보를 묻는 경우("두가헌 레스토랑 몇 시까지 해?")는 INFO이므로 혼동하지 마세요.
 
 intent가 OUT_OF_SCOPE인 경우에만 out_of_scope_category(harmful/unrelated/role_request/
 prompt_injection)와 out_of_scope_severity(high/medium/low)를 함께 채우세요. 그 외
@@ -357,10 +331,19 @@ _MODIFY_FIELD_MERGE_RULES = """\
   null로 채우세요. 0을 반환하지 마세요.
 - budget: "무료만" 같은 교체는 새 값으로("free" 리터럴 사용, 아래 budget 규칙 참고),
   "가격 상관없어" 같은 해제는 null로
-- place_types: 사용자가 유형을 바꾸면 전체 교체 (예: "카페 말고 맛집" → ["restaurant"])
-- place_tags: 사용자가 추가/제거를 말하면 "현재 조건"에 제시된 place_tags를 참고해서
-  그 변경을 반영한 최종 목록을 채운다 (예: 현재 ["카페"]에서 "박물관도 포함" →
-  ["카페", "박물관"]) — place_tags 자체는 바뀌었으므로 채우는 것이 맞다
+- 장소 유형·태그를 새로 요청하면 place_types와 place_tags를 반드시 함께 채운다.
+  두 필드는 각각 최종 목록으로 전체 교체되며, changed_fields에도 둘 다 넣는다.
+- 단순한 새 유형 요청은 기존 유형을 대체한다. 조사 "도"만으로는 추가가 아니다.
+  예: 현재 place_types=["restaurant"], place_tags=["카페"]에서 "공원도 추천해줘" →
+  place_types=["attraction"], place_tags=["공원"],
+  changed_fields=["place_types", "place_tags"].
+- 복수 유형을 함께 원한다는 표현("카페와 공원 같이 추천해줘", "카페나 공원",
+  "카페와 공원 모두")은 발화에서 언급한 유형을 모두 최종 목록에 넣는다. 예:
+  place_types=["restaurant", "attraction"], place_tags=["카페", "공원"].
+- 기존 조건에 새 유형을 명시적으로 더하는 표현("공원도 포함해줘", "공원도 함께 넣어줘")은
+  현재 목록과 새 유형을 합친 최종 목록을 채운다. 예: 현재 ["카페"]에서 "공원도 포함" →
+  place_types=["restaurant", "attraction"], place_tags=["카페", "공원"].
+- "카페 말고 공원"처럼 제외·대체를 명시한 경우에도 새 유형만 최종 목록에 넣는다.
 - exclude_tags/special_requirements: 추가/제거를 반영한 최종 목록
 - "더 가까운 곳"처럼 상대적 표현은 "현재 조건"의 값을 참고해서 계산한 새 값을 채운다
   (예: 현재 max_travel_time=30 → 15). 이 경우도 값이 실제로 바뀌는 것이므로 채운다
@@ -585,6 +568,23 @@ def build_general_answer_instruction(topic: GeneralTopic) -> str:
 - 존댓말을 쓰고, 예약·결제·전화 연결처럼 TripBranch가 아직 실행하지 않는 기능을
   할 수 있는 것처럼 답하지 마세요.
 - 사용자 발화를 그대로 반복하지 말고 바로 답변을 시작하세요."""
+
+
+def build_info_answer_instruction(question_type: str) -> str:
+    """검증된 INFO fields만 사용자용 안내문으로 바꾸는 system instruction."""
+
+    return f"""당신은 TripBranch의 국내 여행 챗봇 \"{CHATBOT_NAME}\"입니다.
+
+{CHATBOT_PERSONA}
+
+사용자가 특정 장소의 {question_type} 정보를 물었습니다. 아래 JSON의 place_name,
+specific_question, fields만 근거로 2~4문장의 한국어 답변을 작성하세요.
+
+답변 규칙:
+- 첫 문장에 질문의 핵심 답을 바로 말하세요.
+- 긴 원문과 세부 항목은 아래 상세 카드에서 확인할 수 있다고 자연스럽게 안내하세요.
+- JSON에 없는 사실, 추측, API·캐시·점수·내부 구현 설명은 절대 추가하지 마세요.
+- 마크다운 표·제목은 쓰지 말고, 사용자 발화를 그대로 반복하지 말고 바로 답변을 시작하세요."""
 
 
 def build_recommendation_summary_instruction(intent: Intent) -> str:
@@ -821,6 +821,7 @@ __all__ = [
     "build_compare_extraction_instruction",
     "build_general_extraction_instruction",
     "build_general_answer_instruction",
+    "build_info_answer_instruction",
     "build_recommendation_summary_instruction",
     "build_compare_summary_instruction",
     "build_schedule_planning_instruction",

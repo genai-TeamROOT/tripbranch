@@ -17,7 +17,10 @@ import {
   type ReactNode,
 } from "react";
 import type {
+  AgentProgressEvent,
   AgentResponse,
+  AgentStageTiming,
+  AgentStreamResultEvent,
   ChatMessage,
   ChatPhase,
   DeveloperAuditTurn,
@@ -53,6 +56,8 @@ export interface TripState {
    * TODO: Agent가 되묻기 맥락을 이어받게 되면 이 우회는 제거한다.
    */
   awaiting_clarification: boolean;
+  agentProgress: AgentProgressEvent | null;
+  streamingIntent: Intent | null;
 }
 
 const initialTripState: TripState = {
@@ -68,6 +73,8 @@ const initialTripState: TripState = {
   session_id: null,
   device_location: null,
   awaiting_clarification: false,
+  agentProgress: null,
+  streamingIntent: null,
 };
 
 type TripAction =
@@ -85,6 +92,20 @@ type TripAction =
       payload: { userInput: string; deviceLocation?: string | null };
     }
   | { type: "APPEND_CHAT_TURN"; payload: ChatTurnPayload }
+  | { type: "SET_AGENT_PROGRESS"; payload: AgentProgressEvent }
+  | { type: "APPEND_STREAM_RESULT"; payload: AgentStreamResultEvent & { elapsedMsClient: number } }
+  | { type: "START_STREAM_MESSAGE"; payload: { intent: Intent } }
+  | { type: "APPEND_STREAM_MESSAGE_DELTA"; payload: { text: string } }
+  | {
+      type: "COMPLETE_STREAM_CHAT_TURN";
+      payload: {
+        response: AgentResponse;
+        elapsedMsClient: number;
+        serverElapsedMs: number;
+        stageTimings: AgentStageTiming[];
+        conditions: InterpretedConditions | null;
+      };
+    }
   | {
       type: "APPEND_FAILED_CHAT_TURN";
       payload: {
@@ -119,6 +140,9 @@ interface ChatTurnPayload {
   agentResponse: AgentResponse;
   showDebug: boolean;
   elapsedMsClient: number;
+  /** SSE progress 이벤트가 있는 응답은 카드 스트림 여부와 무관하게 단계 시간을 보존한다. */
+  serverElapsedMs?: number;
+  stageTimings?: AgentStageTiming[];
 }
 
 interface InterpretedPayload {
@@ -256,7 +280,164 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         ],
         phase: "recommending",
         error: null,
+        agentProgress: null,
+        streamingIntent: null,
       };
+    case "SET_AGENT_PROGRESS":
+      return { ...state, agentProgress: action.payload };
+    case "APPEND_STREAM_RESULT": {
+      const { recommendations, state: streamState, llm_output, elapsedMsClient } = action.payload;
+      const shownIds = [
+        ...recommendations.recommendations,
+        ...recommendations.unverified_recommendations,
+      ].map((item) => item.place_id);
+      return {
+        ...state,
+        recommendations: recommendations.recommendations,
+        unverified_recommendations: recommendations.unverified_recommendations,
+        shown_place_ids: Array.from(new Set([...state.shown_place_ids, ...shownIds])),
+        session_id: streamState.session_id ?? state.session_id,
+        streamingIntent: llm_output.intent,
+        messages: [
+          ...state.messages,
+          // message_start/message_delta가 답변 말풍선을 먼저 만들고 난 뒤에만 이 이벤트가
+          // 온다. 여기서는 카드만 추가해 "카드 → 답변" 역전이 일어나지 않게 한다.
+          {
+            id: createMessageId("result"),
+            type: "recommendation_result",
+            recommendations: recommendations.recommendations,
+            unverified_recommendations: recommendations.unverified_recommendations,
+            elapsed_ms: elapsedMsClient,
+            server_elapsed_ms: recommendations.elapsed_ms,
+          },
+        ],
+      };
+    }
+    case "START_STREAM_MESSAGE":
+      return {
+        ...state,
+        streamingIntent: action.payload.intent,
+        messages: [
+          ...state.messages,
+          {
+            id: createMessageId("assistant-stream"),
+            type: "assistant_text",
+            text: "…",
+            intent: action.payload.intent,
+            streaming: true,
+          },
+        ],
+      };
+    case "APPEND_STREAM_MESSAGE_DELTA": {
+      const streamIndex = state.messages.reduce(
+        (foundIndex, message, index) =>
+          message.type === "assistant_text" && message.streaming ? index : foundIndex,
+        -1,
+      );
+      const streamingMessage = state.messages[streamIndex];
+      if (streamingMessage?.type === "assistant_text" && streamingMessage.streaming) {
+        return {
+          ...state,
+          messages: state.messages.map((message, index) =>
+            index === streamIndex
+              ? {
+                  ...streamingMessage,
+                  // "…"는 빈 말풍선의 로딩 표기일 뿐 실제 답변 본문에 남기지 않는다.
+                  text:
+                    streamingMessage.text === "…"
+                      ? action.payload.text
+                      : `${streamingMessage.text}${action.payload.text}`,
+                }
+              : message,
+          ),
+        };
+      }
+      return {
+        ...state,
+        messages: [
+          ...state.messages,
+          {
+            id: createMessageId("assistant-stream"),
+            type: "assistant_text",
+            text: action.payload.text,
+            intent: state.streamingIntent ?? undefined,
+            status: "complete",
+            streaming: true,
+          },
+        ],
+      };
+    }
+    case "COMPLETE_STREAM_CHAT_TURN": {
+      const { response, elapsedMsClient, serverElapsedMs, stageTimings, conditions } = action.payload;
+      const recommendations = response.recommendations;
+      const auditTurn: DeveloperAuditTurn = {
+        id: createMessageId("audit"),
+        userInput: state.user_input,
+        intent: response.llm_output.intent,
+        status: response.llm_output.status,
+        message: response.message,
+        sessionId: response.state.session_id,
+        runId: response.state.run_id ?? null,
+        deviceLocation: state.device_location,
+        elapsedMsClient,
+        serverElapsedMs,
+        stageTimings,
+        extractedConditions: conditions,
+        beforeConditions: state.auditTurns.at(-1)?.afterConditions ?? null,
+        afterConditions: response.state.user_conditions ?? null,
+        recommendations,
+        response,
+        failure: null,
+      };
+      const streamIndex = state.messages.reduce(
+        (foundIndex, message, index) =>
+          message.type === "assistant_text" && message.streaming ? index : foundIndex,
+        -1,
+      );
+      const streamingMessage = state.messages[streamIndex];
+      const streamedMessages =
+        streamingMessage?.type === "assistant_text" && streamingMessage.streaming
+          ? state.messages.map((message, index) =>
+              index === streamIndex
+                ? {
+                    ...streamingMessage,
+                    text:
+                      response.message ||
+                      (streamingMessage.text === "…" ? "이런 곳들을 찾아봤어요:" : streamingMessage.text),
+                    intent: response.llm_output.intent,
+                    status: response.llm_output.status,
+                    streaming: false,
+                  }
+                : message,
+            )
+          : state.messages;
+      const messages =
+        response.info_place_card !== null && response.info_place_card !== undefined
+          ? [
+              ...streamedMessages,
+              {
+                id: createMessageId("place-info"),
+                type: "place_info_result" as const,
+                card: response.info_place_card,
+              },
+            ]
+          : streamedMessages;
+      return {
+        ...state,
+        interpreted_conditions: conditions ?? state.interpreted_conditions,
+        recommendations: recommendations?.recommendations ?? state.recommendations,
+        unverified_recommendations:
+          recommendations?.unverified_recommendations ?? state.unverified_recommendations,
+        session_id: response.state.session_id ?? state.session_id,
+        messages,
+        auditTurns: [...state.auditTurns, auditTurn],
+        awaiting_clarification: false,
+        agentProgress: null,
+        streamingIntent: null,
+        phase: "ready",
+        error: null,
+      };
+    }
     case "APPEND_CHAT_TURN": {
       const { conditions, intent, message, recommendations, schedule, showDebug } = action.payload;
       const infoPlaceCard = action.payload.agentResponse.info_place_card ?? null;
@@ -274,7 +455,18 @@ function tripReducer(state: TripState, action: TripAction): TripState {
           status: "confirmed",
         });
       }
-      if (message) {
+      const clarificationOptions = action.payload.agentResponse.llm_output.clarification?.options;
+      if (message && clarificationOptions && clarificationOptions.length > 0) {
+        // 인텐트가 모호해 되묻기 버튼이 붙은 턴 — assistant_text 대신 clarification
+        // 메시지로 push해서 같은 문구가 두 번 렌더링되지 않게 한다
+        // (docs/design/clarification-options.md 6절).
+        messages.push({
+          id: createMessageId("clarification"),
+          type: "clarification",
+          text: message,
+          options: clarificationOptions,
+        });
+      } else if (message) {
         messages.push({
           id: createMessageId("assistant"),
           type: "assistant_text",
@@ -324,7 +516,9 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         runId: action.payload.agentResponse.state.run_id ?? null,
         deviceLocation: state.device_location,
         elapsedMsClient: action.payload.elapsedMsClient,
-        serverElapsedMs: recommendations?.elapsed_ms ?? schedule?.elapsed_ms ?? null,
+        serverElapsedMs:
+          action.payload.serverElapsedMs ?? recommendations?.elapsed_ms ?? schedule?.elapsed_ms ?? null,
+        stageTimings: action.payload.stageTimings ?? [],
         extractedConditions: conditions,
         beforeConditions: state.auditTurns.at(-1)?.afterConditions ?? null,
         afterConditions: action.payload.agentResponse.state.user_conditions ?? null,
@@ -364,6 +558,7 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         deviceLocation: state.device_location,
         elapsedMsClient: action.payload.elapsedMsClient,
         serverElapsedMs: null,
+        stageTimings: [],
         extractedConditions: null,
         beforeConditions: state.auditTurns.at(-1)?.afterConditions ?? null,
         afterConditions: state.auditTurns.at(-1)?.afterConditions ?? null,

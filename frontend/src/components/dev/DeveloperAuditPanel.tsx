@@ -10,6 +10,7 @@ import type {
   CandidateConcentrationDebug,
   DeveloperAuditTurn,
   LLMExecutionMetadata,
+  AgentStageTiming,
   RecommendationItem,
   ScheduleItem,
   ToolContextItemDebug,
@@ -18,10 +19,11 @@ import type {
   UserConditions,
 } from "../../types";
 
-type AuditTab = "summary" | "llm" | "state" | "tools" | "scoring" | "raw";
+type AuditTab = "summary" | "timing" | "llm" | "state" | "tools" | "scoring" | "raw";
 
 const TABS: { id: AuditTab; label: string }[] = [
   { id: "summary", label: "요약" },
+  { id: "timing", label: "소요시간" },
   { id: "llm", label: "LLM 추출" },
   { id: "state", label: "B 상태" },
   { id: "tools", label: "C Tool" },
@@ -53,6 +55,15 @@ function formatDuration(milliseconds: number | null | undefined) {
     ? `${(milliseconds / 1000).toFixed(1)}초`
     : `${Math.round(milliseconds)}ms`;
 }
+
+const STAGE_PRESENTATION: Record<AgentStageTiming["stage"], { label: string; owner: string }> = {
+  interpreting: { label: "LLM 의도·조건 추출", owner: "A → Gemini" },
+  merging_conditions: { label: "세션 상태 병합", owner: "A → B" },
+  fetching_context: { label: "장소·정보 조회", owner: "A → C" },
+  scoring: { label: "추천 순위 계산", owner: "A → D" },
+  scheduling: { label: "일정 편성", owner: "A → 일정 플래너·Gemini" },
+  composing_message: { label: "답변 생성·정리", owner: "A → Gemini" },
+};
 
 function formatValue(value: unknown): string {
   if (Array.isArray(value)) return value.length ? value.join(", ") : "없음";
@@ -270,6 +281,7 @@ function toLlmExecutionMetadata(value: unknown): LLMExecutionMetadata | null {
             (model): model is string => typeof model === "string",
           ),
           served_model: typeof entry.served_model === "string" ? entry.served_model : null,
+          latency_ms: typeof entry.latency_ms === "number" ? entry.latency_ms : null,
         },
       ];
     }),
@@ -534,6 +546,151 @@ function ToolExecutionSection({ executions }: { executions: ToolExecutionDebug[]
   );
 }
 
+function TimingCard({
+  timing,
+  turn,
+  llmExecution,
+}: {
+  timing: AgentStageTiming;
+  turn: DeveloperAuditTurn;
+  llmExecution: LLMExecutionMetadata | null;
+}) {
+  const presentation = STAGE_PRESENTATION[timing.stage];
+  const executions = turn.response?.tool_executions?.length
+    ? turn.response.tool_executions
+    : turn.response?.tool_execution
+      ? [turn.response.tool_execution]
+      : [];
+  const llmCalls = llmExecution?.calls ?? [];
+  const relevantLlmCalls =
+    timing.stage === "interpreting"
+      ? llmCalls.filter(
+          (call) => call.operation === "classify_intent" || call.operation.startsWith("extract_"),
+        )
+      : timing.stage === "composing_message"
+        ? llmCalls.filter(
+            (call) =>
+              call.operation.startsWith("generate_") || call.operation.startsWith("stream_"),
+          )
+        : timing.stage === "scheduling"
+          ? llmCalls.filter(
+              (call) =>
+                call.operation === "generate_schedule_plan" ||
+                call.operation === "generate_schedule_fill",
+            )
+        : [];
+
+  return (
+    <section className="rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-800 dark:bg-gray-900">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-gray-950 dark:text-gray-50">
+            {presentation.label}
+          </h3>
+          <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{presentation.owner}</p>
+        </div>
+        <span className="rounded-md bg-indigo-50 px-2 py-1 text-sm font-bold text-indigo-800 dark:bg-indigo-950/50 dark:text-indigo-200">
+          {formatDuration(timing.duration_ms)}
+        </span>
+      </div>
+      <p className="mt-2 text-xs text-gray-600 dark:text-gray-300">{timing.message}</p>
+
+      {timing.stage === "composing_message" && timing.time_to_first_token_ms != null && (
+        <p className="mt-3 border-t border-gray-100 pt-2 text-xs text-gray-700 dark:border-gray-800 dark:text-gray-200">
+          첫 글자 도착(TTFT) · {formatDuration(timing.time_to_first_token_ms)}
+        </p>
+      )}
+
+      {relevantLlmCalls.length > 0 && (
+        <div className="mt-3 border-t border-gray-100 pt-2 text-xs dark:border-gray-800">
+          <p className="font-medium text-gray-500 dark:text-gray-400">세부 LLM 호출</p>
+          {relevantLlmCalls.map((call) => (
+            <p key={call.operation} className="mt-1 text-gray-700 dark:text-gray-200">
+              {call.operation} · {call.served_model ?? "응답 실패"}
+              {(timing.stage === "interpreting" || timing.stage === "scheduling") &&
+              call.latency_ms != null
+                ? ` · ${formatDuration(call.latency_ms)}`
+                : ""}
+            </p>
+          ))}
+        </div>
+      )}
+
+      {timing.stage === "merging_conditions" && turn.response && (
+        <p className="mt-3 border-t border-gray-100 pt-2 text-xs text-gray-700 dark:border-gray-800 dark:text-gray-200">
+          적용 연산 {turn.response.state.applied_operations?.length ?? 0}건 · 무시 연산{" "}
+          {turn.response.state.ignored_operations?.length ?? 0}건
+        </p>
+      )}
+
+      {timing.stage === "fetching_context" && (
+        <div className="mt-3 border-t border-gray-100 pt-2 text-xs dark:border-gray-800">
+          {executions.length ? (
+            executions.map((execution) => (
+              <p key={execution.request_id} className="mt-1 text-gray-700 dark:text-gray-200">
+                {TOOL_OPERATION_LABELS[execution.operation ?? "context_fetch"]} ·{" "}
+                {formatDuration(execution.latency_ms)} · {execution.status}
+              </p>
+            ))
+          ) : (
+            <p className="text-gray-500 dark:text-gray-400">C 호출 없음</p>
+          )}
+        </div>
+      )}
+
+      {timing.stage === "scoring" && (
+        <p className="mt-3 border-t border-gray-100 pt-2 text-xs text-gray-700 dark:border-gray-800 dark:text-gray-200">
+          D 결과 {getRecommendationItems(turn).length}건
+        </p>
+      )}
+    </section>
+  );
+}
+
+function TimingSection({
+  turn,
+  llmExecution,
+}: {
+  turn: DeveloperAuditTurn;
+  llmExecution: LLMExecutionMetadata | null;
+}) {
+  const total = turn.serverElapsedMs ?? turn.elapsedMsClient;
+  if (!turn.stageTimings.length) {
+    return (
+      <p className="rounded-md border border-dashed border-gray-300 p-4 text-sm text-gray-500 dark:border-gray-700">
+        단계별 시간은 SSE 실행 응답부터 기록됩니다. 이 이전 턴은 총 클라이언트 시간만 확인할 수
+        있습니다: {formatDuration(total)}
+      </p>
+    );
+  }
+  const measured = turn.stageTimings.reduce((sum, timing) => sum + timing.duration_ms, 0);
+  return (
+    <div className="flex flex-col gap-3">
+      <section className="rounded-lg border border-indigo-200 bg-indigo-50 p-3 dark:border-indigo-900 dark:bg-indigo-950/30">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-indigo-950 dark:text-indigo-50">이번 요청 총 소요</h3>
+            <p className="mt-0.5 text-xs text-indigo-700 dark:text-indigo-300">
+              서버 기준 {formatDuration(total)} · 단계 합계 {formatDuration(measured)}
+            </p>
+          </div>
+          <span className="text-lg font-bold text-indigo-900 dark:text-indigo-100">
+            {formatDuration(total)}
+          </span>
+        </div>
+      </section>
+      {turn.stageTimings.map((timing) => (
+        <TimingCard
+          key={`${timing.stage}-${timing.started_at_ms}`}
+          timing={timing}
+          turn={turn}
+          llmExecution={llmExecution}
+        />
+      ))}
+    </div>
+  );
+}
+
 function DetailRow({ label, value }: { label: string; value: unknown }) {
   return (
     <div className="rounded-md border border-gray-200 p-3 dark:border-gray-800">
@@ -557,12 +714,16 @@ interface DeveloperAuditPanelProps {
   turns: DeveloperAuditTurn[];
   selectedTurnId: string | null;
   onSelectTurn: (turnId: string) => void;
+  debugIgnoreOperatingHours: boolean;
+  onToggleDebugIgnoreOperatingHours: (enabled: boolean) => void;
 }
 
 export function DeveloperAuditPanel({
   turns,
   selectedTurnId,
   onSelectTurn,
+  debugIgnoreOperatingHours,
+  onToggleDebugIgnoreOperatingHours,
 }: DeveloperAuditPanelProps) {
   const [activeTab, setActiveTab] = useState<AuditTab>("summary");
   const selectedTurn = turns.find((turn) => turn.id === selectedTurnId) ?? turns.at(-1) ?? null;
@@ -582,12 +743,31 @@ export function DeveloperAuditPanel({
   return (
     <aside className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden border-l border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-gray-950">
       <header className="border-b border-gray-200 px-5 py-4 dark:border-gray-800">
-        <p className="text-xs font-semibold uppercase tracking-widest text-emerald-700 dark:text-emerald-400">
-          TripBranch Developer Console
-        </p>
-        <h2 className="mt-1 text-lg font-bold text-gray-950 dark:text-gray-50">
-          Agent Runtime Audit
-        </h2>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-widest text-emerald-700 dark:text-emerald-400">
+              TripBranch Developer Console
+            </p>
+            <h2 className="mt-1 text-lg font-bold text-gray-950 dark:text-gray-50">
+              Agent Runtime Audit
+            </h2>
+          </div>
+          <label
+            className={`flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] ${
+              debugIgnoreOperatingHours
+                ? "border-amber-400 bg-amber-50 text-amber-900 dark:border-amber-600 dark:bg-amber-950/40 dark:text-amber-100"
+                : "border-gray-300 dark:border-gray-700"
+            }`}
+            title="켜두면 이후 발화가 폐점 후보도 항상 채점에 포함해요 — no_data_closed 되묻기를 매번 누르지 않아도 재현/우회할 수 있어요."
+          >
+            <input
+              type="checkbox"
+              checked={debugIgnoreOperatingHours}
+              onChange={(event) => onToggleDebugIgnoreOperatingHours(event.target.checked)}
+            />
+            운영시간 무시
+          </label>
+        </div>
       </header>
 
       <div className="min-h-0 flex-1 overflow-auto px-5 py-4">
@@ -645,6 +825,28 @@ export function DeveloperAuditPanel({
 
         {selectedTurn && (
           <section className="mt-5 flex flex-col gap-4">
+            {selectedTurn.failure && (
+              <div className="rounded-md border border-red-300 bg-red-50 p-3 dark:border-red-800 dark:bg-red-950/40">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-red-700 dark:text-red-300">
+                      오류 발생 · {selectedTurn.failure.code}
+                    </p>
+                    <p className="mt-1 break-words text-sm text-red-900 dark:text-red-100">
+                      {selectedTurn.failure.message}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("raw")}
+                    className="shrink-0 rounded-md border border-red-400 bg-white px-2.5 py-1.5 text-xs font-medium text-red-800 hover:bg-red-100 dark:border-red-700 dark:bg-red-950 dark:text-red-100 dark:hover:bg-red-900"
+                  >
+                    오류 상세 확인
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div className="flex flex-wrap gap-2">
               {TABS.map((tab) => (
                 <button
@@ -736,6 +938,10 @@ export function DeveloperAuditPanel({
                   )}
                 </dl>
               </div>
+            )}
+
+            {activeTab === "timing" && (
+              <TimingSection turn={selectedTurn} llmExecution={llmExecution} />
             )}
 
             {activeTab === "llm" && (

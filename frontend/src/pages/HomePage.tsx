@@ -9,9 +9,10 @@
 import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
-import { sendChat, toDisplayConditions } from "../api/trip";
+import { streamChat, toDisplayConditions } from "../api/trip";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { useTripDispatch } from "../state/TripContext";
+import { buildAgentStageTimings } from "../utils/agentTiming";
 import { getBrowserDeviceLocation } from "../utils/geolocation";
 
 const QUICK_PROMPTS = [
@@ -55,29 +56,91 @@ export function HomePage() {
     navigate(targetPath);
 
     const startedAt = performance.now();
+    const progressEvents = [] as import("../types").AgentProgressEvent[];
+    let messageStartElapsedMs: number | null = null;
+    let firstMessageDeltaElapsedMs: number | null = null;
+    let receivedStreamResult = false;
+    let receivedStreamMessage = false;
     try {
-      const response = await sendChat({
-        user_input: trimmed,
-        session_id: null,
-        device_location: deviceLocation,
-      });
-      dispatch({
-        type: "APPEND_CHAT_TURN",
-        payload: {
-          userInput: trimmed,
-          intent: response.llm_output.intent,
-          conditions: toDisplayConditions(response.llm_output),
-          mergedConditions: response.state.user_conditions,
-          message: response.message,
-          recommendations: response.recommendations,
-          schedule: response.schedule,
-          sessionId: response.state.session_id,
-          status: response.llm_output.status,
-          agentResponse: response,
-          showDebug: false,
-          elapsedMsClient: performance.now() - startedAt,
+      await streamChat(
+        {
+          user_input: trimmed,
+          session_id: null,
+          device_location: deviceLocation,
         },
-      });
+        (event) => {
+          if (event.type === "progress") {
+            progressEvents.push(event.data);
+            dispatch({ type: "SET_AGENT_PROGRESS", payload: event.data });
+            return;
+          }
+          if (event.type === "result") {
+            receivedStreamResult = true;
+            dispatch({
+              type: "APPEND_STREAM_RESULT",
+              payload: { ...event.data, elapsedMsClient: performance.now() - startedAt },
+            });
+            return;
+          }
+          if (event.type === "message_start") {
+            receivedStreamMessage = true;
+            messageStartElapsedMs = event.data.elapsed_ms;
+            dispatch({ type: "START_STREAM_MESSAGE", payload: { intent: event.data.intent } });
+            return;
+          }
+          if (event.type === "message_delta") {
+            firstMessageDeltaElapsedMs ??= event.data.elapsed_ms;
+            dispatch({ type: "APPEND_STREAM_MESSAGE_DELTA", payload: { text: event.data.text } });
+            return;
+          }
+          if (event.type === "error") throw new ApiError(event.data);
+
+          const response = event.data.response;
+          const elapsedMsClient = performance.now() - startedAt;
+          if (receivedStreamResult || receivedStreamMessage) {
+            dispatch({
+              type: "COMPLETE_STREAM_CHAT_TURN",
+              payload: {
+                response,
+                elapsedMsClient,
+                serverElapsedMs: event.data.elapsed_ms,
+                stageTimings: buildAgentStageTimings(progressEvents, event.data.elapsed_ms, {
+                  messageStartElapsedMs,
+                  firstMessageDeltaElapsedMs,
+                }),
+                conditions: toDisplayConditions(response.llm_output),
+              },
+            });
+            return;
+          }
+          dispatch({
+            type: "APPEND_CHAT_TURN",
+            payload: {
+              userInput: trimmed,
+              intent: response.llm_output.intent,
+              conditions: toDisplayConditions(response.llm_output),
+              mergedConditions: response.state.user_conditions,
+              message: response.message,
+              recommendations: response.recommendations,
+              schedule: response.schedule,
+              sessionId: response.state.session_id,
+              status: response.llm_output.status,
+              agentResponse: response,
+              showDebug: false,
+              elapsedMsClient,
+              ...(progressEvents.length > 0
+                ? {
+                    serverElapsedMs: event.data.elapsed_ms,
+                    stageTimings: buildAgentStageTimings(progressEvents, event.data.elapsed_ms, {
+                      messageStartElapsedMs,
+                      firstMessageDeltaElapsedMs,
+                    }),
+                  }
+                : {}),
+            },
+          });
+        },
+      );
     } catch (error) {
       dispatch({
         type: "SET_ERROR",

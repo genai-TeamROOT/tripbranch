@@ -472,33 +472,11 @@ async def test_classify_intent_location_with_other_conditions_boundaries(
 
 
 @pytest.mark.asyncio
-async def test_classify_intent_pure_recommend_after_schedule_is_recommend() -> None:
-    """2026-08-12 실사용 재현: 직전 턴이 SCHEDULE로 정상 완료된 상태에서 "지명+근처"에
-    조건만 붙인 순수 추천 요청은 MODIFY가 아니라 RECOMMEND다.
-
-    D-053(test_classify_intent_location_with_other_conditions_is_modify)과 대조된다 —
-    last_intent가 SCHEDULE이 아니면(일반 RECOMMEND 맥락) 그 테스트처럼 여전히 MODIFY다.
-    이 예외를 안 두면 agent_runtime.py의 SCHEDULE-06 재조정 감지가 MODIFY를 SCHEDULE로
-    다시 라벨링해서, 단순 추천 요청인데 일정 전체가 재편성돼 버린다.
-    """
-    provider = FakeLLMProvider()
-
-    result = await provider.classify_intent(
-        "경복궁 근처 카페 추천해줘",
-        has_previous_recommendation=True,
-        shown_place_count=2,
-        pending_clarification=None,
-        last_intent="SCHEDULE",
-    )
-
-    assert result.data.intent is Intent.RECOMMEND
-
-
-@pytest.mark.asyncio
 async def test_classify_intent_explicit_adjustment_after_schedule_stays_modify() -> None:
-    """"말고"/"바꿔줘" 같은 명시적 조정 표현이 있으면 SCHEDULE 직후여도 예외를 적용하지
-    않는다 — 그건 순수 추천이 아니라 진짜 일정 재조정 요청이라 MODIFY(→ SCHEDULE-06이
-    SCHEDULE로 재라벨링)로 그대로 흘러가야 한다."""
+    """SCHEDULE 직후 "지명+근처"에 조건만 붙인 발화는 D-053 규칙 그대로 MODIFY다 —
+    "일정 재조정"인지 "순수 추천"인지는 classify_intent()가 아니라
+    agent_runtime.py의 SCHEDULE-06 되묻기가 사용자에게 확인한다
+    (docs/design/clarification-options.md 5절)."""
     provider = FakeLLMProvider()
 
     result = await provider.classify_intent(
@@ -514,8 +492,8 @@ async def test_classify_intent_explicit_adjustment_after_schedule_stays_modify()
 
 @pytest.mark.asyncio
 async def test_classify_intent_explicit_schedule_request_after_schedule_stays_schedule() -> None:
-    """발화 자체에 일정/코스 표현이 있으면 직전 턴이 SCHEDULE여도 RECOMMEND 예외보다
-    SCHEDULE 판정이 우선한다(판별 우선순위 2번)."""
+    """발화 자체에 일정/코스 표현이 있으면 직전 턴이 SCHEDULE여도 SCHEDULE 판정이
+    우선한다(판별 우선순위 2번, _SCHEDULE_MARKERS가 다른 맥락 규칙보다 먼저 검사된다)."""
     provider = FakeLLMProvider()
 
     result = await provider.classify_intent(
@@ -605,7 +583,65 @@ async def test_extract_modify_conditions_quiet_place_avoids_concentration() -> N
     output = (await provider.extract_modify_conditions("좀 조용한 공원 가고싶어", current)).data
 
     assert output.modify.condition_changes.concentration_intent is ConcentrationIntent.AVOID
-    assert output.modify.changed_fields == ["concentration_intent"]
+    assert output.modify.condition_changes.place_types == [PlaceType.ATTRACTION]
+    assert output.modify.condition_changes.place_tags == [PlaceTag.PARK]
+    assert output.modify.changed_fields == [
+        "place_types",
+        "place_tags",
+        "concentration_intent",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_extract_modify_conditions_category_request_replaces_previous_category() -> None:
+    """'공원도 추천'의 도는 추가가 아니라 새 추천 유형 강조로 본다."""
+
+    provider = FakeLLMProvider()
+    current = UserConditions(place_types=[PlaceType.RESTAURANT], place_tags=[PlaceTag.CAFE])
+
+    output = (await provider.extract_modify_conditions("공원도 추천해줘", current)).data
+
+    assert output.modify.condition_changes.place_types == [PlaceType.ATTRACTION]
+    assert output.modify.condition_changes.place_tags == [PlaceTag.PARK]
+    assert output.modify.changed_fields == ["place_types", "place_tags"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("user_input", "expected_types", "expected_tags"),
+    [
+        (
+            "공원도 포함해줘",
+            [PlaceType.RESTAURANT, PlaceType.ATTRACTION],
+            [PlaceTag.CAFE, PlaceTag.PARK],
+        ),
+        (
+            "카페와 공원 같이 추천해줘",
+            [PlaceType.RESTAURANT, PlaceType.ATTRACTION],
+            [PlaceTag.CAFE, PlaceTag.PARK],
+        ),
+        (
+            "카페나 공원 추천해줘",
+            [PlaceType.RESTAURANT, PlaceType.ATTRACTION],
+            [PlaceTag.CAFE, PlaceTag.PARK],
+        ),
+    ],
+)
+async def test_extract_modify_conditions_explicit_category_combination_keeps_both(
+    user_input: str,
+    expected_types: list[PlaceType],
+    expected_tags: list[PlaceTag],
+) -> None:
+    """명시적으로 함께·포함·선택지를 말할 때만 교차 유형을 함께 검색한다."""
+
+    provider = FakeLLMProvider()
+    current = UserConditions(place_types=[PlaceType.RESTAURANT], place_tags=[PlaceTag.CAFE])
+
+    output = (await provider.extract_modify_conditions(user_input, current)).data
+
+    assert output.modify.condition_changes.place_types == expected_types
+    assert output.modify.condition_changes.place_tags == expected_tags
+    assert output.modify.changed_fields == ["place_types", "place_tags"]
 
 
 def test_modify_instruction_includes_weather_and_concentration_avoid_rules() -> None:
@@ -617,6 +653,17 @@ def test_modify_instruction_includes_weather_and_concentration_avoid_rules() -> 
     assert "concentration_intent 판별:" in instruction
     assert '"조용한 공원 추천해줘"' in instruction
     assert "concentration_intent/transport" in instruction
+
+
+def test_modify_instruction_distinguishes_category_replacement_and_explicit_addition() -> None:
+    instruction = build_modify_extraction_instruction(
+        UserConditions(place_types=[PlaceType.RESTAURANT], place_tags=[PlaceTag.CAFE])
+    )
+
+    assert '"공원도 추천해줘"' in instruction
+    assert '"공원도 포함해줘"' in instruction
+    assert '"카페와 공원 같이 추천해줘"' in instruction
+    assert 'changed_fields에도 둘 다' in instruction
 
 
 def test_modify_instruction_marks_location_clarification_answer() -> None:
@@ -660,33 +707,6 @@ def test_intent_instruction_hides_clarification_flag_when_absent() -> None:
     )
 
     assert "직전 턴이 되묻기로 끝났는지: 아니오" in instruction
-
-
-def test_intent_instruction_exposes_last_intent() -> None:
-    """2026-08-12 후속: last_intent가 컨텍스트 블록에 직접 노출돼야 LLM이 "직전이
-    SCHEDULE였다"를 알고 SCHEDULE 예외 규칙을 적용할 수 있다 — "이전 추천 이력
-    있음"만으로는 SCHEDULE과 RECOMMEND/MODIFY 이력을 구분할 수 없었다."""
-    with_schedule = build_intent_classification_instruction(
-        has_previous_recommendation=True, shown_place_count=2, last_intent="SCHEDULE"
-    )
-    without_last_intent = build_intent_classification_instruction(
-        has_previous_recommendation=False, shown_place_count=0
-    )
-
-    assert "직전 턴 Intent: SCHEDULE" in with_schedule
-    assert "직전 턴 Intent: 없음" in without_last_intent
-
-
-def test_intent_instruction_includes_pure_recommend_after_schedule_exception() -> None:
-    """SCHEDULE 직후 순수 추천 요청을 MODIFY로 잘못 묶지 않도록 안내하는 예외 규칙과
-    경계 사례가 프롬프트에 들어있는지 확인한다."""
-    instruction = build_intent_classification_instruction(
-        has_previous_recommendation=True, shown_place_count=2, last_intent="SCHEDULE"
-    )
-
-    assert "직전 턴 Intent가 SCHEDULE이고" in instruction
-    assert "경복궁 근처 카페 추천해줘" in instruction
-    assert "카페들을 추천해서 일정 다시 짜줘" in instruction
 
 
 @pytest.mark.asyncio

@@ -15,6 +15,7 @@ import json
 import logging
 import random
 import time
+from collections.abc import AsyncIterator
 from datetime import date
 from typing import TypeVar
 
@@ -84,9 +85,7 @@ def _backoff_seconds(attempt: int) -> float:
     return _BACKOFF_BASE_SECONDS * (2**attempt) + random.uniform(0, 0.25)
 
 
-def _record_gemini_call(
-    model_name: str, started: float, *, ok: bool, status: str
-) -> None:
+def _record_gemini_call(model_name: str, started: float, *, ok: bool, status: str) -> None:
     """Gemini 호출 한 번을 관측 집계에 남긴다(추천 판정과 무관)."""
     record_call(
         "gemini",
@@ -155,9 +154,7 @@ class RealGeminiProvider:
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 
-    async def extract_recommend_conditions(
-        self, user_input: str
-    ) -> ProviderResult[LLMOutput]:
+    async def extract_recommend_conditions(self, user_input: str) -> ProviderResult[LLMOutput]:
         instruction = gemini_prompts.build_recommend_extraction_instruction()
         result = await self._call_structured(
             instruction,
@@ -223,9 +220,7 @@ class RealGeminiProvider:
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 
-    async def extract_general_request(
-        self, user_input: str
-    ) -> ProviderResult[LLMOutput]:
+    async def extract_general_request(self, user_input: str) -> ProviderResult[LLMOutput]:
         instruction = gemini_prompts.build_general_extraction_instruction()
         result = await self._call_structured(
             instruction,
@@ -268,9 +263,142 @@ class RealGeminiProvider:
         )
         return provider_result(result.message, source=ProviderSource.GEMINI)
 
-    async def generate_compare_summary(
-        self, comparison: ComparisonResult
-    ) -> ProviderResult[str]:
+    async def stream_recommendation_summary(
+        self, intent: Intent, recommendations: RecommendationResponse
+    ) -> AsyncIterator[str]:
+        instruction = gemini_prompts.build_recommendation_summary_instruction(intent)
+        payload = {
+            "recommendations": [
+                self._recommendation_summary_item(item)
+                for item in [
+                    *recommendations.recommendations,
+                    *recommendations.unverified_recommendations,
+                ]
+            ]
+        }
+        async for text in self._stream_text(
+            instruction=instruction,
+            user_input=json.dumps(payload, ensure_ascii=False),
+            operation="stream_recommendation_summary",
+        ):
+            yield text
+
+    async def stream_general_answer(
+        self, topic: GeneralTopic, original_question: str
+    ) -> AsyncIterator[str]:
+        """GENERAL 자유 답변을 Gemini 스트림으로 전달한다."""
+
+        async for text in self._stream_text(
+            instruction=gemini_prompts.build_general_answer_instruction(topic),
+            user_input=original_question,
+            operation="stream_general_answer",
+        ):
+            yield text
+
+    async def stream_info_answer(
+        self,
+        *,
+        place_name: str,
+        question_type: str,
+        specific_question: str | None,
+        fields: dict[str, str],
+    ) -> AsyncIterator[str]:
+        """C가 검증한 장소 INFO 필드만 근거로 답변을 스트리밍한다."""
+
+        payload = {
+            "place_name": place_name,
+            "specific_question": specific_question,
+            "fields": fields,
+        }
+        async for text in self._stream_text(
+            instruction=gemini_prompts.build_info_answer_instruction(question_type),
+            user_input=json.dumps(payload, ensure_ascii=False),
+            operation="stream_info_answer",
+        ):
+            yield text
+
+    async def _stream_text(
+        self, *, instruction: str, user_input: str, operation: str
+    ) -> AsyncIterator[str]:
+        """일반 텍스트 Gemini 스트림의 모델 폴백·관측을 공통 처리한다.
+
+        첫 조각을 보낸 뒤 다른 모델로 옮기면 문장이 중복될 수 있다. 따라서 그 이후
+        오류는 호출자에게 전파해 이미 전달된 텍스트를 보존한다.
+        """
+
+        attempted_models: list[str] = []
+        last_error: ProviderTimeoutError | ProviderUnavailableError | None = None
+
+        for model_name in self._model_names:
+            attempted_models.append(model_name)
+            started = time.perf_counter()
+            emitted = False
+            try:
+                stream = await self._client.aio.models.generate_content_stream(
+                    model=model_name,
+                    contents=user_input,
+                    config=genai_types.GenerateContentConfig(
+                        system_instruction=instruction,
+                        temperature=0.0,
+                    ),
+                )
+                async for chunk in stream:
+                    text = getattr(chunk, "text", None)
+                    if not text:
+                        continue
+                    emitted = True
+                    yield text
+            except httpx.TimeoutException:
+                _record_gemini_call(model_name, started, ok=False, status="timeout")
+                last_error = ProviderTimeoutError("Gemini")
+            except genai_errors.APIError as exc:
+                status_code = getattr(exc, "code", None)
+                _record_gemini_call(
+                    model_name,
+                    started,
+                    ok=False,
+                    status=str(status_code or "api_error"),
+                )
+                if status_code not in _RETRYABLE_STATUS_CODES:
+                    record_llm_call(
+                        operation=operation,
+                        attempted_models=attempted_models,
+                        served_model=None,
+                    )
+                    raise ProviderUnavailableError("Gemini", detail=str(exc)) from None
+                last_error = ProviderUnavailableError("Gemini", detail=str(exc))
+            else:
+                _record_gemini_call(model_name, started, ok=True, status="success")
+                record_llm_call(
+                    operation=operation,
+                    attempted_models=attempted_models,
+                    served_model=model_name,
+                )
+                return
+
+            if emitted:
+                record_llm_call(
+                    operation=operation,
+                    attempted_models=attempted_models,
+                    served_model=model_name,
+                )
+                raise last_error
+
+            logger.warning(
+                "Gemini 스트림 시작 실패, 다음 모델로 폴백: operation=%s model=%s",
+                operation,
+                model_name,
+            )
+
+        record_llm_call(
+            operation=operation,
+            attempted_models=attempted_models,
+            served_model=None,
+        )
+        assert last_error is not None
+        raise last_error
+
+    async def generate_compare_summary(self, comparison: ComparisonResult) -> ProviderResult[str]:
         """C가 반환한 공개 비교 사실만 Gemini에 전달해 설명 문장을 생성한다."""
 
         instruction = gemini_prompts.build_compare_summary_instruction(comparison.criteria)
@@ -372,6 +500,7 @@ class RealGeminiProvider:
         전파됨 — 이 메서드는 잡지 않는다).
         """
 
+        operation_started = time.perf_counter()
         last_error: ProviderTimeoutError | ProviderUnavailableError | None = None
 
         attempted_models: list[str] = []
@@ -389,6 +518,7 @@ class RealGeminiProvider:
                         operation=operation,
                         attempted_models=attempted_models,
                         served_model=None,
+                        latency_ms=round((time.perf_counter() - operation_started) * 1000),
                     )
                     logger.error(
                         "Gemini 전 모델 소진, 최종 실패 (models=%s): %s",
@@ -409,6 +539,7 @@ class RealGeminiProvider:
                     operation=operation,
                     attempted_models=attempted_models,
                     served_model=None,
+                    latency_ms=round((time.perf_counter() - operation_started) * 1000),
                 )
                 raise
             except ValidationError:
@@ -418,6 +549,7 @@ class RealGeminiProvider:
                     operation=operation,
                     attempted_models=attempted_models,
                     served_model=model_name,
+                    latency_ms=round((time.perf_counter() - operation_started) * 1000),
                 )
                 raise
 
@@ -425,6 +557,7 @@ class RealGeminiProvider:
                 operation=operation,
                 attempted_models=attempted_models,
                 served_model=model_name,
+                latency_ms=round((time.perf_counter() - operation_started) * 1000),
             )
             if model_index > 0:
                 logger.warning(

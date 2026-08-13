@@ -119,26 +119,22 @@ compose_chat_message(llm_output, *, recommendations=None, tool_status=None,
 │    ├─ tool_status가 needs_clarification/unsupported/unavailable
 │    │    → 각각 clarification 템플릿(code별) / unsupported 문구 / unavailable 문구
 │    └─ recommendations가 비어 있으면 no_data 템플릿, 있으면
-│       llm.generate_recommendation_summary(intent, recommendations) 호출
+│       고정 wrapper(`"이런 곳들을 찾아봤어요:"`)를 즉시 반환
 └─ intent in (INFO, COMPARE)
      → "아직 준비 중" 임시 안내(§3, §6 3차 — 별도 트랙)
 ```
 
-RECOMMEND/MODIFY 성공 경로는 2026-08-07부터 추천 요약 LLM 호출이 1회 추가된다.
-이 호출은 사용자 경험 개선용이므로 실패해도 추천 카드 응답 자체를 깨지 않고 기존
-고정 wrapper(`"이런 곳들을 찾아봤어요:"`)로 fallback한다.
-
-추천 요약 LLM에 넘기는 입력은 `name`, `category`, `distance_km`,
-`remaining_minutes`, `recommendation_reason`, `explanations`로 제한한다. `warnings`,
-`score`, `feature_scores`, `weights_used`는 넘기지 않는다. 따라서 "날씨 점수 제외",
-"가중치 재분배", "API 실패" 같은 내부 계산 사정은 챗봇 말풍선에서 말하지 않는다.
+RECOMMEND/MODIFY 성공 경로는 2026-08-12부터 추천 요약 LLM을 호출하지 않는다.
+추천 카드가 이미 D의 결과·근거를 완결해 제공하므로, 한두 문장의 wrapper를 위해 추가로
+Gemini를 기다리지 않는다. 이로써 추천 응답의 마지막 LLM 대기(실측 약 3~10초)를 없앤다.
+긴 자연어 설명의 가치가 있는 GENERAL·INFO·COMPARE만 LLM 생성 경로를 유지한다.
 
 ---
 
 ## 5. 잠정 결정 (팀 전체 확인 없이 확정, 2026-07-28)
 
-1. **RECOMMEND/MODIFY wrapper**: 추천 카드의 공개 필드만 사용해 LLM이 1~2문장
-   요약을 생성한다. 실패 시 고정 한 줄(`"이런 곳들을 찾아봤어요:"`)로 fallback한다.
+1. **RECOMMEND/MODIFY wrapper**: 고정 한 줄(`"이런 곳들을 찾아봤어요:"`)을 즉시
+   표시한다. 추천 카드가 상세 정보와 근거를 제공하므로 별도 LLM 요약은 만들지 않는다.
 2. **GENERAL**: 실제 LLM 호출로 연동. `LLMProvider.generate_general_answer()` 신규
    추가, `RealGeminiProvider`에 구현.
 3. **C 단계 clarification 템플릿**: A가 초안 작성해서 바로 구현(`_CLARIFICATION_
@@ -159,8 +155,9 @@ RECOMMEND/MODIFY 성공 경로는 2026-08-07부터 추천 요약 LLM 호출이 1
 | --- | --- | --- | --- |
 | 1차 | RECOMMEND/MODIFY wrapper, `no_data` 템플릿, C 단계 clarification/unsupported/unavailable 템플릿, OUT_OF_SCOPE 템플릿 | 없음 | **완료** |
 | 2차 | GENERAL 답변 생성 | 있음 | **완료** |
-| 2.5차 | RECOMMEND/MODIFY 추천 결과 요약 생성, 트리비 페르소나 반영 | 있음 | **완료** |
+| 2.5차 | RECOMMEND/MODIFY 추천 결과 요약 생성 | 있음 | **종료** — 2026-08-12 고정 wrapper로 전환 |
 | 3차(별도 트랙) | INFO/COMPARE 실제 답변 | TBD | 미착수 — C/D와 Context 계약 재협의 먼저 필요(A-C 계약 §3, §7) |
 
 **FakeLLMProvider도 갱신했다** — `service_identity` 분류/답변과
-`generate_recommendation_summary()`를 제공해 Real/Fake 경로의 기능 표면을 맞춘다.
+`generate_recommendation_summary()`는 호환을 위해 Provider 표면에는 남아 있지만,
+RECOMMEND/MODIFY 런타임 경로에서는 호출하지 않는다.

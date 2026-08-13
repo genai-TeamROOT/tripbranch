@@ -114,7 +114,9 @@ export function loadState(): TripState | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<StoredState>;
     if (parsed.version !== STORAGE_VERSION || !isTripState(parsed.state)) return null;
-    return parsed.state;
+    // 스트리밍 진행 상태는 새로고침 뒤에 복원하면 이미 끊긴 HTTP 연결을 계속 표시하게
+    // 된다. 이전 버전 저장본에 이 필드가 없던 경우까지 함께 null로 정규화한다.
+    return { ...parsed.state, agentProgress: null, streamingIntent: null };
   } catch {
     return null;
   }

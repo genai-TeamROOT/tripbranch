@@ -56,6 +56,7 @@ function _turn(execution: ToolExecutionDebug): DeveloperAuditTurn {
     deviceLocation: null,
     elapsedMsClient: 1200,
     serverElapsedMs: 1100,
+    stageTimings: [],
     extractedConditions: null,
     beforeConditions: null,
     afterConditions: null,
@@ -75,6 +76,8 @@ async function openToolsTab(execution: ToolExecutionDebug) {
       turns={[_turn(execution)]}
       selectedTurnId="turn-1"
       onSelectTurn={() => {}}
+      debugIgnoreOperatingHours={false}
+      onToggleDebugIgnoreOperatingHours={() => {}}
     />,
   );
   await user.click(screen.getByRole("button", { name: "C Tool" }));
@@ -108,4 +111,140 @@ it("근사치가 없으면 전부 직접 조회했다고 알린다", async () =>
   expect(
     screen.getByText("값이 있는 후보는 모두 자기 매핑으로 직접 조회했어요."),
   ).toBeInTheDocument();
+});
+
+it("실패한 턴은 오류 배너와 상세 확인 버튼을 보여준다", async () => {
+  const user = userEvent.setup();
+  const failedTurn: DeveloperAuditTurn = {
+    id: "turn-error",
+    userInput: "경복궁 근처 카페 추천해줘",
+    intent: "ERROR",
+    status: "error",
+    message: "Gemini 응답이 지연되고 있어요. 잠시 후 다시 시도해주세요.",
+    sessionId: "session-1",
+    runId: null,
+    deviceLocation: null,
+    elapsedMsClient: 32000,
+    serverElapsedMs: null,
+    stageTimings: [],
+    extractedConditions: null,
+    beforeConditions: null,
+    afterConditions: null,
+    recommendations: null,
+    response: null,
+    failure: {
+      code: "provider_timeout",
+      message: "Gemini 응답이 지연되고 있어요. 잠시 후 다시 시도해주세요.",
+      retryable: true,
+      details: { upstream_detail: "timeout after 3 attempts" },
+    },
+  };
+
+  render(
+    <DeveloperAuditPanel
+      turns={[failedTurn]}
+      selectedTurnId="turn-error"
+      onSelectTurn={() => {}}
+      debugIgnoreOperatingHours={false}
+      onToggleDebugIgnoreOperatingHours={() => {}}
+    />,
+  );
+
+  expect(screen.getByText(/오류 발생 · provider_timeout/)).toBeInTheDocument();
+  expect(
+    screen.getByText("Gemini 응답이 지연되고 있어요. 잠시 후 다시 시도해주세요."),
+  ).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "오류 상세 확인" }));
+
+  expect(screen.getByText(/"code": "provider_timeout"/)).toBeInTheDocument();
+  expect(screen.getByText(/"upstream_detail": "timeout after 3 attempts"/)).toBeInTheDocument();
+});
+
+it("소요시간 탭에서 단계별 합계와 C 세부 시간을 보여준다", async () => {
+  const user = userEvent.setup();
+  const turn = _turn(enrichmentExecution);
+  turn.response = {
+    ...turn.response,
+    llm_execution: {
+      calls: [
+        {
+          operation: "classify_intent",
+          attempted_models: ["gemini-2.5-flash"],
+          served_model: "gemini-2.5-flash",
+          latency_ms: 420,
+        },
+        {
+          operation: "extract_recommend_conditions",
+          attempted_models: ["gemini-2.5-flash"],
+          served_model: "gemini-2.5-flash",
+          latency_ms: 1430,
+        },
+      ],
+    },
+  } as DeveloperAuditTurn["response"];
+  turn.stageTimings = [
+    {
+      stage: "interpreting",
+      message: "요청 의도와 조건을 파악하고 있어요.",
+      started_at_ms: 0,
+      duration_ms: 850,
+    },
+    {
+      stage: "merging_conditions",
+      message: "이전 대화 조건을 반영하고 있어요.",
+      started_at_ms: 850,
+      duration_ms: 30,
+    },
+    {
+      stage: "fetching_context",
+      message: "장소·운영시간·날씨 정보를 찾고 있어요.",
+      started_at_ms: 880,
+      duration_ms: 180,
+    },
+    {
+      stage: "scoring",
+      message: "조건에 맞게 장소 순위를 계산하고 있어요.",
+      started_at_ms: 1060,
+      duration_ms: 40,
+    },
+    {
+      stage: "scheduling",
+      message: "장소 순서와 머무는 시간을 구성하고 있어요.",
+      started_at_ms: 1100,
+      duration_ms: 500,
+    },
+    {
+      stage: "composing_message",
+      message: "추천 결과를 안내하고 있어요.",
+      started_at_ms: 1600,
+      duration_ms: 600,
+      time_to_first_token_ms: 240,
+    },
+  ];
+  render(
+    <DeveloperAuditPanel
+      turns={[turn]}
+      selectedTurnId="turn-1"
+      onSelectTurn={() => {}}
+      debugIgnoreOperatingHours={false}
+      onToggleDebugIgnoreOperatingHours={() => {}}
+    />,
+  );
+
+  await user.click(screen.getByRole("button", { name: "소요시간" }));
+
+  expect(screen.getByText("이번 요청 총 소요")).toBeInTheDocument();
+  expect(screen.getByText("LLM 의도·조건 추출")).toBeInTheDocument();
+  expect(screen.getByText("세션 상태 병합")).toBeInTheDocument();
+  expect(screen.getByText("장소·정보 조회")).toBeInTheDocument();
+  expect(screen.getByText("추천 순위 계산")).toBeInTheDocument();
+  expect(screen.getByText("일정 편성")).toBeInTheDocument();
+  expect(screen.getByText("답변 생성·정리")).toBeInTheDocument();
+  expect(screen.getByText(/첫 글자 도착\(TTFT\) · 240ms/)).toBeInTheDocument();
+  expect(screen.getByText(/classify_intent · gemini-2.5-flash · 420ms/)).toBeInTheDocument();
+  expect(
+    screen.getByText(/extract_recommend_conditions · gemini-2.5-flash · 1.4초/),
+  ).toBeInTheDocument();
+  expect(screen.getByText(/후보 혼잡도 보강 · 180ms · success/)).toBeInTheDocument();
 });

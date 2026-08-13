@@ -272,7 +272,7 @@ missing_conditions 처리 흐름:
 | 필드 | 변경 시 동작 | 이유 |
 |------|-------------|------|
 | `place_types` | **Update** (전체 교체) | "카페 말고 맛집"은 기존 유형을 대체하는 의도 |
-| `place_tags` | **Add** (누적) 또는 **Remove** (제거) | "박물관도 보고 싶어"는 기존 태그에 추가하는 의도 |
+| `place_tags` | **Update**(교체) 또는 명시적 추가/제거 | "공원도 추천해줘"는 새 유형으로 교체, "공원도 포함해줘"는 기존 태그에 추가 |
 
 단, place_types가 교체될 때 소속되지 않는 place_tags의 정리는 B가 자동으로
 수행하지 않는다. A가 place_types Update 연산과 함께 해당 place_tags에 대한
