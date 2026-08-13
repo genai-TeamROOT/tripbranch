@@ -422,10 +422,87 @@ class TestPlanPartialSchedule:
         assert [item.place_id for item in result.items] == ["place-1", "place-2", "place-3"]
         assert [item.order for item in result.items] == [1, 2, 3]
         assert result.route_summary == "2곳은 그대로 유지하고 1곳을 새로운 장소로 바꿨어요."
-        # 체류시간 합(60*3) + 마지막을 제외한 이동시간 합(travel_to_next_min: 15+None+15)
-        assert result.total_duration_min == 60 * 3 + 15 + 15
+        # place-1(order 1)의 travel_to_next_min은 원래 "직전 편성 때 order 2에
+        # 있던 장소"까지의 값(15)이었는데, 이번에 order 2가 새 장소(place-2)로
+        # 교체됐으므로 더 이상 맞지 않는 stale 값이다 — 재계산할 수 없으니
+        # None으로 무효화되는 게 맞는다(실사용 리뷰로 발견한 버그의 회귀 테스트).
+        # place-3(order 3)은 다음 자리(order 4)가 애초에 없어(마지막 항목)
+        # target_orders와 무관하므로 원래 값(15)이 그대로 유지된다 — 이 helper의
+        # 기본값이 실제 "마지막 항목=None" 규칙과는 다르지만, 여기서 검증하려는
+        # 건 "무효화 대상이 아닌 pinned 항목은 안 건드린다"는 것이다.
+        assert result.items[0].travel_to_next_min is None
+        assert result.items[2].travel_to_next_min == 15
+        # 체류시간 합(60*3) + 마지막을 제외한 이동시간 합(travel_to_next_min: None+None+15)
+        assert result.total_duration_min == 60 * 3 + 15
         assert "15:00 기준" in result.basis_note
         assert result.elapsed_ms >= 0
+
+    @pytest.mark.asyncio
+    async def test_invalidates_stale_travel_time_when_last_slot_is_replaced(self) -> None:
+        """교체된 자리가 마지막 order여도 그 직전 pinned 항목의 travel_to_next_min이
+        무효화된다 — 무효화 조건이 "다음 자리가 target_orders에 있는지"만 보므로
+        가운데 슬롯 교체와 동일하게 동작해야 한다."""
+        pinned = [_pinned("place-1", 1), _pinned("place-2", 2)]
+        new_item = _sample_item("place-3", 3)
+        llm = _RecordingFillLLM(SchedulePartialLLMPlan(new_items=[new_item]))
+        request = SchedulePartialFillRequest(
+            pinned_items=pinned,
+            target_orders=[3],
+            candidates=[_candidate("place-3")],
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 11, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_partial_schedule(request, llm)
+
+        assert [item.place_id for item in result.items] == ["place-1", "place-2", "place-3"]
+        # place-1(order 1)은 다음 자리(order 2)가 그대로 유지됐으니 안 건드린다.
+        assert result.items[0].travel_to_next_min == 15
+        # place-2(order 2)는 다음 자리(order 3)가 교체됐으니 무효화된다.
+        assert result.items[1].travel_to_next_min is None
+
+    @pytest.mark.asyncio
+    async def test_resyncs_downstream_pinned_arrival_after_middle_slot_replaced(self) -> None:
+        """중간 자리가 새 장소로 바뀌면 그 새 장소의 실제 체류·이동 시간이 원래
+        있던 장소와 다를 수 있다 — 뒤이어 오는 pinned 항목의 도착 시각을 새
+        체인 기준으로 다시 계산해야 한다(그대로 두면 stale한 시각이 표시됨)."""
+        pinned = [
+            _pinned("place-1", 1, estimated_arrival="14:00"),
+            # place-3의 원래 도착 시각(16:55)은 옛 place-2(체류 90분+이동 10분)
+            # 기준으로 계산됐던 값이라, 새 place-2가 다른 체류·이동 시간을 쓰면
+            # 더 이상 맞지 않는다.
+            _pinned("place-3", 3, estimated_arrival="16:55"),
+        ]
+        new_item = ScheduleItem(
+            order=2,
+            place_id="place-2",
+            place_name="장소 place-2",
+            estimated_arrival="15:30",
+            estimated_duration_min=45,
+            travel_to_next_min=20,
+            reason="테스트 이유",
+        )
+        llm = _RecordingFillLLM(SchedulePartialLLMPlan(new_items=[new_item]))
+        request = SchedulePartialFillRequest(
+            pinned_items=pinned,
+            target_orders=[2],
+            candidates=[_candidate("place-2")],
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 11, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_partial_schedule(request, llm)
+
+        arrivals = {item.place_id: item.estimated_arrival for item in result.items}
+        # place-1은 앵커(첫 항목)라 그대로 유지.
+        assert arrivals["place-1"] == "14:00"
+        # place-2는 새로 채워진 자리라 LLM이 준 값을 그대로 신뢰(앵커).
+        assert arrivals["place-2"] == "15:30"
+        # place-3은 앵커(place-2) 도착 15:30 + 체류 45분 + 이동 20분 = 16:35,
+        # 10분 단위 올림으로 16:40 — stale했던 16:55가 아니어야 한다.
+        assert arrivals["place-3"] == "16:40"
 
     @pytest.mark.asyncio
     async def test_measures_elapsed_ms(self) -> None:
