@@ -207,10 +207,15 @@ class RealGeminiProvider:
         return provider_result(result, source=ProviderSource.GEMINI)
 
     async def extract_compare_request(
-        self, user_input: str, *, shown_place_count: int
+        self,
+        user_input: str,
+        *,
+        shown_place_count: int,
+        shown_place_names: list[str] | None = None,
     ) -> ProviderResult[LLMOutput]:
         instruction = gemini_prompts.build_compare_extraction_instruction(
-            shown_place_count=shown_place_count
+            shown_place_count=shown_place_count,
+            shown_place_names=shown_place_names,
         )
         result = await self._call_structured(
             instruction,

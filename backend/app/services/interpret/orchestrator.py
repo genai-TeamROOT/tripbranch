@@ -314,7 +314,9 @@ async def build_interpretation(
     if classification.intent is Intent.COMPARE:
         return (
             await llm.extract_compare_request(
-                request.user_input, shown_place_count=request.shown_place_count
+                request.user_input,
+                shown_place_count=request.shown_place_count,
+                shown_place_names=request.shown_place_names,
             )
         ).data
 
