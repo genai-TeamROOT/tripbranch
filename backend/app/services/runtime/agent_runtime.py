@@ -1654,10 +1654,21 @@ async def run_agent_flow(
             for prev in session_context.shown_recommendations:
                 if prev.rank in target_orders:
                     continue
-                if prev.name is None or prev.estimated_arrival is None:
+                if (
+                    prev.name is None
+                    or prev.estimated_arrival is None
+                    or prev.estimated_duration_min is None
+                ):
                     # 방어적 폴백 — SCHEDULE-09 2단계 도입 이전에 기록된 세션처럼
-                    # name이 없는 과거 데이터일 때만 해당하며, 이 항목만 새 후보로
-                    # 채워지고 나머지는 정상적으로 유지된다.
+                    # 이 필드들이 없는 과거 데이터일 때만 해당하며, 이 항목만 새
+                    # 후보로 채워지고 나머지는 정상적으로 유지된다. 4개 필드
+                    # (estimated_arrival~reason)는 SCHEDULE-06에서 한꺼번에
+                    # 추가돼 따로 없을 일은 거의 없지만, name/estimated_arrival만
+                    # 체크하고 estimated_duration_min은 빠져 있으면 아래에서
+                    # `or 0`으로 조용히 체류시간 0분짜리 pinned 항목이 만들어질
+                    # 수 있었다 — 가드를 맞춰 방지한다(실사용 리뷰로 발견,
+                    # 2026-08-13). travel_to_next_min은 원래 마지막 항목이면
+                    # None이 정상이라 이 가드에 넣지 않는다.
                     continue
                 pinned_items.append(
                     ScheduleItem(
@@ -1665,7 +1676,7 @@ async def run_agent_flow(
                         place_id=prev.place_id,
                         place_name=prev.name,
                         estimated_arrival=prev.estimated_arrival,
-                        estimated_duration_min=prev.estimated_duration_min or 0,
+                        estimated_duration_min=prev.estimated_duration_min,
                         travel_to_next_min=prev.travel_to_next_min,
                         reason=prev.reason or "",
                     )
