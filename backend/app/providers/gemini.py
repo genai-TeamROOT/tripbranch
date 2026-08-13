@@ -439,11 +439,18 @@ class RealGeminiProvider:
             time_available_min=request.conditions.time_available
         )
         context = gemini_prompts.format_schedule_planning_context(request, start_time)
+        # thinking_budget=0 — 일정 편성은 구조화 출력이 무거워(3~5개 항목×6개 필드)
+        # thinking이 지연시간의 상당 부분을 차지하는 것으로 보여 꺼서 응답 속도를
+        # 줄인다(실사용 지연시간 개선 검토, 2026-08-13). 라우트 선택 근거는
+        # pairwise_distances_km·조건을 프롬프트에 이미 명시적으로 주고 있어
+        # thinking 없이도 규칙 기반 선택이 가능하다고 판단 — 다만 품질 저하가
+        # 관측되면 0보다 큰 낮은 예산으로 조정할 수 있다(_call_structured 참고).
         result = await self._call_structured(
             instruction,
             context,
             ScheduleLLMPlan,
             operation="generate_schedule_plan",
+            thinking_budget=0,
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 
@@ -454,11 +461,13 @@ class RealGeminiProvider:
         start_time = request.visit_datetime.strftime("%H:%M")
         instruction = gemini_prompts.build_schedule_fill_instruction()
         context = gemini_prompts.format_schedule_fill_context(request, start_time)
+        # thinking_budget=0 — generate_schedule_plan()과 같은 이유.
         result = await self._call_structured(
             instruction,
             context,
             SchedulePartialLLMPlan,
             operation="generate_schedule_fill",
+            thinking_budget=0,
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 
@@ -469,16 +478,33 @@ class RealGeminiProvider:
         response_model: type[T],
         *,
         operation: str,
+        thinking_budget: int | None = None,
     ) -> T:
+        """thinking_budget은 기본값 None이면 모델 자체 기본 동작(gemini-2.5-flash는
+        동적 thinking)을 그대로 둔다 — 이 값을 넘기는 호출부(현재 SCHEDULE 두 곳)만
+        영향을 받고, 나머지 9개 호출부는 기존 동작과 완전히 동일하다(실사용
+        지연시간 개선 검토, 2026-08-13. SCHEDULE은 구조화 출력이 무거워 thinking이
+        전체 응답 시간의 상당 부분을 차지하는 것으로 추정됨). 0은 완전히 끄고,
+        모델별 허용 범위 안의 양수면 그 예산만큼만 쓴다."""
         try:
-            return await self._generate(system_instruction, user_input, response_model, operation)
+            return await self._generate(
+                system_instruction,
+                user_input,
+                response_model,
+                operation,
+                thinking_budget=thinking_budget,
+            )
         except ValidationError as exc:
             retry_instruction = system_instruction + gemini_prompts.format_validation_retry_note(
                 exc
             )
             try:
                 return await self._generate(
-                    retry_instruction, user_input, response_model, operation
+                    retry_instruction,
+                    user_input,
+                    response_model,
+                    operation,
+                    thinking_budget=thinking_budget,
                 )
             except ValidationError as retry_exc:
                 raise AppError(
@@ -496,6 +522,8 @@ class RealGeminiProvider:
         user_input: str,
         response_model: type[T],
         operation: str,
+        *,
+        thinking_budget: int | None = None,
     ) -> T:
         """1순위 모델부터 순서대로 시도한다(D-052). 각 모델에서 타임아웃/429/5xx는
         _try_model()이 지수 백오프로 재시도하고, 그 예산이 소진되면 다음 모델로
@@ -513,7 +541,11 @@ class RealGeminiProvider:
             attempted_models.append(model_name)
             try:
                 result = await self._try_model(
-                    model_name, system_instruction, user_input, response_model
+                    model_name,
+                    system_instruction,
+                    user_input,
+                    response_model,
+                    thinking_budget=thinking_budget,
                 )
             except _RetryableExhaustedError as exc:
                 last_error = exc.original
@@ -580,13 +612,25 @@ class RealGeminiProvider:
         system_instruction: str,
         user_input: str,
         response_model: type[T],
+        *,
+        thinking_budget: int | None = None,
     ) -> T:
         """모델 하나에 대해서만 타임아웃/429/5xx를 지수 백오프로 최대
         self._max_retries회 재시도한다. 재시도가 소진되면 _RetryableExhaustedError로
         감싸 던져 호출부(_generate)가 다음 모델로 넘어갈지 판단하게 한다. 4xx 등
         비재시도 오류는 감싸지 않고 ProviderUnavailableError를 바로 던진다 —
         모델을 바꿔도 같은 이유로 실패할 것이므로 폴백 대상이 아니다.
+
+        thinking_budget이 None이면 GenerateContentConfig에 thinking_config를
+        아예 안 넣어 모델 기본 동작(gemini-2.5-flash는 동적 thinking)을 그대로
+        둔다 — 기존 9개 호출부는 이 인자를 안 넘기므로 동작 변화가 없다.
         """
+
+        thinking_config = (
+            genai_types.ThinkingConfig(thinking_budget=thinking_budget)
+            if thinking_budget is not None
+            else None
+        )
 
         for attempt in range(self._max_retries + 1):
             # google-genai는 자체 전송 계층을 써서 MeteredTransport를 거치지 않는다.
@@ -601,6 +645,7 @@ class RealGeminiProvider:
                         response_mime_type="application/json",
                         response_schema=response_model,
                         temperature=0.0,
+                        thinking_config=thinking_config,
                     ),
                 )
             except httpx.TimeoutException:
