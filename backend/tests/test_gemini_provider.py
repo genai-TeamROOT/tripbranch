@@ -20,8 +20,11 @@ from app.schedule.schemas import ScheduleLLMPlan, SchedulePlanningRequest
 from app.schemas import (
     Intent,
     IntentClassificationResult,
+    LLMOutput,
+    OutputStatus,
     RecommendationItem,
     RecommendationResponse,
+    RecommendPayload,
     UserConditions,
 )
 
@@ -347,6 +350,53 @@ async def test_generate_schedule_plan_uses_thinking_budget_zero() -> None:
 
     with patch.object(provider._client.aio.models, "generate_content", side_effect=capture):
         await provider.generate_schedule_plan(request)
+
+    assert captured_config[0].thinking_config.thinking_budget == 0
+
+
+# --- thinking_budget 확장 적용(분류·추출 지연시간 개선, 실측: 2026-08-13
+# scripts/compare_classify_extract_thinking_budget.py, classify_intent 평균
+# 3609ms→1561ms/정확도 90% 유지, extract_recommend_conditions 평균
+# 3122ms→1745ms/search_center 추출 정확도 4/4 유지 — 결과 CSV:
+# test_results/classify_extract_thinking_budget.csv) ---
+
+
+@pytest.mark.asyncio
+async def test_classify_intent_uses_thinking_budget_zero() -> None:
+    """classify_intent()이 실제로 thinking_budget=0을 끝까지 전달하는지 확인한다."""
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    captured_config: list[object] = []
+
+    async def capture(*args: object, **kwargs: object) -> _FakeResponse:
+        captured_config.append(kwargs["config"])
+        return _FakeResponse(IntentClassificationResult(intent=Intent.RECOMMEND))
+
+    with patch.object(provider._client.aio.models, "generate_content", side_effect=capture):
+        await provider.classify_intent(
+            "경복궁 근처 카페 추천해줘", has_previous_recommendation=False, shown_place_count=0
+        )
+
+    assert captured_config[0].thinking_config.thinking_budget == 0
+
+
+@pytest.mark.asyncio
+async def test_extract_recommend_conditions_uses_thinking_budget_zero() -> None:
+    """extract_recommend_conditions()가 실제로 thinking_budget=0을 끝까지 전달하는지
+    확인한다."""
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    captured_config: list[object] = []
+    output = LLMOutput(
+        intent=Intent.RECOMMEND,
+        status=OutputStatus.COMPLETE,
+        recommend=RecommendPayload(conditions=UserConditions(search_center="경복궁")),
+    )
+
+    async def capture(*args: object, **kwargs: object) -> _FakeResponse:
+        captured_config.append(kwargs["config"])
+        return _FakeResponse(output)
+
+    with patch.object(provider._client.aio.models, "generate_content", side_effect=capture):
+        await provider.extract_recommend_conditions("경복궁 근처 카페 추천해줘")
 
     assert captured_config[0].thinking_config.thinking_budget == 0
 

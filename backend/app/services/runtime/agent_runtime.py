@@ -11,12 +11,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import timedelta
+from typing import TypeVar
 
 from app.agent_context.schemas import PlaceCandidate, RecommendationContext
 from app.domain.scoring import SCORING_VERSION
@@ -104,6 +106,8 @@ logger = logging.getLogger(__name__)
 
 StreamEventSink = Callable[[str, dict[str, object]], Awaitable[None]]
 
+T = TypeVar("T")
+
 
 async def _emit_stream_event(
     sink: StreamEventSink | None, event: str, payload: dict[str, object]
@@ -116,6 +120,47 @@ async def _emit_stream_event(
 
 async def _emit_progress(sink: StreamEventSink | None, stage: str, message: str) -> None:
     await _emit_stream_event(sink, "progress", {"stage": stage, "message": message})
+
+
+# SCHEDULE 편성(generate_schedule_plan)처럼 단일 LLM 호출 하나가 오래(수십 초) 걸리는
+# 구간에서, 로딩 화면이 이 구간 전체를 아무 갱신 없이 멈춰 보이는 문제를 완화한다
+# (실사용 피드백, 2026-08-13 — "일정 생성이 로딩 마지막에 혼자 너무 오래 머무른다").
+# 진짜 진행 단계를 아는 게 아니라 "아직 살아있다"를 주기적으로 알리는 heartbeat다.
+_SCHEDULING_HEARTBEAT_MESSAGES = (
+    "장소 순서를 계산하고 있어요.",
+    "이동 동선을 정리하고 있어요.",
+    "체류 시간과 도착 시각을 맞추고 있어요.",
+    "조금만 더 기다려주세요, 거의 다 됐어요.",
+)
+_SCHEDULING_HEARTBEAT_INTERVAL_SECONDS = 6.0
+
+
+async def _await_with_heartbeat(
+    awaitable: Awaitable[T],
+    *,
+    sink: StreamEventSink | None,
+    stage: str,
+    messages: tuple[str, ...] = _SCHEDULING_HEARTBEAT_MESSAGES,
+    interval_seconds: float = _SCHEDULING_HEARTBEAT_INTERVAL_SECONDS,
+) -> T:
+    """awaitable이 끝날 때까지 progress 이벤트를 주기적으로 흘려보내며 기다린다.
+
+    부수 효과: 프론트([client.ts]의 armInactivityTimer)가 progress 이벤트마다
+    45초 무활동 타이머를 다시 세우므로, 편성이 오래 걸려도(폴백 모델까지
+    타면 60초대) 클라이언트가 먼저 연결을 끊는 일을 줄여준다.
+    """
+    task = asyncio.ensure_future(awaitable)
+    tick = 0
+    try:
+        while True:
+            done, _pending = await asyncio.wait({task}, timeout=interval_seconds)
+            if task in done:
+                return task.result()
+            await _emit_progress(sink, stage, messages[tick % len(messages)])
+            tick += 1
+    finally:
+        if not task.done():
+            task.cancel()
 
 
 async def _begin_streamed_message(
@@ -1696,7 +1741,11 @@ async def run_agent_flow(
                 "scheduling",
                 "기존 일정은 유지하고 바꿀 장소를 다시 편성하고 있어요.",
             )
-            schedule_result = await plan_partial_schedule(partial_request, llm)
+            schedule_result = await _await_with_heartbeat(
+                plan_partial_schedule(partial_request, llm),
+                sink=stream_event_sink,
+                stage="scheduling",
+            )
         else:
             schedule_request = SchedulePlanningRequest(
                 candidates=schedule_candidates,
@@ -1709,7 +1758,11 @@ async def run_agent_flow(
                 "scheduling",
                 "장소 순서와 머무는 시간을 구성하고 있어요.",
             )
-            schedule_result = await plan_schedule(schedule_request, llm)
+            schedule_result = await _await_with_heartbeat(
+                plan_schedule(schedule_request, llm),
+                sink=stream_event_sink,
+                stage="scheduling",
+            )
 
         await _emit_progress(
             stream_event_sink,
