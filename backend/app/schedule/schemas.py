@@ -1,0 +1,132 @@
+"""일정 편성 모듈(app.schedule)의 입력 스키마.
+
+역할: 상태 저장소에 의존하지 않는 신규 모듈이 LLM으로 일정을 편성하는 데
+필요한 입력을 정의한다. (docs/design/int-07-schedule.md 6.0~6.1절)
+
+출력 스키마(ScheduleItem/ScheduleResult)는 app.schemas에 있다 — AgentResponse가
+그 타입을 참조해야 해서(app.schemas → app.schedule 방향 import가 생기면 순환
+참조가 된다), 응답에 실리는 출력 스키마는 RecommendationResponse와 같은 위치인
+app.schemas에 두고, 이 모듈에는 이 모듈만 쓰는 입력 스키마만 둔다.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+from pydantic import BaseModel, Field
+
+from app.schemas import RecommendationItem, ScheduleItem, UserConditions
+
+
+class SchedulePlanningRequest(BaseModel):
+    """일정 편성 LLM 호출 입력. (docs/design/int-07-schedule.md 6.1절)"""
+
+    candidates: list[RecommendationItem]
+    # D의 공개 응답 스키마(RecommendationItem)를 쓴다. D 내부 도메인 타입
+    # (app.domain.scoring.RankedCandidate)은 레이어 경계를 넘어가므로 쓰지 않는다.
+
+    conditions: UserConditions
+    # 기존 15개 조건 그대로 사용(time_available, transport 등 이미 있는 필드 재사용)
+
+    visit_datetime: datetime | None = None
+    # 방문 예정 시각
+
+    pairwise_distances_km: dict[tuple[str, str], float]
+    # app.geo.haversine_km()로 계산해 LLM에 근거로 제공한다. RecommendationItem에는
+    # 위경도가 없어(distance_km는 검색 중심 기준 거리) D 응답만으로는 후보 간 거리를
+    # 못 구한다 — A가 C의 AgentContextResponse.places(위경도 보유)를 place_id로
+    # 매칭해 계산해서 넘긴다. D/C 스키마 변경 불필요. 내부 함수 인자로만 쓰여
+    # JSON으로 직렬화되지 않으므로 튜플 키를 그대로 써도 된다.
+
+
+class SchedulePartialFillRequest(BaseModel):
+    """일부 슬롯만 새로 채우는 부분 재편성 입력. (SCHEDULE-09 2단계,
+    SCHEDULE-부분수정-해결방향-설계안.md 3-3절)
+
+    REJECT_SPECIFIC 처리 전용 — pinned_items(유지할 기존 항목, order 포함)는
+    그대로 최종 결과에 들어가고, target_orders에 해당하는 자리만 LLM이 새로
+    고른 항목으로 채운다. LLM에게 pinned_items를 그대로 돌려달라고 요청하지
+    않는다 — echo를 신뢰하는 대신 planner.py가 구조적으로 병합해 pinned
+    항목이 유실·변형될 위험을 원천 차단한다(SCHEDULE-07이 개수 제약을 하드
+    검증으로 옮긴 것과 같은 철학 — LLM 지시 준수보다 구조적 보장을 우선한다).
+    """
+
+    pinned_items: list[ScheduleItem]
+    target_orders: list[int]
+    candidates: list[RecommendationItem]
+    conditions: UserConditions
+    visit_datetime: datetime | None = None
+    pairwise_distances_km: dict[tuple[str, str], float]
+
+
+class SchedulePartialLLMPlan(BaseModel):
+    """generate_schedule_fill() 구조화 출력 전용 모델.
+
+    new_items 개수는 요청마다 다른 target_orders 길이에 달려 있어 Pydantic
+    Field로 정적 강제할 수 없다(ScheduleLLMPlan.items의 min_length=3/
+    max_length=5와 달리 고정 범위가 아니다) — planner.py가 응답 직후
+    "new_items의 order 집합 == target_orders 집합"을 직접 검증한다.
+    불일치 시 llm_output_invalid로 실패 처리한다 — 다만
+    ScheduleLLMPlan과 달리 provider 레벨 자동 재시도는 적용하지 않는다
+    (실패 빈도가 낮을 것으로 보고 V1은 단순 실패로 처리, 필요성이 확인되면
+    나중에 추가한다).
+    """
+
+    new_items: list[ScheduleItem]
+
+
+def target_item_range(time_available_min: int | None) -> tuple[int, int]:
+    """활동 가능 시간(분)에 맞는 일정 항목 개수의 목표 범위(최소, 최대)를 계산한다.
+    (SCHEDULE-10, "2시간 코스 짜줘"처럼 짧은 시간 요청에서 3~5개 고정 하한이
+    비현실적이라는 문제가 실사용 질문으로 제기돼 발견)
+
+    기준: 프롬프트가 이미 안내하는 장소당 체류시간 예시(카페 60분, 관광지 90분)와
+    구간 사이 이동 15분 내외를 기준 삼았다. 3곳을 채우려면 최소
+    60*3+15*2=210분(3.5시간) 안팎이 필요해, 그보다 짧은 시간에 3개를 강제하면
+    LLM이 체류시간을 비현실적으로 줄이거나(예: 카페 20분), 개수 제약 자체를
+    맞추지 못해 검증 실패 → 재시도 → 502로 이어진다.
+
+    time_available이 없으면(사용자가 시간 제한을 말하지 않음) 기존 정책을 그대로
+    쓴다(3~5개, "3~4시간 내외로 구성").
+    """
+    if time_available_min is None:
+        return 3, 5
+    if time_available_min < 120:
+        return 1, 2
+    if time_available_min < 210:
+        return 2, 4
+    return 3, 5
+
+
+class ScheduleLLMPlan(BaseModel):
+    """generate_schedule_plan() 구조화 출력 전용 모델.
+
+    app.schemas.ScheduleResult에서 basis_note만 뺀 형태다. basis_note는 LLM이
+    생성하지 않고 app.schedule.planner가 visit_datetime 값으로 결정적으로
+    채운다(docs/design/int-07-schedule.md 6.2.1절) — 이 모델은 LLM 응답 검증에만
+    쓰이고 AgentResponse에는 직접 실리지 않는다.
+
+    items에는 구조적으로 min_length=1/max_length=5만 건다 — "이번 요청에 맞는"
+    목표 개수는 사용자의 time_available에 따라 1~5 사이에서 달라져
+    (target_item_range() 참고) Pydantic Field로 고정 범위를 강제할 수 없다.
+    SCHEDULE-07 때는 항상 min_length=3을 걸어 "LLM이 개수 지시를 안 지킨다"는
+    문제(9절)를 막았지만, 활동 가능 시간이 짧은 요청(예: "2시간 코스 짜줘")에서는
+    이 고정 하한 자체가 비현실적이라는 게 SCHEDULE-10에서 확인됐다. 목표 개수
+    범위는 gemini_prompts.build_schedule_planning_instruction()이
+    time_available_min으로 프롬프트에 직접 지시하는 쪽으로 옮기고, 이 모델의
+    구조적 제약은 "0개도 6개 이상도 아니다"라는 최소한만 남겼다. 검증 실패 시
+    app.providers.gemini.py의 _call_structured()가 이미 한 번 자동 재시도한다.
+    """
+
+    items: list[ScheduleItem] = Field(min_length=1, max_length=5)
+    total_duration_min: int
+    route_summary: str
+
+
+__all__ = [
+    "SchedulePlanningRequest",
+    "ScheduleLLMPlan",
+    "SchedulePartialFillRequest",
+    "SchedulePartialLLMPlan",
+    "target_item_range",
+]

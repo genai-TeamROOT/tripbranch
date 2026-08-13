@@ -149,6 +149,9 @@ activemq-data/
 
 # Environments
 .env
+.env.*
+!.env.example
+!*/.env.example
 .envrc
 .venv
 env/
@@ -199,7 +202,9 @@ cython_debug/
 #   that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
 #   and can be added to the global gitignore or merged into this file. However, if you prefer, 
 #   you could uncomment the following to ignore the entire vscode folder
-# .vscode/
+# No team-wide shared VS Code settings are required for this project yet;
+# ignore the whole folder so personal editor config doesn't get committed.
+.vscode/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
 
@@ -216,3 +221,26 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# macOS
+.DS_Store
+
+# Node / frontend
+node_modules/
+frontend/dist/
+frontend/.env
+frontend/node_modules/
+*.tsbuildinfo
+
+# Backend
+backend/.env
+backend/.venv/
+backend/.venv*/
+
+# Editor/AI-tool local config (not everyone on the team uses the same tooling)
+.claude/
+.codex/
+.cursor/
+
+# 개인 작업 지시 메모 (task 파일 모음, 커밋 대상 아님)
+package_D/

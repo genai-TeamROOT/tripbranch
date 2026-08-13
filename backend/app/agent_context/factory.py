@@ -1,0 +1,83 @@
+"""C Context Service와 내부 Tool·Provider 의존성을 조립한다."""
+
+from __future__ import annotations
+
+import httpx
+
+from app.agent_context.concentration_proxy import ConcentrationMappingCache
+from app.agent_context.enrichment_service import CandidateEnrichmentService
+from app.agent_context.service import ContextService, ContextTools
+from app.config import settings
+from app.providers.factory import (
+    get_concentration_provider,
+    get_festival_provider,
+    get_geocoding_provider,
+    get_holiday_provider,
+    get_info_place_detail_provider,
+    get_local_search_provider,
+    get_place_details_provider,
+    get_place_location_repository,
+    get_place_search_provider,
+    get_recommendation_card_tool,
+    get_weather_provider,
+)
+from app.tools.concentration import GetConcentrationTool
+from app.tools.festival import GetFestivalsTool
+from app.tools.holiday import GetHolidaysTool
+from app.tools.nearby_place_details import NearbyPlaceDetailsTool
+from app.tools.place_detail import GetPlaceDetailTool
+from app.tools.resolve_location import ResolveLocationTool
+from app.tools.weather_forecast import GetWeatherForecastTool
+
+
+def get_context_provider(client: httpx.AsyncClient) -> ContextService:
+    """설정된 Fake/Real Provider로 A–C ContextProvider를 생성한다."""
+
+    return ContextService(
+        ContextTools(
+            location=ResolveLocationTool(
+                get_geocoding_provider(client),
+                place_repository=get_place_location_repository(client),
+                local_search_provider=get_local_search_provider(client),
+            ),
+            places=NearbyPlaceDetailsTool(
+                search_provider=get_place_search_provider(client),
+                details_provider=get_place_details_provider(client),
+            ),
+            weather=GetWeatherForecastTool(get_weather_provider(client)),
+            holidays=GetHolidaysTool(get_holiday_provider(client)),
+            concentration=GetConcentrationTool(get_concentration_provider(client)),
+            # 추천 후보 상세 캐시(PLACE_DETAILS_SOURCE)와 별개로 INFO 전용 설정을
+            # 따른다 — 이유는 place_detail.py 모듈 docstring 참고.
+            place_detail=GetPlaceDetailTool(get_info_place_detail_provider(client)),
+            festivals=GetFestivalsTool(get_festival_provider(client)),
+            # COMPARE의 place_id → 장소명 해석. 추천 카드와 같은 Tool을 공유한다.
+            cards=get_recommendation_card_tool(client),
+        ),
+        candidate_limit=settings.recommendation_candidate_limit,
+        concentration_mapping_cache=_concentration_mapping_cache(client),
+    )
+
+
+def _concentration_mapping_cache(
+    client: httpx.AsyncClient,
+) -> ConcentrationMappingCache | None:
+    """Supabase 설정이 없으면 INFO 대체 조회를 건너뛴다(기존 경로 유지)."""
+    repository = get_place_location_repository(client)
+    return None if repository is None else ConcentrationMappingCache(repository)
+
+
+def get_candidate_enrichment_service(
+    client: httpx.AsyncClient,
+) -> CandidateEnrichmentService:
+    """설정된 Concentration Provider를 공통 Tool로 감싼 후보 보강 서비스를 생성한다."""
+
+    return CandidateEnrichmentService(
+        GetConcentrationTool(get_concentration_provider(client)),
+        candidate_limit=settings.recommendation_result_limit,
+        # 조회는 검색어로, 대조는 정식 명칭으로 하기 위해 매핑을 함께 넘긴다(D-057).
+        mapping_cache=_concentration_mapping_cache(client),
+    )
+
+
+__all__ = ["get_candidate_enrichment_service", "get_context_provider"]
