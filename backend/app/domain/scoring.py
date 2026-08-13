@@ -112,7 +112,14 @@ def _clamp(value: float, low: float, high: float) -> float:
 
 
 def _remaining_minutes(now: datetime, hours: OperatingHours) -> float | None:
-    """`now`가 영업시간 안이면 마감까지 남은 분을, 밖이면 `None`(폐점)을 반환한다."""
+    """`now`가 영업시간 안이면 마감까지 남은 분을, 밖이면 `None`(폐점)을 반환한다.
+
+    정기 휴무일은 구간 안이어도 `None`이다 — `hours`가 그날 실제로 여는 시간이
+    아니라 평소 구간이기 때문이다. 이 한 곳에서 걸러 두면 폐점 판정·잔여시간
+    Feature·"운영시간 무시" 경고가 모두 같은 기준을 따른다.
+    """
+    if hours.is_regular_closure:
+        return None
     current_time = now.time()
     if not (hours.open_time <= current_time < hours.close_time):
         return None

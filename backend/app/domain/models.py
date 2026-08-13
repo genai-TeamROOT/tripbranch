@@ -47,10 +47,17 @@ class OperatingHours:
 
     v1은 `open_time <= close_time`인 당일 운영만 다룬다. 자정을 넘기는
     운영시간(예: 22:00~02:00)은 범위 밖이며 `TBD`다.
+
+    `is_regular_closure`는 "이 구간은 평소 운영시간이지만 방문일은 정기 휴무"라는
+    뜻이다. 휴무일에 시각을 `00:00~00:00`으로 지워 표시하던 방식을 대체한다 —
+    그 표식은 폐점을 전달하는 대신 표시할 시간까지 함께 없애서, 추천 카드에
+    "00:00~00:00"이 그대로 노출됐다. 시각과 휴무 여부를 한 객체에 같이 두면
+    둘이 어긋난 조합이 만들어지지 않는다.
     """
 
     open_time: time
     close_time: time
+    is_regular_closure: bool = False
 
 
 @dataclass(frozen=True)

@@ -156,15 +156,24 @@ def _operating_hours_from_context(
 
     지금 영업 중인 구간이 없더라도 실제 시간 구간은 보존한다. 이전에는 폐점/정기
     휴무를 ``00:00~00:00`` 내부 표식으로 바꿨는데, Scoring 이후 추천 카드가 이
-    표식을 그대로 표시해 "00:00~00:00 (현재 운영시간 아님)"으로 보였다. 폐점
-    여부는 ``_remaining_minutes() is None``으로 이미 판별하므로, 표식으로 시간을
-    지울 필요가 없다.
+    표식을 그대로 표시해 "00:00~00:00 (현재 운영시간 아님)"으로 보였다.
+
+    다만 시각만으로는 정기 휴무를 전달할 수 없다 — 휴관일에도 평소 구간
+    (09:00~18:00)은 방문 시각을 포함하므로, ``_remaining_minutes()``는 잔여
+    360분을 돌려주고 폐점 판정이 통째로 뚫린다. 그래서 휴무 여부는 시각을 지우는
+    대신 ``OperatingHours.is_regular_closure``로 함께 실어 보낸다.
     """
 
     if not schedule or schedule.get("availability") == "unknown":
         return None
+    # 휴무는 운영 구간과 독립이다 — 24시간 영업(all_day)도 정기 휴무일이 있을 수 있다.
+    regular_closure = _is_regular_closure(schedule, visit_at)
     if schedule.get("availability") == "all_day":
-        return OperatingHours(open_time=time.min, close_time=time.max)
+        return OperatingHours(
+            open_time=time.min,
+            close_time=time.max,
+            is_regular_closure=regular_closure,
+        )
 
     raw_rules = schedule.get("rules")
     rules = (
@@ -191,14 +200,50 @@ def _operating_hours_from_context(
             None,
         )
         if active is not None:
-            return OperatingHours(open_time=active[0], close_time=active[1])
+            return OperatingHours(
+                open_time=active[0],
+                close_time=active[1],
+                is_regular_closure=regular_closure,
+            )
 
     # 정기 휴무·영업 전·영업 종료 후에도 카드에는 실제 운영 구간을 표시한다.
-    # Scoring은 이 구간에서 remaining_minutes가 None인 것을 보고 기존과 똑같이
-    # 폐점 필터 또는 "운영시간 무시" 경고 처리를 한다.
+    # Scoring은 영업 전/후는 remaining_minutes가 None인 것으로, 정기 휴무는
+    # is_regular_closure로 판별해 폐점 필터 또는 "운영시간 무시" 경고를 건다.
     if fallback_range is not None:
-        return OperatingHours(open_time=fallback_range[0], close_time=fallback_range[1])
+        return OperatingHours(
+            open_time=fallback_range[0],
+            close_time=fallback_range[1],
+            is_regular_closure=regular_closure,
+        )
+    if regular_closure:
+        # 요일 열거에서 빠져 유도한 휴무는 그날 구간 자체가 원문에 없다. 표시할
+        # 시각은 없지만 폐점인 것은 확실하므로, `None`(운영시간 미확인 — 폐점으로
+        # 걸러지지 않는다)으로 두지 않고 길이 0 구간에 휴무 표식을 실어 보낸다.
+        # 표시 측은 이 구간을 시각으로 쓰지 않는다(`_operating_hours_display`).
+        return OperatingHours(
+            open_time=time.min,
+            close_time=time.min,
+            is_regular_closure=True,
+        )
     return None
+
+
+def _is_regular_closure(schedule: dict[str, Any], visit_at: datetime) -> bool:
+    """방문일이 정기 휴무 요일인지 본다.
+
+    `closure_rules`에는 원문에 적힌 휴무(`매주 월요일`)와 운영 요일 열거에서
+    빠진 요일로 유도한 휴무가 함께 들어온다(`operating_hours.py`).
+    """
+    weekday = _WEEKDAY_NAMES[visit_at.weekday()]
+    closure_rules = schedule.get("closure_rules")
+    if not isinstance(closure_rules, list):
+        return False
+    return any(
+        isinstance(rule, dict)
+        and isinstance(rule.get("weekdays"), list)
+        and weekday in rule["weekdays"]
+        for rule in closure_rules
+    )
 
 
 def _rule_applies(rule: dict[str, Any], visit_at: datetime) -> bool:

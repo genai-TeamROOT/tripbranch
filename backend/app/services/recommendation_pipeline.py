@@ -474,6 +474,11 @@ def _operating_hours_display(candidate: ScoringCandidate) -> str | None:
     hours = candidate.operating_hours
     if hours is None:
         return None
+    if hours.open_time == hours.close_time:
+        # 길이 0 구간은 표시할 시각이 없다는 뜻이다 — 유도한 정기 휴무처럼 그날
+        # 구간이 원문에 없는 경우다(`candidate_mapper.py`). 그대로 포맷하면
+        # "00:00~00:00"이 카드에 찍힌다.
+        return None
     closes_at_midnight = hours.close_time in _MIDNIGHT_CLOSE_TIMES
     if hours.open_time == time.min and closes_at_midnight:
         return _ALL_DAY_OPERATING_HOURS_DISPLAY
@@ -488,7 +493,11 @@ def _remaining_minutes(
     visit_at: datetime,
 ) -> int | None:
     hours = candidate.operating_hours
-    if hours is None or not (hours.open_time <= visit_at.time() < hours.close_time):
+    if (
+        hours is None
+        or hours.is_regular_closure
+        or not (hours.open_time <= visit_at.time() < hours.close_time)
+    ):
         return None
     close_at = datetime.combine(
         visit_at.date(),

@@ -17,6 +17,7 @@ from app.domain.operating_hours import (
     clean_operating_text,
     normalize_operating_schedule,
 )
+from app.domain.scoring import _is_closed
 
 
 def test_clean_operating_text_preserves_html_line_breaks_and_entities() -> None:
@@ -260,12 +261,12 @@ def test_month_range_scope_is_preserved_without_weekday_declaration() -> None:
     assert [rule.weekdays for rule in schedule.rules] == [None, None]
 
 
-def _scoring_candidate_at(operating_hours: str, visit_at: datetime):
+def _scoring_candidate_at(operating_hours: str, visit_at: datetime, rest_date: str | None = None):
     """정규화 결과가 D의 운영 판정을 실제로 움직이는지 공개 경로로 확인한다."""
     schedule = normalize_operating_schedule(
         content_type_id="12",
         operating_hours=operating_hours,
-        rest_date=None,
+        rest_date=rest_date,
     )
     context = RecommendationContext(
         location=ContextValue(
@@ -305,14 +306,16 @@ def test_saturday_short_hours_close_the_candidate_for_scoring() -> None:
     요일을 분리하지 않으면 소비 측이 09:00~18:00 구간을 골라 잔여 240분(운영점수
     만점)으로 추천한다.
     """
+    visit_at = datetime(2026, 8, 8, 14, 0)
     candidate = _scoring_candidate_at(
         "[일요일~금요일]09:00~18:00[토요일]09:00~13:00",
-        datetime(2026, 8, 8, 14, 0),
+        visit_at,
     )
 
+    assert _is_closed(candidate, visit_at) is True
+    # 폐점이어도 그날 실제 구간은 남는다 — 카드가 "09:00~13:00"을 표시해야 한다.
     assert candidate.operating_hours is not None
-    assert candidate.operating_hours.open_time == time.min
-    assert candidate.operating_hours.close_time == time.min
+    assert candidate.operating_hours.close_time == time(13, 0)
 
 
 def test_saturday_short_hours_stay_open_before_closing() -> None:
@@ -358,15 +361,49 @@ def test_weekday_not_listed_in_operating_hours_is_derived_as_closure() -> None:
 
 def test_derived_closure_excludes_the_candidate_for_scoring() -> None:
     """유도한 휴무가 소비 측 폐점 판정까지 이어진다."""
+    visit_at = datetime(2026, 8, 3, 10, 0)
     candidate = _scoring_candidate_at(
         "- 화요일 / 목요일~금요일 09:00~18:00<br>- 수요일 09:00~20:00<br>"
         "- 토요일~일요일 09:00~17:00",
-        datetime(2026, 8, 3, 10, 0),
+        visit_at,
     )
 
     assert candidate.operating_hours is not None
-    assert candidate.operating_hours.open_time == time.min
-    assert candidate.operating_hours.close_time == time.min
+    assert candidate.operating_hours.is_regular_closure is True
+    assert _is_closed(candidate, visit_at) is True
+
+
+def test_declared_rest_day_closes_the_candidate_but_keeps_the_usual_hours() -> None:
+    """휴관일에도 평소 구간은 카드에 남기고, 폐점 판정만 건다.
+
+    휴무 요일을 보지 않으면 평소 구간(09:00~18:00)이 방문 시각을 포함해 잔여
+    360분으로 읽히고, 휴관일 장소가 그대로 추천된다.
+    """
+    visit_at = datetime(2026, 8, 3, 12, 0)  # 월요일
+    candidate = _scoring_candidate_at("09:00~18:00", visit_at, rest_date="매주 월요일")
+
+    assert _is_closed(candidate, visit_at) is True
+    assert candidate.operating_hours is not None
+    assert candidate.operating_hours.open_time == time(9, 0)
+    assert candidate.operating_hours.close_time == time(18, 0)
+
+
+def test_same_place_stays_open_on_a_non_rest_day() -> None:
+    """휴무 요일이 다른 요일까지 닫아버리지 않는다(대조군)."""
+    visit_at = datetime(2026, 8, 4, 12, 0)  # 화요일
+    candidate = _scoring_candidate_at("09:00~18:00", visit_at, rest_date="매주 월요일")
+
+    assert _is_closed(candidate, visit_at) is False
+    assert candidate.operating_hours is not None
+    assert candidate.operating_hours.is_regular_closure is False
+
+
+def test_all_day_place_is_still_closed_on_its_rest_day() -> None:
+    """24시간 영업도 정기 휴무일에는 닫는다 — 휴무는 운영 구간과 독립이다."""
+    visit_at = datetime(2026, 8, 3, 12, 0)  # 월요일
+    candidate = _scoring_candidate_at("상시 개방", visit_at, rest_date="매주 월요일")
+
+    assert _is_closed(candidate, visit_at) is True
 
 
 def test_no_closure_is_derived_when_a_rule_covers_every_weekday() -> None:
