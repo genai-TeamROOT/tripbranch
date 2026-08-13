@@ -12,6 +12,7 @@ from __future__ import annotations
 import math
 from collections.abc import AsyncIterator, Mapping
 from datetime import date, datetime, timedelta
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from app.domain.models import (
@@ -724,7 +725,11 @@ class FakeLLMProvider:
         return provider_result(result, source=ProviderSource.FAKE_LLM)
 
     async def extract_compare_request(
-        self, user_input: str, *, shown_place_count: int
+        self,
+        user_input: str,
+        *,
+        shown_place_count: int,
+        shown_place_names: list[str] | None = None,
     ) -> ProviderResult[LLMOutput]:
         if "가까워" in user_input:
             criteria = CompareCriteria.DISTANCE
@@ -733,10 +738,39 @@ class FakeLLMProvider:
         else:
             criteria = CompareCriteria.OVERALL
 
+        # 순번이든 이름이든 지목이 있으면 그 대상만 비교한다. MODIFY의
+        # target_indices와 같은 매칭 규칙을 쓴다 — 1-indexed이고, 빈 이름(과거
+        # 세션)은 건너뛴다(빈 문자열은 어떤 발화에도 포함돼 오매칭난다).
+        ordinal_indices = {
+            index for marker, index in _ORDINAL_TO_INDEX.items() if marker in user_input
+        }
+        name_indices = {
+            rank
+            for rank, name in enumerate(shown_place_names or [], start=1)
+            if name and name in user_input
+        }
+        mentioned_indices = sorted(ordinal_indices | name_indices)
+
+        targets: list[int] | Literal["all"] = "all"
+        if mentioned_indices:
+            out_of_range = [index for index in mentioned_indices if index > shown_place_count]
+            if out_of_range:
+                result = LLMOutput(
+                    intent=Intent.COMPARE,
+                    status=OutputStatus.NEEDS_CLARIFICATION,
+                    clarification=ClarificationPayload(
+                        missing_fields=[],
+                        message=f"추천 결과는 {shown_place_count}개까지 있어요. "
+                        "몇 번을 비교할까요?",
+                    ),
+                )
+                return provider_result(result, source=ProviderSource.FAKE_LLM)
+            targets = mentioned_indices
+
         result = LLMOutput(
             intent=Intent.COMPARE,
             status=OutputStatus.COMPLETE,
-            compare=ComparePayload(targets="all", criteria=criteria),
+            compare=ComparePayload(targets=targets, criteria=criteria),
         )
         return provider_result(result, source=ProviderSource.FAKE_LLM)
 

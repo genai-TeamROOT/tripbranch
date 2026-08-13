@@ -115,9 +115,18 @@ class LLMProvider(Protocol):
         ...
 
     async def extract_compare_request(
-        self, user_input: str, *, shown_place_count: int
+        self,
+        user_input: str,
+        *,
+        shown_place_count: int,
+        shown_place_names: list[str] | None = None,
     ) -> ProviderResult[LLMOutput]:
-        """COMPARE 발화에서 비교 대상과 기준을 추출한다."""
+        """COMPARE 발화에서 비교 대상과 기준을 추출한다.
+
+        shown_place_names는 rank 순 이름 목록이다. 사용자가 순번 대신 장소
+        이름으로 비교 대상을 지목했을 때 그 이름을 순번으로 옮기는 데 쓴다 —
+        목록이 없으면 이름 지목을 해석할 근거가 없다.
+        """
         ...
 
     async def extract_general_request(self, user_input: str) -> ProviderResult[LLMOutput]:
