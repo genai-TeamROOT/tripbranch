@@ -133,7 +133,10 @@ def _to_place_details(row: StoredPlaceDetail) -> PlaceDetails:
         pet=row.pet_raw,
         credit_card=row.credit_card_raw,
         restroom=row.restroom_raw,
-        thumbnail_url=row.thumbnail_url or row.first_image_url,
+        # firstimage2(작은 썸네일, thumbnail_url)보다 firstimage(원본 크기,
+        # first_image_url)를 우선한다 — hybrid_place_details.py와 동일한 이유
+        # (2026-08-13). first_image_url이 없는 장소만 thumbnail_url로 대체한다.
+        thumbnail_url=row.first_image_url or row.thumbnail_url,
         operating_schedule=normalize_operating_schedule(
             content_type_id=row.content_type_id,
             operating_hours=row.operating_hours_raw,

@@ -153,16 +153,12 @@ export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
         aria-expanded={expanded}
         onClick={() => setExpanded((value) => !value)}
       >
-        <span>
-          <span className="block text-sm font-semibold text-gray-900 dark:text-gray-100">
-            {card.place_name ?? "장소 상세 정보"}
-          </span>
-          <span className="mt-1 block text-xs text-gray-500 dark:text-gray-400">
-            {expanded ? "상세 정보 접기" : "상세 정보 보기"}
-          </span>
+        <span className="min-w-0 text-sm font-semibold text-gray-900 dark:text-gray-100">
+          {card.place_name ?? "장소 상세 정보"}
         </span>
-        <span aria-hidden="true" className="text-gray-500 dark:text-gray-400">
-          {expanded ? "⌃" : "⌄"}
+        <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-300">
+          {expanded ? "접기" : "상세"}
+          <span aria-hidden="true">{expanded ? "⌃" : "⌄"}</span>
         </span>
       </button>
 
@@ -188,12 +184,17 @@ export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
       {expanded && (
         <div className="flex flex-col gap-4 border-t border-gray-100 px-4 py-4 dark:border-gray-800">
           {card.thumbnail_url && (
-            <img
-              src={card.thumbnail_url}
-              alt={`${card.place_name ?? "장소"} 썸네일`}
-              loading="lazy"
-              className="h-48 w-full rounded-md object-cover"
-            />
+            // 원본 해상도 이미지(first_image_url 우선, 크기 다양)를 그대로 쓰므로
+            // object-cover로 채우면 잘리고 확대돼 보인다. 고정 높이 박스 안에서
+            // object-contain으로 전체를 보여주고, 남는 여백은 배경색으로 채운다.
+            <div className="flex h-56 w-full items-center justify-center overflow-hidden rounded-md bg-gray-100 dark:bg-gray-800">
+              <img
+                src={card.thumbnail_url}
+                alt={`${card.place_name ?? "장소"} 이미지`}
+                loading="lazy"
+                className="h-full w-full object-contain"
+              />
+            </div>
           )}
           {card.overview && (
             <section>
@@ -210,9 +211,12 @@ export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
               href={card.homepage}
               target="_blank"
               rel="noreferrer"
-              className="w-fit text-sm font-medium text-blue-700 underline underline-offset-2 dark:text-blue-300"
+              className="flex items-center justify-between gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm font-medium text-gray-800 transition-colors hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 dark:border-gray-700 dark:bg-gray-800/70 dark:text-gray-100 dark:hover:border-blue-800 dark:hover:bg-blue-950/40 dark:hover:text-blue-300"
             >
-              공식 홈페이지 보기
+              <span>공식 홈페이지 보기</span>
+              <span aria-hidden="true" className="text-gray-400 dark:text-gray-500">
+                ↗
+              </span>
             </a>
           )}
         </div>
