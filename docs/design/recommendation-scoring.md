@@ -5,8 +5,8 @@
 | 항목 | 값 |
 |------|-----|
 | 버전 | v1 |
-| 상태 | v1 확정, §4.4·§5.1·§5.2 혼잡도(D-040) 확정 반영 |
-| 최종 수정 | 2026-08-02 |
+| 상태 | v1 확정, §4.4·§5.1·§5.2 혼잡도(D-040) 확정 반영. §3에 `ignore_operating_hours`/정기 휴무(`is_regular_closure`) 반영(2026-08-13) |
+| 최종 수정 | 2026-08-13 |
 | 관련 코드 | `backend/app/domain/models.py::ScoringCandidate`, `backend/app/domain/scoring.py` |
 
 이 문서는 [`docs/decision-log.md`](../decision-log.md)의 D-008(하드 필터 + 가중치 점수
@@ -21,7 +21,7 @@ Scoring v1이 다루는 것:
 
 - Provider/Tool 독립적인 `Candidate` 공통 모델 (`ScoringCandidate`)
 - 날씨, 남은 운영시간, 거리 3개 Feature
-- 폐점(최종 하드 필터)/운영시간 미확인/이전 추천·거절 장소의 처리 기준
+- 운영종료(최종 하드 필터)/운영시간 미확인/이전 추천·거절 장소의 처리 기준
 - 기본 가중치와 날씨·남은 운영시간 결측 시 재분배 가중치
 - 점수 기준 정렬(Ranking) 출력 구조
 
@@ -52,10 +52,16 @@ Scoring v1이 다루지 않는 것 (`TBD`):
 | `operating_hours` | `OperatingHours \| None` | 당일 개장~마감 시각. `None`이면 운영시간 미확인 |
 | `raw_source` | `str` | 후보를 채운 Tool/Provider 식별값 (기본 `"unknown"`) |
 
-`OperatingHours`는 `open_time`/`close_time`(`datetime.time`) 두 필드만 가지며,
-`open_time <= close_time`인 당일 운영만 다룬다(§1 범위 참고). 운영 유무(폐점
-여부)는 이 필드 자체에 boolean으로 저장하지 않고, Scoring이 실행 시점에 받는
-기준 시각 `now`와 비교해 직접 판정한다(§3).
+`OperatingHours`는 `open_time`/`close_time`(`datetime.time`)에 더해
+`is_regular_closure: bool = False` 필드를 가지며, `open_time <= close_time`인
+당일 운영만 다룬다(§1 범위 참고). `is_regular_closure`는 "이 구간은 평소
+운영시간이지만 방문일은 정기 휴무"라는 뜻으로, 시각을 `00:00~00:00`으로 지워
+운영종료를 표시하던 이전 방식(그 시각 자체가 추천 카드에 그대로 노출되는
+부작용이 있었다)을 대체한다 — 시각과 휴무 여부를 한 객체에 같이 둬서 실제
+운영시간 표시와 운영종료 판정이 어긋나지 않게 한다. 운영 유무(운영종료 여부)
+자체는 이 필드만으로 결정되지 않고, Scoring이 실행 시점에 받는 기준 시각
+`now`와 `open_time`/`close_time`/`is_regular_closure`를 함께 비교해 직접
+판정한다(§3).
 
 `PlaceCandidate`(Provider 산출물)와 별도 모델로 둔 이유는 두 가지다.
 
@@ -86,16 +92,28 @@ Scoring 실행 시점의 기준 시각 `now`를 입력받아, 다음 조건으�
 
 | 조건 | 처리 | 이유 |
 | --- | --- | --- |
-| `operating_hours`가 있고 `now`가 `[open_time, close_time)` 밖 | 제외(폐점) | 폐점 장소는 방문 불가능하므로 추천 후보 자체가 아님 |
+| `operating_hours`가 있고 (`now`가 `[open_time, close_time)` 밖 또는 `is_regular_closure=True`) | 제외(운영종료) — `ignore_operating_hours=True`면 제외하지 않음 | 운영종료 장소는 방문 불가능하므로 원칙적으로 추천 후보가 아님 |
 | `place_id in shown_place_ids` | 제외 | 이미 이번 세션에서 노출한 장소 |
 | `place_id in rejected_place_ids` | 제외 | 사용자가 명시적으로 거절한 장소 |
 
-운영 유무(폐점 여부)는 더 이상 별도 boolean 필드가 아니라, Scoring이 `now`와
-`operating_hours`를 비교해 **최종 하드 필터로 직접 판정**한다. `operating_hours
-is None`(운영시간 미확인)은 **제외하지 않는다.** 폐점과 미확인은 다른 상태이며,
-미확인 후보는 점수를 계산하되 `is_unverified=True`와 경고 문구를 함께 반환한다.
-이는 현재 `services/recommendations.py`가 `operating_hours` 유무로
-`recommendations`/`unverified_recommendations`를 나누는 방식과 같은 원칙이다.
+운영 유무(운영종료 여부)는 별도 boolean 필드 하나로 저장되지 않고, Scoring이
+`now`와 `operating_hours`(개장~마감 시각 + `is_regular_closure`)를 비교해
+**최종 하드 필터로 직접 판정**한다(`_is_closed()`). 정기 휴무일은 `now`가
+평소 개장~마감 구간 안에 있어도 `is_regular_closure=True`면 운영종료로
+판정한다 — `hours`가 그날 실제로 여는 시간이 아니라 평소 구간이기 때문이다.
+`operating_hours is None`(운영시간 미확인)은 **제외하지 않는다.** 운영종료와
+미확인은 다른 상태이며, 미확인 후보는 점수를 계산하되 `is_unverified=True`와
+경고 문구를 함께 반환한다. 이는 현재 `services/recommendations.py`가
+`operating_hours` 유무로 `recommendations`/`unverified_recommendations`를
+나누는 방식과 같은 원칙이다.
+
+**`ignore_operating_hours`(2026-08-13 추가)**: `score_candidates()`의 키워드
+인자로, 기본값은 `False`(기존 동작 그대로 운영종료 후보 제외)다. `True`면
+운영종료 후보를 제외하지 않고 그대로 채점에 포함한다 — 검색 결과가 전부
+운영종료 후보뿐이라 0건으로 응답한 턴에서 "운영 중이 아닌 곳도 볼게요"
+되묻기(`no_data_closed`, [clarification-options.md](./clarification-options.md))를
+사용자가 선택했을 때만 호출부(`agent_runtime.py`)가 켠다. `shown_place_ids`/
+`rejected_place_ids` 제외는 이 플래그와 무관하게 항상 적용된다.
 
 카테고리(place_type/place_tag) 일치 여부도 하드 필터의 영역이다. 예를 들어
 "카페 아니면 공원"처럼 place_type이 여러 개 허용된 경우 그 안에서의 우선순위는
@@ -118,7 +136,7 @@ remaining_operating_time_score = clamp(remaining_minutes / 120, 0.0, 1.0)
 §3의 하드 필터에서 이미 제외되므로 이 함수에 도달하지 않는다.
 `operating_hours is None`(운영시간 미확인)이면 이 Feature 자체를 계산하지 않고
 §5의 재분배 규칙을 적용한다. 미확인을 0점으로 두지 않는 이유는, 미확인이
-"곧 닫음"이나 "폐점"을 의미하지 않기 때문이다(폐점과 구분되는 이유와 동일).
+"곧 닫음"이나 "운영종료"를 의미하지 않기 때문이다(운영종료와 구분되는 이유와 동일).
 
 `environment_type` 매핑은 TourAPI 3단계 분류(대·중·소분류) 기준으로 판정한다
 (D-046, `app/domain/candidate_mapper.py::_environment_type()`). 대분류
@@ -288,6 +306,10 @@ class RankedCandidate:
 class ScoringResult:
     ranked: tuple[RankedCandidate, ...]
     excluded_place_ids: tuple[str, ...]
+    # 운영종료라서 제외된 후보만 별도로 센다(이전 노출/거절 제외와 구분) —
+    # 호출부가 "결과가 0건인 이유가 전부 운영종료인가"를 판단해 no_data_closed
+    # 되묻기를 띄울지 결정하는 데 쓴다(2026-08-13 추가).
+    excluded_closed_place_ids: tuple[str, ...] = ()
 ```
 
 `weights_used`는 §5.2의 이유로 `ScoringResult`가 아니라 `RankedCandidate`마다

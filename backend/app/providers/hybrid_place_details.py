@@ -133,7 +133,11 @@ def _to_place_details(
         pet=row.pet_raw,
         credit_card=row.credit_card_raw,
         restroom=row.restroom_raw,
-        thumbnail_url=row.thumbnail_url or row.first_image_url,
+        # INFO 상세 카드는 firstimage2(작은 썸네일, thumbnail_url)보다 firstimage
+        # (원본 크기, first_image_url)를 우선한다 — 카드가 이미지를 크게 보여주는
+        # 용도라 작은 썸네일을 확대하면 화질이 뭉개진다(2026-08-13 실사용 피드백).
+        # first_image_url이 없는 20%가량의 장소만 thumbnail_url로 대체한다.
+        thumbnail_url=row.first_image_url or row.thumbnail_url,
     )
 
 

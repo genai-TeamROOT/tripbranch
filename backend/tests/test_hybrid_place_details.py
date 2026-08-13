@@ -245,8 +245,24 @@ async def test_편의시설도_캐시에서_답한다() -> None:
 
 
 @pytest.mark.asyncio
-async def test_썸네일이_카드용으로_실린다() -> None:
+async def test_카드_이미지는_원본_크기를_우선한다() -> None:
+    """firstimage2(작은 썸네일)보다 firstimage(원본 크기)를 우선 노출한다.
+
+    INFO 상세 카드가 이미지를 크게 보여주는 용도라 작은 썸네일을 확대하면
+    화질이 뭉개진다(2026-08-13 실사용 피드백).
+    """
     provider, _ = _provider()
+
+    details = (await provider.find_details_by_name("경복궁")).data
+
+    assert details.thumbnail_url == "https://example.test/first.jpg"
+
+
+@pytest.mark.asyncio
+async def test_원본_이미지가_없으면_작은_썸네일로_대체한다() -> None:
+    provider, _ = _provider(
+        rows={"126508": _row(first_image_url=None)},
+    )
 
     details = (await provider.find_details_by_name("경복궁")).data
 

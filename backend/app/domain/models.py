@@ -147,9 +147,11 @@ class PlaceDetails:
     pet: str | None = None
     credit_card: str | None = None
     restroom: str | None = None
-    # 장소 카드 썸네일. TourAPI 경로는 detailCommon2의 firstimage2, 캐시 경로는
-    # 목록 동기화가 저장해둔 값에서 온다. 실측 844건 중 169건(20%)은 이미지가 없어
-    # None이 정상 값이다 — 소비 측이 이미지 영역을 숨기는 근거다.
+    # 장소 카드 이미지. 캐시 경로(hybrid/supabase_place_details.py)는 원본 크기
+    # firstimage(first_image_url)를 우선하고, 없으면 작은 썸네일 firstimage2로
+    # 대체한다(2026-08-13) — 필드명은 thumbnail_url이지만 실제로는 대부분 원본
+    # 크기 이미지가 들어온다. 실측 844건 중 169건(20%)은 이미지가 없어 None이
+    # 정상 값이다 — 소비 측이 이미지 영역을 숨기는 근거다.
     thumbnail_url: str | None = None
 
 
