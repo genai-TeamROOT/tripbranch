@@ -520,7 +520,7 @@ class TestComposeScheduleMessage:
         assert message == "45분 코스를 짜봤어요. 짧은 코스예요."
 
     def test_uses_requested_time_when_close_to_actual(self) -> None:
-        """실제 편성 시간(112분)이 요청 시간(120분)과 15분 이내로 가까우면
+        """실제 편성 시간(112분)이 요청 시간(120분)과 30분 이내로 가까우면
         어색한 "1시간 52분" 대신 요청한 "2시간"을 그대로 보여준다."""
         schedule = ScheduleResult(
             items=[_schedule_item()],
@@ -537,7 +537,7 @@ class TestComposeScheduleMessage:
     def test_boundary_exactly_at_tolerance_uses_requested_time(self) -> None:
         schedule = ScheduleResult(
             items=[_schedule_item()],
-            total_duration_min=105,
+            total_duration_min=90,
             route_summary="동선 요약입니다.",
             basis_note="기준 시각 안내",
             elapsed_ms=100.0,
@@ -548,7 +548,7 @@ class TestComposeScheduleMessage:
         assert message == "2시간 코스를 짜봤어요. 동선 요약입니다."
 
     def test_uses_actual_duration_when_far_from_requested_time(self) -> None:
-        """후보 부족 등으로 실제 편성이 요청과 크게 어긋나면(16분 초과 차이)
+        """후보 부족 등으로 실제 편성이 요청과 크게 어긋나면(30분 초과 차이)
         요청 시간을 그대로 보여주지 않고 실제 계산값을 정직하게 보여준다."""
         schedule = ScheduleResult(
             items=[_schedule_item()],
