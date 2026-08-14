@@ -492,8 +492,10 @@ def _format_compare_remaining_time(remaining_minutes: int) -> str:
 # 사용자가 요청한 시간을 그대로 보여준다 — "2시간 짜줘"에 "1시간 52분 코스를
 # 짜봤어요"처럼 어색하게 어긋나 보이는 걸 막는다. 차이가 크면(후보 부족 등으로
 # 실제 편성이 요청과 크게 벌어진 경우) 사용자를 오도하지 않도록 실제 계산값을
-# 그대로 보여준다.
-_DURATION_MATCH_TOLERANCE_MIN = 15
+# 그대로 보여준다. 15분이었을 때 "3시간 짜줘"(180분)에 실제 163분(오차 17분)이
+# 편성되는 경계 사례가 실제 계산값을 그대로 노출해 어색했다 — 되도록 요청값을
+# 그대로 보여주는 쪽을 우선하기로 하고 30분으로 넓힘(실사용 피드백, 2026-08-14).
+_DURATION_MATCH_TOLERANCE_MIN = 30
 
 
 def _format_duration_label(total_minutes: int) -> str:

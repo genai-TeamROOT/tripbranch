@@ -104,7 +104,7 @@ def _build_basis_note(visit_datetime: datetime) -> str:
 
     formatted = visit_datetime.strftime("%H:%M")
     return (
-        f"이 정보는 {formatted} 기준으로 계산됐어요. "
+        f"이 정보는 현재시각({formatted}) 기준으로 계산됐어요. "
         "실제 방문 시간에는 운영시간·날씨 상황이 달라질 수 있어요."
     )
 

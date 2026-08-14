@@ -102,7 +102,7 @@ async def test_plan_schedule_fills_basis_note_from_visit_datetime() -> None:
     result = await plan_schedule(request, llm)
 
     assert result.basis_note == (
-        "이 정보는 15:30 기준으로 계산됐어요. "
+        "이 정보는 현재시각(15:30) 기준으로 계산됐어요. "
         "실제 방문 시간에는 운영시간·날씨 상황이 달라질 수 있어요."
     )
     assert result.items == _sample_plan().items
@@ -181,7 +181,7 @@ async def test_plan_schedule_normalizes_inconsistent_empty_plan() -> None:
         "다른 지역이나 다른 종류의 장소로 다시 요청해볼까요?"
     )
     # basis_note는 items 유무와 무관하게 계속 채워진다
-    assert "15:00 기준" in result.basis_note
+    assert "현재시각(15:00)" in result.basis_note
     assert result.elapsed_ms >= 0
 
 
@@ -296,7 +296,7 @@ class TestPlanScheduleSkipsLLMWhenCandidatesTooFew:
             "다른 지역이나 다른 종류의 장소로 다시 요청해볼까요?"
         )
         assert result.elapsed_ms >= 0
-        assert "15:00 기준" in result.basis_note
+        assert "현재시각(15:00)" in result.basis_note
 
     @pytest.mark.asyncio
     async def test_llm_called_when_exactly_three_candidates(self) -> None:
@@ -434,7 +434,7 @@ class TestPlanPartialSchedule:
         assert result.items[2].travel_to_next_min == 15
         # 체류시간 합(60*3) + 마지막을 제외한 이동시간 합(travel_to_next_min: None+None+15)
         assert result.total_duration_min == 60 * 3 + 15
-        assert "15:00 기준" in result.basis_note
+        assert "현재시각(15:00)" in result.basis_note
         assert result.elapsed_ms >= 0
 
     @pytest.mark.asyncio
