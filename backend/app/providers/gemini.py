@@ -79,6 +79,46 @@ class _ComparisonSummary(BaseModel):
 _RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
 _BACKOFF_BASE_SECONDS = 0.5
 
+# 폴백 모델 보정 — gemini-2.5-flash-lite는 thinking이 기본 꺼져 있어 0을 걸어도 동작이
+# 같고(미설정과 budget=0의 68건 예측이 한 건도 다르지 않다), 512를 줘야 대화 이력에
+# 의존하는 판정(MODIFY/COMPARE/되묻기)이 산다 — 채점 대상 64건에서 56→59, 대조쌍
+# 12건에서 9→12. 즉 예산의 최적값은 모델마다 반대다.
+#
+# 측정한 범위가 classify_intent뿐이라 그 호출에만 건다. 조건 추출·일정 편성은 폴백
+# 모델로 재본 적이 없어 호출부가 정한 값을 그대로 둔다.
+# 근거: backend/test_results/intent_experiments_2026-08.md §4
+_MODEL_BUDGET_OVERRIDES: dict[tuple[str, str], int] = {
+    ("gemini-2.5-flash-lite", "classify_intent"): 512,
+}
+
+# thinking_budget=0 자체를 거부하고 400 INVALID_ARGUMENT를 돌려주는 모델. 400은
+# 비재시도 오류라 폴백도 안 타고 즉시 실패하므로(_try_model 참고), .env에서 모델명만
+# 바꿔도 0을 싣는 호출이 전부 죽는다. 세대별이 아니라 모델별이다 — gemini-3.1-flash-lite와
+# gemini-3.5-flash는 0을 받는다. 그래서 호출 종류를 가리지 않고 적용한다.
+# 근거: backend/test_results/intent_experiments_2026-08.md §5
+_REJECTS_ZERO_THINKING_BUDGET = frozenset(
+    {
+        "gemini-3.5-flash-lite",
+        "gemini-3.6-flash",
+    }
+)
+
+
+def _resolve_thinking_budget(
+    model_name: str, operation: str, requested: int | None
+) -> int | None:
+    """호출부가 요청한 thinking 예산을 모델 특성에 맞춰 보정한다.
+
+    None을 돌려주면 thinking_config를 아예 싣지 않아 모델 기본 동작이 된다.
+    실측으로 확인한 조합만 보정하고, 모르는 모델에는 요청값을 그대로 통과시킨다.
+    """
+    override = _MODEL_BUDGET_OVERRIDES.get((model_name, operation))
+    if override is not None:
+        return override
+    if requested == 0 and model_name in _REJECTS_ZERO_THINKING_BUDGET:
+        return None
+    return requested
+
 
 def _backoff_seconds(attempt: int) -> float:
     """지수 백오프 + 지터. attempt=0이 첫 번째 재시도 전 대기시간."""
@@ -556,6 +596,7 @@ class RealGeminiProvider:
                     system_instruction,
                     user_input,
                     response_model,
+                    operation=operation,
                     thinking_budget=thinking_budget,
                 )
             except _RetryableExhaustedError as exc:
@@ -624,6 +665,7 @@ class RealGeminiProvider:
         user_input: str,
         response_model: type[T],
         *,
+        operation: str,
         thinking_budget: int | None = None,
     ) -> T:
         """모델 하나에 대해서만 타임아웃/429/5xx를 지수 백오프로 최대
@@ -635,11 +677,16 @@ class RealGeminiProvider:
         thinking_budget이 None이면 GenerateContentConfig에 thinking_config를
         아예 안 넣어 모델 기본 동작(gemini-2.5-flash는 동적 thinking)을 그대로
         둔다 — 기존 9개 호출부는 이 인자를 안 넘기므로 동작 변화가 없다.
+
+        호출부가 넘긴 예산은 그대로 쓰지 않고 _resolve_thinking_budget()으로 모델에
+        맞춰 보정한다. 폴백으로 넘어가면 model_name이 바뀌므로 같은 요청 안에서도
+        모델마다 다른 예산이 실린다 — 예산의 최적값이 모델마다 반대이기 때문이다.
         """
 
+        resolved_budget = _resolve_thinking_budget(model_name, operation, thinking_budget)
         thinking_config = (
-            genai_types.ThinkingConfig(thinking_budget=thinking_budget)
-            if thinking_budget is not None
+            genai_types.ThinkingConfig(thinking_budget=resolved_budget)
+            if resolved_budget is not None
             else None
         )
 
