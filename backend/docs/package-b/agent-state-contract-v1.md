@@ -915,12 +915,28 @@ B는 전달받은 `reset_scope` 값에 따라 실행만 하며 발화를 해석�
 - Chain-of-Thought 등 내부 추론 과정
 - 장소 상세 정보 (이름·주소·좌표·영업시간)
 - `answer_conditions` (병합 결과)
+- 추천 Scoring 세부 근거값 (`concentration_rate`, `feature_scores`, `weights_used`) — D-050 참고, 아래 설명
 
 **`answer_conditions`를 저장하지 않는 이유**
 
 `user_conditions`와 `api_context`를 병합한 결과이므로,
 저장하면 그 자체가 오래된 값으로 남아 현재 값으로 오인될 수 있다.
 매 실행 시 패키지 A가 최신 값으로 재생성한다.
+
+**Scoring 세부 근거값을 저장하지 않는 이유 — 그리고 재검토가 필요한 이유 (2026-08-14 추가)**
+
+`RecommendedPlace`(7.2절)는 `place_id`/`rank` 두 필드만 갖는다. 혼잡도 2차 Scoring(D-040)이
+반영된 뒤에도 노출 이력의 **순서**는 최종 순위를 정확히 반영하지만, 혼잡도 점수(`concentration_rate`)·
+등급·`feature_scores`/`weights_used` 같은 **세부 근거**는 그 턴의 HTTP 응답에만 존재하고 B에는
+전혀 남지 않는다(D-050). 당초 이 결정은 "지금 당장 그 데이터를 쓸 곳이 없다"는 이유로 보류됐다.
+
+기본프로젝트 최종 발표에서 "추천이 실제로 잘 됐는지 무엇으로 판단하는가"라는 피드백을 받았다 —
+확인해보니 현재 검증 수단(`scoring_fixture_v1.py`/`test_scoring.py`)은 "가중치 공식을 코드로
+정확히 구현했는가"만 검증하고, 그 공식 자체가 좋은 추천인지 사후에 재현·평가할 방법은 없다.
+Scoring 세부 근거값을 B가 저장해두면, 최소한 "그때 왜 이 순서였는지"를 재현해 평가 근거로 삼을
+수 있는 길이 열린다 — B-01 이후 원래 의도적으로 미룬 항목이지만, **더 이상 "쓸 곳이 없는" 상태가
+아니게 됐다.** 저장 여부·스키마 확장 필요성은 여전히 D 협의가 먼저 필요하지만(B 혼자 결정할 사안이
+아님), 심화프로젝트에서 이 D-050 보류를 다시 여는 것을 우선순위로 제안한다.
 
 **원문을 저장하지 않아도 되는 이유**
 
@@ -1335,3 +1351,4 @@ GPS·날씨 API로 확보한 데이터를 저장한다.
 | 08-11 | COMPARE 데이터 출처 (D-050 확정) | A안 채택 — `recommended` 항목에 `distance_km`/`remaining_minutes`/`environment_type` 3개 필드 추가. B안(A가 세션에 마지막 응답 캐시)은 되묻기·0건 응답 시 이전 목록 덮어쓰기 위험이 있어 기각. C안(C가 재계산)은 §13의 "이미 계산된 데이터" 정의와 어긋나 기각. Supabase 마이그레이션 불필요(`recommended` 컬럼이 jsonb) | C 문서 §1, A 댓글 |
 | 08-11 | SCHEDULE 부분 재편성 장소 이름 (D-060) | `recommended` 항목에 `name` 필드 추가. 원래는 pinned 자리 이름을 매 턴 C 응답에서 재매칭하도록 설계했으나, "경복궁" 지명 검색이 호출마다 다른 좌표로 resolve돼(Naver local search fallback) 이번 턴 후보가 매번 완전히 달라지는 사례가 실사용 테스트로 확인됨 — pinned 유지가 매번 실패해 REJECT_SPECIFIC이 REJECT_ALL처럼 전체 재편성으로 조용히 폴백되는 버그로 이어짐. C의 지명 resolve 안정화(근본 수정)는 범위 밖이라 B 자체 저장으로 해결 | 실사용 재현 (session sess_1786433109...) |
 | 08-11 | `last_intent` relabel 동기화 (D-061) | `set_last_intent()` 서비스 함수 추가. Agent Runtime의 SCHEDULE 재조정 감지(3-3절)는 apply() 이후에 intent 라벨만 SCHEDULE로 바꿔치기하는데, apply()는 이미 그 이전(원본 MODIFY) 값으로 `last_intent`를 저장해버려 실제 저장값과 어긋났다. SCHEDULE → REJECT_SPECIFIC → REJECT_SPECIFIC처럼 재조정이 연속될 때 두 번째부터 재조정 감지 자체가 실패해 전체가 새로 짜이는 버그로 이어짐 — relabel 직후 `last_intent`를 다시 SCHEDULE로 덮어써 해결 | 실사용 재현 (3턴 연속 REJECT_SPECIFIC) |
+| 08-14 | Scoring 세부 근거값 미저장(D-050) 재검토 필요성 명시 | 기본프로젝트 발표 피드백("추천 품질을 무엇으로 검증하는가") 반영 — 저장 여부 결정 자체는 바뀌지 않았으나(여전히 D 협의 필요), "쓸 곳이 없어 보류"라는 기존 근거가 더 이상 유효하지 않다는 점을 5.6절에 추가 기록. 심화프로젝트 우선순위 후보로 제안 | 발표 피드백 |
