@@ -745,6 +745,34 @@ class InfoPlaceCard(BaseModel):
     homepage: str | None = None
 
 
+class RecommendationPlaceDetailRequest(BaseModel):
+    """추천 카드 클릭으로 여는 장소 상세조회 요청.
+
+    대화 발화가 아니므로 LLM·세션 상태를 거치지 않는다. ``place_name``은 C의 기존
+    INFO 상세조회 입력이고, ``place_id``는 이름 해석이 다른 장소로 빗나가지 않았는지
+    A가 응답을 대조하는 기준이다.
+    """
+
+    place_id: str = Field(min_length=1, max_length=100)
+    place_name: str = Field(min_length=1, max_length=200)
+
+    @field_validator("place_id", "place_name")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("장소 정보는 비어 있을 수 없습니다.")
+        return normalized
+
+
+class RecommendationPlaceDetailResponse(BaseModel):
+    """추천 카드 상세 모달이 소비하는 단건 PlaceDetails 조회 결과."""
+
+    status: Literal["success", "no_data", "unavailable"]
+    requested_place_id: str
+    place_card: InfoPlaceCard | None = None
+
+
 class AgentResponse(BaseModel):
     """TODO(D 계약 확정 시 필드 변경 가능): Agent Runtime의 임시 최종 응답.
 
