@@ -125,13 +125,14 @@ async def test_search_radius_km_passed_to_pipeline_matches_to_search_radius_km(
 ) -> None:
     """D 호출에 실제로 넘어가는 search_radius_km이 to_search_radius_km() 값과 같은지 확인."""
     captured: dict[str, object] = {}
-    original = module.run_recommendation_pipeline_from_context
+    original = module.score_prepared_recommendation
 
-    async def _capture(context, **kwargs):
+    async def _capture(prepared, **kwargs):
+        captured["visit_at"] = prepared.visit_at
         captured.update(kwargs)
-        return await original(context, **kwargs)
+        return await original(prepared, **kwargs)
 
-    monkeypatch.setattr(module, "run_recommendation_pipeline_from_context", _capture)
+    monkeypatch.setattr(module, "score_prepared_recommendation", _capture)
 
     provider = RealRecommendationProvider()
     conditions = UserConditions(max_travel_time=30)
@@ -154,13 +155,13 @@ async def test_conditions_are_passed_to_pipeline(
     판단할 수 없다(D-051).
     """
     captured: dict[str, object] = {}
-    original = module.run_recommendation_pipeline_from_context
+    original = module.prepare_recommendation_from_context
 
     async def _capture(context, **kwargs):
         captured.update(kwargs)
         return await original(context, **kwargs)
 
-    monkeypatch.setattr(module, "run_recommendation_pipeline_from_context", _capture)
+    monkeypatch.setattr(module, "prepare_recommendation_from_context", _capture)
 
     provider = RealRecommendationProvider()
     conditions = UserConditions(

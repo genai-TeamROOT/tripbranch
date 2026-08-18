@@ -13,6 +13,7 @@ RecommendationProvider(D)도 이 형태로 확정됐다([TECH-02]) — excluded_
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Protocol
 
 from app.agent_context.enrichment_schemas import (
@@ -25,6 +26,7 @@ from app.agent_context.schemas import (
     RecommendationContext,
 )
 from app.schemas import RecommendationResponse, UserConditions
+from app.services.recommendation_pipeline import PreparedRecommendationResult
 from app.services.runtime.compare_context_schemas import (
     CompareContextRequest,
     CompareContextResponse,
@@ -77,6 +79,32 @@ class EnrichmentProvider(Protocol):
 
 
 class RecommendationProvider(Protocol):
+    async def prepare(
+        self,
+        conditions: UserConditions,
+        context: RecommendationContext,
+        excluded_place_ids: list[str],
+        *,
+        visit_at: datetime,
+        ignore_operating_hours: bool = False,
+    ) -> PreparedRecommendationResult:
+        """후보 변환과 하드 필터까지만 실행한다.
+
+        같은 사용자 요청 안에서 후보를 보충할 때는 모든 호출에 동일한
+        ``visit_at``을 전달해야 운영시간 판정 기준이 바뀌지 않는다.
+        """
+        ...
+
+    async def score_prepared(
+        self,
+        conditions: UserConditions,
+        prepared: PreparedRecommendationResult,
+        *,
+        limit: int = 5,
+    ) -> RecommendationResponse:
+        """하드 필터를 통과한 후보를 채점해 최종 추천 응답을 반환한다."""
+        ...
+
     async def recommend(
         self,
         conditions: UserConditions,

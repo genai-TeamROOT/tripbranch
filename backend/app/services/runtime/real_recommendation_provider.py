@@ -17,9 +17,11 @@ from zoneinfo import ZoneInfo
 from app.agent_context.enrichment_schemas import CandidateEnrichmentResponse
 from app.schemas import ConcentrationIntent, RecommendationResponse, UserConditions
 from app.services.recommendation_pipeline import (
+    PreparedRecommendationResult,
+    prepare_recommendation_from_context,
     rerank_with_concentration,
     resolve_weather_condition,
-    run_recommendation_pipeline_from_context,
+    score_prepared_recommendation,
 )
 from app.services.runtime.context_schemas import RecommendationContext
 from app.services.runtime.recommendation_transform import to_search_radius_km
@@ -31,6 +33,36 @@ _RECOMMENDATION_LIMIT = 5
 class RealRecommendationProvider:
     """RecommendationProvider Protocol 구현체 — D의 공개 진입점만 호출한다."""
 
+    async def prepare(
+        self,
+        conditions: UserConditions,
+        context: RecommendationContext,
+        excluded_place_ids: list[str],
+        *,
+        visit_at: datetime,
+        ignore_operating_hours: bool = False,
+    ) -> PreparedRecommendationResult:
+        return await prepare_recommendation_from_context(
+            context,
+            conditions=conditions,
+            visit_at=visit_at,
+            shown_place_ids=frozenset(excluded_place_ids),
+            ignore_operating_hours=ignore_operating_hours,
+        )
+
+    async def score_prepared(
+        self,
+        conditions: UserConditions,
+        prepared: PreparedRecommendationResult,
+        *,
+        limit: int = _RECOMMENDATION_LIMIT,
+    ) -> RecommendationResponse:
+        return await score_prepared_recommendation(
+            prepared,
+            search_radius_km=to_search_radius_km(conditions),
+            recommendation_limit=limit,
+        )
+
     async def recommend(
         self,
         conditions: UserConditions,
@@ -39,16 +71,14 @@ class RealRecommendationProvider:
         limit: int = _RECOMMENDATION_LIMIT,
         ignore_operating_hours: bool = False,
     ) -> RecommendationResponse:
-        search_radius_km = to_search_radius_km(conditions)
-        return await run_recommendation_pipeline_from_context(
+        prepared = await self.prepare(
+            conditions,
             context,
-            conditions=conditions,
             visit_at=datetime.now(_KST),
-            search_radius_km=search_radius_km,
-            shown_place_ids=frozenset(excluded_place_ids),
-            recommendation_limit=limit,
+            excluded_place_ids=excluded_place_ids,
             ignore_operating_hours=ignore_operating_hours,
         )
+        return await self.score_prepared(conditions, prepared, limit=limit)
 
     async def rerank_with_concentration(
         self,
