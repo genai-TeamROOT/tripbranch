@@ -37,10 +37,26 @@
   (D-060. `places`에 `baby_carriage_raw`, `pet_raw`, `credit_card_raw`,
   `restroom_raw` 추가. jsonb 하나로 합치지 않는다 — 소비 측이 키 이름을 알아야 하고
   "키가 없다"와 "정보가 없다"가 구분되지 않는다)
-- 실제 DB 적용일: 2026-07-24, 2026-07-29, 2026-08-04, 2026-08-08, 2026-08-10
+- 취향 근거 벡터 테이블 마이그레이션:
+  `202608180001_create_place_embeddings.sql`
+  (원격 이력에는 `20260818120611_create_place_embeddings`로 기록됨)
+  (package_D §2.9·§7.12. `place_embeddings` 생성 —
+  `vector(768)`, `unique(content_id, source_ref)`, `content_id` FK →
+  `places`, HNSW + `content_id` 인덱스. §7.10에서 되돌린 이전 시도의 원격
+  이력(`20260812080614` 등)이 남아 있으나 실제 객체는 그때 삭제됐고 이번이
+  재생성이다)
+- 근거 검색 RPC 마이그레이션:
+  `202608180002_create_search_place_evidence.sql`
+  (원격 이력에는 `20260818120625_create_search_place_evidence`로 기록됨)
+  (package_D §2.10. RPC `search_place_evidence` 생성 — 후보 `content_id`로
+  범위를 좁히고, 같은 글/리뷰는 1건만 남기고, 장소별 top-N 평균으로
+  정렬한다. `min_similarity` 기본값 0.0은 적재 후 재실측 전까지의 임시값)
+- 실제 DB 적용일: 2026-07-24, 2026-07-29, 2026-08-04, 2026-08-08, 2026-08-10,
+  2026-08-18
 - 적용 방법: Supabase Dashboard SQL Editor 및 Supabase MCP `apply_migration`
 - 적용 결과: `places`, `place_enrichments`, `place_sync_runs`,
-  `place_sync_locks`, `place_concentration_mappings` 및 잠금 RPC 생성 완료
+  `place_sync_locks`, `place_concentration_mappings`, `place_embeddings` 및
+  잠금·근거 검색 RPC 생성 완료
 
 ## 값 적재가 끝나지 않은 컬럼 (2026-08-11 기준)
 
@@ -104,6 +120,8 @@ supabase migration list
 - `202608080001_add_place_parking_fee_image_columns.sql`도 적용 완료 상태다.
   `add column if not exists`라 재실행해도 오류는 나지 않지만 다시 실행하지 않는다.
 - `202608100001`, `202608100002`도 적용 완료 상태다. 위와 같은 이유로 재실행하지
+  않는다.
+- `202608180001`, `202608180002`도 적용 완료 상태다. 위와 같은 이유로 재실행하지
   않는다.
 - 기존 마이그레이션 파일은 적용 후 수정하지 않는다.
 - 이후 스키마 변경은 새 타임스탬프를 가진 마이그레이션 파일로 추가한다.
