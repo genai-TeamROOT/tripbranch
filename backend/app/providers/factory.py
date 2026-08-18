@@ -318,6 +318,28 @@ def validate_provider_config(target: Settings | None = None) -> None:
             "real provider 설정에 필요한 환경변수가 비어 있습니다: " + ", ".join(missing)
         )
 
+    # 폐지된 단일 모델 설정이 .env에 남아 있으면 부팅을 막는다. 값이 무시될 뿐 동작은
+    # 하므로 그냥 두면 `.env`에 적힌 모델과 실제로 호출되는 모델이 다른 채로 돌고,
+    # 그 차이는 응답이 이상해진 뒤에야 드러난다. 실패는 첫 요청이 아니라 부팅에서
+    # 드러나야 한다(D-042).
+    legacy_settings = [
+        variable_name
+        for variable_name, attribute in (
+            ("LLM_MODEL_NAME", "legacy_llm_model_name"),
+            ("LLM_FALLBACK_MODEL_NAMES", "legacy_llm_fallback_model_names"),
+        )
+        if getattr(current, attribute)
+    ]
+    if legacy_settings:
+        raise ValueError(
+            "폐지된 LLM 모델 설정이 남아 있습니다: "
+            + ", ".join(legacy_settings)
+            + ". 이 값은 더 이상 사용되지 않으니 지우고, 역할별 설정으로 옮기세요 — "
+            "의도 분류·조건 추출은 LLM_FAST_MODEL_NAME/LLM_FAST_FALLBACK_MODEL_NAMES, "
+            "답변·비교·일정 생성은 LLM_GENERATION_MODEL_NAME/"
+            "LLM_GENERATION_FALLBACK_MODEL_NAMES입니다."
+        )
+
     # 역할별 폴백 목록에 1순위 모델과 같은 이름이 중복되면 폴백처럼 보이지만 실제로는
     # 같은 모델을 또 재시도하는 것뿐이라 부팅 시점에 막는다.
     if current.resolved_llm_provider == "real":
