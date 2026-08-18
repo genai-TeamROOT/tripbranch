@@ -11,6 +11,7 @@ AppError는 여기서 잡지 않고 그대로 전파한다 — RecommendationPro
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -18,6 +19,7 @@ from app.agent_context.enrichment_schemas import CandidateEnrichmentResponse
 from app.schemas import ConcentrationIntent, RecommendationResponse, UserConditions
 from app.services.recommendation_pipeline import (
     PreparedRecommendationResult,
+    merge_prepared_recommendations,
     prepare_recommendation_from_context,
     rerank_with_concentration,
     resolve_weather_condition,
@@ -32,6 +34,12 @@ _RECOMMENDATION_LIMIT = 5
 
 class RealRecommendationProvider:
     """RecommendationProvider Protocol 구현체 — D의 공개 진입점만 호출한다."""
+
+    def merge_prepared(
+        self,
+        results: Sequence[PreparedRecommendationResult],
+    ) -> PreparedRecommendationResult:
+        return merge_prepared_recommendations(results)
 
     async def prepare(
         self,

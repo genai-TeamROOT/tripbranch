@@ -111,6 +111,33 @@ async def test_recommend_defaults_to_five_when_limit_not_given() -> None:
 
 
 @pytest.mark.asyncio
+async def test_provider_merges_multiple_prepared_batches() -> None:
+    provider = RealRecommendationProvider()
+    conditions = UserConditions()
+    visit_at = module.datetime.now(module._KST)
+    first = await provider.prepare(
+        conditions,
+        _context(place_ids=["a"]),
+        excluded_place_ids=[],
+        visit_at=visit_at,
+    )
+    second = await provider.prepare(
+        conditions,
+        _context(place_ids=["b"]),
+        excluded_place_ids=[],
+        visit_at=visit_at,
+    )
+
+    merged = provider.merge_prepared([first, second])
+    result = await provider.score_prepared(conditions, merged)
+
+    assert {
+        item.place_id
+        for item in [*result.recommendations, *result.unverified_recommendations]
+    } == {"a", "b"}
+
+
+@pytest.mark.asyncio
 async def test_recommend_raises_app_error_when_context_is_none() -> None:
     provider = RealRecommendationProvider()
     conditions = UserConditions()

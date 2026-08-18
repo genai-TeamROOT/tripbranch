@@ -7,7 +7,7 @@ D는 C Tool을 직접 호출하지 않는다([TECH-02]). Tool 조회는 호출�
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, time
 from time import perf_counter
@@ -84,6 +84,70 @@ class PreparedRecommendationResult:
     details_missing_place_ids: frozenset[str]
     visit_at: datetime
     weather_ignored: bool
+
+
+def merge_prepared_recommendations(
+    results: Sequence[PreparedRecommendationResult],
+) -> PreparedRecommendationResult:
+    """같은 요청에서 여러 번 준비한 후보를 중복 없이 하나로 합친다.
+
+    방문 시각과 점수 판정 조건은 모든 보충 조회에서 같아야 한다. 서로 다른 값을
+    조용히 섞으면 같은 장소가 호출 순서에 따라 다르게 채점될 수 있으므로 오류로
+    처리한다. Provider가 같은 장소를 다시 반환하면 첫 분류만 유지한다.
+    """
+    if not results:
+        raise ValueError("병합할 준비 결과가 없습니다.")
+
+    first = results[0]
+    expected_scoring_context = (
+        first.visit_at,
+        first.weather_condition,
+        first.weather_reason,
+        first.requested_environment,
+        first.weather_ignored,
+    )
+    for result in results[1:]:
+        scoring_context = (
+            result.visit_at,
+            result.weather_condition,
+            result.weather_reason,
+            result.requested_environment,
+            result.weather_ignored,
+        )
+        if scoring_context != expected_scoring_context:
+            raise ValueError("준비 결과의 방문 시각 또는 점수 조건이 서로 다릅니다.")
+
+    eligible_by_id = {}
+    excluded_by_id = {}
+    candidates_by_id = {}
+    for result in results:
+        for candidate in result.all_candidates:
+            candidates_by_id.setdefault(candidate.place_id, candidate)
+        for prepared in result.preparation.eligible_candidates:
+            place_id = prepared.candidate.place_id
+            if place_id not in excluded_by_id:
+                eligible_by_id.setdefault(place_id, prepared)
+        for excluded in result.preparation.excluded_candidates:
+            place_id = excluded.place_id
+            if place_id not in eligible_by_id:
+                excluded_by_id.setdefault(place_id, excluded)
+
+    return PreparedRecommendationResult(
+        preparation=PrepareResult(
+            eligible_candidates=tuple(eligible_by_id.values()),
+            excluded_candidates=tuple(excluded_by_id.values()),
+            input_count=len(candidates_by_id),
+        ),
+        all_candidates=tuple(candidates_by_id.values()),
+        weather_condition=first.weather_condition,
+        weather_reason=first.weather_reason,
+        requested_environment=first.requested_environment,
+        details_missing_place_ids=frozenset().union(
+            *(result.details_missing_place_ids for result in results)
+        ),
+        visit_at=first.visit_at,
+        weather_ignored=first.weather_ignored,
+    )
 
 
 async def prepare_recommendation_from_context(

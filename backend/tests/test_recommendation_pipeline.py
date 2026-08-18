@@ -30,6 +30,7 @@ from app.schemas import (
     WeatherIntent,
 )
 from app.services.recommendation_pipeline import (
+    merge_prepared_recommendations,
     prepare_recommendation_from_context,
     rerank_with_concentration,
     resolve_requested_environment,
@@ -136,6 +137,47 @@ async def test_split_pipeline_matches_compatibility_entrypoint() -> None:
     assert split_response.model_copy(update={"elapsed_ms": 0}) == (
         compatible_response.model_copy(update={"elapsed_ms": 0})
     )
+
+
+@pytest.mark.asyncio
+async def test_merge_prepared_recommendations_combines_unique_candidates() -> None:
+    first_context = RecommendationContext(
+        location=_context_location(),
+        places=AgentContextValue(status="success", data=[_context_place("place-1")]),
+    )
+    second_context = RecommendationContext(
+        location=_context_location(),
+        places=AgentContextValue(
+            status="success",
+            data=[_context_place("place-1"), _context_place("place-2")],
+        ),
+    )
+    first = await prepare_recommendation_from_context(
+        first_context,
+        visit_at=_CONTEXT_VISIT_AT,
+    )
+    second = await prepare_recommendation_from_context(
+        second_context,
+        visit_at=_CONTEXT_VISIT_AT,
+    )
+
+    merged = merge_prepared_recommendations([first, second])
+    response = await score_prepared_recommendation(merged, search_radius_km=2.0)
+
+    assert merged.preparation.input_count == 2
+    assert [
+        candidate.candidate.place_id
+        for candidate in merged.preparation.eligible_candidates
+    ] == ["place-1", "place-2"]
+    assert {
+        item.place_id
+        for item in [*response.recommendations, *response.unverified_recommendations]
+    } == {"place-1", "place-2"}
+
+
+def test_merge_prepared_recommendations_rejects_empty_input() -> None:
+    with pytest.raises(ValueError, match="병합할 준비 결과"):
+        merge_prepared_recommendations([])
 
 
 @pytest.mark.asyncio

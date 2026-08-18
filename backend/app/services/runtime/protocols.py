@@ -13,6 +13,7 @@ RecommendationProvider(D)도 이 형태로 확정됐다([TECH-02]) — excluded_
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Protocol
 
@@ -79,6 +80,13 @@ class EnrichmentProvider(Protocol):
 
 
 class RecommendationProvider(Protocol):
+    def merge_prepared(
+        self,
+        results: Sequence[PreparedRecommendationResult],
+    ) -> PreparedRecommendationResult:
+        """같은 요청의 여러 하드 필터 결과를 중복 없이 병합한다."""
+        ...
+
     async def prepare(
         self,
         conditions: UserConditions,
