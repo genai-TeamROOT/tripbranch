@@ -46,6 +46,15 @@ export function ScheduleCard({ item, isLast }: ScheduleCardProps) {
             <dd>{item.estimated_duration_min}분</dd>
           </div>
         </dl>
+
+        {/* estimated_arrival이 이 장소의 운영시간과 어긋날 때 planner.py가
+            구조적으로 채우는 경고 — LLM이 아니라 시스템이 결정적으로 판단한
+            값이다(docs/design/int-07-schedule.md v2.2, "폐점 스탑 감지"). */}
+        {item.warnings != null && item.warnings.length > 0 && (
+          <p className="rounded-md bg-amber-50 px-2 py-1 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+            ⚠️ {item.warnings.join(" / ")}
+          </p>
+        )}
       </div>
     </li>
   );
