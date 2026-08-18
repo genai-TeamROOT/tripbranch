@@ -13,6 +13,7 @@ import pytest
 from app.config import Settings
 from app.errors import AppError
 from app.providers import factory
+from app.providers.walking_route import FakeWalkingRouteProvider
 
 
 def test_get_llm_provider_uses_dedicated_llm_timeout_when_set(monkeypatch) -> None:
@@ -111,17 +112,69 @@ def test_get_walking_route_provider_defaults_to_fake(monkeypatch) -> None:
         Settings(_env_file=None, walking_speed_mps=1.1),
     )
 
-    factory.get_walking_route_provider()
+    factory.get_walking_route_provider(object())  # type: ignore[arg-type]
 
     assert captured["walking_speed_mps"] == 1.1
 
 
-def test_get_walking_route_provider_does_not_silently_fake_real_mode(monkeypatch) -> None:
+def test_get_walking_route_provider_builds_real_provider(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _RecordingRealKakaoWalkingRouteProvider:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    client = object()
+    monkeypatch.setattr(
+        factory,
+        "RealKakaoWalkingRouteProvider",
+        _RecordingRealKakaoWalkingRouteProvider,
+    )
     monkeypatch.setattr(
         factory,
         "settings",
-        Settings(_env_file=None, travel_route_provider="real"),
+        Settings(
+            _env_file=None,
+            travel_route_provider="real",
+            kakao_mobility_rest_api_key="test-key",
+            walking_speed_mps=1.1,
+            external_api_timeout_seconds=7.0,
+        ),
     )
 
-    with pytest.raises(ValueError, match="아직 연결되지 않았습니다"):
-        factory.get_walking_route_provider()
+    factory.get_walking_route_provider(client)  # type: ignore[arg-type]
+
+    assert captured == {
+        "api_key": "test-key",
+        "client": client,
+        "walking_speed_mps": 1.1,
+        "timeout_seconds": 7.0,
+    }
+
+
+def test_get_travel_route_tool_adds_fallback_only_in_real_mode(monkeypatch) -> None:
+    primary = object()
+    captured: dict[str, object] = {}
+
+    class _RecordingTravelRouteTool:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(factory, "TravelRouteTool", _RecordingTravelRouteTool)
+    monkeypatch.setattr(factory, "get_walking_route_provider", lambda client: primary)
+    monkeypatch.setattr(
+        factory,
+        "settings",
+        Settings(
+            _env_file=None,
+            travel_route_provider="real",
+            walking_speed_mps=1.1,
+        ),
+    )
+
+    factory.get_travel_route_tool(object())  # type: ignore[arg-type]
+
+    assert captured["primary_provider"] is primary
+    fallback = captured["fallback_provider"]
+    assert isinstance(fallback, FakeWalkingRouteProvider)
+    assert fallback._walking_speed_mps == 1.1

@@ -60,6 +60,19 @@ def test_walking_speed_is_configurable_and_must_be_positive() -> None:
         Settings(_env_file=None, walking_speed_mps=0)
 
 
+def test_validate_provider_config_requires_kakao_key_for_real_walking_route() -> None:
+    with pytest.raises(ValueError, match="KAKAO_MOBILITY_REST_API_KEY"):
+        validate_provider_config(Settings(_env_file=None, travel_route_provider="real"))
+
+    validate_provider_config(
+        Settings(
+            _env_file=None,
+            travel_route_provider="real",
+            kakao_mobility_rest_api_key="present",
+        )
+    )
+
+
 def test_resolved_llm_timeout_falls_back_to_external_api_timeout() -> None:
     """LLM_API_TIMEOUT_SECONDS 미설정 시 EXTERNAL_API_TIMEOUT_SECONDS를 그대로 쓴다
     (하위 호환 — 기존에 EXTERNAL_API_TIMEOUT_SECONDS만 설정해 쓰던 환경도 그대로

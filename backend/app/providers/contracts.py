@@ -29,6 +29,7 @@ class ProviderSource(StrEnum):
     SUPABASE_PLACES = "supabase_places"
     TOUR_API_CONCENTRATION = "tour_api_concentration"
     KASI_HOLIDAY = "kasi_holiday"
+    KAKAO_WALKING_ROUTE = "kakao_walking_route"
     GEMINI = "gemini"
     FAKE_GEOCODING = "fake_geocoding"
     FAKE_LOCAL_SEARCH = "fake_local_search"
@@ -56,9 +57,7 @@ class ProviderMetadata:
         if self.retrieved_at.tzinfo is None:
             raise ValueError("retrieved_at은 timezone-aware datetime이어야 합니다.")
         if self.detail_fetched_at is not None and self.detail_fetched_at.tzinfo is None:
-            raise ValueError(
-                "detail_fetched_at은 timezone-aware datetime이어야 합니다."
-            )
+            raise ValueError("detail_fetched_at은 timezone-aware datetime이어야 합니다.")
 
 
 T = TypeVar("T")
