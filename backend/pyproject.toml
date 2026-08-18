@@ -19,6 +19,12 @@ dev = [
   "pytest-asyncio>=0.23",
   "ruff>=0.6",
 ]
+# package_D 취향 근거 RAG 스크립트 전용(scripts/measure_similarity_distribution.py).
+# torch를 끌고 와 설치가 무거워 기본 설치·dev extras에는 안 넣는다. 모델 가중치
+# (jhgan/ko-sroberta-multitask)는 첫 실행 시 Hugging Face Hub에서 자동 다운로드된다.
+embeddings = [
+  "sentence-transformers>=5.7",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

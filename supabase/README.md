@@ -37,10 +37,44 @@
   (D-060. `places`에 `baby_carriage_raw`, `pet_raw`, `credit_card_raw`,
   `restroom_raw` 추가. jsonb 하나로 합치지 않는다 — 소비 측이 키 이름을 알아야 하고
   "키가 없다"와 "정보가 없다"가 구분되지 않는다)
-- 실제 DB 적용일: 2026-07-24, 2026-07-29, 2026-08-04, 2026-08-08, 2026-08-10
+- 취향 근거 벡터 테이블 마이그레이션:
+  `202608180001_create_place_embeddings.sql`
+  (원격 이력에는 `20260818120611_create_place_embeddings`로 기록됨)
+  (package_D §2.9·§7.12. `place_embeddings` 생성 —
+  `vector(768)`, `unique(content_id, source_ref)`, `content_id` FK →
+  `places`, HNSW + `content_id` 인덱스. §7.10에서 되돌린 이전 시도의 원격
+  이력(`20260812080614` 등)이 남아 있으나 실제 객체는 그때 삭제됐고 이번이
+  재생성이다)
+- 근거 검색 RPC 마이그레이션:
+  `202608180002_create_search_place_evidence.sql`
+  (원격 이력에는 `20260818120625_create_search_place_evidence`로 기록됨)
+  (package_D §2.10. RPC `search_place_evidence` 생성 — 후보 `content_id`로
+  범위를 좁히고, 같은 글/리뷰는 1건만 남기고, 장소별 top-N 평균으로
+  정렬한다. `min_similarity` 기본값 0.0은 적재 후 재실측 전까지의 임시값)
+- 근거 검색 RPC 타임아웃 완화 마이그레이션:
+  `202608180003_increase_search_place_evidence_timeout.sql`
+  (원격 이력에는 `20260818123826_increase_search_place_evidence_timeout`로
+  기록됨)
+  (유사도 분포 실측 중 발견. 후보 844곳 전체를 넘기면 40,389행 코사인 거리
+  계산에 7.5~9.2초가 걸리는데, PostgREST 연결 롤 `authenticator`의
+  `statement_timeout=8s`에 걸려 500 에러가 났다. `search_place_evidence`
+  함수에만 `set statement_timeout = '30s'`를 붙였다 — 이 함수는
+  anon/authenticated 호출이 막혀 있어 전역 타임아웃을 안 건드려도 된다)
+- 근거 검색 RPC 후보 상한 마이그레이션:
+  `202608180004_add_search_place_evidence_candidate_limit.sql`
+  (원격 이력에는 `20260818140058_add_search_place_evidence_candidate_limit`로
+  기록됨)
+  (외부 호출은 막혀 있지만(anon/authenticated 권한 없음), 내부 호출 코드가
+  후보를 안 좁히면 40,389행 전체 스캔으로 커넥션을 오래 붙잡을 수 있다.
+  실측(200~400건 100~300ms, 844건 6~9초)을 근거로 500건 초과 시 즉시
+  에러를 내도록 가드를 추가했다. 절차형 분기가 필요해 `language sql`에서
+  `plpgsql`로 바꿨다)
+- 실제 DB 적용일: 2026-07-24, 2026-07-29, 2026-08-04, 2026-08-08, 2026-08-10,
+  2026-08-18
 - 적용 방법: Supabase Dashboard SQL Editor 및 Supabase MCP `apply_migration`
 - 적용 결과: `places`, `place_enrichments`, `place_sync_runs`,
-  `place_sync_locks`, `place_concentration_mappings` 및 잠금 RPC 생성 완료
+  `place_sync_locks`, `place_concentration_mappings`, `place_embeddings` 및
+  잠금·근거 검색 RPC 생성 완료
 
 ## 값 적재가 끝나지 않은 컬럼 (2026-08-11 기준)
 
@@ -105,6 +139,8 @@ supabase migration list
   `add column if not exists`라 재실행해도 오류는 나지 않지만 다시 실행하지 않는다.
 - `202608100001`, `202608100002`도 적용 완료 상태다. 위와 같은 이유로 재실행하지
   않는다.
+- `202608180001`, `202608180002`, `202608180003`, `202608180004`도 적용 완료
+  상태다. 위와 같은 이유로 재실행하지 않는다.
 - 기존 마이그레이션 파일은 적용 후 수정하지 않는다.
 - 이후 스키마 변경은 새 타임스탬프를 가진 마이그레이션 파일로 추가한다.
 - 새 마이그레이션은 가능한 한 Supabase CLI `db push` 또는 MCP

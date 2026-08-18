@@ -119,6 +119,40 @@ def _resolve_thinking_budget(model_name: str, operation: str, requested: int | N
     return requested
 
 
+def _thinking_config_for(thinking_budget: int | None) -> genai_types.ThinkingConfig | None:
+    """thinking_budget 인자를 실제 SDK에 넘길 ThinkingConfig로 변환한다.
+
+    (2026-08-18 추가) Gemini 3.x부터 숫자 기반 thinking_budget은 레거시
+    취급이고, Google은 thinking_level(MINIMAL/LOW/MEDIUM/HIGH) 사용을
+    권장한다 — 같은 요청에 thinking_budget과 thinking_level을 함께 넘기면
+    400 오류가 나므로 항상 하나만 채운다. 이 코드베이스는 지금까지
+    thinking_budget에 0 또는 None만 넘겨왔다(그 외 값은 쓰인 적 없음) —
+    0("완전히 끔")은 가장 가까운 대응인 MINIMAL로 변환하고, None은 지금과
+    동일하게 아무것도 안 넣어 모델 자체 기본값을 그대로 둔다.
+
+    모델을 gemini-2.5-flash → gemini-3.5-flash로 바꾼 뒤 응답이 전반적으로
+    느려진 문제의 일부가 이 부분이다 — 예전엔 thinking_budget=0이 SCHEDULE
+    2곳과 classify_intent/extract_recommend_conditions에서 thinking을
+    확실히 껐지만, 레거시 파라미터가 새 모델에서도 여전히 그대로 작동한다는
+    보장이 없어 이 네 곳부터 명시적으로 고쳤다. thinking_config를 아예 안
+    넣는 나머지 호출부(문장 생성·요약류, 스트리밍 포함)는 gemini-2.5-flash
+    기준으로 "모델 기본값이 가볍다"고 가정하고 의도적으로 손대지 않았던
+    곳들인데, gemini-3.5-flash의 기본값은 MEDIUM(항상 켜짐)이라 그 가정이
+    더 이상 맞지 않는다 — 다만 이 값들은 응답 품질과 직결돼 있어(과거
+    thinking_budget=0을 적용할 때도 "문장 생성·요약류는 품질 저하 리스크로
+    의도적으로 제외" 원칙을 지켰다) 실측 없이 이번에 같이 끄지 않았다.
+    scripts/compare_*_thinking_budget.py와 같은 방식으로 gemini-3.5-flash
+    기준 속도·품질을 다시 재본 뒤 결정해야 한다(미해결 상태로 남김).
+    """
+    if thinking_budget is None:
+        return None
+    if thinking_budget <= 0:
+        return genai_types.ThinkingConfig(thinking_level=genai_types.ThinkingLevel.MINIMAL)
+    # 0/None 외의 값은 지금까지 쓰인 적이 없다 — 필요해지면 그때 thinking_level
+    # 값으로 다시 매핑 기준을 정한다.
+    return genai_types.ThinkingConfig(thinking_budget=thinking_budget)
+
+
 def _backoff_seconds(attempt: int) -> float:
     """지수 백오프 + 지터. attempt=0이 첫 번째 재시도 전 대기시간."""
     return _BACKOFF_BASE_SECONDS * (2**attempt) + random.uniform(0, 0.25)
@@ -562,10 +596,17 @@ class RealGeminiProvider:
         thinking_budget: int | None = None,
         model_names: list[str] | None = None,
     ) -> T:
-        """호출별 thinking 예산을 모델 선택과 독립적으로 전달한다.
+        """호출별 thinking 예산과 모델 목록을 함께 전달한다.
 
-        기본값 None이면 해당 모델의 기본 동작을 유지한다. 0은 thinking을 끄며,
-        모델별 API 호환성 예외(Flash-Lite)는 _try_model()에서만 설정을 생략한다.
+        기본값 None이면 해당 모델의 기본 동작을 유지한다. thinking_budget=0은
+        "완전히 끔"이 목적이지만, 실제로 어떤 값이 API에 실리는지는
+        _try_model()의 _resolve_thinking_budget()/_thinking_config_for() 조합이
+        모델·호출 종류별로 결정한다 — 일부 모델(Flash-Lite 등)은 thinking_budget=0
+        자체를 거부해 thinking_config를 생략하고, 나머지는 Gemini 3.x 권장 방식인
+        thinking_level=MINIMAL로 변환된다(2026-08-18,
+        _thinking_config_for() docstring 참고). model_names를 넘기면 이번 호출에서만
+        그 모델 목록을 쓴다(폴백 순서 포함) — 넘기지 않으면 생성자가 정한 기본
+        목록(D-052 fast/generation 구분)을 쓴다.
         """
         generate_kwargs = {"model_names": model_names} if model_names is not None else {}
         try:
@@ -710,20 +751,23 @@ class RealGeminiProvider:
         모델을 바꿔도 같은 이유로 실패할 것이므로 폴백 대상이 아니다.
 
         thinking_budget이 None이면 GenerateContentConfig에 thinking_config를
-        아예 안 넣어 모델 기본 동작(gemini-2.5-flash는 동적 thinking)을 그대로
-        둔다 — 기존 9개 호출부는 이 인자를 안 넘기므로 동작 변화가 없다.
-
-        호출부가 넘긴 예산은 그대로 쓰지 않고 _resolve_thinking_budget()으로 모델에
-        맞춰 보정한다. 폴백으로 넘어가면 model_name이 바뀌므로 같은 요청 안에서도
-        모델마다 다른 예산이 실린다 — 예산의 최적값이 모델마다 반대이기 때문이다.
+        아예 안 넣어 모델 자체 기본 동작을 그대로 둔다 — 이 기본값이 어떤 값인지는
+        모델마다 다르다(gemini-2.5-flash는 가벼운 동적 thinking이었지만,
+        gemini-3.5-flash는 기본이 MEDIUM이라 더 무겁다, 2026-08-18). thinking_budget이
+        None이 아니면 먼저 _resolve_thinking_budget()으로 모델·호출 종류에 맞춰
+        보정한다 — override 테이블(예: gemini-2.5-flash-lite의 classify_intent) 또는
+        thinking_budget=0을 거부하는 모델(Flash-Lite 계열)이면 None으로 바꿔
+        thinking_config 자체를 생략한다(근거:
+        backend/test_results/intent_experiments_2026-08.md §4, §5). 그렇게 보정된
+        값을 _thinking_config_for()에 넘겨 실제 ThinkingConfig로 바꾼다 — 0은 레거시
+        thinking_budget이 아니라 thinking_level=MINIMAL로 변환한다(레거시 파라미터를
+        Gemini 3.x에서 계속 믿을 수 없어졌기 때문, 자세한 배경은
+        _thinking_config_for() docstring 참고). 폴백으로 넘어가면 model_name이
+        바뀌므로 같은 요청 안에서도 모델마다 다른 thinking_config가 실릴 수 있다.
         """
 
         resolved_budget = _resolve_thinking_budget(model_name, operation, thinking_budget)
-        thinking_config = (
-            genai_types.ThinkingConfig(thinking_budget=resolved_budget)
-            if resolved_budget is not None
-            else None
-        )
+        thinking_config = _thinking_config_for(resolved_budget)
 
         for attempt in range(self._max_retries + 1):
             # google-genai는 자체 전송 계층을 써서 MeteredTransport를 거치지 않는다.

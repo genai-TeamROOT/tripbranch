@@ -26,13 +26,14 @@ from app.schemas import RecommendationItem, ScheduleItem, UserConditions
 _KST = ZoneInfo("Asia/Seoul")
 
 
-def _candidate(place_id: str) -> RecommendationItem:
+def _candidate(place_id: str, *, operating_hours_display: str | None = None) -> RecommendationItem:
     return RecommendationItem(
         place_id=place_id,
         name=f"장소 {place_id}",
         category="attraction",
         distance_km=0.3,
         remaining_minutes=120,
+        operating_hours_display=operating_hours_display,
         environment_type="indoor",
         recommendation_reason="테스트용 고정 후보입니다.",
         explanations=[],
@@ -371,6 +372,121 @@ class TestPlanScheduleCandidateGuardIsDynamic:
         assert result.items == []
 
 
+class TestPlanScheduleFlagsClosedStops:
+    """폐점 후보를 일정에 넣을 때 estimated_arrival 기준으로 운영시간과 대조해
+    구조적으로 경고를 붙인다. 프롬프트에 운영시간을 함께 전달해 LLM이 애초에
+    피하도록 유도하지만(build_schedule_planning_instruction), 그 지시만으로는
+    부족하다고 판단해(6.2.1절 — 근거 데이터가 단일 시각 기준) planner.py가
+    응답을 받은 뒤 다시 결정적으로 검사한다. (docs/design/int-07-schedule.md
+    9절 "폐점 스탑 감지" 항목 해소)"""
+
+    @pytest.mark.asyncio
+    async def test_도착_예정_시각이_마감_이후면_경고를_붙인다(self) -> None:
+        plan = ScheduleLLMPlan(
+            items=[
+                _sample_item("place-1", 1, estimated_arrival="19:00"),
+                _sample_item("place-2", 2),
+                _sample_item("place-3", 3),
+            ],
+            total_duration_min=180,
+            route_summary="테스트 동선 요약",
+        )
+        llm = _RecordingLLM(plan)
+        candidates = [
+            _candidate("place-1", operating_hours_display="09:00~18:00"),
+            _candidate("place-2"),
+            _candidate("place-3"),
+        ]
+        request = SchedulePlanningRequest(
+            candidates=candidates,
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 7, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, llm)
+
+        assert result.items[0].warnings == [
+            "운영시간(09:00~18:00) 기준으로 도착 예정 시각(19:00)엔 운영 중이 아닐 수 있어요. "
+            "방문 전에 다시 확인해주세요."
+        ]
+        assert result.items[1].warnings == []
+        assert result.items[2].warnings == []
+
+    @pytest.mark.asyncio
+    async def test_운영시간_내_도착이면_경고가_없다(self) -> None:
+        plan = ScheduleLLMPlan(
+            items=[
+                _sample_item("place-1", 1, estimated_arrival="10:00"),
+                _sample_item("place-2", 2),
+                _sample_item("place-3", 3),
+            ],
+            total_duration_min=180,
+            route_summary="테스트 동선 요약",
+        )
+        llm = _RecordingLLM(plan)
+        candidates = [
+            _candidate("place-1", operating_hours_display="09:00~18:00"),
+            _candidate("place-2"),
+            _candidate("place-3"),
+        ]
+        request = SchedulePlanningRequest(
+            candidates=candidates,
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 7, 9, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, llm)
+
+        assert result.items[0].warnings == []
+
+    @pytest.mark.asyncio
+    async def test_운영시간_미확인_후보는_경고하지_않는다(self) -> None:
+        """operating_hours_display가 None(운영시간 자체를 모름)이면 폐점이라고
+        단정할 근거가 없다 — scoring.py의 "운영시간 미확인은 폐점이 아니다"
+        원칙과 동일하게, 검사 대상에서 제외한다."""
+        llm = _RecordingLLM(_sample_plan())
+        request = SchedulePlanningRequest(
+            candidates=_three_candidates(),
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 7, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, llm)
+
+        assert all(item.warnings == [] for item in result.items)
+
+    @pytest.mark.asyncio
+    async def test_24시간_운영은_경고하지_않는다(self) -> None:
+        plan = ScheduleLLMPlan(
+            items=[
+                _sample_item("place-1", 1, estimated_arrival="23:50"),
+                _sample_item("place-2", 2),
+                _sample_item("place-3", 3),
+            ],
+            total_duration_min=180,
+            route_summary="테스트 동선 요약",
+        )
+        llm = _RecordingLLM(plan)
+        candidates = [
+            _candidate("place-1", operating_hours_display="24시간"),
+            _candidate("place-2"),
+            _candidate("place-3"),
+        ]
+        request = SchedulePlanningRequest(
+            candidates=candidates,
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 7, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, llm)
+
+        assert result.items[0].warnings == []
+
+
 class _RecordingFillLLM:
     """generate_schedule_fill()에 실제로 어떤 request가 넘어오는지 기록하는 더블."""
 
@@ -565,6 +681,31 @@ class TestPlanPartialSchedule:
             await plan_partial_schedule(request, llm)
 
         assert exc_info.value.code == "llm_output_invalid"
+
+    @pytest.mark.asyncio
+    async def test_새로_채운_자리도_운영시간_기준으로_검사한다(self) -> None:
+        """pinned 항목은 candidates에 없어(REJECT_SPECIFIC 부분 재편성 특성상 이번
+        요청의 candidates는 새로 채울 자리의 후보만 담고 있다) 검사 대상이
+        아니지만, 새로 채운 자리(new_items)는 이번 candidates에 있으므로 그대로
+        검사된다."""
+        pinned = [_pinned("place-1", 1), _pinned("place-3", 3)]
+        new_item = _sample_item("place-2", 2, estimated_arrival="20:00")
+        llm = _RecordingFillLLM(SchedulePartialLLMPlan(new_items=[new_item]))
+        request = SchedulePartialFillRequest(
+            pinned_items=pinned,
+            target_orders=[2],
+            candidates=[_candidate("place-2", operating_hours_display="09:00~18:00")],
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 11, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_partial_schedule(request, llm)
+
+        by_place = {item.place_id: item for item in result.items}
+        assert by_place["place-2"].warnings != []
+        assert by_place["place-1"].warnings == []
+        assert by_place["place-3"].warnings == []
 
     @pytest.mark.asyncio
     async def test_empty_target_orders_returns_pinned_unchanged(self) -> None:
