@@ -8,6 +8,7 @@ D는 C Tool을 직접 호출하지 않는다([TECH-02]). Tool 조회는 호출�
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, time
 from time import perf_counter
 from typing import TypeAlias
@@ -21,10 +22,12 @@ from app.domain.explanation import build_explanations
 from app.domain.models import ScoringCandidate, WeatherCondition
 from app.domain.scoring import (
     CONCENTRATION_WEIGHTS,
+    PrepareResult,
     RankedCandidate,
     concentration_score,
+    prepare_candidates,
     redistribute_weights,
-    score_candidates,
+    score_prepared_candidates,
     weights_for_feature_scores,
 )
 from app.domain.weather_judgment import (
@@ -69,42 +72,30 @@ _MIDNIGHT_CLOSE_TIMES = (time.max, time(hour=23, minute=59))
 Timer: TypeAlias = Callable[[], float]
 
 
-async def run_recommendation_pipeline_from_context(
+@dataclass(frozen=True)
+class PreparedRecommendationResult:
+    """Context 변환과 하드 필터를 마쳐 최종 채점을 기다리는 결과."""
+
+    preparation: PrepareResult
+    all_candidates: tuple[ScoringCandidate, ...]
+    weather_condition: WeatherCondition | None
+    weather_reason: WeatherReason
+    requested_environment: str | None
+    details_missing_place_ids: frozenset[str]
+    visit_at: datetime
+    weather_ignored: bool
+
+
+async def prepare_recommendation_from_context(
     context: RecommendationContext | None,
     *,
-    # A가 넘기는 사용자 발화 조건. weather_intent와 발화 날씨(conditions.weather)를
-    # resolve_weather_condition()에 전달해 D-051 판정(사실+의도)에 쓴다.
-    # AVOID/ENJOY면 C가 날씨를 조회하지 않을 수 있어 그때는 발화 값으로 대신 판정한다.
     conditions: UserConditions | None = None,
     visit_at: datetime,
-    search_radius_km: float,
     shown_place_ids: frozenset[str] = frozenset(),
     rejected_place_ids: frozenset[str] = frozenset(),
-    recommendation_limit: int = DEFAULT_RECOMMENDATION_RESULT_LIMIT,
-    # True면 폐점 후보도 채점에 포함한다 — "운영중이 아닌 곳도 볼래요"(no_data_closed
-    # 되묻기) 해소 턴에서만 A가 켠다.
     ignore_operating_hours: bool = False,
-    timer: Timer = perf_counter,
-) -> RecommendationResponse:
-    """D의 유일한 공개 진입점. A가 C에서 받은 RecommendationContext를 그대로
-    넘기면, D 내부(후보 변환→Scoring→Evidence→Explanation 조립)를 전부 처리해
-    RecommendationResponse만 반환한다. C Tool을 직접 호출하지 않는다([TECH-02]).
-
-    호출자 책임: `search_radius_km`은 C가 `context.places`를 조회할 때 실제로
-    사용한 검색 반경과 동일해야 한다 — Scoring의 거리 점수 정규화
-    (`max_distance_km`)가 이 값을 그대로 재사용하기 때문이다
-    (`docs/design/recommendation-scoring.md` 참고). 값이 어긋나면 거리 점수가
-    실제 후보 풀 범위와 안 맞게 계산된다.
-
-    Context 상태 처리: `context` 자체가 `None`이거나(예: A의
-    `AgentContextResponse.status`가 `needs_clarification`/`unsupported`/
-    `unavailable`일 때), `location`/`places`가 없거나 `unavailable`(조회
-    자체 실패)이면 `AppError`를 던진다. `no_data`(정상 조회했지만 결과
-    없음)는 에러가 아니라 빈 `RecommendationResponse`로 처리한다 —
-    "확인 못 함"과 "확인했는데 없음"은 다른 상황이라 구분한다.
-    """
-    started_at = timer()
-
+) -> PreparedRecommendationResult:
+    """Context를 후보로 변환하고 하드 필터까지만 적용한다."""
     if context is None:
         raise AppError(
             code="context_unavailable",
@@ -134,37 +125,96 @@ async def run_recommendation_pipeline_from_context(
 
     candidates = map_context_to_scoring_candidates(context, visit_at=visit_at)
     resolved_weather_condition, weather_reason = resolve_weather_condition(context, conditions)
-
-    scoring = score_candidates(
+    preparation = prepare_candidates(
         candidates,
         now=visit_at,
-        weather_condition=resolved_weather_condition,
-        weather_reason=weather_reason,
-        max_distance_km=search_radius_km,
         shown_place_ids=shown_place_ids,
         rejected_place_ids=rejected_place_ids,
         ignore_operating_hours=ignore_operating_hours,
+    )
+
+    return PreparedRecommendationResult(
+        preparation=preparation,
+        all_candidates=candidates,
+        weather_condition=resolved_weather_condition,
+        weather_reason=weather_reason,
         requested_environment=resolve_requested_environment(conditions),
+        details_missing_place_ids=frozenset(
+            place.place_id
+            for place in (places.data or [])
+            if place.operating_schedule is None
+        ),
+        visit_at=visit_at,
+        weather_ignored=_is_weather_explicitly_ignored(context, conditions),
+    )
+
+
+async def score_prepared_recommendation(
+    prepared: PreparedRecommendationResult,
+    *,
+    search_radius_km: float,
+    recommendation_limit: int = DEFAULT_RECOMMENDATION_RESULT_LIMIT,
+    timer: Timer = perf_counter,
+) -> RecommendationResponse:
+    """준비된 후보를 채점하고 Evidence·Explanation 응답을 조립한다."""
+    started_at = timer()
+    scoring = score_prepared_candidates(
+        prepared.preparation.eligible_candidates,
+        weather_condition=prepared.weather_condition,
+        weather_reason=prepared.weather_reason,
+        max_distance_km=search_radius_km,
+        requested_environment=prepared.requested_environment,
     )
     ranked = scoring.ranked[:recommendation_limit]
     # 결과가 0건이고, 그 이유가 전부 폐점 후보 제외였다면(다른 이유로 제외된 후보가
     # 없었다면) A가 "운영중이 아닌 곳도 볼래요" 되묻기를 띄울 수 있게 표시한다.
+    excluded = prepared.preparation.excluded_candidates
+    excluded_closed_count = sum(
+        candidate.reason.value == "closed" for candidate in excluded
+    )
     excluded_all_closed = (
         not ranked
-        and bool(scoring.excluded_closed_place_ids)
-        and len(scoring.excluded_closed_place_ids) == len(scoring.excluded_place_ids)
-    )
-
-    details_missing_place_ids = frozenset(
-        place.place_id for place in (places.data or []) if place.operating_schedule is None
+        and excluded_closed_count > 0
+        and excluded_closed_count == len(excluded)
     )
     response = _build_response(
         ranked,
-        candidates,
-        details_missing_place_ids,
-        visit_at,
-        weather_ignored=_is_weather_explicitly_ignored(context, conditions),
+        prepared.all_candidates,
+        prepared.details_missing_place_ids,
+        prepared.visit_at,
+        weather_ignored=prepared.weather_ignored,
         excluded_all_closed=excluded_all_closed,
+    )
+    return response.model_copy(update={"elapsed_ms": round((timer() - started_at) * 1000, 2)})
+
+
+async def run_recommendation_pipeline_from_context(
+    context: RecommendationContext | None,
+    *,
+    conditions: UserConditions | None = None,
+    visit_at: datetime,
+    search_radius_km: float,
+    shown_place_ids: frozenset[str] = frozenset(),
+    rejected_place_ids: frozenset[str] = frozenset(),
+    recommendation_limit: int = DEFAULT_RECOMMENDATION_RESULT_LIMIT,
+    ignore_operating_hours: bool = False,
+    timer: Timer = perf_counter,
+) -> RecommendationResponse:
+    """prepare와 score를 연속 실행하는 기존 호환 진입점."""
+    started_at = timer()
+    prepared = await prepare_recommendation_from_context(
+        context,
+        conditions=conditions,
+        visit_at=visit_at,
+        shown_place_ids=shown_place_ids,
+        rejected_place_ids=rejected_place_ids,
+        ignore_operating_hours=ignore_operating_hours,
+    )
+    response = await score_prepared_recommendation(
+        prepared,
+        search_radius_km=search_radius_km,
+        recommendation_limit=recommendation_limit,
+        timer=timer,
     )
     return response.model_copy(update={"elapsed_ms": round((timer() - started_at) * 1000, 2)})
 

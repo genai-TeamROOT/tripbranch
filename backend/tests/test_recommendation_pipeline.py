@@ -30,9 +30,11 @@ from app.schemas import (
     WeatherIntent,
 )
 from app.services.recommendation_pipeline import (
+    prepare_recommendation_from_context,
     rerank_with_concentration,
     resolve_requested_environment,
     run_recommendation_pipeline_from_context,
+    score_prepared_recommendation,
 )
 
 _WEATHER_MISSING_WARNING = "현재 날씨 정보를 확인하지 못해 이 조건은 반영되지 않았어요."
@@ -97,6 +99,43 @@ async def test_pipeline_from_context_builds_recommendation_with_explanations() -
     assert len(response.recommendations) == 1
     assert response.unverified_recommendations == []
     assert response.recommendations[0].explanations
+
+
+@pytest.mark.asyncio
+async def test_split_pipeline_matches_compatibility_entrypoint() -> None:
+    context = RecommendationContext(
+        location=_context_location(),
+        weather=AgentContextValue(
+            status="success",
+            data=WeatherForecast(
+                forecast_for=_CONTEXT_VISIT_AT,
+                precipitation="rain",
+            ),
+        ),
+        places=AgentContextValue(
+            status="success",
+            data=[_context_place("place-1"), _context_place("place-2")],
+        ),
+    )
+
+    prepared = await prepare_recommendation_from_context(
+        context,
+        visit_at=_CONTEXT_VISIT_AT,
+    )
+    split_response = await score_prepared_recommendation(
+        prepared,
+        search_radius_km=2.0,
+    )
+    compatible_response = await run_recommendation_pipeline_from_context(
+        context,
+        visit_at=_CONTEXT_VISIT_AT,
+        search_radius_km=2.0,
+    )
+
+    assert prepared.preparation.eligible_count == 2
+    assert split_response.model_copy(update={"elapsed_ms": 0}) == (
+        compatible_response.model_copy(update={"elapsed_ms": 0})
+    )
 
 
 @pytest.mark.asyncio
