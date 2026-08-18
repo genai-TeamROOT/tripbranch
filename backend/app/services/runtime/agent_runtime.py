@@ -23,6 +23,7 @@ from typing import TypeVar
 from app.agent_context.schemas import PlaceCandidate, RecommendationContext
 from app.config import settings
 from app.domain.scoring import SCORING_VERSION
+from app.domain.travel_route import GeoCoordinate, RouteDestination, WalkingRoute
 from app.errors import AppError
 from app.geo import haversine_km
 from app.observability.api_usage import create_external_client
@@ -57,6 +58,7 @@ from app.schemas import (
 from app.services.interpret.orchestrator import build_interpretation
 from app.services.interpret.session_orchestrator import ensure_current_context
 from app.services.interpret.state_transform import to_user_conditions, transform
+from app.services.recommendation_pipeline import PreparedRecommendationResult
 from app.services.runtime.compare_transform import (
     to_compare_context_request,
     to_comparison_result,
@@ -75,6 +77,7 @@ from app.services.runtime.protocols import (
     RecommendationProvider,
     StagedRecommendationProvider,
     ToolProvider,
+    TravelRouteToolProvider,
 )
 from app.services.runtime.response_composer import (
     compose_chat_message,
@@ -108,6 +111,7 @@ from app.state.service import (
 )
 from app.state.session import new_trace_id
 from app.state.store import StateStore
+from app.tools.travel_route import TravelRouteQuery
 
 logger = logging.getLogger(__name__)
 
@@ -976,6 +980,47 @@ async def _apply_concentration_rerank(
     )
 
 
+async def _fetch_walking_routes(
+    route_tool: TravelRouteToolProvider | None,
+    context: RecommendationContext,
+    prepared: PreparedRecommendationResult,
+) -> tuple[WalkingRoute, ...]:
+    """하드 필터 통과 후보만 도보 조회하고 D에 넘길 도메인 결과를 반환한다."""
+    if route_tool is None or context.location is None or context.places is None:
+        return ()
+    resolved_location = context.location.data
+    places = context.places.data
+    if resolved_location is None or not places:
+        return ()
+
+    eligible_ids = {item.candidate.place_id for item in prepared.preparation.eligible_candidates}
+    destinations = tuple(
+        RouteDestination(
+            place_id=place.place_id,
+            coordinate=GeoCoordinate(
+                latitude=place.location.latitude,
+                longitude=place.location.longitude,
+            ),
+        )
+        for place in places
+        if place.place_id in eligible_ids
+    )
+    if not destinations:
+        return ()
+
+    origin = resolved_location.location
+    result = await route_tool.execute(
+        TravelRouteQuery(
+            origin=GeoCoordinate(
+                latitude=origin.latitude,
+                longitude=origin.longitude,
+            ),
+            destinations=destinations,
+        )
+    )
+    return result.routes
+
+
 async def run_agent_flow(
     request: AgentRequest,
     *,
@@ -983,6 +1028,7 @@ async def run_agent_flow(
     tool_provider: ToolProvider,
     recommendation_provider: RecommendationProvider,
     enrichment_provider: EnrichmentProvider,
+    travel_route_tool: TravelRouteToolProvider | None = None,
     store: StateStore | None = None,
     stream_event_sink: StreamEventSink | None = None,
     stream_recommendation_summary: bool = False,
@@ -1786,9 +1832,16 @@ async def run_agent_flow(
             )
             candidate_pool_exhausted = _candidate_pool_exhausted(refill_context)
 
+        merged_prepared = recommendation_provider.merge_prepared(prepared_batches)
+        walking_routes = await _fetch_walking_routes(
+            travel_route_tool,
+            tool_context,
+            merged_prepared,
+        )
         recommendations = await recommendation_provider.score_prepared(
             agent_conditions,
-            recommendation_provider.merge_prepared(prepared_batches),
+            merged_prepared,
+            walking_routes=walking_routes,
             limit=recommendation_limit,
         )
     else:
@@ -2137,7 +2190,7 @@ async def run_agent(
     """
 
     from app.agent_context.factory import get_candidate_enrichment_service, get_context_provider
-    from app.providers.factory import get_llm_provider
+    from app.providers.factory import get_llm_provider, get_travel_route_tool
     from app.services.runtime.real_recommendation_provider import RealRecommendationProvider
 
     async with create_external_client() as client:
@@ -2147,6 +2200,7 @@ async def run_agent(
             tool_provider=get_context_provider(client),
             recommendation_provider=RealRecommendationProvider(),
             enrichment_provider=get_candidate_enrichment_service(client),
+            travel_route_tool=get_travel_route_tool(client),
             stream_event_sink=stream_event_sink,
             stream_recommendation_summary=stream_recommendation_summary,
         )

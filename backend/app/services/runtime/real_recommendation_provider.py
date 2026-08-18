@@ -16,6 +16,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from app.agent_context.enrichment_schemas import CandidateEnrichmentResponse
+from app.domain.travel_route import WalkingRoute
 from app.schemas import ConcentrationIntent, RecommendationResponse, UserConditions
 from app.services.recommendation_pipeline import (
     PreparedRecommendationResult,
@@ -63,8 +64,11 @@ class RealRecommendationProvider:
         conditions: UserConditions,
         prepared: PreparedRecommendationResult,
         *,
+        walking_routes: tuple[WalkingRoute, ...] = (),
         limit: int = _RECOMMENDATION_LIMIT,
     ) -> RecommendationResponse:
+        # A→D 전달 계약만 먼저 연다. 점수 반영 정책은 D 담당 작업으로 남긴다.
+        _ = walking_routes
         return await score_prepared_recommendation(
             prepared,
             search_radius_km=to_search_radius_km(conditions),

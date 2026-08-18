@@ -30,11 +30,16 @@ from app.providers.protocols import (
     PlaceDetailsProvider,
     PlaceProvider,
     PlaceSearchProvider,
+    WalkingRouteProvider,
     WeatherProvider,
 )
 from app.providers.real_place import RealPlaceProvider
 from app.providers.stub import FakeLLMProvider, FakePlaceProvider, FakeWeatherProvider
 from app.providers.supabase_place_details import SupabasePlaceDetailsProvider
+from app.providers.walking_route import (
+    FakeWalkingRouteProvider,
+    RealKakaoWalkingRouteProvider,
+)
 from app.providers.weather import RealWeatherProvider
 from app.repositories.fake_places import (
     FakePlaceDetailsRepository,
@@ -42,6 +47,7 @@ from app.repositories.fake_places import (
 )
 from app.repositories.supabase_places import SupabasePlaceRepository
 from app.tools.recommendation_cards import RecommendationCardTool
+from app.tools.travel_route import TravelRouteTool
 
 
 def _require_key(value: str, variable_name: str) -> str:
@@ -124,6 +130,32 @@ def get_weather_provider(client: httpx.AsyncClient) -> WeatherProvider:
         client=client,
         timeout_seconds=settings.external_api_timeout_seconds,
     )
+
+
+def get_walking_route_provider(client: httpx.AsyncClient) -> WalkingRouteProvider:
+    """설정에 맞는 도보 경로 Provider를 반환한다."""
+    if settings.travel_route_provider == "fake":
+        return FakeWalkingRouteProvider(walking_speed_mps=settings.walking_speed_mps)
+    return RealKakaoWalkingRouteProvider(
+        api_key=_require_key(
+            settings.kakao_map_rest_api_key,
+            "KAKAO_MAP_REST_API_KEY",
+        ),
+        client=client,
+        timeout_seconds=settings.external_api_timeout_seconds,
+        max_concurrency=settings.travel_route_max_concurrency,
+    )
+
+
+def get_travel_route_tool(client: httpx.AsyncClient) -> TravelRouteTool:
+    """도보 경로 Tool을 실제 Provider와 직선거리 fallback으로 구성한다."""
+    primary = get_walking_route_provider(client)
+    fallback = (
+        FakeWalkingRouteProvider(walking_speed_mps=settings.walking_speed_mps)
+        if settings.travel_route_provider == "real"
+        else None
+    )
+    return TravelRouteTool(primary_provider=primary, fallback_provider=fallback)
 
 
 def get_place_provider(client: httpx.AsyncClient) -> PlaceProvider:
@@ -271,6 +303,7 @@ _REQUIRED_KEYS: dict[str, tuple[tuple[str, str], ...]] = {
     "PLACE_PROVIDER": (("TOUR_API_SERVICE_KEY", "tour_api_service_key"),),
     "CONCENTRATION_PROVIDER": (("TOUR_API_SERVICE_KEY", "tour_api_service_key"),),
     "HOLIDAY_PROVIDER": (("TOUR_API_SERVICE_KEY", "tour_api_service_key"),),
+    "TRAVEL_ROUTE_PROVIDER": (("KAKAO_MAP_REST_API_KEY", "kakao_map_rest_api_key"),),
     "LOCAL_SEARCH_PROVIDER": (
         ("NAVER_LOCAL_SEARCH_CLIENT_ID", "naver_local_search_client_id"),
         ("NAVER_LOCAL_SEARCH_CLIENT_SECRET", "naver_local_search_client_secret"),
@@ -289,6 +322,7 @@ _RESOLVED_ATTRS: dict[str, str] = {
     "HOLIDAY_PROVIDER": "resolved_holiday_provider",
     "GEOCODING_PROVIDER": "resolved_geocoding_provider",
     "LOCAL_SEARCH_PROVIDER": "resolved_local_search_provider",
+    "TRAVEL_ROUTE_PROVIDER": "travel_route_provider",
 }
 
 

@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,52 @@ def test_individual_provider_overrides_common_mode() -> None:
     assert settings.resolved_concentration_provider == "fake"
     assert settings.resolved_holiday_provider == "fake"
     assert settings.resolved_llm_provider == "fake"
+
+
+def test_travel_route_provider_stays_fake_until_explicitly_enabled() -> None:
+    settings = Settings(_env_file=None, provider_mode="real")
+
+    assert settings.travel_route_provider == "fake"
+
+    enabled = Settings(
+        _env_file=None,
+        travel_route_provider="real",
+        kakao_map_rest_api_key="test-rest-api-key",
+    )
+
+    assert enabled.travel_route_provider == "real"
+    assert enabled.kakao_map_rest_api_key == "test-rest-api-key"
+
+
+def test_legacy_kakao_mobility_key_name_remains_compatible() -> None:
+    settings = Settings(
+        _env_file=None,
+        KAKAO_MOBILITY_REST_API_KEY="legacy-key",
+    )
+
+    assert settings.kakao_map_rest_api_key == "legacy-key"
+
+
+def test_walking_speed_is_configurable_and_must_be_positive() -> None:
+    settings = Settings(_env_file=None, walking_speed_mps=1.0)
+
+    assert settings.walking_speed_mps == 1.0
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, walking_speed_mps=0)
+
+
+def test_validate_provider_config_requires_kakao_key_for_real_walking_route() -> None:
+    with pytest.raises(ValueError, match="KAKAO_MAP_REST_API_KEY"):
+        validate_provider_config(Settings(_env_file=None, travel_route_provider="real"))
+
+    validate_provider_config(
+        Settings(
+            _env_file=None,
+            travel_route_provider="real",
+            kakao_map_rest_api_key="present",
+        )
+    )
 
 
 def test_resolved_llm_timeout_falls_back_to_external_api_timeout() -> None:
@@ -305,3 +352,15 @@ def test_env_file_is_resolved_relative_to_backend_package() -> None:
     assert env_file.is_absolute()
     assert env_file.name == ".env"
     assert env_file.parent == Path(config_module.__file__).resolve().parent.parent
+
+
+def test_boot_log_includes_travel_route_mode(caplog: pytest.LogCaptureFixture) -> None:
+    """부팅 로그가 도보 provider 모드를 빠뜨리면 fake로 뜬 걸 알아챌 수 없다(D-042)."""
+    from app.main import _log_provider_modes
+
+    # main.py는 uvicorn 로그와 같은 자리에 찍히도록 "uvicorn.error"를 쓴다.
+    with caplog.at_level(logging.INFO, logger="uvicorn.error"):
+        _log_provider_modes()
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("travel_route=" in message for message in messages)

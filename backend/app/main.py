@@ -86,6 +86,8 @@ def _log_provider_modes() -> None:
         "weather": settings.resolved_weather_provider,
         "concentration": settings.resolved_concentration_provider,
         "holiday": settings.resolved_holiday_provider,
+        # 공통 PROVIDER_MODE를 상속하지 않아 resolved_* 변형이 없다(config.py).
+        "travel_route": settings.travel_route_provider,
     }
     summary = ", ".join(f"{name}={mode}" for name, mode in modes.items())
     logger.info(
