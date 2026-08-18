@@ -1,12 +1,13 @@
 /*
  * 역할: INFO 장소 질의의 간략 답변과 전체 장소 상세 정보를 한 카드에 표시한다.
  * 입력: C가 한 번의 상세 조회로 내려준 InfoPlaceCard.
- * 출력: 접힌 답변 요약과 펼친 개요·운영·주차·요금·편의시설.
+ * 출력: 질문 답 요약과 클릭 시 열리는 장소 상세 모달.
  * 호출 시점: ChatMessageList가 place_info_result 메시지를 렌더할 때 호출된다.
  */
 
 import { useState } from "react";
 import type { InfoPlaceCard as InfoPlaceCardData } from "../../types";
+import { RecommendationDetailPreviewModal } from "./RecommendationDetailPreviewModal";
 
 const FIELD_LABELS: Record<string, string> = {
   operating_hours: "운영시간",
@@ -21,21 +22,6 @@ const FIELD_LABELS: Record<string, string> = {
   overview: "개요",
   homepage: "홈페이지",
 };
-
-const DETAIL_FIELDS: Array<[keyof InfoPlaceCardData, string]> = [
-  ["operating_hours", "운영시간"],
-  ["rest_date", "휴무일"],
-  ["parking", "주차"],
-  ["parking_fee", "주차 요금"],
-  ["fee", "요금"],
-];
-
-const FACILITY_FIELDS: Array<[keyof InfoPlaceCardData, string]> = [
-  ["baby_carriage", "유모차"],
-  ["pet", "반려동물 동반"],
-  ["credit_card", "카드 결제"],
-  ["restroom", "화장실"],
-];
 
 interface PlaceInfoCardProps {
   card: InfoPlaceCardData;
@@ -88,81 +74,41 @@ function formatCardValue(fieldKey: keyof InfoPlaceCardData, value: string) {
   return formatted.trim();
 }
 
-function DetailValues({
-  card,
-  entries,
-}: {
-  card: InfoPlaceCardData;
-  entries: Array<[keyof InfoPlaceCardData, string]>;
-}) {
-  const visibleEntries = entries.filter(([key]) => {
-    const value = card[key];
-    return typeof value === "string" && value.trim();
-  });
-  if (visibleEntries.length === 0) return null;
-
-  return (
-    <dl className="grid grid-cols-1 gap-2 text-sm sm:grid-cols-2">
-      {visibleEntries.map(([key, label]) => (
-        <DetailValue key={key} card={card} fieldKey={key} label={label} />
-      ))}
-    </dl>
-  );
-}
-
-function DetailValue({
-  card,
-  fieldKey,
-  label,
-}: {
-  card: InfoPlaceCardData;
-  fieldKey: keyof InfoPlaceCardData;
-  label: string;
-}) {
-  const value = card[fieldKey];
-  if (typeof value !== "string") return null;
-  const operatingHours = fieldKey === "operating_hours" ? parseOperatingHours(value) : null;
-
-  return (
-    <div
-      className={`rounded-md bg-gray-50 px-3 py-2 dark:bg-gray-800/70${
-        operatingHours ? " sm:col-span-2" : ""
-      }`}
-    >
-      <dt className="text-xs text-gray-500 dark:text-gray-400">{label}</dt>
-      {operatingHours ? (
-        <dd><OperatingHoursRows rows={operatingHours} /></dd>
-      ) : (
-        <dd className="mt-0.5 whitespace-pre-line text-gray-800 dark:text-gray-100">
-          {formatCardValue(fieldKey, value)}
-        </dd>
-      )}
-    </div>
-  );
-}
-
 export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
-  const [expanded, setExpanded] = useState(false);
+  const [showDetail, setShowDetail] = useState(false);
   const answers = Object.entries(card.answer_fields);
 
   return (
     <article className="mr-auto w-full max-w-xl overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900">
+      {card.thumbnail_url && (
+        // 기본 카드에서 장소를 바로 알아볼 수 있도록, 작은 아이콘보다 충분히 큰
+        // 중간 높이 썸네일을 카드 상단에 둔다. 상세 영역에서는 중복하지 않는다.
+        <div className="flex h-32 w-full items-center justify-center overflow-hidden bg-gray-100 dark:bg-gray-800">
+          <img
+            src={card.thumbnail_url}
+            alt={`${card.place_name ?? "장소"} 이미지`}
+            loading="lazy"
+            className="h-full w-full object-cover"
+          />
+        </div>
+      )}
       <button
         type="button"
         className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((value) => !value)}
+        aria-haspopup="dialog"
+        aria-label={`${card.place_name ?? "장소"} 상세 보기`}
+        onClick={() => setShowDetail(true)}
       >
         <span className="min-w-0 text-sm font-semibold text-gray-900 dark:text-gray-100">
           {card.place_name ?? "장소 상세 정보"}
         </span>
         <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-300">
-          {expanded ? "접기" : "상세"}
-          <span aria-hidden="true">{expanded ? "⌃" : "⌄"}</span>
+          상세 보기
+          <span aria-hidden="true">↗</span>
         </span>
       </button>
 
-      {!expanded && answers.length > 0 && (
+      {answers.length > 0 && (
         <dl className="border-t border-gray-100 px-4 py-3 text-sm dark:border-gray-800">
           {answers.map(([key, value]) => (
             <div key={key} className="flex gap-2">
@@ -181,45 +127,8 @@ export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
         </dl>
       )}
 
-      {expanded && (
-        <div className="flex flex-col gap-4 border-t border-gray-100 px-4 py-4 dark:border-gray-800">
-          {card.thumbnail_url && (
-            // 원본 해상도 이미지(first_image_url 우선, 크기 다양)를 그대로 쓰므로
-            // object-cover로 채우면 잘리고 확대돼 보인다. 고정 높이 박스 안에서
-            // object-contain으로 전체를 보여주고, 남는 여백은 배경색으로 채운다.
-            <div className="flex h-56 w-full items-center justify-center overflow-hidden rounded-md bg-gray-100 dark:bg-gray-800">
-              <img
-                src={card.thumbnail_url}
-                alt={`${card.place_name ?? "장소"} 이미지`}
-                loading="lazy"
-                className="h-full w-full object-contain"
-              />
-            </div>
-          )}
-          {card.overview && (
-            <section>
-              <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">개요</h3>
-              <p className="mt-1 whitespace-pre-line text-sm leading-6 text-gray-700 dark:text-gray-300">
-                {card.overview}
-              </p>
-            </section>
-          )}
-          <DetailValues card={card} entries={DETAIL_FIELDS} />
-          <DetailValues card={card} entries={FACILITY_FIELDS} />
-          {card.homepage && (
-            <a
-              href={card.homepage}
-              target="_blank"
-              rel="noreferrer"
-              className="flex items-center justify-between gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm font-medium text-gray-800 transition-colors hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 dark:border-gray-700 dark:bg-gray-800/70 dark:text-gray-100 dark:hover:border-blue-800 dark:hover:bg-blue-950/40 dark:hover:text-blue-300"
-            >
-              <span>공식 홈페이지 보기</span>
-              <span aria-hidden="true" className="text-gray-400 dark:text-gray-500">
-                ↗
-              </span>
-            </a>
-          )}
-        </div>
+      {showDetail && (
+        <RecommendationDetailPreviewModal card={card} onClose={() => setShowDetail(false)} />
       )}
     </article>
   );

@@ -14,6 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.routes.chat as chat_route
+from app.agent_context.info_schemas import InfoContextResponse, PlaceCard, PlaceInfoResult
 from app.main import app
 from app.schemas import (
     AgentRequest,
@@ -92,3 +93,94 @@ def test_chat_rejects_empty_user_input(captured) -> None:
 
     assert response.status_code == 422
     assert captured == []
+
+
+def test_recommendation_place_details_returns_matched_c_place_card(monkeypatch) -> None:
+    captured_requests = []
+
+    class FakeContextProvider:
+        async def fetch_info_context(self, request):
+            captured_requests.append(request)
+            return InfoContextResponse(
+                request_id=request.request_id,
+                status="success",
+                result=PlaceInfoResult(
+                    status="success",
+                    question_type="general_info",
+                    place_id="126508",
+                    fields={"overview": "조선 왕조의 법궁"},
+                    place_card=PlaceCard(
+                        place_id="126508",
+                        place_name="경복궁",
+                        thumbnail_url="https://example.test/gyeongbokgung.jpg",
+                        overview="조선 왕조의 법궁",
+                        operating_hours="09:00~18:00",
+                    ),
+                ),
+            )
+
+    monkeypatch.setattr(chat_route, "get_context_provider", lambda client: FakeContextProvider())
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/chat/place-details",
+        json={"place_id": "126508", "place_name": "경복궁"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "success",
+        "requested_place_id": "126508",
+        "place_card": {
+            "question_type": "general_info",
+            "answer_fields": {"overview": "조선 왕조의 법궁"},
+            "place_id": "126508",
+            "place_name": "경복궁",
+            "thumbnail_url": "https://example.test/gyeongbokgung.jpg",
+            "overview": "조선 왕조의 법궁",
+            "operating_hours": "09:00~18:00",
+            "rest_date": None,
+            "parking": None,
+            "parking_fee": None,
+            "fee": None,
+            "baby_carriage": None,
+            "pet": None,
+            "credit_card": None,
+            "restroom": None,
+            "homepage": None,
+        },
+    }
+    assert len(captured_requests) == 1
+    assert captured_requests[0].place_context == "from_recommendation"
+    assert captured_requests[0].question_type == "general_info"
+
+
+def test_recommendation_place_details_hides_mismatched_place_card(monkeypatch) -> None:
+    class FakeContextProvider:
+        async def fetch_info_context(self, request):
+            return InfoContextResponse(
+                request_id=request.request_id,
+                status="success",
+                result=PlaceInfoResult(
+                    status="success",
+                    question_type="general_info",
+                    place_id="other-place",
+                    fields={},
+                    place_card=PlaceCard(place_id="other-place", place_name="동명 장소"),
+                ),
+            )
+
+    monkeypatch.setattr(chat_route, "get_context_provider", lambda client: FakeContextProvider())
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/chat/place-details",
+        json={"place_id": "126508", "place_name": "경복궁"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "no_data",
+        "requested_place_id": "126508",
+        "place_card": None,
+    }

@@ -23,6 +23,7 @@ import type {
   InterpretResponse,
   InterpretedConditions,
   LLMOutput,
+  RecommendationPlaceDetailResponse,
   RecommendationsResponse,
   SessionContextResponse,
   TranscriptionResponse,
@@ -87,6 +88,11 @@ export function getRecommendations(
   const payload = { ...conditions };
   delete payload.raw_conditions;
   return apiClient.post<RecommendationsResponse>("/recommendations", payload);
+}
+
+/** 추천 카드 클릭 시 LLM 없이 C의 장소 상세정보만 단건 조회한다. */
+export function fetchRecommendationPlaceDetails(request: { place_id: string; place_name: string }) {
+  return apiClient.post<RecommendationPlaceDetailResponse>("/chat/place-details", request);
 }
 
 export function runAgentDebug(request: AgentDebugRequest) {

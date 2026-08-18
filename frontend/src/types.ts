@@ -110,6 +110,13 @@ export interface InfoPlaceCard {
   homepage: string | null;
 }
 
+/** 추천 카드 클릭 시 C PlaceDetails를 직접 조회하는 응답이다. */
+export interface RecommendationPlaceDetailResponse {
+  status: "success" | "no_data" | "unavailable";
+  requested_place_id: string;
+  place_card: InfoPlaceCard | null;
+}
+
 export type ChatPhase =
   | "idle"
   | "interpreting"
