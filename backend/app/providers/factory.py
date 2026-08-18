@@ -138,12 +138,12 @@ def get_walking_route_provider(client: httpx.AsyncClient) -> WalkingRouteProvide
         return FakeWalkingRouteProvider(walking_speed_mps=settings.walking_speed_mps)
     return RealKakaoWalkingRouteProvider(
         api_key=_require_key(
-            settings.kakao_mobility_rest_api_key,
-            "KAKAO_MOBILITY_REST_API_KEY",
+            settings.kakao_map_rest_api_key,
+            "KAKAO_MAP_REST_API_KEY",
         ),
         client=client,
-        walking_speed_mps=settings.walking_speed_mps,
         timeout_seconds=settings.external_api_timeout_seconds,
+        max_concurrency=settings.travel_route_max_concurrency,
     )
 
 
@@ -303,7 +303,7 @@ _REQUIRED_KEYS: dict[str, tuple[tuple[str, str], ...]] = {
     "PLACE_PROVIDER": (("TOUR_API_SERVICE_KEY", "tour_api_service_key"),),
     "CONCENTRATION_PROVIDER": (("TOUR_API_SERVICE_KEY", "tour_api_service_key"),),
     "HOLIDAY_PROVIDER": (("TOUR_API_SERVICE_KEY", "tour_api_service_key"),),
-    "TRAVEL_ROUTE_PROVIDER": (("KAKAO_MOBILITY_REST_API_KEY", "kakao_mobility_rest_api_key"),),
+    "TRAVEL_ROUTE_PROVIDER": (("KAKAO_MAP_REST_API_KEY", "kakao_map_rest_api_key"),),
     "LOCAL_SEARCH_PROVIDER": (
         ("NAVER_LOCAL_SEARCH_CLIENT_ID", "naver_local_search_client_id"),
         ("NAVER_LOCAL_SEARCH_CLIENT_SECRET", "naver_local_search_client_secret"),

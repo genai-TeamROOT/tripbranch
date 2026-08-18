@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json
+from urllib.parse import parse_qs
 
 import httpx
 import pytest
@@ -11,10 +11,9 @@ from app.domain.travel_route import (
     RouteSource,
     RouteStatus,
 )
-from app.errors import ProviderTimeoutError, ProviderUnavailableError
 from app.providers.contracts import ProviderSource, ProviderStatus
 from app.providers.walking_route import (
-    KAKAO_WALKING_DESTINATIONS_URL,
+    KAKAO_MAP_WALKING_ROUTE_URL,
     RealKakaoWalkingRouteProvider,
 )
 
@@ -27,98 +26,77 @@ def _destinations() -> tuple[RouteDestination, ...]:
 
 
 @pytest.mark.asyncio
-async def test_kakao_walking_route_sends_official_batch_request_and_maps_routes() -> None:
+async def test_kakao_walking_route_calls_single_route_api_for_each_destination() -> None:
+    requests: list[httpx.Request] = []
+
     def handler(request: httpx.Request) -> httpx.Response:
-        assert str(request.url) == KAKAO_WALKING_DESTINATIONS_URL
-        assert request.method == "POST"
+        requests.append(request)
+        assert request.method == "GET"
+        assert str(request.url).startswith(KAKAO_MAP_WALKING_ROUTE_URL)
         assert request.headers["Authorization"] == "KakaoAK test-key"
-        payload = json.loads(request.content)
-        assert payload == {
-            "origin": {"x": 126.98, "y": 37.57},
-            "destinations": [
-                {"x": 126.981, "y": 37.571},
-                {"x": 126.982, "y": 37.572},
-            ],
-            "summary": True,
-            # 내부 1.2m/s를 공식 API 단위인 km/h로 변환한다.
-            "default_speed": pytest.approx(4.32),
-            "radius": 2_000,
-        }
+        query = parse_qs(request.url.query.decode())
+        assert query["start_x"] == ["126.98"]
+        assert query["start_y"] == ["37.57"]
+        assert query["input_coord"] == ["WGS84"]
+        assert query["output_coord"] == ["WGS84"]
+        assert query["route_mode"] == ["SHORTEST"]
+        index = 1 if query["end_x"] == ["126.981"] else 2
         return httpx.Response(
             200,
             json={
-                "trans_id": "transaction-1",
-                "routes": [
-                    {
-                        "result_code": 0,
-                        "result_message": "길찾기 성공",
-                        "summary": {"distance": 342, "duration": 345},
-                    },
-                    {
-                        "result_code": 0,
-                        "result_message": "길찾기 성공",
-                        "summary": {"distance": 532, "duration": 514},
-                    },
-                ],
+                "status": "OK",
+                "route": {
+                    "properties": {
+                        "totalDistance": index * 100,
+                        "totalTime": index * 90,
+                    }
+                },
             },
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        result = await RealKakaoWalkingRouteProvider(
-            "test-key", client, walking_speed_mps=1.2
-        ).get_routes(
-            GeoCoordinate(37.57, 126.98),
-            _destinations(),
-            radius_m=2_000,
+        result = await RealKakaoWalkingRouteProvider("test-key", client).get_routes(
+            GeoCoordinate(37.57, 126.98), _destinations()
         )
 
-    assert result.data.transaction_id == "transaction-1"
+    assert len(requests) == 2
     assert [route.place_id for route in result.data.routes] == ["first", "second"]
-    assert [route.distance_m for route in result.data.routes] == [342, 532]
-    assert [route.duration_seconds for route in result.data.routes] == [345, 514]
+    assert [route.distance_m for route in result.data.routes] == [100, 200]
+    assert [route.duration_seconds for route in result.data.routes] == [90, 180]
     assert all(route.source is RouteSource.KAKAO_WALKING for route in result.data.routes)
     assert result.metadata.source is ProviderSource.KAKAO_WALKING_ROUTE
     assert result.metadata.status is ProviderStatus.SUCCESS
 
 
 @pytest.mark.asyncio
-async def test_kakao_walking_route_preserves_per_destination_failure() -> None:
+async def test_kakao_walking_route_preserves_per_destination_no_data() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={
-                "routes": [
-                    {"result_code": 0, "summary": {"distance": 100, "duration": 90}},
-                    {"result_code": 104, "result_message": "경로를 찾을 수 없음"},
-                ]
-            },
-        )
+        query = parse_qs(request.url.query.decode())
+        if query["end_x"] == ["126.981"]:
+            return httpx.Response(
+                200,
+                json={
+                    "status": "OK",
+                    "route": {"properties": {"totalDistance": 100, "totalTime": 90}},
+                },
+            )
+        return httpx.Response(200, json={"status": "ROUTE_RESULT_NOT_FOUND"})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        result = await RealKakaoWalkingRouteProvider(
-            "test-key", client, walking_speed_mps=1.2
-        ).get_routes(GeoCoordinate(37.57, 126.98), _destinations())
+        result = await RealKakaoWalkingRouteProvider("test-key", client).get_routes(
+            GeoCoordinate(37.57, 126.98), _destinations()
+        )
 
     failed = result.data.routes[1]
     assert failed.place_id == "second"
     assert failed.status is RouteStatus.NO_DATA
-    assert failed.error_code == "kakao_result_104"
+    assert failed.error_code == "kakao_status_route_result_not_found"
     assert result.metadata.status is ProviderStatus.PARTIAL
-
-
-@pytest.mark.asyncio
-async def test_kakao_walking_route_rejects_mismatched_response_count() -> None:
-    async with httpx.AsyncClient(
-        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"routes": []}))
-    ) as client:
-        provider = RealKakaoWalkingRouteProvider("test-key", client, walking_speed_mps=1.2)
-        with pytest.raises(ProviderUnavailableError):
-            await provider.get_routes(GeoCoordinate(37.57, 126.98), _destinations())
 
 
 @pytest.mark.parametrize("status_code", [401, 429, 500])
 @pytest.mark.asyncio
-async def test_kakao_walking_route_converts_http_failure(status_code: int) -> None:
+async def test_kakao_walking_route_isolates_http_failure(status_code: int) -> None:
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(
             lambda request: httpx.Response(
@@ -128,20 +106,59 @@ async def test_kakao_walking_route_converts_http_failure(status_code: int) -> No
             )
         )
     ) as client:
-        provider = RealKakaoWalkingRouteProvider("test-key", client, walking_speed_mps=1.2)
-        with pytest.raises(ProviderUnavailableError):
-            await provider.get_routes(GeoCoordinate(37.57, 126.98), _destinations())
+        result = await RealKakaoWalkingRouteProvider("test-key", client).get_routes(
+            GeoCoordinate(37.57, 126.98), _destinations()
+        )
+
+    assert all(route.status is RouteStatus.UNAVAILABLE for route in result.data.routes)
+    assert all(route.error_code == f"http_{status_code}" for route in result.data.routes)
+    assert result.metadata.status is ProviderStatus.PARTIAL
 
 
 @pytest.mark.asyncio
-async def test_kakao_walking_route_converts_timeout() -> None:
+async def test_kakao_walking_route_isolates_timeout() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("timeout", request=request)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        provider = RealKakaoWalkingRouteProvider("test-key", client, walking_speed_mps=1.2)
-        with pytest.raises(ProviderTimeoutError):
-            await provider.get_routes(GeoCoordinate(37.57, 126.98), _destinations())
+        result = await RealKakaoWalkingRouteProvider("test-key", client).get_routes(
+            GeoCoordinate(37.57, 126.98), _destinations()
+        )
+
+    assert all(route.status is RouteStatus.UNAVAILABLE for route in result.data.routes)
+    assert all(route.error_code == "provider_timeout" for route in result.data.routes)
+
+
+@pytest.mark.asyncio
+async def test_kakao_walking_route_maps_same_point_to_zero_distance() -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"status": "SAME_POINT"})
+        )
+    ) as client:
+        result = await RealKakaoWalkingRouteProvider("test-key", client).get_routes(
+            GeoCoordinate(37.57, 126.98), (_destinations()[0],)
+        )
+
+    route = result.data.routes[0]
+    assert route.status is RouteStatus.SUCCESS
+    assert route.distance_m == 0
+    assert route.duration_seconds == 0
+
+
+@pytest.mark.asyncio
+async def test_kakao_walking_route_marks_malformed_success_as_unavailable() -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"status": "OK", "route": {}})
+        )
+    ) as client:
+        result = await RealKakaoWalkingRouteProvider("test-key", client).get_routes(
+            GeoCoordinate(37.57, 126.98), (_destinations()[0],)
+        )
+
+    assert result.data.routes[0].status is RouteStatus.UNAVAILABLE
+    assert result.data.routes[0].error_code == "invalid_response"
 
 
 @pytest.mark.asyncio
@@ -150,16 +167,16 @@ async def test_kakao_walking_route_skips_http_for_empty_destinations() -> None:
         raise AssertionError("빈 목적지 요청은 HTTP를 호출하면 안 됩니다.")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        result = await RealKakaoWalkingRouteProvider(
-            "test-key", client, walking_speed_mps=1.2
-        ).get_routes(GeoCoordinate(37.57, 126.98), ())
+        result = await RealKakaoWalkingRouteProvider("test-key", client).get_routes(
+            GeoCoordinate(37.57, 126.98), ()
+        )
 
     assert result.data.routes == ()
     assert result.metadata.status is ProviderStatus.NO_DATA
 
 
 @pytest.mark.asyncio
-async def test_kakao_walking_route_enforces_official_batch_and_radius_limits() -> None:
+async def test_kakao_walking_route_enforces_internal_batch_and_positive_radius() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("유효하지 않은 요청은 HTTP를 호출하면 안 됩니다.")
 
@@ -167,10 +184,8 @@ async def test_kakao_walking_route_enforces_official_batch_and_radius_limits() -
         RouteDestination(str(index), GeoCoordinate(37.57, 126.98)) for index in range(101)
     )
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        provider = RealKakaoWalkingRouteProvider("test-key", client, walking_speed_mps=1.2)
+        provider = RealKakaoWalkingRouteProvider("test-key", client)
         with pytest.raises(ValueError, match="최대 100개"):
             await provider.get_routes(GeoCoordinate(37.57, 126.98), destinations)
-        with pytest.raises(ValueError, match="12000"):
-            await provider.get_routes(
-                GeoCoordinate(37.57, 126.98), _destinations(), radius_m=12_001
-            )
+        with pytest.raises(ValueError, match="0보다 커야"):
+            await provider.get_routes(GeoCoordinate(37.57, 126.98), _destinations(), radius_m=0)

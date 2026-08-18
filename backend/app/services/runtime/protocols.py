@@ -27,6 +27,7 @@ from app.agent_context.schemas import (
     AgentContextResponse,
     RecommendationContext,
 )
+from app.domain.travel_route import WalkingRoute
 from app.schemas import RecommendationResponse, UserConditions
 from app.services.recommendation_pipeline import PreparedRecommendationResult
 from app.services.runtime.compare_context_schemas import (
@@ -34,6 +35,7 @@ from app.services.runtime.compare_context_schemas import (
     CompareContextResponse,
 )
 from app.services.runtime.info_context_schemas import InfoContextRequest, InfoContextResponse
+from app.tools.travel_route import TravelRouteQuery, TravelRouteToolResult
 
 
 class ToolProvider(Protocol):
@@ -66,6 +68,12 @@ class ToolProvider(Protocol):
         fetch_info_context와 달리 호출부에 hasattr 방어가 필요 없다 — 실제 C
         (ContextService)와 FakeToolProvider 양쪽에 구현이 있다.
         """
+        ...
+
+
+class TravelRouteToolProvider(Protocol):
+    async def execute(self, query: TravelRouteQuery) -> TravelRouteToolResult:
+        """통과 후보까지의 이동 정보를 실제 경로 또는 추정값으로 반환한다."""
         ...
 
 
@@ -135,9 +143,10 @@ class StagedRecommendationProvider(Protocol):
         conditions: UserConditions,
         prepared: PreparedRecommendationResult,
         *,
+        walking_routes: tuple[WalkingRoute, ...] = (),
         limit: int = 5,
     ) -> RecommendationResponse:
-        """하드 필터를 통과한 후보를 채점해 최종 추천 응답을 반환한다."""
+        """하드 필터 통과 후보와 A가 조회한 도보 정보를 받아 최종 추천한다."""
         ...
 
 

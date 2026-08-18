@@ -44,11 +44,20 @@ def test_travel_route_provider_stays_fake_until_explicitly_enabled() -> None:
     enabled = Settings(
         _env_file=None,
         travel_route_provider="real",
-        kakao_mobility_rest_api_key="test-rest-api-key",
+        kakao_map_rest_api_key="test-rest-api-key",
     )
 
     assert enabled.travel_route_provider == "real"
-    assert enabled.kakao_mobility_rest_api_key == "test-rest-api-key"
+    assert enabled.kakao_map_rest_api_key == "test-rest-api-key"
+
+
+def test_legacy_kakao_mobility_key_name_remains_compatible() -> None:
+    settings = Settings(
+        _env_file=None,
+        KAKAO_MOBILITY_REST_API_KEY="legacy-key",
+    )
+
+    assert settings.kakao_map_rest_api_key == "legacy-key"
 
 
 def test_walking_speed_is_configurable_and_must_be_positive() -> None:
@@ -61,14 +70,14 @@ def test_walking_speed_is_configurable_and_must_be_positive() -> None:
 
 
 def test_validate_provider_config_requires_kakao_key_for_real_walking_route() -> None:
-    with pytest.raises(ValueError, match="KAKAO_MOBILITY_REST_API_KEY"):
+    with pytest.raises(ValueError, match="KAKAO_MAP_REST_API_KEY"):
         validate_provider_config(Settings(_env_file=None, travel_route_provider="real"))
 
     validate_provider_config(
         Settings(
             _env_file=None,
             travel_route_provider="real",
-            kakao_mobility_rest_api_key="present",
+            kakao_map_rest_api_key="present",
         )
     )
 

@@ -56,12 +56,12 @@ class Settings(BaseSettings):
     local_search_provider: ProviderMode | None = None
     concentration_provider: ProviderMode | None = None
     holiday_provider: ProviderMode | None = None
-    # 카카오 도보 길찾기는 제휴 파트너 전용이므로 공통 PROVIDER_MODE를 상속하지
-    # 않고 명시적으로 real을 켤 때만 외부 API를 호출한다.
+    # 비용이 발생할 수 있으므로 공통 PROVIDER_MODE를 상속하지 않고 명시적으로
+    # real을 켤 때만 카카오맵 도보 API를 호출한다.
     travel_route_provider: ProviderMode = "fake"
-    # 직선거리 fallback의 예상시간과 카카오 도보 요청의 default_speed에 함께 쓸
-    # 보행속도(m/s). 운영환경에서 사용자군에 맞게 조정할 수 있다.
+    # 직선거리 fallback 예상시간에 쓸 보행속도(m/s).
     walking_speed_mps: float = Field(default=1.2, gt=0)
+    travel_route_max_concurrency: int = Field(default=5, ge=1, le=10)
 
     # 상세·운영정보 조회 출처. PLACE_PROVIDER=fake이면 Fake Provider가 상세까지
     # 담당하므로 이 값은 무시된다.
@@ -110,7 +110,15 @@ class Settings(BaseSettings):
     naver_map_client_secret: str = Field(default="", repr=False, exclude=True)
     naver_local_search_client_id: str = Field(default="", repr=False, exclude=True)
     naver_local_search_client_secret: str = Field(default="", repr=False, exclude=True)
-    kakao_mobility_rest_api_key: str = Field(default="", repr=False, exclude=True)
+    kakao_map_rest_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "KAKAO_MAP_REST_API_KEY",
+            "KAKAO_MOBILITY_REST_API_KEY",
+        ),
+        repr=False,
+        exclude=True,
+    )
     supabase_url: str = ""
     supabase_secret_key: str = Field(default="", repr=False, exclude=True)
 

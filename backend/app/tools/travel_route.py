@@ -15,10 +15,7 @@ from app.domain.travel_route import (
 from app.errors import AppError
 from app.providers.contracts import ProviderMetadata
 from app.providers.protocols import WalkingRouteProvider
-from app.providers.walking_route import (
-    MAX_WALKING_DESTINATIONS,
-    MAX_WALKING_RADIUS_M,
-)
+from app.providers.walking_route import MAX_WALKING_DESTINATIONS
 from app.tools.contracts import ToolError, ToolStatus
 
 logger = logging.getLogger(__name__)
@@ -36,8 +33,8 @@ class TravelRouteQuery:
     def __post_init__(self) -> None:
         if len(self.destinations) > MAX_WALKING_DESTINATIONS:
             raise ValueError(f"destinations는 최대 {MAX_WALKING_DESTINATIONS}개까지 허용됩니다.")
-        if self.radius_m is not None and not 0 < self.radius_m <= MAX_WALKING_RADIUS_M:
-            raise ValueError(f"radius_m는 0 초과 {MAX_WALKING_RADIUS_M} 이하여야 합니다.")
+        if self.radius_m is not None and self.radius_m <= 0:
+            raise ValueError("radius_m는 0보다 커야 합니다.")
         place_ids = tuple(destination.place_id for destination in self.destinations)
         if len(place_ids) != len(set(place_ids)):
             raise ValueError("destinations의 place_id는 중복될 수 없습니다.")

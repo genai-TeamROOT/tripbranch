@@ -121,6 +121,30 @@ it("호출량 표와 일일 한도 게이지를 보여준다", async () => {
   expect(screen.getAllByText("517")).toHaveLength(2);
 });
 
+it("카카오맵 도보 provider 라벨을 표시한다", async () => {
+  mockFetch((url) => ({
+    status: 200,
+    body: url.includes("api-usage")
+      ? {
+          ...usageSnapshot,
+          entries: [
+            {
+              ...usageSnapshot.entries[0],
+              provider: "kakao_map",
+              operation: "walk",
+              daily_limit: null,
+            },
+          ],
+        }
+      : dbStatus,
+  }));
+
+  renderPage();
+
+  expect(await screen.findByText("카카오맵 도보")).toBeInTheDocument();
+  expect(screen.getByText("walk")).toBeInTheDocument();
+});
+
 it("fake provider가 있으면 표가 비는 이유를 경고로 알린다", async () => {
   mockFetch((url) => ({
     status: 200,

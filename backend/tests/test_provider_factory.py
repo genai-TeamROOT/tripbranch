@@ -136,9 +136,9 @@ def test_get_walking_route_provider_builds_real_provider(monkeypatch) -> None:
         Settings(
             _env_file=None,
             travel_route_provider="real",
-            kakao_mobility_rest_api_key="test-key",
-            walking_speed_mps=1.1,
+            kakao_map_rest_api_key="test-key",
             external_api_timeout_seconds=7.0,
+            travel_route_max_concurrency=4,
         ),
     )
 
@@ -147,8 +147,8 @@ def test_get_walking_route_provider_builds_real_provider(monkeypatch) -> None:
     assert captured == {
         "api_key": "test-key",
         "client": client,
-        "walking_speed_mps": 1.1,
         "timeout_seconds": 7.0,
+        "max_concurrency": 4,
     }
 
 
