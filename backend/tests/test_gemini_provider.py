@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from google.genai import errors as genai_errors
+from google.genai import types as genai_types
 
 from app.errors import AppError, ProviderUnavailableError
 from app.providers.gemini import RealGeminiProvider
@@ -295,8 +296,13 @@ async def test_try_model_omits_thinking_config_when_budget_not_given() -> None:
 
 @pytest.mark.asyncio
 async def test_try_model_applies_thinking_budget_when_given() -> None:
-    """thinking_budget=0을 넘기면 GenerateContentConfig.thinking_config에 그대로
-    실린다 — SCHEDULE 호출부가 실제로 이 값을 받는지 확인하는 배선 테스트."""
+    """thinking_budget=0을 넘기면 GenerateContentConfig.thinking_config에 실린다 —
+    SCHEDULE 호출부가 실제로 이 값을 받는지 확인하는 배선 테스트.
+
+    (2026-08-18) 실제로 SDK에 실리는 값은 thinking_budget=0이 아니라
+    thinking_level=MINIMAL이다 — Gemini 3.x부터 숫자 기반 thinking_budget이
+    레거시 취급이라 _thinking_config_for()가 변환해서 넘긴다
+    (app/providers/gemini.py 참고)."""
     provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
     captured_config: list[object] = []
 
@@ -310,7 +316,7 @@ async def test_try_model_applies_thinking_budget_when_given() -> None:
         )
 
     assert captured_config[0].thinking_config is not None
-    assert captured_config[0].thinking_config.thinking_budget == 0
+    assert captured_config[0].thinking_config.thinking_level == genai_types.ThinkingLevel.MINIMAL
 
 
 @pytest.mark.asyncio
@@ -351,7 +357,7 @@ async def test_generate_schedule_plan_uses_thinking_budget_zero() -> None:
     with patch.object(provider._client.aio.models, "generate_content", side_effect=capture):
         await provider.generate_schedule_plan(request)
 
-    assert captured_config[0].thinking_config.thinking_budget == 0
+    assert captured_config[0].thinking_config.thinking_level == genai_types.ThinkingLevel.MINIMAL
 
 
 # --- thinking_budget 확장 적용(분류·추출 지연시간 개선, 실측: 2026-08-13
@@ -376,7 +382,7 @@ async def test_classify_intent_uses_thinking_budget_zero() -> None:
             "경복궁 근처 카페 추천해줘", has_previous_recommendation=False, shown_place_count=0
         )
 
-    assert captured_config[0].thinking_config.thinking_budget == 0
+    assert captured_config[0].thinking_config.thinking_level == genai_types.ThinkingLevel.MINIMAL
 
 
 @pytest.mark.asyncio
@@ -398,7 +404,7 @@ async def test_extract_recommend_conditions_uses_thinking_budget_zero() -> None:
     with patch.object(provider._client.aio.models, "generate_content", side_effect=capture):
         await provider.extract_recommend_conditions("경복궁 근처 카페 추천해줘")
 
-    assert captured_config[0].thinking_config.thinking_budget == 0
+    assert captured_config[0].thinking_config.thinking_level == genai_types.ThinkingLevel.MINIMAL
 
 
 # --- D-052: 모델 fallback ---

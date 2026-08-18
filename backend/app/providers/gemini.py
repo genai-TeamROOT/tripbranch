@@ -80,6 +80,40 @@ _RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
 _BACKOFF_BASE_SECONDS = 0.5
 
 
+def _thinking_config_for(thinking_budget: int | None) -> genai_types.ThinkingConfig | None:
+    """thinking_budget 인자를 실제 SDK에 넘길 ThinkingConfig로 변환한다.
+
+    (2026-08-18 추가) Gemini 3.x부터 숫자 기반 thinking_budget은 레거시
+    취급이고, Google은 thinking_level(MINIMAL/LOW/MEDIUM/HIGH) 사용을
+    권장한다 — 같은 요청에 thinking_budget과 thinking_level을 함께 넘기면
+    400 오류가 나므로 항상 하나만 채운다. 이 코드베이스는 지금까지
+    thinking_budget에 0 또는 None만 넘겨왔다(그 외 값은 쓰인 적 없음) —
+    0("완전히 끔")은 가장 가까운 대응인 MINIMAL로 변환하고, None은 지금과
+    동일하게 아무것도 안 넣어 모델 자체 기본값을 그대로 둔다.
+
+    모델을 gemini-2.5-flash → gemini-3.5-flash로 바꾼 뒤 응답이 전반적으로
+    느려진 문제의 일부가 이 부분이다 — 예전엔 thinking_budget=0이 SCHEDULE
+    2곳과 classify_intent/extract_recommend_conditions에서 thinking을
+    확실히 껐지만, 레거시 파라미터가 새 모델에서도 여전히 그대로 작동한다는
+    보장이 없어 이 네 곳부터 명시적으로 고쳤다. thinking_config를 아예 안
+    넣는 나머지 호출부(문장 생성·요약류, 스트리밍 포함)는 gemini-2.5-flash
+    기준으로 "모델 기본값이 가볍다"고 가정하고 의도적으로 손대지 않았던
+    곳들인데, gemini-3.5-flash의 기본값은 MEDIUM(항상 켜짐)이라 그 가정이
+    더 이상 맞지 않는다 — 다만 이 값들은 응답 품질과 직결돼 있어(과거
+    thinking_budget=0을 적용할 때도 "문장 생성·요약류는 품질 저하 리스크로
+    의도적으로 제외" 원칙을 지켰다) 실측 없이 이번에 같이 끄지 않았다.
+    scripts/compare_*_thinking_budget.py와 같은 방식으로 gemini-3.5-flash
+    기준 속도·품질을 다시 재본 뒤 결정해야 한다(미해결 상태로 남김).
+    """
+    if thinking_budget is None:
+        return None
+    if thinking_budget <= 0:
+        return genai_types.ThinkingConfig(thinking_level=genai_types.ThinkingLevel.MINIMAL)
+    # 0/None 외의 값은 지금까지 쓰인 적이 없다 — 필요해지면 그때 thinking_level
+    # 값으로 다시 매핑 기준을 정한다.
+    return genai_types.ThinkingConfig(thinking_budget=thinking_budget)
+
+
 def _backoff_seconds(attempt: int) -> float:
     """지수 백오프 + 지터. attempt=0이 첫 번째 재시도 전 대기시간."""
     return _BACKOFF_BASE_SECONDS * (2**attempt) + random.uniform(0, 0.25)
@@ -491,12 +525,15 @@ class RealGeminiProvider:
         operation: str,
         thinking_budget: int | None = None,
     ) -> T:
-        """thinking_budget은 기본값 None이면 모델 자체 기본 동작(gemini-2.5-flash는
-        동적 thinking)을 그대로 둔다 — 이 값을 넘기는 호출부(현재 SCHEDULE 두 곳)만
-        영향을 받고, 나머지 9개 호출부는 기존 동작과 완전히 동일하다(실사용
-        지연시간 개선 검토, 2026-08-13. SCHEDULE은 구조화 출력이 무거워 thinking이
-        전체 응답 시간의 상당 부분을 차지하는 것으로 추정됨). 0은 완전히 끄고,
-        모델별 허용 범위 안의 양수면 그 예산만큼만 쓴다."""
+        """thinking_budget은 기본값 None이면 모델 자체 기본 동작을 그대로 둔다 —
+        이 값을 넘기는 호출부(SCHEDULE 두 곳, classify_intent,
+        extract_recommend_conditions)만 영향을 받고, 나머지 호출부는 기존과
+        동일하게 모델 기본값에 의존한다(실사용 지연시간 개선 검토, 2026-08-13.
+        SCHEDULE은 구조화 출력이 무거워 thinking이 전체 응답 시간의 상당 부분을
+        차지하는 것으로 추정됨). 0은 완전히 끄는 뜻이고 실제로는
+        _thinking_config_for()가 thinking_level=MINIMAL로 변환해 전달한다
+        (2026-08-18, Gemini 3.x에서 레거시 thinking_budget 파라미터를 계속 믿을 수
+        없어졌기 때문 — 자세한 배경은 _thinking_config_for() docstring 참고)."""
         try:
             return await self._generate(
                 system_instruction,
@@ -633,15 +670,14 @@ class RealGeminiProvider:
         모델을 바꿔도 같은 이유로 실패할 것이므로 폴백 대상이 아니다.
 
         thinking_budget이 None이면 GenerateContentConfig에 thinking_config를
-        아예 안 넣어 모델 기본 동작(gemini-2.5-flash는 동적 thinking)을 그대로
-        둔다 — 기존 9개 호출부는 이 인자를 안 넘기므로 동작 변화가 없다.
+        아예 안 넣어 모델 자체 기본 동작을 그대로 둔다 — 이 기본값이 어떤 값인지는
+        모델마다 다르다(gemini-2.5-flash는 가벼운 동적 thinking이었지만,
+        gemini-3.5-flash는 기본이 MEDIUM이라 더 무겁다, 2026-08-18). thinking_budget을
+        넘기는 호출부만 _thinking_config_for()를 통해 명시적으로 thinking을
+        낮춘다 — 나머지 호출부는 여전히 모델 기본값에 의존한다.
         """
 
-        thinking_config = (
-            genai_types.ThinkingConfig(thinking_budget=thinking_budget)
-            if thinking_budget is not None
-            else None
-        )
+        thinking_config = _thinking_config_for(thinking_budget)
 
         for attempt in range(self._max_retries + 1):
             # google-genai는 자체 전송 계층을 써서 MeteredTransport를 거치지 않는다.
