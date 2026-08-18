@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import random
 import statistics
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -27,6 +28,11 @@ from app.config import Settings
 _MODEL_NAME = "jhgan/ko-sroberta-multitask"
 _RPC_TIMEOUT_SECONDS = 60.0
 _MATCH_COUNT = 3
+# search_place_evidence의 후보 상한(202608180004)과 같은 값. 활성 장소가 이보다
+# 많으면 고정 시드로 무작위 추출해 재현 가능한 부분집합으로 측정한다 — 분포의
+# 근사치로는 충분하고, 상한을 넘겨 호출하면 함수가 즉시 에러를 낸다.
+_MAX_CANDIDATES = 500
+_SAMPLE_SEED = 42
 
 # package_D §2.8 취향 개념 축(동반자·분위기·A가 제기한 역사/문화/시장/디저트 신규 축)을
 # 골고루 덮는 자연 발화 11개. §7.12 검색 테스트와 같은 표현을 최대한 재사용해
@@ -117,6 +123,10 @@ async def run(args: argparse.Namespace, settings: Settings) -> list[QueryDistrib
         timeout=_RPC_TIMEOUT_SECONDS,
     ) as client:
         candidate_content_ids = await _fetch_active_content_ids(client)
+        if len(candidate_content_ids) > _MAX_CANDIDATES:
+            candidate_content_ids = random.Random(_SAMPLE_SEED).sample(
+                candidate_content_ids, k=_MAX_CANDIDATES
+            )
         for query, embedding in zip(queries, embeddings, strict=True):
             rows = await _search(client, embedding, candidate_content_ids)
             similarities = [float(row["avg_similarity"]) for row in rows]
