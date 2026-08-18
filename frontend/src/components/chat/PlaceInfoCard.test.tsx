@@ -1,6 +1,6 @@
 /* INFO 장소 카드의 접기/펼치기와 결측값 숨김을 검증한다. */
 
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { InfoPlaceCard as InfoPlaceCardData } from "../../types";
 import { PlaceInfoCard } from "./PlaceInfoCard";
@@ -13,7 +13,7 @@ const card: InfoPlaceCardData = {
   thumbnail_url: "https://example.test/gyeongbokgung.jpg",
   overview: "조선 왕조의 법궁이다.",
   operating_hours: "09:00~18:00",
-  rest_date: null,
+  rest_date: "매주 화요일 ※ 단, 정기휴일이 공휴일 및 대체공휴일과 겹치면 개방합니다.",
   parking: "가능",
   parking_fee: "무료",
   fee: "성인 3,000원",
@@ -24,20 +24,24 @@ const card: InfoPlaceCardData = {
   homepage: "https://example.test",
 };
 
-it("질문 답은 바로 보이고, 클릭하면 전체 상세를 펼친다", async () => {
+it("질문 답과 썸네일은 바로 보이고, 클릭하면 같은 상세 모달을 연다", async () => {
   const user = userEvent.setup();
   render(<PlaceInfoCard card={card} />);
 
   expect(screen.getByText("주차 요금")).toBeInTheDocument();
   expect(screen.queryByText("조선 왕조의 법궁이다.")).not.toBeInTheDocument();
-  expect(screen.queryByRole("img")).not.toBeInTheDocument();
-
-  await user.click(screen.getByRole("button", { name: /경복궁.*상세/i }));
-
-  expect(screen.getByText("조선 왕조의 법궁이다.")).toBeInTheDocument();
   expect(screen.getByRole("img", { name: "경복궁 이미지" })).toBeInTheDocument();
-  expect(screen.getByText("성인 3,000원")).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "공식 홈페이지 보기" })).toHaveAttribute(
+
+  await user.click(screen.getByRole("button", { name: "경복궁 상세 보기" }));
+
+  const dialog = screen.getByRole("dialog", { name: "경복궁" });
+  expect(within(dialog).getByText("조선 왕조의 법궁이다.")).toBeInTheDocument();
+  expect(within(dialog).getByRole("img", { name: "경복궁 이미지" })).toBeInTheDocument();
+  expect(within(dialog).getByText("성인 3,000원")).toBeInTheDocument();
+  expect(
+    within(dialog).getByText("※ 단, 정기휴일이 공휴일 및 대체공휴일과 겹치면 개방합니다."),
+  ).toHaveClass("text-xs", "text-gray-500");
+  expect(within(dialog).getByRole("link", { name: "공식 홈페이지 보기" })).toHaveAttribute(
     "href",
     "https://example.test",
   );
@@ -59,11 +63,12 @@ it("요금 항목과 ※ 안내를 각각 줄바꿈해 표시한다", async () =
     "whitespace-pre-line",
   );
 
-  await user.click(screen.getByRole("button", { name: /경복궁.*상세/i }));
+  await user.click(screen.getByRole("button", { name: "경복궁 상세 보기" }));
 
-  expect(screen.getByText("- 성인 10,000원 - 학생 7,000원 ※ 무료: 장애인")).toHaveClass(
-    "whitespace-pre-line",
-  );
+  const dialog = within(screen.getByRole("dialog"));
+  expect(dialog.getByText("- 성인 10,000원")).toHaveClass("whitespace-pre-line");
+  expect(dialog.getByText("- 학생 7,000원")).toHaveClass("whitespace-pre-line");
+  expect(dialog.getByText("※ 무료: 장애인")).toHaveClass("text-xs", "text-gray-500");
 });
 
 it("붙어 있는 월별 운영시간을 기간별 카드로 나눈다", async () => {
@@ -75,10 +80,11 @@ it("붙어 있는 월별 운영시간을 기간별 카드로 나눈다", async (
   expect(screen.getByText("1월~2월 · 11월~12월")).toBeInTheDocument();
   expect(screen.getByText("09:00–17:00 · 입장 마감 16:00")).toBeInTheDocument();
 
-  await user.click(screen.getByRole("button", { name: /경복궁.*상세/i }));
+  await user.click(screen.getByRole("button", { name: "경복궁 상세 보기" }));
 
-  expect(screen.getByText("1월~2월 · 11월~12월")).toBeInTheDocument();
-  expect(screen.getByText("09:00–17:00 · 입장 마감 16:00")).toBeInTheDocument();
-  expect(screen.getByText("6월~8월")).toBeInTheDocument();
-  expect(screen.getByText("09:00–18:30 · 입장 마감 17:30")).toBeInTheDocument();
+  const dialog = screen.getByRole("dialog");
+  expect(within(dialog).getByText("1월~2월 · 11월~12월")).toBeInTheDocument();
+  expect(within(dialog).getByText("09:00–17:00 · 입장 마감 16:00")).toBeInTheDocument();
+  expect(within(dialog).getByText("6월~8월")).toBeInTheDocument();
+  expect(within(dialog).getByText("09:00–18:30 · 입장 마감 17:30")).toBeInTheDocument();
 });

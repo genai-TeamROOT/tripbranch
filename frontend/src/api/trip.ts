@@ -23,8 +23,10 @@ import type {
   InterpretResponse,
   InterpretedConditions,
   LLMOutput,
+  RecommendationPlaceDetailResponse,
   RecommendationsResponse,
   SessionContextResponse,
+  TranscriptionResponse,
   WeatherCondition,
 } from "../types";
 
@@ -88,6 +90,11 @@ export function getRecommendations(
   return apiClient.post<RecommendationsResponse>("/recommendations", payload);
 }
 
+/** 추천 카드 클릭 시 LLM 없이 C의 장소 상세정보만 단건 조회한다. */
+export function fetchRecommendationPlaceDetails(request: { place_id: string; place_name: string }) {
+  return apiClient.post<RecommendationPlaceDetailResponse>("/chat/place-details", request);
+}
+
 export function runAgentDebug(request: AgentDebugRequest) {
   return apiClient.post<AgentResponse>("/agent-debug", request);
 }
@@ -100,6 +107,11 @@ export function runAgentDebug(request: AgentDebugRequest) {
  */
 export function sendChat(request: ChatRequest) {
   return apiClient.post<ChatResponse>("/chat", request);
+}
+
+/** 녹음한 WAV를 전사만 한다. 이 결과를 `/chat`으로 자동 전송하지 않는다. */
+export function transcribeAudio(audio: Blob) {
+  return apiClient.postBinary<TranscriptionResponse>("/transcribe", audio, "audio/wav");
 }
 
 /** 실제 진행 상태·추천 카드·요약 문장을 순차 수신하는 SSE 채팅 경로. */

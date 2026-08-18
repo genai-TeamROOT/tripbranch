@@ -47,9 +47,11 @@ interface Conditions {
 
   // 날씨 (사용자 발화 기준 — API로 보충한 값은 api_context.api_weather에 별도 저장)
   weather: "rain" | "snow" | "hot" | "cold" | "good" | null;
+  // "비 와도 괜찮아"처럼 날씨를 감수하는 허용 표현은 ENJOY가 아니라 IGNORE다.
   weather_intent: "AVOID" | "ENJOY" | "NO_MENTION" | "IGNORE" | null;
 
   // 혼잡도 (weather_intent와 동일 패턴 — 상세는 concentration-conditions.md 참고)
+  // "사람 많아도 괜찮아"는 SEEK가 아니라 IGNORE다. SEEK는 혼잡함을 목적으로 원할 때만 쓴다.
   concentration_intent: "AVOID" | "SEEK" | "IGNORE" | null;
 
   // 이동
@@ -60,7 +62,8 @@ interface Conditions {
   time_available: number | null;
 
   // 환경
-  // 언급이 없으면 null. "any"는 "실내외 상관없어"처럼 무관함을 명시했을 때만 쓴다
+  // 언급이 없으면 null. "any"는 "실내외 상관없어"나 "야외도 괜찮아"처럼
+  // 선택지를 넓히는 허용 표현을 명시했을 때만 쓴다.
   // — 미언급을 "any"로 표현하면 되묻기 답변 턴에서 앞 턴의 indoor를 덮어쓴다(D-053).
   environment: "indoor" | "outdoor" | "any" | null;
 

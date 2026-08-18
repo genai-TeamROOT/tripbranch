@@ -276,7 +276,7 @@ enum 목록(MVP)은 [conditions-schema.md § 2. Conditions 필드 정의](./cond
 | `AVOID` | 날씨를 피하고 싶음 | "비 오는데 갈 곳", "더운데 시원한 곳" | environment=indoor 설정 |
 | `ENJOY` | 날씨를 즐기고 싶음 | "눈 오는 거리 걷고 싶어", "단풍 보러" | environment=outdoor 설정 |
 | `NO_MENTION` | 날씨 언급 없음 | "경복궁 근처 카페 추천해줘" | 날씨 API 호출 후 API 값으로 계산 |
-| `IGNORE` | 날씨 무관을 명시 | "날씨 상관없이 추천해줘" | 날씨 API 미호출, 날씨 가중치 제외 |
+| `IGNORE` | 날씨 무관·감수를 명시 | "날씨 상관없이 추천해줘", "비 와도 괜찮아" | 날씨 API 미호출, 날씨 가중치 제외 |
 | `null` | 판별 불가 | "눈 오는데 추천" (의도 모호) | 사용자에게 추가 질문 |
 
 **모호한 경우 처리:**
@@ -300,8 +300,11 @@ LLM이 AVOID/ENJOY 판별 불가
 |----|------|-----------|
 | `AVOID` | 혼잡한 곳을 피하고 싶음 | "조용한 공원 추천해줘", "한적한 곳 가고싶어" |
 | `SEEK` | 혼잡한(인기 있는) 곳을 원함 | "핫한 관광지 어디야", "인기 많은 곳 추천해줘" |
-| `IGNORE` | 혼잡도 무관 | 언급 없음 |
+| `IGNORE` | 혼잡도 무관·감수를 명시 | 언급 없음, "사람 많아도 괜찮아" |
 | `null` | 판별 불가 | 혼잡도 단어는 있으나 방향 모호 (드묾) |
+
+`SEEK`는 "핫한", "인기 많은", "북적이는 데"처럼 혼잡함을 **목적으로** 원할 때만 쓴다.
+"사람 많아도 괜찮아"는 허용 표현이므로 `IGNORE`이며, 혼잡한 후보를 위로 올리지 않는다.
 
 **weather_intent와의 차이**: `weather_intent`의 `null`은 environment 하드 필터를
 결정 못 해 사용자에게 추가 질문한다(§8). `concentration_intent`는 하드 필터에
@@ -475,3 +478,4 @@ place_types 빈 배열 (전체 검색) + place_tags 없음:
 | v0.3 | 2026-07-23 | 소유권 기반 문서 정리: Conditions 필드 정의(3·4절), PlaceType/PlaceTag enum(6·7절), 조건 부족 시 기본 정책(10절), 필드별 변경 규칙(11절)을 conditions-schema.md 참조 링크로 교체. 추천 처리 흐름·위치 처리·날씨 확보·점수 계산 등 RECOMMEND 고유 로직은 유지 |
 | v0.4 | 2026-07-29 | `concentration_intent` 판별 절 신설(신규 9절, weather_intent §8 패턴 요약) — 이후 9~15절을 10~16절로 순연. 13절(구 12절) LLM 추출 예시에 concentration 사례 2건 추가 |
 | v0.5 | 2026-08-05 | `weather_intent`에 `NO_MENTION` 추가. §8에서 `NO_MENTION`(언급 없음)과 `IGNORE`(무관 명시) 의미를 분리하고, §10 날씨 확보 순서를 "발화 날씨는 사용자 값 사용 / `NO_MENTION`만 API 조회"로 갱신 |
+| v0.6 | 2026-08-18 | "~도 괜찮아" 허용 표현을 조건 완화로 명시. "비 와도 괜찮아"는 `weather_intent=IGNORE`, "사람 많아도 괜찮아"는 `concentration_intent=IGNORE`이며, 혼잡·날씨 선호로 좁히지 않는다. 환경 허용은 `environment=any`로 처리 |

@@ -282,9 +282,12 @@ async def main() -> None:
         print("LLM_API_KEY가 필요합니다.")
         return
 
+    # 앱과 같은 역할별 배선으로 잰다 — 여기서 재는 classify_intent·
+    # extract_recommend_conditions는 fast 묶음으로 나간다.
     provider = RealGeminiProvider(
         api_key=settings.llm_api_key,
-        model_names=settings.resolved_llm_models,
+        fast_model_names=settings.resolved_llm_fast_models,
+        generation_model_names=settings.resolved_llm_generation_models,
         timeout_seconds=settings.resolved_llm_timeout_seconds,
         max_retries=settings.external_api_retry_count,
     )

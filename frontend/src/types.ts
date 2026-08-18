@@ -48,6 +48,13 @@ export interface RecommendationsResponse {
   elapsed_ms: number;
 }
 
+/** Gemini Audio API가 짧은 사용자 음성을 전사한 결과. */
+export interface TranscriptionResponse {
+  text: string;
+  elapsed_ms: number;
+  model: string;
+}
+
 export interface ScheduleItem {
   order: number;
   place_id: string;
@@ -106,6 +113,13 @@ export interface InfoPlaceCard {
   credit_card: string | null;
   restroom: string | null;
   homepage: string | null;
+}
+
+/** 추천 카드 클릭 시 C PlaceDetails를 직접 조회하는 응답이다. */
+export interface RecommendationPlaceDetailResponse {
+  status: "success" | "no_data" | "unavailable";
+  requested_place_id: string;
+  place_card: InfoPlaceCard | null;
 }
 
 export type ChatPhase =

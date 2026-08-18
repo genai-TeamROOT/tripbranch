@@ -10,9 +10,11 @@ from __future__ import annotations
 import httpx
 
 from app.config import Settings, settings
+from app.errors import AppError
 from app.providers.concentration import FakeConcentrationProvider, RealConcentrationProvider
 from app.providers.festival import FakeFestivalProvider, RealFestivalProvider
 from app.providers.gemini import RealGeminiProvider
+from app.providers.gemini_audio import GeminiAudioTranscriber
 from app.providers.geocoding import FakeGeocodingProvider, RealGeocodingProvider
 from app.providers.holiday import FakeHolidayProvider, RealHolidayProvider
 from app.providers.hybrid_place_details import HybridPlaceDetailsProvider
@@ -53,12 +55,34 @@ def get_llm_provider() -> LLMProvider:
         return FakeLLMProvider()
     return RealGeminiProvider(
         api_key=_require_key(settings.llm_api_key, "LLM_API_KEY"),
-        model_names=settings.resolved_llm_models,
+        fast_model_names=settings.resolved_llm_fast_models,
+        generation_model_names=settings.resolved_llm_generation_models,
         # Tool/DB 호출과 분리된 LLM 전용 타임아웃(설정 없으면 EXTERNAL_API_TIMEOUT_SECONDS로
         # 폴백) — EXTERNAL_API_TIMEOUT_SECONDS를 Gemini 지연 때문에 올리면 TourAPI/Naver/
         # Supabase까지 같은 값을 물려받는 문제가 있어 분리했다(2026-08-11).
         timeout_seconds=settings.resolved_llm_timeout_seconds,
         max_retries=settings.external_api_retry_count,
+    )
+
+
+def get_gemini_audio_transcriber() -> GeminiAudioTranscriber:
+    """음성 입력 전사용 Gemini 클라이언트를 만든다.
+
+    Fake LLM 모드에서는 실제 음성을 텍스트로 바꿀 모델이 없으므로, 가짜 문장을
+    만들어 채팅으로 보내지 않고 기능 미사용 오류를 명시적으로 반환한다.
+    """
+    if settings.resolved_llm_provider != "real":
+        raise AppError(
+            code="voice_input_unavailable",
+            message="음성 입력은 Gemini 실연동 환경에서 사용할 수 있어요.",
+            status_code=503,
+            retryable=False,
+            provider="Gemini",
+        )
+    return GeminiAudioTranscriber(
+        api_key=_require_key(settings.llm_api_key, "LLM_API_KEY"),
+        model_name=settings.resolved_gemini_audio_model_name,
+        timeout_seconds=settings.resolved_llm_timeout_seconds,
     )
 
 
@@ -150,9 +174,7 @@ def get_place_details_provider(client: httpx.AsyncClient) -> PlaceDetailsProvide
         return SupabasePlaceDetailsProvider(
             SupabasePlaceRepository(
                 supabase_url=_require_key(settings.supabase_url, "SUPABASE_URL"),
-                secret_key=_require_key(
-                    settings.supabase_secret_key, "SUPABASE_SECRET_KEY"
-                ),
+                secret_key=_require_key(settings.supabase_secret_key, "SUPABASE_SECRET_KEY"),
                 client=client,
                 timeout_seconds=settings.external_api_timeout_seconds,
             )
@@ -296,15 +318,39 @@ def validate_provider_config(target: Settings | None = None) -> None:
             "real provider 설정에 필요한 환경변수가 비어 있습니다: " + ", ".join(missing)
         )
 
-    # LLM_FALLBACK_MODEL_NAMES에 LLM_MODEL_NAME과 같은 이름이 중복되면 폴백처럼
-    # 보이지만 실제로는 같은 모델을 또 재시도하는 것뿐이라 부팅 시점에 막는다.
+    # 폐지된 단일 모델 설정이 .env에 남아 있으면 부팅을 막는다. 값이 무시될 뿐 동작은
+    # 하므로 그냥 두면 `.env`에 적힌 모델과 실제로 호출되는 모델이 다른 채로 돌고,
+    # 그 차이는 응답이 이상해진 뒤에야 드러난다. 실패는 첫 요청이 아니라 부팅에서
+    # 드러나야 한다(D-042).
+    legacy_settings = [
+        variable_name
+        for variable_name, attribute in (
+            ("LLM_MODEL_NAME", "legacy_llm_model_name"),
+            ("LLM_FALLBACK_MODEL_NAMES", "legacy_llm_fallback_model_names"),
+        )
+        if getattr(current, attribute)
+    ]
+    if legacy_settings:
+        raise ValueError(
+            "폐지된 LLM 모델 설정이 남아 있습니다: "
+            + ", ".join(legacy_settings)
+            + ". 이 값은 더 이상 사용되지 않으니 지우고, 역할별 설정으로 옮기세요 — "
+            "의도 분류·조건 추출은 LLM_FAST_MODEL_NAME/LLM_FAST_FALLBACK_MODEL_NAMES, "
+            "답변·비교·일정 생성은 LLM_GENERATION_MODEL_NAME/"
+            "LLM_GENERATION_FALLBACK_MODEL_NAMES입니다."
+        )
+
+    # 역할별 폴백 목록에 1순위 모델과 같은 이름이 중복되면 폴백처럼 보이지만 실제로는
+    # 같은 모델을 또 재시도하는 것뿐이라 부팅 시점에 막는다.
     if current.resolved_llm_provider == "real":
-        models = current.resolved_llm_models
-        if len(models) != len(set(models)):
-            raise ValueError(
-                "LLM_FALLBACK_MODEL_NAMES에 LLM_MODEL_NAME과 중복되는 모델이 있습니다: "
-                + ", ".join(models)
-            )
+        for setting_name, models in (
+            ("LLM_FAST_FALLBACK_MODEL_NAMES", current.resolved_llm_fast_models),
+            ("LLM_GENERATION_FALLBACK_MODEL_NAMES", current.resolved_llm_generation_models),
+        ):
+            if len(models) != len(set(models)):
+                raise ValueError(
+                    f"{setting_name}에 1순위 모델과 중복되는 모델이 있습니다: " + ", ".join(models)
+                )
 
     # 상세조회 출처는 provider 모드와 축이 다르므로 별도로 검증한다.
     if current.resolved_place_details_source == "supabase":

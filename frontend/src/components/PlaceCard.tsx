@@ -17,6 +17,8 @@ const SAFE_WALKING_SPEED_KMH = 3.6;
 
 interface PlaceCardProps {
   item: RecommendationItem;
+  /** 추천 결과의 현재 정보만으로 여는 1차 상세 미리보기. */
+  onOpenDetail?: (item: RecommendationItem) => void;
 }
 
 function formatWalkingMinutes(distanceKm: number): string {
@@ -76,9 +78,9 @@ function formatOperatingHours(item: RecommendationItem): string {
   return formatClosingTime(item.remaining_minutes);
 }
 
-export function PlaceCard({ item }: PlaceCardProps) {
-  return (
-    <li className="flex flex-col gap-2 rounded-lg border border-gray-200 p-4 shadow-sm dark:border-gray-700">
+export function PlaceCard({ item, onOpenDetail }: PlaceCardProps) {
+  const content = (
+    <>
       <div className="flex items-start justify-between gap-2">
         <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">{item.name}</h3>
         <span className="shrink-0 rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-300">
@@ -111,6 +113,38 @@ export function PlaceCard({ item }: PlaceCardProps) {
           ))}
         </ul>
       )}
+
+      {onOpenDetail && (
+        <span className="w-fit text-xs font-medium text-blue-700 dark:text-blue-300">
+          장소 정보 미리 보기 →
+        </span>
+      )}
+    </>
+  );
+
+  return (
+    <li
+      className={`flex flex-col gap-2 rounded-lg border border-gray-200 p-4 shadow-sm dark:border-gray-700${
+        onOpenDetail
+          ? " cursor-pointer text-left transition hover:border-blue-300 hover:bg-blue-50/30 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:hover:border-blue-700 dark:hover:bg-blue-950/20"
+          : ""
+      }`}
+      role={onOpenDetail ? "button" : undefined}
+      tabIndex={onOpenDetail ? 0 : undefined}
+      aria-label={onOpenDetail ? `${item.name} 장소 정보 미리 보기` : undefined}
+      onClick={onOpenDetail ? () => onOpenDetail(item) : undefined}
+      onKeyDown={
+        onOpenDetail
+          ? (event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onOpenDetail(item);
+              }
+            }
+          : undefined
+      }
+    >
+      {content}
     </li>
   );
 }

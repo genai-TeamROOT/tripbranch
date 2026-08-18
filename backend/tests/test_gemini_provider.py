@@ -215,9 +215,7 @@ async def test_schedule_plan_retries_once_when_items_count_out_of_range_then_suc
         if call_count == 1:
             return response_model.model_validate(
                 {
-                    "items": [
-                        _schedule_item_dict(f"p{i}", i) for i in range(1, 7)
-                    ],
+                    "items": [_schedule_item_dict(f"p{i}", i) for i in range(1, 7)],
                     "total_duration_min": 360,
                     "route_summary": "테스트 동선",
                 }
@@ -370,7 +368,12 @@ async def test_generate_schedule_plan_uses_thinking_budget_zero() -> None:
 @pytest.mark.asyncio
 async def test_classify_intent_uses_thinking_budget_zero() -> None:
     """classify_intent()이 실제로 thinking_budget=0을 끝까지 전달하는지 확인한다."""
-    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    provider = RealGeminiProvider(
+        api_key="dummy",
+        fast_model_names=["fast-model"],
+        generation_model_names=["generation-model"],
+        timeout_seconds=1.0,
+    )
     captured_config: list[object] = []
 
     async def capture(*args: object, **kwargs: object) -> _FakeResponse:
@@ -383,6 +386,63 @@ async def test_classify_intent_uses_thinking_budget_zero() -> None:
         )
 
     assert captured_config[0].thinking_config.thinking_level == genai_types.ThinkingLevel.MINIMAL
+
+
+@pytest.mark.asyncio
+async def test_classify_and_schedule_route_to_their_respective_model_groups() -> None:
+    """분류는 빠른 모델, 일정 생성은 응답 생성 모델로 분리한다.
+
+    Flash는 기존처럼 thinking_budget=0을 받으며, Flash-Lite는 API 호환성 때문에
+    thinking_config를 생략하는지도 함께 확인한다.
+    """
+    provider = RealGeminiProvider(
+        api_key="dummy",
+        fast_model_names=["gemini-3.5-flash-lite"],
+        generation_model_names=["generation-model"],
+        timeout_seconds=1.0,
+    )
+    calls: list[tuple[str, object]] = []
+    plan = ScheduleLLMPlan(
+        items=[
+            {
+                "order": 1,
+                "place_id": "p1",
+                "place_name": "장소 p1",
+                "estimated_arrival": "15:00",
+                "estimated_duration_min": 60,
+                "travel_to_next_min": None,
+                "reason": "테스트 이유",
+            }
+        ],
+        total_duration_min=60,
+        route_summary="테스트 동선",
+    )
+
+    async def capture(*args: object, **kwargs: object) -> _FakeResponse:
+        calls.append((kwargs["model"], kwargs["config"].thinking_config))
+        if kwargs["model"] == "gemini-3.5-flash-lite":
+            return _FakeResponse(IntentClassificationResult(intent=Intent.RECOMMEND))
+        return _FakeResponse(plan)
+
+    request = SchedulePlanningRequest(
+        candidates=[_recommendation_item()],
+        conditions=UserConditions(),
+        visit_datetime=datetime(2026, 8, 13, 15, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+        pairwise_distances_km={},
+    )
+
+    with patch.object(provider._client.aio.models, "generate_content", side_effect=capture):
+        await provider.classify_intent(
+            "카페 추천해줘",
+            has_previous_recommendation=False,
+            shown_place_count=0,
+        )
+        await provider.generate_schedule_plan(request)
+
+    assert [model for model, _ in calls] == ["gemini-3.5-flash-lite", "generation-model"]
+    assert calls[0][1] is None
+    assert calls[1][1] is not None
+    assert calls[1][1].thinking_budget == 0
 
 
 @pytest.mark.asyncio
@@ -547,3 +607,106 @@ async def test_generate_logs_fallback_transition_and_exhaustion(caplog) -> None:
         "primary" in r.getMessage() and "secondary" in r.getMessage() for r in warning_records
     )
     assert any("전 모델 소진" in r.getMessage() for r in error_records)
+
+
+async def _capture_budgets(
+    provider: RealGeminiProvider, operation: str, thinking_budget: int | None
+) -> list[tuple[str, object]]:
+    """generate_content에 실제로 실린 (모델명, thinking_budget)을 순서대로 모은다."""
+    captured: list[tuple[str, object]] = []
+
+    async def succeed(*args: object, **kwargs: object) -> _FakeResponse:
+        config = kwargs["config"]
+        budget = config.thinking_config.thinking_budget if config.thinking_config else None
+        captured.append((kwargs["model"], budget))
+        return _FakeResponse(IntentClassificationResult(intent=Intent.RECOMMEND))
+
+    with patch.object(provider._client.aio.models, "generate_content", side_effect=succeed):
+        await provider._generate(
+            "sys", "user", IntentClassificationResult, operation, thinking_budget=thinking_budget
+        )
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_fallback_model_gets_its_own_thinking_budget() -> None:
+    """폴백으로 넘어가면 그 모델에 맞는 예산으로 바뀐다.
+
+    gemini-2.5-flash-lite는 thinking이 기본 꺼져 있어 0을 걸어도 동작이 같고, 512를
+    줘야 대화 이력 의존 판정이 산다. 호출부는 두 모델에 같은 0을 넘기므로, 한 번의
+    _generate 안에서 모델마다 갈리는지를 못 박는다 — 여기가 끊기면 폴백 경로가
+    조용히 낮은 품질로 돈다.
+    """
+    provider = RealGeminiProvider(
+        api_key="dummy",
+        model_names=["gemini-2.5-flash", "gemini-2.5-flash-lite"],
+        timeout_seconds=1.0,
+        max_retries=0,
+    )
+    captured: list[tuple[str, object]] = []
+
+    async def flaky(*args: object, **kwargs: object) -> _FakeResponse:
+        config = kwargs["config"]
+        budget = config.thinking_config.thinking_budget if config.thinking_config else None
+        captured.append((kwargs["model"], budget))
+        if kwargs["model"] == "gemini-2.5-flash":
+            raise _api_error(503, "UNAVAILABLE")
+        return _FakeResponse(IntentClassificationResult(intent=Intent.RECOMMEND))
+
+    with (
+        patch.object(provider._client.aio.models, "generate_content", side_effect=flaky),
+        patch("app.providers.gemini.asyncio.sleep", new=AsyncMock()),
+    ):
+        await provider._generate(
+            "sys", "user", IntentClassificationResult, "classify_intent", thinking_budget=0
+        )
+
+    assert captured == [("gemini-2.5-flash", 0), ("gemini-2.5-flash-lite", 512)]
+
+
+@pytest.mark.asyncio
+async def test_fallback_budget_override_is_limited_to_measured_operation() -> None:
+    """폴백 보정은 실측한 classify_intent에만 건다.
+
+    조건 추출·일정 편성은 폴백 모델로 재본 적이 없어 호출부가 정한 값을 그대로 둔다.
+    """
+    provider = RealGeminiProvider(
+        api_key="dummy", model_names=["gemini-2.5-flash-lite"], timeout_seconds=1.0
+    )
+
+    [(_, intent_budget)] = await _capture_budgets(provider, "classify_intent", 0)
+    [(_, extract_budget)] = await _capture_budgets(provider, "extract_recommend_conditions", 0)
+    [(_, schedule_budget)] = await _capture_budgets(provider, "generate_schedule_plan", 0)
+
+    assert intent_budget == 512
+    assert extract_budget == 0
+    assert schedule_budget == 0
+
+
+@pytest.mark.asyncio
+async def test_zero_budget_is_dropped_for_models_that_reject_it() -> None:
+    """thinking_budget=0을 거부하는 모델에는 아무것도 싣지 않는다.
+
+    gemini-3.5-flash-lite/3.6-flash는 0에 400 INVALID_ARGUMENT를 낸다. 400은
+    비재시도 오류라 폴백도 못 타고 즉시 실패하므로, .env에서 모델명만 바꿔도 해당
+    호출이 전부 죽는다. 호출 종류를 가리지 않고 막아야 한다.
+    """
+    for model in ("gemini-3.5-flash-lite", "gemini-3.6-flash"):
+        provider = RealGeminiProvider(api_key="dummy", model_names=[model], timeout_seconds=1.0)
+        for operation in ("classify_intent", "generate_schedule_plan"):
+            [(_, budget)] = await _capture_budgets(provider, operation, 0)
+            assert budget is None, f"{model}/{operation}에 0이 실렸다"
+
+
+@pytest.mark.asyncio
+async def test_requested_budget_passes_through_for_unmeasured_models() -> None:
+    """실측하지 않은 모델에는 호출부가 정한 값을 그대로 통과시킨다."""
+    provider = RealGeminiProvider(
+        api_key="dummy", model_names=["gemini-9.9-unknown"], timeout_seconds=1.0
+    )
+
+    [(_, zero)] = await _capture_budgets(provider, "classify_intent", 0)
+    [(_, unset)] = await _capture_budgets(provider, "classify_intent", None)
+
+    assert zero == 0
+    assert unset is None

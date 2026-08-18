@@ -32,6 +32,19 @@ class ErrorResponse(BaseModel):
     error: ErrorBody
 
 
+class TranscriptionResponse(BaseModel):
+    """음성 입력을 Gemini로 전사한 결과.
+
+    전사 텍스트는 이 응답 이후 프론트 입력창에만 채워진다. AgentRequest로 바로
+    전달하지 않으므로 사용자가 오인식된 고유명사를 확인·수정한 뒤 기존 채팅 흐름으로
+    전송할 수 있다.
+    """
+
+    text: str = Field(min_length=1)
+    elapsed_ms: int = Field(ge=0)
+    model: str
+
+
 class InterpretedConditions(BaseModel):
     location_query: str
     preferred_categories: list[str]
@@ -736,6 +749,34 @@ class InfoPlaceCard(BaseModel):
     credit_card: str | None = None
     restroom: str | None = None
     homepage: str | None = None
+
+
+class RecommendationPlaceDetailRequest(BaseModel):
+    """추천 카드 클릭으로 여는 장소 상세조회 요청.
+
+    대화 발화가 아니므로 LLM·세션 상태를 거치지 않는다. ``place_name``은 C의 기존
+    INFO 상세조회 입력이고, ``place_id``는 이름 해석이 다른 장소로 빗나가지 않았는지
+    A가 응답을 대조하는 기준이다.
+    """
+
+    place_id: str = Field(min_length=1, max_length=100)
+    place_name: str = Field(min_length=1, max_length=200)
+
+    @field_validator("place_id", "place_name")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("장소 정보는 비어 있을 수 없습니다.")
+        return normalized
+
+
+class RecommendationPlaceDetailResponse(BaseModel):
+    """추천 카드 상세 모달이 소비하는 단건 PlaceDetails 조회 결과."""
+
+    status: Literal["success", "no_data", "unavailable"]
+    requested_place_id: str
+    place_card: InfoPlaceCard | None = None
 
 
 class AgentResponse(BaseModel):
