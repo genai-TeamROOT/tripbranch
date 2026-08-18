@@ -4,7 +4,7 @@
 
 | 항목 | 값 |
 |------|-----|
-| 버전 | v0.2 |
+| 버전 | v0.3 |
 | 상태 | 초안 (Draft) — 코드 조사 기반 정리 |
 | 최종 수정 | 2026-08-14 |
 | 관련 코드 | `backend/app/providers/gemini.py` |
@@ -45,14 +45,14 @@
                      └─ GenerateContentConfig(temperature=0.0)
 ```
 
-- `_try_model()`([gemini.py:620-661](../../backend/app/providers/gemini.py#L620-L661)) —
+- `_try_model()`([gemini.py:661-712](../../backend/app/providers/gemini.py#L661-L712)) —
   `response_mime_type="application/json"` + `response_schema=<Pydantic 모델>`로
   구조화 출력을 강제하는 11개 호출부가 공유: `classify_intent`,
   `extract_recommend_conditions`, `extract_modify_conditions`, `extract_info_query`,
   `extract_compare_request`, `extract_general_request`, `generate_general_answer`,
   `generate_recommendation_summary`, `generate_compare_summary`,
   `generate_schedule_plan`, `generate_schedule_fill`.
-- `_stream_text()`([gemini.py:336-360](../../backend/app/providers/gemini.py#L336-L360)) —
+- `_stream_text()`([gemini.py:376-400](../../backend/app/providers/gemini.py#L376-L400)) —
   일반 텍스트 스트림 3개 호출부가 공유: `stream_recommendation_summary`,
   `stream_general_answer`, `stream_info_answer`.
 
@@ -89,13 +89,49 @@
 
 | 값 | 적용 대상 | 근거 |
 |---|---|---|
-| `0`(끔) | `classify_intent`([gemini.py:149-155](../../backend/app/providers/gemini.py#L149-L155)), `extract_recommend_conditions`([gemini.py:167-168](../../backend/app/providers/gemini.py#L167-L168)), `generate_schedule_plan`([gemini.py:453](../../backend/app/providers/gemini.py#L453)), `generate_schedule_fill`([gemini.py:475](../../backend/app/providers/gemini.py#L475)) | 실측(2026-08-13, 10개 대표 질문×2회, `scripts/compare_classify_extract_thinking_budget.py`): `classify_intent` 평균 3609ms→1561ms(2.3배 단축), 정확도 90%(18/20)로 thinking_on과 동일 유지 — 유일한 오답은 thinking on/off 양쪽에서 동일하게 틀려 이 변경과 무관한 기존 프롬프트 이슈로 확인됨. `extract_recommend_conditions`는 평균 3122ms→1745ms(1.8배), search_center 추출 정확도 4/4로 동일 유지. SCHEDULE 두 함수는 "구조화 출력이 무겁고(3~5개 항목×6개 필드) thinking이 응답 시간의 상당 부분을 차지하는 것으로 추정"([gemini.py:494-499](../../backend/app/providers/gemini.py#L494-L499))되어 같은 조치 적용. 결과 원본: `test_results/classify_extract_thinking_budget.csv` |
+| `0`(끔) | `classify_intent`([gemini.py:189-195](../../backend/app/providers/gemini.py#L189-L195)), `extract_recommend_conditions`([gemini.py:207-208](../../backend/app/providers/gemini.py#L207-L208)), `generate_schedule_plan`([gemini.py:493](../../backend/app/providers/gemini.py#L493)), `generate_schedule_fill`([gemini.py:515](../../backend/app/providers/gemini.py#L515)) | 실측(2026-08-13, 10개 대표 질문×2회, `scripts/compare_classify_extract_thinking_budget.py`): `classify_intent` 평균 3609ms→1561ms(2.3배 단축), 정확도 90%(18/20)로 thinking_on과 동일 유지 — 유일한 오답은 thinking on/off 양쪽에서 동일하게 틀려 이 변경과 무관한 기존 프롬프트 이슈로 확인됨. `extract_recommend_conditions`는 평균 3122ms→1745ms(1.8배), search_center 추출 정확도 4/4로 동일 유지. SCHEDULE 두 함수는 "구조화 출력이 무겁고(3~5개 항목×6개 필드) thinking이 응답 시간의 상당 부분을 차지하는 것으로 추정"([gemini.py:493-499](../../backend/app/providers/gemini.py#L493-L499))되어 같은 조치 적용. 결과 원본: `test_results/classify_extract_thinking_budget.csv` |
 | `None`(모델 기본 — `gemini-2.5-flash`는 동적 thinking) | 나머지 구조화 출력 7개(`extract_modify_conditions`, `extract_info_query`, `extract_compare_request`, `extract_general_request`, `generate_general_answer`, `generate_recommendation_summary`, `generate_compare_summary`) + 스트리밍 3개(`stream_recommendation_summary`, `stream_general_answer`, `stream_info_answer`) | 위 실측이 이 호출부들까지 검증한 것은 아니라, 끌 근거가 없는 채로 기존 동작(모델 기본값)을 유지 |
 
 `thinking_budget=None`이면 `GenerateContentConfig`에 `thinking_config` 자체를
 넣지 않아 모델 기본 동작을 그대로 둔다 — `_try_model()`의 `thinking_budget`
 인자가 새로 추가됐을 때도 기존 9개 호출부(당시 기준)는 동작 변화가 없도록
-설계됐다([gemini.py:634-637](../../backend/app/providers/gemini.py#L634-L637)).
+설계됐다.
+
+### 4.1 호출부 값은 그대로 나가지 않는다 — 모델별 보정
+
+위 표는 **호출부가 요청하는 값**이다. 실제로 실리는 값은 `_try_model()`이
+[`_resolve_thinking_budget()`](../../backend/app/providers/gemini.py#L107)로 한 번 보정한 뒤
+정해진다. **예산의 최적값이 모델마다 다르기 때문이다.**
+
+| 보정 | 대상 | 근거 |
+|---|---|---|
+| `0` → **`512`** | `gemini-2.5-flash-lite` × `classify_intent` | `flash-lite`는 **thinking이 기본 꺼져 있어** `0`을 걸어도 동작이 같다(미설정과 `budget=0`의 68건 예측이 한 건도 다르지 않다). `512`를 줘야 대화 이력에 의존하는 판정(MODIFY/COMPARE/되묻기)이 산다 — 채점 대상 64건에서 56→59, 대조쌍 12건에서 9→12 |
+| `0` → **싣지 않음** | `gemini-3.5-flash-lite`, `gemini-3.6-flash` (**모든 호출**) | 이 두 모델은 `thinking_budget=0`에 `400 INVALID_ARGUMENT`를 낸다. `400`은 비재시도 오류라 폴백도 못 타고 즉시 실패하므로, `.env`에서 모델명만 바꿔도 `0`을 싣는 호출이 전부 죽는다. 세대별이 아니라 모델별이다 — `gemini-3.1-flash-lite`·`gemini-3.5-flash`는 `0`을 받는다 |
+
+근거 데이터: `backend/test_results/intent_experiments_2026-08.md` (케이스 68건 전수,
+모델 3종 × 예산 3점, 판정이 갈린 케이스는 5회 반복)
+
+**보정 조건이 "폴백일 때"가 아니라 "모델명이 무엇일 때"인 점이 중요하다.** `512`가
+맞는 이유는 폴백이라서가 아니라 그 모델의 thinking 기본값이 꺼짐이기 때문이라,
+`.env`에서 1순위·폴백 순서가 바뀌어도 따라가야 한다.
+
+**폴백은 호출 단위다.** `_generate()`가 매 호출마다 1순위부터 다시 시도하므로, 한
+요청 안에서도 호출마다 다른 모델이 쓰일 수 있고 그때마다 예산이 다시 정해진다.
+
+보정 범위를 `classify_intent`로 한정한 것은 **그 호출만 폴백 모델로 실측했기
+때문**이다. 조건 추출·일정 편성은 폴백 모델로 재본 적이 없어 §4 표의 값을 그대로 둔다.
+
+> **알려진 한계** — `0`을 거부하는 모델 목록은 실측한 6개 모델 기준이다. 목록에 없는
+> 모델이 `0`을 거부하면 여전히 `400`이 난다. `400` 응답이
+> `"Request contains an invalid argument."`뿐이라 원인을 구분할 수 없어, 오류를 잡아
+> 재시도하는 방식 대신 목록을 택했다. **모델을 교체할 때는 `0` 수용 여부 확인이
+> 선행돼야 한다.**
+
+### 4.2 모델 선택과의 관계
+
+§1은 모델 선택·폴백 체인을 이 문서 범위 밖으로 뒀지만, §4.1의 보정은 **예산이 모델에
+의존한다**는 뜻이므로 둘이 완전히 분리되지는 않는다. `LLM_MODEL_NAME`/
+`LLM_FALLBACK_MODEL_NAMES`를 바꿀 때는 §4.1 표를 함께 확인해야 한다.
 
 ## 5. 설정하지 않는 파라미터
 
@@ -157,3 +193,4 @@
 |------|------|-----------|
 | v0.1 | 2026-08-14 | 초안 작성 — 코드 조사(`gemini.py`) 기반으로 temperature/thinking_budget 적용 범위와 근거 정리 |
 | v0.2 | 2026-08-14 | 파일명을 `llm-hyperparameters.md`로 변경. §5에 미설정 파라미터별 의미·기본값 표 추가(제3자 레퍼런스 교차 확인), §6 향후 테스트 우선순위 5개 신규 작성 |
+| v0.3 | 2026-08-14 | §4.1 모델별 예산 보정 추가 — 호출부 값이 `_resolve_thinking_budget()`을 거쳐 정해진다. 폴백 `gemini-2.5-flash-lite`의 `classify_intent`는 `512`로, `thinking_budget=0`을 거부하는 모델(`gemini-3.5-flash-lite`·`gemini-3.6-flash`)은 미설정으로 보정. §4.2로 모델 선택과의 경계도 정리. 근거: `test_results/intent_experiments_2026-08.md` |
