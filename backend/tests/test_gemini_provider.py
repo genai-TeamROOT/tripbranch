@@ -214,9 +214,7 @@ async def test_schedule_plan_retries_once_when_items_count_out_of_range_then_suc
         if call_count == 1:
             return response_model.model_validate(
                 {
-                    "items": [
-                        _schedule_item_dict(f"p{i}", i) for i in range(1, 7)
-                    ],
+                    "items": [_schedule_item_dict(f"p{i}", i) for i in range(1, 7)],
                     "total_duration_min": 360,
                     "route_summary": "테스트 동선",
                 }
@@ -364,7 +362,12 @@ async def test_generate_schedule_plan_uses_thinking_budget_zero() -> None:
 @pytest.mark.asyncio
 async def test_classify_intent_uses_thinking_budget_zero() -> None:
     """classify_intent()이 실제로 thinking_budget=0을 끝까지 전달하는지 확인한다."""
-    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    provider = RealGeminiProvider(
+        api_key="dummy",
+        fast_model_names=["fast-model"],
+        generation_model_names=["generation-model"],
+        timeout_seconds=1.0,
+    )
     captured_config: list[object] = []
 
     async def capture(*args: object, **kwargs: object) -> _FakeResponse:
@@ -377,6 +380,63 @@ async def test_classify_intent_uses_thinking_budget_zero() -> None:
         )
 
     assert captured_config[0].thinking_config.thinking_budget == 0
+
+
+@pytest.mark.asyncio
+async def test_classify_and_schedule_route_to_their_respective_model_groups() -> None:
+    """분류는 빠른 모델, 일정 생성은 응답 생성 모델로 분리한다.
+
+    Flash는 기존처럼 thinking_budget=0을 받으며, Flash-Lite는 API 호환성 때문에
+    thinking_config를 생략하는지도 함께 확인한다.
+    """
+    provider = RealGeminiProvider(
+        api_key="dummy",
+        fast_model_names=["gemini-3.5-flash-lite"],
+        generation_model_names=["generation-model"],
+        timeout_seconds=1.0,
+    )
+    calls: list[tuple[str, object]] = []
+    plan = ScheduleLLMPlan(
+        items=[
+            {
+                "order": 1,
+                "place_id": "p1",
+                "place_name": "장소 p1",
+                "estimated_arrival": "15:00",
+                "estimated_duration_min": 60,
+                "travel_to_next_min": None,
+                "reason": "테스트 이유",
+            }
+        ],
+        total_duration_min=60,
+        route_summary="테스트 동선",
+    )
+
+    async def capture(*args: object, **kwargs: object) -> _FakeResponse:
+        calls.append((kwargs["model"], kwargs["config"].thinking_config))
+        if kwargs["model"] == "gemini-3.5-flash-lite":
+            return _FakeResponse(IntentClassificationResult(intent=Intent.RECOMMEND))
+        return _FakeResponse(plan)
+
+    request = SchedulePlanningRequest(
+        candidates=[_recommendation_item()],
+        conditions=UserConditions(),
+        visit_datetime=datetime(2026, 8, 13, 15, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+        pairwise_distances_km={},
+    )
+
+    with patch.object(provider._client.aio.models, "generate_content", side_effect=capture):
+        await provider.classify_intent(
+            "카페 추천해줘",
+            has_previous_recommendation=False,
+            shown_place_count=0,
+        )
+        await provider.generate_schedule_plan(request)
+
+    assert [model for model, _ in calls] == ["gemini-3.5-flash-lite", "generation-model"]
+    assert calls[0][1] is None
+    assert calls[1][1] is not None
+    assert calls[1][1].thinking_budget == 0
 
 
 @pytest.mark.asyncio

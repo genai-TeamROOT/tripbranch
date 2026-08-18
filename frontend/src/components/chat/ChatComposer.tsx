@@ -7,6 +7,7 @@
  */
 
 import { useState, type FormEvent } from "react";
+import { VoiceInputButton } from "./VoiceInputButton";
 
 const DEFAULT_PLACEHOLDER = "추가 조건을 입력해 주세요";
 
@@ -23,6 +24,7 @@ export function ChatComposer({
   placeholder = DEFAULT_PLACEHOLDER,
 }: ChatComposerProps) {
   const [text, setText] = useState("");
+  const [voiceError, setVoiceError] = useState<string | null>(null);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -33,21 +35,36 @@ export function ChatComposer({
   }
 
   return (
-    <form onSubmit={handleSubmit} className="sticky bottom-0 flex gap-2 bg-white py-4 dark:bg-gray-950">
-      <input
-        value={text}
-        onChange={(event) => setText(event.target.value)}
-        disabled={disabled}
-        placeholder={placeholder}
-        className="min-w-0 flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-gray-500 focus:outline-none disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900"
-      />
-      <button
-        type="submit"
-        disabled={disabled || !text.trim()}
-        className="rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-gray-100 dark:text-gray-900"
-      >
-        보내기
-      </button>
-    </form>
+    <div className="sticky bottom-0 bg-white py-4 dark:bg-gray-950">
+      {voiceError && <p role="alert" className="mb-2 text-sm text-red-600 dark:text-red-300">{voiceError}</p>}
+      <form onSubmit={handleSubmit} className="flex gap-2">
+        <input
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+          disabled={disabled}
+          placeholder={placeholder}
+          className="min-w-0 flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-gray-500 focus:outline-none disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900"
+        />
+        <VoiceInputButton
+          disabled={disabled}
+          onTranscript={() => {
+            setVoiceError(null);
+          }}
+          onAutoSubmit={async (transcript) => {
+            setVoiceError(null);
+            setText("");
+            await onSubmit(transcript);
+          }}
+          onError={setVoiceError}
+        />
+        <button
+          type="submit"
+          disabled={disabled || !text.trim()}
+          className="rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-gray-100 dark:text-gray-900"
+        >
+          보내기
+        </button>
+      </form>
+    </div>
   );
 }

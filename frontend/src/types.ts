@@ -48,6 +48,13 @@ export interface RecommendationsResponse {
   elapsed_ms: number;
 }
 
+/** Gemini Audio API가 짧은 사용자 음성을 전사한 결과. */
+export interface TranscriptionResponse {
+  text: string;
+  elapsed_ms: number;
+  model: string;
+}
+
 export interface ScheduleItem {
   order: number;
   place_id: string;

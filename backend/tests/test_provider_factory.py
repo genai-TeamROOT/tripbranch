@@ -8,7 +8,10 @@ Naver/Supabase까지 같은 값을 물려받는 문제로 분리).
 
 from __future__ import annotations
 
+import pytest
+
 from app.config import Settings
+from app.errors import AppError
 from app.providers import factory
 
 
@@ -35,6 +38,11 @@ def test_get_llm_provider_uses_dedicated_llm_timeout_when_set(monkeypatch) -> No
     factory.get_llm_provider()
 
     assert captured["timeout_seconds"] == 25.0
+    assert captured["fast_model_names"] == ["gemini-3.5-flash-lite", "gemini-3.5-flash"]
+    assert captured["generation_model_names"] == [
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
+    ]
 
 
 def test_get_llm_provider_falls_back_to_external_api_timeout_when_unset(monkeypatch) -> None:
@@ -59,3 +67,31 @@ def test_get_llm_provider_falls_back_to_external_api_timeout_when_unset(monkeypa
     factory.get_llm_provider()
 
     assert captured["timeout_seconds"] == 10.0
+
+
+def test_get_gemini_audio_transcriber_uses_dedicated_default_model(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _RecordingTranscriber:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(factory, "GeminiAudioTranscriber", _RecordingTranscriber)
+    monkeypatch.setattr(
+        factory,
+        "settings",
+        Settings(_env_file=None, provider_mode="real", llm_api_key="present"),
+    )
+
+    factory.get_gemini_audio_transcriber()
+
+    assert captured["model_name"] == "gemini-3.5-flash-lite"
+
+
+def test_get_gemini_audio_transcriber_requires_real_llm(monkeypatch) -> None:
+    monkeypatch.setattr(factory, "settings", Settings(_env_file=None, provider_mode="fake"))
+
+    with pytest.raises(AppError, match="Gemini 실연동") as raised:
+        factory.get_gemini_audio_transcriber()
+
+    assert raised.value.code == "voice_input_unavailable"

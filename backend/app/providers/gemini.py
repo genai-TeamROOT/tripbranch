@@ -77,12 +77,28 @@ class _ComparisonSummary(BaseModel):
 # 429(rate limit)와 5xx(서버 과부하/일시 장애)만 재시도 대상. 4xx(인증 실패, 잘못된 요청 등)는
 # 재시도해도 같은 결과이므로 즉시 실패시킨다.
 _RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
+
+# Gemini 3.5 Flash-Lite는 구조화 출력은 지원하지만, 2026-08-18 실측상
+# ThinkingConfig(thinking_budget=0)를 같이 보내면 400 INVALID_ARGUMENT을
+# 반환한다. 같은 요청에서 Flash는 0을 정상 수용한다. 따라서 Lite로 빠른 판단을
+# 라우팅할 때만 thinking_config 자체를 생략한다. 이 목록은 모델별 API 호환성
+# 예외이며, 호출별 thinking_budget 정책(분류·추천 추출·일정=0)은 유지한다.
+_THINKING_BUDGET_UNSUPPORTED_MODELS = frozenset({"gemini-3.5-flash-lite"})
 _BACKOFF_BASE_SECONDS = 0.5
 
 
 def _backoff_seconds(attempt: int) -> float:
     """지수 백오프 + 지터. attempt=0이 첫 번째 재시도 전 대기시간."""
     return _BACKOFF_BASE_SECONDS * (2**attempt) + random.uniform(0, 0.25)
+
+
+def _thinking_config_for_model(
+    model_name: str, thinking_budget: int | None
+) -> genai_types.ThinkingConfig | None:
+    """모델별 Thinking API 호환성을 반영해 요청 설정을 만든다."""
+    if thinking_budget is None or model_name in _THINKING_BUDGET_UNSUPPORTED_MODELS:
+        return None
+    return genai_types.ThinkingConfig(thinking_budget=thinking_budget)
 
 
 def _record_gemini_call(model_name: str, started: float, *, ok: bool, status: str) -> None:
@@ -116,17 +132,28 @@ class RealGeminiProvider:
     def __init__(
         self,
         api_key: str,
-        model_names: list[str],
+        model_names: list[str] | None = None,
+        *,
+        fast_model_names: list[str] | None = None,
+        generation_model_names: list[str] | None = None,
         timeout_seconds: float = 10.0,
         max_retries: int = 2,
     ) -> None:
-        if not model_names:
-            raise ValueError("model_names는 최소 1개 이상이어야 합니다.")
+        """역할별 모델 묶음을 설정한다.
+
+        ``model_names``는 D-052 이전 단일 모델 생성자 호출과 테스트를 위한 호환
+        인자다. 실제 앱 팩토리는 ``fast_model_names``와
+        ``generation_model_names``를 각각 넘긴다.
+        """
+        legacy_models = model_names or []
+        self._fast_model_names = fast_model_names or legacy_models
+        self._generation_model_names = generation_model_names or legacy_models
+        if not self._fast_model_names or not self._generation_model_names:
+            raise ValueError("빠른 판단·응답 생성 모델은 각각 최소 1개 이상이어야 합니다.")
         self._client = genai.Client(
             api_key=api_key,
             http_options=genai_types.HttpOptions(timeout=int(timeout_seconds * 1000)),
         )
-        self._model_names = model_names
         self._max_retries = max_retries
 
     async def classify_intent(
@@ -159,6 +186,7 @@ class RealGeminiProvider:
             IntentClassificationResult,
             operation="classify_intent",
             thinking_budget=0,
+            model_names=self._fast_model_names,
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 
@@ -172,6 +200,7 @@ class RealGeminiProvider:
             LLMOutput,
             operation="extract_recommend_conditions",
             thinking_budget=0,
+            model_names=self._fast_model_names,
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 
@@ -195,6 +224,7 @@ class RealGeminiProvider:
             user_input,
             LLMOutput,
             operation="extract_modify_conditions",
+            model_names=self._fast_model_names,
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 
@@ -214,6 +244,7 @@ class RealGeminiProvider:
             user_input,
             LLMOutput,
             operation="extract_info_query",
+            model_names=self._fast_model_names,
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 
@@ -233,6 +264,7 @@ class RealGeminiProvider:
             user_input,
             LLMOutput,
             operation="extract_compare_request",
+            model_names=self._fast_model_names,
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 
@@ -243,6 +275,7 @@ class RealGeminiProvider:
             user_input,
             LLMOutput,
             operation="extract_general_request",
+            model_names=self._fast_model_names,
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 
@@ -255,6 +288,7 @@ class RealGeminiProvider:
             original_question,
             _GeneralAnswer,
             operation="generate_general_answer",
+            model_names=self._generation_model_names,
         )
         return provider_result(result.answer, source=ProviderSource.GEMINI)
 
@@ -276,6 +310,7 @@ class RealGeminiProvider:
             json.dumps(payload, ensure_ascii=False),
             _RecommendationSummary,
             operation="generate_recommendation_summary",
+            model_names=self._generation_model_names,
         )
         return provider_result(result.message, source=ProviderSource.GEMINI)
 
@@ -296,6 +331,7 @@ class RealGeminiProvider:
             instruction=instruction,
             user_input=json.dumps(payload, ensure_ascii=False),
             operation="stream_recommendation_summary",
+            model_names=self._generation_model_names,
         ):
             yield text
 
@@ -308,6 +344,7 @@ class RealGeminiProvider:
             instruction=gemini_prompts.build_general_answer_instruction(topic),
             user_input=original_question,
             operation="stream_general_answer",
+            model_names=self._generation_model_names,
         ):
             yield text
 
@@ -330,11 +367,17 @@ class RealGeminiProvider:
             instruction=gemini_prompts.build_info_answer_instruction(question_type),
             user_input=json.dumps(payload, ensure_ascii=False),
             operation="stream_info_answer",
+            model_names=self._generation_model_names,
         ):
             yield text
 
     async def _stream_text(
-        self, *, instruction: str, user_input: str, operation: str
+        self,
+        *,
+        instruction: str,
+        user_input: str,
+        operation: str,
+        model_names: list[str] | None = None,
     ) -> AsyncIterator[str]:
         """일반 텍스트 Gemini 스트림의 모델 폴백·관측을 공통 처리한다.
 
@@ -342,10 +385,11 @@ class RealGeminiProvider:
         오류는 호출자에게 전파해 이미 전달된 텍스트를 보존한다.
         """
 
+        selected_models = model_names or self._generation_model_names
         attempted_models: list[str] = []
         last_error: ProviderTimeoutError | ProviderUnavailableError | None = None
 
-        for model_name in self._model_names:
+        for model_name in selected_models:
             attempted_models.append(model_name)
             started = time.perf_counter()
             emitted = False
@@ -423,6 +467,7 @@ class RealGeminiProvider:
             comparison.model_dump_json(exclude_none=True),
             _ComparisonSummary,
             operation="generate_compare_summary",
+            model_names=self._generation_model_names,
         )
         return provider_result("\n".join(result.lines), source=ProviderSource.GEMINI)
 
@@ -462,6 +507,7 @@ class RealGeminiProvider:
             ScheduleLLMPlan,
             operation="generate_schedule_plan",
             thinking_budget=0,
+            model_names=self._generation_model_names,
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 
@@ -479,6 +525,7 @@ class RealGeminiProvider:
             SchedulePartialLLMPlan,
             operation="generate_schedule_fill",
             thinking_budget=0,
+            model_names=self._generation_model_names,
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 
@@ -490,13 +537,14 @@ class RealGeminiProvider:
         *,
         operation: str,
         thinking_budget: int | None = None,
+        model_names: list[str] | None = None,
     ) -> T:
-        """thinking_budget은 기본값 None이면 모델 자체 기본 동작(gemini-2.5-flash는
-        동적 thinking)을 그대로 둔다 — 이 값을 넘기는 호출부(현재 SCHEDULE 두 곳)만
-        영향을 받고, 나머지 9개 호출부는 기존 동작과 완전히 동일하다(실사용
-        지연시간 개선 검토, 2026-08-13. SCHEDULE은 구조화 출력이 무거워 thinking이
-        전체 응답 시간의 상당 부분을 차지하는 것으로 추정됨). 0은 완전히 끄고,
-        모델별 허용 범위 안의 양수면 그 예산만큼만 쓴다."""
+        """호출별 thinking 예산을 모델 선택과 독립적으로 전달한다.
+
+        기본값 None이면 해당 모델의 기본 동작을 유지한다. 0은 thinking을 끄며,
+        모델별 API 호환성 예외(Flash-Lite)는 _try_model()에서만 설정을 생략한다.
+        """
+        generate_kwargs = {"model_names": model_names} if model_names is not None else {}
         try:
             return await self._generate(
                 system_instruction,
@@ -504,6 +552,7 @@ class RealGeminiProvider:
                 response_model,
                 operation,
                 thinking_budget=thinking_budget,
+                **generate_kwargs,
             )
         except ValidationError as exc:
             retry_instruction = system_instruction + gemini_prompts.format_validation_retry_note(
@@ -516,6 +565,7 @@ class RealGeminiProvider:
                     response_model,
                     operation,
                     thinking_budget=thinking_budget,
+                    **generate_kwargs,
                 )
             except ValidationError as retry_exc:
                 raise AppError(
@@ -535,6 +585,7 @@ class RealGeminiProvider:
         operation: str,
         *,
         thinking_budget: int | None = None,
+        model_names: list[str] | None = None,
     ) -> T:
         """1순위 모델부터 순서대로 시도한다(D-052). 각 모델에서 타임아웃/429/5xx는
         _try_model()이 지수 백오프로 재시도하고, 그 예산이 소진되면 다음 모델로
@@ -547,8 +598,9 @@ class RealGeminiProvider:
         operation_started = time.perf_counter()
         last_error: ProviderTimeoutError | ProviderUnavailableError | None = None
 
+        selected_models = model_names or self._generation_model_names
         attempted_models: list[str] = []
-        for model_index, model_name in enumerate(self._model_names):
+        for model_index, model_name in enumerate(selected_models):
             attempted_models.append(model_name)
             try:
                 result = await self._try_model(
@@ -560,7 +612,7 @@ class RealGeminiProvider:
                 )
             except _RetryableExhaustedError as exc:
                 last_error = exc.original
-                is_last_model = model_index == len(self._model_names) - 1
+                is_last_model = model_index == len(selected_models) - 1
                 if is_last_model:
                     record_llm_call(
                         operation=operation,
@@ -570,14 +622,14 @@ class RealGeminiProvider:
                     )
                     logger.error(
                         "Gemini 전 모델 소진, 최종 실패 (models=%s): %s",
-                        self._model_names,
+                        selected_models,
                         last_error,
                     )
                     raise last_error from None
                 logger.warning(
                     "Gemini 모델 %s 재시도 소진, %s로 폴백: %s",
                     model_name,
-                    self._model_names[model_index + 1],
+                    selected_models[model_index + 1],
                     last_error,
                 )
                 continue
@@ -611,7 +663,7 @@ class RealGeminiProvider:
                 logger.warning(
                     "Gemini 폴백 모델로 응답 성공 (served_by=%s, primary=%s)",
                     model_name,
-                    self._model_names[0],
+                    selected_models[0],
                 )
             return result
 
@@ -633,15 +685,11 @@ class RealGeminiProvider:
         모델을 바꿔도 같은 이유로 실패할 것이므로 폴백 대상이 아니다.
 
         thinking_budget이 None이면 GenerateContentConfig에 thinking_config를
-        아예 안 넣어 모델 기본 동작(gemini-2.5-flash는 동적 thinking)을 그대로
-        둔다 — 기존 9개 호출부는 이 인자를 안 넘기므로 동작 변화가 없다.
+        넣지 않아 모델 기본 동작을 유지한다. Flash-Lite는 budget 값이 있어도
+        해당 API 옵션을 지원하지 않아 호환 함수에서 생략한다.
         """
 
-        thinking_config = (
-            genai_types.ThinkingConfig(thinking_budget=thinking_budget)
-            if thinking_budget is not None
-            else None
-        )
+        thinking_config = _thinking_config_for_model(model_name, thinking_budget)
 
         for attempt in range(self._max_retries + 1):
             # google-genai는 자체 전송 계층을 써서 MeteredTransport를 거치지 않는다.

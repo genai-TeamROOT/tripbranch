@@ -57,6 +57,38 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return data as T;
 }
 
+async function requestBinary<T>(path: string, body: Blob, contentType: string): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": contentType },
+      body,
+    });
+  } catch {
+    throw new ApiError({
+      code: "internal_server_error",
+      message: "서버에 연결할 수 없어요.",
+      retryable: true,
+      details: null,
+    });
+  }
+
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const errorBody = data?.error as ApiErrorBody | undefined;
+    throw new ApiError(
+      errorBody ?? {
+        code: "internal_server_error",
+        message: "요청을 처리하지 못했어요.",
+        retryable: false,
+        details: null,
+      },
+    );
+  }
+  return data as T;
+}
+
 /** POST 본문을 유지한 SSE 응답 파서. EventSource는 GET만 지원해 채팅 요청에 맞지 않는다. */
 export async function streamPost<T>(
   path: string,
@@ -161,4 +193,6 @@ export const apiClient = {
   get: <T>(path: string) => request<T>(path, { method: "GET" }),
   post: <T>(path: string, body: unknown) =>
     request<T>(path, { method: "POST", body: JSON.stringify(body) }),
+  postBinary: <T>(path: string, body: Blob, contentType: string) =>
+    requestBinary<T>(path, body, contentType),
 };
