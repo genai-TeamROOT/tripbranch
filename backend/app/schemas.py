@@ -32,6 +32,19 @@ class ErrorResponse(BaseModel):
     error: ErrorBody
 
 
+class TranscriptionResponse(BaseModel):
+    """음성 입력을 Gemini로 전사한 결과.
+
+    전사 텍스트는 이 응답 이후 프론트 입력창에만 채워진다. AgentRequest로 바로
+    전달하지 않으므로 사용자가 오인식된 고유명사를 확인·수정한 뒤 기존 채팅 흐름으로
+    전송할 수 있다.
+    """
+
+    text: str = Field(min_length=1)
+    elapsed_ms: int = Field(ge=0)
+    model: str
+
+
 class InterpretedConditions(BaseModel):
     location_query: str
     preferred_categories: list[str]

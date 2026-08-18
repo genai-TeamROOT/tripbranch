@@ -62,14 +62,10 @@ async def test_naver_geocoding_real_smoke() -> None:
     async with httpx.AsyncClient() as client:
         provider = RealGeocodingProvider(
             api_key_id=_required_value("NAVER_MAP_CLIENT_ID", settings.naver_map_client_id),
-            api_key=_required_value(
-                "NAVER_MAP_CLIENT_SECRET", settings.naver_map_client_secret
-            ),
+            api_key=_required_value("NAVER_MAP_CLIENT_SECRET", settings.naver_map_client_secret),
             client=client,
         )
-        result = await ResolveLocationTool(provider).execute(
-            ResolveLocationQuery("경복궁")
-        )
+        result = await ResolveLocationTool(provider).execute(ResolveLocationQuery("경복궁"))
 
     assert result.status is ResolveLocationStatus.SUCCESS
     assert result.location is not None
@@ -130,12 +126,8 @@ async def test_context_service_real_smoke() -> None:
 
     async with httpx.AsyncClient() as client:
         geocoding = RealGeocodingProvider(
-            api_key_id=_required_value(
-                "NAVER_MAP_CLIENT_ID", settings.naver_map_client_id
-            ),
-            api_key=_required_value(
-                "NAVER_MAP_CLIENT_SECRET", settings.naver_map_client_secret
-            ),
+            api_key_id=_required_value("NAVER_MAP_CLIENT_ID", settings.naver_map_client_id),
+            api_key=_required_value("NAVER_MAP_CLIENT_SECRET", settings.naver_map_client_secret),
             client=client,
         )
         weather = RealWeatherProvider(
@@ -183,8 +175,7 @@ async def test_context_service_real_smoke() -> None:
     assert place_data
     assert response.metadata.provider_metadata
     assert all(
-        metadata.retrieved_at.tzinfo is not None
-        for metadata in response.metadata.provider_metadata
+        metadata.retrieved_at.tzinfo is not None for metadata in response.metadata.provider_metadata
     )
     print(
         "ContextService: "
@@ -233,7 +224,8 @@ async def test_gemini_real_smoke() -> None:
     """Gemini 연결 + 구조화 출력 JSON 파싱이 실제로 되는지 확인 (오늘 1순위)."""
     provider = RealGeminiProvider(
         api_key=_llm_api_key(),
-        model_name=settings.llm_model_name,
+        fast_model_names=settings.resolved_llm_fast_models,
+        generation_model_names=settings.resolved_llm_generation_models,
     )
 
     classification = (
@@ -245,9 +237,7 @@ async def test_gemini_real_smoke() -> None:
     ).data
     assert classification.intent is Intent.RECOMMEND
 
-    output = (
-        await provider.extract_recommend_conditions("경복궁 근처 카페 추천해줘")
-    ).data
+    output = (await provider.extract_recommend_conditions("경복궁 근처 카페 추천해줘")).data
     assert output.recommend is not None
     assert output.recommend.conditions.search_center == "경복궁"
     print(f"Gemini RECOMMEND: {output.recommend.conditions.model_dump_json()}")
@@ -257,19 +247,16 @@ async def test_gemini_modify_reject_all_vs_change_condition_real_smoke() -> None
     """MODIFY의 REJECT_ALL vs CHANGE_CONDITION 구분이 핵심 검증 포인트."""
     provider = RealGeminiProvider(
         api_key=_llm_api_key(),
-        model_name=settings.llm_model_name,
+        fast_model_names=settings.resolved_llm_fast_models,
+        generation_model_names=settings.resolved_llm_generation_models,
     )
     current = UserConditions(
         search_center="경복궁",
         place_types=[PlaceType.RESTAURANT],
     )
 
-    reject_all = (
-        await provider.extract_modify_conditions("다른 곳 보여줘", current)
-    ).data
-    change_condition = (
-        await provider.extract_modify_conditions("무료인 곳으로", current)
-    ).data
+    reject_all = (await provider.extract_modify_conditions("다른 곳 보여줘", current)).data
+    change_condition = (await provider.extract_modify_conditions("무료인 곳으로", current)).data
 
     reject_modify = reject_all.modify
     change_modify = change_condition.modify
@@ -293,7 +280,4 @@ async def test_kasi_holiday_real_smoke() -> None:
 
     assert result.entries
     assert all(entry.date.startswith("2026") for entry in result.entries)
-    print(
-        f"KASI Holidays: entries={len(result.entries)}, "
-        f"holidays={len(result.holidays)}"
-    )
+    print(f"KASI Holidays: entries={len(result.entries)}, holidays={len(result.holidays)}")

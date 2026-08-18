@@ -11,6 +11,7 @@ import { useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
 import { streamChat, toDisplayConditions } from "../api/trip";
 import { ErrorBanner } from "../components/ErrorBanner";
+import { VoiceInputButton } from "../components/chat/VoiceInputButton";
 import { useTripDispatch } from "../state/TripContext";
 import { buildAgentStageTimings } from "../utils/agentTiming";
 import { getBrowserDeviceLocation } from "../utils/geolocation";
@@ -193,6 +194,23 @@ export function HomePage() {
           placeholder="예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어"
           className="w-full resize-none rounded-md border border-gray-300 p-3 text-sm focus:border-gray-500 focus:outline-none dark:border-gray-700 dark:bg-gray-900"
         />
+
+        <div className="flex items-center gap-2">
+          <VoiceInputButton
+            disabled={isLoading}
+            onTranscript={() => {
+              setErrorMessage(null);
+            }}
+            onAutoSubmit={async (transcript) => {
+              setErrorMessage(null);
+              await startChat(transcript);
+            }}
+            onError={setErrorMessage}
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            마이크를 누르고 말하면, 말이 끝난 뒤 자동으로 전송합니다.
+          </p>
+        </div>
 
         {errorMessage && <ErrorBanner message={errorMessage} />}
 

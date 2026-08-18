@@ -92,6 +92,26 @@ def test_resolved_llm_models_drops_blank_entries() -> None:
     assert settings.resolved_llm_models == ["gemini-2.5-flash", "gemini-2.0-flash"]
 
 
+def test_resolved_role_based_llm_models_use_independent_routes() -> None:
+    settings = Settings(
+        _env_file=None,
+        llm_fast_model_name="gemini-3.5-flash-lite",
+        llm_fast_fallback_model_names="gemini-3.5-flash",
+        llm_generation_model_name="gemini-3.5-flash",
+        llm_generation_fallback_model_names="gemini-3.5-flash-lite",
+    )
+
+    assert settings.resolved_llm_fast_models == [
+        "gemini-3.5-flash-lite",
+        "gemini-3.5-flash",
+    ]
+    assert settings.resolved_llm_generation_models == [
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
+    ]
+    assert settings.resolved_gemini_audio_model_name == "gemini-3.5-flash-lite"
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
@@ -190,8 +210,7 @@ def test_validate_provider_config_flags_only_the_real_provider() -> None:
 
 
 def test_validate_provider_config_rejects_duplicate_fallback_model() -> None:
-    """LLM_FALLBACK_MODEL_NAMES에 LLM_MODEL_NAME과 같은 이름이 들어가면 부팅 시
-    막는다 — 폴백처럼 보이지만 실제로는 같은 모델만 계속 재시도하게 되기 때문."""
+    """역할별 폴백에 1순위와 같은 모델이 들어가면 부팅 시 막는다."""
     settings = Settings(
         _env_file=None,
         provider_mode="real",
@@ -202,14 +221,14 @@ def test_validate_provider_config_rejects_duplicate_fallback_model() -> None:
         naver_map_client_secret="present",
         naver_local_search_client_id="present",
         naver_local_search_client_secret="present",
-        llm_model_name="gemini-2.5-flash",
-        llm_fallback_model_names="gemini-2.0-flash,gemini-2.5-flash",
+        llm_fast_model_name="gemini-3.5-flash-lite",
+        llm_fast_fallback_model_names="gemini-3.5-flash,gemini-3.5-flash-lite",
     )
 
     with pytest.raises(ValueError) as error:
         validate_provider_config(settings)
 
-    assert "gemini-2.5-flash" in str(error.value)
+    assert "gemini-3.5-flash-lite" in str(error.value)
 
 
 def test_validate_provider_config_allows_distinct_fallback_models() -> None:
@@ -223,8 +242,10 @@ def test_validate_provider_config_allows_distinct_fallback_models() -> None:
         naver_map_client_secret="present",
         naver_local_search_client_id="present",
         naver_local_search_client_secret="present",
-        llm_model_name="gemini-2.5-flash",
-        llm_fallback_model_names="gemini-2.0-flash",
+        llm_fast_model_name="gemini-3.5-flash-lite",
+        llm_fast_fallback_model_names="gemini-3.5-flash",
+        llm_generation_model_name="gemini-3.5-flash",
+        llm_generation_fallback_model_names="gemini-3.5-flash-lite",
     )
 
     validate_provider_config(settings)
