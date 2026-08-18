@@ -83,7 +83,7 @@ export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
       {card.thumbnail_url && (
         // 기본 카드에서 장소를 바로 알아볼 수 있도록, 작은 아이콘보다 충분히 큰
         // 중간 높이 썸네일을 카드 상단에 둔다. 상세 영역에서는 중복하지 않는다.
-        <div className="flex h-32 w-full items-center justify-center overflow-hidden bg-gray-100 dark:bg-gray-800">
+        <div className="flex h-44 w-full items-center justify-center overflow-hidden bg-gray-100 dark:bg-gray-800">
           <img
             src={card.thumbnail_url}
             alt={`${card.place_name ?? "장소"} 이미지`}
