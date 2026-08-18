@@ -1064,6 +1064,11 @@ export function DeveloperAuditPanel({
                             ` · 다음 장소까지 이동 약 ${item.travel_to_next_min}분`}
                         </p>
                         <p className="mt-1 text-xs text-gray-700 dark:text-gray-300">{item.reason}</p>
+                        {item.warnings != null && item.warnings.length > 0 && (
+                          <p className="mt-1 rounded bg-amber-50 px-2 py-1 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+                            warnings: {item.warnings.join(" / ")}
+                          </p>
+                        )}
                       </section>
                     ))}
                   </>

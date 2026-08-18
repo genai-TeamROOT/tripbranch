@@ -17,7 +17,13 @@ from app.schedule.schemas import (
     SchedulePlanningRequest,
     target_item_range,
 )
-from app.schemas import CompareCriteria, GeneralTopic, Intent, UserConditions
+from app.schemas import (
+    CompareCriteria,
+    GeneralTopic,
+    Intent,
+    RecommendationItem,
+    UserConditions,
+)
 
 # B의 LLMOps Trace(record_trace(prompt_version=...))와 StateApplyRequest.prompt_version에
 # 넘길 값 — backend/docs/package-b/llmops-trace-contract-v1.md §7 Q2. B는 이 값의 의미를
@@ -27,7 +33,7 @@ from app.schemas import CompareCriteria, GeneralTopic, Intent, UserConditions
 # 쓰였는지와 무관하게 단일 값으로 취급한다 — 함수별 개별 버전은 만들지 않는다. 판별·추출
 # 규칙에 영향을 주는 변경(6개 함수 중 하나라도) 시 버전을 올린다 — 사소한 문구·주석
 # 변경은 올리지 않는다.
-PROMPT_VERSION = "agent-interpret-prompts-1.0.12"
+PROMPT_VERSION = "agent-interpret-prompts-1.0.14"
 
 CHATBOT_NAME = "트리비"
 CHATBOT_PERSONA = """\
@@ -675,6 +681,27 @@ JSON의 items에 있는 사실만 사용해 3~6줄의 비교 설명을 작성하
   근거를 짧게 붙인 자연스러운 추천 결론을 포함하세요."""
 
 
+def _schedule_candidate_line(candidate: RecommendationItem) -> str:
+    """일정 편성용 후보 1건을 프롬프트 한 줄로 직렬화한다.
+
+    operating_hours_display를 포함해 LLM이 후보별 운영시간을 보고, 뒤 순서에
+    배치하면 도착 예정 시각(estimated_arrival) 기준으로 이미 닫혀 있을 곳을
+    스스로 피하도록 돕는다. 다만 이 프롬프트 힌트만으로는 LLM이 지시를 놓칠
+    수 있어 완전한 보장이 아니다 — app.schedule.planner가 응답을 받은 뒤
+    estimated_arrival과 운영시간을 다시 대조해 구조적으로 재검증한다
+    (docs/design/int-07-schedule.md 9절, "폐점 스탑 감지" 항목 해소. 이
+    한 줄짜리 프롬프트 힌트만으로 부족하다고 판단한 근거는 같은 문서 6.2.1절 —
+    근거 데이터가 단일 시각 기준이라 프롬프트만으로는 뒷 순서 스탑의 정확성을
+    보장할 수 없다).
+    """
+    hours = candidate.operating_hours_display or "확인불가"
+    return (
+        f"- {candidate.place_id} | {candidate.name} | {candidate.category} | "
+        f"운영시간={hours} | score={candidate.score:.2f} | "
+        f"{candidate.recommendation_reason}"
+    )
+
+
 def build_schedule_planning_instruction(time_available_min: int | None = None) -> str:
     """INT-07 SCHEDULE 일정 편성 system instruction.
     (docs/design/int-07-schedule.md 6.1~6.2절)
@@ -688,6 +715,17 @@ def build_schedule_planning_instruction(time_available_min: int | None = None) -
     활동 가능 시간이 짧은 요청(예: "2시간 코스 짜줘")에서 LLM이 체류시간을
     비현실적으로 줄이거나 개수 지시 자체를 못 맞춰 검증 실패로 이어지는 문제가
     있었다 — 요청마다 실제로 달성 가능한 개수를 알려주는 쪽으로 바꿨다.
+
+    (2026-08-18 추가) target_item_range()가 계산한 상한(max_items)까지는 실제로
+    채우도록 프롬프트가 명시적으로 유도한다. "6시간 코스 짜줘"처럼 활동 가능
+    시간이 긴 요청에서 목표 개수 범위(예: 3~5개) 안에 들어오는데도 LLM이 훨씬
+    적은 개수·짧은 체류시간만 채우고 일찍 끝내버리는 과소-채움(under-fill)이
+    실사용 테스트에서 확인됐다(docs/design/int-07-schedule.md 9절). 기존
+    duration_rule 문구는 "시간이 짧으면 줄이라"는 하한 방향 지시만 있었고, 시간이
+    넉넉할 때 상한 방향으로 채우라는 지시가 없었던 게 원인이라, 아래 else 분기에
+    상한 지시를 추가했다. target_item_range() 자체의 상한 계산이나
+    ScheduleLLMPlan의 max_length=5 하드 캡은 건드리지 않았다 — 순수 프롬프트
+    문구만 바꾼 변경이다.
     """
 
     min_items, max_items = target_item_range(time_available_min)
@@ -701,8 +739,11 @@ def build_schedule_planning_instruction(time_available_min: int | None = None) -
     else:
         duration_rule = (
             f"활동 가능 시간이 {time_available_min}분이니 총 소요 시간이 그 안에 "
-            "들어오게 하세요. 시간이 짧다면 무리하게 채우려 하지 말고 개수를 "
-            "줄이세요."
+            f"최대한 가깝게 차도록 구성하세요 — 목표 개수({count_phrase}) 안에서도 "
+            f"너무 일찍 끝내지 마세요. 시간이 넉넉하면 개수를 {max_items}개에 "
+            "가깝게 채우고 장소별 체류시간도 넉넉히 잡아 실제로 그 시간을 다 "
+            "쓰도록 하세요. 반대로 시간이 짧다면 무리하게 채우려 하지 말고 "
+            "개수를 줄이세요."
         )
 
     return f"""당신은 TripBranch의 일정 편성기입니다. 함께 전달된 후보 목록 중
@@ -722,10 +763,16 @@ def build_schedule_planning_instruction(time_available_min: int | None = None) -
   10분) 잡지 마세요.
 - estimated_arrival은 "HH:MM" 형식이며, 전달된 시작 시각부터 순서대로
   체류시간+이동시간을 누적해 계산하세요.
+- 각 후보의 운영시간을 참고해, 그 장소에 실제로 도착할 것으로 계산되는
+  estimated_arrival 기준으로 이미 마감했을 곳은 가능하면 뒷순서에 배치하지
+  마세요(운영시간이 "확인불가"인 후보는 이 기준으로 판단할 수 없으니 그대로
+  두세요).
 - travel_to_next_min은 전달된 거리 정보를 도보/대중교통 기준으로 환산한
   추정값입니다(분). 마지막 장소는 null입니다.
 - reason은 그 장소를 그 순서에 배치한 이유를 1~2문장으로 씁니다(거리·시간·조건
   근거를 포함하세요).
+- warnings는 항상 빈 배열([])로 두세요 — 이 값은 응답을 받은 뒤 시스템이 운영시간을
+  다시 대조해 직접 채웁니다.
 - route_summary는 전체 동선을 1~2문장으로 요약합니다.
 - total_duration_min은 첫 장소 도착부터 마지막 장소 체류 종료까지 총 시간(분)입니다."""
 
@@ -740,9 +787,7 @@ def format_schedule_planning_context(request: SchedulePlanningRequest, start_tim
     """
 
     candidate_lines = "\n".join(
-        f"- {c.place_id} | {c.name} | {c.category} | score={c.score:.2f} | "
-        f"{c.recommendation_reason}"
-        for c in request.candidates
+        _schedule_candidate_line(c) for c in request.candidates
     )
     distance_lines = "\n".join(
         f"- {a}-{b}: {distance_km:.2f}km"
@@ -790,10 +835,15 @@ def build_schedule_fill_instruction() -> str:
 - estimated_duration_min은 장소 성격에 맞게 합리적으로 추정하세요
   (카페 60분, 관광지 90분 등).
 - estimated_arrival은 "HH:MM" 형식입니다.
+- 각 후보의 운영시간을 참고해, 그 장소에 실제로 도착할 것으로 계산되는
+  estimated_arrival 기준으로 이미 마감했을 곳은 가능하면 고르지 마세요(운영시간이
+  "확인불가"인 후보는 이 기준으로 판단할 수 없으니 그대로 두세요).
 - travel_to_next_min은 다음 순서(pinned 포함) 장소까지의 이동 시간 추정값입니다
   (분). 전체 일정에서 가장 마지막 순서라면 null입니다.
 - reason은 그 장소를 그 자리에 배치한 이유를 1~2문장으로 씁니다(거리·시간·조건
-  근거를 포함하세요)."""
+  근거를 포함하세요).
+- warnings는 항상 빈 배열([])로 두세요 — 이 값은 응답을 받은 뒤 시스템이 운영시간을
+  다시 대조해 직접 채웁니다."""
 
 
 def format_schedule_fill_context(request: SchedulePartialFillRequest, start_time: str) -> str:
@@ -805,9 +855,7 @@ def format_schedule_fill_context(request: SchedulePartialFillRequest, start_time
         for p in request.pinned_items
     ) or "(없음)"
     candidate_lines = "\n".join(
-        f"- {c.place_id} | {c.name} | {c.category} | score={c.score:.2f} | "
-        f"{c.recommendation_reason}"
-        for c in request.candidates
+        _schedule_candidate_line(c) for c in request.candidates
     )
     distance_lines = "\n".join(
         f"- {a}-{b}: {distance_km:.2f}km"

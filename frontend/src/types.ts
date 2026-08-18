@@ -56,6 +56,11 @@ export interface ScheduleItem {
   estimated_duration_min: number;
   travel_to_next_min: number | null;
   reason: string;
+  // 백엔드가 항상 채워 보내지만(app.schemas.ScheduleItem, 기본값 []), 기존
+  // 테스트 픽스처가 이 필드 없이 만든 객체와도 호환되도록 optional로 둔다.
+  // estimated_arrival이 후보 운영시간과 어긋날 때 planner.py가 결정적으로
+  // 채우는 경고 — LLM이 생성하지 않는다.
+  warnings?: string[];
 }
 
 export interface ScheduleResult {

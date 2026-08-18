@@ -87,6 +87,12 @@ class ScheduleItem(BaseModel):
     estimated_duration_min: int
     travel_to_next_min: int | None
     reason: str
+    # LLM이 생성하지 않는다 — 프롬프트가 항상 빈 배열로 두라고 지시하고,
+    # app.schedule.planner가 estimated_arrival과 후보의 operating_hours_display를
+    # 대조해 최종적으로 결정적으로 채운다("구조적 보장 우선" 원칙, basis_note와
+    # 같은 이유). 폐점 시각이 지난 도착 예정 스탑을 사용자에게 알리는 용도다
+    # (docs/design/int-07-schedule.md 9절, "폐점 스탑 감지" 항목 해소).
+    warnings: list[str] = Field(default_factory=list)
 
 
 class ScheduleResult(BaseModel):

@@ -17,6 +17,7 @@ from app.providers.gemini_prompts import (
     build_modify_extraction_instruction,
     build_recommend_extraction_instruction,
     build_schedule_planning_instruction,
+    format_schedule_planning_context,
 )
 from app.providers.stub import FakeLLMProvider
 from app.schedule.schemas import SchedulePlanningRequest
@@ -1147,6 +1148,82 @@ class TestBuildSchedulePlanningInstructionDynamicCount:
     def test_짧은_시간에는_체류시간_비현실적_단축_경고_문구가_있다(self):
         instruction = build_schedule_planning_instruction(time_available_min=90)
         assert "비현실적으로 짧게" in instruction
+
+
+class TestBuildSchedulePlanningInstructionFillsLongDuration:
+    """dev-chat 실사용 테스트에서 "6시간 코스 짜줘"라고 요청했는데 실제로는
+    2.5시간 분량만 채워 반환된 버그 발견 후 추가. target_item_range()의
+    목표 개수 범위(예: 3~5개) 안에 있는데도 LLM이 훨씬 적은 개수·짧은
+    체류시간만 채우고 일찍 끝내는 과소-채움 문제라, 시간이 넉넉할 때는 상한
+    개수에 가깝게 채우라는 지시를 duration_rule에 추가했다."""
+
+    def test_긴_시간에는_채우라는_지시와_최대_개수가_들어간다(self) -> None:
+        instruction = build_schedule_planning_instruction(360)
+
+        assert "최대한 가깝게" in instruction
+        assert "너무 일찍 끝내지" in instruction
+        assert "5개에 가깝게 채우고" in instruction
+
+    def test_짧은_시간에도_상한_지시는_그대로_유지된다(self) -> None:
+        instruction = build_schedule_planning_instruction(90)
+
+        assert "무리하게 채우려 하지 말고" in instruction
+        assert "개수를 줄이세요" in instruction
+
+
+class TestSchedulePlanningContextIncludesOperatingHours:
+    """지난번 발표 후 논의: 뒷 순서 스탑이 도착 예정 시각 기준으로 이미 폐점일
+    수 있는 문제(9절 "폐점 스탑 감지")에, planner.py의 구조적 후처리에 더해
+    프롬프트에도 운영시간을 함께 전달해 LLM이 애초에 피하도록 유도한다."""
+
+    def test_instruction에_운영시간_고려_규칙이_있다(self) -> None:
+        instruction = build_schedule_planning_instruction()
+        assert "운영시간" in instruction
+        assert "마감했을 곳" in instruction
+
+    def test_instruction에_warnings는_항상_빈_배열로_두라는_지시가_있다(self) -> None:
+        instruction = build_schedule_planning_instruction()
+        assert "warnings는 항상 빈 배열" in instruction
+
+    def test_후보_목록에_운영시간이_포함된다(self) -> None:
+        candidate = RecommendationItem(
+            place_id="place-1",
+            name="장소 1",
+            category="attraction",
+            distance_km=0.3,
+            remaining_minutes=120,
+            operating_hours_display="09:00~18:00",
+            environment_type="indoor",
+            recommendation_reason="테스트용 고정 후보입니다.",
+            explanations=[],
+            warnings=[],
+            score=0.5,
+            feature_scores={},
+            weights_used={},
+        )
+        request = SchedulePlanningRequest(
+            candidates=[candidate],
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 7, 15, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+            pairwise_distances_km={},
+        )
+
+        context = format_schedule_planning_context(request, "15:00")
+
+        assert "운영시간=09:00~18:00" in context
+
+    def test_운영시간_미확인_후보는_확인불가로_표시된다(self) -> None:
+        candidate = _fake_recommendation_item("place-1", "장소 1")
+        request = SchedulePlanningRequest(
+            candidates=[candidate],
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 7, 15, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+            pairwise_distances_km={},
+        )
+
+        context = format_schedule_planning_context(request, "15:00")
+
+        assert "운영시간=확인불가" in context
 
 
 # --- COMPARE targets 이름 지목 ---------------------------------------------

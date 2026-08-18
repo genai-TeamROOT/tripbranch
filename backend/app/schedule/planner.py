@@ -9,7 +9,7 @@ A(agent_runtime.py)가 D(RecommendationProvider)를 호출하는 것과 동일�
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime
 from time import perf_counter
 from typing import TypeAlias
@@ -21,7 +21,7 @@ from app.schedule.schemas import (
     SchedulePlanningRequest,
     target_item_range,
 )
-from app.schemas import ScheduleItem, ScheduleResult
+from app.schemas import RecommendationItem, ScheduleItem, ScheduleResult
 from app.state.schema import now_kst
 
 Timer: TypeAlias = Callable[[], float]
@@ -92,6 +92,101 @@ def _round_up_items_arrival(items: list[ScheduleItem]) -> list[ScheduleItem]:
         item.model_copy(update={"estimated_arrival": _round_up_arrival(item.estimated_arrival)})
         for item in items
     ]
+
+
+# recommendation_pipeline._operating_hours_display()가 "상시 운영"을 나타낼 때 쓰는
+# 표시값과 동일한 문자열이다. SCHEDULE은 D의 공개 응답(RecommendationItem)만 보고 D
+# 내부 상수를 직접 import하지 않으므로(레이어 경계, SchedulePlanningRequest.candidates의
+# 주석 참고) 여기서 같은 문자열을 별도로 둔다 — 화면 표시 문자열이라 자주 바뀌지 않는다.
+_ALL_DAY_OPERATING_HOURS_DISPLAY = "24시간"
+
+_OPERATING_HOURS_WARNING_TEMPLATE = (
+    "운영시간({display}) 기준으로 도착 예정 시각({arrival})엔 운영 중이 아닐 수 있어요. "
+    "방문 전에 다시 확인해주세요."
+)
+
+
+def _parse_operating_hours_range(display: str | None) -> tuple[int, int] | None:
+    """operating_hours_display("09:00~18:00")를 (개장 분, 마감 분)으로 파싱한다.
+
+    "24시간"(상시 운영)이나 None(운영시간 미확인)은 폐점 여부를 판단할 근거가
+    없거나 애초에 폐점이 없는 경우라 검사 대상이 아니다 — None을 반환해 호출부가
+    경고를 붙이지 않도록 한다. 형식이 예상과 다르면(방어적 상황) 마찬가지로
+    None을 반환한다 — 화면 표시용 후처리가 원본 값을 망가뜨리면 안 된다는 기존
+    원칙과 동일하다.
+
+    "24:00" 마감(자정 종료)은 recommendation_pipeline._operating_hours_display()가
+    쓰는 원문 표기와 짝을 맞춰 1440분으로 취급한다.
+    """
+    if display is None or display == _ALL_DAY_OPERATING_HOURS_DISPLAY:
+        return None
+    parts = display.split("~", 1)
+    if len(parts) != 2:
+        return None
+    open_str, close_str = parts
+    open_minutes = _parse_hhmm_minutes(open_str)
+    close_minutes = 24 * 60 if close_str == "24:00" else _parse_hhmm_minutes(close_str)
+    if open_minutes is None or close_minutes is None:
+        return None
+    return open_minutes, close_minutes
+
+
+def _operating_hours_warning(display: str | None, estimated_arrival: str) -> str | None:
+    """도착 예정 시각이 그 후보의 운영시간을 벗어나면 경고 문구를 만든다.
+
+    LLM 프롬프트에도 운영시간을 함께 전달해 애초에 마감된 곳을 피하도록
+    유도하지만(build_schedule_planning_instruction), LLM이 지시를 놓치는
+    경우까지 대비해 이 함수가 응답을 받은 뒤 다시 결정적으로 검사한다
+    ("구조적 보장 우선" 원칙 — LLM 지시 준수만 믿지 않는다).
+    """
+    hours_range = _parse_operating_hours_range(display)
+    if hours_range is None:
+        return None
+    arrival_minutes = _parse_hhmm_minutes(estimated_arrival)
+    if arrival_minutes is None:
+        return None
+    open_minutes, close_minutes = hours_range
+    if open_minutes <= arrival_minutes < close_minutes:
+        return None
+    return _OPERATING_HOURS_WARNING_TEMPLATE.format(display=display, arrival=estimated_arrival)
+
+
+def _apply_operating_hours_warnings(
+    items: list[ScheduleItem], candidates: Iterable[RecommendationItem]
+) -> list[ScheduleItem]:
+    """items 각 항목의 estimated_arrival을 후보의 operating_hours_display와
+    대조해, 어긋나는 항목에만 경고를 붙인 새 리스트를 만든다.
+
+    근거 데이터(운영시간)가 단일 시각 기준이라는 한계는 그대로 남는다
+    (basis_note가 이미 안내한다, docs/design/int-07-schedule.md 6.2.1절) —
+    이 함수는 "LLM이 이미 계산해 준 도착 예정 시각과, 원래 알고 있던 운영시간이
+    서로 모순되는가"만 결정적으로 검사한다. candidates에 없는 place_id(예:
+    REJECT_SPECIFIC 부분 재편성의 pinned 항목)는 운영시간 정보 자체가 없으므로
+    검사하지 않고 그대로 둔다.
+    """
+    display_by_place = {c.place_id: c.operating_hours_display for c in candidates}
+    result: list[ScheduleItem] = []
+    for item in items:
+        warning = _operating_hours_warning(
+            display_by_place.get(item.place_id), item.estimated_arrival
+        )
+        if warning is None:
+            result.append(item)
+        else:
+            result.append(item.model_copy(update={"warnings": [*item.warnings, warning]}))
+    return result
+
+
+def _finalize_items(
+    items: list[ScheduleItem], candidates: Iterable[RecommendationItem]
+) -> list[ScheduleItem]:
+    """estimated_arrival을 표시용으로 다듬고 운영시간 경고를 붙여 최종 items를 만든다.
+
+    두 처리를 한 함수로 묶은 이유: 운영시간 경고는 사용자에게 실제로 보이는
+    도착 시각(10분 단위로 올림된 값) 기준으로 판단해야 화면 표시와 근거가
+    어긋나지 않는다.
+    """
+    return _apply_operating_hours_warnings(_round_up_items_arrival(items), candidates)
 
 
 def _build_basis_note(visit_datetime: datetime) -> str:
@@ -168,7 +263,7 @@ async def plan_schedule(
         )
 
     return ScheduleResult(
-        items=_round_up_items_arrival(plan.items),
+        items=_finalize_items(plan.items, resolved_request.candidates),
         total_duration_min=plan.total_duration_min,
         route_summary=plan.route_summary,
         basis_note=_build_basis_note(effective_visit_datetime),
@@ -253,13 +348,14 @@ def _resync_downstream_arrivals(
 
 def _pinned_only_result(
     pinned_items: list[ScheduleItem],
+    candidates: Iterable[RecommendationItem],
     visit_datetime: datetime,
     route_summary: str,
     elapsed_ms: float,
 ) -> ScheduleResult:
     ordered = sorted(pinned_items, key=lambda item: item.order)
     return ScheduleResult(
-        items=_round_up_items_arrival(ordered),
+        items=_finalize_items(ordered, candidates),
         total_duration_min=_total_duration_from_items(ordered) if ordered else 0,
         route_summary=route_summary,
         basis_note=_build_basis_note(visit_datetime),
@@ -293,6 +389,7 @@ async def plan_partial_schedule(
         # 채우므로 정상 흐름에서는 발생하지 않는다 — 방어적으로만 처리한다.
         return _pinned_only_result(
             request.pinned_items,
+            request.candidates,
             effective_visit_datetime,
             _NO_FILL_CANDIDATES_ROUTE_SUMMARY,
             round((timer() - started_at) * 1000, 2),
@@ -304,6 +401,7 @@ async def plan_partial_schedule(
         # 그대로 살리고 실패 사실만 안내한다(전체 재구성으로 덮어쓰지 않음).
         return _pinned_only_result(
             request.pinned_items,
+            request.candidates,
             effective_visit_datetime,
             _NO_FILL_CANDIDATES_ROUTE_SUMMARY,
             round((timer() - started_at) * 1000, 2),
@@ -363,7 +461,7 @@ async def plan_partial_schedule(
     route_summary = f"{kept}곳은 그대로 유지하고 {replaced}곳을 새로운 장소로 바꿨어요."
 
     return ScheduleResult(
-        items=_round_up_items_arrival(merged),
+        items=_finalize_items(merged, resolved_request.candidates),
         total_duration_min=_total_duration_from_items(merged),
         route_summary=route_summary,
         basis_note=_build_basis_note(effective_visit_datetime),
