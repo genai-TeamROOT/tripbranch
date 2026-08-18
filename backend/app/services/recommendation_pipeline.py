@@ -22,6 +22,7 @@ from app.domain.explanation import build_explanations
 from app.domain.models import ScoringCandidate, WeatherCondition
 from app.domain.scoring import (
     CONCENTRATION_WEIGHTS,
+    ExclusionReason,
     PrepareResult,
     RankedCandidate,
     concentration_score,
@@ -84,6 +85,18 @@ class PreparedRecommendationResult:
     details_missing_place_ids: frozenset[str]
     visit_at: datetime
     weather_ignored: bool
+    ignore_operating_hours: bool
+
+    @property
+    def filter_context(self) -> tuple[object, ...]:
+        """하드 필터가 실제로 입력으로 받은 값 — 배치 간 이게 같아야 병합할 수 있다.
+
+        `prepare_candidates()`에 들어가는 것만 담는다. 날씨·요청 환경은 여기
+        없다 — 하드 필터는 그 값을 아예 받지 않기 때문에, 배치별로 달라도
+        통과/제외 결과를 오염시킬 수 없다(`merge_prepared_recommendations()`
+        docstring 참고).
+        """
+        return (self.visit_at, self.ignore_operating_hours)
 
 
 def merge_prepared_recommendations(
@@ -91,31 +104,31 @@ def merge_prepared_recommendations(
 ) -> PreparedRecommendationResult:
     """같은 요청에서 여러 번 준비한 후보를 중복 없이 하나로 합친다.
 
-    방문 시각과 점수 판정 조건은 모든 보충 조회에서 같아야 한다. 서로 다른 값을
-    조용히 섞으면 같은 장소가 호출 순서에 따라 다르게 채점될 수 있으므로 오류로
-    처리한다. Provider가 같은 장소를 다시 반환하면 첫 분류만 유지한다.
+    하드 필터 입력(`filter_context` — 방문 시각과 운영시간 무시 여부)은 모든
+    보충 조회에서 같아야 한다. 이게 다르면 같은 장소가 조회 순서에 따라 다르게
+    걸러져 통과/제외 목록 자체가 오염되므로 오류로 처리한다.
+
+    반면 채점 조건(날씨 판정·요청 환경·weather_ignored)은 **첫 배치 값을 그대로
+    재사용한다.** 보충 조회는 같은 요청·같은 시각·같은 좌표를 다시 조회하는
+    것이라 날씨가 달라질 이유가 없고, 실제로 달라졌다면 그건 보충 조회의 기상
+    조회가 실패했다는 뜻이지 판정이 바뀌었다는 뜻이 아니다. 그리고 하드 필터
+    (`prepare_candidates()`)는 날씨를 인자로 받지 않고, 후보 변환
+    (`map_context_to_scoring_candidates()`)도 `context.weather`를 읽지 않는다 —
+    채점은 병합이 끝난 뒤 이 단일 기준으로 한 번만 돌기 때문에, 배치별 날씨
+    차이가 결과에 섞여 들어갈 경로가 없다. 여기서 배치를 거부하면 멀쩡한 보충
+    후보만 통째로 버리게 된다.
+
+    Provider가 같은 장소를 다시 반환하면 첫 분류만 유지한다.
     """
     if not results:
         raise ValueError("병합할 준비 결과가 없습니다.")
 
     first = results[0]
-    expected_scoring_context = (
-        first.visit_at,
-        first.weather_condition,
-        first.weather_reason,
-        first.requested_environment,
-        first.weather_ignored,
-    )
     for result in results[1:]:
-        scoring_context = (
-            result.visit_at,
-            result.weather_condition,
-            result.weather_reason,
-            result.requested_environment,
-            result.weather_ignored,
-        )
-        if scoring_context != expected_scoring_context:
-            raise ValueError("준비 결과의 방문 시각 또는 점수 조건이 서로 다릅니다.")
+        if result.filter_context != first.filter_context:
+            raise ValueError(
+                "준비 결과의 방문 시각 또는 운영시간 무시 여부가 서로 다릅니다."
+            )
 
     eligible_by_id = {}
     excluded_by_id = {}
@@ -147,19 +160,39 @@ def merge_prepared_recommendations(
         ),
         visit_at=first.visit_at,
         weather_ignored=first.weather_ignored,
+        ignore_operating_hours=first.ignore_operating_hours,
     )
 
 
 async def prepare_recommendation_from_context(
     context: RecommendationContext | None,
     *,
+    # A가 넘기는 사용자 발화 조건. weather_intent와 발화 날씨(conditions.weather)를
+    # resolve_weather_condition()에 전달해 D-051 판정(사실+의도)에 쓴다.
+    # AVOID/ENJOY면 C가 날씨를 조회하지 않을 수 있어 그때는 발화 값으로 대신 판정한다.
     conditions: UserConditions | None = None,
     visit_at: datetime,
     shown_place_ids: frozenset[str] = frozenset(),
     rejected_place_ids: frozenset[str] = frozenset(),
+    # True면 폐점 후보도 채점에 포함한다 — "운영중이 아닌 곳도 볼래요"(no_data_closed
+    # 되묻기) 해소 턴에서만 A가 켠다.
     ignore_operating_hours: bool = False,
 ) -> PreparedRecommendationResult:
-    """Context를 후보로 변환하고 하드 필터까지만 적용한다."""
+    """Context를 후보로 변환하고 하드 필터까지만 적용한다.
+
+    Context 상태 처리: `context` 자체가 `None`이거나(예: A의
+    `AgentContextResponse.status`가 `needs_clarification`/`unsupported`/
+    `unavailable`일 때), `location`/`places`가 없거나 `unavailable`(조회
+    자체 실패)이면 `AppError`를 던진다. `no_data`(정상 조회했지만 결과
+    없음)는 에러가 아니라 후보 0건으로 처리한다 — "확인 못 함"과 "확인했는데
+    없음"은 다른 상황이라 구분한다.
+
+    호출자 책임: 같은 사용자 요청 안에서 후보를 보충하려고 이 함수를 여러 번
+    부를 때는 모든 호출에 같은 `visit_at`과 `ignore_operating_hours`를 넘겨야
+    한다. 하드 필터 입력이 호출마다 달라지면 같은 장소가 조회 순서에 따라 다르게
+    걸러진다. `merge_prepared_recommendations()`가 이걸 `filter_context`로
+    검사하고, 다르면 `ValueError`를 던진다.
+    """
     if context is None:
         raise AppError(
             code="context_unavailable",
@@ -210,6 +243,7 @@ async def prepare_recommendation_from_context(
         ),
         visit_at=visit_at,
         weather_ignored=_is_weather_explicitly_ignored(context, conditions),
+        ignore_operating_hours=ignore_operating_hours,
     )
 
 
@@ -220,7 +254,14 @@ async def score_prepared_recommendation(
     recommendation_limit: int = DEFAULT_RECOMMENDATION_RESULT_LIMIT,
     timer: Timer = perf_counter,
 ) -> RecommendationResponse:
-    """준비된 후보를 채점하고 Evidence·Explanation 응답을 조립한다."""
+    """준비된 후보를 채점하고 Evidence·Explanation 응답을 조립한다.
+
+    호출자 책임: `search_radius_km`은 C가 `context.places`를 조회할 때 실제로
+    사용한 검색 반경과 동일해야 한다 — Scoring의 거리 점수 정규화
+    (`max_distance_km`)가 이 값을 그대로 재사용하기 때문이다
+    (`docs/design/recommendation-scoring.md` 참고). 값이 어긋나면 거리 점수가
+    실제 후보 풀 범위와 안 맞게 계산된다.
+    """
     started_at = timer()
     scoring = score_prepared_candidates(
         prepared.preparation.eligible_candidates,
@@ -234,7 +275,7 @@ async def score_prepared_recommendation(
     # 없었다면) A가 "운영중이 아닌 곳도 볼래요" 되묻기를 띄울 수 있게 표시한다.
     excluded = prepared.preparation.excluded_candidates
     excluded_closed_count = sum(
-        candidate.reason.value == "closed" for candidate in excluded
+        candidate.reason is ExclusionReason.CLOSED for candidate in excluded
     )
     excluded_all_closed = (
         not ranked
@@ -264,7 +305,18 @@ async def run_recommendation_pipeline_from_context(
     ignore_operating_hours: bool = False,
     timer: Timer = perf_counter,
 ) -> RecommendationResponse:
-    """prepare와 score를 연속 실행하는 기존 호환 진입점."""
+    """prepare와 score를 연속 실행하는 기존 호환 진입점.
+
+    A가 C에서 받은 RecommendationContext를 그대로 넘기면 D 내부(후보 변환→
+    하드 필터→Scoring→Evidence→Explanation 조립)를 전부 처리해
+    RecommendationResponse만 반환한다. C Tool을 직접 호출하지 않는다([TECH-02]).
+    후보를 보충하지 않는 호출자(HTTP 추천 라우트 등)는 이 진입점만 쓰면 된다.
+
+    각 인자의 의미와 호출자 책임은 `prepare_recommendation_from_context()`와
+    `score_prepared_recommendation()` docstring을 본다.
+    """
+    # 경과 시간은 prepare까지 포함한 전체 구간으로 다시 잰다 —
+    # score_prepared_recommendation()이 채운 값은 채점 구간만이라 여기서 덮어쓴다.
     started_at = timer()
     prepared = await prepare_recommendation_from_context(
         context,
