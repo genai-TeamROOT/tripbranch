@@ -27,7 +27,7 @@ from app.schemas import CompareCriteria, GeneralTopic, Intent, UserConditions
 # 쓰였는지와 무관하게 단일 값으로 취급한다 — 함수별 개별 버전은 만들지 않는다. 판별·추출
 # 규칙에 영향을 주는 변경(6개 함수 중 하나라도) 시 버전을 올린다 — 사소한 문구·주석
 # 변경은 올리지 않는다.
-PROMPT_VERSION = "agent-interpret-prompts-1.0.12"
+PROMPT_VERSION = "agent-interpret-prompts-1.0.13"
 
 CHATBOT_NAME = "트리비"
 CHATBOT_PERSONA = """\
@@ -214,7 +214,9 @@ weather_intent 판별:
 - ENJOY: 날씨를 즐기고 싶음 ("눈 오는 거리 걷고 싶어", "단풍 보러") → environment도 outdoor로
   — "걷고 싶어", "보고 싶어", "즐기고 싶어"처럼 날씨 자체를 활동 목적으로 명시한 경우만 쓴다.
 - NO_MENTION: 날씨 언급이 없음 ("경복궁 근처 카페 추천해줘")
-- IGNORE: "날씨 상관없어"처럼 무관함을 명시
+- IGNORE: "날씨 상관없어", "비 와도 괜찮아"처럼 날씨를 감수하거나 무관함을
+  명시하면 weather_intent=IGNORE. 날씨를 허용한 것이 그 날씨를 즐기고 싶다는 뜻은
+  아니므로 ENJOY로 분류하지 않는다.
 - 판별이 애매하면(예: "눈 오는데 추천" — 피하고 싶은지 즐기고 싶은지 불명확) weather_intent를
   null로 두고 status를 needs_clarification으로, clarification.ambiguous_fields에
   weather_intent 항목을 채운다
@@ -224,10 +226,18 @@ _CONCENTRATION_INTENT_RULES = """\
 concentration_intent 판별:
 - AVOID: 혼잡한 곳을 피하고 싶음 ("조용한 공원 추천해줘", "한적한 곳 가고싶어", "사람 없는 데")
 - SEEK: 혼잡한(인기 있는) 곳을 원함 ("핫한 관광지 어디야", "인기 많은 곳 추천해줘", "북적이는 데")
-- IGNORE: 혼잡도 관련 언급이 없음
+- IGNORE: 혼잡도 관련 언급이 없거나, "사람 많아도 괜찮아"처럼 혼잡을 감수한다고
+  말하면 concentration_intent=IGNORE. 이는 혼잡한 곳을 원하는 SEEK가 아니다.
 - weather_intent와 달리 하드 필터(environment)에 관여하지 않는다. 판별이 애매해도
   needs_clarification을 유발하지 않는다 — null로 두면 IGNORE와 동일하게 처리된다
   (weather_intent 규칙을 여기 적용하지 말 것)
+"""
+
+_ENVIRONMENT_RULES = """\
+environment 판별:
+- 실내/실외를 한쪽만 원하면 indoor/outdoor로 채운다. 언급이 없으면 null로 둔다.
+- "실내외 상관없어", "야외도 괜찮아"처럼 한쪽을 추가로 허용하는 표현은 조건을
+  좁히지 않는 뜻이므로 environment="any"로 채운다. outdoor/indoor로 한정하지 않는다.
 """
 
 
@@ -241,6 +251,7 @@ UserConditions(15개 필드)를 추출해 LLMOutput(intent="RECOMMEND")으로 �
 {_RECOMMEND_PLACE_TAG_RULES}
 {_WEATHER_INTENT_RULES}
 {_CONCENTRATION_INTENT_RULES}
+{_ENVIRONMENT_RULES}
 {_BUDGET_RULE}
 
 기타 필드:
@@ -251,9 +262,7 @@ UserConditions(15개 필드)를 추출해 LLMOutput(intent="RECOMMEND")으로 �
 - max_travel_time/time_available은 **분(minute) 단위 정수**입니다. "시간(hour)"으로
   말했으면 60을 곱해 분으로 환산하세요 — 숫자만 그대로 옮기지 마세요
   (예: "5시간" → 300, "2시간 30분" → 150, "30분" → 30(환산 불필요)).
-- environment: 실내/실외를 명시했거나 weather_intent가 AVOID/ENJOY로 확정된 경우에만
-  채웁니다. 언급이 없으면 반드시 null로 두세요 — "any"는 "실내외 상관없어"처럼 무관함을
-  명시했을 때만 씁니다("언급 없음"을 any로 표현하지 마세요).
+- weather_intent가 AVOID/ENJOY로 확정되면 environment도 각각 indoor/outdoor로 함께 채운다.
 - exclude_tags/special_requirements: "주차 가능한 곳" 같은 부가 조건은 special_requirements에 추가
 
 status 결정:
@@ -429,6 +438,7 @@ needs_clarification 대신 다른 규칙(REJECT_ALL/CHANGE_CONDITION)을 우선 
 {_MODIFY_FIELD_MERGE_RULES}
 {_WEATHER_INTENT_RULES}
 {_CONCENTRATION_INTENT_RULES}
+{_ENVIRONMENT_RULES}
 {_BUDGET_RULE}
 
 status 결정:
