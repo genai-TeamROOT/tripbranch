@@ -59,6 +59,7 @@ D-번호를 찾으면 더 깊은 배경을 볼 수 있다.
 | 1.0.10 | 2026-08-11 | `6904af7` | 10(신설) | `build_compare_summary_instruction` 신설(COMPARE 비교 요약, 3~6줄 구조화 출력) | `ComparisonResult`를 문장으로 바꾸는 단계가 없어 COMPARE가 "준비 중" 안내만 하던 상태 |
 | 1.0.11 | 2026-08-12 | `16e3a9d` | 13, 14(신설) | SCHEDULE 부분 재편성(REJECT_SPECIFIC) 프롬프트 신설 — 순번/이름 지목, 부분 재편성 | 기존엔 SCHEDULE 결과 일부만 마음에 안 들어도 전체(REJECT_ALL)를 다시 짜야 했음 |
 | 1.0.12 | 2026-08-12 | `0c0a548` | 3, 8(신설) | MODIFY 필드 병합 규칙 조정, `build_info_answer_instruction` 신설(INFO 답변 생성) | 되묻기 결정적 해소 경로 추가와 함께 INFO 질의 유형 확장 반영 |
+| 1.0.13 | 2026-08-18 | `585a045` | 2, 3 | "~도 괜찮아" 허용 표현을 조건 완화로 명시 — 비/혼잡 허용은 각각 `IGNORE`, 야외 허용은 `environment=any` | 허용을 날씨 ENJOY·혼잡 SEEK·야외 한정으로 오해하면 후보를 조용히 줄이거나 재정렬함. 실제 Gemini RECOMMEND/MODIFY 6건이 모두 기대값과 일치 |
 
 ## 참고 — 버전 번호가 튀는 지점 (병렬 브랜치 병합)
 
@@ -80,6 +81,6 @@ X.Y.Z에서 작업 시작합니다"라고 짧게 공유하는 것만으로도 �
 
 ## 현재 버전
 
-`agent-interpret-prompts-1.0.12` (2026-08-12 `0c0a548` 기준 최신 — 이 문서 갱신 시점 이후
+`agent-interpret-prompts-1.0.13` (2026-08-18 `585a045` 기준 최신 — 이 문서 갱신 시점 이후
 버전이 더 올랐을 수 있으니, 실제 값은 `backend/app/providers/gemini_prompts.py`의
 `PROMPT_VERSION` 상수를 우선한다)
