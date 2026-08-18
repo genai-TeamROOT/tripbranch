@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     local_search_provider: ProviderMode | None = None
     concentration_provider: ProviderMode | None = None
     holiday_provider: ProviderMode | None = None
+    # 카카오 도보 길찾기는 제휴 파트너 전용이므로 공통 PROVIDER_MODE를 상속하지
+    # 않고 명시적으로 real을 켤 때만 외부 API를 호출한다.
+    travel_route_provider: ProviderMode = "fake"
 
     # 상세·운영정보 조회 출처. PLACE_PROVIDER=fake이면 Fake Provider가 상세까지
     # 담당하므로 이 값은 무시된다.
@@ -104,6 +107,7 @@ class Settings(BaseSettings):
     naver_map_client_secret: str = Field(default="", repr=False, exclude=True)
     naver_local_search_client_id: str = Field(default="", repr=False, exclude=True)
     naver_local_search_client_secret: str = Field(default="", repr=False, exclude=True)
+    kakao_mobility_rest_api_key: str = Field(default="", repr=False, exclude=True)
     supabase_url: str = ""
     supabase_secret_key: str = Field(default="", repr=False, exclude=True)
 

@@ -36,6 +36,21 @@ def test_individual_provider_overrides_common_mode() -> None:
     assert settings.resolved_llm_provider == "fake"
 
 
+def test_travel_route_provider_stays_fake_until_explicitly_enabled() -> None:
+    settings = Settings(_env_file=None, provider_mode="real")
+
+    assert settings.travel_route_provider == "fake"
+
+    enabled = Settings(
+        _env_file=None,
+        travel_route_provider="real",
+        kakao_mobility_rest_api_key="test-rest-api-key",
+    )
+
+    assert enabled.travel_route_provider == "real"
+    assert enabled.kakao_mobility_rest_api_key == "test-rest-api-key"
+
+
 def test_resolved_llm_timeout_falls_back_to_external_api_timeout() -> None:
     """LLM_API_TIMEOUT_SECONDS 미설정 시 EXTERNAL_API_TIMEOUT_SECONDS를 그대로 쓴다
     (하위 호환 — 기존에 EXTERNAL_API_TIMEOUT_SECONDS만 설정해 쓰던 환경도 그대로

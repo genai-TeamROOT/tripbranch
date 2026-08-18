@@ -25,6 +25,11 @@ from app.domain.models import (
     TourPlacePage,
     WeatherForecastResult,
 )
+from app.domain.travel_route import (
+    GeoCoordinate,
+    RouteDestination,
+    WalkingRouteBatch,
+)
 from app.place_search_policy import DEFAULT_PLACE_PROVIDER_RESULT_LIMIT
 from app.providers.contracts import ProviderResult
 from app.providers.festival import FestivalEvent
@@ -242,6 +247,18 @@ class WeatherProvider(Protocol):
         self, latitude: float, longitude: float
     ) -> ProviderResult[WeatherForecastResult]:
         """좌표의 시각별 초단기예보 목록을 반환한다."""
+        ...
+
+
+class WalkingRouteProvider(Protocol):
+    async def get_routes(
+        self,
+        origin: GeoCoordinate,
+        destinations: tuple[RouteDestination, ...],
+        *,
+        radius_m: int | None = None,
+    ) -> ProviderResult[WalkingRouteBatch]:
+        """출발지에서 여러 목적지까지의 도보 경로를 목적지 순서대로 반환한다."""
         ...
 
 
