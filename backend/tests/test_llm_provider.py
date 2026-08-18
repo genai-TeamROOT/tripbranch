@@ -998,6 +998,25 @@ def test_recommend_instruction_includes_time_unit_conversion_rule() -> None:
     assert "5시간" in instruction and "300" in instruction
 
 
+def test_condition_instructions_treat_permissive_expressions_as_unrestricted() -> None:
+    """허용은 선호가 아니다.
+
+    "야외도 괜찮아"는 기존 실내 조건을 풀어야 하고, "비/사람 많아도 괜찮아"는
+    각각 날씨·혼잡을 즐기거나 선호한다는 뜻이 아니다. RECOMMEND와 MODIFY가 공통
+    규칙을 모두 포함하는지 고정해 모델·프롬프트 변경 때 조용한 오분류를 막는다.
+    """
+    recommend = build_recommend_extraction_instruction()
+    modify = build_modify_extraction_instruction(UserConditions(search_center="경복궁"))
+
+    for instruction in (recommend, modify):
+        assert "비 와도 괜찮아" in instruction
+        assert "weather_intent=IGNORE" in instruction
+        assert "사람 많아도 괜찮아" in instruction
+        assert "concentration_intent=IGNORE" in instruction
+        assert "야외도 괜찮아" in instruction
+        assert 'environment="any"' in instruction
+
+
 def test_modify_instruction_includes_time_unit_conversion_rule() -> None:
     """위와 같은 이유로 MODIFY(조건 변경) 프롬프트에도 같은 환산 규칙이 있어야 한다 —
     "이번엔 5시간으로 다시 짜줘"처럼 SCHEDULE 다음 턴 조건 변경이 이 경로를 탄다."""
