@@ -20,9 +20,15 @@ from app.domain.models import OperatingHours, ScoringCandidate, WeatherCondition
 from app.domain.scoring import (
     CONCENTRATION_WEIGHTS,
     DEFAULT_WEIGHTS,
+    ExcludedCandidate,
+    ExclusionReason,
+    PreparedCandidate,
+    PrepareResult,
     concentration_score,
+    prepare_candidates,
     redistribute_weights,
     score_candidates,
+    score_prepared_candidates,
 )
 
 # 고정 기준 시각 (모든 테스트가 공유): 14:00
@@ -69,6 +75,119 @@ RESTAURANT_FAR = ScoringCandidate(
     distance_km=1.2,
     operating_hours=OperatingHours(time(11, 0), time(23, 0)),  # 마감까지 540분(캡)
 )
+
+
+def test_prepare_result_exposes_eligible_count_and_excluded_ids() -> None:
+    prepared = PreparedCandidate(
+        candidate=MUSEUM_OPEN,
+        remaining_minutes=240.0,
+        is_unverified=False,
+    )
+    excluded = ExcludedCandidate(
+        candidate=PARK_CLOSED,
+        reason=ExclusionReason.CLOSED,
+    )
+
+    result = PrepareResult(
+        eligible_candidates=(prepared,),
+        excluded_candidates=(excluded,),
+        input_count=2,
+    )
+
+    assert result.eligible_count == 1
+    assert result.excluded_place_ids == ("p3",)
+    assert result.excluded_candidates[0].reason.value == "closed"
+
+
+def test_prepare_candidates_returns_eligible_and_excluded_with_reasons() -> None:
+    result = prepare_candidates(
+        [MUSEUM_OPEN, PARK_CLOSED, CAFE_CLOSING_SOON, RESTAURANT_FAR],
+        now=NOW,
+        shown_place_ids=["p2"],
+        rejected_place_ids=["p5"],
+    )
+
+    assert [item.candidate.place_id for item in result.eligible_candidates] == ["p1"]
+    assert [
+        (item.place_id, item.reason)
+        for item in result.excluded_candidates
+    ] == [
+        ("p3", ExclusionReason.CLOSED),
+        ("p2", ExclusionReason.ALREADY_SHOWN),
+        ("p5", ExclusionReason.REJECTED),
+    ]
+    assert result.input_count == 4
+
+
+def test_prepare_candidates_keeps_unknown_hours_as_unverified() -> None:
+    result = prepare_candidates([GALLERY_UNKNOWN_HOURS], now=NOW)
+
+    prepared = result.eligible_candidates[0]
+    assert prepared.remaining_minutes is None
+    assert prepared.is_unverified is True
+    assert prepared.warnings == ("방문 전에 운영 여부를 확인해주세요.",)
+
+
+def test_prepare_candidates_can_include_closed_place_with_override_warning() -> None:
+    result = prepare_candidates(
+        [PARK_CLOSED],
+        now=NOW,
+        ignore_operating_hours=True,
+    )
+
+    prepared = result.eligible_candidates[0]
+    assert prepared.remaining_minutes is None
+    assert prepared.is_unverified is True
+    assert prepared.warnings == (
+        "지금은 운영시간이 아니에요. 방문 전에 다시 확인해주세요.",
+    )
+
+
+def test_prepare_candidates_prioritizes_history_reason_over_closed() -> None:
+    result = prepare_candidates(
+        [PARK_CLOSED],
+        now=NOW,
+        shown_place_ids=["p3"],
+    )
+
+    assert result.excluded_candidates[0].reason is ExclusionReason.ALREADY_SHOWN
+
+
+def test_score_prepared_candidates_matches_compatibility_wrapper() -> None:
+    candidates = [MUSEUM_OPEN, CAFE_CLOSING_SOON, GALLERY_UNKNOWN_HOURS]
+    prepared = prepare_candidates(candidates, now=NOW)
+
+    direct = score_prepared_candidates(
+        prepared.eligible_candidates,
+        weather_condition=WeatherCondition.BAD,
+        max_distance_km=1.5,
+    )
+    compatible = score_candidates(
+        candidates,
+        now=NOW,
+        weather_condition=WeatherCondition.BAD,
+        max_distance_km=1.5,
+    )
+
+    assert direct.ranked == compatible.ranked
+    assert direct.excluded_place_ids == ()
+
+
+def test_score_prepared_candidates_uses_remaining_minutes_from_prepare() -> None:
+    prepared = PreparedCandidate(
+        candidate=MUSEUM_OPEN,
+        remaining_minutes=30.0,
+        is_unverified=False,
+    )
+
+    result = score_prepared_candidates(
+        [prepared],
+        weather_condition=WeatherCondition.GOOD,
+        max_distance_km=1.5,
+    )
+
+    assert result.ranked[0].remaining_minutes == 30.0
+    assert result.ranked[0].feature_scores["remaining_operating_time"] == 0.25
 
 
 def test_scores_and_sorts_fixed_candidates() -> None:
