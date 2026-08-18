@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 import pytest
@@ -351,3 +352,15 @@ def test_env_file_is_resolved_relative_to_backend_package() -> None:
     assert env_file.is_absolute()
     assert env_file.name == ".env"
     assert env_file.parent == Path(config_module.__file__).resolve().parent.parent
+
+
+def test_boot_log_includes_travel_route_mode(caplog: pytest.LogCaptureFixture) -> None:
+    """부팅 로그가 도보 provider 모드를 빠뜨리면 fake로 뜬 걸 알아챌 수 없다(D-042)."""
+    from app.main import _log_provider_modes
+
+    # main.py는 uvicorn 로그와 같은 자리에 찍히도록 "uvicorn.error"를 쓴다.
+    with caplog.at_level(logging.INFO, logger="uvicorn.error"):
+        _log_provider_modes()
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("travel_route=" in message for message in messages)

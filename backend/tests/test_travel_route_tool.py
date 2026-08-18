@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 
 import pytest
@@ -87,6 +88,35 @@ async def test_travel_route_tool_fills_only_failed_destination() -> None:
         ProviderSource.KAKAO_WALKING_ROUTE,
         ProviderSource.FAKE_WALKING_ROUTE,
     ]
+
+
+@pytest.mark.asyncio
+async def test_travel_route_tool_logs_when_estimate_replaces_real_route(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """폴백 대체는 예외 없이 일어나므로, 로그가 유일한 노출 경로다(D-042)."""
+    with caplog.at_level(logging.WARNING, logger="app.tools.travel_route"):
+        await TravelRouteTool(
+            _PartialProvider(),  # type: ignore[arg-type]
+            FakeWalkingRouteProvider(walking_speed_mps=1.2),
+        ).execute(_query())
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("1/2건을 직선거리 추정으로 대체" in message for message in messages)
+    assert any("kakao_result_104" in message for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_travel_route_tool_does_not_log_fallback_when_all_routes_succeed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="app.tools.travel_route"):
+        await TravelRouteTool(
+            FakeWalkingRouteProvider(walking_speed_mps=1.2),
+            FakeWalkingRouteProvider(walking_speed_mps=1.2),
+        ).execute(_query())
+
+    assert caplog.records == []
 
 
 @pytest.mark.asyncio

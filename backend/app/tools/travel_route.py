@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from dataclasses import dataclass
 
 from app.domain.travel_route import (
@@ -118,6 +119,26 @@ class TravelRouteTool:
             else route
             for route in primary_result.data.routes
         )
+        # D-042의 "조용한 폴백 금지". 예외가 난 경로는 위에서 로그를 남기지만,
+        # 목적지별 실패는 예외 없이 여기로 오기 때문에 이 분기만 무로그였다 —
+        # 카카오가 한 건도 못 풀어도 추정값이 조용히 D까지 흘러갔다.
+        replaced_ids = frozenset(
+            route.place_id
+            for route in primary_result.data.routes
+            if route.status is not RouteStatus.SUCCESS and route.place_id in fallback_by_id
+        )
+        if replaced_ids:
+            causes = Counter(
+                route.error_code or "unknown"
+                for route in primary_result.data.routes
+                if route.place_id in replaced_ids
+            )
+            logger.warning(
+                "도보 경로 %d/%d건을 직선거리 추정으로 대체 (원인=%s)",
+                len(replaced_ids),
+                len(primary_result.data.routes),
+                dict(sorted(causes.items())),
+            )
         return TravelRouteToolResult(
             # 실제값과 추정값이 섞였으므로 모두 채워졌어도 degraded 결과다.
             status=ToolStatus.PARTIAL,
