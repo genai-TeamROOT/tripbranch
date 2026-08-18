@@ -24,9 +24,19 @@ from collections.abc import AsyncIterator
 from fastapi import APIRouter, Request
 from sse_starlette import EventSourceResponse, ServerSentEvent
 
+from app.agent_context.factory import get_context_provider
+from app.agent_context.info_schemas import InfoContextRequest
 from app.errors import AppError
-from app.schemas import AgentRequest, AgentResponse
+from app.observability.api_usage import create_external_client
+from app.schemas import (
+    AgentRequest,
+    AgentResponse,
+    RecommendationPlaceDetailRequest,
+    RecommendationPlaceDetailResponse,
+)
 from app.services.runtime.agent_runtime import run_agent
+from app.services.runtime.info_response_transform import to_info_place_card
+from app.state.session import new_trace_id
 
 router = APIRouter(tags=["chat"])
 logger = logging.getLogger(__name__)
@@ -35,6 +45,53 @@ logger = logging.getLogger(__name__)
 @router.post("/chat", response_model=AgentResponse)
 async def chat(request: AgentRequest) -> AgentResponse:
     return await run_agent(request)
+
+
+@router.post("/chat/place-details", response_model=RecommendationPlaceDetailResponse)
+async def recommendation_place_details(
+    request: RecommendationPlaceDetailRequest,
+) -> RecommendationPlaceDetailResponse:
+    """추천 카드 한 곳의 C PlaceDetails를 LLM 없이 조회한다.
+
+    C의 INFO 경로는 이름으로 장소를 해석하므로, 응답의 ``place_id``가 추천 카드의
+    ID와 다르면 화면에 싣지 않는다. 동명 장소의 상세가 잘못 열리는 것보다, 상세
+    정보 없음으로 남기는 편이 안전하다.
+    """
+
+    async with create_external_client() as client:
+        context_provider = get_context_provider(client)
+        info_response = await context_provider.fetch_info_context(
+            InfoContextRequest(
+                request_id=new_trace_id(),
+                place_name=request.place_name,
+                place_context="from_recommendation",
+                question_type="general_info",
+            )
+        )
+
+    place_card = to_info_place_card(info_response)
+    if info_response.status == "unavailable":
+        return RecommendationPlaceDetailResponse(
+            status="unavailable",
+            requested_place_id=request.place_id,
+        )
+    if place_card is None or place_card.place_id != request.place_id:
+        if place_card is not None:
+            logger.warning(
+                "추천 카드 상세 ID 불일치: requested=%s resolved=%s name=%s",
+                request.place_id,
+                place_card.place_id,
+                request.place_name,
+            )
+        return RecommendationPlaceDetailResponse(
+            status="no_data",
+            requested_place_id=request.place_id,
+        )
+    return RecommendationPlaceDetailResponse(
+        status="success",
+        requested_place_id=request.place_id,
+        place_card=place_card,
+    )
 
 
 @router.post("/chat/stream")

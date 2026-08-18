@@ -10,8 +10,10 @@
  * /dev-chat(ChatMessageList의 isDeveloperView)에서만 true로 넘어온다.
  */
 
+import { useState } from "react";
 import type { RecommendationItem } from "../../types";
 import { PlaceCard } from "../PlaceCard";
+import { RecommendationDetailPreviewModal } from "./RecommendationDetailPreviewModal";
 
 const RADIUS_RELAXATION_STEP_KM = 0.5;
 
@@ -43,6 +45,7 @@ export function RecommendationResultMessage({
   onRequestMore,
   onRelaxRadius,
 }: RecommendationResultMessageProps) {
+  const [selectedRecommendation, setSelectedRecommendation] = useState<RecommendationItem | null>(null);
   // D는 운영시간을 무시한 재검색에서 "현재는 폐점"인 후보도 unverified 목록에
   // 담는다. 하지만 이 후보는 운영시간 원문 자체가 없는 것이 아니다. 카드에서
   // 실제 구간을 보여 줄 수 있도록, display가 있는 폐점 후보와 진짜 결측 후보를
@@ -90,7 +93,11 @@ export function RecommendationResultMessage({
               <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400">추천 장소</h3>
               <ul className="flex flex-col gap-3">
                 {recommendations.map((item) => (
-                  <PlaceCard key={item.place_id} item={item} />
+                  <PlaceCard
+                    key={item.place_id}
+                    item={item}
+                    onOpenDetail={(selectedItem) => setSelectedRecommendation(selectedItem)}
+                  />
                 ))}
               </ul>
             </section>
@@ -103,7 +110,11 @@ export function RecommendationResultMessage({
               </h3>
               <ul className="flex flex-col gap-3">
                 {closedRecommendations.map((item) => (
-                  <PlaceCard key={item.place_id} item={item} />
+                  <PlaceCard
+                    key={item.place_id}
+                    item={item}
+                    onOpenDetail={(selectedItem) => setSelectedRecommendation(selectedItem)}
+                  />
                 ))}
               </ul>
             </section>
@@ -116,7 +127,11 @@ export function RecommendationResultMessage({
               </h3>
               <ul className="flex flex-col gap-3">
                 {unknownHoursRecommendations.map((item) => (
-                  <PlaceCard key={item.place_id} item={item} />
+                  <PlaceCard
+                    key={item.place_id}
+                    item={item}
+                    onOpenDetail={(selectedItem) => setSelectedRecommendation(selectedItem)}
+                  />
                 ))}
               </ul>
             </section>
@@ -136,6 +151,13 @@ export function RecommendationResultMessage({
             </span>
           </div>
         </>
+      )}
+
+      {selectedRecommendation && (
+        <RecommendationDetailPreviewModal
+          item={selectedRecommendation}
+          onClose={() => setSelectedRecommendation(null)}
+        />
       )}
     </article>
   );

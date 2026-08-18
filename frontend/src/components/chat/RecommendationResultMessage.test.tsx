@@ -1,4 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, vi } from "vitest";
 
 import type { RecommendationItem } from "../../types";
 import { RecommendationResultMessage } from "./RecommendationResultMessage";
@@ -50,4 +52,67 @@ it("운영시간 원문도 없는 후보만 확인 불가 섹션에 표시한다
   expect(screen.getByText("운영시간을 확인할 수 없는 장소")).toBeInTheDocument();
   expect(screen.getByText("확인 불가")).toBeInTheDocument();
   expect(screen.queryByText("현재 운영시간이 아닌 장소")).not.toBeInTheDocument();
+});
+
+it("추천 카드를 클릭하면 C PlaceDetails가 채워진 상세 창을 연다", async () => {
+  const user = userEvent.setup();
+  const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        status: "success",
+        requested_place_id: "place-1",
+        place_card: {
+          question_type: "general_info",
+          answer_fields: {},
+          place_id: "place-1",
+          place_name: "아키비스트 서촌",
+          thumbnail_url: "https://example.test/archivist.jpg",
+          overview: "서촌의 카페입니다.",
+          operating_hours: "11:00~21:00",
+          rest_date: "매주 화요일",
+          parking: null,
+          parking_fee: null,
+          fee: null,
+          baby_carriage: null,
+          pet: null,
+          credit_card: "가능",
+          restroom: null,
+          homepage: "https://example.test/archivist",
+        },
+      }),
+    });
+  vi.stubGlobal("fetch", fetchMock);
+  window.fetch = fetchMock;
+  render(
+    <RecommendationResultMessage
+      recommendations={[item()]}
+      unverifiedRecommendations={[]}
+      elapsedMs={0}
+      serverElapsedMs={0}
+      isLoading={false}
+      onRequestMore={() => {}}
+      onRelaxRadius={() => {}}
+    />,
+  );
+
+  await user.click(screen.getByRole("button", { name: "아키비스트 서촌 장소 정보 미리 보기" }));
+
+  const dialog = screen.getByRole("dialog", { name: "아키비스트 서촌" });
+  expect(dialog).toBeInTheDocument();
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/chat/place-details", expect.anything()));
+  expect(await within(dialog).findByRole("img", { name: "아키비스트 서촌 이미지" })).toBeInTheDocument();
+  expect(within(dialog).getByText("서촌의 카페입니다.")).toBeInTheDocument();
+  expect(within(dialog).getByText("매주 화요일")).toBeInTheDocument();
+  expect(within(dialog).getByText("11:00~21:00 (현재 운영시간 아님)")).toBeInTheDocument();
+  expect(within(dialog).getByRole("link", { name: "공식 홈페이지 보기" })).toHaveAttribute(
+    "href",
+    "https://example.test/archivist",
+  );
+
+  await user.click(screen.getByRole("button", { name: "상세 창 닫기" }));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
