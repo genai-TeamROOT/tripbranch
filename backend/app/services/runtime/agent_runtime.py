@@ -21,6 +21,7 @@ from datetime import timedelta
 from typing import TypeVar
 
 from app.agent_context.schemas import PlaceCandidate, RecommendationContext
+from app.config import settings
 from app.domain.scoring import SCORING_VERSION
 from app.geo import haversine_km
 from app.observability.api_usage import create_external_client
@@ -781,19 +782,60 @@ _CONCENTRATION_RANK_INTENTS = frozenset({ConcentrationIntent.AVOID, Concentratio
 # 재순위가 안 일어나면(D 미구현 등) 1차 결과를 그대로 쓰고 이 상수는 적용하지 않는다 —
 # 기능이 실제로 동작하지 않는데 결과 개수만 줄이는 걸 피하기 위함이다.)
 #
-# SCHEDULE은 이 값을 쓰지 않는다 — _SCHEDULE_RECOMMENDATION_LIMIT(10)을 대신 넘긴다.
-# (주의) 예전엔 1차 Scoring이 항상 5개까지만 넘겨서 이 슬라이싱이 사실상 no-op이라고
-# 적혀 있었는데, SCHEDULE 도입으로 1차가 10개를 넘길 수 있게 되면서 더 이상 no-op이
-# 아니다 — _apply_concentration_rerank() 호출부가 반드시 알맞은 limit을 넘겨야 한다.
-_CONCENTRATION_FINAL_LIMIT = 5
+# SCHEDULE은 호출부가 recommendation_candidate_limit을 final_limit으로 넘긴다.
+# RECOMMEND/MODIFY 기본값도 환경 설정과 같은 원천을 사용한다.
+_CONCENTRATION_FINAL_LIMIT = settings.recommendation_result_limit
 
-# SCHEDULE의 1차 Scoring/2차 재순위 최종 노출 개수(D 협의 완료 — docs/design/
-# int-07-schedule.md 2절/4절). RECOMMEND/MODIFY의 5개보다 많이 받아 LLM이 그중
-# 3~5개를 골라 일정을 편성한다.
-_SCHEDULE_RECOMMENDATION_LIMIT = 10
+# 하드 필터 통과 후보가 목표 개수보다 적을 때 C에 추가 후보를 요청하는 최대 횟수.
+# 최초 조회는 포함하지 않으므로 전체 C 호출은 최대 3회다. 무한 반복과 외부 API
+# 호출 폭증을 막기 위해 상수로 명시한다.
+_MAX_CANDIDATE_REFILL_ATTEMPTS = 2
+_CANDIDATE_POOL_TRUNCATED_WARNING = "candidate_pool_truncated"
 
 # 보강 응답 전체가 이 상태면 2차 Scoring을 시도할 실익이 없다(재조회할 데이터가 없음).
 _ENRICHMENT_TERMINAL_STATUSES = frozenset({"no_data", "unavailable"})
+
+
+def _context_place_ids(context: RecommendationContext) -> list[str]:
+    places = context.places
+    return [place.place_id for place in (places.data or [])] if places is not None else []
+
+
+def _merge_recommendation_context_places(
+    first: RecommendationContext,
+    additional: RecommendationContext,
+) -> RecommendationContext:
+    """후속 혼잡도·일정 계산이 쓸 수 있도록 C 후보 좌표를 ID 기준으로 합친다."""
+    first_places = first.places
+    additional_places = additional.places
+    if first_places is None or additional_places is None:
+        return first
+
+    places_by_id = {place.place_id: place for place in (first_places.data or [])}
+    for place in additional_places.data or []:
+        places_by_id.setdefault(place.place_id, place)
+
+    merged_places = first_places.model_copy(update={"data": list(places_by_id.values())})
+    return first.model_copy(update={"places": merged_places})
+
+
+def _candidate_pool_truncated(context: RecommendationContext) -> bool:
+    places = context.places
+    return bool(
+        places
+        and any(
+            warning.code == _CANDIDATE_POOL_TRUNCATED_WARNING
+            for warning in places.warnings
+        )
+    )
+
+
+def _supports_staged_recommendation(provider: RecommendationProvider) -> bool:
+    """과도기 Fake/외부 구현체는 기존 recommend() 경로로 안전하게 유지한다."""
+    return all(
+        hasattr(provider, method)
+        for method in ("prepare", "merge_prepared", "score_prepared")
+    )
 
 
 def _build_pairwise_distances_km(
@@ -864,8 +906,8 @@ async def _apply_concentration_rerank(
     §6.5.2). 그 외에는 first_pass를 그대로 반환한다.
 
     final_limit: 재순위 후 최종 노출 개수. 호출부가 1차 Scoring에 넘긴 limit과
-    일치시켜야 한다 — RECOMMEND/MODIFY는 기본값 5, SCHEDULE은 10
-    (_SCHEDULE_RECOMMENDATION_LIMIT, docs/design/int-07-schedule.md 4절).
+    일치시켜야 한다. RECOMMEND/MODIFY는 recommendation_result_limit,
+    SCHEDULE은 recommendation_candidate_limit 설정을 사용한다.
 
     C 보강 조회(EnrichmentProvider.enrich())와 D의 2차 Scoring
     (rerank_with_concentration())은 모두 실제로 연결·구현 완료됐다(D-040). hasattr
@@ -1601,23 +1643,131 @@ async def run_agent_flow(
     is_schedule = llm_output.intent is Intent.SCHEDULE
 
     # 6) A → D: 1차 Scoring (Protocol을 통해서만 — D의 구체 클래스는 여기서 모른다).
-    #    concentration_intent 유무와 무관하게 항상 이 호출 하나만 한다 — 기존과 동일.
-    #    SCHEDULE은 10개, RECOMMEND/MODIFY는 기존과 동일하게 5개를 받는다
-    #    (docs/design/int-07-schedule.md 2절/5절, D 협의 완료).
-    recommendation_limit = _SCHEDULE_RECOMMENDATION_LIMIT if is_schedule else 5
+    #    prepare 통과 후보 확보 목표는 recommendation_candidate_limit이다. 최종 반환은
+    #    RECOMMEND/MODIFY가 recommendation_result_limit, SCHEDULE이 후보 설정값 전체를
+    #    사용한다(docs/design/int-07-schedule.md 2절/5절).
+    candidate_target = settings.recommendation_candidate_limit
+    recommendation_limit = (
+        settings.recommendation_candidate_limit
+        if is_schedule
+        else settings.recommendation_result_limit
+    )
     await _emit_progress(
         stream_event_sink,
         "scoring",
         "조건에 맞게 장소 순위를 계산하고 있어요.",
     )
     scoring_started_at = time.monotonic()
-    recommendations = await recommendation_provider.recommend(
-        agent_conditions,
-        tool_context,
-        state_response.excluded_place_ids,
-        limit=recommendation_limit,
-        ignore_operating_hours=effective_ignore_operating_hours,
-    )
+    if _supports_staged_recommendation(recommendation_provider):
+        # 같은 실행의 모든 prepare가 동일한 운영시간 기준을 사용해야 한다. B 세션에는
+        # 저장하지 않고 이 실행 동안만 고정한다.
+        visit_at = now_kst()
+        prepared_batches = [
+            await recommendation_provider.prepare(
+                agent_conditions,
+                tool_context,
+                state_response.excluded_place_ids,
+                visit_at=visit_at,
+                ignore_operating_hours=effective_ignore_operating_hours,
+            )
+        ]
+        run_seen_ids = _context_place_ids(tool_context)
+        run_seen_id_set = set(run_seen_ids)
+        candidate_pool_exhausted = _candidate_pool_truncated(tool_context)
+
+        for refill_attempt in range(1, _MAX_CANDIDATE_REFILL_ATTEMPTS + 1):
+            merged_prepared = recommendation_provider.merge_prepared(prepared_batches)
+            if (
+                merged_prepared.preparation.eligible_count >= candidate_target
+                or candidate_pool_exhausted
+            ):
+                break
+
+            refill_request = to_agent_context_request(
+                request_id=new_trace_id(),
+                conditions=agent_conditions,
+                gps_location=context_gps,
+                excluded_place_ids=[
+                    *state_response.excluded_place_ids,
+                    *(
+                        place_id
+                        for place_id in run_seen_ids
+                        if place_id not in state_response.excluded_place_ids
+                    ),
+                ],
+            )
+            await _emit_progress(
+                stream_event_sink,
+                "fetching_context",
+                "조건에 맞는 장소를 조금 더 찾고 있어요.",
+            )
+            refill_started_at = time.monotonic()
+            refill_response = await tool_provider.fetch_context(refill_request)
+            refill_latency_ms = int((time.monotonic() - refill_started_at) * 1000)
+            refill_execution = build_tool_execution_debug(
+                refill_response,
+                latency_ms=refill_latency_ms,
+            )
+            if refill_execution is not None:
+                tool_executions.append(refill_execution)
+            _record_trace_safely(
+                session_id=state_response.session_id,
+                run_id=state_response.run_id,
+                step=f"tool_refill_{refill_attempt}",
+                latency_ms=refill_latency_ms,
+                error_type=(
+                    refill_response.status
+                    if refill_response.status in _TOOL_TERMINAL_STATUSES
+                    else None
+                ),
+                store=store,
+            )
+
+            # 최초 조회에서 이미 사용할 후보가 있으므로, 보충 조회 실패는 전체 요청을
+            # 실패시키지 않고 확보된 후보로 진행한다.
+            if refill_response.status in _TOOL_TERMINAL_STATUSES:
+                break
+            refill_context = refill_response.context
+            if refill_context is None:
+                break
+
+            refill_place_ids = _context_place_ids(refill_context)
+            new_place_ids = [
+                place_id for place_id in refill_place_ids if place_id not in run_seen_id_set
+            ]
+            if not new_place_ids:
+                break
+            run_seen_ids.extend(new_place_ids)
+            run_seen_id_set.update(new_place_ids)
+
+            prepared_batches.append(
+                await recommendation_provider.prepare(
+                    agent_conditions,
+                    refill_context,
+                    state_response.excluded_place_ids,
+                    visit_at=visit_at,
+                    ignore_operating_hours=effective_ignore_operating_hours,
+                )
+            )
+            tool_context = _merge_recommendation_context_places(
+                tool_context,
+                refill_context,
+            )
+            candidate_pool_exhausted = _candidate_pool_truncated(refill_context)
+
+        recommendations = await recommendation_provider.score_prepared(
+            agent_conditions,
+            recommendation_provider.merge_prepared(prepared_batches),
+            limit=recommendation_limit,
+        )
+    else:
+        recommendations = await recommendation_provider.recommend(
+            agent_conditions,
+            tool_context,
+            state_response.excluded_place_ids,
+            limit=recommendation_limit,
+            ignore_operating_hours=effective_ignore_operating_hours,
+        )
     _record_trace_safely(
         session_id=state_response.session_id,
         run_id=state_response.run_id,

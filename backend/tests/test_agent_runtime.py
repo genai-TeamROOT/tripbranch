@@ -3111,6 +3111,168 @@ class _PartialPlacesToolProvider:
         )
 
 
+_CLOSED_ALL_WEEK_SCHEDULE = {
+    "availability": "all_day",
+    "rules": [],
+    "closure_rules": [
+        {
+            "weekdays": [
+                "monday",
+                "tuesday",
+                "wednesday",
+                "thursday",
+                "friday",
+                "saturday",
+                "sunday",
+            ]
+        }
+    ],
+}
+
+
+class _RefillPlacesToolProvider(FakeToolProvider):
+    """제외 ID 다음의 후보를 최대 10개씩 반환하는 C 보충 조회 대역."""
+
+    def __init__(self) -> None:
+        self.requests: list[AgentContextRequest] = []
+        self._places = [
+            PlaceCandidate(
+                place_id=f"refill-{index}",
+                name=f"보충 장소 {index}",
+                category="cafe",
+                location=Coordinates(
+                    latitude=37.5790 + index * 0.0001,
+                    longitude=126.9772 + index * 0.0001,
+                ),
+                operating_schedule=(
+                    _OPEN_ALL_DAY_SCHEDULE
+                    if index in {0, 10} or index >= 20
+                    else _CLOSED_ALL_WEEK_SCHEDULE
+                ),
+            )
+            for index in range(25)
+        ]
+
+    async def fetch_context(self, request: AgentContextRequest) -> AgentContextResponse:
+        self.requests.append(request)
+        excluded = set(request.excluded_place_ids)
+        places = [place for place in self._places if place.place_id not in excluded][:10]
+        return AgentContextResponse(
+            request_id=request.request_id,
+            intent="RECOMMEND",
+            status="success",
+            context=RecommendationContext(
+                location=ContextValue(
+                    status="success",
+                    data=ResolvedLocation(
+                        requested_query="경복궁",
+                        resolved_name="경복궁",
+                        location=Coordinates(latitude=37.5788, longitude=126.9770),
+                    ),
+                ),
+                places=ContextValue(status="success", data=places),
+            ),
+            metadata=ResponseMetadata(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_staged_recommendation_refills_candidates_up_to_target() -> None:
+    store = InMemoryStateStore()
+    tool_provider = _RefillPlacesToolProvider()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=tool_provider,
+        recommendation_provider=RealRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=store,
+    )
+
+    assert response.recommendations is not None
+    shown = [
+        *response.recommendations.recommendations,
+        *response.recommendations.unverified_recommendations,
+    ]
+    assert len(shown) == 5
+    assert len(tool_provider.requests) == 3
+    assert len(tool_provider.requests[0].excluded_place_ids) == 0
+    assert len(tool_provider.requests[1].excluded_place_ids) == 10
+    assert len(tool_provider.requests[2].excluded_place_ids) == 20
+    assert any(item.place_id.startswith("refill-2") for item in shown)
+
+    session = get_session_context(response.state.session_id, store=store)
+    assert set(session.excluded_place_ids) == {item.place_id for item in shown}
+
+
+@pytest.mark.asyncio
+async def test_staged_recommendation_stops_after_max_refill_attempts() -> None:
+    store = InMemoryStateStore()
+    tool_provider = _RefillPlacesToolProvider()
+    tool_provider._places = [
+        place.model_copy(update={"operating_schedule": _CLOSED_ALL_WEEK_SCHEDULE})
+        for place in tool_provider._places
+    ]
+
+    await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=tool_provider,
+        recommendation_provider=RealRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=store,
+    )
+
+    # 최초 1회 + 보충 최대 2회. 후보가 계속 부족해도 네 번째 호출은 하지 않는다.
+    assert len(tool_provider.requests) == 3
+
+
+@pytest.mark.asyncio
+async def test_staged_recommendation_uses_configured_candidate_and_result_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.runtime.agent_runtime.settings.recommendation_candidate_limit",
+        2,
+    )
+    monkeypatch.setattr(
+        "app.services.runtime.agent_runtime.settings.recommendation_result_limit",
+        1,
+    )
+    store = InMemoryStateStore()
+    tool_provider = _RefillPlacesToolProvider()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=tool_provider,
+        recommendation_provider=RealRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=store,
+    )
+
+    assert len(tool_provider.requests) == 2
+    assert response.recommendations is not None
+    shown = [
+        *response.recommendations.recommendations,
+        *response.recommendations.unverified_recommendations,
+    ]
+    assert len(shown) == 1
+
+
 async def _run_with_partial_places(places: list[PlaceCandidate]):
     """실제 D(RealRecommendationProvider)까지 태워 A→C→D 전파를 확인한다.
 
