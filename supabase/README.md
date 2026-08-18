@@ -51,6 +51,15 @@
   (package_D §2.10. RPC `search_place_evidence` 생성 — 후보 `content_id`로
   범위를 좁히고, 같은 글/리뷰는 1건만 남기고, 장소별 top-N 평균으로
   정렬한다. `min_similarity` 기본값 0.0은 적재 후 재실측 전까지의 임시값)
+- 근거 검색 RPC 타임아웃 완화 마이그레이션:
+  `202608180003_increase_search_place_evidence_timeout.sql`
+  (원격 이력에는 `20260818123826_increase_search_place_evidence_timeout`로
+  기록됨)
+  (유사도 분포 실측 중 발견. 후보 844곳 전체를 넘기면 40,389행 코사인 거리
+  계산에 7.5~9.2초가 걸리는데, PostgREST 연결 롤 `authenticator`의
+  `statement_timeout=8s`에 걸려 500 에러가 났다. `search_place_evidence`
+  함수에만 `set statement_timeout = '30s'`를 붙였다 — 이 함수는
+  anon/authenticated 호출이 막혀 있어 전역 타임아웃을 안 건드려도 된다)
 - 실제 DB 적용일: 2026-07-24, 2026-07-29, 2026-08-04, 2026-08-08, 2026-08-10,
   2026-08-18
 - 적용 방법: Supabase Dashboard SQL Editor 및 Supabase MCP `apply_migration`
@@ -121,8 +130,8 @@ supabase migration list
   `add column if not exists`라 재실행해도 오류는 나지 않지만 다시 실행하지 않는다.
 - `202608100001`, `202608100002`도 적용 완료 상태다. 위와 같은 이유로 재실행하지
   않는다.
-- `202608180001`, `202608180002`도 적용 완료 상태다. 위와 같은 이유로 재실행하지
-  않는다.
+- `202608180001`, `202608180002`, `202608180003`도 적용 완료 상태다. 위와 같은
+  이유로 재실행하지 않는다.
 - 기존 마이그레이션 파일은 적용 후 수정하지 않는다.
 - 이후 스키마 변경은 새 타임스탬프를 가진 마이그레이션 파일로 추가한다.
 - 새 마이그레이션은 가능한 한 Supabase CLI `db push` 또는 MCP
