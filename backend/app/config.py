@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     # 카카오 도보 길찾기는 제휴 파트너 전용이므로 공통 PROVIDER_MODE를 상속하지
     # 않고 명시적으로 real을 켤 때만 외부 API를 호출한다.
     travel_route_provider: ProviderMode = "fake"
+    # 직선거리 fallback의 예상시간과 카카오 도보 요청의 default_speed에 함께 쓸
+    # 보행속도(m/s). 운영환경에서 사용자군에 맞게 조정할 수 있다.
+    walking_speed_mps: float = Field(default=1.2, gt=0)
 
     # 상세·운영정보 조회 출처. PLACE_PROVIDER=fake이면 Fake Provider가 상세까지
     # 담당하므로 이 값은 무시된다.

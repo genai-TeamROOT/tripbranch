@@ -51,6 +51,15 @@ def test_travel_route_provider_stays_fake_until_explicitly_enabled() -> None:
     assert enabled.kakao_mobility_rest_api_key == "test-rest-api-key"
 
 
+def test_walking_speed_is_configurable_and_must_be_positive() -> None:
+    settings = Settings(_env_file=None, walking_speed_mps=1.0)
+
+    assert settings.walking_speed_mps == 1.0
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, walking_speed_mps=0)
+
+
 def test_resolved_llm_timeout_falls_back_to_external_api_timeout() -> None:
     """LLM_API_TIMEOUT_SECONDS 미설정 시 EXTERNAL_API_TIMEOUT_SECONDS를 그대로 쓴다
     (하위 호환 — 기존에 EXTERNAL_API_TIMEOUT_SECONDS만 설정해 쓰던 환경도 그대로

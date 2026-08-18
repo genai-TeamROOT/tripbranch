@@ -30,11 +30,13 @@ from app.providers.protocols import (
     PlaceDetailsProvider,
     PlaceProvider,
     PlaceSearchProvider,
+    WalkingRouteProvider,
     WeatherProvider,
 )
 from app.providers.real_place import RealPlaceProvider
 from app.providers.stub import FakeLLMProvider, FakePlaceProvider, FakeWeatherProvider
 from app.providers.supabase_place_details import SupabasePlaceDetailsProvider
+from app.providers.walking_route import FakeWalkingRouteProvider
 from app.providers.weather import RealWeatherProvider
 from app.repositories.fake_places import (
     FakePlaceDetailsRepository,
@@ -124,6 +126,17 @@ def get_weather_provider(client: httpx.AsyncClient) -> WeatherProvider:
         client=client,
         timeout_seconds=settings.external_api_timeout_seconds,
     )
+
+
+def get_walking_route_provider() -> WalkingRouteProvider:
+    """설정에 맞는 도보 경로 Provider를 반환한다.
+
+    실제 카카오 구현은 다음 단계에서 연결한다. 그 전까지 real 설정으로 Fake가
+    조용히 사용되는 일을 막기 위해 명시적으로 실패시킨다.
+    """
+    if settings.travel_route_provider == "fake":
+        return FakeWalkingRouteProvider(walking_speed_mps=settings.walking_speed_mps)
+    raise ValueError("TRAVEL_ROUTE_PROVIDER=real 구현이 아직 연결되지 않았습니다.")
 
 
 def get_place_provider(client: httpx.AsyncClient) -> PlaceProvider:

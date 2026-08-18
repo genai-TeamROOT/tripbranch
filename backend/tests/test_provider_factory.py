@@ -95,3 +95,33 @@ def test_get_gemini_audio_transcriber_requires_real_llm(monkeypatch) -> None:
         factory.get_gemini_audio_transcriber()
 
     assert raised.value.code == "voice_input_unavailable"
+
+
+def test_get_walking_route_provider_defaults_to_fake(monkeypatch) -> None:
+    captured: dict[str, float] = {}
+
+    class _RecordingFakeWalkingRouteProvider:
+        def __init__(self, *, walking_speed_mps: float) -> None:
+            captured["walking_speed_mps"] = walking_speed_mps
+
+    monkeypatch.setattr(factory, "FakeWalkingRouteProvider", _RecordingFakeWalkingRouteProvider)
+    monkeypatch.setattr(
+        factory,
+        "settings",
+        Settings(_env_file=None, walking_speed_mps=1.1),
+    )
+
+    factory.get_walking_route_provider()
+
+    assert captured["walking_speed_mps"] == 1.1
+
+
+def test_get_walking_route_provider_does_not_silently_fake_real_mode(monkeypatch) -> None:
+    monkeypatch.setattr(
+        factory,
+        "settings",
+        Settings(_env_file=None, travel_route_provider="real"),
+    )
+
+    with pytest.raises(ValueError, match="아직 연결되지 않았습니다"):
+        factory.get_walking_route_provider()

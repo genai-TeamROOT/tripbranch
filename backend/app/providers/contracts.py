@@ -38,6 +38,7 @@ class ProviderSource(StrEnum):
     FAKE_PLACES = "fake_places"
     FAKE_CONCENTRATION = "fake_concentration"
     FAKE_HOLIDAY = "fake_holiday"
+    FAKE_WALKING_ROUTE = "fake_walking_route"
     FAKE_LLM = "fake_llm"
 
 
