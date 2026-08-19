@@ -47,6 +47,7 @@ def _query() -> TravelRouteQuery:
             RouteDestination("first", GeoCoordinate(37.571, 126.981)),
             RouteDestination("second", GeoCoordinate(37.572, 126.982)),
         ),
+        mode=TravelMode.WALKING,
     )
 
 
@@ -172,6 +173,7 @@ def test_travel_route_query_rejects_duplicate_place_ids() -> None:
                 RouteDestination("same", coordinate),
                 RouteDestination("same", coordinate),
             ),
+            mode=TravelMode.WALKING,
         )
 
 

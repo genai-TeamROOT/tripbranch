@@ -29,9 +29,16 @@ TRAVEL_ROUTE_MODE_UNSUPPORTED_WARNING = "travel_route_mode_unsupported"
 
 @dataclass(frozen=True)
 class TravelRouteQuery:
+    """조회 요청. `mode`는 기본값을 두지 않는다.
+
+    기본값을 두면 mode를 넘기지 않은 호출부가 조용히 도보를 조회한다 — 이 카드가
+    고친 문제가 정확히 그것이었다(자동차 요청에도 도보를 20건씩 조회하고 D가
+    결과를 버렸다).
+    """
+
     origin: GeoCoordinate
     destinations: tuple[RouteDestination, ...]
-    mode: TravelMode = TravelMode.WALKING
+    mode: TravelMode
     radius_m: int | None = None
 
     def __post_init__(self) -> None:
