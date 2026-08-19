@@ -747,3 +747,62 @@ def test_all_measured_candidates_keep_their_routes() -> None:
     )
 
     assert [ranked.walking_duration_seconds for ranked in result.ranked] == [300, 900]
+
+
+def _estimated_route(place_id: str, duration_seconds: int) -> WalkingRoute:
+    """TravelRouteTool의 폴백과 fake Provider가 내보내는 직선거리 추정값."""
+    return WalkingRoute(
+        place_id=place_id,
+        status=RouteStatus.SUCCESS,  # 추정값도 SUCCESS로 온다 — 상태로는 구분 못 한다
+        source=RouteSource.STRAIGHT_LINE_ESTIMATE,
+        distance_m=duration_seconds,
+        duration_seconds=duration_seconds,
+    )
+
+
+def test_straight_line_estimate_is_not_treated_as_measurement() -> None:
+    """직선거리 추정은 status가 SUCCESS여도 실측이 아니다.
+
+    이걸 실측으로 쓰면 응답의 walking_duration_seconds에 추정값이 실려
+    "걸어서 약 N분"이라는 거짓 문구가 나간다.
+    """
+    score = _distance_feature_score(
+        MUSEUM_OPEN,
+        walking_routes=[_estimated_route("p1", duration_seconds=857)],
+    )
+
+    assert score == pytest.approx(0.75)  # 직선거리 폴백 점수
+
+
+def test_estimate_is_not_exposed_as_measured_route() -> None:
+    prepared = prepare_candidates([MUSEUM_OPEN], now=NOW)
+    result = score_prepared_candidates(
+        prepared.eligible_candidates,
+        weather_condition=None,
+        max_distance_km=2.0,
+        walking_routes=[_estimated_route("p1", duration_seconds=857)],
+    )
+
+    ranked = result.ranked[0]
+    assert ranked.walking_distance_m is None
+    assert ranked.walking_duration_seconds is None
+
+
+def test_estimate_mixed_with_measurement_falls_back_for_every_candidate() -> None:
+    """실측과 추정이 섞이면 낙관도가 달라 순위가 왜곡된다.
+
+    둘 다 status=SUCCESS라 상태만 보는 일관성 검사는 그냥 통과한다 —
+    source까지 봐야 이 케이스가 잡힌다.
+    """
+    prepared = prepare_candidates([MUSEUM_OPEN, RESTAURANT_FAR], now=NOW)
+    result = score_prepared_candidates(
+        prepared.eligible_candidates,
+        weather_condition=None,
+        max_distance_km=2.0,
+        walking_routes=[
+            _walking_route("p1", duration_seconds=300),  # 실측
+            _estimated_route("p5", duration_seconds=900),  # 추정
+        ],
+    )
+
+    assert [ranked.walking_duration_seconds for ranked in result.ranked] == [None, None]
