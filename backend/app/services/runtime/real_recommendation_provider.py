@@ -45,7 +45,7 @@ def _walking_routes_for(
     """도보 실측을 거리 Feature에 쓸 수 있는 요청인지 판정한다.
 
     거리 점수의 분모는 검색 반경을 도보 속도로 되돌린 값이라(`scoring.py::
-    _walking_minutes_budget()`), 반경이 도보 속도로 만들어진 요청에서만 분자와
+    _travel_minutes_budget()`), 반경이 도보 속도로 만들어진 요청에서만 분자와
     단위가 맞는다. `to_search_radius_km()`이 도보 속도를 쓰는 경우는 두 가지다.
 
     - `transport=WALK`: 사용자가 도보를 명시했다.
@@ -56,7 +56,7 @@ def _walking_routes_for(
     커져 있어 도보 시간을 쓰면 실제로 차로 금방 가는 곳까지 멀다고 깎는다.
     이때는 실측을 버리고 기존 직선거리 점수를 그대로 쓴다.
 
-    TODO: A가 `_fetch_walking_routes()`에서 이동수단을 보고 조회 자체를 건너뛰면
+    TODO: A가 `_fetch_travel_routes()`에서 이동수단을 보고 조회 자체를 건너뛰면
     여기서 버리는 낭비가 사라진다 — A와 조율 후 정리한다.
     """
     if conditions.transport is Transport.WALK or conditions.max_travel_time is None:

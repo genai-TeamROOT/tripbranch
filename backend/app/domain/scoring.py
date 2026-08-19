@@ -22,9 +22,9 @@ from enum import StrEnum
 
 from app.concentration_policy import ConcentrationLevel
 from app.domain.models import OperatingHours, ScoringCandidate, WeatherCondition
-from app.domain.travel_route import RouteSource, RouteStatus, TravelRoute
+from app.domain.travel_route import RouteSource, RouteStatus, TravelMode, TravelRoute
 from app.domain.weather_judgment import WeatherReason
-from app.place_search_policy import WALKING_SPEED_KM_PER_MINUTE
+from app.place_search_policy import TRAVEL_SPEED_KM_PER_MINUTE
 
 # B의 LLMOps Trace(record_trace(scoring_version=...))에 넘길 값 —
 # backend/docs/package-b/llmops-trace-contract-v1.md §7 Q2. B는 이 값의 의미를
@@ -268,12 +268,21 @@ def _distance_score(distance_km: float, max_distance_km: float) -> float:
     return _clamp(1.0 - distance_km / max_distance_km, 0.0, 1.0)
 
 
-def _walking_minutes_budget(max_distance_km: float) -> float:
-    """검색 반경을 도보 소요시간 예산(분)으로 되돌린다.
+def _travel_minutes_budget(max_distance_km: float, mode: TravelMode) -> float:
+    """검색 반경을 그 이동수단의 소요시간 예산(분)으로 되돌린다.
 
-    호출부(`to_search_radius_km()`)가 `max_travel_time × 도보 속도`로 반경을
+    호출부(`to_search_radius_km()`)가 `max_travel_time × 이동수단 속도`로 반경을
     만들었으므로, 같은 속도로 나누면 **사용자가 말한 이동시간이 그대로** 나온다.
+    그래서 여기서 쓰는 속도는 반경을 만든 속도와 반드시 같아야 한다
+    (`to_travel_mode()`가 두 선택을 한 조건으로 묶는다).
+
     이동시간을 말하지 않은 요청은 기본 반경(2.0km)에서 약 28.6분이 된다.
+
+    속도가 정의되지 않은 이동수단이 오면 KeyError로 멈춘다 — 조용히 도보 속도로
+    재는 것보다 낫다. 지금 그런 경로가 만들어지지 않는 이유는 Provider가 도보 외
+    mode를 거부하고 `TravelRouteTool`이 미등록 mode를 조회하지 않는 것이다.
+    `_applied_travel_route()`는 source만 보므로 이 역할을 하지 않는다
+    (place_search_policy.TRAVEL_SPEED_KM_PER_MINUTE 주석 참고).
 
     분모가 사용자 약속 그 자체라는 게 이 방식의 핵심이다. 우회 계수를 추정해
     보정하는 안도 있었지만, 그 계수의 근거가 약해서 택하지 않았다.
@@ -300,18 +309,18 @@ def _walking_minutes_budget(max_distance_km: float) -> float:
     4.20km/h로 잡아 **검색 반경 자체가 도보 기준으로 과대**하다는 데 있다.
     반경 산정을 조정하려면 C·A와 협의가 필요하다.
     """
-    return max_distance_km / WALKING_SPEED_KM_PER_MINUTE
+    return max_distance_km / TRAVEL_SPEED_KM_PER_MINUTE[mode]
 
 
-def _walking_time_score(duration_seconds: int, max_distance_km: float) -> float:
-    budget_minutes = _walking_minutes_budget(max_distance_km)
+def _travel_time_score(duration_seconds: int, max_distance_km: float, mode: TravelMode) -> float:
+    budget_minutes = _travel_minutes_budget(max_distance_km, mode)
     if budget_minutes <= 0:
         return 0.0
     return _clamp(1.0 - (duration_seconds / 60.0) / budget_minutes, 0.0, 1.0)
 
 
-def _applied_walking_route(route: TravelRoute | None) -> TravelRoute | None:
-    """실제로 채점에 쓸 수 있는 도보 경로만 남긴다.
+def _applied_travel_route(route: TravelRoute | None) -> TravelRoute | None:
+    """실제로 채점에 쓸 수 있는 경로만 남긴다.
 
     세 가지를 함께 봐야 한다.
 
@@ -341,9 +350,9 @@ def _applied_walking_route(route: TravelRoute | None) -> TravelRoute | None:
     return None
 
 
-def _walking_field(route: TravelRoute | None, field: str) -> int | None:
+def _travel_field(route: TravelRoute | None, field: str) -> int | None:
     """채점에 실제로 쓴 경로에서만 값을 꺼낸다 — 폴백 후보는 `None`이다."""
-    applied = _applied_walking_route(route)
+    applied = _applied_travel_route(route)
     return None if applied is None else getattr(applied, field)
 
 
@@ -358,10 +367,10 @@ def _proximity_score(
     있어서 결측이 아니고, 재분배를 태우면 도보 조회에 실패한 후보만 거리
     Feature가 빠져 오히려 유리해진다.
     """
-    applied = _applied_walking_route(route)
+    applied = _applied_travel_route(route)
     if applied is not None:
         assert applied.duration_seconds is not None
-        return _walking_time_score(applied.duration_seconds, max_distance_km)
+        return _travel_time_score(applied.duration_seconds, max_distance_km, applied.mode)
     return _distance_score(candidate.distance_km, max_distance_km)
 
 
@@ -473,7 +482,7 @@ def _consistent_routes(
     """
     routes_by_place_id = {route.place_id: route for route in travel_routes}
     applied = {
-        prepared.candidate.place_id: _applied_walking_route(
+        prepared.candidate.place_id: _applied_travel_route(
             routes_by_place_id.get(prepared.candidate.place_id)
         )
         for prepared in candidates
@@ -600,10 +609,10 @@ def score_prepared_candidates(
             weather_condition=weather_condition,
             weather_reason=weather_reason,
             environment_type=candidate.environment_type,
-            walking_distance_m=_walking_field(
+            walking_distance_m=_travel_field(
                 routes_by_place_id.get(candidate.place_id), "distance_m"
             ),
-            walking_duration_seconds=_walking_field(
+            walking_duration_seconds=_travel_field(
                 routes_by_place_id.get(candidate.place_id), "duration_seconds"
             ),
         )
