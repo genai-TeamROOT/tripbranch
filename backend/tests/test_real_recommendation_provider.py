@@ -15,11 +15,13 @@ from app.agent_context.enrichment_schemas import (
 )
 from app.agent_context.schemas import ContextError
 from app.domain.models import WeatherCondition
+from app.domain.travel_route import RouteSource, RouteStatus, WalkingRoute
 from app.errors import AppError
 from app.schemas import (
     ConcentrationIntent,
     RecommendationResponse,
     StatedWeather,
+    Transport,
     UserConditions,
     WeatherIntent,
 )
@@ -310,3 +312,76 @@ async def test_rerank_with_concentration_uses_resolve_weather_condition(
 
     assert captured["weather_condition"] == WeatherCondition.GOOD
     assert captured["weather_reason"] == "rain"
+
+
+# --- 도보 실측 전달 가드 (feat/walking-duration-scoring) --------------------
+
+_WALKING_ROUTE = WalkingRoute(
+    place_id="a",
+    status=RouteStatus.SUCCESS,
+    source=RouteSource.KAKAO_WALKING,
+    distance_m=400,
+    duration_seconds=340,
+)
+
+
+async def _captured_walking_routes(
+    monkeypatch: pytest.MonkeyPatch,
+    conditions: UserConditions,
+) -> object:
+    captured: dict[str, object] = {}
+    original = module.score_prepared_recommendation
+
+    async def _capture(prepared, **kwargs):
+        captured.update(kwargs)
+        return await original(prepared, **kwargs)
+
+    monkeypatch.setattr(module, "score_prepared_recommendation", _capture)
+
+    provider = RealRecommendationProvider()
+    prepared = await provider.prepare(
+        conditions,
+        _context(place_ids=["a"]),
+        excluded_place_ids=[],
+        visit_at=module.datetime.now(module._KST),
+    )
+    await provider.score_prepared(
+        conditions, prepared, walking_routes=(_WALKING_ROUTE,)
+    )
+    return captured["walking_routes"]
+
+
+@pytest.mark.asyncio
+async def test_walking_routes_are_used_when_transport_is_walk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    routes = await _captured_walking_routes(
+        monkeypatch, UserConditions(transport=Transport.WALK, max_travel_time=30)
+    )
+
+    assert routes == (_WALKING_ROUTE,)
+
+
+@pytest.mark.asyncio
+async def test_walking_routes_are_used_when_travel_time_is_unspecified(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """이동시간을 말하지 않으면 기본 반경(2.0km)이라 도보 시간으로 재도 맞는다."""
+    routes = await _captured_walking_routes(monkeypatch, UserConditions())
+
+    assert routes == (_WALKING_ROUTE,)
+
+
+@pytest.mark.asyncio
+async def test_walking_routes_are_dropped_for_non_walking_travel_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """차·대중교통 + 이동시간이면 반경이 20km/h 기준이라 도보 시간과 단위가 안 맞는다.
+
+    이때 실측을 쓰면 차로 금방 가는 곳까지 멀다고 깎이므로 직선거리를 유지한다.
+    """
+    routes = await _captured_walking_routes(
+        monkeypatch, UserConditions(transport=Transport.CAR, max_travel_time=30)
+    )
+
+    assert routes == ()

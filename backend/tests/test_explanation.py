@@ -24,9 +24,12 @@ from app.domain.models import OperatingHours, ScoringCandidate, WeatherCondition
 from app.domain.scoring import (
     CONCENTRATION_WEIGHTS,
     RankedCandidate,
+    prepare_candidates,
     redistribute_weights,
     score_candidates,
+    score_prepared_candidates,
 )
+from app.domain.travel_route import RouteSource, RouteStatus, WalkingRoute
 
 
 def _explanations_by_place_id(candidates, **kwargs) -> dict[str, tuple[str, ...]]:
@@ -393,3 +396,54 @@ def test_mismatched_environment_is_below_threshold() -> None:
     explanations = build_explanations(build_evidence(result.ranked[0]))
 
     assert not any("요청하신" in sentence for sentence in explanations)
+
+
+# --- 실측 도보 시간 문구 (feat/walking-distance-scoring) --------------------
+
+
+def _walking_explanations(
+    duration_seconds: int, *, distance_km: float = 0.437, max_distance_km: float = 2.0
+):
+    candidate = _single_distance_candidate(distance_km)
+    prepared = prepare_candidates([candidate], now=NOW)
+    result = score_prepared_candidates(
+        prepared.eligible_candidates,
+        weather_condition=None,
+        max_distance_km=max_distance_km,
+        walking_routes=[
+            WalkingRoute(
+                place_id=candidate.place_id,
+                status=RouteStatus.SUCCESS,
+                source=RouteSource.KAKAO_WALKING,
+                distance_m=int(distance_km * 1000),
+                duration_seconds=duration_seconds,
+            )
+        ],
+    )
+    return build_explanations(build_evidence(result.ranked[0]))
+
+
+def test_distance_sentence_uses_measured_walking_time() -> None:
+    """실측이 있으면 "직선거리"가 아니라 도보 시간으로 말한다.
+
+    점수도 같은 값으로 계산되므로 근거와 점수가 어긋나지 않는다.
+    """
+    assert _walking_explanations(420) == ("현재 위치에서 걸어서 약 7분 거리예요.",)
+
+
+def test_distance_sentence_formats_walking_time_over_an_hour() -> None:
+    """반경 20km면 도보 예산이 약 286분이라 75분도 임계값 이상으로 남는다."""
+    explanations = _walking_explanations(4500, max_distance_km=20.0)
+
+    assert explanations == ("현재 위치에서 걸어서 약 1시간 15분 거리예요.",)
+
+
+def test_distance_sentence_keeps_straight_line_wording_without_measurement() -> None:
+    """실측이 없으면 기존 직선거리 문구를 그대로 쓴다."""
+    explanations = _explanations_by_place_id(
+        (_single_distance_candidate(0.437),),
+        weather_condition=None,
+        max_distance_km=2.0,
+    )
+
+    assert explanations["dist"] == ("현재 위치에서 직선거리 약 440m예요.",)
