@@ -30,7 +30,7 @@ from app.domain.scoring import (
     score_candidates,
     score_prepared_candidates,
 )
-from app.domain.travel_route import RouteSource, RouteStatus, TravelRoute
+from app.domain.travel_route import RouteSource, RouteStatus, TravelMode, TravelRoute
 
 # 고정 기준 시각 (모든 테스트가 공유): 14:00
 NOW = datetime(2026, 7, 23, 14, 0, 0)
@@ -576,6 +576,7 @@ def _walking_route(
 ) -> TravelRoute:
     return TravelRoute(
         place_id=place_id,
+        mode=TravelMode.WALKING,
         status=status,
         source=RouteSource.KAKAO_WALKING,
         distance_m=None if duration_seconds is None else duration_seconds * 1,
@@ -666,6 +667,7 @@ def test_measured_route_is_exposed_on_ranked_candidate() -> None:
         travel_routes=[
             TravelRoute(
                 place_id="p1",
+                mode=TravelMode.WALKING,
                 status=RouteStatus.SUCCESS,
                 source=RouteSource.KAKAO_WALKING,
                 distance_m=620,
@@ -753,6 +755,7 @@ def _estimated_route(place_id: str, duration_seconds: int) -> TravelRoute:
     """TravelRouteTool의 폴백과 fake Provider가 내보내는 직선거리 추정값."""
     return TravelRoute(
         place_id=place_id,
+        mode=TravelMode.WALKING,
         status=RouteStatus.SUCCESS,  # 추정값도 SUCCESS로 온다 — 상태로는 구분 못 한다
         source=RouteSource.STRAIGHT_LINE_ESTIMATE,
         distance_m=duration_seconds,

@@ -29,7 +29,7 @@ from app.domain.scoring import (
     score_candidates,
     score_prepared_candidates,
 )
-from app.domain.travel_route import RouteSource, RouteStatus, TravelRoute
+from app.domain.travel_route import RouteSource, RouteStatus, TravelMode, TravelRoute
 
 
 def _explanations_by_place_id(candidates, **kwargs) -> dict[str, tuple[str, ...]]:
@@ -413,6 +413,7 @@ def _walking_explanations(
         travel_routes=[
             TravelRoute(
                 place_id=candidate.place_id,
+                mode=TravelMode.WALKING,
                 status=RouteStatus.SUCCESS,
                 source=RouteSource.KAKAO_WALKING,
                 distance_m=int(distance_km * 1000),

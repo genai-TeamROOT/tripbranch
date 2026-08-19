@@ -69,6 +69,7 @@ class TravelRouteTool:
             primary_result = await self._primary_provider.get_routes(
                 query.origin,
                 query.destinations,
+                mode=query.mode,
                 radius_m=query.radius_m,
             )
         except AppError as exc:
@@ -98,6 +99,7 @@ class TravelRouteTool:
             fallback_result = await self._fallback_provider.get_routes(
                 query.origin,
                 fallback_destinations,
+                mode=query.mode,
                 radius_m=query.radius_m,
             )
         except AppError as exc:
@@ -162,6 +164,7 @@ class TravelRouteTool:
             fallback_result = await self._fallback_provider.get_routes(
                 query.origin,
                 query.destinations,
+                mode=query.mode,
                 radius_m=query.radius_m,
             )
         except AppError as fallback_error:

@@ -15,7 +15,7 @@ from app.agent_context.enrichment_schemas import (
 )
 from app.agent_context.schemas import ContextError
 from app.domain.models import WeatherCondition
-from app.domain.travel_route import RouteSource, RouteStatus, TravelRoute
+from app.domain.travel_route import RouteSource, RouteStatus, TravelMode, TravelRoute
 from app.errors import AppError
 from app.schemas import (
     ConcentrationIntent,
@@ -318,6 +318,7 @@ async def test_rerank_with_concentration_uses_resolve_weather_condition(
 
 _WALKING_ROUTE = TravelRoute(
     place_id="a",
+    mode=TravelMode.WALKING,
     status=RouteStatus.SUCCESS,
     source=RouteSource.KAKAO_WALKING,
     distance_m=400,

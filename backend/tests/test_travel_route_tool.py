@@ -10,6 +10,7 @@ from app.domain.travel_route import (
     RouteDestination,
     RouteSource,
     RouteStatus,
+    TravelMode,
     TravelRoute,
     TravelRouteBatch,
 )
@@ -41,21 +42,23 @@ def _query() -> TravelRouteQuery:
 
 
 class _PartialProvider:
-    async def get_routes(self, origin, destinations, *, radius_m=None):
+    async def get_routes(self, origin, destinations, *, mode=TravelMode.WALKING, radius_m=None):
         return provider_result(
             TravelRouteBatch(
                 routes=(
                     TravelRoute(
-                        "first",
-                        RouteStatus.SUCCESS,
-                        RouteSource.KAKAO_WALKING,
+                        place_id="first",
+                        mode=TravelMode.WALKING,
+                        status=RouteStatus.SUCCESS,
+                        source=RouteSource.KAKAO_WALKING,
                         distance_m=100,
                         duration_seconds=90,
                     ),
                     TravelRoute(
-                        "second",
-                        RouteStatus.NO_DATA,
-                        RouteSource.KAKAO_WALKING,
+                        place_id="second",
+                        mode=TravelMode.WALKING,
+                        status=RouteStatus.NO_DATA,
+                        source=RouteSource.KAKAO_WALKING,
                         error_code="kakao_result_104",
                     ),
                 )
@@ -67,7 +70,7 @@ class _PartialProvider:
 
 
 class _FailingProvider:
-    async def get_routes(self, origin, destinations, *, radius_m=None):
+    async def get_routes(self, origin, destinations, *, mode=TravelMode.WALKING, radius_m=None):
         raise ProviderTimeoutError("Kakao Walking Route")
 
 

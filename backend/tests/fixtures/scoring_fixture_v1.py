@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, time
 
 from app.domain.models import OperatingHours, ScoringCandidate, WeatherCondition
-from app.domain.travel_route import RouteSource, RouteStatus, TravelRoute
+from app.domain.travel_route import RouteSource, RouteStatus, TravelMode, TravelRoute
 
 # 모든 케이스가 공유하는 기준 시각 (14:00).
 NOW = datetime(2026, 7, 23, 14, 0, 0)
@@ -109,6 +109,7 @@ class ScoringFixtureCase:
 def _walking_route(place_id: str, duration_seconds: int) -> TravelRoute:
     return TravelRoute(
         place_id=place_id,
+        mode=TravelMode.WALKING,
         status=RouteStatus.SUCCESS,
         source=RouteSource.KAKAO_WALKING,
         distance_m=duration_seconds,

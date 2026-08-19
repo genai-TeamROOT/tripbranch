@@ -10,6 +10,7 @@ from app.domain.travel_route import (
     RouteDestination,
     RouteSource,
     RouteStatus,
+    TravelMode,
 )
 from app.providers.contracts import ProviderSource, ProviderStatus
 from app.providers.walking_route import (
@@ -127,6 +128,8 @@ async def test_kakao_walking_route_isolates_timeout() -> None:
 
     assert all(route.status is RouteStatus.UNAVAILABLE for route in result.data.routes)
     assert all(route.error_code == "provider_timeout" for route in result.data.routes)
+    # 실패 경로도 이동수단 라벨을 잃지 않아야 소비 측이 무엇을 못 구한 건지 안다.
+    assert all(route.mode is TravelMode.WALKING for route in result.data.routes)
 
 
 @pytest.mark.asyncio
@@ -189,3 +192,35 @@ async def test_kakao_walking_route_enforces_internal_batch_and_positive_radius()
             await provider.get_routes(GeoCoordinate(37.57, 126.98), destinations)
         with pytest.raises(ValueError, match="0보다 커야"):
             await provider.get_routes(GeoCoordinate(37.57, 126.98), _destinations(), radius_m=0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [TravelMode.TRANSIT, TravelMode.DRIVING])
+async def test_kakao_walking_route_rejects_non_walking_mode(mode: TravelMode) -> None:
+    """도보 엔드포인트 응답을 다른 이동수단의 실측으로 라벨하지 않는지 확인한다."""
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover - 호출되면 실패
+        raise AssertionError("지원하지 않는 이동수단에서는 외부 호출이 없어야 한다.")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = RealKakaoWalkingRouteProvider("test-key", client)
+        with pytest.raises(ValueError, match="지원하지 않습니다"):
+            await provider.get_routes(
+                GeoCoordinate(37.57, 126.98), _destinations(), mode=mode
+            )
+
+
+@pytest.mark.asyncio
+async def test_kakao_walking_route_labels_routes_with_requested_mode() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"status": "OK", "route": {"properties": {"totalDistance": 100, "totalTime": 90}}},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await RealKakaoWalkingRouteProvider("test-key", client).get_routes(
+            GeoCoordinate(37.57, 126.98), _destinations(), mode=TravelMode.WALKING
+        )
+
+    assert [route.mode for route in result.data.routes] == [TravelMode.WALKING] * 2
