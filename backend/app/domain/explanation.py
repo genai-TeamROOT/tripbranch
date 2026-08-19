@@ -20,6 +20,7 @@ from collections.abc import Callable, Mapping
 from app.concentration_policy import ConcentrationLevel
 from app.domain.evidence import FeatureContribution, RecommendationEvidence
 from app.domain.models import WeatherCondition
+from app.domain.travel_route import TravelMode
 from app.domain.weather_judgment import WeatherReason
 
 # 이 점수 이상인 Feature만 "특별히 강조할 이유"로 문장화한다.
@@ -44,7 +45,7 @@ def _format_distance(distance_km: float) -> str:
     return f"직선거리 약 {km_text}km"
 
 
-def _format_walking_duration(duration_seconds: int) -> str:
+def _format_travel_duration(duration_seconds: int) -> str:
     minutes = max(1, round(duration_seconds / 60))
     hours, remainder = divmod(minutes, 60)
     if hours > 0 and remainder > 0:
@@ -55,13 +56,20 @@ def _format_walking_duration(duration_seconds: int) -> str:
 
 
 def _distance_sentence(evidence: RecommendationEvidence) -> str:
-    """실측 도보 시간이 있으면 그걸 말하고, 없으면 기존 직선거리 문구를 쓴다.
+    """실측 이동시간이 있으면 그걸 말하고, 없으면 기존 직선거리 문구를 쓴다.
 
     거리 Feature 점수도 같은 기준으로 계산되므로(`scoring.py::_proximity_score()`),
     점수와 근거 문장이 서로 다른 거리를 말하는 일이 없다.
+
+    "걸어서"는 도보 실측일 때만 쓴다. 다른 이동수단의 문구는 그 이동수단을
+    연결하는 카드가 여기에 추가한다 — 그때까지는 직선거리 문구로 돌아가므로,
+    자동차 실측을 "걸어서"라고 말하는 일은 없다.
     """
-    if evidence.walking_duration_seconds is not None:
-        walk_text = _format_walking_duration(evidence.walking_duration_seconds)
+    if (
+        evidence.travel_duration_seconds is not None
+        and evidence.travel_mode is TravelMode.WALKING
+    ):
+        walk_text = _format_travel_duration(evidence.travel_duration_seconds)
         return f"현재 위치에서 걸어서 약 {walk_text} 거리예요."
     return f"현재 위치에서 {_format_distance(evidence.distance_km)}예요."
 

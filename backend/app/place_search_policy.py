@@ -1,7 +1,22 @@
 """위치 기반 장소 수집과 거리 계산이 공유하는 정책 상수."""
 
+from app.domain.travel_route import TravelMode
+
 # 성인의 MVP 도보 이동속도 가정값(km/분): 1분에 약 70m를 이동한다.
 WALKING_SPEED_KM_PER_MINUTE = 0.07
+
+# 이동수단별 이동속도 가정값(km/분). 거리 점수의 시간 예산이 이 값으로 검색
+# 반경을 소요시간으로 되돌린다(domain/scoring.py::_travel_minutes_budget).
+#
+# 도보만 채워 둔다. 대중교통·자동차 속도는 각 이동수단 카드에서 실측 근거와 함께
+# 넣는다 — 근거 없는 숫자를 미리 적어두면 그게 검증된 값처럼 굳는다. 그 카드가
+# 함께 넓혀야 하는 곳이 하나 더 있다: scoring.py의 _applied_travel_route()가
+# 실측 여부를 RouteSource로 가리므로 새 이동수단의 source도 허용해야 한다. 둘 중
+# 하나만 바꾸면 채점이 속도를 못 찾아 KeyError로 멈춘다 — 조용히 도보 속도로
+# 재는 것보다 이 편이 낫다.
+TRAVEL_SPEED_KM_PER_MINUTE: dict[TravelMode, float] = {
+    TravelMode.WALKING: WALKING_SPEED_KM_PER_MINUTE,
+}
 
 # 이동시간 조건이 없을 때 A와 C가 공통으로 사용하는 기본 장소 검색 반경(km).
 DEFAULT_PLACE_SEARCH_RADIUS_KM = 2.0

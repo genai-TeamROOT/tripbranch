@@ -27,7 +27,7 @@ from app.agent_context.schemas import (
     AgentContextResponse,
     RecommendationContext,
 )
-from app.domain.travel_route import WalkingRoute
+from app.domain.travel_route import TravelRoute
 from app.schemas import RecommendationResponse, UserConditions
 from app.services.recommendation_pipeline import PreparedRecommendationResult
 from app.services.runtime.compare_context_schemas import (
@@ -143,7 +143,7 @@ class StagedRecommendationProvider(Protocol):
         conditions: UserConditions,
         prepared: PreparedRecommendationResult,
         *,
-        walking_routes: tuple[WalkingRoute, ...] = (),
+        travel_routes: tuple[TravelRoute, ...] = (),
         limit: int = 5,
     ) -> RecommendationResponse:
         """하드 필터 통과 후보와 A가 조회한 도보 정보를 받아 최종 추천한다."""

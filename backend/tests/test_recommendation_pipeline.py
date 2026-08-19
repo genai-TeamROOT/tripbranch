@@ -20,6 +20,7 @@ from app.agent_context.schemas import PlaceCandidate as AgentPlaceCandidate
 from app.concentration_policy import normalize_concentration
 from app.domain.operating_hours import normalize_operating_schedule
 from app.domain.scoring import CONCENTRATION_WEIGHTS
+from app.domain.travel_route import TravelMode
 from app.errors import AppError
 from app.schemas import (
     Environment,
@@ -608,8 +609,9 @@ def _first_pass_item(
     distance_km: float,
     distance_score: float,
     operating_hours_display: str | None = None,
-    walking_distance_m: int | None = None,
-    walking_duration_seconds: int | None = None,
+    travel_distance_m: int | None = None,
+    travel_duration_seconds: int | None = None,
+    travel_mode: TravelMode | None = None,
 ) -> RecommendationItem:
     return RecommendationItem(
         place_id=place_id,
@@ -618,8 +620,9 @@ def _first_pass_item(
         distance_km=distance_km,
         remaining_minutes=None,
         operating_hours_display=operating_hours_display,
-        walking_distance_m=walking_distance_m,
-        walking_duration_seconds=walking_duration_seconds,
+        travel_distance_m=travel_distance_m,
+        travel_duration_seconds=travel_duration_seconds,
+        travel_mode=travel_mode,
         environment_type="indoor",
         recommendation_reason="테스트용 1차 추천입니다.",
         explanations=[],
@@ -926,9 +929,10 @@ async def test_rerank_keeps_environment_feature_in_second_pass() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rerank_with_concentration_preserves_walking_measurements() -> None:
-    """2차는 RecommendationItem을 새로 만든다 — 도보 실측을 옮겨 담지 않으면
-    혼잡도 재순위를 탄 요청에서만 이 필드가 조용히 사라진다.
+async def test_rerank_with_concentration_preserves_travel_measurements() -> None:
+    """2차는 RecommendationItem을 새로 만든다 — 실측 이동 정보를 옮겨 담지 않으면
+    혼잡도 재순위를 탄 요청에서만 이 필드가 조용히 사라진다. mode도 함께 옮긴다:
+    수치만 남고 mode가 빠지면 프론트가 무슨 수단인지 다시 추측하게 된다.
     """
     first_pass = RecommendationResponse(
         recommendations=[
@@ -936,8 +940,9 @@ async def test_rerank_with_concentration_preserves_walking_measurements() -> Non
                 "place-1",
                 distance_km=0.1,
                 distance_score=0.95,
-                walking_distance_m=620,
-                walking_duration_seconds=530,
+                travel_distance_m=620,
+                travel_duration_seconds=530,
+                travel_mode=TravelMode.WALKING,
             )
         ],
         unverified_recommendations=[],
@@ -952,5 +957,6 @@ async def test_rerank_with_concentration_preserves_walking_measurements() -> Non
     result = await rerank_with_concentration(first_pass, None, concentration, seek=True)
 
     item = result.recommendations[0]
-    assert item.walking_distance_m == 620
-    assert item.walking_duration_seconds == 530
+    assert item.travel_distance_m == 620
+    assert item.travel_duration_seconds == 530
+    assert item.travel_mode is TravelMode.WALKING

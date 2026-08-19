@@ -7,6 +7,7 @@ from app.domain.travel_route import (
     RouteDestination,
     RouteSource,
     RouteStatus,
+    TravelMode,
 )
 from app.providers.contracts import ProviderSource, ProviderStatus
 from app.providers.walking_route import FakeWalkingRouteProvider
@@ -29,6 +30,7 @@ async def test_fake_walking_route_estimates_distance_and_duration() -> None:
     assert route.duration_seconds == route.distance_m
     assert route.status is RouteStatus.SUCCESS
     assert route.source is RouteSource.STRAIGHT_LINE_ESTIMATE
+    assert route.mode is TravelMode.WALKING
     assert result.metadata.source is ProviderSource.FAKE_WALKING_ROUTE
     assert result.metadata.status is ProviderStatus.SUCCESS
 
@@ -72,3 +74,20 @@ async def test_fake_walking_route_supports_same_origin_and_destination() -> None
     route = result.data.routes[0]
     assert route.distance_m == 0
     assert route.duration_seconds == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [TravelMode.TRANSIT, TravelMode.DRIVING])
+async def test_fake_walking_route_rejects_non_walking_mode(mode: TravelMode) -> None:
+    """도보 속도 추정값이 다른 이동수단의 실측인 척 나가지 않는지 확인한다."""
+    with pytest.raises(ValueError, match="지원하지 않습니다"):
+        await FakeWalkingRouteProvider(walking_speed_mps=1.2).get_routes(
+            GeoCoordinate(latitude=37.0, longitude=127.0),
+            (
+                RouteDestination(
+                    place_id="north",
+                    coordinate=GeoCoordinate(latitude=38.0, longitude=127.0),
+                ),
+            ),
+            mode=mode,
+        )

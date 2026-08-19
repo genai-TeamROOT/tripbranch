@@ -18,7 +18,12 @@ from fixtures.scoring_fixture_v1 import (
 )
 
 from app.concentration_policy import ConcentrationLevel
-from app.domain.evidence import CONCENTRATION_FEATURE_ORDER, build_evidence
+from app.domain.evidence import (
+    CONCENTRATION_FEATURE_ORDER,
+    FeatureContribution,
+    RecommendationEvidence,
+    build_evidence,
+)
 from app.domain.explanation import build_explanations
 from app.domain.models import OperatingHours, ScoringCandidate, WeatherCondition
 from app.domain.scoring import (
@@ -29,7 +34,7 @@ from app.domain.scoring import (
     score_candidates,
     score_prepared_candidates,
 )
-from app.domain.travel_route import RouteSource, RouteStatus, WalkingRoute
+from app.domain.travel_route import RouteSource, RouteStatus, TravelMode, TravelRoute
 
 
 def _explanations_by_place_id(candidates, **kwargs) -> dict[str, tuple[str, ...]]:
@@ -410,9 +415,10 @@ def _walking_explanations(
         prepared.eligible_candidates,
         weather_condition=None,
         max_distance_km=max_distance_km,
-        walking_routes=[
-            WalkingRoute(
+        travel_routes=[
+            TravelRoute(
                 place_id=candidate.place_id,
+                mode=TravelMode.WALKING,
                 status=RouteStatus.SUCCESS,
                 source=RouteSource.KAKAO_WALKING,
                 distance_m=int(distance_km * 1000),
@@ -447,3 +453,32 @@ def test_distance_sentence_keeps_straight_line_wording_without_measurement() -> 
     )
 
     assert explanations["dist"] == ("현재 위치에서 직선거리 약 440m예요.",)
+
+
+def test_distance_sentence_does_not_claim_walking_for_another_mode() -> None:
+    """도보가 아닌 실측을 "걸어서"라고 말하지 않는다.
+
+    대중교통·자동차 문구는 그 이동수단을 연결하는 카드가 추가한다 — 그때까지는
+    직선거리 문구로 돌아간다.
+    """
+    evidence = RecommendationEvidence(
+        place_id="p1",
+        name="장소A",
+        category="cafe",
+        rank=1,
+        score=0.5,
+        contributions=(
+            FeatureContribution(feature="distance", score=0.9, weight=0.2, contribution=0.18),
+        ),
+        is_unverified=False,
+        warnings=(),
+        distance_km=1.4,
+        remaining_minutes=None,
+        weather_condition=None,
+        environment_type="indoor",
+        travel_distance_m=1800,
+        travel_duration_seconds=600,
+        travel_mode=TravelMode.DRIVING,
+    )
+
+    assert build_explanations(evidence) == ("현재 위치에서 직선거리 약 1.4km예요.",)

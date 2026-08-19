@@ -10,6 +10,9 @@ export type WeatherCondition = "good" | "neutral" | "bad";
 
 export type EnvironmentType = "indoor" | "outdoor" | "mixed" | "unknown";
 
+/** 실측 경로를 조회한 이동수단. 지금 서버가 실제로 내려보내는 값은 "walking"뿐이다. */
+export type TravelMode = "walking" | "transit" | "driving";
+
 export interface InterpretedConditions {
   location_query: string;
   preferred_categories: string[];
@@ -33,6 +36,15 @@ export interface RecommendationItem {
   remaining_minutes: number | null;
   /** D가 현재 적용한 당일 운영 구간으로 만든 표기값. 예: "09:00~18:00" */
   operating_hours_display?: string | null;
+  /*
+   * 실측 경로로 잰 이동 거리·시간과 그 이동수단. 세 값은 함께 채워지거나 함께
+   * null이다. null이면 실측이 없다는 뜻이므로 distance_km(직선거리)로만 말한다 —
+   * 프론트가 직선거리에 임의 속도를 곱해 시간을 만들면 근거 문장과 다른 값이
+   * 표시된다(TP-102에서 41분 vs 24분으로 드러났다).
+   */
+  travel_distance_m?: number | null;
+  travel_duration_seconds?: number | null;
+  travel_mode?: TravelMode | null;
   environment_type: EnvironmentType;
   recommendation_reason: string;
   explanations: string[];

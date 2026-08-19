@@ -10,11 +10,16 @@
 서로 다른 변환 지점을 섞지 않는다.
 이 파일은 D 내부(app.domain.*, app.services.recommendation_pipeline)를 전혀
 import하지 않는다 — D 호출은 app.services.runtime.real_recommendation_provider가
-담당한다.
+담당한다. 예외는 순수 도메인 계약인 app.domain.travel_route(TravelMode)뿐이다.
+
+to_travel_mode()는 A→C(경로 Tool 질의)에 쓰이지만 여기 둔다. 반경 산정과 같은
+조건을 봐야만 실측 이동수단과 거리 점수 분모의 단위가 맞기 때문에(D-042 성격의
+조용한 불일치를 막는다), 두 함수를 떼어놓지 않는 것을 우선했다.
 """
 
 from __future__ import annotations
 
+from app.domain.travel_route import TravelMode
 from app.place_search_policy import (
     DEFAULT_PLACE_SEARCH_RADIUS_KM,
     MAX_PLACE_SEARCH_RADIUS_KM,
@@ -35,6 +40,37 @@ from app.state.service import RecommendedPlace, RecordRecommendationRequest
 _OTHER_KM_PER_MIN = 20 / 60  # 임시: 대중교통/자동차/미언급 공통 가정(20km/h)
 
 
+def _radius_uses_walking_speed(conditions: UserConditions) -> bool:
+    """검색 반경이 도보 속도로 만들어지는 요청인지 판정한다.
+
+    반경 산정(to_search_radius_km)과 실측 이동수단 선택(to_travel_mode)이 같은
+    조건을 봐야 한다 — 거리 점수의 분모가 반경을 이동수단 속도로 되돌린 값이라
+    (scoring.py::_travel_minutes_budget) 둘이 어긋나면 분자와 단위가 맞지 않는다.
+    """
+    return conditions.transport is Transport.WALK or conditions.max_travel_time is None
+
+
+def to_travel_mode(conditions: UserConditions) -> TravelMode | None:
+    """실측 경로를 어떤 이동수단으로 조회할지 정한다. None이면 조회하지 않는다.
+
+    반경이 도보 속도로 만들어진 요청(도보 명시 또는 이동시간 미언급의 기본
+    반경)은 도보로 조회한다.
+
+    이동수단을 말하지 않고 이동시간만 말한 요청은 반경이 20km/h 가정으로
+    커져 있지만(_OTHER_KM_PER_MIN) 그 20km/h가 대중교통인지 자동차인지는
+    발화에 없다. 무엇으로 재야 할지 모르므로 실측하지 않는다 — 지금도 그
+    경우 D가 도보 실측을 버리므로(real_recommendation_provider.py의
+    _walking_routes_for) 결과는 같고, 낭비 호출만 사라진다.
+    """
+    if _radius_uses_walking_speed(conditions):
+        return TravelMode.WALKING
+    if conditions.transport is Transport.PUBLIC:
+        return TravelMode.TRANSIT
+    if conditions.transport is Transport.CAR:
+        return TravelMode.DRIVING
+    return None
+
+
 def to_search_radius_km(conditions: UserConditions) -> float:
     """A의 이동시간과 이동수단 조건을 검색 반경(km)으로 변환한다.
 
@@ -47,7 +83,7 @@ def to_search_radius_km(conditions: UserConditions) -> float:
 
     speed_km_per_min = (
         WALKING_SPEED_KM_PER_MINUTE
-        if conditions.transport is Transport.WALK
+        if _radius_uses_walking_speed(conditions)
         else _OTHER_KM_PER_MIN
     )
     radius = speed_km_per_min * conditions.max_travel_time

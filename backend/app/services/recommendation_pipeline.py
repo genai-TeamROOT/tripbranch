@@ -31,7 +31,7 @@ from app.domain.scoring import (
     score_prepared_candidates,
     weights_for_feature_scores,
 )
-from app.domain.travel_route import WalkingRoute
+from app.domain.travel_route import TravelRoute
 from app.domain.weather_judgment import (
     WeatherReason,
     judge_weather_condition_from_facts,
@@ -254,7 +254,7 @@ async def score_prepared_recommendation(
     search_radius_km: float,
     recommendation_limit: int = DEFAULT_RECOMMENDATION_RESULT_LIMIT,
     # A가 조회한 실측 도보 경로. 비어 있으면 거리 Feature가 직선거리로 계산된다.
-    walking_routes: Sequence[WalkingRoute] = (),
+    travel_routes: Sequence[TravelRoute] = (),
     timer: Timer = perf_counter,
 ) -> RecommendationResponse:
     """준비된 후보를 채점하고 Evidence·Explanation 응답을 조립한다.
@@ -272,7 +272,7 @@ async def score_prepared_recommendation(
         weather_reason=prepared.weather_reason,
         max_distance_km=search_radius_km,
         requested_environment=prepared.requested_environment,
-        walking_routes=walking_routes,
+        travel_routes=travel_routes,
     )
     ranked = scoring.ranked[:recommendation_limit]
     # 결과가 0건이고, 그 이유가 전부 폐점 후보 제외였다면(다른 이유로 제외된 후보가
@@ -471,11 +471,12 @@ async def rerank_with_concentration(
             # 혼잡도와 무관하게 변하지 않으므로 그대로 가져온다. 여기서 빠뜨리면
             # 혼잡도 재순위를 탄 요청만 이 필드가 조용히 사라진다.
             operating_hours_display=item.operating_hours_display,
-            # 혼잡도 재순위는 후보를 다시 만들지 않으므로 도보 실측도
+            # 혼잡도 재순위는 후보를 다시 만들지 않으므로 실측 이동 정보도
             # 1차 값을 그대로 가져온다 — 여기서 빠뜨리면 2차를 탄
             # 요청만 이 필드가 조용히 사라진다.
-            walking_distance_m=item.walking_distance_m,
-            walking_duration_seconds=item.walking_duration_seconds,
+            travel_distance_m=item.travel_distance_m,
+            travel_duration_seconds=item.travel_duration_seconds,
+            travel_mode=item.travel_mode,
             environment_type=item.environment_type,
             recommendation_reason=_recommendation_reason(candidate),
             explanations=list(explanations),
@@ -601,8 +602,9 @@ def _build_response(
             distance_km=round(candidate.distance_km, 2),
             remaining_minutes=_remaining_minutes(candidate, visit_at),
             operating_hours_display=_operating_hours_display(candidate),
-            walking_distance_m=ranked_item.walking_distance_m,
-            walking_duration_seconds=ranked_item.walking_duration_seconds,
+            travel_distance_m=ranked_item.travel_distance_m,
+            travel_duration_seconds=ranked_item.travel_duration_seconds,
+            travel_mode=ranked_item.travel_mode,
             environment_type=candidate.environment_type,
             recommendation_reason=_recommendation_reason(ranked_item),
             explanations=list(explanations),

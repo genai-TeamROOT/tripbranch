@@ -1,5 +1,5 @@
-"""to_search_radius_km/to_concentration_entries/to_record_recommendation_request
-단위 테스트.
+"""to_search_radius_km/to_travel_mode/to_concentration_entries/
+to_record_recommendation_request 단위 테스트.
 
 날씨 조건 변환(옛 to_weather_condition())은 D-051로 D에 이관돼 제거됐다 —
 resolve_weather_condition()에 대한 검증은 test_real_recommendation_provider.py와
@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.agent_context.service import _resolve_search_radius_km as _c_resolve_search_radius_km
+from app.domain.travel_route import TravelMode
 from app.place_search_policy import DEFAULT_PLACE_SEARCH_RADIUS_KM
 from app.schemas import (
     RecommendationItem,
@@ -25,6 +26,7 @@ from app.services.runtime.recommendation_transform import (
     to_concentration_entries,
     to_record_recommendation_request,
     to_search_radius_km,
+    to_travel_mode,
 )
 
 
@@ -43,6 +45,37 @@ def _item(place_id: str) -> RecommendationItem:
         feature_scores={},
         weights_used={},
     )
+
+
+class TestToTravelMode:
+    """실측 이동수단 선택. 반경 산정과 같은 조건을 봐야 단위가 맞는다."""
+
+    def test_walk_uses_walking(self) -> None:
+        conditions = UserConditions(transport=Transport.WALK, max_travel_time=30)
+        assert to_travel_mode(conditions) is TravelMode.WALKING
+
+    @pytest.mark.parametrize("transport", [Transport.WALK, Transport.PUBLIC, Transport.CAR, None])
+    def test_no_travel_time_uses_walking_like_the_default_radius(
+        self,
+        transport: Transport | None,
+    ) -> None:
+        """이동시간 미언급은 기본 반경(도보 기준)이므로 이동수단과 무관하게 도보로 잰다.
+
+        이 케이스는 카드 이전 동작과 같아야 한다 — 그때도 D가 도보 실측을 받았다.
+        """
+        assert to_travel_mode(UserConditions(transport=transport)) is TravelMode.WALKING
+
+    def test_public_uses_transit(self) -> None:
+        conditions = UserConditions(transport=Transport.PUBLIC, max_travel_time=30)
+        assert to_travel_mode(conditions) is TravelMode.TRANSIT
+
+    def test_car_uses_driving(self) -> None:
+        conditions = UserConditions(transport=Transport.CAR, max_travel_time=30)
+        assert to_travel_mode(conditions) is TravelMode.DRIVING
+
+    def test_unstated_transport_with_travel_time_has_no_mode(self) -> None:
+        """20km/h 가정이 대중교통인지 자동차인지 발화에 없으므로 실측하지 않는다."""
+        assert to_travel_mode(UserConditions(max_travel_time=30)) is None
 
 
 class TestToSearchRadiusKm:

@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from app.config import Settings
+from app.domain.travel_route import TravelMode
 from app.errors import AppError
 from app.providers import factory
 from app.providers.walking_route import FakeWalkingRouteProvider
@@ -154,11 +155,11 @@ def test_get_walking_route_provider_builds_real_provider(monkeypatch) -> None:
 
 def test_get_travel_route_tool_adds_fallback_only_in_real_mode(monkeypatch) -> None:
     primary = object()
-    captured: dict[str, object] = {}
+    captured: dict[object, object] = {}
 
     class _RecordingTravelRouteTool:
-        def __init__(self, **kwargs: object) -> None:
-            captured.update(kwargs)
+        def __init__(self, providers: dict[object, object]) -> None:
+            captured.update(providers)
 
     monkeypatch.setattr(factory, "TravelRouteTool", _RecordingTravelRouteTool)
     monkeypatch.setattr(factory, "get_walking_route_provider", lambda client: primary)
@@ -174,7 +175,9 @@ def test_get_travel_route_tool_adds_fallback_only_in_real_mode(monkeypatch) -> N
 
     factory.get_travel_route_tool(object())  # type: ignore[arg-type]
 
-    assert captured["primary_provider"] is primary
-    fallback = captured["fallback_provider"]
-    assert isinstance(fallback, FakeWalkingRouteProvider)
-    assert fallback._walking_speed_mps == 1.1
+    # 등록된 이동수단은 도보뿐이다 — 나머지는 Tool이 호출 없이 NO_DATA로 답한다.
+    assert list(captured) == [TravelMode.WALKING]
+    walking = captured[TravelMode.WALKING]
+    assert walking.primary is primary
+    assert isinstance(walking.fallback, FakeWalkingRouteProvider)
+    assert walking.fallback._walking_speed_mps == 1.1

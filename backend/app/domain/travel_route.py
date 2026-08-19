@@ -21,7 +21,11 @@ class GeoCoordinate:
 
 
 class TravelMode(StrEnum):
+    """조회 대상 이동수단. `Transport`(사용자 조건)와 달리 경로 조회 축이다."""
+
     WALKING = "walking"
+    TRANSIT = "transit"
+    DRIVING = "driving"
 
 
 class RouteSource(StrEnum):
@@ -46,10 +50,16 @@ class RouteDestination:
 
 
 @dataclass(frozen=True)
-class WalkingRoute:
-    """목적지 한 곳의 정규화된 도보 이동 결과."""
+class TravelRoute:
+    """목적지 한 곳의 정규화된 이동 결과.
+
+    `mode`는 기본값을 두지 않는다. 어떤 이동수단으로 잰 값인지가 소비 측의
+    판정(속도 예산·응답 표기)을 직접 움직이므로, 기본값으로 조용히 도보라고
+    적히면 대중교통 결과가 도보로 채점된다.
+    """
 
     place_id: str
+    mode: TravelMode
     status: RouteStatus
     source: RouteSource
     distance_m: int | None = None
@@ -70,6 +80,6 @@ class WalkingRoute:
 
 
 @dataclass(frozen=True)
-class WalkingRouteBatch:
-    routes: tuple[WalkingRoute, ...]
+class TravelRouteBatch:
+    routes: tuple[TravelRoute, ...]
     transaction_id: str | None = None

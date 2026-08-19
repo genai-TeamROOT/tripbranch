@@ -14,6 +14,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.domain.travel_route import TravelMode
 from app.state.service import StateApplyResponse
 
 
@@ -69,11 +70,14 @@ class RecommendationItem(BaseModel):
     # remaining_minutes만으로는 "언제부터"를 표시할 수 없어 함께 내려준다.
     # 운영시간 미확인 후보는 None이다.
     operating_hours_display: str | None = None
-    # 카카오 도보 경로로 실측한 값. 이 값이 있으면 거리 Feature 점수도 직선거리가
-    # 아니라 이 소요시간으로 계산된 것이다. 조회에 실패했거나 도보가 아닌 이동수단
-    # 요청이면 None이고, 그때는 distance_km(직선거리)가 유일한 거리 정보다.
-    walking_distance_m: int | None = None
-    walking_duration_seconds: int | None = None
+    # 실측 경로로 잰 값. 이 값이 있으면 거리 Feature 점수도 직선거리가 아니라 이
+    # 소요시간으로 계산된 것이다. 조회에 실패했거나 그 이동수단의 경로 Provider가
+    # 아직 없으면 세 필드 모두 None이고, 그때는 distance_km(직선거리)가 유일한
+    # 거리 정보다. travel_mode는 어떤 이동수단으로 잰 값인지를 말한다 — 프론트가
+    # "도보 이동"인지 다른 수단인지 스스로 추측하지 않게 하려고 함께 내려준다.
+    travel_distance_m: int | None = None
+    travel_duration_seconds: int | None = None
+    travel_mode: TravelMode | None = None
     environment_type: str
     recommendation_reason: str
     explanations: list[str]

@@ -29,7 +29,8 @@ from app.domain.models import (
 from app.domain.travel_route import (
     GeoCoordinate,
     RouteDestination,
-    WalkingRouteBatch,
+    TravelMode,
+    TravelRouteBatch,
 )
 from app.place_search_policy import DEFAULT_PLACE_PROVIDER_RESULT_LIMIT
 from app.providers.contracts import ProviderResult
@@ -238,15 +239,21 @@ class WeatherProvider(Protocol):
         ...
 
 
-class WalkingRouteProvider(Protocol):
+class TravelRouteProvider(Protocol):
     async def get_routes(
         self,
         origin: GeoCoordinate,
         destinations: tuple[RouteDestination, ...],
         *,
+        mode: TravelMode,
         radius_m: int | None = None,
-    ) -> ProviderResult[WalkingRouteBatch]:
-        """출발지에서 여러 목적지까지의 도보 경로를 목적지 순서대로 반환한다."""
+    ) -> ProviderResult[TravelRouteBatch]:
+        """출발지에서 여러 목적지까지의 경로를 목적지 순서대로 반환한다.
+
+        구현체는 자신이 지원하지 않는 `mode`를 받으면 ValueError를 던진다 —
+        지원 여부는 `TravelRouteTool`의 mode별 등록으로 가르고, 여기서는
+        잘못 배선된 경우를 조용히 통과시키지 않는 것이 목적이다.
+        """
         ...
 
 
