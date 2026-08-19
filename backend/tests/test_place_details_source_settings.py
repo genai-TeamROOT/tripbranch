@@ -48,7 +48,7 @@ def test_supabase_source_requires_credentials() -> None:
         _env_file=None,
         provider_mode="fake",
         place_provider="real",
-        **{"TOUR_API_SERVICE_KEY": "key"},
+        tour_api_service_key="key",
         place_details_source="supabase",
     )
 
@@ -65,7 +65,7 @@ def test_supabase_source_passes_validation_with_credentials() -> None:
         _env_file=None,
         provider_mode="fake",
         place_provider="real",
-        **{"TOUR_API_SERVICE_KEY": "key"},
+        tour_api_service_key="key",
         place_details_source="supabase",
         supabase_url="https://example.supabase.co",
         supabase_secret_key="secret",
@@ -83,7 +83,7 @@ async def test_factory_builds_supabase_details_provider(monkeypatch) -> None:
             _env_file=None,
             provider_mode="real",
             place_details_source="supabase",
-            **{"TOUR_API_SERVICE_KEY": "key"},
+            tour_api_service_key="key",
             supabase_url="https://example.supabase.co",
             supabase_secret_key="secret",
         ),
@@ -106,7 +106,7 @@ async def test_factory_keeps_tour_api_details_provider(monkeypatch) -> None:
             _env_file=None,
             provider_mode="real",
             place_details_source="tour_api",
-            **{"TOUR_API_SERVICE_KEY": "key"},
+            tour_api_service_key="key",
         ),
     )
 
