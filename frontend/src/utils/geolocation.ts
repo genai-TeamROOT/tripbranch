@@ -10,6 +10,14 @@ const GEOLOCATION_OPTIONS: PositionOptions = {
   maximumAge: 60000,
 };
 
+interface BrowserLocationOptions {
+  /**
+   * 사용자가 "현재 위치 다시 가져오기"를 선택했을 때만 사용한다. 브라우저가
+   * 직전 캐시를 돌려주지 않도록 maximumAge를 0으로 낮춘다.
+   */
+  forceFresh?: boolean;
+}
+
 /**
  * 로컬 Vite 개발 서버에서만 쓸 수 있는 고정 좌표다. Codex 같은 자동화 브라우저는
  * macOS 위치 권한 팝업을 승인할 수 없는 경우가 있어, 명시적으로 설정했을 때만
@@ -49,7 +57,7 @@ function locationErrorMessage(error: GeolocationPositionError) {
   return `위치를 가져오지 못했어요: ${error.message}`;
 }
 
-export function getBrowserDeviceLocation(): Promise<string> {
+export function getBrowserDeviceLocation(options: BrowserLocationOptions = {}): Promise<string> {
   const testLocation = testDeviceLocation();
   if (testLocation) return Promise.resolve(testLocation);
 
@@ -64,7 +72,7 @@ export function getBrowserDeviceLocation(): Promise<string> {
         resolve(`${latitude},${longitude}`);
       },
       (error) => reject(new Error(locationErrorMessage(error))),
-      GEOLOCATION_OPTIONS,
+      options.forceFresh ? { ...GEOLOCATION_OPTIONS, maximumAge: 0 } : GEOLOCATION_OPTIONS,
     );
   });
 }

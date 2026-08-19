@@ -27,6 +27,7 @@ import csv
 import hashlib
 import json
 import math
+import re
 import statistics
 import sys
 import time
@@ -486,6 +487,7 @@ def write_markdown_report(
         "",
         f"- 실행 ID: `{summary['run_id']}`",
         f"- 실행 시각: {summary['created_at']}",
+        f"- 프롬프트 기준선: `{summary.get('prompt_variant', 'current')}`",
         f"- 평가셋: `{summary['split']}` · {summary['case_count']}건 / {summary['turn_count']}턴",
         f"- 골드셋 해시: `{summary['dataset_digest']}`",
         "",
@@ -626,6 +628,7 @@ def append_history(summary: dict[str, Any]) -> dict[str, str] | None:
             for row in reversed(_read_history())
             if row.get("split") == summary["split"]
             and row.get("dataset_digest") == summary["dataset_digest"]
+            and row.get("prompt_variant", "current") == summary["prompt_variant"]
         ),
         None,
     )
@@ -634,6 +637,7 @@ def append_history(summary: dict[str, Any]) -> dict[str, str] | None:
         "created_at",
         "split",
         "dataset_digest",
+        "prompt_variant",
         "case_count",
         "turn_count",
         "intent_accuracy",
@@ -685,6 +689,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="TripBranch Agent 골드셋 평가")
     parser.add_argument("--split", choices=("dev", "final", "all"), default="dev")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
+    parser.add_argument(
+        "--prompt-variant",
+        default="current",
+        help=(
+            "평가 중인 서버의 TRIPBRANCH_PROMPT_VARIANT 값. 서버 설정을 바꾸지는 않고 "
+            "결과 식별·비교에만 사용한다."
+        ),
+    )
     parser.add_argument("--timeout-seconds", type=float, default=90.0)
     parser.add_argument("--interval-seconds", type=float, default=DEFAULT_INTERVAL_SECONDS)
     parser.add_argument("--limit", type=int, default=None, help="점검용으로 앞 N개 케이스만 실행")
@@ -709,7 +721,11 @@ def main() -> None:
             continue
 
         started_at = datetime.now().astimezone()
-        run_id = f"{started_at.strftime('%Y-%m-%d_%H%M')}_{split}_{len(cases)}cases_{digest}"
+        variant_slug = re.sub(r"[^A-Za-z0-9._-]+", "-", args.prompt_variant).strip("-")
+        run_id = (
+            f"{started_at.strftime('%Y-%m-%d_%H%M')}_{split}_{variant_slug}_"
+            f"{len(cases)}cases_{digest}"
+        )
         run_dir = QUALITY_DIR / "runs" / run_id
         results: list[CaseResult] = []
         with httpx.Client(timeout=args.timeout_seconds) as client:
@@ -733,6 +749,7 @@ def main() -> None:
                 "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
                 "split": split,
                 "dataset_digest": digest,
+                "prompt_variant": args.prompt_variant,
             }
         )
         previous = append_history(summary)

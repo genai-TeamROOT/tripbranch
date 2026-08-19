@@ -31,6 +31,9 @@ function isTripState(value: unknown): value is TripState {
     state.messages.every(isChatMessage) &&
     isChatPhase(state.phase) &&
     (state.device_location === null || typeof state.device_location === "string") &&
+    (state.device_location_captured_at === undefined ||
+      state.device_location_captured_at === null ||
+      typeof state.device_location_captured_at === "number") &&
     (state.error === null || typeof state.error === "string")
   );
 }
@@ -116,7 +119,14 @@ export function loadState(): TripState | null {
     if (parsed.version !== STORAGE_VERSION || !isTripState(parsed.state)) return null;
     // 스트리밍 진행 상태는 새로고침 뒤에 복원하면 이미 끊긴 HTTP 연결을 계속 표시하게
     // 된다. 이전 버전 저장본에 이 필드가 없던 경우까지 함께 null로 정규화한다.
-    return { ...parsed.state, agentProgress: null, streamingIntent: null };
+    return {
+      ...parsed.state,
+      // 기존 저장본(v5)은 위치를 받은 시각이 없다. 정확한 시각을 알 수 없는 좌표는
+      // 다음 후속 요청에서 갱신 여부를 사용자에게 묻는다.
+      device_location_captured_at: parsed.state.device_location_captured_at ?? null,
+      agentProgress: null,
+      streamingIntent: null,
+    };
   } catch {
     return null;
   }

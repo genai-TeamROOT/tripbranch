@@ -78,6 +78,7 @@ def test_markdown_report_explains_metrics_and_mismatch(tmp_path) -> None:
             "created_at": "2026-08-14T12:00:00+09:00",
             "split": "dev",
             "dataset_digest": "example",
+            "prompt_variant": "router-context@legacy-1.0.0",
         }
     )
 
@@ -97,3 +98,4 @@ def test_markdown_report_explains_metrics_and_mismatch(tmp_path) -> None:
     assert "## 혼동행렬" in report
     assert "## 불일치·오류 케이스" in report
     assert "조건 불일치" in report
+    assert "router-context@legacy-1.0.0" in report

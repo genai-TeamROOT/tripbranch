@@ -15,6 +15,7 @@ import { useEffect, useState } from "react";
 import type { AgentProgressEvent, ChatMessage } from "../../types";
 import { AgentProgressMessage } from "./AgentProgressMessage";
 import { ClarificationMessage } from "./ClarificationMessage";
+import { LocationRefreshMessage } from "./LocationRefreshMessage";
 import { ConditionDebugMessage } from "./ConditionDebugMessage";
 import { PlaceInfoCard } from "./PlaceInfoCard";
 import { RecommendationResultMessage } from "./RecommendationResultMessage";
@@ -70,6 +71,11 @@ interface ChatMessageListProps {
   onRequestMore: () => void;
   onRelaxRadius: () => void;
   onSelectClarificationOption: (optionId: string, label: string) => void;
+  locationRefresh: {
+    ageMinutes: number | null;
+    onUsePrevious: () => void;
+    onRefreshLocation: () => void;
+  } | null;
   progress: AgentProgressEvent | null;
 }
 
@@ -83,6 +89,7 @@ export function ChatMessageList({
   onRequestMore,
   onRelaxRadius,
   onSelectClarificationOption,
+  locationRefresh,
   progress,
 }: ChatMessageListProps) {
   return (
@@ -199,6 +206,14 @@ export function ChatMessageList({
             />
           );
         })}
+      {locationRefresh && (
+        <LocationRefreshMessage
+          ageMinutes={locationRefresh.ageMinutes}
+          isLoading={isLoading}
+          onUsePrevious={locationRefresh.onUsePrevious}
+          onRefreshLocation={locationRefresh.onRefreshLocation}
+        />
+      )}
       {isLoading && (
         <AgentProgressMessage
           hasDeviceLocation={hasDeviceLocation}
