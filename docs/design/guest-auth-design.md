@@ -265,9 +265,17 @@ Supabase Auth는 신원 발급 용도로만 쓰고, 데이터 접근은 지금�
 
 - Supabase 대시보드에서 익명 로그인(Anonymous sign-ins)을 활성화한다. 코드로 켤 수
   없는 항목이다.
-- **CAPTCHA(hCaptcha/Turnstile) 또는 rate limit을 함께 켠다.** 익명 로그인은 누구나
-  무제한으로 사용자를 만들 수 있는 엔드포인트다. 방치하면 `auth.users`가 부풀고
-  MAU에 그대로 집계된다.
+- **남용 방지는 rate limit을 먼저 쓰고, CAPTCHA는 조건부로 둔다.** 익명 로그인은
+  이메일·비밀번호 같은 자연스러운 장벽이 없어 스크립트로 반복 호출하면 `auth.users`가
+  계속 쌓이고, 익명 사용자도 MAU에 그대로 집계된다.
+  - Authentication → Rate Limits의 익명 로그인 항목(기본 IP당 시간당 30회)을 먼저
+    확인한다. 정상 사용자는 기기당 사실상 1회만 호출하므로 이 값으로 대량 생성은
+    막힌다.
+  - CAPTCHA(hCaptcha/Cloudflare Turnstile)는 **익명 사용자 수가 실제로 비정상적으로
+    늘어날 때 켠다.** 켜는 순간 모든 auth 엔드포인트에 적용되므로 이후 소셜 로그인까지
+    영향을 받고, 외부 서비스 가입·키 발급·프론트 위젯·`options.captchaToken` 전달
+    배선이 함께 필요하다. 지금 단계에서 선제적으로 지불할 비용은 아니다.
+  - 켤 때는 Turnstile이 사용자에게 화면을 거의 노출하지 않아 UX 손해가 작다.
 - 오래된 익명 사용자 정리 스케줄을 잡는다(예: 30일 미접속 삭제). 정리 시 해당
   `user_id`를 참조하는 행 처리 방침도 함께 정한다.
 
@@ -275,7 +283,7 @@ Supabase Auth는 신원 발급 용도로만 쓰고, 데이터 접근은 지금�
 
 | Phase | 내용 | 단독 배포 |
 |---|---|---|
-| 0 | Supabase 익명 로그인 활성화 + CAPTCHA, `D-062` 기록 | — |
+| 0 | Supabase 익명 로그인 활성화(2026-08-19 완료), rate limit 확인, `D-062` 기록 | — |
 | 1 | 프론트: supabase-js, AuthContext, 게스트 버튼, `RequireUser`, 헤더 주입 | 가능 (백엔드가 헤더를 무시) |
 | 2 | 백엔드: `app/auth/` 검증, optional principal, 관측 로그 | 가능 |
 | 3 | 스키마: `user_id` 컬럼·필드 추가, 픽스처 전수 갱신 | 가능 |
