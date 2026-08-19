@@ -93,7 +93,7 @@ _SAFE_DATA_GO_KR_QUERY = frozenset(
 # 쿼리에 자격증명이 실리지 않는 provider. 네이버는 x-ncp-* 헤더, Supabase는
 # apikey 헤더로 인증하므로 쿼리는 그대로 보여도 된다(헤더는 위 규칙이 막는다).
 _QUERY_SAFE_PROVIDERS = frozenset(
-    {"naver_geocoding", "naver_local_search", "supabase"}
+    {"kakao_map", "naver_geocoding", "naver_local_search", "supabase"}
 )
 
 _DATA_GO_KR_PROVIDERS = frozenset(

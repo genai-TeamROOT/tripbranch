@@ -30,11 +30,16 @@ from app.providers.protocols import (
     PlaceDetailsProvider,
     PlaceProvider,
     PlaceSearchProvider,
+    WalkingRouteProvider,
     WeatherProvider,
 )
 from app.providers.real_place import RealPlaceProvider
 from app.providers.stub import FakeLLMProvider, FakePlaceProvider, FakeWeatherProvider
 from app.providers.supabase_place_details import SupabasePlaceDetailsProvider
+from app.providers.walking_route import (
+    FakeWalkingRouteProvider,
+    RealKakaoWalkingRouteProvider,
+)
 from app.providers.weather import RealWeatherProvider
 from app.repositories.fake_places import (
     FakePlaceDetailsRepository,
@@ -42,6 +47,7 @@ from app.repositories.fake_places import (
 )
 from app.repositories.supabase_places import SupabasePlaceRepository
 from app.tools.recommendation_cards import RecommendationCardTool
+from app.tools.travel_route import TravelRouteTool
 
 
 def _require_key(value: str, variable_name: str) -> str:
@@ -124,6 +130,32 @@ def get_weather_provider(client: httpx.AsyncClient) -> WeatherProvider:
         client=client,
         timeout_seconds=settings.external_api_timeout_seconds,
     )
+
+
+def get_walking_route_provider(client: httpx.AsyncClient) -> WalkingRouteProvider:
+    """설정에 맞는 도보 경로 Provider를 반환한다."""
+    if settings.travel_route_provider == "fake":
+        return FakeWalkingRouteProvider(walking_speed_mps=settings.walking_speed_mps)
+    return RealKakaoWalkingRouteProvider(
+        api_key=_require_key(
+            settings.kakao_map_rest_api_key,
+            "KAKAO_MAP_REST_API_KEY",
+        ),
+        client=client,
+        timeout_seconds=settings.external_api_timeout_seconds,
+        max_concurrency=settings.travel_route_max_concurrency,
+    )
+
+
+def get_travel_route_tool(client: httpx.AsyncClient) -> TravelRouteTool:
+    """도보 경로 Tool을 실제 Provider와 직선거리 fallback으로 구성한다."""
+    primary = get_walking_route_provider(client)
+    fallback = (
+        FakeWalkingRouteProvider(walking_speed_mps=settings.walking_speed_mps)
+        if settings.travel_route_provider == "real"
+        else None
+    )
+    return TravelRouteTool(primary_provider=primary, fallback_provider=fallback)
 
 
 def get_place_provider(client: httpx.AsyncClient) -> PlaceProvider:
@@ -271,6 +303,7 @@ _REQUIRED_KEYS: dict[str, tuple[tuple[str, str], ...]] = {
     "PLACE_PROVIDER": (("TOUR_API_SERVICE_KEY", "tour_api_service_key"),),
     "CONCENTRATION_PROVIDER": (("TOUR_API_SERVICE_KEY", "tour_api_service_key"),),
     "HOLIDAY_PROVIDER": (("TOUR_API_SERVICE_KEY", "tour_api_service_key"),),
+    "TRAVEL_ROUTE_PROVIDER": (("KAKAO_MAP_REST_API_KEY", "kakao_map_rest_api_key"),),
     "LOCAL_SEARCH_PROVIDER": (
         ("NAVER_LOCAL_SEARCH_CLIENT_ID", "naver_local_search_client_id"),
         ("NAVER_LOCAL_SEARCH_CLIENT_SECRET", "naver_local_search_client_secret"),
@@ -289,6 +322,7 @@ _RESOLVED_ATTRS: dict[str, str] = {
     "HOLIDAY_PROVIDER": "resolved_holiday_provider",
     "GEOCODING_PROVIDER": "resolved_geocoding_provider",
     "LOCAL_SEARCH_PROVIDER": "resolved_local_search_provider",
+    "TRAVEL_ROUTE_PROVIDER": "travel_route_provider",
 }
 
 
@@ -316,6 +350,28 @@ def validate_provider_config(target: Settings | None = None) -> None:
         ]
         raise ValueError(
             "real provider 설정에 필요한 환경변수가 비어 있습니다: " + ", ".join(missing)
+        )
+
+    # 폐지된 단일 모델 설정이 .env에 남아 있으면 부팅을 막는다. 값이 무시될 뿐 동작은
+    # 하므로 그냥 두면 `.env`에 적힌 모델과 실제로 호출되는 모델이 다른 채로 돌고,
+    # 그 차이는 응답이 이상해진 뒤에야 드러난다. 실패는 첫 요청이 아니라 부팅에서
+    # 드러나야 한다(D-042).
+    legacy_settings = [
+        variable_name
+        for variable_name, attribute in (
+            ("LLM_MODEL_NAME", "legacy_llm_model_name"),
+            ("LLM_FALLBACK_MODEL_NAMES", "legacy_llm_fallback_model_names"),
+        )
+        if getattr(current, attribute)
+    ]
+    if legacy_settings:
+        raise ValueError(
+            "폐지된 LLM 모델 설정이 남아 있습니다: "
+            + ", ".join(legacy_settings)
+            + ". 이 값은 더 이상 사용되지 않으니 지우고, 역할별 설정으로 옮기세요 — "
+            "의도 분류·조건 추출은 LLM_FAST_MODEL_NAME/LLM_FAST_FALLBACK_MODEL_NAMES, "
+            "답변·비교·일정 생성은 LLM_GENERATION_MODEL_NAME/"
+            "LLM_GENERATION_FALLBACK_MODEL_NAMES입니다."
         )
 
     # 역할별 폴백 목록에 1순위 모델과 같은 이름이 중복되면 폴백처럼 보이지만 실제로는

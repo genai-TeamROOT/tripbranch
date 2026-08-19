@@ -31,11 +31,14 @@ from app.agent_context.schemas import (
     RecommendationContext,
     ResolvedLocation,
     ResponseMetadata,
+    WeatherForecast,
 )
 from app.domain.scoring import SCORING_VERSION
+from app.domain.travel_route import WalkingRoute
 from app.providers.contracts import ProviderSource, provider_result
 from app.providers.gemini_prompts import PROMPT_VERSION
 from app.providers.stub import FakeLLMProvider
+from app.providers.walking_route import FakeWalkingRouteProvider
 from app.schemas import (
     AgentRequest,
     ConcentrationIntent,
@@ -62,12 +65,15 @@ from app.services.runtime.stubs import (
     FakeRecommendationProvider,
     FakeToolProvider,
 )
+from app.state.schema import now_kst
 from app.state.service import (
     SetPendingClarificationRequest,
     get_session_context,
     set_pending_clarification,
 )
 from app.state.store import InMemoryStateStore
+from app.tools.contracts import ToolStatus
+from app.tools.travel_route import TravelRouteTool, TravelRouteToolResult
 
 DEVICE_LOCATION = "37.5788,126.9770"
 
@@ -3109,6 +3115,495 @@ class _PartialPlacesToolProvider:
             ),
             metadata=ResponseMetadata(),
         )
+
+
+_CLOSED_ALL_WEEK_SCHEDULE = {
+    "availability": "all_day",
+    "rules": [],
+    "closure_rules": [
+        {
+            "weekdays": [
+                "monday",
+                "tuesday",
+                "wednesday",
+                "thursday",
+                "friday",
+                "saturday",
+                "sunday",
+            ]
+        }
+    ],
+}
+
+
+class _RefillPlacesToolProvider(FakeToolProvider):
+    """제외 ID 다음의 후보를 페이지 단위로 반환하는 C 보충 조회 대역.
+
+    실제 C처럼 excluded_place_ids만큼 뒤 후보를 채워 주고, 남은 후보가
+    page_size보다 적으면 그만큼만 반환한다 — A가 "limit보다 적게 왔다"를 풀
+    소진 신호로 쓰기 때문에 그 모양을 그대로 흉내 낸다.
+    """
+
+    def __init__(
+        self,
+        *,
+        total: int = 25,
+        page_size: int = 10,
+        open_indexes: set[int] | None = None,
+    ) -> None:
+        self.requests: list[AgentContextRequest] = []
+        self._page_size = page_size
+        is_open = (
+            (lambda index: index in open_indexes)
+            if open_indexes is not None
+            else (lambda index: index in {0, 10} or index >= 20)
+        )
+        self._places = [
+            PlaceCandidate(
+                place_id=f"refill-{index}",
+                name=f"보충 장소 {index}",
+                category="cafe",
+                location=Coordinates(
+                    latitude=37.5790 + index * 0.0001,
+                    longitude=126.9772 + index * 0.0001,
+                ),
+                operating_schedule=(
+                    _OPEN_ALL_DAY_SCHEDULE if is_open(index) else _CLOSED_ALL_WEEK_SCHEDULE
+                ),
+            )
+            for index in range(total)
+        ]
+
+    def _build_context(
+        self,
+        places: list[PlaceCandidate],
+        call_index: int,
+    ) -> RecommendationContext:
+        return RecommendationContext(
+            location=ContextValue(
+                status="success",
+                data=ResolvedLocation(
+                    requested_query="경복궁",
+                    resolved_name="경복궁",
+                    location=Coordinates(latitude=37.5788, longitude=126.9770),
+                ),
+            ),
+            places=ContextValue(status="success", data=places),
+        )
+
+    async def fetch_context(self, request: AgentContextRequest) -> AgentContextResponse:
+        self.requests.append(request)
+        call_index = len(self.requests) - 1
+        excluded = set(request.excluded_place_ids)
+        places = [place for place in self._places if place.place_id not in excluded]
+        places = places[: self._page_size]
+        return AgentContextResponse(
+            request_id=request.request_id,
+            intent="RECOMMEND",
+            status="success",
+            context=self._build_context(places, call_index),
+            metadata=ResponseMetadata(),
+        )
+
+
+class _RecordingTravelRouteTool:
+    def __init__(self) -> None:
+        self.queries = []
+        self._delegate = TravelRouteTool(FakeWalkingRouteProvider(walking_speed_mps=1.2))
+
+    async def execute(self, query):
+        self.queries.append(query)
+        return await self._delegate.execute(query)
+
+
+class _UnavailableTravelRouteTool:
+    async def execute(self, query):
+        return TravelRouteToolResult(status=ToolStatus.UNAVAILABLE, routes=())
+
+
+class _RecordingWalkingRoutesRecommendationProvider(RealRecommendationProvider):
+    def __init__(self) -> None:
+        self.walking_routes: tuple[WalkingRoute, ...] = ()
+
+    async def score_prepared(
+        self,
+        conditions,
+        prepared,
+        *,
+        walking_routes=(),
+        limit=5,
+    ):
+        self.walking_routes = walking_routes
+        return await super().score_prepared(
+            conditions,
+            prepared,
+            walking_routes=walking_routes,
+            limit=limit,
+        )
+
+
+@pytest.mark.asyncio
+async def test_staged_recommendation_refills_candidates_up_to_target() -> None:
+    store = InMemoryStateStore()
+    tool_provider = _RefillPlacesToolProvider()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=tool_provider,
+        recommendation_provider=RealRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=store,
+    )
+
+    assert response.recommendations is not None
+    shown = [
+        *response.recommendations.recommendations,
+        *response.recommendations.unverified_recommendations,
+    ]
+    assert len(shown) == 5
+    assert len(tool_provider.requests) == 3
+    assert len(tool_provider.requests[0].excluded_place_ids) == 0
+    assert len(tool_provider.requests[1].excluded_place_ids) == 10
+    assert len(tool_provider.requests[2].excluded_place_ids) == 20
+    assert any(item.place_id.startswith("refill-2") for item in shown)
+
+    session = get_session_context(response.state.session_id, store=store)
+    assert set(session.excluded_place_ids) == {item.place_id for item in shown}
+
+
+@pytest.mark.asyncio
+async def test_staged_recommendation_passes_only_eligible_routes_to_d_after_refill() -> None:
+    context_provider = _RefillPlacesToolProvider()
+    route_tool = _RecordingTravelRouteTool()
+    recommendation_provider = _RecordingWalkingRoutesRecommendationProvider()
+
+    await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=context_provider,
+        recommendation_provider=recommendation_provider,
+        enrichment_provider=_CountingEnrichmentProvider(),
+        travel_route_tool=route_tool,
+        store=InMemoryStateStore(),
+    )
+
+    assert len(context_provider.requests) == 3
+    assert len(route_tool.queries) == 1
+    requested_ids = [destination.place_id for destination in route_tool.queries[0].destinations]
+    assert requested_ids == ["refill-0", "refill-10", *[f"refill-{i}" for i in range(20, 25)]]
+    assert [route.place_id for route in recommendation_provider.walking_routes] == requested_ids
+    assert "refill-1" not in requested_ids
+
+
+@pytest.mark.asyncio
+async def test_staged_recommendation_passes_empty_routes_when_route_tool_is_unavailable() -> None:
+    recommendation_provider = _RecordingWalkingRoutesRecommendationProvider()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=_RefillPlacesToolProvider(total=6),
+        recommendation_provider=recommendation_provider,
+        enrichment_provider=_CountingEnrichmentProvider(),
+        travel_route_tool=_UnavailableTravelRouteTool(),
+        store=InMemoryStateStore(),
+    )
+
+    assert response.recommendations is not None
+    assert recommendation_provider.walking_routes == ()
+
+
+@pytest.mark.asyncio
+async def test_staged_recommendation_stops_after_max_refill_attempts() -> None:
+    store = InMemoryStateStore()
+    tool_provider = _RefillPlacesToolProvider()
+    tool_provider._places = [
+        place.model_copy(update={"operating_schedule": _CLOSED_ALL_WEEK_SCHEDULE})
+        for place in tool_provider._places
+    ]
+
+    await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=tool_provider,
+        recommendation_provider=RealRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=store,
+    )
+
+    # 최초 1회 + 보충 최대 2회. 후보가 계속 부족해도 네 번째 호출은 하지 않는다.
+    assert len(tool_provider.requests) == 3
+
+
+async def _run_staged_recommend(
+    tool_provider: FakeToolProvider,
+    *,
+    store: InMemoryStateStore | None = None,
+    user_input: str = "경복궁 근처 카페 추천해줘",
+    stream_event_sink=None,
+):
+    """실제 D(RealRecommendationProvider)를 태워 staged 경로만 돌리는 공통 실행부."""
+    return await run_agent_flow(
+        AgentRequest(
+            user_input=user_input,
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=tool_provider,
+        recommendation_provider=RealRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=store if store is not None else InMemoryStateStore(),
+        stream_event_sink=stream_event_sink,
+    )
+
+
+@pytest.mark.parametrize(
+    ("candidate_limit", "page_size", "expected_requests"),
+    [
+        # 첫 조회에서 6곳이 하드 필터를 통과한다. result_limit(5)은 이미 넘었지만
+        # candidate_limit(10)에는 못 미치므로 보충이 돈다 — 목표가 result_limit이면
+        # 여기서 1회로 끝나버린다.
+        (10, 10, 3),
+        # 같은 6곳이라도 candidate_limit이 6이면 목표를 채웠으니 보충하지 않는다.
+        (6, 6, 1),
+    ],
+)
+@pytest.mark.asyncio
+async def test_staged_recommendation_refill_target_is_candidate_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    candidate_limit: int,
+    page_size: int,
+    expected_requests: int,
+) -> None:
+    """보충 조회 목표는 recommendation_candidate_limit이다.
+
+    하드 필터를 통과한 후보를 설정된 후보 상한만큼 모아두고 그 안에서 고른다 —
+    최종 노출 개수(result_limit)를 채운 시점에 멈추지 않는다.
+    """
+    monkeypatch.setattr(
+        "app.services.runtime.agent_runtime.settings.recommendation_candidate_limit",
+        candidate_limit,
+    )
+    tool_provider = _RefillPlacesToolProvider(
+        page_size=page_size,
+        open_indexes={0, 1, 2, 3, 4, 5},
+    )
+
+    response = await _run_staged_recommend(tool_provider)
+
+    assert len(tool_provider.requests) == expected_requests
+    assert response.recommendations is not None
+
+
+@pytest.mark.asyncio
+async def test_staged_recommendation_skips_refill_when_pool_smaller_than_limit() -> None:
+    """C가 candidate_limit보다 적게 반환했으면 반경을 다 긁은 것이라 보충하지 않는다.
+
+    candidate_pool_truncated 경고는 C가 상한(100행)을 넘겨 요청했을 때만 서기
+    때문에, 반경 안에 후보가 애초에 몇 개 없는 흔한 경우는 이 조건으로만 걸린다.
+    """
+    # 전체 6곳(열린 곳은 refill-0 하나) < candidate_limit(10).
+    tool_provider = _RefillPlacesToolProvider(total=6)
+
+    response = await _run_staged_recommend(tool_provider)
+
+    assert len(tool_provider.requests) == 1
+    assert response.recommendations is not None
+
+
+class _WeatherDivergingRefillToolProvider(_RefillPlacesToolProvider):
+    """최초 조회에만 날씨를 싣는 대역 — 보충 조회에서 기상 조회가 실패한 상황."""
+
+    def _build_context(
+        self,
+        places: list[PlaceCandidate],
+        call_index: int,
+    ) -> RecommendationContext:
+        context = super()._build_context(places, call_index)
+        if call_index > 0:
+            return context
+        return context.model_copy(
+            update={
+                "weather": ContextValue(
+                    status="success",
+                    data=WeatherForecast(
+                        forecast_for=now_kst(),
+                        precipitation="rain",
+                        sky="cloudy",
+                        temperature_celsius=18.0,
+                    ),
+                )
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_staged_recommendation_reuses_first_batch_weather_for_refill_batches() -> None:
+    """보충 조회에서 날씨가 빠져도 배치를 버리지 않고 첫 배치 판정을 재사용한다.
+
+    보충 조회는 같은 요청·같은 시각·같은 좌표를 다시 조회하는 것이라, 날씨가
+    달라졌다면 그건 판정이 바뀐 게 아니라 그쪽 기상 조회가 실패한 것이다.
+    하드 필터는 날씨를 입력으로 받지도 않으므로(prepare_candidates), 여기서
+    배치를 거부하면 멀쩡한 보충 후보만 통째로 버리게 된다.
+    """
+    tool_provider = _WeatherDivergingRefillToolProvider()
+
+    response = await _run_staged_recommend(tool_provider)
+
+    # 날씨가 달라져도 보충이 중단되지 않는다.
+    assert len(tool_provider.requests) == 3
+    assert response.recommendations is not None
+    shown = [
+        *response.recommendations.recommendations,
+        *response.recommendations.unverified_recommendations,
+    ]
+    # 날씨가 없던 보충 배치의 후보도 추천에 남아 있다.
+    from_refill_batches = [item for item in shown if item.place_id != "refill-0"]
+    assert from_refill_batches
+    # 그리고 첫 배치의 날씨 판정으로 채점됐다 — 재사용이 아니었다면 weather
+    # Feature가 결측(None)이 되고 "날씨 확인 못 함" warning이 붙는다.
+    for item in from_refill_batches:
+        assert item.feature_scores.get("weather") is not None
+
+
+class _BrokenLocationRefillToolProvider(_RefillPlacesToolProvider):
+    """보충 조회 응답만 location을 잃은 대역 — D의 prepare()가 AppError를 던진다."""
+
+    def _build_context(
+        self,
+        places: list[PlaceCandidate],
+        call_index: int,
+    ) -> RecommendationContext:
+        context = super()._build_context(places, call_index)
+        if call_index == 0:
+            return context
+        return context.model_copy(update={"location": None})
+
+
+@pytest.mark.asyncio
+async def test_staged_recommendation_drops_refill_batch_when_prepare_raises() -> None:
+    """보충 Context가 장소는 실었지만 location이 없으면 prepare()가 AppError를 던진다.
+
+    응답 status와 place_id 유무만 보는 가드로는 이 조합이 안 걸려서, 보충 실패가
+    요청 전체를 죽였다.
+    """
+    tool_provider = _BrokenLocationRefillToolProvider()
+
+    response = await _run_staged_recommend(tool_provider)
+
+    assert len(tool_provider.requests) == 2
+    assert response.recommendations is not None
+    shown = [
+        *response.recommendations.recommendations,
+        *response.recommendations.unverified_recommendations,
+    ]
+    assert [item.place_id for item in shown] == ["refill-0"]
+
+
+@pytest.mark.asyncio
+async def test_staged_recommendation_refill_progress_does_not_move_backwards() -> None:
+    """보충 조회 중에도 progress stage는 scoring을 유지한다.
+
+    프론트(AgentProgressMessage.tsx)는 stage로 진행 순서를 그리고 문구만 서버
+    message로 덮어쓴다 — 여기서 fetching_context를 다시 보내면 완료 표시가 뒤로
+    돌아간다.
+    """
+    events: list[tuple[str, dict[str, object]]] = []
+
+    async def sink(event: str, payload: dict[str, object]) -> None:
+        events.append((event, payload))
+
+    tool_provider = _RefillPlacesToolProvider()
+    await _run_staged_recommend(tool_provider, stream_event_sink=sink)
+
+    assert len(tool_provider.requests) > 1  # 보충이 실제로 돌았다
+    stages = [payload["stage"] for event, payload in events if event == "progress"]
+    assert "scoring" in stages
+    # scoring 이후에는 그보다 앞 단계로 되돌아가지 않는다.
+    assert "fetching_context" not in stages[stages.index("scoring") :]
+    messages = [payload["message"] for event, payload in events if event == "progress"]
+    assert "조건에 맞는 장소를 조금 더 찾고 있어요." in messages
+
+
+@pytest.mark.asyncio
+async def test_staged_recommendation_all_closed_triggers_no_data_closed() -> None:
+    """보충까지 돌고도 전부 폐점이면 no_data_closed 되묻기로 이어져야 한다.
+
+    excluded_all_closed는 병합된 제외 목록 전체가 CLOSED일 때만 참이다 —
+    배치를 합치면서 제외 사유 집계가 어긋나면 이 되묻기가 조용히 사라진다.
+    """
+    tool_provider = _RefillPlacesToolProvider()
+    tool_provider._places = [
+        place.model_copy(update={"operating_schedule": _CLOSED_ALL_WEEK_SCHEDULE})
+        for place in tool_provider._places
+    ]
+    store = InMemoryStateStore()
+
+    response = await _run_staged_recommend(tool_provider, store=store)
+
+    assert response.llm_output.status == OutputStatus.NEEDS_CLARIFICATION
+    clarification = response.llm_output.clarification
+    assert clarification is not None
+    assert clarification.code == "no_data_closed"
+    context = get_session_context(response.state.session_id, store=store)
+    assert context.pending_clarification == "no_data_closed"
+
+
+@pytest.mark.asyncio
+async def test_staged_recommendation_merges_refill_places_into_tool_context() -> None:
+    """보충으로 받은 장소도 tool_context에 합쳐져 후속 C 보강 조회로 넘어가야 한다.
+
+    to_candidate_enrichment_request()는 원본 places에서 place_id를 못 찾은 후보를
+    조용히 버린다 — 병합을 빠뜨리면 보충으로 추천된 장소만 혼잡도 보강에서
+    사라지고, 그 사실이 아무 데도 안 드러난다.
+    """
+    tool_provider = _RefillPlacesToolProvider()
+    enrichment_provider = _CountingEnrichmentProvider()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            # "조용" → FakeLLMProvider가 concentration_intent=AVOID를 세워
+            # 6-1단계 혼잡도 보강 조회가 실제로 돈다.
+            user_input="경복궁 근처 조용한 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=tool_provider,
+        recommendation_provider=RealRecommendationProvider(),
+        enrichment_provider=enrichment_provider,
+        store=InMemoryStateStore(),
+    )
+
+    assert len(tool_provider.requests) > 1
+    assert response.recommendations is not None
+    shown = [
+        *response.recommendations.recommendations,
+        *response.recommendations.unverified_recommendations,
+    ]
+    refill_ids = {item.place_id for item in shown if item.place_id != "refill-0"}
+    assert refill_ids  # 보충으로 들어온 후보가 실제로 추천됐다
+    assert enrichment_provider.last_request is not None
+    enriched_ids = {target.place_id for target in enrichment_provider.last_request.candidates}
+    assert refill_ids <= enriched_ids
 
 
 async def _run_with_partial_places(places: list[PlaceCandidate]):

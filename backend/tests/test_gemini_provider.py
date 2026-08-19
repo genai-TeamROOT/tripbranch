@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from google.genai import errors as genai_errors
+from google.genai import types as genai_types
 
 from app.errors import AppError, ProviderUnavailableError
 from app.providers.gemini import RealGeminiProvider
@@ -293,8 +294,13 @@ async def test_try_model_omits_thinking_config_when_budget_not_given() -> None:
 
 @pytest.mark.asyncio
 async def test_try_model_applies_thinking_budget_when_given() -> None:
-    """thinking_budget=0을 넘기면 GenerateContentConfig.thinking_config에 그대로
-    실린다 — SCHEDULE 호출부가 실제로 이 값을 받는지 확인하는 배선 테스트."""
+    """thinking_budget=0을 넘기면 GenerateContentConfig.thinking_config에 실린다 —
+    SCHEDULE 호출부가 실제로 이 값을 받는지 확인하는 배선 테스트.
+
+    (2026-08-18) 실제로 SDK에 실리는 값은 thinking_budget=0이 아니라
+    thinking_level=MINIMAL이다 — Gemini 3.x부터 숫자 기반 thinking_budget이
+    레거시 취급이라 _thinking_config_for()가 변환해서 넘긴다
+    (app/providers/gemini.py 참고)."""
     provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
     captured_config: list[object] = []
 
@@ -308,7 +314,7 @@ async def test_try_model_applies_thinking_budget_when_given() -> None:
         )
 
     assert captured_config[0].thinking_config is not None
-    assert captured_config[0].thinking_config.thinking_budget == 0
+    assert captured_config[0].thinking_config.thinking_level == genai_types.ThinkingLevel.MINIMAL
 
 
 @pytest.mark.asyncio
@@ -349,7 +355,7 @@ async def test_generate_schedule_plan_uses_thinking_budget_zero() -> None:
     with patch.object(provider._client.aio.models, "generate_content", side_effect=capture):
         await provider.generate_schedule_plan(request)
 
-    assert captured_config[0].thinking_config.thinking_budget == 0
+    assert captured_config[0].thinking_config.thinking_level == genai_types.ThinkingLevel.MINIMAL
 
 
 # --- thinking_budget 확장 적용(분류·추출 지연시간 개선, 실측: 2026-08-13
@@ -379,15 +385,16 @@ async def test_classify_intent_uses_thinking_budget_zero() -> None:
             "경복궁 근처 카페 추천해줘", has_previous_recommendation=False, shown_place_count=0
         )
 
-    assert captured_config[0].thinking_config.thinking_budget == 0
+    assert captured_config[0].thinking_config.thinking_level == genai_types.ThinkingLevel.MINIMAL
 
 
 @pytest.mark.asyncio
 async def test_classify_and_schedule_route_to_their_respective_model_groups() -> None:
     """분류는 빠른 모델, 일정 생성은 응답 생성 모델로 분리한다.
 
-    Flash는 기존처럼 thinking_budget=0을 받으며, Flash-Lite는 API 호환성 때문에
-    thinking_config를 생략하는지도 함께 확인한다.
+    일정 생성 모델은 thinking_budget=0 요청이 thinking_level=MINIMAL로 변환되어
+    실리며, Flash-Lite는 API 호환성 때문에 thinking_config를 생략하는지도 함께
+    확인한다(2026-08-18, _thinking_config_for() 참고).
     """
     provider = RealGeminiProvider(
         api_key="dummy",
@@ -436,7 +443,7 @@ async def test_classify_and_schedule_route_to_their_respective_model_groups() ->
     assert [model for model, _ in calls] == ["gemini-3.5-flash-lite", "generation-model"]
     assert calls[0][1] is None
     assert calls[1][1] is not None
-    assert calls[1][1].thinking_budget == 0
+    assert calls[1][1].thinking_level == genai_types.ThinkingLevel.MINIMAL
 
 
 @pytest.mark.asyncio
@@ -458,7 +465,7 @@ async def test_extract_recommend_conditions_uses_thinking_budget_zero() -> None:
     with patch.object(provider._client.aio.models, "generate_content", side_effect=capture):
         await provider.extract_recommend_conditions("경복궁 근처 카페 추천해줘")
 
-    assert captured_config[0].thinking_config.thinking_budget == 0
+    assert captured_config[0].thinking_config.thinking_level == genai_types.ThinkingLevel.MINIMAL
 
 
 # --- D-052: 모델 fallback ---
@@ -606,13 +613,26 @@ async def test_generate_logs_fallback_transition_and_exhaustion(caplog) -> None:
 async def _capture_budgets(
     provider: RealGeminiProvider, operation: str, thinking_budget: int | None
 ) -> list[tuple[str, object]]:
-    """generate_content에 실제로 실린 (모델명, thinking_budget)을 순서대로 모은다."""
+    """generate_content에 실제로 실린 (모델명, 실제 thinking 설정값)을 순서대로 모은다.
+
+    (2026-08-18) thinking_config에 실리는 값은 thinking_budget(레거시 숫자,
+    override 512처럼 0보다 큰 값에만 씀) 또는 thinking_level(0은 MINIMAL로
+    변환됨, _thinking_config_for() 참고) 둘 중 하나다. 값이 어느 쪽에 실렸든
+    호출부가 그대로 비교할 수 있게 실제 실린 값 하나로 모은다 — thinking_config
+    자체가 없으면(reject-list 모델) None이다.
+    """
     captured: list[tuple[str, object]] = []
 
     async def succeed(*args: object, **kwargs: object) -> _FakeResponse:
         config = kwargs["config"]
-        budget = config.thinking_config.thinking_budget if config.thinking_config else None
-        captured.append((kwargs["model"], budget))
+        thinking_config = config.thinking_config
+        if thinking_config is None:
+            value = None
+        elif thinking_config.thinking_budget is not None:
+            value = thinking_config.thinking_budget
+        else:
+            value = thinking_config.thinking_level
+        captured.append((kwargs["model"], value))
         return _FakeResponse(IntentClassificationResult(intent=Intent.RECOMMEND))
 
     with patch.object(provider._client.aio.models, "generate_content", side_effect=succeed):
@@ -641,8 +661,14 @@ async def test_fallback_model_gets_its_own_thinking_budget() -> None:
 
     async def flaky(*args: object, **kwargs: object) -> _FakeResponse:
         config = kwargs["config"]
-        budget = config.thinking_config.thinking_budget if config.thinking_config else None
-        captured.append((kwargs["model"], budget))
+        thinking_config = config.thinking_config
+        if thinking_config is None:
+            value = None
+        elif thinking_config.thinking_budget is not None:
+            value = thinking_config.thinking_budget
+        else:
+            value = thinking_config.thinking_level
+        captured.append((kwargs["model"], value))
         if kwargs["model"] == "gemini-2.5-flash":
             raise _api_error(503, "UNAVAILABLE")
         return _FakeResponse(IntentClassificationResult(intent=Intent.RECOMMEND))
@@ -655,7 +681,12 @@ async def test_fallback_model_gets_its_own_thinking_budget() -> None:
             "sys", "user", IntentClassificationResult, "classify_intent", thinking_budget=0
         )
 
-    assert captured == [("gemini-2.5-flash", 0), ("gemini-2.5-flash-lite", 512)]
+    # gemini-2.5-flash는 override 대상이 아니라 0이 thinking_level=MINIMAL로 변환되고,
+    # gemini-2.5-flash-lite는 classify_intent 실측 override(512)가 우선 적용된다.
+    assert captured == [
+        ("gemini-2.5-flash", genai_types.ThinkingLevel.MINIMAL),
+        ("gemini-2.5-flash-lite", 512),
+    ]
 
 
 @pytest.mark.asyncio
@@ -672,9 +703,11 @@ async def test_fallback_budget_override_is_limited_to_measured_operation() -> No
     [(_, extract_budget)] = await _capture_budgets(provider, "extract_recommend_conditions", 0)
     [(_, schedule_budget)] = await _capture_budgets(provider, "generate_schedule_plan", 0)
 
+    # classify_intent만 실측 override(512)가 적용되고, 나머지는 요청한 0이 그대로
+    # thinking_level=MINIMAL로 변환된다(override 없음 → _thinking_config_for(0)).
     assert intent_budget == 512
-    assert extract_budget == 0
-    assert schedule_budget == 0
+    assert extract_budget == genai_types.ThinkingLevel.MINIMAL
+    assert schedule_budget == genai_types.ThinkingLevel.MINIMAL
 
 
 @pytest.mark.asyncio
@@ -702,5 +735,6 @@ async def test_requested_budget_passes_through_for_unmeasured_models() -> None:
     [(_, zero)] = await _capture_budgets(provider, "classify_intent", 0)
     [(_, unset)] = await _capture_budgets(provider, "classify_intent", None)
 
-    assert zero == 0
+    # 0은 override 없이 통과해 thinking_level=MINIMAL로 변환되고, None은 그대로 유지된다.
+    assert zero == genai_types.ThinkingLevel.MINIMAL
     assert unset is None

@@ -65,6 +65,10 @@ def _client(handler) -> httpx.AsyncClient:
             "https://naverapihub.apigw.ntruss.com/search/v1/local?query=x",
             ("naver_local_search", "local"),
         ),
+        (
+            "https://dapi.kakao.com/v2/routing/walk?start_x=127.1&start_y=37.4",
+            ("kakao_map", "walk"),
+        ),
     ],
 )
 def test_classify_maps_known_hosts(url: str, expected: tuple[str, str]) -> None:
@@ -190,6 +194,7 @@ def test_snapshot_always_carries_provider_modes() -> None:
         "weather",
         "concentration",
         "holiday",
+        "travel_route",
     }
     assert all(mode in {"fake", "real"} for mode in snapshot["provider_modes"].values())
 

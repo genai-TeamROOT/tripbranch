@@ -11,15 +11,20 @@ AppError는 여기서 잡지 않고 그대로 전파한다 — RecommendationPro
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from app.agent_context.enrichment_schemas import CandidateEnrichmentResponse
+from app.domain.travel_route import WalkingRoute
 from app.schemas import ConcentrationIntent, RecommendationResponse, UserConditions
 from app.services.recommendation_pipeline import (
+    PreparedRecommendationResult,
+    merge_prepared_recommendations,
+    prepare_recommendation_from_context,
     rerank_with_concentration,
     resolve_weather_condition,
-    run_recommendation_pipeline_from_context,
+    score_prepared_recommendation,
 )
 from app.services.runtime.context_schemas import RecommendationContext
 from app.services.runtime.recommendation_transform import to_search_radius_km
@@ -31,6 +36,45 @@ _RECOMMENDATION_LIMIT = 5
 class RealRecommendationProvider:
     """RecommendationProvider Protocol 구현체 — D의 공개 진입점만 호출한다."""
 
+    def merge_prepared(
+        self,
+        results: Sequence[PreparedRecommendationResult],
+    ) -> PreparedRecommendationResult:
+        return merge_prepared_recommendations(results)
+
+    async def prepare(
+        self,
+        conditions: UserConditions,
+        context: RecommendationContext,
+        excluded_place_ids: list[str],
+        *,
+        visit_at: datetime,
+        ignore_operating_hours: bool = False,
+    ) -> PreparedRecommendationResult:
+        return await prepare_recommendation_from_context(
+            context,
+            conditions=conditions,
+            visit_at=visit_at,
+            shown_place_ids=frozenset(excluded_place_ids),
+            ignore_operating_hours=ignore_operating_hours,
+        )
+
+    async def score_prepared(
+        self,
+        conditions: UserConditions,
+        prepared: PreparedRecommendationResult,
+        *,
+        walking_routes: tuple[WalkingRoute, ...] = (),
+        limit: int = _RECOMMENDATION_LIMIT,
+    ) -> RecommendationResponse:
+        # A→D 전달 계약만 먼저 연다. 점수 반영 정책은 D 담당 작업으로 남긴다.
+        _ = walking_routes
+        return await score_prepared_recommendation(
+            prepared,
+            search_radius_km=to_search_radius_km(conditions),
+            recommendation_limit=limit,
+        )
+
     async def recommend(
         self,
         conditions: UserConditions,
@@ -39,16 +83,14 @@ class RealRecommendationProvider:
         limit: int = _RECOMMENDATION_LIMIT,
         ignore_operating_hours: bool = False,
     ) -> RecommendationResponse:
-        search_radius_km = to_search_radius_km(conditions)
-        return await run_recommendation_pipeline_from_context(
+        prepared = await self.prepare(
+            conditions,
             context,
-            conditions=conditions,
             visit_at=datetime.now(_KST),
-            search_radius_km=search_radius_km,
-            shown_place_ids=frozenset(excluded_place_ids),
-            recommendation_limit=limit,
+            excluded_place_ids=excluded_place_ids,
             ignore_operating_hours=ignore_operating_hours,
         )
+        return await self.score_prepared(conditions, prepared, limit=limit)
 
     async def rerank_with_concentration(
         self,

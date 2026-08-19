@@ -38,7 +38,12 @@ _ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore", env_ignore_empty=True)
+    # populate_by_name: validation_alias가 붙은 필드(TOUR_API_SERVICE_KEY, 폐지된 LLM
+    # 모델 설정)를 테스트에서 필드명으로도 넣을 수 있게 한다. 별칭만 받으면 필드명을 쓴
+    # 인자가 extra="ignore"에 조용히 먹혀 기본값인 채로 통과한다.
+    model_config = SettingsConfigDict(
+        env_file=_ENV_FILE, extra="ignore", env_ignore_empty=True, populate_by_name=True
+    )
 
     app_env: str = "local"
 
@@ -51,6 +56,12 @@ class Settings(BaseSettings):
     local_search_provider: ProviderMode | None = None
     concentration_provider: ProviderMode | None = None
     holiday_provider: ProviderMode | None = None
+    # 비용이 발생할 수 있으므로 공통 PROVIDER_MODE를 상속하지 않고 명시적으로
+    # real을 켤 때만 카카오맵 도보 API를 호출한다.
+    travel_route_provider: ProviderMode = "fake"
+    # 직선거리 fallback 예상시간에 쓸 보행속도(m/s).
+    walking_speed_mps: float = Field(default=1.2, gt=0)
+    travel_route_max_concurrency: int = Field(default=5, ge=1, le=10)
 
     # 상세·운영정보 조회 출처. PLACE_PROVIDER=fake이면 Fake Provider가 상세까지
     # 담당하므로 이 값은 무시된다.
@@ -58,10 +69,6 @@ class Settings(BaseSettings):
 
     # Package B State 저장소 백엔드. 기본값은 Phase 1 인메모리다.
     state_store_backend: StateStoreBackend = "memory"
-
-    # 이전 단일 모델 설정. LLM_FAST_MODEL_NAME/LLM_GENERATION_MODEL_NAME을
-    # 명시하지 않은 기존 배포 환경과의 호환을 위해 남긴다.
-    llm_model_name: str = "gemini-3.5-flash"
 
     # 짧고 구조화된 판단(의도 분류·조건 추출)에 사용할 모델 묶음. 비용·지연이
     # 중요한 경로라 Lite를 기본으로 두되, 일시적 5xx/타임아웃에는 Flash로 폴백한다.
@@ -78,10 +85,17 @@ class Settings(BaseSettings):
     # 2026-08-18 한국어 대표 발화 실측에서 전사를 확인한 기본값이다.
     gemini_audio_model_name: str | None = None
 
-    # 1순위 모델의 재시도가 모두 소진됐을 때 순서대로 시도할 대체 모델(쉼표 구분).
-    # 비어 있으면(기본값) 폴백 없이 기존과 동일하게 단일 모델만 사용한다.
-    # 예: LLM_FALLBACK_MODEL_NAMES=gemini-2.0-flash,gemini-1.5-flash
-    llm_fallback_model_names: str = ""
+    # 폐지된 단일 모델 설정. 값을 읽어 쓰는 곳은 없고, .env에 남아 있는지 감지하려고만
+    # 선언한다 — extra="ignore"라 그냥 지우면 옛 설정이 조용히 안 먹는 상태가 되고,
+    # `.env`만 보고 "이 모델로 돌고 있다"고 오판하게 된다. 실제로 역할별 설정이
+    # 도입된 뒤 이 두 값은 파싱만 되고 아무도 읽지 않는 상태로 남아 있었다.
+    # 검사는 validate_provider_config()에 있다(실패는 첫 요청이 아니라 부팅에서, D-042).
+    legacy_llm_model_name: str | None = Field(
+        default=None, validation_alias=AliasChoices("LLM_MODEL_NAME")
+    )
+    legacy_llm_fallback_model_names: str | None = Field(
+        default=None, validation_alias=AliasChoices("LLM_FALLBACK_MODEL_NAMES")
+    )
 
     # Only required when the corresponding *_provider above is set to "real".
     llm_api_key: str = Field(default="", repr=False, exclude=True)
@@ -96,6 +110,15 @@ class Settings(BaseSettings):
     naver_map_client_secret: str = Field(default="", repr=False, exclude=True)
     naver_local_search_client_id: str = Field(default="", repr=False, exclude=True)
     naver_local_search_client_secret: str = Field(default="", repr=False, exclude=True)
+    kakao_map_rest_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "KAKAO_MAP_REST_API_KEY",
+            "KAKAO_MOBILITY_REST_API_KEY",
+        ),
+        repr=False,
+        exclude=True,
+    )
     supabase_url: str = ""
     supabase_secret_key: str = Field(default="", repr=False, exclude=True)
 
@@ -165,15 +188,6 @@ class Settings(BaseSettings):
         (하위 호환 — 기존에 EXTERNAL_API_TIMEOUT_SECONDS만 설정해 쓰던 환경도 그대로
         동작한다)."""
         return self.llm_api_timeout_seconds or self.external_api_timeout_seconds
-
-    @property
-    def resolved_llm_models(self) -> list[str]:
-        """이전 단일 모델 설정을 읽는 호환용 목록.
-
-        신규 호출은 ``resolved_llm_fast_models`` 또는
-        ``resolved_llm_generation_models``를 사용한다.
-        """
-        return self._model_list(self.llm_model_name, self.llm_fallback_model_names)
 
     @property
     def resolved_llm_fast_models(self) -> list[str]:

@@ -15,6 +15,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   concentration: "집중률",
   kma_weather: "기상청",
   kasi_holiday: "공휴일(KASI)",
+  kakao_map: "카카오맵 도보",
   naver_geocoding: "네이버 지오코딩",
   naver_local_search: "네이버 지역검색",
   supabase: "Supabase",
@@ -30,6 +31,7 @@ const MODE_LABELS: Record<string, string> = {
   weather: "날씨",
   concentration: "집중률",
   holiday: "공휴일",
+  travel_route: "도보 경로",
 };
 
 function formatTime(value: string | null) {

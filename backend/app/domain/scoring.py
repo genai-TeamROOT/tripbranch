@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 
 from app.concentration_policy import ConcentrationLevel
 from app.domain.models import OperatingHours, ScoringCandidate, WeatherCondition
@@ -87,6 +88,53 @@ _ENVIRONMENT_PREFERENCES = frozenset({"indoor", "outdoor"})
 
 _UNVERIFIED_WARNING = "방문 전에 운영 여부를 확인해주세요."
 _CLOSED_NOW_WARNING = "지금은 운영시간이 아니에요. 방문 전에 다시 확인해주세요."
+
+
+class ExclusionReason(StrEnum):
+    """하드 필터에서 후보를 제외한 이유."""
+
+    CLOSED = "closed"
+    ALREADY_SHOWN = "already_shown"
+    REJECTED = "rejected"
+
+
+@dataclass(frozen=True)
+class PreparedCandidate:
+    """하드 필터를 통과해 점수 계산을 기다리는 후보."""
+
+    candidate: ScoringCandidate
+    remaining_minutes: float | None
+    is_unverified: bool
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ExcludedCandidate:
+    """하드 필터에서 제외된 후보와 그 사유."""
+
+    candidate: ScoringCandidate
+    reason: ExclusionReason
+
+    @property
+    def place_id(self) -> str:
+        return self.candidate.place_id
+
+
+@dataclass(frozen=True)
+class PrepareResult:
+    """하드 필터가 입력 후보 전체를 통과/제외로 분류한 결과."""
+
+    eligible_candidates: tuple[PreparedCandidate, ...]
+    excluded_candidates: tuple[ExcludedCandidate, ...]
+    input_count: int
+
+    @property
+    def eligible_count(self) -> int:
+        return len(self.eligible_candidates)
+
+    @property
+    def excluded_place_ids(self) -> tuple[str, ...]:
+        return tuple(candidate.place_id for candidate in self.excluded_candidates)
 
 
 @dataclass(frozen=True)
@@ -245,46 +293,80 @@ def _is_closed(candidate: ScoringCandidate, now: datetime) -> bool:
     return _remaining_minutes(now, candidate.operating_hours) is None
 
 
-def _is_excluded(
-    candidate: ScoringCandidate,
-    now: datetime,
-    shown_place_ids: frozenset[str],
-    rejected_place_ids: frozenset[str],
-    *,
-    ignore_operating_hours: bool,
-) -> bool:
-    if not ignore_operating_hours and _is_closed(candidate, now):
-        return True
-    return candidate.place_id in shown_place_ids or candidate.place_id in rejected_place_ids
-
-
-def score_candidates(
+def prepare_candidates(
     candidates: Sequence[ScoringCandidate],
     *,
     now: datetime,
-    weather_condition: WeatherCondition | None,
-    max_distance_km: float,
     shown_place_ids: Iterable[str] = (),
     rejected_place_ids: Iterable[str] = (),
+    ignore_operating_hours: bool = False,
+) -> PrepareResult:
+    """하드 필터를 적용하고 통과 후보의 운영시간 Feature를 준비한다.
+
+    제외 사유는 사용자 이력을 폐점보다 우선한다. 이미 노출되거나 거절된 후보가
+    현재 폐점이기도 하더라도 폐점 때문에 제외된 것으로 집계하지 않는 기존
+    ``score_candidates()`` 동작을 보존하기 위해서다.
+    """
+    shown = frozenset(shown_place_ids)
+    rejected = frozenset(rejected_place_ids)
+    eligible: list[PreparedCandidate] = []
+    excluded: list[ExcludedCandidate] = []
+
+    for candidate in candidates:
+        if candidate.place_id in shown:
+            excluded.append(
+                ExcludedCandidate(candidate, ExclusionReason.ALREADY_SHOWN)
+            )
+            continue
+        if candidate.place_id in rejected:
+            excluded.append(ExcludedCandidate(candidate, ExclusionReason.REJECTED))
+            continue
+
+        remaining_minutes = (
+            _remaining_minutes(now, candidate.operating_hours)
+            if candidate.operating_hours is not None
+            else None
+        )
+        is_closed = candidate.operating_hours is not None and remaining_minutes is None
+        if is_closed and not ignore_operating_hours:
+            excluded.append(ExcludedCandidate(candidate, ExclusionReason.CLOSED))
+            continue
+
+        is_unverified = candidate.operating_hours is None or is_closed
+        warnings = (
+            (_CLOSED_NOW_WARNING,) if is_closed else (_UNVERIFIED_WARNING,)
+        ) if is_unverified else ()
+        eligible.append(
+            PreparedCandidate(
+                candidate=candidate,
+                remaining_minutes=remaining_minutes,
+                is_unverified=is_unverified,
+                warnings=warnings,
+            )
+        )
+
+    return PrepareResult(
+        eligible_candidates=tuple(eligible),
+        excluded_candidates=tuple(excluded),
+        input_count=len(candidates),
+    )
+
+
+def score_prepared_candidates(
+    candidates: Sequence[PreparedCandidate],
+    *,
+    weather_condition: WeatherCondition | None,
+    max_distance_km: float,
     weights: Mapping[str, float] | None = None,
     weather_reason: WeatherReason = None,
-    # True면 폐점 후보를 제외하지 않고 그대로 채점한다 — "운영중이 아닌 곳도
-    # 볼래요"(no_data_closed 되묻기) 해소 시에만 호출부가 켠다. 기본은 False로,
-    # 기존 하드 필터 동작을 그대로 유지한다.
-    ignore_operating_hours: bool = False,
-    # 사용자가 명시한 실내/실외. indoor/outdoor면 날씨 대신 이 조건으로 같은
-    # 자리의 Feature를 채점한다(호출부가 날씨 언급이 없을 때만 넘긴다).
     requested_environment: str | None = None,
 ) -> ScoringResult:
-    """Candidate 목록에 하드 필터와 가중치 점수를 적용해 정렬한다.
+    """하드 필터를 통과한 후보에 가중치 점수를 적용해 정렬한다.
 
-    1. 이전 노출/거절 후보 제외, 운영 유무 최종 판정으로 폐점 후보 제외
-       (운영시간 미확인은 폐점과 달리 제외하지 않음. ignore_operating_hours=True면
-       폐점도 제외하지 않고 경고만 붙여 채점한다)
-    2. 후보별로 날씨·남은 운영시간 결측 여부를 확인해 기본 가중치 또는
+    1. 후보별로 날씨·남은 운영시간 결측 여부를 확인해 기본 가중치 또는
        재분배 가중치를 적용 (두 Feature 모두 결측일 수도 있음)
-    3. Feature별 점수 계산 후 가중합 (날씨 또는 요청 환경, 남은 운영시간, 거리)
-    4. score 내림차순 → distance_km 오름차순 → place_id 오름차순으로 정렬
+    2. Feature별 점수 계산 후 가중합 (날씨 또는 요청 환경, 남은 운영시간, 거리)
+    3. score 내림차순 → distance_km 오름차순 → place_id 오름차순으로 정렬
 
     `requested_environment`가 indoor/outdoor면 날씨 Feature 자리를 환경 적합도가
     대신한다 — 사용자가 실내/실외를 직접 말했는데 날씨 사실이 순위를 뒤집는
@@ -297,11 +379,6 @@ def score_candidates(
         dict(weights) if weights is not None else dict(DEFAULT_WEIGHTS),
         requested_environment,
     )
-    shown = frozenset(shown_place_ids)
-    rejected = frozenset(rejected_place_ids)
-
-    excluded_ids: list[str] = []
-    excluded_closed_ids: list[str] = []
     scored: list[
         tuple[
             ScoringCandidate,
@@ -314,19 +391,8 @@ def score_candidates(
         ]
     ] = []
 
-    for candidate in candidates:
-        if _is_excluded(
-            candidate, now, shown, rejected, ignore_operating_hours=ignore_operating_hours
-        ):
-            excluded_ids.append(candidate.place_id)
-            if (
-                candidate.place_id not in shown
-                and candidate.place_id not in rejected
-                and _is_closed(candidate, now)
-            ):
-                excluded_closed_ids.append(candidate.place_id)
-            continue
-
+    for prepared in candidates:
+        candidate = prepared.candidate
         missing_features: list[str] = []
 
         # 날씨와 요청 환경은 한 실행에서 같은 자리를 나눠 쓴다. 요청 환경은
@@ -342,11 +408,7 @@ def score_candidates(
         else:
             primary_score = _weather_fit_score(candidate, weather_condition)
 
-        remaining_minutes = (
-            _remaining_minutes(now, candidate.operating_hours)
-            if candidate.operating_hours is not None
-            else None
-        )
+        remaining_minutes = prepared.remaining_minutes
         remaining_time_score: float | None
         if remaining_minutes is None:
             remaining_time_score = None
@@ -371,24 +433,15 @@ def score_candidates(
             for feature, weight in weights_used.items()
         )
 
-        is_closed_override = (
-            ignore_operating_hours
-            and candidate.operating_hours is not None
-            and remaining_minutes is None
-        )
-        is_unverified = candidate.operating_hours is None or is_closed_override
-        warnings = (
-            (_CLOSED_NOW_WARNING,) if is_closed_override else (_UNVERIFIED_WARNING,)
-        ) if is_unverified else ()
         scored.append(
             (
                 candidate,
                 score,
                 feature_scores,
                 weights_used,
-                is_unverified,
+                prepared.is_unverified,
                 remaining_minutes,
-                warnings,
+                prepared.warnings,
             )
         )
 
@@ -424,6 +477,51 @@ def score_candidates(
 
     return ScoringResult(
         ranked=ranked,
-        excluded_place_ids=tuple(excluded_ids),
-        excluded_closed_place_ids=tuple(excluded_closed_ids),
+        excluded_place_ids=(),
+        excluded_closed_place_ids=(),
+    )
+
+
+def score_candidates(
+    candidates: Sequence[ScoringCandidate],
+    *,
+    now: datetime,
+    weather_condition: WeatherCondition | None,
+    max_distance_km: float,
+    shown_place_ids: Iterable[str] = (),
+    rejected_place_ids: Iterable[str] = (),
+    weights: Mapping[str, float] | None = None,
+    weather_reason: WeatherReason = None,
+    # True면 폐점 후보를 제외하지 않고 그대로 채점한다 — "운영중이 아닌 곳도
+    # 볼래요"(no_data_closed 되묻기) 해소 시에만 호출부가 켠다. 기본은 False로,
+    # 기존 하드 필터 동작을 그대로 유지한다.
+    ignore_operating_hours: bool = False,
+    # 사용자가 명시한 실내/실외. indoor/outdoor면 날씨 대신 이 조건으로 같은
+    # 자리의 Feature를 채점한다(호출부가 날씨 언급이 없을 때만 넘긴다).
+    requested_environment: str | None = None,
+) -> ScoringResult:
+    """기존 하드 필터와 점수 계산을 연속 실행하는 호환 진입점."""
+    prepared_result = prepare_candidates(
+        candidates,
+        now=now,
+        shown_place_ids=shown_place_ids,
+        rejected_place_ids=rejected_place_ids,
+        ignore_operating_hours=ignore_operating_hours,
+    )
+    scoring_result = score_prepared_candidates(
+        prepared_result.eligible_candidates,
+        weather_condition=weather_condition,
+        max_distance_km=max_distance_km,
+        weights=weights,
+        weather_reason=weather_reason,
+        requested_environment=requested_environment,
+    )
+    return ScoringResult(
+        ranked=scoring_result.ranked,
+        excluded_place_ids=prepared_result.excluded_place_ids,
+        excluded_closed_place_ids=tuple(
+            candidate.place_id
+            for candidate in prepared_result.excluded_candidates
+            if candidate.reason is ExclusionReason.CLOSED
+        ),
     )

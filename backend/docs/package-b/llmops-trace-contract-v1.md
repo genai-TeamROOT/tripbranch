@@ -163,7 +163,8 @@ Registry(조회 API 등)는 여전히 범위 밖이지만, 최소한의 변경 �
 | 1.0.6 → 1.0.7 | (SCHEDULE-06 무렵) | 직전 턴 Intent(`last_intent`)를 프롬프트에 노출, SCHEDULE 되묻기 이어가기 규칙 추가 (D-059) | 회귀 테스트 통과 여부만 확인, 정확도 수치 없음 — 소급 측정 불가 |
 | (버전 미상) | 08-12 | SCHEDULE 직후 순수 추천 요청 오분류 수정 — 프롬프트에 예외 규칙 추가(Fix A) | pytest 신규 5건, 실 Gemini 재현 시나리오 확인 — 정확도 수치 없음 |
 | (버전 미상) | 08-13 | `time_available`/`max_travel_time` 조건 추출 프롬프트·Field description에 분 단위 규칙 명시(단위 환산 버그 수정) | "가용 시간=300 → 병합 후 300" 단발 재현 확인 — 여러 케이스에 걸친 정확도 수치는 없음 |
-| 1.0.12 (현재) | 08-13 이후 | (표 신설 시점 기준 최신) | — |
+| 1.0.12 | 08-13 이후 | (표 신설 시점 기준 최신, 변경 내용 소급 기록 없음) | — |
+| 1.0.12 → 1.0.13 (현재) | 08-18 | SCHEDULE 두 system instruction에 후보별 운영시간 참고 규칙 + `warnings` 필드는 시스템이 채운다는 지시 추가(폐점 스탑 감지, int-07-schedule.md v2.2 참고) | 프롬프트 힌트는 구조적 후처리(`planner._finalize_items`)와 함께 적용 — 회귀 테스트(폐점/운영중/미확인/24시간 4개 케이스)로 후처리 동작만 확인, 프롬프트 힌트 자체의 효과는 수치화하지 않음 |
 
 **정직하게 남겨야 할 것**: 이 표의 앞 세 줄도 "수치로 개선을 증명"하지 못한다 —
 재현 확인이나 회귀 테스트 통과 여부만 있고, 여러 케이스에 걸친 정확도 비교는
@@ -216,3 +217,4 @@ Q3  이 trace 기록을 실제 HTTP 흐름 어디에 꽂을지 — run_agent_flo
 | 07-28 | 초안 작성 (AF-12 시작) |
 | 08-05 | B-07 완료 반영: record_trace()를 run_agent_flow() 3단계(llm_interpret/tool_fetch/scoring)에 배선. 7절 Q1(step 이름)·Q2(prompt_version/scoring_version, variant_id는 미해결로 유지)·Q3(연결 지점) 해결 상태 반영. 상태 Draft → Implemented |
 | 08-14 | 6.1절 신설 — 기본프로젝트 발표 피드백(프롬프트 개선 수치화 필요) 반영. Version Registry는 여전히 범위 밖이지만, 기존에 쓰던 벤치마크 스크립트+CSV+PR 수치 기록 패턴을 표준 절차로 명시하고 PROMPT_VERSION 변경 이력 표 신설(소급 가능한 범위만) |
+| 08-18 | PROMPT_VERSION 변경 이력 표에 1.0.13 행 추가(SCHEDULE 폐점 스탑 감지 프롬프트 힌트, int-07-schedule.md v2.2) |

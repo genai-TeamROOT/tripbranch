@@ -146,6 +146,16 @@ def test_supabase_query_values_are_kept() -> None:
     }
 
 
+def test_kakao_map_route_coordinates_are_kept() -> None:
+    """카카오맵은 헤더로 인증하므로 경로 좌표 쿼리는 캡처에서 확인할 수 있다."""
+    params = httpx.QueryParams({"start_x": "127.1", "start_y": "37.4"})
+
+    assert mask_query("kakao_map", params) == {
+        "start_x": "127.1",
+        "start_y": "37.4",
+    }
+
+
 @pytest.mark.asyncio
 async def test_large_body_is_truncated() -> None:
     get_recorder().set_enabled(True)

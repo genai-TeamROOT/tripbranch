@@ -54,6 +54,7 @@ _DATA_GO_KR_PREFIXES: tuple[tuple[str, str], ...] = (
 )
 
 _HOST_PROVIDERS: dict[str, str] = {
+    "dapi.kakao.com": "kakao_map",
     "maps.apigw.ntruss.com": "naver_geocoding",
     "naverapihub.apigw.ntruss.com": "naver_local_search",
 }
@@ -230,6 +231,7 @@ def provider_modes() -> dict[str, str]:
         "weather": settings.resolved_weather_provider,
         "concentration": settings.resolved_concentration_provider,
         "holiday": settings.resolved_holiday_provider,
+        "travel_route": settings.travel_route_provider,
     }
 
 
