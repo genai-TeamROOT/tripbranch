@@ -608,6 +608,8 @@ def _first_pass_item(
     distance_km: float,
     distance_score: float,
     operating_hours_display: str | None = None,
+    walking_distance_m: int | None = None,
+    walking_duration_seconds: int | None = None,
 ) -> RecommendationItem:
     return RecommendationItem(
         place_id=place_id,
@@ -616,6 +618,8 @@ def _first_pass_item(
         distance_km=distance_km,
         remaining_minutes=None,
         operating_hours_display=operating_hours_display,
+        walking_distance_m=walking_distance_m,
+        walking_duration_seconds=walking_duration_seconds,
         environment_type="indoor",
         recommendation_reason="테스트용 1차 추천입니다.",
         explanations=[],
@@ -919,3 +923,34 @@ async def test_rerank_keeps_environment_feature_in_second_pass() -> None:
     assert item.weights_used["environment"] == CONCENTRATION_WEIGHTS["weather"]
     assert sum(item.weights_used.values()) == pytest.approx(1.0)
     assert "요청하신 실내 장소예요." in item.explanations
+
+
+@pytest.mark.asyncio
+async def test_rerank_with_concentration_preserves_walking_measurements() -> None:
+    """2차는 RecommendationItem을 새로 만든다 — 도보 실측을 옮겨 담지 않으면
+    혼잡도 재순위를 탄 요청에서만 이 필드가 조용히 사라진다.
+    """
+    first_pass = RecommendationResponse(
+        recommendations=[
+            _first_pass_item(
+                "place-1",
+                distance_km=0.1,
+                distance_score=0.95,
+                walking_distance_m=620,
+                walking_duration_seconds=530,
+            )
+        ],
+        unverified_recommendations=[],
+        elapsed_ms=0,
+    )
+    concentration = CandidateEnrichmentResponse(
+        request_id="req-walk",
+        status="success",
+        candidates=[_concentration_result("place-1", rate=50.0)],
+    )
+
+    result = await rerank_with_concentration(first_pass, None, concentration, seek=True)
+
+    item = result.recommendations[0]
+    assert item.walking_distance_m == 620
+    assert item.walking_duration_seconds == 530

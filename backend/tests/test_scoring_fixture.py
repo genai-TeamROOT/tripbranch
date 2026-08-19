@@ -23,6 +23,7 @@ def _run(case: ScoringFixtureCase):
         max_distance_km=case.max_distance_km,
         shown_place_ids=case.shown_place_ids,
         rejected_place_ids=case.rejected_place_ids,
+        walking_routes=case.walking_routes,
     )
 
 
