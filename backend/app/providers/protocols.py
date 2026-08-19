@@ -1,9 +1,10 @@
-"""TripBranch provider 계층의 최소 인터페이스 정의.
+"""TripBranch provider 계층의 인터페이스 정의.
 
-역할: 해석 provider와 추천 provider가 구현해야 할 메서드 계약을 표현한다.
-입력: 사용자 자연어 입력 또는 이미 노출된 place_id 목록.
-출력: 해석 조건 모델 또는 추천 응답 모델.
-호출 시점: 실제 provider 주입 구조를 만들 때 타입 계약으로 사용된다.
+역할: 외부 시스템(LLM·지도·날씨·관광 API 등)을 다루는 provider가 구현해야 할
+      메서드 계약을 표현한다.
+입력: provider별 조회 조건(사용자 발화, 좌표, 지역 코드, 날짜 등).
+출력: 도메인 모델 또는 ProviderResult로 감싼 조회 결과.
+호출 시점: factory가 Fake/Real provider를 주입할 때 타입 계약으로 사용된다.
 TODO: provider가 늘어나면 오류 타입, 비동기 계약, 메타데이터 계약을 분리한다.
 """
 
@@ -44,18 +45,11 @@ from app.schemas import (
     GeneralTopic,
     Intent,
     IntentClassificationResult,
-    InterpretedConditions,
     LLMOutput,
     PlaceCandidate,
     RecommendationResponse,
     UserConditions,
 )
-
-
-class InterpretProvider(Protocol):
-    def interpret(self, user_input: str) -> InterpretedConditions:
-        """Return structured trip conditions from free-form input."""
-        ...
 
 
 class LLMProvider(Protocol):
@@ -217,12 +211,6 @@ class LLMProvider(Protocol):
         new_items만 반환한다. 개수·순번 일치 여부는 app.schedule.planner가
         검증한다(SchedulePartialLLMPlan 참고).
         """
-        ...
-
-
-class RecommendationProvider(Protocol):
-    def recommendations(self, shown_place_ids: list[str]) -> RecommendationResponse:
-        """Return place recommendations, excluding already shown IDs."""
         ...
 
 
