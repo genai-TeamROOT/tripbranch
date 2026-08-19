@@ -60,11 +60,15 @@ async def test_existing_session_without_device_location_stays_gps_missing(
 
 
 @pytest.mark.asyncio
-async def test_already_fresh_gps_is_not_refetched(store: InMemoryStateStore) -> None:
+async def test_new_browser_gps_replaces_already_fresh_session_gps(
+    store: InMemoryStateStore,
+) -> None:
     session_id = _existing_session(store)
 
     first = await ensure_current_context(session_id, "37.5788,126.9770", store=store)
     second = await ensure_current_context(session_id, "9.9999,9.9999", store=store)
 
-    # 두 번째 호출은 device_location이 달라도 이미 신선하므로 갱신하지 않는다.
-    assert second.api_context.gps_location == first.api_context.gps_location == "37.5788,126.9770"
+    # 사용자가 브라우저에서 새 위치를 받아 보낸 경우에는 1시간 TTL과 무관하게
+    # 세션 GPS도 즉시 교체해야 다음 턴이 같은 기준점을 재사용한다.
+    assert first.api_context.gps_location == "37.5788,126.9770"
+    assert second.api_context.gps_location == "9.9999,9.9999"

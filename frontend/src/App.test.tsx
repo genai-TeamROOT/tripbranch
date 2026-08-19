@@ -208,6 +208,57 @@ test("user chat needs only one chat call", async () => {
   expect(requestBody.device_location).toBe("37.5788,126.977");
 });
 
+test("asks whether to refresh a location older than 30 minutes before a follow-up", async () => {
+  const now = vi.spyOn(Date, "now");
+  now.mockReturnValue(1_000);
+  render(<App />);
+
+  await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+  await screen.findByText("테스트 박물관");
+
+  now.mockReturnValue(30 * 60 * 1000 + 1_001);
+  await userEvent.type(screen.getByPlaceholderText("추가 조건을 입력해 주세요"), "다른 곳 보여줘");
+  await userEvent.click(screen.getByRole("button", { name: "보내기" }));
+
+  expect(
+    await screen.findByText("현재 위치를 확인한 지 30분이 지났어요. 이번 추천에 사용할 위치를 선택해주세요."),
+  ).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "30분 전 위치로 계속" })).toBeInTheDocument();
+  expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+
+  await userEvent.click(screen.getByRole("button", { name: "30분 전 위치로 계속" }));
+  await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2));
+  const requestBody = JSON.parse(String(vi.mocked(fetch).mock.calls[1][1]?.body));
+  expect(requestBody.user_input).toBe("다른 곳 보여줘");
+  expect(requestBody.device_location).toBe("37.5788,126.977");
+  now.mockRestore();
+});
+
+test("refreshing a location after 30 minutes requests browser GPS again", async () => {
+  const now = vi.spyOn(Date, "now");
+  now.mockReturnValue(1_000);
+  render(<App />);
+
+  await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+  await screen.findByText("테스트 박물관");
+
+  now.mockReturnValue(30 * 60 * 1000 + 1_001);
+  await userEvent.type(screen.getByPlaceholderText("추가 조건을 입력해 주세요"), "카페 추천해줘");
+  await userEvent.click(screen.getByRole("button", { name: "보내기" }));
+  await screen.findByRole("button", { name: "현재 위치 다시 가져오기" });
+
+  await userEvent.click(screen.getByRole("button", { name: "현재 위치 다시 가져오기" }));
+
+  await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2));
+  expect(navigator.geolocation.getCurrentPosition).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(navigator.geolocation.getCurrentPosition).mock.calls[1][2]).toMatchObject({
+    maximumAge: 0,
+  });
+  now.mockRestore();
+});
+
 test("falls back to the existing chat endpoint when the SSE route is unavailable", async () => {
   vi.stubGlobal(
     "fetch",
