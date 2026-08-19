@@ -471,11 +471,12 @@ async def rerank_with_concentration(
             # 혼잡도와 무관하게 변하지 않으므로 그대로 가져온다. 여기서 빠뜨리면
             # 혼잡도 재순위를 탄 요청만 이 필드가 조용히 사라진다.
             operating_hours_display=item.operating_hours_display,
-            # 혼잡도 재순위는 후보를 다시 만들지 않으므로 도보 실측도
+            # 혼잡도 재순위는 후보를 다시 만들지 않으므로 실측 이동 정보도
             # 1차 값을 그대로 가져온다 — 여기서 빠뜨리면 2차를 탄
             # 요청만 이 필드가 조용히 사라진다.
-            walking_distance_m=item.walking_distance_m,
-            walking_duration_seconds=item.walking_duration_seconds,
+            travel_distance_m=item.travel_distance_m,
+            travel_duration_seconds=item.travel_duration_seconds,
+            travel_mode=item.travel_mode,
             environment_type=item.environment_type,
             recommendation_reason=_recommendation_reason(candidate),
             explanations=list(explanations),
@@ -601,8 +602,9 @@ def _build_response(
             distance_km=round(candidate.distance_km, 2),
             remaining_minutes=_remaining_minutes(candidate, visit_at),
             operating_hours_display=_operating_hours_display(candidate),
-            walking_distance_m=ranked_item.walking_distance_m,
-            walking_duration_seconds=ranked_item.walking_duration_seconds,
+            travel_distance_m=ranked_item.travel_distance_m,
+            travel_duration_seconds=ranked_item.travel_duration_seconds,
+            travel_mode=ranked_item.travel_mode,
             environment_type=candidate.environment_type,
             recommendation_reason=_recommendation_reason(ranked_item),
             explanations=list(explanations),

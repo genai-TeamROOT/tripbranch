@@ -149,11 +149,15 @@ type RecommendationItem = {
   // 그 후보에 실제 적용된 당일 운영 구간. 운영시간 미확인 후보는 null이다.
   // 24시간 개방은 "24시간", 원문 "09:00~24:00"은 "09:00~24:00"으로 내려간다.
   operating_hours_display: string | null; // 예: "09:00~18:00"
-  // 카카오 도보 경로 실측값. 값이 있으면 distance Feature 점수도 직선거리가 아니라
-  // 이 소요시간으로 계산된 것이다. 조회 실패나 도보가 아닌 이동수단 요청이면 null이고,
-  // 그때는 distance_km(직선거리)가 유일한 거리 정보다.
-  walking_distance_m: number | null;
-  walking_duration_seconds: number | null;
+  // 실측 경로값. 값이 있으면 distance Feature 점수도 직선거리가 아니라 이 소요시간으로
+  // 계산된 것이다. 조회 실패나 그 이동수단의 경로 Provider가 아직 없으면 세 필드가 함께
+  // null이고, 그때는 distance_km(직선거리)가 유일한 거리 정보다. 프론트는 null일 때
+  // 시간을 자체 추정하지 않고 직선거리로만 표시한다.
+  // travel_mode는 어떤 이동수단으로 잰 값인지다. 지금 서버가 실제로 채우는 값은
+  // "walking"뿐이고, 대중교통·자동차는 각 이동수단 카드에서 Provider가 붙는다.
+  travel_distance_m: number | null;
+  travel_duration_seconds: number | null;
+  travel_mode: "walking" | "transit" | "driving" | null;
   environment_type: "indoor" | "outdoor" | "mixed" | "unknown";
   recommendation_reason: string;
   explanations: string[]; // Rule 기반 Feature별 설명 문장(0~3개), 기여도 큰 순

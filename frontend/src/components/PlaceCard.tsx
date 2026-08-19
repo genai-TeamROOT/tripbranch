@@ -7,23 +7,12 @@
  */
 
 import type { RecommendationItem } from "../types";
-
-/*
- * 신호 대기·혼잡·길 찾기 여유를 포함한 보수적 보행 속도. 성인 여성의 일반적인
- * 보행 속도보다 낮은 3.6km/h(1km 약 17분)로 잡아 실제 이동시간을 낙관적으로
- * 안내하지 않는다.
- */
-const SAFE_WALKING_SPEED_KMH = 3.6;
+import { travelLabel, travelValue } from "../utils/travelDisplay";
 
 interface PlaceCardProps {
   item: RecommendationItem;
   /** 추천 결과의 현재 정보만으로 여는 1차 상세 미리보기. */
   onOpenDetail?: (item: RecommendationItem) => void;
-}
-
-function formatWalkingMinutes(distanceKm: number): string {
-  const minutes = Math.max(1, Math.ceil((distanceKm / SAFE_WALKING_SPEED_KMH) * 60));
-  return `약 ${minutes}분`;
 }
 
 function formatRemainingDuration(remainingMinutes: number): string {
@@ -92,8 +81,8 @@ export function PlaceCard({ item, onOpenDetail }: PlaceCardProps) {
 
       <dl className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-700 dark:text-gray-300">
         <div className="flex gap-1">
-          <dt className="text-gray-400">도보 이동</dt>
-          <dd>{formatWalkingMinutes(item.distance_km)}</dd>
+          <dt className="text-gray-400">{travelLabel(item)}</dt>
+          <dd>{travelValue(item)}</dd>
         </div>
         <div className="flex gap-1">
           <dt className="text-gray-400">운영시간</dt>

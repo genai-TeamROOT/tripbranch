@@ -8,6 +8,7 @@
 import { useEffect, useState } from "react";
 import { fetchRecommendationPlaceDetails } from "../../api/trip";
 import type { InfoPlaceCard, RecommendationItem } from "../../types";
+import { travelLabel, travelValue } from "../../utils/travelDisplay";
 
 interface RecommendationDetailPreviewModalProps {
   /** 추천 카드에서 열면 현재 거리·운영시간과 함께 C 상세를 추가 조회한다. */
@@ -15,11 +16,6 @@ interface RecommendationDetailPreviewModalProps {
   /** INFO 카드에서 열면 이미 받은 상세 데이터를 즉시 표시해 재조회하지 않는다. */
   card?: InfoPlaceCard;
   onClose: () => void;
-}
-
-function formatWalkingMinutes(distanceKm: number): string {
-  const minutes = Math.max(1, Math.ceil((distanceKm / 3.6) * 60));
-  return `도보 약 ${minutes}분`;
 }
 
 function formatOperatingHours(item: RecommendationItem): string {
@@ -255,9 +251,9 @@ export function RecommendationDetailPreviewModal({
           {item && (
             <dl className="grid grid-cols-2 gap-3 text-sm">
               <div className="rounded-lg bg-gray-50 p-3 dark:bg-gray-800/70">
-                <dt className="text-xs text-gray-500 dark:text-gray-400">도보 이동</dt>
+                <dt className="text-xs text-gray-500 dark:text-gray-400">{travelLabel(item)}</dt>
                 <dd className="mt-1 font-medium text-gray-900 dark:text-gray-100">
-                  {formatWalkingMinutes(item.distance_km)}
+                  {travelValue(item)}
                 </dd>
               </div>
               <div className="rounded-lg bg-gray-50 p-3 dark:bg-gray-800/70">

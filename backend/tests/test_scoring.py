@@ -719,8 +719,10 @@ def test_measured_route_is_exposed_on_ranked_candidate() -> None:
     )
 
     ranked = result.ranked[0]
-    assert ranked.walking_distance_m == 620
-    assert ranked.walking_duration_seconds == 530
+    assert ranked.travel_distance_m == 620
+    assert ranked.travel_duration_seconds == 530
+    # 수치와 mode는 같은 경로에서 나와야 응답 표기가 어긋나지 않는다.
+    assert ranked.travel_mode is TravelMode.WALKING
 
 
 def test_fallback_candidate_exposes_no_measured_route() -> None:
@@ -736,8 +738,9 @@ def test_fallback_candidate_exposes_no_measured_route() -> None:
     )
 
     ranked = result.ranked[0]
-    assert ranked.walking_distance_m is None
-    assert ranked.walking_duration_seconds is None
+    assert ranked.travel_distance_m is None
+    assert ranked.travel_duration_seconds is None
+    assert ranked.travel_mode is None
 
 
 def test_partial_measurement_falls_back_to_straight_line_for_every_candidate() -> None:
@@ -754,7 +757,7 @@ def test_partial_measurement_falls_back_to_straight_line_for_every_candidate() -
         travel_routes=[_walking_route("p1", duration_seconds=530)],
     )
 
-    assert [ranked.walking_duration_seconds for ranked in result.ranked] == [None, None]
+    assert [ranked.travel_duration_seconds for ranked in result.ranked] == [None, None]
     # 직선거리 기준이므로 더 가까운 p1이 위에 온다.
     assert [ranked.place_id for ranked in result.ranked] == ["p1", "p5"]
 
@@ -790,7 +793,7 @@ def test_all_measured_candidates_keep_their_routes() -> None:
         ],
     )
 
-    assert [ranked.walking_duration_seconds for ranked in result.ranked] == [300, 900]
+    assert [ranked.travel_duration_seconds for ranked in result.ranked] == [300, 900]
 
 
 def _estimated_route(place_id: str, duration_seconds: int) -> TravelRoute:
@@ -808,7 +811,7 @@ def _estimated_route(place_id: str, duration_seconds: int) -> TravelRoute:
 def test_straight_line_estimate_is_not_treated_as_measurement() -> None:
     """직선거리 추정은 status가 SUCCESS여도 실측이 아니다.
 
-    이걸 실측으로 쓰면 응답의 walking_duration_seconds에 추정값이 실려
+    이걸 실측으로 쓰면 응답의 travel_duration_seconds에 추정값이 실려
     "걸어서 약 N분"이라는 거짓 문구가 나간다.
     """
     score = _distance_feature_score(
@@ -829,8 +832,8 @@ def test_estimate_is_not_exposed_as_measured_route() -> None:
     )
 
     ranked = result.ranked[0]
-    assert ranked.walking_distance_m is None
-    assert ranked.walking_duration_seconds is None
+    assert ranked.travel_distance_m is None
+    assert ranked.travel_duration_seconds is None
 
 
 def test_estimate_mixed_with_measurement_falls_back_for_every_candidate() -> None:
@@ -850,4 +853,4 @@ def test_estimate_mixed_with_measurement_falls_back_for_every_candidate() -> Non
         ],
     )
 
-    assert [ranked.walking_duration_seconds for ranked in result.ranked] == [None, None]
+    assert [ranked.travel_duration_seconds for ranked in result.ranked] == [None, None]

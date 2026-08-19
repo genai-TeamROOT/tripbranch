@@ -158,10 +158,13 @@ class RankedCandidate:
     remaining_minutes: float | None
     weather_condition: WeatherCondition | None
     environment_type: str
-    # 실측 도보 경로가 있을 때만 채워진다. 거리 Feature 점수를 이 값으로
-    # 계산했다는 표시이자, 근거 문장·응답 표기의 원본이다(`_proximity_score()`).
-    walking_distance_m: int | None = None
-    walking_duration_seconds: int | None = None
+    # 실측 경로가 있을 때만 채워진다. 거리 Feature 점수를 이 값으로 계산했다는
+    # 표시이자, 근거 문장·응답 표기의 원본이다(`_proximity_score()`). travel_mode는
+    # 어떤 이동수단으로 잰 값인지다 — 문장이 "걸어서"라고 말할 수 있는지가 여기서
+    # 갈린다(explanation.py).
+    travel_distance_m: int | None = None
+    travel_duration_seconds: int | None = None
+    travel_mode: TravelMode | None = None
     # D-040: 2차 Scoring(rerank_with_concentration())에서만 채워진다. 1차 Scoring
     # 결과는 concentration 자체를 모르므로 항상 None이다 — explanation.py가 문장을
     # "한적함/보통/다소 혼잡/혼잡" 중 무엇으로 쓸지 고르는 데 필요하다(direction이
@@ -333,7 +336,7 @@ def _applied_travel_route(route: TravelRoute | None) -> TravelRoute | None:
       실측과 구분되지 않는다(C 리뷰 지적, 2026-08-19).
 
     `source`를 빠뜨리면 두 가지가 깨진다. (1) 직선거리 추정이 실측인 척
-    `walking_duration_seconds`에 실려 "걸어서 약 9분"이라는 거짓 문구가 나간다.
+    `travel_duration_seconds`에 실려 "걸어서 약 9분"이라는 거짓 문구가 나간다.
     (2) 실측과 추정은 낙관도가 달라 한 순위표에 섞이면 안 되는데
     (`_consistent_routes()`), 상태가 똑같이 SUCCESS라 그 검사를 그냥 통과한다.
 
@@ -354,6 +357,15 @@ def _travel_field(route: TravelRoute | None, field: str) -> int | None:
     """채점에 실제로 쓴 경로에서만 값을 꺼낸다 — 폴백 후보는 `None`이다."""
     applied = _applied_travel_route(route)
     return None if applied is None else getattr(applied, field)
+
+
+def _travel_mode_of(route: TravelRoute | None) -> TravelMode | None:
+    """거리·소요시간과 같은 조건으로 이동수단을 꺼낸다.
+
+    세 값이 같은 경로에서 나와야 응답의 mode와 수치가 어긋나지 않는다.
+    """
+    applied = _applied_travel_route(route)
+    return None if applied is None else applied.mode
 
 
 def _proximity_score(
@@ -609,12 +621,13 @@ def score_prepared_candidates(
             weather_condition=weather_condition,
             weather_reason=weather_reason,
             environment_type=candidate.environment_type,
-            walking_distance_m=_travel_field(
+            travel_distance_m=_travel_field(
                 routes_by_place_id.get(candidate.place_id), "distance_m"
             ),
-            walking_duration_seconds=_travel_field(
+            travel_duration_seconds=_travel_field(
                 routes_by_place_id.get(candidate.place_id), "duration_seconds"
             ),
+            travel_mode=_travel_mode_of(routes_by_place_id.get(candidate.place_id)),
         )
         for index, (
             candidate,
