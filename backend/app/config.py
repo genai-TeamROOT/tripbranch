@@ -105,15 +105,7 @@ class Settings(BaseSettings):
     naver_map_client_secret: str = Field(default="", repr=False, exclude=True)
     naver_local_search_client_id: str = Field(default="", repr=False, exclude=True)
     naver_local_search_client_secret: str = Field(default="", repr=False, exclude=True)
-    kakao_map_rest_api_key: str = Field(
-        default="",
-        validation_alias=AliasChoices(
-            "KAKAO_MAP_REST_API_KEY",
-            "KAKAO_MOBILITY_REST_API_KEY",
-        ),
-        repr=False,
-        exclude=True,
-    )
+    kakao_map_rest_api_key: str = Field(default="", repr=False, exclude=True)
     supabase_url: str = ""
     supabase_secret_key: str = Field(default="", repr=False, exclude=True)
 

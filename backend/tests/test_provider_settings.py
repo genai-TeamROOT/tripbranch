@@ -52,15 +52,6 @@ def test_travel_route_provider_stays_fake_until_explicitly_enabled() -> None:
     assert enabled.kakao_map_rest_api_key == "test-rest-api-key"
 
 
-def test_legacy_kakao_mobility_key_name_remains_compatible() -> None:
-    settings = Settings(
-        _env_file=None,
-        KAKAO_MOBILITY_REST_API_KEY="legacy-key",
-    )
-
-    assert settings.kakao_map_rest_api_key == "legacy-key"
-
-
 def test_walking_speed_is_configurable_and_must_be_positive() -> None:
     settings = Settings(_env_file=None, walking_speed_mps=1.0)
 
