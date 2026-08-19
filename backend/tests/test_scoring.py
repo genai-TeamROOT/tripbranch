@@ -30,6 +30,7 @@ from app.domain.scoring import (
     score_candidates,
     score_prepared_candidates,
 )
+from app.domain.travel_route import RouteSource, RouteStatus, WalkingRoute
 
 # 고정 기준 시각 (모든 테스트가 공유): 14:00
 NOW = datetime(2026, 7, 23, 14, 0, 0)
@@ -559,3 +560,249 @@ def test_concentration_weights_redistribute_when_missing() -> None:
     assert weights_used["weather"] == pytest.approx(0.35 / 0.85)
     assert weights_used["distance"] == pytest.approx(0.15 / 0.85)
     assert sum(weights_used.values()) == pytest.approx(1.0)
+
+
+# --- 실측 도보 시간 반영 (feat/walking-duration-scoring) --------------------
+#
+# 거리 Feature는 실측 도보 소요시간이 있으면 그걸 쓰고, 없으면 직선거리로
+# 돌아간다. 분모는 검색 반경을 도보 속도로 되돌린 예산(분)이다.
+
+
+def _walking_route(
+    place_id: str,
+    duration_seconds: int | None,
+    *,
+    status: RouteStatus = RouteStatus.SUCCESS,
+) -> WalkingRoute:
+    return WalkingRoute(
+        place_id=place_id,
+        status=status,
+        source=RouteSource.KAKAO_WALKING,
+        distance_m=None if duration_seconds is None else duration_seconds * 1,
+        duration_seconds=duration_seconds,
+    )
+
+
+def _distance_feature_score(candidate: ScoringCandidate, **kwargs: object) -> float:
+    prepared = prepare_candidates([candidate], now=NOW)
+    result = score_prepared_candidates(
+        prepared.eligible_candidates,
+        weather_condition=None,
+        max_distance_km=2.0,
+        **kwargs,  # type: ignore[arg-type]
+    )
+    score = result.ranked[0].feature_scores["distance"]
+    assert score is not None
+    return score
+
+
+def test_distance_feature_uses_measured_walking_duration() -> None:
+    """반경 2.0km면 예산은 2.0/0.07 = 약 28.57분. 14.28분이면 절반이 남는다."""
+    score = _distance_feature_score(
+        MUSEUM_OPEN,
+        walking_routes=[_walking_route("p1", duration_seconds=857)],
+    )
+
+    assert score == pytest.approx(0.5, abs=0.01)
+
+
+def test_distance_feature_falls_back_to_straight_line_without_route() -> None:
+    """도보 경로가 아예 없으면 기존 직선거리 점수(1 - 0.5/2.0)를 그대로 쓴다."""
+    assert _distance_feature_score(MUSEUM_OPEN) == pytest.approx(0.75)
+
+
+def test_distance_feature_falls_back_when_route_lookup_failed() -> None:
+    """조회 실패(no_data)는 결측이 아니라 직선거리 폴백이다 — 재분배를 태우면
+    조회에 실패한 후보만 거리 Feature가 빠져 오히려 유리해진다."""
+    score = _distance_feature_score(
+        MUSEUM_OPEN,
+        walking_routes=[
+            _walking_route("p1", duration_seconds=None, status=RouteStatus.NO_DATA)
+        ],
+    )
+
+    assert score == pytest.approx(0.75)
+
+
+def test_distance_feature_keeps_distance_weight_when_route_missing() -> None:
+    """폴백 후보의 가중치 구성은 실측 후보와 같아야 한다(결측 재분배 금지)."""
+    prepared = prepare_candidates([MUSEUM_OPEN], now=NOW)
+    result = score_prepared_candidates(
+        prepared.eligible_candidates,
+        weather_condition=WeatherCondition.NEUTRAL,
+        max_distance_km=2.0,
+    )
+
+    assert "distance" in result.ranked[0].weights_used
+
+
+def test_walking_duration_beyond_budget_scores_zero() -> None:
+    """예산(약 28.57분)을 넘으면 0으로 클램프된다."""
+    score = _distance_feature_score(
+        MUSEUM_OPEN,
+        walking_routes=[_walking_route("p1", duration_seconds=3600)],
+    )
+
+    assert score == 0.0
+
+
+def test_walking_route_of_other_place_is_ignored() -> None:
+    """place_id가 다른 경로는 이 후보에 적용되지 않는다."""
+    score = _distance_feature_score(
+        MUSEUM_OPEN,
+        walking_routes=[_walking_route("other", duration_seconds=60)],
+    )
+
+    assert score == pytest.approx(0.75)
+
+
+def test_measured_route_is_exposed_on_ranked_candidate() -> None:
+    """채점에 쓴 실측 값은 응답 조립·근거 문장이 쓸 수 있게 보존된다."""
+    prepared = prepare_candidates([MUSEUM_OPEN], now=NOW)
+    result = score_prepared_candidates(
+        prepared.eligible_candidates,
+        weather_condition=None,
+        max_distance_km=2.0,
+        walking_routes=[
+            WalkingRoute(
+                place_id="p1",
+                status=RouteStatus.SUCCESS,
+                source=RouteSource.KAKAO_WALKING,
+                distance_m=620,
+                duration_seconds=530,
+            )
+        ],
+    )
+
+    ranked = result.ranked[0]
+    assert ranked.walking_distance_m == 620
+    assert ranked.walking_duration_seconds == 530
+
+
+def test_fallback_candidate_exposes_no_measured_route() -> None:
+    """직선거리로 폴백한 후보는 도보 값을 내보내지 않는다 — 표기가 실측인 척하면 안 된다."""
+    prepared = prepare_candidates([MUSEUM_OPEN], now=NOW)
+    result = score_prepared_candidates(
+        prepared.eligible_candidates,
+        weather_condition=None,
+        max_distance_km=2.0,
+        walking_routes=[
+            _walking_route("p1", duration_seconds=None, status=RouteStatus.UNAVAILABLE)
+        ],
+    )
+
+    ranked = result.ranked[0]
+    assert ranked.walking_distance_m is None
+    assert ranked.walking_duration_seconds is None
+
+
+def test_partial_measurement_falls_back_to_straight_line_for_every_candidate() -> None:
+    """실측과 직선거리를 한 순위표에 섞으면 실측 후보만 손해를 본다.
+
+    실거리는 직선거리보다 항상 크거나 같아 두 기준의 낙관도가 다르기 때문이다.
+    하나라도 실측이 없으면 전부 직선거리로 내려서 같은 자로 잰다.
+    """
+    prepared = prepare_candidates([MUSEUM_OPEN, RESTAURANT_FAR], now=NOW)
+    result = score_prepared_candidates(
+        prepared.eligible_candidates,
+        weather_condition=None,
+        max_distance_km=2.0,
+        walking_routes=[_walking_route("p1", duration_seconds=530)],
+    )
+
+    assert [ranked.walking_duration_seconds for ranked in result.ranked] == [None, None]
+    # 직선거리 기준이므로 더 가까운 p1이 위에 온다.
+    assert [ranked.place_id for ranked in result.ranked] == ["p1", "p5"]
+
+
+def test_closer_place_is_not_demoted_by_having_a_measurement() -> None:
+    """회귀 방지: 실측이 있다는 이유로 더 가까운 장소가 밀려나면 안 된다."""
+    prepared = prepare_candidates([MUSEUM_OPEN, RESTAURANT_FAR], now=NOW)
+    partial = score_prepared_candidates(
+        prepared.eligible_candidates,
+        weather_condition=None,
+        max_distance_km=2.0,
+        walking_routes=[_walking_route("p1", duration_seconds=530)],
+    )
+    none_measured = score_prepared_candidates(
+        prepared.eligible_candidates,
+        weather_condition=None,
+        max_distance_km=2.0,
+    )
+
+    assert [r.place_id for r in partial.ranked] == [r.place_id for r in none_measured.ranked]
+
+
+def test_all_measured_candidates_keep_their_routes() -> None:
+    """전원 실측이면 그대로 실측으로 채점한다."""
+    prepared = prepare_candidates([MUSEUM_OPEN, RESTAURANT_FAR], now=NOW)
+    result = score_prepared_candidates(
+        prepared.eligible_candidates,
+        weather_condition=None,
+        max_distance_km=2.0,
+        walking_routes=[
+            _walking_route("p1", duration_seconds=300),
+            _walking_route("p5", duration_seconds=900),
+        ],
+    )
+
+    assert [ranked.walking_duration_seconds for ranked in result.ranked] == [300, 900]
+
+
+def _estimated_route(place_id: str, duration_seconds: int) -> WalkingRoute:
+    """TravelRouteTool의 폴백과 fake Provider가 내보내는 직선거리 추정값."""
+    return WalkingRoute(
+        place_id=place_id,
+        status=RouteStatus.SUCCESS,  # 추정값도 SUCCESS로 온다 — 상태로는 구분 못 한다
+        source=RouteSource.STRAIGHT_LINE_ESTIMATE,
+        distance_m=duration_seconds,
+        duration_seconds=duration_seconds,
+    )
+
+
+def test_straight_line_estimate_is_not_treated_as_measurement() -> None:
+    """직선거리 추정은 status가 SUCCESS여도 실측이 아니다.
+
+    이걸 실측으로 쓰면 응답의 walking_duration_seconds에 추정값이 실려
+    "걸어서 약 N분"이라는 거짓 문구가 나간다.
+    """
+    score = _distance_feature_score(
+        MUSEUM_OPEN,
+        walking_routes=[_estimated_route("p1", duration_seconds=857)],
+    )
+
+    assert score == pytest.approx(0.75)  # 직선거리 폴백 점수
+
+
+def test_estimate_is_not_exposed_as_measured_route() -> None:
+    prepared = prepare_candidates([MUSEUM_OPEN], now=NOW)
+    result = score_prepared_candidates(
+        prepared.eligible_candidates,
+        weather_condition=None,
+        max_distance_km=2.0,
+        walking_routes=[_estimated_route("p1", duration_seconds=857)],
+    )
+
+    ranked = result.ranked[0]
+    assert ranked.walking_distance_m is None
+    assert ranked.walking_duration_seconds is None
+
+
+def test_estimate_mixed_with_measurement_falls_back_for_every_candidate() -> None:
+    """실측과 추정이 섞이면 낙관도가 달라 순위가 왜곡된다.
+
+    둘 다 status=SUCCESS라 상태만 보는 일관성 검사는 그냥 통과한다 —
+    source까지 봐야 이 케이스가 잡힌다.
+    """
+    prepared = prepare_candidates([MUSEUM_OPEN, RESTAURANT_FAR], now=NOW)
+    result = score_prepared_candidates(
+        prepared.eligible_candidates,
+        weather_condition=None,
+        max_distance_km=2.0,
+        walking_routes=[
+            _walking_route("p1", duration_seconds=300),  # 실측
+            _estimated_route("p5", duration_seconds=900),  # 추정
+        ],
+    )
+
+    assert [ranked.walking_duration_seconds for ranked in result.ranked] == [None, None]

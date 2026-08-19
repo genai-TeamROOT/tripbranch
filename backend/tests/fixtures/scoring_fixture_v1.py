@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, time
 
 from app.domain.models import OperatingHours, ScoringCandidate, WeatherCondition
+from app.domain.travel_route import RouteSource, RouteStatus, WalkingRoute
 
 # 모든 케이스가 공유하는 기준 시각 (14:00).
 NOW = datetime(2026, 7, 23, 14, 0, 0)
@@ -101,6 +102,18 @@ class ScoringFixtureCase:
     expected_ranked_place_ids: tuple[str, ...] = field(default_factory=tuple)
     expected_excluded_place_ids: frozenset[str] = field(default_factory=frozenset)
     expected_unverified_place_ids: frozenset[str] = field(default_factory=frozenset)
+    # 실측 도보 경로. 후보 중 하나라도 빠지면 전부 직선거리로 채점된다.
+    walking_routes: tuple[WalkingRoute, ...] = field(default_factory=tuple)
+
+
+def _walking_route(place_id: str, duration_seconds: int) -> WalkingRoute:
+    return WalkingRoute(
+        place_id=place_id,
+        status=RouteStatus.SUCCESS,
+        source=RouteSource.KAKAO_WALKING,
+        distance_m=duration_seconds,
+        duration_seconds=duration_seconds,
+    )
 
 
 SCORING_FIXTURE_V1: tuple[ScoringFixtureCase, ...] = (
@@ -172,5 +185,34 @@ SCORING_FIXTURE_V1: tuple[ScoringFixtureCase, ...] = (
         weather_condition=WeatherCondition.GOOD,
         max_distance_km=1.5,
         expected_ranked_place_ids=("a-near", "z-near", "a-far"),
+    ),
+    ScoringFixtureCase(
+        name="walking_routes_reorder_by_measured_time",
+        purpose=(
+            "전원 실측이면 직선거리가 아니라 도보 소요시간으로 순위가 정해진다 — "
+            "직선으로는 p1이 더 가깝지만 실제로 걸으면 p5가 빠른 경우"
+        ),
+        candidates=(_MUSEUM_OPEN, _RESTAURANT_FAR),
+        now=NOW,
+        weather_condition=None,
+        max_distance_km=2.0,
+        walking_routes=(
+            _walking_route("p1", 1500),  # 25분
+            _walking_route("p5", 300),  # 5분
+        ),
+        expected_ranked_place_ids=("p5", "p1"),
+    ),
+    ScoringFixtureCase(
+        name="walking_routes_partially_missing_fall_back_together",
+        purpose=(
+            "하나라도 실측이 없으면 전부 직선거리로 채점한다 — 낙관도가 다른 두 "
+            "기준이 섞이면 실측이 있는 후보만 손해를 보기 때문"
+        ),
+        candidates=(_MUSEUM_OPEN, _RESTAURANT_FAR),
+        now=NOW,
+        weather_condition=None,
+        max_distance_km=2.0,
+        walking_routes=(_walking_route("p1", 1500),),
+        expected_ranked_place_ids=("p1", "p5"),
     ),
 )

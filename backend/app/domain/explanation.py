@@ -44,7 +44,25 @@ def _format_distance(distance_km: float) -> str:
     return f"직선거리 약 {km_text}km"
 
 
+def _format_walking_duration(duration_seconds: int) -> str:
+    minutes = max(1, round(duration_seconds / 60))
+    hours, remainder = divmod(minutes, 60)
+    if hours > 0 and remainder > 0:
+        return f"{hours}시간 {remainder}분"
+    if hours > 0:
+        return f"{hours}시간"
+    return f"{minutes}분"
+
+
 def _distance_sentence(evidence: RecommendationEvidence) -> str:
+    """실측 도보 시간이 있으면 그걸 말하고, 없으면 기존 직선거리 문구를 쓴다.
+
+    거리 Feature 점수도 같은 기준으로 계산되므로(`scoring.py::_proximity_score()`),
+    점수와 근거 문장이 서로 다른 거리를 말하는 일이 없다.
+    """
+    if evidence.walking_duration_seconds is not None:
+        walk_text = _format_walking_duration(evidence.walking_duration_seconds)
+        return f"현재 위치에서 걸어서 약 {walk_text} 거리예요."
     return f"현재 위치에서 {_format_distance(evidence.distance_km)}예요."
 
 
