@@ -18,6 +18,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.auth.jwks import is_configured as auth_is_configured
+from app.auth.jwks import issuer as auth_issuer
 from app.config import settings
 from app.errors import AppError
 from app.providers.factory import validate_provider_config
@@ -102,6 +104,23 @@ def _log_provider_modes() -> None:
         )
 
 
+def _log_auth_mode() -> None:
+    """신원 토큰을 검증할 수 있는 상태인지 부팅 시 남긴다 (D-062 Phase 2).
+
+    Provider 모드를 부팅에 남기는 것과 같은 이유다 — 설정이 빠지면 프론트가 보낸
+    토큰이 조용히 무시되고, 화면상으로는 아무 문제 없이 동작한다. 지금은 인증이
+    optional이라 부팅을 막지 않지만, Phase 4에서 필수화하면 여기가 부팅 실패가
+    되어야 한다.
+    """
+    if auth_is_configured():
+        logger.info("Auth: 신원 토큰 검증 활성 (issuer=%s)", auth_issuer())
+    else:
+        logger.warning(
+            "Auth: SUPABASE_URL이 없어 신원 토큰을 검증하지 않습니다. "
+            "프론트가 보낸 토큰은 무시됩니다(D-062 Phase 2)."
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # uvicorn의 로깅 설정이 끝난 뒤여야 핸들러를 빌려올 수 있다.
@@ -109,6 +128,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 오설정을 첫 요청의 익명 500이 아니라 부팅 실패로 드러낸다.
     validate_provider_config()
     _log_provider_modes()
+    _log_auth_mode()
     app.state.tour_category_registry = get_tour_category_registry()
     yield
 

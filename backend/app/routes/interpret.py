@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from app.auth.dependency import OptionalPrincipal
 from app.schemas import (
     InterpretRequest,
     InterpretResponse,
@@ -27,7 +28,9 @@ router = APIRouter(tags=["interpret"])
 
 
 @router.post("/interpret", response_model=InterpretResponse)
-async def interpret(request: InterpretRequest) -> InterpretResponse:
+async def interpret(
+    request: InterpretRequest, principal: OptionalPrincipal
+) -> InterpretResponse:
     # 1) 세션 컨텍스트 확보 + GPS 최신화
     #    GPS 형식이 잘못되면 이번 턴만 건너뛴다. 대화 자체는 계속되어야 하고,
     #    사용자가 위치를 직접 말하면 user_conditions.current_location으로 확보된다.

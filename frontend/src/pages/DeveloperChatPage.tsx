@@ -20,6 +20,7 @@ import { ChatMessageList } from "../components/chat/ChatMessageList";
 import { ApiExchangePanel } from "../components/dev/ApiExchangePanel";
 import { DeveloperAuditPanel } from "../components/dev/DeveloperAuditPanel";
 import { ErrorBanner } from "../components/ErrorBanner";
+import { AuthStatusBadge } from "../auth/AuthStatusBadge";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import { buildAgentStageTimings } from "../utils/agentTiming";
 import { getBrowserDeviceLocation } from "../utils/geolocation";
@@ -324,7 +325,8 @@ export function DeveloperChatPage() {
               개발자용 채팅 검증 화면
             </p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
+            <AuthStatusBadge />
             <button
               type="button"
               onClick={() => navigate("/dev-ops")}
