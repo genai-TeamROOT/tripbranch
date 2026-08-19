@@ -11,7 +11,15 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from app.auth import jwks
 from app.auth.errors import TokenVerificationError
 from app.auth.verify import verify_access_token
-from tests.auth.conftest import TEST_KID, make_token, public_jwk
+from tests.auth.conftest import (
+    TEST_ISSUER,
+    TEST_KID,
+    forge_hs256_token,
+    forge_unsigned_token,
+    make_token,
+    public_jwk,
+    public_key_pem,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -55,19 +63,39 @@ async def test_알고리즘_혼동_공격을_막는다(signing_key) -> None:
     공개키는 누구나 가져갈 수 있으므로, 헤더의 alg를 그대로 따르는 검증기는 아무나
     토큰을 위조할 수 있게 된다. 이 테스트가 4-1절 방어의 핵심이다.
     """
-    import json
-
-    public_key_material = json.dumps(public_jwk(signing_key))
-    forged = jwt.encode(
+    forged = forge_hs256_token(
+        public_key_pem(signing_key),
         {
             "sub": "attacker",
-            "iss": "https://test.supabase.co/auth/v1",
+            "iss": TEST_ISSUER,
             "aud": "authenticated",
             "exp": 4102444800,
         },
-        public_key_material,
-        algorithm="HS256",
-        headers={"kid": TEST_KID},
+    )
+
+    with pytest.raises(TokenVerificationError) as exc:
+        await verify_access_token(forged)
+
+    # kid는 실재하는 값이므로 키 조회 단계는 통과한다. 즉 이 테스트가 통과했다면
+    # 그것은 알고리즘 고정이 막아낸 것이지, kid를 못 찾아서가 아니다.
+    #
+    # 다만 이 테스트가 "고정을 풀면 뚫린다"를 증명하지는 않는다. 확인해 보니 최신
+    # PyJWT는 뒤에 자체 가드를 겹쳐 두어(PEM·JWK 모양 입력을 HMAC 비밀키로 거부),
+    # 우리가 고정을 풀어도 다른 이유로 막힌다. 그러나 그 가드는 버전에 따라 없고
+    # (2.12.1에는 JWK 가드가 없다) 라이브러리 선의에 기대는 것이므로, 우리 쪽 고정을
+    # 1차 방어로 유지하고 이 테스트로 그것이 먼저 발동함을 고정한다.
+    assert exc.value.reason == "invalid_signature_or_claims"
+
+
+async def test_서명_없는_토큰을_막는다(signing_key) -> None:
+    """`alg: none`으로 서명을 통째로 비운 토큰. 알고리즘 혼동의 다른 변종이다."""
+    forged = forge_unsigned_token(
+        {
+            "sub": "attacker",
+            "iss": TEST_ISSUER,
+            "aud": "authenticated",
+            "exp": 4102444800,
+        }
     )
 
     with pytest.raises(TokenVerificationError):
