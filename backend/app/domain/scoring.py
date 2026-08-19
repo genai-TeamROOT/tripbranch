@@ -22,7 +22,7 @@ from enum import StrEnum
 
 from app.concentration_policy import ConcentrationLevel
 from app.domain.models import OperatingHours, ScoringCandidate, WeatherCondition
-from app.domain.travel_route import RouteStatus, WalkingRoute
+from app.domain.travel_route import RouteSource, RouteStatus, WalkingRoute
 from app.domain.weather_judgment import WeatherReason
 from app.place_search_policy import WALKING_SPEED_KM_PER_MINUTE
 
@@ -292,13 +292,28 @@ def _walking_time_score(duration_seconds: int, max_distance_km: float) -> float:
 def _applied_walking_route(route: WalkingRoute | None) -> WalkingRoute | None:
     """실제로 채점에 쓸 수 있는 도보 경로만 남긴다.
 
-    조회 실패(`NO_DATA`/`UNAVAILABLE`)나 직선거리 추정 폴백은 소요시간이 없거나
-    실측이 아니므로 여기서 걸러진다. 반환값이 `None`이면 거리 Feature는 직선거리로
-    계산되고, 응답에도 도보 값이 실리지 않는다.
+    세 가지를 함께 봐야 한다.
+
+    - `status`: `NO_DATA`/`UNAVAILABLE`은 조회에 실패한 것이다.
+    - `duration_seconds`: SUCCESS일 때만 값이 보장된다(`travel_route.py`
+      `__post_init__`). 계약상 보장이 아니므로 상태와 따로 확인한다.
+    - `source`: **`STRAIGHT_LINE_ESTIMATE`는 실측이 아니라 직선거리 추정이다.**
+      `TravelRouteTool`이 카카오 실패분을 이 값으로 채우고, 개발용 fake Provider도
+      전부 이 값을 내보낸다. 그런데 둘 다 `status`는 `SUCCESS`라 상태만으로는
+      실측과 구분되지 않는다(C 리뷰 지적, 2026-08-19).
+
+    `source`를 빠뜨리면 두 가지가 깨진다. (1) 직선거리 추정이 실측인 척
+    `walking_duration_seconds`에 실려 "걸어서 약 9분"이라는 거짓 문구가 나간다.
+    (2) 실측과 추정은 낙관도가 달라 한 순위표에 섞이면 안 되는데
+    (`_consistent_routes()`), 상태가 똑같이 SUCCESS라 그 검사를 그냥 통과한다.
+
+    반환값이 `None`이면 거리 Feature는 직선거리로 계산되고, 응답에도 도보 값이
+    실리지 않는다 — 추정을 실측으로 포장하지 않는다.
     """
     if (
         route is not None
         and route.status is RouteStatus.SUCCESS
+        and route.source is RouteSource.KAKAO_WALKING
         and route.duration_seconds is not None
     ):
         return route
