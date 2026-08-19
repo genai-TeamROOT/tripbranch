@@ -6,7 +6,7 @@ TripBranch의 Geocoding, Weather, Place, Concentration, Holiday Provider 테스�
 ## 1. 최초 환경 준비
 
 ```bash
-cd /Users/jinhyoungkim/Desktop/Dev/TripBranch/backend
+cd backend
 source .venv/bin/activate
 python -m pip install -e ".[dev]"
 ```
@@ -147,7 +147,7 @@ RECOMMENDATION_CANDIDATE_LIMIT=10
 첫 번째 터미널에서 서버를 실행한다.
 
 ```bash
-cd /Users/jinhyoungkim/Desktop/Dev/TripBranch/backend
+cd backend
 source .venv/bin/activate
 uvicorn app.main:app --reload
 ```
