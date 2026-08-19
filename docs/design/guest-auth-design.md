@@ -162,6 +162,112 @@ Supabase Auth는 신원 발급 용도로만 쓰고, 데이터 접근은 지금�
 단독 경로를 유지한다. 테이블의 `revoke ... from anon, authenticated` 상태를 그대로
 둔다는 뜻이다.
 
+### 6-1. 착수 전 결정 대기 (D-063)
+
+6절은 "무엇을 저장할지"까지만 정해져 있다. 실제로 착수하려면 아래 네 가지를 먼저
+정해야 하고, **모두 Package B 소유 영역이다.** 각 항목에 이 문서 작성자의 권장안과
+근거를 붙여 두었으니 판단만 하면 된다. 논의는 `D-063`에서 이어간다.
+
+| # | 결정할 것 | 권장 |
+|---|---|---|
+| 1 | `STATE_STORE_BACKEND`를 `supabase`로 전환할 시점 | Phase 3에 **포함하지 않음** |
+| 2 | 소유권 검증(남의 `session_id` 거부)을 어느 Phase에 둘지 | Phase 4로 미룸 |
+| 3 | `user_id`가 비어 있는 세션에 신원이 붙으면 채울지 | 채우되 **덮어쓰기 금지** |
+| 4 | `agent_states.user_id`에 `auth.users(id)` 외래키를 걸지 | **걸지 않음** |
+
+#### 1. 저장소 전환 시점
+
+`STATE_STORE_BACKEND`는 게스트 로그인 작업이 만든 설정이 아니다. `[B-05]`(2026-08-03)로
+이미 들어와 있고 `SupabaseStateStore`·마이그레이션·부팅 검증까지 갖춰져 있다. 값만
+바꾸면 되는 상태다.
+
+문제는 기본값이 `memory`라는 점이다. 이대로 `user_id`를 저장하면 **서버 재시작마다
+소유자 정보가 사라진다** — 코드는 완성되는데 승계할 데이터가 쌓이지 않는다.
+
+권장: **전환을 Phase 3에 포함하지 않는다.** 컬럼·필드·경로를 모두 준비해 두고,
+`supabase`로 켜는 순간 동작하는 상태까지만 만든다. 전환은 모든 세션 읽기·쓰기가
+네트워크를 타게 되는 변경이라 지연·장애 특성이 달라지고, 그 판단은 저장소 소유자의
+몫이다. 게스트 로그인 편의로 켜고 지나갈 성격이 아니다.
+
+#### 2. 소유권 검증 위치
+
+Phase 3이 끝나면 검증에 필요한 재료가 갖춰지지만(저장된 소유자 + 토큰의 신원), 정작
+검증은 하지 않는 상태가 된다. 지금은 `session_id`만 알면 남의 세션도 조회된다.
+
+권장: **Phase 4로 미룬다.** Phase 4가 인증 필수화라 "신원이 반드시 있다"가 전제되는
+시점이고, 그때 소유자 대조를 함께 넣는 편이 자연스럽다. Phase 3에 넣으면 신원이 없는
+요청(현재 optional)에서 어떻게 처리할지가 애매해진다.
+
+#### 3. 비어 있는 세션에 신원이 붙는 경우
+
+연결은 `create_session()` 시점에 한 번 일어난다. 그래서 기존 세션과 토큰 없이 만들어진
+세션은 `user_id`가 `null`로 남는다.
+
+권장: **비어 있으면 채우고, 값이 있으면 절대 덮어쓰지 않는다.** 빈 칸을 채우는 것은
+소유권 이전이 아니지만, 이미 다른 `user_id`가 있는 세션을 덮어쓰는 것은 소유권 탈취다.
+
+#### 4. 외래키를 걸지 않는 이유
+
+사용자 테이블은 이미 있다 — Supabase가 관리하는 `auth.users`이며, `signInAnonymously()`
+호출마다 행이 하나씩 생긴다. `id`(uuid)가 우리가 저장할 값이다. 우리가 만들 것도, 만들어서도
+안 된다(GoTrue 소유). 정식 로그인이 붙어도 새 행이 생기는 것이 아니라 기존 행의
+`is_anonymous`가 false로 바뀔 뿐이다.
+
+`public.agent_states.user_id`에서 `auth.users(id)`로 FK를 거는 선택지가 있으나, 걸지
+않기를 권한다.
+
+- `db-store-design-v2.md` §2-3이 **테이블 간 FK를 의도적으로 두지 않았다.**
+  `delete_state`/`delete_history`가 독립적으로 호출되는 구조와 어긋난다는 이유였다.
+  여기만 예외를 두면 일관성이 깨진다.
+- `public` 스키마가 우리 통제 밖인 `auth` 스키마에 의존하게 된다.
+- **오래된 익명 사용자 정리(10절)와 충돌한다.** FK가 있으면 삭제가 막히거나(`restrict`)
+  세션까지 함께 지워진다(`cascade`). 어느 쪽도 의도한 동작이 아니다.
+
+FK 없이 두면 사용자가 지워져도 세션 행은 남고 `user_id`가 고아값이 될 뿐이다. 그 처리는
+정리 정책에서 따로 다룬다.
+
+#### 마이그레이션 초안 (아직 적용하지 않음)
+
+아래는 결정이 끝난 뒤 `supabase/migrations/`에 파일로 옮길 내용이다. **지금 그 디렉터리에
+두지 않는 이유는 `supabase db push`나 MCP `apply_migration`이 집어갈 수 있기 때문이다.**
+소유자 확인 전에는 문서 안에만 둔다.
+
+```sql
+begin;
+
+-- D-062 Phase 3: 세션의 소유자를 기록한다.
+-- nullable인 이유는 기존 행과 토큰 없는 요청을 함께 수용하기 위해서다.
+-- auth.users(id)로의 FK는 의도적으로 걸지 않는다 (위 4번 참고).
+alter table public.agent_states add column if not exists user_id uuid;
+alter table public.recommendation_histories add column if not exists user_id uuid;
+
+-- "이 사용자의 최근 세션"을 뽑는 조회가 승계·관측의 기본 질의다.
+create index if not exists agent_states_user_id_last_active_idx
+  on public.agent_states (user_id, last_active_at desc);
+
+commit;
+```
+
+`condition_change_logs`와 `trace_records`는 `session_id`로 조인할 수 있어 이번 범위에서
+제외한다.
+
+#### 코드 쪽에서 함께 열리는 경로
+
+필드 하나가 늘어나는 것에 비해 손대는 파일이 넓다. 값이 아래 경로를 통과해야 한다.
+
+```text
+routes/chat.py (principal)  →  run_agent(principal=...)        [A]
+  →  state_transform.py                                        [A]
+    →  StateApplyRequest                                       [B 계약]
+      →  state/service.py apply()                              [B]
+        →  session.get_or_create_session(store, ..., user_id=)  [B]
+          →  create_session(store, user_id=...)                [B]
+```
+
+Phase 2는 의존성 안에서 끝나 `run_agent()`를 건드리지 않았으나, Phase 3은 이 체인을
+전부 통과해야 한다. 그리고 `AgentState`에 필드가 늘어나므로 **기존 픽스처 전수 갱신이
+함께 따라온다**(`tests/state/` 3개 파일이 `AgentState(...)`를 직접 만든다).
+
 ## 7. 프론트엔드
 
 `@supabase/supabase-js`를 추가한다(현재 의존성에 없다). 환경변수는
