@@ -12,6 +12,7 @@ import { ApiError } from "../api/client";
 import { streamChat, toDisplayConditions } from "../api/trip";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { VoiceInputButton } from "../components/chat/VoiceInputButton";
+import { AuthStatusBadge } from "../auth/AuthStatusBadge";
 import { useTripDispatch } from "../state/TripContext";
 import { buildAgentStageTimings } from "../utils/agentTiming";
 import { getBrowserDeviceLocation } from "../utils/geolocation";
@@ -161,7 +162,10 @@ export function HomePage() {
   return (
     <main className="mx-auto flex min-h-screen max-w-xl flex-col justify-center gap-5 px-4 py-10">
       <div className="flex flex-col gap-2">
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">TripBranch</h1>
+        <div className="flex items-center justify-between gap-2">
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">TripBranch</h1>
+          <AuthStatusBadge />
+        </div>
         <p className="text-sm text-gray-600 dark:text-gray-400">
           지금 상황을 말해주면 바로 대체 장소를 찾아볼게요.
         </p>

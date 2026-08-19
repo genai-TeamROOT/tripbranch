@@ -3,7 +3,7 @@
  * 입력: API path, 요청 body, fetch 옵션.
  * 출력: 파싱된 JSON 응답 또는 표준화된 ApiError.
  * 호출 시점: endpoint별 API 함수가 HTTP 요청을 보낼 때 호출된다.
- * TODO: 인증, timeout, abort, retry 정책이 필요해지면 이 계층에서 추가한다.
+ * TODO: timeout, abort, retry 정책이 필요해지면 이 계층에서 추가한다.
  */
 
 import type { ApiErrorBody } from "../types";
@@ -25,12 +25,31 @@ export class ApiError extends Error {
   }
 }
 
+/* 게스트/정식 신원의 access token 공급자. AuthProvider가 등록한다(D-062 4절).
+   토큰을 여기 보관하지 않고 매번 물어보는 이유는 자동 갱신된 토큰을 놓치지 않기
+   위해서다. 등록 전이거나 세션이 없으면 헤더를 붙이지 않는다 — 백엔드가 아직
+   optional 인증이라 그대로 통과한다(Phase 4에서 필수화). */
+type AuthTokenProvider = () => Promise<string | null>;
+
+let authTokenProvider: AuthTokenProvider | null = null;
+
+export function setAuthTokenProvider(provider: AuthTokenProvider | null): void {
+  authTokenProvider = provider;
+}
+
+async function authHeaders(): Promise<Record<string, string>> {
+  if (!authTokenProvider) return {};
+  const token = await authTokenProvider();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const auth = await authHeaders();
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
       ...options,
-      headers: { "Content-Type": "application/json", ...options?.headers },
+      headers: { "Content-Type": "application/json", ...auth, ...options?.headers },
     });
   } catch {
     throw new ApiError({
@@ -58,11 +77,12 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 async function requestBinary<T>(path: string, body: Blob, contentType: string): Promise<T> {
+  const auth = await authHeaders();
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
       method: "POST",
-      headers: { "Content-Type": contentType },
+      headers: { "Content-Type": contentType, ...auth },
       body,
     });
   } catch {
@@ -109,11 +129,12 @@ export async function streamPost<T>(
     }, 45_000);
   };
 
+  const auth = await authHeaders();
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream", ...auth },
       body: JSON.stringify(body),
       signal: controller.signal,
     });
