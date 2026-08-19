@@ -100,12 +100,7 @@ class Settings(BaseSettings):
     # Only required when the corresponding *_provider above is set to "real".
     llm_api_key: str = Field(default="", repr=False, exclude=True)
     weather_api_key: str = Field(default="", repr=False, exclude=True)
-    tour_api_service_key: str = Field(
-        default="",
-        validation_alias=AliasChoices("TOUR_API_SERVICE_KEY", "PLACE_API_KEY"),
-        repr=False,
-        exclude=True,
-    )
+    tour_api_service_key: str = Field(default="", repr=False, exclude=True)
     naver_map_client_id: str = Field(default="", repr=False, exclude=True)
     naver_map_client_secret: str = Field(default="", repr=False, exclude=True)
     naver_local_search_client_id: str = Field(default="", repr=False, exclude=True)

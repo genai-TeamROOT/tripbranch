@@ -341,8 +341,9 @@ PLACE_PROVIDER=fake
 | LLM | `LLM_PROVIDER` | `LLM_API_KEY` |
 
 `TOUR_API_SERVICE_KEY`는 공공데이터포털 인증키로 Place, Concentration, Holiday가
-공유합니다. 이전 변수명 `PLACE_API_KEY`는 `Settings`의 호환 alias로만 남아 있으며
-신규 설정은 `TOUR_API_SERVICE_KEY`를 사용합니다.
+공유합니다. 이전 변수명 `PLACE_API_KEY`를 호환 alias로 두었으나 2026-08-19에
+제거했습니다 — 이 이름으로 설정한 환경이 있으면 부팅 시
+`validate_provider_config()`가 키 누락으로 잡습니다.
 
 ### 6.3 Factory 함수
 
