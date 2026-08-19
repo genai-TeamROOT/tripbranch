@@ -47,6 +47,8 @@ from app.schemas import (
     OutputStatus,
     RecommendationItem,
     RecommendationResponse,
+    RecommendPayload,
+    Transport,
     UserConditions,
 )
 from app.services.runtime.agent_runtime import (
@@ -3312,6 +3314,106 @@ async def test_staged_recommendation_passes_only_eligible_routes_to_d_after_refi
     assert requested_ids == ["refill-0", "refill-10", *[f"refill-{i}" for i in range(20, 25)]]
     assert [route.place_id for route in recommendation_provider.travel_routes] == requested_ids
     assert "refill-1" not in requested_ids
+
+
+class _LLMProviderWithTransport(_LLMProviderWithGeneralAnswer):
+    """이동수단과 이동시간을 못 박는 더블 — FakeLLMProvider는 transport를 만들지 않는다."""
+
+    def __init__(self, transport: Transport | None, max_travel_time: int = 30) -> None:
+        super().__init__()
+        self._transport = transport
+        self._max_travel_time = max_travel_time
+
+    async def extract_recommend_conditions(self, user_input):
+        result = await super().extract_recommend_conditions(user_input)
+        output = result.data
+        assert output.recommend is not None
+        conditions = output.recommend.conditions.model_copy(
+            update={"transport": self._transport, "max_travel_time": self._max_travel_time}
+        )
+        return provider_result(
+            output.model_copy(update={"recommend": RecommendPayload(conditions=conditions)}),
+            source=ProviderSource.FAKE_LLM,
+        )
+
+
+@pytest.mark.asyncio
+async def test_staged_recommendation_asks_driving_mode_and_gets_nothing_for_car_request() -> None:
+    """자동차 요청은 자동차 mode로 묻고, 등록된 Provider가 없어 값 없이 돌아온다.
+
+    도보 실측을 자동차 요청에 쓰지 않는다는 결과는 이전과 같고(D가 버렸다),
+    이제 그 판단이 Tool에서 나므로 카카오 도보 호출이 일어나지 않는다 — 호출이
+    0건인지는 test_travel_route_tool.py가 Provider 호출 수로 못 박는다.
+    """
+    route_tool = _RecordingTravelRouteTool()
+    recommendation_provider = _RecordingWalkingRoutesRecommendationProvider()
+
+    await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithTransport(Transport.CAR),
+        tool_provider=_RefillPlacesToolProvider(),
+        recommendation_provider=recommendation_provider,
+        enrichment_provider=_CountingEnrichmentProvider(),
+        travel_route_tool=route_tool,
+        store=InMemoryStateStore(),
+    )
+
+    assert [query.mode for query in route_tool.queries] == [TravelMode.DRIVING]
+    assert recommendation_provider.travel_routes == ()
+
+
+@pytest.mark.asyncio
+async def test_staged_recommendation_skips_route_lookup_when_transport_is_unstated() -> None:
+    """이동수단 미언급 + 이동시간 언급은 무엇으로 재야 할지 정할 수 없어 조회하지 않는다.
+
+    반경이 20km/h 가정으로 커져 있는데 그게 대중교통인지 자동차인지는 발화에
+    없다(to_travel_mode). 지금도 D가 이 경우 도보 실측을 버렸으므로 결과는 같다.
+    """
+    route_tool = _RecordingTravelRouteTool()
+    recommendation_provider = _RecordingWalkingRoutesRecommendationProvider()
+
+    await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithTransport(None),
+        tool_provider=_RefillPlacesToolProvider(),
+        recommendation_provider=recommendation_provider,
+        enrichment_provider=_CountingEnrichmentProvider(),
+        travel_route_tool=route_tool,
+        store=InMemoryStateStore(),
+    )
+
+    assert route_tool.queries == []
+    assert recommendation_provider.travel_routes == ()
+
+
+@pytest.mark.asyncio
+async def test_staged_recommendation_requests_walking_mode_for_walk_request() -> None:
+    """도보 요청은 mode=WALKING으로 조회한다 — 반경도 도보 속도로 만들어진다."""
+    route_tool = _RecordingTravelRouteTool()
+
+    await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=_RefillPlacesToolProvider(),
+        recommendation_provider=_RecordingWalkingRoutesRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        travel_route_tool=route_tool,
+        store=InMemoryStateStore(),
+    )
+
+    assert [query.mode for query in route_tool.queries] == [TravelMode.WALKING]
 
 
 @pytest.mark.asyncio

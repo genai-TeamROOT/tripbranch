@@ -23,7 +23,12 @@ from typing import TypeVar
 from app.agent_context.schemas import PlaceCandidate, RecommendationContext
 from app.config import settings
 from app.domain.scoring import SCORING_VERSION
-from app.domain.travel_route import GeoCoordinate, RouteDestination, TravelRoute
+from app.domain.travel_route import (
+    GeoCoordinate,
+    RouteDestination,
+    TravelMode,
+    TravelRoute,
+)
 from app.errors import AppError
 from app.geo import haversine_km
 from app.observability.api_usage import create_external_client
@@ -79,6 +84,7 @@ from app.services.runtime.protocols import (
     ToolProvider,
     TravelRouteToolProvider,
 )
+from app.services.runtime.recommendation_transform import to_travel_mode
 from app.services.runtime.response_composer import (
     compose_chat_message,
     compose_compare_message,
@@ -980,13 +986,18 @@ async def _apply_concentration_rerank(
     )
 
 
-async def _fetch_walking_routes(
+async def _fetch_travel_routes(
     route_tool: TravelRouteToolProvider | None,
     context: RecommendationContext,
     prepared: PreparedRecommendationResult,
+    mode: TravelMode | None,
 ) -> tuple[TravelRoute, ...]:
-    """하드 필터 통과 후보만 도보 조회하고 D에 넘길 도메인 결과를 반환한다."""
-    if route_tool is None or context.location is None or context.places is None:
+    """하드 필터 통과 후보만 실측 조회하고 D에 넘길 도메인 결과를 반환한다.
+
+    `mode`가 None이면 조회하지 않는다 — 무엇으로 재야 할지 정할 수 없는
+    요청이다(to_travel_mode 참고).
+    """
+    if mode is None or route_tool is None or context.location is None or context.places is None:
         return ()
     resolved_location = context.location.data
     places = context.places.data
@@ -1016,6 +1027,7 @@ async def _fetch_walking_routes(
                 longitude=origin.longitude,
             ),
             destinations=destinations,
+            mode=mode,
         )
     )
     return result.routes
@@ -1833,10 +1845,11 @@ async def run_agent_flow(
             candidate_pool_exhausted = _candidate_pool_exhausted(refill_context)
 
         merged_prepared = recommendation_provider.merge_prepared(prepared_batches)
-        travel_routes = await _fetch_walking_routes(
+        travel_routes = await _fetch_travel_routes(
             travel_route_tool,
             tool_context,
             merged_prepared,
+            to_travel_mode(agent_conditions),
         )
         recommendations = await recommendation_provider.score_prepared(
             agent_conditions,
