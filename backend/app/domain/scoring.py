@@ -22,7 +22,9 @@ from enum import StrEnum
 
 from app.concentration_policy import ConcentrationLevel
 from app.domain.models import OperatingHours, ScoringCandidate, WeatherCondition
+from app.domain.travel_route import RouteStatus, WalkingRoute
 from app.domain.weather_judgment import WeatherReason
+from app.place_search_policy import WALKING_SPEED_KM_PER_MINUTE
 
 # B의 LLMOps Trace(record_trace(scoring_version=...))에 넘길 값 —
 # backend/docs/package-b/llmops-trace-contract-v1.md §7 Q2. B는 이 값의 의미를
@@ -30,7 +32,7 @@ from app.domain.weather_judgment import WeatherReason
 # OPERATING_PARSER_VERSION과 동일한 semver 패턴. 점수 산출에 영향을 주는 변경
 # (가중치, Feature 추가/제거, environment_type 판정표 등) 시 버전을 올린다 —
 # 사소한 리팩터링·주석 변경은 올리지 않는다.
-SCORING_VERSION = "recommendation-scoring-1.1.0"
+SCORING_VERSION = "recommendation-scoring-1.2.0"
 
 DEFAULT_WEIGHTS: Mapping[str, float] = {
     "weather": 0.4,
@@ -156,6 +158,10 @@ class RankedCandidate:
     remaining_minutes: float | None
     weather_condition: WeatherCondition | None
     environment_type: str
+    # 실측 도보 경로가 있을 때만 채워진다. 거리 Feature 점수를 이 값으로
+    # 계산했다는 표시이자, 근거 문장·응답 표기의 원본이다(`_proximity_score()`).
+    walking_distance_m: int | None = None
+    walking_duration_seconds: int | None = None
     # D-040: 2차 Scoring(rerank_with_concentration())에서만 채워진다. 1차 Scoring
     # 결과는 concentration 자체를 모르므로 항상 None이다 — explanation.py가 문장을
     # "한적함/보통/다소 혼잡/혼잡" 중 무엇으로 쓸지 고르는 데 필요하다(direction이
@@ -262,6 +268,67 @@ def _distance_score(distance_km: float, max_distance_km: float) -> float:
     return _clamp(1.0 - distance_km / max_distance_km, 0.0, 1.0)
 
 
+def _walking_minutes_budget(max_distance_km: float) -> float:
+    """검색 반경을 도보 소요시간 예산(분)으로 되돌린다.
+
+    호출부(`to_search_radius_km()`)가 `max_travel_time × 도보 속도`로 반경을
+    만들었으므로, 같은 속도로 나누면 사용자가 말한 이동시간이 그대로 나온다.
+    이동시간을 말하지 않은 요청은 기본 반경(2.0km)에서 약 28.6분이 된다.
+
+    분모를 이렇게 유도하면 직선거리 → 실거리 우회 계수를 추정할 필요가 없다.
+    거리 기준으로 하면 분모(반경)가 직선거리 전제라 반경 경계 후보가 전부
+    0점으로 몰리는데, 시간 기준은 분자·분모가 같은 단위라 그 왜곡이 없다.
+    """
+    return max_distance_km / WALKING_SPEED_KM_PER_MINUTE
+
+
+def _walking_time_score(duration_seconds: int, max_distance_km: float) -> float:
+    budget_minutes = _walking_minutes_budget(max_distance_km)
+    if budget_minutes <= 0:
+        return 0.0
+    return _clamp(1.0 - (duration_seconds / 60.0) / budget_minutes, 0.0, 1.0)
+
+
+def _applied_walking_route(route: WalkingRoute | None) -> WalkingRoute | None:
+    """실제로 채점에 쓸 수 있는 도보 경로만 남긴다.
+
+    조회 실패(`NO_DATA`/`UNAVAILABLE`)나 직선거리 추정 폴백은 소요시간이 없거나
+    실측이 아니므로 여기서 걸러진다. 반환값이 `None`이면 거리 Feature는 직선거리로
+    계산되고, 응답에도 도보 값이 실리지 않는다.
+    """
+    if (
+        route is not None
+        and route.status is RouteStatus.SUCCESS
+        and route.duration_seconds is not None
+    ):
+        return route
+    return None
+
+
+def _walking_field(route: WalkingRoute | None, field: str) -> int | None:
+    """채점에 실제로 쓴 경로에서만 값을 꺼낸다 — 폴백 후보는 `None`이다."""
+    applied = _applied_walking_route(route)
+    return None if applied is None else getattr(applied, field)
+
+
+def _proximity_score(
+    candidate: ScoringCandidate,
+    route: WalkingRoute | None,
+    max_distance_km: float,
+) -> float:
+    """거리 Feature 점수. 실측 도보 시간이 있으면 쓰고, 없으면 직선거리로 돌아간다.
+
+    폴백을 결측(`missing_features`)으로 처리하지 않는 이유: 거리는 이미 알고
+    있어서 결측이 아니고, 재분배를 태우면 도보 조회에 실패한 후보만 거리
+    Feature가 빠져 오히려 유리해진다.
+    """
+    applied = _applied_walking_route(route)
+    if applied is not None:
+        assert applied.duration_seconds is not None
+        return _walking_time_score(applied.duration_seconds, max_distance_km)
+    return _distance_score(candidate.distance_km, max_distance_km)
+
+
 def concentration_score(concentration_rate: float, *, seek: bool) -> float:
     """혼잡률(평시 대비 0~100대 상대 비율)을 0~1 점수로 선형 정규화한다.
 
@@ -360,6 +427,9 @@ def score_prepared_candidates(
     weights: Mapping[str, float] | None = None,
     weather_reason: WeatherReason = None,
     requested_environment: str | None = None,
+    # A가 조회해 넘긴 실측 도보 경로. 해당 후보가 없거나 조회에 실패했으면
+    # 직선거리로 돌아간다(`_proximity_score()`).
+    walking_routes: Sequence[WalkingRoute] = (),
 ) -> ScoringResult:
     """하드 필터를 통과한 후보에 가중치 점수를 적용해 정렬한다.
 
@@ -375,6 +445,7 @@ def score_prepared_candidates(
     값을 넘기지 않아 기존 날씨 판정을 그대로 쓴다.
     """
     environment_driven = uses_environment_feature(requested_environment)
+    routes_by_place_id = {route.place_id: route for route in walking_routes}
     base_weights = weights_for_environment(
         dict(weights) if weights is not None else dict(DEFAULT_WEIGHTS),
         requested_environment,
@@ -425,7 +496,9 @@ def score_prepared_candidates(
         feature_scores: dict[str, float | None] = {
             primary_feature: primary_score,
             "remaining_operating_time": remaining_time_score,
-            "distance": _distance_score(candidate.distance_km, max_distance_km),
+            "distance": _proximity_score(
+                candidate, routes_by_place_id.get(candidate.place_id), max_distance_km
+            ),  # 실측 도보 시간 우선, 없으면 직선거리
         }
 
         score = sum(
@@ -463,6 +536,12 @@ def score_prepared_candidates(
             weather_condition=weather_condition,
             weather_reason=weather_reason,
             environment_type=candidate.environment_type,
+            walking_distance_m=_walking_field(
+                routes_by_place_id.get(candidate.place_id), "distance_m"
+            ),
+            walking_duration_seconds=_walking_field(
+                routes_by_place_id.get(candidate.place_id), "duration_seconds"
+            ),
         )
         for index, (
             candidate,
