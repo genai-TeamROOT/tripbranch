@@ -69,6 +69,11 @@ class RecommendationItem(BaseModel):
     # remaining_minutes만으로는 "언제부터"를 표시할 수 없어 함께 내려준다.
     # 운영시간 미확인 후보는 None이다.
     operating_hours_display: str | None = None
+    # 카카오 도보 경로로 실측한 값. 이 값이 있으면 거리 Feature 점수도 직선거리가
+    # 아니라 이 소요시간으로 계산된 것이다. 조회에 실패했거나 도보가 아닌 이동수단
+    # 요청이면 None이고, 그때는 distance_km(직선거리)가 유일한 거리 정보다.
+    walking_distance_m: int | None = None
+    walking_duration_seconds: int | None = None
     environment_type: str
     recommendation_reason: str
     explanations: list[str]

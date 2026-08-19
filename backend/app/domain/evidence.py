@@ -86,6 +86,10 @@ class RecommendationEvidence:
     remaining_minutes: float | None
     weather_condition: WeatherCondition | None
     environment_type: str
+    # 실측 도보 경로로 거리 Feature를 채점했을 때만 채워진다. 직선거리로 폴백한
+    # 후보는 None이라, 근거 문장이 "직선거리"와 "도보"를 구분해 쓸 수 있다.
+    walking_distance_m: int | None = None
+    walking_duration_seconds: int | None = None
     # D-040: 2차 Scoring에서만 채워진다(scoring.py::RankedCandidate.concentration_level
     # 참고) — concentration_score(direction 반영됨)만으로는 실제 붐빔 정도를 알 수
     # 없어서, 문장 조립에 원본 4단계 구간을 그대로 보존한다.
@@ -139,6 +143,8 @@ def build_evidence(
         environment_type=candidate.environment_type,
         concentration_level=candidate.concentration_level,
         weather_reason=candidate.weather_reason,
+        walking_distance_m=candidate.walking_distance_m,
+        walking_duration_seconds=candidate.walking_duration_seconds,
     )
 
 
