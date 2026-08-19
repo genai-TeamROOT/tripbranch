@@ -26,6 +26,7 @@ from sse_starlette import EventSourceResponse, ServerSentEvent
 
 from app.agent_context.factory import get_context_provider
 from app.agent_context.info_schemas import InfoContextRequest
+from app.auth.dependency import OptionalPrincipal
 from app.errors import AppError
 from app.observability.api_usage import create_external_client
 from app.schemas import (
@@ -43,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 
 @router.post("/chat", response_model=AgentResponse)
-async def chat(request: AgentRequest) -> AgentResponse:
+async def chat(request: AgentRequest, principal: OptionalPrincipal) -> AgentResponse:
     return await run_agent(request)
 
 

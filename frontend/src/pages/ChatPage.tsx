@@ -18,6 +18,7 @@ import { fetchSessionState, streamChat, toDisplayConditions } from "../api/trip"
 import { ChatComposer } from "../components/chat/ChatComposer";
 import { ChatMessageList } from "../components/chat/ChatMessageList";
 import { ErrorBanner } from "../components/ErrorBanner";
+import { AuthStatusBadge } from "../auth/AuthStatusBadge";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import { buildAgentStageTimings } from "../utils/agentTiming";
 
@@ -200,7 +201,8 @@ export function ChatPage() {
           <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">TripBranch</h1>
           <p className="text-sm text-gray-500 dark:text-gray-400">대화형 대체 장소 추천</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
+          <AuthStatusBadge />
           <button
             type="button"
             onClick={() => navigate("/dev-chat")}

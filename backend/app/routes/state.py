@@ -10,16 +10,21 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from app.auth.dependency import OptionalPrincipal
 from app.state import service as state_service
 
 router = APIRouter(tags=["state"])
 
 
 @router.get("/state/{session_id}", response_model=state_service.SessionContextResponse)
-async def get_state(session_id: str) -> state_service.SessionContextResponse:
+async def get_state(
+    session_id: str, principal: OptionalPrincipal
+) -> state_service.SessionContextResponse:
     return state_service.get_session_context(session_id)
 
 
 @router.delete("/state/{session_id}", response_model=state_service.DeleteSessionResponse)
-async def delete_state(session_id: str) -> state_service.DeleteSessionResponse:
+async def delete_state(
+    session_id: str, principal: OptionalPrincipal
+) -> state_service.DeleteSessionResponse:
     return state_service.delete_session(session_id)

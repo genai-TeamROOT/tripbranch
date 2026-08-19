@@ -11,6 +11,7 @@ import time
 
 from fastapi import APIRouter, Request
 
+from app.auth.dependency import OptionalPrincipal
 from app.errors import AppError
 from app.providers.factory import get_gemini_audio_transcriber
 from app.schemas import TranscriptionResponse
@@ -24,7 +25,7 @@ _MAX_AUDIO_BYTES = 10 * 1024 * 1024
 
 
 @router.post("/transcribe", response_model=TranscriptionResponse)
-async def transcribe(request: Request) -> TranscriptionResponse:
+async def transcribe(request: Request, principal: OptionalPrincipal) -> TranscriptionResponse:
     """짧은 WAV 녹음을 전사한다. 녹음 파일은 저장하지 않고 요청 메모리에서만 쓴다."""
     mime_type = request.headers.get("content-type", "").split(";", maxsplit=1)[0].strip()
     if mime_type not in _WAV_MIME_TYPES:

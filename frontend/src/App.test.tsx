@@ -154,9 +154,16 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
+/* 게스트 세션 확인이 끝나 관문(RequireUser)을 통과할 때까지 기다린다(D-062).
+   렌더 직후에는 세션 조회가 아직 진행 중이라 홈 화면이 그려지지 않은 상태다. */
+async function renderApp() {
+  render(<App />);
+  await screen.findByRole("button", { name: "추천 시작하기" });
+}
+
 test("user chat hides condition debug card and shows recommendations", async () => {
   vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "true");
-  render(<App />);
+  await renderApp();
 
   await userEvent.type(
     screen.getByPlaceholderText(
@@ -171,12 +178,14 @@ test("user chat hides condition debug card and shows recommendations", async () 
   // Agent가 한 번에 끝내므로 중간 승인 버튼이 없고 추천이 함께 나온다.
   expect(screen.queryByRole("button", { name: "추천 진행" })).not.toBeInTheDocument();
   expect(await screen.findByText("테스트 박물관")).toBeInTheDocument();
+  // 채팅 화면 상단에도 신원 표시가 이어진다(D-062).
+  expect(screen.getByText("게스트로 이용 중")).toBeInTheDocument();
   expect(screen.getByText("운영시간 미확인 갤러리")).toBeInTheDocument();
   expect(screen.getByText("운영시간을 확인할 수 없는 장소")).toBeInTheDocument();
 });
 
 test("streamed recommendation renders the answer before its cards", async () => {
-  render(<App />);
+  await renderApp();
 
   await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
@@ -188,7 +197,7 @@ test("streamed recommendation renders the answer before its cards", async () => 
 
 test("user chat needs only one chat call", async () => {
   vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "false");
-  render(<App />);
+  await renderApp();
 
   await userEvent.type(
     screen.getByPlaceholderText(
@@ -228,7 +237,7 @@ test("falls back to the existing chat endpoint when the SSE route is unavailable
       return Response.json(chatResponse());
     }),
   );
-  render(<App />);
+  await renderApp();
 
   await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
@@ -249,7 +258,7 @@ test("main recommendation requests location permission before opening chat", asy
         }),
     ),
   );
-  render(<App />);
+  await renderApp();
 
   await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
@@ -264,7 +273,7 @@ test("main recommendation requests location permission before opening chat", asy
 
 test("developer start opens dev chat with audit panel", async () => {
   vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "false");
-  render(<App />);
+  await renderApp();
 
   await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
   await userEvent.click(screen.getByRole("button", { name: "개발자용으로 시작" }));
@@ -272,12 +281,14 @@ test("developer start opens dev chat with audit panel", async () => {
   expect(await screen.findByText("Agent Runtime Audit")).toBeInTheDocument();
   expect(await screen.findByText(/Intent: RECOMMEND/)).toBeInTheDocument();
   expect(screen.getByText("TripBranch Developer Console")).toBeInTheDocument();
+  // 개발자 화면 상단에도 신원 표시가 이어진다(D-062).
+  expect(screen.getByText("게스트로 이용 중")).toBeInTheDocument();
   expect(screen.getAllByText(/비를 피할 실내 장소가 필요해/).length).toBeGreaterThan(1);
 });
 
 test("developer audit turn cards remain selectable after multiple turns", async () => {
   vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "false");
-  render(<App />);
+  await renderApp();
 
   await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
   await userEvent.click(screen.getByRole("button", { name: "개발자용으로 시작" }));
@@ -309,7 +320,7 @@ test("location permission denial stays on home and shows guidance", async () => 
       ),
     },
   });
-  render(<App />);
+  await renderApp();
 
   await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
@@ -321,7 +332,7 @@ test("location permission denial stays on home and shows guidance", async () => 
 
 test("requesting more places sends a follow-up chat turn with the session id", async () => {
   vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "false");
-  render(<App />);
+  await renderApp();
 
   await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
@@ -352,7 +363,7 @@ test("clarification turn hints a fuller phrasing in the composer placeholder", a
       }),
     ),
   );
-  render(<App />);
+  await renderApp();
 
   await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
@@ -365,7 +376,7 @@ test("clarification turn hints a fuller phrasing in the composer placeholder", a
 test("chat route redirects without stored state", async () => {
   window.history.pushState({}, "", "/chat");
 
-  render(<App />);
+  await renderApp();
 
   await waitFor(() => expect(screen.getByText("TripBranch")).toBeInTheDocument());
   expect(screen.getByRole("button", { name: "추천 시작하기" })).toBeInTheDocument();
