@@ -1,0 +1,17 @@
+intent: MODIFY
+owner: A
+slots:
+  modify.extract:
+    version: 1
+    template: extract.md
+    bundle:
+      - modify/type_rules.md
+      - modify/target_rules.md
+      - modify/relative_expression_rules.md
+      - modify/field_merge_rules.md
+      - _shared/rules/budget.md
+      - _shared/rules/weather_intent.md
+      - _shared/rules/concentration_intent.md
+      - _shared/rules/environment.md
+      - _shared/rules/shown_place_list.md
+    evals: evals/README.md

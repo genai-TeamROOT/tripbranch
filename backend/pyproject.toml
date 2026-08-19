@@ -20,6 +20,10 @@ dev = [
   "pytest>=8.0",
   "pytest-asyncio>=0.23",
   "ruff>=0.6",
+  # tests/prompts/test_prompt_assets.py가 app/prompts/*/meta.yaml을 파싱해 선언(template·
+  # bundle)과 실제 조합이 어긋나지 않는지 검사한다. 런타임은 Markdown만 읽으므로
+  # 기본 의존성에는 넣지 않는다.
+  "pyyaml>=6.0",
 ]
 # package_D 취향 근거 RAG 스크립트 전용(scripts/measure_similarity_distribution.py).
 # torch를 끌고 와 설치가 무거워 기본 설치·dev extras에는 안 넣는다. 모델 가중치
