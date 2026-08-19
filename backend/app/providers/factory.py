@@ -30,7 +30,7 @@ from app.providers.protocols import (
     PlaceDetailsProvider,
     PlaceProvider,
     PlaceSearchProvider,
-    WalkingRouteProvider,
+    TravelRouteProvider,
     WeatherProvider,
 )
 from app.providers.real_place import RealPlaceProvider
@@ -132,7 +132,7 @@ def get_weather_provider(client: httpx.AsyncClient) -> WeatherProvider:
     )
 
 
-def get_walking_route_provider(client: httpx.AsyncClient) -> WalkingRouteProvider:
+def get_walking_route_provider(client: httpx.AsyncClient) -> TravelRouteProvider:
     """설정에 맞는 도보 경로 Provider를 반환한다."""
     if settings.travel_route_provider == "fake":
         return FakeWalkingRouteProvider(walking_speed_mps=settings.walking_speed_mps)

@@ -10,8 +10,8 @@ from app.domain.travel_route import (
     RouteDestination,
     RouteSource,
     RouteStatus,
-    WalkingRoute,
-    WalkingRouteBatch,
+    TravelRoute,
+    TravelRouteBatch,
 )
 from app.errors import ProviderTimeoutError
 from app.providers.contracts import (
@@ -43,16 +43,16 @@ def _query() -> TravelRouteQuery:
 class _PartialProvider:
     async def get_routes(self, origin, destinations, *, radius_m=None):
         return provider_result(
-            WalkingRouteBatch(
+            TravelRouteBatch(
                 routes=(
-                    WalkingRoute(
+                    TravelRoute(
                         "first",
                         RouteStatus.SUCCESS,
                         RouteSource.KAKAO_WALKING,
                         distance_m=100,
                         duration_seconds=90,
                     ),
-                    WalkingRoute(
+                    TravelRoute(
                         "second",
                         RouteStatus.NO_DATA,
                         RouteSource.KAKAO_WALKING,

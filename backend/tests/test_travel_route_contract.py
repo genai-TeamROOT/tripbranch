@@ -6,7 +6,7 @@ from app.domain.travel_route import (
     GeoCoordinate,
     RouteSource,
     RouteStatus,
-    WalkingRoute,
+    TravelRoute,
 )
 
 
@@ -21,17 +21,17 @@ def test_geo_coordinate_rejects_out_of_range_values(
         GeoCoordinate(latitude=latitude, longitude=longitude)
 
 
-def test_successful_walking_route_requires_distance_and_duration() -> None:
+def test_successful_travel_route_requires_distance_and_duration() -> None:
     with pytest.raises(ValueError, match="거리와 소요 시간"):
-        WalkingRoute(
+        TravelRoute(
             place_id="place-1",
             status=RouteStatus.SUCCESS,
             source=RouteSource.KAKAO_WALKING,
         )
 
 
-def test_unavailable_walking_route_can_omit_measurements() -> None:
-    route = WalkingRoute(
+def test_unavailable_travel_route_can_omit_measurements() -> None:
+    route = TravelRoute(
         place_id="place-1",
         status=RouteStatus.UNAVAILABLE,
         source=RouteSource.KAKAO_WALKING,

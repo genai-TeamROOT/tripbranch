@@ -23,7 +23,7 @@ from typing import TypeVar
 from app.agent_context.schemas import PlaceCandidate, RecommendationContext
 from app.config import settings
 from app.domain.scoring import SCORING_VERSION
-from app.domain.travel_route import GeoCoordinate, RouteDestination, WalkingRoute
+from app.domain.travel_route import GeoCoordinate, RouteDestination, TravelRoute
 from app.errors import AppError
 from app.geo import haversine_km
 from app.observability.api_usage import create_external_client
@@ -984,7 +984,7 @@ async def _fetch_walking_routes(
     route_tool: TravelRouteToolProvider | None,
     context: RecommendationContext,
     prepared: PreparedRecommendationResult,
-) -> tuple[WalkingRoute, ...]:
+) -> tuple[TravelRoute, ...]:
     """하드 필터 통과 후보만 도보 조회하고 D에 넘길 도메인 결과를 반환한다."""
     if route_tool is None or context.location is None or context.places is None:
         return ()
@@ -1833,7 +1833,7 @@ async def run_agent_flow(
             candidate_pool_exhausted = _candidate_pool_exhausted(refill_context)
 
         merged_prepared = recommendation_provider.merge_prepared(prepared_batches)
-        walking_routes = await _fetch_walking_routes(
+        travel_routes = await _fetch_walking_routes(
             travel_route_tool,
             tool_context,
             merged_prepared,
@@ -1841,7 +1841,7 @@ async def run_agent_flow(
         recommendations = await recommendation_provider.score_prepared(
             agent_conditions,
             merged_prepared,
-            walking_routes=walking_routes,
+            travel_routes=travel_routes,
             limit=recommendation_limit,
         )
     else:

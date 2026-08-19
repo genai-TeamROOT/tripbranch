@@ -29,7 +29,7 @@ from app.domain.models import (
 from app.domain.travel_route import (
     GeoCoordinate,
     RouteDestination,
-    WalkingRouteBatch,
+    TravelRouteBatch,
 )
 from app.place_search_policy import DEFAULT_PLACE_PROVIDER_RESULT_LIMIT
 from app.providers.contracts import ProviderResult
@@ -238,14 +238,14 @@ class WeatherProvider(Protocol):
         ...
 
 
-class WalkingRouteProvider(Protocol):
+class TravelRouteProvider(Protocol):
     async def get_routes(
         self,
         origin: GeoCoordinate,
         destinations: tuple[RouteDestination, ...],
         *,
         radius_m: int | None = None,
-    ) -> ProviderResult[WalkingRouteBatch]:
+    ) -> ProviderResult[TravelRouteBatch]:
         """출발지에서 여러 목적지까지의 도보 경로를 목적지 순서대로 반환한다."""
         ...
 

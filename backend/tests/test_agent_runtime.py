@@ -34,7 +34,7 @@ from app.agent_context.schemas import (
     WeatherForecast,
 )
 from app.domain.scoring import SCORING_VERSION
-from app.domain.travel_route import WalkingRoute
+from app.domain.travel_route import TravelRoute
 from app.providers.contracts import ProviderSource, provider_result
 from app.providers.gemini_prompts import PROMPT_VERSION
 from app.providers.stub import FakeLLMProvider
@@ -3223,21 +3223,21 @@ class _UnavailableTravelRouteTool:
 
 class _RecordingWalkingRoutesRecommendationProvider(RealRecommendationProvider):
     def __init__(self) -> None:
-        self.walking_routes: tuple[WalkingRoute, ...] = ()
+        self.travel_routes: tuple[TravelRoute, ...] = ()
 
     async def score_prepared(
         self,
         conditions,
         prepared,
         *,
-        walking_routes=(),
+        travel_routes=(),
         limit=5,
     ):
-        self.walking_routes = walking_routes
+        self.travel_routes = travel_routes
         return await super().score_prepared(
             conditions,
             prepared,
-            walking_routes=walking_routes,
+            travel_routes=travel_routes,
             limit=limit,
         )
 
@@ -3300,7 +3300,7 @@ async def test_staged_recommendation_passes_only_eligible_routes_to_d_after_refi
     assert len(route_tool.queries) == 1
     requested_ids = [destination.place_id for destination in route_tool.queries[0].destinations]
     assert requested_ids == ["refill-0", "refill-10", *[f"refill-{i}" for i in range(20, 25)]]
-    assert [route.place_id for route in recommendation_provider.walking_routes] == requested_ids
+    assert [route.place_id for route in recommendation_provider.travel_routes] == requested_ids
     assert "refill-1" not in requested_ids
 
 
@@ -3323,7 +3323,7 @@ async def test_staged_recommendation_passes_empty_routes_when_route_tool_is_unav
     )
 
     assert response.recommendations is not None
-    assert recommendation_provider.walking_routes == ()
+    assert recommendation_provider.travel_routes == ()
 
 
 @pytest.mark.asyncio

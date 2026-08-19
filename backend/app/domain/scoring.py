@@ -22,7 +22,7 @@ from enum import StrEnum
 
 from app.concentration_policy import ConcentrationLevel
 from app.domain.models import OperatingHours, ScoringCandidate, WeatherCondition
-from app.domain.travel_route import RouteSource, RouteStatus, WalkingRoute
+from app.domain.travel_route import RouteSource, RouteStatus, TravelRoute
 from app.domain.weather_judgment import WeatherReason
 from app.place_search_policy import WALKING_SPEED_KM_PER_MINUTE
 
@@ -310,7 +310,7 @@ def _walking_time_score(duration_seconds: int, max_distance_km: float) -> float:
     return _clamp(1.0 - (duration_seconds / 60.0) / budget_minutes, 0.0, 1.0)
 
 
-def _applied_walking_route(route: WalkingRoute | None) -> WalkingRoute | None:
+def _applied_walking_route(route: TravelRoute | None) -> TravelRoute | None:
     """실제로 채점에 쓸 수 있는 도보 경로만 남긴다.
 
     세 가지를 함께 봐야 한다.
@@ -341,7 +341,7 @@ def _applied_walking_route(route: WalkingRoute | None) -> WalkingRoute | None:
     return None
 
 
-def _walking_field(route: WalkingRoute | None, field: str) -> int | None:
+def _walking_field(route: TravelRoute | None, field: str) -> int | None:
     """채점에 실제로 쓴 경로에서만 값을 꺼낸다 — 폴백 후보는 `None`이다."""
     applied = _applied_walking_route(route)
     return None if applied is None else getattr(applied, field)
@@ -349,7 +349,7 @@ def _walking_field(route: WalkingRoute | None, field: str) -> int | None:
 
 def _proximity_score(
     candidate: ScoringCandidate,
-    route: WalkingRoute | None,
+    route: TravelRoute | None,
     max_distance_km: float,
 ) -> float:
     """거리 Feature 점수. 실측 도보 시간이 있으면 쓰고, 없으면 직선거리로 돌아간다.
@@ -457,8 +457,8 @@ def prepare_candidates(
 
 def _consistent_routes(
     candidates: Sequence[PreparedCandidate],
-    walking_routes: Sequence[WalkingRoute],
-) -> dict[str, WalkingRoute]:
+    travel_routes: Sequence[TravelRoute],
+) -> dict[str, TravelRoute]:
     """한 순위 안에서는 모든 후보를 같은 자로 재도록 실측을 전부 쓰거나 전부 버린다.
 
     실측 도보 시간과 직선거리 점수는 낙관도가 다르다 — 실거리는 직선거리보다 항상
@@ -471,7 +471,7 @@ def _consistent_routes(
     직선거리로 내려가는 손해는 있지만, 일관되게 덜 정확한 편이 기준이 뒤섞여
     순위가 뒤집히는 것보다 낫다.
     """
-    routes_by_place_id = {route.place_id: route for route in walking_routes}
+    routes_by_place_id = {route.place_id: route for route in travel_routes}
     applied = {
         prepared.candidate.place_id: _applied_walking_route(
             routes_by_place_id.get(prepared.candidate.place_id)
@@ -493,7 +493,7 @@ def score_prepared_candidates(
     requested_environment: str | None = None,
     # A가 조회해 넘긴 실측 도보 경로. 해당 후보가 없거나 조회에 실패했으면
     # 직선거리로 돌아간다(`_proximity_score()`).
-    walking_routes: Sequence[WalkingRoute] = (),
+    travel_routes: Sequence[TravelRoute] = (),
 ) -> ScoringResult:
     """하드 필터를 통과한 후보에 가중치 점수를 적용해 정렬한다.
 
@@ -509,7 +509,7 @@ def score_prepared_candidates(
     값을 넘기지 않아 기존 날씨 판정을 그대로 쓴다.
     """
     environment_driven = uses_environment_feature(requested_environment)
-    routes_by_place_id = _consistent_routes(candidates, walking_routes)
+    routes_by_place_id = _consistent_routes(candidates, travel_routes)
     base_weights = weights_for_environment(
         dict(weights) if weights is not None else dict(DEFAULT_WEIGHTS),
         requested_environment,
@@ -644,7 +644,7 @@ def score_candidates(
     requested_environment: str | None = None,
     # A가 조회한 실측 도보 경로. 분리 진입점(score_prepared_candidates)과 같은 규칙을
     # 따른다 — 후보 중 하나라도 실측이 없으면 전부 직선거리로 채점한다.
-    walking_routes: Sequence[WalkingRoute] = (),
+    travel_routes: Sequence[TravelRoute] = (),
 ) -> ScoringResult:
     """기존 하드 필터와 점수 계산을 연속 실행하는 호환 진입점."""
     prepared_result = prepare_candidates(
@@ -658,7 +658,7 @@ def score_candidates(
         prepared_result.eligible_candidates,
         weather_condition=weather_condition,
         max_distance_km=max_distance_km,
-        walking_routes=walking_routes,
+        travel_routes=travel_routes,
         weights=weights,
         weather_reason=weather_reason,
         requested_environment=requested_environment,

@@ -13,8 +13,8 @@ from app.domain.travel_route import (
     RouteDestination,
     RouteSource,
     RouteStatus,
-    WalkingRoute,
-    WalkingRouteBatch,
+    TravelRoute,
+    TravelRouteBatch,
 )
 from app.geo import haversine_km
 from app.providers.contracts import ProviderResult, ProviderSource, ProviderStatus, provider_result
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 KAKAO_MAP_WALKING_ROUTE_URL = "https://dapi.kakao.com/v2/routing/walk"
 # 애플리케이션 내부 호출량 방어 상한. 일반 API 자체는 단건 호출만 제공한다.
-MAX_WALKING_DESTINATIONS = 100
+MAX_TRAVEL_ROUTE_DESTINATIONS = 100
 
 
 class FakeWalkingRouteProvider:
@@ -41,16 +41,16 @@ class FakeWalkingRouteProvider:
         destinations: tuple[RouteDestination, ...],
         *,
         radius_m: int | None = None,
-    ) -> ProviderResult[WalkingRouteBatch]:
+    ) -> ProviderResult[TravelRouteBatch]:
         _validate_request(destinations, radius_m)
         routes = tuple(self._estimate_route(origin, destination) for destination in destinations)
         return provider_result(
-            WalkingRouteBatch(routes=routes),
+            TravelRouteBatch(routes=routes),
             source=ProviderSource.FAKE_WALKING_ROUTE,
             status=ProviderStatus.SUCCESS if routes else ProviderStatus.NO_DATA,
         )
 
-    def _estimate_route(self, origin: GeoCoordinate, destination: RouteDestination) -> WalkingRoute:
+    def _estimate_route(self, origin: GeoCoordinate, destination: RouteDestination) -> TravelRoute:
         distance_m = round(
             haversine_km(
                 origin.latitude,
@@ -60,7 +60,7 @@ class FakeWalkingRouteProvider:
             )
             * 1000
         )
-        return WalkingRoute(
+        return TravelRoute(
             place_id=destination.place_id,
             status=RouteStatus.SUCCESS,
             source=RouteSource.STRAIGHT_LINE_ESTIMATE,
@@ -94,18 +94,18 @@ class RealKakaoWalkingRouteProvider:
         destinations: tuple[RouteDestination, ...],
         *,
         radius_m: int | None = None,
-    ) -> ProviderResult[WalkingRouteBatch]:
+    ) -> ProviderResult[TravelRouteBatch]:
         _validate_request(destinations, radius_m)
         if not destinations:
             return provider_result(
-                WalkingRouteBatch(routes=()),
+                TravelRouteBatch(routes=()),
                 source=ProviderSource.KAKAO_WALKING_ROUTE,
                 status=ProviderStatus.NO_DATA,
             )
 
         semaphore = asyncio.Semaphore(self._max_concurrency)
 
-        async def fetch(destination: RouteDestination) -> WalkingRoute:
+        async def fetch(destination: RouteDestination) -> TravelRoute:
             async with semaphore:
                 return await self._get_route(origin, destination)
 
@@ -120,14 +120,14 @@ class RealKakaoWalkingRouteProvider:
             else ProviderStatus.NO_DATA
         )
         return provider_result(
-            WalkingRouteBatch(routes=routes),
+            TravelRouteBatch(routes=routes),
             source=ProviderSource.KAKAO_WALKING_ROUTE,
             status=status,
         )
 
     async def _get_route(
         self, origin: GeoCoordinate, destination: RouteDestination
-    ) -> WalkingRoute:
+    ) -> TravelRoute:
         headers = {"Authorization": f"KakaoAK {self._api_key}"}
         params = {
             "start_x": str(origin.longitude),
@@ -174,18 +174,18 @@ class RealKakaoWalkingRouteProvider:
 
 
 def _validate_request(destinations: tuple[RouteDestination, ...], radius_m: int | None) -> None:
-    if len(destinations) > MAX_WALKING_DESTINATIONS:
-        raise ValueError(f"destinations는 최대 {MAX_WALKING_DESTINATIONS}개까지 허용됩니다.")
+    if len(destinations) > MAX_TRAVEL_ROUTE_DESTINATIONS:
+        raise ValueError(f"destinations는 최대 {MAX_TRAVEL_ROUTE_DESTINATIONS}개까지 허용됩니다.")
     if radius_m is not None and radius_m <= 0:
         raise ValueError("radius_m는 0보다 커야 합니다.")
 
 
-def _map_kakao_map_route(place_id: str, payload: object) -> WalkingRoute:
+def _map_kakao_map_route(place_id: str, payload: object) -> TravelRoute:
     if not isinstance(payload, dict):
         return _unavailable_route(place_id, "invalid_response")
     status = payload.get("status")
     if status == "SAME_POINT":
-        return WalkingRoute(
+        return TravelRoute(
             place_id=place_id,
             status=RouteStatus.SUCCESS,
             source=RouteSource.KAKAO_WALKING,
@@ -194,7 +194,7 @@ def _map_kakao_map_route(place_id: str, payload: object) -> WalkingRoute:
         )
     if status != "OK":
         error_code = str(status).strip().lower() if status is not None else "unknown"
-        return WalkingRoute(
+        return TravelRoute(
             place_id=place_id,
             status=RouteStatus.NO_DATA,
             source=RouteSource.KAKAO_WALKING,
@@ -212,7 +212,7 @@ def _map_kakao_map_route(place_id: str, payload: object) -> WalkingRoute:
         return _unavailable_route(place_id, "invalid_response")
     if distance_m < 0 or duration_seconds < 0:
         return _unavailable_route(place_id, "invalid_response")
-    return WalkingRoute(
+    return TravelRoute(
         place_id=place_id,
         status=RouteStatus.SUCCESS,
         source=RouteSource.KAKAO_WALKING,
@@ -221,8 +221,8 @@ def _map_kakao_map_route(place_id: str, payload: object) -> WalkingRoute:
     )
 
 
-def _unavailable_route(place_id: str, error_code: str) -> WalkingRoute:
-    return WalkingRoute(
+def _unavailable_route(place_id: str, error_code: str) -> TravelRoute:
+    return TravelRoute(
         place_id=place_id,
         status=RouteStatus.UNAVAILABLE,
         source=RouteSource.KAKAO_WALKING,
@@ -233,6 +233,6 @@ def _unavailable_route(place_id: str, error_code: str) -> WalkingRoute:
 __all__ = [
     "FakeWalkingRouteProvider",
     "KAKAO_MAP_WALKING_ROUTE_URL",
-    "MAX_WALKING_DESTINATIONS",
+    "MAX_TRAVEL_ROUTE_DESTINATIONS",
     "RealKakaoWalkingRouteProvider",
 ]

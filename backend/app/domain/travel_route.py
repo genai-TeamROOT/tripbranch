@@ -46,8 +46,8 @@ class RouteDestination:
 
 
 @dataclass(frozen=True)
-class WalkingRoute:
-    """목적지 한 곳의 정규화된 도보 이동 결과."""
+class TravelRoute:
+    """목적지 한 곳의 정규화된 이동 결과."""
 
     place_id: str
     status: RouteStatus
@@ -70,6 +70,6 @@ class WalkingRoute:
 
 
 @dataclass(frozen=True)
-class WalkingRouteBatch:
-    routes: tuple[WalkingRoute, ...]
+class TravelRouteBatch:
+    routes: tuple[TravelRoute, ...]
     transaction_id: str | None = None

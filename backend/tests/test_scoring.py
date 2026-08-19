@@ -30,7 +30,7 @@ from app.domain.scoring import (
     score_candidates,
     score_prepared_candidates,
 )
-from app.domain.travel_route import RouteSource, RouteStatus, WalkingRoute
+from app.domain.travel_route import RouteSource, RouteStatus, TravelRoute
 
 # 고정 기준 시각 (모든 테스트가 공유): 14:00
 NOW = datetime(2026, 7, 23, 14, 0, 0)
@@ -573,8 +573,8 @@ def _walking_route(
     duration_seconds: int | None,
     *,
     status: RouteStatus = RouteStatus.SUCCESS,
-) -> WalkingRoute:
-    return WalkingRoute(
+) -> TravelRoute:
+    return TravelRoute(
         place_id=place_id,
         status=status,
         source=RouteSource.KAKAO_WALKING,
@@ -600,7 +600,7 @@ def test_distance_feature_uses_measured_walking_duration() -> None:
     """반경 2.0km면 예산은 2.0/0.07 = 약 28.57분. 14.28분이면 절반이 남는다."""
     score = _distance_feature_score(
         MUSEUM_OPEN,
-        walking_routes=[_walking_route("p1", duration_seconds=857)],
+        travel_routes=[_walking_route("p1", duration_seconds=857)],
     )
 
     assert score == pytest.approx(0.5, abs=0.01)
@@ -616,7 +616,7 @@ def test_distance_feature_falls_back_when_route_lookup_failed() -> None:
     조회에 실패한 후보만 거리 Feature가 빠져 오히려 유리해진다."""
     score = _distance_feature_score(
         MUSEUM_OPEN,
-        walking_routes=[
+        travel_routes=[
             _walking_route("p1", duration_seconds=None, status=RouteStatus.NO_DATA)
         ],
     )
@@ -640,7 +640,7 @@ def test_walking_duration_beyond_budget_scores_zero() -> None:
     """예산(약 28.57분)을 넘으면 0으로 클램프된다."""
     score = _distance_feature_score(
         MUSEUM_OPEN,
-        walking_routes=[_walking_route("p1", duration_seconds=3600)],
+        travel_routes=[_walking_route("p1", duration_seconds=3600)],
     )
 
     assert score == 0.0
@@ -650,7 +650,7 @@ def test_walking_route_of_other_place_is_ignored() -> None:
     """place_id가 다른 경로는 이 후보에 적용되지 않는다."""
     score = _distance_feature_score(
         MUSEUM_OPEN,
-        walking_routes=[_walking_route("other", duration_seconds=60)],
+        travel_routes=[_walking_route("other", duration_seconds=60)],
     )
 
     assert score == pytest.approx(0.75)
@@ -663,8 +663,8 @@ def test_measured_route_is_exposed_on_ranked_candidate() -> None:
         prepared.eligible_candidates,
         weather_condition=None,
         max_distance_km=2.0,
-        walking_routes=[
-            WalkingRoute(
+        travel_routes=[
+            TravelRoute(
                 place_id="p1",
                 status=RouteStatus.SUCCESS,
                 source=RouteSource.KAKAO_WALKING,
@@ -686,7 +686,7 @@ def test_fallback_candidate_exposes_no_measured_route() -> None:
         prepared.eligible_candidates,
         weather_condition=None,
         max_distance_km=2.0,
-        walking_routes=[
+        travel_routes=[
             _walking_route("p1", duration_seconds=None, status=RouteStatus.UNAVAILABLE)
         ],
     )
@@ -707,7 +707,7 @@ def test_partial_measurement_falls_back_to_straight_line_for_every_candidate() -
         prepared.eligible_candidates,
         weather_condition=None,
         max_distance_km=2.0,
-        walking_routes=[_walking_route("p1", duration_seconds=530)],
+        travel_routes=[_walking_route("p1", duration_seconds=530)],
     )
 
     assert [ranked.walking_duration_seconds for ranked in result.ranked] == [None, None]
@@ -722,7 +722,7 @@ def test_closer_place_is_not_demoted_by_having_a_measurement() -> None:
         prepared.eligible_candidates,
         weather_condition=None,
         max_distance_km=2.0,
-        walking_routes=[_walking_route("p1", duration_seconds=530)],
+        travel_routes=[_walking_route("p1", duration_seconds=530)],
     )
     none_measured = score_prepared_candidates(
         prepared.eligible_candidates,
@@ -740,7 +740,7 @@ def test_all_measured_candidates_keep_their_routes() -> None:
         prepared.eligible_candidates,
         weather_condition=None,
         max_distance_km=2.0,
-        walking_routes=[
+        travel_routes=[
             _walking_route("p1", duration_seconds=300),
             _walking_route("p5", duration_seconds=900),
         ],
@@ -749,9 +749,9 @@ def test_all_measured_candidates_keep_their_routes() -> None:
     assert [ranked.walking_duration_seconds for ranked in result.ranked] == [300, 900]
 
 
-def _estimated_route(place_id: str, duration_seconds: int) -> WalkingRoute:
+def _estimated_route(place_id: str, duration_seconds: int) -> TravelRoute:
     """TravelRouteTool의 폴백과 fake Provider가 내보내는 직선거리 추정값."""
-    return WalkingRoute(
+    return TravelRoute(
         place_id=place_id,
         status=RouteStatus.SUCCESS,  # 추정값도 SUCCESS로 온다 — 상태로는 구분 못 한다
         source=RouteSource.STRAIGHT_LINE_ESTIMATE,
@@ -768,7 +768,7 @@ def test_straight_line_estimate_is_not_treated_as_measurement() -> None:
     """
     score = _distance_feature_score(
         MUSEUM_OPEN,
-        walking_routes=[_estimated_route("p1", duration_seconds=857)],
+        travel_routes=[_estimated_route("p1", duration_seconds=857)],
     )
 
     assert score == pytest.approx(0.75)  # 직선거리 폴백 점수
@@ -780,7 +780,7 @@ def test_estimate_is_not_exposed_as_measured_route() -> None:
         prepared.eligible_candidates,
         weather_condition=None,
         max_distance_km=2.0,
-        walking_routes=[_estimated_route("p1", duration_seconds=857)],
+        travel_routes=[_estimated_route("p1", duration_seconds=857)],
     )
 
     ranked = result.ranked[0]
@@ -799,7 +799,7 @@ def test_estimate_mixed_with_measurement_falls_back_for_every_candidate() -> Non
         prepared.eligible_candidates,
         weather_condition=None,
         max_distance_km=2.0,
-        walking_routes=[
+        travel_routes=[
             _walking_route("p1", duration_seconds=300),  # 실측
             _estimated_route("p5", duration_seconds=900),  # 추정
         ],

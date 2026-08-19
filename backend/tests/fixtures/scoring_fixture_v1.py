@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, time
 
 from app.domain.models import OperatingHours, ScoringCandidate, WeatherCondition
-from app.domain.travel_route import RouteSource, RouteStatus, WalkingRoute
+from app.domain.travel_route import RouteSource, RouteStatus, TravelRoute
 
 # 모든 케이스가 공유하는 기준 시각 (14:00).
 NOW = datetime(2026, 7, 23, 14, 0, 0)
@@ -103,11 +103,11 @@ class ScoringFixtureCase:
     expected_excluded_place_ids: frozenset[str] = field(default_factory=frozenset)
     expected_unverified_place_ids: frozenset[str] = field(default_factory=frozenset)
     # 실측 도보 경로. 후보 중 하나라도 빠지면 전부 직선거리로 채점된다.
-    walking_routes: tuple[WalkingRoute, ...] = field(default_factory=tuple)
+    travel_routes: tuple[TravelRoute, ...] = field(default_factory=tuple)
 
 
-def _walking_route(place_id: str, duration_seconds: int) -> WalkingRoute:
-    return WalkingRoute(
+def _walking_route(place_id: str, duration_seconds: int) -> TravelRoute:
+    return TravelRoute(
         place_id=place_id,
         status=RouteStatus.SUCCESS,
         source=RouteSource.KAKAO_WALKING,
@@ -196,7 +196,7 @@ SCORING_FIXTURE_V1: tuple[ScoringFixtureCase, ...] = (
         now=NOW,
         weather_condition=None,
         max_distance_km=2.0,
-        walking_routes=(
+        travel_routes=(
             _walking_route("p1", 1500),  # 25분
             _walking_route("p5", 300),  # 5분
         ),
@@ -212,7 +212,7 @@ SCORING_FIXTURE_V1: tuple[ScoringFixtureCase, ...] = (
         now=NOW,
         weather_condition=None,
         max_distance_km=2.0,
-        walking_routes=(_walking_route("p1", 1500),),
+        travel_routes=(_walking_route("p1", 1500),),
         expected_ranked_place_ids=("p1", "p5"),
     ),
 )

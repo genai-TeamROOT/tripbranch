@@ -11,12 +11,12 @@ from app.domain.travel_route import (
     RouteDestination,
     RouteStatus,
     TravelMode,
-    WalkingRoute,
+    TravelRoute,
 )
 from app.errors import AppError
 from app.providers.contracts import ProviderMetadata
-from app.providers.protocols import WalkingRouteProvider
-from app.providers.walking_route import MAX_WALKING_DESTINATIONS
+from app.providers.protocols import TravelRouteProvider
+from app.providers.walking_route import MAX_TRAVEL_ROUTE_DESTINATIONS
 from app.tools.contracts import ToolError, ToolStatus
 
 logger = logging.getLogger(__name__)
@@ -32,8 +32,10 @@ class TravelRouteQuery:
     radius_m: int | None = None
 
     def __post_init__(self) -> None:
-        if len(self.destinations) > MAX_WALKING_DESTINATIONS:
-            raise ValueError(f"destinations는 최대 {MAX_WALKING_DESTINATIONS}개까지 허용됩니다.")
+        if len(self.destinations) > MAX_TRAVEL_ROUTE_DESTINATIONS:
+            raise ValueError(
+                f"destinations는 최대 {MAX_TRAVEL_ROUTE_DESTINATIONS}개까지 허용됩니다."
+            )
         if self.radius_m is not None and self.radius_m <= 0:
             raise ValueError("radius_m는 0보다 커야 합니다.")
         place_ids = tuple(destination.place_id for destination in self.destinations)
@@ -44,7 +46,7 @@ class TravelRouteQuery:
 @dataclass(frozen=True)
 class TravelRouteToolResult:
     status: ToolStatus
-    routes: tuple[WalkingRoute, ...]
+    routes: tuple[TravelRoute, ...]
     error: ToolError | None = None
     warnings: tuple[str, ...] = ()
     provider_metadata: tuple[ProviderMetadata, ...] = ()
@@ -53,8 +55,8 @@ class TravelRouteToolResult:
 class TravelRouteTool:
     def __init__(
         self,
-        primary_provider: WalkingRouteProvider,
-        fallback_provider: WalkingRouteProvider | None = None,
+        primary_provider: TravelRouteProvider,
+        fallback_provider: TravelRouteProvider | None = None,
     ) -> None:
         self._primary_provider = primary_provider
         self._fallback_provider = fallback_provider
@@ -182,7 +184,7 @@ class TravelRouteTool:
         )
 
 
-def _tool_status(routes: tuple[WalkingRoute, ...]) -> ToolStatus:
+def _tool_status(routes: tuple[TravelRoute, ...]) -> ToolStatus:
     successful_count = sum(route.status is RouteStatus.SUCCESS for route in routes)
     if successful_count == len(routes) and routes:
         return ToolStatus.SUCCESS

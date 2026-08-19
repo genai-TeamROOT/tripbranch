@@ -31,7 +31,7 @@ from app.domain.scoring import (
     score_prepared_candidates,
     weights_for_feature_scores,
 )
-from app.domain.travel_route import WalkingRoute
+from app.domain.travel_route import TravelRoute
 from app.domain.weather_judgment import (
     WeatherReason,
     judge_weather_condition_from_facts,
@@ -254,7 +254,7 @@ async def score_prepared_recommendation(
     search_radius_km: float,
     recommendation_limit: int = DEFAULT_RECOMMENDATION_RESULT_LIMIT,
     # A가 조회한 실측 도보 경로. 비어 있으면 거리 Feature가 직선거리로 계산된다.
-    walking_routes: Sequence[WalkingRoute] = (),
+    travel_routes: Sequence[TravelRoute] = (),
     timer: Timer = perf_counter,
 ) -> RecommendationResponse:
     """준비된 후보를 채점하고 Evidence·Explanation 응답을 조립한다.
@@ -272,7 +272,7 @@ async def score_prepared_recommendation(
         weather_reason=prepared.weather_reason,
         max_distance_km=search_radius_km,
         requested_environment=prepared.requested_environment,
-        walking_routes=walking_routes,
+        travel_routes=travel_routes,
     )
     ranked = scoring.ranked[:recommendation_limit]
     # 결과가 0건이고, 그 이유가 전부 폐점 후보 제외였다면(다른 이유로 제외된 후보가
