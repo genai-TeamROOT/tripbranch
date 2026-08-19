@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from app.auth.dependency import OptionalPrincipal
 from app.schemas import (
     InterpretedConditions,
     RecommendationRequest,
@@ -23,7 +24,9 @@ router = APIRouter(tags=["recommendations"])
 
 
 @router.post("/recommendations", response_model=RecommendationResponse)
-async def recommendations(request: RecommendationRequest) -> RecommendationResponse:
+async def recommendations(
+    request: RecommendationRequest, principal: OptionalPrincipal
+) -> RecommendationResponse:
     conditions = InterpretedConditions(
         location_query=request.location_query,
         preferred_categories=request.preferred_categories,

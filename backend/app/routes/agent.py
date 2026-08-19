@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from app.auth.dependency import OptionalPrincipal
 from app.schemas import AgentRequest, AgentResponse
 from app.services.runtime.agent_runtime import run_agent
 
@@ -20,5 +21,5 @@ router = APIRouter(tags=["agent"])
 
 
 @router.post("/agent-debug", response_model=AgentResponse)
-async def agent_debug(request: AgentRequest) -> AgentResponse:
+async def agent_debug(request: AgentRequest, principal: OptionalPrincipal) -> AgentResponse:
     return await run_agent(request)
