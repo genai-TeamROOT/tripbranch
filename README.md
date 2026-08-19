@@ -289,6 +289,10 @@ npm run dev
 `backend/`를 작업 디렉터리로 실행해야 `backend/.env`를 읽습니다. 저장소 루트에서
 띄우면 오류 없이 전 Provider가 fake로 뜹니다.
 
+`backend/pyproject.toml`의 의존성이 바뀐 커밋을 받으면 백엔드 패키지를 다시 설치해야
+합니다. 절차와 증상은 [개발 가이드](docs/development-guide.md)의 "의존성이 바뀐 뒤"에
+있습니다.
+
 ## Naming 규칙
 
 Backend가 소유하는 Python 필드와 JSON 필드에는 모두 `snake_case`를 사용합니다.

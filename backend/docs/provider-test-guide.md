@@ -6,7 +6,7 @@ TripBranch의 Geocoding, Weather, Place, Concentration, Holiday Provider 테스�
 ## 1. 최초 환경 준비
 
 ```bash
-cd /Users/jinhyoungkim/Desktop/Dev/TripBranch/backend
+cd backend
 source .venv/bin/activate
 python -m pip install -e ".[dev]"
 ```
@@ -19,6 +19,11 @@ python --version
 ```
 
 `which python`은 프로젝트의 `backend/.venv/bin/python`을 가리켜야 한다.
+
+`backend/pyproject.toml`의 의존성이 바뀐 커밋을 받은 뒤에도 위 설치 명령을 다시 실행한다.
+가상환경은 커밋되지 않아 `git pull`만으로는 새 패키지가 들어오지 않는다. 건너뛰면 테스트가
+수집 단계에서 `ModuleNotFoundError`로 멈춘다 —
+[개발 가이드](../../docs/development-guide.md)의 "의존성이 바뀐 뒤"를 본다.
 
 ## 2. 환경변수
 
@@ -147,7 +152,7 @@ RECOMMENDATION_CANDIDATE_LIMIT=10
 첫 번째 터미널에서 서버를 실행한다.
 
 ```bash
-cd /Users/jinhyoungkim/Desktop/Dev/TripBranch/backend
+cd backend
 source .venv/bin/activate
 uvicorn app.main:app --reload
 ```
