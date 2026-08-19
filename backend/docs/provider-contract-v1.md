@@ -79,10 +79,9 @@ Place 계열 Protocol은 용도별로 나뉘어 있습니다. `PlaceProvider`는
 없습니다. `search_festivals()`는 기간이 해석 가능한 행사를 모아 돌려주기만 하고,
 진행 중 판정은 호출자가 `reference_date`로 다시 합니다.
 
-`InterpretProvider`와 `RecommendationProvider` Protocol도 같은 파일에 남아 있지만
-현재 실행 경로에서는 사용하지 않는 레거시 계약입니다. LLM은 `LLMProvider`, Runtime
-추천은 `app/services/runtime/protocols.py::RecommendationProvider`를 사용합니다.
-레거시 Protocol 제거는 별도 정리 작업입니다.
+Runtime 추천 계약은 이 파일이 아니라
+`app/services/runtime/protocols.py::RecommendationProvider`에 있습니다. 이름이 같은
+레거시 Protocol이 한때 이 파일에도 있었으나 사용처가 없어 제거했습니다.
 
 ## 5. 공통 설계 원칙
 
@@ -342,8 +341,9 @@ PLACE_PROVIDER=fake
 | LLM | `LLM_PROVIDER` | `LLM_API_KEY` |
 
 `TOUR_API_SERVICE_KEY`는 공공데이터포털 인증키로 Place, Concentration, Holiday가
-공유합니다. 이전 변수명 `PLACE_API_KEY`는 `Settings`의 호환 alias로만 남아 있으며
-신규 설정은 `TOUR_API_SERVICE_KEY`를 사용합니다.
+공유합니다. 이전 변수명 `PLACE_API_KEY`를 호환 alias로 두었으나 2026-08-19에
+제거했습니다 — 이 이름으로 설정한 환경이 있으면 부팅 시
+`validate_provider_config()`가 키 누락으로 잡습니다.
 
 ### 6.3 Factory 함수
 
