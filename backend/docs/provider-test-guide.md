@@ -20,6 +20,11 @@ python --version
 
 `which python`은 프로젝트의 `backend/.venv/bin/python`을 가리켜야 한다.
 
+`backend/pyproject.toml`의 의존성이 바뀐 커밋을 받은 뒤에도 위 설치 명령을 다시 실행한다.
+가상환경은 커밋되지 않아 `git pull`만으로는 새 패키지가 들어오지 않는다. 건너뛰면 테스트가
+수집 단계에서 `ModuleNotFoundError`로 멈춘다 —
+[개발 가이드](../../docs/development-guide.md)의 "의존성이 바뀐 뒤"를 본다.
+
 ## 2. 환경변수
 
 실제 Provider 테스트에는 `backend/.env`의 다음 값이 필요하다.

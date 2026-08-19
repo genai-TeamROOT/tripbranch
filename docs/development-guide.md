@@ -35,6 +35,21 @@ Windows PowerShell 가상환경 활성화:
 backend\.venv\Scripts\Activate.ps1
 ```
 
+### 의존성이 바뀐 뒤
+
+`backend/pyproject.toml`의 의존성이 바뀐 커밋을 받으면 백엔드 패키지를 다시 설치합니다.
+가상환경은 커밋되지 않으므로 `git pull`만으로는 새 패키지가 들어오지 않습니다.
+
+```bash
+cd backend
+source .venv/bin/activate
+python -m pip install -e ".[dev]"
+```
+
+설치를 건너뛰면 테스트가 실패하는 것이 아니라 수집 단계에서 `ModuleNotFoundError`로
+멈춥니다. 변경한 코드와 무관한 파일까지 한꺼번에 죽어 원인이 자기 변경처럼 보이므로,
+여러 테스트 파일이 갑자기 수집 실패하면 이 절차를 먼저 확인합니다.
+
 ## 3. 환경변수
 
 ### Backend
