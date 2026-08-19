@@ -233,17 +233,17 @@ export function RecommendationDetailPreviewModal({
 
         <div className="flex flex-col gap-5 p-5">
           {isLoading ? (
-            <div className="flex h-40 animate-pulse items-center justify-center rounded-xl bg-gray-100 text-sm text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+            <div className="flex h-56 animate-pulse items-center justify-center rounded-xl bg-gray-100 text-sm text-gray-500 dark:bg-gray-800 dark:text-gray-400">
               상세 정보를 불러오는 중...
             </div>
           ) : detailCard?.thumbnail_url ? (
             <img
               src={detailCard.thumbnail_url}
               alt={`${detailCard.place_name ?? title} 이미지`}
-              className="h-40 w-full rounded-xl bg-gray-100 object-cover dark:bg-gray-800"
+              className="h-56 w-full rounded-xl bg-gray-100 object-cover dark:bg-gray-800"
             />
           ) : (
-            <div className="flex h-40 items-center justify-center rounded-xl border border-dashed border-gray-300 bg-gray-50 text-sm text-gray-500 dark:border-gray-700 dark:bg-gray-800/60 dark:text-gray-400">
+            <div className="flex h-56 items-center justify-center rounded-xl border border-dashed border-gray-300 bg-gray-50 text-sm text-gray-500 dark:border-gray-700 dark:bg-gray-800/60 dark:text-gray-400">
               {detailStatus === "unavailable" ? "상세 정보를 불러오지 못했어요." : "등록된 이미지가 없어요."}
             </div>
           )}

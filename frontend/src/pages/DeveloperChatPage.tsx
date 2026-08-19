@@ -23,10 +23,17 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { AuthStatusBadge } from "../auth/AuthStatusBadge";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import { buildAgentStageTimings } from "../utils/agentTiming";
+import { getBrowserDeviceLocation } from "../utils/geolocation";
 
 const REQUEST_MORE_PROMPT = "다른 곳 보여줘";
 const RELAX_RADIUS_PROMPT = "검색 범위를 넓혀서 다시 추천해줘";
 const STATUS_COMMAND = "/status";
+const LOCATION_RECONFIRM_AFTER_MS = 30 * 60 * 1000;
+
+interface PendingLocationRefresh {
+  text: string;
+  clarificationChoice?: string;
+}
 
 export function DeveloperChatPage() {
   const state = useTripState();
@@ -41,6 +48,9 @@ export function DeveloperChatPage() {
   // 포함한다 — no_data_closed 되묻기를 재현/우회하려고 매번 버튼을 누르지
   // 않아도 된다(실사용 피드백, 2026-08-13).
   const [debugIgnoreOperatingHours, setDebugIgnoreOperatingHours] = useState(false);
+  const [pendingLocationRefresh, setPendingLocationRefresh] = useState<PendingLocationRefresh | null>(
+    null,
+  );
 
   const isLoading = state.phase === "interpreting" || state.phase === "recommending";
 
@@ -124,8 +134,17 @@ export function DeveloperChatPage() {
   );
 
   const send = useCallback(
-    async (text: string, clarificationChoice?: string) => {
-      dispatch({ type: "START_CHAT_TURN", payload: { userInput: text } });
+    async (
+      text: string,
+      clarificationChoice?: string,
+      deviceLocationOverride?: string,
+      deviceLocationCapturedAt?: number,
+    ) => {
+      const deviceLocation = deviceLocationOverride ?? state.device_location;
+      dispatch({
+        type: "START_CHAT_TURN",
+        payload: { userInput: text, deviceLocation: deviceLocationOverride, deviceLocationCapturedAt },
+      });
       const startedAt = performance.now();
       const progressEvents = [] as import("../types").AgentProgressEvent[];
       let messageStartElapsedMs: number | null = null;
@@ -137,7 +156,7 @@ export function DeveloperChatPage() {
           {
             user_input: text,
             session_id: state.session_id,
-            device_location: state.device_location,
+            device_location: deviceLocation,
             clarification_choice: clarificationChoice ?? null,
             debug_ignore_operating_hours: debugIgnoreOperatingHours,
           },
@@ -235,13 +254,55 @@ export function DeveloperChatPage() {
     [dispatch, loadExchanges, state.device_location, state.session_id, debugIgnoreOperatingHours],
   );
 
+  const locationAgeMinutes =
+    state.device_location_captured_at === null
+      ? null
+      : Math.max(1, Math.floor((Date.now() - state.device_location_captured_at) / 60_000));
+
+  const requestSend = useCallback(
+    async (text: string, clarificationChoice?: string) => {
+      const locationRefreshDue =
+        state.device_location !== null &&
+        (state.device_location_captured_at === null ||
+          Date.now() - state.device_location_captured_at >= LOCATION_RECONFIRM_AFTER_MS);
+      if (locationRefreshDue) {
+        setPendingLocationRefresh({ text, clarificationChoice });
+        return;
+      }
+      await send(text, clarificationChoice);
+    },
+    [send, state.device_location, state.device_location_captured_at],
+  );
+
+  const usePreviousLocation = useCallback(() => {
+    if (!pendingLocationRefresh) return;
+    const pending = pendingLocationRefresh;
+    setPendingLocationRefresh(null);
+    void send(pending.text, pending.clarificationChoice);
+  }, [pendingLocationRefresh, send]);
+
+  const refreshBrowserLocation = useCallback(async () => {
+    if (!pendingLocationRefresh) return;
+    try {
+      const deviceLocation = await getBrowserDeviceLocation({ forceFresh: true });
+      const pending = pendingLocationRefresh;
+      setPendingLocationRefresh(null);
+      await send(pending.text, pending.clarificationChoice, deviceLocation, Date.now());
+    } catch (error) {
+      dispatch({
+        type: "SET_ERROR",
+        payload: error instanceof Error ? error.message : "현재 위치를 가져오지 못했어요.",
+      });
+    }
+  }, [dispatch, pendingLocationRefresh, send]);
+
   async function handleFollowUp(text: string) {
     if (isLoading) return;
     if (text.trim() === STATUS_COMMAND) {
       await showStatus(text.trim());
       return;
     }
-    await send(text);
+    await requestSend(text);
   }
 
   return (
@@ -298,7 +359,7 @@ export function DeveloperChatPage() {
             <ErrorBanner
               message={state.error}
               onRetry={() => {
-                if (state.user_input) void send(state.user_input);
+                if (state.user_input) void requestSend(state.user_input);
               }}
             />
           )}
@@ -321,9 +382,18 @@ export function DeveloperChatPage() {
               isLoading={isLoading}
               hasDeviceLocation={Boolean(state.device_location)}
               deviceLocation={state.device_location}
-              onRequestMore={() => void send(REQUEST_MORE_PROMPT)}
-              onRelaxRadius={() => void send(RELAX_RADIUS_PROMPT)}
-              onSelectClarificationOption={(optionId, label) => void send(label, optionId)}
+              onRequestMore={() => void requestSend(REQUEST_MORE_PROMPT)}
+              onRelaxRadius={() => void requestSend(RELAX_RADIUS_PROMPT)}
+              onSelectClarificationOption={(optionId, label) => void requestSend(label, optionId)}
+              locationRefresh={
+                pendingLocationRefresh
+                  ? {
+                      ageMinutes: locationAgeMinutes,
+                      onUsePrevious: usePreviousLocation,
+                      onRefreshLocation: () => void refreshBrowserLocation(),
+                    }
+                  : null
+              }
               progress={state.agentProgress}
             />
           )}

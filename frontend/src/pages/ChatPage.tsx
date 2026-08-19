@@ -11,7 +11,7 @@
  * TODO: 스트리밍 응답이 생기면 메시지 append 경로를 확장한다.
  */
 
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
 import { fetchSessionState, streamChat, toDisplayConditions } from "../api/trip";
@@ -21,6 +21,7 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { AuthStatusBadge } from "../auth/AuthStatusBadge";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import { buildAgentStageTimings } from "../utils/agentTiming";
+import { getBrowserDeviceLocation } from "../utils/geolocation";
 
 const REQUEST_MORE_PROMPT = "다른 곳 보여줘";
 /*
@@ -34,6 +35,12 @@ const RELAX_RADIUS_PROMPT = "검색 범위를 넓혀서 다시 추천해줘";
  * 현재 누적 조건을 조회해 화면에만 표시한다. 커밋하지 않는 확인용 경로다.
  */
 const STATUS_COMMAND = "/status";
+const LOCATION_RECONFIRM_AFTER_MS = 30 * 60 * 1000;
+
+interface PendingLocationRefresh {
+  text: string;
+  clarificationChoice?: string;
+}
 
 export function ChatPage() {
   const state = useTripState();
@@ -42,6 +49,9 @@ export function ChatPage() {
 
   const isLoading = state.phase === "interpreting" || state.phase === "recommending";
   const hasConversation = state.messages.length > 0;
+  const [pendingLocationRefresh, setPendingLocationRefresh] = useState<PendingLocationRefresh | null>(
+    null,
+  );
 
   const showStatus = useCallback(
     async (text: string) => {
@@ -77,8 +87,17 @@ export function ChatPage() {
   );
 
   const send = useCallback(
-    async (text: string, clarificationChoice?: string) => {
-      dispatch({ type: "START_CHAT_TURN", payload: { userInput: text } });
+    async (
+      text: string,
+      clarificationChoice?: string,
+      deviceLocationOverride?: string,
+      deviceLocationCapturedAt?: number,
+    ) => {
+      const deviceLocation = deviceLocationOverride ?? state.device_location;
+      dispatch({
+        type: "START_CHAT_TURN",
+        payload: { userInput: text, deviceLocation: deviceLocationOverride, deviceLocationCapturedAt },
+      });
       // 사용자가 입력하거나 버튼을 누른 시점부터 결과를 dispatch할 때까지를 잰다.
       const startedAt = performance.now();
       const progressEvents = [] as import("../types").AgentProgressEvent[];
@@ -91,7 +110,7 @@ export function ChatPage() {
           {
             user_input: text,
             session_id: state.session_id,
-            device_location: state.device_location,
+            device_location: deviceLocation,
             clarification_choice: clarificationChoice ?? null,
           },
           (event) => {
@@ -181,6 +200,49 @@ export function ChatPage() {
     [dispatch, state.device_location, state.session_id],
   );
 
+  const locationAgeMinutes =
+    state.device_location_captured_at === null
+      ? null
+      : Math.max(1, Math.floor((Date.now() - state.device_location_captured_at) / 60_000));
+
+  const requestSend = useCallback(
+    async (text: string, clarificationChoice?: string) => {
+      const locationRefreshDue =
+        state.device_location !== null &&
+        (state.device_location_captured_at === null ||
+          Date.now() - state.device_location_captured_at >= LOCATION_RECONFIRM_AFTER_MS);
+      if (locationRefreshDue) {
+        setPendingLocationRefresh({ text, clarificationChoice });
+        return;
+      }
+      await send(text, clarificationChoice);
+    },
+    [send, state.device_location, state.device_location_captured_at],
+  );
+
+  const usePreviousLocation = useCallback(() => {
+    if (!pendingLocationRefresh) return;
+    const pending = pendingLocationRefresh;
+    setPendingLocationRefresh(null);
+    void send(pending.text, pending.clarificationChoice);
+  }, [pendingLocationRefresh, send]);
+
+  const refreshBrowserLocation = useCallback(async () => {
+    if (!pendingLocationRefresh) return;
+    try {
+      // 버튼 클릭이라는 사용자 제스처 안에서 호출해야 브라우저가 위치 권한을 다시 요청할 수 있다.
+      const deviceLocation = await getBrowserDeviceLocation({ forceFresh: true });
+      const pending = pendingLocationRefresh;
+      setPendingLocationRefresh(null);
+      await send(pending.text, pending.clarificationChoice, deviceLocation, Date.now());
+    } catch (error) {
+      dispatch({
+        type: "SET_ERROR",
+        payload: error instanceof Error ? error.message : "현재 위치를 가져오지 못했어요.",
+      });
+    }
+  }, [dispatch, pendingLocationRefresh, send]);
+
   if (!hasConversation) {
     return <Navigate to="/" replace />;
   }
@@ -191,7 +253,7 @@ export function ChatPage() {
       await showStatus(text.trim());
       return;
     }
-    await send(text);
+    await requestSend(text);
   }
 
   return (
@@ -227,7 +289,7 @@ export function ChatPage() {
         <ErrorBanner
           message={state.error}
           onRetry={() => {
-            if (state.user_input) void send(state.user_input);
+            if (state.user_input) void requestSend(state.user_input);
           }}
         />
       )}
@@ -238,9 +300,18 @@ export function ChatPage() {
         isLoading={isLoading}
         hasDeviceLocation={Boolean(state.device_location)}
         deviceLocation={state.device_location}
-        onRequestMore={() => void send(REQUEST_MORE_PROMPT)}
-        onRelaxRadius={() => void send(RELAX_RADIUS_PROMPT)}
-        onSelectClarificationOption={(optionId, label) => void send(label, optionId)}
+        onRequestMore={() => void requestSend(REQUEST_MORE_PROMPT)}
+        onRelaxRadius={() => void requestSend(RELAX_RADIUS_PROMPT)}
+        onSelectClarificationOption={(optionId, label) => void requestSend(label, optionId)}
+        locationRefresh={
+          pendingLocationRefresh
+            ? {
+                ageMinutes: locationAgeMinutes,
+                onUsePrevious: usePreviousLocation,
+                onRefreshLocation: () => void refreshBrowserLocation(),
+              }
+            : null
+        }
         progress={state.agentProgress}
       />
 

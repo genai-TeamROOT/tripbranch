@@ -49,6 +49,8 @@ export interface TripState {
   session_id: string | null;
   /* 최초 추천 시작 시 허용받은 브라우저 위치. 같은 세션의 후속 요청에도 재사용한다. */
   device_location: string | null;
+  /** 브라우저에서 device_location을 마지막으로 받아온 시각(ms). */
+  device_location_captured_at: number | null;
   /*
    * 직전 턴이 추천 없이 되묻기로 끝났는지. Agent는 "직전에 무엇을 되물었는지"를
    * 다음 턴 Intent 분류에 넘기지 않아서, 사용자가 "경복궁"처럼 짧게 답하면 INFO로
@@ -72,6 +74,7 @@ const initialTripState: TripState = {
   error: null,
   session_id: null,
   device_location: null,
+  device_location_captured_at: null,
   awaiting_clarification: false,
   agentProgress: null,
   streamingIntent: null,
@@ -89,7 +92,11 @@ type TripAction =
     }
   | {
       type: "START_CHAT_TURN";
-      payload: { userInput: string; deviceLocation?: string | null };
+      payload: {
+        userInput: string;
+        deviceLocation?: string | null;
+        deviceLocationCapturedAt?: number | null;
+      };
     }
   | { type: "APPEND_CHAT_TURN"; payload: ChatTurnPayload }
   | { type: "SET_AGENT_PROGRESS"; payload: AgentProgressEvent }
@@ -274,6 +281,8 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         ...state,
         user_input: action.payload.userInput,
         device_location: action.payload.deviceLocation ?? state.device_location,
+        device_location_captured_at:
+          action.payload.deviceLocationCapturedAt ?? state.device_location_captured_at,
         messages: [
           ...state.messages,
           { id: createMessageId("user"), type: "user_text", text: action.payload.userInput },

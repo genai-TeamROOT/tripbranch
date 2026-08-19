@@ -53,7 +53,11 @@ export function HomePage() {
     dispatch({ type: "RESET" });
     dispatch({
       type: "START_CHAT_TURN",
-      payload: { userInput: trimmed, deviceLocation },
+      payload: {
+        userInput: trimmed,
+        deviceLocation,
+        deviceLocationCapturedAt: Date.now(),
+      },
     });
     navigate(targetPath);
 

@@ -1,0 +1,18 @@
+intent: COMPARE
+owner: A
+slots:
+  compare.extract:
+    version: 1
+    template: extract.md
+    bundle:
+      - compare/target_rules.md
+      - compare/criteria_rules.md
+      - _shared/rules/shown_place_list.md
+    evals: evals/README.md
+  compare.summary:
+    description: 검증된 비교 결과만으로 거리·운영시간·실내외를 설명하고 한 곳을 추천한다.
+    version: 1
+    template: summary_instruction.md
+    bundle:
+      - _shared/persona/trivi.md
+    evals: evals/README.md

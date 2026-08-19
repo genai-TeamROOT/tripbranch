@@ -42,7 +42,12 @@ async def ensure_current_context(
 
     context = get_session_context(session_id, store=store)
 
-    if context.session_exists and context.api_context.gps_expired and device_location:
+    should_update_gps = (
+        context.session_exists
+        and device_location is not None
+        and (context.api_context.gps_expired or context.api_context.gps_location != device_location)
+    )
+    if should_update_gps:
         update_api_context(
             UpdateApiContextRequest(
                 session_id=context.session_id,
