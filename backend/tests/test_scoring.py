@@ -694,3 +694,56 @@ def test_fallback_candidate_exposes_no_measured_route() -> None:
     ranked = result.ranked[0]
     assert ranked.walking_distance_m is None
     assert ranked.walking_duration_seconds is None
+
+
+def test_partial_measurement_falls_back_to_straight_line_for_every_candidate() -> None:
+    """실측과 직선거리를 한 순위표에 섞으면 실측 후보만 손해를 본다.
+
+    실거리는 직선거리보다 항상 크거나 같아 두 기준의 낙관도가 다르기 때문이다.
+    하나라도 실측이 없으면 전부 직선거리로 내려서 같은 자로 잰다.
+    """
+    prepared = prepare_candidates([MUSEUM_OPEN, RESTAURANT_FAR], now=NOW)
+    result = score_prepared_candidates(
+        prepared.eligible_candidates,
+        weather_condition=None,
+        max_distance_km=2.0,
+        walking_routes=[_walking_route("p1", duration_seconds=530)],
+    )
+
+    assert [ranked.walking_duration_seconds for ranked in result.ranked] == [None, None]
+    # 직선거리 기준이므로 더 가까운 p1이 위에 온다.
+    assert [ranked.place_id for ranked in result.ranked] == ["p1", "p5"]
+
+
+def test_closer_place_is_not_demoted_by_having_a_measurement() -> None:
+    """회귀 방지: 실측이 있다는 이유로 더 가까운 장소가 밀려나면 안 된다."""
+    prepared = prepare_candidates([MUSEUM_OPEN, RESTAURANT_FAR], now=NOW)
+    partial = score_prepared_candidates(
+        prepared.eligible_candidates,
+        weather_condition=None,
+        max_distance_km=2.0,
+        walking_routes=[_walking_route("p1", duration_seconds=530)],
+    )
+    none_measured = score_prepared_candidates(
+        prepared.eligible_candidates,
+        weather_condition=None,
+        max_distance_km=2.0,
+    )
+
+    assert [r.place_id for r in partial.ranked] == [r.place_id for r in none_measured.ranked]
+
+
+def test_all_measured_candidates_keep_their_routes() -> None:
+    """전원 실측이면 그대로 실측으로 채점한다."""
+    prepared = prepare_candidates([MUSEUM_OPEN, RESTAURANT_FAR], now=NOW)
+    result = score_prepared_candidates(
+        prepared.eligible_candidates,
+        weather_condition=None,
+        max_distance_km=2.0,
+        walking_routes=[
+            _walking_route("p1", duration_seconds=300),
+            _walking_route("p5", duration_seconds=900),
+        ],
+    )
+
+    assert [ranked.walking_duration_seconds for ranked in result.ranked] == [300, 900]
