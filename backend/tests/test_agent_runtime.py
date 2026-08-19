@@ -34,7 +34,7 @@ from app.agent_context.schemas import (
     WeatherForecast,
 )
 from app.domain.scoring import SCORING_VERSION
-from app.domain.travel_route import TravelRoute
+from app.domain.travel_route import TravelMode, TravelRoute
 from app.providers.contracts import ProviderSource, provider_result
 from app.providers.gemini_prompts import PROMPT_VERSION
 from app.providers.stub import FakeLLMProvider
@@ -73,7 +73,11 @@ from app.state.service import (
 )
 from app.state.store import InMemoryStateStore
 from app.tools.contracts import ToolStatus
-from app.tools.travel_route import TravelRouteTool, TravelRouteToolResult
+from app.tools.travel_route import (
+    TravelRouteProviders,
+    TravelRouteTool,
+    TravelRouteToolResult,
+)
 
 DEVICE_LOCATION = "37.5788,126.9770"
 
@@ -3209,7 +3213,13 @@ class _RefillPlacesToolProvider(FakeToolProvider):
 class _RecordingTravelRouteTool:
     def __init__(self) -> None:
         self.queries = []
-        self._delegate = TravelRouteTool(FakeWalkingRouteProvider(walking_speed_mps=1.2))
+        self._delegate = TravelRouteTool(
+            {
+                TravelMode.WALKING: TravelRouteProviders(
+                    primary=FakeWalkingRouteProvider(walking_speed_mps=1.2)
+                )
+            }
+        )
 
     async def execute(self, query):
         self.queries.append(query)

@@ -10,6 +10,7 @@ from __future__ import annotations
 import httpx
 
 from app.config import Settings, settings
+from app.domain.travel_route import TravelMode
 from app.errors import AppError
 from app.providers.concentration import FakeConcentrationProvider, RealConcentrationProvider
 from app.providers.festival import FakeFestivalProvider, RealFestivalProvider
@@ -47,7 +48,7 @@ from app.repositories.fake_places import (
 )
 from app.repositories.supabase_places import SupabasePlaceRepository
 from app.tools.recommendation_cards import RecommendationCardTool
-from app.tools.travel_route import TravelRouteTool
+from app.tools.travel_route import TravelRouteProviders, TravelRouteTool
 
 
 def _require_key(value: str, variable_name: str) -> str:
@@ -148,14 +149,25 @@ def get_walking_route_provider(client: httpx.AsyncClient) -> TravelRouteProvider
 
 
 def get_travel_route_tool(client: httpx.AsyncClient) -> TravelRouteTool:
-    """도보 경로 Tool을 실제 Provider와 직선거리 fallback으로 구성한다."""
-    primary = get_walking_route_provider(client)
+    """이동 경로 Tool을 이동수단별 Provider로 구성한다.
+
+    지금 등록하는 이동수단은 도보뿐이다. 대중교통·자동차는 외부 API를 붙이는
+    각 카드에서 여기에 한 줄씩 추가한다 — 미등록 이동수단은 Tool이 호출 없이
+    NO_DATA로 답하므로, 등록되지 않은 동안 도보 값이 대신 나가지 않는다.
+    """
     fallback = (
         FakeWalkingRouteProvider(walking_speed_mps=settings.walking_speed_mps)
         if settings.travel_route_provider == "real"
         else None
     )
-    return TravelRouteTool(primary_provider=primary, fallback_provider=fallback)
+    return TravelRouteTool(
+        {
+            TravelMode.WALKING: TravelRouteProviders(
+                primary=get_walking_route_provider(client),
+                fallback=fallback,
+            )
+        }
+    )
 
 
 def get_place_provider(client: httpx.AsyncClient) -> PlaceProvider:
