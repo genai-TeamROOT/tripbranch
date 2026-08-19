@@ -419,6 +419,34 @@ def prepare_candidates(
     )
 
 
+def _consistent_routes(
+    candidates: Sequence[PreparedCandidate],
+    walking_routes: Sequence[WalkingRoute],
+) -> dict[str, WalkingRoute]:
+    """한 순위 안에서는 모든 후보를 같은 자로 재도록 실측을 전부 쓰거나 전부 버린다.
+
+    실측 도보 시간과 직선거리 점수는 낙관도가 다르다 — 실거리는 직선거리보다 항상
+    크거나 같아서(우회·신호 대기), 두 기준이 한 순위표에 섞이면 **실측이 있는
+    후보만 구조적으로 손해**를 본다. 실제로 더 가까운 장소가 실측이 있다는 이유로
+    실측 없는 먼 장소보다 아래로 내려가는 역전이 확인됐다.
+
+    그래서 후보 중 하나라도 실측이 없으면 전부 직선거리로 채점한다. 카카오 조회가
+    일부 목적지만 실패한 경우(PARTIAL)가 여기 해당한다. 1건 실패로 전체가
+    직선거리로 내려가는 손해는 있지만, 일관되게 덜 정확한 편이 기준이 뒤섞여
+    순위가 뒤집히는 것보다 낫다.
+    """
+    routes_by_place_id = {route.place_id: route for route in walking_routes}
+    applied = {
+        prepared.candidate.place_id: _applied_walking_route(
+            routes_by_place_id.get(prepared.candidate.place_id)
+        )
+        for prepared in candidates
+    }
+    if any(route is None for route in applied.values()):
+        return {}
+    return {place_id: route for place_id, route in applied.items() if route is not None}
+
+
 def score_prepared_candidates(
     candidates: Sequence[PreparedCandidate],
     *,
@@ -445,7 +473,7 @@ def score_prepared_candidates(
     값을 넘기지 않아 기존 날씨 판정을 그대로 쓴다.
     """
     environment_driven = uses_environment_feature(requested_environment)
-    routes_by_place_id = {route.place_id: route for route in walking_routes}
+    routes_by_place_id = _consistent_routes(candidates, walking_routes)
     base_weights = weights_for_environment(
         dict(weights) if weights is not None else dict(DEFAULT_WEIGHTS),
         requested_environment,
@@ -578,6 +606,9 @@ def score_candidates(
     # 사용자가 명시한 실내/실외. indoor/outdoor면 날씨 대신 이 조건으로 같은
     # 자리의 Feature를 채점한다(호출부가 날씨 언급이 없을 때만 넘긴다).
     requested_environment: str | None = None,
+    # A가 조회한 실측 도보 경로. 분리 진입점(score_prepared_candidates)과 같은 규칙을
+    # 따른다 — 후보 중 하나라도 실측이 없으면 전부 직선거리로 채점한다.
+    walking_routes: Sequence[WalkingRoute] = (),
 ) -> ScoringResult:
     """기존 하드 필터와 점수 계산을 연속 실행하는 호환 진입점."""
     prepared_result = prepare_candidates(
@@ -591,6 +622,7 @@ def score_candidates(
         prepared_result.eligible_candidates,
         weather_condition=weather_condition,
         max_distance_km=max_distance_km,
+        walking_routes=walking_routes,
         weights=weights,
         weather_reason=weather_reason,
         requested_environment=requested_environment,
