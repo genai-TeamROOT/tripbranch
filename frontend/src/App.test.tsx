@@ -220,7 +220,7 @@ test("user chat needs only one chat call", async () => {
 test("asks whether to refresh a location older than 30 minutes before a follow-up", async () => {
   const now = vi.spyOn(Date, "now");
   now.mockReturnValue(1_000);
-  render(<App />);
+  await renderApp();
 
   await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
@@ -247,7 +247,7 @@ test("asks whether to refresh a location older than 30 minutes before a follow-u
 test("refreshing a location after 30 minutes requests browser GPS again", async () => {
   const now = vi.spyOn(Date, "now");
   now.mockReturnValue(1_000);
-  render(<App />);
+  await renderApp();
 
   await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
