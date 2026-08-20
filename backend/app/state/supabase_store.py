@@ -56,7 +56,7 @@ class SupabaseStateStore:
 
     def _headers(self, prefer: str | None = None) -> dict[str, str]:
         # Authorization을 함께 보내야 PostgREST가 요청을 인증한다. apikey만
-        # 보내면 테이블 조회도 RPC도 401 42501로 막힌다(2026-08-19 실측:
+        # 보내면 테이블 조회도 RPC도 401 42501로 막힌다(2026-08-20 실측:
         # apikey만/Authorization만은 둘 다 401, 함께 보내야 200). 지금은
         # STATE_STORE_BACKEND 기본값이 memory라 드러나지 않았을 뿐이다.
         headers = {

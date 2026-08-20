@@ -215,10 +215,13 @@ class SupabasePlaceRepository:
 
     def _headers(self, prefer: str | None = None) -> dict[str, str]:
         # Authorization을 함께 보내야 PostgREST가 service_role로 인식한다.
-        # apikey만 보내면 service_role 전용 함수 호출이 401 42501
-        # (permission denied for function)로 막힌다 — search_place_evidence가
-        # 실제로 그렇게 실패했다(2026-08-19). 테이블 접근은 apikey만으로도
-        # 통과해서 이 문제가 RPC를 붙일 때까지 드러나지 않았다.
+        # apikey만 보내면 게이트웨이가 역할을 Authorization 자리로 넘기지 않아
+        # anon으로 실행되고, RLS 정책이 없는 공개 테이블·함수가 전부 401 42501
+        # (permission denied)로 막힌다. 함수(search_place_evidence)뿐 아니라
+        # 테이블 조회도 마찬가지다 — 3조합 x 3접근을 실측했다(2026-08-20:
+        # apikey만/Authorization만은 401, 둘 다여야 200). RPC를 붙이기 전까지
+        # 안 드러난 건 테이블도 되던 게 아니라, 이 저장소를 부르는 실경로가
+        # 장소 동기화뿐이라 그동안 호출이 없었기 때문이다.
         headers = {
             "apikey": self._secret_key,
             "Authorization": f"Bearer {self._secret_key}",
