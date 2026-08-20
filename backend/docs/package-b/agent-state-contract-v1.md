@@ -430,10 +430,16 @@ version: 6 → 7
 | --- | --- | --- |
 | `recommended` | 사용자에게 노출된 적 있는 장소 | 중복 노출 방지 |
 | `rejected` | 사용자가 명시적으로 거부한 장소 | 재노출 방지 |
+| `closed_excluded` | D의 하드 필터가 폐점이라 걸러낸 장소(TP-82, 2026-08-20) | 폐점 후보 반복 수집 방지 |
 
-두 이력은 초기화 범위가 다르므로 별도 구조로 관리한다. (5절)
+세 이력은 초기화 범위가 다르므로 별도 구조로 관리한다. (5절)
 Phase 1에서는 제외 목적으로 동일하게 사용하지만,
 구조를 분리해 두어 이후 스코어링 정책에서 다르게 취급할 수 있도록 한다.
+`closed_excluded`는 "노출됐다"도 "사용자가 거절했다"도 아니다 — D 응답에
+아예 담기지 못해 `recommended`/`rejected` 어느 경로도 탈 수 없었던 후보를
+위한 세 번째 분류다(TP-82: 밤 시간대처럼 폐점 비율이 높을 때 "다른 곳
+보여줘"를 반복하면 노출 이력이 없는 폐점 후보가 매 회차 재수집돼 카드 수가
+줄어드는 문제로 발견).
 
 ### 3.2 이력 구조
 
@@ -450,6 +456,10 @@ Phase 1에서는 제외 목적으로 동일하게 사용하지만,
     { "place_id": "126508", "run_id": "run_01J8XKQ9Z8Y7X6",
       "reason_code": "too_far",
       "rejected_at": "2026-07-23T09:07:30+09:00" }
+  ],
+  "closed_excluded": [
+    { "place_id": "126520", "run_id": "run_01J8XKQ5A1B2C3",
+      "excluded_at": "2026-07-23T09:05:12+09:00" }
   ],
   "updated_at": "2026-07-23T09:07:30+09:00"
 }
@@ -491,17 +501,33 @@ B는 값을 검증하지 않고 그대로 저장한다. 값이 없으면 `null`�
 
 `recommended`와 `rejected`는 append-only 리스트이며 기존 항목을 수정하지 않는다.
 
+**closed_excluded 항목 (TP-82, 2026-08-20)**
+
+| 필드 | 타입 | 설명 |
+| --- | --- | --- |
+| `place_id` | string | D의 하드 필터(`_is_closed`)가 폐점이라 걸러낸 장소 식별자 |
+| `run_id` | string | 해당 실행 식별자 |
+| `excluded_at` | string | 기록 시각 (ISO 8601) |
+
+패키지 D의 `RecommendationResponse.excluded_closed_place_ids`를 그대로
+받아 저장한다 — 폐점 여부 판단은 D의 책임이고 B는 검증하지 않는다. 이
+리스트도 append-only다.
+
 ### 3.3 제외 ID 목록
 
 ```
 excluded_place_ids = recommended의 place_id ∪ rejected의 place_id
+                      ∪ closed_excluded의 place_id (TP-82, 2026-08-20)
 ```
 
 - 중복은 제거하여 반환한다.
 - 순서는 보장하지 않는다.
 - 추천 이력이 없는 `place_id`가 `rejected`로 전달되어도 검증하지 않고 저장한다.
 
-세션이 유지되는 동안 계속 누적된다.
+세션이 유지되는 동안 계속 누적된다. 단, `closed_excluded`는 5절의 history
+reset(`recommended`를 비우는 범위)에서 `recommended`와 함께 비워진다 —
+폐점 여부는 시각에 따라 바뀌는 사실이라 `rejected`처럼 영구 보관할 근거가
+아니기 때문이다.
 
 ### 3.4 마지막 노출 목록
 
@@ -814,19 +840,22 @@ TTL 값은 실사용 후 조정 가능하다.
 
 ### 5.5 초기화 범위
 
-| 종류 | `reset_scope` | 조건 | 추천 이력 | 거절 이력 | session_id |
-| --- | --- | --- | --- | --- | --- |
-| Soft Reset | `soft` | 초기화 | 유지 | 유지 | 유지 |
-| History Reset | `history` | 유지 | 초기화 | **유지** | 유지 |
-| Full Reset | `full` | 초기화 | 초기화 | 초기화 | **신규 발급** |
+| 종류 | `reset_scope` | 조건 | 추천 이력 | 폐점 제외 이력 | 거절 이력 | session_id |
+| --- | --- | --- | --- | --- | --- | --- |
+| Soft Reset | `soft` | 초기화 | 유지 | 유지 | 유지 | 유지 |
+| History Reset | `history` | 유지 | 초기화 | 초기화 | **유지** | 유지 |
+| Full Reset | `full` | 초기화 | 초기화 | 초기화 | 초기화 | **신규 발급** |
 
 **Soft Reset**
 `user_conditions`만 초기화하고 이력은 유지한다.
 조건이 바뀌더라도 이미 노출된 장소를 다시 보여주지 않기 위함이다.
 
 **History Reset**
-추천 이력만 비우고 거절 이력은 유지한다.
-사용자가 명시적으로 거부한 장소를 재노출하지 않기 위함이다.
+추천 이력과 `closed_excluded`(TP-82, 2026-08-20)를 비우고 거절 이력은
+유지한다. 사용자가 명시적으로 거부한 장소를 재노출하지 않기 위함이다.
+`closed_excluded`는 `rejected`와 달리 "그 시점에 닫혀 있었다"는 시간
+의존적 사실이라 `recommended`와 같은 범위에서 함께 비운다 — 영구 보관할
+근거가 아니다.
 
 **Full Reset**
 기존 세션을 만료 처리하고 신규 세션을 발급한다.
@@ -1173,6 +1202,39 @@ AF-05 Agent Runtime이 추천 응답을 조립한 직후 호출한다.
 SCHEDULE 흐름은 생략하면 된다(3.7절 예외 참고). `name`은 SCHEDULE 부분
 재편성 전용 선택 필드다(2026-08-11, D-060) — 있으면 항상 넘기는 것을
 권장한다. 자세한 사유는 3.7절 예외 참고.
+
+### 6.4b 폐점 제외 기록 (Agent Runtime → B, TP-82, 2026-08-20)
+
+D의 하드 필터가 폐점이라 걸러낸 후보 id를 6.4와 별도 경로로 기록한다 —
+`recommended`에 섞으면 "노출했다"로 잘못 취급되어 COMPARE의 "첫 번째"가
+실제로 안 보여준 장소를 가리키게 된다.
+
+**요청**
+
+```json
+{
+  "session_id": "sess_01J8XKQ2M7N4P9",
+  "run_id": "run_01J8XKQ5A1B2C3",
+  "place_ids": ["126520", "126521"]
+}
+```
+
+**응답**
+
+```json
+{ "recorded": 2 }
+```
+
+**호출 주체**
+AF-05 Agent Runtime이 D 응답(`RecommendationResponse.excluded_closed_place_ids`)을
+받은 직후 호출한다. `place_ids`가 비어 있으면(폐점 제외가 없었던 회차)
+아무것도 기록하지 않는다.
+
+`run_id`는 6.1 요청에서 발급된 값을 그대로 사용한다.
+
+여기 기록된 id는 3.3절의 `excluded_place_ids`에 합류해, 같은 세션의 다음
+회차 후보 수집(패키지 C 조회)에서 자동으로 제외된다 — Agent Runtime이
+별도로 병합할 필요가 없다.
 
 ### 6.5 api_context 갱신 (A 또는 Runtime → B)
 

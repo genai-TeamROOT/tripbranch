@@ -158,12 +158,31 @@ class RejectedItem(BaseModel):
     rejected_at: datetime = Field(default_factory=now_kst)
 
 
+class ClosedExclusionItem(BaseModel):
+    """D의 하드 필터(_is_closed)가 폐점이라 걸러낸 후보 1건. (TP-82)
+
+    recommended/rejected와 달리 "노출됐다"도 "사용자가 거절했다"도 아니다 —
+    D 응답에 아예 담기지 못해 노출 이력 경로를 탈 수 없는 후보를 별도로
+    추적하기 위한 항목이다. 운영시간은 시각에 따라 바뀌므로(닫혀 있던
+    곳이 다음 날 다시 열림) recommended/rejected처럼 영구 보관하지 않고,
+    clear_recommended()에서 함께 비운다(history.py 참고).
+    """
+
+    place_id: str
+    run_id: str
+    excluded_at: datetime = Field(default_factory=now_kst)
+
+
 class RecommendationHistory(BaseModel):
     """세션 단위 추천·거절 이력. append-only. (계약 3.2절)"""
 
     session_id: str
     recommended: list[RecommendedItem] = Field(default_factory=list)
     rejected: list[RejectedItem] = Field(default_factory=list)
+    # TP-82: D의 하드 필터가 폐점이라 걸러낸 후보 id. recommended/rejected와
+    # 분리된 별도 리스트다 — "노출했다"로 잘못 취급되면 COMPARE의 "첫 번째"가
+    # 실제로 안 보여준 장소를 가리키게 된다(댓글/카드 참고).
+    closed_excluded: list[ClosedExclusionItem] = Field(default_factory=list)
     updated_at: datetime = Field(default_factory=now_kst)
 
 

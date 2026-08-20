@@ -278,9 +278,12 @@ async def score_prepared_recommendation(
     # 결과가 0건이고, 그 이유가 전부 폐점 후보 제외였다면(다른 이유로 제외된 후보가
     # 없었다면) A가 "운영중이 아닌 곳도 볼래요" 되묻기를 띄울 수 있게 표시한다.
     excluded = prepared.preparation.excluded_candidates
-    excluded_closed_count = sum(
-        candidate.reason is ExclusionReason.CLOSED for candidate in excluded
+    excluded_closed_place_ids = tuple(
+        candidate.candidate.place_id
+        for candidate in excluded
+        if candidate.reason is ExclusionReason.CLOSED
     )
+    excluded_closed_count = len(excluded_closed_place_ids)
     excluded_all_closed = (
         not ranked
         and excluded_closed_count > 0
@@ -293,6 +296,7 @@ async def score_prepared_recommendation(
         prepared.visit_at,
         weather_ignored=prepared.weather_ignored,
         excluded_all_closed=excluded_all_closed,
+        excluded_closed_place_ids=excluded_closed_place_ids,
     )
     return response.model_copy(update={"elapsed_ms": round((timer() - started_at) * 1000, 2)})
 
@@ -497,6 +501,10 @@ async def rerank_with_concentration(
         recommendations=verified,
         unverified_recommendations=unverified,
         elapsed_ms=round((timer() - started_at) * 1000, 2),
+        # 2차(혼잡도 재순위)는 1차가 이미 채점을 마친 후보만 다시 정렬할 뿐,
+        # 하드 필터를 다시 태우지 않는다 — 1차가 걸러낸 폐점 후보 id는 그대로다.
+        excluded_all_closed=response.excluded_all_closed,
+        excluded_closed_place_ids=response.excluded_closed_place_ids,
     )
 
 
@@ -586,6 +594,7 @@ def _build_response(
     *,
     weather_ignored: bool,
     excluded_all_closed: bool = False,
+    excluded_closed_place_ids: Sequence[str] = (),
 ) -> RecommendationResponse:
     candidate_by_id = {item.place_id: item for item in candidates}
     verified: list[RecommendationItem] = []
@@ -632,6 +641,7 @@ def _build_response(
         unverified_recommendations=unverified,
         elapsed_ms=0,
         excluded_all_closed=excluded_all_closed,
+        excluded_closed_place_ids=list(excluded_closed_place_ids),
     )
 
 

@@ -152,6 +152,23 @@ class RecordRecommendationResponse(BaseModel):
     recorded: int
 
 
+class RecordClosedExclusionsRequest(BaseModel):
+    """TP-82: D의 하드 필터가 폐점이라 걸러낸 후보 id 기록 요청.
+
+    RecordRecommendationRequest와 분리한다 — 이 place_id들은 노출되지
+    않았으므로 recommended 이력에 섞으면 "노출했다"로 잘못 취급되어
+    COMPARE의 "첫 번째"가 실제로 안 보여준 장소를 가리키게 된다.
+    """
+
+    session_id: str
+    run_id: str
+    place_ids: list[str] = Field(default_factory=list)
+
+
+class RecordClosedExclusionsResponse(BaseModel):
+    recorded: int
+
+
 class UpdateApiContextRequest(BaseModel):
     """api_context 갱신 요청. (계약 6.5절)
 
@@ -479,6 +496,31 @@ def record_recommendation(
         ],
     )
     return RecordRecommendationResponse(recorded=recorded)
+
+
+# ================================================================ TP-82
+
+@_wrap_store_errors
+def record_closed_exclusions(
+    request: RecordClosedExclusionsRequest,
+    store: StateStore | None = None,
+) -> RecordClosedExclusionsResponse:
+    """D의 하드 필터가 폐점이라 걸러낸 후보 id를 기록한다. (TP-82)
+
+    Agent Runtime이 D 응답(`RecommendationResponse.excluded_closed_place_ids`)을
+    받은 직후 호출한다. 여기 기록된 id는 get_exclusion_place_ids()가 다음
+    회차 후보 수집 시 제외 목록에 포함시켜, 노출 이력이 없어 반복
+    수집되던 폐점 후보를 걸러낸다.
+    """
+    store = store or get_store()
+
+    recorded = history_module.record_closed_excluded(
+        store,
+        request.session_id,
+        request.run_id,
+        request.place_ids,
+    )
+    return RecordClosedExclusionsResponse(recorded=recorded)
 
 
 # ================================================================ 세션 삭제
