@@ -94,6 +94,12 @@ class RecommendationEvidence:
     travel_distance_m: int | None = None
     travel_duration_seconds: int | None = None
     travel_mode: TravelMode | None = None
+    # 거리·이동시간을 어디서부터 잰 것인지 사용자에게 부를 이름. 검색 기준점이
+    # 기기 GPS면 부를 이름이 없어 None이고, 문장이 "현재 위치"로 옮긴다
+    # (explanation.py::_distance_sentence()). distance_km의 기준점 자체는 바뀌지
+    # 않는다 — 점수 분모(search_radius_km)와 같은 원점을 써야 하기 때문이다
+    # (docs/design/recommendation-scoring.md).
+    origin_name: str | None = None
     # D-040: 2차 Scoring에서만 채워진다(scoring.py::RankedCandidate.concentration_level
     # 참고) — concentration_score(direction 반영됨)만으로는 실제 붐빔 정도를 알 수
     # 없어서, 문장 조립에 원본 4단계 구간을 그대로 보존한다.
@@ -123,7 +129,12 @@ def _build_contributions(
 
 
 def build_evidence(
-    candidate: RankedCandidate, *, feature_order: tuple[str, ...] | None = None
+    candidate: RankedCandidate,
+    *,
+    feature_order: tuple[str, ...] | None = None,
+    # 거리 기준점의 표시 이름. None이면 문장이 "현재 위치"로 폴백한다 — 기기 GPS
+    # 기준일 때가 그렇고, 넘기지 않은 호출자도 종전과 같은 문구를 얻는다.
+    origin_name: str | None = None,
 ) -> RecommendationEvidence:
     """`RankedCandidate` 1건을 `RecommendationEvidence`로 변환한다.
 
@@ -150,9 +161,19 @@ def build_evidence(
         travel_distance_m=candidate.travel_distance_m,
         travel_duration_seconds=candidate.travel_duration_seconds,
         travel_mode=candidate.travel_mode,
+        origin_name=origin_name,
     )
 
 
-def build_evidence_list(result: ScoringResult) -> tuple[RecommendationEvidence, ...]:
-    """`ScoringResult.ranked` 전체를 순서 그대로 `RecommendationEvidence` 목록으로 변환한다."""
-    return tuple(build_evidence(candidate) for candidate in result.ranked)
+def build_evidence_list(
+    result: ScoringResult, *, origin_name: str | None = None
+) -> tuple[RecommendationEvidence, ...]:
+    """`ScoringResult.ranked` 전체를 순서 그대로 `RecommendationEvidence` 목록으로 변환한다.
+
+    `origin_name`은 요청당 하나뿐인 값이라 후보별로 나르지 않고 여기서 전 건에
+    같은 값을 찍는다 — 후보마다 다른 기준점을 표현할 수 있는 모양으로 두면
+    픽스처가 서로 다른 값을 넣어도 아무도 잡지 못한다.
+    """
+    return tuple(
+        build_evidence(candidate, origin_name=origin_name) for candidate in result.ranked
+    )

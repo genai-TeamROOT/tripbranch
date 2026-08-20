@@ -43,6 +43,7 @@ def _context(*, place_ids: list[str]) -> RecommendationContext:
             data=ResolvedLocation(
                 requested_query="경복궁",
                 resolved_name="경복궁",
+                source="query",
                 location=Coordinates(latitude=37.5796, longitude=126.9770),
             ),
         ),
@@ -224,6 +225,46 @@ def _unavailable_concentration() -> CandidateEnrichmentResponse:
 
 
 @pytest.mark.asyncio
+async def test_rerank_with_concentration_passes_origin_name_from_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2차 Scoring도 1차와 같은 기준점 이름으로 근거 문장을 다시 조립한다(TP-109).
+
+    `rerank_with_concentration()`은 근거 문장을 처음부터 다시 만든다. 여기에 기준점
+    이름을 안 넘기면 "현재 위치"로 폴백해, 같은 요청인데 1차 답변은 "경복궁에서",
+    혼잡도 재정렬이 걸린 답변은 "현재 위치에서"라고 말하게 된다. 날씨 판정을
+    context에서 다시 뽑는 것과 같은 이유다.
+    """
+    captured: dict[str, object] = {}
+
+    async def _fake_rerank(
+        first_pass,
+        weather_condition,
+        concentration,
+        *,
+        seek,
+        weather_reason=None,
+        origin_name=None,
+    ):
+        captured["origin_name"] = origin_name
+        return first_pass
+
+    monkeypatch.setattr(module, "rerank_with_concentration", _fake_rerank)
+
+    provider = RealRecommendationProvider()
+    conditions = UserConditions(concentration_intent=ConcentrationIntent.AVOID)
+
+    await provider.rerank_with_concentration(
+        conditions,
+        _context(place_ids=["a"]),
+        _empty_first_pass(),
+        _unavailable_concentration(),
+    )
+
+    assert captured["origin_name"] == "경복궁"
+
+
+@pytest.mark.asyncio
 async def test_rerank_with_concentration_derives_seek_true_from_intent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -233,7 +274,13 @@ async def test_rerank_with_concentration_derives_seek_true_from_intent(
     captured: dict[str, object] = {}
 
     async def _fake_rerank(
-        first_pass, weather_condition, concentration, *, seek, weather_reason=None
+        first_pass,
+        weather_condition,
+        concentration,
+        *,
+        seek,
+        weather_reason=None,
+        origin_name=None,
     ):
         captured["seek"] = seek
         return first_pass
@@ -258,7 +305,13 @@ async def test_rerank_with_concentration_derives_seek_false_from_avoid_intent(
     captured: dict[str, object] = {}
 
     async def _fake_rerank(
-        first_pass, weather_condition, concentration, *, seek, weather_reason=None
+        first_pass,
+        weather_condition,
+        concentration,
+        *,
+        seek,
+        weather_reason=None,
+        origin_name=None,
     ):
         captured["seek"] = seek
         return first_pass
@@ -289,7 +342,13 @@ async def test_rerank_with_concentration_uses_resolve_weather_condition(
     captured: dict[str, object] = {}
 
     async def _fake_rerank(
-        first_pass, weather_condition, concentration, *, seek, weather_reason=None
+        first_pass,
+        weather_condition,
+        concentration,
+        *,
+        seek,
+        weather_reason=None,
+        origin_name=None,
     ):
         captured["weather_condition"] = weather_condition
         captured["weather_reason"] = weather_reason

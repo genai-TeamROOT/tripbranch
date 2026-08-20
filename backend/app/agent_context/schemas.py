@@ -148,8 +148,14 @@ class Clarification(StrictModel):
 
 
 class ResolvedLocation(StrictModel):
-    requested_query: str
+    # 사용자가 말한 문자열(수식어 제거 후). 근거 문장이 기준점을 부를 때 쓰는 값이라
+    # 비어 있으면 안 된다 — resolved_name은 지오코딩으로 풀리면 도로명 주소가
+    # 되므로(providers/geocoding.py) 표시용으로 쓸 수 없다.
+    requested_query: str = Field(min_length=1)
     resolved_name: str
+    # 이 좌표의 출처. "query"면 requested_query가 사용자가 말한 장소이고,
+    # "device_gps"면 기기 위치라 부를 이름이 없다(requested_query는 자리표시자).
+    source: Literal["query", "device_gps"]
     location: Coordinates
     address: str | None = None
 
@@ -235,7 +241,15 @@ def _is_empty_data(value: object) -> bool:
 
 
 class RecommendationContext(StrictModel):
+    # 반경 검색·거리 계산·경로 조회의 기준점. 사용자가 있는 곳이 아니라 "이번 검색을
+    # 어디를 중심으로 했는가"다. search_center → current_location → 기기 GPS 순으로
+    # 정해진다(service.py::fetch_context).
     location: ContextValue[ResolvedLocation] | None = None
+    # 기기 GPS 좌표 그대로. location과 달리 사용자 발화와 무관하게, A가 유효한 GPS를
+    # 넘겨준 요청이면 언제나 채운다 — 기준점이 따로 잡혀도 사용자 위치는 보존된다.
+    # Tool 산출물이 아니라 A가 준 값이라 ContextValue로 감싸지 않는다(조회 상태·
+    # provider_metadata가 없다).
+    user_location: Coordinates | None = None
     weather: ContextValue[WeatherForecast] | None = None
     places: ContextValue[list[PlaceCandidate]] | None = None
     holidays: ContextValue[list[HolidayInfo]] | None = None
