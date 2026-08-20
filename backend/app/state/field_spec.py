@@ -72,6 +72,11 @@ FIELD_SPECS: dict[str, FieldSpec] = {
     "companion":            _single("companion", str, OP_UPDATE, OP_REMOVE),
     "budget":               _single("budget", str, OP_UPDATE, OP_REMOVE),
 
+    # 취향 — 벡터 검색 질의로 쓰는 자유 문장. 리스트가 아닌 이유는 여러 개를
+    # 합치면 임베딩이 뭉개지기 때문이다(한 문장 = 한 질의). special_requirements와
+    # 분리한 이유는 그 필드가 "기타 전부"를 받아 일정·교통 조건이 섞이기 때문이다.
+    "taste_query":          _single("taste_query", str, OP_UPDATE, OP_REMOVE),
+
     # 태그
     "exclude_tags":         _multi("exclude_tags", OP_ADD, OP_REMOVE),
     "special_requirements": _multi("special_requirements", OP_ADD, OP_REMOVE),
