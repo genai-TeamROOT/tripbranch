@@ -105,6 +105,7 @@ from app.tools.realtime_commercial import (
 from app.tools.recommendation_cards import RecommendationCardTool
 from app.tools.resolve_location import (
     LocationPurpose,
+    LocationSource,
     ResolutionConfidence,
     ResolutionMethod,
     ResolvedLocation,
@@ -1039,6 +1040,7 @@ def _gps_location_result(
             requested_query="gps_location",
             provider_query="device_gps",
             resolved_name="기기 GPS 위치",
+            source=LocationSource.DEVICE_GPS,
             latitude=gps.latitude,
             longitude=gps.longitude,
             resolution_method=ResolutionMethod.DIRECT,

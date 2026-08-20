@@ -58,7 +58,10 @@ def assemble_agent_context_response(
 
     location_result = assembly_input.location_result
     location = map_location_context(location_result)
-    location_only = RecommendationContext(location=location)
+    # 기준점이 무엇으로 정해졌든 사용자 위치는 그대로 보존한다 — 검색 기준점이
+    # 따로 잡히면 GPS가 버려지던 게 근거 문장이 "현재 위치"라고 거짓말한 원인이다.
+    user_location = request.gps_location
+    location_only = RecommendationContext(location=location, user_location=user_location)
 
     if location_result.status is ToolStatus.NO_DATA:
         cause = location_result.error.cause if location_result.error else None
@@ -126,6 +129,7 @@ def assemble_agent_context_response(
     )
     context = RecommendationContext(
         location=location,
+        user_location=user_location,
         weather=weather,
         places=places,
         holidays=holidays,

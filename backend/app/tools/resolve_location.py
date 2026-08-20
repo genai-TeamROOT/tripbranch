@@ -191,6 +191,18 @@ class ResolutionConfidence(StrEnum):
     UNKNOWN = "unknown"
 
 
+class LocationSource(StrEnum):
+    """이 좌표가 어디서 왔는지. 판정이 아니라 사실이다(D-051).
+
+    기준점을 사용자에게 뭐라고 부를지는 D가 이 값으로 정한다 — QUERY면 사용자가
+    말한 이름을 쓰고, DEVICE_GPS면 "현재 위치"라고 한다. C는 출처만 싣고 문구를
+    고르지 않는다.
+    """
+
+    QUERY = "query"
+    DEVICE_GPS = "device_gps"
+
+
 class LocationPurpose(StrEnum):
     """이 해석이 무엇에 쓰이는지. 사다리 순서를 가른다.
 
@@ -240,6 +252,9 @@ class ResolvedLocation:
     longitude: float
     resolution_method: ResolutionMethod
     confidence: ResolutionConfidence
+    # 이 Tool은 언제나 사용자가 말한 문자열을 푼다. 기기 GPS로 만든 결과는 Tool을
+    # 거치지 않고 service.py::_gps_location_result()가 직접 만들며 거기서만 뒤집는다.
+    source: LocationSource = LocationSource.QUERY
     place_id: str | None = None
     address: str | None = None
     # Naver Local Search의 업종. INFO 현재 혼잡 질문에서 관광지 예측과 상권 활동을

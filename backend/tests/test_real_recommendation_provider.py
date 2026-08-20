@@ -43,6 +43,7 @@ def _context(*, place_ids: list[str]) -> RecommendationContext:
             data=ResolvedLocation(
                 requested_query="경복궁",
                 resolved_name="경복궁",
+                source="query",
                 location=Coordinates(latitude=37.5796, longitude=126.9770),
             ),
         ),
@@ -224,6 +225,46 @@ def _unavailable_concentration() -> CandidateEnrichmentResponse:
 
 
 @pytest.mark.asyncio
+async def test_rerank_with_concentration_passes_origin_name_from_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2차 Scoring도 1차와 같은 기준점 이름으로 근거 문장을 다시 조립한다(TP-109).
+
+    `rerank_with_concentration()`은 근거 문장을 처음부터 다시 만든다. 여기에 기준점
+    이름을 안 넘기면 "현재 위치"로 폴백해, 같은 요청인데 1차 답변은 "경복궁에서",
+    혼잡도 재정렬이 걸린 답변은 "현재 위치에서"라고 말하게 된다. 날씨 판정을
+    context에서 다시 뽑는 것과 같은 이유다.
+    """
+    captured: dict[str, object] = {}
+
+    async def _fake_rerank(
+        first_pass,
+        weather_condition,
+        concentration,
+        *,
+        seek,
+        weather_reason=None,
+        origin_name=None,
+    ):
+        captured["origin_name"] = origin_name
+        return first_pass
+
+    monkeypatch.setattr(module, "rerank_with_concentration", _fake_rerank)
+
+    provider = RealRecommendationProvider()
+    conditions = UserConditions(concentration_intent=ConcentrationIntent.AVOID)
+
+    await provider.rerank_with_concentration(
+        conditions,
+        _context(place_ids=["a"]),
+        _empty_first_pass(),
+        _unavailable_concentration(),
+    )
+
+    assert captured["origin_name"] == "경복궁"
+
+
+@pytest.mark.asyncio
 async def test_rerank_with_concentration_derives_seek_true_from_intent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -233,7 +274,13 @@ async def test_rerank_with_concentration_derives_seek_true_from_intent(
     captured: dict[str, object] = {}
 
     async def _fake_rerank(
-        first_pass, weather_condition, concentration, *, seek, weather_reason=None
+        first_pass,
+        weather_condition,
+        concentration,
+        *,
+        seek,
+        weather_reason=None,
+        origin_name=None,
     ):
         captured["seek"] = seek
         return first_pass
@@ -258,7 +305,13 @@ async def test_rerank_with_concentration_derives_seek_false_from_avoid_intent(
     captured: dict[str, object] = {}
 
     async def _fake_rerank(
-        first_pass, weather_condition, concentration, *, seek, weather_reason=None
+        first_pass,
+        weather_condition,
+        concentration,
+        *,
+        seek,
+        weather_reason=None,
+        origin_name=None,
     ):
         captured["seek"] = seek
         return first_pass
@@ -289,7 +342,13 @@ async def test_rerank_with_concentration_uses_resolve_weather_condition(
     captured: dict[str, object] = {}
 
     async def _fake_rerank(
-        first_pass, weather_condition, concentration, *, seek, weather_reason=None
+        first_pass,
+        weather_condition,
+        concentration,
+        *,
+        seek,
+        weather_reason=None,
+        origin_name=None,
     ):
         captured["weather_condition"] = weather_condition
         captured["weather_reason"] = weather_reason
@@ -326,9 +385,20 @@ _WALKING_ROUTE = TravelRoute(
 )
 
 
-async def _captured_walking_routes(
+_DRIVING_ROUTE = TravelRoute(
+    place_id="a",
+    mode=TravelMode.DRIVING,
+    status=RouteStatus.SUCCESS,
+    source=RouteSource.NAVER_DRIVING,
+    distance_m=3054,
+    duration_seconds=1245,
+)
+
+
+async def _captured_routes(
     monkeypatch: pytest.MonkeyPatch,
     conditions: UserConditions,
+    route: TravelRoute = _WALKING_ROUTE,
 ) -> object:
     captured: dict[str, object] = {}
     original = module.score_prepared_recommendation
@@ -346,9 +416,7 @@ async def _captured_walking_routes(
         excluded_place_ids=[],
         visit_at=module.datetime.now(module._KST),
     )
-    await provider.score_prepared(
-        conditions, prepared, travel_routes=(_WALKING_ROUTE,)
-    )
+    await provider.score_prepared(conditions, prepared, travel_routes=(route,))
     return captured["travel_routes"]
 
 
@@ -356,7 +424,7 @@ async def _captured_walking_routes(
 async def test_walking_routes_are_used_when_transport_is_walk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    routes = await _captured_walking_routes(
+    routes = await _captured_routes(
         monkeypatch, UserConditions(transport=Transport.WALK, max_travel_time=30)
     )
 
@@ -368,21 +436,30 @@ async def test_walking_routes_are_used_when_travel_time_is_unspecified(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """이동시간을 말하지 않으면 기본 반경(2.0km)이라 도보 시간으로 재도 맞는다."""
-    routes = await _captured_walking_routes(monkeypatch, UserConditions())
+    routes = await _captured_routes(monkeypatch, UserConditions())
 
     assert routes == (_WALKING_ROUTE,)
 
 
 @pytest.mark.asyncio
-async def test_walking_routes_are_dropped_for_non_walking_travel_time(
+async def test_driving_routes_are_used_when_transport_is_car(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """차·대중교통 + 이동시간이면 반경이 20km/h 기준이라 도보 시간과 단위가 안 맞는다.
-
-    이때 실측을 쓰면 차로 금방 가는 곳까지 멀다고 깎이므로 직선거리를 유지한다.
-    """
-    routes = await _captured_walking_routes(
-        monkeypatch, UserConditions(transport=Transport.CAR, max_travel_time=30)
+    """자동차 실측은 채점까지 간다 — 반경과 예산이 같은 20km/h 가정이라 단위가 맞는다."""
+    routes = await _captured_routes(
+        monkeypatch,
+        UserConditions(transport=Transport.CAR, max_travel_time=30),
+        route=_DRIVING_ROUTE,
     )
+
+    assert routes == (_DRIVING_ROUTE,)
+
+
+@pytest.mark.asyncio
+async def test_routes_are_dropped_when_transport_is_unspecified_with_travel_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """이동시간만 말하고 수단을 말하지 않으면 무엇으로 잰 값인지 알 수 없다."""
+    routes = await _captured_routes(monkeypatch, UserConditions(max_travel_time=30))
 
     assert routes == ()

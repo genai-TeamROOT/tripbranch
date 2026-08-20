@@ -13,6 +13,10 @@ from app.config import Settings, settings
 from app.domain.travel_route import TravelMode
 from app.errors import AppError
 from app.providers.concentration import FakeConcentrationProvider, RealConcentrationProvider
+from app.providers.driving_route import (
+    FakeDrivingRouteProvider,
+    RealNaverDrivingRouteProvider,
+)
 from app.providers.festival import FakeFestivalProvider, RealFestivalProvider
 from app.providers.gemini import RealGeminiProvider
 from app.providers.gemini_audio import GeminiAudioTranscriber
@@ -156,14 +160,32 @@ def get_walking_route_provider(client: httpx.AsyncClient) -> TravelRouteProvider
     )
 
 
+def get_driving_route_provider(client: httpx.AsyncClient) -> TravelRouteProvider:
+    """설정에 맞는 자동차 경로 Provider를 반환한다."""
+    if settings.travel_route_driving_provider == "fake":
+        return FakeDrivingRouteProvider(driving_speed_mps=settings.driving_speed_mps)
+    return RealNaverDrivingRouteProvider(
+        api_key_id=_require_key(settings.naver_map_client_id, "NAVER_MAP_CLIENT_ID"),
+        api_key=_require_key(settings.naver_map_client_secret, "NAVER_MAP_CLIENT_SECRET"),
+        client=client,
+        timeout_seconds=settings.external_api_timeout_seconds,
+        max_concurrency=settings.travel_route_max_concurrency,
+    )
+
+
 def get_travel_route_tool(client: httpx.AsyncClient) -> TravelRouteTool:
     """이동 경로 Tool을 이동수단별 Provider로 구성한다.
 
-    지금 등록하는 이동수단은 도보뿐이다. 대중교통·자동차는 외부 API를 붙이는
-    각 카드에서 여기에 한 줄씩 추가한다 — 미등록 이동수단은 Tool이 호출 없이
-    NO_DATA로 답하므로, 등록되지 않은 동안 도보 값이 대신 나가지 않는다.
+    지금 등록하는 이동수단은 도보와 자동차다. 대중교통은 외부 API를 붙이는
+    카드에서 여기에 한 줄 추가한다 — 미등록 이동수단은 Tool이 호출 없이
+    NO_DATA로 답하므로, 등록되지 않은 동안 다른 수단의 값이 대신 나가지 않는다.
+
+    자동차에는 fallback을 두지 않는다. fallback이 내는 직선거리 추정은 source가
+    STRAIGHT_LINE_ESTIMATE라 `scoring._applied_travel_route()`가 어차피 걸러내서
+    채점에도 문구에도 쓰이지 않는다 — 쓰이지 않을 값을 벤더마다 만들 이유가 없다.
+    도보의 fallback은 기존 동작이라 그대로 둔다.
     """
-    fallback = (
+    walking_fallback = (
         FakeWalkingRouteProvider(walking_speed_mps=settings.walking_speed_mps)
         if settings.travel_route_provider == "real"
         else None
@@ -172,8 +194,12 @@ def get_travel_route_tool(client: httpx.AsyncClient) -> TravelRouteTool:
         {
             TravelMode.WALKING: TravelRouteProviders(
                 primary=get_walking_route_provider(client),
-                fallback=fallback,
-            )
+                fallback=walking_fallback,
+            ),
+            TravelMode.DRIVING: TravelRouteProviders(
+                primary=get_driving_route_provider(client),
+                fallback=None,
+            ),
         }
     )
 
@@ -348,7 +374,13 @@ _REQUIRED_KEYS: dict[str, tuple[tuple[str, str], ...]] = {
     "CONCENTRATION_PROVIDER": (("TOUR_API_SERVICE_KEY", "tour_api_service_key"),),
     "SEOUL_CITYDATA_PROVIDER": (("SEOUL_OPEN_DATA_API_KEY", "seoul_open_data_api_key"),),
     "HOLIDAY_PROVIDER": (("TOUR_API_SERVICE_KEY", "tour_api_service_key"),),
+    # 이동수단마다 벤더가 다르므로 따로 검증한다 — 도보만 real로 쓰는 설정에서
+    # 네이버 키를 요구하면 부팅이 불필요하게 막힌다.
     "TRAVEL_ROUTE_PROVIDER": (("KAKAO_MAP_REST_API_KEY", "kakao_map_rest_api_key"),),
+    "TRAVEL_ROUTE_DRIVING_PROVIDER": (
+        ("NAVER_MAP_CLIENT_ID", "naver_map_client_id"),
+        ("NAVER_MAP_CLIENT_SECRET", "naver_map_client_secret"),
+    ),
     "LOCAL_SEARCH_PROVIDER": (
         ("NAVER_LOCAL_SEARCH_CLIENT_ID", "naver_local_search_client_id"),
         ("NAVER_LOCAL_SEARCH_CLIENT_SECRET", "naver_local_search_client_secret"),
@@ -369,6 +401,7 @@ _RESOLVED_ATTRS: dict[str, str] = {
     "GEOCODING_PROVIDER": "resolved_geocoding_provider",
     "LOCAL_SEARCH_PROVIDER": "resolved_local_search_provider",
     "TRAVEL_ROUTE_PROVIDER": "travel_route_provider",
+    "TRAVEL_ROUTE_DRIVING_PROVIDER": "travel_route_driving_provider",
 }
 
 

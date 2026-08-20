@@ -4,7 +4,7 @@
   "contract_version": "draft-v0",
   "status": "success",
   "context": {
-    "location": {"status": "success", "data": {"requested_query": "경복궁", "resolved_name": "경복궁", "location": {"latitude": 37.579617, "longitude": 126.977041}, "address": "서울특별시 종로구 사직로 161"}, "error": null, "warnings": [], "provider_metadata": [{"source": "naver_geocoding", "status": "success", "retrieved_at": "2026-08-14T09:00:00+09:00"}]},
+    "location": {"status": "success", "data": {"requested_query": "경복궁", "resolved_name": "경복궁", "source": "query", "location": {"latitude": 37.579617, "longitude": 126.977041}, "address": "서울특별시 종로구 사직로 161"}, "error": null, "warnings": [], "provider_metadata": [{"source": "naver_geocoding", "status": "success", "retrieved_at": "2026-08-14T09:00:00+09:00"}]},
     "weather": {"status": "success", "data": {"forecast_for": "2026-08-15T11:00:00+09:00", "temperature_celsius": 26.0, "precipitation": "none", "sky": "cloudy"}, "error": null, "warnings": [], "provider_metadata": [{"source": "kma_ultra_short_forecast", "status": "success", "retrieved_at": "2026-08-14T09:00:00+09:00"}]},
     "places": {
       "status": "success",

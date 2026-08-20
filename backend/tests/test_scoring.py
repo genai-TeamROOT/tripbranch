@@ -32,7 +32,10 @@ from app.domain.scoring import (
     score_prepared_candidates,
 )
 from app.domain.travel_route import RouteSource, RouteStatus, TravelMode, TravelRoute
-from app.place_search_policy import TRAVEL_SPEED_KM_PER_MINUTE
+from app.place_search_policy import (
+    NON_WALKING_SPEED_KM_PER_MINUTE,
+    TRAVEL_SPEED_KM_PER_MINUTE,
+)
 
 # 고정 기준 시각 (모든 테스트가 공유): 14:00
 NOW = datetime(2026, 7, 23, 14, 0, 0)
@@ -616,31 +619,43 @@ def test_travel_minutes_budget_uses_the_speed_of_the_requested_mode() -> None:
     )
 
 
-@pytest.mark.parametrize("mode", [TravelMode.TRANSIT, TravelMode.DRIVING])
-def test_travel_minutes_budget_refuses_modes_without_a_defined_speed(mode: TravelMode) -> None:
+def test_travel_minutes_budget_uses_the_radius_assumption_for_driving() -> None:
+    """자동차 예산은 반경을 만든 가정(20km/h)과 같은 속도로 되돌린다.
+
+    분모가 사용자가 말한 이동시간 그 자체여야 하므로, 실측 속도가 아니라
+    to_search_radius_km()이 쓴 가정과 같아야 한다.
+    """
+    assert _travel_minutes_budget(2.0, TravelMode.DRIVING) == pytest.approx(
+        2.0 / TRAVEL_SPEED_KM_PER_MINUTE[TravelMode.DRIVING]
+    )
+    assert TRAVEL_SPEED_KM_PER_MINUTE[TravelMode.DRIVING] == pytest.approx(
+        NON_WALKING_SPEED_KM_PER_MINUTE
+    )
+
+
+def test_travel_minutes_budget_refuses_modes_without_a_defined_speed() -> None:
     """속도가 없는 이동수단을 조용히 도보 속도로 재지 않는다."""
     with pytest.raises(KeyError):
-        _travel_minutes_budget(2.0, mode)
+        _travel_minutes_budget(2.0, TravelMode.TRANSIT)
 
 
-@pytest.mark.parametrize("mode", [TravelMode.TRANSIT, TravelMode.DRIVING])
-def test_scoring_refuses_a_route_whose_mode_has_no_speed(mode: TravelMode) -> None:
+def test_scoring_refuses_a_route_whose_mode_has_no_speed() -> None:
     """속도 없는 이동수단 경로가 채점까지 오면 조용히 넘기지 않고 멈춘다.
 
     `_applied_travel_route()`는 source만 보므로 mode/source가 어긋난 경로를 걸러
-    주지 못한다. 지금 이런 경로가 만들어지지 않는 이유는 Provider가 도보 외
-    mode를 거부하고 Tool이 미등록 mode를 조회하지 않기 때문이다
+    주지 못한다. 지금 이런 경로가 만들어지지 않는 이유는 Provider가 자기 mode
+    외를 거부하고 Tool이 미등록 mode를 조회하지 않기 때문이다
     (test_travel_route_tool.py, test_walking_route_provider.py).
 
-    대중교통·자동차 카드는 속도(TRAVEL_SPEED_KM_PER_MINUTE)와 실측 판정
+    대중교통 카드는 속도(TRAVEL_SPEED_KM_PER_MINUTE)와 실측 판정
     (_applied_travel_route의 source 허용)을 함께 넓혀야 한다. 한쪽만 바꾸면
     이 KeyError로 드러난다.
     """
     route = TravelRoute(
         place_id="p1",
-        mode=mode,
+        mode=TravelMode.TRANSIT,
         status=RouteStatus.SUCCESS,
-        source=RouteSource.KAKAO_WALKING,  # 이동수단별 source는 아직 없다
+        source=RouteSource.KAKAO_WALKING,  # 대중교통 source는 아직 없다
         distance_m=800,
         duration_seconds=600,
     )

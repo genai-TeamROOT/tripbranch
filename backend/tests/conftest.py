@@ -25,6 +25,12 @@ def isolate_regular_tests_from_real_providers(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(settings, "concentration_provider", None)
     monkeypatch.setattr(settings, "holiday_provider", None)
 
+    # 경로 Provider도 provider_mode와 별개 축이다 — 비용 때문에 공통값을 상속하지
+    # 않기 때문이다(config.py 주석). .env에 TRAVEL_ROUTE_*=real이 남아 있으면 일반
+    # 테스트가 실 API를 타거나, 그 벤더 키가 없는 환경에서만 부팅 검증이 깨진다.
+    monkeypatch.setattr(settings, "travel_route_provider", "fake")
+    monkeypatch.setattr(settings, "travel_route_driving_provider", "fake")
+
     # Package B의 STATE_STORE_BACKEND는 provider_mode와 별개 축이라 위 patch로는
     # 안 잡힌다. .env에 STATE_STORE_BACKEND=supabase가 남아있으면(실사용 전환 중
     # 흔히 발생) 일반 테스트가 실제 네트워크를 타거나 InMemory 전용 메서드(clear()

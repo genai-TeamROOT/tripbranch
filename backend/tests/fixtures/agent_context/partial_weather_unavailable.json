@@ -9,6 +9,7 @@
       "data": {
         "requested_query": "경복궁",
         "resolved_name": "경복궁",
+        "source": "query",
         "location": {
           "latitude": 37.579617,
           "longitude": 126.977041

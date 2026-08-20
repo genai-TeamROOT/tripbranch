@@ -97,6 +97,12 @@ class RecommendationResponse(BaseModel):
     # 결과가 0건이고 그 이유가 전부 폐점 후보 제외였을 때만 True. A가 이 값으로
     # "운영중이 아닌 곳도 볼래요" 되묻기를 띄울지 판단한다(recommendation_pipeline.py).
     excluded_all_closed: bool = False
+    # 이번 회차에 D의 하드 필터(_is_closed)가 폐점이라 걸러낸 후보 id 전체.
+    # excluded_all_closed와 달리 결과가 0건이 아니어도(일부만 폐점) 채워진다.
+    # A가 이 값을 B(상태 저장소)에 기록해 다음 회차 후보 수집 시 제외 목록에
+    # 반영한다 — 그러지 않으면 노출 이력이 없는 폐점 후보가 매 회차 다시 수집된다
+    # (TP-82, docs/design/... 참고). LLM이 생성하지 않고 D가 결정적으로 채운다.
+    excluded_closed_place_ids: list[str] = Field(default_factory=list)
 
 
 class ScheduleItem(BaseModel):

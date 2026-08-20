@@ -10,6 +10,7 @@ COMPARE 데이터 출처(2026-08-11)를 위해 추천 시점 Feature 스냅샷
 """
 
 from app.state.schema import (
+    ClosedExclusionItem,
     RecommendationHistory,
     RecommendedItem,
     RecommendedItemInput,
@@ -99,12 +100,46 @@ def record_rejected(
     return len(items)
 
 
+def record_closed_excluded(
+    store: StateStore,
+    session_id: str,
+    run_id: str,
+    place_ids: list[str],
+) -> int:
+    """D의 하드 필터가 폐점이라 걸러낸 후보 id를 기록한다. (TP-82)
+
+    D 응답(`RecommendationResponse.excluded_closed_place_ids`)을 그대로
+    받아 저장만 한다 — 폐점 여부 판단은 D의 책임이고, B는 검증하지 않는다.
+    recommended/rejected와 마찬가지로 중복 place_id도 오류로 처리하지
+    않는다(계약 3.5절과 동일 원칙).
+    """
+    if not place_ids:
+        return 0
+
+    history = get_or_create(store, session_id)
+    excluded_at = now_kst()
+
+    for place_id in place_ids:
+        history.closed_excluded.append(
+            ClosedExclusionItem(
+                place_id=place_id,
+                run_id=run_id,
+                excluded_at=excluded_at,
+            )
+        )
+
+    history.updated_at = excluded_at
+    store.save_history(history)
+    return len(place_ids)
+
+
 # ---------------------------------------------------------------- 조회
 
 def get_exclusion_place_ids(store: StateStore, session_id: str) -> list[str]:
-    """추천 제외 대상 ID. (계약 3.3절)
+    """추천 제외 대상 ID. (계약 3.3절, TP-82로 closed_excluded 추가)
 
-    exclusion = recommended의 place_id ∪ rejected의 place_id
+    exclusion = recommended의 place_id ∪ rejected의 place_id ∪
+    closed_excluded의 place_id
 
     중복은 제거하되, 결과가 실행마다 달라지지 않도록 등장 순서를 유지한다.
     (set을 그대로 반환하면 순서가 매번 바뀌어 로그 비교가 어렵다)
@@ -122,6 +157,11 @@ def get_exclusion_place_ids(store: StateStore, session_id: str) -> list[str]:
             result.append(item.place_id)
 
     for item in history.rejected:
+        if item.place_id not in seen:
+            seen.add(item.place_id)
+            result.append(item.place_id)
+
+    for item in history.closed_excluded:
         if item.place_id not in seen:
             seen.add(item.place_id)
             result.append(item.place_id)
@@ -196,12 +236,17 @@ def clear_recommended(store: StateStore, session_id: str) -> None:
     """추천 이력만 비운다. 거절 이력은 유지한다. (history reset, 계약 5.5절)
 
     사용자가 명시적으로 거부한 장소는 어떤 초기화에서도 재노출하지 않는다.
+
+    closed_excluded(TP-82)는 recommended와 함께 비운다 — rejected와 달리
+    "사용자가 거부한" 게 아니라 "그 시점에 닫혀 있었다"는 시간 의존적
+    사실이라, 새 검색 컨텍스트에서까지 영구히 제외할 근거가 아니다.
     """
     history = store.get_history(session_id)
     if history is None:
         return
 
     history.recommended = []
+    history.closed_excluded = []
     history.updated_at = now_kst()
     store.save_history(history)
 

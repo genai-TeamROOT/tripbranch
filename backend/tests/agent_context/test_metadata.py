@@ -47,6 +47,7 @@ def _recommendation_context(
             data=ResolvedLocation(
                 requested_query="경복궁",
                 resolved_name="경복궁",
+                source="query",
                 location=coordinates,
             ),
             provider_metadata=location_metadata or [],

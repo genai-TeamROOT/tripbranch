@@ -61,10 +61,21 @@ class Settings(BaseSettings):
     seoul_citydata_provider: ProviderMode = "fake"
     holiday_provider: ProviderMode | None = None
     # 비용이 발생할 수 있으므로 공통 PROVIDER_MODE를 상속하지 않고 명시적으로
-    # real을 켤 때만 카카오맵 도보 API를 호출한다.
+    # real을 켤 때만 외부 경로 API를 호출한다.
+    #
+    # 이동수단마다 벤더가 다르므로(도보 카카오, 자동차 네이버) 하나씩 따로 켠다.
+    # 상속 관계를 두지 않는 이유도 같다 — 한 값이 여러 벤더를 켜면, 한쪽 키만 가진
+    # 설정이 쓰지도 않는 벤더의 키를 요구하며 부팅에 실패한다. 새 이동수단은 여기에
+    # 한 줄씩 추가하고, 기존 이름(TRAVEL_ROUTE_PROVIDER)은 도보 스위치로 유지한다.
     travel_route_provider: ProviderMode = "fake"
+    travel_route_driving_provider: ProviderMode = "fake"
     # 직선거리 fallback 예상시간에 쓸 보행속도(m/s).
     walking_speed_mps: float = Field(default=1.2, gt=0)
+    # 자동차 fake의 직선거리 예상시간에 쓸 속도(m/s). 20km/h는 반경 산정이 비도보
+    # 요청에 쓰는 가정과 같은 값이다(recommendation_transform._OTHER_KM_PER_MIN).
+    # fake 값은 채점에 쓰이지 않으므로(STRAIGHT_LINE_ESTIMATE는 걸러진다) 정밀도가
+    # 아니라 반경 가정과의 일관성만 맞춘다.
+    driving_speed_mps: float = Field(default=5.5, gt=0)
     travel_route_max_concurrency: int = Field(default=5, ge=1, le=10)
 
     # 상세·운영정보 조회 출처. PLACE_PROVIDER=fake이면 Fake Provider가 상세까지

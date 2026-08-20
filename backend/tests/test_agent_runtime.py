@@ -2909,6 +2909,7 @@ class _FixedStatusToolProvider:
                     data=ResolvedLocation(
                         requested_query="경복궁",
                         resolved_name="경복궁",
+                        source="query",
                         location=Coordinates(latitude=37.5788, longitude=126.9770),
                     ),
                 ),
@@ -3144,6 +3145,7 @@ class _PartialPlacesToolProvider:
                     data=ResolvedLocation(
                         requested_query="경복궁",
                         resolved_name="경복궁",
+                        source="query",
                         location=Coordinates(latitude=37.5788, longitude=126.9770),
                     ),
                 ),
@@ -3221,6 +3223,7 @@ class _RefillPlacesToolProvider(FakeToolProvider):
                 data=ResolvedLocation(
                     requested_query="경복궁",
                     resolved_name="경복궁",
+                    source="query",
                     location=Coordinates(latitude=37.5788, longitude=126.9770),
                 ),
             ),
@@ -3315,7 +3318,73 @@ async def test_staged_recommendation_refills_candidates_up_to_target() -> None:
     assert any(item.place_id.startswith("refill-2") for item in shown)
 
     session = get_session_context(response.state.session_id, store=store)
-    assert set(session.excluded_place_ids) == {item.place_id for item in shown}
+    # TP-82: 화면에 보여준 5개뿐 아니라, 리필 도중 폐점이라 걸러진 후보(3라운드에
+    # 걸쳐 refill-1~9, 11~19 총 18개)도 B에 기록되어 다음 회차 제외 목록에
+    # 들어간다 — 안 그러면 "다른 곳 보여줘"를 반복할 때마다 같은 폐점 후보를
+    # 다시 리필해 뽑는 낭비가 반복된다.
+    assert set(session.excluded_place_ids) == {item.place_id for item in shown} | set(
+        response.recommendations.excluded_closed_place_ids
+    )
+    assert response.recommendations.excluded_closed_place_ids != []
+
+
+@pytest.mark.asyncio
+async def test_repeated_reject_all_does_not_refetch_closed_candidates() -> None:
+    """TP-82 완료 조건: 같은 세션에서 "다른 곳 보여줘"를 반복해도, 이전에
+    폐점으로 판명된 후보는 다음 회차 C 조회에서 다시 뽑히지 않는다.
+
+    후보 15개 중 5개(0~4)만 영업 중, 10개(5~14)는 폐점 — 1턴에서 5개가
+    노출되고 10개가 폐점으로 걸러진다. 2턴("다른 곳 보여줘")에서 C가 받는
+    excluded_place_ids에 그 10개가 이미 포함돼 있어야, 폐점 후보를 매번
+    다시 조회해 낭비하지 않는다(밤 시간대 폐점 비율이 높을 때 카드 수가
+    점점 줄어드는 원인이었다).
+    """
+    store = InMemoryStateStore()
+    tool_provider = _RefillPlacesToolProvider(
+        total=15, page_size=15, open_indexes={0, 1, 2, 3, 4}
+    )
+    providers = {
+        "llm": _LLMProviderWithGeneralAnswer(),
+        "tool_provider": tool_provider,
+        "recommendation_provider": RealRecommendationProvider(),
+        "enrichment_provider": _CountingEnrichmentProvider(),
+    }
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘", session_id=None, device_location=DEVICE_LOCATION
+        ),
+        store=store,
+        **providers,
+    )
+    first_shown = {
+        item.place_id
+        for item in [
+            *first.recommendations.recommendations,
+            *first.recommendations.unverified_recommendations,
+        ]
+    }
+    assert len(first_shown) == 5
+    closed_ids = {f"refill-{i}" for i in range(5, 15)}
+    assert set(first.recommendations.excluded_closed_place_ids) == closed_ids
+
+    second = await run_agent_flow(
+        AgentRequest(
+            user_input="다른 곳 보여줘",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    # 2턴 C 조회의 excluded_place_ids가 1턴 폐점 후보 10개를 이미 포함해야
+    # 한다 — 후보 풀에 남은 게 없으므로(전부 노출 or 폐점) 결과가 0건이어도
+    # 정상이다. 여기서 확인하려는 건 "재조회 자체를 안 한다"는 것이다.
+    assert len(second.state.excluded_place_ids) >= 15
+    assert closed_ids.issubset(set(second.state.excluded_place_ids))
+    second_request_excluded = set(tool_provider.requests[-1].excluded_place_ids)
+    assert closed_ids.issubset(second_request_excluded)
 
 
 @pytest.mark.asyncio
@@ -3990,6 +4059,7 @@ class _ExhaustedNoDataToolProvider:
                     data=ResolvedLocation(
                         requested_query="경복궁",
                         resolved_name="경복궁",
+                        source="query",
                         location=Coordinates(latitude=37.5788, longitude=126.9770),
                     ),
                 ),

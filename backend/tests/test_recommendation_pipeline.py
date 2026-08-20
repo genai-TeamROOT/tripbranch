@@ -63,6 +63,7 @@ def _context_location() -> AgentContextValue:
         data=ResolvedLocation(
             requested_query="경복궁",
             resolved_name="경복궁",
+            source="query",
             location=AgentCoordinates(latitude=37.5796, longitude=126.9770),
         ),
     )
@@ -101,6 +102,92 @@ async def test_pipeline_from_context_builds_recommendation_with_explanations() -
     assert len(response.recommendations) == 1
     assert response.unverified_recommendations == []
     assert response.recommendations[0].explanations
+
+
+def _origin_context(
+    *,
+    requested_query: str = "경복궁",
+    resolved_name: str = "경복궁",
+    source: str = "query",
+) -> RecommendationContext:
+    return RecommendationContext(
+        location=AgentContextValue(
+            status="success",
+            data=ResolvedLocation(
+                requested_query=requested_query,
+                resolved_name=resolved_name,
+                source=source,
+                location=AgentCoordinates(latitude=37.5796, longitude=126.9770),
+            ),
+        ),
+        places=AgentContextValue(status="success", data=[_context_place()]),
+    )
+
+
+async def _first_distance_explanation(context: RecommendationContext) -> str:
+    response = await run_recommendation_pipeline_from_context(
+        context,
+        visit_at=_CONTEXT_VISIT_AT,
+        search_radius_km=2.0,
+    )
+    items = [*response.recommendations, *response.unverified_recommendations]
+    assert items, "후보가 없으면 근거 문장을 검증할 수 없다"
+    distance = [text for text in items[0].explanations if "거리" in text or "직선거리" in text]
+    assert len(distance) == 1, items[0].explanations
+    return distance[0]
+
+
+@pytest.mark.asyncio
+async def test_distance_explanation_names_the_search_origin() -> None:
+    """근거 문장이 실제 기준점을 말한다(TP-109).
+
+    예전에는 기준점이 무엇이든 "현재 위치에서"라고 하드코딩돼 있어서, "경복궁 근처
+    카페"를 물은 사용자가 강남에 있어도 경복궁 기준 거리를 자기 위치 기준인 것처럼
+    읽게 됐다.
+    """
+    sentence = await _first_distance_explanation(_origin_context())
+
+    assert sentence.startswith("경복궁에서 ")
+    assert "현재 위치" not in sentence
+
+
+@pytest.mark.asyncio
+async def test_distance_explanation_says_current_location_for_device_gps() -> None:
+    """기준점이 기기 GPS면 부를 이름이 없으므로 "현재 위치"로 말한다.
+
+    C가 그 경우 `requested_query`에 자리표시자("gps_location")를 넣으므로, 이걸
+    그대로 문장에 쓰면 "gps_location에서 걸어서 41분"이 사용자에게 나간다.
+    """
+    context = _origin_context(
+        requested_query="gps_location",
+        resolved_name="기기 GPS 위치",
+        source="device_gps",
+    )
+
+    sentence = await _first_distance_explanation(context)
+
+    assert sentence.startswith("현재 위치에서 ")
+    assert "gps_location" not in sentence
+    assert "기기 GPS 위치" not in sentence
+
+
+@pytest.mark.asyncio
+async def test_distance_explanation_uses_requested_query_not_resolved_name() -> None:
+    """표시 이름은 `resolved_name`이 아니라 `requested_query`에서 온다.
+
+    기준점이 지오코딩으로 풀리면 `resolved_name`이 도로명 주소가 된다
+    (`providers/geocoding.py`). 그걸 쓰면 "서울특별시 종로구 사직로 161에서 걸어서
+    41분"이라는 문장이 나간다.
+    """
+    context = _origin_context(
+        requested_query="경복궁",
+        resolved_name="서울특별시 종로구 사직로 161",
+    )
+
+    sentence = await _first_distance_explanation(context)
+
+    assert sentence.startswith("경복궁에서 ")
+    assert "사직로" not in sentence
 
 
 @pytest.mark.asyncio
@@ -462,6 +549,31 @@ async def test_pipeline_from_context_reports_excluded_all_closed_when_only_close
     assert response.recommendations == []
     assert response.unverified_recommendations == []
     assert response.excluded_all_closed is True
+    assert response.excluded_closed_place_ids == ["place-1"]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_reports_excluded_closed_ids_even_when_some_results_remain() -> None:
+    """TP-82: 일부만 폐점이라 excluded_all_closed=False여도, 폐점으로 걸러진
+    id는 excluded_closed_place_ids에 그대로 남아야 한다 — A가 이 값을 B에
+    기록해 다음 회차 후보 수집 시 제외해야 같은 폐점 후보가 반복 수집되지
+    않는다(9절 "영업 종료 후보 누적" 항목)."""
+    closed_place = _place_from_operating_hours_raw("09:00~14:00")
+    open_place = _context_place(place_id="place-2")
+    context = RecommendationContext(
+        location=_context_location(),
+        places=AgentContextValue(status="success", data=[closed_place, open_place]),
+    )
+
+    response = await run_recommendation_pipeline_from_context(
+        context,
+        visit_at=_CONTEXT_VISIT_AT,
+        search_radius_km=2.0,
+    )
+
+    assert [item.place_id for item in response.recommendations] == ["place-2"]
+    assert response.excluded_all_closed is False
+    assert response.excluded_closed_place_ids == ["place-1"]
 
 
 @pytest.mark.asyncio
