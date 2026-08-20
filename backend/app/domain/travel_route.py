@@ -31,6 +31,7 @@ class TravelMode(StrEnum):
 class RouteSource(StrEnum):
     KAKAO_WALKING = "kakao_walking"
     NAVER_DRIVING = "naver_driving"
+    KAKAO_TRANSIT = "kakao_transit"
     STRAIGHT_LINE_ESTIMATE = "straight_line_estimate"
 
 

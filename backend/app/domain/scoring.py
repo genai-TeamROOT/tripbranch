@@ -328,6 +328,7 @@ _MEASURED_ROUTE_SOURCES = frozenset(
     {
         RouteSource.KAKAO_WALKING,
         RouteSource.NAVER_DRIVING,
+        RouteSource.KAKAO_TRANSIT,
     }
 )
 

@@ -613,7 +613,7 @@ def test_distance_feature_uses_measured_walking_duration() -> None:
 
 
 def test_travel_minutes_budget_uses_the_speed_of_the_requested_mode() -> None:
-    """예산의 분모는 반경을 만든 이동수단 속도다 — 도보만 정의돼 있다."""
+    """예산의 분모는 반경을 만든 이동수단 속도다."""
     assert _travel_minutes_budget(2.0, TravelMode.WALKING) == pytest.approx(
         2.0 / TRAVEL_SPEED_KM_PER_MINUTE[TravelMode.WALKING]
     )
@@ -633,35 +633,59 @@ def test_travel_minutes_budget_uses_the_radius_assumption_for_driving() -> None:
     )
 
 
-def test_travel_minutes_budget_refuses_modes_without_a_defined_speed() -> None:
-    """속도가 없는 이동수단을 조용히 도보 속도로 재지 않는다."""
+def test_every_travel_mode_has_a_defined_speed() -> None:
+    """속도가 빠진 이동수단이 남아 있으면 채점이 KeyError로 멈춘다.
+
+    이동수단을 추가하면서 이 표를 넓히지 않는 실수를 여기서 잡는다.
+    """
+    assert set(TRAVEL_SPEED_KM_PER_MINUTE) == set(TravelMode)
+
+
+def test_travel_minutes_budget_refuses_modes_without_a_defined_speed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """속도가 없는 이동수단을 조용히 도보 속도로 재지 않는다.
+
+    지금은 모든 이동수단에 속도가 있으므로 하나를 지워서 확인한다 — 표가 넓어져도
+    "없으면 멈춘다"는 성질 자체는 남아 있어야 한다.
+    """
+    monkeypatch.delitem(TRAVEL_SPEED_KM_PER_MINUTE, TravelMode.TRANSIT)
     with pytest.raises(KeyError):
         _travel_minutes_budget(2.0, TravelMode.TRANSIT)
 
 
-def test_scoring_refuses_a_route_whose_mode_has_no_speed() -> None:
-    """속도 없는 이동수단 경로가 채점까지 오면 조용히 넘기지 않고 멈춘다.
+def test_distance_feature_uses_a_measured_transit_route() -> None:
+    """대중교통 실측이 실제로 채점에 반영된다.
 
-    `_applied_travel_route()`는 source만 보므로 mode/source가 어긋난 경로를 걸러
-    주지 못한다. 지금 이런 경로가 만들어지지 않는 이유는 Provider가 자기 mode
-    외를 거부하고 Tool이 미등록 mode를 조회하지 않기 때문이다
-    (test_travel_route_tool.py, test_walking_route_provider.py).
+    두 곳을 함께 넓혀야 이 값이 나온다 — 속도(TRAVEL_SPEED_KM_PER_MINUTE)와 실측
+    판정(_applied_travel_route의 source 허용). 속도만 빠지면 KeyError로 멈추고,
+    source만 빠지면 조용히 직선거리 점수(0.75)로 떨어진다(TP-106).
 
-    대중교통 카드는 속도(TRAVEL_SPEED_KM_PER_MINUTE)와 실측 판정
-    (_applied_travel_route의 source 허용)을 함께 넓혀야 한다. 한쪽만 바꾸면
-    이 KeyError로 드러난다.
+    반경 2.0km를 20km/h로 되돌리면 예산은 6분이다. 3분이면 절반이 남는다.
     """
     route = TravelRoute(
         place_id="p1",
         mode=TravelMode.TRANSIT,
         status=RouteStatus.SUCCESS,
-        source=RouteSource.KAKAO_WALKING,  # 대중교통 source는 아직 없다
-        distance_m=800,
-        duration_seconds=600,
+        source=RouteSource.KAKAO_TRANSIT,
+        distance_m=2400,
+        duration_seconds=180,
     )
 
-    with pytest.raises(KeyError):
-        _distance_feature_score(MUSEUM_OPEN, travel_routes=[route])
+    score = _distance_feature_score(MUSEUM_OPEN, travel_routes=[route])
+
+    assert score == pytest.approx(0.5, abs=0.01)
+
+
+def test_transit_budget_uses_the_radius_assumption_not_the_measured_speed() -> None:
+    """대중교통 예산도 반경을 만든 가정(20km/h)으로 되돌린다.
+
+    실측 실효 속도는 구간마다 4.6~19km/h로 크게 흔들리지만, 분모는 사용자가 말한
+    이동시간 그 자체여야 하므로 to_search_radius_km()이 쓴 가정을 따른다.
+    """
+    assert _travel_minutes_budget(2.0, TravelMode.TRANSIT) == pytest.approx(
+        _travel_minutes_budget(2.0, TravelMode.DRIVING)
+    )
 
 
 def test_distance_feature_falls_back_to_straight_line_without_route() -> None:
