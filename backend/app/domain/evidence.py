@@ -20,6 +20,17 @@ from app.domain.scoring import RankedCandidate, ScoringResult
 from app.domain.travel_route import TravelMode
 from app.domain.weather_judgment import WeatherReason
 
+# 표시 순서의 기준 축. 여기 없는 Feature는 뒤에 들어온 순서대로 붙는다 —
+# 새 Feature가 목록에서 빠져도 응답에서 사라지지 않게 하기 위해서다.
+_BASE_FEATURE_ORDER: tuple[str, ...] = (
+    "weather",
+    "environment",
+    "remaining_operating_time",
+    "distance",
+    "taste",
+    "concentration",
+)
+
 # 1차 Scoring 결과의 Feature 순서 (scoring.py DEFAULT_WEIGHTS와 동일).
 _FEATURE_ORDER: tuple[str, ...] = ("weather", "remaining_operating_time", "distance")
 
@@ -47,16 +58,20 @@ def resolve_feature_order(feature_scores: Mapping[str, float | None]) -> tuple[s
 
     날씨/환경 중 어느 쪽으로 채점됐는지는 호출부가 다시 판단하지 않는다 —
     `feature_scores`에 들어 있는 키가 그대로 답이다.
+
+    **조합을 상수로 두지 않는다.** 예전에는 (날씨|환경) x (혼잡도 유무)를
+    상수 4개로 열거했는데, Feature가 하나 늘 때마다 조합이 배로 늘고 새 키를
+    빠뜨리면 **응답에서 조용히 사라진다** — 2026-08-19에 taste가 실제로 그렇게
+    빠졌다(점수에는 반영되는데 feature_scores에는 없었다). 알려진 축을 먼저
+    정해진 순서로 놓고, 나머지는 들어온 순서를 그대로 이어 붙인다.
     """
-    environment_driven = "environment" in feature_scores
-    with_concentration = "concentration" in feature_scores
-    if environment_driven:
-        return (
-            ENVIRONMENT_CONCENTRATION_FEATURE_ORDER
-            if with_concentration
-            else _ENVIRONMENT_FEATURE_ORDER
-        )
-    return CONCENTRATION_FEATURE_ORDER if with_concentration else _FEATURE_ORDER
+    ordered = [
+        feature for feature in _BASE_FEATURE_ORDER if feature in feature_scores
+    ]
+    ordered.extend(
+        feature for feature in feature_scores if feature not in _BASE_FEATURE_ORDER
+    )
+    return tuple(ordered)
 
 
 @dataclass(frozen=True)
