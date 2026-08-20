@@ -102,7 +102,7 @@ time_available  : 분 단위
 `null`을 그대로 전달함으로써
 "사용자가 지정한 값"과 "시스템이 채운 값"을 구분할 수 있게 한다.
 
-### 1.4 api_context (4개 필드)
+### 1.4 api_context (5개 필드)
 
 외부에서 확보한 데이터를 `user_conditions`와 분리해 저장한다.
 
@@ -112,6 +112,7 @@ time_available  : 분 단위
 | `api_weather` | string \| null | 날씨 API | 1시간 |
 | `gps_location_updated_at` | string \| null | 시스템 | — |
 | `api_weather_updated_at` | string \| null | 시스템 | — |
+| `gps_location_confirmed_at` | string \| null | 시스템 (PR #188, 2026-08-20) | — (A가 30분 기준으로 자체 판정) |
 
 **유효 기간 규칙**
 
@@ -126,6 +127,20 @@ time_available  : 분 단위
   사용자가 조건을 바꾼 것이 아니기 때문이다.
 - `api_context`는 `operations` 대상이 아니며 별도 경로로 갱신한다. (6.5절)
 - 날씨 API 실패 시 `api_weather`는 `null`로 두며 만료된 이전 값을 재사용하지 않는다.
+
+**gps_location_confirmed_at (PR #188, 2026-08-20)**
+
+프론트가 먼저 구현한 위치 재확인 UX(GPS 확보 후 30분이 지나면 "N분 전
+위치로 계속" / "현재 위치 다시 가져오기"를 묻는 흐름)를 세션 단위로도
+일관되게 유지하기 위한 필드다. `gps_location_updated_at`(GPS 데이터의
+기술적 TTL, 1시간)과 의미가 다르므로 혼용하지 않는다 — 이 필드는 사용자가
+실제로 "현재 위치 다시 가져오기"에 성공했을 때만 갱신되고, "N분 전
+위치로 계속"을 선택하면 갱신되지 않는다. B는 30분 경과 여부를 판정하지
+않는다 — 값을 그대로 반환할 뿐, A가 이 값과 현재 시각을 비교해
+판단한다(1.4절의 "B는 만료 여부만 판정" 원칙과 달리, 이 필드는 만료
+판정 자체를 A에 완전히 위임한다 — TTL 기준이 아직 프론트 전용 정책이라
+B가 임의로 규칙화하지 않기 위함). 기존 세션은 `null`이며, A는 `null`을
+최초 재확인 대상으로 처리한다.
 
 ### 1.5 answer_conditions (B 미저장)
 
@@ -163,7 +178,8 @@ time_available  : 분 단위
     "gps_location": null,
     "api_weather": null,
     "gps_location_updated_at": null,
-    "api_weather_updated_at": null
+    "api_weather_updated_at": null,
+    "gps_location_confirmed_at": null
   },
   "condition_version": 0,
   "last_run_id": null,
@@ -1065,7 +1081,8 @@ HTTP 엔드포인트 노출은 AF-05 Agent Runtime의 책임 범위다.
     "gps_location": "37.5565,126.9236",
     "api_weather": "rain",
     "gps_expired": false,
-    "weather_expired": false
+    "weather_expired": false,
+    "gps_location_confirmed_at": "2026-08-20T09:05:00+09:00"
   },
   "condition_version": 5,
   "condition_changed": true,
@@ -1129,7 +1146,7 @@ A가 인텐트를 분류하기 전에 필요한 정보를 제공한다.
   "last_intent": "MODIFY",
   "pending_clarification": null,
   "user_conditions": { "...15개 필드..." },
-  "api_context": { "...4개 필드 + 만료 플래그..." },
+  "api_context": { "...5개 필드 + 만료 플래그..." },
   "condition_version": 5
 }
 ```
@@ -1249,7 +1266,8 @@ GPS·날씨 API로 확보한 데이터를 저장한다.
   "gps_location": "37.5570,126.9240",
   "gps_location_updated_at": "2026-07-23T10:05:00+09:00",
   "api_weather": "good",
-  "api_weather_updated_at": "2026-07-23T10:05:00+09:00"
+  "api_weather_updated_at": "2026-07-23T10:05:00+09:00",
+  "gps_location_confirmed_at": "2026-08-20T10:05:00+09:00"
 }
 ```
 
@@ -1262,7 +1280,8 @@ GPS·날씨 API로 확보한 데이터를 저장한다.
     "gps_location": "37.5570,126.9240",
     "api_weather": "good",
     "gps_expired": false,
-    "weather_expired": false
+    "weather_expired": false,
+    "gps_location_confirmed_at": "2026-08-20T10:05:00+09:00"
   }
 }
 ```
@@ -1273,6 +1292,11 @@ GPS·날씨 API로 확보한 데이터를 저장한다.
 - `condition_version`을 증가시키지 않는다.
 - `updated_at`을 갱신하지 않는다. (`last_active_at`은 갱신)
 - 날씨 API 실패로 `api_weather: null`이 전달되면 `null`로 저장한다.
+- `gps_location_confirmed_at`(PR #188, 2026-08-20)은 `gps_location`과
+  독립된 필드다 — "현재 위치 다시 가져오기" 성공 시에만 A가 이 필드도
+  함께 넘긴다. "N분 전 위치로 계속"을 선택했을 때는 이 필드를 생략해야
+  값이 그대로 유지된다(같은 요청에서 `gps_location`만 갱신해도 이
+  필드는 안 바뀐다).
   만료된 이전 값을 재사용하지 않는다.
 - `updated_at` 값이 전달되지 않으면 B가 수신 시각을 사용한다.
 

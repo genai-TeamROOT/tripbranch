@@ -52,6 +52,13 @@ class ApiContext(BaseModel):
     api_weather: str | None = None
     gps_location_updated_at: datetime | None = None
     api_weather_updated_at: datetime | None = None
+    # PR #188: 위치 재확인 UX(30분 경과 시 "N분 전 위치로 계속"/"현재 위치 다시
+    # 가져오기") 서버 상태 반영. gps_location_updated_at은 GPS 데이터의 기술적
+    # TTL(1시간) 의미를 유지하고, 이 필드는 사용자가 실제로 재확인(현재 위치
+    # 다시 가져오기)한 시각만 담아 혼용하지 않는다 — "N분 전 위치로 계속"을
+    # 선택하면 이 값은 갱신되지 않는다. A가 이 값과 now를 비교해 30분 경과
+    # 여부를 서버 상태 기준으로 판단한다. 기존 세션은 null(최초 재확인 대상).
+    gps_location_confirmed_at: datetime | None = None
 
 
 # ---------------------------------------------------------------- 상태

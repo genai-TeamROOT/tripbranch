@@ -743,6 +743,87 @@ class TestUpdateApiContext:
         assert r.api_context.gps_expired is True
         assert r.api_context.weather_expired is True
 
+    # ---------------------------------------------------- PR #188
+
+    def test_기존_세션은_재확인_시각이_null이다(self, store):
+        r = apply(store, session_id=None, operations=[])
+        assert r.api_context.gps_location_confirmed_at is None
+
+    def test_재확인_시각을_명시적으로_전달하면_저장된다(self, store):
+        r = apply(store, session_id=None, operations=[])
+        confirmed_at = now_kst()
+
+        res = svc.update_api_context(
+            svc.UpdateApiContextRequest(
+                session_id=r.session_id,
+                gps_location="37.5665,126.9780",
+                gps_location_confirmed_at=confirmed_at,
+            ),
+            store=store,
+        )
+
+        assert res is not None
+        assert res.api_context.gps_location_confirmed_at == confirmed_at
+
+    def test_gps_location만_갱신하면_재확인_시각은_그대로다(self, store):
+        """"N분 전 위치로 계속"처럼 재확인 없이 위치만 갱신되는 경우를 흉내낸다
+        — gps_location_updated_at(기술적 TTL)과 gps_location_confirmed_at
+        (사용자 재확인)이 혼용되면 안 된다."""
+        r = apply(store, session_id=None, operations=[])
+        confirmed_at = now_kst()
+
+        svc.update_api_context(
+            svc.UpdateApiContextRequest(
+                session_id=r.session_id,
+                gps_location="37.5665,126.9780",
+                gps_location_confirmed_at=confirmed_at,
+            ),
+            store=store,
+        )
+        res = svc.update_api_context(
+            svc.UpdateApiContextRequest(
+                session_id=r.session_id, gps_location="37.6,127.0"
+            ),
+            store=store,
+        )
+
+        assert res is not None
+        assert res.api_context.gps_location == "37.6,127.0"
+        assert res.api_context.gps_location_confirmed_at == confirmed_at
+
+    def test_재확인_시각을_생략하면_현재시각으로_채워진다(self, store):
+        """gps_location_updated_at과 동일한 관례 — 필드는 전달했지만 값을
+        안 채우면(None) now로 채운다."""
+        r = apply(store, session_id=None, operations=[])
+
+        res = svc.update_api_context(
+            svc.UpdateApiContextRequest(
+                session_id=r.session_id,
+                gps_location="37.5665,126.9780",
+                gps_location_confirmed_at=None,
+            ),
+            store=store,
+        )
+
+        assert res is not None
+        assert res.api_context.gps_location_confirmed_at is not None
+
+    def test_get_session_context에도_재확인_시각이_포함된다(self, store):
+        r = apply(store, session_id=None, operations=[])
+        confirmed_at = now_kst()
+
+        svc.update_api_context(
+            svc.UpdateApiContextRequest(
+                session_id=r.session_id,
+                gps_location="37.5665,126.9780",
+                gps_location_confirmed_at=confirmed_at,
+            ),
+            store=store,
+        )
+        ctx = svc.get_session_context(r.session_id, store=store)
+
+        assert ctx.api_context.gps_location_confirmed_at == confirmed_at
+
 
 # ================================================================ 다중 턴
 
