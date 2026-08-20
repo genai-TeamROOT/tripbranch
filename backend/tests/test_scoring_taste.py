@@ -13,11 +13,13 @@ from app.domain.models import (
     WeatherCondition,
 )
 from app.domain.scoring import (
+    _TASTE_CUT,
     DEFAULT_WEIGHTS,
     TASTE_WEIGHTS,
     PreparedCandidate,
     score_prepared_candidates,
 )
+from app.providers.place_evidence import DEFAULT_MIN_SIMILARITY
 
 _HOURS = OperatingHours(time(9, 0), time(22, 0))
 
@@ -138,3 +140,28 @@ def test_empty_mapping_still_enables_the_feature() -> None:
 
     assert result.ranked[0].feature_scores["taste"] == 0.0
     assert set(result.ranked[0].weights_used) == set(TASTE_WEIGHTS)
+
+
+def test_search_cut_and_score_floor_are_the_same_value() -> None:
+    """검색 컷값(Provider)과 점수 정규화 하한(Scoring)은 같은 숫자여야 한다.
+
+    두 상수가 다른 파일에 따로 적혀 있어, 한쪽만 바꾸면 조용히 어긋난다.
+
+    - 컷 > 하한: 하한과 컷 사이 구간이 죽는다. 점수를 매길 수 있는 유사도인데
+      검색이 그 앞에서 잘라내 후보에 도달하지 않는다.
+    - 컷 < 하한: 검색으로 찾아온 근거가 전부 0점이 된다. RPC와 임베딩 비용을
+      쓰고도 순위에 아무 영향이 없다.
+
+    둘 다 예외가 나지 않아 실행만으로는 드러나지 않는다.
+    """
+    assert DEFAULT_MIN_SIMILARITY == _TASTE_CUT
+
+
+def test_similarity_just_above_the_cut_scores_above_zero() -> None:
+    """컷을 겨우 넘긴 근거도 0점보다는 커야 검색 결과가 버려지지 않는다."""
+    result = _score(
+        [_prepared("a")],
+        taste_matches={"a": _match("a", _TASTE_CUT + 0.001)},
+    )
+
+    assert result.ranked[0].feature_scores["taste"] > 0.0
