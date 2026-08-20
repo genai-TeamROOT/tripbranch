@@ -222,6 +222,7 @@ class RealGeminiProvider:
         pending_clarification: str | None = None,
         last_intent: str | None = None,
         shown_place_names: list[str] | None = None,
+        conversation_place_name: str | None = None,
     ) -> ProviderResult[IntentClassificationResult]:
         instruction = gemini_prompts.build_intent_classification_instruction(
             has_previous_recommendation=has_previous_recommendation,
@@ -229,6 +230,7 @@ class RealGeminiProvider:
             pending_clarification=pending_clarification,
             last_intent=last_intent,
             shown_place_names=shown_place_names,
+            conversation_place_name=conversation_place_name,
         )
         # thinking_budget=0 — SCHEDULE(generate_schedule_plan/fill)에 적용한 것과 같은
         # 이유. classify_intent는 정해진 스키마 중 하나를 고르는 얕은 판단이라 thinking
@@ -291,10 +293,12 @@ class RealGeminiProvider:
         *,
         has_previous_recommendation: bool,
         reference_date: date,
+        conversation_place_name: str | None = None,
     ) -> ProviderResult[LLMOutput]:
         instruction = gemini_prompts.build_info_extraction_instruction(
             has_previous_recommendation=has_previous_recommendation,
             reference_date=reference_date,
+            conversation_place_name=conversation_place_name,
         )
         result = await self._call_structured(
             instruction,

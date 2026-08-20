@@ -2198,6 +2198,32 @@ async def test_info_operating_hours_question_type_calls_tool_provider() -> None:
 
 
 @pytest.mark.asyncio
+async def test_info_walking_time_uses_current_gps_and_route_tool() -> None:
+    """INFO location_info도 현재 GPS가 있으면 카카오 도보 경로 계약을 재사용한다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 가는데 얼마나 걸려?",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        travel_route_tool=TravelRouteTool(
+            {TravelMode.WALKING: TravelRouteProviders(primary=FakeWalkingRouteProvider(walking_speed_mps=1.2))}
+        ),
+        **providers,
+    )
+
+    assert response.llm_output.intent is Intent.INFO
+    assert response.llm_output.info is not None
+    assert response.llm_output.info.question_type.value == "location_info"
+    assert "현재 위치에서 경복궁까지 도보 약" in response.message
+    assert "이동 거리는 약" in response.message
+
+
+@pytest.mark.asyncio
 async def test_info_general_info_question_type_shows_overview_raw() -> None:
     """general_info는 LLM 요약 없이 overview 원문을 그대로 보여준다(사용자 결정)."""
     store = InMemoryStateStore()

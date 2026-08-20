@@ -63,6 +63,7 @@ class LLMProvider(Protocol):
         pending_clarification: str | None = None,
         last_intent: str | None = None,
         shown_place_names: list[str] | None = None,
+        conversation_place_name: str | None = None,
     ) -> ProviderResult[IntentClassificationResult]:
         """사용자 발화의 Intent를 1단계로 판정한다.
 
@@ -72,6 +73,9 @@ class LLMProvider(Protocol):
         shown_place_names는 SCHEDULE-09 후속(이름 지목)에서 추가됐다 — "두가헌
         레스토랑은 빼줘"처럼 순번 없이 노출된 항목 이름만으로 특정 대상을 지목해도
         MODIFY로 판정할 근거가 된다.
+        conversation_place_name은 직전 INFO 상세 카드의 장소명이다. "여기 가는데
+        얼마나 걸려?"처럼 대화 속 장소를 지시하는 정보 질문을 INFO로 판정하는
+        근거로만 쓴다.
         """
         ...
 
@@ -106,11 +110,14 @@ class LLMProvider(Protocol):
         *,
         has_previous_recommendation: bool,
         reference_date: date,
+        conversation_place_name: str | None = None,
     ) -> ProviderResult[LLMOutput]:
         """INFO 발화에서 장소/질문 정보를 추출한다.
 
         reference_date: "오늘"/"내일"/"이번 주말" 등 concentration 질의의
         visit_time을 실제 날짜로 환산하는 기준일(KST). concentration-conditions.md §3.2.
+        conversation_place_name: 직전 INFO 카드의 장소명. "여기/이곳" 같은
+        from_conversation 지시어가 있을 때만 장소를 해소하는 후보다.
         """
         ...
 

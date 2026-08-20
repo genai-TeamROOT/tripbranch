@@ -17,6 +17,7 @@ import logging
 import math
 from collections.abc import AsyncIterator, Awaitable, Callable
 
+from app.domain.travel_route import TravelRoute
 from app.errors import AppError
 from app.providers.protocols import LLMProvider
 from app.schemas import (
@@ -217,7 +218,11 @@ def compose_info_concentration_message(response: InfoContextResponse) -> str:
 
 
 def compose_place_info_message(
-    response: InfoContextResponse, *, specific_question: str | None = None
+    response: InfoContextResponse,
+    *,
+    specific_question: str | None = None,
+    walking_route: TravelRoute | None = None,
+    walking_origin_available: bool = False,
 ) -> str:
     """INFO(question_type=concentration/event 제외 6종) 응답 문구를 조립한다.
 
@@ -241,6 +246,13 @@ def compose_place_info_message(
         return _TOOL_UNAVAILABLE_MESSAGE
 
     place_label = result.resolved_place_name or result.requested_place_name or "그 장소"
+    if result.question_type == "location_info" and _asks_walking_time(specific_question):
+        return _compose_info_walking_time_message(
+            place_label,
+            result.fields.get("address"),
+            walking_route=walking_route,
+            origin_available=walking_origin_available,
+        )
     if result.status == "no_data":
         type_label = _INFO_QUESTION_TYPE_LABELS.get(result.question_type, "그 질문")
         return f"{place_label}의 {type_label} 정보는 확인할 수 없어요."
@@ -251,6 +263,45 @@ def compose_place_info_message(
         result.fields,
         specific_question=specific_question,
     )
+
+
+def _asks_walking_time(specific_question: str | None) -> bool:
+    normalized = (specific_question or "").replace(" ", "")
+    markers = (
+        "가는데얼마나걸",
+        "걷는데얼마나걸",
+        "걸어서얼마나",
+        "도보로얼마나",
+        "도보시간",
+        "도보이동",
+    )
+    return any(marker in normalized for marker in markers)
+
+
+def _compose_info_walking_time_message(
+    place_label: str,
+    address: str | None,
+    *,
+    walking_route: TravelRoute | None,
+    origin_available: bool,
+) -> str:
+    """INFO 도보 시간은 LLM 추측 대신 카카오 경로 결과만으로 안내한다."""
+
+    if walking_route is not None:
+        seconds = walking_route.duration_seconds or 0
+        distance_m = walking_route.distance_m or 0
+        if seconds == 0:
+            return f"현재 위치에서 {place_label}까지 바로 도착할 수 있어요."
+        minutes = max(1, math.ceil(seconds / 60))
+        return (
+            f"현재 위치에서 {place_label}까지 도보 약 {minutes}분 걸려요. "
+            f"이동 거리는 약 {distance_m:,}m예요."
+        )
+    if not origin_available:
+        message = f"현재 위치 정보가 없어 {place_label}까지 도보 이동 시간을 확인할 수 없어요."
+        return f"{message} {place_label} 주소는 {address}예요." if address else message
+    message = f"현재 위치에서 {place_label}까지의 도보 경로를 확인하지 못했어요."
+    return f"{message} {place_label} 주소는 {address}예요." if address else message
 
 
 def _compose_place_info_sentence(
@@ -550,6 +601,8 @@ async def compose_chat_message(
     tool_clarification: Clarification | None = None,
     tool_error_code: str | None = None,
     info_response: InfoContextResponse | None = None,
+    info_walking_route: TravelRoute | None = None,
+    info_walking_origin_available: bool = False,
     llm: LLMProvider,
     on_message_delta: MessageDeltaCallback | None = None,
 ) -> str:
@@ -603,6 +656,8 @@ async def compose_chat_message(
                 specific_question=(
                     llm_output.info.specific_question if llm_output.info is not None else None
                 ),
+                walking_route=info_walking_route,
+                walking_origin_available=info_walking_origin_available,
             )
             result = info_response.result
             if (
