@@ -27,6 +27,8 @@ UserConditions(15개 필드)를 추출해 LLMOutput(intent="RECOMMEND")으로 �
   - 예) "3시간 안에 다녀올 수 있는 곳" → null (시간 조건이지 취향이 아니다)
   - 예) "지하철역에서 가까운 곳" → null (거리 조건이다)
   - 예) "종로 맛집 추천" → null (장소 유형이지 취향 서술이 아니다)
+  (이 반례들은 실측에서 실제로 취향 근거를 잘못 찾아냈던 문장이다 —
+   HISTORY.md "결정 근거" 참고)
 
 status 결정:
 - 필요한 조건을 충분히 추출했으면 status="complete"
