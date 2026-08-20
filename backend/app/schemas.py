@@ -379,6 +379,12 @@ class UserConditions(BaseModel):
     budget: str | None = None
     exclude_tags: list[str] = Field(default_factory=list)
     special_requirements: list[str] = Field(default_factory=list)
+    # 취향 발화 원문. 벡터 검색(search_place_evidence) 질의로 쓴다.
+    # special_requirements와 분리한 이유는 그 필드가 "기타 전부"를 받아
+    # 일정·교통 조건이 섞이고, 그대로 임베딩하면 취향이 아닌 문장이 근거를
+    # 찾아내기 때문이다(실측 2026-08-19: "3시간 안에 다녀올 수 있는 곳"이
+    # 유사도 0.523으로 진짜 취향 발화보다 높게 나왔다).
+    taste_query: str | None = None
 
     @field_validator("current_location", "search_center", mode="before")
     @classmethod

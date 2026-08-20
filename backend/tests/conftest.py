@@ -37,6 +37,14 @@ def isolate_regular_tests_from_real_providers(monkeypatch: pytest.MonkeyPatch) -
     # 등)를 호출하는 테스트가 깨진다 — 여기서도 강제로 memory로 고정한다.
     monkeypatch.setattr(settings, "state_store_backend", "memory")
 
+    # TASTE_EVIDENCE_ENABLED도 provider_mode와 별개 축이다. .env에 true가 남아
+    # 있으면(실사용 전환 중 흔히 발생) 앱 lifespan을 켜는 테스트(with TestClient)가
+    # 임베딩 모델 예열 스레드를 띄운다 — sentence-transformers import 4.3초 +
+    # 500MB 적재가 나머지 테스트와 동시에 돌아 스위트가 느려지고, 스레드 타이밍
+    # 때문에 무관한 테스트가 간헐적으로 깨진다(2026-08-20 실측). 취향 검색은
+    # 별도 단위 테스트가 인코더를 직접 주입해 커버하므로 여기선 꺼도 무방하다.
+    monkeypatch.setattr(settings, "taste_evidence_enabled", False)
+
 
 @pytest.fixture(autouse=True)
 def _reset_concentration_mapping_cache():
