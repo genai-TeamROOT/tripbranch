@@ -37,7 +37,7 @@ from app.place_search_policy import TRAVEL_SPEED_KM_PER_MINUTE
 # OPERATING_PARSER_VERSION과 동일한 semver 패턴. 점수 산출에 영향을 주는 변경
 # (가중치, Feature 추가/제거, environment_type 판정표 등) 시 버전을 올린다 —
 # 사소한 리팩터링·주석 변경은 올리지 않는다.
-SCORING_VERSION = "recommendation-scoring-1.2.0"
+SCORING_VERSION = "recommendation-scoring-1.3.0"
 
 DEFAULT_WEIGHTS: Mapping[str, float] = {
     "weather": 0.4,
@@ -197,6 +197,9 @@ class RankedCandidate:
     travel_distance_m: int | None = None
     travel_duration_seconds: int | None = None
     travel_mode: TravelMode | None = None
+    # 취향 근거로 쓴 문장 원문(유사도 1위). 근거 문장이 "왜 취향에 맞는지"를
+    # 사람 말로 설명하는 데 쓴다 — 점수만으로는 납득이 안 된다.
+    taste_evidence_text: str | None = None
     # D-040: 2차 Scoring(rerank_with_concentration())에서만 채워진다. 1차 Scoring
     # 결과는 concentration 자체를 모르므로 항상 None이다 — explanation.py가 문장을
     # "한적함/보통/다소 혼잡/혼잡" 중 무엇으로 쓸지 고르는 데 필요하다(direction이
@@ -320,6 +323,18 @@ def _taste_score(match: PlaceEvidenceMatch | None) -> float:
     if span <= 0:
         return 0.0
     return _clamp((match.avg_similarity - _TASTE_CUT) / span, 0.0, 1.0)
+
+
+def _taste_evidence_text(match: PlaceEvidenceMatch | None) -> str | None:
+    """근거 문장 중 유사도 1위 원문을 꺼낸다.
+
+    RPC가 유사도 내림차순으로 돌려주므로 첫 조각이 가장 가까운 문장이다.
+    점수만 보여주면 "왜 이게 내 취향이냐"에 답할 수 없어서, 사람이 읽을 수
+    있는 근거를 하나 들고 간다.
+    """
+    if match is None or not match.snippets:
+        return None
+    return match.snippets[0].source_text
 
 
 def _travel_minutes_budget(max_distance_km: float, mode: TravelMode) -> float:
@@ -645,11 +660,10 @@ def score_prepared_candidates(
                 candidate, routes_by_place_id.get(candidate.place_id), max_distance_km
             ),  # 실측 도보 시간 우선, 없으면 직선거리
         }
+        taste_match = taste_by_place_id.get(candidate.place_id) if uses_taste else None
         if uses_taste:
             # 근거가 없으면 0.0이다 — 결측이 아니라 "안 맞는다"는 평가다.
-            feature_scores["taste"] = _taste_score(
-                taste_by_place_id.get(candidate.place_id)
-            )
+            feature_scores["taste"] = _taste_score(taste_match)
 
         score = sum(
             feature_scores[feature] * weight  # type: ignore[operator]
@@ -693,6 +707,9 @@ def score_prepared_candidates(
                 routes_by_place_id.get(candidate.place_id), "duration_seconds"
             ),
             travel_mode=_travel_mode_of(routes_by_place_id.get(candidate.place_id)),
+            taste_evidence_text=_taste_evidence_text(
+                taste_by_place_id.get(candidate.place_id)
+            ),
         )
         for index, (
             candidate,

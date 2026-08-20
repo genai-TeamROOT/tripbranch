@@ -172,12 +172,34 @@ def _concentration_sentence(evidence: RecommendationEvidence) -> str:
     return _CONCENTRATION_SENTENCES[evidence.concentration_level]
 
 
+# 근거 문장에 인용할 원문 길이 상한. 블로그 문장이 길어 그대로 넣으면 카드가
+# 밀린다 — 앞부분만 보여주고 잘렸음을 말줄임으로 표시한다.
+_TASTE_QUOTE_MAX_CHARS = 60
+
+
+def _taste_sentence(evidence: RecommendationEvidence) -> str:
+    """왜 취향에 맞는지를 근거 원문으로 설명한다.
+
+    점수만으로는 "이게 왜 내 취향이냐"에 답할 수 없다. 블로그·리뷰에서 실제로
+    뽑힌 문장을 인용해, 사용자가 판단할 재료를 준다. 원문이 없으면(검색은
+    됐지만 조각이 비어 있는 경우) 축만 언급한다.
+    """
+    text = evidence.taste_evidence_text
+    if not text:
+        return "말씀하신 분위기와 잘 맞는 곳이에요."
+    quote = text.strip().replace("\n", " ")
+    if len(quote) > _TASTE_QUOTE_MAX_CHARS:
+        quote = quote[:_TASTE_QUOTE_MAX_CHARS].rstrip() + "…"
+    return f"방문 후기에 이런 얘기가 있어요 — \"{quote}\""
+
+
 _SENTENCE_BUILDERS: Mapping[str, Callable[[RecommendationEvidence], str]] = {
     "weather": _weather_sentence,
     "environment": _environment_sentence,
     "remaining_operating_time": _remaining_time_sentence,
     "distance": _distance_sentence,
     "concentration": _concentration_sentence,
+    "taste": _taste_sentence,
 }
 
 

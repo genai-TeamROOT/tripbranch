@@ -719,5 +719,29 @@ def _remaining_minutes(
     return max(0, int((close_at - visit_at).total_seconds() // 60))
 
 
+# 응답 문구에 쓸 Feature 이름. 여기 없는 축은 "조건"으로 묶어 표현한다 —
+# 이름을 못 찾아 문장이 깨지는 것보다 낫다.
+_FEATURE_LABELS: Mapping[str, str] = {
+    "weather": "날씨",
+    "environment": "실내외",
+    "remaining_operating_time": "운영시간",
+    "distance": "거리",
+    "taste": "취향",
+    "concentration": "혼잡도",
+}
+
+
 def _recommendation_reason(ranked: RankedCandidate) -> str:
-    return f"거리·날씨·운영시간 조건을 종합한 {ranked.rank}순위 추천이에요."
+    """실제로 채점에 쓴 축을 그대로 말한다.
+
+    전에는 "거리·날씨·운영시간"으로 고정돼 있었다. 취향 축이 붙은 뒤로는 그
+    문구가 **실제 계산과 어긋난다** — 취향이 순위를 바꿔놓고 문장은 그 사실을
+    숨기는 셈이라, 채점에 쓴 키에서 문구를 만든다.
+    """
+    labels = [
+        _FEATURE_LABELS[feature]
+        for feature in ranked.weights_used
+        if feature in _FEATURE_LABELS
+    ]
+    axes = "·".join(labels) if labels else "여러"
+    return f"{axes} 조건을 종합한 {ranked.rank}순위 추천이에요."

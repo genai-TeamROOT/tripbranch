@@ -109,6 +109,7 @@ class RecommendationEvidence:
     travel_distance_m: int | None = None
     travel_duration_seconds: int | None = None
     travel_mode: TravelMode | None = None
+    taste_evidence_text: str | None = None
     # D-040: 2차 Scoring에서만 채워진다(scoring.py::RankedCandidate.concentration_level
     # 참고) — concentration_score(direction 반영됨)만으로는 실제 붐빔 정도를 알 수
     # 없어서, 문장 조립에 원본 4단계 구간을 그대로 보존한다.
@@ -165,6 +166,7 @@ def build_evidence(
         travel_distance_m=candidate.travel_distance_m,
         travel_duration_seconds=candidate.travel_duration_seconds,
         travel_mode=candidate.travel_mode,
+        taste_evidence_text=candidate.taste_evidence_text,
     )
 
 
