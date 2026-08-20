@@ -11,7 +11,14 @@ from app.agent_context.schemas import AgentContextRequest
 from app.agent_context.schemas import UserConditions as AgentUserConditions
 from app.agent_context.service import ContextService, ContextTools
 from app.config import Settings
+from app.domain.travel_route import (
+    GeoCoordinate,
+    RouteDestination,
+    RouteSource,
+    RouteStatus,
+)
 from app.providers.concentration import RealConcentrationProvider
+from app.providers.driving_route import RealNaverDrivingRouteProvider
 from app.providers.gemini import RealGeminiProvider
 from app.providers.geocoding import RealGeocodingProvider
 from app.providers.holiday import RealHolidayProvider
@@ -75,6 +82,31 @@ async def test_naver_geocoding_real_smoke() -> None:
     print(
         f"Naver Geocoding: {result.location.resolved_name} "
         f"({result.location.latitude:.4f}, {result.location.longitude:.4f})"
+    )
+
+
+async def test_naver_driving_route_real_smoke() -> None:
+    """경복궁 → 광장시장 자동차 경로. 소요시간 단위(밀리초→초) 환산까지 확인한다."""
+    async with httpx.AsyncClient() as client:
+        provider = RealNaverDrivingRouteProvider(
+            api_key_id=_required_value("NAVER_MAP_CLIENT_ID", settings.naver_map_client_id),
+            api_key=_required_value("NAVER_MAP_CLIENT_SECRET", settings.naver_map_client_secret),
+            client=client,
+        )
+        result = await provider.get_routes(
+            GeoCoordinate(37.5788, 126.9770),
+            (RouteDestination("gwangjang", GeoCoordinate(37.5702, 126.9991)),),
+        )
+
+    route = result.data.routes[0]
+    assert route.status is RouteStatus.SUCCESS
+    assert route.source is RouteSource.NAVER_DRIVING
+    assert route.distance_m is not None and 1_000 < route.distance_m < 10_000
+    # 밀리초를 그대로 실으면 여기서 걸린다(2.6km가 22분이면 1332초).
+    assert route.duration_seconds is not None and 60 < route.duration_seconds < 3_600
+    print(
+        f"Naver Driving: {route.distance_m}m, "
+        f"{route.duration_seconds}s ({route.duration_seconds / 60:.1f}분)"
     )
 
 

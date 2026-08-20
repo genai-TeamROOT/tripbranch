@@ -322,6 +322,16 @@ def _travel_time_score(duration_seconds: int, max_distance_km: float, mode: Trav
     return _clamp(1.0 - (duration_seconds / 60.0) / budget_minutes, 0.0, 1.0)
 
 
+# 외부 API로 실제 경로를 잰 source만 모은다. 여기 없는 source(직선거리 추정)는
+# 채점에도 근거 문장에도 쓰지 않는다.
+_MEASURED_ROUTE_SOURCES = frozenset(
+    {
+        RouteSource.KAKAO_WALKING,
+        RouteSource.NAVER_DRIVING,
+    }
+)
+
+
 def _applied_travel_route(route: TravelRoute | None) -> TravelRoute | None:
     """실제로 채점에 쓸 수 있는 경로만 남긴다.
 
@@ -331,9 +341,12 @@ def _applied_travel_route(route: TravelRoute | None) -> TravelRoute | None:
     - `duration_seconds`: SUCCESS일 때만 값이 보장된다(`travel_route.py`
       `__post_init__`). 계약상 보장이 아니므로 상태와 따로 확인한다.
     - `source`: **`STRAIGHT_LINE_ESTIMATE`는 실측이 아니라 직선거리 추정이다.**
-      `TravelRouteTool`이 카카오 실패분을 이 값으로 채우고, 개발용 fake Provider도
+      `TravelRouteTool`이 도보 실패분을 이 값으로 채우고, 개발용 fake Provider도
       전부 이 값을 내보낸다. 그런데 둘 다 `status`는 `SUCCESS`라 상태만으로는
       실측과 구분되지 않는다(C 리뷰 지적, 2026-08-19).
+
+      이동수단을 추가할 때 `_MEASURED_ROUTE_SOURCES`에 그 벤더 source를 넣지
+      않으면, 실측을 받아놓고도 전부 직선거리로 떨어진다.
 
     `source`를 빠뜨리면 두 가지가 깨진다. (1) 직선거리 추정이 실측인 척
     `travel_duration_seconds`에 실려 "걸어서 약 9분"이라는 거짓 문구가 나간다.
@@ -346,7 +359,7 @@ def _applied_travel_route(route: TravelRoute | None) -> TravelRoute | None:
     if (
         route is not None
         and route.status is RouteStatus.SUCCESS
-        and route.source is RouteSource.KAKAO_WALKING
+        and route.source in _MEASURED_ROUTE_SOURCES
         and route.duration_seconds is not None
     ):
         return route
