@@ -15,7 +15,7 @@
 | legacy-1.0.5 | 2026-08-07 | `bfad75f` | `recommend.summary` | 추천 카드 요약 생성 슬롯 신설 | 카드 목록을 짧은 자연어 말풍선으로 소개 | 승인됨 |
 | legacy-1.0.9 | 2026-08-10 | `86a9cd1` | `recommend.extract` | 위치 되묻기와 검색 중심점 유지 규칙 보강 | TP-67 후속 | 승인됨 |
 | legacy-1.0.13 | 2026-08-18 | `585a045` | 공유 weather/concentration/environment | 비·혼잡·야외 허용 표현을 조건 완화로 분류 | 후보를 불필요하게 좁히거나 재정렬하는 문제 방지 | 승인됨 |
-| 1.0.17 | 2026-08-19 | `3b991bf` | `recommend.extract` (v1 → v2) | 취향 발화를 `taste_query`로 분리 추출 | 취향 근거 벡터 검색 질의로 쓴다. `special_requirements`는 일정·교통 조건이 섞여 그대로 임베딩하면 오탐이 난다 — 비취향 발화 6건이 취향 근거를 찾아냈고(최대 "3시간 안에 다녀올 수 있는 곳" 0.523 · 150곳 중 19곳 통과), 이는 진짜 취향 발화 "친구들이랑 시끌벅적"(0.498)보다 높다. **분리 후 같은 6건이 전부 `null`이 됐다(6 → 0)** | 실 LLM 검증 14/14 통과(`scripts/verify_taste_query_extraction.py`), PR 검토 대기 |
+| 1.0.17 | 2026-08-19 | `3b991bf` | `recommend.extract` (v1 → v2) | 취향 발화를 `taste_query`로 분리 추출 | 취향 근거 벡터 검색 질의로 쓴다. `special_requirements`는 일정·교통 조건이 섞여 그대로 임베딩하면 오탐이 난다 — 비취향 발화 6건이 취향 근거를 찾아냈고(최대 "3시간 안에 다녀올 수 있는 곳" 0.523 · 150곳 중 19곳 통과), 이는 진짜 취향 발화 "친구들이랑 시끌벅적"(0.498)보다 높다. **분리 후 같은 6건이 전부 `null`이 됐다(6 → 0)** | 실 LLM 검증 14/14 통과, 실 서버 왕복 확인 완료, PR 검토 대기 |
 
 > 슬롯 버전(`meta.yaml`)과 전역 `PROMPT_VERSION`(`app/providers/gemini_prompts.py`)은
 > 함께 올린다. 전역 버전은 6개 인텐트가 공유하므로 어느 슬롯이 바뀌었는지는 이 표가
@@ -54,5 +54,25 @@
 
 **한계**: 모델 1종·발화 14개뿐이고, LLM은 비결정적이라 한 번 통과가 항상
 통과를 뜻하지 않는다. MODIFY로 취향을 수정하는 경로는 아직 보지 않았다.
+
+**추출만으로는 끝이 아니었다 (2026-08-20)**: 실 서버에서 확인해보니 `llm_output`에는
+`taste_query`가 들어오는데 `state.user_conditions`에서는 `null`이었다. 조건 필드를
+스키마 3곳(A/B/C)과 `field_spec.py`에 넣었는데도
+`services/interpret/state_transform._SINGLE_FIELDS`라는 **하드코딩 목록**을 놓쳐서,
+Operation이 만들어지지 않아 상태 병합에서 값이 사라졌다.
+
+프롬프트가 아무리 정확히 뽑아도 그 뒤 경로가 하나라도 비면 **조용히 사라진다.**
+새 조건 필드를 추가할 때 손대야 하는 곳은 다음 다섯이다.
+
+| 파일 | 역할 |
+| --- | --- |
+| `app/prompts/recommend/extract.md` | 추출 규칙 |
+| `app/schemas.py` | A↔D 조건 |
+| `app/agent_context/schemas.py` | A↔C Context |
+| `app/state/schema.py` + `field_spec.py` | B 상태 저장 |
+| `app/services/interpret/state_transform.py` | **조건 → 상태 Operation 변환** |
+
+마지막이 목록 기반이라 잊기 쉽다. `tests/test_state_transform_field_coverage.py`가
+스키마와 목록의 동기화를 검사하므로, 다음부터는 테스트가 먼저 잡는다.
 
 공유 규칙의 원문 이력은 [`_shared/HISTORY.md`](../_shared/HISTORY.md)에서 관리합니다.
