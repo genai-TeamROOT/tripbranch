@@ -25,7 +25,6 @@ from app.domain.models import (
     WeatherCondition,
 )
 from app.domain.scoring import (
-    CONCENTRATION_WEIGHTS,
     ExclusionReason,
     PrepareResult,
     RankedCandidate,
@@ -412,10 +411,12 @@ async def rerank_with_concentration(
             else concentration_score(concentration_rate, seek=seek)
         )
 
-        # 1차가 날씨 대신 요청 환경으로 채점했다면 2차 가중치도 같은 키를 써야
-        # 한다 — 안 맞추면 environment 점수가 합산에서 통째로 빠지고, 없는
-        # weather가 결측으로 잡혀 재분배까지 일어난다.
-        base_weights = weights_for_feature_scores(CONCENTRATION_WEIGHTS, feature_scores)
+        # 2차 가중치는 상수에서 고르지 않고 **1차가 실제로 채점한 키**로 조립한다.
+        # 1차가 날씨 대신 요청 환경을 썼는지, 취향이 켜져 있었는지가 모두 여기서
+        # 갈린다. 예전에는 CONCENTRATION_WEIGHTS를 그대로 썼는데, 그 상수에
+        # taste 키가 없어서 **취향으로 후보를 골라 놓고 최종 순위에서는 취향을
+        # 빼고 있었다**(2026-08-20). 합이 1.0이라 결측 재분배도 안 걸렸다.
+        base_weights = weights_for_feature_scores(feature_scores)
         missing = [feature for feature in base_weights if feature_scores.get(feature) is None]
         weights_used = (
             redistribute_weights(base_weights, missing) if missing else dict(base_weights)

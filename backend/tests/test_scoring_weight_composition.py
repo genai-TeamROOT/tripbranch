@@ -4,7 +4,8 @@
 **기존 세 세트가 숫자 하나까지 그대로인지**를 고정한다. 여기가 깨지면 과거
 버전의 점수를 재현할 수 없다.
 
-조립 규칙 자체(선택 Feature 1개당 기본 3축이 0.05씩 양보)도 여기서 고정한다.
+함께 검증하는 것: 2차 Scoring이 1차에서 켜졌던 taste를 계속 반영하는지
+(2026-08-20 이전에는 CONCENTRATION_WEIGHTS에 taste 키가 없어 조용히 빠졌다).
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from app.domain.scoring import (
     OPTIONAL_FEATURES,
     TASTE_WEIGHTS,
     build_weights,
+    weights_for_feature_scores,
 )
 
 # 조립 방식으로 바꾸기 전에 코드에 하드코딩돼 있던 값 그대로. 상수를 import해서
@@ -84,3 +86,60 @@ def test_unknown_optional_feature_raises() -> None:
 
 def test_optional_feature_order_does_not_change_weights() -> None:
     assert build_weights(("concentration", "taste")) == build_weights(("taste", "concentration"))
+
+
+# --- 2차 Scoring이 보는 가중치 ------------------------------------------------
+
+
+def test_second_pass_keeps_taste_from_first_pass() -> None:
+    """1차에서 taste로 후보를 골랐으면 2차 순위에도 taste가 남아야 한다."""
+    feature_scores = {
+        "weather": 0.7,
+        "remaining_operating_time": 0.5,
+        "distance": 0.9,
+        "taste": 0.59,
+        "concentration": 0.4,
+    }
+    weights = weights_for_feature_scores(feature_scores)
+    assert weights["taste"] == 0.15
+    assert sum(weights.values()) == pytest.approx(1.0)
+
+
+def test_second_pass_without_taste_matches_legacy_concentration_set() -> None:
+    feature_scores = {
+        "weather": 0.7,
+        "remaining_operating_time": 0.5,
+        "distance": 0.9,
+        "concentration": 0.4,
+    }
+    assert weights_for_feature_scores(feature_scores) == _LEGACY_CONCENTRATION
+
+
+def test_second_pass_renames_weather_slot_to_environment() -> None:
+    """1차가 요청 환경으로 채점했으면 2차도 같은 키를 써야 합산에서 안 빠진다."""
+    feature_scores = {
+        "environment": 0.7,
+        "remaining_operating_time": 0.5,
+        "distance": 0.9,
+        "concentration": 0.4,
+    }
+    weights = weights_for_feature_scores(feature_scores)
+    assert "weather" not in weights
+    assert weights["environment"] == 0.35
+
+
+def test_second_pass_keeps_base_axis_even_when_score_missing() -> None:
+    """날씨 조회 실패(None)는 결측이지 Feature 부재가 아니다.
+
+    키 유무로 축을 빼면 가중치 합이 1.0에 못 미쳐 2차를 탄 요청만 점수가
+    통째로 낮아진다.
+    """
+    feature_scores: dict[str, float | None] = {
+        "weather": None,
+        "remaining_operating_time": None,
+        "distance": 0.9,
+        "concentration": 0.4,
+    }
+    weights = weights_for_feature_scores(feature_scores)
+    assert set(weights) == set(_LEGACY_CONCENTRATION)
+    assert sum(weights.values()) == pytest.approx(1.0)

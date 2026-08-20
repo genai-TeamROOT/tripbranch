@@ -612,7 +612,17 @@ def _first_pass_item(
     travel_distance_m: int | None = None,
     travel_duration_seconds: int | None = None,
     travel_mode: TravelMode | None = None,
+    taste_score: float | None = None,
 ) -> RecommendationItem:
+    # taste_score가 None이면 1차가 취향을 아예 안 쓴 실행이라 키 자체가 없다 —
+    # 결측(None 값)과 구분해야 2차 가중치 조립이 같은 판단을 내린다.
+    feature_scores: dict[str, float | None] = {
+        "weather": None,
+        "remaining_operating_time": None,
+        "distance": distance_score,
+    }
+    if taste_score is not None:
+        feature_scores["taste"] = taste_score
     return RecommendationItem(
         place_id=place_id,
         name=f"장소-{place_id}",
@@ -628,11 +638,7 @@ def _first_pass_item(
         explanations=[],
         warnings=[],
         score=distance_score,
-        feature_scores={
-            "weather": None,
-            "remaining_operating_time": None,
-            "distance": distance_score,
-        },
+        feature_scores=feature_scores,
         weights_used={"distance": 1.0},
     )
 
@@ -666,6 +672,64 @@ def _no_data_result(place_id: str) -> CandidateEnrichmentResult:
         status="no_data",
         concentration=[],
     )
+
+
+@pytest.mark.asyncio
+async def test_rerank_with_concentration_keeps_taste_from_first_pass() -> None:
+    """1차에서 취향으로 후보를 골랐으면 2차 순위에도 취향이 남아야 한다.
+
+    place-1은 훨씬 가깝고(1차 1위) place-2는 멀지만 취향 근거가 강하다. 혼잡도는
+    두 곳이 같아서 순위를 가르지 못한다 — 그래서 순위가 뒤집히면 그건 취향이
+    반영됐다는 뜻이다.
+
+    2026-08-20 이전에는 뒤집히지 않았다. 2차가 CONCENTRATION_WEIGHTS를 그대로
+    썼는데 그 상수에 taste 키가 없어서, 취향 점수가 feature_scores에는 남아 있는
+    채로 가중합에서만 빠졌다. 가중치 합이 1.0이라 결측 재분배도 안 걸렸다.
+    """
+    first_pass = RecommendationResponse(
+        recommendations=[
+            _first_pass_item("place-1", distance_km=0.1, distance_score=0.95, taste_score=0.0),
+            _first_pass_item("place-2", distance_km=1.2, distance_score=0.4, taste_score=1.0),
+        ],
+        unverified_recommendations=[],
+        elapsed_ms=0,
+    )
+    concentration = CandidateEnrichmentResponse(
+        request_id="req-taste",
+        status="success",
+        candidates=[
+            _concentration_result("place-1", rate=50.0),
+            _concentration_result("place-2", rate=50.0),
+        ],
+    )
+
+    result = await rerank_with_concentration(first_pass, None, concentration, seek=False)
+
+    assert [item.place_id for item in result.recommendations] == ["place-2", "place-1"]
+    for item in result.recommendations:
+        assert "taste" in item.weights_used
+        assert sum(item.weights_used.values()) == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_rerank_without_taste_does_not_invent_the_axis() -> None:
+    """취향을 말하지 않은 요청은 2차에도 taste 키가 없어야 한다."""
+    first_pass = RecommendationResponse(
+        recommendations=[_first_pass_item("place-1", distance_km=0.1, distance_score=0.95)],
+        unverified_recommendations=[],
+        elapsed_ms=0,
+    )
+    concentration = CandidateEnrichmentResponse(
+        request_id="req-no-taste",
+        status="success",
+        candidates=[_concentration_result("place-1", rate=50.0)],
+    )
+
+    result = await rerank_with_concentration(first_pass, None, concentration, seek=False)
+
+    item = result.recommendations[0]
+    assert "taste" not in item.weights_used
+    assert "taste" not in item.feature_scores
 
 
 @pytest.mark.asyncio

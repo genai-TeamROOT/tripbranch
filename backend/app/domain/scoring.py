@@ -37,7 +37,7 @@ from app.place_search_policy import TRAVEL_SPEED_KM_PER_MINUTE
 # OPERATING_PARSER_VERSION과 동일한 semver 패턴. 점수 산출에 영향을 주는 변경
 # (가중치, Feature 추가/제거, environment_type 판정표 등) 시 버전을 올린다 —
 # 사소한 리팩터링·주석 변경은 올리지 않는다.
-SCORING_VERSION = "recommendation-scoring-1.3.0"
+SCORING_VERSION = "recommendation-scoring-1.4.0"
 
 WEATHER_FEATURE = "weather"
 ENVIRONMENT_FEATURE = "environment"
@@ -62,10 +62,12 @@ _BASE_CONCESSION = 0.05
 # 요청에 따라 켜고 끄는 Feature. 순서는 가중치에 영향을 주지 않지만 표시 순서
 # (evidence._BASE_FEATURE_ORDER)와 맞춰 둔다.
 #
-# 새 선택 Feature를 추가할 때 손댈 곳은 여기 하나다. 조합별 가중치 상수를
-# 열거하면 Feature가 하나 늘 때마다 조합이 배로 늘고, 빠뜨린 조합에서 그
-# Feature가 **점수에서 조용히 사라진다** — evidence.resolve_feature_order()가
-# 같은 이유로 이미 조합 열거를 버렸다(2026-08-19).
+# 새 선택 Feature를 추가할 때 손댈 곳은 여기 하나다. 예전처럼 조합별 가중치
+# 상수를 열거하면 조합이 배로 늘고, 빠뜨린 조합에서 그 Feature가 **점수에서
+# 조용히 사라진다** — 2026-08-20에 실제로 그랬다. taste가 1차에서는 순위를
+# 정하는데 2차(CONCENTRATION_WEIGHTS)에는 키가 없어서, 취향으로 후보를 골라
+# 놓고 최종 순위에서는 취향을 빼고 있었다. 가중치 합이 1.0이라 결측 재분배도
+# 안 걸리고 예외도 안 났다.
 OPTIONAL_FEATURES: tuple[str, ...] = ("taste", "concentration")
 
 # 기본 3축 중 distance(0.20)가 0.05씩 내놓으므로 4개째에서 0이 된다.
@@ -334,15 +336,24 @@ def weights_for_environment(
 
 
 def weights_for_feature_scores(
-    weights: Mapping[str, float], feature_scores: Mapping[str, float | None]
+    feature_scores: Mapping[str, float | None],
 ) -> dict[str, float]:
-    """이미 채점된 feature_scores에 가중치 키를 맞춘다.
+    """이미 채점된 feature_scores를 보고 가중치를 조립한다.
 
     2차 Scoring(`rerank_with_concentration()`)은 조건을 다시 받지 않고 1차
-    결과만 재사용하므로, 어느 Feature로 채점됐는지를 키 존재로 판단한다.
+    결과만 재사용하므로, **어느 Feature로 채점됐는지를 키 존재로 판단한다.**
+    날씨/환경 중 어느 쪽인지도, 취향이 켜져 있었는지도 여기서 갈린다.
+
+    기본 3축은 키가 없어도 항상 넣는다 — 1차에서 날씨 조회에 실패하면
+    `feature_scores["weather"]`가 `None`으로 들어오는데, 그건 결측이지 Feature가
+    없는 게 아니다. 키 유무로 축을 빼면 가중치 합이 1.0에 못 미쳐 2차를 탄
+    요청만 점수가 통째로 낮아진다. 결측 처리는 호출부가
+    `redistribute_weights()`로 따로 한다.
     """
+    active = [feature for feature in OPTIONAL_FEATURES if feature in feature_scores]
+    weights = build_weights(active)
     if ENVIRONMENT_FEATURE not in feature_scores:
-        return dict(weights)
+        return weights
     return _rename_weather_weight(weights)
 
 
