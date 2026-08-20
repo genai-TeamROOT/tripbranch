@@ -6,7 +6,7 @@ docs/design/test-cases.md의 TC-07~09와 conditions-schema.md §5 예시5(place_
 
 from __future__ import annotations
 
-from app.providers.gemini_prompts import PROMPT_VERSION
+from app.prompts.registry import turn_prompt_version
 from app.schemas import (
     ConcentrationIntent,
     Environment,
@@ -64,7 +64,7 @@ def test_recommend_resets_soft_and_updates_all_set_fields() -> None:
     assert ops[("Update", "place_tags")] == ["카페"]
     assert request.confirmed is True
     assert request.intent == "RECOMMEND"
-    assert request.prompt_version == PROMPT_VERSION
+    assert request.prompt_version == turn_prompt_version(Intent.RECOMMEND)
 
 
 def test_schedule_merges_conditions_same_as_recommend() -> None:

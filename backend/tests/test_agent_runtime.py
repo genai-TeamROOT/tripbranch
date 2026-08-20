@@ -35,8 +35,8 @@ from app.agent_context.schemas import (
 )
 from app.domain.scoring import SCORING_VERSION
 from app.domain.travel_route import TravelMode, TravelRoute
+from app.prompts.registry import turn_prompt_version
 from app.providers.contracts import ProviderSource, provider_result
-from app.providers.gemini_prompts import PROMPT_VERSION
 from app.providers.stub import FakeLLMProvider
 from app.providers.walking_route import FakeWalkingRouteProvider
 from app.schemas import (
@@ -324,7 +324,7 @@ async def test_recommend_flow_records_traces_for_llm_tool_and_scoring() -> None:
     assert all(trace.latency_ms is not None and trace.latency_ms >= 0 for trace in traces)
 
     by_step = {trace.step: trace for trace in traces}
-    assert by_step["llm_interpret"].prompt_version == PROMPT_VERSION
+    assert by_step["llm_interpret"].prompt_version == turn_prompt_version(Intent.RECOMMEND)
     assert by_step["llm_interpret"].scoring_version is None
     assert by_step["tool_fetch"].prompt_version is None
     assert by_step["tool_fetch"].scoring_version is None
@@ -2211,7 +2211,11 @@ async def test_info_walking_time_uses_current_gps_and_route_tool() -> None:
         ),
         store=store,
         travel_route_tool=TravelRouteTool(
-            {TravelMode.WALKING: TravelRouteProviders(primary=FakeWalkingRouteProvider(walking_speed_mps=1.2))}
+            {
+                TravelMode.WALKING: TravelRouteProviders(
+                    primary=FakeWalkingRouteProvider(walking_speed_mps=1.2)
+                )
+            }
         ),
         **providers,
     )

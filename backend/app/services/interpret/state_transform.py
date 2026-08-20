@@ -10,7 +10,7 @@ payload를 읽고 operations/rejected_places/reset_scope로 바꾸는 건 해석
 
 from __future__ import annotations
 
-from app.providers.gemini_prompts import PROMPT_VERSION
+from app.prompts.registry import turn_prompt_version
 from app.schemas import (
     ConcentrationIntent,
     Environment,
@@ -225,7 +225,7 @@ def transform(
         reset_scope=reset_scope,
         operations=operations,
         rejected_places=rejected_places,
-        prompt_version=PROMPT_VERSION,
+        prompt_version=turn_prompt_version(llm_output.intent),
     )
 
 

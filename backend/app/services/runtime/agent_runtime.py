@@ -34,7 +34,7 @@ from app.errors import AppError
 from app.geo import haversine_km
 from app.observability.api_usage import create_external_client
 from app.place_search_policy import MAX_PLACE_SEARCH_RADIUS_KM, WALKING_SPEED_KM_PER_MINUTE
-from app.providers.gemini_prompts import PROMPT_VERSION
+from app.prompts.registry import turn_prompt_version
 from app.providers.protocols import LLMProvider
 from app.schedule.planner import plan_partial_schedule, plan_schedule
 from app.schedule.schemas import SchedulePartialFillRequest, SchedulePlanningRequest
@@ -1236,7 +1236,10 @@ async def run_agent_flow(
         run_id=state_response.run_id,
         step="llm_interpret",
         latency_ms=llm_latency_ms,
-        prompt_version=PROMPT_VERSION,
+        # 이번 턴이 실제로 사용한 슬롯의 버전을 남긴다(예: router.classify@1+info.extract@1).
+        # 예전의 단일 고정 문자열로는 어느 인텐트의 프롬프트가 이 응답을 만들었는지
+        # 되짚을 수 없었다.
+        prompt_version=turn_prompt_version(llm_output.intent),
         store=store,
     )
 
