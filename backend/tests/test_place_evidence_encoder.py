@@ -10,7 +10,11 @@ from typing import Any
 
 import pytest
 
-from app.providers.place_evidence_encoder import MODEL_NAME, KoSrobertaEncoder
+from app.providers.place_evidence_encoder import (
+    MODEL_NAME,
+    KoSrobertaEncoder,
+    get_shared_encoder,
+)
 
 
 class _Vector:
@@ -137,3 +141,28 @@ def test_missing_dependency_explains_how_to_install(
 
     with pytest.raises(RuntimeError, match="embeddings"):
         KoSrobertaEncoder().encode("조용한 곳")
+
+
+def test_shared_encoder_is_one_instance_per_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """요청마다 새로 만들면 모델도 매번 적재된다 — 요청당 9.4초·537MB가 붙는다."""
+    import app.providers.place_evidence_encoder as module
+
+    monkeypatch.setattr(module, "_shared_encoder", None)
+
+    assert get_shared_encoder() is get_shared_encoder()
+
+
+def test_warmup_and_request_path_share_the_instance(
+    monkeypatch: pytest.MonkeyPatch, loaded_names: list[str]
+) -> None:
+    """예열한 인스턴스와 요청이 쓰는 인스턴스가 다르면 예열이 무의미하다."""
+    import app.providers.place_evidence_encoder as module
+
+    monkeypatch.setattr(module, "_shared_encoder", None)
+
+    get_shared_encoder().warmup()
+    get_shared_encoder().encode("조용한 곳")
+
+    assert loaded_names == [MODEL_NAME]

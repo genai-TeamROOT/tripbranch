@@ -86,3 +86,20 @@ class KoSrobertaEncoder:
         """적재와 같은 조건(정규화 임베딩)으로 인코딩한다."""
         model = self._load()
         return model.encode(text, normalize_embeddings=True).tolist()
+
+
+# 프로세스에 하나만 둔다. 인코더를 요청마다 새로 만들면 모델도 매번 적재돼
+# 요청 1건당 9.4초와 537MB가 더 붙는다(2026-08-19 실측). lifespan의 예열과
+# 요청 경로가 **같은 인스턴스**를 봐야 예열이 의미를 갖는다.
+_shared_encoder: KoSrobertaEncoder | None = None
+_shared_encoder_lock = threading.Lock()
+
+
+def get_shared_encoder() -> KoSrobertaEncoder:
+    """프로세스 공용 인코더를 돌려준다(없으면 만든다)."""
+    global _shared_encoder
+    if _shared_encoder is None:
+        with _shared_encoder_lock:
+            if _shared_encoder is None:
+                _shared_encoder = KoSrobertaEncoder()
+    return _shared_encoder

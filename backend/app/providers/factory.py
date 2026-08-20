@@ -23,7 +23,7 @@ from app.providers.holiday import FakeHolidayProvider, RealHolidayProvider
 from app.providers.hybrid_place_details import HybridPlaceDetailsProvider
 from app.providers.local_search import FakeLocalSearchProvider, RealLocalSearchProvider
 from app.providers.place_evidence import PlaceEvidenceProvider
-from app.providers.place_evidence_encoder import KoSrobertaEncoder
+from app.providers.place_evidence_encoder import get_shared_encoder
 from app.providers.protocols import (
     ConcentrationProvider,
     FestivalProvider,
@@ -464,4 +464,4 @@ def get_place_evidence_provider(
         client=client,
         timeout_seconds=settings.external_api_timeout_seconds,
     )
-    return PlaceEvidenceProvider(KoSrobertaEncoder(), repository)
+    return PlaceEvidenceProvider(get_shared_encoder(), repository)

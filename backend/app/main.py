@@ -23,7 +23,7 @@ from app.auth.jwks import issuer as auth_issuer
 from app.config import settings
 from app.errors import AppError
 from app.providers.factory import validate_provider_config
-from app.providers.place_evidence_encoder import KoSrobertaEncoder
+from app.providers.place_evidence_encoder import get_shared_encoder
 from app.providers.tour_category_registry import get_tour_category_registry
 from app.routes.agent import router as agent_router
 from app.routes.chat import router as chat_router
@@ -137,7 +137,7 @@ def _warmup_taste_encoder() -> None:
     """
     if not settings.taste_evidence_enabled:
         return
-    KoSrobertaEncoder().warmup_in_background()
+    get_shared_encoder().warmup_in_background()
 
 
 @asynccontextmanager
