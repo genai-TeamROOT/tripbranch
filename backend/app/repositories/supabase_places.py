@@ -18,6 +18,10 @@ from app.domain.models import (
     TourPlaceRecord,
 )
 from app.errors import AppError
+from app.place_search_policy import (
+    PLACE_SEARCH_LDONG_DISTRICT_CODE,
+    PLACE_SEARCH_LDONG_REGION_CODE,
+)
 
 # search_place_evidence RPC가 강제하는 후보 상한. 넘으면 RPC가 즉시 에러를
 # 던진다 — 여기서 미리 막아 왕복 한 번을 아끼고, 실패 지점을 호출부 가까이 둔다.
@@ -458,13 +462,23 @@ class SupabasePlaceRepository:
         return _map_place_locations(rows, fallback_title=normalized_name)
 
     async def _query_places_by_alias(self, alias: str) -> list[object]:
-        """매핑 별칭으로 장소를 찾는다. 별칭이 없는 장소는 조인에서 빠진다."""
+        """매핑 별칭으로 장소를 찾는다. 별칭이 없는 장소는 조인에서 빠진다.
+
+        지원 지역(area_code/district_code)을 명시적으로 걸어둔다. 이 메서드가
+        읽는 결과는 호출자(resolve_location)가 지역 경계 검사를 건너뛰는
+        경로라(D-044, "저장소에서 해석된 장소는 이미 종로구로 등록된 것") —
+        places 테이블에 다른 구 데이터가 들어오는 순간 그 전제가 깨진다.
+        RAG 실험 등으로 다른 구 장소가 이 테이블에 섞여도 실제 서비스 동작이
+        조용히 바뀌지 않도록 여기서 필터로 막아둔다.
+        """
         response = await self._request(
             "GET",
             "/places",
             params={
                 "select": _LOCATION_COLUMNS_INNER,
                 "is_active": "eq.true",
+                "area_code": f"eq.{PLACE_SEARCH_LDONG_REGION_CODE}",
+                "district_code": f"eq.{PLACE_SEARCH_LDONG_DISTRICT_CODE}",
                 "place_concentration_mappings.concentration_aliases": f"cs.{{{alias}}}",
                 "limit": "2",
             },
@@ -475,6 +489,7 @@ class SupabasePlaceRepository:
         return rows
 
     async def _query_places_by_title(self, title_filter: str) -> list[object]:
+        # _query_places_by_alias와 같은 이유로 지원 지역을 명시적으로 건다.
         response = await self._request(
             "GET",
             "/places",
@@ -482,6 +497,8 @@ class SupabasePlaceRepository:
                 "select": _LOCATION_COLUMNS,
                 "title": title_filter,
                 "is_active": "eq.true",
+                "area_code": f"eq.{PLACE_SEARCH_LDONG_REGION_CODE}",
+                "district_code": f"eq.{PLACE_SEARCH_LDONG_DISTRICT_CODE}",
                 "limit": "2",
             },
         )

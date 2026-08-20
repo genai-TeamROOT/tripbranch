@@ -244,3 +244,7 @@ backend/.venv*/
 
 # 개인 작업 지시 메모 (task 파일 모음, 커밋 대상 아님)
 package_D/
+
+# 중구 RAG 확장 개인 실험용 임베딩 산출물 (커밋 대상 아님, 상세는
+# supabase/data/backups/20260820_junggu_rag_expansion/README.md 참고)
+junggu_rag/
