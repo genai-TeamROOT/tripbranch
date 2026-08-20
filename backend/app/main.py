@@ -128,15 +128,16 @@ def _warmup_taste_encoder() -> None:
     적재는 프로세스마다 한 번씩 필요하고 실측 9.4초가 걸린다(2026-08-19).
     여기서 안 올리면 그 시간을 첫 사용자가 그대로 기다린다.
 
+    적재를 기다리지 않는다. 동기로 부르면 부팅이 9.4초 늦어지고, 앱을 띄우는
+    테스트마다 그 비용을 문다. 서버가 먼저 뜨고 모델은 뒤따라 올라오며, 적재
+    중에 취향 요청이 오면 인코더 락에서 기다렸다가 처리된다.
+
     실패해도 서버는 뜬다 — 모델이 없으면 취향 Feature만 빠지고 추천은
     그대로 동작한다. 부팅을 막을 만한 오설정이 아니다.
     """
     if not settings.taste_evidence_enabled:
         return
-    try:
-        KoSrobertaEncoder().warmup()
-    except Exception:
-        logger.exception("취향 임베딩 모델 예열 실패 — 취향 Feature 없이 기동한다")
+    KoSrobertaEncoder().warmup_in_background()
 
 
 @asynccontextmanager

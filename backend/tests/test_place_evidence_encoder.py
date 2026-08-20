@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import builtins
 import sys
+import threading
 import types
 from typing import Any
 
@@ -63,6 +64,54 @@ def test_model_is_not_loaded_until_used(loaded_names: list[str]) -> None:
 def test_warmup_loads_the_model_up_front(loaded_names: list[str]) -> None:
     """lifespan에서 미리 올려두지 않으면 첫 요청이 적재 시간을 뒤집어쓴다."""
     KoSrobertaEncoder().warmup()
+
+    assert loaded_names == [MODEL_NAME]
+
+
+def test_background_warmup_does_not_block_and_loads_once(
+    loaded_names: list[str],
+) -> None:
+    """동기 예열은 부팅을 9.4초 늦추고 앱을 띄우는 테스트마다 그 비용을 문다."""
+    encoder = KoSrobertaEncoder()
+
+    thread = encoder.warmup_in_background()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert loaded_names == [MODEL_NAME]
+
+
+def test_background_warmup_failure_is_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """예열 실패가 스레드 밖으로 새면 기동이 깨진다."""
+    monkeypatch.delitem(sys.modules, "sentence_transformers", raising=False)
+    real_import = builtins.__import__
+
+    def blocked(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "sentence_transformers":
+            raise ImportError("없음")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", blocked)
+
+    thread = KoSrobertaEncoder().warmup_in_background()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+
+
+def test_concurrent_loads_produce_one_model(loaded_names: list[str]) -> None:
+    """두 벌이 올라가면 순간 RSS가 두 배가 된다(실측 537MB x 2)."""
+    encoder = KoSrobertaEncoder()
+
+    threads = [
+        threading.Thread(target=lambda: encoder.encode("조용한 곳")) for _ in range(4)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
 
     assert loaded_names == [MODEL_NAME]
 

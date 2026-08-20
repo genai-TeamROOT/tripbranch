@@ -17,6 +17,7 @@ lifespan에서 warmup()을 부르면 된다 — 안 부르면 첫 요청이 모�
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
@@ -40,20 +41,45 @@ class KoSrobertaEncoder:
     def __init__(self, model_name: str = MODEL_NAME) -> None:
         self._model_name = model_name
         self._model: SentenceTransformer | None = None
+        # 예열 스레드와 첫 요청이 동시에 적재하는 것을 막는다. 두 벌이 올라가면
+        # 순간 RSS가 두 배가 된다.
+        self._lock = threading.Lock()
 
     def warmup(self) -> None:
         """모델을 미리 적재한다. 서버 기동 시 부르면 첫 요청이 느려지지 않는다."""
         self._load()
 
+    def warmup_in_background(self) -> threading.Thread:
+        """적재를 백그라운드로 돌리고 즉시 돌아온다.
+
+        적재가 실측 9.4초라(2026-08-19) 동기로 부르면 그만큼 부팅이 늦어진다.
+        서버는 먼저 뜨고 모델은 뒤따라 올라온다 — 적재 중에 취향 요청이 오면
+        `_load()`의 락에서 기다렸다가 처리된다.
+        """
+        thread = threading.Thread(
+            target=self._warmup_quietly, name="taste-encoder-warmup", daemon=True
+        )
+        thread.start()
+        return thread
+
+    def _warmup_quietly(self) -> None:
+        try:
+            self._load()
+        except Exception:
+            logger.exception("취향 임베딩 모델 예열 실패 — 취향 Feature 없이 동작한다")
+
     def _load(self) -> SentenceTransformer:
-        if self._model is None:
-            try:
-                from sentence_transformers import SentenceTransformer
-            except ImportError as error:  # pragma: no cover - 설치 환경 의존
-                raise RuntimeError(_INSTALL_HINT) from error
-            logger.info("취향 임베딩 모델 적재 시작 (model=%s)", self._model_name)
-            self._model = SentenceTransformer(self._model_name)
-            logger.info("취향 임베딩 모델 적재 완료 (model=%s)", self._model_name)
+        if self._model is not None:
+            return self._model
+        with self._lock:
+            if self._model is None:
+                try:
+                    from sentence_transformers import SentenceTransformer
+                except ImportError as error:  # pragma: no cover - 설치 환경 의존
+                    raise RuntimeError(_INSTALL_HINT) from error
+                logger.info("취향 임베딩 모델 적재 시작 (model=%s)", self._model_name)
+                self._model = SentenceTransformer(self._model_name)
+                logger.info("취향 임베딩 모델 적재 완료 (model=%s)", self._model_name)
         return self._model
 
     def encode(self, text: str) -> Sequence[float]:

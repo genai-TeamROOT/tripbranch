@@ -7,6 +7,8 @@ validate_provider_config()가 담당한다.
 
 from __future__ import annotations
 
+import logging
+
 import httpx
 
 from app.config import Settings, settings
@@ -51,6 +53,8 @@ from app.repositories.fake_places import (
 from app.repositories.supabase_places import SupabasePlaceRepository
 from app.tools.recommendation_cards import RecommendationCardTool
 from app.tools.travel_route import TravelRouteProviders, TravelRouteTool
+
+logger = logging.getLogger(__name__)
 
 
 def _require_key(value: str, variable_name: str) -> str:
@@ -432,23 +436,6 @@ def validate_provider_config(target: Settings | None = None) -> None:
                 + ", ".join(missing_state_store)
             )
 
-    # 취향 근거 검색도 Supabase RPC와 임베딩 모델을 함께 요구한다. 모델은
-    # 선택 의존성이라 여기서 import 가능 여부까지 확인하지 않는다 — 첫 encode()
-    # 때 설치 안내와 함께 멈춘다(place_evidence_encoder.py).
-    if current.taste_evidence_enabled:
-        missing_taste = [
-            variable_name
-            for variable_name, attribute in (
-                ("SUPABASE_URL", "supabase_url"),
-                ("SUPABASE_SECRET_KEY", "supabase_secret_key"),
-            )
-            if not getattr(current, attribute)
-        ]
-        if missing_taste:
-            raise ValueError(
-                "TASTE_EVIDENCE_ENABLED=true에 필요한 환경변수가 비어 있습니다: "
-                + ", ".join(missing_taste)
-            )
 
 
 def get_place_evidence_provider(
@@ -461,9 +448,19 @@ def get_place_evidence_provider(
     """
     if not settings.taste_evidence_enabled:
         return None
+    if not settings.supabase_url or not settings.supabase_secret_key:
+        # 부팅을 막지 않는다. 취향은 순위를 다듬는 축이라 없어도 추천은
+        # 동작하고, 여기서 죽이면 설정 하나 때문에 서비스 전체가 안 뜬다.
+        # 대신 왜 안 켜졌는지는 로그로 남긴다 — 조용히 사라지면 "켰는데 왜
+        # 순위가 그대로냐"를 추적할 방법이 없다.
+        logger.warning(
+            "TASTE_EVIDENCE_ENABLED=true인데 SUPABASE_URL/SUPABASE_SECRET_KEY가"
+            " 비어 있어 취향 근거 검색을 끕니다."
+        )
+        return None
     repository = SupabasePlaceRepository(
-        supabase_url=_require_key(settings.supabase_url, "SUPABASE_URL"),
-        secret_key=_require_key(settings.supabase_secret_key, "SUPABASE_SECRET_KEY"),
+        supabase_url=settings.supabase_url,
+        secret_key=settings.supabase_secret_key,
         client=client,
         timeout_seconds=settings.external_api_timeout_seconds,
     )
