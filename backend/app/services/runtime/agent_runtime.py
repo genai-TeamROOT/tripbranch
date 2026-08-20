@@ -99,6 +99,7 @@ from app.services.runtime.tool_debug import (
 from app.state.schema import now_kst
 from app.state.service import (
     RecommendedPlace,
+    RecordClosedExclusionsRequest,
     RecordRecommendationRequest,
     RecordTraceRequest,
     SessionContextResponse,
@@ -108,6 +109,7 @@ from app.state.service import (
     StateApplyResponse,
     UpdateApiContextRequest,
     apply,
+    record_closed_exclusions,
     record_recommendation,
     record_trace,
     set_ignore_operating_hours_until,
@@ -1892,6 +1894,24 @@ async def run_agent_flow(
         final_limit=recommendation_limit,
         execution_collector=tool_executions,
     )
+
+    # 6-1) A → B: D의 하드 필터(_is_closed)가 폐점이라 걸러낸 후보 id를 기록한다
+    #      (TP-82). 이 후보들은 recommendations/unverified_recommendations
+    #      어디에도 담기지 않아 아래 record_recommendation()의 노출 이력 경로를
+    #      탈 수 없다 — 그래서 기록하지 않으면 다음 회차 후보 수집에서 매번
+    #      다시 뽑혀, 밤 시간대처럼 폐점 비율이 높을 때 "다른 곳 보여줘"를
+    #      반복하면 카드 수가 점점 줄어드는 문제로 이어진다. SCHEDULE/RECOMMEND/
+    #      MODIFY 어느 경로든 D 응답은 여기서 이미 확정됐으므로, 분기 전에 한
+    #      번만 기록해 두 경로에 중복하지 않는다.
+    if recommendations.excluded_closed_place_ids:
+        record_closed_exclusions(
+            RecordClosedExclusionsRequest(
+                session_id=state_response.session_id,
+                run_id=state_response.run_id,
+                place_ids=recommendations.excluded_closed_place_ids,
+            ),
+            store=store,
+        )
 
     if is_schedule:
         # 6-2) A: C의 AgentContextResponse.places(위경도)를 place_id로 매칭해

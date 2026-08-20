@@ -537,6 +537,88 @@ class TestRecordRecommendation:
         assert item.environment_type == "indoor"
 
 
+# ================================================================ TP-82
+
+class TestRecordClosedExclusions:
+    """영업 종료 후보가 노출 이력 없이 매 회차 재수집되던 문제(TP-82) 검증.
+
+    D의 하드 필터가 걸러낸 place_id를 recommended/rejected와 별도로 기록해도,
+    다음 회차 excluded_place_ids에는 셋 다 합쳐져야 한다(get_exclusion_place_ids
+    변경).
+    """
+
+    def test_기록_건수를_반환한다(self, store):
+        r = apply(store, session_id=None, operations=[])
+        res = svc.record_closed_exclusions(
+            svc.RecordClosedExclusionsRequest(
+                session_id=r.session_id, run_id=r.run_id, place_ids=["A", "B"]
+            ),
+            store=store,
+        )
+
+        assert res.recorded == 2
+
+    def test_빈_목록도_오류가_아니다(self, store):
+        r = apply(store, session_id=None, operations=[])
+        res = svc.record_closed_exclusions(
+            svc.RecordClosedExclusionsRequest(
+                session_id=r.session_id, run_id=r.run_id, place_ids=[]
+            ),
+            store=store,
+        )
+        assert res.recorded == 0
+
+    def test_기록한_장소가_다음_회차_제외_목록에_들어간다(self, store):
+        first = apply(store, session_id=None, operations=[])
+        svc.record_closed_exclusions(
+            svc.RecordClosedExclusionsRequest(
+                session_id=first.session_id, run_id=first.run_id, place_ids=["A"]
+            ),
+            store=store,
+        )
+
+        second = apply(store, session_id=first.session_id, operations=[])
+        assert "A" in second.excluded_place_ids
+
+    def test_노출_이력과_구분해서_저장된다(self, store):
+        """closed_excluded는 recommended와 다른 리스트다 — 섞이면 "노출했다"로
+        잘못 취급되어 COMPARE의 "첫 번째"가 실제로 안 보여준 장소를 가리키게
+        된다."""
+        r = apply(store, session_id=None, operations=[])
+        svc.record_closed_exclusions(
+            svc.RecordClosedExclusionsRequest(
+                session_id=r.session_id, run_id=r.run_id, place_ids=["A"]
+            ),
+            store=store,
+        )
+
+        history = store.get_history(r.session_id)
+        assert history is not None
+        assert [item.place_id for item in history.closed_excluded] == ["A"]
+        assert history.recommended == []
+
+    def test_recommended_초기화_시_함께_비워진다(self, store):
+        """clear_recommended()(history reset)는 closed_excluded도 함께 비운다 —
+        폐점 여부는 시각에 따라 바뀌는 사실이라 새 검색 컨텍스트까지 영구히
+        제외할 근거가 아니다."""
+        first = apply(store, session_id=None, operations=[])
+        svc.record_closed_exclusions(
+            svc.RecordClosedExclusionsRequest(
+                session_id=first.session_id, run_id=first.run_id, place_ids=["A"]
+            ),
+            store=store,
+        )
+
+        reset = apply(
+            store,
+            session_id=first.session_id,
+            operations=[],
+            reset_scope="history",
+        )
+
+        assert "A" not in reset.excluded_place_ids
+
+
 # ================================================================ 세션 삭제
 
 class TestDeleteSession:
@@ -660,6 +742,87 @@ class TestUpdateApiContext:
 
         assert r.api_context.gps_expired is True
         assert r.api_context.weather_expired is True
+
+    # ---------------------------------------------------- PR #188
+
+    def test_기존_세션은_재확인_시각이_null이다(self, store):
+        r = apply(store, session_id=None, operations=[])
+        assert r.api_context.gps_location_confirmed_at is None
+
+    def test_재확인_시각을_명시적으로_전달하면_저장된다(self, store):
+        r = apply(store, session_id=None, operations=[])
+        confirmed_at = now_kst()
+
+        res = svc.update_api_context(
+            svc.UpdateApiContextRequest(
+                session_id=r.session_id,
+                gps_location="37.5665,126.9780",
+                gps_location_confirmed_at=confirmed_at,
+            ),
+            store=store,
+        )
+
+        assert res is not None
+        assert res.api_context.gps_location_confirmed_at == confirmed_at
+
+    def test_gps_location만_갱신하면_재확인_시각은_그대로다(self, store):
+        """"N분 전 위치로 계속"처럼 재확인 없이 위치만 갱신되는 경우를 흉내낸다
+        — gps_location_updated_at(기술적 TTL)과 gps_location_confirmed_at
+        (사용자 재확인)이 혼용되면 안 된다."""
+        r = apply(store, session_id=None, operations=[])
+        confirmed_at = now_kst()
+
+        svc.update_api_context(
+            svc.UpdateApiContextRequest(
+                session_id=r.session_id,
+                gps_location="37.5665,126.9780",
+                gps_location_confirmed_at=confirmed_at,
+            ),
+            store=store,
+        )
+        res = svc.update_api_context(
+            svc.UpdateApiContextRequest(
+                session_id=r.session_id, gps_location="37.6,127.0"
+            ),
+            store=store,
+        )
+
+        assert res is not None
+        assert res.api_context.gps_location == "37.6,127.0"
+        assert res.api_context.gps_location_confirmed_at == confirmed_at
+
+    def test_재확인_시각을_생략하면_현재시각으로_채워진다(self, store):
+        """gps_location_updated_at과 동일한 관례 — 필드는 전달했지만 값을
+        안 채우면(None) now로 채운다."""
+        r = apply(store, session_id=None, operations=[])
+
+        res = svc.update_api_context(
+            svc.UpdateApiContextRequest(
+                session_id=r.session_id,
+                gps_location="37.5665,126.9780",
+                gps_location_confirmed_at=None,
+            ),
+            store=store,
+        )
+
+        assert res is not None
+        assert res.api_context.gps_location_confirmed_at is not None
+
+    def test_get_session_context에도_재확인_시각이_포함된다(self, store):
+        r = apply(store, session_id=None, operations=[])
+        confirmed_at = now_kst()
+
+        svc.update_api_context(
+            svc.UpdateApiContextRequest(
+                session_id=r.session_id,
+                gps_location="37.5665,126.9780",
+                gps_location_confirmed_at=confirmed_at,
+            ),
+            store=store,
+        )
+        ctx = svc.get_session_context(r.session_id, store=store)
+
+        assert ctx.api_context.gps_location_confirmed_at == confirmed_at
 
 
 # ================================================================ 다중 턴
