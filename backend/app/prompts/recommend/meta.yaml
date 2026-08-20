@@ -2,7 +2,7 @@ intent: RECOMMEND
 owner: D
 slots:
   recommend.extract:
-    version: 2
+    version: "2.0.0"
     template: extract.md
     bundle:
       - recommend/location_rules.md
@@ -14,7 +14,7 @@ slots:
     evals: evals/README.md
   recommend.summary:
     description: 카드에 있는 검증된 값만 사용해 한두 문장으로 추천을 소개한다.
-    version: 1
+    version: "1.0.0"
     template: summary_instruction.md
     bundle:
       - _shared/persona/trivi.md

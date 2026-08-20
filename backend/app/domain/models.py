@@ -136,11 +136,54 @@ class RealtimePopulationResult:
 
 
 @dataclass(frozen=True)
+class RealtimeParkingLot:
+    name: str
+    latitude: float | None
+    longitude: float | None
+    capacity: int | None
+    current_parked_count: int | None
+    current_available: bool
+    paid: bool | None
+    observed_at: str | None
+
+
+@dataclass(frozen=True)
+class RealtimeSubwayArrival:
+    station_name: str
+    line: str | None
+    direction: str | None
+    destination: str | None
+    arrival_seconds: int | None
+    arrival_message: str | None
+
+
+@dataclass(frozen=True)
+class RealtimeBusStop:
+    name: str
+    ars_id: str | None
+    latitude: float | None
+    longitude: float | None
+
+
+@dataclass(frozen=True)
+class RealtimeCityEvent:
+    name: str
+    period: str | None
+    place: str | None
+    thumbnail_url: str | None
+    url: str | None
+
+
+@dataclass(frozen=True)
 class RealtimeCityDataResult:
     """상권 활동과 인구 혼잡도를 같은 서울시 주요 장소 기준으로 묶는다."""
 
     commercial: RealtimeCommercialResult | None
     population: RealtimePopulationResult | None
+    parking_lots: tuple[RealtimeParkingLot, ...] = ()
+    subway_arrivals: tuple[RealtimeSubwayArrival, ...] = ()
+    bus_stops: tuple[RealtimeBusStop, ...] = ()
+    events: tuple[RealtimeCityEvent, ...] = ()
 
 
 @dataclass(frozen=True)

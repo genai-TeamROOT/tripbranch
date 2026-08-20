@@ -2,7 +2,7 @@ intent: MODIFY
 owner: A
 slots:
   modify.extract:
-    version: 1
+    version: "1.0.0"
     template: extract.md
     bundle:
       - modify/type_rules.md

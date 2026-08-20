@@ -128,6 +128,7 @@ export interface InfoPlaceCard {
   population_current_level?: string | null;
   population_observed_at?: string | null;
   population_forecasts?: PopulationForecastBar[];
+  concentration_forecasts?: ConcentrationForecastBar[];
 }
 
 export interface PopulationForecastBar {
@@ -135,6 +136,13 @@ export interface PopulationForecastBar {
   congestion_level: string | null;
   population_min: number | null;
   population_max: number | null;
+}
+
+export interface ConcentrationForecastBar {
+  forecast_date: string;
+  concentration_rate: number;
+  concentration_level: string;
+  concentration_label: string;
 }
 
 /** 추천 카드 클릭 시 C PlaceDetails를 직접 조회하는 응답이다. */
@@ -529,7 +537,7 @@ export interface CandidateConcentrationDebug {
 }
 
 export interface ToolExecutionDebug {
-  operation?: "context_fetch" | "info_concentration" | "info_realtime_commercial" | "candidate_enrichment" | "compare_fetch";
+  operation?: "context_fetch" | "info_concentration" | "info_realtime_commercial" | "info_realtime_citydata" | "candidate_enrichment" | "compare_fetch";
   request_id: string;
   status: string;
   latency_ms: number | null;

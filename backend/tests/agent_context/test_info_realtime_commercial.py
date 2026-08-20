@@ -9,6 +9,7 @@ import pytest
 
 from app.agent_context.info_schemas import (
     InfoContextRequest,
+    RealtimeCityInfoResult,
     RealtimeCommercialInfoResult,
 )
 from app.agent_context.service import ContextService, ContextTools
@@ -141,3 +142,32 @@ async def test_current_cafe_question_reroutes_after_category_resolution() -> Non
     assert response.status == "success"
     assert isinstance(response.result, RealtimeCommercialInfoResult)
     assert response.result.population_forecasts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("question_type", "question"),
+    [
+        ("realtime_parking", "지금 주차 자리 있어?"),
+        ("realtime_subway", "지금 지하철 언제 와?"),
+        ("realtime_bus", "주변 버스정류장 어디야?"),
+        ("realtime_event", "오늘 주변 행사 있어?"),
+    ],
+)
+async def test_realtime_citydata_question_types_return_card_fields(
+    question_type: str, question: str
+) -> None:
+    response = await _service(latitude=37.5311, longitude=126.9715).fetch_info_context(
+        InfoContextRequest(
+            request_id=f"citydata-{question_type}",
+            place_name="용리단길",
+            place_context="explicit",
+            question_type=question_type,  # type: ignore[arg-type]
+            specific_question=question,
+        )
+    )
+
+    assert response.status == "success"
+    assert isinstance(response.result, RealtimeCityInfoResult)
+    assert response.result.question_type == question_type
+    assert response.result.fields

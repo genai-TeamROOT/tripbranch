@@ -1,6 +1,7 @@
 """INFO 장소 상세 카드의 C→A 최종 응답 변환을 검증한다."""
 
 from app.agent_context.info_schemas import (
+    ConcentrationForecastInfo,
     ConcentrationInfoResult,
     EventInfoResult,
     EventItem,
@@ -107,6 +108,20 @@ def test_concentration_and_event_results_also_return_minimum_cards() -> None:
                 resolved_place_name="경복궁",
                 forecast_date="2026-08-19",
                 concentration_label="보통",
+                forecasts=[
+                    ConcentrationForecastInfo(
+                        forecast_date="2026-08-19",
+                        concentration_rate=42.0,
+                        concentration_level="normal",
+                        concentration_label="보통",
+                    ),
+                    ConcentrationForecastInfo(
+                        forecast_date="2026-08-20",
+                        concentration_rate=72.0,
+                        concentration_level="crowded",
+                        concentration_label="혼잡",
+                    ),
+                ],
             ),
         )
     )
@@ -131,6 +146,14 @@ def test_concentration_and_event_results_also_return_minimum_cards() -> None:
 
     assert concentration is not None
     assert concentration.answer_fields == {"concentration": "2026-08-19 · 보통"}
+    forecast_labels = [
+        (item.forecast_date, item.concentration_label)
+        for item in concentration.concentration_forecasts
+    ]
+    assert forecast_labels == [
+        ("2026-08-19", "보통"),
+        ("2026-08-20", "혼잡"),
+    ]
     assert event is not None
     assert event.answer_fields == {"event": "경복궁 별빛야행 (2026-08-19~2026-08-20)"}
 
@@ -175,4 +198,4 @@ def test_realtime_commercial_area_overall_card_discloses_scope() -> None:
     )
 
     assert card is not None
-    assert card.answer_fields["상권 기준"] == "지역 전체 상권 (카페 업종 세부값 미제공)"
+    assert card.answer_fields["상권 기준"] == "지역 전체 상권 (요청 업종 세부값 미제공)"

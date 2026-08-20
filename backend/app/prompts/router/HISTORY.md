@@ -4,12 +4,14 @@
 
 | 슬롯 | 관리 버전 | 템플릿 | 공유 규칙 |
 | --- | --- | --- | --- |
-| router.classify | v1 | intent_definitions.md, intent_priority.md, context_rules.md, boundary_cases.md | service_scope, safety |
+| router.classify | v2 | intent_definitions.md, intent_priority.md, context_rules.md, boundary_cases.md | service_scope, safety |
 
 ## Draft
 
-- 2026-08-19: 직전 INFO 상세 카드 장소를 분류 컨텍스트에 전달해 `여기`·`이곳` 등 지시어를
-  INFO로 이어서 해석하도록 보강했습니다. 커밋·평가 후 승인 이력으로 승격합니다.
+- 2026-08-20: 실시간 주차·지하철·버스정류장·행사 INFO 추가에 따라 API 조회 가능 사실
+  정보의 범위와 지하철/주차/행사 경계 사례를 보강했습니다. 변경 전 INFO 정의 원문은
+  `archive/intent_definitions__legacy-1.md`에 보관했습니다. INFO 추출 v3과 함께 단위
+  테스트·실서버 질문 확인을 거쳐 승인 이력으로 승격합니다.
 
 ## 승인 이력
 

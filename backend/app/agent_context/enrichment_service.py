@@ -449,9 +449,49 @@ def select_concentration_forecast(
         return None
     return forecasts[0]
 
+
+def select_concentration_forecasts(
+    concentration: ConcentrationResult | None,
+    *,
+    candidate_name: str,
+    start_date: date,
+    limit: int = 7,
+) -> tuple[ConcentrationForecast, ...]:
+    """방문 예정일을 포함해 최대 ``limit``일의 장소별 예측을 고른다.
+
+    단일 날짜 선택과 같은 이름 대조 규칙을 날짜별로 적용한다. 부분 일치 API 응답에
+    다른 관광지가 섞여도 차트에 잘못된 장소의 막대가 들어가지 않게 하기 위해서다.
+    """
+
+    if concentration is None or limit <= 0:
+        return ()
+    dates = sorted(
+        {
+            forecast_date
+            for forecast in concentration.forecasts
+            if (forecast_date := parse_concentration_forecast_date(forecast.forecast_date))
+            is not None
+            and forecast_date >= start_date
+        }
+    )
+    selected: list[ConcentrationForecast] = []
+    for forecast_date in dates:
+        forecast = select_concentration_forecast(
+            concentration,
+            candidate_name=candidate_name,
+            reference_date=forecast_date,
+        )
+        if forecast is not None:
+            selected.append(forecast)
+        if len(selected) == limit:
+            break
+    return tuple(selected)
+
 __all__ = [
     "CandidateEnrichmentService",
     "JONGNO_CONCENTRATION_AREA_CODE",
     "JONGNO_CONCENTRATION_DISTRICT_CODE",
+    "parse_concentration_forecast_date",
     "select_concentration_forecast",
+    "select_concentration_forecasts",
 ]

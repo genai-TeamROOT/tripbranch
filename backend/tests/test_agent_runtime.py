@@ -2257,7 +2257,7 @@ async def test_info_event_question_type_distinguishes_direct_and_nearby() -> Non
 
     response = await run_agent_flow(
         AgentRequest(
-            user_input="경복궁 오늘 행사 있어?",
+            user_input="경복궁 행사 있어?",
             session_id=None,
             device_location=DEVICE_LOCATION,
         ),

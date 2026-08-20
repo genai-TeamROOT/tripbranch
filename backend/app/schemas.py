@@ -283,6 +283,10 @@ class QuestionType(StrEnum):
     # 서울시 실시간 도시데이터의 지역·업종별 카드 소비 활동. 특정 매장 자체의
     # 혼잡도가 아니라, 매장 좌표와 가까운 제공 상권의 대체 정보다.
     REALTIME_COMMERCIAL = "realtime_commercial"
+    REALTIME_PARKING = "realtime_parking"
+    REALTIME_SUBWAY = "realtime_subway"
+    REALTIME_BUS = "realtime_bus"
+    REALTIME_EVENT = "realtime_event"
 
 
 class PlaceContext(StrEnum):
@@ -737,6 +741,7 @@ class ToolExecutionDebug(BaseModel):
         "context_fetch",
         "info_concentration",
         "info_realtime_commercial",
+        "info_realtime_citydata",
         "candidate_enrichment",
         "compare_fetch",
     ] = "context_fetch"
@@ -786,6 +791,7 @@ class InfoPlaceCard(BaseModel):
     population_current_level: str | None = None
     population_observed_at: str | None = None
     population_forecasts: list[PopulationForecastBar] = Field(default_factory=list)
+    concentration_forecasts: list[ConcentrationForecastBar] = Field(default_factory=list)
 
 
 class PopulationForecastBar(BaseModel):
@@ -793,6 +799,15 @@ class PopulationForecastBar(BaseModel):
     congestion_level: str | None = None
     population_min: int | None = None
     population_max: int | None = None
+
+
+class ConcentrationForecastBar(BaseModel):
+    """관광지 집중률 API의 일 단위 예측을 카드 차트에 전달한다."""
+
+    forecast_date: str
+    concentration_rate: float = Field(ge=0)
+    concentration_level: str
+    concentration_label: str
 
 
 class RecommendationPlaceDetailRequest(BaseModel):

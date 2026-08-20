@@ -37,6 +37,10 @@ InfoQuestionType = Literal[
     "general_info",
     "concentration",
     "realtime_commercial",
+    "realtime_parking",
+    "realtime_subway",
+    "realtime_bus",
+    "realtime_event",
 ]
 
 
@@ -94,7 +98,17 @@ class ConcentrationInfoResult(BaseModel):
     concentration_rate: float | None = Field(default=None, ge=0)
     concentration_level: Literal["quiet", "normal", "slightly_crowded", "crowded"] | None = None
     concentration_label: str | None = None
+    forecasts: list[ConcentrationForecastInfo] = Field(default_factory=list)
     error: ContextError | None = None
+
+
+class ConcentrationForecastInfo(BaseModel):
+    """관광지 집중률의 일 단위 예측 막대 한 건."""
+
+    forecast_date: str
+    concentration_rate: float = Field(ge=0)
+    concentration_level: Literal["quiet", "normal", "slightly_crowded", "crowded"]
+    concentration_label: str
 
 
 class RealtimeCommercialInfoResult(BaseModel):
@@ -118,6 +132,19 @@ class RealtimeCommercialInfoResult(BaseModel):
     population_current_level: str | None = None
     population_observed_at: str | None = None
     population_forecasts: list[PopulationForecastInfo] = Field(default_factory=list)
+    error: ContextError | None = None
+
+
+class RealtimeCityInfoResult(BaseModel):
+    """서울시 도시데이터의 주차·대중교통·행사 결과를 공통 카드 계약으로 전달한다."""
+
+    status: Literal["success", "no_data", "unavailable"]
+    question_type: Literal["realtime_parking", "realtime_subway", "realtime_bus", "realtime_event"]
+    requested_place_name: str | None = None
+    resolved_place_name: str | None = None
+    area_name: str | None = None
+    observed_at: str | None = None
+    fields: dict[str, str] = Field(default_factory=dict)
     error: ContextError | None = None
 
 
@@ -235,6 +262,7 @@ class InfoContextResponse(BaseModel):
     result: (
         ConcentrationInfoResult
         | RealtimeCommercialInfoResult
+        | RealtimeCityInfoResult
         | PlaceInfoResult
         | EventInfoResult
         | None
@@ -254,4 +282,5 @@ __all__ = [
     "PlaceCard",
     "PlaceInfoResult",
     "RealtimeCommercialInfoResult",
+    "RealtimeCityInfoResult",
 ]

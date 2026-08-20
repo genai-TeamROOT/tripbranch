@@ -19,7 +19,11 @@ from app.agent_context.enrichment_schemas import (
     CandidateEnrichmentResponse,
     CandidateEnrichmentResult,
 )
-from app.agent_context.info_schemas import InfoContextResponse, RealtimeCommercialInfoResult
+from app.agent_context.info_schemas import (
+    InfoContextResponse,
+    RealtimeCityInfoResult,
+    RealtimeCommercialInfoResult,
+)
 from app.agent_context.schemas import (
     AgentContextResponse,
     ContextValue,
@@ -169,6 +173,8 @@ def build_info_concentration_execution_debug(
             operation=(
                 "info_realtime_commercial"
                 if isinstance(result, RealtimeCommercialInfoResult)
+                else "info_realtime_citydata"
+                if isinstance(result, RealtimeCityInfoResult)
                 else "info_concentration"
             ),
             request_id=response.request_id,

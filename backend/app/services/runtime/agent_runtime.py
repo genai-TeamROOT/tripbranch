@@ -1238,7 +1238,8 @@ async def run_agent_flow(
         run_id=state_response.run_id,
         step="llm_interpret",
         latency_ms=llm_latency_ms,
-        # 이번 턴이 실제로 사용한 슬롯의 버전을 남긴다(예: router.classify@1+info.extract@1).
+        # 이번 턴이 실제로 사용한 슬롯의 버전을 남긴다
+        # (예: router.classify@2.0.0+info.extract@3.0.0).
         # 예전의 단일 고정 문자열로는 어느 인텐트의 프롬프트가 이 응답을 만들었는지
         # 되짚을 수 없었다.
         prompt_version=turn_prompt_version(llm_output.intent),

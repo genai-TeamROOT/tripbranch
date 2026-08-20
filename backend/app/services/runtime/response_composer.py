@@ -36,6 +36,7 @@ from app.services.runtime.info_context_schemas import (
     EventInfoResult,
     InfoContextResponse,
     PlaceInfoResult,
+    RealtimeCityInfoResult,
     RealtimeCommercialInfoResult,
 )
 from app.services.runtime.info_display import format_citydata_timestamp, format_parking_for_display
@@ -255,7 +256,7 @@ def compose_realtime_commercial_message(response: InfoContextResponse) -> str:
     observed = f" {observed_at} 기준이에요." if observed_at else ""
     if result.commercial_scope == "area_overall":
         return (
-            f"{place} 개별 매장 혼잡도는 확인할 수 없고, {distance}{area}의 카페 업종 "
+            f"{place} 개별 매장 혼잡도는 확인할 수 없고, {distance}{area}의 요청 업종 "
             f"세부값도 현재 제공되지 않았어요. 대신 {area} 전체 상권은 현재 {level} 수준이에요. "
             f"이 값은 지역 전체 카드 소비 활동 기준이에요.{observed}"
         )
@@ -264,6 +265,25 @@ def compose_realtime_commercial_message(response: InfoContextResponse) -> str:
         f"{category} 상권은 현재 {level} 수준이에요. 이 값은 지역·업종별 카드 소비 활동 기준이에요."
         f"{observed}"
     )
+
+
+def compose_realtime_city_info_message(response: InfoContextResponse) -> str:
+    """주차·대중교통·행사의 실시간 citydata 결과를 간결하게 안내한다."""
+
+    if response.status == "unavailable" or not isinstance(response.result, RealtimeCityInfoResult):
+        return _TOOL_UNAVAILABLE_MESSAGE
+    result = response.result
+    place = result.resolved_place_name or result.requested_place_name or "해당 지역"
+    labels = {
+        "realtime_parking": "실시간 주차장 정보",
+        "realtime_subway": "지하철 도착 정보",
+        "realtime_bus": "주변 버스정류장 정보",
+        "realtime_event": "진행 중 행사",
+    }
+    label = labels[result.question_type]
+    if result.status == "no_data" or not result.fields:
+        return f"{place} 주변의 {label}는 현재 확인할 수 없어요."
+    return f"{place} 주변의 {label}를 찾았어요. 아래 카드에서 확인해보세요."
 
 
 def compose_place_info_message(
@@ -698,6 +718,8 @@ async def compose_chat_message(
     if llm_output.intent is Intent.INFO and info_response is not None:
         if isinstance(info_response.result, RealtimeCommercialInfoResult):
             return compose_realtime_commercial_message(info_response)
+        if isinstance(info_response.result, RealtimeCityInfoResult):
+            return compose_realtime_city_info_message(info_response)
         if isinstance(info_response.result, EventInfoResult):
             return compose_event_info_message(info_response)
         if isinstance(info_response.result, PlaceInfoResult):
@@ -786,6 +808,7 @@ __all__ = [
     "compose_chat_message",
     "compose_info_concentration_message",
     "compose_realtime_commercial_message",
+    "compose_realtime_city_info_message",
     "compose_place_info_message",
     "compose_event_info_message",
     "compose_compare_message",

@@ -2,14 +2,14 @@ intent: GENERAL
 owner: A
 slots:
   general.extract:
-    version: 1
+    version: "1.0.0"
     template: extract.md
     bundle:
       - general/topic_rules.md
     evals: evals/README.md
   general.answer:
     description: 친절하고 간결한 2~4문장 존댓말로 답하며 미지원 기능을 약속하지 않는다.
-    version: 1
+    version: "1.0.0"
     template: answer_instruction.md
     bundle:
       - _shared/persona/trivi.md
