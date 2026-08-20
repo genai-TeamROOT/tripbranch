@@ -85,7 +85,7 @@ def slots_for(intent: Intent | None) -> tuple[str, ...]:
 def turn_prompt_version(intent: Intent | None) -> str:
     """실행 기록(Trace)에 남길 프롬프트 버전 문자열을 만든다.
 
-    예: ``router.classify@1+info.extract@1``
+    예: ``router.classify@2.0.0+info.extract@3.0.0``
 
     과거 기준선으로 실행 중이면(``TRIPBRANCH_PROMPT_VARIANT``) 그 ID를 뒤에 붙여
     "지금 이 기록은 옛 프롬프트로 낸 것"임을 남긴다.
