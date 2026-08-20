@@ -26,6 +26,7 @@ from app.domain.scoring import SCORING_VERSION
 from app.domain.travel_route import (
     GeoCoordinate,
     RouteDestination,
+    RouteStatus,
     TravelMode,
     TravelRoute,
 )
@@ -33,7 +34,7 @@ from app.errors import AppError
 from app.geo import haversine_km
 from app.observability.api_usage import create_external_client
 from app.place_search_policy import MAX_PLACE_SEARCH_RADIUS_KM, WALKING_SPEED_KM_PER_MINUTE
-from app.providers.gemini_prompts import PROMPT_VERSION
+from app.prompts.registry import turn_prompt_version
 from app.providers.protocols import LLMProvider
 from app.schedule.planner import plan_partial_schedule, plan_schedule
 from app.schedule.schemas import SchedulePartialFillRequest, SchedulePlanningRequest
@@ -53,6 +54,7 @@ from app.schemas import (
     ModifyType,
     OutputStatus,
     PlaceType,
+    QuestionType,
     RecommendationItem,
     RecommendationResponse,
     RecommendPayload,
@@ -70,7 +72,7 @@ from app.services.runtime.compare_transform import (
 )
 from app.services.runtime.context_transform import to_agent_context_request
 from app.services.runtime.enrichment_transform import to_candidate_enrichment_request
-from app.services.runtime.info_context_schemas import PlaceInfoResult
+from app.services.runtime.info_context_schemas import InfoContextResponse, PlaceInfoResult
 from app.services.runtime.info_context_transform import to_info_context_request
 from app.services.runtime.info_response_transform import to_info_place_card
 from app.services.runtime.llm_execution import (
@@ -99,6 +101,7 @@ from app.services.runtime.tool_debug import (
 from app.state.schema import now_kst
 from app.state.service import (
     RecommendedPlace,
+    RecordClosedExclusionsRequest,
     RecordRecommendationRequest,
     RecordTraceRequest,
     SessionContextResponse,
@@ -108,6 +111,7 @@ from app.state.service import (
     StateApplyResponse,
     UpdateApiContextRequest,
     apply,
+    record_closed_exclusions,
     record_recommendation,
     record_trace,
     set_ignore_operating_hours_until,
@@ -148,6 +152,15 @@ _SCHEDULING_HEARTBEAT_MESSAGES = (
     "이동 동선을 정리하고 있어요.",
     "체류 시간과 도착 시각을 맞추고 있어요.",
     "조금만 더 기다려주세요, 거의 다 됐어요.",
+)
+
+_INFO_WALKING_TIME_MARKERS = (
+    "가는데얼마나걸",
+    "걷는데얼마나걸",
+    "걸어서얼마나",
+    "도보로얼마나",
+    "도보시간",
+    "도보이동",
 )
 _SCHEDULING_HEARTBEAT_INTERVAL_SECONDS = 6.0
 
@@ -1033,6 +1046,83 @@ async def _fetch_travel_routes(
     return result.routes
 
 
+def _is_info_walking_time_request(llm_output: LLMOutput) -> bool:
+    """INFO location_info 중 실제 도보 소요 시간을 물은 경우만 경로를 조회한다."""
+
+    info = llm_output.info
+    if info is None or info.question_type is not QuestionType.LOCATION_INFO:
+        return False
+    normalized_question = (info.specific_question or "").replace(" ", "")
+    return any(marker in normalized_question for marker in _INFO_WALKING_TIME_MARKERS)
+
+
+def _to_geo_coordinate(location: str | None) -> GeoCoordinate | None:
+    """B에 저장된 ``위도,경도`` 문자열을 도보 경로 도메인 값으로 변환한다."""
+
+    if location is None:
+        return None
+    parts = location.split(",")
+    if len(parts) != 2:
+        return None
+    try:
+        return GeoCoordinate(latitude=float(parts[0]), longitude=float(parts[1]))
+    except (TypeError, ValueError):
+        return None
+
+
+async def _fetch_info_walking_route(
+    route_tool: TravelRouteToolProvider | None,
+    *,
+    origin_location: str | None,
+    info_response: InfoContextResponse,
+) -> TravelRoute | None:
+    """INFO가 해석한 한 장소까지의 실제 도보 경로를 안전하게 조회한다.
+
+    경로 장애가 주소/상세 정보 응답 전체를 실패시키면 안 되므로, 실패·누락은 None으로
+    낮춘다. `TravelRouteTool` 내부의 Real→직선거리 추정 fallback은 그대로 사용한다.
+    """
+
+    if route_tool is None:
+        return None
+    result = info_response.result
+    if not isinstance(result, PlaceInfoResult):
+        return None
+    if result.place_id is None or result.destination_coordinates is None:
+        return None
+    origin = _to_geo_coordinate(origin_location)
+    if origin is None:
+        return None
+
+    try:
+        route_result = await route_tool.execute(
+            TravelRouteQuery(
+                origin=origin,
+                destinations=(
+                    RouteDestination(
+                        place_id=result.place_id,
+                        coordinate=GeoCoordinate(
+                            latitude=result.destination_coordinates.latitude,
+                            longitude=result.destination_coordinates.longitude,
+                        ),
+                    ),
+                ),
+                mode=TravelMode.WALKING,
+            )
+        )
+    except AppError:
+        logger.warning("INFO 도보 경로 조회 실패", exc_info=True)
+        return None
+
+    return next(
+        (
+            route
+            for route in route_result.routes
+            if route.place_id == result.place_id and route.status is RouteStatus.SUCCESS
+        ),
+        None,
+    )
+
+
 async def run_agent_flow(
     request: AgentRequest,
     *,
@@ -1121,6 +1211,7 @@ async def run_agent_flow(
             # 있으므로(history.get_last_recommended_items) 그대로 옮기면 된다.
             # 이름이 없는 항목(name 저장 이전의 과거 세션 등)은 빈 문자열로 채운다.
             shown_place_names=[item.name or "" for item in session_context.shown_recommendations],
+            conversation_place_name=request.conversation_place_name,
         )
         llm_output = await build_interpretation(interpret_request, llm)
     llm_latency_ms = int((time.monotonic() - llm_started_at) * 1000)
@@ -1147,7 +1238,10 @@ async def run_agent_flow(
         run_id=state_response.run_id,
         step="llm_interpret",
         latency_ms=llm_latency_ms,
-        prompt_version=PROMPT_VERSION,
+        # 이번 턴이 실제로 사용한 슬롯의 버전을 남긴다(예: router.classify@1+info.extract@1).
+        # 예전의 단일 고정 문자열로는 어느 인텐트의 프롬프트가 이 응답을 만들었는지
+        # 되짚을 수 없었다.
+        prompt_version=turn_prompt_version(llm_output.intent),
         store=store,
     )
 
@@ -1323,11 +1417,28 @@ async def run_agent_flow(
             info_response,
             latency_ms=int((time.monotonic() - info_started_at) * 1000),
         )
+        requests_walking_time = _is_info_walking_time_request(llm_output)
+        info_origin_location = valid_gps
+        if info_origin_location is None and not state_response.api_context.gps_expired:
+            info_origin_location = state_response.api_context.gps_location
+        info_walking_route = None
+        if requests_walking_time:
+            await _emit_progress(
+                stream_event_sink,
+                "fetching_context",
+                "현재 위치에서 도보 이동 시간을 확인하고 있어요.",
+            )
+            info_walking_route = await _fetch_info_walking_route(
+                travel_route_tool,
+                origin_location=info_origin_location,
+                info_response=info_response,
+            )
         stream_info_message = (
             stream_recommendation_summary
             and isinstance(info_response.result, PlaceInfoResult)
             and info_response.result.status == "success"
             and bool(info_response.result.fields)
+            and not requests_walking_time
         )
         if stream_info_message:
             await _begin_streamed_message(
@@ -1343,6 +1454,8 @@ async def run_agent_flow(
             llm_output,
             info_response=info_response,
             llm=llm,
+            info_walking_route=info_walking_route,
+            info_walking_origin_available=info_origin_location is not None,
             on_message_delta=(emit_info_message_delta if stream_info_message else None),
         )
         return AgentResponse(
@@ -1892,6 +2005,24 @@ async def run_agent_flow(
         final_limit=recommendation_limit,
         execution_collector=tool_executions,
     )
+
+    # 6-1) A → B: D의 하드 필터(_is_closed)가 폐점이라 걸러낸 후보 id를 기록한다
+    #      (TP-82). 이 후보들은 recommendations/unverified_recommendations
+    #      어디에도 담기지 않아 아래 record_recommendation()의 노출 이력 경로를
+    #      탈 수 없다 — 그래서 기록하지 않으면 다음 회차 후보 수집에서 매번
+    #      다시 뽑혀, 밤 시간대처럼 폐점 비율이 높을 때 "다른 곳 보여줘"를
+    #      반복하면 카드 수가 점점 줄어드는 문제로 이어진다. SCHEDULE/RECOMMEND/
+    #      MODIFY 어느 경로든 D 응답은 여기서 이미 확정됐으므로, 분기 전에 한
+    #      번만 기록해 두 경로에 중복하지 않는다.
+    if recommendations.excluded_closed_place_ids:
+        record_closed_exclusions(
+            RecordClosedExclusionsRequest(
+                session_id=state_response.session_id,
+                run_id=state_response.run_id,
+                place_ids=recommendations.excluded_closed_place_ids,
+            ),
+            store=store,
+        )
 
     if is_schedule:
         # 6-2) A: C의 AgentContextResponse.places(위경도)를 place_id로 매칭해

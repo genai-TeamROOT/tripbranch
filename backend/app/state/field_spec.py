@@ -90,6 +90,8 @@ API_CONTEXT_FIELDS = frozenset({
     "api_weather",
     "gps_location_updated_at",
     "api_weather_updated_at",
+    # PR #188: 위치 재확인 UX 전용, gps_location_updated_at(기술적 TTL)과 별개.
+    "gps_location_confirmed_at",
 })
 
 

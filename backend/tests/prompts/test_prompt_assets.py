@@ -20,6 +20,8 @@ import pytest
 import yaml
 
 from app.prompts.loader import PROMPT_ROOT
+from app.prompts.registry import INTENT_SLOTS, slot_versions, turn_prompt_version
+from app.schemas import Intent
 
 _APP_ROOT = Path(__file__).resolve().parents[2] / "app"
 _DOC_FILENAMES = {"README.md", "HISTORY.md", "OWNERS.md"}
@@ -128,3 +130,41 @@ def test_metadata_declares_only_real_and_used_files(folder: str, meta: dict) -> 
             assert (PROMPT_ROOT / evals_path).is_file(), (
                 f"{folder}/{slot_id}: 선언한 평가 경로가 없습니다 — {evals_path}"
             )
+
+
+def test_every_runtime_slot_has_a_version() -> None:
+    """실행 기록(Trace)에 실리는 슬롯이 전부 meta.yaml에 버전을 갖고 있어야 한다.
+
+    turn_prompt_version()은 표에 없는 슬롯을 조용히 건너뛰므로, 오타나 이름 변경이
+    생기면 기록에서 슬롯 하나가 소리 없이 빠진다. 여기서 먼저 터뜨린다.
+    """
+
+    versions = slot_versions()
+    for intent, slots in INTENT_SLOTS.items():
+        missing = [slot for slot in slots if slot not in versions]
+        assert not missing, (
+            f"{intent.value}가 쓰는 슬롯이 meta.yaml에 없습니다 — {missing}. "
+            "슬롯 이름을 바꿨다면 INTENT_SLOTS도 함께 고치세요."
+        )
+
+
+def test_every_intent_is_mapped_to_slots() -> None:
+    """새 인텐트를 추가하고 INTENT_SLOTS에 등록하지 않으면 버전이 기록되지 않는다."""
+
+    unmapped = [intent.value for intent in Intent if intent not in INTENT_SLOTS]
+    assert not unmapped, (
+        f"INTENT_SLOTS에 등록되지 않은 인텐트가 있습니다 — {unmapped}. "
+        "등록하지 않으면 그 인텐트의 실행 기록에 분류 슬롯 버전만 남습니다."
+    )
+
+
+@pytest.mark.parametrize("intent", list(Intent))
+def test_turn_prompt_version_is_readable_and_complete(intent: Intent) -> None:
+    """기록 문자열이 사람이 읽을 수 있는 형태이고 슬롯을 빠짐없이 담는지 확인한다."""
+
+    rendered = turn_prompt_version(intent)
+
+    assert rendered, f"{intent.value}: 기록할 프롬프트 버전이 비어 있습니다."
+    assert rendered.count("+") == len(INTENT_SLOTS[intent]) - 1
+    for slot in INTENT_SLOTS[intent]:
+        assert f"{slot}@" in rendered, f"{intent.value}: {slot} 버전이 빠졌습니다 — {rendered}"

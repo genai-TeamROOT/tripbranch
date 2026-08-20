@@ -53,6 +53,13 @@ class ApiContext(BaseModel):
     api_weather: str | None = None
     gps_location_updated_at: datetime | None = None
     api_weather_updated_at: datetime | None = None
+    # PR #188: 위치 재확인 UX(30분 경과 시 "N분 전 위치로 계속"/"현재 위치 다시
+    # 가져오기") 서버 상태 반영. gps_location_updated_at은 GPS 데이터의 기술적
+    # TTL(1시간) 의미를 유지하고, 이 필드는 사용자가 실제로 재확인(현재 위치
+    # 다시 가져오기)한 시각만 담아 혼용하지 않는다 — "N분 전 위치로 계속"을
+    # 선택하면 이 값은 갱신되지 않는다. A가 이 값과 now를 비교해 30분 경과
+    # 여부를 서버 상태 기준으로 판단한다. 기존 세션은 null(최초 재확인 대상).
+    gps_location_confirmed_at: datetime | None = None
 
 
 # ---------------------------------------------------------------- 상태
@@ -159,12 +166,31 @@ class RejectedItem(BaseModel):
     rejected_at: datetime = Field(default_factory=now_kst)
 
 
+class ClosedExclusionItem(BaseModel):
+    """D의 하드 필터(_is_closed)가 폐점이라 걸러낸 후보 1건. (TP-82)
+
+    recommended/rejected와 달리 "노출됐다"도 "사용자가 거절했다"도 아니다 —
+    D 응답에 아예 담기지 못해 노출 이력 경로를 탈 수 없는 후보를 별도로
+    추적하기 위한 항목이다. 운영시간은 시각에 따라 바뀌므로(닫혀 있던
+    곳이 다음 날 다시 열림) recommended/rejected처럼 영구 보관하지 않고,
+    clear_recommended()에서 함께 비운다(history.py 참고).
+    """
+
+    place_id: str
+    run_id: str
+    excluded_at: datetime = Field(default_factory=now_kst)
+
+
 class RecommendationHistory(BaseModel):
     """세션 단위 추천·거절 이력. append-only. (계약 3.2절)"""
 
     session_id: str
     recommended: list[RecommendedItem] = Field(default_factory=list)
     rejected: list[RejectedItem] = Field(default_factory=list)
+    # TP-82: D의 하드 필터가 폐점이라 걸러낸 후보 id. recommended/rejected와
+    # 분리된 별도 리스트다 — "노출했다"로 잘못 취급되면 COMPARE의 "첫 번째"가
+    # 실제로 안 보여준 장소를 가리키게 된다(댓글/카드 참고).
+    closed_excluded: list[ClosedExclusionItem] = Field(default_factory=list)
     updated_at: datetime = Field(default_factory=now_kst)
 
 

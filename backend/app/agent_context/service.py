@@ -47,6 +47,7 @@ from app.agent_context.schemas import (
     AgentContextResponse,
     Clarification,
     ContextError,
+    Coordinates,
     ResponseMetadata,
 )
 from app.agent_context.schemas import ProviderMetadata as ContextProviderMetadata
@@ -97,6 +98,7 @@ from app.tools.place_detail import (
 from app.tools.recommendation_cards import RecommendationCardTool
 from app.tools.resolve_location import (
     LocationPurpose,
+    LocationSource,
     ResolutionConfidence,
     ResolutionMethod,
     ResolvedLocation,
@@ -715,6 +717,7 @@ class ContextService:
                 requested_place_name=place_name,
                 resolved_place_name=resolved_location.resolved_name,
                 place_id=resolved_location.place_id,
+                destination_coordinates=_to_info_destination_coordinates(resolved_location),
                 fields=fields,
                 provider_metadata=(location_metadata,),
             )
@@ -755,6 +758,7 @@ class ContextService:
                 requested_place_name=place_name,
                 resolved_place_name=resolved_location.resolved_name,
                 place_id=resolved_location.place_id,
+                destination_coordinates=_to_info_destination_coordinates(resolved_location),
                 fields={},
                 provider_metadata=(location_metadata, detail_result.provider_metadata),
             )
@@ -766,6 +770,7 @@ class ContextService:
                 detail_result.details.title or resolved_location.resolved_name
             ),
             place_id=detail_result.details.content_id or resolved_location.place_id,
+            destination_coordinates=_to_info_destination_coordinates(resolved_location),
             fields=extract_info_fields(request.question_type, detail_result.details),
             # 카드는 질문 유형과 무관하게 채운다. status는 위 fields로만 정해진다.
             place_card=_to_place_card(
@@ -898,6 +903,7 @@ def _gps_location_result(
             requested_query="gps_location",
             provider_query="device_gps",
             resolved_name="기기 GPS 위치",
+            source=LocationSource.DEVICE_GPS,
             latitude=gps.latitude,
             longitude=gps.longitude,
             resolution_method=ResolutionMethod.DIRECT,
@@ -993,6 +999,7 @@ def _place_info_response(
     requested_place_name: str,
     resolved_place_name: str,
     place_id: str | None,
+    destination_coordinates: Coordinates | None,
     fields: dict[str, str],
     place_card: PlaceCard | None = None,
     provider_metadata: tuple[tuple[ProviderMetadata, ...], ...] = (),
@@ -1018,11 +1025,18 @@ def _place_info_response(
             requested_place_name=requested_place_name,
             resolved_place_name=resolved_place_name,
             place_id=place_id,
+            destination_coordinates=destination_coordinates,
             fields=fields,
             place_card=place_card,
         ),
         metadata=_info_response_metadata(*provider_metadata),
     )
+
+
+def _to_info_destination_coordinates(location: ResolvedLocation) -> Coordinates:
+    """C가 확정한 INFO 목적지를 A의 도보 경로 입력 형태로만 재노출한다."""
+
+    return Coordinates(latitude=location.latitude, longitude=location.longitude)
 
 
 def _to_place_card(details: PlaceDetails, place_id: str | None) -> PlaceCard:

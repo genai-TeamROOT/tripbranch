@@ -97,6 +97,12 @@ class RecommendationResponse(BaseModel):
     # 결과가 0건이고 그 이유가 전부 폐점 후보 제외였을 때만 True. A가 이 값으로
     # "운영중이 아닌 곳도 볼래요" 되묻기를 띄울지 판단한다(recommendation_pipeline.py).
     excluded_all_closed: bool = False
+    # 이번 회차에 D의 하드 필터(_is_closed)가 폐점이라 걸러낸 후보 id 전체.
+    # excluded_all_closed와 달리 결과가 0건이 아니어도(일부만 폐점) 채워진다.
+    # A가 이 값을 B(상태 저장소)에 기록해 다음 회차 후보 수집 시 제외 목록에
+    # 반영한다 — 그러지 않으면 노출 이력이 없는 폐점 후보가 매 회차 다시 수집된다
+    # (TP-82, docs/design/... 참고). LLM이 생성하지 않고 D가 결정적으로 채운다.
+    excluded_closed_place_ids: list[str] = Field(default_factory=list)
 
 
 class ScheduleItem(BaseModel):
@@ -615,6 +621,11 @@ class InterpretRequest(BaseModel):
     # 지목할 때 MODIFY 추출기가 이름→순번을 매칭하는 데 쓴다. 이름이 없는 항목은
     # 빈 문자열로 채워 인덱스(=순번-1)가 어긋나지 않게 한다.
     shown_place_names: list[str] = Field(default_factory=list)
+    # 직전 INFO 상세 카드에서 프론트가 보존한 장소명. "여기/이곳/거기"처럼
+    # 추천 목록이 아닌 대화 속 장소를 가리키는 INFO 발화의 해소 후보로만 쓴다.
+    # 상태 계약에 새 필드를 추가하지 않고도, 현재 대화 화면이 이미 받은 카드 정보를
+    # 다음 턴의 해석에 재사용할 수 있게 한다.
+    conversation_place_name: str | None = None
 
 
 # === Agent Runtime (A-03) ===
@@ -632,6 +643,9 @@ class AgentRequest(BaseModel):
     user_input: str = Field(..., min_length=1)
     session_id: str | None = None
     device_location: str | None = None  # "위도,경도" 문자열, api_context.gps_location과 동일 포맷
+    # 직전 INFO 카드의 장소명. 현재 화면이 "여기/이곳"을 보낼 때에만 A가 INFO
+    # from_conversation 해소 후보로 사용한다.
+    conversation_place_name: str | None = None
     # 되묻기 버튼 클릭 시 ClarificationOption.id를 그대로 echo. user_input에는 버튼
     # label을 채워 보내되(채팅 이력 표시용) 라우팅은 이 필드만으로 결정한다 —
     # classify_intent()를 다시 태우지 않는다(docs/design/clarification-options.md 3절).

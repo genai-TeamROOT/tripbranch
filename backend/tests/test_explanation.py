@@ -455,13 +455,8 @@ def test_distance_sentence_keeps_straight_line_wording_without_measurement() -> 
     assert explanations["dist"] == ("현재 위치에서 직선거리 약 440m예요.",)
 
 
-def test_distance_sentence_does_not_claim_walking_for_another_mode() -> None:
-    """도보가 아닌 실측을 "걸어서"라고 말하지 않는다.
-
-    대중교통·자동차 문구는 그 이동수단을 연결하는 카드가 추가한다 — 그때까지는
-    직선거리 문구로 돌아간다.
-    """
-    evidence = RecommendationEvidence(
+def _travel_evidence(mode: TravelMode) -> RecommendationEvidence:
+    return RecommendationEvidence(
         place_id="p1",
         name="장소A",
         category="cafe",
@@ -478,7 +473,22 @@ def test_distance_sentence_does_not_claim_walking_for_another_mode() -> None:
         environment_type="indoor",
         travel_distance_m=1800,
         travel_duration_seconds=600,
-        travel_mode=TravelMode.DRIVING,
+        travel_mode=mode,
     )
 
-    assert build_explanations(evidence) == ("현재 위치에서 직선거리 약 1.4km예요.",)
+
+def test_distance_sentence_says_by_car_for_a_driving_measurement() -> None:
+    """자동차 실측은 "차로"라고 말한다 — "걸어서"로 새어 나가지 않는다."""
+    sentences = build_explanations(_travel_evidence(TravelMode.DRIVING))
+
+    assert sentences == ("현재 위치에서 차로 약 10분 거리예요.",)
+
+
+def test_distance_sentence_falls_back_for_a_mode_without_a_phrase() -> None:
+    """문구가 없는 이동수단(대중교통)은 실측 시간을 말하지 않고 직선거리로 답한다.
+
+    그 이동수단을 연결하는 카드가 _TRAVEL_MODE_PHRASES에 문구를 추가한다.
+    """
+    sentences = build_explanations(_travel_evidence(TravelMode.TRANSIT))
+
+    assert sentences == ("현재 위치에서 직선거리 약 1.4km예요.",)

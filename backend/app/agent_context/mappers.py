@@ -56,6 +56,7 @@ def map_location_context(
         data = ResolvedLocation(
             requested_query=result.location.requested_query,
             resolved_name=result.location.resolved_name,
+            source=result.location.source,
             location=Coordinates(
                 latitude=result.location.latitude,
                 longitude=result.location.longitude,

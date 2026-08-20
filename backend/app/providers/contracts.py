@@ -31,6 +31,7 @@ class ProviderSource(StrEnum):
     TOUR_API_CONCENTRATION = "tour_api_concentration"
     KASI_HOLIDAY = "kasi_holiday"
     KAKAO_WALKING_ROUTE = "kakao_walking_route"
+    NAVER_DRIVING_ROUTE = "naver_driving_route"
     GEMINI = "gemini"
     FAKE_GEOCODING = "fake_geocoding"
     FAKE_LOCAL_SEARCH = "fake_local_search"
@@ -41,6 +42,7 @@ class ProviderSource(StrEnum):
     FAKE_CONCENTRATION = "fake_concentration"
     FAKE_HOLIDAY = "fake_holiday"
     FAKE_WALKING_ROUTE = "fake_walking_route"
+    FAKE_DRIVING_ROUTE = "fake_driving_route"
     FAKE_LLM = "fake_llm"
 
 

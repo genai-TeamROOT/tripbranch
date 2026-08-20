@@ -23,7 +23,6 @@ from app.providers.place_evidence import PlaceEvidenceProvider
 from app.schemas import (
     ConcentrationIntent,
     RecommendationResponse,
-    Transport,
     UserConditions,
 )
 from app.services.recommendation_pipeline import (
@@ -31,11 +30,12 @@ from app.services.recommendation_pipeline import (
     merge_prepared_recommendations,
     prepare_recommendation_from_context,
     rerank_with_concentration,
+    resolve_origin_name,
     resolve_weather_condition,
     score_prepared_recommendation,
 )
 from app.services.runtime.context_schemas import RecommendationContext
-from app.services.runtime.recommendation_transform import to_search_radius_km
+from app.services.runtime.recommendation_transform import to_search_radius_km, to_travel_mode
 
 _KST = ZoneInfo("Asia/Seoul")
 logger = logging.getLogger(__name__)
@@ -43,30 +43,32 @@ logger = logging.getLogger(__name__)
 _RECOMMENDATION_LIMIT = 5
 
 
-def _walking_routes_for(
+def _measured_routes_for(
     conditions: UserConditions,
     travel_routes: tuple[TravelRoute, ...],
 ) -> tuple[TravelRoute, ...]:
-    """도보 실측을 거리 Feature에 쓸 수 있는 요청인지 판정한다.
+    """실측을 거리 Feature에 쓸 수 있는 요청인지 판정한다.
 
-    거리 점수의 분모는 검색 반경을 도보 속도로 되돌린 값이라(`scoring.py::
-    _travel_minutes_budget()`), 반경이 도보 속도로 만들어진 요청에서만 분자와
-    단위가 맞는다. `to_search_radius_km()`이 도보 속도를 쓰는 경우는 두 가지다.
+    거리 점수의 분모는 검색 반경을 이동수단 속도로 되돌린 값이라(`scoring.py::
+    _travel_minutes_budget()`), 반경을 만든 속도와 실측한 이동수단의 속도가 같은
+    요청에서만 분자와 단위가 맞는다. 그 두 선택을 한 조건으로 묶는 것이
+    `to_travel_mode()`이므로, 그것이 이동수단을 정하지 못한 요청(None)만 버린다.
 
-    - `transport=WALK`: 사용자가 도보를 명시했다.
-    - `max_travel_time`이 없음: 이동시간 자체를 말하지 않아 기본 반경(2.0km)을
-      쓴다. 걸어서 30분 안쪽 범위라 도보 시간으로 재도 어긋나지 않는다.
+    조건을 여기 다시 적지 않는 이유가 그것이다 — 같은 판정이 두 군데 있으면
+    한쪽만 바뀌었을 때 조용히 어긋난다. 새 이동수단은 속도
+    (`TRAVEL_SPEED_KM_PER_MINUTE`)만 채우면 여기까지 자동으로 열린다.
 
-    그 외(차·대중교통으로 이동시간을 말한 경우)는 반경이 20km/h 기준으로
-    커져 있어 도보 시간을 쓰면 실제로 차로 금방 가는 곳까지 멀다고 깎는다.
-    이때는 실측을 버리고 기존 직선거리 점수를 그대로 쓴다.
+    지금 버려지는 것은 이동시간을 말했지만 이동수단을 말하지 않은 요청이다.
+    반경이 20km/h 가정으로 커져 있는데 그 20km/h가 무엇인지 발화에 없어서
+    `to_travel_mode()`가 조회 자체를 건너뛰므로, 애초에 실측이 오지 않는다.
 
-    TODO: A가 `_fetch_travel_routes()`에서 이동수단을 보고 조회 자체를 건너뛰면
-    여기서 버리는 낭비가 사라진다 — A와 조율 후 정리한다.
+    속도가 아직 없는 이동수단(대중교통)은 **여기서 막지 않는다.** 그런 경로가
+    채점까지 오면 `_travel_minutes_budget()`이 KeyError로 멈추는 편이 낫다는 것이
+    이미 선 결정이다(place_search_policy.TRAVEL_SPEED_KM_PER_MINUTE 주석). 여기서
+    조용히 걸러내면 그 신호가 사라진다 — 지금은 Provider가 미등록이라 실측 자체가
+    오지 않으므로 실제로 그 경로는 만들어지지 않는다.
     """
-    if conditions.transport is Transport.WALK or conditions.max_travel_time is None:
-        return travel_routes
-    return ()
+    return travel_routes if to_travel_mode(conditions) is not None else ()
 
 
 class RealRecommendationProvider:
@@ -128,7 +130,7 @@ class RealRecommendationProvider:
             prepared,
             search_radius_km=to_search_radius_km(conditions),
             recommendation_limit=limit,
-            travel_routes=_walking_routes_for(conditions, travel_routes),
+            travel_routes=_measured_routes_for(conditions, travel_routes),
             taste_matches=await self._taste_matches_for(conditions, prepared),
         )
 
@@ -207,6 +209,9 @@ class RealRecommendationProvider:
             concentration,
             seek=seek,
             weather_reason=weather_reason,
+            # 날씨 판정과 같은 이유로 여기서 context에서 다시 뽑는다 — 1차와 2차가
+            # 같은 기준점 이름을 써야 근거 문장이 갈리지 않는다.
+            origin_name=resolve_origin_name(context),
         )
 
 

@@ -62,6 +62,9 @@ class ApiContextView(BaseModel):
     api_weather: str | None = None
     gps_expired: bool = True
     weather_expired: bool = True
+    # PR #188: 위치 재확인 UX 전용. B는 만료를 판정하지 않고 값만 그대로
+    # 실어 보낸다 — 30분 경과 여부는 A가 이 값과 now를 비교해 판단한다.
+    gps_location_confirmed_at: datetime | None = None
 
 
 class StateApplyResponse(BaseModel):
@@ -152,6 +155,23 @@ class RecordRecommendationResponse(BaseModel):
     recorded: int
 
 
+class RecordClosedExclusionsRequest(BaseModel):
+    """TP-82: D의 하드 필터가 폐점이라 걸러낸 후보 id 기록 요청.
+
+    RecordRecommendationRequest와 분리한다 — 이 place_id들은 노출되지
+    않았으므로 recommended 이력에 섞으면 "노출했다"로 잘못 취급되어
+    COMPARE의 "첫 번째"가 실제로 안 보여준 장소를 가리키게 된다.
+    """
+
+    session_id: str
+    run_id: str
+    place_ids: list[str] = Field(default_factory=list)
+
+
+class RecordClosedExclusionsResponse(BaseModel):
+    recorded: int
+
+
 class UpdateApiContextRequest(BaseModel):
     """api_context 갱신 요청. (계약 6.5절)
 
@@ -163,6 +183,11 @@ class UpdateApiContextRequest(BaseModel):
     gps_location_updated_at: datetime | None = None
     api_weather: str | None = None
     api_weather_updated_at: datetime | None = None
+    # PR #188: gps_location과 독립적으로 채운다 — "현재 위치 다시 가져오기"가
+    # 성공했을 때만 A가 gps_location과 함께 이 필드도 넘긴다. "N분 전 위치로
+    # 계속"을 선택했을 때는 gps_location만(또는 아무것도) 넘기고 이 필드는
+    # 생략해야 값이 갱신되지 않는다.
+    gps_location_confirmed_at: datetime | None = None
 
 
 class UpdateApiContextResponse(BaseModel):
@@ -257,6 +282,7 @@ def _build_api_context_view(state) -> ApiContextView:
         api_weather=state.api_context.api_weather,
         gps_expired=session_module.is_gps_expired(state),
         weather_expired=session_module.is_weather_expired(state),
+        gps_location_confirmed_at=state.api_context.gps_location_confirmed_at,
     )
 
 
@@ -481,6 +507,31 @@ def record_recommendation(
     return RecordRecommendationResponse(recorded=recorded)
 
 
+# ================================================================ TP-82
+
+@_wrap_store_errors
+def record_closed_exclusions(
+    request: RecordClosedExclusionsRequest,
+    store: StateStore | None = None,
+) -> RecordClosedExclusionsResponse:
+    """D의 하드 필터가 폐점이라 걸러낸 후보 id를 기록한다. (TP-82)
+
+    Agent Runtime이 D 응답(`RecommendationResponse.excluded_closed_place_ids`)을
+    받은 직후 호출한다. 여기 기록된 id는 get_exclusion_place_ids()가 다음
+    회차 후보 수집 시 제외 목록에 포함시켜, 노출 이력이 없어 반복
+    수집되던 폐점 후보를 걸러낸다.
+    """
+    store = store or get_store()
+
+    recorded = history_module.record_closed_excluded(
+        store,
+        request.session_id,
+        request.run_id,
+        request.place_ids,
+    )
+    return RecordClosedExclusionsResponse(recorded=recorded)
+
+
 # ================================================================ 세션 삭제
 
 @_wrap_store_errors
@@ -534,6 +585,13 @@ def update_api_context(
         state.api_context.api_weather = request.api_weather
         state.api_context.api_weather_updated_at = (
             request.api_weather_updated_at or now
+        )
+
+    # PR #188: gps_location 블록과 독립된 분기다 — 매 GPS 갱신마다 자동으로
+    # 따라오면 안 되고, A가 "재확인 성공"을 명시적으로 알릴 때만 값이 바뀐다.
+    if "gps_location_confirmed_at" in fields:
+        state.api_context.gps_location_confirmed_at = (
+            request.gps_location_confirmed_at or now
         )
 
     session_module.touch(state)

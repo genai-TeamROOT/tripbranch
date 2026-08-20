@@ -21,7 +21,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.agent_context.schemas import Clarification, ContextError, ResponseMetadata
+from app.agent_context.schemas import Clarification, ContextError, Coordinates, ResponseMetadata
 
 # int-02-info.md §6의 QuestionType. A의 app.schemas.QuestionType과 값이 일치해야
 # 한다 — A가 InfoPayload.question_type.value를 그대로 실어 보낸다.
@@ -151,6 +151,9 @@ class PlaceInfoResult(BaseModel):
     requested_place_name: str | None = None
     resolved_place_name: str | None = None
     place_id: str | None = None
+    # A가 현재 위치→목적지의 도보 경로를 한 건 조회할 때만 사용한다. 주소만 묻는
+    # location_info에는 추가 호출을 만들지 않으며, 화면 카드에도 노출하지 않는다.
+    destination_coordinates: Coordinates | None = None
     fields: dict[str, str] = Field(default_factory=dict)
     # 상세 조회를 하지 않는 경로(location_info 등)에서는 None이다.
     place_card: PlaceCard | None = None

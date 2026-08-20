@@ -1,9 +1,15 @@
 /* INFO 장소 카드의 접기/펼치기와 결측값 숨김을 검증한다. */
 
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { vi } from "vitest";
+import { fetchRecommendationPlaceDetails } from "../../api/trip";
 import type { InfoPlaceCard as InfoPlaceCardData } from "../../types";
 import { PlaceInfoCard } from "./PlaceInfoCard";
+
+vi.mock("../../api/trip", () => ({
+  fetchRecommendationPlaceDetails: vi.fn(),
+}));
 
 const card: InfoPlaceCardData = {
   question_type: "parking",
@@ -87,4 +93,42 @@ it("붙어 있는 월별 운영시간을 기간별 카드로 나눈다", async (
   expect(within(dialog).getByText("09:00–17:00 · 입장 마감 16:00")).toBeInTheDocument();
   expect(within(dialog).getByText("6월~8월")).toBeInTheDocument();
   expect(within(dialog).getByText("09:00–18:30 · 입장 마감 17:30")).toBeInTheDocument();
+});
+
+it("주소 INFO 카드도 클릭하면 전체 장소 상세를 보강 조회한다", async () => {
+  const user = userEvent.setup();
+  const minimalCard: InfoPlaceCardData = {
+    ...card,
+    question_type: "location_info",
+    answer_fields: { address: "서울특별시 종로구 사직로 161" },
+    thumbnail_url: null,
+    overview: null,
+    operating_hours: null,
+    rest_date: null,
+    parking: null,
+    parking_fee: null,
+    fee: null,
+    baby_carriage: null,
+    credit_card: null,
+    restroom: null,
+    homepage: null,
+  };
+  vi.mocked(fetchRecommendationPlaceDetails).mockResolvedValue({
+    status: "success",
+    requested_place_id: "126508",
+    place_card: card,
+  });
+
+  render(<PlaceInfoCard card={minimalCard} />);
+  await user.click(screen.getByRole("button", { name: "경복궁 상세 보기" }));
+
+  await waitFor(() => {
+    expect(fetchRecommendationPlaceDetails).toHaveBeenCalledWith({
+      place_id: "126508",
+      place_name: "경복궁",
+    });
+  });
+  const dialog = screen.getByRole("dialog", { name: "경복궁" });
+  expect(within(dialog).getByText("조선 왕조의 법궁이다.")).toBeInTheDocument();
+  expect(within(dialog).getByText("서울특별시 종로구 사직로 161")).toBeInTheDocument();
 });

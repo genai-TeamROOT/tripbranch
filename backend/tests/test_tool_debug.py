@@ -44,6 +44,7 @@ def _location_value(source: str = "kakao") -> ContextValue[ResolvedLocation]:
         data=ResolvedLocation(
             requested_query="경복궁",
             resolved_name="경복궁",
+            source="query",
             location=Coordinates(latitude=37.5788, longitude=126.9770),
             address="서울 종로구 사직로 161",
         ),
