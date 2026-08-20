@@ -10,7 +10,14 @@ from __future__ import annotations
 import pytest
 
 from app.providers.stub import FakeLLMProvider
-from app.schemas import Intent, InterpretRequest, OutputStatus, PlaceTag, UserConditions
+from app.schemas import (
+    Intent,
+    InterpretRequest,
+    OutputStatus,
+    PlaceContext,
+    PlaceTag,
+    UserConditions,
+)
 from app.services.interpret.orchestrator import build_interpretation
 
 
@@ -65,6 +72,38 @@ async def test_schedule_with_cafe_marker_sets_place_tags() -> None:
     assert output.intent is Intent.SCHEDULE
     assert output.recommend is not None
     assert PlaceTag.CAFE in output.recommend.conditions.place_tags
+
+
+@pytest.mark.asyncio
+async def test_info_conversation_reference_uses_previous_info_card_place() -> None:
+    """“여기 가는데”는 직전 INFO 카드의 장소를 대상으로 이어져야 한다."""
+    request = InterpretRequest(
+        user_input="여기 가는데 얼마나 걸려?",
+        has_previous_recommendation=False,
+        conversation_place_name="건청궁",
+    )
+
+    output = await build_interpretation(request, FakeLLMProvider())
+
+    assert output.intent is Intent.INFO
+    assert output.info is not None
+    assert output.info.place_context is PlaceContext.FROM_CONVERSATION
+    assert output.info.place_name == "건청궁"
+
+
+@pytest.mark.asyncio
+async def test_info_conversation_reference_does_not_overwrite_explicit_place() -> None:
+    request = InterpretRequest(
+        user_input="경복궁 주차 돼?",
+        has_previous_recommendation=False,
+        conversation_place_name="건청궁",
+    )
+
+    output = await build_interpretation(request, FakeLLMProvider())
+
+    assert output.info is not None
+    assert output.info.place_context is PlaceContext.EXPLICIT
+    assert output.info.place_name == "경복궁"
 
 
 # --- 케이스 4/5(PR 4, docs/design/clarification-options.md): 목적어 없는

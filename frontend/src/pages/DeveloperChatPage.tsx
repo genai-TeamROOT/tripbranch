@@ -23,13 +23,13 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { AuthStatusBadge } from "../auth/AuthStatusBadge";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import { buildAgentStageTimings } from "../utils/agentTiming";
+import { getLatestConversationPlaceName } from "../utils/conversationPlace";
 import { getBrowserDeviceLocation } from "../utils/geolocation";
+import { getLocationAgeMinutes, isLocationRefreshDue } from "../utils/locationRefresh";
 
 const REQUEST_MORE_PROMPT = "다른 곳 보여줘";
 const RELAX_RADIUS_PROMPT = "검색 범위를 넓혀서 다시 추천해줘";
 const STATUS_COMMAND = "/status";
-const LOCATION_RECONFIRM_AFTER_MS = 30 * 60 * 1000;
-
 interface PendingLocationRefresh {
   text: string;
   clarificationChoice?: string;
@@ -141,6 +141,7 @@ export function DeveloperChatPage() {
       deviceLocationCapturedAt?: number,
     ) => {
       const deviceLocation = deviceLocationOverride ?? state.device_location;
+      const conversationPlaceName = getLatestConversationPlaceName(state.messages);
       dispatch({
         type: "START_CHAT_TURN",
         payload: { userInput: text, deviceLocation: deviceLocationOverride, deviceLocationCapturedAt },
@@ -157,6 +158,7 @@ export function DeveloperChatPage() {
             user_input: text,
             session_id: state.session_id,
             device_location: deviceLocation,
+            conversation_place_name: conversationPlaceName,
             clarification_choice: clarificationChoice ?? null,
             debug_ignore_operating_hours: debugIgnoreOperatingHours,
           },
@@ -251,21 +253,21 @@ export function DeveloperChatPage() {
         void loadExchanges();
       }
     },
-    [dispatch, loadExchanges, state.device_location, state.session_id, debugIgnoreOperatingHours],
+    [
+      debugIgnoreOperatingHours,
+      dispatch,
+      loadExchanges,
+      state.device_location,
+      state.messages,
+      state.session_id,
+    ],
   );
 
-  const locationAgeMinutes =
-    state.device_location_captured_at === null
-      ? null
-      : Math.max(1, Math.floor((Date.now() - state.device_location_captured_at) / 60_000));
+  const locationAgeMinutes = getLocationAgeMinutes(state.device_location_captured_at);
 
   const requestSend = useCallback(
     async (text: string, clarificationChoice?: string) => {
-      const locationRefreshDue =
-        state.device_location !== null &&
-        (state.device_location_captured_at === null ||
-          Date.now() - state.device_location_captured_at >= LOCATION_RECONFIRM_AFTER_MS);
-      if (locationRefreshDue) {
+      if (isLocationRefreshDue(state.device_location, state.device_location_captured_at)) {
         setPendingLocationRefresh({ text, clarificationChoice });
         return;
       }

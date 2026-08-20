@@ -549,6 +549,31 @@ async def test_pipeline_from_context_reports_excluded_all_closed_when_only_close
     assert response.recommendations == []
     assert response.unverified_recommendations == []
     assert response.excluded_all_closed is True
+    assert response.excluded_closed_place_ids == ["place-1"]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_reports_excluded_closed_ids_even_when_some_results_remain() -> None:
+    """TP-82: 일부만 폐점이라 excluded_all_closed=False여도, 폐점으로 걸러진
+    id는 excluded_closed_place_ids에 그대로 남아야 한다 — A가 이 값을 B에
+    기록해 다음 회차 후보 수집 시 제외해야 같은 폐점 후보가 반복 수집되지
+    않는다(9절 "영업 종료 후보 누적" 항목)."""
+    closed_place = _place_from_operating_hours_raw("09:00~14:00")
+    open_place = _context_place(place_id="place-2")
+    context = RecommendationContext(
+        location=_context_location(),
+        places=AgentContextValue(status="success", data=[closed_place, open_place]),
+    )
+
+    response = await run_recommendation_pipeline_from_context(
+        context,
+        visit_at=_CONTEXT_VISIT_AT,
+        search_radius_km=2.0,
+    )
+
+    assert [item.place_id for item in response.recommendations] == ["place-2"]
+    assert response.excluded_all_closed is False
+    assert response.excluded_closed_place_ids == ["place-1"]
 
 
 @pytest.mark.asyncio

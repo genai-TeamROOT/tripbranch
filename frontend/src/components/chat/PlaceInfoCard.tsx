@@ -21,6 +21,8 @@ const FIELD_LABELS: Record<string, string> = {
   restroom: "화장실",
   overview: "개요",
   homepage: "홈페이지",
+  concentration: "혼잡도",
+  event: "행사",
 };
 
 interface PlaceInfoCardProps {

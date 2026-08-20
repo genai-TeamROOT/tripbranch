@@ -16,9 +16,18 @@ from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 
 from app.errors import AppError, ProviderUnavailableError
-from app.providers.gemini import RealGeminiProvider
+from app.providers.gemini import (
+    RealGeminiProvider,
+    _ComparisonSummary,
+    _GeneralAnswer,
+    _RecommendationSummary,
+)
 from app.schedule.schemas import ScheduleLLMPlan, SchedulePlanningRequest
 from app.schemas import (
+    CompareCriteria,
+    ComparisonItem,
+    ComparisonResult,
+    GeneralTopic,
     Intent,
     IntentClassificationResult,
     LLMOutput,
@@ -738,3 +747,153 @@ async def test_requested_budget_passes_through_for_unmeasured_models() -> None:
     # 0은 override 없이 통과해 thinking_level=MINIMAL로 변환되고, None은 그대로 유지된다.
     assert zero == genai_types.ThinkingLevel.MINIMAL
     assert unset is None
+
+
+# --- thinking_budget 확장 적용(답변·요약 계열, 2026-08-20) ---
+#
+# gemini-2.5-flash → gemini-3.5-flash 전환 뒤 이 다섯 호출부(GENERAL 답변, RECOMMEND/
+# MODIFY 카드 요약, COMPARE 요약, INFO 답변)만 thinking_config를 안 실어 모델 기본값
+# (gemini-3.5-flash는 MEDIUM, 항상 켜짐)을 그대로 썼다 — 실사용에서 GENERAL 인사말에도
+# 6~7초 TTFT가 확인돼(scripts/compare_answer_thinking_budget.py 실측, 평균 3.9배 개선)
+# 나머지 호출부와 같은 thinking_budget=0을 적용했다.
+
+
+class _FakeStream:
+    """generate_content_stream()이 돌려주는 비동기 스트림을 흉내 낸다."""
+
+    def __init__(self, texts: list[str]) -> None:
+        self._texts = texts
+
+    def __aiter__(self):
+        return self._iter()
+
+    async def _iter(self):
+        for text in self._texts:
+            yield type("Chunk", (), {"text": text})()
+
+
+@pytest.mark.asyncio
+async def test_generate_general_answer_uses_thinking_budget_zero() -> None:
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    captured_config: list[object] = []
+
+    async def capture(*args: object, **kwargs: object) -> _FakeResponse:
+        captured_config.append(kwargs["config"])
+        return _FakeResponse(_GeneralAnswer(answer="안녕하세요, 트리비예요."))
+
+    with patch.object(provider._client.aio.models, "generate_content", side_effect=capture):
+        await provider.generate_general_answer(GeneralTopic.SERVICE_IDENTITY, "안녕")
+
+    assert captured_config[0].thinking_config.thinking_level == genai_types.ThinkingLevel.MINIMAL
+
+
+@pytest.mark.asyncio
+async def test_stream_general_answer_uses_thinking_budget_zero() -> None:
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    captured_config: list[object] = []
+
+    async def capture(*args: object, **kwargs: object) -> _FakeStream:
+        captured_config.append(kwargs["config"])
+        return _FakeStream(["안녕하세요"])
+
+    with patch.object(
+        provider._client.aio.models, "generate_content_stream", side_effect=capture
+    ):
+        chunks = [
+            chunk
+            async for chunk in provider.stream_general_answer(GeneralTopic.SERVICE_IDENTITY, "안녕")
+        ]
+
+    assert chunks == ["안녕하세요"]
+    assert captured_config[0].thinking_config.thinking_level == genai_types.ThinkingLevel.MINIMAL
+
+
+@pytest.mark.asyncio
+async def test_generate_recommendation_summary_uses_thinking_budget_zero() -> None:
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    captured_config: list[object] = []
+    response = RecommendationResponse(
+        recommendations=[_recommendation_item()], unverified_recommendations=[], elapsed_ms=0
+    )
+
+    async def capture(*args: object, **kwargs: object) -> _FakeResponse:
+        captured_config.append(kwargs["config"])
+        return _FakeResponse(_RecommendationSummary(message="가까운 곳을 골라봤어요."))
+
+    with patch.object(provider._client.aio.models, "generate_content", side_effect=capture):
+        await provider.generate_recommendation_summary(Intent.RECOMMEND, response)
+
+    assert captured_config[0].thinking_config.thinking_level == genai_types.ThinkingLevel.MINIMAL
+
+
+@pytest.mark.asyncio
+async def test_stream_recommendation_summary_uses_thinking_budget_zero() -> None:
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    captured_config: list[object] = []
+    response = RecommendationResponse(
+        recommendations=[_recommendation_item()], unverified_recommendations=[], elapsed_ms=0
+    )
+
+    async def capture(*args: object, **kwargs: object) -> _FakeStream:
+        captured_config.append(kwargs["config"])
+        return _FakeStream(["가까운 곳을 골라봤어요."])
+
+    with patch.object(
+        provider._client.aio.models, "generate_content_stream", side_effect=capture
+    ):
+        chunks = [
+            chunk
+            async for chunk in provider.stream_recommendation_summary(Intent.RECOMMEND, response)
+        ]
+
+    assert chunks == ["가까운 곳을 골라봤어요."]
+    assert captured_config[0].thinking_config.thinking_level == genai_types.ThinkingLevel.MINIMAL
+
+
+@pytest.mark.asyncio
+async def test_stream_info_answer_uses_thinking_budget_zero() -> None:
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    captured_config: list[object] = []
+
+    async def capture(*args: object, **kwargs: object) -> _FakeStream:
+        captured_config.append(kwargs["config"])
+        return _FakeStream(["오늘 10시부터 21시까지 운영해요."])
+
+    with patch.object(
+        provider._client.aio.models, "generate_content_stream", side_effect=capture
+    ):
+        chunks = [
+            chunk
+            async for chunk in provider.stream_info_answer(
+                place_name="온천집 카페",
+                question_type="operating_hours",
+                specific_question="오늘 몇 시까지 해?",
+                fields={"operating_hours": "10:00~21:00"},
+            )
+        ]
+
+    assert chunks == ["오늘 10시부터 21시까지 운영해요."]
+    assert captured_config[0].thinking_config.thinking_level == genai_types.ThinkingLevel.MINIMAL
+
+
+@pytest.mark.asyncio
+async def test_generate_compare_summary_uses_thinking_budget_zero() -> None:
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    captured_config: list[object] = []
+    comparison = ComparisonResult(
+        criteria=CompareCriteria.DISTANCE,
+        items=[
+            ComparisonItem(place_id="p1", place_name="테스트 장소", rank=1, distance_km=0.4),
+        ],
+    )
+
+    async def capture(*args: object, **kwargs: object) -> _FakeResponse:
+        captured_config.append(kwargs["config"])
+        return _FakeResponse(
+            _ComparisonSummary(lines=["첫줄입니다.", "둘째줄입니다.", "셋째줄입니다."])
+        )
+
+    with patch.object(provider._client.aio.models, "generate_content", side_effect=capture):
+        await provider.generate_compare_summary(comparison)
+
+    assert captured_config[0].thinking_config.thinking_level == genai_types.ThinkingLevel.MINIMAL

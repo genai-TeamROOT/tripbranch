@@ -24,6 +24,7 @@ from app.schemas import (
     LLMOutput,
     OutOfScopePayload,
     OutputStatus,
+    PlaceContext,
     StatedWeather,
     UserConditions,
     WeatherIntent,
@@ -59,6 +60,31 @@ def _is_service_identity_question(user_input: str) -> bool:
 # 구분한다 — 후자는 D-053/기존 MODIFY 규칙이 이미 잘 처리하므로 여기서 손대지 않는다
 # (docs/design/clarification-options.md 케이스 4/5).
 _BARE_RESTART_MARKERS = ("처음부터 다시", "다시 처음부터")
+
+
+def _resolve_info_conversation_reference(
+    output: LLMOutput,
+    conversation_place_name: str | None,
+) -> LLMOutput:
+    """INFO 추출기가 남긴 대화 지시어를 직전 INFO 카드 장소명으로 해소한다.
+
+    LLM 프롬프트에도 같은 컨텍스트를 전달하지만, 모델이 from_conversation만 채우고
+    place_name을 비워도 C가 불필요한 ``place_required`` 되묻기를 하지 않도록 A에서
+    결정적으로 보정한다. 사용자가 이번 발화에서 명시한 장소(place_name이 이미 있음)는
+    절대 덮어쓰지 않는다.
+    """
+
+    info = output.info
+    if (
+        info is None
+        or info.place_context is not PlaceContext.FROM_CONVERSATION
+        or info.place_name is not None
+        or not conversation_place_name
+    ):
+        return output
+    return output.model_copy(
+        update={"info": info.model_copy(update={"place_name": conversation_place_name})}
+    )
 
 
 def _is_bare_restart_phrase(user_input: str) -> bool:
@@ -251,6 +277,7 @@ async def build_interpretation(
             pending_clarification=request.pending_clarification,
             last_intent=request.last_intent,
             shown_place_names=request.shown_place_names,
+            conversation_place_name=request.conversation_place_name,
         )
     ).data
 
@@ -303,13 +330,15 @@ async def build_interpretation(
         ).data
 
     if classification.intent is Intent.INFO:
-        return (
+        output = (
             await llm.extract_info_query(
                 request.user_input,
                 has_previous_recommendation=request.has_previous_recommendation,
                 reference_date=now_kst().date(),
+                conversation_place_name=request.conversation_place_name,
             )
         ).data
+        return _resolve_info_conversation_reference(output, request.conversation_place_name)
 
     if classification.intent is Intent.COMPARE:
         return (
