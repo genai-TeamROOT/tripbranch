@@ -41,8 +41,9 @@ class UserConditions(StrictModel):
     budget: str | None = None
     exclude_tags: list[str] = Field(default_factory=list)
     special_requirements: list[str] = Field(default_factory=list)
+    taste_query: str | None = None
 
-    @field_validator("current_location", "search_center", "budget")
+    @field_validator("current_location", "search_center", "budget", "taste_query")
     @classmethod
     def normalize_optional_text(cls, value: str | None) -> str | None:
         if value is None:

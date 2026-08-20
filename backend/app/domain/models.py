@@ -305,6 +305,36 @@ class StoredPlaceLocation:
 
 
 @dataclass(frozen=True)
+class PlaceEvidenceSnippet:
+    """취향 근거 한 조각 — 블로그·리뷰 원문에서 뽑은 문장 하나.
+
+    `search_place_evidence` RPC가 장소당 최대 `p_match_count`개를 유사도 내림차순
+    으로 돌려준다. 같은 글에서 두 문장이 뽑히지 않도록 RPC가 url 단위로 대표
+    1건만 남긴다.
+    """
+
+    source_text: str
+    source_url: str | None
+    similarity: float
+    published_at: datetime | None
+
+
+@dataclass(frozen=True)
+class PlaceEvidenceMatch:
+    """한 장소의 취향 근거 검색 결과.
+
+    `avg_similarity`는 그 장소에서 살아남은 조각들의 유사도 평균이다 — 점수
+    Feature의 입력 후보가 되는 값이지만, **0~1 점수로 어떻게 펼지는 아직 정하지
+    않았다.** 실제 분포를 재본 뒤 정한다(계획 문서 2단계).
+    """
+
+    content_id: str
+    place_title: str
+    avg_similarity: float
+    snippets: tuple[PlaceEvidenceSnippet, ...]
+
+
+@dataclass(frozen=True)
 class StoredPlaceDetail:
     """요청 시 저장소에서 읽어오는 장소 상세·운영정보 한 건.
 

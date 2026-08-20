@@ -10,12 +10,18 @@ from uuid import UUID
 import httpx
 
 from app.domain.models import (
+    PlaceEvidenceMatch,
+    PlaceEvidenceSnippet,
     StoredPlaceDetail,
     StoredPlaceLocation,
     StoredPlaceState,
     TourPlaceRecord,
 )
 from app.errors import AppError
+
+# search_place_evidence RPC가 강제하는 후보 상한. 넘으면 RPC가 즉시 에러를
+# 던진다 — 여기서 미리 막아 왕복 한 번을 아끼고, 실패 지점을 호출부 가까이 둔다.
+_MAX_EVIDENCE_CANDIDATES = 500
 
 _READ_PAGE_SIZE = 1000
 _UPSERT_CHUNK_SIZE = 100
@@ -208,8 +214,17 @@ class SupabasePlaceRepository:
         self._timeout_seconds = timeout_seconds
 
     def _headers(self, prefer: str | None = None) -> dict[str, str]:
+        # Authorization을 함께 보내야 PostgREST가 service_role로 인식한다.
+        # apikey만 보내면 게이트웨이가 역할을 Authorization 자리로 넘기지 않아
+        # anon으로 실행되고, RLS 정책이 없는 공개 테이블·함수가 전부 401 42501
+        # (permission denied)로 막힌다. 함수(search_place_evidence)뿐 아니라
+        # 테이블 조회도 마찬가지다 — 3조합 x 3접근을 실측했다(2026-08-20:
+        # apikey만/Authorization만은 401, 둘 다여야 200). RPC를 붙이기 전까지
+        # 안 드러난 건 테이블도 되던 게 아니라, 이 저장소를 부르는 실경로가
+        # 장소 동기화뿐이라 그동안 호출이 없었기 때문이다.
         headers = {
             "apikey": self._secret_key,
+            "Authorization": f"Bearer {self._secret_key}",
             "Content-Type": "application/json",
         }
         if prefer is not None:
@@ -265,6 +280,44 @@ class SupabasePlaceRepository:
             return response.json()
         except ValueError:
             raise SupabaseRepositoryError("non-JSON response") from None
+
+    async def search_place_evidence(
+        self,
+        query_embedding: Sequence[float],
+        candidate_content_ids: Sequence[str],
+        *,
+        match_count: int,
+        min_similarity: float,
+    ) -> tuple[PlaceEvidenceMatch, ...]:
+        """취향 질의 임베딩으로 후보 범위 안에서만 근거 문장을 찾는다.
+
+        후보를 좁히지 않으면 RPC가 전체 행을 훑어 수 초가 걸리므로(2026-08-18
+        실측: 200~400건 100~300ms, 844건 6~9초) 상한을 여기서 먼저 막는다.
+        """
+        unique_ids = list(dict.fromkeys(candidate_content_ids))
+        if not unique_ids:
+            return ()
+        if len(unique_ids) > _MAX_EVIDENCE_CANDIDATES:
+            raise SupabaseRepositoryError(
+                f"후보 content_id가 {len(unique_ids)}건입니다. "
+                f"{_MAX_EVIDENCE_CANDIDATES}건 이하로 좁혀서 호출하세요."
+            )
+
+        response = await self._request(
+            "POST",
+            "/rpc/search_place_evidence",
+            json={
+                "p_query_embedding": list(query_embedding),
+                "p_candidate_content_ids": unique_ids,
+                "p_match_count": match_count,
+                "p_min_similarity": min_similarity,
+            },
+        )
+        payload = self._json(response)
+        if not isinstance(payload, list):
+            raise SupabaseRepositoryError("invalid search_place_evidence response")
+        return tuple(_to_evidence_match(row) for row in payload)
+
 
     async def create_sync_run(self, area_code: str, district_code: str) -> UUID:
         response = await self._request(
@@ -926,3 +979,34 @@ class SupabasePlaceRepository:
 def _bump(counter: dict[str, int], value: object) -> None:
     key = str(value) if value is not None else "null"
     counter[key] = counter.get(key, 0) + 1
+
+
+def _to_evidence_match(row: object) -> PlaceEvidenceMatch:
+    if not isinstance(row, Mapping):
+        raise SupabaseRepositoryError("invalid evidence row")
+    raw_snippets = row.get("evidence")
+    snippets = (
+        tuple(_to_evidence_snippet(item) for item in raw_snippets)
+        if isinstance(raw_snippets, list)
+        else ()
+    )
+    return PlaceEvidenceMatch(
+        content_id=str(row["content_id"]),
+        place_title=str(row.get("place_title") or ""),
+        avg_similarity=float(row["avg_similarity"]),
+        snippets=snippets,
+    )
+
+
+def _to_evidence_snippet(item: object) -> PlaceEvidenceSnippet:
+    if not isinstance(item, Mapping):
+        raise SupabaseRepositoryError("invalid evidence snippet")
+    published_at = item.get("published_at")
+    return PlaceEvidenceSnippet(
+        source_text=str(item.get("source_text") or ""),
+        source_url=str(item["source_url"]) if item.get("source_url") else None,
+        similarity=float(item["similarity"]),
+        published_at=(
+            datetime.fromisoformat(str(published_at)) if published_at else None
+        ),
+    )

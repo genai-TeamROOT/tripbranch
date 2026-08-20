@@ -85,6 +85,12 @@ class Settings(BaseSettings):
     # Package B State 저장소 백엔드. 기본값은 Phase 1 인메모리다.
     state_store_backend: StateStoreBackend = "memory"
 
+    # 취향 근거 벡터 검색 사용 여부. 기본 off인 이유는 임베딩 모델이 선택
+    # 의존성(`pip install -e ".[embeddings]"`)이고 서버 프로세스에 상주하기
+    # 때문이다 — 실측 RSS 537MB, 적재 9.4초(2026-08-19). 모델을 올릴 수 없는
+    # 배포에서도 서버는 떠야 하므로 켜는 쪽을 명시적 선택으로 둔다.
+    taste_evidence_enabled: bool = False
+
     # 짧고 구조화된 판단(의도 분류·조건 추출)에 사용할 모델 묶음. 비용·지연이
     # 중요한 경로라 Lite를 기본으로 두되, 일시적 5xx/타임아웃에는 Flash로 폴백한다.
     llm_fast_model_name: str = "gemini-3.5-flash-lite"

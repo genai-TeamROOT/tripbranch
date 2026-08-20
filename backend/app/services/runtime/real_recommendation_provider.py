@@ -11,12 +11,15 @@ AppError는 여기서 잡지 않고 그대로 전파한다 — RecommendationPro
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from app.agent_context.enrichment_schemas import CandidateEnrichmentResponse
+from app.domain.models import PlaceEvidenceMatch
 from app.domain.travel_route import TravelRoute
+from app.providers.place_evidence import PlaceEvidenceProvider
 from app.schemas import (
     ConcentrationIntent,
     RecommendationResponse,
@@ -35,6 +38,8 @@ from app.services.runtime.context_schemas import RecommendationContext
 from app.services.runtime.recommendation_transform import to_search_radius_km, to_travel_mode
 
 _KST = ZoneInfo("Asia/Seoul")
+logger = logging.getLogger(__name__)
+
 _RECOMMENDATION_LIMIT = 5
 
 
@@ -68,6 +73,27 @@ def _measured_routes_for(
 
 class RealRecommendationProvider:
     """RecommendationProvider Protocol 구현체 — D의 공개 진입점만 호출한다."""
+
+    # 클래스 기본값으로 둔다. 이 클래스를 상속해 __init__을 부르지 않는
+    # 테스트 대역(tests/test_agent_runtime.py)이 있어, 인스턴스 속성으로만
+    # 두면 그쪽이 깨진다.
+    _place_evidence: PlaceEvidenceProvider | None = None
+
+    def __init__(
+        self,
+        place_evidence: PlaceEvidenceProvider | None = None,
+    ) -> None:
+        """취향 근거 Provider는 선택이다.
+
+        None이면 채점이 taste Feature를 아예 쓰지 않는다. 임베딩 모델이 선택
+        의존성이고 서버 상주 비용(실측 RSS 537MB)이 있어, 모델을 올릴 수 없는
+        배포에서도 추천은 그대로 동작해야 하기 때문이다.
+
+        도보 경로와 달리 A가 조회해 넘기지 않고 D가 직접 부른다 — 취향 발화는
+        `conditions.taste_query`로 이미 도착해 있고, 이 값을 쓰는 곳이 D의 점수
+        계산뿐이라 A가 중계할 이유가 없다.
+        """
+        self._place_evidence = place_evidence
 
     def merge_prepared(
         self,
@@ -105,7 +131,41 @@ class RealRecommendationProvider:
             search_radius_km=to_search_radius_km(conditions),
             recommendation_limit=limit,
             travel_routes=_measured_routes_for(conditions, travel_routes),
+            taste_matches=await self._taste_matches_for(conditions, prepared),
         )
+
+    async def _taste_matches_for(
+        self,
+        conditions: UserConditions,
+        prepared: PreparedRecommendationResult,
+    ) -> dict[str, PlaceEvidenceMatch] | None:
+        """취향 근거를 하드 필터 통과 후보 범위 안에서만 찾는다.
+
+        None을 돌려주면 채점이 taste Feature를 쓰지 않는다. 빈 dict는 "취향을
+        말했는데 근거를 못 찾았다"라 Feature가 켜지고 모든 후보가 0점이 된다 —
+        둘을 구분해야 취향 미언급 요청의 가중치가 바뀌지 않는다.
+
+        검색 실패는 추천 전체를 막지 않는다. 취향은 순위를 다듬는 축이지
+        후보를 만드는 축이 아니라서, 실패하면 취향 없이 채점하는 편이 낫다.
+        """
+        if self._place_evidence is None or not conditions.taste_query:
+            return None
+
+        place_ids = [
+            item.candidate.place_id
+            for item in prepared.preparation.eligible_candidates
+        ]
+        if not place_ids:
+            return None
+
+        try:
+            result = await self._place_evidence.search(
+                conditions.taste_query, place_ids
+            )
+        except Exception:
+            logger.exception("취향 근거 검색 실패 — 취향 없이 채점한다")
+            return None
+        return result.data
 
     async def recommend(
         self,

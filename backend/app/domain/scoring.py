@@ -21,7 +21,12 @@ from datetime import datetime
 from enum import StrEnum
 
 from app.concentration_policy import ConcentrationLevel
-from app.domain.models import OperatingHours, ScoringCandidate, WeatherCondition
+from app.domain.models import (
+    OperatingHours,
+    PlaceEvidenceMatch,
+    ScoringCandidate,
+    WeatherCondition,
+)
 from app.domain.travel_route import RouteSource, RouteStatus, TravelMode, TravelRoute
 from app.domain.weather_judgment import WeatherReason
 from app.place_search_policy import TRAVEL_SPEED_KM_PER_MINUTE
@@ -32,23 +37,101 @@ from app.place_search_policy import TRAVEL_SPEED_KM_PER_MINUTE
 # OPERATING_PARSER_VERSION과 동일한 semver 패턴. 점수 산출에 영향을 주는 변경
 # (가중치, Feature 추가/제거, environment_type 판정표 등) 시 버전을 올린다 —
 # 사소한 리팩터링·주석 변경은 올리지 않는다.
-SCORING_VERSION = "recommendation-scoring-1.2.0"
+SCORING_VERSION = "recommendation-scoring-1.4.0"
 
-DEFAULT_WEIGHTS: Mapping[str, float] = {
-    "weather": 0.4,
-    "remaining_operating_time": 0.4,
-    "distance": 0.2,
+WEATHER_FEATURE = "weather"
+ENVIRONMENT_FEATURE = "environment"
+
+# 어느 실행에서나 채점되는 기본 3축. 여기 없는 Feature는 전부 선택 Feature다.
+_BASE_WEIGHTS: Mapping[str, float] = {
+    WEATHER_FEATURE: 0.40,
+    "remaining_operating_time": 0.40,
+    "distance": 0.20,
 }
+
+# 선택 Feature 1개가 받는 가중치와, 그 자리를 만들려고 기본 3축이 각각 내놓는 몫.
+#
+# **이 두 숫자는 새로 만든 게 아니라 기존 세트에서 읽어낸 것이다.**
+# DEFAULT_WEIGHTS(0.40/0.40/0.20)와 CONCENTRATION_WEIGHTS(0.35/0.35/0.15+0.15)를
+# 나란히 놓으면 세 축이 정확히 0.05씩 줄어 있었다 — 0.05 x 3축 = 0.15가 새 Feature
+# 자리다. 취향(1.3.0)도 같은 모양을 따랐다. 그 규칙을 상수로 꺼냈을 뿐이라
+# 기존 두 세트를 그대로 재현한다(test_scoring_weight_composition.py).
+_OPTIONAL_WEIGHT = 0.15
+_BASE_CONCESSION = 0.05
+
+# 요청에 따라 켜고 끄는 Feature. 순서는 가중치에 영향을 주지 않지만 표시 순서
+# (evidence._BASE_FEATURE_ORDER)와 맞춰 둔다.
+#
+# 새 선택 Feature를 추가할 때 손댈 곳은 여기 하나다. 예전처럼 조합별 가중치
+# 상수를 열거하면 조합이 배로 늘고, 빠뜨린 조합에서 그 Feature가 **점수에서
+# 조용히 사라진다** — 2026-08-20에 실제로 그랬다. taste가 1차에서는 순위를
+# 정하는데 2차(CONCENTRATION_WEIGHTS)에는 키가 없어서, 취향으로 후보를 골라
+# 놓고 최종 순위에서는 취향을 빼고 있었다. 가중치 합이 1.0이라 결측 재분배도
+# 안 걸리고 예외도 안 났다.
+OPTIONAL_FEATURES: tuple[str, ...] = ("taste", "concentration")
+
+# 기본 3축 중 distance(0.20)가 0.05씩 내놓으므로 4개째에서 0이 된다.
+_MAX_OPTIONAL_FEATURES = 3
+
+
+def build_weights(optional_features: Iterable[str] = ()) -> dict[str, float]:
+    """켜진 선택 Feature에 맞춰 가중치를 조립한다.
+
+    기본 3축은 켜진 선택 Feature 수만큼 `_BASE_CONCESSION`씩 양보하고, 켜진
+    Feature마다 `_OPTIONAL_WEIGHT`를 준다. 합은 항상 1.0이다.
+
+    켜지지 않은 Feature는 키 자체가 없다 — "결측"이 아니라 "존재하지 않는
+    Feature"다(concentration-conditions.md §2.3). 결측 재분배
+    (`redistribute_weights()`)와 섞이지 않게 이 구분을 유지한다.
+
+    모르는 이름이 오면 멈춘다. 조용히 무시하면 오타 하나로 그 Feature가 점수에서
+    빠진 채 정상처럼 돌아간다 — 이 함수가 막으려는 사고가 바로 그거다.
+    """
+    requested = list(optional_features)
+    unknown = [feature for feature in requested if feature not in OPTIONAL_FEATURES]
+    if unknown:
+        raise ValueError(f"알 수 없는 선택 Feature: {unknown}")
+    active = [feature for feature in OPTIONAL_FEATURES if feature in set(requested)]
+    if len(active) > _MAX_OPTIONAL_FEATURES:
+        raise ValueError(
+            f"선택 Feature는 최대 {_MAX_OPTIONAL_FEATURES}개다"
+            f"(기본 축 가중치가 0 이하가 된다): {active}"
+        )
+    concession = _BASE_CONCESSION * len(active)
+    # 0.4 - 0.1 = 0.30000000000000004 같은 부동소수 찌꺼기를 여기서 끊는다.
+    weights = {
+        feature: round(weight - concession, 10) for feature, weight in _BASE_WEIGHTS.items()
+    }
+    weights.update({feature: _OPTIONAL_WEIGHT for feature in active})
+    return weights
+
+
+DEFAULT_WEIGHTS: Mapping[str, float] = build_weights()
 
 # D-040: concentration_intent가 AVOID/SEEK일 때만 쓰는 2차 Scoring 기본 가중치.
-# 1차 Scoring(DEFAULT_WEIGHTS)은 이 이름 자체를 모른다 — concentration은 1차에
-# "결측"이 아니라 "존재하지 않는 Feature"다(concentration-conditions.md §2.3).
-CONCENTRATION_WEIGHTS: Mapping[str, float] = {
-    "weather": 0.35,
-    "remaining_operating_time": 0.35,
-    "distance": 0.15,
-    "concentration": 0.15,
-}
+# 1차 Scoring은 이 이름 자체를 모른다.
+CONCENTRATION_WEIGHTS: Mapping[str, float] = build_weights(("concentration",))
+
+# 사용자가 취향을 말한 요청에서만 쓰는 가중치. 취향을 말하지 않은 요청은
+# DEFAULT_WEIGHTS로 남는다.
+TASTE_WEIGHTS: Mapping[str, float] = build_weights(("taste",))
+
+# 취향 유사도를 0~1 점수로 펴는 구간.
+#
+# 상한이 1.0이 아닌 이유: 실측 관측 최대가 0.813이고 중심점별 평균은
+# 0.554~0.609다(2026-08-19, 종로 4개 중심점 x 발화 20개, 후보 150곳,
+# backend/test_results/taste_score_distribution.csv). 1.0으로 나누면 1등
+# 후보조차 평균 0.22점에 머문다 — 도보 예산 분모가 과대해 점수가 눌렸던 것과
+# 같은 구조의 함정이다.
+#
+# 0.65로 잡은 근거: 최고 유사도 32건 중 26건이 0.65 미만이다. 0.813·0.732 같은
+# 예외적 상위값에 맞추면 대부분의 질의가 저점에 몰린다. 대가는 강한 질의가
+# 0.65에서 clipping돼 상위권 변별이 줄어드는 것이고, 의도한 선택이다.
+#
+# 하한 0.43은 검색 컷값과 같다(RAG 계획 문서 7.13절). 이 값 미만은 애초에
+# 검색 결과로 오지 않는다.
+_TASTE_CUT = 0.43
+_TASTE_FULL_SCORE = 0.65
 
 # 남은 운영시간이 이 값(분) 이상이면 만점(1.0)으로 취급한다.
 _REMAINING_TIME_FULL_SCORE_MINUTES = 120.0
@@ -79,9 +162,6 @@ _ENVIRONMENT_FIT_TABLE: Mapping[tuple[str, str], float] = {
     ("outdoor", "unknown"): 0.60,
 }
 _ENVIRONMENT_FIT_DEFAULT = 0.60
-
-WEATHER_FEATURE = "weather"
-ENVIRONMENT_FEATURE = "environment"
 
 # 이 두 값일 때만 환경으로 채점한다. `any`는 "실내외 무관"이라 제외한다 —
 # 되묻기 기본값이 ANY라(D-053) 여기 넣으면 되묻기 답변 경로 전체가 환경
@@ -165,6 +245,9 @@ class RankedCandidate:
     travel_distance_m: int | None = None
     travel_duration_seconds: int | None = None
     travel_mode: TravelMode | None = None
+    # 취향 근거로 쓴 문장 원문(유사도 1위). 근거 문장이 "왜 취향에 맞는지"를
+    # 사람 말로 설명하는 데 쓴다 — 점수만으로는 납득이 안 된다.
+    taste_evidence_text: str | None = None
     # D-040: 2차 Scoring(rerank_with_concentration())에서만 채워진다. 1차 Scoring
     # 결과는 concentration 자체를 모르므로 항상 None이다 — explanation.py가 문장을
     # "한적함/보통/다소 혼잡/혼잡" 중 무엇으로 쓸지 고르는 데 필요하다(direction이
@@ -253,15 +336,24 @@ def weights_for_environment(
 
 
 def weights_for_feature_scores(
-    weights: Mapping[str, float], feature_scores: Mapping[str, float | None]
+    feature_scores: Mapping[str, float | None],
 ) -> dict[str, float]:
-    """이미 채점된 feature_scores에 가중치 키를 맞춘다.
+    """이미 채점된 feature_scores를 보고 가중치를 조립한다.
 
     2차 Scoring(`rerank_with_concentration()`)은 조건을 다시 받지 않고 1차
-    결과만 재사용하므로, 어느 Feature로 채점됐는지를 키 존재로 판단한다.
+    결과만 재사용하므로, **어느 Feature로 채점됐는지를 키 존재로 판단한다.**
+    날씨/환경 중 어느 쪽인지도, 취향이 켜져 있었는지도 여기서 갈린다.
+
+    기본 3축은 키가 없어도 항상 넣는다 — 1차에서 날씨 조회에 실패하면
+    `feature_scores["weather"]`가 `None`으로 들어오는데, 그건 결측이지 Feature가
+    없는 게 아니다. 키 유무로 축을 빼면 가중치 합이 1.0에 못 미쳐 2차를 탄
+    요청만 점수가 통째로 낮아진다. 결측 처리는 호출부가
+    `redistribute_weights()`로 따로 한다.
     """
+    active = [feature for feature in OPTIONAL_FEATURES if feature in feature_scores]
+    weights = build_weights(active)
     if ENVIRONMENT_FEATURE not in feature_scores:
-        return dict(weights)
+        return weights
     return _rename_weather_weight(weights)
 
 
@@ -269,6 +361,37 @@ def _distance_score(distance_km: float, max_distance_km: float) -> float:
     if max_distance_km <= 0:
         return 1.0 if distance_km <= 0 else 0.0
     return _clamp(1.0 - distance_km / max_distance_km, 0.0, 1.0)
+
+
+def _taste_score(match: PlaceEvidenceMatch | None) -> float:
+    """취향 근거의 평균 유사도를 0~1 점수로 편다.
+
+    근거가 없는 후보는 **0.0이지 결측이 아니다.** "계산하지 못했다"(날씨 조회
+    실패)와 "안 맞는다"는 다르다 — 후보마다 결측 여부가 갈리면 한 순위 안에서
+    가중치 세트가 달라져 자를 두 개 쓰는 셈이 된다(도보 `_consistent_routes()`
+    에서 실제로 순위가 뒤집혔다).
+
+    후보 전체가 0.0인 경우도 순위에는 무해하다 — 모두 같은 만큼 낮아진다.
+    실측에서 "아이랑 비 오는 날 실내"는 어느 중심점에서도 컷을 넘지 못했다.
+    """
+    if match is None:
+        return 0.0
+    span = _TASTE_FULL_SCORE - _TASTE_CUT
+    if span <= 0:
+        return 0.0
+    return _clamp((match.avg_similarity - _TASTE_CUT) / span, 0.0, 1.0)
+
+
+def _taste_evidence_text(match: PlaceEvidenceMatch | None) -> str | None:
+    """근거 문장 중 유사도 1위 원문을 꺼낸다.
+
+    RPC가 유사도 내림차순으로 돌려주므로 첫 조각이 가장 가까운 문장이다.
+    점수만 보여주면 "왜 이게 내 취향이냐"에 답할 수 없어서, 사람이 읽을 수
+    있는 근거를 하나 들고 간다.
+    """
+    if match is None or not match.snippets:
+        return None
+    return match.snippets[0].source_text
 
 
 def _travel_minutes_budget(max_distance_km: float, mode: TravelMode) -> float:
@@ -528,6 +651,10 @@ def score_prepared_candidates(
     # A가 조회해 넘긴 실측 도보 경로. 해당 후보가 없거나 조회에 실패했으면
     # 직선거리로 돌아간다(`_proximity_score()`).
     travel_routes: Sequence[TravelRoute] = (),
+    # 취향 근거 검색 결과(place_id = content_id 기준). 비어 있으면 사용자가
+    # 취향을 말하지 않았거나 검색이 실패한 것으로 보고 taste Feature를 아예
+    # 쓰지 않는다 — 후보 단위가 아니라 **요청 단위** 판단이다.
+    taste_matches: Mapping[str, PlaceEvidenceMatch] | None = None,
 ) -> ScoringResult:
     """하드 필터를 통과한 후보에 가중치 점수를 적용해 정렬한다.
 
@@ -544,8 +671,13 @@ def score_prepared_candidates(
     """
     environment_driven = uses_environment_feature(requested_environment)
     routes_by_place_id = _consistent_routes(candidates, travel_routes)
+    # 취향 Feature는 요청 단위로 켜고 끈다. 켜지면 모든 후보가 이 Feature를
+    # 가지므로 한 순위 안에서 가중치 세트가 갈리지 않는다.
+    taste_by_place_id = dict(taste_matches or {})
+    uses_taste = taste_matches is not None
+    default_weights = build_weights(("taste",) if uses_taste else ())
     base_weights = weights_for_environment(
-        dict(weights) if weights is not None else dict(DEFAULT_WEIGHTS),
+        dict(weights) if weights is not None else dict(default_weights),
         requested_environment,
     )
     scored: list[
@@ -598,6 +730,10 @@ def score_prepared_candidates(
                 candidate, routes_by_place_id.get(candidate.place_id), max_distance_km
             ),  # 실측 도보 시간 우선, 없으면 직선거리
         }
+        taste_match = taste_by_place_id.get(candidate.place_id) if uses_taste else None
+        if uses_taste:
+            # 근거가 없으면 0.0이다 — 결측이 아니라 "안 맞는다"는 평가다.
+            feature_scores["taste"] = _taste_score(taste_match)
 
         score = sum(
             feature_scores[feature] * weight  # type: ignore[operator]
@@ -641,6 +777,9 @@ def score_prepared_candidates(
                 routes_by_place_id.get(candidate.place_id), "duration_seconds"
             ),
             travel_mode=_travel_mode_of(routes_by_place_id.get(candidate.place_id)),
+            taste_evidence_text=_taste_evidence_text(
+                taste_by_place_id.get(candidate.place_id)
+            ),
         )
         for index, (
             candidate,

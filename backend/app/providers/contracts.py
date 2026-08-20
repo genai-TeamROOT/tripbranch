@@ -27,6 +27,7 @@ class ProviderSource(StrEnum):
     TOUR_API_PLACE = "tour_api_place"
     TOUR_API_FESTIVAL = "tour_api_festival"
     SUPABASE_PLACES = "supabase_places"
+    SUPABASE_PLACE_EVIDENCE = "supabase_place_evidence"
     TOUR_API_CONCENTRATION = "tour_api_concentration"
     SEOUL_CITYDATA_COMMERCIAL = "seoul_citydata_commercial"
     SEOUL_CITYDATA_POPULATION = "seoul_citydata_population"
