@@ -1,6 +1,13 @@
 """INFO 장소 상세 카드의 C→A 최종 응답 변환을 검증한다."""
 
-from app.agent_context.info_schemas import InfoContextResponse, PlaceCard, PlaceInfoResult
+from app.agent_context.info_schemas import (
+    ConcentrationInfoResult,
+    EventInfoResult,
+    EventItem,
+    InfoContextResponse,
+    PlaceCard,
+    PlaceInfoResult,
+)
 from app.services.runtime.info_response_transform import to_info_place_card
 
 
@@ -64,15 +71,66 @@ def test_keeps_card_when_requested_field_has_no_data() -> None:
     assert card.place_name == "경복궁"
 
 
-def test_returns_none_when_info_result_has_no_card() -> None:
+def test_location_info_without_c_place_card_still_returns_minimum_card() -> None:
+    """C가 주소 조회에서 상세 API를 생략해도 INFO 카드 자체는 항상 보인다."""
     response = InfoContextResponse(
         request_id="no-card",
         status="success",
         result=PlaceInfoResult(
             status="success",
             question_type="location_info",
+            requested_place_name="건청궁",
+            resolved_place_name="건청궁",
+            place_id="126508",
             fields={"address": "서울특별시 종로구 사직로 161"},
         ),
     )
 
-    assert to_info_place_card(response) is None
+    card = to_info_place_card(response)
+
+    assert card is not None
+    assert card.question_type.value == "location_info"
+    assert card.place_name == "건청궁"
+    assert card.place_id == "126508"
+    assert card.answer_fields == {"address": "서울특별시 종로구 사직로 161"}
+    assert card.thumbnail_url is None
+    assert card.overview is None
+
+
+def test_concentration_and_event_results_also_return_minimum_cards() -> None:
+    concentration = to_info_place_card(
+        InfoContextResponse(
+            request_id="concentration-card",
+            status="success",
+            result=ConcentrationInfoResult(
+                status="success",
+                requested_place_name="경복궁",
+                resolved_place_name="경복궁",
+                forecast_date="2026-08-19",
+                concentration_label="보통",
+            ),
+        )
+    )
+    event = to_info_place_card(
+        InfoContextResponse(
+            request_id="event-card",
+            status="success",
+            result=EventInfoResult(
+                status="success",
+                requested_place_name="경복궁",
+                resolved_place_name="경복궁",
+                events=[
+                    EventItem(
+                        title="경복궁 별빛야행",
+                        start_date="2026-08-19",
+                        end_date="2026-08-20",
+                    )
+                ],
+            ),
+        )
+    )
+
+    assert concentration is not None
+    assert concentration.answer_fields == {"concentration": "2026-08-19 · 보통"}
+    assert event is not None
+    assert event.answer_fields == {"event": "경복궁 별빛야행 (2026-08-19~2026-08-20)"}

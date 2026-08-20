@@ -1846,6 +1846,119 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `apply_migration`이 소유자 확인 전에 집어갈 수 있어 초안을 설계 문서 안에만 두었다.
 - 상세: `docs/design/guest-auth-design.md` 6-1절
 
+### D-064 — 프롬프트 `meta.yaml`은 당분간 사람이 읽는 선언으로 두고, 런타임은 Markdown만 읽는다
+
+- 상태: `Superseded` — 아래 "미룬 것 1"(`version:` 소비)은 **D-065로 즉시 착수해 완료**했다.
+  나머지(`owner:`, `evals:`, 미조합 공통 규칙 3건)는 여전히 `Deferred`.
+- 배경: 인텐트별 프롬프트 라이브러리(`backend/app/prompts/`)를 도입하면서 프롬프트 본문을
+  `gemini_prompts.py`의 f-string에서 인텐트 폴더의 Markdown으로 옮겼다(커밋 `0695d86`).
+  이관 직후 점검에서 `meta.yaml`의 일부 필드가 어떤 코드에도 소비되지 않는다는 것이
+  확인됐다. 이관 자체는 프롬프트 텍스트를 바꾸지 않는 순수 이동이었고, 렌더 결과
+  스냅샷 27건이 0바이트 차이로 이를 증명한다.
+- 결정 — **`meta.yaml`을 런타임 설정값으로 승격하지 않는다.** 런타임(`loader.py`)은
+  Markdown 자산만 읽고, `meta.yaml`은 (1) 사람이 읽는 소유·버전 표시와 (2) CI 검사의
+  입력으로만 쓴다. 강의 교재 25-6의 YAGNI 원칙 — *"필요해질 때 도입하는 것이 원칙"* — 을
+  따른다. 지금 승격해도 사용자에게 달라지는 것이 없다.
+- 현재 강제되는 것 (`backend/tests/prompts/test_prompt_assets.py`):
+  - `template`·`bundle` 선언이 **실제 조합과 일치**해야 한다. 선언만 하고 코드가 안 읽으면
+    CI 실패 — 이관 전 실제로 있었던 "담당자가 `.md`를 고쳐도 서비스는 그대로인" 조용한
+    실패를 막는다.
+  - 아무도 읽지 않는 자산(고아 파일)이 생기면 CI 실패. 예외는 이유를 적어
+    `KNOWN_UNCOMPOSED`에 올려야 한다.
+- ~~미룬 것 1 — `version:`이 아무 데서도 소비되지 않는다.~~ → **D-065로 해소됨.**
+- 미룬 것 2 — **`owner:`도 소비처가 없다.** `app/prompts/OWNERS.md`와 이중으로 적혀 있어
+  어긋날 수 있다. 필요해지면 `.github/CODEOWNERS`와의 일치를 CI로 검사한다.
+- 미룬 것 3 — **`evals:`가 가리키는 인텐트별 평가 케이스가 아직 없다.** `evals/` 아래에
+  README만 있고 실제 케이스는 0건이다. 인텐트별 단위 평가를 채우더라도 **머지 게이트는
+  기존 `backend/test_results/agent_quality/`의 다중 턴 전수 실행을 유지한다** — 골드셋
+  다중 턴 케이스가 인텐트 경계를 넘나들어(dev 35건 중 13건) 인텐트별로 쪼갤 수 없고,
+  강의 27-4가 요구하는 것도 *"세트 전체의 향상"*이기 때문이다. 인텐트별 평가는 담당자의
+  빠른 반복용이지 게이트가 아니다.
+- 함께 미룬 것 — `_shared/rules/{factuality,safety,service_scope}.md` 3건은 작성돼 있으나
+  아직 어느 프롬프트에도 조합되지 않았다. 넣으면 프롬프트 출력이 바뀌므로 골드셋 평가와
+  함께 별도 변경으로 진행한다. 이유는 `KNOWN_UNCOMPOSED`에 기록돼 있다.
+- 범위 밖: 프롬프트 편집 UI, 런타임 핫스왑, 프롬프트 DB 저장, Langfuse 등 외부 프롬프트
+  관리 SaaS. 채점자가 저장소를 직접 읽는 프로젝트라 자산을 저장소 밖으로 빼지 않는다.
+  관측 도구가 필요해지면 그때 붙이되 직접 만들지 않는다(강의 94-5).
+- 상세: `backend/app/prompts/README.md`, `backend/app/prompts/OWNERS.md`
+
+### D-065 — 실행 기록에는 그 턴이 실제로 쓴 슬롯의 버전을 남긴다
+
+- 상태: `Accepted` — 구현 완료. D-064의 "미룬 것 1"을 대체한다.
+- 배경: 기존에는 `record_trace(prompt_version=...)`에 손으로 적은 고정 문자열
+  `agent-interpret-prompts-1.0.16` **하나만** 실렸다. 인텐트별로 담당자가 나뉜 뒤에는
+  INFO 담당자가 `info/extract.md`를 고쳐도 이 값이 그대로여서, *"이 응답은 어느
+  프롬프트에서 나왔나"*에 답할 수 없었다. 진짜 버전은 `meta.yaml`에 있는데 기록에는
+  무관한 고정값이 붙는 상태였다.
+- 결정 — **`registry.py`가 `meta.yaml`을 실제로 파싱**하고, 턴마다 그 턴이 사용한 슬롯의
+  버전을 조합해 기록한다.
+
+  | | 값 |
+  |---|---|
+  | 이전 | `agent-interpret-prompts-1.0.16` |
+  | 현재 | `router.classify@1+info.extract@1` |
+
+  과거 기준선으로 실행 중이면(`TRIPBRANCH_PROMPT_VARIANT`) 뒤에
+  `+variant:<ID>`가 붙어 "옛 프롬프트로 낸 기록"임이 남는다.
+- 슬롯 선택은 `INTENT_SLOTS` 라우팅 테이블로 한다(강의 89-3 "새 의도는 테이블에 한 줄").
+  분류(`router.classify`)는 항상 돌고 그 뒤 인텐트별 추출/편성 슬롯이 하나 더 돈다.
+  실제 렌더된 슬롯을 런타임에서 수집하지 않는 이유는 요청 컨텍스트 전파 배선이
+  4~5개 파일에 걸치는 데 비해 인텐트→슬롯 대응이 결정적이기 때문이다.
+- 답변 생성 슬롯(`*.answer`, `*.summary`)은 넣지 않았다 — 기록 시점
+  (`step="llm_interpret"`)에는 아직 돌지 않았고, 회귀 판정에 쓰는 지표(intent·조건 추출
+  정확도)가 전부 해석 단계 산출물이라 없이도 추적이 성립한다. 필요해지면
+  `step="llm_answer"` trace를 추가한다.
+- B 영향 없음 — 계약상 B는 이 값을 해석하지 않고 문자열로만 저장한다
+  (`llmops-trace-contract-v1.md` §7 Q2). 형식이 바뀌어도 B 쪽 스키마 변경이 없다.
+- 프롬프트 출력 불변 — 딱지만 바꾼 변경이라 챗봇 응답은 그대로다. 렌더 스냅샷 27건이
+  0바이트 차이로 이를 보증한다.
+- 안전장치 3건 (`backend/tests/prompts/test_prompt_assets.py`):
+  - `INTENT_SLOTS`가 참조하는 슬롯이 `meta.yaml`에 전부 있어야 한다 — 슬롯 이름을 바꾸고
+    표를 안 고치면 기록에서 슬롯 하나가 **조용히 빠지므로** 여기서 먼저 터뜨린다.
+  - 모든 `Intent`가 `INTENT_SLOTS`에 등록돼야 한다 — 새 인텐트를 추가하고 등록하지 않으면
+    분류 슬롯 버전만 남는다.
+  - 조합 문자열이 슬롯을 빠짐없이 담는지 인텐트별로 확인한다.
+- 남은 운영 부담: 프롬프트를 고칠 때 `meta.yaml`의 `version:`도 함께 올려야 한다. 지금은
+  사람이 챙긴다 — 스냅샷 테스트가 "텍스트가 바뀌었다"는 사실 자체는 잡아주므로(갱신
+  시점에 버전도 올리면 된다), 자동 강제는 두지 않았다.
+- 상세: `backend/app/prompts/registry.py`
+
+### D-066 — 답변·요약 계열 5곳에도 thinking_budget=0을 적용한다
+
+- 상태: `Accepted` — 구현 완료. `_thinking_config_for()`(gemini.py)가 남겨뒀던 미해결
+  메모를 대체한다.
+- 배경: gemini-2.5-flash → gemini-3.5-flash 전환 이후 실사용에서 GENERAL 인사말
+  ("안녕") 응답에도 6~7초 TTFT가 걸리고, COMPARE류 후속 질문에서 분류+추출 두 호출이
+  합쳐 18초 넘게 걸려 클라이언트 45초 무활동 타임아웃에 근접하는 문제가 확인됐다
+  (실제로 한 세션에서 48초 `stream_inactive` 오류 재현). 원인은 답변·요약 계열
+  5곳(`generate_general_answer`/`stream_general_answer`/
+  `generate_recommendation_summary`/`stream_recommendation_summary`/
+  `stream_info_answer`/`generate_compare_summary`)이 `thinking_budget`을 아예 안 넘겨
+  모델 기본 동작(gemini-3.5-flash는 MEDIUM, 항상 켜짐)을 그대로 썼기 때문 — 이전
+  thinking_budget=0 적용(SCHEDULE·classify_intent·extract_recommend_conditions) 때는
+  "문장 생성·요약류는 품질 저하 리스크"라는 이유로 의도적으로 제외했던 곳들이다
+  (`_thinking_config_for()` docstring 참고).
+- 결정 — `scripts/compare_answer_thinking_budget.py`로 5개 케이스 × 3회 실측
+  (thinking_budget=None vs 0)한 결과, thinking_budget=0이 평균 **3.9배** 빠르면서
+  (예: GENERAL 자기소개 5.9초→1.3초, COMPARE 요약 6.4초→1.6초) 답변 문구는 페르소나·
+  자기소개("트리비")·문장 수 규칙을 그대로 지켰다(수동 확인 — 우려했던 품질 저하는 이
+  케이스들에서 근거로 뒷받침되지 않았다). 결과:
+  `test_results/answer_thinking_budget_latency.csv`. 5개 호출부 모두 SCHEDULE과 같은
+  방식으로 `thinking_budget=0`을 내부에 고정했다(공개 API로 노출하지 않음 — 프로덕션에서
+  이 값을 바꿔 부를 필요가 없다).
+- 실사용 검증: `/api/chat/stream`에 같은 대화를 재현해 확인.
+  - "안녕"(GENERAL): 9.35초 → 5.06초, TTFT 6.5초 → 0.85초
+  - "첫 번째랑 두 번째 중에 어디가 더 가까워?"(COMPARE, 분류+추출): 18.8초 → 2.8초
+- 안전장치: `tests/test_gemini_provider.py`에 5곳 각각 실제로 `thinking_config.
+  thinking_level == MINIMAL`이 실리는지 확인하는 회귀 테스트 6건 추가(구조화 출력
+  4곳 + 스트리밍 3곳, 스트리밍은 `generate_content_stream` mock으로 검증).
+- Out of Scope: 분류·추출 계열 중 아직 손 안 댄 4곳(`extract_modify_conditions`/
+  `extract_info_query`/`extract_compare_request`/`extract_general_request`)은 이번
+  범위 밖 — 이번 작업은 "답변 생성 계열부터"로 한정했다. 45초 타임아웃의 다른 절반
+  원인(분류·추출 단계에 SCHEDULE 같은 하트비트가 없는 문제)도 별도 작업이다.
+- 상세: `backend/app/providers/gemini.py`(`_thinking_config_for()`),
+  `backend/scripts/compare_answer_thinking_budget.py`
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -1903,3 +2016,6 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-18 | D-061 신설 — 상세 카드에서 요일별 운영시간 원문이 한 줄로 노출되는 문제를 기록. C가 `OperatingSchedule` 기반 표시 전용 구조를 제공하는 후속 작업을 제안하고, A/프론트는 계약 확정 전까지 원문 폴백을 유지 |
 | 2026-08-19 | D-062 신설 — 정식 로그인 도입 전까지의 게스트 로그인 설계. 게스트를 Supabase 익명 사용자로 발급해 승계를 uid 유지로 해결하고, 신원(uid)과 세션(`sess_...`)을 분리. `Authorization` 헤더 전용 계약, optional 인증에서 토큰 없음(통과+경고)과 검증 실패(401)를 구분, `agent_states`/`recommendation_histories`에 `user_id` 추가. 승계가 익명성도 함께 무너뜨린다는 점과 대화 로그 서버 저장을 미루는 근거, LLM 전송의 티어·국외이전 쟁점과 프롬프트 식별자 금지 규칙을 개인정보 절로 기록. JWT 검증은 공개키 로컬 검증으로 확정하고 알고리즘 혼동 방어 항목을 함께 남김. `docs/design/guest-auth-design.md` 신설 |
 | 2026-08-19 | D-063 신설 — D-062 Phase 3(신원을 세션에 저장) 착수 전 B 확인이 필요한 네 항목을 정리. `STATE_STORE_BACKEND` 전환 시점(Phase 3 제외 권장), 소유권 검증 위치(Phase 4 권장), 빈 `user_id` 채우기 규칙(덮어쓰기 금지), `auth.users` FK(걸지 않기 권장). 마이그레이션 초안은 소유자 확인 전까지 `supabase/migrations/`에 두지 않고 설계 문서 6-1절에만 둔다 |
+| 2026-08-19 | D-064 신설 — 인텐트별 프롬프트 라이브러리 이관 완료 후, `meta.yaml`을 런타임 설정값으로 승격하지 않고 사람이 읽는 선언 + CI 검사 입력으로만 두기로 결정(YAGNI, 강의 25-6). `template`·`bundle`은 실제 조합과의 일치를 CI가 강제하고, 소비처가 없는 `version`·`owner`·`evals` 3건과 미조합 공통 규칙 3건(`factuality`/`safety`/`service_scope`)은 필요해질 때 착수하도록 미룸. 인텐트별 평가를 채우더라도 머지 게이트는 `agent_quality`의 다중 턴 전수 실행을 유지한다(강의 27-4) |
+| 2026-08-19 | D-065 신설 — D-064의 "미룬 것 1"을 즉시 착수해 해소. `registry.py`가 `meta.yaml`을 파싱해 슬롯 버전을 읽고, `record_trace(prompt_version=...)`에 그 턴이 실제로 쓴 슬롯 버전을 남긴다(`agent-interpret-prompts-1.0.16` → `router.classify@1+info.extract@1`). 슬롯 선택은 `INTENT_SLOTS` 라우팅 테이블(강의 89-3), 과거 기준선 실행 시 `+variant:<ID>` 접미. 프롬프트 출력은 불변(스냅샷 27건 0바이트 차이), B 계약 변경 없음. 슬롯 이름 불일치·미등록 인텐트를 잡는 안전장치 3건 추가. D-064의 `owner`·`evals`·미조합 공통 규칙은 계속 `Deferred` |
+| 2026-08-20 | D-066 신설 — gemini-3.5-flash 전환 뒤 미해결로 남아 있던 답변·요약 계열(GENERAL/RECOMMEND/COMPARE/INFO 답변 5곳)에 thinking_budget=0 적용. 실사용에서 "안녕" 응답 6~7초 TTFT, COMPARE류 후속 질문 18초+ 소요(45초 타임아웃 근접, 실제로 48초 stream_inactive 오류 재현)를 확인 후 `scripts/compare_answer_thinking_budget.py`로 5개 케이스 × 3회 실측 — 평균 3.9배 개선, 답변 품질(페르소나·자기소개·문장 수 규칙) 유지 확인. 5곳 모두 SCHEDULE과 같은 방식으로 내부 고정(공개 API 미노출). 실사용 재현으로 "안녕" 9.35초→5.06초(TTFT 6.5초→0.85초), COMPARE 분류+추출 18.8초→2.8초 확인. 회귀 테스트 6건 추가. 나머지 미최적화 추출 4곳과 분류·추출 단계 하트비트 부재는 범위 밖 |

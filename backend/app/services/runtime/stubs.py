@@ -22,6 +22,7 @@ from app.agent_context.schemas import (
     AgentContextResponse,
     Clarification,
     ContextValue,
+    Coordinates,
     PlaceCandidate,
     RecommendationContext,
     ResponseMetadata,
@@ -367,9 +368,15 @@ class FakeToolProvider:
                 requested_place_name=request.place_name,
                 resolved_place_name=request.place_name,
                 place_id="fake-place-id",
+                destination_coordinates=Coordinates(latitude=37.5796, longitude=126.9770),
                 fields=dict(fields),
-                place_card=_FAKE_PLACE_CARD.model_copy(
-                    update={"place_name": request.place_name}
+                # 실제 C와 마찬가지로 주소(location_info)는 위치 해석 결과만으로
+                # 답하므로 PlaceDetails를 추가 조회하지 않는다. A가 이 응답에서도
+                # 최소 InfoPlaceCard를 만들도록 Runtime 회귀 테스트를 맞춘다.
+                place_card=(
+                    None
+                    if request.question_type == "location_info"
+                    else _FAKE_PLACE_CARD.model_copy(update={"place_name": request.place_name})
                 ),
             ),
         )

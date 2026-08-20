@@ -226,6 +226,9 @@ class TestLocationInfo:
         assert _place_result(response).fields == {
             "address": "서울특별시 종로구 사직로 161"
         }
+        assert _place_result(response).destination_coordinates is not None
+        assert _place_result(response).destination_coordinates.latitude == pytest.approx(37.5788)
+        assert _place_result(response).destination_coordinates.longitude == pytest.approx(126.9770)
         assert provider.requested_names == []
 
 
