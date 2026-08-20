@@ -139,6 +139,41 @@ async def test_transit_route_treats_equal_points_as_zero_distance() -> None:
 
 
 @pytest.mark.asyncio
+async def test_transit_route_reports_no_data_for_short_distance_no_results() -> None:
+    """근거리는 `status: "NO_RESULTS"`로 온다 — 실 API 실측(2026-08-20).
+
+    안국역 기준 201m 지점이 이 응답이었다. 279m는 정상 조회됐으므로 경계는
+    250m 안팎이다. 걸어서 3분 거리에 버스·지하철 경로가 없는 것이라 장애가
+    아니라 값 없음이다.
+
+    "근처" 검색은 후보가 기준점에 붙어 있어 이 응답이 흔하다. `_consistent_routes()`가
+    후보 하나만 실측이 없어도 전체를 직선거리로 내리므로(scoring.py), 이 분기가
+    UNAVAILABLE로 새면 조회 실패로 잘못 집계된다.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "status": "NO_RESULTS",
+                "properties": {"total": 0, "bus": 0, "subway": 0, "busAndSubway": 0},
+                "routes": [],
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await RealKakaoTransitRouteProvider("test-key", client).get_routes(
+            GeoCoordinate(37.5765, 126.9853),
+            (RouteDestination("p1", GeoCoordinate(37.5747, 126.9855)),),
+        )
+
+    route = result.data.routes[0]
+    assert route.status is RouteStatus.NO_DATA
+    assert route.error_code == "kakao_status_no_results"
+    assert result.metadata.status is ProviderStatus.NO_DATA
+
+
+@pytest.mark.asyncio
 async def test_transit_route_reports_no_data_when_routes_are_empty() -> None:
     """status는 OK인데 경로가 없으면 실패가 아니라 값 없음이다."""
 
