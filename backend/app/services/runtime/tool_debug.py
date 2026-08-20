@@ -19,7 +19,7 @@ from app.agent_context.enrichment_schemas import (
     CandidateEnrichmentResponse,
     CandidateEnrichmentResult,
 )
-from app.agent_context.info_schemas import InfoContextResponse
+from app.agent_context.info_schemas import InfoContextResponse, RealtimeCommercialInfoResult
 from app.agent_context.schemas import (
     AgentContextResponse,
     ContextValue,
@@ -86,7 +86,7 @@ def _item_count(value: ContextValue[object]) -> int | None:
     """목록형 항목만 개수를 센다. 단건형(location/weather)은 None을 그대로 둔다."""
 
     data = value.data
-    if isinstance(data, (list, tuple)):
+    if isinstance(data, list | tuple):
         return len(data)
     return None
 
@@ -156,7 +156,7 @@ def build_info_concentration_execution_debug(
 ) -> ToolExecutionDebug | None:
     """INFO 단일 장소 조회를 감사용 단계 정보로 변환한다.
 
-    이름은 concentration이지만 question_type 8종 전체가 이 함수를 거친다
+    이름은 concentration이지만 INFO question_type 전체가 이 함수를 거친다
     (D-054/D-055 A 배선). is_proxy는 ConcentrationInfoResult 전용 필드라
     PlaceInfoResult/EventInfoResult에는 없으므로 getattr로 방어한다 —
     없으면 AttributeError로 감사 기록 전체가 조용히 사라진다.
@@ -166,7 +166,11 @@ def build_info_concentration_execution_debug(
         result = response.result
         error = result.error if result is not None and result.error is not None else response.error
         return ToolExecutionDebug(
-            operation="info_concentration",
+            operation=(
+                "info_realtime_commercial"
+                if isinstance(result, RealtimeCommercialInfoResult)
+                else "info_concentration"
+            ),
             request_id=response.request_id,
             status=response.status,
             latency_ms=latency_ms,

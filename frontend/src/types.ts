@@ -125,6 +125,16 @@ export interface InfoPlaceCard {
   credit_card: string | null;
   restroom: string | null;
   homepage: string | null;
+  population_current_level?: string | null;
+  population_observed_at?: string | null;
+  population_forecasts?: PopulationForecastBar[];
+}
+
+export interface PopulationForecastBar {
+  forecast_at: string;
+  congestion_level: string | null;
+  population_min: number | null;
+  population_max: number | null;
 }
 
 /** 추천 카드 클릭 시 C PlaceDetails를 직접 조회하는 응답이다. */
@@ -519,7 +529,7 @@ export interface CandidateConcentrationDebug {
 }
 
 export interface ToolExecutionDebug {
-  operation?: "context_fetch" | "info_concentration" | "candidate_enrichment" | "compare_fetch";
+  operation?: "context_fetch" | "info_concentration" | "info_realtime_commercial" | "candidate_enrichment" | "compare_fetch";
   request_id: string;
   status: string;
   latency_ms: number | null;

@@ -23,6 +23,8 @@ from app.domain.models import (
     PlaceCommonDetails,
     PlaceDetails,
     PlaceOperatingDetails,
+    RealtimeCityDataResult,
+    RealtimeCommercialResult,
     TourPlacePage,
     WeatherForecastResult,
 )
@@ -396,6 +398,22 @@ class ConcentrationProvider(Protocol):
         place_name: str | None = None,
     ) -> ProviderResult[ConcentrationResult]:
         """지역과 선택적인 관광지명에 대한 향후 집중률을 반환한다."""
+        ...
+
+
+class RealtimeCommercialProvider(Protocol):
+    async def get_area_commercial_status(
+        self, area_name_or_code: str
+    ) -> ProviderResult[RealtimeCommercialResult]:
+        """서울시 주요 장소 한 곳의 실시간 상권현황을 반환한다."""
+        ...
+
+
+class RealtimeCityDataProvider(Protocol):
+    async def get_area_citydata(
+        self, area_name_or_code: str
+    ) -> ProviderResult[RealtimeCityDataResult]:
+        """서울시 주요 장소의 실시간 상권·인구 데이터를 한 번에 반환한다."""
         ...
 
 

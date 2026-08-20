@@ -31,10 +31,18 @@ from app.providers.protocols import (
     PlaceDetailsProvider,
     PlaceProvider,
     PlaceSearchProvider,
+    RealtimeCityDataProvider,
+    RealtimeCommercialProvider,
     TravelRouteProvider,
     WeatherProvider,
 )
 from app.providers.real_place import RealPlaceProvider
+from app.providers.seoul_citydata import (
+    FakeRealtimeCityDataProvider,
+    FakeRealtimeCommercialProvider,
+    RealRealtimeCityDataProvider,
+    RealRealtimeCommercialProvider,
+)
 from app.providers.stub import FakeLLMProvider, FakePlaceProvider, FakeWeatherProvider
 from app.providers.supabase_place_details import SupabasePlaceDetailsProvider
 from app.providers.walking_route import (
@@ -298,6 +306,30 @@ def get_concentration_provider(client: httpx.AsyncClient) -> ConcentrationProvid
     )
 
 
+def get_realtime_commercial_provider(
+    client: httpx.AsyncClient,
+) -> RealtimeCommercialProvider:
+    """서울시 실시간 상권현황 Provider를 설정에 맞춰 만든다."""
+
+    if settings.resolved_seoul_citydata_provider == "fake":
+        return FakeRealtimeCommercialProvider()
+    return RealRealtimeCommercialProvider(
+        api_key=_require_key(settings.seoul_open_data_api_key, "SEOUL_OPEN_DATA_API_KEY"),
+        client=client,
+        timeout_seconds=settings.external_api_timeout_seconds,
+    )
+
+
+def get_realtime_citydata_provider(client: httpx.AsyncClient) -> RealtimeCityDataProvider:
+    if settings.resolved_seoul_citydata_provider == "fake":
+        return FakeRealtimeCityDataProvider()
+    return RealRealtimeCityDataProvider(
+        api_key=_require_key(settings.seoul_open_data_api_key, "SEOUL_OPEN_DATA_API_KEY"),
+        client=client,
+        timeout_seconds=settings.external_api_timeout_seconds,
+    )
+
+
 def get_holiday_provider(client: httpx.AsyncClient) -> HolidayProvider:
     if settings.resolved_holiday_provider == "fake":
         return FakeHolidayProvider()
@@ -314,6 +346,7 @@ _REQUIRED_KEYS: dict[str, tuple[tuple[str, str], ...]] = {
     "WEATHER_PROVIDER": (("WEATHER_API_KEY", "weather_api_key"),),
     "PLACE_PROVIDER": (("TOUR_API_SERVICE_KEY", "tour_api_service_key"),),
     "CONCENTRATION_PROVIDER": (("TOUR_API_SERVICE_KEY", "tour_api_service_key"),),
+    "SEOUL_CITYDATA_PROVIDER": (("SEOUL_OPEN_DATA_API_KEY", "seoul_open_data_api_key"),),
     "HOLIDAY_PROVIDER": (("TOUR_API_SERVICE_KEY", "tour_api_service_key"),),
     "TRAVEL_ROUTE_PROVIDER": (("KAKAO_MAP_REST_API_KEY", "kakao_map_rest_api_key"),),
     "LOCAL_SEARCH_PROVIDER": (
@@ -331,6 +364,7 @@ _RESOLVED_ATTRS: dict[str, str] = {
     "WEATHER_PROVIDER": "resolved_weather_provider",
     "PLACE_PROVIDER": "resolved_place_provider",
     "CONCENTRATION_PROVIDER": "resolved_concentration_provider",
+    "SEOUL_CITYDATA_PROVIDER": "resolved_seoul_citydata_provider",
     "HOLIDAY_PROVIDER": "resolved_holiday_provider",
     "GEOCODING_PROVIDER": "resolved_geocoding_provider",
     "LOCAL_SEARCH_PROVIDER": "resolved_local_search_provider",

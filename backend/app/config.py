@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     geocoding_provider: ProviderMode | None = None
     local_search_provider: ProviderMode | None = None
     concentration_provider: ProviderMode | None = None
+    # 서울시 실시간 데이터는 특정 INFO 질문에서만 필요하고 별도 키를 쓰므로, 공통
+    # PROVIDER_MODE=real을 따라 자동 호출하지 않는다. 사용할 환경에서만 명시적으로
+    # SEOUL_CITYDATA_PROVIDER=real로 켠다.
+    seoul_citydata_provider: ProviderMode = "fake"
     holiday_provider: ProviderMode | None = None
     # 비용이 발생할 수 있으므로 공통 PROVIDER_MODE를 상속하지 않고 명시적으로
     # real을 켤 때만 카카오맵 도보 API를 호출한다.
@@ -101,6 +105,7 @@ class Settings(BaseSettings):
     llm_api_key: str = Field(default="", repr=False, exclude=True)
     weather_api_key: str = Field(default="", repr=False, exclude=True)
     tour_api_service_key: str = Field(default="", repr=False, exclude=True)
+    seoul_open_data_api_key: str = Field(default="", repr=False, exclude=True)
     naver_map_client_id: str = Field(default="", repr=False, exclude=True)
     naver_map_client_secret: str = Field(default="", repr=False, exclude=True)
     naver_local_search_client_id: str = Field(default="", repr=False, exclude=True)
@@ -218,6 +223,10 @@ class Settings(BaseSettings):
     @property
     def resolved_concentration_provider(self) -> ProviderMode:
         return self.concentration_provider or self.provider_mode
+
+    @property
+    def resolved_seoul_citydata_provider(self) -> ProviderMode:
+        return self.seoul_citydata_provider
 
     @property
     def resolved_holiday_provider(self) -> ProviderMode:

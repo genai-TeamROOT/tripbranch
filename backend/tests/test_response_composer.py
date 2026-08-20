@@ -32,6 +32,7 @@ from app.services.runtime.info_context_schemas import (
     EventItem,
     InfoContextResponse,
     PlaceInfoResult,
+    RealtimeCommercialInfoResult,
 )
 from app.services.runtime.response_composer import (
     compose_chat_message,
@@ -39,6 +40,7 @@ from app.services.runtime.response_composer import (
     compose_event_info_message,
     compose_info_concentration_message,
     compose_place_info_message,
+    compose_realtime_commercial_message,
     compose_recommendation_message,
     compose_schedule_message,
 )
@@ -935,6 +937,73 @@ class TestComposePlaceInfoMessage:
         )
         message = await compose_chat_message(llm_output, info_response=response, llm=_StubLLM())
         assert "성인 기준 3,000원" in message
+
+
+class TestComposeRealtimeCommercialMessage:
+    def _response(self, *, status: str = "success") -> InfoContextResponse:
+        return InfoContextResponse(
+            request_id="commercial",
+            status=status,  # type: ignore[arg-type]
+            result=(
+                RealtimeCommercialInfoResult(
+                    status=status,  # type: ignore[arg-type]
+                    requested_place_name="테스트 카페",
+                    resolved_place_name="테스트 카페",
+                    area_name="용리단길",
+                    proxy_distance_km=0.2,
+                    category_label="음식·음료 · 커피·음료",
+                    commercial_level="바쁜 시간대",
+                    observed_at="2026-08-20 14:00",
+                )
+                if status != "unavailable"
+                else None
+            ),
+        )
+
+    def test_discloses_area_category_proxy_and_activity_basis(self) -> None:
+        message = compose_realtime_commercial_message(self._response())
+
+        assert "개별 매장 혼잡도는 확인할 수 없지만" in message
+        assert "약 0.2km 떨어진 용리단길" in message
+        assert "커피·음료" in message
+        assert "바쁜 시간대" in message
+        assert "카드 소비 활동" in message
+        assert "8월 20일 14:00 기준" in message
+
+    def test_unsupported_region_has_citydata_specific_message(self) -> None:
+        response = InfoContextResponse(
+            request_id="commercial-outside",
+            status="unsupported",
+            error=ContextError(
+                code="realtime_commercial_unsupported_region",
+                message="제공 지역 밖",
+                retryable=False,
+            ),
+        )
+
+        assert "서울시 주요 82개 지역" in compose_realtime_commercial_message(response)
+
+    def test_area_overall_fallback_discloses_missing_cafe_category(self) -> None:
+        response = self._response()
+        assert isinstance(response.result, RealtimeCommercialInfoResult)
+        response.result.category_label = None
+        response.result.commercial_level = "한산한"
+        response.result.commercial_scope = "area_overall"
+
+        message = compose_realtime_commercial_message(response)
+
+        assert "카페 업종 세부값도 현재 제공되지 않았어요" in message
+        assert "용리단길 전체 상권은 현재 한산한" in message
+
+    @pytest.mark.asyncio
+    async def test_chat_composer_dispatches_realtime_commercial(self) -> None:
+        message = await compose_chat_message(
+            LLMOutput(intent=Intent.INFO, status=OutputStatus.COMPLETE),
+            info_response=self._response(),
+            llm=_StubLLM(),
+        )
+
+        assert "개별 매장 혼잡도" in message
 
 
 class TestComposeEventInfoMessage:

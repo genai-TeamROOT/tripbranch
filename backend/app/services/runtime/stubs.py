@@ -47,6 +47,7 @@ from app.services.runtime.info_context_schemas import (
     InfoContextResponse,
     PlaceCard,
     PlaceInfoResult,
+    RealtimeCommercialInfoResult,
 )
 from app.state.schema import now_kst
 
@@ -230,9 +231,7 @@ class FakeToolProvider:
             metadata=metadata,
         )
 
-    async def fetch_compare_context(
-        self, request: CompareContextRequest
-    ) -> CompareContextResponse:
+    async def fetch_compare_context(self, request: CompareContextRequest) -> CompareContextResponse:
         """C의 비교 컨텍스트 조립을 고정 데이터로 흉내 낸다.
 
         place_id를 장소명으로 바꾸는 것만 가짜로 하고, 판정 규칙은 실제 C와 같게
@@ -291,7 +290,8 @@ class FakeToolProvider:
         그 외(카페 등)는 근접치 fallback 성공을 시뮬레이션한다. 실제 장소
         해석·근접치 탐색 오케스트레이션은 C 내부 구현(A는 하지 않음).
 
-        question_type=concentration은 위 흐름 그대로다. 그 외 7종(D-054/D-055,
+        question_type=concentration은 위 흐름 그대로다. realtime_commercial은 특정
+        매장 대신 용리단길 카페 상권을 빌린 고정 응답을 돌린다. 그 외 7종(D-054/D-055,
         backend/docs/package-a/info-question-types-handoff.md)은 알려진
         관광지면 고정 fields/event를 채운 성공 응답을, 그 외는 no_data를
         반환한다 — C처럼 근접치 fallback을 흉내 내지는 않는다(그 오케스트레이션
@@ -310,6 +310,8 @@ class FakeToolProvider:
 
         if request.question_type == "event":
             return self._fake_event_info(request)
+        if request.question_type == "realtime_commercial":
+            return self._fake_realtime_commercial_info(request)
         if request.question_type != "concentration":
             return self._fake_place_info(request)
 
@@ -341,6 +343,23 @@ class FakeToolProvider:
                 concentration_rate=58.0,
                 concentration_level="slightly_crowded",
                 concentration_label="다소 혼잡",
+            ),
+        )
+
+    def _fake_realtime_commercial_info(self, request: InfoContextRequest) -> InfoContextResponse:
+        return InfoContextResponse(
+            request_id=request.request_id,
+            status="success",
+            result=RealtimeCommercialInfoResult(
+                status="success",
+                requested_place_name=request.place_name,
+                resolved_place_name=request.place_name,
+                area_name="용리단길",
+                area_code="POI076",
+                proxy_distance_km=0.2,
+                category_label="음식·음료 · 커피·음료",
+                commercial_level="바쁜 시간대",
+                observed_at="2026-08-20 14:00",
             ),
         )
 
