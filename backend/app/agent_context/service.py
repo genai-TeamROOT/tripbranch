@@ -41,15 +41,19 @@ from app.agent_context.info_schemas import (
     InfoContextResponse,
     PlaceCard,
     PlaceInfoResult,
+    PopulationForecastInfo,
+    RealtimeCommercialInfoResult,
 )
 from app.agent_context.schemas import (
     AgentContextRequest,
     AgentContextResponse,
     Clarification,
     ContextError,
+    Coordinates,
     ResponseMetadata,
 )
 from app.agent_context.schemas import ProviderMetadata as ContextProviderMetadata
+from app.agent_context.seoul_commercial_areas import select_nearest_commercial_area
 from app.agent_context.tool_rules import (
     TOOL_EXECUTION_RULE_VERSION,
     ContextTool,
@@ -61,7 +65,7 @@ from app.concentration_policy import (
     is_valid_concentration_rate,
     normalize_concentration,
 )
-from app.domain.models import PlaceDetails
+from app.domain.models import PlaceDetails, RealtimeCommercialCategory
 from app.errors import AppError
 from app.geo import haversine_km
 from app.place_search_policy import (
@@ -94,9 +98,14 @@ from app.tools.place_detail import (
     GetPlaceDetailTool,
     PlaceDetailQuery,
 )
+from app.tools.realtime_citydata import GetRealtimeCityDataTool, RealtimeCityDataQuery
+from app.tools.realtime_commercial import (
+    GetRealtimeCommercialTool,
+)
 from app.tools.recommendation_cards import RecommendationCardTool
 from app.tools.resolve_location import (
     LocationPurpose,
+    LocationSource,
     ResolutionConfidence,
     ResolutionMethod,
     ResolvedLocation,
@@ -125,6 +134,8 @@ _COMPARE_CRITERIA_FIELDS: dict[CompareCriteria, str] = {
 
 # INFO 행사 응답에 싣는 최대 건수. 챗봇 말풍선 한 번에 읽히는 분량으로 제한한다.
 INFO_EVENT_RESULT_LIMIT = 5
+_CURRENT_ACTIVITY_MARKERS = ("지금", "현재", "오늘")
+_COMMERCIAL_CATEGORY_MARKERS = ("카페", "커피", "제과", "패스트푸드")
 
 
 @dataclass(frozen=True)
@@ -142,6 +153,9 @@ class ContextTools:
     place_detail: GetPlaceDetailTool | None = None
     # INFO 행사 질의(question_type=event) 전용. 위와 같은 이유로 선택적이다.
     festivals: GetFestivalsTool | None = None
+    # 서울시 실시간 도시데이터의 지역·업종별 상권 활동 조회 전용.
+    realtime_commercial: GetRealtimeCommercialTool | None = None
+    realtime_citydata: GetRealtimeCityDataTool | None = None
     # COMPARE의 place_id → 장소명 해석 전용. 추천 카드와 같은 Tool을 쓴다 —
     # 같은 places 행에서 같은 이름을 읽어야 카드와 비교 답변이 어긋나지 않는다.
     cards: RecommendationCardTool | None = None
@@ -159,11 +173,7 @@ class ContextService:
         search_radius_km: float = DEFAULT_PLACE_SEARCH_RADIUS_KM,
         concentration_mapping_cache: ConcentrationMappingCache | None = None,
     ) -> None:
-        if not (
-            MIN_RECOMMENDATION_LIMIT
-            <= candidate_limit
-            <= MAX_RECOMMENDATION_CANDIDATE_LIMIT
-        ):
+        if not (MIN_RECOMMENDATION_LIMIT <= candidate_limit <= MAX_RECOMMENDATION_CANDIDATE_LIMIT):
             raise ValueError(
                 "candidate_limit은 "
                 f"{MIN_RECOMMENDATION_LIMIT} 이상 "
@@ -200,9 +210,7 @@ class ContextService:
             await self._tools.location.execute(
                 # 추천은 반경 검색의 기준 좌표만 필요하다. 저장소 정체성 확정은
                 # 후보 보강 단계가 place_id로 따로 한다(enrichment_service).
-                ResolveLocationQuery(
-                    location_query, purpose=LocationPurpose.SEARCH_CENTER
-                )
+                ResolveLocationQuery(location_query, purpose=LocationPurpose.SEARCH_CENTER)
             )
             if location_query is not None
             else _gps_location_result(request, self._clock())
@@ -233,9 +241,7 @@ class ContextService:
         )
         holidays_task = (
             asyncio.create_task(
-                self._tools.holidays.execute(
-                    HolidayQuery(year=visit_at.year, month=visit_at.month)
-                )
+                self._tools.holidays.execute(HolidayQuery(year=visit_at.year, month=visit_at.month))
             )
             if execution_plan.requires(ContextTool.GET_HOLIDAYS)
             else None
@@ -294,9 +300,7 @@ class ContextService:
             )
 
         candidates = sorted(request.candidates, key=lambda item: item.rank)
-        card_result = await card_tool.get_cards(
-            [candidate.place_id for candidate in candidates]
-        )
+        card_result = await card_tool.get_cards([candidate.place_id for candidate in candidates])
         if card_result.status is ToolStatus.UNAVAILABLE:
             return _compare_error_response(
                 request,
@@ -309,11 +313,7 @@ class ContextService:
                 ),
             )
 
-        names = {
-            card.content_id: card.name
-            for card in card_result.cards
-            if card.name is not None
-        }
+        names = {card.content_id: card.name for card in card_result.cards if card.name is not None}
         items = [
             ComparisonItem(
                 place_id=candidate.place_id,
@@ -327,26 +327,20 @@ class ContextService:
             if candidate.place_id in names
         ]
         missing = [
-            candidate.place_id
-            for candidate in candidates
-            if candidate.place_id not in names
+            candidate.place_id for candidate in candidates if candidate.place_id not in names
         ]
 
         # 이름을 못 찾은 후보는 빼고 진행하되, 남은 수가 비교를 이루지 못하면
         # no_data다 — 한 곳만 남겨두고 "비교"라고 답할 수는 없다.
         if len(items) < _MIN_COMPARE_ITEMS:
-            return _compare_error_response(
-                request, status="no_data", missing_place_ids=missing
-            )
+            return _compare_error_response(request, status="no_data", missing_place_ids=missing)
 
         # 기준에 해당하는 값이 전원 비어 있으면 비교할 사실이 없다. 그대로 넘기면
         # A의 LLM이 빈 값에서 뭔가 지어낼 여지가 생긴다(프롬프트가 "C가 준 값만
         # 쓰라"고 제한하는 취지와도 어긋난다).
         field = _COMPARE_CRITERIA_FIELDS.get(request.criteria)
         if field is not None and all(getattr(item, field) is None for item in items):
-            return _compare_error_response(
-                request, status="no_data", missing_place_ids=missing
-            )
+            return _compare_error_response(request, status="no_data", missing_place_ids=missing)
 
         return CompareContextResponse(
             request_id=request.request_id,
@@ -366,7 +360,8 @@ class ContextService:
         뒤가 갈린다.
 
         - ``concentration`` → 집중률 API + D-036 인근 대체 조회
-        - ``event`` → searchFestival2 연동이 없어 unsupported
+        - ``event`` → 주변 행사 조회
+        - ``realtime_commercial`` → 가까운 서울시 제공 상권의 카페 활동 조회
         - 그 외 → 장소 상세 조회(TourAPI detailCommon2/detailIntro2)
         """
 
@@ -382,9 +377,17 @@ class ContextService:
                 ),
             )
 
+        current_activity_candidate = _is_current_activity_candidate(request)
+        location_purpose = (
+            LocationPurpose.REALTIME_CITYDATA
+            if request.question_type == "realtime_commercial" or current_activity_candidate
+            else LocationPurpose.PLACE_IDENTITY
+        )
         location_result = await self._tools.location.execute(
             # INFO는 좌표가 아니라 "집중률 매핑이 걸린 그 장소"를 확정해야 한다(D-043).
-            ResolveLocationQuery(place_name, purpose=LocationPurpose.PLACE_IDENTITY)
+            # 단, 실시간 상권은 서울시 82개 제공 지역을 별도로 쓰므로 종로구 추천
+            # 범위를 위치 해석 단계에 적용하지 않는다.
+            ResolveLocationQuery(place_name, purpose=location_purpose)
         )
         if location_result.status is ToolStatus.NO_DATA:
             cause = location_result.error.cause if location_result.error else None
@@ -398,9 +401,7 @@ class ContextService:
                         candidates=[],
                     ),
                 )
-            return _info_no_data_response(
-                request, location_result.provider_metadata
-            )
+            return _info_no_data_response(request, location_result.provider_metadata)
         if location_result.status is ToolStatus.UNSUPPORTED:
             return _info_error_response(
                 request,
@@ -449,6 +450,18 @@ class ContextService:
                 location_metadata=location_result.provider_metadata,
             )
 
+        if request.question_type == "realtime_commercial" or (
+            request.question_type == "concentration"
+            and current_activity_candidate
+            and _is_commercial_place_category(resolved_location.place_category)
+        ):
+            return await self._fetch_realtime_commercial_info(
+                request,
+                place_name=place_name,
+                resolved_location=resolved_location,
+                location_metadata=location_result.provider_metadata,
+            )
+
         if request.question_type != "concentration":
             return await self._fetch_place_detail_info(
                 request,
@@ -462,6 +475,140 @@ class ContextService:
             place_name=place_name,
             resolved_location=resolved_location,
             location_metadata=location_result.provider_metadata,
+        )
+
+    async def _fetch_realtime_commercial_info(
+        self,
+        request: InfoContextRequest,
+        *,
+        place_name: str,
+        resolved_location: ResolvedLocation,
+        location_metadata: tuple[ProviderMetadata, ...],
+    ) -> InfoContextResponse:
+        """개별 매장 대신 최근접 서울시 제공 상권의 카페 활동을 안내한다."""
+
+        nearest = select_nearest_commercial_area(
+            latitude=resolved_location.latitude,
+            longitude=resolved_location.longitude,
+        )
+        if nearest is None:
+            return _info_error_response(
+                request,
+                status="unsupported",
+                error=ContextError(
+                    code="realtime_commercial_unsupported_region",
+                    message="서울시 실시간 상권 데이터 제공 지역이 아닙니다.",
+                    retryable=False,
+                ),
+                provider_metadata=(location_metadata,),
+            )
+
+        area, distance_km = nearest
+        tool = self._tools.realtime_citydata
+        if tool is None:
+            return _info_error_response(
+                request,
+                status="unavailable",
+                error=ContextError(
+                    code="realtime_commercial_not_configured",
+                    message="실시간 상권 조회 기능을 사용할 수 없습니다.",
+                    retryable=False,
+                ),
+                provider_metadata=(location_metadata,),
+            )
+
+        tool_result = await tool.execute(RealtimeCityDataQuery(area.code))
+        if tool_result.status is ToolStatus.UNAVAILABLE:
+            return _info_error_response(
+                request,
+                status="unavailable",
+                error=_context_error_from_tool(
+                    tool_result.error,
+                    fallback_code="realtime_commercial_unavailable",
+                    fallback_message="실시간 상권 정보를 가져오지 못했습니다.",
+                    retryable=True,
+                ),
+                provider_metadata=(location_metadata, tool_result.provider_metadata),
+            )
+
+        citydata = tool_result.citydata
+        commercial = citydata.commercial if citydata is not None else None
+        population = citydata.population if citydata is not None else None
+        cafe_category = _select_cafe_commercial_category(
+            commercial.categories if commercial is not None else ()
+        )
+        if tool_result.status is ToolStatus.NO_DATA or commercial is None:
+            return InfoContextResponse(
+                request_id=request.request_id,
+                status="no_data",
+                result=RealtimeCommercialInfoResult(
+                    status="no_data",
+                    requested_place_name=place_name,
+                    resolved_place_name=resolved_location.resolved_name,
+                    area_name=area.name,
+                    area_code=area.code,
+                    proxy_distance_km=distance_km,
+                ),
+                metadata=_info_response_metadata(location_metadata, tool_result.provider_metadata),
+            )
+
+        if cafe_category is not None:
+            category_label, commercial_level = cafe_category
+            commercial_scope = "cafe_category"
+        else:
+            # 실 API는 조회 시점에 대표 업종 한 건만 내려줄 수 있다. 카페 세부 업종이
+            # 빠졌다고 지역 전체 활동값까지 버리면 "용리단길 카페" 같은 질문이 매번
+            # no_data가 된다. 단, 카페 값처럼 보이지 않도록 응답 범위를 명시한다.
+            category_label = None
+            commercial_level = commercial.area_activity_level
+            commercial_scope = "area_overall"
+        if commercial_level is None:
+            return InfoContextResponse(
+                request_id=request.request_id,
+                status="no_data",
+                result=RealtimeCommercialInfoResult(
+                    status="no_data",
+                    requested_place_name=place_name,
+                    resolved_place_name=resolved_location.resolved_name,
+                    area_name=area.name,
+                    area_code=area.code,
+                    proxy_distance_km=distance_km,
+                ),
+                metadata=_info_response_metadata(location_metadata, tool_result.provider_metadata),
+            )
+        return InfoContextResponse(
+            request_id=request.request_id,
+            status="success",
+            result=RealtimeCommercialInfoResult(
+                status="success",
+                requested_place_name=place_name,
+                resolved_place_name=resolved_location.resolved_name,
+                area_name=commercial.area_name or area.name,
+                area_code=commercial.area_code or area.code,
+                proxy_distance_km=distance_km,
+                category_label=category_label,
+                commercial_level=commercial_level,
+                commercial_scope=commercial_scope,
+                observed_at=commercial.observed_at,
+                population_current_level=(
+                    population.current_congestion_level if population is not None else None
+                ),
+                population_observed_at=population.observed_at if population is not None else None,
+                population_forecasts=(
+                    [
+                        PopulationForecastInfo(
+                            forecast_at=slot.forecast_at,
+                            congestion_level=slot.congestion_level,
+                            population_min=slot.population_min,
+                            population_max=slot.population_max,
+                        )
+                        for slot in population.forecasts
+                    ]
+                    if population is not None and population.forecast_available
+                    else []
+                ),
+            ),
+            metadata=_info_response_metadata(location_metadata, tool_result.provider_metadata),
         )
 
     async def _fetch_concentration_info(
@@ -715,6 +862,7 @@ class ContextService:
                 requested_place_name=place_name,
                 resolved_place_name=resolved_location.resolved_name,
                 place_id=resolved_location.place_id,
+                destination_coordinates=_to_info_destination_coordinates(resolved_location),
                 fields=fields,
                 provider_metadata=(location_metadata,),
             )
@@ -755,6 +903,7 @@ class ContextService:
                 requested_place_name=place_name,
                 resolved_place_name=resolved_location.resolved_name,
                 place_id=resolved_location.place_id,
+                destination_coordinates=_to_info_destination_coordinates(resolved_location),
                 fields={},
                 provider_metadata=(location_metadata, detail_result.provider_metadata),
             )
@@ -762,15 +911,12 @@ class ContextService:
         return _place_info_response(
             request,
             requested_place_name=place_name,
-            resolved_place_name=(
-                detail_result.details.title or resolved_location.resolved_name
-            ),
+            resolved_place_name=(detail_result.details.title or resolved_location.resolved_name),
             place_id=detail_result.details.content_id or resolved_location.place_id,
+            destination_coordinates=_to_info_destination_coordinates(resolved_location),
             fields=extract_info_fields(request.question_type, detail_result.details),
             # 카드는 질문 유형과 무관하게 채운다. status는 위 fields로만 정해진다.
-            place_card=_to_place_card(
-                detail_result.details, resolved_location.place_id
-            ),
+            place_card=_to_place_card(detail_result.details, resolved_location.place_id),
             provider_metadata=(location_metadata, detail_result.provider_metadata),
         )
 
@@ -804,9 +950,7 @@ class ContextService:
             )
 
         reference_date = _info_reference_date(request.visit_time, self._clock())
-        festival_result = await festival_tool.execute(
-            FestivalQuery(reference_date=reference_date)
-        )
+        festival_result = await festival_tool.execute(FestivalQuery(reference_date=reference_date))
         if festival_result.status is ToolStatus.UNAVAILABLE:
             return _info_error_response(
                 request,
@@ -838,9 +982,7 @@ class ContextService:
                 events=events,
                 has_direct_match=any(item.is_direct_match for item in events),
             ),
-            metadata=_info_response_metadata(
-                location_metadata, festival_result.provider_metadata
-            ),
+            metadata=_info_response_metadata(location_metadata, festival_result.provider_metadata),
         )
 
     async def _collect_places(
@@ -898,6 +1040,7 @@ def _gps_location_result(
             requested_query="gps_location",
             provider_query="device_gps",
             resolved_name="기기 GPS 위치",
+            source=LocationSource.DEVICE_GPS,
             latitude=gps.latitude,
             longitude=gps.longitude,
             resolution_method=ResolutionMethod.DIRECT,
@@ -920,6 +1063,43 @@ def _info_reference_date(visit_time: str | None, clock_value: datetime) -> date:
     if visit_time is not None:
         return date.fromisoformat(visit_time)
     return _as_kst(clock_value).date()
+
+
+def _select_cafe_commercial_category(
+    categories: tuple[RealtimeCommercialCategory, ...],
+) -> tuple[str, str] | None:
+    """서울시 상권 응답에서 카페·커피 업종의 활동 수준만 고른다.
+
+    ``AREA_CMRCL_LVL``은 모든 업종을 합친 지역 값이므로 카페 질문에 섞지 않는다.
+    중분류가 비어 있는 응답도 있을 수 있어 대분류까지 함께 검사한다.
+    """
+
+    for category in categories:
+        label = " · ".join(
+            value
+            for value in (category.large_category, category.middle_category)
+            if value is not None
+        )
+        if category.activity_level is not None and any(
+            marker in label for marker in ("카페", "커피")
+        ):
+            return label, category.activity_level
+    return None
+
+
+def _is_current_activity_candidate(request: InfoContextRequest) -> bool:
+    """'지금 사람 많아?'처럼 현재 상권 경로 전환 가능성이 있는지 판단한다."""
+
+    question = request.specific_question or ""
+    return any(marker in question for marker in _CURRENT_ACTIVITY_MARKERS)
+
+
+def _is_commercial_place_category(category: str | None) -> bool:
+    """Naver Local Search 업종이 상권 활동 대체 대상인지 확인한다."""
+
+    return category is not None and any(
+        marker in category for marker in _COMMERCIAL_CATEGORY_MARKERS
+    )
 
 
 def _info_no_data_response(
@@ -993,6 +1173,7 @@ def _place_info_response(
     requested_place_name: str,
     resolved_place_name: str,
     place_id: str | None,
+    destination_coordinates: Coordinates | None,
     fields: dict[str, str],
     place_card: PlaceCard | None = None,
     provider_metadata: tuple[tuple[ProviderMetadata, ...], ...] = (),
@@ -1018,11 +1199,18 @@ def _place_info_response(
             requested_place_name=requested_place_name,
             resolved_place_name=resolved_place_name,
             place_id=place_id,
+            destination_coordinates=destination_coordinates,
             fields=fields,
             place_card=place_card,
         ),
         metadata=_info_response_metadata(*provider_metadata),
     )
+
+
+def _to_info_destination_coordinates(location: ResolvedLocation) -> Coordinates:
+    """C가 확정한 INFO 목적지를 A의 도보 경로 입력 형태로만 재노출한다."""
+
+    return Coordinates(latitude=location.latitude, longitude=location.longitude)
 
 
 def _to_place_card(details: PlaceDetails, place_id: str | None) -> PlaceCard:

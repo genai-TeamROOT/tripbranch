@@ -280,6 +280,9 @@ class QuestionType(StrEnum):
     LOCATION_INFO = "location_info"
     GENERAL_INFO = "general_info"
     CONCENTRATION = "concentration"
+    # 서울시 실시간 도시데이터의 지역·업종별 카드 소비 활동. 특정 매장 자체의
+    # 혼잡도가 아니라, 매장 좌표와 가까운 제공 상권의 대체 정보다.
+    REALTIME_COMMERCIAL = "realtime_commercial"
 
 
 class PlaceContext(StrEnum):
@@ -372,6 +375,12 @@ class UserConditions(BaseModel):
     budget: str | None = None
     exclude_tags: list[str] = Field(default_factory=list)
     special_requirements: list[str] = Field(default_factory=list)
+    # 취향 발화 원문. 벡터 검색(search_place_evidence) 질의로 쓴다.
+    # special_requirements와 분리한 이유는 그 필드가 "기타 전부"를 받아
+    # 일정·교통 조건이 섞이고, 그대로 임베딩하면 취향이 아닌 문장이 근거를
+    # 찾아내기 때문이다(실측 2026-08-19: "3시간 안에 다녀올 수 있는 곳"이
+    # 유사도 0.523으로 진짜 취향 발화보다 높게 나왔다).
+    taste_query: str | None = None
 
     @field_validator("current_location", "search_center", mode="before")
     @classmethod
@@ -552,6 +561,7 @@ class LLMOutput(BaseModel):
     out_of_scope: OutOfScopePayload | None = None
     clarification: ClarificationPayload | None = None
 
+
 class SessionState(BaseModel):
     """Package B가 관리하는 세션 상태 스냅샷.
 
@@ -577,6 +587,7 @@ class InterpretResponse(BaseModel):
 
     output: LLMOutput
     state: SessionState
+
 
 class IntentClassificationResult(BaseModel):
     """1단계 LLM 호출(Intent 분류) 전용 최소 스키마. 문서에 없는 신규 모델.
@@ -615,6 +626,11 @@ class InterpretRequest(BaseModel):
     # 지목할 때 MODIFY 추출기가 이름→순번을 매칭하는 데 쓴다. 이름이 없는 항목은
     # 빈 문자열로 채워 인덱스(=순번-1)가 어긋나지 않게 한다.
     shown_place_names: list[str] = Field(default_factory=list)
+    # 직전 INFO 상세 카드에서 프론트가 보존한 장소명. "여기/이곳/거기"처럼
+    # 추천 목록이 아닌 대화 속 장소를 가리키는 INFO 발화의 해소 후보로만 쓴다.
+    # 상태 계약에 새 필드를 추가하지 않고도, 현재 대화 화면이 이미 받은 카드 정보를
+    # 다음 턴의 해석에 재사용할 수 있게 한다.
+    conversation_place_name: str | None = None
 
 
 # === Agent Runtime (A-03) ===
@@ -632,6 +648,9 @@ class AgentRequest(BaseModel):
     user_input: str = Field(..., min_length=1)
     session_id: str | None = None
     device_location: str | None = None  # "위도,경도" 문자열, api_context.gps_location과 동일 포맷
+    # 직전 INFO 카드의 장소명. 현재 화면이 "여기/이곳"을 보낼 때에만 A가 INFO
+    # from_conversation 해소 후보로 사용한다.
+    conversation_place_name: str | None = None
     # 되묻기 버튼 클릭 시 ClarificationOption.id를 그대로 echo. user_input에는 버튼
     # label을 채워 보내되(채팅 이력 표시용) 라우팅은 이 필드만으로 결정한다 —
     # classify_intent()를 다시 태우지 않는다(docs/design/clarification-options.md 3절).
@@ -715,10 +734,12 @@ class ToolExecutionDebug(BaseModel):
     """
 
     operation: Literal[
-        "context_fetch", "info_concentration", "candidate_enrichment", "compare_fetch"
-    ] = (
-        "context_fetch"
-    )
+        "context_fetch",
+        "info_concentration",
+        "info_realtime_commercial",
+        "candidate_enrichment",
+        "compare_fetch",
+    ] = "context_fetch"
     request_id: str
     status: str
     latency_ms: int | None = None
@@ -735,9 +756,7 @@ class ToolExecutionDebug(BaseModel):
     # 근사치가 섞이는 게 정상 상태인데, 상태 집계만 보면 직접 조회한 값과 빌려온
     # 값이 "success 5건"으로 같아 보인다. 건수는 이 목록에서 세면 되므로 따로
     # 두지 않는다 — 같은 사실의 출처가 둘이면 어긋난다.
-    candidate_concentration: list[CandidateConcentrationDebug] = Field(
-        default_factory=list
-    )
+    candidate_concentration: list[CandidateConcentrationDebug] = Field(default_factory=list)
 
 
 class InfoPlaceCard(BaseModel):
@@ -764,6 +783,16 @@ class InfoPlaceCard(BaseModel):
     credit_card: str | None = None
     restroom: str | None = None
     homepage: str | None = None
+    population_current_level: str | None = None
+    population_observed_at: str | None = None
+    population_forecasts: list[PopulationForecastBar] = Field(default_factory=list)
+
+
+class PopulationForecastBar(BaseModel):
+    forecast_at: str
+    congestion_level: str | None = None
+    population_min: int | None = None
+    population_max: int | None = None
 
 
 class RecommendationPlaceDetailRequest(BaseModel):

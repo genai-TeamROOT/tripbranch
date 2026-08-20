@@ -125,6 +125,16 @@ export interface InfoPlaceCard {
   credit_card: string | null;
   restroom: string | null;
   homepage: string | null;
+  population_current_level?: string | null;
+  population_observed_at?: string | null;
+  population_forecasts?: PopulationForecastBar[];
+}
+
+export interface PopulationForecastBar {
+  forecast_at: string;
+  congestion_level: string | null;
+  population_min: number | null;
+  population_max: number | null;
 }
 
 /** 추천 카드 클릭 시 C PlaceDetails를 직접 조회하는 응답이다. */
@@ -342,6 +352,8 @@ export interface AgentDebugRequest {
   user_input: string;
   session_id?: string | null;
   device_location?: string | null;
+  /** 직전 INFO 상세 카드의 장소명. "여기/이곳" 같은 대화 지시어 해소 후보다. */
+  conversation_place_name?: string | null;
   /*
    * 되묻기 버튼 클릭 시 ClarificationOption.id를 그대로 echo. user_input에는 버튼
    * label을 채워 보내되(채팅 이력 표시용) 라우팅은 이 필드만으로 결정된다.
@@ -517,7 +529,7 @@ export interface CandidateConcentrationDebug {
 }
 
 export interface ToolExecutionDebug {
-  operation?: "context_fetch" | "info_concentration" | "candidate_enrichment" | "compare_fetch";
+  operation?: "context_fetch" | "info_concentration" | "info_realtime_commercial" | "candidate_enrichment" | "compare_fetch";
   request_id: string;
   status: string;
   latency_ms: number | null;

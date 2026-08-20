@@ -32,7 +32,7 @@ B가 어떤 형식으로 되돌려주는지를 확정하는 것이 목적이다.
 
 | 층 | 내용 | B 저장 | 생성 주체 |
 | --- | --- | --- | --- |
-| `user_conditions` | 사용자 발화에서 추출한 조건 15개 | O | A (Structured Output) |
+| `user_conditions` | 사용자 발화에서 추출한 조건 16개 | O | A (Structured Output) |
 | `api_context` | GPS·날씨 API로 확보한 외부 데이터 | O | A 또는 Runtime |
 | `answer_conditions` | 위 둘을 병합한 최종 조건 | **X** | A |
 
@@ -49,7 +49,7 @@ B가 어떤 형식으로 되돌려주는지를 확정하는 것이 목적이다.
 값의 우선순위를 판단하는 행위이므로 패키지 A의 책임이다.
 B는 두 층을 분리해 저장하고 그대로 반환한다.
 
-### 1.2 user_conditions (15개 필드)
+### 1.2 user_conditions (16개 필드)
 
 `intent-definition.md` v0.2 및 `conditions-schema.md` 2절의 `Conditions`를 채택한다.
 
@@ -70,6 +70,7 @@ B는 두 층을 분리해 저장하고 그대로 반환한다.
 | 13 | `exclude_tags` | list[string] | 복수 | 제외 태그 |
 | 14 | `special_requirements` | list[string] | 복수 | 특수 요구사항 |
 | 15 | `concentration_intent` | string \| null | 단일 | 혼잡도 대응 방향(`AVOID`/`SEEK`/`IGNORE`) — weather_intent와 동일 패턴 |
+| 16 | `taste_query` | string \| null | 단일 | 취향 발화 원문(2026-08-19 신설). 벡터 검색 질의로 쓴다 — `special_requirements`와 달리 일정·교통 조건을 섞지 않는다 |
 
 - 복수 필드는 `place_types`, `place_tags`, `exclude_tags`, `special_requirements` 4개다.
 - **이 필드들은 사용자가 말한 값만 담는다.** API로 확보한 값은 `api_context`에 저장한다.
@@ -172,7 +173,8 @@ B가 임의로 규칙화하지 않기 위함). 기존 세션은 `null`이며, A�
     "companion": null,
     "budget": null,
     "exclude_tags": [],
-    "special_requirements": []
+    "special_requirements": [],
+    "taste_query": null
   },
   "api_context": {
     "gps_location": null,
@@ -195,7 +197,7 @@ B가 임의로 규칙화하지 않기 위함). 기존 세션은 `null`이며, A�
 | 필드 | 설명 |
 | --- | --- |
 | `session_id` | 대화 단위 식별자 (4절) |
-| `user_conditions` | 사용자 발화에서 추출된 현재 조건 15개 |
+| `user_conditions` | 사용자 발화에서 추출된 현재 조건 16개 |
 | `api_context` | 외부 확보 데이터 4개 |
 | `condition_version` | `user_conditions` 변경 횟수. 동시 갱신 감지용 |
 | `last_run_id` | 이 상태를 마지막으로 갱신한 실행 식별자 |
@@ -231,7 +233,7 @@ B가 임의로 규칙화하지 않기 위함). 기존 세션은 `null`이며, A�
 | 키 | 타입 | 설명 |
 | --- | --- | --- |
 | `op` | string | `Add` / `Update` / `Remove` / `Keep` |
-| `field` | string | 1.2절 `user_conditions` 15개 필드 중 하나 |
+| `field` | string | 1.2절 `user_conditions` 16개 필드 중 하나 |
 | `value` | any \| null | 적용할 값. `Remove`·`Keep`은 생략 가능 |
 
 - 연산은 **4종**이다.
@@ -262,8 +264,9 @@ B가 임의로 규칙화하지 않기 위함). 기존 세션은 `null`이며, A�
 | `budget` | 단일 | `Update` / `Remove` | `null` |
 | `exclude_tags` | 복수 | `Add` / `Remove` | 해당 원소 제거 |
 | `special_requirements` | 복수 | `Add` / `Remove` | 해당 원소 제거 |
+| `taste_query` | 단일 | `Update` / `Remove` | `null`로 설정 |
 
-**15개 필드 모두 `Remove`를 허용한다.**
+**16개 필드 모두 `Remove`를 허용한다.**
 `conditions-schema.md` v0.3에서 `current_location`의 필수 지위가
 `api_context.gps_location`으로 이관되었으므로,
 `user_conditions`에는 해제 불가 필드가 없다.
@@ -939,7 +942,7 @@ B는 전달받은 `reset_scope` 값에 따라 실행만 하며 발화를 해석�
 
 **저장한다**
 
-- `user_conditions` 15개 필드 (구조화된 조건값)
+- `user_conditions` 16개 필드 (구조화된 조건값)
 - `api_context` 4개 필드 (외부 확보 데이터 + 확보 시각)
 - `place_id` (TourAPI `contentid`)
 - `distance_km` / `remaining_minutes` / `environment_type` — COMPARE 전용
@@ -1076,7 +1079,7 @@ HTTP 엔드포인트 노출은 AF-05 Agent Runtime의 책임 범위다.
   "session_id": "sess_01J8XKQ2M7N4P9",
   "run_id": "run_01J8XKQ5A1B2C3",
   "session_created": false,
-  "user_conditions": { "...15개 필드..." },
+  "user_conditions": { "...16개 필드..." },
   "api_context": {
     "gps_location": "37.5565,126.9236",
     "api_weather": "rain",
@@ -1101,7 +1104,7 @@ HTTP 엔드포인트 노출은 AF-05 Agent Runtime의 책임 범위다.
 | `session_id` | string | 신규·기존 무관하게 항상 포함 |
 | `run_id` | string | 이번 실행 식별자 |
 | `session_created` | bool | 세션 신규 발급 여부 |
-| `user_conditions` | object | 병합 완료된 현재 조건 15개 전체 |
+| `user_conditions` | object | 병합 완료된 현재 조건 16개 전체 |
 | `api_context` | object | 외부 데이터 + 만료 플래그 |
 | `condition_version` | int | 병합 후 조건 버전 |
 | `condition_changed` | bool | 이번 요청으로 조건이 실제 변경됐는지 |
@@ -1145,7 +1148,7 @@ A가 인텐트를 분류하기 전에 필요한 정보를 제공한다.
   "last_recommended_run_id": "run_01J8XKQ5A1B2C3",
   "last_intent": "MODIFY",
   "pending_clarification": null,
-  "user_conditions": { "...15개 필드..." },
+  "user_conditions": { "...16개 필드..." },
   "api_context": { "...5개 필드 + 만료 플래그..." },
   "condition_version": 5
 }

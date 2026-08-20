@@ -7,7 +7,7 @@ D는 C Tool을 직접 호출하지 않는다([TECH-02]). Tool 조회는 호출�
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, time
 from time import perf_counter
@@ -19,9 +19,12 @@ from app.concentration_policy import ConcentrationLevel
 from app.domain.candidate_mapper import map_context_to_scoring_candidates
 from app.domain.evidence import build_evidence
 from app.domain.explanation import build_explanations
-from app.domain.models import ScoringCandidate, WeatherCondition
+from app.domain.models import (
+    PlaceEvidenceMatch,
+    ScoringCandidate,
+    WeatherCondition,
+)
 from app.domain.scoring import (
-    CONCENTRATION_WEIGHTS,
     ExclusionReason,
     PrepareResult,
     RankedCandidate,
@@ -87,6 +90,10 @@ class PreparedRecommendationResult:
     visit_at: datetime
     weather_ignored: bool
     ignore_operating_hours: bool
+    # 거리 기준점의 표시 이름(resolve_origin_name 참고). 하드 필터 입력이 아니라
+    # 근거 문장 재료라 filter_context에는 넣지 않는다 — 날씨 판정과 같은 취급으로,
+    # 병합 시 첫 배치 값을 그대로 쓴다.
+    origin_name: str | None = None
 
     @property
     def filter_context(self) -> tuple[object, ...]:
@@ -162,6 +169,7 @@ def merge_prepared_recommendations(
         visit_at=first.visit_at,
         weather_ignored=first.weather_ignored,
         ignore_operating_hours=first.ignore_operating_hours,
+        origin_name=first.origin_name,
     )
 
 
@@ -245,6 +253,7 @@ async def prepare_recommendation_from_context(
         visit_at=visit_at,
         weather_ignored=_is_weather_explicitly_ignored(context, conditions),
         ignore_operating_hours=ignore_operating_hours,
+        origin_name=resolve_origin_name(context),
     )
 
 
@@ -255,6 +264,10 @@ async def score_prepared_recommendation(
     recommendation_limit: int = DEFAULT_RECOMMENDATION_RESULT_LIMIT,
     # A가 조회한 실측 도보 경로. 비어 있으면 거리 Feature가 직선거리로 계산된다.
     travel_routes: Sequence[TravelRoute] = (),
+    # 취향 근거 검색 결과. None이면 사용자가 취향을 말하지 않은 것으로 보고
+    # taste Feature를 아예 쓰지 않는다. 빈 dict는 "말했는데 근거를 못 찾았다"라
+    # Feature는 켜지고 모든 후보가 0점이 된다 — 둘을 구분한다.
+    taste_matches: Mapping[str, PlaceEvidenceMatch] | None = None,
     timer: Timer = perf_counter,
 ) -> RecommendationResponse:
     """준비된 후보를 채점하고 Evidence·Explanation 응답을 조립한다.
@@ -273,6 +286,7 @@ async def score_prepared_recommendation(
         max_distance_km=search_radius_km,
         requested_environment=prepared.requested_environment,
         travel_routes=travel_routes,
+        taste_matches=taste_matches,
     )
     ranked = scoring.ranked[:recommendation_limit]
     # 결과가 0건이고, 그 이유가 전부 폐점 후보 제외였다면(다른 이유로 제외된 후보가
@@ -297,6 +311,7 @@ async def score_prepared_recommendation(
         weather_ignored=prepared.weather_ignored,
         excluded_all_closed=excluded_all_closed,
         excluded_closed_place_ids=excluded_closed_place_ids,
+        origin_name=prepared.origin_name,
     )
     return response.model_copy(update={"elapsed_ms": round((timer() - started_at) * 1000, 2)})
 
@@ -350,6 +365,10 @@ async def rerank_with_concentration(
     *,
     seek: bool,
     weather_reason: WeatherReason = None,
+    # 1차와 같은 기준점 이름. 안 넘기면 근거 문장이 "현재 위치"로 폴백해 1차와
+    # 2차가 같은 요청에서 다른 문장을 말하게 되므로, 호출자가 반드시 1차에 쓴
+    # 값을 그대로 넘긴다(real_recommendation_provider.py).
+    origin_name: str | None = None,
     timer: Timer = perf_counter,
 ) -> RecommendationResponse:
     """D의 2차 Scoring 진입점(D-040, concentration_intent AVOID/SEEK 전용).
@@ -407,10 +426,12 @@ async def rerank_with_concentration(
             else concentration_score(concentration_rate, seek=seek)
         )
 
-        # 1차가 날씨 대신 요청 환경으로 채점했다면 2차 가중치도 같은 키를 써야
-        # 한다 — 안 맞추면 environment 점수가 합산에서 통째로 빠지고, 없는
-        # weather가 결측으로 잡혀 재분배까지 일어난다.
-        base_weights = weights_for_feature_scores(CONCENTRATION_WEIGHTS, feature_scores)
+        # 2차 가중치는 상수에서 고르지 않고 **1차가 실제로 채점한 키**로 조립한다.
+        # 1차가 날씨 대신 요청 환경을 썼는지, 취향이 켜져 있었는지가 모두 여기서
+        # 갈린다. 예전에는 CONCENTRATION_WEIGHTS를 그대로 썼는데, 그 상수에
+        # taste 키가 없어서 **취향으로 후보를 골라 놓고 최종 순위에서는 취향을
+        # 빼고 있었다**(2026-08-20). 합이 1.0이라 결측 재분배도 안 걸렸다.
+        base_weights = weights_for_feature_scores(feature_scores)
         missing = [feature for feature in base_weights if feature_scores.get(feature) is None]
         weights_used = (
             redistribute_weights(base_weights, missing) if missing else dict(base_weights)
@@ -455,11 +476,19 @@ async def rerank_with_concentration(
             weather_condition=weather_condition,
             weather_reason=weather_reason,
             environment_type=item.environment_type,
+            # 근거 문장도 1차와 같은 거리 기준으로 말해야 한다. 응답 필드로는
+            # 아래에서 이월하고 있었는데 이 candidate에는 안 넘겨서, 같은 카드가
+            # 필드로는 "400m/300초/도보", 문장으로는 "직선거리 약 110m"라고
+            # 서로 다른 숫자를 말했다(2026-08-20). explanation._distance_sentence()가
+            # 이 세 값으로 "걸어서 약 5분"인지 직선거리인지를 고른다.
+            travel_distance_m=item.travel_distance_m,
+            travel_duration_seconds=item.travel_duration_seconds,
+            travel_mode=item.travel_mode,
             concentration_level=concentration_level,
         )
         # feature_order를 넘기지 않는다 — build_evidence()가 feature_scores의 키로
         # concentration 포함 여부와 날씨/환경 중 어느 쪽인지를 함께 판단한다.
-        evidence = build_evidence(candidate)
+        evidence = build_evidence(candidate, origin_name=origin_name)
         explanations = build_explanations(evidence)
         warnings = list(candidate.warnings)
         if not explanations:
@@ -551,6 +580,27 @@ def resolve_weather_condition(
     return None, None
 
 
+def resolve_origin_name(context: RecommendationContext) -> str | None:
+    """거리·경로의 기준점을 사용자에게 뭐라고 부를지 정한다.
+
+    C는 사실만 싣는다(D-051) — 좌표의 출처(`source`)와 사용자가 말한 문자열
+    (`requested_query`)이 전부고, 그걸 문구로 옮기는 판정은 D가 한다. 기기 GPS가
+    기준점이면 부를 이름이 없으므로 None을 돌려주고, 문장 쪽이 "현재 위치"로
+    옮긴다(`explanation.py::_distance_sentence()`).
+
+    `resolved_name`을 쓰지 않는다. 기준점이 지오코딩으로 풀리면 그 값이 도로명
+    주소라(`providers/geocoding.py`) "서울특별시 종로구 사직로 161에서 걸어서 41분"이
+    된다. `requested_query`는 수식어를 뗀 사용자 발화라 언제나 부를 수 있는
+    이름이다(`tools/resolve_location.py::strip_location_modifiers()`).
+    """
+    location = context.location
+    if location is None or location.data is None:
+        return None
+    if location.data.source == "device_gps":
+        return None
+    return location.data.requested_query
+
+
 def resolve_requested_environment(conditions: UserConditions | None) -> str | None:
     """날씨 언급이 없을 때만 사용자가 명시한 실내/실외를 Scoring에 넘긴다.
 
@@ -595,6 +645,7 @@ def _build_response(
     weather_ignored: bool,
     excluded_all_closed: bool = False,
     excluded_closed_place_ids: Sequence[str] = (),
+    origin_name: str | None = None,
 ) -> RecommendationResponse:
     candidate_by_id = {item.place_id: item for item in candidates}
     verified: list[RecommendationItem] = []
@@ -602,7 +653,7 @@ def _build_response(
 
     for ranked_item in ranked:
         candidate = candidate_by_id[ranked_item.place_id]
-        evidence = build_evidence(ranked_item)
+        evidence = build_evidence(ranked_item, origin_name=origin_name)
         explanations = build_explanations(evidence)
         item = RecommendationItem(
             place_id=candidate.place_id,
@@ -720,5 +771,29 @@ def _remaining_minutes(
     return max(0, int((close_at - visit_at).total_seconds() // 60))
 
 
+# 응답 문구에 쓸 Feature 이름. 여기 없는 축은 "조건"으로 묶어 표현한다 —
+# 이름을 못 찾아 문장이 깨지는 것보다 낫다.
+_FEATURE_LABELS: Mapping[str, str] = {
+    "weather": "날씨",
+    "environment": "실내외",
+    "remaining_operating_time": "운영시간",
+    "distance": "거리",
+    "taste": "취향",
+    "concentration": "혼잡도",
+}
+
+
 def _recommendation_reason(ranked: RankedCandidate) -> str:
-    return f"거리·날씨·운영시간 조건을 종합한 {ranked.rank}순위 추천이에요."
+    """실제로 채점에 쓴 축을 그대로 말한다.
+
+    전에는 "거리·날씨·운영시간"으로 고정돼 있었다. 취향 축이 붙은 뒤로는 그
+    문구가 **실제 계산과 어긋난다** — 취향이 순위를 바꿔놓고 문장은 그 사실을
+    숨기는 셈이라, 채점에 쓴 키에서 문구를 만든다.
+    """
+    labels = [
+        _FEATURE_LABELS[feature]
+        for feature in ranked.weights_used
+        if feature in _FEATURE_LABELS
+    ]
+    axes = "·".join(labels) if labels else "여러"
+    return f"{axes} 조건을 종합한 {ranked.rank}순위 추천이에요."

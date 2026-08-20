@@ -20,6 +20,17 @@ from app.domain.scoring import RankedCandidate, ScoringResult
 from app.domain.travel_route import TravelMode
 from app.domain.weather_judgment import WeatherReason
 
+# 표시 순서의 기준 축. 여기 없는 Feature는 뒤에 들어온 순서대로 붙는다 —
+# 새 Feature가 목록에서 빠져도 응답에서 사라지지 않게 하기 위해서다.
+_BASE_FEATURE_ORDER: tuple[str, ...] = (
+    "weather",
+    "environment",
+    "remaining_operating_time",
+    "distance",
+    "taste",
+    "concentration",
+)
+
 # 1차 Scoring 결과의 Feature 순서 (scoring.py DEFAULT_WEIGHTS와 동일).
 _FEATURE_ORDER: tuple[str, ...] = ("weather", "remaining_operating_time", "distance")
 
@@ -47,16 +58,20 @@ def resolve_feature_order(feature_scores: Mapping[str, float | None]) -> tuple[s
 
     날씨/환경 중 어느 쪽으로 채점됐는지는 호출부가 다시 판단하지 않는다 —
     `feature_scores`에 들어 있는 키가 그대로 답이다.
+
+    **조합을 상수로 두지 않는다.** 예전에는 (날씨|환경) x (혼잡도 유무)를
+    상수 4개로 열거했는데, Feature가 하나 늘 때마다 조합이 배로 늘고 새 키를
+    빠뜨리면 **응답에서 조용히 사라진다** — 2026-08-19에 taste가 실제로 그렇게
+    빠졌다(점수에는 반영되는데 feature_scores에는 없었다). 알려진 축을 먼저
+    정해진 순서로 놓고, 나머지는 들어온 순서를 그대로 이어 붙인다.
     """
-    environment_driven = "environment" in feature_scores
-    with_concentration = "concentration" in feature_scores
-    if environment_driven:
-        return (
-            ENVIRONMENT_CONCENTRATION_FEATURE_ORDER
-            if with_concentration
-            else _ENVIRONMENT_FEATURE_ORDER
-        )
-    return CONCENTRATION_FEATURE_ORDER if with_concentration else _FEATURE_ORDER
+    ordered = [
+        feature for feature in _BASE_FEATURE_ORDER if feature in feature_scores
+    ]
+    ordered.extend(
+        feature for feature in feature_scores if feature not in _BASE_FEATURE_ORDER
+    )
+    return tuple(ordered)
 
 
 @dataclass(frozen=True)
@@ -94,6 +109,13 @@ class RecommendationEvidence:
     travel_distance_m: int | None = None
     travel_duration_seconds: int | None = None
     travel_mode: TravelMode | None = None
+    taste_evidence_text: str | None = None
+    # 거리·이동시간을 어디서부터 잰 것인지 사용자에게 부를 이름. 검색 기준점이
+    # 기기 GPS면 부를 이름이 없어 None이고, 문장이 "현재 위치"로 옮긴다
+    # (explanation.py::_distance_sentence()). distance_km의 기준점 자체는 바뀌지
+    # 않는다 — 점수 분모(search_radius_km)와 같은 원점을 써야 하기 때문이다
+    # (docs/design/recommendation-scoring.md).
+    origin_name: str | None = None
     # D-040: 2차 Scoring에서만 채워진다(scoring.py::RankedCandidate.concentration_level
     # 참고) — concentration_score(direction 반영됨)만으로는 실제 붐빔 정도를 알 수
     # 없어서, 문장 조립에 원본 4단계 구간을 그대로 보존한다.
@@ -123,7 +145,12 @@ def _build_contributions(
 
 
 def build_evidence(
-    candidate: RankedCandidate, *, feature_order: tuple[str, ...] | None = None
+    candidate: RankedCandidate,
+    *,
+    feature_order: tuple[str, ...] | None = None,
+    # 거리 기준점의 표시 이름. None이면 문장이 "현재 위치"로 폴백한다 — 기기 GPS
+    # 기준일 때가 그렇고, 넘기지 않은 호출자도 종전과 같은 문구를 얻는다.
+    origin_name: str | None = None,
 ) -> RecommendationEvidence:
     """`RankedCandidate` 1건을 `RecommendationEvidence`로 변환한다.
 
@@ -150,9 +177,20 @@ def build_evidence(
         travel_distance_m=candidate.travel_distance_m,
         travel_duration_seconds=candidate.travel_duration_seconds,
         travel_mode=candidate.travel_mode,
+        taste_evidence_text=candidate.taste_evidence_text,
+        origin_name=origin_name,
     )
 
 
-def build_evidence_list(result: ScoringResult) -> tuple[RecommendationEvidence, ...]:
-    """`ScoringResult.ranked` 전체를 순서 그대로 `RecommendationEvidence` 목록으로 변환한다."""
-    return tuple(build_evidence(candidate) for candidate in result.ranked)
+def build_evidence_list(
+    result: ScoringResult, *, origin_name: str | None = None
+) -> tuple[RecommendationEvidence, ...]:
+    """`ScoringResult.ranked` 전체를 순서 그대로 `RecommendationEvidence` 목록으로 변환한다.
+
+    `origin_name`은 요청당 하나뿐인 값이라 후보별로 나르지 않고 여기서 전 건에
+    같은 값을 찍는다 — 후보마다 다른 기준점을 표현할 수 있는 모양으로 두면
+    픽스처가 서로 다른 값을 넣어도 아무도 잡지 못한다.
+    """
+    return tuple(
+        build_evidence(candidate, origin_name=origin_name) for candidate in result.ranked
+    )

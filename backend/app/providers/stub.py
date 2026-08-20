@@ -211,6 +211,7 @@ _INFO_QUESTION_MARKERS = (
     "붐빌",
     "혼잡",
     "개요",
+    "가는데 얼마나 걸",
 )
 _GENERAL_MARKERS = (
     "역사",
@@ -345,6 +346,7 @@ class FakeLLMProvider:
         pending_clarification: str | None = None,
         last_intent: str | None = None,
         shown_place_names: list[str] | None = None,
+        conversation_place_name: str | None = None,
     ) -> ProviderResult[IntentClassificationResult]:
         if any(marker in user_input for marker in _PROMPT_INJECTION_MARKERS):
             result = IntentClassificationResult(
@@ -402,6 +404,12 @@ class FakeLLMProvider:
             result = IntentClassificationResult(intent=Intent.COMPARE)
         elif any(marker in user_input for marker in _GENERAL_MARKERS + _SERVICE_IDENTITY_MARKERS):
             result = IntentClassificationResult(intent=Intent.GENERAL)
+        elif (
+            conversation_place_name is not None
+            and any(reference in user_input for reference in ("여기", "이곳", "거기", "이리로"))
+            and any(marker in user_input for marker in _INFO_QUESTION_MARKERS)
+        ):
+            result = IntentClassificationResult(intent=Intent.INFO)
         elif _find_known_place(user_input) and any(
             marker in user_input for marker in _INFO_QUESTION_MARKERS
         ):
@@ -677,6 +685,7 @@ class FakeLLMProvider:
         *,
         has_previous_recommendation: bool,
         reference_date: date,
+        conversation_place_name: str | None = None,
     ) -> ProviderResult[LLMOutput]:
         place_name = _find_known_place(user_input)
         if place_name:
@@ -688,8 +697,14 @@ class FakeLLMProvider:
         else:
             place_context = PlaceContext.FROM_CONVERSATION
 
+        if place_context is PlaceContext.FROM_CONVERSATION and conversation_place_name:
+            place_name = conversation_place_name
+
         if "열어" in user_input or "몇 시" in user_input:
             question_type = QuestionType.OPERATING_HOURS
+        elif "가는데 얼마나 걸" in user_input:
+            # "얼마"가 있어도 입장료가 아니라 이동시간 질문이다.
+            question_type = QuestionType.LOCATION_INFO
         elif "입장료" in user_input or "얼마" in user_input:
             question_type = QuestionType.FEE
         elif "주차" in user_input:
@@ -700,6 +715,10 @@ class FakeLLMProvider:
             question_type = QuestionType.EVENT
         elif "어디에 있" in user_input or "주소" in user_input:
             question_type = QuestionType.LOCATION_INFO
+        elif any(marker in user_input for marker in ("카페", "커피", "상권")) and any(
+            marker in user_input for marker in ("지금", "사람 많", "붐빌", "혼잡")
+        ):
+            question_type = QuestionType.REALTIME_COMMERCIAL
         elif any(marker in user_input for marker in ("사람 많", "붐빌", "혼잡")):
             question_type = QuestionType.CONCENTRATION
         else:

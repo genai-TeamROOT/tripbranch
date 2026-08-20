@@ -55,12 +55,27 @@ class Settings(BaseSettings):
     geocoding_provider: ProviderMode | None = None
     local_search_provider: ProviderMode | None = None
     concentration_provider: ProviderMode | None = None
+    # 서울시 실시간 데이터는 특정 INFO 질문에서만 필요하고 별도 키를 쓰므로, 공통
+    # PROVIDER_MODE=real을 따라 자동 호출하지 않는다. 사용할 환경에서만 명시적으로
+    # SEOUL_CITYDATA_PROVIDER=real로 켠다.
+    seoul_citydata_provider: ProviderMode = "fake"
     holiday_provider: ProviderMode | None = None
     # 비용이 발생할 수 있으므로 공통 PROVIDER_MODE를 상속하지 않고 명시적으로
-    # real을 켤 때만 카카오맵 도보 API를 호출한다.
+    # real을 켤 때만 외부 경로 API를 호출한다.
+    #
+    # 이동수단마다 벤더가 다르므로(도보 카카오, 자동차 네이버) 하나씩 따로 켠다.
+    # 상속 관계를 두지 않는 이유도 같다 — 한 값이 여러 벤더를 켜면, 한쪽 키만 가진
+    # 설정이 쓰지도 않는 벤더의 키를 요구하며 부팅에 실패한다. 새 이동수단은 여기에
+    # 한 줄씩 추가하고, 기존 이름(TRAVEL_ROUTE_PROVIDER)은 도보 스위치로 유지한다.
     travel_route_provider: ProviderMode = "fake"
+    travel_route_driving_provider: ProviderMode = "fake"
     # 직선거리 fallback 예상시간에 쓸 보행속도(m/s).
     walking_speed_mps: float = Field(default=1.2, gt=0)
+    # 자동차 fake의 직선거리 예상시간에 쓸 속도(m/s). 20km/h는 반경 산정이 비도보
+    # 요청에 쓰는 가정과 같은 값이다(recommendation_transform._OTHER_KM_PER_MIN).
+    # fake 값은 채점에 쓰이지 않으므로(STRAIGHT_LINE_ESTIMATE는 걸러진다) 정밀도가
+    # 아니라 반경 가정과의 일관성만 맞춘다.
+    driving_speed_mps: float = Field(default=5.5, gt=0)
     travel_route_max_concurrency: int = Field(default=5, ge=1, le=10)
 
     # 상세·운영정보 조회 출처. PLACE_PROVIDER=fake이면 Fake Provider가 상세까지
@@ -69,6 +84,12 @@ class Settings(BaseSettings):
 
     # Package B State 저장소 백엔드. 기본값은 Phase 1 인메모리다.
     state_store_backend: StateStoreBackend = "memory"
+
+    # 취향 근거 벡터 검색 사용 여부. 기본 off인 이유는 임베딩 모델이 선택
+    # 의존성(`pip install -e ".[embeddings]"`)이고 서버 프로세스에 상주하기
+    # 때문이다 — 실측 RSS 537MB, 적재 9.4초(2026-08-19). 모델을 올릴 수 없는
+    # 배포에서도 서버는 떠야 하므로 켜는 쪽을 명시적 선택으로 둔다.
+    taste_evidence_enabled: bool = False
 
     # 짧고 구조화된 판단(의도 분류·조건 추출)에 사용할 모델 묶음. 비용·지연이
     # 중요한 경로라 Lite를 기본으로 두되, 일시적 5xx/타임아웃에는 Flash로 폴백한다.
@@ -101,6 +122,7 @@ class Settings(BaseSettings):
     llm_api_key: str = Field(default="", repr=False, exclude=True)
     weather_api_key: str = Field(default="", repr=False, exclude=True)
     tour_api_service_key: str = Field(default="", repr=False, exclude=True)
+    seoul_open_data_api_key: str = Field(default="", repr=False, exclude=True)
     naver_map_client_id: str = Field(default="", repr=False, exclude=True)
     naver_map_client_secret: str = Field(default="", repr=False, exclude=True)
     naver_local_search_client_id: str = Field(default="", repr=False, exclude=True)
@@ -218,6 +240,10 @@ class Settings(BaseSettings):
     @property
     def resolved_concentration_provider(self) -> ProviderMode:
         return self.concentration_provider or self.provider_mode
+
+    @property
+    def resolved_seoul_citydata_provider(self) -> ProviderMode:
+        return self.seoul_citydata_provider
 
     @property
     def resolved_holiday_provider(self) -> ProviderMode:

@@ -39,6 +39,7 @@ class UserConditions(BaseModel):
     budget: str | None = None
     exclude_tags: list[str] = Field(default_factory=list)
     special_requirements: list[str] = Field(default_factory=list)
+    taste_query: str | None = None
 
 
 class ApiContext(BaseModel):

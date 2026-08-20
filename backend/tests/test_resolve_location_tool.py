@@ -212,6 +212,34 @@ async def test_ambiguous_local_search_outside_area_reports_region_not_clarificat
 
 
 @pytest.mark.asyncio
+async def test_realtime_citydata_location_allows_outside_jongno() -> None:
+    local_search = MemoryLocalSearchProvider(
+        (
+            LocalSearchPlace(
+                name="용리단길 카페",
+                address="서울특별시 용산구 한강대로",
+                road_address=None,
+                category="카페",
+                latitude=37.5311,
+                longitude=126.9715,
+            ),
+        )
+    )
+
+    result = await ResolveLocationTool(
+        SequenceGeocodingProvider([]),
+        MemoryPlaceLocationRepository(()),
+        local_search,
+    ).execute(
+        ResolveLocationQuery("용리단길 카페", purpose=LocationPurpose.REALTIME_CITYDATA)
+    )
+
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert result.location is not None
+    assert result.location.latitude == 37.5311
+
+
+@pytest.mark.asyncio
 async def test_place_name_uses_local_search_before_geocoding() -> None:
     local_search = MemoryLocalSearchProvider(
         (

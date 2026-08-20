@@ -63,6 +63,7 @@ def _context_location() -> AgentContextValue:
         data=ResolvedLocation(
             requested_query="경복궁",
             resolved_name="경복궁",
+            source="query",
             location=AgentCoordinates(latitude=37.5796, longitude=126.9770),
         ),
     )
@@ -101,6 +102,92 @@ async def test_pipeline_from_context_builds_recommendation_with_explanations() -
     assert len(response.recommendations) == 1
     assert response.unverified_recommendations == []
     assert response.recommendations[0].explanations
+
+
+def _origin_context(
+    *,
+    requested_query: str = "경복궁",
+    resolved_name: str = "경복궁",
+    source: str = "query",
+) -> RecommendationContext:
+    return RecommendationContext(
+        location=AgentContextValue(
+            status="success",
+            data=ResolvedLocation(
+                requested_query=requested_query,
+                resolved_name=resolved_name,
+                source=source,
+                location=AgentCoordinates(latitude=37.5796, longitude=126.9770),
+            ),
+        ),
+        places=AgentContextValue(status="success", data=[_context_place()]),
+    )
+
+
+async def _first_distance_explanation(context: RecommendationContext) -> str:
+    response = await run_recommendation_pipeline_from_context(
+        context,
+        visit_at=_CONTEXT_VISIT_AT,
+        search_radius_km=2.0,
+    )
+    items = [*response.recommendations, *response.unverified_recommendations]
+    assert items, "후보가 없으면 근거 문장을 검증할 수 없다"
+    distance = [text for text in items[0].explanations if "거리" in text or "직선거리" in text]
+    assert len(distance) == 1, items[0].explanations
+    return distance[0]
+
+
+@pytest.mark.asyncio
+async def test_distance_explanation_names_the_search_origin() -> None:
+    """근거 문장이 실제 기준점을 말한다(TP-109).
+
+    예전에는 기준점이 무엇이든 "현재 위치에서"라고 하드코딩돼 있어서, "경복궁 근처
+    카페"를 물은 사용자가 강남에 있어도 경복궁 기준 거리를 자기 위치 기준인 것처럼
+    읽게 됐다.
+    """
+    sentence = await _first_distance_explanation(_origin_context())
+
+    assert sentence.startswith("경복궁에서 ")
+    assert "현재 위치" not in sentence
+
+
+@pytest.mark.asyncio
+async def test_distance_explanation_says_current_location_for_device_gps() -> None:
+    """기준점이 기기 GPS면 부를 이름이 없으므로 "현재 위치"로 말한다.
+
+    C가 그 경우 `requested_query`에 자리표시자("gps_location")를 넣으므로, 이걸
+    그대로 문장에 쓰면 "gps_location에서 걸어서 41분"이 사용자에게 나간다.
+    """
+    context = _origin_context(
+        requested_query="gps_location",
+        resolved_name="기기 GPS 위치",
+        source="device_gps",
+    )
+
+    sentence = await _first_distance_explanation(context)
+
+    assert sentence.startswith("현재 위치에서 ")
+    assert "gps_location" not in sentence
+    assert "기기 GPS 위치" not in sentence
+
+
+@pytest.mark.asyncio
+async def test_distance_explanation_uses_requested_query_not_resolved_name() -> None:
+    """표시 이름은 `resolved_name`이 아니라 `requested_query`에서 온다.
+
+    기준점이 지오코딩으로 풀리면 `resolved_name`이 도로명 주소가 된다
+    (`providers/geocoding.py`). 그걸 쓰면 "서울특별시 종로구 사직로 161에서 걸어서
+    41분"이라는 문장이 나간다.
+    """
+    context = _origin_context(
+        requested_query="경복궁",
+        resolved_name="서울특별시 종로구 사직로 161",
+    )
+
+    sentence = await _first_distance_explanation(context)
+
+    assert sentence.startswith("경복궁에서 ")
+    assert "사직로" not in sentence
 
 
 @pytest.mark.asyncio
@@ -637,7 +724,17 @@ def _first_pass_item(
     travel_distance_m: int | None = None,
     travel_duration_seconds: int | None = None,
     travel_mode: TravelMode | None = None,
+    taste_score: float | None = None,
 ) -> RecommendationItem:
+    # taste_score가 None이면 1차가 취향을 아예 안 쓴 실행이라 키 자체가 없다 —
+    # 결측(None 값)과 구분해야 2차 가중치 조립이 같은 판단을 내린다.
+    feature_scores: dict[str, float | None] = {
+        "weather": None,
+        "remaining_operating_time": None,
+        "distance": distance_score,
+    }
+    if taste_score is not None:
+        feature_scores["taste"] = taste_score
     return RecommendationItem(
         place_id=place_id,
         name=f"장소-{place_id}",
@@ -653,11 +750,7 @@ def _first_pass_item(
         explanations=[],
         warnings=[],
         score=distance_score,
-        feature_scores={
-            "weather": None,
-            "remaining_operating_time": None,
-            "distance": distance_score,
-        },
+        feature_scores=feature_scores,
         weights_used={"distance": 1.0},
     )
 
@@ -691,6 +784,64 @@ def _no_data_result(place_id: str) -> CandidateEnrichmentResult:
         status="no_data",
         concentration=[],
     )
+
+
+@pytest.mark.asyncio
+async def test_rerank_with_concentration_keeps_taste_from_first_pass() -> None:
+    """1차에서 취향으로 후보를 골랐으면 2차 순위에도 취향이 남아야 한다.
+
+    place-1은 훨씬 가깝고(1차 1위) place-2는 멀지만 취향 근거가 강하다. 혼잡도는
+    두 곳이 같아서 순위를 가르지 못한다 — 그래서 순위가 뒤집히면 그건 취향이
+    반영됐다는 뜻이다.
+
+    2026-08-20 이전에는 뒤집히지 않았다. 2차가 CONCENTRATION_WEIGHTS를 그대로
+    썼는데 그 상수에 taste 키가 없어서, 취향 점수가 feature_scores에는 남아 있는
+    채로 가중합에서만 빠졌다. 가중치 합이 1.0이라 결측 재분배도 안 걸렸다.
+    """
+    first_pass = RecommendationResponse(
+        recommendations=[
+            _first_pass_item("place-1", distance_km=0.1, distance_score=0.95, taste_score=0.0),
+            _first_pass_item("place-2", distance_km=1.2, distance_score=0.4, taste_score=1.0),
+        ],
+        unverified_recommendations=[],
+        elapsed_ms=0,
+    )
+    concentration = CandidateEnrichmentResponse(
+        request_id="req-taste",
+        status="success",
+        candidates=[
+            _concentration_result("place-1", rate=50.0),
+            _concentration_result("place-2", rate=50.0),
+        ],
+    )
+
+    result = await rerank_with_concentration(first_pass, None, concentration, seek=False)
+
+    assert [item.place_id for item in result.recommendations] == ["place-2", "place-1"]
+    for item in result.recommendations:
+        assert "taste" in item.weights_used
+        assert sum(item.weights_used.values()) == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_rerank_without_taste_does_not_invent_the_axis() -> None:
+    """취향을 말하지 않은 요청은 2차에도 taste 키가 없어야 한다."""
+    first_pass = RecommendationResponse(
+        recommendations=[_first_pass_item("place-1", distance_km=0.1, distance_score=0.95)],
+        unverified_recommendations=[],
+        elapsed_ms=0,
+    )
+    concentration = CandidateEnrichmentResponse(
+        request_id="req-no-taste",
+        status="success",
+        candidates=[_concentration_result("place-1", rate=50.0)],
+    )
+
+    result = await rerank_with_concentration(first_pass, None, concentration, seek=False)
+
+    item = result.recommendations[0]
+    assert "taste" not in item.weights_used
+    assert "taste" not in item.feature_scores
 
 
 @pytest.mark.asyncio
@@ -958,6 +1109,11 @@ async def test_rerank_with_concentration_preserves_travel_measurements() -> None
     """2차는 RecommendationItem을 새로 만든다 — 실측 이동 정보를 옮겨 담지 않으면
     혼잡도 재순위를 탄 요청에서만 이 필드가 조용히 사라진다. mode도 함께 옮긴다:
     수치만 남고 mode가 빠지면 프론트가 무슨 수단인지 다시 추측하게 된다.
+
+    **근거 문장까지 함께 본다.** 응답 필드만 검사하던 때는 이 테스트가 통과하는데도
+    같은 카드가 필드로는 "620m/530초/도보", 문장으로는 "직선거리 약 100m"라고
+    서로 다른 숫자를 말했다(2026-08-20). 2차가 문장 조립용 RankedCandidate에는
+    실측을 안 넘겼기 때문이다 — 필드와 문장은 같은 재료를 봐야 한다.
     """
     first_pass = RecommendationResponse(
         recommendations=[
@@ -985,3 +1141,5 @@ async def test_rerank_with_concentration_preserves_travel_measurements() -> None
     assert item.travel_distance_m == 620
     assert item.travel_duration_seconds == 530
     assert item.travel_mode is TravelMode.WALKING
+    assert "현재 위치에서 걸어서 약 9분 거리예요." in item.explanations
+    assert not any("직선거리" in sentence for sentence in item.explanations)

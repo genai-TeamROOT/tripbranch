@@ -10,7 +10,7 @@ payload를 읽고 operations/rejected_places/reset_scope로 바꾸는 건 해석
 
 from __future__ import annotations
 
-from app.providers.gemini_prompts import PROMPT_VERSION
+from app.prompts.registry import turn_prompt_version
 from app.schemas import (
     ConcentrationIntent,
     Environment,
@@ -41,6 +41,10 @@ _SINGLE_FIELDS = (
     "environment",
     "companion",
     "budget",
+    # (2026-08-19) 취향 발화 원문. budget과 동일 스펙(_single(str, Update, Remove)).
+    # 이 목록에서 빠지면 추출은 되는데 연산이 안 만들어져 상태 병합에서 값이
+    # 조용히 사라진다 — 실제로 그렇게 한 번 놓쳤다.
+    "taste_query",
 )
 # agent-state-contract-v1.md §2.2: place_types는 Update/Remove만, place_tags는
 # Add/Update/Remove 다 허용 — 둘 다 Update로 둔다. exclude_tags/special_requirements는
@@ -225,7 +229,7 @@ def transform(
         reset_scope=reset_scope,
         operations=operations,
         rejected_places=rejected_places,
-        prompt_version=PROMPT_VERSION,
+        prompt_version=turn_prompt_version(llm_output.intent),
     )
 
 

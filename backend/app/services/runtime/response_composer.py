@@ -17,6 +17,7 @@ import logging
 import math
 from collections.abc import AsyncIterator, Awaitable, Callable
 
+from app.domain.travel_route import TravelRoute
 from app.errors import AppError
 from app.providers.protocols import LLMProvider
 from app.schemas import (
@@ -35,8 +36,9 @@ from app.services.runtime.info_context_schemas import (
     EventInfoResult,
     InfoContextResponse,
     PlaceInfoResult,
+    RealtimeCommercialInfoResult,
 )
-from app.services.runtime.info_display import format_parking_for_display
+from app.services.runtime.info_display import format_citydata_timestamp, format_parking_for_display
 
 # C 단계에서 Recommendation으로 못 넘어가는 status. agent_runtime.py의
 # _TOOL_TERMINAL_STATUSES와 같은 집합이어야 한다 — 순환 import를 피하려고 별도로
@@ -78,6 +80,7 @@ def tool_clarification_message(code: str | None) -> str:
     """
     return _CLARIFICATION_TEMPLATES.get(code or "", _CLARIFICATION_FALLBACK_MESSAGE)
 
+
 _TOOL_UNSUPPORTED_MESSAGE = "죄송하지만 아직 지원하지 않는 요청이에요."
 
 # unsupported는 이유가 여러 가지다. 지원 지역 밖인데 "아직 지원하지 않는 요청"이라고만
@@ -86,6 +89,10 @@ _TOOL_UNSUPPORTED_TEMPLATES: dict[str, str] = {
     "unsupported_region": (
         "현재는 베타 서비스로 종로구의 장소 추천만 가능해요. "
         "종로에서 가고 싶은 위치를 말씀해주세요."
+    ),
+    "realtime_commercial_unsupported_region": (
+        "해당 장소 주변은 서울시 실시간 상권 데이터 제공 지역이 아니에요. "
+        "현재는 서울시 주요 82개 지역의 카페 상권 현황만 확인할 수 있어요."
     ),
 }
 
@@ -216,8 +223,55 @@ def compose_info_concentration_message(response: InfoContextResponse) -> str:
     return f"{result.resolved_place_name}은(는) {date_label} 기준 {label} 것으로 예측돼요."
 
 
+def compose_realtime_commercial_message(response: InfoContextResponse) -> str:
+    """특정 카페를 최근접 서울시 상권의 카페 소비 활동으로 안내한다."""
+
+    if response.status == "needs_clarification":
+        code = response.clarification.code if response.clarification is not None else None
+        return _CLARIFICATION_TEMPLATES.get(code, _CLARIFICATION_FALLBACK_MESSAGE)
+    if response.status == "unsupported":
+        return _unsupported_message(response.error.code if response.error else None)
+    if response.status == "unavailable" or response.result is None:
+        return _TOOL_UNAVAILABLE_MESSAGE
+
+    result = response.result
+    assert isinstance(result, RealtimeCommercialInfoResult)
+    if result.status == "unavailable":
+        return _TOOL_UNAVAILABLE_MESSAGE
+    if result.status == "no_data":
+        area = result.area_name or "가까운 제공 지역"
+        return f"{area}의 카페 상권 실시간 데이터는 현재 확인할 수 없어요."
+
+    place = result.resolved_place_name or result.requested_place_name or "해당 카페"
+    area = result.area_name or "가까운 상권"
+    category = result.category_label or "카페 업종"
+    level = result.commercial_level or "확인할 수 없음"
+    distance = (
+        f"약 {result.proxy_distance_km:.1f}km 떨어진 "
+        if result.proxy_distance_km is not None and result.proxy_distance_km >= 0.05
+        else ""
+    )
+    observed_at = format_citydata_timestamp(result.observed_at)
+    observed = f" {observed_at} 기준이에요." if observed_at else ""
+    if result.commercial_scope == "area_overall":
+        return (
+            f"{place} 개별 매장 혼잡도는 확인할 수 없고, {distance}{area}의 카페 업종 "
+            f"세부값도 현재 제공되지 않았어요. 대신 {area} 전체 상권은 현재 {level} 수준이에요. "
+            f"이 값은 지역 전체 카드 소비 활동 기준이에요.{observed}"
+        )
+    return (
+        f"{place} 개별 매장 혼잡도는 확인할 수 없지만, {distance}{area}의 "
+        f"{category} 상권은 현재 {level} 수준이에요. 이 값은 지역·업종별 카드 소비 활동 기준이에요."
+        f"{observed}"
+    )
+
+
 def compose_place_info_message(
-    response: InfoContextResponse, *, specific_question: str | None = None
+    response: InfoContextResponse,
+    *,
+    specific_question: str | None = None,
+    walking_route: TravelRoute | None = None,
+    walking_origin_available: bool = False,
 ) -> str:
     """INFO(question_type=concentration/event 제외 6종) 응답 문구를 조립한다.
 
@@ -241,6 +295,13 @@ def compose_place_info_message(
         return _TOOL_UNAVAILABLE_MESSAGE
 
     place_label = result.resolved_place_name or result.requested_place_name or "그 장소"
+    if result.question_type == "location_info" and _asks_walking_time(specific_question):
+        return _compose_info_walking_time_message(
+            place_label,
+            result.fields.get("address"),
+            walking_route=walking_route,
+            origin_available=walking_origin_available,
+        )
     if result.status == "no_data":
         type_label = _INFO_QUESTION_TYPE_LABELS.get(result.question_type, "그 질문")
         return f"{place_label}의 {type_label} 정보는 확인할 수 없어요."
@@ -251,6 +312,45 @@ def compose_place_info_message(
         result.fields,
         specific_question=specific_question,
     )
+
+
+def _asks_walking_time(specific_question: str | None) -> bool:
+    normalized = (specific_question or "").replace(" ", "")
+    markers = (
+        "가는데얼마나걸",
+        "걷는데얼마나걸",
+        "걸어서얼마나",
+        "도보로얼마나",
+        "도보시간",
+        "도보이동",
+    )
+    return any(marker in normalized for marker in markers)
+
+
+def _compose_info_walking_time_message(
+    place_label: str,
+    address: str | None,
+    *,
+    walking_route: TravelRoute | None,
+    origin_available: bool,
+) -> str:
+    """INFO 도보 시간은 LLM 추측 대신 카카오 경로 결과만으로 안내한다."""
+
+    if walking_route is not None:
+        seconds = walking_route.duration_seconds or 0
+        distance_m = walking_route.distance_m or 0
+        if seconds == 0:
+            return f"현재 위치에서 {place_label}까지 바로 도착할 수 있어요."
+        minutes = max(1, math.ceil(seconds / 60))
+        return (
+            f"현재 위치에서 {place_label}까지 도보 약 {minutes}분 걸려요. "
+            f"이동 거리는 약 {distance_m:,}m예요."
+        )
+    if not origin_available:
+        message = f"현재 위치 정보가 없어 {place_label}까지 도보 이동 시간을 확인할 수 없어요."
+        return f"{message} {place_label} 주소는 {address}예요." if address else message
+    message = f"현재 위치에서 {place_label}까지의 도보 경로를 확인하지 못했어요."
+    return f"{message} {place_label} 주소는 {address}예요." if address else message
 
 
 def _compose_place_info_sentence(
@@ -531,8 +631,7 @@ def compose_schedule_message(
 
     if (
         time_available_min is not None
-        and abs(time_available_min - schedule.total_duration_min)
-        <= _DURATION_MATCH_TOLERANCE_MIN
+        and abs(time_available_min - schedule.total_duration_min) <= _DURATION_MATCH_TOLERANCE_MIN
     ):
         duration_label = _format_duration_label(time_available_min)
     else:
@@ -550,6 +649,8 @@ async def compose_chat_message(
     tool_clarification: Clarification | None = None,
     tool_error_code: str | None = None,
     info_response: InfoContextResponse | None = None,
+    info_walking_route: TravelRoute | None = None,
+    info_walking_origin_available: bool = False,
     llm: LLMProvider,
     on_message_delta: MessageDeltaCallback | None = None,
 ) -> str:
@@ -595,6 +696,8 @@ async def compose_chat_message(
         return result.data
 
     if llm_output.intent is Intent.INFO and info_response is not None:
+        if isinstance(info_response.result, RealtimeCommercialInfoResult):
+            return compose_realtime_commercial_message(info_response)
         if isinstance(info_response.result, EventInfoResult):
             return compose_event_info_message(info_response)
         if isinstance(info_response.result, PlaceInfoResult):
@@ -603,13 +706,11 @@ async def compose_chat_message(
                 specific_question=(
                     llm_output.info.specific_question if llm_output.info is not None else None
                 ),
+                walking_route=info_walking_route,
+                walking_origin_available=info_walking_origin_available,
             )
             result = info_response.result
-            if (
-                on_message_delta is not None
-                and result.status == "success"
-                and bool(result.fields)
-            ):
+            if on_message_delta is not None and result.status == "success" and bool(result.fields):
                 place_name = result.resolved_place_name or result.requested_place_name or "그 장소"
                 # 말풍선도 카드의 질문 답변과 같은 정제 규칙을 따른다. 예를 들어
                 # 주차 원문에는 버스 수용 대수가 있어도 일반 사용자용 화면은 승용차
@@ -684,6 +785,7 @@ __all__ = [
     "compose_recommendation_message",
     "compose_chat_message",
     "compose_info_concentration_message",
+    "compose_realtime_commercial_message",
     "compose_place_info_message",
     "compose_event_info_message",
     "compose_compare_message",

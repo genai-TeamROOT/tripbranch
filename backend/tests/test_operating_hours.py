@@ -274,6 +274,7 @@ def _scoring_candidate_at(operating_hours: str, visit_at: datetime, rest_date: s
             data=ResolvedLocation(
                 requested_query="경복궁",
                 resolved_name="경복궁",
+                source="query",
                 location=Coordinates(latitude=37.5796, longitude=126.9770),
             ),
         ),

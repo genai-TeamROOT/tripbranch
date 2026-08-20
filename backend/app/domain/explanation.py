@@ -55,23 +55,32 @@ def _format_travel_duration(duration_seconds: int) -> str:
     return f"{minutes}분"
 
 
+# 실측 이동시간을 말할 때 쓰는 이동수단 표현. 여기 없는 수단은 시간을 말하지
+# 않고 직선거리로 답한다.
+_TRAVEL_MODE_PHRASES: dict[TravelMode, str] = {
+    TravelMode.WALKING: "걸어서",
+    TravelMode.DRIVING: "차로",
+}
+
+
 def _distance_sentence(evidence: RecommendationEvidence) -> str:
     """실측 이동시간이 있으면 그걸 말하고, 없으면 기존 직선거리 문구를 쓴다.
 
     거리 Feature 점수도 같은 기준으로 계산되므로(`scoring.py::_proximity_score()`),
-    점수와 근거 문장이 서로 다른 거리를 말하는 일이 없다.
+    점수와 근거 문장이 서로 다른 거리를 말하는 일이 없다. 기준점 **이름**도
+    마찬가지다 — 예전에는 기준점이 무엇이든 "현재 위치"라고 말해서, "경복궁 근처
+    카페"를 물으면 경복궁 기준 거리를 사용자 위치 기준인 것처럼 말했다(TP-109).
 
-    "걸어서"는 도보 실측일 때만 쓴다. 다른 이동수단의 문구는 그 이동수단을
-    연결하는 카드가 여기에 추가한다 — 그때까지는 직선거리 문구로 돌아가므로,
-    자동차 실측을 "걸어서"라고 말하는 일은 없다.
+    이동수단 문구는 실측한 수단으로만 쓴다. `_TRAVEL_MODE_PHRASES`에 없는
+    수단은 직선거리 문구로 돌아가므로, 자동차 실측을 "걸어서"라고 말하거나
+    도보 실측을 "차로"라고 말하는 일은 없다. 대중교통은 그 카드에서 추가한다.
     """
-    if (
-        evidence.travel_duration_seconds is not None
-        and evidence.travel_mode is TravelMode.WALKING
-    ):
-        walk_text = _format_travel_duration(evidence.travel_duration_seconds)
-        return f"현재 위치에서 걸어서 약 {walk_text} 거리예요."
-    return f"현재 위치에서 {_format_distance(evidence.distance_km)}예요."
+    origin = evidence.origin_name or "현재 위치"
+    phrase = _TRAVEL_MODE_PHRASES.get(evidence.travel_mode)
+    if evidence.travel_duration_seconds is not None and phrase is not None:
+        duration_text = _format_travel_duration(evidence.travel_duration_seconds)
+        return f"{origin}에서 {phrase} 약 {duration_text} 거리예요."
+    return f"{origin}에서 {_format_distance(evidence.distance_km)}예요."
 
 
 def _format_remaining_time(remaining_minutes: float) -> str:
@@ -172,12 +181,34 @@ def _concentration_sentence(evidence: RecommendationEvidence) -> str:
     return _CONCENTRATION_SENTENCES[evidence.concentration_level]
 
 
+# 근거 문장에 인용할 원문 길이 상한. 블로그 문장이 길어 그대로 넣으면 카드가
+# 밀린다 — 앞부분만 보여주고 잘렸음을 말줄임으로 표시한다.
+_TASTE_QUOTE_MAX_CHARS = 60
+
+
+def _taste_sentence(evidence: RecommendationEvidence) -> str:
+    """왜 취향에 맞는지를 근거 원문으로 설명한다.
+
+    점수만으로는 "이게 왜 내 취향이냐"에 답할 수 없다. 블로그·리뷰에서 실제로
+    뽑힌 문장을 인용해, 사용자가 판단할 재료를 준다. 원문이 없으면(검색은
+    됐지만 조각이 비어 있는 경우) 축만 언급한다.
+    """
+    text = evidence.taste_evidence_text
+    if not text:
+        return "말씀하신 분위기와 잘 맞는 곳이에요."
+    quote = text.strip().replace("\n", " ")
+    if len(quote) > _TASTE_QUOTE_MAX_CHARS:
+        quote = quote[:_TASTE_QUOTE_MAX_CHARS].rstrip() + "…"
+    return f"방문 후기에 이런 얘기가 있어요 — \"{quote}\""
+
+
 _SENTENCE_BUILDERS: Mapping[str, Callable[[RecommendationEvidence], str]] = {
     "weather": _weather_sentence,
     "environment": _environment_sentence,
     "remaining_operating_time": _remaining_time_sentence,
     "distance": _distance_sentence,
     "concentration": _concentration_sentence,
+    "taste": _taste_sentence,
 }
 
 

@@ -25,11 +25,25 @@ def isolate_regular_tests_from_real_providers(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(settings, "concentration_provider", None)
     monkeypatch.setattr(settings, "holiday_provider", None)
 
+    # 경로 Provider도 provider_mode와 별개 축이다 — 비용 때문에 공통값을 상속하지
+    # 않기 때문이다(config.py 주석). .env에 TRAVEL_ROUTE_*=real이 남아 있으면 일반
+    # 테스트가 실 API를 타거나, 그 벤더 키가 없는 환경에서만 부팅 검증이 깨진다.
+    monkeypatch.setattr(settings, "travel_route_provider", "fake")
+    monkeypatch.setattr(settings, "travel_route_driving_provider", "fake")
+
     # Package B의 STATE_STORE_BACKEND는 provider_mode와 별개 축이라 위 patch로는
     # 안 잡힌다. .env에 STATE_STORE_BACKEND=supabase가 남아있으면(실사용 전환 중
     # 흔히 발생) 일반 테스트가 실제 네트워크를 타거나 InMemory 전용 메서드(clear()
     # 등)를 호출하는 테스트가 깨진다 — 여기서도 강제로 memory로 고정한다.
     monkeypatch.setattr(settings, "state_store_backend", "memory")
+
+    # TASTE_EVIDENCE_ENABLED도 provider_mode와 별개 축이다. .env에 true가 남아
+    # 있으면(실사용 전환 중 흔히 발생) 앱 lifespan을 켜는 테스트(with TestClient)가
+    # 임베딩 모델 예열 스레드를 띄운다 — sentence-transformers import 4.3초 +
+    # 500MB 적재가 나머지 테스트와 동시에 돌아 스위트가 느려지고, 스레드 타이밍
+    # 때문에 무관한 테스트가 간헐적으로 깨진다(2026-08-20 실측). 취향 검색은
+    # 별도 단위 테스트가 인코더를 직접 주입해 커버하므로 여기선 꺼도 무방하다.
+    monkeypatch.setattr(settings, "taste_evidence_enabled", False)
 
 
 @pytest.fixture(autouse=True)

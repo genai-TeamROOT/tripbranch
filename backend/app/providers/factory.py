@@ -7,12 +7,18 @@ validate_provider_config()가 담당한다.
 
 from __future__ import annotations
 
+import logging
+
 import httpx
 
 from app.config import Settings, settings
 from app.domain.travel_route import TravelMode
 from app.errors import AppError
 from app.providers.concentration import FakeConcentrationProvider, RealConcentrationProvider
+from app.providers.driving_route import (
+    FakeDrivingRouteProvider,
+    RealNaverDrivingRouteProvider,
+)
 from app.providers.festival import FakeFestivalProvider, RealFestivalProvider
 from app.providers.gemini import RealGeminiProvider
 from app.providers.gemini_audio import GeminiAudioTranscriber
@@ -20,6 +26,8 @@ from app.providers.geocoding import FakeGeocodingProvider, RealGeocodingProvider
 from app.providers.holiday import FakeHolidayProvider, RealHolidayProvider
 from app.providers.hybrid_place_details import HybridPlaceDetailsProvider
 from app.providers.local_search import FakeLocalSearchProvider, RealLocalSearchProvider
+from app.providers.place_evidence import PlaceEvidenceProvider
+from app.providers.place_evidence_encoder import get_shared_encoder
 from app.providers.protocols import (
     ConcentrationProvider,
     FestivalProvider,
@@ -31,10 +39,18 @@ from app.providers.protocols import (
     PlaceDetailsProvider,
     PlaceProvider,
     PlaceSearchProvider,
+    RealtimeCityDataProvider,
+    RealtimeCommercialProvider,
     TravelRouteProvider,
     WeatherProvider,
 )
 from app.providers.real_place import RealPlaceProvider
+from app.providers.seoul_citydata import (
+    FakeRealtimeCityDataProvider,
+    FakeRealtimeCommercialProvider,
+    RealRealtimeCityDataProvider,
+    RealRealtimeCommercialProvider,
+)
 from app.providers.stub import FakeLLMProvider, FakePlaceProvider, FakeWeatherProvider
 from app.providers.supabase_place_details import SupabasePlaceDetailsProvider
 from app.providers.walking_route import (
@@ -49,6 +65,8 @@ from app.repositories.fake_places import (
 from app.repositories.supabase_places import SupabasePlaceRepository
 from app.tools.recommendation_cards import RecommendationCardTool
 from app.tools.travel_route import TravelRouteProviders, TravelRouteTool
+
+logger = logging.getLogger(__name__)
 
 
 def _require_key(value: str, variable_name: str) -> str:
@@ -148,14 +166,32 @@ def get_walking_route_provider(client: httpx.AsyncClient) -> TravelRouteProvider
     )
 
 
+def get_driving_route_provider(client: httpx.AsyncClient) -> TravelRouteProvider:
+    """설정에 맞는 자동차 경로 Provider를 반환한다."""
+    if settings.travel_route_driving_provider == "fake":
+        return FakeDrivingRouteProvider(driving_speed_mps=settings.driving_speed_mps)
+    return RealNaverDrivingRouteProvider(
+        api_key_id=_require_key(settings.naver_map_client_id, "NAVER_MAP_CLIENT_ID"),
+        api_key=_require_key(settings.naver_map_client_secret, "NAVER_MAP_CLIENT_SECRET"),
+        client=client,
+        timeout_seconds=settings.external_api_timeout_seconds,
+        max_concurrency=settings.travel_route_max_concurrency,
+    )
+
+
 def get_travel_route_tool(client: httpx.AsyncClient) -> TravelRouteTool:
     """이동 경로 Tool을 이동수단별 Provider로 구성한다.
 
-    지금 등록하는 이동수단은 도보뿐이다. 대중교통·자동차는 외부 API를 붙이는
-    각 카드에서 여기에 한 줄씩 추가한다 — 미등록 이동수단은 Tool이 호출 없이
-    NO_DATA로 답하므로, 등록되지 않은 동안 도보 값이 대신 나가지 않는다.
+    지금 등록하는 이동수단은 도보와 자동차다. 대중교통은 외부 API를 붙이는
+    카드에서 여기에 한 줄 추가한다 — 미등록 이동수단은 Tool이 호출 없이
+    NO_DATA로 답하므로, 등록되지 않은 동안 다른 수단의 값이 대신 나가지 않는다.
+
+    자동차에는 fallback을 두지 않는다. fallback이 내는 직선거리 추정은 source가
+    STRAIGHT_LINE_ESTIMATE라 `scoring._applied_travel_route()`가 어차피 걸러내서
+    채점에도 문구에도 쓰이지 않는다 — 쓰이지 않을 값을 벤더마다 만들 이유가 없다.
+    도보의 fallback은 기존 동작이라 그대로 둔다.
     """
-    fallback = (
+    walking_fallback = (
         FakeWalkingRouteProvider(walking_speed_mps=settings.walking_speed_mps)
         if settings.travel_route_provider == "real"
         else None
@@ -164,8 +200,12 @@ def get_travel_route_tool(client: httpx.AsyncClient) -> TravelRouteTool:
         {
             TravelMode.WALKING: TravelRouteProviders(
                 primary=get_walking_route_provider(client),
-                fallback=fallback,
-            )
+                fallback=walking_fallback,
+            ),
+            TravelMode.DRIVING: TravelRouteProviders(
+                primary=get_driving_route_provider(client),
+                fallback=None,
+            ),
         }
     )
 
@@ -298,6 +338,30 @@ def get_concentration_provider(client: httpx.AsyncClient) -> ConcentrationProvid
     )
 
 
+def get_realtime_commercial_provider(
+    client: httpx.AsyncClient,
+) -> RealtimeCommercialProvider:
+    """서울시 실시간 상권현황 Provider를 설정에 맞춰 만든다."""
+
+    if settings.resolved_seoul_citydata_provider == "fake":
+        return FakeRealtimeCommercialProvider()
+    return RealRealtimeCommercialProvider(
+        api_key=_require_key(settings.seoul_open_data_api_key, "SEOUL_OPEN_DATA_API_KEY"),
+        client=client,
+        timeout_seconds=settings.external_api_timeout_seconds,
+    )
+
+
+def get_realtime_citydata_provider(client: httpx.AsyncClient) -> RealtimeCityDataProvider:
+    if settings.resolved_seoul_citydata_provider == "fake":
+        return FakeRealtimeCityDataProvider()
+    return RealRealtimeCityDataProvider(
+        api_key=_require_key(settings.seoul_open_data_api_key, "SEOUL_OPEN_DATA_API_KEY"),
+        client=client,
+        timeout_seconds=settings.external_api_timeout_seconds,
+    )
+
+
 def get_holiday_provider(client: httpx.AsyncClient) -> HolidayProvider:
     if settings.resolved_holiday_provider == "fake":
         return FakeHolidayProvider()
@@ -314,8 +378,15 @@ _REQUIRED_KEYS: dict[str, tuple[tuple[str, str], ...]] = {
     "WEATHER_PROVIDER": (("WEATHER_API_KEY", "weather_api_key"),),
     "PLACE_PROVIDER": (("TOUR_API_SERVICE_KEY", "tour_api_service_key"),),
     "CONCENTRATION_PROVIDER": (("TOUR_API_SERVICE_KEY", "tour_api_service_key"),),
+    "SEOUL_CITYDATA_PROVIDER": (("SEOUL_OPEN_DATA_API_KEY", "seoul_open_data_api_key"),),
     "HOLIDAY_PROVIDER": (("TOUR_API_SERVICE_KEY", "tour_api_service_key"),),
+    # 이동수단마다 벤더가 다르므로 따로 검증한다 — 도보만 real로 쓰는 설정에서
+    # 네이버 키를 요구하면 부팅이 불필요하게 막힌다.
     "TRAVEL_ROUTE_PROVIDER": (("KAKAO_MAP_REST_API_KEY", "kakao_map_rest_api_key"),),
+    "TRAVEL_ROUTE_DRIVING_PROVIDER": (
+        ("NAVER_MAP_CLIENT_ID", "naver_map_client_id"),
+        ("NAVER_MAP_CLIENT_SECRET", "naver_map_client_secret"),
+    ),
     "LOCAL_SEARCH_PROVIDER": (
         ("NAVER_LOCAL_SEARCH_CLIENT_ID", "naver_local_search_client_id"),
         ("NAVER_LOCAL_SEARCH_CLIENT_SECRET", "naver_local_search_client_secret"),
@@ -331,10 +402,12 @@ _RESOLVED_ATTRS: dict[str, str] = {
     "WEATHER_PROVIDER": "resolved_weather_provider",
     "PLACE_PROVIDER": "resolved_place_provider",
     "CONCENTRATION_PROVIDER": "resolved_concentration_provider",
+    "SEOUL_CITYDATA_PROVIDER": "resolved_seoul_citydata_provider",
     "HOLIDAY_PROVIDER": "resolved_holiday_provider",
     "GEOCODING_PROVIDER": "resolved_geocoding_provider",
     "LOCAL_SEARCH_PROVIDER": "resolved_local_search_provider",
     "TRAVEL_ROUTE_PROVIDER": "travel_route_provider",
+    "TRAVEL_ROUTE_DRIVING_PROVIDER": "travel_route_driving_provider",
 }
 
 
@@ -429,3 +502,33 @@ def validate_provider_config(target: Settings | None = None) -> None:
                 "STATE_STORE_BACKEND=supabase에 필요한 환경변수가 비어 있습니다: "
                 + ", ".join(missing_state_store)
             )
+
+
+
+def get_place_evidence_provider(
+    client: httpx.AsyncClient,
+) -> PlaceEvidenceProvider | None:
+    """취향 근거 검색 Provider를 만든다. 꺼져 있으면 None이다.
+
+    None이면 채점이 taste Feature를 아예 쓰지 않는다 — 후보 일부만 점수를
+    갖는 상태가 생기지 않도록 요청 단위로 켜고 끈다(scoring.py).
+    """
+    if not settings.taste_evidence_enabled:
+        return None
+    if not settings.supabase_url or not settings.supabase_secret_key:
+        # 부팅을 막지 않는다. 취향은 순위를 다듬는 축이라 없어도 추천은
+        # 동작하고, 여기서 죽이면 설정 하나 때문에 서비스 전체가 안 뜬다.
+        # 대신 왜 안 켜졌는지는 로그로 남긴다 — 조용히 사라지면 "켰는데 왜
+        # 순위가 그대로냐"를 추적할 방법이 없다.
+        logger.warning(
+            "TASTE_EVIDENCE_ENABLED=true인데 SUPABASE_URL/SUPABASE_SECRET_KEY가"
+            " 비어 있어 취향 근거 검색을 끕니다."
+        )
+        return None
+    repository = SupabasePlaceRepository(
+        supabase_url=settings.supabase_url,
+        secret_key=settings.supabase_secret_key,
+        client=client,
+        timeout_seconds=settings.external_api_timeout_seconds,
+    )
+    return PlaceEvidenceProvider(get_shared_encoder(), repository)

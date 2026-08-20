@@ -337,6 +337,63 @@ async def test_gps_is_used_when_spoken_location_is_missing() -> None:
 
 
 @pytest.mark.asyncio
+async def test_user_location_is_kept_when_search_center_is_given() -> None:
+    """검색 기준점이 따로 잡혀도 사용자 좌표는 버리지 않는다(TP-109).
+
+    예전에는 `location_query`가 있으면 GPS를 읽지도 않아서, "경복궁 근처 카페"를
+    물으면 사용자가 어디 있는지가 C에서 사라졌다. 근거 문장이 경복궁 기준 거리를
+    "현재 위치에서"라고 말한 원인이다.
+    """
+    gps = Coordinates(latitude=37.4979, longitude=127.0276)  # 강남역
+
+    response = await _service().fetch_context(
+        _request(search_center="경복궁", gps_location=gps)
+    )
+
+    assert response.status == "success"
+    assert response.context is not None
+    assert response.context.user_location == gps
+    # 기준점은 여전히 경복궁이다 — 사용자 좌표가 기준점을 밀어내지 않는다.
+    assert response.context.location is not None
+    assert response.context.location.data is not None
+    assert response.context.location.data.source == "query"
+    assert response.context.location.data.requested_query == "경복궁"
+    assert response.context.location.data.location != gps
+
+
+@pytest.mark.asyncio
+async def test_device_gps_origin_always_has_user_location() -> None:
+    """`source`가 device_gps인데 user_location이 비는 조합은 성립할 수 없다.
+
+    발화 위치도 GPS도 없으면 요청 자체가 needs_clarification으로 끝나므로,
+    기준점이 GPS라는 건 GPS가 있었다는 뜻이다.
+    """
+    gps = Coordinates(latitude=37.5796, longitude=126.9770)
+
+    response = await _service().fetch_context(
+        _request(search_center=None, gps_location=gps)
+    )
+
+    assert response.context is not None
+    assert response.context.location is not None
+    assert response.context.location.data is not None
+    assert response.context.location.data.source == "device_gps"
+    assert response.context.user_location == gps
+
+
+@pytest.mark.asyncio
+async def test_user_location_is_none_without_gps() -> None:
+    """GPS가 안 오면(권한 거부·TTL 만료) 그 사실을 그대로 None으로 싣는다."""
+    response = await _service().fetch_context(
+        _request(search_center="경복궁", gps_location=None)
+    )
+
+    assert response.status == "success"
+    assert response.context is not None
+    assert response.context.user_location is None
+
+
+@pytest.mark.asyncio
 async def test_unsupported_category_stops_before_external_calls() -> None:
     response = await _service().fetch_context(_request(place_types=["unknown"]))
 

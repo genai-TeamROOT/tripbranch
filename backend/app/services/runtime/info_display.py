@@ -9,6 +9,10 @@ from __future__ import annotations
 import re
 
 _CAR_CAPACITY_PATTERN = re.compile(r"승용차\s*[^/,\)\]]+")
+_CITYDATA_TIMESTAMP_PATTERN = re.compile(
+    r"^(?P<year>\d{4})[-.]?(?P<month>\d{2})[-.]?(?P<day>\d{2})"
+    r"(?:[ T](?P<hour>\d{2}):?(?P<minute>\d{2}))?$"
+)
 
 
 def format_parking_for_display(value: str | None) -> str | None:
@@ -31,4 +35,25 @@ def format_parking_for_display(value: str | None) -> str | None:
     return f"{status} ({car_match.group(0).strip()})"
 
 
-__all__ = ["format_parking_for_display"]
+def format_citydata_timestamp(value: str | None) -> str | None:
+    """서울시 도시데이터 시각을 카드·말풍선용 한국어 형식으로 정리한다.
+
+    ``20260820 1520``과 ``2026-08-20 15:20``처럼 API마다 다른 원문 형식을
+    ``8월 20일 15:20``으로 통일한다. 해석하지 못한 값은 정보 손실 없이 그대로 둔다.
+    """
+
+    if value is None:
+        return None
+    normalized = value.strip()
+    match = _CITYDATA_TIMESTAMP_PATTERN.fullmatch(normalized)
+    if match is None:
+        return normalized or None
+    month = int(match.group("month"))
+    day = int(match.group("day"))
+    hour = match.group("hour")
+    minute = match.group("minute")
+    date_label = f"{month}월 {day}일"
+    return f"{date_label} {hour}:{minute}" if hour and minute else date_label
+
+
+__all__ = ["format_citydata_timestamp", "format_parking_for_display"]

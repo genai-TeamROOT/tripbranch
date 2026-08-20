@@ -20,7 +20,8 @@ modify_type과 condition_changes를 추출해 LLMOutput(intent="MODIFY")으로 �
   "companion": null,
   "budget": null,
   "exclude_tags": [],
-  "special_requirements": []
+  "special_requirements": [],
+  "taste_query": null
 }
 ```
 

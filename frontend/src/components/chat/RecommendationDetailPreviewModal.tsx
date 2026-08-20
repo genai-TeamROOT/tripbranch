@@ -13,9 +13,19 @@ import { travelLabel, travelValue } from "../../utils/travelDisplay";
 interface RecommendationDetailPreviewModalProps {
   /** 추천 카드에서 열면 현재 거리·운영시간과 함께 C 상세를 추가 조회한다. */
   item?: RecommendationItem;
-  /** INFO 카드에서 열면 이미 받은 상세 데이터를 즉시 표시해 재조회하지 않는다. */
+  /** INFO 카드에서 열면 답변 요약을 즉시 표시한다. */
   card?: InfoPlaceCard;
   onClose: () => void;
+}
+
+/**
+ * 주소·혼잡도·행사 INFO는 첫 응답에서 필요한 값만 받아온다. 카드 클릭 때만
+ * 전체 PlaceDetails를 보강 조회해, 답변 단계의 불필요한 상세 API 호출은 피한다.
+ */
+function needsDetailEnrichment(card: InfoPlaceCard | undefined): boolean {
+  return Boolean(
+    card && ["location_info", "concentration", "event"].includes(card.question_type),
+  );
 }
 
 function formatOperatingHours(item: RecommendationItem): string {
@@ -41,6 +51,25 @@ const FACILITY_FIELDS: Array<[keyof InfoPlaceCard, string]> = [
   ["credit_card", "카드 결제"],
   ["restroom", "화장실"],
 ];
+
+const ANSWER_FIELD_LABELS: Record<string, string> = {
+  address: "주소",
+  concentration: "혼잡도",
+  event: "행사",
+  "상권 지역": "상권 지역",
+  "카페 업종": "카페 업종",
+  "실시간 활동": "실시간 활동",
+  "기준 시각": "기준 시각",
+  operating_hours: "운영시간",
+  rest_date: "휴무일",
+  parking: "주차",
+  parking_fee: "주차 요금",
+  fee: "요금",
+  baby_carriage: "유모차",
+  pet: "반려동물 동반",
+  credit_card: "카드 결제",
+  restroom: "화장실",
+};
 
 function formatDetailValue(key: keyof InfoPlaceCard, value: string): string {
   let formatted = value.replace(/\s*※\s*/g, "\n※ ");
@@ -155,8 +184,8 @@ export function RecommendationDetailPreviewModal({
 }: RecommendationDetailPreviewModalProps) {
   const [detailCard, setDetailCard] = useState<InfoPlaceCard | null>(card ?? null);
   const [detailStatus, setDetailStatus] = useState<"loading" | "no_data" | "unavailable">("loading");
-  const itemPlaceId = item?.place_id;
-  const itemPlaceName = item?.name;
+  const placeId = card?.place_id ?? item?.place_id;
+  const placeName = card?.place_name ?? item?.name;
   const title = detailCard?.place_name ?? card?.place_name ?? item?.name ?? "장소 상세 정보";
   const isLoading = detailStatus === "loading" && !detailCard;
 
@@ -169,23 +198,33 @@ export function RecommendationDetailPreviewModal({
   }, [onClose]);
 
   useEffect(() => {
-    if (card) {
+    const shouldEnrichCard = needsDetailEnrichment(card);
+    if (card && !shouldEnrichCard) {
       setDetailCard(card);
       return;
     }
-    if (!itemPlaceId || !itemPlaceName) {
+    if (!placeId || !placeName) {
       setDetailStatus("no_data");
       return;
     }
     let cancelled = false;
-    setDetailCard(null);
+    // INFO 답변의 요약(주소·혼잡도·행사)은 상세 조회 중에도 남겨 둔다.
+    setDetailCard(card ?? null);
     setDetailStatus("loading");
 
-    void fetchRecommendationPlaceDetails({ place_id: itemPlaceId, place_name: itemPlaceName })
+    void fetchRecommendationPlaceDetails({ place_id: placeId, place_name: placeName })
       .then((response) => {
         if (cancelled) return;
         if (response.status === "success" && response.place_card) {
-          setDetailCard(response.place_card);
+          setDetailCard(
+            card
+              ? {
+                  ...response.place_card,
+                  question_type: card.question_type,
+                  answer_fields: card.answer_fields,
+                }
+              : response.place_card,
+          );
           return;
         }
         setDetailStatus(response.status === "unavailable" ? "unavailable" : "no_data");
@@ -197,7 +236,7 @@ export function RecommendationDetailPreviewModal({
     return () => {
       cancelled = true;
     };
-  }, [card, itemPlaceId, itemPlaceName]);
+  }, [card, placeId, placeName]);
 
   return (
     <div
@@ -269,6 +308,21 @@ export function RecommendationDetailPreviewModal({
             <div className="h-44 animate-pulse rounded-xl bg-gray-100 dark:bg-gray-800" />
           ) : detailCard ? (
             <section className="flex flex-col gap-4">
+              {Object.keys(detailCard.answer_fields).length > 0 && (
+                <section className="rounded-xl bg-blue-50 p-3 dark:bg-blue-950/30">
+                  <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">질문 답변</h3>
+                  <dl className="mt-2 space-y-2 text-sm">
+                    {Object.entries(detailCard.answer_fields).map(([key, value]) => (
+                      <div key={key} className="flex gap-2">
+                        <dt className="shrink-0 text-gray-500 dark:text-gray-400">
+                          {ANSWER_FIELD_LABELS[key] ?? key}
+                        </dt>
+                        <dd className="whitespace-pre-line text-gray-900 dark:text-gray-100">{value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </section>
+              )}
               {detailCard.overview && (
                 <section>
                   <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">개요</h3>

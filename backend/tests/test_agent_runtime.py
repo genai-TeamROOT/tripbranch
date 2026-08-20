@@ -35,8 +35,8 @@ from app.agent_context.schemas import (
 )
 from app.domain.scoring import SCORING_VERSION
 from app.domain.travel_route import TravelMode, TravelRoute
+from app.prompts.registry import turn_prompt_version
 from app.providers.contracts import ProviderSource, provider_result
-from app.providers.gemini_prompts import PROMPT_VERSION
 from app.providers.stub import FakeLLMProvider
 from app.providers.walking_route import FakeWalkingRouteProvider
 from app.schemas import (
@@ -324,7 +324,7 @@ async def test_recommend_flow_records_traces_for_llm_tool_and_scoring() -> None:
     assert all(trace.latency_ms is not None and trace.latency_ms >= 0 for trace in traces)
 
     by_step = {trace.step: trace for trace in traces}
-    assert by_step["llm_interpret"].prompt_version == PROMPT_VERSION
+    assert by_step["llm_interpret"].prompt_version == turn_prompt_version(Intent.RECOMMEND)
     assert by_step["llm_interpret"].scoring_version is None
     assert by_step["tool_fetch"].prompt_version is None
     assert by_step["tool_fetch"].scoring_version is None
@@ -2198,6 +2198,36 @@ async def test_info_operating_hours_question_type_calls_tool_provider() -> None:
 
 
 @pytest.mark.asyncio
+async def test_info_walking_time_uses_current_gps_and_route_tool() -> None:
+    """INFO location_info도 현재 GPS가 있으면 카카오 도보 경로 계약을 재사용한다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 가는데 얼마나 걸려?",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        travel_route_tool=TravelRouteTool(
+            {
+                TravelMode.WALKING: TravelRouteProviders(
+                    primary=FakeWalkingRouteProvider(walking_speed_mps=1.2)
+                )
+            }
+        ),
+        **providers,
+    )
+
+    assert response.llm_output.intent is Intent.INFO
+    assert response.llm_output.info is not None
+    assert response.llm_output.info.question_type.value == "location_info"
+    assert "현재 위치에서 경복궁까지 도보 약" in response.message
+    assert "이동 거리는 약" in response.message
+
+
+@pytest.mark.asyncio
 async def test_info_general_info_question_type_shows_overview_raw() -> None:
     """general_info는 LLM 요약 없이 overview 원문을 그대로 보여준다(사용자 결정)."""
     store = InMemoryStateStore()
@@ -2879,6 +2909,7 @@ class _FixedStatusToolProvider:
                     data=ResolvedLocation(
                         requested_query="경복궁",
                         resolved_name="경복궁",
+                        source="query",
                         location=Coordinates(latitude=37.5788, longitude=126.9770),
                     ),
                 ),
@@ -3114,6 +3145,7 @@ class _PartialPlacesToolProvider:
                     data=ResolvedLocation(
                         requested_query="경복궁",
                         resolved_name="경복궁",
+                        source="query",
                         location=Coordinates(latitude=37.5788, longitude=126.9770),
                     ),
                 ),
@@ -3191,6 +3223,7 @@ class _RefillPlacesToolProvider(FakeToolProvider):
                 data=ResolvedLocation(
                     requested_query="경복궁",
                     resolved_name="경복궁",
+                    source="query",
                     location=Coordinates(latitude=37.5788, longitude=126.9770),
                 ),
             ),
@@ -4026,6 +4059,7 @@ class _ExhaustedNoDataToolProvider:
                     data=ResolvedLocation(
                         requested_query="경복궁",
                         resolved_name="경복궁",
+                        source="query",
                         location=Coordinates(latitude=37.5788, longitude=126.9770),
                     ),
                 ),

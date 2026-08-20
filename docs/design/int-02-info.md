@@ -58,7 +58,7 @@ interface InfoQuery {
   question_type: QuestionType;
   specific_question: string | null;
 
-  // concentration 질의 전용 (question_type === "concentration"일 때만 사용)
+  // 방문일 기반 혼잡도 예측 질의 전용 (question_type === "concentration"일 때만 사용)
   visit_time: string | null;
 }
 ```
@@ -100,7 +100,8 @@ type QuestionType =
   | "event"            // 현재 전시/행사
   | "location_info"    // 위치/찾아가는 법
   | "general_info"     // 기타 일반 정보
-  | "concentration";   // 방문객 혼잡도 예측
+  | "concentration"    // 방문객 혼잡도 예측
+  | "realtime_commercial"; // 실시간 지역·업종 상권 활동
 ```
 
 ### 상세 정의
@@ -115,6 +116,7 @@ type QuestionType =
 | `location_info` | 위치, 주소, 찾아가는 방법 | "어디에 있어?", "주소가 뭐야?", "어떻게 가?" | detailCommon2 (addr1, mapx, mapy) |
 | `general_info` | 장소 개요, 특징, 일반 설명 | "어떤 곳이야?", "뭐 하는 곳이야?" | detailCommon2 (overview) |
 | `concentration` | 특정 장소/지역의 방문객 혼잡도 예측 | "사람 많아?", "붐빌까?", "혼잡해?" | get_concentration (집중률 API). 상세는 [concentration-conditions.md §3](./concentration-conditions.md#3-info-확장--question_type-concentration) 참고 |
+| `realtime_commercial` | 특정 카페·커피 업종 주변의 현재 상권 활동과 인근 인구 혼잡도 예측 | "용리단길 카페 사람 많아?", "A카페 주변 붐벼?" | 서울시 실시간 도시데이터(`citydata`). 개별 매장 정보가 아니라 매장 좌표와 가까운 서울시 제공 상권의 카페 업종 카드 소비 활동을 안내하고, 같은 지역의 향후 12시간 인구 혼잡도 예측을 함께 제공 |
 
 ---
 
@@ -176,6 +178,7 @@ searchKeyword2 결과:
 | `event` | searchFestival2 | detailCommon2 |
 | `location_info` | detailCommon2 | — |
 | `general_info` | detailCommon2 | — |
+| `realtime_commercial` | Naver Local Search로 대상 매장 좌표 해석 | 서울시 실시간 상권현황(`citydata_cmrcl`) 1회 |
 
 ### detailIntro2 유형별 필드 매핑
 
@@ -394,7 +397,7 @@ INFO 결과에 따라 자연스럽게 RECOMMEND로 이어질 수 있다.
 | "경복궁이랑 창덕궁 중 어디가 좋아?" | COMPARE | 비교 요청 |
 | "경복궁 오늘 열어? 안 열면 다른 곳" | INFO (우선) | 복합 입력 → 첫 번째 의도 처리 후 결과에 따라 RECOMMEND 유도 |
 | "이번 주말 창덕궁 사람 많을까?" | INFO | 특정 장소의 방문객 혼잡도 예측 질문 (`question_type=concentration`) |
-| "인사동 카페 사람 많아?" | INFO | 혼잡도 질문이나, 카페 자체는 집중률 데이터가 없어 인근 관광지로 대체 조회 ([concentration-conditions.md §3.3](./concentration-conditions.md#33-목적지-인근-관광지-대체-조회-근접치-fallback)) |
+| "인사동 카페 사람 많아?" | INFO | 현재 카페 상권 질문이므로 `question_type=realtime_commercial`. 개별 카페가 아닌 가까운 서울시 제공 상권의 카페 업종 활동으로 안내 |
 
 ---
 
@@ -407,7 +410,7 @@ INFO 결과에 따라 자연스럽게 RECOMMEND로 이어질 수 있다.
 - 휴게시간 (런치 브레이크 등)
 - 하루 여러 운영 구간
 - 자정을 넘기는 운영시간
-- 실시간 혼잡도 (예측치 기반 `question_type=concentration`은 지원 — [concentration-conditions.md](./concentration-conditions.md) 참고. 여기서 제외하는 건 "지금 실시간" 값만 해당)
+- 개별 매장 단위 실시간 혼잡도 (카페·커피 업종은 `question_type=realtime_commercial`로 가까운 서울시 제공 상권의 지역·업종 활동을 안내할 수 있으나, 매장 자체의 인원·대기열은 제공하지 않음)
 - 예약 가능 여부
 - 리뷰/평점 정보
 
@@ -428,5 +431,7 @@ INFO 결과에 따라 자연스럽게 RECOMMEND로 이어질 수 있다.
 | 버전 | 날짜 | 변경 내용 |
 |------|------|-----------|
 | v0.1 | 2026-07-22 | 초안 작성 |
+| v1.4 | 2026-08-20 | `question_type=realtime_commercial` 추가. 카페·커피 현재 혼잡 질문은 서울시 실시간 상권현황의 가까운 제공 상권·업종 활동으로 대체 안내하며, 개별 매장 데이터와 구분 |
+| v1.5 | 2026-08-20 | 현재 혼잡 질문은 위치 해석 뒤 Naver 업종이 카페·커피·제과·패스트푸드면 `realtime_commercial`로 재분기. 서울시 `citydata` 한 번의 조회로 상권 활동 스냅샷과 향후 12시간 인구 혼잡도 예측을 함께 제공 |
 | v0.2 | 2026-07-23 | 지시어("첫 번째" 등) 해석이 get_session_context의 shown_place_ids 기준임을 명시(7절) |
 | v0.3 | 2026-07-29 | `question_type=concentration`과 `visit_time` 필드 추가(3·4·6절), LLM 추출 예시(13절)·경계 사례(14절) 반영, 15절 "실시간 혼잡도" 제외 문구를 예측치 지원 범위와 구분되게 명확화. 상세 설계는 concentration-conditions.md |
