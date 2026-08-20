@@ -42,7 +42,6 @@ class ProviderSource(StrEnum):
     FAKE_HOLIDAY = "fake_holiday"
     FAKE_WALKING_ROUTE = "fake_walking_route"
     FAKE_LLM = "fake_llm"
-    FAKE_PLACE_EVIDENCE = "fake_place_evidence"
 
 
 @dataclass(frozen=True)
