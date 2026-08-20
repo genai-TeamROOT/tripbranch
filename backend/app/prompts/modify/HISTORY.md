@@ -4,7 +4,7 @@
 
 | 슬롯 | 관리 버전 | 템플릿 | 공유 규칙 |
 | --- | --- | --- | --- |
-| modify.extract | v1 | extract.md, type_rules.md, target_rules.md, relative_expression_rules.md, field_merge_rules.md | budget, weather, concentration, environment, shown_place_list |
+| modify.extract | 1.1.0 | extract.md, type_rules.md, target_rules.md, relative_expression_rules.md, field_merge_rules.md | budget, weather, concentration, environment, transport, shown_place_list |
 
 ## 승인 이력
 
@@ -14,5 +14,6 @@
 | legacy-1.0.9 | 2026-08-10 | `86a9cd1` | `modify.extract` | 위치 되묻기 답변을 `search_center` 변경으로 병합 | 기존 조건을 유지한 재추천 보장 | 승인됨 |
 | legacy-1.0.12 | 2026-08-12 | `0c0a548` | `modify.extract` | 바뀐 필드만 채우는 병합 규칙과 되묻기 결정 경로 보강 | 누적 조건 덮어쓰기 방지 | 승인됨 |
 | legacy-1.0.13 | 2026-08-18 | `585a045` | 공유 weather/concentration/environment | 허용 표현을 `IGNORE`·`any` 조건 완화로 해석 | 날씨·혼잡도 조건을 반대로 강화하는 문제 방지 | 승인됨 |
+| 1.1.0 | 2026-08-20 | (이 커밋) | `modify.extract` (1.0.0 → 1.1.0), 공유 `_shared/rules/transport.md` 신설 | `{{transport_rules}}` 추가 — "차로 바꿔줘" 같은 이동수단 변경 발화를 transport=car/walk/public로 매핑 | TP-105(PR #196)로 D의 자동차 경로 실측이 붙었지만, RECOMMEND뿐 아니라 MODIFY(조건 변경)에서도 이동수단을 바꾸는 발화의 매핑 규칙이 없었다. RECOMMEND와 규칙을 공유해 한쪽만 바뀌는 문제를 방지한다 | 승인됨 — pytest 2137건 통과(신규 `test_extract_modify_conditions_transport_change` 포함). 실 Gemini 골드셋 베이스라인 A/B 비교로 다른 케이스 변동이 이 변경과 무관한 LLM 비결정성임을 확인 |
 
 공유 규칙의 원문 이력은 [`_shared/HISTORY.md`](../_shared/HISTORY.md)에서 관리합니다.

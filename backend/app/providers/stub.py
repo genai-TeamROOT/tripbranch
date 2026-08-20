@@ -72,6 +72,7 @@ from app.schemas import (
     ScheduleItem,
     Severity,
     StatedWeather,
+    Transport,
     UserConditions,
     WeatherIntent,
 )
@@ -106,6 +107,23 @@ _HARMFUL_MARKERS = ("바보", "미친", "죽어", "씨발", "개새끼")
 _OFF_TOPIC_MARKERS = ("주식", "수학 문제", "코드 짜줘", "파이썬 코드")
 _PROMPT_INJECTION_MARKERS = ("시스템 프롬프트", "프롬프트를 보여줘", "무시하고")
 _REJECT_ALL_MARKERS = ("다른 곳", "다른 거", "전부 별로", "다 마음에 안", "다른거")
+# _shared/rules/transport.md와 같은 매핑을 미러링한다(RECOMMEND/MODIFY 공유,
+# TP-105 — 자동차 경로 네이버 실측이 transport=CAR를 봐야 실제로 호출된다).
+_TRANSPORT_CAR_MARKERS = ("차로", "운전해서", "차 타고", "차로 가려는데")
+_TRANSPORT_WALK_MARKERS = ("걸어서", "도보로", "걸어갈")
+_TRANSPORT_PUBLIC_MARKERS = ("대중교통으로", "버스나 지하철", "지하철 타고", "버스 타고")
+
+
+def _detect_transport(user_input: str) -> Transport | None:
+    """RECOMMEND/MODIFY 양쪽이 같은 판정을 쓰도록 공유한다."""
+
+    if any(marker in user_input for marker in _TRANSPORT_CAR_MARKERS):
+        return Transport.CAR
+    if any(marker in user_input for marker in _TRANSPORT_WALK_MARKERS):
+        return Transport.WALK
+    if any(marker in user_input for marker in _TRANSPORT_PUBLIC_MARKERS):
+        return Transport.PUBLIC
+    return None
 # SCHEDULE-09: 순번 언급("두 번째는 별로야") → REJECT_SPECIFIC 판별용.
 # ComparePayload.targets 파싱과 달리 여기서는 실제로 순번을 파싱해 target_indices를
 # 채운다 — REJECT_SPECIFIC 자체가 이번에 신설된 값이라 테스트가 파싱 결과에 의존한다.
@@ -480,6 +498,8 @@ class FakeLLMProvider:
         elif any(marker in user_input for marker in ("핫한", "인기", "북적")):
             conditions.concentration_intent = ConcentrationIntent.SEEK
 
+        conditions.transport = _detect_transport(user_input)
+
         result = LLMOutput(
             intent=Intent.RECOMMEND,
             status=status,
@@ -653,6 +673,11 @@ class FakeLLMProvider:
         elif any(marker in user_input for marker in ("핫한", "인기", "북적")):
             changed.concentration_intent = ConcentrationIntent.SEEK
             changed_fields.append("concentration_intent")
+
+        detected_transport = _detect_transport(user_input)
+        if detected_transport is not None:
+            changed.transport = detected_transport
+            changed_fields.append("transport")
 
         new_place = _find_known_place(user_input)
         if new_place and (

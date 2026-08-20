@@ -9,6 +9,7 @@
 | shared.safety | v1 (Draft) | rules/safety.md |
 | shared.factuality | v1 (Draft) | rules/factuality.md |
 | shared.budget / weather / concentration / environment | v1 | rules/*.md |
+| shared.transport | v1 | rules/transport.md |
 | shared.shown_place_list / validation_retry | v1 | rules/*.md |
 
 ## 승인 이력
@@ -21,6 +22,7 @@
 | legacy-1.0.0 | 2026-08-05 | `9ef8295` | 전역 Trace 표기 | `PROMPT_VERSION`을 LLMOps Trace·State Apply에 연결 | 전체 | 승인됨 |
 | legacy-1.0.5 | 2026-08-07 | `bfad75f` | `shared.persona` | 트리비 페르소나와 느낌표·질문부호 응답 규칙 도입 | GENERAL, INFO, RECOMMEND, COMPARE | 승인됨 |
 | legacy-1.0.13 | 2026-08-18 | `585a045` | weather, concentration, environment | `~도 괜찮아`를 조건 완화로 해석하도록 보강 | RECOMMEND, MODIFY | 승인됨 |
+| 1.0.18 | 2026-08-20 | (이 커밋) | `shared.transport` 신설 | TP-105(자동차 경로 네이버 실측, PR #196) 이후 `transport=CAR`를 채워야 자동차 provider가 실제로 호출되는데, 그 매핑 규칙이 어디에도 없었다. "차로"/"걸어서"/"대중교통으로" → car/walk/public 매핑을 RECOMMEND·MODIFY 공유 규칙으로 신설 | RECOMMEND, MODIFY | 승인됨 — pytest 2137건 통과, 실 Gemini 골드셋(dev 35·final 15) 중 transport 케이스(DEV-006/007, FINAL-012) 전건 통과. 베이스라인과 A/B 비교로 다른 케이스 변동은 LLM 비결정성이며 이 변경과 무관함을 확인 |
 
 ## 실행 가능한 과거 기준선
 

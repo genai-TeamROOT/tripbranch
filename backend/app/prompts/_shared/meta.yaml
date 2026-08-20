@@ -28,6 +28,9 @@ slots:
   shared.environment:
     version: "1.0.0"
     template: rules/environment.md
+  shared.transport:
+    version: "1.0.0"
+    template: rules/transport.md
   shared.shown_place_list:
     version: "1.0.0"
     template: rules/shown_place_list.md
