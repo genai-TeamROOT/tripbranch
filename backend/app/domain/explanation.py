@@ -59,19 +59,22 @@ def _distance_sentence(evidence: RecommendationEvidence) -> str:
     """실측 이동시간이 있으면 그걸 말하고, 없으면 기존 직선거리 문구를 쓴다.
 
     거리 Feature 점수도 같은 기준으로 계산되므로(`scoring.py::_proximity_score()`),
-    점수와 근거 문장이 서로 다른 거리를 말하는 일이 없다.
+    점수와 근거 문장이 서로 다른 거리를 말하는 일이 없다. 기준점 **이름**도
+    마찬가지다 — 예전에는 기준점이 무엇이든 "현재 위치"라고 말해서, "경복궁 근처
+    카페"를 물으면 경복궁 기준 거리를 사용자 위치 기준인 것처럼 말했다(TP-109).
 
     "걸어서"는 도보 실측일 때만 쓴다. 다른 이동수단의 문구는 그 이동수단을
     연결하는 카드가 여기에 추가한다 — 그때까지는 직선거리 문구로 돌아가므로,
     자동차 실측을 "걸어서"라고 말하는 일은 없다.
     """
+    origin = evidence.origin_name or "현재 위치"
     if (
         evidence.travel_duration_seconds is not None
         and evidence.travel_mode is TravelMode.WALKING
     ):
         walk_text = _format_travel_duration(evidence.travel_duration_seconds)
-        return f"현재 위치에서 걸어서 약 {walk_text} 거리예요."
-    return f"현재 위치에서 {_format_distance(evidence.distance_km)}예요."
+        return f"{origin}에서 걸어서 약 {walk_text} 거리예요."
+    return f"{origin}에서 {_format_distance(evidence.distance_km)}예요."
 
 
 def _format_remaining_time(remaining_minutes: float) -> str:

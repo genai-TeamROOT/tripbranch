@@ -87,6 +87,10 @@ class PreparedRecommendationResult:
     visit_at: datetime
     weather_ignored: bool
     ignore_operating_hours: bool
+    # 거리 기준점의 표시 이름(resolve_origin_name 참고). 하드 필터 입력이 아니라
+    # 근거 문장 재료라 filter_context에는 넣지 않는다 — 날씨 판정과 같은 취급으로,
+    # 병합 시 첫 배치 값을 그대로 쓴다.
+    origin_name: str | None = None
 
     @property
     def filter_context(self) -> tuple[object, ...]:
@@ -162,6 +166,7 @@ def merge_prepared_recommendations(
         visit_at=first.visit_at,
         weather_ignored=first.weather_ignored,
         ignore_operating_hours=first.ignore_operating_hours,
+        origin_name=first.origin_name,
     )
 
 
@@ -245,6 +250,7 @@ async def prepare_recommendation_from_context(
         visit_at=visit_at,
         weather_ignored=_is_weather_explicitly_ignored(context, conditions),
         ignore_operating_hours=ignore_operating_hours,
+        origin_name=resolve_origin_name(context),
     )
 
 
@@ -293,6 +299,7 @@ async def score_prepared_recommendation(
         prepared.visit_at,
         weather_ignored=prepared.weather_ignored,
         excluded_all_closed=excluded_all_closed,
+        origin_name=prepared.origin_name,
     )
     return response.model_copy(update={"elapsed_ms": round((timer() - started_at) * 1000, 2)})
 
@@ -346,6 +353,10 @@ async def rerank_with_concentration(
     *,
     seek: bool,
     weather_reason: WeatherReason = None,
+    # 1차와 같은 기준점 이름. 안 넘기면 근거 문장이 "현재 위치"로 폴백해 1차와
+    # 2차가 같은 요청에서 다른 문장을 말하게 되므로, 호출자가 반드시 1차에 쓴
+    # 값을 그대로 넘긴다(real_recommendation_provider.py).
+    origin_name: str | None = None,
     timer: Timer = perf_counter,
 ) -> RecommendationResponse:
     """D의 2차 Scoring 진입점(D-040, concentration_intent AVOID/SEEK 전용).
@@ -455,7 +466,7 @@ async def rerank_with_concentration(
         )
         # feature_order를 넘기지 않는다 — build_evidence()가 feature_scores의 키로
         # concentration 포함 여부와 날씨/환경 중 어느 쪽인지를 함께 판단한다.
-        evidence = build_evidence(candidate)
+        evidence = build_evidence(candidate, origin_name=origin_name)
         explanations = build_explanations(evidence)
         warnings = list(candidate.warnings)
         if not explanations:
@@ -543,6 +554,27 @@ def resolve_weather_condition(
     return None, None
 
 
+def resolve_origin_name(context: RecommendationContext) -> str | None:
+    """거리·경로의 기준점을 사용자에게 뭐라고 부를지 정한다.
+
+    C는 사실만 싣는다(D-051) — 좌표의 출처(`source`)와 사용자가 말한 문자열
+    (`requested_query`)이 전부고, 그걸 문구로 옮기는 판정은 D가 한다. 기기 GPS가
+    기준점이면 부를 이름이 없으므로 None을 돌려주고, 문장 쪽이 "현재 위치"로
+    옮긴다(`explanation.py::_distance_sentence()`).
+
+    `resolved_name`을 쓰지 않는다. 기준점이 지오코딩으로 풀리면 그 값이 도로명
+    주소라(`providers/geocoding.py`) "서울특별시 종로구 사직로 161에서 걸어서 41분"이
+    된다. `requested_query`는 수식어를 뗀 사용자 발화라 언제나 부를 수 있는
+    이름이다(`tools/resolve_location.py::strip_location_modifiers()`).
+    """
+    location = context.location
+    if location is None or location.data is None:
+        return None
+    if location.data.source == "device_gps":
+        return None
+    return location.data.requested_query
+
+
 def resolve_requested_environment(conditions: UserConditions | None) -> str | None:
     """날씨 언급이 없을 때만 사용자가 명시한 실내/실외를 Scoring에 넘긴다.
 
@@ -586,6 +618,7 @@ def _build_response(
     *,
     weather_ignored: bool,
     excluded_all_closed: bool = False,
+    origin_name: str | None = None,
 ) -> RecommendationResponse:
     candidate_by_id = {item.place_id: item for item in candidates}
     verified: list[RecommendationItem] = []
@@ -593,7 +626,7 @@ def _build_response(
 
     for ranked_item in ranked:
         candidate = candidate_by_id[ranked_item.place_id]
-        evidence = build_evidence(ranked_item)
+        evidence = build_evidence(ranked_item, origin_name=origin_name)
         explanations = build_explanations(evidence)
         item = RecommendationItem(
             place_id=candidate.place_id,

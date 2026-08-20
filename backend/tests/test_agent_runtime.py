@@ -2879,6 +2879,7 @@ class _FixedStatusToolProvider:
                     data=ResolvedLocation(
                         requested_query="경복궁",
                         resolved_name="경복궁",
+                        source="query",
                         location=Coordinates(latitude=37.5788, longitude=126.9770),
                     ),
                 ),
@@ -3114,6 +3115,7 @@ class _PartialPlacesToolProvider:
                     data=ResolvedLocation(
                         requested_query="경복궁",
                         resolved_name="경복궁",
+                        source="query",
                         location=Coordinates(latitude=37.5788, longitude=126.9770),
                     ),
                 ),
@@ -3191,6 +3193,7 @@ class _RefillPlacesToolProvider(FakeToolProvider):
                 data=ResolvedLocation(
                     requested_query="경복궁",
                     resolved_name="경복궁",
+                    source="query",
                     location=Coordinates(latitude=37.5788, longitude=126.9770),
                 ),
             ),
@@ -3960,6 +3963,7 @@ class _ExhaustedNoDataToolProvider:
                     data=ResolvedLocation(
                         requested_query="경복궁",
                         resolved_name="경복궁",
+                        source="query",
                         location=Coordinates(latitude=37.5788, longitude=126.9770),
                     ),
                 ),
