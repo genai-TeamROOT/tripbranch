@@ -8,6 +8,7 @@ from typing import Protocol
 from uuid import UUID
 
 from app.domain.models import (
+    PlaceEvidenceMatch,
     StoredPlaceDetail,
     StoredPlaceLocation,
     StoredPlaceState,
@@ -140,3 +141,20 @@ class PlaceRepository(Protocol):
         error_summary: Mapping[str, object] | None = None,
         completed_at: datetime,
     ) -> None: ...
+
+
+class PlaceEvidenceRepository(Protocol):
+    """취향 근거를 벡터 검색으로 찾는 읽기 전용 계약.
+
+    후보를 반드시 좁혀서 부른다 — RPC가 후보 상한(500)을 강제하고, 좁히지 않으면
+    40,389행 전체를 훑어 6~9초가 걸린다(2026-08-18 실측).
+    """
+
+    async def search_place_evidence(
+        self,
+        query_embedding: Sequence[float],
+        candidate_content_ids: Sequence[str],
+        *,
+        match_count: int,
+        min_similarity: float,
+    ) -> tuple[PlaceEvidenceMatch, ...]: ...
