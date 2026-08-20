@@ -461,6 +461,14 @@ async def rerank_with_concentration(
             weather_condition=weather_condition,
             weather_reason=weather_reason,
             environment_type=item.environment_type,
+            # 근거 문장도 1차와 같은 거리 기준으로 말해야 한다. 응답 필드로는
+            # 아래에서 이월하고 있었는데 이 candidate에는 안 넘겨서, 같은 카드가
+            # 필드로는 "400m/300초/도보", 문장으로는 "직선거리 약 110m"라고
+            # 서로 다른 숫자를 말했다(2026-08-20). explanation._distance_sentence()가
+            # 이 세 값으로 "걸어서 약 5분"인지 직선거리인지를 고른다.
+            travel_distance_m=item.travel_distance_m,
+            travel_duration_seconds=item.travel_duration_seconds,
+            travel_mode=item.travel_mode,
             concentration_level=concentration_level,
         )
         # feature_order를 넘기지 않는다 — build_evidence()가 feature_scores의 키로

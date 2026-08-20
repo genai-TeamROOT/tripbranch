@@ -997,6 +997,11 @@ async def test_rerank_with_concentration_preserves_travel_measurements() -> None
     """2차는 RecommendationItem을 새로 만든다 — 실측 이동 정보를 옮겨 담지 않으면
     혼잡도 재순위를 탄 요청에서만 이 필드가 조용히 사라진다. mode도 함께 옮긴다:
     수치만 남고 mode가 빠지면 프론트가 무슨 수단인지 다시 추측하게 된다.
+
+    **근거 문장까지 함께 본다.** 응답 필드만 검사하던 때는 이 테스트가 통과하는데도
+    같은 카드가 필드로는 "620m/530초/도보", 문장으로는 "직선거리 약 100m"라고
+    서로 다른 숫자를 말했다(2026-08-20). 2차가 문장 조립용 RankedCandidate에는
+    실측을 안 넘겼기 때문이다 — 필드와 문장은 같은 재료를 봐야 한다.
     """
     first_pass = RecommendationResponse(
         recommendations=[
@@ -1024,3 +1029,5 @@ async def test_rerank_with_concentration_preserves_travel_measurements() -> None
     assert item.travel_distance_m == 620
     assert item.travel_duration_seconds == 530
     assert item.travel_mode is TravelMode.WALKING
+    assert "현재 위치에서 걸어서 약 9분 거리예요." in item.explanations
+    assert not any("직선거리" in sentence for sentence in item.explanations)
