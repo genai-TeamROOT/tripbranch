@@ -2203,7 +2203,11 @@ async def run_agent(
     """
 
     from app.agent_context.factory import get_candidate_enrichment_service, get_context_provider
-    from app.providers.factory import get_llm_provider, get_travel_route_tool
+    from app.providers.factory import (
+        get_llm_provider,
+        get_place_evidence_provider,
+        get_travel_route_tool,
+    )
     from app.services.runtime.real_recommendation_provider import RealRecommendationProvider
 
     async with create_external_client() as client:
@@ -2211,7 +2215,9 @@ async def run_agent(
             request,
             llm=get_llm_provider(),
             tool_provider=get_context_provider(client),
-            recommendation_provider=RealRecommendationProvider(),
+            recommendation_provider=RealRecommendationProvider(
+                get_place_evidence_provider(client)
+            ),
             enrichment_provider=get_candidate_enrichment_service(client),
             travel_route_tool=get_travel_route_tool(client),
             stream_event_sink=stream_event_sink,

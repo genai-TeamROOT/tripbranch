@@ -20,6 +20,8 @@ from app.providers.geocoding import FakeGeocodingProvider, RealGeocodingProvider
 from app.providers.holiday import FakeHolidayProvider, RealHolidayProvider
 from app.providers.hybrid_place_details import HybridPlaceDetailsProvider
 from app.providers.local_search import FakeLocalSearchProvider, RealLocalSearchProvider
+from app.providers.place_evidence import PlaceEvidenceProvider
+from app.providers.place_evidence_encoder import KoSrobertaEncoder
 from app.providers.protocols import (
     ConcentrationProvider,
     FestivalProvider,
@@ -429,3 +431,40 @@ def validate_provider_config(target: Settings | None = None) -> None:
                 "STATE_STORE_BACKEND=supabase에 필요한 환경변수가 비어 있습니다: "
                 + ", ".join(missing_state_store)
             )
+
+    # 취향 근거 검색도 Supabase RPC와 임베딩 모델을 함께 요구한다. 모델은
+    # 선택 의존성이라 여기서 import 가능 여부까지 확인하지 않는다 — 첫 encode()
+    # 때 설치 안내와 함께 멈춘다(place_evidence_encoder.py).
+    if current.taste_evidence_enabled:
+        missing_taste = [
+            variable_name
+            for variable_name, attribute in (
+                ("SUPABASE_URL", "supabase_url"),
+                ("SUPABASE_SECRET_KEY", "supabase_secret_key"),
+            )
+            if not getattr(current, attribute)
+        ]
+        if missing_taste:
+            raise ValueError(
+                "TASTE_EVIDENCE_ENABLED=true에 필요한 환경변수가 비어 있습니다: "
+                + ", ".join(missing_taste)
+            )
+
+
+def get_place_evidence_provider(
+    client: httpx.AsyncClient,
+) -> PlaceEvidenceProvider | None:
+    """취향 근거 검색 Provider를 만든다. 꺼져 있으면 None이다.
+
+    None이면 채점이 taste Feature를 아예 쓰지 않는다 — 후보 일부만 점수를
+    갖는 상태가 생기지 않도록 요청 단위로 켜고 끈다(scoring.py).
+    """
+    if not settings.taste_evidence_enabled:
+        return None
+    repository = SupabasePlaceRepository(
+        supabase_url=_require_key(settings.supabase_url, "SUPABASE_URL"),
+        secret_key=_require_key(settings.supabase_secret_key, "SUPABASE_SECRET_KEY"),
+        client=client,
+        timeout_seconds=settings.external_api_timeout_seconds,
+    )
+    return PlaceEvidenceProvider(KoSrobertaEncoder(), repository)

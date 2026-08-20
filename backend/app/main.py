@@ -23,6 +23,7 @@ from app.auth.jwks import issuer as auth_issuer
 from app.config import settings
 from app.errors import AppError
 from app.providers.factory import validate_provider_config
+from app.providers.place_evidence_encoder import KoSrobertaEncoder
 from app.providers.tour_category_registry import get_tour_category_registry
 from app.routes.agent import router as agent_router
 from app.routes.chat import router as chat_router
@@ -121,6 +122,23 @@ def _log_auth_mode() -> None:
         )
 
 
+def _warmup_taste_encoder() -> None:
+    """취향 임베딩 모델을 기동 시 미리 올린다.
+
+    적재는 프로세스마다 한 번씩 필요하고 실측 9.4초가 걸린다(2026-08-19).
+    여기서 안 올리면 그 시간을 첫 사용자가 그대로 기다린다.
+
+    실패해도 서버는 뜬다 — 모델이 없으면 취향 Feature만 빠지고 추천은
+    그대로 동작한다. 부팅을 막을 만한 오설정이 아니다.
+    """
+    if not settings.taste_evidence_enabled:
+        return
+    try:
+        KoSrobertaEncoder().warmup()
+    except Exception:
+        logger.exception("취향 임베딩 모델 예열 실패 — 취향 Feature 없이 기동한다")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # uvicorn의 로깅 설정이 끝난 뒤여야 핸들러를 빌려올 수 있다.
@@ -130,6 +148,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _log_provider_modes()
     _log_auth_mode()
     app.state.tour_category_registry = get_tour_category_registry()
+    _warmup_taste_encoder()
     yield
 
 
