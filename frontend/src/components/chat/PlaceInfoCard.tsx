@@ -23,6 +23,10 @@ const FIELD_LABELS: Record<string, string> = {
   homepage: "홈페이지",
   concentration: "혼잡도",
   event: "행사",
+  "상권 지역": "상권 지역",
+  "카페 업종": "카페 업종",
+  "실시간 활동": "실시간 활동",
+  "기준 시각": "기준 시각",
 };
 
 interface PlaceInfoCardProps {
@@ -32,6 +36,50 @@ interface PlaceInfoCardProps {
 interface OperatingHoursRow {
   period: string;
   hours: string;
+}
+
+const CONGESTION_HEIGHT: Record<string, number> = {
+  "여유": 25,
+  "보통": 45,
+  "약간 붐빔": 70,
+  "붐빔": 92,
+};
+
+function hourLabel(value: string) {
+  const match = value.match(/(\d{2}):(\d{2})/);
+  return match ? `${Number(match[1])}시` : value;
+}
+
+function PopulationForecastBars({ card }: { card: InfoPlaceCardData }) {
+  const forecasts = card.population_forecasts ?? [];
+  if (forecasts.length === 0) return null;
+  return (
+    <section className="border-t border-gray-100 px-4 py-3 dark:border-gray-800">
+      <div className="flex items-baseline justify-between gap-2">
+        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">인구 혼잡도 예측</h3>
+        {card.population_current_level && (
+          <span className="text-xs text-gray-500 dark:text-gray-400">현재 {card.population_current_level}</span>
+        )}
+      </div>
+      <div className="mt-3 flex h-24 items-end gap-1.5" aria-label="향후 인구 혼잡도 예측">
+        {forecasts.map((forecast) => {
+          const height = CONGESTION_HEIGHT[forecast.congestion_level ?? ""] ?? 18;
+          return (
+            <div key={forecast.forecast_at} className="flex min-w-0 flex-1 flex-col items-center gap-1">
+              <div className="flex h-16 w-full items-end rounded-t bg-blue-50 px-0.5 dark:bg-blue-950/40">
+                <div className="w-full rounded-t bg-blue-500" style={{ height: `${height}%` }} />
+              </div>
+              <span className="truncate text-[10px] text-gray-500 dark:text-gray-400">{hourLabel(forecast.forecast_at)}</span>
+            </div>
+          );
+        })}
+      </div>
+      <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+        향후 12시간 인구 혼잡도 예측 · 통신 데이터 기반
+        {card.population_observed_at ? ` · ${card.population_observed_at} 기준` : ""}
+      </p>
+    </section>
+  );
 }
 
 function parseOperatingHours(value: string): OperatingHoursRow[] | null {
@@ -128,6 +176,8 @@ export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
           ))}
         </dl>
       )}
+
+      <PopulationForecastBars card={card} />
 
       {showDetail && (
         <RecommendationDetailPreviewModal card={card} onClose={() => setShowDetail(false)} />

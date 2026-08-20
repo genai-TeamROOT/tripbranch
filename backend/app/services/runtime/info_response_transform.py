@@ -8,9 +8,13 @@ from app.agent_context.info_schemas import (
     InfoContextResponse,
     PlaceCard,
     PlaceInfoResult,
+    RealtimeCommercialInfoResult,
 )
-from app.schemas import InfoPlaceCard, QuestionType
-from app.services.runtime.info_display import format_parking_for_display
+from app.schemas import InfoPlaceCard, PopulationForecastBar, QuestionType
+from app.services.runtime.info_display import (
+    format_citydata_timestamp,
+    format_parking_for_display,
+)
 
 
 def to_info_place_card(response: InfoContextResponse) -> InfoPlaceCard | None:
@@ -30,6 +34,8 @@ def to_info_place_card(response: InfoContextResponse) -> InfoPlaceCard | None:
         return _to_concentration_card(result)
     if isinstance(result, EventInfoResult):
         return _to_event_card(result)
+    if isinstance(result, RealtimeCommercialInfoResult):
+        return _to_realtime_commercial_card(result)
     return None
 
 
@@ -92,4 +98,47 @@ def _to_event_card(result: EventInfoResult) -> InfoPlaceCard | None:
         question_type=QuestionType.EVENT,
         answer_fields={"event": "\n".join(event_lines)} if event_lines else {},
         place_name=place_name,
+    )
+
+
+def _to_realtime_commercial_card(
+    result: RealtimeCommercialInfoResult,
+) -> InfoPlaceCard | None:
+    """개별 매장 대신 조회한 지역·업종 상권 활동을 최소 INFO 카드로 보인다."""
+
+    place_name = result.resolved_place_name or result.requested_place_name
+    if place_name is None:
+        return None
+
+    scope_label = (
+        "카페 업종"
+        if result.commercial_scope != "area_overall"
+        else "지역 전체 상권 (카페 업종 세부값 미제공)"
+    )
+    fields = {
+        key: value
+        for key, value in {
+            "상권 지역": result.area_name,
+            "상권 기준": scope_label,
+            "카페 업종": result.category_label,
+            "실시간 활동": result.commercial_level,
+            "기준 시각": format_citydata_timestamp(result.observed_at),
+        }.items()
+        if value is not None
+    }
+    return InfoPlaceCard(
+        question_type=QuestionType.REALTIME_COMMERCIAL,
+        answer_fields=fields,
+        place_name=place_name,
+        population_current_level=result.population_current_level,
+        population_observed_at=format_citydata_timestamp(result.population_observed_at),
+        population_forecasts=[
+            PopulationForecastBar(
+                forecast_at=forecast.forecast_at,
+                congestion_level=forecast.congestion_level,
+                population_min=forecast.population_min,
+                population_max=forecast.population_max,
+            )
+            for forecast in result.population_forecasts
+        ],
     )

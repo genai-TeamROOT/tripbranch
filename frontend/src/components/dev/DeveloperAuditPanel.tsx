@@ -341,6 +341,7 @@ const CONTEXT_ITEM_LABELS: Record<string, string> = {
 const TOOL_OPERATION_LABELS: Record<NonNullable<ToolExecutionDebug["operation"]>, string> = {
   context_fetch: "기본 Context 조회",
   info_concentration: "INFO 혼잡도 조회",
+  info_realtime_commercial: "INFO 실시간 카페 상권 조회",
   candidate_enrichment: "후보 혼잡도 보강",
   compare_fetch: "COMPARE 후보 조회",
 };

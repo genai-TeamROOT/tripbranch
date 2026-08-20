@@ -148,6 +148,9 @@ def test_recommendation_place_details_returns_matched_c_place_card(monkeypatch) 
             "credit_card": None,
             "restroom": None,
             "homepage": None,
+            "population_current_level": None,
+            "population_observed_at": None,
+            "population_forecasts": [],
         },
     }
     assert len(captured_requests) == 1

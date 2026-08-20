@@ -7,6 +7,7 @@ from app.agent_context.info_schemas import (
     InfoContextResponse,
     PlaceCard,
     PlaceInfoResult,
+    RealtimeCommercialInfoResult,
 )
 from app.services.runtime.info_response_transform import to_info_place_card
 
@@ -36,9 +37,7 @@ def _response(
 
 
 def test_transforms_answer_fields_and_full_card_separately() -> None:
-    card = to_info_place_card(
-        _response(fields={"parking": "가능", "parking_fee": "무료"})
-    )
+    card = to_info_place_card(_response(fields={"parking": "가능", "parking_fee": "무료"}))
 
     assert card is not None
     assert card.question_type.value == "parking"
@@ -134,3 +133,46 @@ def test_concentration_and_event_results_also_return_minimum_cards() -> None:
     assert concentration.answer_fields == {"concentration": "2026-08-19 · 보통"}
     assert event is not None
     assert event.answer_fields == {"event": "경복궁 별빛야행 (2026-08-19~2026-08-20)"}
+
+
+def test_realtime_commercial_result_returns_proxy_card() -> None:
+    card = to_info_place_card(
+        InfoContextResponse(
+            request_id="commercial-card",
+            status="success",
+            result=RealtimeCommercialInfoResult(
+                status="success",
+                requested_place_name="테스트 카페",
+                area_name="용리단길",
+                category_label="음식·음료 · 커피·음료",
+                commercial_level="바쁜 시간대",
+                observed_at="2026-08-20 14:00",
+            ),
+        )
+    )
+
+    assert card is not None
+    assert card.question_type.value == "realtime_commercial"
+    assert card.place_name == "테스트 카페"
+    assert card.answer_fields["상권 지역"] == "용리단길"
+    assert card.answer_fields["실시간 활동"] == "바쁜 시간대"
+    assert card.answer_fields["기준 시각"] == "8월 20일 14:00"
+
+
+def test_realtime_commercial_area_overall_card_discloses_scope() -> None:
+    card = to_info_place_card(
+        InfoContextResponse(
+            request_id="commercial-area-card",
+            status="success",
+            result=RealtimeCommercialInfoResult(
+                status="success",
+                requested_place_name="테스트 카페",
+                area_name="용리단길",
+                commercial_level="한산한",
+                commercial_scope="area_overall",
+            ),
+        )
+    )
+
+    assert card is not None
+    assert card.answer_fields["상권 기준"] == "지역 전체 상권 (카페 업종 세부값 미제공)"

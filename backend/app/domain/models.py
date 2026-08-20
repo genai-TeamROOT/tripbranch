@@ -92,6 +92,58 @@ class ConcentrationResult:
 
 
 @dataclass(frozen=True)
+class RealtimeCommercialCategory:
+    """서울시 실시간 상권현황의 업종별 소비 활동 지표 한 건."""
+
+    large_category: str | None
+    middle_category: str | None
+    activity_level: str | None
+
+
+@dataclass(frozen=True)
+class RealtimeCommercialResult:
+    """서울시 주요 장소 한 곳의 실시간 상권현황 응답."""
+
+    area_name: str
+    area_code: str | None
+    area_activity_level: str | None
+    observed_at: str | None
+    categories: tuple[RealtimeCommercialCategory, ...]
+    provider: str
+
+
+@dataclass(frozen=True)
+class PopulationForecastSlot:
+    """서울시 도시데이터가 제공하는 시간대별 인구 혼잡도 예측 한 건."""
+
+    forecast_at: str
+    congestion_level: str | None
+    population_min: int | None
+    population_max: int | None
+
+
+@dataclass(frozen=True)
+class RealtimePopulationResult:
+    """서울시 주요 장소 단위의 현재·향후 인구 혼잡도."""
+
+    area_name: str
+    area_code: str | None
+    current_congestion_level: str | None
+    observed_at: str | None
+    forecast_available: bool
+    forecasts: tuple[PopulationForecastSlot, ...]
+    provider: str
+
+
+@dataclass(frozen=True)
+class RealtimeCityDataResult:
+    """상권 활동과 인구 혼잡도를 같은 서울시 주요 장소 기준으로 묶는다."""
+
+    commercial: RealtimeCommercialResult | None
+    population: RealtimePopulationResult | None
+
+
+@dataclass(frozen=True)
 class PlaceCategoryFilter:
     """TourAPI 장소 목록 조회에 사용할 선택적 분류 코드 묶음."""
 
@@ -112,9 +164,7 @@ class PlaceCategoryFilter:
         if self.lcls_systm2 and not self.lcls_systm1:
             raise ValueError("lcls_systm2 사용 시 lcls_systm1이 필요합니다.")
         if self.lcls_systm3 and not (self.lcls_systm1 and self.lcls_systm2):
-            raise ValueError(
-                "lcls_systm3 사용 시 lcls_systm1과 lcls_systm2가 필요합니다."
-            )
+            raise ValueError("lcls_systm3 사용 시 lcls_systm1과 lcls_systm2가 필요합니다.")
 
 
 @dataclass(frozen=True)
@@ -165,8 +215,6 @@ class LocalSearchPlace:
     category: str | None
     latitude: float | None
     longitude: float | None
-
-
 
 
 @dataclass(frozen=True)

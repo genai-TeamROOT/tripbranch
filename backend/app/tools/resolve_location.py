@@ -165,9 +165,7 @@ def _is_same_transit_place(places: tuple[LocalSearchPlace, ...]) -> bool:
     if not all(_is_transit_place(place) for place in places):
         return False
     located = [
-        place
-        for place in places
-        if place.latitude is not None and place.longitude is not None
+        place for place in places if place.latitude is not None and place.longitude is not None
     ]
     if len(located) != len(places):
         # 좌표가 없으면 거리를 확인할 수 없다. 묶지 않고 재질문한다.
@@ -224,6 +222,11 @@ class LocationPurpose(StrEnum):
 
     SEARCH_CENTER = "search_center"
     PLACE_IDENTITY = "place_identity"
+    # 서울시 실시간 상권은 종로구 TourAPI 코퍼스 밖의 서울 주요 82개 지역도
+    # 제공한다. 이 목적은 상호 좌표만 찾고, 이후 C가 서울시 제공 지역 반경을 따로
+    # 판정한다. 기존 TripBranch 추천의 종로구 제한을 여기서 재사용하면 용리단길
+    # 같은 정상 상권 질문이 위치 단계에서 막힌다.
+    REALTIME_CITYDATA = "realtime_citydata"
 
 
 @dataclass(frozen=True)
@@ -254,6 +257,9 @@ class ResolvedLocation:
     source: LocationSource = LocationSource.QUERY
     place_id: str | None = None
     address: str | None = None
+    # Naver Local Search의 업종. INFO 현재 혼잡 질문에서 관광지 예측과 상권 활동을
+    # 구분할 때만 사용하며, 없으면 기존 위치 해석 동작을 유지한다.
+    place_category: str | None = None
     # 집중률 응답에서 장소를 골라낼 때 대조할 정식 명칭.
     concentration_name: str | None = None
     # tAtsNm에 넣을 검색어 목록. 앞에서부터 시도한다. 비어 있으면
@@ -288,8 +294,11 @@ class ResolveLocationTool:
         # 수식어를 먼저 떼고 조회한다. 주소 판별도 정리된 값으로 해야 "인사동길 44
         # 근처"가 주소로 잡힌다.
         requested_query = strip_location_modifiers(query.location_query.strip())
+        enforce_service_area = query.purpose is not LocationPurpose.REALTIME_CITYDATA
         if is_address_query(requested_query):
-            return await self._resolve_address(requested_query)
+            return await self._resolve_address(
+                requested_query, enforce_service_area=enforce_service_area
+            )
 
         # 검색 중심점은 좌표만 필요하다. 저장소 조회는 정체성 확정용이라 건너뛴다.
         if query.purpose is LocationPurpose.PLACE_IDENTITY:
@@ -298,7 +307,9 @@ class ResolveLocationTool:
                 return stored_result
 
         local_search_result = await self._lookup_local_search(
-            requested_query, purpose=query.purpose
+            requested_query,
+            purpose=query.purpose,
+            enforce_service_area=enforce_service_area,
         )
         if local_search_result is not None:
             return local_search_result
@@ -321,6 +332,7 @@ class ResolveLocationTool:
                     method=ResolutionMethod.FALLBACK,
                     warnings=("fallback_used",),
                     provider_metadata=(fallback_metadata,),
+                    enforce_service_area=enforce_service_area,
                 )
             first_data, first_metadata = first
             return self._success_or_policy_result(
@@ -329,6 +341,7 @@ class ResolveLocationTool:
                 provider_query=alias,
                 method=ResolutionMethod.ALIAS,
                 provider_metadata=(first_metadata,),
+                enforce_service_area=enforce_service_area,
             )
 
         direct = await self._lookup(requested_query, use_alias=False)
@@ -341,9 +354,12 @@ class ResolveLocationTool:
             provider_query=requested_query,
             method=ResolutionMethod.DIRECT,
             provider_metadata=(direct_metadata,),
+            enforce_service_area=enforce_service_area,
         )
 
-    async def _resolve_address(self, requested_query: str) -> ResolveLocationResult:
+    async def _resolve_address(
+        self, requested_query: str, *, enforce_service_area: bool = True
+    ) -> ResolveLocationResult:
         """주소는 DB·지역 검색을 건너뛰고 Geocoding으로 바로 해석한다."""
         direct = await self._lookup(requested_query, use_alias=False)
         if isinstance(direct, ResolveLocationResult):
@@ -355,6 +371,7 @@ class ResolveLocationTool:
             provider_query=requested_query,
             method=ResolutionMethod.DIRECT,
             provider_metadata=(direct_metadata,),
+            enforce_service_area=enforce_service_area,
         )
 
     async def _lookup_local_search(
@@ -362,6 +379,7 @@ class ResolveLocationTool:
         requested_query: str,
         *,
         purpose: LocationPurpose = LocationPurpose.PLACE_IDENTITY,
+        enforce_service_area: bool = True,
     ) -> ResolveLocationResult | None:
         """DB에 없는 상호명은 지역 검색으로 좌표를 보완한다."""
         if self._local_search_provider is None:
@@ -380,7 +398,7 @@ class ResolveLocationTool:
         if selected is None:
             # 후보를 못 좁혔는데 찾은 것이 전부 지역 밖이면 되묻기가 아니라 지역 문제다.
             # "부산 해운대"에 "종로구 안에서 어느 장소인지" 되묻는 일을 막는다.
-            if not any(
+            if enforce_service_area and not any(
                 is_within_service_area(item.latitude, item.longitude)
                 for item in candidates
                 if item.latitude is not None and item.longitude is not None
@@ -412,9 +430,7 @@ class ResolveLocationTool:
                 retryable=False,
                 details={
                     "reason": "ambiguous_location",
-                    "candidate_names": _join_candidate_names(
-                        item.name for item in names_source
-                    ),
+                    "candidate_names": _join_candidate_names(item.name for item in names_source),
                 },
                 provider_metadata=(result.metadata,),
             )
@@ -422,11 +438,12 @@ class ResolveLocationTool:
         # 없지만 지역 검색이 "북촌 한옥마을"을 주므로, 여기서 다시 찾으면 집중률
         # 매핑까지 이어진다. 재조회가 실패해도 지역 검색 결과는 그대로 쓴다.
         if selected.latitude is not None and selected.longitude is not None:
-            outside = self._outside_service_area_result(
-                selected.latitude, selected.longitude, (result.metadata,)
-            )
-            if outside is not None:
-                return outside
+            if enforce_service_area:
+                outside = self._outside_service_area_result(
+                    selected.latitude, selected.longitude, (result.metadata,)
+                )
+                if outside is not None:
+                    return outside
         # 재조회는 집중률 매핑을 붙이기 위한 것이다. 검색 중심점에는 그 필드가
         # 쓰이지 않으므로(consumer는 service.py의 INFO 혼잡도 한 곳뿐) 건너뛴다.
         if (
@@ -457,6 +474,7 @@ class ResolveLocationTool:
                 resolution_method=ResolutionMethod.LOCAL_SEARCH,
                 confidence=ResolutionConfidence.APPROXIMATE,
                 address=place.road_address or place.address,
+                place_category=place.category,
             ),
             error=None,
             warnings=("local_search_used",),
@@ -559,13 +577,15 @@ class ResolveLocationTool:
         method: ResolutionMethod,
         warnings: tuple[str, ...] = (),
         provider_metadata: tuple[ProviderMetadata, ...] = (),
+        enforce_service_area: bool = True,
     ) -> ResolveLocationResult:
         # 지역 판정을 먼저 한다 - 지원 범위 밖이면 "어느 장소인지" 되물어도 소용없다.
-        outside = self._outside_service_area_result(
-            result.latitude, result.longitude, provider_metadata
-        )
-        if outside is not None:
-            return outside
+        if enforce_service_area:
+            outside = self._outside_service_area_result(
+                result.latitude, result.longitude, provider_metadata
+            )
+            if outside is not None:
+                return outside
         if method is not ResolutionMethod.ALIAS and result.candidate_count > 1:
             return self._error_result(
                 status=ResolveLocationStatus.NO_DATA,

@@ -715,6 +715,10 @@ class FakeLLMProvider:
             question_type = QuestionType.EVENT
         elif "어디에 있" in user_input or "주소" in user_input:
             question_type = QuestionType.LOCATION_INFO
+        elif any(marker in user_input for marker in ("카페", "커피", "상권")) and any(
+            marker in user_input for marker in ("지금", "사람 많", "붐빌", "혼잡")
+        ):
+            question_type = QuestionType.REALTIME_COMMERCIAL
         elif any(marker in user_input for marker in ("사람 많", "붐빌", "혼잡")):
             question_type = QuestionType.CONCENTRATION
         else:
