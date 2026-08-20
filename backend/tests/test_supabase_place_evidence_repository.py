@@ -62,6 +62,10 @@ async def test_rpc_receives_all_four_parameters() -> None:
         )
 
     assert seen[0].url.path.endswith("/rpc/search_place_evidence")
+    # apikey만 보내면 PostgREST가 service_role로 인식하지 않아 401 42501로
+    # 막힌다 — 이 RPC는 service_role에만 권한이 있다(마이그레이션 참고).
+    assert seen[0].headers["apikey"] == _SECRET
+    assert seen[0].headers["Authorization"] == f"Bearer {_SECRET}"
     body = json.loads(seen[0].content)
     assert len(body["p_query_embedding"]) == 768
     assert body["p_candidate_content_ids"] == ["a", "b"]

@@ -61,7 +61,9 @@ async def test_create_sync_run_uses_secret_key_header() -> None:
     assert isinstance(request, httpx.Request)
     assert request.url.path == "/rest/v1/place_sync_runs"
     assert request.headers["apikey"] == "sb_secret_test"
-    assert "authorization" not in request.headers
+    # 2026-07-24에는 apikey만 보내도 통했지만 지금은 아니다 — apikey만/
+    # Authorization만은 둘 다 401 42501이고 함께 보내야 200이다(2026-08-19 실측).
+    assert request.headers["authorization"] == "Bearer sb_secret_test"
     assert request.headers["prefer"] == "return=representation"
     assert request.read() == b'{"area_code":"11","district_code":"110"}'
     assert result == RUN_ID

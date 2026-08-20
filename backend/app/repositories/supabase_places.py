@@ -214,8 +214,14 @@ class SupabasePlaceRepository:
         self._timeout_seconds = timeout_seconds
 
     def _headers(self, prefer: str | None = None) -> dict[str, str]:
+        # Authorization을 함께 보내야 PostgREST가 service_role로 인식한다.
+        # apikey만 보내면 service_role 전용 함수 호출이 401 42501
+        # (permission denied for function)로 막힌다 — search_place_evidence가
+        # 실제로 그렇게 실패했다(2026-08-19). 테이블 접근은 apikey만으로도
+        # 통과해서 이 문제가 RPC를 붙일 때까지 드러나지 않았다.
         headers = {
             "apikey": self._secret_key,
+            "Authorization": f"Bearer {self._secret_key}",
             "Content-Type": "application/json",
         }
         if prefer is not None:
