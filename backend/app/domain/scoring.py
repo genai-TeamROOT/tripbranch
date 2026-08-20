@@ -21,7 +21,12 @@ from datetime import datetime
 from enum import StrEnum
 
 from app.concentration_policy import ConcentrationLevel
-from app.domain.models import OperatingHours, ScoringCandidate, WeatherCondition
+from app.domain.models import (
+    OperatingHours,
+    PlaceEvidenceMatch,
+    ScoringCandidate,
+    WeatherCondition,
+)
 from app.domain.travel_route import RouteSource, RouteStatus, TravelMode, TravelRoute
 from app.domain.weather_judgment import WeatherReason
 from app.place_search_policy import TRAVEL_SPEED_KM_PER_MINUTE
@@ -49,6 +54,33 @@ CONCENTRATION_WEIGHTS: Mapping[str, float] = {
     "distance": 0.15,
     "concentration": 0.15,
 }
+
+# 사용자가 취향을 말한 요청에서만 쓰는 가중치. 새 Feature에 0.15를 주는 것은
+# CONCENTRATION_WEIGHTS의 선례를 그대로 따른 것이다 — 근거 없는 숫자를 새로
+# 만들지 않는다. 취향을 말하지 않은 요청은 DEFAULT_WEIGHTS로 남는다.
+TASTE_WEIGHTS: Mapping[str, float] = {
+    "weather": 0.35,
+    "remaining_operating_time": 0.35,
+    "distance": 0.15,
+    "taste": 0.15,
+}
+
+# 취향 유사도를 0~1 점수로 펴는 구간.
+#
+# 상한이 1.0이 아닌 이유: 실측 관측 최대가 0.813이고 중심점별 평균은
+# 0.554~0.609다(2026-08-19, 종로 4개 중심점 x 발화 20개, 후보 150곳,
+# backend/test_results/taste_score_distribution.csv). 1.0으로 나누면 1등
+# 후보조차 평균 0.22점에 머문다 — 도보 예산 분모가 과대해 점수가 눌렸던 것과
+# 같은 구조의 함정이다.
+#
+# 0.65로 잡은 근거: 최고 유사도 32건 중 26건이 0.65 미만이다. 0.813·0.732 같은
+# 예외적 상위값에 맞추면 대부분의 질의가 저점에 몰린다. 대가는 강한 질의가
+# 0.65에서 clipping돼 상위권 변별이 줄어드는 것이고, 의도한 선택이다.
+#
+# 하한 0.43은 검색 컷값과 같다(RAG 계획 문서 7.13절). 이 값 미만은 애초에
+# 검색 결과로 오지 않는다.
+_TASTE_CUT = 0.43
+_TASTE_FULL_SCORE = 0.65
 
 # 남은 운영시간이 이 값(분) 이상이면 만점(1.0)으로 취급한다.
 _REMAINING_TIME_FULL_SCORE_MINUTES = 120.0
@@ -269,6 +301,25 @@ def _distance_score(distance_km: float, max_distance_km: float) -> float:
     if max_distance_km <= 0:
         return 1.0 if distance_km <= 0 else 0.0
     return _clamp(1.0 - distance_km / max_distance_km, 0.0, 1.0)
+
+
+def _taste_score(match: PlaceEvidenceMatch | None) -> float:
+    """취향 근거의 평균 유사도를 0~1 점수로 편다.
+
+    근거가 없는 후보는 **0.0이지 결측이 아니다.** "계산하지 못했다"(날씨 조회
+    실패)와 "안 맞는다"는 다르다 — 후보마다 결측 여부가 갈리면 한 순위 안에서
+    가중치 세트가 달라져 자를 두 개 쓰는 셈이 된다(도보 `_consistent_routes()`
+    에서 실제로 순위가 뒤집혔다).
+
+    후보 전체가 0.0인 경우도 순위에는 무해하다 — 모두 같은 만큼 낮아진다.
+    실측에서 "아이랑 비 오는 날 실내"는 어느 중심점에서도 컷을 넘지 못했다.
+    """
+    if match is None:
+        return 0.0
+    span = _TASTE_FULL_SCORE - _TASTE_CUT
+    if span <= 0:
+        return 0.0
+    return _clamp((match.avg_similarity - _TASTE_CUT) / span, 0.0, 1.0)
 
 
 def _travel_minutes_budget(max_distance_km: float, mode: TravelMode) -> float:
@@ -515,6 +566,10 @@ def score_prepared_candidates(
     # A가 조회해 넘긴 실측 도보 경로. 해당 후보가 없거나 조회에 실패했으면
     # 직선거리로 돌아간다(`_proximity_score()`).
     travel_routes: Sequence[TravelRoute] = (),
+    # 취향 근거 검색 결과(place_id = content_id 기준). 비어 있으면 사용자가
+    # 취향을 말하지 않았거나 검색이 실패한 것으로 보고 taste Feature를 아예
+    # 쓰지 않는다 — 후보 단위가 아니라 **요청 단위** 판단이다.
+    taste_matches: Mapping[str, PlaceEvidenceMatch] | None = None,
 ) -> ScoringResult:
     """하드 필터를 통과한 후보에 가중치 점수를 적용해 정렬한다.
 
@@ -531,8 +586,13 @@ def score_prepared_candidates(
     """
     environment_driven = uses_environment_feature(requested_environment)
     routes_by_place_id = _consistent_routes(candidates, travel_routes)
+    # 취향 Feature는 요청 단위로 켜고 끈다. 켜지면 모든 후보가 이 Feature를
+    # 가지므로 한 순위 안에서 가중치 세트가 갈리지 않는다.
+    taste_by_place_id = dict(taste_matches or {})
+    uses_taste = taste_matches is not None
+    default_weights = TASTE_WEIGHTS if uses_taste else DEFAULT_WEIGHTS
     base_weights = weights_for_environment(
-        dict(weights) if weights is not None else dict(DEFAULT_WEIGHTS),
+        dict(weights) if weights is not None else dict(default_weights),
         requested_environment,
     )
     scored: list[
@@ -585,6 +645,11 @@ def score_prepared_candidates(
                 candidate, routes_by_place_id.get(candidate.place_id), max_distance_km
             ),  # 실측 도보 시간 우선, 없으면 직선거리
         }
+        if uses_taste:
+            # 근거가 없으면 0.0이다 — 결측이 아니라 "안 맞는다"는 평가다.
+            feature_scores["taste"] = _taste_score(
+                taste_by_place_id.get(candidate.place_id)
+            )
 
         score = sum(
             feature_scores[feature] * weight  # type: ignore[operator]

@@ -7,7 +7,7 @@ D는 C Tool을 직접 호출하지 않는다([TECH-02]). Tool 조회는 호출�
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, time
 from time import perf_counter
@@ -19,7 +19,11 @@ from app.concentration_policy import ConcentrationLevel
 from app.domain.candidate_mapper import map_context_to_scoring_candidates
 from app.domain.evidence import build_evidence
 from app.domain.explanation import build_explanations
-from app.domain.models import ScoringCandidate, WeatherCondition
+from app.domain.models import (
+    PlaceEvidenceMatch,
+    ScoringCandidate,
+    WeatherCondition,
+)
 from app.domain.scoring import (
     CONCENTRATION_WEIGHTS,
     ExclusionReason,
@@ -255,6 +259,10 @@ async def score_prepared_recommendation(
     recommendation_limit: int = DEFAULT_RECOMMENDATION_RESULT_LIMIT,
     # A가 조회한 실측 도보 경로. 비어 있으면 거리 Feature가 직선거리로 계산된다.
     travel_routes: Sequence[TravelRoute] = (),
+    # 취향 근거 검색 결과. None이면 사용자가 취향을 말하지 않은 것으로 보고
+    # taste Feature를 아예 쓰지 않는다. 빈 dict는 "말했는데 근거를 못 찾았다"라
+    # Feature는 켜지고 모든 후보가 0점이 된다 — 둘을 구분한다.
+    taste_matches: Mapping[str, PlaceEvidenceMatch] | None = None,
     timer: Timer = perf_counter,
 ) -> RecommendationResponse:
     """준비된 후보를 채점하고 Evidence·Explanation 응답을 조립한다.
@@ -273,6 +281,7 @@ async def score_prepared_recommendation(
         max_distance_km=search_radius_km,
         requested_environment=prepared.requested_environment,
         travel_routes=travel_routes,
+        taste_matches=taste_matches,
     )
     ranked = scoring.ranked[:recommendation_limit]
     # 결과가 0건이고, 그 이유가 전부 폐점 후보 제외였다면(다른 이유로 제외된 후보가
