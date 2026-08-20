@@ -4,13 +4,17 @@
 
 | 슬롯 | 관리 버전 | 템플릿 | 공유 규칙 |
 | --- | --- | --- | --- |
-| info.extract | v1 | extract.md, question_type_rules.md, place_context_rules.md, visit_time_rules.md | factuality |
+| info.extract | v3 | extract.md, question_type_rules.md, place_context_rules.md, visit_time_rules.md | factuality |
 | info.answer | v1 | answer_instruction.md | persona, factuality |
 
 ## Draft
 
-- 2026-08-19: 이전 INFO 카드 장소를 `from_conversation` 지시어 대상으로 이어서 해석하도록
-  추출 규칙을 보강했습니다. 커밋·평가 후 승인 이력으로 승격합니다.
+- 2026-08-20: `question_type_rules.md`를 v2에서 v3로 변경했습니다. 카페·커피 한정
+  `realtime_commercial`을 서울시 응답에 존재하는 모든 업종으로 확장하고,
+  `realtime_parking`/`realtime_subway`/`realtime_bus`/`realtime_event`를 추가했습니다.
+  기존 v2 원문은 `archive/question_type_rules__legacy-2.md`에 보관했습니다.
+  평가: INFO 구조화 출력 단위 테스트, citydata 실응답 객체 검증, 프론트 빌드 및 질문별
+  수동 점검을 완료한 뒤 승인 이력으로 승격합니다.
 
 ## 승인 이력
 

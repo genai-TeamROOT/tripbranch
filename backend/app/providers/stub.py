@@ -700,7 +700,23 @@ class FakeLLMProvider:
         if place_context is PlaceContext.FROM_CONVERSATION and conversation_place_name:
             place_name = conversation_place_name
 
-        if "열어" in user_input or "몇 시" in user_input:
+        if any(marker in user_input for marker in ("지하철", "전철")) and any(
+            marker in user_input for marker in ("언제", "도착", "몇 분", "몇분")
+        ):
+            question_type = QuestionType.REALTIME_SUBWAY
+        elif "버스" in user_input and any(
+            marker in user_input for marker in ("정류장", "어디", "언제", "도착")
+        ):
+            question_type = QuestionType.REALTIME_BUS
+        elif "주차" in user_input and any(
+            marker in user_input for marker in ("지금", "현재", "실시간", "자리", "빈자리")
+        ):
+            question_type = QuestionType.REALTIME_PARKING
+        elif ("행사" in user_input or "축제" in user_input) and any(
+            marker in user_input for marker in ("지금", "현재", "오늘", "실시간")
+        ):
+            question_type = QuestionType.REALTIME_EVENT
+        elif "열어" in user_input or "몇 시" in user_input:
             question_type = QuestionType.OPERATING_HOURS
         elif "가는데 얼마나 걸" in user_input:
             # "얼마"가 있어도 입장료가 아니라 이동시간 질문이다.

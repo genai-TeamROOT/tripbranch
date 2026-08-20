@@ -8,9 +8,15 @@ from app.agent_context.info_schemas import (
     InfoContextResponse,
     PlaceCard,
     PlaceInfoResult,
+    RealtimeCityInfoResult,
     RealtimeCommercialInfoResult,
 )
-from app.schemas import InfoPlaceCard, PopulationForecastBar, QuestionType
+from app.schemas import (
+    ConcentrationForecastBar,
+    InfoPlaceCard,
+    PopulationForecastBar,
+    QuestionType,
+)
 from app.services.runtime.info_display import (
     format_citydata_timestamp,
     format_parking_for_display,
@@ -36,6 +42,12 @@ def to_info_place_card(response: InfoContextResponse) -> InfoPlaceCard | None:
         return _to_event_card(result)
     if isinstance(result, RealtimeCommercialInfoResult):
         return _to_realtime_commercial_card(result)
+    if isinstance(result, RealtimeCityInfoResult):
+        return InfoPlaceCard(
+            question_type=QuestionType(result.question_type),
+            answer_fields=result.fields,
+            place_name=result.resolved_place_name or result.requested_place_name,
+        )
     return None
 
 
@@ -81,6 +93,15 @@ def _to_concentration_card(result: ConcentrationInfoResult) -> InfoPlaceCard | N
         question_type=QuestionType.CONCENTRATION,
         answer_fields={"concentration": " · ".join(value_parts)} if value_parts else {},
         place_name=place_name,
+        concentration_forecasts=[
+            ConcentrationForecastBar(
+                forecast_date=forecast.forecast_date,
+                concentration_rate=forecast.concentration_rate,
+                concentration_level=forecast.concentration_level,
+                concentration_label=forecast.concentration_label,
+            )
+            for forecast in result.forecasts
+        ],
     )
 
 
@@ -111,16 +132,16 @@ def _to_realtime_commercial_card(
         return None
 
     scope_label = (
-        "카페 업종"
+        "요청 업종"
         if result.commercial_scope != "area_overall"
-        else "지역 전체 상권 (카페 업종 세부값 미제공)"
+        else "지역 전체 상권 (요청 업종 세부값 미제공)"
     )
     fields = {
         key: value
         for key, value in {
             "상권 지역": result.area_name,
             "상권 기준": scope_label,
-            "카페 업종": result.category_label,
+            "업종": result.category_label,
             "실시간 활동": result.commercial_level,
             "기준 시각": format_citydata_timestamp(result.observed_at),
         }.items()

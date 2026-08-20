@@ -1896,7 +1896,7 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   | | 값 |
   |---|---|
   | 이전 | `agent-interpret-prompts-1.0.16` |
-  | 현재 | `router.classify@1+info.extract@1` |
+  | 현재 | `router.classify@2.0.0+info.extract@3.0.0` |
 
   과거 기준선으로 실행 중이면(`TRIPBRANCH_PROMPT_VARIANT`) 뒤에
   `+variant:<ID>`가 붙어 "옛 프롬프트로 낸 기록"임이 남는다.

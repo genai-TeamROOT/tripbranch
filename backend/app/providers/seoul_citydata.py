@@ -11,10 +11,14 @@ import httpx
 
 from app.domain.models import (
     PopulationForecastSlot,
+    RealtimeBusStop,
     RealtimeCityDataResult,
+    RealtimeCityEvent,
     RealtimeCommercialCategory,
     RealtimeCommercialResult,
+    RealtimeParkingLot,
     RealtimePopulationResult,
+    RealtimeSubwayArrival,
 )
 from app.errors import ProviderTimeoutError, ProviderUnavailableError
 from app.providers.contracts import (
@@ -50,6 +54,13 @@ def _text(value: object | None) -> str | None:
 def _int(value: object | None) -> int | None:
     try:
         return int(str(value)) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _float(value: object | None) -> float | None:
+    try:
+        return float(str(value)) if value not in (None, "") else None
     except (TypeError, ValueError):
         return None
 
@@ -123,6 +134,84 @@ def map_realtime_population_response(
     )
 
 
+def _citydata_row(payload: Mapping[str, object]) -> Mapping[str, object]:
+    citydata = payload.get("CITYDATA")
+    response = citydata if isinstance(citydata, Mapping) else payload
+    rows = _mappings(response.get("row"))
+    return rows[0] if rows else response
+
+
+def map_realtime_parking_response(
+    payload: Mapping[str, object],
+) -> tuple[RealtimeParkingLot, ...]:
+    row = _citydata_row(payload)
+    return tuple(
+        RealtimeParkingLot(
+            name=_text(item.get("PRK_NM")) or "주차장",
+            latitude=_float(item.get("LAT")),
+            longitude=_float(item.get("LNG")),
+            capacity=_int(item.get("CPCTY")),
+            current_parked_count=_int(item.get("CUR_PRK_CNT")),
+            current_available=_text(item.get("CUR_PRK_YN")) == "Y",
+            paid=(
+                True
+                if _text(item.get("PAY_YN")) == "Y"
+                else False if _text(item.get("PAY_YN")) == "N" else None
+            ),
+            observed_at=_text(item.get("CUR_PRK_TIME")),
+        )
+        for item in _mappings(row.get("PRK_STTS"))
+    )
+
+
+def map_realtime_subway_response(
+    payload: Mapping[str, object],
+) -> tuple[RealtimeSubwayArrival, ...]:
+    row = _citydata_row(payload)
+    arrivals: list[RealtimeSubwayArrival] = []
+    for station in _mappings(row.get("SUB_STTS")):
+        station_name = _text(station.get("SUB_STN_NM")) or "지하철역"
+        for detail in _mappings(station.get("SUB_DETAIL")):
+            arrivals.append(
+                RealtimeSubwayArrival(
+                    station_name=station_name,
+                    line=_text(detail.get("SUB_LINE")) or _text(station.get("SUB_STN_LINE")),
+                    direction=_text(detail.get("SUB_DIR")),
+                    destination=_text(detail.get("SUB_TERMINAL")),
+                    arrival_seconds=_int(detail.get("SUB_ARVTIME")),
+                    arrival_message=_text(detail.get("SUB_ARMG1")),
+                )
+            )
+    return tuple(arrivals)
+
+
+def map_realtime_bus_response(payload: Mapping[str, object]) -> tuple[RealtimeBusStop, ...]:
+    row = _citydata_row(payload)
+    return tuple(
+        RealtimeBusStop(
+            name=_text(item.get("BUS_STN_NM")) or "버스정류장",
+            ars_id=_text(item.get("BUS_ARS_ID")),
+            latitude=_float(item.get("BUS_STN_Y")),
+            longitude=_float(item.get("BUS_STN_X")),
+        )
+        for item in _mappings(row.get("BUS_STN_STTS"))
+    )
+
+
+def map_realtime_event_response(payload: Mapping[str, object]) -> tuple[RealtimeCityEvent, ...]:
+    row = _citydata_row(payload)
+    return tuple(
+        RealtimeCityEvent(
+            name=_text(item.get("EVENT_NM")) or "행사",
+            period=_text(item.get("EVENT_PERIOD")),
+            place=_text(item.get("EVENT_PLACE")),
+            thumbnail_url=_text(item.get("THUMBNAIL")),
+            url=_text(item.get("URL")),
+        )
+        for item in _mappings(row.get("EVENT_STTS"))
+    )
+
+
 class FakeRealtimeCommercialProvider:
     """테스트용 고정 서울시 상권 데이터."""
 
@@ -169,7 +258,44 @@ class FakeRealtimeCityDataProvider:
             provider="fake_seoul_citydata",
         )
         return provider_result(
-            RealtimeCityDataResult(commercial=commercial, population=population),
+            RealtimeCityDataResult(
+                commercial=commercial,
+                population=population,
+                parking_lots=(
+                    RealtimeParkingLot(
+                        name="테스트 공영주차장",
+                        latitude=37.5311,
+                        longitude=126.9714,
+                        capacity=50,
+                        current_parked_count=20,
+                        current_available=True,
+                        paid=True,
+                        observed_at="2026-08-20 14:00",
+                    ),
+                ),
+                subway_arrivals=(
+                    RealtimeSubwayArrival(
+                        station_name="삼각지역",
+                        line="4호선",
+                        direction="상행",
+                        destination="당고개",
+                        arrival_seconds=180,
+                        arrival_message="3분 후",
+                    ),
+                ),
+                bus_stops=(
+                    RealtimeBusStop("용산구청", "03123", 37.5312, 126.9715),
+                ),
+                events=(
+                    RealtimeCityEvent(
+                        name="테스트 지역 행사",
+                        period="2026-08-20~2026-08-21",
+                        place="용리단길 일대",
+                        thumbnail_url=None,
+                        url=None,
+                    ),
+                ),
+            ),
             source=ProviderSource.FAKE_SEOUL_CITYDATA,
         )
 
@@ -210,6 +336,10 @@ class RealRealtimeCityDataProvider:
                     payload["CITYDATA"], requested_area=query
                 ),
                 population=map_realtime_population_response(payload, requested_area=query),
+                parking_lots=map_realtime_parking_response(payload),
+                subway_arrivals=map_realtime_subway_response(payload),
+                bus_stops=map_realtime_bus_response(payload),
+                events=map_realtime_event_response(payload),
             ),
             source=ProviderSource.SEOUL_CITYDATA_POPULATION,
         )
@@ -288,5 +418,9 @@ __all__ = [
     "RealRealtimeCityDataProvider",
     "RealRealtimeCommercialProvider",
     "map_realtime_commercial_response",
+    "map_realtime_bus_response",
+    "map_realtime_event_response",
+    "map_realtime_parking_response",
     "map_realtime_population_response",
+    "map_realtime_subway_response",
 ]

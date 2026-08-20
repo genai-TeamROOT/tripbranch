@@ -15,6 +15,7 @@ Markdown만 읽으므로 이 모듈을 import하지 않는 경로는 YAML을 요
 
 from __future__ import annotations
 
+import re
 from functools import cache
 from pathlib import Path
 
@@ -40,6 +41,7 @@ INTENT_SLOTS: dict[Intent, tuple[str, ...]] = {
 }
 
 _FALLBACK_SLOTS: tuple[str, ...] = ("router.classify",)
+_SEMVER_PATTERN = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 
 
 def metadata_paths() -> list[Path]:
@@ -49,21 +51,22 @@ def metadata_paths() -> list[Path]:
 
 
 @cache
-def slot_versions() -> dict[str, int]:
+def slot_versions() -> dict[str, str]:
     """모든 ``meta.yaml``을 읽어 ``{슬롯 ID: 버전}`` 표를 만든다.
 
     파일 내용은 프로세스 수명 동안 바뀌지 않는다고 보고 캐시한다(프롬프트 자산도
     같은 전제로 배포 단위로만 바뀐다).
     """
 
-    versions: dict[str, int] = {}
+    versions: dict[str, str] = {}
     for path in metadata_paths():
         document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         for slot_id, slot in (document.get("slots") or {}).items():
             version = slot.get("version")
-            if not isinstance(version, int):
+            if not isinstance(version, str) or _SEMVER_PATTERN.fullmatch(version) is None:
                 raise ValueError(
-                    f"프롬프트 슬롯 버전은 정수여야 합니다: {path.parent.name}/{slot_id}"
+                    "프롬프트 슬롯 버전은 MAJOR.MINOR.PATCH 형식이어야 합니다: "
+                    f"{path.parent.name}/{slot_id}"
                 )
             if slot_id in versions:
                 raise ValueError(f"프롬프트 슬롯 ID가 중복됐습니다: {slot_id}")

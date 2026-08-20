@@ -992,7 +992,7 @@ class TestComposeRealtimeCommercialMessage:
 
         message = compose_realtime_commercial_message(response)
 
-        assert "카페 업종 세부값도 현재 제공되지 않았어요" in message
+        assert "요청 업종 세부값도 현재 제공되지 않았어요" in message
         assert "용리단길 전체 상권은 현재 한산한" in message
 
     @pytest.mark.asyncio
