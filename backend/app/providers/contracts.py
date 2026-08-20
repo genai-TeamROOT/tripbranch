@@ -27,6 +27,7 @@ class ProviderSource(StrEnum):
     TOUR_API_PLACE = "tour_api_place"
     TOUR_API_FESTIVAL = "tour_api_festival"
     SUPABASE_PLACES = "supabase_places"
+    SUPABASE_PLACE_EVIDENCE = "supabase_place_evidence"
     TOUR_API_CONCENTRATION = "tour_api_concentration"
     KASI_HOLIDAY = "kasi_holiday"
     KAKAO_WALKING_ROUTE = "kakao_walking_route"
@@ -41,6 +42,7 @@ class ProviderSource(StrEnum):
     FAKE_HOLIDAY = "fake_holiday"
     FAKE_WALKING_ROUTE = "fake_walking_route"
     FAKE_LLM = "fake_llm"
+    FAKE_PLACE_EVIDENCE = "fake_place_evidence"
 
 
 @dataclass(frozen=True)
