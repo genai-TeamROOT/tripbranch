@@ -39,31 +39,80 @@ from app.place_search_policy import TRAVEL_SPEED_KM_PER_MINUTE
 # 사소한 리팩터링·주석 변경은 올리지 않는다.
 SCORING_VERSION = "recommendation-scoring-1.3.0"
 
-DEFAULT_WEIGHTS: Mapping[str, float] = {
-    "weather": 0.4,
-    "remaining_operating_time": 0.4,
-    "distance": 0.2,
+WEATHER_FEATURE = "weather"
+ENVIRONMENT_FEATURE = "environment"
+
+# 어느 실행에서나 채점되는 기본 3축. 여기 없는 Feature는 전부 선택 Feature다.
+_BASE_WEIGHTS: Mapping[str, float] = {
+    WEATHER_FEATURE: 0.40,
+    "remaining_operating_time": 0.40,
+    "distance": 0.20,
 }
+
+# 선택 Feature 1개가 받는 가중치와, 그 자리를 만들려고 기본 3축이 각각 내놓는 몫.
+#
+# **이 두 숫자는 새로 만든 게 아니라 기존 세트에서 읽어낸 것이다.**
+# DEFAULT_WEIGHTS(0.40/0.40/0.20)와 CONCENTRATION_WEIGHTS(0.35/0.35/0.15+0.15)를
+# 나란히 놓으면 세 축이 정확히 0.05씩 줄어 있었다 — 0.05 x 3축 = 0.15가 새 Feature
+# 자리다. 취향(1.3.0)도 같은 모양을 따랐다. 그 규칙을 상수로 꺼냈을 뿐이라
+# 기존 두 세트를 그대로 재현한다(test_scoring_weight_composition.py).
+_OPTIONAL_WEIGHT = 0.15
+_BASE_CONCESSION = 0.05
+
+# 요청에 따라 켜고 끄는 Feature. 순서는 가중치에 영향을 주지 않지만 표시 순서
+# (evidence._BASE_FEATURE_ORDER)와 맞춰 둔다.
+#
+# 새 선택 Feature를 추가할 때 손댈 곳은 여기 하나다. 조합별 가중치 상수를
+# 열거하면 Feature가 하나 늘 때마다 조합이 배로 늘고, 빠뜨린 조합에서 그
+# Feature가 **점수에서 조용히 사라진다** — evidence.resolve_feature_order()가
+# 같은 이유로 이미 조합 열거를 버렸다(2026-08-19).
+OPTIONAL_FEATURES: tuple[str, ...] = ("taste", "concentration")
+
+# 기본 3축 중 distance(0.20)가 0.05씩 내놓으므로 4개째에서 0이 된다.
+_MAX_OPTIONAL_FEATURES = 3
+
+
+def build_weights(optional_features: Iterable[str] = ()) -> dict[str, float]:
+    """켜진 선택 Feature에 맞춰 가중치를 조립한다.
+
+    기본 3축은 켜진 선택 Feature 수만큼 `_BASE_CONCESSION`씩 양보하고, 켜진
+    Feature마다 `_OPTIONAL_WEIGHT`를 준다. 합은 항상 1.0이다.
+
+    켜지지 않은 Feature는 키 자체가 없다 — "결측"이 아니라 "존재하지 않는
+    Feature"다(concentration-conditions.md §2.3). 결측 재분배
+    (`redistribute_weights()`)와 섞이지 않게 이 구분을 유지한다.
+
+    모르는 이름이 오면 멈춘다. 조용히 무시하면 오타 하나로 그 Feature가 점수에서
+    빠진 채 정상처럼 돌아간다 — 이 함수가 막으려는 사고가 바로 그거다.
+    """
+    requested = list(optional_features)
+    unknown = [feature for feature in requested if feature not in OPTIONAL_FEATURES]
+    if unknown:
+        raise ValueError(f"알 수 없는 선택 Feature: {unknown}")
+    active = [feature for feature in OPTIONAL_FEATURES if feature in set(requested)]
+    if len(active) > _MAX_OPTIONAL_FEATURES:
+        raise ValueError(
+            f"선택 Feature는 최대 {_MAX_OPTIONAL_FEATURES}개다"
+            f"(기본 축 가중치가 0 이하가 된다): {active}"
+        )
+    concession = _BASE_CONCESSION * len(active)
+    # 0.4 - 0.1 = 0.30000000000000004 같은 부동소수 찌꺼기를 여기서 끊는다.
+    weights = {
+        feature: round(weight - concession, 10) for feature, weight in _BASE_WEIGHTS.items()
+    }
+    weights.update({feature: _OPTIONAL_WEIGHT for feature in active})
+    return weights
+
+
+DEFAULT_WEIGHTS: Mapping[str, float] = build_weights()
 
 # D-040: concentration_intent가 AVOID/SEEK일 때만 쓰는 2차 Scoring 기본 가중치.
-# 1차 Scoring(DEFAULT_WEIGHTS)은 이 이름 자체를 모른다 — concentration은 1차에
-# "결측"이 아니라 "존재하지 않는 Feature"다(concentration-conditions.md §2.3).
-CONCENTRATION_WEIGHTS: Mapping[str, float] = {
-    "weather": 0.35,
-    "remaining_operating_time": 0.35,
-    "distance": 0.15,
-    "concentration": 0.15,
-}
+# 1차 Scoring은 이 이름 자체를 모른다.
+CONCENTRATION_WEIGHTS: Mapping[str, float] = build_weights(("concentration",))
 
-# 사용자가 취향을 말한 요청에서만 쓰는 가중치. 새 Feature에 0.15를 주는 것은
-# CONCENTRATION_WEIGHTS의 선례를 그대로 따른 것이다 — 근거 없는 숫자를 새로
-# 만들지 않는다. 취향을 말하지 않은 요청은 DEFAULT_WEIGHTS로 남는다.
-TASTE_WEIGHTS: Mapping[str, float] = {
-    "weather": 0.35,
-    "remaining_operating_time": 0.35,
-    "distance": 0.15,
-    "taste": 0.15,
-}
+# 사용자가 취향을 말한 요청에서만 쓰는 가중치. 취향을 말하지 않은 요청은
+# DEFAULT_WEIGHTS로 남는다.
+TASTE_WEIGHTS: Mapping[str, float] = build_weights(("taste",))
 
 # 취향 유사도를 0~1 점수로 펴는 구간.
 #
@@ -111,9 +160,6 @@ _ENVIRONMENT_FIT_TABLE: Mapping[tuple[str, str], float] = {
     ("outdoor", "unknown"): 0.60,
 }
 _ENVIRONMENT_FIT_DEFAULT = 0.60
-
-WEATHER_FEATURE = "weather"
-ENVIRONMENT_FEATURE = "environment"
 
 # 이 두 값일 때만 환경으로 채점한다. `any`는 "실내외 무관"이라 제외한다 —
 # 되묻기 기본값이 ANY라(D-053) 여기 넣으면 되묻기 답변 경로 전체가 환경
@@ -605,7 +651,7 @@ def score_prepared_candidates(
     # 가지므로 한 순위 안에서 가중치 세트가 갈리지 않는다.
     taste_by_place_id = dict(taste_matches or {})
     uses_taste = taste_matches is not None
-    default_weights = TASTE_WEIGHTS if uses_taste else DEFAULT_WEIGHTS
+    default_weights = build_weights(("taste",) if uses_taste else ())
     base_weights = weights_for_environment(
         dict(weights) if weights is not None else dict(default_weights),
         requested_environment,
