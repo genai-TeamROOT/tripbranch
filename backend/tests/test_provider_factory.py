@@ -153,8 +153,9 @@ def test_get_walking_route_provider_builds_real_provider(monkeypatch) -> None:
     }
 
 
-def test_get_travel_route_tool_adds_fallback_only_in_real_mode(monkeypatch) -> None:
-    primary = object()
+def _capture_travel_route_tool(monkeypatch, settings_override: Settings) -> dict[object, object]:
+    walking_primary = object()
+    driving_primary = object()
     captured: dict[object, object] = {}
 
     class _RecordingTravelRouteTool:
@@ -162,10 +163,17 @@ def test_get_travel_route_tool_adds_fallback_only_in_real_mode(monkeypatch) -> N
             captured.update(providers)
 
     monkeypatch.setattr(factory, "TravelRouteTool", _RecordingTravelRouteTool)
-    monkeypatch.setattr(factory, "get_walking_route_provider", lambda client: primary)
-    monkeypatch.setattr(
-        factory,
-        "settings",
+    monkeypatch.setattr(factory, "get_walking_route_provider", lambda client: walking_primary)
+    monkeypatch.setattr(factory, "get_driving_route_provider", lambda client: driving_primary)
+    monkeypatch.setattr(factory, "settings", settings_override)
+
+    factory.get_travel_route_tool(object())  # type: ignore[arg-type]
+    return captured
+
+
+def test_get_travel_route_tool_adds_fallback_only_in_real_mode(monkeypatch) -> None:
+    captured = _capture_travel_route_tool(
+        monkeypatch,
         Settings(
             _env_file=None,
             travel_route_provider="real",
@@ -173,11 +181,38 @@ def test_get_travel_route_tool_adds_fallback_only_in_real_mode(monkeypatch) -> N
         ),
     )
 
-    factory.get_travel_route_tool(object())  # type: ignore[arg-type]
-
-    # 등록된 이동수단은 도보뿐이다 — 나머지는 Tool이 호출 없이 NO_DATA로 답한다.
-    assert list(captured) == [TravelMode.WALKING]
+    # 등록된 이동수단은 도보와 자동차다 — 대중교통은 Tool이 호출 없이 NO_DATA로 답한다.
+    assert list(captured) == [TravelMode.WALKING, TravelMode.DRIVING]
     walking = captured[TravelMode.WALKING]
-    assert walking.primary is primary
     assert isinstance(walking.fallback, FakeWalkingRouteProvider)
     assert walking.fallback._walking_speed_mps == 1.1
+
+
+def test_get_travel_route_tool_gives_driving_no_fallback(monkeypatch) -> None:
+    """자동차에는 직선거리 fallback을 두지 않는다.
+
+    fallback이 내는 STRAIGHT_LINE_ESTIMATE는 채점에서 걸러지므로
+    (scoring._applied_travel_route) 만들어도 쓰이지 않는다.
+    """
+    captured = _capture_travel_route_tool(
+        monkeypatch,
+        Settings(
+            _env_file=None,
+            travel_route_provider="real",
+            travel_route_driving_provider="real",
+        ),
+    )
+
+    assert captured[TravelMode.DRIVING].fallback is None
+
+
+def test_get_travel_route_tool_keeps_driving_fake_unless_explicitly_enabled(monkeypatch) -> None:
+    """TRAVEL_ROUTE_PROVIDER=real만으로는 자동차(네이버)가 켜지지 않는다.
+
+    이동수단마다 벤더가 달라서, 한 값이 여러 벤더를 켜면 카카오 키만 가진 설정이
+    쓰지도 않는 네이버 키를 요구하며 부팅에 실패한다.
+    """
+    settings_override = Settings(_env_file=None, travel_route_provider="real")
+
+    assert settings_override.travel_route_provider == "real"
+    assert settings_override.travel_route_driving_provider == "fake"
