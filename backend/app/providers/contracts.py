@@ -34,6 +34,7 @@ class ProviderSource(StrEnum):
     KASI_HOLIDAY = "kasi_holiday"
     KAKAO_WALKING_ROUTE = "kakao_walking_route"
     NAVER_DRIVING_ROUTE = "naver_driving_route"
+    KAKAO_TRANSIT_ROUTE = "kakao_transit_route"
     GEMINI = "gemini"
     FAKE_GEOCODING = "fake_geocoding"
     FAKE_LOCAL_SEARCH = "fake_local_search"
@@ -46,6 +47,7 @@ class ProviderSource(StrEnum):
     FAKE_HOLIDAY = "fake_holiday"
     FAKE_WALKING_ROUTE = "fake_walking_route"
     FAKE_DRIVING_ROUTE = "fake_driving_route"
+    FAKE_TRANSIT_ROUTE = "fake_transit_route"
     FAKE_LLM = "fake_llm"
 
 

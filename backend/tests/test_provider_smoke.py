@@ -22,6 +22,7 @@ from app.providers.driving_route import RealNaverDrivingRouteProvider
 from app.providers.gemini import RealGeminiProvider
 from app.providers.geocoding import RealGeocodingProvider
 from app.providers.holiday import RealHolidayProvider
+from app.providers.kakao_transit_route import RealKakaoTransitRouteProvider
 from app.providers.real_place import RealPlaceProvider
 from app.providers.weather import RealWeatherProvider
 from app.schemas import Intent, PlaceType, UserConditions
@@ -106,6 +107,34 @@ async def test_naver_driving_route_real_smoke() -> None:
     assert route.duration_seconds is not None and 60 < route.duration_seconds < 3_600
     print(
         f"Naver Driving: {route.distance_m}m, "
+        f"{route.duration_seconds}s ({route.duration_seconds / 60:.1f}분)"
+    )
+
+
+async def test_kakao_transit_route_real_smoke() -> None:
+    """경복궁 → 남산서울타워 대중교통 경로.
+
+    응답의 `routes[]`가 소요시간 순이 아니므로 최소값을 골랐는지까지 본다 —
+    첫 원소를 쓰면 여기서 더 큰 값이 나온다.
+    """
+    async with httpx.AsyncClient() as client:
+        provider = RealKakaoTransitRouteProvider(
+            api_key=_required_value("KAKAO_MAP_REST_API_KEY", settings.kakao_map_rest_api_key),
+            client=client,
+        )
+        result = await provider.get_routes(
+            GeoCoordinate(37.5796, 126.9770),
+            (RouteDestination("namsan", GeoCoordinate(37.5512, 126.9882)),),
+        )
+
+    route = result.data.routes[0]
+    assert route.status is RouteStatus.SUCCESS
+    assert route.source is RouteSource.KAKAO_TRANSIT
+    assert route.distance_m is not None and 1_000 < route.distance_m < 30_000
+    # 3km 구간이라 실측 40분 안팎이다. 배차 대기는 포함되지 않은 값이다.
+    assert route.duration_seconds is not None and 300 < route.duration_seconds < 7_200
+    print(
+        f"Kakao Transit: {route.distance_m}m, "
         f"{route.duration_seconds}s ({route.duration_seconds / 60:.1f}분)"
     )
 

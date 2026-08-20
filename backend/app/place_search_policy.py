@@ -21,10 +21,16 @@ NON_WALKING_SPEED_KM_PER_MINUTE = 20 / 60
 # 이동수단별 이동속도 가정값(km/분). 거리 점수의 시간 예산이 이 값으로 검색
 # 반경을 소요시간으로 되돌린다(domain/scoring.py::_travel_minutes_budget).
 #
-# 대중교통은 아직 비어 있다. 그 카드에서 넣을 때 함께 넓혀야 하는 곳이 하나 더
-# 있다: scoring.py의 _applied_travel_route()가 실측 여부를 RouteSource로 가리므로
-# 새 이동수단의 source도 허용해야 한다. 둘 중 하나만 바꾸면 채점이 속도를 못 찾아
-# KeyError로 멈춘다 — 조용히 도보 속도로 재는 것보다 이 편이 낫다.
+# 대중교통도 20km/h를 쓴다. 실측값(경복궁 기준 7개 구간에서 직선거리 기준 실효
+# 4.6~19km/h)이 아니라 반경 산정과 같은 가정이어야 하기 때문이다 — 반경 산정
+# (recommendation_transform.to_search_radius_km)이 비도보 요청을 이동수단으로
+# 가르지 않고 _OTHER_KM_PER_MIN 하나로 처리한다. 여기에 실측을 넣으면 분자와
+# 분모의 기준이 어긋난다.
+#
+# 새 이동수단을 넣을 때 함께 넓혀야 하는 곳이 하나 더 있다: scoring.py의
+# _applied_travel_route()가 실측 여부를 RouteSource로 가리므로 새 이동수단의
+# source도 허용해야 한다. 둘 중 하나만 바꾸면 채점이 속도를 못 찾아 KeyError로
+# 멈춘다 — 조용히 도보 속도로 재는 것보다 이 편이 낫다.
 #
 # 자동차 가정(20km/h)과 실제의 차이(네이버 Directions 실 API, 경복궁 기준 종로
 # 6개 지점, 2026-08-20 14시대 평일):
@@ -41,6 +47,7 @@ NON_WALKING_SPEED_KM_PER_MINUTE = 20 / 60
 TRAVEL_SPEED_KM_PER_MINUTE: dict[TravelMode, float] = {
     TravelMode.WALKING: WALKING_SPEED_KM_PER_MINUTE,
     TravelMode.DRIVING: NON_WALKING_SPEED_KM_PER_MINUTE,
+    TravelMode.TRANSIT: NON_WALKING_SPEED_KM_PER_MINUTE,
 }
 
 # 이동시간 조건이 없을 때 A와 C가 공통으로 사용하는 기본 장소 검색 반경(km).

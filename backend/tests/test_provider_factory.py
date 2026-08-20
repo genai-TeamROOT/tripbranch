@@ -14,6 +14,7 @@ from app.config import Settings
 from app.domain.travel_route import TravelMode
 from app.errors import AppError
 from app.providers import factory
+from app.providers.kakao_transit_route import FakeTransitRouteProvider
 from app.providers.walking_route import FakeWalkingRouteProvider
 
 
@@ -156,6 +157,7 @@ def test_get_walking_route_provider_builds_real_provider(monkeypatch) -> None:
 def _capture_travel_route_tool(monkeypatch, settings_override: Settings) -> dict[object, object]:
     walking_primary = object()
     driving_primary = object()
+    transit_primary = object()
     captured: dict[object, object] = {}
 
     class _RecordingTravelRouteTool:
@@ -165,6 +167,7 @@ def _capture_travel_route_tool(monkeypatch, settings_override: Settings) -> dict
     monkeypatch.setattr(factory, "TravelRouteTool", _RecordingTravelRouteTool)
     monkeypatch.setattr(factory, "get_walking_route_provider", lambda client: walking_primary)
     monkeypatch.setattr(factory, "get_driving_route_provider", lambda client: driving_primary)
+    monkeypatch.setattr(factory, "get_transit_route_provider", lambda client: transit_primary)
     monkeypatch.setattr(factory, "settings", settings_override)
 
     factory.get_travel_route_tool(object())  # type: ignore[arg-type]
@@ -181,8 +184,9 @@ def test_get_travel_route_tool_adds_fallback_only_in_real_mode(monkeypatch) -> N
         ),
     )
 
-    # 등록된 이동수단은 도보와 자동차다 — 대중교통은 Tool이 호출 없이 NO_DATA로 답한다.
-    assert list(captured) == [TravelMode.WALKING, TravelMode.DRIVING]
+    # 도보·자동차·대중교통 셋을 등록한다. 미등록 이동수단은 Tool이 호출 없이
+    # NO_DATA로 답하므로, 등록 누락은 조용한 오답이 아니라 값 없음으로 드러난다.
+    assert list(captured) == [TravelMode.WALKING, TravelMode.DRIVING, TravelMode.TRANSIT]
     walking = captured[TravelMode.WALKING]
     assert isinstance(walking.fallback, FakeWalkingRouteProvider)
     assert walking.fallback._walking_speed_mps == 1.1
@@ -204,6 +208,38 @@ def test_get_travel_route_tool_gives_driving_no_fallback(monkeypatch) -> None:
     )
 
     assert captured[TravelMode.DRIVING].fallback is None
+
+
+def test_get_travel_route_tool_gives_transit_no_fallback(monkeypatch) -> None:
+    """대중교통도 자동차와 같은 이유로 fallback을 두지 않는다."""
+    captured = _capture_travel_route_tool(
+        monkeypatch,
+        Settings(
+            _env_file=None,
+            travel_route_provider="real",
+            travel_route_transit_provider="real",
+        ),
+    )
+
+    assert captured[TravelMode.TRANSIT].fallback is None
+
+
+def test_get_travel_route_tool_keeps_transit_fake_unless_explicitly_enabled(monkeypatch) -> None:
+    """TRAVEL_ROUTE_PROVIDER=real만으로는 대중교통이 켜지지 않는다.
+
+    도보와 같은 카카오 키를 쓰지만 엔드포인트가 달라 호출량도 따로 늘어난다.
+    벤더가 같다고 묶으면 도보만 쓰려던 설정이 대중교통까지 호출하게 된다.
+    """
+    settings_override = Settings(_env_file=None, travel_route_provider="real")
+
+    assert settings_override.travel_route_provider == "real"
+    assert settings_override.travel_route_transit_provider == "fake"
+
+    monkeypatch.setattr(factory, "settings", settings_override)
+    assert isinstance(
+        factory.get_transit_route_provider(object()),  # type: ignore[arg-type]
+        FakeTransitRouteProvider,
+    )
 
 
 def test_get_travel_route_tool_keeps_driving_fake_unless_explicitly_enabled(monkeypatch) -> None:
