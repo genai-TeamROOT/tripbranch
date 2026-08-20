@@ -134,15 +134,20 @@ def _thinking_config_for(thinking_budget: int | None) -> genai_types.ThinkingCon
     느려진 문제의 일부가 이 부분이다 — 예전엔 thinking_budget=0이 SCHEDULE
     2곳과 classify_intent/extract_recommend_conditions에서 thinking을
     확실히 껐지만, 레거시 파라미터가 새 모델에서도 여전히 그대로 작동한다는
-    보장이 없어 이 네 곳부터 명시적으로 고쳤다. thinking_config를 아예 안
-    넣는 나머지 호출부(문장 생성·요약류, 스트리밍 포함)는 gemini-2.5-flash
-    기준으로 "모델 기본값이 가볍다"고 가정하고 의도적으로 손대지 않았던
-    곳들인데, gemini-3.5-flash의 기본값은 MEDIUM(항상 켜짐)이라 그 가정이
-    더 이상 맞지 않는다 — 다만 이 값들은 응답 품질과 직결돼 있어(과거
-    thinking_budget=0을 적용할 때도 "문장 생성·요약류는 품질 저하 리스크로
-    의도적으로 제외" 원칙을 지켰다) 실측 없이 이번에 같이 끄지 않았다.
-    scripts/compare_*_thinking_budget.py와 같은 방식으로 gemini-3.5-flash
-    기준 속도·품질을 다시 재본 뒤 결정해야 한다(미해결 상태로 남김).
+    보장이 없어 이 네 곳부터 명시적으로 고쳤다.
+
+    (2026-08-20 해소) 문장 생성·요약류(답변·요약 5곳 — generate_general_answer/
+    stream_general_answer/generate_recommendation_summary/
+    stream_recommendation_summary/stream_info_answer/generate_compare_summary)는
+    gemini-2.5-flash 기준 "모델 기본값이 가볍다"는 가정으로 의도적으로 손대지
+    않았던 곳들인데, gemini-3.5-flash의 기본값은 MEDIUM(항상 켜짐)이라 그 가정이
+    깨져 GENERAL 인사말 응답에도 6~7초 TTFT가 걸리는 게 실사용에서 확인됐다.
+    scripts/compare_answer_thinking_budget.py로 5개 케이스 × 3회 실측한 결과
+    thinking_budget=0이 평균 3.9배 빠르면서(예: 5.9초→1.3초) 답변 문구는 페르소나·
+    자기소개("트리비")·문장 수 규칙을 그대로 지켰다(수동 확인, "문장 생성·요약류는
+    품질 저하 리스크"라는 우려가 이 케이스들에서는 근거로 뒷받침되지 않음). 결과:
+    test_results/answer_thinking_budget_latency.csv. 이 5곳도 이제 thinking_budget=0을
+    쓴다 — 남은 호출부는 없다.
     """
     if thinking_budget is None:
         return None
@@ -350,6 +355,16 @@ class RealGeminiProvider:
             _GeneralAnswer,
             operation="generate_general_answer",
             model_names=self._generation_model_names,
+            # thinking_budget=0 — 답변·요약 계열 5곳에 공통 적용(2026-08-20 실측).
+            # gemini-2.5-flash → gemini-3.5-flash 전환 후 기본 thinking이 MEDIUM(항상
+            # 켜짐)으로 바뀌어 간단한 인사말에도 6~7초가 걸렸다(실사용 확인). 이 5곳만
+            # thinking_budget을 안 넣은 채 남아 있었다(_thinking_config_for() docstring
+            # 참고 — 그때는 "품질 저하 리스크"로 의도적으로 제외했던 곳들).
+            # scripts/compare_answer_thinking_budget.py로 5개 케이스 × 3회 실측한 결과
+            # 평균 3.9배 빨라졌고(예: general_identity 5.9초→1.3초), 답변 문구는
+            # 페르소나·자기소개("트리비")·문장 수 규칙을 그대로 지켰다(수동 확인,
+            # 결과: test_results/answer_thinking_budget_latency.csv).
+            thinking_budget=0,
         )
         return provider_result(result.answer, source=ProviderSource.GEMINI)
 
@@ -372,6 +387,8 @@ class RealGeminiProvider:
             _RecommendationSummary,
             operation="generate_recommendation_summary",
             model_names=self._generation_model_names,
+            # thinking_budget=0 — generate_general_answer()와 같은 이유로 실측 확인.
+            thinking_budget=0,
         )
         return provider_result(result.message, source=ProviderSource.GEMINI)
 
@@ -393,6 +410,8 @@ class RealGeminiProvider:
             user_input=json.dumps(payload, ensure_ascii=False),
             operation="stream_recommendation_summary",
             model_names=self._generation_model_names,
+            # thinking_budget=0 — generate_general_answer()와 같은 이유로 실측 확인.
+            thinking_budget=0,
         ):
             yield text
 
@@ -406,6 +425,8 @@ class RealGeminiProvider:
             user_input=original_question,
             operation="stream_general_answer",
             model_names=self._generation_model_names,
+            # thinking_budget=0 — generate_general_answer()와 같은 이유로 실측 확인.
+            thinking_budget=0,
         ):
             yield text
 
@@ -429,6 +450,8 @@ class RealGeminiProvider:
             user_input=json.dumps(payload, ensure_ascii=False),
             operation="stream_info_answer",
             model_names=self._generation_model_names,
+            # thinking_budget=0 — generate_general_answer()와 같은 이유로 실측 확인.
+            thinking_budget=0,
         ):
             yield text
 
@@ -439,11 +462,15 @@ class RealGeminiProvider:
         user_input: str,
         operation: str,
         model_names: list[str] | None = None,
+        thinking_budget: int | None = None,
     ) -> AsyncIterator[str]:
         """일반 텍스트 Gemini 스트림의 모델 폴백·관측을 공통 처리한다.
 
         첫 조각을 보낸 뒤 다른 모델로 옮기면 문장이 중복될 수 있다. 따라서 그 이후
         오류는 호출자에게 전파해 이미 전달된 텍스트를 보존한다.
+
+        thinking_budget은 _call_structured()와 같은 규칙으로 모델별 보정을 거친다
+        (_resolve_thinking_budget()/_thinking_config_for() 참고).
         """
 
         selected_models = model_names or self._generation_model_names
@@ -454,6 +481,7 @@ class RealGeminiProvider:
             attempted_models.append(model_name)
             started = time.perf_counter()
             emitted = False
+            resolved_budget = _resolve_thinking_budget(model_name, operation, thinking_budget)
             try:
                 stream = await self._client.aio.models.generate_content_stream(
                     model=model_name,
@@ -461,6 +489,7 @@ class RealGeminiProvider:
                     config=genai_types.GenerateContentConfig(
                         system_instruction=instruction,
                         temperature=0.0,
+                        thinking_config=_thinking_config_for(resolved_budget),
                     ),
                 )
                 async for chunk in stream:
@@ -519,7 +548,9 @@ class RealGeminiProvider:
         assert last_error is not None
         raise last_error
 
-    async def generate_compare_summary(self, comparison: ComparisonResult) -> ProviderResult[str]:
+    async def generate_compare_summary(
+        self, comparison: ComparisonResult
+    ) -> ProviderResult[str]:
         """C가 반환한 공개 비교 사실만 Gemini에 전달해 설명 문장을 생성한다."""
 
         instruction = gemini_prompts.build_compare_summary_instruction(comparison.criteria)
@@ -529,6 +560,8 @@ class RealGeminiProvider:
             _ComparisonSummary,
             operation="generate_compare_summary",
             model_names=self._generation_model_names,
+            # thinking_budget=0 — generate_general_answer()와 같은 이유로 실측 확인.
+            thinking_budget=0,
         )
         return provider_result("\n".join(result.lines), source=ProviderSource.GEMINI)
 
