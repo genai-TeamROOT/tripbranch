@@ -29,6 +29,17 @@ _MAX_EVIDENCE_CANDIDATES = 500
 
 _READ_PAGE_SIZE = 1000
 _UPSERT_CHUNK_SIZE = 100
+_PLACE_SUMMARY_COLUMNS = ",".join(
+    (
+        "area_code",
+        "district_code",
+        "is_active",
+        "detail_fetch_status",
+        "operating_parse_status",
+        "operating_parser_version",
+        "detail_fetched_at",
+    )
+)
 _STATE_COLUMNS = ",".join(
     (
         "content_id",
@@ -824,6 +835,7 @@ class SupabasePlaceRepository:
         new_count: int,
         updated_count: int,
         deactivated_count: int,
+        detail_attempted_count: int,
         error_summary: Mapping[str, object] | None = None,
         completed_at: datetime,
     ) -> None:
@@ -842,6 +854,9 @@ class SupabasePlaceRepository:
                 "new_count": new_count,
                 "updated_count": updated_count,
                 "deactivated_count": deactivated_count,
+                # 일일 한도 판단의 근거가 되는 값이라 실행 기록에 남긴다. 메모리
+                # 집계는 재시작하면 사라지고 스크립트 실행분도 놓친다.
+                "detail_attempted_count": detail_attempted_count,
                 "error_summary": error_summary,
                 "completed_at": _iso(completed_at),
             },
@@ -865,29 +880,49 @@ class SupabasePlaceRepository:
         except ValueError:
             raise SupabaseRepositoryError(f"invalid count for {table}") from None
 
-    async def get_region_place_summary(
-        self,
-        area_code: str,
-        district_code: str,
-    ) -> dict[str, object]:
-        """지역 장소의 활성/상세조회/파싱 상태 분포를 한 번에 센다.
+    async def get_place_summaries_by_district(self) -> dict[str, object]:
+        """적재된 구별 요약과 전 구 합계를 한 번의 페이징으로 만든다.
 
-        상태별로 count 질의를 나누면 요청이 십수 건으로 늘어난다. 종로구 기준 900행
-        미만이고 세 열만 받으므로 전부 받아 Python에서 세는 편이 싸다.
+        구마다 따로 질의하면 왕복이 구 수만큼 늘고, 그보다 먼저 "어떤 구가 적재돼
+        있는가"를 알아야 질의를 만들 수 있다. 그 목록을 코드에 박으면 구를 새로
+        넣을 때마다 적재와 조회 두 곳을 고쳐야 한다. 전량을 한 번 훑어
+        (area_code, district_code)로 묶으면 적재된 구가 결과에서 그대로 드러난다.
+
+        전량이라 해도 세 개 구 2,300행 남짓에 열은 일곱 개뿐이라, 상태별로 count
+        질의를 나누는 것보다 싸다.
         """
-        rows: list[object] = []
+        rows = await self._fetch_place_summary_rows()
+
+        grouped: dict[tuple[str, str], list[Mapping[str, object]]] = {}
+        for row in rows:
+            key = (
+                str(row.get("area_code") or ""),
+                str(row.get("district_code") or ""),
+            )
+            grouped.setdefault(key, []).append(row)
+
+        return {
+            "overall": _summarize_places(rows),
+            "districts": [
+                {
+                    "area_code": area_code,
+                    "district_code": district_code,
+                    **_summarize_places(group),
+                }
+                for (area_code, district_code), group in sorted(grouped.items())
+            ],
+        }
+
+    async def _fetch_place_summary_rows(self) -> list[Mapping[str, object]]:
+        """요약에 필요한 일곱 열만 전량 받는다. PostgREST는 한 응답에 1000행까지다."""
+        rows: list[Mapping[str, object]] = []
         offset = 0
         while True:
             response = await self._request(
                 "GET",
                 "/places",
                 params={
-                    "select": (
-                        "is_active,detail_fetch_status,operating_parse_status,"
-                        "detail_fetched_at,operating_parser_version"
-                    ),
-                    "area_code": f"eq.{area_code}",
-                    "district_code": f"eq.{district_code}",
+                    "select": _PLACE_SUMMARY_COLUMNS,
                     "order": "content_id.asc",
                     "limit": str(_READ_PAGE_SIZE),
                     "offset": str(offset),
@@ -896,40 +931,139 @@ class SupabasePlaceRepository:
             page = self._json(response)
             if not isinstance(page, list):
                 raise SupabaseRepositoryError("invalid place summary response")
-            rows.extend(page)
+            for raw in page:
+                if not isinstance(raw, Mapping):
+                    raise SupabaseRepositoryError("invalid place summary row")
+                rows.append(raw)
             if len(page) < _READ_PAGE_SIZE:
                 break
             offset += _READ_PAGE_SIZE
+        return rows
 
-        active = 0
-        detail_status: dict[str, int] = {}
-        parse_status: dict[str, int] = {}
-        parser_versions: dict[str, int] = {}
-        latest_detail_fetched_at: datetime | None = None
-        for raw in rows:
-            if not isinstance(raw, Mapping):
-                raise SupabaseRepositoryError("invalid place summary row")
-            if raw.get("is_active"):
-                active += 1
-            _bump(detail_status, raw.get("detail_fetch_status"))
-            _bump(parse_status, raw.get("operating_parse_status"))
-            _bump(parser_versions, raw.get("operating_parser_version"))
-            fetched_at = _parse_datetime(raw.get("detail_fetched_at"), "detail_fetched_at")
-            if fetched_at is not None and (
-                latest_detail_fetched_at is None or fetched_at > latest_detail_fetched_at
-            ):
-                latest_detail_fetched_at = fetched_at
+    async def list_region_place_rows(
+        self,
+        area_code: str,
+        district_code: str,
+        columns: Sequence[str],
+        *,
+        active_only: bool = True,
+    ) -> list[Mapping[str, object]]:
+        """구 하나의 장소 행을 요청한 열만 페이징해 전부 읽는다.
 
+        열 목록을 호출자가 준다 — 이 저장소가 스냅샷 CSV 형식을 알 필요가 없고,
+        형식을 아는 쪽(`place_snapshot.SNAPSHOT_COLUMNS`)에 열 정의가 하나만 남는다.
+
+        기본은 활성 장소만이다. 비활성 장소는 목록에서 사라져서 비활성이 된 것이라,
+        스냅샷에 넣으면 대조할 때마다 계속 "삭제"로 잡힌다.
+        """
+        params_base: dict[str, str] = {
+            "select": ",".join(columns),
+            "area_code": f"eq.{area_code}",
+            "district_code": f"eq.{district_code}",
+            "order": "content_id.asc",
+        }
+        if active_only:
+            params_base["is_active"] = "eq.true"
+
+        rows: list[Mapping[str, object]] = []
+        offset = 0
+        while True:
+            response = await self._request(
+                "GET",
+                "/places",
+                params={
+                    **params_base,
+                    "limit": str(_READ_PAGE_SIZE),
+                    "offset": str(offset),
+                },
+            )
+            page = self._json(response)
+            if not isinstance(page, list):
+                raise SupabaseRepositoryError("invalid place row response")
+            for raw in page:
+                if not isinstance(raw, Mapping):
+                    raise SupabaseRepositoryError("invalid place row")
+                rows.append(raw)
+            if len(page) < _READ_PAGE_SIZE:
+                break
+            offset += _READ_PAGE_SIZE
+        return rows
+
+    async def list_detail_backfill_ids(
+        self, area_code: str, district_code: str
+    ) -> list[str]:
+        """상세 정보를 아직 못 채운 장소의 content_id.
+
+        동기화는 대조가 정한 변경분 외에 이 장소들도 함께 부른다
+        (`PlaceSyncService._select_targets`) — 빼면 pending·failed가 영영 그대로
+        남기 때문이다. 그래서 "이번 반영이 상세조회를 몇 번 쓰는가"를 계산하려면
+        변경분만으로는 모자라고 이 목록이 필요하다.
+
+        `empty`는 넣지 않는다. TourAPI가 상세를 주지 않는 장소라 다시 불러도 계속
+        비어 있고, 대상에 넣으면 매번 같은 호출을 반복하게 된다.
+        """
+        response = await self._request(
+            "GET",
+            "/places",
+            params={
+                "select": "content_id",
+                "area_code": f"eq.{area_code}",
+                "district_code": f"eq.{district_code}",
+                "detail_fetch_status": "in.(pending,failed)",
+                "order": "content_id.asc",
+            },
+        )
+        payload = self._json(response)
+        if not isinstance(payload, list):
+            raise SupabaseRepositoryError("invalid detail backfill response")
+        ids: list[str] = []
+        for row in payload:
+            if not isinstance(row, Mapping) or not row.get("content_id"):
+                raise SupabaseRepositoryError("detail backfill row missing content_id")
+            ids.append(str(row["content_id"]))
+        return ids
+
+    async def summarize_detail_calls_since(self, since: datetime) -> dict[str, int]:
+        """`since` 이후 시작한 동기화가 부른 detailIntro2 수를 더한다.
+
+        detailIntro2를 부르는 코드는 PlaceSyncService 한 곳뿐이고(추천 경로는 DB에서
+        읽는다) 그 경로는 실행마다 place_sync_runs 행을 남긴다. 그래서 호출마다
+        카운터를 올리지 않고도 오늘 사용량을 셀 수 있다. 프로세스 메모리 집계와
+        달리 서버를 재시작해도 남고, backend/scripts로 돈 실행분도 함께 잡힌다.
+
+        **하한이다.** 재시도는 한 장소를 여러 번 부르지만 여기 세는 것은 장소 수고,
+        중간에 죽어 완료 처리를 못 한 실행은 열이 비어 있다. 그래서 비어 있는 실행
+        수(`runs_without_count`)를 함께 돌려준다 — 화면이 "관측한 값"과 "재지 못한
+        구간"을 구분해 보여줄 수 있어야 한다.
+        """
+        response = await self._request(
+            "GET",
+            "/place_sync_runs",
+            params={
+                "select": "detail_attempted_count",
+                "started_at": f"gte.{_iso(since)}",
+            },
+        )
+        payload = self._json(response)
+        if not isinstance(payload, list):
+            raise SupabaseRepositoryError("invalid sync run summary response")
+
+        total = 0
+        runs = 0
+        runs_without_count = 0
+        for row in payload:
+            if not isinstance(row, Mapping):
+                raise SupabaseRepositoryError("invalid sync run summary row")
+            runs += 1
+            value = row.get("detail_attempted_count")
+            if value is None:
+                runs_without_count += 1
+                continue
+            total += int(value)
         return {
-            "area_code": area_code,
-            "district_code": district_code,
-            "total": len(rows),
-            "active": active,
-            "inactive": len(rows) - active,
-            "detail_fetch_status": detail_status,
-            "operating_parse_status": parse_status,
-            "operating_parser_version": parser_versions,
-            "latest_detail_fetched_at": _iso(latest_detail_fetched_at),
+            "count": total,
+            "runs": runs,
+            "runs_without_count": runs_without_count,
         }
 
     async def list_recent_sync_runs(self, limit: int = 10) -> list[dict[str, object]]:
@@ -991,6 +1125,40 @@ class SupabasePlaceRepository:
         if not isinstance(payload, list):
             raise SupabaseRepositoryError("invalid sync lock list response")
         return [dict(row) for row in payload if isinstance(row, Mapping)]
+
+
+def _summarize_places(rows: Sequence[Mapping[str, object]]) -> dict[str, object]:
+    """장소 행 묶음의 활성 수와 상태 분포를 센다.
+
+    구별 요약과 전 구 합계가 같은 함수를 쓴다 — 따로 세면 한쪽만 규칙이 바뀐 채
+    남는 이중 경로가 생긴다.
+    """
+    active = 0
+    detail_status: dict[str, int] = {}
+    parse_status: dict[str, int] = {}
+    parser_versions: dict[str, int] = {}
+    latest_detail_fetched_at: datetime | None = None
+    for raw in rows:
+        if raw.get("is_active"):
+            active += 1
+        _bump(detail_status, raw.get("detail_fetch_status"))
+        _bump(parse_status, raw.get("operating_parse_status"))
+        _bump(parser_versions, raw.get("operating_parser_version"))
+        fetched_at = _parse_datetime(raw.get("detail_fetched_at"), "detail_fetched_at")
+        if fetched_at is not None and (
+            latest_detail_fetched_at is None or fetched_at > latest_detail_fetched_at
+        ):
+            latest_detail_fetched_at = fetched_at
+
+    return {
+        "total": len(rows),
+        "active": active,
+        "inactive": len(rows) - active,
+        "detail_fetch_status": detail_status,
+        "operating_parse_status": parse_status,
+        "operating_parser_version": parser_versions,
+        "latest_detail_fetched_at": _iso(latest_detail_fetched_at),
+    }
 
 
 def _bump(counter: dict[str, int], value: object) -> None:

@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -38,6 +38,7 @@ from app.observability.api_usage import (
     reset_usage,
 )
 from app.providers.real_place import RealPlaceProvider
+from app.providers.tour_ldong_registry import find_district_name, list_districts
 from app.repositories.supabase_places import SupabasePlaceRepository
 from app.services import place_snapshot
 from app.services.place_sync import PlaceSyncService, SyncProgress
@@ -180,43 +181,88 @@ async def post_exchange_clear() -> dict[str, Any]:
 
 
 @router.get("/db-status")
-async def get_db_status(
-    area_code: str | None = None,
-    district_code: str | None = None,
-    sync_run_limit: int = 10,
-) -> dict[str, Any]:
-    """장소 DB의 현재 상태와 최근 동기화 이력."""
+async def get_db_status(sync_run_limit: int = 10) -> dict[str, Any]:
+    """장소 DB의 현재 상태와 최근 동기화 이력.
+
+    장소 요약은 적재된 구별로 나누고 전 구 합계를 함께 준다 — 패널이 탭으로 나눠
+    보여준다. 예전에는 설정값(`place_sync_district_code`) 한 구만 세었는데, 같은
+    화면의 동기화 이력은 전 구를 보여주고 있어 "용산구 486건 신규"와 "활성 844"가
+    나란히 놓였다. 두 숫자가 서로 다른 범위를 세고 있다는 걸 화면에서 알 방법이
+    없었다.
+
+    구 목록을 파라미터로 받지 않는 이유: 어떤 구가 적재돼 있는지는 places가 아는
+    사실이지 호출자가 정할 값이 아니다. 목록을 넘기게 하면 새 구를 넣고도 화면에
+    안 보이는 상태가 생긴다.
+
+    place_enrichments와 집중률 매핑은 구 열이 없어(둘 다 content_id 기준) 전체
+    건수만 센다. 구별로 쪼개려면 places와 대조해야 하는데, 이 두 테이블은 장소
+    동기화가 건드리지 않아 구별로 볼 실익이 없다.
+
+    `detail_calls_today`는 오늘 detailIntro2를 몇 번 불렀는지를 place_sync_runs에서
+    센 값이다. 호출량 표(api-usage)는 프로세스 메모리라 재시작하면 0이 되고
+    backend/scripts 실행분도 놓치는데, 이 값은 둘 다 살아남는다. 그래도 하한이다 —
+    재시도가 안 세지고, 중간에 죽은 실행은 열이 비어 있다.
+    """
     url, key = _require_supabase()
-    area = area_code or settings.place_sync_area_code
-    district = district_code or settings.place_sync_district_code
 
     async with status_client() as client:
         repository = SupabasePlaceRepository(
             supabase_url=url,
             secret_key=key,
             client=client,
-            # 844행 조회는 챗봇 요청보다 오래 걸린다. 요청 경로용 공통 타임아웃을
+            # 2,300행 조회는 챗봇 요청보다 오래 걸린다. 요청 경로용 공통 타임아웃을
             # 그대로 쓰면 패널이 아무 이유 없이 타임아웃으로 보인다.
             timeout_seconds=max(settings.external_api_timeout_seconds, 30.0),
         )
-        places = await repository.get_region_place_summary(area, district)
+        summaries = await repository.get_place_summaries_by_district()
         enrichment_count = await repository.count_rows("place_enrichments")
         concentration_mapping_count = await repository.count_rows(
             "place_concentration_mappings"
         )
         sync_runs = await repository.list_recent_sync_runs(sync_run_limit)
         locks = await repository.list_sync_locks()
+        detail_calls = await repository.summarize_detail_calls_since(
+            _today_start_kst()
+        )
+
+    districts = [
+        {
+            **summary,
+            # 이름을 못 찾아도 코드는 그대로 남는다 — 화면이 코드로 표시한다.
+            "district_name": find_district_name(
+                str(summary.get("area_code") or ""),
+                str(summary.get("district_code") or ""),
+            ),
+        }
+        for summary in _as_summary_list(summaries.get("districts"))
+    ]
 
     return {
-        "area_code": area,
-        "district_code": district,
-        "places": places,
+        "overall": summaries.get("overall"),
+        "districts": districts,
         "place_enrichments_count": enrichment_count,
         "place_concentration_mappings_count": concentration_mapping_count,
         "sync_runs": sync_runs,
         "sync_locks": locks,
         "detail_ttl_days": settings.place_sync_detail_ttl_days,
+        "detail_calls_today": {
+            **detail_calls,
+            "daily_limit": settings.tour_api_daily_call_limit,
+        },
     }
+
+
+def _today_start_kst() -> datetime:
+    """오늘 0시(KST). TourAPI 일일 한도가 그 경계로 초기화된다."""
+    return datetime.now(place_snapshot.KST).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+
+
+def _as_summary_list(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
 
 
 # --- 동기화: 대조 → 반영 -----------------------------------------------------
@@ -245,6 +291,16 @@ class ApplyRequest(BaseModel):
         ),
     )
     dry_run: bool = True
+    details_limit: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "이번 실행에서 부를 상세조회 상한. 새 구는 대상이 수백 건이라 하루 "
+            "한도(1,000회)를 한 번에 소진할 수 있어 나눠 받는다. 상한이 걸린 "
+            "실행은 비활성화를 건너뛴다 — 목록을 다 처리하지 못했으므로 "
+            "'사라진 장소'를 판정할 수 없다."
+        ),
+    )
     confirm: str = Field(description="'<area>-<district>' 문자열. 오타 실행 방지용")
 
 
@@ -274,6 +330,33 @@ def _snapshot_path(name: str) -> Path:
     return candidate
 
 
+def _require_snapshot_region(
+    snapshot: dict[str, dict[str, str]],
+    snapshot_name: str,
+    area_code: str,
+    district_code: str,
+) -> None:
+    """스냅샷이 담은 구가 지금 다루는 구와 같은지 내용으로 확인한다.
+
+    다른 구 스냅샷으로 반영하면 그 구에 없는 장소, 즉 **대상 구의 활성 장소 전부**가
+    "목록에서 사라진 것"으로 판정돼 비활성화된다(`deactivate_unseen_places`).
+    되돌리려면 동기화를 다시 돌려야 하고, 그 사이 추천은 결과 없음이 된다.
+
+    대조 쪽도 같은 함수로 막는다 — 다른 구를 기준으로 잡으면 "전량 삭제 + 전량
+    신규"가 나오는데, 이 모양은 실제 대량 변경과 구분이 안 된다(2026-08-20 중구
+    사례).
+    """
+    regions = place_snapshot.snapshot_regions(snapshot)
+    expected = (area_code.strip(), district_code.strip())
+    if not regions or regions == {expected}:
+        return
+    found = ", ".join(sorted(f"{area}-{district}" for area, district in regions))
+    raise DevPanelError(
+        f"스냅샷 {snapshot_name}은 {found} 자료라 "
+        f"{expected[0]}-{expected[1]}에 쓸 수 없습니다."
+    )
+
+
 @router.get("/place-sync/snapshots")
 async def get_snapshots() -> dict[str, Any]:
     return {
@@ -282,9 +365,86 @@ async def get_snapshots() -> dict[str, Any]:
     }
 
 
+@router.get("/place-sync/districts")
+async def get_sync_districts() -> dict[str, Any]:
+    """동기화 화면이 고를 수 있는 구와, 코드 입력을 검증할 사전.
+
+    `loaded`는 자료가 있는 구다 — places에 행이 있거나 스냅샷 파일이 있는 구.
+    파일만 있는 구도 넣는 이유는, 대조만 하고 아직 반영하지 않은 구가 화면에서
+    사라지지 않게 하기 위해서다.
+
+    `known`은 시군구 사전이다. 화면이 "구 추가" 입력을 이걸로 검증한다 — 없는
+    코드로 동기화를 걸면 TourAPI가 빈 목록을 돌려주고, 그 결과는 "장소가 0건인
+    구"와 구분되지 않는다.
+
+    새 구를 목록에 저장해두지 않는다. 한 번 대조하면 스냅샷 파일이 생기고 반영하면
+    places에 행이 생기므로, 자료가 곧 목록이 된다. 따로 저장하면 자료 없이 이름만
+    남은 구가 목록에 쌓인다.
+    """
+    url, key = _require_supabase()
+
+    async with status_client() as client:
+        repository = SupabasePlaceRepository(
+            supabase_url=url,
+            secret_key=key,
+            client=client,
+            timeout_seconds=max(settings.external_api_timeout_seconds, 30.0),
+        )
+        summaries = await repository.get_place_summaries_by_district()
+
+    loaded: dict[tuple[str, str], dict[str, Any]] = {}
+    for summary in _as_summary_list(summaries.get("districts")):
+        area_code = str(summary.get("area_code") or "")
+        district_code = str(summary.get("district_code") or "")
+        active_count = int(summary.get("active", 0) or 0)
+        loaded[(area_code, district_code)] = {
+            "area_code": area_code,
+            "district_code": district_code,
+            "district_name": find_district_name(area_code, district_code),
+            "place_count": summary.get("total", 0),
+            "active_count": active_count,
+            "latest_snapshot": None,
+            "list_call_estimate": _list_call_estimate(active_count),
+        }
+
+    for path in place_snapshot.list_snapshots():
+        codes = place_snapshot.district_from_snapshot_name(path.name)
+        if codes is None:
+            continue
+        entry = loaded.setdefault(
+            codes,
+            {
+                "area_code": codes[0],
+                "district_code": codes[1],
+                "district_name": find_district_name(*codes),
+                "place_count": 0,
+                "active_count": 0,
+                "latest_snapshot": None,
+                "list_call_estimate": 1,
+            },
+        )
+        # 최신순 목록이라 그 구에서 처음 만난 파일이 가장 최근 것이다.
+        if entry["latest_snapshot"] is None:
+            entry["latest_snapshot"] = path.name
+
+    return {
+        "loaded": [loaded[key] for key in sorted(loaded)],
+        "known": list_districts(settings.place_sync_area_code),
+    }
+
+
 @router.post("/place-sync/reconcile")
 async def post_reconcile(request: ReconcileRequest) -> dict[str, Any]:
-    """목록을 1회 조회해 스냅샷을 남기고 이전 스냅샷과 대조한다. DB는 안 건드린다."""
+    """목록을 1회 조회해 스냅샷을 남기고 이전 스냅샷과 대조한다. DB에는 쓰지 않는다.
+
+    기준으로 쓸 스냅샷 파일이 없으면 places에서 그 구의 장소를 읽어 기준을 만든다.
+    그러지 않으면 전량이 신규로 잡혀, 이미 DB에 있는 장소에 detailIntro2를 한 번씩
+    더 쓴다(용산구 486건이면 하루 한도 1,000회의 절반이다).
+
+    DB로 만든 기준은 파일로 남기지 않는다. 파일명 날짜가 오늘과 겹치면 이번 대조가
+    쓰는 파일과 이름이 같아, 만들자마자 덮어써지고 기준이 사라진다. 무엇과
+    비교했는지는 대조 결과 CSV의 baseline 칸에 `places@2026-08-21` 꼴로 남긴다.
+    """
     api_key = _require_real_place_provider()
     area = request.area_code or settings.place_sync_area_code
     district = request.district_code or settings.place_sync_district_code
@@ -295,34 +455,47 @@ async def post_reconcile(request: ReconcileRequest) -> dict[str, Any]:
             client, api_key, area, district, now
         )
 
-    snapshot_path = (
-        place_snapshot.DATA_DIR / f"{place_snapshot.SNAPSHOT_PREFIX}{now:%Y%m%d}.csv"
+    snapshot_path = place_snapshot.DATA_DIR / place_snapshot.snapshot_file_name(
+        area, district, now
     )
     baseline_path = (
         _snapshot_path(request.baseline)
         if request.baseline
-        else place_snapshot.find_baseline(exclude=snapshot_path)
+        else place_snapshot.find_baseline(
+            area_code=area, district_code=district, exclude=snapshot_path
+        )
     )
     # 같은 날 다시 대조하면 덮어쓴다. 스냅샷은 git 추적 대상이라 덮어쓴 차이가
     # 그대로 diff로 남는다.
     place_snapshot.write_snapshot(current, snapshot_path)
 
-    if baseline_path is None:
+    if baseline_path is not None:
+        baseline = place_snapshot.load_snapshot(baseline_path)
+        baseline_label = baseline_path.name
+        baseline_source = "file"
+    else:
+        baseline, baseline_source = await _baseline_from_database(area, district)
+        baseline_label = f"places@{now:%Y-%m-%d}" if baseline else None
+
+    if not baseline:
         return {
             "area_code": area,
             "district_code": district,
             "snapshot": snapshot_path.name,
             "snapshot_count": len(current),
             "baseline": None,
+            "baseline_source": baseline_source,
             "skipped_columns": [],
             "counts": {"added": 0, "removed": 0, "updated": 0},
             "detail_content_ids": sorted(current),
             "detail_excluded_ids": [],
+            "detail_backfill_ids": [],
+            "detail_backfill_checked": True,
             "rows": [],
-            "message": "기준 스냅샷이 없어 대조를 건너뛰었습니다. 전량이 신규로 취급됩니다.",
+            "message": _NO_BASELINE_MESSAGES[baseline_source],
         }
 
-    baseline = place_snapshot.load_snapshot(baseline_path)
+    _require_snapshot_region(baseline, baseline_label or "", area, district)
     baseline_columns = list(next(iter(baseline.values()), {}).keys())
     compared = place_snapshot.comparable_columns(baseline_columns)
     # 조용히 빼면 "안 바뀌었다"와 "안 봤다"가 결과에서 구분되지 않는다.
@@ -332,12 +505,15 @@ async def post_reconcile(request: ReconcileRequest) -> dict[str, Any]:
     rows = place_snapshot.build_reconciliation_rows(baseline, current, compared)
     reconciliation_path = (
         place_snapshot.DATA_DIR
-        / f"{place_snapshot.RECONCILIATION_PREFIX}{now:%Y%m%d}.csv"
+        / place_snapshot.reconciliation_file_name(area, district, now)
     )
     place_snapshot.write_reconciliation(
-        rows, reconciliation_path, baseline_name=baseline_path.name, compared_at=now
+        rows, reconciliation_path, baseline_name=baseline_label or "", compared_at=now
     )
     detail_ids, excluded_ids = place_snapshot.select_detail_targets(rows)
+    backfill_ids, backfill_checked = await _detail_backfill_ids(
+        area, district, current, detail_ids
+    )
 
     counts = {"added": 0, "removed": 0, "updated": 0}
     for row in rows:
@@ -348,15 +524,116 @@ async def post_reconcile(request: ReconcileRequest) -> dict[str, Any]:
         "district_code": district,
         "snapshot": snapshot_path.name,
         "snapshot_count": len(current),
-        "baseline": baseline_path.name,
+        "baseline": baseline_label,
+        "baseline_source": baseline_source,
         "baseline_count": len(baseline),
         "reconciliation": reconciliation_path.name,
         "skipped_columns": skipped,
         "counts": counts,
         "detail_content_ids": sorted(detail_ids),
         "detail_excluded_ids": sorted(excluded_ids),
+        "detail_backfill_ids": backfill_ids,
+        "detail_backfill_checked": backfill_checked,
         "rows": rows,
     }
+
+
+_NO_BASELINE_MESSAGES = {
+    "none": (
+        "기준 스냅샷도 없고 DB에도 이 구의 장소가 없어 대조를 건너뛰었습니다. "
+        "전량이 신규로 취급됩니다."
+    ),
+    "unavailable": (
+        "기준 스냅샷이 없고 SUPABASE_URL / SUPABASE_SECRET_KEY가 없어 DB를 "
+        "확인하지 못했습니다. 전량이 신규로 취급됩니다 — DB에 이 구의 장소가 "
+        "이미 있다면 상세조회를 그만큼 낭비하게 됩니다."
+    ),
+}
+
+
+def _list_call_estimate(place_count: int) -> int:
+    """대조 한 번이 쓸 목록 API 호출 수.
+
+    `areaBasedList2`도 오퍼레이션 단위로 일일 한도가 걸려 있다(2026-08-07 소진).
+    한 번에 1회라 작아 보이지만 구를 바꿔가며 누르면 그만큼 쌓이고, 지금은 화면에
+    그 사실이 보이지 않는다.
+
+    쪽수는 DB의 활성 장소 수로 어림한다 — 실제 기준은 TourAPI의 totalCount라
+    불러봐야 알 수 있고, 그걸 알려고 부르면 세려던 호출을 먼저 쓰게 된다.
+    """
+    pages, remainder = divmod(max(place_count, 0), place_snapshot.LIST_PAGE_SIZE)
+    return max(1, pages + (1 if remainder else 0))
+
+
+async def _detail_backfill_ids(
+    area_code: str,
+    district_code: str,
+    current: Mapping[str, Mapping[str, str]],
+    detail_ids: frozenset[str],
+) -> tuple[list[str], bool]:
+    """이번 반영이 변경분과 **함께** 부를 장소들.
+
+    동기화는 대조가 정한 변경분 외에 pending·failed 장소도 부른다
+    (`PlaceSyncService._select_targets`). 그걸 빼고 계산하면 화면이 "상세조회
+    15회"라고 해놓고 실제로는 157회를 쓴다 — 2026-08-21 종로구 대조가 그 상태였다.
+    한도가 왜 줄었는지 아무도 설명할 수 없게 된다.
+
+    목록에 없는 장소는 제외한다. 동기화는 이번 목록에 있는 장소만 훑으므로,
+    비활성이라 목록에서 빠진 장소는 아무리 pending이어도 불리지 않는다.
+
+    두 번째 반환값은 "확인했는가"다. 자격증명이 없어 못 본 것과 "보충할 게 없다"를
+    같은 0으로 뭉개면, 화면이 예상 호출수를 확정된 값처럼 보여주게 된다.
+    """
+    url = settings.supabase_url.strip()
+    key = settings.supabase_secret_key.strip()
+    if not url or not key:
+        return [], False
+
+    async with status_client() as client:
+        repository = SupabasePlaceRepository(
+            supabase_url=url,
+            secret_key=key,
+            client=client,
+            timeout_seconds=max(settings.external_api_timeout_seconds, 30.0),
+        )
+        pending = await repository.list_detail_backfill_ids(area_code, district_code)
+    return [
+        content_id
+        for content_id in pending
+        if content_id in current and content_id not in detail_ids
+    ], True
+
+
+async def _baseline_from_database(
+    area_code: str, district_code: str
+) -> tuple[dict[str, dict[str, str]], str]:
+    """places에서 그 구의 활성 장소를 읽어 기준 스냅샷을 만든다.
+
+    Supabase 자격증명은 여기서만 필요하다 — 파일 기준이 있는 대조는 DB를 아예
+    건드리지 않으므로, 위에서 미리 요구하면 되던 일이 안 되게 만든다. 자격증명이
+    없으면 "DB에 없다"가 아니라 "확인하지 못했다"로 돌려준다. 두 가지를 같은
+    결과로 뭉개면 화면이 낭비되는 상세조회의 이유를 설명할 수 없다.
+
+    비활성 장소는 넣지 않는다. 목록에서 사라져서 비활성이 된 것이라, 넣으면 대조할
+    때마다 계속 "삭제"로 잡힌다.
+    """
+    url = settings.supabase_url.strip()
+    key = settings.supabase_secret_key.strip()
+    if not url or not key:
+        return {}, "unavailable"
+
+    async with status_client() as client:
+        repository = SupabasePlaceRepository(
+            supabase_url=url,
+            secret_key=key,
+            client=client,
+            timeout_seconds=max(settings.external_api_timeout_seconds, 30.0),
+        )
+        rows = await repository.list_region_place_rows(
+            area_code, district_code, place_snapshot.SNAPSHOT_COLUMNS
+        )
+    baseline = place_snapshot.snapshot_rows_from_db(rows)
+    return baseline, "database" if baseline else "none"
 
 
 class _SnapshotListProvider:
@@ -404,6 +681,12 @@ async def post_apply(request: ApplyRequest) -> dict[str, Any]:
         )
 
     snapshot_path = _snapshot_path(request.snapshot)
+    _require_snapshot_region(
+        place_snapshot.load_snapshot(snapshot_path),
+        snapshot_path.name,
+        area,
+        district,
+    )
     detail_ids = frozenset(request.detail_content_ids)
 
     async def run(on_progress: Callable[[SyncProgress], None]) -> SyncJobOutcome:
@@ -433,6 +716,7 @@ async def post_apply(request: ApplyRequest) -> dict[str, Any]:
                 area,
                 district,
                 dry_run=request.dry_run,
+                details_limit=request.details_limit,
                 detail_content_ids=detail_ids,
                 on_progress=on_progress,
             )
@@ -454,6 +738,9 @@ async def post_apply(request: ApplyRequest) -> dict[str, Any]:
                 "dry_run": request.dry_run,
                 "detail_target_count": len(detail_ids),
                 "added_count": len(request.added_content_ids),
+                # 상한이 걸린 실행은 비활성화를 건너뛴다. 화면이 그 사실을 알려면
+                # job 파라미터에 남아 있어야 한다.
+                "details_limit": request.details_limit,
             },
             run,
         )

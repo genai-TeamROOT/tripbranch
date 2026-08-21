@@ -37,9 +37,8 @@ export type ApiUsageSnapshot = {
   entries: ApiUsageEntry[];
 };
 
-export type PlaceTableSummary = {
-  area_code: string;
-  district_code: string;
+/** 장소 행 묶음 하나의 요약. 구 하나일 수도, 전 구 합계일 수도 있다. */
+export type PlaceSummary = {
   total: number;
   active: number;
   inactive: number;
@@ -47,6 +46,13 @@ export type PlaceTableSummary = {
   operating_parse_status: Record<string, number>;
   operating_parser_version: Record<string, number>;
   latest_detail_fetched_at: string | null;
+};
+
+/** 구 하나의 요약. district_name은 코드 자료에 없는 구면 null이라 코드로 표시한다. */
+export type DistrictPlaceSummary = PlaceSummary & {
+  area_code: string;
+  district_code: string;
+  district_name: string | null;
 };
 
 export type SyncRunRow = {
@@ -75,14 +81,27 @@ export type SyncLockRow = {
 };
 
 export type DbStatus = {
-  area_code: string;
-  district_code: string;
-  places: PlaceTableSummary;
+  /** 적재된 전 구 합계. 탭의 "전체"가 읽는다. */
+  overall: PlaceSummary;
+  /** 적재된 구만 들어온다 — 이 배열이 곧 화면의 탭 목록이다. */
+  districts: DistrictPlaceSummary[];
+  /* 아래 네 값은 구로 나누지 않는다. 두 카운트는 테이블에 구 열이 없고(둘 다
+   * content_id 기준), 이력과 잠금은 전 구를 한 목록으로 보는 편이 "어느 구를
+   * 언제 돌렸나"를 읽기 쉽다. */
   place_enrichments_count: number;
   place_concentration_mappings_count: number;
   sync_runs: SyncRunRow[];
   sync_locks: SyncLockRow[];
   detail_ttl_days: number;
+  /* 오늘 detailIntro2를 몇 번 불렀는지. place_sync_runs에서 세므로 서버를
+   * 재시작해도 남고 scripts 실행분도 잡히지만, 여전히 하한이다 — 재시도는 안
+   * 세지고 중간에 죽은 실행은 값이 비어 있다(runs_without_count). */
+  detail_calls_today: {
+    count: number;
+    runs: number;
+    runs_without_count: number;
+    daily_limit: number | null;
+  };
 };
 
 export type ApiExchange = {
@@ -144,18 +163,32 @@ export type ReconcileRow = {
   current: Record<string, string>;
 };
 
+/** 무엇을 기준으로 대조했는지.
+ *
+ * `database`는 스냅샷 파일이 없어 places에서 기준을 만든 경우다. 그 기준은 파일로
+ * 남지 않는다 — 파일명 날짜가 오늘과 겹치면 이번 대조가 쓰는 파일에 덮어써진다.
+ * `unavailable`은 "DB에 없다"가 아니라 "자격증명이 없어 확인하지 못했다"다. */
+export type BaselineSource = "file" | "database" | "none" | "unavailable";
+
 export type ReconcileResult = {
   area_code: string;
   district_code: string;
   snapshot: string;
   snapshot_count: number;
   baseline: string | null;
+  baseline_source: BaselineSource;
   baseline_count?: number;
   reconciliation?: string;
   skipped_columns: string[];
   counts: { added: number; removed: number; updated: number };
   detail_content_ids: string[];
   detail_excluded_ids: string[];
+  /* 이번 변경분은 아니지만 반영이 **함께** 부르는 장소. 지난 실행에서 상세를 못
+   * 채운(pending·failed) 건이다. 빼고 계산하면 화면이 "15회"라고 해놓고 실제로는
+   * 157회를 쓴다. */
+  detail_backfill_ids: string[];
+  /** DB를 실제로 확인했는지. false면 위 목록이 0건이라는 뜻이 아니라 못 봤다는 뜻이다. */
+  detail_backfill_checked: boolean;
   rows: ReconcileRow[];
   message?: string;
 };
@@ -169,6 +202,8 @@ export type SyncJob = {
     dry_run: boolean;
     detail_target_count: number;
     added_count: number;
+    /** 상한이 걸린 실행은 비활성화를 건너뛴다 — 목록을 다 처리하지 못했으므로. */
+    details_limit: number | null;
   };
   status: string;
   started_at: string;
@@ -196,24 +231,70 @@ export type SyncJob = {
   unmapped_new_place_ids: string[];
 };
 
-export function reconcilePlaces(baseline?: string) {
+/** 화면이 고를 수 있는 구. 자료가 있는 구만 들어온다. */
+export type SyncDistrict = {
+  area_code: string;
+  district_code: string;
+  district_name: string | null;
+  place_count: number;
+  active_count: number;
+  latest_snapshot: string | null;
+  /** 이 구를 한 번 대조할 때 나가는 목록 API 호출 수. 장소 1,000건마다 1회다. */
+  list_call_estimate: number;
+};
+
+/** 코드 입력을 검증할 시군구 사전 항목. */
+export type KnownDistrict = {
+  area_code: string;
+  district_code: string;
+  district_name: string;
+};
+
+export type SyncDistricts = {
+  loaded: SyncDistrict[];
+  known: KnownDistrict[];
+};
+
+export function fetchSyncDistricts() {
+  return apiClient.get<SyncDistricts>("/dev/place-sync/districts");
+}
+
+export function reconcilePlaces(input: {
+  areaCode: string;
+  districtCode: string;
+  baseline?: string;
+}) {
   return apiClient.post<ReconcileResult>("/dev/place-sync/reconcile", {
-    baseline: baseline ?? null,
+    area_code: input.areaCode,
+    district_code: input.districtCode,
+    baseline: input.baseline ?? null,
   });
 }
 
+/*
+ * 구를 반드시 싣는다. 빠뜨리면 서버가 설정 기본값(종로구)으로 실행해, 다른 구
+ * 스냅샷을 반영했을 때 종로구 활성 장소가 전부 비활성화된다. 서버도 스냅샷
+ * 내용과 구가 다르면 거부하지만, 그 거부에 걸리지 않으려면 여기서 맞게 보내야
+ * 한다.
+ */
 export function applyPlaceSync(input: {
+  areaCode: string;
+  districtCode: string;
   snapshot: string;
   detailContentIds: string[];
   addedContentIds: string[];
   dryRun: boolean;
+  detailsLimit: number | null;
   confirm: string;
 }) {
   return apiClient.post<SyncJob>("/dev/place-sync/apply", {
+    area_code: input.areaCode,
+    district_code: input.districtCode,
     snapshot: input.snapshot,
     detail_content_ids: input.detailContentIds,
     added_content_ids: input.addedContentIds,
     dry_run: input.dryRun,
+    details_limit: input.detailsLimit,
     confirm: input.confirm,
   });
 }
@@ -222,12 +303,13 @@ export function fetchSyncJob(jobId: string) {
   return apiClient.get<SyncJob>(`/dev/place-sync/jobs/${jobId}`);
 }
 
-export function fetchDbStatus(areaCode?: string, districtCode?: string) {
-  const params = new URLSearchParams();
-  if (areaCode) params.set("area_code", areaCode);
-  if (districtCode) params.set("district_code", districtCode);
-  const query = params.toString();
-  return apiClient.get<DbStatus>(`/dev/db-status${query ? `?${query}` : ""}`);
+/*
+ * 구를 인자로 받지 않는다 — 어떤 구가 적재돼 있는지는 places가 아는 사실이라
+ * 응답이 구 목록까지 함께 준다. 탭 전환은 이미 받아둔 값을 고르는 것이라
+ * 추가 요청이 없다.
+ */
+export function fetchDbStatus() {
+  return apiClient.get<DbStatus>("/dev/db-status");
 }
 
 export type NearestArea = {

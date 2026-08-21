@@ -447,6 +447,7 @@ async def test_complete_sync_run_updates_counts() -> None:
             new_count=3,
             updated_count=0,
             deactivated_count=0,
+            detail_attempted_count=3,
             error_summary={"TOUR_DETAIL_TIMEOUT": 1},
             completed_at=NOW,
         )
@@ -454,6 +455,8 @@ async def test_complete_sync_run_updates_counts() -> None:
     assert seen_payload["status"] == "partial_failure"
     assert seen_payload["failed_count"] == 1
     assert seen_payload["error_summary"] == {"TOUR_DETAIL_TIMEOUT": 1}
+    # 일일 한도 판단의 근거라 실행 기록에 남아야 한다.
+    assert seen_payload["detail_attempted_count"] == 3
 
 
 @pytest.mark.asyncio
@@ -577,9 +580,12 @@ async def test_count_rows_rejects_missing_content_range() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_region_place_summary_counts_status_distribution() -> None:
+async def test_place_summaries_split_by_district_and_total() -> None:
+    """구별 분포와 전 구 합계를 한 번의 조회로 만든다."""
     rows = [
         {
+            "area_code": "11",
+            "district_code": "110",
             "is_active": True,
             "detail_fetch_status": "succeeded",
             "operating_parse_status": "parsed",
@@ -587,45 +593,73 @@ async def test_get_region_place_summary_counts_status_distribution() -> None:
             "detail_fetched_at": "2026-08-08T05:00:00+00:00",
         },
         {
-            "is_active": True,
-            "detail_fetch_status": "failed",
-            "operating_parse_status": "unknown",
-            "operating_parser_version": "operating-hours-1.0.0",
-            "detail_fetched_at": "2026-08-09T05:00:00+00:00",
-        },
-        {
+            "area_code": "11",
+            "district_code": "110",
             "is_active": False,
             "detail_fetch_status": "pending",
             "operating_parse_status": "unknown",
             "operating_parser_version": "operating-hours-0.9.0",
             "detail_fetched_at": None,
         },
+        {
+            "area_code": "11",
+            "district_code": "170",
+            "is_active": True,
+            "detail_fetch_status": "failed",
+            "operating_parse_status": "unknown",
+            "operating_parser_version": "operating-hours-1.0.0",
+            "detail_fetched_at": "2026-08-21T05:00:00+00:00",
+        },
     ]
 
+    requested: list[httpx.Request] = []
+
     def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request)
         return httpx.Response(200, json=rows)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         repository = SupabasePlaceRepository(
             "https://project.supabase.co/", "sb_secret_test", client
         )
-        summary = await repository.get_region_place_summary("11", "110")
+        summaries = await repository.get_place_summaries_by_district()
 
-    assert summary["total"] == 3
-    assert summary["active"] == 2
-    assert summary["inactive"] == 1
-    assert summary["detail_fetch_status"] == {
+    # 구별로 질의를 나누지 않는다 — 나누면 적재된 구 목록을 미리 알아야 한다.
+    assert len(requested) == 1
+    assert "district_code" not in requested[0].url.params
+
+    districts = summaries["districts"]
+    assert isinstance(districts, list)
+    assert [(d["area_code"], d["district_code"]) for d in districts] == [
+        ("11", "110"),
+        ("11", "170"),
+    ]
+
+    jongno = districts[0]
+    assert (jongno["total"], jongno["active"], jongno["inactive"]) == (2, 1, 1)
+    assert jongno["detail_fetch_status"] == {"succeeded": 1, "pending": 1}
+    assert jongno["latest_detail_fetched_at"] == "2026-08-08T05:00:00+00:00"
+
+    yongsan = districts[1]
+    assert (yongsan["total"], yongsan["active"], yongsan["inactive"]) == (1, 1, 0)
+    assert yongsan["latest_detail_fetched_at"] == "2026-08-21T05:00:00+00:00"
+
+    overall = summaries["overall"]
+    assert isinstance(overall, dict)
+    assert (overall["total"], overall["active"], overall["inactive"]) == (3, 2, 1)
+    assert overall["detail_fetch_status"] == {
         "succeeded": 1,
-        "failed": 1,
         "pending": 1,
+        "failed": 1,
     }
-    assert summary["operating_parse_status"] == {"parsed": 1, "unknown": 2}
+    assert overall["operating_parse_status"] == {"parsed": 1, "unknown": 2}
     # 파서 버전이 섞여 있으면 다음 동기화에서 재파싱 대상이 생긴다는 신호다.
-    assert summary["operating_parser_version"] == {
+    assert overall["operating_parser_version"] == {
         "operating-hours-1.0.0": 2,
         "operating-hours-0.9.0": 1,
     }
-    assert summary["latest_detail_fetched_at"] == "2026-08-09T05:00:00+00:00"
+    # 합계의 최신 상세조회 시각은 전 구를 통틀어 가장 나중이다.
+    assert overall["latest_detail_fetched_at"] == "2026-08-21T05:00:00+00:00"
 
 
 @pytest.mark.asyncio
@@ -677,3 +711,31 @@ async def test_find_missing_concentration_mappings_skips_request_when_empty() ->
             "https://project.supabase.co/", "sb_secret_test", client
         )
         assert await repository.find_missing_concentration_mappings([]) == []
+
+
+@pytest.mark.asyncio
+async def test_detail_call_summary_separates_unmeasured_runs() -> None:
+    """재지 못한 실행을 0으로 합치면 합계가 실제보다 정확해 보인다."""
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(
+            200,
+            json=[
+                {"detail_attempted_count": 486},
+                {"detail_attempted_count": 3},
+                # 중간에 죽어 완료 처리를 못 한 실행, 또는 열 추가 이전 행.
+                {"detail_attempted_count": None},
+            ],
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        repository = SupabasePlaceRepository(
+            "https://project.supabase.co/", "sb_secret_test", client
+        )
+        summary = await repository.summarize_detail_calls_since(NOW)
+
+    assert summary == {"count": 489, "runs": 3, "runs_without_count": 1}
+    # 오늘 것만 세야 한다 — 경계를 안 걸면 누적 전체가 오늘 사용량으로 보인다.
+    assert captured[0].url.params["started_at"].startswith("gte.")

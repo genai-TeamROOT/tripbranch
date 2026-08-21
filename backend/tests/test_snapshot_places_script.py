@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from app.services.place_snapshot import (
     COMPARED_COLUMNS as _COMPARED_COLUMNS,
 )
 from app.services.place_snapshot import (
+    KST,
     build_reconciliation_rows,
     comparable_columns,
+    find_baseline,
+    list_snapshots,
+    snapshot_file_name,
+    snapshot_regions,
+    write_snapshot,
 )
 
 
@@ -123,3 +131,69 @@ def test_loader_accepts_old_snapshot_without_image_columns(tmp_path) -> None:
 
     assert records[0].first_image_url is None
     assert records[0].thumbnail_url is None
+
+
+def test_snapshot_file_name_puts_district_before_date() -> None:
+    """구가 앞, 날짜가 뒤. 같은 구 안에서는 이름순이 곧 날짜순이어야 한다."""
+    when = datetime(2026, 8, 21, tzinfo=KST)
+
+    assert (
+        snapshot_file_name("11", "170", when)
+        == "places_api_snapshot_11-170_20260821.csv"
+    )
+    older = snapshot_file_name("11", "170", datetime(2026, 8, 20, tzinfo=KST))
+    assert older < snapshot_file_name("11", "170", when)
+
+
+def test_find_baseline_never_picks_another_district(tmp_path) -> None:
+    """다른 구 스냅샷이 더 최신이어도 기준으로 잡히지 않는다.
+
+    2026-08-20에 중구를 종로구 스냅샷과 대조해 "삭제 844건"이 나왔다. 그 844건은
+    폐업이 아니라 전부 종로구 장소였고, 대조 결과 자체가 의미 없는 값이었다.
+    """
+    write_snapshot(
+        {"1": _row()},
+        tmp_path / snapshot_file_name("11", "110", datetime(2026, 8, 21, tzinfo=KST)),
+    )
+    junggu_old = tmp_path / snapshot_file_name(
+        "11", "140", datetime(2026, 8, 10, tzinfo=KST)
+    )
+    write_snapshot({"2": _row(content_id="2", district_code="140")}, junggu_old)
+
+    baseline = find_baseline(tmp_path, area_code="11", district_code="140")
+
+    assert baseline == junggu_old
+
+
+def test_find_baseline_returns_none_for_a_district_without_snapshots(tmp_path) -> None:
+    """스냅샷이 없는 구는 '기준 없음'이 된다 — 남의 구를 끌어다 쓰지 않는다."""
+    write_snapshot(
+        {"1": _row()},
+        tmp_path / snapshot_file_name("11", "110", datetime(2026, 8, 21, tzinfo=KST)),
+    )
+
+    assert find_baseline(tmp_path, area_code="11", district_code="170") is None
+
+
+def test_old_snapshot_name_without_district_is_not_used_as_baseline(tmp_path) -> None:
+    """구가 없는 옛 이름은 어느 구의 기준으로도 잡히지 않는다.
+
+    파일이 남아 있어도 '기준 없음'이 될 뿐, 다른 구와 섞이지는 않는다.
+    """
+    write_snapshot({"1": _row()}, tmp_path / "places_api_snapshot_20260810.csv")
+
+    assert find_baseline(tmp_path, area_code="11", district_code="110") is None
+    # 목록 조회는 구를 안 주면 옛 파일도 그대로 보여준다(무엇이 있는지 알아야 한다).
+    assert [path.name for path in list_snapshots(tmp_path)] == [
+        "places_api_snapshot_20260810.csv"
+    ]
+
+
+def test_snapshot_regions_reads_content_not_file_name() -> None:
+    """스냅샷이 무엇을 담고 있는지는 행의 district_code가 말한다."""
+    snapshot = {
+        "1": _row(),
+        "2": _row(content_id="2", district_code="140"),
+    }
+
+    assert snapshot_regions(snapshot) == {("11", "110"), ("11", "140")}

@@ -228,6 +228,7 @@ class PlaceSyncService:
                 new_count=0,
                 updated_count=0,
                 deactivated_count=0,
+                detail_attempted_count=0,
                 error_summary={"SYNC_LOCK_UNAVAILABLE": 1},
                 completed_at=completed_at,
             )
@@ -270,6 +271,7 @@ class PlaceSyncService:
                 new_count=0,
                 updated_count=0,
                 deactivated_count=0,
+                detail_attempted_count=0,
                 error_summary={"SYNC_ABORTED": 1},
                 completed_at=self._now(),
             )
@@ -313,6 +315,7 @@ class PlaceSyncService:
                     new_count=0,
                     updated_count=0,
                     deactivated_count=0,
+                    detail_attempted_count=0,
                     error_summary={"INCOMPLETE_PLACE_LIST": 1},
                     completed_at=self._now(),
                 )
@@ -426,6 +429,8 @@ class PlaceSyncService:
                 new_count=new_count,
                 updated_count=updated_count,
                 deactivated_count=deactivated_count,
+                # 계획한 수가 아니라 실제로 부른 수다 — 한도로 중단하면 적다.
+                detail_attempted_count=len(outcomes),
                 error_summary=dict(error_summary) or None,
                 completed_at=self._now(),
             )
