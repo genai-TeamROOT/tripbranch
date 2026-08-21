@@ -420,17 +420,22 @@ function tripReducer(state: TripState, action: TripAction): TripState {
                 : message,
             )
           : state.messages;
-      const messages =
-        response.info_place_card !== null && response.info_place_card !== undefined
-          ? [
-              ...streamedMessages,
-              {
-                id: createMessageId("place-info"),
-                type: "place_info_result" as const,
-                card: response.info_place_card,
-              },
-            ]
-          : streamedMessages;
+      const trailingMessages: ChatMessage[] = [];
+      if (response.info_place_card !== null && response.info_place_card !== undefined) {
+        trailingMessages.push({
+          id: createMessageId("place-info"),
+          type: "place_info_result",
+          card: response.info_place_card,
+        });
+      }
+      if (response.comparison !== null && response.comparison !== undefined) {
+        trailingMessages.push({
+          id: createMessageId("compare"),
+          type: "compare_result",
+          comparison: response.comparison,
+        });
+      }
+      const messages = [...streamedMessages, ...trailingMessages];
       return {
         ...state,
         interpreted_conditions: conditions ?? state.interpreted_conditions,
@@ -450,6 +455,7 @@ function tripReducer(state: TripState, action: TripAction): TripState {
     case "APPEND_CHAT_TURN": {
       const { conditions, intent, message, recommendations, schedule, showDebug } = action.payload;
       const infoPlaceCard = action.payload.agentResponse.info_place_card ?? null;
+      const comparison = action.payload.agentResponse.comparison ?? null;
       const messages: ChatMessage[] = [];
       // 옵션 A: 조건 카드는 유지하되 확인 버튼은 없다 — Agent가 해석과 추천을 한 번에
       // 끝내므로 중간에 사용자가 진행을 승인할 지점이 없다.
@@ -507,6 +513,13 @@ function tripReducer(state: TripState, action: TripAction): TripState {
           id: createMessageId("info-place"),
           type: "place_info_result",
           card: infoPlaceCard,
+        });
+      }
+      if (comparison) {
+        messages.push({
+          id: createMessageId("compare"),
+          type: "compare_result",
+          comparison,
         });
       }
 

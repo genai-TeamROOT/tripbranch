@@ -11,7 +11,7 @@ slots:
     evals: evals/README.md
   compare.summary:
     description: 검증된 비교 결과만으로 운영시간·실내외·실제 이동시간(도보·자동차·대중교통)을 설명하고 한 곳을 추천한다.
-    version: "2.0.0"
+    version: "2.0.1"
     template: summary_instruction.md
     bundle:
       - _shared/persona/trivi.md

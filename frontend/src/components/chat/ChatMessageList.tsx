@@ -15,6 +15,7 @@ import { useEffect, useState } from "react";
 import type { AgentProgressEvent, ChatMessage } from "../../types";
 import { AgentProgressMessage } from "./AgentProgressMessage";
 import { ClarificationMessage } from "./ClarificationMessage";
+import { CompareResultCards } from "./CompareResultCards";
 import { LocationRefreshMessage } from "./LocationRefreshMessage";
 import { ConditionDebugMessage } from "./ConditionDebugMessage";
 import { PlaceInfoCard } from "./PlaceInfoCard";
@@ -178,6 +179,10 @@ export function ChatMessageList({
 
           if (message.type === "place_info_result") {
             return <PlaceInfoCard key={message.id} card={message.card} />;
+          }
+
+          if (message.type === "compare_result") {
+            return <CompareResultCards key={message.id} comparison={message.comparison} />;
           }
 
           if (message.type === "clarification") {

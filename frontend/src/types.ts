@@ -99,10 +99,17 @@ export interface ComparisonItem {
   distance_km: number | null;
   remaining_minutes: number | null;
   environment_type: string | null;
+  /** TRAVEL_TIME 전용(TP-105/106 실측 연결). 좌표는 실측 조회에만 쓰이고 화면에는 없다. */
+  latitude: number | null;
+  longitude: number | null;
+  travel_distance_km: number | null;
+  travel_walking_minutes: number | null;
+  travel_driving_minutes: number | null;
+  travel_transit_minutes: number | null;
 }
 
 export interface ComparisonResult {
-  criteria: "distance" | "time" | "overall";
+  criteria: "time" | "travel_time" | "overall";
   items: ComparisonItem[];
 }
 
@@ -226,6 +233,11 @@ export type ChatMessage =
       id: string;
       type: "place_info_result";
       card: InfoPlaceCard;
+    }
+  | {
+      id: string;
+      type: "compare_result";
+      comparison: ComparisonResult;
     }
   | {
       id: string;
