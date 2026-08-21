@@ -71,6 +71,29 @@ def _measured_routes_for(
     return travel_routes if to_travel_mode(conditions) is not None else ()
 
 
+# 단어 하나짜리 질의("조용한")는 문장형 리뷰 텍스트와 임베딩이 잘 안 맞는다.
+# place_tag를 모르는 요청의 폴백 접미어 — 아예 안 붙이는 것보다는 낫다
+# (실측: "조용한" 2/35곳 컷 통과 → "조용한 곳" 9/35곳,
+# scripts/measure_taste_query_enrichment.py 결과).
+_GENERIC_TASTE_SUFFIX = "곳"
+
+
+def _enrich_taste_query(conditions: UserConditions) -> str:
+    """검색 질의에 place_tag를 붙여 문장형 리뷰 텍스트와 임베딩이 더 잘
+    맞게 만든다.
+
+    실측(2026-08-21, 경복궁 반경 3km 카페 35곳, `search_place_evidence`
+    p_min_similarity=0.0): "조용한"은 컷(0.43) 통과 2/35곳(평균 0.31)뿐인데
+    "조용한 카페"로 place_tag를 붙이면 30/35곳(평균 0.48)으로 뛴다. 컷을
+    낮추는 대신 이 방법을 쓰는 이유는 place_tag가 하드 필터 단계에서 이미
+    확정된 값이라 새 정보를 만드는 게 아니고, 컷을 낮출 때처럼 관련 없는
+    약한 매치를 끌어들이는 부작용도 없기 때문이다.
+    """
+    if conditions.place_tags:
+        return f"{conditions.taste_query} {' '.join(conditions.place_tags)}"
+    return f"{conditions.taste_query} {_GENERIC_TASTE_SUFFIX}"
+
+
 def _log_taste_matches(
     query: str, candidate_count: int, matches: dict[str, PlaceEvidenceMatch]
 ) -> None:
@@ -191,14 +214,13 @@ class RealRecommendationProvider:
         if not place_ids:
             return None
 
+        enriched_query = _enrich_taste_query(conditions)
         try:
-            result = await self._place_evidence.search(
-                conditions.taste_query, place_ids
-            )
+            result = await self._place_evidence.search(enriched_query, place_ids)
         except Exception:
             logger.exception("취향 근거 검색 실패 — 취향 없이 채점한다")
             return None
-        _log_taste_matches(conditions.taste_query, len(place_ids), result.data)
+        _log_taste_matches(enriched_query, len(place_ids), result.data)
         return result.data
 
     async def recommend(

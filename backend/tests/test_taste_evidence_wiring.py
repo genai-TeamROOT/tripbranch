@@ -8,9 +8,10 @@ import pytest
 
 from app.domain.models import PlaceEvidenceMatch
 from app.providers.contracts import ProviderSource, ProviderStatus, provider_result
-from app.schemas import UserConditions
+from app.schemas import PlaceTag, UserConditions
 from app.services.runtime.real_recommendation_provider import (
     RealRecommendationProvider,
+    _enrich_taste_query,
 )
 
 
@@ -60,11 +61,40 @@ async def test_search_is_scoped_to_hard_filter_survivors() -> None:
     provider = RealRecommendationProvider(evidence)
 
     matches = await provider._taste_matches_for(
-        UserConditions(taste_query="조용한 곳"), _Prepared(["a", "b"])
+        UserConditions(taste_query="조용한"), _Prepared(["a", "b"])
     )
 
+    # place_tag가 없어 일반 접미어("곳")로 폴백해 붙는다 — _enrich_taste_query 참고.
     assert evidence.calls == [("조용한 곳", ["a", "b"])]
     assert matches is not None and set(matches) == {"a"}
+
+
+def test_enrich_taste_query_appends_known_place_tag() -> None:
+    """place_tag를 알면 그걸 붙인다 — 실측(2026-08-21, 경복궁 반경 3km 카페
+    35곳): "조용한" 컷 통과 2/35곳(평균 0.31) → "조용한 카페" 30/35곳(평균
+    0.48). scripts/measure_taste_query_enrichment.py, 종로 4개 지점에서 재현.
+    """
+    conditions = UserConditions(taste_query="조용한", place_tags=[PlaceTag.CAFE])
+
+    assert _enrich_taste_query(conditions) == "조용한 카페"
+
+
+def test_enrich_taste_query_appends_every_known_tag() -> None:
+    conditions = UserConditions(
+        taste_query="조용한", place_tags=[PlaceTag.CAFE, PlaceTag.PARK]
+    )
+
+    assert _enrich_taste_query(conditions) == "조용한 카페 공원"
+
+
+def test_enrich_taste_query_falls_back_to_generic_suffix() -> None:
+    """place_tag를 모르는 발화("조용한 곳 추천해줘")도 접미어를 붙인다 —
+    실측: "조용한" 2/35곳 → "조용한 곳" 9/35곳. 특정 태그만큼은 아니지만
+    안 붙이는 것보다 낫다.
+    """
+    conditions = UserConditions(taste_query="조용한")
+
+    assert _enrich_taste_query(conditions) == "조용한 곳"
 
 
 @pytest.mark.asyncio
