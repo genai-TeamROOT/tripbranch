@@ -394,3 +394,37 @@ def test_apply_runs_job_and_reports_progress(
     # 신규 장소는 집중률 매핑이 없다 — 이 동기화가 매핑 테이블을 갱신하지 않으므로
     # 알리지 않으면 그 장소만 조용히 혼잡도 판정에서 빠진다.
     assert job["unmapped_new_place_ids"] == ["1"]
+
+
+def test_nearest_area_resolves_coordinate_to_area_name() -> None:
+    """종로 한복판 좌표는 서울시 상권 지역 이름으로 근사된다."""
+
+    with _client() as client:
+        response = client.get("/api/dev/nearest-area", params={"location": "37.5709,126.9990"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["area_name"]
+    assert payload["area_code"]
+    # 근사치라는 사실을 숨기지 않으려고 거리를 함께 준다.
+    assert payload["distance_km"] is not None
+    assert payload["distance_km"] <= 2.0
+
+
+def test_nearest_area_returns_empty_beyond_proxy_distance() -> None:
+    """82개 지역에서 2km를 넘으면 빌려올 이름이 없다 — 임의의 상권으로 대체하지 않는다."""
+
+    with _client() as client:
+        response = client.get("/api/dev/nearest-area", params={"location": "35.1796,129.0756"})
+
+    assert response.status_code == 200
+    assert response.json() == {"area_code": None, "area_name": None, "distance_km": None}
+
+
+def test_nearest_area_rejects_malformed_location() -> None:
+    with _client() as client:
+        response = client.get("/api/dev/nearest-area", params={"location": "종로3가"})
+
+    assert response.status_code == 400
+    # 원인을 화면에 그대로 띄우는 게 이 패널의 목적이라 공통 핸들러 문구로 덮이면 안 된다.
+    assert "위도,경도" in response.json()["error"]["message"]

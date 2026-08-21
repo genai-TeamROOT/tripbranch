@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
+from typing import Literal
 
 from app.agent_context.compare_schemas import CompareContextResponse
 from app.agent_context.enrichment_schemas import (
@@ -31,8 +32,10 @@ from app.agent_context.schemas import (
     RecommendationContext,
     ResolvedLocation,
 )
+from app.domain.ranking_origin import resolve_ranking_origin
 from app.schemas import (
     CandidateConcentrationDebug,
+    LocationDebug,
     ToolContextItemDebug,
     ToolExecutionDebug,
     ToolProviderDebug,
@@ -116,6 +119,55 @@ def _resolved_location(context: RecommendationContext | None) -> ResolvedLocatio
     return data if isinstance(data, ResolvedLocation) else None
 
 
+def _user_location(context: RecommendationContext | None) -> ResolvedLocation | None:
+    if context is None or context.user_location is None:
+        return None
+    data = context.user_location.data
+    return data if isinstance(data, ResolvedLocation) else None
+
+
+def _to_location_debug(
+    location: ResolvedLocation | None,
+    *,
+    source: Literal["query", "device_gps", "search_center"] | None = None,
+) -> LocationDebug | None:
+    """C의 ResolvedLocation을 표시용 위치로 옮긴다.
+
+    source를 넘기면 그 값으로 덮어쓴다 — 경로 시작점이 사용자 위치를 못 구해 검색
+    위치로 대체된 경우에만 쓴다. 그때 실린 ResolvedLocation은 검색 위치의 것이라
+    자기 source("query"/"device_gps")를 그대로 두면 대체됐다는 사실이 사라진다.
+    """
+
+    if location is None:
+        return None
+    return LocationDebug(
+        # device_gps는 부를 이름이 없다(requested_query가 "gps_location" 자리표시자).
+        name=location.requested_query if location.source != "device_gps" else None,
+        source=source or location.source,
+        latitude=location.location.latitude,
+        longitude=location.location.longitude,
+    )
+
+
+def _to_route_origin_debug(context: RecommendationContext | None) -> LocationDebug | None:
+    """이번 턴의 거리·실측 경로가 실제로 기준 삼은 지점.
+
+    agent_runtime이 경로를 조회할 때 쓰는 것과 같은 함수를 부른다 — 규칙을 여기에
+    옮겨 적으면 D가 기준점 규칙을 바꿨을 때 패널만 조용히 옛 답을 보여준다.
+    """
+
+    if context is None:
+        return None
+    origin = resolve_ranking_origin(context)
+    if origin is None:
+        return None
+    # 사용자 위치가 그대로 시작점이 됐는지, 못 구해서 검색 위치로 내려갔는지를
+    # 가른다. resolve_ranking_origin()이 둘 중 하나를 그대로 돌려주므로 동일성으로
+    # 판정한다 — 좌표 비교로는 두 위치가 같은 곳으로 해석된 경우와 구분되지 않는다.
+    is_user_location = origin is _user_location(context)
+    return _to_location_debug(origin, source=None if is_user_location else "search_center")
+
+
 def build_tool_execution_debug(
     response: AgentContextResponse,
     *,
@@ -143,6 +195,9 @@ def build_tool_execution_debug(
             rule_versions=dict(response.metadata.rule_versions),
             resolved_location_name=location.resolved_name if location else None,
             resolved_location_address=location.address if location else None,
+            search_location=_to_location_debug(location),
+            user_location=_to_location_debug(_user_location(context)),
+            route_origin=_to_route_origin_debug(context),
             error_code=response.error.code if response.error is not None else None,
             clarification_code=(
                 response.clarification.code if response.clarification is not None else None
