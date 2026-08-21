@@ -25,6 +25,10 @@ from app.providers.gemini_audio import GeminiAudioTranscriber
 from app.providers.geocoding import FakeGeocodingProvider, RealGeocodingProvider
 from app.providers.holiday import FakeHolidayProvider, RealHolidayProvider
 from app.providers.hybrid_place_details import HybridPlaceDetailsProvider
+from app.providers.kakao_transit_route import (
+    FakeTransitRouteProvider,
+    RealKakaoTransitRouteProvider,
+)
 from app.providers.local_search import FakeLocalSearchProvider, RealLocalSearchProvider
 from app.providers.place_evidence import PlaceEvidenceProvider
 from app.providers.place_evidence_encoder import get_shared_encoder
@@ -179,14 +183,32 @@ def get_driving_route_provider(client: httpx.AsyncClient) -> TravelRouteProvider
     )
 
 
+def get_transit_route_provider(client: httpx.AsyncClient) -> TravelRouteProvider:
+    """설정에 맞는 대중교통 경로 Provider를 반환한다.
+
+    도보와 같은 카카오 키를 쓴다 — 같은 `Authorization: KakaoAK` 헤더의 다른
+    엔드포인트라 키를 하나 더 발급받을 필요가 없다.
+    """
+    if settings.travel_route_transit_provider == "fake":
+        return FakeTransitRouteProvider(transit_speed_mps=settings.transit_speed_mps)
+    return RealKakaoTransitRouteProvider(
+        api_key=_require_key(
+            settings.kakao_map_rest_api_key,
+            "KAKAO_MAP_REST_API_KEY",
+        ),
+        client=client,
+        timeout_seconds=settings.external_api_timeout_seconds,
+        max_concurrency=settings.travel_route_max_concurrency,
+    )
+
+
 def get_travel_route_tool(client: httpx.AsyncClient) -> TravelRouteTool:
     """이동 경로 Tool을 이동수단별 Provider로 구성한다.
 
-    지금 등록하는 이동수단은 도보와 자동차다. 대중교통은 외부 API를 붙이는
-    카드에서 여기에 한 줄 추가한다 — 미등록 이동수단은 Tool이 호출 없이
+    도보·자동차·대중교통 셋을 등록한다. 미등록 이동수단은 Tool이 호출 없이
     NO_DATA로 답하므로, 등록되지 않은 동안 다른 수단의 값이 대신 나가지 않는다.
 
-    자동차에는 fallback을 두지 않는다. fallback이 내는 직선거리 추정은 source가
+    자동차와 대중교통에는 fallback을 두지 않는다. fallback이 내는 직선거리 추정은 source가
     STRAIGHT_LINE_ESTIMATE라 `scoring._applied_travel_route()`가 어차피 걸러내서
     채점에도 문구에도 쓰이지 않는다 — 쓰이지 않을 값을 벤더마다 만들 이유가 없다.
     도보의 fallback은 기존 동작이라 그대로 둔다.
@@ -204,6 +226,10 @@ def get_travel_route_tool(client: httpx.AsyncClient) -> TravelRouteTool:
             ),
             TravelMode.DRIVING: TravelRouteProviders(
                 primary=get_driving_route_provider(client),
+                fallback=None,
+            ),
+            TravelMode.TRANSIT: TravelRouteProviders(
+                primary=get_transit_route_provider(client),
                 fallback=None,
             ),
         }
@@ -383,6 +409,7 @@ _REQUIRED_KEYS: dict[str, tuple[tuple[str, str], ...]] = {
     # 이동수단마다 벤더가 다르므로 따로 검증한다 — 도보만 real로 쓰는 설정에서
     # 네이버 키를 요구하면 부팅이 불필요하게 막힌다.
     "TRAVEL_ROUTE_PROVIDER": (("KAKAO_MAP_REST_API_KEY", "kakao_map_rest_api_key"),),
+    "TRAVEL_ROUTE_TRANSIT_PROVIDER": (("KAKAO_MAP_REST_API_KEY", "kakao_map_rest_api_key"),),
     "TRAVEL_ROUTE_DRIVING_PROVIDER": (
         ("NAVER_MAP_CLIENT_ID", "naver_map_client_id"),
         ("NAVER_MAP_CLIENT_SECRET", "naver_map_client_secret"),
@@ -408,6 +435,7 @@ _RESOLVED_ATTRS: dict[str, str] = {
     "LOCAL_SEARCH_PROVIDER": "resolved_local_search_provider",
     "TRAVEL_ROUTE_PROVIDER": "travel_route_provider",
     "TRAVEL_ROUTE_DRIVING_PROVIDER": "travel_route_driving_provider",
+    "TRAVEL_ROUTE_TRANSIT_PROVIDER": "travel_route_transit_provider",
 }
 
 

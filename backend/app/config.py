@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     # 한 줄씩 추가하고, 기존 이름(TRAVEL_ROUTE_PROVIDER)은 도보 스위치로 유지한다.
     travel_route_provider: ProviderMode = "fake"
     travel_route_driving_provider: ProviderMode = "fake"
+    travel_route_transit_provider: ProviderMode = "fake"
     # 직선거리 fallback 예상시간에 쓸 보행속도(m/s).
     walking_speed_mps: float = Field(default=1.2, gt=0)
     # 자동차 fake의 직선거리 예상시간에 쓸 속도(m/s). 20km/h는 반경 산정이 비도보
@@ -76,6 +77,9 @@ class Settings(BaseSettings):
     # fake 값은 채점에 쓰이지 않으므로(STRAIGHT_LINE_ESTIMATE는 걸러진다) 정밀도가
     # 아니라 반경 가정과의 일관성만 맞춘다.
     driving_speed_mps: float = Field(default=5.5, gt=0)
+    # 대중교통 fake도 같은 20km/h 가정을 쓴다 — 반경 산정이 비도보 요청을
+    # 이동수단으로 가르지 않고 _OTHER_KM_PER_MIN 하나로 처리하기 때문이다.
+    transit_speed_mps: float = Field(default=5.5, gt=0)
     travel_route_max_concurrency: int = Field(default=5, ge=1, le=10)
 
     # 상세·운영정보 조회 출처. PLACE_PROVIDER=fake이면 Fake Provider가 상세까지

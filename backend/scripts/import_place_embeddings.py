@@ -14,7 +14,10 @@ import httpx
 
 from app.config import Settings
 
-_UPSERT_CHUNK_SIZE = 100
+_UPSERT_CHUNK_SIZE = 10
+# HNSW 인덱스가 있는 상태에서 100건씩 upsert하면 인덱스 갱신 비용 때문에
+# DB statement_timeout(코드 57014)에 걸린다(2026-08-20, 중구 16,942건 적재 중
+# 실측). 배치를 줄이면 각 요청은 느리지만 타임아웃 없이 끝까지 간다.
 _UPSERT_TIMEOUT_SECONDS = 60.0
 _EMBEDDING_DIM = 768
 _VALID_SOURCE_TYPES = {"naver_post", "google_review"}
@@ -160,20 +163,40 @@ def load_embedding_payloads(
     return payloads, row_count, duplicate_count, published_at_nulled
 
 
+_VALIDATE_PAGE_SIZE = 1000
+
+
 async def _validate_active_places(
     client: httpx.AsyncClient,
     payloads: Sequence[dict[str, object]],
 ) -> None:
-    response = await client.get(
-        "/rest/v1/places",
-        params={"select": "content_id", "is_active": "eq.true", "limit": "1000"},
-    )
-    response.raise_for_status()
-    active_ids = {
-        str(row["content_id"])
-        for row in response.json()
-        if isinstance(row, dict) and row.get("content_id")
-    }
+    # limit만 걸고 페이지네이션이 없으면 활성 장소가 1000건을 넘는 순간(다른 구
+    # 확장 등으로) 뒤쪽 행이 조용히 잘려나가 실제로 활성인 content_id를
+    # "없다"고 오판한다(2026-08-20, 중구 확장 중 실측). order를 명시해야
+    # offset 페이지네이션이 페이지 사이에서 행을 건너뛰거나 중복하지 않는다.
+    active_ids: set[str] = set()
+    offset = 0
+    while True:
+        response = await client.get(
+            "/rest/v1/places",
+            params={
+                "select": "content_id",
+                "is_active": "eq.true",
+                "order": "content_id.asc",
+                "limit": str(_VALIDATE_PAGE_SIZE),
+                "offset": str(offset),
+            },
+        )
+        response.raise_for_status()
+        rows = response.json()
+        active_ids.update(
+            str(row["content_id"])
+            for row in rows
+            if isinstance(row, dict) and row.get("content_id")
+        )
+        if len(rows) < _VALIDATE_PAGE_SIZE:
+            break
+        offset += _VALIDATE_PAGE_SIZE
     missing_ids = sorted(
         {
             str(payload["content_id"])
@@ -222,6 +245,12 @@ async def run(
                     headers={"Prefer": "resolution=merge-duplicates,return=minimal"},
                     json=chunk,
                 )
+                if response.status_code >= 400:
+                    # PostgREST 오류 본문에는 실제 원인(제약 이름, 타입 불일치 등)이
+                    # 담겨 있는데 raise_for_status()만 부르면 그 내용이 사라진다.
+                    # 원인 진단을 위해 먼저 출력하고 나서 동일하게 실패 처리한다.
+                    print(f"  배치 {chunk_index}/{total_chunks} 실패 (HTTP {response.status_code})")
+                    print(f"  응답 본문: {response.text[:2000]}")
                 response.raise_for_status()
                 if chunk_index % 20 == 0 or chunk_index == total_chunks:
                     print(f"  적재 {chunk_index}/{total_chunks} 배치 완료")
