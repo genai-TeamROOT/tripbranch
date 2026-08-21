@@ -8,12 +8,13 @@ HTTP 엔드포인트는 AF-05 Agent Runtime의 책임이므로 여기서 정의�
 
 import functools
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from app.auth.principal import Principal
 from app.errors import AppError
+from app.state import feedback as feedback_module
 from app.state import history as history_module
 from app.state import session as session_module
 from app.state import trace as trace_module
@@ -268,6 +269,40 @@ class RecordTraceRequest(BaseModel):
 
 class RecordTraceResponse(BaseModel):
     trace_id: str
+
+
+class RecordFeedbackRequest(BaseModel):
+    """응답 피드백 기록 요청. (roadmap.md 14번)
+
+    rating은 FeedbackRecord가 "like"/"dislike"로 검증한다 — RecordTraceRequest의
+    step 등과 달리 B가 값을 검증하는 예외적인 필드다.
+    """
+
+    session_id: str
+    run_id: str
+    rating: Literal["like", "dislike"]
+
+
+class RecordFeedbackResponse(BaseModel):
+    recorded_at: datetime
+
+
+class DislikeFeedbackItem(BaseModel):
+    """"싫어요" 1건 + 그 응답을 만든 실행의 버전 정보. (roadmap.md 14번)
+
+    prompt_version/scoring_version은 같은 run_id의 TraceRecord들 중에서
+    찾아 채운다 — 기록이 안 남아 있으면(예: record_trace 호출 전 오류) null.
+    """
+
+    session_id: str
+    run_id: str
+    recorded_at: datetime
+    prompt_version: str | None = None
+    scoring_version: str | None = None
+
+
+class DislikeFeedbackResponse(BaseModel):
+    items: list[DislikeFeedbackItem]
 
 
 # ================================================================ 헬퍼
@@ -714,3 +749,82 @@ def record_trace(
         error_type=request.error_type,
     )
     return RecordTraceResponse(trace_id=trace.trace_id)
+
+
+# ================================================================ 응답 피드백
+
+@_wrap_store_errors
+def record_feedback(
+    request: RecordFeedbackRequest,
+    store: StateStore | None = None,
+) -> RecordFeedbackResponse:
+    """응답 1건에 대한 사용자 반응(좋아요/싫어요)을 기록한다. (roadmap.md 14번)
+
+    프론트가 피드백 버튼 클릭 직후 호출한다. run_id로 trace_records와 조인하면
+    이 반응이 어떤 prompt_version/scoring_version에서 나온 응답인지 추적할 수
+    있다 — 그 조인 조회는 실제로 쓰는 곳이 생기면 그때 추가한다(llmops-trace-
+    contract-v1.md 4절과 동일한 YAGNI 판단. get_feedback()/trace_module.
+    get_traces()가 이미 세션 단위로 존재해 필요하면 호출부에서 run_id로
+    걸러 쓸 수 있다).
+    """
+    store = store or get_store()
+
+    feedback = feedback_module.record(
+        store,
+        request.session_id,
+        request.run_id,
+        request.rating,
+    )
+    return RecordFeedbackResponse(recorded_at=feedback.recorded_at)
+
+
+_DEFAULT_DISLIKE_LIMIT = 50
+
+
+@_wrap_store_errors
+def get_dislike_feedback(
+    limit: int = _DEFAULT_DISLIKE_LIMIT,
+    store: StateStore | None = None,
+) -> DislikeFeedbackResponse:
+    """최근 "싫어요"를 버전 정보와 함께 모아 반환한다. (roadmap.md 14번)
+
+    dislike 목록을 먼저 모으고, 각 항목의 run_id로 같은 세션의 trace 기록을
+    다시 불러와 prompt_version/scoring_version을 채운다 — trace_records는
+    세션 단위로만 조회 가능하므로(get_traces(run_id) 자체가 없음, llmops-
+    trace-contract-v1.md 4절) session_id를 먼저 알아야 하는데, FeedbackRecord가
+    이미 session_id를 들고 있어 별도 조회 없이 바로 이어 쓸 수 있다.
+
+    dislike 자체가 흔치 않을 것으로 가정해 세션별로 트레이스를 다시 불러오는
+    비용은 감수한다 — 세션마다 캐싱하는 최적화는 실제로 느릴 때 추가한다.
+    """
+    store = store or get_store()
+
+    dislikes = feedback_module.list_dislikes(store, limit)
+
+    items: list[DislikeFeedbackItem] = []
+    traces_by_session: dict[str, list] = {}
+    for feedback in dislikes:
+        if feedback.session_id not in traces_by_session:
+            traces_by_session[feedback.session_id] = trace_module.get_traces(
+                store, feedback.session_id
+            )
+        run_traces = [
+            t for t in traces_by_session[feedback.session_id] if t.run_id == feedback.run_id
+        ]
+        prompt_version = next(
+            (t.prompt_version for t in run_traces if t.prompt_version), None
+        )
+        scoring_version = next(
+            (t.scoring_version for t in run_traces if t.scoring_version), None
+        )
+        items.append(
+            DislikeFeedbackItem(
+                session_id=feedback.session_id,
+                run_id=feedback.run_id,
+                recorded_at=feedback.recorded_at,
+                prompt_version=prompt_version,
+                scoring_version=scoring_version,
+            )
+        )
+
+    return DislikeFeedbackResponse(items=items)

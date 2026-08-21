@@ -238,3 +238,19 @@ class TraceRecord(BaseModel):
     token_usage: int | None = None
     error_type: str | None = None
     recorded_at: datetime = Field(default_factory=now_kst)
+
+
+class FeedbackRecord(BaseModel):
+    """응답 1건에 대한 사용자 반응. append-only. (roadmap.md 14번)
+
+    trace_id(run 내부 한 단계)가 아니라 run_id(그 턴의 최종 응답) 단위로
+    붙는다 — 사용자는 "이 답변"에 좋아요/싫어요를 누르는 것이지, 그 답변을
+    만든 개별 단계(LLM 호출/Tool 호출/Scoring)에 반응하는 게 아니다.
+    rating은 화면 버튼이 만드는 고정된 두 값이라(TraceRecord의 step 등과
+    달리 호출자가 자유롭게 정하는 값이 아니다) Literal로 검증한다.
+    """
+
+    session_id: str
+    run_id: str
+    rating: Literal["like", "dislike"]
+    recorded_at: datetime = Field(default_factory=now_kst)

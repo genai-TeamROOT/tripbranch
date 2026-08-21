@@ -23,6 +23,7 @@ from typing import TypeVar
 from app.agent_context.schemas import PlaceCandidate, RecommendationContext
 from app.auth.principal import Principal
 from app.config import settings
+from app.domain.ranking_origin import resolve_ranking_origin
 from app.domain.scoring import SCORING_VERSION
 from app.domain.travel_route import (
     GeoCoordinate,
@@ -1035,7 +1036,9 @@ async def _fetch_travel_routes(
     if not destinations:
         return ()
 
-    origin = resolved_location.location
+    # 실측 경로도 거리 계산과 같은 기준점에서 잰다 — 한쪽만 사용자 기준이면
+    # 실측이 있는 후보와 없는 후보가 서로 다른 자로 채점된다(TP-112).
+    origin = (resolve_ranking_origin(context) or resolved_location).location
     result = await route_tool.execute(
         TravelRouteQuery(
             origin=GeoCoordinate(

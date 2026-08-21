@@ -35,6 +35,8 @@ function renderResult(unverifiedRecommendations: RecommendationItem[]) {
       isLoading={false}
       onRequestMore={() => {}}
       onRelaxRadius={() => {}}
+      sessionId="sess_test"
+      runId="run_test"
     />,
     { wrapper: TripProvider },
   );
@@ -94,6 +96,8 @@ it("추천 카드를 클릭하면 C PlaceDetails가 채워진 상세 창을 연�
       isLoading={false}
       onRequestMore={() => {}}
       onRelaxRadius={() => {}}
+      sessionId="sess_test"
+      runId="run_test"
     />,
     { wrapper: TripProvider },
   );

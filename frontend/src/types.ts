@@ -216,6 +216,9 @@ export type ChatMessage =
       elapsed_ms: number;
       /* 백엔드가 보고한 서버 처리 시간(ms). 네트워크·렌더 시간은 포함하지 않는다. */
       server_elapsed_ms: number;
+      /* 좋아요/싫어요 피드백을 이 턴(run)에 연결하기 위한 식별자. */
+      sessionId: string;
+      runId: string;
     }
   | {
       id: string;
@@ -224,6 +227,9 @@ export type ChatMessage =
       /* 일정 요청 클릭부터 응답 수신까지의 클라이언트 실측 시간(ms).
          recommendation_result의 elapsed_ms와 같은 역할이다. */
       elapsed_ms: number;
+      /* 좋아요/싫어요 피드백을 이 턴(run)에 연결하기 위한 식별자. */
+      sessionId: string;
+      runId: string;
     }
   | {
       id: string;
@@ -439,6 +445,18 @@ export interface SessionContextResponse {
   user_conditions: UserConditions;
   api_context: ApiContextView;
   condition_version: number;
+}
+
+/** POST /api/feedback 요청. backend/app/state/service.py의 RecordFeedbackRequest와 대응. */
+export interface RecordFeedbackRequest {
+  session_id: string;
+  run_id: string;
+  rating: "like" | "dislike";
+}
+
+/** POST /api/feedback 응답. */
+export interface RecordFeedbackResponse {
+  recorded_at: string;
 }
 
 export interface AgentResponse {

@@ -24,6 +24,7 @@ from app.domain.models import (
     ScoringCandidate,
     WeatherCondition,
 )
+from app.domain.ranking_origin import resolve_ranking_origin, resolve_user_to_target_km
 from app.domain.scoring import (
     ExclusionReason,
     PrepareResult,
@@ -94,6 +95,9 @@ class PreparedRecommendationResult:
     # 근거 문장 재료라 filter_context에는 넣지 않는다 — 날씨 판정과 같은 취급으로,
     # 병합 시 첫 배치 값을 그대로 쓴다.
     origin_name: str | None = None
+    # 거리 점수 분모에 더할 값(km). 위와 같은 이유로 첫 배치 값을 쓴다.
+    # 계산 근거는 _distance_denominator_offset_km() 참고.
+    distance_denominator_offset_km: float = 0.0
 
     @property
     def filter_context(self) -> tuple[object, ...]:
@@ -170,6 +174,7 @@ def merge_prepared_recommendations(
         weather_ignored=first.weather_ignored,
         ignore_operating_hours=first.ignore_operating_hours,
         origin_name=first.origin_name,
+        distance_denominator_offset_km=first.distance_denominator_offset_km,
     )
 
 
@@ -254,6 +259,7 @@ async def prepare_recommendation_from_context(
         weather_ignored=_is_weather_explicitly_ignored(context, conditions),
         ignore_operating_hours=ignore_operating_hours,
         origin_name=resolve_origin_name(context),
+        distance_denominator_offset_km=_distance_denominator_offset_km(context, conditions),
     )
 
 
@@ -283,7 +289,9 @@ async def score_prepared_recommendation(
         prepared.preparation.eligible_candidates,
         weather_condition=prepared.weather_condition,
         weather_reason=prepared.weather_reason,
-        max_distance_km=search_radius_km,
+        # 분모의 원점을 분자와 맞춘다 — 거리는 사용자 기준으로 재는데 반경은
+        # 타겟 기준이라, 이동시간을 말하지 않은 요청에서 둘이 갈린다(TP-112).
+        max_distance_km=search_radius_km + prepared.distance_denominator_offset_km,
         requested_environment=prepared.requested_environment,
         travel_routes=travel_routes,
         taste_matches=taste_matches,
@@ -580,8 +588,49 @@ def resolve_weather_condition(
     return None, None
 
 
+def _distance_denominator_offset_km(
+    context: RecommendationContext | None,
+    conditions: UserConditions | None,
+) -> float:
+    """거리 점수 분모(`max_distance_km`)에 더할 사용자 → 검색 기준점 거리(km).
+
+    거리를 사용자 기준으로 재기 시작하면서(TP-112) 분자와 분모의 원점을 맞춰야
+    한다. 두 경우를 가른다.
+
+    **사용자가 이동시간을 말한 요청은 0.0이다.** 그때 분모는 `max_travel_time ×
+    속도`이고, 실측 분기에서 같은 속도로 다시 나뉘어 "사용자가 말한 30분"이 그대로
+    예산이 된다(`scoring.py::_travel_minutes_budget`). 시간 약속은 어디서 재든 같은
+    값이라 애초에 원점이 없다 — 여기 거리를 더하면 "30분"이 사실상 30분+α가 된다.
+    그 요청에서 전 후보가 0점이 나온다면 그건 "이 조건으로는 아무데도 30분 안에
+    못 간다"는 사실이고, 분모로 감출 것이 아니다.
+
+    **말하지 않은 요청은 사용자 → 기준점 거리를 더한다.** 그때 분모는
+    `DEFAULT_PLACE_SEARCH_RADIUS_KM`인데, 이 값은 "타겟 주변 얼마를 뒤지는가"라는
+    수집 정책에서 빌려온 거리라 원점이 타겟에 묶여 있다. 분자만 사용자 기준으로
+    바꾸면 사용자가 타겟에서 멀 때 모든 후보가 분모를 넘겨 거리 Feature(가중치
+    0.20)가 통째로 죽고, 순위가 날씨·운영시간만으로 정해진다.
+
+    후보는 전부 타겟 중심 수집 반경 안에 있으므로 삼각부등식에 따라 사용자 기준
+    거리는 `이 값 + 수집 반경`을 넘을 수 없다. 그래서 이 값을 더하면 어떤 후보도
+    0으로 잘리지 않는다. 사용자가 기준점에 서 있으면 0.0이라 기존 분모로 되돌아간다.
+
+    사용자 위치를 모르면(발화도 GPS도 없음) 0.0이다 — 그때는 거리 자체가 타겟
+    기준으로 계산되므로 분모도 그대로 두어야 짝이 맞는다.
+    """
+    if conditions is not None and conditions.max_travel_time is not None:
+        return 0.0
+    if context is None:
+        return 0.0
+    return resolve_user_to_target_km(context) or 0.0
+
+
 def resolve_origin_name(context: RecommendationContext) -> str | None:
     """거리·경로의 기준점을 사용자에게 뭐라고 부를지 정한다.
+
+    부르는 대상은 **랭킹 기준점**이다(`ranking_origin.resolve_ranking_origin`).
+    거리와 경로를 사용자 위치에서 재므로 문장도 거기서 재야 한다 — 기준점만
+    검색 중심 이름으로 부르면 "안국역에서 걸어서 12분"이라고 말해놓고 실제로는
+    혜화역에서 잰 값을 싣게 된다(TP-112).
 
     C는 사실만 싣는다(D-051) — 좌표의 출처(`source`)와 사용자가 말한 문자열
     (`requested_query`)이 전부고, 그걸 문구로 옮기는 판정은 D가 한다. 기기 GPS가
@@ -593,12 +642,10 @@ def resolve_origin_name(context: RecommendationContext) -> str | None:
     된다. `requested_query`는 수식어를 뗀 사용자 발화라 언제나 부를 수 있는
     이름이다(`tools/resolve_location.py::strip_location_modifiers()`).
     """
-    location = context.location
-    if location is None or location.data is None:
+    origin = resolve_ranking_origin(context)
+    if origin is None or origin.source == "device_gps":
         return None
-    if location.data.source == "device_gps":
-        return None
-    return location.data.requested_query
+    return origin.requested_query
 
 
 def resolve_requested_environment(conditions: UserConditions | None) -> str | None:

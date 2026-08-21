@@ -12,13 +12,12 @@ docs/decision-log.md D-046 참고.
 
 from __future__ import annotations
 
-import math
 from datetime import datetime, time
 from typing import Any
 
 from app.agent_context.schemas import RecommendationContext
 from app.domain.models import OperatingHours, ScoringCandidate
-from app.place_search_policy import EARTH_RADIUS_KM
+from app.domain.ranking_origin import haversine_km, resolve_ranking_origin
 from app.providers.tour_category_registry import get_tour_category_registry
 
 # 대분류(category)만으로는 실내외를 가릴 수 없어(관광지에 고궁과 체험관이, 쇼핑에
@@ -104,7 +103,10 @@ def map_context_to_scoring_candidates(
     ):
         return ()
 
-    origin = location_value.data.location
+    # 거리는 사용자 기준으로 잰다 — 후보를 모은 중심(검색 기준점)과 줄을 세우는
+    # 기준점은 다르다(TP-112, ranking_origin.py). 사용자 위치를 모르면 검색
+    # 기준점으로 돌아간다.
+    origin = (resolve_ranking_origin(context) or location_value.data).location
     source = (
         places_value.provider_metadata[0].source if places_value.provider_metadata else "unknown"
     )
@@ -114,7 +116,7 @@ def map_context_to_scoring_candidates(
             name=place.name,
             category=place.category,
             environment_type=_environment_type(place.category, place.lcls_systm3),
-            distance_km=_haversine_km(
+            distance_km=haversine_km(
                 origin.latitude,
                 origin.longitude,
                 place.location.latitude,
@@ -271,18 +273,3 @@ def _context_time_ranges(value: object) -> tuple[tuple[time, time], ...]:
     return tuple(result)
 
 
-def _haversine_km(
-    latitude_a: float,
-    longitude_a: float,
-    latitude_b: float,
-    longitude_b: float,
-) -> float:
-    latitude_delta = math.radians(latitude_b - latitude_a)
-    longitude_delta = math.radians(longitude_b - longitude_a)
-    value = (
-        math.sin(latitude_delta / 2) ** 2
-        + math.cos(math.radians(latitude_a))
-        * math.cos(math.radians(latitude_b))
-        * math.sin(longitude_delta / 2) ** 2
-    )
-    return round(EARTH_RADIUS_KM * 2 * math.asin(math.sqrt(value)), 3)

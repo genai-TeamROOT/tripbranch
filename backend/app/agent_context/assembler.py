@@ -33,6 +33,9 @@ class ContextAssemblyInput:
 
     request: AgentContextRequest
     location_result: ResolveLocationResult | None
+    # 사용자가 있는 곳. 기준점(location_result)과 같은 타입이지만 다른 질의 결과일 수
+    # 있다 — 발화 위치와 검색 기준점이 다르면 따로 해석한다(service.py).
+    user_location_result: ResolveLocationResult | None = None
     weather_result: WeatherForecastToolResult | None = None
     places_result: NearbyPlaceDetailsResult | None = None
     holidays_result: HolidayToolResult | None = None
@@ -60,7 +63,13 @@ def assemble_agent_context_response(
     location = map_location_context(location_result)
     # 기준점이 무엇으로 정해졌든 사용자 위치는 그대로 보존한다 — 검색 기준점이
     # 따로 잡히면 GPS가 버려지던 게 근거 문장이 "현재 위치"라고 거짓말한 원인이다.
-    user_location = request.gps_location
+    # 좌표만 싣던 것을 기준점과 같은 타입으로 올렸다(TP-112): 발화로 말한 위치도
+    # 여기 들어오므로 부를 이름(requested_query)과 출처(source)가 필요하다.
+    user_location = (
+        map_location_context(assembly_input.user_location_result)
+        if assembly_input.user_location_result is not None
+        else None
+    )
     location_only = RecommendationContext(location=location, user_location=user_location)
 
     if location_result.status is ToolStatus.NO_DATA:

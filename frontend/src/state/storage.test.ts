@@ -85,6 +85,8 @@ test("restores a session that contains a schedule_result message", () => {
           basis_note: "기준 시각 안내",
           elapsed_ms: 45.5,
         },
+        sessionId: "sess_test",
+        runId: "run_test",
       },
     ],
   };
