@@ -138,6 +138,7 @@ class PlaceRepository(Protocol):
         new_count: int,
         updated_count: int,
         deactivated_count: int,
+        detail_attempted_count: int,
         error_summary: Mapping[str, object] | None = None,
         completed_at: datetime,
     ) -> None: ...

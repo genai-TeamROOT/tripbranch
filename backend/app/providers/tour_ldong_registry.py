@@ -46,3 +46,17 @@ def _district_names() -> dict[tuple[str, str], str]:
 def find_district_name(area_code: str, district_code: str) -> str | None:
     """코드 쌍에 해당하는 시군구 이름. 자료에 없으면 None."""
     return _district_names().get((area_code.strip(), district_code.strip()))
+
+
+def list_districts(area_code: str) -> list[dict[str, str]]:
+    """한 시도의 시군구를 코드순으로. 개발자 패널이 고를 수 있는 구의 사전이다.
+
+    화면이 이 목록으로 입력을 검증한다 — 없는 코드로 동기화를 걸면 TourAPI가 빈
+    목록을 돌려주고, 그 결과는 "장소가 0건인 구"와 구분되지 않는다.
+    """
+    target = area_code.strip()
+    return [
+        {"area_code": area, "district_code": district, "district_name": name}
+        for (area, district), name in sorted(_district_names().items())
+        if area == target
+    ]

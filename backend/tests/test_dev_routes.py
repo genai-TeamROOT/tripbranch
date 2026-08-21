@@ -146,6 +146,14 @@ def test_db_status_splits_places_by_district_and_keeps_history_global(
     assert payload["place_enrichments_count"] == 12
     assert payload["place_concentration_mappings_count"] == 12
     assert payload["detail_ttl_days"] == settings.place_sync_detail_ttl_days
+    # 오늘 상세조회 사용량은 place_sync_runs에서 센다. 메모리 집계와 달리 서버를
+    # 재시작해도 남고 스크립트 실행분도 잡히지만, 값이 없는 실행은 따로 알린다.
+    assert payload["detail_calls_today"] == {
+        "count": 0,
+        "runs": 1,
+        "runs_without_count": 1,
+        "daily_limit": settings.tour_api_daily_call_limit,
+    }
 
 
 def test_db_status_names_unknown_district_as_none(
@@ -435,6 +443,16 @@ def test_reconcile_ignores_other_district_snapshot_as_baseline(
     나온 사고가 그것이다.
     """
     monkeypatch.setattr(dev_routes.place_snapshot, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(settings, "supabase_url", "https://project.supabase.co")
+    monkeypatch.setattr(settings, "supabase_secret_key", "sb_secret_test")
+    # DB에도 종로구 장소가 없는 상태로 둔다. 여기서 보려는 것은 파일 선택이다.
+    monkeypatch.setattr(
+        dev_routes,
+        "status_client",
+        lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, json=[]))
+        ),
+    )
     place_snapshot.write_snapshot(
         {"9": _snapshot_row("9", district_code="140")},
         tmp_path / place_snapshot.snapshot_file_name(
@@ -453,6 +471,45 @@ def test_reconcile_ignores_other_district_snapshot_as_baseline(
     # 종로구 기준이 없으니 "기준 없음"이지, 중구 것을 끌어다 쓰지 않는다.
     assert payload["baseline"] is None
     assert payload["counts"] == {"added": 0, "removed": 0, "updated": 0}
+    assert payload["baseline_source"] == "none"
+
+
+def test_reconcile_builds_baseline_from_database_when_no_snapshot(
+    monkeypatch: pytest.MonkeyPatch, _real_place: None, tmp_path
+) -> None:
+    """스냅샷이 없어도 DB에 장소가 있으면 그것으로 기준을 세운다.
+
+    없으면 전량이 신규로 잡혀, 이미 DB에 있는 장소에 detailIntro2를 한 번씩 더
+    쓴다. 용산구 486건이면 하루 한도 1,000회의 절반이다.
+    """
+    monkeypatch.setattr(dev_routes.place_snapshot, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(settings, "supabase_url", "https://project.supabase.co")
+    monkeypatch.setattr(settings, "supabase_secret_key", "sb_secret_test")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["district_code"] == "eq.110"
+        # 1번은 DB에 있고, 2번은 이번 목록에만 있다 → 신규 1건.
+        return httpx.Response(200, json=[_snapshot_row("1")])
+
+    monkeypatch.setattr(
+        dev_routes,
+        "status_client",
+        lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    async def fake_fetch(client, api_key, area, district, fetched_at):
+        return {"1": _snapshot_row("1"), "2": _snapshot_row("2")}
+
+    monkeypatch.setattr(dev_routes.place_snapshot, "fetch_place_rows", fake_fetch)
+
+    with _client() as client:
+        payload = client.post("/api/dev/place-sync/reconcile", json={}).json()
+
+    assert payload["baseline_source"] == "database"
+    # 기준을 파일로 남기지 않는다 — 오늘 날짜 파일과 이름이 겹쳐 덮어써진다.
+    assert payload["baseline"].startswith("places@")
+    assert payload["counts"] == {"added": 1, "removed": 0, "updated": 0}
+    assert payload["detail_content_ids"] == ["2"]
 
 
 def test_apply_runs_job_and_reports_progress(
@@ -555,3 +612,159 @@ def test_nearest_area_rejects_malformed_location() -> None:
     assert response.status_code == 400
     # 원인을 화면에 그대로 띄우는 게 이 패널의 목적이라 공통 핸들러 문구로 덮이면 안 된다.
     assert "위도,경도" in response.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_database_baseline_reports_unavailable_without_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """자격증명이 없으면 "DB에 없다"가 아니라 "확인하지 못했다"로 돌려준다.
+
+    두 가지를 같은 결과로 뭉개면, 낭비된 상세조회를 두고 화면이 "원래 없던
+    구"인지 "못 본 것"인지 설명할 수 없다.
+
+    (앱 기동은 이 상태를 애초에 막지만 — PLACE_DETAILS_SOURCE=supabase면
+    validate_provider_config가 거부한다 — 다른 details source에서는 자격증명 없이도
+    패널이 뜬다.)
+    """
+    monkeypatch.setattr(settings, "supabase_url", "")
+    monkeypatch.setattr(settings, "supabase_secret_key", "")
+
+    baseline, source = await dev_routes._baseline_from_database("11", "110")
+
+    assert baseline == {}
+    assert source == "unavailable"
+
+
+def test_sync_districts_lists_loaded_and_known(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """자료가 있는 구와, 구 추가 입력을 검증할 사전을 함께 준다."""
+    monkeypatch.setattr(settings, "supabase_url", "https://project.supabase.co")
+    monkeypatch.setattr(settings, "supabase_secret_key", "sb_secret_test")
+    monkeypatch.setattr(dev_routes.place_snapshot, "DATA_DIR", tmp_path)
+    # 대조만 하고 아직 반영하지 않은 구. 파일만 있어도 목록에 남아야 한다.
+    place_snapshot.write_snapshot(
+        {"9": _snapshot_row("9", district_code="200")},
+        tmp_path / place_snapshot.snapshot_file_name(
+            "11", "200", datetime(2026, 8, 21, tzinfo=place_snapshot.KST)
+        ),
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {"area_code": "11", "district_code": "110", "is_active": True},
+                {"area_code": "11", "district_code": "110", "is_active": False},
+            ],
+        )
+
+    monkeypatch.setattr(
+        dev_routes,
+        "status_client",
+        lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    with _client() as client:
+        payload = client.get("/api/dev/place-sync/districts").json()
+
+    loaded = {row["district_code"]: row for row in payload["loaded"]}
+    assert loaded["110"]["place_count"] == 2
+    assert loaded["110"]["active_count"] == 1
+    assert loaded["110"]["district_name"] == "종로구"
+    # DB에는 없고 스냅샷만 있는 구도 선택지에 남는다.
+    assert loaded["200"]["place_count"] == 0
+    assert loaded["200"]["latest_snapshot"] == (
+        "places_api_snapshot_11-200_20260821.csv"
+    )
+    # 사전은 서울 25개 구 전체다 — 없는 코드 입력을 화면이 막는 근거다.
+    assert len(payload["known"]) == 25
+    assert {"area_code": "11", "district_code": "170", "district_name": "용산구"} in (
+        payload["known"]
+    )
+
+
+def test_apply_passes_details_limit_to_service(
+    monkeypatch: pytest.MonkeyPatch, _real_place: None, tmp_path
+) -> None:
+    """상한이 서비스까지 가야 한다. 안 가면 화면만 나눠 받은 척한다."""
+    monkeypatch.setattr(dev_routes.place_snapshot, "DATA_DIR", tmp_path)
+    place_snapshot.write_snapshot(
+        {"1": _snapshot_row("1")},
+        tmp_path / place_snapshot.snapshot_file_name(
+            "11", "110", datetime(2026, 8, 21, tzinfo=place_snapshot.KST)
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    class _FakeService:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def sync(self, area_code, district_code, **kwargs):
+            captured.update(kwargs)
+            return PlaceSyncResult(
+                status="success",
+                dry_run=True,
+                sync_run_id=None,
+                api_total_count=1,
+                processed_count=1,
+                success_count=1,
+                failed_count=0,
+                new_count=0,
+                updated_count=1,
+                deactivated_count=0,
+                detail_target_count=1,
+                detail_attempted_count=1,
+                reparse_count=0,
+                error_summary={},
+            )
+
+    monkeypatch.setattr(dev_routes, "PlaceSyncService", _FakeService)
+    monkeypatch.setattr(settings, "supabase_url", "https://project.supabase.co")
+    monkeypatch.setattr(settings, "supabase_secret_key", "sb_secret_test")
+
+    with _client() as client:
+        started = client.post(
+            "/api/dev/place-sync/apply",
+            json={
+                "snapshot": "places_api_snapshot_11-110_20260821.csv",
+                "detail_content_ids": ["1"],
+                "dry_run": True,
+                "details_limit": 300,
+                "confirm": "11-110",
+            },
+        ).json()
+        for _ in range(50):
+            job = client.get(f"/api/dev/place-sync/jobs/{started['job_id']}").json()
+            if job["status"] != "running":
+                break
+
+    assert captured["details_limit"] == 300
+    assert job["params"]["details_limit"] == 300
+
+
+def test_apply_rejects_details_limit_below_one(
+    monkeypatch: pytest.MonkeyPatch, _real_place: None, tmp_path
+) -> None:
+    monkeypatch.setattr(dev_routes.place_snapshot, "DATA_DIR", tmp_path)
+    place_snapshot.write_snapshot(
+        {"1": _snapshot_row("1")},
+        tmp_path / place_snapshot.snapshot_file_name(
+            "11", "110", datetime(2026, 8, 21, tzinfo=place_snapshot.KST)
+        ),
+    )
+
+    with _client() as client:
+        response = client.post(
+            "/api/dev/place-sync/apply",
+            json={
+                "snapshot": "places_api_snapshot_11-110_20260821.csv",
+                "detail_content_ids": ["1"],
+                "details_limit": 0,
+                "confirm": "11-110",
+            },
+        )
+
+    assert response.status_code == 422

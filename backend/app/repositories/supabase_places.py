@@ -835,6 +835,7 @@ class SupabasePlaceRepository:
         new_count: int,
         updated_count: int,
         deactivated_count: int,
+        detail_attempted_count: int,
         error_summary: Mapping[str, object] | None = None,
         completed_at: datetime,
     ) -> None:
@@ -853,6 +854,9 @@ class SupabasePlaceRepository:
                 "new_count": new_count,
                 "updated_count": updated_count,
                 "deactivated_count": deactivated_count,
+                # 일일 한도 판단의 근거가 되는 값이라 실행 기록에 남긴다. 메모리
+                # 집계는 재시작하면 사라지고 스크립트 실행분도 놓친다.
+                "detail_attempted_count": detail_attempted_count,
                 "error_summary": error_summary,
                 "completed_at": _iso(completed_at),
             },
@@ -984,6 +988,49 @@ class SupabasePlaceRepository:
                 break
             offset += _READ_PAGE_SIZE
         return rows
+
+    async def summarize_detail_calls_since(self, since: datetime) -> dict[str, int]:
+        """`since` 이후 시작한 동기화가 부른 detailIntro2 수를 더한다.
+
+        detailIntro2를 부르는 코드는 PlaceSyncService 한 곳뿐이고(추천 경로는 DB에서
+        읽는다) 그 경로는 실행마다 place_sync_runs 행을 남긴다. 그래서 호출마다
+        카운터를 올리지 않고도 오늘 사용량을 셀 수 있다. 프로세스 메모리 집계와
+        달리 서버를 재시작해도 남고, backend/scripts로 돈 실행분도 함께 잡힌다.
+
+        **하한이다.** 재시도는 한 장소를 여러 번 부르지만 여기 세는 것은 장소 수고,
+        중간에 죽어 완료 처리를 못 한 실행은 열이 비어 있다. 그래서 비어 있는 실행
+        수(`runs_without_count`)를 함께 돌려준다 — 화면이 "관측한 값"과 "재지 못한
+        구간"을 구분해 보여줄 수 있어야 한다.
+        """
+        response = await self._request(
+            "GET",
+            "/place_sync_runs",
+            params={
+                "select": "detail_attempted_count",
+                "started_at": f"gte.{_iso(since)}",
+            },
+        )
+        payload = self._json(response)
+        if not isinstance(payload, list):
+            raise SupabaseRepositoryError("invalid sync run summary response")
+
+        total = 0
+        runs = 0
+        runs_without_count = 0
+        for row in payload:
+            if not isinstance(row, Mapping):
+                raise SupabaseRepositoryError("invalid sync run summary row")
+            runs += 1
+            value = row.get("detail_attempted_count")
+            if value is None:
+                runs_without_count += 1
+                continue
+            total += int(value)
+        return {
+            "count": total,
+            "runs": runs,
+            "runs_without_count": runs_without_count,
+        }
 
     async def list_recent_sync_runs(self, limit: int = 10) -> list[dict[str, object]]:
         response = await self._request(
