@@ -29,6 +29,17 @@ _MAX_EVIDENCE_CANDIDATES = 500
 
 _READ_PAGE_SIZE = 1000
 _UPSERT_CHUNK_SIZE = 100
+_PLACE_SUMMARY_COLUMNS = ",".join(
+    (
+        "area_code",
+        "district_code",
+        "is_active",
+        "detail_fetch_status",
+        "operating_parse_status",
+        "operating_parser_version",
+        "detail_fetched_at",
+    )
+)
 _STATE_COLUMNS = ",".join(
     (
         "content_id",
@@ -865,29 +876,49 @@ class SupabasePlaceRepository:
         except ValueError:
             raise SupabaseRepositoryError(f"invalid count for {table}") from None
 
-    async def get_region_place_summary(
-        self,
-        area_code: str,
-        district_code: str,
-    ) -> dict[str, object]:
-        """지역 장소의 활성/상세조회/파싱 상태 분포를 한 번에 센다.
+    async def get_place_summaries_by_district(self) -> dict[str, object]:
+        """적재된 구별 요약과 전 구 합계를 한 번의 페이징으로 만든다.
 
-        상태별로 count 질의를 나누면 요청이 십수 건으로 늘어난다. 종로구 기준 900행
-        미만이고 세 열만 받으므로 전부 받아 Python에서 세는 편이 싸다.
+        구마다 따로 질의하면 왕복이 구 수만큼 늘고, 그보다 먼저 "어떤 구가 적재돼
+        있는가"를 알아야 질의를 만들 수 있다. 그 목록을 코드에 박으면 구를 새로
+        넣을 때마다 적재와 조회 두 곳을 고쳐야 한다. 전량을 한 번 훑어
+        (area_code, district_code)로 묶으면 적재된 구가 결과에서 그대로 드러난다.
+
+        전량이라 해도 세 개 구 2,300행 남짓에 열은 일곱 개뿐이라, 상태별로 count
+        질의를 나누는 것보다 싸다.
         """
-        rows: list[object] = []
+        rows = await self._fetch_place_summary_rows()
+
+        grouped: dict[tuple[str, str], list[Mapping[str, object]]] = {}
+        for row in rows:
+            key = (
+                str(row.get("area_code") or ""),
+                str(row.get("district_code") or ""),
+            )
+            grouped.setdefault(key, []).append(row)
+
+        return {
+            "overall": _summarize_places(rows),
+            "districts": [
+                {
+                    "area_code": area_code,
+                    "district_code": district_code,
+                    **_summarize_places(group),
+                }
+                for (area_code, district_code), group in sorted(grouped.items())
+            ],
+        }
+
+    async def _fetch_place_summary_rows(self) -> list[Mapping[str, object]]:
+        """요약에 필요한 일곱 열만 전량 받는다. PostgREST는 한 응답에 1000행까지다."""
+        rows: list[Mapping[str, object]] = []
         offset = 0
         while True:
             response = await self._request(
                 "GET",
                 "/places",
                 params={
-                    "select": (
-                        "is_active,detail_fetch_status,operating_parse_status,"
-                        "detail_fetched_at,operating_parser_version"
-                    ),
-                    "area_code": f"eq.{area_code}",
-                    "district_code": f"eq.{district_code}",
+                    "select": _PLACE_SUMMARY_COLUMNS,
                     "order": "content_id.asc",
                     "limit": str(_READ_PAGE_SIZE),
                     "offset": str(offset),
@@ -896,41 +927,14 @@ class SupabasePlaceRepository:
             page = self._json(response)
             if not isinstance(page, list):
                 raise SupabaseRepositoryError("invalid place summary response")
-            rows.extend(page)
+            for raw in page:
+                if not isinstance(raw, Mapping):
+                    raise SupabaseRepositoryError("invalid place summary row")
+                rows.append(raw)
             if len(page) < _READ_PAGE_SIZE:
                 break
             offset += _READ_PAGE_SIZE
-
-        active = 0
-        detail_status: dict[str, int] = {}
-        parse_status: dict[str, int] = {}
-        parser_versions: dict[str, int] = {}
-        latest_detail_fetched_at: datetime | None = None
-        for raw in rows:
-            if not isinstance(raw, Mapping):
-                raise SupabaseRepositoryError("invalid place summary row")
-            if raw.get("is_active"):
-                active += 1
-            _bump(detail_status, raw.get("detail_fetch_status"))
-            _bump(parse_status, raw.get("operating_parse_status"))
-            _bump(parser_versions, raw.get("operating_parser_version"))
-            fetched_at = _parse_datetime(raw.get("detail_fetched_at"), "detail_fetched_at")
-            if fetched_at is not None and (
-                latest_detail_fetched_at is None or fetched_at > latest_detail_fetched_at
-            ):
-                latest_detail_fetched_at = fetched_at
-
-        return {
-            "area_code": area_code,
-            "district_code": district_code,
-            "total": len(rows),
-            "active": active,
-            "inactive": len(rows) - active,
-            "detail_fetch_status": detail_status,
-            "operating_parse_status": parse_status,
-            "operating_parser_version": parser_versions,
-            "latest_detail_fetched_at": _iso(latest_detail_fetched_at),
-        }
+        return rows
 
     async def list_recent_sync_runs(self, limit: int = 10) -> list[dict[str, object]]:
         response = await self._request(
@@ -991,6 +995,40 @@ class SupabasePlaceRepository:
         if not isinstance(payload, list):
             raise SupabaseRepositoryError("invalid sync lock list response")
         return [dict(row) for row in payload if isinstance(row, Mapping)]
+
+
+def _summarize_places(rows: Sequence[Mapping[str, object]]) -> dict[str, object]:
+    """장소 행 묶음의 활성 수와 상태 분포를 센다.
+
+    구별 요약과 전 구 합계가 같은 함수를 쓴다 — 따로 세면 한쪽만 규칙이 바뀐 채
+    남는 이중 경로가 생긴다.
+    """
+    active = 0
+    detail_status: dict[str, int] = {}
+    parse_status: dict[str, int] = {}
+    parser_versions: dict[str, int] = {}
+    latest_detail_fetched_at: datetime | None = None
+    for raw in rows:
+        if raw.get("is_active"):
+            active += 1
+        _bump(detail_status, raw.get("detail_fetch_status"))
+        _bump(parse_status, raw.get("operating_parse_status"))
+        _bump(parser_versions, raw.get("operating_parser_version"))
+        fetched_at = _parse_datetime(raw.get("detail_fetched_at"), "detail_fetched_at")
+        if fetched_at is not None and (
+            latest_detail_fetched_at is None or fetched_at > latest_detail_fetched_at
+        ):
+            latest_detail_fetched_at = fetched_at
+
+    return {
+        "total": len(rows),
+        "active": active,
+        "inactive": len(rows) - active,
+        "detail_fetch_status": detail_status,
+        "operating_parse_status": parse_status,
+        "operating_parser_version": parser_versions,
+        "latest_detail_fetched_at": _iso(latest_detail_fetched_at),
+    }
 
 
 def _bump(counter: dict[str, int], value: object) -> None:

@@ -74,9 +74,10 @@ def test_db_status_requires_supabase_credentials(
     assert "SUPABASE_URL" in response.json()["error"]["message"]
 
 
-def test_db_status_aggregates_places_runs_and_locks(
+def test_db_status_splits_places_by_district_and_keeps_history_global(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """장소 요약은 구별로 나누고, 동기화 이력·잠금은 전 구 목록 그대로 준다."""
     monkeypatch.setattr(settings, "supabase_url", "https://project.supabase.co")
     monkeypatch.setattr(settings, "supabase_secret_key", "sb_secret_test")
 
@@ -89,16 +90,30 @@ def test_db_status_aggregates_places_runs_and_locks(
                 200,
                 json=[
                     {
+                        "area_code": "11",
+                        "district_code": "110",
                         "is_active": True,
                         "detail_fetch_status": "succeeded",
                         "operating_parse_status": "parsed",
                         "operating_parser_version": "operating-hours-1.0.0",
                         "detail_fetched_at": "2026-08-08T05:00:00+00:00",
-                    }
+                    },
+                    {
+                        "area_code": "11",
+                        "district_code": "170",
+                        "is_active": False,
+                        "detail_fetch_status": "pending",
+                        "operating_parse_status": "unknown",
+                        "operating_parser_version": "operating-hours-1.0.0",
+                        "detail_fetched_at": None,
+                    },
                 ],
             )
         if path.endswith("/place_sync_runs"):
-            return httpx.Response(200, json=[{"id": "run-1", "status": "success"}])
+            return httpx.Response(
+                200,
+                json=[{"id": "run-1", "district_code": "170", "status": "success"}],
+            )
         if path.endswith("/place_sync_locks"):
             return httpx.Response(200, json=[])
         raise AssertionError(f"unexpected path {path}")
@@ -112,14 +127,53 @@ def test_db_status_aggregates_places_runs_and_locks(
     with _client() as client:
         payload = client.get("/api/dev/db-status").json()
 
-    assert payload["area_code"] == settings.place_sync_area_code
-    assert payload["places"]["total"] == 1
-    assert payload["places"]["active"] == 1
+    assert payload["overall"]["total"] == 2
+    assert payload["overall"]["active"] == 1
+    # 이름은 코드에 박지 않고 tour_api_ldong_codes.json에서 찾아 붙인다.
+    assert [(d["district_code"], d["district_name"]) for d in payload["districts"]] == [
+        ("110", "종로구"),
+        ("170", "용산구"),
+    ]
+    assert payload["districts"][0]["total"] == 1
+    assert payload["districts"][1]["inactive"] == 1
+    # 이력과 잠금은 구로 나누지 않는다 — 화면에서도 탭 밖에 둔다.
+    assert payload["sync_runs"] == [
+        {"id": "run-1", "district_code": "170", "status": "success"}
+    ]
+    assert payload["sync_locks"] == []
     assert payload["place_enrichments_count"] == 12
     assert payload["place_concentration_mappings_count"] == 12
-    assert payload["sync_runs"] == [{"id": "run-1", "status": "success"}]
-    assert payload["sync_locks"] == []
     assert payload["detail_ttl_days"] == settings.place_sync_detail_ttl_days
+
+
+def test_db_status_names_unknown_district_as_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """자료에 없는 코드가 와도 조회 전체가 실패하지 않는다 — 이름만 비운다."""
+    monkeypatch.setattr(settings, "supabase_url", "https://project.supabase.co")
+    monkeypatch.setattr(settings, "supabase_secret_key", "sb_secret_test")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "HEAD":
+            return httpx.Response(200, headers={"Content-Range": "*/0"})
+        if request.url.path.endswith("/places"):
+            return httpx.Response(
+                200,
+                json=[{"area_code": "11", "district_code": "999", "is_active": True}],
+            )
+        return httpx.Response(200, json=[])
+
+    monkeypatch.setattr(
+        dev_routes,
+        "status_client",
+        lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    with _client() as client:
+        payload = client.get("/api/dev/db-status").json()
+
+    assert payload["districts"][0]["district_name"] is None
+    assert payload["districts"][0]["district_code"] == "999"
 
 
 def test_db_status_does_not_count_itself_in_api_usage(

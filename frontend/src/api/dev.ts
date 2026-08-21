@@ -37,9 +37,8 @@ export type ApiUsageSnapshot = {
   entries: ApiUsageEntry[];
 };
 
-export type PlaceTableSummary = {
-  area_code: string;
-  district_code: string;
+/** 장소 행 묶음 하나의 요약. 구 하나일 수도, 전 구 합계일 수도 있다. */
+export type PlaceSummary = {
   total: number;
   active: number;
   inactive: number;
@@ -47,6 +46,13 @@ export type PlaceTableSummary = {
   operating_parse_status: Record<string, number>;
   operating_parser_version: Record<string, number>;
   latest_detail_fetched_at: string | null;
+};
+
+/** 구 하나의 요약. district_name은 코드 자료에 없는 구면 null이라 코드로 표시한다. */
+export type DistrictPlaceSummary = PlaceSummary & {
+  area_code: string;
+  district_code: string;
+  district_name: string | null;
 };
 
 export type SyncRunRow = {
@@ -75,9 +81,13 @@ export type SyncLockRow = {
 };
 
 export type DbStatus = {
-  area_code: string;
-  district_code: string;
-  places: PlaceTableSummary;
+  /** 적재된 전 구 합계. 탭의 "전체"가 읽는다. */
+  overall: PlaceSummary;
+  /** 적재된 구만 들어온다 — 이 배열이 곧 화면의 탭 목록이다. */
+  districts: DistrictPlaceSummary[];
+  /* 아래 네 값은 구로 나누지 않는다. 두 카운트는 테이블에 구 열이 없고(둘 다
+   * content_id 기준), 이력과 잠금은 전 구를 한 목록으로 보는 편이 "어느 구를
+   * 언제 돌렸나"를 읽기 쉽다. */
   place_enrichments_count: number;
   place_concentration_mappings_count: number;
   sync_runs: SyncRunRow[];
@@ -222,12 +232,13 @@ export function fetchSyncJob(jobId: string) {
   return apiClient.get<SyncJob>(`/dev/place-sync/jobs/${jobId}`);
 }
 
-export function fetchDbStatus(areaCode?: string, districtCode?: string) {
-  const params = new URLSearchParams();
-  if (areaCode) params.set("area_code", areaCode);
-  if (districtCode) params.set("district_code", districtCode);
-  const query = params.toString();
-  return apiClient.get<DbStatus>(`/dev/db-status${query ? `?${query}` : ""}`);
+/*
+ * 구를 인자로 받지 않는다 — 어떤 구가 적재돼 있는지는 places가 아는 사실이라
+ * 응답이 구 목록까지 함께 준다. 탭 전환은 이미 받아둔 값을 고르는 것이라
+ * 추가 요청이 없다.
+ */
+export function fetchDbStatus() {
+  return apiClient.get<DbStatus>("/dev/db-status");
 }
 
 export type NearestArea = {

@@ -38,6 +38,7 @@ from app.observability.api_usage import (
     reset_usage,
 )
 from app.providers.real_place import RealPlaceProvider
+from app.providers.tour_ldong_registry import find_district_name
 from app.repositories.supabase_places import SupabasePlaceRepository
 from app.services import place_snapshot
 from app.services.place_sync import PlaceSyncService, SyncProgress
@@ -180,26 +181,35 @@ async def post_exchange_clear() -> dict[str, Any]:
 
 
 @router.get("/db-status")
-async def get_db_status(
-    area_code: str | None = None,
-    district_code: str | None = None,
-    sync_run_limit: int = 10,
-) -> dict[str, Any]:
-    """장소 DB의 현재 상태와 최근 동기화 이력."""
+async def get_db_status(sync_run_limit: int = 10) -> dict[str, Any]:
+    """장소 DB의 현재 상태와 최근 동기화 이력.
+
+    장소 요약은 적재된 구별로 나누고 전 구 합계를 함께 준다 — 패널이 탭으로 나눠
+    보여준다. 예전에는 설정값(`place_sync_district_code`) 한 구만 세었는데, 같은
+    화면의 동기화 이력은 전 구를 보여주고 있어 "용산구 486건 신규"와 "활성 844"가
+    나란히 놓였다. 두 숫자가 서로 다른 범위를 세고 있다는 걸 화면에서 알 방법이
+    없었다.
+
+    구 목록을 파라미터로 받지 않는 이유: 어떤 구가 적재돼 있는지는 places가 아는
+    사실이지 호출자가 정할 값이 아니다. 목록을 넘기게 하면 새 구를 넣고도 화면에
+    안 보이는 상태가 생긴다.
+
+    place_enrichments와 집중률 매핑은 구 열이 없어(둘 다 content_id 기준) 전체
+    건수만 센다. 구별로 쪼개려면 places와 대조해야 하는데, 이 두 테이블은 장소
+    동기화가 건드리지 않아 구별로 볼 실익이 없다.
+    """
     url, key = _require_supabase()
-    area = area_code or settings.place_sync_area_code
-    district = district_code or settings.place_sync_district_code
 
     async with status_client() as client:
         repository = SupabasePlaceRepository(
             supabase_url=url,
             secret_key=key,
             client=client,
-            # 844행 조회는 챗봇 요청보다 오래 걸린다. 요청 경로용 공통 타임아웃을
+            # 2,300행 조회는 챗봇 요청보다 오래 걸린다. 요청 경로용 공통 타임아웃을
             # 그대로 쓰면 패널이 아무 이유 없이 타임아웃으로 보인다.
             timeout_seconds=max(settings.external_api_timeout_seconds, 30.0),
         )
-        places = await repository.get_region_place_summary(area, district)
+        summaries = await repository.get_place_summaries_by_district()
         enrichment_count = await repository.count_rows("place_enrichments")
         concentration_mapping_count = await repository.count_rows(
             "place_concentration_mappings"
@@ -207,16 +217,33 @@ async def get_db_status(
         sync_runs = await repository.list_recent_sync_runs(sync_run_limit)
         locks = await repository.list_sync_locks()
 
+    districts = [
+        {
+            **summary,
+            # 이름을 못 찾아도 코드는 그대로 남는다 — 화면이 코드로 표시한다.
+            "district_name": find_district_name(
+                str(summary.get("area_code") or ""),
+                str(summary.get("district_code") or ""),
+            ),
+        }
+        for summary in _as_summary_list(summaries.get("districts"))
+    ]
+
     return {
-        "area_code": area,
-        "district_code": district,
-        "places": places,
+        "overall": summaries.get("overall"),
+        "districts": districts,
         "place_enrichments_count": enrichment_count,
         "place_concentration_mappings_count": concentration_mapping_count,
         "sync_runs": sync_runs,
         "sync_locks": locks,
         "detail_ttl_days": settings.place_sync_detail_ttl_days,
     }
+
+
+def _as_summary_list(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
 
 
 # --- 동기화: 대조 → 반영 -----------------------------------------------------

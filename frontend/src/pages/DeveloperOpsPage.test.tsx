@@ -45,20 +45,43 @@ const usageSnapshot = {
   ],
 };
 
-const dbStatus = {
+const jongno = {
   area_code: "11",
   district_code: "110",
-  places: {
-    area_code: "11",
-    district_code: "110",
-    total: 844,
-    active: 843,
-    inactive: 1,
-    detail_fetch_status: { succeeded: 840, failed: 4 },
-    operating_parse_status: { parsed: 700, unknown: 144 },
-    operating_parser_version: { "operating-hours-1.0.0": 844 },
-    latest_detail_fetched_at: "2026-08-08T14:00:00+09:00",
+  district_name: "종로구",
+  total: 883,
+  active: 844,
+  inactive: 39,
+  detail_fetch_status: { succeeded: 710, failed: 142, empty: 31 },
+  operating_parse_status: { parsed: 495, unknown: 388 },
+  operating_parser_version: { "operating-hours-1.0.0": 883 },
+  latest_detail_fetched_at: "2026-08-10T14:00:00+09:00",
+};
+
+const yongsan = {
+  area_code: "11",
+  district_code: "170",
+  district_name: "용산구",
+  total: 486,
+  active: 486,
+  inactive: 0,
+  detail_fetch_status: { succeeded: 483, pending: 3 },
+  operating_parse_status: { parsed: 282, unknown: 204 },
+  operating_parser_version: { "operating-hours-1.0.0": 486 },
+  latest_detail_fetched_at: "2026-08-21T13:00:00+09:00",
+};
+
+const dbStatus = {
+  overall: {
+    total: 1369,
+    active: 1330,
+    inactive: 39,
+    detail_fetch_status: { succeeded: 1193, failed: 142, empty: 31, pending: 3 },
+    operating_parse_status: { parsed: 777, unknown: 592 },
+    operating_parser_version: { "operating-hours-1.0.0": 1369 },
+    latest_detail_fetched_at: "2026-08-21T13:00:00+09:00",
   },
+  districts: [jongno, yongsan],
   place_enrichments_count: 51,
   place_concentration_mappings_count: 101,
   sync_runs: [
@@ -166,7 +189,7 @@ it("fake provider가 있으면 표가 비는 이유를 경고로 알린다", asy
   expect(screen.getByText("아직 기록된 외부 호출이 없습니다.")).toBeInTheDocument();
 });
 
-it("DB 상태 요약과 동기화 이력을 보여준다", async () => {
+it("전체 탭에서는 전 구 합계와 동기화 이력을 보여준다", async () => {
   mockFetch((url) => ({
     status: 200,
     body: url.includes("api-usage") ? usageSnapshot : dbStatus,
@@ -174,14 +197,56 @@ it("DB 상태 요약과 동기화 이력을 보여준다", async () => {
 
   renderPage();
 
-  expect(await screen.findByText("843")).toBeInTheDocument();
-  expect(screen.getByText("전체 844 · 비활성 1")).toBeInTheDocument();
+  expect(await screen.findByText("1330")).toBeInTheDocument();
+  expect(screen.getByText("전체 1369 · 비활성 39")).toBeInTheDocument();
+  // 구 열이 없는 두 테이블은 전체 탭에만 나온다.
+  expect(screen.getByText("place_enrichments")).toBeInTheDocument();
+  expect(screen.getByText("집중률 매핑")).toBeInTheDocument();
+  // 이력과 잠금은 탭 밖이라 전체 탭에서도 그대로 보인다.
   expect(screen.getByText("success")).toBeInTheDocument();
-  // 어떤 테이블에 반영됐는지는 place_sync_runs 행에 없어 카운트에서 파생한다.
   expect(screen.getByText("places")).toBeInTheDocument();
   expect(screen.getByText("신규 1 · 갱신 16 · 비활성 1")).toBeInTheDocument();
   expect(screen.getByText("place_sync_locks")).toBeInTheDocument();
   expect(screen.getByText("잠금 없음 — 실행 가능한 상태예요.")).toBeInTheDocument();
+});
+
+it("구 탭을 누르면 그 구의 요약만 보여준다", async () => {
+  mockFetch((url) => ({
+    status: 200,
+    body: url.includes("api-usage") ? usageSnapshot : dbStatus,
+  }));
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.click(await screen.findByRole("tab", { name: /종로구/ }));
+
+  expect(screen.getByText("전체 883 · 비활성 39")).toBeInTheDocument();
+  // 최근 상세조회 시각도 그 구 값이다 — 전체 합계(8월 21일)와 다른 날짜여야 한다.
+  expect(screen.getByText(/2026\. 8\. 10\./)).toBeInTheDocument();
+  // 구별로 나눌 수 없는 두 테이블은 구 탭에서 감춘다.
+  expect(screen.queryByText("place_enrichments")).not.toBeInTheDocument();
+  expect(screen.queryByText("집중률 매핑")).not.toBeInTheDocument();
+  // 이력과 잠금은 탭과 무관하게 남는다.
+  expect(screen.getByText("최근 동기화 이력")).toBeInTheDocument();
+  expect(screen.getByText("동기화 잠금")).toBeInTheDocument();
+
+  await user.click(screen.getByRole("tab", { name: /용산구/ }));
+  expect(screen.getByText("전체 486 · 비활성 0")).toBeInTheDocument();
+
+  await user.click(screen.getByRole("tab", { name: /전체/ }));
+  expect(screen.getByText("전체 1369 · 비활성 39")).toBeInTheDocument();
+  expect(screen.getByText("place_enrichments")).toBeInTheDocument();
+});
+
+it("상세조회 TTL은 구별 값이 아니라 머리말에만 쓴다", async () => {
+  mockFetch((url) => ({
+    status: 200,
+    body: url.includes("api-usage") ? usageSnapshot : dbStatus,
+  }));
+
+  renderPage();
+
+  expect(await screen.findByText("상세조회 TTL 30일")).toBeInTheDocument();
 });
 
 it("라우터가 없는 서버(404)에는 APP_ENV 확인을 안내한다", async () => {
