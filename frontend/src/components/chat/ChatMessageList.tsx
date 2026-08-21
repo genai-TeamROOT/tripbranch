@@ -18,6 +18,7 @@ import { ClarificationMessage } from "./ClarificationMessage";
 import { CompareResultCards } from "./CompareResultCards";
 import { LocationRefreshMessage } from "./LocationRefreshMessage";
 import { ConditionDebugMessage } from "./ConditionDebugMessage";
+import { FeedbackButtons } from "./FeedbackButtons";
 import { PlaceInfoCard } from "./PlaceInfoCard";
 import { RecommendationResultMessage } from "./RecommendationResultMessage";
 import { ScheduleResultMessage } from "./ScheduleResultMessage";
@@ -173,8 +174,6 @@ export function ChatMessageList({
                 isLoading={isLoading}
                 onRequestMore={onRequestMore}
                 onRelaxRadius={onRelaxRadius}
-                sessionId={message.sessionId}
-                runId={message.runId}
               />
             );
           }
@@ -185,6 +184,14 @@ export function ChatMessageList({
 
           if (message.type === "compare_result") {
             return <CompareResultCards key={message.id} comparison={message.comparison} />;
+          }
+
+          if (message.type === "feedback") {
+            return (
+              <div key={message.id} className="mr-auto flex w-full max-w-2xl justify-end">
+                <FeedbackButtons sessionId={message.sessionId} runId={message.runId} />
+              </div>
+            );
           }
 
           if (message.type === "clarification") {
@@ -210,8 +217,6 @@ export function ChatMessageList({
               isLoading={isLoading}
               onRequestMore={onRequestMore}
               onRelaxRadius={onRelaxRadius}
-              sessionId={message.sessionId}
-              runId={message.runId}
             />
           );
         })}
