@@ -688,6 +688,8 @@ def test_sync_districts_lists_loaded_and_known(
     assert loaded["110"]["place_count"] == 2
     assert loaded["110"]["active_count"] == 1
     assert loaded["110"]["district_name"] == "종로구"
+    # 대조 한 번이 쓰는 목록 호출 수. 1,000건마다 1회다.
+    assert loaded["110"]["list_call_estimate"] == 1
     # DB에는 없고 스냅샷만 있는 구도 선택지에 남는다.
     assert loaded["200"]["place_count"] == 0
     assert loaded["200"]["latest_snapshot"] == (
@@ -852,3 +854,11 @@ async def test_detail_backfill_reports_unchecked_without_credentials(
 
     assert ids == []
     assert checked is False
+
+
+def test_list_call_estimate_counts_one_call_per_thousand_places() -> None:
+    """areaBasedList2도 일일 한도가 있다(2026-08-07 소진). 쪽수만큼 호출이 늘어난다."""
+    assert dev_routes._list_call_estimate(0) == 1
+    assert dev_routes._list_call_estimate(883) == 1
+    assert dev_routes._list_call_estimate(1000) == 1
+    assert dev_routes._list_call_estimate(1001) == 2

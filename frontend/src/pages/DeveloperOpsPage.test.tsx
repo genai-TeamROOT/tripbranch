@@ -113,6 +113,7 @@ const syncDistricts = {
       place_count: 883,
       active_count: 844,
       latest_snapshot: "places_api_snapshot_11-110_20260810.csv",
+      list_call_estimate: 1,
     },
     {
       area_code: "11",
@@ -121,6 +122,7 @@ const syncDistricts = {
       place_count: 486,
       active_count: 486,
       latest_snapshot: null,
+      list_call_estimate: 1,
     },
   ],
   known: [
@@ -233,7 +235,7 @@ it("전체 탭에서는 전 구 합계와 동기화 이력을 보여준다", asy
   // 이력과 잠금은 탭 밖이라 전체 탭에서도 그대로 보인다.
   expect(screen.getByText("success")).toBeInTheDocument();
   expect(screen.getByText("places")).toBeInTheDocument();
-  expect(screen.getByText("신규 1 · 갱신 16 · 비활성 1")).toBeInTheDocument();
+  expect(screen.getByText("신규 1 · 기존 16 · 비활성 1")).toBeInTheDocument();
   expect(screen.getByText("place_sync_locks")).toBeInTheDocument();
   expect(screen.getByText("잠금 없음 — 실행 가능한 상태예요.")).toBeInTheDocument();
 });
@@ -667,7 +669,21 @@ it("dry-run으로 돈 job은 DB에 쓰지 않았다는 것과 한도를 썼다�
   expect(
     await screen.findByText(/dry-run이라 DB에는 아무것도 쓰지 않았어요/),
   ).toBeInTheDocument();
-  expect(screen.getByText("신규(예상)")).toBeInTheDocument();
+  // "갱신"은 값이 바뀐 수가 아니라 DB에 이미 있던 수라 "기존"으로 쓴다.
+  // (동기화 이력 표에도 같은 이름의 열이 있어 여러 개가 잡힌다.)
+  expect(screen.getAllByText("기존").length).toBeGreaterThan(0);
   // 비활성화는 판정 자체를 건너뛴다 — 0으로 보이면 "사라진 장소가 없다"로 읽힌다.
   expect(screen.getByText("미판정")).toBeInTheDocument();
+});
+
+
+it("대조가 쓰는 목록 API 호출 수를 누르기 전에 알린다", async () => {
+  mockFetch((url) => ({ status: 200, body: panelBody(url) }));
+
+  renderPage();
+
+  // areaBasedList2도 일일 한도가 있다. 한 번에 1회라도 구를 바꿔가며 누르면 쌓인다.
+  expect(await screen.findByText(/대조는 목록 API를 1회 써요/)).toBeInTheDocument();
+  // 반영이 "목록 0회"인 것과 헷갈리지 않게 이유를 함께 적는다.
+  expect(screen.getByText(/반영은 이 스냅샷을 다시 쓰므로/)).toBeInTheDocument();
 });

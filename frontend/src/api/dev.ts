@@ -239,6 +239,8 @@ export type SyncDistrict = {
   place_count: number;
   active_count: number;
   latest_snapshot: string | null;
+  /** 이 구를 한 번 대조할 때 나가는 목록 API 호출 수. 장소 1,000건마다 1회다. */
+  list_call_estimate: number;
 };
 
 /** 코드 입력을 검증할 시군구 사전 항목. */

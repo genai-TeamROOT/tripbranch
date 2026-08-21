@@ -140,6 +140,8 @@ function DistrictPicker({
         place_count: 0,
         active_count: 0,
         latest_snapshot: null,
+        // 자료가 없어 쪽수를 어림할 근거가 없다. 최소 1회는 확실하다.
+        list_call_estimate: 1,
       });
     }
     setAdding(false);
@@ -267,8 +269,8 @@ function JobProgress({ job }: { job: SyncJob }) {
       )}
       {job.result && job.params.dry_run && (
         <p className="mt-2 rounded bg-amber-50 p-2 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
-          <strong>dry-run이라 DB에는 아무것도 쓰지 않았어요.</strong> 아래 신규·갱신은
-          "반영했다면 이렇게 됐을 것"이고, 장소 DB 상태 패널도 바뀌지 않아요.
+          <strong>dry-run이라 DB에는 아무것도 쓰지 않았어요.</strong> 아래 신규는
+          "반영했다면 새로 들어갔을 장소"이고, 장소 DB 상태 패널도 바뀌지 않아요.
           비활성은 아예 판정하지 않았습니다. 다만{" "}
           <strong>
             상세조회 {job.result.detail_attempted_count}회는 실제로 나가 오늘 한도를
@@ -281,8 +283,9 @@ function JobProgress({ job }: { job: SyncJob }) {
         <dl className="mt-2 grid grid-cols-3 gap-2 text-xs sm:grid-cols-6">
           {[
             ["처리", job.result.processed_count],
-            [job.params.dry_run ? "신규(예상)" : "신규", job.result.new_count],
-            [job.params.dry_run ? "갱신(예상)" : "갱신", job.result.updated_count],
+            ["신규", job.result.new_count],
+            // "값이 바뀐 수"가 아니라 "목록에 있던 장소 중 DB에 이미 있던 수"다.
+            ["기존", job.result.updated_count],
             // dry-run은 비활성화 판정 자체를 건너뛴다. 0으로 보이면 "사라진 장소가
             // 없다"로 읽히지만 실제로는 보지도 않았다.
             ["비활성", job.params.dry_run ? "미판정" : job.result.deactivated_count],
@@ -401,6 +404,15 @@ export function PlaceSyncPanel({
             onSelectDistrict(district);
           }}
         />
+        {selected && (
+          /* areaBasedList2도 오퍼레이션 단위로 일일 한도가 걸려 있다(2026-08-07
+           * 소진). 한 번에 1회라 작아 보이지만 구를 바꿔가며 누르면 그만큼 쌓인다. */
+          <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+            대조는 목록 API를 {selected.list_call_estimate}회 써요
+            {isNewDistrict && " (자료가 없는 구라 어림값이에요)"}. 반영은 이 스냅샷을
+            다시 쓰므로 목록을 부르지 않아요.
+          </p>
+        )}
       </div>
 
       {isNewDistrict && (

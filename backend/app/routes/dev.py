@@ -396,13 +396,15 @@ async def get_sync_districts() -> dict[str, Any]:
     for summary in _as_summary_list(summaries.get("districts")):
         area_code = str(summary.get("area_code") or "")
         district_code = str(summary.get("district_code") or "")
+        active_count = int(summary.get("active", 0) or 0)
         loaded[(area_code, district_code)] = {
             "area_code": area_code,
             "district_code": district_code,
             "district_name": find_district_name(area_code, district_code),
             "place_count": summary.get("total", 0),
-            "active_count": summary.get("active", 0),
+            "active_count": active_count,
             "latest_snapshot": None,
+            "list_call_estimate": _list_call_estimate(active_count),
         }
 
     for path in place_snapshot.list_snapshots():
@@ -418,6 +420,7 @@ async def get_sync_districts() -> dict[str, Any]:
                 "place_count": 0,
                 "active_count": 0,
                 "latest_snapshot": None,
+                "list_call_estimate": 1,
             },
         )
         # 최신순 목록이라 그 구에서 처음 만난 파일이 가장 최근 것이다.
@@ -546,6 +549,20 @@ _NO_BASELINE_MESSAGES = {
         "이미 있다면 상세조회를 그만큼 낭비하게 됩니다."
     ),
 }
+
+
+def _list_call_estimate(place_count: int) -> int:
+    """대조 한 번이 쓸 목록 API 호출 수.
+
+    `areaBasedList2`도 오퍼레이션 단위로 일일 한도가 걸려 있다(2026-08-07 소진).
+    한 번에 1회라 작아 보이지만 구를 바꿔가며 누르면 그만큼 쌓이고, 지금은 화면에
+    그 사실이 보이지 않는다.
+
+    쪽수는 DB의 활성 장소 수로 어림한다 — 실제 기준은 TourAPI의 totalCount라
+    불러봐야 알 수 있고, 그걸 알려고 부르면 세려던 호출을 먼저 쓰게 된다.
+    """
+    pages, remainder = divmod(max(place_count, 0), place_snapshot.LIST_PAGE_SIZE)
+    return max(1, pages + (1 if remainder else 0))
 
 
 async def _detail_backfill_ids(
