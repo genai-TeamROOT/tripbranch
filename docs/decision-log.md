@@ -2105,6 +2105,48 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `frontend/src/components/chat/FeedbackButtons.tsx`,
   `frontend/src/components/chat/ChatMessageList.tsx`
 
+### D-070 — reason_code(구조화된 싫어요 사유) PR 검토·반영, 마이그레이션 뷰 버그 수정
+
+- 상태: `Accepted` — 구현은 팀원(PR #214, `feature/llm-interpret`)이 완료해 develop에
+  merge, B는 상태·Supabase 저장 계약 검토와 마이그레이션 적용을 요청받아 수행.
+- 배경: D-069 병합 직후, 같은 팀원이 "싫어요" 사유를 자유 텍스트(comment)뿐 아니라
+  집계 가능한 표준 코드(`reason_code`)로도 남길 수 있게 하는 기능을 독립적으로
+  구현해 PR #214로 develop에 merge했다. PR 설명에서 B(상태·Supabase 저장 계약
+  소유자)에게 두 가지를 요청 — ① 상태·저장 계약이 깨지지 않는지 검토, ②
+  `202608210006_add_feedback_reason_code.sql` 마이그레이션을 실서비스 DB에 적용.
+- 결정:
+  1. `reason_code` 그대로 채택 — `FeedbackReasonCode` 7값 Literal(intent_mismatch/
+     clarification_unhelpful/context_not_preserved/location_misunderstood/
+     conditions_not_applied/recommendation_not_suitable/other)이 DB CHECK 제약과
+     정확히 일치하고, `RecordFeedbackRequest` validator가 "좋아요"에는 reason_code/
+     comment 둘 다 못 붙이게 막아 계약 위반 없음을 확인.
+  2. `intent`/`user_input`/`assistant_message` 캡처 아키텍처는 이쪽(render-time
+     `findTurnText`)을 그대로 유지 — PR #214가 자체적으로 시도했던 reducer 시점
+     임베딩 방식(`ChatMessage` 생성 시 값을 미리 박아두는 방식)은 최종 merge에서
+     채택되지 않았다. D-069에서 정리한 "스크롤해 예전 카드에 피드백을 남기면
+     최신 턴 값이 잘못 붙는" 문제를 render-time 방식이 이미 해결한 상태라 되돌아갈
+     이유가 없었다.
+  3. 마이그레이션 적용 중 발견한 버그 수정 — `202608210006`의 `response_feedback_kst`
+     뷰 재정의가 기존 컬럼 순서(`...user_input, assistant_message, intent...`)를
+     깨고 `intent`를 앞으로 옮기려다 PostgreSQL의 `create or replace view` 제약
+     (42P16: 기존 컬럼 이름·순서 변경 불가)에 걸려 실서비스 적용이 실패했다. 기존
+     순서를 그대로 두고 `reason_code`를 맨 뒤에 추가하도록 수정. `begin`/`commit`으로
+     감싸져 있어 실패 시 전체 롤백 — 부분 적용된 상태는 없었다.
+- 근거: 표준 사유 코드는 "좋아요/싫어요 수만으로는 어떤 인텐트·응답에서 문제가
+  생겼는지 분석할 수 없다"는 D-069 이후로도 유효했던 한계를 정확히 메운다. B
+  자체 구현 없이 검토·인프라(마이그레이션) 역할만 맡는 것도 팀 내 실제 구현자와
+  중복 작업하지 않는다는 원칙에 맞는다.
+- 채택하지 않은 것: PR #214의 reducer-embedding 방식(intent/user_input/
+  assistant_message를 `"feedback"` 메시지 생성 시점에 미리 채워두는 안) — 코드
+  구조는 더 단순하지만 D-069가 이미 해결해둔 문제를 다시 열 이유가 없어 review
+  단계에서 채택하지 않았다.
+- 남은 것: 없음 — 계약 검토·마이그레이션 적용 모두 완료. `llmops-trace-contract-v1.md`
+  §8-3에 계약 반영.
+- 상세: `supabase/migrations/202608210006_add_feedback_reason_code.sql`,
+  `backend/app/state/schema.py`(`FeedbackReasonCode`),
+  `backend/app/state/service.py`(`RecordFeedbackRequest` validator),
+  `frontend/src/components/chat/FeedbackButtons.tsx`
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -2168,3 +2210,4 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-21 | D-067 신설 — 랭킹 기준점을 검색 기준점에서 사용자 위치로 이관(D·A). 후보 수집 중심은 검색 기준점 그대로 두고 거리·경로 origin·근거 문장 기준점 이름만 옮겼다. 검색 기준점에서 등거리인 두 후보를 타겟 기준으로는 구분할 수 없다는 것이 근거. 거리 점수 분모는 이동시간을 말한 요청에서는 그대로 두고(시간 약속은 원점이 없다), 말하지 않은 요청에만 사용자→기준점 거리를 더해 0점 전멸을 막는다. TP-109·TP-112의 `distance_km` 기준점 유지 방침을 대체한다 |
 | 2026-08-21 | D-068 신설 — 피드백을 남긴 턴에 한해서만 질문·답변 원문(`user_input`/`assistant_message`)을 `response_feedback`에 저장하기로 결정. 대화 전체 로그 저장(guest-auth-design.md 9절이 위험도 "높음"으로 분류)과는 다르며, 사용자가 AskUserQuestion으로 "피드백 남긴 턴만"을 직접 선택. 두 컬럼 모두 nullable |
 | 2026-08-21 | D-069 신설 — D-068 후속. `intent`(assistant_text 메시지 값 그대로 복사)와 `comment`(싫어요 사유 자유 텍스트) 필드 추가. comment는 append-only 중복 방지를 위해 클릭 즉시 전송하지 않고 인라인 입력창(제출/건너뛰기)에서 한 번에 전송. NOT NULL 전면 적용과 `is_clarification`/`clarification_code`(되묻기 메시지엔 피드백 버튼이 아예 없어 채울 수 없음)는 채택하지 않음 |
+| 2026-08-21 | D-070 신설 — 팀원 PR #214(`reason_code` 구조화된 싫어요 사유)를 B 관점에서 검토·반영. FeedbackReasonCode 7값이 DB CHECK와 일치함을 확인, intent/user_input/assistant_message 캡처는 render-time `findTurnText` 방식을 그대로 유지(PR #214가 시도한 reducer-embedding 방식은 미채택). 마이그레이션 `202608210006` 적용 중 `response_feedback_kst` 뷰 컬럼 순서 버그(PostgreSQL 42P16) 발견·수정 |
