@@ -207,7 +207,7 @@ async def test_generate_general_answer_service_identity_mentions_trivy() -> None
 async def test_generate_compare_summary_uses_three_to_six_fact_only_lines() -> None:
     provider = FakeLLMProvider()
     comparison = ComparisonResult(
-        criteria=CompareCriteria.DISTANCE,
+        criteria=CompareCriteria.TRAVEL_TIME,
         items=[
             ComparisonItem(
                 place_id="p1",
@@ -235,6 +235,50 @@ async def test_generate_compare_summary_uses_three_to_six_fact_only_lines() -> N
     # 0.2km를 3.6km/h로 환산해 올림한 값이다(추천 카드와 같은 표기 규칙).
     assert "도보 약 4분" in result.data
     assert "점수" not in result.data
+
+
+@pytest.mark.asyncio
+async def test_generate_compare_summary_travel_time_recommends_shortest_duration() -> None:
+    """TRAVEL_TIME은 수단 상관없이 가장 빨리 갈 수 있는 곳을 추천하고, 실측 거리와
+    도보·자동차·대중교통 소요시간을 함께 말한다.
+
+    같은 항목의 distance_km(추천 시점 스냅샷 직선거리)는 travel_time 기준에서는
+    실측값과 섞이면 혼동을 주므로 언급하지 않는다.
+    """
+    provider = FakeLLMProvider()
+    comparison = ComparisonResult(
+        criteria=CompareCriteria.TRAVEL_TIME,
+        items=[
+            ComparisonItem(
+                place_id="p1",
+                place_name="경복궁",
+                rank=1,
+                distance_km=0.2,
+                travel_distance_km=1.8,
+                travel_walking_minutes=22,
+                travel_driving_minutes=12,
+                travel_transit_minutes=18,
+            ),
+            ComparisonItem(
+                place_id="p2",
+                place_name="국립민속박물관",
+                rank=2,
+                distance_km=0.5,
+                travel_distance_km=3.4,
+                travel_walking_minutes=40,
+                travel_driving_minutes=20,
+                travel_transit_minutes=25,
+            ),
+        ],
+    )
+
+    result = await provider.generate_compare_summary(comparison)
+
+    assert "경복궁" in result.data
+    assert "자동차로 약 12분" in result.data
+    assert "도보로 약 22분" in result.data
+    assert "대중교통으로 약 18분" in result.data
+    assert "0.2" not in result.data
 
 
 @pytest.mark.asyncio
@@ -1352,7 +1396,32 @@ async def test_extract_compare_request_mixes_ordinal_and_name() -> None:
 
     assert output.compare is not None
     assert output.compare.targets == [1, 3]
-    assert output.compare.criteria is CompareCriteria.DISTANCE
+    assert output.compare.criteria is CompareCriteria.TRAVEL_TIME
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "user_input",
+    ["첫 번째랑 백인제가옥 중에 어디가 더 빨리 갈까?", "둘 중 얼마나 걸려?", "어디가 덜 막힐까?"],
+)
+async def test_extract_compare_request_travel_time_criteria(user_input: str) -> None:
+    """TP-105/106 실측 연결 — "빨리 갈까?"류 발화는 travel_time으로 판별한다.
+
+    "덜 막힐까?"(실시간 교통 정체)는 아직 별도 API 연동 전이라 지금은 같은
+    travel_time 기준(실측 경로, 정체 미반영)으로 받는다(연결 과제로 남김).
+    """
+    provider = FakeLLMProvider()
+
+    output = (
+        await provider.extract_compare_request(
+            user_input,
+            shown_place_count=3,
+            shown_place_names=_SHOWN_PLACES,
+        )
+    ).data
+
+    assert output.compare is not None
+    assert output.compare.criteria is CompareCriteria.TRAVEL_TIME
 
 
 @pytest.mark.asyncio

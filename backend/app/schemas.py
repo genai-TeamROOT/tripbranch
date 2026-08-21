@@ -242,8 +242,11 @@ class Companion(StrEnum):
 
 
 class CompareCriteria(StrEnum):
-    DISTANCE = "distance"
     TIME = "time"
+    # "가까워?"/"거리 차이?"도 여기로 합친다(2026-08-21) — 직선거리 하나만 답하는
+    # 것보다, 실제 이동 경로(도보/자동차/대중교통) 소요시간과 실측 거리를 함께
+    # 보여주는 쪽이 "이동이 얼마나 용이한지"라는 실제 질문 의도에 더 가깝다.
+    TRAVEL_TIME = "travel_time"
     OVERALL = "overall"
 
 
@@ -487,6 +490,15 @@ class ComparisonItem(BaseModel):
     읽을 수 있는 장소명으로 해석해 이 모델로 반환한다. 이 모델은 C의 Tool 계약을
     중복 정의하려는 것이 아니라, A가 LLM에 넘길 수 있는 공개 비교 사실의 최소
     집합이다.
+
+    latitude/longitude·travel_* 필드는 TRAVEL_TIME 전용(2026-08-21, TP-105/106
+    실측 연결). C는 좌표만 사실 그대로 전달하고(우열 판정 없음, 기존 원칙 유지),
+    A가 그 좌표로 도보·자동차·대중교통 세 경로를 모두 실측해 travel_* 값을
+    채운다 — distance_km/remaining_minutes(추천 시점 스냅샷 재사용, D-050/
+    int-04-compare.md §13)와는 출처가 달라 별도 필드로 둔다. 수단별로 값을
+    나누는 이유: "도보 15분/자동차 4분/대중교통 10분"처럼 사용자가 자기 상황에
+    맞는 수단을 골라 볼 수 있어야 한다 — 하나로 합치면 그 선택지가 사라진다.
+    수단 중 조회에 실패하거나 provider가 없는 것은 None으로 남는다.
     """
 
     place_id: str
@@ -495,6 +507,12 @@ class ComparisonItem(BaseModel):
     distance_km: float | None = Field(default=None, ge=0)
     remaining_minutes: int | None = Field(default=None, ge=0)
     environment_type: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    travel_distance_km: float | None = Field(default=None, ge=0)
+    travel_walking_minutes: int | None = Field(default=None, ge=0)
+    travel_driving_minutes: int | None = Field(default=None, ge=0)
+    travel_transit_minutes: int | None = Field(default=None, ge=0)
 
 
 class ComparisonResult(BaseModel):

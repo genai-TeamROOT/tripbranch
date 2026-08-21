@@ -481,7 +481,7 @@ def test_non_recommend_non_modify_intents_have_no_operations() -> None:
     compare_output = LLMOutput(
         intent=Intent.COMPARE,
         status=OutputStatus.COMPLETE,
-        compare=ComparePayload(targets="all", criteria=CompareCriteria.DISTANCE),
+        compare=ComparePayload(targets="all", criteria=CompareCriteria.TRAVEL_TIME),
     )
     general_output = LLMOutput(
         intent=Intent.GENERAL,

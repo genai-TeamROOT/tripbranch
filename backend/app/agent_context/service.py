@@ -47,6 +47,7 @@ from app.agent_context.info_schemas import (
     PopulationForecastInfo,
     RealtimeCityInfoResult,
     RealtimeCommercialInfoResult,
+    RealtimeInfoDetailItem,
 )
 from app.agent_context.schemas import (
     AgentContextRequest,
@@ -72,6 +73,8 @@ from app.concentration_policy import (
 from app.domain.models import (
     ConcentrationResult,
     PlaceDetails,
+    RealtimeBusStop,
+    RealtimeCityEvent,
     RealtimeCommercialCategory,
     RealtimeParkingLot,
     RealtimeSubwayArrival,
@@ -137,15 +140,18 @@ _MIN_COMPARE_ITEMS = 2
 
 # criteria별로 "이 값이 없으면 비교할 게 없는" 필드. overall은 세 값을 함께 설명하는
 # 방식이라(A 확정) 특정 필드를 요구하지 않는다.
+# TRAVEL_TIME은 travel_* 수단별 값을 여기서 채우지 않는다(A가 실측 호출 후 채운다)
+# — 대신 실측에 필요한 좌표(latitude)가 있는지로 판정한다.
 _COMPARE_CRITERIA_FIELDS: dict[CompareCriteria, str] = {
-    CompareCriteria.DISTANCE: "distance_km",
     CompareCriteria.TIME: "remaining_minutes",
+    CompareCriteria.TRAVEL_TIME: "latitude",
 }
 
 # INFO 행사 응답에 싣는 최대 건수. 챗봇 말풍선 한 번에 읽히는 분량으로 제한한다.
 INFO_EVENT_RESULT_LIMIT = 5
 _CURRENT_ACTIVITY_MARKERS = ("지금", "현재", "오늘")
 _COMMERCIAL_CATEGORY_MARKERS = ("카페", "커피", "제과", "패스트푸드")
+_CITYDATA_SOURCE_URL = "https://data.seoul.go.kr/dataList/OA-21285/F/1/datasetView.do"
 _REALTIME_CITYDATA_QUESTION_TYPES = {
     "realtime_parking",
     "realtime_subway",
@@ -300,7 +306,14 @@ class ContextService:
 
         수치(거리·남은 운영시간·실내외)는 B가 보관한 추천 시점 스냅샷이므로 다시
         조회하지 않고 그대로 통과시킨다 — 사용자가 카드에서 본 값과 어긋나면 안 된다
-        (D-050). C는 우열을 판정하지 않는다. 그건 A의 LLM 요약 몫이다.
+        (D-050, docs/design/int-04-compare.md §13). C는 우열을 판정하지 않는다.
+        그건 A의 LLM 요약 몫이다.
+
+        좌표(latitude/longitude)는 예외다(TRAVEL_TIME, 2026-08-21) — 카드 조회
+        시점에 항상 함께 실어 보낸다. 스냅샷이 아니라 "지금 이 장소가 어디 있는지"
+        라는 불변에 가까운 사실이라 D-050이 막으려던 문제(스냅샷과 최신값의 어긋남)
+        와 무관하고, A가 이 좌표로 실측 경로를 조회할 때만 쓴다 — C는 여기서도
+        거리·시간을 계산하거나 우열을 매기지 않는다.
         """
 
         card_tool = self._tools.cards
@@ -329,21 +342,24 @@ class ContextService:
                 ),
             )
 
-        names = {card.content_id: card.name for card in card_result.cards if card.name is not None}
+        cards_by_id = {card.content_id: card for card in card_result.cards if card.name is not None}
         items = [
             ComparisonItem(
                 place_id=candidate.place_id,
-                place_name=names[candidate.place_id],
+                place_name=cards_by_id[candidate.place_id].name,
                 rank=candidate.rank,
                 distance_km=candidate.distance_km,
                 remaining_minutes=candidate.remaining_minutes,
                 environment_type=candidate.environment_type,
+                # TRAVEL_TIME 전용 — 사실 그대로 전달만 한다(우열 판정은 A 몫).
+                latitude=cards_by_id[candidate.place_id].latitude,
+                longitude=cards_by_id[candidate.place_id].longitude,
             )
             for candidate in candidates
-            if candidate.place_id in names
+            if candidate.place_id in cards_by_id
         ]
         missing = [
-            candidate.place_id for candidate in candidates if candidate.place_id not in names
+            candidate.place_id for candidate in candidates if candidate.place_id not in cards_by_id
         ]
 
         # 이름을 못 찾은 후보는 빼고 진행하되, 남은 수가 비교를 이루지 못하면
@@ -633,6 +649,11 @@ class ContextService:
                     if population is not None and population.forecast_available
                     else []
                 ),
+                detail_items=_to_commercial_detail_items(
+                    commercial.categories,
+                    area_activity_level=commercial.area_activity_level,
+                ),
+                source_url=_CITYDATA_SOURCE_URL,
             ),
             metadata=_info_response_metadata(location_metadata, tool_result.provider_metadata),
         )
@@ -686,7 +707,7 @@ class ContextService:
         citydata = tool_result.citydata
         question_type = request.question_type
         if question_type == "realtime_parking":
-            entries = sorted(
+            all_entries = sorted(
                 citydata.parking_lots,
                 key=lambda item: haversine_km(
                     resolved_location.latitude,
@@ -696,33 +717,55 @@ class ContextService:
                 )
                 if item.latitude is not None and item.longitude is not None
                 else float("inf"),
-            )[:3]
+            )[:10]
+            entries = all_entries[:3]
             fields = {
                 item.name: _format_realtime_parking(item)
                 for item in entries
             }
             observed_at = next((item.observed_at for item in entries if item.observed_at), None)
+            detail_items = _to_parking_detail_items(
+                all_entries,
+                latitude=resolved_location.latitude,
+                longitude=resolved_location.longitude,
+            )
         elif question_type == "realtime_subway":
-            entries = citydata.subway_arrivals[:4]
+            all_entries = citydata.subway_arrivals[:12]
+            entries = all_entries[:4]
             fields = {
                 f"{item.station_name} {item.line or ''}".strip(): _format_subway_arrival(item)
                 for item in entries
             }
             observed_at = None
+            detail_items = _to_subway_detail_items(all_entries)
         elif question_type == "realtime_bus":
-            entries = citydata.bus_stops[:5]
+            all_entries = citydata.bus_stops[:12]
+            entries = all_entries[:5]
             fields = {
                 item.name: f"정류장 번호 {item.ars_id}" if item.ars_id else "주변 정류장"
                 for item in entries
             }
             observed_at = None
+            detail_items = _to_bus_detail_items(
+                all_entries,
+                latitude=resolved_location.latitude,
+                longitude=resolved_location.longitude,
+            )
         else:
-            entries = citydata.events[:5]
+            all_entries = citydata.events[:10]
+            entries = all_entries[:5]
+            # 행사 제목을 키로 쓰면 안 된다 — dt(라벨)는 짧은 값을 전제로 shrink-0로
+            # 렌더링돼(PlaceInfoCard.tsx), 긴 제목이 들어가면 dd(값) 칸이 0너비로
+            # 찌그러져 텍스트가 한 글자씩 세로로 쌓인다(2026-08-20 실측, 최대 580px
+            # 행 높이). 키는 순번으로 짧게 고정하고, 제목·기간·장소를 값 한 줄에 담는다.
             fields = {
-                item.name: " · ".join(part for part in (item.period, item.place) if part)
-                for item in entries
+                f"행사 {index}": " · ".join(
+                    part for part in (item.name, item.period, item.place) if part
+                )
+                for index, item in enumerate(entries, start=1)
             }
             observed_at = None
+            detail_items = _to_event_detail_items(all_entries)
         result_status: Literal["success", "no_data", "unavailable"] = (
             "success" if fields else "no_data"
         )
@@ -745,6 +788,8 @@ class ContextService:
                 area_name=area.name,
                 observed_at=observed_at,
                 fields=fields,
+                detail_items=detail_items,
+                source_url=_CITYDATA_SOURCE_URL,
             ),
             metadata=_info_response_metadata(location_metadata, tool_result.provider_metadata),
         )
@@ -1272,6 +1317,163 @@ def _format_subway_arrival(item: RealtimeSubwayArrival) -> str:
     )
     direction = f" · {item.direction}" if item.direction else ""
     return f"{destination}{direction} · {arrival}"
+
+
+def _distance_from_location_label(
+    *,
+    latitude: float,
+    longitude: float,
+    target_latitude: float | None,
+    target_longitude: float | None,
+) -> str | None:
+    if target_latitude is None or target_longitude is None:
+        return None
+    distance_km = haversine_km(latitude, longitude, target_latitude, target_longitude)
+    if distance_km < 1:
+        return f"약 {max(1, round(distance_km * 1000))}m"
+    return f"약 {distance_km:.1f}km"
+
+
+def _to_commercial_detail_items(
+    categories: tuple[RealtimeCommercialCategory, ...],
+    *,
+    area_activity_level: str | None,
+) -> list[RealtimeInfoDetailItem]:
+    """상권 질의 상세 모달에는 서울시가 준 전체 업종 지표를 보인다."""
+
+    items: list[RealtimeInfoDetailItem] = []
+    if area_activity_level is not None:
+        items.append(
+            RealtimeInfoDetailItem(
+                title="지역 전체 상권",
+                subtitle=area_activity_level,
+                details={"실시간 활동": area_activity_level},
+            )
+        )
+    for category in categories[:15]:
+        label = " · ".join(
+            value
+            for value in (category.large_category, category.middle_category)
+            if value is not None
+        )
+        if not label or category.activity_level is None:
+            continue
+        items.append(
+            RealtimeInfoDetailItem(
+                title=label,
+                subtitle=category.activity_level,
+                details={"실시간 상권 활동": category.activity_level},
+            )
+        )
+    return items
+
+
+def _to_parking_detail_items(
+    items: tuple[RealtimeParkingLot, ...],
+    *,
+    latitude: float,
+    longitude: float,
+) -> list[RealtimeInfoDetailItem]:
+    return [
+        RealtimeInfoDetailItem(
+            title=item.name,
+            subtitle=_format_realtime_parking(item),
+            details={
+                key: value
+                for key, value in {
+                    "총면수": f"{item.capacity}면" if item.capacity is not None else None,
+                    "실시간 주차": (
+                        f"{item.current_parked_count}대 주차"
+                        if item.current_available and item.current_parked_count is not None
+                        else "제공되지 않음"
+                    ),
+                    "요금": "유료" if item.paid is True else "무료" if item.paid is False else None,
+                    "거리": _distance_from_location_label(
+                        latitude=latitude,
+                        longitude=longitude,
+                        target_latitude=item.latitude,
+                        target_longitude=item.longitude,
+                    ),
+                    "기준 시각": item.observed_at,
+                }.items()
+                if value is not None
+            },
+        )
+        for item in items
+    ]
+
+
+def _to_subway_detail_items(
+    items: tuple[RealtimeSubwayArrival, ...],
+) -> list[RealtimeInfoDetailItem]:
+    return [
+        RealtimeInfoDetailItem(
+            title=f"{item.station_name} {item.line or ''}".strip(),
+            subtitle=_format_subway_arrival(item),
+            details={
+                key: value
+                for key, value in {
+                    "방면": item.direction,
+                    "종착역": item.destination,
+                    "도착 정보": item.arrival_message
+                    or (
+                        f"약 {max(1, round(item.arrival_seconds / 60))}분 후"
+                        if item.arrival_seconds is not None
+                        else None
+                    ),
+                }.items()
+                if value is not None
+            },
+        )
+        for item in items
+    ]
+
+
+def _to_bus_detail_items(
+    items: tuple[RealtimeBusStop, ...],
+    *,
+    latitude: float,
+    longitude: float,
+) -> list[RealtimeInfoDetailItem]:
+    return [
+        RealtimeInfoDetailItem(
+            title=item.name,
+            subtitle=f"정류장 번호 {item.ars_id}" if item.ars_id else "주변 버스정류장",
+            details={
+                key: value
+                for key, value in {
+                    "ARS 번호": item.ars_id,
+                    "거리": _distance_from_location_label(
+                        latitude=latitude,
+                        longitude=longitude,
+                        target_latitude=item.latitude,
+                        target_longitude=item.longitude,
+                    ),
+                }.items()
+                if value is not None
+            },
+        )
+        for item in items
+    ]
+
+
+def _to_event_detail_items(
+    items: tuple[RealtimeCityEvent, ...],
+) -> list[RealtimeInfoDetailItem]:
+    return [
+        RealtimeInfoDetailItem(
+            title=item.name,
+            subtitle=item.period,
+            details={
+                key: value
+                for key, value in {"기간": item.period, "장소": item.place}.items()
+                if value
+            },
+            thumbnail_url=item.thumbnail_url,
+            external_url=item.url,
+        )
+        for item in items
+    ]
 
 
 def _to_concentration_forecast_infos(

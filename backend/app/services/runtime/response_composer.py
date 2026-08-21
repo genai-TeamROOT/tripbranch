@@ -546,9 +546,9 @@ def _compose_compare_fallback(comparison: ComparisonResult) -> str:
     """LLM 장애 시 C의 사실 데이터만으로 만드는 사용자 표시용 비교 문구."""
 
     criterion_label = {
-        CompareCriteria.DISTANCE: "거리",
         CompareCriteria.TIME: "운영시간",
-        CompareCriteria.OVERALL: "거리·운영시간·환경",
+        CompareCriteria.TRAVEL_TIME: "실제 이동시간",
+        CompareCriteria.OVERALL: "운영시간·환경·이동시간",
     }[comparison.criteria]
     recommended = _select_compare_recommendation(comparison)
     lines = [
@@ -557,7 +557,10 @@ def _compose_compare_fallback(comparison: ComparisonResult) -> str:
     ]
     for item in comparison.items[:4]:
         details: list[str] = []
-        if item.distance_km is not None:
+        travel_detail = _format_compare_travel_time(item)
+        if travel_detail is not None:
+            details.append(travel_detail)
+        elif item.distance_km is not None:
             details.append(_format_compare_walking_time(item.distance_km))
         if item.remaining_minutes is not None:
             details.append(_format_compare_remaining_time(item.remaining_minutes))
@@ -570,17 +573,35 @@ def _compose_compare_fallback(comparison: ComparisonResult) -> str:
     return "\n".join(lines[:6])
 
 
+def _fastest_travel_minutes(item: ComparisonItem) -> int | None:
+    """세 수단 중 가장 짧은 소요시간. 하나도 없으면 None."""
+
+    candidates = [
+        minutes
+        for minutes in (
+            item.travel_walking_minutes,
+            item.travel_driving_minutes,
+            item.travel_transit_minutes,
+        )
+        if minutes is not None
+    ]
+    return min(candidates) if candidates else None
+
+
 def _select_compare_recommendation(comparison: ComparisonResult) -> ComparisonItem:
     """LLM fallback에서도 질문 기준과 맞는 한 곳을 분명히 고른다."""
 
-    if comparison.criteria is CompareCriteria.DISTANCE:
-        with_distance = [item for item in comparison.items if item.distance_km is not None]
-        if with_distance:
-            return min(with_distance, key=lambda item: item.distance_km or 0)
-    elif comparison.criteria is CompareCriteria.TIME:
+    if comparison.criteria is CompareCriteria.TIME:
         with_time = [item for item in comparison.items if item.remaining_minutes is not None]
         if with_time:
             return max(with_time, key=lambda item: item.remaining_minutes or 0)
+    elif comparison.criteria is CompareCriteria.TRAVEL_TIME:
+        # 수단 상관없이 "어떻게든 가장 빨리 갈 수 있는 곳"을 기준으로 고른다.
+        with_travel_time = [
+            item for item in comparison.items if _fastest_travel_minutes(item) is not None
+        ]
+        if with_travel_time:
+            return min(with_travel_time, key=lambda item: _fastest_travel_minutes(item) or 0)
     # overall은 D가 직전에 정렬해 노출한 1번을 기준으로, 추가 점수 계산 없이 고른다.
     return comparison.items[0]
 
@@ -606,6 +627,36 @@ def _format_compare_remaining_time(remaining_minutes: int) -> str:
     # JavaScript 카드의 Math.round()와 동일하게 .5는 올림 처리한다.
     hours = max(1, math.floor(remaining_minutes / 60 + 0.5))
     return f"약 {hours}시간 남음"
+
+
+# (조사까지 붙인 라벨, ComparisonItem 필드명) 순서 — compare/summary_instruction.md의
+# 나열 순서(도보·자동차·대중교통)와 맞춘다. "대중교통"은 받침이 있어 "으로"를 붙여야
+# 하므로("대중교통로"는 어색함) 조사까지 라벨에 미리 넣어둔다. LLM fallback 경로에서
+# 같은 형식을 미러링한다(2026-08-21, TRAVEL_TIME 실측 연결).
+_TRAVEL_MODE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("도보로", "travel_walking_minutes"),
+    ("자동차로", "travel_driving_minutes"),
+    ("대중교통으로", "travel_transit_minutes"),
+)
+
+
+def _format_compare_travel_time(item: ComparisonItem) -> str | None:
+    """실측 거리·수단별 소요시간(TRAVEL_TIME 전용)을 한 문장 조각으로 표시한다.
+
+    값이 있는 수단만 나열한다 — 조회 실패·provider 미설정으로 없는 수단까지
+    "확인 안 됨"으로 매번 나열하면 문장이 지저분해진다. 셋 다 없으면 None을
+    반환해 호출부가 다른 안내로 대체하게 한다.
+    """
+
+    mode_parts = [
+        f"{label} 약 {minutes}분"
+        for label, field in _TRAVEL_MODE_FIELDS
+        if (minutes := getattr(item, field)) is not None
+    ]
+    if not mode_parts:
+        return None
+    distance_part = f"약 {item.travel_distance_km}km, " if item.travel_distance_km is not None else ""
+    return distance_part + ", ".join(mode_parts)
 
 
 # 요청 시간과 실제 편성 시간의 차이가 이 값(분) 이내면 문구에 실제 계산값 대신

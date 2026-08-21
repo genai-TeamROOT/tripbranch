@@ -47,6 +47,10 @@ class RecommendationCard:
     parking_status: ParkingAvailability
     parking_note: str | None
     operating_schedule: OperatingSchedule
+    # COMPARE의 TRAVEL_TIME 실측 연결(2026-08-21)에서 추가. 조회 자체는 이미 하고
+    # 있던 값(StoredPlaceDetail)을 그대로 옮기는 것뿐이라 추가 DB 호출은 없다.
+    latitude: float | None = None
+    longitude: float | None = None
 
 
 @dataclass(frozen=True)
@@ -126,6 +130,8 @@ class RecommendationCardTool:
                 operating_hours=row.operating_hours_raw,
                 rest_date=row.rest_date_raw,
             ),
+            latitude=row.latitude,
+            longitude=row.longitude,
         )
 
     def _category_label(self, row: StoredPlaceDetail) -> str | None:
