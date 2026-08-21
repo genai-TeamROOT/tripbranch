@@ -17,6 +17,7 @@ def record(
     user_input: str | None = None,
     assistant_message: str | None = None,
     intent: str | None = None,
+    reason_code: str | None = None,
     comment: str | None = None,
 ) -> FeedbackRecord:
     """응답 1건에 대한 사용자 반응을 기록한다.
@@ -36,6 +37,7 @@ def record(
         user_input=user_input,
         assistant_message=assistant_message,
         intent=intent,
+        reason_code=reason_code,
         comment=comment,
         recorded_at=now_kst(),
     )

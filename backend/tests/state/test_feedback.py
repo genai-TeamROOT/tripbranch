@@ -42,6 +42,20 @@ class TestRecordFeedback:
         assert saved.run_id == "run_abc"
         assert saved.rating == "dislike"
 
+    def test_발화_응답_intent도_함께_저장된다(self, store):
+        record_feedback(
+            store,
+            rating="dislike",
+            intent="INFO",
+            user_input="경복궁 지금 사람 많아?",
+            assistant_message="북촌한옥마을 기준으로는 보통이에요.",
+        )
+
+        [saved] = feedback_module.get_feedback(store, "sess_test")
+        assert saved.intent == "INFO"
+        assert saved.user_input == "경복궁 지금 사람 많아?"
+        assert saved.assistant_message == "북촌한옥마을 기준으로는 보통이에요."
+
     def test_like도_저장된다(self, store):
         record_feedback(store, rating="like")
 
@@ -96,7 +110,17 @@ class TestFeedbackIntentComment:
         assert saved.comment is None
 
 class TestComment:
-    """싫어요 클릭 시 선택적으로 남기는 사유 텍스트."""
+    """싫어요 표준 사유와 선택적 자유 의견."""
+
+    def test_reason_code를_전달하면_그대로_저장된다(self, store):
+        record_feedback(
+            store,
+            rating="dislike",
+            reason_code="context_not_preserved",
+        )
+
+        [saved] = feedback_module.get_feedback(store, "sess_test")
+        assert saved.reason_code == "context_not_preserved"
 
     def test_comment을_전달하면_그대로_저장된다(self, store):
         record_feedback(store, rating="dislike", comment="장소가 너무 멀어요")
@@ -109,6 +133,18 @@ class TestComment:
 
         [saved] = feedback_module.get_feedback(store, "sess_test")
         assert saved.comment is None
+
+    def test_다른_표준_사유에도_comment를_함께_남길_수_있다(self, store):
+        record_feedback(
+            store,
+            rating="dislike",
+            reason_code="location_misunderstood",
+            comment="기기 위치가 아닌 검색 중심으로 안내됐어요",
+        )
+
+        [saved] = feedback_module.get_feedback(store, "sess_test")
+        assert saved.reason_code == "location_misunderstood"
+        assert saved.comment == "기기 위치가 아닌 검색 중심으로 안내됐어요"
 
     def test_500자를_넘으면_거부된다(self):
         with pytest.raises(ValidationError):
@@ -127,6 +163,24 @@ class TestInvalidRating:
         with pytest.raises(ValidationError):
             svc.RecordFeedbackRequest(
                 session_id="sess_test", run_id="run_test", rating="neutral"
+            )
+
+    def test_정해지지_않은_reason_code는_거부된다(self):
+        with pytest.raises(ValidationError):
+            svc.RecordFeedbackRequest(
+                session_id="sess_test",
+                run_id="run_test",
+                rating="dislike",
+                reason_code="operating_hours_wrong",
+            )
+
+    def test_좋아요에는_reason_code나_comment를_남길_수_없다(self):
+        with pytest.raises(ValidationError):
+            svc.RecordFeedbackRequest(
+                session_id="sess_test",
+                run_id="run_test",
+                rating="like",
+                reason_code="other",
             )
 
 
@@ -236,6 +290,38 @@ class TestGetDislikeFeedbackWithTrace:
         assert item.run_id == "run_1"
         assert item.prompt_version == "intent_v1.2"
         assert item.scoring_version == "score_v0.3"
+
+    def test_싫어요_조회에_사유와_의견도_포함된다(self, store):
+        record_feedback(
+            store,
+            session_id="sess_a",
+            run_id="run_1",
+            rating="dislike",
+            reason_code="clarification_unhelpful",
+            comment="이미 위치를 말했어요",
+        )
+
+        response = svc.get_dislike_feedback(store=store)
+
+        assert response.items[0].reason_code == "clarification_unhelpful"
+        assert response.items[0].comment == "이미 위치를 말했어요"
+
+    def test_싫어요_조회에_발화와_응답_문맥도_포함된다(self, store):
+        record_feedback(
+            store,
+            session_id="sess_a",
+            run_id="run_1",
+            rating="dislike",
+            intent="RECOMMEND",
+            user_input="비 피할 실내 장소 추천해줘",
+            assistant_message="조건에 맞는 곳을 찾지 못했어요.",
+        )
+
+        response = svc.get_dislike_feedback(store=store)
+
+        assert response.items[0].intent == "RECOMMEND"
+        assert response.items[0].user_input == "비 피할 실내 장소 추천해줘"
+        assert response.items[0].assistant_message == "조건에 맞는 곳을 찾지 못했어요."
 
     def test_trace_기록이_없으면_버전_정보는_None이다(self, store):
         record_feedback(store, session_id="sess_a", run_id="run_1", rating="dislike")

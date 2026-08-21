@@ -240,6 +240,17 @@ class TraceRecord(BaseModel):
     recorded_at: datetime = Field(default_factory=now_kst)
 
 
+FeedbackReasonCode = Literal[
+    "intent_mismatch",
+    "clarification_unhelpful",
+    "context_not_preserved",
+    "location_misunderstood",
+    "conditions_not_applied",
+    "recommendation_not_suitable",
+    "other",
+]
+
+
 class FeedbackRecord(BaseModel):
     """응답 1건에 대한 사용자 반응. append-only. (roadmap.md 14번)
 
@@ -266,6 +277,10 @@ class FeedbackRecord(BaseModel):
     스키마를 다시 손대지 않게 한다. user_input/assistant_message와 같은 위험
     등급(자유 텍스트)으로 취급하되, 짧은 사유라는 용도에 맞춰 500자로 길이를
     제한한다.
+
+    reason_code는 개선 집계용 표준 사유다. comment는 어떤 사유에든 선택적으로
+    덧붙일 수 있는 보조 설명이다. ``run_id``로 TraceRecord와 조인하면 "어느 프롬프트·어느
+    인텐트에서 어떤 불만이 나왔는지"를 재현할 수 있다.
     """
 
     session_id: str
@@ -274,5 +289,6 @@ class FeedbackRecord(BaseModel):
     user_input: str | None = None
     assistant_message: str | None = None
     intent: str | None = None
+    reason_code: FeedbackReasonCode | None = None
     comment: str | None = Field(default=None, max_length=500)
     recorded_at: datetime = Field(default_factory=now_kst)

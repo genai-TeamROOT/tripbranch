@@ -267,6 +267,9 @@ export type ChatMessage =
       type: "feedback";
       sessionId: string;
       runId: string;
+      intent?: Intent;
+      userInput?: string;
+      assistantMessage?: string;
     }
   | {
       id: string;
@@ -481,21 +484,30 @@ export interface SessionContextResponse {
 
 /**
  * POST /api/feedback 요청. backend/app/state/service.py의 RecordFeedbackRequest와 대응.
- * user_input/assistant_message는 선택 필드다 — 피드백을 남긴 턴의 질문·답변
- * 원문을 찾을 수 있을 때만 채운다. 대화 전체를 저장하는 게 아니라 이 반응이
- * 무엇에 대한 것인지 나중에 확인하기 위한 용도라 값이 없어도 rating 기록은
- * 그대로 유효하다(backend FeedbackRecord 스키마 docstring 참고).
- * intent는 그 턴의 assistant_text 메시지가 이미 들고 있는 값을 그대로
- * 옮겨 보낸다. comment는 "싫어요" 사유로 사용자가 직접 남긴 자유 텍스트다.
+ * user_input/assistant_message는 피드백을 남긴 턴의 질문·답변 원문을 찾을 수 있을
+ * 때만 채운다. reason_code는 집계용 표준 싫어요 사유, comment는 선택적 자유 입력이다.
  */
+export type FeedbackReasonCode =
+  | "intent_mismatch"
+  | "clarification_unhelpful"
+  | "context_not_preserved"
+  | "location_misunderstood"
+  | "conditions_not_applied"
+  | "recommendation_not_suitable"
+  | "other";
+
 export interface RecordFeedbackRequest {
   session_id: string;
   run_id: string;
   rating: "like" | "dislike";
+  /** 품질 분석용 사용자 발화 원문 및 최종 응답. */
   user_input?: string;
   assistant_message?: string;
+  /** 이 피드백이 달린 턴의 Intent. */
   intent?: string;
-  /** "싫어요" 클릭 시 선택적으로 남기는 짧은 사유(최대 500자). */
+  /** 싫어요의 개선용 표준 사유. 좋아요에는 보내지 않는다. */
+  reason_code?: FeedbackReasonCode;
+  /** 어떤 싫어요 사유에든 선택적으로 남기는 자유 입력(최대 500자). */
   comment?: string;
 }
 
