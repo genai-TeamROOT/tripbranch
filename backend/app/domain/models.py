@@ -129,6 +129,7 @@ class RealtimePopulationResult:
     area_name: str
     area_code: str | None
     current_congestion_level: str | None
+    current_congestion_message: str | None
     observed_at: str | None
     forecast_available: bool
     forecasts: tuple[PopulationForecastSlot, ...]

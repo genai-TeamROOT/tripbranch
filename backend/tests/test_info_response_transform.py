@@ -8,7 +8,10 @@ from app.agent_context.info_schemas import (
     InfoContextResponse,
     PlaceCard,
     PlaceInfoResult,
+    RealtimeCityInfoResult,
     RealtimeCommercialInfoResult,
+    RealtimeInfoDetailItem,
+    RealtimePopulationInfoResult,
 )
 from app.services.runtime.info_response_transform import to_info_place_card
 
@@ -182,6 +185,46 @@ def test_realtime_commercial_result_returns_proxy_card() -> None:
     assert card.answer_fields["기준 시각"] == "8월 20일 14:00"
 
 
+def test_realtime_population_result_returns_current_level_and_forecasts() -> None:
+    card = to_info_place_card(
+        InfoContextResponse(
+            request_id="population-card",
+            status="success",
+            result=RealtimePopulationInfoResult(
+                status="success",
+                requested_place_name="경복궁",
+                area_name="광화문·덕수궁",
+                proxy_distance_km=0.4,
+                current_congestion_level="보통",
+                current_congestion_message="사람이 몰려있을 수 있지만 크게 붐비지는 않아요.",
+                observed_at="2026-08-20 14:00",
+                population_forecasts=[
+                    {
+                        "forecast_at": "2026-08-20 15:00",
+                        "congestion_level": "약간 붐빔",
+                        "population_min": 3000,
+                        "population_max": 3500,
+                    }
+                ],
+                source_url="https://data.seoul.go.kr/example",
+                map_url="https://data.seoul.go.kr/SeoulRtd/map?hotspotNm=test&y=127&x=37",
+            ),
+        )
+    )
+
+    assert card is not None
+    assert card.question_type.value == "concentration"
+    assert card.answer_fields["실시간 기준 지역"] == "광화문·덕수궁"
+    assert card.answer_fields["안내"] == "사람이 몰려있을 수 있지만 크게 붐비지는 않아요."
+    assert card.population_current_level == "보통"
+    assert card.population_current_message == "사람이 몰려있을 수 있지만 크게 붐비지는 않아요."
+    assert card.population_forecasts[0].congestion_level == "약간 붐빔"
+    assert card.realtime_source_url == "https://data.seoul.go.kr/example"
+    assert card.realtime_map_url is not None
+    assert card.realtime_detail_items[0].title == "혼잡도 안내"
+    assert "크게 붐비지는 않아요" in card.realtime_detail_items[0].details["안내"]
+
+
 def test_realtime_commercial_area_overall_card_discloses_scope() -> None:
     card = to_info_place_card(
         InfoContextResponse(
@@ -199,3 +242,35 @@ def test_realtime_commercial_area_overall_card_discloses_scope() -> None:
 
     assert card is not None
     assert card.answer_fields["상권 기준"] == "지역 전체 상권 (요청 업종 세부값 미제공)"
+
+
+def test_realtime_city_card_keeps_detail_items_and_data_source() -> None:
+    card = to_info_place_card(
+        InfoContextResponse(
+            request_id="realtime-parking-card",
+            status="success",
+            result=RealtimeCityInfoResult(
+                status="success",
+                question_type="realtime_parking",
+                requested_place_name="경복궁",
+                resolved_place_name="경복궁",
+                area_name="광화문·덕수궁",
+                observed_at="2026-08-20 16:20",
+                fields={"테스트 공영주차장": "총 50면 · 현재 20대 주차 · 유료"},
+                detail_items=[
+                    RealtimeInfoDetailItem(
+                        title="테스트 공영주차장",
+                        subtitle="총 50면 · 현재 20대 주차 · 유료",
+                        details={"거리": "약 200m", "기준 시각": "2026-08-20 16:20"},
+                    )
+                ],
+                source_url="https://data.seoul.go.kr/example",
+            ),
+        )
+    )
+
+    assert card is not None
+    assert card.realtime_area_name == "광화문·덕수궁"
+    assert card.realtime_observed_at == "8월 20일 16:20"
+    assert card.realtime_source_url == "https://data.seoul.go.kr/example"
+    assert card.realtime_detail_items[0].details["거리"] == "약 200m"

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from time import perf_counter
 from typing import Literal, cast
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from app.agent_context.assembler import (
@@ -47,6 +48,8 @@ from app.agent_context.info_schemas import (
     PopulationForecastInfo,
     RealtimeCityInfoResult,
     RealtimeCommercialInfoResult,
+    RealtimeInfoDetailItem,
+    RealtimePopulationInfoResult,
 )
 from app.agent_context.schemas import (
     AgentContextRequest,
@@ -57,7 +60,11 @@ from app.agent_context.schemas import (
     ResponseMetadata,
 )
 from app.agent_context.schemas import ProviderMetadata as ContextProviderMetadata
-from app.agent_context.seoul_commercial_areas import select_nearest_commercial_area
+from app.agent_context.seoul_commercial_areas import (
+    POPULATION_AREA_PROXY_MAX_DISTANCE_KM,
+    SeoulCommercialArea,
+    select_nearest_commercial_area,
+)
 from app.agent_context.tool_rules import (
     TOOL_EXECUTION_RULE_VERSION,
     ContextTool,
@@ -72,6 +79,8 @@ from app.concentration_policy import (
 from app.domain.models import (
     ConcentrationResult,
     PlaceDetails,
+    RealtimeBusStop,
+    RealtimeCityEvent,
     RealtimeCommercialCategory,
     RealtimeParkingLot,
     RealtimeSubwayArrival,
@@ -154,6 +163,7 @@ _REALTIME_CITYDATA_QUESTION_TYPES = {
     "realtime_bus",
     "realtime_event",
 }
+_CITYDATA_SOURCE_URL = "https://data.seoul.go.kr/dataList/OA-21285/F/1/datasetView.do"
 
 
 @dataclass(frozen=True)
@@ -468,11 +478,12 @@ class ContextService:
             )
 
         current_activity_candidate = _is_current_activity_candidate(request)
+        current_population_candidate = _is_current_population_candidate(request, self._clock())
         location_purpose = (
             LocationPurpose.REALTIME_CITYDATA
             if request.question_type == "realtime_commercial"
             or request.question_type in _REALTIME_CITYDATA_QUESTION_TYPES
-            or current_activity_candidate
+            or current_population_candidate
             else LocationPurpose.PLACE_IDENTITY
         )
         location_result = await self._tools.location.execute(
@@ -553,6 +564,13 @@ class ContextService:
                 resolved_location=resolved_location,
                 location_metadata=location_result.provider_metadata,
             )
+        if current_population_candidate:
+            return await self._fetch_realtime_population_or_concentration_info(
+                request,
+                place_name=place_name,
+                resolved_location=resolved_location,
+                location_metadata=location_result.provider_metadata,
+            )
         if request.question_type in _REALTIME_CITYDATA_QUESTION_TYPES:
             return await self._fetch_realtime_city_info(
                 request,
@@ -574,6 +592,105 @@ class ContextService:
             place_name=place_name,
             resolved_location=resolved_location,
             location_metadata=location_result.provider_metadata,
+        )
+
+    async def _fetch_realtime_population_or_concentration_info(
+        self,
+        request: InfoContextRequest,
+        *,
+        place_name: str,
+        resolved_location: ResolvedLocation,
+        location_metadata: tuple[ProviderMetadata, ...],
+    ) -> InfoContextResponse:
+        """현재형 혼잡 질문은 가까운 실시간 인구 값을 먼저 확인한다.
+
+        서울시가 제공하는 지역 중심점이 1km 밖이거나 인구 객체가 비어 있으면,
+        현재값인 것처럼 꾸며내지 않고 기존 관광지 일 단위 예측으로 낮춘다. 반면
+        서울시 API 자체 장애는 실시간 조회 실패로 드러낸다.
+        """
+
+        nearest = select_nearest_commercial_area(
+            latitude=resolved_location.latitude,
+            longitude=resolved_location.longitude,
+            max_distance_km=POPULATION_AREA_PROXY_MAX_DISTANCE_KM,
+        )
+        if nearest is None:
+            return await self._fetch_concentration_info(
+                request,
+                place_name=place_name,
+                resolved_location=resolved_location,
+                location_metadata=location_metadata,
+            )
+
+        tool = self._tools.realtime_citydata
+        if tool is None:
+            return _info_error_response(
+                request,
+                status="unavailable",
+                error=ContextError(
+                    code="realtime_population_not_configured",
+                    message="실시간 인구 혼잡도 조회 기능을 사용할 수 없습니다.",
+                    retryable=False,
+                ),
+                provider_metadata=(location_metadata,),
+            )
+
+        area, distance_km = nearest
+        tool_result = await tool.execute(RealtimeCityDataQuery(area.code))
+        if tool_result.status is ToolStatus.UNAVAILABLE:
+            return _info_error_response(
+                request,
+                status="unavailable",
+                error=_context_error_from_tool(
+                    tool_result.error,
+                    fallback_code="realtime_population_unavailable",
+                    fallback_message="실시간 인구 혼잡도를 가져오지 못했습니다.",
+                    retryable=True,
+                ),
+                provider_metadata=(location_metadata, tool_result.provider_metadata),
+            )
+
+        population = tool_result.citydata.population if tool_result.citydata is not None else None
+        if (
+            tool_result.status is ToolStatus.NO_DATA
+            or population is None
+            or population.current_congestion_level is None
+        ):
+            return await self._fetch_concentration_info(
+                request,
+                place_name=place_name,
+                resolved_location=resolved_location,
+                location_metadata=(*location_metadata, *tool_result.provider_metadata),
+            )
+
+        return InfoContextResponse(
+            request_id=request.request_id,
+            status="success",
+            result=RealtimePopulationInfoResult(
+                status="success",
+                requested_place_name=place_name,
+                resolved_place_name=resolved_location.resolved_name,
+                area_name=population.area_name or area.name,
+                area_code=population.area_code or area.code,
+                proxy_distance_km=distance_km,
+                current_congestion_level=population.current_congestion_level,
+                current_congestion_message=population.current_congestion_message,
+                observed_at=population.observed_at,
+                population_forecasts=[
+                    PopulationForecastInfo(
+                        forecast_at=slot.forecast_at,
+                        congestion_level=slot.congestion_level,
+                        population_min=slot.population_min,
+                        population_max=slot.population_max,
+                    )
+                    for slot in population.forecasts
+                ]
+                if population.forecast_available
+                else [],
+                source_url=_CITYDATA_SOURCE_URL,
+                map_url=_seoul_realtime_map_url(area),
+            ),
+            metadata=_info_response_metadata(location_metadata, tool_result.provider_metadata),
         )
 
     async def _fetch_realtime_commercial_info(
@@ -707,6 +824,11 @@ class ContextService:
                     if population is not None and population.forecast_available
                     else []
                 ),
+                detail_items=_to_commercial_detail_items(
+                    commercial.categories,
+                    area_activity_level=commercial.area_activity_level,
+                ),
+                source_url=_CITYDATA_SOURCE_URL,
             ),
             metadata=_info_response_metadata(location_metadata, tool_result.provider_metadata),
         )
@@ -759,8 +881,9 @@ class ContextService:
             )
         citydata = tool_result.citydata
         question_type = request.question_type
+        detail_items: list[RealtimeInfoDetailItem]
         if question_type == "realtime_parking":
-            entries = sorted(
+            all_entries = sorted(
                 citydata.parking_lots,
                 key=lambda item: haversine_km(
                     resolved_location.latitude,
@@ -770,33 +893,45 @@ class ContextService:
                 )
                 if item.latitude is not None and item.longitude is not None
                 else float("inf"),
-            )[:3]
+            )
+            entries = all_entries[:3]
             fields = {
                 item.name: _format_realtime_parking(item)
                 for item in entries
             }
             observed_at = next((item.observed_at for item in entries if item.observed_at), None)
+            detail_items = _to_parking_detail_items(
+                all_entries[:10],
+                latitude=resolved_location.latitude,
+                longitude=resolved_location.longitude,
+            )
         elif question_type == "realtime_subway":
-            entries = citydata.subway_arrivals[:4]
+            all_entries = citydata.subway_arrivals
+            entries = all_entries[:4]
             fields = {
                 f"{item.station_name} {item.line or ''}".strip(): _format_subway_arrival(item)
                 for item in entries
             }
             observed_at = None
+            detail_items = _to_subway_detail_items(all_entries[:12])
         elif question_type == "realtime_bus":
-            entries = citydata.bus_stops[:5]
+            all_entries = citydata.bus_stops
+            entries = all_entries[:5]
             fields = {
                 item.name: f"정류장 번호 {item.ars_id}" if item.ars_id else "주변 정류장"
                 for item in entries
             }
             observed_at = None
+            detail_items = _to_bus_detail_items(all_entries[:12])
         else:
-            entries = citydata.events[:5]
+            all_entries = citydata.events
+            entries = all_entries[:5]
             fields = {
                 item.name: " · ".join(part for part in (item.period, item.place) if part)
                 for item in entries
             }
             observed_at = None
+            detail_items = _to_event_detail_items(all_entries[:10])
         result_status: Literal["success", "no_data", "unavailable"] = (
             "success" if fields else "no_data"
         )
@@ -819,6 +954,8 @@ class ContextService:
                 area_name=area.name,
                 observed_at=observed_at,
                 fields=fields,
+                detail_items=detail_items,
+                source_url=_CITYDATA_SOURCE_URL,
             ),
             metadata=_info_response_metadata(location_metadata, tool_result.provider_metadata),
         )
@@ -1326,6 +1463,157 @@ def _select_commercial_category(
     return None
 
 
+def _to_commercial_detail_items(
+    categories: tuple[RealtimeCommercialCategory, ...],
+    *,
+    area_activity_level: str | None,
+) -> list[RealtimeInfoDetailItem]:
+    """서울시가 제공한 업종별 상권 활동을 상세 카드용 목록으로 정리한다."""
+
+    items = [
+        RealtimeInfoDetailItem(
+            title=" · ".join(
+                value
+                for value in (category.large_category, category.middle_category)
+                if value is not None
+            )
+            or "업종별 상권 활동",
+            subtitle=category.activity_level,
+            details={"실시간 활동": category.activity_level}
+            if category.activity_level is not None
+            else {},
+        )
+        for category in categories
+    ]
+    if not items and area_activity_level is not None:
+        items.append(
+            RealtimeInfoDetailItem(
+                title="지역 전체 상권",
+                subtitle=area_activity_level,
+                details={"실시간 활동": area_activity_level},
+            )
+        )
+    return items
+
+
+def _to_parking_detail_items(
+    entries: list[RealtimeParkingLot] | tuple[RealtimeParkingLot, ...],
+    *,
+    latitude: float,
+    longitude: float,
+) -> list[RealtimeInfoDetailItem]:
+    """주차장은 가까운 순으로, 현재 제공된 실측 필드만 상세 카드에 싣는다."""
+
+    items: list[RealtimeInfoDetailItem] = []
+    for item in entries:
+        details = {
+            key: value
+            for key, value in {
+                "거리": _distance_from_location_label(
+                    latitude,
+                    longitude,
+                    item.latitude,
+                    item.longitude,
+                ),
+                "총 주차면": f"{item.capacity}면" if item.capacity is not None else None,
+                "현재 주차": (
+                    f"{item.current_parked_count}대"
+                    if item.current_available and item.current_parked_count is not None
+                    else None
+                ),
+                "요금": "유료" if item.paid is True else "무료" if item.paid is False else None,
+                "기준 시각": item.observed_at,
+            }.items()
+            if value is not None
+        }
+        items.append(
+            RealtimeInfoDetailItem(
+                title=item.name,
+                subtitle=_format_realtime_parking(item),
+                details=details,
+            )
+        )
+    return items
+
+
+def _to_subway_detail_items(
+    entries: list[RealtimeSubwayArrival] | tuple[RealtimeSubwayArrival, ...],
+) -> list[RealtimeInfoDetailItem]:
+    return [
+        RealtimeInfoDetailItem(
+            title=f"{item.station_name} {item.line or ''}".strip(),
+            subtitle=_format_subway_arrival(item),
+            details={
+                key: value
+                for key, value in {
+                    "방면": item.direction,
+                    "종착역": item.destination,
+                    "도착 안내": item.arrival_message,
+                }.items()
+                if value is not None
+            },
+        )
+        for item in entries
+    ]
+
+
+def _to_bus_detail_items(
+    entries: list[RealtimeBusStop] | tuple[RealtimeBusStop, ...],
+) -> list[RealtimeInfoDetailItem]:
+    return [
+        RealtimeInfoDetailItem(
+            title=item.name,
+            subtitle=f"정류장 번호 {item.ars_id}" if item.ars_id else "주변 버스정류장",
+            details={"정류장 번호": item.ars_id} if item.ars_id else {},
+        )
+        for item in entries
+    ]
+
+
+def _to_event_detail_items(
+    entries: list[RealtimeCityEvent] | tuple[RealtimeCityEvent, ...],
+) -> list[RealtimeInfoDetailItem]:
+    return [
+        RealtimeInfoDetailItem(
+            title=item.name,
+            subtitle=" · ".join(part for part in (item.period, item.place) if part) or None,
+            details={
+                key: value
+                for key, value in {"기간": item.period, "장소": item.place}.items()
+                if value is not None
+            },
+            thumbnail_url=item.thumbnail_url,
+            external_url=item.url,
+        )
+        for item in entries
+    ]
+
+
+def _distance_from_location_label(
+    latitude: float,
+    longitude: float,
+    target_latitude: float | None,
+    target_longitude: float | None,
+) -> str | None:
+    if target_latitude is None or target_longitude is None:
+        return None
+    distance_km = haversine_km(latitude, longitude, target_latitude, target_longitude)
+    return f"약 {round(distance_km * 1000):,}m"
+
+
+def _seoul_realtime_map_url(area: SeoulCommercialArea) -> str:
+    """서울시 실시간 도시데이터 지도의 제공 지역 딥링크를 만든다.
+
+    지도 URL은 ``y=경도``, ``x=위도`` 순서를 사용한다. 응답의 AREA_NM보다
+    고정 지역 목록의 이름·대표 좌표가 URL 파라미터 계약에 맞으므로 그 값을 쓴다.
+    """
+
+    return (
+        "https://data.seoul.go.kr/SeoulRtd/map?hotspotNm="
+        f"{quote(area.name, safe='')}&y={area.longitude}&x={area.latitude}"
+    )
+
+
 def _format_realtime_parking(item: RealtimeParkingLot) -> str:
     capacity = f"총 {item.capacity}면" if item.capacity is not None else "총면수 미제공"
     current = (
@@ -1386,6 +1674,21 @@ def _is_current_activity_candidate(request: InfoContextRequest) -> bool:
 
     question = request.specific_question or ""
     return any(marker in question for marker in _CURRENT_ACTIVITY_MARKERS)
+
+
+def _is_current_population_candidate(request: InfoContextRequest, clock_value: datetime) -> bool:
+    """현재형 INFO 혼잡 질문을 실시간 인구 경로로 보낼지 결정한다.
+
+    날짜가 없는 질문은 INFO 추출 규칙상 오늘으로 정규화된다. 반대로 내일·주말처럼
+    방문일이 오늘보다 뒤면 관광지 집중률 예측만 사용한다. 이 판정은 LLM 프롬프트를
+    바꾸지 않고, 같은 ``concentration`` question_type 안에서 데이터 출처만 고른다.
+    """
+
+    return (
+        request.question_type == "concentration"
+        and request.specific_question is not None
+        and _info_reference_date(request.visit_time, clock_value) == _as_kst(clock_value).date()
+    )
 
 
 def _is_commercial_place_category(category: str | None) -> bool:

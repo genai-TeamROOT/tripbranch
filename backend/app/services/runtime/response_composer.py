@@ -38,6 +38,7 @@ from app.services.runtime.info_context_schemas import (
     PlaceInfoResult,
     RealtimeCityInfoResult,
     RealtimeCommercialInfoResult,
+    RealtimePopulationInfoResult,
 )
 from app.services.runtime.info_display import format_citydata_timestamp, format_parking_for_display
 
@@ -264,6 +265,33 @@ def compose_realtime_commercial_message(response: InfoContextResponse) -> str:
         f"{place} 개별 매장 혼잡도는 확인할 수 없지만, {distance}{area}의 "
         f"{category} 상권은 현재 {level} 수준이에요. 이 값은 지역·업종별 카드 소비 활동 기준이에요."
         f"{observed}"
+    )
+
+
+def compose_realtime_population_message(response: InfoContextResponse) -> str:
+    """가까운 서울시 제공 지역의 현재 인구 혼잡도를 대체 사실로 고지한다."""
+
+    if response.status == "unavailable" or not isinstance(
+        response.result, RealtimePopulationInfoResult
+    ):
+        return _TOOL_UNAVAILABLE_MESSAGE
+    result = response.result
+    if result.status == "no_data":
+        return _CONCENTRATION_NO_DATA_MESSAGE
+
+    place = result.resolved_place_name or result.requested_place_name or "해당 장소"
+    area = result.area_name or "가까운 제공 지역"
+    level = result.current_congestion_level or "확인할 수 없음"
+    distance = (
+        f"약 {result.proxy_distance_km:.1f}km 떨어진 "
+        if result.proxy_distance_km is not None and result.proxy_distance_km >= 0.05
+        else ""
+    )
+    observed_at = format_citydata_timestamp(result.observed_at)
+    observed = f" {observed_at} 기준이에요." if observed_at else ""
+    return (
+        f"{place} 자체의 실시간 인구 데이터는 아니지만, {distance}{area} 기준으로는 "
+        f"현재 {level} 수준이에요. 향후 12시간 예상 변화는 아래 카드에서 확인해보세요.{observed}"
     )
 
 
@@ -771,6 +799,8 @@ async def compose_chat_message(
     if llm_output.intent is Intent.INFO and info_response is not None:
         if isinstance(info_response.result, RealtimeCommercialInfoResult):
             return compose_realtime_commercial_message(info_response)
+        if isinstance(info_response.result, RealtimePopulationInfoResult):
+            return compose_realtime_population_message(info_response)
         if isinstance(info_response.result, RealtimeCityInfoResult):
             return compose_realtime_city_info_message(info_response)
         if isinstance(info_response.result, EventInfoResult):
@@ -860,6 +890,7 @@ __all__ = [
     "compose_recommendation_message",
     "compose_chat_message",
     "compose_info_concentration_message",
+    "compose_realtime_population_message",
     "compose_realtime_commercial_message",
     "compose_realtime_city_info_message",
     "compose_place_info_message",

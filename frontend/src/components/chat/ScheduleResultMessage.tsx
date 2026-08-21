@@ -25,7 +25,6 @@
 import type { ScheduleResult } from "../../types";
 import { ScheduleCard } from "../ScheduleCard";
 import { ScheduleTravelSegment } from "../ScheduleTravelSegment";
-import { FeedbackButtons } from "./FeedbackButtons";
 
 function formatDuration(milliseconds: number | undefined) {
   if (typeof milliseconds !== "number" || !Number.isFinite(milliseconds)) return "-";
@@ -41,8 +40,6 @@ interface ScheduleResultMessageProps {
   isLoading: boolean;
   onRequestMore: () => void;
   onRelaxRadius: () => void;
-  sessionId: string;
-  runId: string;
 }
 
 export function ScheduleResultMessage({
@@ -52,8 +49,6 @@ export function ScheduleResultMessage({
   isLoading,
   onRequestMore,
   onRelaxRadius,
-  sessionId,
-  runId,
 }: ScheduleResultMessageProps) {
   const hasItems = schedule.items.length > 0;
 
@@ -66,7 +61,6 @@ export function ScheduleResultMessage({
           {formatDuration(elapsedMs)} 소요 (서버 {formatDuration(schedule.elapsed_ms)})
         </p>
       )}
-      <FeedbackButtons sessionId={sessionId} runId={runId} />
       {hasItems ? (
         <>
           <section className="flex flex-col gap-3">

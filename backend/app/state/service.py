@@ -281,6 +281,7 @@ class RecordFeedbackRequest(BaseModel):
     session_id: str
     run_id: str
     rating: Literal["like", "dislike"]
+    comment: str | None = Field(default=None, max_length=500)
 
 
 class RecordFeedbackResponse(BaseModel):
@@ -774,6 +775,7 @@ def record_feedback(
         request.session_id,
         request.run_id,
         request.rating,
+        comment=request.comment,
     )
     return RecordFeedbackResponse(recorded_at=feedback.recorded_at)
 

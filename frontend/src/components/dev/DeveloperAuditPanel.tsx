@@ -342,6 +342,7 @@ const TOOL_OPERATION_LABELS: Record<NonNullable<ToolExecutionDebug["operation"]>
   context_fetch: "기본 Context 조회",
   info_concentration: "INFO 혼잡도 조회",
   info_realtime_commercial: "INFO 실시간 카페 상권 조회",
+  info_realtime_population: "INFO 실시간 인구 혼잡도 조회",
   info_realtime_citydata: "INFO 실시간 도시데이터 조회",
   candidate_enrichment: "후보 혼잡도 보강",
   compare_fetch: "COMPARE 후보 조회",

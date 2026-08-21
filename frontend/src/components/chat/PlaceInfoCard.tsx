@@ -24,9 +24,11 @@ const FIELD_LABELS: Record<string, string> = {
   concentration: "혼잡도",
   event: "행사",
   "상권 지역": "상권 지역",
+  "상권 기준": "상권 기준",
   "업종": "업종",
   "실시간 활동": "실시간 활동",
   "기준 시각": "기준 시각",
+  "안내": "안내",
 };
 
 interface PlaceInfoCardProps {

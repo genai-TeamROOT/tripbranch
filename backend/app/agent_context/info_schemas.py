@@ -111,8 +111,23 @@ class ConcentrationForecastInfo(BaseModel):
     concentration_label: str
 
 
+class RealtimeInfoDetailItem(BaseModel):
+    """서울시 실시간 INFO 상세 카드의 추가 항목 한 건.
+
+    도시데이터는 관광지 ``PlaceDetails``와 다른 지역 단위 데이터다. 따라서
+    ``fields``(말풍선 아래 요약)와 별도로 이 모델에 세부 목록·이미지·외부 링크를
+    보존해 모달에서 같은 요약만 반복하지 않게 한다.
+    """
+
+    title: str
+    subtitle: str | None = None
+    details: dict[str, str] = Field(default_factory=dict)
+    thumbnail_url: str | None = None
+    external_url: str | None = None
+
+
 class RealtimeCommercialInfoResult(BaseModel):
-    """서울시 실시간 상권현황을 카페 업종 기준으로 정규화한 결과.
+    """서울시 실시간 상권현황을 지역·업종 기준으로 정규화한 결과.
 
     API는 개별 매장 단위 데이터를 제공하지 않는다. ``is_proxy``는 항상 True이며,
     매장 좌표에서 가까운 서울시 제공 상권의 카드 소비 활동을 대체 근거로 쓴다.
@@ -132,6 +147,31 @@ class RealtimeCommercialInfoResult(BaseModel):
     population_current_level: str | None = None
     population_observed_at: str | None = None
     population_forecasts: list[PopulationForecastInfo] = Field(default_factory=list)
+    detail_items: list[RealtimeInfoDetailItem] = Field(default_factory=list)
+    source_url: str | None = None
+    error: ContextError | None = None
+
+
+class RealtimePopulationInfoResult(BaseModel):
+    """가까운 서울시 제공 지역의 실시간 인구 혼잡도 결과.
+
+    서울시 도시데이터는 개별 관광지·역의 값이 아니라 정해진 지역 단위 값이다.
+    따라서 요청 위치와 제공 지역이 다를 수 있음을 ``is_proxy``와 거리로 명시한다.
+    """
+
+    status: Literal["success", "no_data", "unavailable"]
+    is_proxy: bool = True
+    requested_place_name: str | None = None
+    resolved_place_name: str | None = None
+    area_name: str | None = None
+    area_code: str | None = None
+    proxy_distance_km: float | None = Field(default=None, ge=0)
+    current_congestion_level: str | None = None
+    current_congestion_message: str | None = None
+    observed_at: str | None = None
+    population_forecasts: list[PopulationForecastInfo] = Field(default_factory=list)
+    source_url: str | None = None
+    map_url: str | None = None
     error: ContextError | None = None
 
 
@@ -145,6 +185,8 @@ class RealtimeCityInfoResult(BaseModel):
     area_name: str | None = None
     observed_at: str | None = None
     fields: dict[str, str] = Field(default_factory=dict)
+    detail_items: list[RealtimeInfoDetailItem] = Field(default_factory=list)
+    source_url: str | None = None
     error: ContextError | None = None
 
 
@@ -262,6 +304,7 @@ class InfoContextResponse(BaseModel):
     result: (
         ConcentrationInfoResult
         | RealtimeCommercialInfoResult
+        | RealtimePopulationInfoResult
         | RealtimeCityInfoResult
         | PlaceInfoResult
         | EventInfoResult
@@ -282,5 +325,6 @@ __all__ = [
     "PlaceCard",
     "PlaceInfoResult",
     "RealtimeCommercialInfoResult",
+    "RealtimePopulationInfoResult",
     "RealtimeCityInfoResult",
 ]

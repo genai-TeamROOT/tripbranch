@@ -14,6 +14,7 @@ def record(
     session_id: str,
     run_id: str,
     rating: str,
+    comment: str | None = None,
 ) -> FeedbackRecord:
     """응답 1건에 대한 사용자 반응을 기록한다.
 
@@ -25,6 +26,7 @@ def record(
         session_id=session_id,
         run_id=run_id,
         rating=rating,
+        comment=comment,
         recorded_at=now_kst(),
     )
     store.append_feedback([feedback])

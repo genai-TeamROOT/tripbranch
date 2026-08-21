@@ -19,6 +19,7 @@ from app.agent_context.info_schemas import (
     PlaceInfoResult,
     RealtimeCityInfoResult,
     RealtimeCommercialInfoResult,
+    RealtimePopulationInfoResult,
 )
 
 __all__ = [
@@ -31,4 +32,5 @@ __all__ = [
     "PlaceInfoResult",
     "RealtimeCommercialInfoResult",
     "RealtimeCityInfoResult",
+    "RealtimePopulationInfoResult",
 ]

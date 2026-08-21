@@ -15,8 +15,10 @@ import { useEffect, useState } from "react";
 import type { AgentProgressEvent, ChatMessage } from "../../types";
 import { AgentProgressMessage } from "./AgentProgressMessage";
 import { ClarificationMessage } from "./ClarificationMessage";
+import { CompareResultCards } from "./CompareResultCards";
 import { LocationRefreshMessage } from "./LocationRefreshMessage";
 import { ConditionDebugMessage } from "./ConditionDebugMessage";
+import { FeedbackButtons } from "./FeedbackButtons";
 import { PlaceInfoCard } from "./PlaceInfoCard";
 import { RecommendationResultMessage } from "./RecommendationResultMessage";
 import { ScheduleResultMessage } from "./ScheduleResultMessage";
@@ -172,14 +174,24 @@ export function ChatMessageList({
                 isLoading={isLoading}
                 onRequestMore={onRequestMore}
                 onRelaxRadius={onRelaxRadius}
-                sessionId={message.sessionId}
-                runId={message.runId}
               />
             );
           }
 
           if (message.type === "place_info_result") {
             return <PlaceInfoCard key={message.id} card={message.card} />;
+          }
+
+          if (message.type === "compare_result") {
+            return <CompareResultCards key={message.id} comparison={message.comparison} />;
+          }
+
+          if (message.type === "feedback") {
+            return (
+              <div key={message.id} className="mr-auto flex w-full max-w-2xl justify-end">
+                <FeedbackButtons sessionId={message.sessionId} runId={message.runId} />
+              </div>
+            );
           }
 
           if (message.type === "clarification") {
@@ -205,8 +217,6 @@ export function ChatMessageList({
               isLoading={isLoading}
               onRequestMore={onRequestMore}
               onRelaxRadius={onRelaxRadius}
-              sessionId={message.sessionId}
-              runId={message.runId}
             />
           );
         })}
