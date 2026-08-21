@@ -236,12 +236,23 @@ class ContextService:
                 ContextAssemblyInput(
                     request=request,
                     location_result=location_result,
+                    # 기준점을 못 풀어 추천이 성립하지 않는 응답이다. 발화 위치를 따로
+                    # 지오코딩하는 비용은 추천이 나가는 요청에서만 치르고, 여기서는
+                    # 기기 GPS만 싣는다(TP-109까지의 동작 그대로).
+                    user_location_result=self._device_gps_location(request),
                 ),
                 rule_versions=_rule_versions(),
             )
 
         visit_at = _as_kst(self._clock())
         location = location_result.location
+        user_location_task = asyncio.create_task(
+            self._resolve_user_location(
+                request,
+                location_query=location_query,
+                location_result=location_result,
+            )
+        )
         weather_task = (
             asyncio.create_task(
                 self._tools.weather.execute(
@@ -278,11 +289,13 @@ class ContextService:
         weather_result = await weather_task if weather_task is not None else None
         holidays_result = await holidays_task if holidays_task is not None else None
         places_result = await places_task
+        user_location_result = await user_location_task
 
         return assemble_agent_context_response(
             ContextAssemblyInput(
                 request=request,
                 location_result=location_result,
+                user_location_result=user_location_result,
                 weather_result=weather_result,
                 places_result=places_result,
                 holidays_result=holidays_result,
@@ -291,6 +304,55 @@ class ContextService:
             ),
             rule_versions=_rule_versions(),
         )
+
+    async def _resolve_user_location(
+        self,
+        request: AgentContextRequest,
+        *,
+        location_query: str | None,
+        location_result: ResolveLocationResult,
+    ) -> ResolveLocationResult | None:
+        """사용자가 있는 곳을 해석한다. 발화(current_location)가 기기 GPS보다 앞선다.
+
+        기준점(`location`)이 search_center → current_location → GPS 순인 것과 같은
+        우선순위다. 기준점만 발화를 앞세우고 사용자 위치만 GPS를 앞세우면 한 요청
+        안에서 두 좌표가 서로 다른 규칙으로 정해진다(TP-112).
+
+        `state/field_spec.py`의 "v0.3에서 current_location의 필수 지위가
+        api_context.gps_location으로 이관되었다"는 **위치를 하나도 모를 때 무엇이
+        빈칸을 채우는가**에 대한 것이지, 둘 다 있을 때 무엇이 이기는가가 아니다.
+        낡은 발화 위치를 버리는 것은 A의 몫이다 — 되묻기의 "다른 지역" 선택이
+        current_location을 명시적으로 지운다(agent_runtime.py).
+
+        발화를 앞세우지 않으면 GPS가 없을 때 사용자 위치가 통째로 사라진다.
+        `"지금 서대문역인데 혜화역 근처"`에서 location_query가 혜화역으로 정해지면
+        서대문역은 지오코딩조차 되지 않기 때문이다(GPS 만료는 TTL 1시간이라 흔하다).
+        """
+
+        spoken = request.conditions.current_location
+        if spoken is None:
+            return self._device_gps_location(request)
+        if spoken == location_query:
+            # 기준점이 이미 같은 문자열을 푼 결과다. 같은 질의를 두 번 지오코딩하지
+            # 않는다 — search_center가 없거나 발화와 같을 때가 여기 해당한다.
+            return location_result
+        result = await self._tools.location.execute(
+            # 기준점과 같은 이유로 좌표만 있으면 된다. PLACE_IDENTITY를 쓰면 종로구
+            # 코퍼스 밖 이름("서대문역")에서 저장소 조회만 헛돈다(resolve_location.py).
+            ResolveLocationQuery(spoken, purpose=LocationPurpose.SEARCH_CENTER)
+        )
+        if result.status is ToolStatus.SUCCESS and result.location is not None:
+            return result
+        # 발화를 못 풀면 기기 GPS로 내려간다. D-042(Real 실패 시 Fake로 자동 전환하지
+        # 않는다)와는 다른 상황이다 — 지어낸 값이 아니라 같은 질문에 대한 다른 사실이다.
+        return self._device_gps_location(request)
+
+    def _device_gps_location(self, request: AgentContextRequest) -> ResolveLocationResult | None:
+        """기기 GPS만으로 사용자 위치 결과를 만든다. GPS가 없으면 그 사실대로 None."""
+
+        if request.gps_location is None:
+            return None
+        return _gps_location_result(request, self._clock())
 
     async def fetch_compare_context(
         self,

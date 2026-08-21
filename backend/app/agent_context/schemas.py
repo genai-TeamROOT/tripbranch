@@ -246,11 +246,16 @@ class RecommendationContext(StrictModel):
     # 어디를 중심으로 했는가"다. search_center → current_location → 기기 GPS 순으로
     # 정해진다(service.py::fetch_context).
     location: ContextValue[ResolvedLocation] | None = None
-    # 기기 GPS 좌표 그대로. location과 달리 사용자 발화와 무관하게, A가 유효한 GPS를
-    # 넘겨준 요청이면 언제나 채운다 — 기준점이 따로 잡혀도 사용자 위치는 보존된다.
-    # Tool 산출물이 아니라 A가 준 값이라 ContextValue로 감싸지 않는다(조회 상태·
-    # provider_metadata가 없다).
-    user_location: Coordinates | None = None
+    # 사용자가 있는 곳. 기준점(location)이 따로 잡혀도 버리지 않는다.
+    # current_location(발화) → 기기 GPS 순으로 정해진다(service.py::_resolve_user_location).
+    # location의 search_center → current_location → GPS와 같은 우선순위다 — 기준점만
+    # 발화를 앞세우고 사용자 위치만 GPS를 앞세우면 한 요청 안에서 두 좌표가 서로 다른
+    # 규칙으로 정해진다(TP-112).
+    #
+    # location과 같은 타입이라 D는 기준점에 쓰던 판정을 그대로 쓸 수 있다 — source가
+    # "query"면 requested_query가 사용자가 말한 이름이고, "device_gps"면 부를 이름이
+    # 없다(recommendation_pipeline.py::resolve_origin_name).
+    user_location: ContextValue[ResolvedLocation] | None = None
     weather: ContextValue[WeatherForecast] | None = None
     places: ContextValue[list[PlaceCandidate]] | None = None
     holidays: ContextValue[list[HolidayInfo]] | None = None
