@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -315,6 +317,13 @@ def test_apply_rejects_snapshot_outside_data_dir(
     assert response.status_code == 400
 
 
+def _baseline_name(area_code: str = "11", district_code: str = "110") -> str:
+    """테스트용 기준 스냅샷 파일명. 구가 들어간 현재 규칙을 따른다."""
+    return place_snapshot.snapshot_file_name(
+        area_code, district_code, datetime(2026, 1, 1, tzinfo=place_snapshot.KST)
+    )
+
+
 def test_reconcile_writes_snapshot_and_selects_detail_targets(
     monkeypatch: pytest.MonkeyPatch, _real_place: None, tmp_path
 ) -> None:
@@ -326,9 +335,7 @@ def test_reconcile_writes_snapshot_and_selects_detail_targets(
         "2": _snapshot_row("2"),
         "3": _snapshot_row("3"),
     }
-    place_snapshot.write_snapshot(
-        baseline, tmp_path / f"{place_snapshot.SNAPSHOT_PREFIX}20260101.csv"
-    )
+    place_snapshot.write_snapshot(baseline, tmp_path / _baseline_name())
 
     current = {
         # 1번은 좌표만 바뀜 → updated이지만 상세조회 제외
@@ -353,6 +360,10 @@ def test_reconcile_writes_snapshot_and_selects_detail_targets(
     assert payload["detail_excluded_ids"] == ["1"]
     assert (tmp_path / payload["snapshot"]).exists()
     assert (tmp_path / payload["reconciliation"]).exists()
+    # 파일명에 구가 없으면 같은 날 다른 구를 대조할 때 서로를 덮어쓴다.
+    assert payload["snapshot"].startswith("places_api_snapshot_11-110_")
+    assert payload["reconciliation"].startswith("places_reconciliation_11-110_")
+    assert payload["baseline"] == _baseline_name()
 
 
 def test_reconcile_reports_skipped_columns_from_old_baseline(
@@ -365,7 +376,7 @@ def test_reconcile_reports_skipped_columns_from_old_baseline(
     del old_row["thumbnail_url"]
     import csv as _csv
 
-    baseline_path = tmp_path / f"{place_snapshot.SNAPSHOT_PREFIX}20260101.csv"
+    baseline_path = tmp_path / _baseline_name()
     with baseline_path.open("w", newline="", encoding="utf-8-sig") as fp:
         writer = _csv.DictWriter(fp, fieldnames=list(old_row))
         writer.writeheader()
@@ -380,6 +391,68 @@ def test_reconcile_reports_skipped_columns_from_old_baseline(
         payload = client.post("/api/dev/place-sync/reconcile", json={}).json()
 
     assert set(payload["skipped_columns"]) == {"first_image_url", "thumbnail_url"}
+
+
+def test_apply_rejects_snapshot_from_another_district(
+    monkeypatch: pytest.MonkeyPatch, _real_place: None, tmp_path
+) -> None:
+    """다른 구 스냅샷으로 반영하면 대상 구의 활성 장소가 전부 비활성화된다.
+
+    스냅샷에 없는 장소는 "목록에서 사라진 것"으로 판정돼
+    `deactivate_unseen_places`가 끄는데, 중구 스냅샷에는 종로구 장소가 하나도
+    없으므로 종로구 전량이 대상이 된다. 실행 전에 막는다.
+    """
+    monkeypatch.setattr(dev_routes.place_snapshot, "DATA_DIR", tmp_path)
+    place_snapshot.write_snapshot(
+        {"1": _snapshot_row("1", district_code="140")},
+        tmp_path / place_snapshot.snapshot_file_name(
+            "11", "140", datetime(2026, 8, 20, tzinfo=place_snapshot.KST)
+        ),
+    )
+
+    with _client() as client:
+        response = client.post(
+            "/api/dev/place-sync/apply",
+            json={
+                "snapshot": "places_api_snapshot_11-140_20260820.csv",
+                "detail_content_ids": ["1"],
+                "confirm": "11-110",
+            },
+        )
+
+    assert response.status_code == 400
+    message = response.json()["error"]["message"]
+    assert "11-140" in message and "11-110" in message
+
+
+def test_reconcile_ignores_other_district_snapshot_as_baseline(
+    monkeypatch: pytest.MonkeyPatch, _real_place: None, tmp_path
+) -> None:
+    """다른 구 스냅샷은 기준으로 잡히지 않는다.
+
+    잡히면 "전량 삭제 + 전량 신규"가 나오는데, 그 모양은 실제 대량 변경과
+    구분되지 않는다. 2026-08-20에 중구를 종로구 스냅샷과 대조해 "삭제 844건"이
+    나온 사고가 그것이다.
+    """
+    monkeypatch.setattr(dev_routes.place_snapshot, "DATA_DIR", tmp_path)
+    place_snapshot.write_snapshot(
+        {"9": _snapshot_row("9", district_code="140")},
+        tmp_path / place_snapshot.snapshot_file_name(
+            "11", "140", datetime(2026, 8, 20, tzinfo=place_snapshot.KST)
+        ),
+    )
+
+    async def fake_fetch(client, api_key, area, district, fetched_at):
+        return {"1": _snapshot_row("1")}
+
+    monkeypatch.setattr(dev_routes.place_snapshot, "fetch_place_rows", fake_fetch)
+
+    with _client() as client:
+        payload = client.post("/api/dev/place-sync/reconcile", json={}).json()
+
+    # 종로구 기준이 없으니 "기준 없음"이지, 중구 것을 끌어다 쓰지 않는다.
+    assert payload["baseline"] is None
+    assert payload["counts"] == {"added": 0, "removed": 0, "updated": 0}
 
 
 def test_apply_runs_job_and_reports_progress(

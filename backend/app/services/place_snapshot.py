@@ -95,6 +95,48 @@ def normalize(value: object) -> str:
         return text
 
 
+def region_slug(area_code: str, district_code: str) -> str:
+    """파일명에 쓰는 지역 표기. `11-110` 꼴이다."""
+    return f"{area_code.strip()}-{district_code.strip()}"
+
+
+def snapshot_file_name(area_code: str, district_code: str, when: datetime) -> str:
+    """스냅샷 파일명.
+
+    지역을 날짜 앞에 둔다 — 구가 파일명에 없으면 같은 날 두 구를 대조할 때 뒤엣것이
+    앞엣것을 덮어쓰고, 기준 스냅샷도 다른 구 것을 집는다. 2026-08-20에 중구를
+    종로구 스냅샷과 대조해 "삭제 844건"이 나온 사고가 그것이다(그 844건은 폐업이
+    아니라 전부 종로구 장소였다).
+
+    날짜를 뒤에 두어 "이름 정렬이 곧 시간 정렬"이라는 전제는 그대로 유지한다 —
+    같은 구 안에서는 이름순이 곧 날짜순이다.
+    """
+    return f"{SNAPSHOT_PREFIX}{region_slug(area_code, district_code)}_{when:%Y%m%d}.csv"
+
+
+def reconciliation_file_name(area_code: str, district_code: str, when: datetime) -> str:
+    """대조 결과 파일명. 스냅샷과 같은 규칙을 쓴다."""
+    return (
+        f"{RECONCILIATION_PREFIX}{region_slug(area_code, district_code)}"
+        f"_{when:%Y%m%d}.csv"
+    )
+
+
+def snapshot_regions(snapshot: Mapping[str, Mapping[str, str]]) -> set[tuple[str, str]]:
+    """스냅샷 안에 들어 있는 (지역, 시군구) 코드 집합.
+
+    파일명이 아니라 내용으로 판정한다 — 이름은 손으로 바꿀 수 있지만 행의
+    district_code는 그 스냅샷이 실제로 무엇을 담고 있는지를 말한다.
+    """
+    return {
+        (
+            str(row.get("area_code") or "").strip(),
+            str(row.get("district_code") or "").strip(),
+        )
+        for row in snapshot.values()
+    }
+
+
 def comparable_columns(baseline_columns: Sequence[str]) -> tuple[str, ...]:
     """기준 스냅샷에 실제로 있는 열만 비교 대상으로 남긴다.
 
@@ -320,8 +362,16 @@ async def fetch_place_rows(
     return places
 
 
-def list_snapshots(directory: Path | None = None) -> list[Path]:
+def list_snapshots(
+    directory: Path | None = None,
+    *,
+    area_code: str | None = None,
+    district_code: str | None = None,
+) -> list[Path]:
     """저장된 스냅샷을 최신순으로. 파일명에 날짜가 있어 이름 정렬이 곧 시간 정렬이다.
+
+    지역 코드를 주면 그 구의 스냅샷만 돌려준다. 안 주면 전부 돌려주는데, 그때는
+    구가 섞이므로 "무엇이 저장돼 있는지 보여주는" 용도로만 쓴다.
 
     기본값을 `DATA_DIR`로 박지 않는 이유: 기본 인자는 임포트 시점에 값이 고정돼
     나중에 DATA_DIR을 바꿔도 반영되지 않는다.
@@ -329,18 +379,31 @@ def list_snapshots(directory: Path | None = None) -> list[Path]:
     target = directory if directory is not None else DATA_DIR
     if not target.exists():
         return []
-    return sorted(
-        target.glob(f"{SNAPSHOT_PREFIX}*.csv"),
-        key=lambda path: path.name,
-        reverse=True,
-    )
+    if area_code is not None and district_code is not None:
+        pattern = f"{SNAPSHOT_PREFIX}{region_slug(area_code, district_code)}_*.csv"
+    else:
+        pattern = f"{SNAPSHOT_PREFIX}*.csv"
+    return sorted(target.glob(pattern), key=lambda path: path.name, reverse=True)
 
 
 def find_baseline(
-    directory: Path | None = None, *, exclude: Path | None = None
+    directory: Path | None = None,
+    *,
+    area_code: str,
+    district_code: str,
+    exclude: Path | None = None,
 ) -> Path | None:
-    """대조 기준으로 쓸 직전 스냅샷. 이번에 쓴 파일은 제외한다."""
-    for path in list_snapshots(directory):
+    """대조 기준으로 쓸 같은 구의 직전 스냅샷. 이번에 쓴 파일은 제외한다.
+
+    지역 코드를 반드시 받는다 — 생략을 허용하면 호출자가 빠뜨렸을 때 다른 구
+    스냅샷을 기준으로 잡고, 그 결과는 "전량 삭제 + 전량 신규"라 눈에 띄지도 않는다.
+
+    구가 없는 옛 이름(`places_api_snapshot_20260810.csv`)은 이 glob에 걸리지
+    않는다. 옛 파일이 남아 있어도 "기준 없음"이 될 뿐 다른 구와 섞이지는 않는다.
+    """
+    for path in list_snapshots(
+        directory, area_code=area_code, district_code=district_code
+    ):
         if exclude is not None and path.name == exclude.name:
             continue
         return path
@@ -396,8 +459,12 @@ __all__ = [
     "list_snapshots",
     "load_snapshot",
     "normalize",
+    "reconciliation_file_name",
     "records_from_snapshot",
+    "region_slug",
     "select_detail_targets",
+    "snapshot_file_name",
+    "snapshot_regions",
     "snapshot_rows",
     "write_reconciliation",
     "write_snapshot",

@@ -936,6 +936,55 @@ class SupabasePlaceRepository:
             offset += _READ_PAGE_SIZE
         return rows
 
+    async def list_region_place_rows(
+        self,
+        area_code: str,
+        district_code: str,
+        columns: Sequence[str],
+        *,
+        active_only: bool = True,
+    ) -> list[Mapping[str, object]]:
+        """구 하나의 장소 행을 요청한 열만 페이징해 전부 읽는다.
+
+        열 목록을 호출자가 준다 — 이 저장소가 스냅샷 CSV 형식을 알 필요가 없고,
+        형식을 아는 쪽(`place_snapshot.SNAPSHOT_COLUMNS`)에 열 정의가 하나만 남는다.
+
+        기본은 활성 장소만이다. 비활성 장소는 목록에서 사라져서 비활성이 된 것이라,
+        스냅샷에 넣으면 대조할 때마다 계속 "삭제"로 잡힌다.
+        """
+        params_base: dict[str, str] = {
+            "select": ",".join(columns),
+            "area_code": f"eq.{area_code}",
+            "district_code": f"eq.{district_code}",
+            "order": "content_id.asc",
+        }
+        if active_only:
+            params_base["is_active"] = "eq.true"
+
+        rows: list[Mapping[str, object]] = []
+        offset = 0
+        while True:
+            response = await self._request(
+                "GET",
+                "/places",
+                params={
+                    **params_base,
+                    "limit": str(_READ_PAGE_SIZE),
+                    "offset": str(offset),
+                },
+            )
+            page = self._json(response)
+            if not isinstance(page, list):
+                raise SupabaseRepositoryError("invalid place row response")
+            for raw in page:
+                if not isinstance(raw, Mapping):
+                    raise SupabaseRepositoryError("invalid place row")
+                rows.append(raw)
+            if len(page) < _READ_PAGE_SIZE:
+                break
+            offset += _READ_PAGE_SIZE
+        return rows
+
     async def list_recent_sync_runs(self, limit: int = 10) -> list[dict[str, object]]:
         response = await self._request(
             "GET",
