@@ -107,6 +107,8 @@ test("restores a session that contains a place_info_result message", () => {
           answer_fields: { operating_hours: "09:00~18:00" },
           place_id: "p1",
           place_name: "경복궁",
+          latitude: null,
+          longitude: null,
           thumbnail_url: null,
           overview: null,
           operating_hours: "09:00~18:00",

@@ -113,6 +113,9 @@ export interface InfoPlaceCard {
   answer_fields: Record<string, string>;
   place_id: string | null;
   place_name: string | null;
+  /** 목적지 좌표. 지도 앱 길찾기 딥링크용. 좌표를 못 얻은 카드는 null. */
+  latitude: number | null;
+  longitude: number | null;
   thumbnail_url: string | null;
   overview: string | null;
   operating_hours: string | null;
@@ -148,7 +151,7 @@ export interface ConcentrationForecastBar {
 /** 추천 카드 클릭 시 C PlaceDetails를 직접 조회하는 응답이다. */
 export interface RecommendationPlaceDetailResponse {
   status: "success" | "no_data" | "unavailable";
-  requested_place_id: string;
+  requested_place_id: string | null;
   place_card: InfoPlaceCard | null;
 }
 
