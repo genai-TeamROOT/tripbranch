@@ -67,6 +67,7 @@ const ANSWER_FIELD_LABELS: Record<string, string> = {
   "실시간 활동": "실시간 활동",
   "기준 시각": "기준 시각",
   "안내": "안내",
+  homepage: "홈페이지",
   operating_hours: "운영시간",
   rest_date: "휴무일",
   parking: "주차",
@@ -183,18 +184,30 @@ function DetailEntries({
   );
 }
 
-const URL_PATTERN = /(https?:\/\/[^\s]+)/g;
+// www.로 시작하는 프로토콜 없는 도메인도 잡는다(실측: TourAPI homepage 필드의
+// 3.6%가 이 형태 — "www.kh.or.kr"처럼 http(s):// 없이 온다). 일반 도메인 정규식은
+// 숫자·단위 표기(예: "3.5km")를 오탐할 수 있어 www. 접두만 좁게 잡는다.
+const URL_PATTERN = /(https?:\/\/[^\s]+|www\.[^\s]+)/g;
 
-/** "관련 정보" 값 안의 http(s) URL(홈페이지·인스타 등)을 클릭 가능한 링크로 만든다. */
+function isLinkable(part: string): boolean {
+  return /^(https?:\/\/|www\.)/.test(part);
+}
+
+function toHref(part: string): string {
+  // www.만 있으면 상대경로로 오인돼 우리 사이트 안의 없는 페이지로 이동한다.
+  return part.startsWith("www.") ? `https://${part}` : part;
+}
+
+/** "관련 정보" 값 안의 URL(http(s) 또는 www.)을 클릭 가능한 링크로 만든다. */
 function AnswerValue({ value }: { value: string }) {
   const parts = value.split(URL_PATTERN);
   return (
     <dd className="whitespace-pre-line text-gray-900 dark:text-gray-100">
       {parts.map((part, index) =>
-        /^https?:\/\//.test(part) ? (
+        isLinkable(part) ? (
           <a
             key={index}
-            href={part}
+            href={toHref(part)}
             target="_blank"
             rel="noreferrer"
             className="break-all text-blue-600 underline hover:text-blue-700 dark:text-blue-400"
@@ -320,8 +333,15 @@ export function RecommendationDetailPreviewModal({
   const canRoute =
     detailCard?.latitude != null && detailCard?.longitude != null && Boolean(device_location);
   // "관련 정보"(answer_fields)에서 개요는 아래 "개요" 섹션과 내용이 같아 제외한다(중복 제거).
+  // 홈페이지는 answer_fields가 아니라 카드 최상위 필드다(질문 유형이 general_info가
+  // 아니어도 백엔드가 채울 수 있다) — 하단 링크를 없앤 대신 여기서 합성해 넣는다.
   const answerEntries = detailCard
-    ? Object.entries(detailCard.answer_fields).filter(([key]) => key !== "overview")
+    ? [
+        ...Object.entries(detailCard.answer_fields).filter(([key]) => key !== "overview"),
+        ...(detailCard.homepage && !("homepage" in detailCard.answer_fields)
+          ? ([["homepage", detailCard.homepage]] as [string, string][])
+          : []),
+      ]
     : [];
   const hasRealtimeDetails =
     (detailCard?.realtime_detail_items?.length ?? 0) > 0 || Boolean(detailCard?.realtime_map_url);
@@ -491,19 +511,6 @@ export function RecommendationDetailPreviewModal({
               )}
               <DetailEntries card={detailCard} entries={DETAIL_FIELDS} />
               <DetailEntries card={detailCard} entries={FACILITY_FIELDS} />
-              {detailCard.homepage && (
-                <a
-                  href={detailCard.homepage}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex items-center justify-between gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm font-medium text-gray-800 transition-colors hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 dark:border-gray-700 dark:bg-gray-800/70 dark:text-gray-100 dark:hover:border-blue-800 dark:hover:bg-blue-950/40 dark:hover:text-blue-300"
-                >
-                  <span>공식 홈페이지 보기</span>
-                  <span aria-hidden="true" className="text-gray-400 dark:text-gray-500">
-                    ↗
-                  </span>
-                </a>
-              )}
             </section>
           ) : (
             <p className="rounded-xl border border-dashed border-gray-300 p-4 text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
