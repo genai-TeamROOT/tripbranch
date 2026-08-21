@@ -152,8 +152,12 @@ def _to_location_debug(
 def _to_route_origin_debug(context: RecommendationContext | None) -> LocationDebug | None:
     """이번 턴의 거리·실측 경로가 실제로 기준 삼은 지점.
 
-    agent_runtime이 경로를 조회할 때 쓰는 것과 같은 함수를 부른다 — 규칙을 여기에
-    옮겨 적으면 D가 기준점 규칙을 바꿨을 때 패널만 조용히 옛 답을 보여준다.
+    시작점을 고르는 규칙(user_location을 쓰되 없으면 location으로 내려간다)을 이
+    모듈에 옮겨 적지 않고, agent_runtime이 실제 경로 조회에 쓰는 것과 같은
+    resolve_ranking_origin()을 그대로 호출한다. 같은 판정이 두 곳에 있으면 D가 규칙을
+    바꿨을 때 런타임은 새 규칙으로 경로를 조회하는데 이 패널만 옛 규칙으로 계산한 값을
+    보여준다 — 화면에 "시작점 안국역"이라고 떠 있는데 실제로는 경복궁에서 잰 값인
+    상태가 된다.
     """
 
     if context is None:
@@ -161,9 +165,15 @@ def _to_route_origin_debug(context: RecommendationContext | None) -> LocationDeb
     origin = resolve_ranking_origin(context)
     if origin is None:
         return None
-    # 사용자 위치가 그대로 시작점이 됐는지, 못 구해서 검색 위치로 내려갔는지를
-    # 가른다. resolve_ranking_origin()이 둘 중 하나를 그대로 돌려주므로 동일성으로
-    # 판정한다 — 좌표 비교로는 두 위치가 같은 곳으로 해석된 경우와 구분되지 않는다.
+    # 사용자 위치가 그대로 시작점이 됐는지, 못 구해서 검색 위치로 내려갔는지를 가른다.
+    # resolve_ranking_origin()은 context.user_location.data와 context.location.data 중
+    # 하나를 새로 만들지 않고 그대로 돌려준다. 그래서 위에서 받은 origin이 둘 중 어느
+    # 것과 같은 객체인지 보면 어느 쪽을 골랐는지 알 수 있다.
+    #
+    # 값이 같은지(`==`)로 비교해도 지금은 같은 답이 나온다 — ContextValue가
+    # success/partial이 아니면 data를 담지 못하게 막혀 있어(agent_context/schemas.py),
+    # 사용자 위치에 값이 있는데 랭킹 판정에서 걸러지는 경우가 생기지 않기 때문이다.
+    # 다만 그건 C 계약이 그렇게 막고 있어서 성립하는 결론이라 여기서 다시 기대지 않는다.
     is_user_location = origin is _user_location(context)
     return _to_location_debug(origin, source=None if is_user_location else "search_center")
 
