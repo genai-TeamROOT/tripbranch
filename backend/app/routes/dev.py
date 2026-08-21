@@ -301,6 +301,33 @@ def _snapshot_path(name: str) -> Path:
     return candidate
 
 
+def _require_snapshot_region(
+    snapshot: dict[str, dict[str, str]],
+    snapshot_name: str,
+    area_code: str,
+    district_code: str,
+) -> None:
+    """스냅샷이 담은 구가 지금 다루는 구와 같은지 내용으로 확인한다.
+
+    다른 구 스냅샷으로 반영하면 그 구에 없는 장소, 즉 **대상 구의 활성 장소 전부**가
+    "목록에서 사라진 것"으로 판정돼 비활성화된다(`deactivate_unseen_places`).
+    되돌리려면 동기화를 다시 돌려야 하고, 그 사이 추천은 결과 없음이 된다.
+
+    대조 쪽도 같은 함수로 막는다 — 다른 구를 기준으로 잡으면 "전량 삭제 + 전량
+    신규"가 나오는데, 이 모양은 실제 대량 변경과 구분이 안 된다(2026-08-20 중구
+    사례).
+    """
+    regions = place_snapshot.snapshot_regions(snapshot)
+    expected = (area_code.strip(), district_code.strip())
+    if not regions or regions == {expected}:
+        return
+    found = ", ".join(sorted(f"{area}-{district}" for area, district in regions))
+    raise DevPanelError(
+        f"스냅샷 {snapshot_name}은 {found} 자료라 "
+        f"{expected[0]}-{expected[1]}에 쓸 수 없습니다."
+    )
+
+
 @router.get("/place-sync/snapshots")
 async def get_snapshots() -> dict[str, Any]:
     return {
@@ -322,13 +349,15 @@ async def post_reconcile(request: ReconcileRequest) -> dict[str, Any]:
             client, api_key, area, district, now
         )
 
-    snapshot_path = (
-        place_snapshot.DATA_DIR / f"{place_snapshot.SNAPSHOT_PREFIX}{now:%Y%m%d}.csv"
+    snapshot_path = place_snapshot.DATA_DIR / place_snapshot.snapshot_file_name(
+        area, district, now
     )
     baseline_path = (
         _snapshot_path(request.baseline)
         if request.baseline
-        else place_snapshot.find_baseline(exclude=snapshot_path)
+        else place_snapshot.find_baseline(
+            area_code=area, district_code=district, exclude=snapshot_path
+        )
     )
     # 같은 날 다시 대조하면 덮어쓴다. 스냅샷은 git 추적 대상이라 덮어쓴 차이가
     # 그대로 diff로 남는다.
@@ -350,6 +379,7 @@ async def post_reconcile(request: ReconcileRequest) -> dict[str, Any]:
         }
 
     baseline = place_snapshot.load_snapshot(baseline_path)
+    _require_snapshot_region(baseline, baseline_path.name, area, district)
     baseline_columns = list(next(iter(baseline.values()), {}).keys())
     compared = place_snapshot.comparable_columns(baseline_columns)
     # 조용히 빼면 "안 바뀌었다"와 "안 봤다"가 결과에서 구분되지 않는다.
@@ -359,7 +389,7 @@ async def post_reconcile(request: ReconcileRequest) -> dict[str, Any]:
     rows = place_snapshot.build_reconciliation_rows(baseline, current, compared)
     reconciliation_path = (
         place_snapshot.DATA_DIR
-        / f"{place_snapshot.RECONCILIATION_PREFIX}{now:%Y%m%d}.csv"
+        / place_snapshot.reconciliation_file_name(area, district, now)
     )
     place_snapshot.write_reconciliation(
         rows, reconciliation_path, baseline_name=baseline_path.name, compared_at=now
@@ -431,6 +461,12 @@ async def post_apply(request: ApplyRequest) -> dict[str, Any]:
         )
 
     snapshot_path = _snapshot_path(request.snapshot)
+    _require_snapshot_region(
+        place_snapshot.load_snapshot(snapshot_path),
+        snapshot_path.name,
+        area,
+        district,
+    )
     detail_ids = frozenset(request.detail_content_ids)
 
     async def run(on_progress: Callable[[SyncProgress], None]) -> SyncJobOutcome:
