@@ -247,6 +247,58 @@ record_feedback(session_id, run_id, rating)  # rating: "like" | "dislike"
 **저장소**: `response_feedback` 테이블(append-only, `trace_records`와 동일한
 구조 — 마이그레이션 `202608210001_create_response_feedback.sql`).
 
+**8-1. 피드백 턴 원문 저장 (D-068, 2026-08-21 추가)**
+
+계약이 `record_feedback(session_id, run_id, rating, user_input=None,
+assistant_message=None)`로 확장됐다. 두 필드 모두 nullable — 없어도
+`rating` 기록은 그대로 유효하다.
+
+이 프로젝트의 기본 원칙(`docs/design/guest-auth-design.md` 9절)은 대화
+원문을 저장하지 않는 것이다 — `ConditionChangeLog` 독스트링에도 "사용자
+원문 발화와 LLM 원문 응답은 기록하지 않는다"고 명시돼 있다. `user_input`/
+`assistant_message`는 이 원칙에 대한 **좁은 예외**다: 테스트 중 피드백을
+검토할 때 "이 반응이 뭐에 대한 것인지" 확인할 방법이 없어서, 사용자가
+좋아요/싫어요를 실제로 남긴 턴에 한해서만 그 턴의 질문·답변 원문을 함께
+저장하기로 했다(전체 대화 로그가 아님 — D-068 참고). `rating`과 달리 이
+필드들은 자유 문자열이라 B가 내용을 검증·해석하지 않는다(1절 경계
+원칙 그대로 적용) — 다만 "저장 대상 데이터의 새 카테고리"라는 점에서
+`rating`의 검증 예외와는 성격이 다르다.
+
+프론트는 `session_id`/`run_id`가 이미 있는 결과 카드(recommendation_result/
+schedule_result) 렌더링 시점에, 그 카드 바로 앞의 `user_text`/
+`assistant_text` 메시지를 거슬러 올라가며 찾아서(`findTurnText`,
+`frontend/src/utils/turnText.ts`) 좋아요/싫어요 클릭 시 함께 보낸다 —
+reducer 단계에서 미리 박아두지 않는 이유는 스트리밍 답변이 카드보다 늦게
+완성될 수 있어(SSE), 클릭 시점 기준 최신 텍스트를 반영하기 위해서다.
+
+마이그레이션: `202608210002_add_feedback_turn_text.sql` (nullable text
+컬럼 2개 추가).
+
+**8-2. intent/comment 확장 (D-069, 2026-08-21 추가)**
+
+계약이 `record_feedback(..., intent=None, comment=None)`로 더 확장됐다.
+둘 다 nullable.
+
+`intent`는 그 턴의 `assistant_text` 메시지가 이미 들고 있는 값을 그대로
+옮겨오는 것뿐이라(개발자 뷰 인텐트 배지에 쓰는 값과 동일 소스) B는
+검증하지 않는다 — "어떤 인텐트가 싫어요를 많이 받는지" 필터링용.
+
+`comment`는 "싫어요" 사유로 사용자가 직접 남기는 자유 텍스트(선택)다.
+user_input/assistant_message와 같은 위험 등급(자유 텍스트)으로 취급하고
+같은 이유로 nullable이다. 프론트는 "별로예요" 클릭을 즉시 전송하지 않고
+인라인 입력창(제출/건너뛰기)을 먼저 띄운 뒤 하나의 레코드로 함께
+보낸다 — append-only 구조에서 사유 없이 먼저 보내고 나중에 사유 있는
+레코드를 또 쌓으면 같은 run_id의 dislike가 `list_dislikes()`에서 중복
+집계되기 때문이다.
+
+검토했지만 채택하지 않은 것(D-069 참고): 전 컬럼 NOT NULL(텍스트를 못
+찾는 예외 상황에서 rating 기록 자체가 실패하게 됨), `is_clarification`/
+`clarification_code`(되묻기 메시지에는 피드백 버튼 자체가 없어 채울
+방법이 없음).
+
+마이그레이션: `202608210003_add_feedback_intent_comment.sql` (nullable
+text 컬럼 2개 추가).
+
 ---
 
 ## 9. 갱신 이력
@@ -258,3 +310,5 @@ record_feedback(session_id, run_id, rating)  # rating: "like" | "dislike"
 | 08-14 | 6.1절 신설 — 기본프로젝트 발표 피드백(프롬프트 개선 수치화 필요) 반영. Version Registry는 여전히 범위 밖이지만, 기존에 쓰던 벤치마크 스크립트+CSV+PR 수치 기록 패턴을 표준 절차로 명시하고 PROMPT_VERSION 변경 이력 표 신설(소급 가능한 범위만) |
 | 08-18 | PROMPT_VERSION 변경 이력 표에 1.0.13 행 추가(SCHEDULE 폐점 스탑 감지 프롬프트 힌트, int-07-schedule.md v2.2) |
 | 08-21 | 8절 신설 — 응답 피드백(좋아요/싫어요) 저장 기능(roadmap.md 14번) 추가. `record_feedback()` 신규 진입점, `response_feedback` 테이블, POST /api/feedback 엔드포인트. 이어서 조회·분석 기능(`list_dislikes()`, `get_dislike_feedback()`, GET /api/feedback/dislikes)도 같은 날 추가 — 저장만 하고 꺼내 쓰는 곳이 없으면 죽은 기능이라는 지적 반영 |
+| 08-21 | 8-1절 신설 — 피드백을 남긴 턴에 한해 질문·답변 원문(`user_input`/`assistant_message`)을 함께 저장(D-068). 테스트 중 피드백 검토 편의 목적, 전체 대화 로그 저장과는 다름. 마이그레이션 `202608210002_add_feedback_turn_text.sql` |
+| 08-21 | 8-2절 신설 — `intent`(assistant_text 메시지 값 복사)/`comment`(싫어요 사유 자유 텍스트) 확장(D-069). comment는 append-only 중복 방지를 위해 인라인 입력창(제출/건너뛰기)에서 한 번에 전송. 마이그레이션 `202608210003_add_feedback_intent_comment.sql` |

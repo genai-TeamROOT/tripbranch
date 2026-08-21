@@ -447,11 +447,23 @@ export interface SessionContextResponse {
   condition_version: number;
 }
 
-/** POST /api/feedback 요청. backend/app/state/service.py의 RecordFeedbackRequest와 대응. */
+/**
+ * POST /api/feedback 요청. backend/app/state/service.py의 RecordFeedbackRequest와 대응.
+ * user_input/assistant_message는 선택 필드다 — 피드백을 남긴 턴의 질문·답변
+ * 원문을 찾을 수 있을 때만 채운다. 대화 전체를 저장하는 게 아니라 이 반응이
+ * 무엇에 대한 것인지 나중에 확인하기 위한 용도라 값이 없어도 rating 기록은
+ * 그대로 유효하다(backend FeedbackRecord 스키마 docstring 참고).
+ * intent는 그 턴의 assistant_text 메시지가 이미 들고 있는 값을 그대로
+ * 옮겨 보낸다. comment는 "싫어요" 사유로 사용자가 직접 남긴 자유 텍스트다.
+ */
 export interface RecordFeedbackRequest {
   session_id: string;
   run_id: string;
   rating: "like" | "dislike";
+  user_input?: string;
+  assistant_message?: string;
+  intent?: string;
+  comment?: string;
 }
 
 /** POST /api/feedback 응답. */

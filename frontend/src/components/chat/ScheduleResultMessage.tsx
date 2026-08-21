@@ -43,6 +43,10 @@ interface ScheduleResultMessageProps {
   onRelaxRadius: () => void;
   sessionId: string;
   runId: string;
+  /** 피드백 전송용. ChatMessageList가 근처 메시지에서 찾아 넘겨준다(선택 사항). */
+  userInput?: string;
+  assistantMessage?: string;
+  intent?: string;
 }
 
 export function ScheduleResultMessage({
@@ -54,6 +58,9 @@ export function ScheduleResultMessage({
   onRelaxRadius,
   sessionId,
   runId,
+  userInput,
+  assistantMessage,
+  intent,
 }: ScheduleResultMessageProps) {
   const hasItems = schedule.items.length > 0;
 
@@ -66,7 +73,13 @@ export function ScheduleResultMessage({
           {formatDuration(elapsedMs)} 소요 (서버 {formatDuration(schedule.elapsed_ms)})
         </p>
       )}
-      <FeedbackButtons sessionId={sessionId} runId={runId} />
+      <FeedbackButtons
+        sessionId={sessionId}
+        runId={runId}
+        userInput={userInput}
+        assistantMessage={assistantMessage}
+        intent={intent}
+      />
       {hasItems ? (
         <>
           <section className="flex flex-col gap-3">

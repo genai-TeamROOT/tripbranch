@@ -21,6 +21,7 @@ import { PlaceInfoCard } from "./PlaceInfoCard";
 import { RecommendationResultMessage } from "./RecommendationResultMessage";
 import { ScheduleResultMessage } from "./ScheduleResultMessage";
 import { SessionStatusMessage } from "./SessionStatusMessage";
+import { findTurnText } from "../../utils/turnText";
 
 function StreamingDots() {
   return (
@@ -96,7 +97,7 @@ export function ChatMessageList({
     <div className="flex flex-1 flex-col gap-4">
       {messages
         .filter((message) => showDebug || message.type !== "condition_debug")
-        .map((message) => {
+        .map((message, index, renderedMessages) => {
           if (message.type === "user_text") {
             return (
               <p
@@ -163,6 +164,7 @@ export function ChatMessageList({
           }
 
           if (message.type === "schedule_result") {
+            const { userInput, assistantMessage, intent } = findTurnText(renderedMessages, index);
             return (
               <ScheduleResultMessage
                 key={message.id}
@@ -174,6 +176,9 @@ export function ChatMessageList({
                 onRelaxRadius={onRelaxRadius}
                 sessionId={message.sessionId}
                 runId={message.runId}
+                userInput={userInput}
+                assistantMessage={assistantMessage}
+                intent={intent}
               />
             );
           }
@@ -194,6 +199,7 @@ export function ChatMessageList({
             );
           }
 
+          const { userInput, assistantMessage, intent } = findTurnText(renderedMessages, index);
           return (
             <RecommendationResultMessage
               key={message.id}
@@ -207,6 +213,9 @@ export function ChatMessageList({
               onRelaxRadius={onRelaxRadius}
               sessionId={message.sessionId}
               runId={message.runId}
+              userInput={userInput}
+              assistantMessage={assistantMessage}
+              intent={intent}
             />
           );
         })}

@@ -248,9 +248,27 @@ class FeedbackRecord(BaseModel):
     만든 개별 단계(LLM 호출/Tool 호출/Scoring)에 반응하는 게 아니다.
     rating은 화면 버튼이 만드는 고정된 두 값이라(TraceRecord의 step 등과
     달리 호출자가 자유롭게 정하는 값이 아니다) Literal로 검증한다.
+
+    user_input/assistant_message는 2026-08-21 추가된 선택 필드다. B는 원칙적으로
+    대화 원문을 저장하지 않지만(ConditionChangeLog 참고), 피드백을 남긴 턴에
+    한해서만 예외를 둔다 — 테스트 중 "이 반응이 무엇에 대한 것인지" 확인할
+    근거가 필요하다는 요청 때문. 대화 전체 로그와 달리 사용자가 명시적으로
+    반응한 턴만 남으므로 노출 범위가 훨씬 좁다. 프론트가 텍스트를 못 찾거나
+    안 보내면 None — 이 경우에도 rating 기록 자체는 그대로 유효하다.
+
+    intent/comment는 같은 날 추가된 확장 필드다(D-068 연장). intent는
+    step/prompt_version 등과 같은 성격 — 그 턴의 assistant_text 메시지가
+    이미 들고 있는 값을 그대로 옮겨오는 것뿐이라 B는 검증하지 않는다.
+    comment는 "싫어요" 사유로 사용자가 직접 쓴 자유 텍스트(선택) — user_input/
+    assistant_message와 같은 위험 등급(자유 텍스트)으로 취급하고 같은 이유로
+    nullable이다.
     """
 
     session_id: str
     run_id: str
     rating: Literal["like", "dislike"]
+    user_input: str | None = None
+    assistant_message: str | None = None
+    intent: str | None = None
+    comment: str | None = None
     recorded_at: datetime = Field(default_factory=now_kst)
