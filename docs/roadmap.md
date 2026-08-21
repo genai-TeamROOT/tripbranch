@@ -158,16 +158,6 @@ LangChain이라는 무료 도구가 표준처럼 쓰인다. **기존 챗봇 부�
 남겨두는 걸로 충분해서 미루고 있고, 나중에 "한눈에 보는 화면"이 실제로
 필요해지면 그때 붙인다.
 
-### 14. 좋아요/싫어요 버튼 → 저장 → 나쁜 답변 찾아서 고치기
-
-챗봇 답변마다 좋아요/싫어요 버튼을 달아서 사용자 반응을 기록해두고, 나중에
-"싫어요"가 많이 눌린 답변만 따로 뽑아 분석해서 프롬프트를 개선하는 데
-쓴다. 지금은 "어떤 버전이 답했는지"는 기록하지만 "그 답이 좋았는지 나빴는지"는
-기록하지 않는다 — 이 기능이 그 빈틈을 채운다.
-
-- 관련 파일: `backend/docs/package-b/llmops-trace-contract-v1.md`,
-  `app/state/schema.py`
-
 ---
 
 ## 이미 만든 것 (요약만)
@@ -192,6 +182,18 @@ LangChain이라는 무료 도구가 표준처럼 쓰인다. **기존 챗봇 부�
 만으로 끝난다.
 
 - 관련 파일: `frontend/src/components/chat/VoiceInputButton.tsx`
+
+### ~~좋아요/싫어요 버튼 → 저장 → 나쁜 답변 찾아서 고치기~~ — 완료
+
+챗봇 답변마다 좋아요/싫어요 버튼을 달아서 사용자 반응을 기록하고, "싫어요"만
+따로 뽑아 어떤 `prompt_version`/`scoring_version`에서 나온 답변인지 조회하는
+기능까지 만들었다(2026-08-21). 저장만 하고 조회가 없던 초기안에서, 로드맵이
+말하는 "나쁜 답변 찾아서 고치기"가 실제로 가능하도록 조회/분석 기능도 함께
+넣었다.
+
+- 관련 파일: `backend/app/state/feedback.py`, `backend/app/routes/feedback.py`,
+  `frontend/src/components/chat/FeedbackButtons.tsx`,
+  `backend/docs/package-b/llmops-trace-contract-v1.md`
 
 ### 대중교통 실시간 반영 — 아직 안 만듦 (경로 기능 안에 포함)
 

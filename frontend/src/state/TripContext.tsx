@@ -270,6 +270,11 @@ function tripReducer(state: TripState, action: TripAction): TripState {
             unverified_recommendations: action.payload.unverified_recommendations,
             elapsed_ms: action.payload.elapsed_ms_client,
             server_elapsed_ms: action.payload.elapsed_ms,
+            // APPEND_RECOMMENDATIONS는 어느 페이지에서도 dispatch되지 않는 미사용
+            // 액션이라 RecommendationsResponse에 run_id가 없다. 실제로 쓰이게 되면
+            // 이 자리에 진짜 run_id를 채워야 한다.
+            sessionId: state.session_id ?? "",
+            runId: "",
           },
         ],
         phase: "ready",
@@ -318,6 +323,8 @@ function tripReducer(state: TripState, action: TripAction): TripState {
             unverified_recommendations: recommendations.unverified_recommendations,
             elapsed_ms: elapsedMsClient,
             server_elapsed_ms: recommendations.elapsed_ms,
+            sessionId: streamState.session_id,
+            runId: streamState.run_id,
           },
         ],
       };
@@ -492,6 +499,8 @@ function tripReducer(state: TripState, action: TripAction): TripState {
           unverified_recommendations: recommendations.unverified_recommendations,
           elapsed_ms: action.payload.elapsedMsClient,
           server_elapsed_ms: recommendations.elapsed_ms,
+          sessionId: action.payload.agentResponse.state.session_id,
+          runId: action.payload.agentResponse.state.run_id,
         });
       }
       if (schedule) {
@@ -500,6 +509,8 @@ function tripReducer(state: TripState, action: TripAction): TripState {
           type: "schedule_result",
           schedule,
           elapsed_ms: action.payload.elapsedMsClient,
+          sessionId: action.payload.agentResponse.state.session_id,
+          runId: action.payload.agentResponse.state.run_id,
         });
       }
       if (infoPlaceCard) {

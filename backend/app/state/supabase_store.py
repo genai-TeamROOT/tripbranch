@@ -22,6 +22,7 @@ from app.state.errors import StateStoreError
 from app.state.schema import (
     AgentState,
     ConditionChangeLog,
+    FeedbackRecord,
     RecommendationHistory,
     TraceRecord,
 )
@@ -251,3 +252,53 @@ class SupabaseStateStore:
             return [TraceRecord.model_validate(row) for row in payload]
         except Exception:
             raise StateStoreError("invalid trace_records row") from None
+
+    # ------------------------------------------------------------ Feedback
+
+    def append_feedback(self, records: list[FeedbackRecord]) -> None:
+        """append-only. 기존 기록을 수정하거나 삭제하지 않는다."""
+        if not records:
+            return
+        self._request(
+            "POST",
+            "/response_feedback",
+            json=[record.model_dump(mode="json") for record in records],
+            prefer="return=minimal",
+        )
+
+    def get_feedback(self, session_id: str) -> list[FeedbackRecord]:
+        response = self._request(
+            "GET",
+            "/response_feedback",
+            params={
+                "session_id": f"eq.{session_id}",
+                "select": "*",
+                "order": "id.asc",
+            },
+        )
+        payload = self._json(response)
+        if not isinstance(payload, list):
+            raise StateStoreError("invalid response_feedback response")
+        try:
+            return [FeedbackRecord.model_validate(row) for row in payload]
+        except Exception:
+            raise StateStoreError("invalid response_feedback row") from None
+
+    def list_dislike_feedback(self, limit: int) -> list[FeedbackRecord]:
+        response = self._request(
+            "GET",
+            "/response_feedback",
+            params={
+                "rating": "eq.dislike",
+                "select": "*",
+                "order": "recorded_at.desc",
+                "limit": str(limit),
+            },
+        )
+        payload = self._json(response)
+        if not isinstance(payload, list):
+            raise StateStoreError("invalid response_feedback response")
+        try:
+            return [FeedbackRecord.model_validate(row) for row in payload]
+        except Exception:
+            raise StateStoreError("invalid response_feedback row") from None
