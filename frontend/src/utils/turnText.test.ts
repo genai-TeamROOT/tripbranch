@@ -24,6 +24,10 @@ function recommendationResult(id: string): ChatMessage {
   };
 }
 
+function clarification(text: string): ChatMessage {
+  return { id: `c-${text}`, type: "clarification", text, options: [] };
+}
+
 // "feedback" 메시지는 develop 브랜치의 별도 메시지 타입(session_id/run_id만
 // 들고 텍스트는 없음) — 실제로 findTurnText가 호출되는 대상은 결과 카드가
 // 아니라 이 메시지다. 카드 뒤에 이 메시지가 하나 더 온다는 점만 재현한다.
@@ -91,4 +95,18 @@ it("결과 카드 뒤에 오는 feedback 메시지 index로 찾아도 카드를 
   expect(result.userInput).toBe("질문");
   expect(result.assistantMessage).toBe("답변");
   expect(result.intent).toBe("RECOMMEND");
+});
+
+it("되묻기(clarification) 턴도 답변으로 인식한다 — intent는 없다", () => {
+  const messages = [
+    userText("어디 갈지 모르겠어"),
+    clarification("어떤 걸 찾으세요?"),
+    feedbackMessage(),
+  ];
+
+  const result = findTurnText(messages, 2);
+
+  expect(result.userInput).toBe("어디 갈지 모르겠어");
+  expect(result.assistantMessage).toBe("어떤 걸 찾으세요?");
+  expect(result.intent).toBeUndefined();
 });

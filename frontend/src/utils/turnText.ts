@@ -17,6 +17,11 @@
  * 쓰지 않는 이유도 동일하다 — 그 필드들은 세션에 하나뿐이라 새 턴이 오면
  * 덮어써지므로, 화면을 스크롤해 예전 카드에 피드백을 남기면 엉뚱한(최신) 턴의
  * 값이 잘못 붙는다.
+ *
+ * develop 병합 이후 "feedback" 메시지는 결과 카드뿐 아니라 되묻기(clarification)
+ * 턴 뒤에도 붙는다(run_id만 있으면 붙는 범용 메시지라서) — 답변 자리에
+ * assistant_text 대신 clarification 메시지가 오는 경우도 답변으로 인정한다.
+ * clarification 메시지에는 intent가 없어 그 경우 intent는 계속 undefined다.
  */
 
 import type { ChatMessage } from "../types";
@@ -42,6 +47,10 @@ export function findTurnText(
     if (candidate.type === "assistant_text") {
       assistantMessage = candidate.text;
       intent = candidate.intent;
+      break;
+    }
+    if (candidate.type === "clarification") {
+      assistantMessage = candidate.text;
       break;
     }
   }

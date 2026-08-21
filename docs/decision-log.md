@@ -2086,6 +2086,19 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   index로 옮겼다 — `findTurnText`는 텍스트가 없는 메시지를 건너뛰므로 로직
   변경은 필요 없었다. 마이그레이션 번호 충돌(둘 다 202608210002/003을 씀)로
   우리 쪽 파일은 004/005로 재번호했다.
+- 정정(병합 후 발견): 위 "채택하지 않은 것"의 `is_clarification`/
+  `clarification_code` 제외 근거("되묻기 메시지에 피드백 버튼 자체가
+  없다")가 병합 이후로는 더 이상 사실이 아니다 — develop이 피드백을
+  `run_id`만 있으면 붙는 범용 `"feedback"` 메시지로 바꾸면서, 백엔드가
+  되묻기 응답에도 항상 `run_id`를 발급하기 때문에(`service.py` `apply()`,
+  확정 여부와 무관하게 매 턴 발급) 되묻기 턴에도 피드백 버튼이 이미 뜨고
+  rating은 저장되고 있었다. 다만 `findTurnText`가 답변 자리에서
+  `"assistant_text"`만 찾고 `"clarification"` 타입은 인식하지 못해
+  `assistant_message`가 계속 비어 있던 것을 확인해, `"clarification"`도
+  답변으로 인식하도록 확장했다(`intent`는 clarification 메시지에 그 값 자체가
+  없어 여전히 비어 있다 — `is_clarification`/`clarification_code` DB 컬럼을
+  새로 만들지 않기로 한 결정 자체는 유지, 그 컬럼들을 채울 데이터가 필요해지면
+  그때 다시 검토).
 - 상세: `supabase/migrations/202608210005_add_feedback_intent.sql`,
   `backend/app/state/schema.py`(`FeedbackRecord`), `backend/app/state/feedback.py`,
   `backend/app/state/service.py`, `frontend/src/utils/turnText.ts`,
