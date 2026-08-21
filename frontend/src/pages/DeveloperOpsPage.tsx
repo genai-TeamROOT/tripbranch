@@ -15,12 +15,15 @@ import {
   applyPlaceSync,
   fetchApiUsage,
   fetchDbStatus,
+  fetchSyncDistricts,
   fetchSyncJob,
   reconcilePlaces,
   resetApiUsage,
   type ApiUsageSnapshot,
   type DbStatus,
   type ReconcileResult,
+  type SyncDistrict,
+  type SyncDistricts,
   type SyncJob,
 } from "../api/dev";
 import { ApiUsagePanel } from "../components/dev/ApiUsagePanel";
@@ -77,25 +80,64 @@ export function DeveloperOpsPage() {
   const [syncError, setSyncError] = useState<string | null>(null);
   const [reconciling, setReconciling] = useState(false);
   const [applying, setApplying] = useState(false);
+  const [districts, setDistricts] = useState<SyncDistricts | null>(null);
+  const [selectedDistrict, setSelectedDistrict] = useState<SyncDistrict | null>(null);
+
+  const loadDistricts = useCallback(async () => {
+    try {
+      const next = await fetchSyncDistricts();
+      setDistricts(next);
+      // 처음 한 번만 고른다. 이후 새로고침이 사용자의 선택을 되돌리면 안 된다.
+      setSelectedDistrict((current) => current ?? next.loaded[0] ?? null);
+      setSyncError(null);
+    } catch (error) {
+      setSyncError(toMessage(error, "구 목록을 불러오지 못했어요."));
+    }
+  }, []);
+
+  /* 구를 바꾸면 앞 구의 대조 결과와 job을 비운다. 남겨두면 중구를 대조한 화면에서
+   * 용산구를 반영하는 조작이 가능해 보인다 — 서버가 거부하긴 하지만, 화면이 그런
+   * 조작을 제안하는 것 자체가 잘못이다. */
+  const handleSelectDistrict = useCallback((district: SyncDistrict) => {
+    setSelectedDistrict(district);
+    setReconcile(null);
+    setJob(null);
+    setSyncError(null);
+  }, []);
 
   const handleReconcile = useCallback(async () => {
+    if (!selectedDistrict) return;
     setReconciling(true);
     try {
-      setReconcile(await reconcilePlaces());
+      setReconcile(
+        await reconcilePlaces({
+          areaCode: selectedDistrict.area_code,
+          districtCode: selectedDistrict.district_code,
+        }),
+      );
       setSyncError(null);
     } catch (error) {
       setSyncError(toMessage(error, "대조에 실패했어요."));
     } finally {
       setReconciling(false);
     }
-  }, []);
+  }, [selectedDistrict]);
 
   const handleApply = useCallback(
-    async (input: { dryRun: boolean; confirm: string; includeExcluded: boolean }) => {
+    async (input: {
+      dryRun: boolean;
+      confirm: string;
+      includeExcluded: boolean;
+      detailsLimit: number | null;
+    }) => {
       if (!reconcile) return;
       setApplying(true);
       try {
         const started = await applyPlaceSync({
+          // 구는 대조 결과에서 가져온다 — 드롭다운은 그 사이 바뀔 수 있고,
+          // 반영은 어디까지나 이 스냅샷이 담고 있는 구에 대한 것이다.
+          areaCode: reconcile.area_code,
+          districtCode: reconcile.district_code,
           snapshot: reconcile.snapshot,
           detailContentIds: input.includeExcluded
             ? [...reconcile.detail_content_ids, ...reconcile.detail_excluded_ids]
@@ -104,6 +146,7 @@ export function DeveloperOpsPage() {
             .filter((row) => row.change_type === "added")
             .map((row) => row.content_id),
           dryRun: input.dryRun,
+          detailsLimit: input.detailsLimit,
           confirm: input.confirm,
         });
         setJob(started);
@@ -129,7 +172,8 @@ export function DeveloperOpsPage() {
   useEffect(() => {
     void loadUsage();
     void loadDbStatus();
-  }, [loadDbStatus, loadUsage]);
+    void loadDistricts();
+  }, [loadDbStatus, loadDistricts, loadUsage]);
 
   // 폴링은 호출량에만 건다. DB 상태는 844행을 훑어 Supabase 호출이 따라붙으므로
   // 3초마다 부르면 패널 자체가 트래픽을 만든다.
@@ -153,23 +197,17 @@ export function DeveloperOpsPage() {
         const next = await fetchSyncJob(jobId);
         setJob(next);
         if (next.status !== "running") {
-          // 끝났으면 DB 상태를 다시 읽어 반영 결과를 화면에 맞춘다.
+          // 끝났으면 DB 상태를 다시 읽어 반영 결과를 화면에 맞춘다. 구 목록도
+          // 함께 읽는다 — 이번에 처음 적재한 구는 여기서부터 건수가 생긴다.
           void loadDbStatus();
+          void loadDistricts();
         }
       } catch (error) {
         setSyncError(toMessage(error, "job 상태를 불러오지 못했어요."));
       }
     }, JOB_POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [jobId, loadDbStatus]);
-
-  // 반영 다이얼로그에 참고용으로 넘길 detailIntro2 관측 사용량. 잔여를 계산하지
-  // 않는 이유: 이 집계는 프로세스 메모리라 재시작 전 호출과 backend/scripts
-  // 실행분이 빠져 있다. 한도에서 빼면 실제보다 여유가 있는 것처럼 보인다.
-  const detailUsedSinceStart =
-    usage?.entries.find(
-      (entry) => entry.provider === "tour_api" && entry.operation === "detailIntro2",
-    )?.today_count ?? null;
+  }, [jobId, loadDbStatus, loadDistricts]);
 
   return (
     <main className="min-h-screen bg-gray-50 text-gray-950 dark:bg-gray-950 dark:text-gray-50">
@@ -208,12 +246,18 @@ export function DeveloperOpsPage() {
           onReset={() => void handleReset()}
         />
         <PlaceSyncPanel
+          districts={districts}
+          selected={selectedDistrict}
           reconcile={reconcile}
           job={job}
           error={syncError}
           reconciling={reconciling}
           applying={applying}
-          detailUsedSinceStart={detailUsedSinceStart}
+          /* 잔여를 계산하지 않는 이유: 이 값도 하한이다. 재시도가 안 세지고,
+           * 완료 처리를 못 한 실행은 사용량이 비어 있다. 한도에서 빼면 실제보다
+           * 여유가 있는 것처럼 보인다. */
+          detailCallsToday={dbStatus?.detail_calls_today ?? null}
+          onSelectDistrict={handleSelectDistrict}
           onReconcile={() => void handleReconcile()}
           onApply={(input) => void handleApply(input)}
         />

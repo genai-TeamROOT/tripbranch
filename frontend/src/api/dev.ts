@@ -93,6 +93,15 @@ export type DbStatus = {
   sync_runs: SyncRunRow[];
   sync_locks: SyncLockRow[];
   detail_ttl_days: number;
+  /* 오늘 detailIntro2를 몇 번 불렀는지. place_sync_runs에서 세므로 서버를
+   * 재시작해도 남고 scripts 실행분도 잡히지만, 여전히 하한이다 — 재시도는 안
+   * 세지고 중간에 죽은 실행은 값이 비어 있다(runs_without_count). */
+  detail_calls_today: {
+    count: number;
+    runs: number;
+    runs_without_count: number;
+    daily_limit: number | null;
+  };
 };
 
 export type ApiExchange = {
@@ -154,12 +163,20 @@ export type ReconcileRow = {
   current: Record<string, string>;
 };
 
+/** 무엇을 기준으로 대조했는지.
+ *
+ * `database`는 스냅샷 파일이 없어 places에서 기준을 만든 경우다. 그 기준은 파일로
+ * 남지 않는다 — 파일명 날짜가 오늘과 겹치면 이번 대조가 쓰는 파일에 덮어써진다.
+ * `unavailable`은 "DB에 없다"가 아니라 "자격증명이 없어 확인하지 못했다"다. */
+export type BaselineSource = "file" | "database" | "none" | "unavailable";
+
 export type ReconcileResult = {
   area_code: string;
   district_code: string;
   snapshot: string;
   snapshot_count: number;
   baseline: string | null;
+  baseline_source: BaselineSource;
   baseline_count?: number;
   reconciliation?: string;
   skipped_columns: string[];
@@ -179,6 +196,8 @@ export type SyncJob = {
     dry_run: boolean;
     detail_target_count: number;
     added_count: number;
+    /** 상한이 걸린 실행은 비활성화를 건너뛴다 — 목록을 다 처리하지 못했으므로. */
+    details_limit: number | null;
   };
   status: string;
   started_at: string;
@@ -206,24 +225,68 @@ export type SyncJob = {
   unmapped_new_place_ids: string[];
 };
 
-export function reconcilePlaces(baseline?: string) {
+/** 화면이 고를 수 있는 구. 자료가 있는 구만 들어온다. */
+export type SyncDistrict = {
+  area_code: string;
+  district_code: string;
+  district_name: string | null;
+  place_count: number;
+  active_count: number;
+  latest_snapshot: string | null;
+};
+
+/** 코드 입력을 검증할 시군구 사전 항목. */
+export type KnownDistrict = {
+  area_code: string;
+  district_code: string;
+  district_name: string;
+};
+
+export type SyncDistricts = {
+  loaded: SyncDistrict[];
+  known: KnownDistrict[];
+};
+
+export function fetchSyncDistricts() {
+  return apiClient.get<SyncDistricts>("/dev/place-sync/districts");
+}
+
+export function reconcilePlaces(input: {
+  areaCode: string;
+  districtCode: string;
+  baseline?: string;
+}) {
   return apiClient.post<ReconcileResult>("/dev/place-sync/reconcile", {
-    baseline: baseline ?? null,
+    area_code: input.areaCode,
+    district_code: input.districtCode,
+    baseline: input.baseline ?? null,
   });
 }
 
+/*
+ * 구를 반드시 싣는다. 빠뜨리면 서버가 설정 기본값(종로구)으로 실행해, 다른 구
+ * 스냅샷을 반영했을 때 종로구 활성 장소가 전부 비활성화된다. 서버도 스냅샷
+ * 내용과 구가 다르면 거부하지만, 그 거부에 걸리지 않으려면 여기서 맞게 보내야
+ * 한다.
+ */
 export function applyPlaceSync(input: {
+  areaCode: string;
+  districtCode: string;
   snapshot: string;
   detailContentIds: string[];
   addedContentIds: string[];
   dryRun: boolean;
+  detailsLimit: number | null;
   confirm: string;
 }) {
   return apiClient.post<SyncJob>("/dev/place-sync/apply", {
+    area_code: input.areaCode,
+    district_code: input.districtCode,
     snapshot: input.snapshot,
     detail_content_ids: input.detailContentIds,
     added_content_ids: input.addedContentIds,
     dry_run: input.dryRun,
+    details_limit: input.detailsLimit,
     confirm: input.confirm,
   });
 }
