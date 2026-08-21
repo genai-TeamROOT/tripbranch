@@ -309,6 +309,41 @@ FeedbackButtons UI도 아이콘 기반의 develop 버전(더 완성도 높음)�
 assistant_message 2개), `202608210005_add_feedback_intent.sql`(intent 1개 +
 조회 뷰에 새 컬럼들 반영).
 
+**8-3. reason_code 확장 (D-070, 2026-08-21 추가)**
+
+계약이 `record_feedback(..., reason_code=None)`로 더 확장됐다. nullable —
+기존 클라이언트(reason_code 없이 dislike만 보내는)와 과거 행 모두 그대로
+읽고 쓸 수 있다.
+
+`reason_code`는 "싫어요"를 집계 가능한 표준 사유로 분류하기 위한 값이다.
+`comment`(자유 텍스트, D-069)와는 성격이 다르다 — `rating`처럼 B가 값을
+검증하는 예외적인 필드로, `FeedbackReasonCode` 7값(intent_mismatch/
+clarification_unhelpful/context_not_preserved/location_misunderstood/
+conditions_not_applied/recommendation_not_suitable/other) Literal과 DB
+CHECK 제약이 이중으로 값을 제한한다. "좋아요"에는 reason_code/comment
+둘 다 붙일 수 없다 — `RecordFeedbackRequest`의 `model_validator`가 요청
+단계에서 거부한다.
+
+이 기능은 팀원이 독립적으로 구현해 PR #214로 develop에 먼저 merge했다
+(D-069의 comment 기능과 같은 패턴 — 다만 이번엔 충돌 없이 순수 추가만
+있었다). B는 구현하지 않고 상태·저장 계약 검토와 마이그레이션 적용만
+맡았다. intent/user_input/assistant_message 캡처 아키텍처(render-time
+`findTurnText`, 8-1절)는 PR #214가 시도했던 reducer 시점 임베딩 방식으로
+바뀌지 않고 그대로 유지됐다.
+
+**마이그레이션 버그와 수정**: `202608210006` 초안이 `response_feedback_kst`
+뷰를 재정의하며 `intent` 컬럼 위치를 `rating` 바로 뒤로 옮기려다
+PostgreSQL의 `create or replace view` 제약(기존 컬럼 이름·순서 변경
+불가, 42P16 `cannot change name of view column`)에 걸려 실서비스 적용이
+실패했다. 기존 컬럼 순서(`id, session_id, run_id, rating, user_input,
+assistant_message, intent, comment, recorded_at, recorded_at_kst`)를
+그대로 두고 `reason_code`를 맨 뒤에 추가하도록 수정했다 —
+`create or replace view`로 컬럼을 새로 노출하려면 항상 기존 순서 뒤에만
+추가해야 한다는 제약을 이번에 확인했다.
+
+마이그레이션: `202608210006_add_feedback_reason_code.sql`(reason_code 컬럼
++ CHECK 제약 + dislike 전용 부분 인덱스 + 조회 뷰 컬럼 추가).
+
 ---
 
 ## 9. 갱신 이력
@@ -322,3 +357,4 @@ assistant_message 2개), `202608210005_add_feedback_intent.sql`(intent 1개 +
 | 08-21 | 8절 신설 — 응답 피드백(좋아요/싫어요) 저장 기능(roadmap.md 14번) 추가. `record_feedback()` 신규 진입점, `response_feedback` 테이블, POST /api/feedback 엔드포인트. 이어서 조회·분석 기능(`list_dislikes()`, `get_dislike_feedback()`, GET /api/feedback/dislikes)도 같은 날 추가 — 저장만 하고 꺼내 쓰는 곳이 없으면 죽은 기능이라는 지적 반영 |
 | 08-21 | 8-1절 신설 — 피드백을 남긴 턴에 한해 질문·답변 원문(`user_input`/`assistant_message`)을 함께 저장(D-068). 테스트 중 피드백 검토 편의 목적, 전체 대화 로그 저장과는 다름. 마이그레이션 `202608210004_add_feedback_turn_text.sql`(develop merge로 002→004 재번호) |
 | 08-21 | 8-2절 신설 — `intent`(assistant_text 메시지 값 복사) 확장(D-069). comment는 같은 날 develop에 먼저 merge된 팀원 PR을 그대로 채택(DB 500자 CHECK 제약 포함), FeedbackButtons UI도 develop 버전 채택. 마이그레이션 `202608210005_add_feedback_intent.sql`(develop merge로 003→005 재번호) |
+| 08-21 | 8-3절 신설 — `reason_code`(구조화된 싫어요 사유) 확장(D-070). 팀원 PR #214 구현을 B가 검토·반영, intent/user_input/assistant_message 캡처는 render-time `findTurnText` 방식 유지(reducer-embedding 방식 미채택). 마이그레이션 `202608210006_add_feedback_reason_code.sql` 적용 중 `response_feedback_kst` 뷰 컬럼 순서 버그(PostgreSQL 42P16) 발견·수정 |
