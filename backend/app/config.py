@@ -168,11 +168,19 @@ class Settings(BaseSettings):
 
     # Place synchronization policy.
     place_sync_page_size: int = 100
-    place_sync_detail_concurrency: int = 5
-    # 상세조회 호출 간 최소 간격(초). 0이면 간격을 두지 않는다(기존 동작).
-    # TourAPI는 초당 한도와 일일 한도를 따로 두는데, detailIntro2 응답이 100ms대라
-    # 동시성만으로는 초당 속도를 잡을 수 없다 — 대량 재조회 때만 올려 쓴다.
-    place_sync_detail_min_interval_seconds: float = 0.0
+    # 상세조회 동시성과 호출 간 최소 간격(초). 둘 다 TourAPI의 초당 한도를 피하려고
+    # 있고, 역할이 다르다 — 동시성은 동시에 떠 있는 요청 수, 간격은 초당 몇 개가
+    # 나가는지를 정한다. detailIntro2 응답이 100ms대라 동시성 1에서도 간격이 없으면
+    # 초당 8회쯤 나간다(2026-08-10 실측). 그래서 429를 실제로 막는 것은 간격 쪽이다.
+    #
+    # 기본값을 5 / 0에서 1 / 0.5로 내렸다. 그 조합이 이 서비스키에서 두 번 연속
+    # 429를 냈다 — 2026-08-20 중구 892건 중 669건 실패, 2026-08-22 종로구 16건과
+    # 중구 2건 실패. 1 / 0.5는 추측이 아니라 중구 892건을 실패 0으로 끝낸 값이다
+    # (6분 16초. 5 / 0은 3분 01초였지만 669건을 다시 불러야 했다).
+    #
+    # 빠르게 돌려야 하면 .env에서 올린다. 기본값은 안전한 쪽에 둔다.
+    place_sync_detail_concurrency: int = 1
+    place_sync_detail_min_interval_seconds: float = 0.5
     place_sync_detail_ttl_days: int = 30
     place_sync_area_code: str = "11"
     place_sync_district_code: str = "110"
