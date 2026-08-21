@@ -44,6 +44,7 @@ from app.schemas import (
     ClarificationOption,
     ClarificationPayload,
     CompareCriteria,
+    ComparisonItem,
     ComparisonResult,
     ConcentrationIntent,
     GeneralPayload,

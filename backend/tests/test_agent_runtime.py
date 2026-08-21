@@ -34,12 +34,12 @@ from app.agent_context.schemas import (
     WeatherForecast,
 )
 from app.domain.scoring import SCORING_VERSION
-from app.domain.travel_route import GeoCoordinate, TravelMode, TravelRoute
+from app.domain.travel_route import TravelMode, TravelRoute
 from app.prompts.registry import turn_prompt_version
 from app.providers.contracts import ProviderSource, provider_result
-from app.providers.stub import FakeLLMProvider
 from app.providers.driving_route import FakeDrivingRouteProvider
 from app.providers.kakao_transit_route import FakeTransitRouteProvider
+from app.providers.stub import FakeLLMProvider
 from app.providers.walking_route import FakeWalkingRouteProvider
 from app.schemas import (
     AgentRequest,

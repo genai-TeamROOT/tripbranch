@@ -655,7 +655,9 @@ def _format_compare_travel_time(item: ComparisonItem) -> str | None:
     ]
     if not mode_parts:
         return None
-    distance_part = f"약 {item.travel_distance_km}km, " if item.travel_distance_km is not None else ""
+    distance_part = (
+        f"약 {item.travel_distance_km}km, " if item.travel_distance_km is not None else ""
+    )
     return distance_part + ", ".join(mode_parts)
 
 
