@@ -85,6 +85,8 @@ test("restores a session that contains a schedule_result message", () => {
           basis_note: "기준 시각 안내",
           elapsed_ms: 45.5,
         },
+        sessionId: "sess_test",
+        runId: "run_test",
       },
     ],
   };
@@ -107,6 +109,8 @@ test("restores a session that contains a place_info_result message", () => {
           answer_fields: { operating_hours: "09:00~18:00" },
           place_id: "p1",
           place_name: "경복궁",
+          latitude: null,
+          longitude: null,
           thumbnail_url: null,
           overview: null,
           operating_hours: "09:00~18:00",

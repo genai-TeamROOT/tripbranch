@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 import app.routes.chat as chat_route
 from app.agent_context.info_schemas import InfoContextResponse, PlaceCard, PlaceInfoResult
+from app.agent_context.schemas import Coordinates
 from app.main import app
 from app.schemas import (
     AgentRequest,
@@ -48,7 +49,7 @@ def _fake_response(session_id: str = "sess_test") -> AgentResponse:
 def captured(monkeypatch) -> list[AgentRequest]:
     seen: list[AgentRequest] = []
 
-    async def fake_run_agent(request: AgentRequest) -> AgentResponse:
+    async def fake_run_agent(request: AgentRequest, *, principal=None) -> AgentResponse:
         seen.append(request)
         return _fake_response()
 
@@ -109,6 +110,7 @@ def test_recommendation_place_details_returns_matched_c_place_card(monkeypatch) 
                     question_type="general_info",
                     place_id="126508",
                     fields={"overview": "조선 왕조의 법궁"},
+                    destination_coordinates=Coordinates(latitude=37.5796, longitude=126.977),
                     place_card=PlaceCard(
                         place_id="126508",
                         place_name="경복궁",
@@ -136,6 +138,8 @@ def test_recommendation_place_details_returns_matched_c_place_card(monkeypatch) 
             "answer_fields": {"overview": "조선 왕조의 법궁"},
             "place_id": "126508",
             "place_name": "경복궁",
+            "latitude": 37.5796,
+            "longitude": 126.977,
             "thumbnail_url": "https://example.test/gyeongbokgung.jpg",
             "overview": "조선 왕조의 법궁",
             "operating_hours": "09:00~18:00",
@@ -157,6 +161,38 @@ def test_recommendation_place_details_returns_matched_c_place_card(monkeypatch) 
     assert len(captured_requests) == 1
     assert captured_requests[0].place_context == "from_recommendation"
     assert captured_requests[0].question_type == "general_info"
+
+
+def test_recommendation_place_details_by_name_only_skips_id_match(monkeypatch) -> None:
+    """혼잡도·행사 카드처럼 place_id 없이 이름으로 조회하면 대조를 건너뛰고 성공한다."""
+
+    class FakeContextProvider:
+        async def fetch_info_context(self, request):
+            return InfoContextResponse(
+                request_id=request.request_id,
+                status="success",
+                result=PlaceInfoResult(
+                    status="success",
+                    question_type="general_info",
+                    place_id="126508",
+                    fields={},
+                    destination_coordinates=Coordinates(latitude=37.5796, longitude=126.977),
+                    place_card=PlaceCard(place_id="126508", place_name="창덕궁"),
+                ),
+            )
+
+    monkeypatch.setattr(chat_route, "get_context_provider", lambda client: FakeContextProvider())
+    client = TestClient(app)
+
+    response = client.post("/api/chat/place-details", json={"place_name": "창덕궁"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "success"
+    assert body["requested_place_id"] is None
+    assert body["place_card"]["place_id"] == "126508"
+    assert body["place_card"]["latitude"] == 37.5796
+    assert body["place_card"]["longitude"] == 126.977
 
 
 def test_recommendation_place_details_hides_mismatched_place_card(monkeypatch) -> None:

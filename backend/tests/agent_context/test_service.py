@@ -17,6 +17,7 @@ from app.config import settings
 from app.domain.models import (
     ConcentrationForecast,
     ConcentrationResult,
+    GeocodeResult,
     PlaceCategoryFilter,
     StoredPlaceLocation,
     WeatherForecastResult,
@@ -32,7 +33,7 @@ from app.providers.contracts import (
 )
 from app.providers.geocoding import FakeGeocodingProvider
 from app.providers.holiday import FakeHolidayProvider
-from app.providers.protocols import WeatherProvider
+from app.providers.protocols import GeocodingProvider, WeatherProvider
 from app.providers.stub import FakePlaceProvider, FakeWeatherProvider
 from app.repositories.fake_places import FakePlaceLocationRepository
 from app.schemas import PlaceCandidate
@@ -45,14 +46,18 @@ from app.tools.weather_forecast import GetWeatherForecastTool
 KST = ZoneInfo("Asia/Seoul")
 
 
-def _service(weather_provider: WeatherProvider | None = None) -> ContextService:
+def _service(
+    weather_provider: WeatherProvider | None = None,
+    *,
+    geocoding_provider: GeocodingProvider | None = None,
+) -> ContextService:
     place_provider = FakePlaceProvider()
     return ContextService(
         ContextTools(
             # 집중률 조회는 매핑된 장소명으로만 나가므로(D-043) 저장소가 필요하다.
             # Factory의 fake 구성과 같은 저장소를 쓴다.
             location=ResolveLocationTool(
-                FakeGeocodingProvider(),
+                geocoding_provider or FakeGeocodingProvider(),
                 place_repository=FakePlaceLocationRepository(),
             ),
             places=NearbyPlaceDetailsTool(place_provider, place_provider),
@@ -69,6 +74,7 @@ def _service(weather_provider: WeatherProvider | None = None) -> ContextService:
 def _request(
     *,
     search_center: str | None = "경복궁",
+    current_location: str | None = None,
     place_types: list[str] | None = None,
     place_tags: list[str] | None = None,
     max_travel_time: int | None = None,
@@ -84,6 +90,7 @@ def _request(
         excluded_place_ids=excluded_place_ids or [],
         conditions=UserConditions(
             search_center=search_center,
+            current_location=current_location,
             place_types=place_types or [],
             place_tags=place_tags or [],
             max_travel_time=max_travel_time,
@@ -352,7 +359,10 @@ async def test_user_location_is_kept_when_search_center_is_given() -> None:
 
     assert response.status == "success"
     assert response.context is not None
-    assert response.context.user_location == gps
+    assert response.context.user_location is not None
+    assert response.context.user_location.data is not None
+    assert response.context.user_location.data.location == gps
+    assert response.context.user_location.data.source == "device_gps"
     # 기준점은 여전히 경복궁이다 — 사용자 좌표가 기준점을 밀어내지 않는다.
     assert response.context.location is not None
     assert response.context.location.data is not None
@@ -378,14 +388,146 @@ async def test_device_gps_origin_always_has_user_location() -> None:
     assert response.context.location is not None
     assert response.context.location.data is not None
     assert response.context.location.data.source == "device_gps"
-    assert response.context.user_location == gps
+    assert response.context.user_location is not None
+    assert response.context.user_location.data is not None
+    assert response.context.user_location.data.location == gps
 
 
 @pytest.mark.asyncio
 async def test_user_location_is_none_without_gps() -> None:
-    """GPS가 안 오면(권한 거부·TTL 만료) 그 사실을 그대로 None으로 싣는다."""
+    """발화 위치도 GPS도 없으면 그 사실을 그대로 None으로 싣는다."""
     response = await _service().fetch_context(
-        _request(search_center="경복궁", gps_location=None)
+        _request(search_center="경복궁", current_location=None, gps_location=None)
+    )
+
+    assert response.status == "success"
+    assert response.context is not None
+    assert response.context.user_location is None
+
+
+class _CountingGeocodingProvider:
+    """지오코딩 호출 횟수를 세는 더블. 발화 위치 해석이 호출을 몇 건 늘리는지 본다.
+
+    질의 문자열은 기록하되 단언하지 않는다 — 종로구 랜드마크는 Provider에 닿기 전에
+    formal 주소로 치환되므로("경복궁" → "서울특별시 종로구 사직로 161") 발화 문자열과
+    다르다(geocoding.py::_JONGNO_LANDMARK_ADDRESS_ALIASES).
+    """
+
+    def __init__(self) -> None:
+        self._delegate = FakeGeocodingProvider()
+        self.queries: list[str] = []
+
+    async def geocode(
+        self, location_query: str, *, use_alias: bool = True
+    ) -> ProviderResult[GeocodeResult]:
+        self.queries.append(location_query)
+        return await self._delegate.geocode(location_query, use_alias=use_alias)
+
+
+@pytest.mark.asyncio
+async def test_spoken_location_wins_over_device_gps() -> None:
+    """발화 위치와 기기 GPS가 다르면 발화가 이긴다(TP-112).
+
+    기준점이 search_center → current_location → GPS 순인 것과 같은 우선순위다.
+    한 요청 안에서 두 좌표가 서로 다른 규칙으로 정해지면 안 된다.
+    """
+    gps = Coordinates(latitude=37.4979, longitude=127.0276)  # 강남역
+
+    response = await _service().fetch_context(
+        _request(search_center="경복궁", current_location="인사동", gps_location=gps)
+    )
+
+    assert response.status == "success"
+    assert response.context is not None
+    assert response.context.user_location is not None
+    user_location = response.context.user_location.data
+    assert user_location is not None
+    assert user_location.source == "query"
+    # D가 "인사동에서"라고 부를 수 있는 이름이다. GPS였다면 부를 이름이 없다.
+    assert user_location.requested_query == "인사동"
+    assert user_location.location != gps
+    # 기준점은 여전히 경복궁이다 — 사용자 위치가 기준점을 밀어내지 않는다.
+    assert response.context.location is not None
+    assert response.context.location.data is not None
+    assert response.context.location.data.requested_query == "경복궁"
+
+
+@pytest.mark.asyncio
+async def test_spoken_location_is_resolved_without_gps() -> None:
+    """GPS가 없어도 발화한 위치는 좌표가 된다(TP-112 문제 1).
+
+    예전에는 `location_query = search_center or current_location`이라 search_center가
+    이기면 current_location이 지오코딩조차 되지 않았다. "지금 인사동인데 경복궁 근처"
+    에서 GPS가 만료되면(TTL 1시간) 사용자 위치가 통째로 사라졌다.
+    """
+    response = await _service().fetch_context(
+        _request(search_center="경복궁", current_location="인사동", gps_location=None)
+    )
+
+    assert response.status == "success"
+    assert response.context is not None
+    assert response.context.user_location is not None
+    user_location = response.context.user_location.data
+    assert user_location is not None
+    assert user_location.source == "query"
+    assert user_location.requested_query == "인사동"
+
+
+@pytest.mark.asyncio
+async def test_spoken_location_reuses_search_center_resolution() -> None:
+    """발화 위치와 검색 기준점이 같은 문자열이면 지오코딩을 두 번 하지 않는다."""
+    geocoder = _CountingGeocodingProvider()
+
+    response = await _service(geocoding_provider=geocoder).fetch_context(
+        _request(search_center="경복궁", current_location="경복궁", gps_location=None)
+    )
+
+    assert response.status == "success"
+    assert response.context is not None
+    assert response.context.user_location is not None
+    assert len(geocoder.queries) == 1
+
+
+@pytest.mark.asyncio
+async def test_spoken_location_adds_one_geocoding_call() -> None:
+    """기준점과 다른 발화 위치는 지오코딩 호출을 정확히 1건 늘린다."""
+    geocoder = _CountingGeocodingProvider()
+
+    await _service(geocoding_provider=geocoder).fetch_context(
+        _request(search_center="경복궁", current_location="인사동", gps_location=None)
+    )
+
+    assert len(geocoder.queries) == 2
+    assert geocoder.queries[1] == "인사동"
+
+
+@pytest.mark.asyncio
+async def test_unresolvable_spoken_location_falls_back_to_device_gps() -> None:
+    """발화 위치를 못 풀면 기기 GPS로 내려간다.
+
+    D-042(Real 실패 시 Fake로 자동 전환하지 않는다)와는 다른 상황이다 — 지어낸 값이
+    아니라 같은 질문("사용자가 어디 있나")에 대한 다른 사실이다.
+    """
+    gps = Coordinates(latitude=37.4979, longitude=127.0276)
+
+    response = await _service().fetch_context(
+        _request(search_center="경복궁", current_location="없는동네", gps_location=gps)
+    )
+
+    assert response.status == "success"
+    assert response.context is not None
+    assert response.context.user_location is not None
+    user_location = response.context.user_location.data
+    assert user_location is not None
+    assert user_location.source == "device_gps"
+    assert user_location.location == gps
+
+
+@pytest.mark.asyncio
+async def test_unresolvable_spoken_location_without_gps_is_none() -> None:
+    """발화를 못 풀고 GPS도 없으면 사용자 위치를 지어내지 않는다."""
+    response = await _service().fetch_context(
+        _request(search_center="경복궁", current_location="없는동네", gps_location=None)
     )
 
     assert response.status == "success"

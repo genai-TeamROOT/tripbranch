@@ -21,7 +21,9 @@ from datetime import timedelta
 from typing import TypeVar
 
 from app.agent_context.schemas import PlaceCandidate, RecommendationContext
+from app.auth.principal import Principal
 from app.config import settings
+from app.domain.ranking_origin import resolve_ranking_origin
 from app.domain.scoring import SCORING_VERSION
 from app.domain.travel_route import (
     GeoCoordinate,
@@ -1034,7 +1036,9 @@ async def _fetch_travel_routes(
     if not destinations:
         return ()
 
-    origin = resolved_location.location
+    # 실측 경로도 거리 계산과 같은 기준점에서 잰다 — 한쪽만 사용자 기준이면
+    # 실측이 있는 후보와 없는 후보가 서로 다른 자로 채점된다(TP-112).
+    origin = (resolve_ranking_origin(context) or resolved_location).location
     result = await route_tool.execute(
         TravelRouteQuery(
             origin=GeoCoordinate(
@@ -1222,6 +1226,7 @@ async def run_agent_flow(
     enrichment_provider: EnrichmentProvider,
     travel_route_tool: TravelRouteToolProvider | None = None,
     store: StateStore | None = None,
+    principal: Principal | None = None,
     stream_event_sink: StreamEventSink | None = None,
     stream_recommendation_summary: bool = False,
 ) -> AgentResponse:
@@ -1316,7 +1321,7 @@ async def run_agent_flow(
         "이전 대화 조건을 반영하고 있어요.",
     )
     apply_request = transform(llm_output, session_context, request.user_input)
-    state_response = apply(apply_request, store=store)
+    state_response = apply(apply_request, store=store, principal=principal)
 
     if clarification_resolution is not None and clarification_resolution.ignore_operating_hours:
         _remember_ignore_operating_hours(state_response.session_id, store)
@@ -2126,6 +2131,7 @@ async def run_agent_flow(
                 place_ids=recommendations.excluded_closed_place_ids,
             ),
             store=store,
+            principal=principal,
         )
 
     if is_schedule:
@@ -2273,6 +2279,7 @@ async def run_agent_flow(
                     ],
                 ),
                 store=store,
+                principal=principal,
             )
         else:
             # 후보가 부족해서 일정을 못 짠 경우, route_summary 메시지만 반환하지 말고
@@ -2368,6 +2375,7 @@ async def run_agent_flow(
                 ],
             ),
             store=store,
+            principal=principal,
         )
 
     # 8) A: 추천 카드와 LLM 요약을 같은 시점부터 화면에 보인다. 이전에는 카드(result)를
@@ -2427,6 +2435,7 @@ async def run_agent_flow(
 async def run_agent(
     request: AgentRequest,
     *,
+    principal: Principal | None = None,
     stream_event_sink: StreamEventSink | None = None,
     stream_recommendation_summary: bool = False,
 ) -> AgentResponse:
@@ -2455,6 +2464,7 @@ async def run_agent(
             ),
             enrichment_provider=get_candidate_enrichment_service(client),
             travel_route_tool=get_travel_route_tool(client),
+            principal=principal,
             stream_event_sink=stream_event_sink,
             stream_recommendation_summary=stream_recommendation_summary,
         )

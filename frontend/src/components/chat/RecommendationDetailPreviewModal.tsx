@@ -7,7 +7,9 @@
 
 import { useEffect, useState } from "react";
 import { fetchRecommendationPlaceDetails } from "../../api/trip";
+import { useTripState } from "../../state/TripContext";
 import type { InfoPlaceCard, RecommendationItem } from "../../types";
+import { openNaverDirections } from "../../utils/naverDirections";
 import { travelLabel, travelValue } from "../../utils/travelDisplay";
 
 interface RecommendationDetailPreviewModalProps {
@@ -176,18 +178,52 @@ function DetailEntries({
   );
 }
 
+const URL_PATTERN = /(https?:\/\/[^\s]+)/g;
+
+/** "관련 정보" 값 안의 http(s) URL(홈페이지·인스타 등)을 클릭 가능한 링크로 만든다. */
+function AnswerValue({ value }: { value: string }) {
+  const parts = value.split(URL_PATTERN);
+  return (
+    <dd className="whitespace-pre-line text-gray-900 dark:text-gray-100">
+      {parts.map((part, index) =>
+        /^https?:\/\//.test(part) ? (
+          <a
+            key={index}
+            href={part}
+            target="_blank"
+            rel="noreferrer"
+            className="break-all text-blue-600 underline hover:text-blue-700 dark:text-blue-400"
+          >
+            {part}
+          </a>
+        ) : (
+          <span key={index}>{part}</span>
+        ),
+      )}
+    </dd>
+  );
+}
+
 /** 추천/INFO 어디서 열어도 같은 모양으로 PlaceDetails를 보여주는 상세 모달이다. */
 export function RecommendationDetailPreviewModal({
   item,
   card,
   onClose,
 }: RecommendationDetailPreviewModalProps) {
+  const { device_location } = useTripState();
   const [detailCard, setDetailCard] = useState<InfoPlaceCard | null>(card ?? null);
   const [detailStatus, setDetailStatus] = useState<"loading" | "no_data" | "unavailable">("loading");
   const placeId = card?.place_id ?? item?.place_id;
   const placeName = card?.place_name ?? item?.name;
   const title = detailCard?.place_name ?? card?.place_name ?? item?.name ?? "장소 상세 정보";
   const isLoading = detailStatus === "loading" && !detailCard;
+  // 목적지 좌표와 현재 위치가 모두 있어야 길찾기 딥링크를 만들 수 있다.
+  const canRoute =
+    detailCard?.latitude != null && detailCard?.longitude != null && Boolean(device_location);
+  // "관련 정보"(answer_fields)에서 개요는 아래 "개요" 섹션과 내용이 같아 제외한다(중복 제거).
+  const answerEntries = detailCard
+    ? Object.entries(detailCard.answer_fields).filter(([key]) => key !== "overview")
+    : [];
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -203,7 +239,9 @@ export function RecommendationDetailPreviewModal({
       setDetailCard(card);
       return;
     }
-    if (!placeId || !placeName) {
+    // 이름만 있으면 상세를 조회한다. 혼잡도·행사 카드는 place_id가 없지만
+    // 이름으로 조회해 전체 상세(좌표 포함)를 받는다.
+    if (!placeName) {
       setDetailStatus("no_data");
       return;
     }
@@ -287,6 +325,24 @@ export function RecommendationDetailPreviewModal({
             </div>
           )}
 
+          {canRoute && detailCard && (
+            <button
+              type="button"
+              onClick={() =>
+                openNaverDirections({
+                  deviceLocation: device_location as string,
+                  destLat: detailCard.latitude as number,
+                  destLng: detailCard.longitude as number,
+                  destName: detailCard.place_name ?? title,
+                })
+              }
+              className="flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <span aria-hidden="true">🧭</span>
+              네이버 지도로 길찾기
+            </button>
+          )}
+
           {item && (
             <dl className="grid grid-cols-2 gap-3 text-sm">
               <div className="rounded-lg bg-gray-50 p-3 dark:bg-gray-800/70">
@@ -308,16 +364,16 @@ export function RecommendationDetailPreviewModal({
             <div className="h-44 animate-pulse rounded-xl bg-gray-100 dark:bg-gray-800" />
           ) : detailCard ? (
             <section className="flex flex-col gap-4">
-              {Object.keys(detailCard.answer_fields).length > 0 && (
+              {answerEntries.length > 0 && (
                 <section className="rounded-xl bg-blue-50 p-3 dark:bg-blue-950/30">
-                  <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">질문 답변</h3>
+                  <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">관련 정보</h3>
                   <dl className="mt-2 space-y-2 text-sm">
-                    {Object.entries(detailCard.answer_fields).map(([key, value]) => (
+                    {answerEntries.map(([key, value]) => (
                       <div key={key} className="flex gap-2">
                         <dt className="shrink-0 text-gray-500 dark:text-gray-400">
                           {ANSWER_FIELD_LABELS[key] ?? key}
                         </dt>
-                        <dd className="whitespace-pre-line text-gray-900 dark:text-gray-100">{value}</dd>
+                        <AnswerValue value={value} />
                       </div>
                     ))}
                   </dl>

@@ -10,6 +10,8 @@ const infoCardMessage = (placeName: string | null): ChatMessage => ({
     answer_fields: {},
     place_id: "place-1",
     place_name: placeName,
+    latitude: null,
+    longitude: null,
     thumbnail_url: null,
     overview: null,
     operating_hours: null,

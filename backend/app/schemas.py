@@ -794,6 +794,11 @@ class InfoPlaceCard(BaseModel):
     answer_fields: dict[str, str] = Field(default_factory=dict)
     place_id: str | None = None
     place_name: str | None = None
+    # 목적지 좌표. 프론트가 지도 앱 길찾기 딥링크(출발=현재 위치, 도착=이 좌표)를
+    # 만드는 데 쓴다. C의 destination_coordinates에서 오며, 좌표를 못 얻은 카드
+    # 타입(혼잡도/행사 등)은 None이라 프론트에서 버튼을 숨긴다.
+    latitude: float | None = None
+    longitude: float | None = None
     thumbnail_url: str | None = None
     overview: str | None = None
     operating_hours: str | None = None
@@ -833,10 +838,12 @@ class RecommendationPlaceDetailRequest(BaseModel):
 
     대화 발화가 아니므로 LLM·세션 상태를 거치지 않는다. ``place_name``은 C의 기존
     INFO 상세조회 입력이고, ``place_id``는 이름 해석이 다른 장소로 빗나가지 않았는지
-    A가 응답을 대조하는 기준이다.
+    A가 응답을 대조하는 기준이다. 추천 카드처럼 클릭 대상의 id를 아는 경우에만
+    채운다 — 혼잡도·행사 INFO 카드는 id 없이 이름으로 조회하며, 그때는 대조를
+    건너뛴다(원래 이름으로 해석된 장소라 이름 재해석이 일관된다).
     """
 
-    place_id: str = Field(min_length=1, max_length=100)
+    place_id: str | None = Field(default=None, max_length=100)
     place_name: str = Field(min_length=1, max_length=200)
 
     @field_validator("place_id", "place_name")
@@ -852,7 +859,7 @@ class RecommendationPlaceDetailResponse(BaseModel):
     """추천 카드 상세 모달이 소비하는 단건 PlaceDetails 조회 결과."""
 
     status: Literal["success", "no_data", "unavailable"]
-    requested_place_id: str
+    requested_place_id: str | None = None
     place_card: InfoPlaceCard | None = None
 
 

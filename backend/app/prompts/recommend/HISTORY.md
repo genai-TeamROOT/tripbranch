@@ -4,7 +4,7 @@
 
 | 슬롯 | 관리 버전 | 템플릿 | 공유 규칙 |
 | --- | --- | --- | --- |
-| recommend.extract | 2.1.0 | extract.md, location_rules.md, place_tag_rules.md | budget, weather, concentration, environment, transport |
+| recommend.extract | 2.2.0 | extract.md, location_rules.md, place_tag_rules.md | budget, weather, concentration, environment, transport |
 | recommend.summary | v1 | summary_instruction.md | persona, factuality |
 
 ## 승인 이력
@@ -16,13 +16,42 @@
 | legacy-1.0.9 | 2026-08-10 | `86a9cd1` | `recommend.extract` | 위치 되묻기와 검색 중심점 유지 규칙 보강 | TP-67 후속 | 승인됨 |
 | legacy-1.0.13 | 2026-08-18 | `585a045` | 공유 weather/concentration/environment | 비·혼잡·야외 허용 표현을 조건 완화로 분류 | 후보를 불필요하게 좁히거나 재정렬하는 문제 방지 | 승인됨 |
 | 1.0.17 | 2026-08-19 | `3b991bf` | `recommend.extract` (v1 → v2) | 취향 발화를 `taste_query`로 분리 추출 | 취향 근거 벡터 검색 질의로 쓴다. `special_requirements`는 일정·교통 조건이 섞여 그대로 임베딩하면 오탐이 난다 — 비취향 발화 6건이 취향 근거를 찾아냈고(최대 "3시간 안에 다녀올 수 있는 곳" 0.523 · 150곳 중 19곳 통과), 이는 진짜 취향 발화 "친구들이랑 시끌벅적"(0.498)보다 높다. **분리 후 같은 6건이 전부 `null`이 됐다(6 → 0)** | 실 LLM 검증 14/14 통과, 실 서버 왕복 확인 완료, PR 검토 대기 |
-| 2.1.0 | 2026-08-20 | (이 커밋) | `recommend.extract` (2.0.0 → 2.1.0), 공유 `_shared/rules/transport.md` 신설 | "차로"/"걸어서"/"대중교통으로" 등 표현을 transport=car/walk/public로 매핑하는 구체 규칙과 예시 추가. 기존엔 "명시적으로 언급된 것만 채우고 나머지는 null"이라는 최소 지시뿐이었다. MODIFY와 매핑 규칙을 공유해야 해서 `_shared/rules/`에 둔다(같은 규칙이 두 곳에 있으면 한쪽만 바뀌었을 때 조용히 어긋난다) | TP-105(자동차 경로 네이버 실측, PR #196)로 D의 `to_travel_mode()`가 `transport=CAR`일 때 실제 자동차 provider를 호출하도록 이미 짜여 있었지만, 추출 프롬프트에 구체 매핑 규칙이 없어 이 조건이 채워질 근거가 약했다 — 상태 병합 경로(`_SINGLE_FIELDS`, `test_state_transform_field_coverage.py`)는 이미 통과 상태라 프롬프트만 비어 있었다 | 승인됨 — pytest 2137건 통과. 실 Gemini 골드셋 재현 발화(DEV-006 도보/DEV-007 자동차/FINAL-012 자동차+주차) 전건 통과. 같은 골드셋을 변경 전 코드로 재실행(베이스라인)해 비교한 결과, 다른 케이스의 통과/실패가 매번 다르게 흔들려 LLM 비결정성으로 확인 — 이 변경이 다른 필드 추출에 부작용을 준다는 증거 없음 |
+| 2.1.0 | 2026-08-20 | `8ce0ad4` | `recommend.extract` (2.0.0 → 2.1.0), 공유 `_shared/rules/transport.md` 신설 | "차로"/"걸어서"/"대중교통으로" 등 표현을 transport=car/walk/public로 매핑하는 구체 규칙과 예시 추가. 기존엔 "명시적으로 언급된 것만 채우고 나머지는 null"이라는 최소 지시뿐이었다. MODIFY와 매핑 규칙을 공유해야 해서 `_shared/rules/`에 둔다(같은 규칙이 두 곳에 있으면 한쪽만 바뀌었을 때 조용히 어긋난다) | TP-105(자동차 경로 네이버 실측, PR #196)로 D의 `to_travel_mode()`가 `transport=CAR`일 때 실제 자동차 provider를 호출하도록 이미 짜여 있었지만, 추출 프롬프트에 구체 매핑 규칙이 없어 이 조건이 채워질 근거가 약했다 — 상태 병합 경로(`_SINGLE_FIELDS`, `test_state_transform_field_coverage.py`)는 이미 통과 상태라 프롬프트만 비어 있었다 | 승인됨 — pytest 2137건 통과. 실 Gemini 골드셋 재현 발화(DEV-006 도보/DEV-007 자동차/FINAL-012 자동차+주차) 전건 통과. 같은 골드셋을 변경 전 코드로 재실행(베이스라인)해 비교한 결과, 다른 케이스의 통과/실패가 매번 다르게 흔들려 LLM 비결정성으로 확인 — 이 변경이 다른 필드 추출에 부작용을 준다는 증거 없음 |
+| 2.2.0 | 2026-08-21 | (커밋 대기) | `recommend.extract` (2.1.0 → 2.2.0) | 혼잡도 표현(조용한·한적한·붐비는·북적이는·시끌벅적)을 `taste_query`에서 제외하고 `concentration_intent` 전용으로 둠. 대표 예시 "혼자 조용히 쉴 만한" 교체 | "조용한/한적한" 발화가 `taste_query`와 `concentration_intent=AVOID`를 동시에 채워, 한 선호가 두 축에서 가중치 0.30(0.15+0.15)을 가져가던 것을 막는다(단일축 선호는 0.15) | 실 LLM 2회 검증(혼잡도 단어 누출 0/6), 전체 테스트 통과·스냅샷 갱신, 커밋·PR 대기 |
 
 > 슬롯 버전(`meta.yaml`)과 전역 `PROMPT_VERSION`(`app/providers/gemini_prompts.py`)은
 > 함께 올린다. 전역 버전은 6개 인텐트가 공유하므로 어느 슬롯이 바뀌었는지는 이 표가
 > 기록한다.
 
 ## 결정 근거
+
+### 2.2.0 — 혼잡도 단어를 `taste_query`에서 분리 (2026-08-21)
+
+**측정**: `scripts/verify_taste_query_extraction.py`(겹침 6 + 취향 14 + 대조군 3),
+`gemini-3.5-flash-lite`, 2회 실행.
+
+**문제**: `concentration_intent`(`_shared` 공유 규칙)와 `taste_query`(RECOMMEND
+전용)가 같은 단어를 공유해, "조용한/한적한" 발화가 두 필드를 동시에 채웠다.
+2.1.0까지의 대표 예시 "혼자 조용히 쉴 만한 곳 → 혼자 조용히 쉴 만한"이 그 동작을
+가르치고 있었다. 취향 대표 예시·대조군 SEEK("사람 많고 활기찬")까지 번졌다.
+
+| 지표 | 2.1.0(적용 전) | 2.2.0(적용 후) |
+| --- | --- | --- |
+| 겹침 발화의 혼잡도 단어 누출 | 6/6 | **0/6** |
+| co-fill(두 축 동시) | 6/6 | 2/6 |
+| 순수 혼잡도 발화 → `taste_query` | 채움 | **전부 null** |
+
+한 선호가 두 축에서 0.30(0.15+0.15)을 가져가던 것을, 혼잡도 단어를
+`concentration_intent` 한 축(0.15)으로 되돌렸다. 진짜 취향이 함께 있으면
+그것만 taste로 남는다 — "한적하고 감성적인" → `taste_query="감성적인"`.
+그래서 co-fill 2/6은 왜곡이 아니라 정당한 2축 케이스다.
+
+**바꾸지 않은 것**: `_shared/rules/concentration_intent.md`(MODIFY 공용)는
+건드리지 않았다. "조용한"이 AVOID를 켜는 것은 옳은 동작이고, taste가 그 단어를
+메아리치지 않게만 좁혔다.
+
+**한계**: 모델 1종·2회 실행. LLM은 비결정적이라 한 번 통과가 항상 통과를 뜻하지
+않는다. MODIFY로 취향을 수정하는 경로는 아직 보지 않았다.
 
 ### 1.0.17 — `taste_query` 분리 (2026-08-19)
 

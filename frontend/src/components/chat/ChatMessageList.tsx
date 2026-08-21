@@ -173,6 +173,8 @@ export function ChatMessageList({
                 isLoading={isLoading}
                 onRequestMore={onRequestMore}
                 onRelaxRadius={onRelaxRadius}
+                sessionId={message.sessionId}
+                runId={message.runId}
               />
             );
           }
@@ -208,6 +210,8 @@ export function ChatMessageList({
               isLoading={isLoading}
               onRequestMore={onRequestMore}
               onRelaxRadius={onRelaxRadius}
+              sessionId={message.sessionId}
+              runId={message.runId}
             />
           );
         })}

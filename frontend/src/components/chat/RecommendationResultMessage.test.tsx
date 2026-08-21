@@ -2,6 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, vi } from "vitest";
 
+import { TripProvider } from "../../state/TripContext";
 import type { RecommendationItem } from "../../types";
 import { RecommendationResultMessage } from "./RecommendationResultMessage";
 
@@ -34,7 +35,10 @@ function renderResult(unverifiedRecommendations: RecommendationItem[]) {
       isLoading={false}
       onRequestMore={() => {}}
       onRelaxRadius={() => {}}
+      sessionId="sess_test"
+      runId="run_test"
     />,
+    { wrapper: TripProvider },
   );
 }
 
@@ -92,7 +96,10 @@ it("추천 카드를 클릭하면 C PlaceDetails가 채워진 상세 창을 연�
       isLoading={false}
       onRequestMore={() => {}}
       onRelaxRadius={() => {}}
+      sessionId="sess_test"
+      runId="run_test"
     />,
+    { wrapper: TripProvider },
   );
 
   await user.click(screen.getByRole("button", { name: "아키비스트 서촌 장소 정보 미리 보기" }));

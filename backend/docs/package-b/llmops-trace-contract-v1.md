@@ -210,7 +210,46 @@ Q3  이 trace 기록을 실제 HTTP 흐름 어디에 꽂을지 — run_agent_flo
 
 ---
 
-## 8. 갱신 이력
+## 8. 응답 피드백 (roadmap.md 14번, 2026-08-21 추가)
+
+이 문서 원래 적용 범위(맨 위 "적용 범위" 항목)는 "Trace·버전 기록만"이었지만,
+같은 append-only 저장 패턴을 그대로 재사용하는 인접 기록이라 이 문서에
+같이 남긴다.
+
+**무엇이 다른가**: TraceRecord는 `trace_id`(run 내부 한 단계) 단위로 붙지만,
+FeedbackRecord는 `run_id`(그 턴의 최종 응답) 단위로 붙는다. 사용자는 "이
+답변"에 좋아요/싫어요를 누르는 것이지, 그 답변을 만든 개별 단계(LLM 호출/
+Tool 호출/Scoring)에 반응하는 게 아니기 때문이다.
+
+**계약(신규 진입점 1종)**:
+
+```
+record_feedback(session_id, run_id, rating)  # rating: "like" | "dislike"
+  → 저장, RecordFeedbackResponse(recorded_at) 반환
+```
+
+**B가 검증하는 예외적인 필드**: `step`/`prompt_version` 등 대부분의 Trace
+필드는 호출자가 넘긴 자유 문자열을 그대로 저장하고 B는 의미를 판단하지
+않는다(1절 경계 원칙). `rating`은 예외다 — 화면 버튼이 만드는 고정된 두
+값이라(호출자가 임의로 새 값을 정의할 여지가 없음) Literal["like",
+"dislike"]로 검증하고, 잘못된 값은 요청 단계에서 거부한다.
+
+**조회·분석**: `feedback.list_dislikes(limit)`가 "싫어요"만 최근순으로
+모은다 — 다른 조회 메서드와 달리 세션 범위가 아니라 테이블 전체가
+대상이다("나쁜 답변 찾기"는 특정 세션이 아니라 서비스 전체 응답 중에서
+찾는 분석 작업이라 session_id로 좁힐 수 없다). `service.get_dislike_feedback()`가
+이 목록의 각 `run_id`로 같은 세션의 `get_traces()`를 다시 불러 조인해서
+`prompt_version`/`scoring_version`을 채운 뒤 `GET /api/feedback/dislikes`로
+노출한다. `run_id` 단위 trace 조회(`get_traces(run_id)`) 자체는 여전히
+만들지 않았다 — FeedbackRecord가 이미 `session_id`를 들고 있어서 세션
+단위 `get_traces(session_id)`를 그대로 재사용하면 되기 때문이다.
+
+**저장소**: `response_feedback` 테이블(append-only, `trace_records`와 동일한
+구조 — 마이그레이션 `202608210001_create_response_feedback.sql`).
+
+---
+
+## 9. 갱신 이력
 
 | 일자 | 변경 |
 | --- | --- |
@@ -218,3 +257,4 @@ Q3  이 trace 기록을 실제 HTTP 흐름 어디에 꽂을지 — run_agent_flo
 | 08-05 | B-07 완료 반영: record_trace()를 run_agent_flow() 3단계(llm_interpret/tool_fetch/scoring)에 배선. 7절 Q1(step 이름)·Q2(prompt_version/scoring_version, variant_id는 미해결로 유지)·Q3(연결 지점) 해결 상태 반영. 상태 Draft → Implemented |
 | 08-14 | 6.1절 신설 — 기본프로젝트 발표 피드백(프롬프트 개선 수치화 필요) 반영. Version Registry는 여전히 범위 밖이지만, 기존에 쓰던 벤치마크 스크립트+CSV+PR 수치 기록 패턴을 표준 절차로 명시하고 PROMPT_VERSION 변경 이력 표 신설(소급 가능한 범위만) |
 | 08-18 | PROMPT_VERSION 변경 이력 표에 1.0.13 행 추가(SCHEDULE 폐점 스탑 감지 프롬프트 힌트, int-07-schedule.md v2.2) |
+| 08-21 | 8절 신설 — 응답 피드백(좋아요/싫어요) 저장 기능(roadmap.md 14번) 추가. `record_feedback()` 신규 진입점, `response_feedback` 테이블, POST /api/feedback 엔드포인트. 이어서 조회·분석 기능(`list_dislikes()`, `get_dislike_feedback()`, GET /api/feedback/dislikes)도 같은 날 추가 — 저장만 하고 꺼내 쓰는 곳이 없으면 죽은 기능이라는 지적 반영 |

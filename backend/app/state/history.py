@@ -9,6 +9,7 @@ COMPARE 데이터 출처(2026-08-11)를 위해 추천 시점 Feature 스냅샷
 (거리/남은 운영시간/환경유형)만 예외적으로 저장한다. RecommendedItem 참고.
 """
 
+from app.auth.principal import Principal
 from app.state.schema import (
     ClosedExclusionItem,
     RecommendationHistory,
@@ -28,6 +29,19 @@ def get_or_create(store: StateStore, session_id: str) -> RecommendationHistory:
     return history
 
 
+def attach_user_id(history: RecommendationHistory, principal: Principal | None) -> None:
+    """검증된 신원을 이력에 연결한다. (TP-101 3단계, D-063 결정 3)
+
+    AgentState.user_id와 동일한 규칙 — session.attach_user_id() 참고.
+    비어 있으면 채우고, 이미 값이 있으면 절대 덮어쓰지 않는다.
+    """
+    if principal is None:
+        return
+    if history.user_id is not None:
+        return
+    history.user_id = principal.user_id
+
+
 # ---------------------------------------------------------------- 기록
 
 def record_recommended(
@@ -35,6 +49,7 @@ def record_recommended(
     session_id: str,
     run_id: str,
     items: list[RecommendedItemInput],
+    principal: Principal | None = None,
 ) -> int:
     """추천 결과를 기록한다. (계약 6.4절)
 
@@ -44,6 +59,7 @@ def record_recommended(
     중복 place_id도 오류로 처리하지 않고 추가한다. (계약 3.5절)
     """
     history = get_or_create(store, session_id)
+    attach_user_id(history, principal)
     shown_at = now_kst()
 
     for item in items:
@@ -74,6 +90,7 @@ def record_rejected(
     session_id: str,
     run_id: str,
     items: list[tuple[str, str | None]],
+    principal: Principal | None = None,
 ) -> int:
     """거절 장소를 기록한다.
 
@@ -83,6 +100,7 @@ def record_rejected(
     추천 이력에 없는 place_id가 전달되어도 검증하지 않는다. (계약 3.3절)
     """
     history = get_or_create(store, session_id)
+    attach_user_id(history, principal)
     rejected_at = now_kst()
 
     for place_id, reason_code in items:
@@ -105,6 +123,7 @@ def record_closed_excluded(
     session_id: str,
     run_id: str,
     place_ids: list[str],
+    principal: Principal | None = None,
 ) -> int:
     """D의 하드 필터가 폐점이라 걸러낸 후보 id를 기록한다. (TP-82)
 
@@ -117,6 +136,7 @@ def record_closed_excluded(
         return 0
 
     history = get_or_create(store, session_id)
+    attach_user_id(history, principal)
     excluded_at = now_kst()
 
     for place_id in place_ids:

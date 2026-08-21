@@ -272,6 +272,70 @@ def test_get_traces_parses_rows_into_trace_records() -> None:
     assert traces[0].step == "llm_interpret"
 
 
+# ------------------------------------------------------------ Feedback
+
+
+def test_append_feedback_skips_empty_list() -> None:
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(201)
+
+    transport = httpx.MockTransport(handler)
+    _store(transport).append_feedback([])
+    assert calls == []
+
+
+def test_get_feedback_parses_rows_into_feedback_records() -> None:
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 1,
+                    "session_id": SESSION_ID,
+                    "run_id": "run-1",
+                    "rating": "like",
+                    "recorded_at": "2026-08-21T00:00:00+09:00",
+                }
+            ],
+        )
+    )
+    feedback = _store(transport).get_feedback(SESSION_ID)
+    assert len(feedback) == 1
+    assert feedback[0].rating == "like"
+
+
+def test_list_dislike_feedback_filters_by_rating_and_limit() -> None:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["request"] = request
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 1,
+                    "session_id": SESSION_ID,
+                    "run_id": "run-1",
+                    "rating": "dislike",
+                    "recorded_at": "2026-08-21T00:00:00+09:00",
+                }
+            ],
+        )
+
+    transport = httpx.MockTransport(handler)
+    dislikes = _store(transport).list_dislike_feedback(10)
+
+    request = seen["request"]
+    assert request.url.params["rating"] == "eq.dislike"
+    assert request.url.params["limit"] == "10"
+    assert request.url.params["order"] == "recorded_at.desc"
+    assert len(dislikes) == 1
+    assert dislikes[0].rating == "dislike"
+
+
 # ------------------------------------------------------------ 에러 처리
 
 

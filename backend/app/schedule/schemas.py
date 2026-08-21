@@ -33,9 +33,9 @@ class SchedulePlanningRequest(BaseModel):
 
     pairwise_distances_km: dict[tuple[str, str], float]
     # app.geo.haversine_km()로 계산해 LLM에 근거로 제공한다. RecommendationItem에는
-    # 위경도가 없어(distance_km는 검색 중심 기준 거리) D 응답만으로는 후보 간 거리를
-    # 못 구한다 — A가 C의 AgentContextResponse.places(위경도 보유)를 place_id로
-    # 매칭해 계산해서 넘긴다. D/C 스키마 변경 불필요. 내부 함수 인자로만 쓰여
+    # 위경도가 없어(distance_km는 랭킹 기준점 기준 거리 — 보통 사용자 위치다) D
+    # 응답만으로는 후보 간 거리를 못 구한다 — A가 C의 AgentContextResponse.places
+    # (위경도 보유)를 place_id로 매칭해 계산해서 넘긴다. 내부 함수 인자로만 쓰여
     # JSON으로 직렬화되지 않으므로 튜플 키를 그대로 써도 된다.
 
 

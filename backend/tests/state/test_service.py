@@ -10,6 +10,7 @@ from datetime import timedelta
 
 import pytest
 
+from app.auth.principal import Principal
 from app.state import service as svc
 from app.state.schema import now_kst
 from app.state.store import InMemoryStateStore
@@ -20,11 +21,11 @@ def store() -> InMemoryStateStore:
     return InMemoryStateStore()
 
 
-def apply(store, **kwargs) -> svc.StateApplyResponse:
+def apply(store, *, principal=None, **kwargs) -> svc.StateApplyResponse:
     """조건 적용 호출. 테스트 편의용 헬퍼."""
     kwargs.setdefault("intent", "RECOMMEND")
     kwargs.setdefault("confirmed", True)
-    return svc.apply(svc.StateApplyRequest(**kwargs), store=store)
+    return svc.apply(svc.StateApplyRequest(**kwargs), store=store, principal=principal)
 
 
 def record(store, session_id: str, run_id: str, places: list[tuple[str, int]]):
@@ -241,6 +242,47 @@ class TestConfirmed:
     def test_confirmed_False여도_세션은_생성된다(self, store):
         r = apply(store, session_id=None, confirmed=False, operations=[])
         assert r.session_created is True
+
+
+class TestApplyUserId:
+    """TP-101 3단계, D-063 — apply()가 세션 확보 직후 신원을 연결한다.
+
+    confirmed=False 조기 반환 경로와 본 경로 둘 다에서 저장되는지 확인한다
+    (service.py의 "1-1) 신원 연결" 주석이 가리키는 두 저장 지점).
+    """
+
+    def test_principal이_없으면_user_id가_비어있다(self, store):
+        r = apply(store, session_id=None, operations=[])
+        assert store.get_state(r.session_id).user_id is None
+
+    def test_빈_세션에_principal이_있으면_user_id가_채워진다(self, store):
+        principal = Principal(user_id="user-1", is_anonymous=True)
+        r = apply(store, session_id=None, operations=[], principal=principal)
+        assert store.get_state(r.session_id).user_id == "user-1"
+
+    def test_이미_있는_user_id는_덮어쓰지_않는다(self, store):
+        first = apply(
+            store,
+            session_id=None,
+            operations=[],
+            principal=Principal(user_id="user-원래주인", is_anonymous=True),
+        )
+
+        apply(
+            store,
+            session_id=first.session_id,
+            operations=[],
+            principal=Principal(user_id="user-다른사람", is_anonymous=True),
+        )
+
+        assert store.get_state(first.session_id).user_id == "user-원래주인"
+
+    def test_confirmed_False_경로에서도_user_id가_저장된다(self, store):
+        principal = Principal(user_id="user-1", is_anonymous=True)
+        r = apply(
+            store, session_id=None, confirmed=False, operations=[], principal=principal
+        )
+        assert store.get_state(r.session_id).user_id == "user-1"
 
 
 class TestResetInApply:
@@ -617,6 +659,78 @@ class TestRecordClosedExclusions:
         )
 
         assert "A" not in reset.excluded_place_ids
+
+
+class TestRecordHistoryUserId:
+    """TP-101 3단계, D-063 — recommendation_histories.user_id도 AgentState와
+    같은 규칙(채우되 덮어쓰지 않음)으로 record_recommendation/
+    record_closed_exclusions/apply()의 rejected_places 경로 세 곳 모두에서
+    연결되는지 확인한다."""
+
+    def test_record_recommendation이_user_id를_채운다(self, store):
+        r = apply(store, session_id=None, operations=[])
+        principal = Principal(user_id="user-1", is_anonymous=True)
+
+        svc.record_recommendation(
+            svc.RecordRecommendationRequest(
+                session_id=r.session_id,
+                run_id=r.run_id,
+                recommended=[svc.RecommendedPlace(place_id="A", rank=1)],
+            ),
+            store=store,
+            principal=principal,
+        )
+
+        assert store.get_history(r.session_id).user_id == "user-1"
+
+    def test_record_closed_exclusions이_user_id를_채운다(self, store):
+        r = apply(store, session_id=None, operations=[])
+        principal = Principal(user_id="user-1", is_anonymous=True)
+
+        svc.record_closed_exclusions(
+            svc.RecordClosedExclusionsRequest(
+                session_id=r.session_id, run_id=r.run_id, place_ids=["A"]
+            ),
+            store=store,
+            principal=principal,
+        )
+
+        assert store.get_history(r.session_id).user_id == "user-1"
+
+    def test_apply의_rejected_places_경로도_user_id를_채운다(self, store):
+        principal = Principal(user_id="user-1", is_anonymous=True)
+
+        r = apply(
+            store,
+            session_id=None,
+            operations=[],
+            rejected_places=[{"place_id": "A"}],
+            principal=principal,
+        )
+
+        assert store.get_history(r.session_id).user_id == "user-1"
+
+    def test_이미_있는_history_user_id는_덮어쓰지_않는다(self, store):
+        r = apply(store, session_id=None, operations=[])
+        svc.record_recommendation(
+            svc.RecordRecommendationRequest(
+                session_id=r.session_id,
+                run_id=r.run_id,
+                recommended=[svc.RecommendedPlace(place_id="A", rank=1)],
+            ),
+            store=store,
+            principal=Principal(user_id="user-원래주인", is_anonymous=True),
+        )
+
+        svc.record_closed_exclusions(
+            svc.RecordClosedExclusionsRequest(
+                session_id=r.session_id, run_id=r.run_id, place_ids=["B"]
+            ),
+            store=store,
+            principal=Principal(user_id="user-다른사람", is_anonymous=True),
+        )
+
+        assert store.get_history(r.session_id).user_id == "user-원래주인"
 
 
 # ================================================================ 세션 삭제

@@ -22,4 +22,4 @@ router = APIRouter(tags=["agent"])
 
 @router.post("/agent-debug", response_model=AgentResponse)
 async def agent_debug(request: AgentRequest, principal: OptionalPrincipal) -> AgentResponse:
-    return await run_agent(request)
+    return await run_agent(request, principal=principal)
