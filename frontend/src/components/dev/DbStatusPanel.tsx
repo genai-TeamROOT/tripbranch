@@ -70,7 +70,10 @@ function syncedTables(run: SyncRunRow): { table: string; detail: string }[] {
   if (processed > 0) {
     const parts: string[] = [];
     if (run.new_count) parts.push(`신규 ${run.new_count}`);
-    if (run.updated_count) parts.push(`갱신 ${run.updated_count}`);
+    // updated_count는 "값이 바뀐 수"가 아니라 "목록에 있던 장소 중 DB에 이미
+    // 있던 수"다(place_sync.py의 len(places) - new_count). 갱신이라고 쓰면 그만큼
+    // 바뀐 것으로 읽힌다.
+    if (run.updated_count) parts.push(`기존 ${run.updated_count}`);
     if (run.deactivated_count) parts.push(`비활성 ${run.deactivated_count}`);
     tables.push({
       table: "places",
@@ -148,7 +151,7 @@ function SyncRunTable({ runs }: { runs: SyncRunRow[] }) {
             <th className="py-1.5 pr-2 font-medium">완료</th>
             <th className="py-1.5 pr-2 text-right font-medium">처리</th>
             <th className="py-1.5 pr-2 text-right font-medium">신규</th>
-            <th className="py-1.5 pr-2 text-right font-medium">갱신</th>
+            <th className="py-1.5 pr-2 text-right font-medium">기존</th>
             <th className="py-1.5 pr-2 text-right font-medium">비활성</th>
             <th className="py-1.5 pr-2 text-right font-medium">실패</th>
             <th className="py-1.5 pr-2 font-medium">오류</th>
@@ -423,6 +426,10 @@ export function DbStatusPanel({
             <SyncRunTable runs={status.sync_runs} />
           </div>
           <p className="mt-2 text-[11px] text-gray-500 dark:text-gray-400">
+            <strong>기존</strong>은 값이 바뀐 수가 아니라 목록에 있던 장소 중 DB에
+            이미 있던 수예요(처리 = 신규 + 기존). 무엇이 실제로 바뀌었는지는 대조
+            결과에만 남아요.
+            <br />
             잠금과 이력은 탭과 무관하게 전 구를 함께 보여줘요. 장소 동기화가 쓰는
             테이블은 places · place_sync_runs · place_sync_locks 셋뿐이에요.
             place_enrichments와 집중률 매핑은 이 동기화가 건드리지 않아요 (각각 별도

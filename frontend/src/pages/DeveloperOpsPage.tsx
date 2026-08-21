@@ -125,7 +125,6 @@ export function DeveloperOpsPage() {
 
   const handleApply = useCallback(
     async (input: {
-      dryRun: boolean;
       confirm: string;
       includeExcluded: boolean;
       detailsLimit: number | null;
@@ -139,13 +138,19 @@ export function DeveloperOpsPage() {
           areaCode: reconcile.area_code,
           districtCode: reconcile.district_code,
           snapshot: reconcile.snapshot,
-          detailContentIds: input.includeExcluded
-            ? [...reconcile.detail_content_ids, ...reconcile.detail_excluded_ids]
-            : reconcile.detail_content_ids,
+          /* 못 채운 건을 함께 보낸다. 서버가 알아서 더하기도 하지만, 보내지
+           * 않으면 job 파라미터의 대상 수가 화면이 예고한 수와 어긋난다. */
+          detailContentIds: [
+            ...reconcile.detail_content_ids,
+            ...(input.includeExcluded ? reconcile.detail_excluded_ids : []),
+            ...reconcile.detail_backfill_ids,
+          ],
           addedContentIds: reconcile.rows
             .filter((row) => row.change_type === "added")
             .map((row) => row.content_id),
-          dryRun: input.dryRun,
+          // 패널은 항상 실제 반영이다. dry-run은 한도를 똑같이 쓰면서 결과를
+          // 남기지 않아, 모르고 켜두면 "돌렸는데 아무것도 안 바뀜"이 된다.
+          dryRun: false,
           detailsLimit: input.detailsLimit,
           confirm: input.confirm,
         });

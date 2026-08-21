@@ -183,6 +183,12 @@ export type ReconcileResult = {
   counts: { added: number; removed: number; updated: number };
   detail_content_ids: string[];
   detail_excluded_ids: string[];
+  /* 이번 변경분은 아니지만 반영이 **함께** 부르는 장소. 지난 실행에서 상세를 못
+   * 채운(pending·failed) 건이다. 빼고 계산하면 화면이 "15회"라고 해놓고 실제로는
+   * 157회를 쓴다. */
+  detail_backfill_ids: string[];
+  /** DB를 실제로 확인했는지. false면 위 목록이 0건이라는 뜻이 아니라 못 봤다는 뜻이다. */
+  detail_backfill_checked: boolean;
   rows: ReconcileRow[];
   message?: string;
 };
@@ -233,6 +239,8 @@ export type SyncDistrict = {
   place_count: number;
   active_count: number;
   latest_snapshot: string | null;
+  /** 이 구를 한 번 대조할 때 나가는 목록 API 호출 수. 장소 1,000건마다 1회다. */
+  list_call_estimate: number;
 };
 
 /** 코드 입력을 검증할 시군구 사전 항목. */

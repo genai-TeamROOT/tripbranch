@@ -8,6 +8,11 @@
  * 대조가 정한 대상에만 상세조회를 보낸다. 한 버튼으로 합치면 무엇이 바뀌는지
  * 모르는 채로 운영 DB에 쓰게 된다.
  *
+ * dry-run 선택지는 두지 않는다. DB 쓰기만 막을 뿐 상세조회는 그대로 나가 한도를
+ * 똑같이 쓰는데 결과는 남지 않는다. 같은 비용이면 상세조회 상한을 건 실제 실행이
+ * 낫다 — 검증 효과는 같고 채운 값은 남으며, 상한이 걸린 실행은 비활성화도 건너뛴다.
+ * (`scripts/sync_places.py --dry-run`은 그대로 있다.)
+ *
  * 구를 드롭다운으로 고른다. 목록에 없는 구는 "구 추가"로 코드를 넣어 쓰되, 어디에도
  * 저장하지 않는다 — 한 번 대조하면 스냅샷 파일이, 반영하면 places 행이 생겨 자료
  * 자체가 다음부터의 목록이 된다. 따로 저장하면 자료 없이 이름만 남은 구가 쌓인다.
@@ -135,6 +140,8 @@ function DistrictPicker({
         place_count: 0,
         active_count: 0,
         latest_snapshot: null,
+        // 자료가 없어 쪽수를 어림할 근거가 없다. 최소 1회는 확실하다.
+        list_call_estimate: 1,
       });
     }
     setAdding(false);
@@ -260,13 +267,28 @@ function JobProgress({ job }: { job: SyncJob }) {
           실행해 매핑을 갱신하세요. 이 동기화는 매핑 테이블을 건드리지 않아요.
         </p>
       )}
+      {job.result && job.params.dry_run && (
+        <p className="mt-2 rounded bg-amber-50 p-2 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+          <strong>dry-run이라 DB에는 아무것도 쓰지 않았어요.</strong> 아래 신규는
+          "반영했다면 새로 들어갔을 장소"이고, 장소 DB 상태 패널도 바뀌지 않아요.
+          비활성은 아예 판정하지 않았습니다. 다만{" "}
+          <strong>
+            상세조회 {job.result.detail_attempted_count}회는 실제로 나가 오늘 한도를
+            그만큼 썼어요
+          </strong>{" "}
+          — 그 결과는 어디에도 저장되지 않았습니다.
+        </p>
+      )}
       {job.result && (
         <dl className="mt-2 grid grid-cols-3 gap-2 text-xs sm:grid-cols-6">
           {[
             ["처리", job.result.processed_count],
             ["신규", job.result.new_count],
-            ["갱신", job.result.updated_count],
-            ["비활성", job.result.deactivated_count],
+            // "값이 바뀐 수"가 아니라 "목록에 있던 장소 중 DB에 이미 있던 수"다.
+            ["기존", job.result.updated_count],
+            // dry-run은 비활성화 판정 자체를 건너뛴다. 0으로 보이면 "사라진 장소가
+            // 없다"로 읽히지만 실제로는 보지도 않았다.
+            ["비활성", job.params.dry_run ? "미판정" : job.result.deactivated_count],
             ["상세조회", job.result.detail_attempted_count],
             ["실패", job.result.failed_count],
           ].map(([label, value]) => (
@@ -307,13 +329,11 @@ export function PlaceSyncPanel({
   onSelectDistrict: (district: SyncDistrict) => void;
   onReconcile: () => void;
   onApply: (input: {
-    dryRun: boolean;
     confirm: string;
     includeExcluded: boolean;
     detailsLimit: number | null;
   }) => void;
 }) {
-  const [dryRun, setDryRun] = useState(true);
   const [includeExcluded, setIncludeExcluded] = useState(false);
   const [limitInput, setLimitInput] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -335,9 +355,13 @@ export function PlaceSyncPanel({
   const expectedConfirm = reconcile
     ? `${reconcile.area_code}-${reconcile.district_code}`
     : "";
-  const detailCount =
+  const changedCount =
     (reconcile?.detail_content_ids.length ?? 0) +
     (includeExcluded ? (reconcile?.detail_excluded_ids.length ?? 0) : 0);
+  // 반영은 변경분과 함께 지난 실행에서 못 채운 건도 부른다. 빼고 세면 화면이
+  // 실제보다 훨씬 적은 수를 보여준다.
+  const backfillCount = reconcile?.detail_backfill_ids.length ?? 0;
+  const detailCount = changedCount + backfillCount;
   const parsedLimit = limitInput.trim() === "" ? null : Number(limitInput.trim());
   const detailsLimit =
     parsedLimit !== null && Number.isFinite(parsedLimit) && parsedLimit >= 1
@@ -380,6 +404,15 @@ export function PlaceSyncPanel({
             onSelectDistrict(district);
           }}
         />
+        {selected && (
+          /* areaBasedList2도 오퍼레이션 단위로 일일 한도가 걸려 있다(2026-08-07
+           * 소진). 한 번에 1회라 작아 보이지만 구를 바꿔가며 누르면 그만큼 쌓인다. */
+          <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+            대조는 목록 API를 {selected.list_call_estimate}회 써요
+            {isNewDistrict && " (자료가 없는 구라 어림값이에요)"}. 반영은 이 스냅샷을
+            다시 쓰므로 목록을 부르지 않아요.
+          </p>
+        )}
       </div>
 
       {isNewDistrict && (
@@ -428,6 +461,13 @@ export function PlaceSyncPanel({
             </p>
           )}
 
+          {!reconcile.detail_backfill_checked && (
+            <p className="mt-2 rounded-md bg-amber-50 p-3 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+              상세를 못 채운 장소가 DB에 얼마나 있는지 확인하지 못했어요. 반영은 그
+              장소들도 함께 부르므로, 아래 예상 호출수보다 실제가 많을 수 있어요.
+            </p>
+          )}
+
           {reconcile.skipped_columns.length > 0 && (
             <p className="mt-2 rounded-md bg-amber-50 p-3 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
               기준 스냅샷에 없는 열은 비교하지 않았어요:{" "}
@@ -473,14 +513,6 @@ export function PlaceSyncPanel({
 
           <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-gray-200 pt-3 dark:border-gray-800">
             <label className="flex items-center gap-1.5 text-xs">
-              <input
-                type="checkbox"
-                checked={dryRun}
-                onChange={(event) => setDryRun(event.target.checked)}
-              />
-              dry-run (DB에 쓰지 않음)
-            </label>
-            <label className="flex items-center gap-1.5 text-xs">
               <span className="text-gray-500 dark:text-gray-400">상세조회 상한</span>
               <input
                 aria-label="상세조회 상한"
@@ -493,7 +525,9 @@ export function PlaceSyncPanel({
             </label>
             <span className="text-xs text-gray-500">
               예상 외부 호출: 목록 0회 + 상세조회 {plannedCalls}회
-              {dryRun ? "" : " · DB 쓰기 있음"}
+              {backfillCount > 0 &&
+                ` (이번 변경분 ${changedCount} + 지난 실행에서 못 채운 ${backfillCount})`}
+              {" · DB 쓰기 있음"}
             </span>
             <button
               type="button"
@@ -515,18 +549,19 @@ export function PlaceSyncPanel({
       {showDialog && reconcile && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="w-full max-w-md rounded-lg bg-white p-5 dark:bg-gray-900">
-            <h3 className="text-base font-bold">
-              {dryRun ? "dry-run 실행" : "DB에 반영합니다"}
-            </h3>
+            <h3 className="text-base font-bold">DB에 반영합니다</h3>
             <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">
-              {dryRun
-                ? "DB는 변경하지 않고 상세조회만 수행해요."
-                : "운영 Supabase의 places 테이블을 실제로 변경해요. 삭제된 장소는 비활성화됩니다."}
+              운영 Supabase의 places 테이블을 실제로 변경해요. 삭제된 장소는
+              비활성화됩니다.
             </p>
             <ul className="mt-3 space-y-1 text-xs text-gray-600 dark:text-gray-300">
               <li>· 대상: {expectedConfirm}</li>
               <li>· 스냅샷: {reconcile.snapshot}</li>
-              <li>· 상세조회 {plannedCalls}회 (TourAPI detailIntro2)</li>
+              <li>
+                · 상세조회 {plannedCalls}회 (TourAPI detailIntro2)
+                {backfillCount > 0 &&
+                  ` — 이번 변경분 ${changedCount} + 지난 실행에서 상세를 못 채운 ${backfillCount}`}
+              </li>
               <li>
                 · 신규 {reconcile.counts.added} / 수정 {reconcile.counts.updated} / 삭제{" "}
                 {reconcile.counts.removed}
@@ -574,7 +609,7 @@ export function PlaceSyncPanel({
                 disabled={confirm.trim() !== expectedConfirm}
                 onClick={() => {
                   setShowDialog(false);
-                  onApply({ dryRun, confirm: confirm.trim(), includeExcluded, detailsLimit });
+                  onApply({ confirm: confirm.trim(), includeExcluded, detailsLimit });
                 }}
                 className="rounded-md bg-gray-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-gray-100 dark:text-gray-900"
               >

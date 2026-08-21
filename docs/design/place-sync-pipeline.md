@@ -471,9 +471,15 @@ python -m scripts.sync_places --area-code 11 --district-code 110
 
 안전 규칙:
 
-- 최초 실제 적재 전 `--dry-run`을 실행한다.
+- 최초 실제 적재 전 `--details-limit N`으로 소규모 실제 실행을 한다. 상한이 걸린
+  실행은 비활성화를 수행하지 않으므로, 목록이 잘못돼도 기존 장소를 끄지 않는다.
+  `--dry-run`을 리허설로 쓰지 않는다 — 같은 호출 수를 쓰면서 결과를 남기지 않아
+  한도를 두 번 쓰게 된다(중구 892건이면 리허설에 892회, 실제 적재에 892회).
 - `--details-limit` 실행은 불완전한 운영 검증용이므로 비활성화를 수행하지 않는다.
 - 정기 실행에서는 `--details-limit`을 사용하지 않는다.
+- `--dry-run`은 DB 쓰기 경로를 아예 타지 않고 상세조회 응답만 확인할 때만 쓴다.
+  개발자 Ops 패널에는 이 선택지가 없다 — 모르고 켜두면 한도만 쓰고 아무것도
+  남지 않는다(2026-08-22 새벽에 세 구가 그렇게 돌았다).
 
 자동화가 필요해지면 같은 `PlaceSyncService`를 GitHub Actions, cron 또는 Supabase
 Scheduled Function에서 호출하고 동기화 로직을 복제하지 않는다.
@@ -548,7 +554,7 @@ Fake Provider와 Fake Repository를 사용한다.
 
 명시적인 환경변수가 있을 때만 실행하는 smoke marker를 사용한다.
 
-1. TourAPI `--dry-run --details-limit 3`
+1. TourAPI `--details-limit 3`
 2. 테스트용 Supabase 프로젝트 또는 별도 테스트 지역에 제한 적재
 3. 실행 건수와 DB 행 확인
 4. Supabase Secret Key 및 TourAPI Key 로그 미노출 확인
