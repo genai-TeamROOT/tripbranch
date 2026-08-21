@@ -21,6 +21,7 @@ from datetime import timedelta
 from typing import TypeVar
 
 from app.agent_context.schemas import PlaceCandidate, RecommendationContext
+from app.auth.principal import Principal
 from app.config import settings
 from app.domain.scoring import SCORING_VERSION
 from app.domain.travel_route import (
@@ -1132,6 +1133,7 @@ async def run_agent_flow(
     enrichment_provider: EnrichmentProvider,
     travel_route_tool: TravelRouteToolProvider | None = None,
     store: StateStore | None = None,
+    principal: Principal | None = None,
     stream_event_sink: StreamEventSink | None = None,
     stream_recommendation_summary: bool = False,
 ) -> AgentResponse:
@@ -1226,7 +1228,7 @@ async def run_agent_flow(
         "이전 대화 조건을 반영하고 있어요.",
     )
     apply_request = transform(llm_output, session_context, request.user_input)
-    state_response = apply(apply_request, store=store)
+    state_response = apply(apply_request, store=store, principal=principal)
 
     if clarification_resolution is not None and clarification_resolution.ignore_operating_hours:
         _remember_ignore_operating_hours(state_response.session_id, store)
@@ -2023,6 +2025,7 @@ async def run_agent_flow(
                 place_ids=recommendations.excluded_closed_place_ids,
             ),
             store=store,
+            principal=principal,
         )
 
     if is_schedule:
@@ -2170,6 +2173,7 @@ async def run_agent_flow(
                     ],
                 ),
                 store=store,
+                principal=principal,
             )
         else:
             # 후보가 부족해서 일정을 못 짠 경우, route_summary 메시지만 반환하지 말고
@@ -2265,6 +2269,7 @@ async def run_agent_flow(
                 ],
             ),
             store=store,
+            principal=principal,
         )
 
     # 8) A: 추천 카드와 LLM 요약을 같은 시점부터 화면에 보인다. 이전에는 카드(result)를
@@ -2324,6 +2329,7 @@ async def run_agent_flow(
 async def run_agent(
     request: AgentRequest,
     *,
+    principal: Principal | None = None,
     stream_event_sink: StreamEventSink | None = None,
     stream_recommendation_summary: bool = False,
 ) -> AgentResponse:
@@ -2352,6 +2358,7 @@ async def run_agent(
             ),
             enrichment_provider=get_candidate_enrichment_service(client),
             travel_route_tool=get_travel_route_tool(client),
+            principal=principal,
             stream_event_sink=stream_event_sink,
             stream_recommendation_summary=stream_recommendation_summary,
         )

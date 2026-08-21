@@ -68,6 +68,10 @@ class AgentState(BaseModel):
     """세션 단위 현재 상태. (계약 1.6절)"""
 
     session_id: str
+    # 검증된 신원(Principal.user_id)이 연결되면 채워진다. 비어 있으면 채우고,
+    # 값이 있으면 절대 덮어쓰지 않는다(D-063 결정 3) — session.py의 연결
+    # 로직이 이 규칙을 지킨다. FK는 걸지 않는다(D-063 결정 4).
+    user_id: str | None = None
     user_conditions: UserConditions = Field(default_factory=UserConditions)
     api_context: ApiContext = Field(default_factory=ApiContext)
     condition_version: int = 0
@@ -185,6 +189,9 @@ class RecommendationHistory(BaseModel):
     """세션 단위 추천·거절 이력. append-only. (계약 3.2절)"""
 
     session_id: str
+    # AgentState.user_id와 동일한 규칙(TP-101 3단계, D-063): 비어 있으면
+    # 채우고, 값이 있으면 덮어쓰지 않는다. FK는 걸지 않는다.
+    user_id: str | None = None
     recommended: list[RecommendedItem] = Field(default_factory=list)
     rejected: list[RejectedItem] = Field(default_factory=list)
     # TP-82: D의 하드 필터가 폐점이라 걸러낸 후보 id. recommended/rejected와
