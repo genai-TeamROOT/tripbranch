@@ -13,6 +13,9 @@ begin;
 -- 보관기간 정책은 아직 없다 — 지금은 개발/테스트 단계 전제다. 실서비스
 -- 공개 전에는 guest-auth-design.md 9-3절(보관기간·자동삭제·동의 지점)을
 -- 이 컬럼에도 적용할지 다시 결정해야 한다.
+--
+-- 원래 202608210002 번호로 작성했으나, develop에 먼저 merge된 다른 PR이
+-- 같은 날짜에 202608210002/202608210003 번호를 이미 써서 004로 재번호.
 alter table public.response_feedback
   add column if not exists user_input text,
   add column if not exists assistant_message text;

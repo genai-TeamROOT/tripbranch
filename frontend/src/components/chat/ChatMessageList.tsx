@@ -15,8 +15,10 @@ import { useEffect, useState } from "react";
 import type { AgentProgressEvent, ChatMessage } from "../../types";
 import { AgentProgressMessage } from "./AgentProgressMessage";
 import { ClarificationMessage } from "./ClarificationMessage";
+import { CompareResultCards } from "./CompareResultCards";
 import { LocationRefreshMessage } from "./LocationRefreshMessage";
 import { ConditionDebugMessage } from "./ConditionDebugMessage";
+import { FeedbackButtons } from "./FeedbackButtons";
 import { PlaceInfoCard } from "./PlaceInfoCard";
 import { RecommendationResultMessage } from "./RecommendationResultMessage";
 import { ScheduleResultMessage } from "./ScheduleResultMessage";
@@ -164,7 +166,6 @@ export function ChatMessageList({
           }
 
           if (message.type === "schedule_result") {
-            const { userInput, assistantMessage, intent } = findTurnText(renderedMessages, index);
             return (
               <ScheduleResultMessage
                 key={message.id}
@@ -174,17 +175,35 @@ export function ChatMessageList({
                 isLoading={isLoading}
                 onRequestMore={onRequestMore}
                 onRelaxRadius={onRelaxRadius}
-                sessionId={message.sessionId}
-                runId={message.runId}
-                userInput={userInput}
-                assistantMessage={assistantMessage}
-                intent={intent}
               />
             );
           }
 
           if (message.type === "place_info_result") {
             return <PlaceInfoCard key={message.id} card={message.card} />;
+          }
+
+          if (message.type === "compare_result") {
+            return <CompareResultCards key={message.id} comparison={message.comparison} />;
+          }
+
+          if (message.type === "feedback") {
+            // "feedback" 메시지 자체에는 텍스트가 없다 — 바로 앞의 결과 카드를
+            // 지나 그 턴의 user_text/assistant_text까지 거슬러 올라가 찾는다
+            // (findTurnText는 카드/피드백 등 텍스트가 없는 메시지를 건너뛰고
+            // 계속 탐색하므로 이 메시지의 index를 그대로 넘겨도 된다).
+            const { userInput, assistantMessage, intent } = findTurnText(renderedMessages, index);
+            return (
+              <div key={message.id} className="mr-auto flex w-full max-w-2xl justify-end">
+                <FeedbackButtons
+                  sessionId={message.sessionId}
+                  runId={message.runId}
+                  userInput={userInput}
+                  assistantMessage={assistantMessage}
+                  intent={intent}
+                />
+              </div>
+            );
           }
 
           if (message.type === "clarification") {
@@ -199,7 +218,6 @@ export function ChatMessageList({
             );
           }
 
-          const { userInput, assistantMessage, intent } = findTurnText(renderedMessages, index);
           return (
             <RecommendationResultMessage
               key={message.id}
@@ -211,11 +229,6 @@ export function ChatMessageList({
               isLoading={isLoading}
               onRequestMore={onRequestMore}
               onRelaxRadius={onRelaxRadius}
-              sessionId={message.sessionId}
-              runId={message.runId}
-              userInput={userInput}
-              assistantMessage={assistantMessage}
-              intent={intent}
             />
           );
         })}

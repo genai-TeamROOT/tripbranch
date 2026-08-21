@@ -10,12 +10,17 @@ from app.agent_context.info_schemas import (
     PlaceInfoResult,
     RealtimeCityInfoResult,
     RealtimeCommercialInfoResult,
+    RealtimePopulationInfoResult,
+)
+from app.agent_context.info_schemas import (
+    RealtimeInfoDetailItem as ContextRealtimeInfoDetailItem,
 )
 from app.schemas import (
     ConcentrationForecastBar,
     InfoPlaceCard,
     PopulationForecastBar,
     QuestionType,
+    RealtimeInfoDetailItem,
 )
 from app.services.runtime.info_display import (
     format_citydata_timestamp,
@@ -42,11 +47,17 @@ def to_info_place_card(response: InfoContextResponse) -> InfoPlaceCard | None:
         return _to_event_card(result)
     if isinstance(result, RealtimeCommercialInfoResult):
         return _to_realtime_commercial_card(result)
+    if isinstance(result, RealtimePopulationInfoResult):
+        return _to_realtime_population_card(result)
     if isinstance(result, RealtimeCityInfoResult):
         return InfoPlaceCard(
             question_type=QuestionType(result.question_type),
             answer_fields=result.fields,
             place_name=result.resolved_place_name or result.requested_place_name,
+            realtime_area_name=result.area_name,
+            realtime_observed_at=format_citydata_timestamp(result.observed_at),
+            realtime_source_url=result.source_url,
+            realtime_detail_items=_to_realtime_detail_items(result.detail_items),
         )
     return None
 
@@ -172,4 +183,78 @@ def _to_realtime_commercial_card(
             )
             for forecast in result.population_forecasts
         ],
+        realtime_area_name=result.area_name,
+        realtime_observed_at=format_citydata_timestamp(result.observed_at),
+        realtime_source_url=result.source_url,
+        realtime_detail_items=_to_realtime_detail_items(result.detail_items),
     )
+
+
+def _to_realtime_population_card(
+    result: RealtimePopulationInfoResult,
+) -> InfoPlaceCard | None:
+    """현재 인구 혼잡도와 12시간 예측을 concentration 카드에 함께 싣는다."""
+
+    place_name = result.resolved_place_name or result.requested_place_name
+    if place_name is None:
+        return None
+
+    fields = {
+        key: value
+        for key, value in {
+            "실시간 기준 지역": result.area_name,
+            "현재 인구 혼잡도": result.current_congestion_level,
+            "기준 시각": format_citydata_timestamp(result.observed_at),
+            "안내": result.current_congestion_message,
+        }.items()
+        if value is not None
+    }
+    return InfoPlaceCard(
+        question_type=QuestionType.CONCENTRATION,
+        answer_fields=fields,
+        place_name=place_name,
+        population_current_level=result.current_congestion_level,
+        population_current_message=result.current_congestion_message,
+        population_observed_at=format_citydata_timestamp(result.observed_at),
+        population_forecasts=[
+            PopulationForecastBar(
+                forecast_at=forecast.forecast_at,
+                congestion_level=forecast.congestion_level,
+                population_min=forecast.population_min,
+                population_max=forecast.population_max,
+            )
+            for forecast in result.population_forecasts
+        ],
+        realtime_area_name=result.area_name,
+        realtime_observed_at=format_citydata_timestamp(result.observed_at),
+        realtime_source_url=result.source_url,
+        realtime_map_url=result.map_url,
+        realtime_detail_items=(
+            [
+                RealtimeInfoDetailItem(
+                    title="혼잡도 안내",
+                    subtitle=result.current_congestion_level,
+                    details={"안내": result.current_congestion_message},
+                )
+            ]
+            if result.current_congestion_message is not None
+            else []
+        ),
+    )
+
+
+def _to_realtime_detail_items(
+    items: list[ContextRealtimeInfoDetailItem],
+) -> list[RealtimeInfoDetailItem]:
+    """C의 실시간 도시데이터 상세 항목을 최종 응답 스키마로 옮긴다."""
+
+    return [
+        RealtimeInfoDetailItem(
+            title=item.title,
+            subtitle=item.subtitle,
+            details=item.details,
+            thumbnail_url=item.thumbnail_url,
+            external_url=item.external_url,
+        )
+        for item in items
+    ]

@@ -281,9 +281,11 @@ class RecordFeedbackRequest(BaseModel):
     피드백을 남긴 턴의 질문·답변 텍스트를 함께 보내면 그대로 저장한다 —
     FeedbackRecord 스키마 docstring의 원문 저장 범위 설명 참고.
 
-    intent/comment도 같은 날 추가된 선택 필드다. intent는 그 턴의
-    assistant_text 메시지가 이미 들고 있는 값을 그대로 전달받아 저장한다.
-    comment는 "싫어요" 사유로 사용자가 직접 남긴 자유 텍스트다.
+    intent도 같은 날 추가된 선택 필드다. 그 턴의 assistant_text 메시지가
+    이미 들고 있는 값을 그대로 전달받아 저장한다.
+
+    comment는 "싫어요" 사유로 사용자가 직접 남긴 자유 텍스트다(develop PR에서
+    병합, D-069) — 짧은 사유라는 용도에 맞춰 500자로 길이를 제한한다.
     """
 
     session_id: str
@@ -292,7 +294,7 @@ class RecordFeedbackRequest(BaseModel):
     user_input: str | None = None
     assistant_message: str | None = None
     intent: str | None = None
-    comment: str | None = None
+    comment: str | None = Field(default=None, max_length=500)
 
 
 class RecordFeedbackResponse(BaseModel):

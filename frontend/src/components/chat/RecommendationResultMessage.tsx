@@ -13,7 +13,6 @@
 import { useState } from "react";
 import type { RecommendationItem } from "../../types";
 import { PlaceCard } from "../PlaceCard";
-import { FeedbackButtons } from "./FeedbackButtons";
 import { RecommendationDetailPreviewModal } from "./RecommendationDetailPreviewModal";
 
 const RADIUS_RELAXATION_STEP_KM = 0.5;
@@ -27,12 +26,6 @@ interface RecommendationResultMessageProps {
   isLoading: boolean;
   onRequestMore: () => void;
   onRelaxRadius: () => void;
-  sessionId: string;
-  runId: string;
-  /** 피드백 전송용. ChatMessageList가 근처 메시지에서 찾아 넘겨준다(선택 사항). */
-  userInput?: string;
-  assistantMessage?: string;
-  intent?: string;
 }
 
 function formatDuration(milliseconds: number | undefined) {
@@ -51,11 +44,6 @@ export function RecommendationResultMessage({
   isLoading,
   onRequestMore,
   onRelaxRadius,
-  sessionId,
-  runId,
-  userInput,
-  assistantMessage,
-  intent,
 }: RecommendationResultMessageProps) {
   const [selectedRecommendation, setSelectedRecommendation] = useState<RecommendationItem | null>(null);
   // D는 운영시간을 무시한 재검색에서 "현재는 폐점"인 후보도 unverified 목록에
@@ -85,14 +73,6 @@ export function RecommendationResultMessage({
           </p>
         )}
       </div>
-
-      <FeedbackButtons
-        sessionId={sessionId}
-        runId={runId}
-        userInput={userInput}
-        assistantMessage={assistantMessage}
-        intent={intent}
-      />
 
       {hasNoResults ? (
         <div className="flex flex-col gap-3 text-sm">

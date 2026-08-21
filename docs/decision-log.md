@@ -2033,7 +2033,7 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 - 남은 것: 보관기간·자동삭제 정책은 아직 없다 — 지금은 개발/테스트 단계 전제다.
   실서비스 공개 전에는 9-3절(보관기간·동의 지점·삭제 요구 경로)을 이 컬럼에도
   적용할지 다시 결정해야 한다.
-- 상세: `supabase/migrations/202608210002_add_feedback_turn_text.sql`,
+- 상세: `supabase/migrations/202608210004_add_feedback_turn_text.sql`,
   `backend/app/state/schema.py`(`FeedbackRecord`), `backend/app/state/feedback.py`,
   `frontend/src/components/chat/FeedbackButtons.tsx`,
   `frontend/src/utils/turnText.ts`
@@ -2072,10 +2072,25 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
     카드에 피드백을 남기면 최신 턴의 값이 잘못 붙는다. 대신 카드 위치
     기준으로 거슬러 올라가 찾는 기존 `findTurnText`를 그대로 확장해 intent도
     같이 찾도록 했다.
-- 상세: `supabase/migrations/202608210003_add_feedback_intent_comment.sql`,
+- 병합 후기(같은 날 develop merge): 이 작업 직후 develop에 팀원이 독립적으로
+  구현한 comment 기능(PR)이 먼저 merge됐다 — 같은 목적을 다른 방식으로
+  구현한 우연한 충돌. 병합 시 develop 쪽을 기준으로 정리했다: comment 컬럼은
+  develop의 마이그레이션(`202608210003_add_comment_to_response_feedback.sql`,
+  DB단 500자 CHECK 제약 포함, pydantic max_length=500과 이중 방어)을 그대로
+  채택하고 우리 쪽 comment 컬럼 추가는 제거, FeedbackButtons UI도 develop의
+  아이콘 기반 버전(더 완성도 높음)을 채택해 우리 버전은 버렸다. intent만
+  우리 쪽 추가로 남았다. 또한 develop이 `recommendation_result`/
+  `schedule_result` 메시지에서 피드백 버튼을 분리해 별도 `"feedback"`
+  ChatMessage 타입(카드 뒤에 이어지는 독립 메시지)으로 구조를 바꿔서,
+  `findTurnText` 호출 지점도 결과 카드가 아니라 이 `"feedback"` 메시지의
+  index로 옮겼다 — `findTurnText`는 텍스트가 없는 메시지를 건너뛰므로 로직
+  변경은 필요 없었다. 마이그레이션 번호 충돌(둘 다 202608210002/003을 씀)로
+  우리 쪽 파일은 004/005로 재번호했다.
+- 상세: `supabase/migrations/202608210005_add_feedback_intent.sql`,
   `backend/app/state/schema.py`(`FeedbackRecord`), `backend/app/state/feedback.py`,
   `backend/app/state/service.py`, `frontend/src/utils/turnText.ts`,
-  `frontend/src/components/chat/FeedbackButtons.tsx`
+  `frontend/src/components/chat/FeedbackButtons.tsx`,
+  `frontend/src/components/chat/ChatMessageList.tsx`
 
 ## 변경 이력
 

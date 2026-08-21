@@ -27,6 +27,7 @@ import httpx
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
+from app.agent_context.seoul_commercial_areas import select_nearest_commercial_area
 from app.config import settings
 from app.domain.models import TourPlacePage
 from app.errors import AppError
@@ -103,6 +104,50 @@ async def get_api_usage() -> dict[str, Any]:
 async def post_api_usage_reset() -> dict[str, Any]:
     reset_usage()
     return get_usage_snapshot()
+
+
+class NearestAreaResponse(BaseModel):
+    """좌표에 붙일 사람이 읽을 수 있는 지역 이름.
+
+    기기 GPS는 좌표만 주므로 개발자 패널의 위치 뱃지에 찍을 이름이 없다. 서울시
+    실시간 상권 82개 지역의 대표 좌표(agent_context/seoul_commercial_areas.py)에서
+    최근접을 골라 근사 이름을 만든다 — 외부 호출은 하지 않는다.
+
+    근사치라는 사실을 숨기지 않으려고 distance_km를 항상 함께 준다. 최근접이 2km를
+    넘으면 세 값 모두 None이고, 그때는 표시할 이름이 없다는 뜻이다.
+    """
+
+    area_code: str | None = None
+    area_name: str | None = None
+    distance_km: float | None = None
+
+
+@router.get("/nearest-area")
+async def get_nearest_area(location: str) -> NearestAreaResponse:
+    """`location`("위도,경도")에 가장 가까운 서울시 상권 지역 이름.
+
+    추천 판정과 무관한 표시 전용 조회다. 좌표를 상권 지역으로 대체해 **조회**하는
+    C의 경로(realtime_commercial)와 같은 표를 쓰지만, 여기서는 이름만 꺼내 쓰고
+    상권 데이터를 부르지 않는다.
+    """
+
+    parts = location.split(",")
+    if len(parts) != 2:
+        raise DevPanelError("location은 '위도,경도' 형식이어야 합니다.")
+    try:
+        latitude, longitude = (float(part.strip()) for part in parts)
+    except ValueError:
+        raise DevPanelError("location의 위도·경도를 숫자로 읽을 수 없습니다.") from None
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        raise DevPanelError("location의 위도·경도 범위가 올바르지 않습니다.")
+
+    nearest = select_nearest_commercial_area(latitude=latitude, longitude=longitude)
+    if nearest is None:
+        return NearestAreaResponse()
+    area, distance_km = nearest
+    return NearestAreaResponse(
+        area_code=area.code, area_name=area.name, distance_km=distance_km
+    )
 
 
 class CaptureRequest(BaseModel):

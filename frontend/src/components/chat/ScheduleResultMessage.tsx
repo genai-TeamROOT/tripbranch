@@ -25,7 +25,6 @@
 import type { ScheduleResult } from "../../types";
 import { ScheduleCard } from "../ScheduleCard";
 import { ScheduleTravelSegment } from "../ScheduleTravelSegment";
-import { FeedbackButtons } from "./FeedbackButtons";
 
 function formatDuration(milliseconds: number | undefined) {
   if (typeof milliseconds !== "number" || !Number.isFinite(milliseconds)) return "-";
@@ -41,12 +40,6 @@ interface ScheduleResultMessageProps {
   isLoading: boolean;
   onRequestMore: () => void;
   onRelaxRadius: () => void;
-  sessionId: string;
-  runId: string;
-  /** 피드백 전송용. ChatMessageList가 근처 메시지에서 찾아 넘겨준다(선택 사항). */
-  userInput?: string;
-  assistantMessage?: string;
-  intent?: string;
 }
 
 export function ScheduleResultMessage({
@@ -56,11 +49,6 @@ export function ScheduleResultMessage({
   isLoading,
   onRequestMore,
   onRelaxRadius,
-  sessionId,
-  runId,
-  userInput,
-  assistantMessage,
-  intent,
 }: ScheduleResultMessageProps) {
   const hasItems = schedule.items.length > 0;
 
@@ -73,13 +61,6 @@ export function ScheduleResultMessage({
           {formatDuration(elapsedMs)} 소요 (서버 {formatDuration(schedule.elapsed_ms)})
         </p>
       )}
-      <FeedbackButtons
-        sessionId={sessionId}
-        runId={runId}
-        userInput={userInput}
-        assistantMessage={assistantMessage}
-        intent={intent}
-      />
       {hasItems ? (
         <>
           <section className="flex flex-col gap-3">

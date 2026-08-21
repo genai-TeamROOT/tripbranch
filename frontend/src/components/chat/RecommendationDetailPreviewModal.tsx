@@ -25,6 +25,9 @@ interface RecommendationDetailPreviewModalProps {
  * 전체 PlaceDetails를 보강 조회해, 답변 단계의 불필요한 상세 API 호출은 피한다.
  */
 function needsDetailEnrichment(card: InfoPlaceCard | undefined): boolean {
+  // 실시간 도시데이터 INFO는 이미 지역 단위 상세·지도 링크를 응답에 실었다.
+  // 관광 PlaceDetails를 다시 조회하면 이 값을 덮어써 모달의 실시간 근거가 사라진다.
+  if (card?.realtime_map_url || (card?.realtime_detail_items?.length ?? 0) > 0) return false;
   return Boolean(
     card && ["location_info", "concentration", "event"].includes(card.question_type),
   );
@@ -59,9 +62,12 @@ const ANSWER_FIELD_LABELS: Record<string, string> = {
   concentration: "혼잡도",
   event: "행사",
   "상권 지역": "상권 지역",
-  "카페 업종": "카페 업종",
+  "상권 기준": "상권 기준",
+  "업종": "업종",
   "실시간 활동": "실시간 활동",
   "기준 시각": "기준 시각",
+  "안내": "안내",
+  homepage: "홈페이지",
   operating_hours: "운영시간",
   rest_date: "휴무일",
   parking: "주차",
@@ -178,18 +184,30 @@ function DetailEntries({
   );
 }
 
-const URL_PATTERN = /(https?:\/\/[^\s]+)/g;
+// www.로 시작하는 프로토콜 없는 도메인도 잡는다(실측: TourAPI homepage 필드의
+// 3.6%가 이 형태 — "www.kh.or.kr"처럼 http(s):// 없이 온다). 일반 도메인 정규식은
+// 숫자·단위 표기(예: "3.5km")를 오탐할 수 있어 www. 접두만 좁게 잡는다.
+const URL_PATTERN = /(https?:\/\/[^\s]+|www\.[^\s]+)/g;
 
-/** "관련 정보" 값 안의 http(s) URL(홈페이지·인스타 등)을 클릭 가능한 링크로 만든다. */
+function isLinkable(part: string): boolean {
+  return /^(https?:\/\/|www\.)/.test(part);
+}
+
+function toHref(part: string): string {
+  // www.만 있으면 상대경로로 오인돼 우리 사이트 안의 없는 페이지로 이동한다.
+  return part.startsWith("www.") ? `https://${part}` : part;
+}
+
+/** "관련 정보" 값 안의 URL(http(s) 또는 www.)을 클릭 가능한 링크로 만든다. */
 function AnswerValue({ value }: { value: string }) {
   const parts = value.split(URL_PATTERN);
   return (
     <dd className="whitespace-pre-line text-gray-900 dark:text-gray-100">
       {parts.map((part, index) =>
-        /^https?:\/\//.test(part) ? (
+        isLinkable(part) ? (
           <a
             key={index}
-            href={part}
+            href={toHref(part)}
             target="_blank"
             rel="noreferrer"
             className="break-all text-blue-600 underline hover:text-blue-700 dark:text-blue-400"
@@ -201,6 +219,100 @@ function AnswerValue({ value }: { value: string }) {
         ),
       )}
     </dd>
+  );
+}
+
+function RealtimeDetailEntries({ card }: { card: InfoPlaceCard }) {
+  const items = card.realtime_detail_items ?? [];
+  if (items.length === 0 && !card.realtime_map_url && !card.realtime_source_url) return null;
+
+  return (
+    <section className="rounded-xl border border-sky-100 bg-sky-50/70 p-4 dark:border-sky-900/60 dark:bg-sky-950/20">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">실시간 지역 정보</h3>
+          <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-300">
+            {card.realtime_area_name ?? "가까운 서울시 제공 지역"}
+            {card.realtime_observed_at ? ` · ${card.realtime_observed_at} 기준` : ""}
+          </p>
+        </div>
+        {card.realtime_source_url && (
+          <a
+            href={card.realtime_source_url}
+            target="_blank"
+            rel="noreferrer"
+            className="rounded-full border border-sky-200 bg-white px-2.5 py-1 text-xs font-medium text-sky-700 hover:bg-sky-100 dark:border-sky-800 dark:bg-gray-900 dark:text-sky-300 dark:hover:bg-sky-900/50"
+          >
+            서울시 데이터 출처 ↗
+          </a>
+        )}
+        {card.realtime_map_url && (
+          <a
+            href={card.realtime_map_url}
+            target="_blank"
+            rel="noreferrer"
+            className="rounded-full border border-sky-200 bg-white px-2.5 py-1 text-xs font-medium text-sky-700 hover:bg-sky-100 dark:border-sky-800 dark:bg-gray-900 dark:text-sky-300 dark:hover:bg-sky-900/50"
+          >
+            실시간 혼잡도 지도 ↗
+          </a>
+        )}
+      </div>
+      {card.realtime_map_url && (
+        <iframe
+          title={`${card.realtime_area_name ?? "서울시"} 실시간 혼잡도 지도`}
+          src={card.realtime_map_url}
+          loading="lazy"
+          className="mt-3 h-[78vh] min-h-[680px] w-full rounded-lg border border-sky-100 bg-white dark:border-sky-900/60 dark:bg-gray-900"
+        />
+      )}
+      <div className="mt-3 space-y-3">
+        {items.map((item, index) => (
+          <article
+            key={`${item.title}-${index}`}
+            className="overflow-hidden rounded-lg border border-sky-100 bg-white dark:border-sky-900/60 dark:bg-gray-900"
+          >
+            {item.thumbnail_url && (
+              <img
+                src={item.thumbnail_url}
+                alt={`${item.title} 이미지`}
+                loading="lazy"
+                className="h-36 w-full bg-gray-100 object-cover dark:bg-gray-800"
+              />
+            )}
+            <div className="p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{item.title}</h4>
+                  {item.subtitle && (
+                    <p className="mt-0.5 text-sm text-sky-700 dark:text-sky-300">{item.subtitle}</p>
+                  )}
+                </div>
+                {item.external_url && (
+                  <a
+                    href={item.external_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="shrink-0 text-xs font-medium text-blue-700 hover:underline dark:text-blue-300"
+                  >
+                    자세히 보기 ↗
+                  </a>
+                )}
+              </div>
+              {Object.keys(item.details).length > 0 && (
+                <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
+                  {Object.entries(item.details).map(([key, value]) => (
+                    <div key={key} className="min-w-0">
+                      <dt className="text-gray-500 dark:text-gray-400">{key}</dt>
+                      <dd className="mt-0.5 break-words text-gray-800 dark:text-gray-100">{value}</dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -221,9 +333,18 @@ export function RecommendationDetailPreviewModal({
   const canRoute =
     detailCard?.latitude != null && detailCard?.longitude != null && Boolean(device_location);
   // "관련 정보"(answer_fields)에서 개요는 아래 "개요" 섹션과 내용이 같아 제외한다(중복 제거).
+  // 홈페이지는 answer_fields가 아니라 카드 최상위 필드다(질문 유형이 general_info가
+  // 아니어도 백엔드가 채울 수 있다) — 하단 링크를 없앤 대신 여기서 합성해 넣는다.
   const answerEntries = detailCard
-    ? Object.entries(detailCard.answer_fields).filter(([key]) => key !== "overview")
+    ? [
+        ...Object.entries(detailCard.answer_fields).filter(([key]) => key !== "overview"),
+        ...(detailCard.homepage && !("homepage" in detailCard.answer_fields)
+          ? ([["homepage", detailCard.homepage]] as [string, string][])
+          : []),
+      ]
     : [];
+  const hasRealtimeDetails =
+    (detailCard?.realtime_detail_items?.length ?? 0) > 0 || Boolean(detailCard?.realtime_map_url);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -319,11 +440,11 @@ export function RecommendationDetailPreviewModal({
               alt={`${detailCard.place_name ?? title} 이미지`}
               className="h-56 w-full rounded-xl bg-gray-100 object-cover dark:bg-gray-800"
             />
-          ) : (
+          ) : !hasRealtimeDetails ? (
             <div className="flex h-56 items-center justify-center rounded-xl border border-dashed border-gray-300 bg-gray-50 text-sm text-gray-500 dark:border-gray-700 dark:bg-gray-800/60 dark:text-gray-400">
               {detailStatus === "unavailable" ? "상세 정보를 불러오지 못했어요." : "등록된 이미지가 없어요."}
             </div>
-          )}
+          ) : null}
 
           {canRoute && detailCard && (
             <button
@@ -379,6 +500,7 @@ export function RecommendationDetailPreviewModal({
                   </dl>
                 </section>
               )}
+              <RealtimeDetailEntries card={detailCard} />
               {detailCard.overview && (
                 <section>
                   <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">개요</h3>
@@ -389,19 +511,6 @@ export function RecommendationDetailPreviewModal({
               )}
               <DetailEntries card={detailCard} entries={DETAIL_FIELDS} />
               <DetailEntries card={detailCard} entries={FACILITY_FIELDS} />
-              {detailCard.homepage && (
-                <a
-                  href={detailCard.homepage}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex items-center justify-between gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm font-medium text-gray-800 transition-colors hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 dark:border-gray-700 dark:bg-gray-800/70 dark:text-gray-100 dark:hover:border-blue-800 dark:hover:bg-blue-950/40 dark:hover:text-blue-300"
-                >
-                  <span>공식 홈페이지 보기</span>
-                  <span aria-hidden="true" className="text-gray-400 dark:text-gray-500">
-                    ↗
-                  </span>
-                </a>
-              )}
             </section>
           ) : (
             <p className="rounded-xl border border-dashed border-gray-300 p-4 text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">

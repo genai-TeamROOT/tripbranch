@@ -69,6 +69,16 @@
   실측(200~400건 100~300ms, 844건 6~9초)을 근거로 500건 초과 시 즉시
   에러를 내도록 가드를 추가했다. 절차형 분기가 필요해 `language sql`에서
   `plpgsql`로 바꿨다)
+- 피드백 KST 조회 뷰 마이그레이션:
+  `202608210002_add_response_feedback_kst_view.sql`
+  (저장은 그대로 UTC(`timestamptz`) — Postgres/Supabase 테이블 에디터가 UTC로
+  보여줘서 KST로 보기 불편한 문제만 조회용 뷰(`response_feedback_kst`)로
+  해결한다. 아직 미적용 — Dashboard SQL Editor에서 실행 필요)
+- 피드백 comment 컬럼 마이그레이션:
+  `202608210003_add_comment_to_response_feedback.sql`
+  (`response_feedback`에 `comment text null`(500자 제한) 추가 — "싫어요" 클릭 시
+  선택적으로 남기는 짧은 사유. `response_feedback_kst` 뷰도 함께 갱신. 아직
+  미적용 — Dashboard SQL Editor에서 실행 필요)
 - 실제 DB 적용일: 2026-07-24, 2026-07-29, 2026-08-04, 2026-08-08, 2026-08-10,
   2026-08-18
 - 적용 방법: Supabase Dashboard SQL Editor 및 Supabase MCP `apply_migration`

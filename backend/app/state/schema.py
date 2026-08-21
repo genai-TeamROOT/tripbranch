@@ -256,12 +256,16 @@ class FeedbackRecord(BaseModel):
     반응한 턴만 남으므로 노출 범위가 훨씬 좁다. 프론트가 텍스트를 못 찾거나
     안 보내면 None — 이 경우에도 rating 기록 자체는 그대로 유효하다.
 
-    intent/comment는 같은 날 추가된 확장 필드다(D-068 연장). intent는
-    step/prompt_version 등과 같은 성격 — 그 턴의 assistant_text 메시지가
-    이미 들고 있는 값을 그대로 옮겨오는 것뿐이라 B는 검증하지 않는다.
-    comment는 "싫어요" 사유로 사용자가 직접 쓴 자유 텍스트(선택) — user_input/
-    assistant_message와 같은 위험 등급(자유 텍스트)으로 취급하고 같은 이유로
-    nullable이다.
+    intent는 같은 날 추가된 확장 필드다(D-068 연장). step/prompt_version과
+    같은 성격 — 그 턴의 assistant_text 메시지가 이미 들고 있는 값을 그대로
+    옮겨오는 것뿐이라 B는 검증하지 않는다.
+
+    comment는 "싫어요" 클릭 시 사용자가 선택적으로 남기는 짧은 사유다(develop
+    PR에서 병합, D-069). like에는 입력창을 보여주지 않으므로 사실상 dislike
+    전용이지만, 스키마에서 rating으로 강제하지는 않는다 — 화면 흐름이 바뀌어도
+    스키마를 다시 손대지 않게 한다. user_input/assistant_message와 같은 위험
+    등급(자유 텍스트)으로 취급하되, 짧은 사유라는 용도에 맞춰 500자로 길이를
+    제한한다.
     """
 
     session_id: str
@@ -270,5 +274,5 @@ class FeedbackRecord(BaseModel):
     user_input: str | None = None
     assistant_message: str | None = None
     intent: str | None = None
-    comment: str | None = None
+    comment: str | None = Field(default=None, max_length=500)
     recorded_at: datetime = Field(default_factory=now_kst)

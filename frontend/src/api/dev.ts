@@ -229,3 +229,35 @@ export function fetchDbStatus(areaCode?: string, districtCode?: string) {
   const query = params.toString();
   return apiClient.get<DbStatus>(`/dev/db-status${query ? `?${query}` : ""}`);
 }
+
+export type NearestArea = {
+  area_code: string | null;
+  area_name: string | null;
+  distance_km: number | null;
+};
+
+/*
+ * 기기 GPS 좌표에 붙일 근사 지역 이름을 얻는다. 서울시 상권 82개 지역의 대표 좌표는
+ * 백엔드에만 있고, 프론트로 복사하면 표가 두 곳으로 갈라진다.
+ *
+ * 같은 좌표를 여러 턴이 공유하므로(GPS는 턴마다 바뀌지 않는다) 좌표 문자열을 키로
+ * 캐싱한다. 조회 실패는 throw하지 않고 빈 결과로 낮춘다 — 이름을 못 붙이는 것이
+ * 감사 패널 전체를 막을 이유는 아니다.
+ */
+const EMPTY_NEAREST_AREA: NearestArea = {
+  area_code: null,
+  area_name: null,
+  distance_km: null,
+};
+const nearestAreaCache = new Map<string, Promise<NearestArea>>();
+
+export function fetchNearestArea(location: string): Promise<NearestArea> {
+  const cached = nearestAreaCache.get(location);
+  if (cached) return cached;
+
+  const pending = apiClient
+    .get<NearestArea>(`/dev/nearest-area?location=${encodeURIComponent(location)}`)
+    .catch(() => EMPTY_NEAREST_AREA);
+  nearestAreaCache.set(location, pending);
+  return pending;
+}

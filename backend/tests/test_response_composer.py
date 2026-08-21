@@ -33,6 +33,7 @@ from app.services.runtime.info_context_schemas import (
     InfoContextResponse,
     PlaceInfoResult,
     RealtimeCommercialInfoResult,
+    RealtimePopulationInfoResult,
 )
 from app.services.runtime.response_composer import (
     compose_chat_message,
@@ -41,6 +42,7 @@ from app.services.runtime.response_composer import (
     compose_info_concentration_message,
     compose_place_info_message,
     compose_realtime_commercial_message,
+    compose_realtime_population_message,
     compose_recommendation_message,
     compose_schedule_message,
 )
@@ -724,6 +726,7 @@ class TestComposeInfoConcentrationMessage:
         )
         assert compose_info_concentration_message(response) == "어떤 장소에 대해 알고 싶으신가요?"
 
+
     @pytest.mark.asyncio
     async def test_compose_chat_message_dispatches_to_concentration_composer(self) -> None:
         llm_output = LLMOutput(intent=Intent.INFO, status=OutputStatus.COMPLETE)
@@ -749,6 +752,29 @@ class TestComposeInfoConcentrationMessage:
         llm_output = LLMOutput(intent=Intent.INFO, status=OutputStatus.COMPLETE)
         message = await compose_chat_message(llm_output, llm=_StubLLM())
         assert "준비 중" in message
+
+
+class TestComposeRealtimePopulationMessage:
+    def test_discloses_nearby_area_and_current_basis(self) -> None:
+        response = InfoContextResponse(
+            request_id="population-message",
+            status="success",
+            result=RealtimePopulationInfoResult(
+                status="success",
+                requested_place_name="경복궁",
+                area_name="광화문·덕수궁",
+                proxy_distance_km=0.4,
+                current_congestion_level="보통",
+                observed_at="2026-08-20 14:00",
+            ),
+        )
+
+        message = compose_realtime_population_message(response)
+
+        assert "경복궁 자체의 실시간 인구 데이터는 아니지만" in message
+        assert "광화문·덕수궁" in message
+        assert "현재 보통 수준" in message
+        assert "12시간" in message
 
 
 class TestComposePlaceInfoMessage:

@@ -21,9 +21,14 @@ function recommendationResult(id: string): ChatMessage {
     unverified_recommendations: [],
     elapsed_ms: 0,
     server_elapsed_ms: 0,
-    sessionId: "sess_1",
-    runId: "run_1",
   };
+}
+
+// "feedback" 메시지는 develop 브랜치의 별도 메시지 타입(session_id/run_id만
+// 들고 텍스트는 없음) — 실제로 findTurnText가 호출되는 대상은 결과 카드가
+// 아니라 이 메시지다. 카드 뒤에 이 메시지가 하나 더 온다는 점만 재현한다.
+function feedbackMessage(): ChatMessage {
+  return { id: "feedback-1", type: "feedback", sessionId: "sess_1", runId: "run_1" };
 }
 
 it("바로 앞의 user_text/assistant_text를 찾는다", () => {
@@ -70,5 +75,20 @@ it("assistant_text의 intent도 함께 찾는다", () => {
 
   const result = findTurnText(messages, 2);
 
+  expect(result.intent).toBe("RECOMMEND");
+});
+
+it("결과 카드 뒤에 오는 feedback 메시지 index로 찾아도 카드를 건너뛰고 같은 턴을 찾는다", () => {
+  const messages = [
+    userText("질문"),
+    assistantTextWithIntent("답변", "RECOMMEND"),
+    recommendationResult("card"),
+    feedbackMessage(),
+  ];
+
+  const result = findTurnText(messages, 3);
+
+  expect(result.userInput).toBe("질문");
+  expect(result.assistantMessage).toBe("답변");
   expect(result.intent).toBe("RECOMMEND");
 });

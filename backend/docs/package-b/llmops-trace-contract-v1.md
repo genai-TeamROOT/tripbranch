@@ -289,15 +289,25 @@ user_input/assistant_message와 같은 위험 등급(자유 텍스트)으로 취
 인라인 입력창(제출/건너뛰기)을 먼저 띄운 뒤 하나의 레코드로 함께
 보낸다 — append-only 구조에서 사유 없이 먼저 보내고 나중에 사유 있는
 레코드를 또 쌓으면 같은 run_id의 dislike가 `list_dislikes()`에서 중복
-집계되기 때문이다.
+집계되기 때문이다. DB 레벨에서도 500자 CHECK 제약이 걸려 있다(아래 참고).
 
 검토했지만 채택하지 않은 것(D-069 참고): 전 컬럼 NOT NULL(텍스트를 못
 찾는 예외 상황에서 rating 기록 자체가 실패하게 됨), `is_clarification`/
 `clarification_code`(되묻기 메시지에는 피드백 버튼 자체가 없어 채울
 방법이 없음).
 
-마이그레이션: `202608210003_add_feedback_intent_comment.sql` (nullable
-text 컬럼 2개 추가).
+**병합 후기**: 같은 날 develop에 팀원이 독립적으로 구현한 comment 기능
+PR이 먼저 merge됐다 — 같은 목적을 다른 방식으로 구현한 우연한 충돌.
+`comment` 컬럼·500자 DB CHECK 제약·`response_feedback_kst` 조회 뷰는
+develop의 마이그레이션(`202608210002_add_response_feedback_kst_view.sql`,
+`202608210003_add_comment_to_response_feedback.sql`)을 그대로 채택했고,
+FeedbackButtons UI도 아이콘 기반의 develop 버전(더 완성도 높음)을
+채택했다. intent만 이쪽 추가로 남았다. 마이그레이션 번호가 둘 다
+202608210002/003을 써서 겹쳐, 이쪽 파일은 004/005로 재번호했다.
+
+마이그레이션: `202608210004_add_feedback_turn_text.sql`(user_input/
+assistant_message 2개), `202608210005_add_feedback_intent.sql`(intent 1개 +
+조회 뷰에 새 컬럼들 반영).
 
 ---
 
@@ -310,5 +320,5 @@ text 컬럼 2개 추가).
 | 08-14 | 6.1절 신설 — 기본프로젝트 발표 피드백(프롬프트 개선 수치화 필요) 반영. Version Registry는 여전히 범위 밖이지만, 기존에 쓰던 벤치마크 스크립트+CSV+PR 수치 기록 패턴을 표준 절차로 명시하고 PROMPT_VERSION 변경 이력 표 신설(소급 가능한 범위만) |
 | 08-18 | PROMPT_VERSION 변경 이력 표에 1.0.13 행 추가(SCHEDULE 폐점 스탑 감지 프롬프트 힌트, int-07-schedule.md v2.2) |
 | 08-21 | 8절 신설 — 응답 피드백(좋아요/싫어요) 저장 기능(roadmap.md 14번) 추가. `record_feedback()` 신규 진입점, `response_feedback` 테이블, POST /api/feedback 엔드포인트. 이어서 조회·분석 기능(`list_dislikes()`, `get_dislike_feedback()`, GET /api/feedback/dislikes)도 같은 날 추가 — 저장만 하고 꺼내 쓰는 곳이 없으면 죽은 기능이라는 지적 반영 |
-| 08-21 | 8-1절 신설 — 피드백을 남긴 턴에 한해 질문·답변 원문(`user_input`/`assistant_message`)을 함께 저장(D-068). 테스트 중 피드백 검토 편의 목적, 전체 대화 로그 저장과는 다름. 마이그레이션 `202608210002_add_feedback_turn_text.sql` |
-| 08-21 | 8-2절 신설 — `intent`(assistant_text 메시지 값 복사)/`comment`(싫어요 사유 자유 텍스트) 확장(D-069). comment는 append-only 중복 방지를 위해 인라인 입력창(제출/건너뛰기)에서 한 번에 전송. 마이그레이션 `202608210003_add_feedback_intent_comment.sql` |
+| 08-21 | 8-1절 신설 — 피드백을 남긴 턴에 한해 질문·답변 원문(`user_input`/`assistant_message`)을 함께 저장(D-068). 테스트 중 피드백 검토 편의 목적, 전체 대화 로그 저장과는 다름. 마이그레이션 `202608210004_add_feedback_turn_text.sql`(develop merge로 002→004 재번호) |
+| 08-21 | 8-2절 신설 — `intent`(assistant_text 메시지 값 복사) 확장(D-069). comment는 같은 날 develop에 먼저 merge된 팀원 PR을 그대로 채택(DB 500자 CHECK 제약 포함), FeedbackButtons UI도 develop 버전 채택. 마이그레이션 `202608210005_add_feedback_intent.sql`(develop merge로 003→005 재번호) |

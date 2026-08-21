@@ -746,6 +746,30 @@ class CandidateConcentrationDebug(BaseModel):
     proxy_distance_km: float | None = None
 
 
+class LocationDebug(BaseModel):
+    """개발자용 Audit 전용: 이번 턴에 쓰인 위치 하나가 무엇이었는지.
+
+    name은 ResolvedLocation.resolved_name이 아니라 requested_query다. resolved_name은
+    지오코딩으로 풀리면 도로명 주소가 되어 표시용으로 쓸 수 없다고 C의 계약
+    (agent_context/schemas.py::ResolvedLocation)이 명시한다.
+
+    source는 그 좌표가 어디서 왔는지다. 검색 위치·사용자 위치는 C의
+    ResolvedLocation.source("query" / "device_gps")를 그대로 옮기고, 경로 시작점만
+    "search_center"를 추가로 쓴다 — 사용자 위치를 몰라 검색 위치로 대체한 경우다
+    (domain/ranking_origin.py::resolve_ranking_origin). 사용자가 자기 위치라고 말한
+    적 없는 좌표가 시작점이 된 상태라, 거리·경로 표기가 사실과 어긋나는지 화면에서
+    바로 가려내려면 이 구분이 필요하다.
+    """
+
+    # device_gps로 온 좌표에는 부를 이름이 없다 — C의 requested_query가 "gps_location"
+    # 이라는 자리표시자이므로 그대로 실으면 지명처럼 보인다. 그 경우 None으로 두고
+    # 표시는 소비 측이 좌표로 처리한다.
+    name: str | None = None
+    source: Literal["query", "device_gps", "search_center"]
+    latitude: float
+    longitude: float
+
+
 class ToolExecutionDebug(BaseModel):
     """개발자용 Audit 전용: A→C 호출 한 단계가 실제로 무엇을 했는지.
 
@@ -759,6 +783,7 @@ class ToolExecutionDebug(BaseModel):
         "context_fetch",
         "info_concentration",
         "info_realtime_commercial",
+        "info_realtime_population",
         "info_realtime_citydata",
         "candidate_enrichment",
         "compare_fetch",
@@ -771,6 +796,14 @@ class ToolExecutionDebug(BaseModel):
     rule_versions: dict[str, str] = Field(default_factory=dict)
     resolved_location_name: str | None = None
     resolved_location_address: str | None = None
+    # 이번 턴의 위치 세 갈래. 셋은 서로 다를 수 있고, 다른 것 자체가 관측 대상이다
+    # (TP-112: 후보를 **모으는** 중심과 후보를 **줄 세우는** 기준점은 다르다).
+    # route_origin.source가 "search_center"면 사용자 위치를 몰라 검색 위치로 대체한
+    # 턴이다. context_fetch(RECOMMEND)에서만 채워진다 — INFO/COMPARE는 C의 위치
+    # 해석을 거치지 않고 A가 기기 GPS로 직접 경로를 조회한다(agent_runtime.py).
+    search_location: LocationDebug | None = None
+    user_location: LocationDebug | None = None
+    route_origin: LocationDebug | None = None
     error_code: str | None = None
     clarification_code: str | None = None
     is_proxy: bool | None = None
@@ -812,9 +845,17 @@ class InfoPlaceCard(BaseModel):
     restroom: str | None = None
     homepage: str | None = None
     population_current_level: str | None = None
+    population_current_message: str | None = None
     population_observed_at: str | None = None
     population_forecasts: list[PopulationForecastBar] = Field(default_factory=list)
     concentration_forecasts: list[ConcentrationForecastBar] = Field(default_factory=list)
+    # 서울시 도시데이터는 관광 상세 DB가 아닌 지역 단위 실시간 데이터다. 기본 카드에는
+    # 질문에 대한 요약만 두고, 모달은 이 목록으로 추가 항목·이미지·원문 링크를 표시한다.
+    realtime_area_name: str | None = None
+    realtime_observed_at: str | None = None
+    realtime_source_url: str | None = None
+    realtime_map_url: str | None = None
+    realtime_detail_items: list[RealtimeInfoDetailItem] = Field(default_factory=list)
 
 
 class PopulationForecastBar(BaseModel):
@@ -831,6 +872,16 @@ class ConcentrationForecastBar(BaseModel):
     concentration_rate: float = Field(ge=0)
     concentration_level: str
     concentration_label: str
+
+
+class RealtimeInfoDetailItem(BaseModel):
+    """실시간 INFO 상세 모달에 표시하는 서울시 데이터 항목."""
+
+    title: str
+    subtitle: str | None = None
+    details: dict[str, str] = Field(default_factory=dict)
+    thumbnail_url: str | None = None
+    external_url: str | None = None
 
 
 class RecommendationPlaceDetailRequest(BaseModel):

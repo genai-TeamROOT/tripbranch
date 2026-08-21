@@ -15,6 +15,10 @@ from app.geo import haversine_km
 # 중심 좌표만으로 지역 경계를 완전히 재현하지는 않는다. 따라서 이 거리 안에서만
 # 최근접 대체를 허용한다. 응답에는 항상 대상 지역과 대체 거리를 함께 고지한다.
 COMMERCIAL_AREA_PROXY_MAX_DISTANCE_KM = 2.0
+# 실시간 인구 혼잡도는 "근처" 혼잡을 알려주는 용도이므로, 상권 활동 대체보다
+# 더 보수적인 거리만 허용한다. 멀리 떨어진 관광특구의 인파를 특정 명소의 현재
+# 혼잡처럼 보이게 하지 않기 위한 별도 기준이다.
+POPULATION_AREA_PROXY_MAX_DISTANCE_KM = 1.0
 
 
 @dataclass(frozen=True)
@@ -114,12 +118,16 @@ COMMERCIAL_AREAS = tuple(SeoulCommercialArea(*raw) for raw in _RAW_AREAS)
 
 
 def select_nearest_commercial_area(
-    *, latitude: float, longitude: float
+    *,
+    latitude: float,
+    longitude: float,
+    max_distance_km: float = COMMERCIAL_AREA_PROXY_MAX_DISTANCE_KM,
 ) -> tuple[SeoulCommercialArea, float] | None:
     """좌표에서 가장 가까운 상권 제공 지역을 반환한다.
 
-    지역 중심점이 2km를 넘으면 서울시 상권 제공 범위 밖으로 본다. 가까운 지역
-    데이터를 빌려 답할 때도 이 거리를 응답에 넣어 대체 사실을 숨기지 않는다.
+    기본값은 상권 활동 대체에 쓰는 2km다. 실시간 인구 혼잡처럼 더 가까운 지역만
+    허용해야 하는 경로는 ``max_distance_km``를 명시한다. 가까운 지역 데이터를
+    빌려 답할 때도 이 거리를 응답에 넣어 대체 사실을 숨기지 않는다.
     """
 
     area = min(
@@ -129,7 +137,7 @@ def select_nearest_commercial_area(
         ),
     )
     distance_km = haversine_km(latitude, longitude, area.latitude, area.longitude)
-    if distance_km > COMMERCIAL_AREA_PROXY_MAX_DISTANCE_KM:
+    if distance_km > max_distance_km:
         return None
     return area, round(distance_km, 2)
 
@@ -137,6 +145,7 @@ def select_nearest_commercial_area(
 __all__ = [
     "COMMERCIAL_AREAS",
     "COMMERCIAL_AREA_PROXY_MAX_DISTANCE_KM",
+    "POPULATION_AREA_PROXY_MAX_DISTANCE_KM",
     "SeoulCommercialArea",
     "select_nearest_commercial_area",
 ]
