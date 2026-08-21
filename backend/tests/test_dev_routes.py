@@ -325,6 +325,19 @@ def test_apply_rejects_snapshot_outside_data_dir(
     assert response.status_code == 400
 
 
+def _mock_no_backfill(monkeypatch: pytest.MonkeyPatch) -> None:
+    """상세 정보를 못 채운 장소가 없는 DB. 대조가 그것도 세기 때문에 필요하다."""
+    monkeypatch.setattr(settings, "supabase_url", "https://project.supabase.co")
+    monkeypatch.setattr(settings, "supabase_secret_key", "sb_secret_test")
+    monkeypatch.setattr(
+        dev_routes,
+        "status_client",
+        lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, json=[]))
+        ),
+    )
+
+
 def _baseline_name(area_code: str = "11", district_code: str = "110") -> str:
     """테스트용 기준 스냅샷 파일명. 구가 들어간 현재 규칙을 따른다."""
     return place_snapshot.snapshot_file_name(
@@ -337,6 +350,7 @@ def test_reconcile_writes_snapshot_and_selects_detail_targets(
 ) -> None:
     """대조는 목록 1회만 부르고 DB는 건드리지 않는다."""
     monkeypatch.setattr(dev_routes.place_snapshot, "DATA_DIR", tmp_path)
+    _mock_no_backfill(monkeypatch)
     baseline = {
         "1": _snapshot_row("1"),
         # 2번은 이번 목록에서 빠진다 → removed
@@ -379,6 +393,7 @@ def test_reconcile_reports_skipped_columns_from_old_baseline(
 ) -> None:
     """옛 스냅샷에 없는 열은 비교하지 않는다는 사실을 화면이 알아야 한다."""
     monkeypatch.setattr(dev_routes.place_snapshot, "DATA_DIR", tmp_path)
+    _mock_no_backfill(monkeypatch)
     old_row = _snapshot_row("1")
     del old_row["first_image_url"]
     del old_row["thumbnail_url"]
@@ -768,3 +783,72 @@ def test_apply_rejects_details_limit_below_one(
         )
 
     assert response.status_code == 422
+
+
+def test_reconcile_counts_places_missing_details_as_extra_calls(
+    monkeypatch: pytest.MonkeyPatch, _real_place: None, tmp_path
+) -> None:
+    """반영은 변경분과 **함께** pending·failed 장소도 부른다. 그 수를 대조가 알려야 한다.
+
+    2026-08-21 종로구 대조가 이 상태였다. 화면은 "상세조회 15회"라고 표시했지만
+    실제 반영은 못 채운 142건을 더해 157회를 썼을 것이다. 한도가 왜 줄었는지
+    설명할 수 없는 숫자가 된다.
+    """
+    monkeypatch.setattr(dev_routes.place_snapshot, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(settings, "supabase_url", "https://project.supabase.co")
+    monkeypatch.setattr(settings, "supabase_secret_key", "sb_secret_test")
+    place_snapshot.write_snapshot(
+        {"1": _snapshot_row("1"), "2": _snapshot_row("2"), "3": _snapshot_row("3")},
+        tmp_path / _baseline_name(),
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["detail_fetch_status"] == "in.(pending,failed)"
+        return httpx.Response(
+            200,
+            json=[
+                # 2번은 이번 변경분에도 들어 있다 — 두 번 세면 안 된다.
+                {"content_id": "2"},
+                {"content_id": "3"},
+                # 9번은 이번 목록에 없다(비활성). 동기화가 훑지 않으므로 제외한다.
+                {"content_id": "9"},
+            ],
+        )
+
+    monkeypatch.setattr(
+        dev_routes,
+        "status_client",
+        lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    async def fake_fetch(client, api_key, area, district, fetched_at):
+        return {
+            "1": _snapshot_row("1"),
+            "2": _snapshot_row("2", source_modified_at="2026-08-21T00:00:00+09:00"),
+            "3": _snapshot_row("3"),
+        }
+
+    monkeypatch.setattr(dev_routes.place_snapshot, "fetch_place_rows", fake_fetch)
+
+    with _client() as client:
+        payload = client.post("/api/dev/place-sync/reconcile", json={}).json()
+
+    assert payload["detail_content_ids"] == ["2"]
+    assert payload["detail_backfill_ids"] == ["3"]
+    assert payload["detail_backfill_checked"] is True
+
+
+@pytest.mark.asyncio
+async def test_detail_backfill_reports_unchecked_without_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """못 본 것과 "보충할 게 없다"를 0으로 뭉개면 예상 호출수가 확정값처럼 보인다."""
+    monkeypatch.setattr(settings, "supabase_url", "")
+    monkeypatch.setattr(settings, "supabase_secret_key", "")
+
+    ids, checked = await dev_routes._detail_backfill_ids(
+        "11", "110", {"1": _snapshot_row("1")}, frozenset()
+    )
+
+    assert ids == []
+    assert checked is False

@@ -139,9 +139,13 @@ export function DeveloperOpsPage() {
           areaCode: reconcile.area_code,
           districtCode: reconcile.district_code,
           snapshot: reconcile.snapshot,
-          detailContentIds: input.includeExcluded
-            ? [...reconcile.detail_content_ids, ...reconcile.detail_excluded_ids]
-            : reconcile.detail_content_ids,
+          /* 못 채운 건을 함께 보낸다. 서버가 알아서 더하기도 하지만, 보내지
+           * 않으면 job 파라미터의 대상 수가 화면이 예고한 수와 어긋난다. */
+          detailContentIds: [
+            ...reconcile.detail_content_ids,
+            ...(input.includeExcluded ? reconcile.detail_excluded_ids : []),
+            ...reconcile.detail_backfill_ids,
+          ],
           addedContentIds: reconcile.rows
             .filter((row) => row.change_type === "added")
             .map((row) => row.content_id),

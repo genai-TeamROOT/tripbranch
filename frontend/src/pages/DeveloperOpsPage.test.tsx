@@ -304,6 +304,8 @@ const reconcileResult = {
   counts: { added: 1, removed: 1, updated: 2 },
   detail_content_ids: ["3", "4"],
   detail_excluded_ids: ["1"],
+  detail_backfill_ids: [] as string[],
+  detail_backfill_checked: true,
   rows: [
     {
       content_id: "4",
@@ -546,4 +548,65 @@ it("DB로 기준을 만든 대조는 그 사실을 알린다", async () => {
   // 파일로 남지 않는 기준이라는 걸 모르면, 다음 대조에서 왜 기준이 바뀌었는지
   // 알 수 없다.
   expect(await screen.findByText(/places 테이블로 기준을 만들었어요/)).toBeInTheDocument();
+});
+
+
+it("지난 실행에서 못 채운 건까지 예상 호출수에 넣는다", async () => {
+  const posted: { url: string; body: unknown }[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "POST") posted.push({ url, body: JSON.parse(String(init.body)) });
+      const body = url.includes("reconcile")
+        ? { ...reconcileResult, detail_backfill_ids: ["7", "8", "9"] }
+        : url.includes("place-sync/apply") || url.includes("place-sync/jobs")
+          ? runningJob
+          : panelBody(url);
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }),
+  );
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.click(await screen.findByRole("button", { name: "1. 스냅샷 대조" }));
+
+  // 변경분 2 + 못 채운 3. 변경분만 세면 화면이 실제보다 훨씬 적은 수를 보여준다.
+  expect(
+    await screen.findByText(/상세조회 5회 \(이번 변경분 2 \+ 지난 실행에서 못 채운 3\)/),
+  ).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "2. 반영 실행" }));
+  await user.type(screen.getByLabelText("확인 문자열"), "11-110");
+  await user.click(screen.getByRole("button", { name: "실행" }));
+
+  const applyCall = posted.find((call) => call.url.includes("place-sync/apply"));
+  expect((applyCall?.body as { detail_content_ids: string[] }).detail_content_ids).toEqual(
+    ["3", "4", "7", "8", "9"],
+  );
+});
+
+it("못 채운 건을 확인하지 못하면 예상 호출수가 확정이 아님을 알린다", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const body = url.includes("reconcile")
+        ? { ...reconcileResult, detail_backfill_checked: false }
+        : panelBody(url);
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }),
+  );
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.click(await screen.findByRole("button", { name: "1. 스냅샷 대조" }));
+
+  expect(await screen.findByText(/확인하지 못했어요/)).toBeInTheDocument();
 });

@@ -989,6 +989,40 @@ class SupabasePlaceRepository:
             offset += _READ_PAGE_SIZE
         return rows
 
+    async def list_detail_backfill_ids(
+        self, area_code: str, district_code: str
+    ) -> list[str]:
+        """상세 정보를 아직 못 채운 장소의 content_id.
+
+        동기화는 대조가 정한 변경분 외에 이 장소들도 함께 부른다
+        (`PlaceSyncService._select_targets`) — 빼면 pending·failed가 영영 그대로
+        남기 때문이다. 그래서 "이번 반영이 상세조회를 몇 번 쓰는가"를 계산하려면
+        변경분만으로는 모자라고 이 목록이 필요하다.
+
+        `empty`는 넣지 않는다. TourAPI가 상세를 주지 않는 장소라 다시 불러도 계속
+        비어 있고, 대상에 넣으면 매번 같은 호출을 반복하게 된다.
+        """
+        response = await self._request(
+            "GET",
+            "/places",
+            params={
+                "select": "content_id",
+                "area_code": f"eq.{area_code}",
+                "district_code": f"eq.{district_code}",
+                "detail_fetch_status": "in.(pending,failed)",
+                "order": "content_id.asc",
+            },
+        )
+        payload = self._json(response)
+        if not isinstance(payload, list):
+            raise SupabaseRepositoryError("invalid detail backfill response")
+        ids: list[str] = []
+        for row in payload:
+            if not isinstance(row, Mapping) or not row.get("content_id"):
+                raise SupabaseRepositoryError("detail backfill row missing content_id")
+            ids.append(str(row["content_id"]))
+        return ids
+
     async def summarize_detail_calls_since(self, since: datetime) -> dict[str, int]:
         """`since` 이후 시작한 동기화가 부른 detailIntro2 수를 더한다.
 

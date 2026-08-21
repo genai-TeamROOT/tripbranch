@@ -335,9 +335,13 @@ export function PlaceSyncPanel({
   const expectedConfirm = reconcile
     ? `${reconcile.area_code}-${reconcile.district_code}`
     : "";
-  const detailCount =
+  const changedCount =
     (reconcile?.detail_content_ids.length ?? 0) +
     (includeExcluded ? (reconcile?.detail_excluded_ids.length ?? 0) : 0);
+  // 반영은 변경분과 함께 지난 실행에서 못 채운 건도 부른다. 빼고 세면 화면이
+  // 실제보다 훨씬 적은 수를 보여준다.
+  const backfillCount = reconcile?.detail_backfill_ids.length ?? 0;
+  const detailCount = changedCount + backfillCount;
   const parsedLimit = limitInput.trim() === "" ? null : Number(limitInput.trim());
   const detailsLimit =
     parsedLimit !== null && Number.isFinite(parsedLimit) && parsedLimit >= 1
@@ -428,6 +432,13 @@ export function PlaceSyncPanel({
             </p>
           )}
 
+          {!reconcile.detail_backfill_checked && (
+            <p className="mt-2 rounded-md bg-amber-50 p-3 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+              상세를 못 채운 장소가 DB에 얼마나 있는지 확인하지 못했어요. 반영은 그
+              장소들도 함께 부르므로, 아래 예상 호출수보다 실제가 많을 수 있어요.
+            </p>
+          )}
+
           {reconcile.skipped_columns.length > 0 && (
             <p className="mt-2 rounded-md bg-amber-50 p-3 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
               기준 스냅샷에 없는 열은 비교하지 않았어요:{" "}
@@ -493,6 +504,8 @@ export function PlaceSyncPanel({
             </label>
             <span className="text-xs text-gray-500">
               예상 외부 호출: 목록 0회 + 상세조회 {plannedCalls}회
+              {backfillCount > 0 &&
+                ` (이번 변경분 ${changedCount} + 지난 실행에서 못 채운 ${backfillCount})`}
               {dryRun ? "" : " · DB 쓰기 있음"}
             </span>
             <button
@@ -526,7 +539,11 @@ export function PlaceSyncPanel({
             <ul className="mt-3 space-y-1 text-xs text-gray-600 dark:text-gray-300">
               <li>· 대상: {expectedConfirm}</li>
               <li>· 스냅샷: {reconcile.snapshot}</li>
-              <li>· 상세조회 {plannedCalls}회 (TourAPI detailIntro2)</li>
+              <li>
+                · 상세조회 {plannedCalls}회 (TourAPI detailIntro2)
+                {backfillCount > 0 &&
+                  ` — 이번 변경분 ${changedCount} + 지난 실행에서 상세를 못 채운 ${backfillCount}`}
+              </li>
               <li>
                 · 신규 {reconcile.counts.added} / 수정 {reconcile.counts.updated} / 삭제{" "}
                 {reconcile.counts.removed}
