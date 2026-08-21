@@ -184,3 +184,100 @@ it("혼잡도 카드(place_id 없음)도 이름으로 상세를 보강 조회한
   const dialog = screen.getByRole("dialog", { name: "창덕궁" });
   expect(within(dialog).getByText("창덕궁 상세 개요")).toBeInTheDocument();
 });
+
+it("실시간 도시데이터 카드는 모달에서 추가 항목과 출처를 표시한다", async () => {
+  const user = userEvent.setup();
+  const realtimeCard: InfoPlaceCardData = {
+    ...card,
+    question_type: "realtime_event",
+    answer_fields: { "테스트 행사": "2026-08-20~2026-08-21 · 광화문광장" },
+    thumbnail_url: null,
+    overview: null,
+    operating_hours: null,
+    rest_date: null,
+    parking: null,
+    parking_fee: null,
+    fee: null,
+    baby_carriage: null,
+    credit_card: null,
+    restroom: null,
+    homepage: null,
+    realtime_area_name: "광화문·덕수궁",
+    realtime_observed_at: "8월 20일 16:20",
+    realtime_source_url: "https://data.seoul.go.kr/example",
+    realtime_detail_items: [
+      {
+        title: "테스트 행사",
+        subtitle: "2026-08-20~2026-08-21",
+        details: { 장소: "광화문광장" },
+        thumbnail_url: "https://example.test/event.jpg",
+        external_url: "https://example.test/event",
+      },
+    ],
+  };
+
+  renderWithTrip(<PlaceInfoCard card={realtimeCard} />);
+  await user.click(screen.getByRole("button", { name: "경복궁 상세 보기" }));
+
+  const dialog = screen.getByRole("dialog");
+  expect(within(dialog).getByText("실시간 지역 정보")).toBeInTheDocument();
+  expect(within(dialog).getByText("광화문·덕수궁 · 8월 20일 16:20 기준")).toBeInTheDocument();
+  expect(within(dialog).getByRole("img", { name: "테스트 행사 이미지" })).toBeInTheDocument();
+  expect(within(dialog).getByRole("link", { name: "서울시 데이터 출처 ↗" })).toHaveAttribute(
+    "href",
+    "https://data.seoul.go.kr/example",
+  );
+  expect(within(dialog).getByRole("link", { name: "자세히 보기 ↗" })).toHaveAttribute(
+    "href",
+    "https://example.test/event",
+  );
+});
+
+it("실시간 인구 혼잡도 카드는 안내 문구와 서울시 지도 미리보기를 표시한다", async () => {
+  const user = userEvent.setup();
+  const populationCard: InfoPlaceCardData = {
+    ...card,
+    question_type: "concentration",
+    answer_fields: { concentration: "보통" },
+    thumbnail_url: null,
+    overview: null,
+    operating_hours: null,
+    rest_date: null,
+    parking: null,
+    parking_fee: null,
+    fee: null,
+    baby_carriage: null,
+    credit_card: null,
+    restroom: null,
+    homepage: null,
+    realtime_area_name: "성수카페거리",
+    realtime_observed_at: "8월 20일 11:40",
+    population_current_message: "사람이 몰려있을 수 있지만 크게 붐비지는 않아요.",
+    realtime_map_url: "https://data.seoul.go.kr/SeoulRtd/map?hotspotNm=%EC%84%B1%EC%88%98%EC%B9%B4%ED%8E%98%EA%B1%B0%EB%A6%AC&y=127.0&x=37.5",
+    realtime_detail_items: [
+      {
+        title: "혼잡도 안내",
+        subtitle: "보통",
+        details: { 안내: "사람이 몰려있을 수 있지만 크게 붐비지는 않아요." },
+        thumbnail_url: null,
+        external_url: null,
+      },
+    ],
+  };
+
+  renderWithTrip(<PlaceInfoCard card={populationCard} />);
+  await user.click(screen.getByRole("button", { name: "경복궁 상세 보기" }));
+
+  const dialog = screen.getByRole("dialog");
+  expect(within(dialog).getByText("혼잡도 안내")).toBeInTheDocument();
+  expect(within(dialog).getByText("사람이 몰려있을 수 있지만 크게 붐비지는 않아요.")).toBeInTheDocument();
+  expect(within(dialog).getByRole("link", { name: "실시간 혼잡도 지도 ↗" })).toHaveAttribute(
+    "href",
+    populationCard.realtime_map_url,
+  );
+  expect(within(dialog).getByTitle("성수카페거리 실시간 혼잡도 지도")).toHaveAttribute(
+    "src",
+    populationCard.realtime_map_url,
+  );
+  expect(screen.getByText("사람이 몰려있을 수 있지만 크게 붐비지는 않아요.")).toBeInTheDocument();
+});

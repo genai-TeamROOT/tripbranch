@@ -23,6 +23,7 @@ from app.agent_context.info_schemas import (
     InfoContextResponse,
     RealtimeCityInfoResult,
     RealtimeCommercialInfoResult,
+    RealtimePopulationInfoResult,
 )
 from app.agent_context.schemas import (
     AgentContextResponse,
@@ -173,6 +174,8 @@ def build_info_concentration_execution_debug(
             operation=(
                 "info_realtime_commercial"
                 if isinstance(result, RealtimeCommercialInfoResult)
+                else "info_realtime_population"
+                if isinstance(result, RealtimePopulationInfoResult)
                 else "info_realtime_citydata"
                 if isinstance(result, RealtimeCityInfoResult)
                 else "info_concentration"

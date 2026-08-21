@@ -136,9 +136,15 @@ export interface InfoPlaceCard {
   restroom: string | null;
   homepage: string | null;
   population_current_level?: string | null;
+  population_current_message?: string | null;
   population_observed_at?: string | null;
   population_forecasts?: PopulationForecastBar[];
   concentration_forecasts?: ConcentrationForecastBar[];
+  realtime_area_name?: string | null;
+  realtime_observed_at?: string | null;
+  realtime_source_url?: string | null;
+  realtime_map_url?: string | null;
+  realtime_detail_items?: RealtimeInfoDetailItem[];
 }
 
 export interface PopulationForecastBar {
@@ -153,6 +159,15 @@ export interface ConcentrationForecastBar {
   concentration_rate: number;
   concentration_level: string;
   concentration_label: string;
+}
+
+/** 서울시 실시간 도시데이터를 상세 모달에 표시하는 항목. */
+export interface RealtimeInfoDetailItem {
+  title: string;
+  subtitle: string | null;
+  details: Record<string, string>;
+  thumbnail_url: string | null;
+  external_url: string | null;
 }
 
 /** 추천 카드 클릭 시 C PlaceDetails를 직접 조회하는 응답이다. */
@@ -223,9 +238,6 @@ export type ChatMessage =
       elapsed_ms: number;
       /* 백엔드가 보고한 서버 처리 시간(ms). 네트워크·렌더 시간은 포함하지 않는다. */
       server_elapsed_ms: number;
-      /* 좋아요/싫어요 피드백을 이 턴(run)에 연결하기 위한 식별자. */
-      sessionId: string;
-      runId: string;
     }
   | {
       id: string;
@@ -234,9 +246,6 @@ export type ChatMessage =
       /* 일정 요청 클릭부터 응답 수신까지의 클라이언트 실측 시간(ms).
          recommendation_result의 elapsed_ms와 같은 역할이다. */
       elapsed_ms: number;
-      /* 좋아요/싫어요 피드백을 이 턴(run)에 연결하기 위한 식별자. */
-      sessionId: string;
-      runId: string;
     }
   | {
       id: string;
@@ -247,6 +256,17 @@ export type ChatMessage =
       id: string;
       type: "compare_result";
       comparison: ComparisonResult;
+    }
+  /*
+   * 인텐트와 무관하게 턴 하나가 완결된 답변을 냈을 때(되묻기·에러 제외) 그 턴의
+   * 모든 메시지(텍스트+카드) 뒤에 한 번만 붙는 좋아요/싫어요 컨트롤. 결과별
+   * 컴포넌트마다 따로 붙이지 않고 여기서 한 곳에 모아 모든 인텐트를 덮는다.
+   */
+  | {
+      id: string;
+      type: "feedback";
+      sessionId: string;
+      runId: string;
     }
   | {
       id: string;
@@ -570,7 +590,7 @@ export interface CandidateConcentrationDebug {
 }
 
 export interface ToolExecutionDebug {
-  operation?: "context_fetch" | "info_concentration" | "info_realtime_commercial" | "info_realtime_citydata" | "candidate_enrichment" | "compare_fetch";
+  operation?: "context_fetch" | "info_concentration" | "info_realtime_commercial" | "info_realtime_population" | "info_realtime_citydata" | "candidate_enrichment" | "compare_fetch";
   request_id: string;
   status: string;
   latency_ms: number | null;

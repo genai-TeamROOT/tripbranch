@@ -14,7 +14,11 @@ from app.agent_context.enrichment_schemas import (
     CandidateEnrichmentResult,
     ConcentrationForecastData,
 )
-from app.agent_context.info_schemas import ConcentrationInfoResult, InfoContextResponse
+from app.agent_context.info_schemas import (
+    ConcentrationInfoResult,
+    InfoContextResponse,
+    RealtimePopulationInfoResult,
+)
 from app.agent_context.schemas import (
     AgentContextResponse,
     Clarification,
@@ -194,6 +198,27 @@ def test_info_혼잡도_조회도_독립_감사_단계로_변환한다() -> None
     assert debug.resolved_location_name == "경복궁"
     assert debug.context_items[0].key == "concentration"
     assert {provider.source for provider in debug.providers} == {"tour_api"}
+
+
+def test_info_실시간_인구_조회는_별도_감사_단계로_변환한다() -> None:
+    response = InfoContextResponse(
+        request_id="population-1",
+        status="success",
+        result=RealtimePopulationInfoResult(
+            status="success",
+            requested_place_name="경복궁",
+            resolved_place_name="경복궁",
+            area_name="광화문·덕수궁",
+            current_congestion_level="보통",
+        ),
+    )
+
+    debug = build_info_concentration_execution_debug(response, latency_ms=80)
+
+    assert debug is not None
+    assert debug.operation == "info_realtime_population"
+    assert debug.is_proxy is True
+    assert debug.resolved_location_name == "경복궁"
 
 
 def test_후보_보강_조회는_후보별_상태_집계를_남긴다() -> None:

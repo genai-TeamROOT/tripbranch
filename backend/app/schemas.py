@@ -759,6 +759,7 @@ class ToolExecutionDebug(BaseModel):
         "context_fetch",
         "info_concentration",
         "info_realtime_commercial",
+        "info_realtime_population",
         "info_realtime_citydata",
         "candidate_enrichment",
         "compare_fetch",
@@ -812,9 +813,17 @@ class InfoPlaceCard(BaseModel):
     restroom: str | None = None
     homepage: str | None = None
     population_current_level: str | None = None
+    population_current_message: str | None = None
     population_observed_at: str | None = None
     population_forecasts: list[PopulationForecastBar] = Field(default_factory=list)
     concentration_forecasts: list[ConcentrationForecastBar] = Field(default_factory=list)
+    # 서울시 도시데이터는 관광 상세 DB가 아닌 지역 단위 실시간 데이터다. 기본 카드에는
+    # 질문에 대한 요약만 두고, 모달은 이 목록으로 추가 항목·이미지·원문 링크를 표시한다.
+    realtime_area_name: str | None = None
+    realtime_observed_at: str | None = None
+    realtime_source_url: str | None = None
+    realtime_map_url: str | None = None
+    realtime_detail_items: list[RealtimeInfoDetailItem] = Field(default_factory=list)
 
 
 class PopulationForecastBar(BaseModel):
@@ -831,6 +840,16 @@ class ConcentrationForecastBar(BaseModel):
     concentration_rate: float = Field(ge=0)
     concentration_level: str
     concentration_label: str
+
+
+class RealtimeInfoDetailItem(BaseModel):
+    """실시간 INFO 상세 모달에 표시하는 서울시 데이터 항목."""
+
+    title: str
+    subtitle: str | None = None
+    details: dict[str, str] = Field(default_factory=dict)
+    thumbnail_url: str | None = None
+    external_url: str | None = None
 
 
 class RecommendationPlaceDetailRequest(BaseModel):

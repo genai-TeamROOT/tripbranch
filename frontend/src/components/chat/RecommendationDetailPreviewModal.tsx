@@ -25,6 +25,9 @@ interface RecommendationDetailPreviewModalProps {
  * 전체 PlaceDetails를 보강 조회해, 답변 단계의 불필요한 상세 API 호출은 피한다.
  */
 function needsDetailEnrichment(card: InfoPlaceCard | undefined): boolean {
+  // 실시간 도시데이터 INFO는 이미 지역 단위 상세·지도 링크를 응답에 실었다.
+  // 관광 PlaceDetails를 다시 조회하면 이 값을 덮어써 모달의 실시간 근거가 사라진다.
+  if (card?.realtime_map_url || (card?.realtime_detail_items?.length ?? 0) > 0) return false;
   return Boolean(
     card && ["location_info", "concentration", "event"].includes(card.question_type),
   );
@@ -59,9 +62,11 @@ const ANSWER_FIELD_LABELS: Record<string, string> = {
   concentration: "혼잡도",
   event: "행사",
   "상권 지역": "상권 지역",
-  "카페 업종": "카페 업종",
+  "상권 기준": "상권 기준",
+  "업종": "업종",
   "실시간 활동": "실시간 활동",
   "기준 시각": "기준 시각",
+  "안내": "안내",
   operating_hours: "운영시간",
   rest_date: "휴무일",
   parking: "주차",
@@ -204,6 +209,100 @@ function AnswerValue({ value }: { value: string }) {
   );
 }
 
+function RealtimeDetailEntries({ card }: { card: InfoPlaceCard }) {
+  const items = card.realtime_detail_items ?? [];
+  if (items.length === 0 && !card.realtime_map_url && !card.realtime_source_url) return null;
+
+  return (
+    <section className="rounded-xl border border-sky-100 bg-sky-50/70 p-4 dark:border-sky-900/60 dark:bg-sky-950/20">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">실시간 지역 정보</h3>
+          <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-300">
+            {card.realtime_area_name ?? "가까운 서울시 제공 지역"}
+            {card.realtime_observed_at ? ` · ${card.realtime_observed_at} 기준` : ""}
+          </p>
+        </div>
+        {card.realtime_source_url && (
+          <a
+            href={card.realtime_source_url}
+            target="_blank"
+            rel="noreferrer"
+            className="rounded-full border border-sky-200 bg-white px-2.5 py-1 text-xs font-medium text-sky-700 hover:bg-sky-100 dark:border-sky-800 dark:bg-gray-900 dark:text-sky-300 dark:hover:bg-sky-900/50"
+          >
+            서울시 데이터 출처 ↗
+          </a>
+        )}
+        {card.realtime_map_url && (
+          <a
+            href={card.realtime_map_url}
+            target="_blank"
+            rel="noreferrer"
+            className="rounded-full border border-sky-200 bg-white px-2.5 py-1 text-xs font-medium text-sky-700 hover:bg-sky-100 dark:border-sky-800 dark:bg-gray-900 dark:text-sky-300 dark:hover:bg-sky-900/50"
+          >
+            실시간 혼잡도 지도 ↗
+          </a>
+        )}
+      </div>
+      {card.realtime_map_url && (
+        <iframe
+          title={`${card.realtime_area_name ?? "서울시"} 실시간 혼잡도 지도`}
+          src={card.realtime_map_url}
+          loading="lazy"
+          className="mt-3 h-[78vh] min-h-[680px] w-full rounded-lg border border-sky-100 bg-white dark:border-sky-900/60 dark:bg-gray-900"
+        />
+      )}
+      <div className="mt-3 space-y-3">
+        {items.map((item, index) => (
+          <article
+            key={`${item.title}-${index}`}
+            className="overflow-hidden rounded-lg border border-sky-100 bg-white dark:border-sky-900/60 dark:bg-gray-900"
+          >
+            {item.thumbnail_url && (
+              <img
+                src={item.thumbnail_url}
+                alt={`${item.title} 이미지`}
+                loading="lazy"
+                className="h-36 w-full bg-gray-100 object-cover dark:bg-gray-800"
+              />
+            )}
+            <div className="p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{item.title}</h4>
+                  {item.subtitle && (
+                    <p className="mt-0.5 text-sm text-sky-700 dark:text-sky-300">{item.subtitle}</p>
+                  )}
+                </div>
+                {item.external_url && (
+                  <a
+                    href={item.external_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="shrink-0 text-xs font-medium text-blue-700 hover:underline dark:text-blue-300"
+                  >
+                    자세히 보기 ↗
+                  </a>
+                )}
+              </div>
+              {Object.keys(item.details).length > 0 && (
+                <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
+                  {Object.entries(item.details).map(([key, value]) => (
+                    <div key={key} className="min-w-0">
+                      <dt className="text-gray-500 dark:text-gray-400">{key}</dt>
+                      <dd className="mt-0.5 break-words text-gray-800 dark:text-gray-100">{value}</dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 /** 추천/INFO 어디서 열어도 같은 모양으로 PlaceDetails를 보여주는 상세 모달이다. */
 export function RecommendationDetailPreviewModal({
   item,
@@ -224,6 +323,8 @@ export function RecommendationDetailPreviewModal({
   const answerEntries = detailCard
     ? Object.entries(detailCard.answer_fields).filter(([key]) => key !== "overview")
     : [];
+  const hasRealtimeDetails =
+    (detailCard?.realtime_detail_items?.length ?? 0) > 0 || Boolean(detailCard?.realtime_map_url);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -319,11 +420,11 @@ export function RecommendationDetailPreviewModal({
               alt={`${detailCard.place_name ?? title} 이미지`}
               className="h-56 w-full rounded-xl bg-gray-100 object-cover dark:bg-gray-800"
             />
-          ) : (
+          ) : !hasRealtimeDetails ? (
             <div className="flex h-56 items-center justify-center rounded-xl border border-dashed border-gray-300 bg-gray-50 text-sm text-gray-500 dark:border-gray-700 dark:bg-gray-800/60 dark:text-gray-400">
               {detailStatus === "unavailable" ? "상세 정보를 불러오지 못했어요." : "등록된 이미지가 없어요."}
             </div>
-          )}
+          ) : null}
 
           {canRoute && detailCard && (
             <button
@@ -379,6 +480,7 @@ export function RecommendationDetailPreviewModal({
                   </dl>
                 </section>
               )}
+              <RealtimeDetailEntries card={detailCard} />
               {detailCard.overview && (
                 <section>
                   <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">개요</h3>
