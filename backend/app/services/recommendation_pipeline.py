@@ -46,6 +46,7 @@ from app.recommendation_limits import DEFAULT_RECOMMENDATION_RESULT_LIMIT
 from app.schemas import (
     RecommendationItem,
     RecommendationResponse,
+    TasteEvidenceQuote,
     UserConditions,
     WeatherIntent,
 )
@@ -531,6 +532,10 @@ async def rerank_with_concentration(
                 for contribution in evidence.contributions
                 if contribution.weight is not None
             },
+            # 2차는 후보를 다시 만들지 않으므로 취향 근거도 1차 값을 그대로
+            # 가져온다 — 여기서 빠뜨리면 혼잡도 재순위를 탄 요청만 이 필드가
+            # 조용히 사라진다(travel_distance_m과 같은 이유, 위 주석 참고).
+            taste_evidence=item.taste_evidence,
         )
         (unverified if is_unverified else verified).append(new_item)
 
@@ -731,6 +736,10 @@ def _build_response(
                 for contribution in evidence.contributions
                 if contribution.weight is not None
             },
+            taste_evidence=[
+                TasteEvidenceQuote(text=snippet.source_text, similarity=snippet.similarity)
+                for snippet in ranked_item.taste_evidence
+            ],
         )
         (unverified if ranked_item.is_unverified else verified).append(item)
 

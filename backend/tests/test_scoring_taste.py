@@ -9,6 +9,7 @@ import pytest
 from app.domain.models import (
     OperatingHours,
     PlaceEvidenceMatch,
+    PlaceEvidenceSnippet,
     ScoringCandidate,
     WeatherCondition,
 )
@@ -39,12 +40,14 @@ def _prepared(place_id: str, distance_km: float = 0.5) -> PreparedCandidate:
     )
 
 
-def _match(place_id: str, avg: float) -> PlaceEvidenceMatch:
+def _match(
+    place_id: str, avg: float, snippets: tuple[PlaceEvidenceSnippet, ...] = ()
+) -> PlaceEvidenceMatch:
     return PlaceEvidenceMatch(
         content_id=place_id,
         place_title=f"장소 {place_id}",
         avg_similarity=avg,
-        snippets=(),
+        snippets=snippets,
     )
 
 
@@ -88,6 +91,35 @@ def test_candidate_without_evidence_scores_zero_not_missing() -> None:
     by_id = {r.place_id: r for r in result.ranked}
     assert by_id["b"].feature_scores["taste"] == 0.0
     assert by_id["b"].weights_used["taste"] == TASTE_WEIGHTS["taste"]
+
+
+def test_ranked_candidate_carries_every_evidence_snippet_not_just_top1() -> None:
+    """taste_evidence_text는 1위 인용만 담지만, taste_evidence는 검색이 찾은
+    문장 전부를 유사도 내림차순으로 들고 있어야 한다 — 개발자 디버그 화면이
+    "왜 0점인지"를 원문으로 확인하려면 1건으로는 부족하다.
+    """
+    snippets = (
+        PlaceEvidenceSnippet(
+            source_text="평화롭고 고요한 곳", source_url=None, similarity=0.6, published_at=None
+        ),
+        PlaceEvidenceSnippet(
+            source_text="조용히 쉬기 좋았어요", source_url=None, similarity=0.5, published_at=None
+        ),
+    )
+    result = _score(
+        [_prepared("a"), _prepared("b")],
+        taste_matches={"a": _match("a", 0.55, snippets)},
+    )
+
+    by_id = {r.place_id: r for r in result.ranked}
+    assert by_id["a"].taste_evidence_text == "평화롭고 고요한 곳"
+    assert [s.source_text for s in by_id["a"].taste_evidence] == [
+        "평화롭고 고요한 곳",
+        "조용히 쉬기 좋았어요",
+    ]
+    # 근거 없는 후보는 인용문도 없다 — 0점과 짝이 맞아야 한다.
+    assert by_id["b"].taste_evidence_text is None
+    assert by_id["b"].taste_evidence == ()
 
 
 @pytest.mark.parametrize(

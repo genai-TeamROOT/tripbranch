@@ -24,6 +24,7 @@ from app.concentration_policy import ConcentrationLevel
 from app.domain.models import (
     OperatingHours,
     PlaceEvidenceMatch,
+    PlaceEvidenceSnippet,
     ScoringCandidate,
     WeatherCondition,
 )
@@ -248,6 +249,10 @@ class RankedCandidate:
     # 취향 근거로 쓴 문장 원문(유사도 1위). 근거 문장이 "왜 취향에 맞는지"를
     # 사람 말로 설명하는 데 쓴다 — 점수만으로는 납득이 안 된다.
     taste_evidence_text: str | None = None
+    # 검색이 실제로 찾은 근거 문장 전부(장소당 최대 DEFAULT_MATCH_COUNT건, 유사도
+    # 내림차순). taste_evidence_text는 이 중 1위만 문장 조립용으로 뽑은 것이고,
+    # 이건 개발자 디버그 화면이 "taste=0인데 왜 0인지"를 원문으로 확인하는 데 쓴다.
+    taste_evidence: tuple[PlaceEvidenceSnippet, ...] = ()
     # D-040: 2차 Scoring(rerank_with_concentration())에서만 채워진다. 1차 Scoring
     # 결과는 concentration 자체를 모르므로 항상 None이다 — explanation.py가 문장을
     # "한적함/보통/다소 혼잡/혼잡" 중 무엇으로 쓸지 고르는 데 필요하다(direction이
@@ -392,6 +397,15 @@ def _taste_evidence_text(match: PlaceEvidenceMatch | None) -> str | None:
     if match is None or not match.snippets:
         return None
     return match.snippets[0].source_text
+
+
+def _taste_evidence_snippets(
+    match: PlaceEvidenceMatch | None,
+) -> tuple[PlaceEvidenceSnippet, ...]:
+    """검색이 찾은 근거 문장 전부를 유사도 내림차순으로 그대로 넘긴다."""
+    if match is None:
+        return ()
+    return match.snippets
 
 
 def _travel_minutes_budget(max_distance_km: float, mode: TravelMode) -> float:
@@ -779,6 +793,9 @@ def score_prepared_candidates(
             ),
             travel_mode=_travel_mode_of(routes_by_place_id.get(candidate.place_id)),
             taste_evidence_text=_taste_evidence_text(
+                taste_by_place_id.get(candidate.place_id)
+            ),
+            taste_evidence=_taste_evidence_snippets(
                 taste_by_place_id.get(candidate.place_id)
             ),
         )
