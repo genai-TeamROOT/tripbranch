@@ -484,6 +484,8 @@ export interface RecordFeedbackRequest {
   session_id: string;
   run_id: string;
   rating: "like" | "dislike";
+  /** "싫어요" 클릭 시 선택적으로 남기는 짧은 사유(최대 500자). */
+  comment?: string;
 }
 
 /** POST /api/feedback 응답. */

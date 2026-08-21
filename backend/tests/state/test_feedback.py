@@ -49,6 +49,31 @@ class TestRecordFeedback:
         assert saved.rating == "like"
 
 
+class TestComment:
+    """싫어요 클릭 시 선택적으로 남기는 사유 텍스트."""
+
+    def test_comment을_전달하면_그대로_저장된다(self, store):
+        record_feedback(store, rating="dislike", comment="장소가 너무 멀어요")
+
+        [saved] = feedback_module.get_feedback(store, "sess_test")
+        assert saved.comment == "장소가 너무 멀어요"
+
+    def test_comment을_생략하면_None이다(self, store):
+        record_feedback(store, rating="dislike")
+
+        [saved] = feedback_module.get_feedback(store, "sess_test")
+        assert saved.comment is None
+
+    def test_500자를_넘으면_거부된다(self):
+        with pytest.raises(ValidationError):
+            svc.RecordFeedbackRequest(
+                session_id="sess_test",
+                run_id="run_test",
+                rating="dislike",
+                comment="x" * 501,
+            )
+
+
 class TestInvalidRating:
     """RecordTraceRequest.step과 달리 rating은 B가 검증하는 예외적인 필드다."""
 

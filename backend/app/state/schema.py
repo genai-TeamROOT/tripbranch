@@ -248,9 +248,14 @@ class FeedbackRecord(BaseModel):
     만든 개별 단계(LLM 호출/Tool 호출/Scoring)에 반응하는 게 아니다.
     rating은 화면 버튼이 만드는 고정된 두 값이라(TraceRecord의 step 등과
     달리 호출자가 자유롭게 정하는 값이 아니다) Literal로 검증한다.
+
+    comment는 "싫어요" 클릭 시 사용자가 선택적으로 남기는 짧은 사유다. like에는
+    입력창을 보여주지 않으므로 사실상 dislike 전용이지만, 스키마에서 rating으로
+    강제하지는 않는다 — 화면 흐름이 바뀌어도 스키마를 다시 손대지 않게 한다.
     """
 
     session_id: str
     run_id: str
     rating: Literal["like", "dislike"]
+    comment: str | None = Field(default=None, max_length=500)
     recorded_at: datetime = Field(default_factory=now_kst)
