@@ -282,14 +282,24 @@ class RecordFeedbackRequest(BaseModel):
 
     rating은 FeedbackRecord가 "like"/"dislike"로 검증한다 — RecordTraceRequest의
     step 등과 달리 B가 값을 검증하는 예외적인 필드다.
+
+    user_input/assistant_message는 2026-08-21 추가된 선택 필드다. 프론트가
+    피드백을 남긴 턴의 질문·답변 텍스트를 함께 보내면 그대로 저장한다 —
+    FeedbackRecord 스키마 docstring의 원문 저장 범위 설명 참고.
+
+    intent도 같은 날 추가된 선택 필드다. 그 턴의 assistant_text 메시지가
+    이미 들고 있는 값을 그대로 전달받아 저장한다.
+
+    comment는 "싫어요" 사유로 사용자가 직접 남긴 자유 텍스트다(develop PR에서
+    병합, D-069) — 짧은 사유라는 용도에 맞춰 500자로 길이를 제한한다.
     """
 
     session_id: str
     run_id: str
     rating: Literal["like", "dislike"]
-    intent: str | None = None
     user_input: str | None = None
     assistant_message: str | None = None
+    intent: str | None = None
     reason_code: FeedbackReasonCode | None = None
     comment: str | None = Field(default=None, max_length=500)
 
@@ -799,9 +809,9 @@ def record_feedback(
         request.session_id,
         request.run_id,
         request.rating,
-        intent=request.intent,
         user_input=request.user_input,
         assistant_message=request.assistant_message,
+        intent=request.intent,
         reason_code=request.reason_code,
         comment=request.comment,
     )

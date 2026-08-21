@@ -14,9 +14,9 @@ def record(
     session_id: str,
     run_id: str,
     rating: str,
-    intent: str | None = None,
     user_input: str | None = None,
     assistant_message: str | None = None,
+    intent: str | None = None,
     reason_code: str | None = None,
     comment: str | None = None,
 ) -> FeedbackRecord:
@@ -25,14 +25,18 @@ def record(
     rating은 FeedbackRecord가 "like"/"dislike"로 검증한다 — 잘못된 값이면
     여기서 즉시 pydantic ValidationError가 난다(TraceRecord의 step 등과
     달리 B가 값을 검증하는 예외적인 필드, 스키마 docstring 참고).
+
+    user_input/assistant_message/intent/comment는 모두 선택 필드다 — 프론트가
+    안 보내면 None으로 저장되고 rating 기록 자체는 그대로 유효하다(스키마
+    docstring 참고).
     """
     feedback = FeedbackRecord(
         session_id=session_id,
         run_id=run_id,
         rating=rating,
-        intent=intent,
         user_input=user_input,
         assistant_message=assistant_message,
+        intent=intent,
         reason_code=reason_code,
         comment=comment,
         recorded_at=now_kst(),

@@ -63,6 +63,52 @@ class TestRecordFeedback:
         assert saved.rating == "like"
 
 
+class TestFeedbackTurnText:
+    """user_input/assistant_message는 선택 필드다 — 피드백을 남긴 턴에 한해서만
+    질문·답변 원문을 함께 저장한다(대화 전체 로그와는 다르다)."""
+
+    def test_원문을_함께_보내면_그대로_저장된다(self, store):
+        record_feedback(
+            store,
+            rating="dislike",
+            user_input="경복궁 근처 카페 추천해줘",
+            assistant_message="이런 곳들을 찾아봤어요.",
+        )
+
+        [saved] = feedback_module.get_feedback(store, "sess_test")
+        assert saved.user_input == "경복궁 근처 카페 추천해줘"
+        assert saved.assistant_message == "이런 곳들을 찾아봤어요."
+
+    def test_원문을_안_보내면_None으로_저장된다(self, store):
+        record_feedback(store, rating="like")
+
+        [saved] = feedback_module.get_feedback(store, "sess_test")
+        assert saved.user_input is None
+        assert saved.assistant_message is None
+
+
+class TestFeedbackIntentComment:
+    """intent(분류 결과 복사)/comment(싫어요 사유 자유 텍스트)도 선택 필드다."""
+
+    def test_intent와_comment를_함께_보내면_그대로_저장된다(self, store):
+        record_feedback(
+            store,
+            rating="dislike",
+            intent="RECOMMEND",
+            comment="추천 장소가 너무 멀어요",
+        )
+
+        [saved] = feedback_module.get_feedback(store, "sess_test")
+        assert saved.intent == "RECOMMEND"
+        assert saved.comment == "추천 장소가 너무 멀어요"
+
+    def test_안_보내면_None으로_저장된다(self, store):
+        record_feedback(store, rating="like")
+
+        [saved] = feedback_module.get_feedback(store, "sess_test")
+        assert saved.intent is None
+        assert saved.comment is None
+
 class TestComment:
     """싫어요 표준 사유와 선택적 자유 의견."""
 
@@ -305,3 +351,33 @@ class TestGetDislikeFeedbackWithTrace:
         record_feedback(store, rating="like")
         response = svc.get_dislike_feedback(store=store)
         assert response.items == []
+
+    def test_원문도_함께_노출된다(self, store):
+        record_feedback(
+            store,
+            session_id="sess_a",
+            run_id="run_1",
+            rating="dislike",
+            user_input="비 피할 곳 있어?",
+            assistant_message="근처 실내 장소를 찾아봤어요.",
+        )
+
+        response = svc.get_dislike_feedback(store=store)
+
+        assert response.items[0].user_input == "비 피할 곳 있어?"
+        assert response.items[0].assistant_message == "근처 실내 장소를 찾아봤어요."
+
+    def test_intent와_comment도_함께_노출된다(self, store):
+        record_feedback(
+            store,
+            session_id="sess_a",
+            run_id="run_1",
+            rating="dislike",
+            intent="RECOMMEND",
+            comment="추천 장소가 너무 멀어요",
+        )
+
+        response = svc.get_dislike_feedback(store=store)
+
+        assert response.items[0].intent == "RECOMMEND"
+        assert response.items[0].comment == "추천 장소가 너무 멀어요"

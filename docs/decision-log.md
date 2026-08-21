@@ -2010,6 +2010,101 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `backend/app/services/recommendation_pipeline.py`(`_distance_denominator_offset_km`),
   `backend/tests/test_ranking_origin.py`
 
+### D-068 — 피드백을 남긴 턴에 한해서만 질문·답변 원문을 저장한다
+
+- 상태: `Accepted` — 구현 완료.
+- 배경: `response_feedback`(roadmap.md 14번, D-062/D-063와 별개 트랙)은 `session_id`/
+  `run_id`/`rating`만 저장해, 테스트 중 "이 반응이 정확히 뭐에 대한 것인지" 원문으로
+  확인할 방법이 없었다. `guest-auth-design.md` 9절은 대화 원문을 저장 위험도가 가장
+  높은 항목으로 분류하고(자유 텍스트, 개인정보·민감정보 통제 불가), 서버 대화 로그
+  저장 자체를 9-4절에서 의도적으로 미루고 있다 — 이 전제는 그대로 유지한다.
+- 결정 — **대화 전체가 아니라, 사용자가 좋아요/싫어요를 명시적으로 남긴 턴만** 그
+  턴의 질문(`user_input`)·답변(`assistant_message`) 원문을 `response_feedback`에
+  함께 저장한다. 두 컬럼 모두 nullable — 프론트가 텍스트를 못 찾거나 안 보내도
+  `rating` 기록 자체는 그대로 유효하다.
+- 근거: 전체 대화 로그(9-4절의 "3번")보다 노출 범위가 훨씬 좁다 — 사람이 실제로
+  반응한 턴만 남는다. 그 목적(테스트 중 피드백 검토 편의)에도 대화 전체보다
+  정확히 맞는다.
+- 채택하지 않은 것:
+  - 모든 턴의 원문을 저장 — guest-auth-design.md 9절이 경고한 가장 높은 위험
+    시나리오와 같다. 지금 목적(피드백 검토)에 비해 과도하다.
+  - `conditions`처럼 구조화해서 저장 — 자유 발화 자체를 구조화 없이 그대로 보여줘야
+    "뭐라고 물어봤는지" 확인이라는 목적을 만족한다.
+- 남은 것: 보관기간·자동삭제 정책은 아직 없다 — 지금은 개발/테스트 단계 전제다.
+  실서비스 공개 전에는 9-3절(보관기간·동의 지점·삭제 요구 경로)을 이 컬럼에도
+  적용할지 다시 결정해야 한다.
+- 상세: `supabase/migrations/202608210004_add_feedback_turn_text.sql`,
+  `backend/app/state/schema.py`(`FeedbackRecord`), `backend/app/state/feedback.py`,
+  `frontend/src/components/chat/FeedbackButtons.tsx`,
+  `frontend/src/utils/turnText.ts`
+
+### D-069 — 피드백에 intent(그대로 복사)와 comment(싫어요 사유)를 추가한다
+
+- 상태: `Accepted` — 구현 완료.
+- 배경: D-068 구현 직후, 다른 제안(피드백 테이블에 intent/is_clarification/
+  clarification_code/comment까지 함께 저장하고 모두 NOT NULL로 두자는 안)이
+  들어왔다. 검토 결과 그대로 채택할 수 없는 부분과 그대로 채택 가능한 부분이
+  섞여 있었다 — 아래 "채택하지 않은 것"에 이유를 정리한다.
+- 결정:
+  1. `intent`(선택, nullable) 추가 — 그 턴의 `assistant_text` 메시지가 이미
+     들고 있는 값을 그대로 복사해 저장한다. B는 값을 검증하지 않는다
+     (step/prompt_version과 같은 성격).
+  2. `comment`(선택, nullable) 추가 — "싫어요" 사유를 사용자가 직접 남기는
+     자유 텍스트. 클릭 즉시 전송하지 않고, 인라인 입력창(제출/건너뛰기)을
+     먼저 띄운 뒤 하나의 레코드로 함께 보낸다 — append-only 구조에서 사유
+     없이 먼저 보내고 나중에 사유 있는 레코드를 또 쌓으면 같은 run_id의
+     dislike가 중복 집계되기 때문.
+- 근거: intent는 이미 프론트가 들고 있는 값을 옮기기만 하면 되어 구현 부담이
+  거의 없다. comment는 D-068과 같은 "테스트 중 피드백 검토 편의" 목적에
+  직접 부합한다(사유가 있으면 왜 별로였는지 바로 보인다) — 다만 원 요청
+  범위를 넘는 새 UI라 AskUserQuestion으로 사용자에게 직접 확인받았다.
+- 채택하지 않은 것:
+  - 모든 컬럼 NOT NULL — 프론트가 턴 텍스트를 못 찾는 예외 상황(레거시
+    카드 재구성 경로 등)에서 텍스트만 비는 게 아니라 rating 기록 자체가
+    통째로 실패하게 된다. nullable로 두고 텍스트는 "있으면 같이"가 더
+    안전한 실패 방식이다(D-068과 동일한 판단).
+  - `is_clarification`/`clarification_code` — 지금 구조에서는 되묻기
+    (clarification) 메시지에 피드백 버튼 자체가 없다(추천/일정 결과
+    카드에만 있음). 채울 방법이 없는 컬럼을 미리 만들지 않는다 — 되묻기
+    메시지에도 피드백을 받고 싶어지면 그때 버튼 배선부터 다시 설계한다.
+  - 프론트 `state.user_input` 등 reducer 최상위 상태를 그대로 사용 —
+    세션에 하나뿐인 필드라 새 턴이 오면 덮어써진다. 화면을 스크롤해 예전
+    카드에 피드백을 남기면 최신 턴의 값이 잘못 붙는다. 대신 카드 위치
+    기준으로 거슬러 올라가 찾는 기존 `findTurnText`를 그대로 확장해 intent도
+    같이 찾도록 했다.
+- 병합 후기(같은 날 develop merge): 이 작업 직후 develop에 팀원이 독립적으로
+  구현한 comment 기능(PR)이 먼저 merge됐다 — 같은 목적을 다른 방식으로
+  구현한 우연한 충돌. 병합 시 develop 쪽을 기준으로 정리했다: comment 컬럼은
+  develop의 마이그레이션(`202608210003_add_comment_to_response_feedback.sql`,
+  DB단 500자 CHECK 제약 포함, pydantic max_length=500과 이중 방어)을 그대로
+  채택하고 우리 쪽 comment 컬럼 추가는 제거, FeedbackButtons UI도 develop의
+  아이콘 기반 버전(더 완성도 높음)을 채택해 우리 버전은 버렸다. intent만
+  우리 쪽 추가로 남았다. 또한 develop이 `recommendation_result`/
+  `schedule_result` 메시지에서 피드백 버튼을 분리해 별도 `"feedback"`
+  ChatMessage 타입(카드 뒤에 이어지는 독립 메시지)으로 구조를 바꿔서,
+  `findTurnText` 호출 지점도 결과 카드가 아니라 이 `"feedback"` 메시지의
+  index로 옮겼다 — `findTurnText`는 텍스트가 없는 메시지를 건너뛰므로 로직
+  변경은 필요 없었다. 마이그레이션 번호 충돌(둘 다 202608210002/003을 씀)로
+  우리 쪽 파일은 004/005로 재번호했다.
+- 정정(병합 후 발견): 위 "채택하지 않은 것"의 `is_clarification`/
+  `clarification_code` 제외 근거("되묻기 메시지에 피드백 버튼 자체가
+  없다")가 병합 이후로는 더 이상 사실이 아니다 — develop이 피드백을
+  `run_id`만 있으면 붙는 범용 `"feedback"` 메시지로 바꾸면서, 백엔드가
+  되묻기 응답에도 항상 `run_id`를 발급하기 때문에(`service.py` `apply()`,
+  확정 여부와 무관하게 매 턴 발급) 되묻기 턴에도 피드백 버튼이 이미 뜨고
+  rating은 저장되고 있었다. 다만 `findTurnText`가 답변 자리에서
+  `"assistant_text"`만 찾고 `"clarification"` 타입은 인식하지 못해
+  `assistant_message`가 계속 비어 있던 것을 확인해, `"clarification"`도
+  답변으로 인식하도록 확장했다(`intent`는 clarification 메시지에 그 값 자체가
+  없어 여전히 비어 있다 — `is_clarification`/`clarification_code` DB 컬럼을
+  새로 만들지 않기로 한 결정 자체는 유지, 그 컬럼들을 채울 데이터가 필요해지면
+  그때 다시 검토).
+- 상세: `supabase/migrations/202608210005_add_feedback_intent.sql`,
+  `backend/app/state/schema.py`(`FeedbackRecord`), `backend/app/state/feedback.py`,
+  `backend/app/state/service.py`, `frontend/src/utils/turnText.ts`,
+  `frontend/src/components/chat/FeedbackButtons.tsx`,
+  `frontend/src/components/chat/ChatMessageList.tsx`
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -2071,3 +2166,5 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-19 | D-065 신설 — D-064의 "미룬 것 1"을 즉시 착수해 해소. `registry.py`가 `meta.yaml`을 파싱해 슬롯 버전을 읽고, `record_trace(prompt_version=...)`에 그 턴이 실제로 쓴 슬롯 버전을 남긴다(`agent-interpret-prompts-1.0.16` → `router.classify@1+info.extract@1`). 슬롯 선택은 `INTENT_SLOTS` 라우팅 테이블(강의 89-3), 과거 기준선 실행 시 `+variant:<ID>` 접미. 프롬프트 출력은 불변(스냅샷 27건 0바이트 차이), B 계약 변경 없음. 슬롯 이름 불일치·미등록 인텐트를 잡는 안전장치 3건 추가. D-064의 `owner`·`evals`·미조합 공통 규칙은 계속 `Deferred` |
 | 2026-08-20 | D-066 신설 — gemini-3.5-flash 전환 뒤 미해결로 남아 있던 답변·요약 계열(GENERAL/RECOMMEND/COMPARE/INFO 답변 5곳)에 thinking_budget=0 적용. 실사용에서 "안녕" 응답 6~7초 TTFT, COMPARE류 후속 질문 18초+ 소요(45초 타임아웃 근접, 실제로 48초 stream_inactive 오류 재현)를 확인 후 `scripts/compare_answer_thinking_budget.py`로 5개 케이스 × 3회 실측 — 평균 3.9배 개선, 답변 품질(페르소나·자기소개·문장 수 규칙) 유지 확인. 5곳 모두 SCHEDULE과 같은 방식으로 내부 고정(공개 API 미노출). 실사용 재현으로 "안녕" 9.35초→5.06초(TTFT 6.5초→0.85초), COMPARE 분류+추출 18.8초→2.8초 확인. 회귀 테스트 6건 추가. 나머지 미최적화 추출 4곳과 분류·추출 단계 하트비트 부재는 범위 밖 |
 | 2026-08-21 | D-067 신설 — 랭킹 기준점을 검색 기준점에서 사용자 위치로 이관(D·A). 후보 수집 중심은 검색 기준점 그대로 두고 거리·경로 origin·근거 문장 기준점 이름만 옮겼다. 검색 기준점에서 등거리인 두 후보를 타겟 기준으로는 구분할 수 없다는 것이 근거. 거리 점수 분모는 이동시간을 말한 요청에서는 그대로 두고(시간 약속은 원점이 없다), 말하지 않은 요청에만 사용자→기준점 거리를 더해 0점 전멸을 막는다. TP-109·TP-112의 `distance_km` 기준점 유지 방침을 대체한다 |
+| 2026-08-21 | D-068 신설 — 피드백을 남긴 턴에 한해서만 질문·답변 원문(`user_input`/`assistant_message`)을 `response_feedback`에 저장하기로 결정. 대화 전체 로그 저장(guest-auth-design.md 9절이 위험도 "높음"으로 분류)과는 다르며, 사용자가 AskUserQuestion으로 "피드백 남긴 턴만"을 직접 선택. 두 컬럼 모두 nullable |
+| 2026-08-21 | D-069 신설 — D-068 후속. `intent`(assistant_text 메시지 값 그대로 복사)와 `comment`(싫어요 사유 자유 텍스트) 필드 추가. comment는 append-only 중복 방지를 위해 클릭 즉시 전송하지 않고 인라인 입력창(제출/건너뛰기)에서 한 번에 전송. NOT NULL 전면 적용과 `is_clarification`/`clarification_code`(되묻기 메시지엔 피드백 버튼이 아예 없어 채울 수 없음)는 채택하지 않음 |

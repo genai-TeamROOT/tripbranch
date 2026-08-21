@@ -27,6 +27,46 @@ def test_post_feedback_records_rating() -> None:
     assert saved.rating == "like"
 
 
+def test_post_feedback_stores_turn_text_when_provided() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/feedback",
+        json={
+            "session_id": "sess_route_text",
+            "run_id": "run_1",
+            "rating": "dislike",
+            "user_input": "경복궁 근처 카페 추천해줘",
+            "assistant_message": "이런 곳들을 찾아봤어요.",
+        },
+    )
+
+    assert response.status_code == 200
+    [saved] = feedback_module.get_feedback(get_store(), "sess_route_text")
+    assert saved.user_input == "경복궁 근처 카페 추천해줘"
+    assert saved.assistant_message == "이런 곳들을 찾아봤어요."
+
+
+def test_post_feedback_stores_intent_and_comment_when_provided() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/feedback",
+        json={
+            "session_id": "sess_route_intent",
+            "run_id": "run_1",
+            "rating": "dislike",
+            "intent": "RECOMMEND",
+            "comment": "추천 장소가 너무 멀어요",
+        },
+    )
+
+    assert response.status_code == 200
+    [saved] = feedback_module.get_feedback(get_store(), "sess_route_intent")
+    assert saved.intent == "RECOMMEND"
+    assert saved.comment == "추천 장소가 너무 멀어요"
+
+
 def test_post_feedback_rejects_invalid_rating() -> None:
     client = TestClient(app)
 

@@ -1,6 +1,7 @@
 /*
  * 역할: 추천/일정 결과 카드에 붙는 좋아요·싫어요 피드백 버튼.
- * 입력: 피드백을 연결할 session_id/run_id.
+ * 입력: 피드백을 연결할 session_id/run_id, 찾을 수 있으면 이 턴의 질문·답변
+ *   원문·intent.
  * 출력: POST /api/feedback 호출, 선택 상태 표시.
  * 호출 시점: RecommendationResultMessage/ScheduleResultMessage가 결과 카드 하단에 렌더링한다.
  * 참고: roadmap #14. 값은 한 번 기록하면 그대로 두는 append-only 저장이라(B-01 경계
@@ -13,12 +14,12 @@
 
 import { useState } from "react";
 import { sendFeedback } from "../../api/feedback";
-import type { FeedbackReasonCode, Intent, RecordFeedbackRequest } from "../../types";
+import type { FeedbackReasonCode, RecordFeedbackRequest } from "../../types";
 
 interface FeedbackButtonsProps {
   sessionId: string;
   runId: string;
-  intent?: Intent;
+  intent?: string;
   userInput?: string;
   assistantMessage?: string;
 }
