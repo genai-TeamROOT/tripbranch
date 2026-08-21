@@ -447,6 +447,7 @@ async def test_complete_sync_run_updates_counts() -> None:
             new_count=3,
             updated_count=0,
             deactivated_count=0,
+            detail_attempted_count=3,
             error_summary={"TOUR_DETAIL_TIMEOUT": 1},
             completed_at=NOW,
         )
@@ -454,6 +455,8 @@ async def test_complete_sync_run_updates_counts() -> None:
     assert seen_payload["status"] == "partial_failure"
     assert seen_payload["failed_count"] == 1
     assert seen_payload["error_summary"] == {"TOUR_DETAIL_TIMEOUT": 1}
+    # 일일 한도 판단의 근거라 실행 기록에 남아야 한다.
+    assert seen_payload["detail_attempted_count"] == 3
 
 
 @pytest.mark.asyncio
@@ -708,3 +711,31 @@ async def test_find_missing_concentration_mappings_skips_request_when_empty() ->
             "https://project.supabase.co/", "sb_secret_test", client
         )
         assert await repository.find_missing_concentration_mappings([]) == []
+
+
+@pytest.mark.asyncio
+async def test_detail_call_summary_separates_unmeasured_runs() -> None:
+    """재지 못한 실행을 0으로 합치면 합계가 실제보다 정확해 보인다."""
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(
+            200,
+            json=[
+                {"detail_attempted_count": 486},
+                {"detail_attempted_count": 3},
+                # 중간에 죽어 완료 처리를 못 한 실행, 또는 열 추가 이전 행.
+                {"detail_attempted_count": None},
+            ],
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        repository = SupabasePlaceRepository(
+            "https://project.supabase.co/", "sb_secret_test", client
+        )
+        summary = await repository.summarize_detail_calls_since(NOW)
+
+    assert summary == {"count": 489, "runs": 3, "runs_without_count": 1}
+    # 오늘 것만 세야 한다 — 경계를 안 걸면 누적 전체가 오늘 사용량으로 보인다.
+    assert captured[0].url.params["started_at"].startswith("gte.")

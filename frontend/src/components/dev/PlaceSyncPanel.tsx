@@ -1,16 +1,28 @@
 /*
- * 역할: 장소 DB 동기화를 대조 → 반영 두 단계로 실행한다.
- * 입력: /api/dev/place-sync/{reconcile,apply,jobs}.
- * 출력: 대조 결과 표, 예상 호출수, 확인 다이얼로그, 진행바, 결과 카드.
+ * 역할: 장소 DB 동기화를 구 선택 → 대조 → 반영 순서로 실행한다.
+ * 입력: /api/dev/place-sync/{districts,reconcile,apply,jobs}.
+ * 출력: 구 드롭다운, 대조 결과 표, 예상 호출수, 확인 다이얼로그, 진행바, 결과 카드.
  * 호출 시점: DeveloperOpsPage가 렌더링될 때.
  *
- * 대조는 목록 API 1회로 스냅샷을 남기고 비교만 한다(DB 안 건드림). 반영은 그
+ * 대조는 목록 API 1회로 스냅샷을 남기고 비교만 한다(DB에 쓰지 않음). 반영은 그
  * 대조가 정한 대상에만 상세조회를 보낸다. 한 버튼으로 합치면 무엇이 바뀌는지
  * 모르는 채로 운영 DB에 쓰게 된다.
+ *
+ * 구를 드롭다운으로 고른다. 목록에 없는 구는 "구 추가"로 코드를 넣어 쓰되, 어디에도
+ * 저장하지 않는다 — 한 번 대조하면 스냅샷 파일이, 반영하면 places 행이 생겨 자료
+ * 자체가 다음부터의 목록이 된다. 따로 저장하면 자료 없이 이름만 남은 구가 쌓인다.
  */
 
-import { useState } from "react";
-import type { ReconcileResult, ReconcileRow, SyncJob } from "../../api/dev";
+import { useMemo, useState } from "react";
+import type {
+  DbStatus,
+  KnownDistrict,
+  ReconcileResult,
+  ReconcileRow,
+  SyncDistrict,
+  SyncDistricts,
+  SyncJob,
+} from "../../api/dev";
 
 const CHANGE_LABELS: Record<ReconcileRow["change_type"], string> = {
   added: "신규",
@@ -32,6 +44,21 @@ const PHASE_LABELS: Record<string, string> = {
   deactivate: "비활성화",
   done: "완료",
 };
+
+function districtKey(district: { area_code: string; district_code: string }) {
+  return `${district.area_code}-${district.district_code}`;
+}
+
+function districtLabel(district: SyncDistrict) {
+  const name = district.district_name ?? `구 ${district.district_code}`;
+  const state =
+    district.place_count > 0
+      ? `DB ${district.place_count}건`
+      : district.latest_snapshot
+        ? "DB 없음 · 스냅샷 있음"
+        : "자료 없음";
+  return `${name} ${districtKey(district)} · ${state}`;
+}
 
 function ChangeRows({ rows }: { rows: ReconcileRow[] }) {
   if (rows.length === 0) {
@@ -68,6 +95,127 @@ function ChangeRows({ rows }: { rows: ReconcileRow[] }) {
   );
 }
 
+/** 목록에 없는 구를 코드로 넣는다. 사전에 없는 코드는 받지 않는다 —
+ *  그런 코드로 동기화를 걸면 TourAPI가 빈 목록을 주고, 그 결과는
+ *  "장소가 0건인 구"와 구분되지 않는다. */
+function DistrictPicker({
+  options,
+  known,
+  selected,
+  disabled,
+  onSelect,
+  onAdd,
+}: {
+  options: SyncDistrict[];
+  known: KnownDistrict[];
+  selected: SyncDistrict | null;
+  disabled: boolean;
+  onSelect: (district: SyncDistrict) => void;
+  onAdd: (district: SyncDistrict) => void;
+}) {
+  const [adding, setAdding] = useState(false);
+  const [code, setCode] = useState("");
+  const [addError, setAddError] = useState<string | null>(null);
+
+  function submitCode() {
+    const trimmed = code.trim();
+    const match = known.find((district) => district.district_code === trimmed);
+    if (!match) {
+      setAddError(`시군구 사전에 없는 코드예요: ${trimmed || "(비어 있음)"}`);
+      return;
+    }
+    const existing = options.find(
+      (option) => districtKey(option) === districtKey(match),
+    );
+    if (existing) {
+      onSelect(existing);
+    } else {
+      onAdd({
+        ...match,
+        place_count: 0,
+        active_count: 0,
+        latest_snapshot: null,
+      });
+    }
+    setAdding(false);
+    setCode("");
+    setAddError(null);
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <label className="flex items-center gap-1.5 text-xs">
+        <span className="text-gray-500 dark:text-gray-400">대상 구</span>
+        <select
+          aria-label="대상 구"
+          value={selected ? districtKey(selected) : ""}
+          disabled={disabled || options.length === 0}
+          onChange={(event) => {
+            const next = options.find(
+              (option) => districtKey(option) === event.target.value,
+            );
+            if (next) onSelect(next);
+          }}
+          className="rounded-md border border-gray-300 px-2 py-1 text-xs disabled:opacity-50 dark:border-gray-700 dark:bg-gray-950"
+        >
+          {options.length === 0 && <option value="">불러오는 중…</option>}
+          {options.map((option) => (
+            <option key={districtKey(option)} value={districtKey(option)}>
+              {districtLabel(option)}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      {adding ? (
+        <span className="flex flex-wrap items-center gap-1.5">
+          <input
+            aria-label="추가할 구 코드"
+            value={code}
+            onChange={(event) => setCode(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") submitCode();
+            }}
+            placeholder="200"
+            className="w-24 rounded-md border border-gray-300 px-2 py-1 text-xs dark:border-gray-700 dark:bg-gray-950"
+          />
+          <button
+            type="button"
+            onClick={submitCode}
+            className="rounded-md border border-gray-300 px-2 py-1 text-xs dark:border-gray-700"
+          >
+            추가 완료
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setAdding(false);
+              setCode("");
+              setAddError(null);
+            }}
+            className="rounded-md px-1.5 py-1 text-xs text-gray-500"
+          >
+            취소
+          </button>
+        </span>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setAdding(true)}
+          disabled={disabled}
+          className="rounded-md border border-gray-300 px-2 py-1 text-xs disabled:opacity-50 dark:border-gray-700"
+        >
+          구 추가
+        </button>
+      )}
+
+      {addError && (
+        <span className="text-xs text-red-600 dark:text-red-400">{addError}</span>
+      )}
+    </div>
+  );
+}
+
 function JobProgress({ job }: { job: SyncJob }) {
   const ratio = job.total > 0 ? Math.min(1, job.processed / job.total) : 0;
   const running = job.status === "running";
@@ -77,7 +225,8 @@ function JobProgress({ job }: { job: SyncJob }) {
         <span className="font-semibold">
           {running ? "실행 중" : `종료: ${job.status}`} ·{" "}
           {PHASE_LABELS[job.phase] ?? job.phase}
-          {job.params.dry_run ? " (dry-run)" : ""}
+          {job.params.dry_run ? " (dry-run)" : ""} · {job.params.area_code}-
+          {job.params.district_code}
         </span>
         <span className="tabular-nums text-gray-500">
           {job.processed} / {job.total}
@@ -89,6 +238,13 @@ function JobProgress({ job }: { job: SyncJob }) {
           style={{ width: `${ratio * 100}%` }}
         />
       </div>
+      {job.params.details_limit !== null && (
+        <p className="mt-2 rounded bg-amber-50 p-2 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+          상세조회를 {job.params.details_limit}건으로 제한한 실행이라{" "}
+          <strong>비활성화를 건너뜁니다</strong>. 목록을 다 처리하지 못했으니 "사라진
+          장소"를 판정할 수 없어요.
+        </p>
+      )}
       {job.error && (
         <p className="mt-2 rounded bg-red-50 p-2 text-xs text-red-900 dark:bg-red-950/40 dark:text-red-100">
           {job.error}
@@ -126,32 +282,55 @@ function JobProgress({ job }: { job: SyncJob }) {
 }
 
 export function PlaceSyncPanel({
+  districts,
+  selected,
   reconcile,
   job,
   error,
   reconciling,
   applying,
-  detailUsedSinceStart,
+  detailCallsToday,
+  onSelectDistrict,
   onReconcile,
   onApply,
 }: {
+  districts: SyncDistricts | null;
+  selected: SyncDistrict | null;
   reconcile: ReconcileResult | null;
   job: SyncJob | null;
   error: string | null;
   reconciling: boolean;
   applying: boolean;
-  /** 이 서버 기동 이후 관측된 detailIntro2 호출수. 집계가 없으면 null.
-   *
-   * "잔여"가 아니다 — 프로세스 메모리 집계라 재시작 전 호출과 backend/scripts
-   * 실행분이 빠져 있다. 잔여로 표기하면 실제보다 여유가 있는 것처럼 보인다. */
-  detailUsedSinceStart: number | null;
+  /** 오늘 detailIntro2 사용량. place_sync_runs에서 센 값이라 서버 재시작과
+   *  scripts 실행을 견디지만, 여전히 하한이다. 집계가 없으면 null. */
+  detailCallsToday: DbStatus["detail_calls_today"] | null;
+  onSelectDistrict: (district: SyncDistrict) => void;
   onReconcile: () => void;
-  onApply: (input: { dryRun: boolean; confirm: string; includeExcluded: boolean }) => void;
+  onApply: (input: {
+    dryRun: boolean;
+    confirm: string;
+    includeExcluded: boolean;
+    detailsLimit: number | null;
+  }) => void;
 }) {
   const [dryRun, setDryRun] = useState(true);
   const [includeExcluded, setIncludeExcluded] = useState(false);
+  const [limitInput, setLimitInput] = useState("");
   const [confirm, setConfirm] = useState("");
   const [showDialog, setShowDialog] = useState(false);
+  const [added, setAdded] = useState<SyncDistrict[]>([]);
+
+  // 서버가 준 목록에 이번 세션에서 추가한 구를 얹는다. 이미 자료가 생긴 구는
+  // 서버 쪽 항목이 남아야 건수가 보인다.
+  const options = useMemo(() => {
+    const merged = [...(districts?.loaded ?? [])];
+    for (const extra of added) {
+      if (!merged.some((option) => districtKey(option) === districtKey(extra))) {
+        merged.push(extra);
+      }
+    }
+    return merged;
+  }, [districts, added]);
 
   const expectedConfirm = reconcile
     ? `${reconcile.area_code}-${reconcile.district_code}`
@@ -159,7 +338,15 @@ export function PlaceSyncPanel({
   const detailCount =
     (reconcile?.detail_content_ids.length ?? 0) +
     (includeExcluded ? (reconcile?.detail_excluded_ids.length ?? 0) : 0);
+  const parsedLimit = limitInput.trim() === "" ? null : Number(limitInput.trim());
+  const detailsLimit =
+    parsedLimit !== null && Number.isFinite(parsedLimit) && parsedLimit >= 1
+      ? Math.floor(parsedLimit)
+      : null;
+  const plannedCalls = detailsLimit === null ? detailCount : Math.min(detailCount, detailsLimit);
   const jobRunning = job?.status === "running";
+  const isNewDistrict =
+    selected !== null && selected.place_count === 0 && selected.latest_snapshot === null;
 
   return (
     <section className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900">
@@ -174,12 +361,36 @@ export function PlaceSyncPanel({
         <button
           type="button"
           onClick={onReconcile}
-          disabled={reconciling || jobRunning}
+          disabled={reconciling || jobRunning || selected === null}
           className="rounded-md border border-gray-300 px-3 py-1.5 text-sm disabled:opacity-50 dark:border-gray-700"
         >
           {reconciling ? "대조 중…" : "1. 스냅샷 대조"}
         </button>
       </header>
+
+      <div className="mt-3 border-t border-gray-200 pt-3 dark:border-gray-800">
+        <DistrictPicker
+          options={options}
+          known={districts?.known ?? []}
+          selected={selected}
+          disabled={reconciling || jobRunning}
+          onSelect={onSelectDistrict}
+          onAdd={(district) => {
+            setAdded((current) => [...current, district]);
+            onSelectDistrict(district);
+          }}
+        />
+      </div>
+
+      {isNewDistrict && (
+        <p className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+          <strong>자료가 없는 구예요.</strong> 기준으로 삼을 스냅샷도 DB 행도 없어서
+          목록 전량이 신규로 잡혀요. 그 구의 장소 수만큼 <code>detailIntro2</code>를
+          쓰게 되니(중구는 892건, 용산구는 486건이었어요) 아래 상세조회 상한을 함께
+          쓰는 걸 권해요. 그리고 <strong>적재해도 추천에는 나오지 않아요</strong> —
+          장소 검색이 종로구로 고정돼 있어요.
+        </p>
+      )}
 
       <p className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
         <strong>일일 호출 한도를 크게 소모할 수 있어요.</strong> 상세조회는 장소 1건당
@@ -202,6 +413,20 @@ export function PlaceSyncPanel({
             <span className="font-mono">{reconcile.baseline ?? "없음"}</span>
             {reconcile.baseline_count !== undefined && ` (${reconcile.baseline_count}건)`}
           </p>
+
+          {reconcile.baseline_source === "database" && (
+            <p className="mt-2 rounded-md bg-blue-50 p-3 text-xs text-blue-900 dark:bg-blue-950/30 dark:text-blue-100">
+              스냅샷 파일이 없어 <strong>places 테이블로 기준을 만들었어요.</strong> 이
+              기준은 파일로 남지 않아요 — 날짜가 오늘과 겹치면 이번 대조가 쓰는 파일에
+              덮어써지거든요. 오늘 저장된 스냅샷이 다음 대조의 기준이 됩니다.
+            </p>
+          )}
+
+          {reconcile.message && (
+            <p className="mt-2 rounded-md bg-amber-50 p-3 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+              {reconcile.message}
+            </p>
+          )}
 
           {reconcile.skipped_columns.length > 0 && (
             <p className="mt-2 rounded-md bg-amber-50 p-3 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
@@ -255,8 +480,19 @@ export function PlaceSyncPanel({
               />
               dry-run (DB에 쓰지 않음)
             </label>
+            <label className="flex items-center gap-1.5 text-xs">
+              <span className="text-gray-500 dark:text-gray-400">상세조회 상한</span>
+              <input
+                aria-label="상세조회 상한"
+                value={limitInput}
+                inputMode="numeric"
+                onChange={(event) => setLimitInput(event.target.value)}
+                placeholder="제한 없음"
+                className="w-24 rounded-md border border-gray-300 px-2 py-1 text-xs dark:border-gray-700 dark:bg-gray-950"
+              />
+            </label>
             <span className="text-xs text-gray-500">
-              예상 외부 호출: 목록 0회 + 상세조회 {detailCount}회
+              예상 외부 호출: 목록 0회 + 상세조회 {plannedCalls}회
               {dryRun ? "" : " · DB 쓰기 있음"}
             </span>
             <button
@@ -288,25 +524,38 @@ export function PlaceSyncPanel({
                 : "운영 Supabase의 places 테이블을 실제로 변경해요. 삭제된 장소는 비활성화됩니다."}
             </p>
             <ul className="mt-3 space-y-1 text-xs text-gray-600 dark:text-gray-300">
+              <li>· 대상: {expectedConfirm}</li>
               <li>· 스냅샷: {reconcile.snapshot}</li>
-              <li>· 상세조회 {detailCount}회 (TourAPI detailIntro2)</li>
+              <li>· 상세조회 {plannedCalls}회 (TourAPI detailIntro2)</li>
               <li>
                 · 신규 {reconcile.counts.added} / 수정 {reconcile.counts.updated} / 삭제{" "}
                 {reconcile.counts.removed}
               </li>
             </ul>
+            {detailsLimit !== null && (
+              <p className="mt-3 rounded bg-amber-50 p-2 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+                상한 {detailsLimit}건이 걸린 실행이라 <strong>비활성화를 건너뜁니다</strong>.
+                목록을 다 처리하지 못했으니 사라진 장소를 판정할 수 없어요.
+              </p>
+            )}
             <p className="mt-3 rounded bg-amber-50 p-2 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
-              이 실행으로 <code>detailIntro2</code> {detailCount}회를 씁니다 (한도
-              1,000회).
-              {detailUsedSinceStart !== null &&
-                ` 이 서버 기동 이후 관측된 사용량은 ${detailUsedSinceStart}회예요.`}{" "}
-              관측값은 하한이에요 — 서버 재시작 전 호출과 backend/scripts 실행분은
-              포함되지 않으니, 실제 잔여는 이보다 적을 수 있어요.
+              이 실행으로 <code>detailIntro2</code> {plannedCalls}회를 씁니다 (한도{" "}
+              {detailCallsToday?.daily_limit ?? 1000}회).
+              {detailCallsToday && (
+                <>
+                  {" "}
+                  오늘 기록된 사용량은 {detailCallsToday.count}회예요
+                  {detailCallsToday.runs_without_count > 0 &&
+                    ` (사용량을 못 남긴 실행 ${detailCallsToday.runs_without_count}건 제외)`}
+                  . 재시도는 세지 않아 실제는 이보다 많을 수 있어요.
+                </>
+              )}
             </p>
             <label className="mt-4 block text-xs text-gray-600 dark:text-gray-300">
               확인을 위해 <span className="font-mono font-bold">{expectedConfirm}</span>{" "}
               를 입력하세요.
               <input
+                aria-label="확인 문자열"
                 value={confirm}
                 onChange={(event) => setConfirm(event.target.value)}
                 className="mt-1 w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm dark:border-gray-700 dark:bg-gray-950"
@@ -325,7 +574,7 @@ export function PlaceSyncPanel({
                 disabled={confirm.trim() !== expectedConfirm}
                 onClick={() => {
                   setShowDialog(false);
-                  onApply({ dryRun, confirm: confirm.trim(), includeExcluded });
+                  onApply({ dryRun, confirm: confirm.trim(), includeExcluded, detailsLimit });
                 }}
                 className="rounded-md bg-gray-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-gray-100 dark:text-gray-900"
               >

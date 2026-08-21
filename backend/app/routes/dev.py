@@ -38,7 +38,7 @@ from app.observability.api_usage import (
     reset_usage,
 )
 from app.providers.real_place import RealPlaceProvider
-from app.providers.tour_ldong_registry import find_district_name
+from app.providers.tour_ldong_registry import find_district_name, list_districts
 from app.repositories.supabase_places import SupabasePlaceRepository
 from app.services import place_snapshot
 from app.services.place_sync import PlaceSyncService, SyncProgress
@@ -197,6 +197,11 @@ async def get_db_status(sync_run_limit: int = 10) -> dict[str, Any]:
     place_enrichments와 집중률 매핑은 구 열이 없어(둘 다 content_id 기준) 전체
     건수만 센다. 구별로 쪼개려면 places와 대조해야 하는데, 이 두 테이블은 장소
     동기화가 건드리지 않아 구별로 볼 실익이 없다.
+
+    `detail_calls_today`는 오늘 detailIntro2를 몇 번 불렀는지를 place_sync_runs에서
+    센 값이다. 호출량 표(api-usage)는 프로세스 메모리라 재시작하면 0이 되고
+    backend/scripts 실행분도 놓치는데, 이 값은 둘 다 살아남는다. 그래도 하한이다 —
+    재시도가 안 세지고, 중간에 죽은 실행은 열이 비어 있다.
     """
     url, key = _require_supabase()
 
@@ -216,6 +221,9 @@ async def get_db_status(sync_run_limit: int = 10) -> dict[str, Any]:
         )
         sync_runs = await repository.list_recent_sync_runs(sync_run_limit)
         locks = await repository.list_sync_locks()
+        detail_calls = await repository.summarize_detail_calls_since(
+            _today_start_kst()
+        )
 
     districts = [
         {
@@ -237,7 +245,18 @@ async def get_db_status(sync_run_limit: int = 10) -> dict[str, Any]:
         "sync_runs": sync_runs,
         "sync_locks": locks,
         "detail_ttl_days": settings.place_sync_detail_ttl_days,
+        "detail_calls_today": {
+            **detail_calls,
+            "daily_limit": settings.tour_api_daily_call_limit,
+        },
     }
+
+
+def _today_start_kst() -> datetime:
+    """오늘 0시(KST). TourAPI 일일 한도가 그 경계로 초기화된다."""
+    return datetime.now(place_snapshot.KST).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
 
 
 def _as_summary_list(value: object) -> list[dict[str, Any]]:
@@ -272,6 +291,16 @@ class ApplyRequest(BaseModel):
         ),
     )
     dry_run: bool = True
+    details_limit: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "이번 실행에서 부를 상세조회 상한. 새 구는 대상이 수백 건이라 하루 "
+            "한도(1,000회)를 한 번에 소진할 수 있어 나눠 받는다. 상한이 걸린 "
+            "실행은 비활성화를 건너뛴다 — 목록을 다 처리하지 못했으므로 "
+            "'사라진 장소'를 판정할 수 없다."
+        ),
+    )
     confirm: str = Field(description="'<area>-<district>' 문자열. 오타 실행 방지용")
 
 
@@ -336,9 +365,83 @@ async def get_snapshots() -> dict[str, Any]:
     }
 
 
+@router.get("/place-sync/districts")
+async def get_sync_districts() -> dict[str, Any]:
+    """동기화 화면이 고를 수 있는 구와, 코드 입력을 검증할 사전.
+
+    `loaded`는 자료가 있는 구다 — places에 행이 있거나 스냅샷 파일이 있는 구.
+    파일만 있는 구도 넣는 이유는, 대조만 하고 아직 반영하지 않은 구가 화면에서
+    사라지지 않게 하기 위해서다.
+
+    `known`은 시군구 사전이다. 화면이 "구 추가" 입력을 이걸로 검증한다 — 없는
+    코드로 동기화를 걸면 TourAPI가 빈 목록을 돌려주고, 그 결과는 "장소가 0건인
+    구"와 구분되지 않는다.
+
+    새 구를 목록에 저장해두지 않는다. 한 번 대조하면 스냅샷 파일이 생기고 반영하면
+    places에 행이 생기므로, 자료가 곧 목록이 된다. 따로 저장하면 자료 없이 이름만
+    남은 구가 목록에 쌓인다.
+    """
+    url, key = _require_supabase()
+
+    async with status_client() as client:
+        repository = SupabasePlaceRepository(
+            supabase_url=url,
+            secret_key=key,
+            client=client,
+            timeout_seconds=max(settings.external_api_timeout_seconds, 30.0),
+        )
+        summaries = await repository.get_place_summaries_by_district()
+
+    loaded: dict[tuple[str, str], dict[str, Any]] = {}
+    for summary in _as_summary_list(summaries.get("districts")):
+        area_code = str(summary.get("area_code") or "")
+        district_code = str(summary.get("district_code") or "")
+        loaded[(area_code, district_code)] = {
+            "area_code": area_code,
+            "district_code": district_code,
+            "district_name": find_district_name(area_code, district_code),
+            "place_count": summary.get("total", 0),
+            "active_count": summary.get("active", 0),
+            "latest_snapshot": None,
+        }
+
+    for path in place_snapshot.list_snapshots():
+        codes = place_snapshot.district_from_snapshot_name(path.name)
+        if codes is None:
+            continue
+        entry = loaded.setdefault(
+            codes,
+            {
+                "area_code": codes[0],
+                "district_code": codes[1],
+                "district_name": find_district_name(*codes),
+                "place_count": 0,
+                "active_count": 0,
+                "latest_snapshot": None,
+            },
+        )
+        # 최신순 목록이라 그 구에서 처음 만난 파일이 가장 최근 것이다.
+        if entry["latest_snapshot"] is None:
+            entry["latest_snapshot"] = path.name
+
+    return {
+        "loaded": [loaded[key] for key in sorted(loaded)],
+        "known": list_districts(settings.place_sync_area_code),
+    }
+
+
 @router.post("/place-sync/reconcile")
 async def post_reconcile(request: ReconcileRequest) -> dict[str, Any]:
-    """목록을 1회 조회해 스냅샷을 남기고 이전 스냅샷과 대조한다. DB는 안 건드린다."""
+    """목록을 1회 조회해 스냅샷을 남기고 이전 스냅샷과 대조한다. DB에는 쓰지 않는다.
+
+    기준으로 쓸 스냅샷 파일이 없으면 places에서 그 구의 장소를 읽어 기준을 만든다.
+    그러지 않으면 전량이 신규로 잡혀, 이미 DB에 있는 장소에 detailIntro2를 한 번씩
+    더 쓴다(용산구 486건이면 하루 한도 1,000회의 절반이다).
+
+    DB로 만든 기준은 파일로 남기지 않는다. 파일명 날짜가 오늘과 겹치면 이번 대조가
+    쓰는 파일과 이름이 같아, 만들자마자 덮어써지고 기준이 사라진다. 무엇과
+    비교했는지는 대조 결과 CSV의 baseline 칸에 `places@2026-08-21` 꼴로 남긴다.
+    """
     api_key = _require_real_place_provider()
     area = request.area_code or settings.place_sync_area_code
     district = request.district_code or settings.place_sync_district_code
@@ -363,23 +466,31 @@ async def post_reconcile(request: ReconcileRequest) -> dict[str, Any]:
     # 그대로 diff로 남는다.
     place_snapshot.write_snapshot(current, snapshot_path)
 
-    if baseline_path is None:
+    if baseline_path is not None:
+        baseline = place_snapshot.load_snapshot(baseline_path)
+        baseline_label = baseline_path.name
+        baseline_source = "file"
+    else:
+        baseline, baseline_source = await _baseline_from_database(area, district)
+        baseline_label = f"places@{now:%Y-%m-%d}" if baseline else None
+
+    if not baseline:
         return {
             "area_code": area,
             "district_code": district,
             "snapshot": snapshot_path.name,
             "snapshot_count": len(current),
             "baseline": None,
+            "baseline_source": baseline_source,
             "skipped_columns": [],
             "counts": {"added": 0, "removed": 0, "updated": 0},
             "detail_content_ids": sorted(current),
             "detail_excluded_ids": [],
             "rows": [],
-            "message": "기준 스냅샷이 없어 대조를 건너뛰었습니다. 전량이 신규로 취급됩니다.",
+            "message": _NO_BASELINE_MESSAGES[baseline_source],
         }
 
-    baseline = place_snapshot.load_snapshot(baseline_path)
-    _require_snapshot_region(baseline, baseline_path.name, area, district)
+    _require_snapshot_region(baseline, baseline_label or "", area, district)
     baseline_columns = list(next(iter(baseline.values()), {}).keys())
     compared = place_snapshot.comparable_columns(baseline_columns)
     # 조용히 빼면 "안 바뀌었다"와 "안 봤다"가 결과에서 구분되지 않는다.
@@ -392,7 +503,7 @@ async def post_reconcile(request: ReconcileRequest) -> dict[str, Any]:
         / place_snapshot.reconciliation_file_name(area, district, now)
     )
     place_snapshot.write_reconciliation(
-        rows, reconciliation_path, baseline_name=baseline_path.name, compared_at=now
+        rows, reconciliation_path, baseline_name=baseline_label or "", compared_at=now
     )
     detail_ids, excluded_ids = place_snapshot.select_detail_targets(rows)
 
@@ -405,7 +516,8 @@ async def post_reconcile(request: ReconcileRequest) -> dict[str, Any]:
         "district_code": district,
         "snapshot": snapshot_path.name,
         "snapshot_count": len(current),
-        "baseline": baseline_path.name,
+        "baseline": baseline_label,
+        "baseline_source": baseline_source,
         "baseline_count": len(baseline),
         "reconciliation": reconciliation_path.name,
         "skipped_columns": skipped,
@@ -414,6 +526,51 @@ async def post_reconcile(request: ReconcileRequest) -> dict[str, Any]:
         "detail_excluded_ids": sorted(excluded_ids),
         "rows": rows,
     }
+
+
+_NO_BASELINE_MESSAGES = {
+    "none": (
+        "기준 스냅샷도 없고 DB에도 이 구의 장소가 없어 대조를 건너뛰었습니다. "
+        "전량이 신규로 취급됩니다."
+    ),
+    "unavailable": (
+        "기준 스냅샷이 없고 SUPABASE_URL / SUPABASE_SECRET_KEY가 없어 DB를 "
+        "확인하지 못했습니다. 전량이 신규로 취급됩니다 — DB에 이 구의 장소가 "
+        "이미 있다면 상세조회를 그만큼 낭비하게 됩니다."
+    ),
+}
+
+
+async def _baseline_from_database(
+    area_code: str, district_code: str
+) -> tuple[dict[str, dict[str, str]], str]:
+    """places에서 그 구의 활성 장소를 읽어 기준 스냅샷을 만든다.
+
+    Supabase 자격증명은 여기서만 필요하다 — 파일 기준이 있는 대조는 DB를 아예
+    건드리지 않으므로, 위에서 미리 요구하면 되던 일이 안 되게 만든다. 자격증명이
+    없으면 "DB에 없다"가 아니라 "확인하지 못했다"로 돌려준다. 두 가지를 같은
+    결과로 뭉개면 화면이 낭비되는 상세조회의 이유를 설명할 수 없다.
+
+    비활성 장소는 넣지 않는다. 목록에서 사라져서 비활성이 된 것이라, 넣으면 대조할
+    때마다 계속 "삭제"로 잡힌다.
+    """
+    url = settings.supabase_url.strip()
+    key = settings.supabase_secret_key.strip()
+    if not url or not key:
+        return {}, "unavailable"
+
+    async with status_client() as client:
+        repository = SupabasePlaceRepository(
+            supabase_url=url,
+            secret_key=key,
+            client=client,
+            timeout_seconds=max(settings.external_api_timeout_seconds, 30.0),
+        )
+        rows = await repository.list_region_place_rows(
+            area_code, district_code, place_snapshot.SNAPSHOT_COLUMNS
+        )
+    baseline = place_snapshot.snapshot_rows_from_db(rows)
+    return baseline, "database" if baseline else "none"
 
 
 class _SnapshotListProvider:
@@ -496,6 +653,7 @@ async def post_apply(request: ApplyRequest) -> dict[str, Any]:
                 area,
                 district,
                 dry_run=request.dry_run,
+                details_limit=request.details_limit,
                 detail_content_ids=detail_ids,
                 on_progress=on_progress,
             )
@@ -517,6 +675,9 @@ async def post_apply(request: ApplyRequest) -> dict[str, Any]:
                 "dry_run": request.dry_run,
                 "detail_target_count": len(detail_ids),
                 "added_count": len(request.added_content_ids),
+                # 상한이 걸린 실행은 비활성화를 건너뛴다. 화면이 그 사실을 알려면
+                # job 파라미터에 남아 있어야 한다.
+                "details_limit": request.details_limit,
             },
             run,
         )

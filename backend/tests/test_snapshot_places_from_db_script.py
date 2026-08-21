@@ -12,8 +12,13 @@ import httpx
 import pytest
 
 from app.repositories.supabase_places import SupabasePlaceRepository
-from app.services.place_snapshot import KST, SNAPSHOT_COLUMNS, load_snapshot
-from scripts.snapshot_places_from_db import resolve_date, to_snapshot_rows
+from app.services.place_snapshot import (
+    KST,
+    SNAPSHOT_COLUMNS,
+    load_snapshot,
+    snapshot_rows_from_db,
+)
+from scripts.snapshot_places_from_db import resolve_date
 
 
 def _db_row(content_id: str, **overrides: object) -> dict[str, object]:
@@ -40,7 +45,7 @@ def _db_row(content_id: str, **overrides: object) -> dict[str, object]:
 
 def test_db_rows_become_snapshot_rows_with_empty_string_for_null() -> None:
     """None은 빈 문자열로 쓴다 — API 스냅샷이 비어 있는 값을 그렇게 남긴다."""
-    rows = to_snapshot_rows([_db_row("1")])
+    rows = snapshot_rows_from_db([_db_row("1")])
 
     assert list(rows["1"]) == list(SNAPSHOT_COLUMNS)
     assert rows["1"]["first_image_url"] == ""
@@ -52,7 +57,7 @@ def test_snapshot_written_from_db_rows_reloads(tmp_path) -> None:
     from app.services.place_snapshot import write_snapshot
 
     path = tmp_path / "snapshot.csv"
-    write_snapshot(to_snapshot_rows([_db_row("1"), _db_row("2")]), path)
+    write_snapshot(snapshot_rows_from_db([_db_row("1"), _db_row("2")]), path)
 
     assert set(load_snapshot(path)) == {"1", "2"}
 
@@ -63,7 +68,7 @@ def test_date_comes_from_the_last_list_fetch_not_today() -> None:
     오늘 날짜를 박으면 두 달 전 DB 상태에 오늘 날짜가 붙어, 나중에 그 파일을
     "오늘 조회한 목록"으로 오해한다.
     """
-    rows = to_snapshot_rows(
+    rows = snapshot_rows_from_db(
         [
             _db_row("1", list_fetched_at="2026-08-20T07:25:21+00:00"),
             _db_row("2", list_fetched_at="2026-08-21T03:59:09+00:00"),
@@ -75,7 +80,7 @@ def test_date_comes_from_the_last_list_fetch_not_today() -> None:
 
 
 def test_date_falls_back_to_today_when_column_is_empty() -> None:
-    rows = to_snapshot_rows([_db_row("1", list_fetched_at=None)])
+    rows = snapshot_rows_from_db([_db_row("1", list_fetched_at=None)])
 
     assert resolve_date(rows, None).date() == datetime.now(KST).date()
 

@@ -104,6 +104,40 @@ const dbStatus = {
   detail_ttl_days: 30,
 };
 
+const syncDistricts = {
+  loaded: [
+    {
+      area_code: "11",
+      district_code: "110",
+      district_name: "종로구",
+      place_count: 883,
+      active_count: 844,
+      latest_snapshot: "places_api_snapshot_11-110_20260810.csv",
+    },
+    {
+      area_code: "11",
+      district_code: "170",
+      district_name: "용산구",
+      place_count: 486,
+      active_count: 486,
+      latest_snapshot: null,
+    },
+  ],
+  known: [
+    { area_code: "11", district_code: "110", district_name: "종로구" },
+    { area_code: "11", district_code: "140", district_name: "중구" },
+    { area_code: "11", district_code: "170", district_name: "용산구" },
+    { area_code: "11", district_code: "200", district_name: "성동구" },
+  ],
+};
+
+/** 개발자 패널이 여는 조회 세 개를 한 곳에서 가른다. */
+function panelBody(url: string) {
+  if (url.includes("api-usage")) return usageSnapshot;
+  if (url.includes("place-sync/districts")) return syncDistricts;
+  return dbStatus;
+}
+
 function mockFetch(handler: (url: string) => { status: number; body: unknown }) {
   vi.stubGlobal(
     "fetch",
@@ -130,10 +164,7 @@ afterEach(() => {
 });
 
 it("호출량 표와 일일 한도 게이지를 보여준다", async () => {
-  mockFetch((url) => ({
-    status: 200,
-    body: url.includes("api-usage") ? usageSnapshot : dbStatus,
-  }));
+  mockFetch((url) => ({ status: 200, body: panelBody(url) }));
 
   renderPage();
 
@@ -159,7 +190,7 @@ it("카카오맵 도보 provider 라벨을 표시한다", async () => {
             },
           ],
         }
-      : dbStatus,
+      : panelBody(url),
   }));
 
   renderPage();
@@ -179,7 +210,7 @@ it("fake provider가 있으면 표가 비는 이유를 경고로 알린다", asy
           today_totals: { count: 0, ok: 0, error: 0 },
           entries: [],
         }
-      : dbStatus,
+      : panelBody(url),
   }));
 
   renderPage();
@@ -190,10 +221,7 @@ it("fake provider가 있으면 표가 비는 이유를 경고로 알린다", asy
 });
 
 it("전체 탭에서는 전 구 합계와 동기화 이력을 보여준다", async () => {
-  mockFetch((url) => ({
-    status: 200,
-    body: url.includes("api-usage") ? usageSnapshot : dbStatus,
-  }));
+  mockFetch((url) => ({ status: 200, body: panelBody(url) }));
 
   renderPage();
 
@@ -211,10 +239,7 @@ it("전체 탭에서는 전 구 합계와 동기화 이력을 보여준다", asy
 });
 
 it("구 탭을 누르면 그 구의 요약만 보여준다", async () => {
-  mockFetch((url) => ({
-    status: 200,
-    body: url.includes("api-usage") ? usageSnapshot : dbStatus,
-  }));
+  mockFetch((url) => ({ status: 200, body: panelBody(url) }));
   const user = userEvent.setup();
   renderPage();
 
@@ -239,10 +264,7 @@ it("구 탭을 누르면 그 구의 요약만 보여준다", async () => {
 });
 
 it("상세조회 TTL은 구별 값이 아니라 머리말에만 쓴다", async () => {
-  mockFetch((url) => ({
-    status: 200,
-    body: url.includes("api-usage") ? usageSnapshot : dbStatus,
-  }));
+  mockFetch((url) => ({ status: 200, body: panelBody(url) }));
 
   renderPage();
 
@@ -272,9 +294,10 @@ it("라우터가 없는 서버(404)에는 APP_ENV 확인을 안내한다", async
 const reconcileResult = {
   area_code: "11",
   district_code: "110",
-  snapshot: "places_api_snapshot_20260809.csv",
+  snapshot: "places_api_snapshot_11-110_20260809.csv",
   snapshot_count: 844,
-  baseline: "places_api_snapshot_20260808.csv",
+  baseline: "places_api_snapshot_11-110_20260808.csv",
+  baseline_source: "file" as const,
   baseline_count: 844,
   reconciliation: "places_reconciliation_20260809.csv",
   skipped_columns: [],
@@ -308,10 +331,11 @@ const runningJob = {
   params: {
     area_code: "11",
     district_code: "110",
-    snapshot: "places_api_snapshot_20260809.csv",
+    snapshot: "places_api_snapshot_11-110_20260809.csv",
     dry_run: true,
     detail_target_count: 2,
     added_count: 1,
+    details_limit: null,
   },
   status: "running",
   started_at: "2026-08-09T19:00:00+09:00",
@@ -333,13 +357,11 @@ function mockSyncFetch() {
       if (init?.method === "POST") {
         posted.push({ url, body: JSON.parse(String(init.body)) });
       }
-      const body = url.includes("api-usage")
-        ? usageSnapshot
-        : url.includes("reconcile")
-          ? reconcileResult
-          : url.includes("place-sync/apply") || url.includes("place-sync/jobs")
-            ? runningJob
-            : dbStatus;
+      const body = url.includes("reconcile")
+        ? reconcileResult
+        : url.includes("place-sync/apply") || url.includes("place-sync/jobs")
+          ? runningJob
+          : panelBody(url);
       return new Response(JSON.stringify(body), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -373,20 +395,25 @@ it("확인 문자열을 정확히 입력해야 반영이 시작된다", async ()
   const execute = screen.getByRole("button", { name: "실행" });
   expect(execute).toBeDisabled();
 
-  await user.type(screen.getByRole("textbox"), "11-999");
+  await user.type(screen.getByLabelText("확인 문자열"), "11-999");
   expect(execute).toBeDisabled();
 
-  await user.clear(screen.getByRole("textbox"));
-  await user.type(screen.getByRole("textbox"), "11-110");
+  await user.clear(screen.getByLabelText("확인 문자열"));
+  await user.type(screen.getByLabelText("확인 문자열"), "11-110");
   await user.click(execute);
 
   const applyCall = posted.find((call) => call.url.includes("place-sync/apply"));
   expect(applyCall?.body).toEqual({
-    snapshot: "places_api_snapshot_20260809.csv",
+    // 구를 빠뜨리면 서버가 설정 기본값으로 실행해, 대상 구의 활성 장소가 전부
+    // 비활성화된다. 대조 결과가 정한 구를 그대로 싣는다.
+    area_code: "11",
+    district_code: "110",
+    snapshot: "places_api_snapshot_11-110_20260809.csv",
     detail_content_ids: ["3", "4"],
     // 신규 장소는 반영 후 집중률 매핑 유무를 확인하는 데 쓰인다.
     added_content_ids: ["4"],
     dry_run: true,
+    details_limit: null,
     confirm: "11-110",
   });
 });
@@ -403,9 +430,120 @@ it("제외된 건을 포함하도록 체크하면 상세조회 대상에 들어�
   ).toBeInTheDocument();
 
   await user.click(screen.getByRole("button", { name: "2. 반영 실행" }));
-  await user.type(screen.getByRole("textbox"), "11-110");
+  await user.type(screen.getByLabelText("확인 문자열"), "11-110");
   await user.click(screen.getByRole("button", { name: "실행" }));
 
   const applyCall = posted.find((call) => call.url.includes("place-sync/apply"));
   expect(applyCall?.body).toMatchObject({ detail_content_ids: ["3", "4", "1"] });
+});
+
+
+it("드롭다운에서 고른 구로 대조를 건다", async () => {
+  const posted = mockSyncFetch();
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.selectOptions(
+    await screen.findByLabelText("대상 구"),
+    "11-170",
+  );
+  await user.click(screen.getByRole("button", { name: "1. 스냅샷 대조" }));
+
+  const call = posted.find((posted) => posted.url.includes("reconcile"));
+  expect(call?.body).toEqual({
+    area_code: "11",
+    district_code: "170",
+    baseline: null,
+  });
+});
+
+it("구를 바꾸면 앞 구의 대조 결과를 지운다", async () => {
+  mockSyncFetch();
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.click(await screen.findByRole("button", { name: "1. 스냅샷 대조" }));
+  expect(await screen.findByText("새 장소")).toBeInTheDocument();
+
+  await user.selectOptions(screen.getByLabelText("대상 구"), "11-170");
+
+  // 남겨두면 종로구를 대조한 화면에서 용산구를 반영하는 조작이 가능해 보인다.
+  expect(screen.queryByText("새 장소")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "2. 반영 실행" })).not.toBeInTheDocument();
+});
+
+it("사전에 없는 구 코드는 추가되지 않는다", async () => {
+  mockSyncFetch();
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.click(await screen.findByRole("button", { name: "구 추가" }));
+  await user.type(screen.getByLabelText("추가할 구 코드"), "999");
+  await user.click(screen.getByRole("button", { name: "추가 완료" }));
+
+  // 없는 코드로 동기화를 걸면 TourAPI가 빈 목록을 주고, 그 결과는 "장소가 0건인
+  // 구"와 구분되지 않는다.
+  expect(screen.getByText(/시군구 사전에 없는 코드예요: 999/)).toBeInTheDocument();
+});
+
+it("추가한 구가 드롭다운에 들어가고 바로 선택된다", async () => {
+  mockSyncFetch();
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.click(await screen.findByRole("button", { name: "구 추가" }));
+  await user.type(screen.getByLabelText("추가할 구 코드"), "140");
+  await user.click(screen.getByRole("button", { name: "추가 완료" }));
+
+  const select = screen.getByLabelText("대상 구") as HTMLSelectElement;
+  expect(select.value).toBe("11-140");
+  expect(screen.getByRole("option", { name: /중구 11-140 · 자료 없음/ })).toBeInTheDocument();
+  // 자료가 없는 구는 전량이 신규로 잡힌다는 것을 미리 알린다.
+  expect(screen.getByText(/자료가 없는 구예요/)).toBeInTheDocument();
+});
+
+it("상세조회 상한이 예상 호출수와 반영 요청에 반영된다", async () => {
+  const posted = mockSyncFetch();
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.click(await screen.findByRole("button", { name: "1. 스냅샷 대조" }));
+  await user.type(await screen.findByLabelText("상세조회 상한"), "1");
+
+  expect(
+    screen.getByText("예상 외부 호출: 목록 0회 + 상세조회 1회"),
+  ).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "2. 반영 실행" }));
+  // 상한이 걸린 실행은 비활성화를 건너뛴다는 사실을 실행 전에 알려야 한다.
+  expect(screen.getByText(/비활성화를 건너뜁니다/)).toBeInTheDocument();
+  await user.type(screen.getByLabelText("확인 문자열"), "11-110");
+  await user.click(screen.getByRole("button", { name: "실행" }));
+
+  const applyCall = posted.find((call) => call.url.includes("place-sync/apply"));
+  expect((applyCall?.body as { details_limit: number }).details_limit).toBe(1);
+});
+
+it("DB로 기준을 만든 대조는 그 사실을 알린다", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const body = url.includes("reconcile")
+        ? { ...reconcileResult, baseline: "places@2026-08-21", baseline_source: "database" }
+        : panelBody(url);
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }),
+  );
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.click(await screen.findByRole("button", { name: "1. 스냅샷 대조" }));
+
+  // 파일로 남지 않는 기준이라는 걸 모르면, 다음 대조에서 왜 기준이 바뀌었는지
+  // 알 수 없다.
+  expect(await screen.findByText(/places 테이블로 기준을 만들었어요/)).toBeInTheDocument();
 });

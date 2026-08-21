@@ -246,6 +246,7 @@ class FakePlaceRepository:
         new_count: int,
         updated_count: int,
         deactivated_count: int,
+        detail_attempted_count: int,
         error_summary: Mapping[str, object] | None = None,
         completed_at: datetime,
     ) -> None:
@@ -259,6 +260,7 @@ class FakePlaceRepository:
                 "new_count": new_count,
                 "updated_count": updated_count,
                 "deactivated_count": deactivated_count,
+                "detail_attempted_count": detail_attempted_count,
                 "error_summary": error_summary,
             }
         )
@@ -343,6 +345,9 @@ async def test_details_limit_skips_deactivation() -> None:
     assert result.detail_target_count == 5
     assert result.detail_attempted_count == 2
     assert repository.deactivate_calls == 0
+    # 실행 기록에도 계획한 5가 아니라 실제로 부른 2가 남아야 한다. 이 값이 오늘
+    # 일일 한도를 얼마나 썼는지 세는 근거다.
+    assert repository.completed[0]["detail_attempted_count"] == 2
 
 
 @pytest.mark.asyncio

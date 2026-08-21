@@ -40,6 +40,7 @@ from app.services.place_snapshot import (
     SNAPSHOT_COLUMNS,
     normalize,
     snapshot_file_name,
+    snapshot_rows_from_db,
     write_snapshot,
 )
 
@@ -67,20 +68,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-dir", type=Path, default=DATA_DIR, help="저장할 디렉터리"
     )
     return parser
-
-
-def to_snapshot_rows(rows: Sequence[Mapping[str, object]]) -> dict[str, dict[str, str]]:
-    """DB 행을 스냅샷 CSV 행으로 옮긴다. 열 순서와 빈 값 표기를 API 스냅샷에 맞춘다."""
-    snapshot: dict[str, dict[str, str]] = {}
-    for row in rows:
-        content_id = str(row.get("content_id") or "").strip()
-        if not content_id:
-            raise ValueError("content_id가 없는 행이 있습니다.")
-        snapshot[content_id] = {
-            column: ("" if row.get(column) is None else str(row[column]))
-            for column in SNAPSHOT_COLUMNS
-        }
-    return snapshot
 
 
 def resolve_date(rows: Mapping[str, Mapping[str, str]], override: str | None) -> datetime:
@@ -121,7 +108,7 @@ async def run(args: argparse.Namespace, settings: Settings) -> int:
         print(f"{area_code}-{district_code}에 해당하는 장소가 DB에 없습니다.")
         return 1
 
-    snapshot = to_snapshot_rows(rows)
+    snapshot = snapshot_rows_from_db(rows)
     when = resolve_date(snapshot, args.date)
     # 이름은 API 스냅샷과 같은 규칙을 쓴다. 이 경로는 기준이 없는 구에 한 번
     # 기준을 세우려고 있는 것이고, 다음 대조부터는 API 응답이 같은 자리에 들어온다.

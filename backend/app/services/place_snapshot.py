@@ -122,6 +122,22 @@ def reconciliation_file_name(area_code: str, district_code: str, when: datetime)
     )
 
 
+def district_from_snapshot_name(name: str) -> tuple[str, str] | None:
+    """스냅샷 파일명에서 (지역, 시군구) 코드를 읽는다. 옛 이름이면 None.
+
+    파일이 있다는 것 자체가 "이 구를 다룬 적이 있다"는 뜻이라, 아직 DB에 반영하지
+    않은 구도 화면의 선택지에 남길 수 있다.
+    """
+    stem = name[len(SNAPSHOT_PREFIX) :] if name.startswith(SNAPSHOT_PREFIX) else ""
+    region, separator, _ = stem.partition("_")
+    if not separator:
+        return None
+    area_code, dash, district_code = region.partition("-")
+    if not dash or not area_code or not district_code:
+        return None
+    return area_code, district_code
+
+
 def snapshot_regions(snapshot: Mapping[str, Mapping[str, str]]) -> set[tuple[str, str]]:
     """스냅샷 안에 들어 있는 (지역, 시군구) 코드 집합.
 
@@ -187,6 +203,30 @@ def snapshot_rows(
         row["list_fetched_at"] = fetched_at.isoformat()
         rows[row["content_id"]] = row
     return rows
+
+
+def snapshot_rows_from_db(
+    rows: Iterable[Mapping[str, object]],
+) -> dict[str, dict[str, str]]:
+    """places 테이블 행을 스냅샷 행으로 옮긴다.
+
+    스냅샷이 없는 구의 기준을 외부 호출 없이 세우는 경로다. 값은 목록 조회로
+    들어온 것이지만 저장을 한 번 거쳤다 — 대조는 normalize를 통과한 값으로
+    비교하므로 좌표 자릿수나 시각 표기 차이는 흡수된다.
+
+    None은 빈 문자열로 쓴다. API 스냅샷이 비어 있는 값을 그렇게 남기므로, 다르게
+    쓰면 값이 그대로인 장소가 updated로 잡힌다.
+    """
+    snapshot: dict[str, dict[str, str]] = {}
+    for row in rows:
+        content_id = str(row.get("content_id") or "").strip()
+        if not content_id:
+            raise ValueError("content_id가 없는 행이 있습니다.")
+        snapshot[content_id] = {
+            column: ("" if row.get(column) is None else str(row[column]))
+            for column in SNAPSHOT_COLUMNS
+        }
+    return snapshot
 
 
 def _optional(value: str) -> str | None:
@@ -454,6 +494,7 @@ __all__ = [
     "build_reconciliation_rows",
     "changed_columns",
     "comparable_columns",
+    "district_from_snapshot_name",
     "fetch_place_rows",
     "find_baseline",
     "list_snapshots",
@@ -465,6 +506,7 @@ __all__ = [
     "select_detail_targets",
     "snapshot_file_name",
     "snapshot_regions",
+    "snapshot_rows_from_db",
     "snapshot_rows",
     "write_reconciliation",
     "write_snapshot",
