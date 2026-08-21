@@ -530,10 +530,7 @@ function tripReducer(state: TripState, action: TripAction): TripState {
           comparison,
         });
       }
-      const isClarificationTurn = Boolean(
-        message && clarificationOptions && clarificationOptions.length > 0,
-      );
-      if (!isClarificationTurn && action.payload.agentResponse.state.run_id) {
+      if (action.payload.agentResponse.state.run_id) {
         messages.push({
           id: createMessageId("feedback"),
           type: "feedback",
