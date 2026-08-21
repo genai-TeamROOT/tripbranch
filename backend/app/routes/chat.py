@@ -52,11 +52,13 @@ async def chat(request: AgentRequest, principal: OptionalPrincipal) -> AgentResp
 async def recommendation_place_details(
     request: RecommendationPlaceDetailRequest,
 ) -> RecommendationPlaceDetailResponse:
-    """추천 카드 한 곳의 C PlaceDetails를 LLM 없이 조회한다.
+    """추천/INFO 카드 한 곳의 C PlaceDetails를 LLM 없이 조회한다.
 
-    C의 INFO 경로는 이름으로 장소를 해석하므로, 응답의 ``place_id``가 추천 카드의
-    ID와 다르면 화면에 싣지 않는다. 동명 장소의 상세가 잘못 열리는 것보다, 상세
-    정보 없음으로 남기는 편이 안전하다.
+    C의 INFO 경로는 이름으로 장소를 해석한다. 요청이 ``place_id``를 명시한
+    경우(추천 카드 클릭)에만 응답의 ``place_id``와 대조해, 다르면 화면에 싣지
+    않는다 — 동명 장소의 상세가 잘못 열리는 것보다 상세 정보 없음이 안전하다.
+    혼잡도·행사 INFO 카드는 ``place_id`` 없이 이름으로만 조회하며, 이 경우 대조를
+    건너뛴다(애초에 이름으로 해석된 장소라 이름 재해석이 일관된다).
     """
 
     async with create_external_client() as client:
@@ -76,14 +78,19 @@ async def recommendation_place_details(
             status="unavailable",
             requested_place_id=request.place_id,
         )
-    if place_card is None or place_card.place_id != request.place_id:
-        if place_card is not None:
-            logger.warning(
-                "추천 카드 상세 ID 불일치: requested=%s resolved=%s name=%s",
-                request.place_id,
-                place_card.place_id,
-                request.place_name,
-            )
+    if place_card is None:
+        return RecommendationPlaceDetailResponse(
+            status="no_data",
+            requested_place_id=request.place_id,
+        )
+    # place_id를 명시한 요청(추천 카드 클릭)에만 동명 안전장치로 대조한다.
+    if request.place_id is not None and place_card.place_id != request.place_id:
+        logger.warning(
+            "추천 카드 상세 ID 불일치: requested=%s resolved=%s name=%s",
+            request.place_id,
+            place_card.place_id,
+            request.place_name,
+        )
         return RecommendationPlaceDetailResponse(
             status="no_data",
             requested_place_id=request.place_id,

@@ -66,6 +66,16 @@ def _to_place_info_card(result: PlaceInfoResult) -> InfoPlaceCard:
         },
         place_id=card.place_id,
         place_name=card.place_name,
+        latitude=(
+            result.destination_coordinates.latitude
+            if result.destination_coordinates
+            else None
+        ),
+        longitude=(
+            result.destination_coordinates.longitude
+            if result.destination_coordinates
+            else None
+        ),
         thumbnail_url=card.thumbnail_url,
         overview=card.overview,
         operating_hours=card.operating_hours,
