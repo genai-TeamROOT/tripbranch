@@ -266,8 +266,9 @@ class ContextValue(BaseModel, Generic[T]):
 
 
 class RecommendationContext(BaseModel):
-    # 반경 검색·거리 계산·경로 조회의 기준점. 사용자가 있는 곳이 아니라 "이번 검색을
+    # 반경 검색으로 후보를 **모은** 중심. 사용자가 있는 곳이 아니라 "이번 검색을
     # 어디를 중심으로 했는가"다. search_center → current_location → 기기 GPS 순.
+    # 후보를 **줄 세우는** 기준점은 user_location이다(TP-112, D-067).
     location: ContextValue[ResolvedLocation] | None = None
     # 사용자가 있는 곳. 기준점(location)이 따로 잡혀도 버리지 않는다.
     # current_location(발화) → 기기 GPS 순으로 정해진다 — location의

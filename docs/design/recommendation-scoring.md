@@ -48,7 +48,7 @@ Scoring v1이 다루지 않는 것 (`TBD`):
 | `name` | `str` | 장소명 |
 | `category` | `str` | 내부 카테고리 (`PlaceCandidate.category`와 동일 체계); 표시용 메타데이터로만 사용하고 점수 계산에는 쓰지 않음 |
 | `environment_type` | `str` | `"indoor"` \| `"outdoor"` \| `"unknown"` |
-| `distance_km` | `float` | 검색 기준점(origin)으로부터의 거리 (v1은 직선거리 전제) |
+| `distance_km` | `float` | 랭킹 기준점(origin)으로부터의 거리 (v1은 직선거리 전제). 기준점은 사용자 위치이고, 사용자 위치를 모르는 요청에서만 검색 기준점으로 돌아간다(D-067) |
 | `operating_hours` | `OperatingHours \| None` | 당일 개장~마감 시각. `None`이면 운영시간 미확인 |
 | `raw_source` | `str` | 후보를 채운 Tool/Provider 식별값 (기본 `"unknown"`) |
 
@@ -81,7 +81,7 @@ C-01의 Tool 출력 초안이 아직 없으므로, 현재는 아래 대응을 �
 | `ScoringCandidate` 필드 | 예상 Tool 출처 |
 | --- | --- |
 | `place_id`, `name`, `category` | `searchNearbyPlaces` (Place Provider 기반) |
-| `distance_km` | `estimateTravelTime` 또는 origin 좌표로 계산한 직선거리 |
+| `distance_km` | `estimateTravelTime` 또는 랭킹 기준점 좌표로 계산한 직선거리 |
 | `operating_hours` | `getPlaceDetails`의 운영시간 원문을 `OperatingHours`(개장~마감)로 정규화한 결과 |
 | `environment_type` | `category` → 실내외 매핑표 (§4.2) |
 
