@@ -1,6 +1,7 @@
 /*
  * 역할: 추천/일정 결과 카드에 붙는 좋아요·싫어요 피드백 버튼.
- * 입력: 피드백을 연결할 session_id/run_id.
+ * 입력: 피드백을 연결할 session_id/run_id, 찾을 수 있으면 이 턴의 질문·답변
+ *   원문·intent.
  * 출력: POST /api/feedback 호출, 선택 상태 표시.
  * 호출 시점: RecommendationResultMessage/ScheduleResultMessage가 결과 카드 하단에 렌더링한다.
  * 참고: roadmap #14. 값은 한 번 기록하면 그대로 두는 append-only 저장이라(B-01 경계
@@ -10,7 +11,10 @@
  * 싫어요는 좋아요와 달리 클릭 즉시 전송하지 않는다 — 아이콘 아래 짧은 이유를
  * 적을 수 있는 입력창을 펼치고, "제출"(코멘트 포함) 또는 "건너뛰기"(코멘트 없이)를
  * 눌러야 실제로 기록된다. 좋아요는 부연 설명이 필요한 경우가 드물어 그대로
- * 클릭 즉시 전송한다.
+ * 클릭 즉시 전송한다. append-only라 "먼저 사유 없이 보내고 나중에 사유 있는
+ * 레코드를 하나 더 쌓는" 방식도 가능했지만, 그러면 같은 run_id에 dislike
+ * 레코드가 중복으로 남아 list_dislikes()에서 두 번 집계되는 문제가 생겨
+ * 이 방식을 택했다.
  */
 
 import { useState } from "react";
@@ -20,6 +24,10 @@ import type { RecordFeedbackRequest } from "../../types";
 interface FeedbackButtonsProps {
   sessionId: string;
   runId: string;
+  /** 이 턴의 질문·답변 원문·intent. 찾을 수 있을 때만 함께 전송한다(선택 사항). */
+  userInput?: string;
+  assistantMessage?: string;
+  intent?: string;
 }
 
 type Rating = RecordFeedbackRequest["rating"];
@@ -45,7 +53,13 @@ function ThumbIcon({ className }: { className?: string }) {
   );
 }
 
-export function FeedbackButtons({ sessionId, runId }: FeedbackButtonsProps) {
+export function FeedbackButtons({
+  sessionId,
+  runId,
+  userInput,
+  assistantMessage,
+  intent,
+}: FeedbackButtonsProps) {
   const [selected, setSelected] = useState<Rating | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -66,6 +80,9 @@ export function FeedbackButtons({ sessionId, runId }: FeedbackButtonsProps) {
         session_id: sessionId,
         run_id: runId,
         rating,
+        user_input: userInput,
+        assistant_message: assistantMessage,
+        intent,
         ...(trimmed ? { comment: trimmed } : {}),
       });
       setSelected(rating);
