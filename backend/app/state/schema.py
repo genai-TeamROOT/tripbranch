@@ -240,6 +240,17 @@ class TraceRecord(BaseModel):
     recorded_at: datetime = Field(default_factory=now_kst)
 
 
+FeedbackReasonCode = Literal[
+    "intent_mismatch",
+    "clarification_unhelpful",
+    "context_not_preserved",
+    "location_misunderstood",
+    "conditions_not_applied",
+    "recommendation_not_suitable",
+    "other",
+]
+
+
 class FeedbackRecord(BaseModel):
     """응답 1건에 대한 사용자 반응. append-only. (roadmap.md 14번)
 
@@ -249,13 +260,19 @@ class FeedbackRecord(BaseModel):
     rating은 화면 버튼이 만드는 고정된 두 값이라(TraceRecord의 step 등과
     달리 호출자가 자유롭게 정하는 값이 아니다) Literal로 검증한다.
 
-    comment는 "싫어요" 클릭 시 사용자가 선택적으로 남기는 짧은 사유다. like에는
-    입력창을 보여주지 않으므로 사실상 dislike 전용이지만, 스키마에서 rating으로
-    강제하지는 않는다 — 화면 흐름이 바뀌어도 스키마를 다시 손대지 않게 한다.
+    reason_code는 개선 집계용 표준 사유다. comment는 어떤 사유에든 선택적으로
+    덧붙일 수 있는 보조 설명이다. ``run_id``로 TraceRecord와 조인하면 "어느 프롬프트·어느
+    인텐트에서 어떤 불만이 나왔는지"를 재현할 수 있다.
     """
 
     session_id: str
     run_id: str
     rating: Literal["like", "dislike"]
+    # 피드백 행 자체에서 질문·답변을 바로 분석할 수 있게 최소 실행 문맥을 보관한다.
+    # 원문 보관·마스킹·보관 기간은 별도 개인정보 정책의 대상이다.
+    intent: str | None = None
+    user_input: str | None = None
+    assistant_message: str | None = None
+    reason_code: FeedbackReasonCode | None = None
     comment: str | None = Field(default=None, max_length=500)
     recorded_at: datetime = Field(default_factory=now_kst)

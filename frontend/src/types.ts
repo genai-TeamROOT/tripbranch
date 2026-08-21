@@ -267,6 +267,9 @@ export type ChatMessage =
       type: "feedback";
       sessionId: string;
       runId: string;
+      intent?: Intent;
+      userInput?: string;
+      assistantMessage?: string;
     }
   | {
       id: string;
@@ -480,11 +483,28 @@ export interface SessionContextResponse {
 }
 
 /** POST /api/feedback 요청. backend/app/state/service.py의 RecordFeedbackRequest와 대응. */
+export type FeedbackReasonCode =
+  | "intent_mismatch"
+  | "clarification_unhelpful"
+  | "context_not_preserved"
+  | "location_misunderstood"
+  | "conditions_not_applied"
+  | "recommendation_not_suitable"
+  | "other";
+
 export interface RecordFeedbackRequest {
   session_id: string;
   run_id: string;
   rating: "like" | "dislike";
-  /** "싫어요" 클릭 시 선택적으로 남기는 짧은 사유(최대 500자). */
+  /** 이 피드백이 달린 턴의 Intent. */
+  intent?: Intent;
+  /** 품질 분석용 사용자 발화 원문. */
+  user_input?: string;
+  /** 품질 분석용 최종 챗봇 응답. */
+  assistant_message?: string;
+  /** 싫어요의 개선용 표준 사유. 좋아요에는 보내지 않는다. */
+  reason_code?: FeedbackReasonCode;
+  /** 어떤 싫어요 사유에든 선택적으로 남기는 자유 입력(최대 500자). */
   comment?: string;
 }
 

@@ -189,7 +189,13 @@ export function ChatMessageList({
           if (message.type === "feedback") {
             return (
               <div key={message.id} className="mr-auto flex w-full max-w-2xl justify-end">
-                <FeedbackButtons sessionId={message.sessionId} runId={message.runId} />
+                <FeedbackButtons
+                  sessionId={message.sessionId}
+                  runId={message.runId}
+                  intent={message.intent}
+                  userInput={message.userInput}
+                  assistantMessage={message.assistantMessage}
+                />
               </div>
             );
           }

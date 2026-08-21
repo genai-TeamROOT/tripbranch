@@ -441,6 +441,9 @@ function tripReducer(state: TripState, action: TripAction): TripState {
           type: "feedback",
           sessionId: response.state.session_id,
           runId: response.state.run_id,
+          intent: response.llm_output.intent,
+          userInput: state.user_input,
+          assistantMessage: response.message,
         });
       }
       const messages = [...streamedMessages, ...trailingMessages];
@@ -536,6 +539,9 @@ function tripReducer(state: TripState, action: TripAction): TripState {
           type: "feedback",
           sessionId: action.payload.agentResponse.state.session_id,
           runId: action.payload.agentResponse.state.run_id,
+          intent,
+          userInput: action.payload.userInput,
+          assistantMessage: message,
         });
       }
 
