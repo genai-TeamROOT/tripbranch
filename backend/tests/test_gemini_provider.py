@@ -881,7 +881,7 @@ async def test_generate_compare_summary_uses_thinking_budget_zero() -> None:
     provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
     captured_config: list[object] = []
     comparison = ComparisonResult(
-        criteria=CompareCriteria.DISTANCE,
+        criteria=CompareCriteria.TRAVEL_TIME,
         items=[
             ComparisonItem(place_id="p1", place_name="테스트 장소", rank=1, distance_km=0.4),
         ],

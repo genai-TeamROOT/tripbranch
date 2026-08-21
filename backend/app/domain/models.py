@@ -395,6 +395,10 @@ class StoredPlaceDetail:
     detail_fetch_status: str
     detail_fetched_at: datetime | None
     source_modified_at: datetime | None
+    # COMPARE의 TRAVEL_TIME 실측 연결(2026-08-21)이 쓴다 — A가 이 좌표로 실측 경로를
+    # 조회한다. C는 좌표만 그대로 전달하고 우열은 판정하지 않는다.
+    latitude: float | None = None
+    longitude: float | None = None
     # 아래 필드는 추천 카드 조립(app.tools.recommendation_cards)이 쓴다. 분류 코드는
     # 카테고리 라벨을, 주차·이미지는 카드 배지와 썸네일을 채운다(D-056).
     lcls_systm1: str | None = None

@@ -37,10 +37,15 @@ from app.domain.scoring import SCORING_VERSION
 from app.domain.travel_route import TravelMode, TravelRoute
 from app.prompts.registry import turn_prompt_version
 from app.providers.contracts import ProviderSource, provider_result
+from app.providers.driving_route import FakeDrivingRouteProvider
+from app.providers.kakao_transit_route import FakeTransitRouteProvider
 from app.providers.stub import FakeLLMProvider
 from app.providers.walking_route import FakeWalkingRouteProvider
 from app.schemas import (
     AgentRequest,
+    CompareCriteria,
+    ComparisonItem,
+    ComparisonResult,
     ConcentrationIntent,
     Intent,
     IntentClassificationResult,
@@ -54,6 +59,7 @@ from app.schemas import (
 from app.services.runtime.agent_runtime import (
     _WIDEN_RADIUS_MAX_TRAVEL_TIME,
     _apply_concentration_rerank,
+    _fetch_compare_travel_routes,
     run_agent_flow,
 )
 from app.services.runtime.compare_context_schemas import (
@@ -1889,7 +1895,7 @@ async def test_compare_flow_uses_last_recommendation_snapshots_and_returns_summa
     tool_provider = providers["tool_provider"]
     assert compared.llm_output.intent == "COMPARE"
     assert compared.comparison is not None
-    assert compared.comparison.criteria == "distance"
+    assert compared.comparison.criteria == "travel_time"
     assert tool_provider.call_count == 1  # 첫 RECOMMEND의 일반 Context 조회만 수행
     assert tool_provider.compare_call_count == 1
     assert tool_provider.last_compare_request is not None
@@ -3264,6 +3270,130 @@ class _RecordingTravelRouteTool:
 class _UnavailableTravelRouteTool:
     async def execute(self, query):
         return TravelRouteToolResult(status=ToolStatus.UNAVAILABLE, routes=())
+
+
+def _all_modes_travel_route_tool() -> TravelRouteTool:
+    """도보·자동차·대중교통 세 provider를 모두 등록한 실측 도구.
+
+    COMPARE의 _fetch_compare_travel_routes()가 세 수단을 병렬로 조회하므로,
+    단위 테스트도 세 provider가 모두 필요하다.
+    """
+    return TravelRouteTool(
+        {
+            TravelMode.WALKING: TravelRouteProviders(
+                primary=FakeWalkingRouteProvider(walking_speed_mps=1.2)
+            ),
+            TravelMode.DRIVING: TravelRouteProviders(
+                primary=FakeDrivingRouteProvider(driving_speed_mps=8.0)
+            ),
+            TravelMode.TRANSIT: TravelRouteProviders(
+                primary=FakeTransitRouteProvider(transit_speed_mps=5.0)
+            ),
+        }
+    )
+
+
+class TestFetchCompareTravelRoutes:
+    """COMPARE의 TRAVEL_TIME 실측 연결(2026-08-21, TP-105/106) 전용 단위 테스트."""
+
+    def _comparison(self, *, criteria=CompareCriteria.TRAVEL_TIME) -> ComparisonResult:
+        return ComparisonResult(
+            criteria=criteria,
+            items=[
+                ComparisonItem(
+                    place_id="p1",
+                    place_name="경복궁",
+                    rank=1,
+                    latitude=37.5796,
+                    longitude=126.9770,
+                ),
+                ComparisonItem(
+                    place_id="p2",
+                    place_name="창덕궁",
+                    rank=2,
+                    latitude=37.5824,
+                    longitude=126.9910,
+                ),
+            ],
+        )
+
+    @pytest.mark.asyncio
+    async def test_returns_unchanged_when_criteria_is_not_travel_time(self) -> None:
+        comparison = self._comparison(criteria=CompareCriteria.TIME)
+        tool = _RecordingTravelRouteTool()
+
+        result = await _fetch_compare_travel_routes(
+            tool, origin_location="37.5760,126.9769", comparison=comparison
+        )
+
+        assert result is comparison
+        assert tool.queries == []
+
+    @pytest.mark.asyncio
+    async def test_fetches_all_three_modes_and_fills_fields(self) -> None:
+        comparison = self._comparison()
+        tool = _all_modes_travel_route_tool()
+
+        result = await _fetch_compare_travel_routes(
+            tool, origin_location="37.5760,126.9769", comparison=comparison
+        )
+
+        for item in result.items:
+            assert item.travel_walking_minutes is not None
+            assert item.travel_driving_minutes is not None
+            assert item.travel_transit_minutes is not None
+            assert item.travel_distance_km is not None
+            # 도보가 가장 느린 수단이라 소요시간이 가장 길어야 한다.
+            assert item.travel_walking_minutes > item.travel_driving_minutes
+
+    @pytest.mark.asyncio
+    async def test_missing_provider_leaves_that_mode_none_others_filled(self) -> None:
+        """대중교통 provider가 미설정이어도(TP-106 이전 상태 재현) 나머지 수단은 채워진다."""
+        comparison = self._comparison()
+        tool = TravelRouteTool(
+            {
+                TravelMode.WALKING: TravelRouteProviders(
+                    primary=FakeWalkingRouteProvider(walking_speed_mps=1.2)
+                ),
+                TravelMode.DRIVING: TravelRouteProviders(
+                    primary=FakeDrivingRouteProvider(driving_speed_mps=8.0)
+                ),
+            }
+        )
+
+        result = await _fetch_compare_travel_routes(
+            tool, origin_location="37.5760,126.9769", comparison=comparison
+        )
+
+        for item in result.items:
+            assert item.travel_walking_minutes is not None
+            assert item.travel_driving_minutes is not None
+            assert item.travel_transit_minutes is None
+
+    @pytest.mark.asyncio
+    async def test_items_without_coordinates_are_left_untouched(self) -> None:
+        comparison = ComparisonResult(
+            criteria=CompareCriteria.TRAVEL_TIME,
+            items=[ComparisonItem(place_id="p1", place_name="좌표 없는 곳", rank=1)],
+        )
+        tool = _all_modes_travel_route_tool()
+
+        result = await _fetch_compare_travel_routes(
+            tool, origin_location="37.5760,126.9769", comparison=comparison
+        )
+
+        assert result is comparison
+
+    @pytest.mark.asyncio
+    async def test_no_origin_location_returns_unchanged(self) -> None:
+        comparison = self._comparison()
+        tool = _all_modes_travel_route_tool()
+
+        result = await _fetch_compare_travel_routes(
+            tool, origin_location=None, comparison=comparison
+        )
+
+        assert result is comparison
 
 
 class _RecordingWalkingRoutesRecommendationProvider(RealRecommendationProvider):

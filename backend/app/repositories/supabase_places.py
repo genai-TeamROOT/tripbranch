@@ -58,6 +58,9 @@ _DETAIL_COLUMNS = ",".join(
         "content_type_id",
         "title",
         "address",
+        # COMPARE TRAVEL_TIME 실측 연결(2026-08-21)이 쓴다.
+        "latitude",
+        "longitude",
         "operating_hours_raw",
         "rest_date_raw",
         "detail_fetch_status",
@@ -174,6 +177,10 @@ def _title_filters(name: str) -> list[str]:
 
 def _optional_text(value: object) -> str | None:
     return str(value) if value is not None else None
+
+
+def _optional_float(value: object) -> float | None:
+    return float(value) if isinstance(value, (int, float)) else None
 
 
 def _search_keys(value: object) -> tuple[str, ...]:
@@ -572,6 +579,8 @@ class SupabasePlaceRepository:
                     content_type_id=str(raw.get("content_type_id") or ""),
                     title=_optional_text(raw.get("title")),
                     address=_optional_text(raw.get("address")),
+                    latitude=_optional_float(raw.get("latitude")),
+                    longitude=_optional_float(raw.get("longitude")),
                     operating_hours_raw=_optional_text(raw.get("operating_hours_raw")),
                     rest_date_raw=_optional_text(raw.get("rest_date_raw")),
                     detail_fetch_status=str(raw.get("detail_fetch_status") or ""),

@@ -36,6 +36,7 @@ from app.schemas import (
     PlaceType,
     RecommendationItem,
     StatedWeather,
+    Transport,
     UserConditions,
     WeatherIntent,
 )
@@ -206,7 +207,7 @@ async def test_generate_general_answer_service_identity_mentions_trivy() -> None
 async def test_generate_compare_summary_uses_three_to_six_fact_only_lines() -> None:
     provider = FakeLLMProvider()
     comparison = ComparisonResult(
-        criteria=CompareCriteria.DISTANCE,
+        criteria=CompareCriteria.TRAVEL_TIME,
         items=[
             ComparisonItem(
                 place_id="p1",
@@ -234,6 +235,50 @@ async def test_generate_compare_summary_uses_three_to_six_fact_only_lines() -> N
     # 0.2km를 3.6km/h로 환산해 올림한 값이다(추천 카드와 같은 표기 규칙).
     assert "도보 약 4분" in result.data
     assert "점수" not in result.data
+
+
+@pytest.mark.asyncio
+async def test_generate_compare_summary_travel_time_recommends_shortest_duration() -> None:
+    """TRAVEL_TIME은 수단 상관없이 가장 빨리 갈 수 있는 곳을 추천하고, 실측 거리와
+    도보·자동차·대중교통 소요시간을 함께 말한다.
+
+    같은 항목의 distance_km(추천 시점 스냅샷 직선거리)는 travel_time 기준에서는
+    실측값과 섞이면 혼동을 주므로 언급하지 않는다.
+    """
+    provider = FakeLLMProvider()
+    comparison = ComparisonResult(
+        criteria=CompareCriteria.TRAVEL_TIME,
+        items=[
+            ComparisonItem(
+                place_id="p1",
+                place_name="경복궁",
+                rank=1,
+                distance_km=0.2,
+                travel_distance_km=1.8,
+                travel_walking_minutes=22,
+                travel_driving_minutes=12,
+                travel_transit_minutes=18,
+            ),
+            ComparisonItem(
+                place_id="p2",
+                place_name="국립민속박물관",
+                rank=2,
+                distance_km=0.5,
+                travel_distance_km=3.4,
+                travel_walking_minutes=40,
+                travel_driving_minutes=20,
+                travel_transit_minutes=25,
+            ),
+        ],
+    )
+
+    result = await provider.generate_compare_summary(comparison)
+
+    assert "경복궁" in result.data
+    assert "자동차로 약 12분" in result.data
+    assert "도보로 약 22분" in result.data
+    assert "대중교통으로 약 18분" in result.data
+    assert "0.2" not in result.data
 
 
 @pytest.mark.asyncio
@@ -571,6 +616,46 @@ async def test_extract_recommend_conditions_bare_place_sets_search_center() -> N
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("user_input", "expected_transport"),
+    [
+        ("차로 갈만한 카페 추천해줘", Transport.CAR),
+        ("걸어서 갈 수 있는 곳 추천해줘", Transport.WALK),
+        ("대중교통으로 갈 만한 곳 추천해줘", Transport.PUBLIC),
+    ],
+)
+async def test_extract_recommend_conditions_transport(
+    user_input: str, expected_transport: Transport
+) -> None:
+    """TP-105 — transport=CAR가 채워져야 D의 자동차 경로 실측이 실제로 호출된다."""
+    provider = FakeLLMProvider()
+
+    output = (await provider.extract_recommend_conditions(user_input)).data
+
+    assert output.recommend.conditions.transport is expected_transport
+
+
+@pytest.mark.asyncio
+async def test_extract_recommend_conditions_transport_not_mentioned_stays_null() -> None:
+    """이동수단을 언급하지 않았으면 추정하지 않고 null로 둔다."""
+    provider = FakeLLMProvider()
+
+    output = (await provider.extract_recommend_conditions("경복궁 근처 카페 추천해줘")).data
+
+    assert output.recommend.conditions.transport is None
+
+
+@pytest.mark.asyncio
+async def test_extract_recommend_conditions_travel_time_alone_does_not_imply_transport() -> None:
+    """이동시간만 말하고 이동수단은 말하지 않으면 transport를 유추해서 채우지 않는다."""
+    provider = FakeLLMProvider()
+
+    output = (await provider.extract_recommend_conditions("30분 안에 갈 수 있는 곳")).data
+
+    assert output.recommend.conditions.transport is None
+
+
+@pytest.mark.asyncio
 async def test_extract_modify_conditions_quiet_place_avoids_concentration() -> None:
     """MODIFY에서도 '조용한'은 혼잡도 회피(AVOID)로 추출해야 한다.
 
@@ -593,6 +678,18 @@ async def test_extract_modify_conditions_quiet_place_avoids_concentration() -> N
         "place_tags",
         "concentration_intent",
     ]
+
+
+@pytest.mark.asyncio
+async def test_extract_modify_conditions_transport_change() -> None:
+    """MODIFY도 이동수단 변경 발화를 transport로 추출하고 changed_fields에 남긴다."""
+    provider = FakeLLMProvider()
+    current = UserConditions(search_center="창경궁", transport=Transport.WALK)
+
+    output = (await provider.extract_modify_conditions("차로 가는 걸로 바꿔줘", current)).data
+
+    assert output.modify.condition_changes.transport is Transport.CAR
+    assert "transport" in output.modify.changed_fields
 
 
 @pytest.mark.asyncio
@@ -1014,6 +1111,21 @@ def test_condition_instructions_treat_permissive_expressions_as_unrestricted() -
         assert "weather_intent=IGNORE" in instruction
         assert "사람 많아도 괜찮아" in instruction
         assert "concentration_intent=IGNORE" in instruction
+
+
+def test_condition_instructions_include_transport_mapping_rules() -> None:
+    """TP-105 — D의 자동차 경로 실측이 transport=CAR를 보고 동작하므로,
+    RECOMMEND/MODIFY 양쪽 프롬프트에 구체 매핑 규칙이 있는지 고정한다.
+    한쪽만 규칙이 있으면 그 인텐트에서만 조용히 동작이 갈린다.
+    """
+    recommend = build_recommend_extraction_instruction()
+    modify = build_modify_extraction_instruction(UserConditions(search_center="경복궁"))
+
+    for instruction in (recommend, modify):
+        assert "이동수단(transport) 규칙" in instruction
+        assert 'transport="car"' in instruction
+        assert 'transport="walk"' in instruction
+        assert 'transport="public"' in instruction
         assert "야외도 괜찮아" in instruction
         assert 'environment="any"' in instruction
 
@@ -1284,7 +1396,32 @@ async def test_extract_compare_request_mixes_ordinal_and_name() -> None:
 
     assert output.compare is not None
     assert output.compare.targets == [1, 3]
-    assert output.compare.criteria is CompareCriteria.DISTANCE
+    assert output.compare.criteria is CompareCriteria.TRAVEL_TIME
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "user_input",
+    ["첫 번째랑 백인제가옥 중에 어디가 더 빨리 갈까?", "둘 중 얼마나 걸려?", "어디가 덜 막힐까?"],
+)
+async def test_extract_compare_request_travel_time_criteria(user_input: str) -> None:
+    """TP-105/106 실측 연결 — "빨리 갈까?"류 발화는 travel_time으로 판별한다.
+
+    "덜 막힐까?"(실시간 교통 정체)는 아직 별도 API 연동 전이라 지금은 같은
+    travel_time 기준(실측 경로, 정체 미반영)으로 받는다(연결 과제로 남김).
+    """
+    provider = FakeLLMProvider()
+
+    output = (
+        await provider.extract_compare_request(
+            user_input,
+            shown_place_count=3,
+            shown_place_names=_SHOWN_PLACES,
+        )
+    ).data
+
+    assert output.compare is not None
+    assert output.compare.criteria is CompareCriteria.TRAVEL_TIME
 
 
 @pytest.mark.asyncio

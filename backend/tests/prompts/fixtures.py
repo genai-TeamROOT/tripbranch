@@ -207,6 +207,6 @@ SUMMARY_INTENTS = [
 ]
 
 COMPARE_SUMMARY_CRITERIA = [
-    ("compare_summary__distance", CompareCriteria.DISTANCE),
+    ("compare_summary__travel_time", CompareCriteria.TRAVEL_TIME),
     ("compare_summary__overall", CompareCriteria.OVERALL),
 ]

@@ -4,7 +4,7 @@
 
 | 슬롯 | 관리 버전 | 템플릿 | 공유 규칙 |
 | --- | --- | --- | --- |
-| recommend.extract | v2 | extract.md, location_rules.md, place_tag_rules.md | budget, weather, concentration, environment |
+| recommend.extract | 2.1.0 | extract.md, location_rules.md, place_tag_rules.md | budget, weather, concentration, environment, transport |
 | recommend.summary | v1 | summary_instruction.md | persona, factuality |
 
 ## 승인 이력
@@ -16,6 +16,7 @@
 | legacy-1.0.9 | 2026-08-10 | `86a9cd1` | `recommend.extract` | 위치 되묻기와 검색 중심점 유지 규칙 보강 | TP-67 후속 | 승인됨 |
 | legacy-1.0.13 | 2026-08-18 | `585a045` | 공유 weather/concentration/environment | 비·혼잡·야외 허용 표현을 조건 완화로 분류 | 후보를 불필요하게 좁히거나 재정렬하는 문제 방지 | 승인됨 |
 | 1.0.17 | 2026-08-19 | `3b991bf` | `recommend.extract` (v1 → v2) | 취향 발화를 `taste_query`로 분리 추출 | 취향 근거 벡터 검색 질의로 쓴다. `special_requirements`는 일정·교통 조건이 섞여 그대로 임베딩하면 오탐이 난다 — 비취향 발화 6건이 취향 근거를 찾아냈고(최대 "3시간 안에 다녀올 수 있는 곳" 0.523 · 150곳 중 19곳 통과), 이는 진짜 취향 발화 "친구들이랑 시끌벅적"(0.498)보다 높다. **분리 후 같은 6건이 전부 `null`이 됐다(6 → 0)** | 실 LLM 검증 14/14 통과, 실 서버 왕복 확인 완료, PR 검토 대기 |
+| 2.1.0 | 2026-08-20 | (이 커밋) | `recommend.extract` (2.0.0 → 2.1.0), 공유 `_shared/rules/transport.md` 신설 | "차로"/"걸어서"/"대중교통으로" 등 표현을 transport=car/walk/public로 매핑하는 구체 규칙과 예시 추가. 기존엔 "명시적으로 언급된 것만 채우고 나머지는 null"이라는 최소 지시뿐이었다. MODIFY와 매핑 규칙을 공유해야 해서 `_shared/rules/`에 둔다(같은 규칙이 두 곳에 있으면 한쪽만 바뀌었을 때 조용히 어긋난다) | TP-105(자동차 경로 네이버 실측, PR #196)로 D의 `to_travel_mode()`가 `transport=CAR`일 때 실제 자동차 provider를 호출하도록 이미 짜여 있었지만, 추출 프롬프트에 구체 매핑 규칙이 없어 이 조건이 채워질 근거가 약했다 — 상태 병합 경로(`_SINGLE_FIELDS`, `test_state_transform_field_coverage.py`)는 이미 통과 상태라 프롬프트만 비어 있었다 | 승인됨 — pytest 2137건 통과. 실 Gemini 골드셋 재현 발화(DEV-006 도보/DEV-007 자동차/FINAL-012 자동차+주차) 전건 통과. 같은 골드셋을 변경 전 코드로 재실행(베이스라인)해 비교한 결과, 다른 케이스의 통과/실패가 매번 다르게 흔들려 LLM 비결정성으로 확인 — 이 변경이 다른 필드 추출에 부작용을 준다는 증거 없음 |
 
 > 슬롯 버전(`meta.yaml`)과 전역 `PROMPT_VERSION`(`app/providers/gemini_prompts.py`)은
 > 함께 올린다. 전역 버전은 6개 인텐트가 공유하므로 어느 슬롯이 바뀌었는지는 이 표가
