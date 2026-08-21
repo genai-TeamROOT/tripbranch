@@ -1842,8 +1842,13 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   (2) `public`이 통제 밖인 `auth` 스키마에 의존하게 되며,
   (3) 오래된 익명 사용자 정리와 충돌한다(`restrict`면 삭제가 막히고 `cascade`면 세션이
   함께 지워진다).
-- 범위 밖: 마이그레이션 파일을 아직 `supabase/migrations/`에 두지 않았다 — `db push`나
-  `apply_migration`이 소유자 확인 전에 집어갈 수 있어 초안을 설계 문서 안에만 두었다.
+- 상태 갱신(2026-08-20): 네 결정 모두 확정되어 TP-101 3단계 착수·완료. 마이그레이션
+  `supabase/migrations/202608200002_add_user_id_to_agent_state_tables.sql` 작성
+  완료(아직 미적용), `AgentState`/`RecommendationHistory.user_id` 필드와 연결
+  로직(`session.attach_user_id()`/`history.attach_user_id()`) 구현·테스트 완료.
+  `record_recommendation`/`record_closed_exclusions`/`apply()`의 rejected_places
+  경로까지 세 곳 모두 연결되어, 세션(`agent_states`)과 이력(`recommendation_histories`)
+  양쪽 모두 신원이 채워진다. 남은 건 마이그레이션을 실제 Supabase에 적용하는 것뿐이다.
 - 상세: `docs/design/guest-auth-design.md` 6-1절
 
 ### D-064 — 프롬프트 `meta.yaml`은 당분간 사람이 읽는 선언으로 두고, 런타임은 Markdown만 읽는다

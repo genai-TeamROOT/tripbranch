@@ -9,6 +9,7 @@
 import uuid
 from datetime import datetime, timedelta
 
+from app.auth.principal import Principal
 from app.state import history as history_module
 from app.state.schema import AgentState, now_kst
 from app.state.store import StateStore
@@ -126,6 +127,21 @@ def get_or_create_session(
         return create_session(store), True
 
     return state, False
+
+
+def attach_user_id(state: AgentState, principal: Principal | None) -> None:
+    """검증된 신원을 세션에 연결한다. (TP-101 3단계, D-063 결정 3)
+
+    비어 있으면 채우고, 이미 값이 있으면 절대 덮어쓰지 않는다 — 빈 칸을
+    채우는 것은 소유권 이전이 아니지만, 값이 있는 세션을 덮어쓰는 것은
+    소유권 탈취이기 때문이다. principal이 None(신원 토큰 없이 온 요청,
+    지금은 Phase 4 전이라 정상 경로다)이면 아무것도 하지 않는다.
+    """
+    if principal is None:
+        return
+    if state.user_id is not None:
+        return
+    state.user_id = principal.user_id
 
 
 def peek_session(store: StateStore, session_id: str | None) -> AgentState | None:

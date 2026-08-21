@@ -12,6 +12,7 @@ from datetime import timedelta
 
 import pytest
 
+from app.auth.principal import Principal
 from app.state.history import record_recommended, record_rejected
 from app.state.schema import AgentState, RecommendedItemInput, now_kst
 from app.state.session import (
@@ -19,6 +20,7 @@ from app.state.session import (
     RESET_HISTORY,
     RESET_SOFT,
     apply_reset,
+    attach_user_id,
     create_session,
     get_or_create_session,
     is_gps_expired,
@@ -176,6 +178,43 @@ class TestGetOrCreateSession:
         assert created is True
         assert state.session_id != original.session_id
         assert state.status == "active"
+
+
+# ================================================================ 신원 연결
+
+class TestAttachUserId:
+    """TP-101 3단계, D-063 결정 3의 "채우되 덮어쓰지 않는다" 규칙."""
+
+    def test_principal이_없으면_아무것도_하지_않는다(self):
+        state = AgentState(session_id="sess_A")
+        attach_user_id(state, None)
+        assert state.user_id is None
+
+    def test_빈_세션은_principal의_user_id로_채워진다(self):
+        state = AgentState(session_id="sess_A")
+        principal = Principal(user_id="user-1", is_anonymous=True)
+
+        attach_user_id(state, principal)
+
+        assert state.user_id == "user-1"
+
+    def test_이미_user_id가_있으면_덮어쓰지_않는다(self):
+        state = AgentState(session_id="sess_A", user_id="user-원래주인")
+        principal = Principal(user_id="user-다른사람", is_anonymous=True)
+
+        attach_user_id(state, principal)
+
+        assert state.user_id == "user-원래주인"
+
+    def test_정식_로그인으로_전환돼도_user_id는_그대로다(self):
+        """is_anonymous만 바뀌고 user_id는 유지되는 경우(D-062 2절)도
+        덮어쓰기 금지 규칙이 동일하게 적용되는지 확인한다."""
+        state = AgentState(session_id="sess_A", user_id="user-1")
+        principal = Principal(user_id="user-1", is_anonymous=False)
+
+        attach_user_id(state, principal)
+
+        assert state.user_id == "user-1"
 
 
 class TestPeekSession:

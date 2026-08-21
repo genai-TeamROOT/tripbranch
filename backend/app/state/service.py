@@ -12,6 +12,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.auth.principal import Principal
 from app.errors import AppError
 from app.state import history as history_module
 from app.state import session as session_module
@@ -312,6 +313,7 @@ def _wrap_store_errors(fn):
 def apply(
     request: StateApplyRequest,
     store: StateStore | None = None,
+    principal: Principal | None = None,
 ) -> StateApplyResponse:
     """조건 변경을 적용하고 현재 상태를 반환한다. (계약 6.1 / 6.2절)"""
     store = store or get_store()
@@ -320,6 +322,11 @@ def apply(
     state, session_created = session_module.get_or_create_session(
         store, request.session_id
     )
+
+    # 1-1) 신원 연결 (TP-101 3단계, D-063) — 세션 확보 직후, 두 저장 경로
+    #      (아래 3번 confirmed=false 조기 반환 / 9번 본 경로) 모두보다 먼저
+    #      실행해야 어느 쪽으로 빠지든 user_id가 함께 저장된다.
+    session_module.attach_user_id(state, principal)
 
     # 2) run_id 발급 — 조건 병합 이전 (계약 4.3절)
     #    변경 기록과 추천 이력이 run_id를 필수로 포함하기 때문이다.
@@ -371,6 +378,7 @@ def apply(
             state.session_id,
             run_id,
             [(p.place_id, p.reason_code) for p in request.rejected_places],
+            principal=principal,
         )
 
     # 9) 저장
@@ -476,6 +484,7 @@ def get_session_context(
 def record_recommendation(
     request: RecordRecommendationRequest,
     store: StateStore | None = None,
+    principal: Principal | None = None,
 ) -> RecordRecommendationResponse:
     """실제로 노출된 추천 결과를 기록한다. (계약 6.4절)
 
@@ -503,6 +512,7 @@ def record_recommendation(
             )
             for p in request.recommended
         ],
+        principal=principal,
     )
     return RecordRecommendationResponse(recorded=recorded)
 
@@ -513,6 +523,7 @@ def record_recommendation(
 def record_closed_exclusions(
     request: RecordClosedExclusionsRequest,
     store: StateStore | None = None,
+    principal: Principal | None = None,
 ) -> RecordClosedExclusionsResponse:
     """D의 하드 필터가 폐점이라 걸러낸 후보 id를 기록한다. (TP-82)
 
@@ -528,6 +539,7 @@ def record_closed_exclusions(
         request.session_id,
         request.run_id,
         request.place_ids,
+        principal=principal,
     )
     return RecordClosedExclusionsResponse(recorded=recorded)
 
