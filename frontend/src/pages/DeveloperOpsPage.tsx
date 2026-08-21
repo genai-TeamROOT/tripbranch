@@ -125,7 +125,6 @@ export function DeveloperOpsPage() {
 
   const handleApply = useCallback(
     async (input: {
-      dryRun: boolean;
       confirm: string;
       includeExcluded: boolean;
       detailsLimit: number | null;
@@ -149,7 +148,9 @@ export function DeveloperOpsPage() {
           addedContentIds: reconcile.rows
             .filter((row) => row.change_type === "added")
             .map((row) => row.content_id),
-          dryRun: input.dryRun,
+          // 패널은 항상 실제 반영이다. dry-run은 한도를 똑같이 쓰면서 결과를
+          // 남기지 않아, 모르고 켜두면 "돌렸는데 아무것도 안 바뀜"이 된다.
+          dryRun: false,
           detailsLimit: input.detailsLimit,
           confirm: input.confirm,
         });

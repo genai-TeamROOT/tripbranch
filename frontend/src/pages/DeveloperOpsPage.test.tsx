@@ -381,7 +381,7 @@ it("대조 결과와 상세조회 대상 건수를 보여준다", async () => {
   await user.click(await screen.findByRole("button", { name: "1. 스냅샷 대조" }));
 
   expect(await screen.findByText("새 장소")).toBeInTheDocument();
-  expect(screen.getByText("예상 외부 호출: 목록 0회 + 상세조회 2회")).toBeInTheDocument();
+  expect(screen.getByText(/예상 외부 호출: 목록 0회 \+ 상세조회 2회/)).toBeInTheDocument();
   // 수정시각이 안 바뀐 건은 상세조회에서 빠지되 조용히 사라지지 않아야 한다.
   expect(screen.getByText(/상세조회 제외 1건/)).toBeInTheDocument();
 });
@@ -414,7 +414,9 @@ it("확인 문자열을 정확히 입력해야 반영이 시작된다", async ()
     detail_content_ids: ["3", "4"],
     // 신규 장소는 반영 후 집중률 매핑 유무를 확인하는 데 쓰인다.
     added_content_ids: ["4"],
-    dry_run: true,
+    // 패널은 항상 실제 반영이다. dry-run은 한도를 똑같이 쓰면서 결과를 남기지
+    // 않아, 모르고 켜두면 "돌렸는데 아무것도 안 바뀜"이 된다.
+    dry_run: false,
     details_limit: null,
     confirm: "11-110",
   });
@@ -428,7 +430,7 @@ it("제외된 건을 포함하도록 체크하면 상세조회 대상에 들어�
   await user.click(await screen.findByRole("button", { name: "1. 스냅샷 대조" }));
   await user.click(await screen.findByRole("checkbox", { name: /상세조회 제외 1건/ }));
   expect(
-    screen.getByText("예상 외부 호출: 목록 0회 + 상세조회 3회"),
+    screen.getByText(/예상 외부 호출: 목록 0회 \+ 상세조회 3회/),
   ).toBeInTheDocument();
 
   await user.click(screen.getByRole("button", { name: "2. 반영 실행" }));
@@ -513,7 +515,7 @@ it("상세조회 상한이 예상 호출수와 반영 요청에 반영된다", a
   await user.type(await screen.findByLabelText("상세조회 상한"), "1");
 
   expect(
-    screen.getByText("예상 외부 호출: 목록 0회 + 상세조회 1회"),
+    screen.getByText(/예상 외부 호출: 목록 0회 \+ 상세조회 1회/),
   ).toBeInTheDocument();
 
   await user.click(screen.getByRole("button", { name: "2. 반영 실행" }));
@@ -609,4 +611,63 @@ it("못 채운 건을 확인하지 못하면 예상 호출수가 확정이 아�
   await user.click(await screen.findByRole("button", { name: "1. 스냅샷 대조" }));
 
   expect(await screen.findByText(/확인하지 못했어요/)).toBeInTheDocument();
+});
+
+
+/* 패널에는 dry-run 선택지가 없지만 apply 엔드포인트는 여전히 받는다. 그렇게 돈
+ * job이 화면에 오면 숫자가 실제 반영과 똑같이 보이므로, 결과 표기는 남겨둔다. */
+it("dry-run으로 돈 job은 DB에 쓰지 않았다는 것과 한도를 썼다는 것을 알린다", async () => {
+  const finishedDryRun = {
+    ...runningJob,
+    status: "success",
+    finished_at: "2026-08-22T00:05:00+09:00",
+    phase: "done",
+    processed: 2,
+    total: 2,
+    result: {
+      status: "success",
+      dry_run: true,
+      sync_run_id: null,
+      processed_count: 486,
+      success_count: 486,
+      failed_count: 0,
+      new_count: 486,
+      updated_count: 0,
+      deactivated_count: 0,
+      detail_target_count: 142,
+      detail_attempted_count: 142,
+      reparse_count: 0,
+      error_summary: {},
+    },
+  };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const body = url.includes("reconcile")
+        ? reconcileResult
+        : url.includes("place-sync/apply") || url.includes("place-sync/jobs")
+          ? finishedDryRun
+          : panelBody(url);
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }),
+  );
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.click(await screen.findByRole("button", { name: "1. 스냅샷 대조" }));
+  await user.click(screen.getByRole("button", { name: "2. 반영 실행" }));
+  await user.type(screen.getByLabelText("확인 문자열"), "11-110");
+  await user.click(screen.getByRole("button", { name: "실행" }));
+
+  // 숫자만 크게 띄우면 하지도 않은 일을 한 것처럼 보인다.
+  expect(
+    await screen.findByText(/dry-run이라 DB에는 아무것도 쓰지 않았어요/),
+  ).toBeInTheDocument();
+  expect(screen.getByText("신규(예상)")).toBeInTheDocument();
+  // 비활성화는 판정 자체를 건너뛴다 — 0으로 보이면 "사라진 장소가 없다"로 읽힌다.
+  expect(screen.getByText("미판정")).toBeInTheDocument();
 });
