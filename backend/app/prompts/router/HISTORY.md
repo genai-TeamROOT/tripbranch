@@ -12,6 +12,13 @@
   정보의 범위와 지하철/주차/행사 경계 사례를 보강했습니다. 변경 전 INFO 정의 원문은
   `archive/intent_definitions__legacy-1.md`에 보관했습니다. INFO 추출 v3과 함께 단위
   테스트·실서버 질문 확인을 거쳐 승인 이력으로 승격합니다.
+- 2026-08-21: COMPARE 실측 이동시간 연결(D-050) 검증 중 "빨리 갈까?", "얼마나 걸려?"
+  같은 이동 소요시간 비교 표현이 COMPARE 트리거 예시에 없어 GENERAL로 새는 문제를
+  발견했습니다. `intent_priority.md`(4번 COMPARE 항목)와 `context_rules.md`(이전 추천
+  2개 이상 조건부 규칙)에 예시를 추가했습니다. 변경 전 원문은
+  `archive/intent_priority__legacy-2.0.0.md`, `archive/context_rules__legacy-2.0.0.md`에
+  보관했습니다. "덜 막힐까?"류 교통 정체 표현은 실시간 교통 API 연동 전까지 이번
+  범위에서 제외합니다. 실 서버 재확인 후 승인 이력으로 승격합니다.
 
 ## 승인 이력
 

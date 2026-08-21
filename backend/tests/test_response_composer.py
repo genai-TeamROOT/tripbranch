@@ -411,6 +411,42 @@ class TestComposeCompareMessage:
         assert "180분" not in message
         assert "점수" not in message
 
+    @pytest.mark.asyncio
+    async def test_llm_failure_travel_time_fallback_prefers_measured_duration(self) -> None:
+        """LLM 장애 시 fallback도 실측(travel_walking_minutes 등)을 우선 쓰고,
+        같은 항목의 직선거리(distance_km)는 언급하지 않는다."""
+        comparison = ComparisonResult(
+            criteria=CompareCriteria.TRAVEL_TIME,
+            items=[
+                ComparisonItem(
+                    place_id="p1",
+                    place_name="국립현대미술관 서울",
+                    rank=1,
+                    distance_km=0.3,
+                    travel_distance_km=2.1,
+                    travel_walking_minutes=9,
+                    travel_driving_minutes=4,
+                ),
+                ComparisonItem(
+                    place_id="p2",
+                    place_name="창덕궁",
+                    rank=2,
+                    distance_km=0.8,
+                    travel_distance_km=4.5,
+                    travel_walking_minutes=18,
+                    travel_driving_minutes=10,
+                ),
+            ],
+        )
+
+        message = await compose_compare_message(comparison, _StubLLM(fail_compare_summary=True))
+
+        assert "국립현대미술관 서울" in message
+        assert "도보로 약 9분" in message
+        assert "자동차로 약 4분" in message
+        assert "0.3km" not in message
+        assert "0.3" not in message
+
 
 class TestComposeChatMessageInfoCompare:
     @pytest.mark.parametrize("intent", [Intent.INFO, Intent.COMPARE])

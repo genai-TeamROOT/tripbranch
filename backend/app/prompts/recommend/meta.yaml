@@ -2,11 +2,12 @@ intent: RECOMMEND
 owner: D
 slots:
   recommend.extract:
-    version: "2.1.0"
+    version: "2.2.0"
     template: extract.md
     bundle:
       - recommend/location_rules.md
       - recommend/place_tag_rules.md
+      - _shared/rules/transport.md
       - _shared/rules/budget.md
       - _shared/rules/weather_intent.md
       - _shared/rules/concentration_intent.md

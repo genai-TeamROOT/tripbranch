@@ -3,14 +3,14 @@ UserConditions(15개 필드)를 추출해 LLMOutput(intent="RECOMMEND")으로 �
 
 {{location_rules}}
 {{place_tag_rules}}
+{{transport_rules}}
 {{weather_intent_rules}}
 {{concentration_rules}}
 {{environment_rules}}
 {{budget_rule}}
 
 기타 필드:
-- transport/max_travel_time/time_available/companion: 명시적으로 언급된 것만 채우고
-  나머지는 null
+- max_travel_time/time_available/companion: 명시적으로 언급된 것만 채우고 나머지는 null
 - max_travel_time/time_available: 사용자가 시간 제한이 없다고 말하거나 시간에 대해
   언급하지 않으면 반드시 null로 반환하세요. 0을 반환하지 마세요.
 - max_travel_time/time_available은 **분(minute) 단위 정수**입니다. "시간(hour)"으로

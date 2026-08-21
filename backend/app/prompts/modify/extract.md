@@ -21,6 +21,7 @@ needs_clarification으로 두고 clarification.message에 몇 번까지 있는�
 needs_clarification 대신 다른 규칙(REJECT_ALL/CHANGE_CONDITION)을 우선 검토하세요.
 {{relative_expression_rules}}
 {{field_merge_rules}}
+{{transport_rules}}
 {{weather_intent_rules}}
 {{concentration_rules}}
 {{environment_rules}}

@@ -137,9 +137,11 @@ _MIN_COMPARE_ITEMS = 2
 
 # criteria별로 "이 값이 없으면 비교할 게 없는" 필드. overall은 세 값을 함께 설명하는
 # 방식이라(A 확정) 특정 필드를 요구하지 않는다.
+# TRAVEL_TIME은 travel_* 수단별 값을 여기서 채우지 않는다(A가 실측 호출 후 채운다)
+# — 대신 실측에 필요한 좌표(latitude)가 있는지로 판정한다.
 _COMPARE_CRITERIA_FIELDS: dict[CompareCriteria, str] = {
-    CompareCriteria.DISTANCE: "distance_km",
     CompareCriteria.TIME: "remaining_minutes",
+    CompareCriteria.TRAVEL_TIME: "latitude",
 }
 
 # INFO 행사 응답에 싣는 최대 건수. 챗봇 말풍선 한 번에 읽히는 분량으로 제한한다.
@@ -300,7 +302,14 @@ class ContextService:
 
         수치(거리·남은 운영시간·실내외)는 B가 보관한 추천 시점 스냅샷이므로 다시
         조회하지 않고 그대로 통과시킨다 — 사용자가 카드에서 본 값과 어긋나면 안 된다
-        (D-050). C는 우열을 판정하지 않는다. 그건 A의 LLM 요약 몫이다.
+        (D-050, docs/design/int-04-compare.md §13). C는 우열을 판정하지 않는다.
+        그건 A의 LLM 요약 몫이다.
+
+        좌표(latitude/longitude)는 예외다(TRAVEL_TIME, 2026-08-21) — 카드 조회
+        시점에 항상 함께 실어 보낸다. 스냅샷이 아니라 "지금 이 장소가 어디 있는지"
+        라는 불변에 가까운 사실이라 D-050이 막으려던 문제(스냅샷과 최신값의 어긋남)
+        와 무관하고, A가 이 좌표로 실측 경로를 조회할 때만 쓴다 — C는 여기서도
+        거리·시간을 계산하거나 우열을 매기지 않는다.
         """
 
         card_tool = self._tools.cards
@@ -329,21 +338,24 @@ class ContextService:
                 ),
             )
 
-        names = {card.content_id: card.name for card in card_result.cards if card.name is not None}
+        cards_by_id = {card.content_id: card for card in card_result.cards if card.name is not None}
         items = [
             ComparisonItem(
                 place_id=candidate.place_id,
-                place_name=names[candidate.place_id],
+                place_name=cards_by_id[candidate.place_id].name,
                 rank=candidate.rank,
                 distance_km=candidate.distance_km,
                 remaining_minutes=candidate.remaining_minutes,
                 environment_type=candidate.environment_type,
+                # TRAVEL_TIME 전용 — 사실 그대로 전달만 한다(우열 판정은 A 몫).
+                latitude=cards_by_id[candidate.place_id].latitude,
+                longitude=cards_by_id[candidate.place_id].longitude,
             )
             for candidate in candidates
-            if candidate.place_id in names
+            if candidate.place_id in cards_by_id
         ]
         missing = [
-            candidate.place_id for candidate in candidates if candidate.place_id not in names
+            candidate.place_id for candidate in candidates if candidate.place_id not in cards_by_id
         ]
 
         # 이름을 못 찾은 후보는 빼고 진행하되, 남은 수가 비교를 이루지 못하면

@@ -60,7 +60,7 @@ async def interpret(
     apply_request = transform(llm_output, context, request.user_input)
 
     # 5) State 적용 및 run_id 발급
-    state_result = state_service.apply(apply_request)
+    state_result = state_service.apply(apply_request, principal=principal)
 
     # 6) 최초 턴이면 방금 생성된 세션에 GPS를 심는다.
     #    ensure_current_context 는 세션을 만들 수 없어 GPS를 못 심는다.

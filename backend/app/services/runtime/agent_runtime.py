@@ -21,6 +21,7 @@ from datetime import timedelta
 from typing import TypeVar
 
 from app.agent_context.schemas import PlaceCandidate, RecommendationContext
+from app.auth.principal import Principal
 from app.config import settings
 from app.domain.scoring import SCORING_VERSION
 from app.domain.travel_route import (
@@ -43,6 +44,8 @@ from app.schemas import (
     AgentResponse,
     ClarificationOption,
     ClarificationPayload,
+    CompareCriteria,
+    ComparisonItem,
     ComparisonResult,
     ConcentrationIntent,
     GeneralPayload,
@@ -1123,6 +1126,94 @@ async def _fetch_info_walking_route(
     )
 
 
+# TravelMode → ComparisonItem의 어느 필드에 채울지. "덜 막힐까" 등 실시간 정체는
+# 아직 반영하지 못하므로 이 세 값은 정체 미반영 실측이다(criteria_rules.md에 안내).
+_COMPARE_TRAVEL_TIME_FIELDS: dict[TravelMode, str] = {
+    TravelMode.WALKING: "travel_walking_minutes",
+    TravelMode.DRIVING: "travel_driving_minutes",
+    TravelMode.TRANSIT: "travel_transit_minutes",
+}
+# 대표 거리로 쓸 우선순위 — 자동차 경로가 도로 기준이라 "실제로 얼마나 떨어져
+# 있는지"에 가장 가깝다고 보고, 조회 실패 시 도보·대중교통 순으로 대체한다.
+_COMPARE_DISTANCE_MODE_PRIORITY = (TravelMode.DRIVING, TravelMode.WALKING, TravelMode.TRANSIT)
+
+
+async def _fetch_compare_travel_routes(
+    route_tool: TravelRouteToolProvider | None,
+    *,
+    origin_location: str | None,
+    comparison: ComparisonResult,
+) -> ComparisonResult:
+    """COMPARE의 TRAVEL_TIME 기준일 때 도보·자동차·대중교통 세 경로를 모두 실측한다.
+
+    C는 좌표(item.latitude/longitude)만 사실대로 전달했을 뿐 우열을 매기지
+    않는다(agent_context/service.py 참고) — 여기서 A가 실측을 붙인다. 대상은
+    보통 2~3곳뿐이라 세 수단을 병렬로 조회해도 부담이 적다(_fetch_travel_routes와
+    달리 "하드 필터 통과 후보 전체"가 아니라 "이미 비교 대상으로 확정된 소수").
+
+    사용자 조건(transport)으로 한 수단만 고르지 않는다 — "도보/자차/대중교통으로
+    얼마나 걸리는지"를 한 번에 보여줘야 사용자가 자기 상황에 맞는 수단을 고를 수
+    있다. 수단 하나가 provider 미설정·경로 장애로 실패해도 나머지 수단·item은
+    영향받지 않는다(response_composer가 None인 수단은 안내에서 뺀다).
+    """
+
+    if comparison.criteria is not CompareCriteria.TRAVEL_TIME or route_tool is None:
+        return comparison
+
+    origin = _to_geo_coordinate(origin_location)
+    if origin is None:
+        return comparison
+
+    destinations = tuple(
+        RouteDestination(
+            place_id=item.place_id,
+            coordinate=GeoCoordinate(latitude=item.latitude, longitude=item.longitude),
+        )
+        for item in comparison.items
+        if item.latitude is not None and item.longitude is not None
+    )
+    if not destinations:
+        return comparison
+
+    async def _fetch_one_mode(mode: TravelMode) -> tuple[TravelMode, tuple[TravelRoute, ...]]:
+        try:
+            result = await route_tool.execute(
+                TravelRouteQuery(origin=origin, destinations=destinations, mode=mode)
+            )
+        except AppError:
+            logger.warning("COMPARE 이동시간 실측 조회 실패: mode=%s", mode.value, exc_info=True)
+            return mode, ()
+        return mode, result.routes
+
+    mode_results = await asyncio.gather(
+        *(_fetch_one_mode(mode) for mode in _COMPARE_TRAVEL_TIME_FIELDS)
+    )
+    routes_by_mode: dict[TravelMode, dict[str, TravelRoute]] = {
+        mode: {
+            route.place_id: route for route in routes if route.status is RouteStatus.SUCCESS
+        }
+        for mode, routes in mode_results
+    }
+    if not any(routes_by_mode.values()):
+        return comparison
+
+    def _update_item(item: ComparisonItem) -> ComparisonItem:
+        updates: dict[str, object] = {}
+        for mode, field in _COMPARE_TRAVEL_TIME_FIELDS.items():
+            route = routes_by_mode.get(mode, {}).get(item.place_id)
+            if route is not None and route.duration_seconds is not None:
+                updates[field] = round(route.duration_seconds / 60)
+        for mode in _COMPARE_DISTANCE_MODE_PRIORITY:
+            route = routes_by_mode.get(mode, {}).get(item.place_id)
+            if route is not None and route.distance_m is not None:
+                updates["travel_distance_km"] = round(route.distance_m / 1000, 2)
+                break
+        return item.model_copy(update=updates) if updates else item
+
+    updated_items = [_update_item(item) for item in comparison.items]
+    return comparison.model_copy(update={"items": updated_items})
+
+
 async def run_agent_flow(
     request: AgentRequest,
     *,
@@ -1132,6 +1223,7 @@ async def run_agent_flow(
     enrichment_provider: EnrichmentProvider,
     travel_route_tool: TravelRouteToolProvider | None = None,
     store: StateStore | None = None,
+    principal: Principal | None = None,
     stream_event_sink: StreamEventSink | None = None,
     stream_recommendation_summary: bool = False,
 ) -> AgentResponse:
@@ -1226,7 +1318,7 @@ async def run_agent_flow(
         "이전 대화 조건을 반영하고 있어요.",
     )
     apply_request = transform(llm_output, session_context, request.user_input)
-    state_response = apply(apply_request, store=store)
+    state_response = apply(apply_request, store=store, principal=principal)
 
     if clarification_resolution is not None and clarification_resolution.ignore_operating_hours:
         _remember_ignore_operating_hours(state_response.session_id, store)
@@ -1563,6 +1655,19 @@ async def run_agent_flow(
                 llm_execution=get_llm_execution_metadata(),
                 tool_execution=compare_execution,
                 tool_executions=[compare_execution] if compare_execution is not None else [],
+            )
+
+        if comparison.criteria is CompareCriteria.TRAVEL_TIME:
+            await _emit_progress(
+                stream_event_sink,
+                "fetching_context",
+                "실제 이동시간을 확인하고 있어요.",
+            )
+            compare_origin_location = valid_gps or state_response.api_context.gps_location
+            comparison = await _fetch_compare_travel_routes(
+                travel_route_tool,
+                origin_location=compare_origin_location,
+                comparison=comparison,
             )
 
         await _emit_progress(
@@ -2023,6 +2128,7 @@ async def run_agent_flow(
                 place_ids=recommendations.excluded_closed_place_ids,
             ),
             store=store,
+            principal=principal,
         )
 
     if is_schedule:
@@ -2170,6 +2276,7 @@ async def run_agent_flow(
                     ],
                 ),
                 store=store,
+                principal=principal,
             )
         else:
             # 후보가 부족해서 일정을 못 짠 경우, route_summary 메시지만 반환하지 말고
@@ -2265,6 +2372,7 @@ async def run_agent_flow(
                 ],
             ),
             store=store,
+            principal=principal,
         )
 
     # 8) A: 추천 카드와 LLM 요약을 같은 시점부터 화면에 보인다. 이전에는 카드(result)를
@@ -2324,6 +2432,7 @@ async def run_agent_flow(
 async def run_agent(
     request: AgentRequest,
     *,
+    principal: Principal | None = None,
     stream_event_sink: StreamEventSink | None = None,
     stream_recommendation_summary: bool = False,
 ) -> AgentResponse:
@@ -2352,6 +2461,7 @@ async def run_agent(
             ),
             enrichment_provider=get_candidate_enrichment_service(client),
             travel_route_tool=get_travel_route_tool(client),
+            principal=principal,
             stream_event_sink=stream_event_sink,
             stream_recommendation_summary=stream_recommendation_summary,
         )

@@ -34,7 +34,7 @@ from app.schemas import (
 # 쓰였는지와 무관하게 단일 값으로 취급한다 — 함수별 개별 버전은 만들지 않는다. 판별·추출
 # 규칙에 영향을 주는 변경(6개 함수 중 하나라도) 시 버전을 올린다 — 사소한 문구·주석
 # 변경은 올리지 않는다.
-_BASE_PROMPT_VERSION = "agent-interpret-prompts-1.0.17"
+_BASE_PROMPT_VERSION = "agent-interpret-prompts-1.0.20"
 _ACTIVE_PROMPT_VARIANT = active_variant()
 PROMPT_VERSION = (
     _BASE_PROMPT_VERSION
@@ -117,6 +117,7 @@ _BUDGET_RULE = load_text("_shared/rules/budget.md")
 _WEATHER_INTENT_RULES = load_text("_shared/rules/weather_intent.md")
 _CONCENTRATION_INTENT_RULES = load_text("_shared/rules/concentration_intent.md")
 _ENVIRONMENT_RULES = load_text("_shared/rules/environment.md")
+_TRANSPORT_RULES = load_text("_shared/rules/transport.md")
 
 
 def build_recommend_extraction_instruction() -> str:
@@ -126,6 +127,7 @@ def build_recommend_extraction_instruction() -> str:
         "recommend/extract.md",
         location_rules=_RECOMMEND_LOCATION_RULES,
         place_tag_rules=_RECOMMEND_PLACE_TAG_RULES,
+        transport_rules=_TRANSPORT_RULES,
         weather_intent_rules=_WEATHER_INTENT_RULES,
         concentration_rules=_CONCENTRATION_INTENT_RULES,
         environment_rules=_ENVIRONMENT_RULES,
@@ -192,6 +194,7 @@ def build_modify_extraction_instruction(
         shown_place_count=shown_place_count,
         relative_expression_rules=_MODIFY_RELATIVE_EXPRESSION_RULES,
         field_merge_rules=_MODIFY_FIELD_MERGE_RULES,
+        transport_rules=_TRANSPORT_RULES,
         weather_intent_rules=_WEATHER_INTENT_RULES,
         concentration_rules=_CONCENTRATION_INTENT_RULES,
         environment_rules=_ENVIRONMENT_RULES,

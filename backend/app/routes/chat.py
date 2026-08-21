@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 @router.post("/chat", response_model=AgentResponse)
 async def chat(request: AgentRequest, principal: OptionalPrincipal) -> AgentResponse:
-    return await run_agent(request)
+    return await run_agent(request, principal=principal)
 
 
 @router.post("/chat/place-details", response_model=RecommendationPlaceDetailResponse)
@@ -96,7 +96,9 @@ async def recommendation_place_details(
 
 
 @router.post("/chat/stream")
-async def chat_stream(request: AgentRequest, http_request: Request) -> EventSourceResponse:
+async def chat_stream(
+    request: AgentRequest, http_request: Request, principal: OptionalPrincipal
+) -> EventSourceResponse:
     """Agent의 진행 상태와 스트리밍 가능한 LLM 답변을 SSE로 순서대로 전달한다.
 
     기존 /chat 단발 JSON 계약은 유지한다. 스트리밍 도중에는 HTTP 예외 핸들러가 이미
@@ -122,6 +124,7 @@ async def chat_stream(request: AgentRequest, http_request: Request) -> EventSour
         task = asyncio.create_task(
             run_agent(
                 request,
+                principal=principal,
                 stream_event_sink=emit,
                 stream_recommendation_summary=True,
             )

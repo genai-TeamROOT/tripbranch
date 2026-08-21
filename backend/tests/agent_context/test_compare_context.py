@@ -111,6 +111,24 @@ async def test_resolves_place_names_and_passes_snapshot_through() -> None:
 
 
 @pytest.mark.asyncio
+async def test_passes_coordinates_for_travel_time_without_judging_them() -> None:
+    """TRAVEL_TIME 전용 — C는 카드 조회 시점의 좌표를 그대로 실어 보내기만 한다.
+
+    실측 호출·우열 판정은 A(agent_runtime.py)의 몫이라 여기서는 좌표 존재
+    여부와 값만 확인한다(2026-08-21, TP-105/106 실측 연결).
+    """
+    response = await _service().fetch_compare_context(
+        _request(criteria=CompareCriteria.TRAVEL_TIME)
+    )
+
+    assert response.status == "success"
+    assert [(item.latitude, item.longitude) for item in response.items] == [
+        (37.5735, 126.9788),
+        (37.5720, 126.9850),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_items_are_ordered_by_rank_not_request_order() -> None:
     response = await _service().fetch_compare_context(
         _request(
@@ -168,14 +186,19 @@ async def test_fewer_than_two_resolved_places_is_no_data() -> None:
 @pytest.mark.parametrize(
     ("criteria", "field"),
     [
-        (CompareCriteria.DISTANCE, "distance_km"),
         (CompareCriteria.TIME, "remaining_minutes"),
     ],
 )
 async def test_missing_snapshot_for_criteria_is_no_data(
     criteria: CompareCriteria, field: str
 ) -> None:
-    """기준 값이 전원 비어 있으면 비교할 사실이 없다 — LLM에 빈 값을 넘기지 않는다."""
+    """기준 값이 전원 비어 있으면 비교할 사실이 없다 — LLM에 빈 값을 넘기지 않는다.
+
+    TRAVEL_TIME은 이 파라미터라이즈 대상이 아니다 — 그 판정 필드(latitude)는
+    candidate 요청이 아니라 카드 조회 응답에서 채워지므로 이 픽스처 방식(값
+    없는 candidate)으로는 재현할 수 없다. 별도 테스트
+    (test_passes_coordinates_for_travel_time_without_judging_them)로 커버한다.
+    """
 
     response = await _service().fetch_compare_context(
         _request(
@@ -214,16 +237,16 @@ async def test_partial_snapshot_is_kept_when_some_places_have_the_value() -> Non
 
     response = await _service().fetch_compare_context(
         _request(
-            criteria=CompareCriteria.DISTANCE,
+            criteria=CompareCriteria.TIME,
             candidates=[
-                CompareCandidate(place_id="fake-museum-1", rank=1, distance_km=0.4),
+                CompareCandidate(place_id="fake-museum-1", rank=1, remaining_minutes=180),
                 CompareCandidate(place_id="fake-cafe-1", rank=2),
             ],
         )
     )
 
     assert response.status == "success"
-    assert [item.distance_km for item in response.items] == [0.4, None]
+    assert [item.remaining_minutes for item in response.items] == [180, None]
 
 
 @pytest.mark.asyncio
@@ -334,7 +357,7 @@ async def test_fake_tool_provider_no_data_rules_match_real_service() -> None:
 
     no_facts = await provider.fetch_compare_context(
         _fake_request(
-            criteria=CompareCriteria.DISTANCE,
+            criteria=CompareCriteria.TIME,
             candidates=[
                 CompareCandidate(place_id="fake-place-1", rank=1),
                 CompareCandidate(place_id="fake-place-2", rank=2),

@@ -143,7 +143,8 @@ Phase 2에서 "토큰 없는 요청 비율"을 로그로 관측하고, 0에 수�
 
 ## 6. 저장 스키마
 
-신규 마이그레이션: `supabase/migrations/2026xxxx_add_user_id_to_agent_states.sql`
+마이그레이션: `supabase/migrations/202608200002_add_user_id_to_agent_state_tables.sql`
+(TP-101 3단계, 2026-08-20 작성 — 아직 Supabase에 적용 전)
 
 - `agent_states.user_id uuid null` + `(user_id, last_active_at)` 인덱스
 - `recommendation_histories.user_id uuid null`

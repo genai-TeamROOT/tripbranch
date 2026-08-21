@@ -36,6 +36,7 @@ from app.schemas import (
     UserConditions,
 )
 from app.services.runtime.compare_context_schemas import (
+    CompareCandidate,
     CompareContextRequest,
     CompareContextResponse,
 )
@@ -70,13 +71,30 @@ _FAKE_COMPARE_PLACE_NAMES: dict[str, str] = {
     "runtime-stub-restaurant-1": "런타임 스텁 식당",
     "runtime-stub-market-1": "런타임 스텁 시장",
 }
+# TRAVEL_TIME 실측 연결(2026-08-21) — 실제 C처럼 place_id별 좌표를 함께 흉내 낸다.
+# 값 자체는 종로 일대의 임의 좌표로, 실측 provider가 실제로 거리를 계산할 수 있게
+# 서로 떨어뜨려 둔다.
+_FAKE_COMPARE_PLACE_COORDINATES: dict[str, tuple[float, float]] = {
+    "fake-place-1": (37.5796, 126.9770),
+    "fake-place-2": (37.5824, 126.9910),
+    "fake-place-3": (37.5735, 126.9788),
+    # _FAKE_CANDIDATES(RECOMMEND 고정 후보)의 location과 같은 값 — COMPARE로
+    # 이어지는 통합 테스트가 실제 RECOMMEND 결과를 그대로 재사용하므로 여기서도
+    # 좌표가 있어야 한다.
+    "runtime-stub-museum-1": (37.5796, 126.9770),
+    "runtime-stub-cafe-1": (37.5798, 126.9772),
+    "runtime-stub-park-1": (37.5800, 126.9774),
+    "runtime-stub-gallery-1": (37.5802, 126.9776),
+    "runtime-stub-restaurant-1": (37.5804, 126.9778),
+    "runtime-stub-market-1": (37.5806, 126.9780),
+}
 # 비교가 성립하는 최소 후보 수. C(agent_context.service)의 _MIN_COMPARE_ITEMS와 같다.
 _FAKE_MIN_COMPARE_ITEMS = 2
 # criteria별로 "이 값이 없으면 비교할 게 없는" 필드. overall은 세 값을 함께 설명하는
 # 방식이라 특정 필드를 요구하지 않는다.
 _FAKE_COMPARE_CRITERIA_FIELDS: dict[CompareCriteria, str] = {
-    CompareCriteria.DISTANCE: "distance_km",
     CompareCriteria.TIME: "remaining_minutes",
+    CompareCriteria.TRAVEL_TIME: "latitude",
 }
 
 # concentration 외 question_type(D-054)의 고정 fields — 키는
@@ -244,15 +262,22 @@ class FakeToolProvider:
         """
 
         candidates = sorted(request.candidates, key=lambda item: item.rank)
-        items = [
-            ComparisonItem(
+
+        def _build_item(candidate: CompareCandidate) -> ComparisonItem:
+            coordinates = _FAKE_COMPARE_PLACE_COORDINATES.get(candidate.place_id)
+            return ComparisonItem(
                 place_id=candidate.place_id,
                 place_name=_FAKE_COMPARE_PLACE_NAMES[candidate.place_id],
                 rank=candidate.rank,
                 distance_km=candidate.distance_km,
                 remaining_minutes=candidate.remaining_minutes,
                 environment_type=candidate.environment_type,
+                latitude=coordinates[0] if coordinates else None,
+                longitude=coordinates[1] if coordinates else None,
             )
+
+        items = [
+            _build_item(candidate)
             for candidate in candidates
             if candidate.place_id in _FAKE_COMPARE_PLACE_NAMES
         ]

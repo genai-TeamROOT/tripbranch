@@ -48,7 +48,7 @@ def _fake_response(session_id: str = "sess_test") -> AgentResponse:
 def captured(monkeypatch) -> list[AgentRequest]:
     seen: list[AgentRequest] = []
 
-    async def fake_run_agent(request: AgentRequest) -> AgentResponse:
+    async def fake_run_agent(request: AgentRequest, *, principal=None) -> AgentResponse:
         seen.append(request)
         return _fake_response()
 
