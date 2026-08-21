@@ -28,6 +28,7 @@ from app.providers.tour_category_registry import get_tour_category_registry
 from app.routes.agent import router as agent_router
 from app.routes.chat import router as chat_router
 from app.routes.dev import router as dev_router
+from app.routes.feedback import router as feedback_router
 from app.routes.health import router as health_router
 from app.routes.interpret import router as interpret_router
 from app.routes.recommendations import router as recommendations_router
@@ -212,6 +213,7 @@ def create_app() -> FastAPI:
     app.include_router(chat_router, prefix="/api")
     app.include_router(transcribe_router, prefix="/api")
     app.include_router(state_router, prefix="/api")
+    app.include_router(feedback_router, prefix="/api")
     # 개발자 Ops 패널은 DB 쓰기까지 하는 엔드포인트를 갖는다. 설정 플래그로
     # 막는 대신 로컬이 아니면 라우트를 아예 등록하지 않아 존재 자체를 없앤다.
     if settings.app_env == "local":
