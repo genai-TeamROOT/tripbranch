@@ -54,7 +54,10 @@ it("질문 답과 썸네일은 바로 보이고, 클릭하면 같은 상세 모�
   expect(
     within(dialog).getByText("※ 단, 정기휴일이 공휴일 및 대체공휴일과 겹치면 개방합니다."),
   ).toHaveClass("text-xs", "text-gray-500");
-  expect(within(dialog).getByRole("link", { name: "공식 홈페이지 보기" })).toHaveAttribute(
+  // 홈페이지는 하단 별도 링크가 아니라 "관련 정보" 박스 안에 클릭 가능한 링크로 뜬다.
+  // question_type이 "parking"이라 answer_fields엔 없지만(카드 최상위 필드), 박스가
+  // 합성해서 보여준다.
+  expect(within(dialog).getByRole("link", { name: "https://example.test" })).toHaveAttribute(
     "href",
     "https://example.test",
   );
@@ -74,6 +77,20 @@ it("관련 정보의 URL은 클릭 가능한 링크로 보여준다", async () =
   expect(
     dialog.getByRole("link", { name: "https://instagram.com/gyeongbokgung" }),
   ).toHaveAttribute("href", "https://instagram.com/gyeongbokgung");
+});
+
+it("프로토콜 없는 www. 도메인도 https://를 붙여 링크로 보여준다", async () => {
+  // 실측(TourAPI homepage 필드): 3.6%가 "www.xxx.xxx" 형태로 온다 — http(s):// 없이.
+  const user = userEvent.setup();
+  renderWithTrip(
+    <PlaceInfoCard card={{ ...card, answer_fields: { homepage: "www.royalpalace.go.kr" } }} />,
+  );
+
+  await user.click(screen.getByRole("button", { name: "경복궁 상세 보기" }));
+
+  const dialog = within(screen.getByRole("dialog"));
+  const link = dialog.getByRole("link", { name: "www.royalpalace.go.kr" });
+  expect(link).toHaveAttribute("href", "https://www.royalpalace.go.kr");
 });
 
 it("없는 값은 카드에 임의 문구나 빈 이미지로 표시하지 않는다", () => {
