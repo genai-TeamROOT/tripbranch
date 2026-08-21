@@ -71,6 +71,39 @@ def _measured_routes_for(
     return travel_routes if to_travel_mode(conditions) is not None else ()
 
 
+def _log_taste_matches(
+    query: str, candidate_count: int, matches: dict[str, PlaceEvidenceMatch]
+) -> None:
+    """취향 검색이 실제로 어떤 문장을 근거로 찾았는지 로그로 남긴다.
+
+    "taste가 0으로 나온다"는 관찰만으로는 검색이 아예 실패한 것인지, 컷을 넘는
+    근거가 없어서 0점이 된 것인지 구분이 안 된다 — 이 로그로 그 둘을 가른다.
+    """
+    if not matches:
+        logger.info(
+            "취향 근거 검색: 질의=%r 후보=%d곳 → 매칭 0곳(컷 0.43 이상 근거 없음)",
+            query,
+            candidate_count,
+        )
+        return
+    logger.info(
+        "취향 근거 검색: 질의=%r 후보=%d곳 → 매칭 %d곳",
+        query,
+        candidate_count,
+        len(matches),
+    )
+    top_matches = sorted(matches.values(), key=lambda m: m.avg_similarity, reverse=True)
+    for match in top_matches[:5]:
+        snippet_text = match.snippets[0].source_text if match.snippets else ""
+        excerpt = snippet_text.strip().replace("\n", " ")[:100]
+        logger.info(
+            "  [%s] avg_similarity=%.4f 인용=\"%s\"",
+            match.place_title,
+            match.avg_similarity,
+            excerpt,
+        )
+
+
 class RealRecommendationProvider:
     """RecommendationProvider Protocol 구현체 — D의 공개 진입점만 호출한다."""
 
@@ -165,6 +198,7 @@ class RealRecommendationProvider:
         except Exception:
             logger.exception("취향 근거 검색 실패 — 취향 없이 채점한다")
             return None
+        _log_taste_matches(conditions.taste_query, len(place_ids), result.data)
         return result.data
 
     async def recommend(
