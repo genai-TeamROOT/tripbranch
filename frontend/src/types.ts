@@ -52,6 +52,17 @@ export interface RecommendationItem {
   score: number;
   feature_scores: Record<string, number | null>;
   weights_used: Record<string, number>;
+  /**
+   * 취향 검색이 찾은 근거 문장 전부(유사도 내림차순). taste가 0이어도 검색
+   * 자체가 실패한 것과 근거를 못 찾은 것을 구분할 수 있게 항상 채워진다 —
+   * 빈 배열이면 컷을 넘는 근거가 없었다는 뜻이다. 개발자 디버그 화면 전용.
+   */
+  taste_evidence: TasteEvidenceQuote[];
+}
+
+export interface TasteEvidenceQuote {
+  text: string;
+  similarity: number;
 }
 
 export interface RecommendationsResponse {

@@ -1109,6 +1109,7 @@ export function DeveloperAuditPanel({
                           weights_used: item.weights_used,
                           explanations: item.explanations,
                           warnings: item.warnings,
+                          taste_evidence: item.taste_evidence,
                         }}
                       />
                     </section>
