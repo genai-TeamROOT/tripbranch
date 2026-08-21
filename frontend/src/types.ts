@@ -557,6 +557,19 @@ export interface CandidateConcentrationDebug {
   proxy_distance_km: number | null;
 }
 
+/*
+ * 이번 턴에 쓰인 위치 하나. name은 지오코딩 결과가 아니라 사용자가 말한 원문이다
+ * (백엔드 LocationDebug 주석 참고 — resolved_name은 도로명 주소라 표시용이 아니다).
+ * source가 "device_gps"면 부를 이름이 없어 name이 null이다.
+ */
+export interface LocationDebug {
+  name: string | null;
+  /** "search_center"는 사용자 위치를 몰라 검색 위치를 시작점으로 대체했다는 뜻이다. */
+  source: "query" | "device_gps" | "search_center";
+  latitude: number;
+  longitude: number;
+}
+
 export interface ToolExecutionDebug {
   operation?: "context_fetch" | "info_concentration" | "info_realtime_commercial" | "info_realtime_citydata" | "candidate_enrichment" | "compare_fetch";
   request_id: string;
@@ -567,6 +580,14 @@ export interface ToolExecutionDebug {
   rule_versions: Record<string, string>;
   resolved_location_name: string | null;
   resolved_location_address: string | null;
+  /*
+   * 위치 세 갈래. RECOMMEND(context_fetch)에서만 채워진다 — INFO/COMPARE는 C의 위치
+   * 해석을 거치지 않고 A가 기기 GPS로 직접 경로를 조회한다. 이전 실행 이력에는
+   * 없을 수 있어 optional로 둔다.
+   */
+  search_location?: LocationDebug | null;
+  user_location?: LocationDebug | null;
+  route_origin?: LocationDebug | null;
   error_code: string | null;
   clarification_code: string | null;
   is_proxy: boolean | null;
