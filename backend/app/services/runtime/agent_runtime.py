@@ -15,7 +15,6 @@ import asyncio
 import logging
 import math
 import time
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import TypeVar
@@ -77,6 +76,7 @@ from app.services.runtime.compare_transform import (
 )
 from app.services.runtime.context_transform import to_agent_context_request
 from app.services.runtime.enrichment_transform import to_candidate_enrichment_request
+from app.services.runtime.graph import run_general_answer_graph
 from app.services.runtime.info_context_schemas import InfoContextResponse, PlaceInfoResult
 from app.services.runtime.info_context_transform import to_info_context_request
 from app.services.runtime.info_response_transform import to_info_place_card
@@ -96,6 +96,15 @@ from app.services.runtime.response_composer import (
     compose_chat_message,
     compose_compare_message,
     tool_clarification_message,
+)
+from app.services.runtime.stream_events import (
+    SCHEDULING_HEARTBEAT_INTERVAL_SECONDS,
+    SCHEDULING_HEARTBEAT_MESSAGES,
+    StreamEventSink,
+    await_with_heartbeat,
+    begin_streamed_message,
+    emit_progress,
+    emit_stream_event,
 )
 from app.services.runtime.tool_debug import (
     build_candidate_enrichment_execution_debug,
@@ -130,34 +139,17 @@ from app.tools.travel_route import TravelRouteQuery
 
 logger = logging.getLogger(__name__)
 
-StreamEventSink = Callable[[str, dict[str, object]], Awaitable[None]]
+# SSE 발신 헬퍼는 stream_events.py로 옮겼다 — 라우팅 그래프(graph/)도 같은 sink를
+# 써야 하는데, 이 모듈이 그래프를 import하므로 반대 방향은 순환이 되기 때문이다.
+# 기존 호출부를 그대로 두려고 옮긴 이름을 여기서 비공개 별칭으로 받는다.
+_emit_stream_event = emit_stream_event
+_emit_progress = emit_progress
+_begin_streamed_message = begin_streamed_message
+_await_with_heartbeat = await_with_heartbeat
+_SCHEDULING_HEARTBEAT_MESSAGES = SCHEDULING_HEARTBEAT_MESSAGES
+_SCHEDULING_HEARTBEAT_INTERVAL_SECONDS = SCHEDULING_HEARTBEAT_INTERVAL_SECONDS
 
 T = TypeVar("T")
-
-
-async def _emit_stream_event(
-    sink: StreamEventSink | None, event: str, payload: dict[str, object]
-) -> None:
-    """SSE 경로의 관측 이벤트를 전달한다. 단발 /api/chat에서는 아무 일도 하지 않는다."""
-
-    if sink is not None:
-        await sink(event, payload)
-
-
-async def _emit_progress(sink: StreamEventSink | None, stage: str, message: str) -> None:
-    await _emit_stream_event(sink, "progress", {"stage": stage, "message": message})
-
-
-# SCHEDULE 편성(generate_schedule_plan)처럼 단일 LLM 호출 하나가 오래(수십 초) 걸리는
-# 구간에서, 로딩 화면이 이 구간 전체를 아무 갱신 없이 멈춰 보이는 문제를 완화한다
-# (실사용 피드백, 2026-08-13 — "일정 생성이 로딩 마지막에 혼자 너무 오래 머무른다").
-# 진짜 진행 단계를 아는 게 아니라 "아직 살아있다"를 주기적으로 알리는 heartbeat다.
-_SCHEDULING_HEARTBEAT_MESSAGES = (
-    "장소 순서를 계산하고 있어요.",
-    "이동 동선을 정리하고 있어요.",
-    "체류 시간과 도착 시각을 맞추고 있어요.",
-    "조금만 더 기다려주세요, 거의 다 됐어요.",
-)
 
 _INFO_WALKING_TIME_MARKERS = (
     "가는데얼마나걸",
@@ -167,48 +159,6 @@ _INFO_WALKING_TIME_MARKERS = (
     "도보시간",
     "도보이동",
 )
-_SCHEDULING_HEARTBEAT_INTERVAL_SECONDS = 6.0
-
-
-async def _await_with_heartbeat(
-    awaitable: Awaitable[T],
-    *,
-    sink: StreamEventSink | None,
-    stage: str,
-    messages: tuple[str, ...] = _SCHEDULING_HEARTBEAT_MESSAGES,
-    interval_seconds: float = _SCHEDULING_HEARTBEAT_INTERVAL_SECONDS,
-) -> T:
-    """awaitable이 끝날 때까지 progress 이벤트를 주기적으로 흘려보내며 기다린다.
-
-    부수 효과: 프론트([client.ts]의 armInactivityTimer)가 progress 이벤트마다
-    45초 무활동 타이머를 다시 세우므로, 편성이 오래 걸려도(폴백 모델까지
-    타면 60초대) 클라이언트가 먼저 연결을 끊는 일을 줄여준다.
-    """
-    task = asyncio.ensure_future(awaitable)
-    tick = 0
-    try:
-        while True:
-            done, _pending = await asyncio.wait({task}, timeout=interval_seconds)
-            if task in done:
-                return task.result()
-            await _emit_progress(sink, stage, messages[tick % len(messages)])
-            tick += 1
-    finally:
-        if not task.done():
-            task.cancel()
-
-
-async def _begin_streamed_message(
-    sink: StreamEventSink | None, *, intent: Intent, progress_message: str
-) -> None:
-    """LLM 답변이 시작되기 전, 로딩 말풍선을 먼저 연다.
-
-    RECOMMEND/MODIFY도 카드(result)를 첫 텍스트 조각 뒤에 보내므로, GENERAL/INFO와
-    마찬가지로 이 이벤트가 프론트의 움직이는 점 표시를 연다.
-    """
-
-    await _emit_progress(sink, "composing_message", progress_message)
-    await _emit_stream_event(sink, "message_start", {"intent": intent.value})
 
 
 def _llm_clarification_code(llm_output: LLMOutput) -> str | None:
@@ -1756,25 +1706,35 @@ async def run_agent_flow(
             )
         # terminal_message가 있는 경우는 위(3단계 직후)에서 이미 처리하고
         # 반환했으므로 여기서는 다시 안 본다.
-        if stream_recommendation_summary and llm_output.intent is Intent.GENERAL:
-            await _begin_streamed_message(
-                stream_event_sink,
-                intent=Intent.GENERAL,
-                progress_message="답변을 정리하고 있어요.",
-            )
-
-        async def emit_general_message_delta(text: str) -> None:
-            await _emit_stream_event(stream_event_sink, "message_delta", {"text": text})
-
-        message = await compose_chat_message(
-            llm_output,
-            llm=llm,
-            on_message_delta=(
-                emit_general_message_delta
-                if stream_recommendation_summary and llm_output.intent is Intent.GENERAL
-                else None
-            ),
+        is_streaming_general = (
+            stream_recommendation_summary and llm_output.intent is Intent.GENERAL
         )
+        if llm_output.intent is Intent.GENERAL and settings.use_langgraph_general:
+            # 1단계: GENERAL만 라우팅 그래프로 태운다(langgraph-adoption.md §6.1).
+            # 나머지 인텐트는 아래 기존 경로 그대로다 — 병행 운영이라 문제가 보이면
+            # USE_LANGGRAPH_GENERAL=false 하나로 즉시 되돌아간다.
+            message = await run_general_answer_graph(
+                llm_output,
+                llm=llm,
+                session_id=state_response.session_id,
+                stream_event_sink=stream_event_sink if is_streaming_general else None,
+            )
+        else:
+            if is_streaming_general:
+                await _begin_streamed_message(
+                    stream_event_sink,
+                    intent=Intent.GENERAL,
+                    progress_message="답변을 정리하고 있어요.",
+                )
+
+            async def emit_general_message_delta(text: str) -> None:
+                await _emit_stream_event(stream_event_sink, "message_delta", {"text": text})
+
+            message = await compose_chat_message(
+                llm_output,
+                llm=llm,
+                on_message_delta=emit_general_message_delta if is_streaming_general else None,
+            )
         return AgentResponse(
             llm_output=llm_output,
             state=state_response,

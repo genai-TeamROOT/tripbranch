@@ -4,9 +4,10 @@
 
 | 항목 | 값 |
 |------|-----|
-| 버전 | v1.0 |
-| 상태 | 검토 완료 · 도입 미착수. §1~§5는 "처음부터 설계했다면 맞는가"에 대한 결론, §6~§9는 실제 이관 계획과 사용법 |
-| 작성일 | 2026-08-22 |
+| 버전 | v1.1 |
+| 상태 | 검토 완료 · 0단계 스파이크 완료(§9.6) · **1단계(GENERAL) 구현 완료(2026-08-23 — §9.7)** · 2단계 미착수. §1~§5는 "처음부터 설계했다면 맞는가"에 대한 결론, §6~§11은 이관 계획·사용법·규모·브랜치 전략 |
+| 작성일 | 2026-08-22 (최종 수정 2026-08-23) |
+| 작업 브랜치 | `feature/langgraph-spike` (`feature/llm-interpret`에서 분기, 로컬 전용 — §10) |
 | 관련 코드 | `backend/app/services/runtime/agent_runtime.py`(`run_agent_flow()`), `backend/app/state/store.py`(`StateStore`), `backend/app/state/schema.py`(`AgentState`), `backend/app/providers/gemini.py`(`classify_intent()`) |
 | 관련 문서 | `docs/roadmap.md` 12·16번, `docs/design/agent-runtime-contract.md`, `docs/design/clarification-options.md`, `backend/docs/package-b/agent-state-contract-v1.md` |
 | 강의 교재 근거 | 제61강(LangGraph 라우팅 개요: 61-2 순서도·핵심 개념, 61-5 StateGraph 구성, 61-6 RAG·단순응답 라우팅), 제91강(멀티턴·조건부 분기: 91-2 분기 라우팅과 Checkpointer, 91-5 분류 노드·조건부 엣지, 91-6 RAG 연결과 Checkpointer 멀티턴) |
@@ -128,17 +129,46 @@ START → [classify_intent] 노드
 
 | 단계 | 범위 | 목표 | 위험 |
 |---|---|---|---|
-| **0** | 학습용 스파이크 | 저장소 밖 스크립트에서 3노드 그래프를 굴려 개념 확인. 커밋하지 않음 | 없음 |
-| **1** | 취향 RAG 검색(로드맵 1·11번) | **신규 기능이라 기존 코드를 안 건드림.** 61-6의 "RAG·단순응답 라우팅"을 거의 그대로 적용 | 낮음 |
-| **2** | 되묻기 경로 | `location_required`/`no_data_closed`를 91-4 `escalate` 노드 패턴으로 재구성 | 중간 |
-| **3** | 인텐트 라우팅 본체 | `run_agent_flow()`의 if/elif 40군데를 `StateGraph` + 조건부 엣지로 이관 | 높음 |
+| **0** ✅ | 학습용 스파이크 | 저장소 밖 스크립트에서 3노드 그래프를 굴려 개념 확인. 커밋하지 않음 | 없음 — **완료(§9.6)** |
+| **1** ✅ | **GENERAL 인텐트 1개 이관** | 실제 저장소에서 그래프 1경로를 끝까지 태워본다. 기존 if/elif와 **병행 운영** | 낮음 — **완료(§9.7)** |
+| **2** | OUT_OF_SCOPE + 되묻기 경로 | 같은 조기 반환 블록의 나머지. 91-4 `escalate` 노드 패턴 | 중간 |
+| **3** | 인텐트 라우팅 본체 (나머지 5개) | `run_agent_flow()`의 if/elif 40군데를 `StateGraph`로 이관 | 높음 |
 | **4** | Checkpointer 이관 | `StateStore` → `BaseCheckpointSaver` 어댑터 | 높음 |
+| **(별건)** | 취향 RAG 검색 | 로드맵 1·11번. **데이터가 저장소에 아직 없어 이 계획에서 제외** | — |
 
-**1단계를 첫 착수 지점으로 권한다.** 이유는 세 가지다.
+### 6.1.1 1단계를 "취향 RAG"에서 "GENERAL 인텐트"로 바꾼 이유 (2026-08-23)
 
-- 신규 기능이라 **기존 2,130건 테스트를 위협하지 않는다**
-- 로드맵 12번이 이미 "새로 만드는 취향 검색 기능에만 적용"을 권하고 있어 방향이 일치
-- 61-6이 다루는 실습 내용과 범위가 거의 같아 **교재를 그대로 참고할 수 있다**
+v1.0에서는 1단계를 취향 RAG로 잡았다. **RAG가 아직 프로젝트에 적용되지 않아 그대로
+쓸 수 없다** — `package_D/place_embeddings.jsonl`이 이 저장소에 없고(로드맵 1번,
+담당 팀원이 별도 작업 중), 적재 스크립트만 있는 상태다. 없는 기능 위에 그래프를
+얹는 계획은 착수 자체가 불가능하다.
+
+대신 **이미 동작하는 것 중 가장 작은 인텐트 하나**를 고른다. 스파이크(§9.6)가
+가짜 환경에서 증명한 것을, 실제 저장소에서 다시 증명하는 것이 목적이다.
+
+### 6.1.2 왜 GENERAL인가
+
+`agent_runtime.py:1745`의 조기 반환 블록이 자연스러운 경계다. 여기서 INFO·COMPARE·
+GENERAL·OUT_OF_SCOPE가 Tool/Scoring 단계로 가지 않고 끝난다.
+
+| 후보 | 장점 | 단점 |
+|---|---|---|
+| **GENERAL** | Tool·Scoring 없음. **SSE 스트리밍(`message_start`+`message_delta`)이 있음** | — |
+| OUT_OF_SCOPE | 가장 단순(고정 템플릿) | 스트리밍이 없어 **최대 위험(§9.4)을 검증 못 함** |
+| INFO / COMPARE | — | Tool 호출이 붙어 1단계로는 큼 |
+
+**GENERAL을 고르는 결정적 이유는 스트리밍이 있다는 것이다.** §9.4가 지목한 30군데
+SSE 결합이 실제 코드에서 풀리는지는 스트리밍이 있는 경로로만 확인할 수 있다.
+OUT_OF_SCOPE는 더 쉽지만, 쉬운 만큼 아무것도 증명하지 못한다.
+
+**1단계에서 증명할 것**(스파이크가 가짜로만 보여준 것들):
+
+1. 그래프가 **실제 `chat.py` SSE 엔드포인트**를 통해 프론트 수정 없이 동작하는가
+2. 기존 `run_agent_flow()`와 **병행**할 수 있는가(GENERAL만 그래프, 나머지는 기존 경로)
+3. 회귀 테스트 2,293건이 그대로 통과하는가
+
+**규모**: GENERAL 관련 테스트 24건, OUT_OF_SCOPE 10건. 1단계 코드는 신규 ~250줄,
+기존 수정 ~30줄(분기 하나 추가) 수준으로 예상한다.
 
 3·4단계는 1·2단계를 마친 뒤 **다시 판단한다.** 이 문서는 3·4단계를 "하기로 결정"한
 문서가 아니라 "했을 때 어떤 모양이 되는지 그려둔" 문서다.
@@ -334,9 +364,9 @@ export하므로, **그래프로 바꿔도 이 세 줄과 `__init__.py`만 그대
 
 | 단계 | 신규 작성 | 기존 수정 | 삭제 | 합계(체감) |
 |---|---|---|---|---|
-| 1단계 (취향 RAG) | ~200줄 | ~0줄 | 0줄 | **~200줄** — 기존 코드 무변경 |
-| 2단계 (되묻기) | ~150줄 | ~80줄 | ~50줄 | ~280줄 |
-| 3단계 (인텐트 본체) | ~600줄 | ~300줄 | ~900줄 | **~1,800줄** |
+| 1단계 (GENERAL) | ~250줄 | ~30줄 | ~0줄 | **~280줄** — 기존 경로 병행 유지 |
+| 2단계 (OUT_OF_SCOPE·되묻기) | ~150줄 | ~80줄 | ~50줄 | ~280줄 |
+| 3단계 (나머지 인텐트 5개) | ~600줄 | ~300줄 | ~900줄 | **~1,800줄** |
 | 4단계 (Checkpointer) | ~250줄 | ~100줄 | ~0줄 | ~350줄 |
 
 3단계가 압도적으로 크다. 인텐트 7개를 한 번에 옮기면 저 1,800줄이 한 PR에
@@ -403,8 +433,7 @@ SSE 계약(`progress`/`message_start`/`message_delta`/`done`)과 다르다. 두 
    진행 문구(`"요청 의도와 조건을 파악하고 있어요"` 같은 도메인 문구)를 노드
    메타데이터로 옮겨야 해서 작업이 커진다.
 
-**3단계 착수 전에 이 선택부터 정해야 한다.** 스파이크(0단계)에서 검증할 첫 항목으로
-둔다.
+**→ 0단계 스파이크에서 검증 완료. 방식 1을 채택한다(§9.6).**
 
 ### 9.5 테스트 영향
 
@@ -415,6 +444,106 @@ SSE 계약(`progress`/`message_start`/`message_delta`/`done`)과 다르다. 두 
   진입점 시그니처를 유지하는 것이 **테스트 4,600줄을 지키는 조건**이다.
 - 신규 필요: 라우팅 함수 테이블 테스트, 노드별 단위 테스트, 그래프 컴파일 스모크
   테스트.
+
+---
+
+### 9.6 0단계 스파이크 결과 (2026-08-23) — 방식 1 채택
+
+`langgraph 1.2.11`을 저장소 밖 임시 venv에 설치해, 우리 SSE 계약을 그대로 흉내 낸
+3노드 그래프(`classify → general → respond`)로 두 방식을 실제로 돌려 비교했다.
+저장소에는 커밋하지 않았다.
+
+| | 방식 1 (sink를 config로) | 방식 2 (`astream_events` 번역) |
+|---|---|---|
+| 이벤트 순서 재현 | **완전 일치** | 불일치 |
+| `message_start` | ✅ | ❌ 나오지 않음 |
+| `message_delta` × N | ✅ 3건 그대로 | ❌ 0건 — 노드 **내부** 루프라 그래프 이벤트로 노출되지 않음 |
+| `result` payload | ✅ 그대로 | ⚠️ 노드 반환값 전체가 실려 형태가 다름 |
+
+```
+기준 계약 : progress, progress, message_start, message_delta×3, result
+방식 1    : progress, progress, message_start, message_delta×3, result   ← 일치
+방식 2    : progress, progress, result                                    ← 불일치
+```
+
+**방식 2가 실패한 이유가 핵심이다.** `astream_events`는 *노드 경계*에서 이벤트를
+낸다. 그런데 우리 `message_delta`는 노드 하나 **안에서** LLM 스트림을 돌며 나오는
+것이라(`stream_general_answer()`), 그래프 입장에서는 "노드 하나가 실행 중"일 뿐
+관측 대상이 아니다. 노드를 델타 단위로 쪼개지 않는 한 이 격차는 메울 수 없고,
+쪼개면 그래프가 토큰 수만큼 노드를 갖는 이상한 모양이 된다.
+
+**결정 — 방식 1.** 노드 시그니처를 `(state, config: RunnableConfig)`로 두고
+`config["configurable"]["stream_event_sink"]`에서 기존 sink를 꺼내 지금과 똑같이
+호출한다. 이렇게 하면:
+
+- `chat.py`의 큐 기반 `emit()`을 **한 줄도 안 고친다** — sink는 그냥 콜백이라
+  그래프가 그걸 부르든 `run_agent_flow()`가 부르든 차이가 없다
+- 프론트 계약도 그대로다(§10.3 판정 기준 3번 충족 가능)
+- 대신 LangGraph의 스트리밍 기능은 안 쓴다 — 우리 계약이 이미 더 세밀하다
+
+**부수 확인 2건**
+
+- **노드 시그니처**: `config` 파라미터를 `RunnableConfig`로 **타입 어노테이션해야**
+  LangGraph가 주입한다(`dict`로 적으면 `TypeError: missing 1 required positional
+  argument`). 1.2.x의 `_runnable.py`가 어노테이션으로 판별한다.
+- **`MemorySaver` 멀티턴**: 같은 `thread_id`로 2턴 호출 시 `add_messages` 리듀서가
+  대화를 4건으로 누적하는 것을 확인했다(human/ai × 2). 우리 `session_id`를
+  `thread_id`로 그대로 쓰면 된다는 §7.4 서술이 실제로 성립한다.
+
+**의존성 정정**: `langgraph`를 설치하면 `langchain-core`가 함께 딸려온다
+(1.2.11 기준 `langchain-core 1.6.0`, `langgraph-checkpoint`, `langgraph-sdk` 등).
+§8의 "LangChain 전체를 끌어올 필요는 없다"는 여전히 맞지만(`langchain` 본체·
+통합 패키지는 안 들어옴), **`langchain-core`는 불가피**하다.
+
+---
+
+### 9.7 1단계 구현 결과 (2026-08-23) — GENERAL 이관 완료
+
+**§6.1.2가 증명하겠다고 한 3가지가 전부 확인됐다.**
+
+| 증명 대상 | 결과 |
+|---|---|
+| 실제 `chat.py` SSE로 프론트 수정 없이 동작 | ✅ 프론트 **0줄 변경** |
+| 기존 `run_agent_flow()`와 병행 가능 | ✅ GENERAL만 그래프, 나머지 6개는 기존 경로 |
+| 회귀 2,293건 통과 | ✅ 2,298건 통과(신규 5건 포함) |
+
+**SSE 동등성 실측** — 같은 엔드포인트로 플래그를 켜고 끄며 비교한 결과, 이벤트
+11건의 이름·순서·`stage` 문구가 **완전히 동일**했다(답변 텍스트만 LLM 특성상 매번
+다름).
+
+```
+기존 경로 : progress×3 → message_start → message_delta×6 → done
+그래프 ON : progress×3 → message_start → message_delta×6 → done
+```
+
+실서버(`/api/chat/stream`)에서도 "안녕" 요청이 5.0초에 정상 완료됐다.
+
+**추가된 것**
+
+```
+app/services/runtime/
+├── stream_events.py          ★ 신규 — agent_runtime.py에서 SSE 헬퍼를 추출
+└── graph/                    ★ 신규
+    ├── __init__.py           그래프 조립 + run_general_answer_graph()
+    ├── state.py              GeneralAnswerState
+    ├── sink.py               config에서 sink/LLM 꺼내는 통로
+    └── nodes/general.py      GENERAL 답변 노드
+tests/graph/test_general_graph.py  ★ 신규 — 동등성 테스트 5건
+```
+
+`stream_events.py` 분리가 필요했던 이유: `StreamEventSink`와 발신 헬퍼가
+`agent_runtime.py` 안에 있었는데, `agent_runtime`이 그래프를 import하므로 그래프가
+반대로 `agent_runtime`을 import하면 순환이 된다. **정의 위치만 옮기고 동작은 그대로**
+두었고(옛 이름은 비공개 별칭으로 유지), 이 리팩터 직후 2,293건이 그대로 통과하는
+것을 먼저 확인한 뒤 그래프를 붙였다.
+
+**되돌리기 경로**: `USE_LANGGRAPH_GENERAL=false` 하나로 기존 `compose_chat_message()`
+직접 호출로 즉시 복귀한다. 이 경로가 살아있는지도 테스트로 고정했다
+(`test_flag_off_falls_back_to_legacy_path`).
+
+**남은 것**: 그래프가 아직 노드 하나짜리 외길이라 **조건부 엣지를 쓰지 않는다.**
+라우팅의 진짜 값어치(§2의 40군데 분기 수렴)는 2단계에서 OUT_OF_SCOPE·되묻기가
+붙어 갈림길이 생겨야 드러난다. 1단계는 "배선이 되는가"까지만 증명한 것이다.
 
 ---
 
@@ -472,12 +601,18 @@ develop
 ### 10.4 착수 순서 요약
 
 ```
-1. feature/llm-interpret의 미커밋 39개 파일 커밋       ← 선행 조건
-2. git switch -c feature/langgraph-spike
-3. 0단계 스파이크 — §9.4의 SSE 선택지 결정 (커밋 안 함)
-4. 1단계(취향 RAG)만 구현 → 여기서 한 번 멈추고 팀 검토
+1. feature/llm-interpret의 미커밋 39개 파일 커밋       ← 선행 조건  ✅ 완료
+2. git switch -c feature/langgraph-spike                            ✅ 완료 (2026-08-23)
+3. 0단계 스파이크 — §9.4의 SSE 선택지 결정 (커밋 안 함)              ✅ 완료 → 방식 1 채택
+4. 1단계(GENERAL 인텐트)만 구현 → 여기서 한 번 멈추고 팀 검토        ✅ 완료 → 검토 대기
 5. 2·3단계는 1단계 경험을 근거로 범위 재확정
 ```
+
+**브랜치 현황(2026-08-23)**: `feature/langgraph-spike`를 `feature/llm-interpret`에서
+분기했다. 분기 시점에 두 브랜치는 완전히 동일했고(파일 차이 0, 커밋 차이 양방향 0),
+기준선으로 `pytest 2,293 passed / 24 skipped`, `ruff` 클린을 확인했다 — 이관 후
+비교할 기준값이다. **원격에는 아직 push하지 않았다.** 지금 브랜치가 원본과
+동일해 고유 내용이 없기 때문이며, 4번(1단계) 완료 시점에 push해 팀 검토를 받는다.
 
 **4번에서 반드시 한 번 멈춘다.** 1단계는 기존 코드를 안 건드리므로, 여기까지의
 결과물만으로도 "LangGraph를 프로젝트에 써봤다"는 목표(로드맵 16번)는 이미 달성된다.
