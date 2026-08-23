@@ -69,8 +69,31 @@
   실측(200~400건 100~300ms, 844건 6~9초)을 근거로 500건 초과 시 즉시
   에러를 내도록 가드를 추가했다. 절차형 분기가 필요해 `language sql`에서
   `plpgsql`로 바꿨다)
+- 피드백 KST 조회 뷰 마이그레이션:
+  `202608210002_add_response_feedback_kst_view.sql`
+  (저장은 그대로 UTC(`timestamptz`) — Postgres/Supabase 테이블 에디터가 UTC로
+  보여줘서 KST로 보기 불편한 문제만 조회용 뷰(`response_feedback_kst`)로
+  해결한다. 아직 미적용 — Dashboard SQL Editor에서 실행 필요)
+- 피드백 comment 컬럼 마이그레이션:
+  `202608210003_add_comment_to_response_feedback.sql`
+  (`response_feedback`에 `comment text null`(500자 제한) 추가 — "싫어요" 클릭 시
+  선택적으로 남기는 짧은 사유. `response_feedback_kst` 뷰도 함께 갱신. 아직
+  미적용 — Dashboard SQL Editor에서 실행 필요)
+- 동기화 실행별 상세조회 수 마이그레이션:
+  `202608210007_add_sync_run_detail_attempted_count.sql`
+  (**Dashboard SQL Editor로 직접 적용해 원격 마이그레이션 이력
+  `supabase_migrations.schema_migrations`에는 기록되지 않았다.** 스키마는
+  적용됐다 — `place_sync_runs.detail_attempted_count`와 체크 제약을 조회로
+  확인했다)
+  (`place_sync_runs`에 `detail_attempted_count integer null` 추가. TourAPI
+  일일 한도를 얼마나 썼는지 세는 근거다 — 호출량 집계는 프로세스 메모리라
+  재시작하면 0이 되고 `backend/scripts` 실행분도 놓친다. `detailIntro2`를 부르는
+  곳이 `PlaceSyncService` 하나뿐이고 그 경로가 실행마다 이 테이블에 행을 남기므로,
+  호출마다 카운터를 올리지 않고 열 하나로 센다. nullable인 이유는 기존 행과 중간에
+  죽은 실행이 "0회 불렀다"가 아니라 "재지 않았다"이기 때문이다. 재시도는 세지 않아
+  이 값도 하한이다)
 - 실제 DB 적용일: 2026-07-24, 2026-07-29, 2026-08-04, 2026-08-08, 2026-08-10,
-  2026-08-18
+  2026-08-18, 2026-08-21
 - 적용 방법: Supabase Dashboard SQL Editor 및 Supabase MCP `apply_migration`
 - 적용 결과: `places`, `place_enrichments`, `place_sync_runs`,
   `place_sync_locks`, `place_concentration_mappings`, `place_embeddings` 및
@@ -96,7 +119,7 @@ TourAPI `detailIntro2`의 일일 요청 한도를 소진해 끝내지 못했다.
 ```bash
 cd backend
 PLACE_SYNC_DETAIL_CONCURRENCY=1 PLACE_SYNC_DETAIL_MIN_INTERVAL_SECONDS=0.15 \
-  python -m scripts.sync_places --from-snapshot ../supabase/data/places_api_snapshot_20260810.csv
+  python -m scripts.sync_places --from-snapshot ../supabase/data/places_api_snapshot_11-110_20260810.csv
 ```
 
 `--force-details`는 쓰지 않는다 — 이미 채운 702건까지 다시 부른다. 겪은 한도 문제와
@@ -108,6 +131,21 @@ SQL Editor로 실행했기 때문에 실제 스키마는 생성됐지만 Supabas
 마이그레이션 이력에는 `202607240001`, `202607240002`가 아직 기록되지 않았다.
 `20260729104209`와 `20260804055402`는 Supabase MCP로 적용해 원격 마이그레이션 이력에
 기록됐다.
+
+2026-08-21 기준으로 이 폴더의 파일 24개 중 이력 표
+(`supabase_migrations.schema_migrations`)에 이름이 있는 것은 10개뿐이다. SQL
+Editor로 적용하면 표에 줄이 생기지 않기 때문이다. **지금 진실의 기준은 이 폴더이지
+그 표가 아니다.**
+
+빠진 14개는 초기 4개(`202607240001`, `202607240002`, `202607280001`,
+`202608030001`)와 `202608130001`, 그리고 08-20 이후 추가한 9개
+(`202608200001`~`202608210007`) 전부다. 반대로 표에는 있는데 파일이 없는 이름도
+하나 있다(`secure_place_embeddings` — 되돌린 임베딩 시도의 잔재다).
+
+한 건만 손으로 채워 넣지 않았다. 표에는 도구가 붙인 14자리 시각
+(`20260818140058`)이 들어 있는데 파일명은 12자리 일련번호라 형식이 섞이고,
+`statements` 열이 빈 줄이 생겨 "적용됐다는 기록은 있는데 무엇을 실행했는지는 모르는"
+상태가 된다. 표를 다시 기준으로 삼으려면 빠진 14건 전부와 번호 형식을 함께 정리해야 한다.
 
 ## Supabase CLI 최초 도입 시 필수 작업
 

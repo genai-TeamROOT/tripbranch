@@ -297,6 +297,8 @@ def test_get_feedback_parses_rows_into_feedback_records() -> None:
                     "session_id": SESSION_ID,
                     "run_id": "run-1",
                     "rating": "like",
+                    "user_input": "경복궁 근처 카페 추천해줘",
+                    "assistant_message": "이런 곳들을 찾아봤어요.",
                     "recorded_at": "2026-08-21T00:00:00+09:00",
                 }
             ],
@@ -305,6 +307,72 @@ def test_get_feedback_parses_rows_into_feedback_records() -> None:
     feedback = _store(transport).get_feedback(SESSION_ID)
     assert len(feedback) == 1
     assert feedback[0].rating == "like"
+    assert feedback[0].user_input == "경복궁 근처 카페 추천해줘"
+    assert feedback[0].assistant_message == "이런 곳들을 찾아봤어요."
+
+
+def test_get_feedback_parses_rows_without_turn_text() -> None:
+    """202608210001 마이그레이션 이전 행(컬럼 없음)을 읽어도 깨지지 않아야 한다."""
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 1,
+                    "session_id": SESSION_ID,
+                    "run_id": "run-1",
+                    "rating": "like",
+                    "recorded_at": "2026-08-21T00:00:00+09:00",
+                }
+            ],
+        )
+    )
+    feedback = _store(transport).get_feedback(SESSION_ID)
+    assert feedback[0].user_input is None
+    assert feedback[0].assistant_message is None
+
+
+def test_get_feedback_parses_intent_and_comment() -> None:
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 1,
+                    "session_id": SESSION_ID,
+                    "run_id": "run-1",
+                    "rating": "dislike",
+                    "intent": "RECOMMEND",
+                    "comment": "추천 장소가 너무 멀어요",
+                    "recorded_at": "2026-08-21T00:00:00+09:00",
+                }
+            ],
+        )
+    )
+    feedback = _store(transport).get_feedback(SESSION_ID)
+    assert feedback[0].intent == "RECOMMEND"
+    assert feedback[0].comment == "추천 장소가 너무 멀어요"
+
+
+def test_get_feedback_parses_rows_without_intent_or_comment() -> None:
+    """202608210003 마이그레이션 이전 행(컬럼 없음)을 읽어도 깨지지 않아야 한다."""
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 1,
+                    "session_id": SESSION_ID,
+                    "run_id": "run-1",
+                    "rating": "like",
+                    "recorded_at": "2026-08-21T00:00:00+09:00",
+                }
+            ],
+        )
+    )
+    feedback = _store(transport).get_feedback(SESSION_ID)
+    assert feedback[0].intent is None
+    assert feedback[0].comment is None
 
 
 def test_list_dislike_feedback_filters_by_rating_and_limit() -> None:

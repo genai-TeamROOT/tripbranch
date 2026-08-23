@@ -110,10 +110,17 @@ export interface ComparisonItem {
   distance_km: number | null;
   remaining_minutes: number | null;
   environment_type: string | null;
+  /** TRAVEL_TIME 전용(TP-105/106 실측 연결). 좌표는 실측 조회에만 쓰이고 화면에는 없다. */
+  latitude: number | null;
+  longitude: number | null;
+  travel_distance_km: number | null;
+  travel_walking_minutes: number | null;
+  travel_driving_minutes: number | null;
+  travel_transit_minutes: number | null;
 }
 
 export interface ComparisonResult {
-  criteria: "distance" | "time" | "overall";
+  criteria: "time" | "travel_time" | "overall";
   items: ComparisonItem[];
 }
 
@@ -140,9 +147,15 @@ export interface InfoPlaceCard {
   restroom: string | null;
   homepage: string | null;
   population_current_level?: string | null;
+  population_current_message?: string | null;
   population_observed_at?: string | null;
   population_forecasts?: PopulationForecastBar[];
   concentration_forecasts?: ConcentrationForecastBar[];
+  realtime_area_name?: string | null;
+  realtime_observed_at?: string | null;
+  realtime_source_url?: string | null;
+  realtime_map_url?: string | null;
+  realtime_detail_items?: RealtimeInfoDetailItem[];
 }
 
 export interface PopulationForecastBar {
@@ -157,6 +170,15 @@ export interface ConcentrationForecastBar {
   concentration_rate: number;
   concentration_level: string;
   concentration_label: string;
+}
+
+/** 서울시 실시간 도시데이터를 상세 모달에 표시하는 항목. */
+export interface RealtimeInfoDetailItem {
+  title: string;
+  subtitle: string | null;
+  details: Record<string, string>;
+  thumbnail_url: string | null;
+  external_url: string | null;
 }
 
 /** 추천 카드 클릭 시 C PlaceDetails를 직접 조회하는 응답이다. */
@@ -227,9 +249,6 @@ export type ChatMessage =
       elapsed_ms: number;
       /* 백엔드가 보고한 서버 처리 시간(ms). 네트워크·렌더 시간은 포함하지 않는다. */
       server_elapsed_ms: number;
-      /* 좋아요/싫어요 피드백을 이 턴(run)에 연결하기 위한 식별자. */
-      sessionId: string;
-      runId: string;
     }
   | {
       id: string;
@@ -238,14 +257,30 @@ export type ChatMessage =
       /* 일정 요청 클릭부터 응답 수신까지의 클라이언트 실측 시간(ms).
          recommendation_result의 elapsed_ms와 같은 역할이다. */
       elapsed_ms: number;
-      /* 좋아요/싫어요 피드백을 이 턴(run)에 연결하기 위한 식별자. */
-      sessionId: string;
-      runId: string;
     }
   | {
       id: string;
       type: "place_info_result";
       card: InfoPlaceCard;
+    }
+  | {
+      id: string;
+      type: "compare_result";
+      comparison: ComparisonResult;
+    }
+  /*
+   * 인텐트와 무관하게 턴 하나가 완결된 답변을 냈을 때(되묻기·에러 제외) 그 턴의
+   * 모든 메시지(텍스트+카드) 뒤에 한 번만 붙는 좋아요/싫어요 컨트롤. 결과별
+   * 컴포넌트마다 따로 붙이지 않고 여기서 한 곳에 모아 모든 인텐트를 덮는다.
+   */
+  | {
+      id: string;
+      type: "feedback";
+      sessionId: string;
+      runId: string;
+      intent?: Intent;
+      userInput?: string;
+      assistantMessage?: string;
     }
   | {
       id: string;
@@ -458,11 +493,33 @@ export interface SessionContextResponse {
   condition_version: number;
 }
 
-/** POST /api/feedback 요청. backend/app/state/service.py의 RecordFeedbackRequest와 대응. */
+/**
+ * POST /api/feedback 요청. backend/app/state/service.py의 RecordFeedbackRequest와 대응.
+ * user_input/assistant_message는 피드백을 남긴 턴의 질문·답변 원문을 찾을 수 있을
+ * 때만 채운다. reason_code는 집계용 표준 싫어요 사유, comment는 선택적 자유 입력이다.
+ */
+export type FeedbackReasonCode =
+  | "intent_mismatch"
+  | "clarification_unhelpful"
+  | "context_not_preserved"
+  | "location_misunderstood"
+  | "conditions_not_applied"
+  | "recommendation_not_suitable"
+  | "other";
+
 export interface RecordFeedbackRequest {
   session_id: string;
   run_id: string;
   rating: "like" | "dislike";
+  /** 품질 분석용 사용자 발화 원문 및 최종 응답. */
+  user_input?: string;
+  assistant_message?: string;
+  /** 이 피드백이 달린 턴의 Intent. */
+  intent?: string;
+  /** 싫어요의 개선용 표준 사유. 좋아요에는 보내지 않는다. */
+  reason_code?: FeedbackReasonCode;
+  /** 어떤 싫어요 사유에든 선택적으로 남기는 자유 입력(최대 500자). */
+  comment?: string;
 }
 
 /** POST /api/feedback 응답. */
@@ -568,8 +625,21 @@ export interface CandidateConcentrationDebug {
   proxy_distance_km: number | null;
 }
 
+/*
+ * 이번 턴에 쓰인 위치 하나. name은 지오코딩 결과가 아니라 사용자가 말한 원문이다
+ * (백엔드 LocationDebug 주석 참고 — resolved_name은 도로명 주소라 표시용이 아니다).
+ * source가 "device_gps"면 부를 이름이 없어 name이 null이다.
+ */
+export interface LocationDebug {
+  name: string | null;
+  /** "search_center"는 사용자 위치를 몰라 검색 위치를 시작점으로 대체했다는 뜻이다. */
+  source: "query" | "device_gps" | "search_center";
+  latitude: number;
+  longitude: number;
+}
+
 export interface ToolExecutionDebug {
-  operation?: "context_fetch" | "info_concentration" | "info_realtime_commercial" | "info_realtime_citydata" | "candidate_enrichment" | "compare_fetch";
+  operation?: "context_fetch" | "info_concentration" | "info_realtime_commercial" | "info_realtime_population" | "info_realtime_citydata" | "candidate_enrichment" | "compare_fetch";
   request_id: string;
   status: string;
   latency_ms: number | null;
@@ -578,6 +648,14 @@ export interface ToolExecutionDebug {
   rule_versions: Record<string, string>;
   resolved_location_name: string | null;
   resolved_location_address: string | null;
+  /*
+   * 위치 세 갈래. RECOMMEND(context_fetch)에서만 채워진다 — INFO/COMPARE는 C의 위치
+   * 해석을 거치지 않고 A가 기기 GPS로 직접 경로를 조회한다. 이전 실행 이력에는
+   * 없을 수 있어 optional로 둔다.
+   */
+  search_location?: LocationDebug | null;
+  user_location?: LocationDebug | null;
+  route_origin?: LocationDebug | null;
   error_code: string | null;
   clarification_code: string | null;
   is_proxy: boolean | null;

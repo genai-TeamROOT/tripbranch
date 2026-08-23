@@ -19,6 +19,7 @@ import { ChatComposer } from "../components/chat/ChatComposer";
 import { ChatMessageList } from "../components/chat/ChatMessageList";
 import { ApiExchangePanel } from "../components/dev/ApiExchangePanel";
 import { DeveloperAuditPanel } from "../components/dev/DeveloperAuditPanel";
+import { TurnLocationBadges } from "../components/dev/TurnLocationBadges";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { AuthStatusBadge } from "../auth/AuthStatusBadge";
 import { useTripDispatch, useTripState } from "../state/TripContext";
@@ -53,6 +54,7 @@ export function DeveloperChatPage() {
   );
 
   const isLoading = state.phase === "interpreting" || state.phase === "recommending";
+  const latestTurn = state.auditTurns.at(-1);
 
   const withExchangeErrors = useCallback(
     async (load: () => Promise<ApiExchangeSnapshot>) => {
@@ -80,13 +82,12 @@ export function DeveloperChatPage() {
   }, [loadExchanges]);
 
   useEffect(() => {
-    const latestTurn = state.auditTurns.at(-1);
     const hasNewTurn = state.auditTurns.length > previousAuditTurnCountRef.current;
     previousAuditTurnCountRef.current = state.auditTurns.length;
     if (latestTurn && (selectedTurnId === null || hasNewTurn)) {
       setSelectedTurnId(latestTurn.id);
     }
-  }, [selectedTurnId, state.auditTurns]);
+  }, [latestTurn, selectedTurnId, state.auditTurns]);
 
   useEffect(() => {
     const scroller = chatScrollRef.current;
@@ -402,6 +403,12 @@ export function DeveloperChatPage() {
         </div>
 
         <div className="border-t border-gray-200 p-4 dark:border-gray-800">
+          {/*
+            직전 턴이 실제로 쓴 위치. 오른쪽 감사 패널이 아니라 여기 두는 이유는 폭이다 —
+            패널은 좁아 지명이 잘린다. 선택된 턴이 아니라 마지막 턴을 보여준다: 이 자리는
+            채팅 흐름의 끝이라 바로 위 대화와 같은 턴을 가리켜야 한다.
+          */}
+          {latestTurn && <TurnLocationBadges turn={latestTurn} />}
           <ChatComposer disabled={isLoading} onSubmit={handleFollowUp} />
         </div>
       </section>

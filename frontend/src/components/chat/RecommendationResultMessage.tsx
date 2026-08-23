@@ -13,7 +13,6 @@
 import { useState } from "react";
 import type { RecommendationItem } from "../../types";
 import { PlaceCard } from "../PlaceCard";
-import { FeedbackButtons } from "./FeedbackButtons";
 import { RecommendationDetailPreviewModal } from "./RecommendationDetailPreviewModal";
 
 const RADIUS_RELAXATION_STEP_KM = 0.5;
@@ -27,8 +26,6 @@ interface RecommendationResultMessageProps {
   isLoading: boolean;
   onRequestMore: () => void;
   onRelaxRadius: () => void;
-  sessionId: string;
-  runId: string;
 }
 
 function formatDuration(milliseconds: number | undefined) {
@@ -47,8 +44,6 @@ export function RecommendationResultMessage({
   isLoading,
   onRequestMore,
   onRelaxRadius,
-  sessionId,
-  runId,
 }: RecommendationResultMessageProps) {
   const [selectedRecommendation, setSelectedRecommendation] = useState<RecommendationItem | null>(null);
   // D는 운영시간을 무시한 재검색에서 "현재는 폐점"인 후보도 unverified 목록에
@@ -78,8 +73,6 @@ export function RecommendationResultMessage({
           </p>
         )}
       </div>
-
-      <FeedbackButtons sessionId={sessionId} runId={runId} />
 
       {hasNoResults ? (
         <div className="flex flex-col gap-3 text-sm">

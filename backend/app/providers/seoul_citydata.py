@@ -127,6 +127,7 @@ def map_realtime_population_response(
         area_name=_text(status.get("AREA_NM")) or _text(row.get("AREA_NM")) or requested_area,
         area_code=_text(status.get("AREA_CD")) or _text(row.get("AREA_CD")),
         current_congestion_level=_text(status.get("AREA_CONGEST_LVL")),
+        current_congestion_message=_text(status.get("AREA_CONGEST_MSG")),
         observed_at=_text(status.get("PPLTN_TIME")),
         forecast_available=_text(status.get("FCST_YN")) == "Y",
         forecasts=forecasts,
@@ -248,6 +249,7 @@ class FakeRealtimeCityDataProvider:
             area_name=area_name,
             area_code="POI076" if area_name == "용리단길" else None,
             current_congestion_level="보통",
+            current_congestion_message="사람이 몰려있을 수 있지만 크게 붐비지는 않아요.",
             observed_at="2026-08-20 14:00",
             forecast_available=True,
             forecasts=(

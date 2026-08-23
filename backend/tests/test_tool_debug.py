@@ -14,7 +14,11 @@ from app.agent_context.enrichment_schemas import (
     CandidateEnrichmentResult,
     ConcentrationForecastData,
 )
-from app.agent_context.info_schemas import ConcentrationInfoResult, InfoContextResponse
+from app.agent_context.info_schemas import (
+    ConcentrationInfoResult,
+    InfoContextResponse,
+    RealtimePopulationInfoResult,
+)
 from app.agent_context.schemas import (
     AgentContextResponse,
     Clarification,
@@ -196,6 +200,27 @@ def test_info_혼잡도_조회도_독립_감사_단계로_변환한다() -> None
     assert {provider.source for provider in debug.providers} == {"tour_api"}
 
 
+def test_info_실시간_인구_조회는_별도_감사_단계로_변환한다() -> None:
+    response = InfoContextResponse(
+        request_id="population-1",
+        status="success",
+        result=RealtimePopulationInfoResult(
+            status="success",
+            requested_place_name="경복궁",
+            resolved_place_name="경복궁",
+            area_name="광화문·덕수궁",
+            current_congestion_level="보통",
+        ),
+    )
+
+    debug = build_info_concentration_execution_debug(response, latency_ms=80)
+
+    assert debug is not None
+    assert debug.operation == "info_realtime_population"
+    assert debug.is_proxy is True
+    assert debug.resolved_location_name == "경복궁"
+
+
 def test_후보_보강_조회는_후보별_상태_집계를_남긴다() -> None:
     response = CandidateEnrichmentResponse(
         request_id="enrich-1",
@@ -294,3 +319,121 @@ def test_후보_보강_조회는_후보별로_값의_출처를_남긴다() -> No
     assert (proxied.name, proxied.is_proxy) == ("이름없는 카페", True)
     assert proxied.proxy_place_name == "종묘 [유네스코 세계유산]"
     assert proxied.proxy_distance_km == 0.15
+
+
+def _gps_user_location_value() -> ContextValue[ResolvedLocation]:
+    """C가 기기 GPS만으로 만든 사용자 위치(agent_context/service.py::_gps_location_result)."""
+
+    return ContextValue(
+        status="success",
+        data=ResolvedLocation(
+            requested_query="gps_location",
+            resolved_name="기기 GPS 위치",
+            source="device_gps",
+            location=Coordinates(latitude=37.5709, longitude=126.9990),
+        ),
+    )
+
+
+def _spoken_user_location_value() -> ContextValue[ResolvedLocation]:
+    return ContextValue(
+        status="success",
+        data=ResolvedLocation(
+            requested_query="안국역",
+            resolved_name="서울특별시 종로구 율곡로 62",
+            source="query",
+            location=Coordinates(latitude=37.5765, longitude=126.9855),
+        ),
+    )
+
+
+def _context_response(context: RecommendationContext) -> AgentContextResponse:
+    return AgentContextResponse(
+        request_id="req-origin",
+        intent="RECOMMEND",
+        status="success",
+        context=context,
+        metadata=ResponseMetadata(),
+    )
+
+
+def test_사용자_위치가_기기_GPS면_이름_없이_출처만_남긴다() -> None:
+    """requested_query가 "gps_location" 자리표시자라 그대로 실으면 지명처럼 보인다."""
+
+    debug = build_tool_execution_debug(
+        _context_response(
+            RecommendationContext(
+                location=_location_value(),
+                user_location=_gps_user_location_value(),
+            )
+        )
+    )
+
+    assert debug is not None
+    assert debug.user_location is not None
+    assert debug.user_location.name is None
+    assert debug.user_location.source == "device_gps"
+    assert (debug.user_location.latitude, debug.user_location.longitude) == (37.5709, 126.9990)
+    # 검색 위치는 발화로 왔으므로 부를 이름이 그대로 있다.
+    assert debug.search_location is not None
+    assert (debug.search_location.name, debug.search_location.source) == ("경복궁", "query")
+
+
+def test_사용자_위치가_있으면_경로_시작점이_그_위치다() -> None:
+    debug = build_tool_execution_debug(
+        _context_response(
+            RecommendationContext(
+                location=_location_value(),
+                user_location=_spoken_user_location_value(),
+            )
+        )
+    )
+
+    assert debug is not None
+    assert debug.route_origin is not None
+    assert (debug.route_origin.name, debug.route_origin.source) == ("안국역", "query")
+    assert debug.route_origin.latitude == 37.5765
+
+
+def test_사용자_위치가_없으면_시작점이_검색_위치로_대체된_것을_드러낸다() -> None:
+    """되묻기로 검색 위치만 정해진 턴. 사용자는 거기 있다고 말한 적이 없다.
+
+    이 턴의 거리·실측 경로는 전부 경복궁 기준으로 계산되는데, source가 원래의
+    "query"로 남으면 사용자가 경복궁에 있다고 말한 턴과 화면에서 구분되지 않는다.
+    """
+
+    debug = build_tool_execution_debug(
+        _context_response(RecommendationContext(location=_location_value()))
+    )
+
+    assert debug is not None
+    assert debug.user_location is None
+    assert debug.route_origin is not None
+    assert debug.route_origin.name == "경복궁"
+    assert debug.route_origin.source == "search_center"
+
+
+def test_사용자_위치를_못_구한_상태값이면_시작점이_검색_위치로_내려간다() -> None:
+    """데이터가 없는 ContextValue는 랭킹 기준점 판정에서 걸러진다(ranking_origin._usable)."""
+
+    debug = build_tool_execution_debug(
+        _context_response(
+            RecommendationContext(
+                location=_location_value(),
+                user_location=ContextValue(
+                    status="unavailable",
+                    data=None,
+                    error=ContextError(
+                        code="location_unavailable",
+                        message="사용자 위치를 해석하지 못했습니다.",
+                        retryable=True,
+                    ),
+                ),
+            )
+        )
+    )
+
+    assert debug is not None
+    assert debug.user_location is None
+    assert debug.route_origin is not None
+    assert debug.route_origin.source == "search_center"

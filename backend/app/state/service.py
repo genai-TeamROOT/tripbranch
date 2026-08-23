@@ -10,7 +10,7 @@ import functools
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.auth.principal import Principal
 from app.errors import AppError
@@ -21,7 +21,13 @@ from app.state import trace as trace_module
 from app.state.errors import StateStoreError
 from app.state.merge import merge_conditions
 from app.state.operations import IgnoredOperation, Operation, validate_all
-from app.state.schema import RecommendedItem, RecommendedItemInput, UserConditions, now_kst
+from app.state.schema import (
+    FeedbackReasonCode,
+    RecommendedItem,
+    RecommendedItemInput,
+    UserConditions,
+    now_kst,
+)
 from app.state.store import StateStore, get_store
 
 # ================================================================ 요청·응답
@@ -276,11 +282,35 @@ class RecordFeedbackRequest(BaseModel):
 
     rating은 FeedbackRecord가 "like"/"dislike"로 검증한다 — RecordTraceRequest의
     step 등과 달리 B가 값을 검증하는 예외적인 필드다.
+
+    user_input/assistant_message는 2026-08-21 추가된 선택 필드다. 프론트가
+    피드백을 남긴 턴의 질문·답변 텍스트를 함께 보내면 그대로 저장한다 —
+    FeedbackRecord 스키마 docstring의 원문 저장 범위 설명 참고.
+
+    intent도 같은 날 추가된 선택 필드다. 그 턴의 assistant_text 메시지가
+    이미 들고 있는 값을 그대로 전달받아 저장한다.
+
+    comment는 "싫어요" 사유로 사용자가 직접 남긴 자유 텍스트다(develop PR에서
+    병합, D-069) — 짧은 사유라는 용도에 맞춰 500자로 길이를 제한한다.
     """
 
     session_id: str
     run_id: str
     rating: Literal["like", "dislike"]
+    user_input: str | None = None
+    assistant_message: str | None = None
+    intent: str | None = None
+    reason_code: FeedbackReasonCode | None = None
+    comment: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_reason_details(self) -> "RecordFeedbackRequest":
+        """좋아요에는 사유를 남기지 않고, 싫어요에는 표준 사유를 남긴다."""
+        if self.rating == "like" and (self.reason_code is not None or self.comment is not None):
+            raise ValueError("좋아요에는 reason_code나 comment를 남길 수 없습니다")
+        # 기존 클라이언트의 "싫어요" 기록은 reason_code 없이도 읽고 쓸 수 있게
+        # 둔다. 새 프론트는 항상 표준 사유를 보낸다.
+        return self
 
 
 class RecordFeedbackResponse(BaseModel):
@@ -297,6 +327,11 @@ class DislikeFeedbackItem(BaseModel):
     session_id: str
     run_id: str
     recorded_at: datetime
+    intent: str | None = None
+    user_input: str | None = None
+    assistant_message: str | None = None
+    reason_code: FeedbackReasonCode | None = None
+    comment: str | None = None
     prompt_version: str | None = None
     scoring_version: str | None = None
 
@@ -774,6 +809,11 @@ def record_feedback(
         request.session_id,
         request.run_id,
         request.rating,
+        user_input=request.user_input,
+        assistant_message=request.assistant_message,
+        intent=request.intent,
+        reason_code=request.reason_code,
+        comment=request.comment,
     )
     return RecordFeedbackResponse(recorded_at=feedback.recorded_at)
 
@@ -822,6 +862,11 @@ def get_dislike_feedback(
                 session_id=feedback.session_id,
                 run_id=feedback.run_id,
                 recorded_at=feedback.recorded_at,
+                intent=feedback.intent,
+                user_input=feedback.user_input,
+                assistant_message=feedback.assistant_message,
+                reason_code=feedback.reason_code,
+                comment=feedback.comment,
                 prompt_version=prompt_version,
                 scoring_version=scoring_version,
             )

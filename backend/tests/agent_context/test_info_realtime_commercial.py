@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -11,6 +12,7 @@ from app.agent_context.info_schemas import (
     InfoContextRequest,
     RealtimeCityInfoResult,
     RealtimeCommercialInfoResult,
+    RealtimePopulationInfoResult,
 )
 from app.agent_context.service import ContextService, ContextTools
 from app.domain.models import GeocodeResult, LocalSearchPlace
@@ -65,8 +67,24 @@ class _CafeLocalSearchProvider:
         )
 
 
+class _CountingRealtimeCityDataProvider(FakeRealtimeCityDataProvider):
+    """현재/미래 INFO 분기의 외부 API 호출 여부를 검증하는 테스트 더블."""
+
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    async def get_area_citydata(self, area_name_or_code: str):
+        self.call_count += 1
+        return await super().get_area_citydata(area_name_or_code)
+
+
 def _service(
-    *, latitude: float, longitude: float, with_cafe_local_search: bool = False
+    *,
+    latitude: float,
+    longitude: float,
+    with_cafe_local_search: bool = False,
+    realtime_citydata_provider: FakeRealtimeCityDataProvider | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> ContextService:
     place_provider = FakePlaceProvider()
     return ContextService(
@@ -81,10 +99,12 @@ def _service(
             weather=GetWeatherForecastTool(FakeWeatherProvider()),
             holidays=GetHolidaysTool(FakeHolidayProvider()),
             realtime_commercial=GetRealtimeCommercialTool(FakeRealtimeCommercialProvider()),
-            realtime_citydata=GetRealtimeCityDataTool(FakeRealtimeCityDataProvider()),
+            realtime_citydata=GetRealtimeCityDataTool(
+                realtime_citydata_provider or FakeRealtimeCityDataProvider()
+            ),
         ),
         candidate_limit=10,
-        clock=lambda: datetime.now(ZoneInfo("Asia/Seoul")),
+        clock=clock or (lambda: datetime.now(ZoneInfo("Asia/Seoul"))),
     )
 
 
@@ -142,6 +162,70 @@ async def test_current_cafe_question_reroutes_after_category_resolution() -> Non
     assert response.status == "success"
     assert isinstance(response.result, RealtimeCommercialInfoResult)
     assert response.result.population_forecasts
+
+
+@pytest.mark.asyncio
+async def test_current_general_concentration_prefers_nearby_realtime_population() -> None:
+    """명소·역처럼 업종이 없는 현재형 질문도 실시간 인구를 먼저 쓴다."""
+
+    provider = _CountingRealtimeCityDataProvider()
+    response = await _service(
+        latitude=37.5796,
+        longitude=126.9770,
+        realtime_citydata_provider=provider,
+        clock=lambda: datetime(2026, 8, 20, 14, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    ).fetch_info_context(
+        InfoContextRequest(
+            request_id="current-gyeongbokgung",
+            place_name="경복궁",
+            place_context="explicit",
+            question_type="concentration",
+            specific_question="경복궁 사람 많아?",
+            visit_time="2026-08-20",
+        )
+    )
+
+    assert response.status == "success"
+    assert isinstance(response.result, RealtimePopulationInfoResult)
+    # 82개 제공 지역의 대표 좌표 중 실제 최근접 지역을 고른다. 테스트 더블은
+    # 코드만 area_name으로 되돌리므로 특정 지역명 대신 선택·거리 계약을 검증한다.
+    assert response.result.area_name is not None
+    assert response.result.proxy_distance_km is not None
+    assert response.result.proxy_distance_km <= 1.0
+    assert response.result.current_congestion_message is not None
+    assert response.result.population_forecasts
+    assert response.result.map_url is not None
+    assert "hotspotNm=" in response.result.map_url
+    assert "&y=" in response.result.map_url
+    assert "&x=" in response.result.map_url
+    assert provider.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_future_concentration_skips_realtime_citydata() -> None:
+    """주말·내일처럼 미래 방문일 질문은 실시간 API를 호출하지 않는다."""
+
+    provider = _CountingRealtimeCityDataProvider()
+    response = await _service(
+        latitude=37.5796,
+        longitude=126.9770,
+        realtime_citydata_provider=provider,
+        clock=lambda: datetime(2026, 8, 20, 14, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    ).fetch_info_context(
+        InfoContextRequest(
+            request_id="future-gyeongbokgung",
+            place_name="경복궁",
+            place_context="explicit",
+            question_type="concentration",
+            specific_question="이번 주말 경복궁 사람 많아?",
+            visit_time="2026-08-22",
+        )
+    )
+
+    # 이 테스트 서비스에는 관광지 집중률 Tool을 주입하지 않았으므로 최종 상태는
+    # unavailable일 수 있다. 핵심은 실시간 도시데이터 호출이 0건이라는 점이다.
+    assert not isinstance(response.result, RealtimePopulationInfoResult)
+    assert provider.call_count == 0
 
 
 @pytest.mark.asyncio
