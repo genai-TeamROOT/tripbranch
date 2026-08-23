@@ -89,11 +89,11 @@ class Settings(BaseSettings):
     # Package B State 저장소 백엔드. 기본값은 Phase 1 인메모리다.
     state_store_backend: StateStoreBackend = "memory"
 
-    # GENERAL 답변을 LangGraph 그래프로 태울지 여부(1단계,
-    # docs/design/langgraph-adoption.md §6.1). 기본 on이지만, 이관은 출력이
-    # 같아야 하는 작업이라 문제가 보이면 이 값 하나로 즉시 기존 경로로 되돌린다 —
-    # off로 두면 그래프를 아예 부르지 않고 compose_chat_message()를 직접 호출한다.
-    use_langgraph_general: bool = True
+    # 조기 반환 경로(Tool/Scoring 없이 끝나는 턴 — GENERAL·OUT_OF_SCOPE·되묻기 등)를
+    # LangGraph 그래프로 태울지 여부(docs/design/langgraph-adoption.md §6.1).
+    # 기본 on이지만, 이관은 출력이 같아야 하는 작업이라 문제가 보이면 이 값 하나로
+    # 즉시 기존 경로로 되돌린다 — off면 compose_chat_message()를 직접 호출한다.
+    use_langgraph_early_return: bool = True
 
     # 취향 근거 벡터 검색 사용 여부. 기본 off인 이유는 임베딩 모델이 선택
     # 의존성(`pip install -e ".[embeddings]"`)이고 서버 프로세스에 상주하기

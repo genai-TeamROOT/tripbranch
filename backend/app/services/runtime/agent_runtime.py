@@ -76,7 +76,7 @@ from app.services.runtime.compare_transform import (
 )
 from app.services.runtime.context_transform import to_agent_context_request
 from app.services.runtime.enrichment_transform import to_candidate_enrichment_request
-from app.services.runtime.graph import run_general_answer_graph
+from app.services.runtime.graph import run_early_return_graph
 from app.services.runtime.info_context_schemas import InfoContextResponse, PlaceInfoResult
 from app.services.runtime.info_context_transform import to_info_context_request
 from app.services.runtime.info_response_transform import to_info_place_card
@@ -1709,15 +1709,17 @@ async def run_agent_flow(
         is_streaming_general = (
             stream_recommendation_summary and llm_output.intent is Intent.GENERAL
         )
-        if llm_output.intent is Intent.GENERAL and settings.use_langgraph_general:
-            # 1단계: GENERAL만 라우팅 그래프로 태운다(langgraph-adoption.md §6.1).
-            # 나머지 인텐트는 아래 기존 경로 그대로다 — 병행 운영이라 문제가 보이면
-            # USE_LANGGRAPH_GENERAL=false 하나로 즉시 되돌아간다.
-            message = await run_general_answer_graph(
+        if settings.use_langgraph_early_return:
+            # 2단계: 조기 반환 경로(Tool/Scoring 없이 끝나는 턴) 전체를 라우팅
+            # 그래프가 맡는다(langgraph-adoption.md §6.1). RECOMMEND/MODIFY/
+            # SCHEDULE은 아래로 내려가 기존 경로 그대로다 — 병행 운영이라 문제가
+            # 보이면 USE_LANGGRAPH_EARLY_RETURN=false 하나로 즉시 되돌아간다.
+            message = await run_early_return_graph(
                 llm_output,
                 llm=llm,
                 session_id=state_response.session_id,
-                stream_event_sink=stream_event_sink if is_streaming_general else None,
+                stream_event_sink=stream_event_sink,
+                stream_general=is_streaming_general,
             )
         else:
             if is_streaming_general:
