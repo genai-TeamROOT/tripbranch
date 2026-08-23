@@ -41,7 +41,7 @@ async def test_graph_answer_matches_legacy_compose() -> None:
 
     legacy = await compose_chat_message(llm_output, llm=FakeLLMProvider())
     through_graph = await run_early_return_graph(
-        llm_output, llm=FakeLLMProvider(), session_id="sess_test"
+        llm_output, llm=FakeLLMProvider()
     )
 
     assert through_graph == legacy
@@ -63,7 +63,6 @@ async def test_graph_emits_same_sse_sequence_as_legacy() -> None:
     await run_early_return_graph(
         _general_output(),
         llm=FakeLLMProvider(),
-        session_id="sess_test",
         stream_event_sink=sink,
         stream_general=True,
     )
@@ -79,7 +78,7 @@ async def test_graph_without_sink_emits_nothing() -> None:
     """단발 POST /api/chat 경로(sink 없음)에서는 이벤트를 내지 않는다."""
 
     answer = await run_early_return_graph(
-        _general_output(), llm=FakeLLMProvider(), session_id="sess_test"
+        _general_output(), llm=FakeLLMProvider()
     )
 
     assert answer  # 답변은 정상적으로 나온다
@@ -117,13 +116,13 @@ async def test_flag_on_routes_general_through_graph() -> None:
     seen: list[str] = []
 
     async def spy(llm_output, **kwargs):
-        seen.append(kwargs["session_id"])
+        seen.append(llm_output.intent.value)
         return await real(llm_output, **kwargs)
 
     with patch.object(agent_runtime, "run_early_return_graph", spy):
         response = await agent_runtime.run_agent(AgentRequest(user_input="넌 누구야?"))
 
-    assert len(seen) == 1
+    assert seen == ["GENERAL"]
     assert response.llm_output.intent is Intent.GENERAL
 
 
@@ -168,7 +167,7 @@ async def test_static_paths_match_legacy_compose(label: str, factory) -> None:
 
     legacy = await compose_chat_message(llm_output, llm=FakeLLMProvider())
     through_graph = await run_early_return_graph(
-        llm_output, llm=FakeLLMProvider(), session_id=f"sess_{label}"
+        llm_output, llm=FakeLLMProvider()
     )
 
     assert through_graph == legacy
@@ -190,7 +189,6 @@ async def test_non_general_emits_no_stream_events(label: str, factory) -> None:
     await run_early_return_graph(
         factory(),
         llm=FakeLLMProvider(),
-        session_id=f"sess_{label}",
         stream_event_sink=sink,
         stream_general=True,
     )
@@ -210,7 +208,6 @@ async def test_general_without_streaming_goes_static() -> None:
     answer = await run_early_return_graph(
         _general_output(),
         llm=FakeLLMProvider(),
-        session_id="sess_no_stream",
         stream_event_sink=sink,
         stream_general=False,
     )

@@ -11,7 +11,6 @@ SSE 이벤트 순서가 달라지면 그건 버그다(§6.2).
 
 from __future__ import annotations
 
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from app.providers.protocols import LLMProvider
@@ -67,10 +66,11 @@ def build_early_return_graph():
     )
     graph.add_edge("general_answer", END)
     graph.add_edge("static_answer", END)
-    # checkpointer: 지금은 한 턴 안에서 끝나 상태를 이어받을 일이 없지만, 4단계에서
-    # StateStore를 BaseCheckpointSaver로 바꿔 끼울 자리를 미리 만들어 둔다.
-    # thread_id로는 우리 session_id를 그대로 쓴다(§7.4).
-    return graph.compile(checkpointer=MemorySaver())
+    # checkpointer는 달지 않는다(§9.9). 우리 그래프는 한 턴 안에서 시작하고 끝나며,
+    # 턴 사이 상태는 B(StateStore)가 이미 자기 계약으로 관리한다. 보관함을 달면
+    # 같은 session_id의 다음 턴에 이전 턴 값이 남아 섞이고(실측 확인), 세션마다
+    # 체크포인트가 RAM에 무한정 쌓인다.
+    return graph.compile()
 
 
 # 프로세스 수명 동안 한 번만 조립한다 — 그래프 컴파일은 요청마다 할 일이 아니다.
@@ -81,7 +81,6 @@ async def run_early_return_graph(
     llm_output: LLMOutput,
     *,
     llm: LLMProvider,
-    session_id: str,
     stream_event_sink: StreamEventSink | None = None,
     stream_general: bool = False,
 ) -> str:
@@ -95,7 +94,6 @@ async def run_early_return_graph(
         {"llm_output": llm_output, "stream_general": stream_general, "answer": None},
         config={
             "configurable": {
-                "thread_id": session_id,
                 SINK_CONFIG_KEY: stream_event_sink,
                 LLM_CONFIG_KEY: llm,
             }
@@ -143,7 +141,8 @@ def build_recommend_pipeline_graph():
     )
     graph.add_edge("schedule", END)
     graph.add_edge("finalize", END)
-    return graph.compile(checkpointer=MemorySaver())
+    # checkpointer 미사용 — 이유는 build_early_return_graph() 주석과 §9.9 참고.
+    return graph.compile()
 
 
 _RECOMMEND_PIPELINE_GRAPH = build_recommend_pipeline_graph()
@@ -153,7 +152,6 @@ async def run_recommend_pipeline_graph(
     state: RecommendPipelineState,
     *,
     deps: PipelineDeps,
-    session_id: str,
     stream_event_sink: StreamEventSink | None = None,
 ) -> AgentResponse:
     """Tool 조회부터 응답 조립까지를 그래프로 돌려 최종 응답을 돌려준다."""
@@ -162,7 +160,6 @@ async def run_recommend_pipeline_graph(
         state,
         config={
             "configurable": {
-                "thread_id": session_id,
                 SINK_CONFIG_KEY: stream_event_sink,
                 LLM_CONFIG_KEY: deps.llm,
                 DEPS_CONFIG_KEY: deps,

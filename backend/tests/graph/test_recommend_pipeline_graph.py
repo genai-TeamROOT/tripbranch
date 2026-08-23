@@ -107,3 +107,24 @@ def test_pipeline_routing_table() -> None:
     recommend = LLMOutput(intent=Intent.RECOMMEND, status=OutputStatus.COMPLETE)
     assert route_after_scoring({"llm_output": schedule}) == ROUTE_SCHEDULE
     assert route_after_scoring({"llm_output": recommend}) == ROUTE_FINALIZE
+
+
+def test_graphs_have_no_checkpointer() -> None:
+    """그래프에 보관함(checkpointer)을 달지 않는다 — §9.9.
+
+    달면 두 가지가 실제로 깨진다(2026-08-24 실측):
+    1. 같은 thread_id의 다음 턴에서, 입력에 안 넘긴 칸이 이전 턴 값으로 남는다
+    2. 세션마다 체크포인트가 RAM에 쌓여 줄지 않는다(세션 6개 -> 21건)
+
+    우리 그래프는 한 턴 안에서 시작하고 끝나며 턴 사이 상태는 B(StateStore)가
+    자기 계약으로 관리하므로, 보관함은 이득 없이 위 두 위험만 안는다. 실수로
+    다시 달리는 것을 막으려고 여기서 고정한다.
+    """
+
+    from app.services.runtime.graph import (
+        build_early_return_graph,
+        build_recommend_pipeline_graph,
+    )
+
+    for build in (build_early_return_graph, build_recommend_pipeline_graph):
+        assert build().checkpointer is None, f"{build.__name__}에 checkpointer가 붙었다"

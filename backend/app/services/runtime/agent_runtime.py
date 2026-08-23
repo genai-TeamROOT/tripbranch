@@ -1722,7 +1722,6 @@ async def run_agent_flow(
             message = await run_early_return_graph(
                 llm_output,
                 llm=llm,
-                session_id=state_response.session_id,
                 stream_event_sink=stream_event_sink,
                 stream_general=is_streaming_general,
             )
@@ -1776,7 +1775,6 @@ async def run_agent_flow(
                 store=store,
                 principal=principal,
             ),
-            session_id=state_response.session_id,
             stream_event_sink=stream_event_sink,
         )
 
