@@ -19,7 +19,7 @@ def now_kst() -> datetime:
 # ---------------------------------------------------------------- 조건
 
 class UserConditions(BaseModel):
-    """사용자 발화에서 추출된 조건 15개. (계약 1.2절)
+    """사용자 발화에서 추출된 조건. (계약 1.2절)
 
     B는 각 필드의 허용값을 검증하지 않는다. 허용값 정의는 Package A의 책임이다.
     """
@@ -40,6 +40,9 @@ class UserConditions(BaseModel):
     exclude_tags: list[str] = Field(default_factory=list)
     special_requirements: list[str] = Field(default_factory=list)
     taste_query: str | None = None
+    # "이번 요청의 이동시간을 어디서부터 잴까"의 판정. 값은 "user_location" |
+    # "search_center"(app.schemas.TravelOrigin) 중 하나며 B는 검증하지 않는다.
+    travel_origin: str | None = None
 
 
 class ApiContext(BaseModel):

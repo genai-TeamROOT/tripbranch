@@ -316,6 +316,7 @@ function tripReducer(state: TripState, action: TripAction): TripState {
             type: "recommendation_result",
             recommendations: recommendations.recommendations,
             unverified_recommendations: recommendations.unverified_recommendations,
+            travel_origin_toggle: recommendations.travel_origin_toggle,
             elapsed_ms: elapsedMsClient,
             server_elapsed_ms: recommendations.elapsed_ms,
           },
@@ -507,6 +508,7 @@ function tripReducer(state: TripState, action: TripAction): TripState {
           type: "recommendation_result",
           recommendations: recommendations.recommendations,
           unverified_recommendations: recommendations.unverified_recommendations,
+          travel_origin_toggle: recommendations.travel_origin_toggle,
           elapsed_ms: action.payload.elapsedMsClient,
           server_elapsed_ms: recommendations.elapsed_ms,
         });

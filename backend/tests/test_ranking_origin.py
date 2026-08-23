@@ -22,10 +22,11 @@ from app.domain.candidate_mapper import map_context_to_scoring_candidates
 from app.domain.ranking_origin import (
     haversine_km,
     resolve_ranking_origin,
+    resolve_travel_origin_toggle,
     resolve_user_to_target_km,
 )
 from app.domain.travel_route import TravelMode
-from app.schemas import UserConditions
+from app.schemas import TravelOrigin, UserConditions
 from app.services.recommendation_pipeline import (
     prepare_recommendation_from_context,
     resolve_origin_name,
@@ -326,3 +327,161 @@ async def test_travel_routes_fall_back_to_search_center() -> None:
 def test_haversine_km_matches_latitude_degrees() -> None:
     """이 파일의 기대값이 기대는 환산(위도 0.01도 ≈ 1.112km)을 고정한다."""
     assert haversine_km(37.5796, 126.9770, 37.5896, 126.9770) == pytest.approx(1.112, abs=0.001)
+
+
+# --- travel_origin: "안국역에서 10분" vs "안국역 근처에 10분" (D-071) --------
+
+
+def test_ranking_origin_uses_search_center_when_travel_origin_says_so() -> None:
+    """"안국역에서 10분"은 사용자 위치가 있어도 검색 기준점을 그대로 써야 한다."""
+    origin = resolve_ranking_origin(
+        _context(user_location=_user_here()),
+        UserConditions(travel_origin=TravelOrigin.SEARCH_CENTER),
+    )
+
+    assert origin is not None
+    assert origin.requested_query == "경복궁"
+
+
+def test_ranking_origin_ignores_override_without_conditions() -> None:
+    """conditions를 안 넘기면(기존 호출부) D-067 기본 동작 그대로다."""
+    origin = resolve_ranking_origin(_context(user_location=_user_here()))
+
+    assert origin is not None
+    assert origin.requested_query == "사당역"
+
+
+def test_ranking_origin_default_when_travel_origin_is_none() -> None:
+    """"안국역 근처에 10분"(travel_origin=null)은 D-067 기본값(사용자 위치)을 그대로 쓴다."""
+    origin = resolve_ranking_origin(
+        _context(user_location=_user_here()),
+        UserConditions(),
+    )
+
+    assert origin is not None
+    assert origin.requested_query == "사당역"
+
+
+@pytest.mark.asyncio
+async def test_denominator_offset_is_zero_when_travel_origin_is_search_center() -> None:
+    """분자가 검색 기준점 기준으로 재므로 사용자→기준점 거리를 분모에 얹지 않는다."""
+    prepared = await prepare_recommendation_from_context(
+        _context(user_location=_user_here()),
+        conditions=UserConditions(travel_origin=TravelOrigin.SEARCH_CENTER),
+        visit_at=_VISIT_AT,
+    )
+
+    assert prepared.distance_denominator_offset_km == 0.0
+
+
+def test_origin_name_calls_the_search_center_when_travel_origin_overrides() -> None:
+    """"안국역에서 10분"의 근거 문장은 사용자 위치가 아니라 안국역(검색 기준점)을 불러야 한다."""
+    context = _context(user_location=_user_here())
+
+    assert (
+        resolve_origin_name(context, UserConditions(travel_origin=TravelOrigin.SEARCH_CENTER))
+        == "경복궁"
+    )
+
+
+@pytest.mark.asyncio
+async def test_travel_routes_start_from_search_center_when_travel_origin_overrides() -> None:
+    """실측 경로도 거리·근거 문장과 같은 기준점(검색 기준점)에서 출발해야 한다."""
+    context = _context(user_location=_user_here(), places=[_place("place-a", _NORTH)])
+    conditions = UserConditions(travel_origin=TravelOrigin.SEARCH_CENTER)
+    prepared = await prepare_recommendation_from_context(
+        context, conditions=conditions, visit_at=_VISIT_AT
+    )
+    tool = _RecordingRouteTool()
+
+    await _fetch_travel_routes(tool, context, prepared, TravelMode.WALKING, conditions)
+
+    assert tool.origins == [(_TARGET.latitude, _TARGET.longitude)]
+
+
+# --- 비차단형 전환 제안(TravelOriginToggle, D-071) ---------------------------
+
+
+def test_toggle_offers_search_center_when_origin_undetermined() -> None:
+    """"안국역 근처에 10분"류(travel_origin=None)는 두 기준점이 다르면 전환을 제안한다."""
+    toggle = resolve_travel_origin_toggle(
+        _context(user_location=_user_here()),
+        UserConditions(max_travel_time=10),
+    )
+
+    assert toggle is not None
+    assert toggle.alternative_origin == TravelOrigin.SEARCH_CENTER
+    assert toggle.alternative_origin_name == "경복궁"
+
+
+def test_toggle_is_none_when_travel_origin_already_determined() -> None:
+    """"안국역에서 10분"처럼 이미 확정된 요청엔 되물을 이유가 없다."""
+    toggle = resolve_travel_origin_toggle(
+        _context(user_location=_user_here()),
+        UserConditions(max_travel_time=10, travel_origin=TravelOrigin.SEARCH_CENTER),
+    )
+
+    assert toggle is None
+
+
+def test_toggle_is_none_without_max_travel_time() -> None:
+    """이동시간 제약이 없으면 출발점 논의 자체가 의미 없다."""
+    toggle = resolve_travel_origin_toggle(
+        _context(user_location=_user_here()),
+        UserConditions(),
+    )
+
+    assert toggle is None
+
+
+def test_toggle_is_none_without_user_location() -> None:
+    """전환할 대상(사용자 위치)을 모르면 제안할 것이 없다."""
+    toggle = resolve_travel_origin_toggle(
+        _context(),
+        UserConditions(max_travel_time=10),
+    )
+
+    assert toggle is None
+
+
+def test_toggle_is_none_when_origins_are_the_same_point() -> None:
+    """두 기준점이 같은 지점이면 전환해도 답이 똑같다."""
+    same_point = _location_value(_TARGET, requested_query="경복궁")
+    toggle = resolve_travel_origin_toggle(
+        _context(user_location=same_point),
+        UserConditions(max_travel_time=10),
+    )
+
+    assert toggle is None
+
+
+def test_toggle_is_none_when_search_center_came_from_device_gps() -> None:
+    """검색 기준점이 기기 GPS면 부를 이름이 없어 제안을 만들 수 없다."""
+    context = _context(user_location=_user_here())
+    gps_context = context.model_copy(
+        update={
+            "location": _location_value(
+                _TARGET, requested_query="gps_location", source="device_gps"
+            )
+        }
+    )
+
+    toggle = resolve_travel_origin_toggle(gps_context, UserConditions(max_travel_time=10))
+
+    assert toggle is None
+
+
+@pytest.mark.asyncio
+async def test_prepared_result_carries_toggle_end_to_end() -> None:
+    """전환 제안이 RecommendationResponse까지 그대로 실린다."""
+    context = _context(user_location=_user_here(), places=[_place("place-a", _NORTH)])
+    response = await run_recommendation_pipeline_from_context(
+        context,
+        conditions=UserConditions(max_travel_time=10),
+        visit_at=_VISIT_AT,
+        search_radius_km=2.0,
+    )
+
+    assert response.travel_origin_toggle is not None
+    assert response.travel_origin_toggle.alternative_origin == TravelOrigin.SEARCH_CENTER
+    assert response.travel_origin_toggle.alternative_origin_name == "경복궁"

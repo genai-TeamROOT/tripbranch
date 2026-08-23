@@ -57,6 +57,11 @@ interface Conditions {
   // 이동
   transport: "walk" | "public" | "car" | null;
   max_travel_time: number | null;
+  // 이동시간의 출발점 판정(사실이 아니라 판정 — D-071). "안국역에서/까지 10분"처럼
+  // 조사가 출발점을 확정할 때만 "search_center". "근처/주변"이나 미언급은 null이며
+  // 그때는 기존 기본값(D-067, 사용자 위치 우선)이 그대로 적용된다. "user_location"은
+  // 추출 단계에서 쓰지 않고, 결과를 받은 뒤 기준점 전환 버튼이 생기면 그때 쓴다.
+  travel_origin: "user_location" | "search_center" | null;
 
   // 시간
   time_available: number | null;
@@ -263,6 +268,7 @@ missing_conditions 처리 흐름:
 | `concentration_intent` | 단일 | Update | Remove → null (가중치 제외) |
 | `transport` | 단일 | Update | Remove → null (기본값 walk 적용) |
 | `max_travel_time` | 단일 | Update | Remove → null (기본 반경 적용) |
+| `travel_origin` | 단일 | Update | Remove → null (D-067 기본값 적용) |
 | `time_available` | 단일 | Update | Remove → null |
 | `environment` | 단일 | Update | Remove → null |
 | `companion` | 단일 | Update | Remove → null |

@@ -10,6 +10,11 @@
 
 사용자 위치를 모르면(발화도 기기 GPS도 없는 요청) 검색 기준점으로 돌아간다 —
 지어낸 좌표로 줄을 세우지 않는다.
+
+**예외**: "안국역에서 10분"처럼 발화가 조사로 출발점을 확정하면(`UserConditions.
+travel_origin == TravelOrigin.SEARCH_CENTER`), 위 기본 순서를 따르지 않고
+검색 기준점을 그대로 랭킹 기준점으로 쓴다 — 사용자가 이미 "거기서부터"라고
+말했기 때문이다(D-071).
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ from app.agent_context.schemas import (
     ResolvedLocation,
 )
 from app.place_search_policy import EARTH_RADIUS_KM
+from app.schemas import TravelOrigin, TravelOriginToggle, UserConditions
 
 
 def haversine_km(
@@ -51,8 +57,24 @@ def _usable(value: ContextValue[ResolvedLocation] | None) -> ResolvedLocation | 
     return value.data
 
 
-def resolve_ranking_origin(context: RecommendationContext) -> ResolvedLocation | None:
-    """거리·경로·근거 문장이 기준으로 삼을 좌표. 사용자 위치를 우선한다."""
+def resolve_ranking_origin(
+    context: RecommendationContext,
+    conditions: UserConditions | None = None,
+) -> ResolvedLocation | None:
+    """거리·경로·근거 문장이 기준으로 삼을 좌표.
+
+    `conditions.travel_origin`이 SEARCH_CENTER면("안국역에서 10분") 검색
+    기준점을 그대로 쓴다 — 발화가 이미 출발점을 확정했으므로 사용자 위치로
+    되돌릴 이유가 없다. 그 외에는 사용자 위치를 우선한다(기존 동작, D-067).
+    """
+
+    if (
+        conditions is not None
+        and conditions.travel_origin is TravelOrigin.SEARCH_CENTER
+    ):
+        search_center = _usable(context.location)
+        if search_center is not None:
+            return search_center
 
     return _usable(context.user_location) or _usable(context.location)
 
@@ -96,9 +118,45 @@ def resolve_user_to_target_km(context: RecommendationContext) -> float | None:
     )
 
 
+def resolve_travel_origin_toggle(
+    context: RecommendationContext | None,
+    conditions: UserConditions | None,
+) -> TravelOriginToggle | None:
+    """"OO 기준으로 다시 보기" 비차단형 전환 제안을 만든다(D-071).
+
+    조사가 이미 출발점을 확정한 요청(`travel_origin`이 채워진 요청)에는
+    만들지 않는다 — 되물을 이유가 없다. 이동시간 제약이 없는 요청도 만들지
+    않는다 — 출발점 논의 자체가 의미 없다. 사용자 위치와 검색 기준점이 둘 다
+    알려져 있고 실제로 다른 지점일 때만 제안한다 — 같은 지점이면 전환해도
+    답이 똑같다.
+    """
+
+    if context is None or conditions is None:
+        return None
+    if conditions.max_travel_time is None:
+        return None
+    if conditions.travel_origin is not None:
+        return None
+
+    user_location = _usable(context.user_location)
+    search_center = _usable(context.location)
+    if user_location is None or search_center is None:
+        return None
+    if search_center.source == "device_gps":
+        return None  # 부를 이름이 없다.
+    if user_location.location == search_center.location:
+        return None  # 같은 지점이면 전환할 의미가 없다.
+
+    return TravelOriginToggle(
+        alternative_origin=TravelOrigin.SEARCH_CENTER,
+        alternative_origin_name=search_center.requested_query,
+    )
+
+
 __all__ = [
     "haversine_km",
     "resolve_ranking_origin",
     "resolve_search_center",
+    "resolve_travel_origin_toggle",
     "resolve_user_to_target_km",
 ]

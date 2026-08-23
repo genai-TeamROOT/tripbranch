@@ -15,6 +15,7 @@ modify_type과 condition_changes를 추출해 LLMOutput(intent="MODIFY")으로 �
   "concentration_intent": null,
   "transport": null,
   "max_travel_time": null,
+  "travel_origin": null,
   "time_available": 240,
   "environment": "indoor",
   "companion": null,

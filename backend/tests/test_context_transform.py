@@ -144,13 +144,18 @@ class TestConditionFieldCoverage:
         (StrictModel이라 모르는 필드가 들어가면 ValidationError). 덕분에 A가 먼저
         필드를 추가해도 깨지지 않지만, 누락이 조용히 생긴다. 새 필드가 같은 이유로
         사라지면 이 단언이 실패해 알려준다.
-        C가 concentration_intent를 받게 되면 기대값을 빈 집합으로 바꾼다.
+        C가 concentration_intent를 받게 되면 기대값에서 그 항목만 제거한다.
+
+        travel_origin(D-071)은 이 둘과 성격이 다르다 — C가 아직 못 받는 게 아니라
+        원래부터 C가 몰라도 되는 필드다. C는 위치 문자열을 좌표로 해석하는
+        역할만 하고, "이동시간을 어디서부터 잴까"는 D가 랭킹 단계에서만 쓰는
+        판정이라 C에 넘길 이유가 없다.
         """
         dropped = frozenset(UserConditions.model_fields) - frozenset(
             ContextUserConditions.model_fields
         )
 
-        assert dropped == {"concentration_intent"}
+        assert dropped == {"concentration_intent", "travel_origin"}
 
     def test_merged_state_conditions_reach_context_request(self) -> None:
         """B(순수 문자열) → A(enum) → C 전 구간을 한 번에 확인한다.
