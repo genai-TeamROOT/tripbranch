@@ -1,4 +1,4 @@
-"""place_tag를 붙인 taste 질의가 실제로 컷 통과율을 올리는지 실측한다.
+"""장소 유형을 붙인 taste 질의가 실제로 컷 통과율을 올리는지 실측한다.
 
 배경: `real_recommendation_provider._taste_matches_for()`가 뽑아 쓰는
 `taste_query`는 extract.md 규칙상 "조용한"처럼 단어 하나로 오는 경우가
@@ -7,12 +7,20 @@
 
 지역·카테고리 하드 필터가 이미 "이 후보는 카페다"를 알고 있으므로, 그 값을
 질의에 붙이면("조용한" → "조용한 카페") 새 정보 없이 검색 정확도를 올릴 수
-있다는 게 가설이다. 이 스크립트는 그 가설을 실측한다.
+있다는 게 가설이다. 이 스크립트는 그 가설을 두 단계로 실측한다.
 
-방법: 중심점 4곳(종로 4개 지점, taste_score_distribution.csv와 같은 지점
-기준) 반경 3km 안의 실제 카페(TourAPI 소분류 FD050100) 전체를 후보로 잡고,
-"조용한"(원문 그대로) vs "조용한 <place_tag>"(제안하는 방식)의 컷 통과율·평균
-유사도를 비교한다.
+1. **place_tag(세분류)** — 중심점 4곳(종로, taste_score_distribution.csv와
+   같은 지점) 반경 3km 안의 실제 카페(TourAPI 소분류 FD050100) 전체를 후보로
+   잡고 "조용한" vs "조용한 카페"를 비교한다.
+2. **place_type(넓은 유형)** — "식당"/"레스토랑"처럼 넓게 말한 발화는
+   place_tags가 비고 place_types만 채워진다. 그때 쓸 한국어 라벨을 고르려고
+   유형별 후보 라벨을 함께 잰다(경복궁 기준, contentTypeId로 후보를 가른다).
+
+**주의: 통과 수가 제일 큰 라벨이 항상 정답은 아니다.** cultural_facility는
+"박물관"이 수치상 제일 높지만 인용문을 열어보면 조용함이 아니라 박물관다움을
+끌어온다(문화시설의 일부 하위종이라 도서관·갤러리를 잘못 당긴다). 라벨을 바꿀
+때는 이 스크립트의 수치만 보지 말고 근거 문장을 직접 읽는다 — 최종 선택과
+그 근거는 `real_recommendation_provider._PLACE_TYPE_TASTE_LABELS` 주석에 있다.
 """
 
 from __future__ import annotations
@@ -44,6 +52,18 @@ _RADIUS_KM = 3.0
 _CAFE_SMALL_CODE = "FD050100"
 _BASE_QUERY = "조용한"
 _CAFE_TAG = "카페"
+_GENERIC_SUFFIX = "곳"
+
+# place_type별로 비교할 한국어 라벨 후보. contentTypeId는 TourAPI 대분류다
+# (category_rules.PLACE_TYPE_TO_CONTENT_TYPE_ID와 같은 값).
+_PLACE_TYPE_LABEL_CANDIDATES: dict[str, tuple[str, tuple[str, ...]]] = {
+    "12": ("attraction", ("관광지", "명소", "볼거리")),
+    "14": ("cultural_facility", ("문화시설", "전시", "박물관")),
+    "15": ("festival", ("축제", "행사")),
+    "28": ("leisure", ("레저", "체험", "액티비티")),
+    "38": ("shopping", ("쇼핑", "상점", "쇼핑몰")),
+    "39": ("restaurant", ("식당", "맛집", "음식점")),
+}
 
 RESULTS_DIR = Path(__file__).resolve().parents[1] / "test_results"
 RESULTS_CSV = RESULTS_DIR / "taste_query_enrichment.csv"
@@ -51,6 +71,7 @@ RESULTS_CSV = RESULTS_DIR / "taste_query_enrichment.csv"
 
 @dataclass(frozen=True)
 class EnrichmentRow:
+    scope: str
     center: str
     query: str
     candidate_count: int
@@ -71,24 +92,53 @@ def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     return radius * 2 * math.asin(math.sqrt(a))
 
 
-async def _fetch_cafes(client: httpx.AsyncClient) -> list[tuple[str, float, float]]:
+async def _fetch_places(client: httpx.AsyncClient) -> list[dict[str, object]]:
     response = await client.get(
         "/rest/v1/places",
         params={
-            "select": "content_id,latitude,longitude,lcls_systm3",
+            "select": "content_id,latitude,longitude,lcls_systm3,content_type_id",
             "is_active": "eq.true",
             "limit": "1000",
         },
     )
     response.raise_for_status()
-    cafes: list[tuple[str, float, float]] = []
+    places: list[dict[str, object]] = []
     for row in response.json():
-        if row.get("lcls_systm3") != _CAFE_SMALL_CODE:
-            continue
         content_id, lat, lng = row.get("content_id"), row.get("latitude"), row.get("longitude")
         if content_id and lat is not None and lng is not None:
-            cafes.append((str(content_id), float(lat), float(lng)))
-    return cafes
+            places.append(
+                {
+                    "content_id": str(content_id),
+                    "latitude": float(lat),
+                    "longitude": float(lng),
+                    "lcls_systm3": row.get("lcls_systm3"),
+                    "content_type_id": str(row.get("content_type_id") or ""),
+                }
+            )
+    return places
+
+
+async def _measure(
+    provider: PlaceEvidenceProvider,
+    *,
+    scope: str,
+    center_name: str,
+    query: str,
+    candidates: Sequence[str],
+) -> EnrichmentRow:
+    result = await provider.search(query, candidates)
+    matches = list(result.data.values())
+    passed = sum(1 for m in matches if m.avg_similarity >= DEFAULT_MIN_SIMILARITY)
+    avg_sim = statistics.mean(m.avg_similarity for m in matches) if matches else 0.0
+    return EnrichmentRow(
+        scope=scope,
+        center=center_name,
+        query=query,
+        candidate_count=len(candidates),
+        matched=len(matches),
+        passed_cut=passed,
+        avg_similarity=avg_sim,
+    )
 
 
 async def run(centers: dict[str, tuple[float, float]]) -> list[EnrichmentRow]:
@@ -109,7 +159,7 @@ async def run(centers: dict[str, tuple[float, float]]) -> list[EnrichmentRow]:
         headers=headers,
         timeout=_RPC_TIMEOUT_SECONDS,
     ) as client:
-        all_cafes = await _fetch_cafes(client)
+        places = await _fetch_places(client)
         repository = SupabasePlaceRepository(
             supabase_url=settings.supabase_url,
             secret_key=settings.supabase_secret_key,
@@ -121,40 +171,74 @@ async def run(centers: dict[str, tuple[float, float]]) -> list[EnrichmentRow]:
         # RPC를 다시 부르지 않아도 된다.
         provider = PlaceEvidenceProvider(encoder, repository, min_similarity=0.0)
 
+        # 1단계: place_tag(카페) — 중심점 4곳에서 재현되는지 본다.
         for center_name, center in centers.items():
             candidates = [
-                content_id
-                for content_id, lat, lng in all_cafes
-                if _haversine_km(center[0], center[1], lat, lng) <= _RADIUS_KM
+                p["content_id"]
+                for p in places
+                if p["lcls_systm3"] == _CAFE_SMALL_CODE
+                and _haversine_km(center[0], center[1], p["latitude"], p["longitude"])
+                <= _RADIUS_KM
             ]
-            for query in (_BASE_QUERY, f"{_BASE_QUERY} {_CAFE_TAG}"):
-                result = await provider.search(query, candidates)
-                matches = list(result.data.values())
-                passed = sum(
-                    1 for m in matches if m.avg_similarity >= DEFAULT_MIN_SIMILARITY
-                )
-                avg_sim = statistics.mean(m.avg_similarity for m in matches) if matches else 0.0
+            # 3단 폴백(태그 > 유형 라벨 > 일반 접미어)을 한 후보군에서 비교할 수
+            # 있게 "조용한 곳"도 같이 잰다.
+            for query in (
+                _BASE_QUERY,
+                f"{_BASE_QUERY} {_GENERIC_SUFFIX}",
+                f"{_BASE_QUERY} {_CAFE_TAG}",
+            ):
                 rows.append(
-                    EnrichmentRow(
-                        center=center_name,
+                    await _measure(
+                        provider,
+                        scope="place_tag/카페",
+                        center_name=center_name,
                         query=query,
-                        candidate_count=len(candidates),
-                        matched=len(matches),
-                        passed_cut=passed,
-                        avg_similarity=avg_sim,
+                        candidates=candidates,
+                    )
+                )
+
+        # 2단계: place_type별 후보 라벨 — 경복궁 한 지점에서 라벨을 고른다.
+        label_center_name = next(iter(centers))
+        label_center = centers[label_center_name]
+        for content_type_id, (place_type, labels) in _PLACE_TYPE_LABEL_CANDIDATES.items():
+            candidates = [
+                p["content_id"]
+                for p in places
+                if p["content_type_id"] == content_type_id
+                and _haversine_km(
+                    label_center[0], label_center[1], p["latitude"], p["longitude"]
+                )
+                <= _RADIUS_KM
+            ]
+            if not candidates:
+                continue
+            for query in (
+                f"{_BASE_QUERY} {_GENERIC_SUFFIX}",
+                *(f"{_BASE_QUERY} {label}" for label in labels),
+            ):
+                rows.append(
+                    await _measure(
+                        provider,
+                        scope=f"place_type/{place_type}",
+                        center_name=label_center_name,
+                        query=query,
+                        candidates=candidates,
                     )
                 )
     return rows
 
 
 def _print(rows: Sequence[EnrichmentRow]) -> None:
-    header = f"{'중심':<6} {'질의':<14} {'후보':>4} {'매칭':>4} {'컷통과':>5} {'평균유사':>8}"
+    header = (
+        f"{'구분':<24} {'중심':<6} {'질의':<16} {'후보':>4} {'매칭':>4} "
+        f"{'컷통과':>5} {'평균유사':>8}"
+    )
     print(header)
     print("-" * len(header))
     for r in rows:
         print(
-            f"{r.center:<6} {r.query:<14} {r.candidate_count:>4} {r.matched:>4} "
-            f"{r.passed_cut:>5} {r.avg_similarity:>8.4f}"
+            f"{r.scope:<24} {r.center:<6} {r.query:<16} {r.candidate_count:>4} "
+            f"{r.matched:>4} {r.passed_cut:>5} {r.avg_similarity:>8.4f}"
         )
 
 
@@ -166,11 +250,20 @@ def main() -> None:
     with RESULTS_CSV.open("w", newline="", encoding="utf-8-sig") as fp:
         writer = csv.writer(fp)
         writer.writerow(
-            ["center", "query", "candidate_count", "matched", "passed_cut", "avg_similarity"]
+            [
+                "scope",
+                "center",
+                "query",
+                "candidate_count",
+                "matched",
+                "passed_cut",
+                "avg_similarity",
+            ]
         )
         for r in rows:
             writer.writerow(
                 [
+                    r.scope,
                     r.center,
                     r.query,
                     r.candidate_count,

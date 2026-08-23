@@ -22,6 +22,7 @@ from app.domain.travel_route import TravelRoute
 from app.providers.place_evidence import PlaceEvidenceProvider
 from app.schemas import (
     ConcentrationIntent,
+    PlaceType,
     RecommendationResponse,
     UserConditions,
 )
@@ -72,25 +73,69 @@ def _measured_routes_for(
 
 
 # 단어 하나짜리 질의("조용한")는 문장형 리뷰 텍스트와 임베딩이 잘 안 맞는다.
-# place_tag를 모르는 요청의 폴백 접미어 — 아예 안 붙이는 것보다는 낫다
-# (실측: "조용한" 2/35곳 컷 통과 → "조용한 곳" 9/35곳,
-# scripts/measure_taste_query_enrichment.py 결과).
+# place_tag도 place_type도 모르는 요청의 마지막 폴백 — 아예 안 붙이는 것보다는
+# 낫다(실측: 경복궁 카페 30곳에서 "조용한" 1곳 컷 통과 → "조용한 곳" 6곳).
 _GENERIC_TASTE_SUFFIX = "곳"
+
+# place_tag가 비었을 때 쓸 place_type의 한국어 라벨.
+#
+# "식당"/"레스토랑"처럼 넓은 유형을 말한 발화는 place_tags가 비고 place_types만
+# 채워진다(태그는 한식·카페 같은 세분류만 있다). 그때 일반 접미어로 떨어지면
+# 개선 효과를 거의 못 받아서, 유형명을 대신 붙인다.
+#
+# **라벨은 후보를 여러 개 실측해서 골랐다**(2026-08-23, 경복궁 반경 3km,
+# 질의 "조용한", 컷 0.43 통과 수 / 매칭 수. 원자료는
+# test_results/taste_query_enrichment.csv):
+#
+#   attraction         곳 9/95   → 관광지 28/95  (명소 27, 볼거리 19)
+#   cultural_facility  곳 7/74   → 문화시설 14/74 (전시 17, 박물관 21)
+#   shopping           곳 4/310  → 상점 14/310  (쇼핑 6, 쇼핑몰 6)
+#   restaurant         곳 11/154 → 맛집 63/154  (음식점 29, 식당 21)
+#
+# **통과 수가 제일 큰 라벨을 그냥 고르지는 않았다.** cultural_facility는
+# "박물관"(21건)이 수치상 제일 높은데도 "문화시설"(14건)을 택했다 — 인용문을
+# 열어보니 "박물관"은 조용함이 아니라 박물관다움("알찬 박물관!", "퀄리티가
+# 괜찮은 박물관")을 끌어왔다. 문화시설의 **일부 하위종**이라 도서관·갤러리
+# 후보를 박물관 쪽으로 잘못 당긴다. 반면 restaurant의 "맛집"은 음식점 전반에
+# 두루 쓰이는 리뷰 단어라 같은 왜곡이 없었다 — 인용문이 "조용하고 디저트도
+# 맛있는", "한적한 공간", "고요한 안식처"처럼 조용함을 그대로 짚었다.
+#
+# festival·leisure는 **일부러 뺐다.** 효과가 없거나 오히려 나빠서다
+# (축제 곳 1/19 → 축제 0/19 · 행사 0/19, 레저는 후보 6곳 전부 어느 라벨로도 0).
+# 여기 없는 유형은 일반 접미어로 떨어진다.
+_PLACE_TYPE_TASTE_LABELS: dict[PlaceType, str] = {
+    PlaceType.ATTRACTION: "관광지",
+    PlaceType.CULTURAL_FACILITY: "문화시설",
+    PlaceType.SHOPPING: "상점",
+    PlaceType.RESTAURANT: "맛집",
+}
 
 
 def _enrich_taste_query(conditions: UserConditions) -> str:
-    """검색 질의에 place_tag를 붙여 문장형 리뷰 텍스트와 임베딩이 더 잘
+    """검색 질의에 장소 유형을 붙여 문장형 리뷰 텍스트와 임베딩이 더 잘
     맞게 만든다.
 
-    실측(2026-08-21, 경복궁 반경 3km 카페 35곳, `search_place_evidence`
-    p_min_similarity=0.0): "조용한"은 컷(0.43) 통과 2/35곳(평균 0.31)뿐인데
-    "조용한 카페"로 place_tag를 붙이면 30/35곳(평균 0.48)으로 뛴다. 컷을
-    낮추는 대신 이 방법을 쓰는 이유는 place_tag가 하드 필터 단계에서 이미
+    실측(2026-08-23, 경복궁 반경 3km 카페 30곳, `search_place_evidence`
+    p_min_similarity=0.0): "조용한"은 컷(0.43) 통과 1/30곳(평균 0.31)뿐인데
+    "조용한 카페"로 place_tag를 붙이면 25/30곳(평균 0.48)으로 뛴다. 종로 4개
+    지점 전부에서 같은 폭으로 재현된다(0~1곳 → 19~25곳). 컷을
+    낮추는 대신 이 방법을 쓰는 이유는 장소 유형이 하드 필터 단계에서 이미
     확정된 값이라 새 정보를 만드는 게 아니고, 컷을 낮출 때처럼 관련 없는
     약한 매치를 끌어들이는 부작용도 없기 때문이다.
+
+    붙일 말은 좁은 것부터 고른다 — place_tag(카페·박물관 등 세분류)가 있으면
+    그걸 쓰고, 없으면 place_type의 라벨(`_PLACE_TYPE_TASTE_LABELS`), 그것도
+    없으면 일반 접미어다.
     """
     if conditions.place_tags:
         return f"{conditions.taste_query} {' '.join(conditions.place_tags)}"
+    type_labels = [
+        label
+        for place_type in conditions.place_types
+        if (label := _PLACE_TYPE_TASTE_LABELS.get(place_type)) is not None
+    ]
+    if type_labels:
+        return f"{conditions.taste_query} {' '.join(type_labels)}"
     return f"{conditions.taste_query} {_GENERIC_TASTE_SUFFIX}"
 
 

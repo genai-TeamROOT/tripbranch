@@ -8,7 +8,7 @@ import pytest
 
 from app.domain.models import PlaceEvidenceMatch
 from app.providers.contracts import ProviderSource, ProviderStatus, provider_result
-from app.schemas import PlaceTag, UserConditions
+from app.schemas import PlaceTag, PlaceType, UserConditions
 from app.services.runtime.real_recommendation_provider import (
     RealRecommendationProvider,
     _enrich_taste_query,
@@ -70,8 +70,8 @@ async def test_search_is_scoped_to_hard_filter_survivors() -> None:
 
 
 def test_enrich_taste_query_appends_known_place_tag() -> None:
-    """place_tag를 알면 그걸 붙인다 — 실측(2026-08-21, 경복궁 반경 3km 카페
-    35곳): "조용한" 컷 통과 2/35곳(평균 0.31) → "조용한 카페" 30/35곳(평균
+    """place_tag를 알면 그걸 붙인다 — 실측(2026-08-23, 경복궁 반경 3km 카페
+    30곳): "조용한" 컷 통과 1/30곳(평균 0.31) → "조용한 카페" 25/30곳(평균
     0.48). scripts/measure_taste_query_enrichment.py, 종로 4개 지점에서 재현.
     """
     conditions = UserConditions(taste_query="조용한", place_tags=[PlaceTag.CAFE])
@@ -87,10 +87,48 @@ def test_enrich_taste_query_appends_every_known_tag() -> None:
     assert _enrich_taste_query(conditions) == "조용한 카페 공원"
 
 
+def test_enrich_taste_query_uses_place_type_when_tag_is_missing() -> None:
+    """"식당"/"레스토랑"처럼 넓은 유형을 말하면 place_tags가 비고 place_types만
+    채워진다(태그는 한식·카페 같은 세분류뿐). 그때 일반 접미어로 떨어지면
+    개선 효과를 거의 못 받는다 — 실측(경복궁 반경 3km 음식점 156곳, 질의
+    "조용한"): "조용한 곳" 11/154곳 → "조용한 맛집" 63/154곳.
+    """
+    conditions = UserConditions(
+        taste_query="조용한", place_types=[PlaceType.RESTAURANT]
+    )
+
+    assert _enrich_taste_query(conditions) == "조용한 맛집"
+
+
+def test_enrich_taste_query_prefers_the_narrower_place_tag() -> None:
+    """태그와 유형이 함께 오면 좁은 쪽(태그)을 쓴다 — "카페"가 "맛집"보다
+    후보를 정확히 가리킨다.
+    """
+    conditions = UserConditions(
+        taste_query="조용한",
+        place_tags=[PlaceTag.CAFE],
+        place_types=[PlaceType.RESTAURANT],
+    )
+
+    assert _enrich_taste_query(conditions) == "조용한 카페"
+
+
+def test_enrich_taste_query_skips_place_types_that_did_not_help() -> None:
+    """festival·leisure는 라벨을 붙여도 효과가 없거나 나빠서 일부러 뺐다
+    (실측: 축제 "조용한 곳" 1/19곳 → "조용한 축제" 0/19곳 · "조용한 행사"
+    0/19곳). 표에 없는 유형은 일반 접미어로 떨어져야 한다.
+    """
+    conditions = UserConditions(
+        taste_query="조용한", place_types=[PlaceType.FESTIVAL]
+    )
+
+    assert _enrich_taste_query(conditions) == "조용한 곳"
+
+
 def test_enrich_taste_query_falls_back_to_generic_suffix() -> None:
-    """place_tag를 모르는 발화("조용한 곳 추천해줘")도 접미어를 붙인다 —
-    실측: "조용한" 2/35곳 → "조용한 곳" 9/35곳. 특정 태그만큼은 아니지만
-    안 붙이는 것보다 낫다.
+    """place_tag도 place_type도 없는 발화("조용한 곳 추천해줘")도 접미어를
+    붙인다 — 실측(경복궁 카페 30곳): "조용한" 1곳 → "조용한 곳" 6곳 →
+    "조용한 카페" 25곳. 특정 태그만큼은 아니지만 안 붙이는 것보다 낫다.
     """
     conditions = UserConditions(taste_query="조용한")
 
