@@ -16,6 +16,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from datetime import timedelta
 from typing import TypeVar
 
@@ -1745,6 +1746,115 @@ async def run_agent_flow(
             llm_execution=get_llm_execution_metadata(),
         )
 
+    tool_outcome = await _fetch_tool_context(
+        request,
+        llm_output,
+        state_response,
+        valid_gps=valid_gps,
+        effective_ignore_operating_hours=effective_ignore_operating_hours,
+        llm=llm,
+        tool_provider=tool_provider,
+        travel_route_tool=travel_route_tool,
+        store=store,
+        stream_event_sink=stream_event_sink,
+    )
+    if tool_outcome.terminal is not None:
+        return tool_outcome.terminal
+    assert tool_outcome.tool_context is not None
+    assert tool_outcome.agent_conditions is not None
+    tool_context = tool_outcome.tool_context
+    agent_conditions = tool_outcome.agent_conditions
+    context_gps = tool_outcome.context_gps
+    tool_execution = tool_outcome.tool_execution
+    tool_executions = tool_outcome.tool_executions
+
+    is_schedule = llm_output.intent is Intent.SCHEDULE
+
+    recommendations = await _score_recommendations(
+        state_response,
+        tool_context=tool_context,
+        agent_conditions=agent_conditions,
+        context_gps=context_gps,
+        is_schedule=is_schedule,
+        tool_provider=tool_provider,
+        recommendation_provider=recommendation_provider,
+        enrichment_provider=enrichment_provider,
+        travel_route_tool=travel_route_tool,
+        store=store,
+        principal=principal,
+        tool_executions=tool_executions,
+        effective_ignore_operating_hours=effective_ignore_operating_hours,
+        stream_event_sink=stream_event_sink,
+    )
+
+    if is_schedule:
+        return await _run_schedule_branch(
+            llm_output,
+            state_response,
+            recommendations,
+            tool_context=tool_context,
+            agent_conditions=agent_conditions,
+            session_context=session_context,
+            llm=llm,
+            store=store,
+            principal=principal,
+            tool_execution=tool_execution,
+            tool_executions=tool_executions,
+            effective_ignore_operating_hours=effective_ignore_operating_hours,
+            stream_event_sink=stream_event_sink,
+        )
+
+    return await _finalize_recommendation_response(
+        llm_output,
+        state_response,
+        recommendations,
+        llm=llm,
+        store=store,
+        principal=principal,
+        tool_execution=tool_execution,
+        tool_executions=tool_executions,
+        effective_ignore_operating_hours=effective_ignore_operating_hours,
+        stream_recommendation_summary=stream_recommendation_summary,
+        stream_event_sink=stream_event_sink,
+    )
+
+
+@dataclass(frozen=True)
+class _ToolFetchOutcome:
+    """Tool 조회 결과. 여기서 끝날 수도, 다음 단계로 넘어갈 수도 있다.
+
+    ``terminal``이 채워져 있으면 그 응답으로 이번 턴을 끝낸다(C가 되묻기·no_data·
+    unsupported를 돌려준 경우). 비어 있으면 나머지 칸이 다음 단계 입력이 된다.
+    """
+
+    terminal: AgentResponse | None = None
+    tool_context: RecommendationContext | None = None
+    agent_conditions: UserConditions | None = None
+    context_gps: str | None = None
+    tool_execution: ToolExecutionDebug | None = None
+    tool_executions: list[ToolExecutionDebug] = dataclass_field(default_factory=list)
+
+
+async def _fetch_tool_context(
+    request: AgentRequest,
+    llm_output: LLMOutput,
+    state_response: StateApplyResponse,
+    *,
+    valid_gps: str | None,
+    effective_ignore_operating_hours: bool,
+    llm: LLMProvider,
+    tool_provider: ToolProvider,
+    travel_route_tool: TravelRouteToolProvider | None,
+    store: StateStore | None,
+    stream_event_sink: StreamEventSink | None,
+) -> _ToolFetchOutcome:
+    """A → C Tool 조회와 종료 상태 판정(5단계).
+
+    `run_agent_flow()`의 5단계 블록을 그대로 옮긴 것이다 — 라우팅 그래프가 이 단계를
+    노드로 감쌀 수 있게 먼저 함수로 떼어냈다(langgraph-adoption.md §6.1 3단계).
+    **본문은 한 줄도 바꾸지 않았고**, 중간 반환만 `_ToolFetchOutcome`으로 포장했다.
+    """
+
     # 5) A → C: Tool 결과 확보 (Protocol을 통해서만 — C의 구체 클래스는 여기서 모른다).
     #    B가 준 조건(순수 문자열)을 A의 enum 타입으로 바꾼 뒤 C 계약 형태로 변환한다.
     #    conditions.weather(5단계 rain/snow/hot/cold/good)만 넘기고, api_context.api_weather
@@ -1909,7 +2019,7 @@ async def run_agent_flow(
             tool_error_code=tool_response.error.code if tool_response.error else None,
             llm=llm,
         )
-        return AgentResponse(
+        return _ToolFetchOutcome(terminal=AgentResponse(
             llm_output=llm_output,
             state=state_response,
             recommendations=None,
@@ -1917,7 +2027,7 @@ async def run_agent_flow(
             llm_execution=get_llm_execution_metadata(),
             tool_execution=tool_execution,
             tool_executions=tool_executions,
-        )
+        ))
 
     # success/partial은 Recommendation 단계로 진행한다(경고가 있어도 가능한 데이터로
     # 계속 — 계약 문서 §5.4). 위에서 종료 상태를 걸렀으므로 context는 항상 있다.
@@ -1934,7 +2044,7 @@ async def run_agent_flow(
             tool_response.status,
         )
         message = await compose_chat_message(llm_output, tool_status=tool_response.status, llm=llm)
-        return AgentResponse(
+        return _ToolFetchOutcome(terminal=AgentResponse(
             llm_output=llm_output,
             state=state_response,
             recommendations=None,
@@ -1942,9 +2052,41 @@ async def run_agent_flow(
             llm_execution=get_llm_execution_metadata(),
             tool_execution=tool_execution,
             tool_executions=tool_executions,
-        )
+        ))
 
-    is_schedule = llm_output.intent is Intent.SCHEDULE
+    return _ToolFetchOutcome(
+        tool_context=tool_context,
+        agent_conditions=agent_conditions,
+        context_gps=context_gps,
+        tool_execution=tool_execution,
+        tool_executions=tool_executions,
+    )
+
+
+async def _score_recommendations(
+    state_response: StateApplyResponse,
+    *,
+    tool_context: RecommendationContext,
+    agent_conditions: UserConditions,
+    context_gps: str | None,
+    is_schedule: bool,
+    tool_provider: ToolProvider,
+    recommendation_provider: RecommendationProvider,
+    enrichment_provider: EnrichmentProvider,
+    travel_route_tool: TravelRouteToolProvider | None,
+    store: StateStore | None,
+    principal: Principal | None,
+    tool_executions: list[ToolExecutionDebug],
+    effective_ignore_operating_hours: bool,
+    stream_event_sink: StreamEventSink | None,
+) -> RecommendationResponse:
+    """1차 Scoring과 후보 보충·혼잡도 재정렬까지 끝난 추천 결과를 돌려준다(6단계).
+
+    `run_agent_flow()`의 6단계 블록을 그대로 옮긴 것이다 — 라우팅 그래프가 이 단계를
+    노드로 감쌀 수 있게 먼저 함수로 떼어냈다(langgraph-adoption.md §6.1 3단계).
+    **본문은 한 줄도 바꾸지 않았다.** 이 구간에는 중간 반환이 없어 결과 하나만
+    돌려주면 되는, 경계가 가장 깨끗한 단계다.
+    """
 
     # 6) A → D: 1차 Scoring (Protocol을 통해서만 — D의 구체 클래스는 여기서 모른다).
     #    최종 반환은 RECOMMEND/MODIFY가 recommendation_result_limit, SCHEDULE이
@@ -2148,37 +2290,7 @@ async def run_agent_flow(
             store=store,
             principal=principal,
         )
-
-    if is_schedule:
-        return await _run_schedule_branch(
-            llm_output,
-            state_response,
-            recommendations,
-            tool_context=tool_context,
-            agent_conditions=agent_conditions,
-            session_context=session_context,
-            llm=llm,
-            store=store,
-            principal=principal,
-            tool_execution=tool_execution,
-            tool_executions=tool_executions,
-            effective_ignore_operating_hours=effective_ignore_operating_hours,
-            stream_event_sink=stream_event_sink,
-        )
-
-    return await _finalize_recommendation_response(
-        llm_output,
-        state_response,
-        recommendations,
-        llm=llm,
-        store=store,
-        principal=principal,
-        tool_execution=tool_execution,
-        tool_executions=tool_executions,
-        effective_ignore_operating_hours=effective_ignore_operating_hours,
-        stream_recommendation_summary=stream_recommendation_summary,
-        stream_event_sink=stream_event_sink,
-    )
+    return recommendations
 
 
 async def _run_schedule_branch(
