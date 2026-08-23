@@ -22,6 +22,7 @@ from app.domain.travel_route import TravelRoute
 from app.providers.place_evidence import PlaceEvidenceProvider
 from app.schemas import (
     ConcentrationIntent,
+    PlaceTag,
     PlaceType,
     RecommendationResponse,
     UserConditions,
@@ -74,7 +75,7 @@ def _measured_routes_for(
 
 # 단어 하나짜리 질의("조용한")는 문장형 리뷰 텍스트와 임베딩이 잘 안 맞는다.
 # place_tag도 place_type도 모르는 요청의 마지막 폴백 — 아예 안 붙이는 것보다는
-# 낫다(실측: 경복궁 카페 30곳에서 "조용한" 1곳 컷 통과 → "조용한 곳" 6곳).
+# 낫다(실측: 경복궁 카페 46곳에서 "조용한" 2곳 컷 통과 → "조용한 곳" 10곳).
 _GENERIC_TASTE_SUFFIX = "곳"
 
 # place_tag가 비었을 때 쓸 place_type의 한국어 라벨.
@@ -87,13 +88,13 @@ _GENERIC_TASTE_SUFFIX = "곳"
 # 질의 "조용한", 컷 0.43 통과 수 / 매칭 수. 원자료는
 # test_results/taste_query_enrichment.csv):
 #
-#   attraction         곳 9/95   → 관광지 28/95  (명소 27, 볼거리 19)
-#   cultural_facility  곳 7/74   → 문화시설 14/74 (전시 17, 박물관 21)
-#   shopping           곳 4/310  → 상점 14/310  (쇼핑 6, 쇼핑몰 6)
-#   restaurant         곳 11/154 → 맛집 63/154  (음식점 29, 식당 21)
+#   attraction         곳 19/168 → 관광지 63/168 (명소 58, 볼거리 49)
+#   cultural_facility  곳 17/171 → 문화시설 36/171 (전시 48, 박물관 62)
+#   shopping           곳  7/412 → 상점 26/414  (쇼핑 10, 쇼핑몰 8)
+#   restaurant         곳 17/262 → 맛집 118/262 (음식점 57, 식당 46)
 #
 # **통과 수가 제일 큰 라벨을 그냥 고르지는 않았다.** cultural_facility는
-# "박물관"(21건)이 수치상 제일 높은데도 "문화시설"(14건)을 택했다 — 인용문을
+# "박물관"(62건)이 수치상 제일 높은데도 "문화시설"(36건)을 택했다 — 인용문을
 # 열어보니 "박물관"은 조용함이 아니라 박물관다움("알찬 박물관!", "퀄리티가
 # 괜찮은 박물관")을 끌어왔다. 문화시설의 **일부 하위종**이라 도서관·갤러리
 # 후보를 박물관 쪽으로 잘못 당긴다. 반면 restaurant의 "맛집"은 음식점 전반에
@@ -101,7 +102,7 @@ _GENERIC_TASTE_SUFFIX = "곳"
 # 맛있는", "한적한 공간", "고요한 안식처"처럼 조용함을 그대로 짚었다.
 #
 # festival·leisure는 **일부러 뺐다.** 효과가 없거나 오히려 나빠서다
-# (축제 곳 1/19 → 축제 0/19 · 행사 0/19, 레저는 후보 6곳 전부 어느 라벨로도 0).
+# (축제 곳 1/32 → 축제 0/32 · 행사 0/32, 레저는 후보 8곳 전부 어느 라벨로도 0).
 # 여기 없는 유형은 일반 접미어로 떨어진다.
 _PLACE_TYPE_TASTE_LABELS: dict[PlaceType, str] = {
     PlaceType.ATTRACTION: "관광지",
@@ -110,25 +111,65 @@ _PLACE_TYPE_TASTE_LABELS: dict[PlaceType, str] = {
     PlaceType.RESTAURANT: "맛집",
 }
 
+# 질의에 붙이면 **오히려 손해**인 place_tag. 위 place_type 표에서 festival을
+# 뺀 것과 대칭이다 — 태그 경로에는 그 장치가 없어서 "축제"가 그대로 붙고 있었다.
+#
+# **실측(2026-08-24, 활성 2,220곳 종로·중구·용산, 취향 축 6종.**
+# scripts/measure_taste_tag_enrichment.py, 원자료
+# test_results/taste_tag_enrichment.csv). 각 축에서 "<취향> 곳" 대비
+# "<취향> 축제"의 컷(0.43) 통과 수:
+#
+#   조용한 1→0 · 감성적인 18→11 · 빈티지하고 레트로한 분위기 10→6
+#   분위기 좋은 20→12 · 데이트하기 좋은 19→13 · 혼자 가기 좋은 4→1
+#
+# **6축 전부 감소한 태그는 21개 중 축제뿐이다.** 인용문을 보면 이유가 보인다 —
+# 관련 근거가 실재하는데("요란한 불꽃놀이나 큰 사운드는 없지만... 창경궁 특유의
+# 조용한" 0.3765, "사람이 치이지 않고... 고궁의 고즈넉함" 0.3441) "축제"라는
+# 단어가 유사도를 끌어내려 전부 컷 아래로 밀어낸다.
+#
+# **"공연장"도 넣으려다 실측으로 철회했다.** "조용한" 한 축의 인용문만 보고
+# (좌석·동선 후기가 통과) 왜곡이라 판단했는데, 6축으로 재니 0/6 손해였다
+# (조용한 1→17, 혼자 가기 좋은 1→26, 데이트하기 좋은 16→37). 한 축의 인용문은
+# 태그를 빼는 근거로 부족하다. "양식"은 2/6(감성적인 15→5, 빈티지 6→4)이라
+# 일관된 손해가 아니어서 제외하지 않았다.
+#
+# 취향 축은 전부 실 LLM(gemini-3.5-flash-lite)이 실제로 뽑은 taste_query
+# 문자열이다. "저렴한"은 budget 필드로 가서 taste_query가 되지 않으므로 축에서
+# 뺐다 — 시스템이 만들지 않는 질의로 재면 안 된다.
+_TASTE_QUERY_EXCLUDED_TAGS: frozenset[PlaceTag] = frozenset({PlaceTag.FESTIVAL})
+
 
 def _enrich_taste_query(conditions: UserConditions) -> str:
     """검색 질의에 장소 유형을 붙여 문장형 리뷰 텍스트와 임베딩이 더 잘
     맞게 만든다.
 
-    실측(2026-08-23, 경복궁 반경 3km 카페 30곳, `search_place_evidence`
-    p_min_similarity=0.0): "조용한"은 컷(0.43) 통과 1/30곳(평균 0.31)뿐인데
-    "조용한 카페"로 place_tag를 붙이면 25/30곳(평균 0.48)으로 뛴다. 종로 4개
-    지점 전부에서 같은 폭으로 재현된다(0~1곳 → 19~25곳). 컷을
-    낮추는 대신 이 방법을 쓰는 이유는 장소 유형이 하드 필터 단계에서 이미
-    확정된 값이라 새 정보를 만드는 게 아니고, 컷을 낮출 때처럼 관련 없는
-    약한 매치를 끌어들이는 부작용도 없기 때문이다.
+    실측(2026-08-23, 경복궁 반경 3km 카페 46곳 중 근거가 있는 45곳,
+    `search_place_evidence` p_min_similarity=0.0): "조용한"은 컷(0.43) 통과
+    2/45곳(평균 0.31)뿐인데 "조용한 카페"로 place_tag를 붙이면 38/45곳(평균
+    0.48)으로 뛴다. 종로 4개 지점 전부에서 같은 폭으로 재현된다
+    (1~2곳 → 24~38곳). 컷을 낮추는 대신 이 방법을 쓰는 이유는 장소 유형이
+    하드 필터 단계에서 이미 확정된 값이라 새 정보를 만드는 게 아니고, 컷을
+    낮출 때처럼 관련 없는 약한 매치를 끌어들이는 부작용도 없기 때문이다.
 
     붙일 말은 좁은 것부터 고른다 — place_tag(카페·박물관 등 세분류)가 있으면
     그걸 쓰고, 없으면 place_type의 라벨(`_PLACE_TYPE_TASTE_LABELS`), 그것도
-    없으면 일반 접미어다.
+    없으면 일반 접미어다. 단 `_TASTE_QUERY_EXCLUDED_TAGS`에 든 태그는 붙여봐야
+    손해라 걸러내고, 남는 태그가 없으면 그대로 다음 단계로 내려간다 — 태그를
+    걸러낸 것이 하드 필터에는 영향을 주지 않는다(후보는 이미 확정돼 있다).
+
+    **발화 전체를 그대로 넣는 안은 실측으로 기각했다.** taste는 순위 축이라
+    "얼마나 통과하나"가 아니라 "취향으로 갈라내나"가 본질인데, 발화 전체는
+    후자를 못 한다 — 취향 단어만 뺀 중립 질의와의 순위상관이 0.88~0.97로,
+    "고즈넉한"을 넣든 빼든 같은 곳이 뽑힌다. 블로그 리뷰가 "○○ 근처 ○○
+    추천해요" 형식이라 위치·요청 어투가 그대로 매칭돼 취향 형용사가 묻힌다.
+    자세한 수치와 다른 대안(유형 기준선 차감 등)은 package_D
+    "[기록] 취향 근거 RAG 검색과 Scoring 반영.md" 9절에 있다.
     """
-    if conditions.place_tags:
-        return f"{conditions.taste_query} {' '.join(conditions.place_tags)}"
+    usable_tags = [
+        tag for tag in conditions.place_tags if tag not in _TASTE_QUERY_EXCLUDED_TAGS
+    ]
+    if usable_tags:
+        return f"{conditions.taste_query} {' '.join(usable_tags)}"
     type_labels = [
         label
         for place_type in conditions.place_types
