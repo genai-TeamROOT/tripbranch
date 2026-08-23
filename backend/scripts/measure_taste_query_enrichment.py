@@ -29,7 +29,7 @@ import asyncio
 import csv
 import math
 import statistics
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,6 +49,10 @@ _CENTERS: dict[str, tuple[float, float]] = {
     "부암동": (37.5924, 126.9634),
 }
 _RADIUS_KM = 3.0
+# RPC 호출당 후보 상한(`supabase_places._MAX_EVIDENCE_CANDIDATES`)과 같은 값.
+# 실서비스는 TourAPI 응답 수가 이보다 작아 걸리지 않지만, 측정에서 반경만으로
+# 자르면 쇼핑처럼 밀집한 분류가 상한을 넘어 예외가 난다 — 가까운 순으로 자른다.
+_MAX_CANDIDATES = 500
 _CAFE_SMALL_CODE = "FD050100"
 _BASE_QUERY = "조용한"
 _CAFE_TAG = "카페"
@@ -92,30 +96,62 @@ def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     return radius * 2 * math.asin(math.sqrt(a))
 
 
+_PAGE_SIZE = 1000
+
+
 async def _fetch_places(client: httpx.AsyncClient) -> list[dict[str, object]]:
-    response = await client.get(
-        "/rest/v1/places",
-        params={
-            "select": "content_id,latitude,longitude,lcls_systm3,content_type_id",
-            "is_active": "eq.true",
-            "limit": "1000",
-        },
-    )
-    response.raise_for_status()
+    """활성 장소를 **전부** 읽는다.
+
+    페이지네이션이 필수다 — PostgREST가 한 번에 1000행까지만 주는데 활성 장소는
+    이미 그 수를 넘었다(2026-08-23 기준 2,220곳, 종로·중구·용산). 처음엔 limit만
+    걸고 페이징을 안 해서 앞의 1000곳만 재고 있었다. 같은 표본끼리 비교라
+    개선 폭 자체는 맞았지만 "반경 3km 카페 N곳" 같은 절대 수치가 틀렸다.
+    """
     places: list[dict[str, object]] = []
-    for row in response.json():
-        content_id, lat, lng = row.get("content_id"), row.get("latitude"), row.get("longitude")
-        if content_id and lat is not None and lng is not None:
-            places.append(
-                {
-                    "content_id": str(content_id),
-                    "latitude": float(lat),
-                    "longitude": float(lng),
-                    "lcls_systm3": row.get("lcls_systm3"),
-                    "content_type_id": str(row.get("content_type_id") or ""),
-                }
-            )
-    return places
+    offset = 0
+    while True:
+        response = await client.get(
+            "/rest/v1/places",
+            params={
+                "select": "content_id,latitude,longitude,lcls_systm3,content_type_id",
+                "is_active": "eq.true",
+                "limit": str(_PAGE_SIZE),
+                "offset": str(offset),
+            },
+        )
+        response.raise_for_status()
+        batch = response.json()
+        for row in batch:
+            content_id, lat, lng = row.get("content_id"), row.get("latitude"), row.get("longitude")
+            if content_id and lat is not None and lng is not None:
+                places.append(
+                    {
+                        "content_id": str(content_id),
+                        "latitude": float(lat),
+                        "longitude": float(lng),
+                        "lcls_systm3": row.get("lcls_systm3"),
+                        "content_type_id": str(row.get("content_type_id") or ""),
+                    }
+                )
+        if len(batch) < _PAGE_SIZE:
+            return places
+        offset += _PAGE_SIZE
+
+
+def _nearest_within(
+    places: Sequence[dict[str, object]],
+    center: tuple[float, float],
+    keep: Callable[[dict[str, object]], bool],
+) -> list[str]:
+    """반경 안에서 `keep`을 만족하는 후보를 가까운 순으로 상한까지 돌려준다."""
+    matched = [
+        (_haversine_km(center[0], center[1], p["latitude"], p["longitude"]), p)
+        for p in places
+        if keep(p)
+    ]
+    matched = [(d, p) for d, p in matched if d <= _RADIUS_KM]
+    matched.sort(key=lambda entry: entry[0])
+    return [str(p["content_id"]) for _, p in matched[:_MAX_CANDIDATES]]
 
 
 async def _measure(
@@ -173,13 +209,9 @@ async def run(centers: dict[str, tuple[float, float]]) -> list[EnrichmentRow]:
 
         # 1단계: place_tag(카페) — 중심점 4곳에서 재현되는지 본다.
         for center_name, center in centers.items():
-            candidates = [
-                p["content_id"]
-                for p in places
-                if p["lcls_systm3"] == _CAFE_SMALL_CODE
-                and _haversine_km(center[0], center[1], p["latitude"], p["longitude"])
-                <= _RADIUS_KM
-            ]
+            candidates = _nearest_within(
+                places, center, lambda p: p["lcls_systm3"] == _CAFE_SMALL_CODE
+            )
             # 3단 폴백(태그 > 유형 라벨 > 일반 접미어)을 한 후보군에서 비교할 수
             # 있게 "조용한 곳"도 같이 잰다.
             for query in (
@@ -201,15 +233,11 @@ async def run(centers: dict[str, tuple[float, float]]) -> list[EnrichmentRow]:
         label_center_name = next(iter(centers))
         label_center = centers[label_center_name]
         for content_type_id, (place_type, labels) in _PLACE_TYPE_LABEL_CANDIDATES.items():
-            candidates = [
-                p["content_id"]
-                for p in places
-                if p["content_type_id"] == content_type_id
-                and _haversine_km(
-                    label_center[0], label_center[1], p["latitude"], p["longitude"]
-                )
-                <= _RADIUS_KM
-            ]
+            candidates = _nearest_within(
+                places,
+                label_center,
+                lambda p, ctid=content_type_id: p["content_type_id"] == ctid,
+            )
             if not candidates:
                 continue
             for query in (
