@@ -142,34 +142,22 @@ def _enrich_taste_query(conditions: UserConditions) -> str:
 def _log_taste_matches(
     query: str, candidate_count: int, matches: dict[str, PlaceEvidenceMatch]
 ) -> None:
-    """취향 검색이 실제로 어떤 문장을 근거로 찾았는지 로그로 남긴다.
+    """취향 검색이 무엇을 찾았는지 한 줄로 남긴다.
 
     "taste가 0으로 나온다"는 관찰만으로는 검색이 아예 실패한 것인지, 컷을 넘는
     근거가 없어서 0점이 된 것인지 구분이 안 된다 — 이 로그로 그 둘을 가른다.
+
+    **인용문은 찍지 않는다.** 같은 내용이 `RecommendationItem.taste_evidence`로
+    응답에 실려 개발자 디버그 화면에 나오므로 로그로 반복하면 중복이다. 여기
+    남기는 건 화면에 안 나오는 값(실제로 나간 **보강된 질의**와 후보 수)뿐이다.
     """
-    if not matches:
-        logger.info(
-            "취향 근거 검색: 질의=%r 후보=%d곳 → 매칭 0곳(컷 0.43 이상 근거 없음)",
-            query,
-            candidate_count,
-        )
-        return
     logger.info(
-        "취향 근거 검색: 질의=%r 후보=%d곳 → 매칭 %d곳",
+        "취향 근거 검색: 질의=%r 후보=%d곳 → 매칭 %d곳%s",
         query,
         candidate_count,
         len(matches),
+        "" if matches else " (컷 0.43 이상 근거 없음)",
     )
-    top_matches = sorted(matches.values(), key=lambda m: m.avg_similarity, reverse=True)
-    for match in top_matches[:5]:
-        snippet_text = match.snippets[0].source_text if match.snippets else ""
-        excerpt = snippet_text.strip().replace("\n", " ")[:100]
-        logger.info(
-            "  [%s] avg_similarity=%.4f 인용=\"%s\"",
-            match.place_title,
-            match.avg_similarity,
-            excerpt,
-        )
 
 
 class RealRecommendationProvider:
