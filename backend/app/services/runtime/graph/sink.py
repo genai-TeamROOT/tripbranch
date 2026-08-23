@@ -21,6 +21,8 @@ from app.services.runtime.stream_events import StreamEventSink
 # config["configurable"]에 실어 보내는 값들의 키.
 SINK_CONFIG_KEY = "stream_event_sink"
 LLM_CONFIG_KEY = "llm_provider"
+# 추천 파이프라인 노드가 함께 받는 의존성 묶음(graph/pipeline_state.py 참고).
+DEPS_CONFIG_KEY = "pipeline_deps"
 
 
 def sink_from_config(config: RunnableConfig | None) -> StreamEventSink | None:
@@ -57,4 +59,23 @@ def llm_from_config(config: RunnableConfig | None) -> Any:
     return llm
 
 
-__all__ = ["LLM_CONFIG_KEY", "SINK_CONFIG_KEY", "llm_from_config", "sink_from_config"]
+def deps_from_config(config: RunnableConfig | None) -> Any:
+    """추천 파이프라인 노드가 쓰는 의존성 묶음(PipelineDeps)을 꺼낸다."""
+
+    if not config:
+        raise ValueError("그래프 config에 파이프라인 의존성이 없습니다.")
+    configurable: dict[str, Any] = config.get("configurable") or {}
+    deps = configurable.get(DEPS_CONFIG_KEY)
+    if deps is None:
+        raise ValueError("그래프 config에 파이프라인 의존성이 없습니다.")
+    return deps
+
+
+__all__ = [
+    "DEPS_CONFIG_KEY",
+    "LLM_CONFIG_KEY",
+    "SINK_CONFIG_KEY",
+    "deps_from_config",
+    "llm_from_config",
+    "sink_from_config",
+]

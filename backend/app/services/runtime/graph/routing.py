@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from app.schemas import Intent
+from app.services.runtime.graph.pipeline_state import RecommendPipelineState
 from app.services.runtime.graph.state import EarlyReturnState
 
 # 조건부 엣지 매핑 키. add_conditional_edges의 변환표와 짝을 이룬다.
@@ -26,4 +27,42 @@ def route_early_return(state: EarlyReturnState) -> str:
     return ROUTE_STATIC
 
 
-__all__ = ["ROUTE_GENERAL", "ROUTE_STATIC", "route_early_return"]
+__all__ = [
+    "ROUTE_DONE",
+    "ROUTE_FINALIZE",
+    "ROUTE_GENERAL",
+    "ROUTE_SCHEDULE",
+    "ROUTE_SCORING",
+    "ROUTE_STATIC",
+    "route_after_scoring",
+    "route_after_tool_fetch",
+    "route_early_return",
+]
+
+
+# ── 추천 파이프라인 조건부 엣지 ────────────────────────────────────────
+
+ROUTE_DONE = "done"
+ROUTE_SCORING = "scoring"
+ROUTE_SCHEDULE = "schedule"
+ROUTE_FINALIZE = "finalize"
+
+
+def route_after_tool_fetch(state: RecommendPipelineState) -> str:
+    """C가 되묻기·no_data·unsupported로 끝냈으면 여기서 종료한다."""
+
+    if state.get("response") is not None:
+        return ROUTE_DONE
+    return ROUTE_SCORING
+
+
+def route_after_scoring(state: RecommendPipelineState) -> str:
+    """SCHEDULE이면 편성으로, 아니면 추천 마무리로 간다.
+
+    `run_agent_flow()`에 남아 있던 `if is_schedule:` 하나가 여기로 옮겨온 것이다 —
+    조기 반환 이후 구간의 인텐트 분기는 원래 이 하나뿐이었다(§9.8).
+    """
+
+    if state["llm_output"].intent is Intent.SCHEDULE:
+        return ROUTE_SCHEDULE
+    return ROUTE_FINALIZE

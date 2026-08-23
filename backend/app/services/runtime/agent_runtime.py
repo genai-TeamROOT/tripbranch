@@ -77,7 +77,11 @@ from app.services.runtime.compare_transform import (
 )
 from app.services.runtime.context_transform import to_agent_context_request
 from app.services.runtime.enrichment_transform import to_candidate_enrichment_request
-from app.services.runtime.graph import run_early_return_graph
+from app.services.runtime.graph import (
+    PipelineDeps,
+    run_early_return_graph,
+    run_recommend_pipeline_graph,
+)
 from app.services.runtime.info_context_schemas import InfoContextResponse, PlaceInfoResult
 from app.services.runtime.info_context_transform import to_info_context_request
 from app.services.runtime.info_response_transform import to_info_place_card
@@ -1745,6 +1749,37 @@ async def run_agent_flow(
             message=message,
             llm_execution=get_llm_execution_metadata(),
         )
+
+    if settings.use_langgraph_pipeline:
+        # 3단계: Tool 조회부터 응답 조립까지를 라우팅 그래프가 맡는다
+        # (langgraph-adoption.md §6.1). 노드는 아래에서 떼어낸 단계 함수를 호출만
+        # 하므로 동작은 아래 기존 경로와 같다 — 문제가 보이면
+        # USE_LANGGRAPH_PIPELINE=false 하나로 되돌아간다.
+        return await run_recommend_pipeline_graph(
+            {
+                "request": request,
+                "llm_output": llm_output,
+                "state_response": state_response,
+                "valid_gps": valid_gps,
+                "effective_ignore_operating_hours": effective_ignore_operating_hours,
+                "stream_recommendation_summary": stream_recommendation_summary,
+                "session_context": session_context,
+                "tool_executions": [],
+                "response": None,
+            },
+            deps=PipelineDeps(
+                llm=llm,
+                tool_provider=tool_provider,
+                recommendation_provider=recommendation_provider,
+                enrichment_provider=enrichment_provider,
+                travel_route_tool=travel_route_tool,
+                store=store,
+                principal=principal,
+            ),
+            session_id=state_response.session_id,
+            stream_event_sink=stream_event_sink,
+        )
+
 
     tool_outcome = await _fetch_tool_context(
         request,

@@ -15,11 +15,29 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from app.providers.protocols import LLMProvider
-from app.schemas import LLMOutput
+from app.schemas import AgentResponse, LLMOutput
 from app.services.runtime.graph.nodes.general import general_answer_node
+from app.services.runtime.graph.nodes.pipeline import (
+    PipelineDeps,
+    finalize_node,
+    schedule_node,
+    scoring_node,
+    tool_fetch_node,
+)
 from app.services.runtime.graph.nodes.static_answer import static_answer_node
-from app.services.runtime.graph.routing import ROUTE_GENERAL, ROUTE_STATIC, route_early_return
-from app.services.runtime.graph.sink import LLM_CONFIG_KEY, SINK_CONFIG_KEY
+from app.services.runtime.graph.pipeline_state import RecommendPipelineState
+from app.services.runtime.graph.routing import (
+    ROUTE_DONE,
+    ROUTE_FINALIZE,
+    ROUTE_GENERAL,
+    ROUTE_SCHEDULE,
+    ROUTE_SCORING,
+    ROUTE_STATIC,
+    route_after_scoring,
+    route_after_tool_fetch,
+    route_early_return,
+)
+from app.services.runtime.graph.sink import DEPS_CONFIG_KEY, LLM_CONFIG_KEY, SINK_CONFIG_KEY
 from app.services.runtime.graph.state import EarlyReturnState
 from app.services.runtime.stream_events import StreamEventSink
 
@@ -86,4 +104,81 @@ async def run_early_return_graph(
     return result["answer"] or ""
 
 
-__all__ = ["build_early_return_graph", "run_early_return_graph"]
+def build_recommend_pipeline_graph():
+    """추천 파이프라인 그래프를 조립한다(3단계).
+
+    ```
+    START → [tool_fetch] → ◇route_after_tool_fetch
+                              ├─ done    →────────────────┐  (C가 되묻기/no_data로 끝냄)
+                              └─ scoring → [scoring]      │
+                                              ↓            │
+                                     ◇route_after_scoring  │
+                                       ├─ schedule → [schedule] ┤
+                                       └─ finalize → [finalize] ┤
+                                                                ↓
+                                                               END
+    ```
+
+    갈림길이 둘 생겼다 — 조기 반환 그래프(`build_early_return_graph`)와 달리 여기는
+    단계가 순차로 이어지는 파이프라인이라, 조건부 엣지는 "중간에 끝나는가"와
+    "SCHEDULE인가" 두 판정에만 쓴다(§9.8).
+    """
+
+    graph = StateGraph(RecommendPipelineState)
+    graph.add_node("tool_fetch", tool_fetch_node)
+    graph.add_node("scoring", scoring_node)
+    graph.add_node("schedule", schedule_node)
+    graph.add_node("finalize", finalize_node)
+
+    graph.add_edge(START, "tool_fetch")
+    graph.add_conditional_edges(
+        "tool_fetch",
+        route_after_tool_fetch,
+        {ROUTE_DONE: END, ROUTE_SCORING: "scoring"},
+    )
+    graph.add_conditional_edges(
+        "scoring",
+        route_after_scoring,
+        {ROUTE_SCHEDULE: "schedule", ROUTE_FINALIZE: "finalize"},
+    )
+    graph.add_edge("schedule", END)
+    graph.add_edge("finalize", END)
+    return graph.compile(checkpointer=MemorySaver())
+
+
+_RECOMMEND_PIPELINE_GRAPH = build_recommend_pipeline_graph()
+
+
+async def run_recommend_pipeline_graph(
+    state: RecommendPipelineState,
+    *,
+    deps: PipelineDeps,
+    session_id: str,
+    stream_event_sink: StreamEventSink | None = None,
+) -> AgentResponse:
+    """Tool 조회부터 응답 조립까지를 그래프로 돌려 최종 응답을 돌려준다."""
+
+    result = await _RECOMMEND_PIPELINE_GRAPH.ainvoke(
+        state,
+        config={
+            "configurable": {
+                "thread_id": session_id,
+                SINK_CONFIG_KEY: stream_event_sink,
+                LLM_CONFIG_KEY: deps.llm,
+                DEPS_CONFIG_KEY: deps,
+            }
+        },
+    )
+    response = result.get("response")
+    if response is None:  # 그래프가 응답 없이 끝나면 배선이 잘못된 것이다
+        raise RuntimeError("추천 파이프라인 그래프가 응답을 만들지 못했습니다.")
+    return response
+
+
+__all__ = [
+    "PipelineDeps",
+    "build_early_return_graph",
+    "build_recommend_pipeline_graph",
+    "run_early_return_graph",
+    "run_recommend_pipeline_graph",
+]
