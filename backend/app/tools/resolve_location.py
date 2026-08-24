@@ -300,8 +300,15 @@ class ResolveLocationTool:
                 requested_query, enforce_service_area=enforce_service_area
             )
 
-        # 검색 중심점은 좌표만 필요하다. 저장소 조회는 정체성 확정용이라 건너뛴다.
-        if query.purpose is LocationPurpose.PLACE_IDENTITY:
+        # 검색 중심점도 저장소를 먼저 본다. 예전에는 "종로구 코퍼스에 없는 이름은
+        # 그 조회가 반드시 실패하므로 왕복만 버린다"는 이유로 건너뛰었는데, 지원
+        # 지역이 네 구로 늘면서 그 전제가 깨졌다 — "명동성당 근처"처럼 저장소에
+        # 있는 장소를 검색 중심으로 쓰는 요청이 실제로 들어온다. 지역 검색은 그런
+        # 이름을 못 좁혀 되묻기로 끝난다("르빵 명동성당점" 같은 주변 상호가 섞인다).
+        #
+        # 실시간 도시데이터는 그대로 건너뛴다. 그쪽은 종로구 코퍼스 밖의 서울 주요
+        # 지역을 대상으로 해서 저장소 조회가 실패하는 게 정상이다.
+        if query.purpose is not LocationPurpose.REALTIME_CITYDATA:
             stored_result = await self._lookup_stored_place(requested_query)
             if stored_result is not None:
                 return stored_result

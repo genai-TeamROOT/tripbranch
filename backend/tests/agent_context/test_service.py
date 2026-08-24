@@ -475,11 +475,17 @@ async def test_spoken_location_is_resolved_without_gps() -> None:
 
 @pytest.mark.asyncio
 async def test_spoken_location_reuses_search_center_resolution() -> None:
-    """발화 위치와 검색 기준점이 같은 문자열이면 지오코딩을 두 번 하지 않는다."""
+    """발화 위치와 검색 기준점이 같은 문자열이면 지오코딩을 두 번 하지 않는다.
+
+    지오코딩까지 내려가는 이름을 쓴다 — "인사동"은 fake 저장소에 없고 fake
+    지오코더는 안다. 저장소에 있는 이름(경복궁 등)은 거기서 해석이 끝나 지오코딩
+    호출이 0건이라, 재사용이 깨져도 숫자가 그대로여서 이 테스트가 아무것도
+    지키지 못한다.
+    """
     geocoder = _CountingGeocodingProvider()
 
     response = await _service(geocoding_provider=geocoder).fetch_context(
-        _request(search_center="경복궁", current_location="경복궁", gps_location=None)
+        _request(search_center="인사동", current_location="인사동", gps_location=None)
     )
 
     assert response.status == "success"
@@ -490,11 +496,14 @@ async def test_spoken_location_reuses_search_center_resolution() -> None:
 
 @pytest.mark.asyncio
 async def test_spoken_location_adds_one_geocoding_call() -> None:
-    """기준점과 다른 발화 위치는 지오코딩 호출을 정확히 1건 늘린다."""
+    """기준점과 다른 발화 위치는 지오코딩 호출을 정확히 1건 늘린다.
+
+    둘 다 fake 저장소에 없는 이름이라 각각 지오코딩까지 내려간다.
+    """
     geocoder = _CountingGeocodingProvider()
 
     await _service(geocoding_provider=geocoder).fetch_context(
-        _request(search_center="경복궁", current_location="인사동", gps_location=None)
+        _request(search_center="광화문", current_location="인사동", gps_location=None)
     )
 
     assert len(geocoder.queries) == 2
@@ -686,9 +695,9 @@ async def test_factory_wires_fake_providers_into_common_context() -> None:
     assert {
         metadata.source for metadata in response.metadata.provider_metadata
     } == {
-        # 검색 중심점은 좌표만 필요하므로 저장소를 거치지 않고 지오코딩으로 간다
-        # (LocationPurpose.SEARCH_CENTER). 저장소 정체성 확정은 INFO 혼잡도 전용이다.
-        "fake_geocoding",
+        # 검색 중심점도 저장소를 먼저 본다. "경복궁"은 fake 저장소에 있으므로
+        # 거기서 해석이 끝나고 지오코딩까지 가지 않는다.
+        "fake_places",
         "fake_weather",
         "fake_place",
         "fake_holiday",
@@ -1330,13 +1339,22 @@ async def test_info_concentration_falls_through_to_later_key() -> None:
 
 
 class _CountingPlaceLocationRepository:
-    """조회 횟수를 세는 저장소. 이름은 무엇을 물어도 맞다고 답한다."""
+    """조회 횟수를 세는 저장소. 아는 이름만 맞다고 답한다.
 
-    def __init__(self) -> None:
+    예전에는 무엇을 물어도 맞다고 답했다 — 검색 중심점이 저장소를 아예 거치지
+    않던 시절에는 호출 0건만 세면 됐기 때문이다. 지금은 검색 중심점도 저장소를
+    보므로, 그대로 두면 어떤 이름을 넣어도 저장소에서 해석이 끝나 그 뒤 단계가
+    한 줄도 실행되지 않는다.
+    """
+
+    def __init__(self, titles: tuple[str, ...] = ()) -> None:
+        self._titles = titles
         self.calls: list[str] = []
 
     async def find_active_places_by_name(self, name: str):
         self.calls.append(name)
+        if name.strip() not in self._titles:
+            return ()
         return (
             StoredPlaceLocation(
                 content_id="128553",
@@ -1390,11 +1408,15 @@ def _search_center_service(
 
 
 @pytest.mark.asyncio
-async def test_recommend_never_touches_place_repository_for_search_center() -> None:
-    """추천의 검색 중심점 해석은 저장소를 거치지 않는다.
+async def test_recommend_asks_repository_once_for_search_center() -> None:
+    """추천의 검색 중심점도 저장소를 보되 한 번만 묻는다.
 
-    저장소가 무엇을 물어도 맞다고 답하는데도 호출이 0이어야 한다 — 사다리가
-    공용이던 시절에는 코퍼스에 없는 이름에 `places`를 4번 뒤졌다("안국역" 실측).
+    예전에는 아예 건너뛰었다 — 사다리를 한 칸씩 던지느라 코퍼스에 없는 이름에
+    `places`를 4번 뒤졌기 때문이다("안국역" 실측, cc3da0ed). 필터를 or= 하나로
+    합쳐 그 비용이 한 번으로 줄면서 전제가 바뀌었고, "명동성당 근처"처럼 저장소에
+    있는 이름을 검색 중심으로 쓰는 요청을 살리려면 봐야 한다.
+
+    코퍼스 밖 이름은 여전히 빈손이므로 지역 검색으로 내려간다.
     """
     repository = _CountingPlaceLocationRepository()
     local_search = _EmptyLocalSearchProvider()
@@ -1403,17 +1425,38 @@ async def test_recommend_never_touches_place_repository_for_search_center() -> N
         _request(search_center="안국역")
     )
 
-    assert repository.calls == []
+    assert repository.calls == ["안국역"]
     assert local_search.calls == ["안국역"]
     assert response.status == "needs_clarification"
+
+
+@pytest.mark.asyncio
+async def test_recommend_resolves_search_center_from_repository() -> None:
+    """저장소에 있는 이름은 거기서 끝난다 — 지역 검색까지 가지 않는다.
+
+    "명동성당 근처"가 되묻기로 새던 경로다. 지역 검색은 정확 일치나 첫 토큰
+    일치만 받는데, 후보가 전부 주변 상호("르빵 명동성당점" 등)라 하나도 고르지
+    못한다.
+    """
+    repository = _CountingPlaceLocationRepository(titles=("명동성당",))
+    local_search = _EmptyLocalSearchProvider()
+
+    response = await _search_center_service(repository, local_search).fetch_context(
+        _request(search_center="명동성당")
+    )
+
+    assert repository.calls == ["명동성당"]
+    assert local_search.calls == []
+    assert response.status == "success"
 
 
 @pytest.mark.asyncio
 async def test_search_center_failure_asks_user_for_a_location() -> None:
     """지역검색·지오코딩이 모두 못 찾으면 저장소로 되돌아가지 않고 되묻는다.
 
-    폴백을 두지 않기로 했으므로(사다리를 가른 의미가 사라진다) 위치를 못 찾았다는
-    사실을 그대로 올려 사용자에게 구체적인 위치를 요청한다.
+    앞에서 이미 한 번 물어 빈손이었으므로 되돌아가도 같은 질의를 두 번 던지는
+    것일 뿐이다. 위치를 못 찾았다는 사실을 그대로 올려 사용자에게 구체적인
+    위치를 요청한다.
     """
     repository = _CountingPlaceLocationRepository()
 
@@ -1424,4 +1467,4 @@ async def test_search_center_failure_asks_user_for_a_location() -> None:
     assert response.status == "needs_clarification"
     assert response.clarification is not None
     assert response.clarification.code == "location_required"
-    assert repository.calls == []
+    assert repository.calls == ["없는장소이름"]
