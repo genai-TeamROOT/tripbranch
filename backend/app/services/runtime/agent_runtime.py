@@ -15,8 +15,8 @@ import asyncio
 import logging
 import math
 import time
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from datetime import timedelta
 from typing import TypeVar
 
@@ -77,6 +77,11 @@ from app.services.runtime.compare_transform import (
 )
 from app.services.runtime.context_transform import to_agent_context_request
 from app.services.runtime.enrichment_transform import to_candidate_enrichment_request
+from app.services.runtime.graph import (
+    PipelineDeps,
+    run_early_return_graph,
+    run_recommend_pipeline_graph,
+)
 from app.services.runtime.info_context_schemas import InfoContextResponse, PlaceInfoResult
 from app.services.runtime.info_context_transform import to_info_context_request
 from app.services.runtime.info_response_transform import to_info_place_card
@@ -96,6 +101,15 @@ from app.services.runtime.response_composer import (
     compose_chat_message,
     compose_compare_message,
     tool_clarification_message,
+)
+from app.services.runtime.stream_events import (
+    SCHEDULING_HEARTBEAT_INTERVAL_SECONDS,
+    SCHEDULING_HEARTBEAT_MESSAGES,
+    StreamEventSink,
+    await_with_heartbeat,
+    begin_streamed_message,
+    emit_progress,
+    emit_stream_event,
 )
 from app.services.runtime.tool_debug import (
     build_candidate_enrichment_execution_debug,
@@ -130,34 +144,17 @@ from app.tools.travel_route import TravelRouteQuery
 
 logger = logging.getLogger(__name__)
 
-StreamEventSink = Callable[[str, dict[str, object]], Awaitable[None]]
+# SSE 발신 헬퍼는 stream_events.py로 옮겼다 — 라우팅 그래프(graph/)도 같은 sink를
+# 써야 하는데, 이 모듈이 그래프를 import하므로 반대 방향은 순환이 되기 때문이다.
+# 기존 호출부를 그대로 두려고 옮긴 이름을 여기서 비공개 별칭으로 받는다.
+_emit_stream_event = emit_stream_event
+_emit_progress = emit_progress
+_begin_streamed_message = begin_streamed_message
+_await_with_heartbeat = await_with_heartbeat
+_SCHEDULING_HEARTBEAT_MESSAGES = SCHEDULING_HEARTBEAT_MESSAGES
+_SCHEDULING_HEARTBEAT_INTERVAL_SECONDS = SCHEDULING_HEARTBEAT_INTERVAL_SECONDS
 
 T = TypeVar("T")
-
-
-async def _emit_stream_event(
-    sink: StreamEventSink | None, event: str, payload: dict[str, object]
-) -> None:
-    """SSE 경로의 관측 이벤트를 전달한다. 단발 /api/chat에서는 아무 일도 하지 않는다."""
-
-    if sink is not None:
-        await sink(event, payload)
-
-
-async def _emit_progress(sink: StreamEventSink | None, stage: str, message: str) -> None:
-    await _emit_stream_event(sink, "progress", {"stage": stage, "message": message})
-
-
-# SCHEDULE 편성(generate_schedule_plan)처럼 단일 LLM 호출 하나가 오래(수십 초) 걸리는
-# 구간에서, 로딩 화면이 이 구간 전체를 아무 갱신 없이 멈춰 보이는 문제를 완화한다
-# (실사용 피드백, 2026-08-13 — "일정 생성이 로딩 마지막에 혼자 너무 오래 머무른다").
-# 진짜 진행 단계를 아는 게 아니라 "아직 살아있다"를 주기적으로 알리는 heartbeat다.
-_SCHEDULING_HEARTBEAT_MESSAGES = (
-    "장소 순서를 계산하고 있어요.",
-    "이동 동선을 정리하고 있어요.",
-    "체류 시간과 도착 시각을 맞추고 있어요.",
-    "조금만 더 기다려주세요, 거의 다 됐어요.",
-)
 
 _INFO_WALKING_TIME_MARKERS = (
     "가는데얼마나걸",
@@ -167,48 +164,6 @@ _INFO_WALKING_TIME_MARKERS = (
     "도보시간",
     "도보이동",
 )
-_SCHEDULING_HEARTBEAT_INTERVAL_SECONDS = 6.0
-
-
-async def _await_with_heartbeat(
-    awaitable: Awaitable[T],
-    *,
-    sink: StreamEventSink | None,
-    stage: str,
-    messages: tuple[str, ...] = _SCHEDULING_HEARTBEAT_MESSAGES,
-    interval_seconds: float = _SCHEDULING_HEARTBEAT_INTERVAL_SECONDS,
-) -> T:
-    """awaitable이 끝날 때까지 progress 이벤트를 주기적으로 흘려보내며 기다린다.
-
-    부수 효과: 프론트([client.ts]의 armInactivityTimer)가 progress 이벤트마다
-    45초 무활동 타이머를 다시 세우므로, 편성이 오래 걸려도(폴백 모델까지
-    타면 60초대) 클라이언트가 먼저 연결을 끊는 일을 줄여준다.
-    """
-    task = asyncio.ensure_future(awaitable)
-    tick = 0
-    try:
-        while True:
-            done, _pending = await asyncio.wait({task}, timeout=interval_seconds)
-            if task in done:
-                return task.result()
-            await _emit_progress(sink, stage, messages[tick % len(messages)])
-            tick += 1
-    finally:
-        if not task.done():
-            task.cancel()
-
-
-async def _begin_streamed_message(
-    sink: StreamEventSink | None, *, intent: Intent, progress_message: str
-) -> None:
-    """LLM 답변이 시작되기 전, 로딩 말풍선을 먼저 연다.
-
-    RECOMMEND/MODIFY도 카드(result)를 첫 텍스트 조각 뒤에 보내므로, GENERAL/INFO와
-    마찬가지로 이 이벤트가 프론트의 움직이는 점 표시를 연다.
-    """
-
-    await _emit_progress(sink, "composing_message", progress_message)
-    await _emit_stream_event(sink, "message_start", {"intent": intent.value})
 
 
 def _llm_clarification_code(llm_output: LLMOutput) -> str | None:
@@ -1758,25 +1713,36 @@ async def run_agent_flow(
             )
         # terminal_message가 있는 경우는 위(3단계 직후)에서 이미 처리하고
         # 반환했으므로 여기서는 다시 안 본다.
-        if stream_recommendation_summary and llm_output.intent is Intent.GENERAL:
-            await _begin_streamed_message(
-                stream_event_sink,
-                intent=Intent.GENERAL,
-                progress_message="답변을 정리하고 있어요.",
-            )
-
-        async def emit_general_message_delta(text: str) -> None:
-            await _emit_stream_event(stream_event_sink, "message_delta", {"text": text})
-
-        message = await compose_chat_message(
-            llm_output,
-            llm=llm,
-            on_message_delta=(
-                emit_general_message_delta
-                if stream_recommendation_summary and llm_output.intent is Intent.GENERAL
-                else None
-            ),
+        is_streaming_general = (
+            stream_recommendation_summary and llm_output.intent is Intent.GENERAL
         )
+        if settings.use_langgraph_early_return:
+            # 2단계: 조기 반환 경로(Tool/Scoring 없이 끝나는 턴) 전체를 라우팅
+            # 그래프가 맡는다(langgraph-adoption.md §6.1). RECOMMEND/MODIFY/
+            # SCHEDULE은 아래로 내려가 기존 경로 그대로다 — 병행 운영이라 문제가
+            # 보이면 USE_LANGGRAPH_EARLY_RETURN=false 하나로 즉시 되돌아간다.
+            message = await run_early_return_graph(
+                llm_output,
+                llm=llm,
+                stream_event_sink=stream_event_sink,
+                stream_general=is_streaming_general,
+            )
+        else:
+            if is_streaming_general:
+                await _begin_streamed_message(
+                    stream_event_sink,
+                    intent=Intent.GENERAL,
+                    progress_message="답변을 정리하고 있어요.",
+                )
+
+            async def emit_general_message_delta(text: str) -> None:
+                await _emit_stream_event(stream_event_sink, "message_delta", {"text": text})
+
+            message = await compose_chat_message(
+                llm_output,
+                llm=llm,
+                on_message_delta=emit_general_message_delta if is_streaming_general else None,
+            )
         return AgentResponse(
             llm_output=llm_output,
             state=state_response,
@@ -1784,6 +1750,145 @@ async def run_agent_flow(
             message=message,
             llm_execution=get_llm_execution_metadata(),
         )
+
+    if settings.use_langgraph_pipeline:
+        # 3단계: Tool 조회부터 응답 조립까지를 라우팅 그래프가 맡는다
+        # (langgraph-adoption.md §6.1). 노드는 아래에서 떼어낸 단계 함수를 호출만
+        # 하므로 동작은 아래 기존 경로와 같다 — 문제가 보이면
+        # USE_LANGGRAPH_PIPELINE=false 하나로 되돌아간다.
+        return await run_recommend_pipeline_graph(
+            {
+                "request": request,
+                "llm_output": llm_output,
+                "state_response": state_response,
+                "valid_gps": valid_gps,
+                "effective_ignore_operating_hours": effective_ignore_operating_hours,
+                "stream_recommendation_summary": stream_recommendation_summary,
+                "session_context": session_context,
+                "tool_executions": [],
+                "response": None,
+            },
+            deps=PipelineDeps(
+                llm=llm,
+                tool_provider=tool_provider,
+                recommendation_provider=recommendation_provider,
+                enrichment_provider=enrichment_provider,
+                travel_route_tool=travel_route_tool,
+                store=store,
+                principal=principal,
+            ),
+            stream_event_sink=stream_event_sink,
+        )
+
+
+    tool_outcome = await _fetch_tool_context(
+        request,
+        llm_output,
+        state_response,
+        valid_gps=valid_gps,
+        effective_ignore_operating_hours=effective_ignore_operating_hours,
+        llm=llm,
+        tool_provider=tool_provider,
+        travel_route_tool=travel_route_tool,
+        store=store,
+        stream_event_sink=stream_event_sink,
+    )
+    if tool_outcome.terminal is not None:
+        return tool_outcome.terminal
+    assert tool_outcome.tool_context is not None
+    assert tool_outcome.agent_conditions is not None
+    tool_context = tool_outcome.tool_context
+    agent_conditions = tool_outcome.agent_conditions
+    context_gps = tool_outcome.context_gps
+    tool_execution = tool_outcome.tool_execution
+    tool_executions = tool_outcome.tool_executions
+
+    is_schedule = llm_output.intent is Intent.SCHEDULE
+
+    recommendations = await _score_recommendations(
+        state_response,
+        tool_context=tool_context,
+        agent_conditions=agent_conditions,
+        context_gps=context_gps,
+        is_schedule=is_schedule,
+        tool_provider=tool_provider,
+        recommendation_provider=recommendation_provider,
+        enrichment_provider=enrichment_provider,
+        travel_route_tool=travel_route_tool,
+        store=store,
+        principal=principal,
+        tool_executions=tool_executions,
+        effective_ignore_operating_hours=effective_ignore_operating_hours,
+        stream_event_sink=stream_event_sink,
+    )
+
+    if is_schedule:
+        return await _run_schedule_branch(
+            llm_output,
+            state_response,
+            recommendations,
+            tool_context=tool_context,
+            agent_conditions=agent_conditions,
+            session_context=session_context,
+            llm=llm,
+            store=store,
+            principal=principal,
+            tool_execution=tool_execution,
+            tool_executions=tool_executions,
+            effective_ignore_operating_hours=effective_ignore_operating_hours,
+            stream_event_sink=stream_event_sink,
+        )
+
+    return await _finalize_recommendation_response(
+        llm_output,
+        state_response,
+        recommendations,
+        llm=llm,
+        store=store,
+        principal=principal,
+        tool_execution=tool_execution,
+        tool_executions=tool_executions,
+        effective_ignore_operating_hours=effective_ignore_operating_hours,
+        stream_recommendation_summary=stream_recommendation_summary,
+        stream_event_sink=stream_event_sink,
+    )
+
+
+@dataclass(frozen=True)
+class _ToolFetchOutcome:
+    """Tool 조회 결과. 여기서 끝날 수도, 다음 단계로 넘어갈 수도 있다.
+
+    ``terminal``이 채워져 있으면 그 응답으로 이번 턴을 끝낸다(C가 되묻기·no_data·
+    unsupported를 돌려준 경우). 비어 있으면 나머지 칸이 다음 단계 입력이 된다.
+    """
+
+    terminal: AgentResponse | None = None
+    tool_context: RecommendationContext | None = None
+    agent_conditions: UserConditions | None = None
+    context_gps: str | None = None
+    tool_execution: ToolExecutionDebug | None = None
+    tool_executions: list[ToolExecutionDebug] = dataclass_field(default_factory=list)
+
+
+async def _fetch_tool_context(
+    request: AgentRequest,
+    llm_output: LLMOutput,
+    state_response: StateApplyResponse,
+    *,
+    valid_gps: str | None,
+    effective_ignore_operating_hours: bool,
+    llm: LLMProvider,
+    tool_provider: ToolProvider,
+    travel_route_tool: TravelRouteToolProvider | None,
+    store: StateStore | None,
+    stream_event_sink: StreamEventSink | None,
+) -> _ToolFetchOutcome:
+    """A → C Tool 조회와 종료 상태 판정(5단계).
+
+    `run_agent_flow()`의 5단계 블록을 그대로 옮긴 것이다 — 라우팅 그래프가 이 단계를
+    노드로 감쌀 수 있게 먼저 함수로 떼어냈다(langgraph-adoption.md §6.1 3단계).
+    **본문은 한 줄도 바꾸지 않았고**, 중간 반환만 `_ToolFetchOutcome`으로 포장했다.
+    """
 
     # 5) A → C: Tool 결과 확보 (Protocol을 통해서만 — C의 구체 클래스는 여기서 모른다).
     #    B가 준 조건(순수 문자열)을 A의 enum 타입으로 바꾼 뒤 C 계약 형태로 변환한다.
@@ -1949,7 +2054,7 @@ async def run_agent_flow(
             tool_error_code=tool_response.error.code if tool_response.error else None,
             llm=llm,
         )
-        return AgentResponse(
+        return _ToolFetchOutcome(terminal=AgentResponse(
             llm_output=llm_output,
             state=state_response,
             recommendations=None,
@@ -1957,7 +2062,7 @@ async def run_agent_flow(
             llm_execution=get_llm_execution_metadata(),
             tool_execution=tool_execution,
             tool_executions=tool_executions,
-        )
+        ))
 
     # success/partial은 Recommendation 단계로 진행한다(경고가 있어도 가능한 데이터로
     # 계속 — 계약 문서 §5.4). 위에서 종료 상태를 걸렀으므로 context는 항상 있다.
@@ -1974,7 +2079,7 @@ async def run_agent_flow(
             tool_response.status,
         )
         message = await compose_chat_message(llm_output, tool_status=tool_response.status, llm=llm)
-        return AgentResponse(
+        return _ToolFetchOutcome(terminal=AgentResponse(
             llm_output=llm_output,
             state=state_response,
             recommendations=None,
@@ -1982,9 +2087,41 @@ async def run_agent_flow(
             llm_execution=get_llm_execution_metadata(),
             tool_execution=tool_execution,
             tool_executions=tool_executions,
-        )
+        ))
 
-    is_schedule = llm_output.intent is Intent.SCHEDULE
+    return _ToolFetchOutcome(
+        tool_context=tool_context,
+        agent_conditions=agent_conditions,
+        context_gps=context_gps,
+        tool_execution=tool_execution,
+        tool_executions=tool_executions,
+    )
+
+
+async def _score_recommendations(
+    state_response: StateApplyResponse,
+    *,
+    tool_context: RecommendationContext,
+    agent_conditions: UserConditions,
+    context_gps: str | None,
+    is_schedule: bool,
+    tool_provider: ToolProvider,
+    recommendation_provider: RecommendationProvider,
+    enrichment_provider: EnrichmentProvider,
+    travel_route_tool: TravelRouteToolProvider | None,
+    store: StateStore | None,
+    principal: Principal | None,
+    tool_executions: list[ToolExecutionDebug],
+    effective_ignore_operating_hours: bool,
+    stream_event_sink: StreamEventSink | None,
+) -> RecommendationResponse:
+    """1차 Scoring과 후보 보충·혼잡도 재정렬까지 끝난 추천 결과를 돌려준다(6단계).
+
+    `run_agent_flow()`의 6단계 블록을 그대로 옮긴 것이다 — 라우팅 그래프가 이 단계를
+    노드로 감쌀 수 있게 먼저 함수로 떼어냈다(langgraph-adoption.md §6.1 3단계).
+    **본문은 한 줄도 바꾸지 않았다.** 이 구간에는 중간 반환이 없어 결과 하나만
+    돌려주면 되는, 경계가 가장 깨끗한 단계다.
+    """
 
     # 6) A → D: 1차 Scoring (Protocol을 통해서만 — D의 구체 클래스는 여기서 모른다).
     #    최종 반환은 RECOMMEND/MODIFY가 recommendation_result_limit, SCHEDULE이
@@ -2188,207 +2325,254 @@ async def run_agent_flow(
             store=store,
             principal=principal,
         )
+    return recommendations
 
-    if is_schedule:
-        # 6-2) A: C의 AgentContextResponse.places(위경도)를 place_id로 매칭해
-        #      pairwise_distances_km 계산 → 일정 편성 모듈 호출(docs/design/
-        #      int-07-schedule.md 4절/6절). 상태 저장소 비접근 — D를 부르는 것과
-        #      동일한 방식.
-        schedule_candidates = [
-            *recommendations.recommendations,
-            *recommendations.unverified_recommendations,
-        ]
-        # 후보가 전부 폐점 때문에 제외됐으면(D가 excluded_all_closed로 표시) 일정을
-        # 못 짠 진짜 원인이 "지역/카테고리 부족"이 아니라 "운영시간"이다 — 그런데도
-        # 아래 schedule_no_candidates로 넘어가면 지역/카테고리를 아무리 바꿔도 같은
-        # 이유로 계속 실패해 무한 되묻기가 된다(실사용 재현, 2026-08-13). RECOMMEND/
-        # MODIFY 경로와 동일하게 "운영 중이 아닌 곳도 볼게요"를 먼저 제안한다.
-        if (
-            not schedule_candidates
-            and recommendations.excluded_all_closed
-            and not effective_ignore_operating_hours
-        ):
-            return await _respond_no_data_closed(
-                llm_output,
-                state_response,
-                store=store,
-                llm=llm,
-                tool_execution=tool_execution,
-                tool_executions=tool_executions,
-            )
-        places = (
-            tool_context.places.data if tool_context.places and tool_context.places.data else []
+
+async def _run_schedule_branch(
+    llm_output: LLMOutput,
+    state_response: StateApplyResponse,
+    recommendations: RecommendationResponse,
+    *,
+    tool_context: RecommendationContext,
+    agent_conditions: UserConditions,
+    session_context: SessionContextResponse,
+    llm: LLMProvider,
+    store: StateStore | None,
+    principal: Principal | None,
+    tool_execution: ToolExecutionDebug | None,
+    tool_executions: list[ToolExecutionDebug],
+    effective_ignore_operating_hours: bool,
+    stream_event_sink: StreamEventSink | None,
+) -> AgentResponse:
+    """SCHEDULE 편성 분기(6-2단계)를 처리한다.
+
+    `run_agent_flow()`의 `if is_schedule:` 블록을 그대로 옮긴 것이다 — 라우팅 그래프가
+    이 단계를 노드로 감쌀 수 있게 먼저 함수로 떼어냈다(langgraph-adoption.md §6.1
+    3단계). **본문은 한 줄도 바꾸지 않았다**(들여쓰기만 한 단계 내어썼다).
+    """
+
+    # 6-2) A: C의 AgentContextResponse.places(위경도)를 place_id로 매칭해
+    #      pairwise_distances_km 계산 → 일정 편성 모듈 호출(docs/design/
+    #      int-07-schedule.md 4절/6절). 상태 저장소 비접근 — D를 부르는 것과
+    #      동일한 방식.
+    schedule_candidates = [
+        *recommendations.recommendations,
+        *recommendations.unverified_recommendations,
+    ]
+    # 후보가 전부 폐점 때문에 제외됐으면(D가 excluded_all_closed로 표시) 일정을
+    # 못 짠 진짜 원인이 "지역/카테고리 부족"이 아니라 "운영시간"이다 — 그런데도
+    # 아래 schedule_no_candidates로 넘어가면 지역/카테고리를 아무리 바꿔도 같은
+    # 이유로 계속 실패해 무한 되묻기가 된다(실사용 재현, 2026-08-13). RECOMMEND/
+    # MODIFY 경로와 동일하게 "운영 중이 아닌 곳도 볼게요"를 먼저 제안한다.
+    if (
+        not schedule_candidates
+        and recommendations.excluded_all_closed
+        and not effective_ignore_operating_hours
+    ):
+        return await _respond_no_data_closed(
+            llm_output,
+            state_response,
+            store=store,
+            llm=llm,
+            tool_execution=tool_execution,
+            tool_executions=tool_executions,
         )
+    places = (
+        tool_context.places.data if tool_context.places and tool_context.places.data else []
+    )
 
-        # 6-2-1) SCHEDULE-09 2단계: REJECT_SPECIFIC으로 재라우팅된 턴이면 통째로
-        #        새로 짜지 않고, target_indices가 가리키는 자리만 새로 채운다.
-        #        session_context는 이번 턴 처리 전에 조회한 값이라 직전 SCHEDULE
-        #        턴의 shown_recommendations(순서·도착시각 등 포함)를 그대로 담고
-        #        있다(3-3절과 동일한 전제). pinned 대상의 place_name은 이번 턴
-        #        C 응답에서 다시 매칭하지 않고 B에 저장된 값을 그대로 쓴다 —
-        #        원래는 재매칭하도록 짰다가, "경복궁"류 지명 검색이 호출마다
-        #        다른 좌표로 resolve돼 이번 턴 주변 후보가 매번 통째로 달라지는
-        #        사례가 실사용 테스트에서 확인됐다(2026-08-11). 그러면 이전
-        #        place_id가 이번 후보에 전혀 안 잡혀 pinned 유지가 매번 실패하고
-        #        REJECT_ALL처럼 조용히 전체 재편성으로 폴백됐다. B가 추천 시점에
-        #        이름도 함께 저장해두면(schema.RecommendedItem.name, SCHEDULE-09
-        #        2단계 예외) 이 재검색에 의존하지 않아 안정적이다.
-        pinned_items: list[ScheduleItem] = []
-        if (
-            llm_output.modify is not None
-            and llm_output.modify.modify_type is ModifyType.REJECT_SPECIFIC
-        ):
-            target_orders = set(llm_output.modify.target_indices)
-            for prev in session_context.shown_recommendations:
-                if prev.rank in target_orders:
-                    continue
-                if (
-                    prev.name is None
-                    or prev.estimated_arrival is None
-                    or prev.estimated_duration_min is None
-                ):
-                    # 방어적 폴백 — SCHEDULE-09 2단계 도입 이전에 기록된 세션처럼
-                    # 이 필드들이 없는 과거 데이터일 때만 해당하며, 이 항목만 새
-                    # 후보로 채워지고 나머지는 정상적으로 유지된다. 4개 필드
-                    # (estimated_arrival~reason)는 SCHEDULE-06에서 한꺼번에
-                    # 추가돼 따로 없을 일은 거의 없지만, name/estimated_arrival만
-                    # 체크하고 estimated_duration_min은 빠져 있으면 아래에서
-                    # `or 0`으로 조용히 체류시간 0분짜리 pinned 항목이 만들어질
-                    # 수 있었다 — 가드를 맞춰 방지한다(실사용 리뷰로 발견,
-                    # 2026-08-13). travel_to_next_min은 원래 마지막 항목이면
-                    # None이 정상이라 이 가드에 넣지 않는다.
-                    continue
-                pinned_items.append(
-                    ScheduleItem(
-                        order=prev.rank,
-                        place_id=prev.place_id,
-                        place_name=prev.name,
-                        estimated_arrival=prev.estimated_arrival,
-                        estimated_duration_min=prev.estimated_duration_min,
-                        travel_to_next_min=prev.travel_to_next_min,
-                        reason=prev.reason or "",
-                    )
+    # 6-2-1) SCHEDULE-09 2단계: REJECT_SPECIFIC으로 재라우팅된 턴이면 통째로
+    #        새로 짜지 않고, target_indices가 가리키는 자리만 새로 채운다.
+    #        session_context는 이번 턴 처리 전에 조회한 값이라 직전 SCHEDULE
+    #        턴의 shown_recommendations(순서·도착시각 등 포함)를 그대로 담고
+    #        있다(3-3절과 동일한 전제). pinned 대상의 place_name은 이번 턴
+    #        C 응답에서 다시 매칭하지 않고 B에 저장된 값을 그대로 쓴다 —
+    #        원래는 재매칭하도록 짰다가, "경복궁"류 지명 검색이 호출마다
+    #        다른 좌표로 resolve돼 이번 턴 주변 후보가 매번 통째로 달라지는
+    #        사례가 실사용 테스트에서 확인됐다(2026-08-11). 그러면 이전
+    #        place_id가 이번 후보에 전혀 안 잡혀 pinned 유지가 매번 실패하고
+    #        REJECT_ALL처럼 조용히 전체 재편성으로 폴백됐다. B가 추천 시점에
+    #        이름도 함께 저장해두면(schema.RecommendedItem.name, SCHEDULE-09
+    #        2단계 예외) 이 재검색에 의존하지 않아 안정적이다.
+    pinned_items: list[ScheduleItem] = []
+    if (
+        llm_output.modify is not None
+        and llm_output.modify.modify_type is ModifyType.REJECT_SPECIFIC
+    ):
+        target_orders = set(llm_output.modify.target_indices)
+        for prev in session_context.shown_recommendations:
+            if prev.rank in target_orders:
+                continue
+            if (
+                prev.name is None
+                or prev.estimated_arrival is None
+                or prev.estimated_duration_min is None
+            ):
+                # 방어적 폴백 — SCHEDULE-09 2단계 도입 이전에 기록된 세션처럼
+                # 이 필드들이 없는 과거 데이터일 때만 해당하며, 이 항목만 새
+                # 후보로 채워지고 나머지는 정상적으로 유지된다. 4개 필드
+                # (estimated_arrival~reason)는 SCHEDULE-06에서 한꺼번에
+                # 추가돼 따로 없을 일은 거의 없지만, name/estimated_arrival만
+                # 체크하고 estimated_duration_min은 빠져 있으면 아래에서
+                # `or 0`으로 조용히 체류시간 0분짜리 pinned 항목이 만들어질
+                # 수 있었다 — 가드를 맞춰 방지한다(실사용 리뷰로 발견,
+                # 2026-08-13). travel_to_next_min은 원래 마지막 항목이면
+                # None이 정상이라 이 가드에 넣지 않는다.
+                continue
+            pinned_items.append(
+                ScheduleItem(
+                    order=prev.rank,
+                    place_id=prev.place_id,
+                    place_name=prev.name,
+                    estimated_arrival=prev.estimated_arrival,
+                    estimated_duration_min=prev.estimated_duration_min,
+                    travel_to_next_min=prev.travel_to_next_min,
+                    reason=prev.reason or "",
                 )
-
-        if pinned_items and llm_output.modify is not None:
-            partial_request = SchedulePartialFillRequest(
-                pinned_items=pinned_items,
-                target_orders=sorted(set(llm_output.modify.target_indices)),
-                candidates=schedule_candidates,
-                conditions=agent_conditions,
-                visit_datetime=None,
-                pairwise_distances_km=_build_pairwise_distances_km(schedule_candidates, places),
-            )
-            await _emit_progress(
-                stream_event_sink,
-                "scheduling",
-                "기존 일정은 유지하고 바꿀 장소를 다시 편성하고 있어요.",
-            )
-            schedule_result = await _await_with_heartbeat(
-                plan_partial_schedule(partial_request, llm),
-                sink=stream_event_sink,
-                stage="scheduling",
-            )
-        else:
-            schedule_request = SchedulePlanningRequest(
-                candidates=schedule_candidates,
-                conditions=agent_conditions,
-                visit_datetime=None,
-                pairwise_distances_km=_build_pairwise_distances_km(schedule_candidates, places),
-            )
-            await _emit_progress(
-                stream_event_sink,
-                "scheduling",
-                "장소 순서와 머무는 시간을 구성하고 있어요.",
-            )
-            schedule_result = await _await_with_heartbeat(
-                plan_schedule(schedule_request, llm),
-                sink=stream_event_sink,
-                stage="scheduling",
             )
 
+    if pinned_items and llm_output.modify is not None:
+        partial_request = SchedulePartialFillRequest(
+            pinned_items=pinned_items,
+            target_orders=sorted(set(llm_output.modify.target_indices)),
+            candidates=schedule_candidates,
+            conditions=agent_conditions,
+            visit_datetime=None,
+            pairwise_distances_km=_build_pairwise_distances_km(schedule_candidates, places),
+        )
         await _emit_progress(
             stream_event_sink,
-            "composing_message",
-            "일정 결과를 정리하고 있어요.",
+            "scheduling",
+            "기존 일정은 유지하고 바꿀 장소를 다시 편성하고 있어요.",
+        )
+        schedule_result = await _await_with_heartbeat(
+            plan_partial_schedule(partial_request, llm),
+            sink=stream_event_sink,
+            stage="scheduling",
+        )
+    else:
+        schedule_request = SchedulePlanningRequest(
+            candidates=schedule_candidates,
+            conditions=agent_conditions,
+            visit_datetime=None,
+            pairwise_distances_km=_build_pairwise_distances_km(schedule_candidates, places),
+        )
+        await _emit_progress(
+            stream_event_sink,
+            "scheduling",
+            "장소 순서와 머무는 시간을 구성하고 있어요.",
+        )
+        schedule_result = await _await_with_heartbeat(
+            plan_schedule(schedule_request, llm),
+            sink=stream_event_sink,
+            stage="scheduling",
         )
 
-        # 7) A → B: 일정에 실제로 포함된 장소만 기록한다(6.3절) — LLM이 제외한
-        #    후보는 기록하지 않아 이후 RECOMMEND 요청에서 재노출될 수 있다.
-        if schedule_result.items:
-            record_recommendation(
-                RecordRecommendationRequest(
-                    session_id=state_response.session_id,
-                    run_id=state_response.run_id,
-                    recommended=[
-                        RecommendedPlace(
-                            place_id=item.place_id,
-                            rank=item.order,
-                            name=item.place_name,
-                            estimated_arrival=item.estimated_arrival,
-                            estimated_duration_min=item.estimated_duration_min,
-                            travel_to_next_min=item.travel_to_next_min,
-                            reason=item.reason,
+    await _emit_progress(
+        stream_event_sink,
+        "composing_message",
+        "일정 결과를 정리하고 있어요.",
+    )
+
+    # 7) A → B: 일정에 실제로 포함된 장소만 기록한다(6.3절) — LLM이 제외한
+    #    후보는 기록하지 않아 이후 RECOMMEND 요청에서 재노출될 수 있다.
+    if schedule_result.items:
+        record_recommendation(
+            RecordRecommendationRequest(
+                session_id=state_response.session_id,
+                run_id=state_response.run_id,
+                recommended=[
+                    RecommendedPlace(
+                        place_id=item.place_id,
+                        rank=item.order,
+                        name=item.place_name,
+                        estimated_arrival=item.estimated_arrival,
+                        estimated_duration_min=item.estimated_duration_min,
+                        travel_to_next_min=item.travel_to_next_min,
+                        reason=item.reason,
+                    )
+                    for item in schedule_result.items
+                ],
+            ),
+            store=store,
+            principal=principal,
+        )
+    else:
+        # 후보가 부족해서 일정을 못 짠 경우, route_summary 메시지만 반환하지 말고
+        # 명시적 되묻기로 사용자에게 선택지를 준다(실사용 피드백, 2026-08-13).
+        # 버튼 클릭이 SCHEDULE intent로 올바르게 라우팅되어야 다시 SCHEDULE을 시도하지,
+        # 프론트가 텍스트 파싱으로 버튼을 만들면 LLM 분류가 틀린다.
+        llm_output = llm_output.model_copy(
+            update={
+                "status": OutputStatus.NEEDS_CLARIFICATION,
+                "clarification": ClarificationPayload(
+                    code="schedule_no_candidates",
+                    message=_SCHEDULE_NO_CANDIDATES_MESSAGE,
+                    options=[
+                        ClarificationOption(
+                            id=option_id,
+                            label=label,
+                            resolved_intent=Intent.SCHEDULE,
                         )
-                        for item in schedule_result.items
+                        for option_id, label in _SCHEDULE_NO_CANDIDATES_OPTIONS
                     ],
                 ),
-                store=store,
-                principal=principal,
-            )
-        else:
-            # 후보가 부족해서 일정을 못 짠 경우, route_summary 메시지만 반환하지 말고
-            # 명시적 되묻기로 사용자에게 선택지를 준다(실사용 피드백, 2026-08-13).
-            # 버튼 클릭이 SCHEDULE intent로 올바르게 라우팅되어야 다시 SCHEDULE을 시도하지,
-            # 프론트가 텍스트 파싱으로 버튼을 만들면 LLM 분류가 틀린다.
-            llm_output = llm_output.model_copy(
-                update={
-                    "status": OutputStatus.NEEDS_CLARIFICATION,
-                    "clarification": ClarificationPayload(
-                        code="schedule_no_candidates",
-                        message=_SCHEDULE_NO_CANDIDATES_MESSAGE,
-                        options=[
-                            ClarificationOption(
-                                id=option_id,
-                                label=label,
-                                resolved_intent=Intent.SCHEDULE,
-                            )
-                            for option_id, label in _SCHEDULE_NO_CANDIDATES_OPTIONS
-                        ],
-                    ),
-                }
-            )
-            _remember_clarification(state_response.session_id, "schedule_no_candidates", store)
-            message = await compose_chat_message(llm_output, llm=llm)
-            return AgentResponse(
-                llm_output=llm_output,
-                state=state_response,
-                recommendations=None,
-                schedule=None,
-                message=message,
-                llm_execution=get_llm_execution_metadata(),
-                tool_execution=tool_execution,
-                tool_executions=tool_executions,
-            )
-
-        # 8) A: 최종 응답 조립. recommendations는 채우지 않는다(AgentResponse
-        #    docstring — schedule과 동시에 채워지지 않음).
-        message = await compose_chat_message(
-            llm_output,
-            schedule=schedule_result,
-            schedule_time_available_min=agent_conditions.time_available,
-            llm=llm,
+            }
         )
+        _remember_clarification(state_response.session_id, "schedule_no_candidates", store)
+        message = await compose_chat_message(llm_output, llm=llm)
         return AgentResponse(
             llm_output=llm_output,
             state=state_response,
             recommendations=None,
-            schedule=schedule_result,
+            schedule=None,
             message=message,
             llm_execution=get_llm_execution_metadata(),
             tool_execution=tool_execution,
             tool_executions=tool_executions,
         )
+
+    # 8) A: 최종 응답 조립. recommendations는 채우지 않는다(AgentResponse
+    #    docstring — schedule과 동시에 채워지지 않음).
+    message = await compose_chat_message(
+        llm_output,
+        schedule=schedule_result,
+        schedule_time_available_min=agent_conditions.time_available,
+        llm=llm,
+    )
+    return AgentResponse(
+        llm_output=llm_output,
+        state=state_response,
+        recommendations=None,
+        schedule=schedule_result,
+        message=message,
+        llm_execution=get_llm_execution_metadata(),
+        tool_execution=tool_execution,
+        tool_executions=tool_executions,
+    )
+
+
+async def _finalize_recommendation_response(
+    llm_output: LLMOutput,
+    state_response: StateApplyResponse,
+    recommendations: RecommendationResponse,
+    *,
+    llm: LLMProvider,
+    store: StateStore | None,
+    principal: Principal | None,
+    tool_execution: ToolExecutionDebug | None,
+    tool_executions: list[ToolExecutionDebug],
+    effective_ignore_operating_hours: bool,
+    stream_recommendation_summary: bool,
+    stream_event_sink: StreamEventSink | None,
+) -> AgentResponse:
+    """RECOMMEND/MODIFY 결과를 이력에 남기고 카드·요약을 방출한다(7·8단계).
+
+    `run_agent_flow()`의 꼬리를 그대로 옮긴 것이다 — 라우팅 그래프가 이 단계를 노드로
+    감쌀 수 있게 먼저 함수로 떼어냈다(docs/design/langgraph-adoption.md §6.1 3단계).
+    **본문은 한 줄도 바꾸지 않았다**: 이관은 출력이 같아야 하는 작업이라, 옮기는 것과
+    고치는 것을 같은 커밋에 섞지 않는다.
+    """
 
     # 7) A → B: 실제로 화면에 노출된 결과만 기록한다. recommendations와
     #    unverified_recommendations 둘 다 프론트에 렌더링되므로(운영시간 미검증 섹션으로

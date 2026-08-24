@@ -15,6 +15,7 @@ ConditionChangeLog/TraceRecord는 append-only라 행 단위 insert로 저장한�
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime
 
 import httpx
 
@@ -302,3 +303,38 @@ class SupabaseStateStore:
             return [FeedbackRecord.model_validate(row) for row in payload]
         except Exception:
             raise StateStoreError("invalid response_feedback row") from None
+
+    # ------------------------------------------------------------ 정리(TP-134)
+
+    def list_stale_session_ids(self, cutoff: datetime) -> list[str]:
+        response = self._request(
+            "GET",
+            "/agent_states",
+            params={
+                "last_active_at": f"lt.{cutoff.isoformat()}",
+                "select": "session_id",
+            },
+        )
+        payload = self._json(response)
+        if not isinstance(payload, list):
+            raise StateStoreError("invalid agent_states response")
+        try:
+            return [str(row["session_id"]) for row in payload]
+        except (KeyError, TypeError):
+            raise StateStoreError("invalid agent_states row") from None
+
+    def delete_change_logs(self, session_id: str) -> None:
+        self._request(
+            "DELETE",
+            "/condition_change_logs",
+            params={"session_id": f"eq.{session_id}"},
+            prefer="return=minimal",
+        )
+
+    def delete_traces(self, session_id: str) -> None:
+        self._request(
+            "DELETE",
+            "/trace_records",
+            params={"session_id": f"eq.{session_id}"},
+            prefer="return=minimal",
+        )

@@ -17,6 +17,7 @@ from google.genai import types as genai_types
 
 from app.errors import AppError, ProviderUnavailableError
 from app.providers.gemini import (
+    _REJECTS_ZERO_THINKING_BUDGET,
     RealGeminiProvider,
     _ComparisonSummary,
     _GeneralAnswer,
@@ -401,9 +402,9 @@ async def test_classify_intent_uses_thinking_budget_zero() -> None:
 async def test_classify_and_schedule_route_to_their_respective_model_groups() -> None:
     """분류는 빠른 모델, 일정 생성은 응답 생성 모델로 분리한다.
 
-    일정 생성 모델은 thinking_budget=0 요청이 thinking_level=MINIMAL로 변환되어
-    실리며, Flash-Lite는 API 호환성 때문에 thinking_config를 생략하는지도 함께
-    확인한다(2026-08-18, _thinking_config_for() 참고).
+    두 모델 모두 thinking_budget=0 요청이 thinking_level=MINIMAL로 변환되어 실린다
+    (_thinking_config_for() 참고). 예전에는 Flash-Lite만 thinking_config를 생략했는데,
+    그 예외 때문에 fast 경로의 thinking 끄기가 무효화돼 있었다 — D-076에서 제거했다.
     """
     provider = RealGeminiProvider(
         api_key="dummy",
@@ -450,9 +451,11 @@ async def test_classify_and_schedule_route_to_their_respective_model_groups() ->
         await provider.generate_schedule_plan(request)
 
     assert [model for model, _ in calls] == ["gemini-3.5-flash-lite", "generation-model"]
-    assert calls[0][1] is None
-    assert calls[1][1] is not None
-    assert calls[1][1].thinking_level == genai_types.ThinkingLevel.MINIMAL
+    # 두 모델 모두 MINIMAL이 실린다. Flash-Lite만 생략하던 예외는 없다(D-076).
+    for model, thinking_config in calls:
+        assert thinking_config is not None, f"{model}에 thinking_config가 안 실렸다"
+        assert thinking_config.thinking_level == genai_types.ThinkingLevel.MINIMAL
+        assert thinking_config.thinking_budget is None
 
 
 @pytest.mark.asyncio
@@ -720,18 +723,36 @@ async def test_fallback_budget_override_is_limited_to_measured_operation() -> No
 
 
 @pytest.mark.asyncio
-async def test_zero_budget_is_dropped_for_models_that_reject_it() -> None:
-    """thinking_budget=0을 거부하는 모델에는 아무것도 싣지 않는다.
+async def test_zero_budget_is_never_sent_as_a_number() -> None:
+    """0을 요청하면 숫자가 아니라 thinking_level=MINIMAL이 실린다.
 
-    gemini-3.5-flash-lite/3.6-flash는 0에 400 INVALID_ARGUMENT를 낸다. 400은
-    비재시도 오류라 폴백도 못 타고 즉시 실패하므로, .env에서 모델명만 바꿔도 해당
-    호출이 전부 죽는다. 호출 종류를 가리지 않고 막아야 한다.
+    이게 이 파일에서 가장 중요한 불변식이다. gemini-3.5-flash-lite/3.6-flash는
+    `thinking_budget=0`에 400 INVALID_ARGUMENT를 돌려주고, 400은 비재시도 오류라
+    폴백도 못 타고 즉시 실패한다 — 0이 숫자로 실리는 순간 그 호출은 죽는다.
+    숫자 자체가 문제인 것은 아니다(512는 두 모델 모두 정상). **0만 거부된다.**
+
+    예전에는 그 모델 목록(`_REJECTS_ZERO_THINKING_BUDGET`)을 두고 0을 아예 안
+    싣는 방식으로 막았는데, 그러면 "thinking 끄기"가 그 모델에서 조용히 사라진다.
+    실제로 fast 모델이 gemini-3.5-flash-lite로 바뀐 뒤 그 일이 일어났다(D-076 —
+    이 모델에서는 지연 차이가 없었지만, 기본 thinking이 무거운 모델로 바뀌면
+    같은 분기가 최적화를 삼킨다). 지금은 0을 MINIMAL로 바꿔 보내므로 400이 날
+    이유가 없고 목록도 필요 없다 — 대신 "0이 숫자로 새어 나가지 않는다"를
+    여기서 못 박는다.
+
+    근거(실 API, 2026-08-24): 두 모델 모두 budget=0 → 400, budget=512 → 성공,
+    thinking_level=MINIMAL → 성공.
     """
-    for model in ("gemini-3.5-flash-lite", "gemini-3.6-flash"):
+    assert _REJECTS_ZERO_THINKING_BUDGET, "거부 모델 목록이 비었다 — 검증할 대상이 없다"
+    for model in sorted(_REJECTS_ZERO_THINKING_BUDGET):
         provider = RealGeminiProvider(api_key="dummy", model_names=[model], timeout_seconds=1.0)
         for operation in ("classify_intent", "generate_schedule_plan"):
             [(_, budget)] = await _capture_budgets(provider, operation, 0)
-            assert budget is None, f"{model}/{operation}에 0이 실렸다"
+            assert budget == genai_types.ThinkingLevel.MINIMAL, (
+                f"{model}/{operation}에 MINIMAL이 아니라 {budget!r}이 실렸다"
+            )
+            assert not isinstance(budget, int), (
+                f"{model}/{operation}에 숫자 예산이 실렸다 — 0이면 400으로 죽는다"
+            )
 
 
 @pytest.mark.asyncio
