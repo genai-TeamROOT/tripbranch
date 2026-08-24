@@ -108,6 +108,26 @@ function isChatMessage(value: unknown): value is ChatMessage {
       card.answer_fields !== null
     );
   }
+  /* 턴 하나가 완결될 때마다 항상 붙는 좋아요/싫어요 컨트롤. 이 케이스가 없으면
+     피드백 버튼이 뜬 대화(사실상 대부분의 정상 대화)가 새로고침 시 통째로
+     복원 실패로 버려진다 — schedule_result/place_info_result와 같은 버그. */
+  if (message.type === "feedback") {
+    return typeof message.sessionId === "string" && typeof message.runId === "string";
+  }
+  if (message.type === "compare_result") {
+    const comparison = message.comparison as Record<string, unknown> | null | undefined;
+    return (
+      !!comparison &&
+      typeof comparison === "object" &&
+      (comparison.criteria === "time" ||
+        comparison.criteria === "travel_time" ||
+        comparison.criteria === "overall") &&
+      Array.isArray(comparison.items)
+    );
+  }
+  if (message.type === "clarification") {
+    return typeof message.text === "string" && Array.isArray(message.options);
+  }
   return false;
 }
 
