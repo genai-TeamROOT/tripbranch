@@ -54,6 +54,7 @@ from app.schemas import (
     RecommendationResponse,
     RecommendPayload,
     Transport,
+    TravelOrigin,
     UserConditions,
 )
 from app.services.runtime.agent_runtime import (
@@ -924,6 +925,68 @@ async def test_stale_location_clarification_choice_falls_back_to_normal_classifi
             session_id=None,
             device_location=DEVICE_LOCATION,
             clarification_choice="경복궁",  # 이 세션엔 되묻기가 없었다
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.llm_output.status == OutputStatus.COMPLETE
+    assert response.llm_output.intent == "RECOMMEND"
+    assert response.recommendations is not None
+
+
+@pytest.mark.asyncio
+async def test_travel_origin_override_resolves_without_classification() -> None:
+    """"OO 기준으로 다시 보기" 버튼(travel_origin_override, D-071)은
+    classify_intent()를 건너뛰고 직전 조건에 travel_origin만 덮어써 재실행해야
+    한다. 이를 증명하기 위해 이번 턴 user_input에 OUT_OF_SCOPE 마커("주식")를
+    넣는다 — classify_intent()가 실제로 호출됐다면 OUT_OF_SCOPE로 분류될
+    문장인데, 그대로 RECOMMEND/COMPLETE로 나오면 건너뛴 것이 증명된다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+    assert first.llm_output.status == OutputStatus.COMPLETE
+    assert first.recommendations is not None
+
+    resolved = await run_agent_flow(
+        AgentRequest(
+            user_input="주식 얘기처럼 보이지만 버튼 클릭이라 실제로는 해석되지 않는다",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+            travel_origin_override=TravelOrigin.SEARCH_CENTER,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert resolved.llm_output.intent == "RECOMMEND"
+    assert resolved.llm_output.status == OutputStatus.COMPLETE
+    assert resolved.recommendations is not None
+    assert resolved.state.user_conditions.search_center == "경복궁"
+    assert resolved.state.user_conditions.travel_origin == "search_center"
+
+
+@pytest.mark.asyncio
+async def test_travel_origin_override_falls_back_without_prior_recommendation() -> None:
+    """추천 결과가 아직 없는 세션에서 온 override는 평소 경로로 폴백해야 한다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+            travel_origin_override=TravelOrigin.SEARCH_CENTER,  # 이 세션엔 아직 추천이 없다
         ),
         store=store,
         **providers,

@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, vi } from "vitest";
 
 import { TripProvider } from "../../state/TripContext";
-import type { RecommendationItem } from "../../types";
+import type { RecommendationItem, TravelOriginToggle } from "../../types";
 import { RecommendationResultMessage } from "./RecommendationResultMessage";
 
 function item(overrides: Partial<RecommendationItem> = {}): RecommendationItem {
@@ -119,4 +119,75 @@ it("추천 카드를 클릭하면 C PlaceDetails가 채워진 상세 창을 연�
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+// --- 비차단형 전환 버튼(TravelOriginToggle, D-071) ---------------------------
+
+function toggle(overrides: Partial<TravelOriginToggle> = {}): TravelOriginToggle {
+  return {
+    alternative_origin: "search_center",
+    alternative_origin_name: "안국역",
+    ...overrides,
+  };
+}
+
+it("travelOriginToggle이 없으면 전환 버튼을 렌더링하지 않는다", () => {
+  render(
+    <RecommendationResultMessage
+      recommendations={[item()]}
+      unverifiedRecommendations={[]}
+      elapsedMs={0}
+      serverElapsedMs={0}
+      isLoading={false}
+      onRequestMore={() => {}}
+      onRelaxRadius={() => {}}
+    />,
+    { wrapper: TripProvider },
+  );
+
+  expect(screen.queryByText(/기준으로 다시 보기/)).not.toBeInTheDocument();
+});
+
+it("travelOriginToggle이 있으면 대상 이름을 딴 전환 버튼을 렌더링하고 클릭 시 그대로 넘긴다", async () => {
+  const user = userEvent.setup();
+  const onToggleTravelOrigin = vi.fn();
+  render(
+    <RecommendationResultMessage
+      recommendations={[item()]}
+      unverifiedRecommendations={[]}
+      travelOriginToggle={toggle()}
+      elapsedMs={0}
+      serverElapsedMs={0}
+      isLoading={false}
+      onRequestMore={() => {}}
+      onRelaxRadius={() => {}}
+      onToggleTravelOrigin={onToggleTravelOrigin}
+    />,
+    { wrapper: TripProvider },
+  );
+
+  const button = screen.getByRole("button", { name: "안국역 기준으로 다시 보기" });
+  await user.click(button);
+
+  expect(onToggleTravelOrigin).toHaveBeenCalledWith(toggle());
+});
+
+it("결과가 0건이어도 travelOriginToggle이 있으면 반경 확대 버튼과 함께 전환 버튼을 보여준다", () => {
+  render(
+    <RecommendationResultMessage
+      recommendations={[]}
+      unverifiedRecommendations={[]}
+      travelOriginToggle={toggle({ alternative_origin_name: "혜화역" })}
+      elapsedMs={0}
+      serverElapsedMs={0}
+      isLoading={false}
+      onRequestMore={() => {}}
+      onRelaxRadius={() => {}}
+      onToggleTravelOrigin={() => {}}
+    />,
+    { wrapper: TripProvider },
+  );
+
+  expect(screen.getByText("조건에 맞는 장소를 찾지 못했어요.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "혜화역 기준으로 다시 보기" })).toBeInTheDocument();
 });

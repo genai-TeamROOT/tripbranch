@@ -19,6 +19,7 @@ from app.agent_context.schemas import RecommendationContext
 from app.domain.models import OperatingHours, ScoringCandidate
 from app.domain.ranking_origin import haversine_km, resolve_ranking_origin
 from app.providers.tour_category_registry import get_tour_category_registry
+from app.schemas import UserConditions
 
 # 대분류(category)만으로는 실내외를 가릴 수 없어(관광지에 고궁과 체험관이, 쇼핑에
 # 면세점과 시장이 함께 있다) lcls_systm3(소분류)로 TourCategoryRegistry를 조회해
@@ -84,6 +85,7 @@ def map_context_to_scoring_candidates(
     context: RecommendationContext,
     *,
     visit_at: datetime,
+    conditions: UserConditions | None = None,
 ) -> tuple[ScoringCandidate, ...]:
     """A–C 공개 Context를 D의 ScoringCandidate 목록으로 변환한다.
 
@@ -106,7 +108,7 @@ def map_context_to_scoring_candidates(
     # 거리는 사용자 기준으로 잰다 — 후보를 모은 중심(검색 기준점)과 줄을 세우는
     # 기준점은 다르다(TP-112, ranking_origin.py). 사용자 위치를 모르면 검색
     # 기준점으로 돌아간다.
-    origin = (resolve_ranking_origin(context) or location_value.data).location
+    origin = (resolve_ranking_origin(context, conditions) or location_value.data).location
     source = (
         places_value.provider_metadata[0].source if places_value.provider_metadata else "unknown"
     )

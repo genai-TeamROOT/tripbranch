@@ -169,7 +169,7 @@ export function FeedbackButtons({
 
       {isReasonOpen && (
         <div className="flex w-72 flex-col gap-2 rounded-md border border-gray-200 bg-white p-2 shadow-sm dark:border-gray-700 dark:bg-gray-900">
-          <p className="text-xs font-medium text-gray-700 dark:text-gray-200">어떤 점이 아쉬웠나요?</p>
+          <p className="text-sm font-medium text-gray-700 dark:text-gray-200">어떤 점이 아쉬웠나요?</p>
           <div className="grid gap-1">
             {DISLIKE_REASONS.map((reason) => (
               <button
@@ -177,7 +177,7 @@ export function FeedbackButtons({
                 type="button"
                 disabled={isSubmitting}
                 onClick={() => handleReasonSelect(reason.code)}
-                className={`rounded px-2 py-1.5 text-left text-xs disabled:opacity-50 ${
+                className={`rounded px-2 py-1.5 text-left text-sm disabled:opacity-50 ${
                   selectedReason === reason.code
                     ? "bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900"
                     : "bg-gray-50 text-gray-600 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
@@ -197,14 +197,14 @@ export function FeedbackButtons({
                 disabled={isSubmitting}
                 placeholder="추가 의견이 있다면 알려주세요. (선택)"
                 rows={2}
-                className="w-full resize-none rounded border border-gray-200 bg-transparent p-1.5 text-xs text-gray-700 placeholder:text-gray-400 focus:outline-none disabled:opacity-50 dark:border-gray-700 dark:text-gray-200"
+                className="w-full resize-none rounded border border-gray-200 bg-transparent p-1.5 text-sm text-gray-700 placeholder:text-gray-400 focus:outline-none disabled:opacity-50 dark:border-gray-700 dark:text-gray-200"
               />
               <div className="flex justify-end gap-1.5">
                 <button
                   type="button"
                   disabled={isSubmitting}
                   onClick={handleDislikeClick}
-                  className="rounded px-2 py-1 text-xs text-gray-500 hover:text-gray-800 disabled:opacity-50 dark:text-gray-400 dark:hover:text-gray-100"
+                  className="rounded px-2 py-1 text-sm text-gray-500 hover:text-gray-800 disabled:opacity-50 dark:text-gray-400 dark:hover:text-gray-100"
                 >
                   취소
                 </button>
@@ -212,7 +212,7 @@ export function FeedbackButtons({
                   type="button"
                   disabled={isSubmitting}
                   onClick={() => void submit("dislike", selectedReason, comment)}
-                  className="rounded-md bg-gray-900 px-2.5 py-1 text-xs font-medium text-white disabled:opacity-50 dark:bg-gray-100 dark:text-gray-900"
+                  className="rounded-md bg-gray-900 px-2.5 py-1 text-sm font-medium text-white disabled:opacity-50 dark:bg-gray-100 dark:text-gray-900"
                 >
                   제출
                 </button>

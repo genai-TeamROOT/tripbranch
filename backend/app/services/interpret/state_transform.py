@@ -45,6 +45,9 @@ _SINGLE_FIELDS = (
     # 이 목록에서 빠지면 추출은 되는데 연산이 안 만들어져 상태 병합에서 값이
     # 조용히 사라진다 — 실제로 그렇게 한 번 놓쳤다.
     "taste_query",
+    # (2026-08-22) 이동시간 출발점 판정("안국역에서" vs "안국역 근처"). taste_query와
+    # 같은 이유로 이 목록에 반드시 있어야 한다.
+    "travel_origin",
 )
 # agent-state-contract-v1.md §2.2: place_types는 Update/Remove만, place_tags는
 # Add/Update/Remove 다 허용 — 둘 다 Update로 둔다. exclude_tags/special_requirements는
@@ -191,6 +194,19 @@ def transform(
                     value=existing_search_center,
                 )
             )
+            # travel_origin은 그 search_center에 대한 판정이라 같은 장소가
+            # 이어지는 한 함께 이어진다. "안국역에서 10분" 다음 턴 "그럼
+            # 조용한 데로"가 search_center만 복원되고 travel_origin은
+            # 초기화돼 기준점이 사용자 위치로 도로 바뀌는 걸 막는다.
+            existing_travel_origin = session_context.user_conditions.travel_origin
+            if existing_travel_origin is not None:
+                operations.append(
+                    Operation(
+                        op="Update",
+                        field="travel_origin",
+                        value=existing_travel_origin,
+                    )
+                )
 
     elif llm_output.intent is Intent.MODIFY and llm_output.modify is not None:
         modify = llm_output.modify

@@ -341,7 +341,7 @@ class RealRecommendationProvider:
             weather_reason=weather_reason,
             # 날씨 판정과 같은 이유로 여기서 context에서 다시 뽑는다 — 1차와 2차가
             # 같은 기준점 이름을 써야 근거 문장이 갈리지 않는다.
-            origin_name=resolve_origin_name(context),
+            origin_name=resolve_origin_name(context, conditions),
         )
 
 

@@ -11,7 +11,7 @@
  */
 
 import { useState } from "react";
-import type { RecommendationItem } from "../../types";
+import type { RecommendationItem, TravelOriginToggle } from "../../types";
 import { PlaceCard } from "../PlaceCard";
 import { RecommendationDetailPreviewModal } from "./RecommendationDetailPreviewModal";
 
@@ -20,12 +20,16 @@ const RADIUS_RELAXATION_STEP_KM = 0.5;
 interface RecommendationResultMessageProps {
   recommendations: RecommendationItem[];
   unverifiedRecommendations: RecommendationItem[];
+  /** 있을 때만 "OO 기준으로 다시 보기" 버튼을 노출한다(D-071). */
+  travelOriginToggle?: TravelOriginToggle | null;
   elapsedMs: number;
   serverElapsedMs: number;
   showElapsedTime?: boolean;
   isLoading: boolean;
   onRequestMore: () => void;
   onRelaxRadius: () => void;
+  /** travelOriginToggle이 있을 때만 호출 가능. 버튼 클릭 시 그 값 그대로 넘어온다. */
+  onToggleTravelOrigin?: (toggle: TravelOriginToggle) => void;
 }
 
 function formatDuration(milliseconds: number | undefined) {
@@ -38,12 +42,14 @@ function formatDuration(milliseconds: number | undefined) {
 export function RecommendationResultMessage({
   recommendations,
   unverifiedRecommendations,
+  travelOriginToggle,
   elapsedMs,
   serverElapsedMs,
   showElapsedTime = false,
   isLoading,
   onRequestMore,
   onRelaxRadius,
+  onToggleTravelOrigin,
 }: RecommendationResultMessageProps) {
   const [selectedRecommendation, setSelectedRecommendation] = useState<RecommendationItem | null>(null);
   // D는 운영시간을 무시한 재검색에서 "현재는 폐점"인 후보도 unverified 목록에
@@ -77,14 +83,28 @@ export function RecommendationResultMessage({
       {hasNoResults ? (
         <div className="flex flex-col gap-3 text-sm">
           <p className="text-gray-700 dark:text-gray-300">조건에 맞는 장소를 찾지 못했어요.</p>
-          <button
-            type="button"
-            disabled={isLoading}
-            onClick={onRelaxRadius}
-            className="w-fit rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-gray-100 dark:text-gray-900"
-          >
-            검색 반경 넓혀서 다시 찾기 (+{RADIUS_RELAXATION_STEP_KM}km)
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={isLoading}
+              onClick={onRelaxRadius}
+              className="w-fit rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-gray-100 dark:text-gray-900"
+            >
+              검색 반경 넓혀서 다시 찾기 (+{RADIUS_RELAXATION_STEP_KM}km)
+            </button>
+            {travelOriginToggle && onToggleTravelOrigin && (
+              <button
+                type="button"
+                disabled={isLoading}
+                onClick={() => onToggleTravelOrigin(travelOriginToggle)}
+                className="w-fit rounded-md border border-gray-300 px-4 py-2 text-sm font-medium disabled:opacity-50 dark:border-gray-700"
+              >
+                {travelOriginToggle.alternative_origin === "search_center"
+                  ? `${travelOriginToggle.alternative_origin_name} 기준으로 다시 보기`
+                  : "현재 위치 기준으로 다시 보기"}
+              </button>
+            )}
+          </div>
         </div>
       ) : (
         <>
@@ -146,6 +166,18 @@ export function RecommendationResultMessage({
             >
               {isLoading ? "불러오는 중..." : "다른 장소 보기"}
             </button>
+            {travelOriginToggle && onToggleTravelOrigin && (
+              <button
+                type="button"
+                disabled={isLoading}
+                onClick={() => onToggleTravelOrigin(travelOriginToggle)}
+                className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium disabled:opacity-50 dark:border-gray-700"
+              >
+                {travelOriginToggle.alternative_origin === "search_center"
+                  ? `${travelOriginToggle.alternative_origin_name} 기준으로 다시 보기`
+                  : "현재 위치 기준으로 다시 보기"}
+              </button>
+            )}
             <span className="self-center text-xs text-gray-500 dark:text-gray-400">
               다른 조건이 있으면 아래 입력창에 이어서 적어주세요.
             </span>

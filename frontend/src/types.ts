@@ -65,9 +65,22 @@ export interface TasteEvidenceQuote {
   similarity: number;
 }
 
+export type TravelOrigin = "search_center" | "user_location";
+
+/**
+ * 비차단형 전환 제안(D-071). travel_origin이 판정되지 않았고 사용자 위치와
+ * 검색 기준점이 실제로 다를 때만 채워진다. 있을 때만 "OO 기준으로 다시 보기"
+ * 버튼을 노출한다.
+ */
+export interface TravelOriginToggle {
+  alternative_origin: TravelOrigin;
+  alternative_origin_name: string;
+}
+
 export interface RecommendationsResponse {
   recommendations: RecommendationItem[];
   unverified_recommendations: RecommendationItem[];
+  travel_origin_toggle?: TravelOriginToggle | null;
   elapsed_ms: number;
 }
 
@@ -245,6 +258,8 @@ export type ChatMessage =
       type: "recommendation_result";
       recommendations: RecommendationItem[];
       unverified_recommendations: RecommendationItem[];
+      /* 있을 때만 "OO 기준으로 다시 보기" 버튼을 노출한다(D-071). */
+      travel_origin_toggle?: TravelOriginToggle | null;
       /* 추천 요청 클릭부터 응답 수신까지의 클라이언트 실측 시간(ms). */
       elapsed_ms: number;
       /* 백엔드가 보고한 서버 처리 시간(ms). 네트워크·렌더 시간은 포함하지 않는다. */
@@ -422,6 +437,12 @@ export interface AgentDebugRequest {
    * label을 채워 보내되(채팅 이력 표시용) 라우팅은 이 필드만으로 결정된다.
    */
   clarification_choice?: string | null;
+  /*
+   * "OO 기준으로 다시 보기" 비차단형 전환 버튼 클릭(D-071). user_input에는 버튼
+   * label을 채워 보내되(채팅 이력 표시용) 라우팅은 이 필드만으로 결정된다 —
+   * clarification_choice와 같은 이유로 classify_intent()를 다시 태우지 않는다.
+   */
+  travel_origin_override?: TravelOrigin | null;
   /*
    * 개발자용 채팅(/dev-chat) 전용 디버그 스위치. true면 이번 턴은 폐점 후보도
    * 항상 채점에 포함한다 — no_data_closed 되묻기를 매번 누르지 않고 강제로
@@ -632,8 +653,13 @@ export interface CandidateConcentrationDebug {
  */
 export interface LocationDebug {
   name: string | null;
-  /** "search_center"는 사용자 위치를 몰라 검색 위치를 시작점으로 대체했다는 뜻이다. */
-  source: "query" | "device_gps" | "search_center";
+  /**
+   * "search_center"는 사용자 위치를 몰라 검색 위치를 시작점으로 대체했다는 뜻이다.
+   * "travel_origin_override"는 사용자 위치를 알면서도 발화가 조사로 출발점을
+   * 확정해("안국역에서 10분", D-071) 검색 위치를 고른 것이다 — 대체가 아니라
+   * 정상 동작이라 둘을 구분한다.
+   */
+  source: "query" | "device_gps" | "search_center" | "travel_origin_override";
   latitude: number;
   longitude: number;
 }

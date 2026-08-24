@@ -99,9 +99,24 @@ class RecommendationItem(BaseModel):
     taste_evidence: list[TasteEvidenceQuote] = Field(default_factory=list)
 
 
+class TravelOriginToggle(BaseModel):
+    """비차단형 전환 제안(D-071). travel_origin이 판정되지 않았고 사용자 위치와
+    검색 기준점이 실제로 다를 때만 채워진다 — "안국역 근처에 10분"처럼 발화가
+    출발점을 확정하지 않은 요청에서, 답을 먼저 준 뒤 "안국역 기준으로 다시
+    보기" 같은 원탭 전환을 조건부로 제안한다. 조사로 이미 확정된 요청
+    (travel_origin이 채워진 요청)에는 만들지 않는다 — 되물을 이유가 없다.
+    """
+
+    alternative_origin: TravelOrigin
+    alternative_origin_name: str
+
+
 class RecommendationResponse(BaseModel):
     recommendations: list[RecommendationItem]
     unverified_recommendations: list[RecommendationItem]
+    # 이번 답변에 전환 제안이 있으면 채워진다. 프론트는 이 값이 있을 때만
+    # "OO 기준으로 다시 보기" 버튼을 노출한다.
+    travel_origin_toggle: TravelOriginToggle | None = None
     elapsed_ms: float = Field(
         ge=0,
         description="추천 파이프라인 시작부터 응답 조립 완료까지의 총 처리시간(ms)",
@@ -238,6 +253,22 @@ class Transport(StrEnum):
     CAR = "car"
 
 
+class TravelOrigin(StrEnum):
+    """이동시간의 출발점 판정. search_center(사실, 어디를 말했는가)와 분리된
+    축이다 — "이번 요청에서 그 지명을 어떻게 쓸까"라는 판정만 담는다.
+
+    "안국역에서/까지 10분"처럼 조사가 출발점을 확정하는 발화만 SEARCH_CENTER로
+    채운다. "안국역 근처/주변" 같은 목적지 언급이나 조사가 없는 발화는 비워
+    둔다(None) — D-067 기본값(사용자 위치 우선, 없으면 검색 기준점)이 그대로
+    적용된다. USER_LOCATION은 추출 단계에서는 쓰지 않는다 — 답을 먼저 준 뒤
+    "내 위치 기준으로 다시 보기" 전환 버튼(비차단형 되묻기)이 생기면 그
+    전환에 쓸 자리로 미리 마련해 둔 값이다.
+    """
+
+    USER_LOCATION = "user_location"
+    SEARCH_CENTER = "search_center"
+
+
 class Environment(StrEnum):
     INDOOR = "indoor"
     OUTDOOR = "outdoor"
@@ -367,7 +398,12 @@ class PlaceTag(StrEnum):
 
 
 class UserConditions(BaseModel):
-    """conditions-schema.md §2의 15개 필드. LLM이 사용자 발화에서 추출한 값만 담는다."""
+    """conditions-schema.md §2의 필드. LLM이 사용자 발화에서 추출한 값만 담는다.
+
+    §2가 명명한 "15개"는 taste_query(2026-08-19)·travel_origin(2026-08-22)
+    이전 기준이라 지금은 그보다 많다 — 개수 자체보다 §2의 필드 정의를 최신으로
+    맞춰 참고한다.
+    """
 
     current_location: str | None = None
     search_center: str | None = None
@@ -383,6 +419,9 @@ class UserConditions(BaseModel):
         description="분(minute) 단위 정수. 사용자가 시간(hour) 단위로 말했으면 60을 곱해 "
         "환산한 값을 넣는다(예: '5시간' -> 300). 숫자만 그대로 옮기지 않는다.",
     )
+    # "안국역에서/까지 10분"처럼 조사가 출발점을 확정할 때만 SEARCH_CENTER.
+    # "근처/주변"이나 미언급은 비워 둔다 — D-067 기본값이 그대로 적용된다.
+    travel_origin: TravelOrigin | None = None
     time_available: int | None = Field(
         default=None,
         ge=0,
@@ -689,6 +728,12 @@ class AgentRequest(BaseModel):
     # label을 채워 보내되(채팅 이력 표시용) 라우팅은 이 필드만으로 결정한다 —
     # classify_intent()를 다시 태우지 않는다(docs/design/clarification-options.md 3절).
     clarification_choice: str | None = None
+    # "OO 기준으로 다시 보기" 비차단형 전환 버튼 클릭(D-071, TravelOriginToggle).
+    # user_input에는 버튼 label을 채워 보내되(채팅 이력 표시용) 라우팅은 이
+    # 필드만으로 결정한다 — clarification_choice와 같은 이유로
+    # classify_intent()/extract_recommend_conditions()를 다시 태우지 않는다.
+    # 직전 턴 조건을 그대로 재사용해 travel_origin만 이 값으로 덮어써 재실행한다.
+    travel_origin_override: TravelOrigin | None = None
     # 개발자용 채팅(/dev-chat) 전용 디버그 스위치. True면 이번 턴은 폐점 후보도
     # 항상 채점에 포함한다 — no_data_closed 되묻기 자체를 재현/우회하려고 매번
     # 버튼을 누르지 않고 강제로 켤 수 있게 한다(실사용 피드백, 2026-08-13).
@@ -766,18 +811,25 @@ class LocationDebug(BaseModel):
     (agent_context/schemas.py::ResolvedLocation)이 명시한다.
 
     source는 그 좌표가 어디서 왔는지다. 검색 위치·사용자 위치는 C의
-    ResolvedLocation.source("query" / "device_gps")를 그대로 옮기고, 경로 시작점만
-    "search_center"를 추가로 쓴다 — 사용자 위치를 몰라 검색 위치로 대체한 경우다
-    (domain/ranking_origin.py::resolve_ranking_origin). 사용자가 자기 위치라고 말한
-    적 없는 좌표가 시작점이 된 상태라, 거리·경로 표기가 사실과 어긋나는지 화면에서
-    바로 가려내려면 이 구분이 필요하다.
+    ResolvedLocation.source("query" / "device_gps")를 그대로 옮기고, 경로 시작점은
+    다음 둘 중 하나를 추가로 쓴다.
+
+    - "search_center": 사용자 위치를 몰라 검색 위치로 대체한 경우다
+      (domain/ranking_origin.py::resolve_ranking_origin). 사용자가 자기 위치라고
+      말한 적 없는 좌표가 시작점이 된 상태라, 거리·경로 표기가 사실과 어긋나는지
+      화면에서 바로 가려내야 한다 — 진짜 "대체"다.
+    - "travel_origin_override": 사용자 위치를 알면서도 발화가 조사로 출발점을
+      확정해("안국역에서 10분", D-071) 검색 위치를 골랐다. 값이 사실과 어긋난
+      게 아니라 사용자가 그렇게 말한 것이므로 위 경고 대상이 아니다. 이 둘을
+      구분하지 않으면 정상 동작인 후자까지 "위치를 몰라서 대체됨"으로 잘못
+      경고하게 된다.
     """
 
     # device_gps로 온 좌표에는 부를 이름이 없다 — C의 requested_query가 "gps_location"
     # 이라는 자리표시자이므로 그대로 실으면 지명처럼 보인다. 그 경우 None으로 두고
     # 표시는 소비 측이 좌표로 처리한다.
     name: str | None = None
-    source: Literal["query", "device_gps", "search_center"]
+    source: Literal["query", "device_gps", "search_center", "travel_origin_override"]
     latitude: float
     longitude: float
 

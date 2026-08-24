@@ -217,6 +217,45 @@ def test_recommend_without_new_location_preserves_existing_search_center() -> No
     assert ops[("Update", "place_tags")] == ["카페"]
 
 
+def test_recommend_without_new_location_preserves_existing_travel_origin() -> None:
+    """search_center가 복원되면 그 장소에 대한 travel_origin 판정도 함께 이어진다.
+
+    "안국역에서 10분" 다음 턴 "그럼 조용한 데로"에서 search_center만 복원되고
+    travel_origin이 초기화되면 기준점이 도로 사용자 위치로 바뀐다(D-071).
+    """
+    llm_output = LLMOutput(
+        intent=Intent.RECOMMEND,
+        status=OutputStatus.COMPLETE,
+        recommend=RecommendPayload(conditions=UserConditions(concentration_intent="AVOID")),
+    )
+    context = _context(
+        user_conditions=StateUserConditions(search_center="안국역", travel_origin="search_center")
+    )
+
+    request = transform(llm_output, context, "그럼 조용한 데로")
+
+    ops = {(op.op, op.field): op.value for op in request.operations}
+    assert ops[("Update", "search_center")] == "안국역"
+    assert ops[("Update", "travel_origin")] == "search_center"
+
+
+def test_recommend_with_new_search_center_does_not_restore_previous_travel_origin() -> None:
+    """새 목적지를 말하면 이전 turn의 travel_origin 판정을 끌고 오지 않는다."""
+    llm_output = LLMOutput(
+        intent=Intent.RECOMMEND,
+        status=OutputStatus.COMPLETE,
+        recommend=RecommendPayload(conditions=UserConditions(search_center="광화문")),
+    )
+    context = _context(
+        user_conditions=StateUserConditions(search_center="안국역", travel_origin="search_center")
+    )
+
+    request = transform(llm_output, context, "광화문 근처 추천해줘")
+
+    fields = {op.field for op in request.operations}
+    assert "travel_origin" not in fields
+
+
 def test_recommend_with_new_search_center_does_not_restore_previous_center() -> None:
     llm_output = LLMOutput(
         intent=Intent.RECOMMEND,
