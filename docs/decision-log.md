@@ -2389,6 +2389,58 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `backend/tests/graph/test_llm_execution_across_nodes.py`,
   `docs/design/langgraph-adoption.md` §9.13
 
+### D-074 — thinking 끄기는 모델 목록으로 포기하지 않고 `thinking_level`로 바꿔 보낸다
+
+- 상태: `Implemented`
+- 배경: `thinking_budget=0`을 거부하는 모델 목록(`_REJECTS_ZERO_THINKING_BUDGET`,
+  D-052 계열 eae832f)에 걸리면 `thinking_config`를 **아예 싣지 않았다.** 400
+  INVALID_ARGUMENT는 비재시도라 폴백도 못 타고 즉시 죽으므로 그 자체는 옳은 방어였다.
+  그런데 2026-08-18에 두 가지가 겹쳤다 — (a) `_thinking_config_for()`가 0을 숫자가
+  아니라 `thinking_level=MINIMAL`로 바꿔 보내게 되고(e3a9e2e), (b) fast 모델이
+  `gemini-3.5-flash-lite`(그 목록에 있는 모델)로 바뀌었다(89b5bdf). 그 결과
+  `classify_intent`·`extract_recommend_conditions`의 thinking 끄기가 **조용히
+  무효화**됐다. 코드가 아니라 모델만 바뀐 것이라 아무도 알아채지 못했고, 발견까지
+  6일이 걸렸다.
+- 실 API 실측(2026-08-24, 모델 5개 × 설정 4개 × 3회):
+  - 거부되는 것은 **숫자 `0`뿐**이다 — `thinking_budget=512`는 다섯 모델 전부 성공,
+    `thinking_level=MINIMAL`은 3.x 세대 전부 성공.
+  - `thinking_level=MINIMAL`은 이름만 최소가 아니라 **실제로 생각 토큰 0**이다
+    (두 방식이 다 되는 `gemini-3.5-flash`에서 `예산=0`과 동일하게 0, 설정 없으면 377).
+  - 근거 데이터: `backend/test_results/gemini_thinking_matrix_2026-08-24/`,
+    서술은 `docs/실험-Gemini-thinking-설정-20260824.md`.
+- 결정: `_resolve_thinking_budget()`에서 그 목록을 근거로 `None`을 돌려주던 분기를
+  없앤다. `0`은 `_thinking_config_for()`가 항상 `thinking_level=MINIMAL`로 바꿔
+  보내므로 400이 날 입력을 애초에 만들지 않는다. **목록 자체는 지우지 않는다** —
+  실측으로 얻은 사실이고, 그 사실을 지키는 불변식
+  (`test_zero_budget_is_never_sent_as_a_number`)이 이 상수를 직접 읽어 검증한다.
+  모델이 늘어나면 목록에만 추가하면 테스트가 따라온다.
+- 채택하지 않은 것:
+  - **`_REJECTS_ZERO_THINKING_BUDGET`과 `_MODEL_BUDGET_OVERRIDES` 삭제** — 둘 다
+    실측 근거로 들어온 값이라 남긴다. `_MODEL_BUDGET_OVERRIDES`의
+    `gemini-2.5-flash-lite × classify_intent = 512`는 지금 도달할 경로가 없다(그 모델을
+    쓰지 않는다). 그래도 지우지 않고 문서에 "현재 미사용" 단서만 붙였다 — 폴백으로
+    되살릴 때 같은 실험을 다시 하지 않기 위해서다.
+  - **숫자 예산 자체를 막기** — 검토 중 제안됐으나 실측이 반대였다. `512`는 거부
+    모델에서도 정상이다. 막으면 되는 것을 막는다.
+  - **지연 개선을 근거로 삼기** — 실측하면 이득이 없다. `classify_intent` 15회 중앙값
+    958ms → 949ms(-0.9%). `gemini-3.5-flash-lite`는 설정을 안 해도 생각 토큰이 0인
+    모델이라 끌 것이 없었다. **6회만 재면 -17%·-7%까지 나오지만 15회로 늘리면
+    사라진다** — 표본이 적을 때 없는 효과를 있다고 읽은 사례로 남긴다. 이 결정의
+    근거는 속도가 아니라 "모델을 바꾸는 순간 최적화가 조용히 사라지는 구조"의 제거다
+    (기본 thinking이 무거운 `gemini-3.6-flash`는 설정 없음 3,518ms vs MINIMAL 1,416ms).
+- 함께 정리한 것: Gemini 키 교체로 `gemini-2.5-*`를 쓰지 않게 됐는데 문서·스크립트에
+  남아 있던 참조를 정리했다. 특히 `development-guide.md`와 `llm-hyperparameters.md`가
+  **폐지된 `LLM_MODEL_NAME`을 현행 설정으로 안내**하고 있었다 — 그대로 따라 `.env`를
+  쓰면 부팅에서 막힌다(D-042). 역할별 설정 4개로 교체했다.
+- 남은 것(별건): 지금 코드는 `0`을 **항상** `thinking_level`로 보내는데, `gemini-2.5`
+  세대는 그 방식을 거부한다(실측 확인). 옛 모델을 폴백으로 되살리면 분류를 뺀 호출이
+  전부 400으로 죽는다 — 이번 문제와 방향만 반대인 같은 함정이다. 해결 형태는 검증해
+  뒀다(목록을 "포기 조건"이 아니라 "어느 방식을 보낼지 고르는 기준"으로 쓰면 다섯 모델
+  전부 통과). 지금은 옛 모델을 쓰지 않아 당장 아프지 않으므로 이번 범위에서 제외했다.
+- 상세: `backend/app/providers/gemini.py`, `backend/tests/test_gemini_provider.py`,
+  `backend/scripts/measure_fast_thinking_level.py`,
+  `docs/실험-Gemini-thinking-설정-20260824.md`, `docs/design/llm-hyperparameters.md` §4.1
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -2458,3 +2510,4 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-24 | D-025 개정 — 장소 검색의 종로구 고정을 해제(TP-126). 요청은 `lDongRegnCd=11`까지만 좁히고 지원 구 판정은 응답의 `lDongSignguCd`로 한다. 좌표로 구를 판정하는 안은 기각 — 서울역 부속 시설 72건처럼 등록 구와 좌표가 어긋나는 장소가 빠진다. 구마다 호출하는 안도 기각(호출 수가 구 수만큼 증가). `PLACE_SEARCH_LDONG_DISTRICT_CODE` 상수 제거, 지원 구는 `SUPPORTED_DISTRICTS` 하나가 정하도록 통일(좌표 폴리곤과 같은 출처). 축제 조회와 Supabase `places` 필터도 같은 집합을 쓴다. 구 코드가 빈 응답은 버리되 경고 로그를 남긴다 |
 | 2026-08-24 | D-072 신설 — 인텐트 라우팅과 추천 파이프라인을 LangGraph 그래프 2개(조기 반환 / 추천 파이프라인)로 이관. 인텐트 분류와 조건 병합은 B 계약 소유라 그래프 밖에 남겼고, SSE는 sink를 `RunnableConfig`로 주입해 노드가 직접 호출하는 방식을 택했다(`astream_events`는 `message_delta`가 노드 내부에서 나와 재현 불가). checkpointer는 채택하지 않음 — `StateStore`(도메인 저장소)와 역할이 다르고, `MemorySaver`는 실측상 이전 턴 값 유출과 메모리 누적만 남겼다. `run_agent_flow()` 1,227줄 → 640줄. 프론트 변경 0줄, pytest 2,323건 통과, 차등 비교 18케이스 전부 일치, 오버헤드 약 1ms. 롤백용 기능 플래그 2개는 한동안 유지 후 기존 경로와 함께 제거 예정 |
 | 2026-08-24 | D-073 신설 — LangGraph 노드가 별도 asyncio 태스크에서 도는 탓에 `llm_execution` ContextVar를 값 교체로 갱신하면 노드 안 기록이 유실되던 문제를 수정. 리스트를 하나 두고 `append`하는 방식으로 바꿔 태스크 경계를 넘게 했다. 유실 지점 3곳(조기 반환 정상 응답, 노드 안 LLM 실패의 502 본문, 파이프라인 앞 노드→뒤 노드)이 한꺼번에 해소. 감사 패널의 "LLM 폴백"이 빈칸이 아니라 **틀린 "없음"**을 찍고 있었던 것이 이 문제를 무시하기 어렵게 만든 지점이다. 검토 문서가 제안한 `default` 제거는 채택하지 않음 — 전역 AppError 핸들러가 reset 없는 문맥에서 이 값을 읽어 502 계약이 500으로 깨진다. 기록하는 LLM 더블로 회귀 테스트 9건 추가(Fake는 `record_llm_call()`을 부르지 않아 수정 전에도 통과한다). pytest 2,332건 통과 |
+| 2026-08-24 | D-074 신설 — `thinking_budget=0`을 거부하는 모델에 thinking 설정을 아예 싣지 않던 방어를 제거하고, `0`을 항상 `thinking_level=MINIMAL`로 바꿔 보내도록 정리. 2026-08-18에 fast 모델이 그 목록에 있는 `gemini-3.5-flash-lite`로 바뀌면서 분류·조건 추출의 thinking 끄기가 조용히 무효화돼 있었고, 코드가 아니라 모델만 바뀐 것이라 6일간 아무도 몰랐다. 실 API 전수 측정(모델 5개 × 설정 4개 × 3회)으로 거부되는 것은 숫자 `0`뿐이고(`512`는 전부 성공) `MINIMAL`은 실제로 생각 토큰이 0임을 확인했다. 거부 모델 목록과 `gemini-2.5-flash-lite` 512 보정은 실측 근거라 지우지 않고, 목록은 불변식 테스트가 직접 읽는다. **지연 이득은 없다** — 6회에서 -17%까지 나왔지만 15회로 늘리면 -0.9%로 사라진다(표본 부족으로 없는 효과를 읽은 사례). 근거는 속도가 아니라 모델 교체 시 최적화가 조용히 사라지는 구조의 제거다. 폐지된 `LLM_MODEL_NAME`을 현행으로 안내하던 문서 2곳도 함께 정정 |
