@@ -2331,6 +2331,63 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `docs/design/guest-auth-design.md`, `backend/docs/package-b/
   agent-state-contract-v1.md`
 
+### D-074 — 만료된 익명 세션·이력을 30일 기준으로 정리한다 (TP-134)
+
+- 상태: `Accepted` — 구현 완료.
+- 배경: 세션 TTL(30분, `session.py::SESSION_TTL`)은 그 세션이 다시 조회될 때만
+  상태를 `expired`로 바꾸는 lazy 판정이라, 실제 행을 지우지 않는다.
+  `agent_states`/`recommendation_histories`/`condition_change_logs`/
+  `trace_records` 네 테이블이 무기한 쌓이고, 뒤의 두 append-only 테이블은
+  세션이 오래 쓰일수록 계속 커진다. `agent-state-contract-v1.md`는 "Phase
+  1에서는 만료된 세션 데이터를 즉시 삭제하지 않는다"고 이미 명시해 이후
+  단계에서 정리 메커니즘이 필요함을 예고해뒀다. `guest-auth-design.md` 10절은
+  "오래된 익명 사용자 정리 스케줄(예: 30일 미접속 삭제)"을 열린 과제로
+  남겼고, D-063 결정 4는 `agent_states.user_id`에 FK를 걸지 않은 이유로 이
+  정리와의 충돌을 들었다.
+- 결정:
+  1. 기준: `agent_states.last_active_at`이 기준 일수(기본 30일, `--days`로
+     조정 가능)보다 오래되면 정리 대상.
+  2. 대상 4개 테이블: `agent_states`/`recommendation_histories`/
+     `condition_change_logs`/`trace_records`. `response_feedback`은 세션
+     생애주기와 무관한 별도 분석 데이터라 제외.
+  3. 삭제 순서: `condition_change_logs` → `trace_records` →
+     `recommendation_histories` → `agent_states`. `agent_states`를 마지막에
+     지우는 이유는, 도중 실패해도 `agent_states`가 남아 있으면
+     `list_stale_session_ids`가 다음 실행에서 같은 세션을 다시 찾아내
+     재시도할 수 있기 때문이다 — `agent_states`를 먼저 지우면 나머지 3개
+     테이블 행이 영원히 못 찾는 고아가 된다.
+  4. 실행 방식: Supabase pg_cron이 아니라 `backend/scripts/
+     cleanup_expired_sessions.py` 수동/외부 스케줄 스크립트로 구현. 지금
+     트래픽 규모에서 pg_cron 확장 활성화·SQL 작성 비용 대비 얻는 이득이
+     작다고 판단(팀 확인 완료).
+  5. Supabase 익명 계정(`auth.users`) 정리와의 관계: 이번 범위에서는 다루지
+     않는다. FK가 없어(D-063 결정 4) 두 정리가 서로 의존하지 않고 독립적으로
+     실행 가능하다 — `agent_states` 쪽을 먼저 정리해도, `auth.users` 쪽을
+     먼저 정리해도 서로의 무결성을 깨지 않는다. `auth.users` 정리는 Supabase
+     Admin API(service role) 접근이 필요해 별도 작업으로 분리했다.
+- 근거: append-only 테이블(`condition_change_logs`/`trace_records`)의
+  "수정·삭제 없음" 원칙은 개별 레코드를 골라 고쳐 이력을 조작하지 못하게
+  막는 것이 목적이지, 세션이 통째로 만료된 뒤에도 무기한 보관해야 한다는
+  뜻은 아니다 — 이번에 추가한 `delete_change_logs`/`delete_traces`는 세션
+  단위 일괄 삭제만 제공하고, 개별 레코드를 골라 수정·삭제하는 경로는
+  여전히 없다.
+- 채택하지 않은 것:
+  - **Supabase pg_cron으로 DB 안에서 자동 실행** — 서버 없이도 동작하는
+    장점은 있지만, pg_cron 확장 활성화와 별도 SQL 작성이 필요해 지금
+    규모에서는 비용 대비 이득이 작다. 필요해지면 정리 로직을 SQL로 옮기는
+    것 자체는 어렵지 않다.
+  - **`auth.users` 익명 계정 정리를 같은 작업에서 함께 구현** — Admin API
+    접근 권한 확보와 배포 환경 설정이 별도로 필요해 범위를 분리했다. FK가
+    없어 두 정리가 서로 막지 않으므로 순서를 강제할 필요도 없다.
+- 남은 것: 실제 운영에서 스크립트를 얼마나 자주 돌릴지(수동 vs cron
+  자동화)는 트래픽이 늘어난 뒤 다시 판단한다. `auth.users` 정리는 별도
+  카드로 분리 검토.
+- 상세: `backend/app/state/store.py`(`list_stale_session_ids`/
+  `delete_change_logs`/`delete_traces`), `backend/app/state/supabase_store.py`,
+  `backend/scripts/cleanup_expired_sessions.py`, `docs/design/
+  guest-auth-design.md` 10절, `backend/docs/package-b/
+  agent-state-contract-v1.md`
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -2399,3 +2456,4 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-24 | D-044 확장 — 지원 지역 폴리곤을 종로구 1개에서 종로구·중구·용산구·성동구 4개로 늘림(TP-125). 판정 방식(폴리곤 순회)과 D-044 결정 자체는 그대로이고 폴리곤 개수만 바뀐다. 경계 파일은 구별로 두지 않고 서울 25개 구를 `seoul.geojson` 한 장에 담아, 이후 구 확장이 `SUPPORTED_DISTRICTS` 한 줄로 끝나게 했다(214KB·파싱 2.5ms). 파일에 있는 구를 전부 지원하는 방식과 환경변수 지정은 기각. 경계 추출은 `scripts/extract_district_boundaries.py`로 재현 가능. 활성 2,570건 실측 결과 폴리곤 밖 4건(0.16%). 25개 구 대표점 전수 테스트로 지원 여부 판정을 고정. 장소 검색의 종로구 고정 해제는 범위 밖(TP-126) |
 | 2026-08-24 | D-025 개정 — 장소 검색의 종로구 고정을 해제(TP-126). 요청은 `lDongRegnCd=11`까지만 좁히고 지원 구 판정은 응답의 `lDongSignguCd`로 한다. 좌표로 구를 판정하는 안은 기각 — 서울역 부속 시설 72건처럼 등록 구와 좌표가 어긋나는 장소가 빠진다. 구마다 호출하는 안도 기각(호출 수가 구 수만큼 증가). `PLACE_SEARCH_LDONG_DISTRICT_CODE` 상수 제거, 지원 구는 `SUPPORTED_DISTRICTS` 하나가 정하도록 통일(좌표 폴리곤과 같은 출처). 축제 조회와 Supabase `places` 필터도 같은 집합을 쓴다. 구 코드가 빈 응답은 버리되 경고 로그를 남긴다 |
 | 2026-08-24 | D-073 신설 — `session_id`만으로 남의 세션에 접근 가능하던 문제를 닫음(D-063 결정 2 후속). Phase 4(인증 필수화) 전면 도입을 기다리지 않고, `Principal`이 있는 요청에 한해 `session.verify_ownership()`으로 저장된 `user_id`와 대조 — 다르면 403(`session_ownership_mismatch`). `apply()`/`get_session_context()`/`delete_session()`/`ensure_current_context()`와 각 라우트까지 배선. `routes/state.py`가 `principal`을 선언만 하고 쓰지 않던 배선 공백을 함께 닫음 |
+| 2026-08-24 | D-074 신설 — 만료된 익명 세션·이력 정리(TP-134). `agent_states.last_active_at` 기준 30일(조정 가능) 이상 미사용 세션을 `agent_states`/`recommendation_histories`/`condition_change_logs`/`trace_records` 네 테이블에서 함께 삭제. append-only 두 테이블에 세션 단위 일괄 삭제(`delete_change_logs`/`delete_traces`)를 처음 추가 — 개별 레코드 수정·선택 삭제는 여전히 불가. 삭제 순서는 자식 테이블 먼저, `agent_states` 마지막(중간 실패해도 다음 실행이 재시도 가능하도록). 실행은 Supabase pg_cron 대신 `scripts/cleanup_expired_sessions.py` 수동/외부 스케줄 스크립트로 구현(`--dry-run` 지원). `auth.users` 익명 계정 정리는 FK가 없어(D-063 결정 4) 독립적으로 실행 가능하다고 보고 이번 범위에서 제외 |

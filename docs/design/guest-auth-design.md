@@ -436,6 +436,13 @@ Phase 2는 의존성 안에서 끝나 `run_agent()`를 건드리지 않았으나
   - 켤 때는 Turnstile이 사용자에게 화면을 거의 노출하지 않아 UX 손해가 작다.
 - 오래된 익명 사용자 정리 스케줄을 잡는다(예: 30일 미접속 삭제). 정리 시 해당
   `user_id`를 참조하는 행 처리 방침도 함께 정한다.
+  - **갱신(2026-08-24, D-074/TP-134):** B가 소유한 네 테이블(`agent_states`/
+    `recommendation_histories`/`condition_change_logs`/`trace_records`)
+    쪽은 `backend/scripts/cleanup_expired_sessions.py`로 닫았다 —
+    `agent_states.last_active_at` 기준 30일(조정 가능) 이상 미사용 세션을
+    수동/외부 스케줄로 정리한다. `auth.users`의 익명 계정 자체를 지우는
+    스케줄(Supabase Admin API 필요)은 여전히 별도 과제로 남아 있다 — FK가
+    없어(D-063 결정 4) 두 정리는 서로 의존하지 않고 독립적으로 실행 가능하다.
 
 ## 11. 반영 순서
 
