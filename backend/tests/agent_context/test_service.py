@@ -410,7 +410,7 @@ class _CountingGeocodingProvider:
 
     질의 문자열은 기록하되 단언하지 않는다 — 종로구 랜드마크는 Provider에 닿기 전에
     formal 주소로 치환되므로("경복궁" → "서울특별시 종로구 사직로 161") 발화 문자열과
-    다르다(geocoding.py::_JONGNO_LANDMARK_ADDRESS_ALIASES).
+    다르다(geocoding.py::_LANDMARK_ADDRESS_ALIASES).
     """
 
     def __init__(self) -> None:
