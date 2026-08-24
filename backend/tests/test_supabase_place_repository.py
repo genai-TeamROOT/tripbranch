@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest import mock
 from uuid import UUID
 
 import httpx
 import pytest
 
-from app.domain.models import StoredPlaceState, TourPlaceRecord
+from app.domain.models import (
+    PlaceBarrierFreeDetails,
+    StoredPlaceState,
+    TourPlaceRecord,
+)
 from app.repositories.supabase_places import (
     SupabasePlaceRepository,
     SupabaseRepositoryError,
@@ -1085,3 +1090,111 @@ async def test_detail_call_summary_separates_unmeasured_runs() -> None:
     assert summary == {"count": 489, "runs": 3, "runs_without_count": 1}
     # 오늘 것만 세야 한다 — 경계를 안 걸면 누적 전체가 오늘 사용량으로 보인다.
     assert captured[0].url.params["started_at"].startswith("gte.")
+
+
+@pytest.mark.asyncio
+async def test_무장애_upsert는_부른_장소만_행으로_만든다() -> None:
+    """목록에 없는 장소는 행을 만들지 않는다.
+
+    없다는 사실은 무장애 목록 조회가 매번 알려주므로 저장할 이유가 없다 —
+    종로구에서 그렇게 쌓인 빈 행이 590개였다. 반대로 불러서 값이 비어 온 장소는
+    행을 남긴다. 그래야 같은 빈 응답을 다시 받지 않는다.
+    """
+    posted: list[tuple[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        posted.append((str(request.url), json.loads(request.content)))
+        return httpx.Response(201, json=[])
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        repository = _repository(transport, client)
+        await repository.upsert_barrier_free_details(
+            [
+                PlaceBarrierFreeDetails(
+                    content_id="126508",
+                    accessible_restroom_raw="장애인 화장실 있음",
+                    wheelchair_rental_raw="대여가능",
+                ),
+                # 항목이 미입력인 장소(쇼핑몰 입점 매장 60건이 이 모양이다).
+                PlaceBarrierFreeDetails(content_id="3306733"),
+            ],
+            NOW,
+        )
+
+    rows = [row for _, payload in posted for row in payload]  # type: ignore[union-attr]
+    by_id = {row["content_id"]: row for row in rows}
+    assert all("/place_barrier_free" in url for url, _ in posted)
+    assert all("on_conflict=content_id" in url for url, _ in posted)
+    assert sorted(by_id) == ["126508", "3306733"]
+
+    filled = by_id["126508"]
+    assert filled["accessible_restroom_raw"] == "장애인 화장실 있음"
+    assert filled["wheelchair_rental_raw"] == "대여가능"
+    # 값이 없는 필드도 null로 보낸다 — 옛 값이 남으면 근거 없는 문장을 계속 내보낸다.
+    assert filled["stroller_rental_raw"] is None
+
+    # 미입력 장소도 fetched_at은 남는다. 그게 "불러봤다"는 표시다.
+    empty = by_id["3306733"]
+    assert empty["fetched_at"] is not None
+    assert empty["accessible_restroom_raw"] is None
+
+
+@pytest.mark.asyncio
+async def test_무장애_상세가_없으면_요청하지_않는다() -> None:
+    """부른 장소가 없는데 빈 POST를 보내면 PostgREST가 400을 낸다."""
+    posted: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        posted.append(str(request.url))
+        return httpx.Response(201, json=[])
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        repository = _repository(transport, client)
+        await repository.upsert_barrier_free_details([], NOW)
+
+    assert posted == []
+
+
+@pytest.mark.asyncio
+async def test_무장애_확인_시각은_값이_비어도_읽는다() -> None:
+    """값이 없다고 다시 부르면 "목록에 있는데 값이 없는" 장소를 매번 재조회한다."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/place_barrier_free")
+        assert request.url.params["select"] == "content_id,fetched_at"
+        return httpx.Response(
+            200,
+            json=[{"content_id": "126508", "fetched_at": "2026-08-25T03:00:00+00:00"}],
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        repository = _repository(transport, client)
+        fetched = await repository.list_barrier_free_fetched_at(["126508", "999"])
+
+    assert list(fetched) == ["126508"]
+    assert fetched["126508"] == datetime(2026, 8, 25, 3, 0, tzinfo=UTC)
+
+
+def test_무장애_필드가_전부_마이그레이션에_있다() -> None:
+    """계약 필드를 늘리고 마이그레이션을 안 고치면 저장이 통째로 실패한다.
+
+    이 저장소에서 반복된 실패 유형이라(미완결 스키마 마이그레이션) 파일을 직접
+    읽어 대조한다.
+    """
+    migration = (
+        Path(__file__).resolve().parents[2]
+        / "supabase"
+        / "migrations"
+        / "202608250001_create_place_barrier_free.sql"
+    ).read_text(encoding="utf-8")
+
+    fields = {
+        name
+        for name in vars(PlaceBarrierFreeDetails(content_id="1"))
+        if name != "content_id"
+    }
+    missing = {field for field in fields if f"  {field} text" not in migration}
+    assert missing == set()
