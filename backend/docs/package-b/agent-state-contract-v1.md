@@ -49,7 +49,7 @@ B가 어떤 형식으로 되돌려주는지를 확정하는 것이 목적이다.
 값의 우선순위를 판단하는 행위이므로 패키지 A의 책임이다.
 B는 두 층을 분리해 저장하고 그대로 반환한다.
 
-### 1.2 user_conditions (16개 필드)
+### 1.2 user_conditions (17개 필드)
 
 `intent-definition.md` v0.2 및 `conditions-schema.md` 2절의 `Conditions`를 채택한다.
 
@@ -71,6 +71,7 @@ B는 두 층을 분리해 저장하고 그대로 반환한다.
 | 14 | `special_requirements` | list[string] | 복수 | 특수 요구사항 |
 | 15 | `concentration_intent` | string \| null | 단일 | 혼잡도 대응 방향(`AVOID`/`SEEK`/`IGNORE`) — weather_intent와 동일 패턴 |
 | 16 | `taste_query` | string \| null | 단일 | 취향 발화 원문(2026-08-19 신설). 벡터 검색 질의로 쓴다 — `special_requirements`와 달리 일정·교통 조건을 섞지 않는다 |
+| 17 | `travel_origin` | string \| null | 단일 | 이동시간의 출발점 판정(2026-08-22 신설, D-071). `"user_location"` \| `"search_center"`. "안국역에서 10분"처럼 조사가 출발점을 확정할 때만 `"search_center"` |
 
 - 복수 필드는 `place_types`, `place_tags`, `exclude_tags`, `special_requirements` 4개다.
 - **이 필드들은 사용자가 말한 값만 담는다.** API로 확보한 값은 `api_context`에 저장한다.
@@ -265,8 +266,9 @@ B가 임의로 규칙화하지 않기 위함). 기존 세션은 `null`이며, A�
 | `exclude_tags` | 복수 | `Add` / `Remove` | 해당 원소 제거 |
 | `special_requirements` | 복수 | `Add` / `Remove` | 해당 원소 제거 |
 | `taste_query` | 단일 | `Update` / `Remove` | `null`로 설정 |
+| `travel_origin` | 단일 | `Update` / `Remove` | `null`로 설정 |
 
-**16개 필드 모두 `Remove`를 허용한다.**
+**17개 필드 모두 `Remove`를 허용한다.**
 `conditions-schema.md` v0.3에서 `current_location`의 필수 지위가
 `api_context.gps_location`으로 이관되었으므로,
 `user_conditions`에는 해제 불가 필드가 없다.

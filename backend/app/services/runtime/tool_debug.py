@@ -40,6 +40,8 @@ from app.schemas import (
     ToolContextItemDebug,
     ToolExecutionDebug,
     ToolProviderDebug,
+    TravelOrigin,
+    UserConditions,
 )
 
 logger = logging.getLogger(__name__)
@@ -130,13 +132,16 @@ def _user_location(context: RecommendationContext | None) -> ResolvedLocation | 
 def _to_location_debug(
     location: ResolvedLocation | None,
     *,
-    source: Literal["query", "device_gps", "search_center"] | None = None,
+    source: Literal["query", "device_gps", "search_center", "travel_origin_override"]
+    | None = None,
 ) -> LocationDebug | None:
     """C의 ResolvedLocation을 표시용 위치로 옮긴다.
 
-    source를 넘기면 그 값으로 덮어쓴다 — 경로 시작점이 사용자 위치를 못 구해 검색
-    위치로 대체된 경우에만 쓴다. 그때 실린 ResolvedLocation은 검색 위치의 것이라
-    자기 source("query"/"device_gps")를 그대로 두면 대체됐다는 사실이 사라진다.
+    source를 넘기면 그 값으로 덮어쓴다 — 경로 시작점이 사용자 위치가 아닌 검색
+    위치를 쓴 경우에만 쓴다("search_center"=위치를 몰라 대체,
+    "travel_origin_override"=발화가 확정해서 선택, D-071). 그때 실린
+    ResolvedLocation은 검색 위치의 것이라 자기 source("query"/"device_gps")를
+    그대로 두면 어느 경로로 골랐는지가 사라진다.
     """
 
     if location is None:
@@ -150,7 +155,10 @@ def _to_location_debug(
     )
 
 
-def _to_route_origin_debug(context: RecommendationContext | None) -> LocationDebug | None:
+def _to_route_origin_debug(
+    context: RecommendationContext | None,
+    conditions: UserConditions | None = None,
+) -> LocationDebug | None:
     """이번 턴의 거리·실측 경로가 실제로 기준 삼은 지점.
 
     시작점을 고르는 규칙(user_location을 쓰되 없으면 location으로 내려간다)을 이
@@ -163,7 +171,7 @@ def _to_route_origin_debug(context: RecommendationContext | None) -> LocationDeb
 
     if context is None:
         return None
-    origin = resolve_ranking_origin(context)
+    origin = resolve_ranking_origin(context, conditions)
     if origin is None:
         return None
     # 사용자 위치가 그대로 시작점이 됐는지, 못 구해서 검색 위치로 내려갔는지를 가른다.
@@ -176,13 +184,24 @@ def _to_route_origin_debug(context: RecommendationContext | None) -> LocationDeb
     # 사용자 위치에 값이 있는데 랭킹 판정에서 걸러지는 경우가 생기지 않기 때문이다.
     # 다만 그건 C 계약이 그렇게 막고 있어서 성립하는 결론이라 여기서 다시 기대지 않는다.
     is_user_location = origin is _user_location(context)
-    return _to_location_debug(origin, source=None if is_user_location else "search_center")
+    if is_user_location:
+        source = None
+    elif conditions is not None and conditions.travel_origin is TravelOrigin.SEARCH_CENTER:
+        # 사용자 위치를 몰라서가 아니라 발화가 조사로 출발점을 확정해 검색
+        # 위치를 골랐다(D-071) — 대체가 아니라 정상 동작이므로 다른 source를
+        # 쓴다. 그렇지 않으면 이 정상 케이스까지 "위치를 몰라서 대체됨"으로
+        # 잘못 경고하게 된다(TurnLocationBadges.tsx의 warn 판정 근거).
+        source = "travel_origin_override"
+    else:
+        source = "search_center"
+    return _to_location_debug(origin, source=source)
 
 
 def build_tool_execution_debug(
     response: AgentContextResponse,
     *,
     latency_ms: int | None = None,
+    conditions: UserConditions | None = None,
 ) -> ToolExecutionDebug | None:
     """C 응답에서 감사용 표시 정보를 뽑는다. 실패하면 None을 반환한다.
 
@@ -208,7 +227,7 @@ def build_tool_execution_debug(
             resolved_location_address=location.address if location else None,
             search_location=_to_location_debug(location),
             user_location=_to_location_debug(_user_location(context)),
-            route_origin=_to_route_origin_debug(context),
+            route_origin=_to_route_origin_debug(context, conditions),
             error_code=response.error.code if response.error is not None else None,
             clarification_code=(
                 response.clarification.code if response.clarification is not None else None

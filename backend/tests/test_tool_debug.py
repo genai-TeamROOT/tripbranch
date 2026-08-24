@@ -33,6 +33,7 @@ from app.agent_context.schemas import (
     ResponseMetadata,
     WeatherForecast,
 )
+from app.schemas import TravelOrigin, UserConditions
 from app.services.runtime.tool_debug import (
     build_candidate_enrichment_execution_debug,
     build_info_concentration_execution_debug,
@@ -393,6 +394,33 @@ def test_사용자_위치가_있으면_경로_시작점이_그_위치다() -> No
     assert debug.route_origin is not None
     assert (debug.route_origin.name, debug.route_origin.source) == ("안국역", "query")
     assert debug.route_origin.latitude == 37.5765
+
+
+def test_발화가_출발점을_확정하면_시작점이_대체가_아니라_확정으로_표시된다() -> None:
+    """"안국역에서 10분"(D-071)은 사용자 위치를 몰라서 검색 위치로 내려간 게
+    아니다 — 사용자 위치(안국역)를 알면서도 발화가 검색 위치(경복궁)를 출발점으로
+    확정했다. source가 "search_center"로 뭉뚱그려지면 위 대체 케이스와 똑같이
+    "위치를 몰라서 대체됨"으로 잘못 경고하게 된다.
+    """
+
+    debug = build_tool_execution_debug(
+        _context_response(
+            RecommendationContext(
+                location=_location_value(),
+                user_location=_spoken_user_location_value(),
+            )
+        ),
+        conditions=UserConditions(travel_origin=TravelOrigin.SEARCH_CENTER),
+    )
+
+    assert debug is not None
+    assert debug.user_location is not None
+    assert debug.user_location.name == "안국역"
+    assert debug.route_origin is not None
+    assert (debug.route_origin.name, debug.route_origin.source) == (
+        "경복궁",
+        "travel_origin_override",
+    )
 
 
 def test_사용자_위치가_없으면_시작점이_검색_위치로_대체된_것을_드러낸다() -> None:

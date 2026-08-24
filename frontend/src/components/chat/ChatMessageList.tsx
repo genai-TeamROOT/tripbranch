@@ -12,7 +12,7 @@
  */
 
 import { useEffect, useState } from "react";
-import type { AgentProgressEvent, ChatMessage } from "../../types";
+import type { AgentProgressEvent, ChatMessage, TravelOriginToggle } from "../../types";
 import { AgentProgressMessage } from "./AgentProgressMessage";
 import { ClarificationMessage } from "./ClarificationMessage";
 import { CompareResultCards } from "./CompareResultCards";
@@ -74,6 +74,7 @@ interface ChatMessageListProps {
   onRequestMore: () => void;
   onRelaxRadius: () => void;
   onSelectClarificationOption: (optionId: string, label: string) => void;
+  onToggleTravelOrigin?: (toggle: TravelOriginToggle) => void;
   locationRefresh: {
     ageMinutes: number | null;
     onUsePrevious: () => void;
@@ -92,6 +93,7 @@ export function ChatMessageList({
   onRequestMore,
   onRelaxRadius,
   onSelectClarificationOption,
+  onToggleTravelOrigin,
   locationRefresh,
   progress,
 }: ChatMessageListProps) {
@@ -223,12 +225,14 @@ export function ChatMessageList({
               key={message.id}
               recommendations={message.recommendations}
               unverifiedRecommendations={message.unverified_recommendations}
+              travelOriginToggle={message.travel_origin_toggle}
               elapsedMs={message.elapsed_ms}
               serverElapsedMs={message.server_elapsed_ms}
               showElapsedTime={isDeveloperView}
               isLoading={isLoading}
               onRequestMore={onRequestMore}
               onRelaxRadius={onRelaxRadius}
+              onToggleTravelOrigin={onToggleTravelOrigin}
             />
           );
         })}

@@ -64,6 +64,7 @@ from app.schemas import (
     RecommendPayload,
     ScheduleItem,
     ToolExecutionDebug,
+    TravelOrigin,
     UserConditions,
 )
 from app.services.interpret.orchestrator import build_interpretation
@@ -799,6 +800,46 @@ def _resolve_clarification_choice(
     return None
 
 
+# "OO 기준으로 다시 보기" 비차단형 전환(D-071, TravelOriginToggle)이 결정적으로 재실행할
+# 수 있는 Intent. 직전 답변이 RecommendPayload로 조건을 나르는 두 Intent만 대상이다 —
+# _resolve_clarification_choice의 location_required와 같은 이유.
+_TRAVEL_ORIGIN_OVERRIDE_RESOLVABLE_INTENTS = frozenset(
+    {Intent.RECOMMEND.value, Intent.SCHEDULE.value}
+)
+
+
+def _resolve_travel_origin_override(
+    *, override: TravelOrigin, session_context: SessionContextResponse
+) -> _ClarificationResolution | None:
+    """"OO 기준으로 다시 보기" 버튼 클릭을 결정적으로 해소한다.
+
+    되묻기(_resolve_clarification_choice)와 달리 pending_clarification을 요구하지
+    않는다 — 이 버튼은 완결된 답변 아래에 조건부로 붙는 비차단형 제안이라(D-071,
+    TravelOriginToggle) 직전 턴이 되묻기로 끝났을 필요가 없다. 세션에 이미 병합된
+    조건(session_context.user_conditions)을 그대로 재사용해 travel_origin만
+    override로 덮어쓴다 — classify_intent()/extract_recommend_conditions() 호출
+    없이 즉시 재실행한다.
+
+    직전 턴이 RECOMMEND/SCHEDULE가 아니거나 아직 추천 결과가 없으면(새로고침 뒤
+    오래된 버튼 클릭 등) None을 반환해 평소 build_interpretation() 경로로
+    폴백한다 — 절대 죽지 않는다.
+    """
+    if session_context.last_intent not in _TRAVEL_ORIGIN_OVERRIDE_RESOLVABLE_INTENTS:
+        return None
+    if not session_context.has_recommendation:
+        return None
+    conditions = to_user_conditions(session_context.user_conditions).model_copy(
+        update={"travel_origin": override}
+    )
+    return _ClarificationResolution(
+        llm_output=LLMOutput(
+            intent=Intent(session_context.last_intent),
+            status=OutputStatus.COMPLETE,
+            recommend=RecommendPayload(conditions=conditions),
+        )
+    )
+
+
 # C 단계에서 Recommendation으로 못 넘어가는 status. needs_clarification은 조건 재질문(사용자
 # 응답 필요), unsupported/unavailable은 그 자체로 안내만 하고 끝나는 상태다(계약 문서 §5.4).
 # no_data도 후보가 없어 D에 넘길 것이 없다 — 빈 후보로 Scoring을 돌려도 결과는 같으므로
@@ -1008,6 +1049,7 @@ async def _fetch_travel_routes(
     context: RecommendationContext,
     prepared: PreparedRecommendationResult,
     mode: TravelMode | None,
+    conditions: UserConditions | None = None,
 ) -> tuple[TravelRoute, ...]:
     """하드 필터 통과 후보만 실측 조회하고 D에 넘길 도메인 결과를 반환한다.
 
@@ -1038,7 +1080,7 @@ async def _fetch_travel_routes(
 
     # 실측 경로도 거리 계산과 같은 기준점에서 잰다 — 한쪽만 사용자 기준이면
     # 실측이 있는 후보와 없는 후보가 서로 다른 자로 채점된다(TP-112).
-    origin = (resolve_ranking_origin(context) or resolved_location).location
+    origin = (resolve_ranking_origin(context, conditions) or resolved_location).location
     result = await route_tool.execute(
         TravelRouteQuery(
             origin=GeoCoordinate(
@@ -1259,14 +1301,21 @@ async def run_agent_flow(
     # 되묻기 버튼 클릭이면 classify_intent()/extract_*_conditions()를 건너뛰고
     # 결정적으로 해소한다(docs/design/clarification-options.md 3절). code/choice_id가
     # 안 맞으면 None이 와서 아래 평소 경로로 자연스럽게 폴백한다.
-    clarification_resolution = (
-        _resolve_clarification_choice(
+    # "OO 기준으로 다시 보기" 버튼(travel_origin_override, D-071)도 같은 이유로
+    # 결정적으로 해소한다 — 둘 다 세션에 온 요청이면 클라리피케이션 쪽을 우선한다
+    # (두 필드가 같은 턴에 함께 오는 경우는 없다).
+    if request.clarification_choice is not None:
+        clarification_resolution = _resolve_clarification_choice(
             choice_id=request.clarification_choice,
             session_context=session_context,
         )
-        if request.clarification_choice is not None
-        else None
-    )
+    elif request.travel_origin_override is not None:
+        clarification_resolution = _resolve_travel_origin_override(
+            override=request.travel_origin_override,
+            session_context=session_context,
+        )
+    else:
+        clarification_resolution = None
     # 이번 턴에 막 선택했거나(clarification_resolution), 직전에 선택해서 아직
     # TTL 안이거나(session_context), 개발자 채팅의 일회성 디버그 스위치가
     # 켜졌으면 폐점 후보도 계속 포함한다.
@@ -1764,7 +1813,9 @@ async def run_agent_flow(
     tool_latency_ms = int((time.monotonic() - tool_started_at) * 1000)
     # 개발자용 Audit 표시 정보. 아래 어느 경로로 응답이 끝나든 C를 호출한 사실은
     # 남아야 하므로 여기서 한 번만 만들어 모든 return에 함께 싣는다.
-    tool_execution = build_tool_execution_debug(tool_response, latency_ms=tool_latency_ms)
+    tool_execution = build_tool_execution_debug(
+        tool_response, latency_ms=tool_latency_ms, conditions=agent_conditions
+    )
     tool_executions = [tool_execution] if tool_execution is not None else []
     _record_trace_safely(
         session_id=state_response.session_id,
@@ -2009,6 +2060,7 @@ async def run_agent_flow(
             refill_execution = build_tool_execution_debug(
                 refill_response,
                 latency_ms=refill_latency_ms,
+                conditions=agent_conditions,
             )
             if refill_execution is not None:
                 tool_executions.append(refill_execution)
@@ -2072,6 +2124,7 @@ async def run_agent_flow(
             tool_context,
             merged_prepared,
             to_travel_mode(agent_conditions),
+            agent_conditions,
         )
         recommendations = await recommendation_provider.score_prepared(
             agent_conditions,

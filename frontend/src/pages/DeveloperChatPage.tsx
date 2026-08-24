@@ -27,6 +27,7 @@ import { buildAgentStageTimings } from "../utils/agentTiming";
 import { getLatestConversationPlaceName } from "../utils/conversationPlace";
 import { getBrowserDeviceLocation } from "../utils/geolocation";
 import { getLocationAgeMinutes, isLocationRefreshDue } from "../utils/locationRefresh";
+import type { TravelOrigin } from "../types";
 
 const REQUEST_MORE_PROMPT = "다른 곳 보여줘";
 const RELAX_RADIUS_PROMPT = "검색 범위를 넓혀서 다시 추천해줘";
@@ -34,6 +35,7 @@ const STATUS_COMMAND = "/status";
 interface PendingLocationRefresh {
   text: string;
   clarificationChoice?: string;
+  travelOriginOverride?: TravelOrigin;
 }
 
 export function DeveloperChatPage() {
@@ -140,12 +142,31 @@ export function DeveloperChatPage() {
       clarificationChoice?: string,
       deviceLocationOverride?: string,
       deviceLocationCapturedAt?: number,
+      travelOriginOverride?: TravelOrigin,
     ) => {
-      const deviceLocation = deviceLocationOverride ?? state.device_location;
+      let deviceLocation = deviceLocationOverride ?? state.device_location;
+      let capturedAt = deviceLocationCapturedAt;
+      // /dev-chat은 HomePage를 거치지 않고 바로 들어올 수 있어 첫 턴엔 위치가 없다.
+      // null로 계속 보내면 위치를 아예 모르는 채로만 테스트하게 돼 travel_origin
+      // 같은 위치 기반 기능을 이 화면에서 확인할 수 없다 — 아직 없을 때만
+      // HomePage와 같은 방식으로 한 번 가져온다. 이미 있으면(override든 이전
+      // 턴에 저장된 값이든) 다시 묻지 않는다.
+      if (deviceLocation === null) {
+        try {
+          deviceLocation = await getBrowserDeviceLocation();
+          capturedAt = Date.now();
+        } catch (error) {
+          dispatch({
+            type: "SET_ERROR",
+            payload: error instanceof Error ? error.message : "위치를 가져오지 못했어요.",
+          });
+          return;
+        }
+      }
       const conversationPlaceName = getLatestConversationPlaceName(state.messages);
       dispatch({
         type: "START_CHAT_TURN",
-        payload: { userInput: text, deviceLocation: deviceLocationOverride, deviceLocationCapturedAt },
+        payload: { userInput: text, deviceLocation, deviceLocationCapturedAt: capturedAt },
       });
       const startedAt = performance.now();
       const progressEvents = [] as import("../types").AgentProgressEvent[];
@@ -161,6 +182,7 @@ export function DeveloperChatPage() {
             device_location: deviceLocation,
             conversation_place_name: conversationPlaceName,
             clarification_choice: clarificationChoice ?? null,
+            travel_origin_override: travelOriginOverride ?? null,
             debug_ignore_operating_hours: debugIgnoreOperatingHours,
           },
           (event) => {
@@ -267,12 +289,12 @@ export function DeveloperChatPage() {
   const locationAgeMinutes = getLocationAgeMinutes(state.device_location_captured_at);
 
   const requestSend = useCallback(
-    async (text: string, clarificationChoice?: string) => {
+    async (text: string, clarificationChoice?: string, travelOriginOverride?: TravelOrigin) => {
       if (isLocationRefreshDue(state.device_location, state.device_location_captured_at)) {
-        setPendingLocationRefresh({ text, clarificationChoice });
+        setPendingLocationRefresh({ text, clarificationChoice, travelOriginOverride });
         return;
       }
-      await send(text, clarificationChoice);
+      await send(text, clarificationChoice, undefined, undefined, travelOriginOverride);
     },
     [send, state.device_location, state.device_location_captured_at],
   );
@@ -281,7 +303,7 @@ export function DeveloperChatPage() {
     if (!pendingLocationRefresh) return;
     const pending = pendingLocationRefresh;
     setPendingLocationRefresh(null);
-    void send(pending.text, pending.clarificationChoice);
+    void send(pending.text, pending.clarificationChoice, undefined, undefined, pending.travelOriginOverride);
   }, [pendingLocationRefresh, send]);
 
   const refreshBrowserLocation = useCallback(async () => {
@@ -290,7 +312,13 @@ export function DeveloperChatPage() {
       const deviceLocation = await getBrowserDeviceLocation({ forceFresh: true });
       const pending = pendingLocationRefresh;
       setPendingLocationRefresh(null);
-      await send(pending.text, pending.clarificationChoice, deviceLocation, Date.now());
+      await send(
+        pending.text,
+        pending.clarificationChoice,
+        deviceLocation,
+        Date.now(),
+        pending.travelOriginOverride,
+      );
     } catch (error) {
       dispatch({
         type: "SET_ERROR",
@@ -388,6 +416,13 @@ export function DeveloperChatPage() {
               onRequestMore={() => void requestSend(REQUEST_MORE_PROMPT)}
               onRelaxRadius={() => void requestSend(RELAX_RADIUS_PROMPT)}
               onSelectClarificationOption={(optionId, label) => void requestSend(label, optionId)}
+              onToggleTravelOrigin={(toggle) => {
+                const label =
+                  toggle.alternative_origin === "search_center"
+                    ? `${toggle.alternative_origin_name} 기준으로 다시 보기`
+                    : "현재 위치 기준으로 다시 보기";
+                void requestSend(label, undefined, toggle.alternative_origin);
+              }}
               locationRefresh={
                 pendingLocationRefresh
                   ? {

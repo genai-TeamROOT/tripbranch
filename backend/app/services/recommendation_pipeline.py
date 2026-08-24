@@ -24,7 +24,11 @@ from app.domain.models import (
     ScoringCandidate,
     WeatherCondition,
 )
-from app.domain.ranking_origin import resolve_ranking_origin, resolve_user_to_target_km
+from app.domain.ranking_origin import (
+    resolve_ranking_origin,
+    resolve_travel_origin_toggle,
+    resolve_user_to_target_km,
+)
 from app.domain.scoring import (
     ExclusionReason,
     PrepareResult,
@@ -46,6 +50,8 @@ from app.recommendation_limits import DEFAULT_RECOMMENDATION_RESULT_LIMIT
 from app.schemas import (
     RecommendationItem,
     RecommendationResponse,
+    TravelOrigin,
+    TravelOriginToggle,
     UserConditions,
     WeatherIntent,
 )
@@ -98,6 +104,9 @@ class PreparedRecommendationResult:
     # 거리 점수 분모에 더할 값(km). 위와 같은 이유로 첫 배치 값을 쓴다.
     # 계산 근거는 _distance_denominator_offset_km() 참고.
     distance_denominator_offset_km: float = 0.0
+    # "OO 기준으로 다시 보기" 비차단형 전환 제안(D-071). 위와 같은 이유로
+    # 첫 배치 값을 쓴다 — resolve_travel_origin_toggle() 참고.
+    travel_origin_toggle: TravelOriginToggle | None = None
 
     @property
     def filter_context(self) -> tuple[object, ...]:
@@ -175,6 +184,7 @@ def merge_prepared_recommendations(
         ignore_operating_hours=first.ignore_operating_hours,
         origin_name=first.origin_name,
         distance_denominator_offset_km=first.distance_denominator_offset_km,
+        travel_origin_toggle=first.travel_origin_toggle,
     )
 
 
@@ -234,7 +244,9 @@ async def prepare_recommendation_from_context(
             retryable=error.retryable if error else True,
         )
 
-    candidates = map_context_to_scoring_candidates(context, visit_at=visit_at)
+    candidates = map_context_to_scoring_candidates(
+        context, visit_at=visit_at, conditions=conditions
+    )
     resolved_weather_condition, weather_reason = resolve_weather_condition(context, conditions)
     preparation = prepare_candidates(
         candidates,
@@ -258,8 +270,9 @@ async def prepare_recommendation_from_context(
         visit_at=visit_at,
         weather_ignored=_is_weather_explicitly_ignored(context, conditions),
         ignore_operating_hours=ignore_operating_hours,
-        origin_name=resolve_origin_name(context),
+        origin_name=resolve_origin_name(context, conditions),
         distance_denominator_offset_km=_distance_denominator_offset_km(context, conditions),
+        travel_origin_toggle=resolve_travel_origin_toggle(context, conditions),
     )
 
 
@@ -320,6 +333,7 @@ async def score_prepared_recommendation(
         excluded_all_closed=excluded_all_closed,
         excluded_closed_place_ids=excluded_closed_place_ids,
         origin_name=prepared.origin_name,
+        travel_origin_toggle=prepared.travel_origin_toggle,
     )
     return response.model_copy(update={"elapsed_ms": round((timer() - started_at) * 1000, 2)})
 
@@ -616,7 +630,15 @@ def _distance_denominator_offset_km(
 
     사용자 위치를 모르면(발화도 GPS도 없음) 0.0이다 — 그때는 거리 자체가 타겟
     기준으로 계산되므로 분모도 그대로 두어야 짝이 맞는다.
+
+    **출발점이 검색 기준점으로 확정된 요청도 0.0이다**("안국역에서 10분",
+    `conditions.travel_origin == TravelOrigin.SEARCH_CENTER`). 그때는
+    `resolve_ranking_origin()`이 분자도 검색 기준점 기준으로 재므로(D-071)
+    원점이 이미 타겟과 같다 — 이 오프셋을 더하면 사용자 위치와 타겟 사이의
+    거리를 엉뚱하게 얹히게 된다.
     """
+    if conditions is not None and conditions.travel_origin is TravelOrigin.SEARCH_CENTER:
+        return 0.0
     if conditions is not None and conditions.max_travel_time is not None:
         return 0.0
     if context is None:
@@ -624,7 +646,10 @@ def _distance_denominator_offset_km(
     return resolve_user_to_target_km(context) or 0.0
 
 
-def resolve_origin_name(context: RecommendationContext) -> str | None:
+def resolve_origin_name(
+    context: RecommendationContext,
+    conditions: UserConditions | None = None,
+) -> str | None:
     """거리·경로의 기준점을 사용자에게 뭐라고 부를지 정한다.
 
     부르는 대상은 **랭킹 기준점**이다(`ranking_origin.resolve_ranking_origin`).
@@ -642,7 +667,7 @@ def resolve_origin_name(context: RecommendationContext) -> str | None:
     된다. `requested_query`는 수식어를 뗀 사용자 발화라 언제나 부를 수 있는
     이름이다(`tools/resolve_location.py::strip_location_modifiers()`).
     """
-    origin = resolve_ranking_origin(context)
+    origin = resolve_ranking_origin(context, conditions)
     if origin is None or origin.source == "device_gps":
         return None
     return origin.requested_query
@@ -693,6 +718,7 @@ def _build_response(
     excluded_all_closed: bool = False,
     excluded_closed_place_ids: Sequence[str] = (),
     origin_name: str | None = None,
+    travel_origin_toggle: TravelOriginToggle | None = None,
 ) -> RecommendationResponse:
     candidate_by_id = {item.place_id: item for item in candidates}
     verified: list[RecommendationItem] = []
@@ -737,6 +763,7 @@ def _build_response(
     return RecommendationResponse(
         recommendations=verified,
         unverified_recommendations=unverified,
+        travel_origin_toggle=travel_origin_toggle,
         elapsed_ms=0,
         excluded_all_closed=excluded_all_closed,
         excluded_closed_place_ids=list(excluded_closed_place_ids),

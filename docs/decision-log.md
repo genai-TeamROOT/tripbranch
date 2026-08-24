@@ -2147,6 +2147,85 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `backend/app/state/service.py`(`RecordFeedbackRequest` validator),
   `frontend/src/components/chat/FeedbackButtons.tsx`
 
+### D-071 — 이동시간 출발점(`travel_origin`) 필드를 신설해 "~~에서"와 "~~ 근처"를 구분한다
+
+- 상태: `Accepted` — 코드 변경 완료, 실 LLM 검증·골드셋 회귀는 별도로 이어서 진행.
+- 배경: "안국역에서 10분 안에 갈 수 있는 카페"(출발점=안국역)와 "안국역 근처에 10분
+  안에 갈 수 있는 카페"(출발점=사용자 위치)는 이동시간을 재는 기준점이 다르다.
+  그런데 `location_rules.md`가 "~~ 근처/주변/가려는데"와 지명 단독을 전부
+  `search_center` 하나로 묶어, 두 발화가 완전히 같은 조건(`search_center="안국역"`)
+  으로 추출됐다 — 구분할 필드 자체가 없었다. D-067(랭킹 기준점을 검색 기준점에서
+  사용자 위치로 이관)은 이 구분이 없는 상태에서 어느 기본값이 더 흔한 케이스를
+  맞추는지 고른 결정이라, "~~ 근처"는 맞고 "~~에서"는 틀린 채로 남아 있었다(그
+  전에는 반대였다). 구분이 없는 한 어느 기본값을 골라도 한쪽은 항상 틀린다.
+- 검토 과정: 애매한 발화를 되묻기 버튼으로 확인할지, 조건 필드로 자동 추출할지를
+  먼저 나눠 검토했다. 발화를 세 유형으로 분류했다 — ① 조사로 이미 확정("~에서/
+  까지", 되물을 필요 없음), ② 기본값으로 충분("근처/주변", 골드셋의 관련 사례
+  전부 이 유형이라 D-067 그대로 맞다), ③ 진짜 애매(조사 없는 "안국역 10분 거리"
+  등, 소수). ①은 필드로 조용히 처리하고 ③만 비차단형 전환 버튼(답을 먼저 준 뒤
+  "OO 기준으로 다시 보기") 대상으로 남기기로 했다 — 버튼을 전체 애매 케이스에
+  걸면 흔한 ②까지 매번 눌러야 하는 게 되고, 필드를 전체에 걸면 판정 못 하는 소수
+  케이스까지 억지로 값을 채우게 된다.
+- 결정:
+  1. `UserConditions`(A)에 `travel_origin: Literal["user_location",
+     "search_center"] | None` 신설(`app.schemas.TravelOrigin`). "~~에서/까지
+     N분"처럼 조사가 출발점을 확정하는 발화만 `"search_center"`로 채우고, 그 외
+     (근처/주변, 조사 없는 발화, max_travel_time 미언급)는 null로 둔다 — null이면
+     기존 D-067 기본값이 그대로 적용된다. `"user_location"`은 추출 단계에서는
+     쓰지 않고, 위 비차단형 전환 버튼이 실제로 생기면 그 전환에 쓸 자리로
+     미리 만들어 둔 값이다.
+  2. `domain/ranking_origin.py::resolve_ranking_origin()`이 `travel_origin`이
+     `SEARCH_CENTER`면 검색 기준점을 그대로 랭킹 기준점으로 쓰고, 그 외에는
+     기존 사용자 위치 우선 규칙(D-067)을 그대로 따른다.
+  3. `recommendation_pipeline.py::_distance_denominator_offset_km()`도
+     `travel_origin=SEARCH_CENTER`면 0.0을 반환하도록 맞췄다 — 이때는 분자도
+     검색 기준점 기준으로 재므로(2) 사용자→기준점 거리를 분모에 얹을 이유가
+     없다.
+  4. `state_transform.py`의 soft reset 시 `search_center`를 복원하는 기존
+     로직(대학로 근처 → 카페 추천해줘류)에, `travel_origin`도 함께 복원하는
+     로직을 추가했다 — 같은 장소가 이어지는 한 그 장소를 어떻게 쓸지의 판정도
+     함께 이어져야 한다. 안 그러면 "안국역에서 10분" 다음 턴 "그럼 조용한
+     데로"에서 `search_center`만 복원되고 `travel_origin`은 초기화돼 기준점이
+     도로 사용자 위치로 바뀐다.
+  5. C(`app.agent_context.schemas.UserConditions`)에는 이 필드를 추가하지
+     않았다 — C는 위치 문자열을 좌표로 해석하는 역할만 하고 랭킹 판정에는
+     관여하지 않으며, `context_transform.to_agent_context_request()`가 C가
+     모르는 필드를 자동으로 걸러내므로(과거 `concentration_intent` 과도기와
+     같은 방식) 추가하지 않아도 안전하게 무시된다.
+- 채택하지 않은 것:
+  - **되묻기 버튼으로 전부 확인** — ②(근처/주변, 골드셋 대부분)까지 매번 눌러야
+    해서 버튼 피로가 커진다.
+  - **`UserConditions`가 아니라 턴 한정(non-persistent) 페이로드에 담기** —
+    처음엔 B 계약(field_spec.py) 변경 부담을 피하려고 이 방향을 검토했으나,
+    실제로는 이번 턴 추출값이 recommendation_pipeline에 도달하기 전에 반드시
+    `state_transform.py`/B 영속 상태를 통과하는 구조라(`RecommendPayload.
+    conditions`가 곧 B 상태 스냅샷) 턴 한정 경로 자체가 존재하지 않았다.
+  - **필드만 먼저 넣고 추출 규칙은 나중에** — `taste_query`가 겪은 "채워지기만
+    하고 아무도 읽지 않는 필드" 패턴(1.0.17 HISTORY 참고)과 같은 실수를 막기
+    위해 스키마·상태 배선·프롬프트 규칙을 한 번에 반영했다.
+- 검증: pytest 2283건 통과(`test_ranking_origin.py`·`test_state_transform.py`
+  신규 케이스 포함), 프롬프트 스냅샷 갱신, ruff 통과. 골드셋에 "~~에서/까지"
+  패턴 사례가 없어(`test_results/intent_classification_results.csv` 확인)
+  `scripts/verify_travel_origin_extraction.py`로 신규 발화 8건을 만들어
+  `gemini-3.5-flash-lite` 2회 실행 16/16 통과 — 조사 확정 3건 전부
+  `search_center`, 근처/주변/가려는데·조사 없음·시간 미언급 5건 전부 null.
+- 남은 것:
+  - 비차단형 전환 버튼(③ 대상)은 이번 범위에 없다. 필요해지면 그때 프론트
+    작업으로 착수한다.
+  - MODIFY(조건 변경) 경로에서 `travel_origin`을 사용자가 직접 바꾸는 발화는
+    아직 다루지 않았다(`_changed_field_operations()`의 `changed_fields`에
+    LLM이 이 필드를 넣을 상황을 아직 검토하지 않음).
+- 상세: `backend/app/schemas.py`(`TravelOrigin`, `UserConditions.travel_origin`),
+  `backend/app/state/schema.py`, `backend/app/state/field_spec.py`,
+  `backend/app/services/interpret/state_transform.py`,
+  `backend/app/domain/ranking_origin.py`, `backend/app/services/
+  recommendation_pipeline.py`, `backend/app/services/runtime/agent_runtime.py`,
+  `backend/app/services/runtime/tool_debug.py`, `backend/app/services/runtime/
+  real_recommendation_provider.py`, `backend/app/domain/candidate_mapper.py`,
+  `backend/app/prompts/recommend/location_rules.md`(2.2.0 → 2.3.0),
+  `backend/docs/package-b/agent-state-contract-v1.md`,
+  `docs/design/conditions-schema.md`
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -2211,3 +2290,4 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-21 | D-068 신설 — 피드백을 남긴 턴에 한해서만 질문·답변 원문(`user_input`/`assistant_message`)을 `response_feedback`에 저장하기로 결정. 대화 전체 로그 저장(guest-auth-design.md 9절이 위험도 "높음"으로 분류)과는 다르며, 사용자가 AskUserQuestion으로 "피드백 남긴 턴만"을 직접 선택. 두 컬럼 모두 nullable |
 | 2026-08-21 | D-069 신설 — D-068 후속. `intent`(assistant_text 메시지 값 그대로 복사)와 `comment`(싫어요 사유 자유 텍스트) 필드 추가. comment는 append-only 중복 방지를 위해 클릭 즉시 전송하지 않고 인라인 입력창(제출/건너뛰기)에서 한 번에 전송. NOT NULL 전면 적용과 `is_clarification`/`clarification_code`(되묻기 메시지엔 피드백 버튼이 아예 없어 채울 수 없음)는 채택하지 않음 |
 | 2026-08-21 | D-070 신설 — 팀원 PR #214(`reason_code` 구조화된 싫어요 사유)를 B 관점에서 검토·반영. FeedbackReasonCode 7값이 DB CHECK와 일치함을 확인, intent/user_input/assistant_message 캡처는 render-time `findTurnText` 방식을 그대로 유지(PR #214가 시도한 reducer-embedding 방식은 미채택). 마이그레이션 `202608210006` 적용 중 `response_feedback_kst` 뷰 컬럼 순서 버그(PostgreSQL 42P16) 발견·수정 |
+| 2026-08-22 | D-071 신설 — "안국역에서 10분"(출발점=안국역)과 "안국역 근처에 10분"(출발점=사용자 위치)을 구분하는 `travel_origin` 필드 신설(D·A). 조사("~에서/까지")로 출발점이 확정되는 발화만 `search_center`로 채우고 그 외(근처/주변, 조사 없는 소수 발화)는 null로 두어 D-067 기본값이 그대로 적용되게 한다. `resolve_ranking_origin()`·`_distance_denominator_offset_km()`·soft reset의 search_center 복원 로직에 함께 배선. `recommend.extract` 2.2.0 → 2.3.0 |

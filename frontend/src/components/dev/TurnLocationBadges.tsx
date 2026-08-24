@@ -10,6 +10,11 @@
  * 앉힌 턴이다 — 그 턴의 거리·실측 경로는 사용자가 자기 위치라고 말한 적 없는 지점에서
  * 잰 값이라, 값 자체는 정상으로 보여도 표기가 사실과 어긋난다. 다른 두 뱃지만으로는
  * 이 대체가 일어났는지 화면에서 알 수 없어 시작점을 따로 둔다.
+ *
+ * source가 "travel_origin_override"인 경우는 다르다 — "안국역에서 10분"처럼 발화가
+ * 조사로 출발점을 확정한 턴이라(D-071), 사용자 위치를 몰라서가 아니라 사용자가 그렇게
+ * 말해서 검색 위치를 쓴다. 사실과 어긋난 게 아니므로 warn 대상이 아니다("search_center"
+ * 만 경고한다).
  */
 
 import { useEffect, useState } from "react";
@@ -45,6 +50,9 @@ const SOURCE_LABELS: Record<LocationDebug["source"], string> = {
   query: "발화",
   device_gps: "기기 GPS",
   search_center: "검색 위치 대체",
+  // "안국역에서 10분"처럼 발화가 조사로 출발점을 확정한 경우(D-071). 사용자
+  // 위치를 몰라서 대체된 게 아니라 정상 동작이라 위 라벨과 구분한다.
+  travel_origin_override: "발화로 확정",
 };
 
 interface BadgeProps {

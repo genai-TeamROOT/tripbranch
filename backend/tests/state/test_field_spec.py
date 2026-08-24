@@ -20,9 +20,10 @@ class TestSchemaConsistency:
         spec_fields = set(fs.FIELD_SPECS.keys())
         assert schema_fields == spec_fields
 
-    def test_필드는_16개다(self):
+    def test_필드는_17개다(self):
         # 2026-08-19: taste_query 추가(취향 발화 전용). 15 -> 16.
-        assert len(fs.FIELD_SPECS) == 16
+        # 2026-08-22: travel_origin 추가(이동시간 출발점 판정, D-071). 16 -> 17.
+        assert len(fs.FIELD_SPECS) == 17
 
     def test_api_context_필드가_스키마와_일치한다(self):
         schema_fields = set(ApiContext.model_fields.keys())
