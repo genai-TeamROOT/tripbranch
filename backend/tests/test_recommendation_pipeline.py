@@ -28,6 +28,7 @@ from app.schemas import (
     RecommendationResponse,
     StatedWeather,
     TasteEvidenceQuote,
+    TravelOriginToggle,
     UserConditions,
     WeatherIntent,
 )
@@ -1181,3 +1182,43 @@ async def test_rerank_with_concentration_preserves_taste_evidence() -> None:
     item = result.recommendations[0]
     assert [q.text for q in item.taste_evidence] == ["평화롭고 고요한 곳", "조용히 쉬기 좋았어요"]
     assert item.taste_evidence[0].similarity == 0.6
+
+    # **필드만 보면 이 버그를 놓친다.** 위 두 assert는 2026-08-24까지 통과하는데도
+    # 근거 문장은 인용문을 잃고 폴백 문구로 떨어져 있었다 — RankedCandidate에
+    # taste_evidence_text를 안 넘겼기 때문이다. 같은 함정을 2026-08-20 도보
+    # 필드에서도 겪었다("이름이 맞는 테스트가 응답 필드만 검사하고 문장은 안 봤다").
+    # 그래서 필드와 문장을 같은 테스트에서 함께 고정한다.
+    taste_sentences = [s for s in item.explanations if "방문 후기에" in s]
+    assert taste_sentences, f"취향 인용문 문장이 없다: {item.explanations}"
+    assert "평화롭고 고요한 곳" in taste_sentences[0]
+    assert "말씀하신 분위기와 잘 맞는 곳이에요." not in item.explanations
+
+
+@pytest.mark.asyncio
+async def test_rerank_with_concentration_preserves_travel_origin_toggle() -> None:
+    """전환 제안도 2차에서 이월해야 한다 — 재순위는 순위만 바꾸고 기준점 판정의
+    입력은 건드리지 않으므로 1차와 같은 결론이다. 안 넘기면 혼잡도 재순위를 탄
+    요청만 "OO 기준으로 다시 보기" 버튼을 잃는다(taste_evidence_text와 같은 유형).
+    """
+    toggle = TravelOriginToggle(
+        alternative_origin="search_center", alternative_origin_name="안국역"
+    )
+    first_pass = RecommendationResponse(
+        recommendations=[
+            _first_pass_item("place-1", distance_km=0.1, distance_score=0.95)
+        ],
+        unverified_recommendations=[],
+        elapsed_ms=0,
+        travel_origin_toggle=toggle,
+    )
+    concentration = CandidateEnrichmentResponse(
+        request_id="req-toggle",
+        status="success",
+        candidates=[_concentration_result("place-1", rate=50.0)],
+    )
+
+    result = await rerank_with_concentration(first_pass, None, concentration, seek=True)
+
+    assert result.travel_origin_toggle is not None
+    assert result.travel_origin_toggle.alternative_origin == "search_center"
+    assert result.travel_origin_toggle.alternative_origin_name == "안국역"
