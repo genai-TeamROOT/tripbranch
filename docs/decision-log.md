@@ -2332,6 +2332,63 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `backend/app/services/runtime/agent_runtime.py`, `backend/app/config.py`,
   `backend/pyproject.toml`, `backend/tests/graph/`
 
+### D-073 — LLM 실행 기록은 갈아끼우지 않고 같은 리스트에 붙인다
+
+- 상태: `Implemented`
+- 배경: D-072 이관 후 팀 검토에서 **개발자 감사 패널의 LLM 정보가 사라지는 것**이
+  발견됐다. 원인은 `llm_execution.py`의 `_calls` ContextVar를 **값 교체**로
+  갱신했다는 것이다(`_calls.set((*_calls.get(), call))`). LangGraph는 노드를 별도
+  asyncio 태스크에서 돌리고, 파이썬은 태스크 생성 시 ContextVar 값을 **복사해서**
+  넘긴다. 그래서 노드 안에서 교체한 값은 복사본만 갈리고 노드가 끝나면 버려졌다.
+  태스크 경계는 값을 안으로 들여보내지만 밖으로 내보내지 않는다.
+- 실측으로 확인한 유실(2026-08-24):
+  1. 조기 반환 경로(GENERAL·OUT_OF_SCOPE·되묻기) 정상 응답의 `llm_execution`이
+     통째로 `None`. 감사 패널의 "LLM 응답 모델"이 빈칸이 되고, "LLM 폴백"은
+     `llmExecution?.calls.some(...)`이 `undefined`로 떨어져 **틀린 "없음"**을 찍는다.
+     빈칸은 "모르겠다"로, "없음"은 "확인했고 안 일어났다"로 읽히므로 후자가 더 나쁘다.
+  2. 노드 안에서 LLM이 실패하면 시도 모델 목록이 502 응답 본문의
+     `details.llm_execution`에서 빠진다(단발 `POST /api/chat`·`/api/agent-debug`
+     한정 — SSE 경로는 제너레이터가 `AppError`를 자체 처리해 이 값을 원래 안 싣는다).
+  3. 추천 파이프라인은 앞 노드 기록을 뒤 노드가 못 읽는다. 지금은 `tool_fetch`·
+     `scoring`이 LLM을 안 불러 잃을 것이 0건이지만, 앞 노드에 호출이 하나 생기면
+     그 줄만 조용히 빠진다(예외·로그·테스트 실패 없음).
+- 결정: `_calls`가 **리스트를 담고**, `reset_llm_execution_metadata()`에서만 새
+  리스트를 넣고, `record_llm_call()`은 그 리스트에 `append`한다. 태스크가 복사해
+  가는 것은 리스트 참조이므로 노드 안에서 붙인 항목이 노드 밖에서도 보인다.
+- 채택하지 않은 것:
+  - **기본값(`default`) 제거** — 검토 문서의 제안이었으나 그대로 하면 새 회귀가
+    생긴다. `main.py`의 `handle_app_error()`는 **전역** `AppError` 핸들러이고,
+    `/api/transcribe`·`/api/dev/*`·`/chat/place-details`처럼 `run_agent()`를 거치지
+    않는(따라서 reset을 부르지 않는) 라우트도 이 핸들러를 탄다. 기본값이 없으면
+    거기서 `LookupError`가 나 **502 계약이 500 미처리 예외로 깨진다.** 대신 기본값을
+    불변 센티널 `None`으로 두고 `record_llm_call()`이 첫 호출에서 리스트를 만든다.
+  - **기본값에 리스트를 두기** — 모든 요청이 같은 리스트를 공유해 이력이 섞인다.
+    ContextVar를 쓰는 목적 자체가 깨지므로 불변 센티널이어야 한다.
+  - **노드가 기록을 상태(state)로 반환해 리듀서로 병합** — 노드를 얇게 유지한다는
+    D-072 원칙과 어긋나고(노드마다 기록 수집 코드가 붙는다), 소비처가 관측 전용
+    필드 하나뿐인데 서류철 칸을 늘리는 값이 없다.
+- 검증: pytest **2,332건 통과**(신규 9건), ruff 통과, 플래그 끈 상태도 동일.
+  신규 테스트는 **`record_llm_call()`을 실제로 부르는 LLM 더블**로 돈다 —
+  `FakeLLMProvider`는 이 함수를 부르지 않아 Fake로 쓰면 수정 전에도 통과해버린다.
+  수정을 되돌려 그중 4건이 실제로 실패하는 것을 확인했다.
+- 이 문제를 기존 검증이 못 잡은 이유: `record_llm_call()`을 부르는 것은
+  `RealGeminiProvider` 하나뿐인데, `tests/conftest.py`가 모든 테스트에서 Fake를
+  강제하고 `scripts/compare_langgraph_parity.py`도 `LLM_PROVIDER=fake`를 무조건
+  지정한다(`--real`에서도). 그래서 D-072의 "차등 비교 전부 일치"는 이 필드에
+  관해서는 **양쪽 모두 `None`이었던** 비교였다. `tests/`에 `llm_execution`을
+  단정하는 테스트가 0건이었던 것도 같은 원인이다. CLAUDE.local.md가 "조용한 fake"로
+  적어둔 실패 유형과 같다 — Fake가 소비 측이 읽는 값을 비워두면, 테스트는 통과하는데
+  검증하려던 로직은 실행되지 않는다.
+- 함께 기록한 것(수정 아님): `_score_recommendations()`가 `tool_executions` 리스트를
+  제자리에서 추가하는데 `scoring_node`는 그 키를 반환하지 않는다. checkpointer가
+  없어 LangGraph가 같은 리스트 객체를 그대로 넘기기 때문에 지금은 `finalize_node`가
+  추가 항목을 정상적으로 읽는다. **checkpointer를 달면 이 결합이 깨진다** — D-072가
+  checkpointer를 쓰지 않는 이유가 하나 더 있는 셈이고, 깨질 때 망가지는 것도 같은
+  감사 패널(Tool 호출 목록의 외부 API 호출 수)이다.
+- 상세: `backend/app/services/runtime/llm_execution.py`,
+  `backend/tests/graph/test_llm_execution_across_nodes.py`,
+  `docs/design/langgraph-adoption.md` §9.13
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -2400,3 +2457,4 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-24 | D-044 확장 — 지원 지역 폴리곤을 종로구 1개에서 종로구·중구·용산구·성동구 4개로 늘림(TP-125). 판정 방식(폴리곤 순회)과 D-044 결정 자체는 그대로이고 폴리곤 개수만 바뀐다. 경계 파일은 구별로 두지 않고 서울 25개 구를 `seoul.geojson` 한 장에 담아, 이후 구 확장이 `SUPPORTED_DISTRICTS` 한 줄로 끝나게 했다(214KB·파싱 2.5ms). 파일에 있는 구를 전부 지원하는 방식과 환경변수 지정은 기각. 경계 추출은 `scripts/extract_district_boundaries.py`로 재현 가능. 활성 2,570건 실측 결과 폴리곤 밖 4건(0.16%). 25개 구 대표점 전수 테스트로 지원 여부 판정을 고정. 장소 검색의 종로구 고정 해제는 범위 밖(TP-126) |
 | 2026-08-24 | D-025 개정 — 장소 검색의 종로구 고정을 해제(TP-126). 요청은 `lDongRegnCd=11`까지만 좁히고 지원 구 판정은 응답의 `lDongSignguCd`로 한다. 좌표로 구를 판정하는 안은 기각 — 서울역 부속 시설 72건처럼 등록 구와 좌표가 어긋나는 장소가 빠진다. 구마다 호출하는 안도 기각(호출 수가 구 수만큼 증가). `PLACE_SEARCH_LDONG_DISTRICT_CODE` 상수 제거, 지원 구는 `SUPPORTED_DISTRICTS` 하나가 정하도록 통일(좌표 폴리곤과 같은 출처). 축제 조회와 Supabase `places` 필터도 같은 집합을 쓴다. 구 코드가 빈 응답은 버리되 경고 로그를 남긴다 |
 | 2026-08-24 | D-072 신설 — 인텐트 라우팅과 추천 파이프라인을 LangGraph 그래프 2개(조기 반환 / 추천 파이프라인)로 이관. 인텐트 분류와 조건 병합은 B 계약 소유라 그래프 밖에 남겼고, SSE는 sink를 `RunnableConfig`로 주입해 노드가 직접 호출하는 방식을 택했다(`astream_events`는 `message_delta`가 노드 내부에서 나와 재현 불가). checkpointer는 채택하지 않음 — `StateStore`(도메인 저장소)와 역할이 다르고, `MemorySaver`는 실측상 이전 턴 값 유출과 메모리 누적만 남겼다. `run_agent_flow()` 1,227줄 → 640줄. 프론트 변경 0줄, pytest 2,323건 통과, 차등 비교 18케이스 전부 일치, 오버헤드 약 1ms. 롤백용 기능 플래그 2개는 한동안 유지 후 기존 경로와 함께 제거 예정 |
+| 2026-08-24 | D-073 신설 — LangGraph 노드가 별도 asyncio 태스크에서 도는 탓에 `llm_execution` ContextVar를 값 교체로 갱신하면 노드 안 기록이 유실되던 문제를 수정. 리스트를 하나 두고 `append`하는 방식으로 바꿔 태스크 경계를 넘게 했다. 유실 지점 3곳(조기 반환 정상 응답, 노드 안 LLM 실패의 502 본문, 파이프라인 앞 노드→뒤 노드)이 한꺼번에 해소. 감사 패널의 "LLM 폴백"이 빈칸이 아니라 **틀린 "없음"**을 찍고 있었던 것이 이 문제를 무시하기 어렵게 만든 지점이다. 검토 문서가 제안한 `default` 제거는 채택하지 않음 — 전역 AppError 핸들러가 reset 없는 문맥에서 이 값을 읽어 502 계약이 500으로 깨진다. 기록하는 LLM 더블로 회귀 테스트 9건 추가(Fake는 `record_llm_call()`을 부르지 않아 수정 전에도 통과한다). pytest 2,332건 통과 |
