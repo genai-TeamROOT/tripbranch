@@ -2226,6 +2226,65 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `backend/docs/package-b/agent-state-contract-v1.md`,
   `docs/design/conditions-schema.md`
 
+### D-072 — 인텐트 라우팅과 추천 파이프라인을 LangGraph 그래프로 옮긴다
+
+- 상태: `Implemented` — 코드 이관 완료, `langgraph-adoption.md` §10.3 병합 판정 기준
+  6개 전부 통과.
+- 배경: `run_agent_flow()` 한 함수가 1,227줄이었고 그 안에 인텐트 분기 40개가
+  중첩 if/elif로 들어 있었다. 강의 교재 61·91강 기준으로 "처음부터 설계했다면
+  LangGraph가 맞았는가"를 코드 실측으로 판단했고, 결론은 맞다였다 — 우리는 이미
+  "코드가 라우팅을 못 박는 명시적 그래프" 편에 서 있었고, 그 판단을 표현할 도구만
+  없었다. 로드맵 16번(AI Agent 도구 경험)의 실행이기도 하다.
+- 결정:
+  1. 그래프를 **두 개**로 나눈다. 조기 반환 그래프(Tool·Scoring 없이 끝나는 턴)와
+     추천 파이프라인 그래프(tool_fetch → scoring → schedule/finalize).
+  2. **인텐트 분류와 조건 병합은 그래프 밖에 남긴다.** 이 구간은 B 계약
+     (`agent-state-contract-v1.md`)의 소유이고, 그래프로 끌어들이면 조건 병합의
+     Add/Update/Remove 의미론 소유권이 프레임워크로 넘어간다.
+  3. **SSE는 sink를 `RunnableConfig`로 주입해 노드가 직접 호출한다.** 0단계
+     스파이크에서 `astream_events` 번역 방식과 비교해 정한 것으로, `message_delta`는
+     노드 경계가 아니라 노드 *내부*에서 발생해 노드 단위 이벤트로는 재현할 수 없다.
+     노드의 `config` 파라미터는 반드시 `RunnableConfig`로 어노테이션해야 주입된다.
+  4. **checkpointer는 쓰지 않는다.** 아래 참고.
+  5. 기능 플래그 2개(`use_langgraph_early_return`/`use_langgraph_pipeline`, 기본
+     `True`)를 롤백 스위치로 남기되 영구히 두지 않는다 — 같은 로직이 두 벌 남는
+     비용이 있어, 실사용에서 문제없음을 확인한 뒤 기존 경로와 함께 걷어낸다.
+- 채택하지 않은 것:
+  - **checkpointer(`MemorySaver` 및 `StateStore` 어댑터)** — 검토 문서 v1.0은
+    "`session_id`가 곧 `thread_id`, `StateStore`가 곧 `BaseCheckpointSaver`"라고
+    적었으나 **틀렸다.** `StateStore`는 조건·이력·Trace를 담는 도메인 저장소이고
+    checkpointer는 그래프 재개용 스냅샷이라, 갈아끼우면 조건 병합 소유권이 B에서
+    그래프로 넘어간다. 게다가 붙여둔 `MemorySaver`는 실측 결과 (a) 같은
+    `thread_id`의 다음 턴에 이전 턴 값이 남고 (b) 세션 6개에 체크포인트 21건이
+    RAM에 쌓여 줄지 않았다. 우리 그래프는 한 턴에 시작하고 끝나 보관함이 할 일이
+    없다. 떼어냈고 `test_graphs_have_no_checkpointer`로 재발을 막았다.
+  - **인텐트별 노드 7개로 팬아웃** — 계획 단계의 전제가 틀렸다. 분기 40개가 전부
+    조기 반환 *앞*에 있어서, 그 뒤는 갈라지는 흐름이 아니라 순차 파이프라인이었다.
+    조건부 엣지는 "중간에 끝나는가"와 "SCHEDULE인가" 두 판정에만 쓴다.
+  - **한 번에 전면 재작성** — 단계별 커밋(0~3단계)로 쪼개 되돌릴 지점을 남겼다.
+- 검증: pytest 2,323건 통과(그래프 테스트 18건 신규, develop 동기화 포함), ruff 통과, 프론트엔드 변경
+  **0줄**. 같은 발화를 플래그 ON/OFF로 돌려 최종 응답 JSON 전체와 SSE 이벤트 순서를
+  비교하는 차등 테스트를 13개 케이스에 대해 수행 — 전부 일치. 실제 Provider에서 2건이
+  달랐으나 **그래프를 켜지 않고 기존 경로만 두 번 돌려도 같은 2건이 달라져** 외부 API
+  잡음으로 판정했다.
+  되묻기 재진입도 프론트가 보내는 형태(버튼 라벨을 `user_input`, 버튼 id를
+  `clarification_choice`)를 그대로 흉내 내 5단계 시나리오로 비교 — 차이 0건.
+  응답 지연은 ON/OFF 번갈아 12회씩 측정해 **호출당 약 1ms 고정 오버헤드**를 확인했다
+  (외부 호출이 붙는 RECOMMEND는 428ms→439ms, SCHEDULE은 오히려 426ms→422ms로 잡음
+  범위). 실 LLM이 붙으면 응답이 초 단위라 체감되지 않는다.
+- 남은 것:
+  - 기능 플래그와 기존 경로 제거(위 결정 5).
+  - `langgraph`가 새 의존성이라 팀원 각자 재설치 필요. `npm run dev`는 PATH의
+    `python`을 그대로 쓰므로 가상환경 밖에도 설치돼 있어야 백엔드가 뜬다.
+- 곁가지로 드러난 기존 문제(이 결정 범위 밖): `.env`가 개별 Provider 키를 지정해
+  `PROVIDER_MODE=fake`를 무력화한다. `settings.fake_current_datetime`은 정의만 있고
+  참조가 0건이며 주석이 가리키는 `app/core/clock.py`는 존재하지 않는다.
+- 상세: `docs/design/langgraph-adoption.md`(§9.6~§9.10, §10.3~§10.6),
+  `backend/app/services/runtime/graph/`(8개 파일),
+  `backend/app/services/runtime/stream_events.py`,
+  `backend/app/services/runtime/agent_runtime.py`, `backend/app/config.py`,
+  `backend/pyproject.toml`, `backend/tests/graph/`
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -2291,3 +2350,4 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-21 | D-069 신설 — D-068 후속. `intent`(assistant_text 메시지 값 그대로 복사)와 `comment`(싫어요 사유 자유 텍스트) 필드 추가. comment는 append-only 중복 방지를 위해 클릭 즉시 전송하지 않고 인라인 입력창(제출/건너뛰기)에서 한 번에 전송. NOT NULL 전면 적용과 `is_clarification`/`clarification_code`(되묻기 메시지엔 피드백 버튼이 아예 없어 채울 수 없음)는 채택하지 않음 |
 | 2026-08-21 | D-070 신설 — 팀원 PR #214(`reason_code` 구조화된 싫어요 사유)를 B 관점에서 검토·반영. FeedbackReasonCode 7값이 DB CHECK와 일치함을 확인, intent/user_input/assistant_message 캡처는 render-time `findTurnText` 방식을 그대로 유지(PR #214가 시도한 reducer-embedding 방식은 미채택). 마이그레이션 `202608210006` 적용 중 `response_feedback_kst` 뷰 컬럼 순서 버그(PostgreSQL 42P16) 발견·수정 |
 | 2026-08-22 | D-071 신설 — "안국역에서 10분"(출발점=안국역)과 "안국역 근처에 10분"(출발점=사용자 위치)을 구분하는 `travel_origin` 필드 신설(D·A). 조사("~에서/까지")로 출발점이 확정되는 발화만 `search_center`로 채우고 그 외(근처/주변, 조사 없는 소수 발화)는 null로 두어 D-067 기본값이 그대로 적용되게 한다. `resolve_ranking_origin()`·`_distance_denominator_offset_km()`·soft reset의 search_center 복원 로직에 함께 배선. `recommend.extract` 2.2.0 → 2.3.0 |
+| 2026-08-24 | D-072 신설 — 인텐트 라우팅과 추천 파이프라인을 LangGraph 그래프 2개(조기 반환 / 추천 파이프라인)로 이관. 인텐트 분류와 조건 병합은 B 계약 소유라 그래프 밖에 남겼고, SSE는 sink를 `RunnableConfig`로 주입해 노드가 직접 호출하는 방식을 택했다(`astream_events`는 `message_delta`가 노드 내부에서 나와 재현 불가). checkpointer는 채택하지 않음 — `StateStore`(도메인 저장소)와 역할이 다르고, `MemorySaver`는 실측상 이전 턴 값 유출과 메모리 누적만 남겼다. `run_agent_flow()` 1,227줄 → 640줄. 프론트 변경 0줄, pytest 2,323건 통과, 차등 비교 18케이스 전부 일치, 오버헤드 약 1ms. 롤백용 기능 플래그 2개는 한동안 유지 후 기존 경로와 함께 제거 예정 |
