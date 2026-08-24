@@ -9,6 +9,7 @@ STATE_STORE_BACKEND 설정(memory/supabase)으로 get_store()가 반환하는
 구현체를 고른다 — 호출부(service.py 등)는 이 전환을 알 필요가 없다.
 """
 
+from datetime import datetime
 from typing import Protocol
 
 import httpx
@@ -56,6 +57,13 @@ class StateStore(Protocol):
     # "나쁜 답변 찾기"는 특정 세션이 아니라 전체 응답 중에서 찾는 분석
     # 작업이라, session_id로 좁힐 수 없다.
     def list_dislike_feedback(self, limit: int) -> list[FeedbackRecord]: ...
+
+    # --- 정리(만료 세션 삭제, TP-134)
+    # response_feedback은 세션 생애주기와 무관한 별도 분석 데이터라 대상에서
+    # 제외한다 — 이 네 메서드는 scripts/cleanup_expired_sessions.py 전용이다.
+    def list_stale_session_ids(self, cutoff: datetime) -> list[str]: ...
+    def delete_change_logs(self, session_id: str) -> None: ...
+    def delete_traces(self, session_id: str) -> None: ...
 
 
 class InMemoryStateStore:
@@ -142,6 +150,21 @@ class InMemoryStateStore:
         dislikes = [record for record in all_records if record.rating == "dislike"]
         dislikes.sort(key=lambda record: record.recorded_at, reverse=True)
         return [record.model_copy(deep=True) for record in dislikes[:limit]]
+
+    # ------------------------------------------------------------ 정리(TP-134)
+
+    def list_stale_session_ids(self, cutoff: datetime) -> list[str]:
+        return [
+            session_id
+            for session_id, state in self._states.items()
+            if state.last_active_at < cutoff
+        ]
+
+    def delete_change_logs(self, session_id: str) -> None:
+        self._change_logs.pop(session_id, None)
+
+    def delete_traces(self, session_id: str) -> None:
+        self._traces.pop(session_id, None)
 
     # ------------------------------------------------------------ 테스트용
 

@@ -44,7 +44,10 @@ from app.providers.gemini import RealGeminiProvider
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "test_results"
 EXPERIMENT_DIR = RESULTS_DIR / "intent_cot_2026-08-11"
 DEFAULT_CASES = EXPERIMENT_DIR / "intent_classification_cases_2026-08-11.csv"
-DEFAULT_MODEL = "gemini-2.5-flash"
+# 현행 분류 모델(LLM_FAST_MODEL_NAME 기본값)에 맞춘다. 2026-08-24까지는
+# gemini-2.5-flash였는데, Gemini 키를 바꾸면서 gemini-2.5-*를 쓰지 않기로 해
+# 기본값만으로 돌리면 지금 안 쓰는 모델을 재게 되던 상태였다.
+DEFAULT_MODEL = "gemini-3.5-flash-lite"
 
 # thinking_budget을 실을 자리가 RealGeminiProvider 안쪽(_try_model)이라, 프로덕션
 # 코드를 고치지 않고 재려면 SDK config 생성만 감싸는 수밖에 없다.

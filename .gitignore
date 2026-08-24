@@ -248,3 +248,6 @@ package_D/
 # 중구 RAG 확장 개인 실험용 임베딩 산출물 (커밋 대상 아님, 상세는
 # supabase/data/backups/20260820_junggu_rag_expansion/README.md 참고)
 junggu_rag/
+
+# Supabase CLI가 실행마다 갱신하는 캐시 (버전 문자열 등, 커밋 대상 아님)
+supabase/.temp/

@@ -164,6 +164,18 @@ def _enrich_taste_query(conditions: UserConditions) -> str:
     추천해요" 형식이라 위치·요청 어투가 그대로 매칭돼 취향 형용사가 묻힌다.
     자세한 수치와 다른 대안(유형 기준선 차감 등)은 package_D
     "[기록] 취향 근거 RAG 검색과 Scoring 반영.md" 9절에 있다.
+
+    **단 동행 표현은 이 기각에 해당하지 않는다.** "아이들이랑 가기 좋은" 같은
+    동행 문구는 `taste_query`에 그대로 남긴다(`recommend.extract` 2.4.0). 위
+    기각은 위치·요청 어투("○○ 근처 추천해요")가 매칭되는 발화 **전체** 얘기고,
+    동행은 리뷰가 실제로 장소를 서술할 때 쓰는 말이라 성격이 다르다 — 인용문에
+    "부모님 모시고 가기 좋아요", "아이랑 가기 좋은 식당이고 좌식 방이 있어서"가
+    실재한다. 위 문단이 상위권 기준으로 검증된 적 없는 ρ에 기대 이 안까지 함께
+    기각하는 것으로 읽혀 실제로 한 번 기각됐으므로(TP-128), 상위 5곳 기준으로
+    다시 쟀다: 취향이 묻힌 조합 0/6, 컷 통과 수는 6/6 감소하지만 순위 축에서
+    통과 수는 판정 지표가 아니다(위 첫 문단과 같은 이유). TP-137, 원자료
+    `test_results/taste_companion_cofill.csv`,
+    `scripts/measure_taste_condition_dominance.py --scope companion`.
     """
     usable_tags = [
         tag for tag in conditions.place_tags if tag not in _TASTE_QUERY_EXCLUDED_TAGS

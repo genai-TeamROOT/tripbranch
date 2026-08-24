@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -402,6 +403,69 @@ def test_list_dislike_feedback_filters_by_rating_and_limit() -> None:
     assert request.url.params["order"] == "recorded_at.desc"
     assert len(dislikes) == 1
     assert dislikes[0].rating == "dislike"
+
+
+# ------------------------------------------------------------ 정리(TP-134)
+
+
+def test_list_stale_session_ids_filters_by_last_active_at() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["request"] = request
+        return httpx.Response(200, json=[{"session_id": "sess_old"}])
+
+    transport = httpx.MockTransport(handler)
+    cutoff = datetime(2026, 7, 1, tzinfo=UTC)
+    ids = _store(transport).list_stale_session_ids(cutoff)
+
+    request = seen["request"]
+    assert isinstance(request, httpx.Request)
+    assert request.method == "GET"
+    assert request.url.path == "/rest/v1/agent_states"
+    assert request.url.params["last_active_at"] == f"lt.{cutoff.isoformat()}"
+    assert request.url.params["select"] == "session_id"
+    assert ids == ["sess_old"]
+
+
+def test_list_stale_session_ids_returns_empty_list_when_none_found() -> None:
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=[]))
+    cutoff = datetime.now(UTC)
+    assert _store(transport).list_stale_session_ids(cutoff) == []
+
+
+def test_delete_change_logs_filters_by_session_id() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["request"] = request
+        return httpx.Response(200)
+
+    transport = httpx.MockTransport(handler)
+    _store(transport).delete_change_logs(SESSION_ID)
+
+    request = seen["request"]
+    assert isinstance(request, httpx.Request)
+    assert request.method == "DELETE"
+    assert request.url.path == "/rest/v1/condition_change_logs"
+    assert request.url.params["session_id"] == f"eq.{SESSION_ID}"
+
+
+def test_delete_traces_filters_by_session_id() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["request"] = request
+        return httpx.Response(200)
+
+    transport = httpx.MockTransport(handler)
+    _store(transport).delete_traces(SESSION_ID)
+
+    request = seen["request"]
+    assert isinstance(request, httpx.Request)
+    assert request.method == "DELETE"
+    assert request.url.path == "/rest/v1/trace_records"
+    assert request.url.params["session_id"] == f"eq.{SESSION_ID}"
 
 
 # ------------------------------------------------------------ 에러 처리
