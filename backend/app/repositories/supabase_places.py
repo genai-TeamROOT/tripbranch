@@ -179,20 +179,38 @@ def _map_place_locations(
     return tuple(locations)
 
 
+# TourAPI가 국가지정문화재류 제목에 규칙적으로 붙이는 지역 접두사. 사용자는
+# "명동성당"이라고 하는데 저장소 제목은 "서울 명동성당"이다(활성 26곳).
+_TITLE_REGION_PREFIX = "서울 "
+
+
 def _title_filters(name: str) -> list[str]:
     """장소명 조회에 쓸 PostgREST 필터를 좁은 것부터 나열한다.
 
     부분 일치로 넓히지 않는다 - "종묘*"로 찾으면 종묘광장공원·종묘대제까지 걸려
-    엉뚱한 장소가 검색 중심이 된다. 이름 뒤에 괄호 부기만 붙은 형태로 한정한다.
-    PostgREST는 ilike의 `*`를 `%`로 바꿔 주므로 인코딩 문제가 없다.
+    엉뚱한 장소가 검색 중심이 된다. 이름 앞뒤에 **규칙적으로** 붙는 수식만
+    허용한다. PostgREST는 ilike의 `*`를 `%`로 바꿔 주므로 인코딩 문제가 없다.
 
     순서가 곧 우선순위다(D-043). 한 번에 조회하고 이 순서로 골라내므로, 필터를
     더할 때는 넣는 자리가 그대로 우선순위가 된다.
     """
+    prefixed = not name.startswith(_TITLE_REGION_PREFIX)
+    collapsed = "*".join(name.split()) if any(c.isspace() for c in name) else None
+
     filters = [f"eq.{name}"]
-    if any(character.isspace() for character in name):
+    # "명동성당" → "서울 명동성당". 와일드카드가 없어 사실상 정확 일치라,
+    # "종로"로 찾아도 "서울 종로 낙지볶음 골목"에는 걸리지 않는다. 접두사를 뗀
+    # 이름과 같은 제목의 다른 활성 장소는 없다(26곳 전수, 2026-08-24 확인).
+    # 정확 일치를 먼저 보므로 나중에 접두사 없는 동명 장소가 적재되면 그쪽이 이긴다.
+    if prefixed:
+        filters.append(f"ilike.{_TITLE_REGION_PREFIX}{name}")
+    if collapsed is not None:
         # "북촌 한옥마을" → "북촌한옥마을"
-        filters.append("ilike." + "*".join(name.split()))
+        filters.append(f"ilike.{collapsed}")
+        # "명동 성당" → "서울 명동성당". 두 수식이 함께 걸린 제목이 실제로 있어
+        # 각각만으로는 못 찾는다.
+        if prefixed:
+            filters.append(f"ilike.{_TITLE_REGION_PREFIX}{collapsed}")
     # "종묘" → "종묘 [유네스코 세계유산]", "세검정 터" → "세검정 터 (구 세검정)"
     filters.extend([f"ilike.{name} [*", f"ilike.{name} (*"])
     return filters
