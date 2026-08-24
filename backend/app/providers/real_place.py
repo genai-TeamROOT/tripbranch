@@ -18,7 +18,7 @@ from app.domain.models import (
     TourPlaceRecord,
 )
 from app.domain.operating_hours import normalize_operating_schedule
-from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
+from app.errors import AppError, ProviderUnavailableError
 from app.place_search_policy import (
     DEFAULT_PLACE_PROVIDER_RESULT_LIMIT,
     MAX_PLACE_SEARCH_RADIUS_KM,
@@ -30,6 +30,13 @@ from app.providers.contracts import (
     provider_result,
 )
 from app.providers.mappers import map_tour_api_response
+from app.providers.tour_api_client import (
+    TourApiClient,
+    first_item,
+    first_text,
+    response_body,
+    response_items,
+)
 from app.providers.tour_intro_keys import (
     BABY_CARRIAGE_KEYS,
     CREDIT_CARD_KEYS,
@@ -43,7 +50,6 @@ from app.providers.tour_intro_keys import (
     RESTROOM_KEYS,
     USE_FEE_KEYS,
 )
-from app.providers.upstream_errors import upstream_error_detail
 from app.schemas import PlaceCandidate
 from app.service_area import SUPPORTED_DISTRICT_CODES
 
@@ -59,42 +65,6 @@ _DETAIL_INTRO_PATH = "/detailIntro2"
 # 목록 조회 numOfRows 상한. TourAPI가 실제로 받아주는 값이다.
 _MAX_LIST_ROWS = 1000
 _TOUR_API_TIMEZONE = ZoneInfo("Asia/Seoul")
-
-
-def _first_item(payload: Mapping[str, object]) -> dict[str, object]:
-    response = payload.get("response")
-    body = response.get("body") if isinstance(response, Mapping) else None
-    items = body.get("items") if isinstance(body, Mapping) else None
-    raw_items = items.get("item", []) if isinstance(items, Mapping) else []
-    if isinstance(raw_items, Mapping):
-        return dict(raw_items)
-    if isinstance(raw_items, list) and raw_items and isinstance(raw_items[0], Mapping):
-        return dict(raw_items[0])
-    return {}
-
-
-def _first_text(item: Mapping[str, object], keys: tuple[str, ...]) -> str | None:
-    for key in keys:
-        value = item.get(key)
-        if value not in (None, ""):
-            return str(value)
-    return None
-
-
-def _body(payload: Mapping[str, object]) -> Mapping[str, object]:
-    response = payload.get("response")
-    body = response.get("body") if isinstance(response, Mapping) else None
-    return body if isinstance(body, Mapping) else {}
-
-
-def _items(payload: Mapping[str, object]) -> tuple[Mapping[str, object], ...]:
-    items = _body(payload).get("items")
-    raw_items = items.get("item", []) if isinstance(items, Mapping) else []
-    if isinstance(raw_items, Mapping):
-        return (raw_items,) if raw_items else ()
-    if isinstance(raw_items, list):
-        return tuple(item for item in raw_items if isinstance(item, Mapping))
-    return ()
 
 
 def _required_text(item: Mapping[str, object], key: str) -> str:
@@ -162,12 +132,12 @@ def _map_area_place(
         longitude=_optional_float(item, "mapx"),
         area_code=requested_area_code,
         district_code=requested_district_code,
-        lcls_systm1=_first_text(item, ("lclsSystm1",)),
-        lcls_systm2=_first_text(item, ("lclsSystm2",)),
-        lcls_systm3=_first_text(item, ("lclsSystm3",)),
+        lcls_systm1=first_text(item, ("lclsSystm1",)),
+        lcls_systm2=first_text(item, ("lclsSystm2",)),
+        lcls_systm3=first_text(item, ("lclsSystm3",)),
         source_modified_at=_optional_modified_at(item.get("modifiedtime")),
-        first_image_url=_first_text(item, ("firstimage",)),
-        thumbnail_url=_first_text(item, ("firstimage2",)),
+        first_image_url=first_text(item, ("firstimage",)),
+        thumbnail_url=first_text(item, ("firstimage2",)),
     )
 
 
@@ -181,67 +151,20 @@ class RealPlaceProvider:
         self._api_key = api_key
         self._client = client
         self._timeout_seconds = timeout_seconds
+        self._api = TourApiClient(
+            api_key,
+            client,
+            base_url=_BASE_URL,
+            timeout_seconds=timeout_seconds,
+        )
 
     def _base_params(self) -> dict[str, object]:
-        return {
-            "MobileOS": "ETC",
-            "MobileApp": "TripBranch",
-            "_type": "json",
-        }
+        return self._api.base_params()
 
-    async def _request_json(self, path: str, params: dict[str, object]) -> dict[str, object]:
-        request_params = {"serviceKey": self._api_key, **params}
-        try:
-            response = await self._client.get(
-                _BASE_URL + path,
-                params=request_params,
-                timeout=self._timeout_seconds,
-            )
-            response.raise_for_status()
-            payload = response.json()
-        except httpx.TimeoutException:
-            # httpx 예외와 traceback에는 ServiceKey가 포함된 전체 URL이 남을 수 있다.
-            request_params.clear()
-            response = None
-            logger.error("TourAPI 호출 타임아웃 (path=%s)", path)
-            raise ProviderTimeoutError("TourAPI") from None
-        except httpx.HTTPStatusError as exc:
-            # 상태 코드만으로는 인증 실패·쿼터 초과·기간 만료가 구분되지 않는다.
-            detail = f"HTTP {exc.response.status_code}, {upstream_error_detail(exc.response)}"
-            request_params.clear()
-            response = None
-            exc = None
-            logger.error("TourAPI 호출 실패 (%s, path=%s)", detail, path)
-            raise ProviderUnavailableError("TourAPI", detail=detail) from None
-        except httpx.HTTPError as exc:
-            request_params.clear()
-            response = None
-            logger.error(
-                "TourAPI 호출 실패 (%s, path=%s)", type(exc).__name__, path
-            )
-            raise ProviderUnavailableError("TourAPI") from None
-        except ValueError:
-            request_params.clear()
-            response = None
-            logger.error("TourAPI 호출 실패 (non-JSON response, path=%s)", path)
-            raise ProviderUnavailableError(
-                "TourAPI", detail="non-JSON response"
-            ) from None
-
-        header = payload.get("response", {}).get("header", {})
-        result_code = str(header.get("resultCode", ""))
-        if result_code not in {"", "00", "0000"}:
-            logger.error(
-                "TourAPI 응답 오류 (resultCode=%s, resultMsg=%s, path=%s)",
-                result_code,
-                header.get("resultMsg", ""),
-                path,
-            )
-            raise ProviderUnavailableError(
-                "TourAPI",
-                detail=f"{result_code}: {header.get('resultMsg', '')}",
-            )
-        return payload
+    async def _request_json(
+        self, path: str, params: dict[str, object]
+    ) -> dict[str, object]:
+        return await self._api.request_json(path, params)
 
     async def search_places(
         self,
@@ -330,7 +253,7 @@ class RealPlaceProvider:
                 "numOfRows": num_of_rows,
             },
         )
-        body = _body(payload)
+        body = response_body(payload)
         return TourPlacePage(
             page_no=_non_negative_int(body.get("pageNo"), "pageNo"),
             num_of_rows=_non_negative_int(body.get("numOfRows"), "numOfRows"),
@@ -341,7 +264,7 @@ class RealPlaceProvider:
                     requested_area_code=normalized_area_code,
                     requested_district_code=normalized_district_code,
                 )
-                for item in _items(payload)
+                for item in response_items(payload)
             ),
         )
 
@@ -363,21 +286,21 @@ class RealPlaceProvider:
                 "contentTypeId": normalized_content_type_id,
             },
         )
-        intro = _first_item(payload)
+        intro = first_item(payload)
         return PlaceOperatingDetails(
             content_id=normalized_content_id,
             content_type_id=normalized_content_type_id,
-            operating_hours_raw=_first_text(intro, OPERATING_HOURS_KEYS),
-            rest_date_raw=_first_text(intro, REST_DATE_KEYS),
-            parking_info_raw=_first_text(intro, PARKING_KEYS),
-            parking_fee_raw=_first_text(intro, PARKING_FEE_KEYS),
-            use_fee_raw=_first_text(intro, USE_FEE_KEYS),
-            discount_info_raw=_first_text(intro, DISCOUNT_INFO_KEYS),
-            info_center_raw=_first_text(intro, INFO_CENTER_KEYS),
-            baby_carriage_raw=_first_text(intro, BABY_CARRIAGE_KEYS),
-            pet_raw=_first_text(intro, PET_KEYS),
-            credit_card_raw=_first_text(intro, CREDIT_CARD_KEYS),
-            restroom_raw=_first_text(intro, RESTROOM_KEYS),
+            operating_hours_raw=first_text(intro, OPERATING_HOURS_KEYS),
+            rest_date_raw=first_text(intro, REST_DATE_KEYS),
+            parking_info_raw=first_text(intro, PARKING_KEYS),
+            parking_fee_raw=first_text(intro, PARKING_FEE_KEYS),
+            use_fee_raw=first_text(intro, USE_FEE_KEYS),
+            discount_info_raw=first_text(intro, DISCOUNT_INFO_KEYS),
+            info_center_raw=first_text(intro, INFO_CENTER_KEYS),
+            baby_carriage_raw=first_text(intro, BABY_CARRIAGE_KEYS),
+            pet_raw=first_text(intro, PET_KEYS),
+            credit_card_raw=first_text(intro, CREDIT_CARD_KEYS),
+            restroom_raw=first_text(intro, RESTROOM_KEYS),
         )
 
     async def search_by_keyword(
@@ -432,12 +355,12 @@ class RealPlaceProvider:
             _DETAIL_COMMON_PATH,
             {**self._base_params(), "contentId": normalized_content_id},
         )
-        common = _first_item(payload)
+        common = first_item(payload)
         details = PlaceCommonDetails(
             content_id=normalized_content_id,
-            overview=_first_text(common, ("overview",)),
-            homepage=_first_text(common, ("homepage",)),
-            telephone=_first_text(common, ("tel",)),
+            overview=first_text(common, ("overview",)),
+            homepage=first_text(common, ("homepage",)),
+            telephone=first_text(common, ("tel",)),
         )
         has_data = any((details.overview, details.homepage, details.telephone))
         return provider_result(
@@ -464,37 +387,37 @@ class RealPlaceProvider:
                 "contentTypeId": content_type_id,
             },
         )
-        common = _first_item(common_payload)
-        intro = _first_item(intro_payload)
+        common = first_item(common_payload)
+        intro = first_item(intro_payload)
         address_parts = [common.get("addr1"), common.get("addr2")]
         address = " ".join(str(part) for part in address_parts if part) or None
 
-        operating_hours = _first_text(intro, OPERATING_HOURS_KEYS)
-        rest_date = _first_text(intro, REST_DATE_KEYS)
+        operating_hours = first_text(intro, OPERATING_HOURS_KEYS)
+        rest_date = first_text(intro, REST_DATE_KEYS)
         details = PlaceDetails(
             content_id=content_id,
             content_type_id=content_type_id,
-            title=_first_text(common, ("title",)),
+            title=first_text(common, ("title",)),
             address=address,
-            overview=_first_text(common, ("overview",)),
-            homepage=_first_text(common, ("homepage",)),
+            overview=first_text(common, ("overview",)),
+            homepage=first_text(common, ("homepage",)),
             # common의 tel은 축제(15)에만 채워진다. 나머지 유형은 intro의 안내처가
             # 실제 출처라 유형별 키를 모두 훑는다 — 예전에는 `infocenter` 하나만 봐서
             # 문화시설·숙박·쇼핑·음식점의 전화번호가 누락됐다.
             telephone=(
-                _first_text(common, ("tel",)) or _first_text(intro, INFO_CENTER_KEYS)
+                first_text(common, ("tel",)) or first_text(intro, INFO_CENTER_KEYS)
             ),
             # 주차·요금도 유형별 키를 여기서 정규화한다. 소비 측이 raw_intro에서
             # 원본 키를 다시 찾지 않도록 동기화 경로와 같은 상수를 쓴다.
-            parking=_first_text(intro, PARKING_KEYS),
-            parking_fee=_first_text(intro, PARKING_FEE_KEYS),
-            fee=_first_text(intro, USE_FEE_KEYS),
-            baby_carriage=_first_text(intro, BABY_CARRIAGE_KEYS),
-            pet=_first_text(intro, PET_KEYS),
-            credit_card=_first_text(intro, CREDIT_CARD_KEYS),
-            restroom=_first_text(intro, RESTROOM_KEYS),
+            parking=first_text(intro, PARKING_KEYS),
+            parking_fee=first_text(intro, PARKING_FEE_KEYS),
+            fee=first_text(intro, USE_FEE_KEYS),
+            baby_carriage=first_text(intro, BABY_CARRIAGE_KEYS),
+            pet=first_text(intro, PET_KEYS),
+            credit_card=first_text(intro, CREDIT_CARD_KEYS),
+            restroom=first_text(intro, RESTROOM_KEYS),
             # 목록 동기화가 places에 담는 값과 같은 키다(firstimage2 → firstimage).
-            thumbnail_url=_first_text(common, ("firstimage2", "firstimage")),
+            thumbnail_url=first_text(common, ("firstimage2", "firstimage")),
             operating_hours=operating_hours,
             rest_date=rest_date,
             raw_common=common,
