@@ -91,7 +91,7 @@ class TestAppendOnly:
         assert [t.step for t in saved] == ["llm_interpret", "tool_fetch", "scoring"]
 
     def test_기존_기록을_지우는_메서드가_없다(self, store):
-        assert not hasattr(store, "delete_traces")
+        assert not hasattr(store, "delete_trace")
 
 
 class TestSessionIsolation:

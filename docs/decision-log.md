@@ -2391,7 +2391,64 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `docs/design/guest-auth-design.md`, `backend/docs/package-b/
   agent-state-contract-v1.md`
 
-### D-074 — LLM 실행 기록은 갈아끼우지 않고 같은 리스트에 붙인다
+### D-074 — 만료된 익명 세션·이력을 30일 기준으로 정리한다 (TP-134)
+
+- 상태: `Accepted` — 구현 완료.
+- 배경: 세션 TTL(30분, `session.py::SESSION_TTL`)은 그 세션이 다시 조회될 때만
+  상태를 `expired`로 바꾸는 lazy 판정이라, 실제 행을 지우지 않는다.
+  `agent_states`/`recommendation_histories`/`condition_change_logs`/
+  `trace_records` 네 테이블이 무기한 쌓이고, 뒤의 두 append-only 테이블은
+  세션이 오래 쓰일수록 계속 커진다. `agent-state-contract-v1.md`는 "Phase
+  1에서는 만료된 세션 데이터를 즉시 삭제하지 않는다"고 이미 명시해 이후
+  단계에서 정리 메커니즘이 필요함을 예고해뒀다. `guest-auth-design.md` 10절은
+  "오래된 익명 사용자 정리 스케줄(예: 30일 미접속 삭제)"을 열린 과제로
+  남겼고, D-063 결정 4는 `agent_states.user_id`에 FK를 걸지 않은 이유로 이
+  정리와의 충돌을 들었다.
+- 결정:
+  1. 기준: `agent_states.last_active_at`이 기준 일수(기본 30일, `--days`로
+     조정 가능)보다 오래되면 정리 대상.
+  2. 대상 4개 테이블: `agent_states`/`recommendation_histories`/
+     `condition_change_logs`/`trace_records`. `response_feedback`은 세션
+     생애주기와 무관한 별도 분석 데이터라 제외.
+  3. 삭제 순서: `condition_change_logs` → `trace_records` →
+     `recommendation_histories` → `agent_states`. `agent_states`를 마지막에
+     지우는 이유는, 도중 실패해도 `agent_states`가 남아 있으면
+     `list_stale_session_ids`가 다음 실행에서 같은 세션을 다시 찾아내
+     재시도할 수 있기 때문이다 — `agent_states`를 먼저 지우면 나머지 3개
+     테이블 행이 영원히 못 찾는 고아가 된다.
+  4. 실행 방식: Supabase pg_cron이 아니라 `backend/scripts/
+     cleanup_expired_sessions.py` 수동/외부 스케줄 스크립트로 구현. 지금
+     트래픽 규모에서 pg_cron 확장 활성화·SQL 작성 비용 대비 얻는 이득이
+     작다고 판단(팀 확인 완료).
+  5. Supabase 익명 계정(`auth.users`) 정리와의 관계: 이번 범위에서는 다루지
+     않는다. FK가 없어(D-063 결정 4) 두 정리가 서로 의존하지 않고 독립적으로
+     실행 가능하다 — `agent_states` 쪽을 먼저 정리해도, `auth.users` 쪽을
+     먼저 정리해도 서로의 무결성을 깨지 않는다. `auth.users` 정리는 Supabase
+     Admin API(service role) 접근이 필요해 별도 작업으로 분리했다.
+- 근거: append-only 테이블(`condition_change_logs`/`trace_records`)의
+  "수정·삭제 없음" 원칙은 개별 레코드를 골라 고쳐 이력을 조작하지 못하게
+  막는 것이 목적이지, 세션이 통째로 만료된 뒤에도 무기한 보관해야 한다는
+  뜻은 아니다 — 이번에 추가한 `delete_change_logs`/`delete_traces`는 세션
+  단위 일괄 삭제만 제공하고, 개별 레코드를 골라 수정·삭제하는 경로는
+  여전히 없다.
+- 채택하지 않은 것:
+  - **Supabase pg_cron으로 DB 안에서 자동 실행** — 서버 없이도 동작하는
+    장점은 있지만, pg_cron 확장 활성화와 별도 SQL 작성이 필요해 지금
+    규모에서는 비용 대비 이득이 작다. 필요해지면 정리 로직을 SQL로 옮기는
+    것 자체는 어렵지 않다.
+  - **`auth.users` 익명 계정 정리를 같은 작업에서 함께 구현** — Admin API
+    접근 권한 확보와 배포 환경 설정이 별도로 필요해 범위를 분리했다. FK가
+    없어 두 정리가 서로 막지 않으므로 순서를 강제할 필요도 없다.
+- 남은 것: 실제 운영에서 스크립트를 얼마나 자주 돌릴지(수동 vs cron
+  자동화)는 트래픽이 늘어난 뒤 다시 판단한다. `auth.users` 정리는 별도
+  카드로 분리 검토.
+- 상세: `backend/app/state/store.py`(`list_stale_session_ids`/
+  `delete_change_logs`/`delete_traces`), `backend/app/state/supabase_store.py`,
+  `backend/scripts/cleanup_expired_sessions.py`, `docs/design/
+  guest-auth-design.md` 10절, `backend/docs/package-b/
+  agent-state-contract-v1.md`
+
+### D-075 — LLM 실행 기록은 갈아끼우지 않고 같은 리스트에 붙인다
 
 - 상태: `Implemented`
 - **번호 정정(2026-08-24)**: 이 항목과 아래 D-075는 처음 D-073·D-074로 적었다.
@@ -2453,7 +2510,7 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `backend/tests/graph/test_llm_execution_across_nodes.py`,
   `docs/design/langgraph-adoption.md` §9.13
 
-### D-075 — thinking 끄기는 모델 목록으로 포기하지 않고 `thinking_level`로 바꿔 보낸다
+### D-076 — thinking 끄기는 모델 목록으로 포기하지 않고 `thinking_level`로 바꿔 보낸다
 
 - 상태: `Implemented`
 - 배경: `thinking_budget=0`을 거부하는 모델 목록(`_REJECTS_ZERO_THINKING_BUDGET`,
@@ -2574,5 +2631,7 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-24 | D-025 개정 — 장소 검색의 종로구 고정을 해제(TP-126). 요청은 `lDongRegnCd=11`까지만 좁히고 지원 구 판정은 응답의 `lDongSignguCd`로 한다. 좌표로 구를 판정하는 안은 기각 — 서울역 부속 시설 72건처럼 등록 구와 좌표가 어긋나는 장소가 빠진다. 구마다 호출하는 안도 기각(호출 수가 구 수만큼 증가). `PLACE_SEARCH_LDONG_DISTRICT_CODE` 상수 제거, 지원 구는 `SUPPORTED_DISTRICTS` 하나가 정하도록 통일(좌표 폴리곤과 같은 출처). 축제 조회와 Supabase `places` 필터도 같은 집합을 쓴다. 구 코드가 빈 응답은 버리되 경고 로그를 남긴다 |
 | 2026-08-24 | D-072 신설 — 인텐트 라우팅과 추천 파이프라인을 LangGraph 그래프 2개(조기 반환 / 추천 파이프라인)로 이관. 인텐트 분류와 조건 병합은 B 계약 소유라 그래프 밖에 남겼고, SSE는 sink를 `RunnableConfig`로 주입해 노드가 직접 호출하는 방식을 택했다(`astream_events`는 `message_delta`가 노드 내부에서 나와 재현 불가). checkpointer는 채택하지 않음 — `StateStore`(도메인 저장소)와 역할이 다르고, `MemorySaver`는 실측상 이전 턴 값 유출과 메모리 누적만 남겼다. `run_agent_flow()` 1,227줄 → 640줄. 프론트 변경 0줄, pytest 2,323건 통과, 차등 비교 18케이스 전부 일치, 오버헤드 약 1ms. 롤백용 기능 플래그 2개는 한동안 유지 후 기존 경로와 함께 제거 예정 |
 | 2026-08-24 | D-073 신설 — `session_id`만으로 남의 세션에 접근 가능하던 문제를 닫음(D-063 결정 2 후속). Phase 4(인증 필수화) 전면 도입을 기다리지 않고, `Principal`이 있는 요청에 한해 `session.verify_ownership()`으로 저장된 `user_id`와 대조 — 다르면 403(`session_ownership_mismatch`). `apply()`/`get_session_context()`/`delete_session()`/`ensure_current_context()`와 각 라우트까지 배선. `routes/state.py`가 `principal`을 선언만 하고 쓰지 않던 배선 공백을 함께 닫음 |
-| 2026-08-24 | D-074 신설 — LangGraph 노드가 별도 asyncio 태스크에서 도는 탓에 `llm_execution` ContextVar를 값 교체로 갱신하면 노드 안 기록이 유실되던 문제를 수정. 리스트를 하나 두고 `append`하는 방식으로 바꿔 태스크 경계를 넘게 했다. 유실 지점 3곳(조기 반환 정상 응답, 노드 안 LLM 실패의 502 본문, 파이프라인 앞 노드→뒤 노드)이 한꺼번에 해소. 감사 패널의 "LLM 폴백"이 빈칸이 아니라 **틀린 "없음"**을 찍고 있었던 것이 이 문제를 무시하기 어렵게 만든 지점이다. 검토 문서가 제안한 `default` 제거는 채택하지 않음 — 전역 AppError 핸들러가 reset 없는 문맥에서 이 값을 읽어 502 계약이 500으로 깨진다. 기록하는 LLM 더블로 회귀 테스트 9건 추가(Fake는 `record_llm_call()`을 부르지 않아 수정 전에도 통과한다). pytest 2,332건 통과 |
-| 2026-08-24 | D-075 신설 — `thinking_budget=0`을 거부하는 모델에 thinking 설정을 아예 싣지 않던 방어를 제거하고, `0`을 항상 `thinking_level=MINIMAL`로 바꿔 보내도록 정리. 2026-08-18에 fast 모델이 그 목록에 있는 `gemini-3.5-flash-lite`로 바뀌면서 분류·조건 추출의 thinking 끄기가 조용히 무효화돼 있었고, 코드가 아니라 모델만 바뀐 것이라 6일간 아무도 몰랐다. 실 API 전수 측정(모델 5개 × 설정 4개 × 3회)으로 거부되는 것은 숫자 `0`뿐이고(`512`는 전부 성공) `MINIMAL`은 실제로 생각 토큰이 0임을 확인했다. 거부 모델 목록과 `gemini-2.5-flash-lite` 512 보정은 실측 근거라 지우지 않고, 목록은 불변식 테스트가 직접 읽는다. **지연 이득은 없다** — 6회에서 -17%까지 나왔지만 15회로 늘리면 -0.9%로 사라진다(표본 부족으로 없는 효과를 읽은 사례). 근거는 속도가 아니라 모델 교체 시 최적화가 조용히 사라지는 구조의 제거다. 폐지된 `LLM_MODEL_NAME`을 현행으로 안내하던 문서 2곳도 함께 정정 |
+| 2026-08-24 | D-074 신설 — 만료된 익명 세션·이력 정리(TP-134). `agent_states.last_active_at` 기준 30일(조정 가능) 이상 미사용 세션을 `agent_states`/`recommendation_histories`/`condition_change_logs`/`trace_records` 네 테이블에서 함께 삭제. append-only 두 테이블에 세션 단위 일괄 삭제(`delete_change_logs`/`delete_traces`)를 처음 추가 — 개별 레코드 수정·선택 삭제는 여전히 불가. 삭제 순서는 자식 테이블 먼저, `agent_states` 마지막(중간 실패해도 다음 실행이 재시도 가능하도록). 실행은 Supabase pg_cron 대신 `scripts/cleanup_expired_sessions.py` 수동/외부 스케줄 스크립트로 구현(`--dry-run` 지원). `auth.users` 익명 계정 정리는 FK가 없어(D-063 결정 4) 독립적으로 실행 가능하다고 보고 이번 범위에서 제외 |
+| 2026-08-24 | D-075 신설 — LangGraph 노드가 별도 asyncio 태스크에서 도는 탓에 `llm_execution` ContextVar를 값 교체로 갱신하면 노드 안 기록이 유실되던 문제를 수정. 리스트를 하나 두고 `append`하는 방식으로 바꿔 태스크 경계를 넘게 했다. 유실 지점 3곳(조기 반환 정상 응답, 노드 안 LLM 실패의 502 본문, 파이프라인 앞 노드→뒤 노드)이 한꺼번에 해소. 감사 패널의 "LLM 폴백"이 빈칸이 아니라 **틀린 "없음"**을 찍고 있었던 것이 이 문제를 무시하기 어렵게 만든 지점이다. 검토 문서가 제안한 `default` 제거는 채택하지 않음 — 전역 AppError 핸들러가 reset 없는 문맥에서 이 값을 읽어 502 계약이 500으로 깨진다. 기록하는 LLM 더블로 회귀 테스트 9건 추가(Fake는 `record_llm_call()`을 부르지 않아 수정 전에도 통과한다). pytest 2,332건 통과 |
+| 2026-08-24 | D-076 신설 — `thinking_budget=0`을 거부하는 모델에 thinking 설정을 아예 싣지 않던 방어를 제거하고, `0`을 항상 `thinking_level=MINIMAL`로 바꿔 보내도록 정리. 2026-08-18에 fast 모델이 그 목록에 있는 `gemini-3.5-flash-lite`로 바뀌면서 분류·조건 추출의 thinking 끄기가 조용히 무효화돼 있었고, 코드가 아니라 모델만 바뀐 것이라 6일간 아무도 몰랐다. 실 API 전수 측정(모델 5개 × 설정 4개 × 3회)으로 거부되는 것은 숫자 `0`뿐이고(`512`는 전부 성공) `MINIMAL`은 실제로 생각 토큰이 0임을 확인했다. 거부 모델 목록과 `gemini-2.5-flash-lite` 512 보정은 실측 근거라 지우지 않고, 목록은 불변식 테스트가 직접 읽는다. **지연 이득은 없다** — 6회에서 -17%까지 나왔지만 15회로 늘리면 -0.9%로 사라진다(표본 부족으로 없는 효과를 읽은 사례). 근거는 속도가 아니라 모델 교체 시 최적화가 조용히 사라지는 구조의 제거다. 폐지된 `LLM_MODEL_NAME`을 현행으로 안내하던 문서 2곳도 함께 정정 |
+
