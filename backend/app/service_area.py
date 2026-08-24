@@ -153,9 +153,24 @@ def is_within_service_area(latitude: float, longitude: float) -> bool:
     return False
 
 
+def supported_district_label(*, with_city: bool = False) -> str:
+    """안내 문구에 넣을 지원 구 이름. "종로구·중구·용산구·성동구".
+
+    문구가 이 목록을 읽게 해야 구를 늘릴 때 SUPPORTED_DISTRICTS 한 줄로 끝난다.
+    사람이 쓴 문자열로 두면 목록만 늘고 문구는 옛 범위를 말하는 상태가 된다 —
+    실제로 지원 구가 넷으로 늘어난 뒤에도 "종로구만 지원합니다"가 나갔다.
+
+    with_city는 "서울특별시"를 앞에 붙인다. 네 곳 모두 서울특별시이므로 구 이름만
+    반복하지 않고 한 번만 쓴다.
+    """
+    names = "·".join(district.name for district in SUPPORTED_DISTRICTS)
+    return f"서울특별시 {names}" if with_city else names
+
+
 __all__ = [
     "SUPPORTED_DISTRICTS",
     "SUPPORTED_DISTRICT_CODES",
     "ServiceDistrict",
     "is_within_service_area",
+    "supported_district_label",
 ]

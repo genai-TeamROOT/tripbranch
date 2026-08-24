@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from unittest import mock
 from uuid import UUID
 
 import httpx
@@ -781,6 +782,85 @@ async def test_find_concentration_mapped_places_reads_single_object_embed() -> N
 
     assert [place.concentration_name for place in places] == ["낙산공원"]
     assert captured[0].url.params["is_active"] == "eq.true"
+
+
+@pytest.mark.asyncio
+async def test_find_concentration_mapped_places_reads_every_page() -> None:
+    """상한을 넘는 매핑도 전부 읽는다.
+
+    한 번만 읽으면 넘치는 순간 오류 없이 뒷부분이 잘린다 - 대체 후보가 조용히
+    사라져 "가까운 곳이 있는데 no_data"가 된다. 지금은 101건이라 실데이터로
+    밟히지 않는 경로라서, 늘어난 뒤 처음 도는 일이 없도록 여기서 고정한다.
+    """
+    captured: list[httpx.Request] = []
+    page_size = 3
+
+    def row(index: int) -> dict[str, object]:
+        return {
+            "content_id": f"{index:06d}",
+            "title": f"장소 {index}",
+            "address": None,
+            "latitude": 37.57,
+            "longitude": 126.98,
+            "place_concentration_mappings": {"primary_concentration_name": f"장소 {index}"},
+        }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        offset = int(request.url.params["offset"])
+        # 7건 = 꽉 찬 페이지 둘 + 1건짜리 마지막 페이지.
+        remaining = max(0, 7 - offset)
+        return httpx.Response(
+            200,
+            json=[row(offset + i) for i in range(min(page_size, remaining))],
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        repository = SupabasePlaceRepository(
+            "https://project.supabase.co/", "sb_secret_test", client
+        )
+        with mock.patch(
+            "app.repositories.supabase_places._READ_PAGE_SIZE", page_size
+        ):
+            places = await repository.find_concentration_mapped_places()
+
+    assert len(places) == 7
+    assert [request.url.params["offset"] for request in captured] == ["0", "3", "6"]
+    # 정렬이 없으면 페이지마다 순서가 달라져 같은 행이 두 번 오거나 아예 빠진다.
+    assert captured[0].url.params["order"] == "content_id.asc"
+
+
+@pytest.mark.asyncio
+async def test_find_concentration_mapped_places_stops_on_partial_page() -> None:
+    """덜 찬 페이지에서 멈춘다 - 빈 페이지를 한 번 더 부르지 않는다."""
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "content_id": "129501",
+                    "title": "낙산공원",
+                    "address": None,
+                    "latitude": 37.58,
+                    "longitude": 127.0,
+                    "place_concentration_mappings": {
+                        "primary_concentration_name": "낙산공원"
+                    },
+                }
+            ],
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        repository = SupabasePlaceRepository(
+            "https://project.supabase.co/", "sb_secret_test", client
+        )
+        places = await repository.find_concentration_mapped_places()
+
+    assert len(places) == 1
+    assert len(captured) == 1
 
 
 @pytest.mark.asyncio

@@ -649,23 +649,39 @@ class SupabasePlaceRepository:
         매핑에 있는 장소는 집중률 API에 데이터가 존재한다는 뜻이다. INFO 질의에서
         대상 장소의 직접 데이터가 없을 때, 여기서 가장 가까운 곳을 대체 기준으로
         쓰면 "가까운 곳을 골랐는데 집중률이 없더라"를 구조적으로 피할 수 있다.
-        PostgREST가 거리 정렬을 지원하지 않아 전체를 읽고 호출자가 계산한다 —
-        매핑은 100건 규모라 한 번에 받아도 부담이 없다.
+        PostgREST가 거리 정렬을 지원하지 않아 전체를 읽고 호출자가 계산한다.
+
+        페이지로 나눠 읽는다. 매핑이 101건인 지금은 첫 요청 한 번으로 끝나지만,
+        한 번만 읽으면 상한을 넘는 순간 오류 없이 뒷부분이 잘린다 — 대체 후보가
+        조용히 사라져 "가까운 곳이 있는데 no_data"가 된다. 확장 구 매핑을
+        채우면(TP-136) 건수가 늘어난다.
         """
-        response = await self._request(
-            "GET",
-            "/places",
-            params={
-                "select": _LOCATION_COLUMNS,
-                "is_active": "eq.true",
-                # 내부 조인으로 매핑이 있는 장소만 남긴다.
-                "place_concentration_mappings": "not.is.null",
-                "limit": str(_READ_PAGE_SIZE),
-            },
-        )
-        rows = self._json(response)
-        if not isinstance(rows, list):
-            raise SupabaseRepositoryError("invalid concentration mapping response")
+        rows: list[object] = []
+        offset = 0
+        while True:
+            response = await self._request(
+                "GET",
+                "/places",
+                params={
+                    "select": _LOCATION_COLUMNS,
+                    "is_active": "eq.true",
+                    # 내부 조인으로 매핑이 있는 장소만 남긴다.
+                    "place_concentration_mappings": "not.is.null",
+                    # 정렬이 없으면 페이지마다 순서가 달라져 같은 행이 두 번 오거나
+                    # 아예 빠질 수 있다.
+                    "order": "content_id.asc",
+                    "limit": str(_READ_PAGE_SIZE),
+                    "offset": str(offset),
+                },
+            )
+            page = self._json(response)
+            if not isinstance(page, list):
+                raise SupabaseRepositoryError("invalid concentration mapping response")
+            rows.extend(page)
+            if len(page) < _READ_PAGE_SIZE:
+                break
+            offset += _READ_PAGE_SIZE
+
         return tuple(
             location
             for location in _map_place_locations(rows, fallback_title="")

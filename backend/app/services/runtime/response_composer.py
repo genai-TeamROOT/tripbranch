@@ -31,6 +31,7 @@ from app.schemas import (
     RecommendationResponse,
     ScheduleResult,
 )
+from app.service_area import supported_district_label
 from app.services.runtime.context_schemas import Clarification
 from app.services.runtime.info_context_schemas import (
     EventInfoResult,
@@ -89,8 +90,8 @@ _TOOL_UNSUPPORTED_MESSAGE = "죄송하지만 아직 지원하지 않는 요청�
 # 하면 무엇을 바꿔야 할지 알 수 없다(D-044).
 _TOOL_UNSUPPORTED_TEMPLATES: dict[str, str] = {
     "unsupported_region": (
-        "현재는 베타 서비스로 종로구의 장소 추천만 가능해요. "
-        "종로에서 가고 싶은 위치를 말씀해주세요."
+        f"현재는 베타 서비스로 {supported_district_label()}의 장소 추천만 가능해요. "
+        "그 안에서 가고 싶은 위치를 말씀해주세요."
     ),
     "realtime_commercial_unsupported_region": (
         "해당 장소 주변은 서울시 실시간 상권 데이터 제공 지역이 아니에요. "
