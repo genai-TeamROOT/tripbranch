@@ -7,7 +7,7 @@
 | 측정 대상 | 모델 5개 × 설정 4가지 (전수), 각 3회 반복 |
 | 근거 데이터 | `backend/test_results/gemini_thinking_matrix_2026-08-24/thinking_setting_matrix.json` |
 | 재현 방법 | `python -m scripts.measure_fast_thinking_level --matrix --reps 3` (실 API 호출) |
-| 관련 결정 | D-074 |
+| 관련 결정 | D-075 |
 
 ---
 
@@ -132,7 +132,7 @@ Gemini에는 답을 내기 전에 **스스로 한 번 더 따져보는 단계**�
 측정을 하다 실제 코드의 문제가 두 개 나왔다. 둘 다 **코드를 고친 적 없이 모델만
 바꿨을 때** 생기는 종류다.
 
-### 문제 1 — 생각 끄기가 조용히 무효화돼 있었다 (D-074에서 수정)
+### 문제 1 — 생각 끄기가 조용히 무효화돼 있었다 (D-075에서 수정)
 
 "예산=0을 거부하는 모델"에는 안전하게 **아무 설정도 보내지 않도록** 되어 있었다.
 오류는 피하지만 **생각 끄기도 같이 사라진다.** 8월 18일에 분류용 모델을 그 목록에 있는
@@ -206,6 +206,6 @@ python -m scripts.measure_fast_thinking_level --reps 15           # 실험 3 (�
 ## 9. 관련 문서
 
 - `docs/design/llm-hyperparameters.md` §4 — 호출별 설정값과 모델별 보정 규칙
-- `docs/decision-log.md` D-074 — 이번 수정의 결정 기록
+- `docs/decision-log.md` D-075 — 이번 수정의 결정 기록
 - `backend/test_results/intent_experiments_2026-08.md` — 2026-08-14 선행 실험(어느 모델이
   예산=0을 거부하는지 처음 찾아낸 근거)

@@ -5,9 +5,9 @@
 | 항목 | 값 |
 |------|-----|
 | 버전 | v1.3 |
-| 상태 | **이관 완료·검증 통과·팀 검토 반영(2026-08-24)** — 0단계 스파이크(§9.6), 1단계 GENERAL(§9.7), 2단계 조기 반환 전체, 3단계 파이프라인(§9.8). 4단계는 전제가 틀려 하지 않는다(§9.9). §10.3 병합 판정 기준 6개 전부 통과(§9.10 회귀 비교·§9.11 되묻기 재진입·§9.12 지연 측정). **판정 통과 후 검토에서 결함 1건이 나와 고쳤다 — 노드 안 LLM 기록 유실(§9.13, D-073).** §1~§5는 "처음부터 설계했다면 맞는가"에 대한 결론, §6~§11은 이관 계획·사용법·규모·브랜치 전략 |
+| 상태 | **이관 완료·검증 통과·팀 검토 반영(2026-08-24)** — 0단계 스파이크(§9.6), 1단계 GENERAL(§9.7), 2단계 조기 반환 전체, 3단계 파이프라인(§9.8). 4단계는 전제가 틀려 하지 않는다(§9.9). §10.3 병합 판정 기준 6개 전부 통과(§9.10 회귀 비교·§9.11 되묻기 재진입·§9.12 지연 측정). **판정 통과 후 검토에서 결함 1건이 나와 고쳤다 — 노드 안 LLM 기록 유실(§9.13, D-074).** §1~§5는 "처음부터 설계했다면 맞는가"에 대한 결론, §6~§11은 이관 계획·사용법·규모·브랜치 전략 |
 | 작성일 | 2026-08-22 (최종 수정 2026-08-24) |
-| 관련 결정 | D-072, D-073 (`docs/decision-log.md`) |
+| 관련 결정 | D-072, D-074 (`docs/decision-log.md`) |
 | 작업 브랜치 | `feature/langgraph-spike` (`feature/llm-interpret`에서 분기, 로컬 전용 — §10) |
 | 관련 코드 | `backend/app/services/runtime/agent_runtime.py`(`run_agent_flow()`), `backend/app/services/runtime/llm_execution.py`(§9.13), `backend/app/state/store.py`(`StateStore`), `backend/app/state/schema.py`(`AgentState`), `backend/app/providers/gemini.py`(`classify_intent()`) |
 | 관련 문서 | `docs/roadmap.md` 12·16번, `docs/design/agent-runtime-contract.md`, `docs/design/clarification-options.md`, `backend/docs/package-b/agent-state-contract-v1.md` |
@@ -738,7 +738,7 @@ LangGraph가 **같은 리스트 객체**를 그대로 넘기기 때문이다. �
 > `LLM_PROVIDER=fake`를 무조건 지정하고(`--real`에서도), `record_llm_call()`을 부르는
 > 것은 `RealGeminiProvider` 하나뿐이기 때문이다. 두 실행이 같았던 게 아니라 두 실행
 > 다 아무것도 기록하지 않았다. 실제로는 이 필드가 그래프 경로에서 유실되고 있었고,
-> 팀 검토에서 발견해 D-073으로 고쳤다 — 원인과 수정은 §9.13에 있다.
+> 팀 검토에서 발견해 D-074으로 고쳤다 — 원인과 수정은 §9.13에 있다.
 
 | 케이스 | Fake Provider | 실제 Provider |
 |---|---|---|

@@ -130,3 +130,67 @@ test("restores a session that contains a place_info_result message", () => {
 
   expect(loadState()).toEqual(stateWithPlaceInfo);
 });
+
+test("restores a session that contains a feedback message", () => {
+  // 턴 하나가 끝날 때마다 항상 붙는 좋아요/싫어요 컨트롤 — schedule_result와
+  // 같은 이유로 새로고침 시 대화가 통째로 버려지던 회귀 테스트.
+  const stateWithFeedback: TripState = {
+    ...state,
+    messages: [
+      ...state.messages,
+      {
+        id: "message-3",
+        type: "feedback",
+        sessionId: "sess_test",
+        runId: "run_test",
+        intent: "RECOMMEND",
+        userInput: "비 피할 곳",
+        assistantMessage: "근처 카페 3곳을 찾았어요.",
+      },
+    ],
+  };
+
+  saveState(stateWithFeedback);
+
+  expect(loadState()).toEqual(stateWithFeedback);
+});
+
+test("restores a session that contains a compare_result message", () => {
+  const stateWithCompare: TripState = {
+    ...state,
+    messages: [
+      ...state.messages,
+      {
+        id: "message-3",
+        type: "compare_result",
+        comparison: {
+          criteria: "time",
+          items: [],
+        },
+      },
+    ],
+  };
+
+  saveState(stateWithCompare);
+
+  expect(loadState()).toEqual(stateWithCompare);
+});
+
+test("restores a session that contains a clarification message", () => {
+  const stateWithClarification: TripState = {
+    ...state,
+    messages: [
+      ...state.messages,
+      {
+        id: "message-3",
+        type: "clarification",
+        text: "어디 근처에서 찾을까요?",
+        options: [{ id: "opt-1", label: "경복궁 근처", resolved_intent: "RECOMMEND" }],
+      },
+    ],
+  };
+
+  saveState(stateWithClarification);
+
+  expect(loadState()).toEqual(stateWithClarification);
+});

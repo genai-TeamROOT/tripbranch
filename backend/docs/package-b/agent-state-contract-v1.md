@@ -819,6 +819,25 @@ B는 GPS 확보 여부로 세션 생성을 거부하지 않는다.
 `api_context` 갱신(6.5절)은 `updated_at`을 갱신하지 않으며,
 `last_active_at`만 갱신한다.
 
+### 5.3-1 신원 연결과 소유권 검증 (TP-101, D-063, D-073)
+
+세션을 확보하는 시점에 인증된 `Principal`(있으면)을 연결한다.
+
+- **연결(`attach_user_id`)**: `AgentState.user_id`가 비어 있으면 `Principal.user_id`로
+  채운다. 이미 값이 있으면 절대 덮어쓰지 않는다 — 빈 칸을 채우는 것은 소유권
+  이전이 아니지만, 값이 있는 세션을 덮어쓰는 것은 소유권 탈취다(D-063 결정 3).
+- **소유권 검증(`verify_ownership`, D-073)**: `Principal`이 있고 `AgentState.user_id`도
+  이미 있는데 둘이 다르면 요청을 거부한다(403, `session_ownership_mismatch`).
+  `Principal`이 없는 요청(토큰 미전송)과 `user_id`가 비어 있는 세션은 거부 대상이
+  아니다 — 지금은 인증이 optional이라 정상 경로다.
+- **적용 범위**: `apply()`(6.1/6.2절), `get_session_context()`(6.3절),
+  `delete_session()`(GET/DELETE `/api/state/{session_id}`, 이 계약 문서에
+  별도 절 없음) 세 진입점 모두에서 검증한다. 나머지 진입점
+  (`record_recommendation` 등)은 같은 요청 안에서 `apply()`가 이미 통과시킨
+  `session_id`만 이어받으므로 별도로 재검증하지 않는다.
+- **아직 하지 않는 것**: 모든 요청에 신원을 강제하는 것(Phase 4, 전면 필수화)은
+  이 범위 밖이다 — 착수 시점 자체가 미정이다(`guest-auth-design.md` 5절).
+
 ### 5.4 만료 판정
 
 B가 관리하는 만료는 세 종류이며, 모두 시각 비교로 판정한다.
