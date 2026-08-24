@@ -378,11 +378,14 @@ class FestivalProvider(Protocol):
     async def search_festivals(
         self,
         region_code: str,
-        district_code: str,
+        district_code: str | None,
         reference_date: date,
         limit: int = 100,
     ) -> ProviderResult[list[FestivalEvent]]:
         """법정동 코드 기준 지역의 행사 목록을 반환한다.
+
+        district_code가 None이면 시도 전체를 받는다 — 지원 구가 여럿일 때 구마다
+        호출하지 않기 위해서다. 지원 구 판정은 구현체가 응답으로 한다(D-025).
 
         진행 중 판정은 호출자가 reference_date로 다시 한다 — provider는 기간이
         해석 가능한 행사를 모아 돌려주기만 한다.

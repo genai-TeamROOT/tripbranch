@@ -52,7 +52,7 @@ class StubFestivalProvider:
         error: Exception | None = None,
         status: ProviderStatus = ProviderStatus.SUCCESS,
     ) -> None:
-        self.calls: list[tuple[str, str, date]] = []
+        self.calls: list[tuple[str, str | None, date]] = []
         self._events = events or []
         self._error = error
         self._status = status
@@ -60,7 +60,7 @@ class StubFestivalProvider:
     async def search_festivals(
         self,
         region_code: str,
-        district_code: str,
+        district_code: str | None,
         reference_date: date,
         limit: int = 100,
     ) -> ProviderResult[list[FestivalEvent]]:
@@ -245,11 +245,12 @@ class TestQuery:
     @pytest.mark.asyncio
     async def test_법정동_코드로_조회한다(self) -> None:
         # sigunguCode를 쓰면 응답 다수가 필터에서 탈락한다(D-055).
+        # 구는 넘기지 않는다 — 서울 전체를 한 번에 받아 지원 구만 남긴다(D-025).
         provider = StubFestivalProvider([_event("행사")])
 
         await _service(provider).fetch_info_context(_request())
 
-        assert provider.calls == [("11", "110", TODAY)]
+        assert provider.calls == [("11", None, TODAY)]
 
 
 class TestFailures:
