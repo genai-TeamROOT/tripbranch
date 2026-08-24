@@ -224,10 +224,58 @@ def _spearman(a: dict[str, float], b: dict[str, float]) -> float:
 
 _TOP_N = 5
 
+# 선택성(하위 4분위 하락 - 상위 4분위 하락)의 널 기준선. **측정해서 얻은 값이다** —
+# `--scope taste`의 취향+취향 6조합 선택성 평균(2026-08-24, 경복궁):
+# 0.0419 / 0.0337 / 0.0254 / 0.0611 / 0.0202 / 0.0478 → 평균 0.0384, 양수 6/6.
+#
+# 그 6조합은 TP-128이 "조건 지배는 구조 문제가 아니다"로 결론낸 조합이다. 즉
+# **수용된 혼합에서도 이만큼은 나온다.** 처음엔 임계를 0.02로 임의로 잡았는데
+# 기준선보다 낮아서, 수용된 조합조차 6/6 "희석"으로 찍히는 값이었다.
+_SELECTIVITY_NULL_BASELINE = 0.0384
+# 널 기준선의 실측 범위. 평균 초과만 보면 과대 경보가 난다 — 널 분포 안에 드는지도
+# 함께 봐야 한다.
+_SELECTIVITY_NULL_RANGE = (0.0202, 0.0611)
+
 
 def _top_ids(scores: dict[str, float], n: int = _TOP_N) -> list[str]:
     """유사도 내림차순 상위 n곳. 동점은 content_id로 갈라 실행마다 같은 순서를 준다."""
     return sorted(scores, key=lambda k: (-scores[k], k))[:n]
+
+
+def _shift_profile(
+    compound: dict[str, float], single: dict[str, float]
+) -> tuple[float, float, float]:
+    """복합 질의가 단독 대비 유사도를 **어떻게** 깎는지 본다.
+
+    컷 통과 수가 줄었다는 사실만으로는 두 가지를 못 가른다.
+
+    1. **균일 이동** — 질의가 길어져 모든 후보의 유사도가 비슷하게 내려간 것.
+       고정 컷(0.43) 아래로 밀리는 곳이 생기지만 순위는 보존되므로, 순위 축
+       에서는 손해가 아니다.
+    2. **선택적 희석** — 취향 근거가 **강한 곳일수록 더 많이** 깎인 것. 이건
+       진짜 희석이고, 이 경우 컷 통과 수 감소는 실제 손실 신호다.
+
+    그래서 단독 유사도 기준 상·하위 4분위의 하락폭을 따로 돌려준다.
+    `(전체 평균 하락, 상위 4분위 하락, 하위 4분위 하락)`.
+
+    ⚠️ **부호만 보면 안 된다 — 평균 회귀가 섞인다.** 4분위를 `single`로 나누고
+    같은 `single`로 델타를 재므로, 희석이 전혀 없어도 상위 4분위가 더 많이
+    깎인 것처럼 나온다(상위는 그 질의에 우연히 잘 맞은 곳들이라 다른 질의에서는
+    덜 극단적이다). 실제로 **취향+취향 조합에서도 선택성이 6/6 양수**다.
+    그래서 절대값이 아니라 `_SELECTIVITY_NULL_BASELINE`과 비교해서 읽는다.
+    """
+    keys = sorted(set(compound) & set(single))
+    if len(keys) < 4:
+        return (float("nan"),) * 3
+    deltas = {k: compound[k] - single[k] for k in keys}
+    by_single = sorted(keys, key=lambda k: -single[k])
+    quartile = max(1, len(by_single) // 4)
+    top, bottom = by_single[:quartile], by_single[-quartile:]
+    return (
+        statistics.mean(deltas.values()),
+        statistics.mean(deltas[k] for k in top),
+        statistics.mean(deltas[k] for k in bottom),
+    )
 
 
 @dataclass(frozen=True)
@@ -244,6 +292,11 @@ class DominanceRow:
     overlap_b: int
     # 복합에만 있는 곳. 5 - (a∪b와의 겹침)이라 overlap 합과 일치하지 않을 수 있다.
     novel_in_compound: int
+    # 복합이 취향 단독 대비 유사도를 깎는 모양(`_shift_profile`). 컷 통과 수
+    # 감소가 균일 이동인지 선택적 희석인지 가르는 값이다.
+    shift_mean: float
+    shift_top_quartile: float
+    shift_bottom_quartile: float
     # 참고 지표 — 꼬리까지 포함한 값이라 판정에 쓰지 않는다(docstring 참고).
     rho_compound_vs_a: float
     rho_compound_vs_b: float
@@ -340,6 +393,8 @@ async def run(
             rho_a = _spearman(vc, va)
             rho_b = _spearman(vc, vb)
             gap = abs(rho_a - rho_b)
+            # 취향 단독(B)이 기준선이다 — 2.4.0 전에 나가던 질의가 그것이다.
+            shift_mean, shift_top, shift_bottom = _shift_profile(vc, vb)
 
             top_c = _top_ids(vc)
             top_a, top_b = set(_top_ids(va)), set(_top_ids(vb))
@@ -368,6 +423,9 @@ async def run(
                     overlap_a=overlap_a,
                     overlap_b=overlap_b,
                     novel_in_compound=novel,
+                    shift_mean=shift_mean,
+                    shift_top_quartile=shift_top,
+                    shift_bottom_quartile=shift_bottom,
                     rho_compound_vs_a=rho_a,
                     rho_compound_vs_b=rho_b,
                     dominant=dominant,
@@ -424,6 +482,41 @@ def _print(rows: list[DominanceRow], *, companion: bool = False) -> None:
     for r in buried:
         print(f"    {r.category} '{r.condition_a} {r.condition_b}'")
 
+    # 컷 통과 수 감소가 균일 이동인지 선택적 희석인지 — `_shift_profile` 참고.
+    print()
+    print(
+        f"{'카테고리':<8} {'동행':<{a_width}} {'Δ평균':>8} "
+        f"{'Δ상위4분위':>10} {'Δ하위4분위':>10} {'선택성':>8} {'판정':<12}"
+    )
+    selective = 0
+    for r in rows:
+        # 완전히 균일하면 상·하위 4분위 하락폭이 같다. 그 차이가 선택성이다.
+        # 판정은 절대값이 아니라 널 기준선과의 비교다(`_shift_profile` 경고 참고).
+        selectivity = r.shift_bottom_quartile - r.shift_top_quartile
+        is_selective = selectivity > _SELECTIVITY_NULL_BASELINE
+        selective += is_selective
+        print(
+            f"{r.category:<8} {r.condition_a:<{a_width}} {r.shift_mean:>8.4f} "
+            f"{r.shift_top_quartile:>10.4f} {r.shift_bottom_quartile:>10.4f} "
+            f"{selectivity:>8.4f} {'기준선 초과' if is_selective else '기준선 이하':<12}"
+        )
+    print(
+        f"→ 널 기준선({_SELECTIVITY_NULL_BASELINE:.4f}) 초과 {selective}/{len(rows)}. "
+        f"기준선은 이미 '구조 문제 아님'으로 결론난 취향+취향 6조합의 선택성 평균이다 "
+        f"(--scope taste). 초과가 없으면 컷 통과 수 감소를 동행 co-fill 탓으로 "
+        f"돌릴 수 없다."
+    )
+    null_lo, null_hi = _SELECTIVITY_NULL_RANGE
+    outside = sum(
+        1
+        for r in rows
+        if (r.shift_bottom_quartile - r.shift_top_quartile) > null_hi
+    )
+    print(
+        f"   널 분포 범위 {null_lo:.4f}~{null_hi:.4f} 기준으로는 초과 {outside}/{len(rows)} — "
+        f"평균 초과만 세면 과대 경보다."
+    )
+
     watch = [
         r for r in rows if r.overlap_a >= 4 and r.overlap_b <= 1 and r not in buried
     ]
@@ -475,6 +568,9 @@ def main() -> None:
                 "overlap_b",
                 "novel_in_compound",
                 "dominant",
+                "shift_mean",
+                "shift_top_quartile",
+                "shift_bottom_quartile",
                 "rho_compound_vs_a",
                 "rho_compound_vs_b",
                 "gap",
@@ -494,6 +590,9 @@ def main() -> None:
                     r.overlap_b,
                     r.novel_in_compound,
                     r.dominant,
+                    f"{r.shift_mean:.4f}",
+                    f"{r.shift_top_quartile:.4f}",
+                    f"{r.shift_bottom_quartile:.4f}",
                     f"{r.rho_compound_vs_a:.4f}",
                     f"{r.rho_compound_vs_b:.4f}",
                     f"{r.gap:.4f}",
