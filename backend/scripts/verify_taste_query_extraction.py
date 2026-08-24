@@ -14,6 +14,12 @@ taste_query에 담기면 엉뚱한 장소에 취향 점수가 붙는다.
 (concentration_intent와 co-fill 허용, HISTORY.md 2.3.0 결정 근거 참고). 이 스크립트는
 그 co-fill 비율을 참고로 측정하되 실패로 보지 않는다 — 실패 기준은 여전히 "일정·거리·
 예산·인원수 조건이 taste_query에 섞이는가"뿐이다.
+
+3. 동행(companion) + 취향이 함께 오는 발화 -> companion과 taste_query가 동시에
+   채워지는가(COMPANION_OVERLAP_CASES). 혼잡도 co-fill과 달리 **이건 실패 기준이다**
+   — TP-128 조사에서 "아이들과 조용한 카페" 류가 실 LLM 3회 중 1회만 두 조건을
+   함께 남기는 걸 애드혹으로 확인했다(HISTORY.md 결정 근거 참고). taste_query 규칙에
+   동행 co-fill을 명문화하는 프롬프트 변경 전후를 이 그룹으로 비교한다.
 """
 
 from __future__ import annotations
@@ -63,6 +69,33 @@ OVERLAP_CASES: tuple[str, ...] = (
     "한적하고 감성적인 곳",
 )
 
+# 동행·취향 축이 겹치는 발화 — TP-128 조사에서 "아이들이랑 가기 좋은 조용한
+# 카페"가 3회 중 1회만 두 조건을 taste_query에 함께 남긴다고 애드혹으로
+# 확인했었다(산출물 미보존). 이 스크립트로 재확인하니 정확한 비율은 달랐다
+# (2026-08-24 실측: 동일 발화 5회 중 3회 성공 — "1/3"이라는 원래 수치 자체가
+# 표본 3회짜리 근사였다). 다만 **불안정하다는 방향은 재현됐다.**
+#
+# 처음 만든 케이스(아이들과 조용한/아이들이랑 감성적인/혼자 아늑한/친구들 활기찬/
+# 강아지 조용한)는 전부 12/12로 안정적이었다 — 우연히 이 스크립트가 못 잡는
+# 쉬운 표현만 골랐던 것이다. 실제로 불안정한 건 "가기 좋은" 연결형이었다.
+# 아래는 그 연결형으로 다시 뽑은 케이스다.
+#
+# 세 번째 값(marker)이 중요하다 — 처음엔 "taste_query가 비어있지 않고 companion
+# 필드가 맞으면 통과"로만 쟀는데, 그러면 "친구들이랑 가기 좋은 아늑한 카페"가
+# taste_query="아늑한"(동행 문구가 통째로 빠짐)으로 나와도 통과로 잘못 잡혔다.
+# taste_query 안에 동행을 가리키는 원문 조각(marker)이 실제로 남아 있는지까지
+# 봐야 한다 — 정규식 프록시 오판을 문장으로 확인해야 했던 9.6절과 같은 함정이다.
+# "일치"는 marker 포함 + companion 필드 정확도가 **동시에** 맞는가다 — 혼잡도
+# OVERLAP_CASES와 달리 여기는 참고용이 아니라 이번 수정의 목표 그 자체라
+# 실패 기준이다.
+COMPANION_OVERLAP_CASES: tuple[tuple[str, str, str], ...] = (
+    ("아이들이랑 가기 좋은 조용한 카페", "child", "아이들"),  # 08-24: 5회 중 3회만 co-fill
+    ("친구들이랑 가기 좋은 아늑한 카페", "friend", "친구"),  # 08-24: 3회 중 0회 co-fill(항상 드롭)
+    ("부모님이랑 갈 만한 분위기 좋은 곳", "parent", "부모님"),  # extract.md 예시 — 안정된 양성 대조
+    ("혼자 가기 좋은 조용한 카페", "solo", "혼자"),  # 08-24: 3회 중 3회 안정
+    ("강아지랑 갈 만한 조용한 카페", "pet", "강아지"),
+)
+
 # 대조군 — 취향 단어가 전혀 없는 순수 혼잡도 발화도 이제 taste_query가 함께
 # 채워지는 게 정상이다(2.3.0). "taste" 축 대조군은 혼잡도 단어 없이 취향만
 # 말한 경우로, concentration_intent가 안 켜지는지를 본다.
@@ -96,8 +129,8 @@ _CROWD_PATTERNS = (
 
 async def _extract(
     provider: RealGeminiProvider, text: str
-) -> tuple[str | None, str | None, str | None, int]:
-    """(taste_query, concentration_intent, 오류, ms)를 반환한다."""
+) -> tuple[str | None, str | None, str | None, str | None, int]:
+    """(taste_query, concentration_intent, companion, 오류, ms)를 반환한다."""
     started = time.perf_counter()
     try:
         result = await provider.extract_recommend_conditions(text)
@@ -106,11 +139,13 @@ async def _extract(
         taste = conditions.taste_query if conditions else None
         conc = conditions.concentration_intent if conditions else None
         conc_str = conc.value if conc is not None else None
+        companion = conditions.companion if conditions else None
+        companion_str = companion.value if companion is not None else None
         error = None
     except Exception as exc:  # noqa: BLE001 - 실 API 검증 스크립트
-        taste, conc_str, error = None, None, f"{type(exc).__name__}: {exc}"
+        taste, conc_str, companion_str, error = None, None, None, f"{type(exc).__name__}: {exc}"
     ms = round((time.perf_counter() - started) * 1000)
-    return taste, conc_str, error, ms
+    return taste, conc_str, companion_str, error, ms
 
 
 async def run(
@@ -131,7 +166,7 @@ async def run(
 
     taste_rows: list[dict[str, object]] = []
     for text, should_fill in CASES:
-        taste, conc, error, ms = await _extract(provider, text)
+        taste, conc, _companion, error, ms = await _extract(provider, text)
         filled = bool(taste)
         leaked = [p for p in _LEAK_PATTERNS if re.search(p, taste)] if taste else []
         # 혼잡도 단어는 2.3.0부터 taste_query에 남아도 정상이라 실패 신호가
@@ -155,7 +190,7 @@ async def run(
 
     overlap_rows: list[dict[str, object]] = []
     for text in OVERLAP_CASES:
-        taste, conc, error, ms = await _extract(provider, text)
+        taste, conc, _companion, error, ms = await _extract(provider, text)
         overlap_rows.append(
             {
                 "발화": text,
@@ -169,9 +204,29 @@ async def run(
         print("." if error is None else "!", end="", flush=True)
         await asyncio.sleep(delay)
 
+    companion_rows: list[dict[str, object]] = []
+    for text, expected_companion, marker in COMPANION_OVERLAP_CASES:
+        taste, _conc, companion, error, ms = await _extract(provider, text)
+        companion_ok = companion == expected_companion
+        marker_kept = marker in taste if taste else False
+        companion_rows.append(
+            {
+                "발화": text,
+                "기대동행": expected_companion,
+                "marker": marker,
+                "taste": taste if taste else "null",
+                "companion": companion if companion else "null",
+                "일치": error is None and companion_ok and marker_kept,
+                "오류": error,
+                "ms": ms,
+            }
+        )
+        print("." if error is None else "!", end="", flush=True)
+        await asyncio.sleep(delay)
+
     control_rows: list[dict[str, object]] = []
     for text, axis in CONTROL_CASES:
-        taste, conc, error, ms = await _extract(provider, text)
+        taste, conc, _companion, error, ms = await _extract(provider, text)
         if axis == "concentration":
             # 순수 혼잡도 발화: 혼잡도 축만 켜지면 통과다. taste_query가 같이
             # 채워지는 건 2.3.0부터 정상이라 실패 조건이 아니다.
@@ -193,7 +248,12 @@ async def run(
         await asyncio.sleep(delay)
 
     print(flush=True)
-    return {"taste": taste_rows, "overlap": overlap_rows, "control": control_rows}
+    return {
+        "taste": taste_rows,
+        "overlap": overlap_rows,
+        "companion": companion_rows,
+        "control": control_rows,
+    }
 
 
 def _report(groups: dict[str, list[dict[str, object]]]) -> int:
@@ -231,6 +291,31 @@ def _report(groups: dict[str, list[dict[str, object]]]) -> int:
         "— 2.3.0부터는 이게 정상 동작이라 목표치를 두지 않는다(참고용)"
     )
 
+    print(
+        "\n■ 동행 co-fill (실패 기준: companion 필드가 안 맞거나 taste_query에서 "
+        "동행 원문 조각(marker)이 빠짐)"
+    )
+    print(
+        f"{'일치':<5} {'기대동행':<8} {'companion':<10} {'marker':<6} "
+        f"{'발화':<28} {'taste_query'}"
+    )
+    print("-" * 100)
+    companion_co_fill = 0
+    for r in groups["companion"]:
+        ok = "✅" if r["일치"] else "❌"
+        if r["일치"]:
+            companion_co_fill += 1
+        else:
+            failures += 1
+        print(
+            f"{ok:<4} {r['기대동행']:<8} {str(r['companion']):<10} {r['marker']:<6} "
+            f"{r['발화']:<28} {r['taste']}"
+        )
+        if r["오류"]:
+            print(f"{'':>15} ⚠️  {r['오류']}")
+    total_companion = len(groups["companion"])
+    print(f"\n  → 동행 co-fill {companion_co_fill}/{total_companion}건")
+
     print("\n■ 대조군")
     print(f"{'축':<14} {'일치':<5} {'혼잡도':<8} {'발화':<24} {'taste_query'}")
     print("-" * 92)
@@ -243,7 +328,8 @@ def _report(groups: dict[str, list[dict[str, object]]]) -> int:
             print(f"{'':>15} ⚠️  {r['오류']}")
 
     print(
-        f"\n실패(취향+대조군) {failures}건 · 참고 co-fill {co_fill}/{total_overlap}건"
+        f"\n실패(취향+동행+대조군) {failures}건 · 참고 혼잡도 co-fill "
+        f"{co_fill}/{total_overlap}건 · 동행 co-fill {companion_co_fill}/{total_companion}건"
     )
     return failures
 
