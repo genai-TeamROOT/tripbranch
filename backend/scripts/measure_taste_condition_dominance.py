@@ -29,6 +29,38 @@ place_type 라벨)으로 보강해 실 RPC로 검색한다.
     사용자가 보지 않는 꼬리쪽 다수가 결과를 좌우한다. 실제로 이 축에서는
     ρ 0.9대가 정상 범위라, 높은 ρ 하나만 보고 "거의 같다 = 지배한다"고 읽으면
     틀린다. 이 측정의 착수 근거였던 ρ=0.978이 정확히 그 오독이었다.
+
+동행 scope (`--scope companion`, 2026-08-24 추가)
+------------------------------------------------
+`recommend.extract` 2.4.0이 동행 표현을 `taste_query`에 함께 남기도록 바꿨다
+("아이들이랑 가기 좋은 조용한 카페" → `taste_query="아이들이랑 가기 좋은 조용한"`).
+
+**TP-128은 이 안을 "희석 측정 때문에 택하지 않는다"고 적고 닫혔다.** 그런데 그
+근거는 발화 전체를 질의로 넣었을 때의 순위상관(ρ 0.88~0.97,
+`_enrich_taste_query()` docstring)이고, ρ는 **같은 카드가 위에서 판정에 쓰지
+말라고 결론낸 지표**다. 즉 기각 근거가 상위권 기준으로는 한 번도 검증되지
+않았다. 그래서 동행 표현을 조건 A로 놓고 같은 상위 5곳 기준으로 다시 잰다.
+
+이 scope에서 A는 동행 표현, B는 취향 표현이다. 복합 질의는 조사를 끼우지 않고
+그대로 이어 붙인다(`connector=" "`) — extract.md가 실제로 만드는 문자열이다.
+동행 문구는 전부 `verify_taste_query_extraction.py` 2.4.0 검증에서 실 LLM이
+실제로 뽑은 `taste_query` 값이다.
+
+실패 기준 — 둘 중 하나면 co-fill이 손해다:
+  (a) 복합의 컷 통과 수가 **취향 단독보다 낮다.** 근거를 오히려 잃는 것이므로
+      `_TASTE_QUERY_EXCLUDED_TAGS`에서 축제를 뺀 것과 같은 기준이다.
+  (b) 복합 상위 5곳이 **동행 단독과 5/5 일치하면서 취향 단독과 0/5.** 취향이
+      완전히 묻힌 경우다.
+
+둘 다 아니면 유지한다. 다만 (b)에 가까운 조합(동행 겹침 >= 4, 취향 겹침 <= 1)은
+`--quotes`로 인용문을 직접 읽어 동행 근거가 실재하는지 확인한다 — 수치만으로
+"묻혔다/아니다"를 가르지 않는다(`_PLACE_TYPE_TASTE_LABELS`가 수치 1등인
+"박물관"을 안 고른 것과 같은 이유).
+
+**동행 겹침이 높은 것 자체는 실패가 아니다.** "아이들과 가기 좋아요"는 리뷰가
+실제로 쓰는 장소 서술이라 그 근거를 당겨오는 건 요청에 부합한다 — 위치·어투가
+매칭되던 발화 전체 희석과 성격이 다르다. 그래서 (b)는 취향이 **완전히** 사라진
+경우로만 좁혀 뒀다.
 """
 
 from __future__ import annotations
@@ -44,6 +76,7 @@ from pathlib import Path
 import httpx
 
 from app.config import Settings
+from app.domain.models import PlaceEvidenceMatch
 from app.providers.place_evidence import DEFAULT_MIN_SIMILARITY, PlaceEvidenceProvider
 from app.providers.place_evidence_encoder import get_shared_encoder
 from app.repositories.supabase_places import SupabasePlaceRepository
@@ -68,6 +101,10 @@ class ConditionCombo:
     label: str  # 검색 질의에 붙는 place_tag/place_type 라벨
     condition_a: str
     condition_b: str
+    # 복합 질의에서 두 조건을 잇는 말. 취향 두 개는 발화가 "A하고 B"로 오지만,
+    # 동행 표현은 extract.md가 조사 없이 그대로 이어 붙인 문자열을 만든다
+    # ("아이들이랑 가기 좋은 조용한"). 실제로 나가는 질의와 같아야 한다.
+    connector: str = "하고 "
 
 
 _COMBOS: tuple[ConditionCombo, ...] = (
@@ -79,8 +116,26 @@ _COMBOS: tuple[ConditionCombo, ...] = (
     ConditionCombo("관광지", "관광지", "조용한", "화려한"),
 )
 
+# A는 동행 표현, B는 취향 표현이다(docstring "동행 scope" 참고). 동행 문구는
+# 전부 verify_taste_query_extraction.py 2.4.0 검증에서 실 LLM이 실제로 뽑은
+# taste_query 값이다 — 시스템이 만들지 않는 질의로 재면 안 된다.
+#
+# "혼자 가기 좋은"은 동행값이면서 이미 취향 축으로도 쓰이는 말이라
+# (`_TASTE_QUERY_EXCLUDED_TAGS` 주석의 6축 중 하나) 대조군 역할을 한다.
+_COMPANION_COMBOS: tuple[ConditionCombo, ...] = (
+    ConditionCombo("카페", "카페", "아이들이랑 가기 좋은", "조용한", connector=" "),
+    ConditionCombo("카페", "카페", "친구들이랑 가기 좋은", "아늑한", connector=" "),
+    ConditionCombo("음식점", "맛집", "부모님이랑 갈 만한", "분위기 좋은", connector=" "),
+    ConditionCombo("음식점", "맛집", "아이들이랑 가기 좋은", "조용한", connector=" "),
+    ConditionCombo("관광지", "관광지", "아이들이랑 가기 좋은", "볼거리 많은", connector=" "),
+    ConditionCombo("관광지", "관광지", "혼자 가기 좋은", "조용한", connector=" "),
+)
+
 RESULTS_DIR = Path(__file__).resolve().parents[1] / "test_results"
+# scope별로 파일을 나눈다 — 판정 기준이 다르고, 한쪽을 다시 돌릴 때 다른 쪽
+# 원자료를 덮어쓰면 안 된다.
 RESULTS_CSV = RESULTS_DIR / "taste_condition_dominance.csv"
+COMPANION_RESULTS_CSV = RESULTS_DIR / "taste_companion_cofill.csv"
 
 
 def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
@@ -196,7 +251,41 @@ class DominanceRow:
     gap: float
 
 
-async def run(delay: float) -> list[DominanceRow]:
+_QUOTE_CHARS = 90
+
+
+def _print_quotes(
+    title: str,
+    top_ids: list[str],
+    matches: dict[str, PlaceEvidenceMatch],
+    top_a: set[str],
+    top_b: set[str],
+) -> None:
+    """복합 질의 상위 5곳이 **무슨 문장 때문에** 뽑혔는지 그대로 보여준다.
+
+    수치만으로는 동행 겹침이 높은 것이 "정당한 동행 근거"인지 "취향이 묻힌
+    것"인지 가를 수 없다 — 그 판단은 인용문을 읽어야 한다.
+    """
+    print(f"\n  [인용문] {title}")
+    for rank, content_id in enumerate(top_ids, start=1):
+        match = matches.get(content_id)
+        if match is None:
+            continue
+        where = "".join(("A" if content_id in top_a else "-", "B" if content_id in top_b else "-"))
+        snippet = match.snippets[0].source_text.replace("\n", " ") if match.snippets else ""
+        if len(snippet) > _QUOTE_CHARS:
+            snippet = snippet[:_QUOTE_CHARS] + "…"
+        print(
+            f"   {rank}. [{where}] {match.place_title} ({match.avg_similarity:.3f}) {snippet}"
+        )
+
+
+async def run(
+    delay: float,
+    combos: tuple[ConditionCombo, ...] = _COMBOS,
+    *,
+    quotes: bool = False,
+) -> list[DominanceRow]:
     settings = Settings()
     if not settings.supabase_url or not settings.supabase_secret_key:
         raise ValueError("SUPABASE_URL / SUPABASE_SECRET_KEY가 필요합니다.")
@@ -222,13 +311,15 @@ async def run(delay: float) -> list[DominanceRow]:
         )
         provider = PlaceEvidenceProvider(encoder, repository, min_similarity=0.0)
 
-        for combo in _COMBOS:
+        for combo in combos:
             candidates = _candidates_for(places, combo.category)
             if len(candidates) < _MIN_MATCHED:
                 print(f"[건너뜀] {combo.category}: 후보 {len(candidates)}곳뿐")
                 continue
 
-            compound_query = f"{combo.condition_a}하고 {combo.condition_b} {combo.label}"
+            compound_query = (
+                f"{combo.condition_a}{combo.connector}{combo.condition_b} {combo.label}"
+            )
             a_query = f"{combo.condition_a} {combo.label}"
             b_query = f"{combo.condition_b} {combo.label}"
 
@@ -255,6 +346,8 @@ async def run(delay: float) -> list[DominanceRow]:
             overlap_a = sum(1 for k in top_c if k in top_a)
             overlap_b = sum(1 for k in top_c if k in top_b)
             novel = sum(1 for k in top_c if k not in top_a and k not in top_b)
+            if quotes:
+                _print_quotes(compound_query, top_c, compound.data, top_a, top_b)
             # 지배 판정은 상위 5곳 기준이다. 동수면 지배라고 부르지 않는다.
             if overlap_a == overlap_b:
                 dominant = "-"
@@ -284,45 +377,90 @@ async def run(delay: float) -> list[DominanceRow]:
     return rows
 
 
-def _print(rows: list[DominanceRow]) -> None:
+def _print(rows: list[DominanceRow], *, companion: bool = False) -> None:
+    a_label, b_label = ("동행", "취향") if companion else ("조건A", "조건B")
+    a_width = max([len(a_label), *(len(r.condition_a) for r in rows)]) if rows else 10
+    b_width = max([len(b_label), *(len(r.condition_b) for r in rows)]) if rows else 14
     header = (
-        f"{'카테고리':<8} {'조건A':<10} {'조건B':<14} {'후보':>4} "
+        f"{'카테고리':<8} {a_label:<{a_width}} {b_label:<{b_width}} {'후보':>4} "
         f"{'복합':>4} {'A단독':>5} {'B단독':>5} {'겹A':>4} {'겹B':>4} {'신규':>4} "
-        f"{'지배':<10} {'ρ(A)':>6} {'ρ(B)':>6}"
+        f"{'우세':<{a_width}} {'ρ(A)':>6} {'ρ(B)':>6}"
     )
+    print()
     print(header)
     print("-" * len(header))
     dominated = 0
     for r in rows:
         print(
-            f"{r.category:<8} {r.condition_a:<10} {r.condition_b:<14} "
+            f"{r.category:<8} {r.condition_a:<{a_width}} {r.condition_b:<{b_width}} "
             f"{r.candidate_count:>4} {r.passed_compound:>4} {r.passed_a:>5} "
             f"{r.passed_b:>5} {r.overlap_a:>4} {r.overlap_b:>4} "
-            f"{r.novel_in_compound:>4} {r.dominant:<10} "
+            f"{r.novel_in_compound:>4} {r.dominant:<{a_width}} "
             f"{r.rho_compound_vs_a:>6.3f} {r.rho_compound_vs_b:>6.3f}"
         )
         if max(r.overlap_a, r.overlap_b) >= _TOP_N:
             dominated += 1
     print()
-    print(
-        f"판정 — 상위 {_TOP_N}곳이 한쪽 단독과 완전히 같은 조합: "
-        f"{dominated}/{len(rows)} (과반이면 조건 지배 재현)"
-    )
-    print(
-        "참고 — ρ는 후보 전체 기준이라 꼬리쪽 다수에 좌우된다. 판정에 쓰지 않는다."
-    )
+
+    if not companion:
+        print(
+            f"판정 — 상위 {_TOP_N}곳이 한쪽 단독과 완전히 같은 조합: "
+            f"{dominated}/{len(rows)} (과반이면 조건 지배 재현)"
+        )
+        print("참고 — ρ는 후보 전체 기준이라 꼬리쪽 다수에 좌우된다. 판정에 쓰지 않는다.")
+        return
+
+    # 동행 scope — 실패 기준 두 개를 따로 센다(docstring "동행 scope" 참고).
+    lost = [r for r in rows if r.passed_compound < r.passed_b]
+    buried = [r for r in rows if r.overlap_a >= _TOP_N and r.overlap_b == 0]
+    print(f"(a) 복합 컷 통과 < 취향 단독 — 근거를 잃은 조합: {len(lost)}/{len(rows)}")
+    for r in lost:
+        print(
+            f"    {r.category} '{r.condition_a} {r.condition_b}': "
+            f"복합 {r.passed_compound} < 취향 단독 {r.passed_b}"
+        )
+    print(f"(b) 상위 {_TOP_N}곳이 동행 단독과 {_TOP_N}/{_TOP_N} & 취향 단독과 0 — 취향이 묻힌 "
+          f"조합: {len(buried)}/{len(rows)}")
+    for r in buried:
+        print(f"    {r.category} '{r.condition_a} {r.condition_b}'")
+
+    watch = [
+        r for r in rows if r.overlap_a >= 4 and r.overlap_b <= 1 and r not in buried
+    ]
+    if watch:
+        print(f"인용문 확인 필요(동행 겹침>=4, 취향 겹침<=1): {len(watch)}건 — --quotes로 본다")
+        for r in watch:
+            print(f"    {r.category} '{r.condition_a} {r.condition_b}'")
+    if not lost and not buried:
+        print(f"→ (a)·(b) 모두 0건. 2.4.0 동행 co-fill 유지가 이 {len(rows)}개 조합에서 지지된다.")
+    print("참고 — ρ는 후보 전체 기준이라 꼬리쪽 다수에 좌우된다. 판정에 쓰지 않는다.")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--delay", type=float, default=1.0, help="RPC 호출 간 대기(초)")
+    parser.add_argument(
+        "--scope",
+        choices=("taste", "companion"),
+        default="taste",
+        help="taste=취향+취향 조건 지배(기본), companion=동행 co-fill 검증(2.4.0)",
+    )
+    parser.add_argument(
+        "--quotes",
+        action="store_true",
+        help=f"복합 질의 상위 {_TOP_N}곳이 무슨 문장으로 뽑혔는지 함께 출력한다",
+    )
     args = parser.parse_args()
 
-    rows = asyncio.run(run(args.delay))
-    _print(rows)
+    companion = args.scope == "companion"
+    combos = _COMPANION_COMBOS if companion else _COMBOS
+    target_csv = COMPANION_RESULTS_CSV if companion else RESULTS_CSV
+
+    rows = asyncio.run(run(args.delay, combos, quotes=args.quotes))
+    _print(rows, companion=companion)
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    with RESULTS_CSV.open("w", newline="", encoding="utf-8-sig") as fp:
+    with target_csv.open("w", newline="", encoding="utf-8-sig") as fp:
         writer = csv.writer(fp)
         writer.writerow(
             [
@@ -361,7 +499,7 @@ def main() -> None:
                     f"{r.gap:.4f}",
                 ]
             )
-    print(f"\n결과 저장: {RESULTS_CSV}")
+    print(f"\n결과 저장: {target_csv}")
 
 
 if __name__ == "__main__":
