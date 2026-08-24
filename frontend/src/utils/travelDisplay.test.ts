@@ -16,6 +16,7 @@ function item(overrides: Partial<RecommendationItem> = {}): RecommendationItem {
     score: 0.5,
     feature_scores: {},
     weights_used: {},
+    taste_evidence: [],
     ...overrides,
   };
 }

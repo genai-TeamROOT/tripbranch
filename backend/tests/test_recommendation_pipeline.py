@@ -27,6 +27,7 @@ from app.schemas import (
     RecommendationItem,
     RecommendationResponse,
     StatedWeather,
+    TasteEvidenceQuote,
     UserConditions,
     WeatherIntent,
 )
@@ -725,6 +726,7 @@ def _first_pass_item(
     travel_duration_seconds: int | None = None,
     travel_mode: TravelMode | None = None,
     taste_score: float | None = None,
+    taste_evidence: list[TasteEvidenceQuote] | None = None,
 ) -> RecommendationItem:
     # taste_score가 None이면 1차가 취향을 아예 안 쓴 실행이라 키 자체가 없다 —
     # 결측(None 값)과 구분해야 2차 가중치 조립이 같은 판단을 내린다.
@@ -752,6 +754,7 @@ def _first_pass_item(
         score=distance_score,
         feature_scores=feature_scores,
         weights_used={"distance": 1.0},
+        taste_evidence=taste_evidence or [],
     )
 
 
@@ -1143,3 +1146,38 @@ async def test_rerank_with_concentration_preserves_travel_measurements() -> None
     assert item.travel_mode is TravelMode.WALKING
     assert "현재 위치에서 걸어서 약 9분 거리예요." in item.explanations
     assert not any("직선거리" in sentence for sentence in item.explanations)
+
+
+@pytest.mark.asyncio
+async def test_rerank_with_concentration_preserves_taste_evidence() -> None:
+    """2차는 RecommendationItem을 새로 만든다 — 취향 근거 인용문도 옮겨 담지
+    않으면 혼잡도 재순위를 탄 요청에서만 개발자 디버그 화면의 인용문이 조용히
+    사라진다(travel_distance_m과 같은 유형의 실수, 위 테스트 참고).
+    """
+    first_pass = RecommendationResponse(
+        recommendations=[
+            _first_pass_item(
+                "place-1",
+                distance_km=0.1,
+                distance_score=0.95,
+                taste_score=0.8,
+                taste_evidence=[
+                    TasteEvidenceQuote(text="평화롭고 고요한 곳", similarity=0.6),
+                    TasteEvidenceQuote(text="조용히 쉬기 좋았어요", similarity=0.5),
+                ],
+            )
+        ],
+        unverified_recommendations=[],
+        elapsed_ms=0,
+    )
+    concentration = CandidateEnrichmentResponse(
+        request_id="req-taste-evidence",
+        status="success",
+        candidates=[_concentration_result("place-1", rate=50.0)],
+    )
+
+    result = await rerank_with_concentration(first_pass, None, concentration, seek=True)
+
+    item = result.recommendations[0]
+    assert [q.text for q in item.taste_evidence] == ["평화롭고 고요한 곳", "조용히 쉬기 좋았어요"]
+    assert item.taste_evidence[0].similarity == 0.6
