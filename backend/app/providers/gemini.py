@@ -92,11 +92,33 @@ _MODEL_BUDGET_OVERRIDES: dict[tuple[str, str], int] = {
     ("gemini-2.5-flash-lite", "classify_intent"): 512,
 }
 
-# thinking_budget=0 자체를 거부하고 400 INVALID_ARGUMENT를 돌려주는 모델. 400은
-# 비재시도 오류라 폴백도 안 타고 즉시 실패하므로(_try_model 참고), .env에서 모델명만
-# 바꿔도 0을 싣는 호출이 전부 죽는다. 세대별이 아니라 모델별이다 — gemini-3.1-flash-lite와
-# gemini-3.5-flash는 0을 받는다. 그래서 호출 종류를 가리지 않고 적용한다.
-# 근거: backend/test_results/intent_experiments_2026-08.md §5
+# `thinking_budget`에 **숫자 0**을 실으면 400 INVALID_ARGUMENT를 돌려주는 모델.
+# 400은 비재시도 오류라 폴백도 못 타고 즉시 실패한다(_try_model 참고) — 0이 숫자로
+# 실리는 순간 그 호출은 죽는다. 세대별이 아니라 모델별이다.
+# 근거: backend/test_results/intent_experiments_2026-08.md §5 (2026-08-14, eae832f)
+#
+# 실 API 재확인(2026-08-24) — 거부되는 것은 "0"뿐이다:
+#   thinking_budget=0        → 400 INVALID_ARGUMENT
+#   thinking_budget=512      → 성공   (숫자 자체가 문제인 것이 아니다)
+#   thinking_level=MINIMAL   → 성공   (지금 우리가 실제로 보내는 값)
+#
+# **그래서 이 목록은 더 이상 "thinking을 끄지 않는" 근거가 아니다.** 예전에는 이
+# 목록에 걸리면 thinking_config를 아예 싣지 않았는데, 그러면 400은 피하지만 "thinking
+# 끄기"도 함께 사라진다. fast 모델이 gemini-3.5-flash-lite가 된 뒤(2026-08-18)
+# `classify_intent`·`extract_recommend_conditions`에서 실제로 그 일이 일어났고,
+# 코드가 바뀐 게 아니라 모델만 바뀐 것이라 아무도 알아채지 못했다.
+#
+# 지금은 `_thinking_config_for()`가 0을 숫자가 아니라 `thinking_level=MINIMAL`로
+# 바꿔 보내므로 400이 날 입력을 애초에 만들지 않는다. 목록은 **실측으로 얻은 사실**
+# 이라 지우지 않고, 그 사실을 지키는 불변식
+# (`test_zero_budget_is_never_sent_as_a_number`)이 이 상수를 직접 읽어 검증한다 —
+# 모델이 늘어나면 목록에만 추가하면 테스트가 따라온다.
+#
+# 참고로 이 변경의 목적은 속도가 아니다. gemini-3.5-flash-lite는 thinking 기본값이
+# 이미 가벼워서 MINIMAL을 걸어도 지연이 같다(classify_intent 15회 중앙값
+# 958ms → 949ms, -0.9%). 목적은 "기본 thinking이 무거운 모델로 바꾸는 순간 최적화가
+# 조용히 사라지는" 구조를 없애는 것이다. 상세는 D-076와
+# scripts/measure_fast_thinking_level.py.
 _REJECTS_ZERO_THINKING_BUDGET = frozenset(
     {
         "gemini-3.5-flash-lite",
@@ -114,8 +136,6 @@ def _resolve_thinking_budget(model_name: str, operation: str, requested: int | N
     override = _MODEL_BUDGET_OVERRIDES.get((model_name, operation))
     if override is not None:
         return override
-    if requested == 0 and model_name in _REJECTS_ZERO_THINKING_BUDGET:
-        return None
     return requested
 
 
@@ -152,9 +172,13 @@ def _thinking_config_for(thinking_budget: int | None) -> genai_types.ThinkingCon
     if thinking_budget is None:
         return None
     if thinking_budget <= 0:
+        # 여기가 400을 막는 지점이다. 숫자 0을 그대로 실으면
+        # _REJECTS_ZERO_THINKING_BUDGET의 모델들이 400으로 즉시 죽는다 — 0은 항상
+        # thinking_level로 바꿔 내보내고, 숫자로는 절대 흘리지 않는다.
         return genai_types.ThinkingConfig(thinking_level=genai_types.ThinkingLevel.MINIMAL)
     # 0/None 외의 값은 지금까지 쓰인 적이 없다 — 필요해지면 그때 thinking_level
-    # 값으로 다시 매핑 기준을 정한다.
+    # 값으로 다시 매핑 기준을 정한다. 양수는 위 목록의 모델에서도 정상 동작한다
+    # (2026-08-24 실측: thinking_budget=512는 두 모델 모두 성공).
     return genai_types.ThinkingConfig(thinking_budget=thinking_budget)
 
 

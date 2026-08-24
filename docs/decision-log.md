@@ -2273,6 +2273,66 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `backend/docs/package-b/agent-state-contract-v1.md`,
   `docs/design/conditions-schema.md`
 
+### D-072 — 인텐트 라우팅과 추천 파이프라인을 LangGraph 그래프로 옮긴다
+
+- 상태: `Implemented` — 코드 이관 완료, `langgraph-adoption.md` §10.3 병합 판정 기준
+  6개 전부 통과.
+- 배경: `run_agent_flow()` 한 함수가 1,227줄이었고 그 안에 인텐트 분기 40개가
+  중첩 if/elif로 들어 있었다. 강의 교재 61·91강 기준으로 "처음부터 설계했다면
+  LangGraph가 맞았는가"를 코드 실측으로 판단했고, 결론은 맞다였다 — 우리는 이미
+  "코드가 라우팅을 못 박는 명시적 그래프" 편에 서 있었고, 그 판단을 표현할 도구만
+  없었다. 로드맵 16번(AI Agent 도구 경험)의 실행이기도 하다.
+- 결정:
+  1. 그래프를 **두 개**로 나눈다. 조기 반환 그래프(Tool·Scoring 없이 끝나는 턴)와
+     추천 파이프라인 그래프(tool_fetch → scoring → schedule/finalize).
+  2. **인텐트 분류와 조건 병합은 그래프 밖에 남긴다.** 이 구간은 B 계약
+     (`agent-state-contract-v1.md`)의 소유이고, 그래프로 끌어들이면 조건 병합의
+     Add/Update/Remove 의미론 소유권이 프레임워크로 넘어간다.
+  3. **SSE는 sink를 `RunnableConfig`로 주입해 노드가 직접 호출한다.** 0단계
+     스파이크에서 `astream_events` 번역 방식과 비교해 정한 것으로, `message_delta`는
+     노드 경계가 아니라 노드 *내부*에서 발생해 노드 단위 이벤트로는 재현할 수 없다.
+     노드의 `config` 파라미터는 반드시 `RunnableConfig`로 어노테이션해야 주입된다.
+  4. **checkpointer는 쓰지 않는다.** 아래 참고.
+  5. 기능 플래그 2개(`use_langgraph_early_return`/`use_langgraph_pipeline`, 기본
+     `True`)를 롤백 스위치로 남기되 영구히 두지 않는다 — 같은 로직이 두 벌 남는
+     비용이 있어, 실사용에서 문제없음을 확인한 뒤 기존 경로와 함께 걷어낸다.
+- 채택하지 않은 것:
+  - **checkpointer(`MemorySaver` 및 `StateStore` 어댑터)** — 검토 문서 v1.0은
+    "`session_id`가 곧 `thread_id`, `StateStore`가 곧 `BaseCheckpointSaver`"라고
+    적었으나 **틀렸다.** `StateStore`는 조건·이력·Trace를 담는 도메인 저장소이고
+    checkpointer는 그래프 재개용 스냅샷이라, 갈아끼우면 조건 병합 소유권이 B에서
+    그래프로 넘어간다. 게다가 붙여둔 `MemorySaver`는 실측 결과 (a) 같은
+    `thread_id`의 다음 턴에 이전 턴 값이 남고 (b) 세션 6개에 체크포인트 21건이
+    RAM에 쌓여 줄지 않았다. 우리 그래프는 한 턴에 시작하고 끝나 보관함이 할 일이
+    없다. 떼어냈고 `test_graphs_have_no_checkpointer`로 재발을 막았다.
+  - **인텐트별 노드 7개로 팬아웃** — 계획 단계의 전제가 틀렸다. 분기 40개가 전부
+    조기 반환 *앞*에 있어서, 그 뒤는 갈라지는 흐름이 아니라 순차 파이프라인이었다.
+    조건부 엣지는 "중간에 끝나는가"와 "SCHEDULE인가" 두 판정에만 쓴다.
+  - **한 번에 전면 재작성** — 단계별 커밋(0~3단계)로 쪼개 되돌릴 지점을 남겼다.
+- 검증: pytest 2,323건 통과(그래프 테스트 18건 신규, develop 동기화 포함), ruff 통과, 프론트엔드 변경
+  **0줄**. 같은 발화를 플래그 ON/OFF로 돌려 최종 응답 JSON 전체와 SSE 이벤트 순서를
+  비교하는 차등 테스트를 13개 케이스에 대해 수행 — 전부 일치. 실제 Provider에서 2건이
+  달랐으나 **그래프를 켜지 않고 기존 경로만 두 번 돌려도 같은 2건이 달라져** 외부 API
+  잡음으로 판정했다.
+  되묻기 재진입도 프론트가 보내는 형태(버튼 라벨을 `user_input`, 버튼 id를
+  `clarification_choice`)를 그대로 흉내 내 5단계 시나리오로 비교 — 차이 0건.
+  응답 지연은 ON/OFF 번갈아 12회씩 측정해 **호출당 약 1ms 고정 오버헤드**를 확인했다
+  (외부 호출이 붙는 RECOMMEND는 428ms→439ms, SCHEDULE은 오히려 426ms→422ms로 잡음
+  범위). 실 LLM이 붙으면 응답이 초 단위라 체감되지 않는다.
+- 남은 것:
+  - 기능 플래그와 기존 경로 제거(위 결정 5).
+  - `langgraph`가 새 의존성이라 팀원 각자 재설치 필요. `npm run dev`는 PATH의
+    `python`을 그대로 쓰므로 가상환경 밖에도 설치돼 있어야 백엔드가 뜬다.
+- 곁가지로 드러난 기존 문제(이 결정 범위 밖): `.env`가 개별 Provider 키를 지정해
+  `PROVIDER_MODE=fake`를 무력화한다. `settings.fake_current_datetime`은 정의만 있고
+  참조가 0건이며 주석이 가리키는 `app/core/clock.py`는 존재하지 않는다.
+- 상세: `docs/design/langgraph-adoption.md`(§9.6~§9.10, §10.3~§10.6),
+  `backend/app/services/runtime/graph/`(8개 파일),
+  `backend/app/services/runtime/stream_events.py`,
+  `backend/app/services/runtime/agent_runtime.py`, `backend/app/config.py`,
+  `backend/pyproject.toml`, `backend/tests/graph/`
+
+
 ### D-073 — 인증된 요청에 한해 세션 소유권을 대조한다 (D-063 결정 2 후속)
 
 - 상태: `Accepted` — 구현 완료.
@@ -2388,6 +2448,120 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   guest-auth-design.md` 10절, `backend/docs/package-b/
   agent-state-contract-v1.md`
 
+### D-075 — LLM 실행 기록은 갈아끼우지 않고 같은 리스트에 붙인다
+
+- 상태: `Implemented`
+- **번호 정정(2026-08-24)**: 이 항목과 아래 D-075는 처음 D-073·D-074로 적었다.
+  같은 날 develop에 세션 소유권 검증이 D-073으로 먼저 자리 잡아(PR #227) 번호가
+  겹쳤고, develop 쪽이 코드·계약 문서 10곳에서 이미 참조되고 있어 우리 번호를
+  하나씩 미뤘다. **PR #226 본문과 지라 TP-133은 옛 번호(D-073)로 적혀 있다** —
+  그 문서들이 가리키는 것은 이 항목이다.
+- 배경: D-072 이관 후 팀 검토에서 **개발자 감사 패널의 LLM 정보가 사라지는 것**이
+  발견됐다. 원인은 `llm_execution.py`의 `_calls` ContextVar를 **값 교체**로
+  갱신했다는 것이다(`_calls.set((*_calls.get(), call))`). LangGraph는 노드를 별도
+  asyncio 태스크에서 돌리고, 파이썬은 태스크 생성 시 ContextVar 값을 **복사해서**
+  넘긴다. 그래서 노드 안에서 교체한 값은 복사본만 갈리고 노드가 끝나면 버려졌다.
+  태스크 경계는 값을 안으로 들여보내지만 밖으로 내보내지 않는다.
+- 실측으로 확인한 유실(2026-08-24):
+  1. 조기 반환 경로(GENERAL·OUT_OF_SCOPE·되묻기) 정상 응답의 `llm_execution`이
+     통째로 `None`. 감사 패널의 "LLM 응답 모델"이 빈칸이 되고, "LLM 폴백"은
+     `llmExecution?.calls.some(...)`이 `undefined`로 떨어져 **틀린 "없음"**을 찍는다.
+     빈칸은 "모르겠다"로, "없음"은 "확인했고 안 일어났다"로 읽히므로 후자가 더 나쁘다.
+  2. 노드 안에서 LLM이 실패하면 시도 모델 목록이 502 응답 본문의
+     `details.llm_execution`에서 빠진다(단발 `POST /api/chat`·`/api/agent-debug`
+     한정 — SSE 경로는 제너레이터가 `AppError`를 자체 처리해 이 값을 원래 안 싣는다).
+  3. 추천 파이프라인은 앞 노드 기록을 뒤 노드가 못 읽는다. 지금은 `tool_fetch`·
+     `scoring`이 LLM을 안 불러 잃을 것이 0건이지만, 앞 노드에 호출이 하나 생기면
+     그 줄만 조용히 빠진다(예외·로그·테스트 실패 없음).
+- 결정: `_calls`가 **리스트를 담고**, `reset_llm_execution_metadata()`에서만 새
+  리스트를 넣고, `record_llm_call()`은 그 리스트에 `append`한다. 태스크가 복사해
+  가는 것은 리스트 참조이므로 노드 안에서 붙인 항목이 노드 밖에서도 보인다.
+- 채택하지 않은 것:
+  - **기본값(`default`) 제거** — 검토 문서의 제안이었으나 그대로 하면 새 회귀가
+    생긴다. `main.py`의 `handle_app_error()`는 **전역** `AppError` 핸들러이고,
+    `/api/transcribe`·`/api/dev/*`·`/chat/place-details`처럼 `run_agent()`를 거치지
+    않는(따라서 reset을 부르지 않는) 라우트도 이 핸들러를 탄다. 기본값이 없으면
+    거기서 `LookupError`가 나 **502 계약이 500 미처리 예외로 깨진다.** 대신 기본값을
+    불변 센티널 `None`으로 두고 `record_llm_call()`이 첫 호출에서 리스트를 만든다.
+  - **기본값에 리스트를 두기** — 모든 요청이 같은 리스트를 공유해 이력이 섞인다.
+    ContextVar를 쓰는 목적 자체가 깨지므로 불변 센티널이어야 한다.
+  - **노드가 기록을 상태(state)로 반환해 리듀서로 병합** — 노드를 얇게 유지한다는
+    D-072 원칙과 어긋나고(노드마다 기록 수집 코드가 붙는다), 소비처가 관측 전용
+    필드 하나뿐인데 서류철 칸을 늘리는 값이 없다.
+- 검증: pytest **2,332건 통과**(신규 9건), ruff 통과, 플래그 끈 상태도 동일.
+  신규 테스트는 **`record_llm_call()`을 실제로 부르는 LLM 더블**로 돈다 —
+  `FakeLLMProvider`는 이 함수를 부르지 않아 Fake로 쓰면 수정 전에도 통과해버린다.
+  수정을 되돌려 그중 4건이 실제로 실패하는 것을 확인했다.
+- 이 문제를 기존 검증이 못 잡은 이유: `record_llm_call()`을 부르는 것은
+  `RealGeminiProvider` 하나뿐인데, `tests/conftest.py`가 모든 테스트에서 Fake를
+  강제하고 `scripts/compare_langgraph_parity.py`도 `LLM_PROVIDER=fake`를 무조건
+  지정한다(`--real`에서도). 그래서 D-072의 "차등 비교 전부 일치"는 이 필드에
+  관해서는 **양쪽 모두 `None`이었던** 비교였다. `tests/`에 `llm_execution`을
+  단정하는 테스트가 0건이었던 것도 같은 원인이다. CLAUDE.local.md가 "조용한 fake"로
+  적어둔 실패 유형과 같다 — Fake가 소비 측이 읽는 값을 비워두면, 테스트는 통과하는데
+  검증하려던 로직은 실행되지 않는다.
+- 함께 기록한 것(수정 아님): `_score_recommendations()`가 `tool_executions` 리스트를
+  제자리에서 추가하는데 `scoring_node`는 그 키를 반환하지 않는다. checkpointer가
+  없어 LangGraph가 같은 리스트 객체를 그대로 넘기기 때문에 지금은 `finalize_node`가
+  추가 항목을 정상적으로 읽는다. **checkpointer를 달면 이 결합이 깨진다** — D-072가
+  checkpointer를 쓰지 않는 이유가 하나 더 있는 셈이고, 깨질 때 망가지는 것도 같은
+  감사 패널(Tool 호출 목록의 외부 API 호출 수)이다.
+- 상세: `backend/app/services/runtime/llm_execution.py`,
+  `backend/tests/graph/test_llm_execution_across_nodes.py`,
+  `docs/design/langgraph-adoption.md` §9.13
+
+### D-076 — thinking 끄기는 모델 목록으로 포기하지 않고 `thinking_level`로 바꿔 보낸다
+
+- 상태: `Implemented`
+- 배경: `thinking_budget=0`을 거부하는 모델 목록(`_REJECTS_ZERO_THINKING_BUDGET`,
+  D-052 계열 eae832f)에 걸리면 `thinking_config`를 **아예 싣지 않았다.** 400
+  INVALID_ARGUMENT는 비재시도라 폴백도 못 타고 즉시 죽으므로 그 자체는 옳은 방어였다.
+  그런데 2026-08-18에 두 가지가 겹쳤다 — (a) `_thinking_config_for()`가 0을 숫자가
+  아니라 `thinking_level=MINIMAL`로 바꿔 보내게 되고(e3a9e2e), (b) fast 모델이
+  `gemini-3.5-flash-lite`(그 목록에 있는 모델)로 바뀌었다(89b5bdf). 그 결과
+  `classify_intent`·`extract_recommend_conditions`의 thinking 끄기가 **조용히
+  무효화**됐다. 코드가 아니라 모델만 바뀐 것이라 아무도 알아채지 못했고, 발견까지
+  6일이 걸렸다.
+- 실 API 실측(2026-08-24, 모델 5개 × 설정 4개 × 3회):
+  - 거부되는 것은 **숫자 `0`뿐**이다 — `thinking_budget=512`는 다섯 모델 전부 성공,
+    `thinking_level=MINIMAL`은 3.x 세대 전부 성공.
+  - `thinking_level=MINIMAL`은 이름만 최소가 아니라 **실제로 생각 토큰 0**이다
+    (두 방식이 다 되는 `gemini-3.5-flash`에서 `예산=0`과 동일하게 0, 설정 없으면 377).
+  - 근거 데이터: `backend/test_results/gemini_thinking_matrix_2026-08-24/`,
+    서술은 `docs/실험-Gemini-thinking-설정-20260824.md`.
+- 결정: `_resolve_thinking_budget()`에서 그 목록을 근거로 `None`을 돌려주던 분기를
+  없앤다. `0`은 `_thinking_config_for()`가 항상 `thinking_level=MINIMAL`로 바꿔
+  보내므로 400이 날 입력을 애초에 만들지 않는다. **목록 자체는 지우지 않는다** —
+  실측으로 얻은 사실이고, 그 사실을 지키는 불변식
+  (`test_zero_budget_is_never_sent_as_a_number`)이 이 상수를 직접 읽어 검증한다.
+  모델이 늘어나면 목록에만 추가하면 테스트가 따라온다.
+- 채택하지 않은 것:
+  - **`_REJECTS_ZERO_THINKING_BUDGET`과 `_MODEL_BUDGET_OVERRIDES` 삭제** — 둘 다
+    실측 근거로 들어온 값이라 남긴다. `_MODEL_BUDGET_OVERRIDES`의
+    `gemini-2.5-flash-lite × classify_intent = 512`는 지금 도달할 경로가 없다(그 모델을
+    쓰지 않는다). 그래도 지우지 않고 문서에 "현재 미사용" 단서만 붙였다 — 폴백으로
+    되살릴 때 같은 실험을 다시 하지 않기 위해서다.
+  - **숫자 예산 자체를 막기** — 검토 중 제안됐으나 실측이 반대였다. `512`는 거부
+    모델에서도 정상이다. 막으면 되는 것을 막는다.
+  - **지연 개선을 근거로 삼기** — 실측하면 이득이 없다. `classify_intent` 15회 중앙값
+    958ms → 949ms(-0.9%). `gemini-3.5-flash-lite`는 설정을 안 해도 생각 토큰이 0인
+    모델이라 끌 것이 없었다. **6회만 재면 -17%·-7%까지 나오지만 15회로 늘리면
+    사라진다** — 표본이 적을 때 없는 효과를 있다고 읽은 사례로 남긴다. 이 결정의
+    근거는 속도가 아니라 "모델을 바꾸는 순간 최적화가 조용히 사라지는 구조"의 제거다
+    (기본 thinking이 무거운 `gemini-3.6-flash`는 설정 없음 3,518ms vs MINIMAL 1,416ms).
+- 함께 정리한 것: Gemini 키 교체로 `gemini-2.5-*`를 쓰지 않게 됐는데 문서·스크립트에
+  남아 있던 참조를 정리했다. 특히 `development-guide.md`와 `llm-hyperparameters.md`가
+  **폐지된 `LLM_MODEL_NAME`을 현행 설정으로 안내**하고 있었다 — 그대로 따라 `.env`를
+  쓰면 부팅에서 막힌다(D-042). 역할별 설정 4개로 교체했다.
+- 남은 것(별건): 지금 코드는 `0`을 **항상** `thinking_level`로 보내는데, `gemini-2.5`
+  세대는 그 방식을 거부한다(실측 확인). 옛 모델을 폴백으로 되살리면 분류를 뺀 호출이
+  전부 400으로 죽는다 — 이번 문제와 방향만 반대인 같은 함정이다. 해결 형태는 검증해
+  뒀다(목록을 "포기 조건"이 아니라 "어느 방식을 보낼지 고르는 기준"으로 쓰면 다섯 모델
+  전부 통과). 지금은 옛 모델을 쓰지 않아 당장 아프지 않으므로 이번 범위에서 제외했다.
+- 상세: `backend/app/providers/gemini.py`, `backend/tests/test_gemini_provider.py`,
+  `backend/scripts/measure_fast_thinking_level.py`,
+  `docs/실험-Gemini-thinking-설정-20260824.md`, `docs/design/llm-hyperparameters.md` §4.1
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -2455,5 +2629,9 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-22 | D-071 신설 — "안국역에서 10분"(출발점=안국역)과 "안국역 근처에 10분"(출발점=사용자 위치)을 구분하는 `travel_origin` 필드 신설(D·A). 조사("~에서/까지")로 출발점이 확정되는 발화만 `search_center`로 채우고 그 외(근처/주변, 조사 없는 소수 발화)는 null로 두어 D-067 기본값이 그대로 적용되게 한다. `resolve_ranking_origin()`·`_distance_denominator_offset_km()`·soft reset의 search_center 복원 로직에 함께 배선. `recommend.extract` 2.2.0 → 2.3.0 |
 | 2026-08-24 | D-044 확장 — 지원 지역 폴리곤을 종로구 1개에서 종로구·중구·용산구·성동구 4개로 늘림(TP-125). 판정 방식(폴리곤 순회)과 D-044 결정 자체는 그대로이고 폴리곤 개수만 바뀐다. 경계 파일은 구별로 두지 않고 서울 25개 구를 `seoul.geojson` 한 장에 담아, 이후 구 확장이 `SUPPORTED_DISTRICTS` 한 줄로 끝나게 했다(214KB·파싱 2.5ms). 파일에 있는 구를 전부 지원하는 방식과 환경변수 지정은 기각. 경계 추출은 `scripts/extract_district_boundaries.py`로 재현 가능. 활성 2,570건 실측 결과 폴리곤 밖 4건(0.16%). 25개 구 대표점 전수 테스트로 지원 여부 판정을 고정. 장소 검색의 종로구 고정 해제는 범위 밖(TP-126) |
 | 2026-08-24 | D-025 개정 — 장소 검색의 종로구 고정을 해제(TP-126). 요청은 `lDongRegnCd=11`까지만 좁히고 지원 구 판정은 응답의 `lDongSignguCd`로 한다. 좌표로 구를 판정하는 안은 기각 — 서울역 부속 시설 72건처럼 등록 구와 좌표가 어긋나는 장소가 빠진다. 구마다 호출하는 안도 기각(호출 수가 구 수만큼 증가). `PLACE_SEARCH_LDONG_DISTRICT_CODE` 상수 제거, 지원 구는 `SUPPORTED_DISTRICTS` 하나가 정하도록 통일(좌표 폴리곤과 같은 출처). 축제 조회와 Supabase `places` 필터도 같은 집합을 쓴다. 구 코드가 빈 응답은 버리되 경고 로그를 남긴다 |
+| 2026-08-24 | D-072 신설 — 인텐트 라우팅과 추천 파이프라인을 LangGraph 그래프 2개(조기 반환 / 추천 파이프라인)로 이관. 인텐트 분류와 조건 병합은 B 계약 소유라 그래프 밖에 남겼고, SSE는 sink를 `RunnableConfig`로 주입해 노드가 직접 호출하는 방식을 택했다(`astream_events`는 `message_delta`가 노드 내부에서 나와 재현 불가). checkpointer는 채택하지 않음 — `StateStore`(도메인 저장소)와 역할이 다르고, `MemorySaver`는 실측상 이전 턴 값 유출과 메모리 누적만 남겼다. `run_agent_flow()` 1,227줄 → 640줄. 프론트 변경 0줄, pytest 2,323건 통과, 차등 비교 18케이스 전부 일치, 오버헤드 약 1ms. 롤백용 기능 플래그 2개는 한동안 유지 후 기존 경로와 함께 제거 예정 |
 | 2026-08-24 | D-073 신설 — `session_id`만으로 남의 세션에 접근 가능하던 문제를 닫음(D-063 결정 2 후속). Phase 4(인증 필수화) 전면 도입을 기다리지 않고, `Principal`이 있는 요청에 한해 `session.verify_ownership()`으로 저장된 `user_id`와 대조 — 다르면 403(`session_ownership_mismatch`). `apply()`/`get_session_context()`/`delete_session()`/`ensure_current_context()`와 각 라우트까지 배선. `routes/state.py`가 `principal`을 선언만 하고 쓰지 않던 배선 공백을 함께 닫음 |
 | 2026-08-24 | D-074 신설 — 만료된 익명 세션·이력 정리(TP-134). `agent_states.last_active_at` 기준 30일(조정 가능) 이상 미사용 세션을 `agent_states`/`recommendation_histories`/`condition_change_logs`/`trace_records` 네 테이블에서 함께 삭제. append-only 두 테이블에 세션 단위 일괄 삭제(`delete_change_logs`/`delete_traces`)를 처음 추가 — 개별 레코드 수정·선택 삭제는 여전히 불가. 삭제 순서는 자식 테이블 먼저, `agent_states` 마지막(중간 실패해도 다음 실행이 재시도 가능하도록). 실행은 Supabase pg_cron 대신 `scripts/cleanup_expired_sessions.py` 수동/외부 스케줄 스크립트로 구현(`--dry-run` 지원). `auth.users` 익명 계정 정리는 FK가 없어(D-063 결정 4) 독립적으로 실행 가능하다고 보고 이번 범위에서 제외 |
+| 2026-08-24 | D-075 신설 — LangGraph 노드가 별도 asyncio 태스크에서 도는 탓에 `llm_execution` ContextVar를 값 교체로 갱신하면 노드 안 기록이 유실되던 문제를 수정. 리스트를 하나 두고 `append`하는 방식으로 바꿔 태스크 경계를 넘게 했다. 유실 지점 3곳(조기 반환 정상 응답, 노드 안 LLM 실패의 502 본문, 파이프라인 앞 노드→뒤 노드)이 한꺼번에 해소. 감사 패널의 "LLM 폴백"이 빈칸이 아니라 **틀린 "없음"**을 찍고 있었던 것이 이 문제를 무시하기 어렵게 만든 지점이다. 검토 문서가 제안한 `default` 제거는 채택하지 않음 — 전역 AppError 핸들러가 reset 없는 문맥에서 이 값을 읽어 502 계약이 500으로 깨진다. 기록하는 LLM 더블로 회귀 테스트 9건 추가(Fake는 `record_llm_call()`을 부르지 않아 수정 전에도 통과한다). pytest 2,332건 통과 |
+| 2026-08-24 | D-076 신설 — `thinking_budget=0`을 거부하는 모델에 thinking 설정을 아예 싣지 않던 방어를 제거하고, `0`을 항상 `thinking_level=MINIMAL`로 바꿔 보내도록 정리. 2026-08-18에 fast 모델이 그 목록에 있는 `gemini-3.5-flash-lite`로 바뀌면서 분류·조건 추출의 thinking 끄기가 조용히 무효화돼 있었고, 코드가 아니라 모델만 바뀐 것이라 6일간 아무도 몰랐다. 실 API 전수 측정(모델 5개 × 설정 4개 × 3회)으로 거부되는 것은 숫자 `0`뿐이고(`512`는 전부 성공) `MINIMAL`은 실제로 생각 토큰이 0임을 확인했다. 거부 모델 목록과 `gemini-2.5-flash-lite` 512 보정은 실측 근거라 지우지 않고, 목록은 불변식 테스트가 직접 읽는다. **지연 이득은 없다** — 6회에서 -17%까지 나왔지만 15회로 늘리면 -0.9%로 사라진다(표본 부족으로 없는 효과를 읽은 사례). 근거는 속도가 아니라 모델 교체 시 최적화가 조용히 사라지는 구조의 제거다. 폐지된 `LLM_MODEL_NAME`을 현행으로 안내하던 문서 2곳도 함께 정정 |
+

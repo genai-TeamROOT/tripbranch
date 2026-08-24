@@ -105,11 +105,31 @@
 
 | 보정 | 대상 | 근거 |
 |---|---|---|
-| `0` → **`512`** | `gemini-2.5-flash-lite` × `classify_intent` | `flash-lite`는 **thinking이 기본 꺼져 있어** `0`을 걸어도 동작이 같다(미설정과 `budget=0`의 68건 예측이 한 건도 다르지 않다). `512`를 줘야 대화 이력에 의존하는 판정(MODIFY/COMPARE/되묻기)이 산다 — 채점 대상 64건에서 56→59, 대조쌍 12건에서 9→12 |
-| `0` → **싣지 않음** | `gemini-3.5-flash-lite`, `gemini-3.6-flash` (**모든 호출**) | 이 두 모델은 `thinking_budget=0`에 `400 INVALID_ARGUMENT`를 낸다. `400`은 비재시도 오류라 폴백도 못 타고 즉시 실패하므로, `.env`에서 모델명만 바꿔도 `0`을 싣는 호출이 전부 죽는다. 세대별이 아니라 모델별이다 — `gemini-3.1-flash-lite`·`gemini-3.5-flash`는 `0`을 받는다 |
+| `0` → **`512`** | `gemini-2.5-flash-lite` × `classify_intent` — **현재 미사용 모델(아래 참고)** | `flash-lite`는 **thinking이 기본 꺼져 있어** `0`을 걸어도 동작이 같다(미설정과 `budget=0`의 68건 예측이 한 건도 다르지 않다). `512`를 줘야 대화 이력에 의존하는 판정(MODIFY/COMPARE/되묻기)이 산다 — 채점 대상 64건에서 56→59, 대조쌍 12건에서 9→12 |
+| `0` → **`thinking_level=MINIMAL`** | 모든 모델 (**모든 호출**) | 숫자 `0`은 `gemini-3.5-flash-lite`·`gemini-3.6-flash`에서 `400 INVALID_ARGUMENT`를 낸다. `400`은 비재시도라 폴백도 못 타고 즉시 실패한다. 그래서 `0`은 숫자로 내보내지 않고 항상 `thinking_level=MINIMAL`로 바꿔 보낸다 — 거부하는 모델도 이 값은 받는다(2026-08-24 실측). 양수 예산은 그 모델들에서도 정상이다(`512` 성공) |
 
 근거 데이터: `backend/test_results/intent_experiments_2026-08.md` (케이스 68건 전수,
 모델 3종 × 예산 3점, 판정이 갈린 케이스는 5회 반복)
+
+> **`512` 보정은 지금 발동하지 않는다(2026-08-24 확인).** Gemini 키를 바꾸면서
+> `gemini-2.5-*`를 쓰지 않기로 했고, `.env`·`.env.example`·`config.py`가 모두
+> `gemini-3.5-*`를 가리킨다. 지금 호출될 수 있는 모델은 `gemini-3.5-flash`와
+> `gemini-3.5-flash-lite` 둘뿐이라, `gemini-2.5-flash-lite`를 키로 하는 이 보정에는
+> 도달할 경로가 없다.
+>
+> **그래도 표에서 지우지 않는다.** 근거가 실측(위 68건 전수)이고, 그 모델을 폴백
+> 후보로 다시 올릴 수 있기 때문이다 — 그때 같은 실험을 다시 할 필요가 없어야 한다.
+> 코드(`_MODEL_BUDGET_OVERRIDES`)도 같은 이유로 남겨둔다. 읽는 사람이 "지금 이 보정이
+> 걸리고 있다"고 오해하지 않도록 이 단서만 붙인다.
+
+> **두 번째 행은 2026-08-24에 방식이 바뀌었다(D-076).** 예전에는 거부 모델에
+> `thinking_config`를 **아예 싣지 않는** 방식이었다. 400은 피하지만 "thinking 끄기"도
+> 같이 사라져서, fast 모델이 `gemini-3.5-flash-lite`로 바뀐 뒤(2026-08-18) 분류·조건
+> 추출의 thinking이 조용히 다시 켜져 있었다 — 코드가 아니라 모델만 바뀐 것이라
+> 아무도 알아채지 못했다. 지금은 `0`을 `thinking_level=MINIMAL`로 바꿔 보내
+> 400도 피하고 thinking도 실제로 끈다. 거부 모델 목록
+> (`_REJECTS_ZERO_THINKING_BUDGET`)은 실측 사실이므로 지우지 않고, "숫자 `0`은
+> 절대 실리지 않는다"를 검증하는 테스트가 그 목록을 직접 읽는다.
 
 **보정 조건이 "폴백일 때"가 아니라 "모델명이 무엇일 때"인 점이 중요하다.** `512`가
 맞는 이유는 폴백이라서가 아니라 그 모델의 thinking 기본값이 꺼짐이기 때문이라,
@@ -174,8 +194,11 @@
 
 | 설정 | 기본값 | 비고 |
 |---|---|---|
-| `LLM_MODEL_NAME` | `gemini-2.5-flash` | 1순위 모델. [development-guide.md](../development-guide.md) |
-| `LLM_FALLBACK_MODEL_NAMES` | 빈 값 | 콤마 구분 폴백 모델 목록. 설계 근거는 [decision-log.md D-052](../decision-log.md) |
+| `LLM_FAST_MODEL_NAME` | `gemini-3.5-flash-lite` | 분류·조건 추출 1순위 모델. [development-guide.md](../development-guide.md) |
+| `LLM_FAST_FALLBACK_MODEL_NAMES` | `gemini-3.5-flash` | 위 모델의 폴백(콤마 구분). 설계 근거는 [decision-log.md D-052](../decision-log.md) |
+| `LLM_GENERATION_MODEL_NAME` | `gemini-3.5-flash` | 문장·일정 생성 1순위 모델 |
+| `LLM_GENERATION_FALLBACK_MODEL_NAMES` | `gemini-3.5-flash-lite` | 위 모델의 폴백(콤마 구분) |
+| ~~`LLM_MODEL_NAME`~~ / ~~`LLM_FALLBACK_MODEL_NAMES`~~ | — | **폐지됐다.** 남아 있으면 부팅에서 막는다(D-042). 역할별 모델 라우팅 도입(2026-08-18)으로 위 네 개가 대체했다 |
 | `LLM_API_TIMEOUT_SECONDS` | 빈 값(`EXTERNAL_API_TIMEOUT_SECONDS`로 폴백) | Gemini 전용 타임아웃, Tool/DB 호출과 분리(2026-08-11) |
 | `EXTERNAL_API_RETRY_COUNT` | `2` | Gemini 호출에만 적용되는 모델 하나당 재시도 횟수(지수 백오프) |
 
