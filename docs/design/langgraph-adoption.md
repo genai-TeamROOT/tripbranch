@@ -4,12 +4,12 @@
 
 | 항목 | 값 |
 |------|-----|
-| 버전 | v1.2 |
-| 상태 | **이관 완료·검증 통과(2026-08-24)** — 0단계 스파이크(§9.6), 1단계 GENERAL(§9.7), 2단계 조기 반환 전체, 3단계 파이프라인(§9.8). 4단계는 전제가 틀려 하지 않는다(§9.9). §10.3 병합 판정 기준 6개 전부 통과(§9.10 회귀 비교·§9.11 되묻기 재진입·§9.12 지연 측정). §1~§5는 "처음부터 설계했다면 맞는가"에 대한 결론, §6~§11은 이관 계획·사용법·규모·브랜치 전략 |
+| 버전 | v1.3 |
+| 상태 | **이관 완료·검증 통과·팀 검토 반영(2026-08-24)** — 0단계 스파이크(§9.6), 1단계 GENERAL(§9.7), 2단계 조기 반환 전체, 3단계 파이프라인(§9.8). 4단계는 전제가 틀려 하지 않는다(§9.9). §10.3 병합 판정 기준 6개 전부 통과(§9.10 회귀 비교·§9.11 되묻기 재진입·§9.12 지연 측정). **판정 통과 후 검토에서 결함 1건이 나와 고쳤다 — 노드 안 LLM 기록 유실(§9.13, D-073).** §1~§5는 "처음부터 설계했다면 맞는가"에 대한 결론, §6~§11은 이관 계획·사용법·규모·브랜치 전략 |
 | 작성일 | 2026-08-22 (최종 수정 2026-08-24) |
-| 관련 결정 | D-072 (`docs/decision-log.md`) |
+| 관련 결정 | D-072, D-073 (`docs/decision-log.md`) |
 | 작업 브랜치 | `feature/langgraph-spike` (`feature/llm-interpret`에서 분기, 로컬 전용 — §10) |
-| 관련 코드 | `backend/app/services/runtime/agent_runtime.py`(`run_agent_flow()`), `backend/app/state/store.py`(`StateStore`), `backend/app/state/schema.py`(`AgentState`), `backend/app/providers/gemini.py`(`classify_intent()`) |
+| 관련 코드 | `backend/app/services/runtime/agent_runtime.py`(`run_agent_flow()`), `backend/app/services/runtime/llm_execution.py`(§9.13), `backend/app/state/store.py`(`StateStore`), `backend/app/state/schema.py`(`AgentState`), `backend/app/providers/gemini.py`(`classify_intent()`) |
 | 관련 문서 | `docs/roadmap.md` 12·16번, `docs/design/agent-runtime-contract.md`, `docs/design/clarification-options.md`, `backend/docs/package-b/agent-state-contract-v1.md` |
 | 강의 교재 근거 | 제61강(LangGraph 라우팅 개요: 61-2 순서도·핵심 개념, 61-5 StateGraph 구성, 61-6 RAG·단순응답 라우팅), 제91강(멀티턴·조건부 분기: 91-2 분기 라우팅과 Checkpointer, 91-5 분류 노드·조건부 엣지, 91-6 RAG 연결과 Checkpointer 멀티턴) |
 
@@ -708,10 +708,21 @@ START → [tool_fetch] → ◇중간에 끝나는가
 보관함이 할 일이 없다. 그래서 **두 그래프에서 checkpointer를 떼어냈고**, 실수로 다시
 붙는 것을 `test_graphs_have_no_checkpointer`로 막았다.
 
+**세 번째 이유 — 지금 코드가 "보관함이 없다"에 기대고 있다 (2026-08-24 추가).**
+`_score_recommendations()`는 `tool_executions` 리스트에 항목을 **제자리에서** 추가하는데
+(`tool_executions.append(refill_execution)`), `scoring_node`는 그 키를 반환하지 않는다.
+그런데도 `finalize_node`가 추가된 항목을 정상적으로 읽는다 — checkpointer가 없어
+LangGraph가 **같은 리스트 객체**를 그대로 넘기기 때문이다. 보관함을 달면 상태를
+저장·복원하는 과정에서 리스트가 새로 만들어져 이 결합이 깨질 수 있고, 그때 조용히
+사라지는 것은 후보 보충 호출(`refill_execution`)이다. 망가지는 기능도 §9.13과 같은
+감사 패널이다 — Tool 호출 목록의 외부 API 호출 수가 실제보다 적게 나온다. 호출 수는
+성능 조사에서 직접 쓰는 숫자라 틀리면 조사가 어긋난다.
+
 **나중에 필요해진다면** — "되묻기에서 멈췄다가 사용자 답변으로 재개" 같은 진짜 중단·
 재개가 필요해지는 시점이다. 그때는 `StateStore`를 갈아끼우는 게 아니라, **B의 상태와
 별개로** 그래프 재개용 보관함을 새로 설계해야 한다. 지금 그 기능은 되묻기 코드
-(`clarification_choice`)가 이미 다른 방식으로 해결하고 있다.
+(`clarification_choice`)가 이미 다른 방식으로 해결하고 있다. 착수하면 위 세 번째
+이유(`tool_executions` 제자리 추가)도 함께 정리해야 한다.
 
 ### 9.10 이관 검증 결과 (2026-08-24)
 
@@ -721,6 +732,13 @@ START → [tool_fetch] → ◇중간에 끝나는가
 **방법** — 같은 발화를 기능 플래그 끈 상태(기존 경로)와 켠 상태(그래프 경로)로 각각
 돌려, ① 최종 `AgentResponse` JSON 전체 ② SSE 이벤트 이름 순서 두 가지를 비교했다.
 세션 ID·`request_id`·타임스탬프·소요시간처럼 실행마다 달라지는 값은 제외했다.
+
+> **이 비교의 범위에서 빠진 것 — `llm_execution` (2026-08-24 추가).** 아래 "동일"은
+> 이 필드에 관해서는 **양쪽 모두 `None`이었던** 결과다. 비교 스크립트가
+> `LLM_PROVIDER=fake`를 무조건 지정하고(`--real`에서도), `record_llm_call()`을 부르는
+> 것은 `RealGeminiProvider` 하나뿐이기 때문이다. 두 실행이 같았던 게 아니라 두 실행
+> 다 아무것도 기록하지 않았다. 실제로는 이 필드가 그래프 경로에서 유실되고 있었고,
+> 팀 검토에서 발견해 D-073으로 고쳤다 — 원인과 수정은 §9.13에 있다.
 
 | 케이스 | Fake Provider | 실제 Provider |
 |---|---|---|
@@ -857,6 +875,117 @@ Kakao Map Walking Route 호출 실패 (HTTP 400, message=API limit has been exce
 
 ---
 
+### 9.13 이관 후 발견한 결함 — 노드 안 LLM 기록이 사라졌다 (2026-08-24)
+
+병합 판정 기준 6개를 통과한 뒤 팀 검토(진형)에서 나온 지적이고, **실측으로 재현해
+확인했다.** 이관 자체는 유지되지만 관측 값 하나가 조용히 유실되고 있었다.
+
+**증상** — 조기 반환 경로(GENERAL·OUT_OF_SCOPE·되묻기)의 정상 응답에서
+`llm_execution`이 통째로 `None`이 된다. 그래서 개발자 감사 패널의 "LLM 응답 모델"이
+빈칸이 되고, "LLM 폴백"은 **틀린 "없음"**을 찍는다.
+
+```
+llmExecution?.calls.some((call) => call.attempted_models.length > 1) ? "시도됨" : "없음"
+```
+
+`llmExecution`이 `null`이면 앞부분이 `undefined`가 되고 삼항 연산자는 거짓 쪽을 고른다.
+**빈칸과 "없음"은 다른 정보다.** 빈칸은 "모르겠다"로 읽히고 "없음"은 "확인했고 안
+일어났다"로 읽힌다. 확인하지 않은 것을 확인했다고 말하는 쪽이 더 나쁘다.
+
+**원인 — 태스크 경계는 한 방향으로만 열린다.**
+
+`_calls`는 ContextVar인데, 갱신을 **값 교체**로 했다(`_calls.set((*_calls.get(), call))`).
+LangGraph는 노드를 별도 asyncio 태스크에서 돌리고, 파이썬은 태스크를 만들 때 그 시점
+ContextVar 값을 **복사해서** 넘긴다. 그래서 노드 안에서 교체한 값은 복사본만 갈리고,
+노드가 끝나면 함께 버려진다.
+
+실제 `langgraph 1.2.11`로 노드 2개 그래프를 돌려 두 방식을 나란히 확인했다.
+
+```
+== 노드 안에서 본 이력 ==
+  노드1 tuple: ['before_graph', 'in_node_a']
+  노드2 tuple: ['before_graph', 'in_node_b']       ← node_a 기록이 안 보인다
+  노드2 list : ['before_graph', 'in_node_a', 'in_node_b']
+== 그래프 밖(부모 문맥) ==
+  tuple: ['before_graph']                           ← 노드 기록 전부 유실
+  list : ['before_graph', 'in_node_a', 'in_node_b']  ← 살아남는다
+```
+
+**이 반쪽짜리 가시성이 문제를 알아채기 어렵게 만든다.** 목록이 통째로 비면 누구나
+고장을 의심하지만, 항목이 몇 개 들어 있고 한 줄만 조용히 빠지면 아무도 안 본다.
+
+**유실 지점 3곳**
+
+| 읽는 곳 | 실행 위치 | 상태 | 망가지는 기능 |
+|---|---|---|---|
+| `agent_runtime.py` 조기 반환 응답 조립 | 그래프 **밖** | 유실 | 감사 패널의 모델·폴백·타이밍·호출 목록 4곳 전부 |
+| `main.py` `handle_app_error()` | 요청 문맥(그래프 밖) | 유실 | 502 본문의 `details.llm_execution` — 오류 턴 원인 추적이 끊긴다 |
+| `_run_schedule_branch` / `_finalize_recommendation_response` | 노드 안 | 잠복 | 앞 노드(`tool_fetch`·`scoring`)에 LLM 호출이 생기면 그 줄만 빠진다 |
+
+세 번째가 잠복인 이유는 지금 앞 두 노드가 LLM을 한 번도 안 불러서다 —
+`_score_recommendations()`는 `llm`을 인자로 받지도 않고, `_fetch_tool_context()`의
+LLM 호출 2곳은 둘 다 그 자리에서 턴을 끝내는 분기(기록과 읽기가 같은 노드 안)다.
+
+**범위 정정 하나.** 502 본문 유실은 **단발 `POST /api/chat`과 `/api/agent-debug` 한정**
+이다. SSE 경로(`/api/chat/stream`)는 `run_agent`를 `asyncio.create_task`로 띄우고
+`AppError`를 제너레이터 안에서 잡아 `exc.details`만 쓰므로, 이 값을 원래 싣지 않는다.
+서버 로그도 영향이 없다 — `logger.error`가 `llm_execution`을 읽기 전에 실행되고 로그에
+넣는 값은 `exc.details`라, D-052가 넣은 "502가 로그에 흔적을 남긴다"는 장치는 그대로다.
+
+**서비스 동작에는 영향이 없다.** `llm_execution`은 관측 전용 필드이고
+(`schemas.py`가 "추천 판정에는 쓰이지 않으며"라고 명시), 소비처는 백엔드 1곳
+(`main.py`)과 프론트 1곳(`DeveloperAuditPanel.tsx`)뿐이다. 추천 결과·답변 문구·사용자
+화면은 그대로다. 고장 등급은 **운영 장애가 아니라 진단 기능 회귀**다.
+
+**수정 — 갈아끼우지 말고 붙인다.** `_calls`가 리스트를 담고,
+`reset_llm_execution_metadata()`에서만 새 리스트를 넣고, `record_llm_call()`은 그
+리스트에 `append`한다. 태스크가 복사해 가는 것은 리스트 **참조**라, 노드 안에서 붙인
+항목이 노드 밖에서도 보인다. 바꾼 파일은 `llm_execution.py` 하나이고 위 3지점이
+한꺼번에 해소된다.
+
+**기본값은 지우지 않았다 — 검토 제안과 갈린 지점이다.** 검토 문서는 `default=()`를
+제거하자고 했는데, 그대로 하면 새 회귀가 생긴다. `main.py`의 `handle_app_error()`는
+**전역** `AppError` 핸들러이고, `/api/transcribe`·`/api/dev/*`·`/chat/place-details`처럼
+`run_agent()`를 거치지 않는(따라서 `reset`을 부르지 않는) 라우트도 이 핸들러를 탄다.
+기본값이 없으면 거기서 `LookupError`가 나 **502 계약이 500 미처리 예외로 깨진다.**
+
+```
+default 없음 + reset 미호출 → LookupError 발생 (핸들러가 터진다)
+default=None →  None (안전)
+```
+
+그래서 기본값을 **불변 센티널 `None`**으로 두고, `record_llm_call()`이 첫 호출에서
+리스트를 만든다. 기본값에 리스트를 두면 안 된다는 지적은 그대로 지켰다 — 그러면 모든
+요청이 같은 리스트를 공유해 이력이 섞이고, ContextVar를 쓰는 목적 자체가 깨진다.
+
+**왜 기존 검증이 못 잡았나** — `record_llm_call()`을 부르는 것은 `RealGeminiProvider`
+하나뿐이다. `FakeLLMProvider`는 부르지 않는다. 그런데 `tests/conftest.py`가 모든
+테스트에서 Fake를 강제하고, `scripts/compare_langgraph_parity.py`도 42-43행에서
+`LLM_PROVIDER=fake`를 무조건 지정한다(`--real`을 줘도 LLM만은 Fake로 고정). `tests/`에
+`llm_execution`을 단정하는 테스트는 **0건**이었다.
+
+즉 §9.10의 "전부 일치"는 이 필드에 관해서는 **양쪽 다 `None`이었던** 비교다.
+`CLAUDE.local.md`가 "조용한 fake"로 적어둔 실패 유형과 같다 — Fake가 소비 측이 읽는
+값을 비워두면, 테스트는 통과하는데 검증하려던 로직은 실행되지 않는다.
+
+**그래서 회귀 테스트는 기록하는 LLM 더블로 짰다**
+(`tests/graph/test_llm_execution_across_nodes.py`, 9건). Fake를 그대로 쓰면 이 테스트는
+고치기 전에도 통과해버려 아무것도 지켜주지 못한다. 실제로 수정을 되돌려 **그중 4건이
+실패하는 것을 확인**했고, 잠복 지점은 앞 노드에 LLM 호출이 생긴 상황을 만들어 고정했다.
+
+| | 이관 직후 | 수정 후 |
+|---|---|---|
+| pytest | 2,323 passed / 24 skipped | **2,332 passed / 24 skipped** |
+| `llm_execution` 단정 테스트 | 0건 | 9건 |
+
+**여기서 얻은 원칙** — 노드는 상태(서류철)로만 값을 주고받는다고 봐야 한다. ContextVar
+같은 "옆으로 새는 통로"는 그래프 안으로는 들어가지만 밖으로는 나오지 못한다. 태스크
+경계를 넘겨야 하는 값이 있으면 **가변 객체를 공유하거나** 상태 칸으로 올려야 하고,
+어느 쪽도 안 하면 조용히 사라진다 — 예외도, 로그도, 테스트 실패도 없이. §9.9의
+`tool_executions` 결합이 지금 동작하는 이유도 정확히 같은 원리의 뒷면이다.
+
+---
+
 ## 10. 브랜치 전략 — 별도 브랜치가 맞다
 
 ### 10.1 결론
@@ -903,7 +1032,7 @@ develop
 | 1 | `pytest` 전부 통과 — 스킵으로 넘기지 않는다 | ✅ **2,323 passed / 24 skipped** (기준선 2,293 + 그래프 18건 + develop 동기화로 들어온 12건). 착수 시 적었던 "2,316"은 어림값이었다 |
 | 2 | `ruff check .` 클린 | ✅ |
 | 3 | **SSE 계약 무변경** — 프론트 한 줄도 안 고치고 `/dev-chat` 동작 | ✅ 프론트 변경 **0줄**(§10.5 파일 목록), SSE 순서 일치 확인(§9.10) |
-| 4 | 7개 인텐트 각각 응답이 이관 전과 동일 | ✅ 13개 케이스 차등 비교(§9.10) |
+| 4 | 7개 인텐트 각각 응답이 이관 전과 동일 | ⚠️ 13개 케이스 차등 비교 통과(§9.10) — **단 `llm_execution`은 비교 범위 밖이었고, 실제로 그 필드가 유실되고 있었다(§9.13)**. 비교 도구가 LLM을 Fake로 고정해서다 |
 | 5 | 되묻기 재진입(버튼 클릭 → 재요청) 정상 동작 | ✅ 5단계 시나리오 차등 비교, 차이 0건(§9.11) |
 | 6 | 응답 지연이 유의미하게 나빠지지 않음 | ✅ 고정 오버헤드 약 1ms(§9.12) |
 
@@ -1001,6 +1130,12 @@ develop
   이 문서는 이제 "검토 결과"가 아니라 **결정과 그 실행 기록**이다.
 - 읽는 순서: 결론만 필요하면 §1과 §10.3(판정 기준 표). 왜 이렇게 됐는지가 궁금하면
   §9.6~§9.12(단계별 실측). 그래프를 고칠 사람은 §7(사용법)과 §9.3(실제 폴더 구조).
+  **그래프에 노드를 더할 사람은 §9.13을 먼저 읽는다** — 노드는 별도 태스크에서 돌아
+  상태(서류철) 밖으로 값을 내보내지 못하고, 그 탓에 관측 값이 조용히 사라진 전례가 있다.
 - **계획과 결과가 다른 곳은 지우지 않고 취소선으로 남겼다.** 틀린 전제가 언제 어떻게
   드러났는지가 이 문서의 쓸모 중 하나라서다 — 특히 §5·§7.4의 checkpointer 대응표와
   §6.1의 "인텐트별 팬아웃"은 둘 다 그럴듯했지만 틀렸다.
+- **판정 기준을 통과한 것이 결함이 없다는 뜻은 아니었다.** §9.13이 그 사례다. 기준 4번
+  ("7개 인텐트 응답 동일")은 통과했지만, 비교 도구가 LLM을 Fake로 고정하는 탓에
+  `llm_execution`은 애초에 비교 범위 밖이었다. 통과한 기준이 무엇을 **안 봤는지**까지
+  적어두지 않으면, 다음 사람은 그 기준을 실제보다 넓게 읽는다.
