@@ -24,6 +24,7 @@ from app.service_area import (
     _select_supported,
     _service_area_polygons,
     is_within_service_area,
+    supported_district_label,
 )
 
 # 실제 좌표. 경계 판정이 흔들리면 바로 드러나도록 경계 인접 지점을 함께 둔다.
@@ -178,3 +179,22 @@ def test_경계_파일에_없는_구는_예외로_끊는다() -> None:
     ghost = ServiceDistrict("999", "없는구")
     with pytest.raises(ValueError, match="없는구"):
         _select_supported(_all_district_polygons(), (ghost,))
+
+
+def test_안내_문구용_이름이_지원_목록을_그대로_따른다() -> None:
+    """문구가 목록을 읽지 않으면 구만 늘고 안내는 옛 범위를 말하는 상태가 된다.
+
+    실제로 지원 구가 넷으로 늘어난 뒤에도 "종로구만 지원합니다"가 나갔다(TP-127).
+    """
+    label = supported_district_label()
+
+    assert label == "·".join(district.name for district in SUPPORTED_DISTRICTS)
+    for district in SUPPORTED_DISTRICTS:
+        assert district.name in label
+
+
+def test_안내_문구용_이름에_시_이름을_붙일_수_있다() -> None:
+    """네 곳 모두 서울특별시라 구마다 반복하지 않고 앞에 한 번만 쓴다."""
+    assert supported_district_label(with_city=True) == (
+        f"서울특별시 {supported_district_label()}"
+    )
