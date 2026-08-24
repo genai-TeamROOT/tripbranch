@@ -24,10 +24,7 @@ from dataclasses import dataclass
 
 from app.domain.models import PlaceDetails
 from app.errors import AppError
-from app.place_search_policy import (
-    PLACE_SEARCH_LDONG_DISTRICT_CODE,
-    PLACE_SEARCH_LDONG_REGION_CODE,
-)
+from app.place_search_policy import PLACE_SEARCH_LDONG_REGION_CODE
 from app.providers.contracts import ProviderMetadata, ProviderStatus
 from app.providers.protocols import PlaceDetailByNameProvider
 from app.tools.contracts import ToolError, ToolStatus
@@ -45,7 +42,8 @@ class PlaceDetailQuery:
 
     place_name: str
     region_code: str = PLACE_SEARCH_LDONG_REGION_CODE
-    district_code: str = PLACE_SEARCH_LDONG_DISTRICT_CODE
+    # 구는 요청에 싣지 않고 응답으로 거른다(D-025). nearby_place_details와 같다.
+    district_code: str | None = None
 
     def __post_init__(self) -> None:
         if not self.place_name.strip():

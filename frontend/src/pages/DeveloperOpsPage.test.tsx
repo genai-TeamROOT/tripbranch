@@ -177,7 +177,7 @@ it("호출량 표와 일일 한도 게이지를 보여준다", async () => {
   expect(screen.getAllByText("517")).toHaveLength(2);
 });
 
-it("카카오맵 도보 provider 라벨을 표시한다", async () => {
+it("카카오맵 길찾기 provider 라벨을 표시한다", async () => {
   mockFetch((url) => ({
     status: 200,
     body: url.includes("api-usage")
@@ -197,7 +197,7 @@ it("카카오맵 도보 provider 라벨을 표시한다", async () => {
 
   renderPage();
 
-  expect(await screen.findByText("카카오맵 도보")).toBeInTheDocument();
+  expect(await screen.findByText("카카오맵 길찾기")).toBeInTheDocument();
   expect(screen.getByText("walk")).toBeInTheDocument();
 });
 
