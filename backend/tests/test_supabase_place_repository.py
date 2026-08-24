@@ -128,7 +128,7 @@ async def test_find_active_places_by_name_reads_coordinates_and_mapping() -> Non
 
 @pytest.mark.asyncio
 async def test_find_active_places_by_name_falls_back_through_title_variants() -> None:
-    """정확 일치 → 공백 무시 → 괄호 부기 → 별칭 순으로 넓힌다(D-043).
+    """정확 일치 → 지역 접두사 → 공백 무시 → 괄호 부기 → 별칭 순으로 넓힌다(D-043).
 
     지역 검색은 "북촌 한옥마을"을 주는데 저장소는 "북촌한옥마을"이고, 사용자는
     "종묘"라고 하는데 저장소 제목은 "종묘 [유네스코 세계유산]"이다.
@@ -164,11 +164,101 @@ async def test_find_active_places_by_name_falls_back_through_title_variants() ->
     async with httpx.AsyncClient(transport=transport) as client:
         locations = await _repository(transport, client).find_active_places_by_name("종묘")
 
-    assert seen == ["eq.종묘", "ilike.종묘 [*"]
+    assert seen == ["eq.종묘", "ilike.서울 종묘", "ilike.종묘 [*"]
     assert len(locations) == 1
     assert locations[0].concentration_name == "종묘 [유네스코 세계유산]"
     # 조회는 검색어로, 대조는 정식 명칭으로 해야 종묘광장공원과 섞이지 않는다.
     assert locations[0].concentration_search_keys == ("종묘",)
+
+
+@pytest.mark.asyncio
+async def test_find_active_places_by_name_finds_seoul_prefixed_title() -> None:
+    """사용자는 "명동성당"이라고 하는데 저장소 제목은 "서울 명동성당"이다.
+
+    TourAPI가 국가지정문화재류에 붙이는 접두사이고 활성 26곳이 여기 걸린다.
+    """
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        title = request.url.params.get("title")
+        seen.append(title if title is not None else "alias")
+        if title == "ilike.서울 명동성당":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "content_id": "126804",
+                        "title": "서울 명동성당",
+                        "address": "서울특별시 중구 명동길 74 (명동2가)",
+                        "latitude": 37.56367587,
+                        "longitude": 126.9867758233,
+                        "place_concentration_mappings": [],
+                    }
+                ],
+            )
+        return httpx.Response(200, json=[])
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        locations = await _repository(transport, client).find_active_places_by_name(
+            "명동성당"
+        )
+
+    assert seen == ["eq.명동성당", "ilike.서울 명동성당"]
+    assert len(locations) == 1
+    assert locations[0].content_id == "126804"
+    assert locations[0].title == "서울 명동성당"
+
+
+@pytest.mark.asyncio
+async def test_find_active_places_by_name_prefers_exact_title_over_prefix() -> None:
+    """접두사 없는 동명 장소가 생기면 그쪽이 이긴다 - 접두사 조회까지 가지 않는다."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        title = request.url.params.get("title")
+        seen.append(title if title is not None else "alias")
+        if title == "eq.명동성당":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "content_id": "999999",
+                        "title": "명동성당",
+                        "address": None,
+                        "latitude": 37.5636,
+                        "longitude": 126.9867,
+                        "place_concentration_mappings": [],
+                    }
+                ],
+            )
+        return httpx.Response(200, json=[])
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        locations = await _repository(transport, client).find_active_places_by_name(
+            "명동성당"
+        )
+
+    assert seen == ["eq.명동성당"]
+    assert locations[0].content_id == "999999"
+
+
+@pytest.mark.asyncio
+async def test_find_active_places_by_name_does_not_double_prefix() -> None:
+    """정식 제목을 그대로 넣어도 "서울 서울 ..."을 조회하지 않는다."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        title = request.url.params.get("title")
+        seen.append(title if title is not None else "alias")
+        return httpx.Response(200, json=[])
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        await _repository(transport, client).find_active_places_by_name("서울 명동성당")
+
+    assert "ilike.서울 서울 명동성당" not in seen
 
 
 @pytest.mark.asyncio
