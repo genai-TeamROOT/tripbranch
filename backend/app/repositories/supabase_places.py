@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import re
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from typing import TypeVar
 from uuid import UUID
@@ -58,6 +59,13 @@ _LOCATION_COLUMNS = (
     "content_id,title,address,latitude,longitude,"
     "place_concentration_mappings(primary_concentration_name,concentration_search_keys)"
 )
+
+# 제목 조회 한 번에 받아올 행 상한. 필터 여러 개를 or=로 함께 던지므로 사다리
+# 시절의 2보다 넉넉해야 앞선 필터의 행이 잘리지 않는다.
+_TITLE_QUERY_ROW_LIMIT = 50
+# 우선순위로 고른 뒤 호출자에게 넘길 상한. 사다리 시절 limit=2와 같은 값이고,
+# 2건이면 호출자가 모호하다고 판정한다(`_lookup_stored_place`).
+_TITLE_MATCH_LIMIT = 2
 
 # 별칭 조회는 매핑이 있는 장소로만 좁혀야 해서 inner join이 필요하다.
 _LOCATION_COLUMNS_INNER = _LOCATION_COLUMNS.replace(
@@ -171,20 +179,117 @@ def _map_place_locations(
     return tuple(locations)
 
 
+# TourAPI가 국가지정문화재류 제목에 규칙적으로 붙이는 지역 접두사. 사용자는
+# "명동성당"이라고 하는데 저장소 제목은 "서울 명동성당"이다(활성 26곳).
+_TITLE_REGION_PREFIX = "서울 "
+
+
 def _title_filters(name: str) -> list[str]:
     """장소명 조회에 쓸 PostgREST 필터를 좁은 것부터 나열한다.
 
     부분 일치로 넓히지 않는다 - "종묘*"로 찾으면 종묘광장공원·종묘대제까지 걸려
-    엉뚱한 장소가 검색 중심이 된다. 이름 뒤에 괄호 부기만 붙은 형태로 한정한다.
-    PostgREST는 ilike의 `*`를 `%`로 바꿔 주므로 인코딩 문제가 없다.
+    엉뚱한 장소가 검색 중심이 된다. 이름 앞뒤에 **규칙적으로** 붙는 수식만
+    허용한다. PostgREST는 ilike의 `*`를 `%`로 바꿔 주므로 인코딩 문제가 없다.
+
+    순서가 곧 우선순위다(D-043). 한 번에 조회하고 이 순서로 골라내므로, 필터를
+    더할 때는 넣는 자리가 그대로 우선순위가 된다.
     """
+    prefixed = not name.startswith(_TITLE_REGION_PREFIX)
+    collapsed = "*".join(name.split()) if any(c.isspace() for c in name) else None
+
     filters = [f"eq.{name}"]
-    if any(character.isspace() for character in name):
+    # "명동성당" → "서울 명동성당". 와일드카드가 없어 사실상 정확 일치라,
+    # "종로"로 찾아도 "서울 종로 낙지볶음 골목"에는 걸리지 않는다. 접두사를 뗀
+    # 이름과 같은 제목의 다른 활성 장소는 없다(26곳 전수, 2026-08-24 확인).
+    # 정확 일치를 먼저 보므로 나중에 접두사 없는 동명 장소가 적재되면 그쪽이 이긴다.
+    if prefixed:
+        filters.append(f"ilike.{_TITLE_REGION_PREFIX}{name}")
+    if collapsed is not None:
         # "북촌 한옥마을" → "북촌한옥마을"
-        filters.append("ilike." + "*".join(name.split()))
+        filters.append(f"ilike.{collapsed}")
+        # "명동 성당" → "서울 명동성당". 두 수식이 함께 걸린 제목이 실제로 있어
+        # 각각만으로는 못 찾는다.
+        if prefixed:
+            filters.append(f"ilike.{_TITLE_REGION_PREFIX}{collapsed}")
     # "종묘" → "종묘 [유네스코 세계유산]", "세검정 터" → "세검정 터 (구 세검정)"
     filters.extend([f"ilike.{name} [*", f"ilike.{name} (*"])
     return filters
+
+
+def _quote_filter_value(value: str) -> str:
+    """or= 안에 들어갈 값을 큰따옴표로 감싼다.
+
+    감싸지 않으면 쉼표가 든 제목("꽃,밥에피다" 등 활성 5건)이 필터 구분자로 읽혀
+    PGRST100으로 깨진다. 괄호도 마찬가지다. 따옴표 안에서도 ilike의 `*`는 그대로
+    와일드카드로 동작한다(2026-08-24 실측).
+    """
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _title_or_filter(title_filters: Sequence[str]) -> str:
+    """제목 필터 여러 개를 or= 하나로 합친다.
+
+    사다리를 한 칸씩 따로 던지면 저장소에 없는 이름에서 왕복이 필터 수만큼 쌓인다
+    ("안국역" 기준 4회, 공백이 든 이름은 5회). 한 번에 던지고 우선순위는 받은 뒤
+    파이썬에서 가린다.
+    """
+    conditions = []
+    for title_filter in title_filters:
+        operator, _, value = title_filter.partition(".")
+        conditions.append(f"title.{operator}.{_quote_filter_value(value)}")
+    return f"({','.join(conditions)})"
+
+
+def _title_filter_matcher(title_filter: str) -> Callable[[str], bool]:
+    """제목이 이 필터에 걸리는지 판정한다. 받은 행을 우선순위로 가를 때 쓴다.
+
+    fnmatch를 쓰지 않는다 - 대괄호를 문자 클래스로 읽어 "종묘 [*"가 엉뚱하게
+    동작한다. 저장소 제목에 대괄호가 실제로 있다(활성 22건).
+    """
+    operator, _, value = title_filter.partition(".")
+    if operator == "eq":
+        return lambda title: title == value
+    # ilike: `*`만 와일드카드이고 나머지는 글자 그대로다.
+    pattern = "".join(
+        ".*" if part == "*" else re.escape(part) for part in re.split(r"(\*)", value)
+    )
+    compiled = re.compile(f"^{pattern}$", re.IGNORECASE)
+    return lambda title: compiled.match(title) is not None
+
+
+def _select_by_filter_priority(
+    rows: Sequence[object], title_filters: Sequence[str]
+) -> list[object]:
+    """섞여 온 행에서 가장 앞선 필터에 걸린 것만 남긴다.
+
+    사다리를 한 칸씩 던지던 시절의 동작을 그대로 재현한다 - 먼저 걸린 칸에서
+    멈췄으므로, 뒤 칸에만 걸리는 행은 애초에 보이지 않았다. 여기서 뒤 칸 행까지
+    함께 돌려주면 호출자가 후보 2건 이상으로 보고 되묻기로 새 버린다
+    (`_lookup_stored_place`의 `len(matches) > 1` 판정).
+
+    같은 이유로 2건에서 자른다. 그때 limit이 2였고, 그 상한이 곧 "이 칸에서
+    후보가 여럿이면 모호하다"는 신호였다.
+    """
+    matchers = [_title_filter_matcher(title_filter) for title_filter in title_filters]
+    best_rank: int | None = None
+    selected: list[object] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        title = row.get("title")
+        if not isinstance(title, str):
+            continue
+        rank = next(
+            (index for index, matches in enumerate(matchers) if matches(title)), None
+        )
+        if rank is None:
+            continue
+        if best_rank is None or rank < best_rank:
+            best_rank, selected = rank, [row]
+        elif rank == best_rank:
+            selected.append(row)
+    return selected[:_TITLE_MATCH_LIMIT]
 
 
 def _optional_text(value: object) -> str | None:
@@ -471,10 +576,12 @@ class SupabasePlaceRepository:
         normalized_name = name.strip()
         if not normalized_name:
             return ()
-        for title_filter in _title_filters(normalized_name):
-            rows = await self._query_places_by_title(title_filter)
-            if rows:
-                return _map_place_locations(rows, fallback_title=normalized_name)
+        title_filters = _title_filters(normalized_name)
+        rows = _select_by_filter_priority(
+            await self._query_places_by_title(title_filters), title_filters
+        )
+        if rows:
+            return _map_place_locations(rows, fallback_title=normalized_name)
         # 제목으로 못 찾으면 사람이 지정한 별칭을 본다. "창덕궁"은 저장소 제목이
         # "창덕궁과 후원 [유네스코 세계유산]"이라 어떤 제목 규칙으로도 닿지 않는다.
         rows = await self._query_places_by_alias(normalized_name)
@@ -507,18 +614,28 @@ class SupabasePlaceRepository:
             raise SupabaseRepositoryError("invalid place location response")
         return rows
 
-    async def _query_places_by_title(self, title_filter: str) -> list[object]:
+    async def _query_places_by_title(self, title_filters: Sequence[str]) -> list[object]:
+        """제목 필터 전부를 or= 하나로 던진다. 우선순위 판정은 호출자가 한다.
+
+        limit이 사다리 시절의 2가 아닌 이유: 그때는 한 칸이 자기 필터에 걸린 행만
+        받았지만, 지금은 여러 칸의 결과가 섞여 온다. 2로 자르면 뒤쪽 칸의 행이
+        앞자리를 차지해 정작 정확 일치를 못 받는 일이 생긴다. 넉넉히 받아
+        `_select_by_filter_priority`가 고르고, 거기서 다시 2건으로 줄인다.
+        """
         # _query_places_by_alias와 같은 이유로 지원 지역을 명시적으로 건다.
         response = await self._request(
             "GET",
             "/places",
             params={
                 "select": _LOCATION_COLUMNS,
-                "title": title_filter,
+                "or": _title_or_filter(title_filters),
                 "is_active": "eq.true",
                 "area_code": f"eq.{PLACE_SEARCH_LDONG_REGION_CODE}",
                 "district_code": _SUPPORTED_DISTRICT_FILTER,
-                "limit": "2",
+                # 한 칸에 이만큼 걸리면 어차피 모호해서 되묻기로 간다.
+                "limit": str(_TITLE_QUERY_ROW_LIMIT),
+                # 상한에 걸릴 때 어떤 행이 잘리는지가 호출마다 달라지지 않게 한다.
+                "order": "content_id",
             },
         )
         rows = self._json(response)

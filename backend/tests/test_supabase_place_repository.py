@@ -97,7 +97,7 @@ async def test_lock_rpcs_send_exact_database_arguments() -> None:
 async def test_find_active_places_by_name_reads_coordinates_and_mapping() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/rest/v1/places"
-        assert request.url.params["title"] == "eq.쌈지길"
+        assert request.url.params["or"].startswith('(title.eq."쌈지길",')
         assert request.url.params["is_active"] == "eq.true"
         return httpx.Response(
             200,
@@ -128,47 +128,313 @@ async def test_find_active_places_by_name_reads_coordinates_and_mapping() -> Non
 
 @pytest.mark.asyncio
 async def test_find_active_places_by_name_falls_back_through_title_variants() -> None:
-    """정확 일치 → 공백 무시 → 괄호 부기 → 별칭 순으로 넓힌다(D-043).
+    """정확 일치 → 지역 접두사 → 공백 무시 → 괄호 부기 → 별칭 순으로 넓힌다(D-043).
 
     지역 검색은 "북촌 한옥마을"을 주는데 저장소는 "북촌한옥마을"이고, 사용자는
     "종묘"라고 하는데 저장소 제목은 "종묘 [유네스코 세계유산]"이다.
+
+    필터는 한 번에 던지고 우선순위는 받은 뒤에 가린다. 제목 조회 1회 + 별칭 조회
+    1회가 상한이다.
     """
     seen: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        title = request.url.params.get("title")
+        or_filter = request.url.params.get("or")
         alias = request.url.params.get(
             "place_concentration_mappings.concentration_aliases"
         )
-        seen.append(title if title is not None else f"alias:{alias}")
-        if title == "ilike.종묘 [*":
-            return httpx.Response(
-                200,
-                json=[
-                    {
-                        "content_id": "126510",
-                        "title": "종묘 [유네스코 세계유산]",
-                        "address": None,
-                        "latitude": 37.5739,
-                        "longitude": 126.9945,
-                        "place_concentration_mappings": {
-                            "primary_concentration_name": "종묘 [유네스코 세계유산]",
-                            "concentration_search_keys": ["종묘"],
-                        },
-                    }
-                ],
-            )
-        return httpx.Response(200, json=[])
+        seen.append(or_filter if or_filter is not None else f"alias:{alias}")
+        if or_filter is None:
+            return httpx.Response(200, json=[])
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "content_id": "126510",
+                    "title": "종묘 [유네스코 세계유산]",
+                    "address": None,
+                    "latitude": 37.5739,
+                    "longitude": 126.9945,
+                    "place_concentration_mappings": {
+                        "primary_concentration_name": "종묘 [유네스코 세계유산]",
+                        "concentration_search_keys": ["종묘"],
+                    },
+                }
+            ],
+        )
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as client:
         locations = await _repository(transport, client).find_active_places_by_name("종묘")
 
-    assert seen == ["eq.종묘", "ilike.종묘 [*"]
+    # 사다리를 한 칸씩 던지지 않는다 - 제목 조회는 한 번뿐이고, 걸렸으므로 별칭
+    # 조회까지 가지 않는다. 지역 접두사 필터도 같은 조회에 함께 실린다.
+    assert seen == [
+        '(title.eq."종묘",title.ilike."서울 종묘",'
+        'title.ilike."종묘 [*",title.ilike."종묘 (*")'
+    ]
     assert len(locations) == 1
     assert locations[0].concentration_name == "종묘 [유네스코 세계유산]"
     # 조회는 검색어로, 대조는 정식 명칭으로 해야 종묘광장공원과 섞이지 않는다.
     assert locations[0].concentration_search_keys == ("종묘",)
+
+
+@pytest.mark.asyncio
+async def test_find_active_places_by_name_prefers_earlier_filter_over_later() -> None:
+    """한 번에 받아도 정확 일치가 부기 붙은 제목을 이긴다.
+
+    사다리를 한 칸씩 던지던 시절에는 먼저 걸린 칸에서 멈춰 이 순서가 저절로
+    지켜졌다. 한 번에 던지면 두 행이 함께 오므로 받은 뒤에 가려야 한다.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("or") is None:
+            return httpx.Response(200, json=[])
+        return httpx.Response(
+            200,
+            json=[
+                # 응답 순서를 일부러 뒤집어 둔다 - 우선순위가 응답 순서에 기대면
+                # 안 된다.
+                {
+                    "content_id": "126510",
+                    "title": "종묘 [유네스코 세계유산]",
+                    "address": None,
+                    "latitude": 37.5739,
+                    "longitude": 126.9945,
+                    "place_concentration_mappings": None,
+                },
+                {
+                    "content_id": "999999",
+                    "title": "종묘",
+                    "address": None,
+                    "latitude": 37.5740,
+                    "longitude": 126.9946,
+                    "place_concentration_mappings": None,
+                },
+            ],
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        locations = await _repository(transport, client).find_active_places_by_name("종묘")
+
+    # 두 행이 함께 왔지만 정확 일치 하나만 남는다. 둘 다 남기면 호출자가 후보
+    # 2건으로 보고 되묻기로 새 버린다.
+    assert len(locations) == 1
+    assert locations[0].content_id == "999999"
+
+
+@pytest.mark.asyncio
+async def test_find_active_places_by_name_keeps_same_rung_matches_ambiguous() -> None:
+    """같은 칸에 여럿이 걸리면 그대로 넘긴다 - 호출자가 모호하다고 판정해야 한다."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("or") is None:
+            return httpx.Response(200, json=[])
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "content_id": "1",
+                    "title": "종묘 [유네스코 세계유산]",
+                    "address": None,
+                    "latitude": 37.5739,
+                    "longitude": 126.9945,
+                    "place_concentration_mappings": None,
+                },
+                {
+                    "content_id": "2",
+                    "title": "종묘 [별관]",
+                    "address": None,
+                    "latitude": 37.5741,
+                    "longitude": 126.9947,
+                    "place_concentration_mappings": None,
+                },
+            ],
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        locations = await _repository(transport, client).find_active_places_by_name("종묘")
+
+    assert len(locations) == 2
+
+
+@pytest.mark.asyncio
+async def test_find_active_places_by_name_quotes_titles_with_commas() -> None:
+    """쉼표가 든 이름도 필터가 깨지지 않는다.
+
+    감싸지 않으면 쉼표가 or=의 구분자로 읽혀 PostgREST가 PGRST100으로 끊는다.
+    저장소에 실제로 있는 형태다("꽃,밥에피다" 등 활성 5건).
+    """
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        or_filter = request.url.params.get("or")
+        if or_filter is None:
+            return httpx.Response(200, json=[])
+        seen.append(or_filter)
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "content_id": "3",
+                    "title": "꽃,밥에피다",
+                    "address": None,
+                    "latitude": 37.57,
+                    "longitude": 126.98,
+                    "place_concentration_mappings": None,
+                }
+            ],
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        locations = await _repository(transport, client).find_active_places_by_name(
+            "꽃,밥에피다"
+        )
+
+    assert seen == [
+        '(title.eq."꽃,밥에피다",title.ilike."서울 꽃,밥에피다",'
+        'title.ilike."꽃,밥에피다 [*",title.ilike."꽃,밥에피다 (*")'
+    ]
+    assert len(locations) == 1
+    assert locations[0].title == "꽃,밥에피다"
+
+
+@pytest.mark.asyncio
+async def test_find_active_places_by_name_treats_brackets_as_literal() -> None:
+    """대괄호는 문자 클래스가 아니라 글자 그대로다.
+
+    fnmatch로 판정하면 "종묘 [*"의 대괄호를 문자 클래스로 읽어 엉뚱한 제목이
+    걸린다. 저장소 제목에 대괄호가 실제로 있다(활성 22건).
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("or") is None:
+            return httpx.Response(200, json=[])
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "content_id": "4",
+                    # 대괄호가 문자 클래스로 읽히면 이 제목이 "종묘 [*"에 걸린다.
+                    "title": "종묘 대제",
+                    "address": None,
+                    "latitude": 37.57,
+                    "longitude": 126.99,
+                    "place_concentration_mappings": None,
+                }
+            ],
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        locations = await _repository(transport, client).find_active_places_by_name("종묘")
+
+    # 어떤 필터에도 안 걸리므로 버린다.
+    assert locations == ()
+
+
+@pytest.mark.asyncio
+async def test_find_active_places_by_name_finds_seoul_prefixed_title() -> None:
+    """사용자는 "명동성당"이라고 하는데 저장소 제목은 "서울 명동성당"이다.
+
+    TourAPI가 국가지정문화재류에 붙이는 접두사이고 활성 26곳이 여기 걸린다.
+    """
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        or_filter = request.url.params.get("or")
+        if or_filter is None:
+            return httpx.Response(200, json=[])
+        seen.append(or_filter)
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "content_id": "126804",
+                    "title": "서울 명동성당",
+                    "address": "서울특별시 중구 명동길 74 (명동2가)",
+                    "latitude": 37.56367587,
+                    "longitude": 126.9867758233,
+                    "place_concentration_mappings": [],
+                }
+            ],
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        locations = await _repository(transport, client).find_active_places_by_name(
+            "명동성당"
+        )
+
+    # 접두사 필터가 같은 조회에 실려 나간다.
+    assert 'title.ilike."서울 명동성당"' in seen[0]
+    assert len(locations) == 1
+    assert locations[0].content_id == "126804"
+    assert locations[0].title == "서울 명동성당"
+
+
+@pytest.mark.asyncio
+async def test_find_active_places_by_name_prefers_exact_title_over_prefix() -> None:
+    """접두사 없는 동명 장소가 생기면 그쪽이 이긴다.
+
+    한 번에 조회하므로 둘 다 받아오지만, 정확 일치가 접두사보다 앞선 칸이라
+    거기서 갈린다.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("or") is None:
+            return httpx.Response(200, json=[])
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "content_id": "126804",
+                    "title": "서울 명동성당",
+                    "address": None,
+                    "latitude": 37.56367587,
+                    "longitude": 126.9867758233,
+                    "place_concentration_mappings": [],
+                },
+                {
+                    "content_id": "999999",
+                    "title": "명동성당",
+                    "address": None,
+                    "latitude": 37.5636,
+                    "longitude": 126.9867,
+                    "place_concentration_mappings": [],
+                },
+            ],
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        locations = await _repository(transport, client).find_active_places_by_name(
+            "명동성당"
+        )
+
+    assert len(locations) == 1
+    assert locations[0].content_id == "999999"
+
+
+@pytest.mark.asyncio
+async def test_find_active_places_by_name_does_not_double_prefix() -> None:
+    """정식 제목을 그대로 넣어도 "서울 서울 ..."을 조회하지 않는다."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        or_filter = request.url.params.get("or")
+        if or_filter is not None:
+            seen.append(or_filter)
+        return httpx.Response(200, json=[])
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        await _repository(transport, client).find_active_places_by_name("서울 명동성당")
+
+    assert "서울 서울 명동성당" not in seen[0]
 
 
 @pytest.mark.asyncio
