@@ -14,16 +14,28 @@ from app.synthetic_reviews.review_plans import (
     ReviewPlan,
     generate_review_plans,
 )
+from app.synthetic_reviews.sentiments import (
+    AxisAssessment,
+    AxisPolarity,
+    Sentiment,
+    SentimentAssessment,
+    assess_sentiment,
+)
 
 __all__ = [
+    "AxisAssessment",
+    "AxisPolarity",
     "CompositePersona",
     "DEFAULT_REVIEWS_PER_PLACE",
     "PlacePersonaInput",
     "PriorityTrait",
     "ReviewPlan",
+    "Sentiment",
+    "SentimentAssessment",
     "TravelPartyTrait",
     "VisitPurposeTrait",
     "VisitStyleTrait",
+    "assess_sentiment",
     "generate_personas",
     "generate_review_plans",
 ]
