@@ -51,8 +51,8 @@ class _RecordingLLMProvider(FakeLLMProvider):
     칸이 읽는 값까지 함께 고정한다.
     """
 
-    ATTEMPTED = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
-    SERVED = "gemini-2.5-flash-lite"
+    ATTEMPTED = ["gemini-3.5-flash", "gemini-3.5-flash-lite"]
+    SERVED = "gemini-3.5-flash-lite"
 
     async def generate_general_answer(self, topic: GeneralTopic, original_question: str):
         record_llm_call(
@@ -70,7 +70,7 @@ class _FailingLLMProvider(FakeLLMProvider):
     async def generate_general_answer(self, topic: GeneralTopic, original_question: str):
         record_llm_call(
             operation="generate_general_answer",
-            attempted_models=["gemini-2.5-flash", "gemini-2.5-flash-lite"],
+            attempted_models=["gemini-3.5-flash", "gemini-3.5-flash-lite"],
             served_model=None,
         )
         raise AppError(
@@ -176,8 +176,8 @@ async def test_failure_inside_node_leaves_records_for_the_error_handler(
     metadata = get_llm_execution_metadata()
     assert metadata is not None, "실패한 턴의 시도 모델 목록이 사라졌다"
     assert metadata.calls[-1].attempted_models == [
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
     ]
     assert metadata.calls[-1].served_model is None
 
@@ -203,8 +203,8 @@ async def test_earlier_pipeline_node_records_reach_the_final_response(monkeypatc
     async def scoring_with_llm_call(*args, **kwargs):
         record_llm_call(
             operation="scoring_probe",
-            attempted_models=["gemini-2.5-flash"],
-            served_model="gemini-2.5-flash",
+            attempted_models=["gemini-3.5-flash"],
+            served_model="gemini-3.5-flash",
         )
         return await original(*args, **kwargs)
 
