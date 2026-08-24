@@ -3,7 +3,7 @@
 역할: `_thinking_config_for()`가 0을 `thinking_level=MINIMAL`로 바꿔 보내게 된 뒤
 (2026-08-18), `_resolve_thinking_budget()`에 남아 있던 `_REJECTS_ZERO_THINKING_BUDGET`
 방어가 fast 모델(gemini-3.5-flash-lite)에서 그 최적화를 무효화하고 있었다. 방어를
-지우는 것이 (a) 400을 유발하지 않고 (b) 실제로 더 빠른지를 확인한 스크립트다(D-075).
+지우는 것이 (a) 400을 유발하지 않고 (b) 실제로 더 빠른지를 확인한 스크립트다(D-076).
 
 `--probe`는 각 모델에 세 가지 설정을 직접 보내 무엇이 400을 내는지 가른다.
 옵션 없이 돌리면 실제 `classify_intent()`를 방어 켠/끈 상태로 **번갈아** 호출해

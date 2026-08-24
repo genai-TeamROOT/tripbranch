@@ -117,7 +117,7 @@ _MODEL_BUDGET_OVERRIDES: dict[tuple[str, str], int] = {
 # 참고로 이 변경의 목적은 속도가 아니다. gemini-3.5-flash-lite는 thinking 기본값이
 # 이미 가벼워서 MINIMAL을 걸어도 지연이 같다(classify_intent 15회 중앙값
 # 958ms → 949ms, -0.9%). 목적은 "기본 thinking이 무거운 모델로 바꾸는 순간 최적화가
-# 조용히 사라지는" 구조를 없애는 것이다. 상세는 D-075와
+# 조용히 사라지는" 구조를 없애는 것이다. 상세는 D-076와
 # scripts/measure_fast_thinking_level.py.
 _REJECTS_ZERO_THINKING_BUDGET = frozenset(
     {

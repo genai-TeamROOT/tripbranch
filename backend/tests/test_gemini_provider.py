@@ -404,7 +404,7 @@ async def test_classify_and_schedule_route_to_their_respective_model_groups() ->
 
     두 모델 모두 thinking_budget=0 요청이 thinking_level=MINIMAL로 변환되어 실린다
     (_thinking_config_for() 참고). 예전에는 Flash-Lite만 thinking_config를 생략했는데,
-    그 예외 때문에 fast 경로의 thinking 끄기가 무효화돼 있었다 — D-075에서 제거했다.
+    그 예외 때문에 fast 경로의 thinking 끄기가 무효화돼 있었다 — D-076에서 제거했다.
     """
     provider = RealGeminiProvider(
         api_key="dummy",
@@ -451,7 +451,7 @@ async def test_classify_and_schedule_route_to_their_respective_model_groups() ->
         await provider.generate_schedule_plan(request)
 
     assert [model for model, _ in calls] == ["gemini-3.5-flash-lite", "generation-model"]
-    # 두 모델 모두 MINIMAL이 실린다. Flash-Lite만 생략하던 예외는 없다(D-075).
+    # 두 모델 모두 MINIMAL이 실린다. Flash-Lite만 생략하던 예외는 없다(D-076).
     for model, thinking_config in calls:
         assert thinking_config is not None, f"{model}에 thinking_config가 안 실렸다"
         assert thinking_config.thinking_level == genai_types.ThinkingLevel.MINIMAL
@@ -733,7 +733,7 @@ async def test_zero_budget_is_never_sent_as_a_number() -> None:
 
     예전에는 그 모델 목록(`_REJECTS_ZERO_THINKING_BUDGET`)을 두고 0을 아예 안
     싣는 방식으로 막았는데, 그러면 "thinking 끄기"가 그 모델에서 조용히 사라진다.
-    실제로 fast 모델이 gemini-3.5-flash-lite로 바뀐 뒤 그 일이 일어났다(D-075 —
+    실제로 fast 모델이 gemini-3.5-flash-lite로 바뀐 뒤 그 일이 일어났다(D-076 —
     이 모델에서는 지연 차이가 없었지만, 기본 thinking이 무거운 모델로 바뀌면
     같은 분기가 최적화를 삼킨다). 지금은 0을 MINIMAL로 바꿔 보내므로 400이 날
     이유가 없고 목록도 필요 없다 — 대신 "0이 숫자로 새어 나가지 않는다"를
