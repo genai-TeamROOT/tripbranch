@@ -4,9 +4,10 @@
 
 | 항목 | 값 |
 |------|-----|
-| 버전 | v1.1 |
-| 상태 | **이관 완료(2026-08-24)** — 0단계 스파이크(§9.6), 1단계 GENERAL(§9.7), 2단계 조기 반환 전체, 3단계 파이프라인(§9.8). 4단계는 전제가 틀려 하지 않는다(§9.9). §1~§5는 "처음부터 설계했다면 맞는가"에 대한 결론, §6~§11은 이관 계획·사용법·규모·브랜치 전략 |
-| 작성일 | 2026-08-22 (최종 수정 2026-08-23) |
+| 버전 | v1.2 |
+| 상태 | **이관 완료·검증 통과(2026-08-24)** — 0단계 스파이크(§9.6), 1단계 GENERAL(§9.7), 2단계 조기 반환 전체, 3단계 파이프라인(§9.8). 4단계는 전제가 틀려 하지 않는다(§9.9). §10.3 병합 판정 기준 6개 전부 통과(§9.10 회귀 비교·§9.11 되묻기 재진입·§9.12 지연 측정). §1~§5는 "처음부터 설계했다면 맞는가"에 대한 결론, §6~§11은 이관 계획·사용법·규모·브랜치 전략 |
+| 작성일 | 2026-08-22 (최종 수정 2026-08-24) |
+| 관련 결정 | D-072 (`docs/decision-log.md`) |
 | 작업 브랜치 | `feature/langgraph-spike` (`feature/llm-interpret`에서 분기, 로컬 전용 — §10) |
 | 관련 코드 | `backend/app/services/runtime/agent_runtime.py`(`run_agent_flow()`), `backend/app/state/store.py`(`StateStore`), `backend/app/state/schema.py`(`AgentState`), `backend/app/providers/gemini.py`(`classify_intent()`) |
 | 관련 문서 | `docs/roadmap.md` 12·16번, `docs/design/agent-runtime-contract.md`, `docs/design/clarification-options.md`, `backend/docs/package-b/agent-state-contract-v1.md` |
@@ -52,7 +53,7 @@ app/services/runtime/agent_runtime.py
 | 강의 개념 (61강·91강) | 우리 프로젝트의 대응물 | 비고 |
 |---|---|---|
 | **State**(서류철, TypedDict) | `AgentState`(Pydantic, `app/state/schema.py`) | 구조는 같고, 우리는 검증까지 얹음 |
-| **Checkpointer + thread_id** | `StateStore` Protocol + `session_id`, `STATE_STORE_BACKEND=memory\|supabase` | `MemorySaver`↔메모리 백엔드, `SqliteSaver`↔Supabase 백엔드와 정확히 대응 |
+| **Checkpointer + thread_id** | ~~`StateStore` Protocol + `session_id`~~ **대응물 없음** | v1.0은 정확히 대응한다고 봤으나 **틀렸다(§7.4·§9.9)** — 우리 그래프는 한 턴에 끝나서 보관함이 필요 없고, `StateStore`는 도메인 데이터 저장소라 역할이 다르다 |
 | **분류 노드 → 조건부 엣지** | `classify_intent()` → `run_agent_flow()` 내부 if/elif | 저장소에 명시적 그래프가 없을 뿐, 흐름 자체는 "분류 후 결정적 분기"로 이미 설계됨 |
 | **에스컬레이션/fallback**(확신도 낮으면 사람에게) | `needs_clarification` + `location_required`/`no_data_closed` 되묻기 버튼 | 조건부 엣지를 코드로 흉내 낸 것과 같은 역할 |
 | **90강 vs 91강 — 결정권이 누구에게 있나** | 우리는 이미 "명시적 그래프" 편에 서 있음 — LLM이 도구를 즉석 선택하는 `create_agent`형이 아니라, 코드가 라우팅을 못 박음(`agent_runtime.py`의 if/elif 자체가 그 역할) | 이 판단 자체는 이미 옳게 했다는 뜻 — 다만 그 판단을 표현하는 도구가 없었을 뿐 |
@@ -90,8 +91,11 @@ START → [classify_intent] 노드
 
 - **State**: 지금의 `AgentState`를 거의 그대로 `TypedDict`/Pydantic으로 옮기면 됨
   (이미 구조가 맞음)
-- **checkpointer**: `STATE_STORE_BACKEND=supabase`가 그대로 커스텀
-  `BaseCheckpointSaver` 구현이 됨 — 이미 Protocol로 분리해둔 설계가 그대로 재사용 가능
+- ~~**checkpointer**: `STATE_STORE_BACKEND=supabase`가 그대로 커스텀
+  `BaseCheckpointSaver` 구현이 됨 — 이미 Protocol로 분리해둔 설계가 그대로 재사용 가능~~
+  → **이 대응은 틀렸다(2026-08-24 실측으로 확인). 취소선으로 남긴다 — 왜 틀렸는지는
+  §9.9 참고.** 요약하면 `StateStore`는 도메인 데이터를 담는 저장소이고 checkpointer는
+  그래프를 중간에서 재개하기 위한 스냅샷이라, 이름만 닮았을 뿐 하는 일이 다르다
 - **되묻기 버튼**: `location_required`/`no_data_closed` 각각이 91-4의 `escalate` 노드
   패턴과 동일 — 확신도 대신 "필드 누락"이 라우팅 조건이 되는 변형
 
@@ -264,31 +268,45 @@ graph.add_conditional_edges(
 )
 ```
 
-### 7.4 Checkpointer — `session_id`가 곧 `thread_id`
+### 7.4 Checkpointer — 우리는 쓰지 않는다
 
-강의는 `MemorySaver`로 시작해 운영에선 DB 보관함으로 바꾸라고 한다(91-2). 우리는
-그 두 단계를 이미 `STATE_STORE_BACKEND`로 구현해뒀다.
+> **이 절은 2026-08-24에 결론이 뒤집혔다.** v1.0은 "`session_id`가 곧 `thread_id`이고
+> `StateStore`가 곧 `BaseCheckpointSaver`"라고 적었으나, 실제로 붙여 보니 **틀렸다.**
+> 실측 근거는 §9.9에 있다. 아래는 뒤집힌 뒤의 내용이며, 옛 대응표를 따라 하면 안 된다.
+
+강의는 `MemorySaver`로 시작해 운영에선 DB 보관함으로 바꾸라고 한다(91-2). 그 조언이
+전제하는 것은 **"그래프가 턴 중간에 멈췄다가 나중에 이어서 돈다"**는 상황이다.
+
+**우리 그래프는 한 턴 안에서 시작하고 끝난다.** 요청이 들어오면 돌고, 응답을 내면
+끝난다. 이어서 돌 지점이 없으니 보관함이 할 일이 없다. 그래서 두 그래프 모두
+인자 없이 컴파일한다.
 
 ```python
-from langgraph.checkpoint.memory import MemorySaver
+# 우리 방식 — checkpointer 없음
+app = graph.compile()
 
-app = graph.compile(checkpointer=MemorySaver())
-
-# 우리 session_id를 그대로 thread_id로 쓴다
-config = {"configurable": {"thread_id": session_id}}
-await app.ainvoke({"messages": [("user", user_input)]}, config=config)
+# 한 턴에 필요한 값은 전부 입력으로 넣는다. thread_id도 쓰지 않는다.
+await app.ainvoke({"llm_output": llm_output, "answer": None}, config=config)
 ```
 
-운영 전환 시에는 `MemorySaver` 대신 Supabase를 쓰는 `BaseCheckpointSaver` 구현을
-넣는다 — 지금 `StateStore` Protocol이 하는 역할과 정확히 같아서, 이미 분리해둔
-인터페이스가 그대로 재사용된다.
+붙였다가 뗀 이유는 두 가지다(자세한 실측은 §9.9).
 
-| 지금 | LangGraph |
-|---|---|
-| `session_id` | `thread_id` |
-| `STATE_STORE_BACKEND=memory` | `MemorySaver` |
-| `STATE_STORE_BACKEND=supabase` | 커스텀 `BaseCheckpointSaver` |
-| `StateStore` Protocol | `BaseCheckpointSaver` 추상 클래스 |
+1. **이전 턴 값이 새 턴에 새어 들어온다** — 같은 `thread_id`로 다시 부르면 입력에
+   안 넣은 칸이 지난 턴 값으로 남는다
+2. **메모리가 계속 쌓인다** — 세션 6개에 체크포인트 21건이 남고 줄지 않는다
+
+실수로 다시 붙는 것은 `test_graphs_have_no_checkpointer`가 막는다.
+
+**그럼 턴 사이 상태는 누가 관리하나** — `StateStore`(Package B)다. 이건 checkpointer의
+대체재가 아니라 **다른 층의 물건**이다.
+
+| | `StateStore` (우리 것) | LangGraph checkpointer |
+|---|---|---|
+| 담는 것 | 조건·추천이력·Trace·피드백 | 그래프 실행 중간 상태 |
+| 목적 | 도메인 데이터 영속 | 중단 지점에서 재개 |
+| 계약 | B의 `agent-state-contract-v1.md` | 프레임워크 내부 |
+| 키 | `session_id` | `thread_id` |
+| 지금 상태 | 씀 | **안 씀** |
 
 ### 7.5 그래프 조립
 
@@ -310,7 +328,7 @@ for node in ("recommend", "info", "compare", "schedule",
     graph.add_edge(node, "respond")
 graph.add_edge("respond", END)
 
-app = graph.compile(checkpointer=checkpointer)
+app = graph.compile()  # checkpointer는 달지 않는다 — §7.4
 ```
 
 ---
@@ -414,6 +432,36 @@ backend/app/services/runtime/
 | `backend/pyproject.toml` | `langgraph` 의존성 추가 |
 | `app/routes/chat.py` · `agent.py` | **가급적 무변경** — 시그니처 유지가 목표 |
 
+**실제로 만들어진 구조 (2026-08-24)** — 위는 2026-08-22의 예상이고, 이관을 끝낸
+지금 모습은 이렇다. 인텐트별 노드 9개 대신 **파이프라인 단계별 노드 4개 + 답변
+노드 2개**가 됐다. 인텐트 분기 40개가 전부 조기 반환 앞에 몰려 있어서, 그 뒤는
+"인텐트별로 갈라지는 흐름"이 아니라 순차 파이프라인이었기 때문이다(§9.8).
+
+```
+backend/app/services/runtime/
+├── agent_runtime.py          2,526줄 → 2,700줄(전체) / run_agent_flow()는 1,227 → 640줄
+├── stream_events.py          ★ 신규 99줄 — SSE 유틸을 떼어냄(순환 import 차단용)
+└── graph/                    ★ 신규
+    ├── __init__.py           181줄  그래프 2개 조립·진입 함수
+    ├── state.py               31줄  EarlyReturnState
+    ├── pipeline_state.py      55줄  RecommendPipelineState
+    ├── routing.py             68줄  조건부 엣지 3개
+    ├── sink.py                81줄  config에서 sink·llm·deps 꺼내기
+    └── nodes/
+        ├── general.py         50줄  스트리밍 답변
+        ├── static_answer.py   29줄  한 번에 만드는 답변
+        └── pipeline.py       157줄  tool_fetch·scoring·schedule·finalize
+```
+
+예상과 다른 점 셋:
+
+- **`checkpointer.py`를 안 만들었다** — 4단계 자체를 하지 않기로 했다(§9.9)
+- **`classify.py`가 없다** — 분류는 그래프 밖(`run_agent_flow()`)에 남겼다. 조건
+  병합까지가 B 계약 영역이라 그래프로 끌어들이면 소유권이 흐려진다
+- **`stream_events.py`가 예상에 없었다** — `graph/`가 `agent_runtime.py`의 sink 타입을
+  필요로 하는데 반대 방향 import도 있어 순환이 생겼다. 먼저 순수 리팩터링으로
+  떼어내고 그 위에 그래프를 얹었다
+
 ### 9.4 가장 큰 위험 — SSE 스트리밍 (30군데)
 
 `run_agent_flow()`는 `StreamEventSink`를 인자로 받아 흐름 곳곳에서 진행 상태와
@@ -487,8 +535,11 @@ SSE 계약(`progress`/`message_start`/`message_delta`/`done`)과 다르다. 두 
   LangGraph가 주입한다(`dict`로 적으면 `TypeError: missing 1 required positional
   argument`). 1.2.x의 `_runnable.py`가 어노테이션으로 판별한다.
 - **`MemorySaver` 멀티턴**: 같은 `thread_id`로 2턴 호출 시 `add_messages` 리듀서가
-  대화를 4건으로 누적하는 것을 확인했다(human/ai × 2). 우리 `session_id`를
-  `thread_id`로 그대로 쓰면 된다는 §7.4 서술이 실제로 성립한다.
+  대화를 4건으로 누적하는 것을 확인했다(human/ai × 2). ~~우리 `session_id`를
+  `thread_id`로 그대로 쓰면 된다는 §7.4 서술이 실제로 성립한다.~~
+  → **여기서 내린 결론은 이후 뒤집혔다(§9.9).** "동작한다"는 확인했지만 "우리에게
+  필요하다"까지 확인한 게 아니었다. 실제로는 이득 없이 이전 턴 값 유출과 메모리
+  증가만 남아 떼어냈다.
 
 **의존성 정정**: `langgraph`를 설치하면 `langchain-core`가 함께 딸려온다
 (1.2.11 기준 `langchain-core 1.6.0`, `langgraph-checkpoint`, `langgraph-sdk` 등).
@@ -620,6 +671,105 @@ START → [tool_fetch] → ◇중간에 끝나는가
 별개로** 그래프 재개용 보관함을 새로 설계해야 한다. 지금 그 기능은 되묻기 코드
 (`clarification_choice`)가 이미 다른 방식으로 해결하고 있다.
 
+### 9.10 이관 검증 결과 (2026-08-24)
+
+이관은 **출력이 같아야 하는 작업**이므로(§6.2), "그래프가 동작한다"가 아니라
+**"그래프를 켜도 기존과 결과가 같다"**를 확인했다.
+
+**방법** — 같은 발화를 기능 플래그 끈 상태(기존 경로)와 켠 상태(그래프 경로)로 각각
+돌려, ① 최종 `AgentResponse` JSON 전체 ② SSE 이벤트 이름 순서 두 가지를 비교했다.
+세션 ID·`request_id`·타임스탬프·소요시간처럼 실행마다 달라지는 값은 제외했다.
+
+| 케이스 | Fake Provider | 실제 Provider |
+|---|---|---|
+| GENERAL (정체성 / 지식) | 동일 | 동일 |
+| OUT_OF_SCOPE (무관 / 주입 / 유해) | 동일 ×3 | 동일 ×3 |
+| INFO (운영시간 / 혼잡) | 동일 | 동일 |
+| RECOMMEND | 동일 | 동일 |
+| SCHEDULE | 동일 | API 잡음(아래) |
+| MODIFY (전체거절 / 조건변경) | 동일 | 동일 |
+| COMPARE | 미도달(아래) | 동일 |
+| 되묻기(위치 없음) | 동일 | API 잡음(아래) |
+
+SSE 순서도 전부 일치했다. 예를 들어 RECOMMEND는 양쪽 다
+`progress ×5 → message_start → message_delta → result`였다.
+
+**"API 잡음"으로 판정한 근거** — 실제 Provider에서 2건이 달랐는데, **그래프를 켜지
+않고 기존 경로만 두 번** 돌려도 정확히 같은 2건에서 같은 종류의 차이가 났다. 네이버
+지역검색이 호출마다 다른 장소를 돌려주는 것이지 이관 회귀가 아니다.
+
+**Fake에서 COMPARE를 못 태운 이유** — COMPARE는 앞 턴에 노출된 장소가 2곳 이상이어야
+분류되는데, Fake 장소 저장소는 어떤 질의로도 후보를 0건 반환한다. 이 브랜치가 만든
+문제가 아니라 원래 있던 fixture 한계이며, Fake는 "터지지 않는지"만 보는 용도이므로
+인텐트를 늘릴 때마다 손보지 않기로 했다.
+
+**곁가지로 드러난 것 2건**(LangGraph와 무관, 기존 문제):
+
+1. `.env`가 `PLACE_PROVIDER=real` 등 개별 키를 지정해서 **`PROVIDER_MODE=fake`가
+   무력화된다.** fake로 돌리는 줄 알고 실제 API를 태우기 쉽다
+2. `settings.fake_current_datetime`이 **정의만 있고 참조가 0건**이다
+   ([config.py](../../backend/app/config.py) `fake_current_datetime`). 주석은
+   "`app/core/clock.py`에서 사용"이라 되어 있으나 그런 모듈이 없다
+
+### 9.11 되묻기 재진입 검증 (2026-08-24)
+
+되묻기 해소는 사용자가 버튼을 눌러 보내는 **두 번째 요청**이라 발화 목록만으로는
+재현되지 않는다. 프론트가 보내는 형태를 그대로 흉내 냈다 — 버튼 라벨을
+`user_input`으로, 버튼 id를 `clarification_choice`로 함께 보낸다
+([DeveloperChatPage.tsx](../../frontend/src/pages/DeveloperChatPage.tsx)
+`requestSend(label, optionId)`).
+
+실사용에서 나온 순서를 그대로 재생해 플래그 ON/OFF로 비교했다.
+
+| 단계 | 결과 |
+|---|---|
+| 1. `경복궁 근처로 일정 짜줘` | 동일 |
+| 2. **[버튼] 다른 종류의 장소도 포함해서 찾기** (`schedule_relax_category`) | 동일 |
+| 3. `경복궁 근처 카페 추천해줘` | 동일 |
+| 4. `다른 곳 보여줘` | 동일 |
+| 5. `다른 곳 보여줘`(재차) | 동일 |
+
+응답 JSON 전체와 SSE 이벤트 순서 모두 5단계 전부 일치했다.
+
+**함께 확인한 것 — "조건에 맞는 곳이 없다"는 이관 탓이 아니다.** 실사용 중
+일정·추천이 0건으로 끝나는 경우가 있어 원인을 봤다. Tool은 장소를 정상적으로
+찾아왔고(`places: item_count=7`), 09:44 시점에 그 7곳이 전부 운영시간 하드 필터에
+걸린 것이었다(주변 식당·카페 대부분이 10~11시 개점). 일정은 `time_available`에 맞는
+최소 개수를 못 채우면 LLM을 부르지 않고 실패로 끝낸다([planner.py](../../backend/app/schedule/planner.py)
+`len(request.candidates) < min_items`). 같은 요청을 운영시간 필터만 끄고 돌리면
+일정 3개가 정상으로 나온다. 스코어링·필터·Tool·Provider는 이 브랜치에서 **변경 0줄**이다.
+
+### 9.12 응답 지연 측정 (2026-08-24)
+
+ON/OFF를 **번갈아** 12회씩 돌려 중앙값을 비교했다(한쪽을 몰아 돌리면 캐시 워밍이
+한쪽에만 유리하다). 평균 대신 중앙값을 쓴 것은 첫 실행이 항상 느리기 때문이다.
+
+**Fake Provider — 그래프가 씌운 순수 오버헤드**
+
+| 경로 | 기존 | 그래프 | 차이 |
+|---|---|---|---|
+| GENERAL(조기 반환·스트리밍) | 3.4ms | 4.1ms | +0.7ms |
+| OUT_OF_SCOPE(조기 반환·단발) | 3.2ms | 4.1ms | +0.8ms |
+| RECOMMEND(파이프라인) | 4.1ms | 5.2ms | +1.1ms |
+| SCHEDULE(파이프라인+일정) | 4.2ms | 5.2ms | +0.9ms |
+
+**실제 Provider — 실사용에 가까운 조건**
+
+| 경로 | 기존 | 그래프 | 차이 |
+|---|---|---|---|
+| GENERAL | 3.4ms | 4.1ms | +0.7ms |
+| OUT_OF_SCOPE | 3.4ms | 4.0ms | +0.6ms |
+| RECOMMEND | 428.0ms | 438.7ms | +10.7ms (+2.5%) |
+| SCHEDULE | 425.9ms | 422.0ms | **−4.0ms** (−0.9%) |
+
+**판정: 통과.** 그래프가 더한 것은 **호출당 약 1ms 고정 비용**이다. 퍼센트가 20%대로
+보이는 케이스는 기준이 3~4ms라서 그런 것이고, 외부 호출이 붙는 순간(400ms+) 잡음에
+묻힌다 — 실제로 SCHEDULE은 그래프 쪽이 오히려 빨랐다. 실 LLM이 붙으면 응답이 초
+단위이므로 1ms는 체감되지 않는다.
+
+측정 조건: LLM은 결정적 비교를 위해 fake. 따라서 위 수치에는 LLM 호출 시간이 빠져
+있고, **그래프 오버헤드만** 분리해 본 값이다.
+
 ---
 
 ## 10. 브랜치 전략 — 별도 브랜치가 맞다
@@ -663,15 +813,48 @@ develop
 
 ### 10.3 병합 판정 기준 (이걸 통과 못 하면 브랜치를 버린다)
 
-1. `pytest` 2,316건 전부 통과 — 스킵으로 넘기지 않는다
-2. `ruff check .` 클린
-3. **SSE 계약 무변경** — 프론트 코드를 한 줄도 안 고치고 `/dev-chat`이 그대로 동작
-4. 7개 인텐트 각각 실제 발화로 응답이 이관 전과 동일(스냅샷 비교)
-5. 되묻기 재진입(`location_required` → 버튼 클릭 → 재요청)이 정상 동작
-6. 응답 지연이 이관 전 대비 유의미하게 나빠지지 않음
+| # | 기준 | 결과 (2026-08-24) |
+|---|---|---|
+| 1 | `pytest` 전부 통과 — 스킵으로 넘기지 않는다 | ✅ **2,311 passed / 24 skipped** (기준선 2,293 + 그래프 테스트 18건). 착수 시 적었던 "2,316"은 어림값이었다 |
+| 2 | `ruff check .` 클린 | ✅ |
+| 3 | **SSE 계약 무변경** — 프론트 한 줄도 안 고치고 `/dev-chat` 동작 | ✅ 프론트 변경 **0줄**(§10.5 파일 목록), SSE 순서 일치 확인(§9.10) |
+| 4 | 7개 인텐트 각각 응답이 이관 전과 동일 | ✅ 13개 케이스 차등 비교(§9.10) |
+| 5 | 되묻기 재진입(버튼 클릭 → 재요청) 정상 동작 | ✅ 5단계 시나리오 차등 비교, 차이 0건(§9.11) |
+| 6 | 응답 지연이 유의미하게 나빠지지 않음 | ✅ 고정 오버헤드 약 1ms(§9.12) |
 
 3번이 특히 중요하다. **프론트를 고쳐야 한다면 그건 "내부 구조 개선"이 아니라
 "계약 변경"이므로, 범위를 다시 잡아야 한다는 신호다.**
+
+5번이 자동 비교에서 빠진 이유는 구조적이다. 되묻기 해소는 사용자가 버튼을 눌러
+`clarification_choice`를 실어 보내는 **두 번째 요청**이라, 발화 목록만으로는 재현할 수
+없다. 확인할 되묻기는 `location_required`·`no_data_closed`·`no_data_empty`·
+`no_data_exhausted` 네 종류다.
+
+### 10.5 이 브랜치가 건드린 파일 (2026-08-24)
+
+`feature/llm-interpret` 대비 **17개 파일, +1,823 / −290줄**. 그중 프론트엔드는 0개다.
+
+| 구분 | 파일 |
+|---|---|
+| 신규 (그래프) | `graph/` 8개 파일, `stream_events.py` |
+| 신규 (테스트) | `tests/graph/` 3개 파일 |
+| 수정 | `agent_runtime.py`(+720/−290), `config.py`(플래그 2개), `pyproject.toml`(`langgraph>=1.2`) |
+| 문서 | `docs/design/langgraph-adoption.md` |
+| **프론트엔드** | **없음** |
+
+**팀 병합 시 주의** — `langgraph`가 새 의존성이라 각자 재설치해야 한다. 특히
+`npm run dev`는 `scripts/dev.mjs`가 PATH의 `python`을 그대로 쓰므로, 가상환경이 아닌
+곳에 의존성이 깔려 있으면 그쪽에도 설치해야 백엔드가 뜬다.
+
+### 10.6 기능 플래그를 언제 지울 것인가
+
+`use_langgraph_early_return` / `use_langgraph_pipeline` 두 플래그는 기본값 `True`이고,
+`False`로 두면 기존 경로가 그대로 돈다. 지금은 **롤백 스위치로 남겨둔다** — 실사용에서
+문제가 안 나는 것을 한동안 지켜본 뒤 지운다.
+
+비용은 명확하다. 플래그가 있는 동안은 **같은 일을 하는 코드가 두 벌** 남는다(기존
+경로가 살아 있어야 `False`가 의미를 가지므로). 그래서 영구히 두지 않는다. 지울 때는
+플래그 분기와 함께 `agent_runtime.py`의 기존 경로 호출부도 같이 걷어낸다.
 
 ### 10.4 착수 순서 요약
 
