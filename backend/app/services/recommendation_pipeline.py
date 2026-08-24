@@ -507,6 +507,16 @@ async def rerank_with_concentration(
             travel_distance_m=item.travel_distance_m,
             travel_duration_seconds=item.travel_duration_seconds,
             travel_mode=item.travel_mode,
+            # 취향 근거 원문도 같은 이유로 이월한다. 위 도보 3필드와 **똑같은
+            # 사고를 한 번 더 냈다**(2026-08-24 발견) — 응답 필드
+            # `taste_evidence`는 아래에서 이월하고 있었는데 이 candidate에는 안
+            # 넘겨서, 혼잡도 재순위를 탄 요청만 근거 문장이 인용문 대신 폴백
+            # 문구("말씀하신 분위기와 잘 맞는 곳이에요.")로 떨어졌다.
+            # 1차는 유사도 1위 조각을 쓰므로(scoring._taste_evidence_text),
+            # 유사도 내림차순으로 실려 온 첫 인용문이 같은 값이다.
+            taste_evidence_text=(
+                item.taste_evidence[0].text if item.taste_evidence else None
+            ),
             concentration_level=concentration_level,
         )
         # feature_order를 넘기지 않는다 — build_evidence()가 feature_scores의 키로
@@ -561,6 +571,11 @@ async def rerank_with_concentration(
         # 하드 필터를 다시 태우지 않는다 — 1차가 걸러낸 폐점 후보 id는 그대로다.
         excluded_all_closed=response.excluded_all_closed,
         excluded_closed_place_ids=response.excluded_closed_place_ids,
+        # 전환 제안도 1차 값을 그대로 이월한다. 재순위는 순위만 바꾸고 기준점
+        # 판정(resolve_travel_origin_toggle)의 입력은 건드리지 않으므로 1차와
+        # 같은 결론이다. 안 넘기면 혼잡도 재순위를 탄 요청만 "OO 기준으로 다시
+        # 보기" 버튼을 잃는다(2026-08-24 발견, 위 taste_evidence_text와 같은 유형).
+        travel_origin_toggle=response.travel_origin_toggle,
     )
 
 
