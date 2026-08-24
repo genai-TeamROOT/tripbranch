@@ -226,6 +226,11 @@ export function AgentRuntimeDebugPanel() {
                   <div className="font-mono">
                     weights_used: {JSON.stringify(item.weights_used)}
                   </div>
+                  {item.taste_evidence.length > 0 && (
+                    <div className="font-mono">
+                      taste_evidence: {JSON.stringify(item.taste_evidence)}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
