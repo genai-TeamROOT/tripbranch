@@ -68,7 +68,12 @@ python -m pip install -e ".[dev]"
 | `HOLIDAY_PROVIDER` | 빈 값 | Holiday 개별 Override |
 | `LLM_PROVIDER` | 빈 값 | Fake/Real LLM 개별 Override |
 | `PLACE_DETAILS_SOURCE` | `tour_api` | 장소 상세·운영정보 출처 (`supabase`/`tour_api`) |
-| `LLM_MODEL_NAME` | `gemini-2.5-flash` | Real Gemini 모델명 |
+| `LLM_FAST_MODEL_NAME` | `gemini-3.5-flash-lite` | 짧은 구조화 판단(분류·조건 추출)용 1순위 모델 |
+| `LLM_FAST_FALLBACK_MODEL_NAMES` | `gemini-3.5-flash` | 위 모델 실패 시 폴백(콤마 구분) |
+| `LLM_GENERATION_MODEL_NAME` | `gemini-3.5-flash` | 사용자 문장·일정 생성용 1순위 모델 |
+| `LLM_GENERATION_FALLBACK_MODEL_NAMES` | `gemini-3.5-flash-lite` | 위 모델 실패 시 폴백(콤마 구분) |
+| `GEMINI_AUDIO_MODEL_NAME` | 빈 값 | 음성→텍스트 전용 모델. 비우면 `LLM_FAST_MODEL_NAME`을 쓴다 |
+| ~~`LLM_MODEL_NAME`~~ / ~~`LLM_FALLBACK_MODEL_NAMES`~~ | — | **폐지됐다.** 남아 있으면 부팅에서 막는다(D-042) — 역할별 위 네 개로 대체 |
 | `NAVER_MAP_CLIENT_ID` | 빈 값 | Real Geocoding |
 | `NAVER_MAP_CLIENT_SECRET` | 빈 값 | Real Geocoding |
 | `NAVER_LOCAL_SEARCH_CLIENT_ID` | 빈 값 | Real Naver Local Search API Key ID |
