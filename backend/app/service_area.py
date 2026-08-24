@@ -55,6 +55,12 @@ SUPPORTED_DISTRICTS: tuple[ServiceDistrict, ...] = (
     ServiceDistrict("200", "성동구"),
 )
 
+# 좌표 판정(폴리곤)과 장소 검색(TourAPI 응답의 lDongSignguCd)이 같은 목록을 봐야
+# 한 쪽만 늘어나는 일이 없다. 검색 쪽은 이 집합으로 응답을 거른다(D-025).
+SUPPORTED_DISTRICT_CODES: frozenset[str] = frozenset(
+    district.district_code for district in SUPPORTED_DISTRICTS
+)
+
 
 def _to_polygons(geometry: Mapping[str, object]) -> tuple[_Polygon, ...]:
     """(폴리곤, 링, 좌표) 3단 튜플. 각 폴리곤의 첫 링이 외곽선이고 나머지는 구멍이다."""
@@ -147,4 +153,9 @@ def is_within_service_area(latitude: float, longitude: float) -> bool:
     return False
 
 
-__all__ = ["SUPPORTED_DISTRICTS", "ServiceDistrict", "is_within_service_area"]
+__all__ = [
+    "SUPPORTED_DISTRICTS",
+    "SUPPORTED_DISTRICT_CODES",
+    "ServiceDistrict",
+    "is_within_service_area",
+]

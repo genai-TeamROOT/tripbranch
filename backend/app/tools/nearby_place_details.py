@@ -13,7 +13,6 @@ from app.errors import AppError
 from app.place_search_policy import (
     DEFAULT_PLACE_SEARCH_RADIUS_KM,
     MAX_PLACE_SEARCH_RADIUS_KM,
-    PLACE_SEARCH_LDONG_DISTRICT_CODE,
     PLACE_SEARCH_LDONG_REGION_CODE,
 )
 from app.providers.contracts import ProviderMetadata
@@ -49,7 +48,10 @@ class NearbyPlaceDetailsQuery:
     longitude: float
     search_radius_km: float = DEFAULT_PLACE_SEARCH_RADIUS_KM
     region_code: str = PLACE_SEARCH_LDONG_REGION_CODE
-    district_code: str = PLACE_SEARCH_LDONG_DISTRICT_CODE
+    # 구는 요청에 싣지 않는다 — 지원 구 판정은 응답의 lDongSignguCd로 한다(D-025).
+    # 한 구로 좁히면 반경 안에 있는 옆 지원 구 후보가 잘리고, 구마다 호출하면
+    # 호출 수가 구 수만큼 늘어난다.
+    district_code: str | None = None
     limit: int = DEFAULT_RECOMMENDATION_CANDIDATE_LIMIT
     preferred_categories: tuple[str, ...] = ()
     category_filter: PlaceCategoryFilter | None = None

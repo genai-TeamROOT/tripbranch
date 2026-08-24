@@ -45,6 +45,7 @@ from app.providers.tour_intro_keys import (
 )
 from app.providers.upstream_errors import upstream_error_detail
 from app.schemas import PlaceCandidate
+from app.service_area import SUPPORTED_DISTRICT_CODES
 
 logger = logging.getLogger(__name__)
 
@@ -270,6 +271,9 @@ class RealPlaceProvider:
             raise ValueError("district_code 사용 시 region_code가 필요합니다.")
         if region_code:
             params["lDongRegnCd"] = region_code
+        # district_code를 요청에 실으면 그 구 밖의 후보가 반경 안에 있어도 잘린다.
+        # 지원 구가 여럿이면 구마다 호출해야 해서 호출 수가 구 수만큼 늘어난다.
+        # 그래서 요청은 시도까지만 좁히고, 지원 구 판정은 응답으로 한다(D-025).
         if district_code:
             params["lDongSignguCd"] = district_code
         if category_filter is not None:
@@ -287,7 +291,9 @@ class RealPlaceProvider:
                 }
             )
         payload = await self._request_json(_LOCATION_BASED_LIST_PATH, params)
-        candidates = map_tour_api_response(payload)
+        candidates = map_tour_api_response(
+            payload, allowed_district_codes=SUPPORTED_DISTRICT_CODES
+        )
         return provider_result(
             candidates,
             source=ProviderSource.TOUR_API_PLACE,
@@ -400,7 +406,9 @@ class RealPlaceProvider:
             params["lDongSignguCd"] = district_code
 
         payload = await self._request_json(_SEARCH_KEYWORD_PATH, params)
-        candidates = map_tour_api_response(payload)
+        candidates = map_tour_api_response(
+            payload, allowed_district_codes=SUPPORTED_DISTRICT_CODES
+        )
         return provider_result(
             candidates,
             source=ProviderSource.TOUR_API_PLACE,
