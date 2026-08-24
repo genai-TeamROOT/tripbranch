@@ -20,11 +20,11 @@ router = APIRouter(tags=["state"])
 async def get_state(
     session_id: str, principal: OptionalPrincipal
 ) -> state_service.SessionContextResponse:
-    return state_service.get_session_context(session_id)
+    return state_service.get_session_context(session_id, principal=principal)
 
 
 @router.delete("/state/{session_id}", response_model=state_service.DeleteSessionResponse)
 async def delete_state(
     session_id: str, principal: OptionalPrincipal
 ) -> state_service.DeleteSessionResponse:
-    return state_service.delete_session(session_id)
+    return state_service.delete_session(session_id, principal=principal)

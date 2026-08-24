@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 
 from app.auth.principal import Principal
 from app.state import history as history_module
+from app.state.errors import SessionOwnershipError
 from app.state.schema import AgentState, now_kst
 from app.state.store import StateStore
 
@@ -142,6 +143,24 @@ def attach_user_id(state: AgentState, principal: Principal | None) -> None:
     if state.user_id is not None:
         return
     state.user_id = principal.user_id
+
+
+def verify_ownership(state: AgentState, principal: Principal | None) -> None:
+    """이 세션이 요청을 보낸 신원의 것인지 대조한다. (D-063 결정 2 후속, D-073)
+
+    session_id만 알면 남의 세션에 접근할 수 있던 문제를 닫는다. principal이
+    없는 요청(토큰 미전송)은 지금은 정상 경로라 그대로 통과시킨다 — Phase 4
+    (인증 필수화) 전면 도입 전까지는 검증할 신원 자체가 없기 때문이다.
+    state.user_id가 비어 있는 세션(아직 아무도 신원을 붙이지 않은 경우)도
+    통과시킨다 — 이 경우는 attach_user_id()가 채우는 대상이지 거부 대상이
+    아니다. 값이 있는데 다른 경우만 거부한다.
+    """
+    if principal is None:
+        return
+    if state.user_id is None:
+        return
+    if state.user_id != principal.user_id:
+        raise SessionOwnershipError()
 
 
 def peek_session(store: StateStore, session_id: str | None) -> AgentState | None:

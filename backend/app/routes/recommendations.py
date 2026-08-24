@@ -38,7 +38,7 @@ async def recommendations(
     #    누적 제외(excluded)를 쓴다. 이번 실행에서 다시 보여주지 않을 전체 목록이다.
     exclude_ids = request.shown_place_ids
     if request.session_id:
-        context = state_service.get_session_context(request.session_id)
+        context = state_service.get_session_context(request.session_id, principal=principal)
         if context.session_exists:
             exclude_ids = context.excluded_place_ids
 

@@ -13,6 +13,7 @@ from datetime import timedelta
 import pytest
 
 from app.auth.principal import Principal
+from app.state.errors import SessionOwnershipError
 from app.state.history import record_recommended, record_rejected
 from app.state.schema import AgentState, RecommendedItemInput, now_kst
 from app.state.session import (
@@ -31,6 +32,7 @@ from app.state.session import (
     new_trace_id,
     peek_session,
     touch,
+    verify_ownership,
 )
 from app.state.store import InMemoryStateStore
 
@@ -215,6 +217,31 @@ class TestAttachUserId:
         attach_user_id(state, principal)
 
         assert state.user_id == "user-1"
+
+
+class TestVerifyOwnership:
+    """D-063 결정 2 후속(D-073) — session_id만으로 남의 세션에 접근하지 못하게 막는다."""
+
+    def test_principal이_없으면_통과한다(self):
+        state = AgentState(session_id="sess_A", user_id="user-1")
+        verify_ownership(state, None)  # 예외 없이 통과해야 한다
+
+    def test_user_id가_비어있으면_통과한다(self):
+        state = AgentState(session_id="sess_A")
+        principal = Principal(user_id="user-1", is_anonymous=True)
+        verify_ownership(state, principal)  # 예외 없이 통과해야 한다
+
+    def test_같은_user_id는_통과한다(self):
+        state = AgentState(session_id="sess_A", user_id="user-1")
+        principal = Principal(user_id="user-1", is_anonymous=True)
+        verify_ownership(state, principal)  # 예외 없이 통과해야 한다
+
+    def test_다른_user_id는_거부된다(self):
+        state = AgentState(session_id="sess_A", user_id="user-원래주인")
+        principal = Principal(user_id="user-다른사람", is_anonymous=True)
+
+        with pytest.raises(SessionOwnershipError):
+            verify_ownership(state, principal)
 
 
 class TestPeekSession:
