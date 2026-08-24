@@ -1291,7 +1291,9 @@ async def run_agent_flow(
         "요청 의도와 조건을 파악하고 있어요.",
     )
     valid_gps = _valid_location(request.device_location)
-    session_context = await ensure_current_context(request.session_id, valid_gps, store=store)
+    session_context = await ensure_current_context(
+        request.session_id, valid_gps, store=store, principal=principal
+    )
 
     # 2) A: LLMOutput 생성 (Intent 분류 + Intent별 조건 추출). B가 준 현재 조건(순수 문자열)을
     #    A 쪽 enum 타입으로 변환해서 넘긴다 — MODIFY 추출이 이 타입을 요구한다.

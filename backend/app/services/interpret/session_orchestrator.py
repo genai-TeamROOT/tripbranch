@@ -22,6 +22,7 @@ interpret.py 통합 작업(다음 세션)에서 연결한다.
 
 from __future__ import annotations
 
+from app.auth.principal import Principal
 from app.state.schema import now_kst
 from app.state.service import (
     SessionContextResponse,
@@ -37,10 +38,16 @@ async def ensure_current_context(
     device_location: str | None,
     *,
     store: StateStore | None = None,
+    principal: Principal | None = None,
 ) -> SessionContextResponse:
-    """GPS를 최신화한 SessionContextResponse를 반환한다."""
+    """GPS를 최신화한 SessionContextResponse를 반환한다.
 
-    context = get_session_context(session_id, store=store)
+    principal은 그대로 get_session_context()에 넘겨 소유권을 대조한다
+    (D-063 결정 2 후속, D-073) — 이 함수가 apply()보다 먼저 호출되는
+    경로(라우트의 1단계 컨텍스트 확보)라 여기서도 대조가 필요하다.
+    """
+
+    context = get_session_context(session_id, store=store, principal=principal)
 
     should_update_gps = (
         context.session_exists
@@ -56,7 +63,7 @@ async def ensure_current_context(
             ),
             store=store,
         )
-        context = get_session_context(context.session_id, store=store)
+        context = get_session_context(context.session_id, store=store, principal=principal)
 
     return context
 

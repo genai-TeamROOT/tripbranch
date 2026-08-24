@@ -393,6 +393,11 @@ def apply(
         store, request.session_id
     )
 
+    # 1-0) 소유권 대조 (D-063 결정 2 후속, D-073) — 신원 연결(1-1)보다 먼저
+    #      실행한다. 방금 생성된 세션(session_created=True)은 principal이
+    #      있으면 곧 1-1에서 그 신원이 채워질 값이라 항상 통과한다.
+    session_module.verify_ownership(state, principal)
+
     # 1-1) 신원 연결 (TP-101 3단계, D-063) — 세션 확보 직후, 두 저장 경로
     #      (아래 3번 confirmed=false 조기 반환 / 9번 본 경로) 모두보다 먼저
     #      실행해야 어느 쪽으로 빠지든 user_id가 함께 저장된다.
@@ -509,6 +514,7 @@ def _build_response(
 def get_session_context(
     session_id: str | None,
     store: StateStore | None = None,
+    principal: Principal | None = None,
 ) -> SessionContextResponse:
     """인텐트 분류에 필요한 정보를 조회한다. (계약 6.3절)
 
@@ -517,6 +523,10 @@ def get_session_context(
 
     세션이 없거나 만료된 경우에도 오류를 반환하지 않고
     session_exists: false로 응답하며, 세션을 새로 만들지 않는다.
+
+    principal이 주어지면 소유권을 대조한다(D-063 결정 2 후속, D-073) — 이
+    함수는 조건·이력·GPS까지 포함한 세션 전체를 노출하는 읽기 경로라, 쓰기
+    경로인 apply()와 별도로 여기서도 대조해야 한다.
     """
     store = store or get_store()
 
@@ -528,6 +538,8 @@ def get_session_context(
             has_recommendation=False,
             recommended_count=0,
         )
+
+    session_module.verify_ownership(state, principal)
 
     sid = state.session_id
     return SessionContextResponse(
@@ -620,14 +632,23 @@ def record_closed_exclusions(
 def delete_session(
     session_id: str,
     store: StateStore | None = None,
+    principal: Principal | None = None,
 ) -> DeleteSessionResponse:
     """세션 상태와 추천 이력을 삭제한다.
 
     세션이 없어도 오류를 내지 않고 deleted=False를 반환한다.
+
+    principal이 주어지면 삭제 전에 소유권을 대조한다(D-063 결정 2 후속,
+    D-073) — 조회보다 되돌릴 수 없는 파괴적 동작이라 반드시 같은 기준으로
+    막는다.
     """
     store = store or get_store()
 
-    existed = store.get_state(session_id) is not None or store.get_history(session_id) is not None
+    existing_state = store.get_state(session_id)
+    if existing_state is not None:
+        session_module.verify_ownership(existing_state, principal)
+
+    existed = existing_state is not None or store.get_history(session_id) is not None
     store.delete_state(session_id)
     store.delete_history(session_id)
     return DeleteSessionResponse(session_id=session_id, deleted=existed)

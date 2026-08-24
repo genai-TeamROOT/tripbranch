@@ -12,6 +12,7 @@ import pytest
 
 from app.auth.principal import Principal
 from app.state import service as svc
+from app.state.errors import SessionOwnershipError
 from app.state.schema import now_kst
 from app.state.store import InMemoryStateStore
 
@@ -261,18 +262,17 @@ class TestApplyUserId:
         assert store.get_state(r.session_id).user_id == "user-1"
 
     def test_이미_있는_user_id는_덮어쓰지_않는다(self, store):
-        first = apply(
-            store,
-            session_id=None,
-            operations=[],
-            principal=Principal(user_id="user-원래주인", is_anonymous=True),
-        )
+        principal = Principal(user_id="user-원래주인", is_anonymous=True)
+        first = apply(store, session_id=None, operations=[], principal=principal)
 
+        # 같은 사람이 다시 요청해도(예: is_anonymous만 바뀌는 정식 로그인 전환)
+        # user_id는 그대로 유지된다 — 소유권 대조(D-073)를 통과한 뒤의 attach_user_id
+        # 동작만 확인한다. 다른 사람의 거부는 TestSessionOwnership에서 검증한다.
         apply(
             store,
             session_id=first.session_id,
             operations=[],
-            principal=Principal(user_id="user-다른사람", is_anonymous=True),
+            principal=Principal(user_id="user-원래주인", is_anonymous=False),
         )
 
         assert store.get_state(first.session_id).user_id == "user-원래주인"
@@ -283,6 +283,73 @@ class TestApplyUserId:
             store, session_id=None, confirmed=False, operations=[], principal=principal
         )
         assert store.get_state(r.session_id).user_id == "user-1"
+
+
+class TestSessionOwnership:
+    """D-063 결정 2 후속(D-073) — session_id만으로 남의 세션에 접근하지 못하게 막는다.
+
+    apply()는 세션 확보 직후, get_session_context()/delete_session()은
+    조회·삭제 직전에 각각 session.verify_ownership()을 호출한다.
+    """
+
+    def test_같은_user_id는_통과한다(self, store):
+        principal = Principal(user_id="user-1", is_anonymous=True)
+        first = apply(store, session_id=None, operations=[], principal=principal)
+
+        r = apply(
+            store,
+            session_id=first.session_id,
+            operations=[],
+            principal=principal,
+        )
+
+        assert r.session_id == first.session_id
+
+    def test_다른_user_id는_apply에서_거부된다(self, store):
+        owner = Principal(user_id="user-원래주인", is_anonymous=True)
+        stranger = Principal(user_id="user-다른사람", is_anonymous=True)
+        first = apply(store, session_id=None, operations=[], principal=owner)
+
+        with pytest.raises(SessionOwnershipError):
+            apply(store, session_id=first.session_id, operations=[], principal=stranger)
+
+    def test_principal이_없으면_기존_게스트_흐름대로_통과한다(self, store):
+        owner = Principal(user_id="user-원래주인", is_anonymous=True)
+        first = apply(store, session_id=None, operations=[], principal=owner)
+
+        r = apply(store, session_id=first.session_id, operations=[], principal=None)
+
+        assert r.session_id == first.session_id
+
+    def test_user_id가_비어있는_세션은_통과한다(self, store):
+        """아직 아무도 신원을 붙이지 않은 세션 — 거부 대상이 아니라
+        attach_user_id()가 채울 대상이다."""
+        first = apply(store, session_id=None, operations=[], principal=None)
+        principal = Principal(user_id="user-1", is_anonymous=True)
+
+        r = apply(store, session_id=first.session_id, operations=[], principal=principal)
+
+        assert r.session_id == first.session_id
+        assert store.get_state(first.session_id).user_id == "user-1"
+
+    def test_get_session_context도_다른_user_id는_거부한다(self, store):
+        owner = Principal(user_id="user-원래주인", is_anonymous=True)
+        stranger = Principal(user_id="user-다른사람", is_anonymous=True)
+        first = apply(store, session_id=None, operations=[], principal=owner)
+
+        with pytest.raises(SessionOwnershipError):
+            svc.get_session_context(first.session_id, store=store, principal=stranger)
+
+    def test_delete_session도_다른_user_id는_거부한다(self, store):
+        owner = Principal(user_id="user-원래주인", is_anonymous=True)
+        stranger = Principal(user_id="user-다른사람", is_anonymous=True)
+        first = apply(store, session_id=None, operations=[], principal=owner)
+
+        with pytest.raises(SessionOwnershipError):
+            svc.delete_session(first.session_id, store=store, principal=stranger)
+
+        # 거부됐으니 세션은 그대로 남아 있어야 한다.
+        assert store.get_state(first.session_id) is not None
 
 
 class TestResetInApply:

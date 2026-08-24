@@ -2273,6 +2273,64 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `backend/docs/package-b/agent-state-contract-v1.md`,
   `docs/design/conditions-schema.md`
 
+### D-073 — 인증된 요청에 한해 세션 소유권을 대조한다 (D-063 결정 2 후속)
+
+- 상태: `Accepted` — 구현 완료.
+- 배경: TP-101 3단계로 인증된 신원(`user_id`)을 `agent_states`에 저장하는
+  배선은 끝났지만, 저장된 `user_id`와 요청을 보낸 `Principal`을 대조하는
+  검증은 없었다 — `session_id`만 알면(추측·유출) 다른 사용자의 세션을
+  그대로 조회·수정·삭제할 수 있었다. D-063 결정 2는 이 검증을 "Phase
+  4(인증 필수화)로 미룬다"고 명시했는데, Phase 4 자체의 착수 시점(토큰
+  없는 요청 비율 임계값)이 아직 정해지지 않아 이 항목도 함께 멈춰 있었다.
+  실제로 `routes/state.py`의 GET/DELETE 라우트는 `principal` 파라미터를
+  이미 선언해두고도 서비스 함수에 넘기지 않는 상태였다 — Phase 4를 염두에
+  두고 자리만 만들어 둔 흔적으로 보인다.
+- 결정: Phase 4 전면 필수화를 기다리지 않고, **`Principal`이 있는 요청에
+  한해서만** 소유권을 대조하는 범위로 먼저 닫는다.
+  1. `session.verify_ownership(state, principal)` 신설 — `principal`이
+     없으면(토큰 미전송) 통과, `state.user_id`가 비어 있으면(아직 아무도
+     신원을 붙이지 않음) 통과, 값이 있는데 다르면 `SessionOwnershipError`
+     (403, `session_ownership_mismatch`)를 던진다.
+  2. 세션을 확보·조회·삭제하는 세 진입점에 배선 — `apply()`(세션 확보
+     직후, `attach_user_id()`보다 먼저), `get_session_context()`(조건·
+     이력·GPS까지 노출하는 읽기 경로), `delete_session()`(되돌릴 수 없는
+     삭제 경로). `ensure_current_context()`(interpret 흐름의 1단계 컨텍스트
+     확보, `apply()`보다 먼저 실행됨)와 각 라우트(`routes/state.py`,
+     `routes/interpret.py`, `routes/recommendations.py`)까지 `principal`을
+     끝까지 흘려보냈다.
+  3. `record_recommendation`/`record_trace`/`set_last_intent` 등 나머지
+     진입점은 이번에 손대지 않았다 — 전부 `agent_runtime.py`의 같은 요청
+     흐름 안에서 `apply()`가 이미 통과시킨 `session_id`만 이어받아 호출되고
+     있어(같은 턴 안에서 세션을 바꿔 부르지 않음), 독립적으로 재노출되는
+     경로가 아니다.
+- 근거: 401(신원 자체가 무효)과 403(신원은 유효하지만 이 세션 권한 없음)을
+  구분해, 이미 있는 `_unauthorized()`(401) 패턴을 재사용하지 않고 별도
+  오류 클래스를 뒀다 — 사유가 다르면 상태 코드도 달라야 클라이언트가
+  구분해 대응할 수 있다.
+- 채택하지 않은 것:
+  - **Phase 4 전면 필수화를 함께 착수** — 이 카드의 범위를 넘는다. 토큰
+    없는 요청 비율 임계값(guest-auth-design.md 5절)이 아직 정해지지
+    않았고, 필수화되면 모든 라우트가 `RequiredPrincipal`로 바뀌어야 해서
+    범위가 전혀 다른 작업이다.
+  - **모든 B 진입점에 동일하게 배선** — `record_recommendation` 등은
+    `apply()` 뒤에만 호출되는 내부 체인이라, 거기까지 대조를 넣으면 같은
+    검사를 같은 요청 안에서 중복 수행하게 된다. 독립적으로 HTTP에
+    노출되는 경로가 생기면 그때 같은 패턴(`verify_ownership` 호출 추가)을
+    그대로 적용한다.
+- 남은 것: Phase 4 필수화 시점 자체는 여전히 미정(guest-auth-design.md
+  5절 열린 질문). 필수화되면 이 로직이 새 전제(신원 항상 존재)와
+  일관되는지 재확인 필요 — 지금 로직은 `principal is None`을 그대로
+  통과시키므로 Phase 4 전환 자체와 충돌하지는 않는다.
+- 상세: `backend/app/state/errors.py`(`SessionOwnershipError`),
+  `backend/app/state/session.py`(`verify_ownership`),
+  `backend/app/state/service.py`(`apply`/`get_session_context`/
+  `delete_session`), `backend/app/services/interpret/session_orchestrator.py`
+  (`ensure_current_context`), `backend/app/services/runtime/agent_runtime.py`,
+  `backend/app/routes/state.py`, `backend/app/routes/interpret.py`,
+  `backend/app/routes/recommendations.py`,
+  `docs/design/guest-auth-design.md`, `backend/docs/package-b/
+  agent-state-contract-v1.md`
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -2340,3 +2398,4 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-22 | D-071 신설 — "안국역에서 10분"(출발점=안국역)과 "안국역 근처에 10분"(출발점=사용자 위치)을 구분하는 `travel_origin` 필드 신설(D·A). 조사("~에서/까지")로 출발점이 확정되는 발화만 `search_center`로 채우고 그 외(근처/주변, 조사 없는 소수 발화)는 null로 두어 D-067 기본값이 그대로 적용되게 한다. `resolve_ranking_origin()`·`_distance_denominator_offset_km()`·soft reset의 search_center 복원 로직에 함께 배선. `recommend.extract` 2.2.0 → 2.3.0 |
 | 2026-08-24 | D-044 확장 — 지원 지역 폴리곤을 종로구 1개에서 종로구·중구·용산구·성동구 4개로 늘림(TP-125). 판정 방식(폴리곤 순회)과 D-044 결정 자체는 그대로이고 폴리곤 개수만 바뀐다. 경계 파일은 구별로 두지 않고 서울 25개 구를 `seoul.geojson` 한 장에 담아, 이후 구 확장이 `SUPPORTED_DISTRICTS` 한 줄로 끝나게 했다(214KB·파싱 2.5ms). 파일에 있는 구를 전부 지원하는 방식과 환경변수 지정은 기각. 경계 추출은 `scripts/extract_district_boundaries.py`로 재현 가능. 활성 2,570건 실측 결과 폴리곤 밖 4건(0.16%). 25개 구 대표점 전수 테스트로 지원 여부 판정을 고정. 장소 검색의 종로구 고정 해제는 범위 밖(TP-126) |
 | 2026-08-24 | D-025 개정 — 장소 검색의 종로구 고정을 해제(TP-126). 요청은 `lDongRegnCd=11`까지만 좁히고 지원 구 판정은 응답의 `lDongSignguCd`로 한다. 좌표로 구를 판정하는 안은 기각 — 서울역 부속 시설 72건처럼 등록 구와 좌표가 어긋나는 장소가 빠진다. 구마다 호출하는 안도 기각(호출 수가 구 수만큼 증가). `PLACE_SEARCH_LDONG_DISTRICT_CODE` 상수 제거, 지원 구는 `SUPPORTED_DISTRICTS` 하나가 정하도록 통일(좌표 폴리곤과 같은 출처). 축제 조회와 Supabase `places` 필터도 같은 집합을 쓴다. 구 코드가 빈 응답은 버리되 경고 로그를 남긴다 |
+| 2026-08-24 | D-073 신설 — `session_id`만으로 남의 세션에 접근 가능하던 문제를 닫음(D-063 결정 2 후속). Phase 4(인증 필수화) 전면 도입을 기다리지 않고, `Principal`이 있는 요청에 한해 `session.verify_ownership()`으로 저장된 `user_id`와 대조 — 다르면 403(`session_ownership_mismatch`). `apply()`/`get_session_context()`/`delete_session()`/`ensure_current_context()`와 각 라우트까지 배선. `routes/state.py`가 `principal`을 선언만 하고 쓰지 않던 배선 공백을 함께 닫음 |

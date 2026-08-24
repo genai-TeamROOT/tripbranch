@@ -37,6 +37,7 @@ async def interpret(
     context = await ensure_current_context(
         request.session_id,
         _valid_location(request.device_location),
+        principal=principal,
     )
 
     # 2) 세션이 있으면 B가 조건·이력의 단일 기준이다. (계약 6.2절)
@@ -75,7 +76,9 @@ async def interpret(
         )
 
     # 7) 응답 조립
-    final_context = state_service.get_session_context(state_result.session_id)
+    final_context = state_service.get_session_context(
+        state_result.session_id, principal=principal
+    )
 
     return InterpretResponse(
         output=llm_output,
