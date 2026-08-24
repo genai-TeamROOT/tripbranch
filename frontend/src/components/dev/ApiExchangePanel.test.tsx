@@ -59,7 +59,7 @@ it("기본은 접혀 있고 본문이 보이지 않는다", () => {
   expect(screen.queryByText(/totalCount/)).not.toBeInTheDocument();
 });
 
-it("카카오맵 도보 provider 라벨을 표시한다", () => {
+it("카카오맵 길찾기 provider 라벨을 표시한다", () => {
   renderPanel({
     items: [
       {
@@ -70,7 +70,7 @@ it("카카오맵 도보 provider 라벨을 표시한다", () => {
     ],
   });
 
-  expect(screen.getByText("카카오맵 도보")).toBeInTheDocument();
+  expect(screen.getByText("카카오맵 길찾기")).toBeInTheDocument();
   expect(screen.getByText("walk")).toBeInTheDocument();
 });
 

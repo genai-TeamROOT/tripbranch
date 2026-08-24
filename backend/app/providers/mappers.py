@@ -9,7 +9,11 @@ TODO: detailIntro2 연동 후 operating_hours를 실제 값으로 채운다.
 
 from __future__ import annotations
 
+import logging
+
 from app.schemas import PlaceCandidate, PlaceType
+
+logger = logging.getLogger(__name__)
 
 # TourAPI contenttypeid → PlaceType. LLM이 조건으로 내려보내는 어휘와 같아야 조회와
 # 응답의 왕복이 맞는다. 역방향은 category_rules.PLACE_TYPE_TO_CONTENT_TYPE_ID에 있다.
@@ -28,8 +32,18 @@ _CONTENT_TYPE_TO_CATEGORY = {
 _UNSUPPORTED_CONTENT_TYPE_IDS = frozenset({"25", "32"})
 
 
-def map_tour_api_item(item: dict) -> PlaceCandidate | None:
-    """TourAPI item 1건을 PlaceCandidate로 변환. 필수 필드 없으면 None 반환."""
+def map_tour_api_item(
+    item: dict,
+    *,
+    allowed_district_codes: frozenset[str] | None = None,
+) -> PlaceCandidate | None:
+    """TourAPI item 1건을 PlaceCandidate로 변환. 필수 필드 없으면 None 반환.
+
+    allowed_district_codes를 주면 응답의 `lDongSignguCd`가 그 안에 없는 항목을
+    버린다. 검색 중심 좌표로 구를 판정하지 않고 응답이 말하는 구를 그대로 믿는
+    이유는, 둘이 어긋나는 장소가 실재하기 때문이다 — 서울역 부속 시설 72건은
+    용산구로 등록돼 있지만 좌표는 중구 안에 있다(2026-08-24 실측).
+    """
     content_id = item.get("contentid")
     title = item.get("title")
     map_x = item.get("mapx")  # 경도
@@ -43,6 +57,11 @@ def map_tour_api_item(item: dict) -> PlaceCandidate | None:
         latitude = float(map_y)
     except (TypeError, ValueError):
         return None
+
+    if allowed_district_codes is not None:
+        district_code = str(item.get("lDongSignguCd", "")).strip()
+        if district_code not in allowed_district_codes:
+            return None
 
     content_type_id = str(item.get("contenttypeid", ""))
     if content_type_id in _UNSUPPORTED_CONTENT_TYPE_IDS:
@@ -70,7 +89,11 @@ def map_tour_api_item(item: dict) -> PlaceCandidate | None:
     )
 
 
-def map_tour_api_response(payload: dict) -> list[PlaceCandidate]:
+def map_tour_api_response(
+    payload: dict,
+    *,
+    allowed_district_codes: frozenset[str] | None = None,
+) -> list[PlaceCandidate]:
     """TourAPI 전체 응답 payload에서 유효한 PlaceCandidate 목록을 추출한다."""
     try:
         items = payload["response"]["body"]["items"]
@@ -85,5 +108,22 @@ def map_tour_api_response(payload: dict) -> list[PlaceCandidate]:
     if isinstance(raw_list, dict):
         raw_list = [raw_list]  # 결과가 1건이면 dict로 오는 경우 방어
 
-    candidates = [map_tour_api_item(raw) for raw in raw_list]
+    if allowed_district_codes is not None:
+        # 구 코드가 아예 비어 있으면 지원 구 판정을 할 수 없어 전량이 버려진다.
+        # TourAPI가 필드를 빼면 "이 근처에 장소가 없다"로 조용히 둔갑하므로 남긴다.
+        missing = sum(
+            1 for raw in raw_list if not str(raw.get("lDongSignguCd", "")).strip()
+        )
+        if missing:
+            logger.warning(
+                "TourAPI 응답 %d건에 lDongSignguCd가 없어 지원 구 판정에서 버립니다 "
+                "(전체 %d건). 응답 형식이 바뀌었는지 확인이 필요합니다.",
+                missing,
+                len(raw_list),
+            )
+
+    candidates = [
+        map_tour_api_item(raw, allowed_district_codes=allowed_district_codes)
+        for raw in raw_list
+    ]
     return [c for c in candidates if c is not None]

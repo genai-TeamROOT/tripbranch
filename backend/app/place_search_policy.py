@@ -59,10 +59,14 @@ MIN_PLACE_SEARCH_RADIUS_KM = 0.3
 # 장소 검색 Tool과 Provider가 허용하는 최대 검색 반경(km).
 MAX_PLACE_SEARCH_RADIUS_KM = 20.0
 
-# TourAPI 법정동 코드 기준 MVP 장소 검색 지원 지역: 서울특별시 종로구.
+# TourAPI 법정동 코드 기준 장소 검색 지원 시도: 서울특별시.
 # 집중률 API의 signguCd(종로구 11110)와 다른 코드 체계이므로 혼용하지 않는다.
+#
+# 구는 여기서 고정하지 않는다. 지원 구는 `app.service_area.SUPPORTED_DISTRICTS`
+# 하나가 정하고, 검색은 요청을 시도까지만 좁힌 뒤 응답의 lDongSignguCd로 거른다
+# (D-025). 구를 요청에 실으면 지원 구가 여럿일 때 구마다 호출해야 하고, 반경
+# 안에 있는 옆 지원 구 후보가 잘린다.
 PLACE_SEARCH_LDONG_REGION_CODE = "11"
-PLACE_SEARCH_LDONG_DISTRICT_CODE = "110"
 
 # 별도 조회 개수가 없을 때 Place Provider가 반환할 기본 최대 건수.
 DEFAULT_PLACE_PROVIDER_RESULT_LIMIT = 20

@@ -1,56 +1,122 @@
-"""좌표가 MVP 지원 지역(서울 종로구) 안인지 판정한다.
+"""좌표가 MVP 지원 지역(서울 종로구·중구·용산구·성동구) 안인지 판정한다.
 
-역할: 지원 범위 밖 위치를 해석 단계에서 걸러 낸다. 그 아래 로직은 모두 "종로구 안"을
-전제로 짜여 있어서(장소 검색이 lDongSignguCd를 종로구로 고정, 집중률 매핑도 종로구
-장소만 보유), 밖의 좌표가 들어오면 "결과 없음"으로만 끝나고 이유가 전달되지 않는다.
+역할: 지원 범위 밖 위치를 해석 단계에서 걸러 낸다. 밖의 좌표가 들어오면 그 아래
+로직이 "결과 없음"으로만 끝나고 이유가 전달되지 않아서다(D-044).
 입력: 위도·경도.
-출력: 안이면 True.
+출력: 지원 구 중 어느 하나 안이면 True.
 호출 시점: ResolveLocationTool이 좌표를 얻은 직후.
 
-경계는 `resources/boundaries/jongno.geojson`을 쓴다 — 출처와 선택 이유는 그 옆
-README에 적었다. 정적 데이터라 프로세스당 한 번만 읽는다.
+경계는 `resources/boundaries/seoul.geojson` 한 장을 쓴다. 서울 25개 구가 모두 들어
+있고 그중 어디를 지원할지는 `SUPPORTED_DISTRICTS`가 정한다 — 구를 늘릴 때 파일
+작업 없이 목록 한 줄로 끝나게 하기 위해서다. 출처와 선택 이유는 그 옆 README에 적었다.
+정적 데이터라 프로세스당 한 번만 읽는다.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
 _BOUNDARY_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "resources"
-    / "boundaries"
-    / "jongno.geojson"
+    Path(__file__).resolve().parent.parent / "resources" / "boundaries" / "seoul.geojson"
 )
 
 # GeoJSON 좌표는 [경도, 위도] 순서다.
-_Ring = list[list[float]]
-_Polygon = list[_Ring]
+_Ring = tuple[tuple[float, float], ...]
+_Polygon = tuple[_Ring, ...]
 
 
-@lru_cache(maxsize=1)
-def _service_area_polygons() -> tuple[tuple[tuple[tuple[float, float], ...], ...], ...]:
-    """(폴리곤, 링, 좌표) 3단 튜플. 첫 링이 외곽선이고 나머지는 구멍이다."""
-    with _BOUNDARY_PATH.open(encoding="utf-8") as fp:
-        feature = json.load(fp)
-    geometry = feature["geometry"]
+@dataclass(frozen=True)
+class ServiceDistrict:
+    """지원 구 한 곳."""
+
+    # TourAPI 법정동 코드의 시군구 부분(lDongSignguCd). 경계 파일 안의
+    # properties.code(KOSTAT 11010 등)와는 다른 코드 체계라 섞어 쓰지 않는다.
+    district_code: str
+    # 경계 파일의 properties.name과 정확히 같아야 한다. 이 이름으로 폴리곤을 찾는다.
+    name: str
+
+
+# 지원 구는 여기서 정한다. 경계 파일에는 서울 25개 구가 다 들어 있으므로, 구를
+# 늘릴 때 할 일은 이 목록에 한 줄을 더하는 것뿐이다.
+#
+# 파일에 있는 구를 전부 지원하는 방식은 쓰지 않는다 — 지원 범위는 팀이 합의하는
+# 결정이라 코드에 드러나고 리뷰를 거쳐야 한다. 목록에 있는데 경계 파일에 그 구가
+# 없으면 첫 판정에서 예외로 끊는다.
+#
+# 네 곳 모두 서울특별시라 lDongRegnCd는 "11"로 같다.
+SUPPORTED_DISTRICTS: tuple[ServiceDistrict, ...] = (
+    ServiceDistrict("110", "종로구"),
+    ServiceDistrict("140", "중구"),
+    ServiceDistrict("170", "용산구"),
+    ServiceDistrict("200", "성동구"),
+)
+
+# 좌표 판정(폴리곤)과 장소 검색(TourAPI 응답의 lDongSignguCd)이 같은 목록을 봐야
+# 한 쪽만 늘어나는 일이 없다. 검색 쪽은 이 집합으로 응답을 거른다(D-025).
+SUPPORTED_DISTRICT_CODES: frozenset[str] = frozenset(
+    district.district_code for district in SUPPORTED_DISTRICTS
+)
+
+
+def _to_polygons(geometry: Mapping[str, object]) -> tuple[_Polygon, ...]:
+    """(폴리곤, 링, 좌표) 3단 튜플. 각 폴리곤의 첫 링이 외곽선이고 나머지는 구멍이다."""
     geometry_type = geometry["type"]
     if geometry_type == "Polygon":
-        polygons: list[_Polygon] = [geometry["coordinates"]]
+        raw_polygons = [geometry["coordinates"]]
     elif geometry_type == "MultiPolygon":
-        polygons = list(geometry["coordinates"])
+        raw_polygons = list(geometry["coordinates"])  # type: ignore[arg-type]
     else:
         raise ValueError(f"지원하지 않는 geometry 형식입니다: {geometry_type}")
     return tuple(
-        tuple(tuple((float(point[0]), float(point[1])) for point in ring) for ring in polygon)
-        for polygon in polygons
+        tuple(
+            tuple((float(point[0]), float(point[1])) for point in ring)
+            for ring in polygon
+        )
+        for polygon in raw_polygons
     )
 
 
-def _is_inside_ring(
-    longitude: float, latitude: float, ring: tuple[tuple[float, float], ...]
-) -> bool:
+@lru_cache(maxsize=1)
+def _all_district_polygons() -> tuple[tuple[str, tuple[_Polygon, ...]], ...]:
+    """경계 파일에 든 모든 구의 (이름, 폴리곤들). 지원 여부와 무관하게 전부 읽는다."""
+    with _BOUNDARY_PATH.open(encoding="utf-8") as fp:
+        collection = json.load(fp)
+    if collection.get("type") != "FeatureCollection":
+        raise ValueError("경계 파일은 FeatureCollection이어야 합니다.")
+    return tuple(
+        (str(feature["properties"]["name"]), _to_polygons(feature["geometry"]))
+        for feature in collection["features"]
+    )
+
+
+def _select_supported(
+    all_polygons: tuple[tuple[str, tuple[_Polygon, ...]], ...],
+    districts: tuple[ServiceDistrict, ...],
+) -> tuple[tuple[str, tuple[_Polygon, ...]], ...]:
+    """지원 구의 폴리곤만 목록 순서대로 고른다. 경계가 없는 구는 예외로 끊는다."""
+    by_name = dict(all_polygons)
+    missing = [district.name for district in districts if district.name not in by_name]
+    if missing:
+        raise ValueError(
+            f"경계 파일에 없는 구가 SUPPORTED_DISTRICTS에 있습니다: {', '.join(missing)}. "
+            f"{_BOUNDARY_PATH.name}를 다시 뽑아야 합니다."
+        )
+    return tuple(
+        (district.district_code, by_name[district.name]) for district in districts
+    )
+
+
+@lru_cache(maxsize=1)
+def _service_area_polygons() -> tuple[tuple[str, tuple[_Polygon, ...]], ...]:
+    """(구 코드, 폴리곤들) 쌍의 튜플. 구가 늘어도 판정 방식은 그대로다."""
+    return _select_supported(_all_district_polygons(), SUPPORTED_DISTRICTS)
+
+
+def _is_inside_ring(longitude: float, latitude: float, ring: _Ring) -> bool:
     """Ray casting. 점에서 한 방향으로 반직선을 그어 변과 만나는 횟수를 센다."""
     inside = False
     count = len(ring)
@@ -65,21 +131,31 @@ def _is_inside_ring(
     return inside
 
 
+def _is_inside_polygon(longitude: float, latitude: float, polygon: _Polygon) -> bool:
+    outer, *holes = polygon
+    if not _is_inside_ring(longitude, latitude, outer):
+        return False
+    return not any(_is_inside_ring(longitude, latitude, hole) for hole in holes)
+
+
 def is_within_service_area(latitude: float, longitude: float) -> bool:
-    """좌표가 지원 지역 안이면 True.
+    """좌표가 지원 구 중 어느 하나 안이면 True.
 
     경계선에 붙은 지점은 2018년 경계 데이터의 정밀도 한계로 밖으로 판정될 수 있다
-    (활성 장소 844건 중 2건). 저장소에서 해석된 장소는 이미 종로구로 등록된 것이라
-    호출자가 판정을 생략한다.
+    (구별 활성 장소의 0.3% 미만, README의 정밀도 표 참고). 저장소에서 해석된
+    장소는 이미 지원 구로 등록된 것이라 호출자가 판정을 생략한다.
     """
-    for polygon in _service_area_polygons():
-        outer, *holes = polygon
-        if not _is_inside_ring(longitude, latitude, outer):
-            continue
-        if any(_is_inside_ring(longitude, latitude, hole) for hole in holes):
-            continue
-        return True
+    for _district_code, polygons in _service_area_polygons():
+        if any(
+            _is_inside_polygon(longitude, latitude, polygon) for polygon in polygons
+        ):
+            return True
     return False
 
 
-__all__ = ["is_within_service_area"]
+__all__ = [
+    "SUPPORTED_DISTRICTS",
+    "SUPPORTED_DISTRICT_CODES",
+    "ServiceDistrict",
+    "is_within_service_area",
+]

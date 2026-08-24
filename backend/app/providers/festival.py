@@ -28,6 +28,7 @@ from app.providers.contracts import (
     provider_result,
 )
 from app.providers.upstream_errors import upstream_error_detail
+from app.service_area import SUPPORTED_DISTRICT_CODES
 
 logger = logging.getLogger(__name__)
 
@@ -102,15 +103,24 @@ def _items(payload: Mapping[str, object]) -> list[Mapping[str, object]]:
 
 def map_festival_items(
     items: list[Mapping[str, object]],
+    *,
+    allowed_district_codes: frozenset[str] | None = None,
 ) -> list[FestivalEvent]:
     """응답 항목을 FestivalEvent로 옮긴다. 기간이 없는 행은 버린다.
 
     기간이 없으면 "지금 진행 중인가"를 판정할 수 없어 event 질의에 쓸모가 없다.
     좌표는 없어도 남긴다 — 거리 정렬에서만 빠지고 목록에는 실릴 수 있다.
+
+    allowed_district_codes를 주면 응답의 `lDongSignguCd`가 그 안에 없는 행사를
+    버린다. 서울 전체를 한 번에 받아 여기서 좁히므로 구가 늘어도 호출은 1회다.
     """
 
     events: list[FestivalEvent] = []
     for item in items:
+        if allowed_district_codes is not None:
+            district_code = str(item.get("lDongSignguCd", "")).strip()
+            if district_code not in allowed_district_codes:
+                continue
         content_id = _text(item.get("contentid"))
         title = _text(item.get("title"))
         start_date = _parse_date(item.get("eventstartdate"))
@@ -149,26 +159,30 @@ class RealFestivalProvider:
     async def search_festivals(
         self,
         region_code: str,
-        district_code: str,
+        district_code: str | None,
         reference_date: date,
         limit: int = 100,
     ) -> ProviderResult[list[FestivalEvent]]:
         start_date = reference_date.replace(
             year=reference_date.year - _SEARCH_START_DATE_OFFSET_YEARS
         )
-        payload = await self._request_json(
-            _SEARCH_FESTIVAL_PATH,
-            {
-                "MobileOS": "ETC",
-                "MobileApp": "TripBranch",
-                "_type": "json",
-                "eventStartDate": start_date.strftime("%Y%m%d"),
-                "lDongRegnCd": region_code,
-                "lDongSignguCd": district_code,
-                "numOfRows": max(1, min(limit, 100)),
-            },
+        params: dict[str, object] = {
+            "MobileOS": "ETC",
+            "MobileApp": "TripBranch",
+            "_type": "json",
+            "eventStartDate": start_date.strftime("%Y%m%d"),
+            "lDongRegnCd": region_code,
+            "numOfRows": max(1, min(limit, 100)),
+        }
+        # 구를 지정하면 그 구 행사만 온다. 지원 구가 여럿이면 구마다 호출해야 하므로
+        # 시도까지만 좁히고 지원 구 판정은 응답으로 한다(D-025). 서울 전체 행사는
+        # 2026-08-24 실측 51건이라 numOfRows 100 안에 들어온다.
+        if district_code:
+            params["lDongSignguCd"] = district_code
+        payload = await self._request_json(_SEARCH_FESTIVAL_PATH, params)
+        events = map_festival_items(
+            _items(payload), allowed_district_codes=SUPPORTED_DISTRICT_CODES
         )
-        events = map_festival_items(_items(payload))
         return provider_result(
             events,
             source=ProviderSource.TOUR_API_FESTIVAL,
@@ -243,7 +257,7 @@ class FakeFestivalProvider:
     async def search_festivals(
         self,
         region_code: str,
-        district_code: str,
+        district_code: str | None,
         reference_date: date,
         limit: int = 100,
     ) -> ProviderResult[list[FestivalEvent]]:
