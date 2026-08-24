@@ -119,7 +119,9 @@ async def test_tool_combines_separate_search_and_details_providers() -> None:
     assert result.elapsed_ms >= 0
     assert len(result.provider_metadata) == 4
     assert search.seen_region_code == "11"
-    assert search.seen_district_code == "110"
+    # 구는 요청에 싣지 않는다 — 지원 구 판정은 응답의 lDongSignguCd로 한다
+    # (D-025). 한 구로 좁히면 반경 안의 옆 지원 구 후보가 잘린다.
+    assert search.seen_district_code is None
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
+
 import httpx
 import pytest
 
@@ -34,6 +37,8 @@ async def test_search_places_sends_tour_api_category_filters() -> None:
                 {
                     "contentid": "cafe-1",
                     "contenttypeid": "39",
+                    "lDongRegnCd": "11",
+                    "lDongSignguCd": "110",
                     "lclsSystm1": "FD",
                     "lclsSystm2": "FD05",
                     "lclsSystm3": "FD050100",
@@ -119,6 +124,8 @@ async def test_search_by_keyword_returns_content_identifiers() -> None:
                 {
                     "contentid": "126508",
                     "contenttypeid": "12",
+                    "lDongRegnCd": "11",
+                    "lDongSignguCd": "110",
                     "title": "경복궁",
                     "mapx": "126.9770",
                     "mapy": "37.5788",
@@ -239,6 +246,8 @@ async def test_find_details_by_name_searches_exact_match_then_gets_details() -> 
                     {
                         "contentid": "126508",
                         "contenttypeid": "12",
+                        "lDongRegnCd": "11",
+                        "lDongSignguCd": "110",
                         "title": "경복궁",
                         "mapx": "126.9770",
                         "mapy": "37.5788",
@@ -288,6 +297,8 @@ async def test_find_details_by_name_does_not_guess_non_exact_candidate() -> None
                 {
                     "contentid": "other",
                     "contenttypeid": "12",
+                    "lDongRegnCd": "11",
+                    "lDongSignguCd": "110",
                     "title": "경복궁역",
                     "mapx": "126.9770",
                     "mapy": "37.5788",
@@ -301,3 +312,112 @@ async def test_find_details_by_name_does_not_guess_non_exact_candidate() -> None
             await provider.find_details_by_name("경복궁")
 
     assert exc_info.value.code == "place_not_found"
+
+
+class TestSupportedDistrictFilter:
+    """응답의 lDongSignguCd로 지원 구를 가린다(D-025).
+
+    검색 요청에 구를 싣지 않고 반경으로만 받아 오므로, 거르지 않으면 지원하지 않는
+    구의 장소가 후보에 섞인다.
+    """
+
+    @staticmethod
+    def _handler(items: list[dict]) -> Callable[[httpx.Request], httpx.Response]:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "response": {
+                        "header": {"resultCode": "0000", "resultMsg": "OK"},
+                        "body": {"items": {"item": items}},
+                    }
+                },
+            )
+
+        return handler
+
+    @staticmethod
+    def _item(content_id: str, district_code: str, **overrides: str) -> dict:
+        return {
+            "contentid": content_id,
+            "contenttypeid": "12",
+            "title": f"장소 {content_id}",
+            "mapx": "126.9770",
+            "mapy": "37.5788",
+            "lDongRegnCd": "11",
+            "lDongSignguCd": district_code,
+            **overrides,
+        }
+
+    async def _search(self, items: list[dict]) -> list[str]:
+        transport = httpx.MockTransport(self._handler(items))
+        async with httpx.AsyncClient(transport=transport) as client:
+            provider = RealPlaceProvider(api_key="dummy", client=client)
+            result = await provider.search_places(
+                latitude=37.5788,
+                longitude=126.9770,
+                preferred_categories=[],
+                search_radius_km=2.0,
+                region_code="11",
+            )
+        return [candidate.place_id for candidate in result.data]
+
+    @pytest.mark.asyncio
+    async def test_구를_안_넘기면_요청에_lDongSignguCd가_없다(self) -> None:
+        seen: dict[str, str] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.update(dict(request.url.params))
+            return self._handler([self._item("a", "110")])(request)
+
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as client:
+            provider = RealPlaceProvider(api_key="dummy", client=client)
+            await provider.search_places(
+                latitude=37.5788,
+                longitude=126.9770,
+                preferred_categories=[],
+                search_radius_km=2.0,
+                region_code="11",
+            )
+
+        assert seen["lDongRegnCd"] == "11"
+        assert "lDongSignguCd" not in seen
+
+    @pytest.mark.asyncio
+    async def test_지원_구는_남고_나머지는_버린다(self) -> None:
+        place_ids = await self._search(
+            [
+                self._item("jongno", "110"),
+                self._item("jung", "140"),
+                self._item("yongsan", "170"),
+                self._item("seongdong", "200"),
+                self._item("mapo", "440"),
+                self._item("gangnam", "680"),
+            ]
+        )
+
+        assert place_ids == ["jongno", "jung", "yongsan", "seongdong"]
+
+    @pytest.mark.asyncio
+    async def test_좌표가_다른_구여도_응답의_구를_믿는다(self) -> None:
+        """서울역 부속 시설 72건은 용산구로 등록돼 있지만 좌표는 중구 안이다.
+
+        좌표로 구를 판정하면 이 장소들이 통째로 빠진다(2026-08-24 실측).
+        """
+        place_ids = await self._search(
+            [self._item("seoul-station", "170", mapx="126.971733", mapy="37.554838")]
+        )
+
+        assert place_ids == ["seoul-station"]
+
+    @pytest.mark.asyncio
+    async def test_구_코드가_없으면_버리고_경고를_남긴다(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """전량이 조용히 사라지면 "이 근처에 장소가 없다"로 둔갑한다."""
+        with caplog.at_level(logging.WARNING, logger="app.providers.mappers"):
+            place_ids = await self._search([self._item("unknown", "")])
+
+        assert place_ids == []
+        assert "lDongSignguCd" in caplog.text
