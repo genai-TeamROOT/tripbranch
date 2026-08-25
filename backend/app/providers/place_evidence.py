@@ -145,5 +145,7 @@ class PlaceEvidenceProvider:
         return provider_result(
             {match.content_id: match for match in matches},
             source=ProviderSource.SUPABASE_PLACE_EVIDENCE,
-            status=(ProviderStatus.SUCCESS if matches else ProviderStatus.NO_DATA),
+            status=(
+                ProviderStatus.SUCCESS if matches else ProviderStatus.NO_DATA
+            ),
         )
