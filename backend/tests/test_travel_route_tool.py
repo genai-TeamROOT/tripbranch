@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+from contextlib import contextmanager
 from datetime import UTC, datetime
 
 import pytest
@@ -21,6 +23,7 @@ from app.providers.contracts import (
     provider_result,
 )
 from app.providers.walking_route import FakeWalkingRouteProvider
+from app.tools import travel_route as travel_route_tool
 from app.tools.contracts import ToolStatus
 from app.tools.travel_route import (
     TRAVEL_ROUTE_FALLBACK_WARNING,
@@ -28,6 +31,8 @@ from app.tools.travel_route import (
     TravelRouteProviders,
     TravelRouteQuery,
     TravelRouteTool,
+    TravelRouteToolResult,
+    summarize_fanout,
 )
 
 _NOW = datetime(2026, 8, 18, tzinfo=UTC)
@@ -235,3 +240,168 @@ async def test_travel_route_tool_passes_requested_mode_to_provider() -> None:
 def test_travel_route_tool_rejects_empty_provider_registry() -> None:
     with pytest.raises(ValueError, match="등록되지 않았습니다"):
         TravelRouteTool({})
+
+
+# --- 관측: 팬아웃 하나를 span 하나로 접는다 -----------------------------------
+#
+# **왜 호출 단위가 아니라 팬아웃 단위인가**: Provider가 목적지마다 따로 요청을
+# 쏜다(`asyncio.gather`). 후보 20곳이면 HTTP도 20번이라, 호출 하나를 span 하나로
+# 만들면 한 턴 observation이 5개에서 25개로 뛴다. 무료 티어 유닛을 그대로 먹는다.
+
+
+def _route(place_id: str, source: RouteSource, *, status=RouteStatus.SUCCESS, error=None):
+    return TravelRoute(
+        place_id=place_id,
+        mode=TravelMode.WALKING,
+        status=status,
+        source=source,
+        distance_m=500,
+        duration_seconds=420,
+        error_code=error,
+    )
+
+
+def _result(routes, *, status=ToolStatus.SUCCESS, warnings=()):
+    return TravelRouteToolResult(status=status, routes=tuple(routes), warnings=tuple(warnings))
+
+
+def test_summary_counts_measured_and_estimated_separately() -> None:
+    """이 비율이 요약의 존재 이유다.
+
+    실측이 있는 후보는 소요시간으로, 없는 후보는 직선거리로 채점된다
+    (`domain/scoring.py::_proximity_score`). 추정으로 샌 건수만큼 **같은 순위표
+    안에 서로 다른 자가 섞인다.**
+    """
+    summary = summarize_fanout(
+        _query(),
+        _result(
+            [
+                _route("first", RouteSource.KAKAO_WALKING),
+                _route("second", RouteSource.STRAIGHT_LINE_ESTIMATE),
+            ],
+            status=ToolStatus.PARTIAL,
+            warnings=(TRAVEL_ROUTE_FALLBACK_WARNING,),
+        ),
+    )
+
+    assert summary["requested"] == 2
+    assert summary["measured"] == 1
+    assert summary["estimated"] == 1
+    assert summary["measured_ratio"] == 0.5
+    assert summary["by_source"] == {"kakao_walking": 1, "straight_line_estimate": 1}
+
+
+def test_summary_flags_estimated_fallback_as_a_warning() -> None:
+    """전부 채워졌어도 추정이 섞였으면 정상이 아니다 — 화면에서 눈에 띄어야 한다."""
+    summary = summarize_fanout(
+        _query(),
+        _result(
+            [
+                _route("first", RouteSource.KAKAO_WALKING),
+                _route("second", RouteSource.STRAIGHT_LINE_ESTIMATE),
+            ],
+            status=ToolStatus.PARTIAL,
+        ),
+    )
+
+    assert summary["level"] == "WARNING"
+
+
+def test_summary_stays_default_when_everything_was_measured() -> None:
+    summary = summarize_fanout(
+        _query(),
+        _result(
+            [
+                _route("first", RouteSource.KAKAO_WALKING),
+                _route("second", RouteSource.KAKAO_WALKING),
+            ]
+        ),
+    )
+
+    assert summary["level"] == "DEFAULT"
+    assert summary["measured_ratio"] == 1.0
+
+
+def test_summary_headline_survives_masking() -> None:
+    """`status_message`는 mask를 안 탄다 — `capture_content`를 꺼도 남는 유일한 자리다."""
+    summary = summarize_fanout(
+        _query(),
+        _result([_route("first", RouteSource.STRAIGHT_LINE_ESTIMATE)], status=ToolStatus.PARTIAL),
+    )
+
+    assert summary["headline"] == "walking 2건 요청 · 실측 0 · 추정 1"
+
+
+def test_summary_carries_no_coordinates_or_place_ids() -> None:
+    """여기서 알고 싶은 건 개수와 분포지 어디를 갔느냐가 아니다."""
+    summary = summarize_fanout(
+        _query(),
+        _result([_route("first", RouteSource.KAKAO_WALKING)]),
+    )
+
+    blob = json.dumps(summary, ensure_ascii=False)
+    assert "126.98" not in blob
+    assert "37.57" not in blob
+    assert "first" not in blob
+
+
+def test_summary_groups_failure_causes() -> None:
+    summary = summarize_fanout(
+        _query(),
+        _result(
+            [
+                _route(
+                    "first", RouteSource.KAKAO_WALKING, status=RouteStatus.NO_DATA, error="no_path"
+                ),
+                _route(
+                    "second", RouteSource.KAKAO_WALKING, status=RouteStatus.NO_DATA, error="no_path"
+                ),
+            ],
+            status=ToolStatus.NO_DATA,
+        ),
+    )
+
+    assert summary["error_causes"] == {"no_path": 2}
+    assert summary["by_status"] == {"no_data": 2}
+
+
+@pytest.mark.asyncio
+async def test_execute_records_one_span_for_the_whole_fanout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """목적지가 둘이어도 span은 하나여야 한다."""
+    opened: list[str] = []
+    recorded: list[dict] = []
+
+    class _Step:
+        def record(self, **fields) -> None:
+            recorded.append(fields)
+
+    @contextmanager
+    def _fake_observe_step(name: str, **_):
+        opened.append(name)
+        yield _Step()
+
+    monkeypatch.setattr(travel_route_tool, "observe_step", _fake_observe_step)
+
+    await _tool(FakeWalkingRouteProvider(walking_speed_mps=1.2)).execute(_query())
+
+    assert opened == ["travel_route"]
+    assert recorded[0]["status_message"].startswith("walking 2건 요청")
+
+
+@pytest.mark.asyncio
+async def test_observation_failure_does_not_break_the_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """관측이 삼켜도 되는 건 자기 실패뿐이다 — 결과는 그대로 나가야 한다."""
+
+    def _explode(*_args, **_kwargs):
+        raise RuntimeError("요약 실패")
+
+    monkeypatch.setattr(travel_route_tool, "summarize_fanout", _explode)
+
+    result = await _tool(FakeWalkingRouteProvider(walking_speed_mps=1.2)).execute(_query())
+
+    assert result.status is ToolStatus.SUCCESS
+    assert len(result.routes) == 2

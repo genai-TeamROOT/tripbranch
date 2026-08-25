@@ -10,11 +10,13 @@ from dataclasses import dataclass
 from app.domain.travel_route import (
     GeoCoordinate,
     RouteDestination,
+    RouteSource,
     RouteStatus,
     TravelMode,
     TravelRoute,
 )
 from app.errors import AppError
+from app.observability.langfuse_tracing import observe_step
 from app.providers.contracts import ProviderMetadata
 from app.providers.protocols import TravelRouteProvider
 from app.providers.walking_route import MAX_TRAVEL_ROUTE_DESTINATIONS
@@ -85,6 +87,34 @@ class TravelRouteTool:
         self._providers = dict(providers)
 
     async def execute(self, query: TravelRouteQuery) -> TravelRouteToolResult:
+        """팬아웃 한 번을 span 하나로 남기고 본체(`_execute`)에 넘긴다.
+
+        **HTTP 호출 하나당 span 하나로 하지 않는다.** Provider가 목적지마다 따로
+        요청을 쏘기 때문에(`asyncio.gather`) 후보 20곳이면 호출도 20번이다. 그걸
+        전부 span으로 만들면 한 턴 observation이 5개에서 25개로 뛰어 무료 티어
+        유닛을 그대로 잡아먹는다. 그래서 **팬아웃 하나를 묶어 집계만 싣는다** —
+        observation은 +1인데 "몇 건 쐈고 몇 건이 추정으로 샜나"가 다 보인다.
+
+        `output`은 `capture_content`가 꺼지면 마스킹된다. 그래서 가장 중요한 신호인
+        실측/추정 비율은 `level`·`status_message`에도 싣는다 — 그 둘은 mask를 타지
+        않는다(`langfuse_tracing` 모듈 docstring).
+
+        좌표는 `query.origin`·`destinations`에만 있고 요약에는 넣지 않는다.
+        """
+        with observe_step("travel_route") as step:
+            result = await self._execute(query)
+            try:
+                summary = summarize_fanout(query, result)
+                step.record(
+                    output=summary,
+                    level=summary["level"],
+                    status_message=summary["headline"],
+                )
+            except Exception:
+                logger.warning("경로 관측 요약 실패(응답 흐름에는 영향 없음)", exc_info=True)
+            return result
+
+    async def _execute(self, query: TravelRouteQuery) -> TravelRouteToolResult:
         if not query.destinations:
             return TravelRouteToolResult(status=ToolStatus.NO_DATA, routes=())
 
@@ -230,6 +260,57 @@ class TravelRouteTool:
         )
 
 
+# 한 span에 실을 원인 코드 종류 상한. 종류가 이보다 많으면 이미 무슨 일이
+# 벌어진 건지 개수만으로 충분하다.
+_SUMMARY_CAUSE_LIMIT = 5
+
+
+def summarize_fanout(query: TravelRouteQuery, result: TravelRouteToolResult) -> dict[str, object]:
+    """경로 팬아웃 한 번을 span에 실을 집계로 접는다.
+
+    **실측/추정 비율이 이 요약의 존재 이유다.** 실측 소요시간이 있는 후보는
+    `_travel_time_score()`로, 없는 후보는 직선거리 `_distance_score()`로 채점된다
+    (`app/domain/scoring.py::_proximity_score`). 즉 추정으로 샌 건수만큼 **같은
+    순위표 안에 서로 다른 자가 섞인다.** 지금은 그 비율을 아무도 모른다 — 경로가
+    실패해도 fallback이 조용히 메워서 응답만 봐서는 드러나지 않는다.
+
+    좌표(`query.origin`·`destinations[].coordinate`)와 place_id는 싣지 않는다.
+    여기서 알고 싶은 건 개수와 분포지 어디를 갔느냐가 아니다.
+    """
+    routes = result.routes
+    requested = len(query.destinations)
+    by_source = Counter(route.source.value for route in routes)
+    estimated = by_source.get(RouteSource.STRAIGHT_LINE_ESTIMATE.value, 0)
+    measured = len(routes) - estimated
+    causes = Counter(route.error_code or "unknown" for route in routes if route.error_code)
+
+    if result.status is ToolStatus.UNAVAILABLE:
+        level = "ERROR"
+    elif estimated or result.status is not ToolStatus.SUCCESS:
+        level = "WARNING"
+    else:
+        level = "DEFAULT"
+
+    return {
+        "mode": query.mode.value,
+        "status": result.status.value,
+        "requested": requested,
+        "returned": len(routes),
+        "measured": measured,
+        "estimated": estimated,
+        # 이 턴의 거리 축이 얼마나 실측으로 채워졌나. 1.0이 아니면 자가 섞였다는 뜻이다.
+        "measured_ratio": round(measured / len(routes), 3) if routes else None,
+        "by_source": dict(sorted(by_source.items())),
+        "by_status": dict(sorted(Counter(route.status.value for route in routes).items())),
+        "error_causes": dict(sorted(causes.items())[:_SUMMARY_CAUSE_LIMIT]),
+        "warnings": list(result.warnings),
+        "error_code": result.error.code if result.error is not None else None,
+        "level": level,
+        # 마스킹을 타지 않는 자리(status_message)에 실을 한 줄.
+        "headline": (f"{query.mode.value} {requested}건 요청 · 실측 {measured} · 추정 {estimated}"),
+    }
+
+
 def _tool_status(routes: tuple[TravelRoute, ...]) -> ToolStatus:
     successful_count = sum(route.status is RouteStatus.SUCCESS for route in routes)
     if successful_count == len(routes) and routes:
@@ -258,4 +339,5 @@ __all__ = [
     "TravelRouteQuery",
     "TravelRouteTool",
     "TravelRouteToolResult",
+    "summarize_fanout",
 ]
