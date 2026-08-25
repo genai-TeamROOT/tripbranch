@@ -20,6 +20,12 @@
   (f) **원문 수집을 꺼도 프롬프트 버전이 남아야 한다.** 버전이 mask를 타면 배포
       환경(CAPTURE_CONTENT=false)에서 버전별 비교가 통째로 불가능해진다 — 3단계의
       목적이 사라진다
+  (g) **원문 수집을 꺼도 `status_message`·`level`이 남아야 한다.** Tool 팬아웃
+      요약(`tools/travel_route.py::summarize_fanout`)이 실측/추정 비율을 여기 싣는
+      근거다. SDK 소스상 mask는 input·output·metadata에만 걸리는데
+      (`_client/span.py::_process_media_and_apply_mask`), **읽어서 내린 결론이라
+      서버에서 되읽어 확인한다.** 여기가 마스킹되면 배포 환경에서 경로가 추정으로
+      새는 것을 볼 방법이 없어진다
 
 참고값(합격/불합격을 가르지 않음): 되읽기까지 걸린 시간.
 
@@ -56,6 +62,8 @@ MARKER = "TRIPBRANCH-VERIFY-MARKER-8f3a2c"
 STEP_NAME = "verify_langfuse_tracing"
 # 실제 슬롯 이름과 겹치지 않게 둔다 — 통계에 섞이면 안 된다.
 VERSION = "verify.slot@0.0.0"
+# status_message에만 싣는 마커. MARKER와 겹치면 (b) 판정이 흐려진다.
+STATUS_MARKER = "verify-headline-2건-실측-1-추정-1"
 
 # 수집이 비동기·배치라 flush 직후엔 아직 조회가 안 될 수 있다.
 _POLL_ATTEMPTS = 10
@@ -84,6 +92,10 @@ def _emit(*, capture_content: bool) -> str | None:
             generation.record(
                 output={"answer": MARKER},
                 usage_details={"input": 11, "output": 22, "total": 33},
+                # (g) — 마스킹을 타는 자리(output)와 안 타는 자리(status_message)를
+                # 같은 observation에 나란히 실어 둔다.
+                level="WARNING",
+                status_message=STATUS_MARKER,
             )
     return trace_id
 
@@ -183,12 +195,8 @@ def main() -> int:
     print(f"되읽기 대기 (최대 {int(_POLL_ATTEMPTS * _POLL_INTERVAL_SECONDS)}초)…")
 
     started = time.perf_counter()
-    on_trace = _fetch(
-        client, on_id, lambda t: any(o.usage_details for o in _observations(t))
-    )
-    off_trace = _fetch(
-        client, off_id, lambda t: any(o.version for o in _observations(t))
-    )
+    on_trace = _fetch(client, on_id, lambda t: any(o.usage_details for o in _observations(t)))
+    off_trace = _fetch(client, off_id, lambda t: any(o.version for o in _observations(t)))
     nested_trace = _fetch(client, nested_id, lambda t: len(_observations(t)) >= 3)
     elapsed = time.perf_counter() - started
     if on_trace is None or off_trace is None or nested_trace is None:
@@ -223,6 +231,16 @@ def main() -> int:
         print(f"[실패] (f) 끈 쪽에 버전이 없다 — mask를 타고 있다. 실제: {off_versions}")
         failures += 1
 
+    off_messages = {getattr(o, "status_message", None) for o in _observations(off_trace)}
+    off_levels = {getattr(o, "level", None) for o in _observations(off_trace)}
+    if STATUS_MARKER in off_messages and "WARNING" in off_levels:
+        print("[통과] (g) 원문을 꺼도 status_message·level이 남음")
+    else:
+        print("[실패] (g) 끈 쪽에 status_message/level이 없다 — mask를 타고 있다.")
+        print(f"        status_message={off_messages} level={off_levels}")
+        print("        Tool 요약의 운영 신호를 여기 실을 수 없다는 뜻이다.")
+        failures += 1
+
     names = {getattr(o, "name", None) for o in _observations(nested_trace)}
     expected = {"verify_root_span", "verify_child_one", "verify_child_two"}
     if expected <= names:
@@ -233,7 +251,7 @@ def main() -> int:
         failures += 1
 
     print()
-    print("불합격" if failures else "합격 — 전송·마스킹·토큰·중첩·버전 모두 확인")
+    print("불합격" if failures else "합격 — 전송·마스킹·토큰·중첩·버전·상태메시지 모두 확인")
     return 1 if failures else 0
 
 
