@@ -574,6 +574,39 @@ export interface FeedbackStatsResponse {
   missing_intent_count: number;
 }
 
+export interface TraceStepStat {
+  step: string;
+  count: number;
+  avg_latency_ms: number | null;
+  max_latency_ms: number | null;
+  error_count: number;
+}
+
+export interface TraceRecentError {
+  session_id: string;
+  run_id: string;
+  step: string;
+  error_type: string;
+  recorded_at: string;
+}
+
+/**
+ * GET /api/trace/stats 응답. backend/app/state/service.py의
+ * TraceStatsResponse와 대응.
+ *
+ * step_stats는 reason_code_counts와 달리 고정된 값 집합이 아니다 —
+ * 등장한 step만 담긴다(step은 A/C/D가 자유롭게 붙이는 문자열이라
+ * B가 미리 알 수 없다). recent_errors는 error_type이 있는 행만
+ * 최근순으로 상위 N건(요청한 recent_errors_limit개).
+ */
+export interface TraceStatsResponse {
+  since: string | null;
+  until: string | null;
+  total: number;
+  step_stats: TraceStepStat[];
+  recent_errors: TraceRecentError[];
+}
+
 export interface AgentResponse {
   llm_output: LLMOutput;
   state: StateApplyResponse;

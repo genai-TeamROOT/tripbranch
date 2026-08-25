@@ -159,11 +159,43 @@ const feedbackStats = {
   missing_intent_count: 1,
 };
 
-/** 개발자 패널이 여는 조회 네 개를 한 곳에서 가른다. */
+const traceStats = {
+  since: null,
+  until: null,
+  total: 6,
+  step_stats: [
+    {
+      step: "llm_interpret",
+      count: 3,
+      avg_latency_ms: 150,
+      max_latency_ms: 220,
+      error_count: 1,
+    },
+    {
+      step: "scoring",
+      count: 3,
+      avg_latency_ms: 80,
+      max_latency_ms: 100,
+      error_count: 0,
+    },
+  ],
+  recent_errors: [
+    {
+      session_id: "sess_a",
+      run_id: "run_1",
+      step: "llm_interpret",
+      error_type: "timeout",
+      recorded_at: "2026-08-25T09:00:00+09:00",
+    },
+  ],
+};
+
+/** 개발자 패널이 여는 조회 다섯 개를 한 곳에서 가른다. */
 function panelBody(url: string) {
   if (url.includes("api-usage")) return usageSnapshot;
   if (url.includes("place-sync/districts")) return syncDistricts;
   if (url.includes("feedback/stats")) return feedbackStats;
+  if (url.includes("trace/stats")) return traceStats;
   return dbStatus;
 }
 
@@ -383,6 +415,62 @@ it("피드백이 하나도 없으면 빈 상태 문구를 보여준다", async (
   renderPage();
 
   expect(await screen.findByText("아직 기록된 피드백이 없습니다.")).toBeInTheDocument();
+});
+
+/** Trace 통계 패널만 스코프해서 찾는다 — findFeedbackStatsPanel과 같은 이유. */
+async function findTracePanel() {
+  const heading = await screen.findByText("Trace 통계");
+  const panel = heading.closest("section");
+  if (!panel) throw new Error("Trace 통계 패널을 찾지 못했습니다.");
+  return panel;
+}
+
+it("Trace 통계 요약 카드를 보여준다", async () => {
+  mockFetch((url) => ({ status: 200, body: panelBody(url) }));
+
+  renderPage();
+  const panel = await findTracePanel();
+
+  expect(within(panel).getByText("6")).toBeInTheDocument();
+  expect(within(panel).getByText("2")).toBeInTheDocument();
+});
+
+it("step별 건수·평균/최대 latency·에러 건수를 보여준다", async () => {
+  mockFetch((url) => ({ status: 200, body: panelBody(url) }));
+
+  renderPage();
+  const panel = await findTracePanel();
+  // "llm_interpret"은 step별 집계 표와 최근 에러 목록 양쪽에 나온다 —
+  // 표(table) 안으로 좁혀서 찾는다.
+  const stepTable = within(panel).getByText("step별 집계").closest("div");
+  if (!stepTable) throw new Error("step별 집계 표를 찾지 못했습니다.");
+
+  expect(within(stepTable).getByText("llm_interpret")).toBeInTheDocument();
+  expect(within(stepTable).getByText("scoring")).toBeInTheDocument();
+  expect(within(stepTable).getByText("150ms")).toBeInTheDocument();
+  expect(within(stepTable).getByText("220ms")).toBeInTheDocument();
+});
+
+it("최근 에러 목록을 보여준다", async () => {
+  mockFetch((url) => ({ status: 200, body: panelBody(url) }));
+
+  renderPage();
+  const panel = await findTracePanel();
+
+  expect(within(panel).getByText("timeout")).toBeInTheDocument();
+});
+
+it("trace가 하나도 없으면 빈 상태 문구를 보여준다", async () => {
+  mockFetch((url) => ({
+    status: 200,
+    body: url.includes("trace/stats")
+      ? { since: null, until: null, total: 0, step_stats: [], recent_errors: [] }
+      : panelBody(url),
+  }));
+
+  renderPage();
+
+  expect(await screen.findByText("아직 기록된 trace가 없습니다.")).toBeInTheDocument();
 });
 
 it("상세조회 TTL은 구별 값이 아니라 머리말에만 쓴다", async () => {
