@@ -57,11 +57,19 @@ class TravelRouteQuery:
 
 @dataclass(frozen=True)
 class TravelRouteToolResult:
+    """`fallback_causes`는 **추정으로 대체된 원인**을 코드별로 센 것이다.
+
+    `error`와 다르다 — `error`는 "Tool이 실패했다"이고, 이쪽은 "채우기는 했는데
+    실측이 아니다"의 이유다. 목적지별 실패는 예외를 안 내고 오기 때문에 예전에는
+    `logger.warning`으로만 남았고, 서버 로그를 뒤지지 않으면 알 수 없었다.
+    """
+
     status: ToolStatus
     routes: tuple[TravelRoute, ...]
     error: ToolError | None = None
     warnings: tuple[str, ...] = ()
     provider_metadata: tuple[ProviderMetadata, ...] = ()
+    fallback_causes: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -199,6 +207,7 @@ class TravelRouteTool:
             for route in primary_result.data.routes
             if route.status is not RouteStatus.SUCCESS and route.place_id in fallback_by_id
         )
+        causes: Counter[str] = Counter()
         if replaced_ids:
             causes = Counter(
                 route.error_code or "unknown"
@@ -218,6 +227,9 @@ class TravelRouteTool:
             routes=routes,
             warnings=(TRAVEL_ROUTE_FALLBACK_WARNING,),
             provider_metadata=(primary_result.metadata, fallback_result.metadata),
+            # 관측이 "왜 추정인가"에 답할 수 있게 원인을 결과에 싣는다. 로그에만
+            # 남기면 대시보드에서 보고도 서버 로그를 따로 뒤져야 한다.
+            fallback_causes=tuple(sorted(causes.items())),
         )
 
     async def _fallback_all(
@@ -255,8 +267,14 @@ class TravelRouteTool:
         return TravelRouteToolResult(
             status=ToolStatus.PARTIAL,
             routes=fallback_result.data.routes,
+            # **primary가 왜 죽었는지를 결과에 담는다.** 예전에는 logger.warning으로만
+            # 남겨서, 관측 span이 "전부 추정으로 대체됨"까지만 말하고 원인은 못 말했다.
+            # 2026-08-25에 도보 실측이 0건인 걸 보고도 쿼터 초과인지 키 문제인지
+            # 서버 로그를 따로 뒤져야 했다 — 그 왕복이 관측의 존재 이유를 깎는다.
+            error=_tool_error(primary_error),
             warnings=(TRAVEL_ROUTE_FALLBACK_WARNING,),
             provider_metadata=(fallback_result.metadata,),
+            fallback_causes=((primary_error.code, len(query.destinations)),),
         )
 
 
@@ -282,7 +300,11 @@ def summarize_fanout(query: TravelRouteQuery, result: TravelRouteToolResult) -> 
     by_source = Counter(route.source.value for route in routes)
     estimated = by_source.get(RouteSource.STRAIGHT_LINE_ESTIMATE.value, 0)
     measured = len(routes) - estimated
-    causes = Counter(route.error_code or "unknown" for route in routes if route.error_code)
+    # **대체된 뒤의 routes를 읽으면 안 된다** — 전부 추정 성공이라 error_code가 비어
+    # 있다. 2026-08-25에 그렇게 짜서 "추정 11건"은 나오는데 원인은 계속 빈칸이었다.
+    causes = dict(result.fallback_causes) or Counter(
+        route.error_code or "unknown" for route in routes if route.error_code
+    )
 
     if result.status is ToolStatus.UNAVAILABLE:
         level = "ERROR"
@@ -303,11 +325,18 @@ def summarize_fanout(query: TravelRouteQuery, result: TravelRouteToolResult) -> 
         "by_source": dict(sorted(by_source.items())),
         "by_status": dict(sorted(Counter(route.status.value for route in routes).items())),
         "error_causes": dict(sorted(causes.items())[:_SUMMARY_CAUSE_LIMIT]),
+        # 원인이 하나뿐이면 headline에 얹을 값. 대부분 그렇다(쿼터·키·타임아웃).
+        "primary_cause": next(iter(sorted(causes)), None),
         "warnings": list(result.warnings),
+        # primary 실패 원인. 전부 추정으로 대체된 턴에서 "왜"에 답하는 유일한 값이다.
         "error_code": result.error.code if result.error is not None else None,
+        "error_detail": result.error.message if result.error is not None else None,
         "level": level,
         # 마스킹을 타지 않는 자리(status_message)에 실을 한 줄.
-        "headline": (f"{query.mode.value} {requested}건 요청 · 실측 {measured} · 추정 {estimated}"),
+        "headline": (
+            f"{query.mode.value} {requested}건 요청 · 실측 {measured} · 추정 {estimated}"
+            + (f" · {next(iter(sorted(causes)))}" if causes else "")
+        ),
     }
 
 

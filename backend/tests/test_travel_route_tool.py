@@ -405,3 +405,86 @@ async def test_observation_failure_does_not_break_the_lookup(
 
     assert result.status is ToolStatus.SUCCESS
     assert len(result.routes) == 2
+
+
+def test_summary_names_the_cause_when_everything_fell_back() -> None:
+    """전부 추정으로 대체된 턴에서 "왜"에 답하는 값이다.
+
+    2026-08-25에 도보 실측이 0건인 걸 span으로 보고도 원인(카카오 쿼터 초과)은
+    서버 로그를 따로 뒤져야 알았다. `_fallback_all()`이 primary 에러를 결과에 안
+    담고 logger.warning으로만 남겼기 때문이다. 그 왕복을 없앤다.
+    """
+    result = TravelRouteToolResult(
+        status=ToolStatus.PARTIAL,
+        # 대체가 끝난 routes다 — 전부 추정 성공이라 error_code가 비어 있다.
+        # 여기서 원인을 읽으려 하면 계속 빈칸이 나온다(2026-08-25에 그렇게 짰다).
+        routes=(_route("first", RouteSource.STRAIGHT_LINE_ESTIMATE),),
+        warnings=(TRAVEL_ROUTE_FALLBACK_WARNING,),
+        fallback_causes=(("provider_quota_exceeded", 1),),
+    )
+
+    summary = summarize_fanout(_query(), result)
+
+    assert summary["error_causes"] == {"provider_quota_exceeded": 1}
+    assert summary["primary_cause"] == "provider_quota_exceeded"
+    # status_message는 mask를 안 탄다 — 원문 수집을 꺼도 원인이 남아야 한다.
+    assert str(summary["headline"]).endswith("provider_quota_exceeded")
+
+
+@pytest.mark.asyncio
+async def test_whole_fanout_failure_carries_the_primary_error(caplog) -> None:
+    """primary가 통째로 죽으면 그 원인이 결과에 실려야 한다."""
+
+    class _Dead:
+        async def get_routes(self, origin, destinations, *, mode=TravelMode.WALKING, radius_m=None):
+            raise ProviderTimeoutError("Kakao")
+
+    tool = _tool(_Dead(), FakeWalkingRouteProvider(walking_speed_mps=1.2))
+    result = await tool.execute(_query())
+
+    assert result.status is ToolStatus.PARTIAL
+    assert result.error is not None
+    summary = summarize_fanout(_query(), result)
+    assert summary["error_code"] == result.error.code
+    # primary_cause는 Provider가 낸 원본 코드다 — ToolError.code("unavailable")보다
+    # 화면에서 원인을 좁히는 데 낫다.
+    assert summary["primary_cause"] == "provider_timeout"
+    assert summary["estimated"] == 2
+
+
+@pytest.mark.asyncio
+async def test_per_destination_failures_surface_their_cause() -> None:
+    """실제로 타는 경로는 이쪽이다 — primary가 예외 없이 목적지별로 실패한다.
+
+    2026-08-25에 카카오 도보 쿼터가 초과됐을 때 이 분기를 탔다. `_fallback_all`이
+    아니라서 primary 에러가 결과에 없었고, span은 "추정 3건"까지만 말하고 원인은
+    빈칸이었다. 대시보드를 보고도 서버 로그를 따로 뒤져야 했다.
+    """
+
+    class _PerDestinationFailure:
+        async def get_routes(self, origin, destinations, *, mode=TravelMode.WALKING, radius_m=None):
+            return provider_result(
+                TravelRouteBatch(
+                    routes=tuple(
+                        TravelRoute(
+                            place_id=d.place_id,
+                            mode=mode,
+                            status=RouteStatus.UNAVAILABLE,
+                            source=RouteSource.KAKAO_WALKING,
+                            error_code="provider_quota_exceeded",
+                        )
+                        for d in destinations
+                    )
+                ),
+                source=ProviderSource.KAKAO_WALKING_ROUTE,
+                status=ProviderStatus.NO_DATA,
+            )
+
+    tool = _tool(_PerDestinationFailure(), FakeWalkingRouteProvider(walking_speed_mps=1.2))
+    result = await tool.execute(_query())
+
+    assert result.fallback_causes == (("provider_quota_exceeded", 2),)
+    summary = summarize_fanout(_query(), result)
+    assert summary["measured_ratio"] == 0
+    assert summary["error_causes"] == {"provider_quota_exceeded": 2}
+    assert str(summary["headline"]).endswith("provider_quota_exceeded")
