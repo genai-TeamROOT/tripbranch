@@ -274,6 +274,7 @@ def observe_generation(
     name: str,
     *,
     model: str | None = None,
+    version: str | None = None,
     input: Any = None,
 ) -> Iterator[_Recorder | _NoopRecorder]:
     """LLM 호출 하나를 generation으로 남긴다.
@@ -283,6 +284,10 @@ def observe_generation(
 
     `input`·`output`은 `capture_content`가 꺼져 있으면 mask가 치환한다. 호출부는
     가리는 걸 신경 쓰지 않고 있는 그대로 넘긴다 — 판단을 한 곳에 모아 둔다.
+
+    `version`은 **mask를 타지 않는다.** 프롬프트 버전이 여기 들어가는 이유가 그것이다 —
+    원문 수집을 꺼도 "어느 버전이 이 지연·토큰을 냈나"는 남아야 배포 환경에서도
+    버전 비교가 된다(모듈 docstring).
     """
     client = get_tracer()
     if client is None:
@@ -291,7 +296,7 @@ def observe_generation(
 
     def factory() -> Any:
         return client.start_as_current_observation(
-            as_type="generation", name=name, model=model, input=input
+            as_type="generation", name=name, model=model, version=version, input=input
         )
 
     with _guard(factory) as generation:

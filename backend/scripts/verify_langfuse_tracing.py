@@ -17,9 +17,16 @@
       실측에서 실제로 깨져 있었다 — 속성만 전파하고 루트 span을 안 만들면 부모가
       없는 observation이 저마다 자기가 trace 루트가 되어, 한 턴이 LLM 호출 수만큼
       조각난다. 화면에서 "이 턴이 무슨 일을 했나"를 볼 수 없게 된다
+  (f) **원문 수집을 꺼도 프롬프트 버전이 남아야 한다.** 버전이 mask를 타면 배포
+      환경(CAPTURE_CONTENT=false)에서 버전별 비교가 통째로 불가능해진다 — 3단계의
+      목적이 사라진다
 
-참고값(합격/불합격을 가르지 않음): 되읽기까지 걸린 시간. 수집이 비동기·배치라
-바로 안 보일 수 있어 몇 초 기다린다.
+참고값(합격/불합격을 가르지 않음): 되읽기까지 걸린 시간.
+
+⚠️ **조회 성공을 "데이터가 다 왔다"로 보면 안 된다.** 수집이 비동기라 trace는 이미
+있는데 observation 필드(usage_details 등)는 아직 안 채워진 중간 상태가 있다. 실제로
+그 상태를 (d) 실패로 잘못 읽은 적이 있다 — 값은 나중에 확인하니 멀쩡히 들어가 있었다.
+그래서 **기다리는 조건을 "조회 성공"이 아니라 "볼 값이 도착함"으로 둔다.**
 
 실행: `cd backend && .venv/bin/python -m scripts.verify_langfuse_tracing`
 서버는 필요 없다. `.env`에 LANGFUSE_ENABLED=true와 키가 있어야 한다.
@@ -30,6 +37,7 @@ from __future__ import annotations
 
 import sys
 import time
+from collections.abc import Callable
 from typing import Any
 
 from app.config import settings
@@ -46,6 +54,8 @@ from app.observability.langfuse_tracing import (
 # 실제 발화처럼 보이지 않으면서 우연히 겹치지 않을 문자열.
 MARKER = "TRIPBRANCH-VERIFY-MARKER-8f3a2c"
 STEP_NAME = "verify_langfuse_tracing"
+# 실제 슬롯 이름과 겹치지 않게 둔다 — 통계에 섞이면 안 된다.
+VERSION = "verify.slot@0.0.0"
 
 # 수집이 비동기·배치라 flush 직후엔 아직 조회가 안 될 수 있다.
 _POLL_ATTEMPTS = 10
@@ -67,6 +77,7 @@ def _emit(*, capture_content: bool) -> str | None:
         with observe_generation(
             STEP_NAME,
             model="verification-not-a-real-model",
+            version=VERSION,
             input={"user_input": MARKER},
         ) as generation:
             trace_id = client.get_current_trace_id()
@@ -95,15 +106,27 @@ def _emit_nested() -> str | None:
     return trace_id
 
 
-def _fetch(client: Any, trace_id: str) -> Any | None:
+def _fetch(client: Any, trace_id: str, ready: Callable[[Any], bool]) -> Any | None:
+    """`ready`가 참이 될 때까지 되읽는다. 끝내 안 되면 마지막으로 받은 것을 돌려준다.
+
+    마지막 것을 돌려주는 이유: `None`을 주면 "수집이 안 됐다"와 "값이 안 실렸다"가
+    구분되지 않아, 판정 메시지가 원인을 못 짚는다.
+    """
+    latest: Any | None = None
     for attempt in range(_POLL_ATTEMPTS):
         try:
-            return client.api.trace.get(trace_id)
+            latest = client.api.trace.get(trace_id)
+            if ready(latest):
+                return latest
         except Exception:
-            if attempt == _POLL_ATTEMPTS - 1:
-                return None
+            pass
+        if attempt < _POLL_ATTEMPTS - 1:
             time.sleep(_POLL_INTERVAL_SECONDS)
-    return None
+    return latest
+
+
+def _observations(trace: Any) -> list[Any]:
+    return list(getattr(trace, "observations", None) or [])
 
 
 def _dump(trace: Any) -> str:
@@ -119,12 +142,7 @@ def _dump(trace: Any) -> str:
 
 
 def _has_usage(trace: Any) -> bool:
-    for observation in getattr(trace, "observations", None) or []:
-        if getattr(observation, "usage_details", None):
-            return True
-        if getattr(observation, "total_tokens", None):
-            return True
-    return False
+    return any(getattr(o, "usage_details", None) for o in _observations(trace))
 
 
 def main() -> int:
@@ -165,9 +183,13 @@ def main() -> int:
     print(f"되읽기 대기 (최대 {int(_POLL_ATTEMPTS * _POLL_INTERVAL_SECONDS)}초)…")
 
     started = time.perf_counter()
-    on_trace = _fetch(client, on_id)
-    off_trace = _fetch(client, off_id)
-    nested_trace = _fetch(client, nested_id)
+    on_trace = _fetch(
+        client, on_id, lambda t: any(o.usage_details for o in _observations(t))
+    )
+    off_trace = _fetch(
+        client, off_id, lambda t: any(o.version for o in _observations(t))
+    )
+    nested_trace = _fetch(client, nested_id, lambda t: len(_observations(t)) >= 3)
     elapsed = time.perf_counter() - started
     if on_trace is None or off_trace is None or nested_trace is None:
         print("[실패] 되읽기 실패 — 수집이 안 됐거나 지연이 길다.")
@@ -194,7 +216,14 @@ def main() -> int:
         print("[실패] (d) 토큰이 안 실렸다 — 비용 화면이 빈다.")
         failures += 1
 
-    names = {getattr(o, "name", None) for o in getattr(nested_trace, "observations", None) or []}
+    off_versions = {getattr(o, "version", None) for o in _observations(off_trace)}
+    if VERSION in off_versions:
+        print(f"[통과] (f) 원문을 꺼도 버전이 남음 ({VERSION})")
+    else:
+        print(f"[실패] (f) 끈 쪽에 버전이 없다 — mask를 타고 있다. 실제: {off_versions}")
+        failures += 1
+
+    names = {getattr(o, "name", None) for o in _observations(nested_trace)}
     expected = {"verify_root_span", "verify_child_one", "verify_child_two"}
     if expected <= names:
         print(f"[통과] (e) 한 trace 안에 루트+자식 {len(names)}개 — 턴이 조각나지 않는다")
@@ -204,7 +233,7 @@ def main() -> int:
         failures += 1
 
     print()
-    print("불합격" if failures else "합격 — 전송·마스킹·토큰·중첩 모두 확인")
+    print("불합격" if failures else "합격 — 전송·마스킹·토큰·중첩·버전 모두 확인")
     return 1 if failures else 0
 
 

@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field, ValidationError
 from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
 from app.observability.api_usage import record_call
 from app.observability.langfuse_tracing import observe_generation
+from app.prompts.registry import operation_prompt_version
 from app.providers import gemini_prompts
 from app.providers.contracts import ProviderResult, ProviderSource, provider_result
 from app.schedule.schemas import (
@@ -893,6 +894,8 @@ class RealGeminiProvider:
         with observe_generation(
             operation,
             model=model_name,
+            # 어느 프롬프트 슬롯·버전이 이 호출을 냈는지. 원문 수집을 꺼도 남는다.
+            version=operation_prompt_version(operation),
             input={"system_instruction": system_instruction, "user_input": user_input},
         ) as generation:
             return await self._run_attempts(
