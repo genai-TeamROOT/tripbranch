@@ -1,8 +1,15 @@
-/* COMPARE(TRAVEL_TIME) 카드가 장소별 거리·수단별 소요시간과 최단 수단 배지를 보여주는지 검증한다. */
+/* COMPARE(TRAVEL_TIME) 카드가 장소별 거리·수단별 소요시간과 최단 수단 배지를 보여주는지,
+ * 그리고 카드를 누르면 네이버 지도 길찾기 딥링크가 열리는지(TP-120) 검증한다. */
 
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { vi } from "vitest";
 import type { ComparisonItem, ComparisonResult } from "../../types";
 import { CompareResultCards } from "./CompareResultCards";
+import { openNaverDirections } from "../../utils/naverDirections";
+
+vi.mock("../../utils/naverDirections", () => ({
+  openNaverDirections: vi.fn(),
+}));
 
 function makeItem(overrides: Partial<ComparisonItem>): ComparisonItem {
   return {
@@ -72,4 +79,64 @@ it("이동 경로를 확인하지 못한 장소는 안내 문구만 보여준다
 
   render(<CompareResultCards comparison={comparison} />);
   expect(screen.getByText("이동 경로를 확인하지 못했어요.")).toBeInTheDocument();
+});
+
+it("카드를 누르면 현재 위치에서 그 장소까지 네이버 지도 길찾기를 연다", () => {
+  const comparison: ComparisonResult = {
+    criteria: "travel_time",
+    items: [
+      makeItem({
+        place_id: "a",
+        place_name: "서울공예박물관",
+        latitude: 37.5758,
+        longitude: 126.9843,
+        travel_walking_minutes: 12,
+      }),
+    ],
+  };
+
+  render(<CompareResultCards comparison={comparison} deviceLocation="37.5788,126.9770" />);
+
+  const card = screen.getByRole("button", { name: "서울공예박물관까지 네이버 지도로 길찾기" });
+  expect(screen.getByText("🧭 네이버 지도로 길찾기 →")).toBeInTheDocument();
+
+  fireEvent.click(card);
+
+  expect(openNaverDirections).toHaveBeenCalledWith({
+    deviceLocation: "37.5788,126.9770",
+    destLat: 37.5758,
+    destLng: 126.9843,
+    destName: "서울공예박물관",
+  });
+});
+
+it("좌표가 없는 장소는 클릭할 수 없다", () => {
+  const comparison: ComparisonResult = {
+    criteria: "travel_time",
+    items: [makeItem({ place_id: "a", place_name: "장소 A", travel_walking_minutes: 5 })],
+  };
+
+  render(<CompareResultCards comparison={comparison} deviceLocation="37.5788,126.9770" />);
+
+  expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  expect(screen.queryByText("🧭 네이버 지도로 길찾기 →")).not.toBeInTheDocument();
+});
+
+it("현재 위치가 없으면 좌표가 있어도 클릭할 수 없다", () => {
+  const comparison: ComparisonResult = {
+    criteria: "travel_time",
+    items: [
+      makeItem({
+        place_id: "a",
+        place_name: "장소 A",
+        latitude: 37.5758,
+        longitude: 126.9843,
+        travel_walking_minutes: 5,
+      }),
+    ],
+  };
+
+  render(<CompareResultCards comparison={comparison} deviceLocation={null} />);
+
+  expect(screen.queryByRole("button")).not.toBeInTheDocument();
 });
