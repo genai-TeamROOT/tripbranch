@@ -322,10 +322,19 @@ function LlmExecutionCards({ execution }: { execution: LLMExecutionMetadata | nu
               응답 모델: {call.served_model ?? "응답 없음(실패)"}
               {usedFallback ? " · 폴백 시도" : ""}
             </p>
-            {call.retry_count ? (
-              <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
-                같은 모델로 {call.retry_count}회 재시도 후{" "}
-                {call.served_model ? "성공" : "실패"} — 소요 시간에 재시도 대기가 포함돼 있어요.
+            {call.retry_count != null ? (
+              <p
+                className={
+                  call.retry_count > 0
+                    ? "mt-1 text-xs text-amber-700 dark:text-amber-300"
+                    : "mt-1 text-xs text-gray-500 dark:text-gray-400"
+                }
+              >
+                {call.retry_count > 0
+                  ? `시도 ${call.retry_count + 1}회 끝에 ${
+                      call.served_model ? "성공" : "실패"
+                    } — 소요 시간에 재시도 대기가 포함돼 있어요.`
+                  : "시도 1회로 끝났어요 — 재시도 없음."}
               </p>
             ) : null}
           </section>
@@ -618,9 +627,15 @@ function TimingCard({
             <p key={call.operation} className="mt-1 text-gray-700 dark:text-gray-200">
               {call.operation} · {call.served_model ?? "응답 실패"}
               {call.latency_ms != null ? ` · ${formatDuration(call.latency_ms)}` : ""}
-              {call.retry_count ? (
-                <span className="ml-1 rounded bg-amber-100 px-1 py-0.5 text-[11px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
-                  재시도 {call.retry_count}회
+              {call.retry_count != null ? (
+                <span
+                  className={
+                    call.retry_count > 0
+                      ? "ml-1 rounded bg-amber-100 px-1 py-0.5 text-[11px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
+                      : "ml-1 rounded bg-gray-100 px-1 py-0.5 text-[11px] font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-300"
+                  }
+                >
+                  시도 {call.retry_count + 1}회
                 </span>
               ) : null}
             </p>
