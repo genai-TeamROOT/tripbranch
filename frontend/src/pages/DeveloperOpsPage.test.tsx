@@ -231,7 +231,7 @@ it("호출량 표와 일일 한도 게이지를 보여준다", async () => {
 
   // detailIntro2는 호출량 표와 DB 갱신 패널의 한도 경고 문구 양쪽에 나온다.
   expect((await screen.findAllByText("detailIntro2")).length).toBeGreaterThan(0);
-  expect(screen.getByText("512 / 1000")).toBeInTheDocument();
+  expect(await screen.findByText("512 / 1000")).toBeInTheDocument();
   // 누적 호출과 오늘 호출 두 카드에 같은 값이 뜬다.
   expect(screen.getAllByText("517")).toHaveLength(2);
 });
@@ -343,11 +343,17 @@ it("구별 무장애 행 수를 places 옆에 함께 보여준다", async () => 
 
 /** 피드백 통계 패널만 스코프해서 찾는다 — 다른 패널도 "2"·"3" 같은 짧은
  * 숫자를 표시하므로(예: ApiUsagePanel의 실패 카운트) 전역 getByText는
- * 우연히 다른 패널의 숫자와 겹칠 수 있다. */
+ * 우연히 다른 패널의 숫자와 겹칠 수 있다.
+ *
+ * 머리말("피드백 통계")은 /api/feedback/stats 응답이 오기 전에도 그려지므로,
+ * 머리말만 보고 반환하면 뒤따르는 동기 getByText가 "불러오는 중…"만 든 패널을
+ * 훑다가 실패한다. 요약 카드의 "전체"가 나타날 때까지 기다린 뒤 반환한다 —
+ * 이 카드는 FeedbackStatsPanel이 stats를 받은 뒤에만 그린다. */
 async function findFeedbackStatsPanel() {
   const heading = await screen.findByText("피드백 통계");
   const panel = heading.closest("section");
   if (!panel) throw new Error("피드백 통계 패널을 찾지 못했습니다.");
+  await within(panel).findByText("전체");
   return panel;
 }
 
@@ -417,11 +423,14 @@ it("피드백이 하나도 없으면 빈 상태 문구를 보여준다", async (
   expect(await screen.findByText("아직 기록된 피드백이 없습니다.")).toBeInTheDocument();
 });
 
-/** Trace 통계 패널만 스코프해서 찾는다 — findFeedbackStatsPanel과 같은 이유. */
+/** Trace 통계 패널만 스코프해서 찾는다 — findFeedbackStatsPanel과 같은 이유다.
+ * 응답을 기다리는 것도 같다: 요약 카드의 "전체 실행"이 나타나야 stats가 들어온
+ * 상태다. */
 async function findTracePanel() {
   const heading = await screen.findByText("Trace 통계");
   const panel = heading.closest("section");
   if (!panel) throw new Error("Trace 통계 패널을 찾지 못했습니다.");
+  await within(panel).findByText("전체 실행");
   return panel;
 }
 
