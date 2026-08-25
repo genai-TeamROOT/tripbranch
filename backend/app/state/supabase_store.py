@@ -122,6 +122,31 @@ class SupabaseStateStore:
             raise StateStoreError("invalid row shape")
         return row
 
+    # PostgREST(Supabase REST)는 명시적으로 요청하지 않아도 응답을 기본
+    # 1000행으로 자른다(Supabase 프로젝트 API 설정의 max rows). "전체"를
+    # 반환해야 하는 통계 조회(list_traces_for_stats/list_feedback_for_stats)가
+    # 이 한도에 걸리면 총 건수·집계가 조용히 잘못된 값을 낸다 — limit/offset을
+    # 페이지 단위로 넘겨가며 끝까지 모은다. 세션 범위 조회(get_traces 등)는
+    # 애초에 이 정도로 커지지 않아 대상이 아니다.
+    _STATS_PAGE_SIZE = 1000
+
+    def _fetch_all_rows(self, path: str, params: Mapping[str, str]) -> list[Mapping[str, object]]:
+        rows: list[Mapping[str, object]] = []
+        offset = 0
+        while True:
+            page_params = dict(params)
+            page_params["limit"] = str(self._STATS_PAGE_SIZE)
+            page_params["offset"] = str(offset)
+            response = self._request("GET", path, params=page_params)
+            payload = self._json(response)
+            if not isinstance(payload, list):
+                raise StateStoreError(f"invalid {path} response")
+            rows.extend(payload)
+            if len(payload) < self._STATS_PAGE_SIZE:
+                break
+            offset += self._STATS_PAGE_SIZE
+        return rows
+
     # ------------------------------------------------------------ AgentState
 
     def get_state(self, session_id: str) -> AgentState | None:
@@ -254,6 +279,28 @@ class SupabaseStateStore:
         except Exception:
             raise StateStoreError("invalid trace_records row") from None
 
+    def list_traces_for_stats(
+        self, since: datetime | None = None, until: datetime | None = None
+    ) -> list[TraceRecord]:
+        """세션을 가리지 않고 전량을 읽는다(TP-157). response_feedback의
+        list_feedback_for_stats와 동일한 이유로 집계는 여기가 아니라
+        호출부(service.py)가 Python에서 한다."""
+        params: dict[str, str] = {"select": "*", "order": "recorded_at.asc"}
+        if since is not None:
+            params["recorded_at"] = f"gte.{since.isoformat()}"
+        if until is not None:
+            until_filter = f"lt.{until.isoformat()}"
+            if "recorded_at" in params:
+                since_filter = params.pop("recorded_at")
+                params["and"] = f"(recorded_at.{since_filter},recorded_at.{until_filter})"
+            else:
+                params["recorded_at"] = until_filter
+        rows = self._fetch_all_rows("/trace_records", params)
+        try:
+            return [TraceRecord.model_validate(row) for row in rows]
+        except Exception:
+            raise StateStoreError("invalid trace_records row") from None
+
     # ------------------------------------------------------------ Feedback
 
     def append_feedback(self, records: list[FeedbackRecord]) -> None:
@@ -301,6 +348,32 @@ class SupabaseStateStore:
             raise StateStoreError("invalid response_feedback response")
         try:
             return [FeedbackRecord.model_validate(row) for row in payload]
+        except Exception:
+            raise StateStoreError("invalid response_feedback row") from None
+
+    def list_feedback_for_stats(
+        self, since: datetime | None = None, until: datetime | None = None
+    ) -> list[FeedbackRecord]:
+        """rating을 가리지 않고 전량을 읽는다(TP-146). 집계는 호출부(service.py)가
+        Python에서 한다 — PostgREST group-by/count()는 이 프로젝트 설정에서
+        기본 활성화가 보장되지 않고, 다른 조회 메서드도 전부 원본 행을 그대로
+        FeedbackRecord로 검증해 반환하는 방식을 따르고 있어 그 패턴을 유지한다.
+        """
+        params: dict[str, str] = {"select": "*", "order": "recorded_at.asc"}
+        if since is not None:
+            params["recorded_at"] = f"gte.{since.isoformat()}"
+        if until is not None:
+            until_filter = f"lt.{until.isoformat()}"
+            if "recorded_at" in params:
+                # PostgREST는 같은 컬럼에 여러 조건을 걸 때 and=(...) 문법이
+                # 필요하다 — 쿼리 파라미터 하나에 값 하나만 담을 수 있어서다.
+                since_filter = params.pop("recorded_at")
+                params["and"] = f"(recorded_at.{since_filter},recorded_at.{until_filter})"
+            else:
+                params["recorded_at"] = until_filter
+        rows = self._fetch_all_rows("/response_feedback", params)
+        try:
+            return [FeedbackRecord.model_validate(row) for row in rows]
         except Exception:
             raise StateStoreError("invalid response_feedback row") from None
 

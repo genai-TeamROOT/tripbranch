@@ -2636,6 +2636,204 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   응답으로 내보내는 배선(`info_field_rules` 계약 키), (c) 무장애 적재 건수는 job
   결과에만 남고 `place_sync_runs`에는 기록하지 않는다.
 
+### D-078 — 만료된 익명 계정(`auth.users`)을 30일 기준으로 정리한다 ([B] auth.users 정리)
+
+- 상태: `Accepted` — 구현 완료.
+- 배경: D-074(TP-134)가 B 소유 4개 테이블(`agent_states` 등)의 만료 세션 정리는
+  닫았지만, 실제 로그인 주체인 Supabase Auth의 익명 계정(`auth.users`) 자체는
+  그때 범위에서 명시적으로 제외했다(D-074 결정 5). `guest-auth-design.md` 10절도
+  "`auth.users`의 익명 계정 자체를 지우는 스케줄은 여전히 별도 과제로 남아
+  있다"고 이미 표시해뒀다. 익명 계정은 `signInAnonymously()`를 호출할 때마다
+  하나씩 생겨(D-063 배경) 정리하지 않으면 무기한 쌓인다.
+- 결정:
+  1. 기준: `auth.users.created_at`이 기준 일수(기본 30일, `--days`로 조정
+     가능)보다 오래되면 정리 대상. `last_sign_in_at`이 아니라 `created_at`을
+     쓰는 이유는, B 소유 테이블처럼 "마지막 활동 시각"을 이 레벨에서 알 방법이
+     없어서다(FK가 없어 join하지 않기로 했으므로, D-063 결정 4) — Supabase가
+     공식 문서에서 권장하는 정리 쿼리(`delete from auth.users where
+     is_anonymous is true and created_at < now() - interval '30 days'`)와
+     동일한 기준을 그대로 따른다.
+  2. 대상: `auth.users` 중 `is_anonymous = true`인 행만. 실제 가입자(이메일·
+     소셜 로그인)는 대상에서 완전히 제외.
+  3. 판별: PostgREST가 아니라 Supabase Auth Admin API(GoTrue,
+     `{SUPABASE_URL}/auth/v1/admin/*`)로 접근한다 — `auth.users`는 PostgREST가
+     노출하는 스키마가 아니다. Admin API는 `apikey` 헤더만으로는 인증되지
+     않고 `Authorization: Bearer <secret key>`가 함께 필요해, 기존
+     `SupabaseStateStore`의 PostgREST 클라이언트와는 별도로 작은
+     `AuthAdminClient`를 새로 구현했다.
+  4. 실행 방식: D-074와 동일하게 Supabase pg_cron이 아니라
+     `backend/scripts/cleanup_anonymous_users.py` 수동/외부 스케줄 스크립트로
+     구현(`--days`, `--dry-run` 지원). D-074의 정리 스크립트와는 완전히
+     별개로 실행되며 순서를 강제할 필요가 없다(D-063 결정 4, FK 없음).
+- 근거: 두 정리 작업(D-074, D-078)을 하나로 합치지 않은 이유는 D-074에서 이미
+  "채택하지 않은 것"으로 명시해뒀다 — Admin API 접근 권한 확보와 PostgREST
+  접근 권한이 성격이 달라 배포·권한 설정이 분리되는 편이 낫다.
+- 채택하지 않은 것:
+  - **`last_sign_in_at` 기준 판정** — GoTrue 응답에 필드는 있지만, 이 필드로
+    "활동"을 판정하면 익명 로그인 이후 재로그인이 없는 정상 사용 패턴(토큰이
+    localStorage에 남아 재사용됨, `guest-auth-design.md` 3절)까지 오래된
+    것으로 오판할 위험이 있어 Supabase 공식 권장 기준(`created_at`)을 그대로
+    따랐다.
+  - **D-074 스크립트에 통합** — 위 근거 참고.
+- 검증: 2026-08-25 실 Supabase 프로젝트에서 `--dry-run` 실행. `--days 30`
+  (기본값)은 대상 0건 — 이 프로젝트에 아직 30일 넘은 익명 계정이 없었을
+  뿐임을 `--days 0`으로 재확인(13건, 전부 8/19~8/24 생성 — created_at 필터가
+  의도대로 동작함을 확인). 단위 테스트 14건도 로컬(Python 3.11)에서 통과.
+- 남은 것: 실제 운영에서 스크립트를 얼마나 자주 돌릴지는 D-074와 마찬가지로
+  트래픽이 늘어난 뒤 다시 판단한다.
+- 상세: `backend/scripts/cleanup_anonymous_users.py`,
+  `backend/tests/test_cleanup_anonymous_users_cli.py`, `docs/design/
+  guest-auth-design.md` 10절
+
+### D-079 — 피드백 통계를 dev-ops 패널에서 볼 수 있게 한다 (TP-146)
+
+- 상태: `Accepted` — 구현 완료.
+- 배경: `response_feedback`에 `rating`(like/dislike)·`reason_code`(7개 고정값,
+  dislike에만)·`intent`(자유 텍스트)가 이미 쌓이고 있었지만, 조회는
+  `GET /feedback/dislikes`로 원시 리스트를 가져오는 것뿐이었다. 집계
+  API가 없었고, 있어도 지금까지 볼 화면이 없었다 — API만 추가하면
+  "쌓이는데 아무도 안 보는" 문제를 API 레벨에서 반복하는 셈이라 dev-ops
+  패널 노출까지 한 단위로 묶었다.
+- 결정:
+  1. `GET /feedback/stats` 신규(`since`/`until`/`top_intents` 쿼리 파라미터,
+     전부 선택). 응답은 rating별 전체 건수, reason_code별 건수(dislike만
+     — 표준 7개 값 + 사유 없이 남긴 dislike를 위한 `unclassified`, 항상
+     8개 키 전부 포함), intent별 건수(상위 `top_intents`개 + 롱테일
+     `other_intent_count` + intent 자체가 없는 `missing_intent_count`)로
+     구성.
+  2. 집계는 SQL group-by가 아니라 Python에서 한다. 다른 조회
+     메서드(`list_dislikes` 등)도 전부 원본 행을 `FeedbackRecord`로 그대로
+     돌려주는 방식을 따르고 있어 그 패턴을 유지했고, PostgREST의
+     `count()` 집계가 이 프로젝트 설정에서 기본 활성화된다는 보장이
+     없었다. `StateStore`에 `list_feedback_for_stats(since, until)`을
+     새로 추가했다 — `list_dislike_feedback`과 달리 rating을 가리지
+     않고(like까지) `limit`도 없이 전량을 반환한다.
+  3. Supabase 구현은 `since`/`until` 동시 지정 시 PostgREST `and=(...)`
+     문법으로 `recorded_at` 두 조건을 합성한다(같은 컬럼에 조건을 두 개
+     걸 때 쿼리 파라미터 하나에 값 하나만 담을 수 있어서다).
+  4. 프론트: `frontend/src/api/feedback.ts`에 `fetchFeedbackStats()` 추가
+     — 애초 카드 초안에는 `api/dev.ts`로 적었지만, 구현하면서 보니 이
+     엔드포인트는 `routes/dev.py`가 아니라 `routes/feedback.py` 소속이라
+     `api/feedback.ts`가 맞는 위치였다(`api/dev.ts`의 다른 함수들과 달리
+     `APP_ENV=local` 게이팅도 없다 — `feedback_router`는 무조건
+     `include_router`된다). `FeedbackStatsPanel.tsx`를 기존
+     `ApiUsagePanel`/`PlaceSyncPanel`/`DbStatusPanel`과 동일한 패턴(페이지가
+     fetch, 패널은 props만 받아 렌더링)으로 신설하고 `DeveloperOpsPage`에
+     네 번째 패널로 배선.
+- 근거: LLMOps Trace 조회 API(같은 시점에 검토했던 다른 후보)는 이번
+  범위에 넣지 않았다 — `trace_records`는 `response_feedback`과 다른
+  테이블·다른 도메인이라, 앞서 정리한 원칙(테이블/도메인이 독립이면
+  카드도 분리)대로 별도 카드로 남겨뒀다.
+- 채택하지 않은 것:
+  - **PostgREST group-by 집계** — 위 결정 2 참고.
+  - **API만 추가하고 화면은 나중에** — 이번 카드가 막 지적한 "데이터는
+    쌓이는데 아무도 안 본다"는 문제를 그대로 반복하게 된다.
+- 검증: 2026-08-25 실 Supabase 프로젝트(`STATE_STORE_BACKEND=supabase`)에서
+  브라우저 + curl로 확인. `POST /feedback`으로 넣은 값이 실제로 DB에
+  적재되고, 파라미터 없는 `GET /feedback/stats`가 정상 집계해 dev-ops
+  패널에 표시되는 것까지 확인. `since`/`until`을 동시에 넣어 PostgREST
+  `and=(...)` 문법을 타는 경로는 단위 테스트(mock)로만 검증했고 실
+  Supabase로는 별도 확인하지 않았다 — 패널에 날짜 UI가 아직 없어(아래
+  "남은 것") 실사용에서도 당분간 이 경로를 안 타므로, 그 UI를 붙일 때
+  같이 확인하기로 한다.
+- 남은 것: 기간 필터(`since`/`until`)는 백엔드 API는 지원하지만 패널에는
+  아직 날짜 선택 UI가 없다 — 지금은 항상 전체 기간을 본다. 필요해지면
+  그때 추가하면서 `since`+`until` 동시 지정 경로도 실 Supabase로 함께
+  확인한다.
+- 상세: `backend/app/state/store.py`, `backend/app/state/supabase_store.py`,
+  `backend/app/state/feedback.py`, `backend/app/state/service.py`,
+  `backend/app/routes/feedback.py`, `backend/tests/state/test_feedback.py`,
+  `backend/tests/state/test_supabase_store.py`, `frontend/src/api/feedback.ts`,
+  `frontend/src/types.ts`, `frontend/src/components/dev/FeedbackStatsPanel.tsx`,
+  `frontend/src/pages/DeveloperOpsPage.tsx`,
+  `frontend/src/pages/DeveloperOpsPage.test.tsx`
+
+### D-080 — LLMOps Trace 조회를 dev-ops 패널에서 볼 수 있게 한다 (TP-157)
+
+- 상태: `Accepted` — 구현 완료.
+- 배경: `trace_records`에는 A/C/D가 남긴 실행 단계(step)별 지연시간·에러가
+  이미 쌓이고 있었지만, 조회는 세션 하나를 좁혀 보는
+  `get_traces(session_id)`뿐이었다 — "step별 평균 지연시간이 얼마인지",
+  "최근에 어떤 에러가 났는지"처럼 세션을 가리지 않는 질문에 답할 방법이
+  없었다. D-079에서 같은 문제를 `response_feedback`에 대해 풀면서 "다른
+  테이블·다른 도메인이라 별도 카드로 남긴다"고 정리했던 것의 후속.
+- 결정:
+  1. `GET /trace/stats` 신규(`since`/`until`/`recent_errors_limit` 쿼리
+     파라미터, 전부 선택). 응답은 등장한 step만 담는 step별 집계(건수,
+     평균/최대 `latency_ms`, 에러 건수)와 최근 에러 목록(`error_type`이
+     있는 행만 최근순 상위 N건: session_id/run_id/step/error_type/시각)로
+     구성.
+  2. `step_stats`는 `reason_code_counts`(D-079)와 달리 고정된 값 집합이
+     아니다 — step은 A/C/D가 자유롭게 붙이는 문자열이라 B가 미리 알 수
+     없다(`agent-state-contract-v1.md`/`llmops-trace-contract-v1.md`의
+     경계 원칙과 동일). 등장한 step만 담고, 화면도 그 순서를 그대로
+     쓴다.
+  3. 집계는 이번에도 PostgREST group-by가 아니라 Python에서 한다
+     (D-079 결정 2와 동일한 근거). `StateStore`에
+     `list_traces_for_stats(since, until)`을 신설 — `get_traces`와 달리
+     세션 하나로 좁히지 않고 전체 테이블을 대상으로 한다. Supabase
+     구현은 `since`/`until` 동시 지정 시 `list_feedback_for_stats`와
+     동일한 `and=(...)` 문법으로 `recorded_at` 두 조건을 합성한다.
+  4. 프론트: `frontend/src/api/trace.ts`에 `fetchTraceStats()`,
+     `TracePanel.tsx`를 신설해 기존 패널들과 같은 패턴(페이지가 fetch,
+     패널은 props만 받아 렌더링)으로 `DeveloperOpsPage`에 다섯 번째
+     패널로 배선. `trace_router`는 `feedback_router`와 마찬가지로
+     `APP_ENV=local`과 무관하게 무조건 `include_router`한다.
+- 근거: 세션 단위 조회(`get_traces`)를 API로 별도 노출하지 않았다 — 지금
+  필요한 것은 통계뿐이고, 세션 단위 원시 조회가 필요해지는 시점(예: 특정
+  세션 디버깅 화면)이 오면 그때 범위를 정해 추가하는 게 맞다고 판단했다.
+- 채택하지 않은 것:
+  - **PostgREST group-by 집계** — 결정 3 참고.
+  - **API만 추가하고 화면은 나중에** — D-079와 같은 이유로 기각.
+- 남은 것: D-079와 동일하게 기간 필터(`since`/`until`)는 API는 지원하지만
+  패널에는 날짜 선택 UI가 없다 — 지금은 항상 전체 기간을 본다.
+- 상세: `backend/app/state/store.py`, `backend/app/state/supabase_store.py`,
+  `backend/app/state/trace.py`, `backend/app/state/service.py`,
+  `backend/app/routes/trace.py`, `backend/app/main.py`,
+  `backend/tests/state/test_trace.py`, `backend/tests/state/test_supabase_store.py`,
+  `frontend/src/api/trace.ts`, `frontend/src/types.ts`,
+  `frontend/src/components/dev/TracePanel.tsx`,
+  `frontend/src/pages/DeveloperOpsPage.tsx`,
+  `frontend/src/pages/DeveloperOpsPage.test.tsx`
+
+### D-081 — `list_traces_for_stats`/`list_feedback_for_stats`가 PostgREST 기본 1000행 상한에 걸려 있던 문제 수정 (D-079/D-080 후속)
+
+- 상태: `Accepted` — 구현 완료.
+- 배경: TP-157 브라우저 테스트 중 발견. dev-ops 패널의 "전체 실행"이 정확히
+  1000으로 뜨는 게 단서였다 — 실제 `trace_records`는 그보다 많았는데,
+  `list_traces_for_stats()`가 PostgREST(Supabase REST)에 조건 없이 `GET`
+  한 번만 보내고 있었다. PostgREST는 `limit`을 명시하지 않아도 Supabase
+  프로젝트의 API 설정(기본 max rows=1000)에 따라 응답을 자른다 — D-079
+  결정 2가 "원본 행을 그대로 반환"하는 패턴을 유지하기로 하면서 그 반환이
+  실은 전량이 아니라 첫 1000행일 수 있다는 것을 놓쳤다.
+  `list_feedback_for_stats()`도 완전히 같은 코드 패턴이라 `response_feedback`이
+  1000행을 넘으면 동일하게 잘린다(아직 실측은 안 됐지만 같은 결함).
+- 결정: `SupabaseStateStore`에 `_fetch_all_rows(path, params)` 헬퍼를
+  신설 — `limit`/`offset`을 페이지(1000행) 단위로 넘겨가며 반환된 행 수가
+  페이지 크기보다 작아질 때까지 반복 조회해 합친다. `list_traces_for_stats`/
+  `list_feedback_for_stats` 둘 다 이 헬퍼로 교체. 세션 범위 조회(`get_traces`,
+  `get_feedback`, `list_dislike_feedback`)는 애초에 이 정도로 커질 일이
+  없어 대상에서 제외했다.
+- 근거: 두 메서드 모두 "세션을 가리지 않고 테이블 전체를 대상으로 한다"는
+  것이 설계 의도(D-079 결정 2, TP-157 설계)라, 응답이 조용히 잘리면 그
+  의도 자체가 깨진다 — 집계 API가 틀린 총합·평균을 "정상 응답"으로
+  돌려주는 것이 가장 나쁜 실패 형태다.
+- 채택하지 않은 것:
+  - **Supabase 프로젝트 설정의 max rows를 올린다** — 인프라 설정 변경은
+    이 프로젝트 코드베이스 밖의 결정이고, 값을 아무리 올려도 언젠가는
+    다시 넘긴다. 페이지네이션이 근본 해법이다.
+  - **PostgREST `Range` 헤더 대신 `limit`/`offset` 쿼리 파라미터** —
+    Range 헤더도 결국 서버의 max rows를 넘을 수 없어 여러 요청이
+    필요한 건 같고, `_request()`가 이미 `params` 인자를 받는 구조라
+    쿼리 파라미터 쪽이 기존 코드와 더 잘 맞았다.
+- 검증: 단위 테스트(mock)로 페이지 경계 동작 확인 — 첫 페이지가 1000행
+  꽉 차면 두 번째 요청(offset=1000)을 보내 나머지를 더하는 것,
+  1000행보다 적게 오면 한 번만 요청하고 멈추는 것 둘 다 확인. 실
+  Supabase 재확인은 사용자가 브라우저에서 진행 중.
+- 남은 것: 없음.
+- 상세: `backend/app/state/supabase_store.py`,
+  `backend/tests/state/test_supabase_store.py`
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -2709,3 +2907,7 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-24 | D-075 신설 — LangGraph 노드가 별도 asyncio 태스크에서 도는 탓에 `llm_execution` ContextVar를 값 교체로 갱신하면 노드 안 기록이 유실되던 문제를 수정. 리스트를 하나 두고 `append`하는 방식으로 바꿔 태스크 경계를 넘게 했다. 유실 지점 3곳(조기 반환 정상 응답, 노드 안 LLM 실패의 502 본문, 파이프라인 앞 노드→뒤 노드)이 한꺼번에 해소. 감사 패널의 "LLM 폴백"이 빈칸이 아니라 **틀린 "없음"**을 찍고 있었던 것이 이 문제를 무시하기 어렵게 만든 지점이다. 검토 문서가 제안한 `default` 제거는 채택하지 않음 — 전역 AppError 핸들러가 reset 없는 문맥에서 이 값을 읽어 502 계약이 500으로 깨진다. 기록하는 LLM 더블로 회귀 테스트 9건 추가(Fake는 `record_llm_call()`을 부르지 않아 수정 전에도 통과한다). pytest 2,332건 통과 |
 | 2026-08-24 | D-076 신설 — `thinking_budget=0`을 거부하는 모델에 thinking 설정을 아예 싣지 않던 방어를 제거하고, `0`을 항상 `thinking_level=MINIMAL`로 바꿔 보내도록 정리. 2026-08-18에 fast 모델이 그 목록에 있는 `gemini-3.5-flash-lite`로 바뀌면서 분류·조건 추출의 thinking 끄기가 조용히 무효화돼 있었고, 코드가 아니라 모델만 바뀐 것이라 6일간 아무도 몰랐다. 실 API 전수 측정(모델 5개 × 설정 4개 × 3회)으로 거부되는 것은 숫자 `0`뿐이고(`512`는 전부 성공) `MINIMAL`은 실제로 생각 토큰이 0임을 확인했다. 거부 모델 목록과 `gemini-2.5-flash-lite` 512 보정은 실측 근거라 지우지 않고, 목록은 불변식 테스트가 직접 읽는다. **지연 이득은 없다** — 6회에서 -17%까지 나왔지만 15회로 늘리면 -0.9%로 사라진다(표본 부족으로 없는 효과를 읽은 사례). 근거는 속도가 아니라 모델 교체 시 최적화가 조용히 사라지는 구조의 제거다. 폐지된 `LLM_MODEL_NAME`을 현행으로 안내하던 문서 2곳도 함께 정정 |
 | 2026-08-25 | D-077 신설 — 무장애 여행 정보(`KorWithService2`) 적재. places 컬럼이 아니라 전용 테이블 `place_barrier_free`로 나누고, 응답 28필드 중 채움률 5% 이상인 15개만 담는다(4개 구 427건 실측). 컬럼 이름은 응답 키가 아니라 의미로 짓는다 — `wheelchair`는 출입이 아니라 대여, `exit`는 출구가 아니라 주출입구라 키를 그대로 믿으면 뜻이 뒤집힌다. 무장애 정보가 있는 장소는 places의 19%뿐이라 구별 목록 1회로 대상을 좁히고(종로구 842회 → 182회), 목록을 먼저 부르고 거기 있는 장소만 행으로 만든다 — 반대 순서로 하면 종로구 첫 적재 754행 중 590행이 "목록에 없더라"는 빈 행이 된다. 값이 전부 빈 행은 남긴다(4개 구 60건, 전부 쇼핑몰 입점 매장이라 레코드만 만들어지고 항목이 미입력이다). 대상은 상세조회 대상이 아니라 TTL로 고른다 — 변경분만 따라가면 이미 DB에 있던 2,600여 건이 영영 대상이 되지 않는다. 숙박(32)과 그 전용 필드 `room`은 제외. `place_enrichments.official_facts`에 담는 안은 채택하지 않았다(사람이 검증한 값의 계보가 무너진다) |
+| 2026-08-24 | D-078 신설 — 만료된 익명 계정(`auth.users`) 정리(D-074 후속, [B] auth.users 정리). `created_at` 기준 30일(조정 가능) 이상 지난 익명 계정(`is_anonymous=true`)을 Supabase Auth Admin API로 조회·삭제. PostgREST가 아니라 GoTrue Admin API(`apikey`+`Authorization: Bearer` 둘 다 필요)를 쓰는 별도의 작은 `AuthAdminClient` 신설. `backend/scripts/cleanup_anonymous_users.py`(`--days`, `--dry-run`)로 구현, D-074의 세션 정리 스크립트와는 완전히 독립적으로 실행(FK 없음, D-063 결정 4) |
+| 2026-08-25 | D-079 신설 — 피드백 통계를 dev-ops 패널에서 볼 수 있게 함(TP-146). `GET /feedback/stats` 신규 — rating별 건수, reason_code별 건수(dislike만, 표준 7개 + `unclassified`), intent별 건수(상위 N + 롱테일 `other_intent_count` + `missing_intent_count`)를 반환. 집계는 PostgREST group-by가 아니라 Python에서 하며, `StateStore.list_feedback_for_stats(since, until)`을 신설(rating 안 가리고 limit 없이 전량 반환). 프론트는 `api/feedback.ts`에 `fetchFeedbackStats()`, `FeedbackStatsPanel`을 신설해 기존 ApiUsagePanel/PlaceSyncPanel/DbStatusPanel과 같은 패턴으로 `DeveloperOpsPage`에 배선 — API만 추가하고 화면을 안 붙이면 "쌓이는데 아무도 안 본다"는 이번 카드의 문제의식을 반복하게 되어 백엔드+프론트를 한 카드로 묶었다. LLMOps Trace 조회 API는 다른 도메인이라 별도 카드로 분리 |
+| 2026-08-25 | D-080 신설 — LLMOps Trace 조회를 dev-ops 패널에서 볼 수 있게 함(TP-157, D-079 후속). `GET /trace/stats` 신규 — 등장한 step만 담는 step별 집계(건수, 평균/최대 latency_ms, 에러 건수)와 최근 에러 목록(상위 N건)을 반환. 집계는 D-079와 동일하게 Python에서 하며, `StateStore.list_traces_for_stats(since, until)`을 신설(세션을 가리지 않고 전체 테이블 대상). 프론트는 `api/trace.ts`에 `fetchTraceStats()`, `TracePanel`을 신설해 기존 패널들과 같은 패턴으로 `DeveloperOpsPage`에 다섯 번째 패널로 배선 |
+| 2026-08-25 | D-081 신설 — TP-157 브라우저 테스트 중 발견한 버그 수정. `list_traces_for_stats`/`list_feedback_for_stats`가 PostgREST 기본 1000행 응답 상한에 걸려 있던 문제를 `_fetch_all_rows()` 페이지네이션 헬퍼로 해결(limit/offset 반복 조회). "전체 실행"이 정확히 1000으로 뜨는 것이 단서였다 |

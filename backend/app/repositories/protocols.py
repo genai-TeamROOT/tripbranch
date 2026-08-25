@@ -44,6 +44,8 @@ class PlaceDetailsReadRepository(Protocol):
     async def get_active_place_details(
         self,
         content_ids: Sequence[str],
+        *,
+        include_barrier_free: bool = False,
     ) -> dict[str, StoredPlaceDetail]: ...
 
 
@@ -74,6 +76,8 @@ class PlaceRepository(Protocol):
     async def get_active_place_details(
         self,
         content_ids: Sequence[str],
+        *,
+        include_barrier_free: bool = False,
     ) -> dict[str, StoredPlaceDetail]: ...
 
     async def upsert_place_list(

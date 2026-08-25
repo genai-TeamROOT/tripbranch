@@ -548,6 +548,65 @@ export interface RecordFeedbackResponse {
   recorded_at: string;
 }
 
+/** GET /api/feedback/stats의 intent 항목 1개. (TP-146) */
+export interface FeedbackIntentCount {
+  intent: string;
+  count: number;
+}
+
+/**
+ * GET /api/feedback/stats 응답. backend/app/state/service.py의
+ * FeedbackStatsResponse와 대응.
+ *
+ * reason_code_counts는 표준 7개 사유 + "unclassified"(사유 없이 남긴
+ * dislike) 키를 항상 전부 포함한다. like 행은 여기 안 들어간다.
+ * top_intents는 상위 N개(요청한 top_intents 개수)만 담고, 그 뒤 롱테일은
+ * other_intent_count로 합쳐진다. intent 자체가 없는 행은 missing_intent_count.
+ */
+export interface FeedbackStatsResponse {
+  since: string | null;
+  until: string | null;
+  total: number;
+  rating_counts: Record<"like" | "dislike", number>;
+  reason_code_counts: Record<FeedbackReasonCode | "unclassified", number>;
+  top_intents: FeedbackIntentCount[];
+  other_intent_count: number;
+  missing_intent_count: number;
+}
+
+export interface TraceStepStat {
+  step: string;
+  count: number;
+  avg_latency_ms: number | null;
+  max_latency_ms: number | null;
+  error_count: number;
+}
+
+export interface TraceRecentError {
+  session_id: string;
+  run_id: string;
+  step: string;
+  error_type: string;
+  recorded_at: string;
+}
+
+/**
+ * GET /api/trace/stats 응답. backend/app/state/service.py의
+ * TraceStatsResponse와 대응.
+ *
+ * step_stats는 reason_code_counts와 달리 고정된 값 집합이 아니다 —
+ * 등장한 step만 담긴다(step은 A/C/D가 자유롭게 붙이는 문자열이라
+ * B가 미리 알 수 없다). recent_errors는 error_type이 있는 행만
+ * 최근순으로 상위 N건(요청한 recent_errors_limit개).
+ */
+export interface TraceStatsResponse {
+  since: string | null;
+  until: string | null;
+  total: number;
+  step_stats: TraceStepStat[];
+  recent_errors: TraceRecentError[];
+}
+
 export interface AgentResponse {
   llm_output: LLMOutput;
   state: StateApplyResponse;
@@ -696,6 +755,13 @@ export interface LLMCallMetadata {
   served_model: string | null;
   /** 구조화 LLM 호출 전체 경과 시간(ms). 이전 실행 이력에는 없을 수 있다. */
   latency_ms?: number | null;
+  /**
+   * 같은 모델에 대해 타임아웃·429·5xx로 다시 시도한 횟수(0=첫 시도에서 끝남).
+   * 재시도가 성공하면 로그도 안 남고 attempted_models도 안 늘어나, 이 값이
+   * 없으면 latency_ms가 큰 이유가 "모델이 느렸다"인지 "재시도했다"인지 구분이
+   * 안 된다. 스트리밍 호출은 항상 0. 이전 실행 이력에는 없을 수 있다.
+   */
+  retry_count?: number | null;
 }
 
 export interface LLMExecutionMetadata {

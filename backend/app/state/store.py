@@ -49,6 +49,13 @@ class StateStore(Protocol):
     # --- TraceRecord (append-only)
     def append_traces(self, records: list[TraceRecord]) -> None: ...
     def get_traces(self, session_id: str) -> list[TraceRecord]: ...
+    # 집계(TP-157)용. get_traces와 달리 세션 하나로 좁히지 않고 전체
+    # 테이블을 대상으로 한다 — "최근 에러가 뭐였는지", "step별 평균
+    # 지연시간"은 세션 단위로 물을 수 있는 질문이 아니다. since/until은
+    # recorded_at 기준 반열린구간이며 둘 다 선택이다.
+    def list_traces_for_stats(
+        self, since: datetime | None = None, until: datetime | None = None
+    ) -> list[TraceRecord]: ...
 
     # --- FeedbackRecord (append-only)
     def append_feedback(self, records: list[FeedbackRecord]) -> None: ...
@@ -57,6 +64,13 @@ class StateStore(Protocol):
     # "나쁜 답변 찾기"는 특정 세션이 아니라 전체 응답 중에서 찾는 분석
     # 작업이라, session_id로 좁힐 수 없다.
     def list_dislike_feedback(self, limit: int) -> list[FeedbackRecord]: ...
+    # 집계(TP-146)용. list_dislike_feedback과 달리 rating을 가리지 않고
+    # (like까지 포함) limit도 없이 전량을 반환한다 — 통계는 상위 N건이
+    # 아니라 전체 합이어야 의미가 있다. since/until은 recorded_at 기준
+    # 반열린구간([since, until))이며 둘 다 선택이다.
+    def list_feedback_for_stats(
+        self, since: datetime | None = None, until: datetime | None = None
+    ) -> list[FeedbackRecord]: ...
 
     # --- 정리(만료 세션 삭제, TP-134)
     # response_feedback은 세션 생애주기와 무관한 별도 분석 데이터라 대상에서
@@ -130,6 +144,18 @@ class InMemoryStateStore:
         records = self._traces.get(session_id, [])
         return [record.model_copy(deep=True) for record in records]
 
+    def list_traces_for_stats(
+        self, since: datetime | None = None, until: datetime | None = None
+    ) -> list[TraceRecord]:
+        all_records = [
+            record for records in self._traces.values() for record in records
+        ]
+        if since is not None:
+            all_records = [r for r in all_records if r.recorded_at >= since]
+        if until is not None:
+            all_records = [r for r in all_records if r.recorded_at < until]
+        return [record.model_copy(deep=True) for record in all_records]
+
     # ------------------------------------------------------------ Feedback
 
     def append_feedback(self, records: list[FeedbackRecord]) -> None:
@@ -150,6 +176,18 @@ class InMemoryStateStore:
         dislikes = [record for record in all_records if record.rating == "dislike"]
         dislikes.sort(key=lambda record: record.recorded_at, reverse=True)
         return [record.model_copy(deep=True) for record in dislikes[:limit]]
+
+    def list_feedback_for_stats(
+        self, since: datetime | None = None, until: datetime | None = None
+    ) -> list[FeedbackRecord]:
+        all_records = [
+            record for records in self._feedback.values() for record in records
+        ]
+        if since is not None:
+            all_records = [r for r in all_records if r.recorded_at >= since]
+        if until is not None:
+            all_records = [r for r in all_records if r.recorded_at < until]
+        return [record.model_copy(deep=True) for record in all_records]
 
     # ------------------------------------------------------------ 정리(TP-134)
 

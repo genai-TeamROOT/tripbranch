@@ -3,10 +3,13 @@
 계약 문서: docs/package-b/llmops-trace-contract-v1.md
 """
 
+from datetime import timedelta
+
 import pytest
 
 from app.state import service as svc
 from app.state import trace as trace_module
+from app.state.schema import TraceRecord, now_kst
 from app.state.store import InMemoryStateStore
 
 
@@ -108,3 +111,179 @@ class TestSessionIsolation:
 
     def test_기록이_없는_세션은_빈_목록을_반환한다(self, store):
         assert trace_module.get_traces(store, "sess_never_used") == []
+
+
+class TestTraceStats:
+    """svc.get_trace_stats()의 집계 결과를 확인한다. (TP-157)"""
+
+    def test_비어있으면_전부_비어있다(self, store):
+        response = svc.get_trace_stats(store=store)
+
+        assert response.total == 0
+        assert response.step_stats == []
+        assert response.recent_errors == []
+
+    def test_step별로_묶어서_건수를_센다(self, store):
+        record_trace(store, session_id="sess_a", step="llm_interpret")
+        record_trace(store, session_id="sess_b", step="llm_interpret")
+        record_trace(store, session_id="sess_c", step="scoring")
+
+        response = svc.get_trace_stats(store=store)
+
+        by_step = {s.step: s.count for s in response.step_stats}
+        assert by_step == {"llm_interpret": 2, "scoring": 1}
+        assert response.total == 3
+
+    def test_등장한_step만_담긴다(self, store):
+        """reason_code_counts와 달리 step은 고정된 값 집합이 없다."""
+        record_trace(store, step="tool_fetch")
+
+        response = svc.get_trace_stats(store=store)
+
+        assert [s.step for s in response.step_stats] == ["tool_fetch"]
+
+    def test_평균과_최대_latency를_계산한다(self, store):
+        record_trace(store, session_id="sess_a", step="scoring", latency_ms=100)
+        record_trace(store, session_id="sess_b", step="scoring", latency_ms=300)
+
+        response = svc.get_trace_stats(store=store)
+
+        [stat] = response.step_stats
+        assert stat.avg_latency_ms == 200
+        assert stat.max_latency_ms == 300
+
+    def test_latency가_없는_행은_평균_계산에서_빠진다(self, store):
+        record_trace(store, session_id="sess_a", step="scoring", latency_ms=100)
+        record_trace(store, session_id="sess_b", step="scoring", latency_ms=None)
+
+        response = svc.get_trace_stats(store=store)
+
+        [stat] = response.step_stats
+        assert stat.avg_latency_ms == 100
+        assert stat.max_latency_ms == 100
+
+    def test_latency가_한_건도_없으면_None이다(self, store):
+        record_trace(store, step="scoring", latency_ms=None)
+
+        response = svc.get_trace_stats(store=store)
+
+        [stat] = response.step_stats
+        assert stat.avg_latency_ms is None
+        assert stat.max_latency_ms is None
+
+    def test_step별_에러_건수를_센다(self, store):
+        record_trace(store, session_id="sess_a", step="llm_interpret", error_type="timeout")
+        record_trace(store, session_id="sess_b", step="llm_interpret")
+        record_trace(store, session_id="sess_c", step="scoring")
+
+        response = svc.get_trace_stats(store=store)
+
+        by_step = {s.step: s.error_count for s in response.step_stats}
+        assert by_step == {"llm_interpret": 1, "scoring": 0}
+
+    def test_최근_에러가_최신순으로_담긴다(self, store):
+        now = now_kst()
+        store.append_traces(
+            [
+                TraceRecord(
+                    session_id="sess_a",
+                    run_id="run_1",
+                    trace_id="trace_1",
+                    step="llm_interpret",
+                    error_type="timeout",
+                    recorded_at=now - timedelta(minutes=10),
+                ),
+                TraceRecord(
+                    session_id="sess_b",
+                    run_id="run_2",
+                    trace_id="trace_2",
+                    step="scoring",
+                    error_type="value_error",
+                    recorded_at=now,
+                ),
+            ]
+        )
+
+        response = svc.get_trace_stats(store=store)
+
+        assert [e.session_id for e in response.recent_errors] == ["sess_b", "sess_a"]
+
+    def test_에러가_없는_행은_최근_에러_목록에_안_담긴다(self, store):
+        record_trace(store, step="llm_interpret")
+
+        response = svc.get_trace_stats(store=store)
+
+        assert response.recent_errors == []
+
+    def test_최근_에러_limit을_넘으면_잘린다(self, store):
+        for i in range(5):
+            record_trace(
+                store,
+                session_id=f"sess_{i}",
+                run_id=f"run_{i}",
+                step="llm_interpret",
+                error_type="timeout",
+            )
+
+        response = svc.get_trace_stats(store=store, recent_errors_limit=3)
+
+        assert len(response.recent_errors) == 3
+
+    def test_since까지만_필터하면_그_전_기록은_빠진다(self, store):
+        now = now_kst()
+        store.append_traces(
+            [
+                TraceRecord(
+                    session_id="sess_old",
+                    run_id="run_1",
+                    trace_id="trace_1",
+                    step="scoring",
+                    recorded_at=now - timedelta(days=10),
+                ),
+                TraceRecord(
+                    session_id="sess_new",
+                    run_id="run_2",
+                    trace_id="trace_2",
+                    step="scoring",
+                    recorded_at=now,
+                ),
+            ]
+        )
+
+        response = svc.get_trace_stats(store=store, since=now - timedelta(days=1))
+
+        assert response.total == 1
+
+    def test_until은_그_시각_이전까지만_포함한다(self, store):
+        now = now_kst()
+        store.append_traces(
+            [
+                TraceRecord(
+                    session_id="sess_before",
+                    run_id="run_1",
+                    trace_id="trace_1",
+                    step="scoring",
+                    recorded_at=now - timedelta(days=1),
+                ),
+                TraceRecord(
+                    session_id="sess_after",
+                    run_id="run_2",
+                    trace_id="trace_2",
+                    step="scoring",
+                    recorded_at=now + timedelta(days=1),
+                ),
+            ]
+        )
+
+        response = svc.get_trace_stats(store=store, until=now)
+
+        assert response.total == 1
+
+    def test_since와_until이_응답에도_그대로_담긴다(self, store):
+        since = now_kst() - timedelta(days=7)
+        until = now_kst()
+
+        response = svc.get_trace_stats(store=store, since=since, until=until)
+
+        assert response.since == since
+        assert response.until == until

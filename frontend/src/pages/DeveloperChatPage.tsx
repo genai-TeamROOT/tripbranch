@@ -26,7 +26,11 @@ import { useTripDispatch, useTripState } from "../state/TripContext";
 import { buildAgentStageTimings } from "../utils/agentTiming";
 import { getLatestConversationPlaceName } from "../utils/conversationPlace";
 import { getBrowserDeviceLocation } from "../utils/geolocation";
-import { getLocationAgeMinutes, isLocationRefreshDue } from "../utils/locationRefresh";
+import {
+  getLocationAgeMinutes,
+  isLocationRefreshDue,
+  LOCATION_RECONFIRM_AFTER_MS,
+} from "../utils/locationRefresh";
 import type { TravelOrigin } from "../types";
 
 const REQUEST_MORE_PROMPT = "다른 곳 보여줘";
@@ -290,21 +294,39 @@ export function DeveloperChatPage() {
 
   const requestSend = useCallback(
     async (text: string, clarificationChoice?: string, travelOriginOverride?: TravelOrigin) => {
-      if (isLocationRefreshDue(state.device_location, state.device_location_captured_at)) {
+      if (
+        isLocationRefreshDue(
+          state.device_location,
+          state.device_location_captured_at,
+          state.device_location_snoozed_until,
+        )
+      ) {
         setPendingLocationRefresh({ text, clarificationChoice, travelOriginOverride });
         return;
       }
       await send(text, clarificationChoice, undefined, undefined, travelOriginOverride);
     },
-    [send, state.device_location, state.device_location_captured_at],
+    [
+      send,
+      state.device_location,
+      state.device_location_captured_at,
+      state.device_location_snoozed_until,
+    ],
   );
 
   const usePreviousLocation = useCallback(() => {
     if (!pendingLocationRefresh) return;
     const pending = pendingLocationRefresh;
     setPendingLocationRefresh(null);
+    // 실제 GPS는 다시 받지 않았으니 device_location_captured_at은 그대로 두고,
+    // 재확인 질문만 30분 동안 미룬다 — 그래야 다음 턴 나이 표시가 실제 경과
+    // 시간을 계속 정확히 보여준다(utils/locationRefresh.ts 참고).
+    dispatch({
+      type: "SNOOZE_LOCATION_REFRESH",
+      payload: { until: Date.now() + LOCATION_RECONFIRM_AFTER_MS },
+    });
     void send(pending.text, pending.clarificationChoice, undefined, undefined, pending.travelOriginOverride);
-  }, [pendingLocationRefresh, send]);
+  }, [dispatch, pendingLocationRefresh, send]);
 
   const refreshBrowserLocation = useCallback(async () => {
     if (!pendingLocationRefresh) return;

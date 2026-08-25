@@ -79,7 +79,11 @@ class HybridPlaceDetailsProvider:
             )
 
         content_id = matches[0].content_id
-        rows = await self._details.get_active_place_details([content_id])
+        # 무장애 정보를 함께 읽는다. INFO facility 질문("휠체어 들어갈 수 있어?")이
+        # 이 경로로 오고, 저장소가 한 번의 조회로 함께 돌려준다(D-077).
+        rows = await self._details.get_active_place_details(
+            [content_id], include_barrier_free=True
+        )
         row = rows.get(content_id)
         if row is None:
             # 이름 조회에는 걸렸는데 상세 행이 없다 — 두 조회 사이에 비활성화된
@@ -133,6 +137,24 @@ def _to_place_details(
         pet=row.pet_raw,
         credit_card=row.credit_card_raw,
         restroom=row.restroom_raw,
+        # 무장애 원문 15개는 합치거나 해석하지 않고 그대로 옮긴다. 어떤 값을 어떤
+        # 계약 키로 낼지는 info_field_rules가 정한다 — provider가 미리 합치면
+        # 원문 세 개(접근로·주출입구·승강기)를 잃어 되돌릴 수 없다.
+        approach_route_raw=row.approach_route_raw,
+        entrance_access_raw=row.entrance_access_raw,
+        elevator_raw=row.elevator_raw,
+        accessible_restroom_raw=row.accessible_restroom_raw,
+        accessible_parking_raw=row.accessible_parking_raw,
+        braille_block_raw=row.braille_block_raw,
+        braille_promotion_raw=row.braille_promotion_raw,
+        audio_guide_raw=row.audio_guide_raw,
+        guide_dog_raw=row.guide_dog_raw,
+        wheelchair_rental_raw=row.wheelchair_rental_raw,
+        stroller_rental_raw=row.stroller_rental_raw,
+        nursing_room_raw=row.nursing_room_raw,
+        infant_family_etc_raw=row.infant_family_etc_raw,
+        public_transport_raw=row.public_transport_raw,
+        disability_etc_raw=row.disability_etc_raw,
         # INFO 상세 카드는 firstimage2(작은 썸네일, thumbnail_url)보다 firstimage
         # (원본 크기, first_image_url)를 우선한다 — 카드가 이미지를 크게 보여주는
         # 용도라 작은 썸네일을 확대하면 화질이 뭉개진다(2026-08-13 실사용 피드백).

@@ -381,3 +381,136 @@ class TestGetDislikeFeedbackWithTrace:
 
         assert response.items[0].intent == "RECOMMEND"
         assert response.items[0].comment == "추천 장소가 너무 멀어요"
+
+
+class TestFeedbackStats:
+    """svc.get_feedback_stats()의 집계 결과를 확인한다. (TP-146)"""
+
+    def test_비어있으면_전부_0이다(self, store):
+        response = svc.get_feedback_stats(store=store)
+
+        assert response.total == 0
+        assert response.rating_counts == {"like": 0, "dislike": 0}
+        assert set(response.reason_code_counts) == {
+            "intent_mismatch",
+            "clarification_unhelpful",
+            "context_not_preserved",
+            "location_misunderstood",
+            "conditions_not_applied",
+            "recommendation_not_suitable",
+            "other",
+            "unclassified",
+        }
+        assert all(count == 0 for count in response.reason_code_counts.values())
+        assert response.top_intents == []
+        assert response.other_intent_count == 0
+        assert response.missing_intent_count == 0
+
+    def test_rating별_건수를_센다(self, store):
+        record_feedback(store, session_id="sess_a", rating="like")
+        record_feedback(store, session_id="sess_b", rating="like")
+        record_feedback(store, session_id="sess_c", rating="dislike")
+
+        response = svc.get_feedback_stats(store=store)
+
+        assert response.total == 3
+        assert response.rating_counts == {"like": 2, "dislike": 1}
+
+    def test_reason_code는_dislike만_센다(self, store):
+        record_feedback(
+            store, session_id="sess_a", rating="dislike", reason_code="other"
+        )
+        record_feedback(store, session_id="sess_b", rating="like")
+
+        response = svc.get_feedback_stats(store=store)
+
+        assert response.reason_code_counts["other"] == 1
+        assert sum(response.reason_code_counts.values()) == 1
+
+    def test_reason_code가_없는_dislike는_unclassified로_잡힌다(self, store):
+        record_feedback(store, session_id="sess_a", rating="dislike")
+
+        response = svc.get_feedback_stats(store=store)
+
+        assert response.reason_code_counts["unclassified"] == 1
+
+    def test_intent_상위_N개만_담고_나머지는_기타로_합친다(self, store):
+        for i in range(3):
+            record_feedback(
+                store, session_id=f"sess_top_{i}", intent="RECOMMEND", rating="like"
+            )
+        for i in range(2):
+            record_feedback(
+                store, session_id=f"sess_mid_{i}", intent="INFO", rating="like"
+            )
+        record_feedback(store, session_id="sess_tail", intent="SMALLTALK", rating="like")
+
+        response = svc.get_feedback_stats(store=store, top_intents=2)
+
+        assert [item.intent for item in response.top_intents] == ["RECOMMEND", "INFO"]
+        assert [item.count for item in response.top_intents] == [3, 2]
+        assert response.other_intent_count == 1
+
+    def test_intent가_없는_건은_missing으로_따로_센다(self, store):
+        record_feedback(store, session_id="sess_a", rating="like")
+        record_feedback(store, session_id="sess_b", intent="INFO", rating="like")
+
+        response = svc.get_feedback_stats(store=store)
+
+        assert response.missing_intent_count == 1
+        assert response.other_intent_count == 0
+
+    def test_since까지만_필터하면_그_전_기록은_빠진다(self, store):
+        now = now_kst()
+        store.append_feedback(
+            [
+                FeedbackRecord(
+                    session_id="sess_old",
+                    run_id="run_1",
+                    rating="like",
+                    recorded_at=now - timedelta(days=10),
+                ),
+                FeedbackRecord(
+                    session_id="sess_new",
+                    run_id="run_2",
+                    rating="like",
+                    recorded_at=now,
+                ),
+            ]
+        )
+
+        response = svc.get_feedback_stats(store=store, since=now - timedelta(days=1))
+
+        assert response.total == 1
+
+    def test_until은_그_시각_이전까지만_포함한다(self, store):
+        now = now_kst()
+        store.append_feedback(
+            [
+                FeedbackRecord(
+                    session_id="sess_before",
+                    run_id="run_1",
+                    rating="like",
+                    recorded_at=now - timedelta(days=1),
+                ),
+                FeedbackRecord(
+                    session_id="sess_after",
+                    run_id="run_2",
+                    rating="like",
+                    recorded_at=now + timedelta(days=1),
+                ),
+            ]
+        )
+
+        response = svc.get_feedback_stats(store=store, until=now)
+
+        assert response.total == 1
+
+    def test_since와_echo가_응답에도_그대로_담긴다(self, store):
+        since = now_kst() - timedelta(days=7)
+        until = now_kst()
+
+        response = svc.get_feedback_stats(store=store, since=since, until=until)
+
+        assert response.since == since
+        assert response.until == until

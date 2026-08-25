@@ -52,6 +52,13 @@ export interface TripState {
   /** 브라우저에서 device_location을 마지막으로 받아온 시각(ms). */
   device_location_captured_at: number | null;
   /*
+   * 사용자가 위치 재확인 질문에서 "이전 위치로 계속"을 눌러 다시 묻지 않기로 미룬
+   * 마감 시각(ms). device_location_captured_at과 분리한 이유는
+   * utils/locationRefresh.ts 상단 설명 참고 — capturedAt을 갱신하면 GPS를 다시
+   * 받지 않았는데도 나이 표시가 리셋되는 문제가 있었다.
+   */
+  device_location_snoozed_until: number | null;
+  /*
    * 직전 턴이 추천 없이 되묻기로 끝났는지. Agent는 "직전에 무엇을 되물었는지"를
    * 다음 턴 Intent 분류에 넘기지 않아서, 사용자가 "경복궁"처럼 짧게 답하면 INFO로
    * 분류돼 추천이 나오지 않는다. 입력창 placeholder로 더 온전한 문장을 유도한다.
@@ -75,6 +82,7 @@ const initialTripState: TripState = {
   session_id: null,
   device_location: null,
   device_location_captured_at: null,
+  device_location_snoozed_until: null,
   awaiting_clarification: false,
   agentProgress: null,
   streamingIntent: null,
@@ -131,6 +139,7 @@ type TripAction =
     }
   | { type: "SET_ERROR"; payload: string }
   | { type: "CLEAR_ERROR" }
+  | { type: "SNOOZE_LOCATION_REFRESH"; payload: { until: number } }
   | { type: "RESET" };
 
 /* /api/chat 한 번의 응답을 화면 메시지로 옮기기 위한 입력. */
@@ -283,6 +292,12 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         device_location: action.payload.deviceLocation ?? state.device_location,
         device_location_captured_at:
           action.payload.deviceLocationCapturedAt ?? state.device_location_captured_at,
+        // 진짜 GPS를 새로 받은 턴이면(capturedAt이 실려 왔으면) 미뤄둔 재확인
+        // 마감도 함께 해제한다 — 방금 받은 위치가 이미 최신이라 미룰 이유가 없다.
+        device_location_snoozed_until:
+          action.payload.deviceLocationCapturedAt != null
+            ? null
+            : state.device_location_snoozed_until,
         messages: [
           ...state.messages,
           { id: createMessageId("user"), type: "user_text", text: action.payload.userInput },
@@ -642,6 +657,8 @@ function tripReducer(state: TripState, action: TripAction): TripState {
       return { ...state, phase: "error", error: action.payload };
     case "CLEAR_ERROR":
       return { ...state, error: null, phase: state.messages.length > 0 ? "ready" : "idle" };
+    case "SNOOZE_LOCATION_REFRESH":
+      return { ...state, device_location_snoozed_until: action.payload.until };
     case "RESET":
       clearState();
       return initialTripState;
