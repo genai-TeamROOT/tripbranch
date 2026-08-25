@@ -129,6 +129,61 @@ async def test_generate_retries_on_transient_5xx_then_succeeds() -> None:
 
 
 @pytest.mark.asyncio
+async def test_retry_that_succeeds_is_recorded_so_it_is_not_invisible() -> None:
+    """재시도 끝에 성공해도 감사 기록에 몇 번 재시도했는지 남는다.
+
+    이 테스트가 지키는 문제: 재시도가 성공하면 로그도 안 남고 attempted_models도
+    안 늘어난다. latency_ms만 보면 "모델이 13초 걸렸다"로 보이는데 실제로는
+    "10초 타임아웃 후 재시도가 2초 만에 성공"이었을 수 있다 — record_llm_call에
+    retry_count가 없으면 이 둘을 구분할 방법이 없었다(실사용에서 실제로 이렇게
+    오인됨).
+    """
+    provider = RealGeminiProvider(
+        api_key="dummy", model_names=["dummy"], timeout_seconds=1.0, max_retries=2
+    )
+    call_count = 0
+
+    async def flaky(*args: object, **kwargs: object) -> _FakeResponse:
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 2:
+            raise _api_error(503, "UNAVAILABLE")
+        return _FakeResponse(IntentClassificationResult(intent=Intent.RECOMMEND))
+
+    with (
+        patch.object(provider._client.aio.models, "generate_content", side_effect=flaky),
+        patch("app.providers.gemini.asyncio.sleep", new=AsyncMock()),
+        patch("app.providers.gemini.record_llm_call") as mock_record,
+    ):
+        await provider._generate("sys", "user", IntentClassificationResult, "test")
+
+    assert mock_record.call_count == 1
+    assert mock_record.call_args.kwargs["retry_count"] == 2, (
+        "두 번 실패하고 세 번째(attempt=2)에 성공했으니 재시도 횟수는 2여야 한다"
+    )
+    assert mock_record.call_args.kwargs["served_model"] == "dummy"
+
+
+@pytest.mark.asyncio
+async def test_first_try_success_reports_zero_retries() -> None:
+    """첫 시도에서 바로 성공하면 retry_count=0이 남는다(재시도했다고 오인되지 않게)."""
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+
+    async def immediate_success(*args: object, **kwargs: object) -> _FakeResponse:
+        return _FakeResponse(IntentClassificationResult(intent=Intent.RECOMMEND))
+
+    with (
+        patch.object(
+            provider._client.aio.models, "generate_content", side_effect=immediate_success
+        ),
+        patch("app.providers.gemini.record_llm_call") as mock_record,
+    ):
+        await provider._generate("sys", "user", IntentClassificationResult, "test")
+
+    assert mock_record.call_args.kwargs["retry_count"] == 0
+
+
+@pytest.mark.asyncio
 async def test_generate_raises_after_exhausting_retries_on_persistent_5xx() -> None:
     provider = RealGeminiProvider(
         api_key="dummy", model_names=["dummy"], timeout_seconds=1.0, max_retries=2

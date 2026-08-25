@@ -248,3 +248,90 @@ it("소요시간 탭에서 단계별 합계와 C 세부 시간을 보여준다",
   ).toBeInTheDocument();
   expect(screen.getByText(/후보 혼잡도 보강 · 180ms · success/)).toBeInTheDocument();
 });
+
+it("소요시간 탭에서 답변 생성 호출의 재시도 여부와 소요 시간을 보여준다 (D-076 검토 후속)", async () => {
+  const user = userEvent.setup();
+  const turn = _turn(enrichmentExecution);
+  turn.response = {
+    ...turn.response,
+    llm_execution: {
+      calls: [
+        {
+          operation: "generate_compare_summary",
+          attempted_models: ["gemini-3.5-flash"],
+          served_model: "gemini-3.5-flash",
+          latency_ms: 13200,
+          retry_count: 1,
+        },
+      ],
+    },
+  } as DeveloperAuditTurn["response"];
+  turn.stageTimings = [
+    {
+      stage: "composing_message",
+      message: "비교 결과를 정리하고 있어요.",
+      started_at_ms: 0,
+      duration_ms: 13200,
+    },
+  ];
+
+  render(
+    <DeveloperAuditPanel
+      turns={[turn]}
+      selectedTurnId="turn-1"
+      onSelectTurn={() => {}}
+      debugIgnoreOperatingHours={false}
+      onToggleDebugIgnoreOperatingHours={() => {}}
+    />,
+  );
+
+  await user.click(screen.getByRole("button", { name: "소요시간" }));
+
+  // 예전에는 composing_message 단계에서 latency_ms를 아예 안 보여줬다 — 이제는 보인다.
+  expect(screen.getByText(/generate_compare_summary · gemini-3.5-flash · 13.2초/)).toBeInTheDocument();
+  expect(screen.getByText("재시도 1회")).toBeInTheDocument();
+});
+
+it("LLM 추출 탭에서 재시도가 있었던 호출에 안내 문구를 보여준다", async () => {
+  const user = userEvent.setup();
+  const turn = _turn(enrichmentExecution);
+  turn.response = {
+    ...turn.response,
+    llm_execution: {
+      calls: [
+        {
+          operation: "generate_compare_summary",
+          attempted_models: ["gemini-3.5-flash"],
+          served_model: "gemini-3.5-flash",
+          latency_ms: 13200,
+          retry_count: 1,
+        },
+        {
+          operation: "classify_intent",
+          attempted_models: ["gemini-3.5-flash-lite"],
+          served_model: "gemini-3.5-flash-lite",
+          latency_ms: 300,
+          retry_count: 0,
+        },
+      ],
+    },
+  } as DeveloperAuditTurn["response"];
+
+  render(
+    <DeveloperAuditPanel
+      turns={[turn]}
+      selectedTurnId="turn-1"
+      onSelectTurn={() => {}}
+      debugIgnoreOperatingHours={false}
+      onToggleDebugIgnoreOperatingHours={() => {}}
+    />,
+  );
+
+  await user.click(screen.getByRole("button", { name: "LLM 추출" }));
+
+  expect(
+    screen.getByText(/같은 모델로 1회 재시도 후 성공 — 소요 시간에 재시도 대기가 포함돼 있어요\./),
+  ).toBeInTheDocument();
+  // retry_count=0인 호출에는 재시도 안내가 붙지 않는다.
+  expect(screen.getAllByText(/같은 모델로/)).toHaveLength(1);
+});
