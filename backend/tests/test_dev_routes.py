@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import settings
+from app.errors import ProviderUnavailableError
 from app.main import create_app
 from app.observability import api_usage
 from app.routes import dev as dev_routes
@@ -111,6 +112,29 @@ def test_db_status_splits_places_by_district_and_keeps_history_global(
                     },
                 ],
             )
+        if path.endswith("/place_barrier_free"):
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "content_id": "1",
+                        "places": {
+                            "area_code": "11",
+                            "district_code": "110",
+                            "is_active": True,
+                        },
+                    },
+                    # 비활성 장소에 달린 행. 활성 수에는 안 들어가고 전체에는 들어간다.
+                    {
+                        "content_id": "2",
+                        "places": {
+                            "area_code": "11",
+                            "district_code": "170",
+                            "is_active": False,
+                        },
+                    },
+                ],
+            )
         if path.endswith("/place_sync_runs"):
             return httpx.Response(
                 200,
@@ -137,6 +161,13 @@ def test_db_status_splits_places_by_district_and_keeps_history_global(
         ("170", "용산구"),
     ]
     assert payload["districts"][0]["total"] == 1
+    # 무장애 행은 구별로 센다. place_barrier_free에는 구 열이 없어 places와 묶어야 한다.
+    assert payload["districts"][0]["barrier_free_active"] == 1
+    assert payload["districts"][0]["barrier_free_total"] == 1
+    assert payload["districts"][1]["barrier_free_active"] == 0
+    assert payload["districts"][1]["barrier_free_total"] == 1
+    assert payload["overall"]["barrier_free_active"] == 1
+    assert payload["overall"]["barrier_free_total"] == 2
     assert payload["districts"][1]["inactive"] == 1
     # 이력과 잠금은 구로 나누지 않는다 — 화면에서도 탭 밖에 둔다.
     assert payload["sync_runs"] == [
@@ -222,6 +253,40 @@ def _clean_jobs():
     get_job_registry().reset()
     yield
     get_job_registry().reset()
+
+
+class _FakeBarrierFreeProvider:
+    """대조가 부르는 무장애 목록을 가로챈다.
+
+    테스트에서 `listed`를 채워 예상 호출수를 검증한다. 기본값이 빈 dict이므로
+    아무것도 설정하지 않은 테스트에서는 대상이 0건으로 나온다.
+    """
+
+    listed: dict[str, str] = {}
+    calls: list[tuple[str, str]] = []
+
+    def __init__(self, **kwargs: object) -> None:
+        pass
+
+    async def list_barrier_free_content_ids(
+        self, area_code: str, district_code: str
+    ) -> dict[str, str]:
+        type(self).calls.append((area_code, district_code))
+        return dict(type(self).listed)
+
+
+@pytest.fixture(autouse=True)
+def _barrier_free_list(monkeypatch: pytest.MonkeyPatch) -> type[_FakeBarrierFreeProvider]:
+    """무장애 목록 조회를 전 테스트에서 가짜로 바꾼다.
+
+    autouse인 이유는 대조가 이 목록을 실제로 부르기 때문이다. 막지 않으면 테스트가
+    실 TourAPI로 나가고, 등록되지 않은 키라 403이 조용히 잡혀 "0건"으로 보인다 —
+    네트워크에 나가는 것도, 그 결과가 그럴듯한 0으로 보이는 것도 곤란하다.
+    """
+    _FakeBarrierFreeProvider.listed = {}
+    _FakeBarrierFreeProvider.calls = []
+    monkeypatch.setattr(dev_routes, "RealBarrierFreeProvider", _FakeBarrierFreeProvider)
+    return _FakeBarrierFreeProvider
 
 
 @pytest.fixture
@@ -502,6 +567,9 @@ def test_reconcile_builds_baseline_from_database_when_no_snapshot(
     monkeypatch.setattr(settings, "supabase_secret_key", "sb_secret_test")
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/place_barrier_free"):
+            # 무장애 정보를 확인한 장소가 아직 없다.
+            return httpx.Response(200, json=[])
         assert request.url.params["district_code"] == "eq.110"
         # 1번은 DB에 있고, 2번은 이번 목록에만 있다 → 신규 1건.
         return httpx.Response(200, json=[_snapshot_row("1")])
@@ -558,6 +626,9 @@ def test_apply_runs_job_and_reports_progress(
                 detail_target_count=1,
                 detail_attempted_count=1,
                 reparse_count=0,
+                barrier_free_target_count=0,
+                barrier_free_attempted_count=0,
+                barrier_free_stored_count=0,
                 error_summary={},
             )
 
@@ -735,6 +806,9 @@ def test_apply_passes_details_limit_to_service(
                 detail_target_count=1,
                 detail_attempted_count=1,
                 reparse_count=0,
+                barrier_free_target_count=0,
+                barrier_free_attempted_count=0,
+                barrier_free_stored_count=0,
                 error_summary={},
             )
 
@@ -805,6 +879,8 @@ def test_reconcile_counts_places_missing_details_as_extra_calls(
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/place_barrier_free"):
+            return httpx.Response(200, json=[])
         assert request.url.params["detail_fetch_status"] == "in.(pending,failed)"
         return httpx.Response(
             200,
@@ -862,3 +938,91 @@ def test_list_call_estimate_counts_one_call_per_thousand_places() -> None:
     assert dev_routes._list_call_estimate(883) == 1
     assert dev_routes._list_call_estimate(1000) == 1
     assert dev_routes._list_call_estimate(1001) == 2
+
+
+@pytest.mark.asyncio
+async def test_무장애_예상_호출수는_목록과_교집합을_낸다(
+    monkeypatch: pytest.MonkeyPatch,
+    _real_place: None,
+    _barrier_free_list: type[_FakeBarrierFreeProvider],
+    tmp_path,
+) -> None:
+    """"아직 확인 안 한 장소 수"를 그대로 보여주면 4.6배 부풀려진다.
+
+    종로구는 숙박을 뺀 755건이 대상 후보지만 무장애 목록에 있는 건 164건뿐이고,
+    나머지는 호출 없이 "목록에 없음" 행만 쓰고 끝난다. 하루 한도(1,000회) 옆에
+    붙는 숫자라 상한이 아니라 실제에 가까운 값이어야 한다.
+    """
+    monkeypatch.setattr(dev_routes.place_snapshot, "DATA_DIR", tmp_path)
+    # 4건 중 하나(3번)는 숙박이라 애초에 대상이 아니다.
+    _barrier_free_list.listed = {"1": "12", "3": "32", "9": "12"}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/place_barrier_free"):
+            # 2번은 이미 확인했다 — 다시 부르지 않는다.
+            return httpx.Response(
+                200,
+                json=[{"content_id": "2", "fetched_at": "2026-08-25T00:00:00+00:00"}],
+            )
+        return httpx.Response(200, json=[])
+
+    monkeypatch.setattr(
+        dev_routes,
+        "status_client",
+        lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    async def fake_fetch(client, api_key, area, district, fetched_at):
+        return {
+            "1": _snapshot_row("1"),
+            "2": _snapshot_row("2"),
+            "3": _snapshot_row("3", content_type_id="32"),
+            "4": _snapshot_row("4"),
+        }
+
+    monkeypatch.setattr(dev_routes.place_snapshot, "fetch_place_rows", fake_fetch)
+
+    with _client() as client:
+        payload = client.post("/api/dev/place-sync/reconcile", json={}).json()
+
+    # 대상은 1·2·4(3번은 숙박) → 확인 안 한 것은 1·4 → 목록에 있는 것은 1번뿐이다.
+    assert payload["barrier_free_detail_count"] == 1
+    assert payload["barrier_free_checked"] is True
+    assert _barrier_free_list.calls == [("11", "110")]
+
+
+@pytest.mark.asyncio
+async def test_무장애_목록_조회가_실패하면_확인하지_못한_것으로_알린다(
+    monkeypatch: pytest.MonkeyPatch,
+    _real_place: None,
+    _barrier_free_list: type[_FakeBarrierFreeProvider],
+    tmp_path,
+) -> None:
+    """0건과 "못 봤다"를 뭉개면 화면이 0회를 확정된 값처럼 보여준다."""
+    monkeypatch.setattr(dev_routes.place_snapshot, "DATA_DIR", tmp_path)
+
+    class _실패하는_provider(_FakeBarrierFreeProvider):
+        async def list_barrier_free_content_ids(self, area_code, district_code):
+            raise ProviderUnavailableError("TourAPI(무장애)", detail="HTTP 403")
+
+    monkeypatch.setattr(dev_routes, "RealBarrierFreeProvider", _실패하는_provider)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[])
+
+    monkeypatch.setattr(
+        dev_routes,
+        "status_client",
+        lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    async def fake_fetch(client, api_key, area, district, fetched_at):
+        return {"1": _snapshot_row("1")}
+
+    monkeypatch.setattr(dev_routes.place_snapshot, "fetch_place_rows", fake_fetch)
+
+    with _client() as client:
+        payload = client.post("/api/dev/place-sync/reconcile", json={}).json()
+
+    assert payload["barrier_free_detail_count"] == 0
+    assert payload["barrier_free_checked"] is False

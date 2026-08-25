@@ -1,4 +1,4 @@
-"""사용자 위치 표현을 종로구 범위의 좌표로 해석하는 내부 Tool."""
+"""사용자 위치 표현을 지원 지역 안의 좌표로 해석하는 내부 Tool."""
 
 from __future__ import annotations
 
@@ -16,10 +16,10 @@ from app.providers.contracts import (
     ProviderSource,
     ProviderStatus,
 )
-from app.providers.geocoding import get_jongno_landmark_alias
+from app.providers.geocoding import get_landmark_alias
 from app.providers.protocols import GeocodingProvider, LocalSearchProvider
 from app.repositories.protocols import PlaceLocationRepository
-from app.service_area import is_within_service_area
+from app.service_area import is_within_service_area, supported_district_label
 from app.tools.contracts import ToolError, ToolStatus
 
 ResolveLocationStatus = ToolStatus
@@ -215,17 +215,19 @@ class LocationPurpose(StrEnum):
       한옥마을 좌표의 최근접은 가회민화박물관(27m)이고 정작 북촌한옥마을은
       293m로 밀린다(D-043 실측).
 
-    같은 사다리를 쓰면 SEARCH_CENTER가 필요하지도 않은 저장소 조회를 먼저
-    치른다. 종로구 코퍼스에 없는 이름(역명·상호·지명)은 그 조회가 반드시
-    실패하므로 왕복만 버린다("안국역" 기준 `places` 4회).
+    세 목적 모두 저장소를 먼저 본다. 한때 SEARCH_CENTER만 건너뛰었는데(cc3da0ed),
+    코퍼스에 없는 이름은 조회가 반드시 실패하는 데다 필터 사다리를 한 칸씩 던지느라
+    `places`를 4회 버렸기 때문이다. 필터를 or= 하나로 합쳐 그 비용이 제목 1회 +
+    별칭 1회로 줄면서 전제가 사라졌다. REALTIME_CITYDATA만 예외다(아래).
     """
 
     SEARCH_CENTER = "search_center"
     PLACE_IDENTITY = "place_identity"
-    # 서울시 실시간 상권은 종로구 TourAPI 코퍼스 밖의 서울 주요 82개 지역도
-    # 제공한다. 이 목적은 상호 좌표만 찾고, 이후 C가 서울시 제공 지역 반경을 따로
-    # 판정한다. 기존 TripBranch 추천의 종로구 제한을 여기서 재사용하면 용리단길
-    # 같은 정상 상권 질문이 위치 단계에서 막힌다.
+    # 서울시 실시간 상권은 TourAPI 코퍼스 밖의 서울 주요 지역도 제공한다. 이 목적은
+    # 상호 좌표만 찾고, 이후 C가 서울시 제공 지역 반경을 따로 판정한다. 추천의 지원
+    # 지역 제한을 여기서 재사용하면 용리단길 같은 정상 상권 질문이 위치 단계에서
+    # 막힌다. 저장소 조회도 건너뛴다 — 권역명("광화문·덕수궁")이나 코퍼스 밖 지명이
+    # 대상이라 실패가 정상이다.
     REALTIME_CITYDATA = "realtime_citydata"
 
 
@@ -300,8 +302,15 @@ class ResolveLocationTool:
                 requested_query, enforce_service_area=enforce_service_area
             )
 
-        # 검색 중심점은 좌표만 필요하다. 저장소 조회는 정체성 확정용이라 건너뛴다.
-        if query.purpose is LocationPurpose.PLACE_IDENTITY:
+        # 검색 중심점도 저장소를 먼저 본다. 예전에는 "코퍼스에 없는 이름은
+        # 그 조회가 반드시 실패하므로 왕복만 버린다"는 이유로 건너뛰었는데, 지원
+        # 지역이 네 구로 늘면서 그 전제가 깨졌다 — "명동성당 근처"처럼 저장소에
+        # 있는 장소를 검색 중심으로 쓰는 요청이 실제로 들어온다. 지역 검색은 그런
+        # 이름을 못 좁혀 되묻기로 끝난다("르빵 명동성당점" 같은 주변 상호가 섞인다).
+        #
+        # 실시간 도시데이터는 그대로 건너뛴다. 그쪽은 코퍼스 밖의 서울 주요
+        # 지역을 대상으로 해서 저장소 조회가 실패하는 게 정상이다.
+        if query.purpose is not LocationPurpose.REALTIME_CITYDATA:
             stored_result = await self._lookup_stored_place(requested_query)
             if stored_result is not None:
                 return stored_result
@@ -314,7 +323,7 @@ class ResolveLocationTool:
         if local_search_result is not None:
             return local_search_result
 
-        alias = get_jongno_landmark_alias(requested_query)
+        alias = get_landmark_alias(requested_query)
 
         if alias:
             first = await self._lookup(alias)
@@ -397,7 +406,7 @@ class ResolveLocationTool:
         selected = _select_local_search_candidate(candidates, requested_query)
         if selected is None:
             # 후보를 못 좁혔는데 찾은 것이 전부 지역 밖이면 되묻기가 아니라 지역 문제다.
-            # "부산 해운대"에 "종로구 안에서 어느 장소인지" 되묻는 일을 막는다.
+            # "부산 해운대"에 "지원 구 안에서 어느 장소인지" 되묻는 일을 막는다.
             if enforce_service_area and not any(
                 is_within_service_area(item.latitude, item.longitude)
                 for item in candidates
@@ -624,7 +633,7 @@ class ResolveLocationTool:
     ) -> ResolveLocationResult | None:
         """지원 지역 밖이면 unsupported, 안이면 None.
 
-        저장소에서 해석된 장소에는 쓰지 않는다 — 이미 종로구 장소로 등록된 것이라
+        저장소에서 해석된 장소에는 쓰지 않는다 — 이미 지원 구 장소로 등록된 것이라
         경계선에 붙어 있어도 지원 대상이 맞다(D-044).
         """
         if is_within_service_area(latitude, longitude):
@@ -671,10 +680,18 @@ def _map_unavailable_cause(provider_code: str) -> str:
 
 
 def _error_message(code: str, cause: str) -> str:
+    # 지원 범위를 문구에 직접 쓰지 않는다 - 구가 늘 때 SUPPORTED_DISTRICTS만
+    # 고치면 여기도 따라오게 한다.
     if cause == "ambiguous_location":
-        return "종로구 안에서 어느 장소인지 조금 더 구체적으로 알려주세요."
+        return (
+            f"{supported_district_label()} 안에서 어느 장소인지 "
+            "조금 더 구체적으로 알려주세요."
+        )
     if cause == "outside_supported_region":
-        return "현재는 서울특별시 종로구 내 장소만 지원합니다."
+        return (
+            f"현재는 {supported_district_label(with_city=True)} 안에서만 "
+            "찾아드릴 수 있어요."
+        )
     if code == "no_data":
         return "입력한 위치를 찾을 수 없습니다. 주소나 장소명을 확인해주세요."
     return "위치 검색 서비스를 사용할 수 없습니다. 잠시 후 다시 시도해주세요."

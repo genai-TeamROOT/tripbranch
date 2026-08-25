@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import re
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from typing import TypeVar
 from uuid import UUID
@@ -10,6 +11,7 @@ from uuid import UUID
 import httpx
 
 from app.domain.models import (
+    PlaceBarrierFreeDetails,
     PlaceEvidenceMatch,
     PlaceEvidenceSnippet,
     StoredPlaceDetail,
@@ -58,6 +60,13 @@ _LOCATION_COLUMNS = (
     "content_id,title,address,latitude,longitude,"
     "place_concentration_mappings(primary_concentration_name,concentration_search_keys)"
 )
+
+# 제목 조회 한 번에 받아올 행 상한. 필터 여러 개를 or=로 함께 던지므로 사다리
+# 시절의 2보다 넉넉해야 앞선 필터의 행이 잘리지 않는다.
+_TITLE_QUERY_ROW_LIMIT = 50
+# 우선순위로 고른 뒤 호출자에게 넘길 상한. 사다리 시절 limit=2와 같은 값이고,
+# 2건이면 호출자가 모호하다고 판정한다(`_lookup_stored_place`).
+_TITLE_MATCH_LIMIT = 2
 
 # 별칭 조회는 매핑이 있는 장소로만 좁혀야 해서 inner join이 필요하다.
 _LOCATION_COLUMNS_INNER = _LOCATION_COLUMNS.replace(
@@ -171,20 +180,117 @@ def _map_place_locations(
     return tuple(locations)
 
 
+# TourAPI가 국가지정문화재류 제목에 규칙적으로 붙이는 지역 접두사. 사용자는
+# "명동성당"이라고 하는데 저장소 제목은 "서울 명동성당"이다(활성 26곳).
+_TITLE_REGION_PREFIX = "서울 "
+
+
 def _title_filters(name: str) -> list[str]:
     """장소명 조회에 쓸 PostgREST 필터를 좁은 것부터 나열한다.
 
     부분 일치로 넓히지 않는다 - "종묘*"로 찾으면 종묘광장공원·종묘대제까지 걸려
-    엉뚱한 장소가 검색 중심이 된다. 이름 뒤에 괄호 부기만 붙은 형태로 한정한다.
-    PostgREST는 ilike의 `*`를 `%`로 바꿔 주므로 인코딩 문제가 없다.
+    엉뚱한 장소가 검색 중심이 된다. 이름 앞뒤에 **규칙적으로** 붙는 수식만
+    허용한다. PostgREST는 ilike의 `*`를 `%`로 바꿔 주므로 인코딩 문제가 없다.
+
+    순서가 곧 우선순위다(D-043). 한 번에 조회하고 이 순서로 골라내므로, 필터를
+    더할 때는 넣는 자리가 그대로 우선순위가 된다.
     """
+    prefixed = not name.startswith(_TITLE_REGION_PREFIX)
+    collapsed = "*".join(name.split()) if any(c.isspace() for c in name) else None
+
     filters = [f"eq.{name}"]
-    if any(character.isspace() for character in name):
+    # "명동성당" → "서울 명동성당". 와일드카드가 없어 사실상 정확 일치라,
+    # "종로"로 찾아도 "서울 종로 낙지볶음 골목"에는 걸리지 않는다. 접두사를 뗀
+    # 이름과 같은 제목의 다른 활성 장소는 없다(26곳 전수, 2026-08-24 확인).
+    # 정확 일치를 먼저 보므로 나중에 접두사 없는 동명 장소가 적재되면 그쪽이 이긴다.
+    if prefixed:
+        filters.append(f"ilike.{_TITLE_REGION_PREFIX}{name}")
+    if collapsed is not None:
         # "북촌 한옥마을" → "북촌한옥마을"
-        filters.append("ilike." + "*".join(name.split()))
+        filters.append(f"ilike.{collapsed}")
+        # "명동 성당" → "서울 명동성당". 두 수식이 함께 걸린 제목이 실제로 있어
+        # 각각만으로는 못 찾는다.
+        if prefixed:
+            filters.append(f"ilike.{_TITLE_REGION_PREFIX}{collapsed}")
     # "종묘" → "종묘 [유네스코 세계유산]", "세검정 터" → "세검정 터 (구 세검정)"
     filters.extend([f"ilike.{name} [*", f"ilike.{name} (*"])
     return filters
+
+
+def _quote_filter_value(value: str) -> str:
+    """or= 안에 들어갈 값을 큰따옴표로 감싼다.
+
+    감싸지 않으면 쉼표가 든 제목("꽃,밥에피다" 등 활성 5건)이 필터 구분자로 읽혀
+    PGRST100으로 깨진다. 괄호도 마찬가지다. 따옴표 안에서도 ilike의 `*`는 그대로
+    와일드카드로 동작한다(2026-08-24 실측).
+    """
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _title_or_filter(title_filters: Sequence[str]) -> str:
+    """제목 필터 여러 개를 or= 하나로 합친다.
+
+    사다리를 한 칸씩 따로 던지면 저장소에 없는 이름에서 왕복이 필터 수만큼 쌓인다
+    ("안국역" 기준 4회, 공백이 든 이름은 5회). 한 번에 던지고 우선순위는 받은 뒤
+    파이썬에서 가린다.
+    """
+    conditions = []
+    for title_filter in title_filters:
+        operator, _, value = title_filter.partition(".")
+        conditions.append(f"title.{operator}.{_quote_filter_value(value)}")
+    return f"({','.join(conditions)})"
+
+
+def _title_filter_matcher(title_filter: str) -> Callable[[str], bool]:
+    """제목이 이 필터에 걸리는지 판정한다. 받은 행을 우선순위로 가를 때 쓴다.
+
+    fnmatch를 쓰지 않는다 - 대괄호를 문자 클래스로 읽어 "종묘 [*"가 엉뚱하게
+    동작한다. 저장소 제목에 대괄호가 실제로 있다(활성 22건).
+    """
+    operator, _, value = title_filter.partition(".")
+    if operator == "eq":
+        return lambda title: title == value
+    # ilike: `*`만 와일드카드이고 나머지는 글자 그대로다.
+    pattern = "".join(
+        ".*" if part == "*" else re.escape(part) for part in re.split(r"(\*)", value)
+    )
+    compiled = re.compile(f"^{pattern}$", re.IGNORECASE)
+    return lambda title: compiled.match(title) is not None
+
+
+def _select_by_filter_priority(
+    rows: Sequence[object], title_filters: Sequence[str]
+) -> list[object]:
+    """섞여 온 행에서 가장 앞선 필터에 걸린 것만 남긴다.
+
+    사다리를 한 칸씩 던지던 시절의 동작을 그대로 재현한다 - 먼저 걸린 칸에서
+    멈췄으므로, 뒤 칸에만 걸리는 행은 애초에 보이지 않았다. 여기서 뒤 칸 행까지
+    함께 돌려주면 호출자가 후보 2건 이상으로 보고 되묻기로 새 버린다
+    (`_lookup_stored_place`의 `len(matches) > 1` 판정).
+
+    같은 이유로 2건에서 자른다. 그때 limit이 2였고, 그 상한이 곧 "이 칸에서
+    후보가 여럿이면 모호하다"는 신호였다.
+    """
+    matchers = [_title_filter_matcher(title_filter) for title_filter in title_filters]
+    best_rank: int | None = None
+    selected: list[object] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        title = row.get("title")
+        if not isinstance(title, str):
+            continue
+        rank = next(
+            (index for index, matches in enumerate(matchers) if matches(title)), None
+        )
+        if rank is None:
+            continue
+        if best_rank is None or rank < best_rank:
+            best_rank, selected = rank, [row]
+        elif rank == best_rank:
+            selected.append(row)
+    return selected[:_TITLE_MATCH_LIMIT]
 
 
 def _optional_text(value: object) -> str | None:
@@ -471,10 +577,12 @@ class SupabasePlaceRepository:
         normalized_name = name.strip()
         if not normalized_name:
             return ()
-        for title_filter in _title_filters(normalized_name):
-            rows = await self._query_places_by_title(title_filter)
-            if rows:
-                return _map_place_locations(rows, fallback_title=normalized_name)
+        title_filters = _title_filters(normalized_name)
+        rows = _select_by_filter_priority(
+            await self._query_places_by_title(title_filters), title_filters
+        )
+        if rows:
+            return _map_place_locations(rows, fallback_title=normalized_name)
         # 제목으로 못 찾으면 사람이 지정한 별칭을 본다. "창덕궁"은 저장소 제목이
         # "창덕궁과 후원 [유네스코 세계유산]"이라 어떤 제목 규칙으로도 닿지 않는다.
         rows = await self._query_places_by_alias(normalized_name)
@@ -507,18 +615,28 @@ class SupabasePlaceRepository:
             raise SupabaseRepositoryError("invalid place location response")
         return rows
 
-    async def _query_places_by_title(self, title_filter: str) -> list[object]:
+    async def _query_places_by_title(self, title_filters: Sequence[str]) -> list[object]:
+        """제목 필터 전부를 or= 하나로 던진다. 우선순위 판정은 호출자가 한다.
+
+        limit이 사다리 시절의 2가 아닌 이유: 그때는 한 칸이 자기 필터에 걸린 행만
+        받았지만, 지금은 여러 칸의 결과가 섞여 온다. 2로 자르면 뒤쪽 칸의 행이
+        앞자리를 차지해 정작 정확 일치를 못 받는 일이 생긴다. 넉넉히 받아
+        `_select_by_filter_priority`가 고르고, 거기서 다시 2건으로 줄인다.
+        """
         # _query_places_by_alias와 같은 이유로 지원 지역을 명시적으로 건다.
         response = await self._request(
             "GET",
             "/places",
             params={
                 "select": _LOCATION_COLUMNS,
-                "title": title_filter,
+                "or": _title_or_filter(title_filters),
                 "is_active": "eq.true",
                 "area_code": f"eq.{PLACE_SEARCH_LDONG_REGION_CODE}",
                 "district_code": _SUPPORTED_DISTRICT_FILTER,
-                "limit": "2",
+                # 한 칸에 이만큼 걸리면 어차피 모호해서 되묻기로 간다.
+                "limit": str(_TITLE_QUERY_ROW_LIMIT),
+                # 상한에 걸릴 때 어떤 행이 잘리는지가 호출마다 달라지지 않게 한다.
+                "order": "content_id",
             },
         )
         rows = self._json(response)
@@ -532,23 +650,39 @@ class SupabasePlaceRepository:
         매핑에 있는 장소는 집중률 API에 데이터가 존재한다는 뜻이다. INFO 질의에서
         대상 장소의 직접 데이터가 없을 때, 여기서 가장 가까운 곳을 대체 기준으로
         쓰면 "가까운 곳을 골랐는데 집중률이 없더라"를 구조적으로 피할 수 있다.
-        PostgREST가 거리 정렬을 지원하지 않아 전체를 읽고 호출자가 계산한다 —
-        매핑은 100건 규모라 한 번에 받아도 부담이 없다.
+        PostgREST가 거리 정렬을 지원하지 않아 전체를 읽고 호출자가 계산한다.
+
+        페이지로 나눠 읽는다. 매핑이 101건인 지금은 첫 요청 한 번으로 끝나지만,
+        한 번만 읽으면 상한을 넘는 순간 오류 없이 뒷부분이 잘린다 — 대체 후보가
+        조용히 사라져 "가까운 곳이 있는데 no_data"가 된다. 확장 구 매핑을
+        채우면(TP-136) 건수가 늘어난다.
         """
-        response = await self._request(
-            "GET",
-            "/places",
-            params={
-                "select": _LOCATION_COLUMNS,
-                "is_active": "eq.true",
-                # 내부 조인으로 매핑이 있는 장소만 남긴다.
-                "place_concentration_mappings": "not.is.null",
-                "limit": str(_READ_PAGE_SIZE),
-            },
-        )
-        rows = self._json(response)
-        if not isinstance(rows, list):
-            raise SupabaseRepositoryError("invalid concentration mapping response")
+        rows: list[object] = []
+        offset = 0
+        while True:
+            response = await self._request(
+                "GET",
+                "/places",
+                params={
+                    "select": _LOCATION_COLUMNS,
+                    "is_active": "eq.true",
+                    # 내부 조인으로 매핑이 있는 장소만 남긴다.
+                    "place_concentration_mappings": "not.is.null",
+                    # 정렬이 없으면 페이지마다 순서가 달라져 같은 행이 두 번 오거나
+                    # 아예 빠질 수 있다.
+                    "order": "content_id.asc",
+                    "limit": str(_READ_PAGE_SIZE),
+                    "offset": str(offset),
+                },
+            )
+            page = self._json(response)
+            if not isinstance(page, list):
+                raise SupabaseRepositoryError("invalid concentration mapping response")
+            rows.extend(page)
+            if len(page) < _READ_PAGE_SIZE:
+                break
+            offset += _READ_PAGE_SIZE
+
         return tuple(
             location
             for location in _map_place_locations(rows, fallback_title="")
@@ -1138,6 +1272,120 @@ class SupabasePlaceRepository:
                 if isinstance(row, Mapping) and row.get("content_id"):
                     found.add(str(row["content_id"]))
         return [content_id for content_id in content_ids if content_id not in found]
+
+    async def count_barrier_free_by_district(self) -> dict[tuple[str, str], dict[str, int]]:
+        """구별 무장애 행 수. `places`를 함께 읽어 활성 여부까지 센다.
+
+        place_barrier_free에는 구 열이 없다(content_id 기준). place_enrichments처럼
+        전체 건수만 세지 않고 구별로 쪼개는 이유는, 이 테이블은 장소 동기화가 구
+        단위로 채우기 때문이다 — "이 구는 무장애를 채웠나"가 패널에서 답해야 할
+        질문이다.
+
+        행 수가 적어(4개 구를 다 채워도 430행) places 전량 요약과 달리 한 번에
+        읽는다. 목록에 없는 장소는 행을 만들지 않으므로 places보다 훨씬 적다.
+        """
+        counts: dict[tuple[str, str], dict[str, int]] = {}
+        offset = 0
+        while True:
+            response = await self._request(
+                "GET",
+                "/place_barrier_free",
+                params={
+                    "select": "content_id,places!inner(area_code,district_code,is_active)",
+                    "order": "content_id.asc",
+                    "limit": str(_READ_PAGE_SIZE),
+                    "offset": str(offset),
+                },
+            )
+            page = self._json(response)
+            if not isinstance(page, list):
+                raise SupabaseRepositoryError("invalid barrier free summary response")
+            for raw in page:
+                place = raw.get("places") if isinstance(raw, Mapping) else None
+                if not isinstance(place, Mapping):
+                    raise SupabaseRepositoryError("invalid barrier free summary row")
+                key = (
+                    str(place.get("area_code") or ""),
+                    str(place.get("district_code") or ""),
+                )
+                bucket = counts.setdefault(key, {"active": 0, "total": 0})
+                bucket["total"] += 1
+                if place.get("is_active"):
+                    bucket["active"] += 1
+            if len(page) < _READ_PAGE_SIZE:
+                return counts
+            offset += _READ_PAGE_SIZE
+
+    async def list_barrier_free_fetched_at(
+        self, content_ids: Sequence[str]
+    ) -> dict[str, datetime]:
+        """무장애 정보를 언제 확인했는지. 행이 없는 장소는 결과에도 없다.
+
+        값이 비어 있는 행도 "확인했다"로 센다 — 무장애 목록에 있는데도 15개 필드가
+        모두 빈 장소가 496건 중 60건이라, 값이 없다고 다시 부르면 그 60건에 매번
+        호출을 태우게 된다.
+        """
+        if not content_ids:
+            return {}
+        fetched: dict[str, datetime] = {}
+        for chunk in _chunks(list(content_ids), _UPSERT_CHUNK_SIZE):
+            quoted = ",".join(f'"{content_id}"' for content_id in chunk)
+            response = await self._request(
+                "GET",
+                "/place_barrier_free",
+                params={
+                    "select": "content_id,fetched_at",
+                    "content_id": f"in.({quoted})",
+                },
+            )
+            payload = self._json(response)
+            if not isinstance(payload, list):
+                raise SupabaseRepositoryError("invalid barrier free response")
+            for row in payload:
+                if not isinstance(row, Mapping):
+                    continue
+                content_id = _optional_text(row.get("content_id"))
+                fetched_at = _parse_datetime(row.get("fetched_at"), "fetched_at")
+                if content_id is not None and fetched_at is not None:
+                    fetched[content_id] = fetched_at
+        return fetched
+
+    async def upsert_barrier_free_details(
+        self,
+        details: Sequence[PlaceBarrierFreeDetails],
+        fetched_at: datetime,
+    ) -> None:
+        """무장애 상세를 반영한다. 부른 장소만 행이 된다.
+
+        값이 전부 비어 있어도 행을 만든다. 무장애 목록에 있는데 28개 필드가 모두 빈
+        장소가 4개 구에서 60건이고(전부 쇼핑몰 입점 매장, 2022·2024년 일괄 등록),
+        행이 없으면 그 장소들을 실행할 때마다 다시 부르게 된다.
+
+        반대로 목록에 없는 장소는 행을 만들지 않는다. 없다는 사실은 목록이 매번
+        알려주므로 저장할 이유가 없다.
+        """
+        if not details:
+            return
+        fetched_at_text = _iso(fetched_at)
+        rows: list[dict[str, object]] = []
+        for detail in details:
+            row: dict[str, object] = {
+                "content_id": detail.content_id,
+                "fetched_at": fetched_at_text,
+            }
+            for field_name, value in vars(detail).items():
+                if field_name != "content_id":
+                    row[field_name] = value
+            rows.append(row)
+
+        for chunk in _chunks(rows, _UPSERT_CHUNK_SIZE):
+            await self._request(
+                "POST",
+                "/place_barrier_free",
+                params={"on_conflict": "content_id"},
+                json=list(chunk),
+                prefer="resolution=merge-duplicates,return=minimal",
+            )
 
     async def list_sync_locks(self) -> list[dict[str, object]]:
         """현재 잡혀 있는 동기화 잠금. 만료된 행도 그대로 보여준다.

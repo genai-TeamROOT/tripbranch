@@ -67,6 +67,7 @@ from app.schemas import (
     TravelOrigin,
     UserConditions,
 )
+from app.service_area import supported_district_label
 from app.services.interpret.orchestrator import build_interpretation
 from app.services.interpret.session_orchestrator import ensure_current_context
 from app.services.interpret.state_transform import to_user_conditions, transform
@@ -407,7 +408,7 @@ _CUSTOM_CONDITIONS = "custom_conditions"
 _WIDEN_RADIUS_MAX_TRAVEL_TIME = math.ceil(MAX_PLACE_SEARCH_RADIUS_KM / WALKING_SPEED_KM_PER_MINUTE)
 
 _NO_DATA_EMPTY_MESSAGE = (
-    "말씀하신 조건에 맞는 곳을 종로구 안에서 찾지 못했어요. "
+    f"말씀하신 조건에 맞는 곳을 {supported_district_label()} 안에서 찾지 못했어요. "
     "검색 범위를 넓혀볼까요, 아니면 다른 종류의 장소도 함께 볼까요?"
 )
 _NO_DATA_EMPTY_OPTIONS: tuple[tuple[str, str], ...] = (
@@ -1993,7 +1994,7 @@ async def _fetch_tool_context(
                 else:
                     message = (
                         "말씀하신 목적지 범위가 여러곳으로 해석돼요. "
-                        "종로구 안에서 이런 곳들은 어떠세요? "
+                        f"{supported_district_label()} 안에서 이런 곳들은 어떠세요? "
                         "아니면, 좀 더 자세히 말씀해주시겠어요?"
                     )
                     options = [

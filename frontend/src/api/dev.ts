@@ -46,6 +46,11 @@ export type PlaceSummary = {
   operating_parse_status: Record<string, number>;
   operating_parser_version: Record<string, number>;
   latest_detail_fetched_at: string | null;
+  /* place_barrier_free 행 수. 무장애 목록에 있어 조회한 장소만 행이 되므로
+   * places보다 훨씬 적다(종로구 842건 중 164건). active는 그중 활성 장소에
+   * 달린 것이다. */
+  barrier_free_active: number;
+  barrier_free_total: number;
 };
 
 /** 구 하나의 요약. district_name은 코드 자료에 없는 구면 null이라 코드로 표시한다. */
@@ -189,6 +194,11 @@ export type ReconcileResult = {
   detail_backfill_ids: string[];
   /** DB를 실제로 확인했는지. false면 위 목록이 0건이라는 뜻이 아니라 못 봤다는 뜻이다. */
   detail_backfill_checked: boolean;
+  /* 이번 반영이 무장애 상세(detailWithTour2)를 부를 횟수. 대조가 무장애 목록을
+   * 1회 불러 실제 대상과 교집합을 낸 값이라 상한이 아니라 실제 수다. */
+  barrier_free_detail_count: number;
+  /** 실제로 확인했는지. false면 0건이 아니라 못 봤다는 뜻이다. */
+  barrier_free_checked: boolean;
   rows: ReconcileRow[];
   message?: string;
 };
@@ -224,6 +234,13 @@ export type SyncJob = {
     detail_target_count: number;
     detail_attempted_count: number;
     reparse_count: number;
+    /* 무장애 정보(KorWithService2). target은 부를 대상 수(무장애 목록에 있고 아직
+     * 확인하지 않은 장소), attempted는 실제 호출 수, stored는 값이 하나라도 있어
+     * 저장된 장소 수다. stored가 attempted보다 적을 수 있다 — 목록에 있는데
+     * 항목이 미입력인 장소가 있다. */
+    barrier_free_target_count: number;
+    barrier_free_attempted_count: number;
+    barrier_free_stored_count: number;
     error_summary: Record<string, number>;
   } | null;
   error: string | null;

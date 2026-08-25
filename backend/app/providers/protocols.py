@@ -19,6 +19,7 @@ from app.domain.models import (
     GeocodeResult,
     HolidayResult,
     LocalSearchPlace,
+    PlaceBarrierFreeDetails,
     PlaceCategoryFilter,
     PlaceCommonDetails,
     PlaceDetails,
@@ -371,6 +372,30 @@ class TourAreaPlaceProvider(Protocol):
         content_type_id: str,
     ) -> PlaceOperatingDetails:
         """소개 상세 조회만 사용해 운영시간과 휴무일 원문을 반환한다."""
+        ...
+
+
+class BarrierFreeProvider(Protocol):
+    """무장애 여행 정보(KorWithService2) 조회 계약.
+
+    TourAreaPlaceProvider와 나눈 이유는 서비스가 다르기 때문이다 — 같은 인증키를
+    쓰지만 경로도 응답 필드도 다르고, 등록된 장소가 19%뿐이라 호출 대상을 목록으로
+    먼저 좁힌다.
+    """
+
+    async def list_barrier_free_content_ids(
+        self,
+        area_code: str,
+        district_code: str,
+    ) -> dict[str, str]:
+        """무장애 정보가 등록된 장소의 content_id → content_type_id."""
+        ...
+
+    async def get_barrier_free_details(
+        self,
+        content_id: str,
+    ) -> PlaceBarrierFreeDetails | None:
+        """무장애 상세 1건. 등록되지 않은 장소면 None이다."""
         ...
 
 
