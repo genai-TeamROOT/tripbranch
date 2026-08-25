@@ -27,21 +27,21 @@ def _personas(count: int):
 @pytest.mark.parametrize(
     ("persona_count", "expected_distribution"),
     [
-        (3, [3, 3, 2]),
-        (4, [2, 2, 2, 2]),
-        (5, [2, 2, 2, 1, 1]),
+        (3, [2, 2, 1]),
+        (4, [2, 1, 1, 1]),
+        (5, [1, 1, 1, 1, 1]),
     ],
 )
-def test_리뷰_8개를_페르소나에_균등하게_배분한다(
+def test_리뷰_5개를_페르소나에_균등하게_배분한다(
     persona_count: int, expected_distribution: list[int]
 ) -> None:
     personas = _personas(persona_count)
     plans = generate_review_plans(personas)
     counts = Counter(plan.persona_id for plan in plans)
 
-    assert len(plans) == 8
+    assert len(plans) == 5
     assert [counts[persona.persona_id] for persona in personas] == expected_distribution
-    assert [plan.review_index for plan in plans] == list(range(8))
+    assert [plan.review_index for plan in plans] == list(range(5))
 
 
 def test_같은_페르소나의_visit_context는_중복되지_않는다() -> None:
@@ -57,7 +57,7 @@ def test_같은_페르소나의_visit_context는_중복되지_않는다() -> Non
     )
 
 
-def test_구체적인_공식_평가_축을_장소_유형보다_먼저_배정한다() -> None:
+def test_구체적인_공식_평가_축을_우선순서대로_배정한다() -> None:
     personas = _personas(4)
     plans = generate_review_plans(personas)
     schedule_plans = [plan for plan in plans if plan.persona_id == personas[0].persona_id]
@@ -65,7 +65,6 @@ def test_구체적인_공식_평가_축을_장소_유형보다_먼저_배정한�
     assert schedule_plans[0].focus_axes == ("OPERATING_HOURS",)
     assert schedule_plans[1].focus_axes == ("REST_DATE",)
     assert schedule_plans[0].evidence_fields == (
-        "content_type_id",
         "operating_hours_raw",
         "rest_date_raw",
     )

@@ -1,6 +1,7 @@
 import pytest
 
 from app.synthetic_reviews.personas import (
+    CompanionTypeTrait,
     PlacePersonaInput,
     PriorityTrait,
     TravelPartyTrait,
@@ -29,12 +30,13 @@ def test_네_가지_축을_조합해_복합_페르소나를_생성한다() -> No
         )
     )
 
-    assert len(personas) == 4
+    assert len(personas) == 5
     assert personas[0].travel_party is TravelPartyTrait.SOLO
+    assert personas[0].companion_type is CompanionTypeTrait.NONE
     assert personas[0].visit_purpose is VisitPurposeTrait.CULTURE
     assert personas[0].priority is PriorityTrait.SCHEDULE
     assert personas[0].visit_style is VisitStyleTrait.FIRST_TIME
-    assert personas[0].persona_id == "SOLO_CULTURE_SCHEDULE_FIRST_TIME"
+    assert personas[0].persona_id == "SOLO_NONE_CULTURE_SCHEDULE_FIRST_TIME"
     assert "혼자" in personas[0].description
     assert "운영 일정" in personas[0].description
 
@@ -47,13 +49,8 @@ def test_공식_정보가_있는_중요_조건만_근거와_함께_쓴다() -> N
     parking = personas[0]
     assert parking.priority is PriorityTrait.PARKING
     assert "주차를 중요하게" in parking.description
-    assert parking.evidence_fields == (
-        "content_type_id",
-        "parking_info_raw",
-        "parking_fee_raw",
-    )
+    assert parking.evidence_fields == ("parking_info_raw", "parking_fee_raw")
     assert parking.allowed_evaluation_axes == (
-        "PLACE_TYPE_FIT",
         "PARKING_AVAILABILITY",
         "PARKING_FEE",
     )
@@ -65,7 +62,11 @@ def test_빈_공식_정보는_중요_조건으로_선정하지_않는다() -> No
     )
 
     assert all(persona.priority is PriorityTrait.GENERAL for persona in personas)
-    assert all(persona.evidence_fields == ("content_type_id",) for persona in personas)
+    assert all(persona.evidence_fields == () for persona in personas)
+    assert all(
+        persona.allowed_evaluation_axes == ("PERSONAL_PREFERENCE", "ITINERARY_FIT")
+        for persona in personas
+    )
 
 
 def test_알_수_없는_장소_유형은_일반_탐색_목적으로_안전하게_대체한다() -> None:
@@ -106,6 +107,31 @@ def test_페르소나마다_조합과_id가_중복되지_않는다() -> None:
         TravelPartyTrait.COMPANION,
         TravelPartyTrait.SOLO,
     ]
+    assert [persona.companion_type for persona in personas] == [
+        CompanionTypeTrait.NONE,
+        CompanionTypeTrait.CHILD,
+        CompanionTypeTrait.NONE,
+        CompanionTypeTrait.OLDER_ADULT,
+        CompanionTypeTrait.NONE,
+    ]
+
+
+def test_동행자_유형은_content_id에_따라_결정적으로_다양화한다() -> None:
+    first = generate_personas(_place(content_id="1"), target_count=4)
+    second = generate_personas(_place(content_id="2"), target_count=4)
+
+    first_companions = [
+        persona.companion_type
+        for persona in first
+        if persona.travel_party is TravelPartyTrait.COMPANION
+    ]
+    second_companions = [
+        persona.companion_type
+        for persona in second
+        if persona.travel_party is TravelPartyTrait.COMPANION
+    ]
+    assert first_companions != second_companions
+    assert all(item is not CompanionTypeTrait.NONE for item in first_companions)
 
 
 def test_같은_입력은_항상_같은_페르소나를_만든다() -> None:

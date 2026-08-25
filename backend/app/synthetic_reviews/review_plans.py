@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from app.synthetic_reviews.personas import CompositePersona
 
-DEFAULT_REVIEWS_PER_PLACE = 8
+DEFAULT_REVIEWS_PER_PLACE = 5
 
 _CONTEXT_TEMPLATES = (
     "공식 장소 정보를 확인하고 방문 여부를 계획하는 상황",
@@ -14,9 +14,9 @@ _CONTEXT_TEMPLATES = (
     "같은 목적의 방문 후보와 비교해 선택을 검토하는 상황",
 )
 
-# 장소 유형은 모든 복합 페르소나에 공통으로 붙는다. 구체적인 공식 속성이 있으면
-# 먼저 평가하고, 같은 페르소나의 다음 리뷰에서 유형 적합성을 다루게 한다.
-_SECONDARY_AXES = frozenset({"PLACE_TYPE_FIT", "PERSONAL_PREFERENCE", "ITINERARY_FIT"})
+# 주관적 시나리오 축은 뒤로 미룬다. 구체적인 공식 속성이 있으면 먼저 평가하고,
+# 같은 페르소나의 다음 리뷰에서 취향과 일정 맥락을 다루게 한다.
+_SECONDARY_AXES = frozenset({"PERSONAL_PREFERENCE", "ITINERARY_FIT"})
 
 
 @dataclass(frozen=True)
@@ -46,8 +46,8 @@ def generate_review_plans(
 ) -> tuple[ReviewPlan, ...]:
     """3~5개 페르소나에 리뷰를 round-robin으로 배분한다.
 
-    모든 페르소나에 한 건씩 먼저 배정하고 앞에서부터 추가 배정하므로 기본 8건은
-    3명일 때 3·3·2, 4명일 때 2·2·2·2, 5명일 때 2·2·2·1·1이 된다.
+    모든 페르소나에 한 건씩 먼저 배정하고 앞에서부터 추가 배정한다. 기본 구성은
+    페르소나 5명에게 리뷰를 한 건씩 배정한다.
     """
     if not 3 <= len(personas) <= 5:
         raise ValueError("페르소나는 3~5개여야 합니다.")

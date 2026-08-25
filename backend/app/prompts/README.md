@@ -27,7 +27,8 @@ app/prompts/
 ├── compare/                    # COMPARE 대상 추출·비교 요약
 ├── general/                    # GENERAL 주제·답변
 ├── out_of_scope/               # 범위 밖·안전 분류
-└── schedule/                   # 일정 편성·부분 재편성
+├── schedule/                   # 일정 편성·부분 재편성
+└── synthetic_review/           # TourAPI 기반 합성 리뷰 생성
 ```
 
 각 인텐트 폴더는 아래 구조를 공통으로 사용합니다.

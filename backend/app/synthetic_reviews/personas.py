@@ -15,6 +15,14 @@ class TravelPartyTrait(StrEnum):
     COMPANION = "COMPANION"
 
 
+class CompanionTypeTrait(StrEnum):
+    NONE = "NONE"
+    PARTNER = "PARTNER"
+    FRIEND = "FRIEND"
+    CHILD = "CHILD"
+    OLDER_ADULT = "OLDER_ADULT"
+
+
 class VisitPurposeTrait(StrEnum):
     ATTRACTION = "ATTRACTION"
     CULTURE = "CULTURE"
@@ -74,6 +82,7 @@ class CompositePersona:
     persona_id: str
     description: str
     travel_party: TravelPartyTrait
+    companion_type: CompanionTypeTrait
     visit_purpose: VisitPurposeTrait
     priority: PriorityTrait
     visit_style: VisitStyleTrait
@@ -128,6 +137,12 @@ _TYPE_PURPOSES = {
 }
 
 _PARTIES = (TravelPartyTrait.SOLO, TravelPartyTrait.COMPANION)
+_COMPANION_TYPES = (
+    CompanionTypeTrait.PARTNER,
+    CompanionTypeTrait.FRIEND,
+    CompanionTypeTrait.CHILD,
+    CompanionTypeTrait.OLDER_ADULT,
+)
 _STYLES = (
     VisitStyleTrait.FIRST_TIME,
     VisitStyleTrait.RETURN_CONSIDERING,
@@ -136,9 +151,12 @@ _STYLES = (
     VisitStyleTrait.MULTI_STOP,
 )
 
-_PARTY_LABELS = {
-    TravelPartyTrait.SOLO: "혼자",
-    TravelPartyTrait.COMPANION: "동행자와",
+_COMPANION_LABELS = {
+    CompanionTypeTrait.NONE: "혼자",
+    CompanionTypeTrait.PARTNER: "연인 또는 배우자와",
+    CompanionTypeTrait.FRIEND: "친구와",
+    CompanionTypeTrait.CHILD: "어린이와",
+    CompanionTypeTrait.OLDER_ADULT: "고령의 가족과",
 }
 _PURPOSE_LABELS = {
     VisitPurposeTrait.ATTRACTION: "관광지를 둘러보는",
@@ -195,13 +213,14 @@ def _available_priorities(
 
 def _description(
     party: TravelPartyTrait,
+    companion_type: CompanionTypeTrait,
     purpose: VisitPurposeTrait,
     priority: PriorityTrait,
     style: VisitStyleTrait,
 ) -> str:
     priority_label = _PRIORITY_LABELS[priority]
     return (
-        f"{_STYLE_LABELS[style]} {_PARTY_LABELS[party]} "
+        f"{_STYLE_LABELS[style]} {_COMPANION_LABELS[companion_type]} "
         f"{_PURPOSE_LABELS[purpose]} 여행자. "
         f"{priority_label}{_object_particle(priority_label)} 중요하게 본다."
     )
@@ -217,7 +236,7 @@ def _object_particle(label: str) -> str:
 
 
 def generate_personas(
-    place: PlacePersonaInput, *, target_count: int = 4
+    place: PlacePersonaInput, *, target_count: int = 5
 ) -> tuple[CompositePersona, ...]:
     """장소별로 서로 다른 복합 페르소나 3~5개를 생성한다."""
     if not 3 <= target_count <= 5:
@@ -233,22 +252,43 @@ def generate_personas(
     )
 
     personas: list[CompositePersona] = []
+    companion_offset = sum(ord(character) for character in place.content_id) % len(
+        _COMPANION_TYPES
+    )
+    companion_count = 0
     for index, (priority, priority_fields, priority_axes) in enumerate(
         priorities[:target_count]
     ):
         party = _PARTIES[index % len(_PARTIES)]
+        if party is TravelPartyTrait.SOLO:
+            companion_type = CompanionTypeTrait.NONE
+        else:
+            companion_type = _COMPANION_TYPES[
+                (companion_offset + companion_count) % len(_COMPANION_TYPES)
+            ]
+            companion_count += 1
         style = _STYLES[index]
-        known_purpose = purpose is not VisitPurposeTrait.GENERAL_EXPLORATION
-        evidence_fields = (
-            ("content_type_id", *priority_fields) if known_purpose else priority_fields
+        # content_type_id는 방문 목적을 고르는 내부 분류값일 뿐, 장소 적합성이나
+        # 리뷰의 객관적 claim을 뒷받침하는 근거로 사용하지 않는다.
+        evidence_fields = priority_fields
+        axes = priority_axes
+        persona_id = "_".join(
+            (
+                party.value,
+                companion_type.value,
+                purpose.value,
+                priority.value,
+                style.value,
+            )
         )
-        axes = ("PLACE_TYPE_FIT", *priority_axes) if known_purpose else priority_axes
-        persona_id = "_".join((party.value, purpose.value, priority.value, style.value))
         personas.append(
             CompositePersona(
                 persona_id=persona_id,
-                description=_description(party, purpose, priority, style),
+                description=_description(
+                    party, companion_type, purpose, priority, style
+                ),
                 travel_party=party,
+                companion_type=companion_type,
                 visit_purpose=purpose,
                 priority=priority,
                 visit_style=style,
@@ -260,6 +300,7 @@ def generate_personas(
 
 
 __all__ = [
+    "CompanionTypeTrait",
     "CompositePersona",
     "PlacePersonaInput",
     "PriorityTrait",

@@ -38,7 +38,6 @@ def _plan(place: PlacePersonaInput, axis: str) -> ReviewPlan:
         "STROLLER_POLICY": "baby_carriage_raw",
         "CARD_PAYMENT": "credit_card_raw",
         "RESTROOM": "restroom_raw",
-        "PLACE_TYPE_FIT": "content_type_id",
     }
     return replace(base, focus_axes=(axis,), evidence_fields=(field_by_axis[axis],))
 
@@ -99,12 +98,6 @@ def test_운영정보는_존재만으로_긍정이나_부정을_단정하지_않
     assert assess_sentiment(place, _plan(place, axis)).sentiment is Sentiment.NEUTRAL
 
 
-def test_장소_유형과_방문_목적의_일치는_긍정이다() -> None:
-    place = _place()
-
-    assert assess_sentiment(place, _plan(place, "PLACE_TYPE_FIT")).sentiment is Sentiment.POSITIVE
-
-
 def test_긍정과_부정_축이_함께_있으면_mixed다() -> None:
     place = _place(parking_info_raw="불가능", parking_fee_raw="무료")
     plan = replace(
@@ -134,7 +127,7 @@ def test_공식_정보가_비어_있으면_감정을_발명하지_않고_거부�
 
 def test_알_수_없는_평가_축은_거부한다() -> None:
     place = _place()
-    plan = replace(_plan(place, "PLACE_TYPE_FIT"), focus_axes=("CROWD_LEVEL",))
+    plan = replace(_plan(place, "OPERATING_HOURS"), focus_axes=("CROWD_LEVEL",))
 
     with pytest.raises(ValueError, match="알 수 없는 평가 축"):
         assess_sentiment(place, plan)

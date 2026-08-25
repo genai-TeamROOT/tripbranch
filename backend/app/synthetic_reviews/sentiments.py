@@ -55,7 +55,6 @@ _AXIS_FIELDS: dict[str, tuple[str, ...]] = {
     "CARD_PAYMENT": ("credit_card_raw",),
     "RESTROOM": ("restroom_raw",),
     "INFORMATION_CONTACT": ("info_center_raw",),
-    "PLACE_TYPE_FIT": ("content_type_id",),
 }
 _SCENARIO_AXES = frozenset({"PERSONAL_PREFERENCE", "ITINERARY_FIT"})
 _NEGATIVE_MARKERS = ("불가능", "불가", "없음", "금지", "안됨", "안 됨")
@@ -124,8 +123,6 @@ def _assess_axis(
             if judged is AxisPolarity.POSITIVE
             else AxisPolarity.NEUTRAL
         )
-    elif axis == "PLACE_TYPE_FIT":
-        polarity = AxisPolarity.POSITIVE
     else:
         # 운영시간·휴무일·안내처는 값의 존재만으로 편리함이나 불편함을 단정하지 않는다.
         polarity = AxisPolarity.NEUTRAL

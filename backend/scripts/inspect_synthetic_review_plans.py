@@ -25,6 +25,10 @@ INSPECTION_COLUMNS = (
     "content_id",
     "content_type_id",
     "title",
+    "address",
+    "lcls_systm1",
+    "lcls_systm2",
+    "lcls_systm3",
     "operating_hours_raw",
     "rest_date_raw",
     "parking_info_raw",
@@ -37,7 +41,7 @@ INSPECTION_COLUMNS = (
     "credit_card_raw",
     "restroom_raw",
 )
-_INPUT_FIELDS = tuple(field for field in INSPECTION_COLUMNS if field != "title")
+_INPUT_FIELDS = tuple(PlacePersonaInput.__dataclass_fields__)
 
 
 class _PlaceReader(Protocol):
@@ -66,7 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--area-code", help="TourAPI 광역 코드")
     parser.add_argument("--district-code", help="TourAPI 시·군·구 코드")
     parser.add_argument(
-        "--persona-count", type=int, default=4, choices=range(3, 6), help="장소당 페르소나 수"
+        "--persona-count", type=int, default=5, choices=range(3, 6), help="장소당 페르소나 수"
     )
     parser.add_argument(
         "--reviews-per-place",

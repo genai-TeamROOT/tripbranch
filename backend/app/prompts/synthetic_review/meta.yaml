@@ -1,0 +1,6 @@
+owner: synthetic-review-generation
+slots:
+  synthetic_review.generate:
+    description: 공식 TourAPI 사실과 사전 결정된 페르소나·계획으로 합성 리뷰 5개를 생성한다.
+    version: "2.0.0"
+    template: system_instruction.md
