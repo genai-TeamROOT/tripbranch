@@ -50,6 +50,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
+from urllib.parse import quote
 
 BACKEND_ROOT: Final = Path(__file__).resolve().parents[1]
 RESULTS_DIR: Final = BACKEND_ROOT / "test_results"
@@ -532,6 +533,47 @@ def run_probe(*, confirmed: bool, rounds: int) -> int:
     print(f"  판정: {dep_verdict}")
     rows.append({"measure": "dependency", "target": parent_name, "result": dep_verdict})
 
+    # ── (5) 매개변수 조각 — 합성 뒤에도 부모 compile이 채우는가 ──
+    #
+    # 이게 이관에서 가장 위험한 가정이다. `info/extract.md`가 `{{visit_time_rules}}`
+    # 자리에 `info/visit_time_rules.md`를 꽂는데, 그 조각 안에는 또
+    # `{{reference_date}}`가 있다. 서버가 조각을 끼운 뒤 그 자리표시자가 살아남아야
+    # 부모 `compile()`이 채울 수 있다. 죽으면 이 슬롯은 서버측 합성을 못 쓴다.
+    print("\n=== (5) 매개변수 조각 — 합성 뒤 자리표시자가 살아남는가 ===")
+    inner_name = f"{SPIKE_PREFIX}param_child"
+    outer_name = f"{SPIKE_PREFIX}param_parent"
+    param_verdict = "불합격"
+    try:
+        client.create_prompt(
+            name=inner_name,
+            prompt="기준일은 {{reference_date}}다.",
+            labels=["production"],
+            type="text",
+        )
+        client.create_prompt(
+            name=outer_name,
+            prompt=f"HEAD\n@@@langfusePrompt:name={inner_name}|label=production@@@\nTAIL",
+            labels=["production"],
+            type="text",
+        )
+        fetched = client.get_prompt(outer_name, cache_ttl_seconds=0)
+        raw = fetched.prompt
+        compiled = fetched.compile(reference_date="2026-08-26")
+        print(f"  합성 결과   : {raw!r}")
+        print(f"  compile 결과: {compiled!r}")
+        print(f"  선언된 변수 : {sorted(fetched.variables)}")
+        if compiled == "HEAD\n기준일은 2026-08-26다.\nTAIL":
+            param_verdict = "합격 — 조각 안 자리표시자가 부모 compile로 채워진다"
+            print(f"  ✓ {param_verdict}")
+        else:
+            print("  ✗ 기대와 다르다 — 이 슬롯은 Python 조립을 남겨야 한다")
+    except Exception as exc:
+        param_verdict = f"불합격 — {type(exc).__name__}: {exc}"
+        print(f"  ✗ {param_verdict}")
+    rows.append(
+        {"measure": "parameterized_fragment", "target": outer_name, "result": param_verdict}
+    )
+
     # ── (1) 부팅 비용 ─────────────────────────────────────────
     print(f"\n=== (1) 부팅 비용 — 왕복 {rounds}회 ===")
     name = f"{SPIKE_PREFIX}{targets[0].langfuse_name}"
@@ -578,6 +620,34 @@ def run_probe(*, confirmed: bool, rounds: int) -> int:
     return 0
 
 
+def _delete_prompt(name: str) -> tuple[bool, str]:
+    """프롬프트 하나를 지운다. 실패하면 이유를 돌려준다.
+
+    **SDK의 `api.prompts.delete()`를 쓰지 않는다.** 이름에 `/`가 들어가면 그게
+    경로 구분자로 나가서 라우트가 안 잡히고, API가 아니라 웹앱의 404 HTML이 온다
+    (2026-08-25에 `spike__slash/nested/name`으로 실제로 겪었다 — 슬래시 없는 이름만
+    지워졌다). `quote(safe="")`로 인코딩하면 204다. 우리 자산 이름은 전부 폴더형이라
+    이관 도구는 반드시 이 경로를 타야 한다.
+    """
+
+    import httpx
+
+    from app.config import settings
+
+    url = f"{settings.langfuse_base_url.rstrip('/')}/api/public/v2/prompts/{quote(name, safe='')}"
+    response = httpx.request(
+        "DELETE",
+        url,
+        auth=(settings.langfuse_public_key, settings.langfuse_secret_key),
+        timeout=20,
+    )
+    if response.status_code in (200, 204):
+        return True, ""
+    # 의존성이 걸린 경우 400 + 어느 프롬프트가 막고 있는지 알려준다.
+    detail = response.text[:200].replace("\n", " ")
+    return False, f"{response.status_code} {detail}"
+
+
 def run_cleanup(*, confirmed: bool) -> int:
     client = _client()
     if client is None:
@@ -596,15 +666,24 @@ def run_cleanup(*, confirmed: bool) -> int:
         print("\n실제로 지우려면 --yes 를 붙인다.")
         return 0
 
-    failed = 0
-    for name in names:
-        try:
-            client.api.prompts.delete(name)
-            print(f"  ✓ {name}")
-        except Exception as exc:
-            failed += 1
-            print(f"  ✗ {name} — {type(exc).__name__}: {exc}")
-    return 1 if failed else 0
+    # Langfuse가 의존성 순서를 강제한다 — 부모가 남아 있으면 조각을 못 지운다.
+    # 어느 쪽이 부모인지 API가 알려주지 않으므로 더 못 지울 때까지 돌린다.
+    pending = list(names)
+    while pending:
+        stuck: list[tuple[str, str]] = []
+        for name in pending:
+            ok, reason = _delete_prompt(name)
+            if ok:
+                print(f"  ✓ {name}")
+            else:
+                stuck.append((name, reason))
+        if len(stuck) == len(pending):
+            print(f"\n✗ {len(stuck)}개를 못 지웠다:")
+            for name, reason in stuck:
+                print(f"    {name} — {reason}")
+            return 1
+        pending = [name for name, _ in stuck]
+    return 0
 
 
 def main() -> int:
