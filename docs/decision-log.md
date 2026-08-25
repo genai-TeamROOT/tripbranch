@@ -2748,6 +2748,92 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `frontend/src/pages/DeveloperOpsPage.tsx`,
   `frontend/src/pages/DeveloperOpsPage.test.tsx`
 
+### D-080 — LLMOps Trace 조회를 dev-ops 패널에서 볼 수 있게 한다 (TP-157)
+
+- 상태: `Accepted` — 구현 완료.
+- 배경: `trace_records`에는 A/C/D가 남긴 실행 단계(step)별 지연시간·에러가
+  이미 쌓이고 있었지만, 조회는 세션 하나를 좁혀 보는
+  `get_traces(session_id)`뿐이었다 — "step별 평균 지연시간이 얼마인지",
+  "최근에 어떤 에러가 났는지"처럼 세션을 가리지 않는 질문에 답할 방법이
+  없었다. D-079에서 같은 문제를 `response_feedback`에 대해 풀면서 "다른
+  테이블·다른 도메인이라 별도 카드로 남긴다"고 정리했던 것의 후속.
+- 결정:
+  1. `GET /trace/stats` 신규(`since`/`until`/`recent_errors_limit` 쿼리
+     파라미터, 전부 선택). 응답은 등장한 step만 담는 step별 집계(건수,
+     평균/최대 `latency_ms`, 에러 건수)와 최근 에러 목록(`error_type`이
+     있는 행만 최근순 상위 N건: session_id/run_id/step/error_type/시각)로
+     구성.
+  2. `step_stats`는 `reason_code_counts`(D-079)와 달리 고정된 값 집합이
+     아니다 — step은 A/C/D가 자유롭게 붙이는 문자열이라 B가 미리 알 수
+     없다(`agent-state-contract-v1.md`/`llmops-trace-contract-v1.md`의
+     경계 원칙과 동일). 등장한 step만 담고, 화면도 그 순서를 그대로
+     쓴다.
+  3. 집계는 이번에도 PostgREST group-by가 아니라 Python에서 한다
+     (D-079 결정 2와 동일한 근거). `StateStore`에
+     `list_traces_for_stats(since, until)`을 신설 — `get_traces`와 달리
+     세션 하나로 좁히지 않고 전체 테이블을 대상으로 한다. Supabase
+     구현은 `since`/`until` 동시 지정 시 `list_feedback_for_stats`와
+     동일한 `and=(...)` 문법으로 `recorded_at` 두 조건을 합성한다.
+  4. 프론트: `frontend/src/api/trace.ts`에 `fetchTraceStats()`,
+     `TracePanel.tsx`를 신설해 기존 패널들과 같은 패턴(페이지가 fetch,
+     패널은 props만 받아 렌더링)으로 `DeveloperOpsPage`에 다섯 번째
+     패널로 배선. `trace_router`는 `feedback_router`와 마찬가지로
+     `APP_ENV=local`과 무관하게 무조건 `include_router`한다.
+- 근거: 세션 단위 조회(`get_traces`)를 API로 별도 노출하지 않았다 — 지금
+  필요한 것은 통계뿐이고, 세션 단위 원시 조회가 필요해지는 시점(예: 특정
+  세션 디버깅 화면)이 오면 그때 범위를 정해 추가하는 게 맞다고 판단했다.
+- 채택하지 않은 것:
+  - **PostgREST group-by 집계** — 결정 3 참고.
+  - **API만 추가하고 화면은 나중에** — D-079와 같은 이유로 기각.
+- 남은 것: D-079와 동일하게 기간 필터(`since`/`until`)는 API는 지원하지만
+  패널에는 날짜 선택 UI가 없다 — 지금은 항상 전체 기간을 본다.
+- 상세: `backend/app/state/store.py`, `backend/app/state/supabase_store.py`,
+  `backend/app/state/trace.py`, `backend/app/state/service.py`,
+  `backend/app/routes/trace.py`, `backend/app/main.py`,
+  `backend/tests/state/test_trace.py`, `backend/tests/state/test_supabase_store.py`,
+  `frontend/src/api/trace.ts`, `frontend/src/types.ts`,
+  `frontend/src/components/dev/TracePanel.tsx`,
+  `frontend/src/pages/DeveloperOpsPage.tsx`,
+  `frontend/src/pages/DeveloperOpsPage.test.tsx`
+
+### D-081 — `list_traces_for_stats`/`list_feedback_for_stats`가 PostgREST 기본 1000행 상한에 걸려 있던 문제 수정 (D-079/D-080 후속)
+
+- 상태: `Accepted` — 구현 완료.
+- 배경: TP-157 브라우저 테스트 중 발견. dev-ops 패널의 "전체 실행"이 정확히
+  1000으로 뜨는 게 단서였다 — 실제 `trace_records`는 그보다 많았는데,
+  `list_traces_for_stats()`가 PostgREST(Supabase REST)에 조건 없이 `GET`
+  한 번만 보내고 있었다. PostgREST는 `limit`을 명시하지 않아도 Supabase
+  프로젝트의 API 설정(기본 max rows=1000)에 따라 응답을 자른다 — D-079
+  결정 2가 "원본 행을 그대로 반환"하는 패턴을 유지하기로 하면서 그 반환이
+  실은 전량이 아니라 첫 1000행일 수 있다는 것을 놓쳤다.
+  `list_feedback_for_stats()`도 완전히 같은 코드 패턴이라 `response_feedback`이
+  1000행을 넘으면 동일하게 잘린다(아직 실측은 안 됐지만 같은 결함).
+- 결정: `SupabaseStateStore`에 `_fetch_all_rows(path, params)` 헬퍼를
+  신설 — `limit`/`offset`을 페이지(1000행) 단위로 넘겨가며 반환된 행 수가
+  페이지 크기보다 작아질 때까지 반복 조회해 합친다. `list_traces_for_stats`/
+  `list_feedback_for_stats` 둘 다 이 헬퍼로 교체. 세션 범위 조회(`get_traces`,
+  `get_feedback`, `list_dislike_feedback`)는 애초에 이 정도로 커질 일이
+  없어 대상에서 제외했다.
+- 근거: 두 메서드 모두 "세션을 가리지 않고 테이블 전체를 대상으로 한다"는
+  것이 설계 의도(D-079 결정 2, TP-157 설계)라, 응답이 조용히 잘리면 그
+  의도 자체가 깨진다 — 집계 API가 틀린 총합·평균을 "정상 응답"으로
+  돌려주는 것이 가장 나쁜 실패 형태다.
+- 채택하지 않은 것:
+  - **Supabase 프로젝트 설정의 max rows를 올린다** — 인프라 설정 변경은
+    이 프로젝트 코드베이스 밖의 결정이고, 값을 아무리 올려도 언젠가는
+    다시 넘긴다. 페이지네이션이 근본 해법이다.
+  - **PostgREST `Range` 헤더 대신 `limit`/`offset` 쿼리 파라미터** —
+    Range 헤더도 결국 서버의 max rows를 넘을 수 없어 여러 요청이
+    필요한 건 같고, `_request()`가 이미 `params` 인자를 받는 구조라
+    쿼리 파라미터 쪽이 기존 코드와 더 잘 맞았다.
+- 검증: 단위 테스트(mock)로 페이지 경계 동작 확인 — 첫 페이지가 1000행
+  꽉 차면 두 번째 요청(offset=1000)을 보내 나머지를 더하는 것,
+  1000행보다 적게 오면 한 번만 요청하고 멈추는 것 둘 다 확인. 실
+  Supabase 재확인은 사용자가 브라우저에서 진행 중.
+- 남은 것: 없음.
+- 상세: `backend/app/state/supabase_store.py`,
+  `backend/tests/state/test_supabase_store.py`
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -2823,3 +2909,5 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-25 | D-077 신설 — 무장애 여행 정보(`KorWithService2`) 적재. places 컬럼이 아니라 전용 테이블 `place_barrier_free`로 나누고, 응답 28필드 중 채움률 5% 이상인 15개만 담는다(4개 구 427건 실측). 컬럼 이름은 응답 키가 아니라 의미로 짓는다 — `wheelchair`는 출입이 아니라 대여, `exit`는 출구가 아니라 주출입구라 키를 그대로 믿으면 뜻이 뒤집힌다. 무장애 정보가 있는 장소는 places의 19%뿐이라 구별 목록 1회로 대상을 좁히고(종로구 842회 → 182회), 목록을 먼저 부르고 거기 있는 장소만 행으로 만든다 — 반대 순서로 하면 종로구 첫 적재 754행 중 590행이 "목록에 없더라"는 빈 행이 된다. 값이 전부 빈 행은 남긴다(4개 구 60건, 전부 쇼핑몰 입점 매장이라 레코드만 만들어지고 항목이 미입력이다). 대상은 상세조회 대상이 아니라 TTL로 고른다 — 변경분만 따라가면 이미 DB에 있던 2,600여 건이 영영 대상이 되지 않는다. 숙박(32)과 그 전용 필드 `room`은 제외. `place_enrichments.official_facts`에 담는 안은 채택하지 않았다(사람이 검증한 값의 계보가 무너진다) |
 | 2026-08-24 | D-078 신설 — 만료된 익명 계정(`auth.users`) 정리(D-074 후속, [B] auth.users 정리). `created_at` 기준 30일(조정 가능) 이상 지난 익명 계정(`is_anonymous=true`)을 Supabase Auth Admin API로 조회·삭제. PostgREST가 아니라 GoTrue Admin API(`apikey`+`Authorization: Bearer` 둘 다 필요)를 쓰는 별도의 작은 `AuthAdminClient` 신설. `backend/scripts/cleanup_anonymous_users.py`(`--days`, `--dry-run`)로 구현, D-074의 세션 정리 스크립트와는 완전히 독립적으로 실행(FK 없음, D-063 결정 4) |
 | 2026-08-25 | D-079 신설 — 피드백 통계를 dev-ops 패널에서 볼 수 있게 함(TP-146). `GET /feedback/stats` 신규 — rating별 건수, reason_code별 건수(dislike만, 표준 7개 + `unclassified`), intent별 건수(상위 N + 롱테일 `other_intent_count` + `missing_intent_count`)를 반환. 집계는 PostgREST group-by가 아니라 Python에서 하며, `StateStore.list_feedback_for_stats(since, until)`을 신설(rating 안 가리고 limit 없이 전량 반환). 프론트는 `api/feedback.ts`에 `fetchFeedbackStats()`, `FeedbackStatsPanel`을 신설해 기존 ApiUsagePanel/PlaceSyncPanel/DbStatusPanel과 같은 패턴으로 `DeveloperOpsPage`에 배선 — API만 추가하고 화면을 안 붙이면 "쌓이는데 아무도 안 본다"는 이번 카드의 문제의식을 반복하게 되어 백엔드+프론트를 한 카드로 묶었다. LLMOps Trace 조회 API는 다른 도메인이라 별도 카드로 분리 |
+| 2026-08-25 | D-080 신설 — LLMOps Trace 조회를 dev-ops 패널에서 볼 수 있게 함(TP-157, D-079 후속). `GET /trace/stats` 신규 — 등장한 step만 담는 step별 집계(건수, 평균/최대 latency_ms, 에러 건수)와 최근 에러 목록(상위 N건)을 반환. 집계는 D-079와 동일하게 Python에서 하며, `StateStore.list_traces_for_stats(since, until)`을 신설(세션을 가리지 않고 전체 테이블 대상). 프론트는 `api/trace.ts`에 `fetchTraceStats()`, `TracePanel`을 신설해 기존 패널들과 같은 패턴으로 `DeveloperOpsPage`에 다섯 번째 패널로 배선 |
+| 2026-08-25 | D-081 신설 — TP-157 브라우저 테스트 중 발견한 버그 수정. `list_traces_for_stats`/`list_feedback_for_stats`가 PostgREST 기본 1000행 응답 상한에 걸려 있던 문제를 `_fetch_all_rows()` 페이지네이션 헬퍼로 해결(limit/offset 반복 조회). "전체 실행"이 정확히 1000으로 뜨는 것이 단서였다 |

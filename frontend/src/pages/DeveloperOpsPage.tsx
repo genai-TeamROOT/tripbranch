@@ -27,11 +27,13 @@ import {
   type SyncJob,
 } from "../api/dev";
 import { fetchFeedbackStats } from "../api/feedback";
-import type { FeedbackStatsResponse } from "../types";
+import { fetchTraceStats } from "../api/trace";
+import type { FeedbackStatsResponse, TraceStatsResponse } from "../types";
 import { ApiUsagePanel } from "../components/dev/ApiUsagePanel";
 import { DbStatusPanel } from "../components/dev/DbStatusPanel";
 import { FeedbackStatsPanel } from "../components/dev/FeedbackStatsPanel";
 import { PlaceSyncPanel } from "../components/dev/PlaceSyncPanel";
+import { TracePanel } from "../components/dev/TracePanel";
 
 const AUTO_REFRESH_INTERVAL_MS = 3000;
 const JOB_POLL_INTERVAL_MS = 1000;
@@ -70,6 +72,22 @@ export function DeveloperOpsPage() {
       setFeedbackStatsError(toMessage(error, "피드백 통계를 불러오지 못했어요."));
     } finally {
       setFeedbackStatsLoading(false);
+    }
+  }, []);
+
+  const [traceStats, setTraceStats] = useState<TraceStatsResponse | null>(null);
+  const [traceStatsError, setTraceStatsError] = useState<string | null>(null);
+  const [traceStatsLoading, setTraceStatsLoading] = useState(false);
+
+  const loadTraceStats = useCallback(async () => {
+    setTraceStatsLoading(true);
+    try {
+      setTraceStats(await fetchTraceStats());
+      setTraceStatsError(null);
+    } catch (error) {
+      setTraceStatsError(toMessage(error, "Trace 통계를 불러오지 못했어요."));
+    } finally {
+      setTraceStatsLoading(false);
     }
   }, []);
 
@@ -198,7 +216,8 @@ export function DeveloperOpsPage() {
     void loadDbStatus();
     void loadDistricts();
     void loadFeedbackStats();
-  }, [loadDbStatus, loadDistricts, loadFeedbackStats, loadUsage]);
+    void loadTraceStats();
+  }, [loadDbStatus, loadDistricts, loadFeedbackStats, loadTraceStats, loadUsage]);
 
   // 폴링은 호출량에만 건다. DB 상태는 844행을 훑어 Supabase 호출이 따라붙으므로
   // 3초마다 부르면 패널 자체가 트래픽을 만든다.
@@ -297,6 +316,12 @@ export function DeveloperOpsPage() {
           error={feedbackStatsError}
           loading={feedbackStatsLoading}
           onRefresh={() => void loadFeedbackStats()}
+        />
+        <TracePanel
+          stats={traceStats}
+          error={traceStatsError}
+          loading={traceStatsLoading}
+          onRefresh={() => void loadTraceStats()}
         />
       </div>
     </main>
