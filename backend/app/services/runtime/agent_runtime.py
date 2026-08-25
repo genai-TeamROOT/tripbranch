@@ -251,7 +251,7 @@ _IGNORE_OPERATING_HOURS_TTL = timedelta(hours=1)
 
 
 def _remember_ignore_operating_hours(session_id: str, store: StateStore | None) -> None:
-    """ "운영 중이 아닌 곳도 볼게요" 선택을 TTL 동안 B에 남긴다."""
+    """"운영 중이 아닌 곳도 볼게요" 선택을 TTL 동안 B에 남긴다."""
     set_ignore_operating_hours_until(
         SetIgnoreOperatingHoursRequest(
             session_id=session_id, until=now_kst() + _IGNORE_OPERATING_HOURS_TTL
@@ -352,7 +352,7 @@ async def _respond_no_data_closed(
     tool_execution: object,
     tool_executions: object,
 ) -> AgentResponse:
-    """ "운영 중이 아닌 곳도 볼게요" 되묻기 응답을 조립한다.
+    """"운영 중이 아닌 곳도 볼게요" 되묻기 응답을 조립한다.
 
     RECOMMEND/MODIFY 경로와 SCHEDULE 경로 둘 다에서 쓴다 — SCHEDULE도 원인이
     "폐점 후보뿐"이면 "후보가 부족하니 지역/카테고리를 바꿔달라"는 일반 되묻기
@@ -772,7 +772,7 @@ _TRAVEL_ORIGIN_OVERRIDE_RESOLVABLE_INTENTS = frozenset(
 def _resolve_travel_origin_override(
     *, override: TravelOrigin, session_context: SessionContextResponse
 ) -> _ClarificationResolution | None:
-    """ "OO 기준으로 다시 보기" 버튼 클릭을 결정적으로 해소한다.
+    """"OO 기준으로 다시 보기" 버튼 클릭을 결정적으로 해소한다.
 
     되묻기(_resolve_clarification_choice)와 달리 pending_clarification을 요구하지
     않는다 — 이 버튼은 완결된 답변 아래에 조건부로 붙는 비차단형 제안이라(D-071,
