@@ -1,0 +1,182 @@
+"""Langfuse 전송과 **마스킹 스위치**가 실제 서버에서 먹는지 검증한다.
+
+배경: 단위 테스트(`tests/test_langfuse_tracing.py`)는 mask 함수가 값을 치환하는지
+프로세스 안에서만 확인한다. 그런데 정작 중요한 질문은 **"발화 원문이 정말 밖으로
+안 나갔는가"**이고, 그건 보낸 뒤 서버에서 되읽어야만 답할 수 있다. 마스킹이 조용히
+안 먹으면 아무도 모르는 채로 사용자 발화가 계속 쌓인다.
+
+방법: 같은 마커 문자열을 두 번 보낸다 — `LANGFUSE_CAPTURE_CONTENT`를 켠 채로 한 번,
+끈 채로 한 번. 전송 후 공개 API로 두 trace를 되읽어 마커가 어디에 남아 있는지 본다.
+
+실패 기준 — 하나라도 어긋나면 불합격이다.
+  (a) 인증이 안 되면 불합격 (키 또는 리전 불일치)
+  (b) **끈 쪽 trace에서 마커가 발견되면 불합격.** 이게 이 스크립트의 존재 이유다
+  (c) 켠 쪽에서 마커가 안 보이면 불합격 — 마스킹이 아니라 전송이 깨진 것이다
+  (d) 토큰(usage_details)이 안 실리면 불합격 — 비용 화면이 비게 된다
+
+참고값(합격/불합격을 가르지 않음): 되읽기까지 걸린 시간. 수집이 비동기·배치라
+바로 안 보일 수 있어 몇 초 기다린다.
+
+실행: `cd backend && .venv/bin/python -m scripts.verify_langfuse_tracing`
+서버는 필요 없다. `.env`에 LANGFUSE_ENABLED=true와 키가 있어야 한다.
+실제 Langfuse 프로젝트에 검증용 trace 2건이 남는다(이름 `verify_langfuse_tracing`).
+"""
+
+from __future__ import annotations
+
+import sys
+import time
+from typing import Any
+
+from app.config import settings
+from app.observability import langfuse_tracing
+from app.observability.langfuse_tracing import (
+    REDACTED,
+    get_tracer,
+    observe_generation,
+    shutdown,
+    trace_attributes,
+)
+
+# 실제 발화처럼 보이지 않으면서 우연히 겹치지 않을 문자열.
+MARKER = "TRIPBRANCH-VERIFY-MARKER-8f3a2c"
+STEP_NAME = "verify_langfuse_tracing"
+
+# 수집이 비동기·배치라 flush 직후엔 아직 조회가 안 될 수 있다.
+_POLL_ATTEMPTS = 10
+_POLL_INTERVAL_SECONDS = 2.0
+
+
+def _emit(*, capture_content: bool) -> str | None:
+    """마커를 담은 generation 하나를 보내고 trace id를 돌려준다."""
+    settings.langfuse_capture_content = capture_content
+    client = get_tracer()
+    if client is None:
+        return None
+
+    trace_id: str | None = None
+    with trace_attributes(
+        session_id=f"verify-{'on' if capture_content else 'off'}",
+        tags=[f"capture_content:{str(capture_content).lower()}"],
+    ):
+        with observe_generation(
+            STEP_NAME,
+            model="verification-not-a-real-model",
+            input={"user_input": MARKER},
+        ) as generation:
+            trace_id = client.get_current_trace_id()
+            generation.record(
+                output={"answer": MARKER},
+                usage_details={"input": 11, "output": 22, "total": 33},
+            )
+    return trace_id
+
+
+def _fetch(client: Any, trace_id: str) -> Any | None:
+    for attempt in range(_POLL_ATTEMPTS):
+        try:
+            return client.api.trace.get(trace_id)
+        except Exception:
+            if attempt == _POLL_ATTEMPTS - 1:
+                return None
+            time.sleep(_POLL_INTERVAL_SECONDS)
+    return None
+
+
+def _dump(trace: Any) -> str:
+    """trace 전체를 문자열로 눌러 마커 유무를 통째로 검사한다.
+
+    필드 하나씩 보면 우리가 예상 못 한 자리(메타데이터·태그 등)에 남은 원문을
+    놓친다. 안전한 쪽으로 판정하려면 전부를 훑어야 한다.
+    """
+    try:
+        return trace.model_dump_json()
+    except AttributeError:
+        return str(trace)
+
+
+def _has_usage(trace: Any) -> bool:
+    for observation in getattr(trace, "observations", None) or []:
+        if getattr(observation, "usage_details", None):
+            return True
+        if getattr(observation, "total_tokens", None):
+            return True
+    return False
+
+
+def main() -> int:
+    if not settings.langfuse_enabled:
+        print("LANGFUSE_ENABLED가 false다. .env를 켜고 다시 실행한다.")
+        return 2
+
+    client = get_tracer()
+    if client is None:
+        print("[실패] 클라이언트를 만들지 못했다.")
+        return 1
+
+    print(f"대상: {settings.langfuse_base_url}")
+    try:
+        authenticated = client.auth_check()
+    except Exception as error:  # noqa: BLE001 - 원인을 그대로 보여주는 게 목적이다
+        print(f"[실패] (a) 인증 확인 중 예외: {type(error).__name__}: {error}")
+        return 1
+    if not authenticated:
+        print("[실패] (a) 인증 실패 — 키 또는 리전이 맞지 않는다.")
+        return 1
+    print("[통과] (a) 인증")
+
+    original = settings.langfuse_capture_content
+    try:
+        on_id = _emit(capture_content=True)
+        off_id = _emit(capture_content=False)
+    finally:
+        settings.langfuse_capture_content = original
+
+    if not on_id or not off_id:
+        print("[실패] trace id를 얻지 못했다 — 전송 자체가 안 됐다.")
+        return 1
+
+    client.flush()
+    print(f"전송 완료. capture on={on_id} / off={off_id}")
+    print(f"되읽기 대기 (최대 {int(_POLL_ATTEMPTS * _POLL_INTERVAL_SECONDS)}초)…")
+
+    started = time.perf_counter()
+    on_trace = _fetch(client, on_id)
+    off_trace = _fetch(client, off_id)
+    elapsed = time.perf_counter() - started
+    if on_trace is None or off_trace is None:
+        print("[실패] 되읽기 실패 — 수집이 안 됐거나 지연이 길다.")
+        return 1
+    print(f"       되읽기까지 {elapsed:.1f}초 (참고값)")
+
+    failures = 0
+
+    if MARKER in _dump(off_trace):
+        print("[실패] (b) **끈 쪽 trace에 마커가 남아 있다 — 마스킹이 안 먹는다.**")
+        failures += 1
+    else:
+        print(f"[통과] (b) 끈 쪽에 마커 없음 (치환값 {REDACTED!r})")
+
+    if MARKER in _dump(on_trace):
+        print("[통과] (c) 켠 쪽에 마커 있음 — 전송 경로 정상")
+    else:
+        print("[실패] (c) 켠 쪽에도 마커가 없다 — 마스킹이 아니라 전송이 깨졌다.")
+        failures += 1
+
+    if _has_usage(on_trace):
+        print("[통과] (d) 토큰(usage_details) 기록됨")
+    else:
+        print("[실패] (d) 토큰이 안 실렸다 — 비용 화면이 빈다.")
+        failures += 1
+
+    print()
+    print("불합격" if failures else "합격 — 전송·마스킹·토큰 모두 확인")
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    finally:
+        shutdown()
+        langfuse_tracing.shutdown()
