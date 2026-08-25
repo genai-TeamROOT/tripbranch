@@ -15,13 +15,23 @@
 from __future__ import annotations
 
 import inspect
+import json
 from typing import TypedDict
 
 import pytest
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
-from app.services.runtime.graph import _observed
+from app.schemas import (
+    RecommendationItem,
+    RecommendationResponse,
+    TasteEvidenceQuote,
+)
+from app.services.runtime.graph import (
+    _observed,
+    _summarize_finalize,
+    _summarize_scoring,
+)
 
 
 class _State(TypedDict):
@@ -82,3 +92,106 @@ def test_pipeline_nodes_are_registered_wrapped() -> None:
     compiled = build_recommend_pipeline_graph()
 
     assert {"tool_fetch", "scoring", "schedule", "finalize"} <= set(compiled.nodes)
+
+
+# --- span 요약: 무엇을 싣고 무엇을 빼는가 -------------------------------------
+
+
+def _item(place_id: str, score: float) -> RecommendationItem:
+    return RecommendationItem(
+        place_id=place_id,
+        name=f"장소 {place_id}",
+        category="cafe",
+        distance_km=0.42,
+        remaining_minutes=120,
+        environment_type="indoor",
+        recommendation_reason="조건을 종합한 추천이에요.",
+        explanations=["현재 위치에서 가까운 장소예요."],
+        warnings=[],
+        score=score,
+        feature_scores={"distance": 0.7234891, "weather": 0.8, "taste": None},
+        weights_used={"distance": 0.2, "weather": 0.4},
+        taste_evidence=[TasteEvidenceQuote(text="조용하고 아늑했어요", similarity=0.61)],
+    )
+
+
+def _response(items: list[RecommendationItem]) -> RecommendationResponse:
+    return RecommendationResponse(
+        recommendations=items,
+        unverified_recommendations=[],
+        elapsed_ms=0,
+        excluded_closed_place_ids=["p9", "p10"],
+    )
+
+
+def test_scoring_summary_keeps_the_scores_that_explain_the_ranking() -> None:
+    summary = _summarize_scoring({"recommendations": _response([_item("p1", 0.7213)])})
+
+    assert summary is not None
+    ranked = summary["ranked"][0]
+    assert ranked["place_id"] == "p1"
+    assert ranked["score"] == 0.721
+    # 소수점을 줄인다 — 0.7234891은 화면에서 읽는 데 방해만 된다.
+    assert ranked["features"] == {"distance": 0.723, "weather": 0.8, "taste": None}
+    assert ranked["weights"] == {"distance": 0.2, "weather": 0.4}
+    assert summary["excluded_closed_count"] == 2
+
+
+def test_scoring_summary_leaves_out_the_bulky_prose() -> None:
+    """근거 문장 원문·설명은 뺀다.
+
+    후보 10곳 × 17필드를 통째로 넣으면 span 하나가 수 KB가 되고, 정작 여기서 보고 싶은
+    "어느 축이 몇 점인가"가 그 사이에 묻힌다.
+    """
+    summary = _summarize_scoring({"recommendations": _response([_item("p1", 0.7)])})
+
+    blob = json.dumps(summary, ensure_ascii=False)
+    assert "조용하고 아늑했어요" not in blob
+    assert "현재 위치에서 가까운 장소예요" not in blob
+    assert "조건을 종합한 추천이에요" not in blob
+
+
+def test_scoring_summary_caps_how_many_candidates_it_carries() -> None:
+    summary = _summarize_scoring(
+        {"recommendations": _response([_item(f"p{i}", 0.5) for i in range(25)])}
+    )
+
+    assert summary is not None
+    assert len(summary["ranked"]) == 10
+    # 잘라낸 것과 별개로 전체 건수는 남긴다 — 안 그러면 10곳뿐인 줄 안다.
+    assert summary["ranked_count"] == 25
+
+
+def test_finalize_summary_records_the_message_length_not_its_text() -> None:
+    """답변 원문은 발화만큼이나 사용자 것이다. 필요하면 generation output에 이미 있다."""
+
+    class _Resp:
+        recommendations = _response([_item("p1", 0.7), _item("p2", 0.6)])
+        message = "경복궁 근처 조용한 카페 두 곳을 찾았어요."
+        schedule = None
+        comparison = None
+
+    summary = _summarize_finalize({"response": _Resp()})
+
+    assert summary is not None
+    assert summary["card_order"] == ["p1", "p2"]
+    assert summary["card_count"] == 2
+    assert summary["message_length"] == len(_Resp.message)
+    assert "경복궁" not in json.dumps(summary, ensure_ascii=False)
+
+
+def test_summaries_return_none_when_the_node_produced_nothing() -> None:
+    assert _summarize_scoring({}) is None
+    assert _summarize_finalize({}) is None
+
+
+@pytest.mark.asyncio
+async def test_a_failing_summary_does_not_break_the_node() -> None:
+    """요약이 터져도 노드 결과는 그대로 나가야 한다."""
+
+    def _explode(_: object) -> dict[str, object]:
+        raise RuntimeError("요약 실패")
+
+    wrapped = _observed("scoring", _node_with_config, _explode)
+
+    assert await wrapped({"value": 1}, {}) == {"value": 2}

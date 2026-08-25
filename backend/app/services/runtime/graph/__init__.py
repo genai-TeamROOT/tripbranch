@@ -11,7 +11,8 @@ SSE 이벤트 순서가 달라지면 그건 버그다(§6.2).
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+import logging
+from collections.abc import Awaitable, Callable, Mapping
 from functools import wraps
 from typing import Any
 
@@ -44,6 +45,8 @@ from app.services.runtime.graph.routing import (
 from app.services.runtime.graph.sink import DEPS_CONFIG_KEY, LLM_CONFIG_KEY, SINK_CONFIG_KEY
 from app.services.runtime.graph.state import EarlyReturnState
 from app.services.runtime.stream_events import StreamEventSink
+
+logger = logging.getLogger(__name__)
 
 
 def build_early_return_graph():
@@ -78,7 +81,84 @@ def build_early_return_graph():
     return graph.compile()
 
 
-def _observed(name: str, node: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
+# 한 span에 실을 후보 수 상한. 1차 Scoring 후보 예산이 10이라 그 이상은 안 나오지만,
+# 예산이 늘어도 span 하나가 수 KB로 부풀지 않게 막아 둔다.
+_SUMMARY_ITEM_LIMIT = 10
+
+
+def _round_scores(scores: Mapping[str, float | None] | None) -> dict[str, float | None]:
+    """소수점을 줄여 화면에서 읽히게 한다. 0.7234891은 볼 때 방해만 된다."""
+    if not scores:
+        return {}
+    return {
+        key: (round(value, 3) if isinstance(value, int | float) else None)
+        for key, value in scores.items()
+    }
+
+
+def _summarize_scoring(result: Mapping[str, Any]) -> dict[str, Any] | None:
+    """`scoring` span에 실을 값을 고른다.
+
+    **통째로 넣지 않는다.** `RecommendationItem`은 필드가 17개라 후보 10곳이면 한 span이
+    수 KB가 되고, 그중 `taste_evidence`(근거 문장 원문)와 `explanations`는 화면에서
+    점수를 읽는 데 방해만 된다. 여기서 보고 싶은 건 **"어느 축이 몇 점이었나"**다 —
+    2026-08-25에 거리 점수가 0으로 나오는 원인을 쫓을 때, 이 값이 없어서 실제 API
+    응답을 따로 받아야 했다.
+
+    좌표는 애초에 여기 없다. C가 장소를 찾을 때만 쓰고 D로 넘어올 땐 `distance_km`로
+    접힌다(`ScoringCandidate`) — 그래서 이 span은 열어도 위치가 새지 않는다.
+    """
+    response = result.get("recommendations")
+    if response is None:
+        return None
+    items = list(getattr(response, "recommendations", []) or [])
+    return {
+        "ranked": [
+            {
+                "place_id": item.place_id,
+                "name": item.name,
+                "score": round(item.score, 3),
+                "features": _round_scores(item.feature_scores),
+                # 취향·혼잡도가 켜졌는지에 따라 세트가 달라지는데 지금은 눈에 안 보인다.
+                "weights": _round_scores(item.weights_used),
+            }
+            for item in items[:_SUMMARY_ITEM_LIMIT]
+        ],
+        "ranked_count": len(items),
+        "unverified_count": len(getattr(response, "unverified_recommendations", []) or []),
+        "excluded_closed_count": len(getattr(response, "excluded_closed_place_ids", []) or []),
+        "excluded_all_closed": getattr(response, "excluded_all_closed", False),
+    }
+
+
+def _summarize_finalize(result: Mapping[str, Any]) -> dict[str, Any] | None:
+    """`finalize` span에 실을 값을 고른다.
+
+    **답변 문장은 길이만 남긴다.** 원문은 발화만큼이나 사용자 것이고, 여기서 알고 싶은
+    건 "문장이 나갔나"와 "카드가 몇 장 어떤 순서로 나갔나"다. 원문이 필요하면
+    generation의 output에 이미 있다.
+    """
+    response = result.get("response")
+    if response is None:
+        return None
+    recommendations = getattr(response, "recommendations", None)
+    shown = list(getattr(recommendations, "recommendations", []) or [])
+    unverified = list(getattr(recommendations, "unverified_recommendations", []) or [])
+    message = getattr(response, "message", None)
+    return {
+        "card_order": [item.place_id for item in (shown + unverified)[:_SUMMARY_ITEM_LIMIT]],
+        "card_count": len(shown) + len(unverified),
+        "message_length": len(message) if message else 0,
+        "has_schedule": getattr(response, "schedule", None) is not None,
+        "has_comparison": getattr(response, "comparison", None) is not None,
+    }
+
+
+def _observed(
+    name: str,
+    node: Callable[..., Awaitable[Any]],
+    summarize: Callable[[Mapping[str, Any]], dict[str, Any] | None] | None = None,
+) -> Callable[..., Awaitable[Any]]:
     """노드 하나를 관측 span 하나로 감싼다.
 
     **Langfuse가 주는 LangChain CallbackHandler를 안 쓰는 이유**: 그 핸들러가
@@ -89,6 +169,10 @@ def _observed(name: str, node: Callable[..., Awaitable[Any]]) -> Callable[..., A
 
     직접 감싸면 의존성도 안 늘고 **이름을 우리가 정한다.** `tool_fetch`·`scoring`은
     B의 Trace `step`과 같은 이름이라 두 기록을 나란히 읽을 수 있다.
+
+    `summarize`를 주면 노드 결과에서 **고른 값만** span에 남긴다. 주지 않으면 이름과
+    지연만 남는다 — `tool_fetch`가 그렇다. 거기는 좌표와 외부 API 자격증명이 흐르는
+    경로라 의도적으로 닫아 뒀다.
 
     관측이 꺼져 있으면(기본값) `observe_step()`이 no-op이라 호출 한 겹만 는다.
 
@@ -101,8 +185,16 @@ def _observed(name: str, node: Callable[..., Awaitable[Any]]) -> Callable[..., A
 
     @wraps(node)
     async def _run(*args: Any, **kwargs: Any) -> Any:
-        with observe_step(name):
-            return await node(*args, **kwargs)
+        with observe_step(name) as step:
+            result = await node(*args, **kwargs)
+            if summarize is not None and isinstance(result, Mapping):
+                # 요약이 터져도 노드 결과는 그대로 나가야 한다 — 관측이 삼켜도 되는
+                # 건 자기 실패뿐이다(langfuse_tracing._guard와 같은 원칙).
+                try:
+                    step.record(output=summarize(result))
+                except Exception:
+                    logger.warning("관측 요약 실패(응답 흐름에는 영향 없음)", exc_info=True)
+            return result
 
     return _run
 
@@ -158,9 +250,9 @@ def build_recommend_pipeline_graph():
 
     graph = StateGraph(RecommendPipelineState)
     graph.add_node("tool_fetch", _observed("tool_fetch", tool_fetch_node))
-    graph.add_node("scoring", _observed("scoring", scoring_node))
+    graph.add_node("scoring", _observed("scoring", scoring_node, _summarize_scoring))
     graph.add_node("schedule", _observed("schedule", schedule_node))
-    graph.add_node("finalize", _observed("finalize", finalize_node))
+    graph.add_node("finalize", _observed("finalize", finalize_node, _summarize_finalize))
 
     graph.add_edge(START, "tool_fetch")
     graph.add_conditional_edges(
