@@ -4654,20 +4654,20 @@ async def test_turn_summary_says_what_the_turn_was() -> None:
         AgentRequest(
             user_input="경복궁 근처 카페 추천해줘",
             session_id=None,
-            latitude=37.5796,
-            longitude=126.9770,
+            device_location=DEVICE_LOCATION,
         ),
         **providers,
     )
 
     summary = summarize_turn(response)
 
-    assert summary["intent"] == response.llm_output.intent.value
-    assert summary["status"] == response.llm_output.status.value
+    # 같은 객체에서 뽑은 값끼리 비교하면 항진명제다 — 기대값을 직접 적는다.
+    assert summary["intent"] == "RECOMMEND"
+    assert summary["status"] == "complete"
+    assert summary["card_count"] > 0
     assert summary["message_length"] == len(response.message)
     # 목록 행에 뜨는 한 줄. 마스킹을 타지 않는 자리로 나간다.
-    assert summary["intent"] in str(summary["headline"])
-    assert summary["status"] in str(summary["headline"])
+    assert summary["headline"].startswith("RECOMMEND · complete · 카드 ")
 
 
 @pytest.mark.asyncio
@@ -4678,8 +4678,7 @@ async def test_turn_summary_carries_no_utterance_or_answer_text() -> None:
         AgentRequest(
             user_input="경복궁 근처 카페 추천해줘",
             session_id=None,
-            latitude=37.5796,
-            longitude=126.9770,
+            device_location=DEVICE_LOCATION,
         ),
         **providers,
     )
