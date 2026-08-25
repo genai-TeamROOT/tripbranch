@@ -755,6 +755,15 @@ class LLMCallMetadata(BaseModel):
     # 개발자용 Audit에서 Intent 분류·조건 추출 호출별 지연을 보여주기 위한 값이다.
     # 기존에 저장된 실행 이력과의 호환을 위해 누락 가능하게 둔다.
     latency_ms: int | None = None
+    # 토큰 사용량. B의 LLMOps Trace(token_usage)와 Langfuse 비용 화면이 같은 값을
+    # 쓴다. 실패하거나 usage_metadata가 없는 응답에서는 None이다 — 0으로 채우면
+    # "안 썼다"와 "모른다"가 구분되지 않는다.
+    # thoughts_tokens는 Gemini 3.x 계열의 사고 토큰이다. 과금 대상인데
+    # candidates_token_count에 안 잡혀서 따로 세지 않으면 비용이 과소 집계된다.
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    thoughts_tokens: int | None = None
+    total_tokens: int | None = None
 
 
 class LLMExecutionMetadata(BaseModel):

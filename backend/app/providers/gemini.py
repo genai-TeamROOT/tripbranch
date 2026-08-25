@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
 from app.observability.api_usage import record_call
+from app.observability.langfuse_tracing import observe_generation
 from app.providers import gemini_prompts
 from app.providers.contracts import ProviderResult, ProviderSource, provider_result
 from app.schedule.schemas import (
@@ -196,6 +197,50 @@ def _record_gemini_call(model_name: str, started: float, *, ok: bool, status: st
         latency_ms=(time.perf_counter() - started) * 1000,
         status=status,
     )
+
+
+def _token_usage(usage: object | None) -> dict[str, int]:
+    """google-genai `usage_metadata`를 우리 필드 이름으로 옮긴다.
+
+    빠진 값은 키 자체를 넣지 않는다 — 0으로 채우면 "안 썼다"와 "모른다"가
+    구분되지 않고, 토큰이 안 잡히는 회귀가 조용히 묻힌다.
+    """
+    if usage is None:
+        return {}
+    fields = {
+        "input_tokens": "prompt_token_count",
+        "output_tokens": "candidates_token_count",
+        "thoughts_tokens": "thoughts_token_count",
+        "total_tokens": "total_token_count",
+    }
+    collected: dict[str, int] = {}
+    for name, source in fields.items():
+        value = getattr(usage, source, None)
+        if isinstance(value, int):
+            collected[name] = value
+    return collected
+
+
+def _usage_details(usage: dict[str, int]) -> dict[str, int] | None:
+    """우리 필드를 Langfuse `usage_details`로 옮긴다.
+
+    **사고 토큰을 output에 더한다.** Gemini 3.x의 thoughts는 candidates_token_count에
+    안 잡히는데 과금은 출력 요율로 된다 — 빼고 보내면 비용이 과소 집계된다.
+    원래 값은 `thoughts`로 따로 남겨 어느 쪽이 얼마인지 볼 수 있게 한다.
+    """
+    if not usage:
+        return None
+    details: dict[str, int] = {}
+    if "input_tokens" in usage:
+        details["input"] = usage["input_tokens"]
+    output = usage.get("output_tokens")
+    if output is not None:
+        details["output"] = output + usage.get("thoughts_tokens", 0)
+    if "thoughts_tokens" in usage:
+        details["thoughts"] = usage["thoughts_tokens"]
+    if "total_tokens" in usage:
+        details["total"] = usage["total_tokens"]
+    return details or None
 
 
 class _RetryableExhaustedError(Exception):
@@ -725,8 +770,13 @@ class RealGeminiProvider:
 
         selected_models = model_names or self._generation_model_names
         attempted_models: list[str] = []
+        # 이번 시도가 실제로 쓴 토큰. 모델을 바꿀 때마다 비운다 — 폴백 후 기록되는
+        # 값이 앞 모델 것이면 안 된다. 응답이 왔지만 스키마 검증에서 실패한 경우
+        # (ValidationError)에도 토큰은 이미 과금됐으므로 그 분기에서도 함께 남긴다.
+        usage: dict[str, int] = {}
         for model_index, model_name in enumerate(selected_models):
             attempted_models.append(model_name)
+            usage.clear()
             try:
                 result = await self._try_model(
                     model_name,
@@ -735,6 +785,7 @@ class RealGeminiProvider:
                     response_model,
                     operation=operation,
                     thinking_budget=thinking_budget,
+                    usage_sink=usage,
                 )
             except _RetryableExhaustedError as exc:
                 last_error = exc.original
@@ -745,6 +796,7 @@ class RealGeminiProvider:
                         attempted_models=attempted_models,
                         served_model=None,
                         latency_ms=round((time.perf_counter() - operation_started) * 1000),
+                        **usage,
                     )
                     logger.error(
                         "Gemini 전 모델 소진, 최종 실패 (models=%s): %s",
@@ -766,6 +818,7 @@ class RealGeminiProvider:
                     attempted_models=attempted_models,
                     served_model=None,
                     latency_ms=round((time.perf_counter() - operation_started) * 1000),
+                    **usage,
                 )
                 raise
             except ValidationError:
@@ -776,6 +829,7 @@ class RealGeminiProvider:
                     attempted_models=attempted_models,
                     served_model=model_name,
                     latency_ms=round((time.perf_counter() - operation_started) * 1000),
+                    **usage,
                 )
                 raise
 
@@ -784,6 +838,7 @@ class RealGeminiProvider:
                 attempted_models=attempted_models,
                 served_model=model_name,
                 latency_ms=round((time.perf_counter() - operation_started) * 1000),
+                **usage,
             )
             if model_index > 0:
                 logger.warning(
@@ -804,6 +859,7 @@ class RealGeminiProvider:
         *,
         operation: str,
         thinking_budget: int | None = None,
+        usage_sink: dict[str, int] | None = None,
     ) -> T:
         """모델 하나에 대해서만 타임아웃/429/5xx를 지수 백오프로 최대
         self._max_retries회 재시도한다. 재시도가 소진되면 _RetryableExhaustedError로
@@ -829,6 +885,40 @@ class RealGeminiProvider:
 
         resolved_budget = _resolve_thinking_budget(model_name, operation, thinking_budget)
         thinking_config = _thinking_config_for(resolved_budget)
+
+        # 이 모델 시도 하나를 Langfuse generation 하나로 남긴다. 안쪽 재시도는
+        # 여기 합산된다 — 백오프 대기까지 포함한 "이 모델에 실제로 쓴 시간"이다.
+        # 재시도 횟수는 api_usage가 시도 단위로 따로 세고 있다.
+        # 꺼져 있으면(기본값) 아무 동작도 하지 않는 no-op이다.
+        with observe_generation(
+            operation,
+            model=model_name,
+            input={"system_instruction": system_instruction, "user_input": user_input},
+        ) as generation:
+            return await self._run_attempts(
+                model_name,
+                system_instruction,
+                user_input,
+                response_model,
+                operation=operation,
+                thinking_config=thinking_config,
+                usage_sink=usage_sink,
+                generation=generation,
+            )
+
+    async def _run_attempts(
+        self,
+        model_name: str,
+        system_instruction: str,
+        user_input: str,
+        response_model: type[T],
+        *,
+        operation: str,
+        thinking_config: object,
+        usage_sink: dict[str, int] | None,
+        generation: object,
+    ) -> T:
+        """한 모델에 대한 재시도 루프. 계측은 호출부(_try_model)가 감싼다."""
 
         for attempt in range(self._max_retries + 1):
             # google-genai는 자체 전송 계층을 써서 MeteredTransport를 거치지 않는다.
@@ -864,11 +954,20 @@ class RealGeminiProvider:
                     ) from None
             else:
                 _record_gemini_call(model_name, started, ok=True, status="ok")
+                usage = _token_usage(getattr(response, "usage_metadata", None))
+                if usage_sink is not None:
+                    usage_sink.update(usage)
+                # 파싱이 실패해도(ValidationError) 토큰은 이미 과금됐다 — 기록을
+                # 먼저 남긴다.
+                generation.record(usage_details=_usage_details(usage))
                 if response.parsed is not None:
-                    return response_model.model_validate(response.parsed)
-                # response_schema가 SDK 자동 파싱을 못 한 경우(빈 응답 등)
-                # 원문 텍스트로 직접 검증한다.
-                return response_model.model_validate_json(response.text or "")
+                    parsed = response_model.model_validate(response.parsed)
+                else:
+                    # response_schema가 SDK 자동 파싱을 못 한 경우(빈 응답 등)
+                    # 원문 텍스트로 직접 검증한다.
+                    parsed = response_model.model_validate_json(response.text or "")
+                generation.record(output=parsed)
+                return parsed
 
             await asyncio.sleep(_backoff_seconds(attempt))
 

@@ -46,6 +46,10 @@ def record_llm_call(
     attempted_models: list[str],
     served_model: str | None,
     latency_ms: int | None = None,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+    thoughts_tokens: int | None = None,
+    total_tokens: int | None = None,
 ) -> None:
     """모델 선택 루프 1회의 최종 결과를 현재 요청 이력에 추가한다."""
 
@@ -54,6 +58,10 @@ def record_llm_call(
         attempted_models=attempted_models,
         served_model=served_model,
         latency_ms=latency_ms,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        thoughts_tokens=thoughts_tokens,
+        total_tokens=total_tokens,
     )
     calls = _calls.get()
     if calls is None:
@@ -72,7 +80,24 @@ def get_llm_execution_metadata() -> LLMExecutionMetadata | None:
     return LLMExecutionMetadata(calls=list(calls)) if calls else None
 
 
+def consumed_tokens() -> int | None:
+    """이 요청이 지금까지 쓴 총 토큰. 아무 호출도 값을 못 남겼으면 `None`.
+
+    B의 Trace `token_usage`에 넣을 값이다(llmops-trace-contract-v1.md 2절). 계약이
+    단일 int라 호출별 내역이 아니라 합계를 넘긴다 — 내역은 `LLMExecutionMetadata`와
+    Langfuse가 각각 들고 있다.
+
+    **`None`과 `0`을 구분한다.** 값을 남긴 호출이 하나도 없으면 "안 썼다"가 아니라
+    "모른다"이고, 0으로 채우면 토큰이 안 잡히는 회귀가 조용히 묻힌다.
+    """
+
+    calls = _calls.get() or []
+    totals = [call.total_tokens for call in calls if call.total_tokens is not None]
+    return sum(totals) if totals else None
+
+
 __all__ = [
+    "consumed_tokens",
     "get_llm_execution_metadata",
     "record_llm_call",
     "reset_llm_execution_metadata",
