@@ -241,3 +241,130 @@ def test_consumed_tokens_ignores_calls_that_reported_nothing() -> None:
 
 def test_consumed_tokens_is_none_when_nothing_ran() -> None:
     assert consumed_tokens() is None
+
+
+# --- 스트리밍: 사용자가 실제로 읽는 문장을 만드는 호출 ---------------------------
+#
+# 2026-08-25까지 `_stream_text()`에는 계측이 아예 없었다. 14개 operation 중 11개만
+# 잡혀서, 답변 생성 토큰이 턴당 비용에서 통째로 빠져 있었다. 이 절이 그 통로를 고정한다.
+
+
+class _Chunk:
+    """스트림 청크 흉내. usage_metadata는 청크마다 실려 오고 누적값이다."""
+
+    def __init__(self, text: str | None = None, usage: _Usage | None = None) -> None:
+        self.text = text
+        self.usage_metadata = usage
+
+
+async def _stream(*chunks: _Chunk) -> Any:
+    async def _gen() -> Any:
+        for chunk in chunks:
+            yield chunk
+
+    return _gen()
+
+
+async def _drain(provider: RealGeminiProvider, chunks: list[_Chunk]) -> list[str]:
+    with patch.object(
+        provider._client.aio.models,
+        "generate_content_stream",
+        new=AsyncMock(return_value=await _stream(*chunks)),
+    ):
+        return [
+            piece
+            async for piece in provider._stream_text(
+                instruction="sys", user_input="user", operation="stream_general_answer"
+            )
+        ]
+
+
+@pytest.mark.asyncio
+async def test_streaming_tokens_reach_the_execution_metadata() -> None:
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+
+    pieces = await _drain(
+        provider,
+        [
+            _Chunk("안녕", _Usage(prompt_token_count=30)),
+            _Chunk(
+                "하세요",
+                _Usage(prompt_token_count=30, candidates_token_count=12, total_token_count=42),
+            ),
+        ],
+    )
+
+    assert pieces == ["안녕", "하세요"]
+    metadata = get_llm_execution_metadata()
+    assert metadata is not None
+    call = metadata.calls[0]
+    assert call.operation == "stream_general_answer"
+    # 마지막 청크가 누적 총량이다 — 첫 청크의 부분값이 남으면 안 된다.
+    assert (call.input_tokens, call.output_tokens, call.total_tokens) == (30, 12, 42)
+    assert consumed_tokens() == 42
+
+
+@pytest.mark.asyncio
+async def test_a_stream_without_usage_records_none_not_zero() -> None:
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+
+    await _drain(provider, [_Chunk("답변")])
+
+    metadata = get_llm_execution_metadata()
+    assert metadata is not None
+    assert metadata.calls[0].total_tokens is None
+    assert consumed_tokens() is None
+
+
+@pytest.mark.asyncio
+async def test_stream_records_first_chunk_time_as_completion_start() -> None:
+    """스트리밍의 체감 지연은 전체 소요가 아니라 첫 글자까지의 시간이다."""
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    recorded: list[dict[str, Any]] = []
+
+    class _Recorder:
+        def record(self, **fields: Any) -> None:
+            recorded.append(fields)
+
+    from contextlib import contextmanager
+
+    from app.providers import gemini as gemini_module
+
+    @contextmanager
+    def _fake_observe(name: str, **_: Any) -> Any:
+        yield _Recorder()
+
+    with patch.object(gemini_module, "observe_generation", _fake_observe):
+        await _drain(provider, [_Chunk("가"), _Chunk("나"), _Chunk("다")])
+
+    starts = [f for f in recorded if "completion_start_time" in f]
+    # 첫 조각에서 한 번만 찍는다 — 청크마다 찍으면 마지막 조각 시각이 되어 의미가 없다.
+    assert len(starts) == 1
+    assert starts[0]["completion_start_time"].tzinfo is not None
+
+
+@pytest.mark.asyncio
+async def test_stream_generation_carries_the_prompt_slot_version() -> None:
+    """원문 수집을 꺼도 남는 값이다 — 버전별 비교가 여기 걸려 있다."""
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    opened: list[dict[str, Any]] = []
+
+    from contextlib import contextmanager
+
+    from app.providers import gemini as gemini_module
+
+    @contextmanager
+    def _fake_observe(name: str, **kwargs: Any) -> Any:
+        opened.append({"name": name, **kwargs})
+
+        class _R:
+            def record(self, **_: Any) -> None:
+                return
+
+        yield _R()
+
+    with patch.object(gemini_module, "observe_generation", _fake_observe):
+        await _drain(provider, [_Chunk("답")])
+
+    assert opened[0]["name"] == "stream_general_answer"
+    assert opened[0]["version"] == "general.answer@1.0.0"

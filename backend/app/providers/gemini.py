@@ -16,7 +16,7 @@ import logging
 import random
 import time
 from collections.abc import AsyncIterator
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import TypeVar
 
 import httpx
@@ -198,6 +198,11 @@ def _record_gemini_call(model_name: str, started: float, *, ok: bool, status: st
         latency_ms=(time.perf_counter() - started) * 1000,
         status=status,
     )
+
+
+def _now_utc() -> datetime:
+    """`completion_start_time`에 넣을 현재 시각. Langfuse는 tz-aware를 기대한다."""
+    return datetime.now(UTC)
 
 
 def _token_usage(usage: object | None) -> dict[str, int]:
@@ -541,6 +546,18 @@ class RealGeminiProvider:
 
         thinking_budget은 _call_structured()와 같은 규칙으로 모델별 보정을 거친다
         (_resolve_thinking_budget()/_thinking_config_for() 참고).
+
+        **관측은 모델 시도 하나를 generation 하나로 남긴다** — `_try_model()`과 같은
+        규칙이다. 스트리밍이라 두 가지가 더 붙는다.
+
+        - `completion_start_time`: **첫 조각이 도착한 시각.** 스트리밍에서 사용자가
+          체감하는 지연은 전체 소요가 아니라 이 값이다. 구조화 호출에는 없는 지표다.
+        - 토큰은 마지막 청크의 `usage_metadata`에서 온다. 청크마다 실려 오되 누적값이라
+          마지막 것을 쓴다. 없으면 키를 안 넣는다 — 0으로 채우면 "안 썼다"와 "모른다"가
+          섞인다(`_token_usage` 참고).
+
+        이 호출들이 **사용자가 실제로 읽는 문장**을 만든다. 여기가 빠져 있던 동안
+        턴당 비용·토큰이 과소 집계됐다.
         """
 
         selected_models = model_names or self._generation_model_names
@@ -551,58 +568,81 @@ class RealGeminiProvider:
             attempted_models.append(model_name)
             started = time.perf_counter()
             emitted = False
+            usage: dict[str, int] = {}
             resolved_budget = _resolve_thinking_budget(model_name, operation, thinking_budget)
-            try:
-                stream = await self._client.aio.models.generate_content_stream(
-                    model=model_name,
-                    contents=user_input,
-                    config=genai_types.GenerateContentConfig(
-                        system_instruction=instruction,
-                        temperature=0.0,
-                        thinking_config=_thinking_config_for(resolved_budget),
-                    ),
-                )
-                async for chunk in stream:
-                    text = getattr(chunk, "text", None)
-                    if not text:
-                        continue
-                    emitted = True
-                    yield text
-            except httpx.TimeoutException:
-                _record_gemini_call(model_name, started, ok=False, status="timeout")
-                last_error = ProviderTimeoutError("Gemini")
-            except genai_errors.APIError as exc:
-                status_code = getattr(exc, "code", None)
-                _record_gemini_call(
-                    model_name,
-                    started,
-                    ok=False,
-                    status=str(status_code or "api_error"),
-                )
-                if status_code not in _RETRYABLE_STATUS_CODES:
+            with observe_generation(
+                operation,
+                model=model_name,
+                version=operation_prompt_version(operation),
+                input={"system_instruction": instruction, "user_input": user_input},
+            ) as generation:
+                pieces: list[str] = []
+                try:
+                    stream = await self._client.aio.models.generate_content_stream(
+                        model=model_name,
+                        contents=user_input,
+                        config=genai_types.GenerateContentConfig(
+                            system_instruction=instruction,
+                            temperature=0.0,
+                            thinking_config=_thinking_config_for(resolved_budget),
+                        ),
+                    )
+                    async for chunk in stream:
+                        chunk_usage = _token_usage(getattr(chunk, "usage_metadata", None))
+                        if chunk_usage:
+                            # 청크마다 실려 오지만 누적값이다 — 마지막 것이 이 호출의 총량.
+                            usage = chunk_usage
+                        text = getattr(chunk, "text", None)
+                        if not text:
+                            continue
+                        if not emitted:
+                            # 사용자가 첫 글자를 본 시각. 스트리밍의 체감 지연이 이것이다.
+                            generation.record(completion_start_time=_now_utc())
+                        emitted = True
+                        pieces.append(text)
+                        yield text
+                except httpx.TimeoutException:
+                    _record_gemini_call(model_name, started, ok=False, status="timeout")
+                    last_error = ProviderTimeoutError("Gemini")
+                    generation.record(level="ERROR", status_message="timeout")
+                except genai_errors.APIError as exc:
+                    status_code = getattr(exc, "code", None)
+                    _record_gemini_call(
+                        model_name,
+                        started,
+                        ok=False,
+                        status=str(status_code or "api_error"),
+                    )
+                    generation.record(level="ERROR", status_message=str(status_code or "api_error"))
+                    if status_code not in _RETRYABLE_STATUS_CODES:
+                        record_llm_call(
+                            operation=operation,
+                            attempted_models=attempted_models,
+                            served_model=None,
+                            **usage,
+                        )
+                        raise ProviderUnavailableError("Gemini", detail=str(exc)) from None
+                    last_error = ProviderUnavailableError("Gemini", detail=str(exc))
+                else:
+                    _record_gemini_call(model_name, started, ok=True, status="success")
+                    generation.record(output="".join(pieces), usage_details=_usage_details(usage))
                     record_llm_call(
                         operation=operation,
                         attempted_models=attempted_models,
-                        served_model=None,
+                        served_model=model_name,
+                        **usage,
                     )
-                    raise ProviderUnavailableError("Gemini", detail=str(exc)) from None
-                last_error = ProviderUnavailableError("Gemini", detail=str(exc))
-            else:
-                _record_gemini_call(model_name, started, ok=True, status="success")
-                record_llm_call(
-                    operation=operation,
-                    attempted_models=attempted_models,
-                    served_model=model_name,
-                )
-                return
+                    return
 
-            if emitted:
-                record_llm_call(
-                    operation=operation,
-                    attempted_models=attempted_models,
-                    served_model=model_name,
-                )
-                raise last_error
+                if emitted:
+                    generation.record(output="".join(pieces), usage_details=_usage_details(usage))
+                    record_llm_call(
+                        operation=operation,
+                        attempted_models=attempted_models,
+                        served_model=model_name,
+                        **usage,
+                    )
+                    raise last_error
 
             logger.warning(
                 "Gemini 스트림 시작 실패, 다음 모델로 폴백: operation=%s model=%s",
@@ -618,9 +658,7 @@ class RealGeminiProvider:
         assert last_error is not None
         raise last_error
 
-    async def generate_compare_summary(
-        self, comparison: ComparisonResult
-    ) -> ProviderResult[str]:
+    async def generate_compare_summary(self, comparison: ComparisonResult) -> ProviderResult[str]:
         """C가 반환한 공개 비교 사실만 Gemini에 전달해 설명 문장을 생성한다."""
 
         instruction = gemini_prompts.build_compare_summary_instruction(comparison.criteria)
