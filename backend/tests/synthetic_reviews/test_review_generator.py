@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import unicodedata
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +13,7 @@ from app.synthetic_reviews import (
     GeminiSyntheticReviewGenerator,
     PlacePersonaInput,
     SyntheticReviewBatch,
+    SyntheticReviewClaim,
     assess_sentiment,
     build_official_facts,
     generate_personas,
@@ -432,3 +434,79 @@ def test_전송_스키마는_그_장소의_리뷰_수로_배열_길이를_고정
 def test_전송_스키마는_허용_범위_밖의_리뷰_수를_거부한다(review_count: int) -> None:
     with pytest.raises(ValueError, match="리뷰 수는"):
         wire_schema_for(review_count)
+
+
+# --- 한글 정규화 (NFC/NFD) -------------------------------------------------
+#
+# 한글은 완성형과 조합형이 화면에 똑같이 그려지지만 문자열로는 다르다. 공식 원문은
+# NFC인데 모델이 NFD로 돌려주면 sourceValue 대조가 어긋나, 원문을 정확히 베꼈는데도
+# 실패로 잡힌다. 2026-08-25 종로구 표본에서 gemini-3.5-flash-lite가 실제로 그랬다.
+
+
+def _first_hangul_claim(payload: dict[str, object]) -> dict[str, object]:
+    """sourceValue에 한글이 든 첫 claim을 고른다.
+
+    "09:00~18:00" 같은 값은 NFD로 바꿔도 그대로라 이 테스트가 아무것도 재지 않는다.
+    """
+    for review in payload["reviews"]:  # type: ignore[union-attr]
+        for claim in review["claims"]:
+            value = claim.get("sourceValue") or ""
+            if any(0xAC00 <= ord(ch) <= 0xD7A3 for ch in value):
+                return claim
+    raise AssertionError("한글이 든 sourceValue가 표본에 없다")
+
+
+def test_모델이_조합형_한글로_보내도_공식_원문과_같다고_본다() -> None:
+    facts, plans, sentiments = _inputs()
+    payload = _valid_payload()
+    claim = _first_hangul_claim(payload)
+    original = claim["sourceValue"]
+    claim["sourceValue"] = unicodedata.normalize("NFD", str(original))
+
+    # 눈으로 같지만 문자열로는 다른 값이라는 것을 먼저 못 박는다.
+    assert claim["sourceValue"] != original
+
+    batch = SyntheticReviewBatch.model_validate(payload)
+
+    validate_review_batch(batch, facts=facts, plans=plans, sentiments=sentiments)
+    assert any(
+        c.source_value == original for review in batch.reviews for c in review.claims
+    )
+
+
+def test_조합형_한글이_길이_제약을_넘기지_않는다() -> None:
+    """NFD는 글자 수가 2~3배로 늘어 정규화를 나중에 하면 max_length에 걸린다."""
+    long_text = "가" * 300
+    claim = SyntheticReviewClaim.model_validate(
+        {
+            "text": unicodedata.normalize("NFD", long_text),
+            "grounding": ClaimGrounding.SYNTHETIC_SCENARIO.value,
+        }
+    )
+
+    assert claim.text == long_text
+    assert len(claim.text) == 300
+
+
+def test_리뷰_본문도_완성형으로_맞춘다() -> None:
+    facts, plans, sentiments = _inputs()
+    payload = _valid_payload()
+    original = payload["reviews"][0]["reviewText"]  # type: ignore[index]
+    payload["reviews"][0]["reviewText"] = unicodedata.normalize(  # type: ignore[index]
+        "NFD", original
+    )
+
+    batch = SyntheticReviewBatch.model_validate(payload)
+
+    assert batch.reviews[0].review_text == original
+    validate_review_batch(batch, facts=facts, plans=plans, sentiments=sentiments)
+
+
+def test_공식_입력도_완성형으로_맞춘다() -> None:
+    """DB는 현재 전부 NFC지만, 한쪽만 정규화하면 대조가 다시 어긋난다."""
+    row = _row()
+    row["title"] = unicodedata.normalize("NFD", str(row["title"]))
+
+    facts = build_official_facts(row)
+
+    assert facts["title"] == "테스트 문화시설"

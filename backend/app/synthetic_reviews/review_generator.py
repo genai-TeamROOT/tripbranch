@@ -17,7 +17,11 @@ from pydantic import BaseModel, Field, ValidationError, create_model
 
 from app.prompts.loader import load_text
 from app.prompts.registry import slot_versions
-from app.synthetic_reviews.review_models import ClaimGrounding, SyntheticReviewBatch
+from app.synthetic_reviews.review_models import (
+    ClaimGrounding,
+    SyntheticReviewBatch,
+    to_nfc,
+)
 from app.synthetic_reviews.review_plans import (
     MAX_REVIEWS_PER_PLACE,
     MIN_REVIEWS_PER_PLACE,
@@ -25,7 +29,7 @@ from app.synthetic_reviews.review_plans import (
 )
 from app.synthetic_reviews.sentiments import SentimentAssessment
 
-GENERATOR_VERSION = "synthetic-review-generator-3.0.0"
+GENERATOR_VERSION = "synthetic-review-generator-3.1.0"
 PROMPT_VERSION = f"synthetic_review.generate@{slot_versions()['synthetic_review.generate']}"
 
 ALLOWED_OFFICIAL_FIELDS = (
@@ -119,9 +123,15 @@ _INTERNAL_METADATA_PATTERNS = (
 
 
 def build_official_facts(row: Mapping[str, object]) -> dict[str, str]:
-    """TourAPI 캐시에서 허용한 필드만 정규화 없이 보존한다."""
+    """TourAPI 캐시에서 허용한 필드만 원문 그대로 보존한다.
+
+    표기를 바꾸지 않되 한글만 NFC로 맞춘다. 모델 응답도 같은 규칙을 지나므로
+    (review_models.to_nfc) 대조하는 두 값이 늘 같은 형태가 된다. 2026-08-25
+    실측으로 종로구 9,534개 값이 전부 이미 NFC라 지금은 아무것도 바꾸지 않지만,
+    한쪽만 정규화하면 다시 어긋나므로 양쪽을 같은 규칙 아래 둔다.
+    """
     facts = {
-        field: str(row[field]).strip()
+        field: to_nfc(str(row[field]).strip())
         for field in ALLOWED_OFFICIAL_FIELDS
         if row.get(field) is not None and str(row[field]).strip()
     }
