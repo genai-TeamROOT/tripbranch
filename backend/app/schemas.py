@@ -764,6 +764,13 @@ class LLMCallMetadata(BaseModel):
     output_tokens: int | None = None
     thoughts_tokens: int | None = None
     total_tokens: int | None = None
+    # 같은 모델에 대해 타임아웃·429·5xx로 다시 시도한 횟수(0 = 첫 시도에서 끝남).
+    # latency_ms가 유독 크게 보일 때 "모델이 느렸다"와 "타임아웃 후 재시도가
+    # 조용히 성공했다"를 구분하는 값이다 — 재시도가 성공하면 로그도 안 남고
+    # attempted_models도 안 늘어나 겉보기엔 아무 흔적이 없다(D-076 검토 후속).
+    # 스트리밍 호출(stream_*)은 모델별 재시도 없이 바로 다음 모델로 넘어가므로
+    # 항상 0이다. 기존 저장된 실행 이력에는 없을 수 있어 누락을 허용한다.
+    retry_count: int | None = None
 
 
 class LLMExecutionMetadata(BaseModel):

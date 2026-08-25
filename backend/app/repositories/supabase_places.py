@@ -247,7 +247,17 @@ def _title_filters(name: str) -> list[str]:
         if prefixed:
             filters.append(f"ilike.{_TITLE_REGION_PREFIX}{collapsed}")
     # "종묘" → "종묘 [유네스코 세계유산]", "세검정 터" → "세검정 터 (구 세검정)"
-    filters.extend([f"ilike.{name} [*", f"ilike.{name} (*"])
+    #
+    # 괄호는 공백을 두는 표기와 붙이는 표기가 모두 있다. 공백 있는 쪽만 보면
+    # "조계사"로 "조계사(서울)"을 못 찾는다 — 활성 2,761건 중 붙여 쓴 제목이 47건으로
+    # 띄어 쓴 14건보다 세 배 넘게 많다(2026-08-25 실측). 동대문디자인플라자(DDP)·
+    # 남산공원(서울)·대원군별장(석파정)처럼 사람이 괄호 없이 부르는 이름들이다.
+    #
+    # 와일드카드가 여는 괄호 뒤에만 있어 부분 일치로 넓어지지 않는다 — "조계사"가
+    # "조계사터"나 "조계사길"에는 걸리지 않는다.
+    filters.extend(
+        [f"ilike.{name} [*", f"ilike.{name} (*", f"ilike.{name}(*"]
+    )
     return filters
 
 
@@ -1169,6 +1179,34 @@ class SupabasePlaceRepository:
                 break
             offset += _READ_PAGE_SIZE
         return rows
+
+    async def list_active_place_rows_by_ids(
+        self, content_ids: Sequence[str], columns: Sequence[str]
+    ) -> list[Mapping[str, object]]:
+        """활성 장소를 ID로 읽되 호출자가 요청한 순서를 보존한다."""
+        unique_ids = list(dict.fromkeys(content_ids))
+        if not unique_ids:
+            return []
+        rows_by_id: dict[str, Mapping[str, object]] = {}
+        for chunk in _chunks(unique_ids, _UPSERT_CHUNK_SIZE):
+            quoted_ids = ",".join(f'"{content_id}"' for content_id in chunk)
+            response = await self._request(
+                "GET",
+                "/places",
+                params={
+                    "select": ",".join(columns),
+                    "content_id": f"in.({quoted_ids})",
+                    "is_active": "eq.true",
+                },
+            )
+            payload = self._json(response)
+            if not isinstance(payload, list):
+                raise SupabaseRepositoryError("invalid place row response")
+            for raw in payload:
+                if not isinstance(raw, Mapping) or not raw.get("content_id"):
+                    raise SupabaseRepositoryError("place row missing content_id")
+                rows_by_id[str(raw["content_id"])] = raw
+        return [rows_by_id[content_id] for content_id in unique_ids if content_id in rows_by_id]
 
     async def list_detail_backfill_ids(
         self, area_code: str, district_code: str

@@ -177,7 +177,7 @@ async def test_find_active_places_by_name_falls_back_through_title_variants() ->
     # 조회까지 가지 않는다. 지역 접두사 필터도 같은 조회에 함께 실린다.
     assert seen == [
         '(title.eq."종묘",title.ilike."서울 종묘",'
-        'title.ilike."종묘 [*",title.ilike."종묘 (*")'
+        'title.ilike."종묘 [*",title.ilike."종묘 (*",title.ilike."종묘(*")'
     ]
     assert len(locations) == 1
     assert locations[0].concentration_name == "종묘 [유네스코 세계유산]"
@@ -302,7 +302,8 @@ async def test_find_active_places_by_name_quotes_titles_with_commas() -> None:
 
     assert seen == [
         '(title.eq."꽃,밥에피다",title.ilike."서울 꽃,밥에피다",'
-        'title.ilike."꽃,밥에피다 [*",title.ilike."꽃,밥에피다 (*")'
+        'title.ilike."꽃,밥에피다 [*",title.ilike."꽃,밥에피다 (*",'
+        'title.ilike."꽃,밥에피다(*")'
     ]
     assert len(locations) == 1
     assert locations[0].title == "꽃,밥에피다"
@@ -1183,13 +1184,18 @@ def test_무장애_필드가_전부_마이그레이션에_있다() -> None:
 
     이 저장소에서 반복된 실패 유형이라(미완결 스키마 마이그레이션) 파일을 직접
     읽어 대조한다.
+
+    파일명은 glob으로 찾는다. 이 테스트가 보는 것은 필드 누락이지 파일명이 아니고,
+    번호가 바뀌었다고 깨지면 안 된다 — 실제로 2026-08-25에 같은 날 다른 마이그레이션과
+    번호가 겹쳐 `202608250001`에서 `202608250002`로 옮긴 적이 있다.
     """
-    migration = (
-        Path(__file__).resolve().parents[2]
-        / "supabase"
-        / "migrations"
-        / "202608250001_create_place_barrier_free.sql"
-    ).read_text(encoding="utf-8")
+    migrations = sorted(
+        (Path(__file__).resolve().parents[2] / "supabase" / "migrations").glob(
+            "*_create_place_barrier_free.sql"
+        )
+    )
+    assert len(migrations) == 1, f"무장애 테이블 마이그레이션이 하나여야 한다: {migrations}"
+    migration = migrations[0].read_text(encoding="utf-8")
 
     fields = {
         name
@@ -1198,3 +1204,76 @@ def test_무장애_필드가_전부_마이그레이션에_있다() -> None:
     }
     missing = {field for field in fields if f"  {field} text" not in migration}
     assert missing == set()
+
+
+@pytest.mark.asyncio
+async def test_find_active_places_by_name_finds_paren_suffix_without_space() -> None:
+    """사용자는 "조계사"라고 하는데 저장소 제목은 "조계사(서울)"이다.
+
+    괄호를 공백 없이 붙인 제목이 활성 2,761건 중 47건으로, 공백을 둔 14건보다 세 배
+    넘게 많다(2026-08-25 실측). 공백 있는 형태만 보면 이 47곳이 괄호를 빼고 부를 때
+    한 곳도 안 찾힌다 — 동대문디자인플라자(DDP)·남산공원(서울)·대원군별장(석파정)처럼
+    사람이 괄호 없이 부르는 이름들이다.
+    """
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        or_filter = request.url.params.get("or")
+        if or_filter is None:
+            return httpx.Response(200, json=[])
+        seen.append(or_filter)
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "content_id": "128144",
+                    "title": "조계사(서울)",
+                    "address": "서울특별시 종로구 우정국로 55",
+                    "latitude": 37.5729,
+                    "longitude": 126.9810,
+                    "place_concentration_mappings": None,
+                }
+            ],
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        locations = await _repository(transport, client).find_active_places_by_name("조계사")
+
+    assert "조계사(*" in seen[0]
+    assert len(locations) == 1
+    assert locations[0].title == "조계사(서울)"
+
+
+@pytest.mark.asyncio
+async def test_find_active_places_by_name_paren_filter_does_not_widen() -> None:
+    """괄호 필터가 부분 일치로 넓어지면 안 된다.
+
+    와일드카드가 여는 괄호 뒤에만 있어 "조계사"가 "조계사터"·"조계사길"에는 걸리지
+    않는다. 넓어지면 엉뚱한 장소가 검색 중심이 된다(_title_filters의 원래 경고).
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("or") is None:
+            return httpx.Response(200, json=[])
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "content_id": "9",
+                    # 괄호 필터가 넓어지면 이 제목이 "조계사(*"에 걸린다.
+                    "title": "조계사터",
+                    "address": None,
+                    "latitude": 37.57,
+                    "longitude": 126.99,
+                    "place_concentration_mappings": None,
+                }
+            ],
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        locations = await _repository(transport, client).find_active_places_by_name("조계사")
+
+    # 어떤 필터에도 안 걸리므로 버린다.
+    assert locations == ()

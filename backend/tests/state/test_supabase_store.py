@@ -273,6 +273,125 @@ def test_get_traces_parses_rows_into_trace_records() -> None:
     assert traces[0].step == "llm_interpret"
 
 
+def test_list_traces_for_stats_no_range_omits_recorded_at_filter() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["request"] = request
+        return httpx.Response(200, json=[])
+
+    transport = httpx.MockTransport(handler)
+    _store(transport).list_traces_for_stats()
+
+    request = seen["request"]
+    assert "session_id" not in request.url.params
+    assert "recorded_at" not in request.url.params
+    assert "and" not in request.url.params
+    assert request.url.params["order"] == "recorded_at.asc"
+
+
+def test_list_traces_for_stats_since_only_uses_gte() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["request"] = request
+        return httpx.Response(200, json=[])
+
+    transport = httpx.MockTransport(handler)
+    since = datetime(2026, 8, 1, tzinfo=UTC)
+    _store(transport).list_traces_for_stats(since=since)
+
+    request = seen["request"]
+    assert request.url.params["recorded_at"] == f"gte.{since.isoformat()}"
+
+
+def test_list_traces_for_stats_since_and_until_uses_and_filter() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["request"] = request
+        return httpx.Response(200, json=[])
+
+    transport = httpx.MockTransport(handler)
+    since = datetime(2026, 8, 1, tzinfo=UTC)
+    until = datetime(2026, 8, 8, tzinfo=UTC)
+    _store(transport).list_traces_for_stats(since=since, until=until)
+
+    request = seen["request"]
+    assert "recorded_at" not in request.url.params
+    assert request.url.params["and"] == (
+        f"(recorded_at.gte.{since.isoformat()},recorded_at.lt.{until.isoformat()})"
+    )
+
+
+def test_list_traces_for_stats_includes_rows_across_sessions() -> None:
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 1,
+                    "session_id": SESSION_ID,
+                    "run_id": "run-1",
+                    "trace_id": "trace-1",
+                    "step": "llm_interpret",
+                    "recorded_at": "2026-08-21T00:00:00+09:00",
+                }
+            ],
+        )
+    )
+    records = _store(transport).list_traces_for_stats()
+    assert len(records) == 1
+    assert records[0].step == "llm_interpret"
+
+
+def _trace_row(i: int) -> dict[str, object]:
+    return {
+        "id": i,
+        "session_id": f"sess_{i}",
+        "run_id": f"run_{i}",
+        "trace_id": f"trace_{i}",
+        "step": "llm_interpret",
+        "recorded_at": "2026-08-21T00:00:00+09:00",
+    }
+
+
+def test_list_traces_for_stats_paginates_beyond_postgrest_default_limit() -> None:
+    """PostgREST(Supabase REST)는 명시하지 않으면 응답을 기본 1000행으로
+    자른다 — 첫 페이지가 꽉 찬(1000행) 응답이면 offset을 올려 다음 페이지를
+    마저 가져와야 한다."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        offset = int(request.url.params["offset"])
+        if offset == 0:
+            return httpx.Response(200, json=[_trace_row(i) for i in range(1000)])
+        return httpx.Response(200, json=[_trace_row(i) for i in range(1000, 1002)])
+
+    transport = httpx.MockTransport(handler)
+    records = _store(transport).list_traces_for_stats()
+
+    assert len(records) == 1002
+    assert [r.url.params["offset"] for r in requests] == ["0", "1000"]
+    assert [r.url.params["limit"] for r in requests] == ["1000", "1000"]
+
+
+def test_list_traces_for_stats_stops_when_first_page_is_partial() -> None:
+    """대상이 페이지 크기(1000)보다 적으면 두 번째 요청을 보내지 않는다."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=[_trace_row(1)])
+
+    transport = httpx.MockTransport(handler)
+    records = _store(transport).list_traces_for_stats()
+
+    assert len(records) == 1
+    assert len(requests) == 1
+
+
 # ------------------------------------------------------------ Feedback
 
 
@@ -474,6 +593,34 @@ def test_list_feedback_for_stats_includes_like_rows() -> None:
     records = _store(transport).list_feedback_for_stats()
     assert len(records) == 1
     assert records[0].rating == "like"
+
+
+def _feedback_row(i: int) -> dict[str, object]:
+    return {
+        "id": i,
+        "session_id": f"sess_{i}",
+        "run_id": f"run_{i}",
+        "rating": "like",
+        "recorded_at": "2026-08-21T00:00:00+09:00",
+    }
+
+
+def test_list_feedback_for_stats_paginates_beyond_postgrest_default_limit() -> None:
+    """list_traces_for_stats와 동일한 이유(PostgREST 기본 1000행 상한)."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        offset = int(request.url.params["offset"])
+        if offset == 0:
+            return httpx.Response(200, json=[_feedback_row(i) for i in range(1000)])
+        return httpx.Response(200, json=[_feedback_row(i) for i in range(1000, 1001)])
+
+    transport = httpx.MockTransport(handler)
+    records = _store(transport).list_feedback_for_stats()
+
+    assert len(records) == 1001
+    assert [r.url.params["offset"] for r in requests] == ["0", "1000"]
 
 
 # ------------------------------------------------------------ 정리(TP-134)

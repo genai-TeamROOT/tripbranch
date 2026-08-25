@@ -244,6 +244,47 @@ test("asks whether to refresh a location older than 30 minutes before a follow-u
   now.mockRestore();
 });
 
+test("does not ask again within 30 minutes after continuing with the previous location", async () => {
+  // "N분 전 위치로 계속"을 누른 뒤 실제 GPS를 다시 받은 게 아닌데도 재확인
+  // 질문이 다음 턴마다 반복되던 버그(D 재확인 필요)의 회귀 테스트.
+  const now = vi.spyOn(Date, "now");
+  now.mockReturnValue(1_000);
+  await renderApp();
+
+  await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+  await screen.findByText("테스트 박물관");
+
+  now.mockReturnValue(30 * 60 * 1000 + 1_001);
+  await userEvent.type(screen.getByPlaceholderText("추가 조건을 입력해 주세요"), "다른 곳 보여줘");
+  await userEvent.click(screen.getByRole("button", { name: "보내기" }));
+  await screen.findByText("현재 위치를 확인한 지 30분이 지났어요. 이번 추천에 사용할 위치를 선택해주세요.");
+  await userEvent.click(screen.getByRole("button", { name: "30분 전 위치로 계속" }));
+  await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2));
+
+  // 스누즈 구간(30분) 안의 다음 턴 — 재확인 질문 없이 바로 보내져야 한다.
+  now.mockReturnValue(30 * 60 * 1000 + 5 * 60 * 1000 + 1_001);
+  await userEvent.type(screen.getByPlaceholderText("추가 조건을 입력해 주세요"), "카페도 보여줘");
+  await userEvent.click(screen.getByRole("button", { name: "보내기" }));
+  await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3));
+  expect(
+    screen.queryByText(/현재 위치를 확인한 지 .*지났어요/),
+  ).not.toBeInTheDocument();
+  const secondFollowUpBody = JSON.parse(String(vi.mocked(fetch).mock.calls[2][1]?.body));
+  expect(secondFollowUpBody.user_input).toBe("카페도 보여줘");
+  expect(secondFollowUpBody.device_location).toBe("37.5788,126.977");
+
+  // 스누즈가 끝난 뒤엔 다시 물어야 하고, 실제 GPS 나이(60분)를 그대로 보여줘야
+  // 한다 — "이전 위치로 계속"이 나이를 30분으로 리셋해버리면 안 된다.
+  now.mockReturnValue(60 * 60 * 1000 + 1_002);
+  await userEvent.type(screen.getByPlaceholderText("추가 조건을 입력해 주세요"), "한 곳 더 보여줘");
+  await userEvent.click(screen.getByRole("button", { name: "보내기" }));
+  expect(
+    await screen.findByText("현재 위치를 확인한 지 60분이 지났어요. 이번 추천에 사용할 위치를 선택해주세요."),
+  ).toBeInTheDocument();
+  now.mockRestore();
+});
+
 test("refreshing a location after 30 minutes requests browser GPS again", async () => {
   const now = vi.spyOn(Date, "now");
   now.mockReturnValue(1_000);

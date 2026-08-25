@@ -50,6 +50,7 @@ def record_llm_call(
     output_tokens: int | None = None,
     thoughts_tokens: int | None = None,
     total_tokens: int | None = None,
+    retry_count: int | None = None,
 ) -> None:
     """모델 선택 루프 1회의 최종 결과를 현재 요청 이력에 추가한다."""
 
@@ -62,6 +63,7 @@ def record_llm_call(
         output_tokens=output_tokens,
         thoughts_tokens=thoughts_tokens,
         total_tokens=total_tokens,
+        retry_count=retry_count,
     )
     calls = _calls.get()
     if calls is None:

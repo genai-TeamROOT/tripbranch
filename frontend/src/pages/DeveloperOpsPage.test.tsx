@@ -159,11 +159,43 @@ const feedbackStats = {
   missing_intent_count: 1,
 };
 
-/** 개발자 패널이 여는 조회 네 개를 한 곳에서 가른다. */
+const traceStats = {
+  since: null,
+  until: null,
+  total: 6,
+  step_stats: [
+    {
+      step: "llm_interpret",
+      count: 3,
+      avg_latency_ms: 150,
+      max_latency_ms: 220,
+      error_count: 1,
+    },
+    {
+      step: "scoring",
+      count: 3,
+      avg_latency_ms: 80,
+      max_latency_ms: 100,
+      error_count: 0,
+    },
+  ],
+  recent_errors: [
+    {
+      session_id: "sess_a",
+      run_id: "run_1",
+      step: "llm_interpret",
+      error_type: "timeout",
+      recorded_at: "2026-08-25T09:00:00+09:00",
+    },
+  ],
+};
+
+/** 개발자 패널이 여는 조회 다섯 개를 한 곳에서 가른다. */
 function panelBody(url: string) {
   if (url.includes("api-usage")) return usageSnapshot;
   if (url.includes("place-sync/districts")) return syncDistricts;
   if (url.includes("feedback/stats")) return feedbackStats;
+  if (url.includes("trace/stats")) return traceStats;
   return dbStatus;
 }
 
@@ -199,7 +231,7 @@ it("호출량 표와 일일 한도 게이지를 보여준다", async () => {
 
   // detailIntro2는 호출량 표와 DB 갱신 패널의 한도 경고 문구 양쪽에 나온다.
   expect((await screen.findAllByText("detailIntro2")).length).toBeGreaterThan(0);
-  expect(screen.getByText("512 / 1000")).toBeInTheDocument();
+  expect(await screen.findByText("512 / 1000")).toBeInTheDocument();
   // 누적 호출과 오늘 호출 두 카드에 같은 값이 뜬다.
   expect(screen.getAllByText("517")).toHaveLength(2);
 });
@@ -311,11 +343,21 @@ it("구별 무장애 행 수를 places 옆에 함께 보여준다", async () => 
 
 /** 피드백 통계 패널만 스코프해서 찾는다 — 다른 패널도 "2"·"3" 같은 짧은
  * 숫자를 표시하므로(예: ApiUsagePanel의 실패 카운트) 전역 getByText는
- * 우연히 다른 패널의 숫자와 겹칠 수 있다. */
+ * 우연히 다른 패널의 숫자와 겹칠 수 있다.
+ *
+ * 머리말("피드백 통계")은 /api/feedback/stats 응답이 오기 전에도 그려지므로,
+ * 머리말만 보고 반환하면 뒤따르는 동기 getByText가 "불러오는 중…"만 든 패널을
+ * 훑다가 실패한다 — CI처럼 느린 환경에서 가끔 터진다(TP-158).
+ *
+ * 기다리는 대상은 새로고침 버튼 문구가 아니라 요약 카드의 "전체"다. 버튼은
+ * loading이 false로 돌아오기만 하면 "새로고침"이 되므로 응답이 실패해
+ * stats가 null인 상태와 구분되지 않는다. "전체"는 FeedbackStatsPanel이
+ * stats를 받은 뒤에만 그리는 값이라 본문이 실제로 렌더됐음을 보장한다. */
 async function findFeedbackStatsPanel() {
   const heading = await screen.findByText("피드백 통계");
   const panel = heading.closest("section");
   if (!panel) throw new Error("피드백 통계 패널을 찾지 못했습니다.");
+  await within(panel).findByText("전체");
   return panel;
 }
 
@@ -383,6 +425,65 @@ it("피드백이 하나도 없으면 빈 상태 문구를 보여준다", async (
   renderPage();
 
   expect(await screen.findByText("아직 기록된 피드백이 없습니다.")).toBeInTheDocument();
+});
+
+/** Trace 통계 패널만 스코프해서 찾는다 — findFeedbackStatsPanel과 같은 이유다.
+ * 응답을 기다리는 것도 같다: 요약 카드의 "전체 실행"이 나타나야 stats가 들어온
+ * 상태다. */
+async function findTracePanel() {
+  const heading = await screen.findByText("Trace 통계");
+  const panel = heading.closest("section");
+  if (!panel) throw new Error("Trace 통계 패널을 찾지 못했습니다.");
+  await within(panel).findByText("전체 실행");
+  return panel;
+}
+
+it("Trace 통계 요약 카드를 보여준다", async () => {
+  mockFetch((url) => ({ status: 200, body: panelBody(url) }));
+
+  renderPage();
+  const panel = await findTracePanel();
+
+  expect(within(panel).getByText("6")).toBeInTheDocument();
+  expect(within(panel).getByText("2")).toBeInTheDocument();
+});
+
+it("step별 건수·평균/최대 latency·에러 건수를 보여준다", async () => {
+  mockFetch((url) => ({ status: 200, body: panelBody(url) }));
+
+  renderPage();
+  const panel = await findTracePanel();
+  // "llm_interpret"은 step별 집계 표와 최근 에러 목록 양쪽에 나온다 —
+  // 표(table) 안으로 좁혀서 찾는다.
+  const stepTable = within(panel).getByText("step별 집계").closest("div");
+  if (!stepTable) throw new Error("step별 집계 표를 찾지 못했습니다.");
+
+  expect(within(stepTable).getByText("llm_interpret")).toBeInTheDocument();
+  expect(within(stepTable).getByText("scoring")).toBeInTheDocument();
+  expect(within(stepTable).getByText("150ms")).toBeInTheDocument();
+  expect(within(stepTable).getByText("220ms")).toBeInTheDocument();
+});
+
+it("최근 에러 목록을 보여준다", async () => {
+  mockFetch((url) => ({ status: 200, body: panelBody(url) }));
+
+  renderPage();
+  const panel = await findTracePanel();
+
+  expect(within(panel).getByText("timeout")).toBeInTheDocument();
+});
+
+it("trace가 하나도 없으면 빈 상태 문구를 보여준다", async () => {
+  mockFetch((url) => ({
+    status: 200,
+    body: url.includes("trace/stats")
+      ? { since: null, until: null, total: 0, step_stats: [], recent_errors: [] }
+      : panelBody(url),
+  }));
+
+  renderPage();
+
+  expect(await screen.findByText("아직 기록된 trace가 없습니다.")).toBeInTheDocument();
 });
 
 it("상세조회 TTL은 구별 값이 아니라 머리말에만 쓴다", async () => {

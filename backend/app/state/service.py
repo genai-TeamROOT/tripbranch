@@ -983,3 +983,117 @@ def get_feedback_stats(
         other_intent_count=other_intent_count,
         missing_intent_count=missing_intent_count,
     )
+
+
+# ================================================================ 실행 기록(Trace) 통계
+
+
+class TraceStepStat(BaseModel):
+    """step 하나의 집계. (TP-157)"""
+
+    step: str
+    count: int
+    avg_latency_ms: float | None
+    max_latency_ms: int | None
+    error_count: int
+
+
+class TraceRecentError(BaseModel):
+    """최근 에러 발생 실행 1건. (TP-157)"""
+
+    session_id: str
+    run_id: str
+    step: str
+    error_type: str
+    recorded_at: datetime
+
+
+class TraceStatsResponse(BaseModel):
+    """전체 trace를 step 기준으로 집계한 응답. (TP-157)
+
+    step_stats는 등장한 step만 담는다(reason_code_counts처럼 고정된 값
+    집합이 없다 — step은 trace.py docstring대로 A/C/D가 자유롭게 붙이는
+    문자열이라 B가 미리 알 수 없다). avg_latency_ms/max_latency_ms는
+    latency_ms가 기록된 행만으로 계산하고, 한 건도 없으면 null이다.
+    recent_errors는 error_type이 있는 행만 최근순으로 상위
+    recent_errors_limit개.
+    """
+
+    since: datetime | None
+    until: datetime | None
+    total: int
+    step_stats: list[TraceStepStat]
+    recent_errors: list[TraceRecentError]
+
+
+_DEFAULT_RECENT_ERRORS_LIMIT = 20
+
+
+@_wrap_store_errors
+def get_trace_stats(
+    since: datetime | None = None,
+    until: datetime | None = None,
+    recent_errors_limit: int = _DEFAULT_RECENT_ERRORS_LIMIT,
+    store: StateStore | None = None,
+) -> TraceStatsResponse:
+    """전체 trace를 집계해 dev-ops 패널에서 볼 수 있는 요약을 만든다. (TP-157)
+
+    집계는 get_feedback_stats와 동일한 이유로 SQL group-by가 아니라
+    여기(Python)에서 한다.
+    """
+    store = store or get_store()
+    records = trace_module.list_for_stats(store, since=since, until=until)
+
+    counts: dict[str, int] = {}
+    latency_sums: dict[str, int] = {}
+    latency_counts: dict[str, int] = {}
+    max_latency: dict[str, int] = {}
+    error_counts: dict[str, int] = {}
+    step_order: list[str] = []
+
+    for record in records:
+        if record.step not in counts:
+            step_order.append(record.step)
+        counts[record.step] = counts.get(record.step, 0) + 1
+        if record.latency_ms is not None:
+            latency_sums[record.step] = latency_sums.get(record.step, 0) + record.latency_ms
+            latency_counts[record.step] = latency_counts.get(record.step, 0) + 1
+            max_latency[record.step] = max(
+                max_latency.get(record.step, record.latency_ms), record.latency_ms
+            )
+        if record.error_type is not None:
+            error_counts[record.step] = error_counts.get(record.step, 0) + 1
+
+    step_stats = [
+        TraceStepStat(
+            step=step,
+            count=counts[step],
+            avg_latency_ms=(
+                latency_sums[step] / latency_counts[step] if step in latency_counts else None
+            ),
+            max_latency_ms=max_latency.get(step),
+            error_count=error_counts.get(step, 0),
+        )
+        for step in step_order
+    ]
+
+    error_records = [r for r in records if r.error_type is not None]
+    error_records.sort(key=lambda r: r.recorded_at, reverse=True)
+    recent_errors = [
+        TraceRecentError(
+            session_id=r.session_id,
+            run_id=r.run_id,
+            step=r.step,
+            error_type=r.error_type,  # type: ignore[arg-type]  # filtered not-None above
+            recorded_at=r.recorded_at,
+        )
+        for r in error_records[:recent_errors_limit]
+    ]
+
+    return TraceStatsResponse(
+        since=since,
+        until=until,
+        total=len(records),
+        step_stats=step_stats,
+        recent_errors=recent_errors,
+    )
