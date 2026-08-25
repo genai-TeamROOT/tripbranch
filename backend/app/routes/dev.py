@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -38,10 +38,16 @@ from app.observability.api_usage import (
     reset_usage,
 )
 from app.providers.real_place import RealPlaceProvider
+from app.providers.tour_barrier_free import RealBarrierFreeProvider
 from app.providers.tour_ldong_registry import find_district_name, list_districts
 from app.repositories.supabase_places import SupabasePlaceRepository
 from app.services import place_snapshot
-from app.services.place_sync import PlaceSyncService, SyncProgress
+from app.services.place_sync import (
+    PlaceSyncService,
+    SyncProgress,
+    barrier_free_candidate_ids,
+    barrier_free_stale_ids,
+)
 from app.services.place_sync_jobs import (
     SyncJobConflictError,
     SyncJobOutcome,
@@ -215,6 +221,7 @@ async def get_db_status(sync_run_limit: int = 10) -> dict[str, Any]:
             timeout_seconds=max(settings.external_api_timeout_seconds, 30.0),
         )
         summaries = await repository.get_place_summaries_by_district()
+        barrier_free_counts = await repository.count_barrier_free_by_district()
         enrichment_count = await repository.count_rows("place_enrichments")
         concentration_mapping_count = await repository.count_rows(
             "place_concentration_mappings"
@@ -233,12 +240,33 @@ async def get_db_status(sync_run_limit: int = 10) -> dict[str, Any]:
                 str(summary.get("area_code") or ""),
                 str(summary.get("district_code") or ""),
             ),
+            **_barrier_free_summary(
+                barrier_free_counts.get(
+                    (
+                        str(summary.get("area_code") or ""),
+                        str(summary.get("district_code") or ""),
+                    )
+                )
+            ),
         }
         for summary in _as_summary_list(summaries.get("districts"))
     ]
 
+    overall = summaries.get("overall")
+    if isinstance(overall, Mapping):
+        overall = {
+            **overall,
+            # 전 구 합계는 구별 값을 더한다 — 따로 세면 한쪽만 규칙이 바뀐 채 남는다.
+            **_barrier_free_summary(
+                {
+                    "active": sum(c["active"] for c in barrier_free_counts.values()),
+                    "total": sum(c["total"] for c in barrier_free_counts.values()),
+                }
+            ),
+        }
+
     return {
-        "overall": summaries.get("overall"),
+        "overall": overall,
         "districts": districts,
         "place_enrichments_count": enrichment_count,
         "place_concentration_mappings_count": concentration_mapping_count,
@@ -249,6 +277,18 @@ async def get_db_status(sync_run_limit: int = 10) -> dict[str, Any]:
             **detail_calls,
             "daily_limit": settings.tour_api_daily_call_limit,
         },
+    }
+
+
+def _barrier_free_summary(counts: Mapping[str, int] | None) -> dict[str, int]:
+    """무장애 행 수를 요약에 실을 모양으로 바꾼다.
+
+    행이 없는 구는 0으로 채운다 — 키를 빼면 화면이 "아직 안 채웠다"와 "이 응답에는
+    그 값이 없다"를 구분할 수 없다.
+    """
+    return {
+        "barrier_free_active": (counts or {}).get("active", 0),
+        "barrier_free_total": (counts or {}).get("total", 0),
     }
 
 
@@ -469,6 +509,10 @@ async def post_reconcile(request: ReconcileRequest) -> dict[str, Any]:
     # 그대로 diff로 남는다.
     place_snapshot.write_snapshot(current, snapshot_path)
 
+    barrier_free_calls, barrier_free_checked = await _barrier_free_detail_count(
+        api_key, area, district, current
+    )
+
     if baseline_path is not None:
         baseline = place_snapshot.load_snapshot(baseline_path)
         baseline_label = baseline_path.name
@@ -491,6 +535,8 @@ async def post_reconcile(request: ReconcileRequest) -> dict[str, Any]:
             "detail_excluded_ids": [],
             "detail_backfill_ids": [],
             "detail_backfill_checked": True,
+            "barrier_free_detail_count": barrier_free_calls,
+            "barrier_free_checked": barrier_free_checked,
             "rows": [],
             "message": _NO_BASELINE_MESSAGES[baseline_source],
         }
@@ -534,6 +580,8 @@ async def post_reconcile(request: ReconcileRequest) -> dict[str, Any]:
         "detail_excluded_ids": sorted(excluded_ids),
         "detail_backfill_ids": backfill_ids,
         "detail_backfill_checked": backfill_checked,
+        "barrier_free_detail_count": barrier_free_calls,
+        "barrier_free_checked": barrier_free_checked,
         "rows": rows,
     }
 
@@ -602,6 +650,76 @@ async def _detail_backfill_ids(
         for content_id in pending
         if content_id in current and content_id not in detail_ids
     ], True
+
+
+async def _barrier_free_detail_count(
+    api_key: str,
+    area_code: str,
+    district_code: str,
+    current: Mapping[str, Mapping[str, str]],
+) -> tuple[int, bool]:
+    """이번 반영이 무장애 상세(detailWithTour2)를 몇 번 부를지.
+
+    무장애 목록을 1회 불러 실제 대상을 센다. 목록을 부르지 않고 "아직 확인하지 않은
+    장소 수"를 그대로 보여주면 4.6배 부풀려진다 — 종로구에서 755회로 표시되지만
+    실제 상세 호출은 164회다. 무장애 레코드가 있는 장소가 19%뿐이기 때문이다.
+    한도 옆에 붙는 숫자라 상한보다 실제에 가까운 값이 낫고, 목록은 구당 1회다.
+
+    순서와 규칙을 동기화(`_sync_barrier_free`)와 똑같이 맞춘다 — 목록 → 등록된
+    장소만 추림 → 확인 시각 조회 → TTL 판정. 조건을 따로 적으면 한쪽만 고쳤을 때
+    화면이 실제와 다른 수를 보여주게 된다.
+
+    두 번째 반환값은 "확인했는가"다. 자격증명이 없거나 목록 조회가 실패해 못 본
+    것과 "부를 게 없다"를 같은 0으로 뭉개면, 화면이 0회를 확정된 값처럼 보여준다.
+    """
+    url = settings.supabase_url.strip()
+    key = settings.supabase_secret_key.strip()
+    if not url or not key:
+        return 0, False
+
+    candidates = barrier_free_candidate_ids(
+        {
+            content_id: str(row.get("content_type_id", "")).strip()
+            for content_id, row in current.items()
+        }
+    )
+    if not candidates:
+        return 0, True
+
+    # 목록 조회는 계측 대상 트래픽이다 — 상태 조회와 달리 실제로 한도를 쓴다.
+    async with create_external_client() as client:
+        provider = RealBarrierFreeProvider(
+            api_key=api_key,
+            client=client,
+            timeout_seconds=settings.external_api_timeout_seconds,
+        )
+        try:
+            listed = await provider.list_barrier_free_content_ids(
+                area_code, district_code
+            )
+        except AppError:
+            return 0, False
+
+    registered = [content_id for content_id in candidates if content_id in listed]
+    if not registered:
+        return 0, True
+
+    async with status_client() as client:
+        repository = SupabasePlaceRepository(
+            supabase_url=url,
+            secret_key=key,
+            client=client,
+            timeout_seconds=max(settings.external_api_timeout_seconds, 30.0),
+        )
+        already = await repository.list_barrier_free_fetched_at(registered)
+    return len(
+        barrier_free_stale_ids(
+            registered,
+            already,
+            now=datetime.now(UTC),
+            ttl=timedelta(days=settings.place_sync_detail_ttl_days),
+        )
+    ), True
 
 
 async def _baseline_from_database(
@@ -707,6 +825,15 @@ async def post_apply(request: ApplyRequest) -> dict[str, Any]:
             service = PlaceSyncService(
                 _SnapshotListProvider(snapshot_path, provider),
                 repository,
+                # 무장애 정보(KorWithService2)는 같은 인증키를 쓰지만 다른
+                # 서비스라 호출도 따로 나간다. 상세조회와 같은 실행에서 함께
+                # 채워야 "스냅샷 반영은 됐는데 무장애만 비어 있는" 상태가 남지
+                # 않는다.
+                barrier_free_provider=RealBarrierFreeProvider(
+                    api_key=api_key,
+                    client=client,
+                    timeout_seconds=settings.external_api_timeout_seconds,
+                ),
                 page_size=settings.place_sync_page_size,
                 detail_concurrency=settings.place_sync_detail_concurrency,
                 detail_ttl_days=settings.place_sync_detail_ttl_days,

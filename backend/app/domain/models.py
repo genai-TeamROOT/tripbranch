@@ -318,6 +318,51 @@ class PlaceOperatingDetails:
 
 
 @dataclass(frozen=True)
+class PlaceBarrierFreeDetails:
+    """무장애 여행 정보(KorWithService2/detailWithTour2) 원문(D-077).
+
+    detailIntro2와 다른 서비스라 호출도 따로 나간다. 응답 필드 28개 중 채움률 5%를
+    넘긴 15개만 담는다(2026-08-25 실측, 4개 구 427건 기준). 담지 않는 13개는
+    수어 안내·큰활자 안내물처럼 427건 중 한 자리 수만 채워진 필드들이다.
+
+    필드 이름은 응답 키가 아니라 의미를 따른다. 응답 키를 그대로 쓰면 두 필드가
+    이름과 반대로 읽힌다 — `wheelchair`는 휠체어 대여이지 출입이 아니고, `exit`는
+    출구가 아니라 주출입구다.
+    """
+
+    content_id: str
+    # 휠체어 접근. 접근로(route)와 출입구(exit)를 나눈 필드인데 작성자가 뒤바꿔 넣은
+    # 사례가 있어, 접근 가능 여부는 두 값을 함께 읽어야 한다.
+    approach_route_raw: str | None = None
+    entrance_access_raw: str | None = None
+    elevator_raw: str | None = None
+    accessible_restroom_raw: str | None = None
+    accessible_parking_raw: str | None = None
+    braille_block_raw: str | None = None
+    braille_promotion_raw: str | None = None
+    audio_guide_raw: str | None = None
+    guide_dog_raw: str | None = None
+    wheelchair_rental_raw: str | None = None
+    stroller_rental_raw: str | None = None
+    nursing_room_raw: str | None = None
+    infant_family_etc_raw: str | None = None
+    public_transport_raw: str | None = None
+    disability_etc_raw: str | None = None
+
+    def has_any_value(self) -> bool:
+        """값이 하나라도 있는가.
+
+        무장애 목록에 있어도 15개가 전부 빈 장소가 496건 중 60건이다. 목록에
+        있었다는 사실과 값이 있다는 사실은 다르다.
+        """
+        return any(
+            value is not None
+            for field_name, value in vars(self).items()
+            if field_name != "content_id"
+        )
+
+
+@dataclass(frozen=True)
 class PlaceCommonDetails:
     """detailCommon2에서만 얻을 수 있는 값. places 동기화 대상이 아니다.
 

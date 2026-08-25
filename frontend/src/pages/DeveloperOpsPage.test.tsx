@@ -56,6 +56,8 @@ const jongno = {
   operating_parse_status: { parsed: 495, unknown: 388 },
   operating_parser_version: { "operating-hours-1.0.0": 883 },
   latest_detail_fetched_at: "2026-08-10T14:00:00+09:00",
+  barrier_free_active: 164,
+  barrier_free_total: 166,
 };
 
 const yongsan = {
@@ -69,6 +71,8 @@ const yongsan = {
   operating_parse_status: { parsed: 282, unknown: 204 },
   operating_parser_version: { "operating-hours-1.0.0": 486 },
   latest_detail_fetched_at: "2026-08-21T13:00:00+09:00",
+  barrier_free_active: 0,
+  barrier_free_total: 0,
 };
 
 const dbStatus = {
@@ -80,6 +84,8 @@ const dbStatus = {
     operating_parse_status: { parsed: 777, unknown: 592 },
     operating_parser_version: { "operating-hours-1.0.0": 1369 },
     latest_detail_fetched_at: "2026-08-21T13:00:00+09:00",
+    barrier_free_active: 164,
+    barrier_free_total: 166,
   },
   districts: [jongno, yongsan],
   place_enrichments_count: 51,
@@ -265,6 +271,23 @@ it("구 탭을 누르면 그 구의 요약만 보여준다", async () => {
   expect(screen.getByText("place_enrichments")).toBeInTheDocument();
 });
 
+/* 무장애 행 수는 구별로 나뉜다. place_barrier_free에 구 열이 없어 places와 묶어
+ * 세는 값이라, 구를 바꿔도 안 바뀌면 전 구 합계를 보여주고 있다는 뜻이다. */
+it("구별 무장애 행 수를 places 옆에 함께 보여준다", async () => {
+  mockFetch((url) => ({ status: 200, body: panelBody(url) }));
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.click(await screen.findByRole("tab", { name: /종로구/ }));
+  expect(screen.getByText("place_barrier_free 활성")).toBeInTheDocument();
+  expect(screen.getByText("164")).toBeInTheDocument();
+  expect(screen.getByText("전체 166")).toBeInTheDocument();
+
+  // 아직 안 채운 구는 0으로 보인다 — 칸이 비면 "값이 없다"와 구분되지 않는다.
+  await user.click(screen.getByRole("tab", { name: /용산구/ }));
+  expect(screen.getByText("전체 0")).toBeInTheDocument();
+});
+
 it("상세조회 TTL은 구별 값이 아니라 머리말에만 쓴다", async () => {
   mockFetch((url) => ({ status: 200, body: panelBody(url) }));
 
@@ -308,6 +331,8 @@ const reconcileResult = {
   detail_excluded_ids: ["1"],
   detail_backfill_ids: [] as string[],
   detail_backfill_checked: true,
+  barrier_free_detail_count: 164,
+  barrier_free_checked: true,
   rows: [
     {
       content_id: "4",
@@ -612,7 +637,60 @@ it("못 채운 건을 확인하지 못하면 예상 호출수가 확정이 아�
 
   await user.click(await screen.findByRole("button", { name: "1. 스냅샷 대조" }));
 
-  expect(await screen.findByText(/확인하지 못했어요/)).toBeInTheDocument();
+  expect(
+    await screen.findByText(/상세를 못 채운 장소가 DB에 얼마나 있는지 확인하지 못했어요/),
+  ).toBeInTheDocument();
+});
+
+
+/* 무장애 목록을 못 부르면 예상 호출수가 0으로 나온다. 0건과 "못 봤다"를 뭉개면
+ * 화면이 0회를 확정된 값처럼 보여준다. */
+it("무장애 목록을 확인하지 못하면 0회가 확정이 아님을 알린다", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const body = url.includes("reconcile")
+        ? { ...reconcileResult, barrier_free_detail_count: 0, barrier_free_checked: false }
+        : panelBody(url);
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }),
+  );
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.click(await screen.findByRole("button", { name: "1. 스냅샷 대조" }));
+
+  expect(await screen.findByText(/무장애 목록을 확인하지 못했어요/)).toBeInTheDocument();
+});
+
+
+/* 예상 호출수는 상한이 아니라 실제 수다. 대조가 무장애 목록을 1회 불러 교집합을
+ * 내기 때문에, 여기에 "아직 확인 안 한 장소 수"가 그대로 뜨면 종로구 기준
+ * 4.6배(755 vs 164) 부풀려진 값을 한도 옆에 보여주게 된다. */
+it("무장애 예상 호출수를 목록·상세로 나눠 보여준다", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const body = url.includes("reconcile") ? reconcileResult : panelBody(url);
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }),
+  );
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.click(await screen.findByRole("button", { name: "1. 스냅샷 대조" }));
+
+  expect(
+    await screen.findByText(/무장애 목록 1회 \+ 무장애 상세 164회/),
+  ).toBeInTheDocument();
 });
 
 

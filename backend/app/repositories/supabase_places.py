@@ -11,6 +11,7 @@ from uuid import UUID
 import httpx
 
 from app.domain.models import (
+    PlaceBarrierFreeDetails,
     PlaceEvidenceMatch,
     PlaceEvidenceSnippet,
     StoredPlaceDetail,
@@ -1243,6 +1244,120 @@ class SupabasePlaceRepository:
                 if isinstance(row, Mapping) and row.get("content_id"):
                     found.add(str(row["content_id"]))
         return [content_id for content_id in content_ids if content_id not in found]
+
+    async def count_barrier_free_by_district(self) -> dict[tuple[str, str], dict[str, int]]:
+        """구별 무장애 행 수. `places`를 함께 읽어 활성 여부까지 센다.
+
+        place_barrier_free에는 구 열이 없다(content_id 기준). place_enrichments처럼
+        전체 건수만 세지 않고 구별로 쪼개는 이유는, 이 테이블은 장소 동기화가 구
+        단위로 채우기 때문이다 — "이 구는 무장애를 채웠나"가 패널에서 답해야 할
+        질문이다.
+
+        행 수가 적어(4개 구를 다 채워도 430행) places 전량 요약과 달리 한 번에
+        읽는다. 목록에 없는 장소는 행을 만들지 않으므로 places보다 훨씬 적다.
+        """
+        counts: dict[tuple[str, str], dict[str, int]] = {}
+        offset = 0
+        while True:
+            response = await self._request(
+                "GET",
+                "/place_barrier_free",
+                params={
+                    "select": "content_id,places!inner(area_code,district_code,is_active)",
+                    "order": "content_id.asc",
+                    "limit": str(_READ_PAGE_SIZE),
+                    "offset": str(offset),
+                },
+            )
+            page = self._json(response)
+            if not isinstance(page, list):
+                raise SupabaseRepositoryError("invalid barrier free summary response")
+            for raw in page:
+                place = raw.get("places") if isinstance(raw, Mapping) else None
+                if not isinstance(place, Mapping):
+                    raise SupabaseRepositoryError("invalid barrier free summary row")
+                key = (
+                    str(place.get("area_code") or ""),
+                    str(place.get("district_code") or ""),
+                )
+                bucket = counts.setdefault(key, {"active": 0, "total": 0})
+                bucket["total"] += 1
+                if place.get("is_active"):
+                    bucket["active"] += 1
+            if len(page) < _READ_PAGE_SIZE:
+                return counts
+            offset += _READ_PAGE_SIZE
+
+    async def list_barrier_free_fetched_at(
+        self, content_ids: Sequence[str]
+    ) -> dict[str, datetime]:
+        """무장애 정보를 언제 확인했는지. 행이 없는 장소는 결과에도 없다.
+
+        값이 비어 있는 행도 "확인했다"로 센다 — 무장애 목록에 있는데도 15개 필드가
+        모두 빈 장소가 496건 중 60건이라, 값이 없다고 다시 부르면 그 60건에 매번
+        호출을 태우게 된다.
+        """
+        if not content_ids:
+            return {}
+        fetched: dict[str, datetime] = {}
+        for chunk in _chunks(list(content_ids), _UPSERT_CHUNK_SIZE):
+            quoted = ",".join(f'"{content_id}"' for content_id in chunk)
+            response = await self._request(
+                "GET",
+                "/place_barrier_free",
+                params={
+                    "select": "content_id,fetched_at",
+                    "content_id": f"in.({quoted})",
+                },
+            )
+            payload = self._json(response)
+            if not isinstance(payload, list):
+                raise SupabaseRepositoryError("invalid barrier free response")
+            for row in payload:
+                if not isinstance(row, Mapping):
+                    continue
+                content_id = _optional_text(row.get("content_id"))
+                fetched_at = _parse_datetime(row.get("fetched_at"), "fetched_at")
+                if content_id is not None and fetched_at is not None:
+                    fetched[content_id] = fetched_at
+        return fetched
+
+    async def upsert_barrier_free_details(
+        self,
+        details: Sequence[PlaceBarrierFreeDetails],
+        fetched_at: datetime,
+    ) -> None:
+        """무장애 상세를 반영한다. 부른 장소만 행이 된다.
+
+        값이 전부 비어 있어도 행을 만든다. 무장애 목록에 있는데 28개 필드가 모두 빈
+        장소가 4개 구에서 60건이고(전부 쇼핑몰 입점 매장, 2022·2024년 일괄 등록),
+        행이 없으면 그 장소들을 실행할 때마다 다시 부르게 된다.
+
+        반대로 목록에 없는 장소는 행을 만들지 않는다. 없다는 사실은 목록이 매번
+        알려주므로 저장할 이유가 없다.
+        """
+        if not details:
+            return
+        fetched_at_text = _iso(fetched_at)
+        rows: list[dict[str, object]] = []
+        for detail in details:
+            row: dict[str, object] = {
+                "content_id": detail.content_id,
+                "fetched_at": fetched_at_text,
+            }
+            for field_name, value in vars(detail).items():
+                if field_name != "content_id":
+                    row[field_name] = value
+            rows.append(row)
+
+        for chunk in _chunks(rows, _UPSERT_CHUNK_SIZE):
+            await self._request(
+                "POST",
+                "/place_barrier_free",
+                params={"on_conflict": "content_id"},
+                json=list(chunk),
+                prefer="resolution=merge-duplicates,return=minimal",
+            )
 
     async def list_sync_locks(self) -> list[dict[str, object]]:
         """현재 잡혀 있는 동기화 잠금. 만료된 행도 그대로 보여준다.

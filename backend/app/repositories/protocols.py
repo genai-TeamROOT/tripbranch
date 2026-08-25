@@ -8,6 +8,7 @@ from typing import Protocol
 from uuid import UUID
 
 from app.domain.models import (
+    PlaceBarrierFreeDetails,
     PlaceEvidenceMatch,
     StoredPlaceDetail,
     StoredPlaceLocation,
@@ -101,6 +102,17 @@ class PlaceRepository(Protocol):
         pet_raw: str | None = None,
         credit_card_raw: str | None = None,
         restroom_raw: str | None = None,
+    ) -> None: ...
+
+    async def list_barrier_free_fetched_at(
+        self,
+        content_ids: Sequence[str],
+    ) -> dict[str, datetime]: ...
+
+    async def upsert_barrier_free_details(
+        self,
+        details: Sequence[PlaceBarrierFreeDetails],
+        fetched_at: datetime,
     ) -> None: ...
 
     async def update_parsed_schedule(

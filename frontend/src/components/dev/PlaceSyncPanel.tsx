@@ -46,6 +46,7 @@ const PHASE_LABELS: Record<string, string> = {
   upsert: "목록 반영",
   reparse: "운영시간 재파싱",
   details: "상세조회",
+  barrier_free: "무장애 정보",
   deactivate: "비활성화",
   done: "완료",
 };
@@ -280,7 +281,7 @@ function JobProgress({ job }: { job: SyncJob }) {
         </p>
       )}
       {job.result && (
-        <dl className="mt-2 grid grid-cols-3 gap-2 text-xs sm:grid-cols-6">
+        <dl className="mt-2 grid grid-cols-3 gap-2 text-xs sm:grid-cols-7">
           {[
             ["처리", job.result.processed_count],
             ["신규", job.result.new_count],
@@ -290,6 +291,12 @@ function JobProgress({ job }: { job: SyncJob }) {
             // 없다"로 읽히지만 실제로는 보지도 않았다.
             ["비활성", job.params.dry_run ? "미판정" : job.result.deactivated_count],
             ["상세조회", job.result.detail_attempted_count],
+            // 부른 수가 아니라 값이 있어 저장된 수다. 무장애 목록에 있어도 15개
+            // 필드가 전부 빈 장소가 있어 둘이 다르다.
+            [
+              "무장애",
+              `${job.result.barrier_free_stored_count}/${job.result.barrier_free_attempted_count}`,
+            ],
             ["실패", job.result.failed_count],
           ].map(([label, value]) => (
             <div key={String(label)} className="rounded bg-gray-100 p-1.5 dark:bg-gray-800">
@@ -368,6 +375,11 @@ export function PlaceSyncPanel({
       ? Math.floor(parsedLimit)
       : null;
   const plannedCalls = detailsLimit === null ? detailCount : Math.min(detailCount, detailsLimit);
+  // 대조가 무장애 목록을 1회 불러 낸 실제 대상 수다. 상한을 걸어 실행하면
+  // 상세조회와 같은 상한이 무장애 호출에도 함께 걸린다.
+  const barrierFreeTargets = reconcile?.barrier_free_detail_count ?? 0;
+  const barrierFreeCalls =
+    detailsLimit === null ? barrierFreeTargets : Math.min(barrierFreeTargets, detailsLimit);
   const jobRunning = job?.status === "running";
   const isNewDistrict =
     selected !== null && selected.place_count === 0 && selected.latest_snapshot === null;
@@ -467,6 +479,13 @@ export function PlaceSyncPanel({
             </p>
           )}
 
+          {!reconcile.barrier_free_checked && (
+            <p className="mt-2 rounded-md bg-amber-50 p-3 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+              무장애 목록을 확인하지 못했어요(자격증명이 없거나 조회에 실패했어요).
+              아래 무장애 예상 호출수는 0으로 나오지만 실제로는 그만큼 나갈 수 있어요.
+            </p>
+          )}
+
           {reconcile.skipped_columns.length > 0 && (
             <p className="mt-2 rounded-md bg-amber-50 p-3 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
               기준 스냅샷에 없는 열은 비교하지 않았어요:{" "}
@@ -526,7 +545,8 @@ export function PlaceSyncPanel({
               예상 외부 호출: 목록 0회 + 상세조회 {plannedCalls}회
               {backfillCount > 0 &&
                 ` (이번 변경분 ${changedCount} + 지난 실행에서 못 채운 ${backfillCount})`}
-              {" · DB 쓰기 있음"}
+              {" + 무장애 목록 1회 + 무장애 상세 "}
+              {barrierFreeCalls}회{" · DB 쓰기 있음"}
             </span>
             <button
               type="button"
@@ -560,6 +580,11 @@ export function PlaceSyncPanel({
                 · 상세조회 {plannedCalls}회 (TourAPI detailIntro2)
                 {backfillCount > 0 &&
                   ` — 이번 변경분 ${changedCount} + 지난 실행에서 상세를 못 채운 ${backfillCount}`}
+              </li>
+              <li>
+                · 무장애 정보 {barrierFreeCalls + 1}회 (TourAPI KorWithService2,
+                목록 1회 포함) — 아직 확인하지 않은 장소 중 무장애 목록에 등록된
+                곳만 부릅니다
               </li>
               <li>
                 · 신규 {reconcile.counts.added} / 수정 {reconcile.counts.updated} / 삭제{" "}

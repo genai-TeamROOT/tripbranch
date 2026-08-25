@@ -8,6 +8,7 @@ from uuid import UUID
 import pytest
 
 from app.domain.models import (
+    PlaceBarrierFreeDetails,
     PlaceOperatingDetails,
     StoredPlaceState,
     TourPlacePage,
@@ -15,7 +16,7 @@ from app.domain.models import (
 )
 from app.domain.operating_hours import OPERATING_PARSER_VERSION
 from app.errors import ProviderTimeoutError, ProviderUnavailableError
-from app.services.place_sync import PlaceSyncService
+from app.services.place_sync import PlaceSyncService, SyncProgress
 
 RUN_ID = UUID("11111111-1111-4111-8111-111111111111")
 NOW = datetime(2026, 7, 24, 3, 0, tzinfo=UTC)
@@ -139,6 +140,9 @@ class FakePlaceRepository:
         self.parsed_updates: list[str] = []
         self.deactivate_calls = 0
         self.completed: list[dict[str, object]] = []
+        # content_id → 무장애 정보를 확인한 시각. 값이 비어 있어도 "확인했다"다.
+        self.barrier_free_fetched: dict[str, datetime] = {}
+        self.barrier_free_upserts: list[list[PlaceBarrierFreeDetails]] = []
 
     async def create_sync_run(self, area_code: str, district_code: str) -> UUID:
         self.created += 1
@@ -172,6 +176,22 @@ class FakePlaceRepository:
         fetched_at: datetime,
     ) -> None:
         self.upserted.extend(places)
+
+    async def list_barrier_free_fetched_at(
+        self, content_ids: Sequence[str]
+    ) -> dict[str, datetime]:
+        return {
+            content_id: fetched
+            for content_id, fetched in self.barrier_free_fetched.items()
+            if content_id in set(content_ids)
+        }
+
+    async def upsert_barrier_free_details(
+        self,
+        details: Sequence[PlaceBarrierFreeDetails],
+        fetched_at: datetime,
+    ) -> None:
+        self.barrier_free_upserts.append(list(details))
 
     async def update_operating_details(
         self,
@@ -263,6 +283,47 @@ class FakePlaceRepository:
                 "detail_attempted_count": detail_attempted_count,
                 "error_summary": error_summary,
             }
+        )
+
+
+class FakeBarrierFreeProvider:
+    """무장애 목록과 상세를 흉내 낸다.
+
+    `listed`에 없는 content_id는 상세를 부를 일이 없어야 한다 — 그걸 어기면
+    `detail_calls`에 남아 테스트가 깨진다.
+    """
+
+    def __init__(
+        self,
+        listed: Mapping[str, str] | None = None,
+        *,
+        values: Mapping[str, str] | None = None,
+        list_error: Exception | None = None,
+    ) -> None:
+        self.listed = dict(listed or {})
+        # content_id → 장애인 화장실 원문. 여기 없는 장소는 응답이 전부 빈 값이다.
+        self.values = dict(values or {})
+        self.list_error = list_error
+        self.list_calls: list[tuple[str, str]] = []
+        self.detail_calls: list[str] = []
+
+    async def list_barrier_free_content_ids(
+        self, area_code: str, district_code: str
+    ) -> dict[str, str]:
+        self.list_calls.append((area_code, district_code))
+        if self.list_error is not None:
+            raise self.list_error
+        return dict(self.listed)
+
+    async def get_barrier_free_details(
+        self, content_id: str
+    ) -> PlaceBarrierFreeDetails | None:
+        self.detail_calls.append(content_id)
+        if content_id not in self.listed:
+            return None
+        return PlaceBarrierFreeDetails(
+            content_id=content_id,
+            accessible_restroom_raw=self.values.get(content_id),
         )
 
 
@@ -699,3 +760,272 @@ def test_음수_간격은_거부한다() -> None:
             FakePlaceRepository(),
             detail_min_interval_seconds=-0.1,
         )
+
+
+def _typed_place(index: int, content_type_id: str) -> TourPlaceRecord:
+    """유형만 다른 장소. 무장애 대상 거르기를 확인할 때 쓴다."""
+    base = _place(index)
+    return TourPlaceRecord(
+        content_id=base.content_id,
+        content_type_id=content_type_id,
+        title=base.title,
+        address=base.address,
+        latitude=base.latitude,
+        longitude=base.longitude,
+        area_code=base.area_code,
+        district_code=base.district_code,
+        lcls_systm1=base.lcls_systm1,
+        lcls_systm2=base.lcls_systm2,
+        lcls_systm3=base.lcls_systm3,
+        source_modified_at=base.source_modified_at,
+    )
+
+
+@pytest.mark.asyncio
+async def test_무장애_목록에_있는_장소만_상세를_부른다() -> None:
+    """등록되지 않은 장소에 detailWithTour2를 부르면 빈 응답만 받고 한도를 쓴다.
+
+    4개 구 실측에서 무장애 정보가 있는 장소는 19%뿐이라, 목록으로 좁히지 않으면
+    호출의 대부분이 헛돈다.
+    """
+    places = [_place(index) for index in range(3)]
+    provider = FakeAreaProvider(places)
+    barrier_free = FakeBarrierFreeProvider({"1": "12"}, values={"1": "장애인 화장실 있음"})
+    repository = FakePlaceRepository()
+    service = PlaceSyncService(
+        provider, repository, barrier_free_provider=barrier_free, now=lambda: NOW
+    )
+
+    result = await service.sync("11", "110")
+
+    assert barrier_free.detail_calls == ["1"]
+    assert barrier_free.list_calls == [("11", "110")]
+    details = repository.barrier_free_upserts[0]
+    # 목록에 없는 0·2번은 행조차 만들지 않는다. 없다는 사실은 목록이 매번 알려주므로
+    # 저장할 이유가 없다 — 종로구에서 그런 행이 590개였다.
+    assert [detail.content_id for detail in details] == ["1"]
+    assert details[0].accessible_restroom_raw == "장애인 화장실 있음"
+    assert result.barrier_free_target_count == 1
+    assert result.barrier_free_attempted_count == 1
+    assert result.barrier_free_stored_count == 1
+
+
+@pytest.mark.asyncio
+async def test_숙박은_무장애_대상에서_제외한다() -> None:
+    """숙박(32)은 관광 대상에서 뺐다. 목록에 있어도 부르지 않는다."""
+    places = [_typed_place(1, "32"), _typed_place(2, "14")]
+    provider = FakeAreaProvider(places)
+    barrier_free = FakeBarrierFreeProvider({"1": "32", "2": "14"})
+    repository = FakePlaceRepository()
+    service = PlaceSyncService(
+        provider, repository, barrier_free_provider=barrier_free, now=lambda: NOW
+    )
+
+    result = await service.sync("11", "110")
+
+    assert barrier_free.detail_calls == ["2"]
+    assert [
+        detail.content_id for detail in repository.barrier_free_upserts[0]
+    ] == ["2"]
+    assert result.barrier_free_target_count == 1
+
+
+@pytest.mark.asyncio
+async def test_이미_확인한_장소는_다시_부르지_않는다() -> None:
+    """TTL 안에 확인한 장소를 매번 다시 부르면 구를 누를 때마다 호출이 반복된다."""
+    places = [_place(1), _place(2)]
+    provider = FakeAreaProvider(places)
+    barrier_free = FakeBarrierFreeProvider({"1": "12", "2": "12"})
+    repository = FakePlaceRepository()
+    # 1번은 어제 확인했고, 2번은 확인한 적이 없다.
+    repository.barrier_free_fetched = {"1": NOW - timedelta(days=1)}
+    service = PlaceSyncService(
+        provider, repository, barrier_free_provider=barrier_free, now=lambda: NOW
+    )
+
+    result = await service.sync("11", "110")
+
+    assert barrier_free.detail_calls == ["2"]
+    assert result.barrier_free_target_count == 1
+
+
+@pytest.mark.asyncio
+async def test_TTL이_지난_장소는_다시_확인한다() -> None:
+    places = [_place(1)]
+    provider = FakeAreaProvider(places)
+    barrier_free = FakeBarrierFreeProvider({"1": "12"})
+    repository = FakePlaceRepository()
+    repository.barrier_free_fetched = {"1": NOW - timedelta(days=90)}
+    service = PlaceSyncService(
+        provider,
+        repository,
+        barrier_free_provider=barrier_free,
+        detail_ttl_days=30,
+        now=lambda: NOW,
+    )
+
+    await service.sync("11", "110")
+
+    assert barrier_free.detail_calls == ["1"]
+
+
+@pytest.mark.asyncio
+async def test_값이_비어도_확인한_것으로_저장한다() -> None:
+    """목록에 있는데 필드가 전부 빈 장소가 4개 구에서 60건이다.
+
+    전부 쇼핑몰 입점 매장이고(2022·2024년 일괄 등록) 무장애 레코드만 만들어진 채
+    항목이 비어 있다. 저장하지 않으면 그 60건이 매번 다시 대상이 되어 같은 빈
+    응답에 한도를 계속 쓴다. 대신 stored_count로는 세지 않는다 — 쓸 값이 있는
+    장소 수와 구분해야 한다.
+    """
+    provider = FakeAreaProvider([_place(1)])
+    barrier_free = FakeBarrierFreeProvider({"1": "12"})  # values를 주지 않았다
+    repository = FakePlaceRepository()
+    service = PlaceSyncService(
+        provider, repository, barrier_free_provider=barrier_free, now=lambda: NOW
+    )
+
+    result = await service.sync("11", "110")
+
+    details = repository.barrier_free_upserts[0]
+    assert [detail.content_id for detail in details] == ["1"]
+    assert details[0].has_any_value() is False
+    assert result.barrier_free_attempted_count == 1
+    assert result.barrier_free_stored_count == 0
+
+
+@pytest.mark.asyncio
+async def test_목록_조회가_실패하면_상세를_부르지_않는다() -> None:
+    """어느 장소를 불러야 하는지 모르는 채로 전량을 부르면 한도만 태운다."""
+    provider = FakeAreaProvider([_place(1), _place(2)])
+    barrier_free = FakeBarrierFreeProvider(
+        {"1": "12"}, list_error=ProviderUnavailableError("TourAPI(무장애)")
+    )
+    repository = FakePlaceRepository()
+    service = PlaceSyncService(
+        provider, repository, barrier_free_provider=barrier_free, now=lambda: NOW
+    )
+
+    result = await service.sync("11", "110")
+
+    assert barrier_free.detail_calls == []
+    assert repository.barrier_free_upserts == []
+    assert result.error_summary["BARRIER_FREE_LIST_FAILED"] == 1
+    # 장소 동기화 자체는 성공했다 — 무장애는 곁가지라 전체를 실패로 만들지 않는다.
+    assert result.status == "partial_failure"
+    assert result.failed_count == 0
+
+
+@pytest.mark.asyncio
+async def test_provider가_없으면_무장애를_아예_건드리지_않는다() -> None:
+    """실패로 대체하지 않고 하지 않는다(D-042와 같은 태도).
+
+    세 값이 모두 0인 것으로 "안 했다"가 화면에서 드러난다.
+    """
+    provider = FakeAreaProvider([_place(1)])
+    repository = FakePlaceRepository()
+    service = PlaceSyncService(provider, repository, now=lambda: NOW)
+
+    result = await service.sync("11", "110")
+
+    assert repository.barrier_free_upserts == []
+    assert result.barrier_free_target_count == 0
+    assert result.barrier_free_attempted_count == 0
+    assert result.error_summary == {}
+
+
+@pytest.mark.asyncio
+async def test_상세조회_상한은_무장애_호출에도_걸린다() -> None:
+    """상한을 걸었는데 다른 서비스로 수백 회가 더 나가면 상한이 아니다."""
+    places = [_place(index) for index in range(4)]
+    provider = FakeAreaProvider(places)
+    barrier_free = FakeBarrierFreeProvider(
+        {"0": "12", "1": "12", "2": "12", "3": "12"}
+    )
+    repository = FakePlaceRepository()
+    service = PlaceSyncService(
+        provider, repository, barrier_free_provider=barrier_free, now=lambda: NOW
+    )
+
+    result = await service.sync("11", "110", details_limit=2)
+
+    assert len(barrier_free.detail_calls) == 2
+    assert result.barrier_free_attempted_count == 2
+
+
+@pytest.mark.asyncio
+async def test_dry_run은_무장애도_쓰지_않는다() -> None:
+    provider = FakeAreaProvider([_place(1)])
+    barrier_free = FakeBarrierFreeProvider({"1": "12"}, values={"1": "있음"})
+    repository = FakePlaceRepository()
+    service = PlaceSyncService(
+        provider, repository, barrier_free_provider=barrier_free, now=lambda: NOW
+    )
+
+    result = await service.sync("11", "110", dry_run=True)
+
+    assert repository.barrier_free_upserts == []
+    # 호출은 실제로 나갔다 — dry-run이 아끼는 것은 DB 쓰기지 외부 호출이 아니다.
+    assert barrier_free.detail_calls == ["1"]
+    assert result.barrier_free_attempted_count == 1
+
+
+@pytest.mark.asyncio
+async def test_무장애_저장이_실패해도_장소_동기화는_끝낸다() -> None:
+    """무장애는 곁가지라 여기서 예외를 올리면 이미 끝난 일까지 실패로 뒤집힌다.
+
+    목록 반영과 상세조회는 그 전에 각각 저장돼 있는데, 예외를 올리면 실행이 failed로
+    남고 비활성화 판정만 건너뛴다. 실패는 error_summary로 드러낸다.
+    """
+
+    class 저장이_실패하는_저장소(FakePlaceRepository):
+        async def upsert_barrier_free_details(self, details, fetched_at):
+            raise RuntimeError('relation "place_barrier_free" does not exist')
+
+    provider = FakeAreaProvider([_place(1)])
+    barrier_free = FakeBarrierFreeProvider(
+        {"1": "12"}, values={"1": "장애인 화장실 있음"}
+    )
+    repository = 저장이_실패하는_저장소()
+    service = PlaceSyncService(
+        provider, repository, barrier_free_provider=barrier_free, now=lambda: NOW
+    )
+
+    result = await service.sync("11", "110")
+
+    assert result.error_summary["BARRIER_FREE_STORE_FAILED"] == 1
+    assert result.status == "partial_failure"
+    # 장소 쪽은 그대로 끝났다 — 상세조회 저장도, 비활성화 판정도 이뤄졌다.
+    assert repository.detail_updates == ["1"]
+    assert repository.deactivate_calls == 1
+    # 저장에 실패했으니 "저장된 장소"로 세지 않는다.
+    assert result.barrier_free_stored_count == 0
+    assert result.barrier_free_attempted_count == 1
+
+
+@pytest.mark.asyncio
+async def test_진행률_분모는_실제로_부를_수다() -> None:
+    """확인 대상 전체를 분모로 쓰면 화면이 164/755에서 끝난다.
+
+    종로구에서 확인 대상은 755건이지만 실제 호출은 무장애 목록에 있는 164건뿐이고,
+    나머지 591건은 호출 없이 "목록에 없음" 행만 남긴다. 분모를 755로 두면 591건이
+    빠진 것처럼 보인다.
+    """
+    places = [_place(index) for index in range(5)]
+    provider = FakeAreaProvider(places)
+    barrier_free = FakeBarrierFreeProvider({"1": "12", "3": "12"})
+    repository = FakePlaceRepository()
+    progress: list[tuple[int, int]] = []
+
+    def on_progress(event: SyncProgress) -> None:
+        if event.phase == "barrier_free":
+            progress.append((event.processed, event.total))
+
+    service = PlaceSyncService(
+        provider, repository, barrier_free_provider=barrier_free, now=lambda: NOW
+    )
+    await service.sync("11", "110", on_progress=on_progress)
+
+    assert progress[0] == (0, 2)
+    assert progress[-1] == (2, 2)
+    assert {total for _, total in progress} == {2}
