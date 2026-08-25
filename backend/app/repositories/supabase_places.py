@@ -247,7 +247,17 @@ def _title_filters(name: str) -> list[str]:
         if prefixed:
             filters.append(f"ilike.{_TITLE_REGION_PREFIX}{collapsed}")
     # "종묘" → "종묘 [유네스코 세계유산]", "세검정 터" → "세검정 터 (구 세검정)"
-    filters.extend([f"ilike.{name} [*", f"ilike.{name} (*"])
+    #
+    # 괄호는 공백을 두는 표기와 붙이는 표기가 모두 있다. 공백 있는 쪽만 보면
+    # "조계사"로 "조계사(서울)"을 못 찾는다 — 활성 2,761건 중 붙여 쓴 제목이 47건으로
+    # 띄어 쓴 14건보다 세 배 넘게 많다(2026-08-25 실측). 동대문디자인플라자(DDP)·
+    # 남산공원(서울)·대원군별장(석파정)처럼 사람이 괄호 없이 부르는 이름들이다.
+    #
+    # 와일드카드가 여는 괄호 뒤에만 있어 부분 일치로 넓어지지 않는다 — "조계사"가
+    # "조계사터"나 "조계사길"에는 걸리지 않는다.
+    filters.extend(
+        [f"ilike.{name} [*", f"ilike.{name} (*", f"ilike.{name}(*"]
+    )
     return filters
 
 
