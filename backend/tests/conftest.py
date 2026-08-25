@@ -45,6 +45,13 @@ def isolate_regular_tests_from_real_providers(monkeypatch: pytest.MonkeyPatch) -
     # 별도 단위 테스트가 인코더를 직접 주입해 커버하므로 여기선 꺼도 무방하다.
     monkeypatch.setattr(settings, "taste_evidence_enabled", False)
 
+    # LANGFUSE_ENABLED도 provider_mode와 별개 축이다. .env에 true가 남아 있으면
+    # 일반 테스트가 실제로 Langfuse Cloud에 span을 쏘고, 그 안에 테스트 픽스처
+    # 발화가 실린다. 관측은 판정에 관여하지 않으므로 테스트에서는 항상 꺼둔다 —
+    # 켜진 경로는 test_langfuse_tracing.py가 가짜 클라이언트로 따로 검증한다.
+    monkeypatch.setattr(settings, "langfuse_enabled", False)
+    monkeypatch.setattr(settings, "langfuse_capture_content", False)
+
 
 @pytest.fixture(autouse=True)
 def _reset_concentration_mapping_cache():

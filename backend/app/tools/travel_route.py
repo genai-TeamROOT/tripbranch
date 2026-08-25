@@ -10,11 +10,13 @@ from dataclasses import dataclass
 from app.domain.travel_route import (
     GeoCoordinate,
     RouteDestination,
+    RouteSource,
     RouteStatus,
     TravelMode,
     TravelRoute,
 )
 from app.errors import AppError
+from app.observability.langfuse_tracing import observe_step
 from app.providers.contracts import ProviderMetadata
 from app.providers.protocols import TravelRouteProvider
 from app.providers.walking_route import MAX_TRAVEL_ROUTE_DESTINATIONS
@@ -55,11 +57,19 @@ class TravelRouteQuery:
 
 @dataclass(frozen=True)
 class TravelRouteToolResult:
+    """`fallback_causes`는 **추정으로 대체된 원인**을 코드별로 센 것이다.
+
+    `error`와 다르다 — `error`는 "Tool이 실패했다"이고, 이쪽은 "채우기는 했는데
+    실측이 아니다"의 이유다. 목적지별 실패는 예외를 안 내고 오기 때문에 예전에는
+    `logger.warning`으로만 남았고, 서버 로그를 뒤지지 않으면 알 수 없었다.
+    """
+
     status: ToolStatus
     routes: tuple[TravelRoute, ...]
     error: ToolError | None = None
     warnings: tuple[str, ...] = ()
     provider_metadata: tuple[ProviderMetadata, ...] = ()
+    fallback_causes: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -85,6 +95,34 @@ class TravelRouteTool:
         self._providers = dict(providers)
 
     async def execute(self, query: TravelRouteQuery) -> TravelRouteToolResult:
+        """팬아웃 한 번을 span 하나로 남기고 본체(`_execute`)에 넘긴다.
+
+        **HTTP 호출 하나당 span 하나로 하지 않는다.** Provider가 목적지마다 따로
+        요청을 쏘기 때문에(`asyncio.gather`) 후보 20곳이면 호출도 20번이다. 그걸
+        전부 span으로 만들면 한 턴 observation이 5개에서 25개로 뛰어 무료 티어
+        유닛을 그대로 잡아먹는다. 그래서 **팬아웃 하나를 묶어 집계만 싣는다** —
+        observation은 +1인데 "몇 건 쐈고 몇 건이 추정으로 샜나"가 다 보인다.
+
+        `output`은 `capture_content`가 꺼지면 마스킹된다. 그래서 가장 중요한 신호인
+        실측/추정 비율은 `level`·`status_message`에도 싣는다 — 그 둘은 mask를 타지
+        않는다(`langfuse_tracing` 모듈 docstring).
+
+        좌표는 `query.origin`·`destinations`에만 있고 요약에는 넣지 않는다.
+        """
+        with observe_step("travel_route") as step:
+            result = await self._execute(query)
+            try:
+                summary = summarize_fanout(query, result)
+                step.record(
+                    output=summary,
+                    level=summary["level"],
+                    status_message=summary["headline"],
+                )
+            except Exception:
+                logger.warning("경로 관측 요약 실패(응답 흐름에는 영향 없음)", exc_info=True)
+            return result
+
+    async def _execute(self, query: TravelRouteQuery) -> TravelRouteToolResult:
         if not query.destinations:
             return TravelRouteToolResult(status=ToolStatus.NO_DATA, routes=())
 
@@ -169,6 +207,7 @@ class TravelRouteTool:
             for route in primary_result.data.routes
             if route.status is not RouteStatus.SUCCESS and route.place_id in fallback_by_id
         )
+        causes: Counter[str] = Counter()
         if replaced_ids:
             causes = Counter(
                 route.error_code or "unknown"
@@ -188,6 +227,9 @@ class TravelRouteTool:
             routes=routes,
             warnings=(TRAVEL_ROUTE_FALLBACK_WARNING,),
             provider_metadata=(primary_result.metadata, fallback_result.metadata),
+            # 관측이 "왜 추정인가"에 답할 수 있게 원인을 결과에 싣는다. 로그에만
+            # 남기면 대시보드에서 보고도 서버 로그를 따로 뒤져야 한다.
+            fallback_causes=tuple(sorted(causes.items())),
         )
 
     async def _fallback_all(
@@ -225,9 +267,77 @@ class TravelRouteTool:
         return TravelRouteToolResult(
             status=ToolStatus.PARTIAL,
             routes=fallback_result.data.routes,
+            # **primary가 왜 죽었는지를 결과에 담는다.** 예전에는 logger.warning으로만
+            # 남겨서, 관측 span이 "전부 추정으로 대체됨"까지만 말하고 원인은 못 말했다.
+            # 2026-08-25에 도보 실측이 0건인 걸 보고도 쿼터 초과인지 키 문제인지
+            # 서버 로그를 따로 뒤져야 했다 — 그 왕복이 관측의 존재 이유를 깎는다.
+            error=_tool_error(primary_error),
             warnings=(TRAVEL_ROUTE_FALLBACK_WARNING,),
             provider_metadata=(fallback_result.metadata,),
+            fallback_causes=((primary_error.code, len(query.destinations)),),
         )
+
+
+# 한 span에 실을 원인 코드 종류 상한. 종류가 이보다 많으면 이미 무슨 일이
+# 벌어진 건지 개수만으로 충분하다.
+_SUMMARY_CAUSE_LIMIT = 5
+
+
+def summarize_fanout(query: TravelRouteQuery, result: TravelRouteToolResult) -> dict[str, object]:
+    """경로 팬아웃 한 번을 span에 실을 집계로 접는다.
+
+    **실측/추정 비율이 이 요약의 존재 이유다.** 실측 소요시간이 있는 후보는
+    `_travel_time_score()`로, 없는 후보는 직선거리 `_distance_score()`로 채점된다
+    (`app/domain/scoring.py::_proximity_score`). 즉 추정으로 샌 건수만큼 **같은
+    순위표 안에 서로 다른 자가 섞인다.** 지금은 그 비율을 아무도 모른다 — 경로가
+    실패해도 fallback이 조용히 메워서 응답만 봐서는 드러나지 않는다.
+
+    좌표(`query.origin`·`destinations[].coordinate`)와 place_id는 싣지 않는다.
+    여기서 알고 싶은 건 개수와 분포지 어디를 갔느냐가 아니다.
+    """
+    routes = result.routes
+    requested = len(query.destinations)
+    by_source = Counter(route.source.value for route in routes)
+    estimated = by_source.get(RouteSource.STRAIGHT_LINE_ESTIMATE.value, 0)
+    measured = len(routes) - estimated
+    # **대체된 뒤의 routes를 읽으면 안 된다** — 전부 추정 성공이라 error_code가 비어
+    # 있다. 2026-08-25에 그렇게 짜서 "추정 11건"은 나오는데 원인은 계속 빈칸이었다.
+    causes = dict(result.fallback_causes) or Counter(
+        route.error_code or "unknown" for route in routes if route.error_code
+    )
+
+    if result.status is ToolStatus.UNAVAILABLE:
+        level = "ERROR"
+    elif estimated or result.status is not ToolStatus.SUCCESS:
+        level = "WARNING"
+    else:
+        level = "DEFAULT"
+
+    return {
+        "mode": query.mode.value,
+        "status": result.status.value,
+        "requested": requested,
+        "returned": len(routes),
+        "measured": measured,
+        "estimated": estimated,
+        # 이 턴의 거리 축이 얼마나 실측으로 채워졌나. 1.0이 아니면 자가 섞였다는 뜻이다.
+        "measured_ratio": round(measured / len(routes), 3) if routes else None,
+        "by_source": dict(sorted(by_source.items())),
+        "by_status": dict(sorted(Counter(route.status.value for route in routes).items())),
+        "error_causes": dict(sorted(causes.items())[:_SUMMARY_CAUSE_LIMIT]),
+        # 원인이 하나뿐이면 headline에 얹을 값. 대부분 그렇다(쿼터·키·타임아웃).
+        "primary_cause": next(iter(sorted(causes)), None),
+        "warnings": list(result.warnings),
+        # primary 실패 원인. 전부 추정으로 대체된 턴에서 "왜"에 답하는 유일한 값이다.
+        "error_code": result.error.code if result.error is not None else None,
+        "error_detail": result.error.message if result.error is not None else None,
+        "level": level,
+        # 마스킹을 타지 않는 자리(status_message)에 실을 한 줄.
+        "headline": (
+            f"{query.mode.value} {requested}건 요청 · 실측 {measured} · 추정 {estimated}"
+            + (f" · {next(iter(sorted(causes)))}" if causes else "")
+        ),
+    }
 
 
 def _tool_status(routes: tuple[TravelRoute, ...]) -> ToolStatus:
@@ -258,4 +368,5 @@ __all__ = [
     "TravelRouteQuery",
     "TravelRouteTool",
     "TravelRouteToolResult",
+    "summarize_fanout",
 ]

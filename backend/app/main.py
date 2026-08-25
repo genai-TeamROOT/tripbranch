@@ -22,6 +22,12 @@ from app.auth.jwks import is_configured as auth_is_configured
 from app.auth.jwks import issuer as auth_issuer
 from app.config import settings
 from app.errors import AppError
+from app.observability.langfuse_tracing import (
+    shutdown as shutdown_langfuse,
+)
+from app.observability.langfuse_tracing import (
+    validate_langfuse_config,
+)
 from app.providers.factory import validate_provider_config
 from app.providers.place_evidence_encoder import get_shared_encoder
 from app.providers.tour_category_registry import get_tour_category_registry
@@ -148,11 +154,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _configure_app_logging()
     # 오설정을 첫 요청의 익명 500이 아니라 부팅 실패로 드러낸다.
     validate_provider_config()
+    # 관측도 같은 이유로 부팅에서 검증한다 — 켠 줄 알았는데 아무것도 안 쌓이는
+    # 상태는 조용해서 며칠씩 간다. 꺼져 있으면(기본값) 즉시 반환한다.
+    validate_langfuse_config()
     _log_provider_modes()
     _log_auth_mode()
     app.state.tour_category_registry = get_tour_category_registry()
     _warmup_taste_encoder()
     yield
+    # 대기 중인 span을 내보내고 백그라운드 스레드를 정리한다. 관측이 꺼져 있으면
+    # 클라이언트 자체가 없어 아무 일도 하지 않는다.
+    shutdown_langfuse()
 
 
 def create_app() -> FastAPI:
