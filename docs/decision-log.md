@@ -2834,6 +2834,58 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 - 상세: `backend/app/state/supabase_store.py`,
   `backend/tests/state/test_supabase_store.py`
 
+### D-082 — 서비스 지원 지역을 4개 구에서 12개 구로 확장한다
+
+- 상태: `Accepted` — 구현 완료.
+- 배경: PR #224(D-044/D-025)가 서비스 지역을 종로구 한 곳에서 종로구·중구·용산구·
+  성동구 네 곳으로 늘리며 "구를 늘릴 때 `SUPPORTED_DISTRICTS`에 한 줄만 추가하면
+  된다"는 구조를 만들어뒀다. Supabase `places`를 다시 보니 그 네 구 밖에도 이미
+  여덟 구(광진·동대문·중랑·성북·강북·도봉·노원·은평, 합계 1,103건)가 적재돼
+  있었다 — 적재는 끝났는데 서비스 지역 판정이 여전히 네 구만 통과시켜 후보로
+  나올 수 없는 상태였다.
+- 결정:
+  1. `app/service_area.py`의 `SUPPORTED_DISTRICTS`에 여덟 구를 추가한다(12곳).
+     PR #224가 만든 구조 그대로 한 줄씩만 늘렸다 — 경계 파일(`seoul.geojson`)은
+     이미 서울 25개 구를 다 담고 있어 손댈 필요가 없었고, 좌표 판정·장소 검색·
+     안내 문구 전부 `SUPPORTED_DISTRICTS`/`SUPPORTED_DISTRICT_CODES`/
+     `supported_district_label()`을 동적으로 읽어 다른 코드는 한 곳도 고치지
+     않았다.
+  2. district_code(215/230/260/290/305/320/350/380)는 추정하지 않고 Supabase
+     `places`에서 구별 표본 좌표·주소를 뽑아 실제 행정구역명과 대조해 확인했다
+     (예: 215 → "서울특별시 광진구 능동로 216").
+  3. `tests/test_service_area.py`의 `_OFFICIAL_AREA_KM2`에 여덟 구의 공식 면적을
+     추가하고, 폴리곤 면적을 계산해 전부 1% 이내(최대 0.49%)임을 확인했다.
+     `_INSIDE`/`_OUTSIDE` 대표 좌표도 새 경계에 맞게 갱신했다 — 청량리역(동대문구)·
+     건대입구역(광진구)이 "밖"에서 "안"으로 옮겼고, 새로 인접한 미지원 구(송파·
+     강동·구리·남양주·고양)의 좌표를 "밖"에 추가해 확장이 그쪽으로 새지 않는지
+     잡는다.
+- 채택하지 않은 것:
+  - **파일에 있는 25개 구를 전부 지원 처리** — PR #224가 이미 기각한 방향과
+    같은 이유다. 지원 범위는 팀 합의가 필요한 결정이라 코드에 드러나야 한다.
+  - **경계 판정과 별개로 이 여덟 구를 우선 서비스 지역에서 뺀 채 데이터만
+    쌓아두기** — 이미 적재가 끝난 데이터를 추천에서 계속 배제할 이유가 없다.
+- 검증: `pytest tests/test_service_area.py` 83건 통과(기존 54건 → 29건 추가,
+  전부 목록만 따라가는 파라미터화 테스트라 손으로 늘린 것은 좌표 몇 개뿐).
+  활성 장소 1,103건의 좌표를 폴리곤과 대조해 밖으로 나온 것 7건(0.63%,
+  기존 네 구는 0.16%)을 확인 — 다섯 건은 2018년 경계의 능선 정밀도 한계
+  (아차산·망우산·북악산 계열), 두 건은 좌표 자체가 깨졌다.
+- 곁가지 발견: 좌표 (19.694, 117.993)(남중국해)이 서로 다른 구의 서로 다른
+  장소 세 곳(용산구 성촌공원, 광진구 아차산배수지체육공원, 은평구 증산체육공원)
+  에서 정확히 같은 값으로 나왔다 — 우연이 아니라 적재 파이프라인 어딘가의
+  결측치 대체값으로 보인다. 저장소 경로는 경계 판정을 생략해(D-044) 지금
+  서비스에 영향은 없지만, 원인은 확인하지 않았다.
+- 남은 것:
+  - 여덟 구의 집중률(혼잡도) 매핑, 취향 근거 임베딩은 이번 범위 밖이다
+    (README `지원 구를 늘릴 때` 체크리스트의 "경계·판정 밖" 항목).
+  - `agent_runtime.py`의 `_LOCATION_REQUIRED_QUICK_PICKS`와
+    `docs/design/clarification-options.md` §7이 여전히 "서비스 지역이 종로구
+    한정"을 전제로 대표 스팟 4곳만 고정해 두고 있다 — 이 전제는 PR #224
+    시점부터 이미 틀려 있었고 지금 더 틀렸다. 구가 늘 때마다 버튼을 늘릴지,
+    다른 방식으로 바꿀지는 UX 결정이 필요해 이번 범위에서 건드리지 않았다.
+  - (19.694, 117.993) 결측치 대체값 패턴의 원인 조사.
+- 상세: `backend/app/service_area.py`, `backend/tests/test_service_area.py`,
+  `backend/resources/boundaries/README.md`
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -2911,3 +2963,4 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-25 | D-079 신설 — 피드백 통계를 dev-ops 패널에서 볼 수 있게 함(TP-146). `GET /feedback/stats` 신규 — rating별 건수, reason_code별 건수(dislike만, 표준 7개 + `unclassified`), intent별 건수(상위 N + 롱테일 `other_intent_count` + `missing_intent_count`)를 반환. 집계는 PostgREST group-by가 아니라 Python에서 하며, `StateStore.list_feedback_for_stats(since, until)`을 신설(rating 안 가리고 limit 없이 전량 반환). 프론트는 `api/feedback.ts`에 `fetchFeedbackStats()`, `FeedbackStatsPanel`을 신설해 기존 ApiUsagePanel/PlaceSyncPanel/DbStatusPanel과 같은 패턴으로 `DeveloperOpsPage`에 배선 — API만 추가하고 화면을 안 붙이면 "쌓이는데 아무도 안 본다"는 이번 카드의 문제의식을 반복하게 되어 백엔드+프론트를 한 카드로 묶었다. LLMOps Trace 조회 API는 다른 도메인이라 별도 카드로 분리 |
 | 2026-08-25 | D-080 신설 — LLMOps Trace 조회를 dev-ops 패널에서 볼 수 있게 함(TP-157, D-079 후속). `GET /trace/stats` 신규 — 등장한 step만 담는 step별 집계(건수, 평균/최대 latency_ms, 에러 건수)와 최근 에러 목록(상위 N건)을 반환. 집계는 D-079와 동일하게 Python에서 하며, `StateStore.list_traces_for_stats(since, until)`을 신설(세션을 가리지 않고 전체 테이블 대상). 프론트는 `api/trace.ts`에 `fetchTraceStats()`, `TracePanel`을 신설해 기존 패널들과 같은 패턴으로 `DeveloperOpsPage`에 다섯 번째 패널로 배선 |
 | 2026-08-25 | D-081 신설 — TP-157 브라우저 테스트 중 발견한 버그 수정. `list_traces_for_stats`/`list_feedback_for_stats`가 PostgREST 기본 1000행 응답 상한에 걸려 있던 문제를 `_fetch_all_rows()` 페이지네이션 헬퍼로 해결(limit/offset 반복 조회). "전체 실행"이 정확히 1000으로 뜨는 것이 단서였다 |
+| 2026-08-25 | D-082 신설 — 서비스 지원 지역을 4개 구(종로·중·용산·성동)에서 12개 구로 확장(PR #224 후속). Supabase `places`에 이미 적재돼 있던 광진·동대문·중랑·성북·강북·도봉·노원·은평 8개 구를 `SUPPORTED_DISTRICTS`에 추가 — district_code는 실제 주소와 대조해 확인, 경계 파일은 이미 25개 구를 다 담고 있어 손댈 필요 없음. 활성 장소 1,103건 폴리곤 대조로 밖 7건(0.63%) 확인, 그중 3건은 서로 다른 구에서 정확히 같은 깨진 좌표(19.694, 117.993) — 결측치 대체값으로 추정. `_LOCATION_REQUIRED_QUICK_PICKS`가 여전히 "종로구 한정" 전제로 남아 있는 것은 확인만 하고 범위 밖으로 남김 |
