@@ -443,6 +443,11 @@ Phase 2는 의존성 안에서 끝나 `run_agent()`를 건드리지 않았으나
     수동/외부 스케줄로 정리한다. `auth.users`의 익명 계정 자체를 지우는
     스케줄(Supabase Admin API 필요)은 여전히 별도 과제로 남아 있다 — FK가
     없어(D-063 결정 4) 두 정리는 서로 의존하지 않고 독립적으로 실행 가능하다.
+  - **갱신(2026-08-24, D-077):** `auth.users`의 익명 계정 자체를 지우는 쪽도
+    닫았다 — `backend/scripts/cleanup_anonymous_users.py`가 Supabase Auth
+    Admin API로 `is_anonymous=true`이면서 `created_at` 기준 30일(조정 가능)
+    이상 지난 계정을 조회·삭제한다(`--dry-run` 지원). D-074의 세션 정리
+    스크립트와는 완전히 독립적으로 실행된다.
 
 ## 11. 반영 순서
 

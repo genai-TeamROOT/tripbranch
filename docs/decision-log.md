@@ -2562,6 +2562,55 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `backend/scripts/measure_fast_thinking_level.py`,
   `docs/실험-Gemini-thinking-설정-20260824.md`, `docs/design/llm-hyperparameters.md` §4.1
 
+### D-077 — 만료된 익명 계정(`auth.users`)을 30일 기준으로 정리한다 ([B] auth.users 정리)
+
+- 상태: `Accepted` — 구현 완료.
+- 배경: D-074(TP-134)가 B 소유 4개 테이블(`agent_states` 등)의 만료 세션 정리는
+  닫았지만, 실제 로그인 주체인 Supabase Auth의 익명 계정(`auth.users`) 자체는
+  그때 범위에서 명시적으로 제외했다(D-074 결정 5). `guest-auth-design.md` 10절도
+  "`auth.users`의 익명 계정 자체를 지우는 스케줄은 여전히 별도 과제로 남아
+  있다"고 이미 표시해뒀다. 익명 계정은 `signInAnonymously()`를 호출할 때마다
+  하나씩 생겨(D-063 배경) 정리하지 않으면 무기한 쌓인다.
+- 결정:
+  1. 기준: `auth.users.created_at`이 기준 일수(기본 30일, `--days`로 조정
+     가능)보다 오래되면 정리 대상. `last_sign_in_at`이 아니라 `created_at`을
+     쓰는 이유는, B 소유 테이블처럼 "마지막 활동 시각"을 이 레벨에서 알 방법이
+     없어서다(FK가 없어 join하지 않기로 했으므로, D-063 결정 4) — Supabase가
+     공식 문서에서 권장하는 정리 쿼리(`delete from auth.users where
+     is_anonymous is true and created_at < now() - interval '30 days'`)와
+     동일한 기준을 그대로 따른다.
+  2. 대상: `auth.users` 중 `is_anonymous = true`인 행만. 실제 가입자(이메일·
+     소셜 로그인)는 대상에서 완전히 제외.
+  3. 판별: PostgREST가 아니라 Supabase Auth Admin API(GoTrue,
+     `{SUPABASE_URL}/auth/v1/admin/*`)로 접근한다 — `auth.users`는 PostgREST가
+     노출하는 스키마가 아니다. Admin API는 `apikey` 헤더만으로는 인증되지
+     않고 `Authorization: Bearer <secret key>`가 함께 필요해, 기존
+     `SupabaseStateStore`의 PostgREST 클라이언트와는 별도로 작은
+     `AuthAdminClient`를 새로 구현했다.
+  4. 실행 방식: D-074와 동일하게 Supabase pg_cron이 아니라
+     `backend/scripts/cleanup_anonymous_users.py` 수동/외부 스케줄 스크립트로
+     구현(`--days`, `--dry-run` 지원). D-074의 정리 스크립트와는 완전히
+     별개로 실행되며 순서를 강제할 필요가 없다(D-063 결정 4, FK 없음).
+- 근거: 두 정리 작업(D-074, D-077)을 하나로 합치지 않은 이유는 D-074에서 이미
+  "채택하지 않은 것"으로 명시해뒀다 — Admin API 접근 권한 확보와 PostgREST
+  접근 권한이 성격이 달라 배포·권한 설정이 분리되는 편이 낫다.
+- 채택하지 않은 것:
+  - **`last_sign_in_at` 기준 판정** — GoTrue 응답에 필드는 있지만, 이 필드로
+    "활동"을 판정하면 익명 로그인 이후 재로그인이 없는 정상 사용 패턴(토큰이
+    localStorage에 남아 재사용됨, `guest-auth-design.md` 3절)까지 오래된
+    것으로 오판할 위험이 있어 Supabase 공식 권장 기준(`created_at`)을 그대로
+    따랐다.
+  - **D-074 스크립트에 통합** — 위 근거 참고.
+- 검증: 2026-08-25 실 Supabase 프로젝트에서 `--dry-run` 실행. `--days 30`
+  (기본값)은 대상 0건 — 이 프로젝트에 아직 30일 넘은 익명 계정이 없었을
+  뿐임을 `--days 0`으로 재확인(13건, 전부 8/19~8/24 생성 — created_at 필터가
+  의도대로 동작함을 확인). 단위 테스트 14건도 로컬(Python 3.11)에서 통과.
+- 남은 것: 실제 운영에서 스크립트를 얼마나 자주 돌릴지는 D-074와 마찬가지로
+  트래픽이 늘어난 뒤 다시 판단한다.
+- 상세: `backend/scripts/cleanup_anonymous_users.py`,
+  `backend/tests/test_cleanup_anonymous_users_cli.py`, `docs/design/
+  guest-auth-design.md` 10절
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -2634,4 +2683,5 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-24 | D-074 신설 — 만료된 익명 세션·이력 정리(TP-134). `agent_states.last_active_at` 기준 30일(조정 가능) 이상 미사용 세션을 `agent_states`/`recommendation_histories`/`condition_change_logs`/`trace_records` 네 테이블에서 함께 삭제. append-only 두 테이블에 세션 단위 일괄 삭제(`delete_change_logs`/`delete_traces`)를 처음 추가 — 개별 레코드 수정·선택 삭제는 여전히 불가. 삭제 순서는 자식 테이블 먼저, `agent_states` 마지막(중간 실패해도 다음 실행이 재시도 가능하도록). 실행은 Supabase pg_cron 대신 `scripts/cleanup_expired_sessions.py` 수동/외부 스케줄 스크립트로 구현(`--dry-run` 지원). `auth.users` 익명 계정 정리는 FK가 없어(D-063 결정 4) 독립적으로 실행 가능하다고 보고 이번 범위에서 제외 |
 | 2026-08-24 | D-075 신설 — LangGraph 노드가 별도 asyncio 태스크에서 도는 탓에 `llm_execution` ContextVar를 값 교체로 갱신하면 노드 안 기록이 유실되던 문제를 수정. 리스트를 하나 두고 `append`하는 방식으로 바꿔 태스크 경계를 넘게 했다. 유실 지점 3곳(조기 반환 정상 응답, 노드 안 LLM 실패의 502 본문, 파이프라인 앞 노드→뒤 노드)이 한꺼번에 해소. 감사 패널의 "LLM 폴백"이 빈칸이 아니라 **틀린 "없음"**을 찍고 있었던 것이 이 문제를 무시하기 어렵게 만든 지점이다. 검토 문서가 제안한 `default` 제거는 채택하지 않음 — 전역 AppError 핸들러가 reset 없는 문맥에서 이 값을 읽어 502 계약이 500으로 깨진다. 기록하는 LLM 더블로 회귀 테스트 9건 추가(Fake는 `record_llm_call()`을 부르지 않아 수정 전에도 통과한다). pytest 2,332건 통과 |
 | 2026-08-24 | D-076 신설 — `thinking_budget=0`을 거부하는 모델에 thinking 설정을 아예 싣지 않던 방어를 제거하고, `0`을 항상 `thinking_level=MINIMAL`로 바꿔 보내도록 정리. 2026-08-18에 fast 모델이 그 목록에 있는 `gemini-3.5-flash-lite`로 바뀌면서 분류·조건 추출의 thinking 끄기가 조용히 무효화돼 있었고, 코드가 아니라 모델만 바뀐 것이라 6일간 아무도 몰랐다. 실 API 전수 측정(모델 5개 × 설정 4개 × 3회)으로 거부되는 것은 숫자 `0`뿐이고(`512`는 전부 성공) `MINIMAL`은 실제로 생각 토큰이 0임을 확인했다. 거부 모델 목록과 `gemini-2.5-flash-lite` 512 보정은 실측 근거라 지우지 않고, 목록은 불변식 테스트가 직접 읽는다. **지연 이득은 없다** — 6회에서 -17%까지 나왔지만 15회로 늘리면 -0.9%로 사라진다(표본 부족으로 없는 효과를 읽은 사례). 근거는 속도가 아니라 모델 교체 시 최적화가 조용히 사라지는 구조의 제거다. 폐지된 `LLM_MODEL_NAME`을 현행으로 안내하던 문서 2곳도 함께 정정 |
+| 2026-08-24 | D-077 신설 — 만료된 익명 계정(`auth.users`) 정리(D-074 후속, [B] auth.users 정리). `created_at` 기준 30일(조정 가능) 이상 지난 익명 계정(`is_anonymous=true`)을 Supabase Auth Admin API로 조회·삭제. PostgREST가 아니라 GoTrue Admin API(`apikey`+`Authorization: Bearer` 둘 다 필요)를 쓰는 별도의 작은 `AuthAdminClient` 신설. `backend/scripts/cleanup_anonymous_users.py`(`--days`, `--dry-run`)로 구현, D-074의 세션 정리 스크립트와는 완전히 독립적으로 실행(FK 없음, D-063 결정 4) |
 
