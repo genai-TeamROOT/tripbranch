@@ -13,6 +13,10 @@
   (b) **끈 쪽 trace에서 마커가 발견되면 불합격.** 이게 이 스크립트의 존재 이유다
   (c) 켠 쪽에서 마커가 안 보이면 불합격 — 마스킹이 아니라 전송이 깨진 것이다
   (d) 토큰(usage_details)이 안 실리면 불합격 — 비용 화면이 비게 된다
+  (e) **루트 span 아래 두 호출이 같은 trace에 안 묶이면 불합격.** 2026-08-25 첫
+      실측에서 실제로 깨져 있었다 — 속성만 전파하고 루트 span을 안 만들면 부모가
+      없는 observation이 저마다 자기가 trace 루트가 되어, 한 턴이 LLM 호출 수만큼
+      조각난다. 화면에서 "이 턴이 무슨 일을 했나"를 볼 수 없게 된다
 
 참고값(합격/불합격을 가르지 않음): 되읽기까지 걸린 시간. 수집이 비동기·배치라
 바로 안 보일 수 있어 몇 초 기다린다.
@@ -34,6 +38,7 @@ from app.observability.langfuse_tracing import (
     REDACTED,
     get_tracer,
     observe_generation,
+    observe_step,
     shutdown,
     trace_attributes,
 )
@@ -69,6 +74,24 @@ def _emit(*, capture_content: bool) -> str | None:
                 output={"answer": MARKER},
                 usage_details={"input": 11, "output": 22, "total": 33},
             )
+    return trace_id
+
+
+def _emit_nested() -> str | None:
+    """루트 span 하나 아래에 generation 둘을 넣고 trace id를 돌려준다.
+
+    실제 한 턴의 모양이다(`run_agent_flow` 아래 classify + extract).
+    """
+    client = get_tracer()
+    if client is None:
+        return None
+
+    trace_id: str | None = None
+    with observe_step("verify_root_span"):
+        trace_id = client.get_current_trace_id()
+        for name in ("verify_child_one", "verify_child_two"):
+            with observe_generation(name, model="verification-not-a-real-model") as child:
+                child.record(usage_details={"input": 1, "output": 1, "total": 2})
     return trace_id
 
 
@@ -129,10 +152,11 @@ def main() -> int:
     try:
         on_id = _emit(capture_content=True)
         off_id = _emit(capture_content=False)
+        nested_id = _emit_nested()
     finally:
         settings.langfuse_capture_content = original
 
-    if not on_id or not off_id:
+    if not on_id or not off_id or not nested_id:
         print("[실패] trace id를 얻지 못했다 — 전송 자체가 안 됐다.")
         return 1
 
@@ -143,8 +167,9 @@ def main() -> int:
     started = time.perf_counter()
     on_trace = _fetch(client, on_id)
     off_trace = _fetch(client, off_id)
+    nested_trace = _fetch(client, nested_id)
     elapsed = time.perf_counter() - started
-    if on_trace is None or off_trace is None:
+    if on_trace is None or off_trace is None or nested_trace is None:
         print("[실패] 되읽기 실패 — 수집이 안 됐거나 지연이 길다.")
         return 1
     print(f"       되읽기까지 {elapsed:.1f}초 (참고값)")
@@ -169,8 +194,17 @@ def main() -> int:
         print("[실패] (d) 토큰이 안 실렸다 — 비용 화면이 빈다.")
         failures += 1
 
+    names = {getattr(o, "name", None) for o in getattr(nested_trace, "observations", None) or []}
+    expected = {"verify_root_span", "verify_child_one", "verify_child_two"}
+    if expected <= names:
+        print(f"[통과] (e) 한 trace 안에 루트+자식 {len(names)}개 — 턴이 조각나지 않는다")
+    else:
+        print(f"[실패] (e) 중첩이 깨졌다. trace 안에 있는 것: {sorted(names)}")
+        print("        루트 span이 없으면 호출마다 별도 trace가 된다.")
+        failures += 1
+
     print()
-    print("불합격" if failures else "합격 — 전송·마스킹·토큰 모두 확인")
+    print("불합격" if failures else "합격 — 전송·마스킹·토큰·중첩 모두 확인")
     return 1 if failures else 0
 
 

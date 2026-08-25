@@ -22,7 +22,6 @@ from app.config import Settings, settings
 from app.observability import langfuse_tracing
 from app.observability.langfuse_tracing import (
     REDACTED,
-    callback_handler,
     captures_content,
     is_enabled,
     observe_generation,
@@ -122,7 +121,6 @@ def test_public_surface_has_no_tool_argument_helper() -> None:
     """
     assert set(langfuse_tracing.__all__) == {
         "REDACTED",
-        "callback_handler",
         "captures_content",
         "is_enabled",
         "observe_generation",
@@ -154,8 +152,6 @@ def test_disabled_helpers_hand_back_a_no_op_recorder(monkeypatch: pytest.MonkeyP
         step.record(output="무시된다", usage_details={"input_tokens": 1})
     with observe_generation("llm_interpret", model="gemini") as generation:
         generation.record(output="무시된다")
-
-    assert callback_handler() is None
 
 
 # --- 3. 마스킹 -----------------------------------------------------------------

@@ -11,8 +11,13 @@ SSE 이벤트 순서가 달라지면 그건 버그다(§6.2).
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from functools import wraps
+from typing import Any
+
 from langgraph.graph import END, START, StateGraph
 
+from app.observability.langfuse_tracing import observe_step
 from app.providers.protocols import LLMProvider
 from app.schemas import AgentResponse, LLMOutput
 from app.services.runtime.graph.nodes.general import general_answer_node
@@ -73,6 +78,35 @@ def build_early_return_graph():
     return graph.compile()
 
 
+def _observed(name: str, node: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
+    """노드 하나를 관측 span 하나로 감싼다.
+
+    **Langfuse가 주는 LangChain CallbackHandler를 안 쓰는 이유**: 그 핸들러가
+    `langchain` **본체**를 import한다. 우리는 langgraph가 끌고 온 `langchain-core`만
+    두고 본체·통합 패키지는 의도적으로 안 넣었다(pyproject.toml). 2026-08-25에
+    콜백으로 붙여봤다가 `ModuleNotFoundError`로 조용히 꺼지는 걸 실측으로 확인했다 —
+    앱은 멀쩡했고 노드 span만 통째로 안 생겼다.
+
+    직접 감싸면 의존성도 안 늘고 **이름을 우리가 정한다.** `tool_fetch`·`scoring`은
+    B의 Trace `step`과 같은 이름이라 두 기록을 나란히 읽을 수 있다.
+
+    관측이 꺼져 있으면(기본값) `observe_step()`이 no-op이라 호출 한 겹만 는다.
+
+    `wraps`는 표시용이 아니라 **동작 조건이다.** LangGraph는 노드의 시그니처를 보고
+    `config`를 넘길지 정하는데(`_internal/_runnable.py`), 감싼 함수가 `*args`로만
+    보이면 `state` 하나만 넘겨서 `TypeError: missing 1 required positional argument:
+    'config'`로 죽는다. `wraps`가 남기는 `__wrapped__`를 `inspect.signature`가 따라가
+    원본 시그니처를 보게 한다.
+    """
+
+    @wraps(node)
+    async def _run(*args: Any, **kwargs: Any) -> Any:
+        with observe_step(name):
+            return await node(*args, **kwargs)
+
+    return _run
+
+
 # 프로세스 수명 동안 한 번만 조립한다 — 그래프 컴파일은 요청마다 할 일이 아니다.
 _EARLY_RETURN_GRAPH = build_early_return_graph()
 
@@ -123,10 +157,10 @@ def build_recommend_pipeline_graph():
     """
 
     graph = StateGraph(RecommendPipelineState)
-    graph.add_node("tool_fetch", tool_fetch_node)
-    graph.add_node("scoring", scoring_node)
-    graph.add_node("schedule", schedule_node)
-    graph.add_node("finalize", finalize_node)
+    graph.add_node("tool_fetch", _observed("tool_fetch", tool_fetch_node))
+    graph.add_node("scoring", _observed("scoring", scoring_node))
+    graph.add_node("schedule", _observed("schedule", schedule_node))
+    graph.add_node("finalize", _observed("finalize", finalize_node))
 
     graph.add_edge(START, "tool_fetch")
     graph.add_conditional_edges(

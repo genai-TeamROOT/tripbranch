@@ -35,6 +35,7 @@ from app.domain.travel_route import (
 from app.errors import AppError
 from app.geo import haversine_km
 from app.observability.api_usage import create_external_client
+from app.observability.langfuse_tracing import observe_step, trace_attributes
 from app.place_search_policy import MAX_PLACE_SEARCH_RADIUS_KM, WALKING_SPEED_KM_PER_MINUTE
 from app.prompts.registry import turn_prompt_version
 from app.providers.protocols import LLMProvider
@@ -87,6 +88,7 @@ from app.services.runtime.info_context_schemas import InfoContextResponse, Place
 from app.services.runtime.info_context_transform import to_info_context_request
 from app.services.runtime.info_response_transform import to_info_place_card
 from app.services.runtime.llm_execution import (
+    consumed_tokens,
     get_llm_execution_metadata,
     reset_llm_execution_metadata,
 )
@@ -198,12 +200,16 @@ def _record_trace_safely(
     error_type: str | None = None,
     prompt_version: str | None = None,
     scoring_version: str | None = None,
+    token_usage: int | None = None,
     store: StateStore | None,
 ) -> None:
     """실행 단계 1건을 B에 기록한다. (llmops-trace-contract-v1.md AF-12, B-07)
 
     variant_id는 아직 값을 안 줘서 None으로 둔다. 기록 실패가 사용자 응답까지
     막으면 안 되므로 예외를 여기서 흡수한다.
+
+    token_usage는 계약상 LLM 단계에만 해당하는 값이라 호출부가 그 단계에서만
+    넘긴다 — 모든 단계에 누적 합계를 넣으면 단계별 토큰인 것처럼 읽힌다.
     """
     try:
         record_trace(
@@ -215,6 +221,7 @@ def _record_trace_safely(
                 error_type=error_type,
                 prompt_version=prompt_version,
                 scoring_version=scoring_version,
+                token_usage=token_usage,
             ),
             store=store,
         )
@@ -1228,6 +1235,60 @@ async def run_agent_flow(
     stream_event_sink: StreamEventSink | None = None,
     stream_recommendation_summary: bool = False,
 ) -> AgentResponse:
+    """한 턴 전체를 하나의 관측 trace로 묶고 본체(`_run_agent_flow`)에 넘긴다.
+
+    **루트 span이 있어야 한 턴이 trace 하나가 된다.** 속성만 전파하고
+    (`trace_attributes`) 루트를 안 만들면, 부모가 없는 observation이 저마다
+    자기가 trace 루트가 되어 한 턴이 여러 조각으로 흩어진다 — 2026-08-25 첫
+    실측에서 `classify_intent`와 `extract_recommend_conditions`가 별도 trace로
+    올라와 확인했다. 여기서 연 span이 그 부모 자리다.
+
+    이 블록 안에서 생기는 모든 span이 같은 session_id와 태그도 함께 물려받는다.
+    LangGraph 노드는 별도 asyncio 태스크에서 돌지만, 태스크 생성 시점에 문맥을
+    복사해 가므로 여기서 연 범위가 그 안까지 따라간다(llm_execution.py의
+    ContextVar 설명과 같은 이유).
+
+    **첫 턴은 session_id 없이 기록된다.** 세션은 아래 apply()에서 발급되는데
+    그때는 이미 LLM 단계가 지나가서, 나중에 붙여도 앞 span에 소급되지 않는다
+    (v4에는 trace 속성을 나중에 갱신하는 API가 없다). 두 번째 턴부터는 묶인다.
+
+    관측이 꺼져 있으면(기본값) 이 래퍼는 아무 일도 하지 않는다.
+    """
+
+    with (
+        trace_attributes(
+            session_id=request.session_id,
+            tags=[f"scoring:{SCORING_VERSION}", f"env:{settings.app_env}"],
+        ),
+        observe_step("agent_turn"),
+    ):
+        return await _run_agent_flow(
+            request,
+            llm=llm,
+            tool_provider=tool_provider,
+            recommendation_provider=recommendation_provider,
+            enrichment_provider=enrichment_provider,
+            travel_route_tool=travel_route_tool,
+            store=store,
+            principal=principal,
+            stream_event_sink=stream_event_sink,
+            stream_recommendation_summary=stream_recommendation_summary,
+        )
+
+
+async def _run_agent_flow(
+    request: AgentRequest,
+    *,
+    llm: LLMProvider,
+    tool_provider: ToolProvider,
+    recommendation_provider: RecommendationProvider,
+    enrichment_provider: EnrichmentProvider,
+    travel_route_tool: TravelRouteToolProvider | None = None,
+    store: StateStore | None = None,
+    principal: Principal | None = None,
+    stream_event_sink: StreamEventSink | None = None,
+    stream_recommendation_summary: bool = False,
+) -> AgentResponse:
     """Provider를 인자로 받는 테스트 가능한 본체.
 
     호출 순서(A가 전체를 조정, B/C/D는 각자 내부 판단만 담당):
@@ -1345,6 +1406,10 @@ async def run_agent_flow(
         # 예전의 단일 고정 문자열로는 어느 인텐트의 프롬프트가 이 응답을 만들었는지
         # 되짚을 수 없었다.
         prompt_version=turn_prompt_version(llm_output.intent),
+        # 계약 2절의 token_usage. 2026-08-25까지 이 값은 항상 None이었다 —
+        # 필드는 있었지만 gemini.py가 응답의 usage_metadata를 안 읽었다.
+        # 이 시점까지 이 턴이 쓴 총 토큰을 넘긴다(분류 + 조건 추출).
+        token_usage=consumed_tokens(),
         store=store,
     )
 

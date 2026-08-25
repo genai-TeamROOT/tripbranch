@@ -298,27 +298,14 @@ def observe_generation(
         yield _NOOP if generation is None else _Recorder(generation)
 
 
-def callback_handler() -> Any | None:
-    """LangGraph `invoke(config={"callbacks": [...]})`에 넣을 핸들러. 꺼져 있으면 `None`.
-
-    그래프 **노드 경계**만 자동으로 span이 된다. LLM 호출은 LangChain 모델이 아니라
-    `google-genai` SDK 직접 호출이라 여기 안 잡힌다 — 그건 `observe_generation()`이
-    맡는다.
-    """
-    if get_tracer() is None:
-        return None
-    try:
-        from langfuse.langchain import CallbackHandler
-
-        return CallbackHandler()
-    except Exception:
-        logger.warning("Langfuse 콜백 핸들러 생성 실패 — 관측만 꺼진다", exc_info=True)
-        return None
-
-
+# LangGraph 노드는 `observe_step()`으로 직접 감싼다(graph/__init__.py). Langfuse가
+# 주는 LangChain CallbackHandler를 쓰지 않는 이유는 그게 **`langchain` 본체를
+# 요구하기 때문**이다 — 우리는 langgraph가 끌고 온 `langchain-core`만 두고
+# 본체·통합 패키지는 의도적으로 안 넣었다(pyproject.toml). 콜백 하나 때문에 그
+# 무거운 의존성을 들이는 것보다, 노드를 직접 감싸 이름까지 우리가 정하는 편이 낫다
+# (B의 Trace `step`과 같은 이름을 쓸 수 있다).
 __all__ = [
     "REDACTED",
-    "callback_handler",
     "captures_content",
     "is_enabled",
     "observe_generation",
