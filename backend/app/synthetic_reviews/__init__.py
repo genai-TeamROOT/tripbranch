@@ -1,6 +1,8 @@
 """TourAPI 장소 속성에 근거한 합성 리뷰 준비 로직."""
 
 from app.synthetic_reviews.personas import (
+    PERSONA_COUNT_CEILING,
+    PERSONA_COUNT_FLOOR,
     CompanionTypeTrait,
     CompositePersona,
     PlacePersonaInput,
@@ -16,6 +18,7 @@ from app.synthetic_reviews.review_generator import (
     GeminiSyntheticReviewGenerator,
     build_official_facts,
     validate_review_batch,
+    wire_schema_for,
 )
 from app.synthetic_reviews.review_models import (
     ClaimGrounding,
@@ -24,7 +27,8 @@ from app.synthetic_reviews.review_models import (
     SyntheticReviewClaim,
 )
 from app.synthetic_reviews.review_plans import (
-    DEFAULT_REVIEWS_PER_PLACE,
+    MAX_REVIEWS_PER_PLACE,
+    MIN_REVIEWS_PER_PLACE,
     ReviewPlan,
     generate_review_plans,
 )
@@ -39,15 +43,18 @@ from app.synthetic_reviews.sentiments import (
 __all__ = [
     "AxisAssessment",
     "AxisPolarity",
-    "CompositePersona",
     "ClaimGrounding",
     "CompanionTypeTrait",
-    "DEFAULT_REVIEWS_PER_PLACE",
+    "CompositePersona",
     "GENERATOR_VERSION",
     "GeminiSyntheticReviewGenerator",
+    "MAX_REVIEWS_PER_PLACE",
+    "MIN_REVIEWS_PER_PLACE",
+    "PERSONA_COUNT_CEILING",
+    "PERSONA_COUNT_FLOOR",
+    "PROMPT_VERSION",
     "PlacePersonaInput",
     "PriorityTrait",
-    "PROMPT_VERSION",
     "ReviewPlan",
     "Sentiment",
     "SentimentAssessment",
@@ -62,4 +69,5 @@ __all__ = [
     "generate_personas",
     "generate_review_plans",
     "validate_review_batch",
+    "wire_schema_for",
 ]

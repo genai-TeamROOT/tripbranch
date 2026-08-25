@@ -26,7 +26,7 @@ def _place(**overrides: object) -> PlacePersonaInput:
 
 
 def _plan(place: PlacePersonaInput, axis: str) -> ReviewPlan:
-    personas = generate_personas(place, target_count=5)
+    personas = generate_personas(place, max_count=5)
     base = generate_review_plans(personas)[0]
     field_by_axis = {
         "OPERATING_HOURS": "operating_hours_raw",

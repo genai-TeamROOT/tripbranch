@@ -6,6 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 from app.synthetic_reviews import (
+    MAX_REVIEWS_PER_PLACE,
+    MIN_REVIEWS_PER_PLACE,
     ClaimGrounding,
     GeminiSyntheticReviewGenerator,
     PlacePersonaInput,
@@ -15,6 +17,7 @@ from app.synthetic_reviews import (
     generate_personas,
     generate_review_plans,
     validate_review_batch,
+    wire_schema_for,
 )
 
 
@@ -387,9 +390,45 @@ def test_동행자_유형만으로_장소_적합성을_추론하면_거부한다
         )
 
 
-def test_json_schema가_리뷰_5개를_강제한다() -> None:
+def test_json_schema는_리뷰_수의_허용_범위만_막는다() -> None:
+    """정확한 개수는 장소마다 달라 validate_review_batch가 계획과 대조해 확인한다."""
     payload = _valid_payload()
-    payload["reviews"] = payload["reviews"][:4]  # type: ignore[index]
+    reviews = payload["reviews"]  # type: ignore[index]
 
     with pytest.raises(ValueError):
-        SyntheticReviewBatch.model_validate(payload)
+        SyntheticReviewBatch.model_validate(
+            {"reviews": reviews[: MIN_REVIEWS_PER_PLACE - 1]}
+        )
+
+
+def test_계획보다_리뷰가_적으면_거부한다() -> None:
+    facts, plans, sentiments = _inputs()
+    payload = _valid_payload()
+    payload["reviews"] = payload["reviews"][:-1]  # type: ignore[index]
+    batch = SyntheticReviewBatch.model_validate(payload)
+
+    with pytest.raises(ValueError, match="중복 없이"):
+        validate_review_batch(
+            batch, facts=facts, plans=plans, sentiments=sentiments
+        )
+
+
+@pytest.mark.parametrize(
+    "review_count", range(MIN_REVIEWS_PER_PLACE, MAX_REVIEWS_PER_PLACE + 1)
+)
+def test_전송_스키마는_그_장소의_리뷰_수로_배열_길이를_고정한다(
+    review_count: int,
+) -> None:
+    schema = wire_schema_for(review_count).model_json_schema()
+    reviews = schema["properties"]["reviews"]
+
+    assert reviews["minItems"] == review_count
+    assert reviews["maxItems"] == review_count
+
+
+@pytest.mark.parametrize(
+    "review_count", [MIN_REVIEWS_PER_PLACE - 1, MAX_REVIEWS_PER_PLACE + 1]
+)
+def test_전송_스키마는_허용_범위_밖의_리뷰_수를_거부한다(review_count: int) -> None:
+    with pytest.raises(ValueError, match="리뷰 수는"):
+        wire_schema_for(review_count)

@@ -66,20 +66,21 @@ def _args(**overrides: object) -> argparse.Namespace:
         "limit": 5,
         "area_code": None,
         "district_code": None,
-        "persona_count": 4,
-        "reviews_per_place": 8,
+        "max_personas": 4,
+        "reviews_per_place": None,
     }
     values.update(overrides)
     return argparse.Namespace(**values)
 
 
-def test_장소_한_건을_페르소나와_리뷰_계획_여덟_개로_변환한다() -> None:
-    report = build_place_report(_row(), persona_count=4, review_count=8)
+def test_장소_한_건을_페르소나와_리뷰_계획으로_변환한다() -> None:
+    report = build_place_report(_row(), max_personas=4, review_count=None)
 
     assert report["contentId"] == "126508"
     assert report["title"] == "테스트 문화시설"
+    # review_count를 생략하면 페르소나마다 리뷰 한 건씩이다.
     assert len(report["personas"]) == 4
-    assert len(report["reviews"]) == 8
+    assert len(report["reviews"]) == 4
     sentiments = [review["sentiment"]["sentiment"] for review in report["reviews"]]
     assert "NEGATIVE" in sentiments
     assert "NEUTRAL" in sentiments
@@ -127,16 +128,17 @@ def test_cli가_검증_옵션을_파싱한다() -> None:
             "2",
             "--limit",
             "2",
-            "--persona-count",
+            "--max-personas",
             "5",
             "--reviews-per-place",
-            "8",
+            "5",
         ]
     )
 
     assert args.place_id == ["1", "2"]
     assert args.limit == 2
-    assert args.persona_count == 5
+    assert args.max_personas == 5
+    assert args.reviews_per_place == 5
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,7 @@
-"""실제 장소 한 곳의 합성 리뷰 5개를 생성해 표준 출력으로만 확인한다."""
+"""실제 장소 한 곳의 합성 리뷰를 생성해 표준 출력으로만 확인한다.
+
+리뷰 수는 그 장소가 가진 공식 근거 수를 따라 3~5로 달라진다.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +16,7 @@ import httpx
 from app.config import Settings
 from app.repositories.supabase_places import SupabasePlaceRepository
 from app.synthetic_reviews import (
+    PERSONA_COUNT_CEILING,
     GeminiSyntheticReviewGenerator,
     PlacePersonaInput,
     assess_sentiment,
@@ -25,14 +29,18 @@ from scripts.inspect_synthetic_review_plans import INSPECTION_COLUMNS
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="장소 한 곳의 합성 리뷰 5개를 생성하며 DB에는 저장하지 않음"
+        description="장소 한 곳의 합성 리뷰를 생성하며 DB에는 저장하지 않음"
     )
     parser.add_argument("--place-id", required=True, help="TourAPI content_id")
     parser.add_argument(
         "--model", help="생성 모델(생략 시 비용 절감용 LLM_FAST_MODEL_NAME)"
     )
     parser.add_argument(
-        "--persona-count", type=int, default=5, choices=range(3, 6), help="복합 페르소나 수"
+        "--max-personas",
+        type=int,
+        default=PERSONA_COUNT_CEILING,
+        choices=range(3, 6),
+        help="복합 페르소나 수 상한 (기본 5). 실제 수는 그 장소의 공식 근거 수를 따른다",
     )
     return parser
 
@@ -66,7 +74,7 @@ async def run(args: argparse.Namespace, settings: Settings) -> dict[str, object]
 
     facts = build_official_facts(rows[0])
     place = _place_input(facts)
-    personas = generate_personas(place, target_count=args.persona_count)
+    personas = generate_personas(place, max_count=args.max_personas)
     plans = generate_review_plans(personas)
     sentiments = tuple(assess_sentiment(place, plan) for plan in plans)
     model_name = args.model or settings.llm_fast_model_name

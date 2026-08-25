@@ -2,9 +2,8 @@
 입력의 officialFacts만 객관적 사실로 사용할 수 있다. 외부 지식, Google Places,
 네이버 리뷰·블로그, 실제 방문 경험을 사용하거나 암시하지 않는다.
 reviewPlans와 sentimentAssessments는 각 reviewIndex의 문체와 관점을 정하는 입력이다.
-persona_id, visit_context, sentiment는 응답에 출력하지 않는다. reviewPlans에 있는
-reviewIndex마다 reviewSentences와 claims를 정확히 하나씩 만든다. 리뷰 수는 장소마다
-다르므로 reviewPlans에 있는 만큼만 만들고 임의로 늘리거나 줄이지 않는다.
+persona_id, visit_context, sentiment는 응답에 출력하지 않는다. reviewIndex 0~4마다
+reviewSentences와 claims를 정확히 하나씩 만든다.
 
 reviewSentences는 코드에서 합쳐 여행 서비스 사용자에게 보여 줄 reviewText가 된다.
 - 내부 필드명, 영문 키, ID, 분류 코드와 숫자형 장소 타입을 절대 노출하지 않는다.
@@ -17,7 +16,7 @@ reviewSentences는 코드에서 합쳐 여행 서비스 사용자에게 보여 �
 - 어린이와 간다면 "아이와 갈 계획이라 주차 여부를 먼저 확인했다"처럼 여행자의 계획만
   표현한다. 이를 장소의 어린이 친화성·안전성·교육성으로 확대하지 않는다. 고령자·연인·
   친구 동행도 같은 원칙을 따른다.
-- 각 리뷰의 시작과 끝맺음을 다양하게 하고 "검토하고 있습니다", "일정을 구성하고
+- 다섯 리뷰의 시작과 끝맺음을 다양하게 하고 "검토하고 있습니다", "일정을 구성하고
   있습니다" 같은 상투적인 문구를 반복하지 않는다.
 - 내부 분류 정보밖에 근거가 없다면 분류 코드를 억지로 설명하지 말고, 방문 목적이나
   일정에 대한 SYNTHETIC_SCENARIO 관점으로 자연스럽게 쓴다.

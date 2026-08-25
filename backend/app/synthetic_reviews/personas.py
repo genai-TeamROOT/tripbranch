@@ -54,6 +54,14 @@ class VisitStyleTrait(StrEnum):
     MULTI_STOP = "MULTI_STOP"
 
 
+# 페르소나 수는 장소가 가진 공식 근거 수를 따르되 이 범위 안으로 자른다.
+# 하한 3은 _CONTEXT_TEMPLATES가 페르소나당 고유 visitContext를 3개까지만 주기
+# 때문이 아니라, generate_review_plans가 페르소나 3~5명을 계약으로 요구하기 때문이다.
+# 상한 5는 _STYLES가 방문 스타일을 5종만 갖고 있어 그 이상은 중복이 된다.
+PERSONA_COUNT_FLOOR = 3
+PERSONA_COUNT_CEILING = 5
+
+
 @dataclass(frozen=True)
 class PlacePersonaInput:
     content_id: str
@@ -236,19 +244,30 @@ def _object_particle(label: str) -> str:
 
 
 def generate_personas(
-    place: PlacePersonaInput, *, target_count: int = 5
+    place: PlacePersonaInput, *, max_count: int = PERSONA_COUNT_CEILING
 ) -> tuple[CompositePersona, ...]:
-    """장소별로 서로 다른 복합 페르소나 3~5개를 생성한다."""
-    if not 3 <= target_count <= 5:
-        raise ValueError("target_count는 3~5여야 합니다.")
+    """장소가 가진 공식 근거 수만큼만 복합 페르소나를 만든다.
+
+    근거가 있는 우선순위 하나가 페르소나 하나가 된다. 빈 자리를 GENERAL 페르소나로
+    메우지 않는 이유는, 그렇게 만든 페르소나에는 인용할 공식 정보가 없어서 모델이
+    근거를 지어내기 때문이다. 종로구 841곳 실측에서 리뷰 계획의 29.1%가 그런 자리였고,
+    근거가 하나도 없는 장소에서는 모델이 address를 TOUR_API 근거로 끌어다 썼다.
+
+    다만 generate_review_plans가 페르소나 3명 이상을 요구하므로, 근거가 3개에 못
+    미치면 그 수까지만 GENERAL로 채운다. 종로구에서는 114곳이 여기 해당한다.
+    """
+    if not PERSONA_COUNT_FLOOR <= max_count <= PERSONA_COUNT_CEILING:
+        raise ValueError(
+            f"max_count는 {PERSONA_COUNT_FLOOR}~{PERSONA_COUNT_CEILING}여야 합니다."
+        )
 
     purpose = _TYPE_PURPOSES.get(
         place.content_type_id.strip(), VisitPurposeTrait.GENERAL_EXPLORATION
     )
-    priorities = list(_available_priorities(place))
+    priorities = list(_available_priorities(place))[:max_count]
     priorities.extend(
         (PriorityTrait.GENERAL, (), ("PERSONAL_PREFERENCE", "ITINERARY_FIT"))
-        for _ in range(max(0, target_count - len(priorities)))
+        for _ in range(max(0, PERSONA_COUNT_FLOOR - len(priorities)))
     )
 
     personas: list[CompositePersona] = []
@@ -256,9 +275,7 @@ def generate_personas(
         _COMPANION_TYPES
     )
     companion_count = 0
-    for index, (priority, priority_fields, priority_axes) in enumerate(
-        priorities[:target_count]
-    ):
+    for index, (priority, priority_fields, priority_axes) in enumerate(priorities):
         party = _PARTIES[index % len(_PARTIES)]
         if party is TravelPartyTrait.SOLO:
             companion_type = CompanionTypeTrait.NONE
@@ -302,6 +319,8 @@ def generate_personas(
 __all__ = [
     "CompanionTypeTrait",
     "CompositePersona",
+    "PERSONA_COUNT_CEILING",
+    "PERSONA_COUNT_FLOOR",
     "PlacePersonaInput",
     "PriorityTrait",
     "TravelPartyTrait",

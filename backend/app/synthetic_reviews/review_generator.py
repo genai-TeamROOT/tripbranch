@@ -1,4 +1,7 @@
-"""공식 장소 정보와 사전 결정된 계획으로 합성 리뷰 5개를 한 번에 생성한다."""
+"""공식 장소 정보와 사전 결정된 계획으로 장소당 합성 리뷰를 한 번에 생성한다.
+
+리뷰 수는 그 장소가 가진 공식 근거 수를 따라 3~5로 달라진다.
+"""
 
 from __future__ import annotations
 
@@ -6,18 +9,23 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
+from functools import lru_cache
 
 from google import genai
 from google.genai import types as genai_types
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, create_model
 
 from app.prompts.loader import load_text
 from app.prompts.registry import slot_versions
 from app.synthetic_reviews.review_models import ClaimGrounding, SyntheticReviewBatch
-from app.synthetic_reviews.review_plans import DEFAULT_REVIEWS_PER_PLACE, ReviewPlan
+from app.synthetic_reviews.review_plans import (
+    MAX_REVIEWS_PER_PLACE,
+    MIN_REVIEWS_PER_PLACE,
+    ReviewPlan,
+)
 from app.synthetic_reviews.sentiments import SentimentAssessment
 
-GENERATOR_VERSION = "synthetic-review-generator-2.0.0"
+GENERATOR_VERSION = "synthetic-review-generator-3.0.0"
 PROMPT_VERSION = f"synthetic_review.generate@{slot_versions()['synthetic_review.generate']}"
 
 ALLOWED_OFFICIAL_FIELDS = (
@@ -180,15 +188,26 @@ def validate_review_batch(
     plans: Sequence[ReviewPlan],
     sentiments: Sequence[SentimentAssessment],
 ) -> None:
-    if len(plans) != DEFAULT_REVIEWS_PER_PLACE or len(sentiments) != DEFAULT_REVIEWS_PER_PLACE:
-        raise ValueError("리뷰 생성 계획과 sentiment는 각각 정확히 5개여야 합니다.")
+    # 리뷰 수는 장소가 가진 공식 근거 수를 따라 3~5로 달라진다. 고정값이 아니라
+    # 그 장소의 리뷰 계획 수를 기준으로 삼는다.
+    review_count = len(plans)
+    if not MIN_REVIEWS_PER_PLACE <= review_count <= MAX_REVIEWS_PER_PLACE:
+        raise ValueError(
+            f"리뷰 계획은 {MIN_REVIEWS_PER_PLACE}~{MAX_REVIEWS_PER_PLACE}개여야 합니다: "
+            f"{review_count}개"
+        )
+    if len(sentiments) != review_count:
+        raise ValueError(
+            f"리뷰 계획 {review_count}개와 sentiment {len(sentiments)}개가 맞지 않습니다."
+        )
     plans_by_index = {plan.review_index: plan for plan in plans}
     sentiments_by_index = {item.review_index: item for item in sentiments}
-    expected_indices = set(range(DEFAULT_REVIEWS_PER_PLACE))
+    expected_indices = set(range(review_count))
+    last = review_count - 1
     if set(plans_by_index) != expected_indices or set(sentiments_by_index) != expected_indices:
-        raise ValueError("리뷰 인덱스는 중복 없이 0~4여야 합니다.")
+        raise ValueError(f"리뷰 인덱스는 중복 없이 0~{last}여야 합니다.")
     if {review.review_index for review in batch.reviews} != expected_indices:
-        raise ValueError("생성 리뷰 인덱스는 중복 없이 0~4여야 합니다.")
+        raise ValueError(f"생성 리뷰 인덱스는 중복 없이 0~{last}여야 합니다.")
 
     official_numbers = set(_NUMBER_PATTERN.findall(" ".join(facts.values())))
     for review in batch.reviews:
@@ -257,16 +276,31 @@ class _GeminiClaimSchema(BaseModel):
     sourceValue: str | None = None
 
 
-class _GeminiReviewSchema(BaseModel):
-    reviewIndex: int = Field(ge=0, le=DEFAULT_REVIEWS_PER_PLACE - 1)
-    reviewSentences: list[str] = Field(min_length=4, max_length=5)
-    claims: list[_GeminiClaimSchema]
+@lru_cache(maxsize=MAX_REVIEWS_PER_PLACE + 1)
+def wire_schema_for(review_count: int) -> type[BaseModel]:
+    """리뷰 수에 맞춘 전송 스키마를 만든다.
 
-
-class _GeminiReviewBatchSchema(BaseModel):
-    reviews: list[_GeminiReviewSchema] = Field(
-        min_length=DEFAULT_REVIEWS_PER_PLACE,
-        max_length=DEFAULT_REVIEWS_PER_PLACE,
+    리뷰 수가 장소마다 3~5로 달라져 모듈 상수로 둘 수 없다. reviewIndex 상한과 배열
+    길이를 그 장소의 리뷰 수로 고정해야 모델이 개수를 틀릴 여지가 사라진다. 값이
+    세 가지뿐이라 캐시해 재사용한다.
+    """
+    if not MIN_REVIEWS_PER_PLACE <= review_count <= MAX_REVIEWS_PER_PLACE:
+        raise ValueError(
+            f"리뷰 수는 {MIN_REVIEWS_PER_PLACE}~{MAX_REVIEWS_PER_PLACE}여야 합니다: "
+            f"{review_count}"
+        )
+    review_schema = create_model(
+        f"_GeminiReviewSchema{review_count}",
+        reviewIndex=(int, Field(ge=0, le=review_count - 1)),
+        reviewSentences=(list[str], Field(min_length=4, max_length=5)),
+        claims=(list[_GeminiClaimSchema], ...),
+    )
+    return create_model(
+        f"_GeminiReviewBatchSchema{review_count}",
+        reviews=(
+            list[review_schema],
+            Field(min_length=review_count, max_length=review_count),
+        ),
     )
 
 
@@ -314,11 +348,14 @@ class GeminiSyntheticReviewGenerator:
         plans: Sequence[ReviewPlan],
         sentiments: Sequence[SentimentAssessment],
     ) -> SyntheticReviewBatch:
-        if (
-            len(plans) != DEFAULT_REVIEWS_PER_PLACE
-            or len(sentiments) != DEFAULT_REVIEWS_PER_PLACE
-        ):
-            raise ValueError("장소당 리뷰 계획과 sentiment가 정확히 5개여야 합니다.")
+        review_count = len(plans)
+        if len(sentiments) != review_count:
+            raise ValueError(
+                f"리뷰 계획 {review_count}개와 sentiment {len(sentiments)}개가 "
+                "맞지 않습니다."
+            )
+        # 이 장소의 리뷰 수에 맞춘 스키마를 쓴다. 범위 검사는 wire_schema_for가 한다.
+        wire_schema = wire_schema_for(review_count)
         response = await self._client.aio.models.generate_content(
             model=self._model_name,
             contents=_prompt_payload(facts, plans, sentiments),
@@ -327,7 +364,7 @@ class GeminiSyntheticReviewGenerator:
                 response_mime_type="application/json",
                 # 전송 모델은 Google Schema 호환 형태로 단순화한다. 추가 필드와
                 # grounding 조건은 수신 후 SyntheticReviewBatch가 엄격하게 검증한다.
-                response_schema=_GeminiReviewBatchSchema,
+                response_schema=wire_schema,
                 temperature=0.7,
             ),
         )
@@ -344,7 +381,7 @@ class GeminiSyntheticReviewGenerator:
             if isinstance((value := getattr(usage, name, None)), int)
         }
         try:
-            wire_batch = _GeminiReviewBatchSchema.model_validate_json(response.text or "")
+            wire_batch = wire_schema.model_validate_json(response.text or "")
         except ValidationError as exc:
             raise ValueError("Gemini 합성 리뷰가 JSON Schema를 만족하지 않습니다.") from exc
         plans_by_index = {plan.review_index: plan for plan in plans}
@@ -385,4 +422,5 @@ __all__ = [
     "GeminiSyntheticReviewGenerator",
     "build_official_facts",
     "validate_review_batch",
+    "wire_schema_for",
 ]

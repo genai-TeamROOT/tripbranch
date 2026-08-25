@@ -6,7 +6,10 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.synthetic_reviews.review_plans import DEFAULT_REVIEWS_PER_PLACE
+from app.synthetic_reviews.review_plans import (
+    MAX_REVIEWS_PER_PLACE,
+    MIN_REVIEWS_PER_PLACE,
+)
 from app.synthetic_reviews.sentiments import Sentiment
 
 
@@ -39,7 +42,7 @@ class SyntheticReview(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     review_index: int = Field(
-        alias="reviewIndex", ge=0, le=DEFAULT_REVIEWS_PER_PLACE - 1
+        alias="reviewIndex", ge=0, le=MAX_REVIEWS_PER_PLACE - 1
     )
     persona_type: str = Field(alias="personaType", min_length=1, max_length=200)
     sentiment: Sentiment
@@ -51,9 +54,11 @@ class SyntheticReview(BaseModel):
 class SyntheticReviewBatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    # 리뷰 수는 장소마다 다르다. 여기서는 허용 범위만 막고, 그 장소에 맞는 정확한
+    # 개수는 validate_review_batch가 리뷰 계획과 대조해 확인한다.
     reviews: list[SyntheticReview] = Field(
-        min_length=DEFAULT_REVIEWS_PER_PLACE,
-        max_length=DEFAULT_REVIEWS_PER_PLACE,
+        min_length=MIN_REVIEWS_PER_PLACE,
+        max_length=MAX_REVIEWS_PER_PLACE,
     )
 
 

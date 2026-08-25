@@ -14,7 +14,7 @@ import httpx
 from app.config import Settings
 from app.repositories.supabase_places import SupabasePlaceRepository
 from app.synthetic_reviews import (
-    DEFAULT_REVIEWS_PER_PLACE,
+    PERSONA_COUNT_CEILING,
     PlacePersonaInput,
     assess_sentiment,
     generate_personas,
@@ -70,13 +70,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--area-code", help="TourAPI 광역 코드")
     parser.add_argument("--district-code", help="TourAPI 시·군·구 코드")
     parser.add_argument(
-        "--persona-count", type=int, default=5, choices=range(3, 6), help="장소당 페르소나 수"
+        "--max-personas",
+        type=int,
+        default=PERSONA_COUNT_CEILING,
+        choices=range(3, 6),
+        help="장소당 페르소나 수 상한 (기본 5). 실제 수는 그 장소의 공식 근거 수를 따른다",
     )
     parser.add_argument(
         "--reviews-per-place",
         type=int,
-        default=DEFAULT_REVIEWS_PER_PLACE,
-        help="장소당 리뷰 계획 수 (기본 8)",
+        help="장소당 리뷰 계획 수를 강제한다. 생략하면 페르소나 수를 따른다",
     )
     return parser
 
@@ -90,7 +93,7 @@ def _text(row: Mapping[str, object], field: str) -> str | None:
 
 
 def build_place_report(
-    row: Mapping[str, object], *, persona_count: int, review_count: int
+    row: Mapping[str, object], *, max_personas: int, review_count: int | None
 ) -> dict[str, object]:
     values = {field: _text(row, field) for field in _INPUT_FIELDS}
     place = PlacePersonaInput(
@@ -98,7 +101,7 @@ def build_place_report(
         content_type_id=values.pop("content_type_id") or "",
         **values,
     )
-    personas = generate_personas(place, target_count=persona_count)
+    personas = generate_personas(place, max_count=max_personas)
     plans = generate_review_plans(personas, review_count=review_count)
     reviews = []
     for plan in plans:
@@ -139,7 +142,7 @@ async def inspect(
         rows = rows[: args.limit]
     return [
         build_place_report(
-            row, persona_count=args.persona_count, review_count=args.reviews_per_place
+            row, max_personas=args.max_personas, review_count=args.reviews_per_place
         )
         for row in rows
     ]
