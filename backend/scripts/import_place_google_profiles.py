@@ -8,12 +8,10 @@ import csv
 import json
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
 
 import httpx
 
 from app.config import Settings
-
 
 CHUNK_SIZE = 100
 JSON_FIELDS = {
@@ -75,7 +73,11 @@ def load_payloads(path: Path) -> list[dict[str, object]]:
                 continue
             value = nullable(raw)
             if key in JSON_FIELDS:
-                payload[key] = json.loads(value) if value else ([] if key in {"google_types", "google_photos"} else None)
+                if value:
+                    payload[key] = json.loads(value)
+                else:
+                    # 배열 컬럼은 빈 배열로, 객체 컬럼은 NULL로 둔다.
+                    payload[key] = [] if key in {"google_types", "google_photos"} else None
             elif key in BOOL_FIELDS:
                 if value not in {None, "true", "false"}:
                     raise ValueError(f"{number}행 {key}: 불리언 형식이 아닙니다.")
@@ -92,7 +94,9 @@ def load_payloads(path: Path) -> list[dict[str, object]]:
     return payloads
 
 
-async def validate_place_ids(client: httpx.AsyncClient, payloads: Sequence[dict[str, object]]) -> None:
+async def validate_place_ids(
+    client: httpx.AsyncClient, payloads: Sequence[dict[str, object]]
+) -> None:
     expected = {str(item["content_id"]) for item in payloads}
     found: set[str] = set()
     expected_ids = sorted(expected)
@@ -119,13 +123,18 @@ async def run(args: argparse.Namespace) -> None:
     if not settings.supabase_url or not settings.supabase_secret_key:
         raise ValueError("SUPABASE_URL / SUPABASE_SECRET_KEY가 필요합니다.")
     payloads = load_payloads(args.csv)
-    headers = {"apikey": settings.supabase_secret_key, "Authorization": f"Bearer {settings.supabase_secret_key}"}
-    async with httpx.AsyncClient(base_url=settings.supabase_url.rstrip("/"), headers=headers, timeout=60) as client:
+    headers = {
+        "apikey": settings.supabase_secret_key,
+        "Authorization": f"Bearer {settings.supabase_secret_key}",
+    }
+    async with httpx.AsyncClient(
+        base_url=settings.supabase_url.rstrip("/"), headers=headers, timeout=60
+    ) as client:
         await validate_place_ids(client, payloads)
         print(f"CSV {len(payloads):,}건 / places 참조 검증 완료")
         if args.dry_run:
             return
-        for chunk_number, start in enumerate(range(0, len(payloads), CHUNK_SIZE), start=1):
+        for start in range(0, len(payloads), CHUNK_SIZE):
             chunk = payloads[start : start + CHUNK_SIZE]
             response = await client.post(
                 "/rest/v1/place_google_profiles",
