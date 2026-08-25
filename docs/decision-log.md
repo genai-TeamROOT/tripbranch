@@ -2685,6 +2685,69 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `backend/tests/test_cleanup_anonymous_users_cli.py`, `docs/design/
   guest-auth-design.md` 10절
 
+### D-079 — 피드백 통계를 dev-ops 패널에서 볼 수 있게 한다 (TP-146)
+
+- 상태: `Accepted` — 구현 완료.
+- 배경: `response_feedback`에 `rating`(like/dislike)·`reason_code`(7개 고정값,
+  dislike에만)·`intent`(자유 텍스트)가 이미 쌓이고 있었지만, 조회는
+  `GET /feedback/dislikes`로 원시 리스트를 가져오는 것뿐이었다. 집계
+  API가 없었고, 있어도 지금까지 볼 화면이 없었다 — API만 추가하면
+  "쌓이는데 아무도 안 보는" 문제를 API 레벨에서 반복하는 셈이라 dev-ops
+  패널 노출까지 한 단위로 묶었다.
+- 결정:
+  1. `GET /feedback/stats` 신규(`since`/`until`/`top_intents` 쿼리 파라미터,
+     전부 선택). 응답은 rating별 전체 건수, reason_code별 건수(dislike만
+     — 표준 7개 값 + 사유 없이 남긴 dislike를 위한 `unclassified`, 항상
+     8개 키 전부 포함), intent별 건수(상위 `top_intents`개 + 롱테일
+     `other_intent_count` + intent 자체가 없는 `missing_intent_count`)로
+     구성.
+  2. 집계는 SQL group-by가 아니라 Python에서 한다. 다른 조회
+     메서드(`list_dislikes` 등)도 전부 원본 행을 `FeedbackRecord`로 그대로
+     돌려주는 방식을 따르고 있어 그 패턴을 유지했고, PostgREST의
+     `count()` 집계가 이 프로젝트 설정에서 기본 활성화된다는 보장이
+     없었다. `StateStore`에 `list_feedback_for_stats(since, until)`을
+     새로 추가했다 — `list_dislike_feedback`과 달리 rating을 가리지
+     않고(like까지) `limit`도 없이 전량을 반환한다.
+  3. Supabase 구현은 `since`/`until` 동시 지정 시 PostgREST `and=(...)`
+     문법으로 `recorded_at` 두 조건을 합성한다(같은 컬럼에 조건을 두 개
+     걸 때 쿼리 파라미터 하나에 값 하나만 담을 수 있어서다).
+  4. 프론트: `frontend/src/api/feedback.ts`에 `fetchFeedbackStats()` 추가
+     — 애초 카드 초안에는 `api/dev.ts`로 적었지만, 구현하면서 보니 이
+     엔드포인트는 `routes/dev.py`가 아니라 `routes/feedback.py` 소속이라
+     `api/feedback.ts`가 맞는 위치였다(`api/dev.ts`의 다른 함수들과 달리
+     `APP_ENV=local` 게이팅도 없다 — `feedback_router`는 무조건
+     `include_router`된다). `FeedbackStatsPanel.tsx`를 기존
+     `ApiUsagePanel`/`PlaceSyncPanel`/`DbStatusPanel`과 동일한 패턴(페이지가
+     fetch, 패널은 props만 받아 렌더링)으로 신설하고 `DeveloperOpsPage`에
+     네 번째 패널로 배선.
+- 근거: LLMOps Trace 조회 API(같은 시점에 검토했던 다른 후보)는 이번
+  범위에 넣지 않았다 — `trace_records`는 `response_feedback`과 다른
+  테이블·다른 도메인이라, 앞서 정리한 원칙(테이블/도메인이 독립이면
+  카드도 분리)대로 별도 카드로 남겨뒀다.
+- 채택하지 않은 것:
+  - **PostgREST group-by 집계** — 위 결정 2 참고.
+  - **API만 추가하고 화면은 나중에** — 이번 카드가 막 지적한 "데이터는
+    쌓이는데 아무도 안 본다"는 문제를 그대로 반복하게 된다.
+- 검증: 2026-08-25 실 Supabase 프로젝트(`STATE_STORE_BACKEND=supabase`)에서
+  브라우저 + curl로 확인. `POST /feedback`으로 넣은 값이 실제로 DB에
+  적재되고, 파라미터 없는 `GET /feedback/stats`가 정상 집계해 dev-ops
+  패널에 표시되는 것까지 확인. `since`/`until`을 동시에 넣어 PostgREST
+  `and=(...)` 문법을 타는 경로는 단위 테스트(mock)로만 검증했고 실
+  Supabase로는 별도 확인하지 않았다 — 패널에 날짜 UI가 아직 없어(아래
+  "남은 것") 실사용에서도 당분간 이 경로를 안 타므로, 그 UI를 붙일 때
+  같이 확인하기로 한다.
+- 남은 것: 기간 필터(`since`/`until`)는 백엔드 API는 지원하지만 패널에는
+  아직 날짜 선택 UI가 없다 — 지금은 항상 전체 기간을 본다. 필요해지면
+  그때 추가하면서 `since`+`until` 동시 지정 경로도 실 Supabase로 함께
+  확인한다.
+- 상세: `backend/app/state/store.py`, `backend/app/state/supabase_store.py`,
+  `backend/app/state/feedback.py`, `backend/app/state/service.py`,
+  `backend/app/routes/feedback.py`, `backend/tests/state/test_feedback.py`,
+  `backend/tests/state/test_supabase_store.py`, `frontend/src/api/feedback.ts`,
+  `frontend/src/types.ts`, `frontend/src/components/dev/FeedbackStatsPanel.tsx`,
+  `frontend/src/pages/DeveloperOpsPage.tsx`,
+  `frontend/src/pages/DeveloperOpsPage.test.tsx`
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -2759,3 +2822,4 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-24 | D-076 신설 — `thinking_budget=0`을 거부하는 모델에 thinking 설정을 아예 싣지 않던 방어를 제거하고, `0`을 항상 `thinking_level=MINIMAL`로 바꿔 보내도록 정리. 2026-08-18에 fast 모델이 그 목록에 있는 `gemini-3.5-flash-lite`로 바뀌면서 분류·조건 추출의 thinking 끄기가 조용히 무효화돼 있었고, 코드가 아니라 모델만 바뀐 것이라 6일간 아무도 몰랐다. 실 API 전수 측정(모델 5개 × 설정 4개 × 3회)으로 거부되는 것은 숫자 `0`뿐이고(`512`는 전부 성공) `MINIMAL`은 실제로 생각 토큰이 0임을 확인했다. 거부 모델 목록과 `gemini-2.5-flash-lite` 512 보정은 실측 근거라 지우지 않고, 목록은 불변식 테스트가 직접 읽는다. **지연 이득은 없다** — 6회에서 -17%까지 나왔지만 15회로 늘리면 -0.9%로 사라진다(표본 부족으로 없는 효과를 읽은 사례). 근거는 속도가 아니라 모델 교체 시 최적화가 조용히 사라지는 구조의 제거다. 폐지된 `LLM_MODEL_NAME`을 현행으로 안내하던 문서 2곳도 함께 정정 |
 | 2026-08-25 | D-077 신설 — 무장애 여행 정보(`KorWithService2`) 적재. places 컬럼이 아니라 전용 테이블 `place_barrier_free`로 나누고, 응답 28필드 중 채움률 5% 이상인 15개만 담는다(4개 구 427건 실측). 컬럼 이름은 응답 키가 아니라 의미로 짓는다 — `wheelchair`는 출입이 아니라 대여, `exit`는 출구가 아니라 주출입구라 키를 그대로 믿으면 뜻이 뒤집힌다. 무장애 정보가 있는 장소는 places의 19%뿐이라 구별 목록 1회로 대상을 좁히고(종로구 842회 → 182회), 목록을 먼저 부르고 거기 있는 장소만 행으로 만든다 — 반대 순서로 하면 종로구 첫 적재 754행 중 590행이 "목록에 없더라"는 빈 행이 된다. 값이 전부 빈 행은 남긴다(4개 구 60건, 전부 쇼핑몰 입점 매장이라 레코드만 만들어지고 항목이 미입력이다). 대상은 상세조회 대상이 아니라 TTL로 고른다 — 변경분만 따라가면 이미 DB에 있던 2,600여 건이 영영 대상이 되지 않는다. 숙박(32)과 그 전용 필드 `room`은 제외. `place_enrichments.official_facts`에 담는 안은 채택하지 않았다(사람이 검증한 값의 계보가 무너진다) |
 | 2026-08-24 | D-078 신설 — 만료된 익명 계정(`auth.users`) 정리(D-074 후속, [B] auth.users 정리). `created_at` 기준 30일(조정 가능) 이상 지난 익명 계정(`is_anonymous=true`)을 Supabase Auth Admin API로 조회·삭제. PostgREST가 아니라 GoTrue Admin API(`apikey`+`Authorization: Bearer` 둘 다 필요)를 쓰는 별도의 작은 `AuthAdminClient` 신설. `backend/scripts/cleanup_anonymous_users.py`(`--days`, `--dry-run`)로 구현, D-074의 세션 정리 스크립트와는 완전히 독립적으로 실행(FK 없음, D-063 결정 4) |
+| 2026-08-25 | D-079 신설 — 피드백 통계를 dev-ops 패널에서 볼 수 있게 함(TP-146). `GET /feedback/stats` 신규 — rating별 건수, reason_code별 건수(dislike만, 표준 7개 + `unclassified`), intent별 건수(상위 N + 롱테일 `other_intent_count` + `missing_intent_count`)를 반환. 집계는 PostgREST group-by가 아니라 Python에서 하며, `StateStore.list_feedback_for_stats(since, until)`을 신설(rating 안 가리고 limit 없이 전량 반환). 프론트는 `api/feedback.ts`에 `fetchFeedbackStats()`, `FeedbackStatsPanel`을 신설해 기존 ApiUsagePanel/PlaceSyncPanel/DbStatusPanel과 같은 패턴으로 `DeveloperOpsPage`에 배선 — API만 추가하고 화면을 안 붙이면 "쌓이는데 아무도 안 본다"는 이번 카드의 문제의식을 반복하게 되어 백엔드+프론트를 한 카드로 묶었다. LLMOps Trace 조회 API는 다른 도메인이라 별도 카드로 분리 |

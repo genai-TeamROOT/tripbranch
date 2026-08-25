@@ -5,7 +5,7 @@
  * 호출 시점: vitest 실행 시 호출된다.
  */
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { DeveloperOpsPage } from "./DeveloperOpsPage";
@@ -139,10 +139,31 @@ const syncDistricts = {
   ],
 };
 
-/** 개발자 패널이 여는 조회 세 개를 한 곳에서 가른다. */
+const feedbackStats = {
+  since: null,
+  until: null,
+  total: 5,
+  rating_counts: { like: 2, dislike: 3 },
+  reason_code_counts: {
+    intent_mismatch: 0,
+    clarification_unhelpful: 0,
+    context_not_preserved: 1,
+    location_misunderstood: 0,
+    conditions_not_applied: 0,
+    recommendation_not_suitable: 1,
+    other: 0,
+    unclassified: 1,
+  },
+  top_intents: [{ intent: "RECOMMEND", count: 4 }],
+  other_intent_count: 0,
+  missing_intent_count: 1,
+};
+
+/** 개발자 패널이 여는 조회 네 개를 한 곳에서 가른다. */
 function panelBody(url: string) {
   if (url.includes("api-usage")) return usageSnapshot;
   if (url.includes("place-sync/districts")) return syncDistricts;
+  if (url.includes("feedback/stats")) return feedbackStats;
   return dbStatus;
 }
 
@@ -286,6 +307,82 @@ it("구별 무장애 행 수를 places 옆에 함께 보여준다", async () => 
   // 아직 안 채운 구는 0으로 보인다 — 칸이 비면 "값이 없다"와 구분되지 않는다.
   await user.click(screen.getByRole("tab", { name: /용산구/ }));
   expect(screen.getByText("전체 0")).toBeInTheDocument();
+});
+
+/** 피드백 통계 패널만 스코프해서 찾는다 — 다른 패널도 "2"·"3" 같은 짧은
+ * 숫자를 표시하므로(예: ApiUsagePanel의 실패 카운트) 전역 getByText는
+ * 우연히 다른 패널의 숫자와 겹칠 수 있다. */
+async function findFeedbackStatsPanel() {
+  const heading = await screen.findByText("피드백 통계");
+  const panel = heading.closest("section");
+  if (!panel) throw new Error("피드백 통계 패널을 찾지 못했습니다.");
+  return panel;
+}
+
+it("피드백 통계 요약 카드를 보여준다", async () => {
+  mockFetch((url) => ({ status: 200, body: panelBody(url) }));
+
+  renderPage();
+  const panel = await findFeedbackStatsPanel();
+
+  expect(within(panel).getByText("5")).toBeInTheDocument();
+  expect(within(panel).getByText("2")).toBeInTheDocument();
+  expect(within(panel).getByText("3")).toBeInTheDocument();
+});
+
+it("reason_code가 없는 dislike는 사유 미입력으로 잡힌다", async () => {
+  mockFetch((url) => ({ status: 200, body: panelBody(url) }));
+
+  renderPage();
+  const panel = await findFeedbackStatsPanel();
+
+  expect(within(panel).getByText("사유 미입력")).toBeInTheDocument();
+  // context_not_preserved 1건 + recommendation_not_suitable 1건 + unclassified 1건 = dislike 3건.
+  expect(within(panel).getByText("맥락 유지 실패")).toBeInTheDocument();
+  expect(within(panel).getByText("추천 부적절")).toBeInTheDocument();
+});
+
+it("intent 상위 목록과 intent 없는 건수를 따로 보여준다", async () => {
+  mockFetch((url) => ({ status: 200, body: panelBody(url) }));
+
+  renderPage();
+  const panel = await findFeedbackStatsPanel();
+
+  expect(within(panel).getByText("RECOMMEND")).toBeInTheDocument();
+  expect(
+    within(panel).getByText(/intent가 기록되지 않은 피드백 1건은 위 집계에서/),
+  ).toBeInTheDocument();
+});
+
+it("피드백이 하나도 없으면 빈 상태 문구를 보여준다", async () => {
+  mockFetch((url) => ({
+    status: 200,
+    body: url.includes("feedback/stats")
+      ? {
+          since: null,
+          until: null,
+          total: 0,
+          rating_counts: { like: 0, dislike: 0 },
+          reason_code_counts: {
+            intent_mismatch: 0,
+            clarification_unhelpful: 0,
+            context_not_preserved: 0,
+            location_misunderstood: 0,
+            conditions_not_applied: 0,
+            recommendation_not_suitable: 0,
+            other: 0,
+            unclassified: 0,
+          },
+          top_intents: [],
+          other_intent_count: 0,
+          missing_intent_count: 0,
+        }
+      : panelBody(url),
+  }));
+
+  renderPage();
+
+  expect(await screen.findByText("아직 기록된 피드백이 없습니다.")).toBeInTheDocument();
 });
 
 it("상세조회 TTL은 구별 값이 아니라 머리말에만 쓴다", async () => {
