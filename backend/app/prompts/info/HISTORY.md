@@ -9,7 +9,19 @@
 
 ## Draft
 
-- 2026-08-25 (TP-148): `question_type_rules.md`의 `facility` 정의를 편의시설·접근성에서
+*(없음)*
+
+## 승인 이력
+
+| 기준선 | 날짜 | 커밋 | 슬롯 | 변경 내용 | 변경 이유 | 상태 |
+| --- | --- | --- | --- | --- | --- | --- |
+| legacy-3.1 | 2026-08-25 | `c7cd67a` | `info.extract` | `facility`를 편의시설·접근성에서 동반자 적합성까지 확대, `concentration`을 혼잡·사람 수·붐빔을 직접 묻는 경우로 한정, 기본 낙하 지점을 `general_info`로 명시 | 동반자 질문이 실행마다 다른 유형으로 갈렸고, TP-144가 붙여 둔 답변 재료가 쓰이지 못했다 | 승인됨 (단일 턴 19케이스×10회 0.705→1.000, 동반자 0.44→1.00, 인접 유형 1.00 유지 / 다중 턴 dev Intent 0.98→1.00. 상세는 아래) |
+| legacy-3 | 2026-08-20 | `fc4a967` | `info.extract` | `realtime_parking`·`realtime_subway`·`realtime_bus`·`realtime_event` 추가, `realtime_commercial`을 카페 한정에서 전 업종으로 확장 | 서울시 실시간 도시데이터 연동 | 승인됨 (변경: mintee/A, 다중 턴 회귀 dev 0.98 · final 0.955, 2026-08-20 20:44·20:47) |
+| legacy-1.0.12 | 2026-08-12 | `0c0a548` | `info.answer` | 검증된 INFO fields를 자연어 답변으로 변환하는 슬롯 신설 | 관광 데이터 결과를 사용자 답변으로 조립 | 승인됨 |
+
+### legacy-3.1 상세 (2026-08-25, TP-148)
+
+  `question_type_rules.md`의 `facility` 정의를 편의시설·접근성에서
   **동반자 적합성까지** 넓히고, 판별 우선순위에 세 줄을 더했습니다. 동반자 질문은
   혼잡도로도 읽히면 `facility`로 보내고, `concentration`은 혼잡·사람 수·붐빔을 직접
   묻는 경우로 한정하며, 어느 유형에도 맞지 않으면 `general_info`로 보냅니다. 기존 v3
@@ -72,12 +84,5 @@
   정확도가 0.96으로 떨어집니다. v3.1이 이 INFO 케이스를 지키고 있습니다.
 
   조건 필드 정확도는 세 실행 모두 0.92로 같습니다.
-
-## 승인 이력
-
-| 기준선 | 날짜 | 커밋 | 슬롯 | 변경 내용 | 변경 이유 | 상태 |
-| --- | --- | --- | --- | --- | --- | --- |
-| legacy-3 | 2026-08-20 | `fc4a967` | `info.extract` | `realtime_parking`·`realtime_subway`·`realtime_bus`·`realtime_event` 추가, `realtime_commercial`을 카페 한정에서 전 업종으로 확장 | 서울시 실시간 도시데이터 연동 | 승인됨 (변경: mintee/A, 다중 턴 회귀 dev 0.98 · final 0.955, 2026-08-20 20:44·20:47) |
-| legacy-1.0.12 | 2026-08-12 | `0c0a548` | `info.answer` | 검증된 INFO fields를 자연어 답변으로 변환하는 슬롯 신설 | 관광 데이터 결과를 사용자 답변으로 조립 | 승인됨 |
 
 `Draft`는 승인 기준선이 아니므로 별도 Markdown 스냅샷으로 보관하지 않습니다.
