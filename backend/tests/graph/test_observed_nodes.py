@@ -26,11 +26,15 @@ from app.schemas import (
     RecommendationItem,
     RecommendationResponse,
     TasteEvidenceQuote,
+    ToolContextItemDebug,
+    ToolExecutionDebug,
+    ToolProviderDebug,
 )
 from app.services.runtime.graph import (
     _observed,
     _summarize_finalize,
     _summarize_scoring,
+    _summarize_tool_fetch,
 )
 
 
@@ -195,3 +199,87 @@ async def test_a_failing_summary_does_not_break_the_node() -> None:
     wrapped = _observed("scoring", _node_with_config, _explode)
 
     assert await wrapped({"value": 1}, {}) == {"value": 2}
+
+
+# --- tool_fetch 요약: 빈 상자를 채우되 인자는 안 싣는다 ------------------------
+
+
+def _execution(**overrides: object) -> ToolExecutionDebug:
+    defaults: dict[str, object] = {
+        "operation": "context_fetch",
+        "request_id": "req-1",
+        "status": "success",
+        "latency_ms": 812,
+        "providers": [
+            ToolProviderDebug(source="kakao_local", status="success"),
+            ToolProviderDebug(source="kma_weather", status="unavailable"),
+        ],
+        "context_items": [
+            ToolContextItemDebug(key="location", fetched=True, status="success"),
+            ToolContextItemDebug(
+                key="weather", fetched=True, status="unavailable", error_code="upstream_timeout"
+            ),
+            ToolContextItemDebug(key="holidays", fetched=False),
+        ],
+        "rule_versions": {"operating_hours": "1.2.0"},
+        "resolved_location_name": "경복궁",
+        "resolved_location_address": "서울 종로구 사직로 161",
+    }
+    defaults.update(overrides)
+    return ToolExecutionDebug(**defaults)
+
+
+def test_tool_fetch_summary_shows_which_providers_ran_and_what_failed() -> None:
+    summary = _summarize_tool_fetch({"tool_executions": [_execution()]})
+
+    assert summary is not None
+    call = summary["calls"][0]
+    assert summary["call_count"] == 1
+    assert call["operation"] == "context_fetch"
+    assert call["latency_ms"] == 812
+    assert call["providers"] == [
+        {"source": "kakao_local", "status": "success"},
+        {"source": "kma_weather", "status": "unavailable"},
+    ]
+    assert call["item_errors"] == {"weather": "upstream_timeout"}
+    assert call["rule_versions"] == {"operating_hours": "1.2.0"}
+
+
+def test_tool_fetch_summary_separates_not_queried_from_failed() -> None:
+    """`fetched=False`는 실패가 아니라 아예 안 부른 것이다 — 섞이면 오진한다."""
+    summary = _summarize_tool_fetch({"tool_executions": [_execution()]})
+
+    assert summary is not None
+    assert summary["calls"][0]["items"] == {
+        "location": "success",
+        "weather": "unavailable",
+        "holidays": "skipped",
+    }
+
+
+def test_tool_fetch_summary_leaves_out_the_resolved_location() -> None:
+    """C가 발화에서 풀어낸 장소명·주소는 사용자가 어디를 찾는지 그대로 드러낸다."""
+    summary = _summarize_tool_fetch({"tool_executions": [_execution()]})
+
+    blob = json.dumps(summary, ensure_ascii=False)
+    assert "경복궁" not in blob
+    assert "사직로" not in blob
+
+
+def test_tool_fetch_summary_marks_a_turn_that_ended_before_scoring() -> None:
+    """조기 종료는 Tool 기록이 없다 — 값이 없는 것과 건너뛴 것이 구분돼야 한다."""
+    summary = _summarize_tool_fetch({"response": object()})
+
+    assert summary == {"terminal": True, "call_count": 0, "calls": []}
+
+
+def test_tool_fetch_summary_is_none_when_the_node_did_nothing() -> None:
+    assert _summarize_tool_fetch({}) is None
+
+
+def test_tool_fetch_summary_caps_how_many_calls_it_carries() -> None:
+    summary = _summarize_tool_fetch({"tool_executions": [_execution() for _ in range(25)]})
+
+    assert summary is not None
+    assert len(summary["calls"]) == 10
+    assert summary["call_count"] == 25

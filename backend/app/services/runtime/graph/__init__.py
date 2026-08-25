@@ -96,6 +96,54 @@ def _round_scores(scores: Mapping[str, float | None] | None) -> dict[str, float 
     }
 
 
+def _summarize_tool_fetch(result: Mapping[str, Any]) -> dict[str, Any] | None:
+    """`tool_fetch` span에 실을 값을 고른다.
+
+    **여기는 원래 비워 뒀던 자리다.** 좌표와 외부 API 자격증명이 흐르는 경로라
+    이름·지연만 남겼는데, 그 결과 span 하나가 빈 상자였다 — C가 Provider를 몇 개
+    불렀고 무엇이 실패했는지 화면에서 알 수 없었다. 지금은 **인자와 응답 원문은
+    그대로 빼고 상태·개수만** 싣는다. 그 값들은 `ToolExecutionDebug`가 이미
+    개발자 Audit용으로 만들어 두고 있어서 새로 수집하는 게 아니다.
+
+    **`resolved_location_name`·`resolved_location_address`는 일부러 뺀다.** C가
+    발화에서 풀어낸 장소명·주소라 사용자가 어디 있는지/어디를 찾는지를 그대로
+    드러낸다 — `capture_content`를 꺼도 여긴 안 새야 한다.
+
+    조기 종료(`response`만 채워 그 턴을 끝낸 경우)는 Tool 기록이 아예 없으므로
+    `terminal`만 남긴다 — 값이 없는 것과 단계를 건너뛴 것이 구분돼야 한다.
+    """
+    executions = list(result.get("tool_executions") or [])
+    terminal = result.get("response") is not None
+    if not executions and not terminal:
+        return None
+    return {
+        "terminal": terminal,
+        "call_count": len(executions),
+        "calls": [
+            {
+                "operation": execution.operation,
+                "status": execution.status,
+                "latency_ms": execution.latency_ms,
+                "providers": [
+                    {"source": provider.source, "status": provider.status}
+                    for provider in execution.providers
+                ],
+                # fetched=False는 실패가 아니라 "아예 조회하지 않음"이다
+                # (발화에 이미 값이 있어 생략한 경우 등). 둘을 구분해 적는다.
+                "items": {
+                    item.key: (item.status or "unknown") if item.fetched else "skipped"
+                    for item in execution.context_items
+                },
+                "item_errors": {
+                    item.key: item.error_code for item in execution.context_items if item.error_code
+                },
+                "rule_versions": dict(execution.rule_versions),
+            }
+            for execution in executions[:_SUMMARY_ITEM_LIMIT]
+        ],
+    }
+
+
 def _summarize_scoring(result: Mapping[str, Any]) -> dict[str, Any] | None:
     """`scoring` span에 실을 값을 고른다.
 
@@ -171,8 +219,8 @@ def _observed(
     B의 Trace `step`과 같은 이름이라 두 기록을 나란히 읽을 수 있다.
 
     `summarize`를 주면 노드 결과에서 **고른 값만** span에 남긴다. 주지 않으면 이름과
-    지연만 남는다 — `tool_fetch`가 그렇다. 거기는 좌표와 외부 API 자격증명이 흐르는
-    경로라 의도적으로 닫아 뒀다.
+    지연만 남는다 — `schedule`이 그렇다. 고르는 일은 요약 함수가 하고, 좌표·발화
+    원문처럼 실으면 안 되는 값은 거기서 걸러낸다(`_summarize_tool_fetch` 참고).
 
     관측이 꺼져 있으면(기본값) `observe_step()`이 no-op이라 호출 한 겹만 는다.
 
@@ -249,7 +297,7 @@ def build_recommend_pipeline_graph():
     """
 
     graph = StateGraph(RecommendPipelineState)
-    graph.add_node("tool_fetch", _observed("tool_fetch", tool_fetch_node))
+    graph.add_node("tool_fetch", _observed("tool_fetch", tool_fetch_node, _summarize_tool_fetch))
     graph.add_node("scoring", _observed("scoring", scoring_node, _summarize_scoring))
     graph.add_node("schedule", _observed("schedule", schedule_node))
     graph.add_node("finalize", _observed("finalize", finalize_node, _summarize_finalize))
