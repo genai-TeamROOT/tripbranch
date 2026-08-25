@@ -92,6 +92,21 @@
   호출마다 카운터를 올리지 않고 열 하나로 센다. nullable인 이유는 기존 행과 중간에
   죽은 실행이 "0회 불렀다"가 아니라 "재지 않았다"이기 때문이다. 재시도는 세지 않아
   이 값도 하한이다)
+- 공식 출처 보강 컬럼 마이그레이션:
+  `202608240001_add_official_facts_to_place_enrichments.sql`
+  (원격 이력에는 `20260824234532_add_official_facts_to_place_enrichments`로 기록됨)
+  (`place_enrichments`에 `official_facts jsonb` 추가. **현재 이 컬럼을 읽는 코드는
+  없다** — 무장애 정보를 여기 담으려던 접근이 `place_barrier_free` 전용 테이블로
+  나뉘면서(D-077) 보류됐다. 컬럼과 116행의 값은 전용 테이블이 담지 못하는 정보가
+  있어 남겨둔다. **원격에는 적용돼 있었으나 저장소에 파일이 없어 2026-08-25에
+  되살렸다** — 저장소만 보고 DB를 세우면 컬럼이 빠진다)
+- 무장애 정보 테이블 마이그레이션:
+  `202608250002_create_place_barrier_free.sql`
+  (원격 이력에는 `20260825042434_create_place_barrier_free`로 기록됨. 이후
+  `20260825050116_drop_place_barrier_free_listed_flag`로 `listed_in_barrier_free`
+  칸을 지웠는데, 저장소 파일은 그 결과까지 반영한 최종 형태라 별도 파일이 없다)
+  (D-077. 같은 날 `202608250001`을 `create_place_google_profiles`가 먼저 써서
+  번호가 겹쳤고, 2026-08-25에 이 파일을 `0002`로 옮겼다)
 - 실제 DB 적용일: 2026-07-24, 2026-07-29, 2026-08-04, 2026-08-08, 2026-08-10,
   2026-08-18, 2026-08-21
 - 적용 방법: Supabase Dashboard SQL Editor 및 Supabase MCP `apply_migration`

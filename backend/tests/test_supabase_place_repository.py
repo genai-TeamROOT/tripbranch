@@ -1184,13 +1184,18 @@ def test_무장애_필드가_전부_마이그레이션에_있다() -> None:
 
     이 저장소에서 반복된 실패 유형이라(미완결 스키마 마이그레이션) 파일을 직접
     읽어 대조한다.
+
+    파일명은 glob으로 찾는다. 이 테스트가 보는 것은 필드 누락이지 파일명이 아니고,
+    번호가 바뀌었다고 깨지면 안 된다 — 실제로 2026-08-25에 같은 날 다른 마이그레이션과
+    번호가 겹쳐 `202608250001`에서 `202608250002`로 옮긴 적이 있다.
     """
-    migration = (
-        Path(__file__).resolve().parents[2]
-        / "supabase"
-        / "migrations"
-        / "202608250001_create_place_barrier_free.sql"
-    ).read_text(encoding="utf-8")
+    migrations = sorted(
+        (Path(__file__).resolve().parents[2] / "supabase" / "migrations").glob(
+            "*_create_place_barrier_free.sql"
+        )
+    )
+    assert len(migrations) == 1, f"무장애 테이블 마이그레이션이 하나여야 한다: {migrations}"
+    migration = migrations[0].read_text(encoding="utf-8")
 
     fields = {
         name
