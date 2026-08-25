@@ -106,6 +106,29 @@ _DETAIL_COLUMNS = ",".join(
         "restroom_raw",
     )
 )
+# place_barrier_free에서 함께 읽을 컬럼(D-077). places와 1:1이라 PostgREST 임베드로
+# 한 번에 읽는다 — 왕복이 늘지 않는다. 무장애 행이 없는 장소는 임베드 자리가 null로
+# 온다.
+_BARRIER_FREE_COLUMNS = ",".join(
+    (
+        "approach_route_raw",
+        "entrance_access_raw",
+        "elevator_raw",
+        "accessible_restroom_raw",
+        "accessible_parking_raw",
+        "braille_block_raw",
+        "braille_promotion_raw",
+        "audio_guide_raw",
+        "guide_dog_raw",
+        "wheelchair_rental_raw",
+        "stroller_rental_raw",
+        "nursing_room_raw",
+        "infant_family_etc_raw",
+        "public_transport_raw",
+        "disability_etc_raw",
+    )
+)
+_BARRIER_FREE_FIELDS = tuple(_BARRIER_FREE_COLUMNS.split(","))
 _VALID_RUN_STATUSES = {"success", "partial_failure", "failed"}
 _VALID_PARSE_STATUSES = {"parsed", "partial", "unknown", "assumed"}
 T = TypeVar("T")
@@ -136,6 +159,17 @@ def _parse_datetime(value: object, field: str) -> datetime | None:
         return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except ValueError:
         raise SupabaseRepositoryError(f"invalid {field}") from None
+
+
+def _barrier_free_fields(embedded: object) -> dict[str, str | None]:
+    """임베드로 온 place_barrier_free 행을 StoredPlaceDetail 인자로 바꾼다.
+
+    무장애 목록에 없는 장소는 행 자체가 없어 임베드 자리가 null로 온다(D-077).
+    그때는 15개 필드를 전부 None으로 둔다 — 조회하지 않은 것과 값이 없는 것을
+    구분하지 않는다. 어느 쪽이든 소비 측이 답할 값이 없다는 뜻은 같다.
+    """
+    row = embedded if isinstance(embedded, Mapping) else {}
+    return {field: _optional_text(row.get(field)) for field in _BARRIER_FREE_FIELDS}
 
 
 def _map_place_locations(
@@ -692,14 +726,25 @@ class SupabasePlaceRepository:
     async def get_active_place_details(
         self,
         content_ids: Sequence[str],
+        *,
+        include_barrier_free: bool = False,
     ) -> dict[str, StoredPlaceDetail]:
         """활성 상태인 장소들의 상세·운영정보를 content_id 기준으로 한 번에 읽는다.
 
         조회되지 않은 content_id는 결과에 포함되지 않는다. content_id가 URL 길이
         제한을 넘지 않도록 청크로 나눠 요청한다.
+
+        include_barrier_free가 참이면 place_barrier_free를 임베드로 함께 읽는다.
+        기본값이 거짓인 이유는 이 메서드를 부르는 세 곳 중 둘(추천 카드 조립,
+        추천 후보 상세)이 무장애 값을 읽지 않기 때문이다 — 항상 붙이면 그 두 경로가
+        쓰지도 않는 데이터를 매 요청마다 받아온다.
         """
         if not content_ids:
             return {}
+
+        select = _DETAIL_COLUMNS
+        if include_barrier_free:
+            select = f"{select},place_barrier_free({_BARRIER_FREE_COLUMNS})"
 
         details: dict[str, StoredPlaceDetail] = {}
         for chunk in _chunks(list(content_ids), _UPSERT_CHUNK_SIZE):
@@ -708,7 +753,7 @@ class SupabasePlaceRepository:
                 "GET",
                 "/places",
                 params={
-                    "select": _DETAIL_COLUMNS,
+                    "select": select,
                     "content_id": f"in.({quoted_ids})",
                     "is_active": "eq.true",
                 },
@@ -749,6 +794,7 @@ class SupabasePlaceRepository:
                     pet_raw=_optional_text(raw.get("pet_raw")),
                     credit_card_raw=_optional_text(raw.get("credit_card_raw")),
                     restroom_raw=_optional_text(raw.get("restroom_raw")),
+                    **_barrier_free_fields(raw.get("place_barrier_free")),
                 )
         return details
 

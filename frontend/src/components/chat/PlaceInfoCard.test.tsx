@@ -298,3 +298,51 @@ it("실시간 인구 혼잡도 카드는 안내 문구와 서울시 지도 미�
   );
   expect(screen.getByText("사람이 몰려있을 수 있지만 크게 붐비지는 않아요.")).toBeInTheDocument();
 });
+
+/* 무장애 값(D-077)은 계약 키가 영문이라, 라벨 지도에 없으면 화면에 wheelchair_access
+ * 그대로 찍힌다. 키가 늘어날 때마다 라벨을 함께 넣었는지 이 테스트가 잡는다. */
+it("무장애 항목을 한글 라벨로 보여준다", () => {
+  renderWithTrip(
+    <PlaceInfoCard
+      card={{
+        ...card,
+        question_type: "facility",
+        answer_fields: {
+          wheelchair_access: "주출입구는 경사로가 있어 휠체어 접근 가능함",
+          accessible_restroom: "장애인 화장실 있음",
+          accessible_parking: "장애인 주차장 있음(9면)",
+          wheelchair_rental: "대여가능",
+          stroller_rental: "대여가능",
+          nursing_room: "수유실 있음",
+          guide_dog: "동반가능",
+          braille_block: "점자블록 있음",
+          braille_promotion: "점자 안내물 있음",
+          audio_guide: "음성 안내 있음",
+          public_transport: "저상버스 운행",
+          infant_family_etc: "기저귀교환대 있음",
+          disability_etc: "관람경로 표시",
+        },
+      }}
+    />,
+  );
+
+  for (const label of [
+    "휠체어 접근",
+    "장애인 화장실",
+    "장애인 주차",
+    "휠체어 대여",
+    "유모차 대여",
+    "수유실",
+    "보조견 동반",
+    "점자블록",
+    "점자 안내물",
+    "음성 안내",
+    "대중교통",
+    "영유아·가족 편의",
+    "장애인 편의 기타",
+  ]) {
+    expect(screen.getByText(label)).toBeInTheDocument();
+  }
+  // 영문 계약 키가 화면에 남아 있으면 안 된다.
+  expect(screen.queryByText("wheelchair_access")).not.toBeInTheDocument();
+});

@@ -30,6 +30,7 @@ def _details(
     pet: str | None = None,
     credit_card: str | None = None,
     restroom: str | None = None,
+    **barrier_free: str | None,
 ) -> PlaceDetails:
     return PlaceDetails(
         content_id="126508",
@@ -51,6 +52,7 @@ def _details(
         pet=pet,
         credit_card=credit_card,
         restroom=restroom,
+        **barrier_free,
     )
 
 
@@ -245,3 +247,108 @@ class TestCleanText:
     def test_문자열이_아니면_None이다(self) -> None:
         assert clean_text(None) is None
         assert clean_text(3000) is None
+
+
+class TestBarrierFree:
+    """무장애 값(place_barrier_free, D-077)이 facility로 나가는 규칙.
+
+    분류 규칙(prompts/info/question_type_rules.md)이 이미 "휠체어 가능?"을
+    facility로 보내고 있어 새 question_type을 만들지 않았다.
+    """
+
+    def test_접근로_주출입구_승강기를_한_키로_잇는다(self) -> None:
+        details = _details(
+            approach_route_raw="출입구까지 턱이 없어 휠체어 접근 가능함",
+            entrance_access_raw="주출입구는 경사로가 있어 휠체어 접근 가능함",
+            elevator_raw="엘리베이터 있음",
+        )
+
+        fields = extract_info_fields("facility", details)
+
+        assert fields["wheelchair_access"] == (
+            "출입구까지 턱이 없어 휠체어 접근 가능함"
+            " / 주출입구는 경사로가 있어 휠체어 접근 가능함"
+            " / 엘리베이터 있음"
+        )
+
+    def test_조각이_하나면_구분자를_붙이지_않는다(self) -> None:
+        details = _details(entrance_access_raw="주출입구는 턱이 없어 휠체어 접근 가능함")
+
+        fields = extract_info_fields("facility", details)
+
+        assert fields["wheelchair_access"] == "주출입구는 턱이 없어 휠체어 접근 가능함"
+
+    def test_세_값이_모두_없으면_키가_생기지_않는다(self) -> None:
+        """무장애 목록에 없는 장소가 대부분이다(4개 구 실측 커버리지 19%)."""
+        fields = extract_info_fields("facility", _details(restroom="있음"))
+
+        assert "wheelchair_access" not in fields
+        assert fields == {"restroom": "있음"}
+
+    def test_원문의_HTML_태그를_정리한다(self) -> None:
+        """무장애 원문에는 <br/>이 섞여 있다. 합치기 전에 정리해야 한다."""
+        details = _details(
+            approach_route_raw="접근로 이용이 쉬움<br />경사로 있음",
+            public_transport_raw="대중교통 이용 가능<br/>저상버스 운행",
+        )
+
+        fields = extract_info_fields("facility", details)
+
+        assert fields["wheelchair_access"] == "접근로 이용이 쉬움 경사로 있음"
+        assert fields["public_transport"] == "대중교통 이용 가능 저상버스 운행"
+
+    def test_휠체어_대여는_출입과_다른_키로_나간다(self) -> None:
+        """TourAPI의 `wheelchair`는 출입이 아니라 대여다.
+
+        두 값이 한 키로 섞이면 "휠체어로 들어갈 수 있나요"라는 질문에 대여 여부로
+        답하게 된다.
+        """
+        details = _details(
+            entrance_access_raw="주출입구는 턱이 없어 휠체어 접근 가능함",
+            wheelchair_rental_raw="대여 가능(1대/안내데스크)",
+        )
+
+        fields = extract_info_fields("facility", details)
+
+        assert fields["wheelchair_access"] == "주출입구는 턱이 없어 휠체어 접근 가능함"
+        assert fields["wheelchair_rental"] == "대여 가능(1대/안내데스크)"
+
+    def test_일반_화장실과_장애인_화장실을_함께_낸다(self) -> None:
+        """앞은 detailIntro2, 뒤는 detailWithTour2에서 온 값이라 뜻이 다르다."""
+        details = _details(
+            restroom="있음", accessible_restroom_raw="장애인 화장실 있음(남녀 분리)"
+        )
+
+        fields = extract_info_fields("facility", details)
+
+        assert fields["restroom"] == "있음"
+        assert fields["accessible_restroom"] == "장애인 화장실 있음(남녀 분리)"
+
+    def test_다른_question_type에는_나가지_않는다(self) -> None:
+        """무장애 값은 facility 질문의 답이다. 주차 질문에 섞이면 안 된다."""
+        details = _details(
+            parking="가능 (54대)", accessible_parking_raw="장애인 주차장 있음(9면)"
+        )
+
+        assert extract_info_fields("parking", details) == {"parking": "가능 (54대)"}
+
+    def test_유모차는_무장애_값이_있으면_그것만_낸다(self) -> None:
+        """두 출처가 같은 사실을 말하는데 값이 서로 반대인 장소가 있다.
+
+        서울공예박물관은 detailIntro2가 "없음", 무장애가 "대여가능(10대)"이다.
+        둘 다 내면 카드에 모순된 두 줄이 나란히 보인다.
+        """
+        details = _details(
+            baby_carriage="없음", stroller_rental_raw="대여가능(10대)"
+        )
+
+        fields = extract_info_fields("facility", details)
+
+        assert fields["stroller_rental"] == "대여가능(10대)"
+        assert "baby_carriage" not in fields
+
+    def test_무장애_값이_없으면_기존_유모차_값을_그대로_낸다(self) -> None:
+        """무장애 정보가 없는 장소가 대부분이라 이 경로가 기본이다."""
+        fields = extract_info_fields("facility", _details(baby_carriage="가능"))
+
+        assert fields == {"baby_carriage": "가능"}
