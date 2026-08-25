@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import inspect
 import json
+from contextlib import contextmanager
 from typing import TypedDict
 
 import pytest
@@ -283,3 +284,58 @@ def test_tool_fetch_summary_caps_how_many_calls_it_carries() -> None:
     assert summary is not None
     assert len(summary["calls"]) == 10
     assert summary["call_count"] == 25
+
+
+# --- intent 태그: 루트를 연 뒤에도 붙는다 --------------------------------------
+
+
+def test_intent_tag_is_built_from_the_turn_intent() -> None:
+    """지금 태그는 scoring·env뿐이라 RECOMMEND와 INFO가 한 덩어리로 섞여 있다."""
+    from app.schemas import Intent, LLMOutput, OutputStatus
+    from app.services.runtime.graph import _intent_tag
+
+    output = LLMOutput(intent=Intent.RECOMMEND, status=OutputStatus.COMPLETE)
+
+    assert _intent_tag(output) == ["intent:RECOMMEND"]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_entry_opens_the_intent_tag_scope() -> None:
+    """태그가 실릴 observation이 그 범위 안에 생겨야 trace 태그가 된다.
+
+    2026-08-25 실측: 루트 span을 연 뒤 `trace_attributes(tags=...)`를 열어도 trace
+    태그에 합쳐진다. 단 그 안에서 observation이 하나도 안 생기면 실릴 데가 없다.
+    그래서 그래프 진입에 뒀다 — 안에서 노드 span이 반드시 생긴다.
+    """
+    from unittest.mock import patch
+
+    from app.schemas import Intent, LLMOutput, OutputStatus
+    from app.services.runtime import graph as graph_module
+
+    scopes: list[list[str]] = []
+
+    @contextmanager
+    def _spy(**kwargs: object):
+        tags = kwargs.get("tags")
+        if tags:
+            scopes.append(list(tags))  # type: ignore[arg-type]
+        yield
+
+    graph = StateGraph(_State)
+    graph.add_node("only", _observed("scoring", _node_with_config))
+    graph.add_edge(START, "only")
+    graph.add_edge("only", END)
+
+    with (
+        patch.object(graph_module, "trace_attributes", _spy),
+        patch.object(graph_module, "_EARLY_RETURN_GRAPH", graph.compile()),
+    ):
+        # 조기 반환 경로도 같은 규칙을 따른다.
+        try:
+            await graph_module.run_early_return_graph(
+                LLMOutput(intent=Intent.INFO, status=OutputStatus.COMPLETE), llm=object()
+            )
+        except KeyError:
+            pass  # 더미 그래프라 answer 키가 없다 — 태그 범위만 확인한다
+
+    assert scopes == [["intent:INFO"]]

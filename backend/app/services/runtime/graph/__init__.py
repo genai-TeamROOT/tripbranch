@@ -18,7 +18,7 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from app.observability.langfuse_tracing import observe_step
+from app.observability.langfuse_tracing import observe_step, trace_attributes
 from app.providers.protocols import LLMProvider
 from app.schemas import AgentResponse, LLMOutput
 from app.services.runtime.graph.nodes.general import general_answer_node
@@ -251,6 +251,24 @@ def _observed(
 _EARLY_RETURN_GRAPH = build_early_return_graph()
 
 
+def _intent_tag(llm_output: LLMOutput) -> list[str]:
+    """이 턴의 intent를 trace 태그로 만든다.
+
+    **태그는 trace를 열 때 정해지는 게 아니다.** 2026-08-25 실측으로 확인했다 —
+    루트 span을 연 뒤에 `trace_attributes(tags=...)`를 열어도 trace 태그에 합쳐진다.
+    그 전까지는 "intent는 분류 이후에나 알 수 있으니 태그로 못 싣는다"고 적어뒀는데
+    틀린 진단이었다.
+
+    **다만 그 범위 안에 observation이 하나는 생겨야 한다** — 태그는 observation에
+    실려 올라가고 trace 태그는 그것들을 합친 결과다. 그래서 여기(그래프 진입)에
+    두었다. 안에서 노드 span이 반드시 생기고, intent는 이미 인자로 들어와 있다.
+
+    이게 있으면 화면에서 **intent별 비용·지연을 가를 수 있다.** 지금은 `scoring:`과
+    `env:` 태그뿐이라 RECOMMEND와 INFO가 한 덩어리로 섞여 있다.
+    """
+    return [f"intent:{llm_output.intent.value}"]
+
+
 async def run_early_return_graph(
     llm_output: LLMOutput,
     *,
@@ -264,15 +282,16 @@ async def run_early_return_graph(
     문자열 하나다 — 그래프로 바뀐 것을 호출부가 알 필요가 없게 시그니처를 맞췄다.
     """
 
-    result = await _EARLY_RETURN_GRAPH.ainvoke(
-        {"llm_output": llm_output, "stream_general": stream_general, "answer": None},
-        config={
-            "configurable": {
-                SINK_CONFIG_KEY: stream_event_sink,
-                LLM_CONFIG_KEY: llm,
-            }
-        },
-    )
+    with trace_attributes(tags=_intent_tag(llm_output)):
+        result = await _EARLY_RETURN_GRAPH.ainvoke(
+            {"llm_output": llm_output, "stream_general": stream_general, "answer": None},
+            config={
+                "configurable": {
+                    SINK_CONFIG_KEY: stream_event_sink,
+                    LLM_CONFIG_KEY: llm,
+                }
+            },
+        )
     return result["answer"] or ""
 
 
@@ -330,16 +349,17 @@ async def run_recommend_pipeline_graph(
 ) -> AgentResponse:
     """Tool 조회부터 응답 조립까지를 그래프로 돌려 최종 응답을 돌려준다."""
 
-    result = await _RECOMMEND_PIPELINE_GRAPH.ainvoke(
-        state,
-        config={
-            "configurable": {
-                SINK_CONFIG_KEY: stream_event_sink,
-                LLM_CONFIG_KEY: deps.llm,
-                DEPS_CONFIG_KEY: deps,
-            }
-        },
-    )
+    with trace_attributes(tags=_intent_tag(state["llm_output"])):
+        result = await _RECOMMEND_PIPELINE_GRAPH.ainvoke(
+            state,
+            config={
+                "configurable": {
+                    SINK_CONFIG_KEY: stream_event_sink,
+                    LLM_CONFIG_KEY: deps.llm,
+                    DEPS_CONFIG_KEY: deps,
+                }
+            },
+        )
     response = result.get("response")
     if response is None:  # 그래프가 응답 없이 끝나면 배선이 잘못된 것이다
         raise RuntimeError("추천 파이프라인 그래프가 응답을 만들지 못했습니다.")
