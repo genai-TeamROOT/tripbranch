@@ -106,6 +106,22 @@ class Settings(BaseSettings):
     # 배포에서도 서버는 떠야 하므로 켜는 쪽을 명시적 선택으로 둔다.
     taste_evidence_enabled: bool = False
 
+    # LLMOps 관측(Langfuse) 스위치. **두 개로 나눠 둔 것이 요점이다.**
+    # langfuse_enabled는 "전송을 하느냐", langfuse_capture_content는 "발화·응답
+    # 원문을 실어 보내느냐"다. 하나로 묶으면 배포 환경에서 지연·토큰만 보고
+    # 원문은 빼는 선택을 할 수 없다.
+    #
+    # 둘 다 기본 off다. 지금은 실사용자가 없어(로컬 개발만) 나가는 게 팀원 자기
+    # 발화뿐이지만, 그 조건에서 정한 기본값이 배포 이후까지 살아남으면 남의
+    # 발화가 그대로 외부로 나간다. 켜는 쪽을 명시적 선택으로 둔다.
+    # 자세한 근거는 package_D/[계획] Langfuse 도입 §6.3.
+    langfuse_enabled: bool = False
+    langfuse_capture_content: bool = False
+    langfuse_public_key: str = Field(default="", repr=False, exclude=True)
+    langfuse_secret_key: str = Field(default="", repr=False, exclude=True)
+    # 리전별로 호스트가 다르다. 한국에서는 JP가 지연이 가장 낮다.
+    langfuse_base_url: str = "https://jp.cloud.langfuse.com"
+
     # 짧고 구조화된 판단(의도 분류·조건 추출)에 사용할 모델 묶음. 비용·지연이
     # 중요한 경로라 Lite를 기본으로 두되, 일시적 5xx/타임아웃에는 Flash로 폴백한다.
     llm_fast_model_name: str = "gemini-3.5-flash-lite"

@@ -35,6 +35,7 @@ from app.domain.travel_route import (
 from app.errors import AppError
 from app.geo import haversine_km
 from app.observability.api_usage import create_external_client
+from app.observability.langfuse_tracing import observe_step, trace_attributes
 from app.place_search_policy import MAX_PLACE_SEARCH_RADIUS_KM, WALKING_SPEED_KM_PER_MINUTE
 from app.prompts.registry import turn_prompt_version
 from app.providers.protocols import LLMProvider
@@ -87,6 +88,7 @@ from app.services.runtime.info_context_schemas import InfoContextResponse, Place
 from app.services.runtime.info_context_transform import to_info_context_request
 from app.services.runtime.info_response_transform import to_info_place_card
 from app.services.runtime.llm_execution import (
+    consumed_tokens,
     get_llm_execution_metadata,
     reset_llm_execution_metadata,
 )
@@ -198,12 +200,16 @@ def _record_trace_safely(
     error_type: str | None = None,
     prompt_version: str | None = None,
     scoring_version: str | None = None,
+    token_usage: int | None = None,
     store: StateStore | None,
 ) -> None:
     """실행 단계 1건을 B에 기록한다. (llmops-trace-contract-v1.md AF-12, B-07)
 
     variant_id는 아직 값을 안 줘서 None으로 둔다. 기록 실패가 사용자 응답까지
     막으면 안 되므로 예외를 여기서 흡수한다.
+
+    token_usage는 계약상 LLM 단계에만 해당하는 값이라 호출부가 그 단계에서만
+    넘긴다 — 모든 단계에 누적 합계를 넣으면 단계별 토큰인 것처럼 읽힌다.
     """
     try:
         record_trace(
@@ -215,6 +221,7 @@ def _record_trace_safely(
                 error_type=error_type,
                 prompt_version=prompt_version,
                 scoring_version=scoring_version,
+                token_usage=token_usage,
             ),
             store=store,
         )
@@ -671,9 +678,7 @@ def _resolve_clarification_choice(
                 llm_output=LLMOutput(
                     intent=Intent.GENERAL,
                     status=OutputStatus.COMPLETE,
-                    general=GeneralPayload(
-                        topic=GeneralTopic.TRAVEL_TIP, original_question=""
-                    ),
+                    general=GeneralPayload(topic=GeneralTopic.TRAVEL_TIP, original_question=""),
                 ),
                 terminal_message=_COMPARE_SINGLE_SHOWN_KEEP_MESSAGE,
             )
@@ -964,7 +969,33 @@ async def _apply_concentration_rerank(
         return first_pass
 
     enrichment_started_at = time.monotonic()
-    enrichment_response = await enrichment_provider.enrich(enrichment_request)
+    # **혼잡도 보강을 자기 span으로 뺀다.** 이 조회는 `scoring` 노드 안에서 일어나서,
+    # 여기서 터져도 화면에는 "scoring이 죽었다"까지만 보였다. 2026-08-25에 SCHEDULE
+    # 턴이 `보강 후보는 최대 5개` ValueError로 죽고 있던 걸 그렇게 놓쳤다 — 요청한
+    # 후보 수가 span에 있었으면 원인이 바로 읽혔다.
+    with observe_step("concentration_enrichment") as enrichment_step:
+        enrichment_step.record(
+            output={
+                "requested": len(enrichment_request.candidates),
+                "features": list(enrichment_request.features),
+            }
+        )
+        enrichment_response = await enrichment_provider.enrich(enrichment_request)
+        try:
+            enrichment_step.record(
+                output={
+                    "requested": len(enrichment_request.candidates),
+                    "features": list(enrichment_request.features),
+                    "status": str(getattr(enrichment_response, "status", None)),
+                    "enriched": len(getattr(enrichment_response, "candidates", None) or []),
+                },
+                status_message=(
+                    f"보강 {len(enrichment_request.candidates)}건 요청 · "
+                    f"{getattr(enrichment_response, 'status', '?')}"
+                ),
+            )
+        except Exception:
+            logger.warning("보강 관측 요약 실패(응답 흐름에는 영향 없음)", exc_info=True)
     enrichment_execution = build_candidate_enrichment_execution_debug(
         enrichment_response,
         latency_ms=int((time.monotonic() - enrichment_started_at) * 1000),
@@ -1190,9 +1221,7 @@ async def _fetch_compare_travel_routes(
         *(_fetch_one_mode(mode) for mode in _COMPARE_TRAVEL_TIME_FIELDS)
     )
     routes_by_mode: dict[TravelMode, dict[str, TravelRoute]] = {
-        mode: {
-            route.place_id: route for route in routes if route.status is RouteStatus.SUCCESS
-        }
+        mode: {route.place_id: route for route in routes if route.status is RouteStatus.SUCCESS}
         for mode, routes in mode_results
     }
     if not any(routes_by_mode.values()):
@@ -1215,7 +1244,116 @@ async def _fetch_compare_travel_routes(
     return comparison.model_copy(update={"items": updated_items})
 
 
+def summarize_turn(response: AgentResponse) -> dict[str, object]:
+    """루트 span(`agent_turn`)에 실을 값을 고른다.
+
+    **여기가 비어 있으면 목록 화면이 안 읽힌다.** 루트는 SPAN이라 토큰·비용·모델이
+    원래 없고(그건 자식 GENERATION의 것), 입출력까지 비어 있으면 행에 이름과 지연만
+    남는다 — "이 턴이 무슨 요청이었나"를 알려면 눌러서 `classify_intent`의 출력을
+    봐야 했다. 턴이 쌓이면 못 쓴다.
+
+    **발화도 답변 원문도 싣지 않는다.** intent와 결과 모양만으로 목록이 읽힌다.
+    원문이 필요하면 자식 generation에 이미 있다(`capture_content`가 켜져 있을 때).
+
+    `headline`은 `status_message`로 나간다 — 그 자리는 mask를 타지 않아
+    원문 수집을 꺼도 남는다(`langfuse_tracing` 모듈 docstring, 검증 기준 g).
+    """
+    recommendations = response.recommendations
+    shown = list(getattr(recommendations, "recommendations", None) or [])
+    unverified = list(getattr(recommendations, "unverified_recommendations", None) or [])
+    cards = len(shown) + len(unverified)
+    intent = response.llm_output.intent.value
+    status = response.llm_output.status.value
+
+    detail = f"카드 {cards}" if cards else None
+    if response.schedule is not None:
+        detail = "일정"
+    elif response.comparison is not None:
+        detail = "비교"
+    elif response.info_place_card is not None:
+        detail = "장소 정보"
+
+    return {
+        "intent": intent,
+        "status": status,
+        "card_count": cards,
+        "unverified_count": len(unverified),
+        "has_schedule": response.schedule is not None,
+        "has_comparison": response.comparison is not None,
+        "has_info_card": response.info_place_card is not None,
+        # 답변이 나갔는지만 본다. 원문은 자식 generation에 있다.
+        "message_length": len(response.message) if response.message else 0,
+        "headline": " · ".join(part for part in (intent, status, detail) if part),
+    }
+
+
 async def run_agent_flow(
+    request: AgentRequest,
+    *,
+    llm: LLMProvider,
+    tool_provider: ToolProvider,
+    recommendation_provider: RecommendationProvider,
+    enrichment_provider: EnrichmentProvider,
+    travel_route_tool: TravelRouteToolProvider | None = None,
+    store: StateStore | None = None,
+    principal: Principal | None = None,
+    stream_event_sink: StreamEventSink | None = None,
+    stream_recommendation_summary: bool = False,
+) -> AgentResponse:
+    """한 턴 전체를 하나의 관측 trace로 묶고 본체(`_run_agent_flow`)에 넘긴다.
+
+    **루트 span이 있어야 한 턴이 trace 하나가 된다.** 속성만 전파하고
+    (`trace_attributes`) 루트를 안 만들면, 부모가 없는 observation이 저마다
+    자기가 trace 루트가 되어 한 턴이 여러 조각으로 흩어진다 — 2026-08-25 첫
+    실측에서 `classify_intent`와 `extract_recommend_conditions`가 별도 trace로
+    올라와 확인했다. 여기서 연 span이 그 부모 자리다.
+
+    이 블록 안에서 생기는 모든 span이 같은 session_id와 태그도 함께 물려받는다.
+    LangGraph 노드는 별도 asyncio 태스크에서 돌지만, 태스크 생성 시점에 문맥을
+    복사해 가므로 여기서 연 범위가 그 안까지 따라간다(llm_execution.py의
+    ContextVar 설명과 같은 이유).
+
+    **첫 턴은 session_id 없이 기록된다.** 세션은 아래 apply()에서 발급되는데
+    그때는 이미 LLM 단계가 지나가서, 나중에 붙여도 앞 span에 소급되지 않는다
+    (v4에는 trace 속성을 나중에 갱신하는 API가 없다). 두 번째 턴부터는 묶인다.
+
+    관측이 꺼져 있으면(기본값) 이 래퍼는 아무 일도 하지 않는다.
+    """
+
+    with (
+        trace_attributes(
+            session_id=request.session_id,
+            tags=[f"scoring:{SCORING_VERSION}", f"env:{settings.app_env}"],
+        ),
+        observe_step("agent_turn") as turn,
+    ):
+        response = await _run_agent_flow(
+            request,
+            llm=llm,
+            tool_provider=tool_provider,
+            recommendation_provider=recommendation_provider,
+            enrichment_provider=enrichment_provider,
+            travel_route_tool=travel_route_tool,
+            store=store,
+            principal=principal,
+            stream_event_sink=stream_event_sink,
+            stream_recommendation_summary=stream_recommendation_summary,
+        )
+        try:
+            summary = summarize_turn(response)
+            turn.record(
+                output=summary,
+                # 목록 화면에서 필터를 걸 자리. capture_content가 꺼지면 가려진다.
+                metadata={"intent": summary["intent"], "status": summary["status"]},
+                # 마스킹을 타지 않는 자리. 원문 수집을 꺼도 목록에서 턴이 읽힌다.
+                status_message=summary["headline"],
+            )
+        except Exception:
+            logger.warning("턴 관측 요약 실패(응답 흐름에는 영향 없음)", exc_info=True)
+        return response
+
+
+async def _run_agent_flow(
     request: AgentRequest,
     *,
     llm: LLMProvider,
@@ -1345,6 +1483,10 @@ async def run_agent_flow(
         # 예전의 단일 고정 문자열로는 어느 인텐트의 프롬프트가 이 응답을 만들었는지
         # 되짚을 수 없었다.
         prompt_version=turn_prompt_version(llm_output.intent),
+        # 계약 2절의 token_usage. 2026-08-25까지 이 값은 항상 None이었다 —
+        # 필드는 있었지만 gemini.py가 응답의 usage_metadata를 안 읽었다.
+        # 이 시점까지 이 턴이 쓴 총 토큰을 넘긴다(분류 + 조건 추출).
+        token_usage=consumed_tokens(),
         store=store,
     )
 
@@ -1714,9 +1856,7 @@ async def run_agent_flow(
             )
         # terminal_message가 있는 경우는 위(3단계 직후)에서 이미 처리하고
         # 반환했으므로 여기서는 다시 안 본다.
-        is_streaming_general = (
-            stream_recommendation_summary and llm_output.intent is Intent.GENERAL
-        )
+        is_streaming_general = stream_recommendation_summary and llm_output.intent is Intent.GENERAL
         if settings.use_langgraph_early_return:
             # 2단계: 조기 반환 경로(Tool/Scoring 없이 끝나는 턴) 전체를 라우팅
             # 그래프가 맡는다(langgraph-adoption.md §6.1). RECOMMEND/MODIFY/
@@ -1780,7 +1920,6 @@ async def run_agent_flow(
             ),
             stream_event_sink=stream_event_sink,
         )
-
 
     tool_outcome = await _fetch_tool_context(
         request,
@@ -2055,15 +2194,17 @@ async def _fetch_tool_context(
             tool_error_code=tool_response.error.code if tool_response.error else None,
             llm=llm,
         )
-        return _ToolFetchOutcome(terminal=AgentResponse(
-            llm_output=llm_output,
-            state=state_response,
-            recommendations=None,
-            message=message,
-            llm_execution=get_llm_execution_metadata(),
-            tool_execution=tool_execution,
-            tool_executions=tool_executions,
-        ))
+        return _ToolFetchOutcome(
+            terminal=AgentResponse(
+                llm_output=llm_output,
+                state=state_response,
+                recommendations=None,
+                message=message,
+                llm_execution=get_llm_execution_metadata(),
+                tool_execution=tool_execution,
+                tool_executions=tool_executions,
+            )
+        )
 
     # success/partial은 Recommendation 단계로 진행한다(경고가 있어도 가능한 데이터로
     # 계속 — 계약 문서 §5.4). 위에서 종료 상태를 걸렀으므로 context는 항상 있다.
@@ -2080,15 +2221,17 @@ async def _fetch_tool_context(
             tool_response.status,
         )
         message = await compose_chat_message(llm_output, tool_status=tool_response.status, llm=llm)
-        return _ToolFetchOutcome(terminal=AgentResponse(
-            llm_output=llm_output,
-            state=state_response,
-            recommendations=None,
-            message=message,
-            llm_execution=get_llm_execution_metadata(),
-            tool_execution=tool_execution,
-            tool_executions=tool_executions,
-        ))
+        return _ToolFetchOutcome(
+            terminal=AgentResponse(
+                llm_output=llm_output,
+                state=state_response,
+                recommendations=None,
+                message=message,
+                llm_execution=get_llm_execution_metadata(),
+                tool_execution=tool_execution,
+                tool_executions=tool_executions,
+            )
+        )
 
     return _ToolFetchOutcome(
         tool_context=tool_context,
@@ -2378,9 +2521,7 @@ async def _run_schedule_branch(
             tool_execution=tool_execution,
             tool_executions=tool_executions,
         )
-    places = (
-        tool_context.places.data if tool_context.places and tool_context.places.data else []
-    )
+    places = tool_context.places.data if tool_context.places and tool_context.places.data else []
 
     # 6-2-1) SCHEDULE-09 2단계: REJECT_SPECIFIC으로 재라우팅된 턴이면 통째로
     #        새로 짜지 않고, target_indices가 가리키는 자리만 새로 채운다.
@@ -2699,9 +2840,7 @@ async def run_agent(
             request,
             llm=get_llm_provider(),
             tool_provider=get_context_provider(client),
-            recommendation_provider=RealRecommendationProvider(
-                get_place_evidence_provider(client)
-            ),
+            recommendation_provider=RealRecommendationProvider(get_place_evidence_provider(client)),
             enrichment_provider=get_candidate_enrichment_service(client),
             travel_route_tool=get_travel_route_tool(client),
             principal=principal,
@@ -2710,4 +2849,4 @@ async def run_agent(
         )
 
 
-__all__ = ["StreamEventSink", "run_agent", "run_agent_flow"]
+__all__ = ["StreamEventSink", "run_agent", "run_agent_flow", "summarize_turn"]

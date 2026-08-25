@@ -19,6 +19,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 
 from app.domain.travel_route import TravelRoute
 from app.errors import AppError
+from app.observability.langfuse_tracing import trace_attributes
 from app.providers.protocols import LLMProvider
 from app.schemas import (
     CompareCriteria,
@@ -766,6 +767,47 @@ async def compose_chat_message(
     활동 가능 시간, 분) — compose_schedule_message에 그대로 전달해 "요청한
     시간대로" 문구를 만드는 데 쓴다.
     """
+
+    # **이 턴의 intent를 trace 태그로 남기는 자리.** 태그는 그 범위 안에서 생기는
+    # observation에 실려 올라가는데, 답변 생성 LLM 호출이 아래에서 생긴다.
+    #
+    # 그래프 진입(`graph/__init__.py::_intent_tag`)에도 같은 태그를 여는데,
+    # **INFO는 두 그래프 중 어느 쪽도 안 거친다** — 자체 경로로 답변을 만든다.
+    # 2026-08-25 실측에서 INFO 턴만 `intent:` 태그가 빠져 있는 걸 확인했다.
+    # 태그는 집합으로 합쳐지므로 두 곳에서 같은 값을 열어도 중복되지 않는다.
+    with trace_attributes(tags=[f"intent:{llm_output.intent.value}"]):
+        return await _compose_chat_message(
+            llm_output,
+            recommendations=recommendations,
+            schedule=schedule,
+            schedule_time_available_min=schedule_time_available_min,
+            tool_status=tool_status,
+            tool_clarification=tool_clarification,
+            tool_error_code=tool_error_code,
+            info_response=info_response,
+            info_walking_route=info_walking_route,
+            info_walking_origin_available=info_walking_origin_available,
+            llm=llm,
+            on_message_delta=on_message_delta,
+        )
+
+
+async def _compose_chat_message(
+    llm_output: LLMOutput,
+    *,
+    recommendations: RecommendationResponse | None = None,
+    schedule: ScheduleResult | None = None,
+    schedule_time_available_min: int | None = None,
+    tool_status: str | None = None,
+    tool_clarification: Clarification | None = None,
+    tool_error_code: str | None = None,
+    info_response: InfoContextResponse | None = None,
+    info_walking_route: TravelRoute | None = None,
+    info_walking_origin_available: bool = False,
+    llm: LLMProvider,
+    on_message_delta: MessageDeltaCallback | None = None,
+) -> str:
+    """`compose_chat_message()`의 본체. 태그 범위 안에서 돈다."""
 
     if llm_output.status is OutputStatus.NEEDS_CLARIFICATION:
         # LLM 단계 needs_clarification은 추출 단계에서 이미 자연어 메시지가 나온다.

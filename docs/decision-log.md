@@ -2834,7 +2834,39 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 - 상세: `backend/app/state/supabase_store.py`,
   `backend/tests/state/test_supabase_store.py`
 
-### D-082 — 서비스 지원 지역을 4개 구에서 12개 구로 확장한다
+
+### D-082 — `place_embeddings` HNSW 인덱스 누락 발견·복구 (Package D 테이블, B가 발견해 직접 복구)
+
+- 상태: `Accepted` — 복구 완료.
+- 배경: `place_embeddings`는 Package D 소유 테이블(RAG용 벡터 저장소)이라
+  B의 공식 작업 범위는 아니지만, 다른 작업 중 우연히 `pg_indexes`를
+  조회하다 원래 생성 마이그레이션(`202608180001_create_place_embeddings.sql`)에
+  정의돼 있던 `place_embeddings_embedding_hnsw_idx`가 실제 프로덕션 DB에는
+  없다는 것을 발견했다. 정확한 경위를 남긴 기록은 없지만, 2026-08-20 중구
+  RAG 확장 실험(`backend/scripts/import_place_embeddings.py`)의 코드 주석이
+  HNSW 인덱스가 걸린 상태로 대량 upsert하면 인덱스 갱신 비용 때문에
+  `statement_timeout`(57014)에 걸리는 문제를 언급하고 있어, 이를 우회하려
+  인덱스를 지운 뒤 다시 만들지 않은 것으로 추정된다. 실측 결과 57,331건
+  (장소 1,516곳)이 인덱스 없이 쌓여 있었다.
+- 결정: 마이그레이션 파일(`202608250002_restore_place_embeddings_hnsw_index.sql`)로
+  `create index if not exists`를 다시 남기고, 실제 DB에도 적용했다.
+- 근거: RAG는 아직 추천 파이프라인에 노출되지 않아 지금 당장 장애는
+  아니지만, 인덱스 없이 데이터가 계속 쌓이면 나중에 RAG가 실사용에
+  연결될 때 전역 최근접 이웃 검색(§2.10)이 전부 순차 스캔을 타게 된다.
+  발견한 시점에 바로 남기지 않으면 다음에 또 같은 경위로 놓칠 수 있어
+  기록을 남겼다.
+- 채택하지 않은 것:
+  - **Package D에 넘기고 B는 손대지 않는다** — 별도 조율 없이 방치하면
+    복구가 계속 미뤄질 위험이 커서, 우선 복구하고 사후에 D 담당자에게
+    공유하는 쪽을 택했다.
+- 검증: `pg_indexes`로 복구 전(3개)·복구 후(4개) 인덱스 목록을 직접 조회해
+  확인.
+- 남은 것: Package D 담당자에게 인덱스가 없었던 사실과 복구 내역 공유
+  (아직 안 함). 인덱스가 다시 빠지지 않도록 후속 마이그레이션에서
+  `place_embeddings` 관련 DDL을 만질 때 이 이력을 참고할 것.
+- 상세: `supabase/migrations/202608250002_restore_place_embeddings_hnsw_index.sql`
+
+### D-083 — 서비스 지원 지역을 4개 구에서 12개 구로 확장한다
 
 - 상태: `Accepted` — 구현 완료.
 - 배경: PR #224(D-044/D-025)가 서비스 지역을 종로구 한 곳에서 종로구·중구·용산구·
@@ -2963,4 +2995,5 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-25 | D-079 신설 — 피드백 통계를 dev-ops 패널에서 볼 수 있게 함(TP-146). `GET /feedback/stats` 신규 — rating별 건수, reason_code별 건수(dislike만, 표준 7개 + `unclassified`), intent별 건수(상위 N + 롱테일 `other_intent_count` + `missing_intent_count`)를 반환. 집계는 PostgREST group-by가 아니라 Python에서 하며, `StateStore.list_feedback_for_stats(since, until)`을 신설(rating 안 가리고 limit 없이 전량 반환). 프론트는 `api/feedback.ts`에 `fetchFeedbackStats()`, `FeedbackStatsPanel`을 신설해 기존 ApiUsagePanel/PlaceSyncPanel/DbStatusPanel과 같은 패턴으로 `DeveloperOpsPage`에 배선 — API만 추가하고 화면을 안 붙이면 "쌓이는데 아무도 안 본다"는 이번 카드의 문제의식을 반복하게 되어 백엔드+프론트를 한 카드로 묶었다. LLMOps Trace 조회 API는 다른 도메인이라 별도 카드로 분리 |
 | 2026-08-25 | D-080 신설 — LLMOps Trace 조회를 dev-ops 패널에서 볼 수 있게 함(TP-157, D-079 후속). `GET /trace/stats` 신규 — 등장한 step만 담는 step별 집계(건수, 평균/최대 latency_ms, 에러 건수)와 최근 에러 목록(상위 N건)을 반환. 집계는 D-079와 동일하게 Python에서 하며, `StateStore.list_traces_for_stats(since, until)`을 신설(세션을 가리지 않고 전체 테이블 대상). 프론트는 `api/trace.ts`에 `fetchTraceStats()`, `TracePanel`을 신설해 기존 패널들과 같은 패턴으로 `DeveloperOpsPage`에 다섯 번째 패널로 배선 |
 | 2026-08-25 | D-081 신설 — TP-157 브라우저 테스트 중 발견한 버그 수정. `list_traces_for_stats`/`list_feedback_for_stats`가 PostgREST 기본 1000행 응답 상한에 걸려 있던 문제를 `_fetch_all_rows()` 페이지네이션 헬퍼로 해결(limit/offset 반복 조회). "전체 실행"이 정확히 1000으로 뜨는 것이 단서였다 |
-| 2026-08-25 | D-082 신설 — 서비스 지원 지역을 4개 구(종로·중·용산·성동)에서 12개 구로 확장(PR #224 후속). Supabase `places`에 이미 적재돼 있던 광진·동대문·중랑·성북·강북·도봉·노원·은평 8개 구를 `SUPPORTED_DISTRICTS`에 추가 — district_code는 실제 주소와 대조해 확인, 경계 파일은 이미 25개 구를 다 담고 있어 손댈 필요 없음. 활성 장소 1,103건 폴리곤 대조로 밖 7건(0.63%) 확인, 그중 3건은 서로 다른 구에서 정확히 같은 깨진 좌표(19.694, 117.993) — 결측치 대체값으로 추정. `_LOCATION_REQUIRED_QUICK_PICKS`가 여전히 "종로구 한정" 전제로 남아 있는 것은 확인만 하고 범위 밖으로 남김 |
+| 2026-08-25 | D-082 신설 — Package D 소유 테이블 `place_embeddings`의 HNSW 인덱스가 프로덕션 DB에서 누락된 것을 발견해 마이그레이션으로 복구. 2026-08-20 중구 RAG 확장 실험 당시 statement_timeout 우회를 위해 지운 뒤 재생성하지 않은 것으로 추정 |
+| 2026-08-25 | D-083 신설 — 서비스 지원 지역을 4개 구(종로·중·용산·성동)에서 12개 구로 확장(PR #224 후속). Supabase `places`에 이미 적재돼 있던 광진·동대문·중랑·성북·강북·도봉·노원·은평 8개 구를 `SUPPORTED_DISTRICTS`에 추가 — district_code는 실제 주소와 대조해 확인, 경계 파일은 이미 25개 구를 다 담고 있어 손댈 필요 없음. 활성 장소 1,103건 폴리곤 대조로 밖 7건(0.63%) 확인, 그중 3건은 서로 다른 구에서 정확히 같은 깨진 좌표(19.694, 117.993) — 결측치 대체값으로 추정. `_LOCATION_REQUIRED_QUICK_PICKS`가 여전히 "종로구 한정" 전제로 남아 있는 것은 확인만 하고 범위 밖으로 남김 |

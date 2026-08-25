@@ -281,14 +281,22 @@ TourAPI에 없거나 추천에 바로 사용하기 어려운 TripBranch 자체 �
 | `weather_tags` | `text[]` | 필수 | 날씨 태그, 기본값 빈 배열 |
 | `reservation_required` | `boolean` | 선택 | 예약 필요 여부 |
 | `source_type` | `text` | 필수 | `manual_research`, `external_data`, `derived` |
+| `official_facts` | `jsonb` | 필수 | TourAPI 누락을 공식 출처로 보강한 필드별 객체, 기본값 `{}`. **현재 읽는 코드 없음(보류)** |
 | `verified_at` | `timestamptz` | 선택 | 사람이 마지막으로 확인한 시각 |
 | `created_at` | `timestamptz` | 필수 | 최초 생성 시각 |
 | `updated_at` | `timestamptz` | 필수 | 마지막 수정 시각 |
+
+`official_facts`는 최상위 키가 `places` 필드명과 같고 각 값에 `value`,
+`merge_policy`, `verified_at`, `sources`를 보존한다. **무장애 정보를 여기 담으려던
+접근이 `place_barrier_free` 전용 테이블로 나뉘면서(D-077) 보류됐다.** 컬럼과 값은
+남겨둔다 — 전용 테이블이 담지 못하는 정보가 있어 나중에 반영할 수 있다. 2026-08-25
+기준 116행 전부에 값이 있고, 담긴 키는 `places` 원문 8종과 무장애 6종이다.
 
 ### 제약조건
 
 - `estimated_visit_minutes`는 값이 있다면 `0`보다 커야 한다.
 - 배열에는 `NULL` 원소나 빈 문자열을 넣지 않는다.
+- `official_facts`는 JSON 객체여야 한다(`jsonb_typeof = 'object'`).
 - 장소 삭제 시 보완정보는 `ON DELETE CASCADE`로 함께 삭제한다.
 - `place_type`은 기존 추천 공통 계약의 `attraction`, `cultural_facility`,
   `festival`, `leisure`, `shopping`, `restaurant` 중 하나다.
@@ -548,6 +556,8 @@ API 일시 오류로 전체 장소가 비활성화되는 것을 막기 위해 �
 | `202608040001_add_concentration_search_key.sql` | 2026-08-04 | 조회용 검색어 단수 컬럼 추가 (D-043) |
 | `202608080001_add_place_parking_fee_image_columns.sql` | 2026-08-08 | `places`에 주차·요금·할인·이미지 6개 컬럼 추가 (D-056) |
 | `202608080002_add_concentration_search_keys.sql` | 2026-08-08 | 검색어를 순서 있는 목록으로 교체하고 단수 컬럼 삭제 (D-057) |
+| `202608240001_add_official_facts_to_place_enrichments.sql` | 2026-08-24 | `place_enrichments`에 `official_facts jsonb` 추가. 무장애는 전용 테이블로 가면서 보류됐고 컬럼은 남긴다 |
+| `202608250002_create_place_barrier_free.sql` | 2026-08-25 | `place_barrier_free` 생성 (D-077). 같은 날 `202608250001`을 구글 프로필이 먼저 써서 번호를 옮겼다 |
 
 - 최초 두 건은 Supabase SQL Editor로 적용해 원격 마이그레이션 이력이 생성되지
   않았다. Supabase CLI 최초 도입 시 `supabase/README.md`의 이력 복구 절차를 먼저

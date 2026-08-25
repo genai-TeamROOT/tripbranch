@@ -11,6 +11,8 @@ FakeToolProvider는 A-C Context Contract v0(docs/design/a-c-context-contract-dra
 from __future__ import annotations
 
 import asyncio
+import json
+from contextlib import contextmanager
 from datetime import UTC, datetime
 
 import pytest
@@ -58,11 +60,13 @@ from app.schemas import (
     UserConditions,
 )
 from app.service_area import supported_district_label
+from app.services.runtime import agent_runtime as agent_runtime_module
 from app.services.runtime.agent_runtime import (
     _WIDEN_RADIUS_MAX_TRAVEL_TIME,
     _apply_concentration_rerank,
     _fetch_compare_travel_routes,
     run_agent_flow,
+    summarize_turn,
 )
 from app.services.runtime.compare_context_schemas import (
     CompareContextRequest,
@@ -4599,3 +4603,116 @@ async def test_await_with_heartbeat_emits_progress_until_task_completes() -> Non
     scheduling_events = [p for e, p in events if e == "progress" and p["stage"] == "scheduling"]
     assert len(scheduling_events) >= 2
     assert all(p["message"] == "계속 진행 중이에요." for p in scheduling_events)
+
+
+@pytest.mark.asyncio
+async def test_turn_opens_a_root_observation_so_it_stays_one_trace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """한 턴은 관측에서 **trace 하나**여야 한다 — 루트 span이 그 부모 자리다.
+
+    2026-08-25 첫 실측에서 실제로 깨져 있었다. 속성만 전파하고(`trace_attributes`)
+    루트 span을 안 만들면, 부모가 없는 observation이 저마다 자기가 trace 루트가
+    되어 `classify_intent`와 `extract_recommend_conditions`가 **별도 trace**로
+    올라갔다. 화면에서 "이 턴이 무슨 일을 했나"를 볼 수 없다.
+
+    실 서버까지 확인하는 건 `scripts/verify_langfuse_tracing.py`의 기준 (e)다.
+    여기서는 네트워크 없이 루트가 열리는지, 그리고 **본체보다 먼저** 열리는지만
+    잡는다 — 나중에 열면 앞선 LLM 호출이 이미 밖으로 나가버린다.
+    """
+
+    opened: list[str] = []
+    real_observe_step = agent_runtime_module.observe_step
+
+    @contextmanager
+    def _spy(name: str, **kwargs: object):
+        opened.append(name)
+        with real_observe_step(name, **kwargs) as recorder:  # type: ignore[arg-type]
+            yield recorder
+
+    monkeypatch.setattr(agent_runtime_module, "observe_step", _spy)
+
+    providers = _providers()
+    await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=InMemoryStateStore(),
+        **providers,
+    )
+
+    assert opened, "턴을 감싸는 루트 관측이 열리지 않았다 — trace가 조각난다."
+    assert opened[0] == "agent_turn"
+
+
+# --- 루트 span 요약: 목록 화면이 읽히게 한다 ---------------------------------
+
+
+@pytest.mark.asyncio
+async def test_turn_summary_says_what_the_turn_was() -> None:
+    """루트는 SPAN이라 토큰·비용이 없다. 그래서 요약이 없으면 행에 이름과 지연만 남는다."""
+    providers = _providers()
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        **providers,
+    )
+
+    summary = summarize_turn(response)
+
+    # 같은 객체에서 뽑은 값끼리 비교하면 항진명제다 — 기대값을 직접 적는다.
+    assert summary["intent"] == "RECOMMEND"
+    assert summary["status"] == "complete"
+    assert summary["card_count"] > 0
+    assert summary["message_length"] == len(response.message)
+    # 목록 행에 뜨는 한 줄. 마스킹을 타지 않는 자리로 나간다.
+    assert summary["headline"].startswith("RECOMMEND · complete · 카드 ")
+
+
+@pytest.mark.asyncio
+async def test_turn_summary_carries_no_utterance_or_answer_text() -> None:
+    """발화도 답변도 싣지 않는다 — intent와 결과 모양만으로 목록이 읽힌다."""
+    providers = _providers()
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        **providers,
+    )
+
+    blob = json.dumps(summarize_turn(response), ensure_ascii=False)
+
+    assert "경복궁 근처 카페 추천해줘" not in blob
+    if response.message:
+        assert response.message not in blob
+
+
+def test_turn_summary_names_the_payload_shape() -> None:
+    """카드·일정·비교·장소정보 중 무엇이 나갔는지가 headline에 드러난다."""
+
+    class _Resp:
+        recommendations = None
+        schedule = object()
+        comparison = None
+        info_place_card = None
+        message = "일정을 만들었어요."
+
+        class llm_output:  # noqa: N801
+            class intent:
+                value = "SCHEDULE"
+
+            class status:
+                value = "complete"
+
+    summary = summarize_turn(_Resp())  # type: ignore[arg-type]
+
+    assert summary["has_schedule"] is True
+    assert summary["card_count"] == 0
+    assert summary["headline"] == "SCHEDULE · complete · 일정"

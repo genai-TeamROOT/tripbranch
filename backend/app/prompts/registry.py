@@ -40,6 +40,33 @@ INTENT_SLOTS: dict[Intent, tuple[str, ...]] = {
     Intent.OUT_OF_SCOPE: ("router.classify", "out_of_scope.classify"),
 }
 
+# LLM 호출 하나(`providers/gemini.py`의 operation)가 어느 슬롯을 쓰는지. 관측에서
+# generation 하나에 프롬프트 버전을 붙이는 데 쓴다.
+#
+# **INTENT_SLOTS와 목적이 다르다.** 저쪽은 "이 턴이 해석 단계에서 어느 슬롯을
+# 지났나"(B의 Trace용)라 답변 생성 슬롯을 일부러 뺐다. 이쪽은 **호출 하나가 실제로
+# 무엇을 썼나**라서 생성 슬롯(*.answer, *.summary)까지 전부 넣는다 — 그 호출들이
+# 토큰과 비용을 가장 많이 쓰는데 버전을 못 달면 비교가 안 된다.
+#
+# 새 operation을 추가하면서 여기 빠뜨리면 그 호출만 조용히 버전 없이 기록된다.
+# tests/test_prompt_operation_slots.py가 gemini.py의 operation 목록과 대조한다.
+OPERATION_SLOTS: dict[str, str] = {
+    "classify_intent": "router.classify",
+    "extract_recommend_conditions": "recommend.extract",
+    "extract_modify_conditions": "modify.extract",
+    "extract_info_query": "info.extract",
+    "extract_compare_request": "compare.extract",
+    "extract_general_request": "general.extract",
+    "generate_recommendation_summary": "recommend.summary",
+    "stream_recommendation_summary": "recommend.summary",
+    "generate_compare_summary": "compare.summary",
+    "generate_general_answer": "general.answer",
+    "stream_general_answer": "general.answer",
+    "stream_info_answer": "info.answer",
+    "generate_schedule_plan": "schedule.plan",
+    "generate_schedule_fill": "schedule.fill",
+}
+
 _FALLBACK_SLOTS: tuple[str, ...] = ("router.classify",)
 _SEMVER_PATTERN = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 
@@ -102,3 +129,28 @@ def turn_prompt_version(intent: Intent | None) -> str:
     if variant != "current":
         return f"{rendered}+variant:{variant}" if rendered else f"variant:{variant}"
     return rendered
+
+
+def operation_prompt_version(operation: str) -> str | None:
+    """LLM 호출 하나에 붙일 프롬프트 버전. 모르는 operation이면 `None`.
+
+    예: `classify_intent` → `router.classify@2.1.0`
+
+    **관측에서 `version` 자리에 넣는 값이다.** `turn_prompt_version()`이 턴 전체를
+    한 문자열로 묶는 것과 달리 여기는 호출 하나만 가리킨다 — 한 턴이 슬롯을 여러 개
+    쓰므로, 묶어버리면 "`recommend.extract` 2.3.0과 2.4.0 중 어느 쪽이 느린가"를
+    가를 수 없다.
+
+    과거 기준선으로 실행 중이면(`TRIPBRANCH_PROMPT_VARIANT`) 그 ID를 뒤에 붙인다 —
+    옛 프롬프트로 낸 기록이 현재 버전 통계에 섞이면 비교가 오염된다.
+    """
+
+    slot = OPERATION_SLOTS.get(operation)
+    if slot is None:
+        return None
+    version = slot_versions().get(slot)
+    if version is None:
+        return None
+    rendered = f"{slot}@{version}"
+    variant = active_variant()
+    return rendered if variant == "current" else f"{rendered}+variant:{variant}"
