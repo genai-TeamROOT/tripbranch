@@ -49,6 +49,13 @@ class StateStore(Protocol):
     # --- TraceRecord (append-only)
     def append_traces(self, records: list[TraceRecord]) -> None: ...
     def get_traces(self, session_id: str) -> list[TraceRecord]: ...
+    # 집계(TP-157)용. get_traces와 달리 세션 하나로 좁히지 않고 전체
+    # 테이블을 대상으로 한다 — "최근 에러가 뭐였는지", "step별 평균
+    # 지연시간"은 세션 단위로 물을 수 있는 질문이 아니다. since/until은
+    # recorded_at 기준 반열린구간이며 둘 다 선택이다.
+    def list_traces_for_stats(
+        self, since: datetime | None = None, until: datetime | None = None
+    ) -> list[TraceRecord]: ...
 
     # --- FeedbackRecord (append-only)
     def append_feedback(self, records: list[FeedbackRecord]) -> None: ...
@@ -136,6 +143,18 @@ class InMemoryStateStore:
     def get_traces(self, session_id: str) -> list[TraceRecord]:
         records = self._traces.get(session_id, [])
         return [record.model_copy(deep=True) for record in records]
+
+    def list_traces_for_stats(
+        self, since: datetime | None = None, until: datetime | None = None
+    ) -> list[TraceRecord]:
+        all_records = [
+            record for records in self._traces.values() for record in records
+        ]
+        if since is not None:
+            all_records = [r for r in all_records if r.recorded_at >= since]
+        if until is not None:
+            all_records = [r for r in all_records if r.recorded_at < until]
+        return [record.model_copy(deep=True) for record in all_records]
 
     # ------------------------------------------------------------ Feedback
 
