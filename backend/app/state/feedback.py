@@ -5,6 +5,8 @@ trace_id가 아니라 run_id 단위로 기록한다는 점만 다르다 — Feed
 docstring 참고.
 """
 
+from datetime import datetime
+
 from app.state.schema import FeedbackRecord, now_kst
 from app.state.store import StateStore
 
@@ -64,4 +66,16 @@ def list_dislikes(store: StateStore, limit: int = _DEFAULT_DISLIKE_LIMIT) -> lis
     return store.list_dislike_feedback(limit)
 
 
-__all__ = ["record", "get_feedback", "list_dislikes"]
+def list_for_stats(
+    store: StateStore, since: datetime | None = None, until: datetime | None = None
+) -> list[FeedbackRecord]:
+    """집계(TP-146)를 위해 rating을 가리지 않고 전체 피드백을 모은다.
+
+    list_dislikes와 달리 like/dislike를 모두 포함하고 limit도 없다 — 통계는
+    상위 N건이 아니라 전체 합이어야 의미가 있다. since/until은 recorded_at
+    기준 반열린구간이며 둘 다 선택이다.
+    """
+    return store.list_feedback_for_stats(since=since, until=until)
+
+
+__all__ = ["record", "get_feedback", "list_dislikes", "list_for_stats"]

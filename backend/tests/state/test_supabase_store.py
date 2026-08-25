@@ -405,6 +405,77 @@ def test_list_dislike_feedback_filters_by_rating_and_limit() -> None:
     assert dislikes[0].rating == "dislike"
 
 
+def test_list_feedback_for_stats_no_range_omits_recorded_at_filter() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["request"] = request
+        return httpx.Response(200, json=[])
+
+    transport = httpx.MockTransport(handler)
+    _store(transport).list_feedback_for_stats()
+
+    request = seen["request"]
+    assert "rating" not in request.url.params
+    assert "recorded_at" not in request.url.params
+    assert "and" not in request.url.params
+    assert request.url.params["order"] == "recorded_at.asc"
+
+
+def test_list_feedback_for_stats_since_only_uses_gte() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["request"] = request
+        return httpx.Response(200, json=[])
+
+    transport = httpx.MockTransport(handler)
+    since = datetime(2026, 8, 1, tzinfo=UTC)
+    _store(transport).list_feedback_for_stats(since=since)
+
+    request = seen["request"]
+    assert request.url.params["recorded_at"] == f"gte.{since.isoformat()}"
+
+
+def test_list_feedback_for_stats_since_and_until_uses_and_filter() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["request"] = request
+        return httpx.Response(200, json=[])
+
+    transport = httpx.MockTransport(handler)
+    since = datetime(2026, 8, 1, tzinfo=UTC)
+    until = datetime(2026, 8, 8, tzinfo=UTC)
+    _store(transport).list_feedback_for_stats(since=since, until=until)
+
+    request = seen["request"]
+    assert "recorded_at" not in request.url.params
+    assert request.url.params["and"] == (
+        f"(recorded_at.gte.{since.isoformat()},recorded_at.lt.{until.isoformat()})"
+    )
+
+
+def test_list_feedback_for_stats_includes_like_rows() -> None:
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 1,
+                    "session_id": SESSION_ID,
+                    "run_id": "run-1",
+                    "rating": "like",
+                    "recorded_at": "2026-08-21T00:00:00+09:00",
+                }
+            ],
+        )
+    )
+    records = _store(transport).list_feedback_for_stats()
+    assert len(records) == 1
+    assert records[0].rating == "like"
+
+
 # ------------------------------------------------------------ 정리(TP-134)
 
 

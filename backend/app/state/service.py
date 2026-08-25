@@ -8,7 +8,7 @@ HTTP 엔드포인트는 AF-05 Agent Runtime의 책임이므로 여기서 정의�
 
 import functools
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -338,6 +338,40 @@ class DislikeFeedbackItem(BaseModel):
 
 class DislikeFeedbackResponse(BaseModel):
     items: list[DislikeFeedbackItem]
+
+
+class IntentCount(BaseModel):
+    """intent 1개의 등장 횟수. (TP-146)"""
+
+    intent: str
+    count: int
+
+
+_FEEDBACK_STATS_UNCLASSIFIED = "unclassified"
+
+
+class FeedbackStatsResponse(BaseModel):
+    """전체 피드백을 rating/reason_code/intent 기준으로 집계한 응답. (TP-146)
+
+    reason_code_counts는 표준 7개 사유 + "unclassified"(구 클라이언트가 사유
+    없이 남긴 dislike, RecordFeedbackRequest.validate_reason_details 참고)
+    키를 항상 전부 포함한다 — 프론트가 값이 0인 항목까지 그대로 표로 그릴 수
+    있게 하기 위해서다. like 행은 이 집계에 들어가지 않는다.
+
+    intent는 자유 텍스트라(스키마 docstring 참고) 값이 무한정 늘어날 수
+    있어 상위 top_intents개만 담고, 그 뒤는 other_intent_count로 합친다.
+    intent 자체가 없는 행(intent=None)은 missing_intent_count로 따로 센다 —
+    "롱테일에 묻힌 것"과 "애초에 안 남은 것"은 다른 상황이라 섞지 않는다.
+    """
+
+    since: datetime | None
+    until: datetime | None
+    total: int
+    rating_counts: dict[str, int]
+    reason_code_counts: dict[str, int]
+    top_intents: list[IntentCount]
+    other_intent_count: int
+    missing_intent_count: int
 
 
 # ================================================================ 헬퍼
@@ -894,3 +928,58 @@ def get_dislike_feedback(
         )
 
     return DislikeFeedbackResponse(items=items)
+
+
+_DEFAULT_TOP_INTENTS = 20
+
+
+@_wrap_store_errors
+def get_feedback_stats(
+    since: datetime | None = None,
+    until: datetime | None = None,
+    top_intents: int = _DEFAULT_TOP_INTENTS,
+    store: StateStore | None = None,
+) -> FeedbackStatsResponse:
+    """전체 피드백을 집계해 dev-ops 패널에서 볼 수 있는 요약을 만든다. (TP-146)
+
+    집계 자체는 SQL group-by가 아니라 여기(Python)에서 한다 — 다른 조회
+    메서드(list_dislikes 등)도 전부 원본 행을 FeedbackRecord로 그대로
+    돌려주는 방식을 따르고 있어 그 패턴을 유지했고, PostgREST의 count()
+    집계는 이 프로젝트 설정에서 기본 활성화가 보장되지 않는다. 데이터
+    규모가 커지면(수만 건 이상) 그때 DB 쪽 집계로 옮기는 게 맞다 — 지금은
+    "이미 쌓인 데이터를 처음으로 꺼내 쓴다"는 이번 카드의 목적에 비해
+    과한 최적화다.
+    """
+    store = store or get_store()
+    records = feedback_module.list_for_stats(store, since=since, until=until)
+
+    rating_counts: dict[str, int] = {"like": 0, "dislike": 0}
+    reason_code_counts: dict[str, int] = dict.fromkeys(get_args(FeedbackReasonCode), 0)
+    reason_code_counts[_FEEDBACK_STATS_UNCLASSIFIED] = 0
+    intent_counts: dict[str, int] = {}
+    missing_intent_count = 0
+
+    for record in records:
+        rating_counts[record.rating] = rating_counts.get(record.rating, 0) + 1
+        if record.rating == "dislike":
+            key = record.reason_code or _FEEDBACK_STATS_UNCLASSIFIED
+            reason_code_counts[key] = reason_code_counts.get(key, 0) + 1
+        if record.intent:
+            intent_counts[record.intent] = intent_counts.get(record.intent, 0) + 1
+        else:
+            missing_intent_count += 1
+
+    sorted_intents = sorted(intent_counts.items(), key=lambda kv: kv[1], reverse=True)
+    top = sorted_intents[:top_intents]
+    other_intent_count = sum(count for _, count in sorted_intents[top_intents:])
+
+    return FeedbackStatsResponse(
+        since=since,
+        until=until,
+        total=len(records),
+        rating_counts=rating_counts,
+        reason_code_counts=reason_code_counts,
+        top_intents=[IntentCount(intent=intent, count=count) for intent, count in top],
+        other_intent_count=other_intent_count,
+        missing_intent_count=missing_intent_count,
+    )
