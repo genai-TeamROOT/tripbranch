@@ -1,7 +1,9 @@
 /*
  * 역할: COMPARE(TRAVEL_TIME) 응답의 장소별 실측 거리·수단별 소요시간을 카드로 보여준다.
- * 입력: ComparisonResult(비교 기준 + 장소별 비교 사실).
+ * 입력: ComparisonResult(비교 기준 + 장소별 비교 사실), 길찾기 출발점으로 쓸 deviceLocation.
  * 출력: 비교 대상 장소마다 거리·도보/자동차/대중교통 소요시간을 한눈에 보는 카드 목록.
+ *       카드를 누르면 RECOMMEND 상세 카드와 같은 방식(TP-120)으로 "현재 위치 → 그 장소"
+ *       네이버지도 대중교통 길찾기 딥링크가 열린다.
  * 호출 시점: ChatMessageList가 compare_result 메시지를 렌더링할 때 호출된다.
  *
  * criteria=travel_time일 때만 의미 있는 카드다(travel_* 필드가 이때만 채워진다).
@@ -10,9 +12,12 @@
  */
 
 import type { ComparisonItem, ComparisonResult } from "../../types";
+import { openNaverDirections } from "../../utils/naverDirections";
 
 interface CompareResultCardsProps {
   comparison: ComparisonResult;
+  /** 길찾기 출발점("위도,경도"). RECOMMEND 상세 카드와 같은 소스(디바이스 GPS)를 쓴다. */
+  deviceLocation?: string | null;
 }
 
 const TRAVEL_MODES: {
@@ -34,10 +39,31 @@ function fastestMinutes(item: ComparisonItem): number | null {
   return values.length > 0 ? Math.min(...values) : null;
 }
 
-function CompareTravelCard({ item, isFastest }: { item: ComparisonItem; isFastest: boolean }) {
+function CompareTravelCard({
+  item,
+  isFastest,
+  deviceLocation,
+}: {
+  item: ComparisonItem;
+  isFastest: boolean;
+  deviceLocation?: string | null;
+}) {
   const modeEntries = TRAVEL_MODES.map(({ label, field }) => ({ label, minutes: item[field] })).filter(
     (entry): entry is { label: string; minutes: number } => entry.minutes !== null,
   );
+
+  // RECOMMEND 상세 카드의 canRoute 가드와 같은 조건이다 — 좌표와 출발점이 둘 다 있어야 연다.
+  const canRoute = item.latitude != null && item.longitude != null && Boolean(deviceLocation);
+
+  const openDirections = () => {
+    if (!canRoute || item.latitude == null || item.longitude == null || !deviceLocation) return;
+    openNaverDirections({
+      deviceLocation,
+      destLat: item.latitude,
+      destLng: item.longitude,
+      destName: item.place_name,
+    });
+  };
 
   return (
     <li
@@ -45,7 +71,25 @@ function CompareTravelCard({ item, isFastest }: { item: ComparisonItem; isFastes
         isFastest
           ? "border-blue-300 bg-blue-50/40 dark:border-blue-700 dark:bg-blue-950/20"
           : "border-gray-200 dark:border-gray-700"
+      }${
+        canRoute
+          ? " cursor-pointer transition hover:border-blue-400 hover:bg-blue-50/30 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:hover:border-blue-600 dark:hover:bg-blue-950/20"
+          : ""
       }`}
+      role={canRoute ? "button" : undefined}
+      tabIndex={canRoute ? 0 : undefined}
+      aria-label={canRoute ? `${item.place_name}까지 네이버 지도로 길찾기` : undefined}
+      onClick={canRoute ? openDirections : undefined}
+      onKeyDown={
+        canRoute
+          ? (event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                openDirections();
+              }
+            }
+          : undefined
+      }
     >
       <div className="flex items-baseline justify-between gap-2">
         <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">{item.place_name}</p>
@@ -72,11 +116,17 @@ function CompareTravelCard({ item, isFastest }: { item: ComparisonItem; isFastes
       ) : (
         <p className="text-xs text-gray-500 dark:text-gray-400">이동 경로를 확인하지 못했어요.</p>
       )}
+
+      {canRoute && (
+        <span className="w-fit text-xs font-medium text-blue-700 dark:text-blue-300">
+          🧭 네이버 지도로 길찾기 →
+        </span>
+      )}
     </li>
   );
 }
 
-export function CompareResultCards({ comparison }: CompareResultCardsProps) {
+export function CompareResultCards({ comparison, deviceLocation }: CompareResultCardsProps) {
   if (comparison.criteria !== "travel_time") return null;
 
   const fastest = Math.min(
@@ -90,6 +140,7 @@ export function CompareResultCards({ comparison }: CompareResultCardsProps) {
           key={item.place_id}
           item={item}
           isFastest={Number.isFinite(fastest) && fastestMinutes(item) === fastest}
+          deviceLocation={deviceLocation}
         />
       ))}
     </ul>

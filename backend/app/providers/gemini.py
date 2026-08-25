@@ -538,6 +538,9 @@ class RealGeminiProvider:
                         operation=operation,
                         attempted_models=attempted_models,
                         served_model=None,
+                        # 스트리밍은 모델별 재시도 루프가 없다 — 실패하면 그대로
+                        # 다음 모델로 넘어가므로 항상 0이다.
+                        retry_count=0,
                     )
                     raise ProviderUnavailableError("Gemini", detail=str(exc)) from None
                 last_error = ProviderUnavailableError("Gemini", detail=str(exc))
@@ -547,6 +550,7 @@ class RealGeminiProvider:
                     operation=operation,
                     attempted_models=attempted_models,
                     served_model=model_name,
+                    retry_count=0,
                 )
                 return
 
@@ -555,6 +559,7 @@ class RealGeminiProvider:
                     operation=operation,
                     attempted_models=attempted_models,
                     served_model=model_name,
+                    retry_count=0,
                 )
                 raise last_error
 
@@ -568,6 +573,7 @@ class RealGeminiProvider:
             operation=operation,
             attempted_models=attempted_models,
             served_model=None,
+            retry_count=0,
         )
         assert last_error is not None
         raise last_error
@@ -728,7 +734,7 @@ class RealGeminiProvider:
         for model_index, model_name in enumerate(selected_models):
             attempted_models.append(model_name)
             try:
-                result = await self._try_model(
+                result, retry_count = await self._try_model(
                     model_name,
                     system_instruction,
                     user_input,
@@ -745,6 +751,8 @@ class RealGeminiProvider:
                         attempted_models=attempted_models,
                         served_model=None,
                         latency_ms=round((time.perf_counter() - operation_started) * 1000),
+                        # 이 모델에서 재시도를 전부 소진했다는 뜻이라 그 값 자체다.
+                        retry_count=self._max_retries,
                     )
                     logger.error(
                         "Gemini 전 모델 소진, 최종 실패 (models=%s): %s",
@@ -760,17 +768,21 @@ class RealGeminiProvider:
                 )
                 continue
             except ProviderUnavailableError:
-                # 4xx 등 비재시도 오류는 모델을 바꿔도 해결되지 않아 즉시 끝난다.
+                # 4xx 등 비재시도 오류는 모델을 바꿔도 해결되지 않아 즉시 끝난다 —
+                # _try_model()이 첫 시도에서 바로 던지므로 재시도는 없었다.
                 record_llm_call(
                     operation=operation,
                     attempted_models=attempted_models,
                     served_model=None,
                     latency_ms=round((time.perf_counter() - operation_started) * 1000),
+                    retry_count=0,
                 )
                 raise
             except ValidationError:
                 # Gemini는 응답했지만 구조화 스키마 검증에 실패한 경우다. 뒤의
                 # _call_structured() 보정 재시도와 구분할 수 있게 모델을 남긴다.
+                # 몇 번째 시도에서 검증이 깨졌는지는 _try_model() 밖으로 안 나와
+                # retry_count를 알 수 없다 — None으로 둔다.
                 record_llm_call(
                     operation=operation,
                     attempted_models=attempted_models,
@@ -784,6 +796,7 @@ class RealGeminiProvider:
                 attempted_models=attempted_models,
                 served_model=model_name,
                 latency_ms=round((time.perf_counter() - operation_started) * 1000),
+                retry_count=retry_count,
             )
             if model_index > 0:
                 logger.warning(
@@ -804,12 +817,18 @@ class RealGeminiProvider:
         *,
         operation: str,
         thinking_budget: int | None = None,
-    ) -> T:
+    ) -> tuple[T, int]:
         """모델 하나에 대해서만 타임아웃/429/5xx를 지수 백오프로 최대
         self._max_retries회 재시도한다. 재시도가 소진되면 _RetryableExhaustedError로
         감싸 던져 호출부(_generate)가 다음 모델로 넘어갈지 판단하게 한다. 4xx 등
         비재시도 오류는 감싸지 않고 ProviderUnavailableError를 바로 던진다 —
         모델을 바꿔도 같은 이유로 실패할 것이므로 폴백 대상이 아니다.
+
+        반환값은 (결과, 이 모델에서 실제로 재시도한 횟수)다. 성공이 몇 번째
+        시도에서 났는지를 호출부가 감사 기록(retry_count)에 남기기 위해서다 —
+        재시도가 성공하면 로그도 안 남고 attempted_models도 안 늘어나, 이 값이
+        없으면 "모델이 원래 느렸다"와 "타임아웃 후 재시도로 늦게 성공했다"를
+        구분할 방법이 없다(D-076 검토 후속).
 
         thinking_budget이 None이면 GenerateContentConfig에 thinking_config를
         아예 안 넣어 모델 자체 기본 동작을 그대로 둔다 — 이 기본값이 어떤 값인지는
@@ -865,10 +884,10 @@ class RealGeminiProvider:
             else:
                 _record_gemini_call(model_name, started, ok=True, status="ok")
                 if response.parsed is not None:
-                    return response_model.model_validate(response.parsed)
+                    return response_model.model_validate(response.parsed), attempt
                 # response_schema가 SDK 자동 파싱을 못 한 경우(빈 응답 등)
                 # 원문 텍스트로 직접 검증한다.
-                return response_model.model_validate_json(response.text or "")
+                return response_model.model_validate_json(response.text or ""), attempt
 
             await asyncio.sleep(_backoff_seconds(attempt))
 
