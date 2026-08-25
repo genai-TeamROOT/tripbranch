@@ -26,7 +26,14 @@
 
 **Tool 인자·응답을 계측하는 헬퍼는 의도적으로 두지 않는다.** 사용자 좌표(장소
 검색·경로 조회)와 외부 API 자격증명이 그 경로로만 흐른다. 헬퍼가 없으면 실수로도
-못 쓴다. Tool 단계는 이름·지연·성공 여부만 `observe_step()`으로 남긴다.
+못 쓴다. Tool 단계가 남기는 것은 **집계뿐이다** — 몇 건 요청해 몇 건이 성공했나,
+Provider별 상태가 무엇인가. 그 요약은 호출부가 직접 고르며(`_summarize_tool_fetch`,
+`tools/travel_route.py::summarize_fanout`), 인자와 응답 원문은 거기서 걸러낸다.
+
+**마스킹을 타는 자리와 안 타는 자리를 나눠 쓴다.** `input`·`output`·`metadata`만
+mask를 거치고(`_client/span.py::_process_media_and_apply_mask`), `level`·
+`status_message`·`version`은 그대로 나간다. 그래서 `capture_content`가 꺼져도 남아야
+하는 운영 신호(예: 경로 실측/추정 비율)는 `status_message`에도 한 줄로 싣는다.
 
 실패는 전부 흡수한다 — 관측이 사용자 응답을 막으면 안 된다
 (`runtime/agent_runtime.py::_record_trace_safely()`가 쓰는 것과 같은 원칙). 다만
