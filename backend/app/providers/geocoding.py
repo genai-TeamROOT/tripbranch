@@ -16,6 +16,7 @@ from app.domain.models import GeocodeResult
 from app.errors import AppError
 from app.providers.contracts import ProviderResult, ProviderSource, provider_result
 from app.providers.upstream_errors import upstream_error_detail
+from app.service_area import SUPPORTED_DISTRICTS
 
 logger = logging.getLogger(__name__)
 
@@ -23,10 +24,18 @@ _GEOCODE_URL = "https://maps.apigw.ntruss.com/map-geocode/v2/geocode"
 
 # Naver Geocoding은 도로명/지번 주소와 행정동/법정동 이름은 인식하지만("인사동",
 # "익선동"은 그대로 통함) 궁궐·공원·상가 같은 개별 장소명(POI)은 인식하지 못한다
-# (실제 호출로 확인, backend/docs/api-samples.md 참고). MVP 범위를 서울 종로구로
-# 한정하기로 해서, 종로구의 잘 알려진 장소명만 우선 formal 주소로 치환해 우회한다.
-# 각 주소는 실제 Naver Geocoding 호출로 결과가 나오는 것을 확인한 값이다.
-_JONGNO_LANDMARK_ADDRESS_ALIASES: dict[str, str] = {
+# (실제 호출로 확인, backend/docs/api-samples.md 참고). 그 우회로 잘 알려진
+# 장소명을 formal 주소로 치환한다. 각 주소는 실제 Naver Geocoding 호출로 결과가
+# 나오는 것을 확인한 값이다. 지원 지역이 종로구뿐이던 시절에 만들어 종로구
+# 13곳만 들어 있다.
+#
+# 다만 이 표는 지금 어느 경로에서도 도달하지 않는다(2026-08-24 실측). 사다리
+# 3단계인데 표의 13곳이 저장소(9곳)나 지역 검색(2곳)에서 끝나거나 그 전에
+# 되묻기로 끊긴다 — 세 목적(PLACE_IDENTITY·SEARCH_CENTER·REALTIME_CITYDATA)
+# 모두에서 그렇다. 저장소에 TourAPI 장소 2,570곳이 채워지고 검색 중심점도 저장소를
+# 보게 되면서(TP-127) 이 표가 하던 일을 저장소가 넘겨받았다. 제거하려면
+# resolve_location의 사다리 3단계를 함께 걷어내야 해서 별도로 판단한다.
+_LANDMARK_ADDRESS_ALIASES: dict[str, str] = {
     "경복궁": "서울특별시 종로구 사직로 161",
     "광화문": "서울특별시 종로구 사직로 161",  # 경복궁 정문
     "창덕궁": "서울특별시 종로구 율곡로 99",
@@ -43,25 +52,30 @@ _JONGNO_LANDMARK_ADDRESS_ALIASES: dict[str, str] = {
 }
 
 
-def get_jongno_landmark_alias(normalized_query: str) -> str | None:
-    for name, address in _JONGNO_LANDMARK_ADDRESS_ALIASES.items():
+def get_landmark_alias(normalized_query: str) -> str | None:
+    for name, address in _LANDMARK_ADDRESS_ALIASES.items():
         if name in normalized_query:
             return address
     return None
 
 
 def _apply_landmark_alias(normalized_query: str) -> str:
-    return get_jongno_landmark_alias(normalized_query) or normalized_query
+    return get_landmark_alias(normalized_query) or normalized_query
 
 
-# 로컬 개발/테스트용 고정 지명 테이블. MVP 범위(서울 종로구)에 맞춰
-# _JONGNO_LANDMARK_ADDRESS_ALIASES와 같은 장소들로 구성했다. substring 매칭으로 찾는다.
+# 로컬 개발/테스트용 고정 지명 테이블. substring 매칭으로 찾는다. 지원 구가 넷으로
+# 늘어난 뒤에도 종로구만 들어 있으면 테스트가 종로구 밖을 한 번도 밟지 않으므로,
+# 구마다 한 곳씩 둔다.
 _KNOWN_LOCATIONS: dict[str, tuple[str, float, float]] = {
     "경복궁": ("경복궁", 37.5788, 126.9770),
     "광화문": ("광화문", 37.5788, 126.9770),
     "창덕궁": ("창덕궁", 37.5826, 126.9919),
     "종묘": ("종묘", 37.5739, 126.9945),
     "인사동": ("인사동", 37.5717, 126.9860),
+    # 확장 구(TP-125·TP-126). 좌표는 places의 해당 장소 값이다.
+    "명동성당": ("서울 명동성당", 37.5637, 126.9868),
+    "노들섬": ("노들섬", 37.5175, 126.9585),
+    "서울숲": ("서울숲", 37.5445, 127.0374),
 }
 
 
@@ -81,7 +95,7 @@ class FakeGeocodingProvider:
         alias_name = next(
             (
                 name
-                for name, address in _JONGNO_LANDMARK_ADDRESS_ALIASES.items()
+                for name, address in _LANDMARK_ADDRESS_ALIASES.items()
                 if address == provider_query and name in _KNOWN_LOCATIONS
             ),
             None,
@@ -123,8 +137,9 @@ class RealGeocodingProvider:
     """Naver Cloud Platform Geocoding API를 사용하는 실제 구현.
 
     이 API는 도로명/지번 주소 검색에 최적화되어 있어 개별 장소명(POI)은 인식하지
-    못한다. 종로구 MVP 범위의 잘 알려진 장소명은 _JONGNO_LANDMARK_ADDRESS_ALIASES로
-    formal 주소로 치환해서 우회하고, 그 외 지역/장소명은 아직 지원하지 않는다.
+    못한다. 잘 알려진 장소명은 _LANDMARK_ADDRESS_ALIASES로 formal 주소로 치환해서
+    우회하지만, 그 표는 지금 도달하지 않는다(위 주석 참고) — 저장소 조회가 먼저
+    같은 일을 한다.
     """
 
     def __init__(
@@ -242,6 +257,9 @@ def _extract_district(address: dict, resolved_name: str) -> str | None:
             district = element.get("shortName") or element.get("longName")
             if district:
                 return str(district).strip()
-    if "종로구" in resolved_name:
-        return "종로구"
+    # SIGUGUN이 없으면 이름에서 찾는다. 지원 구 목록을 읽어야 구가 늘 때 여기도
+    # 따라온다 - 종로구만 알던 탓에 확장 구는 이 경로에서 항상 None이었다.
+    for district in SUPPORTED_DISTRICTS:
+        if district.name in resolved_name:
+            return district.name
     return None

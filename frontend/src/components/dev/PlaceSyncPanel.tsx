@@ -46,6 +46,7 @@ const PHASE_LABELS: Record<string, string> = {
   upsert: "목록 반영",
   reparse: "운영시간 재파싱",
   details: "상세조회",
+  barrier_free: "무장애 정보",
   deactivate: "비활성화",
   done: "완료",
 };
@@ -280,7 +281,7 @@ function JobProgress({ job }: { job: SyncJob }) {
         </p>
       )}
       {job.result && (
-        <dl className="mt-2 grid grid-cols-3 gap-2 text-xs sm:grid-cols-6">
+        <dl className="mt-2 grid grid-cols-3 gap-2 text-xs sm:grid-cols-7">
           {[
             ["처리", job.result.processed_count],
             ["신규", job.result.new_count],
@@ -290,6 +291,12 @@ function JobProgress({ job }: { job: SyncJob }) {
             // 없다"로 읽히지만 실제로는 보지도 않았다.
             ["비활성", job.params.dry_run ? "미판정" : job.result.deactivated_count],
             ["상세조회", job.result.detail_attempted_count],
+            // 부른 수가 아니라 값이 있어 저장된 수다. 무장애 목록에 있어도 15개
+            // 필드가 전부 빈 장소가 있어 둘이 다르다.
+            [
+              "무장애",
+              `${job.result.barrier_free_stored_count}/${job.result.barrier_free_attempted_count}`,
+            ],
             ["실패", job.result.failed_count],
           ].map(([label, value]) => (
             <div key={String(label)} className="rounded bg-gray-100 p-1.5 dark:bg-gray-800">
@@ -368,6 +375,11 @@ export function PlaceSyncPanel({
       ? Math.floor(parsedLimit)
       : null;
   const plannedCalls = detailsLimit === null ? detailCount : Math.min(detailCount, detailsLimit);
+  // 대조가 무장애 목록을 1회 불러 낸 실제 대상 수다. 상한을 걸어 실행하면
+  // 상세조회와 같은 상한이 무장애 호출에도 함께 걸린다.
+  const barrierFreeTargets = reconcile?.barrier_free_detail_count ?? 0;
+  const barrierFreeCalls =
+    detailsLimit === null ? barrierFreeTargets : Math.min(barrierFreeTargets, detailsLimit);
   const jobRunning = job?.status === "running";
   const isNewDistrict =
     selected !== null && selected.place_count === 0 && selected.latest_snapshot === null;
@@ -420,8 +432,7 @@ export function PlaceSyncPanel({
           <strong>자료가 없는 구예요.</strong> 기준으로 삼을 스냅샷도 DB 행도 없어서
           목록 전량이 신규로 잡혀요. 그 구의 장소 수만큼 <code>detailIntro2</code>를
           쓰게 되니(중구는 892건, 용산구는 486건이었어요) 아래 상세조회 상한을 함께
-          쓰는 걸 권해요. 그리고 <strong>적재해도 추천에는 나오지 않아요</strong> —
-          장소 검색이 종로구로 고정돼 있어요.
+          쓰는 걸 권해요.
         </p>
       )}
 
@@ -465,6 +476,13 @@ export function PlaceSyncPanel({
             <p className="mt-2 rounded-md bg-amber-50 p-3 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
               상세를 못 채운 장소가 DB에 얼마나 있는지 확인하지 못했어요. 반영은 그
               장소들도 함께 부르므로, 아래 예상 호출수보다 실제가 많을 수 있어요.
+            </p>
+          )}
+
+          {!reconcile.barrier_free_checked && (
+            <p className="mt-2 rounded-md bg-amber-50 p-3 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+              무장애 목록을 확인하지 못했어요(자격증명이 없거나 조회에 실패했어요).
+              아래 무장애 예상 호출수는 0으로 나오지만 실제로는 그만큼 나갈 수 있어요.
             </p>
           )}
 
@@ -527,7 +545,8 @@ export function PlaceSyncPanel({
               예상 외부 호출: 목록 0회 + 상세조회 {plannedCalls}회
               {backfillCount > 0 &&
                 ` (이번 변경분 ${changedCount} + 지난 실행에서 못 채운 ${backfillCount})`}
-              {" · DB 쓰기 있음"}
+              {" + 무장애 목록 1회 + 무장애 상세 "}
+              {barrierFreeCalls}회{" · DB 쓰기 있음"}
             </span>
             <button
               type="button"
@@ -561,6 +580,11 @@ export function PlaceSyncPanel({
                 · 상세조회 {plannedCalls}회 (TourAPI detailIntro2)
                 {backfillCount > 0 &&
                   ` — 이번 변경분 ${changedCount} + 지난 실행에서 상세를 못 채운 ${backfillCount}`}
+              </li>
+              <li>
+                · 무장애 정보 {barrierFreeCalls + 1}회 (TourAPI KorWithService2,
+                목록 1회 포함) — 아직 확인하지 않은 장소 중 무장애 목록에 등록된
+                곳만 부릅니다
               </li>
               <li>
                 · 신규 {reconcile.counts.added} / 수정 {reconcile.counts.updated} / 삭제{" "}

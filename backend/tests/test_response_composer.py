@@ -25,6 +25,7 @@ from app.schemas import (
     ScheduleResult,
     Severity,
 )
+from app.service_area import supported_district_label
 from app.services.runtime.context_schemas import Clarification
 from app.services.runtime.info_context_schemas import (
     ConcentrationInfoResult,
@@ -353,10 +354,13 @@ class TestComposeChatMessageRecommendAndModify:
             tool_error_code="unsupported_region",
             llm=_StubLLM(),
         )
+        # 문구가 지원 구 목록을 읽는지까지 본다 - 목록만 늘고 문구는 옛 범위를
+        # 말하던 상태가 이 카드의 발단이다.
         assert message == (
-            "현재는 베타 서비스로 종로구의 장소 추천만 가능해요. "
-            "종로에서 가고 싶은 위치를 말씀해주세요."
+            f"현재는 베타 서비스로 {supported_district_label()}의 장소 추천만 가능해요. "
+            "그 안에서 가고 싶은 위치를 말씀해주세요."
         )
+        assert "종로구" in message and "성동구" in message
 
     @pytest.mark.asyncio
     async def test_tool_stage_unavailable(self) -> None:
@@ -696,15 +700,18 @@ class TestComposeInfoConcentrationMessage:
             status="unsupported",
             error=ContextError(
                 code="unsupported_region",
-                message="현재는 서울특별시 종로구 내 장소만 지원합니다.",
+                message="현재는 서울특별시 종로구·중구·용산구·성동구 안에서만 찾아드릴 수 있어요.",
                 retryable=False,
             ),
         )
         message = compose_info_concentration_message(response)
+        # 문구가 지원 구 목록을 읽는지까지 본다 - 목록만 늘고 문구는 옛 범위를
+        # 말하던 상태가 이 카드의 발단이다.
         assert message == (
-            "현재는 베타 서비스로 종로구의 장소 추천만 가능해요. "
-            "종로에서 가고 싶은 위치를 말씀해주세요."
+            f"현재는 베타 서비스로 {supported_district_label()}의 장소 추천만 가능해요. "
+            "그 안에서 가고 싶은 위치를 말씀해주세요."
         )
+        assert "종로구" in message and "성동구" in message
 
     def test_unavailable_result_returns_generic_error(self) -> None:
         response = InfoContextResponse(

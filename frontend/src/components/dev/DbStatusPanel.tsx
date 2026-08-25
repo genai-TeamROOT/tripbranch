@@ -277,7 +277,7 @@ function PlaceSummaryCards({
   return (
     <dl
       className={`mt-3 grid grid-cols-2 gap-2 ${
-        tableCounts ? "sm:grid-cols-4" : "sm:grid-cols-2"
+        tableCounts ? "sm:grid-cols-5" : "sm:grid-cols-3"
       }`}
     >
       <div className="rounded-md bg-gray-100 p-2.5 dark:bg-gray-800">
@@ -286,6 +286,15 @@ function PlaceSummaryCards({
         <dd className="text-[11px] text-gray-500">
           전체 {summary.total} · 비활성 {summary.inactive}
         </dd>
+      </div>
+      {/* 무장애 정보를 확인한 장소 수. places보다 훨씬 적은 게 정상이에요 —
+       * 무장애 목록에 있는 장소만 행이 되고, 4개 구 실측으로 19%였습니다. */}
+      <div className="rounded-md bg-gray-100 p-2.5 dark:bg-gray-800">
+        <dt className="text-[11px] text-gray-500 dark:text-gray-400">
+          place_barrier_free 활성
+        </dt>
+        <dd className="text-lg font-bold tabular-nums">{summary.barrier_free_active}</dd>
+        <dd className="text-[11px] text-gray-500">전체 {summary.barrier_free_total}</dd>
       </div>
       {tableCounts && (
         <>

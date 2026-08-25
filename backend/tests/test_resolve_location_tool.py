@@ -695,11 +695,14 @@ async def test_address_with_modifier_is_still_treated_as_address() -> None:
 
 
 @pytest.mark.asyncio
-async def test_search_center_skips_repository_entirely() -> None:
-    """검색 중심점은 좌표만 필요하므로 저장소를 아예 조회하지 않는다.
+async def test_search_center_resolves_from_repository_first() -> None:
+    """검색 중심점도 저장소를 먼저 본다. 저장소에 있으면 지역 검색까지 가지 않는다.
 
-    코퍼스에 없는 이름(역명·상호·지명)은 저장소 조회가 반드시 실패하는데, 사다리가
-    공용이던 시절에는 그 실패에 `places` 4회를 썼다("안국역" 실측).
+    예전에는 건너뛰었다 — 코퍼스에 없는 이름(역명·상호·지명)은 조회가 반드시
+    실패하는데 그 실패에 `places` 4회를 썼기 때문이다("안국역" 실측, cc3da0ed).
+    필터를 or= 하나로 합쳐 그 실패가 제목 1회 + 별칭 1회로 줄면서 전제가 바뀌었고,
+    지원 지역이 네 구로 늘며 "명동성당 근처"처럼 저장소에 있는 장소를 검색 중심으로
+    쓰는 요청이 실제로 들어온다. 지역 검색은 그런 이름을 못 좁혀 되묻기로 끝난다.
     """
     repository = MemoryPlaceLocationRepository(
         (
@@ -733,9 +736,10 @@ async def test_search_center_skips_repository_entirely() -> None:
 
     assert result.status is ResolveLocationStatus.SUCCESS
     assert result.location is not None
-    # 저장소에 정확히 같은 이름이 있어도 거치지 않는다.
-    assert repository.calls == []
-    assert result.location.resolution_method is ResolutionMethod.LOCAL_SEARCH
+    # 저장소에 정확히 같은 이름이 있으므로 거기서 끝난다 — 지역 검색을 부르지 않는다.
+    assert repository.calls == ["쌈지길"]
+    assert local_search.calls == []
+    assert result.location.resolution_method is ResolutionMethod.DATABASE
 
 
 @pytest.mark.asyncio
@@ -743,6 +747,8 @@ async def test_search_center_does_not_requery_repository_after_local_search() ->
     """지역 검색이 다른 이름을 줘도 재조회하지 않는다.
 
     재조회는 집중률 매핑을 붙이기 위한 것인데, 검색 중심점은 그 필드를 쓰지 않는다.
+    지역 검색 앞의 첫 조회는 저장소에 없어 빈손으로 끝나고, 그 뒤로는 다시 묻지
+    않는다 — 조회가 정확히 한 번이어야 한다.
     """
     repository = MemoryPlaceLocationRepository(())
     local_search = MemoryLocalSearchProvider(
@@ -765,7 +771,9 @@ async def test_search_center_does_not_requery_repository_after_local_search() ->
     )
 
     assert result.status is ResolveLocationStatus.SUCCESS
-    assert repository.calls == []
+    # 지역 검색 앞에서 한 번만 묻는다. 지역 검색이 알아낸 "북촌 한옥마을"로 다시
+    # 묻지 않는다.
+    assert repository.calls == ["북촌"]
     assert result.location is not None
     assert result.location.concentration_name is None
 
@@ -810,21 +818,12 @@ async def test_purpose_defaults_to_place_identity() -> None:
 async def test_search_center_returns_no_data_without_falling_back_to_repository() -> None:
     """지역 검색·지오코딩이 모두 못 찾으면 저장소로 되돌아가지 않고 no_data로 끝낸다.
 
-    폴백을 두면 사다리를 가른 의미가 없어진다. 위치를 못 찾았다는 사실을 그대로
-    돌려주어 상위에서 사용자에게 구체적인 위치를 되묻게 한다.
+    첫 조회에서 저장소가 빈손이었다면 그 뒤로 다시 묻지 않는다. 여기서 되돌아가면
+    같은 질의를 두 번 던지는 것일 뿐이라 결과가 바뀌지 않는다. 위치를 못 찾았다는
+    사실을 그대로 돌려주어 상위에서 사용자에게 구체적인 위치를 되묻게 한다.
     """
-    repository = MemoryPlaceLocationRepository(
-        (
-            StoredPlaceLocation(
-                content_id="128553",
-                title="없는역",
-                address="서울특별시 종로구",
-                latitude=37.57,
-                longitude=126.98,
-                concentration_name="없는역",
-            ),
-        )
-    )
+    # 어느 단계에서도 찾히지 않는 이름이다.
+    repository = MemoryPlaceLocationRepository(())
     local_search = MemoryLocalSearchProvider(())
     provider = SequenceGeocodingProvider(
         [AppError(code="no_data", message="찾지 못했어요.", status_code=404)]
@@ -835,4 +834,5 @@ async def test_search_center_returns_no_data_without_falling_back_to_repository(
     )
 
     assert result.status is not ResolveLocationStatus.SUCCESS
-    assert repository.calls == []
+    # 앞에서 한 번 묻고 끝이다. 지역 검색·지오코딩이 실패했다고 다시 묻지 않는다.
+    assert repository.calls == ["없는역"]
