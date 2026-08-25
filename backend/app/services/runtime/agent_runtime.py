@@ -969,7 +969,33 @@ async def _apply_concentration_rerank(
         return first_pass
 
     enrichment_started_at = time.monotonic()
-    enrichment_response = await enrichment_provider.enrich(enrichment_request)
+    # **혼잡도 보강을 자기 span으로 뺀다.** 이 조회는 `scoring` 노드 안에서 일어나서,
+    # 여기서 터져도 화면에는 "scoring이 죽었다"까지만 보였다. 2026-08-25에 SCHEDULE
+    # 턴이 `보강 후보는 최대 5개` ValueError로 죽고 있던 걸 그렇게 놓쳤다 — 요청한
+    # 후보 수가 span에 있었으면 원인이 바로 읽혔다.
+    with observe_step("concentration_enrichment") as enrichment_step:
+        enrichment_step.record(
+            output={
+                "requested": len(enrichment_request.candidates),
+                "features": list(enrichment_request.features),
+            }
+        )
+        enrichment_response = await enrichment_provider.enrich(enrichment_request)
+        try:
+            enrichment_step.record(
+                output={
+                    "requested": len(enrichment_request.candidates),
+                    "features": list(enrichment_request.features),
+                    "status": str(getattr(enrichment_response, "status", None)),
+                    "enriched": len(getattr(enrichment_response, "candidates", None) or []),
+                },
+                status_message=(
+                    f"보강 {len(enrichment_request.candidates)}건 요청 · "
+                    f"{getattr(enrichment_response, 'status', '?')}"
+                ),
+            )
+        except Exception:
+            logger.warning("보강 관측 요약 실패(응답 흐름에는 영향 없음)", exc_info=True)
     enrichment_execution = build_candidate_enrichment_execution_debug(
         enrichment_response,
         latency_ms=int((time.monotonic() - enrichment_started_at) * 1000),
