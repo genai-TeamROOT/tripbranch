@@ -253,12 +253,19 @@ def trace_attributes(
 def observe_step(
     name: str,
     *,
+    kind: str = "span",
     metadata: Mapping[str, Any] | None = None,
 ) -> Iterator[_Recorder | _NoopRecorder]:
     """실행 단계 하나를 span으로 남긴다. 지연은 SDK가 잰다.
 
     `name`은 B의 Trace `step`과 같은 값을 쓴다(`llm_interpret`·`scoring` 등) —
     두 기록을 나란히 읽으려면 이름이 갈리면 안 된다.
+
+    `kind`는 Langfuse가 화면에서 다르게 취급하는 의미 타입이다(`retriever`,
+    `embedding`, `tool` 등). 기본 `span`이면 "그냥 구간"이고, 검색·임베딩처럼
+    성격이 분명한 단계는 제 이름을 붙이는 편이 목록에서 골라내기 쉽다.
+    **토큰·비용이 붙는 `generation`은 여기서 열지 않는다** — 그건
+    `observe_generation()`이고, 섞으면 비용 통계가 어긋난다.
     """
     client = get_tracer()
     if client is None:
@@ -267,7 +274,7 @@ def observe_step(
 
     def factory() -> Any:
         return client.start_as_current_observation(
-            as_type="span",
+            as_type=kind,
             name=name,
             metadata=dict(metadata) if metadata else None,
         )
