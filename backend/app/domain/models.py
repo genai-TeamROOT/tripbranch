@@ -247,6 +247,29 @@ class PlaceDetails:
     # 크기 이미지가 들어온다. 실측 844건 중 169건(20%)은 이미지가 없어 None이
     # 정상 값이다 — 소비 측이 이미지 영역을 숨기는 근거다.
     thumbnail_url: str | None = None
+    # 무장애 여행 정보(place_barrier_free, D-077). 무장애 목록에 등록된 장소만
+    # 행이 있어 대부분의 장소에서는 전부 None이다 — 4개 구 실측 커버리지가 19%다.
+    #
+    # 두 가지 함정이 있다.
+    #   1. wheelchair_rental_raw는 휠체어 **대여** 여부다. 휠체어로 들어갈 수 있는지가
+    #      아니다. 출입 가능 여부는 approach_route_raw·entrance_access_raw가 답한다.
+    #   2. approach_route_raw(접근로)와 entrance_access_raw(주출입구)는 원문에서 서로
+    #      뒤바뀐 장소가 있다(가나아트센터). 한쪽만 읽어 판정하지 않는다.
+    approach_route_raw: str | None = None
+    entrance_access_raw: str | None = None
+    elevator_raw: str | None = None
+    accessible_restroom_raw: str | None = None
+    accessible_parking_raw: str | None = None
+    braille_block_raw: str | None = None
+    braille_promotion_raw: str | None = None
+    audio_guide_raw: str | None = None
+    guide_dog_raw: str | None = None
+    wheelchair_rental_raw: str | None = None
+    stroller_rental_raw: str | None = None
+    nursing_room_raw: str | None = None
+    infant_family_etc_raw: str | None = None
+    public_transport_raw: str | None = None
+    disability_etc_raw: str | None = None
 
 
 @dataclass(frozen=True)
@@ -463,6 +486,29 @@ class StoredPlaceDetail:
     pet_raw: str | None = None
     credit_card_raw: str | None = None
     restroom_raw: str | None = None
+    # 무장애 여행 정보(place_barrier_free, D-077). 무장애 목록에 등록된 장소만
+    # 행이 있어 대부분의 장소에서는 전부 None이다 — 4개 구 실측 커버리지가 19%다.
+    #
+    # 두 가지 함정이 있다.
+    #   1. wheelchair_rental_raw는 휠체어 **대여** 여부다. 휠체어로 들어갈 수 있는지가
+    #      아니다. 출입 가능 여부는 approach_route_raw·entrance_access_raw가 답한다.
+    #   2. approach_route_raw(접근로)와 entrance_access_raw(주출입구)는 원문에서 서로
+    #      뒤바뀐 장소가 있다(가나아트센터). 한쪽만 읽어 판정하지 않는다.
+    approach_route_raw: str | None = None
+    entrance_access_raw: str | None = None
+    elevator_raw: str | None = None
+    accessible_restroom_raw: str | None = None
+    accessible_parking_raw: str | None = None
+    braille_block_raw: str | None = None
+    braille_promotion_raw: str | None = None
+    audio_guide_raw: str | None = None
+    guide_dog_raw: str | None = None
+    wheelchair_rental_raw: str | None = None
+    stroller_rental_raw: str | None = None
+    nursing_room_raw: str | None = None
+    infant_family_etc_raw: str | None = None
+    public_transport_raw: str | None = None
+    disability_etc_raw: str | None = None
 
 
 @dataclass(frozen=True)
