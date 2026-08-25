@@ -46,6 +46,7 @@ def record_llm_call(
     attempted_models: list[str],
     served_model: str | None,
     latency_ms: int | None = None,
+    retry_count: int | None = None,
 ) -> None:
     """모델 선택 루프 1회의 최종 결과를 현재 요청 이력에 추가한다."""
 
@@ -54,6 +55,7 @@ def record_llm_call(
         attempted_models=attempted_models,
         served_model=served_model,
         latency_ms=latency_ms,
+        retry_count=retry_count,
     )
     calls = _calls.get()
     if calls is None:

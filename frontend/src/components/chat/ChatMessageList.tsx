@@ -186,7 +186,13 @@ export function ChatMessageList({
           }
 
           if (message.type === "compare_result") {
-            return <CompareResultCards key={message.id} comparison={message.comparison} />;
+            return (
+              <CompareResultCards
+                key={message.id}
+                comparison={message.comparison}
+                deviceLocation={deviceLocation}
+              />
+            );
           }
 
           if (message.type === "feedback") {

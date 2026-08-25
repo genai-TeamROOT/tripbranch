@@ -755,6 +755,13 @@ export interface LLMCallMetadata {
   served_model: string | null;
   /** 구조화 LLM 호출 전체 경과 시간(ms). 이전 실행 이력에는 없을 수 있다. */
   latency_ms?: number | null;
+  /**
+   * 같은 모델에 대해 타임아웃·429·5xx로 다시 시도한 횟수(0=첫 시도에서 끝남).
+   * 재시도가 성공하면 로그도 안 남고 attempted_models도 안 늘어나, 이 값이
+   * 없으면 latency_ms가 큰 이유가 "모델이 느렸다"인지 "재시도했다"인지 구분이
+   * 안 된다. 스트리밍 호출은 항상 0. 이전 실행 이력에는 없을 수 있다.
+   */
+  retry_count?: number | null;
 }
 
 export interface LLMExecutionMetadata {

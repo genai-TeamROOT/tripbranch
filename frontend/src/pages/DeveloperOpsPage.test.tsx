@@ -345,15 +345,26 @@ it("구별 무장애 행 수를 places 옆에 함께 보여준다", async () => 
  * 숫자를 표시하므로(예: ApiUsagePanel의 실패 카운트) 전역 getByText는
  * 우연히 다른 패널의 숫자와 겹칠 수 있다.
  *
+
  * 머리말("피드백 통계")은 /api/feedback/stats 응답이 오기 전에도 그려지므로,
  * 머리말만 보고 반환하면 뒤따르는 동기 getByText가 "불러오는 중…"만 든 패널을
  * 훑다가 실패한다. 요약 카드의 "전체"가 나타날 때까지 기다린 뒤 반환한다 —
  * 이 카드는 FeedbackStatsPanel이 stats를 받은 뒤에만 그린다. */
+ * ======= 충돌
+ * 헤딩("피드백 통계")은 로딩 중에도 항상 떠 있어서, 헤딩만 기다리면 아직
+ * fetch가 안 끝난 스켈레톤 상태의 section을 돌려줄 수 있다 — 그 상태에서
+ * 곧바로 동기 getByText를 하면 CI처럼 느린 환경에서 가끔 실패한다(TP-158).
+ * 로딩 버튼 문구가 "새로고침"으로 바뀔 때까지 기다려 데이터가 실제로 렌더된
+ * 뒤의 section을 돌려준다. */
+
 async function findFeedbackStatsPanel() {
   const heading = await screen.findByText("피드백 통계");
   const panel = heading.closest("section");
   if (!panel) throw new Error("피드백 통계 패널을 찾지 못했습니다.");
+
+  // 충돌 부분 확인 필요
   await within(panel).findByText("전체");
+  //await within(panel).findByRole("button", { name: "새로고침" });
   return panel;
 }
 
