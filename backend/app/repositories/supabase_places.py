@@ -1170,6 +1170,34 @@ class SupabasePlaceRepository:
             offset += _READ_PAGE_SIZE
         return rows
 
+    async def list_active_place_rows_by_ids(
+        self, content_ids: Sequence[str], columns: Sequence[str]
+    ) -> list[Mapping[str, object]]:
+        """활성 장소를 ID로 읽되 호출자가 요청한 순서를 보존한다."""
+        unique_ids = list(dict.fromkeys(content_ids))
+        if not unique_ids:
+            return []
+        rows_by_id: dict[str, Mapping[str, object]] = {}
+        for chunk in _chunks(unique_ids, _UPSERT_CHUNK_SIZE):
+            quoted_ids = ",".join(f'"{content_id}"' for content_id in chunk)
+            response = await self._request(
+                "GET",
+                "/places",
+                params={
+                    "select": ",".join(columns),
+                    "content_id": f"in.({quoted_ids})",
+                    "is_active": "eq.true",
+                },
+            )
+            payload = self._json(response)
+            if not isinstance(payload, list):
+                raise SupabaseRepositoryError("invalid place row response")
+            for raw in payload:
+                if not isinstance(raw, Mapping) or not raw.get("content_id"):
+                    raise SupabaseRepositoryError("place row missing content_id")
+                rows_by_id[str(raw["content_id"])] = raw
+        return [rows_by_id[content_id] for content_id in unique_ids if content_id in rows_by_id]
+
     async def list_detail_backfill_ids(
         self, area_code: str, district_code: str
     ) -> list[str]:
