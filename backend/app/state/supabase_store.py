@@ -304,6 +304,35 @@ class SupabaseStateStore:
         except Exception:
             raise StateStoreError("invalid response_feedback row") from None
 
+    def list_feedback_for_stats(
+        self, since: datetime | None = None, until: datetime | None = None
+    ) -> list[FeedbackRecord]:
+        """rating을 가리지 않고 전량을 읽는다(TP-146). 집계는 호출부(service.py)가
+        Python에서 한다 — PostgREST group-by/count()는 이 프로젝트 설정에서
+        기본 활성화가 보장되지 않고, 다른 조회 메서드도 전부 원본 행을 그대로
+        FeedbackRecord로 검증해 반환하는 방식을 따르고 있어 그 패턴을 유지한다.
+        """
+        params: dict[str, str] = {"select": "*", "order": "recorded_at.asc"}
+        if since is not None:
+            params["recorded_at"] = f"gte.{since.isoformat()}"
+        if until is not None:
+            until_filter = f"lt.{until.isoformat()}"
+            if "recorded_at" in params:
+                # PostgREST는 같은 컬럼에 여러 조건을 걸 때 and=(...) 문법이
+                # 필요하다 — 쿼리 파라미터 하나에 값 하나만 담을 수 있어서다.
+                since_filter = params.pop("recorded_at")
+                params["and"] = f"(recorded_at.{since_filter},recorded_at.{until_filter})"
+            else:
+                params["recorded_at"] = until_filter
+        response = self._request("GET", "/response_feedback", params=params)
+        payload = self._json(response)
+        if not isinstance(payload, list):
+            raise StateStoreError("invalid response_feedback response")
+        try:
+            return [FeedbackRecord.model_validate(row) for row in payload]
+        except Exception:
+            raise StateStoreError("invalid response_feedback row") from None
+
     # ------------------------------------------------------------ 정리(TP-134)
 
     def list_stale_session_ids(self, cutoff: datetime) -> list[str]:

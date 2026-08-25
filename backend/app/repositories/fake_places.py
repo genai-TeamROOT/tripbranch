@@ -159,7 +159,10 @@ class FakePlaceDetailsRepository:
         self._details = {detail.content_id: detail for detail in details}
 
     async def get_active_place_details(
-        self, content_ids: Sequence[str]
+        self,
+        content_ids: Sequence[str],
+        *,
+        include_barrier_free: bool = False,
     ) -> dict[str, StoredPlaceDetail]:
         # 실제 저장소와 같이 없는 id는 결과에서 빠진다 — 자리를 채워 주면 호출 측이
         # 미조회를 알아채지 못한다.

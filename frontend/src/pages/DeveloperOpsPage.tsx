@@ -26,8 +26,11 @@ import {
   type SyncDistricts,
   type SyncJob,
 } from "../api/dev";
+import { fetchFeedbackStats } from "../api/feedback";
+import type { FeedbackStatsResponse } from "../types";
 import { ApiUsagePanel } from "../components/dev/ApiUsagePanel";
 import { DbStatusPanel } from "../components/dev/DbStatusPanel";
+import { FeedbackStatsPanel } from "../components/dev/FeedbackStatsPanel";
 import { PlaceSyncPanel } from "../components/dev/PlaceSyncPanel";
 
 const AUTO_REFRESH_INTERVAL_MS = 3000;
@@ -53,6 +56,22 @@ export function DeveloperOpsPage() {
   const [dbStatus, setDbStatus] = useState<DbStatus | null>(null);
   const [dbError, setDbError] = useState<string | null>(null);
   const [dbLoading, setDbLoading] = useState(false);
+
+  const [feedbackStats, setFeedbackStats] = useState<FeedbackStatsResponse | null>(null);
+  const [feedbackStatsError, setFeedbackStatsError] = useState<string | null>(null);
+  const [feedbackStatsLoading, setFeedbackStatsLoading] = useState(false);
+
+  const loadFeedbackStats = useCallback(async () => {
+    setFeedbackStatsLoading(true);
+    try {
+      setFeedbackStats(await fetchFeedbackStats());
+      setFeedbackStatsError(null);
+    } catch (error) {
+      setFeedbackStatsError(toMessage(error, "피드백 통계를 불러오지 못했어요."));
+    } finally {
+      setFeedbackStatsLoading(false);
+    }
+  }, []);
 
   const loadUsage = useCallback(async () => {
     try {
@@ -178,7 +197,8 @@ export function DeveloperOpsPage() {
     void loadUsage();
     void loadDbStatus();
     void loadDistricts();
-  }, [loadDbStatus, loadDistricts, loadUsage]);
+    void loadFeedbackStats();
+  }, [loadDbStatus, loadDistricts, loadFeedbackStats, loadUsage]);
 
   // 폴링은 호출량에만 건다. DB 상태는 844행을 훑어 Supabase 호출이 따라붙으므로
   // 3초마다 부르면 패널 자체가 트래픽을 만든다.
@@ -271,6 +291,12 @@ export function DeveloperOpsPage() {
           error={dbError}
           loading={dbLoading}
           onRefresh={() => void loadDbStatus()}
+        />
+        <FeedbackStatsPanel
+          stats={feedbackStats}
+          error={feedbackStatsError}
+          loading={feedbackStatsLoading}
+          onRefresh={() => void loadFeedbackStats()}
         />
       </div>
     </main>

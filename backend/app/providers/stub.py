@@ -1312,6 +1312,25 @@ class FakePlaceProvider:
                 pet=_first_intro_text(intro, PET_KEYS),
                 credit_card=_first_intro_text(intro, CREDIT_CARD_KEYS),
                 restroom=_first_intro_text(intro, RESTROOM_KEYS),
+                # 무장애 정보(D-077)도 채운다. 비워 두면 INFO facility 배선이
+                # 끊어져도 fake로 도는 테스트는 전부 통과하고, 실제 운영에서만
+                # 값이 비는 상태가 된다.
+                approach_route_raw="출입구까지 턱이 없어 휠체어 접근 가능함",
+                entrance_access_raw="주출입구는 경사로가 있어 휠체어 접근 가능함",
+                elevator_raw="엘리베이터 있음",
+                accessible_restroom_raw="장애인 화장실 있음",
+                accessible_parking_raw="장애인 주차장 있음(2대)",
+                braille_block_raw="점자블록 있음",
+                braille_promotion_raw="점자 안내물 있음",
+                audio_guide_raw="음성 안내 있음",
+                guide_dog_raw="동반가능",
+                # 이름과 달리 출입이 아니라 대여다 — fake도 그 뜻으로 채운다.
+                wheelchair_rental_raw="대여가능(2대, 안내데스크)",
+                stroller_rental_raw="대여가능",
+                nursing_room_raw="수유실 있음",
+                infant_family_etc_raw="기저귀교환대 있음",
+                public_transport_raw="저상버스 운행",
+                disability_etc_raw="장애인 안내 도우미 있음",
                 thumbnail_url=(
                     f"https://example.test/{content_id}-thumb.jpg" if candidate else None
                 ),

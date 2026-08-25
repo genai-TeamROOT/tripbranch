@@ -548,6 +548,32 @@ export interface RecordFeedbackResponse {
   recorded_at: string;
 }
 
+/** GET /api/feedback/stats의 intent 항목 1개. (TP-146) */
+export interface FeedbackIntentCount {
+  intent: string;
+  count: number;
+}
+
+/**
+ * GET /api/feedback/stats 응답. backend/app/state/service.py의
+ * FeedbackStatsResponse와 대응.
+ *
+ * reason_code_counts는 표준 7개 사유 + "unclassified"(사유 없이 남긴
+ * dislike) 키를 항상 전부 포함한다. like 행은 여기 안 들어간다.
+ * top_intents는 상위 N개(요청한 top_intents 개수)만 담고, 그 뒤 롱테일은
+ * other_intent_count로 합쳐진다. intent 자체가 없는 행은 missing_intent_count.
+ */
+export interface FeedbackStatsResponse {
+  since: string | null;
+  until: string | null;
+  total: number;
+  rating_counts: Record<"like" | "dislike", number>;
+  reason_code_counts: Record<FeedbackReasonCode | "unclassified", number>;
+  top_intents: FeedbackIntentCount[];
+  other_intent_count: number;
+  missing_intent_count: number;
+}
+
 export interface AgentResponse {
   llm_output: LLMOutput;
   state: StateApplyResponse;

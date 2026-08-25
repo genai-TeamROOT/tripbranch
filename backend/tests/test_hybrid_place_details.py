@@ -81,10 +81,17 @@ class _Locations:
 class _Details:
     def __init__(self, rows: dict[str, StoredPlaceDetail]) -> None:
         self._rows = rows
+        # provider가 무장애 정보를 요청했는지 기록한다. 요청하지 않으면 저장소가
+        # 그 값을 읽어오지 않아 INFO facility 질문이 답할 근거를 잃는다.
+        self.barrier_free_requested: list[bool] = []
 
     async def get_active_place_details(
-        self, content_ids: Sequence[str]
+        self,
+        content_ids: Sequence[str],
+        *,
+        include_barrier_free: bool = False,
     ) -> dict[str, StoredPlaceDetail]:
+        self.barrier_free_requested.append(include_barrier_free)
         return {
             content_id: self._rows[content_id]
             for content_id in content_ids
@@ -314,3 +321,91 @@ async def test_Tool이_상세를_그대로_전달한다() -> None:
     assert result.status is ToolStatus.SUCCESS
     assert result.details is not None
     assert result.details.parking == "가능 (승용차 240대 / 버스 50대)"
+
+
+@pytest.mark.asyncio
+async def test_무장애_정보를_저장소에_요청한다() -> None:
+    """요청하지 않으면 저장소가 무장애 값을 읽어오지 않는다.
+
+    INFO facility 질문이 답할 근거를 잃는데, 값이 비어 있을 뿐 오류가 나지 않아
+    화면에서는 "그 장소에 정보가 없다"로 보인다.
+    """
+    details_repository = _Details({"126508": _row()})
+    provider = HybridPlaceDetailsProvider(
+        location_repository=_Locations((_location(),)),
+        details_repository=details_repository,
+        common_provider=_Common(),
+    )
+
+    await provider.find_details_by_name("경복궁")
+
+    assert details_repository.barrier_free_requested == [True]
+
+
+@pytest.mark.asyncio
+async def test_무장애_원문이_facility_응답까지_도달한다() -> None:
+    """저장소 → PlaceDetails → 계약 키로 이어지는 배선을 못 박는다.
+
+    값을 비워 둔 채 테스트하면 배선이 끊어져도 통과한다. 실제 문장을 넣는다.
+    """
+    provider, _ = _provider(
+        rows={
+            "126508": _row(
+                approach_route_raw="출입구까지 경사로가 설치되어 있음",
+                entrance_access_raw="주출입구는 턱이 없어 휠체어 접근 가능함",
+                elevator_raw="엘리베이터 있음",
+                accessible_restroom_raw="장애인 화장실 있음",
+                accessible_parking_raw="장애인 주차장 있음(9면)",
+                wheelchair_rental_raw="대여가능",
+                stroller_rental_raw="유모차 대여 가능함(4대)",
+                nursing_room_raw="수유실 있음(흥례문)",
+                guide_dog_raw="동반가능",
+                braille_block_raw="점자블록 있음",
+                braille_promotion_raw="점자 안내물 있음",
+                audio_guide_raw="음성 안내 있음",
+                public_transport_raw="저상버스 운행 : 모든 버스",
+                infant_family_etc_raw="기저귀교환대 있음",
+                disability_etc_raw="휠체어 관람경로가 표시되어 있음",
+            )
+        }
+    )
+
+    details = (await provider.find_details_by_name("경복궁")).data
+    fields = extract_info_fields("facility", details)
+
+    # 접근로·주출입구·승강기는 한 키로 합쳐 나간다.
+    assert fields["wheelchair_access"] == (
+        "출입구까지 경사로가 설치되어 있음"
+        " / 주출입구는 턱이 없어 휠체어 접근 가능함"
+        " / 엘리베이터 있음"
+    )
+    # 이름과 달리 출입이 아니라 대여다.
+    assert fields["wheelchair_rental"] == "대여가능"
+    # 일반 화장실과 장애인 화장실은 뜻이 달라 둘 다 나간다.
+    assert fields["restroom"] == "있음"
+    assert fields["accessible_restroom"] == "장애인 화장실 있음"
+    assert fields["accessible_parking"] == "장애인 주차장 있음(9면)"
+    assert fields["stroller_rental"] == "유모차 대여 가능함(4대)"
+    assert fields["nursing_room"] == "수유실 있음(흥례문)"
+    assert fields["guide_dog"] == "동반가능"
+    assert fields["braille_block"] == "점자블록 있음"
+    assert fields["braille_promotion"] == "점자 안내물 있음"
+    assert fields["audio_guide"] == "음성 안내 있음"
+    assert fields["public_transport"] == "저상버스 운행 : 모든 버스"
+    assert fields["infant_family_etc"] == "기저귀교환대 있음"
+    assert fields["disability_etc"] == "휠체어 관람경로가 표시되어 있음"
+
+
+@pytest.mark.asyncio
+async def test_무장애_정보가_없는_장소는_키가_생기지_않는다() -> None:
+    """places 행의 81%가 이 경우다. 없는 값을 지어내지 않는다."""
+    provider, _ = _provider()
+
+    details = (await provider.find_details_by_name("경복궁")).data
+    fields = extract_info_fields("facility", details)
+
+    assert "wheelchair_access" not in fields
+    assert "accessible_restroom" not in fields
+    # 기존 편의시설 답변은 그대로다.
+    assert fields["restroom"] == "있음"
+    assert fields["pet"] == "불가"
