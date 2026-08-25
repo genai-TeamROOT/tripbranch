@@ -11,6 +11,7 @@ FakeToolProvider는 A-C Context Contract v0(docs/design/a-c-context-contract-dra
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import contextmanager
 from datetime import UTC, datetime
 
@@ -65,6 +66,7 @@ from app.services.runtime.agent_runtime import (
     _apply_concentration_rerank,
     _fetch_compare_travel_routes,
     run_agent_flow,
+    summarize_turn,
 )
 from app.services.runtime.compare_context_schemas import (
     CompareContextRequest,
@@ -854,9 +856,7 @@ async def test_clarification_choice_location_quick_pick_resolves_to_recommend() 
     providers = _providers()
 
     ambiguous = await run_agent_flow(
-        AgentRequest(
-            user_input="카페 추천해줘", session_id=None, device_location=DEVICE_LOCATION
-        ),
+        AgentRequest(user_input="카페 추천해줘", session_id=None, device_location=DEVICE_LOCATION),
         store=store,
         **providers,
     )
@@ -940,7 +940,7 @@ async def test_stale_location_clarification_choice_falls_back_to_normal_classifi
 
 @pytest.mark.asyncio
 async def test_travel_origin_override_resolves_without_classification() -> None:
-    """"OO 기준으로 다시 보기" 버튼(travel_origin_override, D-071)은
+    """ "OO 기준으로 다시 보기" 버튼(travel_origin_override, D-071)은
     classify_intent()를 건너뛰고 직전 조건에 travel_origin만 덮어써 재실행해야
     한다. 이를 증명하기 위해 이번 턴 user_input에 OUT_OF_SCOPE 마커("주식")를
     넣는다 — classify_intent()가 실제로 호출됐다면 OUT_OF_SCOPE로 분류될
@@ -1044,7 +1044,7 @@ async def test_schedule_bare_restart_during_location_ask_triggers_clarification(
 
 @pytest.mark.asyncio
 async def test_clarification_choice_schedule_restart_wipes_conditions() -> None:
-    """"네, 처음부터 다시 잡을게요" 클릭은 조건을 비우고 다시 location_required로
+    """ "네, 처음부터 다시 잡을게요" 클릭은 조건을 비우고 다시 location_required로
     이어져야 한다(PR 2의 종로구 대표 스팟 버튼으로 자연스럽게 연결)."""
     store = InMemoryStateStore()
     providers = _providers()
@@ -1089,7 +1089,7 @@ async def test_clarification_choice_schedule_restart_wipes_conditions() -> None:
 
 @pytest.mark.asyncio
 async def test_clarification_choice_schedule_keep_asking_preserves_conditions() -> None:
-    """"아니요, 위치만 알려드릴게요" 클릭은 조건을 그대로 두고 같은
+    """ "아니요, 위치만 알려드릴게요" 클릭은 조건을 그대로 두고 같은
     location_required를 다시 띄워야 한다."""
     store = InMemoryStateStore()
     providers = _providers()
@@ -1176,7 +1176,7 @@ async def test_bare_restart_during_active_recommend_triggers_clarification() -> 
 
 @pytest.mark.asyncio
 async def test_clarification_choice_keep_context_resolves_to_modify_reject_all() -> None:
-    """"경복궁 근처로 다시 찾아주세요" 클릭은 조건은 유지한 채 REJECT_ALL로
+    """ "경복궁 근처로 다시 찾아주세요" 클릭은 조건은 유지한 채 REJECT_ALL로
     재조회해야 한다."""
     store = InMemoryStateStore()
     providers = _providers()
@@ -1219,7 +1219,7 @@ async def test_clarification_choice_keep_context_resolves_to_modify_reject_all()
 
 @pytest.mark.asyncio
 async def test_clarification_choice_full_reset_wipes_conditions_without_auto_searching() -> None:
-    """"새로 시작할게요" 클릭은 조건을 전부 비우되, Tool을 바로 부르지 않고 새
+    """ "새로 시작할게요" 클릭은 조건을 전부 비우되, Tool을 바로 부르지 않고 새
     목적지/조건을 직접 말해달라는 터미널 문구로 끝나야 한다.
 
     (2026-08-13 실사용 재현) 예전엔 조건을 비운 뒤 그대로 Tool까지 이어져서,
@@ -1317,7 +1317,7 @@ async def test_bare_restart_after_schedule_completed_triggers_clarification() ->
 
 @pytest.mark.asyncio
 async def test_clarification_choice_retry_schedule_keeps_conditions_and_replans() -> None:
-    """"{조건}로 다시 짜주세요" 클릭은 같은 조건으로 SCHEDULE 재편성해야 한다
+    """ "{조건}로 다시 짜주세요" 클릭은 같은 조건으로 SCHEDULE 재편성해야 한다
     (REJECT_ALL이 아니다 — MODIFY 결과 모양은 SCHEDULE에 안 맞는다)."""
     store = InMemoryStateStore()
     providers = _providers()
@@ -2016,7 +2016,7 @@ async def test_compare_with_single_shown_triggers_clarification() -> None:
 
 @pytest.mark.asyncio
 async def test_clarification_choice_compare_show_more_resolves_to_recommend() -> None:
-    """"다른 곳도 보여주세요" 클릭은 REJECT_ALL로 재조회하는 기존 검증된 경로를
+    """ "다른 곳도 보여주세요" 클릭은 REJECT_ALL로 재조회하는 기존 검증된 경로를
     그대로 탄다.
 
     검색 중심점이 있어야 REJECT_ALL 재조회가 location_required로 새지 않으므로,
@@ -2061,7 +2061,7 @@ async def test_clarification_choice_compare_show_more_resolves_to_recommend() ->
 
 @pytest.mark.asyncio
 async def test_clarification_choice_compare_keep_current_returns_canned_message() -> None:
-    """"지금 장소가 마음에 들어요" 클릭은 조회할 것이 없으므로 Tool/LLM 호출 없이
+    """ "지금 장소가 마음에 들어요" 클릭은 조회할 것이 없으므로 Tool/LLM 호출 없이
     고정 문구로 바로 끝나야 한다."""
     store = InMemoryStateStore()
     providers = _providers_with_forced_compare()
@@ -3536,9 +3536,7 @@ async def test_repeated_reject_all_does_not_refetch_closed_candidates() -> None:
     점점 줄어드는 원인이었다).
     """
     store = InMemoryStateStore()
-    tool_provider = _RefillPlacesToolProvider(
-        total=15, page_size=15, open_indexes={0, 1, 2, 3, 4}
-    )
+    tool_provider = _RefillPlacesToolProvider(total=15, page_size=15, open_indexes={0, 1, 2, 3, 4})
     providers = {
         "llm": _LLMProviderWithGeneralAnswer(),
         "tool_provider": tool_provider,
@@ -4145,7 +4143,7 @@ async def test_no_data_closed_triggers_clarification_with_show_closed_button() -
 
 @pytest.mark.asyncio
 async def test_clarification_choice_show_closed_reruns_ignoring_operating_hours() -> None:
-    """"운영 중이 아닌 곳도 볼게요" 클릭은 classify_intent() 재호출 없이 같은
+    """ "운영 중이 아닌 곳도 볼게요" 클릭은 classify_intent() 재호출 없이 같은
     조건으로 D를 다시 부르되, 이번엔 ignore_operating_hours=True로 폐점 후보도
     채점에 포함해야 한다."""
     store = InMemoryStateStore()
@@ -4349,7 +4347,7 @@ async def test_clarification_choice_no_data_exhausted_widens_category_and_reruns
 
 @pytest.mark.asyncio
 async def test_clarification_choice_no_data_exhausted_custom_conditions_is_terminal() -> None:
-    """"새로운 조건 직접 말할게요"는 Tool을 다시 부르지 않고 바로 끝난다(케이스5의
+    """ "새로운 조건 직접 말할게요"는 Tool을 다시 부르지 않고 바로 끝난다(케이스5의
     full_reset과 동일 패턴)."""
     store = InMemoryStateStore()
     providers = _providers()
@@ -4625,8 +4623,8 @@ async def test_turn_opens_a_root_observation_so_it_stays_one_trace(
     @contextmanager
     def _spy(name: str, **kwargs: object):
         opened.append(name)
-        with real_observe_step(name, **kwargs):  # type: ignore[arg-type]
-            yield
+        with real_observe_step(name, **kwargs) as recorder:  # type: ignore[arg-type]
+            yield recorder
 
     monkeypatch.setattr(agent_runtime_module, "observe_step", _spy)
 
@@ -4643,3 +4641,75 @@ async def test_turn_opens_a_root_observation_so_it_stays_one_trace(
 
     assert opened, "턴을 감싸는 루트 관측이 열리지 않았다 — trace가 조각난다."
     assert opened[0] == "agent_turn"
+
+
+# --- 루트 span 요약: 목록 화면이 읽히게 한다 ---------------------------------
+
+
+@pytest.mark.asyncio
+async def test_turn_summary_says_what_the_turn_was() -> None:
+    """루트는 SPAN이라 토큰·비용이 없다. 그래서 요약이 없으면 행에 이름과 지연만 남는다."""
+    providers = _providers()
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            latitude=37.5796,
+            longitude=126.9770,
+        ),
+        **providers,
+    )
+
+    summary = summarize_turn(response)
+
+    assert summary["intent"] == response.llm_output.intent.value
+    assert summary["status"] == response.llm_output.status.value
+    assert summary["message_length"] == len(response.message)
+    # 목록 행에 뜨는 한 줄. 마스킹을 타지 않는 자리로 나간다.
+    assert summary["intent"] in str(summary["headline"])
+    assert summary["status"] in str(summary["headline"])
+
+
+@pytest.mark.asyncio
+async def test_turn_summary_carries_no_utterance_or_answer_text() -> None:
+    """발화도 답변도 싣지 않는다 — intent와 결과 모양만으로 목록이 읽힌다."""
+    providers = _providers()
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            latitude=37.5796,
+            longitude=126.9770,
+        ),
+        **providers,
+    )
+
+    blob = json.dumps(summarize_turn(response), ensure_ascii=False)
+
+    assert "경복궁 근처 카페 추천해줘" not in blob
+    if response.message:
+        assert response.message not in blob
+
+
+def test_turn_summary_names_the_payload_shape() -> None:
+    """카드·일정·비교·장소정보 중 무엇이 나갔는지가 headline에 드러난다."""
+
+    class _Resp:
+        recommendations = None
+        schedule = object()
+        comparison = None
+        info_place_card = None
+        message = "일정을 만들었어요."
+
+        class llm_output:  # noqa: N801
+            class intent:
+                value = "SCHEDULE"
+
+            class status:
+                value = "complete"
+
+    summary = summarize_turn(_Resp())  # type: ignore[arg-type]
+
+    assert summary["has_schedule"] is True
+    assert summary["card_count"] == 0
+    assert summary["headline"] == "SCHEDULE · complete · 일정"

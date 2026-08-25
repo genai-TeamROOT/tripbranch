@@ -251,7 +251,7 @@ _IGNORE_OPERATING_HOURS_TTL = timedelta(hours=1)
 
 
 def _remember_ignore_operating_hours(session_id: str, store: StateStore | None) -> None:
-    """"운영 중이 아닌 곳도 볼게요" 선택을 TTL 동안 B에 남긴다."""
+    """ "운영 중이 아닌 곳도 볼게요" 선택을 TTL 동안 B에 남긴다."""
     set_ignore_operating_hours_until(
         SetIgnoreOperatingHoursRequest(
             session_id=session_id, until=now_kst() + _IGNORE_OPERATING_HOURS_TTL
@@ -352,7 +352,7 @@ async def _respond_no_data_closed(
     tool_execution: object,
     tool_executions: object,
 ) -> AgentResponse:
-    """"운영 중이 아닌 곳도 볼게요" 되묻기 응답을 조립한다.
+    """ "운영 중이 아닌 곳도 볼게요" 되묻기 응답을 조립한다.
 
     RECOMMEND/MODIFY 경로와 SCHEDULE 경로 둘 다에서 쓴다 — SCHEDULE도 원인이
     "폐점 후보뿐"이면 "후보가 부족하니 지역/카테고리를 바꿔달라"는 일반 되묻기
@@ -678,9 +678,7 @@ def _resolve_clarification_choice(
                 llm_output=LLMOutput(
                     intent=Intent.GENERAL,
                     status=OutputStatus.COMPLETE,
-                    general=GeneralPayload(
-                        topic=GeneralTopic.TRAVEL_TIP, original_question=""
-                    ),
+                    general=GeneralPayload(topic=GeneralTopic.TRAVEL_TIP, original_question=""),
                 ),
                 terminal_message=_COMPARE_SINGLE_SHOWN_KEEP_MESSAGE,
             )
@@ -774,7 +772,7 @@ _TRAVEL_ORIGIN_OVERRIDE_RESOLVABLE_INTENTS = frozenset(
 def _resolve_travel_origin_override(
     *, override: TravelOrigin, session_context: SessionContextResponse
 ) -> _ClarificationResolution | None:
-    """"OO 기준으로 다시 보기" 버튼 클릭을 결정적으로 해소한다.
+    """ "OO 기준으로 다시 보기" 버튼 클릭을 결정적으로 해소한다.
 
     되묻기(_resolve_clarification_choice)와 달리 pending_clarification을 요구하지
     않는다 — 이 버튼은 완결된 답변 아래에 조건부로 붙는 비차단형 제안이라(D-071,
@@ -1197,9 +1195,7 @@ async def _fetch_compare_travel_routes(
         *(_fetch_one_mode(mode) for mode in _COMPARE_TRAVEL_TIME_FIELDS)
     )
     routes_by_mode: dict[TravelMode, dict[str, TravelRoute]] = {
-        mode: {
-            route.place_id: route for route in routes if route.status is RouteStatus.SUCCESS
-        }
+        mode: {route.place_id: route for route in routes if route.status is RouteStatus.SUCCESS}
         for mode, routes in mode_results
     }
     if not any(routes_by_mode.values()):
@@ -1220,6 +1216,49 @@ async def _fetch_compare_travel_routes(
 
     updated_items = [_update_item(item) for item in comparison.items]
     return comparison.model_copy(update={"items": updated_items})
+
+
+def summarize_turn(response: AgentResponse) -> dict[str, object]:
+    """루트 span(`agent_turn`)에 실을 값을 고른다.
+
+    **여기가 비어 있으면 목록 화면이 안 읽힌다.** 루트는 SPAN이라 토큰·비용·모델이
+    원래 없고(그건 자식 GENERATION의 것), 입출력까지 비어 있으면 행에 이름과 지연만
+    남는다 — "이 턴이 무슨 요청이었나"를 알려면 눌러서 `classify_intent`의 출력을
+    봐야 했다. 턴이 쌓이면 못 쓴다.
+
+    **발화도 답변 원문도 싣지 않는다.** intent와 결과 모양만으로 목록이 읽힌다.
+    원문이 필요하면 자식 generation에 이미 있다(`capture_content`가 켜져 있을 때).
+
+    `headline`은 `status_message`로 나간다 — 그 자리는 mask를 타지 않아
+    원문 수집을 꺼도 남는다(`langfuse_tracing` 모듈 docstring, 검증 기준 g).
+    """
+    recommendations = response.recommendations
+    shown = list(getattr(recommendations, "recommendations", None) or [])
+    unverified = list(getattr(recommendations, "unverified_recommendations", None) or [])
+    cards = len(shown) + len(unverified)
+    intent = response.llm_output.intent.value
+    status = response.llm_output.status.value
+
+    detail = f"카드 {cards}" if cards else None
+    if response.schedule is not None:
+        detail = "일정"
+    elif response.comparison is not None:
+        detail = "비교"
+    elif response.info_place_card is not None:
+        detail = "장소 정보"
+
+    return {
+        "intent": intent,
+        "status": status,
+        "card_count": cards,
+        "unverified_count": len(unverified),
+        "has_schedule": response.schedule is not None,
+        "has_comparison": response.comparison is not None,
+        "has_info_card": response.info_place_card is not None,
+        # 답변이 나갔는지만 본다. 원문은 자식 generation에 있다.
+        "message_length": len(response.message) if response.message else 0,
+        "headline": " · ".join(part for part in (intent, status, detail) if part),
+    }
 
 
 async def run_agent_flow(
@@ -1260,9 +1299,9 @@ async def run_agent_flow(
             session_id=request.session_id,
             tags=[f"scoring:{SCORING_VERSION}", f"env:{settings.app_env}"],
         ),
-        observe_step("agent_turn"),
+        observe_step("agent_turn") as turn,
     ):
-        return await _run_agent_flow(
+        response = await _run_agent_flow(
             request,
             llm=llm,
             tool_provider=tool_provider,
@@ -1274,6 +1313,18 @@ async def run_agent_flow(
             stream_event_sink=stream_event_sink,
             stream_recommendation_summary=stream_recommendation_summary,
         )
+        try:
+            summary = summarize_turn(response)
+            turn.record(
+                output=summary,
+                # 목록 화면에서 필터를 걸 자리. capture_content가 꺼지면 가려진다.
+                metadata={"intent": summary["intent"], "status": summary["status"]},
+                # 마스킹을 타지 않는 자리. 원문 수집을 꺼도 목록에서 턴이 읽힌다.
+                status_message=summary["headline"],
+            )
+        except Exception:
+            logger.warning("턴 관측 요약 실패(응답 흐름에는 영향 없음)", exc_info=True)
+        return response
 
 
 async def _run_agent_flow(
@@ -1779,9 +1830,7 @@ async def _run_agent_flow(
             )
         # terminal_message가 있는 경우는 위(3단계 직후)에서 이미 처리하고
         # 반환했으므로 여기서는 다시 안 본다.
-        is_streaming_general = (
-            stream_recommendation_summary and llm_output.intent is Intent.GENERAL
-        )
+        is_streaming_general = stream_recommendation_summary and llm_output.intent is Intent.GENERAL
         if settings.use_langgraph_early_return:
             # 2단계: 조기 반환 경로(Tool/Scoring 없이 끝나는 턴) 전체를 라우팅
             # 그래프가 맡는다(langgraph-adoption.md §6.1). RECOMMEND/MODIFY/
@@ -1845,7 +1894,6 @@ async def _run_agent_flow(
             ),
             stream_event_sink=stream_event_sink,
         )
-
 
     tool_outcome = await _fetch_tool_context(
         request,
@@ -2120,15 +2168,17 @@ async def _fetch_tool_context(
             tool_error_code=tool_response.error.code if tool_response.error else None,
             llm=llm,
         )
-        return _ToolFetchOutcome(terminal=AgentResponse(
-            llm_output=llm_output,
-            state=state_response,
-            recommendations=None,
-            message=message,
-            llm_execution=get_llm_execution_metadata(),
-            tool_execution=tool_execution,
-            tool_executions=tool_executions,
-        ))
+        return _ToolFetchOutcome(
+            terminal=AgentResponse(
+                llm_output=llm_output,
+                state=state_response,
+                recommendations=None,
+                message=message,
+                llm_execution=get_llm_execution_metadata(),
+                tool_execution=tool_execution,
+                tool_executions=tool_executions,
+            )
+        )
 
     # success/partial은 Recommendation 단계로 진행한다(경고가 있어도 가능한 데이터로
     # 계속 — 계약 문서 §5.4). 위에서 종료 상태를 걸렀으므로 context는 항상 있다.
@@ -2145,15 +2195,17 @@ async def _fetch_tool_context(
             tool_response.status,
         )
         message = await compose_chat_message(llm_output, tool_status=tool_response.status, llm=llm)
-        return _ToolFetchOutcome(terminal=AgentResponse(
-            llm_output=llm_output,
-            state=state_response,
-            recommendations=None,
-            message=message,
-            llm_execution=get_llm_execution_metadata(),
-            tool_execution=tool_execution,
-            tool_executions=tool_executions,
-        ))
+        return _ToolFetchOutcome(
+            terminal=AgentResponse(
+                llm_output=llm_output,
+                state=state_response,
+                recommendations=None,
+                message=message,
+                llm_execution=get_llm_execution_metadata(),
+                tool_execution=tool_execution,
+                tool_executions=tool_executions,
+            )
+        )
 
     return _ToolFetchOutcome(
         tool_context=tool_context,
@@ -2443,9 +2495,7 @@ async def _run_schedule_branch(
             tool_execution=tool_execution,
             tool_executions=tool_executions,
         )
-    places = (
-        tool_context.places.data if tool_context.places and tool_context.places.data else []
-    )
+    places = tool_context.places.data if tool_context.places and tool_context.places.data else []
 
     # 6-2-1) SCHEDULE-09 2단계: REJECT_SPECIFIC으로 재라우팅된 턴이면 통째로
     #        새로 짜지 않고, target_indices가 가리키는 자리만 새로 채운다.
@@ -2764,9 +2814,7 @@ async def run_agent(
             request,
             llm=get_llm_provider(),
             tool_provider=get_context_provider(client),
-            recommendation_provider=RealRecommendationProvider(
-                get_place_evidence_provider(client)
-            ),
+            recommendation_provider=RealRecommendationProvider(get_place_evidence_provider(client)),
             enrichment_provider=get_candidate_enrichment_service(client),
             travel_route_tool=get_travel_route_tool(client),
             principal=principal,
@@ -2775,4 +2823,4 @@ async def run_agent(
         )
 
 
-__all__ = ["StreamEventSink", "run_agent", "run_agent_flow"]
+__all__ = ["StreamEventSink", "run_agent", "run_agent_flow", "summarize_turn"]
