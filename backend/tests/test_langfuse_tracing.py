@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import builtins
 from typing import Any
 
 import pytest
@@ -220,6 +221,65 @@ def test_boot_passes_when_enabled_with_credentials() -> None:
             langfuse_secret_key="sk-lf-test",
         )
     )
+
+
+def test_boot_fails_when_enabled_without_the_package(monkeypatch: pytest.MonkeyPatch) -> None:
+    """설정만 검사하면 "켰는데 조용히 꺼진" 상태가 남는다.
+
+    2026-08-25에 정확히 그렇게 물렸다 — LangChain CallbackHandler가 `langchain` 본체를
+    못 찾아 ModuleNotFoundError를 냈는데, 에러 흡수 설계대로 **앱은 멀쩡하고 노드
+    span만 통째로 안 생겼다.** 실 서버로 되읽지 않았으면 몰랐다.
+
+    켠 사람만 영향받는다 — 꺼져 있으면 이 검사에 도달하지 않는다(아래 테스트).
+    """
+    real_import = builtins.__import__
+
+    def _no_langfuse(name: str, *args: object, **kwargs: object) -> object:
+        if name == "langfuse" or name.startswith("langfuse."):
+            raise ModuleNotFoundError(f"No module named {name!r}")
+        return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(builtins, "__import__", _no_langfuse)
+
+    with pytest.raises(ValueError) as error:
+        validate_langfuse_config(
+            Settings(
+                _env_file=None,
+                langfuse_enabled=True,
+                langfuse_public_key="pk-lf-test",
+                langfuse_secret_key="sk-lf-test",
+            )
+        )
+
+    assert "설치되지 않았습니다" in str(error.value)
+    # 무엇을 하라는 건지 문구에 있어야 한다 — 팀원이 이 메시지만 보고 해결한다.
+    assert "pip install" in str(error.value)
+
+
+def test_boot_passes_without_the_package_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**팀원은 설치도 설정도 안 해야 한다.**
+
+    브랜치를 받은 사람이 `pip install`을 안 돌려도 동작이 이전과 같아야 한다.
+    실제로 `langfuse`를 최상위에서 import하는 코드가 한 곳도 없다 — 전부
+    `get_tracer()` 안의 지연 import다.
+    """
+    real_import = builtins.__import__
+
+    def _no_langfuse(name: str, *args: object, **kwargs: object) -> object:
+        if name == "langfuse" or name.startswith("langfuse."):
+            raise ModuleNotFoundError(f"No module named {name!r}")
+        return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(builtins, "__import__", _no_langfuse)
+
+    validate_langfuse_config(Settings(_env_file=None))
+
+    # 계측 헬퍼도 패키지 없이 그냥 지나가야 한다.
+    with trace_attributes(session_id="s", tags=["t"]):
+        with observe_step("no_package") as step:
+            step.record(output={"a": 1})
+        with observe_generation("no_package_gen", model="m") as generation:
+            generation.record(output="x", usage_details={"input": 1})
 
 
 # --- 5. 관측 실패가 응답을 막지 않는다 ------------------------------------------

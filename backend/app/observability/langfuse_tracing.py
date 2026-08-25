@@ -82,7 +82,7 @@ def _mask(*, data: Any, **_: Any) -> Any:
 
 
 def validate_langfuse_config(target: Settings | None = None) -> None:
-    """켜져 있는데 자격증명이 비어 있으면 부팅에서 막는다.
+    """켜져 있는데 자격증명이나 패키지가 없으면 부팅에서 막는다.
 
     실패는 첫 요청이 아니라 부팅에서 드러나야 한다(D-042). 관측은 조용히 안 되면
     "켠 줄 알았는데 아무것도 안 쌓이는" 상태가 며칠씩 간다.
@@ -105,6 +105,17 @@ def validate_langfuse_config(target: Settings | None = None) -> None:
         raise ValueError(
             "LANGFUSE_ENABLED=true인데 필요한 환경변수가 비어 있습니다: " + ", ".join(missing)
         )
+    # **패키지 유무까지 여기서 본다.** 설정만 검사하면 켠 사람이 "켰는데 아무것도
+    # 안 쌓이는" 상태로 며칠 간다 — 2026-08-25에 LangChain CallbackHandler가 정확히
+    # 그렇게 조용히 꺼졌다(langchain 본체 미설치, 앱은 멀쩡, 노드 span만 통째로 없음).
+    # 켠 사람만 영향받는다. 꺼져 있으면 위에서 이미 돌아갔다.
+    try:
+        import langfuse  # noqa: F401
+    except ModuleNotFoundError as exc:
+        raise ValueError(
+            "LANGFUSE_ENABLED=true인데 langfuse 패키지가 설치되지 않았습니다. "
+            'backend에서 pip install -e "." 를 실행하거나 LANGFUSE_ENABLED=false로 두세요.'
+        ) from exc
 
 
 def get_tracer() -> Any | None:
