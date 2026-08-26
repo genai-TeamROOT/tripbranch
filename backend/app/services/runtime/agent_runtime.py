@@ -44,6 +44,7 @@ from app.observability.langfuse_tracing import (
 from app.place_search_policy import MAX_PLACE_SEARCH_RADIUS_KM, WALKING_SPEED_KM_PER_MINUTE
 from app.prompts.registry import turn_prompt_version
 from app.providers.protocols import LLMProvider
+from app.schedule.associations import fetch_co_visited_hints
 from app.schedule.planner import plan_partial_schedule, plan_schedule
 from app.schedule.schemas import SchedulePartialFillRequest, SchedulePlanningRequest
 from app.schemas import (
@@ -2768,7 +2769,9 @@ async def _run_schedule_branch(
             "기존 일정은 유지하고 바꿀 장소를 다시 편성하고 있어요.",
         )
         schedule_result = await _await_with_heartbeat(
-            plan_partial_schedule(partial_request, llm),
+            plan_partial_schedule(
+                partial_request, llm, co_visited_fetcher=fetch_co_visited_hints
+            ),
             sink=stream_event_sink,
             stage="scheduling",
         )
@@ -2785,7 +2788,7 @@ async def _run_schedule_branch(
             "장소 순서와 머무는 시간을 구성하고 있어요.",
         )
         schedule_result = await _await_with_heartbeat(
-            plan_schedule(schedule_request, llm),
+            plan_schedule(schedule_request, llm, co_visited_fetcher=fetch_co_visited_hints),
             sink=stream_event_sink,
             stage="scheduling",
         )
