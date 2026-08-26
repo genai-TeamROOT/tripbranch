@@ -156,6 +156,20 @@ def test_kakao_map_route_coordinates_are_kept() -> None:
     }
 
 
+def test_naver_driving_route_coordinates_are_kept() -> None:
+    """자동차 경로도 x-ncp-* 헤더로 인증하므로 좌표 쿼리는 가리지 않는다.
+
+    provider가 지오코딩에서 갈려 나오면서(TP-131) `_QUERY_SAFE_PROVIDERS`에
+    새 이름을 넣지 않으면, 집계만 고치고 원문 패널의 좌표는 전부 마스킹된다.
+    """
+    params = httpx.QueryParams({"start": "127.1,37.4", "goal": "126.9,37.5"})
+
+    assert mask_query("naver_driving", params) == {
+        "start": "127.1,37.4",
+        "goal": "126.9,37.5",
+    }
+
+
 @pytest.mark.asyncio
 async def test_large_body_is_truncated() -> None:
     get_recorder().set_enabled(True)
