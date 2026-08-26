@@ -1260,6 +1260,38 @@ async def _fetch_compare_travel_routes(
     return comparison.model_copy(update={"items": updated_items})
 
 
+def _failure_attributes(error: BaseException) -> dict[str, object]:
+    """실패한 턴을 `agent_turn` span에 적을 모양으로 편다.
+
+    **`level`·`status_message`는 mask를 타지 않는다.** 오류 코드가 `capture_content`
+    스위치에 걸리면 원문 수집을 끈 배포에서 "무엇이 터졌나"를 화면에서 못 읽는데,
+    그건 이 관측이 있는 이유 자체다. 그래서 코드는 두 자리 모두에 적는다.
+
+    `AppError`는 우리가 의도해서 만든 오류라 코드·재시도 가능 여부가 계약으로
+    정해져 있다(`errors.py`). 그 밖의 예외는 **클래스 이름만** 적는다 — 메시지는
+    싣지 않는다. 어디서 터졌느냐에 따라 발화나 좌표가 섞여 들어올 수 있는데
+    `status_message`는 스위치와 무관하게 나가는 자리다.
+    """
+
+    if isinstance(error, AppError):
+        return {
+            "level": "ERROR",
+            "status_message": f"{error.code} · retryable={error.retryable}",
+            "output": {
+                "error_code": error.code,
+                "retryable": error.retryable,
+                "status_code": error.status_code,
+                "provider": error.provider,
+            },
+        }
+    name = type(error).__name__
+    return {
+        "level": "ERROR",
+        "status_message": name,
+        "output": {"error_code": name, "retryable": False},
+    }
+
+
 def summarize_state_merge(response: StateApplyResponse) -> dict[str, object]:
     """`merge_conditions` span에 실을 값을 고른다 — Audit "B 상태" 탭과 같은 값이다.
 
@@ -1412,7 +1444,11 @@ async def run_agent_flow(
                 stream_event_sink=stream_event_sink,
                 stream_recommendation_summary=stream_recommendation_summary,
             )
-        except BaseException:
+        except BaseException as error:
+            # **오류 코드를 span에 적는다.** 그 전까지 실패한 턴은 `turn_success=0`
+            # 하나로만 남아서, 화면에서 "터졌다"까지는 알아도 "무엇이 터졌나"는
+            # 서버 로그를 따로 봐야 했다.
+            turn.record(**_failure_attributes(error))
             # **실패한 턴에도 점수를 남긴다.** 여기서 안 남기면 실패는 Score 집계에서
             # 통째로 빠져 성공률이 항상 1.0으로 보인다 — 2026-08-07부터 SCHEDULE +
             # 혼잡도 조합이 ValueError로 죽고 있었는데 18일간 아무 지표도 안 움직인

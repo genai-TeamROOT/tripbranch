@@ -4876,6 +4876,44 @@ def test_merge_conditions_headline_survives_the_content_switch() -> None:
     assert "low" not in headline
 
 
+# --- 실패한 턴: 무엇이 터졌는지 span에 남긴다 ---------------------------------
+
+
+def test_failure_attributes_keep_the_error_code_outside_the_mask() -> None:
+    """오류 코드가 `capture_content`에 걸리면 원문 수집을 끈 배포에서 못 읽는다.
+
+    그건 이 관측이 있는 이유 자체라, 코드는 mask를 안 타는 `status_message`에도 적는다.
+    """
+    from app.errors import ProviderTimeoutError
+
+    attributes = agent_runtime_module._failure_attributes(
+        ProviderTimeoutError("kakao_local"),
+    )
+
+    assert attributes["level"] == "ERROR"
+    assert attributes["status_message"] == "provider_timeout · retryable=True"
+    assert attributes["output"] == {
+        "error_code": "provider_timeout",
+        "retryable": True,
+        "status_code": 504,
+        "provider": "kakao_local",
+    }
+
+
+def test_failure_attributes_do_not_carry_an_unexpected_errors_message() -> None:
+    """어디서 터졌느냐에 따라 발화나 좌표가 예외 메시지에 섞여 들어올 수 있다.
+
+    `status_message`는 스위치와 무관하게 나가는 자리라 클래스 이름만 적는다.
+    """
+    attributes = agent_runtime_module._failure_attributes(
+        ValueError("경복궁 근처 37.5796,126.977 처리 실패"),
+    )
+
+    assert attributes["status_message"] == "ValueError"
+    assert attributes["output"] == {"error_code": "ValueError", "retryable": False}
+    assert "경복궁" not in json.dumps(attributes, ensure_ascii=False)
+
+
 @pytest.mark.asyncio
 async def test_condition_merge_opens_its_own_span(monkeypatch: pytest.MonkeyPatch) -> None:
     """B를 부르는 단계에 관측이 없어서 최종 조건이 trace 어디에도 없었다.
