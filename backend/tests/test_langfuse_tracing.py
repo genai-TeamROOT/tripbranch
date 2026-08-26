@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import builtins
+import inspect
 from typing import Any
 
 import pytest
@@ -126,10 +127,24 @@ def test_public_surface_has_no_tool_argument_helper() -> None:
         "is_enabled",
         "observe_generation",
         "observe_step",
+        "record_score",
         "shutdown",
         "trace_attributes",
         "validate_langfuse_config",
     }
+
+
+def test_record_score_takes_no_free_text() -> None:
+    """Score는 mask 훅을 타지 않으므로 **자유 텍스트 인자를 두지 않는다.**
+
+    `create_score`에는 마스킹이 아예 없다(SDK 4.14.5). `comment`나 `metadata`를
+    열어두면 `capture_content=false`인 배포에서도 발화가 그대로 나갈 수 있다.
+    위 목록 가드와 짝이다 — 이름을 늘리는 것만 막아서는 부족하고, 이미 있는 헬퍼가
+    원문 통로가 되는 것도 막아야 한다.
+    """
+    parameters = inspect.signature(langfuse_tracing.record_score).parameters
+    assert set(parameters) == {"name", "value"}
+    assert parameters["value"].annotation == "float | bool"
 
 
 # --- 2. 꺼져 있으면 아무 일도 안 한다 -------------------------------------------
@@ -395,3 +410,55 @@ def test_recorder_drops_none_fields(monkeypatch: pytest.MonkeyPatch) -> None:
     assert client.span.updates == [
         {"output": "응답", "usage_details": {"input_tokens": 12, "output_tokens": 34}}
     ]
+
+
+# --- 8. Score -------------------------------------------------------------------
+
+
+class _ScoringClient:
+    """`score_current_trace()`만 받아 적는 클라이언트 흉내."""
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.scores: list[dict[str, Any]] = []
+        self._fail = fail
+
+    def score_current_trace(self, **fields: Any) -> None:
+        if self._fail:
+            raise RuntimeError("전송 실패")
+        self.scores.append(fields)
+
+
+def test_score_does_nothing_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """꺼져 있으면 클라이언트를 만들지도 않는다 — 다른 헬퍼와 같은 성질."""
+    monkeypatch.setattr(settings, "langfuse_enabled", False)
+
+    langfuse_tracing.record_score("turn_success", True)
+
+    assert langfuse_tracing._client is None
+
+
+def test_score_marks_booleans_as_boolean_not_numeric(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`bool`은 `float`의 하위형이라 그냥 넘기면 NUMERIC으로 새어 들어간다.
+
+    그러면 Langfuse 화면에서 성공률이 0/1 막대가 아니라 연속값 평균으로 잡혀
+    "0.5건 성공" 같은 눈금이 생긴다.
+    """
+    _enable(monkeypatch)
+    client = _ScoringClient()
+    _install(monkeypatch, client)
+
+    langfuse_tracing.record_score("turn_success", True)
+    langfuse_tracing.record_score("route_measured_ratio", 0.25)
+
+    assert client.scores == [
+        {"name": "turn_success", "value": 1, "data_type": "BOOLEAN"},
+        {"name": "route_measured_ratio", "value": 0.25, "data_type": "NUMERIC"},
+    ]
+
+
+def test_score_failure_never_reaches_the_caller(monkeypatch: pytest.MonkeyPatch) -> None:
+    """관측 실패가 사용자 응답을 막지 않는다 — 이 스위트가 지키는 성질 2."""
+    _enable(monkeypatch)
+    _install(monkeypatch, _ScoringClient(fail=True))
+
+    langfuse_tracing.record_score("turn_success", True)

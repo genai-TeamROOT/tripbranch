@@ -34,6 +34,8 @@ Provider별 상태가 무엇인가. 그 요약은 호출부가 직접 고르며(
 mask를 거치고(`_client/span.py::_process_media_and_apply_mask`), `level`·
 `status_message`·`version`은 그대로 나간다. 그래서 `capture_content`가 꺼져도 남아야
 하는 운영 신호(예: 경로 실측/추정 비율)는 `status_message`에도 한 줄로 싣는다.
+**Score도 mask를 타지 않는다** — `create_score`에 마스킹 자체가 없다. 그래서
+`record_score()`는 수치만 받고 자유 텍스트를 안 받는다.
 
 실패는 전부 흡수한다 — 관측이 사용자 응답을 막으면 안 된다
 (`runtime/agent_runtime.py::_record_trace_safely()`가 쓰는 것과 같은 원칙). 다만
@@ -328,6 +330,36 @@ def observe_generation(
         yield _NOOP if generation is None else _Recorder(generation)
 
 
+def record_score(name: str, value: float | bool) -> None:
+    """지금 turn의 trace에 수치 하나를 남긴다. 꺼져 있으면 아무 일도 안 한다.
+
+    **span의 `output`과 목적이 다르다.** `output`은 그 턴을 열어봤을 때 읽는 값이고,
+    Score는 **여러 턴에 걸쳐 집계·정렬·알림이 걸리는 값**이다. 같은 수치라도
+    `output`에만 있으면 "이 턴이 어땠나"까지고, Score로 올려야 "지난주 대비 떨어졌나"가
+    된다. 관측의 발견들(경로 실측 0%, 취향 상한)이 한 번 본 수치에 머문 이유가 이것이다.
+
+    **자유 텍스트를 받지 않는다.** Score는 mask 훅을 타지 않는다 — `create_score`에
+    마스킹이 아예 없다(SDK 4.14.5에서 확인). 그래서 `comment`를 열어두면
+    `capture_content=false`인 배포에서도 발화가 그대로 나갈 수 있다. 헬퍼가 없으면
+    실수로도 못 쓴다 — Tool 인자 계측 헬퍼를 안 둔 것과 같은 판단이다(모듈 docstring).
+
+    **호출 위치는 값이 있는 곳이다.** `score_current_trace()`가 현재 span에서 trace를
+    찾아가므로, 루트까지 값을 들고 올라올 필요가 없다. Tool·Provider 계층에서 바로
+    부르면 그 turn의 trace에 붙는다.
+    """
+    client = get_tracer()
+    if client is None:
+        return
+    try:
+        # bool은 float의 하위형이라 그대로 넘기면 BOOLEAN이 아니라 NUMERIC이 된다.
+        if isinstance(value, bool):
+            client.score_current_trace(name=name, value=int(value), data_type="BOOLEAN")
+        else:
+            client.score_current_trace(name=name, value=float(value), data_type="NUMERIC")
+    except Exception:
+        logger.warning("Langfuse Score 기록 실패(응답 흐름에는 영향 없음)", exc_info=True)
+
+
 # LangGraph 노드는 `observe_step()`으로 직접 감싼다(graph/__init__.py). Langfuse가
 # 주는 LangChain CallbackHandler를 쓰지 않는 이유는 그게 **`langchain` 본체를
 # 요구하기 때문**이다 — 우리는 langgraph가 끌고 온 `langchain-core`만 두고
@@ -340,6 +372,7 @@ __all__ = [
     "is_enabled",
     "observe_generation",
     "observe_step",
+    "record_score",
     "shutdown",
     "trace_attributes",
     "validate_langfuse_config",
