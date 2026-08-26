@@ -336,6 +336,47 @@ it("인구 혼잡도 예측 그래프와 게이지는 요약 카드와 상세 �
   ).toBeInTheDocument();
 });
 
+it("도로소통 카드는 단계 게이지를 요약 카드와 상세 모달 양쪽에 보여준다", async () => {
+  const user = userEvent.setup();
+  const trafficCard: InfoPlaceCardData = {
+    ...card,
+    question_type: "realtime_traffic",
+    answer_fields: {
+      "도로소통 단계": "원활",
+      "평균 주행속도": "32km/h",
+      "안내": "해당 장소로 이동·진입하는 도로가 크게 막히지 않아요.",
+    },
+    thumbnail_url: null,
+    overview: null,
+    operating_hours: null,
+    rest_date: null,
+    parking: null,
+    parking_fee: null,
+    fee: null,
+    baby_carriage: null,
+    credit_card: null,
+    restroom: null,
+    homepage: null,
+    realtime_detail_items: [
+      {
+        title: "도로소통 안내",
+        subtitle: "원활",
+        details: { 안내: "해당 장소로 이동·진입하는 도로가 크게 막히지 않아요." },
+        thumbnail_url: null,
+        external_url: null,
+      },
+    ],
+  };
+
+  renderWithTrip(<PlaceInfoCard card={trafficCard} />);
+  expect(screen.getByLabelText("현재 도로소통 단계 원활")).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "경복궁 상세 보기" }));
+
+  const dialog = within(screen.getByRole("dialog"));
+  expect(dialog.getByLabelText("현재 도로소통 단계 원활")).toBeInTheDocument();
+});
+
 /* 무장애 값(D-077)은 계약 키가 영문이라, 라벨 지도에 없으면 화면에 wheelchair_access
  * 그대로 찍힌다. 키가 늘어날 때마다 라벨을 함께 넣었는지 이 테스트가 잡는다. */
 it("무장애 항목을 한글 라벨로 보여준다", () => {

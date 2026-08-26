@@ -3297,6 +3297,100 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `backend/app/services/runtime/info_response_transform.py`,
   `backend/app/schemas.py`
 
+### D-091 — 지하철 방향 충돌 버그 수정, 주차 공영/민영 그룹핑, 도로소통 신규 연결
+
+- 상태: `Accepted` — 구현 완료.
+- 배경: 사용자가 "지하철은 종로구만 되는 것 같다", "주차는 실시간 정보
+  미제공인 곳이 많아 보인다", "도로소통은 연결 안 했는데 서울시가 제공하는
+  것 같다"고 지적. 실제 `citydata` API를 여러 지역(경복궁·이촌한강공원·
+  교대역·강남역·홍대 관광특구)에 직접 호출해 확인한 결과, 예상보다 필요한
+  작업이 작았다 — 도로소통과 주차 공영/민영 구분 모두 새 API 연동이 필요
+  없고, 이미 매번 호출하는 `citydata` 응답 안에 있는데 파싱만 안 하고
+  버리고 있었다.
+- 실측으로 확정한 사실:
+  1. **지하철 "종로구만"은 지역 제한이 아니라 버그였다.** `_fetch_realtime_city_info`
+     는 121개 지역(서울 전역) 중 최근접 1곳을 찾으므로 지역 제한 코드가
+     없다. 진짜 원인은 요약 카드의 `fields` 딕셔너리 키를 `"역이름 호선"`
+     으로만 만들어, 같은 역·같은 호선의 상행/하행 두 항목이 같은 키로
+     충돌해 한쪽이 지워지는 것이었다(모달용 `detail_items`는 리스트라
+     방향이 보존돼 있었다). 부수적으로 121개 지점의 구별 밀도가 크게
+     다르다는 것도 로컬 계산(경계 폴리곤 vs 좌표 대조)으로 확인했다(종로구
+     14·중구 10 vs 성북/도봉/노원/은평/양천 1~2, 중랑구만 구 내부 0개지만
+     경계에서 0.72km라 기존 2km 허용치 안에는 든다) — 이건 코드로 보정하지
+     않고 사실만 남긴다.
+  2. **주차장 공영/민영 구분도 이미 받고 있었다.** `PRK_STTS`의 `PRK_TYPE`
+     필드를 파싱 코드가 버리고 있었다. 실측(교대역 14곳·강남역 95곳·홍대
+     51곳)으로 코드값을 확정: `NW`(노외주차장)·`NS`(노상주차장)=공영,
+     `BS`(부설주차장)·`NP`(개별 민영)=민영. 교대역 실측이 사용자가 첨부한
+     서울시 공식 앱 캡처와 정확히 일치했다(`NW` 1곳+`NP` 1곳+`BS` 12곳,
+     민영 목록 이름까지 캡처와 동일). 별도 데이터셋(`GetParkInfo`)도 실제
+     호출해봤는데(기존 키로 인증 없이 잘 불림 — 별도 API 신청 불필요)
+     공영주차장 전용에 2019년까지 거슬러 올라가는 낡은 데이터라 이번
+     목적엔 안 맞아 채택하지 않았다.
+  3. **실시간 주차 대수는 실측 결과 대부분 비어 있다.** 교대역 14곳·강남역
+     95곳·홍대 51곳 전부 `CUR_PRK_YN=N`. 이촌한강공원만 유일하게 "Y"였는데
+     `CUR_PRK_TIME`이 2025-02로 낡았다. 기대치를 낮추고 공영/민영·총면수·
+     요금 위주로 카드를 구성한다.
+  4. **`PRK_STTS`에 같은 주차장이 중복으로 온다.** 이촌한강공원 조회에서
+     "이촌3, 4주차장"(`PRK_CD` 동일)이 실시간 정보 없는 항목과 있는 항목
+     두 번 들어왔다 — `PRK_CD` 기준으로 병합하고 실시간 정보가 있는 쪽을
+     남기도록 고쳤다.
+  5. **도로소통(`ROAD_TRAFFIC_STTS.AVG_ROAD_DATA`)이 이미 payload에 있었다.**
+     단계(원활/서행/정체)·평균속도·안내문구까지 캡처 화면과 정확히
+     대응한다. **24시간 추이는 이 응답 어디에도 없다** — 개별 도로 링크
+     배열(좌표 폴리라인 포함)은 있지만 시간별 이력은 없다. 인구 "지난
+     12시간 추이"(D-089에서 보류)와 같은 종류의 한계라 이번에도 스냅샷만
+     다루고 24시간 추이는 제외했다.
+- 결정:
+  1. 지하철: `service.py`의 `realtime_subway` 분기에서 `fields` 키에 방향을
+     포함(`"강남역 2호선 · 잠실행"`)하고, 역+호선 단위로 그룹핑해 서로 다른
+     방향을 우선 포함하도록 정렬을 바꿨다.
+  2. 주차: `RealtimeParkingLot`에 `code`(PRK_CD, 중복 제거용)·`lot_type`
+     (공영/민영) 필드를 추가하고 `map_realtime_parking_response`에서
+     매핑·중복 제거를 함께 처리한다. `service.py`의 `realtime_parking`
+     분기는 공영/민영으로 나눠 각각 상위 몇 곳을 보여주고, 한쪽이 비어도
+     (이촌한강공원 민영 0곳, 교대역 공영 0곳처럼) 있는 쪽만으로 정상
+     응답한다. `question_type_rules.md`의 트리거도 "지금/현재/실시간"
+     필수 요건을 없애 "주변 주차되는 곳 있어?"처럼 시제 없는 질문도
+     받는다(TP-115).
+  3. 도로소통: 새 `question_type=realtime_traffic` 추가. `RoadTrafficStatus`
+     도메인 모델과 `map_realtime_traffic_response()`를 새로 만들고 기존
+     `_fetch_realtime_city_info`에 분기 하나만 추가했다 — 지역당 API 호출
+     1회 그대로 유지(이미 받는 응답에서 필드만 더 읽는다). 채팅 말풍선은
+     다른 realtime_* 유형과 달리 "카드 확인" 유도가 아니라 단계·속도 값을
+     바로 담는다(항목 하나짜리 스냅샷이라 카드로 미룰 이유가 없다).
+     프론트는 `CongestionLevelGauge`를 4단계 전용에서 `levels` prop을 받는
+     범용 컴포넌트로 일반화해 도로소통(3단계: 원활/서행/정체)과 인구(4단계)
+     가 같은 컴포넌트를 공유한다.
+  4. `question_type_rules.md` 변경은 A/C 공유 프롬프트 버전 관리 규칙을
+     따른다 — 기존 v3.1.0을 `archive/question_type_rules__legacy-3.1.md`에
+     보관하고 `meta.yaml`을 v3.2.0으로 올렸다. `evals/question_type_cases.csv`
+     에 케이스 5건(주차 완화 2건, 도로소통 신규 2건, 정적 parking 회귀 1건)
+     을 추가하고 `scripts.evaluate_info_question_type --repeat 5`로 실제
+     Gemini를 호출해 검증했다 — 기존 21건 회귀 없음(전부 100%), 신규
+     5건도 도입 즉시는 스키마(`InfoQuestionType`)에 `realtime_traffic`이
+     없어 0%로 전부 실패했다가, 스키마에 추가한 뒤 재실행하니 23건 전체
+     100%·전부 stable로 통과했다 — **프롬프트 규칙만 바꾸고 출력 스키마를
+     안 바꾸면 LLM이 그 값을 고를 수 없다는 걸 실측으로 다시 확인한
+     셈**이다. HISTORY.md에는 다중 턴 회귀(`evaluate_agent_quality --split
+     dev`)까지는 이번 범위가 좁아 생략했다고 정직하게 남기고 Draft로
+     기록한다(팀 통상 프로세스는 다중 턴까지 포함).
+- 검증: 백엔드 `pytest` 2,868 passed(무관한 기존 langfuse 테스트 1건 제외),
+  `ruff` 클린. 프론트 `vitest` 24개 파일 182건 통과, `tsc --noEmit`·
+  `eslint`·`vite build` 클린. 단일 턴 프롬프트 eval 23케이스 100%(위 참고).
+- 채택하지 않은 것: `GetParkInfo`(공영주차장 전용 별도 데이터셋) — 실제
+  호출까지 해봤지만 낡고 범위가 좁아 기존 `citydata`의 `PRK_TYPE` 파싱으로
+  대체.
+- 상세: `backend/app/agent_context/service.py`,
+  `backend/app/providers/seoul_citydata.py`, `backend/app/domain/models.py`,
+  `backend/app/agent_context/info_schemas.py`, `backend/app/schemas.py`,
+  `backend/app/services/runtime/response_composer.py`,
+  `backend/app/prompts/info/question_type_rules.md`(+`meta.yaml`+`archive/`+
+  `evals/question_type_cases.csv`),
+  `frontend/src/components/chat/CongestionForecastBars.tsx`,
+  `frontend/src/components/chat/PlaceInfoCard.tsx`,
+  `frontend/src/components/chat/RecommendationDetailPreviewModal.tsx`
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -3384,3 +3478,4 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-26 | D-088 확장 — 서비스 지원 12개 구(D-083) 전체로 수집·매칭·적재 범위 확대. 코드 변경 없이 `--districts`만 넓혀 같은 base_ym으로 재실행, 기존 종로구·중구 행은 upsert로 덮어쓰고 나머지 10개 구 신규 추가. 원본 5,511건 → 매칭 666/2,344건 → 엣지 1,612건 실제 적재. 매칭률(29.3%)이 파일럿(30.3%)과 거의 동일하게 유지됨을 확인 |
 | 2026-08-26 | D-089 신설 — "성수동"처럼 지역 검색에 상호명만 잡히는 동 이름은 Geocoding으로 폴백한다. "성수동 카페 추천해줘"가 종로구 랜드마크 되묻기로 빠지던 버그 — 지역 검색이 뭔가(애매한 결과라도)를 돌려주면 그 아래 별칭/Geocoding 폴백 사다리가 아예 실행되지 않던 게 원인. `_lookup_local_search()`에서 역/명소 후보도 정확히 같은 이름의 후보도 없을 때만 `None`을 반환해 execute()의 기존 Geocoding 사다리로 넘긴다. 실제 Naver API 호출로 "성수동" 지역 검색은 카페·식당 상호명뿐임을, Geocoding은 좌표로 정상 해석됨을, 그 좌표가 기존 기본 검색 반경(2.0km) 안에 성수역·주변 카페를 다 포함함을 확인 — 검토했던 "가까운 지하철역 버튼"(역 데이터 없음)과 "구 전체로 넓혀 검색"(실측 결과 불필요)은 기각 |
 | 2026-08-26 | D-090 신설 — 실시간 혼잡도 카드에 단계별 색상·게이지·전망 인사이트 추가. 인구/집중률 예측 막대그래프가 항상 단색이던 것을 레벨별 4단계 팔레트(emerald→amber→orange→red)로 바꾸고, 현재 단계를 보여주는 `CongestionLevelGauge`를 신설. 공용 컴포넌트(`CongestionForecastBars.tsx`)로 분리해 요약 카드뿐 아니라 상세 모달(`RecommendationDetailPreviewModal`)에도 처음으로 노출 — 기존엔 모달에 이 그래프가 아예 없었다. 향후 예측에서 가장 붐비는 시간대를 "N시간 후 가장 붐빌 예정" 한 줄로 요약하는 `_summarize_population_peak()`을 추가해 `population_peak_forecast_summary`로 새로 내려줌 — 관측·예측 시각을 실제 파싱해 시간 차를 구하고(인덱스 가정 안 함), 채팅 말풍선 텍스트는 기존 회귀 테스트 보호를 위해 그대로 둠. 과거 추이·현재 인구 수 실측치는 서울시 API 미제공/참고 이미지 미노출로 이번 스코프에서 제외. (후속) 예측 그래프가 "현재 시각부터만" 보여 기준점이 안 보인다는 지적에, 실제 과거 데이터 폴링 파이프라인 구축(큰 작업)은 보류하고 대신 예측 막대 맨 앞에 점선 구분선·강조 테두리를 준 "현재" 막대를 추가해 시각적 기준점만 뒀다 |
+| 2026-08-26 | D-091 신설 — 지하철 방향 충돌 버그 수정, 주차 공영/민영 그룹핑, 도로소통 신규 연결. 지하철 "종로구만 되는 것 같다"는 지역 제한이 아니라 요약 카드 `fields` 키가 "역이름 호선"뿐이라 같은 역의 상행/하행이 충돌해 지워지던 버그였다(방향까지 키에 포함해 수정). 주차 공영/민영 구분(`PRK_TYPE`: NW/NS=공영, BS/NP=민영)과 도로소통(`ROAD_TRAFFIC_STTS.AVG_ROAD_DATA`: 단계·속도·안내문구)은 새 API 연동 없이 이미 매번 호출하는 `citydata` 응답에 있던 걸 파싱만 추가 — 실측(교대역·강남역·홍대·이촌한강공원)으로 코드값·중복 레코드 패턴을 확인했다. 별도 데이터셋(`GetParkInfo`)도 실제 호출해봤지만 낡고 범위가 안 맞아 기각. `question_type_rules.md`를 v3.2.0으로 올려 주차 트리거를 시제 키워드 없이도 매칭되게 완화하고 `realtime_traffic` 유형을 신설 — 스키마(`InfoQuestionType`)에 값을 안 넣은 채로 프롬프트만 먼저 바꿨더니 신규 케이스가 전부 0%로 실패했다가, 스키마에 추가한 뒤 재실행하니 기존 21건 회귀 없이 신규 포함 23건 100%로 통과했다(실제 Gemini 호출) |

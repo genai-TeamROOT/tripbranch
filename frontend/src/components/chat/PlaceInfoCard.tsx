@@ -7,7 +7,11 @@
 
 import { useState } from "react";
 import type { InfoPlaceCard as InfoPlaceCardData } from "../../types";
-import { ConcentrationForecastBars, PopulationForecastBars } from "./CongestionForecastBars";
+import {
+  ConcentrationForecastBars,
+  PopulationForecastBars,
+  RoadTrafficStatusSection,
+} from "./CongestionForecastBars";
 import { RecommendationDetailPreviewModal } from "./RecommendationDetailPreviewModal";
 
 const FIELD_LABELS: Record<string, string> = {
@@ -155,6 +159,7 @@ export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
 
       <ConcentrationForecastBars card={card} />
       <PopulationForecastBars card={card} />
+      <RoadTrafficStatusSection card={card} />
 
       {showDetail && (
         <RecommendationDetailPreviewModal card={card} onClose={() => setShowDetail(false)} />
