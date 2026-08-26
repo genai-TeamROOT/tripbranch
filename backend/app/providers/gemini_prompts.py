@@ -43,8 +43,6 @@ PROMPT_VERSION = (
 )
 
 CHATBOT_NAME = "트리비"
-# OUT_OF_SCOPE 판정 자체는 분류기가 하지만, 규칙 문구의 소유는 out_of_scope/에 둔다 —
-# 그래야 해당 인텐트 담당자도 자기 폴더만 열고 수정·이력 관리를 할 수 있다.
 
 
 def build_intent_classification_instruction(
@@ -96,6 +94,9 @@ def build_intent_classification_instruction(
         intent_priority=load_text("router/intent_priority.md"),
         context_rules=load_text("router/context_rules.md"),
         boundary_cases=load_text("router/boundary_cases.md"),
+        # OUT_OF_SCOPE 판정 자체는 분류기가 하지만, 규칙 문구의 소유는
+        # out_of_scope/에 둔다 — 그래야 해당 인텐트 담당자도 자기 폴더만 열고
+        # 수정·이력 관리를 할 수 있다.
         out_of_scope_rules=load_text("out_of_scope/classify.md"),
         has_previous_recommendation="있음" if has_previous_recommendation else "없음",
         shown_place_count=shown_place_count,
@@ -103,8 +104,6 @@ def build_intent_classification_instruction(
         shown_names_line=shown_names_line,
         conversation_place_line=conversation_place_line,
     )
-
-
 
 
 def build_recommend_extraction_instruction() -> str:
@@ -120,8 +119,6 @@ def build_recommend_extraction_instruction() -> str:
         environment_rules=load_text("_shared/rules/environment.md"),
         budget_rule=load_text("_shared/rules/budget.md"),
     )
-
-
 
 
 def _shown_place_list_block(shown_place_names: list[str] | None) -> str:
@@ -185,8 +182,6 @@ def build_modify_extraction_instruction(
     )
 
 
-
-
 def _build_visit_time_rules(reference_date: date) -> str:
     """concentration-conditions.md §3.2. reference_date는 오늘(KST)."""
 
@@ -211,8 +206,6 @@ def build_info_extraction_instruction(
     )
 
 
-
-
 def build_compare_extraction_instruction(
     *,
     shown_place_count: int,
@@ -234,8 +227,6 @@ def build_compare_extraction_instruction(
         criteria_rules=load_text("compare/criteria_rules.md"),
         shown_place_count=shown_place_count,
     )
-
-
 
 
 def build_general_extraction_instruction() -> str:
