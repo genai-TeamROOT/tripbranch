@@ -23,7 +23,7 @@ from collections.abc import Sequence
 from typing import Protocol
 
 from app.domain.models import PlaceEvidenceMatch
-from app.observability.langfuse_tracing import observe_step
+from app.observability.langfuse_tracing import observe_step, record_score
 from app.providers.contracts import (
     ProviderResult,
     ProviderSource,
@@ -132,14 +132,18 @@ class PlaceEvidenceProvider:
                 min_similarity=self._min_similarity,
             )
             try:
-                step.record(
-                    output=_search_summary(
-                        candidate_content_ids,
-                        matches,
-                        min_similarity=self._min_similarity,
-                        match_count=self._match_count,
-                    )
+                summary = _search_summary(
+                    candidate_content_ids,
+                    matches,
+                    min_similarity=self._min_similarity,
+                    match_count=self._match_count,
                 )
+                step.record(output=summary)
+                # 취향 근거가 실제로 붙는 비율. 후보가 없으면 0/0이라 안 올린다 —
+                # "근거를 못 찾았다"와 "찾을 후보가 없었다"를 같은 값으로 적으면
+                # 평균이 거짓말을 한다.
+                if summary["hit_rate"] is not None:
+                    record_score("taste_hit_rate", float(summary["hit_rate"]))
             except Exception:
                 logger.warning("취향 검색 관측 요약 실패(응답 흐름에는 영향 없음)", exc_info=True)
         return provider_result(

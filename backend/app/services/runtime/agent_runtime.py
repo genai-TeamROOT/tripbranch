@@ -15,6 +15,7 @@ import asyncio
 import logging
 import math
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import timedelta
@@ -35,7 +36,11 @@ from app.domain.travel_route import (
 from app.errors import AppError
 from app.geo import haversine_km
 from app.observability.api_usage import create_external_client
-from app.observability.langfuse_tracing import observe_step, trace_attributes
+from app.observability.langfuse_tracing import (
+    observe_step,
+    record_score,
+    trace_attributes,
+)
 from app.place_search_policy import MAX_PLACE_SEARCH_RADIUS_KM, WALKING_SPEED_KM_PER_MINUTE
 from app.prompts.registry import turn_prompt_version
 from app.providers.protocols import LLMProvider
@@ -1328,18 +1333,26 @@ async def run_agent_flow(
         ),
         observe_step("agent_turn") as turn,
     ):
-        response = await _run_agent_flow(
-            request,
-            llm=llm,
-            tool_provider=tool_provider,
-            recommendation_provider=recommendation_provider,
-            enrichment_provider=enrichment_provider,
-            travel_route_tool=travel_route_tool,
-            store=store,
-            principal=principal,
-            stream_event_sink=stream_event_sink,
-            stream_recommendation_summary=stream_recommendation_summary,
-        )
+        try:
+            response = await _run_agent_flow(
+                request,
+                llm=llm,
+                tool_provider=tool_provider,
+                recommendation_provider=recommendation_provider,
+                enrichment_provider=enrichment_provider,
+                travel_route_tool=travel_route_tool,
+                store=store,
+                principal=principal,
+                stream_event_sink=stream_event_sink,
+                stream_recommendation_summary=stream_recommendation_summary,
+            )
+        except BaseException:
+            # **실패한 턴에도 점수를 남긴다.** 여기서 안 남기면 실패는 Score 집계에서
+            # 통째로 빠져 성공률이 항상 1.0으로 보인다 — 2026-08-07부터 SCHEDULE +
+            # 혼잡도 조합이 ValueError로 죽고 있었는데 18일간 아무 지표도 안 움직인
+            # 것이 그 모양이다. 예외는 그대로 올린다.
+            record_score("turn_success", False)
+            raise
         try:
             summary = summarize_turn(response)
             turn.record(
@@ -1349,6 +1362,7 @@ async def run_agent_flow(
                 # 마스킹을 타지 않는 자리. 원문 수집을 꺼도 목록에서 턴이 읽힌다.
                 status_message=summary["headline"],
             )
+            record_turn_scores(summary)
         except Exception:
             logger.warning("턴 관측 요약 실패(응답 흐름에는 영향 없음)", exc_info=True)
         return response
@@ -1365,6 +1379,24 @@ def _observed_user_id(principal: Principal | None) -> str | None:
         return None
     return principal.user_id
 
+
+def record_turn_scores(summary: Mapping[str, object]) -> None:
+    """턴 요약에서 **집계할 값**만 골라 Score로 올린다.
+
+    `turn.record(output=summary)`와 중복이 아니다 — output은 그 턴을 열어봤을 때
+    읽는 값이고 Score는 여러 턴에 걸쳐 곡선이 되는 값이다. 그래서 여기 올리는 것은
+    "추세가 의미 있는 수치"로 좁힌다. `intent`·`status`는 태그와 metadata로 이미
+    필터가 되므로 Score로 또 올리지 않는다.
+
+    `unverified_ratio`는 카드가 있을 때만 올린다 — 0/0을 0.0으로 적으면 "미검증이
+    하나도 없는 좋은 턴"과 "카드 자체가 없는 턴"이 같은 값이 되어 평균이 거짓말을 한다.
+    """
+
+    record_score("turn_success", True)
+    cards = int(summary.get("card_count") or 0)
+    record_score("card_count", cards)
+    if cards:
+        record_score("unverified_ratio", int(summary.get("unverified_count") or 0) / cards)
 
 
 async def _run_agent_flow(

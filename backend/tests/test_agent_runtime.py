@@ -4720,6 +4720,44 @@ def test_turn_summary_names_the_payload_shape() -> None:
     assert summary["headline"] == "SCHEDULE · complete · 일정"
 
 
+# --- Score: 여러 턴에 걸쳐 곡선이 되는 값만 올린다 ------------------------------
+
+
+def _captured_scores(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, float | bool]]:
+    scores: list[tuple[str, float | bool]] = []
+    monkeypatch.setattr(
+        agent_runtime_module,
+        "record_score",
+        lambda name, value: scores.append((name, value)),
+    )
+    return scores
+
+
+def test_turn_scores_skip_unverified_ratio_when_there_are_no_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """0/0을 0.0으로 적으면 평균이 거짓말을 한다.
+
+    "미검증이 하나도 없는 좋은 턴"과 "카드 자체가 없는 턴"이 같은 값이 되기 때문이다.
+    GENERAL·INFO는 카드가 원래 없으므로 이 경로가 대부분의 턴에 걸린다.
+    """
+    scores = _captured_scores(monkeypatch)
+
+    agent_runtime_module.record_turn_scores(
+        {"card_count": 0, "unverified_count": 0},
+    )
+
+    assert scores == [("turn_success", True), ("card_count", 0)]
+
+
+def test_turn_scores_report_the_unverified_share(monkeypatch: pytest.MonkeyPatch) -> None:
+    scores = _captured_scores(monkeypatch)
+
+    agent_runtime_module.record_turn_scores({"card_count": 4, "unverified_count": 1})
+
+    assert scores == [("turn_success", True), ("card_count", 4), ("unverified_ratio", 0.25)]
+
+
 def test_user_id_stays_off_until_the_switch_is_turned_on(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
