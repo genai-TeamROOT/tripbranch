@@ -128,6 +128,7 @@ from app.services.runtime.tool_debug import (
 )
 from app.state.schema import now_kst
 from app.state.service import (
+    ApiContextView,
     RecommendedPlace,
     RecordClosedExclusionsRequest,
     RecordRecommendationRequest,
@@ -1301,10 +1302,10 @@ def summarize_state_merge(response: StateApplyResponse) -> dict[str, object]:
     턴에서 유지된 값까지 합친 최종 조건**은 어디에도 없었다. 2026-08-26에 B와
     협의해 열었다.
 
-    **`user_conditions`에는 좌표가 들어 있다**(`current_location`·`search_center`).
-    `api_context.gps_location`도 마찬가지다. `capture_content`가 꺼져 있으면 output
-    전체가 `<redacted>`가 되지만 켜면 그대로 나간다 — `tool_fetch` span과 같은
-    조건이고, 켜는 것이 명시적 선택이어야 한다.
+    **좌표는 안 싣는다.** `api_context.gps_location`은 "위도,경도" 문자열이라
+    유무만 남긴다(`_api_context_summary`). `user_conditions`의
+    `current_location`·`search_center`는 좌표가 아니라 발화에서 온 지명이라
+    (`"홍대"`·`"경복궁"`) 그대로 싣는다 — 조건 병합 결과를 읽으려면 그 값이 있어야 한다.
 
     조건 목록 전체를 싣는다. B가 돌려주는 값이 곧 이 턴의 입력이라 일부만 고르면
     "왜 이 조건으로 돌았나"에 답이 안 된다 — 그게 이 span을 여는 이유다.
@@ -1316,7 +1317,7 @@ def summarize_state_merge(response: StateApplyResponse) -> dict[str, object]:
         "condition_changed": response.condition_changed,
         "reset_applied": response.reset_applied,
         "user_conditions": response.user_conditions.model_dump(mode="json"),
-        "api_context": response.api_context.model_dump(mode="json"),
+        "api_context": _api_context_summary(response.api_context),
         "applied_operations": [
             operation.model_dump(mode="json") for operation in response.applied_operations
         ],
@@ -1327,6 +1328,23 @@ def summarize_state_merge(response: StateApplyResponse) -> dict[str, object]:
         ],
         "excluded_place_count": len(response.excluded_place_ids),
     }
+
+
+def _api_context_summary(api_context: ApiContextView) -> dict[str, object]:
+    """`api_context`에서 **좌표만 빼고** 편다.
+
+    `gps_location`은 "위도,경도" 문자열이다 — 지금 이 앱을 돌리는 사람의 실제
+    위치라, 스위치 하나에 맡길 값이 아니다. 값 대신 **있었는지만** 남긴다:
+    "GPS가 없어서 못 했다"와 "있었는데 다른 이유"는 구분돼야 하지만 그건 유무로
+    갈리지 좌표 값으로 갈리지 않는다.
+
+    `gps_location_confirmed_at`은 시각이라 그대로 둔다 — "몇 분 전 위치로 계속"
+    분기를 읽는 데 필요하고, 위치를 드러내지 않는다.
+    """
+
+    summary = api_context.model_dump(mode="json")
+    summary["has_gps_location"] = summary.pop("gps_location") is not None
+    return summary
 
 
 def _state_merge_headline(response: StateApplyResponse) -> str:

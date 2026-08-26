@@ -353,15 +353,35 @@ def test_tool_fetch_summary_carries_all_three_locations_separately() -> None:
 
     assert summary is not None
     locations = summary["calls"][0]["locations"]
-    assert locations["search"] == {
-        "name": "경복궁",
-        "source": "query",
-        "latitude": 37.5796,
-        "longitude": 126.977,
-    }
+    assert locations["search"] == {"name": "경복궁", "source": "query"}
     assert locations["route_origin"]["source"] == "search_center"
     # 값이 없는 것과 안 실은 것이 구분돼야 한다.
     assert locations["user"] is None
+
+
+def test_tool_fetch_summary_never_carries_the_coordinates() -> None:
+    """`source`는 남기고 **위경도는 뺀다**(2026-08-26 결정).
+
+    팀원이 테스트하는 자리의 실좌표라 스위치 하나에 맡길 값이 아니다. `source`만
+    있으면 "사용자 위치를 몰라 검색 위치로 대체했나"는 그대로 읽힌다.
+    """
+    summary = _summarize_tool_fetch(
+        {
+            "tool_executions": [
+                _execution(
+                    user_location=LocationDebug(
+                        source="device_gps", latitude=37.5796, longitude=126.977
+                    )
+                )
+            ]
+        }
+    )
+
+    blob = json.dumps(summary, ensure_ascii=False)
+    assert "37.5796" not in blob
+    assert "126.977" not in blob
+    assert "latitude" not in blob
+    assert "longitude" not in blob
 
 
 def test_tool_fetch_summary_shows_where_each_concentration_value_came_from() -> None:

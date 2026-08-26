@@ -106,20 +106,20 @@ def _round_scores(scores: Mapping[str, float | None] | None) -> dict[str, float 
 
 
 def _location(location: Any) -> dict[str, Any] | None:
-    """`LocationDebug` 하나를 span에 실을 모양으로 편다.
+    """`LocationDebug` 하나를 span에 실을 모양으로 편다. **좌표는 뺀다.**
 
-    **좌표가 여기 실린다.** 2026-08-26에 "개발자 Audit 화면에 있는 값은 trace에도
-    있어야 한다"로 정하면서 열었다. 그 전까지는 아예 안 실었다.
+    `source`가 이 요약의 존재 이유다 — 검색 위치·사용자 위치·경로 시작점 셋이
+    서로 다를 수 있고 **다른 것 자체가 관측 대상이다**(TP-112). `route_origin`이
+    `search_center`로 대체됐는지는 좌표 없이도 이 한 필드로 읽힌다.
+
+    **위경도는 싣지 않는다.** 팀원이 테스트하는 자리의 실좌표라, 켜고 끄는 스위치
+    하나에 맡길 값이 아니다(2026-08-26 결정). `name`은 발화에서 온 지명이고
+    (`"경복궁"`), 기기 GPS로 온 좌표에는 애초에 이름이 없어 `None`이다.
     """
 
     if location is None:
         return None
-    return {
-        "name": location.name,
-        "source": location.source,
-        "latitude": location.latitude,
-        "longitude": location.longitude,
-    }
+    return {"name": location.name, "source": location.source}
 
 
 def concentration_source_rows(execution: Any) -> list[dict[str, Any]]:

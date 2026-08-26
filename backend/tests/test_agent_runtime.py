@@ -4810,7 +4810,9 @@ def test_merge_conditions_span_carries_the_accumulated_conditions() -> None:
 
     response = _state_response(
         user_conditions=StateUserConditions(budget="low", place_types=["cafe"]),
-        api_context=ApiContextView(api_weather="맑음", gps_expired=False),
+        api_context=ApiContextView(
+            api_weather="맑음", gps_expired=False, gps_location="37.5796,126.977"
+        ),
         applied_operations=[
             AppliedOperation(op="set", field="budget", before_value=None, after_value="low")
         ],
@@ -4826,15 +4828,37 @@ def test_merge_conditions_span_carries_the_accumulated_conditions() -> None:
     assert conditions["budget"] == "low"
     assert conditions["place_types"] == ["cafe"]
     # Audit "C Tool" 탭이 보여주던 날씨 캐시·만료 플래그도 여기 들어온다.
+    # **좌표는 값 대신 유무만** 남는다 — "GPS가 없어서 못 했다"와 "있었는데 다른
+    # 이유"는 구분돼야 하지만 그건 유무로 갈리지 좌표 값으로 갈리지 않는다.
     assert summary["api_context"] == {
-        "gps_location": None,
+        "has_gps_location": True,
         "api_weather": "맑음",
         "gps_expired": False,
         "weather_expired": True,
         "gps_location_confirmed_at": None,
     }
+    assert "37.5796" not in json.dumps(summary, ensure_ascii=False)
     assert summary["applied_operations"][0]["field"] == "budget"
     assert summary["excluded_place_count"] == 2
+
+
+def test_merge_conditions_span_keeps_the_place_names_that_are_not_coordinates() -> None:
+    """`current_location`·`search_center`는 좌표가 아니라 발화에서 온 지명이다.
+
+    이 둘까지 빼면 "무슨 조건으로 돌았나"에 답할 수 없어 span을 여는 이유가 없어진다.
+    """
+    from app.state.schema import UserConditions as StateUserConditions
+
+    summary = agent_runtime_module.summarize_state_merge(
+        _state_response(
+            user_conditions=StateUserConditions(current_location="홍대", search_center="경복궁")
+        )
+    )
+
+    conditions = summary["user_conditions"]
+    assert isinstance(conditions, dict)
+    assert conditions["current_location"] == "홍대"
+    assert conditions["search_center"] == "경복궁"
 
 
 def test_merge_conditions_span_says_why_an_operation_was_ignored() -> None:
