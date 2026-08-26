@@ -33,6 +33,7 @@ from app.providers.kakao_transit_route import (
 from app.providers.local_search import FakeLocalSearchProvider, RealLocalSearchProvider
 from app.providers.place_evidence import PlaceEvidenceProvider
 from app.providers.place_evidence_encoder import get_shared_encoder
+from app.providers.place_mood import PlaceMoodProvider
 from app.providers.protocols import (
     ConcentrationProvider,
     FestivalProvider,
@@ -570,3 +571,59 @@ def get_place_evidence_provider(
         timeout_seconds=settings.external_api_timeout_seconds,
     )
     return PlaceEvidenceProvider(get_shared_encoder(), repository)
+
+
+def get_place_mood_provider(
+    client: httpx.AsyncClient,
+) -> PlaceMoodProvider | None:
+    """장소 분위기 Provider를 만든다. 꺼져 있으면 None이다.
+
+    None이면 분위기 축이 채점에 아예 안 들어간다 — 후보 일부만 점수를 갖는
+    상태가 생기지 않도록 요청 단위가 아니라 여기서 한 번에 끊는다.
+
+    **인코더가 없어도 Provider는 만든다.** 발화 경로(축 점수 조회)는 모델 없이
+    돌기 때문이다. 사진 경로만 못 쓰고, 그건 Provider가 스스로
+    `photo_search_available`로 알린다.
+    """
+    if not settings.place_mood_enabled:
+        return None
+    if not settings.supabase_url or not settings.supabase_secret_key:
+        # 취향 쪽과 같은 이유로 부팅을 막지 않는다. 분위기는 순위를 다듬는
+        # 축이라 없어도 추천은 동작한다. 대신 왜 안 켜졌는지는 남긴다 — 조용히
+        # 사라지면 "켰는데 왜 순위가 그대로냐"를 추적할 방법이 없다.
+        logger.warning(
+            "PLACE_MOOD_ENABLED=true인데 SUPABASE_URL/SUPABASE_SECRET_KEY가"
+            " 비어 있어 장소 분위기 기능을 끕니다."
+        )
+        return None
+
+    repository = SupabasePlaceRepository(
+        supabase_url=settings.supabase_url,
+        secret_key=settings.supabase_secret_key,
+        client=client,
+        timeout_seconds=settings.external_api_timeout_seconds,
+    )
+    return PlaceMoodProvider(repository, _get_mood_encoder())
+
+
+def _get_mood_encoder() -> object | None:
+    """SigLIP 인코더를 만든다. 설치돼 있지 않으면 None이다.
+
+    **import 실패를 삼키지만 조용히 넘어가지는 않는다.** 선택 의존성이라 없는
+    환경이 정상이고 부팅을 막을 이유는 없지만, 사진 검색이 소리 없이 사라지면
+    "사진을 올렸는데 왜 아무 일도 안 일어나냐"를 알 수 없다.
+    """
+    try:
+        from app.providers.place_mood_encoder import get_shared_encoder as get_encoder
+    except ImportError:  # pragma: no cover - 설치 환경 의존
+        logger.warning(
+            "사진 임베딩 인코더를 불러오지 못해 사진 검색 없이 동작합니다."
+            ' 필요하면 `pip install -e ".[mood]"`로 설치하세요.'
+        )
+        return None
+
+    encoder = get_encoder()
+    if settings.place_mood_warmup_enabled:
+        # 적재를 백그라운드로 돌린다. 동기로 부르면 그만큼 부팅이 늦어진다.
+        encoder.warmup_in_background()
+    return encoder
