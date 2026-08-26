@@ -4969,3 +4969,51 @@ async def test_condition_merge_opens_its_own_span(monkeypatch: pytest.MonkeyPatc
 
     assert "merge_conditions" in opened
     assert opened.index("agent_turn") < opened.index("merge_conditions")
+
+
+# --- 루트 span의 입력: 무슨 발화였나 ------------------------------------------
+
+
+def test_turn_input_carries_the_utterance_but_not_coordinates() -> None:
+    """발화는 `input`에 싣는다 — 그 자리는 mask를 타서 스위치를 우회하지 않는다.
+
+    좌표는 다르다. `device_location`은 팀원이 테스트하는 자리의 실좌표라, 켜고 끄는
+    스위치 하나에 맡기지 않고 **있고 없음만** 남긴다(2026-08-26 결정).
+    """
+    payload = agent_runtime_module._turn_input(
+        AgentRequest(user_input="경복궁 근처 카페 추천해줘", device_location="37.5796,126.9770")
+    )
+
+    assert payload["user_input"] == "경복궁 근처 카페 추천해줘"
+    assert payload["language"] == "ko"
+    assert payload["has_device_location"] is True
+
+    blob = json.dumps(payload, ensure_ascii=False)
+    assert "37.5" not in blob
+    assert "126.9" not in blob
+    assert "device_location" not in payload
+
+
+def test_turn_input_omits_optional_fields_that_were_not_sent() -> None:
+    """빈 값을 다 적으면 실제로 채워진 턴과 아닌 턴이 화면에서 구분되지 않는다."""
+    payload = agent_runtime_module._turn_input(AgentRequest(user_input="안녕"))
+
+    assert set(payload) == {"user_input", "language", "has_device_location"}
+    assert payload["has_device_location"] is False
+
+
+def test_turn_input_records_the_paths_that_skip_intent_classification() -> None:
+    """이 둘이 채워진 턴은 `classify_intent`를 건너뛴다.
+
+    그래서 span이 안 보이는 게 정상인 턴과 이상한 턴을 여기서 가른다.
+    """
+    payload = agent_runtime_module._turn_input(
+        AgentRequest(
+            user_input="운영 중이 아닌 곳도 볼게요",
+            clarification_choice="ignore_operating_hours",
+            travel_origin_override=TravelOrigin.USER_LOCATION,
+        )
+    )
+
+    assert payload["clarification_choice"] == "ignore_operating_hours"
+    assert payload["travel_origin_override"] == TravelOrigin.USER_LOCATION.value
