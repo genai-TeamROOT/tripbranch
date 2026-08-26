@@ -145,10 +145,14 @@ def _client(*, tracing_enabled: bool = False) -> Any | None:
         print('✗ langfuse 패키지가 없다. pip install -e "." 로 설치한다.')
         return None
 
+    # **`host=`가 아니라 `base_url=`이다.** `host`는 레거시 별칭이고 SDK 안에서
+    # `base_url → LANGFUSE_BASE_URL 환경변수 → host → LANGFUSE_HOST` 순으로 밀린다
+    # (4.14.5 `Langfuse.__init__`). 셸에 `LANGFUSE_BASE_URL`이 export돼 있으면
+    # `host=`로 준 값이 조용히 무시돼 다른 리전으로 나간다.
     client = Langfuse(
         public_key=settings.langfuse_public_key,
         secret_key=settings.langfuse_secret_key,
-        host=settings.langfuse_base_url,
+        base_url=settings.langfuse_base_url,
         tracing_enabled=tracing_enabled,
     )
     if not client.auth_check():

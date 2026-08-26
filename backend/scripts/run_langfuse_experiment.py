@@ -44,6 +44,7 @@ import argparse
 from typing import Any, Final
 
 import httpx
+from langfuse.experiment import Evaluation
 
 from app.config import settings
 from scripts.sync_langfuse_dataset import DATASET_NAMES, _client
@@ -123,18 +124,19 @@ def make_task(base_url: str) -> Any:
     return task
 
 
-def intent_match(*, output: Any, expected_output: Any, **_: Any) -> dict[str, Any]:
+def intent_match(*, output: Any, expected_output: Any, **_: Any) -> Evaluation:
     """턴 순서까지 같아야 맞는 것으로 센다 — 순서가 어긋나면 다른 대화다."""
     expected = list((expected_output or {}).get("turn_intents") or [])
     actual = list((output or {}).get("turn_intents") or [])
-    return {
-        "name": "intent_match",
-        "value": 1.0 if expected and expected == actual else 0.0,
-        "comment": f"기대 {expected} · 실제 {actual}",
-    }
+    return Evaluation(
+        name="intent_match",
+        value=1.0 if expected and expected == actual else 0.0,
+        comment=f"기대 {expected} · 실제 {actual}",
+        data_type="NUMERIC",
+    )
 
 
-def condition_match(*, output: Any, expected_output: Any, **_: Any) -> dict[str, Any]:
+def condition_match(*, output: Any, expected_output: Any, **_: Any) -> Evaluation:
     """**기대한 필드만** 본다. 더 채워진 것은 감점하지 않는다.
 
     `evaluate_agent_quality`와 같은 규칙이다 — 두 경로가 같은 골드셋을 읽으므로
@@ -143,22 +145,29 @@ def condition_match(*, output: Any, expected_output: Any, **_: Any) -> dict[str,
     expected = (expected_output or {}).get("final_conditions") or {}
     actual = (output or {}).get("final_conditions") or {}
     if not expected:
-        return {"name": "condition_match", "value": 1.0, "comment": "기대 조건 없음"}
+        return Evaluation(
+            name="condition_match", value=1.0, comment="기대 조건 없음", data_type="NUMERIC"
+        )
     wrong = [field for field, want in expected.items() if actual.get(field) != want]
-    return {
-        "name": "condition_match",
-        "value": 1.0 if not wrong else 0.0,
-        "comment": "일치" if not wrong else f"불일치 {wrong}",
-    }
-
-
-def case_pass(*, output: Any, expected_output: Any, **_: Any) -> dict[str, Any]:
-    """Intent와 조건을 모두 통과했나 — CSV의 `case_pass`와 같은 기준."""
-    both = (
-        intent_match(output=output, expected_output=expected_output)["value"] == 1.0
-        and condition_match(output=output, expected_output=expected_output)["value"] == 1.0
+    return Evaluation(
+        name="condition_match",
+        value=1.0 if not wrong else 0.0,
+        comment="일치" if not wrong else f"불일치 {wrong}",
+        data_type="NUMERIC",
     )
-    return {"name": "case_pass", "value": 1.0 if both else 0.0}
+
+
+def case_pass(*, output: Any, expected_output: Any, **_: Any) -> Evaluation:
+    """Intent와 조건을 모두 통과했나 — CSV의 `case_pass`와 같은 기준.
+
+    `BOOLEAN`으로 올린다 — 화면에서 통과/실패 막대가 되고, NUMERIC이면 연속값
+    평균으로 잡혀 "0.5건 통과" 같은 눈금이 생긴다(`record_score`와 같은 이유).
+    """
+    both = (
+        _field(intent_match(output=output, expected_output=expected_output), "value") == 1.0
+        and _field(condition_match(output=output, expected_output=expected_output), "value") == 1.0
+    )
+    return Evaluation(name="case_pass", value=both, data_type="BOOLEAN")
 
 
 def _run_rate(item_results: Any, name: str) -> float:
@@ -177,13 +186,24 @@ def _run_rate(item_results: Any, name: str) -> float:
     return sum(numbers) / len(numbers) if numbers else 0.0
 
 
-def case_pass_rate(*, item_results: Any, **_: Any) -> dict[str, Any]:
-    return {"name": "case_pass_rate", "value": _run_rate(item_results, "case_pass")}
+def case_pass_rate(*, item_results: Any, **_: Any) -> Evaluation:
+    return Evaluation(
+        name="case_pass_rate",
+        value=_run_rate(item_results, "case_pass"),
+        data_type="NUMERIC",
+    )
 
 
-def intent_accuracy(*, item_results: Any, **_: Any) -> dict[str, Any]:
-    """케이스 단위다 — CSV의 `intent_accuracy`(턴 단위)와 이름이 같지만 분모가 다르다."""
-    return {"name": "case_intent_match_rate", "value": _run_rate(item_results, "intent_match")}
+def intent_accuracy(*, item_results: Any, **_: Any) -> Evaluation:
+    """케이스 단위다 — CSV의 `intent_accuracy`(턴 단위)와 이름이 같지만 분모가 다르다.
+
+    그래서 이름을 달리 붙인다. 같은 이름으로 올리면 두 수치가 한 곡선에 섞인다.
+    """
+    return Evaluation(
+        name="case_intent_match_rate",
+        value=_run_rate(item_results, "intent_match"),
+        data_type="NUMERIC",
+    )
 
 
 def _field(evaluation: Any, key: str) -> Any:

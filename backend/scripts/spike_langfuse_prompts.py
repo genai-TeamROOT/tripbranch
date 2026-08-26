@@ -407,7 +407,7 @@ def _client():
     client = Langfuse(
         public_key=settings.langfuse_public_key,
         secret_key=settings.langfuse_secret_key,
-        host=settings.langfuse_base_url,
+        base_url=settings.langfuse_base_url,
     )
     if not client.auth_check():
         print(f"✗ 인증 실패 — host={settings.langfuse_base_url}")

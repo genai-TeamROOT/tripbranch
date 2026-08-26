@@ -44,7 +44,7 @@ from __future__ import annotations
 import sys
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Final
 
 from app.config import settings
 from app.observability import langfuse_tracing
@@ -118,6 +118,12 @@ def _emit_nested() -> str | None:
     return trace_id
 
 
+# `fields`는 필드명이 아니라 **그룹명**을 받는다(4.14.5 문서). 기본값에는 `usage`가
+# 없어서 `usage_details`가 전부 `None`으로 온다 — 그러면 "토큰이 안 실렸다"는 판정이
+# 항상 참이 되어 검증이 거짓 합격한다.
+_OBSERVATION_FIELDS: Final = "core,basic,usage"
+
+
 def _fetch(client: Any, trace_id: str, ready: Callable[[Any], bool]) -> Any | None:
     """`ready`가 참이 될 때까지 되읽는다. 끝내 안 되면 마지막으로 받은 것을 돌려준다.
 
@@ -127,7 +133,9 @@ def _fetch(client: Any, trace_id: str, ready: Callable[[Any], bool]) -> Any | No
     latest: Any | None = None
     for attempt in range(_POLL_ATTEMPTS):
         try:
-            latest = client.api.trace.get(trace_id)
+            latest = client.api.observations.get_many(
+                trace_id=trace_id, fields=_OBSERVATION_FIELDS
+            )
             if ready(latest):
                 return latest
         except Exception:
@@ -138,7 +146,7 @@ def _fetch(client: Any, trace_id: str, ready: Callable[[Any], bool]) -> Any | No
 
 
 def _observations(trace: Any) -> list[Any]:
-    return list(getattr(trace, "observations", None) or [])
+    return list(getattr(trace, "data", None) or [])
 
 
 def _dump(trace: Any) -> str:
