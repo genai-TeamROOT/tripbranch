@@ -284,6 +284,9 @@ def build_info_concentration_execution_debug(
                 response.clarification.code if response.clarification is not None else None
             ),
             is_proxy=getattr(result, "is_proxy", None) if result is not None else None,
+            stale_area_detected=getattr(result, "stale_area_detected", None)
+            if result is not None
+            else None,
         )
     except Exception:  # noqa: BLE001 - 표시 정보 때문에 요청을 실패시키지 않는다.
         logger.warning("INFO 응답에서 Audit 표시 정보를 만들지 못함", exc_info=True)

@@ -19,6 +19,7 @@ import { ChatComposer } from "../components/chat/ChatComposer";
 import { ChatMessageList } from "../components/chat/ChatMessageList";
 import { ApiExchangePanel } from "../components/dev/ApiExchangePanel";
 import { DeveloperAuditPanel } from "../components/dev/DeveloperAuditPanel";
+import { StaleAreaBanner } from "../components/dev/StaleAreaBanner";
 import { TurnLocationBadges } from "../components/dev/TurnLocationBadges";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { LanguageSelector } from "../components/LanguageSelector";
@@ -504,6 +505,7 @@ export function DeveloperChatPage() {
             패널은 좁아 지명이 잘린다. 선택된 턴이 아니라 마지막 턴을 보여준다: 이 자리는
             채팅 흐름의 끝이라 바로 위 대화와 같은 턴을 가리켜야 한다.
           */}
+          {latestTurn && <StaleAreaBanner turn={latestTurn} />}
           {latestTurn && <TurnLocationBadges turn={latestTurn} />}
           <ChatComposer
             disabled={isLoading}

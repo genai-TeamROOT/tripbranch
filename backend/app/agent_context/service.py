@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -60,10 +61,12 @@ from app.agent_context.schemas import (
     ResponseMetadata,
 )
 from app.agent_context.schemas import ProviderMetadata as ContextProviderMetadata
-from app.agent_context.seoul_commercial_areas import (
-    POPULATION_AREA_PROXY_MAX_DISTANCE_KM,
-    SeoulCommercialArea,
+from app.agent_context.seoul_realtime_areas import (
+    COMMERCIAL_AREA_PROXY_MAX_DISTANCE_KM,
+    POPULATION_AREAS,
+    SeoulRealtimeArea,
     select_nearest_commercial_area,
+    select_nearest_population_area,
 )
 from app.agent_context.tool_rules import (
     TOOL_EXECUTION_RULE_VERSION,
@@ -76,6 +79,7 @@ from app.concentration_policy import (
     is_valid_concentration_rate,
     normalize_concentration,
 )
+from app.config import settings
 from app.domain.models import (
     ConcentrationResult,
     PlaceDetails,
@@ -99,7 +103,7 @@ from app.recommendation_limits import (
     MAX_RECOMMENDATION_CANDIDATE_LIMIT,
     MIN_RECOMMENDATION_LIMIT,
 )
-from app.schemas import CompareCriteria, ComparisonItem
+from app.schemas import CompareCriteria, ComparisonItem, StaleAreaProbeDebug
 from app.tools.concentration import (
     GetConcentrationTool,
 )
@@ -164,6 +168,17 @@ _REALTIME_CITYDATA_QUESTION_TYPES = {
     "realtime_event",
 }
 _CITYDATA_SOURCE_URL = "https://data.seoul.go.kr/dataList/OA-21285/F/1/datasetView.do"
+
+logger = logging.getLogger(__name__)
+
+# 인구 목록(POPULATION_AREAS)에 있는 이름 집합. 낡음 감지 probe가 "서울시 API는
+# 지원하는데 우리 목록엔 없다"를 판정하는 기준이다.
+_POPULATION_AREA_NAMES = {area.name for area in POPULATION_AREAS}
+
+# 같은 장소 이름을 반복 probe하지 않기 위한 프로세스 메모리 캐시. 값은 "서울시
+# API가 실제로 지원하는지" 여부다. 재시작하면 비워지는데, probe는 그 정도로도
+# 충분한 저비용 모니터링이라 별도 TTL·영속화를 두지 않는다(TP-141/D-084).
+_stale_area_probe_cache: dict[str, bool] = {}
 
 
 @dataclass(frozen=True)
@@ -609,10 +624,9 @@ class ContextService:
         서울시 API 자체 장애는 실시간 조회 실패로 드러낸다.
         """
 
-        nearest = select_nearest_commercial_area(
+        nearest = select_nearest_population_area(
             latitude=resolved_location.latitude,
             longitude=resolved_location.longitude,
-            max_distance_km=POPULATION_AREA_PROXY_MAX_DISTANCE_KM,
         )
         if nearest is None:
             return await self._fetch_concentration_info(
@@ -663,6 +677,13 @@ class ContextService:
                 location_metadata=(*location_metadata, *tool_result.provider_metadata),
             )
 
+        stale_area_detected = await self._probe_stale_population_area(
+            place_name=place_name,
+            matched_area_name=area.name,
+            matched_area_distance_km=distance_km,
+            tool=tool,
+        )
+
         return InfoContextResponse(
             request_id=request.request_id,
             status="success",
@@ -689,8 +710,65 @@ class ContextService:
                 else [],
                 source_url=_CITYDATA_SOURCE_URL,
                 map_url=_seoul_realtime_map_url(area),
+                stale_area_detected=stale_area_detected,
             ),
             metadata=_info_response_metadata(location_metadata, tool_result.provider_metadata),
+        )
+
+    async def _probe_stale_population_area(
+        self,
+        *,
+        place_name: str,
+        matched_area_name: str,
+        matched_area_distance_km: float,
+        tool: GetRealtimeCityDataTool,
+    ) -> StaleAreaProbeDebug | None:
+        """우리 121곳 목록엔 없지만 서울시 API는 지원하는 지역을 조용히 찾는다.
+
+        응답(추천 판정)에는 절대 개입하지 않는다 — 이 메서드는 항상 감사용
+        신호만 만들거나 아무것도 하지 않는다(TP-141/D-084). 탐색 실패는 이유를
+        따지지 않고 "신호 없음"으로 취급한다 — 서울시 API 자체 장애와 미지원
+        지역을 구분하려 들면 이 probe가 본 요청의 실패 판정에 영향을 줄 수 있다.
+        """
+
+        if not settings.seoul_area_staleness_probe_enabled:
+            return None
+        if matched_area_name == place_name:
+            # 대체가 안 일어났다 — place_name이 이미 우리 목록에 있다는 뜻이라
+            # 확인할 게 없다.
+            return None
+        if place_name in _POPULATION_AREA_NAMES:
+            # 좌표 기준 최근접은 다른 지역으로 잡혔지만(드문 경우), place_name
+            # 자체는 이미 우리 목록에 있다 — probe로 확인할 새 사실이 없다.
+            return None
+
+        cached = _stale_area_probe_cache.get(place_name)
+        if cached is None:
+            try:
+                probe_result = await tool.execute(RealtimeCityDataQuery(place_name))
+            except Exception:  # noqa: BLE001 - probe 실패가 본 요청에 번지면 안 된다.
+                logger.warning("낡음 감지 probe 호출 실패: %s", place_name, exc_info=True)
+                _stale_area_probe_cache[place_name] = False
+                return None
+            supported = (
+                probe_result.status is not ToolStatus.UNAVAILABLE
+                and probe_result.citydata is not None
+                and probe_result.citydata.population is not None
+            )
+            _stale_area_probe_cache[place_name] = supported
+            cached = supported
+
+        if not cached:
+            return None
+
+        logger.warning(
+            "서울시 실시간 도시데이터가 지원하는데 우리 121곳 목록엔 없는 지역: %s",
+            place_name,
+        )
+        return StaleAreaProbeDebug(
+            probed_area_name=place_name,
+            matched_area_name=matched_area_name,
+            matched_area_distance_km=matched_area_distance_km,
         )
 
     async def _fetch_realtime_commercial_info(
@@ -841,11 +919,18 @@ class ContextService:
         resolved_location: ResolvedLocation,
         location_metadata: tuple[ProviderMetadata, ...],
     ) -> InfoContextResponse:
-        """서울시 citydata의 주차·지하철·버스·행사 객체를 INFO 카드로 정규화한다."""
+        """서울시 citydata의 주차·지하철·버스·행사 객체를 INFO 카드로 정규화한다.
 
-        nearest = select_nearest_commercial_area(
+        citydata(통합)는 상권 82개보다 넓은 121개 지역을 지원하므로(경복궁·한강공원
+        등) 인구 목록으로 조회한다. 거리 허용치는 기존 상권 조회와 같은 2km를
+        유지한다 — 이 조회는 인구 혼잡도처럼 "지금 여기" 정확도가 중요한 값이
+        아니라 주차·지하철 같은 주변 정보라 더 넓게 대체해도 된다.
+        """
+
+        nearest = select_nearest_population_area(
             latitude=resolved_location.latitude,
             longitude=resolved_location.longitude,
+            max_distance_km=COMMERCIAL_AREA_PROXY_MAX_DISTANCE_KM,
         )
         if nearest is None:
             return _realtime_city_info_no_data_response(
@@ -1601,7 +1686,7 @@ def _distance_from_location_label(
     return f"약 {round(distance_km * 1000):,}m"
 
 
-def _seoul_realtime_map_url(area: SeoulCommercialArea) -> str:
+def _seoul_realtime_map_url(area: SeoulRealtimeArea) -> str:
     """서울시 실시간 도시데이터 지도의 제공 지역 딥링크를 만든다.
 
     지도 URL은 ``y=경도``, ``x=위도`` 순서를 사용한다. 응답의 AREA_NM보다
