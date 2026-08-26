@@ -1,7 +1,9 @@
 /*
- * 역할: 짧은 음성 발화를 감지해 자동 종료하고 Gemini 전사 뒤 기존 채팅 전송으로 넘긴다.
- * 입력: 전사 결과/오류/자동 전송 콜백과 외부 요청 중 여부.
- * 출력: 사용자 발화가 끝난 뒤 한 번의 클릭만으로 실행되는 음성 입력 UX.
+ * 역할: 짧은 음성 발화를 감지해 자동 종료하거나 사용자가 직접 멈춰 Gemini 전사 뒤
+ * 기존 채팅 입력으로 넘긴다.
+ * 입력: 전사 결과/오류/자동 전송/수동 정지 콜백과 외부 요청 중 여부.
+ * 출력: 무음 감지로 자동 종료되면 한 번의 클릭만으로 바로 전송되고, 녹음 중 버튼을
+ * 다시 눌러 수동으로 멈추면 인식된 텍스트가 입력창에 채워져 사용자가 수정 후 보낸다.
  * 호출 시점: HomePage와 ChatComposer의 음성 버튼 클릭.
  */
 
@@ -11,17 +13,24 @@ import { transcribeAudio } from "../../api/trip";
 import { toWavBlob } from "../../utils/audioRecording";
 
 const MAX_RECORDING_MILLISECONDS = 60_000;
+const NO_SPEECH_TIMEOUT_MILLISECONDS = 10_000;
 const SILENCE_DURATION_MILLISECONDS = 1_200;
 const SPEECH_THRESHOLD = 0.025;
 
 type VoiceState = "idle" | "recording" | "transcribing";
 
+// 녹음이 끝난 이유. "manual"만 사용자가 정지 버튼을 직접 누른 경우이고,
+// 나머지는 전부 자동 종료다 — onstop에서 이 값으로 자동 전송/수동 정지를 가른다.
+type StopReason = "manual" | "silence" | "no-speech-timeout" | "max-duration" | "unmount";
+
 interface VoiceInputButtonProps {
   disabled?: boolean;
   /** 전사 직후 UI 오류 상태 등을 먼저 정리할 때 사용한다. */
   onTranscript: (text: string) => void;
-  /** 있으면 입력창을 거치지 않고 기존 채팅 전송 흐름으로 바로 보낸다. */
+  /** 무음 감지 등 자동 종료 시 입력창을 거치지 않고 기존 채팅 전송 흐름으로 바로 보낸다. */
   onAutoSubmit?: (text: string) => Promise<void> | void;
+  /** 녹음 중 정지 버튼을 직접 눌러 멈췄을 때. 전송하지 않고 입력창에만 채워 넣는다. */
+  onManualStop?: (text: string) => void;
   onError?: (message: string) => void;
 }
 
@@ -29,6 +38,7 @@ export function VoiceInputButton({
   disabled = false,
   onTranscript,
   onAutoSubmit,
+  onManualStop,
   onError,
 }: VoiceInputButtonProps) {
   const [voiceState, setVoiceState] = useState<VoiceState>("idle");
@@ -37,13 +47,14 @@ export function VoiceInputButton({
   const monitorContextRef = useRef<AudioContext | null>(null);
   const monitorFrameRef = useRef<number | null>(null);
   const stopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const noSpeechTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const heardSpeechRef = useRef(false);
   const lastSpeechAtRef = useRef(0);
-  const discardRecordingRef = useRef(false);
+  const stopReasonRef = useRef<StopReason | null>(null);
 
   useEffect(
     () => () => {
-      discardRecordingRef.current = true;
+      stopReasonRef.current = "unmount";
       if (recorderRef.current?.state === "recording") recorderRef.current.stop();
       cleanupResources();
     },
@@ -54,6 +65,10 @@ export function VoiceInputButton({
     if (stopTimerRef.current) {
       clearTimeout(stopTimerRef.current);
       stopTimerRef.current = null;
+    }
+    if (noSpeechTimerRef.current) {
+      clearTimeout(noSpeechTimerRef.current);
+      noSpeechTimerRef.current = null;
     }
     if (monitorFrameRef.current !== null) {
       cancelAnimationFrame(monitorFrameRef.current);
@@ -68,8 +83,13 @@ export function VoiceInputButton({
     recorderRef.current = null;
   }
 
-  function stopRecording() {
-    if (recorderRef.current?.state === "recording") recorderRef.current.stop();
+  // 정지 트리거는 전부 이 함수 하나를 거친다. MediaRecorder.stop()이 state를
+  // 동기적으로 바꾸므로, 이미 멈춘 뒤 도착한 트리거는 가드에 걸려 무시된다 —
+  // 가장 먼저 도착한 트리거의 reason만 stopReasonRef에 남는다.
+  function stopRecording(reason: StopReason) {
+    if (recorderRef.current?.state !== "recording") return;
+    stopReasonRef.current = reason;
+    recorderRef.current.stop();
   }
 
   function monitorSilence(stream: MediaStream) {
@@ -88,6 +108,10 @@ export function VoiceInputButton({
         128;
       const now = performance.now();
       if (averageAmplitude >= SPEECH_THRESHOLD) {
+        if (!heardSpeechRef.current && noSpeechTimerRef.current) {
+          clearTimeout(noSpeechTimerRef.current);
+          noSpeechTimerRef.current = null;
+        }
         heardSpeechRef.current = true;
         lastSpeechAtRef.current = now;
       }
@@ -96,7 +120,7 @@ export function VoiceInputButton({
         heardSpeechRef.current &&
         now - lastSpeechAtRef.current >= SILENCE_DURATION_MILLISECONDS
       ) {
-        stopRecording();
+        stopRecording("silence");
         return;
       }
       monitorFrameRef.current = requestAnimationFrame(checkVolume);
@@ -120,7 +144,7 @@ export function VoiceInputButton({
       const chunks: BlobPart[] = [];
       heardSpeechRef.current = false;
       lastSpeechAtRef.current = performance.now();
-      discardRecordingRef.current = false;
+      stopReasonRef.current = null;
       streamRef.current = stream;
       recorderRef.current = recorder;
       recorder.ondataavailable = (event) => {
@@ -133,18 +157,22 @@ export function VoiceInputButton({
       };
       recorder.onstop = () => {
         const recording = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
-        const discardRecording = discardRecordingRef.current;
+        const reason = stopReasonRef.current ?? "manual";
         cleanupResources();
-        if (discardRecording) {
+        if (reason === "unmount") {
           setVoiceState("idle");
           return;
         }
-        void transcribeRecording(recording);
+        void transcribeRecording(recording, reason);
       };
       recorder.start();
       monitorSilence(stream);
       setVoiceState("recording");
-      stopTimerRef.current = setTimeout(stopRecording, MAX_RECORDING_MILLISECONDS);
+      stopTimerRef.current = setTimeout(() => stopRecording("max-duration"), MAX_RECORDING_MILLISECONDS);
+      noSpeechTimerRef.current = setTimeout(
+        () => stopRecording("no-speech-timeout"),
+        NO_SPEECH_TIMEOUT_MILLISECONDS,
+      );
     } catch (error) {
       cleanupResources();
       setVoiceState("idle");
@@ -157,7 +185,7 @@ export function VoiceInputButton({
     }
   }
 
-  async function transcribeRecording(recording: Blob) {
+  async function transcribeRecording(recording: Blob, reason: StopReason) {
     if (!recording.size || !heardSpeechRef.current) {
       setVoiceState("idle");
       onError?.("음성을 인식하지 못했어요. 조금 더 또렷하게 말씀해 주세요.");
@@ -168,7 +196,11 @@ export function VoiceInputButton({
       const wav = await toWavBlob(recording);
       const response = await transcribeAudio(wav);
       onTranscript(response.text);
-      await onAutoSubmit?.(response.text);
+      if (reason === "manual") {
+        onManualStop?.(response.text);
+      } else {
+        await onAutoSubmit?.(response.text);
+      }
     } catch (error) {
       onError?.(
         error instanceof ApiError
@@ -182,9 +214,7 @@ export function VoiceInputButton({
 
   function handleClick() {
     if (voiceState === "recording") {
-      // 완료는 무음 감지가 담당한다. 두 번째 클릭은 의도적으로 취소만 한다.
-      discardRecordingRef.current = true;
-      stopRecording();
+      stopRecording("manual");
       return;
     }
     if (voiceState === "idle") void startRecording();
@@ -192,7 +222,7 @@ export function VoiceInputButton({
 
   const label =
     voiceState === "recording"
-      ? "듣고 있어요. 말이 끝나면 자동으로 전송합니다."
+      ? "녹음 중이에요. 말이 끝나면 자동으로 전송하고, 버튼을 누르면 지금까지 인식된 내용을 입력창에 채워줘요."
       : voiceState === "transcribing"
         ? "음성을 텍스트로 바꾸는 중"
         : "음성으로 입력";
@@ -203,7 +233,7 @@ export function VoiceInputButton({
       disabled={disabled || voiceState === "transcribing"}
       onClick={handleClick}
       aria-label={label}
-      title={voiceState === "recording" ? "녹음을 취소하려면 누르세요" : label}
+      title={voiceState === "recording" ? "눌러서 녹음 마치기" : label}
       className={`inline-flex size-10 shrink-0 items-center justify-center rounded-full transition disabled:opacity-50 ${
         voiceState === "recording"
           ? "bg-gray-950 text-white shadow-md shadow-gray-400/40 dark:bg-gray-100 dark:text-gray-950"
@@ -212,8 +242,12 @@ export function VoiceInputButton({
     >
       {voiceState === "transcribing" ? (
         <span className="size-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+      ) : voiceState === "recording" ? (
+        <span aria-hidden="true">
+          <StopIcon />
+        </span>
       ) : (
-        <span className={voiceState === "recording" ? "animate-pulse" : ""} aria-hidden="true">
+        <span aria-hidden="true">
           <VoiceWaveIcon />
         </span>
       )}
@@ -227,6 +261,14 @@ function VoiceWaveIcon() {
     <svg viewBox="0 0 24 24" fill="none" className="size-7" stroke="currentColor" strokeWidth="2.2">
       <rect x="8.25" y="3" width="7.5" height="11.5" rx="3.75" />
       <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M8.5 21h7" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function StopIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className="size-6">
+      <rect x="6" y="6" width="12" height="12" rx="2.5" />
     </svg>
   );
 }

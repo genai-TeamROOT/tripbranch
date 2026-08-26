@@ -13,6 +13,7 @@ from __future__ import annotations
 from datetime import date
 
 from app.prompts.loader import active_variant, load_text, render_text
+from app.schedule.associations import CoVisitedHint
 from app.schedule.schemas import (
     SchedulePartialFillRequest,
     SchedulePlanningRequest,
@@ -358,6 +359,12 @@ def build_schedule_planning_instruction(time_available_min: int | None = None) -
     )
 
 
+def _co_visited_line(hint: CoVisitedHint, name_by_place_id: dict[str, str]) -> str:
+    from_name = name_by_place_id.get(hint.from_place_id, hint.from_place_id)
+    to_name = name_by_place_id.get(hint.to_place_id, hint.to_place_id)
+    return f"- {from_name}({hint.from_place_id}) ↔ {to_name}({hint.to_place_id}) | rank={hint.rank}"
+
+
 def format_schedule_planning_context(request: SchedulePlanningRequest, start_time: str) -> str:
     """SchedulePlanningRequest를 LLM에 전달할 contents 텍스트로 직렬화한다.
 
@@ -365,6 +372,12 @@ def format_schedule_planning_context(request: SchedulePlanningRequest, start_tim
     이 함수가 실제 후보/조건/거리 데이터(contents)를 담당한다. start_time은
     호출부(app.schedule.planner)가 request.visit_datetime의 fallback까지
     반영해 미리 "HH:MM"으로 계산해 넘긴다.
+
+    co_visited_hints(place_associations 기반, D-088)는 대부분의 요청에서
+    비어 있다 — planner.py가 co_visited_fetcher를 받았을 때만 채운다. 비어
+    있으면 "(없음)"으로 표시해, 이 섹션이 있는지 없는지가 아니라 항상 같은
+    구조로 렌더링되게 한다(format_schedule_fill_context()의 pinned_lines
+    fallback과 같은 패턴).
     """
 
     candidate_lines = "\n".join(
@@ -374,6 +387,10 @@ def format_schedule_planning_context(request: SchedulePlanningRequest, start_tim
         f"- {a}-{b}: {distance_km:.2f}km"
         for (a, b), distance_km in request.pairwise_distances_km.items()
     )
+    name_by_place_id = {c.place_id: c.name for c in request.candidates}
+    co_visited_lines = "\n".join(
+        _co_visited_line(hint, name_by_place_id) for hint in request.co_visited_hints
+    ) or "(없음)"
     condition_lines = request.conditions.model_dump_json(exclude_none=True)
 
     return render_text(
@@ -381,6 +398,7 @@ def format_schedule_planning_context(request: SchedulePlanningRequest, start_tim
         start_time=start_time,
         candidate_lines=candidate_lines,
         distance_lines=distance_lines,
+        co_visited_lines=co_visited_lines,
         condition_lines=condition_lines,
     )
 
@@ -399,7 +417,13 @@ def build_schedule_fill_instruction() -> str:
 
 
 def format_schedule_fill_context(request: SchedulePartialFillRequest, start_time: str) -> str:
-    """SchedulePartialFillRequest를 LLM에 전달할 contents 텍스트로 직렬화한다."""
+    """SchedulePartialFillRequest를 LLM에 전달할 contents 텍스트로 직렬화한다.
+
+    co_visited_hints(D-088/D-091)는 pinned_items + candidates 양쪽 place_id를
+    다 조회 대상으로 삼으므로(app.schedule.planner._with_co_visited_hints),
+    이름 매핑도 두 목록을 합쳐서 만든다 — 힌트 한 쪽이 이미 확정된 pinned
+    항목을 가리킬 수 있어서다.
+    """
 
     pinned_lines = "\n".join(
         f"- order={p.order} | {p.place_id} | {p.place_name} | "
@@ -413,6 +437,11 @@ def format_schedule_fill_context(request: SchedulePartialFillRequest, start_time
         f"- {a}-{b}: {distance_km:.2f}km"
         for (a, b), distance_km in request.pairwise_distances_km.items()
     )
+    name_by_place_id = {p.place_id: p.place_name for p in request.pinned_items}
+    name_by_place_id.update({c.place_id: c.name for c in request.candidates})
+    co_visited_lines = "\n".join(
+        _co_visited_line(hint, name_by_place_id) for hint in request.co_visited_hints
+    ) or "(없음)"
     condition_lines = request.conditions.model_dump_json(exclude_none=True)
 
     return render_text(
@@ -422,6 +451,7 @@ def format_schedule_fill_context(request: SchedulePartialFillRequest, start_time
         target_orders=request.target_orders,
         candidate_lines=candidate_lines,
         distance_lines=distance_lines,
+        co_visited_lines=co_visited_lines,
         condition_lines=condition_lines,
     )
 

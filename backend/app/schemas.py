@@ -333,6 +333,7 @@ class QuestionType(StrEnum):
     REALTIME_SUBWAY = "realtime_subway"
     REALTIME_BUS = "realtime_bus"
     REALTIME_EVENT = "realtime_event"
+    REALTIME_TRAFFIC = "realtime_traffic"
 
 
 class PlaceContext(StrEnum):
@@ -948,6 +949,9 @@ class InfoPlaceCard(BaseModel):
     population_current_level: str | None = None
     population_current_message: str | None = None
     population_observed_at: str | None = None
+    # 향후 예측 중 가장 붐빌 시간대 요약("N시 후 가장 붐빌 것으로 예상돼요").
+    # 과거 추이는 서울시 API가 제공하지 않아 다루지 않는다.
+    population_peak_forecast_summary: str | None = None
     population_forecasts: list[PopulationForecastBar] = Field(default_factory=list)
     concentration_forecasts: list[ConcentrationForecastBar] = Field(default_factory=list)
     # 서울시 도시데이터는 관광 상세 DB가 아닌 지역 단위 실시간 데이터다. 기본 카드에는
@@ -1038,6 +1042,11 @@ class AgentResponse(BaseModel):
     # 목적이 달라 InfoPlaceCard.answer_fields와 카드 상세를 분리해 보존한다.
     info_place_card: InfoPlaceCard | None = None
     message: str
+    # message 본문에 넣기엔 긴 부가 정보 — 지금은 서비스 지역 밖 안내에서 지원 구
+    # 목록을 여기 담는다. 화면은 이 필드가 있으면 본문 아래 작고 옅은 글씨로 보여준다
+    # (D-085). 본문에 목록을 그대로 이어붙이면 구가 늘 때마다 문장이 길어지는데,
+    # 그 성장을 본문과 분리된 각주 쪽에서만 받게 한다.
+    message_footnote: str | None = None
     # 개발자용 Audit에서 1차 Intent/2차 추출 호출의 실제 Gemini 모델·폴백 경로를
     # 확인한다. Fake LLM 등 실행 메타데이터를 제공하지 않는 구현체에서는 None이다.
     llm_execution: LLMExecutionMetadata | None = None

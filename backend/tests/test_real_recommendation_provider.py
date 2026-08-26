@@ -373,6 +373,76 @@ async def test_rerank_with_concentration_uses_resolve_weather_condition(
     assert captured["weather_reason"] == "rain"
 
 
+# --- rerank_with_co_visited() 배선 (D-092) -----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rerank_with_co_visited_passes_origin_name_from_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """rerank_with_concentration()과 같은 이유로 2차도 1차와 같은 기준점 이름을
+    써야 근거 문장이 갈리지 않는다(TP-109와 같은 유형)."""
+    captured: dict[str, object] = {}
+
+    async def _fake_rerank(
+        first_pass,
+        co_visited_pairs,
+        weather_condition,
+        *,
+        weather_reason=None,
+        origin_name=None,
+    ):
+        captured["origin_name"] = origin_name
+        captured["co_visited_pairs"] = co_visited_pairs
+        return first_pass
+
+    monkeypatch.setattr(module, "rerank_with_co_visited", _fake_rerank)
+
+    provider = RealRecommendationProvider()
+    conditions = UserConditions()
+    pairs = [("a", "b")]
+
+    await provider.rerank_with_co_visited(
+        conditions, _context(place_ids=["a", "b"]), _empty_first_pass(), pairs
+    )
+
+    assert captured["origin_name"] == "경복궁"
+    assert captured["co_visited_pairs"] == pairs
+
+
+@pytest.mark.asyncio
+async def test_rerank_with_co_visited_uses_resolve_weather_condition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D-051과 같은 이유로 co_visited 2차도 resolve_weather_condition()을 다시
+    거쳐야 한다 — 1차와 판정이 갈리면 근거 문장이 서로 다른 날씨를 말하게 된다.
+    """
+    captured: dict[str, object] = {}
+
+    async def _fake_rerank(
+        first_pass,
+        co_visited_pairs,
+        weather_condition,
+        *,
+        weather_reason=None,
+        origin_name=None,
+    ):
+        captured["weather_condition"] = weather_condition
+        captured["weather_reason"] = weather_reason
+        return first_pass
+
+    monkeypatch.setattr(module, "rerank_with_co_visited", _fake_rerank)
+
+    provider = RealRecommendationProvider()
+    conditions = UserConditions(weather_intent=WeatherIntent.ENJOY, weather=StatedWeather.RAIN)
+    context = _context(place_ids=["a"])
+
+    await provider.rerank_with_co_visited(conditions, context, _empty_first_pass(), [])
+
+    assert captured["weather_condition"] == WeatherCondition.GOOD
+    assert captured["weather_reason"] == "rain"
+
+
 # --- 도보 실측 전달 가드 (feat/walking-duration-scoring) --------------------
 
 _WALKING_ROUTE = TravelRoute(

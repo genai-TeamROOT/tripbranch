@@ -89,10 +89,14 @@ _TOOL_UNSUPPORTED_MESSAGE = "죄송하지만 아직 지원하지 않는 요청�
 
 # unsupported는 이유가 여러 가지다. 지원 지역 밖인데 "아직 지원하지 않는 요청"이라고만
 # 하면 무엇을 바꿔야 할지 알 수 없다(D-044).
+#
+# unsupported_region 본문에는 지원 구 목록을 넣지 않는다(D-085) — 구가 12개, 앞으로도
+# 계속 늘어날 예정이라 문장에 그대로 이어붙이면 매번 길어진다. 목록은
+# AgentResponse.message_footnote로 따로 빼서 화면이 작고 옅은 글씨로 보여준다
+# (unsupported_region_footnote() 참고).
 _TOOL_UNSUPPORTED_TEMPLATES: dict[str, str] = {
     "unsupported_region": (
-        f"현재는 베타 서비스로 {supported_district_label()}의 장소 추천만 가능해요. "
-        "그 안에서 가고 싶은 위치를 말씀해주세요."
+        "이 위치는 지금 서비스 지역이 아니에요. 다른 위치를 말씀해 주세요."
     ),
     "realtime_commercial_unsupported_region": (
         "해당 장소 주변은 서울시 실시간 상권 데이터 제공 지역이 아니에요. "
@@ -103,6 +107,18 @@ _TOOL_UNSUPPORTED_TEMPLATES: dict[str, str] = {
 
 def _unsupported_message(error_code: str | None) -> str:
     return _TOOL_UNSUPPORTED_TEMPLATES.get(error_code or "", _TOOL_UNSUPPORTED_MESSAGE)
+
+
+def unsupported_region_footnote(error_code: str | None) -> str | None:
+    """unsupported_region 본문에서 뺀 지원 구 목록. AgentResponse.message_footnote로 간다.
+
+    error_code가 "unsupported_region"이 아니면 None — 그 자리에 footnote를 안 쓴다.
+    `supported_district_label()`을 그대로 읽으므로 구가 늘어도 이 함수는 손댈 필요가
+    없다(D-085).
+    """
+    if error_code != "unsupported_region":
+        return None
+    return f"현재 서비스 지역: {supported_district_label(with_city=True)}"
 
 
 _TOOL_UNAVAILABLE_MESSAGE = "일시적으로 요청을 처리하지 못했어요. 잠시 후 다시 시도해주세요."
@@ -313,12 +329,14 @@ def compose_realtime_population_message(response: InfoContextResponse) -> str:
 
 
 def compose_realtime_city_info_message(response: InfoContextResponse) -> str:
-    """주차·대중교통·행사의 실시간 citydata 결과를 간결하게 안내한다."""
+    """주차·대중교통·행사·도로소통의 실시간 citydata 결과를 간결하게 안내한다."""
 
     if response.status == "unavailable" or not isinstance(response.result, RealtimeCityInfoResult):
         return _TOOL_UNAVAILABLE_MESSAGE
     result = response.result
     place = result.resolved_place_name or result.requested_place_name or "해당 지역"
+    if result.question_type == "realtime_traffic":
+        return _compose_realtime_traffic_message(place, result)
     labels = {
         "realtime_parking": "실시간 주차장 정보",
         "realtime_subway": "지하철 도착 정보",
@@ -329,6 +347,23 @@ def compose_realtime_city_info_message(response: InfoContextResponse) -> str:
     if result.status == "no_data" or not result.fields:
         return f"{place} 주변의 {label}는 현재 확인할 수 없어요."
     return f"{place} 주변의 {label}를 찾았어요. 아래 카드에서 확인해보세요."
+
+
+def _compose_realtime_traffic_message(place: str, result: RealtimeCityInfoResult) -> str:
+    """도로소통은 카드로 안내를 미루지 않고, 값 자체를 말풍선에 바로 담는다.
+
+    항목 하나짜리 스냅샷이라(주차·지하철처럼 여러 곳을 나열할 필요가 없다) 카드
+    확인을 유도하는 대신 바로 답한다. 24시간 추이는 원본 API에 없어 다루지 않는다.
+    """
+
+    if result.status == "no_data" or not result.fields:
+        return f"{place} 주변 도로소통 정보는 현재 확인할 수 없어요."
+    level = result.fields.get("도로소통 단계")
+    speed = result.fields.get("평균 주행속도")
+    if level is None:
+        return f"{place} 주변 도로소통 정보를 찾았어요. 아래 카드에서 확인해보세요."
+    speed_part = f" 평균 주행속도 {speed}예요." if speed else ""
+    return f"{place} 주변 도로는 지금 {level} 수준이에요.{speed_part}"
 
 
 def compose_place_info_message(
@@ -955,4 +990,5 @@ __all__ = [
     "compose_event_info_message",
     "compose_compare_message",
     "compose_schedule_message",
+    "unsupported_region_footnote",
 ]

@@ -165,6 +165,8 @@ export interface InfoPlaceCard {
   population_current_level?: string | null;
   population_current_message?: string | null;
   population_observed_at?: string | null;
+  /** 향후 예측 중 가장 붐빌 시간대 요약. 과거 추이는 원본 API 미제공으로 없다. */
+  population_peak_forecast_summary?: string | null;
   population_forecasts?: PopulationForecastBar[];
   concentration_forecasts?: ConcentrationForecastBar[];
   realtime_area_name?: string | null;
@@ -226,6 +228,8 @@ export type ChatMessage =
       status?: LLMOutputStatus;
       /** SSE로 요약 문장을 받는 중인 말풍선이다. */
       streaming?: boolean;
+      /** AgentResponse.message_footnote 그대로. 본문 아래 작고 옅은 글씨로 보여준다. */
+      footnote?: string;
     }
   | {
       id: string;
@@ -619,6 +623,8 @@ export interface AgentResponse {
   comparison?: ComparisonResult | null;
   info_place_card?: InfoPlaceCard | null;
   message: string;
+  /** message에 넣기엔 긴 부가 정보(D-085). 있으면 본문 아래 작고 옅은 글씨로 보여준다. */
+  message_footnote?: string | null;
   llm_execution?: LLMExecutionMetadata | null;
   tool_execution?: ToolExecutionDebug | null;
   tool_executions?: ToolExecutionDebug[];

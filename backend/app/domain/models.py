@@ -146,6 +146,10 @@ class RealtimeParkingLot:
     current_available: bool
     paid: bool | None
     observed_at: str | None
+    # PRK_CD. 같은 주차장이 PRK_STTS에 중복으로 올 때 병합용 키로 쓴다.
+    code: str | None = None
+    # PRK_TYPE(NW/NS/BS/NP)을 "공영"/"민영"으로 정리한 값. 모르는 코드는 None.
+    lot_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -176,6 +180,16 @@ class RealtimeCityEvent:
 
 
 @dataclass(frozen=True)
+class RoadTrafficStatus:
+    """지역 인근 도로의 평균 소통 현황(citydata의 ROAD_TRAFFIC_STTS.AVG_ROAD_DATA)."""
+
+    level: str | None
+    average_speed_kmh: float | None
+    message: str | None
+    observed_at: str | None
+
+
+@dataclass(frozen=True)
 class RealtimeCityDataResult:
     """상권 활동과 인구 혼잡도를 같은 서울시 주요 장소 기준으로 묶는다."""
 
@@ -185,6 +199,7 @@ class RealtimeCityDataResult:
     subway_arrivals: tuple[RealtimeSubwayArrival, ...] = ()
     bus_stops: tuple[RealtimeBusStop, ...] = ()
     events: tuple[RealtimeCityEvent, ...] = ()
+    road_traffic: RoadTrafficStatus | None = None
 
 
 @dataclass(frozen=True)
@@ -409,6 +424,11 @@ class StoredPlaceLocation:
     address: str | None
     latitude: float
     longitude: float
+    # TourAPI 법정동 코드의 시군구 부분(lDongSignguCd, 종로구 "110"). 집중률 조회는
+    # 구를 지정해야 하고 API가 그 값으로 엄격하게 거른다 - 중구 장소를 종로구로
+    # 물으면 0건이 온다(D-095). 집중률 API의 signguCd는 시도까지 붙인 5자리라
+    # 넘기기 전에 concentration_signgu_code()로 바꾼다.
+    district_code: str | None = None
     # 집중률 응답에서 장소를 골라낼 때 대조할 정식 명칭.
     concentration_name: str | None = None
     # tAtsNm에 넣을 검색어 목록. 앞에서부터 시도하고 결과가 나오면 멈춘다(D-057).
@@ -444,6 +464,48 @@ class PlaceEvidenceMatch:
     place_title: str
     avg_similarity: float
     snippets: tuple[PlaceEvidenceSnippet, ...]
+
+
+@dataclass(frozen=True)
+class PlaceMoodProfile:
+    """장소 사진에서 뽑은 분위기 축 점수 한 벌.
+
+    `place_mood_vectors.axis_scores`를 그대로 담는다. 적재 때 미리 계산해 둔
+    값이라 조회 경로에는 벡터 연산이 없다 — 발화에 분위기 표현이 있으면 이
+    점수로 정렬만 하면 된다.
+
+    **점수의 부호를 임계값으로 쓰지 않는다.** 특히 `세월`은 종로 631곳 중
+    양수가 24곳뿐일 만큼 한쪽으로 쏠려 있어 "0보다 크면 새것"이 성립하지
+    않는다. 순위는 정확하므로 정렬에만 쓴다(D-087).
+    """
+
+    content_id: str
+    # 축 이름 → −1~1 점수. 키는 영문이고 부호는 `+` 쪽을 가리킨다 — calm이
+    # 양수면 조용한 쪽이다. 지금 켠 축은 indoor·calm·traditional·warm_toned·
+    # weathered 다섯이지만
+    # 축을 켜고 끄는 일이 잦아 고정 필드로 두지 않는다.
+    axis_scores: Mapping[str, float]
+    # 평균에 쓴 사진 수. 1이면 detailImage2가 비어 대표 이미지 한 장으로 대체된
+    # 장소이고, 그 한 장이 간판만 찍혔으면 장소가 아니라 그 사진을 대표한다.
+    # 종로 631곳 중 170곳(27%)이 여기 해당한다.
+    photo_count: int
+
+
+@dataclass(frozen=True)
+class PlaceMoodMatch:
+    """사진 한 장으로 찾은 "분위기가 닮은 장소" 한 건.
+
+    `similarity`는 올린 사진의 벡터와 장소 벡터의 코사인 유사도다. 양쪽 다
+    길이 1로 정규화돼 있어 내적이 곧 유사도다.
+
+    **얼마부터 "닮았다"인지는 아직 정하지 않았다.** 축 점수 쪽은 사람 정답표
+    77곳으로 AUC를 쟀지만(D-087), 사진끼리의 유사도 컷은 표본이 없다. 재기
+    전까지는 절대값이 아니라 순위만 쓴다.
+    """
+
+    content_id: str
+    similarity: float
+    profile: PlaceMoodProfile
 
 
 @dataclass(frozen=True)

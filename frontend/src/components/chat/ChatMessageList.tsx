@@ -147,6 +147,9 @@ export function ChatMessageList({
                     language={language}
                   />
                 )}
+                {message.type === "assistant_text" && message.footnote && (
+                  <p className="text-xs text-gray-400 dark:text-gray-500">{message.footnote}</p>
+                )}
               </div>
             );
           }

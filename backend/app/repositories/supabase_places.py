@@ -14,6 +14,8 @@ from app.domain.models import (
     PlaceBarrierFreeDetails,
     PlaceEvidenceMatch,
     PlaceEvidenceSnippet,
+    PlaceMoodMatch,
+    PlaceMoodProfile,
     StoredPlaceDetail,
     StoredPlaceLocation,
     StoredPlaceState,
@@ -26,6 +28,15 @@ from app.service_area import SUPPORTED_DISTRICT_CODES
 # search_place_evidence RPC가 강제하는 후보 상한. 넘으면 RPC가 즉시 에러를
 # 던진다 — 여기서 미리 막아 왕복 한 번을 아끼고, 실패 지점을 호출부 가까이 둔다.
 _MAX_EVIDENCE_CANDIDATES = 500
+
+# search_place_mood도 같은 상한을 둔다. 이유는 다르다 — place_mood_vectors는
+# 장소당 한 행이라 종로구만 적재한 지금 631행이고 전체를 훑어도 빠르지만,
+# 후보 배열로 좁히면 HNSW 인덱스를 못 타고 순차 스캔이 된다.
+_MAX_MOOD_CANDIDATES = 500
+
+# 발화 경로가 한 번에 읽는 장소 수. PostgREST의 in 필터는 URL에 그대로 실려서
+# 너무 길면 요청줄 길이 제한에 걸린다. content_id가 7자리라 200건이면 1.6KB다.
+_MOOD_PROFILE_CHUNK_SIZE = 200
 
 # PostgREST의 in 필터 값. 지원 구가 늘면 SUPPORTED_DISTRICT_CODES만 고치면 된다.
 _SUPPORTED_DISTRICT_FILTER = f"in.({','.join(sorted(SUPPORTED_DISTRICT_CODES))})"
@@ -57,7 +68,7 @@ _STATE_COLUMNS = ",".join(
     )
 )
 _LOCATION_COLUMNS = (
-    "content_id,title,address,latitude,longitude,"
+    "content_id,title,address,latitude,longitude,district_code,"
     "place_concentration_mappings(primary_concentration_name,concentration_search_keys)"
 )
 
@@ -207,6 +218,9 @@ def _map_place_locations(
                 address=_optional_text(raw.get("address")),
                 latitude=latitude,
                 longitude=longitude,
+                # 집중률 조회는 구를 지정해야 한다. 이 값이 비면 그 장소로는
+                # 조회하지 않는다 - 종로구로 대신 묻지 않는다.
+                district_code=_optional_text(raw.get("district_code")),
                 concentration_name=concentration_name,
                 concentration_search_keys=concentration_search_keys,
             )
@@ -481,6 +495,90 @@ class SupabasePlaceRepository:
         if not isinstance(payload, list):
             raise SupabaseRepositoryError("invalid search_place_evidence response")
         return tuple(_to_evidence_match(row) for row in payload)
+
+    async def find_mood_profiles(
+        self,
+        content_ids: Sequence[str],
+    ) -> dict[str, PlaceMoodProfile]:
+        """미리 계산된 분위기 축 점수를 content_id로 읽는다.
+
+        발화 경로가 쓴다. 축 점수는 적재 때 계산해 뒀으므로 여기서는 벡터 연산도
+        임베딩 모델도 필요 없다 — 단순 조회다.
+
+        **분위기 벡터가 없는 장소가 정상이다.** 사진 임베딩은 종로구까지만
+        적재돼 있어(2026-08-26 기준 631곳), 나머지 구의 후보는 여기서 빠진다.
+        호출부는 결측을 결측으로 다뤄야 하고, 0점으로 채우면 사진이 없는 장소가
+        "분위기가 안 맞는 곳"으로 잘못 밀린다.
+        """
+        unique_ids = list(dict.fromkeys(content_ids))
+        if not unique_ids:
+            return {}
+
+        profiles: dict[str, PlaceMoodProfile] = {}
+        for start in range(0, len(unique_ids), _MOOD_PROFILE_CHUNK_SIZE):
+            chunk = unique_ids[start : start + _MOOD_PROFILE_CHUNK_SIZE]
+            response = await self._request(
+                "GET",
+                "/place_mood_vectors",
+                params={
+                    # embedding은 안 읽는다. 768개 float을 장소마다 실어 오면
+                    # 응답이 수 MB가 되는데, 발화 경로는 축 점수만 쓴다.
+                    "select": "content_id,axis_scores,photo_count",
+                    "content_id": "in.(" + ",".join(chunk) + ")",
+                    "limit": str(_MOOD_PROFILE_CHUNK_SIZE),
+                },
+            )
+            payload = self._json(response)
+            if not isinstance(payload, list):
+                raise SupabaseRepositoryError("invalid place_mood_vectors response")
+            for row in payload:
+                profile = _to_mood_profile(row)
+                profiles[profile.content_id] = profile
+        return profiles
+
+    async def search_place_mood(
+        self,
+        query_embedding: Sequence[float],
+        candidate_content_ids: Sequence[str] | None,
+        *,
+        match_count: int,
+        min_similarity: float,
+    ) -> tuple[PlaceMoodMatch, ...]:
+        """올린 사진의 벡터로 분위기가 닮은 장소를 찾는다.
+
+        `candidate_content_ids`가 None이면 적재된 전체에서 찾는다. 빈 배열은
+        None과 다르게 다뤄 빈 결과를 돌려준다 — 후보를 좁히려다 전부 걸러진
+        호출이 전체 검색으로 둔갑하면, 지역 필터를 통과하지 못한 장소가 추천에
+        섞인다.
+
+        질의 벡터는 적재와 **같은 모델·같은 정규화**여야 한다. 적재는
+        google/siglip2-base-patch16-224로 길이 1 정규화 상태에서 했다.
+        """
+        payload_ids: list[str] | None = None
+        if candidate_content_ids is not None:
+            payload_ids = list(dict.fromkeys(candidate_content_ids))
+            if not payload_ids:
+                return ()
+            if len(payload_ids) > _MAX_MOOD_CANDIDATES:
+                raise SupabaseRepositoryError(
+                    f"후보 content_id가 {len(payload_ids)}건입니다. "
+                    f"{_MAX_MOOD_CANDIDATES}건 이하로 좁혀서 호출하세요."
+                )
+
+        response = await self._request(
+            "POST",
+            "/rpc/search_place_mood",
+            json={
+                "p_query_embedding": list(query_embedding),
+                "p_candidate_content_ids": payload_ids,
+                "p_match_count": match_count,
+                "p_min_similarity": min_similarity,
+            },
+        )
+        payload = self._json(response)
+        if not isinstance(payload, list):
+            raise SupabaseRepositoryError("invalid search_place_mood response")
+        return tuple(_to_mood_match(row) for row in payload)
 
 
     async def create_sync_run(self, area_code: str, district_code: str) -> UUID:
@@ -1527,4 +1625,34 @@ def _to_evidence_snippet(item: object) -> PlaceEvidenceSnippet:
         published_at=(
             datetime.fromisoformat(str(published_at)) if published_at else None
         ),
+    )
+
+
+def _to_mood_profile(row: object) -> PlaceMoodProfile:
+    if not isinstance(row, Mapping):
+        raise SupabaseRepositoryError("invalid mood profile row")
+    raw_scores = row.get("axis_scores")
+    scores: dict[str, float] = {}
+    if isinstance(raw_scores, Mapping):
+        for name, value in raw_scores.items():
+            try:
+                scores[str(name)] = float(value)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                # 축 하나가 깨졌다고 장소 전체를 버리지 않는다. 축은 켜고 끄는
+                # 중이라 옛 판본이 섞일 수 있고, 남은 축만으로도 정렬은 된다.
+                continue
+    return PlaceMoodProfile(
+        content_id=str(row["content_id"]),
+        axis_scores=scores,
+        photo_count=int(row.get("photo_count") or 0),
+    )
+
+
+def _to_mood_match(row: object) -> PlaceMoodMatch:
+    if not isinstance(row, Mapping):
+        raise SupabaseRepositoryError("invalid mood match row")
+    return PlaceMoodMatch(
+        content_id=str(row["content_id"]),
+        similarity=float(row["similarity"]),
+        profile=_to_mood_profile(row),
     )
