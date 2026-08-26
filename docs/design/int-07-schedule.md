@@ -1,6 +1,18 @@
-**문서 버전:** v2.2
-**작성일:** 2026-08-06 (v2.1 갱신: 2026-08-14, v2.2 갱신: 2026-08-18)
+**문서 버전:** v2.3
+**작성일:** 2026-08-06 (v2.1 갱신: 2026-08-14, v2.2 갱신: 2026-08-18, v2.3 갱신: 2026-08-26)
 **관련 인텐트:** INT-01 RECOMMEND (파생), 신규 INT-07 SCHEDULE
+
+**v2.3 변경 이력 (place_associations 연동, D-091, v2.2 대비)**
+- `SchedulePlanningRequest`에 `co_visited_hints` 필드 신설(6.1절) — D-088로
+  만든 `place_associations`에서 후보 집합 안의 "함께 방문된" 쌍을
+  `app.schedule.associations.fetch_co_visited_hints()`로 조회한다
+- `plan_schedule()`/`plan_partial_schedule()`에 `co_visited_fetcher` opt-in
+  키워드 인자 추가 — 기본값 `None`이면 기존 동작과 완전히 동일.
+  `agent_runtime.py`가 두 호출부 모두에 `co_visited_fetcher=fetch_co_visited_hints`를
+  넘기도록 배선을 마쳐 실제로 켜져 있다(D-091)
+- 프롬프트에 `[함께 방문된 이력]` 섹션과 활용 규칙 추가(`schedule.plan`/
+  `schedule.plan_context` 1.0.0 → 1.1.0)
+- D/A 스키마·코드 변경 없음 — D의 `RecommendationItem.place_id`만 재사용
 
 **v2.2 변경 이력 (폐점 스탑 구조적 검증 추가, v2.1 대비)**
 - 6.2.1절이 남겨뒀던 한계("스탑별 재계산은 계속 범위 밖") 중 일부를 완화 —
@@ -302,6 +314,11 @@ class SchedulePlanningRequest(BaseModel):
                                          # 검색 중심 기준 거리) D 응답만으로는 후보 간 거리를
                                          # 못 구한다 — A가 C의 AgentContextResponse.places(위경도
                                          # 보유)를 place_id로 매칭해 계산한다. D/C 스키마 변경 불필요.
+    co_visited_hints: list[CoVisitedHint] = []
+                                         # 신규(D-091) — place_associations(D-088) 기반 "이 후보들은
+                                         # 실제로 함께 방문됐다" 힌트. opt-in — plan_schedule()이
+                                         # co_visited_fetcher를 받았을 때만 채운다(app.schedule
+                                         # .associations 참고). D 스키마 변경 없음(place_id만 사용).
 ```
 
 ### 6.2 LLM 출력 스키마
@@ -507,6 +524,11 @@ LLM이 제외한 후보 5~7개는 기록되지 않아 이후 일반 RECOMMEND �
   편성 작업 중 발견, 아직 미조치).
 * ~~FE 타임라인 UI 컴포넌트는 별도 이슈로 관리.~~ → SCHEDULE-08에서
   구현 완료(세로 타임라인, 이동 구간 분리). 아래 "해소된 항목" 참고.
+* **(2026-08-26, D-091, 해소됨)** `co_visited_hints`(6.1절) 연동 —
+  B 쪽 코드(associations.py/schemas.py/planner.py/프롬프트)와 A 쪽 배선
+  (`agent_runtime.py`의 `plan_schedule`/`plan_partial_schedule` 호출부에
+  `co_visited_fetcher=fetch_co_visited_hints`) 모두 반영 완료. RECOMMEND
+  목록 자체의 2차 스코어링 연동은 범위 밖 — 별도 카드(D-092)로 진행한다.
 
 **해소된 항목(번호 미부여, 08-18)**
 * 뒷 순서 스탑이 estimated_arrival 기준으로 이미 마감했을 수 있는데도

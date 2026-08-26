@@ -3149,9 +3149,9 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   161). 매칭률(엣지/원본)이 파일럿 30.3%(698/2,300) → 확장 후 29.3%
   (1,612/5,511)로 거의 그대로 유지돼 커버리지 특성이 구가 늘어도
   일관됨을 확인했다.
-- 남은 것: 서울 나머지 13개 구(비지원 지역) 확장 여부, SCHEDULE(추천
-  경로에 "함께 방문" 제안 추가)/RECOMMEND 설명문 연동, 2차 스코어링
-  반영은 모두 후속 작업(우선순위 논의 필요).
+- 남은 것: 서울 나머지 13개 구(비지원 지역) 확장 여부, RECOMMEND 설명문 연동,
+  2차 스코어링 반영은 후속 작업(우선순위 논의 필요). SCHEDULE 연동은 D-091로
+  이어졌다.
 - 상세: `backend/scripts/collect_place_associations.py`,
   `backend/scripts/build_place_association_mappings.py`,
   `backend/scripts/import_place_associations.py`,
@@ -3297,6 +3297,73 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `backend/app/services/runtime/info_response_transform.py`,
   `backend/app/schemas.py`
 
+### D-091 — SCHEDULE 일정 편성에 place_associations "함께 방문된 이력"을 opt-in으로 연결한다
+
+- 상태: `Accepted` — 구현 완료(`agent_runtime.py`(A) 배선, `SchedulePartialFillRequest`
+  연동 포함).
+- 배경: D-088로 만든 `place_associations`(TourAPI 관광지별 연관 관광지 정보)를
+  실제 추천/일정 경로에 연결하는 건 D-088에서 범위 밖으로 남겨뒀다. SCHEDULE
+  (`backend/app/schedule/`)은 프롬프트·코드 전부 B 소유(`OWNERS.md`)라 B
+  혼자 구현할 수 있는 통합 지점이었고, `SchedulePlanningRequest.candidates`
+  (D의 `RecommendationItem`)에 이미 `place_id`가 있어 D의 스키마 변경 없이도
+  후보 집합 안에서 연관 쌍을 찾을 수 있었다.
+- 결정:
+  1. `backend/app/schedule/associations.py` 신설 — `fetch_co_visited_hints()`가
+     후보 place_id 집합을 `from_content_id`/`to_content_id` 양쪽에 동시에
+     `in.()` 필터로 걸어, 후보 집합 안에서 완결되는 co-visit 쌍만 가져온다.
+     후보가 2개 미만이거나 `supabase_url`이 비어 있으면 네트워크 호출 자체를
+     생략한다.
+  2. `SchedulePlanningRequest`에 `co_visited_hints: list[CoVisitedHint] = []`를
+     추가한다(B 소유 스키마, `app/schedule/schemas.py`). 기본값이 빈 리스트라
+     이 필드를 모르는 기존 호출부는 동작이 전혀 바뀌지 않는다.
+  3. `plan_schedule()`에 `co_visited_fetcher`를 opt-in 키워드 인자로 추가한다
+     — 기본값 `None`이면 이 함수는 기존과 바이트 단위로 동일하게 동작한다.
+     실제로 켜려면 호출부(agent_runtime.py)가
+     `co_visited_fetcher=fetch_co_visited_hints`를 넘겨야 한다. 조회가
+     실패해도(네트워크·설정 문제) 예외를 삼키고 힌트 없이 계속 진행한다 —
+     이 힌트는 참고 정보일 뿐 SCHEDULE의 핵심 기능이 아니다.
+  4. `format_schedule_planning_context()`(gemini_prompts.py)에
+     `[함께 방문된 이력]` 섹션을 추가하고, 비어 있으면 "(없음)"으로 채운다
+     (`format_schedule_fill_context()`의 `pinned_lines` fallback과 같은
+     패턴). `plan.md`에 "쌍이 있으면 인접 배치를 고려하되 거리·운영시간·
+     활동 가능 시간이 우선"이라는 규칙을 추가했다 — 이 신호 하나로 동선을
+     비효율적으로 만들지 않게 하는 안전장치다. `schedule.plan`/
+     `schedule.plan_context` 버전을 1.0.0 → 1.1.0으로 올렸다.
+- 채택하지 않은 것:
+  - **plan_schedule() 안에서 항상 자동으로 조회** — 기존 SCHEDULE 테스트
+    전부가 실제 네트워크 호출을 타게 되고, agent_runtime.py의 하드 타임아웃
+    가정이 깨질 위험이 있다. opt-in 키워드 인자로 만들어 A가 준비됐을 때
+    한 줄만 추가하면 켜지게 했다.
+  - **D의 RecommendationItem 스키마 확장(예: co-visit 플래그 미리 계산)** —
+    place_id 하나로 이미 충분해서 D 쪽 변경을 요구할 이유가 없었다.
+- 검증: `app/schedule/associations.py` 요청 파라미터(양쪽 컬럼 `in.()` 필터,
+  후보 2개 미만/설정 없음 시 호출 생략, 중복 id 정리)를 `httpx.MockTransport`로
+  고정. `plan_schedule()`/`plan_partial_schedule()`이 (a) fetcher 미지정 시
+  `co_visited_hints`가 항상 빈 리스트임을, (b) fetcher가 준 힌트가 LLM 요청에
+  그대로 실림을, (c) fetcher가 예외를 던져도 일정 편성 자체는 성공함을 각각
+  회귀로 고정. 프롬프트 스냅샷(`schedule_plan_context`, `schedule_plan__*`,
+  `schedule_fill`, `schedule_fill_context`)을 갱신해 새 섹션·규칙 문구를
+  바이트 단위로 고정. 실제 `pytest`(2900여 건 전체 스위트)를 로컬 shim
+  (StrEnum/datetime.UTC 3.11 전용 문법을 3.10에 되살리는 conftest, 세션
+  한정 임시 파일)으로 실행해 통과 확인 — 이전에는 "샌드박스 Python 버전 때문에
+  직접 실행 불가"로 남겨뒀던 항목인데, StrEnum shim에 `__str__`을 값 그대로
+  반환하도록 보강하니 실행 가능하다는 걸 이번에 확인했다.
+- 남은 것: RECOMMEND 목록 자체의 2차 스코어링 연동은 이 카드 범위 밖 —
+  별도 카드로 진행한다(D-040 `rerank_with_concentration()`과 같은 패턴 재사용
+  예정, D 소유 scoring.py/recommendation_pipeline.py를 건드리므로 별도 리뷰).
+- 상세: `backend/app/schedule/associations.py`, `backend/app/schedule/schemas.py`,
+  `backend/app/schedule/planner.py`, `backend/app/providers/gemini_prompts.py`,
+  `backend/app/prompts/schedule/plan.md`, `backend/app/prompts/schedule/plan_context.md`,
+  `backend/app/prompts/schedule/fill.md`, `backend/app/prompts/schedule/fill_context.md`,
+  `backend/app/prompts/schedule/meta.yaml`, `backend/app/prompts/schedule/HISTORY.md`,
+  `backend/app/services/runtime/agent_runtime.py`,
+  `backend/tests/schedule/test_associations.py`, `backend/tests/schedule/test_planner.py`,
+  `backend/tests/prompts/snapshots/schedule_plan_context.txt`,
+  `backend/tests/prompts/snapshots/schedule_plan__no_limit.txt`,
+  `backend/tests/prompts/snapshots/schedule_plan__with_time_available.txt`,
+  `backend/tests/prompts/snapshots/schedule_fill.txt`,
+  `backend/tests/prompts/snapshots/schedule_fill_context.txt`
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -3384,3 +3451,4 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-26 | D-088 확장 — 서비스 지원 12개 구(D-083) 전체로 수집·매칭·적재 범위 확대. 코드 변경 없이 `--districts`만 넓혀 같은 base_ym으로 재실행, 기존 종로구·중구 행은 upsert로 덮어쓰고 나머지 10개 구 신규 추가. 원본 5,511건 → 매칭 666/2,344건 → 엣지 1,612건 실제 적재. 매칭률(29.3%)이 파일럿(30.3%)과 거의 동일하게 유지됨을 확인 |
 | 2026-08-26 | D-089 신설 — "성수동"처럼 지역 검색에 상호명만 잡히는 동 이름은 Geocoding으로 폴백한다. "성수동 카페 추천해줘"가 종로구 랜드마크 되묻기로 빠지던 버그 — 지역 검색이 뭔가(애매한 결과라도)를 돌려주면 그 아래 별칭/Geocoding 폴백 사다리가 아예 실행되지 않던 게 원인. `_lookup_local_search()`에서 역/명소 후보도 정확히 같은 이름의 후보도 없을 때만 `None`을 반환해 execute()의 기존 Geocoding 사다리로 넘긴다. 실제 Naver API 호출로 "성수동" 지역 검색은 카페·식당 상호명뿐임을, Geocoding은 좌표로 정상 해석됨을, 그 좌표가 기존 기본 검색 반경(2.0km) 안에 성수역·주변 카페를 다 포함함을 확인 — 검토했던 "가까운 지하철역 버튼"(역 데이터 없음)과 "구 전체로 넓혀 검색"(실측 결과 불필요)은 기각 |
 | 2026-08-26 | D-090 신설 — 실시간 혼잡도 카드에 단계별 색상·게이지·전망 인사이트 추가. 인구/집중률 예측 막대그래프가 항상 단색이던 것을 레벨별 4단계 팔레트(emerald→amber→orange→red)로 바꾸고, 현재 단계를 보여주는 `CongestionLevelGauge`를 신설. 공용 컴포넌트(`CongestionForecastBars.tsx`)로 분리해 요약 카드뿐 아니라 상세 모달(`RecommendationDetailPreviewModal`)에도 처음으로 노출 — 기존엔 모달에 이 그래프가 아예 없었다. 향후 예측에서 가장 붐비는 시간대를 "N시간 후 가장 붐빌 예정" 한 줄로 요약하는 `_summarize_population_peak()`을 추가해 `population_peak_forecast_summary`로 새로 내려줌 — 관측·예측 시각을 실제 파싱해 시간 차를 구하고(인덱스 가정 안 함), 채팅 말풍선 텍스트는 기존 회귀 테스트 보호를 위해 그대로 둠. 과거 추이·현재 인구 수 실측치는 서울시 API 미제공/참고 이미지 미노출로 이번 스코프에서 제외. (후속) 예측 그래프가 "현재 시각부터만" 보여 기준점이 안 보인다는 지적에, 실제 과거 데이터 폴링 파이프라인 구축(큰 작업)은 보류하고 대신 예측 막대 맨 앞에 점선 구분선·강조 테두리를 준 "현재" 막대를 추가해 시각적 기준점만 뒀다 |
+| 2026-08-26 | D-091 신설 — SCHEDULE에 place_associations "함께 방문된 이력"을 opt-in으로 연결(B 단독 구현). `co_visited_fetcher` 키워드 인자 미지정 시 기존 동작과 바이트 단위로 동일. agent_runtime.py(A) 배선, SchedulePartialFillRequest 연동까지 이어서 완료. RECOMMEND 2차 스코어링 연동은 범위 밖 — 별도 카드(D-092)로 분리 |

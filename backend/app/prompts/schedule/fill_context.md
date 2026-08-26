@@ -13,5 +13,8 @@
 [후보 간 거리]
 {{distance_lines}}
 
+[함께 방문된 이력]
+{{co_visited_lines}}
+
 [사용자 조건]
 {{condition_lines}}
