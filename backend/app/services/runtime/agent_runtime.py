@@ -15,6 +15,7 @@ import asyncio
 import logging
 import math
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import timedelta
@@ -35,7 +36,11 @@ from app.domain.travel_route import (
 from app.errors import AppError
 from app.geo import haversine_km
 from app.observability.api_usage import create_external_client
-from app.observability.langfuse_tracing import observe_step, trace_attributes
+from app.observability.langfuse_tracing import (
+    observe_step,
+    record_score,
+    trace_attributes,
+)
 from app.place_search_policy import MAX_PLACE_SEARCH_RADIUS_KM, WALKING_SPEED_KM_PER_MINUTE
 from app.prompts.registry import turn_prompt_version
 from app.providers.protocols import LLMProvider
@@ -81,6 +86,7 @@ from app.services.runtime.context_transform import to_agent_context_request
 from app.services.runtime.enrichment_transform import to_candidate_enrichment_request
 from app.services.runtime.graph import (
     PipelineDeps,
+    concentration_source_rows,
     run_early_return_graph,
     run_recommend_pipeline_graph,
 )
@@ -122,6 +128,7 @@ from app.services.runtime.tool_debug import (
 )
 from app.state.schema import now_kst
 from app.state.service import (
+    ApiContextView,
     RecommendedPlace,
     RecordClosedExclusionsRequest,
     RecordRecommendationRequest,
@@ -981,6 +988,13 @@ async def _apply_concentration_rerank(
             }
         )
         enrichment_response = await enrichment_provider.enrich(enrichment_request)
+        # **Audit용 요약을 span 안에서 만든다.** 밖에서 만들면 span이 이미 닫혀 있어
+        # 후보별 출처를 붙일 자리가 없다. 지연은 위에서 재둔 시각으로 계산하므로
+        # 자리를 옮겨도 값이 달라지지 않는다.
+        enrichment_execution = build_candidate_enrichment_execution_debug(
+            enrichment_response,
+            latency_ms=int((time.monotonic() - enrichment_started_at) * 1000),
+        )
         try:
             enrichment_step.record(
                 output={
@@ -988,6 +1002,13 @@ async def _apply_concentration_rerank(
                     "features": list(enrichment_request.features),
                     "status": str(getattr(enrichment_response, "status", None)),
                     "enriched": len(getattr(enrichment_response, "candidates", None) or []),
+                    # 성공 건수만으로는 직접 조회한 값과 인근에서 빌려온 값이
+                    # 구분되지 않는다 — 후보별 출처를 그대로 남긴다.
+                    "candidates": (
+                        concentration_source_rows(enrichment_execution)
+                        if enrichment_execution is not None
+                        else []
+                    ),
                 },
                 status_message=(
                     f"보강 {len(enrichment_request.candidates)}건 요청 · "
@@ -996,10 +1017,6 @@ async def _apply_concentration_rerank(
             )
         except Exception:
             logger.warning("보강 관측 요약 실패(응답 흐름에는 영향 없음)", exc_info=True)
-    enrichment_execution = build_candidate_enrichment_execution_debug(
-        enrichment_response,
-        latency_ms=int((time.monotonic() - enrichment_started_at) * 1000),
-    )
     if execution_collector is not None and enrichment_execution is not None:
         execution_collector.append(enrichment_execution)
     if enrichment_response.status in _ENRICHMENT_TERMINAL_STATUSES or not hasattr(
@@ -1244,6 +1261,110 @@ async def _fetch_compare_travel_routes(
     return comparison.model_copy(update={"items": updated_items})
 
 
+def _failure_attributes(error: BaseException) -> dict[str, object]:
+    """실패한 턴을 `agent_turn` span에 적을 모양으로 편다.
+
+    **`level`·`status_message`는 mask를 타지 않는다.** 오류 코드가 `capture_content`
+    스위치에 걸리면 원문 수집을 끈 배포에서 "무엇이 터졌나"를 화면에서 못 읽는데,
+    그건 이 관측이 있는 이유 자체다. 그래서 코드는 두 자리 모두에 적는다.
+
+    `AppError`는 우리가 의도해서 만든 오류라 코드·재시도 가능 여부가 계약으로
+    정해져 있다(`errors.py`). 그 밖의 예외는 **클래스 이름만** 적는다 — 메시지는
+    싣지 않는다. 어디서 터졌느냐에 따라 발화나 좌표가 섞여 들어올 수 있는데
+    `status_message`는 스위치와 무관하게 나가는 자리다.
+    """
+
+    if isinstance(error, AppError):
+        return {
+            "level": "ERROR",
+            "status_message": f"{error.code} · retryable={error.retryable}",
+            "output": {
+                "error_code": error.code,
+                "retryable": error.retryable,
+                "status_code": error.status_code,
+                "provider": error.provider,
+            },
+        }
+    name = type(error).__name__
+    return {
+        "level": "ERROR",
+        "status_message": name,
+        "output": {"error_code": name, "retryable": False},
+    }
+
+
+def summarize_state_merge(response: StateApplyResponse) -> dict[str, object]:
+    """`merge_conditions` span에 실을 값을 고른다 — Audit "B 상태" 탭과 같은 값이다.
+
+    **여기는 span 자체가 없던 자리다.** 조건 병합은 A가 B를 부르는 단계인데 관측을
+    안 걸어서, trace만 보면 "이번 턴이 어떤 조건으로 돌았나"를 알 수 없었다.
+    `classify_intent`의 출력(= 이번 발화에서 **새로** 추출한 것)은 보여도 **이전
+    턴에서 유지된 값까지 합친 최종 조건**은 어디에도 없었다. 2026-08-26에 B와
+    협의해 열었다.
+
+    **좌표는 안 싣는다.** `api_context.gps_location`은 "위도,경도" 문자열이라
+    유무만 남긴다(`_api_context_summary`). `user_conditions`의
+    `current_location`·`search_center`는 좌표가 아니라 발화에서 온 지명이라
+    (`"홍대"`·`"경복궁"`) 그대로 싣는다 — 조건 병합 결과를 읽으려면 그 값이 있어야 한다.
+
+    조건 목록 전체를 싣는다. B가 돌려주는 값이 곧 이 턴의 입력이라 일부만 고르면
+    "왜 이 조건으로 돌았나"에 답이 안 된다 — 그게 이 span을 여는 이유다.
+    """
+
+    return {
+        "session_created": response.session_created,
+        "condition_version": response.condition_version,
+        "condition_changed": response.condition_changed,
+        "reset_applied": response.reset_applied,
+        "user_conditions": response.user_conditions.model_dump(mode="json"),
+        "api_context": _api_context_summary(response.api_context),
+        "applied_operations": [
+            operation.model_dump(mode="json") for operation in response.applied_operations
+        ],
+        # 무효 처리된 연산이 왜 무시됐는지(reason)가 여기 있다. 적용된 것만 보면
+        # "왜 내 말이 반영이 안 됐지"에 답할 수 없다.
+        "ignored_operations": [
+            operation.model_dump(mode="json") for operation in response.ignored_operations
+        ],
+        "excluded_place_count": len(response.excluded_place_ids),
+    }
+
+
+def _api_context_summary(api_context: ApiContextView) -> dict[str, object]:
+    """`api_context`에서 **좌표만 빼고** 편다.
+
+    `gps_location`은 "위도,경도" 문자열이다 — 지금 이 앱을 돌리는 사람의 실제
+    위치라, 스위치 하나에 맡길 값이 아니다. 값 대신 **있었는지만** 남긴다:
+    "GPS가 없어서 못 했다"와 "있었는데 다른 이유"는 구분돼야 하지만 그건 유무로
+    갈리지 좌표 값으로 갈리지 않는다.
+
+    `gps_location_confirmed_at`은 시각이라 그대로 둔다 — "몇 분 전 위치로 계속"
+    분기를 읽는 데 필요하고, 위치를 드러내지 않는다.
+    """
+
+    summary = api_context.model_dump(mode="json")
+    summary["has_gps_location"] = summary.pop("gps_location") is not None
+    return summary
+
+
+def _state_merge_headline(response: StateApplyResponse) -> str:
+    """`merge_conditions`의 `status_message`. **mask를 타지 않는 자리다.**
+
+    원문 수집을 꺼도 "이번 턴에 조건이 바뀌었나"는 목록에서 읽혀야 한다. 좌표나
+    조건 값은 넣지 않는다 — 여기 넣으면 스위치와 무관하게 나간다.
+    """
+
+    parts = [
+        f"조건 v{response.condition_version}",
+        "변경" if response.condition_changed else "유지",
+        f"적용 {len(response.applied_operations)}",
+        f"무시 {len(response.ignored_operations)}",
+    ]
+    if response.reset_applied:
+        parts.append(f"reset:{response.reset_applied}")
+    return " · ".join(parts)
+
+
 def summarize_turn(response: AgentResponse) -> dict[str, object]:
     """루트 span(`agent_turn`)에 실을 값을 고른다.
 
@@ -1323,22 +1444,35 @@ async def run_agent_flow(
     with (
         trace_attributes(
             session_id=request.session_id,
+            user_id=_observed_user_id(principal),
             tags=[f"scoring:{SCORING_VERSION}", f"env:{settings.app_env}"],
         ),
         observe_step("agent_turn") as turn,
     ):
-        response = await _run_agent_flow(
-            request,
-            llm=llm,
-            tool_provider=tool_provider,
-            recommendation_provider=recommendation_provider,
-            enrichment_provider=enrichment_provider,
-            travel_route_tool=travel_route_tool,
-            store=store,
-            principal=principal,
-            stream_event_sink=stream_event_sink,
-            stream_recommendation_summary=stream_recommendation_summary,
-        )
+        try:
+            response = await _run_agent_flow(
+                request,
+                llm=llm,
+                tool_provider=tool_provider,
+                recommendation_provider=recommendation_provider,
+                enrichment_provider=enrichment_provider,
+                travel_route_tool=travel_route_tool,
+                store=store,
+                principal=principal,
+                stream_event_sink=stream_event_sink,
+                stream_recommendation_summary=stream_recommendation_summary,
+            )
+        except BaseException as error:
+            # **오류 코드를 span에 적는다.** 그 전까지 실패한 턴은 `turn_success=0`
+            # 하나로만 남아서, 화면에서 "터졌다"까지는 알아도 "무엇이 터졌나"는
+            # 서버 로그를 따로 봐야 했다.
+            turn.record(**_failure_attributes(error))
+            # **실패한 턴에도 점수를 남긴다.** 여기서 안 남기면 실패는 Score 집계에서
+            # 통째로 빠져 성공률이 항상 1.0으로 보인다 — 2026-08-07부터 SCHEDULE +
+            # 혼잡도 조합이 ValueError로 죽고 있었는데 18일간 아무 지표도 안 움직인
+            # 것이 그 모양이다. 예외는 그대로 올린다.
+            record_score("turn_success", False)
+            raise
         try:
             summary = summarize_turn(response)
             turn.record(
@@ -1348,9 +1482,41 @@ async def run_agent_flow(
                 # 마스킹을 타지 않는 자리. 원문 수집을 꺼도 목록에서 턴이 읽힌다.
                 status_message=summary["headline"],
             )
+            record_turn_scores(summary)
         except Exception:
             logger.warning("턴 관측 요약 실패(응답 흐름에는 영향 없음)", exc_info=True)
         return response
+
+
+def _observed_user_id(principal: Principal | None) -> str | None:
+    """관측에 실을 사용자 식별자. 스위치가 꺼져 있으면 `None`.
+
+    켜는 것은 팀 결정이라 기본값이 꺼짐이다(`config.py`). 게스트도 `user_id`를
+    갖지만(D-062 2절) 그것 역시 외부로 나가는 식별자라 똑같이 스위치를 탄다.
+    """
+
+    if not settings.langfuse_capture_user_id or principal is None:
+        return None
+    return principal.user_id
+
+
+def record_turn_scores(summary: Mapping[str, object]) -> None:
+    """턴 요약에서 **집계할 값**만 골라 Score로 올린다.
+
+    `turn.record(output=summary)`와 중복이 아니다 — output은 그 턴을 열어봤을 때
+    읽는 값이고 Score는 여러 턴에 걸쳐 곡선이 되는 값이다. 그래서 여기 올리는 것은
+    "추세가 의미 있는 수치"로 좁힌다. `intent`·`status`는 태그와 metadata로 이미
+    필터가 되므로 Score로 또 올리지 않는다.
+
+    `unverified_ratio`는 카드가 있을 때만 올린다 — 0/0을 0.0으로 적으면 "미검증이
+    하나도 없는 좋은 턴"과 "카드 자체가 없는 턴"이 같은 값이 되어 평균이 거짓말을 한다.
+    """
+
+    record_score("turn_success", True)
+    cards = int(summary.get("card_count") or 0)
+    record_score("card_count", cards)
+    if cards:
+        record_score("unverified_ratio", int(summary.get("unverified_count") or 0) / cards)
 
 
 async def _run_agent_flow(
@@ -1466,7 +1632,15 @@ async def _run_agent_flow(
         "이전 대화 조건을 반영하고 있어요.",
     )
     apply_request = transform(llm_output, session_context, request.user_input)
-    state_response = apply(apply_request, store=store, principal=principal)
+    with observe_step("merge_conditions") as merge_step:
+        state_response = apply(apply_request, store=store, principal=principal)
+        try:
+            merge_step.record(
+                output=summarize_state_merge(state_response),
+                status_message=_state_merge_headline(state_response),
+            )
+        except Exception:
+            logger.warning("조건 병합 관측 요약 실패(응답 흐름에는 영향 없음)", exc_info=True)
 
     if clarification_resolution is not None and clarification_resolution.ignore_operating_hours:
         _remember_ignore_operating_hours(state_response.session_id, store)

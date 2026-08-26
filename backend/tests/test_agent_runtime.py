@@ -35,6 +35,8 @@ from app.agent_context.schemas import (
     ResponseMetadata,
     WeatherForecast,
 )
+from app.auth.principal import Principal
+from app.config import settings
 from app.domain.scoring import SCORING_VERSION
 from app.domain.travel_route import TravelMode, TravelRoute
 from app.prompts.registry import turn_prompt_version
@@ -82,6 +84,7 @@ from app.services.runtime.stubs import (
 from app.state.schema import now_kst
 from app.state.service import (
     SetPendingClarificationRequest,
+    StateApplyResponse,
     get_session_context,
     set_pending_clarification,
 )
@@ -4716,3 +4719,253 @@ def test_turn_summary_names_the_payload_shape() -> None:
     assert summary["has_schedule"] is True
     assert summary["card_count"] == 0
     assert summary["headline"] == "SCHEDULE · complete · 일정"
+
+
+# --- Score: 여러 턴에 걸쳐 곡선이 되는 값만 올린다 ------------------------------
+
+
+def _captured_scores(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, float | bool]]:
+    scores: list[tuple[str, float | bool]] = []
+    monkeypatch.setattr(
+        agent_runtime_module,
+        "record_score",
+        lambda name, value: scores.append((name, value)),
+    )
+    return scores
+
+
+def test_turn_scores_skip_unverified_ratio_when_there_are_no_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """0/0을 0.0으로 적으면 평균이 거짓말을 한다.
+
+    "미검증이 하나도 없는 좋은 턴"과 "카드 자체가 없는 턴"이 같은 값이 되기 때문이다.
+    GENERAL·INFO는 카드가 원래 없으므로 이 경로가 대부분의 턴에 걸린다.
+    """
+    scores = _captured_scores(monkeypatch)
+
+    agent_runtime_module.record_turn_scores(
+        {"card_count": 0, "unverified_count": 0},
+    )
+
+    assert scores == [("turn_success", True), ("card_count", 0)]
+
+
+def test_turn_scores_report_the_unverified_share(monkeypatch: pytest.MonkeyPatch) -> None:
+    scores = _captured_scores(monkeypatch)
+
+    agent_runtime_module.record_turn_scores({"card_count": 4, "unverified_count": 1})
+
+    assert scores == [("turn_success", True), ("card_count", 4), ("unverified_ratio", 0.25)]
+
+
+def test_user_id_stays_off_until_the_switch_is_turned_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """개인정보를 외부 SaaS에 올리는 것은 팀 합의가 먼저다 — 코드가 먼저 들어가도 꺼짐이다.
+
+    `capture_content`와 별개 축이라는 것도 함께 잠근다. 원문을 가려도 user_id는
+    trace 속성이라 mask를 타지 않으므로, 묶어두면 "발화는 가리고 신원만 쌓는" 상태가
+    실수로 만들어진다.
+    """
+    principal = Principal(user_id="user-abc", is_anonymous=False)
+    monkeypatch.setattr(settings, "langfuse_capture_content", True)
+
+    monkeypatch.setattr(settings, "langfuse_capture_user_id", False)
+    assert agent_runtime_module._observed_user_id(principal) is None
+
+    monkeypatch.setattr(settings, "langfuse_capture_user_id", True)
+    assert agent_runtime_module._observed_user_id(principal) == "user-abc"
+    assert agent_runtime_module._observed_user_id(None) is None
+
+
+# --- 조건 병합 span: Audit "B 상태" 탭과 같은 값을 싣는다 ----------------------
+
+
+def _state_response(**overrides: object) -> StateApplyResponse:
+    from app.state.schema import UserConditions as StateUserConditions
+    from app.state.service import ApiContextView
+
+    defaults: dict[str, object] = {
+        "session_id": "s-1",
+        "run_id": "r-1",
+        "session_created": False,
+        "user_conditions": StateUserConditions(),
+        "api_context": ApiContextView(),
+        "condition_version": 3,
+        "condition_changed": True,
+    }
+    defaults.update(overrides)
+    return StateApplyResponse(**defaults)  # type: ignore[arg-type]
+
+
+def test_merge_conditions_span_carries_the_accumulated_conditions() -> None:
+    """`classify_intent` 출력은 **이번 발화에서 새로 뽑은 것**뿐이다.
+
+    이전 턴에서 유지된 값까지 합친 최종 조건은 그동안 trace 어디에도 없었다 —
+    "이번 턴이 어떤 조건으로 돌았나"에 답할 수 없었다는 뜻이다.
+    """
+    from app.state.schema import UserConditions as StateUserConditions
+    from app.state.service import ApiContextView, AppliedOperation
+
+    response = _state_response(
+        user_conditions=StateUserConditions(budget="low", place_types=["cafe"]),
+        api_context=ApiContextView(
+            api_weather="맑음", gps_expired=False, gps_location="37.5796,126.977"
+        ),
+        applied_operations=[
+            AppliedOperation(op="set", field="budget", before_value=None, after_value="low")
+        ],
+        excluded_place_ids=["p1", "p2"],
+    )
+
+    summary = agent_runtime_module.summarize_state_merge(response)
+
+    assert summary["condition_version"] == 3
+    assert summary["condition_changed"] is True
+    conditions = summary["user_conditions"]
+    assert isinstance(conditions, dict)
+    assert conditions["budget"] == "low"
+    assert conditions["place_types"] == ["cafe"]
+    # Audit "C Tool" 탭이 보여주던 날씨 캐시·만료 플래그도 여기 들어온다.
+    # **좌표는 값 대신 유무만** 남는다 — "GPS가 없어서 못 했다"와 "있었는데 다른
+    # 이유"는 구분돼야 하지만 그건 유무로 갈리지 좌표 값으로 갈리지 않는다.
+    assert summary["api_context"] == {
+        "has_gps_location": True,
+        "api_weather": "맑음",
+        "gps_expired": False,
+        "weather_expired": True,
+        "gps_location_confirmed_at": None,
+    }
+    assert "37.5796" not in json.dumps(summary, ensure_ascii=False)
+    assert summary["applied_operations"][0]["field"] == "budget"
+    assert summary["excluded_place_count"] == 2
+
+
+def test_merge_conditions_span_keeps_the_place_names_that_are_not_coordinates() -> None:
+    """`current_location`·`search_center`는 좌표가 아니라 발화에서 온 지명이다.
+
+    이 둘까지 빼면 "무슨 조건으로 돌았나"에 답할 수 없어 span을 여는 이유가 없어진다.
+    """
+    from app.state.schema import UserConditions as StateUserConditions
+
+    summary = agent_runtime_module.summarize_state_merge(
+        _state_response(
+            user_conditions=StateUserConditions(current_location="홍대", search_center="경복궁")
+        )
+    )
+
+    conditions = summary["user_conditions"]
+    assert isinstance(conditions, dict)
+    assert conditions["current_location"] == "홍대"
+    assert conditions["search_center"] == "경복궁"
+
+
+def test_merge_conditions_span_says_why_an_operation_was_ignored() -> None:
+    """적용된 것만 보면 "왜 내 말이 반영이 안 됐지"에 답할 수 없다."""
+    from app.state.operations import IgnoredOperation
+
+    response = _state_response(
+        ignored_operations=[
+            IgnoredOperation(
+                operation={"op": "set", "field": "budget", "value": "무한대"},
+                reason="invalid_value",
+            )
+        ]
+    )
+
+    summary = agent_runtime_module.summarize_state_merge(response)
+
+    ignored = summary["ignored_operations"]
+    assert isinstance(ignored, list)
+    assert ignored[0]["reason"] == "invalid_value"
+
+
+def test_merge_conditions_headline_survives_the_content_switch() -> None:
+    """`status_message`는 mask를 타지 않는다 — 원문 수집을 꺼도 목록에서 읽혀야 한다.
+
+    그래서 여기에는 좌표도 조건 값도 넣지 않는다. 넣으면 스위치와 무관하게 나간다.
+    """
+    from app.state.schema import UserConditions as StateUserConditions
+
+    headline = agent_runtime_module._state_merge_headline(
+        _state_response(
+            user_conditions=StateUserConditions(budget="low"),
+            condition_changed=False,
+            reset_applied="soft",
+        )
+    )
+
+    assert headline == "조건 v3 · 유지 · 적용 0 · 무시 0 · reset:soft"
+    assert "low" not in headline
+
+
+# --- 실패한 턴: 무엇이 터졌는지 span에 남긴다 ---------------------------------
+
+
+def test_failure_attributes_keep_the_error_code_outside_the_mask() -> None:
+    """오류 코드가 `capture_content`에 걸리면 원문 수집을 끈 배포에서 못 읽는다.
+
+    그건 이 관측이 있는 이유 자체라, 코드는 mask를 안 타는 `status_message`에도 적는다.
+    """
+    from app.errors import ProviderTimeoutError
+
+    attributes = agent_runtime_module._failure_attributes(
+        ProviderTimeoutError("kakao_local"),
+    )
+
+    assert attributes["level"] == "ERROR"
+    assert attributes["status_message"] == "provider_timeout · retryable=True"
+    assert attributes["output"] == {
+        "error_code": "provider_timeout",
+        "retryable": True,
+        "status_code": 504,
+        "provider": "kakao_local",
+    }
+
+
+def test_failure_attributes_do_not_carry_an_unexpected_errors_message() -> None:
+    """어디서 터졌느냐에 따라 발화나 좌표가 예외 메시지에 섞여 들어올 수 있다.
+
+    `status_message`는 스위치와 무관하게 나가는 자리라 클래스 이름만 적는다.
+    """
+    attributes = agent_runtime_module._failure_attributes(
+        ValueError("경복궁 근처 37.5796,126.977 처리 실패"),
+    )
+
+    assert attributes["status_message"] == "ValueError"
+    assert attributes["output"] == {"error_code": "ValueError", "retryable": False}
+    assert "경복궁" not in json.dumps(attributes, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_condition_merge_opens_its_own_span(monkeypatch: pytest.MonkeyPatch) -> None:
+    """B를 부르는 단계에 관측이 없어서 최종 조건이 trace 어디에도 없었다.
+
+    루트(`agent_turn`)보다 뒤, Tool 단계보다 앞이어야 한다 — 이 순서가 뒤집히면
+    "무슨 조건으로 조회했나"를 시간순으로 읽을 수 없다.
+    """
+    opened: list[str] = []
+    real_observe_step = agent_runtime_module.observe_step
+
+    @contextmanager
+    def _spy(name: str, **kwargs: object):
+        opened.append(name)
+        with real_observe_step(name, **kwargs) as recorder:  # type: ignore[arg-type]
+            yield recorder
+
+    monkeypatch.setattr(agent_runtime_module, "observe_step", _spy)
+
+    providers = _providers()
+    await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=InMemoryStateStore(),
+        **providers,
+    )
+
+    assert "merge_conditions" in opened
+    assert opened.index("agent_turn") < opened.index("merge_conditions")

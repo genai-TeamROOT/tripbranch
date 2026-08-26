@@ -18,6 +18,7 @@ from __future__ import annotations
 import re
 from functools import cache
 from pathlib import Path
+from typing import Final
 
 import yaml
 
@@ -65,6 +66,31 @@ OPERATION_SLOTS: dict[str, str] = {
     "stream_info_answer": "info.answer",
     "generate_schedule_plan": "schedule.plan",
     "generate_schedule_fill": "schedule.fill",
+}
+
+# 슬롯 하나가 조립을 시작하는 **진입 템플릿**. 조각(`_shared/rules/*`)은 이 템플릿의
+# 자리표시자로 꽂히므로 여기 나오지 않는다.
+#
+# **관측에서 generation 하나에 프롬프트를 링크하는 데 쓴다.** 링크는 하나만 걸리므로
+# "조각 23개 중 무엇이냐"가 아니라 "이 호출이 시작한 템플릿이 무엇이냐"로 답해야 한다.
+# 그래야 Langfuse가 버전별 지연·비용·Score를 자동 집계한다.
+#
+# **기계적으로 못 만든다.** 진입점 후보는 15개인데 슬롯은 12종이다 — 차이는
+# `schedule/*_context.md`(본문과 짝을 이루는 문맥)와 `_shared/rules/validation_retry.md`
+# (재시도 부록)라 슬롯이 아니다. 그래서 손으로 선언하고 테스트로 잠근다.
+SLOT_ENTRY_TEMPLATES: dict[str, str] = {
+    "router.classify": "router/classify.md",
+    "recommend.extract": "recommend/extract.md",
+    "modify.extract": "modify/extract.md",
+    "info.extract": "info/extract.md",
+    "compare.extract": "compare/extract.md",
+    "general.extract": "general/extract.md",
+    "general.answer": "general/answer_instruction.md",
+    "info.answer": "info/answer_instruction.md",
+    "recommend.summary": "recommend/summary_instruction.md",
+    "compare.summary": "compare/summary_instruction.md",
+    "schedule.plan": "schedule/plan.md",
+    "schedule.fill": "schedule/fill.md",
 }
 
 _FALLBACK_SLOTS: tuple[str, ...] = ("router.classify",)
@@ -148,9 +174,61 @@ def operation_prompt_version(operation: str) -> str | None:
     slot = OPERATION_SLOTS.get(operation)
     if slot is None:
         return None
-    version = slot_versions().get(slot)
+    version = live_slot_version(slot) or slot_versions().get(slot)
     if version is None:
         return None
     rendered = f"{slot}@{version}"
     variant = active_variant()
     return rendered if variant == "current" else f"{rendered}+variant:{variant}"
+
+
+CONFIG_SEMVER_KEY: Final = "semver"
+CONFIG_SLOT_KEY: Final = "slot"
+
+
+def live_slot_version(slot: str) -> str | None:
+    """**지금 돌고 있는** 프롬프트가 스스로 밝힌 슬롯 버전. 모르면 `None`.
+
+    프롬프트를 Langfuse에서 읽으면 `meta.yaml`은 더 이상 "실제로 돈 것"의 근거가
+    아니다 — UI에서 고치면 레포는 그대로인데 지침만 바뀐다. 그 상태로 관측에
+    `recommend.extract@2.4.0`을 적으면 **기록이 거짓말을 하고 회귀 판정이 무의미해진다.**
+
+    그래서 `--push`가 `meta.yaml`의 semver를 각 프롬프트 `config`에 함께 올리고,
+    여기서는 그 값을 되읽는다. 올린 뒤 UI에서 본문만 고치면 semver는 그대로이므로
+    **버전 문자열과 내용이 어긋난 상태 자체는 남는다** — 그건 `--check`가 잡는다.
+    여기서 없애는 것은 "레포 값을 실제 값인 양 적는" 더 나쁜 쪽이다.
+
+    프롬프트 관리가 꺼져 있으면 `None`이고 호출부가 `meta.yaml`로 돌아간다.
+    """
+
+    template = SLOT_ENTRY_TEMPLATES.get(slot)
+    if template is None:
+        return None
+    # 함수 안에서 import 한다 — 프롬프트 라이브러리가 관측 모듈에 부팅 의존을 걸지
+    # 않게 하려는 것이다(`loader._remote_text()`와 같은 이유).
+    from app.observability import langfuse_prompts
+
+    if not langfuse_prompts.is_enabled():
+        return None
+    prompt = langfuse_prompts.prompt_object(template)
+    config = getattr(prompt, "config", None)
+    if not isinstance(config, dict):
+        return None
+    semver = config.get(CONFIG_SEMVER_KEY)
+    return semver if isinstance(semver, str) else None
+
+
+def operation_entry_template(operation: str) -> str | None:
+    """LLM 호출 하나가 시작한 진입 템플릿의 상대경로. 모르는 operation이면 `None`.
+
+    예: `classify_intent` → `router/classify.md`
+
+    `operation_prompt_version()`이 같은 호출에 **버전 문자열**을 붙인다면 이쪽은
+    **어느 파일이냐**다. 둘 다 필요하다 — 버전 문자열은 관측을 꺼도 남는 자리
+    (`version`)에 들어가고, 이 경로는 Langfuse 프롬프트 객체를 찾아 링크하는 데 쓴다.
+    """
+
+    slot = OPERATION_SLOTS.get(operation)
+    if slot is None:
+        return None
+    return SLOT_ENTRY_TEMPLATES.get(slot)
