@@ -145,18 +145,38 @@ def test_scoring_summary_keeps_the_scores_that_explain_the_ranking() -> None:
     assert summary["excluded_closed_count"] == 2
 
 
-def test_scoring_summary_leaves_out_the_bulky_prose() -> None:
-    """근거 문장 원문·설명은 뺀다.
+def test_scoring_summary_carries_the_prose_that_explains_the_score() -> None:
+    """근거 문장·설명을 싣는다 — 2026-08-26에 뒤집은 결정이다.
 
-    후보 10곳 × 17필드를 통째로 넣으면 span 하나가 수 KB가 되고, 정작 여기서 보고 싶은
-    "어느 축이 몇 점인가"가 그 사이에 묻힌다.
+    원래는 "점수를 읽는 데 방해된다"고 뺐는데, 정작 **왜 그 점수가 나왔나**를 쫓을 때
+    근거 문장이 없어 span만으로는 답이 안 나왔다. Audit 화면의 "D Scoring" 탭과 같은
+    값을 싣는다.
     """
     summary = _summarize_scoring({"recommendations": _response([_item("p1", 0.7)])})
 
-    blob = json.dumps(summary, ensure_ascii=False)
-    assert "조용하고 아늑했어요" not in blob
-    assert "현재 위치에서 가까운 장소예요" not in blob
-    assert "조건을 종합한 추천이에요" not in blob
+    assert summary is not None
+    ranked = summary["ranked"][0]
+    assert ranked["explanations"] == ["현재 위치에서 가까운 장소예요."]
+    assert ranked["warnings"] == []
+    assert ranked["taste_evidence"] == [{"text": "조용하고 아늑했어요", "similarity": 0.61}]
+    # 화면이 카테고리·거리로 후보를 가려내므로 함께 싣는다.
+    assert ranked["category"] == "cafe"
+    assert ranked["distance_km"] == 0.42
+
+
+def test_scoring_summary_caps_the_evidence_quotes_but_says_how_many_there_were() -> None:
+    """`taste_evidence`는 RPC가 찾은 만큼 전부 들어 있어 상한이 없다.
+
+    한 이벤트가 너무 커지면 Langfuse가 통째로 버려서 span 자체가 사라진다. 잘라내되
+    **잘랐다는 사실이 보여야** 근거가 하나뿐인 것과 구분된다.
+    """
+    quotes = [TasteEvidenceQuote(text=f"근거 {i}", similarity=0.5) for i in range(25)]
+    item = _item("p1", 0.7).model_copy(update={"taste_evidence": quotes})
+    summary = _summarize_scoring({"recommendations": _response([item])})
+
+    assert summary is not None
+    assert len(summary["ranked"][0]["taste_evidence"]) == 10
+    assert summary["ranked"][0]["taste_evidence_count"] == 25
 
 
 def test_scoring_summary_caps_how_many_candidates_it_carries() -> None:

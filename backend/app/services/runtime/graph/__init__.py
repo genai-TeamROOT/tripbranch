@@ -85,6 +85,11 @@ def build_early_return_graph():
 # 예산이 늘어도 span 하나가 수 KB로 부풀지 않게 막아 둔다.
 _SUMMARY_ITEM_LIMIT = 10
 
+# 후보 하나에 실을 취향 근거 문장 수. `taste_evidence`는 RPC가 찾은 만큼 전부
+# 들어 있어 상한이 없는데, 한 이벤트가 너무 커지면 Langfuse가 통째로 버려서
+# span 자체가 사라진다. 잘렸는지는 `taste_evidence_count`로 본다.
+_EVIDENCE_QUOTE_LIMIT = 10
+
 
 def _round_scores(scores: Mapping[str, float | None] | None) -> dict[str, float | None]:
     """소수점을 줄여 화면에서 읽히게 한다. 0.7234891은 볼 때 방해만 된다."""
@@ -210,17 +215,20 @@ def _summarize_tool_fetch(result: Mapping[str, Any]) -> dict[str, Any] | None:
 
 
 def _summarize_scoring(result: Mapping[str, Any]) -> dict[str, Any] | None:
-    """`scoring` span에 실을 값을 고른다.
+    """`scoring` span에 실을 값을 고른다 — 개발자 Audit "D Scoring" 탭과 같은 값이다.
 
-    **통째로 넣지 않는다.** `RecommendationItem`은 필드가 17개라 후보 10곳이면 한 span이
-    수 KB가 되고, 그중 `taste_evidence`(근거 문장 원문)와 `explanations`는 화면에서
-    점수를 읽는 데 방해만 된다. 여기서 보고 싶은 건 **"어느 축이 몇 점이었나"**다 —
-    2026-08-25에 거리 점수가 0으로 나오는 원인을 쫓을 때, 이 값이 없어서 실제 API
-    응답을 따로 받아야 했다.
+    **원래는 점수 축만 남기고 `explanations`·`taste_evidence`를 뺐다** — 화면에서
+    점수를 읽는 데 방해가 된다는 이유였다. 2026-08-26에 되돌렸다: "왜 이 점수가
+    나왔나"를 쫓을 때 근거 문장이 없으면 span만으로는 답이 안 나온다.
 
-    좌표는 애초에 여기 없다. C가 장소를 찾을 때만 쓰고 D로 넘어올 땐 `distance_km`로
-    접힌다(`ScoringCandidate`) — 그래서 이 span은 열어도 위치가 새지 않는다.
+    **후보는 상위 10건, 근거 문장은 후보당 10개까지** 싣는다(`_EVIDENCE_QUOTE_LIMIT`).
+    `taste_evidence`는 상한이 없어 그대로 실으면 이벤트가 얼마나 커질지 모른다.
+
+    좌표는 여기 없다. C가 장소를 찾을 때만 쓰고 D로 넘어올 땐 `distance_km`로
+    접힌다(`ScoringCandidate`) — `tool_fetch` span과 달리 이쪽은 열어도 위치가
+    새지 않는다.
     """
+
     response = result.get("recommendations")
     if response is None:
         return None
@@ -230,10 +238,21 @@ def _summarize_scoring(result: Mapping[str, Any]) -> dict[str, Any] | None:
             {
                 "place_id": item.place_id,
                 "name": item.name,
+                "category": item.category,
+                "distance_km": item.distance_km,
                 "score": round(item.score, 3),
                 "features": _round_scores(item.feature_scores),
                 # 취향·혼잡도가 켜졌는지에 따라 세트가 달라지는데 지금은 눈에 안 보인다.
                 "weights": _round_scores(item.weights_used),
+                "explanations": list(item.explanations),
+                "warnings": list(item.warnings),
+                "taste_evidence": [
+                    {"text": quote.text, "similarity": round(quote.similarity, 3)}
+                    for quote in item.taste_evidence[:_EVIDENCE_QUOTE_LIMIT]
+                ],
+                # 위 목록이 잘렸는지 여기서 본다. 빈 목록이면 "컷을 넘는 근거가
+                # 없었다"는 뜻이고, 검색이 실패한 것과는 다르다.
+                "taste_evidence_count": len(item.taste_evidence),
             }
             for item in items[:_SUMMARY_ITEM_LIMIT]
         ],
