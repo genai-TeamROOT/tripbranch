@@ -21,10 +21,25 @@
   **마지막 턴의 trace**를 대표로 걸고, 턴별 trace id는 전부 metadata에 남긴다.
   마지막 턴을 고르는 이유는 `expected_final_conditions`가 그 턴의 결과이기 때문이다.
 
-  **Score를 두 층으로 남긴다.** 케이스 단위(`case_pass`)는 trace에, 회차 단위
-  (`intent_accuracy` 등)는 run에 붙인다. 둘 다 수치·불리언만 올린다 — Score는 마스킹을
-  타지 않아서 자유 텍스트를 실으면 `capture_content=false` 환경에서도 발화가 샌다
-  (`observability/langfuse_tracing.record_score` docstring과 같은 판단).
+  ⚠️ **Dataset Run 화면은 이 방식으로 그려지지 않는다**(2026-08-26 확인). Langfuse의
+  Experiments 화면은 run item 테이블이 아니라 **trace에 실린 실험 속성**을 읽는다 —
+  SDK의 `run_experiment()`가 trace에 `langfuse.experiment.*`와 환경
+  `sdk-experiment`를 심는다(`_client/client.py`). 우리 trace는 서버가 만들고 서버는
+  골드셋을 모르므로 그 속성이 없다. run item은 API로 조회되지만 화면에는 안 뜬다.
+  그래서 **화면에서 실제로 쓰는 통로는 Score다.**
+
+  **Score를 세 가지로 남긴다.** 전부 trace에 붙어서 Traces 화면에서 필터가 된다.
+    `eval_run`  (CATEGORICAL) 어느 회차인가 — 이 값으로 그 회차 trace만 골라낸다
+    `eval_case` (CATEGORICAL) 어느 골드셋 케이스인가
+    `case_pass` (BOOLEAN)     통과했나
+  회차 단위 수치(`intent_accuracy` 등)는 run에도 올리지만, **회차 비교의 정본은
+  `history.csv`와 `report.md`다** — 평가가 직전 회차 대비 델타를 이미 찍어준다.
+
+  **자유 텍스트를 싣지 않는다는 규칙은 지킨다.** Score는 마스킹을 타지 않아서
+  `capture_content=false` 환경에서도 값이 그대로 나간다
+  (`observability/langfuse_tracing.record_score` docstring). 여기 싣는 CATEGORICAL
+  값은 **우리가 지은 식별자**(회차 폴더명·case_id)이지 사용자 발화가 아니다 —
+  `version`·`tags`를 마스킹 밖에 두는 것과 같은 이유다.
 
   **`client.create_score()`를 쓰지 않는다.** 그건 OTel 파이프라인을 타는데 첫머리에
   `if not self._tracing_enabled: return`이 있다(SDK 4.14.5). 배치 스크립트의 클라이언트는
@@ -49,12 +64,24 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
 
 from scripts.sync_langfuse_dataset import DATASET_NAMES, _client, item_id
+
+
+def score_id(run_id: str, trace_id: str, name: str) -> str:
+    """같은 회차를 다시 올려도 Score가 쌓이지 않게 하는 결정적 id.
+
+    id를 안 주면 서버가 매번 새로 발급해서, 재실행할 때마다 같은 trace에
+    `case_pass`가 여러 개 붙는다. 그러면 화면에서 어느 게 최신인지 알 수 없다.
+    """
+    digest = hashlib.sha1(f"{run_id}|{trace_id}|{name}".encode()).hexdigest()
+    return f"eval-{digest}"
+
 
 RUNS_DIR: Final = Path(__file__).resolve().parents[1] / "test_results" / "agent_quality" / "runs"
 
@@ -229,14 +256,24 @@ def push_run(client: Any, payload: RunPayload) -> int:
             run_description=description,
             metadata=metadata,
         )
-        # 케이스 단위 판정은 trace에 붙인다 — 화면에서 그 trace를 열면 바로 보인다.
-        client.api.scores.create(
-            name="case_pass",
-            value=int(link.case_pass),
-            data_type="BOOLEAN",
-            trace_id=link.trace_id,
-        )
-    print(f"✓ run item {len(payload.links)}건 · case_pass Score {len(payload.links)}건")
+        # **화면에서 실제로 쓰는 통로다.** Dataset Run 화면이 안 그려지므로
+        # (모듈 docstring), 이 셋으로 Traces 화면에서 회차·케이스를 골라낸다.
+        for name, value, data_type in (
+            ("eval_run", payload.run_id, "CATEGORICAL"),
+            ("eval_case", link.case_id, "CATEGORICAL"),
+            ("case_pass", int(link.case_pass), "BOOLEAN"),
+        ):
+            client.api.scores.create(
+                id=score_id(payload.run_id, link.trace_id, name),
+                name=name,
+                value=value,
+                data_type=data_type,
+                trace_id=link.trace_id,
+            )
+    print(
+        f"✓ run item {len(payload.links)}건 · "
+        f"trace Score {len(payload.links) * 3}건 (eval_run·eval_case·case_pass)"
+    )
 
     dataset_run = client.api.datasets.get_run(
         dataset_name=payload.dataset_name, run_name=payload.run_id
@@ -247,6 +284,7 @@ def push_run(client: Any, payload: RunPayload) -> int:
         if not isinstance(value, (int, float)):
             continue
         client.api.scores.create(
+            id=score_id(payload.run_id, dataset_run.id, name),
             name=name,
             value=float(value),
             data_type="NUMERIC",

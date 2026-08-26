@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -223,6 +224,16 @@ def test_push_writes_run_items_and_two_layers_of_scores(tmp_path: Path) -> None:
     # bool은 float의 하위형이라 그냥 넘기면 NUMERIC으로 새어 들어간다.
     assert {score["data_type"] for score in case_scores} == {"BOOLEAN"}
 
+    # Dataset Run 화면이 안 그려지므로 화면에서 쓰는 통로는 이 셋뿐이다.
+    marks = {
+        (score["name"], score["trace_id"]): score["value"]
+        for score in client.scores
+        if score["name"] in ("eval_run", "eval_case")
+    }
+    assert marks[("eval_case", "t1")] == "DEV-001"
+    assert marks[("eval_case", "t3")] == "DEV-002"
+    assert marks[("eval_run", "t1")] == run_dir.name
+
     run_scores = {score["name"]: score for score in client.scores if "dataset_run_id" in score}
     assert set(run_scores) == {"intent_accuracy", "case_pass_rate", "error_count"}
     assert all(score["data_type"] == "NUMERIC" for score in run_scores.values())
@@ -246,3 +257,35 @@ def test_scores_do_not_go_through_the_otel_gated_helper() -> None:
 
     assert "client.api.scores.create(" in body
     assert "client.create_score(" not in body
+
+
+def test_rerunning_the_same_push_does_not_pile_up_scores(tmp_path: Path) -> None:
+    """id를 안 주면 서버가 매번 새로 발급해 같은 trace에 case_pass가 여러 개 붙는다.
+
+    그러면 화면에서 어느 값이 최신인지 알 수 없다. 같은 (회차, trace, 이름)이면
+    같은 id가 나와야 재실행이 덮어쓴다.
+    """
+    run_dir = _write_run(tmp_path, [_row("DEV-001", trace_ids=["t1"])])
+
+    first, second = _FakeClient(), _FakeClient()
+    push_run(first, load_run(run_dir))
+    push_run(second, load_run(run_dir))
+
+    assert [score["id"] for score in first.scores] == [score["id"] for score in second.scores]
+    assert len({score["id"] for score in first.scores}) == len(first.scores)
+
+
+def test_score_marks_carry_our_own_identifiers_not_user_text() -> None:
+    """Score는 마스킹을 타지 않는다 — 자유 텍스트를 실으면 발화가 그대로 나간다.
+
+    CATEGORICAL을 쓰는 자리는 **우리가 지은 식별자**(회차 폴더명·case_id)로 좁힌다.
+    발화·응답을 싣는 경로가 생기면 이 테스트가 먼저 깨져야 한다.
+    """
+    source = Path(push_langfuse_dataset_run.__file__).read_text(encoding="utf-8")
+    body = source.split('"""', 2)[2]
+
+    categorical_values = re.findall(r'\("(\w+)", ([\w.]+), "CATEGORICAL"\)', body)
+    assert categorical_values == [
+        ("eval_run", "payload.run_id"),
+        ("eval_case", "link.case_id"),
+    ]
