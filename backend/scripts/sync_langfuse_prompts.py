@@ -24,6 +24,13 @@
       cd backend && .venv/bin/python -m scripts.sync_langfuse_prompts --push --yes
       cd backend && .venv/bin/python -m scripts.sync_langfuse_prompts --pull --yes
 
+라벨: `--push`가 붙이는 것은 둘이다.
+  * `production` — 지금 도는 버전. 새 버전으로 **옮겨간다**.
+  * semver(`2.4.0`) — 그게 어느 버전인지 화면에서 바로 읽히게 한다. Langfuse의
+    버전은 정수 자동 증가(`create_prompt`에 `version` 인자가 없다)라 `1,2,3,4`는
+    우리가 몇 번 올렸는지를 셀 뿐, semver와 대응하지 않는다. 진입 템플릿에만
+    붙는다 — 조각은 슬롯 여러 개에 걸쳐 semver가 하나로 안 정해진다.
+
 주의: `--push`는 `production` 라벨을 새 버전으로 옮긴다. 즉 **켜져 있는 서버가
       TTL(기본 60초) 안에 새 프롬프트로 갈아탄다.** 배포 없이 바뀌는 게 이 이관의
       목적이지만, 그래서 되돌릴 것을 먼저 확인하고 눌러야 한다.
@@ -33,7 +40,9 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import re
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Final
 
@@ -49,6 +58,11 @@ from app.prompts.registry import (
 
 # 서버가 읽는 라벨. Langfuse는 이 라벨이 가리키는 버전을 기본으로 준다.
 PRODUCTION_LABEL: Final = "production"
+
+# Langfuse 라벨이 받는 문자. 소문자·숫자·`_`·`-`·`.`뿐이다(2026-08-25 실측) —
+# 대문자도 `@`도 안 받는다. semver는 보통 그대로 통과하지만 프리릴리스 표기에
+# 대문자가 섞이면(`2.5.0-RC1`) 서버가 거부한다.
+_LABEL_PATTERN: Final = re.compile(r"^[a-z0-9_.-]+$")
 
 STATUS_SAME: Final = "same"
 STATUS_MISSING: Final = "missing"  # 원격에 없다
@@ -87,6 +101,36 @@ def asset_config(relative_path: str) -> dict[str, str]:
             return {}
         return {CONFIG_SLOT_KEY: slot, CONFIG_SEMVER_KEY: version}
     return {}
+
+
+def push_labels(config: Mapping[str, str]) -> list[str]:
+    """새 버전에 붙일 라벨. `production`에 더해 **semver를 라벨로도** 붙인다.
+
+    **Langfuse의 버전은 정수 자동 증가라 semver를 담을 수 없다**(`create_prompt`에
+    `version` 인자가 아예 없다). 그래서 `1, 2, 3, 4`는 우리가 몇 번 올렸는지를 셀 뿐,
+    `2.4.0`과 대응하지 않는다 — 프롬프트를 안 바꾸고 semver만 올려 다시 밀어도 정수는
+    1 오른다. 화면 목록에서 어느 버전이 `2.4.0`인지 눌러보지 않고 알 수 있어야 한다.
+
+    `config.semver`는 **코드가** 읽어 관측의 버전 문자열을 만들고(`live_slot_version`),
+    이 라벨은 **사람이** 읽는다. 둘은 같은 값의 다른 쓰임이다.
+
+    **조각(`_shared/rules/*`)에는 안 붙는다.** semver가 슬롯 단위라 여러 슬롯에 걸친
+    조각은 값이 하나로 정해지지 않는다(`asset_config` 참고) — 그런 자산은 config가
+    비어 있어 여기서도 자연히 빠진다.
+
+    **같은 semver를 다시 올리면 라벨이 새 버전으로 옮겨간다.** 라벨은 이름당 버전
+    하나만 가리킨다. 그 상황은 "본문이 바뀌었는데 semver를 안 올렸다"는 뜻이라
+    옮겨가는 쪽이 맞다 — 라벨은 항상 "우리가 2.4.0이라고 부르는 그 버전"이다.
+
+    형식에 안 맞는 semver는 **라벨만 빼고 올린다.** 여기서 예외를 올리면 라벨 하나
+    때문에 43개 푸시가 통째로 멈춘다.
+    """
+
+    labels = [PRODUCTION_LABEL]
+    semver = config.get(CONFIG_SEMVER_KEY)
+    if semver and _LABEL_PATTERN.fullmatch(semver):
+        labels.append(semver)
+    return labels
 
 
 def _client() -> Any | None:
@@ -258,6 +302,21 @@ def run_push(*, confirmed: bool, message: str) -> int:
         f"\n※ '{PRODUCTION_LABEL}' 라벨이 새 버전으로 옮겨간다. "
         f"켜져 있는 서버는 TTL({settings.langfuse_prompt_cache_ttl_seconds}초) 안에 갈아탄다."
     )
+    tagged = [(row, push_labels(row.config)) for row in todo]
+    with_semver = [(row, labels[-1]) for row, labels in tagged if len(labels) > 1]
+    if with_semver:
+        print(f"※ semver 라벨도 함께 붙는다({len(with_semver)}개):")
+        for row, semver in with_semver:
+            print(f"    {row.relative_path:<40} {semver}")
+    skipped = [
+        row
+        for row in todo
+        if row.config.get(CONFIG_SEMVER_KEY) and len(push_labels(row.config)) == 1
+    ]
+    if skipped:
+        print("※ semver 형식이 라벨 규칙에 안 맞아 라벨은 빼고 올린다:")
+        for row in skipped:
+            print(f"    {row.relative_path:<40} {row.config[CONFIG_SEMVER_KEY]!r}")
     if not confirmed:
         print("\n실제로 올리려면 --yes 를 붙인다.")
         return 0
@@ -268,7 +327,7 @@ def run_push(*, confirmed: bool, message: str) -> int:
             client.create_prompt(
                 name=row.name,
                 prompt=row.disk,
-                labels=[PRODUCTION_LABEL],
+                labels=push_labels(row.config),
                 type="text",
                 config=row.config or None,
                 commit_message=message,
