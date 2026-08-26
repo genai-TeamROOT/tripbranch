@@ -96,22 +96,108 @@ def _round_scores(scores: Mapping[str, float | None] | None) -> dict[str, float 
     }
 
 
+def _location(location: Any) -> dict[str, Any] | None:
+    """`LocationDebug` 하나를 span에 실을 모양으로 편다.
+
+    **좌표가 여기 실린다.** 2026-08-26에 "개발자 Audit 화면에 있는 값은 trace에도
+    있어야 한다"로 정하면서 열었다. 그 전까지는 아예 안 실었다.
+    """
+
+    if location is None:
+        return None
+    return {
+        "name": location.name,
+        "source": location.source,
+        "latitude": location.latitude,
+        "longitude": location.longitude,
+    }
+
+
+def concentration_source_rows(execution: Any) -> list[dict[str, Any]]:
+    """후보별 혼잡도가 어디서 온 값인지를 span에 실을 모양으로 편다.
+
+    **근사치가 섞이는 게 정상 상태다**(활성 844건 중 집중률 매핑 100건). 그래서
+    상태 집계만 보면 직접 조회한 값과 인근 장소에서 빌려온 값이 "success 5건"으로
+    같아 보인다 — 근사치의 타당성은 "어느 장소에서 얼마나 떨어진 값인가"로 판단해야
+    하므로 후보별로 남긴다(`CandidateConcentrationDebug`).
+
+    `tool_fetch` span과 `concentration_enrichment` span이 **같은 함수를 쓴다.** 같은
+    사실을 두 모양으로 적으면 한쪽만 고쳤을 때 조용히 어긋난다.
+    """
+
+    return [
+        {
+            "place_id": row.place_id,
+            "name": row.name,
+            "status": row.status,
+            "is_proxy": row.is_proxy,
+            "proxy_place_name": row.proxy_place_name,
+            "proxy_distance_km": row.proxy_distance_km,
+        }
+        for row in execution.candidate_concentration[:_SUMMARY_ITEM_LIMIT]
+    ]
+
+
+def _tool_call_summary(execution: Any) -> dict[str, Any]:
+    """C 호출 한 건을 span에 실을 모양으로 편다.
+
+    `ToolExecutionDebug`가 개발자 Audit용으로 이미 만들어 둔 값이라 새로 수집하는
+    게 아니다 — 고르기만 한다.
+    """
+
+    return {
+        "operation": execution.operation,
+        "status": execution.status,
+        "latency_ms": execution.latency_ms,
+        "providers": [
+            {"source": provider.source, "status": provider.status}
+            for provider in execution.providers
+        ],
+        # fetched=False는 실패가 아니라 "아예 조회하지 않음"이다
+        # (발화에 이미 값이 있어 생략한 경우 등). 둘을 구분해 적는다.
+        "items": {
+            item.key: (item.status or "unknown") if item.fetched else "skipped"
+            for item in execution.context_items
+        },
+        "item_errors": {
+            item.key: item.error_code for item in execution.context_items if item.error_code
+        },
+        "rule_versions": dict(execution.rule_versions),
+        "resolved_location_name": execution.resolved_location_name,
+        "resolved_location_address": execution.resolved_location_address,
+        # 셋은 서로 다를 수 있고, **다른 것 자체가 관측 대상이다**(TP-112). 특히
+        # route_origin.source가 "search_center"면 사용자 위치를 몰라 검색 위치로
+        # 대체한 턴이라 거리·경로 표기가 사실과 어긋날 수 있다.
+        "locations": {
+            "search": _location(execution.search_location),
+            "user": _location(execution.user_location),
+            "route_origin": _location(execution.route_origin),
+        },
+        "error_code": execution.error_code,
+        "clarification_code": execution.clarification_code,
+        "is_proxy": execution.is_proxy,
+        "candidate_status_counts": dict(execution.candidate_status_counts),
+        "candidate_concentration": concentration_source_rows(execution),
+    }
+
+
 def _summarize_tool_fetch(result: Mapping[str, Any]) -> dict[str, Any] | None:
-    """`tool_fetch` span에 실을 값을 고른다.
+    """`tool_fetch` span에 실을 값을 고른다 — 개발자 Audit "C Tool" 탭과 같은 값이다.
 
-    **여기는 원래 비워 뒀던 자리다.** 좌표와 외부 API 자격증명이 흐르는 경로라
-    이름·지연만 남겼는데, 그 결과 span 하나가 빈 상자였다 — C가 Provider를 몇 개
-    불렀고 무엇이 실패했는지 화면에서 알 수 없었다. 지금은 **인자와 응답 원문은
-    그대로 빼고 상태·개수만** 싣는다. 그 값들은 `ToolExecutionDebug`가 이미
-    개발자 Audit용으로 만들어 두고 있어서 새로 수집하는 게 아니다.
+    **원래는 상태·개수만 남기고 좌표·해석된 장소명·주소를 뺐다.** 외부 SaaS로 나가는
+    값이라 `capture_content`를 켜도 안 새게 두 겹으로 막은 것이었다. 2026-08-26에
+    **한 겹으로 줄이기로 했다** — 화면에 보이는 값이 trace에는 없어서, 원인을 쫓을
+    때마다 결국 API 응답을 따로 받아야 했다.
 
-    **`resolved_location_name`·`resolved_location_address`는 일부러 뺀다.** C가
-    발화에서 풀어낸 장소명·주소라 사용자가 어디 있는지/어디를 찾는지를 그대로
-    드러낸다 — `capture_content`를 꺼도 여긴 안 새야 한다.
+    **이제 방어선은 `capture_content` 하나뿐이다.** 꺼져 있으면 이 output 전체가
+    `<redacted>`로 치환되지만(`langfuse_tracing._mask`), 켜면 **사용자 좌표와
+    사용자가 찾는 장소명이 그대로 Langfuse로 나간다.** 켜는 것이 명시적 선택이어야
+    한다는 뜻이고, 한 번 올라간 trace는 스위치를 도로 꺼도 남는다.
 
     조기 종료(`response`만 채워 그 턴을 끝낸 경우)는 Tool 기록이 아예 없으므로
     `terminal`만 남긴다 — 값이 없는 것과 단계를 건너뛴 것이 구분돼야 한다.
     """
+
     executions = list(result.get("tool_executions") or [])
     terminal = result.get("response") is not None
     if not executions and not terminal:
@@ -119,28 +205,7 @@ def _summarize_tool_fetch(result: Mapping[str, Any]) -> dict[str, Any] | None:
     return {
         "terminal": terminal,
         "call_count": len(executions),
-        "calls": [
-            {
-                "operation": execution.operation,
-                "status": execution.status,
-                "latency_ms": execution.latency_ms,
-                "providers": [
-                    {"source": provider.source, "status": provider.status}
-                    for provider in execution.providers
-                ],
-                # fetched=False는 실패가 아니라 "아예 조회하지 않음"이다
-                # (발화에 이미 값이 있어 생략한 경우 등). 둘을 구분해 적는다.
-                "items": {
-                    item.key: (item.status or "unknown") if item.fetched else "skipped"
-                    for item in execution.context_items
-                },
-                "item_errors": {
-                    item.key: item.error_code for item in execution.context_items if item.error_code
-                },
-                "rule_versions": dict(execution.rule_versions),
-            }
-            for execution in executions[:_SUMMARY_ITEM_LIMIT]
-        ],
+        "calls": [_tool_call_summary(execution) for execution in executions[:_SUMMARY_ITEM_LIMIT]],
     }
 
 
@@ -368,6 +433,7 @@ async def run_recommend_pipeline_graph(
 
 __all__ = [
     "PipelineDeps",
+    "concentration_source_rows",
     "build_early_return_graph",
     "build_recommend_pipeline_graph",
     "run_early_return_graph",

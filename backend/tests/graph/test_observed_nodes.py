@@ -24,6 +24,8 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
 from app.schemas import (
+    CandidateConcentrationDebug,
+    LocationDebug,
     RecommendationItem,
     RecommendationResponse,
     TasteEvidenceQuote,
@@ -36,6 +38,7 @@ from app.services.runtime.graph import (
     _summarize_finalize,
     _summarize_scoring,
     _summarize_tool_fetch,
+    concentration_source_rows,
 )
 
 
@@ -258,13 +261,104 @@ def test_tool_fetch_summary_separates_not_queried_from_failed() -> None:
     }
 
 
-def test_tool_fetch_summary_leaves_out_the_resolved_location() -> None:
-    """C가 발화에서 풀어낸 장소명·주소는 사용자가 어디를 찾는지 그대로 드러낸다."""
+def test_tool_fetch_summary_carries_the_resolved_location() -> None:
+    """장소명·주소를 싣는다 — 2026-08-26에 뒤집은 결정이다.
+
+    **이 값은 사용자가 어디를 찾는지 그대로 드러낸다.** 원래는 `capture_content`를
+    켜도 안 새게 두 겹으로 막았는데, 화면에 보이는 값이 trace에 없어 원인을 쫓을
+    때마다 API 응답을 따로 받아야 했다. 이제 방어선은 그 스위치 하나다.
+    """
     summary = _summarize_tool_fetch({"tool_executions": [_execution()]})
 
-    blob = json.dumps(summary, ensure_ascii=False)
-    assert "경복궁" not in blob
-    assert "사직로" not in blob
+    assert summary is not None
+    call = summary["calls"][0]
+    assert call["resolved_location_name"] == "경복궁"
+    assert call["resolved_location_address"] == "서울 종로구 사직로 161"
+
+
+def test_tool_fetch_summary_carries_all_three_locations_separately() -> None:
+    """셋은 서로 다를 수 있고 **다른 것 자체가 관측 대상이다**(TP-112).
+
+    `route_origin.source`가 `search_center`면 사용자 위치를 몰라 검색 위치로 대체한
+    턴이라, 거리·경로 표기가 사실과 어긋날 수 있다.
+    """
+    summary = _summarize_tool_fetch(
+        {
+            "tool_executions": [
+                _execution(
+                    search_location=LocationDebug(
+                        name="경복궁", source="query", latitude=37.5796, longitude=126.977
+                    ),
+                    route_origin=LocationDebug(
+                        source="search_center", latitude=37.5796, longitude=126.977
+                    ),
+                )
+            ]
+        }
+    )
+
+    assert summary is not None
+    locations = summary["calls"][0]["locations"]
+    assert locations["search"] == {
+        "name": "경복궁",
+        "source": "query",
+        "latitude": 37.5796,
+        "longitude": 126.977,
+    }
+    assert locations["route_origin"]["source"] == "search_center"
+    # 값이 없는 것과 안 실은 것이 구분돼야 한다.
+    assert locations["user"] is None
+
+
+def test_tool_fetch_summary_shows_where_each_concentration_value_came_from() -> None:
+    """근사치가 섞이는 게 정상 상태라(활성 844건 중 매핑 100건) 건수로는 못 가린다."""
+    summary = _summarize_tool_fetch(
+        {
+            "tool_executions": [
+                _execution(
+                    candidate_status_counts={"success": 2},
+                    candidate_concentration=[
+                        CandidateConcentrationDebug(
+                            place_id="p1", name="후보1", status="success", is_proxy=False
+                        ),
+                        CandidateConcentrationDebug(
+                            place_id="p2",
+                            name="후보2",
+                            status="success",
+                            is_proxy=True,
+                            proxy_place_name="경복궁",
+                            proxy_distance_km=0.31,
+                        ),
+                    ],
+                )
+            ]
+        }
+    )
+
+    assert summary is not None
+    call = summary["calls"][0]
+    assert call["candidate_status_counts"] == {"success": 2}
+    rows = call["candidate_concentration"]
+    # 상태만 보면 둘 다 "success 1건"이라 같아 보인다 — 출처가 갈라져 있어야 한다.
+    assert [row["is_proxy"] for row in rows] == [False, True]
+    assert rows[1]["proxy_place_name"] == "경복궁"
+    assert rows[1]["proxy_distance_km"] == 0.31
+
+
+def test_concentration_rows_are_built_by_one_function_for_both_spans() -> None:
+    """`tool_fetch`와 `concentration_enrichment`가 같은 함수를 쓴다.
+
+    같은 사실을 두 모양으로 적으면 한쪽만 고쳤을 때 조용히 어긋난다.
+    """
+    execution = _execution(
+        candidate_concentration=[
+            CandidateConcentrationDebug(place_id="p1", name="후보1", status="success")
+        ]
+    )
+    summary = _summarize_tool_fetch({"tool_executions": [execution]})
+
+    assert summary is not None
+    assert summary["calls"][0]["candidate_concentration"] == concentration_source_rows(execution)
 
 
 def test_tool_fetch_summary_marks_a_turn_that_ended_before_scoring() -> None:

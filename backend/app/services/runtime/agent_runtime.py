@@ -86,6 +86,7 @@ from app.services.runtime.context_transform import to_agent_context_request
 from app.services.runtime.enrichment_transform import to_candidate_enrichment_request
 from app.services.runtime.graph import (
     PipelineDeps,
+    concentration_source_rows,
     run_early_return_graph,
     run_recommend_pipeline_graph,
 )
@@ -986,6 +987,13 @@ async def _apply_concentration_rerank(
             }
         )
         enrichment_response = await enrichment_provider.enrich(enrichment_request)
+        # **Audit용 요약을 span 안에서 만든다.** 밖에서 만들면 span이 이미 닫혀 있어
+        # 후보별 출처를 붙일 자리가 없다. 지연은 위에서 재둔 시각으로 계산하므로
+        # 자리를 옮겨도 값이 달라지지 않는다.
+        enrichment_execution = build_candidate_enrichment_execution_debug(
+            enrichment_response,
+            latency_ms=int((time.monotonic() - enrichment_started_at) * 1000),
+        )
         try:
             enrichment_step.record(
                 output={
@@ -993,6 +1001,13 @@ async def _apply_concentration_rerank(
                     "features": list(enrichment_request.features),
                     "status": str(getattr(enrichment_response, "status", None)),
                     "enriched": len(getattr(enrichment_response, "candidates", None) or []),
+                    # 성공 건수만으로는 직접 조회한 값과 인근에서 빌려온 값이
+                    # 구분되지 않는다 — 후보별 출처를 그대로 남긴다.
+                    "candidates": (
+                        concentration_source_rows(enrichment_execution)
+                        if enrichment_execution is not None
+                        else []
+                    ),
                 },
                 status_message=(
                     f"보강 {len(enrichment_request.candidates)}건 요청 · "
@@ -1001,10 +1016,6 @@ async def _apply_concentration_rerank(
             )
         except Exception:
             logger.warning("보강 관측 요약 실패(응답 흐름에는 영향 없음)", exc_info=True)
-    enrichment_execution = build_candidate_enrichment_execution_debug(
-        enrichment_response,
-        latency_ms=int((time.monotonic() - enrichment_started_at) * 1000),
-    )
     if execution_collector is not None and enrichment_execution is not None:
         execution_collector.append(enrichment_execution)
     if enrichment_response.status in _ENRICHMENT_TERMINAL_STATUSES or not hasattr(
