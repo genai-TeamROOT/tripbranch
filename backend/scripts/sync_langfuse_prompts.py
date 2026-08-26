@@ -34,12 +34,18 @@ from __future__ import annotations
 import argparse
 import difflib
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Final
 
 from app.config import settings
 from app.observability.langfuse_prompts import prompt_name
 from app.prompts.loader import PROMPT_ROOT, asset_paths
+from app.prompts.registry import (
+    CONFIG_SEMVER_KEY,
+    CONFIG_SLOT_KEY,
+    SLOT_ENTRY_TEMPLATES,
+    slot_versions,
+)
 
 # 서버가 읽는 라벨. Langfuse는 이 라벨이 가리키는 버전을 기본으로 준다.
 PRODUCTION_LABEL: Final = "production"
@@ -58,6 +64,29 @@ class Comparison:
     remote: str | None
     status: str
     detail: str = ""
+    config: dict[str, str] = field(default_factory=dict)
+    remote_config: dict[str, Any] = field(default_factory=dict)
+
+
+def asset_config(relative_path: str) -> dict[str, str]:
+    """프롬프트와 함께 올릴 메타데이터.
+
+    **진입 템플릿에만 `semver`가 붙는다.** semver는 슬롯 단위인데 Langfuse 버전은
+    파일 단위라, 조각(`_shared/rules/budget`)은 슬롯 여러 개에 걸쳐 있어 값이 하나로
+    정해지지 않는다. 진입 템플릿은 슬롯과 1:1이라 모호함이 없다.
+
+    이 값을 `registry.live_slot_version()`이 되읽어 관측의 버전 문자열을 만든다 —
+    그래야 기록이 "레포에 적힌 값"이 아니라 "실제로 돈 값"을 말한다.
+    """
+
+    for slot, template in SLOT_ENTRY_TEMPLATES.items():
+        if template != relative_path:
+            continue
+        version = slot_versions().get(slot)
+        if version is None:
+            return {}
+        return {CONFIG_SLOT_KEY: slot, CONFIG_SEMVER_KEY: version}
+    return {}
 
 
 def _client() -> Any | None:
@@ -101,7 +130,7 @@ def _disk_text(relative_path: str) -> str:
     return (PROMPT_ROOT / relative_path).read_text(encoding="utf-8").strip()
 
 
-def _remote_text(client: Any, name: str) -> tuple[str | None, str]:
+def _remote_text(client: Any, name: str) -> tuple[str | None, dict[str, Any], str]:
     """원격 원문. 없으면 `(None, 사유)`.
 
     `cache_ttl_seconds=0`으로 캐시를 우회한다 — 대조하는 도구가 캐시된 옛 값을 보면
@@ -113,12 +142,13 @@ def _remote_text(client: Any, name: str) -> tuple[str | None, str]:
     except Exception as exc:
         message = str(exc)
         if "not found" in message.lower() or "404" in message:
-            return None, "원격에 없음"
-        return None, f"{type(exc).__name__}: {message[:120]}"
+            return None, {}, "원격에 없음"
+        return None, {}, f"{type(exc).__name__}: {message[:120]}"
     text = getattr(prompt, "prompt", None)
+    config = getattr(prompt, "config", None)
     if not isinstance(text, str):
-        return None, f"text 프롬프트가 아니다({type(text).__name__})"
-    return text, ""
+        return None, {}, f"text 프롬프트가 아니다({type(text).__name__})"
+    return text, config if isinstance(config, dict) else {}, ""
 
 
 def compare_all(client: Any) -> list[Comparison]:
@@ -126,14 +156,25 @@ def compare_all(client: Any) -> list[Comparison]:
     for relative_path in asset_paths():
         name = prompt_name(relative_path)
         disk = _disk_text(relative_path)
-        remote, detail = _remote_text(client, name)
+        config = asset_config(relative_path)
+        remote, remote_config, detail = _remote_text(client, name)
         if remote is None:
             status = STATUS_MISSING if detail == "원격에 없음" else STATUS_ERROR
-        elif remote == disk:
-            status = STATUS_SAME
-        else:
+        elif remote != disk:
             status = STATUS_DIFFERENT
-        rows.append(Comparison(relative_path, name, disk, remote, status, detail))
+        elif config and {key: remote_config.get(key) for key in config} != config:
+            # 본문은 같은데 semver만 다른 경우다 — 버전만 올리고 안 올린 상태.
+            # 관측이 옛 버전 문자열을 계속 적으므로 이것도 어긋남이다.
+            status = STATUS_DIFFERENT
+            detail = (
+                f"본문은 같고 config가 다르다 (레포 {config} / 원격 "
+                f"{ {key: remote_config.get(key) for key in config} })"
+            )
+        else:
+            status = STATUS_SAME
+        rows.append(
+            Comparison(relative_path, name, disk, remote, status, detail, config, remote_config)
+        )
     return rows
 
 
@@ -229,6 +270,7 @@ def run_push(*, confirmed: bool, message: str) -> int:
                 prompt=row.disk,
                 labels=[PRODUCTION_LABEL],
                 type="text",
+                config=row.config or None,
                 commit_message=message,
             )
             print(f"  ✓ {row.relative_path}")

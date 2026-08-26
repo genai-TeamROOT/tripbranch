@@ -18,6 +18,7 @@ from __future__ import annotations
 import re
 from functools import cache
 from pathlib import Path
+from typing import Final
 
 import yaml
 
@@ -173,12 +174,48 @@ def operation_prompt_version(operation: str) -> str | None:
     slot = OPERATION_SLOTS.get(operation)
     if slot is None:
         return None
-    version = slot_versions().get(slot)
+    version = live_slot_version(slot) or slot_versions().get(slot)
     if version is None:
         return None
     rendered = f"{slot}@{version}"
     variant = active_variant()
     return rendered if variant == "current" else f"{rendered}+variant:{variant}"
+
+
+CONFIG_SEMVER_KEY: Final = "semver"
+CONFIG_SLOT_KEY: Final = "slot"
+
+
+def live_slot_version(slot: str) -> str | None:
+    """**지금 돌고 있는** 프롬프트가 스스로 밝힌 슬롯 버전. 모르면 `None`.
+
+    프롬프트를 Langfuse에서 읽으면 `meta.yaml`은 더 이상 "실제로 돈 것"의 근거가
+    아니다 — UI에서 고치면 레포는 그대로인데 지침만 바뀐다. 그 상태로 관측에
+    `recommend.extract@2.4.0`을 적으면 **기록이 거짓말을 하고 회귀 판정이 무의미해진다.**
+
+    그래서 `--push`가 `meta.yaml`의 semver를 각 프롬프트 `config`에 함께 올리고,
+    여기서는 그 값을 되읽는다. 올린 뒤 UI에서 본문만 고치면 semver는 그대로이므로
+    **버전 문자열과 내용이 어긋난 상태 자체는 남는다** — 그건 `--check`가 잡는다.
+    여기서 없애는 것은 "레포 값을 실제 값인 양 적는" 더 나쁜 쪽이다.
+
+    프롬프트 관리가 꺼져 있으면 `None`이고 호출부가 `meta.yaml`로 돌아간다.
+    """
+
+    template = SLOT_ENTRY_TEMPLATES.get(slot)
+    if template is None:
+        return None
+    # 함수 안에서 import 한다 — 프롬프트 라이브러리가 관측 모듈에 부팅 의존을 걸지
+    # 않게 하려는 것이다(`loader._remote_text()`와 같은 이유).
+    from app.observability import langfuse_prompts
+
+    if not langfuse_prompts.is_enabled():
+        return None
+    prompt = langfuse_prompts.prompt_object(template)
+    config = getattr(prompt, "config", None)
+    if not isinstance(config, dict):
+        return None
+    semver = config.get(CONFIG_SEMVER_KEY)
+    return semver if isinstance(semver, str) else None
 
 
 def operation_entry_template(operation: str) -> str | None:

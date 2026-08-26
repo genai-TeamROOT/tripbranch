@@ -15,9 +15,12 @@ import ast
 import pathlib
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from app.config import settings
+from app.observability import langfuse_prompts
 from app.prompts import registry
 from app.prompts.loader import asset_paths
 from app.prompts.registry import (
@@ -162,3 +165,58 @@ def test_no_prompt_is_read_at_import_time() -> None:
                 )
 
     assert module_level == []
+
+
+# --- 관측 버전 문자열이 "실제로 돈 것"을 말하게 한다 ---------------------------
+
+
+def test_version_string_comes_from_meta_yaml_when_prompts_are_local(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """프롬프트 관리가 꺼져 있으면 레포가 곧 실제로 돈 것이다 — 지금까지와 같다."""
+    monkeypatch.setattr(settings, "langfuse_prompts_enabled", False)
+
+    assert registry.live_slot_version("recommend.extract") is None
+    expected = registry.slot_versions()["recommend.extract"]
+    assert registry.operation_prompt_version("extract_recommend_conditions") == (
+        f"recommend.extract@{expected}"
+    )
+
+
+def test_version_string_follows_the_prompt_that_actually_ran(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """켜져 있으면 **원격 프롬프트가 스스로 밝힌 semver**를 적는다.
+
+    `meta.yaml`을 그대로 믿으면 UI에서 고친 뒤 기록이 거짓말을 한다 — 레포는 2.4.0인데
+    실제로는 다른 지침이 돌고, 그 상태로 회귀를 판정하면 판정 자체가 무의미해진다.
+    """
+    monkeypatch.setattr(settings, "langfuse_prompts_enabled", True)
+    monkeypatch.setattr(
+        langfuse_prompts,
+        "prompt_object",
+        lambda path: SimpleNamespace(
+            config={"slot": "recommend.extract", "semver": "9.9.9"}
+        ),
+    )
+
+    assert registry.live_slot_version("recommend.extract") == "9.9.9"
+    assert registry.operation_prompt_version("extract_recommend_conditions") == (
+        "recommend.extract@9.9.9"
+    )
+    # meta.yaml은 건드리지 않는다 — 레포는 여전히 승인 이력의 정본이다.
+    assert registry.slot_versions()["recommend.extract"] != "9.9.9"
+
+
+def test_version_string_falls_back_when_the_remote_says_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """config가 없거나 조회에 실패하면 `meta.yaml`로 돌아간다 — 버전이 비면 안 된다."""
+    monkeypatch.setattr(settings, "langfuse_prompts_enabled", True)
+    expected = registry.slot_versions()["recommend.extract"]
+
+    for stub in (None, SimpleNamespace(config=None), SimpleNamespace(config={})):
+        monkeypatch.setattr(langfuse_prompts, "prompt_object", lambda path, s=stub: s)
+        assert registry.operation_prompt_version("extract_recommend_conditions") == (
+            f"recommend.extract@{expected}"
+        )
