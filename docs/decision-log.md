@@ -3299,8 +3299,8 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 
 ### D-091 — SCHEDULE 일정 편성에 place_associations "함께 방문된 이력"을 opt-in으로 연결한다
 
-- 상태: `Accepted` — 구현 완료(`agent_runtime.py`(A) 배선, `SchedulePartialFillRequest`
-  연동 포함).
+- 상태: `Accepted` — 구현 완료. `agent_runtime.py`(A) 배선, `SchedulePartialFillRequest`
+  연동, RECOMMEND 2차 스코어링 연동(D-092)까지 모두 반영됐다(아래 "남은 것" 갱신 참고).
 - 배경: D-088로 만든 `place_associations`(TourAPI 관광지별 연관 관광지 정보)를
   실제 추천/일정 경로에 연결하는 건 D-088에서 범위 밖으로 남겨뒀다. SCHEDULE
   (`backend/app/schedule/`)은 프롬프트·코드 전부 B 소유(`OWNERS.md`)라 B
@@ -3343,14 +3343,13 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   그대로 실림을, (c) fetcher가 예외를 던져도 일정 편성 자체는 성공함을 각각
   회귀로 고정. 프롬프트 스냅샷(`schedule_plan_context`, `schedule_plan__*`,
   `schedule_fill`, `schedule_fill_context`)을 갱신해 새 섹션·규칙 문구를
-  바이트 단위로 고정. 실제 `pytest`(2900여 건 전체 스위트)를 로컬 shim
+  바이트 단위로 고정. 실제 `pytest`(2886건 전체 스위트)를 로컬 shim
   (StrEnum/datetime.UTC 3.11 전용 문법을 3.10에 되살리는 conftest, 세션
   한정 임시 파일)으로 실행해 통과 확인 — 이전에는 "샌드박스 Python 버전 때문에
   직접 실행 불가"로 남겨뒀던 항목인데, StrEnum shim에 `__str__`을 값 그대로
-  반환하도록 보강하니 실행 가능하다는 걸 이번에 확인했다.
-- 남은 것: RECOMMEND 목록 자체의 2차 스코어링 연동은 이 카드 범위 밖 —
-  별도 카드로 진행한다(D-040 `rerank_with_concentration()`과 같은 패턴 재사용
-  예정, D 소유 scoring.py/recommendation_pipeline.py를 건드리므로 별도 리뷰).
+  반환하도록 보강하니 실행 가능하다는 걸 이번에 확인했다(D-092 "검증" 참고).
+- 남은 것: 없음. `agent_runtime.py` 배선(A), `SchedulePartialFillRequest`
+  연동, RECOMMEND 2차 스코어링 연동은 모두 D-092까지 반영됐다.
 - 상세: `backend/app/schedule/associations.py`, `backend/app/schedule/schemas.py`,
   `backend/app/schedule/planner.py`, `backend/app/providers/gemini_prompts.py`,
   `backend/app/prompts/schedule/plan.md`, `backend/app/prompts/schedule/plan_context.md`,
@@ -3363,6 +3362,88 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `backend/tests/prompts/snapshots/schedule_plan__with_time_available.txt`,
   `backend/tests/prompts/snapshots/schedule_fill.txt`,
   `backend/tests/prompts/snapshots/schedule_fill_context.txt`
+
+### D-092 — RECOMMEND 2차 스코어링에 place_associations "함께 방문된 이력"을 반영한다 (D-040 패턴 재사용)
+
+- 상태: `Accepted` — 구현 완료.
+- 배경: D-091로 SCHEDULE에는 연결했지만, RECOMMEND(순수 장소 추천) 목록 자체의
+  순위에는 아직 co-visit 신호가 없었다. D-040(`rerank_with_concentration()`,
+  혼잡도 2차 Scoring)이 정확히 같은 모양의 문제 — "1차 결과를 다시 만들지 않고
+  새 Feature 하나로 재채점"— 를 이미 풀어둔 패턴이라 그대로 재사용했다.
+- 결정:
+  1. `scoring.OPTIONAL_FEATURES`에 `"co_visited"`를 추가한다(`("taste",
+     "concentration", "co_visited")`) — `_MAX_OPTIONAL_FEATURES=3`이 예고해둔
+     정확히 그 세 번째 자리다. 튜플에 넣는 것만으로는 기존 요청 어느 것의
+     점수도 바꾸지 않는다 — `feature_scores`에 `"co_visited"` 키가 실제로
+     있는 요청(아래 3번을 탄 요청)에서만 가중치 조립이 이 이름을 본다.
+  2. `scoring.co_visited_score(hit_count, max_hit_count)` 신설 — 이번 응답
+     안에서 이 후보가 "함께 방문된 이력" 쌍에 몇 번 등장했는지를, 이번
+     응답에서 관측된 최댓값 대비 0~1로 정규화한다. concentration_rate(0~100
+     고정 스케일)와 달리 절대 스케일이 없어 상대 정규화를 택했다 — taste_score가
+     실측 분포 상한(0.65)에 맞춰 클리핑한 것과 같은 이유. 쌍이 없는 후보도
+     0.0이지 결측이 아니다(_taste_score와 같은 이유 — 후보마다 결측 여부가
+     갈리면 한 순위 안에서 가중치 세트가 달라진다).
+  3. `recommendation_pipeline.rerank_with_co_visited(response, co_visited_pairs,
+     weather_condition, ...)` 신설 — `rerank_with_concentration()`과 거의
+     동일한 구조(1차 feature_scores 재사용, `weights_for_feature_scores()`로
+     실제 채점 키만 보고 가중치 재조립, `build_evidence()`/`build_explanations()`로
+     근거 문장 재조립). 입력은 B의 `CoVisitedHint` 스키마가 아니라 순수
+     `(place_id, place_id)` 쌍이다 — D가 B의 스키마를 몰라도 되게 하려고
+     여기서 경계를 그었다(B-01 "판단하지 않는 기억 장치" 경계 원칙을 D→B
+     방향에도 적용).
+  4. 근거 문장 계층(`evidence.py`/`explanation.py`)에도 `co_visited` 축을
+     추가한다 — `_BASE_FEATURE_ORDER`에 추가, `RankedCandidate`/
+     `RecommendationEvidence`에 `co_visited_place_names`(함께 방문된 다른
+     후보 이름, 최대 2개) 필드 추가, `explanation._SENTENCE_BUILDERS`에
+     `_co_visited_sentence()` 등록. **이 등록을 빠뜨리면 co_visited가
+     notable(점수 ≥ 0.7)일 때 `_SENTENCE_BUILDERS[contribution.feature]`가
+     `KeyError`로 응답 자체를 깨뜨린다** — `build_explanations()`가 dict
+     조회에 `.get()` 폴백을 안 쓰기 때문에 구현 중 실제로 확인했다(테스트로도
+     고정, 아래 "검증" 참고).
+  5. A↔D 배선은 `rerank_with_concentration()`과 동일한 3계층(Protocol
+     `RecommendationProvider.rerank_with_co_visited()` — `RealRecommendationProvider`
+     구현 — `agent_runtime._apply_co_visited_rerank()`)으로 넣는다. `hasattr()`
+     가드는 그대로 재사용해, 테스트 더블(`FakeRecommendationProvider`)이 이
+     메서드를 갖추지 않아도 기존 동작이 그대로 유지된다 — `stubs.py`는 의도적으로
+     건드리지 않았다. `_apply_co_visited_rerank()`는 `_apply_concentration_rerank()`
+     바로 뒤에 이어 호출한다 — concentration_intent 게이트가 없다(co-visit은
+     방향 개념이 없는 사실 신호라 쌍이 없으면 0.0이 되어 무해하다). 두 2차
+     Scoring이 같은 응답에 동시에 얹힐 수 있다 — OPTIONAL_FEATURES가 정확히
+     그 경우(taste+concentration+co_visited=3)를 지원하도록 설계돼 있었다.
+     co-visit 쌍 조회는 B가 SCHEDULE에서 쓰는
+     `app.schedule.associations.fetch_co_visited_hints()`를 그대로 재사용한다.
+- 채택하지 않은 것:
+  - **D가 B의 `CoVisitedHint`를 직접 import** — `real_recommendation_provider.py`가
+    B의 `app/schedule/` 스키마를 알아야 하게 된다. A가 힌트를 조회해
+    `(place_id, place_id)` 쌍으로 낮춰서 넘기게 해 D→B 의존을 없앴다.
+  - **concentration_intent와 같은 조건 게이트 추가** — co-visit은 세워야 할
+    "의도"가 없는 사실 신호라 게이트가 필요 없다. 쌍이 없으면 자연히 0.0이라
+    항상 켜둬도 순위가 무의미하게 흔들리지 않는다.
+- 검증: `co_visited_score()` 정규화(최댓값 대비 비율, 쌍 0개는 0.0, 최댓값
+  0도 0.0)를 단위 테스트로 고정(`test_scoring.py`). `weights_for_feature_scores`가
+  taste+concentration+co_visited 3개 동시 활성을 정확히 조립하는지
+  (`test_scoring_weight_composition.py`), `resolve_feature_order`가 co_visited를
+  마지막 순서로 두는지(`test_evidence_feature_order.py`), `_co_visited_sentence()`가
+  이름을 인용하고 이름이 없으면 크래시 대신 폴백 문구를 내는지·임계값 미만/
+  0.0은 문장을 생략하는지(`test_explanation.py`)를 각각 고정. `rerank_with_co_visited()`는
+  거리 우선 1차 순위가 co-visit 쌍으로 실제 뒤집히는지, taste 축을 이월하는지,
+  자기 자신·응답 밖 id 쌍을 방어적으로 걸러내는지, 실측 이동 정보·unverified
+  분리를 이월하는지를 회귀로 고정(`test_recommendation_pipeline.py`).
+  `RealRecommendationProvider.rerank_with_co_visited()`가 1차와 같은
+  `resolve_weather_condition()`/`origin_name`을 재사용하는지도
+  고정(`test_real_recommendation_provider.py`, D-051과 같은 이유).
+  실제 `pytest` 전체 스위트(2,900여 건, langfuse 포함)를 로컬 shim으로 실행해
+  전부 통과 확인 — 실패했던 것은 shim 자체의 결함(StrEnum `__str__`이 값이
+  아니라 `"ClassName.MEMBER"`를 반환해 상태 직렬화 테스트가 깨짐)이었고, shim을
+  고치자 재발했던 135건이 전부 사라졌다. `ruff check`도 통과.
+- 상세: `backend/app/domain/scoring.py`, `backend/app/domain/evidence.py`,
+  `backend/app/domain/explanation.py`, `backend/app/services/recommendation_pipeline.py`,
+  `backend/app/services/runtime/protocols.py`,
+  `backend/app/services/runtime/real_recommendation_provider.py`,
+  `backend/app/services/runtime/agent_runtime.py`,
+  `backend/tests/test_scoring.py`, `backend/tests/test_scoring_weight_composition.py`,
+  `backend/tests/test_evidence_feature_order.py`, `backend/tests/test_explanation.py`,
+  `backend/tests/test_recommendation_pipeline.py`, `backend/tests/test_real_recommendation_provider.py`
 
 ## 변경 이력
 
@@ -3452,3 +3533,4 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-26 | D-089 신설 — "성수동"처럼 지역 검색에 상호명만 잡히는 동 이름은 Geocoding으로 폴백한다. "성수동 카페 추천해줘"가 종로구 랜드마크 되묻기로 빠지던 버그 — 지역 검색이 뭔가(애매한 결과라도)를 돌려주면 그 아래 별칭/Geocoding 폴백 사다리가 아예 실행되지 않던 게 원인. `_lookup_local_search()`에서 역/명소 후보도 정확히 같은 이름의 후보도 없을 때만 `None`을 반환해 execute()의 기존 Geocoding 사다리로 넘긴다. 실제 Naver API 호출로 "성수동" 지역 검색은 카페·식당 상호명뿐임을, Geocoding은 좌표로 정상 해석됨을, 그 좌표가 기존 기본 검색 반경(2.0km) 안에 성수역·주변 카페를 다 포함함을 확인 — 검토했던 "가까운 지하철역 버튼"(역 데이터 없음)과 "구 전체로 넓혀 검색"(실측 결과 불필요)은 기각 |
 | 2026-08-26 | D-090 신설 — 실시간 혼잡도 카드에 단계별 색상·게이지·전망 인사이트 추가. 인구/집중률 예측 막대그래프가 항상 단색이던 것을 레벨별 4단계 팔레트(emerald→amber→orange→red)로 바꾸고, 현재 단계를 보여주는 `CongestionLevelGauge`를 신설. 공용 컴포넌트(`CongestionForecastBars.tsx`)로 분리해 요약 카드뿐 아니라 상세 모달(`RecommendationDetailPreviewModal`)에도 처음으로 노출 — 기존엔 모달에 이 그래프가 아예 없었다. 향후 예측에서 가장 붐비는 시간대를 "N시간 후 가장 붐빌 예정" 한 줄로 요약하는 `_summarize_population_peak()`을 추가해 `population_peak_forecast_summary`로 새로 내려줌 — 관측·예측 시각을 실제 파싱해 시간 차를 구하고(인덱스 가정 안 함), 채팅 말풍선 텍스트는 기존 회귀 테스트 보호를 위해 그대로 둠. 과거 추이·현재 인구 수 실측치는 서울시 API 미제공/참고 이미지 미노출로 이번 스코프에서 제외. (후속) 예측 그래프가 "현재 시각부터만" 보여 기준점이 안 보인다는 지적에, 실제 과거 데이터 폴링 파이프라인 구축(큰 작업)은 보류하고 대신 예측 막대 맨 앞에 점선 구분선·강조 테두리를 준 "현재" 막대를 추가해 시각적 기준점만 뒀다 |
 | 2026-08-26 | D-091 신설 — SCHEDULE에 place_associations "함께 방문된 이력"을 opt-in으로 연결(B 단독 구현). `co_visited_fetcher` 키워드 인자 미지정 시 기존 동작과 바이트 단위로 동일. agent_runtime.py(A) 배선, SchedulePartialFillRequest 연동까지 이어서 완료. RECOMMEND 2차 스코어링 연동은 범위 밖 — 별도 카드(D-092)로 분리 |
+| 2026-08-26 | D-092 신설 — RECOMMEND 2차 스코어링에 place_associations "함께 방문된 이력"을 반영(D-040 `rerank_with_concentration()` 패턴 재사용). `scoring.OPTIONAL_FEATURES`에 `co_visited` 추가(taste+concentration과 동시 활성 시 정확히 설계 최대치 3개를 채움), `rerank_with_co_visited()`/`co_visited_score()`/`_co_visited_sentence()` 신설. 실제 `pytest` 전체 스위트를 로컬 shim으로 실행해 전부 통과 확인(StrEnum shim 보강으로 이전 세션에서 "3.11 전용 문법 때문에 실행 불가"로 남겼던 제약을 해소) |

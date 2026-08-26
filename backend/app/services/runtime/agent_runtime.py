@@ -1050,6 +1050,52 @@ async def _apply_concentration_rerank(
     )
 
 
+async def _apply_co_visited_rerank(
+    agent_conditions: UserConditions,
+    tool_context: RecommendationContext,
+    recommendations: RecommendationResponse,
+    *,
+    recommendation_provider: RecommendationProvider,
+) -> RecommendationResponse:
+    """(D-092) place_associations(B-owned, D-088) 기반 "함께 방문된 이력"으로
+    2차 Scoring(재순위)을 한다. `_apply_concentration_rerank()`와 달리
+    concentration_intent 게이트가 없다 — co-visit은 방향(seek/avoid) 개념이
+    없는 사실 신호라 항상 켜져 있어도 무해하다(쌍이 없으면 co_visited feature
+    점수가 0.0이라 순위에 영향이 없다, scoring.co_visited_score() 참고).
+
+    `_apply_concentration_rerank()` 뒤에 이어 호출한다 — 혼잡도 2차를 이미
+    탄 응답이면 그 결과 위에 co_visited 축만 추가로 얹는다(OPTIONAL_FEATURES가
+    최대 3개까지 동시 활성을 지원하도록 설계돼 있다, scoring.py 참고).
+
+    place_associations 조회는 B가 SCHEDULE에서 쓰는
+    `app.schedule.associations.fetch_co_visited_hints()`를 그대로 재사용한다 —
+    "이번 응답 후보 집합 안에서 서로 함께 방문된 쌍"을 구하는 로직이 SCHEDULE과
+    동일하기 때문이다. 조회 실패는 여기서 삼키고 `recommendations`를 그대로
+    반환한다 — 이 신호가 없어도 기존 추천 흐름은 그대로 동작해야 한다(SCHEDULE
+    통합 때와 같은 opt-in 원칙, planner.py::_with_co_visited_hints 참고).
+    """
+    items = [*recommendations.recommendations, *recommendations.unverified_recommendations]
+    place_ids = [item.place_id for item in items]
+    if len(place_ids) < 2 or not hasattr(recommendation_provider, "rerank_with_co_visited"):
+        return recommendations
+
+    try:
+        hints = await fetch_co_visited_hints(place_ids, settings)
+    except Exception:  # noqa: BLE001
+        logger.warning("co_visited 힌트 조회 실패 — 힌트 없이 계속합니다.", exc_info=True)
+        return recommendations
+    if not hints:
+        return recommendations
+
+    co_visited_pairs = [(hint.from_place_id, hint.to_place_id) for hint in hints]
+    return await recommendation_provider.rerank_with_co_visited(
+        agent_conditions,
+        tool_context,
+        recommendations,
+        co_visited_pairs,
+    )
+
+
 async def _fetch_travel_routes(
     route_tool: TravelRouteToolProvider | None,
     context: RecommendationContext,
@@ -2630,6 +2676,15 @@ async def _score_recommendations(
         enrichment_provider=enrichment_provider,
         final_limit=recommendation_limit,
         execution_collector=tool_executions,
+    )
+
+    # 6-1-1) D-092: place_associations 기반 co-visit 2차 Scoring. concentration과
+    #        달리 조건 게이트가 없다 — _apply_co_visited_rerank() 참고.
+    recommendations = await _apply_co_visited_rerank(
+        agent_conditions,
+        tool_context,
+        recommendations,
+        recommendation_provider=recommendation_provider,
     )
 
     # 6-1) A → B: D의 하드 필터(_is_closed)가 폐점이라 걸러낸 후보 id를 기록한다

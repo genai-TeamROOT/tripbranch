@@ -9,7 +9,7 @@
 - `plan_schedule()`/`plan_partial_schedule()`에 `co_visited_fetcher` opt-in
   키워드 인자 추가 — 기본값 `None`이면 기존 동작과 완전히 동일.
   `agent_runtime.py`가 두 호출부 모두에 `co_visited_fetcher=fetch_co_visited_hints`를
-  넘기도록 배선을 마쳐 실제로 켜져 있다(D-091)
+  넘기도록 배선을 마쳐 실제로 켜져 있다(D-091/D-092)
 - 프롬프트에 `[함께 방문된 이력]` 섹션과 활용 규칙 추가(`schedule.plan`/
   `schedule.plan_context` 1.0.0 → 1.1.0)
 - D/A 스키마·코드 변경 없음 — D의 `RecommendationItem.place_id`만 재사용
@@ -524,11 +524,13 @@ LLM이 제외한 후보 5~7개는 기록되지 않아 이후 일반 RECOMMEND �
   편성 작업 중 발견, 아직 미조치).
 * ~~FE 타임라인 UI 컴포넌트는 별도 이슈로 관리.~~ → SCHEDULE-08에서
   구현 완료(세로 타임라인, 이동 구간 분리). 아래 "해소된 항목" 참고.
-* **(2026-08-26, D-091, 해소됨)** `co_visited_hints`(6.1절) 연동 —
+* **(2026-08-26, D-091/D-092, 해소됨)** `co_visited_hints`(6.1절) 연동 —
   B 쪽 코드(associations.py/schemas.py/planner.py/프롬프트)와 A 쪽 배선
   (`agent_runtime.py`의 `plan_schedule`/`plan_partial_schedule` 호출부에
   `co_visited_fetcher=fetch_co_visited_hints`) 모두 반영 완료. RECOMMEND
-  목록 자체의 2차 스코어링 연동은 범위 밖 — 별도 카드(D-092)로 진행한다.
+  목록 자체의 2차 스코어링에도 같은 신호를 연결했다(D-092,
+  `rerank_with_co_visited()`, D-040 패턴 재사용, `docs/decision-log.md` 참고)
+  — SCHEDULE 설계 문서인 이 문서의 범위 밖이라 상세는 decision-log에만 남긴다.
 
 **해소된 항목(번호 미부여, 08-18)**
 * 뒷 순서 스탑이 estimated_arrival 기준으로 이미 마감했을 수 있는데도

@@ -35,6 +35,7 @@ from app.schemas import (
 from app.services.recommendation_pipeline import (
     merge_prepared_recommendations,
     prepare_recommendation_from_context,
+    rerank_with_co_visited,
     rerank_with_concentration,
     resolve_requested_environment,
     run_recommendation_pipeline_from_context,
@@ -1222,3 +1223,138 @@ async def test_rerank_with_concentration_preserves_travel_origin_toggle() -> Non
     assert result.travel_origin_toggle is not None
     assert result.travel_origin_toggle.alternative_origin == "search_center"
     assert result.travel_origin_toggle.alternative_origin_name == "안국역"
+
+
+# --- rerank_with_co_visited() (D-092, RECOMMEND 2차 Scoring) ----------------
+#
+# place_associations(B-owned, D-088) 기반 "함께 방문된 이력" 쌍으로 재순위하는
+# D의 신규 진입점. rerank_with_concentration()과 같은 검증 축(순서 뒤집힘,
+# 이월 필드, unverified 분리)을 co_visited 버전으로도 고정한다.
+
+
+@pytest.mark.asyncio
+async def test_rerank_with_co_visited_prefers_the_co_visited_pair() -> None:
+    """place-1이 1차 1위(거리)지만 함께 방문된 이력이 없고, place-2/place-3는
+    거리가 밀리지만 서로 함께 방문된 이력이 있다 — 2차에서 순위가 뒤집혀야 한다.
+    """
+    first_pass = RecommendationResponse(
+        recommendations=[
+            _first_pass_item("place-1", distance_km=0.1, distance_score=0.95),
+            _first_pass_item("place-2", distance_km=1.0, distance_score=0.4),
+            _first_pass_item("place-3", distance_km=1.2, distance_score=0.4),
+        ],
+        unverified_recommendations=[],
+        elapsed_ms=0,
+    )
+
+    result = await rerank_with_co_visited(
+        first_pass, [("place-2", "place-3")], None
+    )
+
+    assert [item.place_id for item in result.recommendations] == [
+        "place-2",
+        "place-3",
+        "place-1",
+    ]
+    by_id = {item.place_id: item for item in result.recommendations}
+    assert by_id["place-2"].feature_scores["co_visited"] == 1.0
+    assert by_id["place-3"].feature_scores["co_visited"] == 1.0
+    assert by_id["place-1"].feature_scores["co_visited"] == 0.0
+    assert "경복궁" not in "".join(by_id["place-1"].explanations)  # 이름 오염 없음
+    assert any("장소-place-3" in s for s in by_id["place-2"].explanations)
+    assert any("장소-place-2" in s for s in by_id["place-3"].explanations)
+
+
+@pytest.mark.asyncio
+async def test_rerank_with_co_visited_keeps_taste_from_first_pass() -> None:
+    """concentration과 마찬가지로, 1차에서 켜졌던 taste 축이 co_visited 2차에서도
+    사라지면 안 된다(weights_for_feature_scores()가 실제 채점 키를 본다).
+    """
+    first_pass = RecommendationResponse(
+        recommendations=[
+            _first_pass_item("place-1", distance_km=0.1, distance_score=0.95, taste_score=0.8),
+        ],
+        unverified_recommendations=[],
+        elapsed_ms=0,
+    )
+
+    result = await rerank_with_co_visited(first_pass, [], None)
+
+    item = result.recommendations[0]
+    assert "taste" in item.weights_used
+    assert "co_visited" in item.weights_used
+    assert sum(item.weights_used.values()) == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_rerank_with_co_visited_ignores_self_and_unknown_pairs() -> None:
+    """자기 자신과의 쌍, 이번 응답에 없는 place_id가 섞인 쌍은 무시한다 —
+    호출부(fetch_co_visited_hints)의 dual in.() 필터가 이미 걸러주지만, 이 함수
+    자체도 방어적으로 한 번 더 걸러야 한다(protocols.py 문서 참고).
+    """
+    first_pass = RecommendationResponse(
+        recommendations=[
+            _first_pass_item("place-1", distance_km=0.1, distance_score=0.95),
+        ],
+        unverified_recommendations=[],
+        elapsed_ms=0,
+    )
+
+    result = await rerank_with_co_visited(
+        first_pass, [("place-1", "place-1"), ("place-1", "not-in-response")], None
+    )
+
+    item = result.recommendations[0]
+    assert item.feature_scores["co_visited"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_rerank_with_co_visited_preserves_travel_measurements() -> None:
+    """2차는 RecommendationItem을 새로 만든다 — rerank_with_concentration()과
+    같은 이유로 실측 이동 정보를 명시적으로 이월해야 한다.
+    """
+    first_pass = RecommendationResponse(
+        recommendations=[
+            _first_pass_item(
+                "place-1",
+                distance_km=0.1,
+                distance_score=0.95,
+                travel_distance_m=620,
+                travel_duration_seconds=530,
+                travel_mode=TravelMode.WALKING,
+            )
+        ],
+        unverified_recommendations=[],
+        elapsed_ms=0,
+    )
+
+    result = await rerank_with_co_visited(first_pass, [], None)
+
+    item = result.recommendations[0]
+    assert item.travel_distance_m == 620
+    assert item.travel_duration_seconds == 530
+    assert item.travel_mode is TravelMode.WALKING
+
+
+@pytest.mark.asyncio
+async def test_rerank_with_co_visited_preserves_unverified_split() -> None:
+    """1차의 verified/unverified 분리를 2차도 그대로 지켜야 한다."""
+    first_pass = RecommendationResponse(
+        recommendations=[
+            _first_pass_item("place-1", distance_km=0.1, distance_score=0.95),
+        ],
+        unverified_recommendations=[
+            _first_pass_item("place-2", distance_km=0.2, distance_score=0.9),
+        ],
+        elapsed_ms=0,
+    )
+
+    result = await rerank_with_co_visited(
+        first_pass, [("place-1", "place-2")], None
+    )
+
+    assert [item.place_id for item in result.recommendations] == ["place-1"]
+    assert [item.place_id for item in result.unverified_recommendations] == ["place-2"]
+    # unverified 후보도 co_visited 쌍 계산 대상에는 포함된다(같은 응답 안이므로).
+    assert result.recommendations[0].feature_scores["co_visited"] == 1.0
+    assert result.unverified_recommendations[0].feature_scores["co_visited"] == 1.0

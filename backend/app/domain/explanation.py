@@ -5,7 +5,8 @@
 (distance_km/remaining_minutes/weather_condition/environment_type/
 concentration_level)으로 실제 수치가 들어간 한국어 문장을 조립한다. LLM을
 호출하지 않는 Rule 기반·결정적 구조라 동일 입력에는 항상 동일한 문장이 나온다.
-concentration은 2차 Scoring(D-040, rerank_with_concentration())에서만 등장한다.
+concentration은 2차 Scoring(D-040, rerank_with_concentration())에서만, co_visited는
+2차 Scoring(D-092, rerank_with_co_visited())에서만 등장한다.
 입력: `RecommendationEvidence` (`backend/app/domain/evidence.py`).
 출력: `tuple[str, ...]` (0~3개, Feature 점수가 임계값 이상인 것만 포함).
 호출 시점: 추천 파이프라인이 응답을 조립할 때 Evidence 계산 직후 호출한다.
@@ -202,6 +203,19 @@ def _taste_sentence(evidence: RecommendationEvidence) -> str:
     return f"방문 후기에 이런 얘기가 있어요 — \"{quote}\""
 
 
+# co_visited Feature(D-092, RECOMMEND 2차 Scoring 전용)의 사실 문장.
+# concentration과 달리 방향(seek/avoid) 개념이 없어 4단계 구간 매핑이 필요
+# 없다 — "함께 방문된 이력이 있다/없다"만 있으면 되고, "누구와"가 핵심 정보라
+# 이름을 그대로 인용한다(co_visited_score 수치 자체는 상대 정규화값이라 그대로
+# 말해도 사용자에게 의미가 없다 — taste_score와 같은 이유).
+def _co_visited_sentence(evidence: RecommendationEvidence) -> str:
+    names = evidence.co_visited_place_names
+    if not names:
+        return "다른 추천 장소와 함께 방문객들이 자주 찾는 곳이에요."
+    joined = ", ".join(names[:2])
+    return f"{joined}와(과) 함께 방문객들이 자주 찾는 곳이에요."
+
+
 _SENTENCE_BUILDERS: Mapping[str, Callable[[RecommendationEvidence], str]] = {
     "weather": _weather_sentence,
     "environment": _environment_sentence,
@@ -209,6 +223,7 @@ _SENTENCE_BUILDERS: Mapping[str, Callable[[RecommendationEvidence], str]] = {
     "distance": _distance_sentence,
     "concentration": _concentration_sentence,
     "taste": _taste_sentence,
+    "co_visited": _co_visited_sentence,
 }
 
 

@@ -31,6 +31,7 @@ from app.services.recommendation_pipeline import (
     PreparedRecommendationResult,
     merge_prepared_recommendations,
     prepare_recommendation_from_context,
+    rerank_with_co_visited,
     rerank_with_concentration,
     resolve_origin_name,
     resolve_weather_condition,
@@ -353,6 +354,27 @@ class RealRecommendationProvider:
             weather_reason=weather_reason,
             # 날씨 판정과 같은 이유로 여기서 context에서 다시 뽑는다 — 1차와 2차가
             # 같은 기준점 이름을 써야 근거 문장이 갈리지 않는다.
+            origin_name=resolve_origin_name(context, conditions),
+        )
+
+    async def rerank_with_co_visited(
+        self,
+        conditions: UserConditions,
+        context: RecommendationContext,
+        first_pass: RecommendationResponse,
+        co_visited_pairs: Sequence[tuple[str, str]],
+    ) -> RecommendationResponse:
+        """D-092: RECOMMEND 2차 Scoring에 place_associations 기반 co-visit을
+        반영한다. `rerank_with_concentration()`과 같은 이유로 날씨 판정만 여기서
+        다시 계산하고(1차와 판정이 갈리지 않게), 점수 자체는
+        `recommendation_pipeline.rerank_with_co_visited()`가 새로 얹는다.
+        """
+        weather_condition, weather_reason = resolve_weather_condition(context, conditions)
+        return await rerank_with_co_visited(
+            first_pass,
+            co_visited_pairs,
+            weather_condition,
+            weather_reason=weather_reason,
             origin_name=resolve_origin_name(context, conditions),
         )
 
