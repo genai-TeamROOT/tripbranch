@@ -368,6 +368,29 @@ def observe_generation(
         yield _NOOP if generation is None else _Recorder(generation)
 
 
+def current_trace_id() -> str | None:
+    """지금 열려 있는 trace의 id. 꺼져 있거나 span 밖이면 `None`.
+
+    **원문 통로가 아니다.** 나가는 값은 SDK가 만든 hex 문자열 하나이고 사용자
+    입력에서 유도되지 않는다 — Tool 인자 헬퍼를 두지 않는 이유(모듈 docstring)와
+    충돌하지 않는다. 방향도 반대다: 이건 우리가 밖으로 보내는 값이 아니라
+    Langfuse가 만든 식별자를 **우리 응답으로 되받는** 자리다.
+
+    **session_id로 대신할 수 없어서 필요하다.** 세션은 LLM 단계가 지나간 뒤
+    `apply()`에서 발급돼서 **첫 턴 trace에는 session_id가 안 붙는다**
+    (`runtime/agent_runtime.py::run_agent_flow` docstring). 골드셋 dev 35건 중
+    20건이 1턴짜리라, session_id 역조회로는 그 20건의 trace를 영영 못 찾는다.
+    """
+    client = get_tracer()
+    if client is None:
+        return None
+    try:
+        return client.get_current_trace_id()
+    except Exception:
+        logger.warning("Langfuse trace id 조회 실패(응답 흐름에는 영향 없음)", exc_info=True)
+        return None
+
+
 def record_score(name: str, value: float | bool) -> None:
     """지금 turn의 trace에 수치 하나를 남긴다. 꺼져 있으면 아무 일도 안 한다.
 
@@ -407,6 +430,7 @@ def record_score(name: str, value: float | bool) -> None:
 __all__ = [
     "REDACTED",
     "captures_content",
+    "current_trace_id",
     "is_enabled",
     "get_prompt_client",
     "observe_generation",

@@ -121,10 +121,15 @@ def test_public_surface_has_no_tool_argument_helper() -> None:
 
     사용자 좌표(장소 검색·경로 조회)와 외부 API 자격증명이 그 경로로만 흐른다.
     헬퍼가 없으면 실수로도 못 쓴다. 이 목록을 늘리려면 §6.3을 먼저 읽어야 한다.
+
+    `current_trace_id`는 그 규칙의 예외가 아니라 **방향이 반대**라서 들어와 있다.
+    나머지 헬퍼는 우리 값을 Langfuse로 내보내지만 이건 Langfuse가 만든 식별자를
+    우리 응답으로 되받는다 — 사용자 입력에서 유도되지 않는 hex 문자열 하나다.
     """
     assert set(langfuse_tracing.__all__) == {
         "REDACTED",
         "captures_content",
+        "current_trace_id",
         "get_prompt_client",
         "is_enabled",
         "observe_generation",
@@ -505,3 +510,58 @@ def test_every_langfuse_setting_is_documented_in_env_example() -> None:
     )
 
     assert not undocumented, f".env.example에 없는 설정: {', '.join(undocumented)}"
+
+
+# --- 8. trace id를 응답으로 되받는다 -------------------------------------------
+
+
+class _TraceIdClient:
+    """`get_current_trace_id()`만 흉내 내는 클라이언트."""
+
+    def __init__(self, *, value: str | None = "abc123", fail: bool = False) -> None:
+        self._value = value
+        self._fail = fail
+
+    def get_current_trace_id(self) -> str | None:
+        if self._fail:
+            raise RuntimeError("span 밖")
+        return self._value
+
+
+def test_trace_id_is_none_when_observability_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """꺼져 있으면 클라이언트를 만들지도 않는다 — 다른 헬퍼와 같은 성질."""
+    monkeypatch.setattr(settings, "langfuse_enabled", False)
+
+    assert langfuse_tracing.current_trace_id() is None
+    assert langfuse_tracing._client is None
+
+
+def test_trace_id_comes_back_from_the_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    _enable(monkeypatch)
+    _install(monkeypatch, _TraceIdClient(value="26108fa6566f330f651a8483054f99c4"))
+
+    assert langfuse_tracing.current_trace_id() == "26108fa6566f330f651a8483054f99c4"
+
+
+def test_trace_id_failure_never_reaches_the_caller(monkeypatch: pytest.MonkeyPatch) -> None:
+    """관측 실패가 사용자 응답을 막지 않는다 — 이 스위트가 지키는 성질 2.
+
+    span 밖에서 부르면 SDK가 던질 수 있는데, 그게 턴을 죽이면 안 된다.
+    """
+    _enable(monkeypatch)
+    _install(monkeypatch, _TraceIdClient(fail=True))
+
+    assert langfuse_tracing.current_trace_id() is None
+
+
+def test_trace_id_field_is_not_the_state_trace_id() -> None:
+    """이름을 `trace_id`로 줄이면 B의 `state.trace_id`와 섞인다.
+
+    그쪽은 run 내부 한 단계(`app/state/trace.py`)를 가리키는 다른 식별자다.
+    두 값이 한 응답에 같이 실리므로, 이름이 겹치면 화면에서 구분이 안 된다.
+    """
+    from app.schemas import AgentResponse
+
+    assert "langfuse_trace_id" in AgentResponse.model_fields
+    assert "trace_id" not in AgentResponse.model_fields
+    assert AgentResponse.model_fields["langfuse_trace_id"].default is None

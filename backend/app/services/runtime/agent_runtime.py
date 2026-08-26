@@ -37,6 +37,7 @@ from app.errors import AppError
 from app.geo import haversine_km
 from app.observability.api_usage import create_external_client
 from app.observability.langfuse_tracing import (
+    current_trace_id,
     observe_step,
     record_score,
     trace_attributes,
@@ -1473,6 +1474,11 @@ async def run_agent_flow(
             # 것이 그 모양이다. 예외는 그대로 올린다.
             record_score("turn_success", False)
             raise
+        # **trace id를 응답에 실어 보낸다.** 평가가 골드셋 케이스와 trace를 잇는
+        # 통로다. 위 docstring대로 첫 턴에는 session_id가 안 붙어서, session_id
+        # 역조회로는 1턴짜리 케이스(dev 35건 중 20건)의 trace를 못 찾는다.
+        # 요약(아래 try)과 분리해 둔다 — 요약이 실패해도 연결은 살아야 한다.
+        response.langfuse_trace_id = current_trace_id()
         try:
             summary = summarize_turn(response)
             turn.record(

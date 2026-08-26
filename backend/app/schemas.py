@@ -1047,3 +1047,10 @@ class AgentResponse(BaseModel):
     # 한 요청 안에서 C가 여러 번 호출될 수 있으므로, 감사 패널은 이 목록을 우선 사용한다.
     # tool_execution은 이전 개발자 클라이언트 호환을 위해 첫/주요 호출을 계속 제공한다.
     tool_executions: list[ToolExecutionDebug] = Field(default_factory=list)
+    # 이 턴을 기록한 Langfuse trace의 id. 관측이 꺼져 있으면 None이다(기본값).
+    # **`state.trace_id`와 다른 값이다** — 그쪽은 run 내부 한 단계를 가리키는 B의
+    # 식별자이고, 이건 턴 하나에 대응하는 관측 trace다. 그래서 이름을 `trace_id`로
+    # 줄이지 않는다.
+    # 평가 스크립트가 골드셋 케이스와 trace를 잇는 유일한 통로다. session_id로
+    # 대신할 수 없다 — 세션은 LLM 단계 뒤에 발급돼서 첫 턴 trace에는 안 붙는다.
+    langfuse_trace_id: str | None = None
