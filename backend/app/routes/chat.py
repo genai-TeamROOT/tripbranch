@@ -29,6 +29,7 @@ from app.agent_context.info_schemas import InfoContextRequest
 from app.auth.dependency import OptionalPrincipal
 from app.errors import AppError
 from app.observability.api_usage import create_external_client
+from app.providers.factory import get_google_translate_provider
 from app.schemas import (
     AgentRequest,
     AgentResponse,
@@ -37,15 +38,41 @@ from app.schemas import (
 )
 from app.services.runtime.agent_runtime import run_agent
 from app.services.runtime.info_response_transform import to_info_place_card
+from app.services.runtime.localization import (
+    localize_request_for_runtime,
+    localize_response_for_user,
+)
 from app.state.session import new_trace_id
 
 router = APIRouter(tags=["chat"])
 logger = logging.getLogger(__name__)
 
 
+async def _request_for_runtime(request: AgentRequest) -> AgentRequest:
+    """영어 입력만 한국어 Agent Runtime 사본으로 변환한다."""
+
+    if request.language != "en":
+        return request
+    async with create_external_client() as client:
+        return await localize_request_for_runtime(request, get_google_translate_provider(client))
+
+
+async def _response_for_user(response: AgentResponse, *, language: str) -> AgentResponse:
+    """영어 화면에 보이는 답변·카드 문장을 번역한다."""
+
+    if language != "en":
+        return response
+    async with create_external_client() as client:
+        return await localize_response_for_user(
+            response, language=language, translator=get_google_translate_provider(client)
+        )
+
+
 @router.post("/chat", response_model=AgentResponse)
 async def chat(request: AgentRequest, principal: OptionalPrincipal) -> AgentResponse:
-    return await run_agent(request, principal=principal)
+    runtime_request = await _request_for_runtime(request)
+    response = await run_agent(runtime_request, principal=principal)
+    return await _response_for_user(response, language=request.language)
 
 
 @router.post("/chat/place-details", response_model=RecommendationPlaceDetailResponse)
@@ -116,8 +143,14 @@ async def chat_stream(
     async def event_stream() -> AsyncIterator[ServerSentEvent]:
         queue: asyncio.Queue[tuple[str, dict[str, object]]] = asyncio.Queue()
         started_at = time.monotonic()
+        task: asyncio.Task[AgentResponse] | None = None
 
         async def emit(event: str, payload: dict[str, object]) -> None:
+            # 영어 응답은 마지막에 문장 묶음을 한 번에 번역한다. Runtime의 한국어
+            # message_delta/result를 먼저 내보내면 화면에 한국어가 잠깐 보이고 카드도
+            # 번역 전 상태로 고정되므로, 진행 단계만 유지하고 이 세 이벤트는 숨긴다.
+            if request.language == "en" and event in {"message_start", "message_delta", "result"}:
+                return
             await queue.put(
                 (
                     event,
@@ -128,15 +161,16 @@ async def chat_stream(
                 )
             )
 
-        task = asyncio.create_task(
-            run_agent(
-                request,
-                principal=principal,
-                stream_event_sink=emit,
-                stream_recommendation_summary=True,
-            )
-        )
         try:
+            runtime_request = await _request_for_runtime(request)
+            task = asyncio.create_task(
+                run_agent(
+                    runtime_request,
+                    principal=principal,
+                    stream_event_sink=emit,
+                    stream_recommendation_summary=True,
+                )
+            )
             while not task.done() or not queue.empty():
                 if await http_request.is_disconnected():
                     task.cancel()
@@ -149,6 +183,7 @@ async def chat_stream(
 
             try:
                 response = await task
+                response = await _response_for_user(response, language=request.language)
             except AppError as exc:
                 yield ServerSentEvent(
                     event="error",
@@ -195,7 +230,7 @@ async def chat_stream(
                 ),
             )
         finally:
-            if not task.done():
+            if task is not None and not task.done():
                 task.cancel()
                 try:
                     await task

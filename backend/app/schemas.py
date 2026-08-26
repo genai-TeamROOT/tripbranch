@@ -719,6 +719,10 @@ class AgentRequest(BaseModel):
     Runtime이 B의 SessionContextResponse에서 직접 계산한다."""
 
     user_input: str = Field(..., min_length=1)
+    # 화면 표시는 영어여도 Runtime·B의 누적 조건 계약은 한국어로 유지한다. 라우터가
+    # language="en" 요청만 Cloud Translation으로 한국어화한 사본을 Runtime에 넘긴다.
+    # 매 턴 함께 보내므로 B 세션 스키마를 넓히지 않고도 언어를 바꿀 수 있다.
+    language: Literal["ko", "en"] = "ko"
     session_id: str | None = None
     device_location: str | None = None  # "위도,경도" 문자열, api_context.gps_location과 동일 포맷
     # 직전 INFO 카드의 장소명. 현재 화면이 "여기/이곳"을 보낼 때에만 A가 INFO

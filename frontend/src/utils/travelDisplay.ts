@@ -1,4 +1,4 @@
-import type { RecommendationItem, TravelMode } from "../types";
+import type { Language, RecommendationItem, TravelMode } from "../types";
 
 /**
  * 추천 카드의 "이동" 행 표기. 서버 실측값만 쓰고, 프론트에서 시간을 만들지 않는다.
@@ -15,23 +15,30 @@ const MODE_LABEL: Record<TravelMode, string> = {
   driving: "자동차 이동",
 };
 
+const MODE_LABEL_EN: Record<TravelMode, string> = {
+  walking: "Walking",
+  transit: "Public transit",
+  driving: "Driving",
+};
+
 /** 실측이 없을 때 쓰는 행 제목. 값이 직선거리라는 것을 제목에서 밝힌다. */
 const STRAIGHT_LINE_LABEL = "직선거리";
 
-export function travelLabel(item: RecommendationItem): string {
+export function travelLabel(item: RecommendationItem, language: Language = "ko"): string {
   const measured = measuredMinutes(item);
   if (measured === null || !item.travel_mode) {
-    return STRAIGHT_LINE_LABEL;
+    return language === "en" ? "Straight-line distance" : STRAIGHT_LINE_LABEL;
   }
-  return MODE_LABEL[item.travel_mode] ?? STRAIGHT_LINE_LABEL;
+  const labels = language === "en" ? MODE_LABEL_EN : MODE_LABEL;
+  return labels[item.travel_mode] ?? (language === "en" ? "Straight-line distance" : STRAIGHT_LINE_LABEL);
 }
 
-export function travelValue(item: RecommendationItem): string {
+export function travelValue(item: RecommendationItem, language: Language = "ko"): string {
   const measured = measuredMinutes(item);
   if (measured === null) {
-    return formatDistance(item.distance_km);
+    return formatDistance(item.distance_km, language);
   }
-  return `약 ${formatMinutes(measured)}`;
+  return language === "en" ? `About ${formatMinutes(measured, language)}` : `약 ${formatMinutes(measured, language)}`;
 }
 
 function measuredMinutes(item: RecommendationItem): number | null {
@@ -42,9 +49,14 @@ function measuredMinutes(item: RecommendationItem): number | null {
   return Math.max(1, Math.round(seconds / 60));
 }
 
-function formatMinutes(minutes: number): string {
+function formatMinutes(minutes: number, language: Language): string {
   const hours = Math.floor(minutes / 60);
   const remainder = minutes % 60;
+  if (language === "en") {
+    if (hours > 0 && remainder > 0) return `${hours} hr ${remainder} min`;
+    if (hours > 0) return `${hours} hr`;
+    return `${minutes} min`;
+  }
   if (hours > 0 && remainder > 0) {
     return `${hours}시간 ${remainder}분`;
   }
@@ -54,10 +66,11 @@ function formatMinutes(minutes: number): string {
   return `${minutes}분`;
 }
 
-function formatDistance(distanceKm: number): string {
+function formatDistance(distanceKm: number, language: Language): string {
   if (distanceKm < 1) {
-    return `약 ${Math.round(distanceKm * 1000)}m`;
+    return language === "en" ? `About ${Math.round(distanceKm * 1000)}m` : `약 ${Math.round(distanceKm * 1000)}m`;
   }
   const rounded = Math.round(distanceKm * 10) / 10;
-  return `약 ${Number.isInteger(rounded) ? rounded : rounded.toFixed(1)}km`;
+  const value = `${Number.isInteger(rounded) ? rounded : rounded.toFixed(1)}km`;
+  return language === "en" ? `About ${value}` : `약 ${value}`;
 }

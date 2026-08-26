@@ -23,6 +23,7 @@ from app.providers.festival import FakeFestivalProvider, RealFestivalProvider
 from app.providers.gemini import RealGeminiProvider
 from app.providers.gemini_audio import GeminiAudioTranscriber
 from app.providers.geocoding import FakeGeocodingProvider, RealGeocodingProvider
+from app.providers.google_translate import GoogleTranslateProvider
 from app.providers.holiday import FakeHolidayProvider, RealHolidayProvider
 from app.providers.hybrid_place_details import HybridPlaceDetailsProvider
 from app.providers.kakao_transit_route import (
@@ -91,6 +92,16 @@ def get_llm_provider() -> LLMProvider:
         # Supabase까지 같은 값을 물려받는 문제가 있어 분리했다(2026-08-11).
         timeout_seconds=settings.resolved_llm_timeout_seconds,
         max_retries=settings.external_api_retry_count,
+    )
+
+
+def get_google_translate_provider(client: httpx.AsyncClient) -> GoogleTranslateProvider:
+    """영어 UI 요청에서만 만드는 Cloud Translation Basic(v2) provider."""
+
+    return GoogleTranslateProvider(
+        api_key=_require_key(settings.google_translate_api_key, "GOOGLE_TRANSLATE_API_KEY"),
+        client=client,
+        timeout_seconds=settings.external_api_timeout_seconds,
     )
 
 
@@ -530,7 +541,6 @@ def validate_provider_config(target: Settings | None = None) -> None:
                 "STATE_STORE_BACKEND=supabase에 필요한 환경변수가 비어 있습니다: "
                 + ", ".join(missing_state_store)
             )
-
 
 
 def get_place_evidence_provider(

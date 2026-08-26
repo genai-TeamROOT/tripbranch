@@ -172,6 +172,39 @@ it("travelOriginToggle이 있으면 대상 이름을 딴 전환 버튼을 렌더
   expect(onToggleTravelOrigin).toHaveBeenCalledWith(toggle());
 });
 
+it("영어 화면에서는 추천 카드의 고정 문구와 전환 버튼을 영어로 표시한다", () => {
+  render(
+    <RecommendationResultMessage
+      recommendations={[
+        item({
+          remaining_minutes: 120,
+          recommendation_reason: "날씨·운영시간·거리 조건을 종합한 1순위 추천이에요.",
+        }),
+      ]}
+      unverifiedRecommendations={[]}
+      travelOriginToggle={toggle({ alternative_origin_name: "Myeongdong" })}
+      elapsedMs={0}
+      serverElapsedMs={0}
+      isLoading={false}
+      onRequestMore={() => {}}
+      onRelaxRadius={() => {}}
+      onToggleTravelOrigin={() => {}}
+      language="en"
+    />,
+    { wrapper: TripProvider },
+  );
+
+  expect(screen.getByText("Here are some places that match your preferences.")).toBeInTheDocument();
+  expect(screen.getByText("Recommended places")).toBeInTheDocument();
+  expect(
+    screen.getByText("Recommended #1 based on weather, opening hours, and distance."),
+  ).toBeInTheDocument();
+  expect(screen.getByText("Opening hours")).toBeInTheDocument();
+  expect(screen.getByText("View place details →")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Show more places" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "View results based on Myeongdong" })).toBeInTheDocument();
+});
+
 it("결과가 0건이어도 travelOriginToggle이 있으면 반경 확대 버튼과 함께 전환 버튼을 보여준다", () => {
   render(
     <RecommendationResultMessage

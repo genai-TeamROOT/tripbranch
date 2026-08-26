@@ -19,6 +19,7 @@ import { ChatComposer } from "../components/chat/ChatComposer";
 import { ChatMessageList } from "../components/chat/ChatMessageList";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { AuthStatusBadge } from "../auth/AuthStatusBadge";
+import { LanguageSelector } from "../components/LanguageSelector";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import type { TravelOrigin } from "../types";
 import { buildAgentStageTimings } from "../utils/agentTiming";
@@ -30,18 +31,38 @@ import {
   LOCATION_RECONFIRM_AFTER_MS,
 } from "../utils/locationRefresh";
 
-const REQUEST_MORE_PROMPT = "다른 곳 보여줘";
-/*
- * Agent가 되묻기 맥락을 다음 턴에 넘기지 않아, "경복궁"처럼 짧은 답변은 INFO로
- * 분류돼 추천이 나오지 않는다. 발화를 대신 만들어 보내지 않고 예시만 안내한다.
- */
-const CLARIFICATION_PLACEHOLDER = "예: 경복궁 근처에서 찾아줘";
-const RELAX_RADIUS_PROMPT = "검색 범위를 넓혀서 다시 추천해줘";
 /*
  * 로컬 테스트용 슬래시 명령. Agent에 보내지 않고 GET /api/state/{session_id}로
  * 현재 누적 조건을 조회해 화면에만 표시한다. 커밋하지 않는 확인용 경로다.
  */
 const STATUS_COMMAND = "/status";
+
+const CHAT_TEXT = {
+  ko: {
+    subtitle: "대화형 대체 장소 추천",
+    developer: "개발자용 보기",
+    restart: "처음부터",
+    requestError: "추천을 불러오지 못했어요. 다시 시도해주세요.",
+    composer: "추가 조건을 입력해 주세요",
+    clarificationComposer: "예: 경복궁 근처에서 찾아줘",
+    requestMore: "다른 곳 보여줘",
+    relaxRadius: "검색 범위를 넓혀서 다시 추천해줘",
+    basedOn: (name: string) => `${name} 기준으로 다시 보기`,
+    currentLocation: "현재 위치 기준으로 다시 보기",
+  },
+  en: {
+    subtitle: "Conversational Seoul travel recommendations",
+    developer: "Developer view",
+    restart: "Start over",
+    requestError: "We couldn’t load recommendations. Please try again.",
+    composer: "Add another condition or ask a follow-up",
+    clarificationComposer: "For example: Find somewhere near Gyeongbokgung",
+    requestMore: "Show more places",
+    relaxRadius: "Search in a wider area",
+    basedOn: (name: string) => `View results based on ${name}`,
+    currentLocation: "View results based on my current location",
+  },
+} as const;
 interface PendingLocationRefresh {
   text: string;
   clarificationChoice?: string;
@@ -52,6 +73,7 @@ export function ChatPage() {
   const state = useTripState();
   const dispatch = useTripDispatch();
   const navigate = useNavigate();
+  const text = CHAT_TEXT[state.language];
 
   const isLoading = state.phase === "interpreting" || state.phase === "recommending";
   const hasConversation = state.messages.length > 0;
@@ -117,6 +139,7 @@ export function ChatPage() {
         await streamChat(
           {
             user_input: text,
+            language: state.language,
             session_id: state.session_id,
             device_location: deviceLocation,
             conversation_place_name: conversationPlaceName,
@@ -203,11 +226,11 @@ export function ChatPage() {
           payload:
             error instanceof ApiError
               ? error.message
-              : "추천을 불러오지 못했어요. 다시 시도해주세요.",
+            : CHAT_TEXT[state.language].requestError,
         });
       }
     },
-    [dispatch, state.device_location, state.messages, state.session_id],
+    [dispatch, state.device_location, state.language, state.messages, state.session_id],
   );
 
   const locationAgeMinutes = getLocationAgeMinutes(state.device_location_captured_at);
@@ -288,16 +311,20 @@ export function ChatPage() {
       <header className="flex items-center justify-between gap-3 border-b border-gray-200 pb-4 dark:border-gray-800">
         <div>
           <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">TripBranch</h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400">대화형 대체 장소 추천</p>
+          <p className="text-sm text-gray-500 dark:text-gray-400">{text.subtitle}</p>
         </div>
         <div className="flex items-center gap-2">
+          <LanguageSelector
+            language={state.language}
+            onChange={(language) => dispatch({ type: "SET_LANGUAGE", payload: language })}
+          />
           <AuthStatusBadge />
           <button
             type="button"
             onClick={() => navigate("/dev-chat")}
             className="rounded-md border border-gray-300 px-3 py-1.5 text-sm dark:border-gray-700"
           >
-            개발자용 보기
+            {text.developer}
           </button>
           <button
             type="button"
@@ -307,7 +334,7 @@ export function ChatPage() {
             }}
             className="rounded-md border border-gray-300 px-3 py-1.5 text-sm dark:border-gray-700"
           >
-            처음부터
+            {text.restart}
           </button>
         </div>
       </header>
@@ -327,14 +354,13 @@ export function ChatPage() {
         isLoading={isLoading}
         hasDeviceLocation={Boolean(state.device_location)}
         deviceLocation={state.device_location}
-        onRequestMore={() => void requestSend(REQUEST_MORE_PROMPT)}
-        onRelaxRadius={() => void requestSend(RELAX_RADIUS_PROMPT)}
+        onRequestMore={() => void requestSend(text.requestMore)}
+        onRelaxRadius={() => void requestSend(text.relaxRadius)}
         onSelectClarificationOption={(optionId, label) => void requestSend(label, optionId)}
         onToggleTravelOrigin={(toggle) => {
-          const label =
-            toggle.alternative_origin === "search_center"
-              ? `${toggle.alternative_origin_name} 기준으로 다시 보기`
-              : "현재 위치 기준으로 다시 보기";
+          const label = toggle.alternative_origin === "search_center"
+            ? text.basedOn(toggle.alternative_origin_name)
+            : text.currentLocation;
           void requestSend(label, undefined, toggle.alternative_origin);
         }}
         locationRefresh={
@@ -347,12 +373,14 @@ export function ChatPage() {
             : null
         }
         progress={state.agentProgress}
+        language={state.language}
       />
 
       <ChatComposer
         disabled={isLoading}
         onSubmit={handleFollowUp}
-        placeholder={state.awaiting_clarification ? CLARIFICATION_PLACEHOLDER : undefined}
+        placeholder={state.awaiting_clarification ? text.clarificationComposer : text.composer}
+        language={state.language}
       />
     </main>
   );

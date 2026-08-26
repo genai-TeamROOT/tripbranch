@@ -13,19 +13,43 @@ import { streamChat, toDisplayConditions } from "../api/trip";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { VoiceInputButton } from "../components/chat/VoiceInputButton";
 import { AuthStatusBadge } from "../auth/AuthStatusBadge";
-import { useTripDispatch } from "../state/TripContext";
+import { LanguageSelector } from "../components/LanguageSelector";
+import { useTripDispatch, useTripState } from "../state/TripContext";
 import { buildAgentStageTimings } from "../utils/agentTiming";
 import { getBrowserDeviceLocation } from "../utils/geolocation";
 
-const QUICK_PROMPTS = [
-  "비를 피할 실내 장소가 필요해",
-  "남은 시간이 1시간 정도야",
-  "근처 카페나 박물관을 찾고 싶어",
-];
+const HOME_TEXT = {
+  ko: {
+    subtitle: "지금 상황을 말해주면 바로 대체 장소를 찾아볼게요.",
+    locationNotice: "추천 시작 시 브라우저가 위치 권한을 요청합니다. 허용한 위치는 현재 채팅 세션의 장소 탐색 기준으로 사용됩니다.",
+    prompts: ["비를 피할 실내 장소가 필요해", "남은 시간이 1시간 정도야", "근처 카페나 박물관을 찾고 싶어"],
+    placeholder: "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+    voiceHelp: "마이크를 누르고 말하면, 말이 끝난 뒤 자동으로 전송합니다.",
+    locating: "현재 위치 확인 중...",
+    start: "추천 시작하기",
+    developer: "개발자용으로 시작",
+    locationError: "위치를 가져오지 못했어요.",
+    requestError: "입력을 처리하지 못했어요. 다시 시도해주세요.",
+  },
+  en: {
+    subtitle: "Tell us what you need, and we’ll find a place to visit in Seoul.",
+    locationNotice: "Your browser will ask for location permission before starting. We use it as the search point for this chat session.",
+    prompts: ["I need an indoor place to avoid the rain", "I have about one hour left", "Find a café or museum nearby"],
+    placeholder: "For example: Find a museum or café near Gyeongbokgung where I can avoid the rain",
+    voiceHelp: "Tap the microphone and we’ll send your speech after you finish speaking.",
+    locating: "Getting your location...",
+    start: "Start recommendations",
+    developer: "Start in developer view",
+    locationError: "We couldn’t get your location.",
+    requestError: "We couldn’t process your request. Please try again.",
+  },
+} as const;
 
 export function HomePage() {
   const dispatch = useTripDispatch();
+  const state = useTripState();
   const navigate = useNavigate();
+  const text = HOME_TEXT[state.language];
 
   const [userInput, setUserInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -43,7 +67,7 @@ export function HomePage() {
       // 사용자 동작 직후 호출해야 브라우저가 위치 권한 팝업을 정상적으로 표시한다.
       deviceLocation = await getBrowserDeviceLocation();
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "위치를 가져오지 못했어요.");
+      setErrorMessage(error instanceof Error ? error.message : text.locationError);
       setIsLoading(false);
       return;
     }
@@ -71,6 +95,7 @@ export function HomePage() {
       await streamChat(
         {
           user_input: trimmed,
+          language: state.language,
           session_id: null,
           device_location: deviceLocation,
         },
@@ -153,7 +178,7 @@ export function HomePage() {
         payload:
           error instanceof ApiError
             ? error.message
-            : "입력을 처리하지 못했어요. 다시 시도해주세요.",
+            : text.requestError,
       });
     }
   }
@@ -168,20 +193,25 @@ export function HomePage() {
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between gap-2">
           <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">TripBranch</h1>
-          <AuthStatusBadge />
+          <div className="flex items-center gap-2">
+            <LanguageSelector
+              language={state.language}
+              onChange={(language) => dispatch({ type: "SET_LANGUAGE", payload: language })}
+            />
+            <AuthStatusBadge />
+          </div>
         </div>
         <p className="text-sm text-gray-600 dark:text-gray-400">
-          지금 상황을 말해주면 바로 대체 장소를 찾아볼게요.
+          {text.subtitle}
         </p>
       </div>
 
       <section className="rounded-md border border-gray-200 p-3 text-sm text-gray-700 dark:border-gray-700 dark:text-gray-300">
-        추천 시작 시 브라우저가 위치 권한을 요청합니다. 허용한 위치는 현재 채팅 세션의
-        장소 탐색 기준으로 사용됩니다.
+        {text.locationNotice}
       </section>
 
       <div className="flex flex-wrap gap-2">
-        {QUICK_PROMPTS.map((prompt) => (
+        {text.prompts.map((prompt) => (
           <button
             key={prompt}
             type="button"
@@ -199,7 +229,7 @@ export function HomePage() {
           value={userInput}
           onChange={(event) => setUserInput(event.target.value)}
           rows={5}
-          placeholder="예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어"
+          placeholder={text.placeholder}
           className="w-full resize-none rounded-md border border-gray-300 p-3 text-sm focus:border-gray-500 focus:outline-none dark:border-gray-700 dark:bg-gray-900"
         />
 
@@ -216,7 +246,7 @@ export function HomePage() {
             onError={setErrorMessage}
           />
           <p className="text-xs text-gray-500 dark:text-gray-400">
-            마이크를 누르고 말하면, 말이 끝난 뒤 자동으로 전송합니다.
+            {text.voiceHelp}
           </p>
         </div>
 
@@ -227,7 +257,7 @@ export function HomePage() {
           disabled={isLoading || !userInput.trim()}
           className="rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-gray-100 dark:text-gray-900"
         >
-          {isLoading ? "현재 위치 확인 중..." : "추천 시작하기"}
+          {isLoading ? text.locating : text.start}
         </button>
         <button
           type="button"
@@ -235,7 +265,7 @@ export function HomePage() {
           onClick={() => void startChat(userInput, "/dev-chat")}
           className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-800 disabled:opacity-50 dark:border-gray-700 dark:text-gray-100"
         >
-          개발자용으로 시작
+          {text.developer}
         </button>
       </form>
 

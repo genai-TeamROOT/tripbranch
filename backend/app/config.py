@@ -153,6 +153,9 @@ class Settings(BaseSettings):
     llm_api_key: str = Field(default="", repr=False, exclude=True)
     weather_api_key: str = Field(default="", repr=False, exclude=True)
     tour_api_service_key: str = Field(default="", repr=False, exclude=True)
+    # Cloud Translation Basic(v2) 호출 전용 키. Gemini/Maps 키와 역할·API 제한을
+    # 분리한다. 영어 UI를 쓰지 않는 한국어 요청에는 읽거나 요구하지 않는다.
+    google_translate_api_key: str = Field(default="", repr=False, exclude=True)
     seoul_open_data_api_key: str = Field(default="", repr=False, exclude=True)
     naver_map_client_id: str = Field(default="", repr=False, exclude=True)
     naver_map_client_secret: str = Field(default="", repr=False, exclude=True)
