@@ -333,6 +333,7 @@ class QuestionType(StrEnum):
     REALTIME_SUBWAY = "realtime_subway"
     REALTIME_BUS = "realtime_bus"
     REALTIME_EVENT = "realtime_event"
+    REALTIME_TRAFFIC = "realtime_traffic"
 
 
 class PlaceContext(StrEnum):

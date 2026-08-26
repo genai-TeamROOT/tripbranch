@@ -6,6 +6,7 @@ import {
   CongestionLevelGauge,
   ConcentrationForecastBars,
   PopulationForecastBars,
+  RoadTrafficStatusSection,
 } from "./CongestionForecastBars";
 
 const baseCard: InfoPlaceCardData = {
@@ -143,5 +144,62 @@ describe("ConcentrationForecastBars", () => {
     const bars = container.querySelectorAll('[aria-label="관광지 혼잡도 7일 예측"] > div > div > div');
     expect(bars[0]).toHaveClass("bg-emerald-500");
     expect(bars[1]).toHaveClass("bg-red-500");
+  });
+});
+
+describe("CongestionLevelGauge와 levels prop", () => {
+  it("3단계(도로소통) 배열을 넘기면 그 순서로 게이지를 그린다", () => {
+    render(
+      <CongestionLevelGauge
+        level="정체"
+        levels={[
+          { label: "원활", color: "bg-emerald-500" },
+          { label: "서행", color: "bg-amber-400" },
+          { label: "정체", color: "bg-red-500" },
+        ]}
+        ariaLabelPrefix="현재 도로소통 단계"
+      />,
+    );
+
+    expect(screen.getByLabelText("현재 도로소통 단계 정체")).toBeInTheDocument();
+    expect(screen.getByText("정체")).toHaveClass("font-semibold");
+    // 인구 혼잡도 라벨("여유" 등)이 섞여 나오면 안 된다.
+    expect(screen.queryByText("여유")).not.toBeInTheDocument();
+  });
+});
+
+describe("RoadTrafficStatusSection", () => {
+  const trafficCard: InfoPlaceCardData = {
+    ...baseCard,
+    question_type: "realtime_traffic",
+    answer_fields: {
+      "도로소통 단계": "원활",
+      "평균 주행속도": "32km/h",
+      "안내": "해당 장소로 이동·진입하는 도로가 크게 막히지 않아요.",
+    },
+  };
+
+  it("단계 게이지·평균속도·안내문구를 보여준다", () => {
+    render(<RoadTrafficStatusSection card={trafficCard} />);
+
+    expect(screen.getByLabelText("현재 도로소통 단계 원활")).toBeInTheDocument();
+    expect(screen.getByText("평균 32km/h")).toBeInTheDocument();
+    expect(
+      screen.getByText("해당 장소로 이동·진입하는 도로가 크게 막히지 않아요."),
+    ).toBeInTheDocument();
+  });
+
+  it("question_type이 realtime_traffic이 아니면 렌더링하지 않는다", () => {
+    const { container } = render(
+      <RoadTrafficStatusSection card={{ ...trafficCard, question_type: "concentration" }} />,
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("단계 값이 없으면 렌더링하지 않는다", () => {
+    const { container } = render(
+      <RoadTrafficStatusSection card={{ ...trafficCard, answer_fields: {} }} />,
+    );
+    expect(container).toBeEmptyDOMElement();
   });
 });

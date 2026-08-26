@@ -32,6 +32,7 @@ from app.services.runtime.info_context_schemas import (
     EventItem,
     InfoContextResponse,
     PlaceInfoResult,
+    RealtimeCityInfoResult,
     RealtimeCommercialInfoResult,
     RealtimePopulationInfoResult,
 )
@@ -41,6 +42,7 @@ from app.services.runtime.response_composer import (
     compose_event_info_message,
     compose_info_concentration_message,
     compose_place_info_message,
+    compose_realtime_city_info_message,
     compose_realtime_commercial_message,
     compose_realtime_population_message,
     compose_recommendation_message,
@@ -1131,6 +1133,61 @@ class TestComposeRealtimeCommercialMessage:
         )
 
         assert "개별 매장 혼잡도" in message
+
+
+class TestComposeRealtimeCityInfoMessage:
+    def _traffic_response(
+        self, *, fields: dict[str, str] | None = None, status: str = "success"
+    ) -> InfoContextResponse:
+        return InfoContextResponse(
+            request_id="traffic",
+            status=status,  # type: ignore[arg-type]
+            result=RealtimeCityInfoResult(
+                status=status,  # type: ignore[arg-type]
+                question_type="realtime_traffic",
+                requested_place_name="이촌한강공원",
+                resolved_place_name="이촌한강공원",
+                fields=fields
+                if fields is not None
+                else {"도로소통 단계": "원활", "평균 주행속도": "32km/h"},
+            ),
+        )
+
+    def test_traffic_message_embeds_level_and_speed_directly(self) -> None:
+        message = compose_realtime_city_info_message(self._traffic_response())
+
+        assert message == "이촌한강공원 주변 도로는 지금 원활 수준이에요. 평균 주행속도 32km/h예요."
+
+    def test_traffic_message_omits_speed_sentence_when_missing(self) -> None:
+        message = compose_realtime_city_info_message(
+            self._traffic_response(fields={"도로소통 단계": "정체"})
+        )
+
+        assert message == "이촌한강공원 주변 도로는 지금 정체 수준이에요."
+
+    def test_traffic_message_reports_no_data(self) -> None:
+        message = compose_realtime_city_info_message(
+            self._traffic_response(fields={}, status="no_data")
+        )
+
+        assert "현재 확인할 수 없어요" in message
+
+    def test_parking_message_stays_generic_card_pointer(self) -> None:
+        response = InfoContextResponse(
+            request_id="parking",
+            status="success",
+            result=RealtimeCityInfoResult(
+                status="success",
+                question_type="realtime_parking",
+                requested_place_name="경복궁",
+                resolved_place_name="경복궁",
+                fields={"[공영] 테스트 주차장": "총 50면 · 현재 20대 주차 · 유료"},
+            ),
+        )
+
+        message = compose_realtime_city_info_message(response)
+
+        assert "실시간 주차장 정보를 찾았어요" in message
 
 
 class TestComposeEventInfoMessage:
