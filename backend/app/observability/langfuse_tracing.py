@@ -330,6 +330,7 @@ def observe_generation(
     model: str | None = None,
     version: str | None = None,
     input: Any = None,
+    prompt: Any = None,
 ) -> Iterator[_Recorder | _NoopRecorder]:
     """LLM 호출 하나를 generation으로 남긴다.
 
@@ -342,6 +343,11 @@ def observe_generation(
     `version`은 **mask를 타지 않는다.** 프롬프트 버전이 여기 들어가는 이유가 그것이다 —
     원문 수집을 꺼도 "어느 버전이 이 지연·토큰을 냈나"는 남아야 배포 환경에서도
     버전 비교가 된다(모듈 docstring).
+
+    `prompt`는 Langfuse 프롬프트 객체다(`langfuse_prompts.prompt_object()`). 넘기면
+    서버가 이 호출을 그 프롬프트 버전에 묶어 **버전별 지연·비용·Score를 자동 집계**한다.
+    `version` 문자열로는 안 되는 것이고, 그래서 둘 다 싣는다 — 문자열은 프롬프트 관리가
+    꺼져 있어도 남고, 링크는 켰을 때 집계를 만든다.
     """
     client = get_tracer()
     if client is None:
@@ -350,7 +356,12 @@ def observe_generation(
 
     def factory() -> Any:
         return client.start_as_current_observation(
-            as_type="generation", name=name, model=model, version=version, input=input
+            as_type="generation",
+            name=name,
+            model=model,
+            version=version,
+            input=input,
+            prompt=prompt,
         )
 
     with _guard(factory) as generation:

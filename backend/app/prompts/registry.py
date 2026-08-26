@@ -67,6 +67,31 @@ OPERATION_SLOTS: dict[str, str] = {
     "generate_schedule_fill": "schedule.fill",
 }
 
+# 슬롯 하나가 조립을 시작하는 **진입 템플릿**. 조각(`_shared/rules/*`)은 이 템플릿의
+# 자리표시자로 꽂히므로 여기 나오지 않는다.
+#
+# **관측에서 generation 하나에 프롬프트를 링크하는 데 쓴다.** 링크는 하나만 걸리므로
+# "조각 23개 중 무엇이냐"가 아니라 "이 호출이 시작한 템플릿이 무엇이냐"로 답해야 한다.
+# 그래야 Langfuse가 버전별 지연·비용·Score를 자동 집계한다.
+#
+# **기계적으로 못 만든다.** 진입점 후보는 15개인데 슬롯은 12종이다 — 차이는
+# `schedule/*_context.md`(본문과 짝을 이루는 문맥)와 `_shared/rules/validation_retry.md`
+# (재시도 부록)라 슬롯이 아니다. 그래서 손으로 선언하고 테스트로 잠근다.
+SLOT_ENTRY_TEMPLATES: dict[str, str] = {
+    "router.classify": "router/classify.md",
+    "recommend.extract": "recommend/extract.md",
+    "modify.extract": "modify/extract.md",
+    "info.extract": "info/extract.md",
+    "compare.extract": "compare/extract.md",
+    "general.extract": "general/extract.md",
+    "general.answer": "general/answer_instruction.md",
+    "info.answer": "info/answer_instruction.md",
+    "recommend.summary": "recommend/summary_instruction.md",
+    "compare.summary": "compare/summary_instruction.md",
+    "schedule.plan": "schedule/plan.md",
+    "schedule.fill": "schedule/fill.md",
+}
+
 _FALLBACK_SLOTS: tuple[str, ...] = ("router.classify",)
 _SEMVER_PATTERN = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 
@@ -154,3 +179,19 @@ def operation_prompt_version(operation: str) -> str | None:
     rendered = f"{slot}@{version}"
     variant = active_variant()
     return rendered if variant == "current" else f"{rendered}+variant:{variant}"
+
+
+def operation_entry_template(operation: str) -> str | None:
+    """LLM 호출 하나가 시작한 진입 템플릿의 상대경로. 모르는 operation이면 `None`.
+
+    예: `classify_intent` → `router/classify.md`
+
+    `operation_prompt_version()`이 같은 호출에 **버전 문자열**을 붙인다면 이쪽은
+    **어느 파일이냐**다. 둘 다 필요하다 — 버전 문자열은 관측을 꺼도 남는 자리
+    (`version`)에 들어가고, 이 경로는 Langfuse 프롬프트 객체를 찾아 링크하는 데 쓴다.
+    """
+
+    slot = OPERATION_SLOTS.get(operation)
+    if slot is None:
+        return None
+    return SLOT_ENTRY_TEMPLATES.get(slot)

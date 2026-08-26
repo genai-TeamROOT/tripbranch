@@ -101,6 +101,32 @@ def fetch_text(relative_path: str, *, fallback: str) -> str:
     return text
 
 
+def prompt_object(relative_path: str) -> Any | None:
+    """generation에 링크할 Langfuse 프롬프트 객체. 없거나 꺼져 있으면 `None`.
+
+    **`fetch_text()`와 목적이 다르다.** 저쪽은 원문 문자열을 가져와 조립에 쓰고,
+    이쪽은 객체 자체를 관측에 넘겨 "이 호출이 이 프롬프트 버전을 썼다"를 남긴다.
+    그래야 Langfuse가 버전별 지연·비용·Score를 자동으로 묶는다.
+
+    **폴백 객체는 링크하지 않는다.** SDK가 fetch에 실패하면 우리가 준 fallback으로
+    객체를 만들어 주는데, 그건 원격의 어느 버전도 아니라서 링크하면 통계가 거짓이 된다.
+    여기서는 fallback을 아예 안 넘겨 실패를 실패로 둔다 — 링크가 없어도 답변은 나간다.
+    """
+
+    client = get_prompt_client()
+    if client is None:
+        return None
+    _warm_cache(client)
+    try:
+        prompt = client.get_prompt(
+            prompt_name(relative_path),
+            cache_ttl_seconds=settings.langfuse_prompt_cache_ttl_seconds,
+        )
+    except Exception:
+        return None
+    return None if getattr(prompt, "is_fallback", False) else prompt
+
+
 def _warm_cache(client: Any) -> None:
     """첫 조회 때 자산 전체를 병렬로 한 번 데운다.
 
@@ -155,5 +181,6 @@ __all__ = [
     "fetch_text",
     "is_enabled",
     "prompt_name",
+    "prompt_object",
     "reset_fallback_warnings",
 ]

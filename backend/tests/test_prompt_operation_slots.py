@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+from app.prompts import registry
+from app.prompts.loader import asset_paths
 from app.prompts.registry import (
     OPERATION_SLOTS,
     operation_prompt_version,
@@ -80,3 +82,44 @@ def test_answer_slots_are_included_unlike_the_trace_side_mapping() -> None:
 
     assert "recommend.summary" in mapped
     assert "general.answer" in mapped
+
+
+# --- 슬롯 → 진입 템플릿: 손으로 선언한 표라 잠근다 -----------------------------
+
+
+def test_every_slot_declares_its_entry_template() -> None:
+    """`prompt=` 링크는 슬롯마다 진입 템플릿이 있어야 걸린다.
+
+    빠뜨리면 그 호출만 조용히 링크 없이 기록된다 — 버전별 지연·비용 집계에서
+    통째로 빠지는데, 화면에는 generation이 정상으로 보여서 알아채기 어렵다.
+    `OPERATION_SLOTS`에 슬롯을 추가하면 여기도 따라와야 한다.
+    """
+    assert set(registry.SLOT_ENTRY_TEMPLATES) == set(registry.OPERATION_SLOTS.values())
+
+
+def test_entry_templates_point_at_real_assets() -> None:
+    """선언한 경로가 실제 파일이어야 하고, 동기화 대상 안에 있어야 한다.
+
+    자산 목록 밖을 가리키면 Langfuse에 올라가지 않은 이름을 조회하게 되고, 링크는
+    영영 안 걸리는데 오류도 안 난다.
+    """
+    assets = set(asset_paths())
+
+    for slot, template in sorted(registry.SLOT_ENTRY_TEMPLATES.items()):
+        assert template in assets, f"{slot} → {template}"
+
+
+def test_entry_templates_are_not_fragments_of_one_another() -> None:
+    """진입 템플릿은 다른 템플릿에 꽂히는 조각이 아니어야 한다.
+
+    조각을 링크하면 "이 호출이 쓴 프롬프트"가 `_shared/rules/budget` 같은 부품으로
+    잡혀, 슬롯 단위 비교가 무의미해진다.
+    """
+    entries = set(registry.SLOT_ENTRY_TEMPLATES.values())
+    fragments = {
+        path
+        for path in asset_paths()
+        if path.startswith("_shared/") or path.endswith("_rules.md")
+    }
+
+    assert entries & fragments == set()

@@ -26,9 +26,10 @@ from google.genai import types as genai_types
 from pydantic import BaseModel, Field, ValidationError
 
 from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
+from app.observability import langfuse_prompts
 from app.observability.api_usage import record_call
 from app.observability.langfuse_tracing import observe_generation
-from app.prompts.registry import operation_prompt_version
+from app.prompts.registry import operation_entry_template, operation_prompt_version
 from app.providers import gemini_prompts
 from app.providers.contracts import ProviderResult, ProviderSource, provider_result
 from app.schedule.schemas import (
@@ -247,6 +248,22 @@ def _usage_details(usage: dict[str, int]) -> dict[str, int] | None:
     if "total_tokens" in usage:
         details["total"] = usage["total_tokens"]
     return details or None
+
+
+def _linked_prompt(operation: str) -> object | None:
+    """이 호출을 묶을 Langfuse 프롬프트 객체. 프롬프트 관리가 꺼져 있으면 `None`.
+
+    **`version=` 문자열과 둘 다 싣는다.** 문자열은 프롬프트 관리를 안 써도 남고
+    (`operation_prompt_version()`), 링크는 켰을 때 Langfuse가 버전별 지연·비용·Score를
+    자동으로 묶어 준다. 하나로 다른 하나를 대신할 수 없다.
+
+    조회 실패는 `None`이다 — 링크가 없어도 답변은 나가야 한다.
+    """
+
+    template = operation_entry_template(operation)
+    if template is None:
+        return None
+    return langfuse_prompts.prompt_object(template)
 
 
 class _RetryableExhaustedError(Exception):
@@ -575,6 +592,7 @@ class RealGeminiProvider:
                 model=model_name,
                 version=operation_prompt_version(operation),
                 input={"system_instruction": instruction, "user_input": user_input},
+                prompt=_linked_prompt(operation),
             ) as generation:
                 pieces: list[str] = []
                 try:
@@ -954,6 +972,8 @@ class RealGeminiProvider:
             # 어느 프롬프트 슬롯·버전이 이 호출을 냈는지. 원문 수집을 꺼도 남는다.
             version=operation_prompt_version(operation),
             input={"system_instruction": system_instruction, "user_input": user_input},
+            # 프롬프트 관리를 켰으면 그 버전에 이 호출을 묶는다(집계용).
+            prompt=_linked_prompt(operation),
         ) as generation:
             return await self._run_attempts(
                 model_name,
