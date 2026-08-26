@@ -1260,6 +1260,61 @@ async def _fetch_compare_travel_routes(
     return comparison.model_copy(update={"items": updated_items})
 
 
+def summarize_state_merge(response: StateApplyResponse) -> dict[str, object]:
+    """`merge_conditions` span에 실을 값을 고른다 — Audit "B 상태" 탭과 같은 값이다.
+
+    **여기는 span 자체가 없던 자리다.** 조건 병합은 A가 B를 부르는 단계인데 관측을
+    안 걸어서, trace만 보면 "이번 턴이 어떤 조건으로 돌았나"를 알 수 없었다.
+    `classify_intent`의 출력(= 이번 발화에서 **새로** 추출한 것)은 보여도 **이전
+    턴에서 유지된 값까지 합친 최종 조건**은 어디에도 없었다. 2026-08-26에 B와
+    협의해 열었다.
+
+    **`user_conditions`에는 좌표가 들어 있다**(`current_location`·`search_center`).
+    `api_context.gps_location`도 마찬가지다. `capture_content`가 꺼져 있으면 output
+    전체가 `<redacted>`가 되지만 켜면 그대로 나간다 — `tool_fetch` span과 같은
+    조건이고, 켜는 것이 명시적 선택이어야 한다.
+
+    조건 목록 전체를 싣는다. B가 돌려주는 값이 곧 이 턴의 입력이라 일부만 고르면
+    "왜 이 조건으로 돌았나"에 답이 안 된다 — 그게 이 span을 여는 이유다.
+    """
+
+    return {
+        "session_created": response.session_created,
+        "condition_version": response.condition_version,
+        "condition_changed": response.condition_changed,
+        "reset_applied": response.reset_applied,
+        "user_conditions": response.user_conditions.model_dump(mode="json"),
+        "api_context": response.api_context.model_dump(mode="json"),
+        "applied_operations": [
+            operation.model_dump(mode="json") for operation in response.applied_operations
+        ],
+        # 무효 처리된 연산이 왜 무시됐는지(reason)가 여기 있다. 적용된 것만 보면
+        # "왜 내 말이 반영이 안 됐지"에 답할 수 없다.
+        "ignored_operations": [
+            operation.model_dump(mode="json") for operation in response.ignored_operations
+        ],
+        "excluded_place_count": len(response.excluded_place_ids),
+    }
+
+
+def _state_merge_headline(response: StateApplyResponse) -> str:
+    """`merge_conditions`의 `status_message`. **mask를 타지 않는 자리다.**
+
+    원문 수집을 꺼도 "이번 턴에 조건이 바뀌었나"는 목록에서 읽혀야 한다. 좌표나
+    조건 값은 넣지 않는다 — 여기 넣으면 스위치와 무관하게 나간다.
+    """
+
+    parts = [
+        f"조건 v{response.condition_version}",
+        "변경" if response.condition_changed else "유지",
+        f"적용 {len(response.applied_operations)}",
+        f"무시 {len(response.ignored_operations)}",
+    ]
+    if response.reset_applied:
+        parts.append(f"reset:{response.reset_applied}")
+    return " · ".join(parts)
+
+
 def summarize_turn(response: AgentResponse) -> dict[str, object]:
     """루트 span(`agent_turn`)에 실을 값을 고른다.
 
@@ -1523,7 +1578,15 @@ async def _run_agent_flow(
         "이전 대화 조건을 반영하고 있어요.",
     )
     apply_request = transform(llm_output, session_context, request.user_input)
-    state_response = apply(apply_request, store=store, principal=principal)
+    with observe_step("merge_conditions") as merge_step:
+        state_response = apply(apply_request, store=store, principal=principal)
+        try:
+            merge_step.record(
+                output=summarize_state_merge(state_response),
+                status_message=_state_merge_headline(state_response),
+            )
+        except Exception:
+            logger.warning("조건 병합 관측 요약 실패(응답 흐름에는 영향 없음)", exc_info=True)
 
     if clarification_resolution is not None and clarification_resolution.ignore_operating_hours:
         _remember_ignore_operating_hours(state_response.session_id, store)
