@@ -6,23 +6,24 @@
  * TODO: 지도 링크, 저장/제외 액션, 실시간 영업 정보가 생기면 하위 UI를 확장한다.
  */
 
-import type { RecommendationItem } from "../types";
+import type { Language, RecommendationItem } from "../types";
 import { travelLabel, travelValue } from "../utils/travelDisplay";
 
 interface PlaceCardProps {
   item: RecommendationItem;
   /** 추천 결과의 현재 정보만으로 여는 1차 상세 미리보기. */
   onOpenDetail?: (item: RecommendationItem) => void;
+  language?: Language;
 }
 
-function formatRemainingDuration(remainingMinutes: number): string {
+function formatRemainingDuration(remainingMinutes: number, language: Language): string {
   // 카드에서는 분 단위 정밀도보다 빠른 비교가 중요하므로, 가장 가까운 시간으로
   // 반올림한다. 운영 종료가 임박한 경우 0시간으로 보이지 않도록 최소 1시간이다.
   const hours = Math.max(1, Math.round(remainingMinutes / 60));
-  return `${hours}시간 남음`;
+  return language === "en" ? `${hours} hr remaining` : `${hours}시간 남음`;
 }
 
-function formatClosingTime(remainingMinutes: number): string {
+function formatClosingTime(remainingMinutes: number, language: Language): string {
   const closesAt = new Date(Date.now() + remainingMinutes * 60 * 1000);
   const time = new Intl.DateTimeFormat("ko-KR", {
     timeZone: "Asia/Seoul",
@@ -30,7 +31,9 @@ function formatClosingTime(remainingMinutes: number): string {
     minute: "2-digit",
     hour12: false,
   }).format(closesAt);
-  return `운영 종료 예정 ${time} (${formatRemainingDuration(remainingMinutes)})`;
+  return language === "en"
+    ? `Closes at ${time} (${formatRemainingDuration(remainingMinutes, language)})`
+    : `운영 종료 예정 ${time} (${formatRemainingDuration(remainingMinutes, language)})`;
 }
 
 function isAlwaysOpen(operatingHours: string): boolean {
@@ -44,7 +47,7 @@ function isAlwaysOpen(operatingHours: string): boolean {
   );
 }
 
-function formatOperatingHours(item: RecommendationItem): string {
+function formatOperatingHours(item: RecommendationItem, language: Language): string {
   // D가 제공하는 당일 적용 운영 구간을 우선 표시한다. 이전 응답 또는 구간을
   // 판별할 수 없는 후보는 기존의 종료 예정 시각 표기로 자연스럽게 폴백한다.
   // 운영시간 무시로 폐점 후보를 함께 보여주는 경우에도 이 값은 남아 있다. 이때
@@ -55,19 +58,30 @@ function formatOperatingHours(item: RecommendationItem): string {
       return item.operating_hours_display;
     }
     if (item.remaining_minutes === null) {
-      return `${item.operating_hours_display} (현재 운영시간 아님)`;
+      return `${item.operating_hours_display} (${language === "en" ? "Currently closed" : "현재 운영시간 아님"})`;
     }
-    return `${item.operating_hours_display} (${formatRemainingDuration(item.remaining_minutes)})`;
+    return `${item.operating_hours_display} (${formatRemainingDuration(item.remaining_minutes, language)})`;
   }
 
   if (item.remaining_minutes === null) {
-    return "확인 불가";
+    return language === "en" ? "Unavailable" : "확인 불가";
   }
 
-  return formatClosingTime(item.remaining_minutes);
+  return formatClosingTime(item.remaining_minutes, language);
 }
 
-export function PlaceCard({ item, onOpenDetail }: PlaceCardProps) {
+/**
+ * D의 기본 추천 사유는 구조화된 순위 문장이다. 영어 화면에서 번역 API 응답이
+ * 지연되거나 구버전 응답이 섞여도, 이 고정 형식만큼은 즉시 자연스럽게 보인다.
+ */
+function displayRecommendationReason(reason: string, language: Language): string {
+  if (language !== "en") return reason;
+  const matched = reason.match(/^날씨·운영시간·거리 조건을 종합한 (\d+)순위 추천이에요\.?$/);
+  if (matched) return `Recommended #${matched[1]} based on weather, opening hours, and distance.`;
+  return reason;
+}
+
+export function PlaceCard({ item, onOpenDetail, language = "ko" }: PlaceCardProps) {
   const content = (
     <>
       <div className="flex items-start justify-between gap-2">
@@ -77,16 +91,18 @@ export function PlaceCard({ item, onOpenDetail }: PlaceCardProps) {
         </span>
       </div>
 
-      <p className="text-sm text-gray-600 dark:text-gray-400">{item.recommendation_reason}</p>
+      <p className="text-sm text-gray-600 dark:text-gray-400">
+        {displayRecommendationReason(item.recommendation_reason, language)}
+      </p>
 
       <dl className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-700 dark:text-gray-300">
         <div className="flex gap-1">
-          <dt className="text-gray-400">{travelLabel(item)}</dt>
-          <dd>{travelValue(item)}</dd>
+          <dt className="text-gray-400">{travelLabel(item, language)}</dt>
+          <dd>{travelValue(item, language)}</dd>
         </div>
         <div className="flex gap-1">
-          <dt className="text-gray-400">운영시간</dt>
-          <dd>{formatOperatingHours(item)}</dd>
+          <dt className="text-gray-400">{language === "en" ? "Opening hours" : "운영시간"}</dt>
+          <dd>{formatOperatingHours(item, language)}</dd>
         </div>
       </dl>
 
@@ -105,7 +121,7 @@ export function PlaceCard({ item, onOpenDetail }: PlaceCardProps) {
 
       {onOpenDetail && (
         <span className="w-fit text-xs font-medium text-blue-700 dark:text-blue-300">
-          장소 정보 미리 보기 →
+          {language === "en" ? "View place details →" : "장소 정보 미리 보기 →"}
         </span>
       )}
     </>
@@ -120,7 +136,13 @@ export function PlaceCard({ item, onOpenDetail }: PlaceCardProps) {
       }`}
       role={onOpenDetail ? "button" : undefined}
       tabIndex={onOpenDetail ? 0 : undefined}
-      aria-label={onOpenDetail ? `${item.name} 장소 정보 미리 보기` : undefined}
+      aria-label={
+        onOpenDetail
+          ? language === "en"
+            ? `View details for ${item.name}`
+            : `${item.name} 장소 정보 미리 보기`
+          : undefined
+      }
       onClick={onOpenDetail ? () => onOpenDetail(item) : undefined}
       onKeyDown={
         onOpenDetail

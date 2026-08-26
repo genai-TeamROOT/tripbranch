@@ -11,7 +11,7 @@
  */
 
 import { useState } from "react";
-import type { RecommendationItem, TravelOriginToggle } from "../../types";
+import type { Language, RecommendationItem, TravelOriginToggle } from "../../types";
 import { PlaceCard } from "../PlaceCard";
 import { RecommendationDetailPreviewModal } from "./RecommendationDetailPreviewModal";
 
@@ -30,6 +30,7 @@ interface RecommendationResultMessageProps {
   onRelaxRadius: () => void;
   /** travelOriginToggle이 있을 때만 호출 가능. 버튼 클릭 시 그 값 그대로 넘어온다. */
   onToggleTravelOrigin?: (toggle: TravelOriginToggle) => void;
+  language?: Language;
 }
 
 function formatDuration(milliseconds: number | undefined) {
@@ -50,7 +51,35 @@ export function RecommendationResultMessage({
   onRequestMore,
   onRelaxRadius,
   onToggleTravelOrigin,
+  language = "ko",
 }: RecommendationResultMessageProps) {
+  const text = language === "en"
+    ? {
+        summary: "Here are some places that match your preferences.",
+        noResults: "We couldn’t find a place that matches those conditions.",
+        widen: `Search a wider area (+${RADIUS_RELAXATION_STEP_KM} km)`,
+        basedOn: (name: string) => `View results based on ${name}`,
+        currentLocation: "View results based on my current location",
+        recommendations: "Recommended places",
+        closed: "Places that are currently closed",
+        hoursUnknown: "Places with unavailable opening hours",
+        loading: "Loading...",
+        more: "Show more places",
+        hint: "Add another condition in the message box below.",
+      }
+    : {
+        summary: "조건에 맞춰 이런 장소를 찾아봤어요.",
+        noResults: "조건에 맞는 장소를 찾지 못했어요.",
+        widen: `검색 반경 넓혀서 다시 찾기 (+${RADIUS_RELAXATION_STEP_KM}km)`,
+        basedOn: (name: string) => `${name} 기준으로 다시 보기`,
+        currentLocation: "현재 위치 기준으로 다시 보기",
+        recommendations: "추천 장소",
+        closed: "현재 운영시간이 아닌 장소",
+        hoursUnknown: "운영시간을 확인할 수 없는 장소",
+        loading: "불러오는 중...",
+        more: "다른 장소 보기",
+        hint: "다른 조건이 있으면 아래 입력창에 이어서 적어주세요.",
+      };
   const [selectedRecommendation, setSelectedRecommendation] = useState<RecommendationItem | null>(null);
   // D는 운영시간을 무시한 재검색에서 "현재는 폐점"인 후보도 unverified 목록에
   // 담는다. 하지만 이 후보는 운영시간 원문 자체가 없는 것이 아니다. 카드에서
@@ -71,7 +100,7 @@ export function RecommendationResultMessage({
     <article className="mr-auto flex w-full max-w-2xl flex-col gap-4 rounded-md border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-900">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-          조건에 맞춰 이런 장소를 찾아봤어요.
+          {text.summary}
         </p>
         {showElapsedTime && (
           <p className="text-xs text-gray-500 dark:text-gray-400">
@@ -82,7 +111,7 @@ export function RecommendationResultMessage({
 
       {hasNoResults ? (
         <div className="flex flex-col gap-3 text-sm">
-          <p className="text-gray-700 dark:text-gray-300">조건에 맞는 장소를 찾지 못했어요.</p>
+          <p className="text-gray-700 dark:text-gray-300">{text.noResults}</p>
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
@@ -90,7 +119,7 @@ export function RecommendationResultMessage({
               onClick={onRelaxRadius}
               className="w-fit rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-gray-100 dark:text-gray-900"
             >
-              검색 반경 넓혀서 다시 찾기 (+{RADIUS_RELAXATION_STEP_KM}km)
+              {text.widen}
             </button>
             {travelOriginToggle && onToggleTravelOrigin && (
               <button
@@ -100,8 +129,8 @@ export function RecommendationResultMessage({
                 className="w-fit rounded-md border border-gray-300 px-4 py-2 text-sm font-medium disabled:opacity-50 dark:border-gray-700"
               >
                 {travelOriginToggle.alternative_origin === "search_center"
-                  ? `${travelOriginToggle.alternative_origin_name} 기준으로 다시 보기`
-                  : "현재 위치 기준으로 다시 보기"}
+                  ? text.basedOn(travelOriginToggle.alternative_origin_name)
+                  : text.currentLocation}
               </button>
             )}
           </div>
@@ -110,12 +139,13 @@ export function RecommendationResultMessage({
         <>
           {recommendations.length > 0 && (
             <section className="flex flex-col gap-3">
-              <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400">추천 장소</h3>
+              <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400">{text.recommendations}</h3>
               <ul className="flex flex-col gap-3">
                 {recommendations.map((item) => (
                   <PlaceCard
                     key={item.place_id}
                     item={item}
+                    language={language}
                     onOpenDetail={(selectedItem) => setSelectedRecommendation(selectedItem)}
                   />
                 ))}
@@ -126,13 +156,14 @@ export function RecommendationResultMessage({
           {closedRecommendations.length > 0 && (
             <section className="flex flex-col gap-3">
               <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400">
-                현재 운영시간이 아닌 장소
+                {text.closed}
               </h3>
               <ul className="flex flex-col gap-3">
                 {closedRecommendations.map((item) => (
                   <PlaceCard
                     key={item.place_id}
                     item={item}
+                    language={language}
                     onOpenDetail={(selectedItem) => setSelectedRecommendation(selectedItem)}
                   />
                 ))}
@@ -143,13 +174,14 @@ export function RecommendationResultMessage({
           {unknownHoursRecommendations.length > 0 && (
             <section className="flex flex-col gap-3">
               <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400">
-                운영시간을 확인할 수 없는 장소
+                {text.hoursUnknown}
               </h3>
               <ul className="flex flex-col gap-3">
                 {unknownHoursRecommendations.map((item) => (
                   <PlaceCard
                     key={item.place_id}
                     item={item}
+                    language={language}
                     onOpenDetail={(selectedItem) => setSelectedRecommendation(selectedItem)}
                   />
                 ))}
@@ -164,7 +196,7 @@ export function RecommendationResultMessage({
               onClick={onRequestMore}
               className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium disabled:opacity-50 dark:border-gray-700"
             >
-              {isLoading ? "불러오는 중..." : "다른 장소 보기"}
+              {isLoading ? text.loading : text.more}
             </button>
             {travelOriginToggle && onToggleTravelOrigin && (
               <button
@@ -174,12 +206,12 @@ export function RecommendationResultMessage({
                 className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium disabled:opacity-50 dark:border-gray-700"
               >
                 {travelOriginToggle.alternative_origin === "search_center"
-                  ? `${travelOriginToggle.alternative_origin_name} 기준으로 다시 보기`
-                  : "현재 위치 기준으로 다시 보기"}
+                  ? text.basedOn(travelOriginToggle.alternative_origin_name)
+                  : text.currentLocation}
               </button>
             )}
             <span className="self-center text-xs text-gray-500 dark:text-gray-400">
-              다른 조건이 있으면 아래 입력창에 이어서 적어주세요.
+              {text.hint}
             </span>
           </div>
         </>

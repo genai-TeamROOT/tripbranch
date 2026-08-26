@@ -87,6 +87,35 @@ def test_chat_passes_session_and_device_location(captured) -> None:
     assert captured[0].device_location == "37.5788,126.9770"
 
 
+def test_chat_translates_english_at_route_boundary_without_changing_runtime_contract(
+    captured, monkeypatch
+) -> None:
+    seen_languages: list[str] = []
+
+    async def fake_request_for_runtime(request: AgentRequest) -> AgentRequest:
+        seen_languages.append(request.language)
+        return request.model_copy(update={"user_input": "경복궁 근처 실내 박물관 추천"})
+
+    async def fake_response_for_user(response: AgentResponse, *, language: str) -> AgentResponse:
+        seen_languages.append(language)
+        return response.model_copy(update={"message": "Try an indoor museum near Gyeongbokgung."})
+
+    monkeypatch.setattr(chat_route, "_request_for_runtime", fake_request_for_runtime)
+    monkeypatch.setattr(chat_route, "_response_for_user", fake_response_for_user)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/chat",
+        json={"user_input": "Find an indoor museum near Gyeongbokgung", "language": "en"},
+    )
+
+    assert response.status_code == 200
+    assert captured[0].user_input == "경복궁 근처 실내 박물관 추천"
+    assert captured[0].language == "en"
+    assert response.json()["message"] == "Try an indoor museum near Gyeongbokgung."
+    assert seen_languages == ["en", "en"]
+
+
 def test_chat_rejects_empty_user_input(captured) -> None:
     client = TestClient(app)
 

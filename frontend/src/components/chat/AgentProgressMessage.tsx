@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { AgentProgressEvent } from "../../types";
+import type { AgentProgressEvent, Language } from "../../types";
 
 const AGENT_STAGES = [
   { stage: "interpreting", label: "요청 의도와 조건 파악", detail: "Gemini가 Intent와 사용자 조건을 해석하고 있어요." },
@@ -15,6 +15,20 @@ const SCHEDULE_STAGE = {
   detail: "장소 순서와 머무는 시간을 구성하고 있어요.",
 } as const;
 
+const AGENT_STAGES_EN = [
+  { stage: "interpreting", label: "Understanding your request", detail: "Reviewing your travel intent and preferences." },
+  { stage: "merging_conditions", label: "Applying conversation context", detail: "Keeping the conditions from your earlier messages." },
+  { stage: "fetching_context", label: "Finding place information", detail: "Looking up places, opening hours, and weather." },
+  { stage: "scoring", label: "Ranking places", detail: "Ranking places that fit your travel preferences." },
+  { stage: "composing_message", label: "Preparing your answer", detail: "Putting together the recommendation results." },
+] as const;
+
+const SCHEDULE_STAGE_EN = {
+  stage: "scheduling",
+  label: "Planning your itinerary",
+  detail: "Organizing the visit order and time at each place.",
+} as const;
+
 // 실제 서버 단계는 응답이 끝난 뒤 개발자 Audit의 소요시간 탭에서 정확히 확인한다.
 // 채팅 로딩 UI는 특정 외부 호출(특히 LLM)에서 수 초간 멈춘 인상을 주지 않도록
 // 순차적으로 움직인다. 모든 단계를 한 번 보여준 뒤에는 마지막 단계에 머문다.
@@ -25,6 +39,7 @@ export function AgentProgressMessage({
   hasDeviceLocation,
   schedulePlanning = false,
   progress = null,
+  language = "ko",
 }: {
   hasDeviceLocation: boolean;
   /** 실제 SCHEDULE 플래너 호출 이벤트를 받은 뒤에만 일정 단계를 목록에 넣는다. */
@@ -38,6 +53,7 @@ export function AgentProgressMessage({
    * 그때만 기존처럼 경과 시간 기반의 가상 단계 회전으로 대체한다.
    */
   progress?: AgentProgressEvent | null;
+  language?: Language;
 }) {
   const [elapsedMs, setElapsedMs] = useState(0);
 
@@ -49,9 +65,11 @@ export function AgentProgressMessage({
     return () => window.clearInterval(timer);
   }, []);
 
+  const stageSet = language === "en" ? AGENT_STAGES_EN : AGENT_STAGES;
+  const scheduleStage = language === "en" ? SCHEDULE_STAGE_EN : SCHEDULE_STAGE;
   const stages = schedulePlanning
-    ? [...AGENT_STAGES.slice(0, -1), SCHEDULE_STAGE, AGENT_STAGES.at(-1)!]
-    : AGENT_STAGES;
+    ? [...stageSet.slice(0, -1), scheduleStage, stageSet.at(-1)!]
+    : stageSet;
   const liveStageIndex = progress
     ? stages.findIndex((stage) => stage.stage === progress.stage)
     : -1;
@@ -59,10 +77,25 @@ export function AgentProgressMessage({
     liveStageIndex >= 0
       ? liveStageIndex
       : Math.min(Math.floor(elapsedMs / STAGE_ROTATION_INTERVAL_MS), stages.length - 1);
+  // Runtime이 보내는 progress.message는 한국어이므로 영어 화면에서는 단계별 영문
+  // 기본 안내를 사용한다. 한글 화면은 기존의 실제 heartbeat 문구를 그대로 보여 준다.
   const current =
     liveStageIndex >= 0
-      ? { ...stages[liveStageIndex], detail: progress!.message }
+      ? { ...stages[liveStageIndex], detail: language === "en" ? stages[liveStageIndex].detail : progress!.message }
       : stages[stageIndex];
+  const text = language === "en"
+    ? {
+        inProgress: "in progress",
+        elapsed: "elapsed",
+        deviceReady: "Device location ready",
+        inputLocation: "Using the location in your request",
+      }
+    : {
+        inProgress: "중",
+        elapsed: "초 경과",
+        deviceReady: "기기 위치 확인 완료",
+        inputLocation: "입력 위치 기준으로 진행",
+      };
 
   return (
     <section
@@ -76,10 +109,10 @@ export function AgentProgressMessage({
           <span className="relative inline-flex h-3 w-3 rounded-full bg-indigo-600 dark:bg-indigo-300" />
         </span>
         <div>
-          <p className="font-semibold">{current.label} 중</p>
+          <p className="font-semibold">{current.label} {text.inProgress}</p>
           <p className="mt-0.5 text-xs text-indigo-700 dark:text-indigo-300">{current.detail}</p>
           <p className="mt-0.5 text-xs text-indigo-600 dark:text-indigo-400">
-            {(elapsedMs / 1000).toFixed(1)}초 경과
+            {(elapsedMs / 1000).toFixed(1)} {text.elapsed}
           </p>
         </div>
       </div>
@@ -87,7 +120,7 @@ export function AgentProgressMessage({
       <ol className="mt-4 grid gap-2 text-xs">
         <li className="flex items-center gap-2 text-emerald-700 dark:text-emerald-300">
           <span aria-hidden="true">✓</span>
-          {hasDeviceLocation ? "기기 위치 확인 완료" : "입력 위치 기준으로 진행"}
+          {hasDeviceLocation ? text.deviceReady : text.inputLocation}
         </li>
         {stages.map((stage, index) => {
           const complete = index < stageIndex;

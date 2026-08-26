@@ -10,6 +10,7 @@ import { loadState, saveState } from "./storage";
 import type { TripState } from "./TripContext";
 
 const state: TripState = {
+  language: "ko",
   user_input: "비 피할 곳",
   interpreted_conditions: {
     location_query: "경복궁",
