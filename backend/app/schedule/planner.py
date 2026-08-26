@@ -5,17 +5,24 @@
 A(agent_runtime.py)가 D(RecommendationProvider)를 호출하는 것과 동일한 방식으로
 이 모듈을 호출한다(docs/design/int-07-schedule.md 6.0절, B의 "판단하지 않는
 기억 장치" 원칙과 무관하게 B 코드는 전혀 건드리지 않는다).
+
+place_associations(D-088) 연동(co_visited_fetcher)은 opt-in이다 — 호출부가
+넘기지 않으면 이 모듈은 그 데이터 소스를 전혀 건드리지 않고 기존 동작과
+바이트 단위로 동일하다(app.schedule.associations 참고).
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+import logging
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from datetime import datetime
 from time import perf_counter
-from typing import TypeAlias
+from typing import TypeAlias, TypeVar
 
+from app.config import Settings
 from app.errors import AppError
 from app.providers.protocols import LLMProvider
+from app.schedule.associations import CoVisitedHint
 from app.schedule.schemas import (
     SchedulePartialFillRequest,
     SchedulePlanningRequest,
@@ -24,7 +31,12 @@ from app.schedule.schemas import (
 from app.schemas import RecommendationItem, ScheduleItem, ScheduleResult
 from app.state.schema import now_kst
 
+logger = logging.getLogger(__name__)
+
 Timer: TypeAlias = Callable[[], float]
+CoVisitedFetcher: TypeAlias = Callable[
+    [Sequence[str], Settings], Awaitable[list[CoVisitedHint]]
+]
 
 _NO_CANDIDATES_ROUTE_SUMMARY = (
     "조건에 맞는 곳을 충분히 찾지 못해 일정을 만들지 못했어요. "
@@ -204,8 +216,48 @@ def _build_basis_note(visit_datetime: datetime) -> str:
     )
 
 
+_RequestT = TypeVar("_RequestT", SchedulePlanningRequest, SchedulePartialFillRequest)
+
+
+async def _with_co_visited_hints(
+    request: _RequestT,
+    place_ids: Sequence[str],
+    fetcher: CoVisitedFetcher | None,
+    settings: Settings | None,
+) -> _RequestT:
+    """co_visited_fetcher가 주어졌을 때만 place_associations를 조회해
+    request.co_visited_hints를 채운 사본을 돌려준다.
+
+    place_ids는 호출부가 명시적으로 넘긴다 — plan_schedule()은 candidates만
+    보면 되지만, plan_partial_schedule()은 새로 채울 자리(candidates)뿐 아니라
+    이미 확정된 pinned_items도 "함께 방문" 판단 대상에 넣어야 하기 때문이다
+    (예: pinned로 남은 경복궁과 새로 채울 후보 중 하나가 실제로 같이 다닌
+    곳이면 그것도 신호로 쓴다).
+
+    실패(네트워크·설정 문제 등)는 SCHEDULE 전체를 막을 이유가 아니다 — 이
+    힌트는 LLM에게 주는 참고 정보일 뿐 필수 입력이 아니므로, 조회가
+    실패하면 경고만 남기고 힌트 없이(기존 동작) 계속한다("구조적 보장 우선"
+    원칙과 같은 이유 — 부가 정보 실패가 핵심 기능을 무너뜨리면 안 된다).
+    """
+    if fetcher is None:
+        return request
+    try:
+        hints = await fetcher(list(place_ids), settings or Settings())
+    except Exception:  # noqa: BLE001 — 부가 힌트 실패는 SCHEDULE 흐름을 막지 않는다.
+        logger.warning("co_visited_hints 조회 실패 — 힌트 없이 계속합니다.", exc_info=True)
+        return request
+    if not hints:
+        return request
+    return request.model_copy(update={"co_visited_hints": hints})
+
+
 async def plan_schedule(
-    request: SchedulePlanningRequest, llm: LLMProvider, *, timer: Timer = perf_counter
+    request: SchedulePlanningRequest,
+    llm: LLMProvider,
+    *,
+    timer: Timer = perf_counter,
+    co_visited_fetcher: CoVisitedFetcher | None = None,
+    settings: Settings | None = None,
 ) -> ScheduleResult:
     """SchedulePlanningRequest로 LLM을 호출해 ScheduleResult를 만든다.
 
@@ -219,6 +271,10 @@ async def plan_schedule(
     같은 패턴으로 재서, 개발자 화면(카드·감사 패널)이 RECOMMEND와 동일하게
     SCHEDULE의 서버 소요시간도 보여줄 수 있게 한다(RECOMMEND는 이 값이 있는데
     SCHEDULE만 없어 "서버 소요"가 항상 빈 값으로 보이던 걸 정리함).
+
+    co_visited_fetcher는 opt-in이다(app.schedule.associations.fetch_co_visited_hints를
+    호출부가 넘겨야 켜진다) — 기본값 None이면 이 함수는 기존과 완전히 동일하게
+    동작한다.
     """
 
     started_at = timer()
@@ -242,6 +298,12 @@ async def plan_schedule(
         request
         if request.visit_datetime is not None
         else request.model_copy(update={"visit_datetime": effective_visit_datetime})
+    )
+    resolved_request = await _with_co_visited_hints(
+        resolved_request,
+        [candidate.place_id for candidate in resolved_request.candidates],
+        co_visited_fetcher,
+        settings,
     )
 
     plan = (await llm.generate_schedule_plan(resolved_request)).data
@@ -364,7 +426,12 @@ def _pinned_only_result(
 
 
 async def plan_partial_schedule(
-    request: SchedulePartialFillRequest, llm: LLMProvider, *, timer: Timer = perf_counter
+    request: SchedulePartialFillRequest,
+    llm: LLMProvider,
+    *,
+    timer: Timer = perf_counter,
+    co_visited_fetcher: CoVisitedFetcher | None = None,
+    settings: Settings | None = None,
 ) -> ScheduleResult:
     """SchedulePartialFillRequest로 일부 슬롯만 새로 채운 ScheduleResult를 만든다.
 
@@ -379,6 +446,11 @@ async def plan_partial_schedule(
 
     elapsed_ms는 plan_schedule()과 같은 방식으로 이 함수 진입부터 결과 조립까지
     잰다(SCHEDULE-10 후속, RECOMMEND와 서버 소요시간 표시 방식을 맞춘다).
+
+    co_visited_fetcher는 plan_schedule()과 같은 opt-in 계약이다 — 기본값
+    None이면 기존과 완전히 동일하게 동작한다. 켜지면 pinned_items +
+    candidates 전체의 place_id로 조회한다(둘 중 한쪽에만 있어서는 "함께
+    방문" 쌍이 안 잡히므로).
     """
 
     started_at = timer()
@@ -411,6 +483,15 @@ async def plan_partial_schedule(
         request
         if request.visit_datetime is not None
         else request.model_copy(update={"visit_datetime": effective_visit_datetime})
+    )
+    resolved_request = await _with_co_visited_hints(
+        resolved_request,
+        [
+            *(item.place_id for item in resolved_request.pinned_items),
+            *(candidate.place_id for candidate in resolved_request.candidates),
+        ],
+        co_visited_fetcher,
+        settings,
     )
 
     plan = (await llm.generate_schedule_fill(resolved_request)).data

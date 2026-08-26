@@ -69,7 +69,13 @@ _BASE_CONCESSION = 0.05
 # 정하는데 2차(CONCENTRATION_WEIGHTS)에는 키가 없어서, 취향으로 후보를 골라
 # 놓고 최종 순위에서는 취향을 빼고 있었다. 가중치 합이 1.0이라 결측 재분배도
 # 안 걸리고 예외도 안 났다.
-OPTIONAL_FEATURES: tuple[str, ...] = ("taste", "concentration")
+#
+# D-092: co_visited(RECOMMEND 2차 Scoring, rerank_with_co_visited())를 추가해
+# taste/concentration과 함께 정확히 3개를 채운다 — 아래 _MAX_OPTIONAL_FEATURES
+# 주석이 예고한 그 자리다. 이 튜플에 넣는 것만으로는 어떤 요청의 점수도 바꾸지
+# 않는다 — feature_scores에 "co_visited" 키가 실제로 있는 요청(rerank_with_co_visited()를
+# 탄 요청)에서만 build_weights()/weights_for_feature_scores()가 이 이름을 활성으로 본다.
+OPTIONAL_FEATURES: tuple[str, ...] = ("taste", "concentration", "co_visited")
 
 # 기본 3축 중 distance(0.20)가 0.05씩 내놓으므로 4개째에서 0이 된다.
 _MAX_OPTIONAL_FEATURES = 3
@@ -261,6 +267,12 @@ class RankedCandidate:
     # WeatherCondition만으로는 "왜"(비/눈/폭염/한파 중 무엇 때문)를 알 수 없어서
     # 근거 문장(explanation.py) 조립에 따로 필요하다 — 점수 계산에는 안 쓰인다.
     weather_reason: WeatherReason = None
+    # D-092: 2차 Scoring(rerank_with_co_visited())에서만 채워진다. 이 후보와
+    # place_associations(B-owned, D-088) 상 "함께 방문된 이력"이 있는, 같은
+    # 응답 안의 다른 후보 이름들(최대 2개, 중복 제거). concentration_level과
+    # 같은 이유로 원본을 들고 간다 — co_visited_score만으로는 "누구와" 겹쳤는지
+    # 근거 문장에 쓸 수 없다.
+    co_visited_place_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -548,6 +560,25 @@ def concentration_score(concentration_rate: float, *, seek: bool) -> float:
     """
     normalized = _clamp(concentration_rate / 100.0, 0.0, 1.0)
     return normalized if seek else 1.0 - normalized
+
+
+def co_visited_score(hit_count: int, max_hit_count: int) -> float:
+    """D-092: 이 후보가 이번 응답 내 다른 후보와 "함께 방문된 이력"(place_associations,
+    B-owned) 쌍에 몇 번 등장했는지를, 이번 응답에서 관측된 최댓값 대비 0~1로
+    정규화한다.
+
+    concentration_rate(0~100 고정 스케일)와 달리 "몇 번 함께 갔는지"는 관광지마다
+    표본 수가 달라 절대값으로 비교할 근거가 없다. 같은 응답 안에서 상대적으로 많이
+    겹치는 후보가 더 높은 점수를 받으면 된다 — taste_score가 실측 분포 상한(0.65)에
+    맞춰 상대적으로 클리핑한 것과 같은 이유로 상대 스케일을 택했다.
+
+    쌍이 하나도 없는 후보(hit_count=0)도 0.0이지 결측이 아니다 — _taste_score와
+    같은 이유다: 후보마다 결측 여부가 갈리면 한 순위 안에서 가중치 세트가 달라져
+    자를 두 개 쓰는 셈이 된다.
+    """
+    if max_hit_count <= 0:
+        return 0.0
+    return _clamp(hit_count / max_hit_count, 0.0, 1.0)
 
 
 def redistribute_weights(

@@ -189,3 +189,26 @@ class RecommendationProvider(Protocol):
         타기 시작한다.
         """
         ...
+
+    async def rerank_with_co_visited(
+        self,
+        conditions: UserConditions,
+        context: RecommendationContext,
+        first_pass: RecommendationResponse,
+        co_visited_pairs: Sequence[tuple[str, str]],
+    ) -> RecommendationResponse:
+        """(D-092) place_associations(B-owned, D-088) 기반 "함께 방문된 이력"
+        쌍으로 `first_pass`(1차, 또는 이미 혼잡도 2차를 탄 결과)를 재순위한다.
+
+        `co_visited_pairs`는 B의 `CoVisitedHint` 스키마를 그대로 받지 않고
+        (place_id, place_id) 쌍만 받는다 — D가 B의 스키마를 몰라도 되게 하기
+        위해서다. `conditions`/`context`는 1차 `recommend()`에 넘긴 것과 동일해야
+        한다 — 구현체가 내부에서 `resolve_weather_condition(context, conditions)`로
+        날씨 판정을 다시 얻어 `rerank_with_concentration()`과 같은 방식으로 근거
+        문장을 재조립한다.
+
+        D의 Real 구현체가 아직 이 메서드를 갖고 있지 않을 수 있다 — 호출부
+        (agent_runtime.py)는 `hasattr()`로 방어하고, 없으면 `first_pass`를
+        그대로 최종 결과로 쓴다.
+        """
+        ...
