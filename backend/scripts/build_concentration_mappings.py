@@ -57,6 +57,8 @@ _WHITESPACE_PATTERN = re.compile(r"\s")
 # places `초전섬유·퀼트박물관`(가운뎃점 U+00B7)이 이것 때문에 안 붙었다.
 _EQUIVALENT_CHARACTERS = {
     "ㆍ": "·",  # U+318D HANGUL LETTER ARAEA → U+00B7 MIDDLE DOT
+    ".": "·",  # 나열 구분에 마침표를 쓰기도 한다. 집중률 API `국립4.19민주묘지`와
+    #           places `국립4·19민주묘지`가 이것 때문에 안 붙었다(2026-08-26 강북구).
 }
 
 # 괄호 기호 자체. 안 내용을 지우는 _PAREN_PATTERN과 달리 기호만 공백으로 바꾼다.
