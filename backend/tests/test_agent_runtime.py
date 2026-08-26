@@ -3047,6 +3047,47 @@ async def test_tool_status_decides_whether_recommendation_runs(
     assert (response.recommendations is not None) is reaches_recommendation
 
 
+class _UnsupportedRegionToolProvider:
+    """서비스 지역 밖 판정만 재현하는 C 대역(D-085 회귀 확인용)."""
+
+    async def fetch_context(self, request: AgentContextRequest) -> AgentContextResponse:
+        return AgentContextResponse(
+            request_id=request.request_id,
+            intent="RECOMMEND",
+            status="unsupported",
+            error=ContextError(
+                code="unsupported_region", message="테스트용 오류", retryable=False
+            ),
+            metadata=ResponseMetadata(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_unsupported_region_message_is_short_and_footnote_names_the_area() -> None:
+    """구 목록은 message가 아니라 message_footnote에 실린다(D-085).
+
+    본문에 목록을 그대로 이어붙이던 옛 방식은 구가 늘 때마다 문장이 길어졌다 —
+    지금은 본문을 짧게 고정하고, 목록은 화면이 작고 옅은 글씨로 따로 보여줄
+    message_footnote 쪽으로만 늘어나게 한다.
+    """
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="홍대입구역 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=_UnsupportedRegionToolProvider(),
+        recommendation_provider=_CountingRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=InMemoryStateStore(),
+    )
+
+    assert response.message == "이 위치는 지금 서비스 지역이 아니에요. 다른 위치를 말씀해 주세요."
+    assert response.message_footnote is not None
+    assert "종로구" in response.message_footnote
+
+
 @pytest.mark.asyncio
 async def test_location_required_clarification_reaches_user_message() -> None:
     """C의 clarification.code가 A를 거쳐 되묻기 문장까지 이어지는지 확인한다."""

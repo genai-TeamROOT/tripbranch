@@ -58,6 +58,10 @@ export function ChatComposer({
             setText("");
             await onSubmit(transcript);
           }}
+          onManualStop={(transcript) => {
+            setVoiceError(null);
+            setText(transcript);
+          }}
           onError={setVoiceError}
         />
         <button

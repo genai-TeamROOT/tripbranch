@@ -25,7 +25,6 @@ from app.schemas import (
     ScheduleResult,
     Severity,
 )
-from app.service_area import supported_district_label
 from app.services.runtime.context_schemas import Clarification
 from app.services.runtime.info_context_schemas import (
     ConcentrationInfoResult,
@@ -46,6 +45,7 @@ from app.services.runtime.response_composer import (
     compose_realtime_population_message,
     compose_recommendation_message,
     compose_schedule_message,
+    unsupported_region_footnote,
 )
 
 
@@ -345,7 +345,10 @@ class TestComposeChatMessageRecommendAndModify:
     async def test_tool_stage_unsupported_region_names_the_service_area(self) -> None:
         """지원 지역 밖은 무엇이 문제인지 알려야 한다(D-044).
 
-        "아직 지원하지 않는 요청"이라고만 하면 조건을 바꿔 다시 시도하게 된다.
+        "아직 지원하지 않는 요청"이라고만 하면 조건을 바꿔 다시 시도하게 된다. 다만
+        구 목록 자체는 message 본문이 아니라 message_footnote가 담당한다(D-085) —
+        본문에 그대로 이어붙이면 구가 늘 때마다 문장이 길어져서다. 여기서는 본문이
+        짧게 고정됐는지만 보고, 목록은 unsupported_region_footnote()로 따로 검증한다.
         """
         llm_output = LLMOutput(intent=Intent.RECOMMEND, status=OutputStatus.COMPLETE)
         message = await compose_chat_message(
@@ -354,13 +357,15 @@ class TestComposeChatMessageRecommendAndModify:
             tool_error_code="unsupported_region",
             llm=_StubLLM(),
         )
-        # 문구가 지원 구 목록을 읽는지까지 본다 - 목록만 늘고 문구는 옛 범위를
-        # 말하던 상태가 이 카드의 발단이다.
-        assert message == (
-            f"현재는 베타 서비스로 {supported_district_label()}의 장소 추천만 가능해요. "
-            "그 안에서 가고 싶은 위치를 말씀해주세요."
-        )
-        assert "종로구" in message and "성동구" in message
+        assert message == "이 위치는 지금 서비스 지역이 아니에요. 다른 위치를 말씀해 주세요."
+        footnote = unsupported_region_footnote("unsupported_region")
+        assert footnote is not None
+        assert "종로구" in footnote and "성동구" in footnote
+
+    def test_unsupported_region_footnote_is_none_for_other_codes(self) -> None:
+        """다른 사유의 unsupported까지 구 목록을 붙이지 않는다."""
+        assert unsupported_region_footnote(None) is None
+        assert unsupported_region_footnote("some_other_error") is None
 
     @pytest.mark.asyncio
     async def test_tool_stage_unavailable(self) -> None:
@@ -694,7 +699,11 @@ class TestComposeInfoConcentrationMessage:
         assert message == "이 장소 유형은 혼잡도 데이터가 없어요."
 
     def test_unsupported_region_names_the_service_area(self) -> None:
-        """ "혼잡도 데이터가 없다"고 하면 다른 날 다시 물어보게 된다(D-044)."""
+        """ "혼잡도 데이터가 없다"고 하면 다른 날 다시 물어보게 된다(D-044).
+
+        구 목록은 message 본문이 아니라 message_footnote가 담당한다(D-085) —
+        unsupported_region_footnote()로 따로 검증한다.
+        """
         response = InfoContextResponse(
             request_id="r5",
             status="unsupported",
@@ -705,13 +714,10 @@ class TestComposeInfoConcentrationMessage:
             ),
         )
         message = compose_info_concentration_message(response)
-        # 문구가 지원 구 목록을 읽는지까지 본다 - 목록만 늘고 문구는 옛 범위를
-        # 말하던 상태가 이 카드의 발단이다.
-        assert message == (
-            f"현재는 베타 서비스로 {supported_district_label()}의 장소 추천만 가능해요. "
-            "그 안에서 가고 싶은 위치를 말씀해주세요."
-        )
-        assert "종로구" in message and "성동구" in message
+        assert message == "이 위치는 지금 서비스 지역이 아니에요. 다른 위치를 말씀해 주세요."
+        footnote = unsupported_region_footnote(response.error.code if response.error else None)
+        assert footnote is not None
+        assert "종로구" in footnote and "성동구" in footnote
 
     def test_unavailable_result_returns_generic_error(self) -> None:
         response = InfoContextResponse(
