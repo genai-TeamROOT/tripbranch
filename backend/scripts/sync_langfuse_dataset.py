@@ -118,8 +118,15 @@ class Comparison:
     detail: str = ""
 
 
-def _client() -> Any | None:
-    """Langfuse 클라이언트. 키가 없거나 패키지가 없으면 `None`."""
+def _client(*, tracing_enabled: bool = False) -> Any | None:
+    """Langfuse 클라이언트. 키가 없거나 패키지가 없으면 `None`.
+
+    **기본값이 `tracing_enabled=False`인 게 함정이 될 수 있다.** 이 값이 꺼져 있으면
+    span을 만드는 기능이 전부 조용히 죽는다 — `create_score`는 첫머리에서 return하고
+    (2026-08-26 Score 41건이 그렇게 날아갔다), `run_experiment`는 trace id가
+    `0000…0`인 run item을 만든다(같은 날 3건). 읽기·쓰기만 하는 스크립트는 기본값을
+    쓰고, **span이 필요한 쪽은 명시적으로 켠다.**
+    """
 
     missing = [
         name
@@ -142,7 +149,7 @@ def _client() -> Any | None:
         public_key=settings.langfuse_public_key,
         secret_key=settings.langfuse_secret_key,
         host=settings.langfuse_base_url,
-        tracing_enabled=False,
+        tracing_enabled=tracing_enabled,
     )
     if not client.auth_check():
         print(f"✗ 인증 실패 — host={settings.langfuse_base_url} (리전과 키가 맞는지 본다)")
