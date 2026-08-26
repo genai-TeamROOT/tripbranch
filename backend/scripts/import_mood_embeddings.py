@@ -1,14 +1,23 @@
 """장소 사진의 분위기 임베딩을 Supabase에 적재한다.
 
-입력은 코랩에서 만들어 내려받은 두 파일이다.
+입력은 코랩에서 만들어 내려받은 파일들이다. 구마다 한 벌씩 있다.
 
-  jongno_image_vectors.npy   사진 벡터 (사진 수 × 768)
-  manifest.json              벡터 순서대로의 사진 목록
-  mood_anchors.json          분위기 축 정의와 벡터
+  {구}_image_vectors.npy   사진 벡터 (사진 수 × 768)
+  {구}_manifest.json       벡터 순서대로의 사진 목록
+  mood_anchors.json        분위기 축 정의와 벡터 (구와 무관하게 하나)
 
-manifest에는 원본 주소가 없어(파일 경로만 있다) images.json과 jongno/images.json에서
+**한 번에 한 구씩 넣는다.** TourAPI detailImage2가 하루 1,000회라 구 하나도 여러 날에
+걸쳐 받게 되고, 임베딩도 코랩 세션 단위로 나뉜다. 장소 벡터는 그 장소 사진들의
+평균이라 구 사이에 의존이 없어, 나눠 넣어도 결과가 달라지지 않는다.
+
+manifest에는 원본 주소가 없어(파일 경로만 있다) 수집 때 만든 images.json에서
 (content_id, 파일명)으로 이어 붙인다. 원본 주소를 남겨야 사진 파일을 보관하지 않고도
 나중에 다시 받을 수 있다.
+
+종로(jongno)만 파일 이름이 다르다. 배치 방식을 만들기 전에 넣은 첫 구라
+manifest.json·jongno_image_vectors.npy이고, images.json도 두 곳(최상위 시드 29곳과
+jongno/)에 나뉘어 있다. 이름을 바꾸면 이미 적재된 것과 대조할 근거가 사라지므로
+그대로 두고 예외로 처리한다.
 
 사진 벡터에서 장소 평균을 여기서 계산한다. 코랩에서 미리 계산해 오지 않는 이유는,
 장소 평균이 사진 몇 장으로 만들었느냐에 따라 달라지는 파생값이라 원본과 함께
@@ -45,9 +54,13 @@ from app.config import Settings
 _UPSERT_CHUNK_SIZE = 200
 _DEFAULT_INPUT_DIR = Path.home() / "Dev" / "image_embedding"
 
+# 종로는 배치 방식 이전에 넣어 파일 이름이 다르다. 위 모듈 문서 참고.
+_LEGACY_BATCH = "jongno"
+
 
 @dataclass
 class MoodEmbeddingImportResult:
+    batch: str
     photo_count: int
     place_count: int
     single_photo_places: int
@@ -95,14 +108,22 @@ def normalize(vector: Sequence[float]) -> list[float]:
     return [x / length for x in vector]
 
 
-def load_origin_urls(input_dir: Path) -> dict[tuple[str, str], str]:
+def images_json_paths(batch: str) -> tuple[str, ...]:
+    """그 구의 수집 목록(images.json) 경로들. 뒤에 오는 것이 우선한다."""
+    if batch == _LEGACY_BATCH:
+        # 종로는 시드 29곳과 함께 임베딩했다. 겹치는 11곳은 손으로 걸러낸
+        # 최상위(images.json) 쪽을 쓴다 — 정답표가 그 사진들을 보고 매겨졌다.
+        return ("jongno/images.json", "images.json")
+    return (f"{batch}/images.json",)
+
+
+def load_origin_urls(input_dir: Path, batch: str) -> dict[tuple[str, str], str]:
     """(content_id, 파일명) → 관광공사 원본 주소.
 
-    manifest는 파일 경로만 담고 있어 여기서 이어 붙인다. 기존 29곳(images.json)이
-    종로(jongno/images.json)보다 우선한다 — 겹치는 11곳은 손으로 걸러낸 쪽을 썼다.
+    manifest는 파일 경로만 담고 있어 여기서 이어 붙인다.
     """
     urls: dict[tuple[str, str], str] = {}
-    for relative in ("jongno/images.json", "images.json"):
+    for relative in images_json_paths(batch):
         path = input_dir / relative
         if not path.exists():
             continue
@@ -117,13 +138,29 @@ def load_origin_urls(input_dir: Path) -> dict[tuple[str, str], str]:
     return urls
 
 
+def batch_files(batch: str) -> tuple[str, str]:
+    """(manifest 파일명, 벡터 파일명). 종로만 이름이 다르다."""
+    if batch == _LEGACY_BATCH:
+        return "manifest.json", "jongno_image_vectors.npy"
+    return f"{batch}_manifest.json", f"{batch}_image_vectors.npy"
+
+
 def build_payloads(
     input_dir: Path,
+    batch: str,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], MoodEmbeddingImportResult]:
-    manifest = json.loads((input_dir / "manifest.json").read_text(encoding="utf-8"))
-    origin_urls = load_origin_urls(input_dir)
+    manifest_name, vectors_name = batch_files(batch)
+    for name in (manifest_name, vectors_name, "mood_anchors.json"):
+        if not (input_dir / name).exists():
+            raise ValueError(
+                f"{input_dir / name} 가 없습니다. "
+                "코랩 산출물을 내려받았는지 확인하세요."
+            )
+
+    manifest = json.loads((input_dir / manifest_name).read_text(encoding="utf-8"))
+    origin_urls = load_origin_urls(input_dir, batch)
     anchors = json.loads((input_dir / "mood_anchors.json").read_text(encoding="utf-8"))
-    vectors = read_npy(input_dir / "jongno_image_vectors.npy")
+    vectors = read_npy(input_dir / vectors_name)
 
     photo_rows = [
         (place, image)
@@ -209,6 +246,7 @@ def build_payloads(
         )
 
     summary = MoodEmbeddingImportResult(
+        batch=batch,
         photo_count=len(photo_payloads),
         place_count=len(place_payloads),
         single_photo_places=sum(1 for p in place_payloads if p["photo_count"] == 1),
@@ -281,7 +319,7 @@ async def run(
     if not settings.supabase_secret_key:
         raise ValueError("SUPABASE_SECRET_KEY가 필요합니다.")
 
-    photo_payloads, place_payloads, summary = build_payloads(args.input_dir)
+    photo_payloads, place_payloads, summary = build_payloads(args.input_dir, args.batch)
     summary.dry_run = args.dry_run
 
     base_url = settings.supabase_url
@@ -313,10 +351,15 @@ async def run(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="장소 분위기 임베딩 적재")
     parser.add_argument(
+        "--batch",
+        required=True,
+        help="구 이름. 예: jung. {구}_manifest.json과 {구}_image_vectors.npy를 읽는다",
+    )
+    parser.add_argument(
         "--input-dir",
         type=Path,
         default=_DEFAULT_INPUT_DIR,
-        help="manifest.json·mood_anchors.json·jongno_image_vectors.npy가 있는 폴더",
+        help="코랩 산출물과 수집 목록이 있는 폴더",
     )
     parser.add_argument(
         "--dry-run",
