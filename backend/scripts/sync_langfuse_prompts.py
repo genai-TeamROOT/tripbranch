@@ -339,6 +339,69 @@ def run_push(*, confirmed: bool, message: str) -> int:
     return 1 if failed else 0
 
 
+def run_relabel(*, confirmed: bool) -> int:
+    """이미 올라간 버전에 semver 라벨만 붙인다. **새 버전을 만들지 않는다.**
+
+    `--push`는 본문이 다를 때만 올린다 — 같은 내용으로 버전만 쌓이면 "언제 뭐가
+    바뀌었나"를 못 읽기 때문이다. 그래서 라벨 규칙을 나중에 도입하면 **이미 올라간
+    것에는 영원히 안 붙는다.** 이 모드가 그 한 번을 메운다.
+
+    `update_prompt(new_labels=...)`는 **기존 라벨에 더한다** — 2026-08-26에 버리는
+    프롬프트로 실측했다(`production`·`keepme`가 그대로 남고 새 라벨만 늘었다).
+    대체가 아니라서 `production`이 날아갈 걱정 없이 쓸 수 있다.
+
+    `production`이 가리키는 버전에 붙인다 — 지금 실제로 도는 그 버전이다.
+    """
+
+    client = _client()
+    if client is None:
+        return 1
+
+    planned: list[tuple[str, int, str]] = []
+    skipped: list[tuple[str, str]] = []
+    for relative_path in asset_paths():
+        labels = push_labels(asset_config(relative_path))
+        if len(labels) == 1:
+            continue  # semver가 없는 조각
+        semver = labels[-1]
+        name = prompt_name(relative_path)
+        try:
+            prompt = client.get_prompt(name, label=PRODUCTION_LABEL, cache_ttl_seconds=0)
+        except Exception as exc:
+            skipped.append((relative_path, f"{type(exc).__name__}: {exc}"))
+            continue
+        if semver in (prompt.labels or []):
+            continue  # 이미 붙어 있다
+        planned.append((name, prompt.version, semver))
+
+    if skipped:
+        print("\n✗ 조회에 실패해 건너뛴다:")
+        for relative_path, detail in skipped:
+            print(f"    {relative_path} — {detail}")
+
+    if not planned:
+        print("\n✓ 붙일 라벨이 없다. 진입 템플릿이 전부 semver 라벨을 갖고 있다.")
+        return 1 if skipped else 0
+
+    print(f"\n=== 라벨을 붙일 버전 {len(planned)}개 ===")
+    for name, version, semver in planned:
+        print(f"  {name:<40} v{version} ← {semver}")
+    print("\n※ 새 버전은 생기지 않는다. 기존 라벨도 그대로 남는다.")
+    if not confirmed:
+        print("\n실제로 붙이려면 --yes 를 붙인다.")
+        return 0
+
+    failed = 0
+    for name, version, semver in planned:
+        try:
+            client.update_prompt(name=name, version=version, new_labels=[semver])
+            print(f"  ✓ {name} v{version} ← {semver}")
+        except Exception as exc:
+            failed += 1
+            print(f"  ✗ {name} — {type(exc).__name__}: {exc}")
+    return 1 if (failed or skipped) else 0
+
+
 def run_pull(*, confirmed: bool) -> int:
     client = _client()
     if client is None:
@@ -375,6 +438,9 @@ def main() -> int:
     mode.add_argument("--check", action="store_true", help="대조만 한다 (기본)")
     mode.add_argument("--push", action="store_true", help="디스크 → Langfuse")
     mode.add_argument("--pull", action="store_true", help="Langfuse → 디스크")
+    mode.add_argument(
+        "--relabel", action="store_true", help="새 버전 없이 semver 라벨만 붙인다"
+    )
     parser.add_argument("--yes", action="store_true", help="쓰기를 실제로 실행한다")
     parser.add_argument("--diff", action="store_true", help="--check에서 차이를 함께 낸다")
     parser.add_argument(
@@ -386,6 +452,8 @@ def main() -> int:
 
     if args.push:
         return run_push(confirmed=args.yes, message=args.message)
+    if args.relabel:
+        return run_relabel(confirmed=args.yes)
     if args.pull:
         return run_pull(confirmed=args.yes)
     return run_check(show_diff=args.diff)
