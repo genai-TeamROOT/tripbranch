@@ -62,6 +62,10 @@ def _client(handler) -> httpx.AsyncClient:
             ("naver_geocoding", "geocode"),
         ),
         (
+            "https://maps.apigw.ntruss.com/map-direction/v1/driving?start=1,2",
+            ("naver_driving", "driving"),
+        ),
+        (
             "https://naverapihub.apigw.ntruss.com/search/v1/local?query=x",
             ("naver_local_search", "local"),
         ),
@@ -74,6 +78,32 @@ def _client(handler) -> httpx.AsyncClient:
 def test_classify_maps_known_hosts(url: str, expected: tuple[str, str]) -> None:
     parsed = httpx.URL(url)
     assert classify(parsed.host, parsed.path) == expected
+
+
+def test_classify_splits_naver_maps_host_by_path_prefix() -> None:
+    """자동차 경로와 지오코딩은 호스트가 같아도 provider가 갈려야 한다(TP-131).
+
+    operation만 갈리고 provider가 하나로 묶이면 Ops 패널에서 호출 수·실패 수·
+    지연이 두 API의 합으로 보여 어느 쪽이 얼마나 나갔는지 읽을 수 없다.
+    """
+    driving = classify("maps.apigw.ntruss.com", "/map-direction/v1/driving")
+    geocode = classify("maps.apigw.ntruss.com", "/map-geocode/v2/geocode")
+    assert driving == ("naver_driving", "driving")
+    assert geocode == ("naver_geocoding", "geocode")
+    assert driving[0] != geocode[0]
+
+
+def test_classify_marks_unmapped_naver_maps_path_as_unknown() -> None:
+    """접두사 표에 없는 네이버 지도 API는 기존 provider에 붙이지 않는다.
+
+    붙여 두면 새 API를 추가했을 때 남의 집계에 조용히 섞인다 — TP-131이 바로
+    그 사례였다. unknown으로 떨어뜨리면 패널에 path 원문이 그대로 보인다.
+    """
+    provider, operation = classify(
+        "maps.apigw.ntruss.com", "/map-reversegeocode/v2/gc"
+    )
+    assert provider == UNKNOWN_PROVIDER
+    assert operation == "maps.apigw.ntruss.com/map-reversegeocode/v2/gc"
 
 
 def test_classify_marks_unknown_host_instead_of_dropping() -> None:

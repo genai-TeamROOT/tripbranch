@@ -18,6 +18,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   // 도보(/v2/routing/walk)와 대중교통(/v2/routing/publictraffic)이 같은 호스트라
   // provider가 하나로 묶인다. 어느 쪽인지는 operation 열이 가른다.
   kakao_map: "카카오맵 길찾기",
+  naver_driving: "네이버 자동차 경로",
   naver_geocoding: "네이버 지오코딩",
   naver_local_search: "네이버 지역검색",
   supabase: "Supabase",

@@ -43,19 +43,32 @@ _RETAINED_DAYS = 7
 # 보려면 표본이 있어야 해서 최근 것만 제한적으로 남긴다.
 _LATENCY_SAMPLE_SIZE = 200
 
-# host(정확히 일치) → provider. path 접두사로 더 나누는 경우는 classify에서 처리한다.
-_DATA_GO_KR_HOST = "apis.data.go.kr"
+# 한 호스트에 여러 API가 붙어 있어 path 접두사로 갈라야 하는 경우.
+# host → ((path 접두사, provider), ...) 이고, 접두사는 위에서부터 startswith로
+# 첫 일치를 찾으므로 순서가 곧 우선순위다. `/B551011`처럼 접두사끼리 앞부분을
+# 공유하는 경우가 있어 dict가 아니라 순서 있는 튜플로 둔다.
+#
+# 접두사에 하나도 안 걸리는 path는 UNKNOWN_PROVIDER로 보낸다. 임의로 그 호스트의
+# 다른 provider에 붙이면 새 API를 추가했을 때 조용히 남의 집계에 섞인다 — 네이버
+# 자동차 경로가 지오코딩으로 집계되던 것이 그 사례다(TP-131).
+_HOST_PREFIX_PROVIDERS: dict[str, tuple[tuple[str, str], ...]] = {
+    "apis.data.go.kr": (
+        ("/B551011/TatsCnctrRateService", "concentration"),
+        ("/B551011/KorService2", "tour_api"),
+        ("/1360000/VilageFcstInfoService_2.0", "kma_weather"),
+        ("/B090041/openapi/service/SpcdeInfoService", "kasi_holiday"),
+    ),
+    # 자동차 경로와 지오코딩이 같은 호스트를 쓴다.
+    "maps.apigw.ntruss.com": (
+        ("/map-direction", "naver_driving"),
+        ("/map-geocode", "naver_geocoding"),
+    ),
+}
 
-_DATA_GO_KR_PREFIXES: tuple[tuple[str, str], ...] = (
-    ("/B551011/TatsCnctrRateService", "concentration"),
-    ("/B551011/KorService2", "tour_api"),
-    ("/1360000/VilageFcstInfoService_2.0", "kma_weather"),
-    ("/B090041/openapi/service/SpcdeInfoService", "kasi_holiday"),
-)
-
+# host(정확히 일치) → provider. path를 보지 않으므로 호스트 하나에 API가 하나뿐이거나,
+# 여러 개여도 operation 열로 충분히 갈리는 경우에만 쓴다.
 _HOST_PROVIDERS: dict[str, str] = {
     "dapi.kakao.com": "kakao_map",
-    "maps.apigw.ntruss.com": "naver_geocoding",
     "naverapihub.apigw.ntruss.com": "naver_local_search",
 }
 
@@ -276,8 +289,9 @@ def classify(host: str, path: str) -> tuple[str, str]:
     쿼리스트링은 받지 않는다 — ServiceKey가 거기 실려 있다.
     """
     host = host.lower()
-    if host == _DATA_GO_KR_HOST:
-        for prefix, provider in _DATA_GO_KR_PREFIXES:
+    prefixes = _HOST_PREFIX_PROVIDERS.get(host)
+    if prefixes is not None:
+        for prefix, provider in prefixes:
             if path.startswith(prefix):
                 return provider, _last_segment(path) or prefix
         return UNKNOWN_PROVIDER, f"{host}{path}"
