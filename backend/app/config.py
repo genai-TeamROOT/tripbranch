@@ -150,6 +150,16 @@ class Settings(BaseSettings):
     # 0으로 두면 캐시를 아예 안 쓴다 — 호출마다 왕복(실측 중위 51ms)이 붙으므로
     # 디버깅용이지 상시 설정이 아니다.
     langfuse_prompt_cache_ttl_seconds: int = 60
+    # 이 서버가 만든 turn에 `developer:<값>` 태그를 붙인다. 팀원 넷이 같은 Langfuse
+    # 프로젝트를 공유하면 목록에서 누가 만든 턴인지 구분할 수 없어서 둔다.
+    #
+    # **`app_env`로 대신하지 않는다.** 그건 관측 라벨이 아니라 기능 게이트다 —
+    # `main.py`가 정확히 `"local"`과 비교해서 개발자 Ops 라우터(`/api/dev/*`)를
+    # 등록할지 정한다. 사람 이름을 붙이려고 값을 바꾸면 그 라우터가 통째로 사라진다.
+    #
+    # 기본값은 빈 문자열이고, 그때는 태그를 아예 안 붙인다 — 안 적은 사람의 트레이스가
+    # `developer:` 로 오염되지 않아야 필터가 제 역할을 한다.
+    langfuse_developer: str = ""
     langfuse_public_key: str = Field(default="", repr=False, exclude=True)
     langfuse_secret_key: str = Field(default="", repr=False, exclude=True)
     # 리전별로 호스트가 다르다. 한국에서는 JP가 지연이 가장 낮다.

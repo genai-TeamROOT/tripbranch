@@ -256,6 +256,25 @@ class _NoopRecorder:
 _NOOP: _NoopRecorder = _NoopRecorder()
 
 
+def _tags_with_developer(tags: Sequence[str]) -> list[str]:
+    """호출부가 준 태그에 `developer:<핸들>`을 더한다.
+
+    **호출부가 붙이지 않고 여기서 붙인다.** 이 태그는 관측 전용 관심사라, 넣는
+    자리를 관측 모듈 안으로 모아두면 호출부(런타임)는 이 설정의 존재를 몰라도 된다.
+
+    설정이 비어 있으면 아무것도 더하지 않는다 — 안 적은 사람의 trace가
+    `developer:` 로 오염되면 필터가 제 역할을 못 한다.
+
+    **`app_env`(태그 `env:`)로 대신할 수 없다.** 그건 기능 게이트다 — `main.py`가
+    정확히 `"local"`과 비교해 개발자 Ops 라우터를 등록할지 정하므로, 사람 이름을
+    넣으려고 값을 바꾸면 `/api/dev/*`가 사라진다(2026-08-26 확인).
+    """
+    developer = settings.langfuse_developer.strip()
+    if not developer:
+        return list(tags)
+    return [*tags, f"developer:{developer}"]
+
+
 @contextmanager
 def trace_attributes(
     *,
@@ -281,7 +300,7 @@ def trace_attributes(
             session_id=session_id,
             user_id=user_id,
             version=version,
-            tags=list(tags) or None,
+            tags=_tags_with_developer(tags) or None,
             metadata=dict(metadata) if metadata else None,
         )
 

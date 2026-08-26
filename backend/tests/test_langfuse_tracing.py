@@ -565,3 +565,52 @@ def test_trace_id_field_is_not_the_state_trace_id() -> None:
     assert "langfuse_trace_id" in AgentResponse.model_fields
     assert "trace_id" not in AgentResponse.model_fields
     assert AgentResponse.model_fields["langfuse_trace_id"].default is None
+
+
+# --- 9. 팀원끼리 자기 trace를 가려낸다 ------------------------------------------
+
+
+def test_no_developer_tag_when_the_setting_is_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """안 적은 사람의 trace가 `developer:` 로 오염되면 필터가 제 역할을 못 한다."""
+    monkeypatch.setattr(settings, "langfuse_developer", "")
+
+    assert langfuse_tracing._tags_with_developer(["env:local"]) == ["env:local"]
+
+
+def test_developer_tag_is_appended_to_the_callers_tags(monkeypatch: pytest.MonkeyPatch) -> None:
+    """호출부 태그를 지우지 않고 뒤에 더한다 — scoring·env 필터가 살아 있어야 한다."""
+    monkeypatch.setattr(settings, "langfuse_developer", "rayquaza410")
+
+    assert langfuse_tracing._tags_with_developer(["scoring:1.6.0", "env:local"]) == [
+        "scoring:1.6.0",
+        "env:local",
+        "developer:rayquaza410",
+    ]
+
+
+def test_developer_setting_is_trimmed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`.env`에 딸려 들어온 공백이 태그 값이 되면 화면에서 같은 사람이 둘로 갈린다."""
+    monkeypatch.setattr(settings, "langfuse_developer", "  rayquaza410  ")
+
+    assert langfuse_tracing._tags_with_developer([]) == ["developer:rayquaza410"]
+
+    monkeypatch.setattr(settings, "langfuse_developer", "   ")
+    assert langfuse_tracing._tags_with_developer([]) == []
+
+
+def test_developer_tag_does_not_ride_on_app_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`APP_ENV`를 사람마다 다르게 두는 방법을 막는다.
+
+    그건 관측 라벨이 아니라 **기능 게이트**다 — `main.py`가 정확히 `"local"`과
+    비교해 개발자 Ops 라우터(`/api/dev/*`)를 등록할지 정한다. 관측에서 이름을
+    구분하려고 그 값을 바꾸면 개발자 도구가 통째로 사라진다(2026-08-26 확인).
+
+    그래서 이 테스트는 `app_env`가 사람 이름이 아니어도 `developer:` 태그가
+    독립적으로 붙는지를 잠근다.
+    """
+    monkeypatch.setattr(settings, "app_env", "local")
+    monkeypatch.setattr(settings, "langfuse_developer", "mintee")
+
+    tags = langfuse_tracing._tags_with_developer([f"env:{settings.app_env}"])
+
+    assert tags == ["env:local", "developer:mintee"]
