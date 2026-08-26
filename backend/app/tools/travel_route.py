@@ -16,7 +16,7 @@ from app.domain.travel_route import (
     TravelRoute,
 )
 from app.errors import AppError
-from app.observability.langfuse_tracing import observe_step
+from app.observability.langfuse_tracing import observe_step, record_score
 from app.providers.contracts import ProviderMetadata
 from app.providers.protocols import TravelRouteProvider
 from app.providers.walking_route import MAX_TRAVEL_ROUTE_DESTINATIONS
@@ -118,6 +118,12 @@ class TravelRouteTool:
                     level=summary["level"],
                     status_message=summary["headline"],
                 )
+                # 이 턴의 거리 축이 실측인지 직선거리인지. **추세로 봐야 하는 값이라
+                # span의 output만으로는 부족하다** — 2026-08-25에 "실측 0%"를 한 번
+                # 보고 알았지만, 그게 언제부터였는지도 카카오가 고쳐지면 언제
+                # 올라가는지도 열어보기 전에는 모른다.
+                if summary["measured_ratio"] is not None:
+                    record_score("route_measured_ratio", float(summary["measured_ratio"]))
             except Exception:
                 logger.warning("경로 관측 요약 실패(응답 흐름에는 영향 없음)", exc_info=True)
             return result

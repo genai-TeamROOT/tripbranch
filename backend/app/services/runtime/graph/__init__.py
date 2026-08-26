@@ -65,8 +65,12 @@ def build_early_return_graph():
     """
 
     graph = StateGraph(EarlyReturnState)
-    graph.add_node("general_answer", general_answer_node)
-    graph.add_node("static_answer", static_answer_node)
+    graph.add_node(
+        "general_answer", _observed("general_answer", general_answer_node, _summarize_answer)
+    )
+    graph.add_node(
+        "static_answer", _observed("static_answer", static_answer_node, _summarize_answer)
+    )
     graph.add_conditional_edges(
         START,
         route_early_return,
@@ -85,6 +89,11 @@ def build_early_return_graph():
 # 예산이 늘어도 span 하나가 수 KB로 부풀지 않게 막아 둔다.
 _SUMMARY_ITEM_LIMIT = 10
 
+# 후보 하나에 실을 취향 근거 문장 수. `taste_evidence`는 RPC가 찾은 만큼 전부
+# 들어 있어 상한이 없는데, 한 이벤트가 너무 커지면 Langfuse가 통째로 버려서
+# span 자체가 사라진다. 잘렸는지는 `taste_evidence_count`로 본다.
+_EVIDENCE_QUOTE_LIMIT = 10
+
 
 def _round_scores(scores: Mapping[str, float | None] | None) -> dict[str, float | None]:
     """소수점을 줄여 화면에서 읽히게 한다. 0.7234891은 볼 때 방해만 된다."""
@@ -96,22 +105,108 @@ def _round_scores(scores: Mapping[str, float | None] | None) -> dict[str, float 
     }
 
 
+def _location(location: Any) -> dict[str, Any] | None:
+    """`LocationDebug` 하나를 span에 실을 모양으로 편다. **좌표는 뺀다.**
+
+    `source`가 이 요약의 존재 이유다 — 검색 위치·사용자 위치·경로 시작점 셋이
+    서로 다를 수 있고 **다른 것 자체가 관측 대상이다**(TP-112). `route_origin`이
+    `search_center`로 대체됐는지는 좌표 없이도 이 한 필드로 읽힌다.
+
+    **위경도는 싣지 않는다.** 팀원이 테스트하는 자리의 실좌표라, 켜고 끄는 스위치
+    하나에 맡길 값이 아니다(2026-08-26 결정). `name`은 발화에서 온 지명이고
+    (`"경복궁"`), 기기 GPS로 온 좌표에는 애초에 이름이 없어 `None`이다.
+    """
+
+    if location is None:
+        return None
+    return {"name": location.name, "source": location.source}
+
+
+def concentration_source_rows(execution: Any) -> list[dict[str, Any]]:
+    """후보별 혼잡도가 어디서 온 값인지를 span에 실을 모양으로 편다.
+
+    **근사치가 섞이는 게 정상 상태다**(활성 844건 중 집중률 매핑 100건). 그래서
+    상태 집계만 보면 직접 조회한 값과 인근 장소에서 빌려온 값이 "success 5건"으로
+    같아 보인다 — 근사치의 타당성은 "어느 장소에서 얼마나 떨어진 값인가"로 판단해야
+    하므로 후보별로 남긴다(`CandidateConcentrationDebug`).
+
+    `tool_fetch` span과 `concentration_enrichment` span이 **같은 함수를 쓴다.** 같은
+    사실을 두 모양으로 적으면 한쪽만 고쳤을 때 조용히 어긋난다.
+    """
+
+    return [
+        {
+            "place_id": row.place_id,
+            "name": row.name,
+            "status": row.status,
+            "is_proxy": row.is_proxy,
+            "proxy_place_name": row.proxy_place_name,
+            "proxy_distance_km": row.proxy_distance_km,
+        }
+        for row in execution.candidate_concentration[:_SUMMARY_ITEM_LIMIT]
+    ]
+
+
+def _tool_call_summary(execution: Any) -> dict[str, Any]:
+    """C 호출 한 건을 span에 실을 모양으로 편다.
+
+    `ToolExecutionDebug`가 개발자 Audit용으로 이미 만들어 둔 값이라 새로 수집하는
+    게 아니다 — 고르기만 한다.
+    """
+
+    return {
+        "operation": execution.operation,
+        "status": execution.status,
+        "latency_ms": execution.latency_ms,
+        "providers": [
+            {"source": provider.source, "status": provider.status}
+            for provider in execution.providers
+        ],
+        # fetched=False는 실패가 아니라 "아예 조회하지 않음"이다
+        # (발화에 이미 값이 있어 생략한 경우 등). 둘을 구분해 적는다.
+        "items": {
+            item.key: (item.status or "unknown") if item.fetched else "skipped"
+            for item in execution.context_items
+        },
+        "item_errors": {
+            item.key: item.error_code for item in execution.context_items if item.error_code
+        },
+        "rule_versions": dict(execution.rule_versions),
+        "resolved_location_name": execution.resolved_location_name,
+        "resolved_location_address": execution.resolved_location_address,
+        # 셋은 서로 다를 수 있고, **다른 것 자체가 관측 대상이다**(TP-112). 특히
+        # route_origin.source가 "search_center"면 사용자 위치를 몰라 검색 위치로
+        # 대체한 턴이라 거리·경로 표기가 사실과 어긋날 수 있다.
+        "locations": {
+            "search": _location(execution.search_location),
+            "user": _location(execution.user_location),
+            "route_origin": _location(execution.route_origin),
+        },
+        "error_code": execution.error_code,
+        "clarification_code": execution.clarification_code,
+        "is_proxy": execution.is_proxy,
+        "candidate_status_counts": dict(execution.candidate_status_counts),
+        "candidate_concentration": concentration_source_rows(execution),
+    }
+
+
 def _summarize_tool_fetch(result: Mapping[str, Any]) -> dict[str, Any] | None:
-    """`tool_fetch` span에 실을 값을 고른다.
+    """`tool_fetch` span에 실을 값을 고른다 — 개발자 Audit "C Tool" 탭과 같은 값이다.
 
-    **여기는 원래 비워 뒀던 자리다.** 좌표와 외부 API 자격증명이 흐르는 경로라
-    이름·지연만 남겼는데, 그 결과 span 하나가 빈 상자였다 — C가 Provider를 몇 개
-    불렀고 무엇이 실패했는지 화면에서 알 수 없었다. 지금은 **인자와 응답 원문은
-    그대로 빼고 상태·개수만** 싣는다. 그 값들은 `ToolExecutionDebug`가 이미
-    개발자 Audit용으로 만들어 두고 있어서 새로 수집하는 게 아니다.
+    **원래는 상태·개수만 남기고 좌표·해석된 장소명·주소를 뺐다.** 외부 SaaS로 나가는
+    값이라 `capture_content`를 켜도 안 새게 두 겹으로 막은 것이었다. 2026-08-26에
+    **한 겹으로 줄이기로 했다** — 화면에 보이는 값이 trace에는 없어서, 원인을 쫓을
+    때마다 결국 API 응답을 따로 받아야 했다.
 
-    **`resolved_location_name`·`resolved_location_address`는 일부러 뺀다.** C가
-    발화에서 풀어낸 장소명·주소라 사용자가 어디 있는지/어디를 찾는지를 그대로
-    드러낸다 — `capture_content`를 꺼도 여긴 안 새야 한다.
+    **이제 방어선은 `capture_content` 하나뿐이다.** 꺼져 있으면 이 output 전체가
+    `<redacted>`로 치환되지만(`langfuse_tracing._mask`), 켜면 **사용자 좌표와
+    사용자가 찾는 장소명이 그대로 Langfuse로 나간다.** 켜는 것이 명시적 선택이어야
+    한다는 뜻이고, 한 번 올라간 trace는 스위치를 도로 꺼도 남는다.
 
     조기 종료(`response`만 채워 그 턴을 끝낸 경우)는 Tool 기록이 아예 없으므로
     `terminal`만 남긴다 — 값이 없는 것과 단계를 건너뛴 것이 구분돼야 한다.
     """
+
     executions = list(result.get("tool_executions") or [])
     terminal = result.get("response") is not None
     if not executions and not terminal:
@@ -119,43 +214,25 @@ def _summarize_tool_fetch(result: Mapping[str, Any]) -> dict[str, Any] | None:
     return {
         "terminal": terminal,
         "call_count": len(executions),
-        "calls": [
-            {
-                "operation": execution.operation,
-                "status": execution.status,
-                "latency_ms": execution.latency_ms,
-                "providers": [
-                    {"source": provider.source, "status": provider.status}
-                    for provider in execution.providers
-                ],
-                # fetched=False는 실패가 아니라 "아예 조회하지 않음"이다
-                # (발화에 이미 값이 있어 생략한 경우 등). 둘을 구분해 적는다.
-                "items": {
-                    item.key: (item.status or "unknown") if item.fetched else "skipped"
-                    for item in execution.context_items
-                },
-                "item_errors": {
-                    item.key: item.error_code for item in execution.context_items if item.error_code
-                },
-                "rule_versions": dict(execution.rule_versions),
-            }
-            for execution in executions[:_SUMMARY_ITEM_LIMIT]
-        ],
+        "calls": [_tool_call_summary(execution) for execution in executions[:_SUMMARY_ITEM_LIMIT]],
     }
 
 
 def _summarize_scoring(result: Mapping[str, Any]) -> dict[str, Any] | None:
-    """`scoring` span에 실을 값을 고른다.
+    """`scoring` span에 실을 값을 고른다 — 개발자 Audit "D Scoring" 탭과 같은 값이다.
 
-    **통째로 넣지 않는다.** `RecommendationItem`은 필드가 17개라 후보 10곳이면 한 span이
-    수 KB가 되고, 그중 `taste_evidence`(근거 문장 원문)와 `explanations`는 화면에서
-    점수를 읽는 데 방해만 된다. 여기서 보고 싶은 건 **"어느 축이 몇 점이었나"**다 —
-    2026-08-25에 거리 점수가 0으로 나오는 원인을 쫓을 때, 이 값이 없어서 실제 API
-    응답을 따로 받아야 했다.
+    **원래는 점수 축만 남기고 `explanations`·`taste_evidence`를 뺐다** — 화면에서
+    점수를 읽는 데 방해가 된다는 이유였다. 2026-08-26에 되돌렸다: "왜 이 점수가
+    나왔나"를 쫓을 때 근거 문장이 없으면 span만으로는 답이 안 나온다.
 
-    좌표는 애초에 여기 없다. C가 장소를 찾을 때만 쓰고 D로 넘어올 땐 `distance_km`로
-    접힌다(`ScoringCandidate`) — 그래서 이 span은 열어도 위치가 새지 않는다.
+    **후보는 상위 10건, 근거 문장은 후보당 10개까지** 싣는다(`_EVIDENCE_QUOTE_LIMIT`).
+    `taste_evidence`는 상한이 없어 그대로 실으면 이벤트가 얼마나 커질지 모른다.
+
+    좌표는 여기 없다. C가 장소를 찾을 때만 쓰고 D로 넘어올 땐 `distance_km`로
+    접힌다(`ScoringCandidate`) — `tool_fetch` span과 달리 이쪽은 열어도 위치가
+    새지 않는다.
     """
+
     response = result.get("recommendations")
     if response is None:
         return None
@@ -165,10 +242,21 @@ def _summarize_scoring(result: Mapping[str, Any]) -> dict[str, Any] | None:
             {
                 "place_id": item.place_id,
                 "name": item.name,
+                "category": item.category,
+                "distance_km": item.distance_km,
                 "score": round(item.score, 3),
                 "features": _round_scores(item.feature_scores),
                 # 취향·혼잡도가 켜졌는지에 따라 세트가 달라지는데 지금은 눈에 안 보인다.
                 "weights": _round_scores(item.weights_used),
+                "explanations": list(item.explanations),
+                "warnings": list(item.warnings),
+                "taste_evidence": [
+                    {"text": quote.text, "similarity": round(quote.similarity, 3)}
+                    for quote in item.taste_evidence[:_EVIDENCE_QUOTE_LIMIT]
+                ],
+                # 위 목록이 잘렸는지 여기서 본다. 빈 목록이면 "컷을 넘는 근거가
+                # 없었다"는 뜻이고, 검색이 실패한 것과는 다르다.
+                "taste_evidence_count": len(item.taste_evidence),
             }
             for item in items[:_SUMMARY_ITEM_LIMIT]
         ],
@@ -200,6 +288,23 @@ def _summarize_finalize(result: Mapping[str, Any]) -> dict[str, Any] | None:
         "has_schedule": getattr(response, "schedule", None) is not None,
         "has_comparison": getattr(response, "comparison", None) is not None,
     }
+
+
+def _summarize_answer(result: Mapping[str, Any]) -> dict[str, Any] | None:
+    """`general_answer`·`static_answer` span에 실을 값을 고른다.
+
+    **이 두 노드는 span이 아예 없었다.** `_observed()`를 안 씌워서 GENERAL 턴의
+    trace에는 `agent_turn` 밑에 generation 하나만 떠 있었다 — 노드가 얼마나 걸렸고
+    답변이 실제로 나갔는지가 화면에서 안 보였다.
+
+    답변 원문은 싣지 않는다. 같은 문자열이 바로 아래 generation의 output에 이미
+    있어서, 두 번 실으면 이벤트만 커지고 읽히는 건 늘지 않는다.
+    """
+
+    answer = result.get("answer")
+    if answer is None:
+        return None
+    return {"answer_length": len(answer)}
 
 
 def _observed(
@@ -368,6 +473,7 @@ async def run_recommend_pipeline_graph(
 
 __all__ = [
     "PipelineDeps",
+    "concentration_source_rows",
     "build_early_return_graph",
     "build_recommend_pipeline_graph",
     "run_early_return_graph",

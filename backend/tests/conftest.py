@@ -51,6 +51,19 @@ def isolate_regular_tests_from_real_providers(monkeypatch: pytest.MonkeyPatch) -
     # 켜진 경로는 test_langfuse_tracing.py가 가짜 클라이언트로 따로 검증한다.
     monkeypatch.setattr(settings, "langfuse_enabled", False)
     monkeypatch.setattr(settings, "langfuse_capture_content", False)
+    monkeypatch.setattr(settings, "langfuse_capture_user_id", False)
+
+    # LANGFUSE_PROMPTS_ENABLED는 위 셋과도 또 다른 축이다 — 전송이 아니라 **프롬프트를
+    # 어디서 읽느냐**다. 그래서 langfuse_enabled를 꺼도 이건 안 꺼진다.
+    #
+    # .env에 true가 남아 있으면 프롬프트를 읽는 모든 테스트가 실제 네트워크를 탄다.
+    # 프롬프트는 요청마다 여러 번 읽히므로 스위트 전체가 사실상 멈춘다 —
+    # 2026-08-26에 실제로 그렇게 됐다(6.8초 → 2분 넘게 미완료). 캐시가 있어도 첫
+    # 조회가 43개를 예열하고, 프로세스가 아니라 테스트 단위로 설정이 오가면서
+    # 예열이 반복된다.
+    #
+    # 켜진 경로는 test_langfuse_prompts.py가 가짜 클라이언트로 따로 검증한다.
+    monkeypatch.setattr(settings, "langfuse_prompts_enabled", False)
 
 
 @pytest.fixture(autouse=True)

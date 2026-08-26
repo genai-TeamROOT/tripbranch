@@ -24,6 +24,8 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
 from app.schemas import (
+    CandidateConcentrationDebug,
+    LocationDebug,
     RecommendationItem,
     RecommendationResponse,
     TasteEvidenceQuote,
@@ -33,9 +35,11 @@ from app.schemas import (
 )
 from app.services.runtime.graph import (
     _observed,
+    _summarize_answer,
     _summarize_finalize,
     _summarize_scoring,
     _summarize_tool_fetch,
+    concentration_source_rows,
 )
 
 
@@ -99,6 +103,39 @@ def test_pipeline_nodes_are_registered_wrapped() -> None:
     assert {"tool_fetch", "scoring", "schedule", "finalize"} <= set(compiled.nodes)
 
 
+def test_early_return_nodes_are_registered_wrapped() -> None:
+    """이 두 노드는 span이 아예 없었다 — `_observed()`를 안 씌워서다.
+
+    GENERAL 턴의 trace에는 `agent_turn` 밑에 generation 하나만 떠 있어서, 노드가
+    얼마나 걸렸고 답변이 실제로 나갔는지가 화면에서 안 보였다.
+    """
+    from app.services.runtime.graph import build_early_return_graph
+    from app.services.runtime.graph.nodes.general import general_answer_node
+    from app.services.runtime.graph.nodes.static_answer import static_answer_node
+
+    compiled = build_early_return_graph()
+
+    assert {"general_answer", "static_answer"} <= set(compiled.nodes)
+    for name, original in (
+        ("general_answer", general_answer_node),
+        ("static_answer", static_answer_node),
+    ):
+        bound = compiled.nodes[name].bound
+        # 감싸지 않았으면 원본이 그대로라 `__wrapped__`가 없다.
+        assert bound.afunc.__wrapped__ is original
+        # 감싼 뒤에도 LangGraph가 `config`를 넘기려면 원본 시그니처가 보여야 한다.
+        assert "config" in bound.func_accepts
+
+
+def test_answer_summary_records_the_length_not_the_text() -> None:
+    """같은 문자열이 바로 아래 generation output에 이미 있다 — 두 번 실을 이유가 없다."""
+    assert _summarize_answer({"answer": "안녕하세요, 무엇을 도와드릴까요?"}) == {
+        "answer_length": 18
+    }
+    # 노드가 답을 못 채웠으면 span에 빈 값을 적지 않는다.
+    assert _summarize_answer({"answer": None}) is None
+
+
 # --- span 요약: 무엇을 싣고 무엇을 빼는가 -------------------------------------
 
 
@@ -142,18 +179,38 @@ def test_scoring_summary_keeps_the_scores_that_explain_the_ranking() -> None:
     assert summary["excluded_closed_count"] == 2
 
 
-def test_scoring_summary_leaves_out_the_bulky_prose() -> None:
-    """근거 문장 원문·설명은 뺀다.
+def test_scoring_summary_carries_the_prose_that_explains_the_score() -> None:
+    """근거 문장·설명을 싣는다 — 2026-08-26에 뒤집은 결정이다.
 
-    후보 10곳 × 17필드를 통째로 넣으면 span 하나가 수 KB가 되고, 정작 여기서 보고 싶은
-    "어느 축이 몇 점인가"가 그 사이에 묻힌다.
+    원래는 "점수를 읽는 데 방해된다"고 뺐는데, 정작 **왜 그 점수가 나왔나**를 쫓을 때
+    근거 문장이 없어 span만으로는 답이 안 나왔다. Audit 화면의 "D Scoring" 탭과 같은
+    값을 싣는다.
     """
     summary = _summarize_scoring({"recommendations": _response([_item("p1", 0.7)])})
 
-    blob = json.dumps(summary, ensure_ascii=False)
-    assert "조용하고 아늑했어요" not in blob
-    assert "현재 위치에서 가까운 장소예요" not in blob
-    assert "조건을 종합한 추천이에요" not in blob
+    assert summary is not None
+    ranked = summary["ranked"][0]
+    assert ranked["explanations"] == ["현재 위치에서 가까운 장소예요."]
+    assert ranked["warnings"] == []
+    assert ranked["taste_evidence"] == [{"text": "조용하고 아늑했어요", "similarity": 0.61}]
+    # 화면이 카테고리·거리로 후보를 가려내므로 함께 싣는다.
+    assert ranked["category"] == "cafe"
+    assert ranked["distance_km"] == 0.42
+
+
+def test_scoring_summary_caps_the_evidence_quotes_but_says_how_many_there_were() -> None:
+    """`taste_evidence`는 RPC가 찾은 만큼 전부 들어 있어 상한이 없다.
+
+    한 이벤트가 너무 커지면 Langfuse가 통째로 버려서 span 자체가 사라진다. 잘라내되
+    **잘랐다는 사실이 보여야** 근거가 하나뿐인 것과 구분된다.
+    """
+    quotes = [TasteEvidenceQuote(text=f"근거 {i}", similarity=0.5) for i in range(25)]
+    item = _item("p1", 0.7).model_copy(update={"taste_evidence": quotes})
+    summary = _summarize_scoring({"recommendations": _response([item])})
+
+    assert summary is not None
+    assert len(summary["ranked"][0]["taste_evidence"]) == 10
+    assert summary["ranked"][0]["taste_evidence_count"] == 25
 
 
 def test_scoring_summary_caps_how_many_candidates_it_carries() -> None:
@@ -258,13 +315,124 @@ def test_tool_fetch_summary_separates_not_queried_from_failed() -> None:
     }
 
 
-def test_tool_fetch_summary_leaves_out_the_resolved_location() -> None:
-    """C가 발화에서 풀어낸 장소명·주소는 사용자가 어디를 찾는지 그대로 드러낸다."""
+def test_tool_fetch_summary_carries_the_resolved_location() -> None:
+    """장소명·주소를 싣는다 — 2026-08-26에 뒤집은 결정이다.
+
+    **이 값은 사용자가 어디를 찾는지 그대로 드러낸다.** 원래는 `capture_content`를
+    켜도 안 새게 두 겹으로 막았는데, 화면에 보이는 값이 trace에 없어 원인을 쫓을
+    때마다 API 응답을 따로 받아야 했다. 이제 방어선은 그 스위치 하나다.
+    """
     summary = _summarize_tool_fetch({"tool_executions": [_execution()]})
 
+    assert summary is not None
+    call = summary["calls"][0]
+    assert call["resolved_location_name"] == "경복궁"
+    assert call["resolved_location_address"] == "서울 종로구 사직로 161"
+
+
+def test_tool_fetch_summary_carries_all_three_locations_separately() -> None:
+    """셋은 서로 다를 수 있고 **다른 것 자체가 관측 대상이다**(TP-112).
+
+    `route_origin.source`가 `search_center`면 사용자 위치를 몰라 검색 위치로 대체한
+    턴이라, 거리·경로 표기가 사실과 어긋날 수 있다.
+    """
+    summary = _summarize_tool_fetch(
+        {
+            "tool_executions": [
+                _execution(
+                    search_location=LocationDebug(
+                        name="경복궁", source="query", latitude=37.5796, longitude=126.977
+                    ),
+                    route_origin=LocationDebug(
+                        source="search_center", latitude=37.5796, longitude=126.977
+                    ),
+                )
+            ]
+        }
+    )
+
+    assert summary is not None
+    locations = summary["calls"][0]["locations"]
+    assert locations["search"] == {"name": "경복궁", "source": "query"}
+    assert locations["route_origin"]["source"] == "search_center"
+    # 값이 없는 것과 안 실은 것이 구분돼야 한다.
+    assert locations["user"] is None
+
+
+def test_tool_fetch_summary_never_carries_the_coordinates() -> None:
+    """`source`는 남기고 **위경도는 뺀다**(2026-08-26 결정).
+
+    팀원이 테스트하는 자리의 실좌표라 스위치 하나에 맡길 값이 아니다. `source`만
+    있으면 "사용자 위치를 몰라 검색 위치로 대체했나"는 그대로 읽힌다.
+    """
+    summary = _summarize_tool_fetch(
+        {
+            "tool_executions": [
+                _execution(
+                    user_location=LocationDebug(
+                        source="device_gps", latitude=37.5796, longitude=126.977
+                    )
+                )
+            ]
+        }
+    )
+
     blob = json.dumps(summary, ensure_ascii=False)
-    assert "경복궁" not in blob
-    assert "사직로" not in blob
+    assert "37.5796" not in blob
+    assert "126.977" not in blob
+    assert "latitude" not in blob
+    assert "longitude" not in blob
+
+
+def test_tool_fetch_summary_shows_where_each_concentration_value_came_from() -> None:
+    """근사치가 섞이는 게 정상 상태라(활성 844건 중 매핑 100건) 건수로는 못 가린다."""
+    summary = _summarize_tool_fetch(
+        {
+            "tool_executions": [
+                _execution(
+                    candidate_status_counts={"success": 2},
+                    candidate_concentration=[
+                        CandidateConcentrationDebug(
+                            place_id="p1", name="후보1", status="success", is_proxy=False
+                        ),
+                        CandidateConcentrationDebug(
+                            place_id="p2",
+                            name="후보2",
+                            status="success",
+                            is_proxy=True,
+                            proxy_place_name="경복궁",
+                            proxy_distance_km=0.31,
+                        ),
+                    ],
+                )
+            ]
+        }
+    )
+
+    assert summary is not None
+    call = summary["calls"][0]
+    assert call["candidate_status_counts"] == {"success": 2}
+    rows = call["candidate_concentration"]
+    # 상태만 보면 둘 다 "success 1건"이라 같아 보인다 — 출처가 갈라져 있어야 한다.
+    assert [row["is_proxy"] for row in rows] == [False, True]
+    assert rows[1]["proxy_place_name"] == "경복궁"
+    assert rows[1]["proxy_distance_km"] == 0.31
+
+
+def test_concentration_rows_are_built_by_one_function_for_both_spans() -> None:
+    """`tool_fetch`와 `concentration_enrichment`가 같은 함수를 쓴다.
+
+    같은 사실을 두 모양으로 적으면 한쪽만 고쳤을 때 조용히 어긋난다.
+    """
+    execution = _execution(
+        candidate_concentration=[
+            CandidateConcentrationDebug(place_id="p1", name="후보1", status="success")
+        ]
+    )
+    summary = _summarize_tool_fetch({"tool_executions": [execution]})
+
+    assert summary is not None
+    assert summary["calls"][0]["candidate_concentration"] == concentration_source_rows(execution)
 
 
 def test_tool_fetch_summary_marks_a_turn_that_ended_before_scoring() -> None:
