@@ -120,13 +120,19 @@ def validate_langfuse_config(target: Settings | None = None) -> None:
         ) from exc
 
 
-def get_tracer() -> Any | None:
-    """켜져 있으면 Langfuse 클라이언트를, 아니면 `None`을 돌려준다.
+def _shared_client() -> Any | None:
+    """관측과 프롬프트가 **같은 클라이언트를 쓴다.**
 
-    꺼져 있을 때는 `langfuse`를 import조차 하지 않는다.
+    두 개 만들면 안 된다 — 생성이 프로세스 전역 OpenTelemetry provider를 세팅하므로
+    두 번째 인스턴스가 첫 번째 위에 덮어쓴다. 그래서 스위치가 둘이어도 객체는 하나다.
+
+    `tracing_enabled`로 전송만 따로 끈다. 프롬프트만 켜고 관측은 끄는 조합
+    (배치 스크립트 등)에서 span이 새 나가지 않게 한다.
+
+    둘 다 꺼져 있으면 `langfuse`를 import조차 하지 않는다.
     """
     global _client, _client_failed
-    if not is_enabled():
+    if not (settings.langfuse_enabled or settings.langfuse_prompts_enabled):
         return None
     if _client is not None or _client_failed:
         return _client
@@ -140,11 +146,32 @@ def get_tracer() -> Any | None:
             # 로컬과 배포 기록이 한 프로젝트에 섞이면 비교가 무의미해진다.
             environment=settings.app_env,
             mask=_mask,
+            tracing_enabled=is_enabled(),
         )
     except Exception:
         _client_failed = True
         logger.warning("Langfuse 초기화 실패 — 관측만 꺼진다", exc_info=True)
     return _client
+
+
+def get_tracer() -> Any | None:
+    """관측 전송이 켜져 있으면 클라이언트를, 아니면 `None`을 돌려준다."""
+    if not is_enabled():
+        return None
+    return _shared_client()
+
+
+def get_prompt_client() -> Any | None:
+    """프롬프트 관리가 켜져 있으면 클라이언트를, 아니면 `None`을 돌려준다.
+
+    **원문 통로가 아니다.** 이 모듈이 Tool 인자 헬퍼를 안 두는 이유(모듈 docstring)와
+    충돌하지 않는다 — 프롬프트는 우리가 레포에 두고 관리하는 자산이지 사용자 입력이
+    아니다. 다만 클라이언트를 그대로 돌려주므로, 이걸 받아서 span을 만들거나 원문을
+    싣는 것은 이 모듈을 우회하는 것이다. 쓰는 곳은 `langfuse_prompts` 하나여야 한다.
+    """
+    if not settings.langfuse_prompts_enabled:
+        return None
+    return _shared_client()
 
 
 def shutdown() -> None:
@@ -370,6 +397,7 @@ __all__ = [
     "REDACTED",
     "captures_content",
     "is_enabled",
+    "get_prompt_client",
     "observe_generation",
     "observe_step",
     "record_score",

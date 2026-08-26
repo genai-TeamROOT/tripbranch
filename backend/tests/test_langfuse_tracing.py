@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import builtins
 import inspect
+import pathlib
 from typing import Any
 
 import pytest
@@ -124,6 +125,7 @@ def test_public_surface_has_no_tool_argument_helper() -> None:
     assert set(langfuse_tracing.__all__) == {
         "REDACTED",
         "captures_content",
+        "get_prompt_client",
         "is_enabled",
         "observe_generation",
         "observe_step",
@@ -132,6 +134,24 @@ def test_public_surface_has_no_tool_argument_helper() -> None:
         "trace_attributes",
         "validate_langfuse_config",
     }
+
+
+def test_prompt_client_is_the_only_raw_client_accessor() -> None:
+    """`get_prompt_client()`는 클라이언트를 그대로 내준다 — 쓰는 곳을 하나로 묶어 둔다.
+
+    위 목록 가드가 막으려는 건 "원문을 실어 보내는 헬퍼가 늘어나는 것"이다. 클라이언트를
+    그대로 돌려주는 접근자는 그 가드를 우회할 수 있으므로, **쓰는 모듈이 하나뿐인지**를
+    여기서 잠근다. 늘리려면 왜 langfuse_prompts로 안 되는지 답할 수 있어야 한다.
+    """
+    root = pathlib.Path(langfuse_tracing.__file__).resolve().parents[2]
+    users = sorted(
+        path.relative_to(root).as_posix()
+        for path in root.joinpath("app").rglob("*.py")
+        if "get_prompt_client" in path.read_text(encoding="utf-8")
+        and path.name != "langfuse_tracing.py"
+    )
+
+    assert users == ["app/observability/langfuse_prompts.py"]
 
 
 def test_record_score_takes_no_free_text() -> None:
