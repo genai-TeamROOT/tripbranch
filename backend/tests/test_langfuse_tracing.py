@@ -125,12 +125,18 @@ def test_public_surface_has_no_tool_argument_helper() -> None:
     `current_trace_id`는 그 규칙의 예외가 아니라 **방향이 반대**라서 들어와 있다.
     나머지 헬퍼는 우리 값을 Langfuse로 내보내지만 이건 Langfuse가 만든 식별자를
     우리 응답으로 되받는다 — 사용자 입력에서 유도되지 않는 hex 문자열 하나다.
+
+    `incoming_trace_context`·`honors_incoming_trace_context`도 내보내는 헬퍼가
+    아니다. 들어온 `traceparent` 헤더를 부모 문맥으로 받을지 정하는 자리라, 값이
+    나가는 통로가 아니라 **들어오는 문맥을 받는 통로**다.
     """
     assert set(langfuse_tracing.__all__) == {
         "REDACTED",
         "captures_content",
         "current_trace_id",
         "get_prompt_client",
+        "honors_incoming_trace_context",
+        "incoming_trace_context",
         "is_enabled",
         "observe_generation",
         "observe_step",
@@ -664,3 +670,89 @@ def test_trace_name_is_none_for_empty_input(monkeypatch: pytest.MonkeyPatch) -> 
     assert langfuse_tracing._trace_name(None) is None
     assert langfuse_tracing._trace_name("") is None
     assert langfuse_tracing._trace_name("   ") is None
+
+
+# --- 11. 들어온 traceparent를 부모로 받는다 --------------------------------------
+
+
+def _traceparent_headers() -> tuple[dict[str, str], str]:
+    """클라이언트가 span 하나를 열고 만든 헤더와 그 trace id."""
+    from opentelemetry import trace as otel_trace
+    from opentelemetry.propagate import inject
+    from opentelemetry.sdk.trace import TracerProvider
+
+    if not isinstance(otel_trace.get_tracer_provider(), TracerProvider):
+        otel_trace.set_tracer_provider(TracerProvider())
+    tracer = otel_trace.get_tracer("test")
+    with tracer.start_as_current_span("client-item"):
+        trace_id = format(otel_trace.get_current_span().get_span_context().trace_id, "032x")
+        headers: dict[str, str] = {}
+        inject(headers)
+    return headers, trace_id
+
+
+def _trace_id_inside(headers: dict[str, str]) -> str:
+    from opentelemetry import trace as otel_trace
+
+    with langfuse_tracing.incoming_trace_context(headers):
+        tracer = otel_trace.get_tracer("test")
+        with tracer.start_as_current_span("agent_turn") as span:
+            return format(span.get_span_context().trace_id, "032x")
+
+
+def test_incoming_traceparent_joins_the_callers_trace(monkeypatch: pytest.MonkeyPatch) -> None:
+    """평가가 연 실험 trace에 서버 span이 붙어야 실험 표의 행에서 내부가 보인다.
+
+    안 이어지면 trace가 둘로 갈린다 — 표는 그려지는데 행을 눌러도
+    `classify_intent`·`scoring`이 없는 빈 trace가 열린다.
+    """
+    _enable(monkeypatch)
+    monkeypatch.setattr(settings, "app_env", "local")
+    headers, client_trace_id = _traceparent_headers()
+
+    assert _trace_id_inside(headers) == client_trace_id
+
+
+def test_a_request_without_traceparent_opens_its_own_trace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """평소 요청은 지금과 똑같아야 한다 — 헤더가 없으면 자기 trace를 연다."""
+    _enable(monkeypatch)
+    monkeypatch.setattr(settings, "app_env", "local")
+    _, client_trace_id = _traceparent_headers()
+
+    assert _trace_id_inside({}) != client_trace_id
+
+
+def test_traceparent_is_ignored_outside_local(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**이 테스트가 실패하면 배포에서 남이 우리 trace 트리에 끼어들 수 있다.**
+
+    헤더를 신뢰하면 아무 클라이언트나 trace id를 골라 만들거나 우리 트리에 자기
+    span을 붙일 수 있다. 필요한 쪽은 로컬 평가 스크립트 하나뿐이라 배포에서는 막는다.
+    """
+    _enable(monkeypatch)
+    monkeypatch.setattr(settings, "app_env", "production")
+    headers, client_trace_id = _traceparent_headers()
+
+    assert langfuse_tracing.honors_incoming_trace_context() is False
+    assert _trace_id_inside(headers) != client_trace_id
+
+
+def test_traceparent_is_ignored_when_observability_is_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "langfuse_enabled", False)
+    monkeypatch.setattr(settings, "app_env", "local")
+
+    assert langfuse_tracing.honors_incoming_trace_context() is False
+
+
+def test_a_broken_traceparent_does_not_break_the_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """관측 실패가 사용자 응답을 막지 않는다 — 이 스위트가 지키는 성질 2."""
+    _enable(monkeypatch)
+    monkeypatch.setattr(settings, "app_env", "local")
+
+    with langfuse_tracing.incoming_trace_context({"traceparent": "쓰레기"}):
+        pass

@@ -282,6 +282,51 @@ def _trace_name(user_input: str | None) -> str | None:
     return collapsed[: _TRACE_NAME_LIMIT - 1] + "…"
 
 
+def honors_incoming_trace_context() -> bool:
+    """들어온 `traceparent`를 부모로 받아들일지.
+
+    **로컬에서만 받는다.** 이 헤더를 신뢰하면 아무 클라이언트나 우리 trace 트리에
+    자기 span을 붙이거나 trace id를 골라 만들 수 있다. 실제로 필요한 쪽은 로컬에서
+    도는 평가 스크립트 하나뿐이라, 배포에서 열어둘 이유가 없다.
+
+    `main.py`가 개발자 Ops 라우터를 `app_env == "local"`로 가르는 것과 같은 판단이다.
+    """
+    return is_enabled() and settings.app_env == "local"
+
+
+@contextmanager
+def incoming_trace_context(headers: Mapping[str, str]) -> Iterator[None]:
+    """`traceparent`가 있으면 이 블록의 span을 그 trace의 자식으로 만든다.
+
+    평가 스크립트가 `run_experiment()`로 trace를 열고 그 안에서 HTTP를 부르면,
+    서버는 **다른 프로세스**라 자기 trace를 따로 만든다. 그러면 실험 표는 그려지는데
+    행을 눌러도 `classify_intent`·`scoring` 같은 내부 span이 없다. 이 헬퍼가 그
+    두 조각을 하나로 잇는다(W3C Trace Context 표준).
+
+    헤더가 없거나 꺼져 있으면 아무 일도 하지 않는다 — 평소 요청은 지금과 똑같이
+    자기 trace를 연다.
+    """
+    if not honors_incoming_trace_context() or "traceparent" not in headers:
+        yield
+        return
+    try:
+        from opentelemetry import context as otel_context
+        from opentelemetry.propagate import extract
+
+        token = otel_context.attach(extract(dict(headers)))
+    except Exception:
+        logger.warning("들어온 trace 문맥 해석 실패(응답 흐름에는 영향 없음)", exc_info=True)
+        yield
+        return
+    try:
+        yield
+    finally:
+        try:
+            otel_context.detach(token)
+        except Exception:
+            logger.warning("trace 문맥 해제 실패(응답 흐름에는 영향 없음)", exc_info=True)
+
+
 def _tags_with_developer(tags: Sequence[str]) -> list[str]:
     """호출부가 준 태그에 `developer:<핸들>`을 더한다.
 
@@ -482,6 +527,8 @@ __all__ = [
     "REDACTED",
     "captures_content",
     "current_trace_id",
+    "honors_incoming_trace_context",
+    "incoming_trace_context",
     "is_enabled",
     "get_prompt_client",
     "observe_generation",
