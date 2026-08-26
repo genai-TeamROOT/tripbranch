@@ -20,7 +20,7 @@ def _row(content_id: str, similarity: float) -> dict[str, object]:
     return {
         "content_id": content_id,
         "similarity": similarity,
-        "axis_scores": {"한산함": 0.12, "시대": -0.08},
+        "axis_scores": {"calm": 0.12, "traditional": -0.08},
         "photo_count": 4,
     }
 
@@ -151,7 +151,7 @@ async def test_match_row_is_converted() -> None:
     assert matches[0].content_id == "2946087"
     assert matches[0].similarity == pytest.approx(0.83)
     assert matches[0].profile.photo_count == 4
-    assert matches[0].profile.axis_scores["한산함"] == pytest.approx(0.12)
+    assert matches[0].profile.axis_scores["calm"] == pytest.approx(0.12)
 
 
 @pytest.mark.asyncio
@@ -198,7 +198,7 @@ async def test_broken_axis_score_does_not_drop_the_place() -> None:
             json=[
                 {
                     "content_id": "a",
-                    "axis_scores": {"한산함": 0.12, "시대": None},
+                    "axis_scores": {"calm": 0.12, "traditional": None},
                     "photo_count": 2,
                 }
             ],
@@ -208,7 +208,7 @@ async def test_broken_axis_score_does_not_drop_the_place() -> None:
     async with client:
         profiles = await repository.find_mood_profiles(["a"])
 
-    assert profiles["a"].axis_scores == {"한산함": pytest.approx(0.12)}
+    assert profiles["a"].axis_scores == {"calm": pytest.approx(0.12)}
 
 
 @pytest.mark.asyncio

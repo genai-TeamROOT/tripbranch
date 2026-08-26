@@ -480,7 +480,9 @@ class PlaceMoodProfile:
     """
 
     content_id: str
-    # 축 이름 → −1~1 점수. 지금 켠 축은 안팎·한산함·시대·색온도·세월 다섯이지만
+    # 축 이름 → −1~1 점수. 키는 영문이고 부호는 `+` 쪽을 가리킨다 — calm이
+    # 양수면 조용한 쪽이다. 지금 켠 축은 indoor·calm·traditional·warm_toned·
+    # weathered 다섯이지만
     # 축을 켜고 끄는 일이 잦아 고정 필드로 두지 않는다.
     axis_scores: Mapping[str, float]
     # 평균에 쓴 사진 수. 1이면 detailImage2가 비어 대표 이미지 한 장으로 대체된
