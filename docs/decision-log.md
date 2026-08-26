@@ -3081,6 +3081,144 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `backend/resources/boundaries/README.md`, `backend/tests/test_festival_provider.py`,
   `backend/tests/test_place_provider.py`, `backend/tests/test_resolve_location_tool.py`
 
+### D-087 — 실시간 혼잡도 카드에 단계별 색상·게이지·전망 인사이트를 추가한다
+
+- 상태: `Accepted` — 구현 완료.
+- 배경: D-084로 82/121 지역 목록을 고친 뒤에도 "실시간 혼잡도" 기능이 잘
+  체감되지 않는다는 지적. 서울시 공식 앱과 비교하면 우리는 이미 같은 데이터
+  (`FCST_PPLTN` 12시간 예측, `AREA_CONGEST_LVL`)를 갖고 있으면서도, 예측
+  그래프가 항상 단색(인구=파랑, 집중률=amber)이고 현재 단계를 보여주는 시각
+  요소(게이지)가 없었다. 또 상세 모달(`RecommendationDetailPreviewModal`)에는
+  이 그래프들이 아예 렌더링되지 않아 카드 클릭 시 기대한 시각 정보가 빠져
+  있었다.
+- 결정:
+  1. `frontend/src/components/chat/CongestionForecastBars.tsx`를 새로 만들어
+     `PlaceInfoCard.tsx`에 있던 `ConcentrationForecastBars`/
+     `PopulationForecastBars`를 이 파일로 옮기고 export했다 — 요약 카드와
+     상세 모달이 같은 컴포넌트를 공유한다. 막대 색을 레벨별 매핑 테이블로
+     바꿨다: 인구 예측은 서울시 원문 한글(`여유`/`보통`/`약간 붐빔`/`붐빔`),
+     집중률 예측은 `ConcentrationLevel` 영문 코드(`quiet`/`normal`/
+     `slightly_crowded`/`crowded`) — 두 값 체계가 달라 매핑 테이블도
+     각각 둔다. emerald→amber→orange→red 4단계 팔레트를 공유하고, 모르는
+     레벨은 회색 fallback으로 처리해 깨지지 않게 한다.
+  2. `CongestionLevelGauge` 컴포넌트를 신설 — 여유/보통/약간 붐빔/붐빔 4단계
+     가로 세그먼트 바 위에 현재 단계를 가리키는 마커(▼)를 얹는다. 새 차트
+     라이브러리 없이 기존 막대그래프와 같은 순수 CSS로 구현. 값이 없으면
+     아무것도 렌더링하지 않는다.
+  3. `RecommendationDetailPreviewModal.tsx`가 이제 `population_forecasts`/
+     `concentration_forecasts`가 있을 때 같은 그래프를 렌더링한다.
+     `needsDetailEnrichment()`가 `realtime_map_url`/`realtime_detail_items`
+     있는 카드는 PlaceDetails 재조회를 건너뛰므로(기존 동작), 혼잡도 카드는
+     원본 예측 데이터가 `detailCard`에 그대로 남아 있어 배관 작업 없이
+     렌더만 추가하면 됐다.
+  4. 향후 예측 중 가장 붐비는 시간대를 "16시(2시간 후)에 가장 붐빌 것으로
+     예상돼요" 형태 한 줄로 요약하는 `_summarize_population_peak()`을
+     `info_response_transform.py`에 추가, `InfoPlaceCard.population_peak_forecast_summary`
+     로 새로 내려준다. 인덱스를 "1시간 후"로 가정하지 않고, 관측 시각과
+     예측 시각을 `info_display.py`에 새로 뽑은 `parse_citydata_timestamp()`
+     (기존 `format_citydata_timestamp()`와 같은 정규식 재사용)로 실제 파싱해
+     시간 차이를 구한다. 전부 같은 단계거나 파싱 실패 시 문장을 생략한다
+     (억지로 만들지 않음). 채팅 말풍선 텍스트(`compose_realtime_population_message`)
+     는 기존 회귀 테스트가 정확한 문자열을 검증하고 있어 손대지 않았다 —
+     새 인사이트는 카드에만 싣는다.
+  5. "과거 12시간 추이"(참고 이미지에 있던 기능)는 서울시 API가 애초에
+     미래 방향(`FCST_PPLTN`)만 제공해 원본 데이터가 없다 — 못 만든 게
+     아니라 데이터가 없는 것으로 범위에서 제외했다. 현재 인구 수 실측치
+     (`AREA_PPLTN_MIN/MAX`)도 참고 이미지에 노출되지 않는 값이라 이번
+     스코프에서 제외했다(여전히 파싱되지 않고 버려짐).
+  6. (후속) 사용자가 예측 그래프가 오후 5시 등 "현재 시각부터"만 보여
+     기준점이 안 보인다고 지적. 실제 과거 시간대는 위 5번과 같은 이유로
+     여전히 못 채우지만(서울시 API 미제공, 우리가 직접 폴링해 쌓는 방안은
+     새 파이프라인이 필요한 큰 작업이라 이번엔 보류하기로 사용자와 합의),
+     `PopulationForecastBars`의 예측 막대 맨 앞에 `population_current_level`
+     기준 "현재" 막대를 하나 추가해 시각적 기준점을 뒀다 — 점선 구분선
+     (`border-r-2 border-dashed`)과 강조 테두리(`ring-2`)로 예측 막대와
+     구분한다. 실제 과거 데이터를 꾸며내지 않고, 지금 갖고 있는 현재값
+     하나만 정직하게 강조하는 선에서 마무리했다.
+- 검증: 백엔드 `pytest` 2,765 passed(무관한 기존 langfuse 테스트 1건 제외),
+  `ruff` 클린. 프론트 `vitest` 24개 파일 177건 통과(`CongestionForecastBars.test.tsx`
+  신규 5건, `PlaceInfoCard.test.tsx`에 게이지·색상·상세 모달 노출 테스트 추가),
+  `tsc --noEmit`·`eslint`·`vite build` 클린.
+- 채택하지 않은 것:
+  - 채팅 말풍선 텍스트에 피크 인사이트를 직접 넣는 안 — 기존 문자열 검증
+    테스트를 깨뜨리고, "자세한 건 카드, 말풍선은 짧게"라는 기존 패턴과도
+    어긋나 카드 전용으로 뒀다.
+  - 실제 과거 12시간을 서울시 API 주기적 폴링으로 직접 쌓는 안(6번) —
+    새 스케줄러·저장소가 필요한 별도 프로젝트급 작업이고, 처음 조회하는
+    장소는 데이터가 쌓이기 전까진 어차피 과거 구간이 빈다는 콜드스타트
+    문제도 있어 사용자가 이번 스코프에서는 보류를 선택했다.
+- 상세: `frontend/src/components/chat/CongestionForecastBars.tsx`(신규),
+  `frontend/src/components/chat/PlaceInfoCard.tsx`,
+  `frontend/src/components/chat/RecommendationDetailPreviewModal.tsx`,
+  `frontend/src/types.ts`, `backend/app/services/runtime/info_display.py`,
+  `backend/app/services/runtime/info_response_transform.py`,
+  `backend/app/schemas.py`
+
+### D-088 — "성수동"처럼 지역 검색에 상호명만 잡히는 동 이름은 Geocoding으로 폴백한다
+
+- 상태: `Accepted` — 구현 완료.
+- 배경: "성수동 카페 추천해 줘"(GPS 확보된 상태)가 "말씀하신 목적지 범위가
+  여러곳으로 해석돼요"와 함께 성수동과 무관한 종로구 랜드마크 4곳
+  (`_LOCATION_REQUIRED_QUICK_PICKS`)을 보여주는 버그 제보. 추적 결과
+  `ResolveLocationTool.execute()`는 지역 검색(Naver Local Search)이 뭔가를
+  돌려주면(성공이든 애매한 결과든) 그 아래 별칭/Geocoding 폴백 사다리를 아예
+  안 탄다. "성수동"을 실제로 지역 검색에 호출해보면 상호명에 "성수"가 들어간
+  카페·식당 5건뿐(오르노 성수점/화화돈 성수점/성수온실 성수본점 등)이라
+  역·명소 카테고리(`_is_location_pickable`)가 하나도 없어 빈 후보로
+  `NO_DATA`/`ambiguous_location`이 되고, `agent_runtime.py`가 그 빈 후보를
+  종로구 quick-picks로 대체한다. 한편 같은 "성수동"을 Naver Geocoding에
+  실제로 호출하면 정상 해석된다(`성동구 성수동1가`, `(37.542108, 127.04965)`)
+  — `docs/api-samples.md`가 이미 기록한 "Geocoding은 행정동/법정동 이름을
+  직접 인식한다"는 사실과 일치한다. 문제는 이 폴백이 지역 검색에 막혀 아예
+  실행되지 않는 것이었다.
+- 결정:
+  1. `resolve_location.py`의 `_lookup_local_search()`에서, 지역 검색 후보 중
+     역/명소가 하나도 없고(`names_source` 비어 있음) 정확히 같은 이름의
+     후보도 없으면(`has_exact_match` False) 기존처럼 `NO_DATA` 에러를 바로
+     반환하지 않고 `None`을 반환한다. `execute()`에 이미 있던(현재는 거의
+     죽은 코드였던) 별칭/Geocoding 폴백 사다리가 자연스럽게 이어받는다.
+  2. 정확히 같은 이름의 후보가 있는 경우(예: "쌈지길" 동명이인 2건)는
+     이 폴백에서 제외했다 — Geocoding은 상호명을 인식하지 못하므로
+     (`docs/api-samples.md`) 폴백해도 소용없고, 어느 쪽인지 되묻는 기존
+     동작이 맞다.
+  3. Geocoding으로 얻은 좌표는 `_success_or_policy_result()`의 기존
+     `enforce_service_area`/`candidate_count` 가드를 그대로 통과한다 —
+     지원 지역 밖 좌표는 여전히 `unsupported_region`, Geocoding 자체가
+     애매하면 여전히 `ambiguous_location`으로 정리된다. 새 코드 없이 기존
+     안전장치를 재사용했다.
+  4. 검토했던 "좌표 기준 가까운 지하철역 버튼", "구 전체로 넓혀 검색
+     (district_code 필터 + 넓은 반경)"은 채택하지 않았다 — 아래 참고.
+- 채택하지 않은 것:
+  - 좌표 기준 가까운 지하철역 3~4개를 후보 버튼으로: 우리 DB(Supabase
+    `places`)엔 TourAPI 관광지만 있고 지하철역이 없다. Naver 지역검색도
+    좌표 기반 "주변 카테고리 검색"을 지원하지 않아(키워드 검색만 가능)
+    역 좌표를 얻으려면 새 정적 데이터셋을 들여와 유지보수해야 한다.
+  - 구 전체로 넓혀 검색(`NearbyPlaceDetailsQuery.district_code` 사용 +
+    반경 확대): `service_area.py`에 좌표→구 코드 판정 함수, `ResolvedLocation`에
+    `district_code` 필드, `agent_context/service.py` 배선까지 필요해 손대는
+    파일이 늘어난다. 실측으로 필요성부터 확인했다 — "성수동" Geocoding
+    좌표에서 실제 지역 검색으로 확인한 성수역(약 0.62km)·주변 카페들
+    (약 0.58~0.83km)까지 전부 기존 기본 검색 반경(`DEFAULT_PLACE_SEARCH_RADIUS_KM`
+    = 2.0km, 1km 아님)에 여유 있게 들어와 불필요했다. 동 단위는 구보다 훨씬
+    작아 좌표 하나로도 실질적으로 충분하다는 게 확인된 셈이다. 다만 이건
+    "성수동" 한 곳에 대한 확인이라 다른 동/구에서도 항상 맞는다는 보장은
+    아니다 — 실제 배포 후 "반경이 좁아서 결과가 부족하다"는 사례가 나오면
+    이 방향을 다시 꺼내 쓸 수 있게 남겨둔다.
+  - `NearbyPlaceDetailsQuery.district_code`를 평소 경로에도 채우는 안:
+    D-025가 이미 "구로 좁히면 반경 안의 옆 지원 구 후보가 잘린다"는 이유로
+    의도적으로 안 쓰기로 정한 것이라 건드리지 않았다.
+- 검증: 백엔드 `pytest` 2,767 passed(무관한 기존 langfuse 환경 이슈 1건
+  제외), `ruff check` 클린. Naver Local Search·Geocoding 두 API를 실제
+  자격증명으로 직접 호출해 "성수동" 지역 검색 결과(카페·식당뿐)와 Geocoding
+  좌표, 그 좌표에서 성수역·주변 카페까지의 거리를 실측 확인.
+- 남은 것: `agent_runtime.py`의 종로구 고정 quick-picks(`_LOCATION_REQUIRED_QUICK_PICKS`)
+  자체는 이번 범위 밖(TP-160). 이 수정으로 quick-picks가 필요한 잔여
+  트리거는 "완전히 좌표 신호가 없는 경우"와 "Geocoding도 실패하는 경우"
+  두 가지로 좁혀졌다는 점을 TP-160에 덧붙일 필요가 있다.
+- 상세: `backend/app/tools/resolve_location.py`,
+  `backend/tests/test_resolve_location_tool.py`,
+  `backend/app/providers/geocoding.py`
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -3163,3 +3301,5 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-26 | D-084 신설 — 서울시 실시간 지역 목록을 JSON으로 옮기고 조회 경로별로 맞는 목록에 연결(TP-141). "경복궁 붐벼?"에 북촌한옥마을이 대신 나가던 문제를 서울시 공식 매뉴얼로 재조사한 결과, "82곳 목록이 낡은 것"이 아니라 "인구 조회에 상권 전용 82개 목록을 잘못 가져다 쓴 것"이었다 — 인구 API(`citydata`/`citydata_ppltn`)는 처음부터 121곳, 상권 API(`citydata_cmrcl`)는 가맹점 수가 적은 39곳(공원 33곳 등)을 구조적으로 제외한 82곳만 지원한다(매뉴얼 36p). 두 파일(`population_areas_121.json`/`commercial_areas_82.json`, 서울 열린데이터광장 공식 파일 기반)로 분리하고 로더가 매뉴얼 표와 카테고리 개수까지 대조 검증한다. 인구 혼잡도·citydata 통합 조회는 121개를, 상권 조회는 82개를 쓴다. 121개 목록도 서울시가 계속 확대할 예정이라(매뉴얼 48p) 최근접 대체 시 실제 이름을 한 번 더 조회하는 낡음 감지 probe를 추가 — 응답은 안 바꾸고 개발자 화면 배너로만 알린다. TP-141 원안(82곳 유지, 121 확장은 A로 이관)에서 매뉴얼 근거로 벗어난 부분은 A 리뷰를 요청한다 |
 | 2026-08-26 | D-085 신설 — 서비스 지역 밖 안내에서 구 목록을 본문과 분리해 각주로 뺀다. D-083으로 지원 구가 12개로 늘며 "종로구·중구·...·은평구의 장소 추천만 가능해요" 문구가 길어진 문제 — `AgentResponse.message_footnote` 필드를 신설해 본문은 "이 위치는 지금 서비스 지역이 아니에요"로 짧게 고정하고, 구 목록은 화면이 작고 옅은 글씨로 따로 보여준다. `compose_chat_message()` 시그니처는 손대지 않고 `AgentResponse` 조립 지점(agent_runtime.py) 2곳에서 각주만 계산해 끼워 넣었다 |
 | 2026-08-26 | D-086 신설 — 서비스 지원 지역을 12개 구에서 16개 구로 확장. 2026-08-26 place-sync로 새로 적재한 서대문·마포·양천·강서구를 `SUPPORTED_DISTRICTS`에 추가 — D-083과 같은 구조로 한 줄씩만 늘렸다. 공식 면적 대조(위키백과 infobox)로 폴리곤 오차 1% 이내 확인, 활성 장소 1,019건 중 밖으로 나온 4건 중 3건은 D-083에서 발견한 것과 같은 깨진 좌표(19.694, 117.993) — 누적 여섯 번째로 재현. 망원역·마포구를 "지원 밖" 예시로 쓰던 기존 테스트 3건을 영등포구 예시로 교체. 구로·금천·영등포구는 아직 place-sync 전이라 이번 확장에서 제외(데이터 없는 구를 지원 목록에 넣으면 추천이 항상 0건). 은평구 141건·강서구 19건 상세정보 백필은 TourAPI 일일 한도 소진으로 다음 실행으로 미룸 |
+| 2026-08-26 | D-087 신설 — 실시간 혼잡도 카드에 단계별 색상·게이지·전망 인사이트 추가. 인구/집중률 예측 막대그래프가 항상 단색이던 것을 레벨별 4단계 팔레트(emerald→amber→orange→red)로 바꾸고, 현재 단계를 보여주는 `CongestionLevelGauge`를 신설. 공용 컴포넌트(`CongestionForecastBars.tsx`)로 분리해 요약 카드뿐 아니라 상세 모달(`RecommendationDetailPreviewModal`)에도 처음으로 노출 — 기존엔 모달에 이 그래프가 아예 없었다. 향후 예측에서 가장 붐비는 시간대를 "N시간 후 가장 붐빌 예정" 한 줄로 요약하는 `_summarize_population_peak()`을 추가해 `population_peak_forecast_summary`로 새로 내려줌 — 관측·예측 시각을 실제 파싱해 시간 차를 구하고(인덱스 가정 안 함), 채팅 말풍선 텍스트는 기존 회귀 테스트 보호를 위해 그대로 둠. 과거 추이·현재 인구 수 실측치는 서울시 API 미제공/참고 이미지 미노출로 이번 스코프에서 제외. (후속) 예측 그래프가 "현재 시각부터만" 보여 기준점이 안 보인다는 지적에, 실제 과거 데이터 폴링 파이프라인 구축(큰 작업)은 보류하고 대신 예측 막대 맨 앞에 점선 구분선·강조 테두리를 준 "현재" 막대를 추가해 시각적 기준점만 뒀다 |
+| 2026-08-26 | D-088 신설 — "성수동"처럼 지역 검색에 상호명만 잡히는 동 이름은 Geocoding으로 폴백한다. "성수동 카페 추천해줘"가 종로구 랜드마크 되묻기로 빠지던 버그 — 지역 검색이 뭔가(애매한 결과라도)를 돌려주면 그 아래 별칭/Geocoding 폴백 사다리가 아예 실행되지 않던 게 원인. `_lookup_local_search()`에서 역/명소 후보도 정확히 같은 이름의 후보도 없을 때만 `None`을 반환해 execute()의 기존 Geocoding 사다리로 넘긴다. 실제 Naver API 호출로 "성수동" 지역 검색은 카페·식당 상호명뿐임을, Geocoding은 좌표로 정상 해석됨을, 그 좌표가 기존 기본 검색 반경(2.0km) 안에 성수역·주변 카페를 다 포함함을 확인 — 검토했던 "가까운 지하철역 버튼"(역 데이터 없음)과 "구 전체로 넓혀 검색"(실측 결과 불필요)은 기각 |

@@ -11,6 +11,7 @@ import { useTripState } from "../../state/TripContext";
 import type { InfoPlaceCard, RecommendationItem } from "../../types";
 import { openNaverDirections } from "../../utils/naverDirections";
 import { travelLabel, travelValue } from "../../utils/travelDisplay";
+import { ConcentrationForecastBars, PopulationForecastBars } from "./CongestionForecastBars";
 
 interface RecommendationDetailPreviewModalProps {
   /** 추천 카드에서 열면 현재 거리·운영시간과 함께 C 상세를 추가 조회한다. */
@@ -501,6 +502,13 @@ export function RecommendationDetailPreviewModal({
                 </section>
               )}
               <RealtimeDetailEntries card={detailCard} />
+              {((detailCard.population_forecasts?.length ?? 0) > 0 ||
+                (detailCard.concentration_forecasts?.length ?? 0) > 0) && (
+                <section className="overflow-hidden rounded-xl border border-gray-100 bg-white dark:border-gray-800 dark:bg-gray-900">
+                  <ConcentrationForecastBars card={detailCard} />
+                  <PopulationForecastBars card={detailCard} />
+                </section>
+              )}
               {detailCard.overview && (
                 <section>
                   <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">개요</h3>
