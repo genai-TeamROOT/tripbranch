@@ -29,6 +29,7 @@ def _place(
         address=None,
         latitude=latitude,
         longitude=longitude,
+        district_code="110",
         concentration_name=concentration_name,
     )
 

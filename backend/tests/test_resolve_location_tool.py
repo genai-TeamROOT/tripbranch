@@ -87,6 +87,7 @@ async def test_resolves_stored_tour_place_before_geocoding() -> None:
                 address="서울특별시 종로구 인사동길 44",
                 latitude=37.5743062352,
                 longitude=126.9848674428,
+                district_code="110",
                 concentration_name="쌈지길",
             ),
         )
@@ -712,6 +713,7 @@ async def test_search_center_resolves_from_repository_first() -> None:
                 address="서울특별시 종로구 인사동길 44",
                 latitude=37.5743062352,
                 longitude=126.9848674428,
+                district_code="110",
                 concentration_name="쌈지길",
             ),
         )
@@ -789,6 +791,7 @@ async def test_place_identity_keeps_repository_first() -> None:
                 address="서울특별시 종로구 인사동길 44",
                 latitude=37.5743062352,
                 longitude=126.9848674428,
+                district_code="110",
                 concentration_name="쌈지길",
             ),
         )

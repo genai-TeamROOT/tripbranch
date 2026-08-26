@@ -86,11 +86,35 @@ def _provider_result(
     )
 
 
+def _district_only_places(count: int = 10) -> tuple[StoredPlaceLocation, ...]:
+    """_target()이 만드는 후보에 대응하는 매핑. 구 코드만 담는다.
+
+    집중률 조회는 구를 지정해야 하고, 구는 매핑된 장소에서 온다(TP-168). 정식
+    명칭을 비워 두면 조회 이름이 후보 이름으로 떨어져 이 파일의 기존 기대값이
+    그대로 유지된다 - 이 테스트들이 보는 것은 결과 조립이지 이름 매칭이 아니다.
+    """
+    return tuple(
+        StoredPlaceLocation(
+            content_id=f"place-{index}",
+            title=f"후보 {index}",
+            address=None,
+            latitude=37.57 + index / 1000,
+            longitude=126.97 + index / 1000,
+            district_code="110",
+            concentration_name=None,
+        )
+        for index in range(1, count + 1)
+    )
+
+
 def _service(provider: _ScriptedConcentrationProvider) -> CandidateEnrichmentService:
     return CandidateEnrichmentService(
         GetConcentrationTool(provider),
         candidate_limit=5,
         clock=lambda: REFERENCE_TIME,
+        mapping_cache=ConcentrationMappingCache(
+            _StubMappingRepository(_district_only_places())
+        ),
     )
 
 
@@ -385,6 +409,10 @@ async def test_fake_provider_uses_the_common_concentration_contract() -> None:
     response = await CandidateEnrichmentService(
         GetConcentrationTool(FakeConcentrationProvider()),
         candidate_limit=5,
+        # 구를 알아야 조회가 나간다(TP-168). 프로덕션 배선과 같이 매핑을 넘긴다.
+        mapping_cache=ConcentrationMappingCache(
+            _StubMappingRepository(_district_only_places())
+        ),
     ).enrich(_request(_target(1, name="경복궁")))
 
     assert response.status == "success"
@@ -455,6 +483,7 @@ def _mapped_place(
         address=None,
         latitude=37.5739,
         longitude=126.9945,
+        district_code="110",
         concentration_name=concentration_name,
         concentration_search_keys=search_keys,
     )
@@ -799,3 +828,112 @@ async def test_proxy_flag_survives_into_the_response_d_receives() -> None:
         "종묘 [유네스코 세계유산]",
     )
     assert forecast.concentration_level is not None
+
+
+@pytest.mark.asyncio
+async def test_lookup_uses_the_district_of_the_mapped_place() -> None:
+    """조회 signguCd가 매핑 장소의 구에서 나온다(TP-168).
+
+    집중률 API는 signguCd로 엄격하게 거른다 — 중구 명동성당을 종로구로 물으면
+    0건이 온다. 구를 종로구로 고정하던 동안에는 매핑이 전부 종로구라 값이 맞았고,
+    다른 구 매핑이 들어오는 순간 틀린 값이 된다.
+    """
+    provider = _ScriptedConcentrationProvider({"덕수궁": _provider_result("덕수궁")})
+    service = CandidateEnrichmentService(
+        GetConcentrationTool(provider),
+        candidate_limit=5,
+        clock=lambda: REFERENCE_TIME,
+        mapping_cache=ConcentrationMappingCache(
+            _StubMappingRepository(
+                (
+                    StoredPlaceLocation(
+                        content_id="place-1",
+                        title="덕수궁",
+                        address=None,
+                        latitude=37.5658,
+                        longitude=126.9751,
+                        district_code="140",  # 중구
+                        concentration_name="덕수궁",
+                    ),
+                )
+            )
+        ),
+    )
+
+    await service.enrich(_request(_target(1, name="덕수궁")))
+
+    area_codes = {area for area, _, _ in provider.calls}
+    signgu_codes = {signgu for _, signgu, _ in provider.calls}
+    assert area_codes == {"11"}
+    # 종로구(11110)가 아니라 중구(11140)로 나가야 한다.
+    assert signgu_codes == {"11140"}
+
+
+@pytest.mark.asyncio
+async def test_jongno_only_mappings_keep_querying_jongno() -> None:
+    """매핑이 종로구뿐이면 조회가 예전과 똑같이 나간다(TP-168 회귀 방지).
+
+    고정을 푸는 변경의 안전 조건이다. 이 카드만 머지된 시점에는 매핑이 전부
+    종로구라, 상수를 쓰던 때와 나가는 값이 같아야 한다.
+    """
+    provider = _ScriptedConcentrationProvider({"경복궁": _provider_result("경복궁")})
+    service = CandidateEnrichmentService(
+        GetConcentrationTool(provider),
+        candidate_limit=5,
+        clock=lambda: REFERENCE_TIME,
+        mapping_cache=ConcentrationMappingCache(
+            _StubMappingRepository(
+                (
+                    StoredPlaceLocation(
+                        content_id="place-1",
+                        title="경복궁",
+                        address=None,
+                        latitude=37.5788,
+                        longitude=126.9770,
+                        district_code="110",
+                        concentration_name="경복궁",
+                    ),
+                )
+            )
+        ),
+    )
+
+    response = await service.enrich(_request(_target(1, name="경복궁")))
+
+    assert provider.calls == [("11", "11110", "경복궁")]
+    assert response.candidates[0].status == "success"
+
+
+@pytest.mark.asyncio
+async def test_place_without_district_is_not_queried_as_jongno() -> None:
+    """구를 모르는 장소는 조회하지 않는다(TP-168).
+
+    종로구로 대신 물으면 다른 구 장소는 언제나 0건이라, 틀린 조회가 "혼잡도 정보
+    없음"과 구분되지 않고 조용히 섞인다. 호출을 아예 내보내지 않는 쪽을 택한다.
+    """
+    provider = _ScriptedConcentrationProvider({"덕수궁": _provider_result("덕수궁")})
+    service = CandidateEnrichmentService(
+        GetConcentrationTool(provider),
+        candidate_limit=5,
+        clock=lambda: REFERENCE_TIME,
+        mapping_cache=ConcentrationMappingCache(
+            _StubMappingRepository(
+                (
+                    StoredPlaceLocation(
+                        content_id="place-1",
+                        title="덕수궁",
+                        address=None,
+                        latitude=37.5658,
+                        longitude=126.9751,
+                        district_code=None,
+                        concentration_name="덕수궁",
+                    ),
+                )
+            )
+        ),
+    )
+
+    response = await service.enrich(_request(_target(1, name="덕수궁")))
+
+    assert provider.calls == []
+    assert response.candidates[0].status == "no_data"

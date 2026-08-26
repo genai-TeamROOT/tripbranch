@@ -262,6 +262,10 @@ class ResolvedLocation:
     # Naver Local Search의 업종. INFO 현재 혼잡 질문에서 관광지 예측과 상권 활동을
     # 구분할 때만 사용하며, 없으면 기존 위치 해석 동작을 유지한다.
     place_category: str | None = None
+    # 저장소에서 푼 장소의 구(lDongSignguCd, 종로구 "110"). 집중률 조회가 구를
+    # 지정해야 해서 함께 나른다. 저장소를 거치지 않은 해석(지오코딩·GPS)에는
+    # 값이 없는데, 그 경로는 concentration_name도 없어 집중률을 묻지 않는다.
+    district_code: str | None = None
     # 집중률 응답에서 장소를 골라낼 때 대조할 정식 명칭.
     concentration_name: str | None = None
     # tAtsNm에 넣을 검색어 목록. 앞에서부터 시도한다. 비어 있으면
@@ -546,6 +550,7 @@ class ResolveLocationTool:
                 confidence=ResolutionConfidence.EXACT,
                 place_id=place.content_id,
                 address=place.address,
+                district_code=place.district_code,
                 concentration_name=place.concentration_name,
                 concentration_search_keys=place.concentration_search_keys,
             ),
