@@ -212,3 +212,32 @@ def test_variant_override_never_reads_remote(monkeypatch: pytest.MonkeyPatch) ->
 
 def _disk_text() -> str:
     return loader._safe_path(_ASSET).read_text(encoding="utf-8").strip()
+
+
+# --- 5. 테스트가 실수로 네트워크를 타지 않는다 ----------------------------------
+
+
+def test_every_langfuse_switch_is_forced_off_in_tests() -> None:
+    """`.env`가 무엇이든 테스트에서는 Langfuse 스위치가 전부 꺼져 있어야 한다.
+
+    **스위치를 새로 추가하면서 여기를 빠뜨리면 스위트가 통째로 멈춘다.**
+    2026-08-26에 `langfuse_prompts_enabled`가 그랬다 — `.env`에 true를 넣는 순간
+    프롬프트를 읽는 모든 테스트가 실제 네트워크를 탔고, 6.8초짜리 스위트가 2분을
+    넘겨도 안 끝났다. 프롬프트는 요청마다 여러 번 읽히기 때문이다.
+
+    `langfuse_enabled` 하나만 끄면 안 된다는 것이 요점이다. 전송·원문·신원·프롬프트가
+    **서로 다른 축**이라 하나를 꺼도 나머지가 안 꺼진다(`config.py`).
+
+    이 테스트는 `conftest.py`의 autouse 픽스처가 적용된 상태에서 돈다 — 즉 여기서
+    보이는 값이 곧 다른 모든 테스트가 보는 값이다.
+    """
+    switches = [
+        name
+        for name in type(settings).model_fields
+        if name.startswith("langfuse_") and isinstance(getattr(settings, name), bool)
+    ]
+
+    assert switches, "langfuse_* 불리언 설정을 하나도 못 찾았다 — 이름 규칙이 바뀌었나"
+    assert {name: getattr(settings, name) for name in switches} == dict.fromkeys(
+        switches, False
+    )
