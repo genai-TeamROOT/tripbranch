@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import csv
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,16 +38,67 @@ def _parse_search_keys(value: object) -> list[str]:
 _UPSERT_CHUNK_SIZE = 100
 _DATA_DIR = Path(__file__).resolve().parents[2] / "supabase" / "data"
 _MAPPING_CSV_GLOB = "concentration_place_mapping_*.csv"
+# concentration_place_mapping_<구코드>_<날짜>.csv. 구 코드가 없던 옛 이름은
+# 2026-08-26에 전부 11110(종로구)을 붙여 바꿨으므로 한 가지 형태만 읽는다.
+_MAPPING_CSV_PATTERN = re.compile(
+    r"^concentration_place_mapping_(?P<district>\d+)_(?P<date>\d{8})\.csv$"
+)
+
+
+def mapping_csv_paths(data_dir: Path = _DATA_DIR) -> list[Path]:
+    """저장소에 있는 매핑 CSV 전부. 구마다 한 장씩 쌓인다.
+
+    이름 규칙에 맞지 않는 파일은 뺀다 — 백업본이나 손으로 만든 파일이 섞여
+    들어오면 적재 대상이 조용히 늘어난다.
+    """
+    return sorted(
+        path
+        for path in data_dir.glob(_MAPPING_CSV_GLOB)
+        if _MAPPING_CSV_PATTERN.match(path.name) is not None
+    )
+
+
+def latest_mapping_csv_by_district(data_dir: Path = _DATA_DIR) -> dict[str, Path]:
+    """구 코드 → 그 구의 최신 매핑 CSV.
+
+    같은 구를 다시 뽑으면 날짜가 다른 파일이 함께 남는다. 지금 유효한 것은 구마다
+    최신 한 장이고, 옛 파일은 이력으로 둔다 — 검색어 컬럼(D-057) 도입 전에 만든
+    CSV처럼 지금 형식으로는 적재되지 않는 것도 섞여 있다.
+    """
+    newest: dict[str, tuple[str, Path]] = {}
+    for path in mapping_csv_paths(data_dir):
+        matched = _MAPPING_CSV_PATTERN.match(path.name)
+        assert matched is not None  # mapping_csv_paths가 이미 걸렀다.
+        district = matched.group("district")
+        date = matched.group("date")
+        if district not in newest or date > newest[district][0]:
+            newest[district] = (date, path)
+    return {district: path for district, (_, path) in sorted(newest.items())}
 
 
 def latest_mapping_csv(data_dir: Path = _DATA_DIR) -> Path | None:
-    """가장 최근 매핑 CSV. 파일명이 날짜라 이름 정렬로 최신을 고른다.
+    """가장 최근 매핑 CSV. 날짜가 같은 구가 둘 이상이면 고르지 않고 None을 준다.
 
-    build_concentration_mappings.py가 실행일로 파일을 남기므로 기본값을 고정
-    파일명으로 두면 재생성할 때마다 어긋난다.
+    파일명에 구 코드가 들어가면서(<구코드>_<날짜>) 이름 정렬은 더 이상 최신을
+    뜻하지 않는다 — 구 코드가 날짜보다 앞이라 정렬하면 "번호가 큰 구"가 뽑힌다.
+    그래서 파일명에서 날짜만 떼어 비교한다.
+
+    같은 날 여러 구를 뽑으면 어느 구를 적재할지는 사람만 안다. 임의로 하나를
+    고르면 엉뚱한 구의 매핑이 조용히 올라가므로, 이때는 None을 돌려 --csv를
+    필수 인자로 만든다.
     """
-    candidates = sorted(data_dir.glob(_MAPPING_CSV_GLOB))
-    return candidates[-1] if candidates else None
+    dated: list[tuple[str, Path]] = []
+    for path in mapping_csv_paths(data_dir):
+        matched = _MAPPING_CSV_PATTERN.match(path.name)
+        assert matched is not None  # mapping_csv_paths가 이미 걸렀다.
+        dated.append((matched.group("date"), path))
+    if not dated:
+        return None
+    latest_date = max(date for date, _ in dated)
+    same_day = [path for date, path in dated if date == latest_date]
+    if len(same_day) > 1:
+        return None
+    return same_day[0]
 
 
 _DEFAULT_CSV_PATH = latest_mapping_csv()
@@ -68,7 +120,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=_DEFAULT_CSV_PATH,
         required=_DEFAULT_CSV_PATH is None,
-        help="집중률 장소 매핑 CSV 경로(기본값: supabase/data의 최신 매핑 CSV)",
+        help=(
+            "집중률 장소 매핑 CSV 경로(기본값: supabase/data의 최신 매핑 CSV. "
+            "같은 날짜의 CSV가 여러 구에 있으면 기본값이 없어 직접 지정해야 한다)"
+        ),
     )
     parser.add_argument(
         "--dry-run",
