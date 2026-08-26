@@ -7,6 +7,7 @@
  */
 
 import { useState, type FormEvent } from "react";
+import type { Language } from "../../types";
 import { VoiceInputButton } from "./VoiceInputButton";
 
 const DEFAULT_PLACEHOLDER = "추가 조건을 입력해 주세요";
@@ -16,12 +17,14 @@ interface ChatComposerProps {
   onSubmit: (text: string) => Promise<void>;
   /* 되묻기처럼 특정 형태의 답변이 필요할 때 예시 문장을 안내한다. */
   placeholder?: string;
+  language?: Language;
 }
 
 export function ChatComposer({
   disabled,
   onSubmit,
   placeholder = DEFAULT_PLACEHOLDER,
+  language = "ko",
 }: ChatComposerProps) {
   const [text, setText] = useState("");
   const [voiceError, setVoiceError] = useState<string | null>(null);
@@ -62,7 +65,7 @@ export function ChatComposer({
           disabled={disabled || !text.trim()}
           className="rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-gray-100 dark:text-gray-900"
         >
-          보내기
+          {language === "en" ? "Send" : "보내기"}
         </button>
       </form>
     </div>

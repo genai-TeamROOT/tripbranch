@@ -38,7 +38,8 @@ function isTripState(value: unknown): value is TripState {
     (state.device_location_snoozed_until === undefined ||
       state.device_location_snoozed_until === null ||
       typeof state.device_location_snoozed_until === "number") &&
-    (state.error === null || typeof state.error === "string")
+    (state.error === null || typeof state.error === "string") &&
+    (state.language === undefined || state.language === "ko" || state.language === "en")
   );
 }
 
@@ -151,6 +152,8 @@ export function loadState(): TripState | null {
       // 기존 저장본(v5 이하)은 스누즈 마감이 없다. null이면 정상적으로 재확인
       // 여부를 다시 판단한다.
       device_location_snoozed_until: parsed.state.device_location_snoozed_until ?? null,
+      // 기존 저장본에는 언어가 없으므로 한국어로 자연스럽게 이어간다.
+      language: parsed.state.language ?? "ko",
       agentProgress: null,
       streamingIntent: null,
     };

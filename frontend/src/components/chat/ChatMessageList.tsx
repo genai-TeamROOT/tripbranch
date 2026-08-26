@@ -12,7 +12,7 @@
  */
 
 import { useEffect, useState } from "react";
-import type { AgentProgressEvent, ChatMessage, TravelOriginToggle } from "../../types";
+import type { AgentProgressEvent, ChatMessage, Language, TravelOriginToggle } from "../../types";
 import { AgentProgressMessage } from "./AgentProgressMessage";
 import { ClarificationMessage } from "./ClarificationMessage";
 import { CompareResultCards } from "./CompareResultCards";
@@ -25,9 +25,10 @@ import { ScheduleResultMessage } from "./ScheduleResultMessage";
 import { SessionStatusMessage } from "./SessionStatusMessage";
 import { findTurnText } from "../../utils/turnText";
 
-function StreamingDots() {
+function StreamingDots({ language }: { language: Language }) {
+  const loadingLabel = language === "en" ? "Generating a response" : "답변 생성 중";
   return (
-    <span className="flex h-6 items-center gap-1.5" aria-label="답변 생성 중" role="status">
+    <span className="flex h-6 items-center gap-1.5" aria-label={loadingLabel} role="status">
       {[0, 1, 2].map((index) => (
         <span
           key={index}
@@ -36,12 +37,12 @@ function StreamingDots() {
           style={{ animationDelay: `${index * 150}ms`, animationDuration: "900ms" }}
         />
       ))}
-      <span className="sr-only">답변 생성 중</span>
+      <span className="sr-only">{loadingLabel}</span>
     </span>
   );
 }
 
-function StreamingText({ text, streaming }: { text: string; streaming: boolean }) {
+function StreamingText({ text, streaming, language }: { text: string; streaming: boolean; language: Language }) {
   // Gemini는 단어·문장 단위 청크를 보내기도 한다. 화면에서는 청크 크기와 무관하게
   // 한 글자씩 이어 보여, 첫 텍스트가 도착한 뒤에도 생성 중이라는 감각을 유지한다.
   const [visibleText, setVisibleText] = useState(() => (streaming ? "" : text));
@@ -61,7 +62,11 @@ function StreamingText({ text, streaming }: { text: string; streaming: boolean }
     return () => window.clearInterval(timer);
   }, [streaming, text, visibleText]);
 
-  return <p className="whitespace-pre-line leading-6">{visibleText}</p>;
+  const displayText =
+    language === "en" && text === "이런 곳들을 찾아봤어요:"
+      ? "Here are some places that match your preferences."
+      : visibleText;
+  return <p className="whitespace-pre-line leading-6">{displayText}</p>;
 }
 
 interface ChatMessageListProps {
@@ -81,6 +86,7 @@ interface ChatMessageListProps {
     onRefreshLocation: () => void;
   } | null;
   progress: AgentProgressEvent | null;
+  language?: Language;
 }
 
 export function ChatMessageList({
@@ -96,6 +102,7 @@ export function ChatMessageList({
   onToggleTravelOrigin,
   locationRefresh,
   progress,
+  language = "ko",
 }: ChatMessageListProps) {
   return (
     <div className="flex flex-1 flex-col gap-4">
@@ -132,11 +139,12 @@ export function ChatMessageList({
                   </div>
                 )}
                 {message.type === "assistant_text" && message.streaming && message.text === "…" ? (
-                  <StreamingDots />
+                  <StreamingDots language={language} />
                 ) : (
                   <StreamingText
                     text={message.text}
                     streaming={message.type === "assistant_text" && Boolean(message.streaming)}
+                    language={language}
                   />
                 )}
               </div>
@@ -239,6 +247,7 @@ export function ChatMessageList({
               onRequestMore={onRequestMore}
               onRelaxRadius={onRelaxRadius}
               onToggleTravelOrigin={onToggleTravelOrigin}
+              language={language}
             />
           );
         })}
@@ -255,6 +264,7 @@ export function ChatMessageList({
           hasDeviceLocation={hasDeviceLocation}
           schedulePlanning={progress?.stage === "scheduling"}
           progress={progress}
+          language={language}
         />
       )}
     </div>

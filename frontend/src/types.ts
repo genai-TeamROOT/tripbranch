@@ -8,6 +8,9 @@
 
 export type WeatherCondition = "good" | "neutral" | "bad";
 
+/** 화면 언어. Runtime은 한국어 계약을 유지하고, 영어는 API 경계에서 번역한다. */
+export type Language = "ko" | "en";
+
 export type EnvironmentType = "indoor" | "outdoor" | "mixed" | "unknown";
 
 /** 실측 경로를 조회한 이동수단. 지금 서버가 실제로 내려보내는 값은 "walking"뿐이다. */
@@ -428,6 +431,7 @@ export interface InterpretDebugRequest {
 
 export interface AgentDebugRequest {
   user_input: string;
+  language?: Language;
   session_id?: string | null;
   device_location?: string | null;
   /** 직전 INFO 상세 카드의 장소명. "여기/이곳" 같은 대화 지시어 해소 후보다. */

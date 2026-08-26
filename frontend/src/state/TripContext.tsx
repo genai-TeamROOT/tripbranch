@@ -26,6 +26,7 @@ import type {
   DeveloperAuditTurn,
   Intent,
   InterpretedConditions,
+  Language,
   LLMOutputStatus,
   RecommendationItem,
   RecommendationsResponse,
@@ -36,6 +37,8 @@ import type {
 import { clearState, loadState, saveState } from "./storage";
 
 export interface TripState {
+  /** 사용자 화면 및 API 번역 경계에 적용할 언어. */
+  language: Language;
   user_input: string;
   interpreted_conditions: InterpretedConditions | null;
   recommendations: RecommendationItem[];
@@ -70,6 +73,7 @@ export interface TripState {
 }
 
 const initialTripState: TripState = {
+  language: "ko",
   user_input: "",
   interpreted_conditions: null,
   recommendations: [],
@@ -89,6 +93,7 @@ const initialTripState: TripState = {
 };
 
 type TripAction =
+  | { type: "SET_LANGUAGE"; payload: Language }
   | { type: "START_INTERPRETING" }
   | { type: "ADD_INTERPRETATION"; payload: InterpretedPayload }
   | { type: "UPDATE_CONDITIONS"; payload: Partial<InterpretedConditions> }
@@ -223,6 +228,8 @@ function buildInterpretationMessages(payload: InterpretedPayload): ChatMessage[]
 
 function tripReducer(state: TripState, action: TripAction): TripState {
   switch (action.type) {
+    case "SET_LANGUAGE":
+      return { ...state, language: action.payload };
     case "START_INTERPRETING":
       return { ...state, phase: "interpreting", error: null };
     case "ADD_INTERPRETATION": {
@@ -428,7 +435,11 @@ function tripReducer(state: TripState, action: TripAction): TripState {
                     ...streamingMessage,
                     text:
                       response.message ||
-                      (streamingMessage.text === "…" ? "이런 곳들을 찾아봤어요:" : streamingMessage.text),
+                      (streamingMessage.text === "…"
+                        ? state.language === "en"
+                          ? "Here are some places that match your preferences."
+                          : "이런 곳들을 찾아봤어요:"
+                        : streamingMessage.text),
                     intent: response.llm_output.intent,
                     status: response.llm_output.status,
                     streaming: false,
@@ -661,7 +672,8 @@ function tripReducer(state: TripState, action: TripAction): TripState {
       return { ...state, device_location_snoozed_until: action.payload.until };
     case "RESET":
       clearState();
-      return initialTripState;
+      // 새 대화여도 사용자가 고른 화면 언어는 유지한다.
+      return { ...initialTripState, language: state.language };
     default:
       return state;
   }

@@ -21,6 +21,7 @@ import { ApiExchangePanel } from "../components/dev/ApiExchangePanel";
 import { DeveloperAuditPanel } from "../components/dev/DeveloperAuditPanel";
 import { TurnLocationBadges } from "../components/dev/TurnLocationBadges";
 import { ErrorBanner } from "../components/ErrorBanner";
+import { LanguageSelector } from "../components/LanguageSelector";
 import { AuthStatusBadge } from "../auth/AuthStatusBadge";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import { buildAgentStageTimings } from "../utils/agentTiming";
@@ -33,9 +34,40 @@ import {
 } from "../utils/locationRefresh";
 import type { TravelOrigin } from "../types";
 
-const REQUEST_MORE_PROMPT = "다른 곳 보여줘";
-const RELAX_RADIUS_PROMPT = "검색 범위를 넓혀서 다시 추천해줘";
 const STATUS_COMMAND = "/status";
+
+const DEV_CHAT_TEXT = {
+  ko: {
+    subtitle: "개발자용 채팅 검증 화면",
+    ops: "Ops 패널",
+    userView: "사용자 화면",
+    newChat: "새 대화",
+    emptyTitle: "첫 발화를 입력해 검증을 시작하세요.",
+    emptyDescription: "응답이 돌아오면 오른쪽에 Intent, 조건 병합, Tool/Scoring 요약이 턴별로 누적됩니다.",
+    composer: "추가 조건을 입력해 주세요",
+    requestMore: "다른 곳 보여줘",
+    relaxRadius: "검색 범위를 넓혀서 다시 추천해줘",
+    basedOn: (name: string) => `${name} 기준으로 다시 보기`,
+    currentLocation: "현재 위치 기준으로 다시 보기",
+    locationError: "위치를 가져오지 못했어요.",
+    requestError: "추천을 불러오지 못했어요. 다시 시도해주세요.",
+  },
+  en: {
+    subtitle: "Developer chat verification",
+    ops: "Ops panel",
+    userView: "User view",
+    newChat: "New chat",
+    emptyTitle: "Send a first message to start verification.",
+    emptyDescription: "After a response arrives, the right panel accumulates the Intent, merged conditions, and Tool/Scoring summary for each turn.",
+    composer: "Add another condition or ask a follow-up",
+    requestMore: "Show more places",
+    relaxRadius: "Search in a wider area",
+    basedOn: (name: string) => `View results based on ${name}`,
+    currentLocation: "View results based on my current location",
+    locationError: "We couldn’t get your location.",
+    requestError: "We couldn’t load recommendations. Please try again.",
+  },
+} as const;
 interface PendingLocationRefresh {
   text: string;
   clarificationChoice?: string;
@@ -46,6 +78,7 @@ export function DeveloperChatPage() {
   const state = useTripState();
   const dispatch = useTripDispatch();
   const navigate = useNavigate();
+  const text = DEV_CHAT_TEXT[state.language];
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const previousAuditTurnCountRef = useRef(0);
   const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null);
@@ -162,7 +195,8 @@ export function DeveloperChatPage() {
         } catch (error) {
           dispatch({
             type: "SET_ERROR",
-            payload: error instanceof Error ? error.message : "위치를 가져오지 못했어요.",
+            payload:
+              error instanceof Error ? error.message : DEV_CHAT_TEXT[state.language].locationError,
           });
           return;
         }
@@ -182,6 +216,7 @@ export function DeveloperChatPage() {
         await streamChat(
           {
             user_input: text,
+            language: state.language,
             session_id: state.session_id,
             device_location: deviceLocation,
             conversation_place_name: conversationPlaceName,
@@ -267,7 +302,7 @@ export function DeveloperChatPage() {
           type: "APPEND_FAILED_CHAT_TURN",
           payload: {
             userInput: text,
-            message: apiError?.message ?? "추천을 불러오지 못했어요. 다시 시도해주세요.",
+            message: apiError?.message ?? DEV_CHAT_TEXT[state.language].requestError,
             code: apiError?.code ?? "internal_server_error",
             retryable: apiError?.retryable ?? true,
             details: apiError?.details ?? null,
@@ -285,6 +320,7 @@ export function DeveloperChatPage() {
       dispatch,
       loadExchanges,
       state.device_location,
+      state.language,
       state.messages,
       state.session_id,
     ],
@@ -344,7 +380,7 @@ export function DeveloperChatPage() {
     } catch (error) {
       dispatch({
         type: "SET_ERROR",
-        payload: error instanceof Error ? error.message : "현재 위치를 가져오지 못했어요.",
+        payload: error instanceof Error ? error.message : text.locationError,
       });
     }
   }, [dispatch, pendingLocationRefresh, send]);
@@ -375,24 +411,28 @@ export function DeveloperChatPage() {
           <div>
             <h1 className="text-xl font-bold">TripBranch</h1>
             <p className="text-sm text-gray-500 dark:text-gray-400">
-              개발자용 채팅 검증 화면
+              {text.subtitle}
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <LanguageSelector
+              language={state.language}
+              onChange={(language) => dispatch({ type: "SET_LANGUAGE", payload: language })}
+            />
             <AuthStatusBadge />
             <button
               type="button"
               onClick={() => navigate("/dev-ops")}
               className="rounded-md border border-gray-300 px-3 py-1.5 text-sm dark:border-gray-700"
             >
-              Ops 패널
+              {text.ops}
             </button>
             <button
               type="button"
               onClick={() => navigate("/chat")}
               className="rounded-md border border-gray-300 px-3 py-1.5 text-sm dark:border-gray-700"
             >
-              사용자 화면
+              {text.userView}
             </button>
             <button
               type="button"
@@ -402,7 +442,7 @@ export function DeveloperChatPage() {
               }}
               className="rounded-md border border-gray-300 px-3 py-1.5 text-sm dark:border-gray-700"
             >
-              새 대화
+              {text.newChat}
             </button>
           </div>
         </header>
@@ -420,10 +460,9 @@ export function DeveloperChatPage() {
           {state.messages.length === 0 ? (
             <div className="flex h-full items-center justify-center">
               <div className="max-w-md rounded-md border border-dashed border-gray-300 p-6 text-center dark:border-gray-700">
-                <h2 className="text-lg font-semibold">첫 발화를 입력해 검증을 시작하세요.</h2>
+                <h2 className="text-lg font-semibold">{text.emptyTitle}</h2>
                 <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
-                  응답이 돌아오면 오른쪽에 Intent, 조건 병합, Tool/Scoring 요약이 턴별로
-                  누적됩니다.
+                  {text.emptyDescription}
                 </p>
               </div>
             </div>
@@ -435,14 +474,13 @@ export function DeveloperChatPage() {
               isLoading={isLoading}
               hasDeviceLocation={Boolean(state.device_location)}
               deviceLocation={state.device_location}
-              onRequestMore={() => void requestSend(REQUEST_MORE_PROMPT)}
-              onRelaxRadius={() => void requestSend(RELAX_RADIUS_PROMPT)}
+              onRequestMore={() => void requestSend(text.requestMore)}
+              onRelaxRadius={() => void requestSend(text.relaxRadius)}
               onSelectClarificationOption={(optionId, label) => void requestSend(label, optionId)}
               onToggleTravelOrigin={(toggle) => {
-                const label =
-                  toggle.alternative_origin === "search_center"
-                    ? `${toggle.alternative_origin_name} 기준으로 다시 보기`
-                    : "현재 위치 기준으로 다시 보기";
+                const label = toggle.alternative_origin === "search_center"
+                  ? text.basedOn(toggle.alternative_origin_name)
+                  : text.currentLocation;
                 void requestSend(label, undefined, toggle.alternative_origin);
               }}
               locationRefresh={
@@ -455,6 +493,7 @@ export function DeveloperChatPage() {
                   : null
               }
               progress={state.agentProgress}
+              language={state.language}
             />
           )}
         </div>
@@ -466,7 +505,12 @@ export function DeveloperChatPage() {
             채팅 흐름의 끝이라 바로 위 대화와 같은 턴을 가리켜야 한다.
           */}
           {latestTurn && <TurnLocationBadges turn={latestTurn} />}
-          <ChatComposer disabled={isLoading} onSubmit={handleFollowUp} />
+          <ChatComposer
+            disabled={isLoading}
+            onSubmit={handleFollowUp}
+            placeholder={text.composer}
+            language={state.language}
+          />
         </div>
       </section>
 
