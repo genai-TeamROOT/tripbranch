@@ -34,7 +34,7 @@ def concentration_signgu_code(district_code: str | None) -> str | None:
 
     구를 모르면 None을 돌려준다. 이때 종로구로 대신 물어보면 안 된다 - 다른 구
     장소를 종로구로 물으면 응답이 0건이라, 조회에 실패한 것이 "혼잡도 정보 없음"과
-    구분되지 않고 조용히 섞인다.
+    구분되지 않고 조용히 섞인다(D-095).
     """
     if not district_code:
         return None

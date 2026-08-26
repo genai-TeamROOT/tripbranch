@@ -49,7 +49,7 @@ from app.tools.contracts import ToolStatus
 
 # 집중률 API의 종로구 행정 코드. INFO와 후보 보강이 같은 MVP 범위를 사용한다.
 # 구는 더 이상 고정하지 않는다. 조회할 구는 대상 장소의 district_code에서 나오고,
-# 광역 코드는 지원 구가 전부 서울이라 concentration_policy가 정한다(TP-168).
+# 광역 코드는 지원 구가 전부 서울이라 concentration_policy가 정한다(D-095).
 _KST = ZoneInfo("Asia/Seoul")
 
 

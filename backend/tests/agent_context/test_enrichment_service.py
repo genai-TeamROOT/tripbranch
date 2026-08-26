@@ -89,7 +89,7 @@ def _provider_result(
 def _district_only_places(count: int = 10) -> tuple[StoredPlaceLocation, ...]:
     """_target()이 만드는 후보에 대응하는 매핑. 구 코드만 담는다.
 
-    집중률 조회는 구를 지정해야 하고, 구는 매핑된 장소에서 온다(TP-168). 정식
+    집중률 조회는 구를 지정해야 하고, 구는 매핑된 장소에서 온다(D-095). 정식
     명칭을 비워 두면 조회 이름이 후보 이름으로 떨어져 이 파일의 기존 기대값이
     그대로 유지된다 - 이 테스트들이 보는 것은 결과 조립이지 이름 매칭이 아니다.
     """
@@ -409,7 +409,7 @@ async def test_fake_provider_uses_the_common_concentration_contract() -> None:
     response = await CandidateEnrichmentService(
         GetConcentrationTool(FakeConcentrationProvider()),
         candidate_limit=5,
-        # 구를 알아야 조회가 나간다(TP-168). 프로덕션 배선과 같이 매핑을 넘긴다.
+        # 구를 알아야 조회가 나간다(D-095). 프로덕션 배선과 같이 매핑을 넘긴다.
         mapping_cache=ConcentrationMappingCache(
             _StubMappingRepository(_district_only_places())
         ),
@@ -832,7 +832,7 @@ async def test_proxy_flag_survives_into_the_response_d_receives() -> None:
 
 @pytest.mark.asyncio
 async def test_lookup_uses_the_district_of_the_mapped_place() -> None:
-    """조회 signguCd가 매핑 장소의 구에서 나온다(TP-168).
+    """조회 signguCd가 매핑 장소의 구에서 나온다(D-095).
 
     집중률 API는 signguCd로 엄격하게 거른다 — 중구 명동성당을 종로구로 물으면
     0건이 온다. 구를 종로구로 고정하던 동안에는 매핑이 전부 종로구라 값이 맞았고,
@@ -871,7 +871,7 @@ async def test_lookup_uses_the_district_of_the_mapped_place() -> None:
 
 @pytest.mark.asyncio
 async def test_jongno_only_mappings_keep_querying_jongno() -> None:
-    """매핑이 종로구뿐이면 조회가 예전과 똑같이 나간다(TP-168 회귀 방지).
+    """매핑이 종로구뿐이면 조회가 예전과 똑같이 나간다(D-095 회귀 방지).
 
     고정을 푸는 변경의 안전 조건이다. 이 카드만 머지된 시점에는 매핑이 전부
     종로구라, 상수를 쓰던 때와 나가는 값이 같아야 한다.
@@ -906,7 +906,7 @@ async def test_jongno_only_mappings_keep_querying_jongno() -> None:
 
 @pytest.mark.asyncio
 async def test_place_without_district_is_not_queried_as_jongno() -> None:
-    """구를 모르는 장소는 조회하지 않는다(TP-168).
+    """구를 모르는 장소는 조회하지 않는다(D-095).
 
     종로구로 대신 물으면 다른 구 장소는 언제나 0건이라, 틀린 조회가 "혼잡도 정보
     없음"과 구분되지 않고 조용히 섞인다. 호출을 아예 내보내지 않는 쪽을 택한다.
