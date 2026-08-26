@@ -223,6 +223,57 @@ def test_realtime_population_result_returns_current_level_and_forecasts() -> Non
     assert card.realtime_map_url is not None
     assert card.realtime_detail_items[0].title == "혼잡도 안내"
     assert "크게 붐비지는 않아요" in card.realtime_detail_items[0].details["안내"]
+    # 예측이 하나뿐이라 "가장 붐빈다"고 짚어줄 대비 시간대가 없다.
+    assert card.population_peak_forecast_summary is None
+
+
+def test_realtime_population_result_summarizes_peak_forecast_hour() -> None:
+    card = to_info_place_card(
+        InfoContextResponse(
+            request_id="population-peak-card",
+            status="success",
+            result=RealtimePopulationInfoResult(
+                status="success",
+                requested_place_name="경복궁",
+                area_name="광화문·덕수궁",
+                current_congestion_level="보통",
+                observed_at="2026-08-20 14:00",
+                population_forecasts=[
+                    {"forecast_at": "2026-08-20 15:00", "congestion_level": "보통"},
+                    {"forecast_at": "2026-08-20 16:00", "congestion_level": "붐빔"},
+                    {"forecast_at": "2026-08-20 17:00", "congestion_level": "약간 붐빔"},
+                ],
+            ),
+        )
+    )
+
+    assert card is not None
+    assert card.population_peak_forecast_summary == (
+        "16시(2시간 후)에 가장 붐빌 것으로 예상돼요. 혼잡정도는 붐빔일 것으로 예상돼요."
+    )
+
+
+def test_realtime_population_result_omits_peak_summary_without_observed_time() -> None:
+    card = to_info_place_card(
+        InfoContextResponse(
+            request_id="population-no-observed",
+            status="success",
+            result=RealtimePopulationInfoResult(
+                status="success",
+                requested_place_name="경복궁",
+                area_name="광화문·덕수궁",
+                current_congestion_level="보통",
+                observed_at=None,
+                population_forecasts=[
+                    {"forecast_at": "2026-08-20 15:00", "congestion_level": "보통"},
+                    {"forecast_at": "2026-08-20 16:00", "congestion_level": "붐빔"},
+                ],
+            ),
+        )
+    )
+
+    assert card is not None
+    assert card.population_peak_forecast_summary is None
 
 
 def test_realtime_commercial_area_overall_card_discloses_scope() -> None:

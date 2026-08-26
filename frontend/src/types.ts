@@ -165,6 +165,8 @@ export interface InfoPlaceCard {
   population_current_level?: string | null;
   population_current_message?: string | null;
   population_observed_at?: string | null;
+  /** 향후 예측 중 가장 붐빌 시간대 요약. 과거 추이는 원본 API 미제공으로 없다. */
+  population_peak_forecast_summary?: string | null;
   population_forecasts?: PopulationForecastBar[];
   concentration_forecasts?: ConcentrationForecastBar[];
   realtime_area_name?: string | null;

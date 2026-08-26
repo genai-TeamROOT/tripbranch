@@ -426,10 +426,13 @@ def _local_place(
 
 
 async def _resolve_with_local_search(
-    places: tuple[LocalSearchPlace, ...], query: str
+    places: tuple[LocalSearchPlace, ...],
+    query: str,
+    *,
+    geocoding_responses: Iterable[GeocodeResult | AppError] = (),
 ):
     local_search = MemoryLocalSearchProvider(places)
-    geocoding = SequenceGeocodingProvider([])
+    geocoding = SequenceGeocodingProvider(geocoding_responses)
     result = await ResolveLocationTool(
         geocoding, MemoryPlaceLocationRepository(()), local_search
     ).execute(ResolveLocationQuery(query))
@@ -461,14 +464,24 @@ async def test_local_search_selects_head_token_match_among_nearby_shops() -> Non
 
 @pytest.mark.asyncio
 async def test_local_search_does_not_pick_similar_prefix_name() -> None:
-    """"안국역사거리"는 "안국역"과 다른 장소다 — startswith였다면 잘못 선택된다."""
-    result, _ = await _resolve_with_local_search(
-        (_local_place("안국역사거리"),), "안국역"
+    """"안국역사거리"는 "안국역"과 다른 장소다 — startswith였다면 잘못 선택된다.
+
+    정확 일치도, 역/명소 후보도 없으니 Geocoding으로 넘어간다(성수동 폴백과 같은
+    경로). "안국역"은 상호명이라 Geocoding이 인식하지 못하므로(docs/api-samples.md)
+    결국 location_not_found로 끝난다 — "여러 곳으로 해석돼요"보다 정확한 결과다.
+    """
+    result, geocoding = await _resolve_with_local_search(
+        (_local_place("안국역사거리"),),
+        "안국역",
+        geocoding_responses=[
+            AppError(code="location_not_found", message="위치를 찾을 수 없어요.")
+        ],
     )
 
     assert result.status is ResolveLocationStatus.NO_DATA
     assert result.error is not None
-    assert result.error.cause == "ambiguous_location"
+    assert result.error.cause == "location_not_found"
+    assert geocoding.calls != []
 
 
 @pytest.mark.asyncio
@@ -580,22 +593,71 @@ async def test_local_search_ambiguous_candidates_exclude_restaurants() -> None:
 
 
 @pytest.mark.asyncio
-async def test_local_search_ambiguous_yields_no_candidate_names_when_all_are_shops() -> None:
-    """후보가 전부 식당·상점뿐이면(지하철역/명소가 하나도 없으면) candidate_names를
-    비운다 — 식당을 위치 후보로 보여주지 않는다(실사용 피드백, 2026-08-13: "그냥
-    지하철역으로만 가자"). 이때 agent_runtime.py가 A2 종로구 대표 스팟 고정
-    버튼으로 대신한다."""
-    result, _ = await _resolve_with_local_search(
+async def test_local_search_ambiguous_all_shops_falls_back_to_geocoding() -> None:
+    """후보가 전부 식당·상점뿐이면(지하철역/명소가 하나도 없으면) 되묻지 않고
+    Geocoding으로 넘어간다 — "성수동"처럼 동 이름이 지역 검색에서 카페·식당
+    상호명으로만 잡히는 경우다(실측, 2026-08-26). Naver Geocoding은 행정동/법정동
+    이름을 직접 인식하므로(docs/api-samples.md) 여기서 좌표로 풀린다."""
+    result, geocoding = await _resolve_with_local_search(
         (
             _local_place("종각 스타벅스", category="음식점>카페"),
             _local_place("종각 노브랜드버거", category="음식점>패스트푸드"),
         ),
         "종각",
+        geocoding_responses=[_result(query="종각")],
+    )
+
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert geocoding.calls != []
+
+
+@pytest.mark.asyncio
+async def test_local_search_ambiguous_all_shops_and_geocoding_fails_still_asks_again() -> None:
+    """Geocoding도 실패하면(진짜 알아들을 수 없는 입력) 기존처럼 되묻는다 —
+    다만 원인이 location_not_found라 "여러 곳으로 해석돼요"는 더는 안 나간다."""
+    result, geocoding = await _resolve_with_local_search(
+        (
+            _local_place("종각 스타벅스", category="음식점>카페"),
+            _local_place("종각 노브랜드버거", category="음식점>패스트푸드"),
+        ),
+        "종각",
+        geocoding_responses=[
+            AppError(code="location_not_found", message="위치를 찾을 수 없어요.")
+        ],
     )
 
     assert result.status is ResolveLocationStatus.NO_DATA
     assert result.error is not None
-    assert result.error.details["candidate_names"] == ""
+    assert result.error.cause == "location_not_found"
+    assert geocoding.calls != []
+
+
+@pytest.mark.asyncio
+async def test_local_search_ambiguous_all_shops_and_geocoding_outside_service_area() -> None:
+    """Geocoding이 지원 구 밖 좌표를 주면 되묻기가 아니라 unsupported_region이다
+    — "부산 해운대"류 지역 밖 지명에 "지원 구 안 어디인지" 되묻지 않는다."""
+    result, geocoding = await _resolve_with_local_search(
+        (
+            _local_place("해운대 스타벅스", category="음식점>카페"),
+            _local_place("해운대 노브랜드버거", category="음식점>패스트푸드"),
+        ),
+        "해운대",
+        geocoding_responses=[
+            GeocodeResult(
+                query="해운대",
+                resolved_name="해운대",
+                latitude=35.1587,
+                longitude=129.1604,
+                candidate_count=1,
+                administrative_district="해운대구",
+            )
+        ],
+    )
+
+    assert result.status is ResolveLocationStatus.UNSUPPORTED
+    assert result.error is not None
+    assert result.error.cause == "outside_supported_region"
+    assert geocoding.calls != []
 
 
 @pytest.mark.asyncio

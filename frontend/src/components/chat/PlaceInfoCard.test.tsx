@@ -299,6 +299,43 @@ it("실시간 인구 혼잡도 카드는 안내 문구와 서울시 지도 미�
   expect(screen.getByText("사람이 몰려있을 수 있지만 크게 붐비지는 않아요.")).toBeInTheDocument();
 });
 
+it("인구 혼잡도 예측 그래프와 게이지는 요약 카드와 상세 모달 양쪽에 나온다", async () => {
+  const user = userEvent.setup();
+  const populationCard: InfoPlaceCardData = {
+    ...card,
+    question_type: "concentration",
+    answer_fields: { concentration: "보통" },
+    thumbnail_url: null,
+    overview: null,
+    population_current_level: "약간 붐빔",
+    population_observed_at: "8월 20일 14:00",
+    population_peak_forecast_summary: "16시(2시간 후)에 가장 붐빌 것으로 예상돼요. 혼잡정도는 붐빔일 것으로 예상돼요.",
+    population_forecasts: [
+      { forecast_at: "2026-08-20 15:00", congestion_level: "보통", population_min: 3000, population_max: 3500 },
+      { forecast_at: "2026-08-20 16:00", congestion_level: "붐빔", population_min: 5000, population_max: 5500 },
+    ],
+    realtime_map_url: "https://data.seoul.go.kr/SeoulRtd/map?hotspotNm=test&y=127&x=37",
+    realtime_detail_items: [],
+  };
+
+  renderWithTrip(<PlaceInfoCard card={populationCard} />);
+
+  // 요약 카드: 게이지가 "약간 붐빔"을 강조하고, 피크 시간 요약이 보인다.
+  expect(screen.getByLabelText("현재 인구 혼잡도 약간 붐빔")).toBeInTheDocument();
+  expect(
+    screen.getByText("16시(2시간 후)에 가장 붐빌 것으로 예상돼요. 혼잡정도는 붐빔일 것으로 예상돼요."),
+  ).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "경복궁 상세 보기" }));
+
+  const dialog = within(screen.getByRole("dialog"));
+  expect(dialog.getByLabelText("현재 인구 혼잡도 약간 붐빔")).toBeInTheDocument();
+  expect(dialog.getByLabelText("현재부터 향후 12시간 인구 혼잡도 예측")).toBeInTheDocument();
+  expect(
+    dialog.getByText("16시(2시간 후)에 가장 붐빌 것으로 예상돼요. 혼잡정도는 붐빔일 것으로 예상돼요."),
+  ).toBeInTheDocument();
+});
+
 /* 무장애 값(D-077)은 계약 키가 영문이라, 라벨 지도에 없으면 화면에 wheelchair_access
  * 그대로 찍힌다. 키가 늘어날 때마다 라벨을 함께 넣었는지 이 테스트가 잡는다. */
 it("무장애 항목을 한글 라벨로 보여준다", () => {
