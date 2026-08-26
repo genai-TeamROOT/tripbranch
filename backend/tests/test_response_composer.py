@@ -783,6 +783,58 @@ class TestComposeRealtimePopulationMessage:
         assert "현재 보통 수준" in message
         assert "12시간" in message
 
+    def test_omits_self_referential_disclosure_when_area_equals_requested_place(self) -> None:
+        """121곳 목록에 요청 장소 자체가 있으면(예: 경복궁) 대체가 아니다.
+
+        "경복궁 자체의 데이터는 아니지만, 경복궁 기준으로는"처럼 스스로를 대체값
+        이라 말하는 문장이 나오면 안 된다(TP-141/D-084 후속 발견).
+        """
+
+        response = InfoContextResponse(
+            request_id="population-message-exact",
+            status="success",
+            result=RealtimePopulationInfoResult(
+                status="success",
+                requested_place_name="경복궁",
+                resolved_place_name="경복궁",
+                area_name="경복궁",
+                proxy_distance_km=0.1,
+                current_congestion_level="보통",
+                observed_at="2026-08-20 14:00",
+            ),
+        )
+
+        message = compose_realtime_population_message(response)
+
+        assert "자체" not in message
+        assert "아니지만" not in message
+        assert "경복궁 기준으로는 현재 보통 수준" in message
+
+    def test_treats_same_place_with_different_spacing_as_self_reference(self) -> None:
+        """지오코딩 표기("여의도 한강공원")와 목록 표기("여의도한강공원")는 같은
+        장소인데 공백만 다르다 — 실측으로 발견됨(TP-141/D-084 후속).
+        """
+
+        response = InfoContextResponse(
+            request_id="population-message-spacing",
+            status="success",
+            result=RealtimePopulationInfoResult(
+                status="success",
+                requested_place_name="여의도 한강공원",
+                resolved_place_name="여의도 한강공원",
+                area_name="여의도한강공원",
+                proxy_distance_km=0.7,
+                current_congestion_level="보통",
+                observed_at="2026-08-26 11:40",
+            ),
+        )
+
+        message = compose_realtime_population_message(response)
+
+        assert "자체" not in message
+        assert "아니지만" not in message
+        assert "여의도한강공원 기준으로는 현재 보통 수준" in message
+
 
 class TestComposePlaceInfoMessage:
     """D-054 A 배선 — concentration/event를 제외한 6종 question_type."""

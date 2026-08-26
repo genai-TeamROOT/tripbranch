@@ -106,6 +106,13 @@ class Settings(BaseSettings):
     # 배포에서도 서버는 떠야 하므로 켜는 쪽을 명시적 선택으로 둔다.
     taste_evidence_enabled: bool = False
 
+    # 실시간 인구 혼잡도 조회에서 최근접 대체가 일어났을 때, 실제 해석된 장소
+    # 이름을 서울시 API에 한 번 더 직접 던져(probe) "우리 121곳 스냅샷엔 없는데
+    # 서울시 API는 지원하는 지역"을 찾아내는 기능의 스위치다(TP-141, D-084).
+    # 응답은 바꾸지 않고 개발자 화면 배너로만 알린다. probe 자체가 서울시 API
+    # 호출을 하나 더 만들므로, 트래픽이 예상보다 늘면 배포 없이 끌 수 있게 둔다.
+    seoul_area_staleness_probe_enabled: bool = True
+
     # LLMOps 관측(Langfuse) 스위치. **두 개로 나눠 둔 것이 요점이다.**
     # langfuse_enabled는 "전송을 하느냐", langfuse_capture_content는 "발화·응답
     # 원문을 실어 보내느냐"다. 하나로 묶으면 배포 환경에서 지연·토큰만 보고

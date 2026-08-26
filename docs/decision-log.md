@@ -2918,6 +2918,75 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 - 상세: `backend/app/service_area.py`, `backend/tests/test_service_area.py`,
   `backend/resources/boundaries/README.md`
 
+### D-084 — 서울시 실시간 지역 목록을 JSON으로 옮기고, 조회 경로별로 맞는 목록에 연결한다
+
+- 상태: `Accepted` — 구현 완료.
+- 배경: TP-141(작성: JinHyeong Kim)이 "지금 경복궁 붐벼?"에 북촌한옥마을(0.85km)
+  값이 대신 나가는 걸 신고했다. 원인은 `seoul_commercial_areas.py`의 `_RAW_AREAS`
+  (하드코딩 82곳, "서울시 주요 82장소 영역 경계 SHP(2026-04-10)"에서 뽑아 고정)를
+  인구 혼잡도 조회에도 그대로 썼기 때문이다. TP-141은 이걸 "목록이 낡았다"로
+  진단하고, 82곳을 121곳으로 채우는 건 서울시 도시데이터 연동을 실제로 소유한
+  패키지(A)로 넘기도록 범위를 잘랐다(응답을 바꾸는 판정 규칙 변경은 A 리뷰가
+  필요하다는 이유).
+- 재해석: 서울시가 공개한 공식 매뉴얼(`실시간 도시데이터 매뉴얼 V8.5`, 2026-04)을
+  받아 대조한 결과, 82/121 분리는 "목록이 아직 못 따라간 것"이 아니라 **서울시가
+  처음부터 정한 영구적인 API 설계 차이**였다. 인구데이터 API(`citydata` 통합,
+  `citydata_ppltn` 전용)는 처음부터 121곳을 지원하고(매뉴얼 6p, 8~10p 표 2-2),
+  상권현황 API(`citydata_cmrcl`)는 "정확한 정보 전달을 위해 121장소 중 가맹점 수가
+  적거나 소비가 적은 장소를 제외한 82장소에 대해 서비스 제공"(매뉴얼 36p)이라는
+  이유로 82곳만 지원한다 — 카드소비 데이터가 통계적으로 의미 있으려면 가맹점이
+  일정 수 이상 있어야 하는데 공원 33곳 등은 애초에 그 조건을 못 채운다. 즉 진짜
+  원인은 "인구 조회에 상권 전용 82개 목록을 잘못 가져다 쓴 것"이었다. 이 발견을
+  근거로 82→121 확장을 A의 판단 없이도 되는 데이터 정정으로 보고 범위에 포함시켰다
+  — 다만 TP-141의 리뷰 원칙(서울시 도시데이터 연동은 A 소유, PR에 타 패키지 수정
+  명시하고 A 리뷰 요청)은 그대로 따른다.
+- 결정:
+  1. **목록을 JSON으로 이관**. `backend/resources/seoul_realtime/`에
+     `population_areas_121.json`(인구용)·`commercial_areas_82.json`(상권용) 두
+     파일을 둔다. 둘 다 서울 열린데이터광장 공식 파일(OA-21778/OA-22385의
+     xlsx+SHP)에서 받았고, 좌표는 같은 SHP·같은 계산식(면적가중 중심, shoelace
+     공식)으로 다시 뽑아 82/121이 서로 다른 기준으로 어긋나지 않게 했다. 파일에
+     출처·조회일·`coordinate_source`를 담는다. 로더(`seoul_realtime_areas.py`,
+     옛 이름 `seoul_commercial_areas.py`에서 개명)가 로드 시점에 코드 중복·좌표
+     범위·필수 필드는 물론 **카테고리별 개수가 매뉴얼 표 2-2/3-9와 일치하는지도**
+     검증해 예외로 끊는다 — 매뉴얼과 어긋나면 우리 스냅샷이 조용히 깨진 것이다.
+  2. **조회 경로 3개를 각자 맞는 목록에 연결**(`app/agent_context/service.py`):
+     `_fetch_realtime_population_or_concentration_info`(인구)와
+     `_fetch_realtime_city_info`(citydata 통합 — 주차·지하철·버스·행사)는
+     121개 목록을, `_fetch_realtime_commercial_info`(상권)는 82개 목록을 쓴다.
+     상권은 82개가 구조적 한계라 앞으로도 확장하지 않는다.
+  3. **낡음 감지 probe + 개발자 배너**(TP-141 2·3번, 목적 재정의). 121개 목록도
+     서울시가 "시민 의견을 수렴해 지속 확대"(매뉴얼 48p)할 예정이라 언젠가
+     뒤처질 수 있다. 최근접 대체가 일어났을 때(`area.name != place_name`)만
+     이미 들고 있는 `GetRealtimeCityDataTool`로 실제 해석된 이름을 한 번 더
+     조회해, 성공하고 우리 목록에 없으면 `StaleAreaProbeDebug`(대체 지역·거리
+     포함)를 감사 메타데이터에 싣는다. **응답(대체 판정·문구)은 절대 바꾸지
+     않는다** — probe 실패는 이유를 따지지 않고 조용히 넘어간다(서울시 API
+     장애와 미지원 지역을 구분하려 들면 본 요청에 영향을 줄 위험이 있다).
+     같은 이름 반복 조회는 프로세스 메모리 캐시로 막고,
+     `SEOUL_AREA_STALENESS_PROBE_ENABLED`(기본 true)로 배포 없이 끌 수 있다.
+     프론트는 `DeveloperChatPage`의 `TurnLocationBadges` 바로 위에 `StaleAreaBanner`를
+     새로 둔다 — `ErrorBanner`를 재사용하지 않았다: 이건 오류가 아니라 참고
+     정보라 빨강 alert 톤·재시도 버튼이 맥락에 안 맞는다.
+- 채택하지 않은 것:
+  - **82곳을 그대로 두고 121곳 확장은 다음 카드로 미루기**(TP-141 원안) —
+    매뉴얼로 "낡음"이 아니라 "애초에 잘못 연결된 참조 데이터"임을 확인한
+    뒤에는 미룰 이유가 약해졌다고 판단했다. 다만 A 리뷰는 그대로 요청한다.
+  - probe가 실 API 장애와 미지원 지역을 구분하는 것 — 구분하려 들면 판정
+    로직이 복잡해지고, 그 구분이 본 요청의 실패 판정에 영향을 줄 위험이
+    생긴다. TP-141 원안대로 "탐색 실패는 전부 신호 없음"으로 단순화했다.
+- 검증: 신규 pytest 19건(지역 목록 11건 + probe 3건 + 기존 회귀 갱신) 포함
+  전체 2745 passed(무관한 기존 langfuse 테스트 1건 제외), ruff 클린. 프론트
+  vitest 160 passed, tsc 클린, eslint 새 경고 없음.
+- 상세: `backend/resources/seoul_realtime/`, `backend/app/agent_context/seoul_realtime_areas.py`,
+  `backend/app/agent_context/service.py`, `backend/app/schemas.py`,
+  `backend/app/agent_context/info_schemas.py`,
+  `backend/tests/test_seoul_realtime_areas.py`,
+  `backend/tests/agent_context/test_realtime_population_staleness_probe.py`,
+  `frontend/src/components/dev/StaleAreaBanner.tsx`, `frontend/src/types.ts`,
+  `frontend/src/pages/DeveloperChatPage.tsx`
+- 관련 작업: TP-141
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -2997,3 +3066,4 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-25 | D-081 신설 — TP-157 브라우저 테스트 중 발견한 버그 수정. `list_traces_for_stats`/`list_feedback_for_stats`가 PostgREST 기본 1000행 응답 상한에 걸려 있던 문제를 `_fetch_all_rows()` 페이지네이션 헬퍼로 해결(limit/offset 반복 조회). "전체 실행"이 정확히 1000으로 뜨는 것이 단서였다 |
 | 2026-08-25 | D-082 신설 — Package D 소유 테이블 `place_embeddings`의 HNSW 인덱스가 프로덕션 DB에서 누락된 것을 발견해 마이그레이션으로 복구. 2026-08-20 중구 RAG 확장 실험 당시 statement_timeout 우회를 위해 지운 뒤 재생성하지 않은 것으로 추정 |
 | 2026-08-25 | D-083 신설 — 서비스 지원 지역을 4개 구(종로·중·용산·성동)에서 12개 구로 확장(PR #224 후속). Supabase `places`에 이미 적재돼 있던 광진·동대문·중랑·성북·강북·도봉·노원·은평 8개 구를 `SUPPORTED_DISTRICTS`에 추가 — district_code는 실제 주소와 대조해 확인, 경계 파일은 이미 25개 구를 다 담고 있어 손댈 필요 없음. 활성 장소 1,103건 폴리곤 대조로 밖 7건(0.63%) 확인, 그중 3건은 서로 다른 구에서 정확히 같은 깨진 좌표(19.694, 117.993) — 결측치 대체값으로 추정. `_LOCATION_REQUIRED_QUICK_PICKS`가 여전히 "종로구 한정" 전제로 남아 있는 것은 확인만 하고 범위 밖으로 남김 |
+| 2026-08-26 | D-084 신설 — 서울시 실시간 지역 목록을 JSON으로 옮기고 조회 경로별로 맞는 목록에 연결(TP-141). "경복궁 붐벼?"에 북촌한옥마을이 대신 나가던 문제를 서울시 공식 매뉴얼로 재조사한 결과, "82곳 목록이 낡은 것"이 아니라 "인구 조회에 상권 전용 82개 목록을 잘못 가져다 쓴 것"이었다 — 인구 API(`citydata`/`citydata_ppltn`)는 처음부터 121곳, 상권 API(`citydata_cmrcl`)는 가맹점 수가 적은 39곳(공원 33곳 등)을 구조적으로 제외한 82곳만 지원한다(매뉴얼 36p). 두 파일(`population_areas_121.json`/`commercial_areas_82.json`, 서울 열린데이터광장 공식 파일 기반)로 분리하고 로더가 매뉴얼 표와 카테고리 개수까지 대조 검증한다. 인구 혼잡도·citydata 통합 조회는 121개를, 상권 조회는 82개를 쓴다. 121개 목록도 서울시가 계속 확대할 예정이라(매뉴얼 48p) 최근접 대체 시 실제 이름을 한 번 더 조회하는 낡음 감지 probe를 추가 — 응답은 안 바꾸고 개발자 화면 배너로만 알린다. TP-141 원안(82곳 유지, 121 확장은 A로 이관)에서 매뉴얼 근거로 벗어난 부분은 A 리뷰를 요청한다 |
