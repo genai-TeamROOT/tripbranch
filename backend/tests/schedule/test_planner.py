@@ -12,8 +12,10 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from app.config import Settings
 from app.errors import AppError
 from app.providers.contracts import ProviderSource, provider_result
+from app.schedule.associations import CoVisitedHint
 from app.schedule.planner import _round_up_arrival, plan_partial_schedule, plan_schedule
 from app.schedule.schemas import (
     ScheduleLLMPlan,
@@ -765,6 +767,147 @@ class TestPlanPartialScheduleRoundsArrivalUpToTenMinutes:
         result = await plan_partial_schedule(request, llm)
 
         assert [item.estimated_arrival for item in result.items] == ["14:00"]
+
+
+class TestCoVisitedFetcherWiring:
+    """place_associations(D-088) 연동은 opt-in이다 — co_visited_fetcher를 안 넘기면
+    plan_schedule()은 기존과 완전히 동일하게 동작해야 한다. 실패 시에도 SCHEDULE
+    전체를 막지 않고 힌트 없이 계속돼야 한다."""
+
+    @pytest.mark.asyncio
+    async def test_fetcher를_안_넘기면_co_visited_hints가_비어있다(self) -> None:
+        llm = _RecordingLLM(_sample_plan())
+        request = SchedulePlanningRequest(
+            candidates=_three_candidates(),
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 26, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        await plan_schedule(request, llm)
+
+        assert llm.received_request is not None
+        assert llm.received_request.co_visited_hints == []
+
+    @pytest.mark.asyncio
+    async def test_fetcher가_반환한_힌트가_LLM_요청에_실린다(self) -> None:
+        llm = _RecordingLLM(_sample_plan())
+        request = SchedulePlanningRequest(
+            candidates=_three_candidates(),
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 26, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+        expected_hint = CoVisitedHint(from_place_id="place-1", to_place_id="place-2", rank=1)
+        received_place_ids: list[str] = []
+
+        async def fake_fetcher(place_ids, settings):
+            received_place_ids.extend(place_ids)
+            return [expected_hint]
+
+        await plan_schedule(request, llm, co_visited_fetcher=fake_fetcher, settings=Settings())
+
+        assert llm.received_request is not None
+        assert llm.received_request.co_visited_hints == [expected_hint]
+        assert sorted(received_place_ids) == ["place-1", "place-2", "place-3"]
+
+    @pytest.mark.asyncio
+    async def test_fetcher가_예외를_던져도_일정_편성은_그대로_진행된다(self) -> None:
+        llm = _RecordingLLM(_sample_plan())
+        request = SchedulePlanningRequest(
+            candidates=_three_candidates(),
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 26, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        async def failing_fetcher(place_ids, settings):
+            raise RuntimeError("네트워크 실패 흉내")
+
+        result = await plan_schedule(
+            request, llm, co_visited_fetcher=failing_fetcher, settings=Settings()
+        )
+
+        assert llm.received_request is not None
+        assert llm.received_request.co_visited_hints == []
+        assert result.items == _sample_plan().items
+
+
+class TestCoVisitedFetcherWiringForPartialSchedule:
+    """plan_partial_schedule()도 같은 opt-in 계약을 따른다 — 다만 조회 대상
+    place_id는 candidates뿐 아니라 pinned_items까지 합친 집합이어야 한다."""
+
+    @pytest.mark.asyncio
+    async def test_fetcher를_안_넘기면_co_visited_hints가_비어있다(self) -> None:
+        pinned_items = [_pinned("place-1", 1), _pinned("place-3", 3)]
+        new_item = _sample_item("place-2", 2)
+        llm = _RecordingFillLLM(SchedulePartialLLMPlan(new_items=[new_item]))
+        request = SchedulePartialFillRequest(
+            pinned_items=pinned_items,
+            target_orders=[2],
+            candidates=[_candidate("place-2")],
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 26, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        await plan_partial_schedule(request, llm)
+
+        assert llm.received_request is not None
+        assert llm.received_request.co_visited_hints == []
+
+    @pytest.mark.asyncio
+    async def test_pinned과_candidates_place_id를_합쳐서_조회한다(self) -> None:
+        pinned_items = [_pinned("place-1", 1), _pinned("place-3", 3)]
+        new_item = _sample_item("place-2", 2)
+        llm = _RecordingFillLLM(SchedulePartialLLMPlan(new_items=[new_item]))
+        request = SchedulePartialFillRequest(
+            pinned_items=pinned_items,
+            target_orders=[2],
+            candidates=[_candidate("place-2")],
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 26, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+        expected_hint = CoVisitedHint(from_place_id="place-1", to_place_id="place-2", rank=1)
+        received_place_ids: list[str] = []
+
+        async def fake_fetcher(place_ids, settings):
+            received_place_ids.extend(place_ids)
+            return [expected_hint]
+
+        await plan_partial_schedule(
+            request, llm, co_visited_fetcher=fake_fetcher, settings=Settings()
+        )
+
+        assert llm.received_request is not None
+        assert llm.received_request.co_visited_hints == [expected_hint]
+        assert sorted(received_place_ids) == ["place-1", "place-2", "place-3"]
+
+    @pytest.mark.asyncio
+    async def test_fetcher가_예외를_던져도_부분_재편성은_그대로_진행된다(self) -> None:
+        pinned_items = [_pinned("place-1", 1)]
+        new_item = _sample_item("place-2", 2)
+        llm = _RecordingFillLLM(SchedulePartialLLMPlan(new_items=[new_item]))
+        request = SchedulePartialFillRequest(
+            pinned_items=pinned_items,
+            target_orders=[2],
+            candidates=[_candidate("place-2")],
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 26, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        async def failing_fetcher(place_ids, settings):
+            raise RuntimeError("네트워크 실패 흉내")
+
+        result = await plan_partial_schedule(
+            request, llm, co_visited_fetcher=failing_fetcher, settings=Settings()
+        )
+
+        assert llm.received_request is not None
+        assert llm.received_request.co_visited_hints == []
+        assert result.items[-1].place_id == "place-2"
 
 
 class TestRoundUpArrival:

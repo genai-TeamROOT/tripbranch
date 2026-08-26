@@ -236,6 +236,7 @@ async def test_future_concentration_skips_realtime_citydata() -> None:
         ("realtime_subway", "지금 지하철 언제 와?"),
         ("realtime_bus", "주변 버스정류장 어디야?"),
         ("realtime_event", "오늘 주변 행사 있어?"),
+        ("realtime_traffic", "지금 가는길 막혀?"),
     ],
 )
 async def test_realtime_citydata_question_types_return_card_fields(
@@ -255,3 +256,43 @@ async def test_realtime_citydata_question_types_return_card_fields(
     assert isinstance(response.result, RealtimeCityInfoResult)
     assert response.result.question_type == question_type
     assert response.result.fields
+
+
+@pytest.mark.asyncio
+async def test_realtime_subway_keeps_both_directions_of_same_station() -> None:
+    """방향 충돌 버그(D-091) 회귀 — 같은 역·같은 호선의 두 방향이 모두 살아남아야 한다."""
+
+    response = await _service(latitude=37.5311, longitude=126.9715).fetch_info_context(
+        InfoContextRequest(
+            request_id="subway-directions",
+            place_name="용리단길",
+            place_context="explicit",
+            question_type="realtime_subway",
+            specific_question="지금 지하철 언제 와?",
+        )
+    )
+
+    assert response.status == "success"
+    assert isinstance(response.result, RealtimeCityInfoResult)
+    # FakeRealtimeCityDataProvider가 삼각지역 4호선 상행·하행 두 건을 준다.
+    assert "삼각지역 4호선 · 상행" in response.result.fields
+    assert "삼각지역 4호선 · 하행" in response.result.fields
+
+
+@pytest.mark.asyncio
+async def test_realtime_parking_groups_by_public_and_private() -> None:
+    response = await _service(latitude=37.5311, longitude=126.9715).fetch_info_context(
+        InfoContextRequest(
+            request_id="parking-groups",
+            place_name="용리단길",
+            place_context="explicit",
+            question_type="realtime_parking",
+            specific_question="지금 주차 자리 있어?",
+        )
+    )
+
+    assert response.status == "success"
+    assert isinstance(response.result, RealtimeCityInfoResult)
+    # FakeRealtimeCityDataProvider가 공영 1곳·민영 1곳을 준다 — 둘 다 살아남아야 한다.
+    assert "[공영] 테스트 공영주차장" in response.result.fields
+    assert "[민영] 테스트 민영주차장" in response.result.fields

@@ -25,6 +25,7 @@ from app.domain.scoring import (
     PreparedCandidate,
     PrepareResult,
     _travel_minutes_budget,
+    co_visited_score,
     concentration_score,
     prepare_candidates,
     redistribute_weights,
@@ -555,6 +556,22 @@ def test_concentration_score_clamps_out_of_range_rate() -> None:
     assert concentration_score(150.0, seek=False) == pytest.approx(0.0)
     assert concentration_score(0.0, seek=True) == pytest.approx(0.0)
     assert concentration_score(0.0, seek=False) == pytest.approx(1.0)
+
+
+def test_co_visited_score_normalizes_relative_to_batch_max() -> None:
+    assert co_visited_score(3, 3) == pytest.approx(1.0)
+    assert co_visited_score(1, 4) == pytest.approx(0.25)
+    assert co_visited_score(2, 4) == pytest.approx(0.5)
+
+
+def test_co_visited_score_zero_hits_is_zero_not_missing() -> None:
+    assert co_visited_score(0, 5) == pytest.approx(0.0)
+
+
+def test_co_visited_score_zero_max_is_zero() -> None:
+    # 이번 응답 안에 함께 방문된 쌍이 아예 없으면(모든 후보 hit_count=0) 0으로
+    # 떨어진다 — ZeroDivisionError가 아니라.
+    assert co_visited_score(0, 0) == pytest.approx(0.0)
 
 
 def test_concentration_weights_redistribute_when_missing() -> None:

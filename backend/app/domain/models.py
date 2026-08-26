@@ -146,6 +146,10 @@ class RealtimeParkingLot:
     current_available: bool
     paid: bool | None
     observed_at: str | None
+    # PRK_CD. 같은 주차장이 PRK_STTS에 중복으로 올 때 병합용 키로 쓴다.
+    code: str | None = None
+    # PRK_TYPE(NW/NS/BS/NP)을 "공영"/"민영"으로 정리한 값. 모르는 코드는 None.
+    lot_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -176,6 +180,16 @@ class RealtimeCityEvent:
 
 
 @dataclass(frozen=True)
+class RoadTrafficStatus:
+    """지역 인근 도로의 평균 소통 현황(citydata의 ROAD_TRAFFIC_STTS.AVG_ROAD_DATA)."""
+
+    level: str | None
+    average_speed_kmh: float | None
+    message: str | None
+    observed_at: str | None
+
+
+@dataclass(frozen=True)
 class RealtimeCityDataResult:
     """상권 활동과 인구 혼잡도를 같은 서울시 주요 장소 기준으로 묶는다."""
 
@@ -185,6 +199,7 @@ class RealtimeCityDataResult:
     subway_arrivals: tuple[RealtimeSubwayArrival, ...] = ()
     bus_stops: tuple[RealtimeBusStop, ...] = ()
     events: tuple[RealtimeCityEvent, ...] = ()
+    road_traffic: RoadTrafficStatus | None = None
 
 
 @dataclass(frozen=True)

@@ -184,6 +184,7 @@ def test_recommendation_place_details_returns_matched_c_place_card(monkeypatch) 
             "population_current_level": None,
             "population_current_message": None,
             "population_observed_at": None,
+            "population_peak_forecast_summary": None,
             "population_forecasts": [],
             "concentration_forecasts": [],
             "realtime_area_name": None,

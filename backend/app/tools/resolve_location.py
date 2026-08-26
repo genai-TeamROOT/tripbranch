@@ -409,6 +409,15 @@ class ResolveLocationTool:
             return None
         selected = _select_local_search_candidate(candidates, requested_query)
         if selected is None:
+            # 정확히 같은 이름의 후보가 있으면(동명이인, 예: "쌈지길" 2건) 이건
+            # 실제로 그 이름의 장소를 찾은 것이다 — Geocoding은 상호명을 인식하지
+            # 못하므로(docs/api-samples.md) 폴백해봐야 소용없고, 어느 쪽인지
+            # 되묻는 게 맞다. 아래 "역/명소 후보 없음→ Geocoding 폴백"은 이런
+            # 정확 일치가 전혀 없을 때만 적용한다.
+            normalized_query = _normalize_name(requested_query)
+            has_exact_match = any(
+                _normalize_name(item.name) == normalized_query for item in candidates
+            )
             # 후보를 못 좁혔는데 찾은 것이 전부 지역 밖이면 되묻기가 아니라 지역 문제다.
             # "부산 해운대"에 "지원 구 안에서 어느 장소인지" 되묻는 일을 막는다.
             if enforce_service_area and not any(
@@ -432,10 +441,19 @@ class ResolveLocationTool:
                 and is_within_service_area(item.latitude, item.longitude)
             ]
             # 지하철역/명소류로만 좁힌다. 식당·상점은 위치 후보로 부적절하니 안
-            # 좁혀진 전체로 폴백하지 않는다 — 여기서 비어 있으면(전부 식당·상점뿐)
-            # agent_runtime.py가 A2 종로구 대표 스팟 고정 버튼으로 대신한다
-            # (실사용 피드백, 2026-08-13: "그냥 지하철역으로만 가자").
+            # 좁혀진 전체로 폴백하지 않는다(실사용 피드백, 2026-08-13: "그냥
+            # 지하철역으로만 가자").
             names_source = [item for item in in_area if _is_location_pickable(item)]
+            if not names_source and not has_exact_match:
+                # 역/명소가 하나도 없고 정확히 같은 이름의 후보도 없다 —
+                # "성수동"처럼 동 이름이 지역 검색에서 카페·식당 상호명으로만
+                # 잡힌 경우다(실측, 2026-08-26). None을 돌려주면 execute()의
+                # 별칭/Geocoding 사다리로 넘어간다. Naver Geocoding은 행정동/
+                # 법정동 이름을 직접 인식하므로(docs/api-samples.md) "성수동"이
+                # 여기서 좌표로 풀린다 — 실측 결과 그 좌표만으로도 기본 검색
+                # 반경(2km) 안에 실제 상권·역이 다 들어와 굳이 구 단위로 넓힐
+                # 필요가 없었다.
+                return None
             return self._error_result(
                 status=ResolveLocationStatus.NO_DATA,
                 code="no_data",

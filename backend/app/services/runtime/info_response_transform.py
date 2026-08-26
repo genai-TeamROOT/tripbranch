@@ -8,6 +8,7 @@ from app.agent_context.info_schemas import (
     InfoContextResponse,
     PlaceCard,
     PlaceInfoResult,
+    PopulationForecastInfo,
     RealtimeCityInfoResult,
     RealtimeCommercialInfoResult,
     RealtimePopulationInfoResult,
@@ -25,7 +26,64 @@ from app.schemas import (
 from app.services.runtime.info_display import (
     format_citydata_timestamp,
     format_parking_for_display,
+    parse_citydata_timestamp,
 )
+
+# 서울시 원문 그대로의 인구 혼잡도 단계 — 값이 늘어나지 않는 한 이 4단계다
+# (프론트 CONGESTION_HEIGHT와 순서를 맞춘다).
+_CONGESTION_LEVEL_RANK = {"여유": 0, "보통": 1, "약간 붐빔": 2, "붐빔": 3}
+
+
+def _summarize_population_peak(
+    observed_at: str | None, forecasts: list[PopulationForecastInfo]
+) -> str | None:
+    """향후 예측 중 가장 붐비는 시간대를 한 줄 요약으로 만든다.
+
+    과거 추이는 서울시 API가 애초에 제공하지 않아(미래 방향만 응답) 다루지
+    않는다. 관측 시각과 예측 시각을 둘 다 실제 파싱해 시간 차를 구한다 —
+    슬롯 간격이 항상 정확히 1시간이라고 가정하지 않는다.
+    """
+
+    observed = parse_citydata_timestamp(observed_at)
+    if observed is None:
+        return None
+
+    ranked = [
+        (forecast, _CONGESTION_LEVEL_RANK.get(forecast.congestion_level or "", -1))
+        for forecast in forecasts
+    ]
+    ranked = [(forecast, rank) for forecast, rank in ranked if rank >= 0]
+    if not ranked:
+        return None
+    if len({rank for _, rank in ranked}) == 1:
+        # 전부 같은 단계면 "가장 붐빈다"고 짚어줄 시간대가 없다.
+        return None
+
+    # 최고 단계 중 가장 이른 시각을 고른다.
+    best_forecast = None
+    best_rank = -1
+    best_hours_ahead = None
+    for forecast, rank in ranked:
+        peak_at = parse_citydata_timestamp(forecast.forecast_at)
+        if peak_at is None:
+            continue
+        hours_ahead = round((peak_at - observed).total_seconds() / 3600)
+        is_better = rank > best_rank or (
+            rank == best_rank and best_hours_ahead is not None and hours_ahead < best_hours_ahead
+        )
+        if best_forecast is None or is_better:
+            best_forecast, best_rank, best_hours_ahead = forecast, rank, hours_ahead
+    if best_forecast is None or best_hours_ahead is None or best_hours_ahead <= 0:
+        return None
+
+    peak_at = parse_citydata_timestamp(best_forecast.forecast_at)
+    if peak_at is None:
+        return None
+    level = best_forecast.congestion_level or "알 수 없음"
+    return (
+        f"{peak_at.hour}시({best_hours_ahead}시간 후)에 가장 붐빌 것으로 예상돼요. "
+        f"혼잡정도는 {level}일 것으로 예상돼요."
+    )
 
 
 def to_info_place_card(response: InfoContextResponse) -> InfoPlaceCard | None:
@@ -216,6 +274,9 @@ def _to_realtime_population_card(
         population_current_level=result.current_congestion_level,
         population_current_message=result.current_congestion_message,
         population_observed_at=format_citydata_timestamp(result.observed_at),
+        population_peak_forecast_summary=_summarize_population_peak(
+            result.observed_at, result.population_forecasts
+        ),
         population_forecasts=[
             PopulationForecastBar(
                 forecast_at=forecast.forecast_at,

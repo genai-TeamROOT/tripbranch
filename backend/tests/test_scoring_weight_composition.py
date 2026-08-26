@@ -71,6 +71,22 @@ def test_taste_and_concentration_together_sums_to_one() -> None:
     }
 
 
+def test_taste_concentration_co_visited_together_fills_max_optional_slots() -> None:
+    """D-092: co_visited가 OPTIONAL_FEATURES에 추가되며 정확히 3개(최대치)를
+    동시에 채우는 조합이 처음 생겼다 — distance가 0.05까지 내려가는 경계값이다.
+    """
+    weights = build_weights(("taste", "concentration", "co_visited"))
+    assert weights == {
+        "weather": 0.25,
+        "remaining_operating_time": 0.25,
+        "distance": 0.05,
+        "taste": 0.15,
+        "concentration": 0.15,
+        "co_visited": 0.15,
+    }
+    assert sum(weights.values()) == pytest.approx(1.0)
+
+
 @pytest.mark.parametrize("count", range(len(OPTIONAL_FEATURES) + 1))
 def test_every_combination_sums_to_one(count: int) -> None:
     weights = build_weights(OPTIONAL_FEATURES[:count])

@@ -58,6 +58,29 @@ def test_taste_and_concentration_can_coexist() -> None:
     )
 
 
+def test_taste_concentration_co_visited_can_coexist() -> None:
+    """D-092: co_visited가 마지막 순서로 taste/concentration과 함께 나타난다."""
+    order = resolve_feature_order(
+        {
+            "weather": 1.0,
+            "remaining_operating_time": 1.0,
+            "distance": 1.0,
+            "taste": 1.0,
+            "concentration": 1.0,
+            "co_visited": 1.0,
+        }
+    )
+
+    assert order == (
+        "weather",
+        "remaining_operating_time",
+        "distance",
+        "taste",
+        "concentration",
+        "co_visited",
+    )
+
+
 def test_environment_replaces_weather_in_place() -> None:
     """날씨와 환경은 같은 자리를 나눠 쓴다 — 둘이 동시에 오지 않는다."""
     order = resolve_feature_order(

@@ -19,6 +19,7 @@ from app.domain.models import (
     RealtimeParkingLot,
     RealtimePopulationResult,
     RealtimeSubwayArrival,
+    RoadTrafficStatus,
 )
 from app.errors import ProviderTimeoutError, ProviderUnavailableError
 from app.providers.contracts import (
@@ -142,12 +143,32 @@ def _citydata_row(payload: Mapping[str, object]) -> Mapping[str, object]:
     return rows[0] if rows else response
 
 
+# PRK_TYPE 코드 → 공영/민영. 서울시 실측(교대역·강남역·홍대 관광특구, 2026-08-26)으로
+# 확인한 값 — 문서화된 코드표가 따로 없어 실제 응답과 이름(예: "OO 공영주차장",
+# "OO 주차장(민영)")을 대조해서 확정했다.
+_PARKING_LOT_TYPE_LABELS: dict[str, str] = {
+    "NW": "공영",  # 노외주차장
+    "NS": "공영",  # 노상주차장
+    "BS": "민영",  # 부설주차장
+    "NP": "민영",  # 개별 민영 주차장
+}
+
+
 def map_realtime_parking_response(
     payload: Mapping[str, object],
 ) -> tuple[RealtimeParkingLot, ...]:
+    """PRK_STTS를 정규화한다.
+
+    같은 주차장(PRK_CD)이 실측에서 두 번 들어오는 걸 확인했다(이촌한강공원의
+    "이촌3, 4주차장" — 한쪽은 빈 값, 다른 쪽은 실시간 대수가 채워짐). 코드가 없는
+    항목은 이름·좌표로 대체 키를 만들어 중복 제거하고, 실시간 정보가 있는 쪽을 남긴다.
+    """
+
     row = _citydata_row(payload)
-    return tuple(
-        RealtimeParkingLot(
+    merged: dict[str, RealtimeParkingLot] = {}
+    order: list[str] = []
+    for item in _mappings(row.get("PRK_STTS")):
+        lot = RealtimeParkingLot(
             name=_text(item.get("PRK_NM")) or "주차장",
             latitude=_float(item.get("LAT")),
             longitude=_float(item.get("LNG")),
@@ -160,9 +181,17 @@ def map_realtime_parking_response(
                 else False if _text(item.get("PAY_YN")) == "N" else None
             ),
             observed_at=_text(item.get("CUR_PRK_TIME")),
+            code=_text(item.get("PRK_CD")),
+            lot_type=_PARKING_LOT_TYPE_LABELS.get(_text(item.get("PRK_TYPE")) or ""),
         )
-        for item in _mappings(row.get("PRK_STTS"))
-    )
+        key = lot.code or f"{lot.name}|{lot.latitude}|{lot.longitude}"
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = lot
+            order.append(key)
+        elif lot.current_available and not existing.current_available:
+            merged[key] = lot
+    return tuple(merged[key] for key in order)
 
 
 def map_realtime_subway_response(
@@ -210,6 +239,31 @@ def map_realtime_event_response(payload: Mapping[str, object]) -> tuple[Realtime
             url=_text(item.get("URL")),
         )
         for item in _mappings(row.get("EVENT_STTS"))
+    )
+
+
+def map_realtime_traffic_response(payload: Mapping[str, object]) -> RoadTrafficStatus | None:
+    """ROAD_TRAFFIC_STTS.AVG_ROAD_DATA를 정규화한다.
+
+    개별 도로 링크 배열(``ROAD_TRAFFIC_STTS.ROAD_TRAFFIC_STTS``, 좌표 폴리라인 포함)은
+    이번 스코프에서 쓰지 않는다 — 지역 평균 스냅샷(단계·속도·안내문구)만 다룬다.
+    24시간 추이는 이 응답에 없다(실측 확인, D-091).
+    """
+
+    row = _citydata_row(payload)
+    section = row.get("ROAD_TRAFFIC_STTS")
+    section_map = section if isinstance(section, Mapping) else None
+    if section_map is None:
+        return None
+    avg = section_map.get("AVG_ROAD_DATA")
+    avg_map = avg if isinstance(avg, Mapping) else None
+    if avg_map is None:
+        return None
+    return RoadTrafficStatus(
+        level=_text(avg_map.get("ROAD_TRAFFIC_IDX")),
+        average_speed_kmh=_float(avg_map.get("ROAD_TRAFFIC_SPD")),
+        message=_text(avg_map.get("ROAD_MSG")),
+        observed_at=_text(avg_map.get("ROAD_TRAFFIC_TIME")),
     )
 
 
@@ -273,6 +327,20 @@ class FakeRealtimeCityDataProvider:
                         current_available=True,
                         paid=True,
                         observed_at="2026-08-20 14:00",
+                        code="TEST-PUB-1",
+                        lot_type="공영",
+                    ),
+                    RealtimeParkingLot(
+                        name="테스트 민영주차장",
+                        latitude=37.5313,
+                        longitude=126.9718,
+                        capacity=30,
+                        current_parked_count=None,
+                        current_available=False,
+                        paid=True,
+                        observed_at=None,
+                        code="TEST-PRV-1",
+                        lot_type="민영",
                     ),
                 ),
                 subway_arrivals=(
@@ -283,6 +351,14 @@ class FakeRealtimeCityDataProvider:
                         destination="당고개",
                         arrival_seconds=180,
                         arrival_message="3분 후",
+                    ),
+                    RealtimeSubwayArrival(
+                        station_name="삼각지역",
+                        line="4호선",
+                        direction="하행",
+                        destination="오이도",
+                        arrival_seconds=300,
+                        arrival_message="5분 후",
                     ),
                 ),
                 bus_stops=(
@@ -296,6 +372,12 @@ class FakeRealtimeCityDataProvider:
                         thumbnail_url=None,
                         url=None,
                     ),
+                ),
+                road_traffic=RoadTrafficStatus(
+                    level="원활",
+                    average_speed_kmh=32.0,
+                    message="해당 장소로 이동·진입하는 도로가 크게 막히지 않아요.",
+                    observed_at="2026-08-20 14:00",
                 ),
             ),
             source=ProviderSource.FAKE_SEOUL_CITYDATA,
@@ -342,6 +424,7 @@ class RealRealtimeCityDataProvider:
                 subway_arrivals=map_realtime_subway_response(payload),
                 bus_stops=map_realtime_bus_response(payload),
                 events=map_realtime_event_response(payload),
+                road_traffic=map_realtime_traffic_response(payload),
             ),
             source=ProviderSource.SEOUL_CITYDATA_POPULATION,
         )
@@ -425,4 +508,5 @@ __all__ = [
     "map_realtime_parking_response",
     "map_realtime_population_response",
     "map_realtime_subway_response",
+    "map_realtime_traffic_response",
 ]
