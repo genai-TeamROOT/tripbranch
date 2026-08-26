@@ -271,7 +271,13 @@ def compose_realtime_commercial_message(response: InfoContextResponse) -> str:
 
 
 def compose_realtime_population_message(response: InfoContextResponse) -> str:
-    """가까운 서울시 제공 지역의 현재 인구 혼잡도를 대체 사실로 고지한다."""
+    """가까운 서울시 제공 지역의 현재 인구 혼잡도를 대체 사실로 고지한다.
+
+    place(요청한 장소)와 area(실제 답한 서울시 제공 지역)가 같으면 대체가 아니라
+    그 장소 자체의 값이다 — "자체 데이터는 아니지만"을 그대로 붙이면 자기 자신을
+    대체값이라 말하는 자기참조 문장이 된다. 121곳 목록에 실제 장소(경복궁 등)가
+    들어오기 전에는 place와 area가 항상 달라서 드러나지 않던 문제다(TP-141/D-084).
+    """
 
     if response.status == "unavailable" or not isinstance(
         response.result, RealtimePopulationInfoResult
@@ -284,13 +290,22 @@ def compose_realtime_population_message(response: InfoContextResponse) -> str:
     place = result.resolved_place_name or result.requested_place_name or "해당 장소"
     area = result.area_name or "가까운 제공 지역"
     level = result.current_congestion_level or "확인할 수 없음"
+    observed_at = format_citydata_timestamp(result.observed_at)
+    observed = f" {observed_at} 기준이에요." if observed_at else ""
+
+    # 공백만 다른 같은 장소("여의도 한강공원" 지오코딩 결과 vs "여의도한강공원" 목록
+    # 표기)를 다른 곳으로 오판하지 않도록 공백을 지우고 비교한다.
+    if area.replace(" ", "") == place.replace(" ", ""):
+        return (
+            f"{area} 기준으로는 현재 {level} 수준이에요. "
+            f"향후 12시간 예상 변화는 아래 카드에서 확인해보세요.{observed}"
+        )
+
     distance = (
         f"약 {result.proxy_distance_km:.1f}km 떨어진 "
         if result.proxy_distance_km is not None and result.proxy_distance_km >= 0.05
         else ""
     )
-    observed_at = format_citydata_timestamp(result.observed_at)
-    observed = f" {observed_at} 기준이에요." if observed_at else ""
     return (
         f"{place} 자체의 실시간 인구 데이터는 아니지만, {distance}{area} 기준으로는 "
         f"현재 {level} 수준이에요. 향후 12시간 예상 변화는 아래 카드에서 확인해보세요.{observed}"

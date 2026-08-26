@@ -24,6 +24,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 from app.agent_context.schemas import Clarification, ContextError, Coordinates, ResponseMetadata
+from app.schemas import StaleAreaProbeDebug
 
 # int-02-info.md §6의 QuestionType. A의 app.schemas.QuestionType과 값이 일치해야
 # 한다 — A가 InfoPayload.question_type.value를 그대로 실어 보낸다.
@@ -173,6 +174,10 @@ class RealtimePopulationInfoResult(BaseModel):
     source_url: str | None = None
     map_url: str | None = None
     error: ContextError | None = None
+    # 우리 121곳 목록엔 없지만 서울시 API는 지원하는 지역을 찾았을 때만 채워진다
+    # (TP-141/D-084). 응답 판정(area_name 등)에는 영향을 주지 않는다 — 감사
+    # 화면 배너용 신호일 뿐이다.
+    stale_area_detected: StaleAreaProbeDebug | None = None
 
 
 class RealtimeCityInfoResult(BaseModel):

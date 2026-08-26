@@ -27,7 +27,7 @@ import httpx
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from app.agent_context.seoul_commercial_areas import select_nearest_commercial_area
+from app.agent_context.seoul_realtime_areas import select_nearest_commercial_area
 from app.config import settings
 from app.domain.models import TourPlacePage
 from app.errors import AppError
@@ -117,7 +117,7 @@ class NearestAreaResponse(BaseModel):
     """좌표에 붙일 사람이 읽을 수 있는 지역 이름.
 
     기기 GPS는 좌표만 주므로 개발자 패널의 위치 뱃지에 찍을 이름이 없다. 서울시
-    실시간 상권 82개 지역의 대표 좌표(agent_context/seoul_commercial_areas.py)에서
+    실시간 상권 82개 지역의 대표 좌표(agent_context/seoul_realtime_areas.py)에서
     최근접을 골라 근사 이름을 만든다 — 외부 호출은 하지 않는다.
 
     근사치라는 사실을 숨기지 않으려고 distance_km를 항상 함께 준다. 최근접이 2km를

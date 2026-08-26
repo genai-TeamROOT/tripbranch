@@ -748,6 +748,17 @@ export interface ToolExecutionDebug {
   error_code: string | null;
   clarification_code: string | null;
   is_proxy: boolean | null;
+  /**
+   * info_realtime_population 전용. 우리 121곳 목록엔 없지만 서울시 API는 실제로
+   * 지원하는 지역을 찾았을 때만 채워진다(TP-141/D-084). 응답 판정에는 영향을
+   * 주지 않는 감시용 신호 — 이전 실행 이력에는 없을 수 있어 optional로 둔다.
+   */
+  stale_area_detected?: {
+    probed_area_name: string;
+    probed_area_code: string | null;
+    matched_area_name: string;
+    matched_area_distance_km: number;
+  } | null;
   candidate_status_counts: Record<string, number>;
   /** candidate_enrichment 전용: 후보별로 혼잡도가 어디서 온 값인지. */
   candidate_concentration?: CandidateConcentrationDebug[];
