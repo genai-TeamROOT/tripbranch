@@ -65,8 +65,12 @@ def build_early_return_graph():
     """
 
     graph = StateGraph(EarlyReturnState)
-    graph.add_node("general_answer", general_answer_node)
-    graph.add_node("static_answer", static_answer_node)
+    graph.add_node(
+        "general_answer", _observed("general_answer", general_answer_node, _summarize_answer)
+    )
+    graph.add_node(
+        "static_answer", _observed("static_answer", static_answer_node, _summarize_answer)
+    )
     graph.add_conditional_edges(
         START,
         route_early_return,
@@ -284,6 +288,23 @@ def _summarize_finalize(result: Mapping[str, Any]) -> dict[str, Any] | None:
         "has_schedule": getattr(response, "schedule", None) is not None,
         "has_comparison": getattr(response, "comparison", None) is not None,
     }
+
+
+def _summarize_answer(result: Mapping[str, Any]) -> dict[str, Any] | None:
+    """`general_answer`·`static_answer` span에 실을 값을 고른다.
+
+    **이 두 노드는 span이 아예 없었다.** `_observed()`를 안 씌워서 GENERAL 턴의
+    trace에는 `agent_turn` 밑에 generation 하나만 떠 있었다 — 노드가 얼마나 걸렸고
+    답변이 실제로 나갔는지가 화면에서 안 보였다.
+
+    답변 원문은 싣지 않는다. 같은 문자열이 바로 아래 generation의 output에 이미
+    있어서, 두 번 실으면 이벤트만 커지고 읽히는 건 늘지 않는다.
+    """
+
+    answer = result.get("answer")
+    if answer is None:
+        return None
+    return {"answer_length": len(answer)}
 
 
 def _observed(

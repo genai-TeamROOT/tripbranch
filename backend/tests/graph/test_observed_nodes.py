@@ -35,6 +35,7 @@ from app.schemas import (
 )
 from app.services.runtime.graph import (
     _observed,
+    _summarize_answer,
     _summarize_finalize,
     _summarize_scoring,
     _summarize_tool_fetch,
@@ -100,6 +101,39 @@ def test_pipeline_nodes_are_registered_wrapped() -> None:
     compiled = build_recommend_pipeline_graph()
 
     assert {"tool_fetch", "scoring", "schedule", "finalize"} <= set(compiled.nodes)
+
+
+def test_early_return_nodes_are_registered_wrapped() -> None:
+    """이 두 노드는 span이 아예 없었다 — `_observed()`를 안 씌워서다.
+
+    GENERAL 턴의 trace에는 `agent_turn` 밑에 generation 하나만 떠 있어서, 노드가
+    얼마나 걸렸고 답변이 실제로 나갔는지가 화면에서 안 보였다.
+    """
+    from app.services.runtime.graph import build_early_return_graph
+    from app.services.runtime.graph.nodes.general import general_answer_node
+    from app.services.runtime.graph.nodes.static_answer import static_answer_node
+
+    compiled = build_early_return_graph()
+
+    assert {"general_answer", "static_answer"} <= set(compiled.nodes)
+    for name, original in (
+        ("general_answer", general_answer_node),
+        ("static_answer", static_answer_node),
+    ):
+        bound = compiled.nodes[name].bound
+        # 감싸지 않았으면 원본이 그대로라 `__wrapped__`가 없다.
+        assert bound.afunc.__wrapped__ is original
+        # 감싼 뒤에도 LangGraph가 `config`를 넘기려면 원본 시그니처가 보여야 한다.
+        assert "config" in bound.func_accepts
+
+
+def test_answer_summary_records_the_length_not_the_text() -> None:
+    """같은 문자열이 바로 아래 generation output에 이미 있다 — 두 번 실을 이유가 없다."""
+    assert _summarize_answer({"answer": "안녕하세요, 무엇을 도와드릴까요?"}) == {
+        "answer_length": 18
+    }
+    # 노드가 답을 못 채웠으면 span에 빈 값을 적지 않는다.
+    assert _summarize_answer({"answer": None}) is None
 
 
 # --- span 요약: 무엇을 싣고 무엇을 빼는가 -------------------------------------
