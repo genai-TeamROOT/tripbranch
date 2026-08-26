@@ -2987,6 +2987,54 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `frontend/src/pages/DeveloperChatPage.tsx`
 - 관련 작업: TP-141
 
+### D-085 — 서비스 지역 밖 안내에서 구 목록을 본문과 분리해 각주로 뺀다
+
+- 상태: `Accepted` — 구현 완료.
+- 배경: D-083으로 지원 구가 4개에서 12개로 늘면서, `unsupported_region` 안내
+  문구("현재는 베타 서비스로 종로구·중구·용산구·성동구·광진구·동대문구·중랑구·
+  성북구·강북구·도봉구·노원구·은평구의 장소 추천만 가능해요.")가 한 문장 안에
+  구 이름을 전부 나열해 지나치게 길어졌다. 구는 계속 늘어날 예정이라 이 문장은
+  앞으로도 계속 길어진다.
+- 결정:
+  1. `AgentResponse`에 `message_footnote: str | None` 필드를 신설한다. 본문
+     (`message`)은 "이 위치는 지금 서비스 지역이 아니에요. 다른 위치를 말씀해
+     주세요."로 짧게 고정하고, 구 목록은 이 필드로 뺀다. 화면은 이 필드가 있으면
+     본문 아래 작고 옅은 글씨(`text-xs text-gray-400`)로 보여준다.
+  2. `response_composer.py`에 `unsupported_region_footnote(error_code)` 헬퍼를
+     신설 — `error_code == "unsupported_region"`일 때만
+     `supported_district_label(with_city=True)`로 만든 문자열을 돌려주고, 그 외는
+     `None`이다. `compose_chat_message()`의 시그니처·내부 흐름은 손대지 않았다 —
+     `AgentResponse`를 조립하는 지점(`agent_runtime.py`)에 이미 `tool_error_code`/
+     `info_response.error.code`가 있어서, 그 자리에서 각주만 별도로 계산해
+     끼워 넣는 것으로 끝났다(RECOMMEND/MODIFY/SCHEDULE 경로, INFO 경로 두 곳).
+  3. 프론트는 `AgentResponse.message_footnote`를 `assistant_text` 메시지의
+     `footnote` 필드로 그대로 옮기기만 한다 — `ClarificationMessage.tsx`가
+     `location_ambiguous` 동적 후보를 이미 그대로 렌더링만 하듯, 여기도 백엔드가
+     보낸 값을 그대로 그린다.
+- 채택하지 않은 것:
+  - **문자열 하나에 구분자로 이어붙이고 프론트에서 split** — 이 저장소가 어디서나
+    타입 계약으로 처리하는 것과 결이 안 맞고, 구분자가 우연히 본문에 등장하면
+    깨진다.
+  - **`compose_chat_message()`의 반환 타입을 `(message, footnote)` 튜플로 바꾸기**
+    — 이 함수가 ~10곳에서 단순 `str`을 반환하고 있어(INFO 세부 유형별 4개 함수
+    포함) 전부 고쳐야 한다. `unsupported_region` 하나만 각주가 필요한데 모든
+    반환 경로의 타입을 바꾸는 건 과했다.
+- 검증: `compose_chat_message()`/`compose_info_concentration_message()` 단위
+  테스트로 본문이 짧아졌는지, `unsupported_region_footnote()`가 해당 코드에만
+  반응하는지 확인. `run_agent_flow()` 종단 테스트(`_UnsupportedRegionToolProvider`)로
+  실제 `AgentResponse.message`/`message_footnote` 둘 다 확인. 프론트는 SSE 흐름부터
+  렌더링까지 통합 테스트 1건 추가. `pytest` 2,749 passed(무관한 기존 langfuse 테스트
+  1건 제외), `ruff` 클린, 프론트 `vitest` 161 passed, `tsc`/`eslint` 클린.
+- 남은 것: `resolve_location.py`의 `_error_message()`가 가진 같은 모양의 긴 문자열
+  (`ambiguous_location`/`outside_supported_region` cause)은 실제로는
+  `response_composer.py`가 에러 코드만 보고 자체 문구로 덮어써서 화면에 안 뜨는
+  것으로 보인다(죽은 문자열 추정) — 이번엔 확인만 하고 정리하지 않았다.
+- 상세: `backend/app/schemas.py`, `backend/app/services/runtime/response_composer.py`,
+  `backend/app/services/runtime/agent_runtime.py`,
+  `backend/tests/test_response_composer.py`, `backend/tests/test_agent_runtime.py`,
+  `frontend/src/types.ts`, `frontend/src/state/TripContext.tsx`,
+  `frontend/src/components/chat/ChatMessageList.tsx`, `frontend/src/App.test.tsx`
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -3067,3 +3115,4 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-25 | D-082 신설 — Package D 소유 테이블 `place_embeddings`의 HNSW 인덱스가 프로덕션 DB에서 누락된 것을 발견해 마이그레이션으로 복구. 2026-08-20 중구 RAG 확장 실험 당시 statement_timeout 우회를 위해 지운 뒤 재생성하지 않은 것으로 추정 |
 | 2026-08-25 | D-083 신설 — 서비스 지원 지역을 4개 구(종로·중·용산·성동)에서 12개 구로 확장(PR #224 후속). Supabase `places`에 이미 적재돼 있던 광진·동대문·중랑·성북·강북·도봉·노원·은평 8개 구를 `SUPPORTED_DISTRICTS`에 추가 — district_code는 실제 주소와 대조해 확인, 경계 파일은 이미 25개 구를 다 담고 있어 손댈 필요 없음. 활성 장소 1,103건 폴리곤 대조로 밖 7건(0.63%) 확인, 그중 3건은 서로 다른 구에서 정확히 같은 깨진 좌표(19.694, 117.993) — 결측치 대체값으로 추정. `_LOCATION_REQUIRED_QUICK_PICKS`가 여전히 "종로구 한정" 전제로 남아 있는 것은 확인만 하고 범위 밖으로 남김 |
 | 2026-08-26 | D-084 신설 — 서울시 실시간 지역 목록을 JSON으로 옮기고 조회 경로별로 맞는 목록에 연결(TP-141). "경복궁 붐벼?"에 북촌한옥마을이 대신 나가던 문제를 서울시 공식 매뉴얼로 재조사한 결과, "82곳 목록이 낡은 것"이 아니라 "인구 조회에 상권 전용 82개 목록을 잘못 가져다 쓴 것"이었다 — 인구 API(`citydata`/`citydata_ppltn`)는 처음부터 121곳, 상권 API(`citydata_cmrcl`)는 가맹점 수가 적은 39곳(공원 33곳 등)을 구조적으로 제외한 82곳만 지원한다(매뉴얼 36p). 두 파일(`population_areas_121.json`/`commercial_areas_82.json`, 서울 열린데이터광장 공식 파일 기반)로 분리하고 로더가 매뉴얼 표와 카테고리 개수까지 대조 검증한다. 인구 혼잡도·citydata 통합 조회는 121개를, 상권 조회는 82개를 쓴다. 121개 목록도 서울시가 계속 확대할 예정이라(매뉴얼 48p) 최근접 대체 시 실제 이름을 한 번 더 조회하는 낡음 감지 probe를 추가 — 응답은 안 바꾸고 개발자 화면 배너로만 알린다. TP-141 원안(82곳 유지, 121 확장은 A로 이관)에서 매뉴얼 근거로 벗어난 부분은 A 리뷰를 요청한다 |
+| 2026-08-26 | D-085 신설 — 서비스 지역 밖 안내에서 구 목록을 본문과 분리해 각주로 뺀다. D-083으로 지원 구가 12개로 늘며 "종로구·중구·...·은평구의 장소 추천만 가능해요" 문구가 길어진 문제 — `AgentResponse.message_footnote` 필드를 신설해 본문은 "이 위치는 지금 서비스 지역이 아니에요"로 짧게 고정하고, 구 목록은 화면이 작고 옅은 글씨로 따로 보여준다. `compose_chat_message()` 시그니처는 손대지 않고 `AgentResponse` 조립 지점(agent_runtime.py) 2곳에서 각주만 계산해 끼워 넣었다 |

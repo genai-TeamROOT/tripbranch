@@ -104,6 +104,7 @@ from app.services.runtime.response_composer import (
     compose_chat_message,
     compose_compare_message,
     tool_clarification_message,
+    unsupported_region_footnote,
 )
 from app.services.runtime.stream_events import (
     SCHEDULING_HEARTBEAT_INTERVAL_SECONDS,
@@ -1709,6 +1710,9 @@ async def _run_agent_flow(
             recommendations=None,
             info_place_card=to_info_place_card(info_response),
             message=message,
+            message_footnote=unsupported_region_footnote(
+                info_response.error.code if info_response.error else None
+            ),
             llm_execution=get_llm_execution_metadata(),
             tool_execution=info_execution,
             tool_executions=[info_execution] if info_execution is not None else [],
@@ -2187,11 +2191,12 @@ async def _fetch_tool_context(
                     ),
                 }
             )
+        tool_error_code = tool_response.error.code if tool_response.error else None
         message = await compose_chat_message(
             llm_output,
             tool_status=tool_response.status,
             tool_clarification=tool_response.clarification,
-            tool_error_code=tool_response.error.code if tool_response.error else None,
+            tool_error_code=tool_error_code,
             llm=llm,
         )
         return _ToolFetchOutcome(
@@ -2200,6 +2205,7 @@ async def _fetch_tool_context(
                 state=state_response,
                 recommendations=None,
                 message=message,
+                message_footnote=unsupported_region_footnote(tool_error_code),
                 llm_execution=get_llm_execution_metadata(),
                 tool_execution=tool_execution,
                 tool_executions=tool_executions,
