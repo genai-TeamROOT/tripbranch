@@ -117,6 +117,17 @@ class Settings(BaseSettings):
     # 자세한 근거는 package_D/[계획] Langfuse 도입 §6.3.
     langfuse_enabled: bool = False
     langfuse_capture_content: bool = False
+    # 세 번째 스위치. `Principal.user_id`(Supabase 신원 토큰의 sub)를 trace에
+    # 실을지다. 이걸 켜면 사용자별 비용·지연·실패율이 보이고, 한 사람이 같은 걸
+    # 몇 번 다시 물었는지도 보인다.
+    #
+    # **원문과 별개 축이라 스위치를 나눴다.** capture_content가 꺼져 있어도
+    # user_id는 mask를 타지 않는다(trace 속성이다). 즉 "발화는 가리고 신원만
+    # 외부에 쌓는" 상태가 실수로 만들어질 수 있어, 묶어두면 오히려 위험하다.
+    #
+    # 기본 off다 — 개인정보를 외부 SaaS에 올리는 것은 팀 합의가 먼저다.
+    # 코드는 먼저 들어가되 켜는 결정은 사람이 한다.
+    langfuse_capture_user_id: bool = False
     langfuse_public_key: str = Field(default="", repr=False, exclude=True)
     langfuse_secret_key: str = Field(default="", repr=False, exclude=True)
     # 리전별로 호스트가 다르다. 한국에서는 JP가 지연이 가장 낮다.

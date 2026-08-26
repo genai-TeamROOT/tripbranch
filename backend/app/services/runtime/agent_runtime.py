@@ -1323,6 +1323,7 @@ async def run_agent_flow(
     with (
         trace_attributes(
             session_id=request.session_id,
+            user_id=_observed_user_id(principal),
             tags=[f"scoring:{SCORING_VERSION}", f"env:{settings.app_env}"],
         ),
         observe_step("agent_turn") as turn,
@@ -1351,6 +1352,19 @@ async def run_agent_flow(
         except Exception:
             logger.warning("턴 관측 요약 실패(응답 흐름에는 영향 없음)", exc_info=True)
         return response
+
+
+def _observed_user_id(principal: Principal | None) -> str | None:
+    """관측에 실을 사용자 식별자. 스위치가 꺼져 있으면 `None`.
+
+    켜는 것은 팀 결정이라 기본값이 꺼짐이다(`config.py`). 게스트도 `user_id`를
+    갖지만(D-062 2절) 그것 역시 외부로 나가는 식별자라 똑같이 스위치를 탄다.
+    """
+
+    if not settings.langfuse_capture_user_id or principal is None:
+        return None
+    return principal.user_id
+
 
 
 async def _run_agent_flow(

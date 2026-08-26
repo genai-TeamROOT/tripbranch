@@ -35,6 +35,8 @@ from app.agent_context.schemas import (
     ResponseMetadata,
     WeatherForecast,
 )
+from app.auth.principal import Principal
+from app.config import settings
 from app.domain.scoring import SCORING_VERSION
 from app.domain.travel_route import TravelMode, TravelRoute
 from app.prompts.registry import turn_prompt_version
@@ -4716,3 +4718,23 @@ def test_turn_summary_names_the_payload_shape() -> None:
     assert summary["has_schedule"] is True
     assert summary["card_count"] == 0
     assert summary["headline"] == "SCHEDULE · complete · 일정"
+
+
+def test_user_id_stays_off_until_the_switch_is_turned_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """개인정보를 외부 SaaS에 올리는 것은 팀 합의가 먼저다 — 코드가 먼저 들어가도 꺼짐이다.
+
+    `capture_content`와 별개 축이라는 것도 함께 잠근다. 원문을 가려도 user_id는
+    trace 속성이라 mask를 타지 않으므로, 묶어두면 "발화는 가리고 신원만 쌓는" 상태가
+    실수로 만들어진다.
+    """
+    principal = Principal(user_id="user-abc", is_anonymous=False)
+    monkeypatch.setattr(settings, "langfuse_capture_content", True)
+
+    monkeypatch.setattr(settings, "langfuse_capture_user_id", False)
+    assert agent_runtime_module._observed_user_id(principal) is None
+
+    monkeypatch.setattr(settings, "langfuse_capture_user_id", True)
+    assert agent_runtime_module._observed_user_id(principal) == "user-abc"
+    assert agent_runtime_module._observed_user_id(None) is None
