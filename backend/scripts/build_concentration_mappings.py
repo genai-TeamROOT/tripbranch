@@ -1,12 +1,14 @@
-"""집중률 API의 장소명을 종로구 `places`와 매칭해 매핑 CSV를 만든다.
+"""집중률 API의 장소명을 한 개 구의 `places`와 매칭해 매핑 CSV를 만든다.
 
 역할: import_concentration_mappings.py가 적재할 CSV를 생성한다. 집중률 API가 쓰는
 장소명과 TourAPI 장소명이 달라(예: `서울 운현궁` vs `운현궁`) 매핑 테이블에 이름이
 있어도 조회가 실패하는 문제를 줄이는 것이 목적이다.
-입력: --places-snapshot(없으면 Supabase places에서 활성 장소를 읽는다).
-출력: supabase/data/concentration_place_mapping_<오늘>.csv
+입력: --district-code(필수), --places-snapshot(없으면 Supabase places에서 활성 장소를
+      읽는다).
+출력: supabase/data/concentration_place_mapping_<구코드>_<오늘>.csv
       + 미매칭 장소 목록을 표준 출력에 나열한다.
-호출 시점: `python -m scripts.build_concentration_mappings`로 수동 실행한다.
+호출 시점: `python -m scripts.build_concentration_mappings --district-code 11140`처럼
+      구를 지정해 수동 실행한다. 구마다 한 번씩 돌린다.
 
 매칭은 보수적으로 한다 — 정확 일치와 규칙 기반 정규화 일치만 자동으로 붙이고,
 편집거리 같은 유사도 매칭은 쓰지 않는다. 이름이 크게 다른 장소를 잘못 붙이면 엉뚱한
@@ -50,6 +52,19 @@ _PAREN_PATTERN = re.compile(r"\s*\([^)]*\)")
 _SEOUL_PREFIX = "서울 "
 _WHITESPACE_PATTERN = re.compile(r"\s")
 
+# 모양이 같아 사람 눈에는 구분되지 않지만 코드포인트가 다른 문자. 한쪽으로 모아
+# 비교한다. 2026-08-26 중구 실측: 집중률 API `초전섬유ㆍ퀼트박물관`(아래아 U+318D)과
+# places `초전섬유·퀼트박물관`(가운뎃점 U+00B7)이 이것 때문에 안 붙었다.
+_EQUIVALENT_CHARACTERS = {
+    "ㆍ": "·",  # U+318D HANGUL LETTER ARAEA → U+00B7 MIDDLE DOT
+}
+
+# 괄호 기호 자체. 안 내용을 지우는 _PAREN_PATTERN과 달리 기호만 공백으로 바꾼다.
+_BRACKET_CHARACTERS = "()[]"
+
+# 낱말이 한 글자도 없는 토큰을 걸러낼 때 쓴다.
+_WORD_CHARACTER_PATTERN = re.compile(r"\w")
+
 
 @dataclass(frozen=True)
 class PlaceRow:
@@ -60,7 +75,13 @@ class PlaceRow:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="집중률 장소 매핑 CSV 생성")
     parser.add_argument("--area-code", default="11", help="집중률 API 광역 코드")
-    parser.add_argument("--district-code", default="11110", help="집중률 API 시군구 코드")
+    # 기본값을 두지 않는다. 종로구(11110)가 기본이던 때는 구를 지정하지 않고 돌리면
+    # 조용히 종로구가 다시 만들어져, 다른 구를 뽑으려던 실행이 종로구 CSV를 남겼다.
+    parser.add_argument(
+        "--district-code",
+        required=True,
+        help="집중률 API 시군구 코드(예: 종로구 11110, 중구 11140)",
+    )
     parser.add_argument(
         "--places-snapshot",
         type=Path,
@@ -140,8 +161,11 @@ def write_names_file(names: Sequence[str], path: Path) -> None:
 
 
 def _normalize_key(name: str) -> str:
-    """비교용 키. 공백을 지우고 소문자로 맞춘다."""
-    return name.replace(" ", "").casefold()
+    """비교용 키. 같은 문자의 다른 표기를 모으고, 공백을 지우고 소문자로 맞춘다."""
+    unified = name
+    for variant, canonical in _EQUIVALENT_CHARACTERS.items():
+        unified = unified.replace(variant, canonical)
+    return unified.replace(" ", "").casefold()
 
 
 def _variants(name: str) -> list[str]:
@@ -150,6 +174,15 @@ def _variants(name: str) -> list[str]:
     stripped = _PAREN_PATTERN.sub("", _BRACKET_PATTERN.sub("", name)).strip()
     if stripped and stripped != name:
         candidates.append(stripped)
+    # 괄호 안이 부기가 아니라 이름의 일부인 경우가 있다 — 집중률 API
+    # `서울시립미술관(서소문본관)`과 places `서울시립미술관 서소문본관`은 괄호를
+    # 공백처럼 쓴 같은 이름이다. 안 내용을 지우면 `서울시립미술관`이 되어 어긋난다.
+    unwrapped = name
+    for character in _BRACKET_CHARACTERS:
+        unwrapped = unwrapped.replace(character, " ")
+    unwrapped = " ".join(unwrapped.split())
+    if unwrapped and unwrapped != name:
+        candidates.append(unwrapped)
     for base in list(candidates):
         if base.startswith(_SEOUL_PREFIX):
             candidates.append(base[len(_SEOUL_PREFIX) :].strip())
@@ -235,7 +268,12 @@ def _candidate_tokens(canonical: str) -> list[str]:
         # 원본에서 자른 토큰에는 부기 조각이 섞인다("종묘 [유네스코 세계유산]" →
         # "[유네스코", "세계유산]"). 괄호가 한쪽만 붙은 값은 장소명이 아니라 잘린
         # 부기이므로 검색어로 쓰지 않는다.
-        if any(char in token for char in "[]()"):
+        if any(char in token for char in _BRACKET_CHARACTERS):
+            continue
+        # 낱말이 한 글자도 없는 토큰은 장소명이 아니다. 부기 안의 구분 기호가
+        # 그대로 토큰이 된다 — `황학동 벼룩시장 (도깨비시장 / 만물시장)`에서
+        # 검색어 "/"가 나왔다(2026-08-26 중구 실측).
+        if not _WORD_CHARACTER_PATTERN.search(token):
             continue
         ordered.append(token)
     return ordered
@@ -349,19 +387,95 @@ def load_places_from_snapshot(path: Path) -> list[PlaceRow]:
         ]
 
 
-async def load_places_from_supabase(settings: Settings) -> list[PlaceRow]:
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            settings.supabase_url.rstrip("/") + "/rest/v1/places",
-            params={"select": "content_id,title", "is_active": "eq.true", "limit": "2000"},
-            headers={"apikey": settings.supabase_secret_key},
-            timeout=settings.external_api_timeout_seconds,
+def places_district_code(area_code: str, district_code: str) -> str:
+    """집중률 API의 signguCd(11140)에서 `places.district_code`(140)를 뗀다.
+
+    집중률 API는 법정동 코드 시군구 5자리(시도 2 + 시군구 3)를 쓰고, places는
+    TourAPI의 lDongSignguCd, 즉 뒤 3자리만 담는다. 같은 값의 다른 표기다
+    (app/service_area.py의 ServiceDistrict 주석 참고).
+    """
+    if not district_code.startswith(area_code):
+        raise ValueError(
+            f"--district-code({district_code})가 --area-code({area_code})로 시작하지 "
+            "않습니다. 두 값이 같은 지역을 가리키는지 확인하세요."
         )
-        response.raise_for_status()
-        return [
-            PlaceRow(content_id=str(row["content_id"]), title=str(row["title"]))
-            for row in response.json()
-        ]
+    return district_code[len(area_code) :]
+
+
+# PostgREST가 한 응답에 돌려주는 최대 행 수. 이보다 큰 limit을 보내도 서버가 자른다.
+_PLACES_PAGE_SIZE = 1000
+
+
+def _parse_total_count(content_range: str) -> int | None:
+    """PostgREST의 Content-Range(`0-999/4355`)에서 전체 건수를 읽는다."""
+    _, _, total = content_range.partition("/")
+    return int(total) if total.isdigit() else None
+
+
+async def load_places_from_supabase(
+    settings: Settings, *, district_code: str
+) -> list[PlaceRow]:
+    """한 구의 활성 장소를 전부 읽는다. 한 건이라도 빠지면 예외로 끊는다.
+
+    PostgREST는 limit을 아무리 크게 줘도 한 응답을 1000행에서 자른다. 2026-08-26
+    중구 실행에서 활성 891건 중 387건만 읽고도 오류 없이 끝나 매칭률이 40%로
+    나왔다 — limit=2000을 보내고 1000행을 받은 것을 아무도 확인하지 않아서였다.
+    그래서 Range로 끝까지 넘기고 마지막에 Content-Range의 전체 건수와 대조한다.
+
+    구로 거르는 이유는 따로 있다. 예전에는 전체 구를 읽어 이름만으로 붙였는데,
+    이름이 같은 다른 구 장소가 붙을 수 있었다.
+
+    페이지를 넘기려면 정렬이 고정돼야 한다. order가 없으면 같은 행이 두 페이지에
+    나오거나 아예 빠질 수 있다.
+    """
+    url = settings.supabase_url.rstrip("/") + "/rest/v1/places"
+    rows: list[PlaceRow] = []
+    total: int | None = None
+    offset = 0
+    async with httpx.AsyncClient() as client:
+        while True:
+            response = await client.get(
+                url,
+                params={
+                    "select": "content_id,title",
+                    "is_active": "eq.true",
+                    "district_code": f"eq.{district_code}",
+                    "order": "content_id",
+                },
+                headers={
+                    "apikey": settings.supabase_secret_key,
+                    "Range-Unit": "items",
+                    "Range": f"{offset}-{offset + _PLACES_PAGE_SIZE - 1}",
+                    # 전체 건수를 받아야 다 읽었는지 대조할 수 있다.
+                    "Prefer": "count=exact",
+                },
+                timeout=settings.external_api_timeout_seconds,
+            )
+            response.raise_for_status()
+            page = response.json()
+            if total is None:
+                total = _parse_total_count(response.headers.get("content-range", ""))
+            rows.extend(
+                PlaceRow(content_id=str(row["content_id"]), title=str(row["title"]))
+                for row in page
+            )
+            if not page:
+                break
+            offset += len(page)
+            if total is not None and offset >= total:
+                break
+
+    if total is None:
+        raise ValueError(
+            "Supabase 응답에 Content-Range가 없어 전체 건수를 확인할 수 없습니다. "
+            "몇 건이 빠졌는지 알 수 없으므로 매칭을 진행하지 않습니다."
+        )
+    if len(rows) != total:
+        raise ValueError(
+            f"places를 {total}건 중 {len(rows)}건만 읽었습니다. 일부만 가지고 매칭하면 "
+            "매칭률이 실제보다 낮게 나오므로 끊습니다."
+        )
+    return rows
 
 
 @dataclass(frozen=True)
@@ -514,8 +628,9 @@ async def run(args: argparse.Namespace, settings: Settings) -> int:
     else:
         if not settings.supabase_url or not settings.supabase_secret_key:
             raise ValueError("SUPABASE_URL / SUPABASE_SECRET_KEY가 필요합니다.")
-        places = await load_places_from_supabase(settings)
-        print(f"Supabase 활성 장소 {len(places)}건")
+        district = places_district_code(args.area_code, args.district_code)
+        places = await load_places_from_supabase(settings, district_code=district)
+        print(f"Supabase 활성 장소 {len(places)}건(district_code={district})")
 
     overrides = load_manual_overrides(args.manual_overrides)
     if overrides:
@@ -523,11 +638,17 @@ async def run(args: argparse.Namespace, settings: Settings) -> int:
     matched, unmatched, leftover = match_places(places, concentration_names, overrides)
     matched, unresolved = apply_search_keys(matched, concentration_names)
     now = datetime.now(_KST)
-    # 다음 실행에서 API를 다시 부르지 않도록 수집 결과를 남긴다.
+    # 파일명에 구 코드를 넣는다. 날짜만 쓰면 같은 날 여러 구를 돌릴 때 앞의 구 결과를
+    # 덮어써서 사라진다(TP-136에서 세 구를 하루에 뽑다가 확인).
     write_names_file(
-        concentration_names, args.output_dir / f"concentration_place_names_{now:%Y%m%d}.csv"
+        concentration_names,
+        args.output_dir
+        / f"concentration_place_names_{args.district_code}_{now:%Y%m%d}.csv",
     )
-    output = args.output_dir / f"concentration_place_mapping_{now:%Y%m%d}.csv"
+    output = (
+        args.output_dir
+        / f"concentration_place_mapping_{args.district_code}_{now:%Y%m%d}.csv"
+    )
     write_mapping_csv(matched, output)
 
     method_counts: dict[str, int] = {}
