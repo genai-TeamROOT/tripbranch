@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import ast
+import pathlib
 import re
 from pathlib import Path
 
@@ -23,6 +25,7 @@ from app.prompts.registry import (
     operation_prompt_version,
     slot_versions,
 )
+from app.providers import gemini_prompts
 
 _GEMINI_SOURCE = Path(__file__).resolve().parents[1] / "app" / "providers" / "gemini.py"
 _OPERATION_LITERAL = re.compile(r'operation="([a-z_]+)"')
@@ -123,3 +126,39 @@ def test_entry_templates_are_not_fragments_of_one_another() -> None:
     }
 
     assert entries & fragments == set()
+
+
+# --- TTL 라이브가 반쪽이 되지 않게 잠근다 ---------------------------------------
+
+
+def test_no_prompt_is_read_at_import_time() -> None:
+    """`gemini_prompts.py`는 프롬프트를 **모듈 수준에서 읽지 않는다.**
+
+    읽으면 그 값이 import 시점에 박혀 `LANGFUSE_PROMPTS_ENABLED=true`여도 바뀌지
+    않는다. 2026-08-26 이전에는 22곳이 그랬고, 공유 규칙(`_shared/rules/*`)이 전부
+    거기 있었다 — UI에서 `recommend/extract`를 고치면 반영되는데 `budget`을 고치면
+    아무 일도 안 일어나는, **같은 화면에서 하나는 먹고 하나는 안 먹는** 상태였다.
+
+    부팅 비용도 같은 문제였다. 22곳이 순차 왕복이 되어 import가 0.26초 → 1.76초였다.
+    지금은 켜도 꺼도 0.25초다.
+    """
+    module = ast.parse(
+        pathlib.Path(gemini_prompts.__file__).read_text(encoding="utf-8")
+    )
+
+    module_level: list[str] = []
+    for node in module.body:
+        # 함수·클래스 본문은 import 때 안 돈다 — 최상위 문장만 본다.
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.Call):
+                continue
+            name = getattr(inner.func, "id", None) or getattr(inner.func, "attr", None)
+            if name in ("load_text", "render_text") and inner.args:
+                argument = inner.args[0]
+                module_level.append(
+                    argument.value if isinstance(argument, ast.Constant) else "<동적>"
+                )
+
+    assert module_level == []

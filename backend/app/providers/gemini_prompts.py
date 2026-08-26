@@ -43,14 +43,8 @@ PROMPT_VERSION = (
 )
 
 CHATBOT_NAME = "트리비"
-CHATBOT_PERSONA = load_text("_shared/persona/trivi.md")
-_INTENT_DEFINITIONS = load_text("router/intent_definitions.md")
-_INTENT_PRIORITY = load_text("router/intent_priority.md")
-_CONTEXT_DEPENDENT_RULES = load_text("router/context_rules.md")
-_BOUNDARY_CASES = load_text("router/boundary_cases.md")
 # OUT_OF_SCOPE 판정 자체는 분류기가 하지만, 규칙 문구의 소유는 out_of_scope/에 둔다 —
 # 그래야 해당 인텐트 담당자도 자기 폴더만 열고 수정·이력 관리를 할 수 있다.
-_OUT_OF_SCOPE_RULES = load_text("out_of_scope/classify.md")
 
 
 def build_intent_classification_instruction(
@@ -98,11 +92,11 @@ def build_intent_classification_instruction(
 
     return render_text(
         "router/classify.md",
-        intent_definitions=_INTENT_DEFINITIONS,
-        intent_priority=_INTENT_PRIORITY,
-        context_rules=_CONTEXT_DEPENDENT_RULES,
-        boundary_cases=_BOUNDARY_CASES,
-        out_of_scope_rules=_OUT_OF_SCOPE_RULES,
+        intent_definitions=load_text("router/intent_definitions.md"),
+        intent_priority=load_text("router/intent_priority.md"),
+        context_rules=load_text("router/context_rules.md"),
+        boundary_cases=load_text("router/boundary_cases.md"),
+        out_of_scope_rules=load_text("out_of_scope/classify.md"),
         has_previous_recommendation="있음" if has_previous_recommendation else "없음",
         shown_place_count=shown_place_count,
         clarification_status=clarification_status,
@@ -111,13 +105,6 @@ def build_intent_classification_instruction(
     )
 
 
-_RECOMMEND_LOCATION_RULES = load_text("recommend/location_rules.md")
-_RECOMMEND_PLACE_TAG_RULES = load_text("recommend/place_tag_rules.md")
-_BUDGET_RULE = load_text("_shared/rules/budget.md")
-_WEATHER_INTENT_RULES = load_text("_shared/rules/weather_intent.md")
-_CONCENTRATION_INTENT_RULES = load_text("_shared/rules/concentration_intent.md")
-_ENVIRONMENT_RULES = load_text("_shared/rules/environment.md")
-_TRANSPORT_RULES = load_text("_shared/rules/transport.md")
 
 
 def build_recommend_extraction_instruction() -> str:
@@ -125,20 +112,16 @@ def build_recommend_extraction_instruction() -> str:
 
     return render_text(
         "recommend/extract.md",
-        location_rules=_RECOMMEND_LOCATION_RULES,
-        place_tag_rules=_RECOMMEND_PLACE_TAG_RULES,
-        transport_rules=_TRANSPORT_RULES,
-        weather_intent_rules=_WEATHER_INTENT_RULES,
-        concentration_rules=_CONCENTRATION_INTENT_RULES,
-        environment_rules=_ENVIRONMENT_RULES,
-        budget_rule=_BUDGET_RULE,
+        location_rules=load_text("recommend/location_rules.md"),
+        place_tag_rules=load_text("recommend/place_tag_rules.md"),
+        transport_rules=load_text("_shared/rules/transport.md"),
+        weather_intent_rules=load_text("_shared/rules/weather_intent.md"),
+        concentration_rules=load_text("_shared/rules/concentration_intent.md"),
+        environment_rules=load_text("_shared/rules/environment.md"),
+        budget_rule=load_text("_shared/rules/budget.md"),
     )
 
 
-_MODIFY_TYPE_RULES = load_text("modify/type_rules.md")
-_MODIFY_TARGET_RULES = load_text("modify/target_rules.md")
-_MODIFY_RELATIVE_EXPRESSION_RULES = load_text("modify/relative_expression_rules.md")
-_MODIFY_FIELD_MERGE_RULES = load_text("modify/field_merge_rules.md")
 
 
 def _shown_place_list_block(shown_place_names: list[str] | None) -> str:
@@ -189,21 +172,19 @@ def build_modify_extraction_instruction(
             else "아니오"
         ),
         shown_list_block=_shown_place_list_block(shown_place_names),
-        type_rules=_MODIFY_TYPE_RULES,
-        target_rules=_MODIFY_TARGET_RULES,
+        type_rules=load_text("modify/type_rules.md"),
+        target_rules=load_text("modify/target_rules.md"),
         shown_place_count=shown_place_count,
-        relative_expression_rules=_MODIFY_RELATIVE_EXPRESSION_RULES,
-        field_merge_rules=_MODIFY_FIELD_MERGE_RULES,
-        transport_rules=_TRANSPORT_RULES,
-        weather_intent_rules=_WEATHER_INTENT_RULES,
-        concentration_rules=_CONCENTRATION_INTENT_RULES,
-        environment_rules=_ENVIRONMENT_RULES,
-        budget_rule=_BUDGET_RULE,
+        relative_expression_rules=load_text("modify/relative_expression_rules.md"),
+        field_merge_rules=load_text("modify/field_merge_rules.md"),
+        transport_rules=load_text("_shared/rules/transport.md"),
+        weather_intent_rules=load_text("_shared/rules/weather_intent.md"),
+        concentration_rules=load_text("_shared/rules/concentration_intent.md"),
+        environment_rules=load_text("_shared/rules/environment.md"),
+        budget_rule=load_text("_shared/rules/budget.md"),
     )
 
 
-_INFO_QUESTION_TYPE_RULES = load_text("info/question_type_rules.md")
-_INFO_PLACE_CONTEXT_RULES = load_text("info/place_context_rules.md")
 
 
 def _build_visit_time_rules(reference_date: date) -> str:
@@ -222,16 +203,14 @@ def build_info_extraction_instruction(
 
     return render_text(
         "info/extract.md",
-        question_type_rules=_INFO_QUESTION_TYPE_RULES,
-        place_context_rules=_INFO_PLACE_CONTEXT_RULES,
+        question_type_rules=load_text("info/question_type_rules.md"),
+        place_context_rules=load_text("info/place_context_rules.md"),
         visit_time_rules=_build_visit_time_rules(reference_date),
         has_previous_recommendation="있음" if has_previous_recommendation else "없음",
         conversation_place_name=conversation_place_name or "없음",
     )
 
 
-_COMPARE_TARGET_RULES = load_text("compare/target_rules.md")
-_COMPARE_CRITERIA_RULES = load_text("compare/criteria_rules.md")
 
 
 def build_compare_extraction_instruction(
@@ -251,19 +230,18 @@ def build_compare_extraction_instruction(
     return render_text(
         "compare/extract.md",
         shown_list_block=_shown_place_list_block(shown_place_names),
-        target_rules=_COMPARE_TARGET_RULES,
-        criteria_rules=_COMPARE_CRITERIA_RULES,
+        target_rules=load_text("compare/target_rules.md"),
+        criteria_rules=load_text("compare/criteria_rules.md"),
         shown_place_count=shown_place_count,
     )
 
 
-_GENERAL_TOPIC_RULES = load_text("general/topic_rules.md")
 
 
 def build_general_extraction_instruction() -> str:
     """int-05-general.md §5~6(GeneralRequest, topic) 기반."""
 
-    return render_text("general/extract.md", topic_rules=_GENERAL_TOPIC_RULES)
+    return render_text("general/extract.md", topic_rules=load_text("general/topic_rules.md"))
 
 
 def build_general_answer_instruction(topic: GeneralTopic) -> str:
@@ -277,7 +255,7 @@ def build_general_answer_instruction(topic: GeneralTopic) -> str:
     return render_text(
         "general/answer_instruction.md",
         chatbot_name=CHATBOT_NAME,
-        persona=CHATBOT_PERSONA,
+        persona=load_text("_shared/persona/trivi.md"),
         topic=topic.value,
     )
 
@@ -288,7 +266,7 @@ def build_info_answer_instruction(question_type: str) -> str:
     return render_text(
         "info/answer_instruction.md",
         chatbot_name=CHATBOT_NAME,
-        persona=CHATBOT_PERSONA,
+        persona=load_text("_shared/persona/trivi.md"),
         question_type=question_type,
     )
 
@@ -299,7 +277,7 @@ def build_recommendation_summary_instruction(intent: Intent) -> str:
     return render_text(
         "recommend/summary_instruction.md",
         chatbot_name=CHATBOT_NAME,
-        persona=CHATBOT_PERSONA,
+        persona=load_text("_shared/persona/trivi.md"),
         intent=intent.value,
     )
 
@@ -310,7 +288,7 @@ def build_compare_summary_instruction(criteria: CompareCriteria) -> str:
     return render_text(
         "compare/summary_instruction.md",
         chatbot_name=CHATBOT_NAME,
-        persona=CHATBOT_PERSONA,
+        persona=load_text("_shared/persona/trivi.md"),
         criteria=criteria.value,
     )
 
