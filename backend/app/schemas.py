@@ -854,6 +854,20 @@ class LocationDebug(BaseModel):
     longitude: float
 
 
+class StaleAreaProbeDebug(BaseModel):
+    """우리 지역 목록엔 없지만 서울시 API는 실제로 지원하는 지역을 찾았을 때만
+    채워진다(TP-141, D-084). 응답(추천 판정)에는 영향을 주지 않는 감시 전용
+    필드다 — 우리 스냅샷이 서울시 라이브 목록보다 뒤처지기 시작했다는 신호다.
+    """
+
+    probed_area_name: str
+    probed_area_code: str | None = None
+    # 지금 실제로 대신 답한 지역과 그 거리. 개발자 화면 배너가 "OO은 목록에
+    # 없어서 대신 XX(0.85km) 값으로 답했다"는 문구를 만드는 데 쓴다.
+    matched_area_name: str
+    matched_area_distance_km: float
+
+
 class ToolExecutionDebug(BaseModel):
     """개발자용 Audit 전용: A→C 호출 한 단계가 실제로 무엇을 했는지.
 
@@ -891,6 +905,9 @@ class ToolExecutionDebug(BaseModel):
     error_code: str | None = None
     clarification_code: str | None = None
     is_proxy: bool | None = None
+    # info_realtime_population 전용. is_proxy가 true일 때만 의미가 있다 — 대체가
+    # 안 일어났으면 애초에 확인할 게 없다. TP-141/D-084 참고.
+    stale_area_detected: StaleAreaProbeDebug | None = None
     candidate_status_counts: dict[str, int] = Field(default_factory=dict)
     # candidate_enrichment 전용. 매핑 없는 후보가 다수라(활성 844건 중 매핑 100건)
     # 근사치가 섞이는 게 정상 상태인데, 상태 집계만 보면 직접 조회한 값과 빌려온
