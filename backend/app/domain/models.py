@@ -447,6 +447,46 @@ class PlaceEvidenceMatch:
 
 
 @dataclass(frozen=True)
+class PlaceMoodProfile:
+    """장소 사진에서 뽑은 분위기 축 점수 한 벌.
+
+    `place_mood_vectors.axis_scores`를 그대로 담는다. 적재 때 미리 계산해 둔
+    값이라 조회 경로에는 벡터 연산이 없다 — 발화에 분위기 표현이 있으면 이
+    점수로 정렬만 하면 된다.
+
+    **점수의 부호를 임계값으로 쓰지 않는다.** 특히 `세월`은 종로 631곳 중
+    양수가 24곳뿐일 만큼 한쪽으로 쏠려 있어 "0보다 크면 새것"이 성립하지
+    않는다. 순위는 정확하므로 정렬에만 쓴다(D-087).
+    """
+
+    content_id: str
+    # 축 이름 → −1~1 점수. 지금 켠 축은 안팎·한산함·시대·색온도·세월 다섯이지만
+    # 축을 켜고 끄는 일이 잦아 고정 필드로 두지 않는다.
+    axis_scores: Mapping[str, float]
+    # 평균에 쓴 사진 수. 1이면 detailImage2가 비어 대표 이미지 한 장으로 대체된
+    # 장소이고, 그 한 장이 간판만 찍혔으면 장소가 아니라 그 사진을 대표한다.
+    # 종로 631곳 중 170곳(27%)이 여기 해당한다.
+    photo_count: int
+
+
+@dataclass(frozen=True)
+class PlaceMoodMatch:
+    """사진 한 장으로 찾은 "분위기가 닮은 장소" 한 건.
+
+    `similarity`는 올린 사진의 벡터와 장소 벡터의 코사인 유사도다. 양쪽 다
+    길이 1로 정규화돼 있어 내적이 곧 유사도다.
+
+    **얼마부터 "닮았다"인지는 아직 정하지 않았다.** 축 점수 쪽은 사람 정답표
+    77곳으로 AUC를 쟀지만(D-087), 사진끼리의 유사도 컷은 표본이 없다. 재기
+    전까지는 절대값이 아니라 순위만 쓴다.
+    """
+
+    content_id: str
+    similarity: float
+    profile: PlaceMoodProfile
+
+
+@dataclass(frozen=True)
 class StoredPlaceDetail:
     """요청 시 저장소에서 읽어오는 장소 상세·운영정보 한 건.
 
