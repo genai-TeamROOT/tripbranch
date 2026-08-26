@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+import scripts.push_langfuse_dataset_run as push_langfuse_dataset_run
 from scripts.push_langfuse_dataset_run import (
     RUN_SCORES,
     load_run,
@@ -101,15 +102,36 @@ class _FakeDatasets:
         return type("Run", (), {"id": f"runid::{dataset_name}::{run_name}"})()
 
 
+class _FakeScores:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def create(self, **fields: Any) -> None:
+        self.calls.append(fields)
+
+
 class _FakeClient:
+    """실제 클라이언트와 **같은 자리에** 메서드를 둔다.
+
+    `create_score`는 일부러 두지 않는다 — 그걸 부르면 여기서 AttributeError로
+    터져야 한다. SDK의 `create_score`는 `tracing_enabled=False`면 조용히 return
+    하므로, 가짜가 그걸 받아주면 테스트는 통과하고 실제로는 아무것도 안 올라간다.
+    """
+
     def __init__(self) -> None:
         self.api = type(
-            "Api", (), {"dataset_run_items": _FakeRunItems(), "datasets": _FakeDatasets()}
+            "Api",
+            (),
+            {
+                "dataset_run_items": _FakeRunItems(),
+                "datasets": _FakeDatasets(),
+                "scores": _FakeScores(),
+            },
         )()
-        self.scores: list[dict[str, Any]] = []
 
-    def create_score(self, **fields: Any) -> None:
-        self.scores.append(fields)
+    @property
+    def scores(self) -> list[dict[str, Any]]:
+        return self.api.scores.calls
 
 
 def test_last_turn_is_the_linked_trace(tmp_path: Path) -> None:
@@ -209,3 +231,18 @@ def test_push_writes_run_items_and_two_layers_of_scores(tmp_path: Path) -> None:
 def test_latency_is_not_a_run_score() -> None:
     """지연은 로컬 실행 환경에 좌우된다. 회차 곡선에 올리면 프롬프트 탓으로 오인한다."""
     assert not [name for name in RUN_SCORES if "latency" in name]
+
+
+def test_scores_do_not_go_through_the_otel_gated_helper() -> None:
+    """`client.create_score()`는 `tracing_enabled=False`면 조용히 return 한다.
+
+    이 스크립트의 클라이언트는 span을 안 내보내려고 그렇게 만들어진다. 그래서 그
+    헬퍼를 쓰면 Score가 **오류 없이 사라진다** — 2026-08-26 첫 Run에서 41건이 실제로
+    그렇게 날아갔고, 가짜 클라이언트가 `create_score`를 받아주는 바람에 테스트는
+    통과했다. 동기 REST 경로(`api.scores.create`)를 쓰는지 원문으로 잠근다.
+    """
+    source = Path(push_langfuse_dataset_run.__file__).read_text(encoding="utf-8")
+    body = source.split('"""', 2)[2]  # 모듈 docstring의 설명 문장은 제외한다
+
+    assert "client.api.scores.create(" in body
+    assert "client.create_score(" not in body

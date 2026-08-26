@@ -26,6 +26,12 @@
   타지 않아서 자유 텍스트를 실으면 `capture_content=false` 환경에서도 발화가 샌다
   (`observability/langfuse_tracing.record_score` docstring과 같은 판단).
 
+  **`client.create_score()`를 쓰지 않는다.** 그건 OTel 파이프라인을 타는데 첫머리에
+  `if not self._tracing_enabled: return`이 있다(SDK 4.14.5). 배치 스크립트의 클라이언트는
+  span을 안 내보내려고 `tracing_enabled=False`로 만들기 때문에, 그 헬퍼를 쓰면 Score가
+  **오류 없이 조용히 사라진다**(2026-08-26 첫 Run에서 41건이 그렇게 날아갔다).
+  `api.scores.create()`는 동기 REST 호출이라 그 게이트도, flush 대기도 없다.
+
 판정 기준 — 합격/불합격:
   * trace id가 하나도 없는 실행은 불합격이다. 관측이 꺼진 채로 돌린 것이라 연결할 게
     없다 — 빈 Run을 만들면 "돌렸는데 결과가 없는 회차"로 남아 집계를 더럽힌다.
@@ -224,7 +230,7 @@ def push_run(client: Any, payload: RunPayload) -> int:
             metadata=metadata,
         )
         # 케이스 단위 판정은 trace에 붙인다 — 화면에서 그 trace를 열면 바로 보인다.
-        client.create_score(
+        client.api.scores.create(
             name="case_pass",
             value=int(link.case_pass),
             data_type="BOOLEAN",
@@ -240,7 +246,7 @@ def push_run(client: Any, payload: RunPayload) -> int:
         value = payload.summary.get(name)
         if not isinstance(value, (int, float)):
             continue
-        client.create_score(
+        client.api.scores.create(
             name=name,
             value=float(value),
             data_type="NUMERIC",
