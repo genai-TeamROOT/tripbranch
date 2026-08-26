@@ -76,6 +76,7 @@ from app.agent_context.tool_rules import (
 from app.concentration_policy import (
     INFO_CONCENTRATION_FALLBACK_ATTEMPT_LIMIT,
     INFO_CONCENTRATION_FALLBACK_RADIUS_KM,
+    concentration_signgu_code,
     is_valid_concentration_rate,
     normalize_concentration,
 )
@@ -1147,10 +1148,26 @@ class ContextService:
         # 조회는 검색어로, 대조는 정식 명칭으로 한다. tAtsNm은 공백이 든 값에 0건을
         # 돌려주므로 "종묘 [유네스코 세계유산]"은 "종묘"로 조회해야 한다. 대신 그
         # 응답에는 "종묘광장공원"도 섞여 오므로 고를 때는 정식 명칭을 써야 한다.
+        # 조회할 구는 해석된 장소의 것을 쓴다. concentration_name이 있다는 건 저장소
+        # 에서 푼 장소라는 뜻이라 district_code도 함께 온다.
+        signgu_code = concentration_signgu_code(resolved_location.district_code)
+        if signgu_code is None:
+            # 구를 모르면 직접 조회를 하지 않는다. 종로구로 대신 물으면 다른 구
+            # 장소는 언제나 0건이라, 틀린 조회가 "정보 없음"으로 보인다. 인근
+            # 대체 경로는 그대로 탄다 - 매핑 없는 이름일 때와 같은 처리다.
+            return await self._fetch_info_concentration_fallback(
+                request,
+                latitude=resolved_location.latitude,
+                longitude=resolved_location.longitude,
+                reference_date=reference_date,
+                concentration_tool=concentration_tool,
+                provider_metadata=(location_metadata,),
+            )
         concentration_result = await execute_concentration_by_search_keys(
             concentration_tool,
             search_keys=resolved_location.concentration_search_keys,
             canonical_name=concentration_place_name,
+            signgu_code=signgu_code,
         )
         if concentration_result.status is ToolStatus.UNAVAILABLE:
             return _info_error_response(
@@ -1278,10 +1295,16 @@ class ContextService:
             # 매핑 테이블이 보유한 집중률 API 기준 이름을 쓴다 — TourAPI 장소명을
             # 그대로 던지던 기존 방식은 이름이 달라 조회에 실패하는 경우가 있었다.
             # 직접 조회와 같이 조회는 검색어로, 대조는 정식 명칭으로 한다.
+            # 구를 모르는 장소는 건너뛴다. 종로구로 대신 물으면 다른 구 장소는
+            # 언제나 0건이라, 조회 실패가 "정보 없음"과 구분되지 않는다.
+            proxy_signgu_code = concentration_signgu_code(proxy_place.district_code)
+            if proxy_signgu_code is None:
+                continue
             proxy_result = await execute_concentration_by_search_keys(
                 concentration_tool,
                 search_keys=proxy_place.concentration_search_keys,
                 canonical_name=proxy_place.concentration_name,
+                signgu_code=proxy_signgu_code,
             )
             attempted_metadata.append(proxy_result.provider_metadata)
 

@@ -22,8 +22,10 @@ from app.agent_context.enrichment_schemas import (
 )
 from app.agent_context.schemas import ContextError, ProviderMetadata
 from app.concentration_policy import (
+    CONCENTRATION_AREA_CODE,
     INFO_CONCENTRATION_FALLBACK_ATTEMPT_LIMIT,
     INFO_CONCENTRATION_FALLBACK_RADIUS_KM,
+    concentration_signgu_code,
     is_valid_concentration_rate,
     normalize_concentration,
 )
@@ -46,8 +48,8 @@ from app.tools.concentration import (
 from app.tools.contracts import ToolStatus
 
 # 집중률 API의 종로구 행정 코드. INFO와 후보 보강이 같은 MVP 범위를 사용한다.
-JONGNO_CONCENTRATION_AREA_CODE = "11"
-JONGNO_CONCENTRATION_DISTRICT_CODE = "11110"
+# 구는 더 이상 고정하지 않는다. 조회할 구는 대상 장소의 district_code에서 나오고,
+# 광역 코드는 지원 구가 전부 서울이라 concentration_policy가 정한다(D-095).
 _KST = ZoneInfo("Asia/Seoul")
 
 
@@ -64,21 +66,24 @@ class _ConcentrationLookupMemo:
 
     def __init__(self, tool: GetConcentrationTool) -> None:
         self._tool = tool
-        self._tasks: dict[str, asyncio.Task[ConcentrationToolResult]] = {}
+        self._tasks: dict[tuple[str, str], asyncio.Task[ConcentrationToolResult]] = {}
 
     async def lookup(
-        self, *, search_keys: Sequence[str], canonical_name: str
+        self, *, search_keys: Sequence[str], canonical_name: str, signgu_code: str
     ) -> ConcentrationToolResult:
-        task = self._tasks.get(canonical_name)
+        # 구까지 키에 넣는다. 같은 이름이 구를 달리해 오면 서로 다른 조회다.
+        key = (signgu_code, canonical_name)
+        task = self._tasks.get(key)
         if task is None:
             task = asyncio.create_task(
                 execute_concentration_by_search_keys(
                     self._tool,
                     search_keys=search_keys,
                     canonical_name=canonical_name,
+                    signgu_code=signgu_code,
                 )
             )
-            self._tasks[canonical_name] = task
+            self._tasks[key] = task
         return await task
 
 
@@ -192,8 +197,23 @@ class CandidateEnrichmentService:
             else candidate.name
         )
         search_keys = mapping.concentration_search_keys if mapping is not None else ()
+        # 조회할 구는 매핑된 장소의 것을 쓴다. 구를 모르면 조회하지 않는다 - 종로구로
+        # 대신 물으면 다른 구 장소는 언제나 0건이라 틀린 조회가 "정보 없음"으로 보인다.
+        signgu_code = concentration_signgu_code(
+            mapping.district_code if mapping is not None else None
+        )
+        if signgu_code is None:
+            return CandidateEnrichmentResult(
+                **candidate.model_dump(),
+                status="no_data",
+                concentration=[],
+                error=None,
+                provider_metadata=[],
+            )
         tool_result = await memo.lookup(
-            search_keys=search_keys, canonical_name=canonical_name
+            search_keys=search_keys,
+            canonical_name=canonical_name,
+            signgu_code=signgu_code,
         )
         if tool_result.status is ToolStatus.UNAVAILABLE:
             error = tool_result.error
@@ -266,9 +286,15 @@ class CandidateEnrichmentService:
         for proxy_place in proxy_places:
             if not proxy_place.concentration_name:
                 continue
+            # 구를 모르는 장소는 건너뛴다. 종로구로 대신 물으면 다른 구 장소는
+            # 언제나 0건이라, 조회 실패가 "정보 없음"과 구분되지 않는다.
+            proxy_signgu_code = concentration_signgu_code(proxy_place.district_code)
+            if proxy_signgu_code is None:
+                continue
             proxy_result = await memo.lookup(
                 search_keys=proxy_place.concentration_search_keys,
                 canonical_name=proxy_place.concentration_name,
+                signgu_code=proxy_signgu_code,
             )
             attempted_metadata.extend(
                 _map_provider_metadata(item)
@@ -345,6 +371,7 @@ async def execute_concentration_by_search_keys(
     *,
     search_keys: Sequence[str],
     canonical_name: str,
+    signgu_code: str,
 ) -> ConcentrationToolResult:
     """검색어를 순서대로 시도하고 결과가 나오면 멈춘다(D-057).
 
@@ -357,6 +384,10 @@ async def execute_concentration_by_search_keys(
 
     UNAVAILABLE은 즉시 반환한다 — 외부 장애는 다음 검색어로 바꿔도 같은 결과다.
 
+    signgu_code는 대상 장소가 속한 구다. 집중률 API가 이 값으로 엄격하게 거르므로
+    (중구 명동성당을 종로구로 물으면 0건) 장소마다 맞는 값을 받아야 한다. 호출자가
+    concentration_signgu_code()로 바꿔 넘긴다 - 구를 모르면 조회 자체를 하지 않는다.
+
     INFO 경로(`service.py`)와 추천 후보 보강이 함께 쓴다. 두 경로가 같은 조회 규칙을
     갖도록 여기 한 곳에만 둔다.
     """
@@ -365,8 +396,8 @@ async def execute_concentration_by_search_keys(
     for candidate in candidates:
         result = await concentration_tool.execute(
             ConcentrationQuery(
-                area_code=JONGNO_CONCENTRATION_AREA_CODE,
-                district_code=JONGNO_CONCENTRATION_DISTRICT_CODE,
+                area_code=CONCENTRATION_AREA_CODE,
+                district_code=signgu_code,
                 place_name=candidate,
             )
         )
@@ -489,8 +520,6 @@ def select_concentration_forecasts(
 
 __all__ = [
     "CandidateEnrichmentService",
-    "JONGNO_CONCENTRATION_AREA_CODE",
-    "JONGNO_CONCENTRATION_DISTRICT_CODE",
     "parse_concentration_forecast_date",
     "select_concentration_forecast",
     "select_concentration_forecasts",

@@ -20,6 +20,27 @@ CONCENTRATION_SLIGHTLY_CROWDED_MAX_EXCLUSIVE = 70.0
 # 기본 반경과 구분하며, 실측 결과에 따라 조정할 수 있도록 정책 상수로 둔다.
 INFO_CONCENTRATION_FALLBACK_RADIUS_KM = 0.5
 
+# 집중률 API의 광역 코드. 지원 구가 전부 서울특별시라 고정이다 - 25개 구로 넓혀도
+# 바뀌지 않는다. 구는 고정하지 않는다(장소마다 다르다).
+CONCENTRATION_AREA_CODE = "11"
+
+
+def concentration_signgu_code(district_code: str | None) -> str | None:
+    """places.district_code(3자리 "140")를 집중률 API signguCd(5자리 "11140")로 바꾼다.
+
+    두 값은 같은 법정동 코드의 다른 자리다 - TourAPI 응답의 lDongSignguCd는 시군구
+    3자리만 담고, 집중률 API의 signguCd는 앞에 시도 2자리(lDongRegnCd)를 붙인 5자리다
+    (app/service_area.py의 ServiceDistrict 주석 참고).
+
+    구를 모르면 None을 돌려준다. 이때 종로구로 대신 물어보면 안 된다 - 다른 구
+    장소를 종로구로 물으면 응답이 0건이라, 조회에 실패한 것이 "혼잡도 정보 없음"과
+    구분되지 않고 조용히 섞인다(D-095).
+    """
+    if not district_code:
+        return None
+    return f"{CONCENTRATION_AREA_CODE}{district_code}"
+
+
 # 대체 조회에서 순서대로 시도할 최대 장소 수다. 매핑에 이름이 있어도 집중률 API
 # 조회가 실패할 수 있어(표기 차이·API 갱신) 한 곳만 보고 포기하지 않는다.
 # 실측(2026-08-03): 매핑 100건 중 30건이 조회 실패, 안국역은 2번째 후보에서 성공.
