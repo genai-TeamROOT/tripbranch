@@ -3680,6 +3680,92 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `backend/app/repositories/supabase_places.py`,
   `backend/app/domain/models.py`, `backend/app/providers/factory.py`
 
+### D-095 — 집중률 조회의 구를 장소에 맞춰 고르고, 구를 모르면 조회하지 않는다
+
+- 상태: `Accepted` — 구현 완료.
+- 배경: 집중률 조회의 구 코드가 종로구로 고정돼 있었다.
+  `agent_context/enrichment_service.py`가 `JONGNO_CONCENTRATION_DISTRICT_CODE`
+  (`"11110"`)를 장소와 무관하게 넘겨, 사용자 요청으로 도는 조회는 전부 종로구로
+  나갔다. 매핑(`place_concentration_mappings`)이 전부 종로구였던 동안은 이 값이
+  맞아 문제가 드러나지 않았다.
+- 실측으로 확정한 사실:
+  1. **집중률 API는 `signguCd`로 엄격하게 거른다.** 같은 이름으로 구만 바꿔
+     질의했다(2026-08-26). 명동성당은 종로구(11110)에 `totalCount=0`,
+     중구(11140)에 30. 덕수궁도 같다. 경복궁은 반대로 종로구 30, 중구 0.
+     즉 다른 구 매핑이 들어오는 순간 그 장소는 언제나 0건이 된다.
+  2. **매핑을 먼저 적재하면 지금 값이 나오던 장소가 no_data로 회귀한다.**
+     대체 조회는 500m 안의 매핑 장소를 거리순 3곳까지 시도한다
+     (`INFO_CONCENTRATION_FALLBACK_ATTEMPT_LIMIT`). 중구 매핑이 생기면 더 가까운
+     중구 장소가 상위 3곳을 차지하는데 그 셋이 전부 종로구로 조회돼 0건이 되고,
+     답을 낼 수 있는 종로구 장소는 시도 범위 밖으로 밀린다. 활성 장소 좌표를
+     전수 대조한 결과 이런 장소가 중구 62곳이다(종로구는 0곳). 예: 중구
+     `아시아프 (ASYAAF 100)`는 지금 세종문화회관(종로구, 470m) 기준으로 값을
+     받는데, 중구 매핑 적재 후에는 1~10순위가 전부 중구가 되고 세종문화회관은
+     11순위로 밀린다.
+  3. **`StoredPlaceLocation`은 C가 만들고 C만 쓴다.** `domain/models.py`에 있어
+     D 소유로 보이지만, 정의 커밋 `d6ea941`(2026-08-03)이 함께 건드린 파일이
+     전부 C이고(`agent_context/`, `providers/factory.py`, `repositories/`,
+     `tools/resolve_location.py`), 정의 이후 이 블록을 수정한 커밋도 그 하나뿐이며,
+     참조하는 곳도 전부 C다. D 쪽에서 쓰는 곳은 없다.
+- 결정:
+  1. **조회할 구를 대상 장소에서 가져온다.** `places.district_code`를
+     `StoredPlaceLocation.district_code`로 읽어 대체 조회로 넘기고, INFO 직접
+     조회 경로에는 `ResolvedLocation.district_code`로 이어 나른다.
+     `JONGNO_CONCENTRATION_AREA_CODE`/`JONGNO_CONCENTRATION_DISTRICT_CODE`는
+     지운다.
+  2. **구를 모르면 조회하지 않는다.** `district_code`가 없으면 호출을 아예
+     내보내지 않고 `no_data`로 끝낸다. 대체 조회에서는 그 후보를 건너뛰고 다음
+     장소로 간다.
+  3. **광역 코드만 고정으로 남긴다.** 지원 구가 전부 서울이라
+     `concentration_policy.CONCENTRATION_AREA_CODE = "11"`이다. 25개 구로 넓혀도
+     유효하다. 구는 고정하지 않는다.
+  4. **코드 자리 변환을 `concentration_policy`에 둔다.** `places.district_code`는
+     시군구 3자리(`"140"`)이고 집중률 API `signguCd`는 시도를 붙인 5자리
+     (`"11140"`)다. 같은 법정동 코드의 다른 자리라
+     `concentration_signgu_code()`가 앞에 광역 코드를 붙인다.
+  5. **매핑 데이터 적재보다 이 변경이 먼저다.** 이 카드만 머지된 시점에는 매핑이
+     전부 종로구라 나가는 값이 예전과 같아 동작이 바뀌지 않는다. 순서를 뒤집으면
+     위 62곳이 깨진다.
+- 근거:
+  - 종로구로 대신 묻는 폴백을 넣지 않은 이유가 이 결정의 핵심이다. 다른 구 장소를
+    종로구로 물으면 응답이 `totalCount=0`인데, 이는 "그 장소의 데이터가 없다"와
+    응답이 똑같다. 틀린 조회가 정상적인 "정보 없음"으로 위장돼 아무도 모르게
+    섞인다. 실패는 조용히 흡수되지 않고 드러나야 한다는 점에서 D-042(Real 실패
+    시 Fake로 자동 전환하지 않는다)와 같은 판단이다.
+  - 구를 모르는 경우는 실제로는 거의 없다. 매핑된 장소는 전부 `places`에서 오고
+    `district_code`가 채워져 있다. 그래도 폴백 대신 조회 생략을 택한 것은,
+    드문 경로일수록 틀린 값이 오래 남기 때문이다.
+- 채택하지 않은 것:
+  - **`find_concentration_mapped_places`가 `content_id → district_code` 대응을
+    따로 돌려주기** — `domain/models.py`를 건드리지 않으려던 방안이다. 위 사실 3
+    으로 피할 경계가 없음이 확인돼 채택하지 않았다. 같은 장소의 정보가 두
+    자료구조로 갈리면 쓰는 쪽이 둘을 맞춰 들고 다녀야 한다.
+  - **`CandidateEnrichmentTarget`에 구를 싣기** — A–C 계약 스키마라 계약 변경이
+    된다. 저장소에서 읽는 값으로 충분해 필요가 없다.
+- 검증:
+  - `pytest` 2,901건 통과, `ruff` 클린.
+  - 회귀 방지 테스트를 못 박았다. 매핑이 종로구뿐이면 조회가
+    `("11", "11110", "경복궁")`으로 예전과 똑같이 나간다.
+  - 중구(`"140"`) 매핑이면 `signguCd=11140`으로 나가는 것,
+    `district_code`가 없으면 Provider 호출이 0회인 것을 각각 테스트로 확인했다.
+  - 기존 픽스처 14곳에 `district_code`를 채웠다. 비워 두면 조회를 건너뛰어
+    테스트는 통과하는데 검증하려던 판정이 한 줄도 실행되지 않는다(CLAUDE.local.md
+    가 적어둔 "조용한 fake" 유형). 매핑 캐시 없이 서비스를 만들던 테스트 헬퍼도
+    프로덕션 배선(`agent_context/factory.py`)에 맞췄다.
+- 남은 것:
+  - 확장 구 매핑 CSV 적재는 TP-136에서 한다. 이 변경이 머지된 뒤다.
+  - 집중률 API의 구 분류와 TourAPI `district_code`가 어긋나는 사례가 있다.
+    `간송미술관(서울 보화각)`은 집중률 API가 중구로 분류하지만 `places`는
+    성북구(290), `서울로 7017`은 용산구(170)다. 어느 구 코드로 물을지 정하지
+    않았으므로 매핑하지 않은 상태로 둔다.
+- 관련 파일: `backend/app/agent_context/enrichment_service.py`,
+  `backend/app/agent_context/service.py`,
+  `backend/app/concentration_policy.py`,
+  `backend/app/domain/models.py`,
+  `backend/app/repositories/supabase_places.py`,
+  `backend/app/repositories/fake_places.py`,
+  `backend/app/tools/resolve_location.py`
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -3770,4 +3856,5 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-26 | D-091 신설 — SCHEDULE에 place_associations "함께 방문된 이력"을 opt-in으로 연결(B 단독 구현). `co_visited_fetcher` 키워드 인자 미지정 시 기존 동작과 바이트 단위로 동일. agent_runtime.py(A) 배선, SchedulePartialFillRequest 연동까지 이어서 완료. RECOMMEND 2차 스코어링 연동은 범위 밖 — 별도 카드(D-092)로 분리 |
 | 2026-08-26 | D-092 신설 — RECOMMEND 2차 스코어링에 place_associations "함께 방문된 이력"을 반영(D-040 `rerank_with_concentration()` 패턴 재사용). `scoring.OPTIONAL_FEATURES`에 `co_visited` 추가(taste+concentration과 동시 활성 시 정확히 설계 최대치 3개를 채움), `rerank_with_co_visited()`/`co_visited_score()`/`_co_visited_sentence()` 신설. 실제 `pytest` 전체 스위트를 로컬 shim으로 실행해 전부 통과 확인(StrEnum shim 보강으로 이전 세션에서 "3.11 전용 문법 때문에 실행 불가"로 남겼던 제약을 해소) |
 | 2026-08-26 | D-093 신설 — 지하철 방향 충돌 버그 수정, 주차 공영/민영 그룹핑, 도로소통 신규 연결. 지하철 "종로구만 되는 것 같다"는 지역 제한이 아니라 요약 카드 `fields` 키가 "역이름 호선"뿐이라 같은 역의 상행/하행이 충돌해 지워지던 버그였다(방향까지 키에 포함해 수정). 주차 공영/민영 구분(`PRK_TYPE`: NW/NS=공영, BS/NP=민영)과 도로소통(`ROAD_TRAFFIC_STTS.AVG_ROAD_DATA`: 단계·속도·안내문구)은 새 API 연동 없이 이미 매번 호출하는 `citydata` 응답에 있던 걸 파싱만 추가 — 실측(교대역·강남역·홍대·이촌한강공원)으로 코드값·중복 레코드 패턴을 확인했다. 별도 데이터셋(`GetParkInfo`)도 실제 호출해봤지만 낡고 범위가 안 맞아 기각. `question_type_rules.md`를 v3.2.0으로 올려 주차 트리거를 시제 키워드 없이도 매칭되게 완화하고 `realtime_traffic` 유형을 신설 — 스키마(`InfoQuestionType`)에 값을 안 넣은 채로 프롬프트만 먼저 바꿨더니 신규 케이스가 전부 0%로 실패했다가, 스키마에 추가한 뒤 재실행하니 기존 21건 회귀 없이 신규 포함 23건 100%로 통과했다(실제 Gemini 호출) |
-| 2026-08-26 | D-094 신설 — 분위기 임베딩을 조회 계층에 연결(D-087 후속, C). `PlaceMoodRepository` 계약과 `search_place_mood` RPC를 만들어 발화 경로(축 점수 조회)와 사진 경로(최근접 검색)를 붙였다. 재정렬(D)과 축 선택(A)은 범위 밖 |
+| 2026-08-26 | D-094 신설 — 분위기 임베딩을 조회 계층에 연결한다(D-087 후속, C). D-087이 범위 밖으로 미룬 서비스 배선 중 **조회까지**를 붙였다 — 재정렬과 발화에서 축을 고르는 단계는 D 패키지·A 패키지 소관이라 이번에도 손대지 않았다. 계약 `PlaceMoodRepository`는 취향 근거(`PlaceEvidenceRepository`)와 나눴다. 둘 다 768차원이지만 한쪽은 한국어 문장, 다른 쪽은 사진이 사는 공간이라 한 계약에 두면 호출부가 좌표계를 헷갈릴 수 있다. 경로가 둘이고 비용이 크게 다르다 — `find_mood_profiles`(발화)는 미리 계산된 `axis_scores`만 읽어 **임베딩 모델이 필요 없고**, `search_place_mood`(사진)만 SigLIP을 요구한다. 그래서 인코더가 없어도 Provider는 만들고 `photo_search_available`로 사진 경로만 막는다 — 인코더가 없을 때 0으로 채운 벡터를 넘기면 유사도가 전부 같아져 아무 장소나 순서대로 돌아오고 그게 추천으로 나간다(D-042). RPC `search_place_mood`는 `search_place_evidence`와 **후보 규칙이 다르다**. 저쪽은 40,389행이라 좁히지 않으면 6~9초가 걸려 좁힘을 강제하지만, `place_mood_vectors`는 장소당 한 행이라 지금 631행·서울 전체로 넓혀도 6,000~10,000행이다. 그래서 후보가 `null`이면 전체 검색을 허용하고("이 사진과 닮은 곳 아무데나"가 실제로 있을 수 있는 질문이다), **빈 배열은 `null`과 다르게 0건으로 끝낸다** — 후보를 좁히려다 전부 걸러진 호출이 전체 검색으로 둔갑하면 지역 필터를 통과하지 못한 장소가 추천에 섞인다. 후보를 넘길 때는 배열이 HNSW를 무력화하므로 저쪽과 같은 500건 상한을 둔다. **유사도 컷은 0.0으로 두고 순위만 쓴다** — 축 점수는 사람 정답표 77곳으로 AUC를 쟀지만(D-087) 사진끼리의 "이 정도면 닮았다" 경계는 표본이 없어서, 근거 없는 숫자를 코드에 남기지 않는다. 발화 경로 조회는 `embedding` 컬럼을 빼고 읽는다(768 float × 장소 수면 응답이 수 MB가 된다). 선택 의존성은 `[embeddings]`(취향, sentence-transformers)와 `[mood]`(사진, transformers·torch·pillow)로 나눴다 — 취향만 켜는 배포가 SigLIP까지 받을 이유가 없고, torch는 양쪽이 공유해 둘 다 깔아도 한 벌만 받는다. 스위치는 `PLACE_MOOD_ENABLED`(기본 off)이고, 켰는데 Supabase 설정이 비면 부팅을 막지 않고 경고만 남긴다 — 순위를 다듬는 축이라 없어도 추천은 동작한다. **분위기 벡터가 없는 장소가 정상이다** — 사진 임베딩은 종로구까지만 적재돼 있어(631곳) 다른 구 후보는 결측으로 빠지고, 0점으로 채우면 사진이 없는 장소가 "분위기가 안 맞는 곳"으로 잘못 밀린다. 커버리지는 `place_mood_coverage` 점수로 관측에 올려 적재 범위를 넓힐 시점을 숫자로 알 수 있게 했다 |
+| 2026-08-26 | D-095 신설 — 집중률 조회의 구 고정을 해제한다. `enrichment_service`가 `JONGNO_CONCENTRATION_DISTRICT_CODE`("11110")를 장소와 무관하게 넘겨 모든 조회가 종로구로 나가고 있었다. 집중률 API는 `signguCd`로 엄격하게 거른다(실측: 명동성당·덕수궁은 종로구 0건/중구 30건, 경복궁은 반대) — 매핑이 전부 종로구였던 동안만 값이 맞았다. `places.district_code`를 `StoredPlaceLocation`·`ResolvedLocation`으로 이어 날라 대상 장소의 구로 조회한다(3자리 "140" → signguCd 5자리 "11140" 변환은 `concentration_policy.concentration_signgu_code()`). **구를 모르면 종로구로 대신 묻지 않고 조회 자체를 생략한다** — 다른 구 장소는 언제나 0건이라 틀린 조회가 "정보 없음"으로 위장되기 때문이며, D-042와 같은 판단이다. 매핑 적재보다 이 변경이 먼저다: 순서를 뒤집으면 경계 근처 중구 62곳이 지금 받는 값을 잃는다(더 가까운 중구 매핑이 대체 후보 상위 3곳을 차지하는데 셋 다 종로구로 조회돼 0건). `StoredPlaceLocation`이 `domain/models.py`에 있어 D 소유로 보였으나 정의 커밋 `d6ea941`·참조처가 전부 C임을 blame으로 확인해 C 소유로 판정했다(TP-127이 반대로 적어둔 것을 정정) |

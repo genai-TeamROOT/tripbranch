@@ -263,6 +263,7 @@ def _mapped_place(
         address=None,
         latitude=latitude,
         longitude=longitude,
+        district_code="110",
         concentration_name=concentration_name or title,
     )
 
@@ -745,6 +746,7 @@ async def test_info_concentration_uses_stored_mapping_before_geocoding() -> None
                         address="서울특별시 종로구 인사동길 44",
                         latitude=37.5743062352,
                         longitude=126.9848674428,
+                        district_code="110",
                         concentration_name="창덕궁",
                     )
                 ),
@@ -794,6 +796,7 @@ async def test_info_concentration_queries_with_search_key_and_matches_by_name() 
                         address="서울특별시 종로구 종로 157",
                         latitude=37.5739,
                         longitude=126.9945,
+                        district_code="110",
                         concentration_name="종묘 [유네스코 세계유산]",
                         concentration_search_keys=("종묘",),
                     )
@@ -845,6 +848,7 @@ async def test_info_concentration_never_queries_unmapped_name() -> None:
                         address="서울특별시 종로구 인사동길 44",
                         latitude=37.5743062352,
                         longitude=126.9848674428,
+                        district_code="110",
                         concentration_name=None,
                     )
                 ),
@@ -1287,6 +1291,7 @@ async def test_info_concentration_stops_at_first_key_that_answers() -> None:
             address="서울특별시 종로구 종로40가길",
             latitude=37.5706,
             longitude=127.0092,
+            district_code="110",
             concentration_name="서울 동대문 닭한마리 골목",
             concentration_search_keys=("닭한마리", "동대문", "골목", "서울"),
         ),
@@ -1321,6 +1326,7 @@ async def test_info_concentration_falls_through_to_later_key() -> None:
             address="서울특별시 종로구 청와대로",
             latitude=37.5866,
             longitude=126.9748,
+            district_code="110",
             concentration_name="청와대 앞길",
             concentration_search_keys=("앞길", "청와대"),
         ),
@@ -1362,6 +1368,7 @@ class _CountingPlaceLocationRepository:
                 address="서울특별시 종로구",
                 latitude=37.5788,
                 longitude=126.9770,
+                district_code="110",
                 concentration_name=name,
             ),
         )

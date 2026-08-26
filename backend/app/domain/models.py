@@ -424,6 +424,11 @@ class StoredPlaceLocation:
     address: str | None
     latitude: float
     longitude: float
+    # TourAPI 법정동 코드의 시군구 부분(lDongSignguCd, 종로구 "110"). 집중률 조회는
+    # 구를 지정해야 하고 API가 그 값으로 엄격하게 거른다 - 중구 장소를 종로구로
+    # 물으면 0건이 온다(D-095). 집중률 API의 signguCd는 시도까지 붙인 5자리라
+    # 넘기기 전에 concentration_signgu_code()로 바꾼다.
+    district_code: str | None = None
     # 집중률 응답에서 장소를 골라낼 때 대조할 정식 명칭.
     concentration_name: str | None = None
     # tAtsNm에 넣을 검색어 목록. 앞에서부터 시도하고 결과가 나오면 멈춘다(D-057).

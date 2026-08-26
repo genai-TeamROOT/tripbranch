@@ -27,6 +27,7 @@ _FAKE_PLACES: tuple[StoredPlaceLocation, ...] = (
         address="서울특별시 종로구 사직로 161",
         latitude=37.5788,
         longitude=126.9770,
+        district_code="110",
         concentration_name="경복궁",
     ),
     StoredPlaceLocation(
@@ -35,6 +36,7 @@ _FAKE_PLACES: tuple[StoredPlaceLocation, ...] = (
         address="서울특별시 종로구 율곡로 99",
         latitude=37.5826,
         longitude=126.9919,
+        district_code="110",
         concentration_name="창덕궁과 후원 [유네스코 세계유산]",
     ),
     StoredPlaceLocation(
@@ -43,6 +45,7 @@ _FAKE_PLACES: tuple[StoredPlaceLocation, ...] = (
         address="서울특별시 종로구 종로 157",
         latitude=37.5739,
         longitude=126.9945,
+        district_code="110",
         concentration_name="종묘 [유네스코 세계유산]",
     ),
     StoredPlaceLocation(
@@ -51,6 +54,7 @@ _FAKE_PLACES: tuple[StoredPlaceLocation, ...] = (
         address="서울특별시 종로구 계동길 37",
         latitude=37.5826,
         longitude=126.9850,
+        district_code="110",
         concentration_name="북촌한옥마을",
     ),
     # 매핑이 없는 장소도 하나 둔다 — 인근 대체 경로를 fake로 확인할 수 있어야 한다.
@@ -60,6 +64,7 @@ _FAKE_PLACES: tuple[StoredPlaceLocation, ...] = (
         address="서울특별시 종로구 인사동길 44",
         latitude=37.5740,
         longitude=126.9855,
+        district_code="110",
         concentration_name=None,
     ),
 )

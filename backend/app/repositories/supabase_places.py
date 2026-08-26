@@ -68,7 +68,7 @@ _STATE_COLUMNS = ",".join(
     )
 )
 _LOCATION_COLUMNS = (
-    "content_id,title,address,latitude,longitude,"
+    "content_id,title,address,latitude,longitude,district_code,"
     "place_concentration_mappings(primary_concentration_name,concentration_search_keys)"
 )
 
@@ -218,6 +218,9 @@ def _map_place_locations(
                 address=_optional_text(raw.get("address")),
                 latitude=latitude,
                 longitude=longitude,
+                # 집중률 조회는 구를 지정해야 한다. 이 값이 비면 그 장소로는
+                # 조회하지 않는다 - 종로구로 대신 묻지 않는다.
+                district_code=_optional_text(raw.get("district_code")),
                 concentration_name=concentration_name,
                 concentration_search_keys=concentration_search_keys,
             )
