@@ -482,3 +482,26 @@ def test_score_failure_never_reaches_the_caller(monkeypatch: pytest.MonkeyPatch)
     _install(monkeypatch, _ScoringClient(fail=True))
 
     langfuse_tracing.record_score("turn_success", True)
+
+
+def test_every_langfuse_setting_is_documented_in_env_example() -> None:
+    """설정을 늘려놓고 `.env.example`에 안 적으면 팀원은 그게 있는 줄 모른다.
+
+    실제로 놓쳤다 — `LANGFUSE_CAPTURE_USER_ID`·`LANGFUSE_PROMPTS_ENABLED`·
+    `LANGFUSE_PROMPT_CACHE_TTL_SECONDS` 셋이 코드에만 있고 문서에는 없는 채로
+    푸시 직전까지 갔다(2026-08-26 검수에서 발견). 특히 `PROMPTS_ENABLED`는
+    프롬프트 이관 기능 전체를 켜는 스위치라, 안 적히면 아무도 못 켠다.
+
+    **`langfuse_*`만 본다.** 다른 패키지의 설정까지 강제하면 남의 영역에 규칙을
+    새로 부과하는 셈이라, 우리가 늘린 것만 우리가 지킨다.
+    """
+    env_example = pathlib.Path(__file__).resolve().parents[1] / ".env.example"
+    documented = env_example.read_text(encoding="utf-8")
+
+    undocumented = sorted(
+        name.upper()
+        for name in Settings.model_fields
+        if name.startswith("langfuse_") and name.upper() not in documented
+    )
+
+    assert not undocumented, f".env.example에 없는 설정: {', '.join(undocumented)}"
