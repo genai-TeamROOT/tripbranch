@@ -2987,6 +2987,73 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `frontend/src/pages/DeveloperChatPage.tsx`
 - 관련 작업: TP-141
 
+### D-085 — 관광지별 연관 관광지 정보(TarRlteTarService1)를 종로구·중구 파일럿으로 수집·매칭·적재한다 (패키지 경계 밖 실험, B가 진행)
+
+- 상태: `Accepted` — 파일럿 범위 구현 완료. 서울 전역 확장·SCHEDULE/RECOMMEND
+  연동은 범위 밖.
+- 배경: 한국관광공사가 공공데이터포털에 새로 공개한 TourAPI
+  "관광지별 연관 관광지 정보"는 Tmap 실내비게이션 co-visitation(실제
+  동선) 데이터 기반이라, 기존 TourAPI 정적 속성만으로는 못 만드는
+  "이 장소와 실제로 같이 다닌 곳" 정보를 준다. 추천/일정(SCHEDULE) 개선에
+  쓸모가 있다고 보고, 패키지 경계를 벗어나더라도 우선순위 높은 순으로
+  실험해보기로 했다(원 소유는 D 영역에 가깝지만 인프라 구축은 B가 맡음).
+- 결정:
+  1. `collect_place_associations.py` — `areaBasedList1`을 구 단위로 호출해
+     원본 응답(JSONL)을 그대로 보존한다. `NODATA_ERROR`는 그 구만 건너뛰는
+     정상 흐름으로 처리하고, `baseYm` 기본값은 매월 8일 갱신 특성을 고려해
+     항상 저번 달을 쓴다.
+  2. `build_place_association_mappings.py` — 원본의 `tAtsCd`/`rlteTatsCd`
+     (32자리 해시코드, TourAPI 표준 content_id와 다른 체계)를 이름+구
+     기준으로 `places.content_id`에 매칭한다.
+     `place_concentration_mappings`(D-043/D-057)가 이미 푼 같은 문제
+     (장소 고유 ID가 없는 외부 API를 이름으로만 매칭)와 같은 보수적 원칙을
+     그대로 재사용했다 — exact → normalized → 유일 후보일 때만 substring,
+     모호하면 자동 매칭하지 않고 사람 확인용 unmatched로 남긴다. 구 필터를
+     이름 비교보다 먼저 적용해 동명이인 장소 오매칭(EXP-01 교훈)을 막는다.
+  3. `place_associations` 테이블(마이그레이션
+     `202608260001_create_place_associations.sql`) — `from_content_id`/
+     `to_content_id`/`base_ym` 복합 PK로 월별 스냅샷을 이력으로 보존한다.
+     `import_place_associations.py`가 원본 JSONL과 매핑 CSV를 조인해 양쪽
+     다 매칭된 엣지만 적재하고, 재수집 시 upsert(`on_conflict`+
+     `merge-duplicates`)로 `rank`/`category`만 덮어써 `created_at`(최초
+     적재 시각)은 유지한다. `query_place_associations.py`로 content_id
+     기준 조회 헬퍼를 뒀다.
+- 근거: 매칭 실패 시 대충 편집거리로 이어붙이면 엉뚱한 장소를 "함께 다니면
+  좋은 곳"으로 추천하는 사고가 나므로, 이미 검증된 D-043/D-057 원칙을
+  그대로 재사용하는 쪽이 새 휴리스틱을 만드는 것보다 안전하다고 판단했다.
+- 채택하지 않은 것:
+  - **네이버 포스트 데이터도 함께 적재** — 이 작업 조사 과정에서 중구 RAG
+    임베딩(`place_embeddings`)이 구글 리뷰만 있고 다른 구에 있는 네이버
+    포스트 소스가 중구엔 없다는 게 눈에 띄었지만, RAG 자체가 아직 추천
+    파이프라인에 안 붙어 있고(D-082 참고) 저장소에 네이버 블로그 검색
+    연동이 아예 없어 이번 범위에 넣지 않았다. 필요하면 별도 카드로 D와
+    협의.
+  - **서울 25개 구 전체 선수집** — 파일럿(종로구·중구)으로 매칭률·데이터
+    품질부터 확인하는 쪽을 택했다. 원본 2,300건 중 698건만 양쪽 다
+    매칭됐고(나머지는 미동기화 구 388건 + 호텔·프랜차이즈 등 매칭 실패
+    344건), 전역 확장 전에 이 커버리지 한계를 먼저 알아야 한다고 판단했다.
+- 곁가지 발견: `build_place_association_mappings.py`의 `load_places_from_supabase`가
+  D-081과 완전히 같은 패턴으로 PostgREST 기본 1000행 상한에 걸려 있었다
+  (`limit=2000`을 명시해도 1000건에서 잘림). 같은 페이지네이션 헬퍼 패턴으로
+  수정 — 매칭 가능 장소가 1,000건에서 3,671건으로 늘며 매칭 건수도
+  76→237건으로 뛰었다. D-081(list_traces_for_stats/list_feedback_for_stats)에
+  이어 이 클래스의 버그가 두 번째로 재발한 것이라, PostgREST REST 호출을
+  새로 짤 때는 기본적으로 페이지네이션을 넣는 것을 원칙으로 삼아야 한다.
+- 검증: 파일럿 실행 로그로 확인 — 원본 2,300건(종로구 1,556 + 중구 744) →
+  content_id 매칭 354/1,086건(정확 212 / 정규화 25 / 부분일치 117) →
+  엣지 698건 실제 적재(미매칭 1,532 / 자기참조 5 / 중복 65 제외) →
+  content_id 조회(`945824` 경교장)로 rank/category 포함 연관 장소 4건
+  확인.
+- 남은 것: 서울 25개 구 확장, SCHEDULE(추천 경로에 "함께 방문" 제안 추가)/
+  RECOMMEND 설명문 연동, 2차 스코어링 반영은 모두 후속 작업(우선순위 논의
+  필요).
+- 상세: `backend/scripts/collect_place_associations.py`,
+  `backend/scripts/build_place_association_mappings.py`,
+  `backend/scripts/import_place_associations.py`,
+  `backend/scripts/query_place_associations.py`,
+  `supabase/migrations/202608260001_create_place_associations.sql`,
+  `supabase/data_dictionary/place_associations.md`
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -3067,3 +3134,4 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-25 | D-082 신설 — Package D 소유 테이블 `place_embeddings`의 HNSW 인덱스가 프로덕션 DB에서 누락된 것을 발견해 마이그레이션으로 복구. 2026-08-20 중구 RAG 확장 실험 당시 statement_timeout 우회를 위해 지운 뒤 재생성하지 않은 것으로 추정 |
 | 2026-08-25 | D-083 신설 — 서비스 지원 지역을 4개 구(종로·중·용산·성동)에서 12개 구로 확장(PR #224 후속). Supabase `places`에 이미 적재돼 있던 광진·동대문·중랑·성북·강북·도봉·노원·은평 8개 구를 `SUPPORTED_DISTRICTS`에 추가 — district_code는 실제 주소와 대조해 확인, 경계 파일은 이미 25개 구를 다 담고 있어 손댈 필요 없음. 활성 장소 1,103건 폴리곤 대조로 밖 7건(0.63%) 확인, 그중 3건은 서로 다른 구에서 정확히 같은 깨진 좌표(19.694, 117.993) — 결측치 대체값으로 추정. `_LOCATION_REQUIRED_QUICK_PICKS`가 여전히 "종로구 한정" 전제로 남아 있는 것은 확인만 하고 범위 밖으로 남김 |
 | 2026-08-26 | D-084 신설 — 서울시 실시간 지역 목록을 JSON으로 옮기고 조회 경로별로 맞는 목록에 연결(TP-141). "경복궁 붐벼?"에 북촌한옥마을이 대신 나가던 문제를 서울시 공식 매뉴얼로 재조사한 결과, "82곳 목록이 낡은 것"이 아니라 "인구 조회에 상권 전용 82개 목록을 잘못 가져다 쓴 것"이었다 — 인구 API(`citydata`/`citydata_ppltn`)는 처음부터 121곳, 상권 API(`citydata_cmrcl`)는 가맹점 수가 적은 39곳(공원 33곳 등)을 구조적으로 제외한 82곳만 지원한다(매뉴얼 36p). 두 파일(`population_areas_121.json`/`commercial_areas_82.json`, 서울 열린데이터광장 공식 파일 기반)로 분리하고 로더가 매뉴얼 표와 카테고리 개수까지 대조 검증한다. 인구 혼잡도·citydata 통합 조회는 121개를, 상권 조회는 82개를 쓴다. 121개 목록도 서울시가 계속 확대할 예정이라(매뉴얼 48p) 최근접 대체 시 실제 이름을 한 번 더 조회하는 낡음 감지 probe를 추가 — 응답은 안 바꾸고 개발자 화면 배너로만 알린다. TP-141 원안(82곳 유지, 121 확장은 A로 이관)에서 매뉴얼 근거로 벗어난 부분은 A 리뷰를 요청한다 |
+| 2026-08-26 | D-085 신설 — TourAPI "관광지별 연관 관광지 정보"를 종로구·중구 파일럿으로 수집·매칭·적재(패키지 경계 밖 실험). `place_concentration_mappings`(D-043/D-057)와 동일한 보수적 매칭 원칙 재사용, `place_associations` 테이블 신설(월별 스냅샷 이력 보존). PostgREST 1000행 상한 버그가 두 번째로 재발(D-081과 동일 패턴)한 것을 발견해 수정. 원본 2,300건 → 매칭 354/1,086건 → 엣지 698건 실제 적재까지 확인 |
