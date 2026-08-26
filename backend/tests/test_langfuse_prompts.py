@@ -107,11 +107,31 @@ def test_remote_text_replaces_the_disk_copy_when_it_arrives(
     client = _enable(monkeypatch, _FakeClient(_FakePrompt("원격 예산 규칙")))
 
     assert loader.load_text(_ASSET) == "원격 예산 규칙"
+
     # 이름은 확장자만 뗀 것이어야 한다 — 폴더 구조가 화면에 그대로 보이도록.
-    name, kwargs = client.calls[0]
-    assert name == "_shared/rules/budget"
+    # calls[0]으로 찾지 않는다 — 첫 조회가 캐시 예열을 트리거해 43개가 먼저 들어온다.
+    named = [kwargs for name, kwargs in client.calls if name == "_shared/rules/budget"]
+    assert named, [name for name, _ in client.calls][:3]
     # 디스크 원문을 fallback으로 함께 넘겨야 SDK 안에서 실패해도 돌아갈 곳이 있다.
-    assert kwargs["fallback"] == _disk_text()
+    assert named[-1]["fallback"] == _disk_text()
+
+
+def test_first_lookup_warms_every_asset_in_one_go(monkeypatch: pytest.MonkeyPatch) -> None:
+    """첫 조회가 자산 전체를 병렬로 데운다 — 안 하면 부팅이 +1.5초다(실측 2026-08-26).
+
+    `gemini_prompts.py`가 모듈 수준에서 22개를 읽으므로 그게 전부 import 시점의 순차
+    왕복이 된다. 예열을 넣어 1.76초 → 1.11초가 됐다.
+
+    두 번째 조회에서 다시 데우면 안 된다 — 조회마다 43회를 또 도는 셈이 된다.
+    """
+    client = _enable(monkeypatch, _FakeClient(_FakePrompt("원격")))
+
+    loader.load_text(_ASSET)
+    after_first = len(client.calls)
+    loader.load_text(_ASSET)
+
+    assert after_first == len(loader.asset_paths()) + 1  # 예열 43 + 본 조회 1
+    assert len(client.calls) == after_first + 1  # 두 번째는 본 조회 하나뿐
 
 
 def test_fetch_failure_falls_back_to_disk(monkeypatch: pytest.MonkeyPatch) -> None:

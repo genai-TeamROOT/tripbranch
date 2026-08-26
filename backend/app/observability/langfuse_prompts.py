@@ -25,6 +25,7 @@ URL 인코딩이 필요하다** — SDK의 `api.prompts.delete()`가 그걸 안 
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Final
 
 from app.config import settings
@@ -33,6 +34,14 @@ from app.observability.langfuse_tracing import get_prompt_client
 logger = logging.getLogger(__name__)
 
 _MARKDOWN_SUFFIX: Final = ".md"
+
+# 첫 조회에서 전체를 한꺼번에 데울 때 쓰는 동시성. 실측(2026-08-26): 43개를 순차로
+# 읽으면 2.28초, 8스레드면 0.4초다. 부팅이 +1.5초 느려지던 것이 이 때문이었다
+# (`gemini_prompts.py`가 모듈 수준에서 22개를 읽는다).
+_WARM_WORKERS: Final = 8
+
+# 한 프로세스에서 한 번만 데운다.
+_warmed = False
 
 # 폴백으로 돌아간 이름. 한 번씩만 알리고 이후에는 조용히 넘어간다 — 프롬프트는
 # 요청마다 여러 번 읽히므로 매번 찍으면 로그가 그것만 남는다.
@@ -66,6 +75,7 @@ def fetch_text(relative_path: str, *, fallback: str) -> str:
     if client is None:
         return fallback
 
+    _warm_cache(client)
     name = prompt_name(relative_path)
     try:
         prompt: Any = client.get_prompt(
@@ -91,6 +101,39 @@ def fetch_text(relative_path: str, *, fallback: str) -> str:
     return text
 
 
+def _warm_cache(client: Any) -> None:
+    """첫 조회 때 자산 전체를 병렬로 한 번 데운다.
+
+    **하나씩 읽으면 부팅이 느려진다.** `gemini_prompts.py`가 모듈 수준에서 22개를
+    읽으므로 그게 전부 import 시점에 순차 왕복이 된다 — 실측 +1.5초. 첫 요청이
+    들어오기 전에 끝나야 하는 시간이라 그냥 두면 배포마다 눈에 띈다.
+
+    실패는 무시한다. 여기서 못 데운 이름은 아래 개별 조회가 폴백으로 처리하므로,
+    데우기가 실패했다고 해서 따로 알릴 것이 없다.
+    """
+
+    global _warmed
+    if _warmed:
+        return
+    _warmed = True  # 실패해도 다시 시도하지 않는다 — 매 조회마다 43회를 또 돌면 안 된다.
+
+    from app.prompts.loader import asset_paths
+
+    ttl = settings.langfuse_prompt_cache_ttl_seconds
+
+    def warm(path: str) -> None:
+        try:
+            client.get_prompt(prompt_name(path), cache_ttl_seconds=ttl)
+        except Exception:
+            pass
+
+    try:
+        with ThreadPoolExecutor(max_workers=_WARM_WORKERS) as pool:
+            list(pool.map(warm, asset_paths()))
+    except Exception:
+        logger.warning("프롬프트 캐시 예열 실패(디스크 폴백으로 계속 동작한다)", exc_info=True)
+
+
 def _warn_once(name: str, reason: str) -> None:
     if name in _warned:
         return
@@ -101,9 +144,11 @@ def _warn_once(name: str, reason: str) -> None:
 
 
 def reset_fallback_warnings() -> None:
-    """폴백 경고 기록을 지운다. 테스트와 동기화 스크립트가 쓴다."""
+    """폴백 경고와 예열 기록을 지운다. 테스트가 매번 같은 조건에서 시작하게 한다."""
 
+    global _warmed
     _warned.clear()
+    _warmed = False
 
 
 __all__ = [
