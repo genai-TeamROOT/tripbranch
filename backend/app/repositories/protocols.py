@@ -10,6 +10,8 @@ from uuid import UUID
 from app.domain.models import (
     PlaceBarrierFreeDetails,
     PlaceEvidenceMatch,
+    PlaceMoodMatch,
+    PlaceMoodProfile,
     StoredPlaceDetail,
     StoredPlaceLocation,
     StoredPlaceState,
@@ -175,3 +177,33 @@ class PlaceEvidenceRepository(Protocol):
         match_count: int,
         min_similarity: float,
     ) -> tuple[PlaceEvidenceMatch, ...]: ...
+
+
+class PlaceMoodRepository(Protocol):
+    """장소 사진의 분위기 벡터를 읽는 읽기 전용 계약.
+
+    경로가 둘이고 비용이 크게 다르다.
+
+      find_mood_profiles   발화 경로. 미리 계산된 축 점수만 읽는다. 벡터 연산이
+                           없고 임베딩 모델도 필요 없다.
+      search_place_mood    사진 경로. 올린 사진을 임베딩해 최근접 장소를 찾는다.
+                           질의 벡터를 만들려면 SigLIP이 있어야 한다.
+
+    분위기 벡터는 텍스트 임베딩(place_embeddings)과 좌표계가 다르다. 둘 다
+    768차원이지만 한쪽은 한국어 문장, 다른 쪽은 사진이 사는 공간이라 섞으면
+    계산은 되고 뜻이 없다. 그래서 PlaceEvidenceRepository와 계약을 나눈다.
+    """
+
+    async def find_mood_profiles(
+        self,
+        content_ids: Sequence[str],
+    ) -> dict[str, PlaceMoodProfile]: ...
+
+    async def search_place_mood(
+        self,
+        query_embedding: Sequence[float],
+        candidate_content_ids: Sequence[str] | None,
+        *,
+        match_count: int,
+        min_similarity: float,
+    ) -> tuple[PlaceMoodMatch, ...]: ...

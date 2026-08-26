@@ -40,6 +40,17 @@ dev = [
 embeddings = [
   "sentence-transformers>=5.7",
 ]
+# 사진 분위기 임베딩 전용(app/providers/place_mood_encoder.py). 적재는 코랩에서
+# 했고 서버는 올린 사진 한 장을 인코딩할 때만 쓴다. embeddings와 분리한 이유는
+# 두 모델이 서로 필요 없기 때문이다 — 취향 검색만 켜는 배포가 SigLIP까지 받을
+# 이유가 없다. torch는 양쪽이 공유하므로 둘 다 설치해도 한 벌만 받는다.
+# 모델 가중치(google/siglip2-base-patch16-224)는 첫 적재 때 Hugging Face Hub에서
+# 자동 다운로드된다.
+mood = [
+  "transformers>=4.49",
+  "torch>=2.2",
+  "pillow>=10.0",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
