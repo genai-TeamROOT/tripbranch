@@ -42,6 +42,7 @@ InfoQuestionType = Literal[
     "realtime_subway",
     "realtime_bus",
     "realtime_event",
+    "realtime_traffic",
 ]
 
 
@@ -184,7 +185,9 @@ class RealtimeCityInfoResult(BaseModel):
     """서울시 도시데이터의 주차·대중교통·행사 결과를 공통 카드 계약으로 전달한다."""
 
     status: Literal["success", "no_data", "unavailable"]
-    question_type: Literal["realtime_parking", "realtime_subway", "realtime_bus", "realtime_event"]
+    question_type: Literal[
+        "realtime_parking", "realtime_subway", "realtime_bus", "realtime_event", "realtime_traffic"
+    ]
     requested_place_name: str | None = None
     resolved_place_name: str | None = None
     area_name: str | None = None

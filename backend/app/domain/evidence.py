@@ -29,6 +29,7 @@ _BASE_FEATURE_ORDER: tuple[str, ...] = (
     "distance",
     "taste",
     "concentration",
+    "co_visited",
 )
 
 # 1차 Scoring 결과의 Feature 순서 (scoring.py DEFAULT_WEIGHTS와 동일).
@@ -123,6 +124,10 @@ class RecommendationEvidence:
     # weather_condition만으로는 "왜"(비/눈/폭염/한파)를 알 수 없어서 문장 조립에
     # 따로 필요하다(scoring.py::RankedCandidate.weather_reason 참고).
     weather_reason: WeatherReason = None
+    # D-092: 2차 Scoring(rerank_with_co_visited())에서만 채워진다. 문장 조립이
+    # "함께 방문된 이력"을 점수 대신 이름으로 말할 수 있게 원본을 그대로 이월한다
+    # (scoring.py::RankedCandidate.co_visited_place_names 참고).
+    co_visited_place_names: tuple[str, ...] = ()
 
 
 def _build_contributions(
@@ -179,6 +184,7 @@ def build_evidence(
         travel_mode=candidate.travel_mode,
         taste_evidence_text=candidate.taste_evidence_text,
         origin_name=origin_name,
+        co_visited_place_names=candidate.co_visited_place_names,
     )
 
 

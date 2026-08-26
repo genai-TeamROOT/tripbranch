@@ -15,6 +15,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from app.schedule.associations import CoVisitedHint
 from app.schemas import RecommendationItem, ScheduleItem, UserConditions
 
 
@@ -38,6 +39,13 @@ class SchedulePlanningRequest(BaseModel):
     # (위경도 보유)를 place_id로 매칭해 계산해서 넘긴다. 내부 함수 인자로만 쓰여
     # JSON으로 직렬화되지 않으므로 튜플 키를 그대로 써도 된다.
 
+    co_visited_hints: list[CoVisitedHint] = Field(default_factory=list)
+    # place_associations(D-088) 기반 "이 후보들은 실제로 함께 방문됐다" 힌트.
+    # A가 채우지 않는다 — planner.py의 plan_schedule()이 co_visited_fetcher가
+    # 주어졌을 때만 자체적으로 조회해 이 필드를 채운 뒤 LLM 호출 직전에
+    # model_copy()로 덮어쓴다(app.schedule.associations 참고). 기본값 빈 리스트라
+    # 이 필드를 모르는 기존 호출부는 동작이 전혀 바뀌지 않는다.
+
 
 class SchedulePartialFillRequest(BaseModel):
     """일부 슬롯만 새로 채우는 부분 재편성 입력. (SCHEDULE-09 2단계,
@@ -57,6 +65,12 @@ class SchedulePartialFillRequest(BaseModel):
     conditions: UserConditions
     visit_datetime: datetime | None = None
     pairwise_distances_km: dict[tuple[str, str], float]
+
+    co_visited_hints: list[CoVisitedHint] = Field(default_factory=list)
+    # SchedulePlanningRequest.co_visited_hints와 동일한 용도(D-088/D-091) — 부분
+    # 재편성에서 새로 채울 자리(candidates)를 고를 때도 같은 힌트를 참고할 수
+    # 있게 한다. plan_partial_schedule()이 co_visited_fetcher가 주어졌을 때만
+    # pinned_items + candidates의 place_id 전체로 조회해 채운다.
 
 
 class SchedulePartialLLMPlan(BaseModel):

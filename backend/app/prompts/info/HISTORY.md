@@ -4,12 +4,47 @@
 
 | 슬롯 | 관리 버전 | 템플릿 | 공유 규칙 |
 | --- | --- | --- | --- |
-| info.extract | v3.1.0 | extract.md, question_type_rules.md, place_context_rules.md, visit_time_rules.md | factuality |
+| info.extract | v3.2.0 | extract.md, question_type_rules.md, place_context_rules.md, visit_time_rules.md | factuality |
 | info.answer | v1.0.0 | answer_instruction.md | persona, factuality |
 
 ## Draft
 
-*(없음)*
+### v3.2.0 (2026-08-26, D-091)
+
+  `question_type_rules.md`의 `realtime_parking`을 "지금/현재/실시간" 필수에서
+  "주변/근처"만 있어도 매칭되도록 완화하고(TP-115), 신규 유형 `realtime_traffic`
+  (도로소통)을 추가했습니다. `parking`(정적) 정의에 "주변 여러 곳을 찾으면
+  realtime_parking으로 본다"는 경계 문구를 덧붙였습니다. 기존 v3.1.0 원문은
+  `archive/question_type_rules__legacy-3.1.md`에 보관했습니다.
+
+  **새 유형(`realtime_traffic`)을 만든 이유**: 도로소통은 기존 6종
+  (parking/subway/bus/event 중 어디)과도 성격이 다릅니다 — "주변 여러 곳"이
+  아니라 그 지역 하나의 단일 스냅샷(단계·속도)이라 응답 조립 방식 자체가
+  다르고(카드로 미루지 않고 말풍선에 바로 값을 담음), 기존 유형에 끼워
+  넣으면 그 차이가 코드에서 안 드러납니다.
+
+  **단일 턴 평가 결과**: `question_type_cases.csv`에 5건 추가(주차 완화 2건
+  RP-001/RP-002, 도로소통 신규 2건 RT-001/RT-002, 정적 `parking` 회귀 확인용
+  PK-001 노트 보강)한 뒤 `python -m scripts.evaluate_info_question_type --repeat 5`
+  로 실제 Gemini를 호출했습니다.
+
+  1차 실행(스키마에 `realtime_traffic`을 아직 안 넣은 상태) — 기존 21건은
+  전부 100%로 회귀 없었지만, 신규 `realtime_traffic` 2건은 **0%**로
+  실패했습니다(`realtime_subway`/`realtime_parking`/`realtime_commercial`로
+  잘못 분류). `InfoQuestionType`/`RealtimeCityInfoResult.question_type`
+  Literal에 `"realtime_traffic"`을 추가한 뒤 2차 실행하니 23건 전체
+  **100%, 전부 stable**로 통과했습니다. 프롬프트 규칙만 바꾸고 구조화 출력
+  스키마를 안 바꾸면 모델이 애초에 그 값을 고를 수 없다는 걸 실측으로
+  확인한 셈입니다 — 순서를 지켜야 하는 이유가 이번에 실패로 드러났습니다.
+
+  실행 기록: `test_results/info_question_type/2026-08-26_1947_v3.2-realtime-parking-traffic/`
+  (1차, 스키마 반영 전), `2026-08-26_1955_v3.2-schema-fixed/`(2차, 최종).
+
+  **다중 턴 회귀는 이번에 생략했습니다.** `evaluate_agent_quality --split dev`
+  까지 포함하는 것이 팀 통상 프로세스(legacy-3.1 참고)지만, 이번 변경은
+  기존 유형 경계(facility/concentration)를 건드리지 않는 좁은 추가 변경이라
+  단일 턴 검증만으로 Draft에 남깁니다. 다중 턴 실행은 리뷰 시 필요하면
+  추가하겠습니다.
 
 ## 승인 이력
 

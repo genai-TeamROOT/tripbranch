@@ -166,6 +166,7 @@ _REALTIME_CITYDATA_QUESTION_TYPES = {
     "realtime_subway",
     "realtime_bus",
     "realtime_event",
+    "realtime_traffic",
 }
 _CITYDATA_SOURCE_URL = "https://data.seoul.go.kr/dataList/OA-21285/F/1/datasetView.do"
 
@@ -979,23 +980,48 @@ class ContextService:
                 if item.latitude is not None and item.longitude is not None
                 else float("inf"),
             )
-            entries = all_entries[:3]
-            fields = {
-                item.name: _format_realtime_parking(item)
-                for item in entries
+            # 공영/민영으로 나눠 보여준다 — 한쪽이 비어도(예: 공원 주변은 민영이
+            # 없거나, 역세권은 공영이 없는 경우) 있는 쪽만으로 정상 응답한다.
+            grouped_lots: dict[str, list[RealtimeParkingLot]] = {
+                "공영": [],
+                "민영": [],
+                "기타": [],
             }
+            for item in all_entries:
+                grouped_lots[item.lot_type or "기타"].append(item)
+            entries: list[RealtimeParkingLot] = []
+            fields = {}
+            for label in ("공영", "민영", "기타"):
+                for item in grouped_lots[label][:3]:
+                    entries.append(item)
+                    key = item.name if label == "기타" else f"[{label}] {item.name}"
+                    fields[key] = _format_realtime_parking(item)
             observed_at = next((item.observed_at for item in entries if item.observed_at), None)
             detail_items = _to_parking_detail_items(
-                all_entries[:10],
+                grouped_lots["공영"][:10] + grouped_lots["민영"][:10] + grouped_lots["기타"][:10],
                 latitude=resolved_location.latitude,
                 longitude=resolved_location.longitude,
             )
         elif question_type == "realtime_subway":
             all_entries = citydata.subway_arrivals
-            entries = all_entries[:4]
+            # 역+호선 단위로 묶어 서로 다른 방향을 우선 살린다. 예전에는
+            # all_entries[:4]로 원본 순서대로만 잘라 같은 역의 두 방향(상행/하행)이
+            # 겹치면 한쪽이 밀려났다.
+            by_station_line: dict[str, list[RealtimeSubwayArrival]] = {}
+            station_line_order: list[str] = []
+            for item in all_entries:
+                key = f"{item.station_name}|{item.line or ''}"
+                if key not in by_station_line:
+                    by_station_line[key] = []
+                    station_line_order.append(key)
+                by_station_line[key].append(item)
+            entries = []
+            for key in station_line_order:
+                entries.extend(by_station_line[key][:2])  # 방향은 최대 2개(상/하행)
+                if len(entries) >= 4:
+                    break
             fields = {
-                f"{item.station_name} {item.line or ''}".strip(): _format_subway_arrival(item)
-                for item in entries
+                _subway_field_key(item): _format_subway_arrival(item) for item in entries
             }
             observed_at = None
             detail_items = _to_subway_detail_items(all_entries[:12])
@@ -1008,6 +1034,37 @@ class ContextService:
             }
             observed_at = None
             detail_items = _to_bus_detail_items(all_entries[:12])
+        elif question_type == "realtime_traffic":
+            traffic = citydata.road_traffic
+            fields = (
+                {
+                    key: value
+                    for key, value in {
+                        "도로소통 단계": traffic.level,
+                        "평균 주행속도": (
+                            f"{traffic.average_speed_kmh:.0f}km/h"
+                            if traffic.average_speed_kmh is not None
+                            else None
+                        ),
+                        "안내": traffic.message,
+                    }.items()
+                    if value is not None
+                }
+                if traffic is not None
+                else {}
+            )
+            observed_at = traffic.observed_at if traffic is not None else None
+            detail_items = (
+                [
+                    RealtimeInfoDetailItem(
+                        title="도로소통 안내",
+                        subtitle=traffic.level,
+                        details={"안내": traffic.message} if traffic.message else {},
+                    )
+                ]
+                if traffic is not None and traffic.message is not None
+                else []
+            )
         else:
             all_entries = citydata.events
             entries = all_entries[:5]
@@ -1031,6 +1088,7 @@ class ContextService:
                         "realtime_subway",
                         "realtime_bus",
                         "realtime_event",
+                        "realtime_traffic",
                     ],
                     question_type,
                 ),
@@ -1710,6 +1768,13 @@ def _format_realtime_parking(item: RealtimeParkingLot) -> str:
     return f"{capacity} · {current} · {paid}"
 
 
+def _subway_field_key(item: RealtimeSubwayArrival) -> str:
+    """같은 역·같은 호선의 두 방향이 같은 키로 겹쳐 한쪽이 지워지는 걸 막는다."""
+
+    base = f"{item.station_name} {item.line or ''}".strip()
+    return f"{base} · {item.direction}" if item.direction else base
+
+
 def _format_subway_arrival(item: RealtimeSubwayArrival) -> str:
     destination = f"{item.destination}행" if item.destination else "방면 정보 미제공"
     arrival = item.arrival_message or (
@@ -1821,6 +1886,7 @@ def _realtime_city_info_no_data_response(
                     "realtime_subway",
                     "realtime_bus",
                     "realtime_event",
+                    "realtime_traffic",
                 ],
                 request.question_type,
             ),

@@ -17,4 +17,8 @@ GI-002,익선동 한옥거리 소개해줘,general_info,neighbor,장소 설명
 CO-001,경복궁 주말에 사람 많아?,concentration,neighbor,혼잡도 - 미래 시점
 CO-002,북촌한옥마을 붐빌까?,concentration,neighbor,혼잡도 - 직접 표현
 OH-001,창덕궁 오늘 열어?,operating_hours,neighbor,운영 여부
-PK-001,경복궁 주차 가능해?,parking,neighbor,정적 주차
+PK-001,경복궁 주차 가능해?,parking,neighbor,정적 주차 - 대상이 명확한 장소 하나. 트리거 완화가 이 판정을 흔들면 안 된다
+RP-001,경복궁 주변 주차되는 곳 있어?,realtime_parking,realtime_parking,시제 키워드 없이 "주변"만으로도 실시간 주차로 가야 한다(TP-115)
+RP-002,지금 경복궁 주변 주차 자리 있어?,realtime_parking,realtime_parking,기존 시제 키워드 형태 - 회귀 확인용
+RT-001,이촌한강공원 가는길 막혀?,realtime_traffic,realtime_traffic,신규 유형 - 도로소통
+RT-002,지금 도로 많이 막혀?,realtime_traffic,realtime_traffic,신규 유형 - 시제 키워드 포함 형태

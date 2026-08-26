@@ -29,6 +29,7 @@ from app.domain.models import OperatingHours, ScoringCandidate, WeatherCondition
 from app.domain.scoring import (
     CONCENTRATION_WEIGHTS,
     RankedCandidate,
+    build_weights,
     prepare_candidates,
     redistribute_weights,
     score_candidates,
@@ -357,6 +358,76 @@ def test_concentration_below_threshold_is_omitted() -> None:
 def test_concentration_missing_is_omitted() -> None:
     candidate = _concentration_ranked_candidate(None, None)
     evidence = build_evidence(candidate, feature_order=CONCENTRATION_FEATURE_ORDER)
+    assert build_explanations(evidence) == ()
+
+
+# --- co_visited Feature(D-092, RECOMMEND 2차 Scoring 전용) 근거 문장 ---------
+
+
+def _co_visited_ranked_candidate(
+    co_visited_score_value: float,
+    co_visited_place_names: tuple[str, ...],
+) -> RankedCandidate:
+    co_visited_weights = build_weights(("co_visited",))
+    feature_scores: dict[str, float | None] = {
+        "weather": None,
+        "remaining_operating_time": None,
+        "distance": 0.0,
+        "co_visited": co_visited_score_value,
+    }
+    missing = [f for f in co_visited_weights if feature_scores.get(f) is None]
+    weights_used = redistribute_weights(co_visited_weights, missing)
+    return RankedCandidate(
+        place_id="cov",
+        name="동선테스트",
+        category="test",
+        rank=1,
+        score=0.0,
+        feature_scores=feature_scores,
+        weights_used=weights_used,
+        is_unverified=False,
+        warnings=(),
+        distance_km=0.0,
+        remaining_minutes=None,
+        weather_condition=None,
+        environment_type="unknown",
+        co_visited_place_names=co_visited_place_names,
+    )
+
+
+def test_co_visited_sentence_names_the_other_place() -> None:
+    candidate = _co_visited_ranked_candidate(1.0, ("경복궁",))
+    evidence = build_evidence(candidate)
+    assert build_explanations(evidence) == ("경복궁와(과) 함께 방문객들이 자주 찾는 곳이에요.",)
+
+
+def test_co_visited_sentence_lists_up_to_two_names() -> None:
+    candidate = _co_visited_ranked_candidate(1.0, ("경복궁", "북촌한옥마을", "인사동"))
+    evidence = build_evidence(candidate)
+    assert build_explanations(evidence) == (
+        "경복궁, 북촌한옥마을와(과) 함께 방문객들이 자주 찾는 곳이에요.",
+    )
+
+
+def test_co_visited_sentence_falls_back_without_names() -> None:
+    """이름이 없는데도 notable(비정상 입력 방어) — 그래도 크래시 없이 일반 문구를 낸다."""
+    candidate = _co_visited_ranked_candidate(1.0, ())
+    evidence = build_evidence(candidate)
+    assert build_explanations(evidence) == (
+        "다른 추천 장소와 함께 방문객들이 자주 찾는 곳이에요.",
+    )
+
+
+def test_co_visited_below_threshold_is_omitted() -> None:
+    candidate = _co_visited_ranked_candidate(0.3, ("경복궁",))
+    evidence = build_evidence(candidate)
+    assert build_explanations(evidence) == ()
+
+
+def test_co_visited_zero_is_omitted() -> None:
+    """쌍이 없는 후보(co_visited=0.0)는 결측이 아니라 낮은 점수다 — 문장 생략."""
+    candidate = _co_visited_ranked_candidate(0.0, ())
+    evidence = build_evidence(candidate)
     assert build_explanations(evidence) == ()
 
 

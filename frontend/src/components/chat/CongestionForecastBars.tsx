@@ -32,12 +32,19 @@ const CONGESTION_HEIGHT: Record<string, number> = {
   "붐빔": 92,
 };
 
-/** 게이지에 표시할 4단계 순서. 마커 위치도 이 순서 기준 인덱스로 계산한다. */
-const GAUGE_LEVELS: Array<{ label: string; color: string }> = [
+/** 인구 혼잡도 게이지의 4단계 순서. 마커 위치도 이 순서 기준 인덱스로 계산한다. */
+const POPULATION_GAUGE_LEVELS: Array<{ label: string; color: string }> = [
   { label: "여유", color: "bg-emerald-500" },
   { label: "보통", color: "bg-amber-400" },
   { label: "약간 붐빔", color: "bg-orange-500" },
   { label: "붐빔", color: "bg-red-500" },
+];
+
+/** 도로소통 게이지의 3단계 순서(ROAD_TRAFFIC_IDX 원문 그대로). */
+const TRAFFIC_GAUGE_LEVELS: Array<{ label: string; color: string }> = [
+  { label: "원활", color: "bg-emerald-500" },
+  { label: "서행", color: "bg-amber-400" },
+  { label: "정체", color: "bg-red-500" },
 ];
 
 function hourLabel(value: string) {
@@ -50,31 +57,39 @@ function dateLabel(value: string) {
   return match ? `${Number(match[2])}/${Number(match[3])}` : value;
 }
 
-/** 현재 인구 혼잡도가 여유~붐빔 4단계 중 어디인지 보여주는 가로 게이지. */
-export function CongestionLevelGauge({ level }: { level: string | null | undefined }) {
+/** 현재 단계가 주어진 순서형 척도(예: 여유~붐빔, 원활~정체) 중 어디인지 보여주는 가로 게이지. */
+export function CongestionLevelGauge({
+  level,
+  levels = POPULATION_GAUGE_LEVELS,
+  ariaLabelPrefix = "현재 인구 혼잡도",
+}: {
+  level: string | null | undefined;
+  levels?: Array<{ label: string; color: string }>;
+  ariaLabelPrefix?: string;
+}) {
   if (!level) return null;
-  const activeIndex = GAUGE_LEVELS.findIndex((entry) => entry.label === level);
+  const activeIndex = levels.findIndex((entry) => entry.label === level);
 
   return (
-    <div className="mt-2" aria-label={`현재 인구 혼잡도 ${level}`}>
+    <div className="mt-2" aria-label={`${ariaLabelPrefix} ${level}`}>
       {activeIndex >= 0 && (
         <div
           className="flex text-red-600 transition-transform dark:text-red-400"
           style={{
             transform: `translateX(calc(${activeIndex} * 100%))`,
-            width: `${100 / GAUGE_LEVELS.length}%`,
+            width: `${100 / levels.length}%`,
           }}
         >
           <span className="mx-auto text-xs" aria-hidden="true">▼</span>
         </div>
       )}
       <div className="flex overflow-hidden rounded-full">
-        {GAUGE_LEVELS.map((entry) => (
+        {levels.map((entry) => (
           <div key={entry.label} className={`h-2 flex-1 ${entry.color}`} />
         ))}
       </div>
       <div className="mt-1 flex text-[10px] text-gray-500 dark:text-gray-400">
-        {GAUGE_LEVELS.map((entry) => (
+        {levels.map((entry) => (
           <span
             key={entry.label}
             className={`flex-1 text-center ${
@@ -86,6 +101,32 @@ export function CongestionLevelGauge({ level }: { level: string | null | undefin
         ))}
       </div>
     </div>
+  );
+}
+
+/** 도로소통 단계·평균속도·안내문구를 카드에 시각적으로 보여준다. */
+export function RoadTrafficStatusSection({ card }: { card: InfoPlaceCardData }) {
+  if (card.question_type !== "realtime_traffic") return null;
+  const level = card.answer_fields["도로소통 단계"];
+  if (!level) return null;
+  const speed = card.answer_fields["평균 주행속도"];
+  const message = card.answer_fields["안내"];
+
+  return (
+    <section className="border-t border-gray-100 px-4 py-3 dark:border-gray-800">
+      <div className="flex items-baseline justify-between gap-2">
+        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">도로소통 현황</h3>
+        {speed && <span className="text-xs text-gray-500 dark:text-gray-400">평균 {speed}</span>}
+      </div>
+      <CongestionLevelGauge
+        level={level}
+        levels={TRAFFIC_GAUGE_LEVELS}
+        ariaLabelPrefix="현재 도로소통 단계"
+      />
+      {message && (
+        <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">{message}</p>
+      )}
+    </section>
   );
 }
 
