@@ -18,6 +18,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   kasi_holiday: "공휴일",
   // 도보와 대중교통이 같은 호스트라 provider가 하나로 묶인다(operation이 가른다).
   kakao_map: "카카오맵 길찾기",
+  naver_driving: "자동차 경로",
   naver_geocoding: "지오코딩",
   naver_local_search: "지역검색",
   supabase: "Supabase",

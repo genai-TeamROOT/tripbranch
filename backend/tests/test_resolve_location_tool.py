@@ -147,12 +147,12 @@ async def test_local_search_result_outside_service_area_is_unsupported() -> None
     local_search = MemoryLocalSearchProvider(
         (
             LocalSearchPlace(
-                name="망원역",
-                address="서울특별시 마포구 망원동",
-                road_address="서울특별시 마포구 월드컵로 137",
+                name="영등포역",
+                address="서울특별시 영등포구 영등포동",
+                road_address="서울특별시 영등포구 경인로 846",
                 category="지하철역",
-                latitude=37.556068,
-                longitude=126.9101053,
+                latitude=37.5157,
+                longitude=126.9070,
             ),
         )
     )
@@ -162,7 +162,7 @@ async def test_local_search_result_outside_service_area_is_unsupported() -> None
         provider,
         MemoryPlaceLocationRepository(()),
         local_search,
-    ).execute(ResolveLocationQuery("망원역"))
+    ).execute(ResolveLocationQuery("영등포역"))
 
     assert result.status is ResolveLocationStatus.UNSUPPORTED
     assert result.location is None

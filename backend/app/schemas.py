@@ -1038,6 +1038,11 @@ class AgentResponse(BaseModel):
     # 목적이 달라 InfoPlaceCard.answer_fields와 카드 상세를 분리해 보존한다.
     info_place_card: InfoPlaceCard | None = None
     message: str
+    # message 본문에 넣기엔 긴 부가 정보 — 지금은 서비스 지역 밖 안내에서 지원 구
+    # 목록을 여기 담는다. 화면은 이 필드가 있으면 본문 아래 작고 옅은 글씨로 보여준다
+    # (D-085). 본문에 목록을 그대로 이어붙이면 구가 늘 때마다 문장이 길어지는데,
+    # 그 성장을 본문과 분리된 각주 쪽에서만 받게 한다.
+    message_footnote: str | None = None
     # 개발자용 Audit에서 1차 Intent/2차 추출 호출의 실제 Gemini 모델·폴백 경로를
     # 확인한다. Fake LLM 등 실행 메타데이터를 제공하지 않는 구현체에서는 None이다.
     llm_execution: LLMExecutionMetadata | None = None

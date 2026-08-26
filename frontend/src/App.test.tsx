@@ -84,6 +84,7 @@ function streamResponse(
     state: unknown;
     recommendations: unknown;
     message: string;
+    message_footnote?: string;
   } = chatResponse(),
 ) {
   const events: Array<{ event: string; data: unknown }> = [
@@ -463,6 +464,32 @@ test("clarification turn hints a fuller phrasing in the composer placeholder", a
   expect(await screen.findByText(/어디 근처에서 찾아드릴까요/)).toBeInTheDocument();
   // 발화를 대신 만들어 보내지 않고, 입력창 안내 문구만 바꾼다.
   expect(screen.getByPlaceholderText("예: 경복궁 근처에서 찾아줘")).toBeInTheDocument();
+});
+
+test("unsupported region reply shows a short message with the district list as a footnote", async () => {
+  // 서비스 지역 밖 요청: 본문은 짧고, 지원 구 목록은 message_footnote로 따로 온다(D-085).
+  vi.stubEnv("VITE_SHOW_INTERPRETATION_DEBUG", "false");
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () =>
+      streamResponse({
+        llm_output: { ...interpretResponse, recommend: null },
+        state: { session_id: "sess_test", run_id: "run_test" },
+        recommendations: null,
+        message: "이 위치는 지금 서비스 지역이 아니에요. 다른 위치를 말씀해 주세요.",
+        message_footnote: "현재 서비스 지역: 서울특별시 종로구·중구·용산구·성동구",
+      }),
+    ),
+  );
+  await renderApp();
+
+  await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+
+  expect(
+    await screen.findByText("이 위치는 지금 서비스 지역이 아니에요. 다른 위치를 말씀해 주세요."),
+  ).toBeInTheDocument();
+  expect(screen.getByText("현재 서비스 지역: 서울특별시 종로구·중구·용산구·성동구")).toBeInTheDocument();
 });
 
 test("chat route redirects without stored state", async () => {

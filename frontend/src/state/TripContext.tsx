@@ -526,6 +526,7 @@ function tripReducer(state: TripState, action: TripAction): TripState {
           text: message,
           intent,
           status: action.payload.status,
+          footnote: action.payload.agentResponse.message_footnote ?? undefined,
         });
       }
       if (recommendations) {

@@ -34,6 +34,8 @@ Provider별 상태가 무엇인가. 그 요약은 호출부가 직접 고르며(
 mask를 거치고(`_client/span.py::_process_media_and_apply_mask`), `level`·
 `status_message`·`version`은 그대로 나간다. 그래서 `capture_content`가 꺼져도 남아야
 하는 운영 신호(예: 경로 실측/추정 비율)는 `status_message`에도 한 줄로 싣는다.
+**Score도 mask를 타지 않는다** — `create_score`에 마스킹 자체가 없다. 그래서
+`record_score()`는 수치만 받고 자유 텍스트를 안 받는다.
 
 실패는 전부 흡수한다 — 관측이 사용자 응답을 막으면 안 된다
 (`runtime/agent_runtime.py::_record_trace_safely()`가 쓰는 것과 같은 원칙). 다만
@@ -118,13 +120,19 @@ def validate_langfuse_config(target: Settings | None = None) -> None:
         ) from exc
 
 
-def get_tracer() -> Any | None:
-    """켜져 있으면 Langfuse 클라이언트를, 아니면 `None`을 돌려준다.
+def _shared_client() -> Any | None:
+    """관측과 프롬프트가 **같은 클라이언트를 쓴다.**
 
-    꺼져 있을 때는 `langfuse`를 import조차 하지 않는다.
+    두 개 만들면 안 된다 — 생성이 프로세스 전역 OpenTelemetry provider를 세팅하므로
+    두 번째 인스턴스가 첫 번째 위에 덮어쓴다. 그래서 스위치가 둘이어도 객체는 하나다.
+
+    `tracing_enabled`로 전송만 따로 끈다. 프롬프트만 켜고 관측은 끄는 조합
+    (배치 스크립트 등)에서 span이 새 나가지 않게 한다.
+
+    둘 다 꺼져 있으면 `langfuse`를 import조차 하지 않는다.
     """
     global _client, _client_failed
-    if not is_enabled():
+    if not (settings.langfuse_enabled or settings.langfuse_prompts_enabled):
         return None
     if _client is not None or _client_failed:
         return _client
@@ -138,11 +146,32 @@ def get_tracer() -> Any | None:
             # 로컬과 배포 기록이 한 프로젝트에 섞이면 비교가 무의미해진다.
             environment=settings.app_env,
             mask=_mask,
+            tracing_enabled=is_enabled(),
         )
     except Exception:
         _client_failed = True
         logger.warning("Langfuse 초기화 실패 — 관측만 꺼진다", exc_info=True)
     return _client
+
+
+def get_tracer() -> Any | None:
+    """관측 전송이 켜져 있으면 클라이언트를, 아니면 `None`을 돌려준다."""
+    if not is_enabled():
+        return None
+    return _shared_client()
+
+
+def get_prompt_client() -> Any | None:
+    """프롬프트 관리가 켜져 있으면 클라이언트를, 아니면 `None`을 돌려준다.
+
+    **원문 통로가 아니다.** 이 모듈이 Tool 인자 헬퍼를 안 두는 이유(모듈 docstring)와
+    충돌하지 않는다 — 프롬프트는 우리가 레포에 두고 관리하는 자산이지 사용자 입력이
+    아니다. 다만 클라이언트를 그대로 돌려주므로, 이걸 받아서 span을 만들거나 원문을
+    싣는 것은 이 모듈을 우회하는 것이다. 쓰는 곳은 `langfuse_prompts` 하나여야 한다.
+    """
+    if not settings.langfuse_prompts_enabled:
+        return None
+    return _shared_client()
 
 
 def shutdown() -> None:
@@ -301,6 +330,7 @@ def observe_generation(
     model: str | None = None,
     version: str | None = None,
     input: Any = None,
+    prompt: Any = None,
 ) -> Iterator[_Recorder | _NoopRecorder]:
     """LLM 호출 하나를 generation으로 남긴다.
 
@@ -313,6 +343,11 @@ def observe_generation(
     `version`은 **mask를 타지 않는다.** 프롬프트 버전이 여기 들어가는 이유가 그것이다 —
     원문 수집을 꺼도 "어느 버전이 이 지연·토큰을 냈나"는 남아야 배포 환경에서도
     버전 비교가 된다(모듈 docstring).
+
+    `prompt`는 Langfuse 프롬프트 객체다(`langfuse_prompts.prompt_object()`). 넘기면
+    서버가 이 호출을 그 프롬프트 버전에 묶어 **버전별 지연·비용·Score를 자동 집계**한다.
+    `version` 문자열로는 안 되는 것이고, 그래서 둘 다 싣는다 — 문자열은 프롬프트 관리가
+    꺼져 있어도 남고, 링크는 켰을 때 집계를 만든다.
     """
     client = get_tracer()
     if client is None:
@@ -321,11 +356,46 @@ def observe_generation(
 
     def factory() -> Any:
         return client.start_as_current_observation(
-            as_type="generation", name=name, model=model, version=version, input=input
+            as_type="generation",
+            name=name,
+            model=model,
+            version=version,
+            input=input,
+            prompt=prompt,
         )
 
     with _guard(factory) as generation:
         yield _NOOP if generation is None else _Recorder(generation)
+
+
+def record_score(name: str, value: float | bool) -> None:
+    """지금 turn의 trace에 수치 하나를 남긴다. 꺼져 있으면 아무 일도 안 한다.
+
+    **span의 `output`과 목적이 다르다.** `output`은 그 턴을 열어봤을 때 읽는 값이고,
+    Score는 **여러 턴에 걸쳐 집계·정렬·알림이 걸리는 값**이다. 같은 수치라도
+    `output`에만 있으면 "이 턴이 어땠나"까지고, Score로 올려야 "지난주 대비 떨어졌나"가
+    된다. 관측의 발견들(경로 실측 0%, 취향 상한)이 한 번 본 수치에 머문 이유가 이것이다.
+
+    **자유 텍스트를 받지 않는다.** Score는 mask 훅을 타지 않는다 — `create_score`에
+    마스킹이 아예 없다(SDK 4.14.5에서 확인). 그래서 `comment`를 열어두면
+    `capture_content=false`인 배포에서도 발화가 그대로 나갈 수 있다. 헬퍼가 없으면
+    실수로도 못 쓴다 — Tool 인자 계측 헬퍼를 안 둔 것과 같은 판단이다(모듈 docstring).
+
+    **호출 위치는 값이 있는 곳이다.** `score_current_trace()`가 현재 span에서 trace를
+    찾아가므로, 루트까지 값을 들고 올라올 필요가 없다. Tool·Provider 계층에서 바로
+    부르면 그 turn의 trace에 붙는다.
+    """
+    client = get_tracer()
+    if client is None:
+        return
+    try:
+        # bool은 float의 하위형이라 그대로 넘기면 BOOLEAN이 아니라 NUMERIC이 된다.
+        if isinstance(value, bool):
+            client.score_current_trace(name=name, value=int(value), data_type="BOOLEAN")
+        else:
+            client.score_current_trace(name=name, value=float(value), data_type="NUMERIC")
+    except Exception:
+        logger.warning("Langfuse Score 기록 실패(응답 흐름에는 영향 없음)", exc_info=True)
 
 
 # LangGraph 노드는 `observe_step()`으로 직접 감싼다(graph/__init__.py). Langfuse가
@@ -338,8 +408,10 @@ __all__ = [
     "REDACTED",
     "captures_content",
     "is_enabled",
+    "get_prompt_client",
     "observe_generation",
     "observe_step",
+    "record_score",
     "shutdown",
     "trace_attributes",
     "validate_langfuse_config",
