@@ -70,7 +70,7 @@ class _RecordingRepository:
 def _profile(content_id: str, photo_count: int = 4) -> PlaceMoodProfile:
     return PlaceMoodProfile(
         content_id=content_id,
-        axis_scores={"한산함": 0.12, "시대": -0.08},
+        axis_scores={"calm": 0.12, "traditional": -0.08},
         photo_count=photo_count,
     )
 
