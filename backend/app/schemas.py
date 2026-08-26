@@ -948,6 +948,9 @@ class InfoPlaceCard(BaseModel):
     population_current_level: str | None = None
     population_current_message: str | None = None
     population_observed_at: str | None = None
+    # 향후 예측 중 가장 붐빌 시간대 요약("N시 후 가장 붐빌 것으로 예상돼요").
+    # 과거 추이는 서울시 API가 제공하지 않아 다루지 않는다.
+    population_peak_forecast_summary: str | None = None
     population_forecasts: list[PopulationForecastBar] = Field(default_factory=list)
     concentration_forecasts: list[ConcentrationForecastBar] = Field(default_factory=list)
     # 서울시 도시데이터는 관광 상세 DB가 아닌 지역 단위 실시간 데이터다. 기본 카드에는
