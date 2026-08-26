@@ -614,3 +614,53 @@ def test_developer_tag_does_not_ride_on_app_env(monkeypatch: pytest.MonkeyPatch)
     tags = langfuse_tracing._tags_with_developer([f"env:{settings.app_env}"])
 
     assert tags == ["env:local", "developer:mintee"]
+
+
+# --- 10. 목록 이름은 발화로 쓰되 스위치를 탄다 ----------------------------------
+
+
+def test_trace_name_stays_the_span_name_when_content_capture_is_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**이 테스트가 실패하면 원문 수집 스위치에 구멍을 낸 것이다.**
+
+    trace 이름은 mask를 타지 않는다(`level`·`status_message`와 같은 부류). 그래서
+    발화를 이름으로 쓰면 `capture_content=false`인 배포에서도 사용자 말이 그대로
+    나간다. `None`을 돌려주면 SDK가 루트 span 이름(`agent_turn`)을 쓴다.
+    """
+    _enable(monkeypatch, capture_content=False)
+
+    assert langfuse_tracing._trace_name("경복궁 근처 카페 추천해줘") is None
+
+
+def test_trace_name_is_the_utterance_when_content_capture_is_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable(monkeypatch, capture_content=True)
+
+    assert langfuse_tracing._trace_name("경복궁 근처 카페 추천해줘") == "경복궁 근처 카페 추천해줘"
+
+
+def test_trace_name_collapses_whitespace(monkeypatch: pytest.MonkeyPatch) -> None:
+    """목록은 한 줄로 그려진다 — 줄바꿈이 들어가면 뒤가 잘리거나 줄이 깨진다."""
+    _enable(monkeypatch, capture_content=True)
+
+    assert langfuse_tracing._trace_name("경복궁\n근처   카페") == "경복궁 근처 카페"
+
+
+def test_trace_name_is_truncated(monkeypatch: pytest.MonkeyPatch) -> None:
+    _enable(monkeypatch, capture_content=True)
+
+    name = langfuse_tracing._trace_name("가" * 200)
+
+    assert len(name or "") == langfuse_tracing._TRACE_NAME_LIMIT
+    assert (name or "").endswith("…")
+
+
+def test_trace_name_is_none_for_empty_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    """빈 이름을 넘기면 목록에서 그 줄이 무엇인지 알 수 없다 — span 이름으로 되돌린다."""
+    _enable(monkeypatch, capture_content=True)
+
+    assert langfuse_tracing._trace_name(None) is None
+    assert langfuse_tracing._trace_name("") is None
+    assert langfuse_tracing._trace_name("   ") is None

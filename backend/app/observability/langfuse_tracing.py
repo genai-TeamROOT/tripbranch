@@ -47,7 +47,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, Final
 
 from app.config import Settings, settings
 
@@ -256,6 +256,32 @@ class _NoopRecorder:
 _NOOP: _NoopRecorder = _NoopRecorder()
 
 
+# 목록에서 한 줄로 읽히는 길이. 길게 잡으면 화면에서 잘려 오히려 안 읽힌다.
+_TRACE_NAME_LIMIT: Final = 60
+
+
+def _trace_name(user_input: str | None) -> str | None:
+    """목록에 보일 trace 이름. 발화를 쓰되 **원문 수집 스위치를 탄다.**
+
+    `None`을 돌려주면 SDK가 루트 span 이름(`agent_turn`)을 쓴다 — 지금까지의 모양이다.
+
+    **`capture_content`가 꺼져 있으면 발화를 쓰지 않는다.** trace 이름은 mask를 타지
+    않아서(`level`·`status_message`와 같은 부류), 여기에 발화를 실으면 원문 수집을 꺼도
+    사용자 말이 그대로 나간다. 스위치를 우회하는 통로를 만들지 않는다.
+
+    줄바꿈·연속 공백을 하나로 접는다. 목록은 한 줄로 그려지므로 접지 않으면 뒤가 잘려
+    보이거나 줄이 깨진다.
+    """
+    if not user_input or not captures_content():
+        return None
+    collapsed = " ".join(user_input.split())
+    if not collapsed:
+        return None
+    if len(collapsed) <= _TRACE_NAME_LIMIT:
+        return collapsed
+    return collapsed[: _TRACE_NAME_LIMIT - 1] + "…"
+
+
 def _tags_with_developer(tags: Sequence[str]) -> list[str]:
     """호출부가 준 태그에 `developer:<핸들>`을 더한다.
 
@@ -283,8 +309,12 @@ def trace_attributes(
     version: str | None = None,
     tags: Sequence[str] = (),
     metadata: Mapping[str, Any] | None = None,
+    user_input: str | None = None,
 ) -> Iterator[None]:
     """이 블록 안에서 생기는 모든 관측에 trace 단위 속성을 붙인다.
+
+    `user_input`은 **목록에 보일 이름을 만드는 데만** 쓴다(`_trace_name`). 원문 수집이
+    꺼져 있으면 쓰지 않으므로, 호출부는 스위치를 확인하지 않고 그냥 넘기면 된다.
 
     `version`·`tags`는 mask를 타지 않는다 — 프롬프트·Scoring 버전처럼 `capture_content`
     가 꺼져 있어도 남아야 하는 값은 `metadata`가 아니라 여기에 싣는다(모듈 docstring).
@@ -302,6 +332,8 @@ def trace_attributes(
             version=version,
             tags=_tags_with_developer(tags) or None,
             metadata=dict(metadata) if metadata else None,
+            # None이면 SDK가 루트 span 이름(`agent_turn`)을 쓴다.
+            trace_name=_trace_name(user_input),
         )
 
     with _guard(factory):

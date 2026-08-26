@@ -1447,6 +1447,9 @@ async def run_agent_flow(
             session_id=request.session_id,
             user_id=_observed_user_id(principal),
             tags=[f"scoring:{SCORING_VERSION}", f"env:{settings.app_env}"],
+            # 목록에서 턴을 알아보게 이름을 발화로 쓴다. 원문 수집이 꺼져 있으면
+            # 관측 모듈이 쓰지 않으므로 여기서 스위치를 보지 않는다.
+            user_input=request.user_input,
         ),
         observe_step("agent_turn") as turn,
     ):
