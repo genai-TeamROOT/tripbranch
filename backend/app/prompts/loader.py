@@ -14,6 +14,8 @@ from typing import Final
 
 PROMPT_ROOT: Final = Path(__file__).resolve().parent
 PROMPT_VARIANT_ENV: Final = "TRIPBRANCH_PROMPT_VARIANT"
+# 라이브러리 안에 있지만 모델에 넣는 지침이 아닌 Markdown. 동기화 대상이 아니다.
+_NON_ASSET_NAMES: Final = frozenset({"HISTORY.md", "README.md", "OWNERS.md"})
 _CURRENT_VARIANT: Final = "current"
 
 
@@ -90,6 +92,21 @@ def _variant_overrides(variant: str) -> dict[str, str]:
             )
         normalized[source_path] = replacement_path
     return normalized
+
+
+def asset_paths() -> list[str]:
+    """활성 프롬프트 Markdown의 상대경로 목록. `archive/`와 문서 파일은 뺀다.
+
+    **한 곳에서만 센다.** 동기화 스크립트와 스파이크가 각자 glob을 돌리면 한쪽만
+    제외 규칙이 바뀌었을 때 "레포에는 있는데 올라가지 않는" 자산이 조용히 생긴다.
+    """
+
+    return sorted(
+        path.relative_to(PROMPT_ROOT).as_posix()
+        for path in PROMPT_ROOT.rglob("*.md")
+        if "archive" not in path.relative_to(PROMPT_ROOT).parts
+        and path.name not in _NON_ASSET_NAMES
+    )
 
 
 def load_text(relative_path: str) -> str:
