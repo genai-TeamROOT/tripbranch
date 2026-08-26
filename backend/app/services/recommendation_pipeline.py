@@ -33,6 +33,7 @@ from app.domain.scoring import (
     ExclusionReason,
     PrepareResult,
     RankedCandidate,
+    co_visited_score,
     concentration_score,
     prepare_candidates,
     redistribute_weights,
@@ -579,6 +580,179 @@ async def rerank_with_concentration(
     )
 
 
+async def rerank_with_co_visited(
+    response: RecommendationResponse,
+    co_visited_pairs: Sequence[tuple[str, str]],
+    weather_condition: WeatherCondition | None,
+    *,
+    weather_reason: WeatherReason = None,
+    origin_name: str | None = None,
+    timer: Timer = perf_counter,
+) -> RecommendationResponse:
+    """D-092: RECOMMEND의 2차 Scoring 진입점. place_associations(B-owned, D-088)
+    기반 "함께 방문된 이력"으로 `response`(1차, 또는 이미 혼잡도 2차를 탄 결과)를
+    재순위한다. `rerank_with_concentration()`(D-040)과 같은 패턴이다 — 새
+    Candidate를 다시 만들지 않고 `RecommendationItem.feature_scores`를 그대로
+    재사용한다.
+
+    `co_visited_pairs`는 A(agent_runtime.py)가 이번 응답의 candidate place_id
+    집합으로 조회해 넘긴 (place_id, place_id) 쌍이다. B의 place_associations
+    스키마(`CoVisitedHint`)를 여기서 직접 받지 않고 순수 튜플만 받는다 — D가
+    B의 스키마를 몰라도 되게 하기 위해서다(B-01 "판단하지 않는 기억 장치"
+    경계 원칙과 같은 이유를 D→B 방향에도 적용한다). 두 값 모두 이번 응답 안의
+    후보라는 보장은 호출부(`app.schedule.associations.fetch_co_visited_hints`의
+    dual `in.()` 필터)가 이미 하지만, 방어적으로 여기서도 한 번 더 걸러낸다 —
+    이 함수가 항상 그 호출부만 거쳐 오리라는 보장은 계약이 아니라 관례다.
+
+    `weather_condition`/`weather_reason`/`origin_name`은 1차 호출과 동일한
+    입력으로 얻은 값이어야 한다 — 근거 문장을 다시 조립하는 데만 쓰고, 이
+    함수가 날씨를 다시 판정하지는 않는다(`rerank_with_concentration()`과 동일).
+
+    쌍이 하나도 없는 후보는 co_visited feature_scores가 0.0이다(결측이 아니다,
+    `scoring.co_visited_score()` 참고) — `weights_for_feature_scores()`가 모든
+    후보에 co_visited 축을 균일하게 반영해, 이 재순위를 탄 요청은 기존 3~5축
+    가중치가 그만큼 양보한다(`build_weights()`).
+    """
+    started_at = timer()
+
+    items = [*response.recommendations, *response.unverified_recommendations]
+    unverified_place_ids = frozenset(item.place_id for item in response.unverified_recommendations)
+    valid_ids = frozenset(item.place_id for item in items)
+    name_by_place_id = {item.place_id: item.name for item in items}
+
+    partners_by_place_id: dict[str, list[str]] = {place_id: [] for place_id in valid_ids}
+    for left, right in co_visited_pairs:
+        if left == right or left not in valid_ids or right not in valid_ids:
+            continue
+        partners_by_place_id[left].append(right)
+        partners_by_place_id[right].append(left)
+
+    hit_counts = {place_id: len(partners) for place_id, partners in partners_by_place_id.items()}
+    max_hit_count = max(hit_counts.values(), default=0)
+
+    order_key: list[tuple[float, float, str]] = []
+    rescoring_context: dict[
+        str,
+        tuple[RecommendationItem, dict[str, float | None], dict[str, float], tuple[str, ...]],
+    ] = {}
+
+    for item in items:
+        partner_ids = partners_by_place_id.get(item.place_id, [])
+        hit_count = hit_counts.get(item.place_id, 0)
+
+        feature_scores: dict[str, float | None] = dict(item.feature_scores)
+        feature_scores["co_visited"] = co_visited_score(hit_count, max_hit_count)
+
+        # 2차 가중치는 상수에서 고르지 않고 1차(혹은 혼잡도 2차)가 실제로 채점한
+        # 키로 조립한다 — rerank_with_concentration()과 같은 이유(2026-08-20 사고
+        # 재발 방지).
+        base_weights = weights_for_feature_scores(feature_scores)
+        missing = [feature for feature in base_weights if feature_scores.get(feature) is None]
+        weights_used = (
+            redistribute_weights(base_weights, missing) if missing else dict(base_weights)
+        )
+        score = round(
+            sum(
+                feature_scores[feature] * weight  # type: ignore[operator]
+                for feature, weight in weights_used.items()
+            ),
+            4,
+        )
+
+        # 근거 문장에 쓸 이름 — 원래 등장 순서로 중복 제거, 최대 2개만.
+        seen: set[str] = set()
+        partner_names: list[str] = []
+        for partner_id in partner_ids:
+            name = name_by_place_id.get(partner_id)
+            if name is None or name in seen:
+                continue
+            seen.add(name)
+            partner_names.append(name)
+            if len(partner_names) >= 2:
+                break
+
+        order_key.append((score, item.distance_km, item.place_id))
+        rescoring_context[item.place_id] = (
+            item,
+            feature_scores,
+            weights_used,
+            tuple(partner_names),
+        )
+
+    order_key.sort(key=lambda entry: (-entry[0], entry[1], entry[2]))
+
+    verified: list[RecommendationItem] = []
+    unverified: list[RecommendationItem] = []
+
+    for rank, (score, _distance_km, place_id) in enumerate(order_key, start=1):
+        item, feature_scores, weights_used, partner_names = rescoring_context[place_id]
+        is_unverified = place_id in unverified_place_ids
+        candidate = RankedCandidate(
+            place_id=item.place_id,
+            name=item.name,
+            category=item.category,
+            rank=rank,
+            score=score,
+            feature_scores=feature_scores,
+            weights_used=weights_used,
+            is_unverified=is_unverified,
+            warnings=tuple(w for w in item.warnings if w != _NO_NOTABLE_EXPLANATION_WARNING),
+            distance_km=item.distance_km,
+            remaining_minutes=item.remaining_minutes,
+            weather_condition=weather_condition,
+            weather_reason=weather_reason,
+            environment_type=item.environment_type,
+            travel_distance_m=item.travel_distance_m,
+            travel_duration_seconds=item.travel_duration_seconds,
+            travel_mode=item.travel_mode,
+            taste_evidence_text=(
+                item.taste_evidence[0].text if item.taste_evidence else None
+            ),
+            co_visited_place_names=partner_names,
+        )
+        evidence = build_evidence(candidate, origin_name=origin_name)
+        explanations = build_explanations(evidence)
+        warnings = list(candidate.warnings)
+        if not explanations:
+            warnings.append(_NO_NOTABLE_EXPLANATION_WARNING)
+
+        new_item = RecommendationItem(
+            place_id=item.place_id,
+            name=item.name,
+            category=item.category,
+            distance_km=item.distance_km,
+            remaining_minutes=item.remaining_minutes,
+            operating_hours_display=item.operating_hours_display,
+            travel_distance_m=item.travel_distance_m,
+            travel_duration_seconds=item.travel_duration_seconds,
+            travel_mode=item.travel_mode,
+            environment_type=item.environment_type,
+            recommendation_reason=_recommendation_reason(candidate),
+            explanations=list(explanations),
+            warnings=warnings,
+            score=score,
+            feature_scores={
+                contribution.feature: contribution.score for contribution in evidence.contributions
+            },
+            weights_used={
+                contribution.feature: contribution.weight
+                for contribution in evidence.contributions
+                if contribution.weight is not None
+            },
+            taste_evidence=item.taste_evidence,
+        )
+        (unverified if is_unverified else verified).append(new_item)
+
+    return RecommendationResponse(
+        recommendations=verified,
+        unverified_recommendations=unverified,
+        elapsed_ms=round((timer() - started_at) * 1000, 2),
+        excluded_all_closed=response.excluded_all_closed,
+        excluded_closed_place_ids=response.excluded_closed_place_ids,
+        travel_origin_toggle=response.travel_origin_toggle,
+    )
+
+
 def resolve_weather_condition(
     context: RecommendationContext,
     conditions: UserConditions | None,
@@ -878,6 +1052,7 @@ _FEATURE_LABELS: Mapping[str, str] = {
     "distance": "거리",
     "taste": "취향",
     "concentration": "혼잡도",
+    "co_visited": "동선",
 }
 
 
