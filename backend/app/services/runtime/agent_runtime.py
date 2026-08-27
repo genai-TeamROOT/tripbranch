@@ -19,7 +19,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import timedelta
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from app.agent_context.schemas import PlaceCandidate, RecommendationContext
 from app.auth.principal import Principal
@@ -37,6 +37,7 @@ from app.errors import AppError
 from app.geo import haversine_km
 from app.observability.api_usage import create_external_client
 from app.observability.langfuse_tracing import (
+    current_trace_id,
     observe_step,
     record_score,
     trace_attributes,
@@ -1494,9 +1495,15 @@ async def run_agent_flow(
             session_id=request.session_id,
             user_id=_observed_user_id(principal),
             tags=[f"scoring:{SCORING_VERSION}", f"env:{settings.app_env}"],
+            # 목록에서 턴을 알아보게 이름을 발화로 쓴다. 원문 수집이 꺼져 있으면
+            # 관측 모듈이 쓰지 않으므로 여기서 스위치를 보지 않는다.
+            user_input=request.user_input,
         ),
         observe_step("agent_turn") as turn,
     ):
+        # **본문 전에 기록한다.** 뒤에 적으면 터진 턴에는 입력이 안 남아서, 화면에서
+        # "무슨 발화가 이 예외를 냈나"를 서버 로그로 따로 봐야 한다.
+        turn.record(input=_turn_input(request))
         try:
             response = await _run_agent_flow(
                 request,
@@ -1521,6 +1528,11 @@ async def run_agent_flow(
             # 것이 그 모양이다. 예외는 그대로 올린다.
             record_score("turn_success", False)
             raise
+        # **trace id를 응답에 실어 보낸다.** 평가가 골드셋 케이스와 trace를 잇는
+        # 통로다. 위 docstring대로 첫 턴에는 session_id가 안 붙어서, session_id
+        # 역조회로는 1턴짜리 케이스(dev 35건 중 20건)의 trace를 못 찾는다.
+        # 요약(아래 try)과 분리해 둔다 — 요약이 실패해도 연결은 살아야 한다.
+        response.langfuse_trace_id = current_trace_id()
         try:
             summary = summarize_turn(response)
             turn.record(
@@ -1534,6 +1546,35 @@ async def run_agent_flow(
         except Exception:
             logger.warning("턴 관측 요약 실패(응답 흐름에는 영향 없음)", exc_info=True)
         return response
+
+
+def _turn_input(request: AgentRequest) -> dict[str, Any]:
+    """루트 span에 실을 이 턴의 입력.
+
+    **`input`은 mask를 탄다**(`observability/langfuse_tracing` 모듈 docstring) —
+    `capture_content`가 꺼지면 SDK가 통째로 치환한다. 그래서 발화를 여기 실어도
+    스위치를 우회하지 않는다. trace 이름과 다른 점이다(그쪽은 mask를 안 타서
+    호출부가 직접 판단해야 한다).
+
+    **좌표는 싣지 않는다.** `device_location`은 팀원이 테스트하는 자리의 실좌표라
+    있고 없음만 남긴다(2026-08-26 결정, `graph/__init__.py::_location`과 같은 규칙).
+
+    `clarification_choice`·`travel_origin_override`는 **값이 있을 때만** 넣는다.
+    이 둘이 채워진 턴은 LLM 분류를 건너뛰므로, 없는데 `classify_intent` span이
+    안 보이면 그게 이상한 것이고 있으면 정상이다 — 그 구분이 여기서 된다.
+    """
+    payload: dict[str, Any] = {
+        "user_input": request.user_input,
+        "language": request.language,
+        "has_device_location": request.device_location is not None,
+    }
+    if request.conversation_place_name:
+        payload["conversation_place_name"] = request.conversation_place_name
+    if request.clarification_choice:
+        payload["clarification_choice"] = request.clarification_choice
+    if request.travel_origin_override is not None:
+        payload["travel_origin_override"] = request.travel_origin_override.value
+    return payload
 
 
 def _observed_user_id(principal: Principal | None) -> str | None:

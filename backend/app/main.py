@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -23,10 +24,11 @@ from app.auth.jwks import issuer as auth_issuer
 from app.config import settings
 from app.errors import AppError
 from app.observability.langfuse_tracing import (
-    shutdown as shutdown_langfuse,
+    incoming_trace_context,
+    validate_langfuse_config,
 )
 from app.observability.langfuse_tracing import (
-    validate_langfuse_config,
+    shutdown as shutdown_langfuse,
 )
 from app.providers.factory import validate_provider_config
 from app.providers.place_evidence_encoder import get_shared_encoder
@@ -176,6 +178,16 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def join_incoming_trace(request: Request, call_next: Any) -> Any:
+        """평가 스크립트가 연 trace에 이 요청의 span을 이어 붙인다.
+
+        로컬에서 `traceparent` 헤더가 올 때만 동작한다(`incoming_trace_context`).
+        평소 요청에는 아무 영향이 없다 — 헤더가 없으면 그대로 통과한다.
+        """
+        with incoming_trace_context(request.headers):
+            return await call_next(request)
 
     @app.exception_handler(AppError)
     async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:

@@ -241,6 +241,14 @@ backend/.venv*/
 .claude/
 .codex/
 .cursor/
+# `npx skills add`가 설치하는 에이전트 스킬과 그 잠금 파일. 위와 같은 이유로 개인
+# 것으로 둔다 — 쓰는 도구가 사람마다 다르고, 각자 최신으로 받는 편이 낫다.
+.agents/
+skills-lock.json
+# MCP 서버 설정. `claude mcp add --scope project`가 만드는 파일인데, HTTP 서버는
+# 인증 헤더를 여기 평문으로 적는다 — 커밋되면 키가 그대로 나간다. 프로젝트 범위가
+# 필요해질 때까지는 무시 대상으로 둬서 실수 여지를 없앤다(`--scope local`이 기본).
+.mcp.json
 
 # 개인 작업 지시 메모 (task 파일 모음, 커밋 대상 아님)
 package_D/

@@ -70,6 +70,9 @@ class CaseResult:
     condition_matches: dict[str, bool]
     client_elapsed_ms: float
     server_elapsed_ms: float | None
+    # 턴마다 하나씩, 순서대로. 관측이 꺼져 있으면 빈 튜플이다.
+    # 케이스 하나가 trace 여러 개에 대응하므로 단수가 아니다.
+    langfuse_trace_ids: tuple[str, ...] = ()
     error: str = ""
 
     @property
@@ -175,6 +178,17 @@ def _session_id(body: dict[str, Any]) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _langfuse_trace_id(body: dict[str, Any]) -> str | None:
+    """이 턴을 기록한 Langfuse trace의 id. 관측이 꺼져 있으면 `None`이다.
+
+    **session_id로 대신하지 않는다.** 세션은 LLM 단계 뒤에 발급돼서 첫 턴 trace에는
+    session_id가 안 붙는다. 골드셋은 dev 35건 중 20건이 1턴짜리라, session_id
+    역조회로는 그 20건이 통째로 빠진다.
+    """
+    value = body.get("langfuse_trace_id")
+    return value if isinstance(value, str) and value else None
+
+
 def _server_elapsed_ms(body: dict[str, Any]) -> float | None:
     recommendations = body.get("recommendations")
     if isinstance(recommendations, dict) and isinstance(
@@ -212,6 +226,7 @@ def evaluate_case(client: httpx.Client, case: EvaluationCase, base_url: str) -> 
     session_id: str | None = None
     response: dict[str, Any] | None = None
     actual_intents: list[str] = []
+    trace_ids: list[str] = []
     try:
         for turn_index, user_input in enumerate(case.turns):
             payload: dict[str, Any] = {"user_input": user_input, "session_id": session_id}
@@ -220,6 +235,9 @@ def evaluate_case(client: httpx.Client, case: EvaluationCase, base_url: str) -> 
                 payload["device_location"] = case.device_location
             response, _ = _post(client, base_url, payload)
             actual_intents.append(_intent(response))
+            turn_trace_id = _langfuse_trace_id(response)
+            if turn_trace_id is not None:
+                trace_ids.append(turn_trace_id)
             session_id = _session_id(response)
             if session_id is None:
                 raise ValueError(f"{turn_index + 1}턴 응답에 session_id가 없습니다.")
@@ -241,6 +259,7 @@ def evaluate_case(client: httpx.Client, case: EvaluationCase, base_url: str) -> 
             condition_matches=condition_matches,
             client_elapsed_ms=(time.perf_counter() - started) * 1000,
             server_elapsed_ms=_server_elapsed_ms(response),
+            langfuse_trace_ids=tuple(trace_ids),
         )
     except (httpx.HTTPError, RuntimeError, ValueError) as exc:
         return CaseResult(
@@ -251,6 +270,9 @@ def evaluate_case(client: httpx.Client, case: EvaluationCase, base_url: str) -> 
             condition_matches={field: False for field in case.expected_final_conditions},
             client_elapsed_ms=(time.perf_counter() - started) * 1000,
             server_elapsed_ms=_server_elapsed_ms(response) if response else None,
+            # 실패한 케이스도 지금까지 열린 trace는 남는다 — 어디서 터졌는지
+            # 보려면 오히려 이쪽이 필요하다.
+            langfuse_trace_ids=tuple(trace_ids),
             error=str(exc),
         )
 
@@ -411,6 +433,7 @@ def write_run(
             "case_pass",
             "client_elapsed_ms",
             "server_elapsed_ms",
+            "langfuse_trace_ids",
             "note",
             "error",
         ],
@@ -428,6 +451,7 @@ def write_run(
                 result.passed,
                 round(result.client_elapsed_ms, 2),
                 result.server_elapsed_ms,
+                json.dumps(result.langfuse_trace_ids, ensure_ascii=False),
                 result.case.note,
                 result.error,
             ]

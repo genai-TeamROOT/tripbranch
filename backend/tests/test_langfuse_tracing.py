@@ -121,11 +121,22 @@ def test_public_surface_has_no_tool_argument_helper() -> None:
 
     사용자 좌표(장소 검색·경로 조회)와 외부 API 자격증명이 그 경로로만 흐른다.
     헬퍼가 없으면 실수로도 못 쓴다. 이 목록을 늘리려면 §6.3을 먼저 읽어야 한다.
+
+    `current_trace_id`는 그 규칙의 예외가 아니라 **방향이 반대**라서 들어와 있다.
+    나머지 헬퍼는 우리 값을 Langfuse로 내보내지만 이건 Langfuse가 만든 식별자를
+    우리 응답으로 되받는다 — 사용자 입력에서 유도되지 않는 hex 문자열 하나다.
+
+    `incoming_trace_context`·`honors_incoming_trace_context`도 내보내는 헬퍼가
+    아니다. 들어온 `traceparent` 헤더를 부모 문맥으로 받을지 정하는 자리라, 값이
+    나가는 통로가 아니라 **들어오는 문맥을 받는 통로**다.
     """
     assert set(langfuse_tracing.__all__) == {
         "REDACTED",
         "captures_content",
+        "current_trace_id",
         "get_prompt_client",
+        "honors_incoming_trace_context",
+        "incoming_trace_context",
         "is_enabled",
         "observe_generation",
         "observe_step",
@@ -505,3 +516,243 @@ def test_every_langfuse_setting_is_documented_in_env_example() -> None:
     )
 
     assert not undocumented, f".env.example에 없는 설정: {', '.join(undocumented)}"
+
+
+# --- 8. trace id를 응답으로 되받는다 -------------------------------------------
+
+
+class _TraceIdClient:
+    """`get_current_trace_id()`만 흉내 내는 클라이언트."""
+
+    def __init__(self, *, value: str | None = "abc123", fail: bool = False) -> None:
+        self._value = value
+        self._fail = fail
+
+    def get_current_trace_id(self) -> str | None:
+        if self._fail:
+            raise RuntimeError("span 밖")
+        return self._value
+
+
+def test_trace_id_is_none_when_observability_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """꺼져 있으면 클라이언트를 만들지도 않는다 — 다른 헬퍼와 같은 성질."""
+    monkeypatch.setattr(settings, "langfuse_enabled", False)
+
+    assert langfuse_tracing.current_trace_id() is None
+    assert langfuse_tracing._client is None
+
+
+def test_trace_id_comes_back_from_the_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    _enable(monkeypatch)
+    _install(monkeypatch, _TraceIdClient(value="26108fa6566f330f651a8483054f99c4"))
+
+    assert langfuse_tracing.current_trace_id() == "26108fa6566f330f651a8483054f99c4"
+
+
+def test_trace_id_failure_never_reaches_the_caller(monkeypatch: pytest.MonkeyPatch) -> None:
+    """관측 실패가 사용자 응답을 막지 않는다 — 이 스위트가 지키는 성질 2.
+
+    span 밖에서 부르면 SDK가 던질 수 있는데, 그게 턴을 죽이면 안 된다.
+    """
+    _enable(monkeypatch)
+    _install(monkeypatch, _TraceIdClient(fail=True))
+
+    assert langfuse_tracing.current_trace_id() is None
+
+
+def test_trace_id_field_is_not_the_state_trace_id() -> None:
+    """이름을 `trace_id`로 줄이면 B의 `state.trace_id`와 섞인다.
+
+    그쪽은 run 내부 한 단계(`app/state/trace.py`)를 가리키는 다른 식별자다.
+    두 값이 한 응답에 같이 실리므로, 이름이 겹치면 화면에서 구분이 안 된다.
+    """
+    from app.schemas import AgentResponse
+
+    assert "langfuse_trace_id" in AgentResponse.model_fields
+    assert "trace_id" not in AgentResponse.model_fields
+    assert AgentResponse.model_fields["langfuse_trace_id"].default is None
+
+
+# --- 9. 팀원끼리 자기 trace를 가려낸다 ------------------------------------------
+
+
+def test_no_developer_tag_when_the_setting_is_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """안 적은 사람의 trace가 `developer:` 로 오염되면 필터가 제 역할을 못 한다."""
+    monkeypatch.setattr(settings, "langfuse_developer", "")
+
+    assert langfuse_tracing._tags_with_developer(["env:local"]) == ["env:local"]
+
+
+def test_developer_tag_is_appended_to_the_callers_tags(monkeypatch: pytest.MonkeyPatch) -> None:
+    """호출부 태그를 지우지 않고 뒤에 더한다 — scoring·env 필터가 살아 있어야 한다."""
+    monkeypatch.setattr(settings, "langfuse_developer", "rayquaza410")
+
+    assert langfuse_tracing._tags_with_developer(["scoring:1.6.0", "env:local"]) == [
+        "scoring:1.6.0",
+        "env:local",
+        "developer:rayquaza410",
+    ]
+
+
+def test_developer_setting_is_trimmed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`.env`에 딸려 들어온 공백이 태그 값이 되면 화면에서 같은 사람이 둘로 갈린다."""
+    monkeypatch.setattr(settings, "langfuse_developer", "  rayquaza410  ")
+
+    assert langfuse_tracing._tags_with_developer([]) == ["developer:rayquaza410"]
+
+    monkeypatch.setattr(settings, "langfuse_developer", "   ")
+    assert langfuse_tracing._tags_with_developer([]) == []
+
+
+def test_developer_tag_does_not_ride_on_app_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`APP_ENV`를 사람마다 다르게 두는 방법을 막는다.
+
+    그건 관측 라벨이 아니라 **기능 게이트**다 — `main.py`가 정확히 `"local"`과
+    비교해 개발자 Ops 라우터(`/api/dev/*`)를 등록할지 정한다. 관측에서 이름을
+    구분하려고 그 값을 바꾸면 개발자 도구가 통째로 사라진다(2026-08-26 확인).
+
+    그래서 이 테스트는 `app_env`가 사람 이름이 아니어도 `developer:` 태그가
+    독립적으로 붙는지를 잠근다.
+    """
+    monkeypatch.setattr(settings, "app_env", "local")
+    monkeypatch.setattr(settings, "langfuse_developer", "mintee")
+
+    tags = langfuse_tracing._tags_with_developer([f"env:{settings.app_env}"])
+
+    assert tags == ["env:local", "developer:mintee"]
+
+
+# --- 10. 목록 이름은 발화로 쓰되 스위치를 탄다 ----------------------------------
+
+
+def test_trace_name_stays_the_span_name_when_content_capture_is_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**이 테스트가 실패하면 원문 수집 스위치에 구멍을 낸 것이다.**
+
+    trace 이름은 mask를 타지 않는다(`level`·`status_message`와 같은 부류). 그래서
+    발화를 이름으로 쓰면 `capture_content=false`인 배포에서도 사용자 말이 그대로
+    나간다. `None`을 돌려주면 SDK가 루트 span 이름(`agent_turn`)을 쓴다.
+    """
+    _enable(monkeypatch, capture_content=False)
+
+    assert langfuse_tracing._trace_name("경복궁 근처 카페 추천해줘") is None
+
+
+def test_trace_name_is_the_utterance_when_content_capture_is_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable(monkeypatch, capture_content=True)
+
+    assert langfuse_tracing._trace_name("경복궁 근처 카페 추천해줘") == "경복궁 근처 카페 추천해줘"
+
+
+def test_trace_name_collapses_whitespace(monkeypatch: pytest.MonkeyPatch) -> None:
+    """목록은 한 줄로 그려진다 — 줄바꿈이 들어가면 뒤가 잘리거나 줄이 깨진다."""
+    _enable(monkeypatch, capture_content=True)
+
+    assert langfuse_tracing._trace_name("경복궁\n근처   카페") == "경복궁 근처 카페"
+
+
+def test_trace_name_is_truncated(monkeypatch: pytest.MonkeyPatch) -> None:
+    _enable(monkeypatch, capture_content=True)
+
+    name = langfuse_tracing._trace_name("가" * 200)
+
+    assert len(name or "") == langfuse_tracing._TRACE_NAME_LIMIT
+    assert (name or "").endswith("…")
+
+
+def test_trace_name_is_none_for_empty_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    """빈 이름을 넘기면 목록에서 그 줄이 무엇인지 알 수 없다 — span 이름으로 되돌린다."""
+    _enable(monkeypatch, capture_content=True)
+
+    assert langfuse_tracing._trace_name(None) is None
+    assert langfuse_tracing._trace_name("") is None
+    assert langfuse_tracing._trace_name("   ") is None
+
+
+# --- 11. 들어온 traceparent를 부모로 받는다 --------------------------------------
+
+
+def _traceparent_headers() -> tuple[dict[str, str], str]:
+    """클라이언트가 span 하나를 열고 만든 헤더와 그 trace id."""
+    from opentelemetry import trace as otel_trace
+    from opentelemetry.propagate import inject
+    from opentelemetry.sdk.trace import TracerProvider
+
+    if not isinstance(otel_trace.get_tracer_provider(), TracerProvider):
+        otel_trace.set_tracer_provider(TracerProvider())
+    tracer = otel_trace.get_tracer("test")
+    with tracer.start_as_current_span("client-item"):
+        trace_id = format(otel_trace.get_current_span().get_span_context().trace_id, "032x")
+        headers: dict[str, str] = {}
+        inject(headers)
+    return headers, trace_id
+
+
+def _trace_id_inside(headers: dict[str, str]) -> str:
+    from opentelemetry import trace as otel_trace
+
+    with langfuse_tracing.incoming_trace_context(headers):
+        tracer = otel_trace.get_tracer("test")
+        with tracer.start_as_current_span("agent_turn") as span:
+            return format(span.get_span_context().trace_id, "032x")
+
+
+def test_incoming_traceparent_joins_the_callers_trace(monkeypatch: pytest.MonkeyPatch) -> None:
+    """평가가 연 실험 trace에 서버 span이 붙어야 실험 표의 행에서 내부가 보인다.
+
+    안 이어지면 trace가 둘로 갈린다 — 표는 그려지는데 행을 눌러도
+    `classify_intent`·`scoring`이 없는 빈 trace가 열린다.
+    """
+    _enable(monkeypatch)
+    monkeypatch.setattr(settings, "app_env", "local")
+    headers, client_trace_id = _traceparent_headers()
+
+    assert _trace_id_inside(headers) == client_trace_id
+
+
+def test_a_request_without_traceparent_opens_its_own_trace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """평소 요청은 지금과 똑같아야 한다 — 헤더가 없으면 자기 trace를 연다."""
+    _enable(monkeypatch)
+    monkeypatch.setattr(settings, "app_env", "local")
+    _, client_trace_id = _traceparent_headers()
+
+    assert _trace_id_inside({}) != client_trace_id
+
+
+def test_traceparent_is_ignored_outside_local(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**이 테스트가 실패하면 배포에서 남이 우리 trace 트리에 끼어들 수 있다.**
+
+    헤더를 신뢰하면 아무 클라이언트나 trace id를 골라 만들거나 우리 트리에 자기
+    span을 붙일 수 있다. 필요한 쪽은 로컬 평가 스크립트 하나뿐이라 배포에서는 막는다.
+    """
+    _enable(monkeypatch)
+    monkeypatch.setattr(settings, "app_env", "production")
+    headers, client_trace_id = _traceparent_headers()
+
+    assert langfuse_tracing.honors_incoming_trace_context() is False
+    assert _trace_id_inside(headers) != client_trace_id
+
+
+def test_traceparent_is_ignored_when_observability_is_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "langfuse_enabled", False)
+    monkeypatch.setattr(settings, "app_env", "local")
+
+    assert langfuse_tracing.honors_incoming_trace_context() is False
+
+
+def test_a_broken_traceparent_does_not_break_the_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """관측 실패가 사용자 응답을 막지 않는다 — 이 스위트가 지키는 성질 2."""
+    _enable(monkeypatch)
+    monkeypatch.setattr(settings, "app_env", "local")
+
+    with langfuse_tracing.incoming_trace_context({"traceparent": "쓰레기"}):
+        pass

@@ -47,7 +47,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, Final
 
 from app.config import Settings, settings
 
@@ -256,6 +256,96 @@ class _NoopRecorder:
 _NOOP: _NoopRecorder = _NoopRecorder()
 
 
+# 목록에서 한 줄로 읽히는 길이. 길게 잡으면 화면에서 잘려 오히려 안 읽힌다.
+_TRACE_NAME_LIMIT: Final = 60
+
+
+def _trace_name(user_input: str | None) -> str | None:
+    """목록에 보일 trace 이름. 발화를 쓰되 **원문 수집 스위치를 탄다.**
+
+    `None`을 돌려주면 SDK가 루트 span 이름(`agent_turn`)을 쓴다 — 지금까지의 모양이다.
+
+    **`capture_content`가 꺼져 있으면 발화를 쓰지 않는다.** trace 이름은 mask를 타지
+    않아서(`level`·`status_message`와 같은 부류), 여기에 발화를 실으면 원문 수집을 꺼도
+    사용자 말이 그대로 나간다. 스위치를 우회하는 통로를 만들지 않는다.
+
+    줄바꿈·연속 공백을 하나로 접는다. 목록은 한 줄로 그려지므로 접지 않으면 뒤가 잘려
+    보이거나 줄이 깨진다.
+    """
+    if not user_input or not captures_content():
+        return None
+    collapsed = " ".join(user_input.split())
+    if not collapsed:
+        return None
+    if len(collapsed) <= _TRACE_NAME_LIMIT:
+        return collapsed
+    return collapsed[: _TRACE_NAME_LIMIT - 1] + "…"
+
+
+def honors_incoming_trace_context() -> bool:
+    """들어온 `traceparent`를 부모로 받아들일지.
+
+    **로컬에서만 받는다.** 이 헤더를 신뢰하면 아무 클라이언트나 우리 trace 트리에
+    자기 span을 붙이거나 trace id를 골라 만들 수 있다. 실제로 필요한 쪽은 로컬에서
+    도는 평가 스크립트 하나뿐이라, 배포에서 열어둘 이유가 없다.
+
+    `main.py`가 개발자 Ops 라우터를 `app_env == "local"`로 가르는 것과 같은 판단이다.
+    """
+    return is_enabled() and settings.app_env == "local"
+
+
+@contextmanager
+def incoming_trace_context(headers: Mapping[str, str]) -> Iterator[None]:
+    """`traceparent`가 있으면 이 블록의 span을 그 trace의 자식으로 만든다.
+
+    평가 스크립트가 `run_experiment()`로 trace를 열고 그 안에서 HTTP를 부르면,
+    서버는 **다른 프로세스**라 자기 trace를 따로 만든다. 그러면 실험 표는 그려지는데
+    행을 눌러도 `classify_intent`·`scoring` 같은 내부 span이 없다. 이 헬퍼가 그
+    두 조각을 하나로 잇는다(W3C Trace Context 표준).
+
+    헤더가 없거나 꺼져 있으면 아무 일도 하지 않는다 — 평소 요청은 지금과 똑같이
+    자기 trace를 연다.
+    """
+    if not honors_incoming_trace_context() or "traceparent" not in headers:
+        yield
+        return
+    try:
+        from opentelemetry import context as otel_context
+        from opentelemetry.propagate import extract
+
+        token = otel_context.attach(extract(dict(headers)))
+    except Exception:
+        logger.warning("들어온 trace 문맥 해석 실패(응답 흐름에는 영향 없음)", exc_info=True)
+        yield
+        return
+    try:
+        yield
+    finally:
+        try:
+            otel_context.detach(token)
+        except Exception:
+            logger.warning("trace 문맥 해제 실패(응답 흐름에는 영향 없음)", exc_info=True)
+
+
+def _tags_with_developer(tags: Sequence[str]) -> list[str]:
+    """호출부가 준 태그에 `developer:<핸들>`을 더한다.
+
+    **호출부가 붙이지 않고 여기서 붙인다.** 이 태그는 관측 전용 관심사라, 넣는
+    자리를 관측 모듈 안으로 모아두면 호출부(런타임)는 이 설정의 존재를 몰라도 된다.
+
+    설정이 비어 있으면 아무것도 더하지 않는다 — 안 적은 사람의 trace가
+    `developer:` 로 오염되면 필터가 제 역할을 못 한다.
+
+    **`app_env`(태그 `env:`)로 대신할 수 없다.** 그건 기능 게이트다 — `main.py`가
+    정확히 `"local"`과 비교해 개발자 Ops 라우터를 등록할지 정하므로, 사람 이름을
+    넣으려고 값을 바꾸면 `/api/dev/*`가 사라진다(2026-08-26 확인).
+    """
+    developer = settings.langfuse_developer.strip()
+    if not developer:
+        return list(tags)
+    return [*tags, f"developer:{developer}"]
+
+
 @contextmanager
 def trace_attributes(
     *,
@@ -264,8 +354,12 @@ def trace_attributes(
     version: str | None = None,
     tags: Sequence[str] = (),
     metadata: Mapping[str, Any] | None = None,
+    user_input: str | None = None,
 ) -> Iterator[None]:
     """이 블록 안에서 생기는 모든 관측에 trace 단위 속성을 붙인다.
+
+    `user_input`은 **목록에 보일 이름을 만드는 데만** 쓴다(`_trace_name`). 원문 수집이
+    꺼져 있으면 쓰지 않으므로, 호출부는 스위치를 확인하지 않고 그냥 넘기면 된다.
 
     `version`·`tags`는 mask를 타지 않는다 — 프롬프트·Scoring 버전처럼 `capture_content`
     가 꺼져 있어도 남아야 하는 값은 `metadata`가 아니라 여기에 싣는다(모듈 docstring).
@@ -281,8 +375,10 @@ def trace_attributes(
             session_id=session_id,
             user_id=user_id,
             version=version,
-            tags=list(tags) or None,
+            tags=_tags_with_developer(tags) or None,
             metadata=dict(metadata) if metadata else None,
+            # None이면 SDK가 루트 span 이름(`agent_turn`)을 쓴다.
+            trace_name=_trace_name(user_input),
         )
 
     with _guard(factory):
@@ -368,6 +464,29 @@ def observe_generation(
         yield _NOOP if generation is None else _Recorder(generation)
 
 
+def current_trace_id() -> str | None:
+    """지금 열려 있는 trace의 id. 꺼져 있거나 span 밖이면 `None`.
+
+    **원문 통로가 아니다.** 나가는 값은 SDK가 만든 hex 문자열 하나이고 사용자
+    입력에서 유도되지 않는다 — Tool 인자 헬퍼를 두지 않는 이유(모듈 docstring)와
+    충돌하지 않는다. 방향도 반대다: 이건 우리가 밖으로 보내는 값이 아니라
+    Langfuse가 만든 식별자를 **우리 응답으로 되받는** 자리다.
+
+    **session_id로 대신할 수 없어서 필요하다.** 세션은 LLM 단계가 지나간 뒤
+    `apply()`에서 발급돼서 **첫 턴 trace에는 session_id가 안 붙는다**
+    (`runtime/agent_runtime.py::run_agent_flow` docstring). 골드셋 dev 35건 중
+    20건이 1턴짜리라, session_id 역조회로는 그 20건의 trace를 영영 못 찾는다.
+    """
+    client = get_tracer()
+    if client is None:
+        return None
+    try:
+        return client.get_current_trace_id()
+    except Exception:
+        logger.warning("Langfuse trace id 조회 실패(응답 흐름에는 영향 없음)", exc_info=True)
+        return None
+
+
 def record_score(name: str, value: float | bool) -> None:
     """지금 turn의 trace에 수치 하나를 남긴다. 꺼져 있으면 아무 일도 안 한다.
 
@@ -407,6 +526,9 @@ def record_score(name: str, value: float | bool) -> None:
 __all__ = [
     "REDACTED",
     "captures_content",
+    "current_trace_id",
+    "honors_incoming_trace_context",
+    "incoming_trace_context",
     "is_enabled",
     "get_prompt_client",
     "observe_generation",
