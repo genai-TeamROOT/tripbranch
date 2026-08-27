@@ -7,3 +7,4 @@ slots:
     bundle:
       - _shared/persona/trivi.md
       - follow_up/capability_rules.md
+    evals: evals/README.md
