@@ -16,11 +16,6 @@ UserConditions를 추출해 LLMOutput(intent="RECOMMEND")으로 반환하세요.
 - max_travel_time/time_available은 **분(minute) 단위 정수**입니다. "시간(hour)"으로
   말했으면 60을 곱해 분으로 환산하세요 — 숫자만 그대로 옮기지 마세요
   (예: "5시간" → 300, "2시간 30분" → 150, "30분" → 30(환산 불필요)).
-- **"반나절"은 time_available=240으로 채웁니다.** 숫자가 없어도 시간을 언급한
-  것으로 보고, 위의 "명시적으로 언급된 것만" 규칙보다 이 규칙을 우선합니다
-  (예: "반나절 일정 짜줘" → 240, "광화문 반나절 코스" → 240).
-  그 밖의 모호한 시간 표현("하루", "오전", "잠깐" 등)은 정해진 값이 없으므로
-  기존 규칙대로 null입니다.
 - weather_intent가 AVOID/ENJOY로 확정되면 environment도 각각 indoor/outdoor로 함께 채운다.
 - exclude_tags/special_requirements: "주차 가능한 곳" 같은 부가 조건은 special_requirements에 추가
 - taste_query: 장소의 **분위기·경험·취향**을 말한 부분만 원문 표현 그대로 옮긴다.
