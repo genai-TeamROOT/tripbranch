@@ -54,3 +54,22 @@ it("응답을 기다리는 동안에는 버튼을 비활성화한다", () => {
 
   expect(screen.getByRole("button", { name: "여기 주차되나요?" })).toBeDisabled();
 });
+
+
+it("제안을 한 줄에 하나씩 세로로 쌓는다", () => {
+  /* 가로로 흘리면 문구 길이에 따라 두 개가 붙었다 떨어졌다 해서
+     줄 수가 제안 개수와 어긋난다. */
+  render(
+    <SuggestedFollowUps
+      suggestions={suggestions}
+      isLoading={false}
+      onSelect={vi.fn()}
+      language="ko"
+    />,
+  );
+
+  const group = screen.getByRole("group", { name: "이어서 물어볼 만한 질문" });
+
+  expect(group).toHaveClass("flex-col");
+  expect(group).not.toHaveClass("flex-wrap");
+});

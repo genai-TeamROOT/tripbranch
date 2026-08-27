@@ -215,6 +215,43 @@ async def test_shown_place_names_reach_the_model() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["car", "walk", "public", None])
+async def test_transport_condition_reaches_the_model(transport: str | None) -> None:
+    """주차 질문을 권할 자리인지 가릴 근거를 실제로 넘기는지 본다.
+
+    프롬프트에 "walk/public이면 주차 질문을 빼라"고 적어도 이 값이 안 넘어가면 모델은
+    판단할 재료가 없다. 걷겠다고 말한 사용자에게 주차 자리를 묻게 하면 버튼 하나를
+    통째로 버리는 셈이 된다.
+    """
+    llm = _RecordingLLM()
+    response = _response()
+    response.state.user_conditions.transport = transport
+
+    await suggest_follow_ups(_request(), response, llm=llm)  # type: ignore[arg-type]
+
+    assert llm.calls[0]["transport"] == transport
+
+
+@pytest.mark.asyncio
+async def test_a_natural_sentence_fits_within_the_label_cap() -> None:
+    """상한이 문구를 전보문으로 만들지 않는지 본다.
+
+    30자였을 때는 "운영시간 알려줘" 수준으로 줄어야 들어갔다. 누르면 그게 그대로 사용자
+    발화가 되므로, 사람이 실제로 칠 만한 문장이 상한 안에 들어와야 한다.
+    """
+    natural = "여기 몇 시까지 하는지 알려줘"
+    parking = "주차할 자리 지금 있는지 봐줘"
+    assert len(natural) <= MAX_LABEL_LENGTH
+    assert len(parking) <= MAX_LABEL_LENGTH
+
+    llm = _RecordingLLM([natural, parking])
+
+    suggestions = await suggest_follow_ups(_request(), _response(), llm=llm)  # type: ignore[arg-type]
+
+    assert suggestions == [natural, parking]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("given", "expected"),
     [
@@ -237,3 +274,86 @@ async def test_question_mark_is_dropped_only_from_commands(given: str, expected:
     suggestions = await suggest_follow_ups(_request(), _response(), llm=llm)  # type: ignore[arg-type]
 
     assert suggestions == [expected]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [
+        # 2026-08-27 실제로 버튼에 나갔던 문구.
+        ("운현궁 걷어서 얼마나 걸려?", "운현궁 걸어서 얼마나 걸려?"),
+        ("거기까지 걷어가면 몇 분이야?", "거기까지 걸어가면 몇 분이야?"),
+        # 이미 맞는 문구는 그대로 둔다.
+        ("운현궁 걸어서 얼마나 걸려?", "운현궁 걸어서 얼마나 걸려?"),
+    ],
+)
+async def test_observed_spelling_error_is_corrected(given: str, expected: str) -> None:
+    """"걷다"는 ㄷ 불규칙이라 "걷어서"가 아니라 "걸어서"다.
+
+    문구가 그대로 사용자 발화가 되고 화면에도 그대로 실리므로, 프롬프트 지시에만 맡기지
+    않고 관측된 오류는 코드에서도 걷어낸다.
+    """
+    llm = _RecordingLLM([given])
+
+    suggestions = await suggest_follow_ups(_request(), _response(), llm=llm)  # type: ignore[arg-type]
+
+    assert suggestions == [expected]
+
+
+@pytest.mark.asyncio
+async def test_congestion_question_without_a_place_is_dropped() -> None:
+    """혼잡도를 묻는데 어디를 묻는지 없으면 버린다.
+
+    대화 문맥으로 서버가 장소를 이어받기는 하지만, 버튼은 사용자가 읽고 고르는 것이다 —
+    읽어서 무엇을 묻는지 알 수 없으면 고를 수가 없다.
+    """
+    llm = _RecordingLLM(["주말에 사람 많아?", "주말 안국역 많이 혼잡해?"])
+    response = _response()
+    response.state.user_conditions.search_center = "안국역"
+
+    suggestions = await suggest_follow_ups(_request(), response, llm=llm)  # type: ignore[arg-type]
+
+    assert suggestions == ["주말 안국역 많이 혼잡해?"]
+
+
+@pytest.mark.asyncio
+async def test_congestion_question_may_name_a_shown_place() -> None:
+    """검색 장소가 아니라 추천 카드의 장소를 지목해도 된다."""
+    llm = _RecordingLLM(["지금 커피한약방 사람 많아?"])
+    response = _response(
+        recommendations=RecommendationResponse(
+            recommendations=[_item("place-2", "커피한약방")],
+            unverified_recommendations=[],
+            elapsed_ms=10,
+        )
+    )
+
+    suggestions = await suggest_follow_ups(_request(), response, llm=llm)  # type: ignore[arg-type]
+
+    assert suggestions == ["지금 커피한약방 사람 많아?"]
+
+
+@pytest.mark.asyncio
+async def test_non_congestion_questions_are_left_alone() -> None:
+    """장소명 요구는 혼잡도 문구에만 건다 — 다른 문구까지 좁히면 멀쩡한 제안이 사라진다."""
+    llm = _RecordingLLM(["다른 곳도 보여줘", "이 장소들로 일정 짜줘"])
+
+    suggestions = await suggest_follow_ups(_request(), _response(), llm=llm)  # type: ignore[arg-type]
+
+    assert suggestions == ["다른 곳도 보여줘", "이 장소들로 일정 짜줘"]
+
+
+@pytest.mark.asyncio
+async def test_search_place_reaches_the_model() -> None:
+    """"안국역 근처 카페 추천해줘"의 "안국역"은 카드 이름 어디에도 없다.
+
+    안 넘기면 모델이 지역을 지목한 혼잡도 질문을 만들 근거 자체가 없어, 규칙을 아무리
+    적어도 주어 없는 문구밖에 못 만든다.
+    """
+    llm = _RecordingLLM()
+    response = _response()
+    response.state.user_conditions.search_center = "안국역"
+
+    await suggest_follow_ups(_request(), response, llm=llm)  # type: ignore[arg-type]
+
+    assert llm.calls[0]["search_place"] == "안국역"
