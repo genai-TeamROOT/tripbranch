@@ -34,6 +34,18 @@ MAX_SUGGESTIONS = 3
 # 지켰는지는 여기서 다시 검사한다.
 MAX_LABEL_LENGTH = 30
 
+# 물음표를 떼어낼 문장 끝. **의문문이 될 수 없는 명령형 어미만 넣는다.**
+#
+# 후속 "질문"이라고 해서 전부 의문문은 아니다 — "이 근처 카페도 추천해줘"는 시키는
+# 말이라 물음표가 붙으면 어색하다. 프롬프트에도 규칙을 적었지만 지켰는지는 여기서
+# 확인한다.
+#
+# **일반 규칙으로 넓히지 않는다.** "얼마나 걸려?"나 "주차되나요?"는 물음표가 있어야
+# 맞는 문장이고, 무엇이 질문인지를 어미만으로 가르는 규칙은 만들 수 없다. 그래서
+# "-줘"처럼 의문문으로 읽힐 여지가 없는 어미만 목록으로 둔다. 목록에 없는 어미가
+# 물음표를 달고 오면 그대로 통과하고, 그건 프롬프트 쪽에서 잡을 몫이다.
+_IMPERATIVE_ENDINGS = ("줘", "다오", "해봐", "보여줘")
+
 # LLM에 넘길 장소 이름 수. 이번 턴에 화면에 나간 순서대로 앞에서 자른다 — 뒤쪽 카드는
 # 사용자가 후속 질문의 대상으로 삼을 확률이 낮은데 토큰만 늘린다.
 _MAX_PLACE_NAMES = 5
@@ -91,6 +103,15 @@ def _should_suggest(response: AgentResponse) -> bool:
     return bool(response.message.strip())
 
 
+def _strip_stray_question_mark(label: str) -> str:
+    """명령형 문장에 붙은 물음표를 뗀다. 그 밖에는 손대지 않는다."""
+
+    stripped = label.rstrip("?？").rstrip()
+    if stripped != label and stripped.endswith(_IMPERATIVE_ENDINGS):
+        return stripped
+    return label
+
+
 def _clean(suggestions: list[str], *, user_input: str) -> list[str]:
     """모델이 준 문구를 화면에 올릴 수 있는 형태로 좁힌다.
 
@@ -102,7 +123,7 @@ def _clean(suggestions: list[str], *, user_input: str) -> list[str]:
     spoken = user_input.strip()
     cleaned: list[str] = []
     for suggestion in suggestions:
-        label = " ".join(suggestion.split())
+        label = _strip_stray_question_mark(" ".join(suggestion.split()))
         if not label or len(label) > MAX_LABEL_LENGTH:
             continue
         # 방금 한 질문을 그대로 다시 권하지 않는다.

@@ -212,3 +212,28 @@ async def test_shown_place_names_reach_the_model() -> None:
     assert llm.calls[0]["place_names"] == ["블루보틀 삼청", "커피한약방", "테라로사 광화문"]
     assert llm.calls[0]["intent"] is Intent.RECOMMEND
     assert llm.calls[0]["user_input"] == "경복궁 근처 카페 추천해줘"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [
+        ("이 근처 카페도 추천해줘?", "이 근처 카페도 추천해줘"),
+        ("이 장소들로 일정 짜줘?", "이 장소들로 일정 짜줘"),
+        ("운영시간 알려줘 ?", "운영시간 알려줘"),
+        # 진짜 의문문은 그대로 둔다 — 물음표가 있어야 맞는 문장이다.
+        ("여기 주차되나요?", "여기 주차되나요?"),
+        ("거기까지 얼마나 걸려?", "거기까지 얼마나 걸려?"),
+    ],
+)
+async def test_question_mark_is_dropped_only_from_commands(given: str, expected: str) -> None:
+    """후속 '질문'이라고 전부 의문문은 아니다.
+
+    "-줘"는 시키는 말이라 물음표가 붙으면 어색하다. 반대로 "주차되나요?"에서 물음표를
+    떼면 그쪽이 틀린 문장이 되므로, 어미로 가를 수 있는 경우에만 손댄다.
+    """
+    llm = _RecordingLLM([given])
+
+    suggestions = await suggest_follow_ups(_request(), _response(), llm=llm)  # type: ignore[arg-type]
+
+    assert suggestions == [expected]
