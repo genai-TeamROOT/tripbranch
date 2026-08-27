@@ -286,6 +286,25 @@ def get_place_location_repository(
     )
 
 
+def get_place_details_repository(
+    client: httpx.AsyncClient,
+) -> SupabasePlaceRepository | None:
+    """content_id로 상세 행만 읽는 저장소.
+
+    사진 검색이 쓴다 — 사진 유사도로 먼저 줄을 세운 뒤 상위 N곳의 영업시간만
+    확인하는 경로라, TourAPI를 거치는 `NearbyPlaceDetailsTool`(후보 20곳 상한)이
+    맞지 않는다. 이쪽은 DB만 읽어 상한이 없다.
+    """
+    if not settings.supabase_url.strip() or not settings.supabase_secret_key.strip():
+        return None
+    return SupabasePlaceRepository(
+        supabase_url=settings.supabase_url,
+        secret_key=settings.supabase_secret_key,
+        client=client,
+        timeout_seconds=settings.external_api_timeout_seconds,
+    )
+
+
 def get_place_details_provider(client: httpx.AsyncClient) -> PlaceDetailsProvider:
     """후보별 상세·운영정보 provider를 PLACE_DETAILS_SOURCE에 따라 고른다.
 

@@ -31,6 +31,7 @@ from app.observability.api_usage import create_external_client
 from app.providers.factory import (
     get_geocoding_provider,
     get_local_search_provider,
+    get_place_details_repository,
     get_place_location_repository,
     get_place_mood_provider,
     get_place_provider,
@@ -128,6 +129,7 @@ async def similar_by_photo(
             mood_provider=get_place_mood_provider(client),
             # 채팅 경로(agent_context/factory.py)와 같은 조합이다. 지오코딩만
             # 넘기면 "안국역" 같은 장소명이 안 풀린다.
+            details_repository=get_place_details_repository(client),
             place_repository=get_place_location_repository(client),
             local_search_provider=get_local_search_provider(client),
         )
