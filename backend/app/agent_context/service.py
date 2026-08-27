@@ -2027,14 +2027,16 @@ def _to_parking_detail_items(
                     item.latitude,
                     item.longitude,
                 ),
-                "총 주차면": f"{item.capacity}면" if item.capacity is not None else None,
+                "주소": item.address,
+                "유형": item.lot_type or "기타",
+                "총 주차": f"총 {item.capacity}대" if item.capacity is not None else None,
                 "현재 주차": (
-                    f"{item.current_parked_count}대"
+                    f"{item.current_parked_count}대 주차 중"
                     if item.current_available and item.current_parked_count is not None
                     else None
                 ),
-                "잔여 면수": (
-                    f"{item.available_spaces}면" if item.available_spaces is not None else None
+                "가능 주차": (
+                    f"{item.available_spaces}대 가능" if item.available_spaces is not None else None
                 ),
                 "요금": "유료" if item.paid is True else "무료" if item.paid is False else None,
                 "기준 시각": item.observed_at,
@@ -2179,6 +2181,7 @@ def _municipal_status_to_realtime_lot(
         current_available=status.is_live,
         paid=status.paid if status.paid is not None else getattr(catalog_entry, "paid", None),
         observed_at=status.observed_at,
+        address=status.address or getattr(catalog_entry, "address", None),
         code=status.code,
         lot_type="공영",
         available_spaces=available_spaces,

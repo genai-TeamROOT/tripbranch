@@ -33,9 +33,7 @@ function needsDetailEnrichment(card: InfoPlaceCard | undefined): boolean {
   // 실시간 도시데이터 INFO는 이미 지역 단위 상세·지도 링크를 응답에 실었다.
   // 관광 PlaceDetails를 다시 조회하면 이 값을 덮어써 모달의 실시간 근거가 사라진다.
   if (card?.realtime_map_url || (card?.realtime_detail_items?.length ?? 0) > 0) return false;
-  return Boolean(
-    card && ["location_info", "concentration", "event"].includes(card.question_type),
-  );
+  return Boolean(card && ["location_info", "concentration", "event"].includes(card.question_type));
 }
 
 function formatOperatingHours(item: RecommendationItem): string {
@@ -62,16 +60,18 @@ const FACILITY_FIELDS: Array<[keyof InfoPlaceCard, string]> = [
   ["restroom", "화장실"],
 ];
 
+const SEOUL_PARKING_PORTAL_URL = "https://parking.seoul.go.kr/";
+
 const ANSWER_FIELD_LABELS: Record<string, string> = {
   address: "주소",
   concentration: "혼잡도",
   event: "행사",
   "상권 지역": "상권 지역",
   "상권 기준": "상권 기준",
-  "업종": "업종",
+  업종: "업종",
   "실시간 활동": "실시간 활동",
   "기준 시각": "기준 시각",
-  "안내": "안내",
+  안내: "안내",
   homepage: "홈페이지",
   operating_hours: "운영시간",
   rest_date: "휴무일",
@@ -105,7 +105,10 @@ function DetailText({ fieldKey, value }: { fieldKey: keyof InfoPlaceCard; value:
             {line}
           </p>
         ) : (
-          <p key={`${line}-${index}`} className="whitespace-pre-line text-gray-900 dark:text-gray-100">
+          <p
+            key={`${line}-${index}`}
+            className="whitespace-pre-line text-gray-900 dark:text-gray-100"
+          >
             {line}
           </p>
         ),
@@ -178,7 +181,9 @@ function DetailEntries({
           >
             <dt className="text-xs text-gray-500 dark:text-gray-400">{label}</dt>
             {operatingHours ? (
-              <dd><OperatingHoursRows rows={operatingHours} /></dd>
+              <dd>
+                <OperatingHoursRows rows={operatingHours} />
+              </dd>
             ) : (
               <DetailText fieldKey={key} value={value} />
             )}
@@ -227,40 +232,358 @@ function AnswerValue({ value }: { value: string }) {
   );
 }
 
+type RealtimeDetailItem = NonNullable<InfoPlaceCard["realtime_detail_items"]>[number];
+type ParkingTab = "전체" | "공영" | "민영" | "기타";
+
+interface ParkingCardItem {
+  item: RealtimeDetailItem;
+  category: Exclude<ParkingTab, "전체">;
+  availableSpaces: number | null;
+  capacity: number | null;
+  currentParkedCount: number | null;
+}
+
+function isRealtimeParkingCard(card: InfoPlaceCard): boolean {
+  return ["realtime_parking", "realtime_public_parking"].includes(card.question_type);
+}
+
+function extractParkingCount(value: string | undefined): number | null {
+  const matched = value?.match(/\d[\d,]*/);
+  return matched ? Number(matched[0].replaceAll(",", "")) : null;
+}
+
+function extractParkingCountFromSubtitle(
+  subtitle: string | null | undefined,
+  labels: string[],
+): number | null {
+  if (!subtitle) return null;
+  for (const label of labels) {
+    const matched = subtitle.match(new RegExp(`${label}\\s*([\\d,]+)\\s*(?:대|면)?`));
+    if (matched) return Number(matched[1].replaceAll(",", ""));
+  }
+  return null;
+}
+
+function toParkingCardItem(item: RealtimeDetailItem, questionType: string): ParkingCardItem {
+  const type = item.details["유형"];
+  const category: Exclude<ParkingTab, "전체"> =
+    type === "공영" || type === "민영"
+      ? type
+      : questionType === "realtime_public_parking"
+        ? "공영"
+        : "기타";
+  return {
+    item,
+    category,
+    // 배포 중 백엔드 재시작 전에도 기존 키(잔여 면수/총 주차면)를 읽는다.
+    availableSpaces:
+      extractParkingCount(item.details["가능 주차"] ?? item.details["잔여 면수"]) ??
+      extractParkingCountFromSubtitle(item.subtitle, ["잔여", "가능"]),
+    capacity:
+      extractParkingCount(item.details["총 주차"] ?? item.details["총 주차면"]) ??
+      extractParkingCountFromSubtitle(item.subtitle, ["총"]),
+    currentParkedCount:
+      extractParkingCount(item.details["현재 주차"]) ??
+      extractParkingCountFromSubtitle(item.subtitle, ["현재"]),
+  };
+}
+
+function formatParkingCount(value: number | null): string {
+  return value === null ? "정보 미제공" : `${new Intl.NumberFormat("ko-KR").format(value)}대`;
+}
+
+function parkingStatus(item: ParkingCardItem): "여유" | "보통" | "혼잡" | "현황 미제공" {
+  if (item.availableSpaces === null || item.capacity === null || item.capacity === 0)
+    return "현황 미제공";
+  const availableRatio = item.availableSpaces / item.capacity;
+  if (availableRatio >= 0.4) return "여유";
+  if (availableRatio >= 0.15) return "보통";
+  return "혼잡";
+}
+
+function parkingStatusClass(status: ReturnType<typeof parkingStatus>): string {
+  if (status === "여유")
+    return "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300";
+  if (status === "보통")
+    return "bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-300";
+  if (status === "혼잡") return "bg-rose-100 text-rose-800 dark:bg-rose-950/50 dark:text-rose-300";
+  return "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300";
+}
+
+function ParkingLotCard({ parkingItem }: { parkingItem: ParkingCardItem }) {
+  const { item, availableSpaces, capacity, currentParkedCount } = parkingItem;
+  const status = parkingStatus(parkingItem);
+  const address = item.details["주소"];
+
+  return (
+    <article className="rounded-xl border border-gray-100 bg-white p-3 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <span className="inline-flex rounded-md bg-sky-100 px-1.5 py-0.5 text-[11px] font-semibold text-sky-800 dark:bg-sky-950/50 dark:text-sky-300">
+            {parkingItem.category}
+          </span>
+          <h4 className="mt-1 break-keep text-sm font-semibold leading-5 text-gray-900 dark:text-gray-100">
+            {item.title}
+          </h4>
+          <p
+            className="mt-1 truncate text-xs text-gray-500 dark:text-gray-400"
+            title={address ?? item.details["거리"] ?? undefined}
+          >
+            {address ?? item.details["거리"] ?? "주소 정보 미제공"}
+          </p>
+        </div>
+        <span
+          className={`shrink-0 whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${parkingStatusClass(status)}`}
+        >
+          {status}
+        </span>
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <div className="min-w-0 rounded-lg bg-sky-50 px-2.5 py-2 dark:bg-sky-950/30">
+          <p className="whitespace-nowrap text-[11px] text-sky-700 dark:text-sky-300">가능 주차</p>
+          <p className="mt-0.5 text-sm font-bold leading-5 text-gray-900 dark:text-gray-100">
+            {availableSpaces === null
+              ? "잔여 정보 미제공"
+              : `${new Intl.NumberFormat("ko-KR").format(availableSpaces)}대 가능`}
+          </p>
+        </div>
+        <div className="min-w-0 rounded-lg bg-gray-50 px-2.5 py-2 dark:bg-gray-800">
+          <p className="whitespace-nowrap text-[11px] text-gray-500 dark:text-gray-400">
+            주차 규모
+          </p>
+          <p className="mt-0.5 text-sm font-bold leading-5 text-gray-900 dark:text-gray-100">
+            {capacity === null
+              ? "총 대수 미제공"
+              : `총 ${new Intl.NumberFormat("ko-KR").format(capacity)}대`}
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-gray-600 dark:text-gray-300">
+        {currentParkedCount !== null && (
+          <span className="whitespace-nowrap rounded-full bg-gray-100 px-2 py-1 dark:bg-gray-800">
+            {new Intl.NumberFormat("ko-KR").format(currentParkedCount)}대 주차 중
+          </span>
+        )}
+        {item.details["거리"] && (
+          <span className="whitespace-nowrap rounded-full bg-gray-100 px-2 py-1 dark:bg-gray-800">
+            {item.details["거리"]}
+          </span>
+        )}
+        {item.details["요금"] && (
+          <span className="whitespace-nowrap rounded-full bg-gray-100 px-2 py-1 dark:bg-gray-800">
+            {item.details["요금"]}
+          </span>
+        )}
+      </div>
+      {item.details["기준 시각"] && (
+        <p className="mt-2 text-[11px] text-gray-400 dark:text-gray-500">
+          {item.details["기준 시각"]} 기준
+        </p>
+      )}
+    </article>
+  );
+}
+
+function RealtimeDetailLinks({ card }: { card: InfoPlaceCard }) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      {card.realtime_source_url && (
+        <a
+          href={card.realtime_source_url}
+          target="_blank"
+          rel="noreferrer"
+          className="rounded-full border border-sky-200 bg-white px-2.5 py-1 text-xs font-medium text-sky-700 hover:bg-sky-100 dark:border-sky-800 dark:bg-gray-900 dark:text-sky-300 dark:hover:bg-sky-900/50"
+        >
+          서울시 데이터 출처 ↗
+        </a>
+      )}
+      {isRealtimeParkingCard(card) && (
+        <a
+          href={SEOUL_PARKING_PORTAL_URL}
+          target="_blank"
+          rel="noreferrer"
+          className="rounded-full border border-sky-200 bg-white px-2.5 py-1 text-xs font-medium text-sky-700 hover:bg-sky-100 dark:border-sky-800 dark:bg-gray-900 dark:text-sky-300 dark:hover:bg-sky-900/50"
+        >
+          서울시 실시간 주차정보 ↗
+        </a>
+      )}
+      {card.realtime_map_url && (
+        <a
+          href={card.realtime_map_url}
+          target="_blank"
+          rel="noreferrer"
+          className="rounded-full border border-sky-200 bg-white px-2.5 py-1 text-xs font-medium text-sky-700 hover:bg-sky-100 dark:border-sky-800 dark:bg-gray-900 dark:text-sky-300 dark:hover:bg-sky-900/50"
+        >
+          실시간 혼잡도 지도 ↗
+        </a>
+      )}
+    </div>
+  );
+}
+
+function RealtimeParkingEntries({ card }: { card: InfoPlaceCard }) {
+  const items = (card.realtime_detail_items ?? []).map((item) =>
+    toParkingCardItem(item, card.question_type),
+  );
+  const [activeTab, setActiveTab] = useState<ParkingTab>("전체");
+  const tabs: ParkingTab[] = ["전체", "공영", "민영", "기타"];
+  const tabCounts = Object.fromEntries(
+    tabs.map((tab) => [
+      tab,
+      tab === "전체" ? items.length : items.filter((item) => item.category === tab).length,
+    ]),
+  ) as Record<ParkingTab, number>;
+  const visibleItems = items.filter((item) => activeTab === "전체" || item.category === activeTab);
+  const visibleRealtimeItems = visibleItems.filter((item) => item.availableSpaces !== null);
+  const visibleUnavailableItems = visibleItems.filter((item) => item.availableSpaces === null);
+  const realtimeItems = items.filter((item) => item.availableSpaces !== null);
+  const totalAvailable = realtimeItems.reduce((sum, item) => sum + (item.availableSpaces ?? 0), 0);
+  const totalCapacity = items.reduce((sum, item) => sum + (item.capacity ?? 0), 0);
+
+  return (
+    <section className="rounded-2xl border border-sky-100 bg-gradient-to-b from-sky-50 to-white p-4 shadow-sm dark:border-sky-900/60 dark:from-sky-950/30 dark:to-gray-900">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-semibold tracking-wide text-sky-700 dark:text-sky-300">
+            REALTIME PARKING
+          </p>
+          <h3 className="mt-0.5 text-lg font-bold text-gray-900 dark:text-gray-100">주차장 현황</h3>
+          <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">
+            {card.realtime_area_name ?? "가까운 서울시 제공 지역"}
+            {card.realtime_observed_at ? ` · ${card.realtime_observed_at} 기준` : ""}
+          </p>
+        </div>
+        <RealtimeDetailLinks card={card} />
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        <div className="rounded-xl bg-blue-600 px-3 py-3 text-white shadow-sm">
+          <p className="whitespace-nowrap text-xs font-medium text-blue-100">현재 가능한 주차</p>
+          <p className="mt-1 whitespace-nowrap text-xl font-bold">
+            {realtimeItems.length > 0
+              ? `${new Intl.NumberFormat("ko-KR").format(totalAvailable)}대`
+              : "정보 없음"}
+          </p>
+        </div>
+        <div className="rounded-xl border border-sky-100 bg-white px-3 py-3 dark:border-sky-900/60 dark:bg-gray-900">
+          <p className="whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">실시간 제공</p>
+          <p className="mt-1 whitespace-nowrap text-xl font-bold text-gray-900 dark:text-gray-100">
+            {realtimeItems.length}곳
+          </p>
+        </div>
+        <div className="rounded-xl border border-sky-100 bg-white px-3 py-3 dark:border-sky-900/60 dark:bg-gray-900">
+          <p className="whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">공영 주차장</p>
+          <p className="mt-1 whitespace-nowrap text-xl font-bold text-gray-900 dark:text-gray-100">
+            {tabCounts["공영"]}곳
+          </p>
+        </div>
+        <div className="rounded-xl border border-sky-100 bg-white px-3 py-3 dark:border-sky-900/60 dark:bg-gray-900">
+          <p className="whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">목록 총 수용</p>
+          <p className="mt-1 whitespace-nowrap text-xl font-bold text-gray-900 dark:text-gray-100">
+            {formatParkingCount(totalCapacity)}
+          </p>
+        </div>
+      </div>
+
+      <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+        가능한 주차 대수는 실시간 정보가 제공된 주차장만 합산합니다.
+      </p>
+
+      <div className="mt-4 grid grid-cols-4 rounded-xl border border-sky-100 bg-white p-1 dark:border-sky-900/60 dark:bg-gray-900">
+        {tabs.map((tab) => (
+          <button
+            key={tab}
+            type="button"
+            onClick={() => setActiveTab(tab)}
+            disabled={tabCounts[tab] === 0}
+            aria-pressed={activeTab === tab}
+            className={`rounded-lg px-2 py-2 text-xs font-semibold transition sm:text-sm ${
+              activeTab === tab
+                ? "bg-blue-600 text-white shadow-sm"
+                : "text-gray-500 hover:bg-sky-50 disabled:cursor-not-allowed disabled:text-gray-300 dark:text-gray-400 dark:hover:bg-sky-950/30"
+            }`}
+          >
+            {tab} {tabCounts[tab]}
+          </button>
+        ))}
+      </div>
+
+      <div className="mt-3 space-y-3">
+        {visibleRealtimeItems.length > 0 && (
+          <section aria-labelledby="realtime-parking-available-heading">
+            <div className="mb-2 flex items-center justify-between">
+              <h4
+                id="realtime-parking-available-heading"
+                className="text-sm font-semibold text-gray-900 dark:text-gray-100"
+              >
+                실시간 주차 가능
+              </h4>
+              <span className="text-xs text-gray-500 dark:text-gray-400">
+                {visibleRealtimeItems.length}곳
+              </span>
+            </div>
+            <div className="space-y-2">
+              {visibleRealtimeItems.map((parkingItem, index) => (
+                <ParkingLotCard
+                  key={`${parkingItem.item.title}-realtime-${index}`}
+                  parkingItem={parkingItem}
+                />
+              ))}
+            </div>
+          </section>
+        )}
+
+        {visibleUnavailableItems.length > 0 && (
+          <details
+            className="rounded-xl border border-gray-200 bg-gray-50 p-2 dark:border-gray-800 dark:bg-gray-950/40"
+            open={visibleRealtimeItems.length === 0}
+          >
+            <summary className="flex cursor-pointer list-none items-center justify-between rounded-lg px-2 py-2 text-sm font-semibold text-gray-700 hover:bg-white dark:text-gray-200 dark:hover:bg-gray-900">
+              <span>실시간 잔여 현황 미제공</span>
+              <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
+                {visibleUnavailableItems.length}곳 보기
+              </span>
+            </summary>
+            <div className="mt-2 space-y-2">
+              {visibleUnavailableItems.map((parkingItem, index) => (
+                <ParkingLotCard
+                  key={`${parkingItem.item.title}-unavailable-${index}`}
+                  parkingItem={parkingItem}
+                />
+              ))}
+            </div>
+          </details>
+        )}
+        {visibleItems.length === 0 && (
+          <p className="rounded-xl bg-white px-3 py-4 text-center text-sm text-gray-500 dark:bg-gray-900 dark:text-gray-400">
+            이 유형의 주차장 정보는 제공되지 않습니다.
+          </p>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function RealtimeDetailEntries({ card }: { card: InfoPlaceCard }) {
   const items = card.realtime_detail_items ?? [];
   if (items.length === 0 && !card.realtime_map_url && !card.realtime_source_url) return null;
+  if (isRealtimeParkingCard(card)) return <RealtimeParkingEntries card={card} />;
 
   return (
     <section className="rounded-xl border border-sky-100 bg-sky-50/70 p-4 dark:border-sky-900/60 dark:bg-sky-950/20">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">실시간 지역 정보</h3>
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+            실시간 지역 정보
+          </h3>
           <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-300">
             {card.realtime_area_name ?? "가까운 서울시 제공 지역"}
             {card.realtime_observed_at ? ` · ${card.realtime_observed_at} 기준` : ""}
           </p>
         </div>
-        {card.realtime_source_url && (
-          <a
-            href={card.realtime_source_url}
-            target="_blank"
-            rel="noreferrer"
-            className="rounded-full border border-sky-200 bg-white px-2.5 py-1 text-xs font-medium text-sky-700 hover:bg-sky-100 dark:border-sky-800 dark:bg-gray-900 dark:text-sky-300 dark:hover:bg-sky-900/50"
-          >
-            서울시 데이터 출처 ↗
-          </a>
-        )}
-        {card.realtime_map_url && (
-          <a
-            href={card.realtime_map_url}
-            target="_blank"
-            rel="noreferrer"
-            className="rounded-full border border-sky-200 bg-white px-2.5 py-1 text-xs font-medium text-sky-700 hover:bg-sky-100 dark:border-sky-800 dark:bg-gray-900 dark:text-sky-300 dark:hover:bg-sky-900/50"
-          >
-            실시간 혼잡도 지도 ↗
-          </a>
-        )}
+        <RealtimeDetailLinks card={card} />
       </div>
       {card.realtime_map_url && (
         <iframe
@@ -287,7 +610,9 @@ function RealtimeDetailEntries({ card }: { card: InfoPlaceCard }) {
             <div className="p-3">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{item.title}</h4>
+                  <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                    {item.title}
+                  </h4>
                   {item.subtitle && (
                     <p className="mt-0.5 text-sm text-sky-700 dark:text-sky-300">{item.subtitle}</p>
                   )}
@@ -308,7 +633,9 @@ function RealtimeDetailEntries({ card }: { card: InfoPlaceCard }) {
                   {Object.entries(item.details).map(([key, value]) => (
                     <div key={key} className="min-w-0">
                       <dt className="text-gray-500 dark:text-gray-400">{key}</dt>
-                      <dd className="mt-0.5 break-words text-gray-800 dark:text-gray-100">{value}</dd>
+                      <dd className="mt-0.5 break-words text-gray-800 dark:text-gray-100">
+                        {value}
+                      </dd>
                     </div>
                   ))}
                 </dl>
@@ -329,7 +656,9 @@ export function RecommendationDetailPreviewModal({
 }: RecommendationDetailPreviewModalProps) {
   const { device_location } = useTripState();
   const [detailCard, setDetailCard] = useState<InfoPlaceCard | null>(card ?? null);
-  const [detailStatus, setDetailStatus] = useState<"loading" | "no_data" | "unavailable">("loading");
+  const [detailStatus, setDetailStatus] = useState<"loading" | "no_data" | "unavailable">(
+    "loading",
+  );
   const placeId = card?.place_id ?? item?.place_id;
   const placeName = card?.place_name ?? item?.name;
   const title = detailCard?.place_name ?? card?.place_name ?? item?.name ?? "장소 상세 정보";
@@ -420,7 +749,10 @@ export function RecommendationDetailPreviewModal({
             <p className="text-xs text-gray-500 dark:text-gray-400">
               {item ? "추천 장소 상세" : "장소 상세"}
             </p>
-            <h2 id="recommendation-detail-title" className="truncate text-lg font-bold text-gray-900 dark:text-gray-100">
+            <h2
+              id="recommendation-detail-title"
+              className="truncate text-lg font-bold text-gray-900 dark:text-gray-100"
+            >
               {title}
             </h2>
           </div>
@@ -447,7 +779,9 @@ export function RecommendationDetailPreviewModal({
             />
           ) : !hasRealtimeDetails ? (
             <div className="flex h-56 items-center justify-center rounded-xl border border-dashed border-gray-300 bg-gray-50 text-sm text-gray-500 dark:border-gray-700 dark:bg-gray-800/60 dark:text-gray-400">
-              {detailStatus === "unavailable" ? "상세 정보를 불러오지 못했어요." : "등록된 이미지가 없어요."}
+              {detailStatus === "unavailable"
+                ? "상세 정보를 불러오지 못했어요."
+                : "등록된 이미지가 없어요."}
             </div>
           ) : null}
 
@@ -492,7 +826,9 @@ export function RecommendationDetailPreviewModal({
             <section className="flex flex-col gap-4">
               {answerEntries.length > 0 && (
                 <section className="rounded-xl bg-blue-50 p-3 dark:bg-blue-950/30">
-                  <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">관련 정보</h3>
+                  <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                    관련 정보
+                  </h3>
                   <dl className="mt-2 space-y-2 text-sm">
                     {answerEntries.map(([key, value]) => (
                       <div key={key} className="flex gap-2">

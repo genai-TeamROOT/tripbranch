@@ -168,21 +168,30 @@ def map_realtime_parking_response(
     merged: dict[str, RealtimeParkingLot] = {}
     order: list[str] = []
     for item in _mappings(row.get("PRK_STTS")):
+        capacity = _int(item.get("CPCTY"))
+        current_parked_count = _int(item.get("CUR_PRK_CNT"))
+        current_available = _text(item.get("CUR_PRK_YN")) == "Y"
         lot = RealtimeParkingLot(
             name=_text(item.get("PRK_NM")) or "주차장",
             latitude=_float(item.get("LAT")),
             longitude=_float(item.get("LNG")),
-            capacity=_int(item.get("CPCTY")),
-            current_parked_count=_int(item.get("CUR_PRK_CNT")),
-            current_available=_text(item.get("CUR_PRK_YN")) == "Y",
+            capacity=capacity,
+            current_parked_count=current_parked_count,
+            current_available=current_available,
             paid=(
                 True
                 if _text(item.get("PAY_YN")) == "Y"
                 else False if _text(item.get("PAY_YN")) == "N" else None
             ),
             observed_at=_text(item.get("CUR_PRK_TIME")),
+            address=_text(item.get("ADDR")) or _text(item.get("ADDRESS")),
             code=_text(item.get("PRK_CD")),
             lot_type=_PARKING_LOT_TYPE_LABELS.get(_text(item.get("PRK_TYPE")) or ""),
+            available_spaces=(
+                max(0, capacity - current_parked_count)
+                if capacity is not None and current_parked_count is not None and current_available
+                else None
+            ),
         )
         key = lot.code or f"{lot.name}|{lot.latitude}|{lot.longitude}"
         existing = merged.get(key)
