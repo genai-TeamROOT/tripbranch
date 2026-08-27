@@ -59,6 +59,7 @@ from app.agent_context.schemas import (
     ContextError,
     Coordinates,
     ResponseMetadata,
+    parse_candidate_names,
 )
 from app.agent_context.schemas import ProviderMetadata as ContextProviderMetadata
 from app.agent_context.seoul_realtime_areas import (
@@ -526,13 +527,28 @@ class ContextService:
         if location_result.status is ToolStatus.NO_DATA:
             cause = location_result.error.cause if location_result.error else None
             if cause == "ambiguous_location":
+                candidate_names = parse_candidate_names(
+                    location_result.error.details.get("candidate_names", "")
+                    if location_result.error
+                    else ""
+                )
+                filtered_candidates = await self._filter_info_place_candidates(
+                    candidate_names,
+                    question_type=request.question_type,
+                    location_purpose=location_purpose,
+                    is_realtime_citydata_purpose=is_realtime_citydata_purpose,
+                    current_population_candidate=current_population_candidate,
+                )
                 return InfoContextResponse(
                     request_id=request.request_id,
                     status="needs_clarification",
                     clarification=Clarification(
                         code="place_ambiguous",
                         missing_fields=[],
-                        candidates=[],
+                        # 걸러서 하나도 안 남으면 거르기 전 원본을 그대로 보여준다 —
+                        # 버튼 없는 것보다 낫다(RECOMMEND의 location_ambiguous와 같은
+                        # 원칙).
+                        candidates=filtered_candidates or candidate_names,
                     ),
                 )
             if request.question_type == "concentration":
@@ -634,6 +650,43 @@ class ContextService:
             resolved_location=resolved_location,
             location_metadata=location_result.provider_metadata,
         )
+
+    async def _filter_info_place_candidates(
+        self,
+        candidate_names: list[str],
+        *,
+        question_type: str,
+        location_purpose: LocationPurpose,
+        is_realtime_citydata_purpose: bool,
+        current_population_candidate: bool,
+    ) -> list[str]:
+        """되묻기 후보 중 이번 질문 유형의 정보가 실제로 조회 가능한 곳만 남긴다.
+
+        후보 이름마다 다시 한번 개별 해석해 identity/좌표를 얻은 뒤 판정한다 —
+        resolve_location.py는 question_type을 모르므로(좌표/신원 해석만 책임진다)
+        가용성 판정은 이 계층에서만 한다. 재해석 자체가 또 애매하게 나오면
+        (예: DB에 동명 타이틀 2건) "조회 불가"로 단정하지 않고 후보를 그대로
+        남긴다 — 확실히 실패했을 때만 버린다. 호출부가 결과가 비면 원본 목록으로
+        되돌린다.
+        """
+        kept: list[str] = []
+        for name in candidate_names:
+            result = await self._tools.location.execute(
+                ResolveLocationQuery(name, purpose=location_purpose)
+            )
+            if result.status is ToolStatus.NO_DATA:
+                kept.append(name)
+                continue
+            if result.status is not ToolStatus.SUCCESS or result.location is None:
+                continue
+            if _place_candidate_has_data(
+                result.location,
+                question_type=question_type,
+                is_realtime_citydata_purpose=is_realtime_citydata_purpose,
+                current_population_candidate=current_population_candidate,
+            ):
+                kept.append(name)
+        return kept
 
     async def _fetch_realtime_population_or_concentration_info(
         self,
@@ -2000,6 +2053,52 @@ def _is_current_population_candidate(request: InfoContextRequest, clock_value: d
         and request.specific_question is not None
         and _info_reference_date(request.visit_time, clock_value) == _as_kst(clock_value).date()
     )
+
+
+def _place_candidate_has_data(
+    location: ResolvedLocation,
+    *,
+    question_type: str,
+    is_realtime_citydata_purpose: bool,
+    current_population_candidate: bool,
+) -> bool:
+    """되묻기 후보 하나가 이번 질문 유형에 실제로 답할 데이터를 갖고 있는지.
+
+    fetch_info_context()가 실제로 타는 갈래(위 question_type 분기)와 같은 기준을
+    쓴다 — 여기서 통과시켜 놓고 정작 그 갈래에서 no_data가 나면 되묻기가
+    무의미해진다.
+    """
+    if question_type == "realtime_commercial":
+        return (
+            select_nearest_commercial_area(
+                latitude=location.latitude, longitude=location.longitude
+            )
+            is not None
+        )
+    if is_realtime_citydata_purpose:
+        return (
+            select_nearest_population_area(
+                latitude=location.latitude, longitude=location.longitude
+            )
+            is not None
+        )
+    if question_type == "concentration":
+        if location.concentration_name is not None:
+            return True
+        # 현재형 혼잡 질문은 집중률 매핑이 없어도 실시간 인구로 답할 수 있다
+        # (_fetch_realtime_population_or_concentration_info와 같은 기준).
+        if current_population_candidate:
+            return (
+                select_nearest_population_area(
+                    latitude=location.latitude, longitude=location.longitude
+                )
+                is not None
+            )
+        return False
+    # 그 외(주차·화장실 등 시설 상세)는 우리 DB에 저장된 장소인지만 본다 —
+    # 특정 필드까지 미리 조회하진 않는다(비용 대비 실익 작음, 클릭 후 그
+    # 필드가 비어 있으면 기존과 같은 "정보 없음"으로 끝난다).
+    return location.place_id is not None
 
 
 def _is_commercial_place_category(category: str | None) -> bool:

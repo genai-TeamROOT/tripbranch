@@ -651,6 +651,77 @@ async def test_local_search_does_not_pick_similar_prefix_name() -> None:
 
 
 @pytest.mark.asyncio
+async def test_local_search_selects_edit_distance_match_for_landmark_candidate() -> None:
+    """"성수 카페거리"(질의)와 "성수동카페거리"(실제 이름)는 "동" 한 글자 차이다.
+
+    정확 일치도 첫토큰 일치도 안 되지만(공백 제거해도 "성수카페거리"≠
+    "성수동카페거리"), 편집거리 1에 역/명소 카테고리라 채택된다(실측, 2026-08-27).
+    """
+    result, geocoding = await _resolve_with_local_search(
+        (_local_place("성수동카페거리", category="여행,명소>거리,골목"),),
+        "성수 카페거리",
+    )
+
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert result.location is not None
+    assert result.location.resolved_name == "성수동카페거리"
+    assert geocoding.calls == []
+
+
+@pytest.mark.asyncio
+async def test_local_search_edit_distance_tier_ignores_non_pickable_candidates() -> None:
+    """같은 한 글자 차이여도 역/명소가 아니면(식당 등) 편집거리 단계를 안 탄다.
+
+    부분 일치를 상호명까지 넓히지 않는다는 파일 전체 원칙을 지킨다.
+    """
+    result, geocoding = await _resolve_with_local_search(
+        (_local_place("성수동카페거리", category="음식점>카페"),),
+        "성수 카페거리",
+        geocoding_responses=[
+            AppError(code="location_not_found", message="위치를 찾을 수 없어요.")
+        ],
+    )
+
+    assert result.status is ResolveLocationStatus.NO_DATA
+    assert geocoding.calls != []
+
+
+@pytest.mark.asyncio
+async def test_local_search_edit_distance_tier_stays_ambiguous_with_two_near_matches() -> None:
+    """편집거리 1인 후보가 둘이면 여전히 하나로 못 좁힌다."""
+    result, _ = await _resolve_with_local_search(
+        (
+            _local_place("성수동카페거리", category="여행,명소>거리,골목"),
+            _local_place("성수도카페거리", category="여행,명소>거리,골목"),
+        ),
+        "성수 카페거리",
+    )
+
+    assert result.status is ResolveLocationStatus.NO_DATA
+    assert result.error is not None
+    assert result.error.cause == "ambiguous_location"
+
+
+@pytest.mark.asyncio
+async def test_local_search_edit_distance_tier_skips_short_queries() -> None:
+    """2글자 질의는 편집거리 단계를 아예 안 탄다 — "신촌"↔"신천"처럼 완전히 다른
+    동네가 편집거리 1일 수 있다. 길이 가드가 없으면 "신천"이 "신촌"의 정답으로
+    잘못 채택된다 — 대신 역/명소 후보가 있는 정상적인 되묻기로 남아야 한다.
+    """
+    result, geocoding = await _resolve_with_local_search(
+        (_local_place("신천", category="여행,명소>거리,골목"),),
+        "신촌",
+    )
+
+    assert result.status is ResolveLocationStatus.NO_DATA
+    assert result.error is not None
+    assert result.error.cause == "ambiguous_location"
+    assert result.error.details["candidate_names"] == "신천"
+    # 후보가 있으니(명소 카테고리) Geocoding까지 갈 이유가 없다.
+    assert geocoding.calls == []
+
+
+@pytest.mark.asyncio
 async def test_local_search_groups_transit_candidates_of_one_station() -> None:
     """같은 역의 노선별 후보는 하나로 본다(D-045).
 

@@ -61,6 +61,35 @@ _SAME_PLACE_RADIUS_KM = 0.5
 # 정답이 3번째였다). 실측한 표기는 4종이었다 — 지하철·전철·기차역·정차역.
 _TRANSIT_CATEGORY_MARKERS = ("지하철", "전철", "기차", "철도", "정차역")
 
+# 정확/첫토큰 일치가 다 실패했을 때만 쓰는 마지막 보정 단계. 오탈자·조사 한 글자
+# 차이만 흡수한다("성수 카페거리" vs 실제 "성수동카페거리", 동 삽입, 실측
+# 2026-08-26). 2는 안 된다 — "경복궁"↔"덕수궁"처럼 둘 다 3글자에 편집거리 2인
+# 서로 다른 실존 랜드마크가 있다.
+_EDIT_DISTANCE_LIMIT = 1
+# 2글자 질의는 이 단계를 아예 안 탄다 — "신촌"↔"신천"처럼 편집거리 1이 완전히
+# 다른 동네를 가리킬 수 있다.
+_MIN_QUERY_LEN_FOR_FUZZY_MATCH = 3
+
+
+def _bounded_edit_distance(a: str, b: str, *, limit: int) -> int:
+    """길이 차가 limit을 넘으면 즉시 limit+1(무조건 탈락)을 반환해 DP를 아낀다.
+
+    이름이 최대 20자 안팎이라 전체 Levenshtein DP 자체도 비용이 미미하다 — 밴드
+    매트릭스 같은 정교화는 이 규모에서 실익이 없다.
+    """
+    if abs(len(a) - len(b)) > limit:
+        return limit + 1
+    previous_row = list(range(len(b) + 1))
+    for i, ca in enumerate(a, start=1):
+        current_row = [i] + [0] * len(b)
+        for j, cb in enumerate(b, start=1):
+            cost = 0 if ca == cb else 1
+            current_row[j] = min(
+                previous_row[j] + 1, current_row[j - 1] + 1, previous_row[j - 1] + cost
+            )
+        previous_row = current_row
+    return previous_row[-1]
+
 
 def strip_location_modifiers(value: str) -> str:
     """장소명 뒤의 위치 수식어를 떼어낸다. 남는 게 없으면 원문을 유지한다.
@@ -122,6 +151,23 @@ def _select_local_search_candidate(
     #    묶으므로, 상호가 하나라도 섞이면 여기서 걸러져 재질문으로 남는다.
     if len(head_matched) > 1 and _is_same_transit_place(head_matched):
         return head_matched[0]
+
+    # 4) 편집 거리 근사 일치. 역/명소류로만 적용해 상호를 엉뚱하게 정답으로
+    #    추정하지 않는다 — 식당·상점까지 넓히면 이 파일의 "부분 일치로 넓히지
+    #    않는다" 원칙과 충돌한다("안국역"≠"안국역사거리"는 그 후보가 기본
+    #    카테고리(음식점)라 여기서도 그대로 안전하다).
+    if len(normalized_query) >= _MIN_QUERY_LEN_FOR_FUZZY_MATCH:
+        near = tuple(
+            item
+            for item in candidates
+            if _is_location_pickable(item)
+            and _bounded_edit_distance(
+                _normalize_name(item.name), normalized_query, limit=_EDIT_DISTANCE_LIMIT
+            )
+            <= _EDIT_DISTANCE_LIMIT
+        )
+        if len(near) == 1:
+            return near[0]
 
     return None
 

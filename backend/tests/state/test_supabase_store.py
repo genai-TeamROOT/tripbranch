@@ -10,6 +10,7 @@ from app.state.errors import StateStoreError
 from app.state.schema import (
     AgentState,
     ConditionChangeLog,
+    PendingInfoContext,
     RecommendationHistory,
     UserConditions,
 )
@@ -130,6 +131,50 @@ def test_save_state_includes_pending_clarification_in_body() -> None:
     assert isinstance(request, httpx.Request)
     body = json.loads(request.content)
     assert body["pending_clarification"] == "location_required"
+
+
+def test_get_state_defaults_pending_info_context_when_column_absent() -> None:
+    """202608270001 마이그레이션 이전 행(컬럼 없음)을 읽어도 깨지지 않아야 한다."""
+    row = {
+        "session_id": SESSION_ID,
+        "user_conditions": {},
+        "api_context": {},
+        "condition_version": 0,
+        "status": "active",
+        "created_at": "2026-07-28T00:00:00+09:00",
+        "updated_at": "2026-07-28T00:00:00+09:00",
+        "last_active_at": "2026-07-28T00:00:00+09:00",
+    }
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=[row]))
+    state = _store(transport).get_state(SESSION_ID)
+    assert state is not None
+    assert state.pending_info_context is None
+
+
+def test_save_state_includes_pending_info_context_in_body() -> None:
+    """INFO의 place_ambiguous 되묻기가 저장한 원래 질문도 model_dump()로 그대로
+    실려야 버튼 클릭 시 재분류 없이 이어받을 수 있다(D-088)."""
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["request"] = request
+        return httpx.Response(201)
+
+    transport = httpx.MockTransport(handler)
+    state = AgentState(
+        session_id=SESSION_ID,
+        user_conditions=UserConditions(),
+        pending_clarification="place_ambiguous",
+        pending_info_context=PendingInfoContext(
+            question_type="parking", place_context="explicit", specific_question="주차장 정보"
+        ),
+    )
+    _store(transport).save_state(state)
+
+    request = seen["request"]
+    assert isinstance(request, httpx.Request)
+    body = json.loads(request.content)
+    assert body["pending_info_context"]["question_type"] == "parking"
 
 
 def test_delete_state_filters_by_session_id() -> None:

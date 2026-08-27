@@ -13,7 +13,7 @@ import pytest
 from app.auth.principal import Principal
 from app.state import service as svc
 from app.state.errors import SessionOwnershipError
-from app.state.schema import now_kst
+from app.state.schema import PendingInfoContext, now_kst
 from app.state.store import InMemoryStateStore
 
 
@@ -1140,3 +1140,99 @@ def test_set_pending_clarification_returns_none_for_missing_session() -> None:
     )
 
     assert result is None
+
+
+def _place_ambiguous_context() -> PendingInfoContext:
+    return PendingInfoContext(
+        question_type="parking",
+        place_context="explicit",
+        specific_question="주차장 정보",
+        visit_time=None,
+    )
+
+
+def test_set_pending_info_context_stores_and_exposes_context() -> None:
+    store = InMemoryStateStore()
+    session_id = _session(store)
+
+    result = svc.set_pending_info_context(
+        svc.SetPendingInfoContextRequest(
+            session_id=session_id, context=_place_ambiguous_context()
+        ),
+        store=store,
+    )
+
+    assert result is not None
+    assert result.pending_info_context == _place_ambiguous_context()
+    context = svc.get_session_context(session_id, store=store)
+    assert context.pending_info_context == _place_ambiguous_context()
+
+
+def test_set_pending_info_context_clears_with_none() -> None:
+    store = InMemoryStateStore()
+    session_id = _session(store)
+    svc.set_pending_info_context(
+        svc.SetPendingInfoContextRequest(
+            session_id=session_id, context=_place_ambiguous_context()
+        ),
+        store=store,
+    )
+
+    svc.set_pending_info_context(
+        svc.SetPendingInfoContextRequest(session_id=session_id, context=None), store=store
+    )
+
+    assert svc.get_session_context(session_id, store=store).pending_info_context is None
+
+
+def test_set_pending_info_context_returns_none_for_missing_session() -> None:
+    store = InMemoryStateStore()
+
+    result = svc.set_pending_info_context(
+        svc.SetPendingInfoContextRequest(session_id="sess_missing", context=None), store=store
+    )
+
+    assert result is None
+
+
+def test_set_pending_clarification_keeps_pending_info_context_for_place_ambiguous() -> None:
+    """code가 place_ambiguous 그대로면 저장해둔 원래 질문을 건드리지 않는다."""
+    store = InMemoryStateStore()
+    session_id = _session(store)
+    svc.set_pending_info_context(
+        svc.SetPendingInfoContextRequest(
+            session_id=session_id, context=_place_ambiguous_context()
+        ),
+        store=store,
+    )
+
+    svc.set_pending_clarification(
+        svc.SetPendingClarificationRequest(session_id=session_id, code="place_ambiguous"),
+        store=store,
+    )
+
+    context = svc.get_session_context(session_id, store=store)
+    assert context.pending_info_context == _place_ambiguous_context()
+
+
+def test_set_pending_clarification_clears_pending_info_context_when_code_changes() -> None:
+    """다른 되묻기 코드로 바뀌거나 지워지면 pending_info_context도 같이 지워진다
+    — place_ambiguous일 때만 의미가 있는 값이라 따로 안 챙기면 다음 턴에
+    엉뚱한 질문(주차 등)으로 새는 걸 막는다."""
+    store = InMemoryStateStore()
+    session_id = _session(store)
+    svc.set_pending_info_context(
+        svc.SetPendingInfoContextRequest(
+            session_id=session_id, context=_place_ambiguous_context()
+        ),
+        store=store,
+    )
+
+    svc.set_pending_clarification(
+        svc.SetPendingClarificationRequest(session_id=session_id, code="location_required"),
+        store=store,
+    )
+
+    context = svc.get_session_context(session_id, store=store)
+    assert context.pending_clarification == "location_required"
+    assert context.pending_info_context is None
