@@ -215,6 +215,43 @@ async def test_shown_place_names_reach_the_model() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["car", "walk", "public", None])
+async def test_transport_condition_reaches_the_model(transport: str | None) -> None:
+    """주차 질문을 권할 자리인지 가릴 근거를 실제로 넘기는지 본다.
+
+    프롬프트에 "walk/public이면 주차 질문을 빼라"고 적어도 이 값이 안 넘어가면 모델은
+    판단할 재료가 없다. 걷겠다고 말한 사용자에게 주차 자리를 묻게 하면 버튼 하나를
+    통째로 버리는 셈이 된다.
+    """
+    llm = _RecordingLLM()
+    response = _response()
+    response.state.user_conditions.transport = transport
+
+    await suggest_follow_ups(_request(), response, llm=llm)  # type: ignore[arg-type]
+
+    assert llm.calls[0]["transport"] == transport
+
+
+@pytest.mark.asyncio
+async def test_a_natural_sentence_fits_within_the_label_cap() -> None:
+    """상한이 문구를 전보문으로 만들지 않는지 본다.
+
+    30자였을 때는 "운영시간 알려줘" 수준으로 줄어야 들어갔다. 누르면 그게 그대로 사용자
+    발화가 되므로, 사람이 실제로 칠 만한 문장이 상한 안에 들어와야 한다.
+    """
+    natural = "여기 몇 시까지 하는지 알려줘"
+    parking = "주차할 자리 지금 있는지 봐줘"
+    assert len(natural) <= MAX_LABEL_LENGTH
+    assert len(parking) <= MAX_LABEL_LENGTH
+
+    llm = _RecordingLLM([natural, parking])
+
+    suggestions = await suggest_follow_ups(_request(), _response(), llm=llm)  # type: ignore[arg-type]
+
+    assert suggestions == [natural, parking]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("given", "expected"),
     [
@@ -231,6 +268,30 @@ async def test_question_mark_is_dropped_only_from_commands(given: str, expected:
 
     "-줘"는 시키는 말이라 물음표가 붙으면 어색하다. 반대로 "주차되나요?"에서 물음표를
     떼면 그쪽이 틀린 문장이 되므로, 어미로 가를 수 있는 경우에만 손댄다.
+    """
+    llm = _RecordingLLM([given])
+
+    suggestions = await suggest_follow_ups(_request(), _response(), llm=llm)  # type: ignore[arg-type]
+
+    assert suggestions == [expected]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [
+        # 2026-08-27 실제로 버튼에 나갔던 문구.
+        ("운현궁 걷어서 얼마나 걸려?", "운현궁 걸어서 얼마나 걸려?"),
+        ("거기까지 걷어가면 몇 분이야?", "거기까지 걸어가면 몇 분이야?"),
+        # 이미 맞는 문구는 그대로 둔다.
+        ("운현궁 걸어서 얼마나 걸려?", "운현궁 걸어서 얼마나 걸려?"),
+    ],
+)
+async def test_observed_spelling_error_is_corrected(given: str, expected: str) -> None:
+    """"걷다"는 ㄷ 불규칙이라 "걷어서"가 아니라 "걸어서"다.
+
+    문구가 그대로 사용자 발화가 되고 화면에도 그대로 실리므로, 프롬프트 지시에만 맡기지
+    않고 관측된 오류는 코드에서도 걷어낸다.
     """
     llm = _RecordingLLM([given])
 

@@ -36,7 +36,9 @@ export function SuggestedFollowUps({
             type="button"
             disabled={isLoading}
             onClick={() => onSelect(suggestion)}
-            className="rounded-full border border-gray-300 px-3 py-1.5 text-sm text-gray-700 disabled:opacity-50 dark:border-gray-700 dark:text-gray-200"
+            /* 문구가 한 문장이라 가운데 정렬하면 줄바꿈될 때 읽기 나쁘다.
+               왼쪽으로 붙이고 버튼 폭은 글자만큼만 차지하게 둔다. */
+            className="rounded-full border border-gray-300 px-3.5 py-2 text-left text-sm leading-5 text-gray-700 disabled:opacity-50 dark:border-gray-700 dark:text-gray-200"
           >
             {suggestion}
           </button>

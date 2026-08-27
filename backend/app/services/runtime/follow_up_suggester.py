@@ -30,9 +30,13 @@ logger = logging.getLogger(__name__)
 # 비용보다 커진다.
 MAX_SUGGESTIONS = 3
 
-# 모바일 폭에서 한 버튼이 두 줄로 접히지 않는 상한. 프롬프트에도 같은 값을 싣지만
-# 지켰는지는 여기서 다시 검사한다.
-MAX_LABEL_LENGTH = 30
+# 버튼 문구 길이 상한. 프롬프트에도 같은 값을 싣지만 지켰는지는 여기서 다시 검사한다.
+#
+# 처음에는 30자였는데 그 상한이 문구를 전보문처럼 만들었다("운영시간 알려줘"). 버튼에
+# 들어가는 것보다 **사람이 실제로 칠 만한 문장**인 쪽이 중요하다 — 누르면 그게 그대로
+# 사용자 발화가 되기 때문이다. 40자면 "여기 몇 시까지 하는지 알려줘" 같은 문장이 들어가고,
+# 화면(`SuggestedFollowUps.tsx`)은 한 줄에 하나씩 흘려 담는다.
+MAX_LABEL_LENGTH = 40
 
 # 물음표를 떼어낼 문장 끝. **의문문이 될 수 없는 명령형 어미만 넣는다.**
 #
@@ -45,6 +49,22 @@ MAX_LABEL_LENGTH = 30
 # "-줘"처럼 의문문으로 읽힐 여지가 없는 어미만 목록으로 둔다. 목록에 없는 어미가
 # 물음표를 달고 오면 그대로 통과하고, 그건 프롬프트 쪽에서 잡을 몫이다.
 _IMPERATIVE_ENDINGS = ("줘", "다오", "해봐", "보여줘")
+
+# 실제로 나온 맞춤법 오류를 문구에서 걷어낸다.
+#
+# **일반 맞춤법 검사기가 아니다.** 한국어 맞춤법을 코드로 일반화하려면 형태소 분석기나
+# 외부 검사 API가 필요한데, 버튼 문구 하나 때문에 의존성을 늘릴 자리가 아니다. 여기 있는
+# 것은 이 슬롯에서 **실제로 관측된** 오류뿐이고, 나머지는 프롬프트의 맞춤법 규칙이 맡는다.
+#
+# "걷다"는 ㄷ 불규칙이라 "걷어서"가 아니라 "걸어서"다. 2026-08-27에 "운현궁 걷어서 얼마나
+# 걸려?"가 버튼으로 나갔다. 걸어서 이동하는 맥락 밖에서 "걷어서"(걷어 올리다)가 쓰일 일이
+# 이 슬롯에는 없어 그대로 바꾼다.
+_TYPO_FIXES = (
+    ("걷어서", "걸어서"),
+    ("걷어가", "걸어가"),
+    ("걷어도", "걸어도"),
+    ("걷어야", "걸어야"),
+)
 
 # LLM에 넘길 장소 이름 수. 이번 턴에 화면에 나간 순서대로 앞에서 자른다 — 뒤쪽 카드는
 # 사용자가 후속 질문의 대상으로 삼을 확률이 낮은데 토큰만 늘린다.
@@ -103,6 +123,14 @@ def _should_suggest(response: AgentResponse) -> bool:
     return bool(response.message.strip())
 
 
+def _fix_known_typos(label: str) -> str:
+    """관측된 맞춤법 오류만 바로잡는다. 목록에 없는 것은 건드리지 않는다."""
+
+    for wrong, right in _TYPO_FIXES:
+        label = label.replace(wrong, right)
+    return label
+
+
 def _strip_stray_question_mark(label: str) -> str:
     """명령형 문장에 붙은 물음표를 뗀다. 그 밖에는 손대지 않는다."""
 
@@ -123,7 +151,7 @@ def _clean(suggestions: list[str], *, user_input: str) -> list[str]:
     spoken = user_input.strip()
     cleaned: list[str] = []
     for suggestion in suggestions:
-        label = _strip_stray_question_mark(" ".join(suggestion.split()))
+        label = _fix_known_typos(_strip_stray_question_mark(" ".join(suggestion.split())))
         if not label or len(label) > MAX_LABEL_LENGTH:
             continue
         # 방금 한 질문을 그대로 다시 권하지 않는다.
@@ -151,6 +179,9 @@ async def suggest_follow_ups(
             intent=response.llm_output.intent,
             assistant_message=response.message,
             place_names=_place_names(response),
+            # 주차 질문을 권할 자리인지 모델이 가릴 근거. 도보·대중교통으로 움직이는
+            # 사용자에게 주차 자리를 묻게 하면 버튼 하나를 통째로 버리는 셈이 된다.
+            transport=response.state.user_conditions.transport,
             max_suggestions=MAX_SUGGESTIONS,
             max_label_length=MAX_LABEL_LENGTH,
         )

@@ -930,6 +930,7 @@ class FakeLLMProvider:
         intent: Intent,
         assistant_message: str,
         place_names: list[str],
+        transport: str | None,
         max_suggestions: int,
         max_label_length: int,
     ) -> ProviderResult[list[str]]:
@@ -942,6 +943,12 @@ class FakeLLMProvider:
         """
 
         del user_input, assistant_message, max_label_length
+        # 이동수단이 차면 주차 질문을 섞는다 — 소비 측이 실제로 읽는 조건이다.
+        if transport == "car" and place_names:
+            return provider_result(
+                [f"{place_names[0]} 근처에 주차할 데 있는지 알려줘"],
+                source=ProviderSource.FAKE_LLM,
+            )
         if intent in (Intent.OUT_OF_SCOPE, Intent.GENERAL) and not place_names:
             return provider_result(
                 ["서울에서 갈 만한 곳 추천해줘"], source=ProviderSource.FAKE_LLM
