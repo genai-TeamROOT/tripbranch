@@ -124,6 +124,15 @@ export function HomePage() {
             dispatch({ type: "APPEND_STREAM_MESSAGE_DELTA", payload: { text: event.data.text } });
             return;
           }
+          if (event.type === "follow_ups") {
+            // done 뒤에 오는 유일한 이벤트다. 첫 턴은 여기서 /chat으로 넘어간 뒤에
+            // 도착할 수 있는데, TripContext가 라우터 위에 있어 그대로 반영된다.
+            dispatch({
+              type: "APPEND_FOLLOW_UP_SUGGESTIONS",
+              payload: { suggestions: event.data.suggestions },
+            });
+            return;
+          }
           if (event.type === "error") throw new ApiError(event.data);
 
           const response = event.data.response;

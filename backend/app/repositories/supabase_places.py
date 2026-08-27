@@ -543,8 +543,17 @@ class SupabasePlaceRepository:
         *,
         match_count: int,
         min_similarity: float,
+        latitude: float | None = None,
+        longitude: float | None = None,
+        radius_km: float | None = None,
     ) -> tuple[PlaceMoodMatch, ...]:
         """올린 사진의 벡터로 분위기가 닮은 장소를 찾는다.
+
+        **좌표와 반경을 주면 DB가 직접 좁힌다.** 후보 목록을 만들어 넘기려면
+        TourAPI 상세 조회를 거쳐야 해 최대 20곳인데, 반경으로 좁히면 그 안
+        전부를 줄 세운다. 사진 유사도는 DB 안에서 끝나 사실상 공짜다.
+
+        둘 다 주면 교집합이고, 좌표만 주면 반경, 후보만 주면 그 목록이다.
 
         `candidate_content_ids`가 None이면 적재된 전체에서 찾는다. 빈 배열은
         None과 다르게 다뤄 빈 결과를 돌려준다 — 후보를 좁히려다 전부 걸러진
@@ -573,6 +582,9 @@ class SupabasePlaceRepository:
                 "p_candidate_content_ids": payload_ids,
                 "p_match_count": match_count,
                 "p_min_similarity": min_similarity,
+                "p_latitude": latitude,
+                "p_longitude": longitude,
+                "p_radius_km": radius_km,
             },
         )
         payload = self._json(response)
@@ -1690,8 +1702,10 @@ def _to_mood_profile(row: object) -> PlaceMoodProfile:
 def _to_mood_match(row: object) -> PlaceMoodMatch:
     if not isinstance(row, Mapping):
         raise SupabaseRepositoryError("invalid mood match row")
+    distance = row.get("distance_km")
     return PlaceMoodMatch(
         content_id=str(row["content_id"]),
         similarity=float(row["similarity"]),
         profile=_to_mood_profile(row),
+        distance_km=float(distance) if distance is not None else None,
     )

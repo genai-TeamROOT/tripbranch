@@ -52,6 +52,12 @@ async def localize_response_for_user(
         for option in clarification.options:
             add(option.label, lambda value, option=option: setattr(option, "label", value))
 
+    for index, suggestion in enumerate(localized.suggested_follow_ups):
+        add(
+            suggestion,
+            lambda value, index=index: localized.suggested_follow_ups.__setitem__(index, value),
+        )
+
     recommendations = localized.recommendations
     if recommendations is not None:
         for item in [*recommendations.recommendations, *recommendations.unverified_recommendations]:
@@ -100,4 +106,30 @@ async def localize_response_for_user(
     return localized
 
 
-__all__ = ["localize_request_for_runtime", "localize_response_for_user"]
+async def localize_follow_ups_for_user(
+    suggestions: list[str], *, language: str, translator: GoogleTranslateProvider | None
+) -> list[str]:
+    """후속 질문 버튼 문구만 따로 번역한다.
+
+    SSE 경로는 `done`을 먼저 보내고 후속 질문을 그 뒤에 만들기 때문에, 응답 전체를
+    번역하는 `localize_response_for_user()`가 이미 지나간 뒤에 문구가 생긴다. 그
+    문구도 화면에 보이는 문장이라 같은 규칙을 타야 해서 이 진입점을 따로 둔다.
+
+    **버튼을 누르면 이 영어 문구가 그대로 user_input으로 재전송되지만 문제되지
+    않는다.** 영어 발화는 Runtime 직전에 다시 한국어로 번역되므로
+    (`localize_request_for_runtime`) 왕복이 성립한다.
+    """
+
+    if language != "en" or not suggestions:
+        return suggestions
+    assert translator is not None
+    return await translator.translate_many(
+        suggestions, source_language="ko", target_language="en"
+    )
+
+
+__all__ = [
+    "localize_follow_ups_for_user",
+    "localize_request_for_runtime",
+    "localize_response_for_user",
+]

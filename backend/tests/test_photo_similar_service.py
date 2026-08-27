@@ -1,4 +1,9 @@
-"""사진 검색 서비스의 위치 우선순위·하드 필터 연결·상한 처리 테스트."""
+"""사진 검색 서비스의 순서·위치 우선순위·하드 필터 연결 테스트.
+
+**순서가 이 파일의 주제다.** 사진 유사도로 먼저 줄을 세우고 상위 N곳만 상세를
+확인한다 — 반대로 하면 후보가 20곳 상한에 걸려 어떤 사진을 올려도 같은 대여섯
+곳이 나온다.
+"""
 
 from __future__ import annotations
 
@@ -14,24 +19,15 @@ from app.services.photo_similar import PhotoSimilarQuery, build_photo_similar_pl
 
 
 @dataclass
-class _Candidate:
-    place_id: str
-    name: str
-    category: str = "카페"
-    distance_km: float = 0.4
-
-
-@dataclass
-class _Prepared:
-    place_ids: list[str]
-
-    @property
-    def preparation(self):
-        rows = [
-            type("Item", (), {"candidate": _Candidate(pid, f"장소 {pid}")})()
-            for pid in self.place_ids
-        ]
-        return type("P", (), {"eligible_candidates": tuple(rows)})()
+class _Detail:
+    content_id: str
+    title: str
+    content_type_id: str = "39"
+    address: str | None = "서울특별시 종로구"
+    latitude: float | None = 37.57
+    longitude: float | None = 126.98
+    operating_hours_raw: str | None = "09:00~22:00"
+    rest_date_raw: str | None = None
 
 
 class _RecordingMood:
@@ -49,15 +45,23 @@ class _RecordingMood:
         self._photo_urls = photo_urls or {}
         self.photo_search_available = available
 
-    async def first_photo_urls(self, content_ids):
-        self.photo_url_calls.append(list(content_ids))
-        return dict(self._photo_urls)
-
-    async def search_by_photo(self, image_bytes, candidate_content_ids=None):
+    async def search_by_photo(
+        self,
+        image_bytes,
+        candidate_content_ids=None,
+        *,
+        latitude=None,
+        longitude=None,
+        radius_km=None,
+        match_count=None,
+    ):
         self.calls.append(
             {
-                "bytes": len(image_bytes),
-                "candidates": list(candidate_content_ids or []),
+                "candidates": candidate_content_ids,
+                "latitude": latitude,
+                "longitude": longitude,
+                "radius_km": radius_km,
+                "match_count": match_count,
             }
         )
         return provider_result(
@@ -66,56 +70,247 @@ class _RecordingMood:
             status=ProviderStatus.SUCCESS if self._matches else ProviderStatus.NO_DATA,
         )
 
+    async def first_photo_urls(self, content_ids):
+        self.photo_url_calls.append(list(content_ids))
+        return dict(self._photo_urls)
 
-def _match(content_id: str, similarity: float) -> PlaceMoodMatch:
+
+class _RecordingDetails:
+    def __init__(self, details: dict[str, _Detail] | None = None):
+        self.calls: list[list[str]] = []
+        self._details = details or {}
+
+    async def get_active_place_details(self, content_ids, **kwargs):
+        self.calls.append(list(content_ids))
+        return {k: v for k, v in self._details.items() if k in set(content_ids)}
+
+
+def _match(content_id: str, similarity: float, distance_km: float = 0.5) -> PlaceMoodMatch:
     return PlaceMoodMatch(
         content_id=content_id,
         similarity=similarity,
         profile=PlaceMoodProfile(
             content_id=content_id, axis_scores={"calm": 0.02}, photo_count=4
         ),
+        distance_km=distance_km,
     )
 
 
 @pytest.fixture
 def patched(monkeypatch):
-    """위치·장소·하드 필터를 대역으로 바꿔 외부 호출 없이 흐름만 본다."""
+    """하드 필터를 대역으로 바꿔 외부 호출 없이 흐름만 본다."""
     seen: dict[str, object] = {}
-
-    class _Tool:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def execute(self, query):
-            seen["nearby"] = query
-            return type("R", (), {"status": None, "places": []})()
 
     async def _fake_prepare(context, **kwargs):
         seen["prepare_kwargs"] = kwargs
-        return _Prepared(seen.get("place_ids", ["a", "b", "c"]))
+        places = (context.places.data or []) if context.places else []
+        closed = seen.get("closed_ids", set())
+        rows = [
+            type("Item", (), {"candidate": type("C", (), {"place_id": p.place_id})()})()
+            for p in places
+            if p.place_id not in closed
+        ]
+        return type(
+            "P", (), {"preparation": type("Prep", (), {"eligible_candidates": tuple(rows)})()}
+        )()
 
-    monkeypatch.setattr(photo_similar, "NearbyPlaceDetailsTool", _Tool)
-    monkeypatch.setattr(photo_similar, "map_places_context", lambda r: None)
     monkeypatch.setattr(photo_similar, "map_location_context", lambda r: None)
     monkeypatch.setattr(photo_similar, "prepare_recommendation_from_context", _fake_prepare)
     return seen
 
 
 @pytest.mark.asyncio
-async def test_gps_is_used_when_no_location_query(patched) -> None:
-    """지역명이 없으면 좌표를 그대로 쓴다 — 지오코딩을 타지 않는다."""
-    mood = _RecordingMood(matches=(_match("a", 0.9),))
+async def test_ranks_by_radius_not_by_candidate_list(patched) -> None:
+    """후보 목록이 아니라 좌표·반경으로 부른다.
 
-    result = await build_photo_similar_places(
-        PhotoSimilarQuery(image_bytes=b"jpeg", latitude=37.57, longitude=126.98),
+    후보 목록으로 부르면 그 목록을 만드는 데 TourAPI 상세 조회가 붙어 최대
+    20곳이 된다.
+    """
+    mood = _RecordingMood(matches=(_match("a", 0.9),))
+    details = _RecordingDetails({"a": _Detail("a", "장소 a")})
+
+    await build_photo_similar_places(
+        PhotoSimilarQuery(image_bytes=b"jpeg", latitude=37.57, longitude=126.98, limit=10),
         geocoding_provider=object(),
         place_provider=object(),
         mood_provider=mood,
+        details_repository=details,
     )
 
-    assert result.center_latitude == pytest.approx(37.57)
-    assert result.center_name == "기기 GPS 위치"
-    assert mood.calls[0]["candidates"] == ["a", "b", "c"]
+    call = mood.calls[0]
+    assert call["candidates"] is None
+    assert call["latitude"] == pytest.approx(37.57)
+    assert call["radius_km"] is not None
+    # 영업시간에 걸려 빠질 것을 감안해 넉넉히 받는다.
+    assert call["match_count"] == 10 * photo_similar._OVERFETCH_FACTOR
+
+
+@pytest.mark.asyncio
+async def test_details_are_fetched_only_for_ranked_places(patched) -> None:
+    """비싼 조회를 "어차피 보여줄 곳"에만 쓴다."""
+    mood = _RecordingMood(matches=(_match("a", 0.9), _match("b", 0.8)))
+    details = _RecordingDetails(
+        {"a": _Detail("a", "장소 a"), "b": _Detail("b", "장소 b")}
+    )
+
+    await build_photo_similar_places(
+        PhotoSimilarQuery(image_bytes=b"x", latitude=37.5, longitude=127.0),
+        geocoding_provider=object(),
+        place_provider=object(),
+        mood_provider=mood,
+        details_repository=details,
+    )
+
+    assert details.calls == [["a", "b"]]
+
+
+@pytest.mark.asyncio
+async def test_photo_order_survives_the_hard_filter(patched) -> None:
+    """하드 필터를 지나도 사진 유사도 순서가 유지된다."""
+    mood = _RecordingMood(
+        matches=(_match("a", 0.9), _match("b", 0.8), _match("c", 0.7))
+    )
+    details = _RecordingDetails(
+        {cid: _Detail(cid, f"장소 {cid}") for cid in ("a", "b", "c")}
+    )
+
+    result = await build_photo_similar_places(
+        PhotoSimilarQuery(image_bytes=b"x", latitude=37.5, longitude=127.0),
+        geocoding_provider=object(),
+        place_provider=object(),
+        mood_provider=mood,
+        details_repository=details,
+    )
+
+    assert [row.content_id for row in result.places] == ["a", "b", "c"]
+
+
+@pytest.mark.asyncio
+async def test_closed_places_are_dropped_and_counted(patched) -> None:
+    """닫힌 곳은 빼고 몇 곳이 빠졌는지 남긴다.
+
+    결과가 적을 때 "닮은 곳이 없다"인지 "다 닫혔다"인지 갈릴 수 있어야 한다.
+    """
+    patched["closed_ids"] = {"b"}
+    mood = _RecordingMood(matches=(_match("a", 0.9), _match("b", 0.8)))
+    details = _RecordingDetails(
+        {"a": _Detail("a", "장소 a"), "b": _Detail("b", "장소 b")}
+    )
+
+    result = await build_photo_similar_places(
+        PhotoSimilarQuery(image_bytes=b"x", latitude=37.5, longitude=127.0),
+        geocoding_provider=object(),
+        place_provider=object(),
+        mood_provider=mood,
+        details_repository=details,
+    )
+
+    assert [row.content_id for row in result.places] == ["a"]
+    assert result.truncated_count == 1
+
+
+@pytest.mark.asyncio
+async def test_hard_filter_reuses_the_recommendation_path(patched) -> None:
+    """영업시간 판정을 직접 만들지 않는다.
+
+    여기서 새로 만들면 같은 장소가 추천에서는 열렸는데 사진 검색에서는 닫힌
+    것으로 갈릴 수 있다.
+    """
+    mood = _RecordingMood(matches=(_match("a", 0.9),))
+    details = _RecordingDetails({"a": _Detail("a", "장소 a")})
+
+    await build_photo_similar_places(
+        PhotoSimilarQuery(
+            image_bytes=b"x", latitude=37.5, longitude=127.0, ignore_operating_hours=True
+        ),
+        geocoding_provider=object(),
+        place_provider=object(),
+        mood_provider=mood,
+        details_repository=details,
+    )
+
+    assert patched["prepare_kwargs"]["ignore_operating_hours"] is True
+
+
+@pytest.mark.asyncio
+async def test_place_without_details_is_skipped(patched) -> None:
+    """상세가 없으면 영업 여부를 판정할 수 없다. 열려 있다고 단정하지 않는다."""
+    mood = _RecordingMood(matches=(_match("a", 0.9), _match("ghost", 0.8)))
+    details = _RecordingDetails({"a": _Detail("a", "장소 a")})
+
+    result = await build_photo_similar_places(
+        PhotoSimilarQuery(image_bytes=b"x", latitude=37.5, longitude=127.0),
+        geocoding_provider=object(),
+        place_provider=object(),
+        mood_provider=mood,
+        details_repository=details,
+    )
+
+    assert [row.content_id for row in result.places] == ["a"]
+
+
+@pytest.mark.asyncio
+async def test_limit_is_applied_after_filtering(patched) -> None:
+    """상한은 걸러낸 뒤에 적용한다. 먼저 자르면 닫힌 곳이 자리를 차지한다."""
+    patched["closed_ids"] = {"a"}
+    mood = _RecordingMood(
+        matches=(_match("a", 0.9), _match("b", 0.8), _match("c", 0.7))
+    )
+    details = _RecordingDetails(
+        {cid: _Detail(cid, f"장소 {cid}") for cid in ("a", "b", "c")}
+    )
+
+    result = await build_photo_similar_places(
+        PhotoSimilarQuery(image_bytes=b"x", latitude=37.5, longitude=127.0, limit=2),
+        geocoding_provider=object(),
+        place_provider=object(),
+        mood_provider=mood,
+        details_repository=details,
+    )
+
+    assert [row.content_id for row in result.places] == ["b", "c"]
+
+
+@pytest.mark.asyncio
+async def test_first_photo_url_is_attached_for_shown_places_only(patched) -> None:
+    """비교에 쓴 사진을 붙이되 보여줄 곳만 조회한다."""
+    mood = _RecordingMood(
+        matches=(_match("a", 0.9), _match("b", 0.8)),
+        photo_urls={"a": "https://tong.visitkorea.or.kr/x.jpg"},
+    )
+    details = _RecordingDetails(
+        {"a": _Detail("a", "장소 a"), "b": _Detail("b", "장소 b")}
+    )
+
+    result = await build_photo_similar_places(
+        PhotoSimilarQuery(image_bytes=b"x", latitude=37.5, longitude=127.0, limit=1),
+        geocoding_provider=object(),
+        place_provider=object(),
+        mood_provider=mood,
+        details_repository=details,
+    )
+
+    assert result.places[0].image_url == "https://tong.visitkorea.or.kr/x.jpg"
+    assert mood.photo_url_calls == [["a"]]
+
+
+@pytest.mark.asyncio
+async def test_no_ranked_result_returns_zero_candidates(patched) -> None:
+    """반경 안에 사진 벡터가 있는 장소 자체가 없었다는 뜻이다."""
+    mood = _RecordingMood(matches=())
+    details = _RecordingDetails()
+
+    result = await build_photo_similar_places(
+        PhotoSimilarQuery(image_bytes=b"x", latitude=37.5, longitude=127.0),
+        geocoding_provider=object(),
+        place_provider=object(),
+        mood_provider=mood,
+        details_repository=details,
+    )
+
+    assert result.places == ()
+    assert result.candidate_count == 0
+    assert details.calls == []
 
 
 @pytest.mark.asyncio
@@ -127,6 +322,7 @@ async def test_missing_location_asks_again(patched) -> None:
             geocoding_provider=object(),
             place_provider=object(),
             mood_provider=_RecordingMood(),
+            details_repository=_RecordingDetails(),
         )
 
     assert error.value.code == "location_required"
@@ -134,16 +330,14 @@ async def test_missing_location_asks_again(patched) -> None:
 
 @pytest.mark.asyncio
 async def test_encoder_absent_is_an_error_not_empty_result(patched) -> None:
-    """기능이 꺼진 것과 "닮은 곳이 없다"는 다르다.
-
-    조용히 빈 목록을 주면 왜 안 나오는지 추적할 수 없다(D-042와 같은 이유).
-    """
+    """기능이 꺼진 것과 "닮은 곳이 없다"는 다르다(D-042와 같은 이유)."""
     with pytest.raises(AppError) as error:
         await build_photo_similar_places(
             PhotoSimilarQuery(image_bytes=b"jpeg", latitude=37.5, longitude=127.0),
             geocoding_provider=object(),
             place_provider=object(),
             mood_provider=_RecordingMood(available=False),
+            details_repository=_RecordingDetails(),
         )
 
     assert error.value.code == "photo_search_unavailable"
@@ -157,127 +351,7 @@ async def test_empty_image_is_rejected(patched) -> None:
             geocoding_provider=object(),
             place_provider=object(),
             mood_provider=_RecordingMood(),
+            details_repository=_RecordingDetails(),
         )
 
     assert error.value.code == "empty_image"
-
-
-@pytest.mark.asyncio
-async def test_candidates_are_capped_at_the_rpc_limit(patched) -> None:
-    """500건을 넘기면 RPC가 에러를 낸다. 앞에서 잘라 넘기고 몇 건 잘렸는지 알린다."""
-    patched["place_ids"] = [str(i) for i in range(620)]
-    mood = _RecordingMood()
-
-    result = await build_photo_similar_places(
-        PhotoSimilarQuery(image_bytes=b"jpeg", latitude=37.5, longitude=127.0),
-        geocoding_provider=object(),
-        place_provider=object(),
-        mood_provider=mood,
-    )
-
-    assert len(mood.calls[0]["candidates"]) == 500
-    assert result.candidate_count == 500
-    assert result.truncated_count == 120
-
-
-@pytest.mark.asyncio
-async def test_result_carries_candidate_name_without_extra_lookup(patched) -> None:
-    """장소명은 후보에서 가져온다 — 상세를 다시 조회하지 않는다."""
-    mood = _RecordingMood(matches=(_match("b", 0.88), _match("a", 0.81)))
-
-    result = await build_photo_similar_places(
-        PhotoSimilarQuery(image_bytes=b"jpeg", latitude=37.5, longitude=127.0),
-        geocoding_provider=object(),
-        place_provider=object(),
-        mood_provider=mood,
-    )
-
-    assert [row.name for row in result.places] == ["장소 b", "장소 a"]
-    assert result.places[0].similarity == pytest.approx(0.88)
-    assert result.places[0].photo_count == 4
-
-
-@pytest.mark.asyncio
-async def test_unknown_content_id_is_skipped(patched) -> None:
-    """후보에 없는 content_id가 오면 이름 없는 카드를 내보내지 않고 건너뛴다."""
-    mood = _RecordingMood(matches=(_match("zzz", 0.9), _match("a", 0.8)))
-
-    result = await build_photo_similar_places(
-        PhotoSimilarQuery(image_bytes=b"jpeg", latitude=37.5, longitude=127.0),
-        geocoding_provider=object(),
-        place_provider=object(),
-        mood_provider=mood,
-    )
-
-    assert [row.content_id for row in result.places] == ["a"]
-
-
-@pytest.mark.asyncio
-async def test_limit_is_applied(patched) -> None:
-    mood = _RecordingMood(
-        matches=(_match("a", 0.9), _match("b", 0.8), _match("c", 0.7))
-    )
-
-    result = await build_photo_similar_places(
-        PhotoSimilarQuery(image_bytes=b"x", latitude=37.5, longitude=127.0, limit=2),
-        geocoding_provider=object(),
-        place_provider=object(),
-        mood_provider=mood,
-    )
-
-    assert len(result.places) == 2
-
-
-@pytest.mark.asyncio
-async def test_first_photo_url_is_attached(patched) -> None:
-    """비교에 쓴 사진을 결과에 싣는다.
-
-    places.first_image_url이 아니다 — 2,008곳 중 1,163곳이 서로 다른 주소라
-    (2026-08-27 실측) 대표 이미지를 보여주면 비교하지 않은 사진을 보여주게 된다.
-    """
-    mood = _RecordingMood(
-        matches=(_match("a", 0.9),),
-        photo_urls={"a": "https://tong.visitkorea.or.kr/x.jpg"},
-    )
-
-    result = await build_photo_similar_places(
-        PhotoSimilarQuery(image_bytes=b"jpeg", latitude=37.5, longitude=127.0),
-        geocoding_provider=object(),
-        place_provider=object(),
-        mood_provider=mood,
-    )
-
-    assert result.places[0].image_url == "https://tong.visitkorea.or.kr/x.jpg"
-
-
-@pytest.mark.asyncio
-async def test_photo_urls_are_fetched_only_for_shown_places(patched) -> None:
-    """후보 전체가 아니라 보여줄 만큼만 조회한다."""
-    mood = _RecordingMood(
-        matches=(_match("a", 0.9), _match("b", 0.8), _match("c", 0.7))
-    )
-
-    await build_photo_similar_places(
-        PhotoSimilarQuery(image_bytes=b"x", latitude=37.5, longitude=127.0, limit=2),
-        geocoding_provider=object(),
-        place_provider=object(),
-        mood_provider=mood,
-    )
-
-    assert mood.photo_url_calls == [["a", "b"]]
-
-
-@pytest.mark.asyncio
-async def test_missing_photo_url_is_not_an_error(patched) -> None:
-    """사진이 안 보이는 것과 결과가 안 나오는 것은 무게가 다르다."""
-    mood = _RecordingMood(matches=(_match("a", 0.9),), photo_urls={})
-
-    result = await build_photo_similar_places(
-        PhotoSimilarQuery(image_bytes=b"x", latitude=37.5, longitude=127.0),
-        geocoding_provider=object(),
-        place_provider=object(),
-        mood_provider=mood,
-    )
-
-    assert result.places[0].image_url is None
-    assert result.places[0].name == "장소 a"

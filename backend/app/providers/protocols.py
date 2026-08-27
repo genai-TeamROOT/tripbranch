@@ -19,6 +19,7 @@ from app.domain.models import (
     GeocodeResult,
     HolidayResult,
     LocalSearchPlace,
+    MunicipalParkingStatus,
     PlaceBarrierFreeDetails,
     PlaceCategoryFilter,
     PlaceCommonDetails,
@@ -199,6 +200,28 @@ class LLMProvider(Protocol):
 
         comparison 밖의 사실·점수·순위를 만들지 않는다. 호출부는 LLM 장애 시
         고정 템플릿으로 fallback해 비교 데이터 응답 자체를 유지해야 한다.
+        """
+        ...
+
+    async def generate_follow_up_suggestions(
+        self,
+        *,
+        user_input: str,
+        intent: Intent,
+        assistant_message: str,
+        place_names: list[str],
+        max_suggestions: int,
+        max_label_length: int,
+    ) -> ProviderResult[list[str]]:
+        """방금 끝난 턴 뒤에 버튼으로 보여줄 다음 발화 후보를 만든다.
+
+        Intent에 매이지 않는 유일한 생성 메서드다 — 어떤 Intent로 끝난 턴이든 그 뒤에
+        한 번 돈다. place_names는 이번 턴에 화면에 나간 장소 이름(추천 카드·일정·비교·
+        INFO 카드)으로, 답변 본문이 고정 문구인 경로(RECOMMEND 카드 wrapper 등)에서
+        모델이 근거로 삼을 유일한 재료다.
+
+        개수·길이 상한은 호출부가 코드로 다시 검사한다. 실패해도 답변 자체는 이미
+        확정돼 있으므로 호출부는 빈 목록으로 낮춰야 한다.
         """
         ...
 
@@ -442,6 +465,14 @@ class RealtimeCityDataProvider(Protocol):
         self, area_name_or_code: str
     ) -> ProviderResult[RealtimeCityDataResult]:
         """서울시 주요 장소의 실시간 상권·인구 데이터를 한 번에 반환한다."""
+        ...
+
+
+class MunicipalParkingProvider(Protocol):
+    async def get_district_parking(
+        self, district: str
+    ) -> ProviderResult[tuple[MunicipalParkingStatus, ...]]:
+        """서울시 공영주차장 API에서 한 구의 최신 주차 현황을 가져온다."""
         ...
 
 

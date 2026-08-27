@@ -51,6 +51,9 @@ class _RecordingRepository:
         *,
         match_count: int,
         min_similarity: float,
+        latitude: float | None = None,
+        longitude: float | None = None,
+        radius_km: float | None = None,
     ) -> tuple[PlaceMoodMatch, ...]:
         self.search_calls.append(
             {
@@ -62,6 +65,9 @@ class _RecordingRepository:
                 ),
                 "match_count": match_count,
                 "min_similarity": min_similarity,
+                "latitude": latitude,
+                "longitude": longitude,
+                "radius_km": radius_km,
             }
         )
         return self._matches
@@ -137,6 +143,9 @@ async def test_photo_search_passes_defaults_to_repository() -> None:
             "candidates": ["a", "b"],
             "match_count": DEFAULT_MATCH_COUNT,
             "min_similarity": DEFAULT_MIN_SIMILARITY,
+            "latitude": None,
+            "longitude": None,
+            "radius_km": None,
         }
     ]
 
@@ -193,3 +202,24 @@ async def test_describe_works_without_encoder() -> None:
 
     assert result.metadata.status is ProviderStatus.SUCCESS
     assert provider.photo_search_available is False
+
+
+@pytest.mark.asyncio
+async def test_radius_is_passed_through() -> None:
+    """좌표와 반경으로 부르면 DB가 직접 좁힌다.
+
+    후보 목록으로 부르면 그 목록을 만드는 데 TourAPI 상세 조회가 붙어 최대
+    20곳이 된다 — 2,009곳을 적재해 두고 그 안에서만 고르는 셈이 된다.
+    """
+    repository = _RecordingRepository(matches=(_match("a", 0.9),))
+    provider = PlaceMoodProvider(repository, _RecordingEncoder())
+
+    await provider.search_by_photo(
+        b"bytes", None, latitude=37.57, longitude=126.98, radius_km=2.0, match_count=40
+    )
+
+    call = repository.search_calls[0]
+    assert call["candidates"] is None
+    assert call["latitude"] == pytest.approx(37.57)
+    assert call["radius_km"] == pytest.approx(2.0)
+    assert call["match_count"] == 40

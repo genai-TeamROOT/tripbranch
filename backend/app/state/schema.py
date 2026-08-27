@@ -65,6 +65,28 @@ class ApiContext(BaseModel):
     gps_location_confirmed_at: datetime | None = None
 
 
+# ---------------------------------------------------------------- INFO 되묻기
+
+class PendingInfoContext(BaseModel):
+    """INFO의 place_ambiguous 되묻기가 저장해두는 원래 질문.
+
+    RECOMMEND/SCHEDULE의 되묻기는 session_context.user_conditions만으로
+    결정적으로 재구성되지만(_resolve_clarification_choice), INFO는 question_type/
+    specific_question/place_context/visit_time을 세션 어디에도 저장하지 않아
+    되묻기 버튼을 누르면 장소명만 가지고 처음부터 재분류됐다("주차장 질문이었다"는
+    사실이 사라짐). 이 값을 pending_clarification="place_ambiguous"와 함께
+    저장해두면 버튼 클릭 시 InfoPayload를 그대로 재구성할 수 있다.
+
+    B는 이 값을 해석하지 않고 그대로 보관만 한다 — question_type/place_context
+    허용값 정의는 Package A(app.schemas.QuestionType/PlaceContext)의 책임이다.
+    """
+
+    question_type: str
+    place_context: str
+    specific_question: str | None = None
+    visit_time: str | None = None
+
+
 # ---------------------------------------------------------------- 상태
 
 class AgentState(BaseModel):
@@ -84,6 +106,9 @@ class AgentState(BaseModel):
     # B는 판단하지 않고 A가 준 값을 보관만 한다 — 되묻기 판정은 LLM과 C가 하고,
     # 소비(부분 갱신 여부 결정)는 A의 state_transform이 한다.
     pending_clarification: str | None = None
+    # pending_clarification == "place_ambiguous"일 때만 의미가 있다. 다른 코드로
+    # 바뀌거나 지워지면 같이 지워진다(agent_runtime.py의 _remember_clarification).
+    pending_info_context: PendingInfoContext | None = None
     # "운영 중이 아닌 곳도 볼게요"를 한 번 선택하면 이 시각까지는 매 턴 다시
     # 묻지 않고 폐점 후보도 계속 포함한다(실사용 피드백, 2026-08-13 — 매 턴
     # 버튼을 다시 눌러야 하는 게 불편하다는 지적).

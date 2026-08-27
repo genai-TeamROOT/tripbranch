@@ -23,6 +23,7 @@ from app.state.merge import merge_conditions
 from app.state.operations import IgnoredOperation, Operation, validate_all
 from app.state.schema import (
     FeedbackReasonCode,
+    PendingInfoContext,
     RecommendedItem,
     RecommendedItemInput,
     UserConditions,
@@ -110,6 +111,9 @@ class SessionContextResponse(BaseModel):
     # 직전 턴이 되묻기로 끝났다면 그 사유 코드. A가 이번 턴의 조건 병합 방식을
     # 정할 때 읽는다.
     pending_clarification: str | None = None
+    # pending_clarification == "place_ambiguous"일 때 원래 INFO 질문을 그대로
+    # 담고 있다. A가 되묻기 버튼 클릭을 결정적으로 재구성할 때 읽는다.
+    pending_info_context: PendingInfoContext | None = None
     # "운영 중이 아닌 곳도 볼게요"가 유효한 만료 시각. A가 now와 비교해서
     # 이번 턴에도 폐점 후보를 계속 포함할지 판정한다(state.py는 판단하지 않음).
     ignore_operating_hours_until: datetime | None = None
@@ -218,6 +222,22 @@ class SetPendingClarificationRequest(BaseModel):
 class SetPendingClarificationResponse(BaseModel):
     session_id: str
     pending_clarification: str | None
+
+
+class SetPendingInfoContextRequest(BaseModel):
+    """INFO 되묻기(place_ambiguous)가 원래 질문을 저장하는 요청.
+
+    set_pending_clarification과 짝을 이룬다 — code="place_ambiguous"를 저장할
+    때 바로 뒤에 이 요청도 보낸다. context=None이면 지운다.
+    """
+
+    session_id: str
+    context: PendingInfoContext | None = None
+
+
+class SetPendingInfoContextResponse(BaseModel):
+    session_id: str
+    pending_info_context: PendingInfoContext | None
 
 
 class SetIgnoreOperatingHoursRequest(BaseModel):
@@ -587,6 +607,7 @@ def get_session_context(
         last_recommended_run_id=history_module.get_last_recommended_run_id(store, sid),
         last_intent=state.last_intent,
         pending_clarification=state.pending_clarification,
+        pending_info_context=state.pending_info_context,
         ignore_operating_hours_until=state.ignore_operating_hours_until,
         user_conditions=state.user_conditions,
         api_context=_build_api_context_view(state),
@@ -756,12 +777,46 @@ def set_pending_clarification(
         return None
 
     state.pending_clarification = request.code
+    # pending_info_context는 place_ambiguous일 때만 의미가 있다. 다른 코드로
+    # 바뀌거나(다른 되묻기) 지워지면(정상 완료) 여기서 같이 지운다 — 그러면
+    # set_pending_info_context()는 place_ambiguous를 저장하는 호출부 한 곳만
+    # 신경 쓰면 되고, 기존 set_pending_clarification 호출부 전부가 자동으로
+    # 안전하게 정리된다.
+    if request.code != "place_ambiguous":
+        state.pending_info_context = None
     session_module.touch(state)
     store.save_state(state)
 
     return SetPendingClarificationResponse(
         session_id=state.session_id,
         pending_clarification=state.pending_clarification,
+    )
+
+
+@_wrap_store_errors
+def set_pending_info_context(
+    request: SetPendingInfoContextRequest,
+    store: StateStore | None = None,
+) -> SetPendingInfoContextResponse | None:
+    """INFO 되묻기(place_ambiguous)가 원래 질문을 저장하거나(context) 지운다(None).
+
+    set_pending_clarification(code="place_ambiguous") 직후에 호출한다. 세션이
+    없으면 None을 반환하며 세션을 생성하지 않는다(다른 pending_* 갱신 함수들과
+    같은 방어 패턴).
+    """
+    store = store or get_store()
+
+    state = store.get_state(request.session_id)
+    if state is None:
+        return None
+
+    state.pending_info_context = request.context
+    session_module.touch(state)
+    store.save_state(state)
+
+    return SetPendingInfoContextResponse(
+        session_id=state.session_id,
+        pending_info_context=state.pending_info_context,
     )
 
 

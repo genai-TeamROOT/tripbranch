@@ -28,8 +28,12 @@ app/prompts/
 ├── general/                    # GENERAL 주제·답변
 ├── out_of_scope/               # 범위 밖·안전 분류
 ├── schedule/                   # 일정 편성·부분 재편성
+├── follow_up/                  # 턴이 끝난 뒤 다음 발화 제안
 └── synthetic_review/           # TourAPI 기반 합성 리뷰 생성
 ```
+
+`follow_up/`과 `synthetic_review/`는 인텐트 폴더가 아닙니다 — 인텐트 하나에 속하지 않아
+`meta.yaml`에 `intent` 키가 없습니다. 나머지 규칙(슬롯·버전·아카이브)은 동일합니다.
 
 각 인텐트 폴더는 아래 구조를 공통으로 사용합니다.
 

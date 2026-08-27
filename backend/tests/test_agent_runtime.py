@@ -74,6 +74,7 @@ from app.services.runtime.compare_context_schemas import (
     CompareContextRequest,
     CompareContextResponse,
 )
+from app.services.runtime.follow_up_suggester import MAX_LABEL_LENGTH, MAX_SUGGESTIONS
 from app.services.runtime.info_context_schemas import InfoContextRequest, InfoContextResponse
 from app.services.runtime.real_recommendation_provider import RealRecommendationProvider
 from app.services.runtime.stubs import (
@@ -244,6 +245,31 @@ async def test_recommend_flow_reaches_recommendations() -> None:
     assert providers["tool_provider"].last_request.gps_location == Coordinates(
         latitude=37.5788, longitude=126.9770
     )
+
+
+@pytest.mark.asyncio
+async def test_turn_carries_follow_up_suggestions() -> None:
+    """응답 조립 지점이 열다섯 군데라도 후속 질문은 한 곳에서 붙는다.
+
+    `run_agent_flow`가 본체의 응답을 받은 직후 한 번만 부르므로, 어느 경로로 만들어진
+    응답이든 같은 자리에서 채워진다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.recommendations is not None
+    assert 0 < len(response.suggested_follow_ups) <= MAX_SUGGESTIONS
+    assert all(len(label) <= MAX_LABEL_LENGTH for label in response.suggested_follow_ups)
 
 
 @pytest.mark.asyncio
@@ -2962,6 +2988,103 @@ async def test_clarification_choice_location_ambiguous_candidate_resolves_search
     assert resolved.state.user_conditions.search_center == "종각역"
     context = get_session_context(resolved.state.session_id, store=store)
     assert context.pending_clarification is None
+
+
+class _InfoPlaceAmbiguousToolProvider:
+    """C 대역 — INFO의 place_ambiguous를 후보 이름과 함께 돌려준다.
+
+    agent_context/service.py의 실제 필터링 로직(question_type별 가용성)은
+    tests/agent_context/test_service.py에서 검증한다. 여기서는 agent_runtime.py가
+    그 결과를 버튼으로 바꾸고, 상태에 원래 질문을 저장하는지만 본다.
+    """
+
+    def __init__(self, candidates: list[str]) -> None:
+        self._candidates = candidates
+        self.info_call_count = 0
+
+    async def fetch_info_context(self, request: InfoContextRequest) -> InfoContextResponse:
+        self.info_call_count += 1
+        return InfoContextResponse(
+            request_id=request.request_id,
+            status="needs_clarification",
+            clarification=Clarification(code="place_ambiguous", candidates=self._candidates),
+        )
+
+
+@pytest.mark.asyncio
+async def test_info_place_ambiguous_shows_candidates_as_buttons() -> None:
+    """INFO도 RECOMMEND의 location_ambiguous와 같은 방식으로 후보를 버튼으로
+    보여줘야 한다 — 예전엔 candidates가 항상 버려졌다(실측, 2026-08-27)."""
+    store = InMemoryStateStore()
+    providers = _providers()
+    providers["tool_provider"] = _InfoPlaceAmbiguousToolProvider(
+        ["창덕궁 제1주차장", "창덕궁 제2주차장"]
+    )
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="창덕궁 주차장 정보 알려줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.llm_output.intent == "INFO"
+    assert response.llm_output.status == OutputStatus.NEEDS_CLARIFICATION
+    clarification = response.llm_output.clarification
+    assert clarification is not None
+    option_ids = {option.id for option in clarification.options}
+    assert option_ids == {"창덕궁 제1주차장", "창덕궁 제2주차장"}
+    context = get_session_context(response.state.session_id, store=store)
+    assert context.pending_clarification == "place_ambiguous"
+    assert context.pending_info_context is not None
+    assert context.pending_info_context.question_type == "parking"
+
+
+@pytest.mark.asyncio
+async def test_clarification_choice_place_ambiguous_candidate_resolves_info_request() -> None:
+    """되묻기 버튼 클릭 시 재분류 없이 저장해둔 question_type을 그대로 이어받는다
+    — 클릭 전엔 이 상태가 없어 장소명만으로 처음부터 재분류됐다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+    providers["tool_provider"] = _InfoPlaceAmbiguousToolProvider(
+        ["창덕궁 제1주차장", "창덕궁 제2주차장"]
+    )
+
+    ambiguous = await run_agent_flow(
+        AgentRequest(
+            user_input="창덕궁 주차장 정보 알려줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+    assert ambiguous.llm_output.status == OutputStatus.NEEDS_CLARIFICATION
+
+    providers["tool_provider"] = _CountingToolProvider()
+    resolved = await run_agent_flow(
+        AgentRequest(
+            user_input="창덕궁 제1주차장",
+            session_id=ambiguous.state.session_id,
+            device_location=DEVICE_LOCATION,
+            clarification_choice="창덕궁 제1주차장",
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert resolved.llm_output.intent == "INFO"
+    assert resolved.llm_output.status == OutputStatus.COMPLETE
+    assert resolved.llm_output.info is not None
+    assert resolved.llm_output.info.place_name == "창덕궁 제1주차장"
+    # question_type이 재분류로 사라지지 않고 그대로 이어받아졌다.
+    assert resolved.llm_output.info.question_type == "parking"
+    context = get_session_context(resolved.state.session_id, store=store)
+    assert context.pending_clarification is None
+    assert context.pending_info_context is None
 
 
 class _FixedStatusToolProvider:

@@ -4,10 +4,29 @@
 
 | 슬롯 | 관리 버전 | 템플릿 | 공유 규칙 |
 | --- | --- | --- | --- |
-| info.extract | v3.2.0 | extract.md, question_type_rules.md, place_context_rules.md, visit_time_rules.md | factuality |
+| info.extract | v3.2.1 | extract.md, question_type_rules.md, place_context_rules.md, visit_time_rules.md | factuality |
 | info.answer | v1.0.0 | answer_instruction.md | persona, factuality |
 
 ## Draft
+
+### v3.2.1 (2026-08-27, 공영주차장 실시간 경로)
+
+  `공영/시영주차장`을 명시한 현재 주차 자리 질문을 신규
+  `realtime_public_parking`으로 분리했습니다. 이 유형은 서울시
+  GetParkingInfo의 구 단위 공영주차장 최신 대수(최근 20분 이내 갱신 여부)를
+  사용합니다. 일반 `realtime_parking`은 기존처럼 서울시 실시간 도시데이터의
+  공영·민영 근접 목록을 함께 보여줍니다.
+
+  **분리 이유**: 두 데이터는 모두 서울시 제공이지만 범위와 신뢰도가 다릅니다.
+  도시데이터는 특정 핫스팟의 근접 목록이라 모든 공영주차장을 포괄하지 않을 수
+  있고, GetParkingInfo는 공영주차장 코드·최신 주차 대수를 구 단위로 제공합니다.
+  질문의 "공영/시영" 명시 여부를 계약으로 남겨, 사용자에게 민영 목록을 섞어
+  공영 잔여 대수처럼 보이게 하지 않습니다.
+
+  기존 v3.2.0 원문은
+  `archive/question_type_rules__legacy-3.2.md`에 보관했습니다. 평가 케이스는
+  RP-003/RP-004를 추가했습니다. 구조화 출력 enum과 C INFO 계약도 같은 변경에
+  포함해야 합니다.
 
 ### v3.2.0 (2026-08-26, D-091)
 
