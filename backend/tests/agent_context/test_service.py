@@ -18,6 +18,7 @@ from app.domain.models import (
     ConcentrationForecast,
     ConcentrationResult,
     GeocodeResult,
+    LocalSearchPlace,
     PlaceCategoryFilter,
     StoredPlaceLocation,
     WeatherForecastResult,
@@ -1475,3 +1476,233 @@ async def test_search_center_failure_asks_user_for_a_location() -> None:
     assert response.clarification is not None
     assert response.clarification.code == "location_required"
     assert repository.calls == ["없는장소이름"]
+
+
+# --- TP-171: 오늘 혼잡 질문이 위치 해석에서 저장소 장소를 놓치지 않는다 ---
+
+
+class _FixedLocalSearchProvider:
+    """한 후보만 항상 돌려주는 지역 검색 대역."""
+
+    def __init__(self, place: LocalSearchPlace) -> None:
+        self._place = place
+        self.calls: list[str] = []
+
+    async def search_places_by_name(self, query: str, *, display: int = 5):
+        self.calls.append(query)
+        return provider_result((self._place,), source=ProviderSource.FAKE_LOCAL_SEARCH)
+
+
+@pytest.mark.asyncio
+async def test_info_concentration_today_question_resolves_via_database_first() -> None:
+    """TP-171: 명동성당류 — 오늘 혼잡 질문도 저장소를 먼저 본다.
+
+    REALTIME_CITYDATA로 위치를 풀던 예전 코드라면 저장소를 건너뛰고 곧장
+    Geocoding으로 갔을 것이다. Geocoding을 일부러 장애로 만들어 두고, 실제로
+    한 번도 불리지 않았음을 확인해 DB가 먼저 소비됐다는 걸 증명한다.
+    """
+    geocoding = _AlwaysFailingGeocodingProvider()
+    service = ContextService(
+        ContextTools(
+            location=ResolveLocationTool(
+                geocoding,
+                place_repository=_StoredPlaceRepository(
+                    # 121곳 실시간 인구 지역 반경(1km) 밖의 좌표를 골라 이 테스트가
+                    # realtime_citydata Tool 없이도 곧장 집중률로 떨어지게 한다.
+                    _mapped_place("명동성당", latitude=37.30, longitude=127.20)
+                ),
+            ),
+            places=NearbyPlaceDetailsTool(FakePlaceProvider(), FakePlaceProvider()),
+            weather=GetWeatherForecastTool(FakeWeatherProvider()),
+            holidays=GetHolidaysTool(FakeHolidayProvider()),
+            concentration=GetConcentrationTool(FakeConcentrationProvider()),
+        ),
+        candidate_limit=10,
+        clock=lambda: datetime.now(KST),
+    )
+
+    response = await service.fetch_info_context(
+        InfoContextRequest(
+            request_id="today-population-db-hit",
+            place_name="명동성당",
+            place_context="explicit",
+            specific_question="명동성당 지금 붐벼?",
+        )
+    )
+
+    assert response.status == "success"
+    assert response.result is not None
+    assert response.result.requested_place_name == "명동성당"
+    assert response.result.resolved_place_name == "명동성당"
+    assert geocoding.calls == []
+
+
+@pytest.mark.asyncio
+async def test_info_concentration_today_question_allows_realtime_hub_outside_service_area() -> None:
+    """TP-171: 강남역류 — DB엔 없고 지원 16개 구 밖이어도 위치 단계에서 막히지 않는다.
+
+    PLACE_IDENTITY로 바꾸면서 지역 제한까지 같이 켜졌다면 이 요청은 unsupported로
+    끝났을 것이다 — enforce_service_area 오버라이드가 실제로 동작하는지 증명한다.
+    """
+    outside_lat, outside_lon = 37.30, 127.20
+    local_search = _FixedLocalSearchProvider(
+        LocalSearchPlace(
+            name="강남역",
+            address="서울특별시 강남구 역삼동",
+            road_address=None,
+            category="지하철역",
+            latitude=outside_lat,
+            longitude=outside_lon,
+        )
+    )
+    service = ContextService(
+        ContextTools(
+            location=ResolveLocationTool(
+                _FailingGeocodingProvider(),
+                place_repository=FakePlaceLocationRepository(()),
+                local_search_provider=local_search,
+            ),
+            places=NearbyPlaceDetailsTool(FakePlaceProvider(), FakePlaceProvider()),
+            weather=GetWeatherForecastTool(FakeWeatherProvider()),
+            holidays=GetHolidaysTool(FakeHolidayProvider()),
+            concentration=GetConcentrationTool(FakeConcentrationProvider()),
+        ),
+        candidate_limit=10,
+        clock=lambda: datetime.now(KST),
+        concentration_mapping_cache=ConcentrationMappingCache(
+            _MemoryConcentrationMappingRepository(
+                (_mapped_place("강남역 인근 명소", latitude=outside_lat, longitude=outside_lon),)
+            )
+        ),
+    )
+
+    response = await service.fetch_info_context(
+        InfoContextRequest(
+            request_id="today-population-outside-area",
+            place_name="강남역",
+            place_context="explicit",
+            specific_question="강남역 지금 붐벼?",
+        )
+    )
+
+    assert local_search.calls == ["강남역"]
+    assert response.status == "success"
+    assert response.result is not None
+    assert response.result.is_proxy is True
+    assert response.result.resolved_place_name == "강남역 인근 명소"
+
+
+def _name_only_fallback_service(
+    mapping_repository: _MemoryConcentrationMappingRepository,
+) -> ContextService:
+    """위치 해석이 완전히 실패하는 환경(DB 미스·지역 검색 없음·Geocoding 장애)."""
+    return ContextService(
+        ContextTools(
+            location=ResolveLocationTool(
+                _FailingGeocodingProvider(),
+                place_repository=FakePlaceLocationRepository(()),
+                local_search_provider=_EmptyLocalSearchProvider(),
+            ),
+            places=NearbyPlaceDetailsTool(FakePlaceProvider(), FakePlaceProvider()),
+            weather=GetWeatherForecastTool(FakeWeatherProvider()),
+            holidays=GetHolidaysTool(FakeHolidayProvider()),
+            concentration=GetConcentrationTool(FakeConcentrationProvider()),
+        ),
+        candidate_limit=10,
+        clock=lambda: datetime.now(KST),
+        concentration_mapping_cache=ConcentrationMappingCache(mapping_repository),
+    )
+
+
+@pytest.mark.asyncio
+async def test_info_concentration_falls_back_to_name_match_when_location_resolution_fails() -> (
+    None
+):
+    """TP-171 플랜 B: 위치 해석이 완전히 실패해도 이름이 매핑에 정확히 하나면 답한다."""
+    service = _name_only_fallback_service(
+        _MemoryConcentrationMappingRepository(
+            (_mapped_place("아시아프", latitude=37.5109, longitude=127.0600),)
+        )
+    )
+
+    response = await service.fetch_info_context(
+        InfoContextRequest(
+            request_id="name-only-fallback-success",
+            place_name="아시아프",
+            place_context="explicit",
+            specific_question="아시아프 붐벼?",
+        )
+    )
+
+    assert response.status == "success"
+    assert response.result is not None
+    assert response.result.is_proxy is False
+    assert response.result.requested_place_name == "아시아프"
+    assert response.result.resolved_place_name == "아시아프"
+
+
+@pytest.mark.asyncio
+async def test_info_concentration_name_only_fallback_returns_no_data_without_match() -> None:
+    """이름이 매핑에 없으면 억지로 대체하지 않고 no_data로 끝낸다."""
+    service = _name_only_fallback_service(
+        _MemoryConcentrationMappingRepository(
+            (_mapped_place("다른장소", latitude=37.5109, longitude=127.0600),)
+        )
+    )
+
+    response = await service.fetch_info_context(
+        InfoContextRequest(
+            request_id="name-only-fallback-no-match",
+            place_name="아시아프",
+            place_context="explicit",
+            specific_question="아시아프 붐벼?",
+        )
+    )
+
+    assert response.status == "no_data"
+
+
+@pytest.mark.asyncio
+async def test_info_concentration_name_only_fallback_skips_ambiguous_duplicates() -> None:
+    """이름이 매핑에 둘 이상이면 하나를 임의로 고르지 않고 no_data로 끝낸다."""
+    service = _name_only_fallback_service(
+        _MemoryConcentrationMappingRepository(
+            (
+                _mapped_place("아시아프", latitude=37.5109, longitude=127.0600),
+                _mapped_place("아시아프", latitude=37.5200, longitude=127.0700),
+            )
+        )
+    )
+
+    response = await service.fetch_info_context(
+        InfoContextRequest(
+            request_id="name-only-fallback-ambiguous",
+            place_name="아시아프",
+            place_context="explicit",
+            specific_question="아시아프 붐벼?",
+        )
+    )
+
+    assert response.status == "no_data"
+
+
+@pytest.mark.asyncio
+async def test_info_event_does_not_use_name_only_concentration_fallback() -> None:
+    """이름-일치 폴백은 concentration 문항 전용이다 — event 등은 그대로 no_data."""
+    mapping_repository = _MemoryConcentrationMappingRepository(
+        (_mapped_place("아시아프", latitude=37.5109, longitude=127.0600),)
+    )
+    service = _name_only_fallback_service(mapping_repository)
+
+    response = await service.fetch_info_context(
+        InfoContextRequest(
+            request_id="event-no-fallback",
+            place_name="아시아프",
+            place_context="explicit",
+            question_type="event",
+            specific_question="아시아프 오늘 행사 있어?",
+        )
+    )
+
+    assert response.status == "no_data"
+    assert mapping_repository.calls == 0

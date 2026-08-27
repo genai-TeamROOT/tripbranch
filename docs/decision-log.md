@@ -3162,8 +3162,9 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 
 ### D-088 — 관광지별 연관 관광지 정보(TarRlteTarService1)를 종로구·중구 파일럿으로 수집·매칭·적재한다 (패키지 경계 밖 실험, B가 진행)
 
-- 상태: `Accepted` — 파일럿 범위 구현 완료. 서울 전역 확장·SCHEDULE/RECOMMEND
-  연동은 범위 밖.
+- 상태: `Accepted` — 수집·매칭·적재는 서비스 지원 16개 구 전체 완료(2026-08-27
+  기준). SCHEDULE 연동(D-091)·RECOMMEND 2차 스코어링 연동(D-092)도 완료.
+  INFO/COMPARE 인텐트 연동, 서비스 미지원 지역 확장은 범위 밖으로 남음.
 - 배경: 한국관광공사가 공공데이터포털에 새로 공개한 TourAPI
   "관광지별 연관 관광지 정보"는 Tmap 실내비게이션 co-visitation(실제
   동선) 데이터 기반이라, 기존 TourAPI 정적 속성만으로는 못 만드는
@@ -3228,9 +3229,20 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   161). 매칭률(엣지/원본)이 파일럿 30.3%(698/2,300) → 확장 후 29.3%
   (1,612/5,511)로 거의 그대로 유지돼 커버리지 특성이 구가 늘어도
   일관됨을 확인했다.
-- 남은 것: 서울 나머지 13개 구(비지원 지역) 확장 여부, RECOMMEND 설명문 연동,
-  2차 스코어링 반영은 후속 작업(우선순위 논의 필요). SCHEDULE 연동은 D-091로
-  이어졌다.
+- 2026-08-27 확장(2차): D-086으로 서비스 지원 지역이 12개 구에서 16개 구로
+  늘었는데(서대문·마포·양천·강서 추가), place_associations는 12개 구 기준
+  그대로 남아 새로 지원된 4개 구만 co-visit 데이터가 없는 공백이 생겼다.
+  코드 변경 없이 `--districts`만 16개 구 전체로 넓혀 같은 방식으로 재실행 —
+  기존 12개 구 행은 upsert로 덮어쓰이고 4개 구가 새로 추가됐다. 결과: 원본
+  7,219건 → 매핑 CSV 751건 → 엣지 2,001건 실제 적재(미매칭 5,110 / 자기참조
+  15 / 중복 93 제외). 매칭률(엣지/원본)이 27.7%(2,001/7,219)로 파일럿
+  30.3%·12개 구 확장 29.3%에 이어 소폭 더 낮아졌지만 같은 하락 추세라 특이
+  이상은 아니다.
+- 남은 것: 서울 나머지 9개 구(비지원 지역, place-sync 자체가 안 된 구로·
+  금천·영등포 등)는 place 데이터가 없어 범위 밖. RECOMMEND 설명문 연동·
+  2차 스코어링 반영은 D-092로 완료. SCHEDULE 연동은 D-091로 완료. INFO/
+  COMPARE 인텐트에는 아직 이 데이터가 연결되지 않았다(패키지 C·A 협의
+  필요, 별도 카드).
 - 상세: `backend/scripts/collect_place_associations.py`,
   `backend/scripts/build_place_association_mappings.py`,
   `backend/scripts/import_place_associations.py`,
@@ -3844,6 +3856,90 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `backend/app/main.py`
 
 
+### D-097 — 오늘 혼잡 질문에서 저장소 장소가 위치 해석에서 탈락하지 않게 한다
+
+- 상태: `Accepted` — 구현 완료.
+- 배경: TP-171. "명동성당 붐벼?", "아시아프 붐벼?"가 집중률 매핑(TP-136)도
+  실시간 인구도 못 쓰고 "혼잡도 데이터가 없어요"로 끝났다. 원인은 데이터가
+  아니라 위치 해석 단계 — `service.py`가 오늘 날짜 혼잡 질문(`current_population_candidate`)
+  을 `LocationPurpose.REALTIME_CITYDATA`로 보내는데, 이 목적은 저장소(DB)
+  조회를 아예 건너뛴다. 명동성당·아시아프는 우리 DB(TourAPI 코퍼스)엔 있지만
+  Naver 지역 검색엔 상호로 안 잡히고 Naver Geocoding은 상호명 자체를 인식
+  못 해(코드 주석 확인) 위치 해석이 완전히 실패했다.
+- 카드가 제안한 수정은 "`current_population_candidate`를 REALTIME_CITYDATA
+  조건에서 뺀다"(→ `PLACE_IDENTITY`로 통일)였다. **계획 단계에서 이 제안을
+  문구 그대로 구현하면 안 되는 이유를 실측으로 발견했다.**
+- 실측으로 확정한 사실:
+  1. **카드 제안을 그대로 쓰면 심각한 회귀가 생긴다.** `resolve_location.py`의
+     `execute()`는 `enforce_service_area = purpose is not REALTIME_CITYDATA`로
+     정한다 — REALTIME_CITYDATA만 "지원 16개 구 밖이면 unsupported"를
+     건너뛴다. `is_within_service_area()`로 우리 실시간 지역 목록을 전수
+     검사한 결과: **인구 121곳 중 49곳, 상권 82곳 중 32곳이 지원 16개 구
+     밖이다**(강남역·교대역·여의도·잠실·신도림역 등 대형 허브 다수 포함).
+     이런 곳은 지하철역·업무지구라 우리 TourAPI DB에도 없다. 카드 제안대로
+     `location_purpose`를 `PLACE_IDENTITY`로 완전히 바꾸면: DB 조회 실패 →
+     지역 검색 폴백 → `enforce_service_area=True`라 "지원 지역 밖"으로
+     막힌다 — 지금 잘 되는 "지금 강남역 붐벼?"가 깨진다. 카드가 든 두
+     예시(광화문·덕수궁, 용리단길)는 우연히 둘 다 지원 구 안(종로·중구,
+     용산구)이라 이 회귀를 드러내지 않았다.
+  2. 저장소 우선순위와 지역 제한 미적용은 원래 독립적인 두 결정인데 enum
+     하나(`LocationPurpose`)에 같이 묶여 있었다. REALTIME_CITYDATA가 DB를
+     건너뛴 이유는 "권역명은 코퍼스 밖이라 조회가 헛돈다"는 비용 논리였지
+     지역 제한과는 무관했다 — 명동성당처럼 코퍼스 안에 있는데 이 purpose로
+     잘못 보내진 이름엔 그 논리가 애초에 안 맞는다.
+  3. `_lookup_stored_place`는 DB 매치 시 `district_code`/`concentration_name`
+     /`concentration_search_keys`를 목적과 무관하게 항상 채운다(D-095가
+     이미 이어 둔 배선). `_fetch_concentration_info`는 이미
+     `resolved_location.district_code`를 그대로 읽으므로 이 경로엔 손댈
+     필요가 없었다.
+  4. `_lookup_local_search`에 두 번째 DB 재조회가 있다(지역 검색이 다른
+     이름을 주면 그 이름으로 다시 저장소를 본다 — 집중률 매핑을 붙이기
+     위해서). PLACE_IDENTITY로 목적을 바꾸면서 오늘 혼잡 질문에도 새로
+     열리는 경로다. 코드 주석대로 "재조회가 실패해도 지역 검색 결과는
+     그대로 쓴다" — 재조회가 동명이인으로 실패해도(NO_DATA) 그 결과를
+     버리고 지역 검색 성공을 그대로 반환하므로, 새로 사용자에게 되묻기가
+     뜨는 회귀는 없다(실측 확인).
+  5. 실측(실제 API 8건 호출, `scripts/try_info_context.py`류 임시 스크립트):
+     명동성당(구 명동성당, `supabase_places`로 해석)·아시아프(`supabase_places`)
+     둘 다 이제 실시간 인구 값을 반환한다. 광화문·덕수궁(`naver_geocoding`)·
+     용리단길(`naver_local_search`)은 기존과 동일한 출처로 그대로 성공한다
+     (카드의 안전 조건 충족). 새로 찾은 위험 케이스 강남역·교대역·여의도도
+     전부 `naver_local_search`/`naver_geocoding`으로 그대로 성공한다(회귀
+     없음 확인). 서울숲은 `supabase_places`로 해석되며 최근접 실시간
+     지역이 "서울숲공원"(0.37km)으로 나온다 — 요청한 이름과 가장 자연스럽게
+     대응하는 결과다.
+- 결정:
+  1. `resolve_location.py`의 `ResolveLocationQuery`에 `enforce_service_area:
+     bool | None = None` 필드를 추가했다. `execute()`는 값이 명시되면
+     `purpose` 기반 기본값보다 우선한다 — 값을 안 주면 기존과 완전히 동일.
+  2. `service.py`: 오늘 날짜 혼잡 질문의 `location_purpose`는 카드 제안대로
+     `PLACE_IDENTITY`로 바꾸되(저장소를 먼저 봄), 이 한 갈래에서만
+     `enforce_service_area=False`를 명시했다(지역 제한만 끔). `realtime_commercial`
+     /`_REALTIME_CITYDATA_QUESTION_TYPES`(subway/parking/bus/event/traffic)
+     경로는 REALTIME_CITYDATA 그대로 손대지 않았다 — 최소 반경의 변경.
+  3. 위치 해석 자체가 완전히 실패해도(코퍼스에도 없고 지역 검색·Geocoding도
+     못 찾음) `concentration` 문항이면 `_info_no_data_response`로 바로
+     끝내지 않는다. 좌표가 없어 기존 D-036 인근 대체(반경 기반)는 못 쓰므로,
+     이름이 집중률 매핑 캐시(`ConcentrationMappingCache`)와 **정확히 하나만**
+     일치할 때만 그 장소로 바로 조회한다(`_fetch_concentration_by_name_only`).
+     일치가 없거나 둘 이상이면 억지로 고르지 않고 그대로 `no_data`. 사용자
+     결정("실시간 혼잡도가 없으면 집중률이라도 보여준다")의 구현이며, 카드가
+     열어 둔 완료 조건("위치 해석 실패 시 집중률로 낮출지")에 대한 답이다.
+     이 폴백은 `concentration` 문항에만 적용한다.
+- 검증: 백엔드 `pytest` 3,005 passed, `ruff` 클린. 신규 테스트 12건(
+  `enforce_service_area` 오버라이드 단위 테스트 4건·동명이인 재조회 무해성
+  1건은 `test_resolve_location_tool.py`, DB-우선 성공·지원 구 밖 성공·이름-
+  일치 폴백 성공/미일치/동명이인·event 유형 미적용 6건은
+  `test_service.py`). 실제 API로 8개 장소(명동성당·아시아프·광화문·덕수궁·
+  용리단길·강남역·교대역·여의도·서울숲)를 오늘 혼잡 질문으로 조회해 위
+  "실측으로 확정한 사실 5"의 결과를 확인했다.
+- 채택하지 않은 것: 카드 문구 그대로("`current_population_candidate`를
+  REALTIME_CITYDATA 조건에서만 뺀다") — 지원 구 밖 실시간 허브 다수를
+  깨뜨리는 회귀가 있어, 지역 제한을 저장소 우선순위와 분리하는 `enforce_service_area`
+  오버라이드를 추가로 도입했다.
+- 상세: `backend/app/agent_context/service.py`, `backend/app/tools/resolve_location.py`,
+  `backend/tests/test_resolve_location_tool.py`, `backend/tests/agent_context/test_service.py`
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -3937,3 +4033,5 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-26 | D-094 신설 — 분위기 임베딩을 조회 계층에 연결한다(D-087 후속, C). D-087이 범위 밖으로 미룬 서비스 배선 중 **조회까지**를 붙였다 — 재정렬과 발화에서 축을 고르는 단계는 D 패키지·A 패키지 소관이라 이번에도 손대지 않았다. 계약 `PlaceMoodRepository`는 취향 근거(`PlaceEvidenceRepository`)와 나눴다. 둘 다 768차원이지만 한쪽은 한국어 문장, 다른 쪽은 사진이 사는 공간이라 한 계약에 두면 호출부가 좌표계를 헷갈릴 수 있다. 경로가 둘이고 비용이 크게 다르다 — `find_mood_profiles`(발화)는 미리 계산된 `axis_scores`만 읽어 **임베딩 모델이 필요 없고**, `search_place_mood`(사진)만 SigLIP을 요구한다. 그래서 인코더가 없어도 Provider는 만들고 `photo_search_available`로 사진 경로만 막는다 — 인코더가 없을 때 0으로 채운 벡터를 넘기면 유사도가 전부 같아져 아무 장소나 순서대로 돌아오고 그게 추천으로 나간다(D-042). RPC `search_place_mood`는 `search_place_evidence`와 **후보 규칙이 다르다**. 저쪽은 40,389행이라 좁히지 않으면 6~9초가 걸려 좁힘을 강제하지만, `place_mood_vectors`는 장소당 한 행이라 지금 631행·서울 전체로 넓혀도 6,000~10,000행이다. 그래서 후보가 `null`이면 전체 검색을 허용하고("이 사진과 닮은 곳 아무데나"가 실제로 있을 수 있는 질문이다), **빈 배열은 `null`과 다르게 0건으로 끝낸다** — 후보를 좁히려다 전부 걸러진 호출이 전체 검색으로 둔갑하면 지역 필터를 통과하지 못한 장소가 추천에 섞인다. 후보를 넘길 때는 배열이 HNSW를 무력화하므로 저쪽과 같은 500건 상한을 둔다. **유사도 컷은 0.0으로 두고 순위만 쓴다** — 축 점수는 사람 정답표 77곳으로 AUC를 쟀지만(D-087) 사진끼리의 "이 정도면 닮았다" 경계는 표본이 없어서, 근거 없는 숫자를 코드에 남기지 않는다. 발화 경로 조회는 `embedding` 컬럼을 빼고 읽는다(768 float × 장소 수면 응답이 수 MB가 된다). 선택 의존성은 `[embeddings]`(취향, sentence-transformers)와 `[mood]`(사진, transformers·torch·pillow)로 나눴다 — 취향만 켜는 배포가 SigLIP까지 받을 이유가 없고, torch는 양쪽이 공유해 둘 다 깔아도 한 벌만 받는다. 스위치는 `PLACE_MOOD_ENABLED`(기본 off)이고, 켰는데 Supabase 설정이 비면 부팅을 막지 않고 경고만 남긴다 — 순위를 다듬는 축이라 없어도 추천은 동작한다. **분위기 벡터가 없는 장소가 정상이다** — 사진 임베딩은 종로구까지만 적재돼 있어(631곳) 다른 구 후보는 결측으로 빠지고, 0점으로 채우면 사진이 없는 장소가 "분위기가 안 맞는 곳"으로 잘못 밀린다. 커버리지는 `place_mood_coverage` 점수로 관측에 올려 적재 범위를 넓힐 시점을 숫자로 알 수 있게 했다 |
 | 2026-08-26 | D-095 신설 — 집중률 조회의 구 고정을 해제한다. `enrichment_service`가 `JONGNO_CONCENTRATION_DISTRICT_CODE`("11110")를 장소와 무관하게 넘겨 모든 조회가 종로구로 나가고 있었다. 집중률 API는 `signguCd`로 엄격하게 거른다(실측: 명동성당·덕수궁은 종로구 0건/중구 30건, 경복궁은 반대) — 매핑이 전부 종로구였던 동안만 값이 맞았다. `places.district_code`를 `StoredPlaceLocation`·`ResolvedLocation`으로 이어 날라 대상 장소의 구로 조회한다(3자리 "140" → signguCd 5자리 "11140" 변환은 `concentration_policy.concentration_signgu_code()`). **구를 모르면 종로구로 대신 묻지 않고 조회 자체를 생략한다** — 다른 구 장소는 언제나 0건이라 틀린 조회가 "정보 없음"으로 위장되기 때문이며, D-042와 같은 판단이다. 매핑 적재보다 이 변경이 먼저다: 순서를 뒤집으면 경계 근처 중구 62곳이 지금 받는 값을 잃는다(더 가까운 중구 매핑이 대체 후보 상위 3곳을 차지하는데 셋 다 종로구로 조회돼 0건). `StoredPlaceLocation`이 `domain/models.py`에 있어 D 소유로 보였으나 정의 커밋 `d6ea941`·참조처가 전부 C임을 blame으로 확인해 C 소유로 판정했다(TP-127이 반대로 적어둔 것을 정정) |
 | 2026-08-27 | D-096 신설 — 사진 검색을 인텐트·채점 밖의 독립 엔드포인트로 둔다(D-094 후속, TP-175, C). `POST /api/places/similar-by-photo` 신설. 사진은 발화가 아니라 목적이 확정된 입력이라 인텐트를 만들지 않고, 순위를 사진 유사도만으로 정해 `scoring.py`를 건드리지 않는다. `prepare()`까지만 불러 하드 필터는 태운다. 좌표계 일치를 실측으로 확인했고(로컬 CPU 재계산이 코랩 GPU 적재값과 소수점 넷째 자리까지 일치), 예열 뒤 응답 1.2초다. 후보가 최대 20곳이라는 한계가 남아 순서를 뒤집는 후속 작업이 필요하다 |
+| 2026-08-27 | D-097 신설 — 오늘 혼잡 질문에서 저장소 장소가 위치 해석에서 탈락하지 않게 한다(TP-171). "명동성당 붐벼?"가 위치 해석 단계(REALTIME_CITYDATA가 저장소 조회를 건너뜀)에서 실패해 집중률 폴백까지 못 가던 문제 — 카드는 `current_population_candidate`를 REALTIME_CITYDATA 조건에서 빼자고 제안했지만, 그대로 구현하면 지원 16개 구 밖의 실시간 인구 허브(강남역·교대역·여의도 등, 실측: 121곳 중 49곳·82곳 중 32곳)가 지역 제한에 걸려 깨지는 회귀를 실측으로 발견했다. `ResolveLocationQuery`에 `enforce_service_area` 명시 오버라이드를 추가해 저장소 우선순위와 지역 제한을 분리하는 방식으로 수정했다. 위치 해석이 완전히 실패해도 집중률 매핑 이름과 정확히 하나만 일치하면 답하는 플랜 B 폴백도 함께 추가(사용자 결정). 실제 API 8개 장소 조회로 안전 조건과 회귀 없음을 확인 |
+| 2026-08-27 | D-088 확장(2차) — place_associations 수집 범위를 서비스 지원 12개 구에서 16개 구로 확장(D-086으로 늘어난 서대문·마포·양천·강서 4개 구 반영). 코드 변경 없이 `--districts`만 넓혀 재실행, 기존 12개 구는 upsert로 유지되고 4개 구가 새로 추가됨. 원본 7,219건 → 매핑 CSV 751건 → 엣지 2,001건 실제 적재(미매칭 5,110 / 자기참조 15 / 중복 93 제외). 매칭률 27.7%로 파일럿·1차 확장과 같은 추세 유지 |
