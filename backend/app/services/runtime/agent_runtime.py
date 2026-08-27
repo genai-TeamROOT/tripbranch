@@ -903,12 +903,20 @@ def _candidate_pool_exhausted(context: RecommendationContext) -> bool:
 
     두 가지 신호를 본다.
 
-    1. `candidate_pool_truncated` 경고 — 제외분이 많아 C가 상한(100행)까지 받고도
-       요청한 개수를 못 채웠다는 뜻이다(nearby_place_details.py).
+    1. `candidate_pool_truncated` 경고 — C가 행 상한(100행)까지 받고도 요청한
+       개수를 못 채웠다는 뜻이다(nearby_place_details.py).
     2. 반환 후보 수가 `recommendation_candidate_limit`보다 적음 — C는
        min(가용 후보, limit)을 반환하므로, limit보다 적게 왔다면 반경 안을 이미
-       다 긁은 것이다. 1번 경고는 100행을 넘겨 받았을 때만 서기 때문에, 반경에
+       다 긁은 것이다. 1번 경고는 행 상한에 걸렸을 때만 서기 때문에, 반경에
        애초에 후보가 몇 개 없는 흔한 경우는 이 조건으로만 걸린다.
+
+    **2번이 성립하려면 C가 실제로 limit을 채워줘야 한다.** 예전에는 C가 TourAPI에
+    필요분만 요청하고 미지원 분류(숙박·여행코스)를 받은 뒤에 걸러내서, 반경에
+    후보가 수백 곳 남아 있어도 늘 limit보다 적게 돌려줬다. 그래서 이 판정이 항상
+    참이 되어 **보충 조회가 한 번도 돌지 않았다**(안국역 반경 2km 실측: TourAPI
+    totalCount 364곳인데 10 요청에 9곳 반환 → 소진 판정). 지금은 C가
+    `CANDIDATE_OVERFETCH_FACTOR`만큼 넉넉히 받아 채우므로 이 전제가 성립한다.
+    C 쪽 과요청을 되돌리면 이 판정도 함께 무너진다.
     """
     places = context.places
     if places is None:
