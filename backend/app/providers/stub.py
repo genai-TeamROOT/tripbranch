@@ -930,6 +930,7 @@ class FakeLLMProvider:
         intent: Intent,
         assistant_message: str,
         place_names: list[str],
+        search_place: str | None,
         transport: str | None,
         max_suggestions: int,
         max_label_length: int,
@@ -942,7 +943,13 @@ class FakeLLMProvider:
         만들고, 상한을 넘는 개수를 일부러 반환한다 — 호출부가 자르는지 확인된다.
         """
 
-        del user_input, assistant_message, max_label_length
+        del assistant_message, max_label_length
+        # 혼잡도 문구에는 장소명을 반드시 넣는다 — 소비 측이 그 유무로 걸러낸다.
+        subject = place_names[0] if place_names else search_place
+        if subject and "혼잡" in user_input:
+            return provider_result(
+                [f"주말에 {subject} 많이 혼잡해?"], source=ProviderSource.FAKE_LLM
+            )
         # 이동수단이 차면 주차 질문을 섞는다 — 소비 측이 실제로 읽는 조건이다.
         if transport == "car" and place_names:
             return provider_result(

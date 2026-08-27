@@ -518,6 +518,7 @@ class RealGeminiProvider:
         intent: Intent,
         assistant_message: str,
         place_names: list[str],
+        search_place: str | None,
         transport: str | None,
         max_suggestions: int,
         max_label_length: int,
@@ -531,6 +532,7 @@ class RealGeminiProvider:
             "user_input": user_input,
             "assistant_message": assistant_message,
             "places_shown": place_names,
+            "search_place": search_place,
             "transport": transport,
         }
         result = await self._call_structured(

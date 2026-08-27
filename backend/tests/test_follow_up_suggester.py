@@ -298,3 +298,62 @@ async def test_observed_spelling_error_is_corrected(given: str, expected: str) -
     suggestions = await suggest_follow_ups(_request(), _response(), llm=llm)  # type: ignore[arg-type]
 
     assert suggestions == [expected]
+
+
+@pytest.mark.asyncio
+async def test_congestion_question_without_a_place_is_dropped() -> None:
+    """혼잡도를 묻는데 어디를 묻는지 없으면 버린다.
+
+    대화 문맥으로 서버가 장소를 이어받기는 하지만, 버튼은 사용자가 읽고 고르는 것이다 —
+    읽어서 무엇을 묻는지 알 수 없으면 고를 수가 없다.
+    """
+    llm = _RecordingLLM(["주말에 사람 많아?", "주말 안국역 많이 혼잡해?"])
+    response = _response()
+    response.state.user_conditions.search_center = "안국역"
+
+    suggestions = await suggest_follow_ups(_request(), response, llm=llm)  # type: ignore[arg-type]
+
+    assert suggestions == ["주말 안국역 많이 혼잡해?"]
+
+
+@pytest.mark.asyncio
+async def test_congestion_question_may_name_a_shown_place() -> None:
+    """검색 장소가 아니라 추천 카드의 장소를 지목해도 된다."""
+    llm = _RecordingLLM(["지금 커피한약방 사람 많아?"])
+    response = _response(
+        recommendations=RecommendationResponse(
+            recommendations=[_item("place-2", "커피한약방")],
+            unverified_recommendations=[],
+            elapsed_ms=10,
+        )
+    )
+
+    suggestions = await suggest_follow_ups(_request(), response, llm=llm)  # type: ignore[arg-type]
+
+    assert suggestions == ["지금 커피한약방 사람 많아?"]
+
+
+@pytest.mark.asyncio
+async def test_non_congestion_questions_are_left_alone() -> None:
+    """장소명 요구는 혼잡도 문구에만 건다 — 다른 문구까지 좁히면 멀쩡한 제안이 사라진다."""
+    llm = _RecordingLLM(["다른 곳도 보여줘", "이 장소들로 일정 짜줘"])
+
+    suggestions = await suggest_follow_ups(_request(), _response(), llm=llm)  # type: ignore[arg-type]
+
+    assert suggestions == ["다른 곳도 보여줘", "이 장소들로 일정 짜줘"]
+
+
+@pytest.mark.asyncio
+async def test_search_place_reaches_the_model() -> None:
+    """"안국역 근처 카페 추천해줘"의 "안국역"은 카드 이름 어디에도 없다.
+
+    안 넘기면 모델이 지역을 지목한 혼잡도 질문을 만들 근거 자체가 없어, 규칙을 아무리
+    적어도 주어 없는 문구밖에 못 만든다.
+    """
+    llm = _RecordingLLM()
+    response = _response()
+    response.state.user_conditions.search_center = "안국역"
+
+    await suggest_follow_ups(_request(), response, llm=llm)  # type: ignore[arg-type]
+
+    assert llm.calls[0]["search_place"] == "안국역"

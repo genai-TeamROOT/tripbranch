@@ -59,6 +59,13 @@ _IMPERATIVE_ENDINGS = ("줘", "다오", "해봐", "보여줘")
 # "걷다"는 ㄷ 불규칙이라 "걷어서"가 아니라 "걸어서"다. 2026-08-27에 "운현궁 걷어서 얼마나
 # 걸려?"가 버튼으로 나갔다. 걸어서 이동하는 맥락 밖에서 "걷어서"(걷어 올리다)가 쓰일 일이
 # 이 슬롯에는 없어 그대로 바꾼다.
+# 혼잡도를 묻는 문구인지 알아보는 표지. 이 문구에는 반드시 장소명이 있어야 한다.
+#
+# "주말에 사람 많아?"처럼 주어가 없으면 어디를 묻는지 화면만 보고는 알 수 없다. 대화
+# 문맥으로 서버가 장소를 이어받기는 하지만, 버튼은 사용자가 읽고 고르는 것이라 읽어서
+# 무엇을 묻는지 알 수 없으면 고를 수가 없다.
+_CONGESTION_MARKERS = ("혼잡", "붐비", "붐빌", "사람 많", "사람이 많")
+
 _TYPO_FIXES = (
     ("걷어서", "걸어서"),
     ("걷어가", "걸어가"),
@@ -111,6 +118,21 @@ def _place_names(response: AgentResponse) -> list[str]:
     return unique[:_MAX_PLACE_NAMES]
 
 
+def _search_place(response: AgentResponse) -> str | None:
+    """이번 대화가 잡고 있는 검색 장소. 없으면 None.
+
+    B가 누적한 조건에서 읽는다 — 사용자가 말한 지명(`search_center`)이 우선이고,
+    없으면 현재 위치로 잡힌 지명(`current_location`)을 쓴다. 추천 카드 이름과 겹치지
+    않는 별개 값이다.
+    """
+
+    conditions = response.state.user_conditions
+    for value in (conditions.search_center, conditions.current_location):
+        if value and value.strip():
+            return value.strip()
+    return None
+
+
 def _should_suggest(response: AgentResponse) -> bool:
     """이 턴에 버튼을 붙일 자리인지 판단한다."""
 
@@ -121,6 +143,25 @@ def _should_suggest(response: AgentResponse) -> bool:
     if response.llm_output.intent in _SKIPPED_INTENTS:
         return False
     return bool(response.message.strip())
+
+
+def _mentions_a_place(label: str, known_places: list[str]) -> bool:
+    """이번 턴에 등장한 장소 이름이 문구 안에 있는지 본다."""
+
+    return any(place and place in label for place in known_places)
+
+
+def _drops_congestion_without_a_place(label: str, known_places: list[str]) -> bool:
+    """혼잡도를 묻는데 어디를 묻는지 없는 문구인가.
+
+    프롬프트에도 규칙을 적지만, 지켜졌는지는 여기서 본다. 장소명이 없는 혼잡도 질문은
+    버튼으로 읽었을 때 무엇을 묻는지 알 수 없어 그대로 버린다 — 세 개를 채우는 것보다
+    읽어서 이해되는 두 개가 낫다.
+    """
+
+    if not any(marker in label for marker in _CONGESTION_MARKERS):
+        return False
+    return not _mentions_a_place(label, known_places)
 
 
 def _fix_known_typos(label: str) -> str:
@@ -140,7 +181,9 @@ def _strip_stray_question_mark(label: str) -> str:
     return label
 
 
-def _clean(suggestions: list[str], *, user_input: str) -> list[str]:
+def _clean(
+    suggestions: list[str], *, user_input: str, known_places: list[str]
+) -> list[str]:
     """모델이 준 문구를 화면에 올릴 수 있는 형태로 좁힌다.
 
     프롬프트에 적은 개수·길이 상한은 부탁이고 실제 계약은 여기다. 상한을 넘겨 받아도
@@ -159,6 +202,8 @@ def _clean(suggestions: list[str], *, user_input: str) -> list[str]:
             continue
         if label in cleaned:
             continue
+        if _drops_congestion_without_a_place(label, known_places):
+            continue
         cleaned.append(label)
         if len(cleaned) == MAX_SUGGESTIONS:
             break
@@ -173,12 +218,17 @@ async def suggest_follow_ups(
     if not _should_suggest(response):
         return []
 
+    place_names = _place_names(response)
+    search_place = _search_place(response)
     try:
         result = await llm.generate_follow_up_suggestions(
             user_input=request.user_input,
             intent=response.llm_output.intent,
             assistant_message=response.message,
-            place_names=_place_names(response),
+            place_names=place_names,
+            # 카드 이름과 별개다 — "안국역 근처 카페 추천해줘"의 "안국역"은 카드 이름
+            # 어디에도 없어서, 안 넘기면 지역을 가리키는 후속 질문을 만들 근거가 없다.
+            search_place=search_place,
             # 주차 질문을 권할 자리인지 모델이 가릴 근거. 도보·대중교통으로 움직이는
             # 사용자에게 주차 자리를 묻게 하면 버튼 하나를 통째로 버리는 셈이 된다.
             transport=response.state.user_conditions.transport,
@@ -194,7 +244,11 @@ async def suggest_follow_ups(
         logger.warning("후속 질문 제안에서 예상 못 한 오류", exc_info=True)
         return []
 
-    return _clean(result.data, user_input=request.user_input)
+    return _clean(
+        result.data,
+        user_input=request.user_input,
+        known_places=[*place_names, *( [search_place] if search_place else [] )],
+    )
 
 
 __all__ = ["MAX_LABEL_LENGTH", "MAX_SUGGESTIONS", "suggest_follow_ups"]
