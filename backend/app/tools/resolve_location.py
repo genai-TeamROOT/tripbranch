@@ -136,10 +136,26 @@ def _select_local_search_candidate(
     """
     normalized_query = _normalize_name(requested_query)
 
-    # 1) 정확 일치. 동명 후보가 2건 이상이면 첫 토큰으로도 못 좁히므로 바로 재질문한다.
+    # 1) 정확 일치. 동명 후보가 여러 건이면 그중 위치 후보로 쓸 수 있는 것만 남겨 본다.
+    #
+    # **이름이 같다고 다 같은 성격의 후보는 아니다.** "운현궁"을 지역 검색에 넣으면 이름이
+    # 완전히 같은 후보가 3건 나오는데(2026-08-27 실측) 중식당·한식당·궁궐이고, 그중 위치
+    # 후보로 쓸 수 있는 것은 궁궐 하나뿐이다. 식당·상점은 위치 후보로 부적절하다는 규칙은
+    # 이미 있었지만(`_is_location_pickable`) 되묻기 목록을 만들 때만 쓰였고, 여기 고르는
+    # 단계에서는 안 쓰여서 "못 좁혔다"로 끝났다.
+    #
+    # 그 결과가 **끝나지 않는 되묻기**였다. 되묻기 버튼에는 걸러낸 "운현궁" 하나만 실리고,
+    # 사용자가 그걸 고르면 같은 이름으로 같은 조회를 다시 돌아 같은 3건이 나온다 — 답이
+    # 질문과 같은 문자열이라 입력이 하나도 바뀌지 않는다. 이름이 같은 것들끼리의 모호함은
+    # 이름을 되물어 풀 수 없다.
+    #
+    # 걸러낸 뒤에도 2건 이상이면 그때는 진짜로 못 고르는 것이라 그대로 재질문한다.
     exact = tuple(item for item in candidates if _normalize_name(item.name) == normalized_query)
     if exact:
-        return exact[0] if len(exact) == 1 else None
+        if len(exact) == 1:
+            return exact[0]
+        pickable_exact = tuple(item for item in exact if _is_location_pickable(item))
+        return pickable_exact[0] if len(pickable_exact) == 1 else None
 
     # 2) 첫 토큰 일치. "안국역 3호선"은 잡고 "안국역사거리"는 배제하기 위해
     #    startswith가 아니라 토큰 단위로 비교한다.
@@ -483,10 +499,8 @@ class ResolveLocationTool:
             # 못하므로(docs/api-samples.md) 폴백해봐야 소용없고, 어느 쪽인지
             # 되묻는 게 맞다. 아래 "역/명소 후보 없음→ Geocoding 폴백"은 이런
             # 정확 일치가 전혀 없을 때만 적용한다.
-            normalized_query = _normalize_name(requested_query)
-            has_exact_match = any(
-                _normalize_name(item.name) == normalized_query for item in candidates
-            )
+            normalized = _normalize_name(requested_query)
+            has_exact_match = any(_normalize_name(item.name) == normalized for item in candidates)
             # 후보를 못 좁혔는데 찾은 것이 전부 지역 밖이면 되묻기가 아니라 지역 문제다.
             # "부산 해운대"에 "지원 구 안에서 어느 장소인지" 되묻는 일을 막는다.
             if enforce_service_area and not any(
@@ -513,7 +527,20 @@ class ResolveLocationTool:
             # 좁혀진 전체로 폴백하지 않는다(실사용 피드백, 2026-08-13: "그냥
             # 지하철역으로만 가자").
             names_source = [item for item in in_area if _is_location_pickable(item)]
-            if not names_source and not has_exact_match:
+            # **답이 질문과 같아지는 되묻기는 만들지 않는다.** 후보가 하나뿐이고 그 이름이
+            # 방금 물어본 이름과 똑같다면, 사용자가 그 버튼을 눌러도 같은 문자열로 같은
+            # 조회가 다시 돌아 같은 되묻기가 나온다 — 입력이 하나도 바뀌지 않으므로 영영
+            # 끝나지 않는다(2026-08-27 "운현궁 → 공영주차장" 흐름에서 실제로 그랬다).
+            #
+            # **후보 이름이 질의와 다르면 그대로 되묻는다.** 예를 들어 "종각역"에 후보가
+            # "종각역 1호선" 하나뿐이면, 그 버튼을 누른 답은 질의와 달라서 다음 턴에
+            # 정확 일치로 풀린다. 그런 되묻기는 한 번 더 확인받는 값어치가 있고, 첫 후보를
+            # 임의로 고르지 않는다는 이 파일의 원칙도 지켜진다.
+            if len(names_source) == 1 and _normalize_name(names_source[0].name) == normalized:
+                # 아래 공통 성공 경로로 흘려보낸다 — 지원 구 검사와 저장소 재조회를
+                # 여기서 다시 구현하지 않기 위해서다.
+                selected = names_source[0]
+            elif not names_source and not has_exact_match:
                 # 역/명소가 하나도 없고 정확히 같은 이름의 후보도 없다 —
                 # "성수동"처럼 동 이름이 지역 검색에서 카페·식당 상호명으로만
                 # 잡힌 경우다(실측, 2026-08-26). None을 돌려주면 execute()의
@@ -523,17 +550,20 @@ class ResolveLocationTool:
                 # 반경(2km) 안에 실제 상권·역이 다 들어와 굳이 구 단위로 넓힐
                 # 필요가 없었다.
                 return None
-            return self._error_result(
-                status=ResolveLocationStatus.NO_DATA,
-                code="no_data",
-                cause="ambiguous_location",
-                retryable=False,
-                details={
-                    "reason": "ambiguous_location",
-                    "candidate_names": _join_candidate_names(item.name for item in names_source),
-                },
-                provider_metadata=(result.metadata,),
-            )
+            else:
+                return self._error_result(
+                    status=ResolveLocationStatus.NO_DATA,
+                    code="no_data",
+                    cause="ambiguous_location",
+                    retryable=False,
+                    details={
+                        "reason": "ambiguous_location",
+                        "candidate_names": _join_candidate_names(
+                            item.name for item in names_source
+                        ),
+                    },
+                    provider_metadata=(result.metadata,),
+                )
         # 지역 검색이 알아낸 정식 상호명으로 저장소를 다시 찾는다. "북촌"은 저장소에
         # 없지만 지역 검색이 "북촌 한옥마을"을 주므로, 여기서 다시 찾으면 집중률
         # 매핑까지 이어진다. 재조회가 실패해도 지역 검색 결과는 그대로 쓴다.
