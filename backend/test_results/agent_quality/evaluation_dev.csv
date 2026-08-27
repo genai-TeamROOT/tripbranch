@@ -31,6 +31,6 @@ DEV-029,제외 조건 후속 추가,"[""경복궁 근처 갈 곳 추천해줘"",
 DEV-030,비 회피 후 위치 변경,"[""비 와서 실내로 바꿔줘"",""인사동 근처로""]","[""RECOMMEND"",""MODIFY""]","{""search_center"":""인사동"",""weather"":""rain"",""weather_intent"":""AVOID"",""environment"":""indoor""}","37.5760,126.9769",weather AVOID 회귀
 DEV-031,추천 뒤 정보 질문,"[""경복궁 근처 카페 추천해줘"",""첫 번째 장소 주차 가능해?""]","[""RECOMMEND"",""INFO""]","{""search_center"":""경복궁"",""place_tags"":[""카페""]}","37.5760,126.9769",추천 이력 참조 INFO
 DEV-032,추천 뒤 비교 질문,"[""경복궁 근처 카페 추천해줘"",""1번과 2번 중 어디가 더 가까워?""]","[""RECOMMEND"",""COMPARE""]","{""search_center"":""경복궁"",""place_tags"":[""카페""]}","37.5760,126.9769",추천 이력 참조 COMPARE
-DEV-033,일정에 카페 추가,"[""경복궁 근처 반나절 일정 짜줘"",""카페도 포함해줘""]","[""SCHEDULE"",""SCHEDULE""]","{""search_center"":""경복궁"",""place_tags"":[""카페""]}","37.5760,126.9769",SCHEDULE 후속 조건
+DEV-033,일정에 카페 추가,"[""경복궁 근처 반나절 일정 짜줘"",""카페도 포함해줘""]","[""SCHEDULE"",""SCHEDULE""]","{""search_center"":""경복궁"",""place_tags"":[""카페""],""time_available"":240}","37.5760,126.9769",SCHEDULE 후속 조건
 DEV-034,실내외 변경,"[""경복궁 근처 공원 추천해줘"",""비 와서 실내로 바꿔줘""]","[""RECOMMEND"",""MODIFY""]","{""search_center"":""경복궁"",""weather"":""rain"",""weather_intent"":""AVOID"",""environment"":""indoor""}","37.5760,126.9769",MODIFY 날씨 의도
 DEV-035,태그 교체,"[""광화문 근처 박물관 추천해줘"",""미술관으로 바꿔줘""]","[""RECOMMEND"",""MODIFY""]","{""search_center"":""광화문"",""place_types"":[""cultural_facility""],""place_tags"":[""미술관""]}","37.5760,126.9769",태그 대체
