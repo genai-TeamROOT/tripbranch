@@ -78,6 +78,11 @@ from app.schemas import (
     UserConditions,
 )
 from app.service_area import supported_district_label
+from app.service_area_landmarks import (
+    DISTRICT_LANDMARKS,
+    find_district_by_gps,
+    find_district_by_text,
+)
 from app.services.interpret.orchestrator import build_interpretation
 from app.services.interpret.session_orchestrator import ensure_current_context
 from app.services.interpret.state_transform import to_user_conditions, transform
@@ -320,9 +325,62 @@ _SCHEDULE06_RESOLUTIONS: dict[str, Intent] = {
     "recommend_only": Intent.RECOMMEND,
 }
 
-# location_required 되묻기 버튼(A2). 서비스 지역이 종로구 한정이라(D-044) 대표 스팟을
-# 고정 목록으로 제공한다 — docs/design/clarification-options.md 7절.
+# location_required 되묻기 버튼(A2)의 최종 폴백값. 발화·GPS 둘 다 위치 신호를 못 주면
+# 이 종로구 대표 스팟으로 대신한다 — docs/design/clarification-options.md 7절, D-044.
 _LOCATION_REQUIRED_QUICK_PICKS = ("경복궁", "인사동", "광화문", "북촌")
+
+# 클릭 시점 검증용(_resolve_clarification_choice). 어떤 구 버튼이 나갔는지 세션에
+# 안 남기므로(TP-160), 나올 수 있는 모든 랜드마크 이름을 허용해야 한다.
+_ALL_LOCATION_QUICK_PICK_NAMES = frozenset(_LOCATION_REQUIRED_QUICK_PICKS) | {
+    landmark.name for landmarks in DISTRICT_LANDMARKS.values() for landmark in landmarks
+}
+
+
+def _parse_gps(context_gps: str | None) -> tuple[float, float] | None:
+    """'위도,경도' 문자열을 (위도, 경도)로. 형식이 아니면 None(_valid_location과 같은 관례)."""
+    if not context_gps:
+        return None
+    parts = context_gps.split(",")
+    if len(parts) != 2:
+        return None
+    try:
+        latitude, longitude = float(parts[0]), float(parts[1])
+    except ValueError:
+        return None
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        return None
+    return latitude, longitude
+
+
+def _location_required_quick_picks(context_gps: str | None) -> tuple[str, ...]:
+    """위치 신호가 전혀 없을 때(location_required) 보여줄 대표 스팟 이름들.
+
+    GPS로 가장 가까운 지원 구를 짐작할 수 있으면 그 구 대표 스팟을, 아니면 종로구
+    고정 스팟을 반환한다(TP-160).
+    """
+    coordinate = _parse_gps(context_gps)
+    if coordinate is not None:
+        district = find_district_by_gps(*coordinate)
+        if district is not None:
+            return tuple(landmark.name for landmark in DISTRICT_LANDMARKS[district.name])
+    return _LOCATION_REQUIRED_QUICK_PICKS
+
+
+def _location_ambiguous_quick_picks(
+    agent_conditions: UserConditions, context_gps: str | None
+) -> tuple[str, ...]:
+    """위치는 언급했지만(location_ambiguous) 후보를 못 찾았을 때 보여줄 대표 스팟 이름들.
+
+    사용자가 실제로 말한 지역명("용산")을 GPS보다 우선한다 — 방금 직접 말한 지역명이
+    현재 위치보다 신뢰도 높은 신호라서다(강남에서 "용산 카페" 검색하는 경우 등).
+    발화에서 못 찾으면 GPS로, 그마저 없으면 종로구 고정 스팟으로 대신한다(TP-160).
+    """
+    location_text = agent_conditions.search_center or agent_conditions.current_location
+    if location_text:
+        district = find_district_by_text(location_text)
+        if district is not None:
+            return tuple(landmark.name for landmark in DISTRICT_LANDMARKS[district.name])
+    return _location_required_quick_picks(context_gps)
 
 # location_required는 last_intent를 그대로 복원해 재사용한다. RECOMMEND/SCHEDULE는
 # 둘 다 llm_output.recommend(RecommendPayload)로 조건을 나르므로 이 지름길로 풀 수
@@ -547,7 +605,7 @@ def _resolve_clarification_choice(
         )
 
     if code == "location_required":
-        if choice_id not in _LOCATION_REQUIRED_QUICK_PICKS:
+        if choice_id not in _ALL_LOCATION_QUICK_PICK_NAMES:
             return None
         if session_context.last_intent not in _LOCATION_REQUIRED_RESOLVABLE_INTENTS:
             return None
@@ -2455,8 +2513,9 @@ async def _fetch_tool_context(
             )
             _remember_clarification(state_response.session_id, code, store)
             if code == "location_required":
-                # 서비스 지역이 종로구 한정이라(D-044) 대표 스팟 고정 버튼을 제공한다
-                # (docs/design/clarification-options.md 7절, A2). resolved_intent는
+                # 위치 신호가 전혀 없다. GPS로 가장 가까운 지원 구를 짐작할 수 있으면
+                # 그 구 대표 스팟을, 그마저 없으면 종로구 고정 스팟으로 대신한다
+                # (TP-160, docs/design/clarification-options.md 7절 A2). resolved_intent는
                 # 이번 턴의 intent를 그대로 표시용으로 담는다 — 실제 해소는 다음 턴에
                 # last_intent로 복원한다(_resolve_clarification_choice).
                 llm_output = llm_output.model_copy(
@@ -2470,7 +2529,7 @@ async def _fetch_tool_context(
                                     label=f"{name} 근처",
                                     resolved_intent=llm_output.intent,
                                 )
-                                for name in _LOCATION_REQUIRED_QUICK_PICKS
+                                for name in _location_required_quick_picks(context_gps)
                             ],
                         ),
                     }
@@ -2479,9 +2538,10 @@ async def _fetch_tool_context(
                 # 동명이인 장소 후보(Tool이 실제로 찾아낸 지하철역·명소 이름)를
                 # 버튼으로 준다. resolve_location.py가 이미 식당·상점류는 걸러내고
                 # 넘긴다 — 여기서 candidates가 비어 있으면(전부 식당·상점뿐이었거나
-                # 지오코딩 경로라 이름 자체를 모르면) 식당을 보여주는 대신 A2와 같은
-                # 종로구 대표 스팟 고정 버튼으로 대신한다(실사용 피드백, 2026-08-13:
-                # "그냥 지하철역으로만 가자").
+                # 지오코딩 경로라 이름 자체를 모르면) 식당을 보여주는 대신, 사용자가
+                # 말한 지역명("용산")이나 GPS로 짐작한 구의 대표 스팟으로 대신한다
+                # (TP-160 — 예전엔 종로구 고정 스팟이었는데, 서비스 지역이 16개 구로
+                # 늘어난 뒤에도 안 바뀌어 "용산"에도 종로구 버튼이 뜨는 버그였다).
                 found_candidates = tool_response.clarification.candidates
                 if found_candidates:
                     message = tool_clarification_message(code)
@@ -2491,15 +2551,14 @@ async def _fetch_tool_context(
                     ]
                 else:
                     message = (
-                        "말씀하신 목적지 범위가 여러곳으로 해석돼요. "
-                        f"{supported_district_label()} 안에서 이런 곳들은 어떠세요? "
-                        "아니면, 좀 더 자세히 말씀해주시겠어요?"
+                        "말씀하신 곳이 넓은 지역이라 어디인지 콕 짚기 어려워요. "
+                        "아래 후보 중에 골라주세요. 다른 곳이면 더 자세히 알려주셔도 좋아요."
                     )
                     options = [
                         ClarificationOption(
                             id=name, label=f"{name} 근처", resolved_intent=llm_output.intent
                         )
-                        for name in _LOCATION_REQUIRED_QUICK_PICKS
+                        for name in _location_ambiguous_quick_picks(agent_conditions, context_gps)
                     ]
                 llm_output = llm_output.model_copy(
                     update={

@@ -111,6 +111,21 @@ class _LLMProviderWithGeneralAnswer(FakeLLMProvider):
         return provider_result("(테스트용 고정 답변)", source=ProviderSource.FAKE_LLM)
 
 
+class _LLMProviderForcingSearchCenter(_LLMProviderWithGeneralAnswer):
+    """FakeLLMProvider의 _KNOWN_PLACE_NAMES는 종로구 랜드마크만 알아서 "용산" 같은
+    지명은 search_center로 못 넘긴다 — TP-160의 발화-매치 경로(구 이름 부분 일치)를
+    검증하려면 실제 사용자 발화처럼 임의 지명을 그대로 넘겨야 한다.
+    """
+
+    def __init__(self, search_center: str) -> None:
+        self._search_center = search_center
+
+    async def extract_recommend_conditions(self, user_input):
+        result = await super().extract_recommend_conditions(user_input)
+        result.data.recommend.conditions.search_center = self._search_center
+        return result
+
+
 class _LLMProviderForcingCompareWithFewShown(_LLMProviderWithGeneralAnswer):
     """FakeLLMProvider는 shown_place_count>=2일 때만 COMPARE를 낸다(실제 규칙과 일치).
 
@@ -2922,6 +2937,84 @@ async def test_location_ambiguous_without_candidates_falls_back_to_quick_picks()
     assert option_ids == {"경복궁", "인사동", "광화문", "북촌"}
     labels = {option.label for option in clarification.options}
     assert labels == {"경복궁 근처", "인사동 근처", "광화문 근처", "북촌 근처"}
+
+
+@pytest.mark.asyncio
+async def test_location_ambiguous_without_candidates_matches_mentioned_district() -> None:
+    """TP-160: "용산 카페 추천"처럼 지원 구 이름을 직접 말했는데 후보를 못 찾으면,
+    무관한 종로구 스팟이 아니라 그 구(용산구)의 대표 스팟을 보여줘야 한다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+    providers["llm"] = _LLMProviderForcingSearchCenter("용산")
+    providers["tool_provider"] = _LocationAmbiguousToolProvider([])
+
+    response = await run_agent_flow(
+        AgentRequest(user_input="용산 카페 추천해줘", session_id=None, device_location=None),
+        store=store,
+        **providers,
+    )
+
+    assert response.llm_output.status == OutputStatus.NEEDS_CLARIFICATION
+    clarification = response.llm_output.clarification
+    assert clarification is not None
+    option_ids = {option.id for option in clarification.options}
+    assert option_ids == {"이태원역", "용산역"}
+
+
+@pytest.mark.asyncio
+async def test_location_required_uses_gps_nearest_district_when_no_location_mentioned() -> None:
+    """TP-160: 위치를 아예 언급 안 했어도 GPS가 종로구 밖(용산구)이면, 무관한
+    종로구 스팟이 아니라 GPS로 짐작한 구의 대표 스팟을 보여줘야 한다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="카페 추천해줘", session_id=None, device_location="37.5299,126.9648"
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.llm_output.status == OutputStatus.NEEDS_CLARIFICATION
+    clarification = response.llm_output.clarification
+    assert clarification is not None
+    option_ids = {option.id for option in clarification.options}
+    assert option_ids == {"이태원역", "용산역"}
+
+
+@pytest.mark.asyncio
+async def test_clarification_choice_location_required_district_landmark_resolves() -> None:
+    """TP-160: GPS로 짐작한 구(종로구가 아닌)의 대표 스팟 버튼도 정상적으로
+    클릭 해소돼야 한다 — 클릭 검증이 종로구 4곳으로만 좁혀져 있으면 안 된다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    ambiguous = await run_agent_flow(
+        AgentRequest(
+            user_input="카페 추천해줘", session_id=None, device_location="37.5299,126.9648"
+        ),
+        store=store,
+        **providers,
+    )
+    assert ambiguous.llm_output.status == OutputStatus.NEEDS_CLARIFICATION
+
+    resolved = await run_agent_flow(
+        AgentRequest(
+            user_input="이태원역 근처",
+            session_id=ambiguous.state.session_id,
+            device_location="37.5299,126.9648",
+            clarification_choice="이태원역",
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert resolved.llm_output.intent == "RECOMMEND"
+    assert resolved.llm_output.status == OutputStatus.COMPLETE
+    assert resolved.state.user_conditions.search_center == "이태원역"
+    context = get_session_context(resolved.state.session_id, store=store)
+    assert context.pending_clarification is None
 
 
 @pytest.mark.asyncio

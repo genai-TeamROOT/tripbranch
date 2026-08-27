@@ -166,12 +166,22 @@ def is_within_service_area(latitude: float, longitude: float) -> bool:
     (구별 활성 장소의 0.3% 미만, README의 정밀도 표 참고). 저장소에서 해석된
     장소는 이미 지원 구로 등록된 것이라 호출자가 판정을 생략한다.
     """
-    for _district_code, polygons in _service_area_polygons():
+    return find_containing_district(latitude, longitude) is not None
+
+
+def find_containing_district(latitude: float, longitude: float) -> ServiceDistrict | None:
+    """좌표를 포함하는 지원 구. 지원 구 밖이면 None.
+
+    `is_within_service_area`가 bool만 필요한 호출부용이라면, 이건 "어느 구인지"까지
+    필요한 호출부용이다(TP-160 위치 되묻기 대체 버튼, `app.service_area_landmarks`).
+    """
+    by_code = {district.district_code: district for district in SUPPORTED_DISTRICTS}
+    for district_code, polygons in _service_area_polygons():
         if any(
             _is_inside_polygon(longitude, latitude, polygon) for polygon in polygons
         ):
-            return True
-    return False
+            return by_code[district_code]
+    return None
 
 
 def supported_district_label(*, with_city: bool = False) -> str:
@@ -192,6 +202,7 @@ __all__ = [
     "SUPPORTED_DISTRICTS",
     "SUPPORTED_DISTRICT_CODES",
     "ServiceDistrict",
+    "find_containing_district",
     "is_within_service_area",
     "supported_district_label",
 ]
