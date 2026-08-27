@@ -93,6 +93,8 @@ class PhotoSimilarPlaceRow:
     distance_km: float
     similarity: float
     photo_count: int
+    # 비교에 실제로 쓴 첫 사진. places.first_image_url과 다를 수 있다.
+    image_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -115,6 +117,8 @@ async def build_photo_similar_places(
     geocoding_provider: GeocodingProvider,
     place_provider: PlaceProvider,
     mood_provider,
+    place_repository=None,
+    local_search_provider=None,
 ) -> PhotoSimilarResult:
     """위치 해석부터 사진 순위까지 한 번에 실행한다."""
     if not query.image_bytes:
@@ -134,7 +138,9 @@ async def build_photo_similar_places(
             retryable=False,
         )
 
-    center = await _resolve_center(query, geocoding_provider)
+    center = await _resolve_center(
+        query, geocoding_provider, place_repository, local_search_provider
+    )
     # 반경을 안 주면 추천과 같은 기본값을 쓴다 — 사진 검색만 다른 범위를 보면
     # "추천에는 나왔는데 사진으로는 안 나온다"가 생긴다.
     radius_km = query.search_radius_km or DEFAULT_PLACE_SEARCH_RADIUS_KM
@@ -172,6 +178,10 @@ async def build_photo_similar_places(
         item.candidate.place_id: item.candidate
         for item in prepared.preparation.eligible_candidates
     }
+    # 보여줄 만큼만 조회한다. 후보 전체(최대 500)가 아니라 상위 N곳이면 된다.
+    photo_urls = await mood_provider.first_photo_urls(
+        [match.content_id for match in result.data[: query.limit]]
+    )
     places = tuple(
         PhotoSimilarPlaceRow(
             content_id=match.content_id,
@@ -180,6 +190,7 @@ async def build_photo_similar_places(
             distance_km=candidate.distance_km,
             similarity=match.similarity,
             photo_count=match.profile.photo_count,
+            image_url=photo_urls.get(match.content_id),
         )
         for match in result.data[: query.limit]
         # 후보에 없는 content_id가 오면 건너뛴다. 후보를 좁혀 부르므로 정상적으로는
@@ -208,14 +219,25 @@ class _Center:
 async def _resolve_center(
     query: PhotoSimilarQuery,
     geocoding_provider: GeocodingProvider,
+    place_repository=None,
+    local_search_provider=None,
 ) -> _Center:
     """기준점을 정한다. 지역명이 있으면 그것이 이긴다.
 
     사용자가 지역을 적었으면 GPS를 무시한다 — 명시한 쪽이 의도이고, 좌표는
     적지 않았을 때의 기본값이다(agent_context/service.py와 같은 우선순위).
+
+    **저장소와 지역 검색을 함께 넘긴다.** 지오코딩만으로는 주소만 풀린다 —
+    "안국역"처럼 장소명으로 말한 위치는 지역 검색이 담당하고, 저장된 장소는
+    저장소가 먼저 답한다. 셋을 다 넘기지 않으면 채팅 경로에서는 되는 위치가
+    사진 경로에서만 실패한다(2026-08-27에 실제로 그랬다).
     """
     if query.location_query:
-        result = await ResolveLocationTool(geocoding_provider).execute(
+        result = await ResolveLocationTool(
+            geocoding_provider,
+            place_repository=place_repository,
+            local_search_provider=local_search_provider,
+        ).execute(
             ResolveLocationQuery(
                 query.location_query, purpose=LocationPurpose.SEARCH_CENTER
             )

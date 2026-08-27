@@ -110,3 +110,87 @@ def test_blank_location_query_falls_back_to_gps(client, monkeypatch) -> None:
         data={"latitude": "37.5", "longitude": "127.0", "location_query": "   "},
     )
     assert seen["location_query"] is None
+
+
+def test_session_location_is_used_when_no_explicit_query(client, monkeypatch) -> None:
+    """앞 턴에서 "안국역"이라고 말했으면 사진도 거기서 찾는다.
+
+    사진만 다른 규칙으로 위치를 정하면 같은 대화 안에서 "추천은 안국역인데
+    사진은 내 위치"가 된다.
+    """
+    seen: dict[str, object] = {}
+
+    class _Conditions:
+        search_center = "안국역"
+        current_location = None
+
+    class _Context:
+        session_exists = True
+        user_conditions = _Conditions()
+
+    monkeypatch.setattr(
+        route.state_service, "get_session_context", lambda *a, **k: _Context()
+    )
+
+    async def _fake(query, **kwargs):
+        seen["location_query"] = query.location_query
+        return PhotoSimilarResult((), "안국역", 0.0, 0.0, 0, 0)
+
+    monkeypatch.setattr(route, "build_photo_similar_places", _fake)
+    client.post(
+        _URL, files=_image(),
+        data={"session_id": "s-1", "latitude": "37.5", "longitude": "127.0"},
+    )
+
+    assert seen["location_query"] == "안국역"
+
+
+def test_explicit_query_beats_the_session(client, monkeypatch) -> None:
+    """사용자가 이번에 지역을 적었으면 그쪽이 이긴다."""
+    seen: dict[str, object] = {}
+
+    class _Conditions:
+        search_center = "안국역"
+        current_location = None
+
+    class _Context:
+        session_exists = True
+        user_conditions = _Conditions()
+
+    monkeypatch.setattr(
+        route.state_service, "get_session_context", lambda *a, **k: _Context()
+    )
+
+    async def _fake(query, **kwargs):
+        seen["location_query"] = query.location_query
+        return PhotoSimilarResult((), "성수동", 0.0, 0.0, 0, 0)
+
+    monkeypatch.setattr(route, "build_photo_similar_places", _fake)
+    client.post(_URL, files=_image(), data={"session_id": "s-1", "location_query": "성수동"})
+
+    assert seen["location_query"] == "성수동"
+
+
+def test_session_lookup_failure_falls_back_to_coordinates(client, monkeypatch) -> None:
+    """세션 조회가 실패해도 사진 검색 자체를 막지 않는다."""
+    seen: dict[str, object] = {}
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("state store down")
+
+    monkeypatch.setattr(route.state_service, "get_session_context", _boom)
+
+    async def _fake(query, **kwargs):
+        seen["location_query"] = query.location_query
+        seen["latitude"] = query.latitude
+        return PhotoSimilarResult((), "기기 GPS 위치", 0.0, 0.0, 0, 0)
+
+    monkeypatch.setattr(route, "build_photo_similar_places", _fake)
+    response = client.post(
+        _URL, files=_image(),
+        data={"session_id": "s-1", "latitude": "37.5", "longitude": "127.0"},
+    )
+
+    assert response.status_code == 200
+    assert seen["location_query"] is None
+    assert seen["latitude"] == pytest.approx(37.5)
