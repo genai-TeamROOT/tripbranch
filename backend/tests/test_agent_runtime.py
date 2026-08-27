@@ -74,6 +74,7 @@ from app.services.runtime.compare_context_schemas import (
     CompareContextRequest,
     CompareContextResponse,
 )
+from app.services.runtime.follow_up_suggester import MAX_LABEL_LENGTH, MAX_SUGGESTIONS
 from app.services.runtime.info_context_schemas import InfoContextRequest, InfoContextResponse
 from app.services.runtime.real_recommendation_provider import RealRecommendationProvider
 from app.services.runtime.stubs import (
@@ -244,6 +245,31 @@ async def test_recommend_flow_reaches_recommendations() -> None:
     assert providers["tool_provider"].last_request.gps_location == Coordinates(
         latitude=37.5788, longitude=126.9770
     )
+
+
+@pytest.mark.asyncio
+async def test_turn_carries_follow_up_suggestions() -> None:
+    """응답 조립 지점이 열다섯 군데라도 후속 질문은 한 곳에서 붙는다.
+
+    `run_agent_flow`가 본체의 응답을 받은 직후 한 번만 부르므로, 어느 경로로 만들어진
+    응답이든 같은 자리에서 채워진다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.recommendations is not None
+    assert 0 < len(response.suggested_follow_ups) <= MAX_SUGGESTIONS
+    assert all(len(label) <= MAX_LABEL_LENGTH for label in response.suggested_follow_ups)
 
 
 @pytest.mark.asyncio

@@ -11,11 +11,12 @@ from datetime import datetime
 from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
+import httpx
 import pytest
 from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 
-from app.errors import AppError, ProviderUnavailableError
+from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
 from app.providers.gemini import (
     _REJECTS_ZERO_THINKING_BUDGET,
     RealGeminiProvider,
@@ -973,3 +974,137 @@ async def test_generate_compare_summary_uses_thinking_budget_zero() -> None:
         await provider.generate_compare_summary(comparison)
 
     assert captured_config[0].thinking_config.thinking_level == genai_types.ThinkingLevel.MINIMAL
+
+
+# --- 전송 계층별 타임아웃: aiohttp가 던지는 예외까지 잡는가 ------------------
+#
+# google-genai는 aiohttp를 임포트할 수 있으면 그쪽으로 요청을 보내고, 아니면 httpx로
+# 보낸다. aiohttp는 이 프로젝트의 의존성이 아니라 환경에 따라 있기도 없기도 해서,
+# **같은 코드가 머신마다 다른 예외를 받는다.** 아래 테스트가 두 예외를 모두 넣고 도는
+# 이유다 — 한쪽만 검사하면 다른 쪽 환경에서 조용히 죽는다.
+
+_TIMEOUT_CASES = [
+    pytest.param(httpx.ReadTimeout("timeout"), id="httpx"),
+    # aiohttp가 타임아웃에 던지는 것. 3.11+에서 builtin TimeoutError와 같은 객체다.
+    pytest.param(TimeoutError(), id="aiohttp"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("timeout_error", _TIMEOUT_CASES)
+async def test_structured_call_retries_after_timeout(timeout_error: Exception) -> None:
+    """타임아웃은 일시적 오류다 — 재시도해서 살아나야 한다.
+
+    안 잡히면 재시도 루프까지 못 가고 그 자리에서 예외가 새어 나간다.
+    """
+    provider = RealGeminiProvider(
+        api_key="dummy", model_names=["dummy"], timeout_seconds=1.0, max_retries=2
+    )
+    call_count = 0
+
+    async def flaky(*args: object, **kwargs: object) -> _FakeResponse:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise timeout_error
+        return _FakeResponse(IntentClassificationResult(intent=Intent.RECOMMEND))
+
+    with (
+        patch.object(provider._client.aio.models, "generate_content", side_effect=flaky),
+        patch("app.providers.gemini.asyncio.sleep", new=AsyncMock()),
+    ):
+        result = await provider._generate("sys", "user", IntentClassificationResult, "test")
+
+    assert result.intent is Intent.RECOMMEND
+    assert call_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("timeout_error", _TIMEOUT_CASES)
+async def test_structured_call_raises_provider_timeout_after_exhausting_retries(
+    timeout_error: Exception,
+) -> None:
+    """소진되면 AppError 계열로 나가야 호출부가 안내문으로 낮출 수 있다."""
+    provider = RealGeminiProvider(
+        api_key="dummy", model_names=["dummy"], timeout_seconds=1.0, max_retries=1
+    )
+
+    async def always_timeout(*args: object, **kwargs: object) -> _FakeResponse:
+        raise timeout_error
+
+    with (
+        patch.object(provider._client.aio.models, "generate_content", side_effect=always_timeout),
+        patch("app.providers.gemini.asyncio.sleep", new=AsyncMock()),
+        pytest.raises(ProviderTimeoutError),
+    ):
+        await provider._generate("sys", "user", IntentClassificationResult, "test")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("timeout_error", _TIMEOUT_CASES)
+async def test_stream_falls_back_to_next_model_when_it_times_out_before_any_text(
+    timeout_error: Exception,
+) -> None:
+    """첫 조각 전 타임아웃이면 다음 모델로 넘어간다.
+
+    아직 화면에 아무 글자도 안 나갔으니 다른 모델로 옮겨도 문장이 겹치지 않는다.
+    """
+    provider = RealGeminiProvider(
+        api_key="dummy", model_names=["first", "second"], timeout_seconds=1.0
+    )
+    used_models: list[str] = []
+
+    async def flaky(*args: object, **kwargs: object):
+        used_models.append(str(kwargs["model"]))
+        if len(used_models) == 1:
+            raise timeout_error
+        return _FakeStream(["폴백 모델 답변"])
+
+    with patch.object(
+        provider._client.aio.models, "generate_content_stream", side_effect=flaky
+    ):
+        chunks = [
+            chunk
+            async for chunk in provider.stream_general_answer(GeneralTopic.SERVICE_IDENTITY, "안녕")
+        ]
+
+    assert chunks == ["폴백 모델 답변"]
+    assert used_models == ["first", "second"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("timeout_error", _TIMEOUT_CASES)
+async def test_stream_timeout_after_first_chunk_propagates_instead_of_switching_models(
+    timeout_error: Exception,
+) -> None:
+    """조각을 이미 보낸 뒤면 폴백하지 않고 AppError로 올린다.
+
+    다른 모델로 옮기면 사용자가 이미 읽은 문장 뒤에 다른 답변이 이어붙는다.
+    """
+    provider = RealGeminiProvider(
+        api_key="dummy", model_names=["first", "second"], timeout_seconds=1.0
+    )
+    used_models: list[str] = []
+
+    class _StreamThatDiesMidway:
+        def __aiter__(self):
+            return self._iter()
+
+        async def _iter(self):
+            yield type("Chunk", (), {"text": "앞부분"})()
+            raise timeout_error
+
+    async def flaky(*args: object, **kwargs: object):
+        used_models.append(str(kwargs["model"]))
+        return _StreamThatDiesMidway()
+
+    received: list[str] = []
+    with (
+        patch.object(provider._client.aio.models, "generate_content_stream", side_effect=flaky),
+        pytest.raises(ProviderTimeoutError),
+    ):
+        async for chunk in provider.stream_general_answer(GeneralTopic.SERVICE_IDENTITY, "안녕"):
+            received.append(chunk)
+
+    assert received == ["앞부분"]
+    assert used_models == ["first"]

@@ -29,7 +29,7 @@ from app.agent_context.info_schemas import InfoContextRequest
 from app.auth.dependency import OptionalPrincipal
 from app.errors import AppError
 from app.observability.api_usage import create_external_client
-from app.providers.factory import get_google_translate_provider
+from app.providers.factory import get_google_translate_provider, get_llm_provider
 from app.schemas import (
     AgentRequest,
     AgentResponse,
@@ -37,8 +37,10 @@ from app.schemas import (
     RecommendationPlaceDetailResponse,
 )
 from app.services.runtime.agent_runtime import run_agent
+from app.services.runtime.follow_up_suggester import suggest_follow_ups
 from app.services.runtime.info_response_transform import to_info_place_card
 from app.services.runtime.localization import (
+    localize_follow_ups_for_user,
     localize_request_for_runtime,
     localize_response_for_user,
 )
@@ -65,6 +67,31 @@ async def _response_for_user(response: AgentResponse, *, language: str) -> Agent
     async with create_external_client() as client:
         return await localize_response_for_user(
             response, language=language, translator=get_google_translate_provider(client)
+        )
+
+
+async def _follow_ups_for_user(
+    request: AgentRequest, response: AgentResponse, *, runtime_request: AgentRequest
+) -> list[str]:
+    """`done` 뒤에 이어 보낼 후속 질문 문구를 만든다.
+
+    Runtime 안이 아니라 여기서 부르는 이유는 순서 때문이다 — 이 호출은 답변이 이미
+    화면에 다 뜬 뒤에 도는데, `done`보다 앞에 두면 그 시간만큼 턴이 안 끝나 답변과
+    카드 아래에 로딩 말풍선이 한 번 더 뜬 것처럼 보인다(D-102).
+
+    입력은 **한국어 사본**(`runtime_request`, `response`)이다. 화면에 나가는 문구는
+    그 결과를 다시 영어로 옮긴 것이다 — Runtime이 한국어로만 도는 전제를 여기서도
+    지킨다.
+    """
+
+    suggestions = await suggest_follow_ups(runtime_request, response, llm=get_llm_provider())
+    if request.language != "en" or not suggestions:
+        return suggestions
+    async with create_external_client() as client:
+        return await localize_follow_ups_for_user(
+            suggestions,
+            language=request.language,
+            translator=get_google_translate_provider(client),
         )
 
 
@@ -169,6 +196,8 @@ async def chat_stream(
                     principal=principal,
                     stream_event_sink=emit,
                     stream_recommendation_summary=True,
+                    # 후속 질문은 done 뒤에 따로 만든다(_follow_ups_for_user).
+                    generate_follow_ups=False,
                 )
             )
             while not task.done() or not queue.empty():
@@ -182,8 +211,14 @@ async def chat_stream(
                 yield ServerSentEvent(event=event, data=json.dumps(payload, ensure_ascii=False))
 
             try:
-                response = await task
-                response = await _response_for_user(response, language=request.language)
+                # **한국어 사본을 따로 붙잡아 둔다.** 후속 질문을 만드는 입력이
+                # 이쪽이어야 한다 — 번역본을 넘기면 한국어 지침에 영어 답변이
+                # 들어가고, 그렇게 나온 문구를 다시 ko→en으로 한 번 더 번역하게
+                # 된다. 한국어 요청이면 두 이름이 같은 객체를 가리킨다.
+                runtime_response = await task
+                response = await _response_for_user(
+                    runtime_response, language=request.language
+                )
             except AppError as exc:
                 yield ServerSentEvent(
                     event="error",
@@ -229,6 +264,31 @@ async def chat_stream(
                     ensure_ascii=False,
                 ),
             )
+
+            # **done 뒤에 보낸다.** 화면은 done에서 턴을 끝내 로딩을 감추고 입력창을
+            # 풀고, 버튼만 조금 늦게 붙는다. 만들지 못했으면 이벤트를 아예 보내지
+            # 않는다 — 빈 목록을 보내도 화면이 할 일이 없다.
+            try:
+                suggestions = await _follow_ups_for_user(
+                    request, runtime_response, runtime_request=runtime_request
+                )
+            except Exception:
+                # suggest_follow_ups()가 자체적으로 삼키지만 번역까지 포함한 이
+                # 구간 전체를 한 번 더 감싼다. 이미 done을 보낸 뒤라 여기서 예외가
+                # 새면 완결된 턴이 스트림 오류로 뒤집힌다.
+                logger.warning("후속 질문 전달 실패(답변에는 영향 없음)", exc_info=True)
+                suggestions = []
+            if suggestions:
+                yield ServerSentEvent(
+                    event="follow_ups",
+                    data=json.dumps(
+                        {
+                            "elapsed_ms": int((time.monotonic() - started_at) * 1000),
+                            "suggestions": suggestions,
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
         finally:
             if task is not None and not task.done():
                 task.cancel()

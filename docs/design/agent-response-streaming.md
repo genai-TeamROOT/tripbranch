@@ -170,6 +170,12 @@ data: {
   "response": { "...최종 AgentResponse...": "..." }
 }
 
+event: follow_ups
+data: {
+  "elapsed_ms": 4012,
+  "suggestions": ["여기 주차되나요?", "이 근처 카페도 알려줘"]
+}
+
 event: error
 data: {
   "elapsed_ms": 3456,
@@ -182,6 +188,14 @@ data: {
 `result`는 카드 렌더링에 필요한 확정 데이터만 먼저 담는다. `message`는 비워 두고,
 `message_delta`로 누적한다. `done.response`는 저장·Audit·재현에 쓰는 완전한 최종
 `AgentResponse`다.
+
+**`follow_ups`는 `done` 뒤에 오는 유일한 이벤트다**(D-102). 후속 질문 생성은 답변이
+이미 화면에 다 뜬 뒤에 도는 LLM 호출이라, `done` 앞에 두면 그 시간만큼 턴이 안 끝나
+답변과 카드 아래에 로딩 말풍선이 한 번 더 뜬 것처럼 보인다. 화면은 `done`에서 턴을
+끝내 로딩을 감추고 입력창을 풀고, 버튼만 조금 늦게 붙인다. 제안할 게 없으면 서버는
+이 이벤트를 보내지 않으며, `done.response.suggested_follow_ups`는 이 경로에서 항상
+빈 배열이다(단발 `POST /api/chat`에서는 반대로 응답 안에 담겨 온다 — 나눠 보낼
+스트림이 없다).
 
 ### 4.4 단계 전이
 

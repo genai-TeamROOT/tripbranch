@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app.agent_context.schemas import ContextError
-from app.errors import ProviderUnavailableError
+from app.errors import ProviderTimeoutError, ProviderUnavailableError
 from app.providers.contracts import ProviderSource, provider_result
 from app.schemas import (
     ClarificationPayload,
@@ -876,6 +876,49 @@ class TestComposePlaceInfoMessage:
         assert len(received) == 2
         assert message == "".join(received)
         assert stub.info_received == {"parking": "가능 (승용차 240대)"}
+
+    @pytest.mark.asyncio
+    async def test_stream_timeout_falls_back_to_the_fixed_message_instead_of_dying(self) -> None:
+        """답변 스트림이 타임아웃해도 C가 가져온 장소 정보를 버리지 않는다.
+
+        여기까지 왔다는 것은 C 조회가 이미 성공했다는 뜻이다. 말풍선 문장 하나 때문에
+        턴 전체를 실패시키면 그 정보가 통째로 사라지고 사용자는 오류만 본다 —
+        2026-08-27에 실제로 그렇게 됐다. 타임아웃이 `AppError` 계열
+        (`ProviderTimeoutError`)로 올라와야 이 폴백이 걸린다.
+        """
+
+        class _TimingOutLLM(_StubLLM):
+            async def stream_info_answer(self, **kwargs: object):
+                raise ProviderTimeoutError("Gemini")
+                yield ""  # pragma: no cover - 제너레이터로 만들기 위한 선언
+
+        response = InfoContextResponse(
+            request_id="r8-timeout",
+            status="success",
+            result=PlaceInfoResult(
+                status="success",
+                question_type="parking",
+                requested_place_name="경복궁",
+                resolved_place_name="경복궁",
+                fields={"parking": "가능 (승용차 240대)"},
+            ),
+        )
+        received: list[str] = []
+
+        async def on_delta(text: str) -> None:
+            received.append(text)
+
+        message = await compose_chat_message(
+            LLMOutput(intent=Intent.INFO, status=OutputStatus.COMPLETE),
+            info_response=response,
+            llm=_TimingOutLLM(),
+            on_message_delta=on_delta,
+        )
+
+        # 예외가 새지 않고, C가 확인한 사실(경복궁에 주차 가능)이 문장으로 남는다.
+        # 상세 수치는 이 폴백에서 카드 쪽으로 넘긴다 — 그래서 "240대"는 없다.
+        assert message == "경복궁 주차는 가능해요. 아래 주차 상세 내용을 확인해보세요."
+        assert received == [message]
 
     def test_success_renders_fields_with_labels(self) -> None:
         response = InfoContextResponse(

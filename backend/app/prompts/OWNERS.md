@@ -5,6 +5,7 @@
 | `router/`, `modify/`, `compare/`, `general/`, `out_of_scope/`, `_shared/` | A | @kiminlim | 인텐트 경계, 대화 흐름, 공통 응답 규칙 |
 | `recommend/` | D | @rayquaza410 | 추천 조건·RAG/Scoring 연계 규칙 |
 | `info/` | C | @jjinsword | 관광 데이터·외부 API 기반 정보 질의 규칙 |
+| `follow_up/` | C | @jjinsword | 턴이 끝난 뒤 제안할 다음 발화와 서비스 기능 목록 |
 | `schedule/` | B | @lth2295 | 일정 편성·부분 재편성 규칙 |
 
 공유 규칙을 바꿀 때는 영향받는 모든 슬롯의 단일 턴 평가와

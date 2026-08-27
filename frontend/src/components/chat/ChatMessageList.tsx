@@ -24,6 +24,7 @@ import { PhotoSimilarResultMessage } from "./PhotoSimilarResultMessage";
 import { RecommendationResultMessage } from "./RecommendationResultMessage";
 import { ScheduleResultMessage } from "./ScheduleResultMessage";
 import { SessionStatusMessage } from "./SessionStatusMessage";
+import { SuggestedFollowUps } from "./SuggestedFollowUps";
 import { findTurnText } from "../../utils/turnText";
 
 function StreamingDots({ language }: { language: Language }) {
@@ -80,6 +81,7 @@ interface ChatMessageListProps {
   onRequestMore: () => void;
   onRelaxRadius: () => void;
   onSelectClarificationOption: (optionId: string, label: string) => void;
+  onSelectFollowUpSuggestion: (suggestion: string) => void;
   onToggleTravelOrigin?: (toggle: TravelOriginToggle) => void;
   locationRefresh: {
     ageMinutes: number | null;
@@ -100,6 +102,7 @@ export function ChatMessageList({
   onRequestMore,
   onRelaxRadius,
   onSelectClarificationOption,
+  onSelectFollowUpSuggestion,
   onToggleTravelOrigin,
   locationRefresh,
   progress,
@@ -234,6 +237,18 @@ export function ChatMessageList({
                 options={message.options}
                 isLoading={isLoading}
                 onSelectOption={onSelectClarificationOption}
+              />
+            );
+          }
+
+          if (message.type === "follow_up_suggestions") {
+            return (
+              <SuggestedFollowUps
+                key={message.id}
+                suggestions={message.suggestions}
+                isLoading={isLoading}
+                onSelect={onSelectFollowUpSuggestion}
+                language={language}
               />
             );
           }
