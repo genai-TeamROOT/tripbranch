@@ -39,6 +39,7 @@ type AgentResponse = {
   message: string;                          // 챗봇 말풍선 텍스트
   recommendations?: RecommendationResponse; // RECOMMEND/MODIFY + complete일 때만
   schedule?: ScheduleResult;                // SCHEDULE + complete일 때만
+  suggested_follow_ups?: string[];          // 다음 발화 제안 버튼 문구, 0~3개
   llm_execution?: LLMExecutionMetadata;     // 개발자 Audit용
   tool_execution?: ToolExecutionDebug;      // 개발자 Audit용
 };
@@ -47,6 +48,13 @@ type AgentResponse = {
 - `recommendations`와 `schedule`은 동시에 채워지지 않습니다.
 - `message`에 카드·일정 상세를 다시 풀어쓰지 않습니다. 상세는
   [Agent 응답 생성 설계](./design/agent-response-generation.md) 참고.
+- `suggested_follow_ups`는 이 턴 뒤에 버튼으로 보여줄 다음 발화 후보입니다. 버튼을 누르면
+  **그 문구가 그대로 `user_input`으로 재전송됩니다** — `clarification.options`가 `id`를
+  `clarification_choice`로 보내 Intent를 못 박는 것과 다릅니다. 되묻기 턴
+  (`status = needs_clarification`)과 `OUT_OF_SCOPE` 턴에서는 항상 빈 배열입니다(D-102).
+  **`POST /api/chat/stream`에서는 이 필드가 항상 빈 배열이고**, 문구는 `done` 뒤에 오는
+  별도 `follow_ups` 이벤트로 전달됩니다
+  ([스트리밍 설계](./design/agent-response-streaming.md) 4.3절).
 - 상세 필드는 `backend/app/schemas.py`의 `AgentRequest`, `AgentResponse`를
   기준으로 합니다.
 

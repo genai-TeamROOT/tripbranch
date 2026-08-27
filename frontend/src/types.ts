@@ -361,6 +361,17 @@ export type ChatMessage =
       type: "clarification";
       text: string;
       options: ClarificationOption[];
+    }
+  /*
+   * 한 턴이 끝난 뒤 다음 발화를 제안하는 버튼 묶음. feedback과 마찬가지로 턴의
+   * 맨 뒤에 한 번만 붙고, 사용자가 다음 발화를 보내는 순간 사라진다 — 대화를
+   * 위로 거슬러 올라갔을 때 옛 턴의 버튼이 남아 있으면 어느 답변에 대한
+   * 제안인지 알 수 없다.
+   */
+  | {
+      id: string;
+      type: "follow_up_suggestions";
+      suggestions: string[];
     };
 
 export interface ApiErrorBody {
@@ -677,6 +688,12 @@ export interface AgentResponse {
   message: string;
   /** message에 넣기엔 긴 부가 정보(D-085). 있으면 본문 아래 작고 옅은 글씨로 보여준다. */
   message_footnote?: string | null;
+  /**
+   * 이 턴 뒤에 버튼으로 보여줄 다음 발화 후보(0~3개). 누르면 이 문구가 그대로
+   * user_input으로 재전송된다 — 되묻기 버튼(ClarificationOption)이 id로 Intent를
+   * 못 박는 것과 다르다.
+   */
+  suggested_follow_ups?: string[];
   llm_execution?: LLMExecutionMetadata | null;
   tool_execution?: ToolExecutionDebug | null;
   tool_executions?: ToolExecutionDebug[];
@@ -739,7 +756,19 @@ export type AgentStreamEvent =
   | { type: "message_start"; data: AgentStreamMessageStartEvent }
   | { type: "message_delta"; data: AgentStreamMessageDeltaEvent }
   | { type: "done"; data: AgentStreamDoneEvent }
+  | { type: "follow_ups"; data: AgentStreamFollowUpsEvent }
   | { type: "error"; data: AgentStreamErrorEvent };
+
+/*
+ * done **뒤에** 오는 유일한 이벤트다. 후속 질문 생성은 답변이 이미 화면에 다 뜬 뒤에
+ * 도는 호출이라, done보다 앞에 두면 그 시간만큼 턴이 안 끝나 답변과 카드 아래에
+ * 로딩 말풍선이 한 번 더 뜬 것처럼 보인다(D-102). 제안할 게 없으면 서버가 이 이벤트를
+ * 아예 보내지 않는다.
+ */
+export interface AgentStreamFollowUpsEvent {
+  suggestions: string[];
+  elapsed_ms: number;
+}
 
 export interface ToolProviderDebug {
   source: string;

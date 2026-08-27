@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -17,6 +19,7 @@ import app.routes.chat as chat_route
 from app.agent_context.info_schemas import InfoContextResponse, PlaceCard, PlaceInfoResult
 from app.agent_context.schemas import Coordinates
 from app.main import app
+from app.providers.contracts import ProviderSource, provider_result
 from app.schemas import (
     AgentRequest,
     AgentResponse,
@@ -260,3 +263,85 @@ def test_recommendation_place_details_hides_mismatched_place_card(monkeypatch) -
         "requested_place_id": "126508",
         "place_card": None,
     }
+
+
+# --- SSE: 후속 질문은 done 뒤에 온다 (D-102) ---------------------------------
+
+
+def _sse_events(body: str) -> list[tuple[str, dict]]:
+    """SSE 본문을 (이벤트 이름, payload) 순서대로 푼다."""
+
+    events: list[tuple[str, dict]] = []
+    for frame in body.replace("\r\n", "\n").split("\n\n"):
+        lines = [line for line in frame.split("\n") if line]
+        name = next((line[6:].strip() for line in lines if line.startswith("event:")), None)
+        data = "\n".join(line[5:].strip() for line in lines if line.startswith("data:"))
+        if name and data:
+            events.append((name, json.loads(data)))
+    return events
+
+
+@pytest.fixture
+def streaming(monkeypatch) -> list[str]:
+    """run_agent와 후속 질문 LLM을 대역으로 바꾼다. 만들어진 문구를 돌려준다."""
+
+    generated = ["여기 주차되나요?", "다른 곳도 보여줘"]
+
+    async def fake_run_agent(request: AgentRequest, **kwargs) -> AgentResponse:
+        # 라우트가 Runtime 쪽 생성을 껐는지 여기서 잠근다 — 켜진 채로 두면 done이
+        # 그 호출을 기다려 로딩이 한 번 더 뜬 것처럼 보인다.
+        assert kwargs["generate_follow_ups"] is False
+        return _fake_response()
+
+    class _FollowUpLLM:
+        async def generate_follow_up_suggestions(self, **kwargs):
+            return provider_result(list(generated), source=ProviderSource.FAKE_LLM)
+
+    monkeypatch.setattr(chat_route, "run_agent", fake_run_agent)
+    monkeypatch.setattr(chat_route, "get_llm_provider", lambda: _FollowUpLLM())
+    return generated
+
+
+def test_stream_sends_follow_ups_after_done(streaming) -> None:
+    """순서가 계약이다 — 화면은 done에서 로딩을 감추고 버튼만 뒤늦게 붙인다."""
+    client = TestClient(app)
+
+    response = client.post("/api/chat/stream", json={"user_input": "경복궁 근처 카페 추천해줘"})
+
+    assert response.status_code == 200
+    names = [name for name, _ in _sse_events(response.text)]
+    assert names[-2:] == ["done", "follow_ups"]
+    payload = dict(_sse_events(response.text))["follow_ups"]
+    assert payload["suggestions"] == ["여기 주차되나요?", "다른 곳도 보여줘"]
+
+
+def test_stream_omits_the_event_when_there_is_nothing_to_suggest(streaming) -> None:
+    """빈 목록을 보내도 화면이 할 일이 없다 — 이벤트 자체를 생략한다."""
+    streaming.clear()
+    client = TestClient(app)
+
+    response = client.post("/api/chat/stream", json={"user_input": "경복궁 근처 카페 추천해줘"})
+
+    names = [name for name, _ in _sse_events(response.text)]
+    assert names[-1] == "done"
+    assert "follow_ups" not in names
+
+
+def test_stream_still_completes_when_follow_ups_blow_up(monkeypatch) -> None:
+    """done을 이미 보낸 뒤라, 여기서 예외가 새면 완결된 턴이 오류로 뒤집힌다."""
+
+    async def fake_run_agent(request: AgentRequest, **kwargs) -> AgentResponse:
+        return _fake_response()
+
+    def exploding_llm():
+        raise RuntimeError("provider 조립 실패")
+
+    monkeypatch.setattr(chat_route, "run_agent", fake_run_agent)
+    monkeypatch.setattr(chat_route, "get_llm_provider", exploding_llm)
+    client = TestClient(app)
+
+    response = client.post("/api/chat/stream", json={"user_input": "경복궁 근처 카페 추천해줘"})
+
+    names = [name for name, _ in _sse_events(response.text)]
+    assert names[-1] == "done"
+    assert "error" not in names

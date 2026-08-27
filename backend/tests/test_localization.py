@@ -100,3 +100,21 @@ async def test_english_response_translates_display_text_but_preserves_place_iden
     assert item.recommendation_reason == "en:가까운 궁궐이에요."
     assert item.explanations == ["en:도보로 가까워요."]
     assert item.warnings == ["en:비가 오면 우산이 필요해요."]
+
+
+@pytest.mark.asyncio
+async def test_follow_up_suggestions_are_translated_for_english_screens() -> None:
+    """버튼 문구도 화면에 보이는 문장이다.
+
+    빠뜨리면 영어 화면 아래에 한국어 버튼만 남는다 — 눌러도 동작은 하지만(발화가
+    다시 한국어로 번역돼 Runtime에 들어간다) 화면이 두 언어로 갈린다.
+    """
+    translator = FakeTranslator()
+    response = _response()
+    response.suggested_follow_ups = ["여기 주차되나요?", "다른 곳도 보여줘"]
+
+    localized = await localize_response_for_user(
+        response, language="en", translator=translator  # type: ignore[arg-type]
+    )
+
+    assert localized.suggested_follow_ups == ["en:여기 주차되나요?", "en:다른 곳도 보여줘"]
