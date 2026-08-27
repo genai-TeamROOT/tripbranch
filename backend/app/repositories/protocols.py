@@ -12,6 +12,7 @@ from app.domain.models import (
     PlaceEvidenceMatch,
     PlaceMoodMatch,
     PlaceMoodProfile,
+    StoredMunicipalParkingLot,
     StoredPlaceDetail,
     StoredPlaceLocation,
     StoredPlaceState,
@@ -25,6 +26,16 @@ class PlaceLocationRepository(Protocol):
     async def find_active_places_by_name(
         self, name: str
     ) -> tuple[StoredPlaceLocation, ...]: ...
+
+
+class MunicipalParkingCatalogRepository(Protocol):
+    """공영주차장 코드와 한 번 보강한 좌표를 연결하는 읽기/동기화 계약."""
+
+    async def find_by_codes(
+        self, codes: Sequence[str]
+    ) -> dict[str, StoredMunicipalParkingLot]: ...
+
+    async def upsert_lots(self, lots: Sequence[StoredMunicipalParkingLot]) -> None: ...
 
 
 class ConcentrationMappingRepository(Protocol):

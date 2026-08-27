@@ -363,6 +363,8 @@ class QuestionType(StrEnum):
     # 혼잡도가 아니라, 매장 좌표와 가까운 제공 상권의 대체 정보다.
     REALTIME_COMMERCIAL = "realtime_commercial"
     REALTIME_PARKING = "realtime_parking"
+    # 공영/시영을 명시한 질문은 GetParkingInfo의 구 단위 최신 대수 경로를 쓴다.
+    REALTIME_PUBLIC_PARKING = "realtime_public_parking"
     REALTIME_SUBWAY = "realtime_subway"
     REALTIME_BUS = "realtime_bus"
     REALTIME_EVENT = "realtime_event"

@@ -136,16 +136,22 @@ async def test_카드가_차도_no_data_판정은_그대로다() -> None:
     """이 테스트가 이 설계의 전부다.
 
     카드를 fields에 합치면 overview가 거의 항상 있어 fields가 비지 않고,
-    "경복궁 주차 정보는 없어요"가 영영 나오지 않는다.
+    "경복궁 요금 정보는 없어요"가 영영 나오지 않는다.
+
+    질문 유형이 parking이 아니라 fee인 이유는 D-099다 — 주차는 상세정보에
+    parking/parking_fee가 없으면 주변 공영주차장 현황으로 대체하므로
+    PlaceInfoResult로 돌아오지 않는다(그 경로는
+    test_info_realtime_commercial.py가 본다). 여기서 보려는 것은 대체 경로가
+    없는 질문 유형에서 카드와 fields가 서로 다른 값으로 남는지다.
     """
     service = _service(
         _details(overview="조선왕조 제일의 법궁이다.", operating_hours="09:00~18:00")
     )
 
-    response = await service.fetch_info_context(_request("parking"))
+    response = await service.fetch_info_context(_request("fee"))
 
     result = _result(response)
-    # 물어본 주차 정보가 없으므로 no_data다.
+    # 물어본 요금 정보가 없으므로 no_data다.
     assert response.status == "no_data"
     assert result.status == "no_data"
     assert result.fields == {}

@@ -150,6 +150,43 @@ class RealtimeParkingLot:
     code: str | None = None
     # PRK_TYPE(NW/NS/BS/NP)을 "공영"/"민영"으로 정리한 값. 모르는 코드는 None.
     lot_type: str | None = None
+    # 총면수와 현재 주차 대수를 모두 제공할 때만 계산한다. 기존 citydata는 이 값을
+    # 직접 주지 않아 None이고, GetParkingInfo 경로가 결정적으로 채운다.
+    available_spaces: int | None = None
+
+
+@dataclass(frozen=True)
+class MunicipalParkingStatus:
+    """서울시 시영·공영주차장 API(GetParkingInfo)의 최신 현황 한 건.
+
+    좌표는 API에 없으므로 ``municipal_parking_lots`` 카탈로그에서 별도로 보강한다.
+    ``is_live``는 '최근 20분 안에 실시간 주차 대수가 제공됐는지'를 뜻하며, 빈자리가
+    있다는 뜻이 아니다.
+    """
+
+    code: str
+    name: str
+    address: str | None
+    district: str | None
+    capacity: int | None
+    current_parked_count: int | None
+    observed_at: str | None
+    paid: bool | None
+    is_live: bool
+
+
+@dataclass(frozen=True)
+class StoredMunicipalParkingLot:
+    """한 번 지오코딩해 Supabase에 보관하는 공영주차장 정적 카탈로그 행."""
+
+    code: str
+    name: str
+    address: str | None
+    district: str | None
+    latitude: float | None
+    longitude: float | None
+    capacity: int | None
+    paid: bool | None
 
 
 @dataclass(frozen=True)

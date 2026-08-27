@@ -19,6 +19,7 @@ from app.agent_context.schemas import (
     ContextError,
     ContextWarning,
     RecommendationContext,
+    parse_candidate_names,
 )
 from app.tools.contracts import ToolError, ToolStatus
 from app.tools.holiday import HolidayToolResult
@@ -83,10 +84,7 @@ def assemble_agent_context_response(
             request,
             code=("location_ambiguous" if cause == "ambiguous_location" else "location_required"),
             missing_fields=[] if cause == "ambiguous_location" else ["current_location"],
-            # "|" 구분 문자열로 온다 — ToolError.details가 dict[str, str]라 리스트를
-            # 직접 못 담는다(resolve_location.py). 지오코딩 경로(후보 개수만 아는
-            # GeocodeResult)는 이름이 없어 빈 문자열이 온다 — 그때는 빈 리스트가 된다.
-            candidates=[name for name in candidate_names.split("|") if name],
+            candidates=parse_candidate_names(candidate_names),
             metadata_context=location_only,
             rule_versions=rule_versions,
         )

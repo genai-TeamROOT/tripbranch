@@ -59,12 +59,14 @@ from app.schemas import (
     ConcentrationIntent,
     GeneralPayload,
     GeneralTopic,
+    InfoPayload,
     Intent,
     InterpretRequest,
     LLMOutput,
     ModifyPayload,
     ModifyType,
     OutputStatus,
+    PlaceContext,
     PlaceType,
     QuestionType,
     RecommendationItem,
@@ -129,7 +131,7 @@ from app.services.runtime.tool_debug import (
     build_info_concentration_execution_debug,
     build_tool_execution_debug,
 )
-from app.state.schema import now_kst
+from app.state.schema import PendingInfoContext, now_kst
 from app.state.service import (
     ApiContextView,
     RecommendedPlace,
@@ -140,6 +142,7 @@ from app.state.service import (
     SetIgnoreOperatingHoursRequest,
     SetLastIntentRequest,
     SetPendingClarificationRequest,
+    SetPendingInfoContextRequest,
     StateApplyResponse,
     UpdateApiContextRequest,
     apply,
@@ -149,6 +152,7 @@ from app.state.service import (
     set_ignore_operating_hours_until,
     set_last_intent,
     set_pending_clarification,
+    set_pending_info_context,
     update_api_context,
 )
 from app.state.session import new_trace_id
@@ -572,6 +576,35 @@ def _resolve_clarification_choice(
                 intent=Intent(session_context.last_intent),
                 status=OutputStatus.COMPLETE,
                 recommend=RecommendPayload(conditions=conditions),
+            )
+        )
+
+    if code == "place_ambiguous":
+        # location_ambiguous와 같은 이유로 choice_id는 Tool이 실제로 찾아낸 후보
+        # 이름이다(resolve_location.py). INFO는 RECOMMEND와 달리 조건이 아니라
+        # question_type/specific_question 등 원래 질문 자체를 이어받아야 하므로
+        # session_context.user_conditions가 아니라 pending_info_context(agent_runtime의
+        # place_ambiguous 되묻기 생성 지점이 저장해둠)를 쓴다. 세션이 만료됐거나
+        # 새로고침 후 오래된 버튼을 누르면(pending_info_context 없음) 평소
+        # build_interpretation() 경로로 안전하게 폴백한다.
+        pending_info = session_context.pending_info_context
+        if (
+            not choice_id
+            or pending_info is None
+            or session_context.last_intent != Intent.INFO.value
+        ):
+            return None
+        return _ClarificationResolution(
+            llm_output=LLMOutput(
+                intent=Intent.INFO,
+                status=OutputStatus.COMPLETE,
+                info=InfoPayload(
+                    place_name=choice_id,
+                    place_context=PlaceContext(pending_info.place_context),
+                    question_type=QuestionType(pending_info.question_type),
+                    specific_question=pending_info.specific_question,
+                    visit_time=pending_info.visit_time,
+                ),
             )
         )
 
@@ -1925,6 +1958,59 @@ async def _run_agent_flow(
             info_response,
             latency_ms=int((time.monotonic() - info_started_at) * 1000),
         )
+        # place_ambiguous면 되묻기 버튼으로 끝낸다 — RECOMMEND/SCHEDULE의
+        # location_ambiguous와 같은 패턴(status를 NEEDS_CLARIFICATION으로 바꾸고
+        # ClarificationPayload를 채움). candidates가 비어 있으면(예: 지오코딩
+        # 경로라 이름 자체를 모르는 경우) 버튼 없는 되묻기를 만들지 않고 기존
+        # 평문 경로로 그대로 흘려보낸다.
+        info_clarification = info_response.clarification
+        if (
+            info_response.status == "needs_clarification"
+            and info_clarification is not None
+            and info_clarification.code == "place_ambiguous"
+            and info_clarification.candidates
+        ):
+            _remember_clarification(state_response.session_id, "place_ambiguous", store)
+            # 버튼 클릭 시 원래 질문(question_type 등)을 그대로 이어받을 수
+            # 있도록 저장해둔다 — 세션에 없으면 장소명만으로 처음부터
+            # 재분류돼 "주차장 질문이었다"는 사실이 사라진다.
+            set_pending_info_context(
+                SetPendingInfoContextRequest(
+                    session_id=state_response.session_id,
+                    context=PendingInfoContext(
+                        question_type=llm_output.info.question_type.value,
+                        place_context=llm_output.info.place_context.value,
+                        specific_question=llm_output.info.specific_question,
+                        visit_time=llm_output.info.visit_time,
+                    ),
+                ),
+                store=store,
+            )
+            llm_output = llm_output.model_copy(
+                update={
+                    "status": OutputStatus.NEEDS_CLARIFICATION,
+                    "clarification": ClarificationPayload(
+                        message=tool_clarification_message("place_ambiguous"),
+                        options=[
+                            ClarificationOption(
+                                id=name, label=name, resolved_intent=llm_output.intent
+                            )
+                            for name in info_clarification.candidates
+                        ],
+                    ),
+                }
+            )
+            message = await compose_chat_message(llm_output, llm=llm)
+            return AgentResponse(
+                llm_output=llm_output,
+                state=state_response,
+                recommendations=None,
+                message=message,
+                llm_execution=get_llm_execution_metadata(),
+                tool_execution=info_execution,
+                tool_executions=[info_execution] if info_execution is not None else [],
+            )
+
         requests_walking_time = _is_info_walking_time_request(llm_output)
         info_origin_location = valid_gps
         if info_origin_location is None and not state_response.api_context.gps_expired:
@@ -1957,6 +2043,13 @@ async def _run_agent_flow(
 
         async def emit_info_message_delta(text: str) -> None:
             await _emit_stream_event(stream_event_sink, "message_delta", {"text": text})
+
+        if session_context.pending_clarification == "place_ambiguous":
+            # 이번 턴은(되묻기 해소든 아니든) 되묻지 않고 끝났다 — 직전 턴이 남긴
+            # place_ambiguous를 여기서 지운다. INFO/GENERAL 곁가지 대화가 RECOMMEND의
+            # pending_clarification까지 지우지는 않는(위 3-2) 원칙과 같은 결로,
+            # place_ambiguous는 INFO 자신의 되묻기라 INFO가 정리할 책임이 있다.
+            _remember_clarification(state_response.session_id, None, store)
 
         message = await compose_chat_message(
             llm_output,

@@ -4072,6 +4072,118 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `backend/app/repositories/supabase_places.py`,
   `backend/app/providers/place_mood.py`, `backend/app/providers/factory.py`
 
+### D-100 — INFO 장소 되묻기: 편집거리 매칭 + 후보 버튼 노출 + 상태 저장 이어받기
+
+- 상태: `Accepted` — 구현 완료.
+- 배경: "성수 카페거리 주차장 정보"가 INFO에서 "여러 장소 중 어느 곳을 말씀하시는
+  건가요?"라고 버튼 하나 없이 되묻는 버그 제보. 조사해보니 두 가지가 겹쳐 있었다.
+  1) 지역 검색이 실제로 "성수동카페거리"(여행,명소>거리,골목 — 명소로 인식)를
+     찾아주는데, 사용자 발화 "성수 카페거리"와 "동" 한 글자 차이로 정확/첫토큰
+     일치 어느 쪽에도 안 걸려 후보를 하나로 못 좁혔다.
+  2) `agent_context/service.py`의 INFO 처리 코드가 `resolve_location.py`가 실제로
+     찾아낸 후보 이름을 받아서 쓰지 않고 `candidates=[]`를 하드코딩해 버렸다 —
+     RECOMMEND/SCHEDULE는 같은 상황에서 후보를 버튼으로 보여주는데 INFO만
+     안 그랬다. 게다가 `llm_output.status`를 `NEEDS_CLARIFICATION`으로 바꾸지도
+     않아 애초에 버튼 UI 자체가 뜰 수 없는 구조였다.
+- 결정:
+  1. **편집거리 매칭(Part A)**: `resolve_location.py`의 `_select_local_search_candidate()`에
+     4번째 단계 추가 — 정확/첫토큰/노선별 역 묶기가 다 실패했을 때만, 편집거리
+     (Levenshtein) ≤ 1이고 역/명소 카테고리인 후보가 정확히 하나면 채택한다.
+     임계값 2는 안 됨("경복궁"↔"덕수궁" 둘 다 3글자 편집거리 2인 서로 다른
+     실존 랜드마크). 질의 길이 3자 미만은 이 단계를 안 탄다("신촌"↔"신천"
+     처럼 편집거리 1이 완전히 다른 동네일 수 있음). 역/명소 카테고리로만
+     제한해 이 파일 전체의 "부분 일치로 넓히지 않는다" 원칙과 충돌하지
+     않게 했다(식당·상점까지 넓히면 "안국역"≠"안국역사거리" 같은 기존
+     회귀 테스트가 지키는 경계가 무너진다).
+  2. **INFO도 실제 후보를 candidates에 담는다(Part B)**: `agent_context/service.py`의
+     `ambiguous_location` 분기에서 `location_result.error.details["candidate_names"]`를
+     실제로 풀어 쓴다. `"|"` 구분 파싱을 `agent_context/schemas.py`의
+     `parse_candidate_names()`로 공용화해 `assembler.py`(RECOMMEND 경로)와
+     함께 쓴다.
+  3. **question_type별 가용성 필터(Part C)**: 후보 이름마다
+     `self._tools.location.execute()`로 다시 개별 해석해, `concentration`은
+     `concentration_name` 있는 것만, 실시간 유형(주차·지하철·버스·행사·교통,
+     현재형 혼잡 질문)은 `select_nearest_population_area`가 잡히는 것만,
+     `realtime_commercial`은 `select_nearest_commercial_area`가 잡히는 것만,
+     그 외 시설 상세는 `place_id`(저장소 존재) 있는 것만 남긴다. 재해석
+     자체가 또 애매하면(DB 동명 타이틀 2건 등) "조회 불가"로 버리지 않고
+     후보를 유지한다. 필터링으로 0건이 되면 원본 후보 목록으로 되돌린다
+     (RECOMMEND의 location_ambiguous가 후보 없으면 quick-pick으로 대체하지
+     버튼 없는 메시지로 안 가는 것과 같은 원칙).
+  4. **상태 저장으로 정확히 이어받기(Part D)**: INFO는 RECOMMEND와 달리
+     `question_type`/`specific_question`/`place_context`/`visit_time`을 세션에
+     저장해두지 않아, 버튼 클릭 시 장소명만으로 처음부터 재분류되면 "주차장
+     질문이었다"는 사실이 사라진다(사용자 결정: 상태 저장해 정확히 이어받는
+     쪽 채택, 재분류 허용 대신). `AgentState`에 `pending_info_context` 필드
+     신설, `set_pending_info_context()`를 `set_pending_clarification()`과
+     같은 모양으로 추가했다. `pending_info_context`는 `pending_clarification
+     == "place_ambiguous"`일 때만 의미가 있어, `set_pending_clarification()`
+     내부에서 code가 `"place_ambiguous"`가 아니면 같이 지우게 했다 — 새
+     호출부 하나만 추가하면 기존 9개 호출부가 자동으로 안전하게 정리된다.
+     `agent_runtime.py`의 INFO 블록이 RECOMMEND의 `location_ambiguous`와
+     같은 패턴으로 `NEEDS_CLARIFICATION` + `ClarificationPayload`를 만들고,
+     `_resolve_clarification_choice()`에 `place_ambiguous` 분기를 추가해
+     저장해둔 값으로 `InfoPayload`를 결정적으로 재구성한다. INFO가 되묻지
+     않고 끝나는 지점에서 `pending_clarification == "place_ambiguous"`였다면
+     정리한다 — "INFO/GENERAL 곁가지 대화는 RECOMMEND의 되묻기를 안 건드린다"는
+     기존 원칙과 결이 같되, place_ambiguous는 INFO 자신의 되묻기라 INFO가
+     정리할 책임이 있다고 봤다.
+  5. Supabase `agent_states` 테이블에 `pending_info_context jsonb` 컬럼 추가
+     마이그레이션(`202608270001`) — `pending_clarification` 컬럼 때(202608030001)와
+     같은 이유로, `save_state()`가 `model_dump()`를 통째로 보내 컬럼이 없으면
+     저장이 실패한다.
+- 검증: 백엔드 `pytest` 3,022 passed, `ruff check` 클린. 실제 Naver 지역검색
+  API로 "성수 카페거리"→"성수동카페거리"(여행,명소>거리,골목) 편집거리 1
+  매칭을 실측 확인.
+- 채택하지 않은 것:
+  - 좌표 기준 가까운 지하철역 버튼: 우리 DB엔 TourAPI 관광지만 있고 역
+    데이터가 없다. Naver 지역검색도 좌표 기반 카테고리 검색을 지원하지
+    않아 별도 데이터셋이 필요해 기각.
+  - 되묻기 버튼 클릭 시 장소명만으로 재분류(상태 저장 없이): 원래 질문
+    (주차 등) 신호가 사라져 다른 question_type으로 잘못 재분류될 위험이
+    있어, 상태 저장 쪽을 채택(위 결정 4).
+- 상세: `backend/app/tools/resolve_location.py`, `backend/app/agent_context/service.py`,
+  `backend/app/agent_context/assembler.py`, `backend/app/agent_context/schemas.py`,
+  `backend/app/services/runtime/agent_runtime.py`, `backend/app/state/schema.py`,
+  `backend/app/state/service.py`,
+  `supabase/migrations/202608270001_add_pending_info_context_column.sql`,
+  관련 테스트 파일 다수
+
+### D-101 — 공영주차장 실시간 현황을 일반 근처 주차장과 분리한다
+
+- 상태: `Accepted` — 구현 완료, 좌표 카탈로그 적재는 마이그레이션 적용 후 별도 실행.
+- 배경: 서울시 실시간 도시데이터 `PRK_STTS`는 특정 핫스팟 주변의 공영·민영 주차장
+  목록을 함께 내려주지만, 실시간 대수가 있는 항목이 일부이고 모든 공영주차장을
+  포괄한다는 보장이 없다. 반면 서울시 `GetParkingInfo`는 구 단위 시영·공영주차장에
+  `PKLT_CD`, 총면수, 현재 주차 대수, 갱신 시각을 제공한다. 2026-08-27 실측에서
+  종로·중·용산·영등포구의 `PRK_STTS_YN=1` 행에 20분 이내 갱신 수치가 있음을 확인했다.
+- 결정:
+  1. "공영/시영주차장"을 명시한 자리·잔여 질문은 `realtime_public_parking`으로
+     분류해 GetParkingInfo를 우선 사용한다. `PRK_STTS_YN=1`이고 수치가 있는 행만
+     실시간 현황으로 표시하며, 잔여 면수는 `총면수 - 현재 주차 대수`로 결정적으로
+     계산한다.
+  2. 공영/시영을 명시하지 않은 "근처 주차장"은 기존 `realtime_parking`을 유지해
+     도시데이터의 공영·민영 목록을 함께 보여준다. 같은 분류 안에서는 실시간 수치가
+     있는 항목을 거리보다 먼저 노출해, 값 있는 주차장이 카드 밖으로 밀리는 문제를 막는다.
+  3. GetParkingInfo에 좌표가 없으므로 `municipal_parking_lots`에는 코드·주소·한 번
+     지오코딩한 좌표·기본 속성만 저장한다. 실시간 주차 대수는 DB에 적재하지 않고
+     요청마다 API에서 가져온다. 카탈로그가 비어도 해당 구 최신 공영주차장 목록은
+     답하되, 거리 정렬만 생략한다.
+  4. 일반 `parking`이 관광지 상세정보에서 주차 필드를 찾지 못하면(예: 관광 DB에
+     없는 `종각역`) 확정한 장소 좌표를 기준으로 같은 GetParkingInfo 경로를 대체
+     사용한다. 관광지 자체의 주차 가능 여부·요금이 있으면 기존 상세 경로를
+     유지한다. 좌표가 불명확하거나 해당 구에 실시간 공영주차장 값이 없을 때만
+     `확인할 수 없음`으로 응답한다.
+  5. 지원 구 이름만 말한 "종로 주차장 정보"는 장소 후보를 되묻지 않는다. `종로`와
+     `종로구`를 행정구역 좌표로 직접 해석해 해당 구의 공영주차장을 조회한다.
+     `종각`처럼 역·명소로도 읽히는 이름은 이 예외에 넣지 않아 기존 후보 선택을
+     유지한다.
+- 채택하지 않은 것: GetParkingInfo만으로 근처 민영주차장까지 포괄하는 방식. 이 API는
+  공영 중심이고 좌표도 없어 민영 포함 근처 탐색에는 기존 도시데이터 경로가 더 맞다.
+- 상세: `backend/app/providers/municipal_parking.py`,
+  `backend/app/agent_context/service.py`,
+  `supabase/migrations/202608270002_create_municipal_parking_lots.sql`,
+  `docs/design/int-02-info.md`.
 
 ## 변경 이력
 
@@ -4170,3 +4282,6 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-27 | D-088 확장(2차) — place_associations 수집 범위를 서비스 지원 12개 구에서 16개 구로 확장(D-086으로 늘어난 서대문·마포·양천·강서 4개 구 반영). 코드 변경 없이 `--districts`만 넓혀 재실행, 기존 12개 구는 upsert로 유지되고 4개 구가 새로 추가됨. 원본 7,219건 → 매핑 CSV 751건 → 엣지 2,001건 실제 적재(미매칭 5,110 / 자기참조 15 / 중복 93 제외). 매칭률 27.7%로 파일럿·1차 확장과 같은 추세 유지 |
 | 2026-08-27 | D-098 신설 — 사진 검색을 채팅창에 붙이고 대화가 잡은 위치를 이어받는다(D-096 후속, TP-175, C). 입력창 왼쪽 "+" 버튼 → 사진/갤러리. `session_id`로 B의 누적 조건에서 `search_center` → `current_location` 순으로 위치를 찾고 없으면 GPS로 떨어진다. 위치가 안 풀리던 원인이 둘이었다 — 세션을 안 본 것과 `ResolveLocationTool`에 지오코딩만 넘겨 "안국역" 같은 장소명을 못 푼 것. 사진은 320px data URL로 담고(object URL은 새로고침에 무효), 결과는 가로로 늘어놓아 분위기를 한눈에 견주게 한다. 유사도는 숫자로 보여주지 않고 카드를 눌러 상세로 확인한다. 후보가 10곳 상한이라 사진마다 결과가 같은 문제는 TP-176으로 남는다 |
 | 2026-08-27 | D-099 신설 — 사진 검색은 순위를 먼저 매기고 상위 N곳만 상세를 확인한다(D-098 후속, TP-176, C). 후보를 모으고 줄 세우던 순서를 뒤집었다 — 사진 유사도는 DB 안에서 끝나 공짜이고 비싼 것은 TourAPI 상세 조회라, "어차피 보여줄 곳"에만 값을 치른다. `search_place_mood`에 좌표·반경 인자를 더하고(하버사인 직접 계산, PostGIS 없음) 상세는 `get_active_place_details`로 DB에서 읽는다. 하드 필터는 `prepare_recommendation_from_context()`를 그대로 재사용해 추천과 판정이 갈리지 않게 했다. 안국역 반경 2km 실측으로 후보 7 → 40곳, 응답 1.2 → 0.65초, TourAPI 10 → 0회. 사진마다 다른 결과가 나온다(상가·공원·한옥건물로 갈림) |
+| 2026-08-27 | D-100 신설 — INFO 장소 되묻기에 편집거리 매칭·후보 버튼·상태 저장 이어받기 추가. "성수 카페거리 주차장 정보"가 INFO에서 버튼 없이 되묻던 버그 — 지역 검색이 실제로 "성수동카페거리"(명소 카테고리)를 찾아주는데 "동" 한 글자 차이로 후보를 못 좁혔고(→ 역/명소류만 편집거리 1 이내면 채택하는 4번째 매칭 단계 추가), `agent_context/service.py`가 찾은 후보를 `candidates=[]`로 항상 버리고 있었다(→ 실제 후보를 담고, question_type별 가용성(집중률 매핑/실시간 인구·상권 반경/저장소 존재)으로 필터링). INFO도 RECOMMEND처럼 `NEEDS_CLARIFICATION` + 버튼으로 뜨게 했고, INFO는 question_type 등 원래 질문을 세션에 저장하지 않아 버튼 클릭 시 재분류되던 문제를 `AgentState.pending_info_context` 신설로 해결(사용자 결정: 재분류 대신 상태 저장). Supabase `agent_states`에 `pending_info_context` 컬럼 마이그레이션 포함 |
+| 2026-08-27 | D-101 신설 — 공영/시영주차장을 명시한 질문을 `realtime_public_parking`으로 분리. `GetParkingInfo`의 구 단위 최신 주차 대수와 한 번 지오코딩한 좌표 카탈로그를 연결하고, 일반 근처 주차장(`realtime_parking`)은 기존 도시데이터의 공영·민영 혼합 목록을 유지 |
+

@@ -31,6 +31,10 @@ from app.providers.kakao_transit_route import (
     RealKakaoTransitRouteProvider,
 )
 from app.providers.local_search import FakeLocalSearchProvider, RealLocalSearchProvider
+from app.providers.municipal_parking import (
+    FakeMunicipalParkingProvider,
+    RealMunicipalParkingProvider,
+)
 from app.providers.place_evidence import PlaceEvidenceProvider
 from app.providers.place_evidence_encoder import get_shared_encoder
 from app.providers.place_mood import PlaceMoodProvider
@@ -41,6 +45,7 @@ from app.providers.protocols import (
     HolidayProvider,
     LLMProvider,
     LocalSearchProvider,
+    MunicipalParkingProvider,
     PlaceDetailByNameProvider,
     PlaceDetailsProvider,
     PlaceProvider,
@@ -64,10 +69,12 @@ from app.providers.walking_route import (
     RealKakaoWalkingRouteProvider,
 )
 from app.providers.weather import RealWeatherProvider
+from app.repositories.fake_municipal_parking import FakeMunicipalParkingCatalogRepository
 from app.repositories.fake_places import (
     FakePlaceDetailsRepository,
     FakePlaceLocationRepository,
 )
+from app.repositories.municipal_parking import SupabaseMunicipalParkingRepository
 from app.repositories.supabase_places import SupabasePlaceRepository
 from app.tools.recommendation_cards import RecommendationCardTool
 from app.tools.travel_route import TravelRouteProviders, TravelRouteTool
@@ -414,6 +421,33 @@ def get_realtime_citydata_provider(client: httpx.AsyncClient) -> RealtimeCityDat
         return FakeRealtimeCityDataProvider()
     return RealRealtimeCityDataProvider(
         api_key=_require_key(settings.seoul_open_data_api_key, "SEOUL_OPEN_DATA_API_KEY"),
+        client=client,
+        timeout_seconds=settings.external_api_timeout_seconds,
+    )
+
+
+def get_municipal_parking_provider(client: httpx.AsyncClient) -> MunicipalParkingProvider:
+    """시영·공영주차장 최신 대수 Provider. 서울시 도시데이터와 같은 키를 쓴다."""
+
+    if settings.resolved_seoul_citydata_provider == "fake":
+        return FakeMunicipalParkingProvider()
+    return RealMunicipalParkingProvider(
+        api_key=_require_key(settings.seoul_open_data_api_key, "SEOUL_OPEN_DATA_API_KEY"),
+        client=client,
+        timeout_seconds=settings.external_api_timeout_seconds,
+    )
+
+
+def get_municipal_parking_catalog_repository(
+    client: httpx.AsyncClient,
+) -> SupabaseMunicipalParkingRepository | FakeMunicipalParkingCatalogRepository:
+    """공영주차장 좌표 카탈로그. Supabase 미설정 개발 환경은 빈 fake를 쓴다."""
+
+    if not settings.supabase_url.strip() or not settings.supabase_secret_key.strip():
+        return FakeMunicipalParkingCatalogRepository()
+    return SupabaseMunicipalParkingRepository(
+        supabase_url=settings.supabase_url,
+        secret_key=settings.supabase_secret_key,
         client=client,
         timeout_seconds=settings.external_api_timeout_seconds,
     )
