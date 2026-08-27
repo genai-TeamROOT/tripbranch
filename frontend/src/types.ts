@@ -94,6 +94,38 @@ export interface TranscriptionResponse {
   model: string;
 }
 
+/** 올린 사진과 분위기가 닮은 장소 한 곳. */
+export interface PhotoSimilarPlace {
+  content_id: string;
+  title: string;
+  /**
+   * 코사인 유사도.
+   *
+   * **순위를 위한 값이지 "얼마나 닮았다"의 눈금이 아니다.** 사진끼리의 경계값을
+   * 아직 재지 않아 컷 없이 상위 N곳을 그대로 받는다(D-094). 백분율로 보여주지
+   * 않는다.
+   */
+  similarity: number;
+  /**
+   * 장소 벡터를 만든 사진 수. 1이면 대표 이미지 한 장으로 대체된 곳이라
+   * 그 한 장에 좌우된다(D-087).
+   */
+  photo_count: number;
+  address?: string | null;
+  image_url?: string | null;
+}
+
+export interface PhotoSimilarPlacesResponse {
+  places: PhotoSimilarPlace[];
+  /** 어디를 중심으로 찾았는지. "내 주변에서 찾았어요"를 보여줄 때 쓴다. */
+  center_name: string;
+  /** 하드 필터를 통과해 사진 검색에 넘어간 후보 수. 0이면 볼 곳 자체가 없었다는 뜻이다. */
+  candidate_count: number;
+  /** 후보 상한에 걸려 잘린 수. 0이 아니면 반경을 좁히는 편이 낫다. */
+  truncated_count: number;
+  elapsed_ms: number;
+}
+
 export interface ScheduleItem {
   order: number;
   place_id: string;
@@ -235,6 +267,26 @@ export type ChatMessage =
       id: string;
       type: "interpretation_summary";
       text: string;
+    }
+  | {
+      id: string;
+      type: "photo_similar_result";
+      /**
+       * 올린 사진의 축소본(data URL). 무엇에 대한 답인지 이력에서 보이게 한다.
+       * 브라우저가 못 여는 형식이면 null이고, 그때도 검색 결과는 그대로 나온다.
+       */
+      imageUrl: string | null;
+      /**
+       * 검색이 끝나기 전에는 places가 없다. 사진만 먼저 띄우고 "찾는 중"을
+       * 보여주기 위해서다 — 응답이 1~2초라 아무것도 없으면 멈춘 것처럼 보인다.
+       */
+      status: "loading" | "done";
+      /** 어디를 중심으로 찾았는지. "내 주변에서 찾았어요"를 보여준다. */
+      centerName: string;
+      places: PhotoSimilarPlace[];
+      /** 하드 필터를 통과해 검색에 넘어간 후보 수. 0이면 볼 곳 자체가 없었다. */
+      candidateCount: number;
+      elapsedMs: number;
     }
   | {
       id: string;

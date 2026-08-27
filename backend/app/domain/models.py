@@ -543,6 +543,8 @@ class PlaceMoodMatch:
     content_id: str
     similarity: float
     profile: PlaceMoodProfile
+    # 검색 중심에서의 거리. 반경으로 좁혀 부른 경우에만 채워진다.
+    distance_km: float | None = None
 
 
 @dataclass(frozen=True)

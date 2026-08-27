@@ -78,6 +78,17 @@ function isChatMessage(value: unknown): value is ChatMessage {
       (message.error === null || typeof message.error === "string")
     );
   }
+  /* 위 schedule_result와 같은 이유다 — 이 케이스가 없으면 사진 검색을 한 번이라도
+     한 대화가 새로고침에서 통째로 사라진다. */
+  if (message.type === "photo_similar_result") {
+    /* status는 나중에 추가한 필드라 없는 저장분이 있을 수 있다 — 없으면 done으로
+       본다. 여기서 false를 주면 옛 세션이 통째로 버려진다. */
+    return (
+      Array.isArray(message.places) &&
+      typeof message.centerName === "string" &&
+      typeof message.candidateCount === "number"
+    );
+  }
   if (message.type === "recommendation_result") {
     return (
       Array.isArray(message.recommendations) &&

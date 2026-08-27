@@ -176,12 +176,35 @@ class PlaceMoodProvider:
             ),
         )
 
+    async def first_photo_urls(self, content_ids: Sequence[str]) -> dict[str, str]:
+        """비교에 쓴 첫 사진의 주소. 결과 카드에 보여줄 값이다.
+
+        조회 실패를 검색 실패로 만들지 않는다 — 사진이 안 보이는 것과 결과가
+        안 나오는 것은 무게가 다르다.
+        """
+        if not content_ids:
+            return {}
+        try:
+            return await self._repository.find_first_photo_urls(content_ids)
+        except Exception:
+            logger.warning("비교 사진 주소를 읽지 못했습니다.", exc_info=True)
+            return {}
+
     async def search_by_photo(
         self,
         image_bytes: bytes,
         candidate_content_ids: Sequence[str] | None = None,
+        *,
+        latitude: float | None = None,
+        longitude: float | None = None,
+        radius_km: float | None = None,
+        match_count: int | None = None,
     ) -> ProviderResult[tuple[PlaceMoodMatch, ...]]:
         """올린 사진과 분위기가 닮은 장소를 찾는다.
+
+        **좌표와 반경으로 부르는 것이 기본이다.** 후보 목록으로 부르면 그 목록을
+        만드는 데 TourAPI 상세 조회가 붙어 최대 20곳이 되는데, 반경으로 좁히면
+        그 안 전부를 줄 세운다 — 사진 유사도는 DB 안에서 끝나 사실상 공짜다.
 
         인코더가 없으면 조회하지 않고 NO_DATA로 끝낸다. **빈 벡터로 흉내내지
         않는다** — 0으로 채운 벡터를 넘기면 유사도가 전부 0이 되어 아무 장소나
@@ -208,8 +231,11 @@ class PlaceMoodProvider:
             matches = await self._repository.search_place_mood(
                 embedding,
                 candidate_content_ids,
-                match_count=self._match_count,
+                match_count=match_count or self._match_count,
                 min_similarity=self._min_similarity,
+                latitude=latitude,
+                longitude=longitude,
+                radius_km=radius_km,
             )
             try:
                 step.record(
@@ -221,7 +247,7 @@ class PlaceMoodProvider:
                             else len(dict.fromkeys(candidate_content_ids))
                         ),
                         min_similarity=self._min_similarity,
-                        match_count=self._match_count,
+                        match_count=match_count or self._match_count,
                     )
                 )
             except Exception:

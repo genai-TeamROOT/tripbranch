@@ -22,6 +22,12 @@ interface RecommendationDetailPreviewModalProps {
   item?: RecommendationItem;
   /** INFO 카드에서 열면 답변 요약을 즉시 표시한다. */
   card?: InfoPlaceCard;
+  /**
+   * 사진 검색 결과에서 열 때. 그 결과는 content_id와 유사도뿐이라 위 두 모양을
+   * 만들 수 없어, 조회에 필요한 최소값만 받는다.
+   */
+  placeId?: string;
+  placeName?: string;
   onClose: () => void;
 }
 
@@ -325,14 +331,17 @@ function RealtimeDetailEntries({ card }: { card: InfoPlaceCard }) {
 export function RecommendationDetailPreviewModal({
   item,
   card,
+  placeId: placeIdProp,
+  placeName: placeNameProp,
   onClose,
 }: RecommendationDetailPreviewModalProps) {
   const { device_location } = useTripState();
   const [detailCard, setDetailCard] = useState<InfoPlaceCard | null>(card ?? null);
   const [detailStatus, setDetailStatus] = useState<"loading" | "no_data" | "unavailable">("loading");
-  const placeId = card?.place_id ?? item?.place_id;
-  const placeName = card?.place_name ?? item?.name;
-  const title = detailCard?.place_name ?? card?.place_name ?? item?.name ?? "장소 상세 정보";
+  const placeId = card?.place_id ?? item?.place_id ?? placeIdProp;
+  const placeName = card?.place_name ?? item?.name ?? placeNameProp;
+  const title =
+    detailCard?.place_name ?? card?.place_name ?? item?.name ?? placeNameProp ?? "장소 상세 정보";
   const isLoading = detailStatus === "loading" && !detailCard;
   // 목적지 좌표와 현재 위치가 모두 있어야 길찾기 딥링크를 만들 수 있다.
   const canRoute =
