@@ -32,7 +32,27 @@ from app.tools.contracts import ToolError, ToolStatus
 # TourAPI locationBasedList2가 한 페이지에 허용하는 최대 행 수.
 MAX_PLACE_PROVIDER_ROWS = 100
 
-# 제외분이 많아 상한(MAX_PLACE_PROVIDER_ROWS)까지 받고도 새 후보를 다 채우지 못했다.
+# 필요한 후보 수의 몇 배를 Provider에 요청할지.
+#
+# **응답에서 쓸 수 없는 행이 빠지기 때문에 필요분만 요청하면 항상 모자란다.**
+# Provider는 미지원 분류(숙박·여행코스)와 지원 구 밖 장소를 걸러낸 뒤에 돌려주는데,
+# 그 필터는 TourAPI가 numOfRows만큼 행을 고른 **다음에** 걸린다. 그래서 상위 N행에
+# 숙박이 하나라도 섞이면 반경에 후보가 아무리 남아 있어도 N곳을 못 채운다.
+#
+# 3배로 잡은 근거는 실측 생존율이다(2026-08-27, 반경 2km, 30행·60행 요청):
+#
+#   성수동 97~98% / 안국역 80~87% / 명동 77~78% / 경복궁 62~70%
+#   북촌 53~67% / 홍대입구 40~58%
+#
+# 최저가 홍대입구 40%였고 3배면 그 아래(33%)까지 덮는다. 홍대·북촌이 낮은 이유는
+# 게스트하우스가 밀집해 상위 행이 숙박으로 채워지기 때문이다.
+#
+# **행 수를 늘리는 비용은 응답 크기뿐이다.** TourAPI 목록 조회는 numOfRows를 키워도
+# 호출 1회고 일일 한도는 호출 수 기준이라, 한도 소모가 늘지 않는다. 그래서 넉넉히
+# 받아 자르는 편이 "모자라면 다시 부르기"보다 싸다.
+CANDIDATE_OVERFETCH_FACTOR = 3
+
+# 상한(MAX_PLACE_PROVIDER_ROWS)까지 받고도 요청한 만큼 새 후보를 채우지 못했다.
 CANDIDATE_POOL_TRUNCATED_WARNING = "candidate_pool_truncated"
 
 
@@ -118,13 +138,12 @@ class NearbyPlaceDetailsTool:
         started_at = perf_counter()
         # 제외분만큼 더 받아야 새 후보가 limit만큼 남는다. 장소 검색은 거리순 고정
         # 정렬이라 행 수만 늘리면 이전 결과의 상위집합이 와서 페이지 번호가 필요 없다.
-        requested_rows = query.limit + len(query.excluded_place_ids)
-        provider_limit = min(MAX_PLACE_PROVIDER_ROWS, requested_rows)
-        # 상한에 걸리면 제외분을 다 건너뛰지 못해 새 후보가 limit보다 적게 남는다.
-        # 이때의 빈 결과는 "이 근처에 더 없음"이 아니라 "더 받아올 수 없음"이므로
-        # 소비 측이 구분할 수 있게 표시한다 — 아직 후보가 남았는데 소진됐다고
-        # 답하는 걸 막기 위함이다.
-        truncated = requested_rows > MAX_PLACE_PROVIDER_ROWS
+        # 여기에 CANDIDATE_OVERFETCH_FACTOR를 곱하는 이유는 그 상수 주석에 있다 —
+        # Provider가 걸러낸 뒤에 돌려주므로 필요분만 요청하면 limit을 못 채운다.
+        needed_rows = query.limit + len(query.excluded_place_ids)
+        wanted_rows = needed_rows * CANDIDATE_OVERFETCH_FACTOR
+        provider_limit = min(MAX_PLACE_PROVIDER_ROWS, wanted_rows)
+        row_cap_reached = wanted_rows > MAX_PLACE_PROVIDER_ROWS
         try:
             search_result = await self._search_provider.search_places(
                 latitude=query.latitude,
@@ -159,6 +178,13 @@ class NearbyPlaceDetailsTool:
             for candidate in candidates
             if candidate.place_id not in query.excluded_place_ids
         )[: query.limit]
+
+        # 상한에 걸려 요청한 만큼 못 채운 경우를 표시한다. 판정을 "행 상한에 걸릴
+        # 것 같다"가 아니라 **실제로 못 채웠다**로 두는 이유는, 넉넉히 받게 된
+        # 뒤로는 상한에 걸리고도 limit을 다 채우는 경우가 흔해졌기 때문이다.
+        # 이 표시가 붙은 결과는 "이 근처에 더 없음"이 아니라 "더 받아올 수 없음"이다
+        # — 아직 후보가 남았는데 소진됐다고 답하는 걸 막는다.
+        truncated = row_cap_reached and len(selected) < query.limit
 
         if not selected:
             return self._result(

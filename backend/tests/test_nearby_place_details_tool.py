@@ -14,6 +14,7 @@ from app.providers.contracts import (
 )
 from app.schemas import PlaceCandidate
 from app.tools.nearby_place_details import (
+    CANDIDATE_OVERFETCH_FACTOR,
     CANDIDATE_POOL_TRUNCATED_WARNING,
     MAX_PLACE_PROVIDER_ROWS,
     DetailStatus,
@@ -79,6 +80,37 @@ class SearchProvider:
         )
 
 
+class FilteringSearchProvider(SearchProvider):
+    """행을 고른 **뒤에** 일부를 걸러내고 돌려주는 Provider.
+
+    RealPlaceProvider의 실제 동작이다 — TourAPI가 numOfRows만큼 고른 행에서
+    `map_tour_api_response()`가 미지원 분류와 지원 구 밖 장소를 제거한다. 그래서
+    요청한 행 수보다 적게 돌아오고, 그 결손은 요청 행 수를 키워야만 메워진다.
+
+    이 대역이 없으면 결손 자체가 재현되지 않아, 과요청을 되돌려도 테스트가 통과한다.
+    """
+
+    def __init__(
+        self, candidates: list[PlaceCandidate], *, keep: int, every: int
+    ) -> None:
+        super().__init__(candidates)
+        if not 0 < keep <= every:
+            raise ValueError("keep은 1 이상 every 이하여야 합니다.")
+        self._keep = keep
+        self._every = every
+
+    async def search_places(
+        self, *args, **kwargs
+    ) -> ProviderResult[list[PlaceCandidate]]:
+        result = await super().search_places(*args, **kwargs)
+        kept = [
+            candidate
+            for index, candidate in enumerate(result.data)
+            if index % self._every < self._keep
+        ]
+        return provider_result(kept, source=ProviderSource.FAKE_PLACE)
+
+
 class DetailsProvider:
     def __init__(self, failures: frozenset[str] = frozenset()) -> None:
         self.failures = failures
@@ -139,7 +171,8 @@ async def test_tool_applies_exclusions_limit_and_concurrency() -> None:
         )
     )
 
-    assert search.seen_limit == 7
+    # 필요분 7곳(limit 5 + 제외 2)의 CANDIDATE_OVERFETCH_FACTOR배를 요청한다.
+    assert search.seen_limit == 7 * CANDIDATE_OVERFETCH_FACTOR
     assert [item.candidate.place_id for item in result.places] == [
         "place-2",
         "place-3",
@@ -167,10 +200,62 @@ async def test_tool_warns_when_row_cap_blocks_new_candidates() -> None:
         NearbyPlaceDetailsQuery(37.5, 127.0, limit=5, excluded_place_ids=excluded)
     )
 
-    # 5 + 100 = 105를 요청했지만 상한이 100이라 새 후보가 하나도 안 남는다.
+    # (5 + 100) x 3 = 315를 원하지만 상한이 100이라 제외분을 다 건너뛰지 못하고,
+    # 새 후보가 하나도 안 남는다.
     assert search.seen_limit == MAX_PLACE_PROVIDER_ROWS
     assert result.status is ToolStatus.NO_DATA
     assert CANDIDATE_POOL_TRUNCATED_WARNING in result.warnings
+
+
+@pytest.mark.asyncio
+async def test_tool_does_not_warn_when_row_cap_is_reached_but_limit_is_filled() -> None:
+    """상한에 걸려도 limit을 채웠으면 경고하지 않는다.
+
+    과요청을 시작한 뒤로는 상한에 걸리는 것과 못 채우는 것이 더는 같은 뜻이 아니다.
+    상한에 걸렸다는 이유만으로 경고하면, 후보가 넉넉한데도 소비 측이 보충 조회를
+    멈춘다 — 고치려던 것과 같은 종류의 오독이다.
+    """
+
+    # 필요분 40곳(limit 20 + 제외 20) x 3 = 120이라 상한 100에 걸리지만,
+    # 받은 100행에서 제외분 20곳을 빼도 limit 20곳이 남는다.
+    excluded = frozenset(f"place-{index}" for index in range(20))
+    search = SearchProvider([_candidate(index) for index in range(200)])
+    tool = NearbyPlaceDetailsTool(search, DetailsProvider())
+
+    result = await tool.execute(
+        NearbyPlaceDetailsQuery(37.5, 127.0, limit=20, excluded_place_ids=excluded)
+    )
+
+    assert search.seen_limit == MAX_PLACE_PROVIDER_ROWS
+    assert len(result.places) == 20
+    assert CANDIDATE_POOL_TRUNCATED_WARNING not in result.warnings
+
+
+@pytest.mark.asyncio
+async def test_tool_fills_limit_when_provider_filters_rows_out() -> None:
+    """Provider가 걸러낸 뒤 돌려줘도 limit을 채운다.
+
+    RealPlaceProvider는 TourAPI가 numOfRows만큼 고른 행에서 미지원 분류
+    (숙박·여행코스)와 지원 구 밖 장소를 제거한 뒤 반환한다. 그래서 필요분만
+    요청하면 반경에 후보가 아무리 남아 있어도 limit을 못 채운다.
+
+    이 결손이 실제로 추천을 망가뜨렸다 — 안국역 반경 2km는 TourAPI totalCount가
+    364곳인데 10 요청에 9곳만 와서, A의 `_candidate_pool_exhausted()`가 이를
+    "반경 소진"으로 읽고 보충 조회를 한 번도 돌리지 않았다.
+    """
+
+    # 5행 중 2행만 살아남는다 = 생존율 40%. 실측 최저(홍대입구, 반경 2km)와 같다.
+    search = FilteringSearchProvider(
+        [_candidate(index) for index in range(300)], keep=2, every=5
+    )
+    tool = NearbyPlaceDetailsTool(search, DetailsProvider())
+
+    result = await tool.execute(NearbyPlaceDetailsQuery(37.5, 127.0, limit=10))
+
+    # 과요청이 없었다면 10행을 요청해 4곳만 남았을 자리다.
+    assert search.seen_limit == 10 * CANDIDATE_OVERFETCH_FACTOR
+    assert len(result.places) == 10
+    assert CANDIDATE_POOL_TRUNCATED_WARNING not in result.warnings
 
 
 @pytest.mark.asyncio
