@@ -19,6 +19,7 @@ from app.domain.models import (
     GeocodeResult,
     HolidayResult,
     LocalSearchPlace,
+    MunicipalParkingStatus,
     PlaceBarrierFreeDetails,
     PlaceCategoryFilter,
     PlaceCommonDetails,
@@ -442,6 +443,14 @@ class RealtimeCityDataProvider(Protocol):
         self, area_name_or_code: str
     ) -> ProviderResult[RealtimeCityDataResult]:
         """서울시 주요 장소의 실시간 상권·인구 데이터를 한 번에 반환한다."""
+        ...
+
+
+class MunicipalParkingProvider(Protocol):
+    async def get_district_parking(
+        self, district: str
+    ) -> ProviderResult[tuple[MunicipalParkingStatus, ...]]:
+        """서울시 공영주차장 API에서 한 구의 최신 주차 현황을 가져온다."""
         ...
 
 

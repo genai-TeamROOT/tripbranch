@@ -84,6 +84,7 @@ from app.concentration_policy import (
 from app.config import settings
 from app.domain.models import (
     ConcentrationResult,
+    MunicipalParkingStatus,
     PlaceDetails,
     RealtimeBusStop,
     RealtimeCityEvent,
@@ -105,13 +106,16 @@ from app.recommendation_limits import (
     MAX_RECOMMENDATION_CANDIDATE_LIMIT,
     MIN_RECOMMENDATION_LIMIT,
 )
+from app.repositories.protocols import MunicipalParkingCatalogRepository
 from app.schemas import CompareCriteria, ComparisonItem, StaleAreaProbeDebug
+from app.service_area import SUPPORTED_DISTRICTS
 from app.tools.concentration import (
     GetConcentrationTool,
 )
 from app.tools.contracts import ToolError, ToolStatus
 from app.tools.festival import FestivalQuery, GetFestivalsTool
 from app.tools.holiday import GetHolidaysTool, HolidayQuery
+from app.tools.municipal_parking import GetMunicipalParkingTool, MunicipalParkingQuery
 from app.tools.nearby_place_details import (
     CANDIDATE_POOL_TRUNCATED_WARNING,
     EnrichedPlace,
@@ -170,7 +174,9 @@ _REALTIME_CITYDATA_QUESTION_TYPES = {
     "realtime_event",
     "realtime_traffic",
 }
+_PUBLIC_PARKING_QUESTION_TYPE = "realtime_public_parking"
 _CITYDATA_SOURCE_URL = "https://data.seoul.go.kr/dataList/OA-21285/F/1/datasetView.do"
+_MUNICIPAL_PARKING_SOURCE_URL = "https://data.seoul.go.kr/dataList/OA-21709/S/1/datasetView.do"
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +208,10 @@ class ContextTools:
     # 서울시 실시간 도시데이터의 지역·업종별 상권 활동 조회 전용.
     realtime_commercial: GetRealtimeCommercialTool | None = None
     realtime_citydata: GetRealtimeCityDataTool | None = None
+    # 명시적 공영/시영주차장 질문은 도시데이터의 근접 목록이 아니라 구 단위
+    # GetParkingInfo를 쓴다. 좌표 카탈로그는 한 번 지오코딩한 정적 값만 보관한다.
+    municipal_parking: GetMunicipalParkingTool | None = None
+    municipal_parking_catalog: MunicipalParkingCatalogRepository | None = None
     # COMPARE의 place_id → 장소명 해석 전용. 추천 카드와 같은 Tool을 쓴다 —
     # 같은 places 행에서 같은 이름을 읽어야 카드와 비교 답변이 어긋나지 않는다.
     cards: RecommendationCardTool | None = None
@@ -497,9 +507,14 @@ class ContextService:
 
         current_activity_candidate = _is_current_activity_candidate(request)
         current_population_candidate = _is_current_population_candidate(request, self._clock())
+        parking_district = (
+            _supported_district_name(place_name) if request.question_type == "parking" else None
+        )
         is_realtime_citydata_purpose = (
             request.question_type == "realtime_commercial"
+            or request.question_type == _PUBLIC_PARKING_QUESTION_TYPE
             or request.question_type in _REALTIME_CITYDATA_QUESTION_TYPES
+            or parking_district is not None
         )
         location_purpose = (
             LocationPurpose.REALTIME_CITYDATA
@@ -519,9 +534,13 @@ class ContextService:
             # 명시적으로 끈다 — PLACE_IDENTITY의 기본 지역 제한과 저장소 우선
             # 순위는 원래 서로 다른 이유로 묶여 있던 게 아니다.
             ResolveLocationQuery(
-                place_name,
+                # "종로 주차장 정보"의 종로는 특정 관광지가 아니라 구 단위 범위다.
+                # 지역 검색 후보를 되묻지 말고 행정구역 좌표로 확정해 해당 구의
+                # 공영주차장 최신 현황을 찾는다.
+                f"서울특별시 {parking_district}" if parking_district else place_name,
                 purpose=location_purpose,
                 enforce_service_area=(False if current_population_candidate else None),
+                skip_local_search=parking_district is not None,
             )
         )
         if location_result.status is ToolStatus.NO_DATA:
@@ -628,8 +647,23 @@ class ContextService:
                 resolved_location=resolved_location,
                 location_metadata=location_result.provider_metadata,
             )
+        if request.question_type == _PUBLIC_PARKING_QUESTION_TYPE:
+            return await self._fetch_realtime_public_parking_info(
+                request,
+                place_name=place_name,
+                resolved_location=resolved_location,
+                location_metadata=location_result.provider_metadata,
+            )
         if request.question_type in _REALTIME_CITYDATA_QUESTION_TYPES:
             return await self._fetch_realtime_city_info(
+                request,
+                place_name=place_name,
+                resolved_location=resolved_location,
+                location_metadata=location_result.provider_metadata,
+            )
+
+        if request.question_type == "parking" and parking_district is not None:
+            return await self._fetch_realtime_public_parking_info(
                 request,
                 place_name=place_name,
                 resolved_location=resolved_location,
@@ -990,6 +1024,100 @@ class ContextService:
             metadata=_info_response_metadata(location_metadata, tool_result.provider_metadata),
         )
 
+    async def _fetch_realtime_public_parking_info(
+        self,
+        request: InfoContextRequest,
+        *,
+        place_name: str,
+        resolved_location: ResolvedLocation,
+        location_metadata: tuple[ProviderMetadata, ...],
+    ) -> InfoContextResponse:
+        """공영/시영주차장을 명시한 질문에 구 단위 최신 대수를 돌려준다.
+
+        GetParkingInfo에는 좌표가 없어 카탈로그가 있으면 거리순으로, 아직 동기화되지
+        않았으면 같은 구의 실시간 수치가 있는 항목 우선으로 보인다. 이 fallback은
+        주소를 요청 중에 지오코딩하지 않으므로 API 비용·응답시간을 늘리지 않는다.
+        """
+
+        district = _district_from_address(resolved_location.address)
+        if district is None:
+            return _realtime_city_info_no_data_response(
+                request,
+                place_name=place_name,
+                resolved_location=resolved_location,
+                provider_metadata=location_metadata,
+            )
+        if self._tools.municipal_parking is None:
+            return _info_error_response(
+                request,
+                status="unavailable",
+                error=ContextError(
+                    code="municipal_parking_unavailable",
+                    message="공영주차장 실시간 조회 도구가 설정되지 않았습니다.",
+                    retryable=False,
+                ),
+                provider_metadata=location_metadata,
+            )
+        tool_result = await self._tools.municipal_parking.execute(MunicipalParkingQuery(district))
+        if tool_result.status is ToolStatus.UNAVAILABLE:
+            return _info_error_response(
+                request,
+                status="unavailable",
+                error=_context_error_from_tool(
+                    tool_result.error,
+                    fallback_code="municipal_parking_unavailable",
+                    fallback_message="공영주차장 실시간 정보를 가져오지 못했습니다.",
+                    retryable=True,
+                ),
+                provider_metadata=(location_metadata, tool_result.provider_metadata),
+            )
+
+        catalog = {}
+        if self._tools.municipal_parking_catalog is not None:
+            try:
+                catalog = await self._tools.municipal_parking_catalog.find_by_codes(
+                    [lot.code for lot in tool_result.lots]
+                )
+            except AppError:
+                # 좌표 카탈로그 장애가 공영주차장 실측 수치까지 막으면 안 된다. 거리만
+                # 생략하고 구 단위 목록으로 안전하게 계속한다.
+                logger.warning("공영주차장 좌표 카탈로그 조회 실패", exc_info=True)
+
+        entries = [
+            _municipal_status_to_realtime_lot(lot, catalog.get(lot.code))
+            for lot in tool_result.lots
+            if lot.is_live and lot.current_parked_count is not None
+        ]
+        entries.sort(
+            key=lambda item: (
+                0 if item.available_spaces is not None else 1,
+                _parking_distance_or_inf(resolved_location, item),
+                -(item.available_spaces or -1),
+            )
+        )
+        fields = {f"[공영] {item.name}": _format_realtime_parking(item) for item in entries[:5]}
+        observed_at = next((item.observed_at for item in entries if item.observed_at), None)
+        return InfoContextResponse(
+            request_id=request.request_id,
+            status="success" if fields else "no_data",
+            result=RealtimeCityInfoResult(
+                status="success" if fields else "no_data",
+                question_type="realtime_public_parking",
+                requested_place_name=place_name,
+                resolved_place_name=resolved_location.resolved_name,
+                area_name=district,
+                observed_at=observed_at,
+                fields=fields,
+                detail_items=_to_parking_detail_items(
+                    entries[:15],
+                    latitude=resolved_location.latitude,
+                    longitude=resolved_location.longitude,
+                ),
+                source_url=_MUNICIPAL_PARKING_SOURCE_URL,
+            ),
+            metadata=_info_response_metadata(location_metadata, tool_result.provider_metadata),
+        )
+
     async def _fetch_realtime_city_info(
         self,
         request: InfoContextRequest,
@@ -1067,6 +1195,20 @@ class ContextService:
             }
             for item in all_entries:
                 grouped_lots[item.lot_type or "기타"].append(item)
+            # 같은 공영/민영 묶음 안에서는 실시간 대수 제공 항목을 먼저 보여준다.
+            # 기존에는 단순 거리순이라 실제 잔여 여부가 있는 주차장이 4번째 이후로
+            # 밀려 카드에 안 나오는 문제가 있었다.
+            for lots in grouped_lots.values():
+                lots.sort(
+                    key=lambda item: (
+                        (
+                            0
+                            if item.current_available and item.current_parked_count is not None
+                            else 1
+                        ),
+                        _parking_distance_or_inf(resolved_location, item),
+                    )
+                )
             entries: list[RealtimeParkingLot] = []
             fields = {}
             for label in ("공영", "민영", "기타"):
@@ -1163,6 +1305,7 @@ class ContextService:
                 question_type=cast(
                     Literal[
                         "realtime_parking",
+                        "realtime_public_parking",
                         "realtime_subway",
                         "realtime_bus",
                         "realtime_event",
@@ -1603,6 +1746,17 @@ class ContextService:
                 provider_metadata=(location_metadata, detail_result.provider_metadata),
             )
         if detail_result.status is ToolStatus.NO_DATA or detail_result.details is None:
+            # "종각역 주차장 정보"처럼 장소 좌표는 확정됐지만 TourAPI 관광 DB에는
+            # 없는 역·상권도 있다. 이때 "확인할 수 없음"으로 끝내지 않고, 해당
+            # 좌표를 기준으로 가까운 공영주차장의 최신 잔여 면수를 안내한다. 반대로
+            # 관광지 상세에 주차 필드가 있으면 아래 기존 상세 경로를 유지한다.
+            if request.question_type == "parking":
+                return await self._fetch_realtime_public_parking_info(
+                    request,
+                    place_name=place_name,
+                    resolved_location=resolved_location,
+                    location_metadata=location_metadata,
+                )
             return _place_info_response(
                 request,
                 requested_place_name=place_name,
@@ -1613,13 +1767,25 @@ class ContextService:
                 provider_metadata=(location_metadata, detail_result.provider_metadata),
             )
 
+        fields = extract_info_fields(request.question_type, detail_result.details)
+        if request.question_type == "parking" and not fields:
+            # 상세 행은 찾았어도 주차 정보가 비어 있으면 같은 기준으로 주변
+            # 공영주차장으로 대체한다. "주차 불가"라는 명시값은 fields에 남으므로
+            # 대체하지 않는다.
+            return await self._fetch_realtime_public_parking_info(
+                request,
+                place_name=place_name,
+                resolved_location=resolved_location,
+                location_metadata=location_metadata,
+            )
+
         return _place_info_response(
             request,
             requested_place_name=place_name,
             resolved_place_name=(detail_result.details.title or resolved_location.resolved_name),
             place_id=detail_result.details.content_id or resolved_location.place_id,
             destination_coordinates=_to_info_destination_coordinates(resolved_location),
-            fields=extract_info_fields(request.question_type, detail_result.details),
+            fields=fields,
             # 카드는 질문 유형과 무관하게 채운다. status는 위 fields로만 정해진다.
             place_card=_to_place_card(detail_result.details, resolved_location.place_id),
             provider_metadata=(location_metadata, detail_result.provider_metadata),
@@ -1867,6 +2033,9 @@ def _to_parking_detail_items(
                     if item.current_available and item.current_parked_count is not None
                     else None
                 ),
+                "잔여 면수": (
+                    f"{item.available_spaces}면" if item.available_spaces is not None else None
+                ),
                 "요금": "유료" if item.paid is True else "무료" if item.paid is False else None,
                 "기준 시각": item.observed_at,
             }.items()
@@ -1962,13 +2131,64 @@ def _seoul_realtime_map_url(area: SeoulRealtimeArea) -> str:
 
 def _format_realtime_parking(item: RealtimeParkingLot) -> str:
     capacity = f"총 {item.capacity}면" if item.capacity is not None else "총면수 미제공"
-    current = (
-        f"현재 {item.current_parked_count}대 주차"
-        if item.current_available and item.current_parked_count is not None
-        else "실시간 주차 대수 미제공"
-    )
+    if item.available_spaces is not None:
+        current = f"잔여 {item.available_spaces}면 · 현재 {item.current_parked_count}대 주차"
+    elif item.current_available and item.current_parked_count is not None:
+        current = f"현재 {item.current_parked_count}대 주차"
+    else:
+        current = "실시간 주차 대수 미제공"
     paid = "유료" if item.paid is True else "무료" if item.paid is False else "요금 정보 미제공"
     return f"{capacity} · {current} · {paid}"
+
+
+def _district_from_address(address: str | None) -> str | None:
+    """주소에서 서울시 자치구를 꺼낸다. 공영주차장 API의 구 단위 파라미터다."""
+
+    if not address:
+        return None
+    for token in address.replace(",", " ").split():
+        if token.endswith("구") and len(token) >= 2:
+            return token
+    return None
+
+
+def _municipal_status_to_realtime_lot(
+    status: MunicipalParkingStatus,
+    catalog_entry: object | None,
+) -> RealtimeParkingLot:
+    """공영주차장 최신값과 좌표 카탈로그를 기존 실시간 카드 모델로 합친다."""
+
+    latitude = getattr(catalog_entry, "latitude", None)
+    longitude = getattr(catalog_entry, "longitude", None)
+    capacity = (
+        status.capacity
+        if status.capacity is not None
+        else getattr(catalog_entry, "capacity", None)
+    )
+    available_spaces = (
+        max(0, capacity - status.current_parked_count)
+        if capacity is not None and status.current_parked_count is not None and status.is_live
+        else None
+    )
+    return RealtimeParkingLot(
+        name=status.name,
+        latitude=latitude,
+        longitude=longitude,
+        capacity=capacity,
+        current_parked_count=status.current_parked_count,
+        current_available=status.is_live,
+        paid=status.paid if status.paid is not None else getattr(catalog_entry, "paid", None),
+        observed_at=status.observed_at,
+        code=status.code,
+        lot_type="공영",
+        available_spaces=available_spaces,
+    )
+
+
+def _parking_distance_or_inf(location: ResolvedLocation, item: RealtimeParkingLot) -> float:
+    if item.latitude is None or item.longitude is None:
+        return float("inf")
+    return haversine_km(location.latitude, location.longitude, item.latitude, item.longitude)
 
 
 def _subway_field_key(item: RealtimeSubwayArrival) -> str:
@@ -2026,6 +2246,24 @@ def _normalize_place_name(value: str) -> str:
     """공백·대소문자 차이를 무시하고 장소명을 대조한다(TP-171 이름-일치 폴백 전용)."""
 
     return value.casefold().replace(" ", "")
+
+
+def _supported_district_name(value: str) -> str | None:
+    """'종로'·'종로구'처럼 지원 구를 가리키는 짧은 권역명을 정규화한다.
+
+    주차장 질문의 이 표현은 특정 관광지 식별이 아니라 구 안의 주차장 목록을
+    찾으려는 뜻이다. 임의 지명까지 넓히지 않고, 서비스가 실제로 지원하는 구
+    이름만 받는다. 따라서 '종각'처럼 역·명소와 혼동될 수 있는 입력은 기존
+    후보 되묻기 흐름을 유지한다.
+    """
+
+    normalized = value.casefold().replace(" ", "")
+    for district in SUPPORTED_DISTRICTS:
+        full_name = district.name.casefold()
+        short_name = full_name.removesuffix("구")
+        if normalized in {full_name, short_name}:
+            return district.name
+    return None
 
 
 def _is_current_activity_candidate(request: InfoContextRequest) -> bool:
@@ -2143,6 +2381,7 @@ def _realtime_city_info_no_data_response(
             question_type=cast(
                 Literal[
                     "realtime_parking",
+                    "realtime_public_parking",
                     "realtime_subway",
                     "realtime_bus",
                     "realtime_event",

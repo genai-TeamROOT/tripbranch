@@ -339,6 +339,7 @@ def compose_realtime_city_info_message(response: InfoContextResponse) -> str:
         return _compose_realtime_traffic_message(place, result)
     labels = {
         "realtime_parking": "실시간 주차장 정보",
+        "realtime_public_parking": "공영주차장 실시간 현황",
         "realtime_subway": "지하철 도착 정보",
         "realtime_bus": "주변 버스정류장 정보",
         "realtime_event": "진행 중 행사",

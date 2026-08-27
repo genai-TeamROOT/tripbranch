@@ -296,6 +296,10 @@ class ResolveLocationQuery:
     # 건너뜀). 명시하면 그 값이 purpose와 무관하게 우선한다 — TP-171: 오늘 날짜
     # 혼잡 질문은 저장소는 보되(PLACE_IDENTITY) 지역 제한만 끄고 싶어서 추가했다.
     enforce_service_area: bool | None = None
+    # "서울특별시 종로구"처럼 행정구역 자체를 좌표로 풀 때는 지역 검색이 주변
+    # 명소·역 후보를 여럿 돌려 불필요한 되묻기를 만들 수 있다. 이 호출만
+    # Geocoding으로 바로 보내며, 기본값은 기존 위치 해석 사다리를 유지한다.
+    skip_local_search: bool = False
 
     def __post_init__(self) -> None:
         normalized = self.location_query.strip()
@@ -383,13 +387,14 @@ class ResolveLocationTool:
             if stored_result is not None:
                 return stored_result
 
-        local_search_result = await self._lookup_local_search(
-            requested_query,
-            purpose=query.purpose,
-            enforce_service_area=enforce_service_area,
-        )
-        if local_search_result is not None:
-            return local_search_result
+        if not query.skip_local_search:
+            local_search_result = await self._lookup_local_search(
+                requested_query,
+                purpose=query.purpose,
+                enforce_service_area=enforce_service_area,
+            )
+            if local_search_result is not None:
+                return local_search_result
 
         alias = get_landmark_alias(requested_query)
 
@@ -705,6 +710,9 @@ class ResolveLocationTool:
                     if method in (ResolutionMethod.ALIAS, ResolutionMethod.DATABASE)
                     else ResolutionConfidence.APPROXIMATE
                 ),
+                # Geocoding 결과의 resolved_name은 도로명/지번 주소다. INFO의 공영
+                # 주차장 구 단위 조회처럼 주소가 필요한 소비자가 있어 함께 보존한다.
+                address=result.resolved_name,
             ),
             error=None,
             warnings=warnings,

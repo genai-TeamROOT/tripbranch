@@ -756,8 +756,11 @@ class FakeLLMProvider:
             marker in user_input for marker in ("정류장", "어디", "언제", "도착")
         ):
             question_type = QuestionType.REALTIME_BUS
-        elif "주차" in user_input and any(
-            marker in user_input for marker in ("지금", "현재", "실시간", "자리", "빈자리")
+        elif "주차" in user_input and any(marker in user_input for marker in ("공영", "시영")):
+            question_type = QuestionType.REALTIME_PUBLIC_PARKING
+        elif "주차" in user_input and (
+            any(marker in user_input for marker in ("지금", "현재", "실시간", "자리", "빈자리"))
+            or any(marker in user_input for marker in ("근처", "주변", "어디"))
         ):
             question_type = QuestionType.REALTIME_PARKING
         elif ("행사" in user_input or "축제" in user_input) and any(
