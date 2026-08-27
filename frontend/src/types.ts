@@ -756,7 +756,19 @@ export type AgentStreamEvent =
   | { type: "message_start"; data: AgentStreamMessageStartEvent }
   | { type: "message_delta"; data: AgentStreamMessageDeltaEvent }
   | { type: "done"; data: AgentStreamDoneEvent }
+  | { type: "follow_ups"; data: AgentStreamFollowUpsEvent }
   | { type: "error"; data: AgentStreamErrorEvent };
+
+/*
+ * done **뒤에** 오는 유일한 이벤트다. 후속 질문 생성은 답변이 이미 화면에 다 뜬 뒤에
+ * 도는 호출이라, done보다 앞에 두면 그 시간만큼 턴이 안 끝나 답변과 카드 아래에
+ * 로딩 말풍선이 한 번 더 뜬 것처럼 보인다(D-102). 제안할 게 없으면 서버가 이 이벤트를
+ * 아예 보내지 않는다.
+ */
+export interface AgentStreamFollowUpsEvent {
+  suggestions: string[];
+  elapsed_ms: number;
+}
 
 export interface ToolProviderDebug {
   source: string;

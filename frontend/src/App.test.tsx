@@ -110,7 +110,13 @@ function streamResponse(
       },
     );
   }
-  events.push({ event: "done", data: { response, elapsed_ms: 5 } });
+  // 실제 서버와 같은 순서를 흉내 낸다 — 후속 질문은 done **뒤에** 별도 이벤트로
+  // 온다(D-102). done 응답 자체에는 담기지 않는다.
+  const { suggested_follow_ups: followUps, ...doneResponse } = response;
+  events.push({ event: "done", data: { response: doneResponse, elapsed_ms: 5 } });
+  if (followUps && followUps.length > 0) {
+    events.push({ event: "follow_ups", data: { suggestions: followUps, elapsed_ms: 6 } });
+  }
   const payload = events
     .map(({ event, data }) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
     .join("");
@@ -538,4 +544,28 @@ test("keeps only the latest turn's follow-up suggestions", async () => {
   await waitFor(() =>
     expect(screen.getAllByRole("group", { name: "이어서 물어볼 만한 질문" })).toHaveLength(1),
   );
+});
+
+
+test("renders no follow-up buttons when the server sends no follow_ups event", async () => {
+  /* done 응답에는 문구가 없다 — 버튼은 오직 done 뒤의 follow_ups 이벤트에서 온다. */
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/chat/stream")) {
+        return streamResponse({ ...chatResponse(), suggested_follow_ups: [] });
+      }
+      return Response.json({ error: { message: "not found" } }, { status: 404 });
+    }),
+  );
+  await renderApp();
+
+  await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+  await screen.findByText("테스트 박물관");
+
+  expect(
+    screen.queryByRole("group", { name: "이어서 물어볼 만한 질문" }),
+  ).not.toBeInTheDocument();
 });

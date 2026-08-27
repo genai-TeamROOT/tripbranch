@@ -52,6 +52,9 @@ type AgentResponse = {
   **그 문구가 그대로 `user_input`으로 재전송됩니다** — `clarification.options`가 `id`를
   `clarification_choice`로 보내 Intent를 못 박는 것과 다릅니다. 되묻기 턴
   (`status = needs_clarification`)과 `OUT_OF_SCOPE` 턴에서는 항상 빈 배열입니다(D-102).
+  **`POST /api/chat/stream`에서는 이 필드가 항상 빈 배열이고**, 문구는 `done` 뒤에 오는
+  별도 `follow_ups` 이벤트로 전달됩니다
+  ([스트리밍 설계](./design/agent-response-streaming.md) 4.3절).
 - 상세 필드는 `backend/app/schemas.py`의 `AgentRequest`, `AgentResponse`를
   기준으로 합니다.
 

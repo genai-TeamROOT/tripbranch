@@ -1503,8 +1503,15 @@ async def run_agent_flow(
     principal: Principal | None = None,
     stream_event_sink: StreamEventSink | None = None,
     stream_recommendation_summary: bool = False,
+    generate_follow_ups: bool = True,
 ) -> AgentResponse:
     """한 턴 전체를 하나의 관측 trace로 묶고 본체(`_run_agent_flow`)에 넘긴다.
+
+    `generate_follow_ups=False`는 후속 질문(`suggested_follow_ups`)을 만들지 않고
+    빈 목록으로 둔다. **SSE 라우트만 쓴다.** 그 호출은 답변이 이미 화면에 다 뜬 뒤에
+    도는데, 여기서 응답을 붙잡고 있으면 `done`이 그만큼 늦어져 화면에는 답변과 카드
+    아래에 로딩 말풍선이 한 번 더 뜬 것처럼 보인다. 라우트가 `done`을 먼저 내보내
+    턴을 끝내고, 후속 질문은 뒤이어 별도 이벤트로 붙인다(D-102).
 
     **루트 span이 있어야 한 턴이 trace 하나가 된다.** 속성만 전파하고
     (`trace_attributes`) 루트를 안 만들면, 부모가 없는 observation이 저마다
@@ -1571,7 +1578,11 @@ async def run_agent_flow(
         # (`AgentResponse(...)`)는 인텐트·실패 경로별로 열다섯 군데인데, 버튼은 그
         # 전부에 똑같이 필요하다. 본체가 무엇을 돌려주든 반드시 지나는 이 지점에
         # 두면 새 경로가 생겨도 따로 배선하지 않아도 된다.
-        response.suggested_follow_ups = await suggest_follow_ups(request, response, llm=llm)
+        #
+        # SSE 경로는 이걸 끄고(`generate_follow_ups=False`) 라우트가 done을 먼저
+        # 내보낸 뒤에 직접 만든다 — 아래 설명 참고.
+        if generate_follow_ups:
+            response.suggested_follow_ups = await suggest_follow_ups(request, response, llm=llm)
         try:
             summary = summarize_turn(response)
             turn.record(
@@ -3197,6 +3208,7 @@ async def run_agent(
     principal: Principal | None = None,
     stream_event_sink: StreamEventSink | None = None,
     stream_recommendation_summary: bool = False,
+    generate_follow_ups: bool = True,
 ) -> AgentResponse:
     """호출자가 쓰는 Fake/Real 공통 진입점.
 
@@ -3224,6 +3236,7 @@ async def run_agent(
             principal=principal,
             stream_event_sink=stream_event_sink,
             stream_recommendation_summary=stream_recommendation_summary,
+            generate_follow_ups=generate_follow_ups,
         )
 
 

@@ -172,6 +172,15 @@ export function ChatPage() {
               dispatch({ type: "APPEND_STREAM_MESSAGE_DELTA", payload: { text: event.data.text } });
               return;
             }
+            if (event.type === "follow_ups") {
+              // done 뒤에 오는 유일한 이벤트다. 턴은 이미 끝나 로딩이 사라진
+              // 상태이고, 버튼만 조금 늦게 붙는다.
+              dispatch({
+                type: "APPEND_FOLLOW_UP_SUGGESTIONS",
+                payload: { suggestions: event.data.suggestions },
+              });
+              return;
+            }
             if (event.type === "error") {
               throw new ApiError(event.data);
             }

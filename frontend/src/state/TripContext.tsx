@@ -127,6 +127,8 @@ type TripAction =
         conditions: InterpretedConditions | null;
       };
     }
+  /* done 뒤에 도착하는 후속 질문 버튼. 턴은 이미 끝나 있다. */
+  | { type: "APPEND_FOLLOW_UP_SUGGESTIONS"; payload: { suggestions: string[] } }
   | {
       type: "APPEND_FAILED_CHAT_TURN";
       payload: {
@@ -650,6 +652,22 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         auditTurns: [...state.auditTurns, auditTurn],
         phase: "ready",
         error: null,
+      };
+    }
+    case "APPEND_FOLLOW_UP_SUGGESTIONS": {
+      if (action.payload.suggestions.length === 0) return state;
+      return {
+        ...state,
+        // 이 턴에 이미 붙은 버튼이 있으면 갈아끼운다. 단발 /api/chat 폴백은 응답
+        // 안에 문구를 실어 보내므로, 두 경로가 겹쳐 두 벌이 쌓이는 것을 막는다.
+        messages: [
+          ...state.messages.filter((message) => message.type !== "follow_up_suggestions"),
+          {
+            id: createMessageId("follow-up"),
+            type: "follow_up_suggestions",
+            suggestions: action.payload.suggestions,
+          },
+        ],
       };
     }
     case "APPEND_FAILED_CHAT_TURN": {
