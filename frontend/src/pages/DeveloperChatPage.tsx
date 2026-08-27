@@ -480,6 +480,7 @@ export function DeveloperChatPage() {
               onRequestMore={() => void requestSend(text.requestMore)}
               onRelaxRadius={() => void requestSend(text.relaxRadius)}
               onSelectClarificationOption={(optionId, label) => void requestSend(label, optionId)}
+              onSelectFollowUpSuggestion={(suggestion) => void requestSend(suggestion)}
               onToggleTravelOrigin={(toggle) => {
                 const label = toggle.alternative_origin === "search_center"
                   ? text.basedOn(toggle.alternative_origin_name)

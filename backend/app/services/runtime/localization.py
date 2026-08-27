@@ -52,6 +52,15 @@ async def localize_response_for_user(
         for option in clarification.options:
             add(option.label, lambda value, option=option: setattr(option, "label", value))
 
+    # 후속 질문 버튼은 누르면 그 문구가 그대로 user_input으로 재전송되는데, 영어
+    # 발화는 Runtime 직전에 다시 한국어로 번역되므로(localize_request_for_runtime)
+    # 여기서 영어로 바꿔도 왕복이 성립한다.
+    for index, suggestion in enumerate(localized.suggested_follow_ups):
+        add(
+            suggestion,
+            lambda value, index=index: localized.suggested_follow_ups.__setitem__(index, value),
+        )
+
     recommendations = localized.recommendations
     if recommendations is not None:
         for item in [*recommendations.recommendations, *recommendations.unverified_recommendations]:

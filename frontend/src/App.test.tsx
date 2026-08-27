@@ -75,6 +75,7 @@ function chatResponse() {
     state: { session_id: "sess_test", run_id: "run_test", user_conditions: null },
     recommendations: { ...recommendationsResponse, elapsed_ms: 12.3 },
     message: "조건에 맞는 장소를 찾아봤어요.",
+    suggested_follow_ups: ["테스트 박물관 운영시간 알려줘", "다른 곳도 보여줘"],
   };
 }
 
@@ -85,6 +86,7 @@ function streamResponse(
     recommendations: unknown;
     message: string;
     message_footnote?: string;
+    suggested_follow_ups?: string[];
   } = chatResponse(),
 ) {
   const events: Array<{ event: string; data: unknown }> = [
@@ -499,4 +501,41 @@ test("chat route redirects without stored state", async () => {
 
   await waitFor(() => expect(screen.getByText("TripBranch")).toBeInTheDocument());
   expect(screen.getByRole("button", { name: "추천 시작하기" })).toBeInTheDocument();
+});
+
+
+test("shows follow-up suggestions after an answer and sends the label as the next message", async () => {
+  /* 되묻기 버튼과 달리 clarification_choice 없이 문구만 발화로 나간다. */
+  await renderApp();
+
+  await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+  await screen.findByText("테스트 박물관");
+
+  const suggestion = await screen.findByRole("button", {
+    name: "테스트 박물관 운영시간 알려줘",
+  });
+  await userEvent.click(suggestion);
+
+  const fetchMock = vi.mocked(fetch);
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  const secondBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+  expect(secondBody.user_input).toBe("테스트 박물관 운영시간 알려줘");
+  expect(secondBody.clarification_choice).toBeNull();
+});
+
+test("keeps only the latest turn's follow-up suggestions", async () => {
+  /* 옛 턴의 버튼이 남으면 지난 답변 기준의 문구를 지금 맥락에 보내게 된다. */
+  await renderApp();
+
+  await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+  await screen.findByText("테스트 박물관");
+  await screen.findByRole("button", { name: "다른 곳도 보여줘" });
+
+  await userEvent.click(screen.getByRole("button", { name: "다른 곳도 보여줘" }));
+
+  await waitFor(() =>
+    expect(screen.getAllByRole("group", { name: "이어서 물어볼 만한 질문" })).toHaveLength(1),
+  );
 });

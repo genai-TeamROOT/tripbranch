@@ -77,6 +77,17 @@ class _ComparisonSummary(BaseModel):
     lines: list[str] = Field(min_length=3, max_length=6)
 
 
+class _FollowUpSuggestions(BaseModel):
+    """generate_follow_up_suggestions() 전용 wire 모델.
+
+    `_ComparisonSummary`와 달리 개수를 스키마로 묶지 않는다 — 빈 목록도 정상 결과이고
+    (제안할 게 없으면 버튼을 안 띄운다), 상한을 넘겨 받으면 호출부가 잘라 쓰는 편이
+    ValidationError로 턴 전체를 흔드는 것보다 안전하다.
+    """
+
+    suggestions: list[str] = Field(default_factory=list)
+
+
 # 429(rate limit)와 5xx(서버 과부하/일시 장애)만 재시도 대상. 4xx(인증 실패, 잘못된 요청 등)는
 # 재시도해도 같은 결과이므로 즉시 실패시킨다.
 _RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
@@ -483,6 +494,39 @@ class RealGeminiProvider:
             thinking_budget=0,
         )
         return provider_result(result.message, source=ProviderSource.GEMINI)
+
+    async def generate_follow_up_suggestions(
+        self,
+        *,
+        user_input: str,
+        intent: Intent,
+        assistant_message: str,
+        place_names: list[str],
+        max_suggestions: int,
+        max_label_length: int,
+    ) -> ProviderResult[list[str]]:
+        instruction = gemini_prompts.build_follow_up_suggestion_instruction(
+            max_suggestions=max_suggestions,
+            max_label_length=max_label_length,
+        )
+        payload = {
+            "intent": intent.value,
+            "user_input": user_input,
+            "assistant_message": assistant_message,
+            "places_shown": place_names,
+        }
+        result = await self._call_structured(
+            instruction,
+            json.dumps(payload, ensure_ascii=False),
+            _FollowUpSuggestions,
+            operation="generate_follow_up_suggestions",
+            # 답변이 아니라 짧은 문구 목록이라 fast 모델을 쓴다. 이 호출은 사용자가
+            # 답변을 이미 다 읽은 뒤에 붙는 것이라 지연이 곧 버튼이 늦게 뜨는 시간이다.
+            model_names=self._fast_model_names,
+            # thinking_budget=0 — generate_general_answer()와 같은 이유.
+            thinking_budget=0,
+        )
+        return provider_result(result.suggestions, source=ProviderSource.GEMINI)
 
     async def stream_recommendation_summary(
         self, intent: Intent, recommendations: RecommendationResponse

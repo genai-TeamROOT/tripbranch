@@ -203,6 +203,28 @@ class LLMProvider(Protocol):
         """
         ...
 
+    async def generate_follow_up_suggestions(
+        self,
+        *,
+        user_input: str,
+        intent: Intent,
+        assistant_message: str,
+        place_names: list[str],
+        max_suggestions: int,
+        max_label_length: int,
+    ) -> ProviderResult[list[str]]:
+        """방금 끝난 턴 뒤에 버튼으로 보여줄 다음 발화 후보를 만든다.
+
+        Intent에 매이지 않는 유일한 생성 메서드다 — 어떤 Intent로 끝난 턴이든 그 뒤에
+        한 번 돈다. place_names는 이번 턴에 화면에 나간 장소 이름(추천 카드·일정·비교·
+        INFO 카드)으로, 답변 본문이 고정 문구인 경로(RECOMMEND 카드 wrapper 등)에서
+        모델이 근거로 삼을 유일한 재료다.
+
+        개수·길이 상한은 호출부가 코드로 다시 검사한다. 실패해도 답변 자체는 이미
+        확정돼 있으므로 호출부는 빈 목록으로 낮춰야 한다.
+        """
+        ...
+
     async def generate_schedule_plan(
         self, request: SchedulePlanningRequest
     ) -> ProviderResult[ScheduleLLMPlan]:

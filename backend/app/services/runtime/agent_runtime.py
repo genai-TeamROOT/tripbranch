@@ -88,6 +88,7 @@ from app.services.runtime.compare_transform import (
 )
 from app.services.runtime.context_transform import to_agent_context_request
 from app.services.runtime.enrichment_transform import to_candidate_enrichment_request
+from app.services.runtime.follow_up_suggester import suggest_follow_ups
 from app.services.runtime.graph import (
     PipelineDeps,
     concentration_source_rows,
@@ -1566,6 +1567,11 @@ async def run_agent_flow(
         # 역조회로는 1턴짜리 케이스(dev 35건 중 20건)의 trace를 못 찾는다.
         # 요약(아래 try)과 분리해 둔다 — 요약이 실패해도 연결은 살아야 한다.
         response.langfuse_trace_id = current_trace_id()
+        # **후속 질문은 여기 한 곳에서만 붙인다.** 응답을 만드는 자리
+        # (`AgentResponse(...)`)는 인텐트·실패 경로별로 열다섯 군데인데, 버튼은 그
+        # 전부에 똑같이 필요하다. 본체가 무엇을 돌려주든 반드시 지나는 이 지점에
+        # 두면 새 경로가 생겨도 따로 배선하지 않아도 된다.
+        response.suggested_follow_ups = await suggest_follow_ups(request, response, llm=llm)
         try:
             summary = summarize_turn(response)
             turn.record(
