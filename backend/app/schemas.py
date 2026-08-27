@@ -46,6 +46,39 @@ class TranscriptionResponse(BaseModel):
     model: str
 
 
+class PhotoSimilarPlace(BaseModel):
+    """사진 검색 결과 한 곳."""
+
+    content_id: str
+    title: str
+    similarity: float
+    # 평균에 쓴 사진 수. 1이면 detailImage2가 비어 대표 이미지 한 장으로 대체된
+    # 장소이고 벡터가 그 한 장에 좌우된다(D-087). 화면이 신뢰도를 낮춰 보이거나
+    # 걸러낼 수 있게 그대로 싣는다.
+    photo_count: int
+    address: str | None = None
+    image_url: str | None = None
+
+
+class PhotoSimilarPlacesResponse(BaseModel):
+    """올린 사진과 분위기가 닮은 장소 목록.
+
+    **유사도는 순위를 위한 값이지 "얼마나 닮았다"의 눈금이 아니다.** 사진끼리의
+    경계값을 아직 재지 않아 컷 없이 상위 N곳을 그대로 준다(D-094). 화면에
+    백분율로 표시하지 않는다.
+    """
+
+    places: list[PhotoSimilarPlace]
+    # 어디를 중심으로 찾았는지. "내 주변에서 찾았어요"를 보여줄 때 쓴다.
+    center_name: str
+    # 하드 필터를 통과해 사진 검색에 넘어간 후보 수. 0이면 "닮은 곳이 없다"가
+    # 아니라 "볼 곳 자체가 없었다"라 화면 문구가 달라져야 한다.
+    candidate_count: int
+    # 후보 상한(500)에 걸려 잘린 수. 0이 아니면 반경을 좁히는 편이 낫다.
+    truncated_count: int = 0
+    elapsed_ms: int = Field(ge=0)
+
+
 class InterpretedConditions(BaseModel):
     location_query: str
     preferred_categories: list[str]
