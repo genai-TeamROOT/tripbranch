@@ -651,6 +651,77 @@ async def test_local_search_does_not_pick_similar_prefix_name() -> None:
 
 
 @pytest.mark.asyncio
+async def test_local_search_selects_edit_distance_match_for_landmark_candidate() -> None:
+    """"성수 카페거리"(질의)와 "성수동카페거리"(실제 이름)는 "동" 한 글자 차이다.
+
+    정확 일치도 첫토큰 일치도 안 되지만(공백 제거해도 "성수카페거리"≠
+    "성수동카페거리"), 편집거리 1에 역/명소 카테고리라 채택된다(실측, 2026-08-27).
+    """
+    result, geocoding = await _resolve_with_local_search(
+        (_local_place("성수동카페거리", category="여행,명소>거리,골목"),),
+        "성수 카페거리",
+    )
+
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert result.location is not None
+    assert result.location.resolved_name == "성수동카페거리"
+    assert geocoding.calls == []
+
+
+@pytest.mark.asyncio
+async def test_local_search_edit_distance_tier_ignores_non_pickable_candidates() -> None:
+    """같은 한 글자 차이여도 역/명소가 아니면(식당 등) 편집거리 단계를 안 탄다.
+
+    부분 일치를 상호명까지 넓히지 않는다는 파일 전체 원칙을 지킨다.
+    """
+    result, geocoding = await _resolve_with_local_search(
+        (_local_place("성수동카페거리", category="음식점>카페"),),
+        "성수 카페거리",
+        geocoding_responses=[
+            AppError(code="location_not_found", message="위치를 찾을 수 없어요.")
+        ],
+    )
+
+    assert result.status is ResolveLocationStatus.NO_DATA
+    assert geocoding.calls != []
+
+
+@pytest.mark.asyncio
+async def test_local_search_edit_distance_tier_stays_ambiguous_with_two_near_matches() -> None:
+    """편집거리 1인 후보가 둘이면 여전히 하나로 못 좁힌다."""
+    result, _ = await _resolve_with_local_search(
+        (
+            _local_place("성수동카페거리", category="여행,명소>거리,골목"),
+            _local_place("성수도카페거리", category="여행,명소>거리,골목"),
+        ),
+        "성수 카페거리",
+    )
+
+    assert result.status is ResolveLocationStatus.NO_DATA
+    assert result.error is not None
+    assert result.error.cause == "ambiguous_location"
+
+
+@pytest.mark.asyncio
+async def test_local_search_edit_distance_tier_skips_short_queries() -> None:
+    """2글자 질의는 편집거리 단계를 아예 안 탄다 — "신촌"↔"신천"처럼 완전히 다른
+    동네가 편집거리 1일 수 있다. 길이 가드가 없으면 "신천"이 "신촌"의 정답으로
+    잘못 채택된다 — 대신 역/명소 후보가 있는 정상적인 되묻기로 남아야 한다.
+    """
+    result, geocoding = await _resolve_with_local_search(
+        (_local_place("신천", category="여행,명소>거리,골목"),),
+        "신촌",
+    )
+
+    assert result.status is ResolveLocationStatus.NO_DATA
+    assert result.error is not None
+    assert result.error.cause == "ambiguous_location"
+    assert result.error.details["candidate_names"] == "신천"
+    # 후보가 있으니(명소 카테고리) Geocoding까지 갈 이유가 없다.
+    assert geocoding.calls == []
+
+
+@pytest.mark.asyncio
 async def test_local_search_groups_transit_candidates_of_one_station() -> None:
     """같은 역의 노선별 후보는 하나로 본다(D-045).
 
@@ -1066,3 +1137,80 @@ async def test_search_center_returns_no_data_without_falling_back_to_repository(
     assert result.status is not ResolveLocationStatus.SUCCESS
     # 앞에서 한 번 묻고 끝이다. 지역 검색·지오코딩이 실패했다고 다시 묻지 않는다.
     assert repository.calls == ["없는역"]
+
+
+# --- 끝나지 않던 되묻기 (2026-08-27 실사용) ---------------------------------
+#
+# "운현궁 주차장 있어?"는 답이 나오는데, 이어진 "근처 공영 주차장 자리 있어?"가
+# `여러 장소 중 어느 곳을 말씀하시는 건가요?`로 끝나고, "운현궁"이라고 답하면 같은
+# 되묻기가 다시 나오는 것이 무한히 반복됐다.
+#
+# 아래 후보 구성은 실측값이다 — 네이버 지역검색이 "운현궁"에 이름이 완전히 같은 후보를
+# 3건(중식당·궁궐·한식당) 돌려준다.
+
+
+def _unhyeongung_candidates() -> tuple[LocalSearchPlace, ...]:
+    return (
+        _local_place("운현궁한방삼계탕", category="음식점>한식"),
+        _local_place("운현궁식당", category="한식>한정식"),
+        _local_place("운현궁", category="중식>중식당"),
+        _local_place("운현궁", category="여행,명소>궁궐"),
+        _local_place("운현궁", category="음식점>한식"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_same_name_candidates_resolve_to_the_only_usable_location() -> None:
+    """이름이 같아도 위치 후보로 쓸 수 있는 것이 하나면 그것으로 정한다.
+
+    식당·상점은 위치 후보로 쓰지 않는다는 규칙이 이미 있었지만 되묻기 목록을 만들 때만
+    쓰였다. 고르는 단계에서도 보지 않으면 "못 좁혔다"로 끝나, 궁궐 하나가 정답인데도
+    되묻게 된다.
+    """
+    result, _ = await _resolve_with_local_search(_unhyeongung_candidates(), "운현궁")
+
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert result.location is not None
+    assert result.location.resolved_name == "운현궁"
+
+
+@pytest.mark.asyncio
+async def test_clarification_is_not_raised_when_the_answer_would_repeat_the_question() -> None:
+    """되묻기의 답이 질문과 같은 문자열이면 물어봐야 소용이 없다.
+
+    후보 이름이 질의와 같으면, 사용자가 그 버튼을 눌러도 같은 조회가 다시 돌아 같은
+    되묻기가 나온다 — 입력이 하나도 바뀌지 않아 영영 끝나지 않는다.
+    """
+    result, _ = await _resolve_with_local_search(
+        (
+            _local_place("운현궁", category="여행,명소>궁궐"),
+            _local_place("운현궁", category="음식점>한식"),
+            _local_place("운현궁", category="중식>중식당"),
+        ),
+        "운현궁",
+    )
+
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert result.location is not None
+    assert result.location.resolved_name == "운현궁"
+
+
+@pytest.mark.asyncio
+async def test_still_asks_when_two_real_locations_share_the_name() -> None:
+    """걸러낸 뒤에도 둘 이상 남으면 그때는 진짜로 못 고른다 — 그대로 되묻는다.
+
+    이 경우의 되묻기는 여전히 답이 질문과 같아 반복될 수 있다. 이름이 같은 서로 다른
+    장소를 어떻게 가를지는 별개 문제이고, 이 테스트는 그 상황에서 임의로 한 곳을 고르지
+    않는다는 것만 잠근다.
+    """
+    result, _ = await _resolve_with_local_search(
+        (
+            _local_place("운현궁", category="여행,명소>궁궐"),
+            _local_place("운현궁", category="여행,명소>고궁,종교유적"),
+        ),
+        "운현궁",
+    )
+
+    assert result.status is ResolveLocationStatus.NO_DATA
+    assert result.error is not None
+    assert result.error.cause == "ambiguous_location"

@@ -148,6 +148,15 @@ class Clarification(StrictModel):
     candidates: list[str] = Field(default_factory=list)
 
 
+def parse_candidate_names(raw: str) -> list[str]:
+    """resolve_location.py가 "|" 구분 문자열로 준 되묻기 후보 이름을 리스트로 푼다.
+
+    ToolError.details가 dict[str, str]라 리스트를 직접 못 담아 생긴 형식이다.
+    빈 문자열(지오코딩 경로처럼 이름이 없는 경우)은 빈 리스트가 된다.
+    """
+    return [name for name in raw.split("|") if name]
+
+
 class ResolvedLocation(StrictModel):
     # 사용자가 말한 문자열(수식어 제거 후). 근거 문장이 기준점을 부를 때 쓰는 값이라
     # 비어 있으면 안 된다 — resolved_name은 지오코딩으로 풀리면 도로명 주소가

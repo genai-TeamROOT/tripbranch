@@ -75,6 +75,7 @@ function chatResponse() {
     state: { session_id: "sess_test", run_id: "run_test", user_conditions: null },
     recommendations: { ...recommendationsResponse, elapsed_ms: 12.3 },
     message: "조건에 맞는 장소를 찾아봤어요.",
+    suggested_follow_ups: ["테스트 박물관 운영시간 알려줘", "다른 곳도 보여줘"],
   };
 }
 
@@ -85,6 +86,7 @@ function streamResponse(
     recommendations: unknown;
     message: string;
     message_footnote?: string;
+    suggested_follow_ups?: string[];
   } = chatResponse(),
 ) {
   const events: Array<{ event: string; data: unknown }> = [
@@ -108,7 +110,13 @@ function streamResponse(
       },
     );
   }
-  events.push({ event: "done", data: { response, elapsed_ms: 5 } });
+  // 실제 서버와 같은 순서를 흉내 낸다 — 후속 질문은 done **뒤에** 별도 이벤트로
+  // 온다(D-102). done 응답 자체에는 담기지 않는다.
+  const { suggested_follow_ups: followUps, ...doneResponse } = response;
+  events.push({ event: "done", data: { response: doneResponse, elapsed_ms: 5 } });
+  if (followUps && followUps.length > 0) {
+    events.push({ event: "follow_ups", data: { suggestions: followUps, elapsed_ms: 6 } });
+  }
   const payload = events
     .map(({ event, data }) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
     .join("");
@@ -499,4 +507,65 @@ test("chat route redirects without stored state", async () => {
 
   await waitFor(() => expect(screen.getByText("TripBranch")).toBeInTheDocument());
   expect(screen.getByRole("button", { name: "추천 시작하기" })).toBeInTheDocument();
+});
+
+
+test("shows follow-up suggestions after an answer and sends the label as the next message", async () => {
+  /* 되묻기 버튼과 달리 clarification_choice 없이 문구만 발화로 나간다. */
+  await renderApp();
+
+  await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+  await screen.findByText("테스트 박물관");
+
+  const suggestion = await screen.findByRole("button", {
+    name: "테스트 박물관 운영시간 알려줘",
+  });
+  await userEvent.click(suggestion);
+
+  const fetchMock = vi.mocked(fetch);
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  const secondBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+  expect(secondBody.user_input).toBe("테스트 박물관 운영시간 알려줘");
+  expect(secondBody.clarification_choice).toBeNull();
+});
+
+test("keeps only the latest turn's follow-up suggestions", async () => {
+  /* 옛 턴의 버튼이 남으면 지난 답변 기준의 문구를 지금 맥락에 보내게 된다. */
+  await renderApp();
+
+  await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+  await screen.findByText("테스트 박물관");
+  await screen.findByRole("button", { name: "다른 곳도 보여줘" });
+
+  await userEvent.click(screen.getByRole("button", { name: "다른 곳도 보여줘" }));
+
+  await waitFor(() =>
+    expect(screen.getAllByRole("group", { name: "이어서 물어볼 만한 질문" })).toHaveLength(1),
+  );
+});
+
+
+test("renders no follow-up buttons when the server sends no follow_ups event", async () => {
+  /* done 응답에는 문구가 없다 — 버튼은 오직 done 뒤의 follow_ups 이벤트에서 온다. */
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/chat/stream")) {
+        return streamResponse({ ...chatResponse(), suggested_follow_ups: [] });
+      }
+      return Response.json({ error: { message: "not found" } }, { status: 404 });
+    }),
+  );
+  await renderApp();
+
+  await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+  await screen.findByText("테스트 박물관");
+
+  expect(
+    screen.queryByRole("group", { name: "이어서 물어볼 만한 질문" }),
+  ).not.toBeInTheDocument();
 });

@@ -14,6 +14,7 @@
 
 import { apiClient, streamPost } from "./client";
 import type {
+  PhotoSimilarPlacesResponse,
   AgentDebugRequest,
   AgentResponse,
   AgentStreamEvent,
@@ -130,6 +131,7 @@ export function streamChat(
       event === "message_start" ||
       event === "message_delta" ||
       event === "done" ||
+      event === "follow_ups" ||
       event === "error"
     ) {
       receivedEvent = true;
@@ -151,4 +153,30 @@ export function streamChat(
  */
 export function fetchSessionState(sessionId: string) {
   return apiClient.get<SessionContextResponse>(`/state/${encodeURIComponent(sessionId)}`);
+}
+
+
+/*
+ * 올린 사진과 분위기가 닮은 장소를 찾는다(POST /api/places/similar-by-photo).
+ *
+ * 위치는 지역명이 좌표를 이긴다 — 사용자가 적은 쪽이 의도이고 좌표는 적지
+ * 않았을 때의 기본값이다. 둘 다 없으면 서버가 location_required로 되묻는다.
+ */
+export function searchPlacesByPhoto(params: {
+  image: File;
+  /** 대화 세션. 앞 턴이 잡은 위치("안국역" 등)를 서버가 이어받는다. */
+  sessionId?: string | null;
+  locationQuery?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  limit?: number;
+}) {
+  const form = new FormData();
+  form.append("image", params.image);
+  if (params.sessionId) form.append("session_id", params.sessionId);
+  if (params.locationQuery?.trim()) form.append("location_query", params.locationQuery.trim());
+  if (params.latitude != null) form.append("latitude", String(params.latitude));
+  if (params.longitude != null) form.append("longitude", String(params.longitude));
+  if (params.limit != null) form.append("limit", String(params.limit));
+  return apiClient.postForm<PhotoSimilarPlacesResponse>("/places/similar-by-photo", form);
 }

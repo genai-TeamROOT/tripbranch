@@ -18,13 +18,17 @@ from app.agent_context.service import ContextService, ContextTools
 from app.domain.models import GeocodeResult, LocalSearchPlace
 from app.providers.contracts import ProviderSource, provider_result
 from app.providers.holiday import FakeHolidayProvider
+from app.providers.municipal_parking import FakeMunicipalParkingProvider
 from app.providers.seoul_citydata import (
     FakeRealtimeCityDataProvider,
     FakeRealtimeCommercialProvider,
 )
 from app.providers.stub import FakePlaceProvider, FakeWeatherProvider
+from app.repositories.fake_municipal_parking import FakeMunicipalParkingCatalogRepository
 from app.tools.holiday import GetHolidaysTool
+from app.tools.municipal_parking import GetMunicipalParkingTool
 from app.tools.nearby_place_details import NearbyPlaceDetailsTool
+from app.tools.place_detail import GetPlaceDetailTool
 from app.tools.realtime_citydata import GetRealtimeCityDataTool
 from app.tools.realtime_commercial import GetRealtimeCommercialTool
 from app.tools.resolve_location import ResolveLocationTool
@@ -41,7 +45,13 @@ class _FixedGeocodingProvider:
         return provider_result(
             GeocodeResult(
                 query=location_query,
-                resolved_name=location_query,
+                # 공영주차장 API는 구 단위라 실제 Geocoding처럼 주소에 자치구가
+                # 포함된 결과를 준다.
+                resolved_name=(
+                    f"서울특별시 종로구 {location_query}"
+                    if location_query == "경복궁"
+                    else location_query
+                ),
                 latitude=self._latitude,
                 longitude=self._longitude,
             ),
@@ -67,6 +77,26 @@ class _CafeLocalSearchProvider:
         )
 
 
+class _TransitLocalSearchProvider:
+    """관광 DB에는 없지만 좌표·주소는 확정되는 역을 재현한다."""
+
+    async def search_places_by_name(self, query: str, *, display: int = 5):
+        del query, display
+        return provider_result(
+            (
+                LocalSearchPlace(
+                    name="종각역 1호선",
+                    address="서울특별시 종로구 종로1가",
+                    road_address="서울특별시 종로구 종로 55",
+                    category="교통>지하철역",
+                    latitude=37.5702,
+                    longitude=126.9826,
+                ),
+            ),
+            source=ProviderSource.FAKE_LOCAL_SEARCH,
+        )
+
+
 class _CountingRealtimeCityDataProvider(FakeRealtimeCityDataProvider):
     """현재/미래 INFO 분기의 외부 API 호출 여부를 검증하는 테스트 더블."""
 
@@ -83,6 +113,7 @@ def _service(
     latitude: float,
     longitude: float,
     with_cafe_local_search: bool = False,
+    with_transit_local_search: bool = False,
     realtime_citydata_provider: FakeRealtimeCityDataProvider | None = None,
     clock: Callable[[], datetime] | None = None,
 ) -> ContextService:
@@ -92,16 +123,23 @@ def _service(
             location=ResolveLocationTool(
                 _FixedGeocodingProvider(latitude=latitude, longitude=longitude),
                 local_search_provider=(
-                    _CafeLocalSearchProvider() if with_cafe_local_search else None
+                    _TransitLocalSearchProvider()
+                    if with_transit_local_search
+                    else _CafeLocalSearchProvider()
+                    if with_cafe_local_search
+                    else None
                 ),
             ),
             places=NearbyPlaceDetailsTool(place_provider, place_provider),
+            place_detail=GetPlaceDetailTool(place_provider),
             weather=GetWeatherForecastTool(FakeWeatherProvider()),
             holidays=GetHolidaysTool(FakeHolidayProvider()),
             realtime_commercial=GetRealtimeCommercialTool(FakeRealtimeCommercialProvider()),
             realtime_citydata=GetRealtimeCityDataTool(
                 realtime_citydata_provider or FakeRealtimeCityDataProvider()
             ),
+            municipal_parking=GetMunicipalParkingTool(FakeMunicipalParkingProvider()),
+            municipal_parking_catalog=FakeMunicipalParkingCatalogRepository(),
         ),
         candidate_limit=10,
         clock=clock or (lambda: datetime.now(ZoneInfo("Asia/Seoul"))),
@@ -296,3 +334,75 @@ async def test_realtime_parking_groups_by_public_and_private() -> None:
     # FakeRealtimeCityDataProvider가 공영 1곳·민영 1곳을 준다 — 둘 다 살아남아야 한다.
     assert "[공영] 테스트 공영주차장" in response.result.fields
     assert "[민영] 테스트 민영주차장" in response.result.fields
+
+
+@pytest.mark.asyncio
+async def test_realtime_public_parking_uses_municipal_live_counts() -> None:
+    """공영을 명시하면 citydata의 민영 혼합 목록이 아닌 구 단위 API를 쓴다."""
+
+    response = await _service(latitude=37.5788, longitude=126.9770).fetch_info_context(
+        InfoContextRequest(
+            request_id="public-parking",
+            place_name="경복궁",
+            place_context="explicit",
+            question_type="realtime_public_parking",
+            specific_question="경복궁 근처 공영주차장 자리 있어?",
+        )
+    )
+
+    assert response.status == "success"
+    assert isinstance(response.result, RealtimeCityInfoResult)
+    assert response.result.question_type == "realtime_public_parking"
+    assert "[공영] 테스트 종로 공영주차장" in response.result.fields
+    assert "잔여 44면" in response.result.fields["[공영] 테스트 종로 공영주차장"]
+
+
+@pytest.mark.asyncio
+async def test_static_parking_without_tour_match_falls_back_to_nearby_public_parking() -> None:
+    """역처럼 관광 DB에 없어도 좌표가 있으면 주변 공영주차장으로 계속 안내한다."""
+
+    response = await _service(
+        latitude=37.5702,
+        longitude=126.9826,
+        with_transit_local_search=True,
+    ).fetch_info_context(
+        InfoContextRequest(
+            request_id="station-parking-fallback",
+            place_name="종각역",
+            place_context="explicit",
+            question_type="parking",
+            specific_question="종각역 주차장 정보",
+        )
+    )
+
+    assert response.status == "success"
+    assert isinstance(response.result, RealtimeCityInfoResult)
+    assert response.result.question_type == "realtime_public_parking"
+    assert response.result.resolved_place_name == "종각역 1호선"
+    assert "[공영] 테스트 종로 공영주차장" in response.result.fields
+
+
+@pytest.mark.asyncio
+async def test_supported_district_parking_bypasses_ambiguous_place_candidates() -> None:
+    """'종로 주차장 정보'의 종로는 장소 선택이 아니라 구 단위 주차장 범위다."""
+
+    response = await _service(
+        latitude=37.5702,
+        longitude=126.9826,
+        # 종로와 무관한 지역 검색 응답이 있어도 행정구역 Geocoding을 바로 써야 한다.
+        with_transit_local_search=True,
+    ).fetch_info_context(
+        InfoContextRequest(
+            request_id="district-parking",
+            place_name="종로",
+            place_context="explicit",
+            question_type="parking",
+            specific_question="종로 주차장 정보",
+        )
+    )
+
+    assert response.status == "success"
+    assert isinstance(response.result, RealtimeCityInfoResult)
+    assert response.result.question_type == "realtime_public_parking"
+    assert response.result.area_name == "종로구"
+    assert "[공영] 테스트 종로 공영주차장" in response.result.fields

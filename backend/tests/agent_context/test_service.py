@@ -1,6 +1,6 @@
 """실제 C ContextService가 조건에 따라 Tool을 조합하는 흐름을 검증한다."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -1706,3 +1706,251 @@ async def test_info_event_does_not_use_name_only_concentration_fallback() -> Non
 
     assert response.status == "no_data"
     assert mapping_repository.calls == 0
+
+
+class _QueryKeyedLocalSearchProvider:
+    """질의별로 다른 후보를 돌려주는 지역 검색 대역.
+
+    되묻기 후보를 개별 재해석할 때(_filter_info_place_candidates) 처음 질의와
+    후보 이름 재조회가 서로 다른 응답을 받아야 하는 테스트에 쓴다.
+    """
+
+    def __init__(self, responses: dict[str, tuple[LocalSearchPlace, ...]]) -> None:
+        self._responses = responses
+        self.calls: list[str] = []
+
+    async def search_places_by_name(self, query: str, *, display: int = 5):
+        self.calls.append(query)
+        return provider_result(
+            self._responses.get(query, ()), source=ProviderSource.FAKE_LOCAL_SEARCH
+        )
+
+
+def _ambiguous_landmark_places(
+    first_name: str, second_name: str
+) -> tuple[LocalSearchPlace, LocalSearchPlace]:
+    """정확/첫토큰 어느 쪽으로도 안 좁혀지는 명소 카테고리 후보 2건.
+
+    둘 다 종로구 안 좌표를 써 "지원 구 밖" 판정에 걸리지 않게 한다.
+    """
+    return (
+        LocalSearchPlace(
+            name=first_name,
+            address="서울특별시 종로구",
+            road_address=None,
+            category="여행,명소>거리,골목",
+            latitude=37.5788,
+            longitude=126.9770,
+        ),
+        LocalSearchPlace(
+            name=second_name,
+            address="서울특별시 종로구",
+            road_address=None,
+            category="여행,명소>거리,골목",
+            latitude=37.5789,
+            longitude=126.9771,
+        ),
+    )
+
+
+def _info_place_ambiguous_service(
+    local_search: _QueryKeyedLocalSearchProvider,
+    repository,
+) -> ContextService:
+    place_provider = FakePlaceProvider()
+    return ContextService(
+        ContextTools(
+            location=ResolveLocationTool(
+                FakeGeocodingProvider(),
+                place_repository=repository,
+                local_search_provider=local_search,
+            ),
+            places=NearbyPlaceDetailsTool(place_provider, place_provider),
+            weather=GetWeatherForecastTool(FakeWeatherProvider()),
+            holidays=GetHolidaysTool(FakeHolidayProvider()),
+            concentration=GetConcentrationTool(FakeConcentrationProvider()),
+        ),
+        candidate_limit=10,
+        clock=lambda: datetime.now(KST),
+    )
+
+
+@pytest.mark.asyncio
+async def test_info_place_ambiguous_surfaces_candidate_names_as_clarification_candidates() -> None:
+    """INFO도 지역 검색이 실제로 찾은 후보 이름을 되묻기 candidates로 보여준다.
+
+    예전엔 candidates=[]로 항상 버려졌다(실측, 2026-08-27) — 이 테스트는 그
+    회귀를 잠근다. 두 후보 다 저장소에 있어(시설 상세 질문의 place_id 기준)
+    걸러지지 않고 둘 다 남는다.
+    """
+    repository = _CountingPlaceLocationRepository(("정자역", "정자동카페거리"))
+    local_search = _QueryKeyedLocalSearchProvider(
+        {"정자": _ambiguous_landmark_places("정자역", "정자동카페거리")}
+    )
+    service = _info_place_ambiguous_service(local_search, repository)
+
+    response = await service.fetch_info_context(
+        InfoContextRequest(
+            request_id="place-ambiguous-surfaces-candidates",
+            place_name="정자",
+            place_context="explicit",
+            question_type="parking",
+            specific_question="정자 주차장 정보",
+        )
+    )
+
+    assert response.status == "needs_clarification"
+    assert response.clarification is not None
+    assert response.clarification.code == "place_ambiguous"
+    assert set(response.clarification.candidates) == {"정자역", "정자동카페거리"}
+
+
+@pytest.mark.asyncio
+async def test_info_place_ambiguous_filters_candidates_by_concentration_availability() -> None:
+    """혼잡도 예측 질문은 집중률 매핑(concentration_name)이 있는 후보만 남는다."""
+    repository = _CountingPlaceLocationRepository(("정자역",))
+    local_search = _QueryKeyedLocalSearchProvider(
+        {
+            "정자": _ambiguous_landmark_places("정자역", "정자동카페거리"),
+            # "정자동카페거리"는 저장소에 없어 재조회가 지역 검색으로 폴백한다 —
+            # 자기 자신으로 유일하게 다시 잡혀야 SUCCESS(LOCAL_SEARCH, 집중률
+            # 매핑 없음)가 되어 "확실히 실패"로 걸러진다.
+            "정자동카페거리": (
+                LocalSearchPlace(
+                    name="정자동카페거리",
+                    address="서울특별시 종로구",
+                    road_address=None,
+                    category="여행,명소>거리,골목",
+                    latitude=37.5789,
+                    longitude=126.9771,
+                ),
+            ),
+        }
+    )
+    service = _info_place_ambiguous_service(local_search, repository)
+
+    response = await service.fetch_info_context(
+        InfoContextRequest(
+            request_id="place-ambiguous-concentration-filter",
+            place_name="정자",
+            place_context="explicit",
+            question_type="concentration",
+            specific_question="정자 내일 혼잡해?",
+            visit_time=(datetime.now(KST) + timedelta(days=1)).date().isoformat(),
+        )
+    )
+
+    assert response.status == "needs_clarification"
+    assert response.clarification is not None
+    assert response.clarification.candidates == ["정자역"]
+
+
+@pytest.mark.asyncio
+async def test_info_place_ambiguous_falls_back_to_unfiltered_when_filter_empties_list() -> None:
+    """필터링으로 후보가 0건이 되면 거르기 전 원본 목록을 그대로 보여준다."""
+    repository = _CountingPlaceLocationRepository(())  # 둘 다 저장소에 없음
+    local_search = _QueryKeyedLocalSearchProvider(
+        {
+            "정자": _ambiguous_landmark_places("정자역", "정자동카페거리"),
+            "정자역": (
+                LocalSearchPlace(
+                    name="정자역",
+                    address="서울특별시 종로구",
+                    road_address=None,
+                    category="여행,명소>거리,골목",
+                    latitude=37.5788,
+                    longitude=126.9770,
+                ),
+            ),
+            "정자동카페거리": (
+                LocalSearchPlace(
+                    name="정자동카페거리",
+                    address="서울특별시 종로구",
+                    road_address=None,
+                    category="여행,명소>거리,골목",
+                    latitude=37.5789,
+                    longitude=126.9771,
+                ),
+            ),
+        }
+    )
+    service = _info_place_ambiguous_service(local_search, repository)
+
+    response = await service.fetch_info_context(
+        InfoContextRequest(
+            request_id="place-ambiguous-empty-filter-fallback",
+            place_name="정자",
+            place_context="explicit",
+            question_type="parking",
+            specific_question="정자 주차장 정보",
+        )
+    )
+
+    # 시설 상세 질문 기준(place_id 있음)을 둘 다 못 만족하지만(저장소에 없음),
+    # 버튼 없는 것보다 나으므로 원본 두 후보가 그대로 나온다.
+    assert response.status == "needs_clarification"
+    assert response.clarification is not None
+    assert set(response.clarification.candidates) == {"정자역", "정자동카페거리"}
+
+
+@pytest.mark.asyncio
+async def test_info_place_ambiguous_keeps_candidate_when_re_resolve_is_itself_ambiguous() -> None:
+    """재해석 자체가 또 애매하면(예: DB에 동명 타이틀 2건) 조회 불가로 버리지 않는다."""
+
+    class _DuplicateTitleRepository:
+        async def find_active_places_by_name(self, name: str):
+            if name != "정자역":
+                return ()
+            return (
+                StoredPlaceLocation(
+                    content_id="1",
+                    title="정자역",
+                    address="서울특별시 종로구 1",
+                    latitude=37.5788,
+                    longitude=126.9770,
+                    district_code="110",
+                    concentration_name="정자역 1",
+                ),
+                StoredPlaceLocation(
+                    content_id="2",
+                    title="정자역",
+                    address="서울특별시 종로구 2",
+                    latitude=37.5789,
+                    longitude=126.9771,
+                    district_code="110",
+                    concentration_name="정자역 2",
+                ),
+            )
+
+    local_search = _QueryKeyedLocalSearchProvider(
+        {
+            "정자": _ambiguous_landmark_places("정자역", "정자동카페거리"),
+            "정자동카페거리": (
+                LocalSearchPlace(
+                    name="정자동카페거리",
+                    address="서울특별시 종로구",
+                    road_address=None,
+                    category="여행,명소>거리,골목",
+                    latitude=37.5789,
+                    longitude=126.9771,
+                ),
+            ),
+        }
+    )
+    service = _info_place_ambiguous_service(local_search, _DuplicateTitleRepository())
+
+    response = await service.fetch_info_context(
+        InfoContextRequest(
+            request_id="place-ambiguous-reresolve-still-ambiguous",
+            place_name="정자",
+            place_context="explicit",
+            question_type="parking",
+            specific_question="정자 주차장 정보",
+        )
+    )
+
+    assert response.status == "needs_clarification"
+    assert response.clarification is not None
+    # "정자역"은 재해석도 애매하지만(동명 타이틀 2건) 조회 불가로 단정하지 않고
+    # 후보로 유지된다. "정자동카페거리"는 저장소에 없어(place_id 없음) 걸러진다.
+    assert response.clarification.candidates == ["정자역"]

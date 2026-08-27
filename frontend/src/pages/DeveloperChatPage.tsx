@@ -24,6 +24,7 @@ import { TurnLocationBadges } from "../components/dev/TurnLocationBadges";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { LanguageSelector } from "../components/LanguageSelector";
 import { AuthStatusBadge } from "../auth/AuthStatusBadge";
+import { usePhotoSimilarSearch } from "../hooks/usePhotoSimilarSearch";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import { buildAgentStageTimings } from "../utils/agentTiming";
 import { getLatestConversationPlaceName } from "../utils/conversationPlace";
@@ -78,6 +79,7 @@ interface PendingLocationRefresh {
 export function DeveloperChatPage() {
   const state = useTripState();
   const dispatch = useTripDispatch();
+  const handlePhotoSelect = usePhotoSimilarSearch();
   const navigate = useNavigate();
   const text = DEV_CHAT_TEXT[state.language];
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
@@ -248,6 +250,15 @@ export function DeveloperChatPage() {
             if (event.type === "message_delta") {
               firstMessageDeltaElapsedMs ??= event.data.elapsed_ms;
               dispatch({ type: "APPEND_STREAM_MESSAGE_DELTA", payload: { text: event.data.text } });
+              return;
+            }
+            if (event.type === "follow_ups") {
+              // done 뒤에 오는 유일한 이벤트다. 턴은 이미 끝나 로딩이 사라진
+              // 상태이고, 버튼만 조금 늦게 붙는다.
+              dispatch({
+                type: "APPEND_FOLLOW_UP_SUGGESTIONS",
+                payload: { suggestions: event.data.suggestions },
+              });
               return;
             }
             if (event.type === "error") throw new ApiError(event.data);
@@ -478,6 +489,7 @@ export function DeveloperChatPage() {
               onRequestMore={() => void requestSend(text.requestMore)}
               onRelaxRadius={() => void requestSend(text.relaxRadius)}
               onSelectClarificationOption={(optionId, label) => void requestSend(label, optionId)}
+              onSelectFollowUpSuggestion={(suggestion) => void requestSend(suggestion)}
               onToggleTravelOrigin={(toggle) => {
                 const label = toggle.alternative_origin === "search_center"
                   ? text.basedOn(toggle.alternative_origin_name)
@@ -512,6 +524,7 @@ export function DeveloperChatPage() {
             onSubmit={handleFollowUp}
             placeholder={text.composer}
             language={state.language}
+            onPhotoSelect={handlePhotoSelect}
           />
         </div>
       </section>

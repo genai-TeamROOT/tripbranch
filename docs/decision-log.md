@@ -3162,8 +3162,9 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 
 ### D-088 — 관광지별 연관 관광지 정보(TarRlteTarService1)를 종로구·중구 파일럿으로 수집·매칭·적재한다 (패키지 경계 밖 실험, B가 진행)
 
-- 상태: `Accepted` — 파일럿 범위 구현 완료. 서울 전역 확장·SCHEDULE/RECOMMEND
-  연동은 범위 밖.
+- 상태: `Accepted` — 수집·매칭·적재는 서비스 지원 16개 구 전체 완료(2026-08-27
+  기준). SCHEDULE 연동(D-091)·RECOMMEND 2차 스코어링 연동(D-092)도 완료.
+  INFO/COMPARE 인텐트 연동, 서비스 미지원 지역 확장은 범위 밖으로 남음.
 - 배경: 한국관광공사가 공공데이터포털에 새로 공개한 TourAPI
   "관광지별 연관 관광지 정보"는 Tmap 실내비게이션 co-visitation(실제
   동선) 데이터 기반이라, 기존 TourAPI 정적 속성만으로는 못 만드는
@@ -3228,9 +3229,20 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   161). 매칭률(엣지/원본)이 파일럿 30.3%(698/2,300) → 확장 후 29.3%
   (1,612/5,511)로 거의 그대로 유지돼 커버리지 특성이 구가 늘어도
   일관됨을 확인했다.
-- 남은 것: 서울 나머지 13개 구(비지원 지역) 확장 여부, RECOMMEND 설명문 연동,
-  2차 스코어링 반영은 후속 작업(우선순위 논의 필요). SCHEDULE 연동은 D-091로
-  이어졌다.
+- 2026-08-27 확장(2차): D-086으로 서비스 지원 지역이 12개 구에서 16개 구로
+  늘었는데(서대문·마포·양천·강서 추가), place_associations는 12개 구 기준
+  그대로 남아 새로 지원된 4개 구만 co-visit 데이터가 없는 공백이 생겼다.
+  코드 변경 없이 `--districts`만 16개 구 전체로 넓혀 같은 방식으로 재실행 —
+  기존 12개 구 행은 upsert로 덮어쓰이고 4개 구가 새로 추가됐다. 결과: 원본
+  7,219건 → 매핑 CSV 751건 → 엣지 2,001건 실제 적재(미매칭 5,110 / 자기참조
+  15 / 중복 93 제외). 매칭률(엣지/원본)이 27.7%(2,001/7,219)로 파일럿
+  30.3%·12개 구 확장 29.3%에 이어 소폭 더 낮아졌지만 같은 하락 추세라 특이
+  이상은 아니다.
+- 남은 것: 서울 나머지 9개 구(비지원 지역, place-sync 자체가 안 된 구로·
+  금천·영등포 등)는 place 데이터가 없어 범위 밖. RECOMMEND 설명문 연동·
+  2차 스코어링 반영은 D-092로 완료. SCHEDULE 연동은 D-091로 완료. INFO/
+  COMPARE 인텐트에는 아직 이 데이터가 연결되지 않았다(패키지 C·A 협의
+  필요, 별도 카드).
 - 상세: `backend/scripts/collect_place_associations.py`,
   `backend/scripts/build_place_association_mappings.py`,
   `backend/scripts/import_place_associations.py`,
@@ -3928,6 +3940,334 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 - 상세: `backend/app/agent_context/service.py`, `backend/app/tools/resolve_location.py`,
   `backend/tests/test_resolve_location_tool.py`, `backend/tests/agent_context/test_service.py`
 
+### D-098 — 사진 검색을 채팅창에 붙이고 대화가 잡은 위치를 이어받는다
+
+- 상태: `Accepted` — 구현 완료(D-096 후속, TP-175, 패키지 C·공용 프론트).
+- 배경: D-096으로 엔드포인트는 만들었으나 부르는 화면이 없었다. 붙여 보니
+  위치를 못 찾아 매번 되묻기로 끝났다.
+- 결정:
+  1. **입력창 왼쪽 "+" 버튼**에서 사진/갤러리를 고른다. 사용자 화면과 개발자
+     화면 둘 다에 붙이고, 핸들러는 `usePhotoSimilarSearch` 훅으로 뺀다 —
+     복사해 두면 한쪽만 고쳤을 때 개발자 화면에서 재현한 것이 사용자 화면과
+     달라진다.
+  2. **대화가 잡은 위치를 이어받는다.** `session_id`를 받아 B의 누적 조건에서
+     `search_center` → `current_location` 순으로 찾고, 없으면 기기 GPS로
+     떨어진다. 기존 추천과 같은 순서다(agent_context/service.py).
+  3. **올린 사진은 긴 변 320px로 줄여 data URL로 담는다.**
+  4. **사진은 사용자 쪽(`ml-auto`), 결과는 응답 쪽(`mr-auto`)**에 둔다. 결과는
+     가로로 늘어놓는다.
+  5. **유사도를 숫자로 보여주지 않는다.** 순위로만 보여주고, 정말 닮았는지는
+     카드를 눌러 상세를 열어 확인하게 한다.
+  6. **결과 카드의 사진은 `place_image_embeddings`의 첫 장**이다.
+- 근거:
+  - **위치가 안 풀린 원인이 둘이었다.** 세션을 안 본 것이 하나이고, 다른 하나는
+    `ResolveLocationTool`에 지오코딩만 넘긴 것이다 — 지오코딩은 주소 전용이라
+    "안국역"이 `no_data/location_not_found`로 끝난다. 저장소와 지역 검색을 함께
+    넘겨야 "안국역 3호선"으로 풀린다. `build_recommendations`가 지오코딩만
+    넘기길래 따라 했는데, 그쪽은 옛 경로라 장소명을 다루지 않는다.
+  - **`URL.createObjectURL`을 쓰지 않는 이유.** 그 주소는 탭 수명에 묶여 있어
+    대화가 sessionStorage에서 복원될 때 이미 무효다. data URL은 문자열이라
+    그대로 저장되고, 320px/품질 0.7이면 15~25KB라 한도에 부담이 없다.
+  - **결과를 가로로 두는 이유.** 세로 목록이면 카드 하나가 한 줄을 통째로 쓰면서
+    오른쪽이 비고 화면이 길어진다. 가로면 사진이 나란히 놓여 분위기를 한눈에
+    견줄 수 있는데, 이 화면의 목적이 그 비교다.
+  - **`places.first_image_url`을 쓰지 않는 이유.** 2,008곳 중 1,163곳이 서로 다른
+    주소다(2026-08-27 실측). 사용자가 분위기가 맞는지 확인하려는 화면에서
+    비교하지 않은 사진을 보여주면 틀린 근거가 된다.
+- 검증: 프론트 199건·백엔드 2,995건 통과. 안국역 세션으로 실제 호출해
+  강서 좌표를 함께 보내도 `안국역 3호선`으로 잡히는 것을 확인했다.
+- 곁가지 발견: `python-multipart`가 의존성에 없었다. `Form`·`File`을 쓰려면
+  필요한데 `fastapi`의 선택 의존성이라 따로 적어야 한다. **없으면 앱 전체가 못
+  뜬다** — CI에서 `app`을 import하는 테스트 14개가 전부 수집 단계에서 터졌다
+  (`test_health.py`처럼 사진과 무관한 것 포함). 로컬에는 우연히 깔려 있어
+  통과했고 CI가 잡았다. 인코더 반환형 결함(D-096)과 함께, **로컬 환경이 CI보다
+  넉넉하면 못 잡는다**는 사례를 하나 더 남긴다.
+- 남은 것:
+  - **후보가 여전히 좁다.** `RECOMMENDATION_CANDIDATE_LIMIT`이 10이고 절대 상한이
+    20이라, 안국역 반경 2km에서 후보 10곳 → 하드 필터 7곳 → 사진 벡터가 있는
+    5곳이 나온다. **어떤 사진을 올려도 같은 5곳이 순서만 바뀐다.** 순서를 뒤집는
+    작업(TP-176)이 붙어야 사진마다 다른 결과가 나온다.
+  - **깨진 사진이 500을 낸다.** 확장자만 `.jpg`인 파일이나 잘린 사진에서
+    `PIL.UnidentifiedImageError`가 그대로 올라간다.
+  - 앞 대화 위치가 없을 때의 되묻기 버튼 흐름. 지금은 오류 배너로만 알린다.
+- 상세: `frontend/src/components/chat/PhotoInputButton.tsx`,
+  `frontend/src/components/chat/PhotoSimilarResultMessage.tsx`,
+  `frontend/src/hooks/usePhotoSimilarSearch.ts`,
+  `frontend/src/utils/imageThumbnail.ts`,
+  `backend/app/services/photo_similar.py`, `backend/app/routes/photo_similar.py`
+
+
+### D-099 — 사진 검색은 순위를 먼저 매기고 상위 N곳만 상세를 확인한다
+
+- 상태: `Accepted` — 구현 완료(D-098 후속, TP-176, 패키지 C).
+- 배경: D-098로 화면까지 붙였는데 **어떤 사진을 올려도 같은 대여섯 곳이 순서만
+  바뀌었다.** 안국역 반경 2km에서 후보 10곳(`RECOMMENDATION_CANDIDATE_LIMIT`) →
+  하드 필터 7곳 → 사진 벡터가 있는 5곳이 나왔다. 2,009곳을 적재해 두고 5곳
+  안에서만 고르는 셈이라 기능이 반쯤만 도는 상태였다.
+- 결정:
+  1. **순서를 뒤집는다.**
+
+     ```
+     전:  위치 → 장소 조회(상세 포함, 최대 20곳) → prepare() → 사진 순위
+     후:  위치 → 사진 순위(DB, 반경 안 전부) → 상위 N곳 상세 → prepare()
+     ```
+
+  2. `search_place_mood` RPC에 `p_latitude`·`p_longitude`·`p_radius_km`를 더한다.
+     후보 목록 인자도 그대로 둔다 — 둘 다 주면 교집합, 좌표만 주면 반경, 후보만
+     주면 그 목록이다(D-096 호출이 계속 동작해야 한다).
+  3. **거리는 하버사인을 직접 계산한다.** PostGIS가 설치돼 있지 않고
+     `places.latitude/longitude`가 `double precision`이라 이 정도면 충분하다.
+     1차로 위경도 사각형으로 걷어낸 뒤 하버사인으로 최종 판정한다.
+  4. **상세는 DB에서 읽는다**(`get_active_place_details`). `NearbyPlaceDetailsTool`은
+     TourAPI를 타고 `limit`이 20으로 막혀 있어 이 경로에 맞지 않는다.
+  5. **하드 필터 판정을 직접 만들지 않는다.**
+     `prepare_recommendation_from_context()`를 그대로 태운다.
+  6. 보여줄 수의 **4배**를 먼저 받는다(`_OVERFETCH_FACTOR`).
+- 근거:
+  - **왜 뒤집는 것이 맞나.** 사진 유사도는 DB 안에서 끝나 사실상 공짜이고,
+    비싼 것은 상세 조회다. 뒤집기 전에는 후보를 만들려고 상세를 먼저 다 조회해
+    **결과에 안 나갈 곳까지 값을 치렀다.** 뒤집으면 "어차피 보여줄 곳"에만 쓴다.
+  - **상한을 올리는 안은 쓸 수 없었다.** 후보 300곳이면 TourAPI 상세 300건이고,
+    초당 2건이라 약 150초다(중구 892건에 6분 16초가 걸린 실측이 config.py 주석에
+    있다). `MAX_RECOMMENDATION_CANDIDATE_LIMIT`이 20인 이유가 그 제약이다.
+  - **하드 필터를 재사용하는 이유.** 영업시간 해석을 여기서 새로 만들면 같은
+    장소가 추천에서는 열렸는데 사진 검색에서는 닫힌 것으로 갈릴 수 있다.
+  - **4배의 근거.** 실측에서 영업 중인 비율이 20곳 중 7곳(35%)이었다. 10곳을
+    채우려면 30~40곳을 훑어야 하고, 상세가 DB라 값이 싸다.
+  - **좌표와 반경 중 하나만 오면 예외로 끝낸다.** 조용히 전체를 훑게 되는데
+    그건 호출부가 의도한 적 없는 동작이다.
+  - **상세가 없는 장소는 건너뛴다.** 영업 여부를 판정할 수 없는데 열려 있다고
+    단정하면 닫힌 곳을 추천하게 된다.
+- 검증: 안국역 반경 2km 실측.
+
+  | | 전 | 후 |
+  | --- | --- | --- |
+  | 후보 | 7곳 | **40곳** |
+  | 응답 | 1.2초 | **0.65초** |
+  | TourAPI 호출 | 10회 | **0회** |
+
+  **후보가 6배 늘었는데 응답이 절반이다.** 상세를 DB에서 읽어 TourAPI 초당 2건
+  제한을 타지 않는다.
+
+  **사진마다 다른 결과가 나온다.** 같은 위치·반경에서 한복매장 사진은
+  삼익패션타운·대학천 책방거리·우석공예사를, 창덕궁 사진은 기억의 터·무궁화동산·
+  삼청공원을, 민속박물관 사진은 통의동 국빈관·설가온·한국의집을 준다. **겹치는
+  곳이 하나도 없다.** 상가·공원·한옥건물로 갈렸다.
+
+  백엔드 2,997건 통과, `ruff` 클린. 서비스 테스트는 새 흐름으로 다시 썼다(12건).
+- 채택하지 않은 것:
+  - **`MAX_RECOMMENDATION_CANDIDATE_LIMIT`을 올리기** — A/D가 공유하는 정책이고,
+    올려도 TourAPI 속도 때문에 실용적이지 않다.
+  - **`PLACE_DETAILS_SOURCE=supabase`로 전역 전환** — 추천 경로 전체에 영향을
+    주는 설정이라 사진 경로만 DB를 읽게 했다. DB 값은 place-sync 시점에 멈춰
+    있어 신선도가 떨어지는데, 그 절충은 추천 쪽이 따로 판단할 일이다.
+- 남은 것:
+  - **깨진 사진이 500을 낸다.** `PIL.UnidentifiedImageError`가 그대로 올라간다.
+  - **유사도 컷 실측.** 지금 0.0이고 순위만 쓴다(D-094). 후보가 넓어져 "안 닮았는데
+    억지로 채운" 경우가 보일 수 있다.
+  - **적재 범위.** 2,009곳(종로·중구·마포·용산·노원)뿐이라 나머지 11개 구에서는
+    후보가 잡혀도 비교할 벡터가 없다.
+- 상세: `supabase/migrations/202608270001_add_radius_to_search_place_mood.sql`,
+  `backend/app/services/photo_similar.py`,
+  `backend/app/repositories/supabase_places.py`,
+  `backend/app/providers/place_mood.py`, `backend/app/providers/factory.py`
+
+### D-100 — INFO 장소 되묻기: 편집거리 매칭 + 후보 버튼 노출 + 상태 저장 이어받기
+
+- 상태: `Accepted` — 구현 완료.
+- 배경: "성수 카페거리 주차장 정보"가 INFO에서 "여러 장소 중 어느 곳을 말씀하시는
+  건가요?"라고 버튼 하나 없이 되묻는 버그 제보. 조사해보니 두 가지가 겹쳐 있었다.
+  1) 지역 검색이 실제로 "성수동카페거리"(여행,명소>거리,골목 — 명소로 인식)를
+     찾아주는데, 사용자 발화 "성수 카페거리"와 "동" 한 글자 차이로 정확/첫토큰
+     일치 어느 쪽에도 안 걸려 후보를 하나로 못 좁혔다.
+  2) `agent_context/service.py`의 INFO 처리 코드가 `resolve_location.py`가 실제로
+     찾아낸 후보 이름을 받아서 쓰지 않고 `candidates=[]`를 하드코딩해 버렸다 —
+     RECOMMEND/SCHEDULE는 같은 상황에서 후보를 버튼으로 보여주는데 INFO만
+     안 그랬다. 게다가 `llm_output.status`를 `NEEDS_CLARIFICATION`으로 바꾸지도
+     않아 애초에 버튼 UI 자체가 뜰 수 없는 구조였다.
+- 결정:
+  1. **편집거리 매칭(Part A)**: `resolve_location.py`의 `_select_local_search_candidate()`에
+     4번째 단계 추가 — 정확/첫토큰/노선별 역 묶기가 다 실패했을 때만, 편집거리
+     (Levenshtein) ≤ 1이고 역/명소 카테고리인 후보가 정확히 하나면 채택한다.
+     임계값 2는 안 됨("경복궁"↔"덕수궁" 둘 다 3글자 편집거리 2인 서로 다른
+     실존 랜드마크). 질의 길이 3자 미만은 이 단계를 안 탄다("신촌"↔"신천"
+     처럼 편집거리 1이 완전히 다른 동네일 수 있음). 역/명소 카테고리로만
+     제한해 이 파일 전체의 "부분 일치로 넓히지 않는다" 원칙과 충돌하지
+     않게 했다(식당·상점까지 넓히면 "안국역"≠"안국역사거리" 같은 기존
+     회귀 테스트가 지키는 경계가 무너진다).
+  2. **INFO도 실제 후보를 candidates에 담는다(Part B)**: `agent_context/service.py`의
+     `ambiguous_location` 분기에서 `location_result.error.details["candidate_names"]`를
+     실제로 풀어 쓴다. `"|"` 구분 파싱을 `agent_context/schemas.py`의
+     `parse_candidate_names()`로 공용화해 `assembler.py`(RECOMMEND 경로)와
+     함께 쓴다.
+  3. **question_type별 가용성 필터(Part C)**: 후보 이름마다
+     `self._tools.location.execute()`로 다시 개별 해석해, `concentration`은
+     `concentration_name` 있는 것만, 실시간 유형(주차·지하철·버스·행사·교통,
+     현재형 혼잡 질문)은 `select_nearest_population_area`가 잡히는 것만,
+     `realtime_commercial`은 `select_nearest_commercial_area`가 잡히는 것만,
+     그 외 시설 상세는 `place_id`(저장소 존재) 있는 것만 남긴다. 재해석
+     자체가 또 애매하면(DB 동명 타이틀 2건 등) "조회 불가"로 버리지 않고
+     후보를 유지한다. 필터링으로 0건이 되면 원본 후보 목록으로 되돌린다
+     (RECOMMEND의 location_ambiguous가 후보 없으면 quick-pick으로 대체하지
+     버튼 없는 메시지로 안 가는 것과 같은 원칙).
+  4. **상태 저장으로 정확히 이어받기(Part D)**: INFO는 RECOMMEND와 달리
+     `question_type`/`specific_question`/`place_context`/`visit_time`을 세션에
+     저장해두지 않아, 버튼 클릭 시 장소명만으로 처음부터 재분류되면 "주차장
+     질문이었다"는 사실이 사라진다(사용자 결정: 상태 저장해 정확히 이어받는
+     쪽 채택, 재분류 허용 대신). `AgentState`에 `pending_info_context` 필드
+     신설, `set_pending_info_context()`를 `set_pending_clarification()`과
+     같은 모양으로 추가했다. `pending_info_context`는 `pending_clarification
+     == "place_ambiguous"`일 때만 의미가 있어, `set_pending_clarification()`
+     내부에서 code가 `"place_ambiguous"`가 아니면 같이 지우게 했다 — 새
+     호출부 하나만 추가하면 기존 9개 호출부가 자동으로 안전하게 정리된다.
+     `agent_runtime.py`의 INFO 블록이 RECOMMEND의 `location_ambiguous`와
+     같은 패턴으로 `NEEDS_CLARIFICATION` + `ClarificationPayload`를 만들고,
+     `_resolve_clarification_choice()`에 `place_ambiguous` 분기를 추가해
+     저장해둔 값으로 `InfoPayload`를 결정적으로 재구성한다. INFO가 되묻지
+     않고 끝나는 지점에서 `pending_clarification == "place_ambiguous"`였다면
+     정리한다 — "INFO/GENERAL 곁가지 대화는 RECOMMEND의 되묻기를 안 건드린다"는
+     기존 원칙과 결이 같되, place_ambiguous는 INFO 자신의 되묻기라 INFO가
+     정리할 책임이 있다고 봤다.
+  5. Supabase `agent_states` 테이블에 `pending_info_context jsonb` 컬럼 추가
+     마이그레이션(`202608270001`) — `pending_clarification` 컬럼 때(202608030001)와
+     같은 이유로, `save_state()`가 `model_dump()`를 통째로 보내 컬럼이 없으면
+     저장이 실패한다.
+- 검증: 백엔드 `pytest` 3,022 passed, `ruff check` 클린. 실제 Naver 지역검색
+  API로 "성수 카페거리"→"성수동카페거리"(여행,명소>거리,골목) 편집거리 1
+  매칭을 실측 확인.
+- 채택하지 않은 것:
+  - 좌표 기준 가까운 지하철역 버튼: 우리 DB엔 TourAPI 관광지만 있고 역
+    데이터가 없다. Naver 지역검색도 좌표 기반 카테고리 검색을 지원하지
+    않아 별도 데이터셋이 필요해 기각.
+  - 되묻기 버튼 클릭 시 장소명만으로 재분류(상태 저장 없이): 원래 질문
+    (주차 등) 신호가 사라져 다른 question_type으로 잘못 재분류될 위험이
+    있어, 상태 저장 쪽을 채택(위 결정 4).
+- 상세: `backend/app/tools/resolve_location.py`, `backend/app/agent_context/service.py`,
+  `backend/app/agent_context/assembler.py`, `backend/app/agent_context/schemas.py`,
+  `backend/app/services/runtime/agent_runtime.py`, `backend/app/state/schema.py`,
+  `backend/app/state/service.py`,
+  `supabase/migrations/202608270001_add_pending_info_context_column.sql`,
+  관련 테스트 파일 다수
+
+### D-101 — 공영주차장 실시간 현황을 일반 근처 주차장과 분리한다
+
+- 상태: `Accepted` — 구현 완료, 좌표 카탈로그 적재는 마이그레이션 적용 후 별도 실행.
+- 배경: 서울시 실시간 도시데이터 `PRK_STTS`는 특정 핫스팟 주변의 공영·민영 주차장
+  목록을 함께 내려주지만, 실시간 대수가 있는 항목이 일부이고 모든 공영주차장을
+  포괄한다는 보장이 없다. 반면 서울시 `GetParkingInfo`는 구 단위 시영·공영주차장에
+  `PKLT_CD`, 총면수, 현재 주차 대수, 갱신 시각을 제공한다. 2026-08-27 실측에서
+  종로·중·용산·영등포구의 `PRK_STTS_YN=1` 행에 20분 이내 갱신 수치가 있음을 확인했다.
+- 결정:
+  1. "공영/시영주차장"을 명시한 자리·잔여 질문은 `realtime_public_parking`으로
+     분류해 GetParkingInfo를 우선 사용한다. `PRK_STTS_YN=1`이고 수치가 있는 행만
+     실시간 현황으로 표시하며, 잔여 면수는 `총면수 - 현재 주차 대수`로 결정적으로
+     계산한다.
+  2. 공영/시영을 명시하지 않은 "근처 주차장"은 기존 `realtime_parking`을 유지해
+     도시데이터의 공영·민영 목록을 함께 보여준다. 같은 분류 안에서는 실시간 수치가
+     있는 항목을 거리보다 먼저 노출해, 값 있는 주차장이 카드 밖으로 밀리는 문제를 막는다.
+  3. GetParkingInfo에 좌표가 없으므로 `municipal_parking_lots`에는 코드·주소·한 번
+     지오코딩한 좌표·기본 속성만 저장한다. 실시간 주차 대수는 DB에 적재하지 않고
+     요청마다 API에서 가져온다. 카탈로그가 비어도 해당 구 최신 공영주차장 목록은
+     답하되, 거리 정렬만 생략한다.
+  4. 일반 `parking`이 관광지 상세정보에서 주차 필드를 찾지 못하면(예: 관광 DB에
+     없는 `종각역`) 확정한 장소 좌표를 기준으로 같은 GetParkingInfo 경로를 대체
+     사용한다. 관광지 자체의 주차 가능 여부·요금이 있으면 기존 상세 경로를
+     유지한다. 좌표가 불명확하거나 해당 구에 실시간 공영주차장 값이 없을 때만
+     `확인할 수 없음`으로 응답한다.
+  5. 지원 구 이름만 말한 "종로 주차장 정보"는 장소 후보를 되묻지 않는다. `종로`와
+     `종로구`를 행정구역 좌표로 직접 해석해 해당 구의 공영주차장을 조회한다.
+     `종각`처럼 역·명소로도 읽히는 이름은 이 예외에 넣지 않아 기존 후보 선택을
+     유지한다.
+- 채택하지 않은 것: GetParkingInfo만으로 근처 민영주차장까지 포괄하는 방식. 이 API는
+  공영 중심이고 좌표도 없어 민영 포함 근처 탐색에는 기존 도시데이터 경로가 더 맞다.
+- 상세: `backend/app/providers/municipal_parking.py`,
+  `backend/app/agent_context/service.py`,
+  `supabase/migrations/202608270002_create_municipal_parking_lots.sql`,
+  `docs/design/int-02-info.md`.
+
+### D-104 — 숫자 없는 시간 표현을 `time_available` 분 단위로 고정 환산한다
+
+- 상태: `Accepted` — 구현 완료(TP-177). 골드셋 재확인 1회가 남아 있다(아래 "남은 것").
+- 배경: 골드셋(`test_results/agent_quality/evaluation_dev.csv`)의 SCHEDULE 실패가
+  2026-08-20부터 같은 자리에서 반복됐다 — DEV-008/023의 `time_available`,
+  DEV-008/033의 `search_center`. `prompts/recommend/HISTORY.md`는 이를 "기존
+  비결정성 케이스"로 기록하고 "1회 실행으로 회귀를 판정하지 않아야 하는 사례로
+  남긴다"고 적어뒀지만, 흔들림의 크기를 재는 수단이 없어 원인을 특정하지 못한 채
+  네 번의 실행에 걸쳐 같은 문장이 반복됐다.
+  기준선이 흔들리는 상태에서 프롬프트를 고치면 개선인지 실행 간 분산인지 구분할 수
+  없으므로, 측정 도구를 먼저 만들고 가설을 하나씩 기각하는 순서로 접근했다.
+- 결정:
+  1. `verify_schedule_condition_extraction.py`를 신설해 **흔들림(같은 발화·같은
+     설정에서 실행마다 값이 바뀌는가)** 과 **기대 일치(골드셋 라벨과 맞는가)** 를
+     따로 측정한다. `record_llm_call()`의 `served_model`을 함께 읽어 폴백 발생도
+     같은 표에서 본다. 기존 `verify_taste_query_extraction.py`·
+     `verify_travel_origin_extraction.py`와 같은 패턴이다.
+  2. `recommend.extract`(2.4.0 → 2.5.0)에 숫자 없는 시간 표현의 고정 환산 규칙을
+     넣는다 — 반나절/한나절/오전·오후 내내 240, 하루 종일/온종일/아침부터 저녁까지
+     480, 잠깐·짧게 120, 범위로 말했으면 하한("두세 시간" → 120), 목록에 없는
+     표현은 억지로 숫자를 만들지 않고 null. 기존 시간 규칙은 숫자 환산("5시간"
+     → 300)만 있었다.
+  3. **SCHEDULE 전용 추출 슬롯을 신설하지 않는다.** 남은 결함이 시간 표현 하나로
+     좁혀졌고, "반나절 = 4시간"은 RECOMMEND 발화에도 맞는 해석이라 슬롯을 복제할
+     이유가 없다. `prompts/schedule/`가 B 소유라 전용 슬롯을 만들면 협의 없이
+     끝낼 수 있었지만, 규칙 몇 줄을 위해 슬롯을 둘로 늘리면 두 슬롯이 같이 낡는다.
+  4. 값은 코드가 이미 쓰는 폴백과 일관되게 맞춘다 —
+     `build_schedule_planning_instruction()`이 `time_available` 미지정 시
+     "3~4시간 내외로 구성"을 지시하므로 반나절을 그 상한인 240으로 둔다.
+     골드셋 라벨(240)도 같은 값이다.
+- 근거: "반나절"은 3회 반복에서 발화에 지명이 있으면 240, 없으면 360으로 갈렸다 —
+  각각은 3회 모두 고정이었으므로 흔들림이 아니라 **규칙이 없어서 모델이 문맥으로
+  해석한 결과**다. 사용자가 "반나절"이라 말하고 6시간 일정을 받는 것은 틀린 결과이고,
+  같은 단어가 지명 유무로 갈리는 것 자체가 일관성 결함이다. "하루 종일"은 3회 모두
+  null로 떨어져 시간 조건 없이 편성되고 있었다. 범위 표현("두세 시간")은 150/150/180
+  으로 유일하게 실제로 흔들렸고, 하한을 쓰기로 정한 근거는 일정이 넘치는 쪽보다
+  여유가 남는 쪽이 사용자 피해가 작다는 것이다.
+- 기각한 가설(측정으로 확인): 네 개를 세워 네 개를 모두 기각했다. 기록해두는 이유는
+  다음에 같은 증상을 보는 사람이 같은 길을 다시 걷지 않게 하기 위함이다.
+  1. **구세대 모델 폴백이 원인** — 한가한 상태 42호출(14케이스 × 3회) 전부
+     `gemini-3.5-flash`가 응답했다(`served_model`). 단, 골드셋을 돌려 호출이 몰리자
+     폴백이 실제로 발동했다(아래 "곁가지로 드러난 문제").
+  2. **모델 티어가 낮아서** — `config.py`의 기본값은 `gemini-3.5-flash-lite`지만
+     `.env`가 `LLM_FAST_MODEL_NAME=gemini-3.5-flash`로 덮어쓰고 있었다. 기본값을
+     실제 설정으로 착각한 오독이었다.
+  3. **`location_rules.md`가 일정 발화를 커버하지 못해 `search_center`가 빠진다** —
+     "경복궁 코스/일정/근처 일정", "북촌 반나절 코스", "광화문 반나절 일정" 5종
+     전부 3회 고정으로 정확히 잡았다. 규칙 문면이 "근처/주변/지명 단독"만 열거해
+     애매하지만 모델은 문제없이 처리한다.
+  4. **조건 병합(`state_transform`)에서 값이 사라진다** — 골드셋이 채점하는 값은
+     추출 직후가 아니라 병합된 `state.user_conditions`라서 이 가설을 세웠다.
+     `POST /api/interpret`로 DEV-008과 같은 입력을 넣어 `search_center=광화문`,
+     `time_available=240`이 그대로 통과하는 것을 확인해 기각했다.
+- 검증: `verify_schedule_condition_extraction.py --repeat 3`을 변경 전후로 실행 —
+  변경 전 흔들림 1건·기대 불일치 1건에서 **변경 후 14/14 전부 고정·기대 일치**로
+  바뀌었다("반나절 일정" 360 → 240, "하루 종일" null → 480, "두세 시간"
+  150/150/180 → 120 고정). RECOMMEND 대조군 2건은 변화 없음. 전체 테스트
+  3,064건 통과(develop 머지 후), ruff 통과, 프롬프트 스냅샷 갱신.
+  골드셋(dev 35건)은 관광 API 일일 한도가 소진돼 `PLACE_PROVIDER=fake`로 대체
+  실행했고, 지표 하락(-18%p 등)은 전부 (a) Gemini 404 오류 4건 (b) fake 장소로
+  1턴째 추천이 기록되지 않아 2턴째가 MODIFY 대신 RECOMMEND로 분류된 2건으로
+  설명된다 — **정상 응답한 31건은 조건 불일치가 0건**이었고, 이번 변경이 건드린
+  필드에서 실제 불일치는 없었다.
+- 곁가지로 드러난 문제(이 결정 범위 밖): 골드셋 실행 중 `classify_intent`에서
+  Gemini가 **간헐적으로 404 NOT_FOUND**를 냈다(35건 중 4건, `attempted_models`에
+  주 모델과 폴백이 모두 있고 `served_model=None` — 두 모델 다 실패). 404는
+  결정적인 오류인데 간헐적이라는 점이 설명되지 않는다. 같은 실행에서
+  `gemini-3.5-flash` 재시도 소진 후 `gemini-2.5-flash-lite`로 폴백되는 것도
+  관측됐다 — 위 기각 가설 1이 한가할 때는 발동하지 않지만 호출이 몰리면 발동한다는
+  뜻이고, 그 경우 같은 발화가 실행마다 다른 모델로 처리된다. 별도 카드로 다룬다.
+- 남은 것:
+  - 관광 API 일일 한도가 풀린 뒤 골드셋(dev 35건)을 `--base-url` 없이 1회 재실행해
+    다중 턴까지 확인한다. 이번 대체 실행은 다중 턴 통과율을 신뢰할 수 없다.
+  - `evaluation_dev.csv`의 "반나절 = 240" 라벨은 이번에 프롬프트와 일치시켰지만,
+    팀 합의로 정한 값이 아니라 골드셋에만 있던 값이다(README: "라벨은 팀 합의로
+    검토해야 하는 기대 동작"). 다른 값이 맞다고 판단되면 프롬프트와 라벨을 함께 바꾼다.
+  - MODIFY 슬롯의 `exclude_tags` 추출(DEV-029)은 이번 범위 밖이다.
+- 상세: `backend/app/prompts/recommend/extract.md`,
+  `backend/app/prompts/recommend/meta.yaml`,
+  `backend/app/prompts/recommend/HISTORY.md`(2.5.0),
+  `backend/scripts/verify_schedule_condition_extraction.py`,
+  `backend/tests/prompts/snapshots/recommend_extract.txt`
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -4022,3 +4362,14 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-26 | D-095 신설 — 집중률 조회의 구 고정을 해제한다. `enrichment_service`가 `JONGNO_CONCENTRATION_DISTRICT_CODE`("11110")를 장소와 무관하게 넘겨 모든 조회가 종로구로 나가고 있었다. 집중률 API는 `signguCd`로 엄격하게 거른다(실측: 명동성당·덕수궁은 종로구 0건/중구 30건, 경복궁은 반대) — 매핑이 전부 종로구였던 동안만 값이 맞았다. `places.district_code`를 `StoredPlaceLocation`·`ResolvedLocation`으로 이어 날라 대상 장소의 구로 조회한다(3자리 "140" → signguCd 5자리 "11140" 변환은 `concentration_policy.concentration_signgu_code()`). **구를 모르면 종로구로 대신 묻지 않고 조회 자체를 생략한다** — 다른 구 장소는 언제나 0건이라 틀린 조회가 "정보 없음"으로 위장되기 때문이며, D-042와 같은 판단이다. 매핑 적재보다 이 변경이 먼저다: 순서를 뒤집으면 경계 근처 중구 62곳이 지금 받는 값을 잃는다(더 가까운 중구 매핑이 대체 후보 상위 3곳을 차지하는데 셋 다 종로구로 조회돼 0건). `StoredPlaceLocation`이 `domain/models.py`에 있어 D 소유로 보였으나 정의 커밋 `d6ea941`·참조처가 전부 C임을 blame으로 확인해 C 소유로 판정했다(TP-127이 반대로 적어둔 것을 정정) |
 | 2026-08-27 | D-096 신설 — 사진 검색을 인텐트·채점 밖의 독립 엔드포인트로 둔다(D-094 후속, TP-175, C). `POST /api/places/similar-by-photo` 신설. 사진은 발화가 아니라 목적이 확정된 입력이라 인텐트를 만들지 않고, 순위를 사진 유사도만으로 정해 `scoring.py`를 건드리지 않는다. `prepare()`까지만 불러 하드 필터는 태운다. 좌표계 일치를 실측으로 확인했고(로컬 CPU 재계산이 코랩 GPU 적재값과 소수점 넷째 자리까지 일치), 예열 뒤 응답 1.2초다. 후보가 최대 20곳이라는 한계가 남아 순서를 뒤집는 후속 작업이 필요하다 |
 | 2026-08-27 | D-097 신설 — 오늘 혼잡 질문에서 저장소 장소가 위치 해석에서 탈락하지 않게 한다(TP-171). "명동성당 붐벼?"가 위치 해석 단계(REALTIME_CITYDATA가 저장소 조회를 건너뜀)에서 실패해 집중률 폴백까지 못 가던 문제 — 카드는 `current_population_candidate`를 REALTIME_CITYDATA 조건에서 빼자고 제안했지만, 그대로 구현하면 지원 16개 구 밖의 실시간 인구 허브(강남역·교대역·여의도 등, 실측: 121곳 중 49곳·82곳 중 32곳)가 지역 제한에 걸려 깨지는 회귀를 실측으로 발견했다. `ResolveLocationQuery`에 `enforce_service_area` 명시 오버라이드를 추가해 저장소 우선순위와 지역 제한을 분리하는 방식으로 수정했다. 위치 해석이 완전히 실패해도 집중률 매핑 이름과 정확히 하나만 일치하면 답하는 플랜 B 폴백도 함께 추가(사용자 결정). 실제 API 8개 장소 조회로 안전 조건과 회귀 없음을 확인 |
+| 2026-08-27 | D-088 확장(2차) — place_associations 수집 범위를 서비스 지원 12개 구에서 16개 구로 확장(D-086으로 늘어난 서대문·마포·양천·강서 4개 구 반영). 코드 변경 없이 `--districts`만 넓혀 재실행, 기존 12개 구는 upsert로 유지되고 4개 구가 새로 추가됨. 원본 7,219건 → 매핑 CSV 751건 → 엣지 2,001건 실제 적재(미매칭 5,110 / 자기참조 15 / 중복 93 제외). 매칭률 27.7%로 파일럿·1차 확장과 같은 추세 유지 |
+| 2026-08-27 | D-098 신설 — 사진 검색을 채팅창에 붙이고 대화가 잡은 위치를 이어받는다(D-096 후속, TP-175, C). 입력창 왼쪽 "+" 버튼 → 사진/갤러리. `session_id`로 B의 누적 조건에서 `search_center` → `current_location` 순으로 위치를 찾고 없으면 GPS로 떨어진다. 위치가 안 풀리던 원인이 둘이었다 — 세션을 안 본 것과 `ResolveLocationTool`에 지오코딩만 넘겨 "안국역" 같은 장소명을 못 푼 것. 사진은 320px data URL로 담고(object URL은 새로고침에 무효), 결과는 가로로 늘어놓아 분위기를 한눈에 견주게 한다. 유사도는 숫자로 보여주지 않고 카드를 눌러 상세로 확인한다. 후보가 10곳 상한이라 사진마다 결과가 같은 문제는 TP-176으로 남는다 |
+| 2026-08-27 | D-099 신설 — 사진 검색은 순위를 먼저 매기고 상위 N곳만 상세를 확인한다(D-098 후속, TP-176, C). 후보를 모으고 줄 세우던 순서를 뒤집었다 — 사진 유사도는 DB 안에서 끝나 공짜이고 비싼 것은 TourAPI 상세 조회라, "어차피 보여줄 곳"에만 값을 치른다. `search_place_mood`에 좌표·반경 인자를 더하고(하버사인 직접 계산, PostGIS 없음) 상세는 `get_active_place_details`로 DB에서 읽는다. 하드 필터는 `prepare_recommendation_from_context()`를 그대로 재사용해 추천과 판정이 갈리지 않게 했다. 안국역 반경 2km 실측으로 후보 7 → 40곳, 응답 1.2 → 0.65초, TourAPI 10 → 0회. 사진마다 다른 결과가 나온다(상가·공원·한옥건물로 갈림) |
+| 2026-08-27 | D-100 신설 — INFO 장소 되묻기에 편집거리 매칭·후보 버튼·상태 저장 이어받기 추가. "성수 카페거리 주차장 정보"가 INFO에서 버튼 없이 되묻던 버그 — 지역 검색이 실제로 "성수동카페거리"(명소 카테고리)를 찾아주는데 "동" 한 글자 차이로 후보를 못 좁혔고(→ 역/명소류만 편집거리 1 이내면 채택하는 4번째 매칭 단계 추가), `agent_context/service.py`가 찾은 후보를 `candidates=[]`로 항상 버리고 있었다(→ 실제 후보를 담고, question_type별 가용성(집중률 매핑/실시간 인구·상권 반경/저장소 존재)으로 필터링). INFO도 RECOMMEND처럼 `NEEDS_CLARIFICATION` + 버튼으로 뜨게 했고, INFO는 question_type 등 원래 질문을 세션에 저장하지 않아 버튼 클릭 시 재분류되던 문제를 `AgentState.pending_info_context` 신설로 해결(사용자 결정: 재분류 대신 상태 저장). Supabase `agent_states`에 `pending_info_context` 컬럼 마이그레이션 포함 |
+| 2026-08-27 | D-101 신설 — 공영/시영주차장을 명시한 질문을 `realtime_public_parking`으로 분리. `GetParkingInfo`의 구 단위 최신 주차 대수와 한 번 지오코딩한 좌표 카탈로그를 연결하고, 일반 근처 주차장(`realtime_parking`)은 기존 도시데이터의 공영·민영 혼합 목록을 유지 |
+
+| 2026-08-27 | D-102 신설 — 답변 뒤에 후속 질문을 버튼으로 제안한다(C). 턴이 끝난 뒤 `follow_up.suggest` 프롬프트로 다음 발화 후보 0~3개를 받아 `AgentResponse.suggested_follow_ups`에 싣고, 버튼을 누르면 **그 문구를 그대로 `user_input`으로 재전송**한다 — 되묻기 버튼(D-053 계열, `clarification_choice`로 Intent를 못 박음)과 반대 방향이라 같은 메커니즘을 쓰지 않는다. 답변 생성 LLM 호출에 필드를 얹지 않고 별도 호출로 뺀 이유는 답변 경로가 인텐트마다 다르고(GENERAL/INFO/COMPARE만 LLM 자유 생성, RECOMMEND는 고정 wrapper, SCHEDULE·OUT_OF_SCOPE는 템플릿) 그중 셋이 텍스트를 스트리밍하기 때문 — 같은 호출에서 JSON을 받으려면 스트리밍을 포기해야 한다. SSE 경로에서는 답변이 이미 화면에 다 뜬 뒤에 도는 호출이라 체감 지연이 늘지 않는다. 모델이 없는 기능을 권하지 않도록 `follow_up/capability_rules.md`에 실제 처리 가능한 요청 목록을 싣고, 개수·길이·중복·직전 발화 반복은 `follow_up_suggester.py`가 코드로 다시 검사한다(프롬프트 지시는 부탁, 코드 검사가 계약). 되묻기 턴과 OUT_OF_SCOPE 턴은 제안하지 않고, 호출이 실패하면 빈 목록으로 낮춘다 — 이미 확정된 답변을 버튼 때문에 실패시키지 않는다 |
+| 2026-08-27 | D-102 후속 — 후속 질문을 `done` 뒤 별도 SSE 이벤트로 뺀다. Runtime 안에서 만들면 그 호출이 끝날 때까지 `done`이 안 나가는데, 그 시간에는 답변과 카드가 이미 화면에 다 떠 있어서 그 아래 로딩 말풍선이 한 번 더 뜬 것처럼 보였다(실사용 지적). `run_agent(generate_follow_ups=False)`로 SSE 경로만 생성을 끄고, 라우트가 `done`을 먼저 내보내 턴을 끝낸 뒤 `follow_ups` 이벤트를 이어 보낸다 — 화면은 로딩을 감추고 입력창을 푼 상태에서 버튼만 늦게 받는다. 답변 LLM 호출에 필드를 얹는 안은 버렸다: GENERAL·INFO·COMPARE는 답변을 스트리밍해서 같은 호출로 JSON을 받으려면 스트리밍을 포기해야 하고, RECOMMEND·SCHEDULE은 답변이 고정 문구·템플릿이라 얹을 호출이 아예 없다. 단발 `POST /api/chat`은 나눠 보낼 스트림이 없어 지금처럼 응답 안에 담는다. 후속 질문 입력은 번역 전 한국어 사본(`runtime_response`)을 쓰고 결과만 다시 영어로 옮긴다 |
+| 2026-08-27 | D-103 신설 — Gemini 타임아웃을 전송 계층과 무관하게 잡는다. INFO 답변 스트림이 타임아웃하자 모델 폴백도, `AppError` 변환도 못 하고 턴 전체가 죽었다(C가 이미 가져온 장소 정보까지 함께 버려졌다). 원인은 `except httpx.TimeoutException`이 **죽은 코드**였다는 것 — google-genai는 `aiohttp`를 임포트할 수 있으면 그쪽으로 요청을 보내는데(`_use_aiohttp()`), aiohttp는 이 프로젝트의 의존성이 아니라 환경에 따라 다른 패키지(kubernetes, langchain-community)가 딸려 들여올 뿐이라 **어느 전송 계층으로 나가는지가 머신마다 다르다.** aiohttp는 `asyncio.TimeoutError`를, httpx는 `httpx.TimeoutException`을 던지고 둘은 상속 관계가 없다. aiohttp가 없는 환경에서는 같은 코드가 멀쩡히 돌아서 테스트로도 CI로도 드러나지 않았다. `_TIMEOUT_ERRORS = (httpx.TimeoutException, TimeoutError)`로 두 곳(`_stream_text`, `_run_attempts`)과 음성 전사(`gemini_audio.py`)를 함께 고치고, 테스트를 전송 계층별로 파라미터화해 aiohttp 예외에서 실제로 재시도·폴백이 도는지 잠갔다(수정 전 `[aiohttp]` 4건 실패·`[httpx]` 4건 통과로 확인). 공유 httpx 클라이언트를 쓰는 나머지 15곳의 handler는 그대로 둔다 — 그쪽은 전송 계층이 확정돼 있다. **남은 문제 2건은 이번 범위 밖:** (a) SDK가 `HttpOptions(timeout=)`을 aiohttp `ClientTimeout(total=)`로 넣어 10초가 응답 전체에 걸린다 — 정상 스트리밍도 10초를 넘기면 중간에 끊긴다. (b) 스트림 도중 실패 시 이미 내보낸 텍스트 뒤에 고정 안내문이 통째로 덧붙는다(기존 APIError 경로에서도 일어나던 동작) |
+| 2026-08-27 | D-104 신설 — 숫자 없는 시간 표현을 `time_available` 분 단위로 고정 환산(TP-177, B). 같은 "반나절"이 발화에 지명이 있으면 240, 없으면 360으로 갈리고 "하루 종일"은 null로 떨어지던 것을 `recommend.extract` 2.4.0 → 2.5.0으로 닫았다 — 반나절/오전·오후 내내 240, 하루 종일 480, 잠깐 120, 범위 표현은 하한, 목록 밖은 null. 값은 `build_schedule_planning_instruction()`의 미지정 폴백("3~4시간 내외")과 일관되게 맞췄다. 흔들림·응답 모델·기대 일치를 따로 재는 `verify_schedule_condition_extraction.py`를 먼저 만들어 기준선을 확정한 뒤 프롬프트를 고쳤고, 그 과정에서 모델 폴백·모델 티어·`location_rules` 미커버·조건 병합 유실 네 가설을 모두 기각했다. 전후 비교 14/14 고정·기대 일치. SCHEDULE 전용 추출 슬롯은 신설하지 않았다("반나절 = 4시간"은 RECOMMEND에도 맞는 해석) |
+| 2026-08-27 | D-105 신설 — 끝나지 않던 장소 되묻기를 고친다(C). "운현궁 주차장 있어?"는 답이 나오는데 이어진 "근처 공영 주차장 자리 있어?"가 `여러 장소 중 어느 곳을 말씀하시는 건가요?`로 끝나고, "운현궁"이라고 답하면 같은 되묻기가 무한히 반복됐다. 원인은 두 겹이다 — (1) 네이버 지역검색이 "운현궁"에 **이름이 완전히 같은 후보를 3건**(중식당·궁궐·한식당) 돌려주는데, `_select_local_search_candidate`의 정확 일치 단계가 2건 이상이면 무조건 재질문으로 떨어뜨렸다. 식당·상점은 위치 후보로 쓰지 않는다는 규칙(`_is_location_pickable`)이 이미 있었지만 **되묻기 목록을 만들 때만 쓰이고 고르는 단계에서는 안 쓰였다.** (2) 그래서 뜬 되묻기는 버튼이 "운현궁" 하나뿐이었고, 그걸 누르면 같은 문자열로 같은 조회가 다시 돌아 같은 화면이 나왔다 — **답이 질문과 같아 입력이 하나도 바뀌지 않는다.** 정확 일치가 여러 건이면 pickable로 한 번 걸러 하나만 남을 때 그것을 고르고(걸러도 2건 이상이면 그대로 재질문), 후보 하나의 이름이 질의와 같으면 되묻지 않고 그것으로 해결한다. **후보 이름이 질의와 다르면 그대로 되묻는다** — "종각역"에 후보가 "종각역 1호선" 하나뿐인 경우는 답이 질의와 달라 다음 턴에 풀리므로, 첫 후보를 임의로 고르지 않는다는 이 파일의 원칙을 지킨다(넓게 고쳤다가 기존 테스트 2건이 깨져 좁혔다). 첫 질문만 됐던 이유는 `question_type`에 따라 목적이 갈려서다 — `parking`은 PLACE_IDENTITY라 저장소에서 `서울 운현궁`을 찾지만, `realtime_public_parking`은 REALTIME_CITYDATA라 저장소 조회를 건너뛴다(execute():385). 그 건너뛰기 자체는 그대로 두었다. **남은 문제:** 이름이 같은 서로 다른 장소가 둘 이상이면 여전히 되묻고 그 되묻기는 여전히 반복될 수 있다 — 저장소에도 제목이 같은 행이 20건 넘게 있다(`익선동 한옥거리`, `커먼그라운드` 등). "같은 이름의 다른 장소를 무엇으로 가를 것인가"가 정해져야 풀리는 별개 문제다 |

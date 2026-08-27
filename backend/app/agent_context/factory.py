@@ -15,6 +15,8 @@ from app.providers.factory import (
     get_holiday_provider,
     get_info_place_detail_provider,
     get_local_search_provider,
+    get_municipal_parking_catalog_repository,
+    get_municipal_parking_provider,
     get_place_details_provider,
     get_place_location_repository,
     get_place_search_provider,
@@ -26,6 +28,7 @@ from app.providers.factory import (
 from app.tools.concentration import GetConcentrationTool
 from app.tools.festival import GetFestivalsTool
 from app.tools.holiday import GetHolidaysTool
+from app.tools.municipal_parking import GetMunicipalParkingTool
 from app.tools.nearby_place_details import NearbyPlaceDetailsTool
 from app.tools.place_detail import GetPlaceDetailTool
 from app.tools.realtime_citydata import GetRealtimeCityDataTool
@@ -57,6 +60,8 @@ def get_context_provider(client: httpx.AsyncClient) -> ContextService:
             festivals=GetFestivalsTool(get_festival_provider(client)),
             realtime_commercial=GetRealtimeCommercialTool(get_realtime_commercial_provider(client)),
             realtime_citydata=GetRealtimeCityDataTool(get_realtime_citydata_provider(client)),
+            municipal_parking=GetMunicipalParkingTool(get_municipal_parking_provider(client)),
+            municipal_parking_catalog=get_municipal_parking_catalog_repository(client),
             # COMPARE의 place_id → 장소명 해석. 추천 카드와 같은 Tool을 공유한다.
             cards=get_recommendation_card_tool(client),
         ),

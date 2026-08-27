@@ -17,6 +17,7 @@ import {
   type ReactNode,
 } from "react";
 import type {
+  PhotoSimilarPlace,
   AgentProgressEvent,
   AgentResponse,
   AgentStageTiming,
@@ -126,6 +127,8 @@ type TripAction =
         conditions: InterpretedConditions | null;
       };
     }
+  /* done 뒤에 도착하는 후속 질문 버튼. 턴은 이미 끝나 있다. */
+  | { type: "APPEND_FOLLOW_UP_SUGGESTIONS"; payload: { suggestions: string[] } }
   | {
       type: "APPEND_FAILED_CHAT_TURN";
       payload: {
@@ -142,6 +145,20 @@ type TripAction =
       type: "APPEND_SESSION_STATUS";
       payload: { userInput: string; status: SessionContextResponse | null; error: string | null };
     }
+  /* 사진을 고른 즉시. 결과를 기다리는 동안 사진과 "찾는 중"을 먼저 보여준다. */
+  | { type: "START_PHOTO_SIMILAR"; payload: { messageId: string; imageUrl: string | null } }
+  | {
+      type: "RESOLVE_PHOTO_SIMILAR";
+      payload: {
+        messageId: string;
+        centerName: string;
+        places: PhotoSimilarPlace[];
+        candidateCount: number;
+        elapsedMs: number;
+      };
+    }
+  /* 검색이 실패했을 때. 사진 말풍선을 남겨두면 영원히 "찾는 중"이 된다. */
+  | { type: "FAIL_PHOTO_SIMILAR"; payload: { messageId: string } }
   | { type: "SET_ERROR"; payload: string }
   | { type: "CLEAR_ERROR" }
   | { type: "SNOOZE_LOCATION_REFRESH"; payload: { until: number } }
@@ -305,8 +322,11 @@ function tripReducer(state: TripState, action: TripAction): TripState {
           action.payload.deviceLocationCapturedAt != null
             ? null
             : state.device_location_snoozed_until,
+        // 옛 턴의 후속 질문 버튼은 새 발화가 나가는 순간 걷어낸다. 남겨두면 대화를
+        // 위로 올렸을 때 어느 답변에 대한 제안인지 알 수 없고, 지난 답변 기준의
+        // 문구를 눌러 지금 맥락과 어긋난 요청이 나간다.
         messages: [
-          ...state.messages,
+          ...state.messages.filter((message) => message.type !== "follow_up_suggestions"),
           { id: createMessageId("user"), type: "user_text", text: action.payload.userInput },
         ],
         phase: "recommending",
@@ -473,6 +493,13 @@ function tripReducer(state: TripState, action: TripAction): TripState {
           assistantMessage: response.message,
         });
       }
+      if (response.suggested_follow_ups && response.suggested_follow_ups.length > 0) {
+        trailingMessages.push({
+          id: createMessageId("follow-up"),
+          type: "follow_up_suggestions",
+          suggestions: response.suggested_follow_ups,
+        });
+      }
       const messages = [...streamedMessages, ...trailingMessages];
       return {
         ...state,
@@ -573,6 +600,14 @@ function tripReducer(state: TripState, action: TripAction): TripState {
           assistantMessage: message,
         });
       }
+      const followUps = action.payload.agentResponse.suggested_follow_ups;
+      if (followUps && followUps.length > 0) {
+        messages.push({
+          id: createMessageId("follow-up"),
+          type: "follow_up_suggestions",
+          suggestions: followUps,
+        });
+      }
 
       const shownIds = recommendations
         ? [...recommendations.recommendations, ...recommendations.unverified_recommendations].map(
@@ -619,6 +654,22 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         error: null,
       };
     }
+    case "APPEND_FOLLOW_UP_SUGGESTIONS": {
+      if (action.payload.suggestions.length === 0) return state;
+      return {
+        ...state,
+        // 이 턴에 이미 붙은 버튼이 있으면 갈아끼운다. 단발 /api/chat 폴백은 응답
+        // 안에 문구를 실어 보내므로, 두 경로가 겹쳐 두 벌이 쌓이는 것을 막는다.
+        messages: [
+          ...state.messages.filter((message) => message.type !== "follow_up_suggestions"),
+          {
+            id: createMessageId("follow-up"),
+            type: "follow_up_suggestions",
+            suggestions: action.payload.suggestions,
+          },
+        ],
+      };
+    }
     case "APPEND_FAILED_CHAT_TURN": {
       const auditTurn: DeveloperAuditTurn = {
         id: createMessageId("audit-error"),
@@ -651,6 +702,47 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         error: action.payload.message,
       };
     }
+    case "START_PHOTO_SIMILAR":
+      return {
+        ...state,
+        messages: [
+          // 사진 검색도 새 턴이다 — START_CHAT_TURN과 같은 이유로 옛 제안을 걷어낸다.
+          ...state.messages.filter((message) => message.type !== "follow_up_suggestions"),
+          {
+            id: action.payload.messageId,
+            type: "photo_similar_result",
+            imageUrl: action.payload.imageUrl,
+            status: "loading",
+            centerName: "",
+            places: [],
+            candidateCount: 0,
+            elapsedMs: 0,
+          },
+        ],
+      };
+    case "RESOLVE_PHOTO_SIMILAR":
+      return {
+        ...state,
+        messages: state.messages.map((message) =>
+          message.id === action.payload.messageId && message.type === "photo_similar_result"
+            ? {
+                ...message,
+                status: "done",
+                centerName: action.payload.centerName,
+                places: action.payload.places,
+                candidateCount: action.payload.candidateCount,
+                elapsedMs: action.payload.elapsedMs,
+              }
+            : message,
+        ),
+      };
+    case "FAIL_PHOTO_SIMILAR":
+      /* 실패한 사진 말풍선은 지운다. 오류는 배너가 따로 알린다 — 말풍선을
+         남기면 무엇이 잘못됐는지 모른 채 사진만 덩그러니 남는다. */
+      return {
+        ...state,
+        messages: state.messages.filter((message) => message.id !== action.payload.messageId),
+      };
     case "APPEND_SESSION_STATUS":
       return {
         ...state,

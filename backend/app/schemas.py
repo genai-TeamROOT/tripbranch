@@ -363,6 +363,8 @@ class QuestionType(StrEnum):
     # 혼잡도가 아니라, 매장 좌표와 가까운 제공 상권의 대체 정보다.
     REALTIME_COMMERCIAL = "realtime_commercial"
     REALTIME_PARKING = "realtime_parking"
+    # 공영/시영을 명시한 질문은 GetParkingInfo의 구 단위 최신 대수 경로를 쓴다.
+    REALTIME_PUBLIC_PARKING = "realtime_public_parking"
     REALTIME_SUBWAY = "realtime_subway"
     REALTIME_BUS = "realtime_bus"
     REALTIME_EVENT = "realtime_event"
@@ -1082,6 +1084,13 @@ class AgentResponse(BaseModel):
     message_footnote: str | None = None
     # 개발자용 Audit에서 1차 Intent/2차 추출 호출의 실제 Gemini 모델·폴백 경로를
     # 확인한다. Fake LLM 등 실행 메타데이터를 제공하지 않는 구현체에서는 None이다.
+    # 이 턴 뒤에 버튼으로 보여줄 다음 발화 후보(0~3개). 버튼을 누르면 이 문구가
+    # **그대로 user_input으로 재전송된다** — 되묻기 버튼(ClarificationPayload.options)이
+    # id로 Intent를 못 박는 것과 다르다. 그쪽은 서버가 모르는 것을 물어 결정적으로
+    # 분기하는 자리이고, 이쪽은 답변이 이미 끝난 뒤 다음 발화를 깔아주는 자리라
+    # 사용자가 직접 입력한 것과 같은 경로를 타야 한다.
+    # 만들지 못했거나 만들 게 없으면 빈 목록이고, 화면은 버튼을 띄우지 않는다.
+    suggested_follow_ups: list[str] = Field(default_factory=list)
     llm_execution: LLMExecutionMetadata | None = None
     # 개발자용 Audit에서 C가 실제로 호출한 Provider·항목별 상태를 확인한다.
     # C 단계에 도달하지 못한 요청(LLM 실패, needs_clarification 등)에서는 None이다.

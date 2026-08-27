@@ -1,17 +1,22 @@
 """올린 사진과 분위기가 닮은 장소를 찾는 서비스.
 
-역할: 위치 해석 → 주변 장소 조회 → 하드 필터 → 사진 유사도 순위.
+역할: 위치 해석 → 사진 유사도 순위 → 상세 확인 → 하드 필터.
 
-`build_recommendations`(services/recommendations.py)와 앞부분이 같고 **마지막만
-다르다.** 저쪽은 `score_prepared_recommendation()`으로 거리·취향·혼잡도를 섞어
-점수를 내고, 이쪽은 그 단계를 건너뛰고 사진 유사도만으로 줄을 세운다.
+**순서가 추천과 반대다.** 추천은 후보를 먼저 모으고 점수를 내지만, 사진 검색은
+먼저 줄을 세우고 상위 N곳만 상세를 확인한다.
 
-  기존:  위치 → 장소 → prepare() → score_prepared()
-  사진:  위치 → 장소 → prepare() → search_by_photo()
+  추천:   위치 → 장소 조회(상세 포함) → prepare() → score_prepared()
+  사진:   위치 → 사진 순위(DB) → 상위 N곳 상세 → prepare()
 
-`prepare()`까지만 부르는 이유는 **하드 필터가 필요하기 때문이다.** 지금 닫힌
-가게가 1등으로 나오면 쓸모가 없다. 채점은 필요 없지만 "갈 수 있는 곳인가"는
-사진 경로에서도 똑같이 물어야 한다.
+**왜 뒤집었나.** 장소 조회는 후보마다 상세가 붙어 최대 20곳이다
+(MAX_RECOMMENDATION_CANDIDATE_LIMIT). 2,009곳을 적재해 두고 20곳 안에서만
+고르면 어떤 사진을 올려도 같은 대여섯 곳이 순서만 바뀐다. 사진 유사도는 DB
+안에서 끝나 사실상 공짜이므로, 반경 안 전부를 먼저 줄 세우고 비싼 상세 조회를
+"어차피 보여줄 곳"에만 쓴다.
+
+**하드 필터 판정은 직접 하지 않는다.** `prepare_recommendation_from_context()`를
+그대로 태운다 — 영업시간 해석을 여기서 새로 만들면 같은 장소가 추천에서는
+열렸는데 사진 검색에서는 닫힌 것으로 갈릴 수 있다.
 
 **날씨는 조회하지 않는다.** 날씨는 채점(실내외 선호)에만 쓰이고 하드 필터는
 영업시간·이미 본 곳·거절한 곳만 본다. 후보 매핑도 `context.weather`를 읽지
@@ -25,23 +30,23 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
-from app.agent_context.mappers import map_location_context, map_places_context
-from app.agent_context.schemas import RecommendationContext
-from app.config import settings
+from app.agent_context.mappers import map_location_context
+from app.agent_context.schemas import (
+    ContextValue,
+    Coordinates,
+    PlaceCandidate,
+    RecommendationContext,
+)
 from app.errors import AppError
 from app.place_search_policy import DEFAULT_PLACE_SEARCH_RADIUS_KM
 from app.providers.contracts import ProviderMetadata, ProviderSource, ProviderStatus
 from app.providers.protocols import GeocodingProvider, PlaceProvider
 from app.services.recommendation_pipeline import prepare_recommendation_from_context
 from app.tools.contracts import ToolStatus
-from app.tools.nearby_place_details import (
-    NearbyPlaceDetailsQuery,
-    NearbyPlaceDetailsTool,
-)
 from app.tools.resolve_location import (
     LocationPurpose,
     LocationSource,
@@ -55,9 +60,10 @@ from app.tools.resolve_location import (
 
 _KST = ZoneInfo("Asia/Seoul")
 
-# search_place_mood RPC가 강제하는 후보 상한. 넘으면 저장소가 에러를 던지므로
-# 여기서 앞에서부터 자른다. 후보는 거리순으로 와서 앞쪽이 더 가깝다.
-_MAX_CANDIDATES = 500
+# 보여줄 수보다 몇 배를 먼저 받을지. 상위 N곳 중 상당수가 영업시간에 걸려
+# 빠지기 때문이다 — 실측에서 영업 중인 비율이 20곳 중 7곳(35%)이었다.
+# 4배면 10곳을 채우는 데 40곳을 훑는 셈이고, 상세 조회는 DB라 값이 싸다.
+_OVERFETCH_FACTOR = 4
 
 
 @dataclass(frozen=True)
@@ -75,6 +81,10 @@ class PhotoSimilarQuery:
     longitude: float | None = None
     search_radius_km: float | None = None
     limit: int = 10
+    # True면 지금 닫힌 곳도 결과에 남긴다. "나중에 가볼 데"를 찾는 흐름을 위해
+    # 열어 두지만 기본은 False다 — "이 분위기 어디 있어?"에 닫힌 가게가 1등으로
+    # 나오면 쓸모가 없다.
+    ignore_operating_hours: bool = False
 
 
 @dataclass(frozen=True)
@@ -93,6 +103,9 @@ class PhotoSimilarPlaceRow:
     distance_km: float
     similarity: float
     photo_count: int
+    address: str | None = None
+    # 비교에 실제로 쓴 첫 사진. places.first_image_url과 다를 수 있다.
+    image_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -115,6 +128,9 @@ async def build_photo_similar_places(
     geocoding_provider: GeocodingProvider,
     place_provider: PlaceProvider,
     mood_provider,
+    details_repository,
+    place_repository=None,
+    local_search_provider=None,
 ) -> PhotoSimilarResult:
     """위치 해석부터 사진 순위까지 한 번에 실행한다."""
     if not query.image_bytes:
@@ -134,68 +150,100 @@ async def build_photo_similar_places(
             retryable=False,
         )
 
-    center = await _resolve_center(query, geocoding_provider)
+    center = await _resolve_center(
+        query, geocoding_provider, place_repository, local_search_provider
+    )
     # 반경을 안 주면 추천과 같은 기본값을 쓴다 — 사진 검색만 다른 범위를 보면
     # "추천에는 나왔는데 사진으로는 안 나온다"가 생긴다.
     radius_km = query.search_radius_km or DEFAULT_PLACE_SEARCH_RADIUS_KM
     visit_at = datetime.now(_KST)
 
-    places_result = await NearbyPlaceDetailsTool(place_provider, place_provider).execute(
-        NearbyPlaceDetailsQuery(
-            latitude=center.latitude,
-            longitude=center.longitude,
-            search_radius_km=radius_km,
-            limit=settings.recommendation_candidate_limit,
-            preferred_categories=(),
-            excluded_place_ids=frozenset(),
-        )
+    # ── 1단계: 반경 안 전부를 사진 유사도로 줄 세운다 ──────────────────
+    # DB 안에서 끝나 사실상 공짜다. 보여줄 수보다 넉넉히 받는 이유는 다음
+    # 단계에서 영업시간으로 걸러지기 때문이다 — 실측에서 영업 중인 비율이
+    # 20곳 중 7곳(35%)이었다.
+    ranked = await mood_provider.search_by_photo(
+        query.image_bytes,
+        None,
+        latitude=center.latitude,
+        longitude=center.longitude,
+        radius_km=radius_km,
+        match_count=query.limit * _OVERFETCH_FACTOR,
     )
+    if not ranked.data:
+        return PhotoSimilarResult(
+            places=(),
+            center_name=center.name,
+            center_latitude=center.latitude,
+            center_longitude=center.longitude,
+            candidate_count=0,
+            truncated_count=0,
+        )
 
+    # ── 2단계: 상위 N곳만 상세를 확인한다 ─────────────────────────────
+    # 비싼 조회를 "어차피 보여줄 곳"에만 쓴다. 순서를 뒤집기 전에는 후보를
+    # 만들려고 상세를 먼저 다 조회해, 결과에 안 나갈 곳까지 값을 치렀다.
+    top_ids = [match.content_id for match in ranked.data]
+    details = await details_repository.get_active_place_details(top_ids)
+
+    # ── 3단계: 하드 필터 ─────────────────────────────────────────────
+    # **판정을 직접 하지 않는다.** prepare_recommendation_from_context()를 그대로
+    # 태워 추천 경로와 같은 규칙을 쓴다 — 영업시간 해석을 여기서 새로 만들면
+    # 같은 장소가 추천에서는 열렸는데 사진 검색에서는 닫힌 것으로 갈릴 수 있다.
     context = RecommendationContext(
         location=map_location_context(center.result),
-        places=map_places_context(places_result),
+        places=_places_context(ranked.data, details),
         # 날씨는 싣지 않는다 — 위 모듈 문서 참고.
     )
-    prepared = await prepare_recommendation_from_context(context, visit_at=visit_at)
-    place_ids = [
-        item.candidate.place_id for item in prepared.preparation.eligible_candidates
-    ]
-
-    truncated = max(0, len(place_ids) - _MAX_CANDIDATES)
-    if truncated:
-        place_ids = place_ids[:_MAX_CANDIDATES]
-
-    result = await mood_provider.search_by_photo(query.image_bytes, place_ids)
-
-    # content_id → 후보. 사진 검색은 유사도만 주므로 이름을 여기서 붙인다.
-    by_id = {
-        item.candidate.place_id: item.candidate
-        for item in prepared.preparation.eligible_candidates
-    }
-    places = tuple(
-        PhotoSimilarPlaceRow(
-            content_id=match.content_id,
-            name=candidate.name,
-            category=candidate.category,
-            distance_km=candidate.distance_km,
-            similarity=match.similarity,
-            photo_count=match.profile.photo_count,
-        )
-        for match in result.data[: query.limit]
-        # 후보에 없는 content_id가 오면 건너뛴다. 후보를 좁혀 부르므로 정상적으로는
-        # 일어나지 않지만, 조용히 이름 없는 카드를 내보내는 것보다 빠뜨리는 편이 낫다.
-        if (candidate := by_id.get(match.content_id)) is not None
+    prepared = await prepare_recommendation_from_context(
+        context,
+        visit_at=visit_at,
+        ignore_operating_hours=query.ignore_operating_hours,
     )
+    open_ids = {
+        item.candidate.place_id for item in prepared.preparation.eligible_candidates
+    }
+    skipped_closed = len(top_ids) - len(open_ids)
+
+    # ── 4단계: 사진 순위 그대로 상위 N곳만 남긴다 ─────────────────────
+    # prepared는 후보를 다시 정렬하지 않지만, 순서를 ranked에서 가져와야 사진
+    # 유사도 순서가 유지된다.
+    rows: list[PhotoSimilarPlaceRow] = []
+    for match in ranked.data:
+        if match.content_id not in open_ids:
+            continue
+        detail = details.get(match.content_id)
+        if detail is None:
+            continue
+        rows.append(
+            PhotoSimilarPlaceRow(
+                content_id=match.content_id,
+                name=detail.title or match.content_id,
+                category=detail.content_type_id,
+                distance_km=match.distance_km or 0.0,
+                similarity=match.similarity,
+                photo_count=match.profile.photo_count,
+                address=detail.address,
+            )
+        )
+        if len(rows) >= query.limit:
+            break
+
+    # ── 5단계: 보여줄 것만 사진 주소를 붙인다 ─────────────────────────
+    photo_urls = await mood_provider.first_photo_urls([row.content_id for row in rows])
+    places = [replace(row, image_url=photo_urls.get(row.content_id)) for row in rows]
 
     return PhotoSimilarResult(
-        places=places,
+        places=tuple(places),
         center_name=center.name,
         center_latitude=center.latitude,
         center_longitude=center.longitude,
-        candidate_count=len(place_ids),
-        truncated_count=truncated,
+        # 사진으로 줄 세운 뒤 상세를 확인한 곳의 수. 0이면 반경 안에 사진 벡터가
+        # 있는 장소 자체가 없었다는 뜻이다.
+        candidate_count=len(ranked.data),
+        # 영업시간에 걸려 빠진 수. 결과가 적을 때 왜인지 알 수 있어야 한다.
+        truncated_count=skipped_closed,
     )
-
 
 @dataclass(frozen=True)
 class _Center:
@@ -208,14 +256,25 @@ class _Center:
 async def _resolve_center(
     query: PhotoSimilarQuery,
     geocoding_provider: GeocodingProvider,
+    place_repository=None,
+    local_search_provider=None,
 ) -> _Center:
     """기준점을 정한다. 지역명이 있으면 그것이 이긴다.
 
     사용자가 지역을 적었으면 GPS를 무시한다 — 명시한 쪽이 의도이고, 좌표는
     적지 않았을 때의 기본값이다(agent_context/service.py와 같은 우선순위).
+
+    **저장소와 지역 검색을 함께 넘긴다.** 지오코딩만으로는 주소만 풀린다 —
+    "안국역"처럼 장소명으로 말한 위치는 지역 검색이 담당하고, 저장된 장소는
+    저장소가 먼저 답한다. 셋을 다 넘기지 않으면 채팅 경로에서는 되는 위치가
+    사진 경로에서만 실패한다(2026-08-27에 실제로 그랬다).
     """
     if query.location_query:
-        result = await ResolveLocationTool(geocoding_provider).execute(
+        result = await ResolveLocationTool(
+            geocoding_provider,
+            place_repository=place_repository,
+            local_search_provider=local_search_provider,
+        ).execute(
             ResolveLocationQuery(
                 query.location_query, purpose=LocationPurpose.SEARCH_CENTER
             )
@@ -274,3 +333,27 @@ def _gps_location_result(latitude: float, longitude: float) -> ResolveLocationRe
             ),
         ),
     )
+
+
+def _places_context(matches, details):
+    """사진 순위 결과를 하드 필터가 읽는 Context 모양으로 옮긴다.
+
+    좌표는 싣지 않는다 — `prepare()`가 거리 점수를 내는 데 쓰지만 사진 검색은
+    채점을 타지 않고, 순위는 이미 사진 유사도로 정해져 있다.
+    """
+    places = [
+        PlaceCandidate(
+            place_id=match.content_id,
+            name=detail.title or match.content_id,
+            category=detail.content_type_id,
+            location=Coordinates(
+                latitude=detail.latitude or 0.0,
+                longitude=detail.longitude or 0.0,
+            ),
+            operating_hours_raw=detail.operating_hours_raw,
+            rest_date_raw=detail.rest_date_raw,
+        )
+        for match in matches
+        if (detail := details.get(match.content_id)) is not None
+    ]
+    return ContextValue(status="success", data=places or [])

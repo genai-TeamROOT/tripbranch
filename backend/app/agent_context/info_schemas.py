@@ -39,6 +39,7 @@ InfoQuestionType = Literal[
     "concentration",
     "realtime_commercial",
     "realtime_parking",
+    "realtime_public_parking",
     "realtime_subway",
     "realtime_bus",
     "realtime_event",
@@ -186,7 +187,12 @@ class RealtimeCityInfoResult(BaseModel):
 
     status: Literal["success", "no_data", "unavailable"]
     question_type: Literal[
-        "realtime_parking", "realtime_subway", "realtime_bus", "realtime_event", "realtime_traffic"
+        "realtime_parking",
+        "realtime_public_parking",
+        "realtime_subway",
+        "realtime_bus",
+        "realtime_event",
+        "realtime_traffic",
     ]
     requested_place_name: str | None = None
     resolved_place_name: str | None = None

@@ -543,8 +543,17 @@ class SupabasePlaceRepository:
         *,
         match_count: int,
         min_similarity: float,
+        latitude: float | None = None,
+        longitude: float | None = None,
+        radius_km: float | None = None,
     ) -> tuple[PlaceMoodMatch, ...]:
         """올린 사진의 벡터로 분위기가 닮은 장소를 찾는다.
+
+        **좌표와 반경을 주면 DB가 직접 좁힌다.** 후보 목록을 만들어 넘기려면
+        TourAPI 상세 조회를 거쳐야 해 최대 20곳인데, 반경으로 좁히면 그 안
+        전부를 줄 세운다. 사진 유사도는 DB 안에서 끝나 사실상 공짜다.
+
+        둘 다 주면 교집합이고, 좌표만 주면 반경, 후보만 주면 그 목록이다.
 
         `candidate_content_ids`가 None이면 적재된 전체에서 찾는다. 빈 배열은
         None과 다르게 다뤄 빈 결과를 돌려준다 — 후보를 좁히려다 전부 걸러진
@@ -573,12 +582,54 @@ class SupabasePlaceRepository:
                 "p_candidate_content_ids": payload_ids,
                 "p_match_count": match_count,
                 "p_min_similarity": min_similarity,
+                "p_latitude": latitude,
+                "p_longitude": longitude,
+                "p_radius_km": radius_km,
             },
         )
         payload = self._json(response)
         if not isinstance(payload, list):
             raise SupabaseRepositoryError("invalid search_place_mood response")
         return tuple(_to_mood_match(row) for row in payload)
+
+    async def find_first_photo_urls(
+        self,
+        content_ids: Sequence[str],
+    ) -> dict[str, str]:
+        """장소별 첫 사진의 관광공사 원본 주소.
+
+        **비교에 실제로 쓴 사진이다.** `places.first_image_url`과 다르다 —
+        2,008곳 중 1,163곳이 서로 다른 주소다(2026-08-27 실측). 대표 이미지를
+        보여주면 "우리가 비교한 사진"이 아닌 것을 보여주는 셈이고, 사용자가
+        분위기가 맞는지 확인하려는 화면에서 그건 틀린 근거가 된다.
+
+        `photo_order = 1`만 읽는다. detailImage2가 준 순서 그대로이고 관광공사가
+        대표성 높은 사진을 앞에 주므로 1이 가장 대표적이다.
+        """
+        unique_ids = list(dict.fromkeys(content_ids))
+        if not unique_ids:
+            return {}
+
+        urls: dict[str, str] = {}
+        for start in range(0, len(unique_ids), _MOOD_PROFILE_CHUNK_SIZE):
+            chunk = unique_ids[start : start + _MOOD_PROFILE_CHUNK_SIZE]
+            response = await self._request(
+                "GET",
+                "/place_image_embeddings",
+                params={
+                    "select": "content_id,origin_url",
+                    "content_id": "in.(" + ",".join(chunk) + ")",
+                    "photo_order": "eq.1",
+                    "limit": str(_MOOD_PROFILE_CHUNK_SIZE),
+                },
+            )
+            payload = self._json(response)
+            if not isinstance(payload, list):
+                raise SupabaseRepositoryError("invalid place_image_embeddings response")
+            for row in payload:
+                if isinstance(row, Mapping) and row.get("origin_url"):
+                    urls[str(row["content_id"])] = str(row["origin_url"])
+        return urls
 
 
     async def create_sync_run(self, area_code: str, district_code: str) -> UUID:
@@ -1651,8 +1702,10 @@ def _to_mood_profile(row: object) -> PlaceMoodProfile:
 def _to_mood_match(row: object) -> PlaceMoodMatch:
     if not isinstance(row, Mapping):
         raise SupabaseRepositoryError("invalid mood match row")
+    distance = row.get("distance_km")
     return PlaceMoodMatch(
         content_id=str(row["content_id"]),
         similarity=float(row["similarity"]),
         profile=_to_mood_profile(row),
+        distance_km=float(distance) if distance is not None else None,
     )

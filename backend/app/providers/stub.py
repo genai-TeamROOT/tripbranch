@@ -756,8 +756,11 @@ class FakeLLMProvider:
             marker in user_input for marker in ("정류장", "어디", "언제", "도착")
         ):
             question_type = QuestionType.REALTIME_BUS
-        elif "주차" in user_input and any(
-            marker in user_input for marker in ("지금", "현재", "실시간", "자리", "빈자리")
+        elif "주차" in user_input and any(marker in user_input for marker in ("공영", "시영")):
+            question_type = QuestionType.REALTIME_PUBLIC_PARKING
+        elif "주차" in user_input and (
+            any(marker in user_input for marker in ("지금", "현재", "실시간", "자리", "빈자리"))
+            or any(marker in user_input for marker in ("근처", "주변", "어디"))
         ):
             question_type = QuestionType.REALTIME_PARKING
         elif ("행사" in user_input or "축제" in user_input) and any(
@@ -919,6 +922,48 @@ class FakeLLMProvider:
             f"{first.name}을(를) 중심으로 지금 가볼 만한 곳을 골라봤어요.",
             source=ProviderSource.FAKE_LLM,
         )
+
+    async def generate_follow_up_suggestions(
+        self,
+        *,
+        user_input: str,
+        intent: Intent,
+        assistant_message: str,
+        place_names: list[str],
+        search_place: str | None,
+        transport: str | None,
+        max_suggestions: int,
+        max_label_length: int,
+    ) -> ProviderResult[list[str]]:
+        """후속 질문 제안의 테스트용 결정적 대체 구현.
+
+        **호출부가 실제로 읽는 것을 채운다.** 빈 목록을 돌려주면 소비 측
+        (`follow_up_suggester.py`)의 정제·상한 로직이 한 줄도 안 돌면서 테스트는
+        통과한다. 그래서 여기서는 이번 턴에 나간 장소 이름을 실제로 써서 문구를
+        만들고, 상한을 넘는 개수를 일부러 반환한다 — 호출부가 자르는지 확인된다.
+        """
+
+        del assistant_message, max_label_length
+        # 혼잡도 문구에는 장소명을 반드시 넣는다 — 소비 측이 그 유무로 걸러낸다.
+        subject = place_names[0] if place_names else search_place
+        if subject and "혼잡" in user_input:
+            return provider_result(
+                [f"주말에 {subject} 많이 혼잡해?"], source=ProviderSource.FAKE_LLM
+            )
+        # 이동수단이 차면 주차 질문을 섞는다 — 소비 측이 실제로 읽는 조건이다.
+        if transport == "car" and place_names:
+            return provider_result(
+                [f"{place_names[0]} 근처에 주차할 데 있는지 알려줘"],
+                source=ProviderSource.FAKE_LLM,
+            )
+        if intent in (Intent.OUT_OF_SCOPE, Intent.GENERAL) and not place_names:
+            return provider_result(
+                ["서울에서 갈 만한 곳 추천해줘"], source=ProviderSource.FAKE_LLM
+            )
+        suggestions = [f"{name} 운영시간 알려줘" for name in place_names[:max_suggestions]]
+        suggestions.append("다른 곳도 보여줘")
+        suggestions.append("이 장소들로 일정 짜줘")
+        return provider_result(suggestions, source=ProviderSource.FAKE_LLM)
 
     async def stream_recommendation_summary(
         self, intent: Intent, recommendations: RecommendationResponse
