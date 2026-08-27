@@ -88,6 +88,22 @@ class _FollowUpSuggestions(BaseModel):
     suggestions: list[str] = Field(default_factory=list)
 
 
+# 타임아웃 예외는 **전송 계층마다 다르고, 그 계층을 우리가 고르지 않는다.**
+#
+# google-genai는 `aiohttp`를 임포트할 수 있으면 그쪽으로 요청을 보내고(`_use_aiohttp()`),
+# 아니면 httpx로 보낸다. 그런데 `aiohttp`는 이 프로젝트의 의존성이 아니다 —
+# `pyproject.toml`에 없고, 환경에 따라 다른 패키지(kubernetes, langchain-community 등)가
+# 딸려 들여올 뿐이다. 즉 **어느 쪽으로 나가는지가 그 머신에 뭐가 깔려 있느냐로 갈린다.**
+#
+# 두 라이브러리는 상속 관계가 없어서 한쪽만 잡으면 다른 쪽은 그대로 새어 나간다.
+# 2026-08-27에 `httpx.TimeoutException`만 잡고 있다가 실제로 그렇게 됐다 — aiohttp가
+# 있는 개발 머신에서 INFO 답변 스트림이 타임아웃하자 모델 폴백도, `AppError` 변환도
+# 못 하고 턴 전체가 죽었다(C가 이미 가져온 장소 정보까지 함께 버려졌다). aiohttp가 없는
+# 환경에서는 같은 코드가 멀쩡히 돌아서, 테스트로도 CI로도 드러나지 않았다.
+#
+# `asyncio.TimeoutError`는 Python 3.11+에서 builtin `TimeoutError`와 같은 객체다.
+_TIMEOUT_ERRORS = (httpx.TimeoutException, TimeoutError)
+
 # 429(rate limit)와 5xx(서버 과부하/일시 장애)만 재시도 대상. 4xx(인증 실패, 잘못된 요청 등)는
 # 재시도해도 같은 결과이므로 즉시 실패시킨다.
 _RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
@@ -663,7 +679,7 @@ class RealGeminiProvider:
                         emitted = True
                         pieces.append(text)
                         yield text
-                except httpx.TimeoutException:
+                except _TIMEOUT_ERRORS:
                     _record_gemini_call(model_name, started, ok=False, status="timeout")
                     last_error = ProviderTimeoutError("Gemini")
                     generation.record(level="ERROR", status_message="timeout")
@@ -1060,7 +1076,7 @@ class RealGeminiProvider:
                         thinking_config=thinking_config,
                     ),
                 )
-            except httpx.TimeoutException:
+            except _TIMEOUT_ERRORS:
                 _record_gemini_call(model_name, started, ok=False, status="timeout")
                 if attempt >= self._max_retries:
                     raise _RetryableExhaustedError(ProviderTimeoutError("Gemini")) from None

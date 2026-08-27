@@ -45,7 +45,9 @@ class GeminiAudioTranscriber:
                 ],
                 config=genai_types.GenerateContentConfig(temperature=0.0),
             )
-        except httpx.TimeoutException:
+        except (httpx.TimeoutException, TimeoutError):
+            # 전송 계층이 aiohttp일 수도 httpx일 수도 있어 둘 다 잡는다
+            # (gemini.py의 `_TIMEOUT_ERRORS` 주석 참고).
             _record(self.model_name, started, ok=False, status="timeout")
             raise ProviderTimeoutError("Gemini 음성 인식") from None
         except genai_errors.APIError as exc:
