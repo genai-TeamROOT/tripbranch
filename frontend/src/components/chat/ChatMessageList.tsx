@@ -20,6 +20,7 @@ import { LocationRefreshMessage } from "./LocationRefreshMessage";
 import { ConditionDebugMessage } from "./ConditionDebugMessage";
 import { FeedbackButtons } from "./FeedbackButtons";
 import { PlaceInfoCard } from "./PlaceInfoCard";
+import { PhotoSimilarResultMessage } from "./PhotoSimilarResultMessage";
 import { RecommendationResultMessage } from "./RecommendationResultMessage";
 import { ScheduleResultMessage } from "./ScheduleResultMessage";
 import { SessionStatusMessage } from "./SessionStatusMessage";
@@ -233,6 +234,19 @@ export function ChatMessageList({
                 options={message.options}
                 isLoading={isLoading}
                 onSelectOption={onSelectClarificationOption}
+              />
+            );
+          }
+
+          if (message.type === "photo_similar_result") {
+            return (
+              <PhotoSimilarResultMessage
+                key={message.id}
+                imageUrl={message.imageUrl}
+                status={message.status}
+                centerName={message.centerName}
+                places={message.places}
+                candidateCount={message.candidateCount}
               />
             );
           }

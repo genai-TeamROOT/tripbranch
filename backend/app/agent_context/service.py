@@ -1056,7 +1056,7 @@ class ContextService:
                     message="공영주차장 실시간 조회 도구가 설정되지 않았습니다.",
                     retryable=False,
                 ),
-                provider_metadata=location_metadata,
+                provider_metadata=(location_metadata,),
             )
         tool_result = await self._tools.municipal_parking.execute(MunicipalParkingQuery(district))
         if tool_result.status is ToolStatus.UNAVAILABLE:
