@@ -8,6 +8,7 @@
 
 import { useState, type FormEvent } from "react";
 import type { Language } from "../../types";
+import { PhotoInputButton } from "./PhotoInputButton";
 import { VoiceInputButton } from "./VoiceInputButton";
 
 const DEFAULT_PLACEHOLDER = "추가 조건을 입력해 주세요";
@@ -18,6 +19,11 @@ interface ChatComposerProps {
   /* 되묻기처럼 특정 형태의 답변이 필요할 때 예시 문장을 안내한다. */
   placeholder?: string;
   language?: Language;
+  /*
+   * "+" 버튼으로 고른 사진. 안 넘기면 버튼 자체를 그리지 않는다 — 붙일 곳이
+   * 준비되지 않은 화면에서 눌러도 아무 일이 없는 버튼을 보이지 않게 한다.
+   */
+  onPhotoSelect?: (file: File) => Promise<void> | void;
 }
 
 export function ChatComposer({
@@ -25,8 +31,11 @@ export function ChatComposer({
   onSubmit,
   placeholder = DEFAULT_PLACEHOLDER,
   language = "ko",
+  onPhotoSelect,
 }: ChatComposerProps) {
   const [text, setText] = useState("");
+  // 음성과 사진이 같은 자리에 오류를 띄운다. 하나만 두면 뒤에 난 오류가 앞의 것을
+  // 덮어쓰는데, 둘을 동시에 쓰는 흐름이 아니라 그 편이 자연스럽다.
   const [voiceError, setVoiceError] = useState<string | null>(null);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -41,6 +50,16 @@ export function ChatComposer({
     <div className="sticky bottom-0 bg-white py-4 dark:bg-gray-950">
       {voiceError && <p role="alert" className="mb-2 text-sm text-red-600 dark:text-red-300">{voiceError}</p>}
       <form onSubmit={handleSubmit} className="flex gap-2">
+        {onPhotoSelect && (
+          <PhotoInputButton
+            disabled={disabled}
+            onSelect={async (file) => {
+              setVoiceError(null);
+              await onPhotoSelect(file);
+            }}
+            onError={setVoiceError}
+          />
+        )}
         <input
           value={text}
           onChange={(event) => setText(event.target.value)}

@@ -69,6 +69,40 @@ test("ignores invalid storage", () => {
   expect(loadState()).toBeNull();
 });
 
+test("restores a session that contains a photo_similar_result message", () => {
+  // 위 schedule_result와 같은 회귀다 — isChatMessage()가 이 타입을 모르면 사진
+  // 검색을 한 번이라도 한 대화가 새로고침에서 통째로 사라진다.
+  const stateWithPhoto: TripState = {
+    ...state,
+    messages: [
+      ...state.messages,
+      {
+        id: "message-photo",
+        type: "photo_similar_result",
+        imageUrl: "data:image/jpeg;base64,AAAA",
+        status: "done",
+        centerName: "성수동",
+        candidateCount: 40,
+        elapsedMs: 1_180,
+        places: [
+          {
+            content_id: "2946087",
+            title: "마우스래빗",
+            similarity: 0.8939,
+            photo_count: 5,
+          },
+        ],
+      },
+    ],
+  };
+
+  saveState(stateWithPhoto);
+
+  const restored = loadState();
+  expect(restored).not.toBeNull();
+  expect(restored?.messages.at(-1)).toMatchObject({ type: "photo_similar_result" });
+});
+
 test("restores a session that contains a schedule_result message", () => {
   // isChatMessage()가 schedule_result를 몰라서 이 타입이 하나라도 있으면
   // messages.every(isChatMessage)가 실패해 세션 전체가 버려지던 회귀 테스트.

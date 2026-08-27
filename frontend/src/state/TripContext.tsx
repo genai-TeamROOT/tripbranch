@@ -17,6 +17,7 @@ import {
   type ReactNode,
 } from "react";
 import type {
+  PhotoSimilarPlace,
   AgentProgressEvent,
   AgentResponse,
   AgentStageTiming,
@@ -142,6 +143,20 @@ type TripAction =
       type: "APPEND_SESSION_STATUS";
       payload: { userInput: string; status: SessionContextResponse | null; error: string | null };
     }
+  /* 사진을 고른 즉시. 결과를 기다리는 동안 사진과 "찾는 중"을 먼저 보여준다. */
+  | { type: "START_PHOTO_SIMILAR"; payload: { messageId: string; imageUrl: string | null } }
+  | {
+      type: "RESOLVE_PHOTO_SIMILAR";
+      payload: {
+        messageId: string;
+        centerName: string;
+        places: PhotoSimilarPlace[];
+        candidateCount: number;
+        elapsedMs: number;
+      };
+    }
+  /* 검색이 실패했을 때. 사진 말풍선을 남겨두면 영원히 "찾는 중"이 된다. */
+  | { type: "FAIL_PHOTO_SIMILAR"; payload: { messageId: string } }
   | { type: "SET_ERROR"; payload: string }
   | { type: "CLEAR_ERROR" }
   | { type: "SNOOZE_LOCATION_REFRESH"; payload: { until: number } }
@@ -651,6 +666,46 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         error: action.payload.message,
       };
     }
+    case "START_PHOTO_SIMILAR":
+      return {
+        ...state,
+        messages: [
+          ...state.messages,
+          {
+            id: action.payload.messageId,
+            type: "photo_similar_result",
+            imageUrl: action.payload.imageUrl,
+            status: "loading",
+            centerName: "",
+            places: [],
+            candidateCount: 0,
+            elapsedMs: 0,
+          },
+        ],
+      };
+    case "RESOLVE_PHOTO_SIMILAR":
+      return {
+        ...state,
+        messages: state.messages.map((message) =>
+          message.id === action.payload.messageId && message.type === "photo_similar_result"
+            ? {
+                ...message,
+                status: "done",
+                centerName: action.payload.centerName,
+                places: action.payload.places,
+                candidateCount: action.payload.candidateCount,
+                elapsedMs: action.payload.elapsedMs,
+              }
+            : message,
+        ),
+      };
+    case "FAIL_PHOTO_SIMILAR":
+      /* 실패한 사진 말풍선은 지운다. 오류는 배너가 따로 알린다 — 말풍선을
+         남기면 무엇이 잘못됐는지 모른 채 사진만 덩그러니 남는다. */
+      return {
+        ...state,
+        messages: state.messages.filter((message) => message.id !== action.payload.messageId),
+      };
     case "APPEND_SESSION_STATUS":
       return {
         ...state,

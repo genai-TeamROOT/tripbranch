@@ -20,6 +20,7 @@ import { ChatMessageList } from "../components/chat/ChatMessageList";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { AuthStatusBadge } from "../auth/AuthStatusBadge";
 import { LanguageSelector } from "../components/LanguageSelector";
+import { usePhotoSimilarSearch } from "../hooks/usePhotoSimilarSearch";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import type { TravelOrigin } from "../types";
 import { buildAgentStageTimings } from "../utils/agentTiming";
@@ -233,6 +234,8 @@ export function ChatPage() {
     [dispatch, state.device_location, state.language, state.messages, state.session_id],
   );
 
+  const handlePhotoSelect = usePhotoSimilarSearch();
+
   const locationAgeMinutes = getLocationAgeMinutes(state.device_location_captured_at);
 
   const requestSend = useCallback(
@@ -381,6 +384,7 @@ export function ChatPage() {
         onSubmit={handleFollowUp}
         placeholder={state.awaiting_clarification ? text.clarificationComposer : text.composer}
         language={state.language}
+        onPhotoSelect={handlePhotoSelect}
       />
     </main>
   );
