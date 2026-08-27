@@ -176,6 +176,20 @@ class PlaceMoodProvider:
             ),
         )
 
+    async def first_photo_urls(self, content_ids: Sequence[str]) -> dict[str, str]:
+        """비교에 쓴 첫 사진의 주소. 결과 카드에 보여줄 값이다.
+
+        조회 실패를 검색 실패로 만들지 않는다 — 사진이 안 보이는 것과 결과가
+        안 나오는 것은 무게가 다르다.
+        """
+        if not content_ids:
+            return {}
+        try:
+            return await self._repository.find_first_photo_urls(content_ids)
+        except Exception:
+            logger.warning("비교 사진 주소를 읽지 못했습니다.", exc_info=True)
+            return {}
+
     async def search_by_photo(
         self,
         image_bytes: bytes,

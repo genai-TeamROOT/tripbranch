@@ -37,10 +37,21 @@ class _Prepared:
 class _RecordingMood:
     """호출 인자만 기록하는 대역. SigLIP 없이 돈다."""
 
-    def __init__(self, matches: tuple[PlaceMoodMatch, ...] = (), available: bool = True):
+    def __init__(
+        self,
+        matches: tuple[PlaceMoodMatch, ...] = (),
+        available: bool = True,
+        photo_urls: dict[str, str] | None = None,
+    ):
         self.calls: list[dict[str, object]] = []
+        self.photo_url_calls: list[list[str]] = []
         self._matches = matches
+        self._photo_urls = photo_urls or {}
         self.photo_search_available = available
+
+    async def first_photo_urls(self, content_ids):
+        self.photo_url_calls.append(list(content_ids))
+        return dict(self._photo_urls)
 
     async def search_by_photo(self, image_bytes, candidate_content_ids=None):
         self.calls.append(
@@ -215,3 +226,58 @@ async def test_limit_is_applied(patched) -> None:
     )
 
     assert len(result.places) == 2
+
+
+@pytest.mark.asyncio
+async def test_first_photo_url_is_attached(patched) -> None:
+    """비교에 쓴 사진을 결과에 싣는다.
+
+    places.first_image_url이 아니다 — 2,008곳 중 1,163곳이 서로 다른 주소라
+    (2026-08-27 실측) 대표 이미지를 보여주면 비교하지 않은 사진을 보여주게 된다.
+    """
+    mood = _RecordingMood(
+        matches=(_match("a", 0.9),),
+        photo_urls={"a": "https://tong.visitkorea.or.kr/x.jpg"},
+    )
+
+    result = await build_photo_similar_places(
+        PhotoSimilarQuery(image_bytes=b"jpeg", latitude=37.5, longitude=127.0),
+        geocoding_provider=object(),
+        place_provider=object(),
+        mood_provider=mood,
+    )
+
+    assert result.places[0].image_url == "https://tong.visitkorea.or.kr/x.jpg"
+
+
+@pytest.mark.asyncio
+async def test_photo_urls_are_fetched_only_for_shown_places(patched) -> None:
+    """후보 전체가 아니라 보여줄 만큼만 조회한다."""
+    mood = _RecordingMood(
+        matches=(_match("a", 0.9), _match("b", 0.8), _match("c", 0.7))
+    )
+
+    await build_photo_similar_places(
+        PhotoSimilarQuery(image_bytes=b"x", latitude=37.5, longitude=127.0, limit=2),
+        geocoding_provider=object(),
+        place_provider=object(),
+        mood_provider=mood,
+    )
+
+    assert mood.photo_url_calls == [["a", "b"]]
+
+
+@pytest.mark.asyncio
+async def test_missing_photo_url_is_not_an_error(patched) -> None:
+    """사진이 안 보이는 것과 결과가 안 나오는 것은 무게가 다르다."""
+    mood = _RecordingMood(matches=(_match("a", 0.9),), photo_urls={})
+
+    result = await build_photo_similar_places(
+        PhotoSimilarQuery(image_bytes=b"x", latitude=37.5, longitude=127.0),
+        geocoding_provider=object(),
+        place_provider=object(),
+        mood_provider=mood,
+    )
+
+    assert result.places[0].image_url is None
+    assert result.places[0].name == "장소 a"

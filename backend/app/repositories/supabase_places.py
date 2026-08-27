@@ -580,6 +580,45 @@ class SupabasePlaceRepository:
             raise SupabaseRepositoryError("invalid search_place_mood response")
         return tuple(_to_mood_match(row) for row in payload)
 
+    async def find_first_photo_urls(
+        self,
+        content_ids: Sequence[str],
+    ) -> dict[str, str]:
+        """장소별 첫 사진의 관광공사 원본 주소.
+
+        **비교에 실제로 쓴 사진이다.** `places.first_image_url`과 다르다 —
+        2,008곳 중 1,163곳이 서로 다른 주소다(2026-08-27 실측). 대표 이미지를
+        보여주면 "우리가 비교한 사진"이 아닌 것을 보여주는 셈이고, 사용자가
+        분위기가 맞는지 확인하려는 화면에서 그건 틀린 근거가 된다.
+
+        `photo_order = 1`만 읽는다. detailImage2가 준 순서 그대로이고 관광공사가
+        대표성 높은 사진을 앞에 주므로 1이 가장 대표적이다.
+        """
+        unique_ids = list(dict.fromkeys(content_ids))
+        if not unique_ids:
+            return {}
+
+        urls: dict[str, str] = {}
+        for start in range(0, len(unique_ids), _MOOD_PROFILE_CHUNK_SIZE):
+            chunk = unique_ids[start : start + _MOOD_PROFILE_CHUNK_SIZE]
+            response = await self._request(
+                "GET",
+                "/place_image_embeddings",
+                params={
+                    "select": "content_id,origin_url",
+                    "content_id": "in.(" + ",".join(chunk) + ")",
+                    "photo_order": "eq.1",
+                    "limit": str(_MOOD_PROFILE_CHUNK_SIZE),
+                },
+            )
+            payload = self._json(response)
+            if not isinstance(payload, list):
+                raise SupabaseRepositoryError("invalid place_image_embeddings response")
+            for row in payload:
+                if isinstance(row, Mapping) and row.get("origin_url"):
+                    urls[str(row["content_id"])] = str(row["origin_url"])
+        return urls
+
 
     async def create_sync_run(self, area_code: str, district_code: str) -> UUID:
         response = await self._request(

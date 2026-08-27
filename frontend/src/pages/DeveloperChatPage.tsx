@@ -24,6 +24,7 @@ import { TurnLocationBadges } from "../components/dev/TurnLocationBadges";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { LanguageSelector } from "../components/LanguageSelector";
 import { AuthStatusBadge } from "../auth/AuthStatusBadge";
+import { usePhotoSimilarSearch } from "../hooks/usePhotoSimilarSearch";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import { buildAgentStageTimings } from "../utils/agentTiming";
 import { getLatestConversationPlaceName } from "../utils/conversationPlace";
@@ -78,6 +79,7 @@ interface PendingLocationRefresh {
 export function DeveloperChatPage() {
   const state = useTripState();
   const dispatch = useTripDispatch();
+  const handlePhotoSelect = usePhotoSimilarSearch();
   const navigate = useNavigate();
   const text = DEV_CHAT_TEXT[state.language];
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
@@ -512,6 +514,7 @@ export function DeveloperChatPage() {
             onSubmit={handleFollowUp}
             placeholder={text.composer}
             language={state.language}
+            onPhotoSelect={handlePhotoSelect}
           />
         </div>
       </section>
