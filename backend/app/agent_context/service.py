@@ -496,18 +496,32 @@ class ContextService:
 
         current_activity_candidate = _is_current_activity_candidate(request)
         current_population_candidate = _is_current_population_candidate(request, self._clock())
+        is_realtime_citydata_purpose = (
+            request.question_type == "realtime_commercial"
+            or request.question_type in _REALTIME_CITYDATA_QUESTION_TYPES
+        )
         location_purpose = (
             LocationPurpose.REALTIME_CITYDATA
-            if request.question_type == "realtime_commercial"
-            or request.question_type in _REALTIME_CITYDATA_QUESTION_TYPES
-            or current_population_candidate
+            if is_realtime_citydata_purpose
             else LocationPurpose.PLACE_IDENTITY
         )
         location_result = await self._tools.location.execute(
             # INFO는 좌표가 아니라 "집중률 매핑이 걸린 그 장소"를 확정해야 한다(D-043).
             # 단, 실시간 상권은 서울시 82개 제공 지역을 별도로 쓰므로 종로구 추천
             # 범위를 위치 해석 단계에 적용하지 않는다.
-            ResolveLocationQuery(place_name, purpose=location_purpose)
+            #
+            # 오늘 날짜 혼잡 질문은 저장소를 먼저 봐야 명동성당·아시아프처럼
+            # TourAPI 코퍼스엔 있지만 Naver 지역 검색·Geocoding으론 못 찾는
+            # 장소가 산다(TP-171) — 그래서 PLACE_IDENTITY를 쓴다. 다만 강남역·
+            # 여의도처럼 지원 16개 구 밖의 실시간 인구 허브도 여전히 답해야
+            # 하므로(실측: 121곳 중 49곳·82곳 중 32곳이 지원 구 밖), 지역 제한만
+            # 명시적으로 끈다 — PLACE_IDENTITY의 기본 지역 제한과 저장소 우선
+            # 순위는 원래 서로 다른 이유로 묶여 있던 게 아니다.
+            ResolveLocationQuery(
+                place_name,
+                purpose=location_purpose,
+                enforce_service_area=(False if current_population_candidate else None),
+            )
         )
         if location_result.status is ToolStatus.NO_DATA:
             cause = location_result.error.cause if location_result.error else None
@@ -520,6 +534,16 @@ class ContextService:
                         missing_fields=[],
                         candidates=[],
                     ),
+                )
+            if request.question_type == "concentration":
+                # 위치 해석이 완전히 실패해도 집중률만으로는 답할 수 있는 경우가
+                # 있다(TP-171, 사용자 결정: "실시간 혼잡도가 없으면 집중률이라도").
+                # 좌표가 없어 D-036 인근 대체(_fetch_info_concentration_fallback)는
+                # 못 쓰므로, 이름이 매핑에 정확히 하나만 일치할 때만 시도한다.
+                return await self._fetch_concentration_by_name_only(
+                    request,
+                    reference_date=_info_reference_date(request.visit_time, self._clock()),
+                    provider_metadata=(location_result.provider_metadata,),
                 )
             return _info_no_data_response(request, location_result.provider_metadata)
         if location_result.status is ToolStatus.UNSUPPORTED:
@@ -1246,6 +1270,109 @@ class ContextService:
             ),
         )
 
+    async def _fetch_concentration_by_name_only(
+        self,
+        request: InfoContextRequest,
+        *,
+        reference_date: date,
+        provider_metadata: tuple[tuple[ProviderMetadata, ...], ...],
+    ) -> InfoContextResponse:
+        """위치 해석이 완전히 실패했을 때 이름만으로 집중률 매핑을 대조한다(TP-171).
+
+        좌표가 없어 D-036 인근 대체(``_fetch_info_concentration_fallback``)는 쓸 수
+        없다 — 이름이 매핑에 정확히 하나만 일치할 때만 답하고, 없거나 여럿이면
+        억지로 하나를 고르지 않고 no_data로 끝낸다.
+        """
+
+        place_name = request.place_name
+        concentration_tool = self._tools.concentration
+        if (
+            place_name is None
+            or concentration_tool is None
+            or self._concentration_mapping_cache is None
+        ):
+            return _info_no_data_response(request, *provider_metadata)
+        try:
+            mapped_places = await self._concentration_mapping_cache.places()
+        except AppError:
+            return _info_no_data_response(request, *provider_metadata)
+
+        normalized_query = _normalize_place_name(place_name)
+        matches = [
+            place
+            for place in mapped_places
+            if place.concentration_name is not None
+            and _normalize_place_name(place.title) == normalized_query
+        ]
+        if len(matches) != 1:
+            return _info_no_data_response(request, *provider_metadata)
+        matched_place = matches[0]
+
+        signgu_code = concentration_signgu_code(matched_place.district_code)
+        if signgu_code is None:
+            return _info_no_data_response(request, *provider_metadata)
+
+        concentration_result = await execute_concentration_by_search_keys(
+            concentration_tool,
+            search_keys=matched_place.concentration_search_keys,
+            canonical_name=cast(str, matched_place.concentration_name),
+            signgu_code=signgu_code,
+        )
+        if concentration_result.status is ToolStatus.UNAVAILABLE:
+            return _info_error_response(
+                request,
+                status="unavailable",
+                error=_context_error_from_tool(
+                    concentration_result.error,
+                    fallback_code="concentration_unavailable",
+                    fallback_message="집중률 정보를 가져오지 못했습니다.",
+                    retryable=True,
+                ),
+                provider_metadata=(*provider_metadata, concentration_result.provider_metadata),
+            )
+        if concentration_result.status is ToolStatus.NO_DATA:
+            return _info_no_data_response(
+                request, *provider_metadata, concentration_result.provider_metadata
+            )
+
+        forecast = select_concentration_forecast(
+            concentration_result.concentration,
+            candidate_name=cast(str, matched_place.concentration_name),
+            reference_date=reference_date,
+        )
+        rate = forecast.concentration_rate if forecast is not None else None
+        if forecast is None or not is_valid_concentration_rate(rate):
+            return _info_no_data_response(
+                request, *provider_metadata, concentration_result.provider_metadata
+            )
+
+        normalized = normalize_concentration(rate)
+        return InfoContextResponse(
+            request_id=request.request_id,
+            status="success",
+            result=ConcentrationInfoResult(
+                status="success",
+                is_proxy=False,
+                requested_place_name=place_name,
+                resolved_place_name=forecast.place_name,
+                forecast_date=reference_date.isoformat(),
+                concentration_rate=rate,
+                concentration_level=cast(
+                    Literal["quiet", "normal", "slightly_crowded", "crowded"],
+                    normalized.level.value,
+                ),
+                concentration_label=normalized.label.value,
+                forecasts=_to_concentration_forecast_infos(
+                    concentration_result.concentration,
+                    candidate_name=cast(str, matched_place.concentration_name),
+                    start_date=reference_date,
+                ),
+            ),
+            metadata=_info_response_metadata(
+                *provider_metadata, concentration_result.provider_metadata
+            ),
+        )
+
     async def _fetch_info_concentration_fallback(
         self,
         request: InfoContextRequest,
@@ -1842,6 +1969,12 @@ def _to_concentration_forecast_infos(
     return items
 
 
+def _normalize_place_name(value: str) -> str:
+    """공백·대소문자 차이를 무시하고 장소명을 대조한다(TP-171 이름-일치 폴백 전용)."""
+
+    return value.casefold().replace(" ", "")
+
+
 def _is_current_activity_candidate(request: InfoContextRequest) -> bool:
     """'지금 사람 많아?'처럼 현재 상권 경로 전환 가능성이 있는지 판단한다."""
 
@@ -1855,6 +1988,11 @@ def _is_current_population_candidate(request: InfoContextRequest, clock_value: d
     날짜가 없는 질문은 INFO 추출 규칙상 오늘으로 정규화된다. 반대로 내일·주말처럼
     방문일이 오늘보다 뒤면 관광지 집중률 예측만 사용한다. 이 판정은 LLM 프롬프트를
     바꾸지 않고, 같은 ``concentration`` question_type 안에서 데이터 출처만 고른다.
+
+    (TP-171) 위치 해석에도 영향을 준다 — True면 저장소 지역 제한(enforce_service_area)
+    을 명시적으로 끈다. 저장소 조회 자체는 끄지 않는다(그래서 명동성당류가 산다) —
+    끄는 건 "지원 16개 구 밖이면 막는다"는 지역 제한 하나뿐이다. 자세한 이유는
+    fetch_info_context() 호출부의 주석 참고.
     """
 
     return (

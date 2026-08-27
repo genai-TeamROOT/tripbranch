@@ -219,6 +219,16 @@ class LocationPurpose(StrEnum):
     코퍼스에 없는 이름은 조회가 반드시 실패하는 데다 필터 사다리를 한 칸씩 던지느라
     `places`를 4회 버렸기 때문이다. 필터를 or= 하나로 합쳐 그 비용이 제목 1회 +
     별칭 1회로 줄면서 전제가 사라졌다. REALTIME_CITYDATA만 예외다(아래).
+
+    저장소 우선순위와 "지원 16개 구 밖이면 막는다"는 지역 제한은 원래 서로 다른
+    이유로 묶인 게 아니다 — REALTIME_CITYDATA가 둘 다 건너뛴 건 "권역명은
+    코퍼스 밖이라 저장소 조회가 헛돈다"는 비용 논리 하나였다. 그런데 명동성당처럼
+    **코퍼스 안에 있는 장소**가 이 purpose로 잘못 보내지면(TP-171, 오늘 날짜
+    혼잡 질문) 저장소를 못 봐 위치 해석이 통째로 실패한다. 그래서 `ResolveLocationQuery`
+    에 `enforce_service_area` 명시 오버라이드를 따로 뒀다 — 저장소는 보되(PLACE_IDENTITY)
+    지역 제한만 끄고 싶은 경우(강남역처럼 지원 구 밖의 실시간 인구 허브)를 표현하기
+    위해서다. 아래 REALTIME_CITYDATA는 여전히 "저장소도 건너뛴다"는 기존 동작
+    그대로다 — 이번 변경은 그 경로를 손대지 않는다.
     """
 
     SEARCH_CENTER = "search_center"
@@ -236,6 +246,10 @@ class ResolveLocationQuery:
     location_query: str
     # 기존 호출부와 CLI가 그대로 동작하도록 정체성 확정을 기본으로 둔다.
     purpose: LocationPurpose = LocationPurpose.PLACE_IDENTITY
+    # None이면 purpose가 정하는 기본값을 그대로 쓴다(REALTIME_CITYDATA만 지역 제한을
+    # 건너뜀). 명시하면 그 값이 purpose와 무관하게 우선한다 — TP-171: 오늘 날짜
+    # 혼잡 질문은 저장소는 보되(PLACE_IDENTITY) 지역 제한만 끄고 싶어서 추가했다.
+    enforce_service_area: bool | None = None
 
     def __post_init__(self) -> None:
         normalized = self.location_query.strip()
@@ -300,7 +314,11 @@ class ResolveLocationTool:
         # 수식어를 먼저 떼고 조회한다. 주소 판별도 정리된 값으로 해야 "인사동길 44
         # 근처"가 주소로 잡힌다.
         requested_query = strip_location_modifiers(query.location_query.strip())
-        enforce_service_area = query.purpose is not LocationPurpose.REALTIME_CITYDATA
+        enforce_service_area = (
+            query.enforce_service_area
+            if query.enforce_service_area is not None
+            else query.purpose is not LocationPurpose.REALTIME_CITYDATA
+        )
         if is_address_query(requested_query):
             return await self._resolve_address(
                 requested_query, enforce_service_area=enforce_service_area

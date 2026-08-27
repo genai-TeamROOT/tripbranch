@@ -241,6 +241,171 @@ async def test_realtime_citydata_location_allows_outside_jongno() -> None:
 
 
 @pytest.mark.asyncio
+async def test_place_identity_with_area_override_checks_database_first() -> None:
+    """TP-171: enforce_service_area를 꺼도 PLACE_IDENTITY는 여전히 저장소를 먼저 본다.
+
+    지역 제한을 끄는 것과 저장소 조회를 건너뛰는 것은 서로 다른 결정이다 —
+    override는 전자만 끈다.
+    """
+    repository = MemoryPlaceLocationRepository(
+        (
+            StoredPlaceLocation(
+                content_id="999001",
+                title="명동성당",
+                address="서울특별시 중구 명동길 74",
+                latitude=37.5633,
+                longitude=126.9873,
+                district_code="140",
+                concentration_name="명동성당",
+            ),
+        )
+    )
+    provider = SequenceGeocodingProvider([])
+
+    result = await ResolveLocationTool(provider, repository).execute(
+        ResolveLocationQuery(
+            "명동성당", purpose=LocationPurpose.PLACE_IDENTITY, enforce_service_area=False
+        )
+    )
+
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert result.location is not None
+    assert result.location.resolution_method is ResolutionMethod.DATABASE
+    assert result.location.district_code == "140"
+    assert provider.calls == []
+
+
+@pytest.mark.asyncio
+async def test_place_identity_with_area_override_false_allows_outside_service_area() -> None:
+    """TP-171: 저장소 미스가 지역 검색으로 넘어가도, 끈 지역 제한은 그대로 유지된다.
+
+    강남역처럼 지원 16개 구 밖의 실시간 인구 허브가 이 경로다 — DB엔 없고
+    (지하철역이라 TourAPI 코퍼스 밖), 지역 검색으로 풀리는데 지원 구 밖이다.
+    """
+    local_search = MemoryLocalSearchProvider(
+        (
+            LocalSearchPlace(
+                name="강남역",
+                address="서울특별시 강남구 역삼동",
+                road_address=None,
+                category="지하철역",
+                latitude=37.4979,
+                longitude=127.0276,
+            ),
+        )
+    )
+
+    result = await ResolveLocationTool(
+        SequenceGeocodingProvider([]),
+        MemoryPlaceLocationRepository(()),
+        local_search,
+    ).execute(
+        ResolveLocationQuery(
+            "강남역", purpose=LocationPurpose.PLACE_IDENTITY, enforce_service_area=False
+        )
+    )
+
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert result.location is not None
+    assert result.location.resolution_method is ResolutionMethod.LOCAL_SEARCH
+
+
+@pytest.mark.asyncio
+async def test_place_identity_without_override_still_enforces_service_area() -> None:
+    """override를 안 주면 오늘과 완전히 같다 — PLACE_IDENTITY는 계속 지역을 제한한다."""
+    local_search = MemoryLocalSearchProvider(
+        (
+            LocalSearchPlace(
+                name="강남역",
+                address="서울특별시 강남구 역삼동",
+                road_address=None,
+                category="지하철역",
+                latitude=37.4979,
+                longitude=127.0276,
+            ),
+        )
+    )
+
+    result = await ResolveLocationTool(
+        SequenceGeocodingProvider([]),
+        MemoryPlaceLocationRepository(()),
+        local_search,
+    ).execute(ResolveLocationQuery("강남역", purpose=LocationPurpose.PLACE_IDENTITY))
+
+    assert result.status is ResolveLocationStatus.UNSUPPORTED
+    assert result.error is not None
+    assert result.error.cause == "outside_supported_region"
+
+
+class _NamedPlaceLocationRepository:
+    """조회한 이름에 따라 다른 결과를 주는 저장소 대역."""
+
+    def __init__(self, by_name: dict[str, tuple[StoredPlaceLocation, ...]]) -> None:
+        self._by_name = by_name
+        self.calls: list[str] = []
+
+    async def find_active_places_by_name(self, name: str) -> tuple[StoredPlaceLocation, ...]:
+        self.calls.append(name)
+        return self._by_name.get(name, ())
+
+
+@pytest.mark.asyncio
+async def test_place_identity_second_database_reattempt_ignores_ambiguous_duplicates() -> None:
+    """TP-171: 지역 검색 이름 재조회가 동명이인이어도 지역 검색 결과를 그대로 쓴다.
+
+    오늘 혼잡 질문이 PLACE_IDENTITY로 풀리면서 새로 열리는 경로다 — 예전엔
+    REALTIME_CITYDATA가 저장소를 통째로 건너뛰어 이 재조회 자체가 없었다. 코드
+    주석대로("재조회가 실패해도 지역 검색 결과는 그대로 쓴다") 동명이인으로
+    재조회가 실패해도 사용자에게 새로 되묻기가 뜨면 안 된다.
+    """
+    repository = _NamedPlaceLocationRepository(
+        {
+            "강남타워 빌딩": (
+                StoredPlaceLocation(
+                    content_id="1",
+                    title="강남타워 빌딩",
+                    address="서울특별시 강남구 테헤란로 1",
+                    latitude=37.50,
+                    longitude=127.03,
+                ),
+                StoredPlaceLocation(
+                    content_id="2",
+                    title="강남타워 빌딩",
+                    address="서울특별시 강남구 테헤란로 2",
+                    latitude=37.51,
+                    longitude=127.04,
+                ),
+            )
+        }
+    )
+    local_search = MemoryLocalSearchProvider(
+        (
+            LocalSearchPlace(
+                name="강남타워 빌딩",
+                address="서울특별시 강남구 테헤란로 1",
+                road_address=None,
+                category="빌딩",
+                latitude=37.50,
+                longitude=127.03,
+            ),
+        )
+    )
+
+    result = await ResolveLocationTool(
+        SequenceGeocodingProvider([]), repository, local_search
+    ).execute(
+        ResolveLocationQuery(
+            "강남타워", purpose=LocationPurpose.PLACE_IDENTITY, enforce_service_area=False
+        )
+    )
+
+    assert result.status is ResolveLocationStatus.SUCCESS
+    assert result.location is not None
+    assert result.location.resolution_method is ResolutionMethod.LOCAL_SEARCH
+    assert repository.calls == ["강남타워", "강남타워 빌딩"]
+
+
+@pytest.mark.asyncio
 async def test_place_name_uses_local_search_before_geocoding() -> None:
     local_search = MemoryLocalSearchProvider(
         (
