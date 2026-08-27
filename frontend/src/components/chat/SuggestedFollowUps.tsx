@@ -29,7 +29,9 @@ export function SuggestedFollowUps({
   return (
     <div className="mr-auto flex max-w-xl flex-col gap-2">
       <p className="text-xs text-gray-400 dark:text-gray-500">{label}</p>
-      <div className="flex flex-wrap gap-2" role="group" aria-label={label}>
+      {/* 한 줄에 하나씩 세로로 쌓는다. 문구가 한 문장이라 가로로 흘리면 길이에 따라
+          두 개가 붙었다 떨어졌다 해서 줄 수가 제안 개수와 어긋난다. */}
+      <div className="flex flex-col items-start gap-2" role="group" aria-label={label}>
         {suggestions.map((suggestion) => (
           <button
             key={suggestion}
