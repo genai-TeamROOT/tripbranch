@@ -4185,6 +4185,89 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `supabase/migrations/202608270002_create_municipal_parking_lots.sql`,
   `docs/design/int-02-info.md`.
 
+### D-104 — 숫자 없는 시간 표현을 `time_available` 분 단위로 고정 환산한다
+
+- 상태: `Accepted` — 구현 완료(TP-177). 골드셋 재확인 1회가 남아 있다(아래 "남은 것").
+- 배경: 골드셋(`test_results/agent_quality/evaluation_dev.csv`)의 SCHEDULE 실패가
+  2026-08-20부터 같은 자리에서 반복됐다 — DEV-008/023의 `time_available`,
+  DEV-008/033의 `search_center`. `prompts/recommend/HISTORY.md`는 이를 "기존
+  비결정성 케이스"로 기록하고 "1회 실행으로 회귀를 판정하지 않아야 하는 사례로
+  남긴다"고 적어뒀지만, 흔들림의 크기를 재는 수단이 없어 원인을 특정하지 못한 채
+  네 번의 실행에 걸쳐 같은 문장이 반복됐다.
+  기준선이 흔들리는 상태에서 프롬프트를 고치면 개선인지 실행 간 분산인지 구분할 수
+  없으므로, 측정 도구를 먼저 만들고 가설을 하나씩 기각하는 순서로 접근했다.
+- 결정:
+  1. `verify_schedule_condition_extraction.py`를 신설해 **흔들림(같은 발화·같은
+     설정에서 실행마다 값이 바뀌는가)** 과 **기대 일치(골드셋 라벨과 맞는가)** 를
+     따로 측정한다. `record_llm_call()`의 `served_model`을 함께 읽어 폴백 발생도
+     같은 표에서 본다. 기존 `verify_taste_query_extraction.py`·
+     `verify_travel_origin_extraction.py`와 같은 패턴이다.
+  2. `recommend.extract`(2.4.0 → 2.5.0)에 숫자 없는 시간 표현의 고정 환산 규칙을
+     넣는다 — 반나절/한나절/오전·오후 내내 240, 하루 종일/온종일/아침부터 저녁까지
+     480, 잠깐·짧게 120, 범위로 말했으면 하한("두세 시간" → 120), 목록에 없는
+     표현은 억지로 숫자를 만들지 않고 null. 기존 시간 규칙은 숫자 환산("5시간"
+     → 300)만 있었다.
+  3. **SCHEDULE 전용 추출 슬롯을 신설하지 않는다.** 남은 결함이 시간 표현 하나로
+     좁혀졌고, "반나절 = 4시간"은 RECOMMEND 발화에도 맞는 해석이라 슬롯을 복제할
+     이유가 없다. `prompts/schedule/`가 B 소유라 전용 슬롯을 만들면 협의 없이
+     끝낼 수 있었지만, 규칙 몇 줄을 위해 슬롯을 둘로 늘리면 두 슬롯이 같이 낡는다.
+  4. 값은 코드가 이미 쓰는 폴백과 일관되게 맞춘다 —
+     `build_schedule_planning_instruction()`이 `time_available` 미지정 시
+     "3~4시간 내외로 구성"을 지시하므로 반나절을 그 상한인 240으로 둔다.
+     골드셋 라벨(240)도 같은 값이다.
+- 근거: "반나절"은 3회 반복에서 발화에 지명이 있으면 240, 없으면 360으로 갈렸다 —
+  각각은 3회 모두 고정이었으므로 흔들림이 아니라 **규칙이 없어서 모델이 문맥으로
+  해석한 결과**다. 사용자가 "반나절"이라 말하고 6시간 일정을 받는 것은 틀린 결과이고,
+  같은 단어가 지명 유무로 갈리는 것 자체가 일관성 결함이다. "하루 종일"은 3회 모두
+  null로 떨어져 시간 조건 없이 편성되고 있었다. 범위 표현("두세 시간")은 150/150/180
+  으로 유일하게 실제로 흔들렸고, 하한을 쓰기로 정한 근거는 일정이 넘치는 쪽보다
+  여유가 남는 쪽이 사용자 피해가 작다는 것이다.
+- 기각한 가설(측정으로 확인): 네 개를 세워 네 개를 모두 기각했다. 기록해두는 이유는
+  다음에 같은 증상을 보는 사람이 같은 길을 다시 걷지 않게 하기 위함이다.
+  1. **구세대 모델 폴백이 원인** — 한가한 상태 42호출(14케이스 × 3회) 전부
+     `gemini-3.5-flash`가 응답했다(`served_model`). 단, 골드셋을 돌려 호출이 몰리자
+     폴백이 실제로 발동했다(아래 "곁가지로 드러난 문제").
+  2. **모델 티어가 낮아서** — `config.py`의 기본값은 `gemini-3.5-flash-lite`지만
+     `.env`가 `LLM_FAST_MODEL_NAME=gemini-3.5-flash`로 덮어쓰고 있었다. 기본값을
+     실제 설정으로 착각한 오독이었다.
+  3. **`location_rules.md`가 일정 발화를 커버하지 못해 `search_center`가 빠진다** —
+     "경복궁 코스/일정/근처 일정", "북촌 반나절 코스", "광화문 반나절 일정" 5종
+     전부 3회 고정으로 정확히 잡았다. 규칙 문면이 "근처/주변/지명 단독"만 열거해
+     애매하지만 모델은 문제없이 처리한다.
+  4. **조건 병합(`state_transform`)에서 값이 사라진다** — 골드셋이 채점하는 값은
+     추출 직후가 아니라 병합된 `state.user_conditions`라서 이 가설을 세웠다.
+     `POST /api/interpret`로 DEV-008과 같은 입력을 넣어 `search_center=광화문`,
+     `time_available=240`이 그대로 통과하는 것을 확인해 기각했다.
+- 검증: `verify_schedule_condition_extraction.py --repeat 3`을 변경 전후로 실행 —
+  변경 전 흔들림 1건·기대 불일치 1건에서 **변경 후 14/14 전부 고정·기대 일치**로
+  바뀌었다("반나절 일정" 360 → 240, "하루 종일" null → 480, "두세 시간"
+  150/150/180 → 120 고정). RECOMMEND 대조군 2건은 변화 없음. 전체 테스트
+  3,064건 통과(develop 머지 후), ruff 통과, 프롬프트 스냅샷 갱신.
+  골드셋(dev 35건)은 관광 API 일일 한도가 소진돼 `PLACE_PROVIDER=fake`로 대체
+  실행했고, 지표 하락(-18%p 등)은 전부 (a) Gemini 404 오류 4건 (b) fake 장소로
+  1턴째 추천이 기록되지 않아 2턴째가 MODIFY 대신 RECOMMEND로 분류된 2건으로
+  설명된다 — **정상 응답한 31건은 조건 불일치가 0건**이었고, 이번 변경이 건드린
+  필드에서 실제 불일치는 없었다.
+- 곁가지로 드러난 문제(이 결정 범위 밖): 골드셋 실행 중 `classify_intent`에서
+  Gemini가 **간헐적으로 404 NOT_FOUND**를 냈다(35건 중 4건, `attempted_models`에
+  주 모델과 폴백이 모두 있고 `served_model=None` — 두 모델 다 실패). 404는
+  결정적인 오류인데 간헐적이라는 점이 설명되지 않는다. 같은 실행에서
+  `gemini-3.5-flash` 재시도 소진 후 `gemini-2.5-flash-lite`로 폴백되는 것도
+  관측됐다 — 위 기각 가설 1이 한가할 때는 발동하지 않지만 호출이 몰리면 발동한다는
+  뜻이고, 그 경우 같은 발화가 실행마다 다른 모델로 처리된다. 별도 카드로 다룬다.
+- 남은 것:
+  - 관광 API 일일 한도가 풀린 뒤 골드셋(dev 35건)을 `--base-url` 없이 1회 재실행해
+    다중 턴까지 확인한다. 이번 대체 실행은 다중 턴 통과율을 신뢰할 수 없다.
+  - `evaluation_dev.csv`의 "반나절 = 240" 라벨은 이번에 프롬프트와 일치시켰지만,
+    팀 합의로 정한 값이 아니라 골드셋에만 있던 값이다(README: "라벨은 팀 합의로
+    검토해야 하는 기대 동작"). 다른 값이 맞다고 판단되면 프롬프트와 라벨을 함께 바꾼다.
+  - MODIFY 슬롯의 `exclude_tags` 추출(DEV-029)은 이번 범위 밖이다.
+- 상세: `backend/app/prompts/recommend/extract.md`,
+  `backend/app/prompts/recommend/meta.yaml`,
+  `backend/app/prompts/recommend/HISTORY.md`(2.5.0),
+  `backend/scripts/verify_schedule_condition_extraction.py`,
+  `backend/tests/prompts/snapshots/recommend_extract.txt`
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -4288,3 +4371,4 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-27 | D-102 신설 — 답변 뒤에 후속 질문을 버튼으로 제안한다(C). 턴이 끝난 뒤 `follow_up.suggest` 프롬프트로 다음 발화 후보 0~3개를 받아 `AgentResponse.suggested_follow_ups`에 싣고, 버튼을 누르면 **그 문구를 그대로 `user_input`으로 재전송**한다 — 되묻기 버튼(D-053 계열, `clarification_choice`로 Intent를 못 박음)과 반대 방향이라 같은 메커니즘을 쓰지 않는다. 답변 생성 LLM 호출에 필드를 얹지 않고 별도 호출로 뺀 이유는 답변 경로가 인텐트마다 다르고(GENERAL/INFO/COMPARE만 LLM 자유 생성, RECOMMEND는 고정 wrapper, SCHEDULE·OUT_OF_SCOPE는 템플릿) 그중 셋이 텍스트를 스트리밍하기 때문 — 같은 호출에서 JSON을 받으려면 스트리밍을 포기해야 한다. SSE 경로에서는 답변이 이미 화면에 다 뜬 뒤에 도는 호출이라 체감 지연이 늘지 않는다. 모델이 없는 기능을 권하지 않도록 `follow_up/capability_rules.md`에 실제 처리 가능한 요청 목록을 싣고, 개수·길이·중복·직전 발화 반복은 `follow_up_suggester.py`가 코드로 다시 검사한다(프롬프트 지시는 부탁, 코드 검사가 계약). 되묻기 턴과 OUT_OF_SCOPE 턴은 제안하지 않고, 호출이 실패하면 빈 목록으로 낮춘다 — 이미 확정된 답변을 버튼 때문에 실패시키지 않는다 |
 | 2026-08-27 | D-102 후속 — 후속 질문을 `done` 뒤 별도 SSE 이벤트로 뺀다. Runtime 안에서 만들면 그 호출이 끝날 때까지 `done`이 안 나가는데, 그 시간에는 답변과 카드가 이미 화면에 다 떠 있어서 그 아래 로딩 말풍선이 한 번 더 뜬 것처럼 보였다(실사용 지적). `run_agent(generate_follow_ups=False)`로 SSE 경로만 생성을 끄고, 라우트가 `done`을 먼저 내보내 턴을 끝낸 뒤 `follow_ups` 이벤트를 이어 보낸다 — 화면은 로딩을 감추고 입력창을 푼 상태에서 버튼만 늦게 받는다. 답변 LLM 호출에 필드를 얹는 안은 버렸다: GENERAL·INFO·COMPARE는 답변을 스트리밍해서 같은 호출로 JSON을 받으려면 스트리밍을 포기해야 하고, RECOMMEND·SCHEDULE은 답변이 고정 문구·템플릿이라 얹을 호출이 아예 없다. 단발 `POST /api/chat`은 나눠 보낼 스트림이 없어 지금처럼 응답 안에 담는다. 후속 질문 입력은 번역 전 한국어 사본(`runtime_response`)을 쓰고 결과만 다시 영어로 옮긴다 |
 | 2026-08-27 | D-103 신설 — Gemini 타임아웃을 전송 계층과 무관하게 잡는다. INFO 답변 스트림이 타임아웃하자 모델 폴백도, `AppError` 변환도 못 하고 턴 전체가 죽었다(C가 이미 가져온 장소 정보까지 함께 버려졌다). 원인은 `except httpx.TimeoutException`이 **죽은 코드**였다는 것 — google-genai는 `aiohttp`를 임포트할 수 있으면 그쪽으로 요청을 보내는데(`_use_aiohttp()`), aiohttp는 이 프로젝트의 의존성이 아니라 환경에 따라 다른 패키지(kubernetes, langchain-community)가 딸려 들여올 뿐이라 **어느 전송 계층으로 나가는지가 머신마다 다르다.** aiohttp는 `asyncio.TimeoutError`를, httpx는 `httpx.TimeoutException`을 던지고 둘은 상속 관계가 없다. aiohttp가 없는 환경에서는 같은 코드가 멀쩡히 돌아서 테스트로도 CI로도 드러나지 않았다. `_TIMEOUT_ERRORS = (httpx.TimeoutException, TimeoutError)`로 두 곳(`_stream_text`, `_run_attempts`)과 음성 전사(`gemini_audio.py`)를 함께 고치고, 테스트를 전송 계층별로 파라미터화해 aiohttp 예외에서 실제로 재시도·폴백이 도는지 잠갔다(수정 전 `[aiohttp]` 4건 실패·`[httpx]` 4건 통과로 확인). 공유 httpx 클라이언트를 쓰는 나머지 15곳의 handler는 그대로 둔다 — 그쪽은 전송 계층이 확정돼 있다. **남은 문제 2건은 이번 범위 밖:** (a) SDK가 `HttpOptions(timeout=)`을 aiohttp `ClientTimeout(total=)`로 넣어 10초가 응답 전체에 걸린다 — 정상 스트리밍도 10초를 넘기면 중간에 끊긴다. (b) 스트림 도중 실패 시 이미 내보낸 텍스트 뒤에 고정 안내문이 통째로 덧붙는다(기존 APIError 경로에서도 일어나던 동작) |
+| 2026-08-27 | D-104 신설 — 숫자 없는 시간 표현을 `time_available` 분 단위로 고정 환산(TP-177, B). 같은 "반나절"이 발화에 지명이 있으면 240, 없으면 360으로 갈리고 "하루 종일"은 null로 떨어지던 것을 `recommend.extract` 2.4.0 → 2.5.0으로 닫았다 — 반나절/오전·오후 내내 240, 하루 종일 480, 잠깐 120, 범위 표현은 하한, 목록 밖은 null. 값은 `build_schedule_planning_instruction()`의 미지정 폴백("3~4시간 내외")과 일관되게 맞췄다. 흔들림·응답 모델·기대 일치를 따로 재는 `verify_schedule_condition_extraction.py`를 먼저 만들어 기준선을 확정한 뒤 프롬프트를 고쳤고, 그 과정에서 모델 폴백·모델 티어·`location_rules` 미커버·조건 병합 유실 네 가설을 모두 기각했다. 전후 비교 14/14 고정·기대 일치. SCHEDULE 전용 추출 슬롯은 신설하지 않았다("반나절 = 4시간"은 RECOMMEND에도 맞는 해석) |
