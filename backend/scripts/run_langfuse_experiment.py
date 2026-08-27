@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import argparse
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -99,6 +99,31 @@ def _session_id(body: dict[str, Any]) -> str | None:
         return None
     value = state.get("session_id")
     return value if isinstance(value, str) and value else None
+
+
+def _in_goldset_order(items: Sequence[Any], split: str) -> list[Any]:
+    """Dataset 항목을 골드셋 CSV 순서로 되돌린다.
+
+    **API는 역순으로 준다** — 2026-08-28 실측에서 `dev`의 첫 항목이 `DEV-035`였다.
+    그대로 `--limit N`을 하면 `evaluate_agent_quality --limit N`과 **다른 케이스가
+    뽑힌다**(전자는 DEV-035·034·033, 후자는 DEV-001·002·003). 이 스크립트의 전제가
+    "두 경로가 같은 골드셋을 읽으므로 수치는 맞아야 한다"인데, 점검용으로 몇 건만
+    돌리는 순간 그 전제가 깨져서 서로 비교할 수 없는 값이 나온다.
+
+    항목 id는 `<데이터셋 이름>-<case_id>`다(`sync_langfuse_dataset`). 접두어를 떼서
+    CSV 순서에 맞춘다. CSV에 없는 id는 뒤로 몰되 버리지 않는다 — 골드셋에서 지운
+    케이스가 원격에 남아 있으면 `sync_langfuse_dataset --check`가 잡을 일이지,
+    여기서 조용히 빼면 건수가 안 맞는 이유를 알 수 없게 된다.
+    """
+
+    order = {case.case_id: index for index, case in enumerate(load_cases(split))}  # type: ignore[arg-type]
+    prefix = f"{DATASET_NAMES[split]}-"
+
+    def sort_key(item: Any) -> tuple[int, str]:
+        case_id = str(item.id).removeprefix(prefix)
+        return (order.get(case_id, len(order)), str(item.id))
+
+    return sorted(items, key=sort_key)
 
 
 def _run_name(split: str, item_count: int) -> str:
@@ -344,7 +369,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--split", choices=("dev", "final"), default="dev")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
-    parser.add_argument("--limit", type=int, default=None, help="앞 N건만 (점검용)")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="골드셋 CSV 앞 N건만 (점검용). API 반환 순서가 아니라 CSV 순서다",
+    )
     parser.add_argument("--run-name", default=None, help="회차 이름(생략하면 SDK가 시각을 붙임)")
     return parser
 
@@ -372,7 +402,7 @@ def main() -> int:
         return 1
 
     dataset_name = DATASET_NAMES[args.split]
-    items = client.get_dataset(dataset_name).items
+    items = _in_goldset_order(client.get_dataset(dataset_name).items, args.split)
     if args.limit:
         items = items[: args.limit]
     print(f"✓ {dataset_name} {len(items)}건")
