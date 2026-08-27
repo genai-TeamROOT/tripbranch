@@ -47,6 +47,7 @@ import httpx
 from langfuse.experiment import Evaluation
 
 from app.config import settings
+from app.prompts.registry import operation_prompt_version
 from scripts.sync_langfuse_dataset import DATASET_NAMES, _client
 
 DEFAULT_BASE_URL: Final = "http://localhost:8000"
@@ -91,6 +92,33 @@ def _session_id(body: dict[str, Any]) -> str | None:
         return None
     value = state.get("session_id")
     return value if isinstance(value, str) and value else None
+
+
+def _run_name(split: str, item_count: int) -> str | None:
+    """Experiments 목록에 뜰 회차 이름. 넣을 게 없으면 `None`(SDK가 시각을 붙인다).
+
+    **목록에서 개발자와 프롬프트 버전이 읽히는 자리는 여기뿐이다.** Experiments
+    화면의 열 목록(18개)에 metadata가 없다 — 2026-08-27에 UI로 확인했다. 그래서
+    `metadata`에만 넣으면 회차를 나란히 놓고 볼 때 누구 것인지, 어느 버전이 낸
+    점수인지 구분이 안 된다.
+
+    trace 태그(`developer:`)로도 안 된다. 실험 trace의 루트는 SDK가 만드는
+    `experiment-item-run`이라 우리 `trace_attributes()`를 타지 않고, 태그가 붙는
+    `agent_turn`은 그 자식이다 — 목록까지 올라오지 않는다(실측: 같은 trace 안에
+    태그 있는 observation 14개, 없는 것 6개).
+
+    시각은 붙이지 않는다 — SDK가 `run_name`을 안 주면 자기가 붙이고, 주면 그대로
+    쓴다. 여기서 또 넣으면 이름이 길어져 목록에서 뒤가 잘린다.
+    """
+
+    parts = [f"{split} {item_count}건"]
+    developer = settings.langfuse_developer.strip()
+    if developer:
+        parts.append(developer)
+    version = operation_prompt_version("extract_recommend_conditions")
+    if version:
+        parts.append(version)
+    return " · ".join(parts) if len(parts) > 1 else None
 
 
 def make_task(base_url: str) -> Any:
@@ -257,14 +285,23 @@ def main() -> int:
 
     result = client.run_experiment(
         name=f"{args.split} 골드셋 회귀",
-        run_name=args.run_name,
+        run_name=args.run_name or _run_name(args.split, len(items)),
         description=f"{dataset_name} {len(items)}건 · env={settings.app_env}",
         data=items,
         task=make_task(args.base_url),
         evaluators=[intent_match, condition_match, case_pass],
         run_evaluators=[case_pass_rate, intent_accuracy],
         max_concurrency=MAX_CONCURRENCY,
-        metadata={"split": args.split, "source": "run_langfuse_experiment"},
+        metadata={
+            "split": args.split,
+            "source": "run_langfuse_experiment",
+            "item_count": len(items),
+            # 누가 돌렸는지. Experiments 화면에는 metadata 열이 없어서(2026-08-27 확인)
+            # 목록에서 읽히는 자리는 `run_name`뿐이다 — 여기는 필터·API 조회용이다.
+            "developer": settings.langfuse_developer or None,
+            "extract_prompt_version": operation_prompt_version("extract_recommend_conditions"),
+            "classify_prompt_version": operation_prompt_version("classify_intent"),
+        },
     )
     client.flush()
 
