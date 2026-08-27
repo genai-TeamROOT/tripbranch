@@ -226,24 +226,47 @@ async def _validate_active_places(
     client: httpx.AsyncClient,
     payloads: Sequence[dict[str, object]],
 ) -> None:
-    response = await client.get(
-        "/rest/v1/places",
-        params={
-            "select": "content_id",
-            "is_active": "eq.true",
-            "limit": "1000",
-        },
-    )
-    response.raise_for_status()
-    active_ids = {
-        str(row["content_id"])
-        for row in response.json()
-        if isinstance(row, dict) and row.get("content_id")
-    }
+    """적재 대상 content_id가 활성 places에 있는지 확인한다.
+
+    활성 목록 전체를 받아 그 안에서 찾는 방식이었는데, PostgREST가 한 응답을
+    1,000행에서 자르는 탓에 장소가 그보다 많아지면 멀쩡한 매핑이 "활성 아님"으로
+    걸렸다(2026-08-26: 활성 4,690건 중 1,000건만 읽어 88건 중 52건이 거부됨).
+    종로구만 적재하던 때는 활성이 1,000건 미만이라 드러나지 않았다.
+
+    그래서 전체를 받지 않고 적재 대상 id만 골라 묻는다. 받아오는 양이 저장소
+    크기가 아니라 적재 건수에 비례하므로 장소가 몇 만 건이 되어도 영향이 없다.
+    id 목록이 길면 URL이 길어지므로 upsert와 같은 크기로 나눠 보낸다.
+    """
+    target_ids = [str(payload["content_id"]) for payload in payloads]
+    active_ids: set[str] = set()
+    for start in range(0, len(target_ids), _UPSERT_CHUNK_SIZE):
+        chunk = target_ids[start : start + _UPSERT_CHUNK_SIZE]
+        response = await client.get(
+            "/rest/v1/places",
+            params={
+                "select": "content_id",
+                "is_active": "eq.true",
+                "content_id": f"in.({','.join(chunk)})",
+            },
+        )
+        response.raise_for_status()
+        rows = response.json()
+        if not isinstance(rows, list):
+            raise ValueError("places 응답이 목록이 아닙니다.")
+        # 한 청크가 상한에 닿는 일은 없다 - 요청한 id 수보다 많이 올 수 없고
+        # _UPSERT_CHUNK_SIZE가 상한보다 훨씬 작다. 그래도 어긋나면 끊는다.
+        if len(rows) > len(chunk):
+            raise ValueError(
+                f"places 조회가 요청({len(chunk)}건)보다 많은 {len(rows)}건을 "
+                "돌려줬습니다. content_id 필터가 걸리지 않았을 수 있습니다."
+            )
+        active_ids.update(
+            str(row["content_id"])
+            for row in rows
+            if isinstance(row, dict) and row.get("content_id")
+        )
     missing_ids = sorted(
-        str(payload["content_id"])
-        for payload in payloads
-        if str(payload["content_id"]) not in active_ids
+        content_id for content_id in target_ids if content_id not in active_ids
     )
     if missing_ids:
         raise ValueError(
