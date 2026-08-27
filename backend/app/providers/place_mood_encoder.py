@@ -106,12 +106,32 @@ class SiglipImageEncoder:
             inputs = processor(images=image, return_tensors="pt")
 
         with torch.no_grad():
-            features = model.get_image_features(**inputs)
+            features = _as_tensor(model.get_image_features(**inputs))
 
         # 길이 1로 정규화한다. 적재 벡터가 정규화돼 있어 이쪽도 맞춰야 내적이
         # 코사인 유사도가 된다.
         normalized = features / features.norm(dim=-1, keepdim=True)
-        return normalized[0].tolist()
+        return normalized[0].float().tolist()
+
+
+def _as_tensor(output: Any) -> Any:
+    """`get_image_features()`의 반환형을 텐서로 맞춘다.
+
+    transformers 버전에 따라 텐서를 그대로 주기도 하고 출력 객체
+    (`BaseModelOutputWithPooling`)를 주기도 한다. 적재에 쓴 코랩 노트북에서 먼저
+    겪은 문제이며, 같은 처리를 여기에도 둔다 — 여기서 갈라지면 적재 벡터와
+    질의 벡터가 다른 방식으로 만들어진다.
+    """
+    import torch
+
+    if torch.is_tensor(output):
+        return output
+    for name in ("pooler_output", "image_embeds", "last_hidden_state"):
+        value = getattr(output, name, None)
+        if torch.is_tensor(value):
+            # last_hidden_state는 토큰별 벡터라 평균으로 접는다.
+            return value.mean(dim=1) if name == "last_hidden_state" else value
+    raise RuntimeError(f"임베딩을 찾지 못했습니다: {type(output).__name__}")
 
 
 # 프로세스에 하나만 둔다. 인코더를 요청마다 새로 만들면 모델도 매번 적재된다.
