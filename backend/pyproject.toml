@@ -25,7 +25,13 @@ dependencies = [
   # 설치만으로는 아무 동작도 바뀌지 않는다 — LANGFUSE_ENABLED=true여야 켜진다.
   # OpenTelemetry SDK와 protobuf를 함께 끌고 온다. 2026-08-25 확인 기준 protobuf는
   # 미설치 상태였고 google-genai는 optional extra에서만 요구해 충돌하지 않는다.
-  "langfuse>=4.14",
+  # **여기만 상한을 둔다.** 다른 의존성은 상한 없는 `>=`인데, 이 패키지는 v3 → v4에서
+  # 계약이 통째로 바뀐 전례가 있고 관측 계층이 v4 전용 API(`propagate_attributes`,
+  # `start_as_current_observation`, `run_experiment`, `langfuse.experiment.Evaluation`)에
+  # 직접 올라가 있다. 상한이 없으면 v5가 나오는 순간 조용히 올라타 관측이 깨진다 —
+  # 그런데 관측 실패는 예외를 올리지 않고 로그 한 줄만 남기도록 설계돼 있어서
+  # (`langfuse_tracing._guard`) **깨진 걸 한동안 모른다.**
+  "langfuse>=4.14,<5",
 ]
 
 [project.optional-dependencies]
