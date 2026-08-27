@@ -45,6 +45,13 @@ def isolate_regular_tests_from_real_providers(monkeypatch: pytest.MonkeyPatch) -
     # 별도 단위 테스트가 인코더를 직접 주입해 커버하므로 여기선 꺼도 무방하다.
     monkeypatch.setattr(settings, "taste_evidence_enabled", False)
 
+    # PLACE_MOOD_ENABLED도 같은 이유로 끈다. 여기서 안 끄면 .env에 true가 남은
+    # 개발 환경에서 앱 lifespan을 켜는 테스트가 SigLIP을 적재한다 — 취향 인코더보다
+    # 무겁다(모델 적재 실측 44초). 사진 검색은 별도 단위 테스트가 Provider와
+    # 인코더를 직접 주입해 커버하므로 여기선 꺼도 무방하다.
+    monkeypatch.setattr(settings, "place_mood_enabled", False)
+    monkeypatch.setattr(settings, "place_mood_warmup_enabled", False)
+
     # LANGFUSE_ENABLED도 provider_mode와 별개 축이다. .env에 true가 남아 있으면
     # 일반 테스트가 실제로 Langfuse Cloud에 span을 쏘고, 그 안에 테스트 픽스처
     # 발화가 실린다. 관측은 판정에 관여하지 않으므로 테스트에서는 항상 꺼둔다 —

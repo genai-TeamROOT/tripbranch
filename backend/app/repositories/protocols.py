@@ -207,3 +207,8 @@ class PlaceMoodRepository(Protocol):
         match_count: int,
         min_similarity: float,
     ) -> tuple[PlaceMoodMatch, ...]: ...
+
+    async def find_first_photo_urls(
+        self,
+        content_ids: Sequence[str],
+    ) -> dict[str, str]: ...
