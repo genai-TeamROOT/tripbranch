@@ -41,6 +41,11 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Final
 
 import httpx
@@ -48,6 +53,8 @@ from langfuse.experiment import Evaluation
 
 from app.config import settings
 from app.prompts.registry import operation_prompt_version
+from app.providers.gemini_prompts import PROMPT_VERSION
+from scripts.evaluate_agent_quality import dataset_digest, load_cases
 from scripts.sync_langfuse_dataset import DATASET_NAMES, _client
 
 DEFAULT_BASE_URL: Final = "http://localhost:8000"
@@ -94,21 +101,24 @@ def _session_id(body: dict[str, Any]) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _run_name(split: str, item_count: int) -> str | None:
-    """Experiments 목록에 뜰 회차 이름. 넣을 게 없으면 `None`(SDK가 시각을 붙인다).
+def _run_name(split: str, item_count: int) -> str:
+    """Experiments 목록에 뜰 회차 이름.
 
-    **목록에서 개발자와 프롬프트 버전이 읽히는 자리는 여기뿐이다.** Experiments
-    화면의 열 목록(18개)에 metadata가 없다 — 2026-08-27에 UI로 확인했다. 그래서
-    `metadata`에만 넣으면 회차를 나란히 놓고 볼 때 누구 것인지, 어느 버전이 낸
-    점수인지 구분이 안 된다.
+    **목록에서 개발자와 프롬프트 버전이 가장 잘 읽히는 자리다.** 회차 목록 화면에는
+    `Metadata` 열이 있지만 6개 필드가 JSON 한 덩어리로 들어가 `{ "split": "de…`로
+    잘린다 — 열을 넓히거나 눌러야 읽힌다. 비교(Results) 화면의 열 목록 18개에는
+    `Metadata`가 아예 없다. 둘 다 2026-08-27에 UI로 확인했다.
 
-    trace 태그(`developer:`)로도 안 된다. 실험 trace의 루트는 SDK가 만드는
-    `experiment-item-run`이라 우리 `trace_attributes()`를 타지 않고, 태그가 붙는
-    `agent_turn`은 그 자식이다 — 목록까지 올라오지 않는다(실측: 같은 trace 안에
-    태그 있는 observation 14개, 없는 것 6개).
+    그래서 이름과 `metadata` 양쪽에 넣는다 — 이름은 눈으로 읽는 자리,
+    `metadata`는 필터·API 조회용이다.
 
-    시각은 붙이지 않는다 — SDK가 `run_name`을 안 주면 자기가 붙이고, 주면 그대로
-    쓴다. 여기서 또 넣으면 이름이 길어져 목록에서 뒤가 잘린다.
+    **Experiments 목록과 Tracing 목록은 다른 문제다.** Tracing 쪽은
+    `_experiment_attributes()`가 태그로 푼다 — 이 함수는 Experiments 목록 담당이다.
+
+    **시각을 반드시 넣는다.** SDK는 `run_name`이 없을 때만 시각을 붙인다. 우리가
+    이름을 주면 그대로 쓰므로, 고정 이름이면 **같은 회차에 덮어써진다** — 실측으로
+    확인했다(2026-08-27, 3건 회차를 두 번 돌렸더니 run id가 같았다). 그러면 회차를
+    나란히 비교하려던 목적이 사라진다. 초는 빼서 이름이 길어지지 않게 한다.
     """
 
     parts = [f"{split} {item_count}건"]
@@ -118,7 +128,91 @@ def _run_name(split: str, item_count: int) -> str | None:
     version = operation_prompt_version("extract_recommend_conditions")
     if version:
         parts.append(version)
-    return " · ".join(parts) if len(parts) > 1 else None
+    # 로컬 시각. UTC로 적으면 화면 시계와 어긋나 어느 회차인지 헷갈린다.
+    parts.append(datetime.now().astimezone().strftime("%m-%d %H:%M"))
+    return " · ".join(parts)
+
+
+def _server_commit() -> str | None:
+    """지금 체크아웃된 커밋. git이 없거나 레포 밖이면 `None`.
+
+    프롬프트 버전만으로는 부족하다 — 스코어링·조건 병합이 바뀌면 같은 프롬프트로도
+    결과가 달라진다. 회차를 나중에 재현하려면 코드 쪽 기준점이 있어야 한다.
+    """
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+            cwd=Path(__file__).resolve().parents[2],
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() or None
+
+
+def _description(split: str) -> str:
+    """회차 목록의 `Description`. **재현에 필요한 기준점만** 담는다.
+
+    이름(`_run_name`)이 누가·무엇을·언제를 담으므로 여기는 겹치지 않게 쓴다.
+
+    **골드셋 해시를 맨 앞에 둔다.** 목록의 Description 열이 좁아 뒤가 잘리는데,
+    잘려도 이건 보여야 한다 — 골드셋이 바뀌면 두 회차를 나란히 놓고도 같은 문제를
+    푼 것인지 알 수 없다(2026-08-27에 `2d4e276eed53` → `99825c9642fa`로 바뀌었다).
+
+    ⚠️ **`description`은 회차를 처음 만들 때만 반영된다.** SDK가 항목마다
+    `dataset_run_items.create(run_description=...)`로 보내는데 이미 있는 회차는
+    덮어쓰지 않는다. 같은 `run_name`으로 다시 돌리면 빈칸으로 남는다 —
+    `_run_name`이 시각을 넣는 또 하나의 이유다.
+    """
+
+    parts = [dataset_digest(load_cases(split))]  # type: ignore[arg-type]
+    commit = _server_commit()
+    if commit:
+        parts.append(commit)
+    for operation in ("extract_recommend_conditions", "classify_intent"):
+        version = operation_prompt_version(operation)
+        if version:
+            parts.append(version)
+    # `agent-interpret-prompts-` 접두어는 이 자리에서 정보가 없다 — 숫자만 남긴다.
+    parts.append(f"base {PROMPT_VERSION.rsplit('-', 1)[-1]}")
+    parts.append(f"env={settings.app_env}")
+    return " · ".join(parts)
+
+
+@contextmanager
+def _experiment_attributes(split: str) -> Iterator[None]:
+    """`run_experiment()`가 만들 span에 붙일 trace 속성 범위.
+
+    **Tracing 탭에서 실험 회차를 가려내려면 이게 필요하다.** 그 trace의 루트는
+    SDK가 만드는 `experiment-item-run`인데, 서버의 `trace_attributes()`는 그
+    자식(`agent_turn`)에만 걸린다 — 자식 태그는 목록까지 올라오지 않는다.
+
+    v4에는 trace 속성을 나중에 갱신하는 API가 없다(`update_current_span`은 있고
+    `update_current_trace`는 없다). 그래서 **만들기 전에** 범위를 열어야 한다.
+
+    실패해도 회차는 돌아야 한다 — 관측 배선이 평가를 막으면 안 된다.
+    """
+
+    developer = settings.langfuse_developer.strip()
+    tags = ["source:experiment", f"split:{split}"]
+    if developer:
+        tags.append(f"developer:{developer}")
+    version = operation_prompt_version("extract_recommend_conditions")
+    if version:
+        tags.append(f"prompt:{version}")
+
+    try:
+        from langfuse import propagate_attributes
+
+        with propagate_attributes(tags=tags):
+            yield
+    except Exception as exc:  # noqa: BLE001 — 관측 실패가 평가를 막지 않는다
+        print(f"  (trace 속성 전파 실패, 회차는 계속: {type(exc).__name__})")
+        yield
 
 
 def make_task(base_url: str) -> Any:
@@ -283,26 +377,32 @@ def main() -> int:
         items = items[: args.limit]
     print(f"✓ {dataset_name} {len(items)}건")
 
-    result = client.run_experiment(
-        name=f"{args.split} 골드셋 회귀",
-        run_name=args.run_name or _run_name(args.split, len(items)),
-        description=f"{dataset_name} {len(items)}건 · env={settings.app_env}",
-        data=items,
-        task=make_task(args.base_url),
-        evaluators=[intent_match, condition_match, case_pass],
-        run_evaluators=[case_pass_rate, intent_accuracy],
-        max_concurrency=MAX_CONCURRENCY,
-        metadata={
-            "split": args.split,
-            "source": "run_langfuse_experiment",
-            "item_count": len(items),
-            # 누가 돌렸는지. Experiments 화면에는 metadata 열이 없어서(2026-08-27 확인)
-            # 목록에서 읽히는 자리는 `run_name`뿐이다 — 여기는 필터·API 조회용이다.
-            "developer": settings.langfuse_developer or None,
-            "extract_prompt_version": operation_prompt_version("extract_recommend_conditions"),
-            "classify_prompt_version": operation_prompt_version("classify_intent"),
-        },
-    )
+    # **`run_experiment()`를 태그 범위 안에서 부른다.** 이 호출이 만드는
+    # `experiment-item-run`이 그 trace의 루트인데, SDK가 만들어서 우리
+    # `trace_attributes()`를 타지 않는다 — 그래서 Tracing 탭 목록에서 누가 돌린
+    # 회차인지 안 보였다(2026-08-27 확인). v4에는 trace 속성을 나중에 갱신하는
+    # API가 없으므로(`update_current_trace` 없음) 만들기 전에 범위를 열어야 한다.
+    with _experiment_attributes(args.split):
+        result = client.run_experiment(
+            name=f"{args.split} 골드셋 회귀",
+            run_name=args.run_name or _run_name(args.split, len(items)),
+            description=_description(args.split),
+            data=items,
+            task=make_task(args.base_url),
+            evaluators=[intent_match, condition_match, case_pass],
+            run_evaluators=[case_pass_rate, intent_accuracy],
+            max_concurrency=MAX_CONCURRENCY,
+            metadata={
+                "split": args.split,
+                "source": "run_langfuse_experiment",
+                "item_count": len(items),
+                # 누가 돌렸는지. Experiments 화면에는 metadata 열이 없어서(2026-08-27 확인)
+                # 목록에서 읽히는 자리는 `run_name`뿐이다 — 여기는 필터·API 조회용이다.
+                "developer": settings.langfuse_developer or None,
+                "extract_prompt_version": operation_prompt_version("extract_recommend_conditions"),
+                "classify_prompt_version": operation_prompt_version("classify_intent"),
+            },
+        )
     client.flush()
 
     print(f"\n회차: {result.run_name}")
