@@ -6,6 +6,7 @@ import { vi } from "vitest";
 import { fetchRecommendationPlaceDetails } from "../../api/trip";
 import { TripProvider } from "../../state/TripContext";
 import type { InfoPlaceCard as InfoPlaceCardData } from "../../types";
+import { openNaverMapSearch } from "../../utils/naverDirections";
 import { PlaceInfoCard } from "./PlaceInfoCard";
 
 // 상세 모달이 useTripState(현재 위치)를 읽으므로 TripProvider로 감싼다.
@@ -13,6 +14,11 @@ const renderWithTrip = (ui: Parameters<typeof render>[0]) => render(ui, { wrappe
 
 vi.mock("../../api/trip", () => ({
   fetchRecommendationPlaceDetails: vi.fn(),
+}));
+
+vi.mock("../../utils/naverDirections", () => ({
+  openNaverMapSearch: vi.fn(),
+  openNaverDirections: vi.fn(),
 }));
 
 const card: InfoPlaceCardData = {
@@ -265,7 +271,7 @@ it("실시간 주차 카드에는 데이터 출처와 서울시 주차정보 포
   const parkingCard: InfoPlaceCardData = {
     ...card,
     question_type: "realtime_parking",
-    answer_fields: { "[공영] 세종로 공영주차장": "잔여 535대" },
+    answer_fields: { "[공영] 세종로 공영주차장": "현재 535대 주차 가능(총 1,260대, 유료)" },
     thumbnail_url: null,
     overview: null,
     operating_hours: null,
@@ -314,6 +320,7 @@ it("실시간 주차 카드에는 데이터 출처와 서울시 주차정보 포
   };
 
   renderWithTrip(<PlaceInfoCard card={parkingCard} />);
+  expect(screen.getByText("현재 535대 주차 가능")).toHaveClass("text-emerald-700");
   await user.click(screen.getByRole("button", { name: "경복궁 상세 보기" }));
 
   const dialog = within(screen.getByRole("dialog"));
@@ -330,6 +337,13 @@ it("실시간 주차 카드에는 데이터 출처와 서울시 주차정보 포
   expect(dialog.getByText("서울특별시 종로구 세종대로 189")).toBeInTheDocument();
   expect(dialog.getByText("실시간 주차 가능")).toBeInTheDocument();
   expect(dialog.getByText("실시간 잔여 현황 미제공")).toBeInTheDocument();
+  expect(dialog.queryByRole("heading", { name: "관련 정보" })).not.toBeInTheDocument();
+
+  await user.click(dialog.getAllByRole("button", { name: "네이버 지도로 길찾기" })[0]);
+  expect(openNaverMapSearch).toHaveBeenCalledWith(
+    "서울특별시 종로구 세종대로 189",
+    "세종로 공영주차장",
+  );
 
   await user.click(dialog.getByRole("button", { name: "공영 1" }));
   expect(dialog.queryByText("서울스퀘어 주차장")).not.toBeInTheDocument();

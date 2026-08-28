@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { buildNaverDirections, openNaverDirections } from "./naverDirections";
+import { buildNaverDirections, openNaverDirections, openNaverMapSearch } from "./naverDirections";
 
 describe("buildNaverDirections", () => {
   it("출발·도착 좌표로 대중교통 앱 딥링크와 웹 폴백을 만든다", () => {
@@ -80,6 +80,31 @@ describe("openNaverDirections (데스크톱)", () => {
     expect(
       openNaverDirections({ deviceLocation: "", destLat: 37.6, destLng: 127.1, destName: "장소" }),
     ).toBe(false);
+    expect(openSpy).not.toHaveBeenCalled();
+    openSpy.mockRestore();
+  });
+});
+
+describe("openNaverMapSearch", () => {
+  it("주소와 주차장 이름으로 네이버지도 검색을 연다", () => {
+    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+
+    expect(openNaverMapSearch("서울특별시 종로구 세종대로 189", "세종로 공영주차장")).toBe(true);
+    expect(openSpy).toHaveBeenCalledWith(
+      expect.stringContaining("map.naver.com/p/search/"),
+      "_blank",
+      "noopener",
+    );
+    expect(openSpy.mock.calls[0]?.[0]).toContain(
+      encodeURIComponent("세종로 공영주차장 서울특별시 종로구 세종대로 189"),
+    );
+    openSpy.mockRestore();
+  });
+
+  it("주소가 없으면 지도를 열지 않는다", () => {
+    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+
+    expect(openNaverMapSearch("   ", "주차장")).toBe(false);
     expect(openSpy).not.toHaveBeenCalled();
     openSpy.mockRestore();
   });

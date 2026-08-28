@@ -354,7 +354,7 @@ async def test_realtime_public_parking_uses_municipal_live_counts() -> None:
     assert isinstance(response.result, RealtimeCityInfoResult)
     assert response.result.question_type == "realtime_public_parking"
     assert "[공영] 테스트 종로 공영주차장" in response.result.fields
-    assert "잔여 44면" in response.result.fields["[공영] 테스트 종로 공영주차장"]
+    assert "현재 44대 주차 가능" in response.result.fields["[공영] 테스트 종로 공영주차장"]
 
 
 @pytest.mark.asyncio

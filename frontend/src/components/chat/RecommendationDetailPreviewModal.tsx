@@ -9,7 +9,7 @@ import { useEffect, useState } from "react";
 import { fetchRecommendationPlaceDetails } from "../../api/trip";
 import { useTripState } from "../../state/TripContext";
 import type { InfoPlaceCard, RecommendationItem } from "../../types";
-import { openNaverDirections } from "../../utils/naverDirections";
+import { openNaverDirections, openNaverMapSearch } from "../../utils/naverDirections";
 import { travelLabel, travelValue } from "../../utils/travelDisplay";
 import {
   ConcentrationForecastBars,
@@ -388,6 +388,16 @@ function ParkingLotCard({ parkingItem }: { parkingItem: ParkingCardItem }) {
           {item.details["기준 시각"]} 기준
         </p>
       )}
+      {address && (
+        <button
+          type="button"
+          onClick={() => openNaverMapSearch(address, item.title)}
+          className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 transition-colors hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-300 dark:hover:bg-blue-950/60"
+        >
+          <span aria-hidden="true">🧭</span>
+          네이버 지도로 길찾기
+        </button>
+      )}
     </article>
   );
 }
@@ -678,7 +688,7 @@ export function RecommendationDetailPreviewModal({
   // "관련 정보"(answer_fields)에서 개요는 아래 "개요" 섹션과 내용이 같아 제외한다(중복 제거).
   // 홈페이지는 answer_fields가 아니라 카드 최상위 필드다(질문 유형이 general_info가
   // 아니어도 백엔드가 채울 수 있다) — 하단 링크를 없앤 대신 여기서 합성해 넣는다.
-  const answerEntries = detailCard
+  const answerEntries = detailCard && !isRealtimeParkingCard(detailCard)
     ? [
         ...Object.entries(detailCard.answer_fields).filter(([key]) => key !== "overview"),
         ...(detailCard.homepage && !("homepage" in detailCard.answer_fields)
