@@ -15,7 +15,7 @@ import asyncio
 import logging
 import math
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import timedelta
@@ -2315,6 +2315,7 @@ async def _run_agent_flow(
         tool_provider=tool_provider,
         travel_route_tool=travel_route_tool,
         store=store,
+        shown_place_ids=_revivable_shown_place_ids(llm_output, session_context),
         stream_event_sink=stream_event_sink,
     )
     if tool_outcome.terminal is not None:
@@ -2335,6 +2336,7 @@ async def _run_agent_flow(
         agent_conditions=agent_conditions,
         context_gps=context_gps,
         is_schedule=is_schedule,
+        shown_place_ids=_revivable_shown_place_ids(llm_output, session_context),
         tool_provider=tool_provider,
         recommendation_provider=recommendation_provider,
         enrichment_provider=enrichment_provider,
@@ -2405,13 +2407,17 @@ async def _fetch_tool_context(
     tool_provider: ToolProvider,
     travel_route_tool: TravelRouteToolProvider | None,
     store: StateStore | None,
+    # 마지막 run에서 보여준 place_id. 새 SCHEDULE 턴에서 제외 목록을 되살리는 데만
+    # 쓴다(TP-180). 조회 단계에서 이미 걸러지면 채점 단계에는 후보 자체가 없다.
+    shown_place_ids: Sequence[str] = (),
     stream_event_sink: StreamEventSink | None,
 ) -> _ToolFetchOutcome:
     """A → C Tool 조회와 종료 상태 판정(5단계).
 
     `run_agent_flow()`의 5단계 블록을 그대로 옮긴 것이다 — 라우팅 그래프가 이 단계를
     노드로 감쌀 수 있게 먼저 함수로 떼어냈다(langgraph-adoption.md §6.1 3단계).
-    **본문은 한 줄도 바꾸지 않았고**, 중간 반환만 `_ToolFetchOutcome`으로 포장했다.
+    떼어낼 당시에는 본문을 한 줄도 바꾸지 않고 중간 반환만 `_ToolFetchOutcome`으로
+    포장했다. 이후 TP-180으로 C에 넘기는 제외 목록을 고르는 한 줄이 붙었다.
     """
 
     # 5) A → C: Tool 결과 확보 (Protocol을 통해서만 — C의 구체 클래스는 여기서 모른다).
@@ -2432,7 +2438,11 @@ async def _fetch_tool_context(
         # D에 넘기는 것과 같은 소진분을 C에도 넘긴다. C는 이걸로 판정하지 않고
         # 수집 범위를 그만큼 넓히는 데만 쓴다 — 안 넘기면 "다른 곳 보여줘"에
         # 같은 후보가 다시 와서 D가 전부 걸러내고 0건이 된다.
-        excluded_place_ids=state_response.excluded_place_ids,
+        excluded_place_ids=_effective_excluded_place_ids(
+            state_response.excluded_place_ids,
+            shown_place_ids=shown_place_ids,
+            is_schedule=llm_output.intent is Intent.SCHEDULE,
+        ),
     )
     await _emit_progress(
         stream_event_sink,
@@ -2628,6 +2638,53 @@ async def _fetch_tool_context(
     )
 
 
+def _revivable_shown_place_ids(
+    llm_output: LLMOutput, session_context: SessionContextResponse
+) -> Sequence[str]:
+    """직전 노출분 중 이번 턴에 후보로 되살려도 되는 것을 고른다 (TP-180).
+
+    되살리는 것은 **새 SCHEDULE 턴**뿐이다. 재조정 턴(REJECT_ALL "다른 곳 보여줘",
+    REJECT_SPECIFIC "두 번째는 별로야")은 MODIFY로 분류된 뒤 SCHEDULE로 relabel되며,
+    사용자가 방금 그 장소들을 거절한 턴이다. 거절 대상은 `rejected`로 제외 목록에
+    들어가지만 `shown_place_ids`에도 그대로 남아 있어, 구분 없이 되살리면 REJECT
+    이력이 통째로 무력화된다(재조정해도 같은 장소가 다시 나온다).
+
+    relabel된 재조정 턴은 `llm_output.modify`가 채워져 있다 — `_run_schedule_branch()`가
+    pinned_items를 쓸지 판단하는 것과 같은 신호를 쓴다.
+    """
+
+    if llm_output.modify is not None:
+        return ()
+    return session_context.shown_place_ids
+
+
+def _effective_excluded_place_ids(
+    excluded_place_ids: Sequence[str],
+    *,
+    shown_place_ids: Sequence[str],
+    is_schedule: bool,
+) -> list[str]:
+    """SCHEDULE 턴에 한해 직전 턴에 보여준 장소를 제외 목록에서 뺀다 (TP-180).
+
+    B의 제외 목록은 `recommended ∪ rejected ∪ closed_excluded`라(state/history.py)
+    직전 턴에 추천한 장소가 이미 들어 있다. SCHEDULE은 직전 노출분을 그대로 쓰지
+    않고 후보를 새로 채점하는데(`_run_schedule_branch`의 `schedule_candidates`),
+    그 채점에 이 목록이 그대로 적용되면 "이 장소들로 일정 짜줘"가 "이 장소들만 빼고
+    짜줘"로 동작한다 — 사용자가 방금 본 장소가 한 곳도 일정에 들어갈 수 없다.
+
+    그래서 SCHEDULE 턴에서만 마지막 run의 노출분을 후보 풀로 되살린다. 제외 목록의
+    의미(`get_exclusion_place_ids()`의 계약)는 바꾸지 않는다 — 이 턴에 무엇을
+    넘길지만 조정한다. 무엇을 되살릴지는 `_revivable_shown_place_ids()`가 정한다 —
+    거절된 장소도 shown에 남아 있어 그대로 되살리면 REJECT 이력이 무력화된다.
+    RECOMMEND를 연속 요청하는 흐름은 `is_schedule=False`라 영향을 받지 않는다.
+    """
+
+    if not is_schedule or not shown_place_ids:
+        return list(excluded_place_ids)
+    revived = set(shown_place_ids)
+    return [place_id for place_id in excluded_place_ids if place_id not in revived]
+
+
 async def _score_recommendations(
     state_response: StateApplyResponse,
     *,
@@ -2635,6 +2692,9 @@ async def _score_recommendations(
     agent_conditions: UserConditions,
     context_gps: str | None,
     is_schedule: bool,
+    # 마지막 run에서 사용자에게 보여준 place_id(rank 순). SCHEDULE 턴에서
+    # 제외 목록을 되살리는 데만 쓴다(TP-180).
+    shown_place_ids: Sequence[str] = (),
     tool_provider: ToolProvider,
     recommendation_provider: RecommendationProvider,
     enrichment_provider: EnrichmentProvider,
@@ -2649,9 +2709,16 @@ async def _score_recommendations(
 
     `run_agent_flow()`의 6단계 블록을 그대로 옮긴 것이다 — 라우팅 그래프가 이 단계를
     노드로 감쌀 수 있게 먼저 함수로 떼어냈다(langgraph-adoption.md §6.1 3단계).
-    **본문은 한 줄도 바꾸지 않았다.** 이 구간에는 중간 반환이 없어 결과 하나만
-    돌려주면 되는, 경계가 가장 깨끗한 단계다.
+    이 구간에는 중간 반환이 없어 결과 하나만 돌려주면 되는, 경계가 가장 깨끗한
+    단계다. 떼어낼 당시에는 본문을 한 줄도 바꾸지 않았고, 이후 TP-180으로 제외
+    목록을 고르는 한 줄(`_effective_excluded_place_ids()`)만 앞에 붙었다.
     """
+
+    excluded_place_ids = _effective_excluded_place_ids(
+        state_response.excluded_place_ids,
+        shown_place_ids=shown_place_ids,
+        is_schedule=is_schedule,
+    )
 
     # 6) A → D: 1차 Scoring (Protocol을 통해서만 — D의 구체 클래스는 여기서 모른다).
     #    최종 반환은 RECOMMEND/MODIFY가 recommendation_result_limit, SCHEDULE이
@@ -2685,7 +2752,7 @@ async def _score_recommendations(
             await recommendation_provider.prepare(
                 agent_conditions,
                 tool_context,
-                state_response.excluded_place_ids,
+                excluded_place_ids,
                 visit_at=visit_at,
                 ignore_operating_hours=effective_ignore_operating_hours,
             )
@@ -2707,11 +2774,11 @@ async def _score_recommendations(
                 conditions=agent_conditions,
                 gps_location=context_gps,
                 excluded_place_ids=[
-                    *state_response.excluded_place_ids,
+                    *excluded_place_ids,
                     *(
                         place_id
                         for place_id in run_seen_ids
-                        if place_id not in state_response.excluded_place_ids
+                        if place_id not in excluded_place_ids
                     ),
                 ],
             )
@@ -2767,7 +2834,7 @@ async def _score_recommendations(
                 refill_prepared = await recommendation_provider.prepare(
                     agent_conditions,
                     refill_context,
-                    state_response.excluded_place_ids,
+                    excluded_place_ids,
                     visit_at=visit_at,
                     ignore_operating_hours=effective_ignore_operating_hours,
                 )
@@ -2805,7 +2872,7 @@ async def _score_recommendations(
         recommendations = await recommendation_provider.recommend(
             agent_conditions,
             tool_context,
-            state_response.excluded_place_ids,
+            excluded_place_ids,
             limit=recommendation_limit,
             ignore_operating_hours=effective_ignore_operating_hours,
         )

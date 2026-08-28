@@ -44,7 +44,10 @@ async def tool_fetch_node(
 ) -> dict[str, object]:
     """A → C Tool 조회(5단계). 종료 상태면 ``response``를 채워 그 턴을 끝낸다."""
 
-    from app.services.runtime.agent_runtime import _fetch_tool_context
+    from app.services.runtime.agent_runtime import (
+        _fetch_tool_context,
+        _revivable_shown_place_ids,
+    )
 
     deps: PipelineDeps = deps_from_config(config)
     outcome = await _fetch_tool_context(
@@ -57,6 +60,9 @@ async def tool_fetch_node(
         tool_provider=deps.tool_provider,
         travel_route_tool=deps.travel_route_tool,
         store=deps.store,
+        shown_place_ids=_revivable_shown_place_ids(
+            state["llm_output"], state["session_context"]
+        ),
         stream_event_sink=sink_from_config(config),
     )
     if outcome.terminal is not None:
@@ -76,7 +82,10 @@ async def scoring_node(
     """A → D 1차 Scoring과 후보 보충·혼잡도 재정렬(6단계)."""
 
     from app.schemas import Intent
-    from app.services.runtime.agent_runtime import _score_recommendations
+    from app.services.runtime.agent_runtime import (
+        _revivable_shown_place_ids,
+        _score_recommendations,
+    )
 
     deps: PipelineDeps = deps_from_config(config)
     recommendations = await _score_recommendations(
@@ -85,6 +94,9 @@ async def scoring_node(
         agent_conditions=state["agent_conditions"],
         context_gps=state["context_gps"],
         is_schedule=state["llm_output"].intent is Intent.SCHEDULE,
+        shown_place_ids=_revivable_shown_place_ids(
+            state["llm_output"], state["session_context"]
+        ),
         tool_provider=deps.tool_provider,
         recommendation_provider=deps.recommendation_provider,
         enrichment_provider=deps.enrichment_provider,

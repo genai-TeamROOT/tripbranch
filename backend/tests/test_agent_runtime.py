@@ -66,7 +66,9 @@ from app.services.runtime import agent_runtime as agent_runtime_module
 from app.services.runtime.agent_runtime import (
     _WIDEN_RADIUS_MAX_TRAVEL_TIME,
     _apply_concentration_rerank,
+    _effective_excluded_place_ids,
     _fetch_compare_travel_routes,
+    _revivable_shown_place_ids,
     run_agent_flow,
     summarize_turn,
 )
@@ -5181,3 +5183,114 @@ def test_turn_input_records_the_paths_that_skip_intent_classification() -> None:
 
     assert payload["clarification_choice"] == "ignore_operating_hours"
     assert payload["travel_origin_override"] == TravelOrigin.USER_LOCATION.value
+
+
+# --- TP-180: SCHEDULE 턴의 제외 목록 되살리기 -----------------------------------
+# "이 장소들로 일정 짜줘"가 방금 추천한 장소를 오히려 제외한 채 일정을 짜던 문제.
+# 제외 목록(recommended ∪ rejected ∪ closed_excluded)에 직전 추천분이 들어 있고,
+# SCHEDULE은 후보를 새로 채점하면서 그 목록을 그대로 적용해 사용자가 방금 본 장소가
+# 후보에서 통째로 빠졌다.
+
+
+def test_schedule_revives_shown_places_from_exclusion() -> None:
+    """SCHEDULE 턴에서는 마지막 run의 노출분이 제외 목록에서 빠진다."""
+
+    result = _effective_excluded_place_ids(
+        ["p1", "p2", "p3"],
+        shown_place_ids=["p1", "p2"],
+        is_schedule=True,
+    )
+
+    assert result == ["p3"]
+
+
+def test_schedule_keeps_rejected_places_excluded() -> None:
+    """노출분이 아닌 제외 대상(거절·폐점)은 SCHEDULE 턴에서도 계속 제외된다.
+
+    되살리는 것은 "방금 보여준 것"뿐이다 — 사용자가 명시적으로 거절한 장소까지
+    후보로 돌아오면 이번 수정이 REJECT 이력을 무력화하게 된다.
+    """
+
+    result = _effective_excluded_place_ids(
+        ["shown1", "rejected1", "closed1"],
+        shown_place_ids=["shown1"],
+        is_schedule=True,
+    )
+
+    assert result == ["rejected1", "closed1"]
+
+
+def test_recommend_turn_keeps_exclusion_intact() -> None:
+    """RECOMMEND 반복 흐름은 영향을 받지 않는다 — 중복 추천 방지가 그대로 산다."""
+
+    result = _effective_excluded_place_ids(
+        ["p1", "p2"],
+        shown_place_ids=["p1", "p2"],
+        is_schedule=False,
+    )
+
+    assert result == ["p1", "p2"]
+
+
+def test_exclusion_unchanged_when_nothing_shown() -> None:
+    """첫 턴처럼 노출 이력이 없으면 그대로 둔다."""
+
+    assert _effective_excluded_place_ids(["p1"], shown_place_ids=[], is_schedule=True) == ["p1"]
+
+
+def test_exclusion_order_is_preserved() -> None:
+    """제외 목록의 순서를 뒤집지 않는다 — 호출부가 순서에 의미를 두지 않더라도
+    diff와 로그를 읽을 때 원본 순서가 유지되는 편이 낫다."""
+
+    result = _effective_excluded_place_ids(
+        ["a", "b", "c", "d"],
+        shown_place_ids=["c"],
+        is_schedule=True,
+    )
+
+    assert result == ["a", "b", "d"]
+
+
+def _llm_output(*, modify: object) -> object:
+    """_revivable_shown_place_ids()가 보는 필드(modify)만 가진 최소 스텁."""
+
+    class _Stub:
+        pass
+
+    stub = _Stub()
+    stub.modify = modify
+    return stub
+
+
+def _session_context_stub(shown: list[str]) -> object:
+    class _Stub:
+        pass
+
+    stub = _Stub()
+    stub.shown_place_ids = shown
+    return stub
+
+
+def test_new_schedule_turn_revives_shown_places() -> None:
+    """새 SCHEDULE 턴("이 장소들로 일정 짜줘")은 직전 노출분을 되살린다."""
+
+    assert _revivable_shown_place_ids(
+        _llm_output(modify=None), _session_context_stub(["p1", "p2"])
+    ) == ["p1", "p2"]
+
+
+def test_replan_turn_does_not_revive_shown_places() -> None:
+    """재조정 턴은 되살리지 않는다 — 방금 거절한 장소가 다시 나오면 안 된다.
+
+    "다른 곳 보여줘"(REJECT_ALL)·"두 번째는 별로야"(REJECT_SPECIFIC)는 MODIFY로
+    분류된 뒤 SCHEDULE로 relabel되므로 is_schedule만으로는 새 일정 요청과 구분되지
+    않는다. 거절 대상이 shown_place_ids에도 남아 있어, 구분 없이 되살리면 REJECT
+    이력이 무력화된다.
+    """
+
+    assert (
+        _revivable_shown_place_ids(
+            _llm_output(modify=object()), _session_context_stub(["p1", "p2"])
+        )
+        == ()
+    )
