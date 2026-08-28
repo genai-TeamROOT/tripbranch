@@ -260,19 +260,20 @@ class TestComposeChatMessageGeneral:
 class TestComposeChatMessageRecommendAndModify:
     @pytest.mark.parametrize("intent", [Intent.RECOMMEND, Intent.MODIFY])
     @pytest.mark.asyncio
-    async def test_uses_immediate_template_when_recommendations_present(
+    async def test_uses_llm_summary_when_recommendations_present(
         self, intent: Intent
     ) -> None:
         llm_output = LLMOutput(intent=intent, status=OutputStatus.COMPLETE)
         stub = _StubLLM(recommendation_summary="테스트 장소를 중심으로 골라봤어요.")
+        recommendations = _response(place_ids=["a", "b"])
         message = await compose_chat_message(
-            llm_output, recommendations=_response(place_ids=["a", "b"]), llm=stub
+            llm_output, recommendations=recommendations, llm=stub
         )
-        assert message == "이런 곳들을 찾아봤어요:"
-        assert stub.summary_received is None
+        assert message == "테스트 장소를 중심으로 골라봤어요."
+        assert stub.summary_received == (intent, recommendations)
 
     @pytest.mark.asyncio
-    async def test_template_does_not_depend_on_recommendation_summary_llm(self) -> None:
+    async def test_falls_back_to_template_when_recommendation_summary_llm_fails(self) -> None:
         llm_output = LLMOutput(intent=Intent.RECOMMEND, status=OutputStatus.COMPLETE)
         stub = _StubLLM(fail_recommendation_summary=True)
         message = await compose_chat_message(
@@ -281,11 +282,11 @@ class TestComposeChatMessageRecommendAndModify:
             llm=stub,
         )
         assert message == "이런 곳들을 찾아봤어요:"
-        assert stub.summary_received is None
+        assert stub.summary_received is not None
 
     @pytest.mark.asyncio
-    async def test_streams_template_once_when_callback_is_provided(self) -> None:
-        """추천 카드 wrapper는 LLM 호출 없이 한 번에 스트림으로 보낸다."""
+    async def test_streams_llm_summary_when_callback_is_provided(self) -> None:
+        """SSE 경로에서는 추천 소개 문장이 청크 단위로 먼저 전달된다."""
 
         llm_output = LLMOutput(intent=Intent.RECOMMEND, status=OutputStatus.COMPLETE)
         received: list[str] = []
@@ -293,15 +294,18 @@ class TestComposeChatMessageRecommendAndModify:
         async def on_delta(text: str) -> None:
             received.append(text)
 
+        stub = _StubLLM(recommendation_summary="테스트 장소를 중심으로 골라봤어요.")
         message = await compose_chat_message(
             llm_output,
             recommendations=_response(place_ids=["a", "b"]),
-            llm=_StubLLM(recommendation_summary="테스트 장소를 중심으로 골라봤어요."),
+            llm=stub,
             on_message_delta=on_delta,
         )
 
-        assert received == ["이런 곳들을 찾아봤어요:"]
-        assert message == "이런 곳들을 찾아봤어요:"
+        assert len(received) == 2
+        assert message == "".join(received)
+        assert message == "테스트 장소를 중심으로 골라봤어요."
+        assert stub.summary_received is not None
 
     @pytest.mark.asyncio
     async def test_no_data_message_when_recommendations_is_none(self) -> None:

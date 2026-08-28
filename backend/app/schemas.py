@@ -127,8 +127,8 @@ class RecommendationItem(BaseModel):
     weights_used: dict[str, float]
     # 취향 검색이 찾은 근거 문장 전부(유사도 내림차순). taste가 0이어도 검색 자체가
     # 실패한 것과 근거를 못 찾은 것을 구분할 수 있게 항상 채운다 — 빈 리스트면
-    # 컷을 넘는 근거가 없었다는 뜻이다. 개발자 디버그 화면 전용이고, 서비스
-    # 화면에는 노출하지 않는다.
+    # 컷을 넘는 근거가 없었다는 뜻이다. 서비스 화면에는 원문을 직접 노출하지 않되,
+    # RECOMMEND/MODIFY 말풍선 생성에는 후보별 일부 문장을 제한적으로 전달할 수 있다.
     taste_evidence: list[TasteEvidenceQuote] = Field(default_factory=list)
 
 

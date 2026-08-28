@@ -5,7 +5,21 @@
 | 슬롯 | 관리 버전 | 템플릿 | 공유 규칙 |
 | --- | --- | --- | --- |
 | recommend.extract | 2.5.0 | extract.md, location_rules.md, place_tag_rules.md | budget, weather, concentration, environment, transport |
-| recommend.summary | 1.0.0 | summary_instruction.md | persona |
+| recommend.summary | 1.1.0 | summary_instruction.md | persona |
+
+## Draft
+
+### 1.1.0 (2026-08-28, 취향 리뷰 기반 추천 말풍선)
+
+RECOMMEND·MODIFY의 카드 아래에 LLM 선택 팁을 추가합니다. 고정 안내와 추천 카드는
+먼저 즉시 표시하고, 상세 선택 팁만 SSE로 이어서 생성합니다.
+후보별 `taste_evidence`의 상위 두 리뷰 문장만 `review_evidence`로 전달해, 취향에
+맞는 분위기·경험과 대표 후보 2~4개의 선택 기준을 4~7문장으로 안내합니다. 유사도·점수·
+경고 같은 내부 값은 전달하지 않으며, 리뷰에 없는 메뉴·예약·주차·시설은 만들지 않도록
+명시합니다.
+
+LLM 생성이나 스트리밍이 실패하면 카드만 남겨 기존 `이런 곳들을 찾아봤어요:` 흐름을
+유지합니다. 사용자별 저장 취향은 이후 동일 payload에 별도 검증 필드로 추가합니다.
 
 ## 승인 이력
 

@@ -775,9 +775,14 @@ class RealGeminiProvider:
 
     @staticmethod
     def _recommendation_summary_item(item: RecommendationItem) -> dict[str, object]:
-        """추천 요약 LLM에 넘겨도 되는 사용자-facing 필드만 남긴다."""
+        """추천 요약 LLM에 넘겨도 되는 사용자-facing 필드만 남긴다.
 
-        return {
+        ``taste_evidence``는 D가 취향 검색으로 찾은 공개 리뷰 근거다. 내부 유사도나
+        원문 전체를 넘기지 않고, 후보별 상위 두 문장만 제한해 추천 말풍선이 카드의
+        점수 설명을 되풀이하지 않으면서도 사용자의 취향과 연결되게 한다.
+        """
+
+        summary_item: dict[str, object] = {
             "name": item.name,
             "category": item.category,
             "distance_km": item.distance_km,
@@ -785,6 +790,14 @@ class RealGeminiProvider:
             "recommendation_reason": item.recommendation_reason,
             "explanations": item.explanations,
         }
+        review_evidence = [
+            quote.text.strip()[:280]
+            for quote in item.taste_evidence[:2]
+            if quote.text.strip()
+        ]
+        if review_evidence:
+            summary_item["review_evidence"] = review_evidence
+        return summary_item
 
     async def generate_schedule_plan(
         self, request: SchedulePlanningRequest

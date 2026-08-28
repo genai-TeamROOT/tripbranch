@@ -95,19 +95,20 @@ function streamResponse(
   if (response.recommendations) {
     events.push(
       {
-        event: "message_start",
-        data: { intent: response.llm_output.intent, elapsed_ms: 2 },
-      },
-      { event: "message_delta", data: { text: response.message, elapsed_ms: 3 } },
-      {
         event: "result",
         data: {
           llm_output: response.llm_output,
           state: response.state,
           recommendations: response.recommendations,
-          elapsed_ms: 4,
+          message: "이런 곳들을 찾아봤어요:",
+          elapsed_ms: 2,
         },
       },
+      {
+        event: "message_start",
+        data: { intent: response.llm_output.intent, elapsed_ms: 3 },
+      },
+      { event: "message_delta", data: { text: response.message, elapsed_ms: 4 } },
     );
   }
   // 실제 서버와 같은 순서를 흉내 낸다 — 후속 질문은 done **뒤에** 별도 이벤트로
@@ -193,15 +194,17 @@ test("user chat hides condition debug card and shows recommendations", async () 
   expect(screen.getByText("운영시간을 확인할 수 없는 장소")).toBeInTheDocument();
 });
 
-test("streamed recommendation renders the answer before its cards", async () => {
+test("streamed recommendation renders template, cards, then the LLM tip", async () => {
   await renderApp();
 
   await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
 
-  const answer = await screen.findByText("조건에 맞는 장소를 찾아봤어요.");
+  const template = await screen.findByText("이런 곳들을 찾아봤어요:");
   const firstCard = screen.getByText("테스트 박물관");
-  expect(answer.compareDocumentPosition(firstCard) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  const tip = await screen.findByText("조건에 맞는 장소를 찾아봤어요.");
+  expect(template.compareDocumentPosition(firstCard) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(firstCard.compareDocumentPosition(tip) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
 });
 
 test("user chat needs only one chat call", async () => {
@@ -380,7 +383,7 @@ test("developer start opens dev chat with audit panel", async () => {
   await userEvent.click(screen.getByRole("button", { name: "개발자용으로 시작" }));
 
   expect(await screen.findByText("Agent Runtime Audit")).toBeInTheDocument();
-  expect(await screen.findByText(/Intent: RECOMMEND/)).toBeInTheDocument();
+  expect((await screen.findAllByText(/Intent: RECOMMEND/)).length).toBeGreaterThan(0);
   expect(screen.getByText("TripBranch Developer Console")).toBeInTheDocument();
   // 개발자 화면 상단에도 신원 표시가 이어진다(D-062).
   expect(screen.getByText("게스트로 이용 중")).toBeInTheDocument();

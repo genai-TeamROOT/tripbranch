@@ -728,6 +728,8 @@ export interface AgentStreamResultEvent {
   llm_output: LLMOutput;
   state: StateApplyResponse;
   recommendations: RecommendationsResponse;
+  /** 카드 바로 위에 즉시 표시할 고정 안내문. */
+  message?: string;
 }
 
 export interface AgentStreamMessageDeltaEvent {

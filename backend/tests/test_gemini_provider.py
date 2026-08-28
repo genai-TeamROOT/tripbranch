@@ -44,6 +44,7 @@ from app.schemas import (
     RecommendationItem,
     RecommendationResponse,
     RecommendPayload,
+    TasteEvidenceQuote,
     UserConditions,
 )
 
@@ -109,6 +110,33 @@ def test_recommendation_summary_item_excludes_internal_scoring_fields() -> None:
     assert "score" not in item
     assert "feature_scores" not in item
     assert "weights_used" not in item
+
+
+def test_recommendation_summary_item_includes_limited_review_evidence() -> None:
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    recommendation = _recommendation_item().model_copy(
+        update={
+            "taste_evidence": [
+                TasteEvidenceQuote(
+                    text="  넓은 창가 자리에서 여유롭게 쉬기 좋아요.  ", similarity=0.91
+                ),
+                TasteEvidenceQuote(
+                    text="디저트가 깔끔하고 대화하기 편한 분위기예요.", similarity=0.85
+                ),
+                TasteEvidenceQuote(
+                    text="세 번째 근거는 요약에 포함하지 않아요.", similarity=0.80
+                ),
+            ]
+        }
+    )
+
+    item = provider._recommendation_summary_item(recommendation)
+
+    assert item["review_evidence"] == [
+        "넓은 창가 자리에서 여유롭게 쉬기 좋아요.",
+        "디저트가 깔끔하고 대화하기 편한 분위기예요.",
+    ]
+    assert "similarity" not in item
 
 
 @pytest.mark.asyncio
