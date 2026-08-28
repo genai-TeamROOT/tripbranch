@@ -14,6 +14,7 @@ import pytest
 from app.domain.models import PlaceMoodMatch, PlaceMoodProfile
 from app.errors import AppError
 from app.providers.contracts import ProviderSource, ProviderStatus, provider_result
+from app.providers.place_mood_encoder import UnreadableImageError
 from app.services import photo_similar
 from app.services.photo_similar import PhotoSimilarQuery, build_photo_similar_places
 
@@ -38,7 +39,9 @@ class _RecordingMood:
         matches: tuple[PlaceMoodMatch, ...] = (),
         available: bool = True,
         photo_urls: dict[str, str] | None = None,
+        raises: Exception | None = None,
     ):
+        self._raises = raises
         self.calls: list[dict[str, object]] = []
         self.photo_url_calls: list[list[str]] = []
         self._matches = matches
@@ -55,6 +58,8 @@ class _RecordingMood:
         radius_km=None,
         match_count=None,
     ):
+        if self._raises is not None:
+            raise self._raises
         self.calls.append(
             {
                 "candidates": candidate_content_ids,
@@ -355,3 +360,28 @@ async def test_empty_image_is_rejected(patched) -> None:
         )
 
     assert error.value.code == "empty_image"
+
+
+@pytest.mark.asyncio
+async def test_unreadable_image_is_a_user_error_not_a_server_error(patched) -> None:
+    """열 수 없는 사진은 422다.
+
+    500으로 두면 서버 잘못이라는 뜻이 되어 로그·모니터링에서 진짜 장애와 섞이고,
+    화면도 "예상치 못한 오류"만 보여줘 사용자가 무엇을 고쳐야 할지 모른다.
+    확장자만 사진인 파일이나 잘린 사진에서 실제로 난다 — MIME 검사로는 못
+    걸러진다(content-type은 브라우저가 파일 이름으로 붙이는 값이다).
+    """
+    mood = _RecordingMood(raises=UnreadableImageError("형식을 알아볼 수 없습니다."))
+
+    with pytest.raises(AppError) as error:
+        await build_photo_similar_places(
+            PhotoSimilarQuery(image_bytes=b"not-an-image", latitude=37.5, longitude=127.0),
+            geocoding_provider=object(),
+            place_provider=object(),
+            mood_provider=mood,
+            details_repository=_RecordingDetails(),
+        )
+
+    assert error.value.code == "unreadable_image"
+    assert error.value.status_code == 422
+    assert error.value.retryable is True

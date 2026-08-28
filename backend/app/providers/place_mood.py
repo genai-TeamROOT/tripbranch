@@ -227,6 +227,9 @@ class PlaceMoodProvider:
             )
 
         with observe_step("place_mood_photo_search", kind="retriever") as step:
+            # 열 수 없는 사진은 UnreadableImageError로 올라온다. 여기서 잡지
+            # 않는다 — 호출부가 사용자 입력 문제로 다뤄야 하고, 빈 결과로
+            # 바꾸면 "안 닮았다"와 구분되지 않는다.
             embedding = self._encoder.encode_image(image_bytes)
             matches = await self._repository.search_place_mood(
                 embedding,

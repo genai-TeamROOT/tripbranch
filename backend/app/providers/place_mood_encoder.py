@@ -34,6 +34,14 @@ logger = logging.getLogger(__name__)
 # 임베딩해야 한다. so400m 계열로 가면 1152차원이 되어 컬럼 타입까지 바뀐다.
 MODEL_NAME = "google/siglip2-base-patch16-224"
 
+class UnreadableImageError(Exception):
+    """올린 파일을 사진으로 열 수 없다.
+
+    사용자 입력 문제이지 서버 장애가 아니라는 것을 호출부가 구분할 수 있게
+    전용 예외로 둔다 — Pillow 예외를 그대로 올리면 라우트가 500으로 감싼다.
+    """
+
+
 _INSTALL_HINT = (
     "사진 분위기 검색에는 transformers·torch·pillow가 필요합니다. "
     'backend에서 `pip install -e ".[mood]"`로 설치하세요.'
@@ -92,18 +100,32 @@ class SiglipImageEncoder:
         return self._model, self._processor
 
     def encode_image(self, image_bytes: bytes) -> Sequence[float]:
-        """적재와 같은 조건(RGB 변환 + 길이 1 정규화)으로 인코딩한다."""
+        """적재와 같은 조건(RGB 변환 + 길이 1 정규화)으로 인코딩한다.
+
+        열 수 없는 사진은 `UnreadableImageError`로 바꿔 던진다. 그대로 두면
+        Pillow 예외가 라우트까지 올라가 500이 되는데, 그건 서버 잘못이라는
+        뜻이라 사용자 입력 문제와 섞인다.
+        """
         import io
 
         import torch
-        from PIL import Image
+        from PIL import Image, UnidentifiedImageError
 
         model, processor = self._load()
         # 적재 때 RGB로 변환했다. 흑백(L)이나 투명 채널(RGBA)이 그대로 들어가면
         # 채널 수가 달라 processor가 실패하거나 다른 값을 낸다.
-        with Image.open(io.BytesIO(image_bytes)) as raw:
-            image = raw.convert("RGB")
-            inputs = processor(images=image, return_tensors="pt")
+        try:
+            with Image.open(io.BytesIO(image_bytes)) as raw:
+                image = raw.convert("RGB")
+                inputs = processor(images=image, return_tensors="pt")
+        except UnidentifiedImageError as error:
+            # 확장자만 사진인 파일, 전송 중 잘린 사진, 브라우저가 만든 형식 중
+            # Pillow가 모르는 것. MIME 검사로는 못 걸러진다 — content-type은
+            # 브라우저가 파일 이름으로 붙이는 값이라 내용과 무관하다.
+            raise UnreadableImageError("사진 형식을 알아볼 수 없습니다.") from error
+        except OSError as error:
+            # 잘린 사진은 열리다가 여기서 깨진다("image file is truncated").
+            raise UnreadableImageError("사진이 손상됐습니다.") from error
 
         with torch.no_grad():
             features = _as_tensor(model.get_image_features(**inputs))
