@@ -104,6 +104,31 @@ function formatCardValue(fieldKey: keyof InfoPlaceCardData, value: string) {
   return formatted.trim();
 }
 
+function isRealtimeParkingCard(card: InfoPlaceCardData): boolean {
+  return ["realtime_parking", "realtime_public_parking"].includes(card.question_type);
+}
+
+function RealtimeParkingSummary({ title, value }: { title: string; value: string }) {
+  const matched = value.match(/^(현재\s+[\d,]+대\s+주차 가능)(.*)$/);
+  return (
+    <article className="rounded-xl border border-emerald-100 bg-emerald-50/50 px-3 py-2.5 dark:border-emerald-900/60 dark:bg-emerald-950/20">
+      <h3 className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100" title={title}>
+        {title}
+      </h3>
+      <p className="mt-1 text-sm text-gray-700 dark:text-gray-200">
+        {matched ? (
+          <>
+            <strong className="font-semibold text-emerald-700 dark:text-emerald-300">{matched[1]}</strong>
+            {matched[2]}
+          </>
+        ) : (
+          value
+        )}
+      </p>
+    </article>
+  );
+}
+
 export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
   const [showDetail, setShowDetail] = useState(false);
   const answers = Object.entries(card.answer_fields);
@@ -138,7 +163,13 @@ export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
         </span>
       </button>
 
-      {answers.length > 0 && (
+      {isRealtimeParkingCard(card) && answers.length > 0 ? (
+        <section className="grid gap-2 border-t border-gray-100 px-4 py-3 dark:border-gray-800">
+          {answers.map(([title, value]) => (
+            <RealtimeParkingSummary key={title} title={title} value={value} />
+          ))}
+        </section>
+      ) : answers.length > 0 ? (
         <dl className="border-t border-gray-100 px-4 py-3 text-sm dark:border-gray-800">
           {answers.map(([key, value]) => (
             <div key={key} className="flex gap-2">
@@ -155,7 +186,7 @@ export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
             </div>
           ))}
         </dl>
-      )}
+      ) : null}
 
       <ConcentrationForecastBars card={card} />
       <PopulationForecastBars card={card} />

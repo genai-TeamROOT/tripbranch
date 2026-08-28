@@ -2132,15 +2132,13 @@ def _seoul_realtime_map_url(area: SeoulRealtimeArea) -> str:
 
 
 def _format_realtime_parking(item: RealtimeParkingLot) -> str:
-    capacity = f"총 {item.capacity}면" if item.capacity is not None else "총면수 미제공"
-    if item.available_spaces is not None:
-        current = f"잔여 {item.available_spaces}면 · 현재 {item.current_parked_count}대 주차"
-    elif item.current_available and item.current_parked_count is not None:
-        current = f"현재 {item.current_parked_count}대 주차"
-    else:
-        current = "실시간 주차 대수 미제공"
+    capacity = f"총 {item.capacity}대" if item.capacity is not None else "총 주차 대수 미제공"
     paid = "유료" if item.paid is True else "무료" if item.paid is False else "요금 정보 미제공"
-    return f"{capacity} · {current} · {paid}"
+    if item.available_spaces is not None:
+        return f"현재 {item.available_spaces}대 주차 가능({capacity}, {paid})"
+    elif item.current_available and item.current_parked_count is not None:
+        return f"현재 {item.current_parked_count}대 주차 중({capacity}, {paid})"
+    return f"실시간 주차 현황 미제공({capacity}, {paid})"
 
 
 def _district_from_address(address: str | None) -> str | None:
