@@ -5,10 +5,11 @@
 대표 스팟을 되묻기 버튼으로 보여준다. 종로구 4곳(경복궁/인사동/광화문/북촌)만
 고정으로 보여주던 옛 방식(D-044)이 서비스 지역이 16개 구로 늘어난 뒤에도 안
 바뀌어 생긴 버그(D-083, D-086 "남은 것" 항목, TP-160)를 고친다.
+2026-08-28에 지원 구가 22곳이 되면서 6개 구를 같은 출처에서 옮겨 채웠다(D-108).
 
 좌표는 새로 조사하지 않고 이미 이 저장소에서 검증된 두 출처에서 그대로 옮겼다:
 종로구 4곳은 `resources/seoul_realtime/population_areas_121.json`(서울시 실시간
-인구 지역 목록), 나머지 15개 구는 `tests/test_service_area.py`의 `_INSIDE`
+인구 지역 목록), 나머지 21개 구는 `tests/test_service_area.py`의 `_INSIDE`
 딕셔너리(경계 판정 회귀 테스트가 이미 실측 검증한 좌표)에서 구당 2곳씩 옮겼다.
 테스트 파일을 import하지 않고 값만 옮긴 이유는 판정 회귀 테스트와 이 대표 스팟
 데이터가 서로 다른 책임이라서다 — 한쪽이 바뀌어도 다른 쪽이 흔들리면 안 된다.
@@ -95,6 +96,30 @@ DISTRICT_LANDMARKS: dict[str, tuple[DistrictLandmark, ...]] = {
     "강서구": (
         DistrictLandmark("김포공항", 37.5583, 126.7906),
         DistrictLandmark("발산역", 37.5586, 126.8378),
+    ),
+    "구로구": (
+        DistrictLandmark("신도림역", 37.5088, 126.8912),
+        DistrictLandmark("구로디지털단지역", 37.4850, 126.9016),
+    ),
+    "금천구": (
+        DistrictLandmark("가산디지털단지역", 37.4816, 126.8826),
+        DistrictLandmark("독산역", 37.4661, 126.8886),
+    ),
+    "영등포구": (
+        DistrictLandmark("여의도역", 37.5216, 126.9243),
+        DistrictLandmark("영등포역", 37.5157, 126.9070),
+    ),
+    "동작구": (
+        DistrictLandmark("노량진역", 37.5131, 126.9425),
+        DistrictLandmark("사당역", 37.4765, 126.9816),
+    ),
+    "관악구": (
+        DistrictLandmark("서울대입구역", 37.4813, 126.9527),
+        DistrictLandmark("신림역", 37.4842, 126.9296),
+    ),
+    "서초구": (
+        DistrictLandmark("고속터미널역", 37.5049, 127.0048),
+        DistrictLandmark("교대역", 37.4935, 127.0143),
     ),
 }
 

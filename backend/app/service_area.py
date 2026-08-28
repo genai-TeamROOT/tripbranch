@@ -1,4 +1,4 @@
-"""좌표가 MVP 지원 지역(서울 16개 구, SUPPORTED_DISTRICTS 참고) 안인지 판정한다.
+"""좌표가 MVP 지원 지역(서울 22개 구, SUPPORTED_DISTRICTS 참고) 안인지 판정한다.
 
 역할: 지원 범위 밖 위치를 해석 단계에서 걸러 낸다. 밖의 좌표가 들어오면 그 아래
 로직이 "결과 없음"으로만 끝나고 이유가 전달되지 않아서다(D-044).
@@ -56,7 +56,12 @@ class ServiceDistrict:
 # 적재한 TourAPI 응답 주소와 대조해 확인했다(app/resources/tour_api/
 # tour_api_ldong_codes.json과 동일).
 #
-# 열여섯 곳 모두 서울특별시라 lDongRegnCd는 "11"로 같다.
+# 2026-08-28: 구로구·금천구·영등포구·동작구·관악구·서초구를 추가했다(D-108) — place-sync로
+# 새로 적재된 6개 구다(활성 1,516건). district_code는 순서로 짐작하지 않고 각 구
+# 표본 주소로 대조해 확인했다 — 코드 순서와 구 이름이 한 칸씩 어긋나 있어(530이
+# 영등포가 아니라 구로) 짐작하면 전부 틀린다.
+#
+# 스물두 곳 모두 서울특별시라 lDongRegnCd는 "11"로 같다.
 SUPPORTED_DISTRICTS: tuple[ServiceDistrict, ...] = (
     ServiceDistrict("110", "종로구"),
     ServiceDistrict("140", "중구"),
@@ -74,6 +79,12 @@ SUPPORTED_DISTRICTS: tuple[ServiceDistrict, ...] = (
     ServiceDistrict("440", "마포구"),
     ServiceDistrict("470", "양천구"),
     ServiceDistrict("500", "강서구"),
+    ServiceDistrict("530", "구로구"),
+    ServiceDistrict("545", "금천구"),
+    ServiceDistrict("560", "영등포구"),
+    ServiceDistrict("590", "동작구"),
+    ServiceDistrict("620", "관악구"),
+    ServiceDistrict("650", "서초구"),
 )
 
 # 좌표 판정(폴리곤)과 장소 검색(TourAPI 응답의 lDongSignguCd)이 같은 목록을 봐야
