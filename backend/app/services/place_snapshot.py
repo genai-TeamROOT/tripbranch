@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict
 from datetime import datetime
@@ -23,6 +24,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from app.domain.models import TourPlaceRecord
+from app.errors import ProviderUnavailableError
 from app.providers.real_place import RealPlaceProvider
 
 KST = ZoneInfo("Asia/Seoul")
@@ -373,6 +375,11 @@ def write_reconciliation(
             )
 
 
+def _page_count(total_count: int) -> int:
+    """`total_count`를 다 받는 데 필요한 쪽수. 0건이어도 첫 쪽은 부른다."""
+    return max(1, math.ceil(total_count / LIST_PAGE_SIZE))
+
+
 async def fetch_place_rows(
     client: httpx.AsyncClient,
     api_key: str,
@@ -380,7 +387,19 @@ async def fetch_place_rows(
     district_code: str,
     fetched_at: datetime,
 ) -> dict[str, dict[str, str]]:
-    """지역 전체 목록을 페이지 끝까지 받아 스냅샷 행으로 만든다."""
+    """지역 전체 목록을 페이지 끝까지 받아 스냅샷 행으로 만든다.
+
+    멈추는 조건이 세 개인 이유가 있다. 예전에는 `page_no * numOfRows >= totalCount`
+    하나뿐이었는데, 이 식은 모든 쪽이 같은 건수로 온다고 가정한다. TourAPI는 마지막
+    쪽을 지나면 numOfRows를 0으로 주므로 `page_no * 0`은 totalCount에 영원히 못
+    닿고, 빈 응답을 일일 한도가 바닥날 때까지 반복해서 받는다. 2026-08-28 강남구
+    스냅샷 한 번이 areaBasedList2 1,000회를 그렇게 태웠다.
+
+    1,000건을 넘는 첫 구가 강남구여서 그때까지 2쪽을 부를 일 자체가 없었고, 그래서
+    2026-08-08에 LIST_PAGE_SIZE를 1000으로 올린 뒤로 20일 넘게 드러나지 않았다.
+    무장애 목록(`tour_barrier_free.list_barrier_free_content_ids`)은 같은 함정을
+    이미 "items가 비면 멈춘다"로 막아두고 있었다.
+    """
     provider = RealPlaceProvider(
         api_key=api_key,
         client=client,
@@ -388,6 +407,7 @@ async def fetch_place_rows(
     )
     places: dict[str, dict[str, str]] = {}
     page_no = 1
+    max_page_no = 0
     while True:
         page = await provider.list_places_by_area(
             area_code=area_code,
@@ -395,9 +415,42 @@ async def fetch_place_rows(
             page_no=page_no,
             num_of_rows=LIST_PAGE_SIZE,
         )
-        places.update(snapshot_rows(page.places, fetched_at))
-        if page_no * page.num_of_rows >= page.total_count:
+        # totalCount는 응답을 받아야 알 수 있어서 상한도 여기서 정한다. 쪽마다 다시
+        # 계산하는 이유는 조회 도중 totalCount가 늘어날 수 있어서다 — 첫 쪽 값으로
+        # 고정해두면 그렇게 늘어난 뒷쪽을 못 받는다.
+        max_page_no = max(max_page_no, _page_count(page.total_count))
+        # 받은 게 없으면 멈춘다. 이것이 실제 안전망이다 — 마지막 쪽을 지나면 TourAPI는
+        # items를 빈 문자열로 주고 numOfRows도 0으로 준다.
+        if not page.places:
+            # 다만 한 건도 못 받았는데 totalCount가 0이 아니면 "그 구에 장소가
+            # 없다"가 아니라 "목록을 통째로 못 받았다"이다. 빈 스냅샷을 그대로
+            # 저장하면 다음 대조에서 그 구의 장소가 전량 삭제로 잡힌다
+            # (2026-08-20 중구를 종로구 스냅샷과 대조해 844건이 삭제로 나온 것과
+            # 같은 모양이다).
+            if not places and page.total_count:
+                raise ProviderUnavailableError(
+                    "TourAPI",
+                    detail=(
+                        f"areaBasedList2 returned no places for "
+                        f"totalCount {page.total_count}"
+                    ),
+                )
             break
+        places.update(snapshot_rows(page.places, fetched_at))
+        # 누적 건수로 판정한다. 쪽마다 numOfRows가 같다고 가정하지 않는다.
+        if len(places) >= page.total_count:
+            break
+        # 위 두 조건이 모두 빗나가도 무한히 돌지는 않게 한다. 조용히 멈추지 않고
+        # 예외로 알리는 이유는, 여기 닿았다는 것은 받은 목록이 total_count보다
+        # 적다는 뜻이라 그대로 저장하면 없는 장소가 "삭제"로 잡히기 때문이다.
+        if page_no >= max_page_no:
+            raise ProviderUnavailableError(
+                "TourAPI",
+                detail=(
+                    f"areaBasedList2 returned {len(places)} of {page.total_count} "
+                    f"places in {page_no} pages"
+                ),
+            )
         page_no += 1
     return places
 
