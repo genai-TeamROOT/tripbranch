@@ -442,12 +442,20 @@ def _detect_reset_scope(user_input: str, modify_type: ModifyType) -> str | None:
     바뀌면 직전 노출분(recommended)을 비워서, 조건이 되돌아왔을 때 다시 노출될
     수 있게 한다. REJECT_ALL은 대상이 아니다 — 그쪽은 rejected 기록으로 영구
     제외를 이미 표현하므로 기본값을 None으로 유지한다.
+
+    REJECT_SPECIFIC도 "history"다. 지목한 자리만 거절이고 나머지는 유지 대상인데,
+    그 나머지가 직전 턴의 recommended로 제외 목록에 남아 있으면 다음 채점에서 함께
+    빠진다 — "두 번째만 별로야"가 REJECT_ALL과 같은 결과를 내게 된다. 거절한 자리는
+    rejected로 계속 제외되므로 recommended를 비워도 되살아나지 않는다.
+    SCHEDULE 부분 재편성은 pinned_items가 자리를 붙들고 있어 이 값에 영향받지
+    않는다 — 유지 항목은 planner가 후보에서 직접 걸러내고(planner.py) 프롬프트도
+    "pinned_items의 place_id를 다시 고르지 마세요"로 지시한다(fill.md).
     """
 
     for phrase, scope in _RESET_SCOPE_PHRASES:
         if phrase in user_input:
             return scope
-    if modify_type is ModifyType.CHANGE_CONDITION:
+    if modify_type in (ModifyType.CHANGE_CONDITION, ModifyType.REJECT_SPECIFIC):
         return "history"
     return None
 

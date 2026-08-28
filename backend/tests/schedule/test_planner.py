@@ -556,6 +556,56 @@ class TestPlanPartialSchedule:
         assert result.elapsed_ms >= 0
 
     @pytest.mark.asyncio
+    async def test_pinned_places_are_removed_from_fill_candidates(self) -> None:
+        """유지 대상이 후보에 섞여 있으면 후보에서 빼고 LLM에 넘긴다.
+
+        섞인 채로 넘기면 그 자리에 같은 장소가 다시 뽑혀 한 일정에 중복으로
+        들어간다. 프롬프트도 "pinned_items의 place_id를 다시 고르지 마세요"라고
+        지시하지만(fill.md) LLM 지시는 구조적 보장이 아니다.
+
+        지금까지는 호출부의 제외 목록(recommended ∪ rejected)이 pinned를 먼저
+        걸러내 드러나지 않았다 — 그 목록이 무엇을 담는지에 편성 정확성이
+        딸려 있으면 안 된다.
+        """
+        pinned = [_pinned("place-1", 1), _pinned("place-3", 3)]
+        llm = _RecordingFillLLM(SchedulePartialLLMPlan(new_items=[_sample_item("place-2", 2)]))
+        request = SchedulePartialFillRequest(
+            pinned_items=pinned,
+            target_orders=[2],
+            # place-1은 pinned인데 후보에도 들어 있다.
+            candidates=[_candidate("place-1"), _candidate("place-2")],
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 11, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_partial_schedule(request, llm)
+
+        assert llm.received_request is not None
+        assert [c.place_id for c in llm.received_request.candidates] == ["place-2"]
+        assert [item.place_id for item in result.items] == ["place-1", "place-2", "place-3"]
+
+    @pytest.mark.asyncio
+    async def test_pinned_only_when_every_candidate_is_pinned(self) -> None:
+        """후보가 전부 유지 대상이면 채울 수 있는 새 장소가 없다 — LLM을 부르지
+        않고 pinned만 살려 안내한다(후보 0건과 같은 처리)."""
+        pinned = [_pinned("place-1", 1), _pinned("place-3", 3)]
+        llm = _RecordingFillLLM(SchedulePartialLLMPlan(new_items=[_sample_item("place-1", 2)]))
+        request = SchedulePartialFillRequest(
+            pinned_items=pinned,
+            target_orders=[2],
+            candidates=[_candidate("place-1"), _candidate("place-3")],
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 11, 15, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_partial_schedule(request, llm)
+
+        assert llm.call_count == 0
+        assert [item.place_id for item in result.items] == ["place-1", "place-3"]
+
+    @pytest.mark.asyncio
     async def test_invalidates_stale_travel_time_when_last_slot_is_replaced(self) -> None:
         """교체된 자리가 마지막 order여도 그 직전 pinned 항목의 travel_to_next_min이
         무효화된다 — 무효화 조건이 "다음 자리가 target_orders에 있는지"만 보므로
