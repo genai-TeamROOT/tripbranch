@@ -1026,3 +1026,146 @@ async def test_무장애_목록_조회가_실패하면_확인하지_못한_것�
 
     assert payload["barrier_free_detail_count"] == 0
     assert payload["barrier_free_checked"] is False
+
+
+def _lock_release_client(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    run_status: str | None,
+    calls: list[tuple[str, str]],
+) -> TestClient:
+    """잠금 1건과 그 실행 1건만 있는 Supabase를 흉내 낸다."""
+    monkeypatch.setattr(settings, "supabase_url", "https://project.supabase.co")
+    monkeypatch.setattr(settings, "supabase_secret_key", "sb_secret_test")
+    run_id = "44444444-4444-4444-8444-444444444444"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        calls.append((request.method, path))
+        if path.endswith("/place_sync_locks") and request.method == "GET":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "area_code": "11",
+                        "district_code": "740",
+                        "sync_run_id": run_id,
+                        "acquired_at": "2026-08-29T00:59:00+09:00",
+                        "expires_at": "2026-08-29T02:59:00+09:00",
+                    }
+                ],
+            )
+        if path.endswith("/place_sync_runs") and request.method == "GET":
+            if run_status is None:
+                return httpx.Response(200, json=[])
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": run_id,
+                        "status": run_status,
+                        "started_at": "2026-08-29T00:59:00+09:00",
+                        "processed_count": 111,
+                        "api_total_count": None,
+                    }
+                ],
+            )
+        if path.endswith("/place_sync_locks") and request.method == "DELETE":
+            return httpx.Response(200, json=[{"area_code": "11", "district_code": "740"}])
+        if path.endswith("/place_sync_runs") and request.method == "PATCH":
+            return httpx.Response(200, json=[{"id": run_id, "status": "failed"}])
+        return httpx.Response(200, json=[])
+
+    monkeypatch.setattr(
+        dev_routes,
+        "status_client",
+        lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    return TestClient(create_app())
+
+
+def _release_body(force: bool = False) -> dict[str, object]:
+    return {
+        "area_code": "11",
+        "district_code": "740",
+        "sync_run_id": "44444444-4444-4444-8444-444444444444",
+        "force": force,
+    }
+
+
+def test_sync_lock_release_refuses_running_run_without_force(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """실행이 아직 running이면 force 없이는 풀지 않는다.
+
+    잠금 행만으로는 살아 있는 동기화와 유령 잠금이 구분되지 않는다. 화면이
+    경과 시간을 보고 판단하도록 여기서는 거부하고 사실만 돌려준다.
+    """
+    calls: list[tuple[str, str]] = []
+    with _lock_release_client(monkeypatch, run_status="running", calls=calls) as client:
+        response = client.post("/api/dev/place-sync/locks/release", json=_release_body())
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["released"] is False
+    assert payload["reason"] == "run_still_running"
+    # 거부했으면 지우는 요청이 나가면 안 된다.
+    assert ("DELETE", "/rest/v1/place_sync_locks") not in calls
+
+
+def test_sync_lock_release_deletes_lock_when_run_finished(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """실행이 이미 끝났으면 잠금은 확실히 유령이라 force 없이 지운다."""
+    calls: list[tuple[str, str]] = []
+    with _lock_release_client(monkeypatch, run_status="failed", calls=calls) as client:
+        response = client.post("/api/dev/place-sync/locks/release", json=_release_body())
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["released"] is True
+    # 이미 끝난 실행은 다시 마감하지 않는다.
+    assert payload["run_abandoned"] is False
+    assert ("DELETE", "/rest/v1/place_sync_locks") in calls
+
+
+def test_sync_lock_release_abandons_running_run_when_forced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """force면 잠금을 지우고 running 실행도 함께 마감한다.
+
+    잠금만 풀고 실행을 running으로 두면 이력이 영영 "진행 중"으로 남는다.
+    """
+    calls: list[tuple[str, str]] = []
+    with _lock_release_client(monkeypatch, run_status="running", calls=calls) as client:
+        response = client.post(
+            "/api/dev/place-sync/locks/release", json=_release_body(force=True)
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["released"] is True
+    assert payload["run_abandoned"] is True
+    assert ("PATCH", "/rest/v1/place_sync_runs") in calls
+
+
+def test_sync_lock_release_rejects_unknown_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """sync_run_id가 다르면 404다.
+
+    그 사이 잠금이 만료되고 다른 실행이 새로 잡았을 수 있어, 구만 보고 지우면
+    살아 있는 동기화의 잠금을 뺏는다.
+    """
+    calls: list[tuple[str, str]] = []
+    with _lock_release_client(monkeypatch, run_status="failed", calls=calls) as client:
+        response = client.post(
+            "/api/dev/place-sync/locks/release",
+            json={
+                **_release_body(force=True),
+                "sync_run_id": "55555555-5555-4555-8555-555555555555",
+            },
+        )
+
+    assert response.status_code == 404
+    assert ("DELETE", "/rest/v1/place_sync_locks") not in calls

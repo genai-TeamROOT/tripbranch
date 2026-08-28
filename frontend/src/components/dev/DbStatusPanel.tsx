@@ -19,6 +19,7 @@
 
 import { useState } from "react";
 
+import { releaseSyncLock } from "../../api/dev";
 import type {
   DbStatus,
   DistrictPlaceSummary,
@@ -104,11 +105,38 @@ function SyncedTables({ run }: { run: SyncRunRow }) {
   );
 }
 
-function LockRow({ lock }: { lock: SyncLockRow }) {
+/* 잠금을 만든 실행이 얼마나 오래 running으로 있었는지. 살아 있는 동기화인지
+ * 죽은 프로세스가 남긴 유령인지는 이 값으로만 짐작할 수 있다 — 진행 상황은
+ * 서버 메모리에만 있어 DB에는 시작·종료 시점만 남는다. */
+function formatElapsed(startedAt: string | null | undefined) {
+  if (!startedAt) return null;
+  const started = new Date(startedAt);
+  if (Number.isNaN(started.getTime())) return null;
+  const minutes = Math.floor((Date.now() - started.getTime()) / 60000);
+  if (minutes < 1) return "1분 미만";
+  if (minutes < 60) return `${minutes}분`;
+  return `${Math.floor(minutes / 60)}시간 ${minutes % 60}분`;
+}
+
+function LockRow({
+  lock,
+  onRelease,
+  releasing,
+}: {
+  lock: SyncLockRow;
+  onRelease: (lock: SyncLockRow, force: boolean) => void;
+  releasing: boolean;
+}) {
   const expiresAt = lock.expires_at ? new Date(lock.expires_at) : null;
   // 만료 판정은 저장소가 아니라 화면에서 한다 — 저장소가 걸러버리면 "잠금이 남아
   // 실행이 막힌다"와 "잠금이 없다"가 구분되지 않는다.
   const expired = expiresAt !== null && expiresAt.getTime() <= Date.now();
+  // 실행이 끝났으면(success/failed) 잠금은 확실히 유령이라 바로 풀어도 된다.
+  // running이면 살아 있을 수도 죽었을 수도 있어 한 번 더 확인받는다.
+  const stillRunning = lock.run_status === "running";
+  const elapsed = formatElapsed(lock.run_started_at);
+  const canRelease = Boolean(lock.area_code && lock.district_code && lock.sync_run_id);
+
   return (
     <li className="flex flex-wrap items-center gap-2 py-1 text-xs">
       <span
@@ -126,7 +154,31 @@ function LockRow({ lock }: { lock: SyncLockRow }) {
       <span className="text-gray-500">
         획득 {formatDateTime(lock.acquired_at)} · 만료 {formatDateTime(lock.expires_at)}
       </span>
+      <span
+        className={`rounded px-1.5 py-0.5 ${
+          stillRunning
+            ? "bg-amber-100 text-amber-900 dark:bg-amber-950/50 dark:text-amber-100"
+            : "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300"
+        }`}
+      >
+        {lock.run_status
+          ? `실행 ${lock.run_status}${elapsed ? ` · ${elapsed} 경과` : ""}`
+          : "실행 기록 없음"}
+      </span>
+      {typeof lock.run_processed_count === "number" && (
+        <span className="text-gray-500">처리 {lock.run_processed_count}건</span>
+      )}
       <span className="font-mono text-[11px] text-gray-400">{lock.sync_run_id}</span>
+      {canRelease && (
+        <button
+          type="button"
+          onClick={() => onRelease(lock, stillRunning)}
+          disabled={releasing}
+          className="rounded border border-gray-300 px-2 py-0.5 text-[11px] font-semibold text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-800"
+        >
+          {releasing ? "해제 중…" : stillRunning ? "강제 해제" : "잠금 해제"}
+        </button>
+      )}
     </li>
   );
 }
@@ -336,6 +388,54 @@ export function DbStatusPanel({
   onRefresh: () => void;
 }) {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [releasingRunId, setReleasingRunId] = useState<string | null>(null);
+  const [releaseMessage, setReleaseMessage] = useState<string | null>(null);
+
+  /* 잠금 해제. 실행이 아직 running이면 한 번 더 확인받는다. 서버도 force 없이는
+   * 거부하므로 확인은 두 겹이다.
+   *
+   * 해제해도 돌고 있는 동기화가 멈추지는 않는다 — 잠금은 시작할 때 한 번 잡고
+   * 도는 동안 다시 확인하지 않는다. 그래서 위험은 "실행이 끊기는 것"이 아니라
+   * "같은 구를 두 곳에서 동시에 적재하는 것"이다. 문구도 그렇게 적는다. */
+  const handleRelease = async (lock: SyncLockRow, stillRunning: boolean) => {
+    const { area_code: areaCode, district_code: districtCode, sync_run_id: syncRunId } = lock;
+    if (!areaCode || !districtCode || !syncRunId) return;
+    if (
+      stillRunning &&
+      !window.confirm(
+        "이 잠금을 만든 동기화가 아직 진행 중으로 기록돼 있어요.\n\n" +
+          "해제해도 그 실행이 멈추지는 않습니다 — 잠금만 풀려서, 다른 곳에서 " +
+          "실제로 돌고 있다면 같은 구를 두 곳에서 동시에 적재하게 돼요.\n\n" +
+          "서버가 강제 종료돼 남은 잠금인 것이 확실할 때만 진행하세요.",
+      )
+    ) {
+      return;
+    }
+    setReleasingRunId(syncRunId);
+    setReleaseMessage(null);
+    try {
+      const result = await releaseSyncLock({
+        areaCode,
+        districtCode,
+        syncRunId,
+        force: stillRunning,
+      });
+      if (result.released) {
+        setReleaseMessage(
+          result.run_abandoned
+            ? "잠금을 풀고 진행 중이던 실행을 실패로 마감했어요."
+            : "잠금을 풀었어요.",
+        );
+        onRefresh();
+      } else {
+        setReleaseMessage(result.message ?? "잠금을 풀지 못했어요.");
+      }
+    } catch (caught) {
+      setReleaseMessage(caught instanceof Error ? caught.message : "잠금 해제에 실패했어요.");
+    } finally {
+      setReleasingRunId(null);
+    }
+  };
 
   const districts = status?.districts ?? [];
   // 고른 구가 새 응답에 없으면(전량 삭제 등) 전체로 되돌린다 — 빈 화면을 남기지 않는다.
@@ -423,10 +523,25 @@ export function DbStatusPanel({
           ) : (
             <ul className="mt-1">
               {status.sync_locks.map((lock) => (
-                <LockRow key={lock.sync_run_id ?? `${lock.area_code}-${lock.district_code}`} lock={lock} />
+                <LockRow
+                  key={lock.sync_run_id ?? `${lock.area_code}-${lock.district_code}`}
+                  lock={lock}
+                  onRelease={handleRelease}
+                  releasing={releasingRunId === lock.sync_run_id}
+                />
               ))}
             </ul>
           )}
+          {releaseMessage && (
+            <p className="mt-1 text-xs text-gray-600 dark:text-gray-300">{releaseMessage}</p>
+          )}
+          <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+            서버가 강제 종료되면 잠금이 남아 최대 2시간 동안 그 구의 동기화가 막혀요 —
+            재시작해도 안 풀립니다. 실행이 이미 끝났으면 바로 풀어도 되고, 아직
+            진행 중으로 보이면 경과 시간을 보고 판단하세요. 해제해도 돌고 있는
+            동기화가 멈추지는 않습니다 — 잠금만 풀려서 같은 구를 두 곳에서 동시에
+            적재할 수 있어요.
+          </p>
 
           <h3 className="mt-4 text-sm font-semibold text-gray-900 dark:text-gray-100">
             최근 동기화 이력
