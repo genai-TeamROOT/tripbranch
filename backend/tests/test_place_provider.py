@@ -392,7 +392,7 @@ class TestSupportedDistrictFilter:
                 self._item("jung", "140"),
                 self._item("yongsan", "170"),
                 self._item("seongdong", "200"),
-                self._item("yeongdeungpo", "560"),
+                self._item("songpa", "710"),
                 self._item("gangnam", "680"),
             ]
         )
