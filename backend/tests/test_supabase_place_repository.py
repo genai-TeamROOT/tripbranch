@@ -1026,6 +1026,9 @@ async def test_list_sync_locks_keeps_expired_rows() -> None:
     }
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/place_sync_runs"):
+            # 실행 기록이 지워진 잠금. run_status가 None으로 실린다.
+            return httpx.Response(200, json=[])
         return httpx.Response(200, json=[expired])
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
@@ -1034,7 +1037,51 @@ async def test_list_sync_locks_keeps_expired_rows() -> None:
         )
         locks = await repository.list_sync_locks()
 
-    assert locks == [expired]
+    assert len(locks) == 1
+    assert {key: locks[0][key] for key in expired} == expired
+    # 실행 기록이 없어도 열은 채워 보낸다 — 화면이 "기록 없음"을 표시할 수 있어야 한다.
+    assert locks[0]["run_status"] is None
+
+
+@pytest.mark.asyncio
+async def test_list_sync_locks_joins_run_status() -> None:
+    """잠금을 만든 실행의 상태를 함께 싣는다.
+
+    잠금 행만으로는 "지금 돌고 있는 동기화"와 "죽은 프로세스가 남긴 유령 잠금"이
+    구분되지 않는다 — 두 경우의 행 모양이 똑같다.
+    """
+    lock = {
+        "area_code": "11",
+        "district_code": "740",
+        "sync_run_id": str(RUN_ID),
+        "acquired_at": "2026-08-29T00:00:00+00:00",
+        "expires_at": "2026-08-29T02:00:00+00:00",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/place_sync_runs"):
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": str(RUN_ID),
+                        "status": "running",
+                        "started_at": "2026-08-29T00:00:00+00:00",
+                        "processed_count": 111,
+                        "api_total_count": None,
+                    }
+                ],
+            )
+        return httpx.Response(200, json=[lock])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        repository = SupabasePlaceRepository(
+            "https://project.supabase.co/", "sb_secret_test", client
+        )
+        locks = await repository.list_sync_locks()
+
+    assert locks[0]["run_status"] == "running"
+    assert locks[0]["run_processed_count"] == 111
 
 
 @pytest.mark.asyncio
@@ -1277,3 +1324,40 @@ async def test_find_active_places_by_name_paren_filter_does_not_widen() -> None:
 
     # 어떤 필터에도 안 걸리므로 버린다.
     assert locations == ()
+
+
+@pytest.mark.asyncio
+async def test_complete_sync_run_does_not_overwrite_abandoned_run() -> None:
+    """이미 마감된 실행은 정상 종료가 덮어쓰지 않는다.
+
+    개발자 패널이 잠금을 강제 해제하면서 실행을 failed로 마감해도, 그 프로세스는
+    자기 잠금이 사라진 것을 모른 채 계속 돌다가 정상 종료한다. 조건이 없으면
+    여기서 success로 덮어써 강제 해제 흔적이 지워진다.
+    """
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url.query, "utf-8"))
+        return httpx.Response(200, json=[])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        repository = SupabasePlaceRepository(
+            "https://project.supabase.co/", "sb_secret_test", client
+        )
+        await repository.complete_sync_run(
+            RUN_ID,
+            status="success",
+            api_total_count=10,
+            processed_count=10,
+            success_count=10,
+            failed_count=0,
+            new_count=1,
+            updated_count=9,
+            deactivated_count=0,
+            detail_attempted_count=10,
+            completed_at=datetime(2026, 8, 29, tzinfo=UTC),
+        )
+
+    assert seen
+    # running인 행만 갱신한다 — 이미 failed로 마감된 행은 조건에서 빠진다.
+    assert "status=eq.running" in seen[0]

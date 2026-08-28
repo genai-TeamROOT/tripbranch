@@ -83,6 +83,23 @@ export type SyncLockRow = {
   sync_run_id?: string;
   acquired_at?: string;
   expires_at?: string;
+  /* 잠금을 만든 실행의 상태. 잠금 행만으로는 "지금 돌고 있는 동기화"와 "죽은
+   * 프로세스가 남긴 유령 잠금"이 구분되지 않아 서버가 함께 실어 보낸다.
+   * 실행 기록이 없으면 null이다. */
+  run_status?: string | null;
+  run_started_at?: string | null;
+  run_processed_count?: number | null;
+  run_api_total_count?: number | null;
+};
+
+export type SyncLockReleaseResult = {
+  released: boolean;
+  /* released=false일 때만 온다. 지금은 "실행이 아직 running" 한 가지다. */
+  reason?: string;
+  message?: string;
+  /* running이던 실행을 failed로 마감했는지. */
+  run_abandoned?: boolean;
+  lock?: SyncLockRow;
 };
 
 export type DbStatus = {
@@ -313,6 +330,30 @@ export function applyPlaceSync(input: {
     dry_run: input.dryRun,
     details_limit: input.detailsLimit,
     confirm: input.confirm,
+  });
+}
+
+/*
+ * 남은 동기화 잠금을 손으로 푼다. 서버가 강제 종료되면 잠금이 DB에 남아 최대
+ * 2시간 동안 그 구의 동기화가 막히는데, 재시작해도 안 풀린다(2026-08-29 강동구).
+ *
+ * syncRunId를 함께 보낸다 — 그 사이 잠금이 만료되고 다른 실행이 새로 잡았을 수
+ * 있어, 구만 보고 지우면 살아 있는 동기화의 잠금을 뺏는다. 서버가 소유자를
+ * 대조해 다르면 404로 끊는다.
+ *
+ * 실행이 아직 running이면 force 없이는 거부되고 released=false가 돌아온다.
+ */
+export function releaseSyncLock(input: {
+  areaCode: string;
+  districtCode: string;
+  syncRunId: string;
+  force?: boolean;
+}) {
+  return apiClient.post<SyncLockReleaseResult>("/dev/place-sync/locks/release", {
+    area_code: input.areaCode,
+    district_code: input.districtCode,
+    sync_run_id: input.syncRunId,
+    force: input.force ?? false,
   });
 }
 
