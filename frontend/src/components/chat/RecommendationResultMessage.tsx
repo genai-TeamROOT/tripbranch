@@ -13,6 +13,7 @@
 import { useState } from "react";
 import type { Language, RecommendationItem, TravelOriginToggle } from "../../types";
 import { PlaceCard } from "../PlaceCard";
+import { PreferenceTagSummaryTable } from "./PreferenceTagSummaryTable";
 import { RecommendationDetailPreviewModal } from "./RecommendationDetailPreviewModal";
 
 const RADIUS_RELAXATION_STEP_KM = 0.5;
@@ -53,34 +54,37 @@ export function RecommendationResultMessage({
   onToggleTravelOrigin,
   language = "ko",
 }: RecommendationResultMessageProps) {
-  const text = language === "en"
-    ? {
-        summary: "Here are some places that match your preferences.",
-        noResults: "We couldn’t find a place that matches those conditions.",
-        widen: `Search a wider area (+${RADIUS_RELAXATION_STEP_KM} km)`,
-        basedOn: (name: string) => `View results based on ${name}`,
-        currentLocation: "View results based on my current location",
-        recommendations: "Recommended places",
-        closed: "Places that are currently closed",
-        hoursUnknown: "Places with unavailable opening hours",
-        loading: "Loading...",
-        more: "Show more places",
-        hint: "Add another condition in the message box below.",
-      }
-    : {
-        summary: "조건에 맞춰 이런 장소를 찾아봤어요.",
-        noResults: "조건에 맞는 장소를 찾지 못했어요.",
-        widen: `검색 반경 넓혀서 다시 찾기 (+${RADIUS_RELAXATION_STEP_KM}km)`,
-        basedOn: (name: string) => `${name} 기준으로 다시 보기`,
-        currentLocation: "현재 위치 기준으로 다시 보기",
-        recommendations: "추천 장소",
-        closed: "현재 운영시간이 아닌 장소",
-        hoursUnknown: "운영시간을 확인할 수 없는 장소",
-        loading: "불러오는 중...",
-        more: "다른 장소 보기",
-        hint: "다른 조건이 있으면 아래 입력창에 이어서 적어주세요.",
-      };
-  const [selectedRecommendation, setSelectedRecommendation] = useState<RecommendationItem | null>(null);
+  const text =
+    language === "en"
+      ? {
+          summary: "Here are some places that match your preferences.",
+          noResults: "We couldn’t find a place that matches those conditions.",
+          widen: `Search a wider area (+${RADIUS_RELAXATION_STEP_KM} km)`,
+          basedOn: (name: string) => `View results based on ${name}`,
+          currentLocation: "View results based on my current location",
+          recommendations: "Recommended places",
+          closed: "Places that are currently closed",
+          hoursUnknown: "Places with unavailable opening hours",
+          loading: "Loading...",
+          more: "Show more places",
+          hint: "Add another condition in the message box below.",
+        }
+      : {
+          summary: "조건에 맞춰 이런 장소를 찾아봤어요.",
+          noResults: "조건에 맞는 장소를 찾지 못했어요.",
+          widen: `검색 반경 넓혀서 다시 찾기 (+${RADIUS_RELAXATION_STEP_KM}km)`,
+          basedOn: (name: string) => `${name} 기준으로 다시 보기`,
+          currentLocation: "현재 위치 기준으로 다시 보기",
+          recommendations: "추천 장소",
+          closed: "현재 운영시간이 아닌 장소",
+          hoursUnknown: "운영시간을 확인할 수 없는 장소",
+          loading: "불러오는 중...",
+          more: "다른 장소 보기",
+          hint: "다른 조건이 있으면 아래 입력창에 이어서 적어주세요.",
+        };
+  const [selectedRecommendation, setSelectedRecommendation] = useState<RecommendationItem | null>(
+    null,
+  );
   // D는 운영시간을 무시한 재검색에서 "현재는 폐점"인 후보도 unverified 목록에
   // 담는다. 하지만 이 후보는 운영시간 원문 자체가 없는 것이 아니다. 카드에서
   // 실제 구간을 보여 줄 수 있도록, display가 있는 폐점 후보와 진짜 결측 후보를
@@ -99,9 +103,7 @@ export function RecommendationResultMessage({
   return (
     <article className="mr-auto flex w-full max-w-2xl flex-col gap-4 rounded-md border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-900">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-          {text.summary}
-        </p>
+        <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{text.summary}</p>
         {showElapsedTime && (
           <p className="text-xs text-gray-500 dark:text-gray-400">
             {formatDuration(elapsedMs)} 소요 (서버 {formatDuration(serverElapsedMs)})
@@ -139,7 +141,9 @@ export function RecommendationResultMessage({
         <>
           {recommendations.length > 0 && (
             <section className="flex flex-col gap-3">
-              <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400">{text.recommendations}</h3>
+              <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400">
+                {text.recommendations}
+              </h3>
               <ul className="flex flex-col gap-3">
                 {recommendations.map((item) => (
                   <PlaceCard
@@ -214,6 +218,11 @@ export function RecommendationResultMessage({
               {text.hint}
             </span>
           </div>
+
+          <PreferenceTagSummaryTable
+            items={[...recommendations, ...closedRecommendations, ...unknownHoursRecommendations]}
+            language={language}
+          />
         </>
       )}
 

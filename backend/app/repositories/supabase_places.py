@@ -459,6 +459,43 @@ class SupabasePlaceRepository:
         except ValueError:
             raise SupabaseRepositoryError("non-JSON response") from None
 
+    async def find_preference_tags(
+        self,
+        content_ids: Sequence[str],
+    ) -> dict[str, tuple[dict[str, object], ...]]:
+        """추천 카드에 표시할 장소별 상위 취향 태그를 읽는다."""
+        unique_ids = list(dict.fromkeys(content_ids))
+        if not unique_ids:
+            return {}
+
+        grouped: dict[str, list[dict[str, object]]] = {}
+        for start in range(0, len(unique_ids), _MOOD_PROFILE_CHUNK_SIZE):
+            chunk = unique_ids[start : start + _MOOD_PROFILE_CHUNK_SIZE]
+            response = await self._request(
+                "GET",
+                "/place_preference_tags",
+                params={
+                    "select": (
+                        "content_id,preference_code,preference_label,"
+                        "display_rank,mention_count"
+                    ),
+                    "content_id": "in.(" + ",".join(chunk) + ")",
+                    "order": "content_id.asc,display_rank.asc",
+                    "limit": str(len(chunk) * 5),
+                },
+            )
+            payload = self._json(response)
+            if not isinstance(payload, list):
+                raise SupabaseRepositoryError("invalid place_preference_tags response")
+            for row in payload:
+                if not isinstance(row, Mapping):
+                    raise SupabaseRepositoryError("invalid place_preference_tags row")
+                content_id = str(row.get("content_id") or "")
+                if not content_id:
+                    raise SupabaseRepositoryError("preference tag missing content_id")
+                grouped.setdefault(content_id, []).append(dict(row))
+        return {content_id: tuple(rows[:5]) for content_id, rows in grouped.items()}
+
     async def search_place_evidence(
         self,
         query_embedding: Sequence[float],
@@ -691,6 +728,64 @@ class SupabasePlaceRepository:
         if not isinstance(payload, bool):
             raise SupabaseRepositoryError("invalid release lock response")
         return payload
+
+    async def abandon_sync_run(
+        self,
+        sync_run_id: UUID,
+        *,
+        reason: str,
+        completed_at: datetime,
+    ) -> bool:
+        """running으로 남은 실행을 failed로 마감한다. 이미 끝난 실행은 건드리지 않는다.
+
+        잠금을 손으로 풀 때 함께 쓴다. 잠금만 지우고 실행을 running으로 두면 이력이
+        영영 "진행 중"으로 남아, 나중에 통계와 화면이 실제와 어긋난다(2026-08-29
+        강동구 사고).
+
+        카운터는 손대지 않는다 — 어디까지 처리했는지는 죽은 프로세스만 알고, 여기서
+        0이나 임의 값으로 덮으면 실제로 적재된 행과 어긋난 기록이 남는다.
+        status=eq.running 조건을 함께 걸어, 그 사이 정상 종료된 실행을 덮어쓰지
+        않는다.
+        """
+        response = await self._request(
+            "PATCH",
+            "/place_sync_runs",
+            params={"id": f"eq.{sync_run_id}", "status": "eq.running"},
+            json={
+                "status": "failed",
+                "completed_at": _iso(completed_at),
+                "error_summary": {"SYNC_LOCK_RELEASED": 1, "note": reason},
+            },
+            prefer="return=representation",
+        )
+        payload = self._json(response)
+        return isinstance(payload, list) and len(payload) > 0
+
+    async def delete_sync_lock(
+        self,
+        area_code: str,
+        district_code: str,
+        sync_run_id: UUID,
+    ) -> bool:
+        """잠금을 지운다. sync_run_id가 일치할 때만 지운다.
+
+        RPC(`release_place_sync_lock`)는 동기화 파이프라인이 자기 잠금을 정상
+        반납할 때 쓰는 경로라 그대로 두고, 손으로 푸는 경로는 여기 따로 둔다.
+        소유자를 함께 대조하는 이유는 그 사이 잠금이 만료되고 **다른 실행이 새로
+        잡았을 수 있어서다** — 그때 지우면 살아 있는 동기화의 잠금을 뺏는다.
+        """
+        response = await self._request(
+            "DELETE",
+            "/place_sync_locks",
+            params={
+                "area_code": f"eq.{area_code}",
+                "district_code": f"eq.{district_code}",
+                "sync_run_id": f"eq.{sync_run_id}",
+            },
+            prefer="return=representation",
+        )
+        payload = self._json(response)
+        return isinstance(payload, list) and len(payload) > 0
 
     async def get_region_place_states(
         self,
@@ -1179,12 +1274,24 @@ class SupabasePlaceRepository:
         error_summary: Mapping[str, object] | None = None,
         completed_at: datetime,
     ) -> None:
+        """실행을 종료 상태로 마감한다. 이미 마감된 실행은 덮어쓰지 않는다.
+
+        `status=eq.running` 조건을 함께 건다. 개발자 패널이 잠금을 강제 해제하면서
+        이 실행을 failed로 마감했을 수 있는데(abandon_sync_run), 그때 이 프로세스는
+        자기 잠금이 사라진 것을 모른 채 계속 돌다가 정상 종료한다. 조건이 없으면
+        여기서 status를 success로 덮어써 강제 해제 흔적이 지워지고, 화면에는 아무
+        일도 없었던 것처럼 보인다.
+
+        동기화 자체를 멈추지는 못한다 — 잠금은 시작할 때 한 번 잡고 도는 동안
+        다시 확인하지 않는다. 여기서 막는 것은 "무슨 일이 있었는지가 기록에서
+        사라지는 것"까지다.
+        """
         if status not in _VALID_RUN_STATUSES:
             raise ValueError("유효하지 않은 동기화 종료 상태입니다.")
         await self._request(
             "PATCH",
             "/place_sync_runs",
-            params={"id": f"eq.{sync_run_id}"},
+            params={"id": f"eq.{sync_run_id}", "status": "eq.running"},
             json={
                 "status": status,
                 "api_total_count": api_total_count,
@@ -1597,6 +1704,12 @@ class SupabasePlaceRepository:
 
         만료를 여기서 걸러내면 "잠금이 남아 실행이 막힌다"와 "잠금이 없다"가
         화면에서 같아 보인다. 판단은 화면에서 하도록 시각을 그대로 넘긴다.
+
+        잠금을 만든 실행의 상태를 함께 싣는다. 잠금 행만으로는 "지금 돌고 있는
+        동기화"와 "죽은 프로세스가 남긴 유령 잠금"이 구분되지 않는다 — 두 경우의
+        행 모양이 똑같다. 실행이 이미 끝났으면(success/failed) 잠금은 확실히
+        유령이고, running이면 살아 있을 수도 죽었을 수도 있어 화면이 경과 시간을
+        보고 판단한다.
         """
         response = await self._request(
             "GET",
@@ -1606,7 +1719,42 @@ class SupabasePlaceRepository:
         payload = self._json(response)
         if not isinstance(payload, list):
             raise SupabaseRepositoryError("invalid sync lock list response")
-        return [dict(row) for row in payload if isinstance(row, Mapping)]
+        locks = [dict(row) for row in payload if isinstance(row, Mapping)]
+        if not locks:
+            return locks
+
+        run_ids = sorted({str(lock["sync_run_id"]) for lock in locks if lock.get("sync_run_id")})
+        runs = await self._get_sync_runs_by_ids(run_ids) if run_ids else {}
+        for lock in locks:
+            run = runs.get(str(lock.get("sync_run_id") or ""))
+            # 실행 기록이 없는 잠금도 있다(행이 지워졌거나 기록 전에 죽은 경우).
+            # 그때는 run_status를 None으로 둬 화면이 "기록 없음"으로 보여준다.
+            lock["run_status"] = run.get("status") if run else None
+            lock["run_started_at"] = run.get("started_at") if run else None
+            lock["run_processed_count"] = run.get("processed_count") if run else None
+            lock["run_api_total_count"] = run.get("api_total_count") if run else None
+        return locks
+
+    async def _get_sync_runs_by_ids(
+        self, run_ids: Sequence[str]
+    ) -> dict[str, dict[str, object]]:
+        """id로 동기화 실행을 찾아 id → 행으로 돌려준다."""
+        response = await self._request(
+            "GET",
+            "/place_sync_runs",
+            params={
+                "select": "id,status,started_at,processed_count,api_total_count",
+                "id": f"in.({','.join(run_ids)})",
+            },
+        )
+        payload = self._json(response)
+        if not isinstance(payload, list):
+            raise SupabaseRepositoryError("invalid sync run lookup response")
+        return {
+            str(row["id"]): dict(row)
+            for row in payload
+            if isinstance(row, Mapping) and row.get("id")
+        }
 
 
 def _summarize_places(rows: Sequence[Mapping[str, object]]) -> dict[str, object]:

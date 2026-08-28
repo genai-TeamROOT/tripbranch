@@ -22,6 +22,7 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import httpx
 from fastapi import APIRouter
@@ -471,6 +472,107 @@ async def get_sync_districts() -> dict[str, Any]:
         "loaded": [loaded[key] for key in sorted(loaded)],
         "known": list_districts(settings.place_sync_area_code),
     }
+
+
+class SyncLockReleaseRequest(BaseModel):
+    """손으로 푸는 동기화 잠금 해제 요청."""
+
+    area_code: str
+    district_code: str
+    # 소유자를 함께 받는다. 그 사이 잠금이 만료되고 다른 실행이 새로 잡았을 수
+    # 있어, 구만 보고 지우면 살아 있는 동기화의 잠금을 뺏는다.
+    sync_run_id: str
+    # 실행이 아직 running일 때는 이 값이 참이어야 지운다. 화면이 경과 시간을
+    # 보여주고 사용자가 한 번 더 확인하게 하기 위한 장치다.
+    force: bool = False
+
+
+@router.post("/place-sync/locks/release")
+async def post_sync_lock_release(request: SyncLockReleaseRequest) -> dict[str, Any]:
+    """남은 동기화 잠금을 손으로 푼다.
+
+    서버가 강제 종료되면 잠금이 DB에 남아 최대 TTL(2시간) 동안 그 구의 동기화가
+    막힌다 — 재시작해도 안 풀린다. 정리 코드가 프로세스와 함께 죽기 때문이다
+    (2026-08-29 강동구).
+
+    잠금 행만으로는 "지금 돌고 있는 동기화"와 "죽은 프로세스가 남긴 유령 잠금"이
+    구분되지 않는다. 그래서 잠금을 만든 실행의 상태를 보고 갈라 처리한다.
+
+    - 실행이 이미 끝났거나(success/failed) 기록이 없으면 바로 지운다. 잠금이
+      유령인 것이 확실하다.
+    - 실행이 running이면 ``force``가 참이어야 지운다. 살아 있을 수도 죽었을
+      수도 있어, 화면이 경과 시간을 보여주고 사용자가 판단하게 한다.
+
+    지울 때 running 실행도 함께 failed로 마감한다. 잠금만 풀면 이력이 영영
+    "진행 중"으로 남아 통계와 화면이 실제와 어긋난다.
+    """
+    url, key = _require_supabase()
+    try:
+        run_id = UUID(request.sync_run_id)
+    except ValueError:
+        raise DevPanelError("sync_run_id가 UUID 형식이 아닙니다.") from None
+
+    async with status_client() as client:
+        repository = SupabasePlaceRepository(
+            supabase_url=url,
+            secret_key=key,
+            client=client,
+            timeout_seconds=max(settings.external_api_timeout_seconds, 30.0),
+        )
+        locks = await repository.list_sync_locks()
+        target = next(
+            (
+                lock
+                for lock in locks
+                if str(lock.get("area_code")) == request.area_code
+                and str(lock.get("district_code")) == request.district_code
+                and str(lock.get("sync_run_id")) == str(run_id)
+            ),
+            None,
+        )
+        if target is None:
+            # 이미 풀렸거나 다른 실행이 새로 잡았다. 어느 쪽이든 지울 대상이 아니다.
+            raise DevPanelError(
+                "그 잠금을 찾지 못했습니다. 이미 풀렸거나 다른 실행이 새로 잡았습니다.",
+                status_code=404,
+            )
+
+        run_status = target.get("run_status")
+        if run_status == "running" and not request.force:
+            return {
+                "released": False,
+                "reason": "run_still_running",
+                "message": (
+                    "이 잠금을 만든 동기화가 아직 진행 중으로 기록돼 있습니다. "
+                    "다른 곳에서 동기화가 돌고 있다면 끊깁니다."
+                ),
+                "lock": target,
+            }
+
+        released = await repository.delete_sync_lock(
+            request.area_code, request.district_code, run_id
+        )
+        if not released:
+            raise DevPanelError(
+                "잠금을 지우지 못했습니다. 그 사이 상태가 바뀌었을 수 있습니다.",
+                status_code=409,
+            )
+
+        abandoned = False
+        if run_status == "running":
+            abandoned = await repository.abandon_sync_run(
+                run_id,
+                reason=(
+                    "개발자 패널에서 잠금을 수동 해제했다. 어디까지 처리했는지는 "
+                    "죽은 프로세스만 알므로 카운터는 그대로 둔다."
+                ),
+                completed_at=datetime.now(UTC),
+            )
+        return {
+            "released": True,
+            "run_abandoned": abandoned,
+            "lock": target,
+        }
 
 
 @router.post("/place-sync/reconcile")

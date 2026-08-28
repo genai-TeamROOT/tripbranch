@@ -561,6 +561,7 @@ async def rerank_with_concentration(
             # 가져온다 — 여기서 빠뜨리면 혼잡도 재순위를 탄 요청만 이 필드가
             # 조용히 사라진다(travel_distance_m과 같은 이유, 위 주석 참고).
             taste_evidence=item.taste_evidence,
+            preference_tags=item.preference_tags,
         )
         (unverified if is_unverified else verified).append(new_item)
 
@@ -740,6 +741,7 @@ async def rerank_with_co_visited(
                 if contribution.weight is not None
             },
             taste_evidence=item.taste_evidence,
+            preference_tags=item.preference_tags,
         )
         (unverified if is_unverified else verified).append(new_item)
 

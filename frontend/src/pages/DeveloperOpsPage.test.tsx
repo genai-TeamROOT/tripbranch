@@ -963,3 +963,151 @@ it("대조가 쓰는 목록 API 호출 수를 누르기 전에 알린다", async
   // 반영이 "목록 0회"인 것과 헷갈리지 않게 이유를 함께 적는다.
   expect(screen.getByText(/반영은 이 스냅샷을 다시 쓰므로/)).toBeInTheDocument();
 });
+
+/*
+ * 잠금 해제 — 서버가 강제 종료되면 잠금이 DB에 남아 최대 2시간 동안 그 구의
+ * 동기화가 막힌다. 실행이 이미 끝났으면 바로 풀고, 아직 running이면 한 번 더
+ * 확인받는다(다른 곳에서 도는 동기화를 끊을 수 있어서다).
+ */
+test("끝난 실행이 남긴 잠금은 확인 없이 바로 푼다", async () => {
+  const posted: { url: string; body: Record<string, unknown> }[] = [];
+  const withLock = {
+    ...dbStatus,
+    sync_locks: [
+      {
+        area_code: "11",
+        district_code: "740",
+        sync_run_id: "11111111-1111-4111-8111-111111111111",
+        acquired_at: "2026-08-29T00:59:00+09:00",
+        expires_at: "2026-08-29T02:59:00+09:00",
+        run_status: "failed",
+        run_started_at: "2026-08-29T00:59:00+09:00",
+        run_processed_count: 111,
+      },
+    ],
+  };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "POST") {
+        posted.push({ url, body: JSON.parse(String(init.body)) });
+        return new Response(JSON.stringify({ released: true, run_abandoned: false }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      const body = url.includes("db-status") ? withLock : panelBody(url);
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }),
+  );
+  const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+  renderPage();
+  const button = await screen.findByRole("button", { name: "잠금 해제" });
+  await userEvent.click(button);
+
+  await waitFor(() => expect(posted).toHaveLength(1));
+  expect(posted[0].url).toContain("/dev/place-sync/locks/release");
+  // 소유자를 함께 보낸다 — 구만 보고 지우면 그 사이 새로 잡은 잠금을 뺏는다.
+  expect(posted[0].body).toMatchObject({
+    area_code: "11",
+    district_code: "740",
+    sync_run_id: "11111111-1111-4111-8111-111111111111",
+    force: false,
+  });
+  // 실행이 이미 끝났으므로 되묻지 않는다.
+  expect(confirmSpy).not.toHaveBeenCalled();
+  await screen.findByText("잠금을 풀었어요.");
+  confirmSpy.mockRestore();
+});
+
+test("아직 running인 실행의 잠금은 확인을 받고 force로 푼다", async () => {
+  const posted: { url: string; body: Record<string, unknown> }[] = [];
+  const withRunningLock = {
+    ...dbStatus,
+    sync_locks: [
+      {
+        area_code: "11",
+        district_code: "740",
+        sync_run_id: "22222222-2222-4222-8222-222222222222",
+        acquired_at: "2026-08-29T00:59:00+09:00",
+        expires_at: "2026-08-29T02:59:00+09:00",
+        run_status: "running",
+        run_started_at: "2026-08-29T00:59:00+09:00",
+        run_processed_count: 111,
+      },
+    ],
+  };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "POST") {
+        posted.push({ url, body: JSON.parse(String(init.body)) });
+        return new Response(JSON.stringify({ released: true, run_abandoned: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      const body = url.includes("db-status") ? withRunningLock : panelBody(url);
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }),
+  );
+  const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+  renderPage();
+  // running이면 버튼 문구부터 다르다 — 무엇을 하는지 눌러보기 전에 보여야 한다.
+  const button = await screen.findByRole("button", { name: "강제 해제" });
+  await userEvent.click(button);
+
+  await waitFor(() => expect(posted).toHaveLength(1));
+  expect(confirmSpy).toHaveBeenCalled();
+  expect(posted[0].body).toMatchObject({ force: true });
+  await screen.findByText("잠금을 풀고 진행 중이던 실행을 실패로 마감했어요.");
+  confirmSpy.mockRestore();
+});
+
+test("running 잠금 해제를 취소하면 요청을 보내지 않는다", async () => {
+  const posted: string[] = [];
+  const withRunningLock = {
+    ...dbStatus,
+    sync_locks: [
+      {
+        area_code: "11",
+        district_code: "740",
+        sync_run_id: "33333333-3333-4333-8333-333333333333",
+        acquired_at: "2026-08-29T00:59:00+09:00",
+        expires_at: "2026-08-29T02:59:00+09:00",
+        run_status: "running",
+        run_started_at: "2026-08-29T00:59:00+09:00",
+      },
+    ],
+  };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "POST") posted.push(url);
+      const body = url.includes("db-status") ? withRunningLock : panelBody(url);
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }),
+  );
+  const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+
+  renderPage();
+  await userEvent.click(await screen.findByRole("button", { name: "강제 해제" }));
+
+  expect(confirmSpy).toHaveBeenCalled();
+  expect(posted).toHaveLength(0);
+  confirmSpy.mockRestore();
+});

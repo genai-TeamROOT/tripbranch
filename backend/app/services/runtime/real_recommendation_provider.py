@@ -20,10 +20,13 @@ from app.agent_context.enrichment_schemas import CandidateEnrichmentResponse
 from app.domain.models import PlaceEvidenceMatch
 from app.domain.travel_route import TravelRoute
 from app.providers.place_evidence import PlaceEvidenceProvider
+from app.repositories.supabase_places import SupabasePlaceRepository
 from app.schemas import (
     ConcentrationIntent,
     PlaceTag,
     PlaceType,
+    PreferenceTagSummary,
+    RecommendationItem,
     RecommendationResponse,
     UserConditions,
 )
@@ -221,10 +224,12 @@ class RealRecommendationProvider:
     # 테스트 대역(tests/test_agent_runtime.py)이 있어, 인스턴스 속성으로만
     # 두면 그쪽이 깨진다.
     _place_evidence: PlaceEvidenceProvider | None = None
+    _preference_tags: SupabasePlaceRepository | None = None
 
     def __init__(
         self,
         place_evidence: PlaceEvidenceProvider | None = None,
+        preference_tags: SupabasePlaceRepository | None = None,
     ) -> None:
         """취향 근거 Provider는 선택이다.
 
@@ -237,6 +242,7 @@ class RealRecommendationProvider:
         계산뿐이라 A가 중계할 이유가 없다.
         """
         self._place_evidence = place_evidence
+        self._preference_tags = preference_tags
 
     def merge_prepared(
         self,
@@ -269,12 +275,48 @@ class RealRecommendationProvider:
         travel_routes: tuple[TravelRoute, ...] = (),
         limit: int = _RECOMMENDATION_LIMIT,
     ) -> RecommendationResponse:
-        return await score_prepared_recommendation(
+        response = await score_prepared_recommendation(
             prepared,
             search_radius_km=to_search_radius_km(conditions),
             recommendation_limit=limit,
             travel_routes=_measured_routes_for(conditions, travel_routes),
             taste_matches=await self._taste_matches_for(conditions, prepared),
+        )
+        return await self._with_preference_tags(response)
+
+    async def _with_preference_tags(
+        self, response: RecommendationResponse
+    ) -> RecommendationResponse:
+        """추천 결과에 DB의 장소별 취향 태그를 붙인다. 실패해도 추천은 유지한다."""
+        if self._preference_tags is None:
+            return response
+        items = [*response.recommendations, *response.unverified_recommendations]
+        try:
+            tags_by_place = await self._preference_tags.find_preference_tags(
+                [item.place_id for item in items]
+            )
+        except Exception:
+            logger.exception("장소 취향 태그 조회 실패 — 태그 없이 추천한다")
+            return response
+
+        def attach(item: RecommendationItem) -> RecommendationItem:
+            summaries = [
+                PreferenceTagSummary(
+                    code=str(row.get("preference_code") or ""),
+                    label=str(row.get("preference_label") or ""),
+                    mention_count=int(row.get("mention_count") or 0),
+                )
+                for row in tags_by_place.get(item.place_id, ())
+            ]
+            return item.model_copy(update={"preference_tags": summaries})
+
+        return response.model_copy(
+            update={
+                "recommendations": [attach(item) for item in response.recommendations],
+                "unverified_recommendations": [
+                    attach(item) for item in response.unverified_recommendations
+                ],
+            }
         )
 
     async def _taste_matches_for(
