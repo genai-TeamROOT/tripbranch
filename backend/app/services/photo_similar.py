@@ -44,6 +44,7 @@ from app.agent_context.schemas import (
 from app.errors import AppError
 from app.place_search_policy import DEFAULT_PLACE_SEARCH_RADIUS_KM
 from app.providers.contracts import ProviderMetadata, ProviderSource, ProviderStatus
+from app.providers.place_mood_encoder import UnreadableImageError
 from app.providers.protocols import GeocodingProvider, PlaceProvider
 from app.services.recommendation_pipeline import prepare_recommendation_from_context
 from app.tools.contracts import ToolStatus
@@ -162,14 +163,24 @@ async def build_photo_similar_places(
     # DB 안에서 끝나 사실상 공짜다. 보여줄 수보다 넉넉히 받는 이유는 다음
     # 단계에서 영업시간으로 걸러지기 때문이다 — 실측에서 영업 중인 비율이
     # 20곳 중 7곳(35%)이었다.
-    ranked = await mood_provider.search_by_photo(
-        query.image_bytes,
-        None,
-        latitude=center.latitude,
-        longitude=center.longitude,
-        radius_km=radius_km,
-        match_count=query.limit * _OVERFETCH_FACTOR,
-    )
+    try:
+        ranked = await mood_provider.search_by_photo(
+            query.image_bytes,
+            None,
+            latitude=center.latitude,
+            longitude=center.longitude,
+            radius_km=radius_km,
+            match_count=query.limit * _OVERFETCH_FACTOR,
+        )
+    except UnreadableImageError as error:
+        # 사용자 입력 문제다. 500으로 두면 서버 잘못이라는 뜻이 되어 로그와
+        # 모니터링에서 진짜 장애와 섞이고, 화면도 "예상치 못한 오류"만 보여준다.
+        raise AppError(
+            code="unreadable_image",
+            message="사진을 열 수 없어요. 다른 사진으로 올려 주세요.",
+            status_code=422,
+            retryable=True,
+        ) from error
     if not ranked.data:
         return PhotoSimilarResult(
             places=(),
