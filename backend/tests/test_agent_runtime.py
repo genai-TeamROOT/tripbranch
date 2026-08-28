@@ -288,8 +288,8 @@ async def test_turn_carries_follow_up_suggestions() -> None:
 
 
 @pytest.mark.asyncio
-async def test_recommend_stream_starts_template_before_showing_cards() -> None:
-    """SSE 추천은 LLM 요약 없이 템플릿 답변 시작 후 카드를 같은 시점에 노출한다."""
+async def test_recommend_stream_shows_template_and_cards_before_llm_tip() -> None:
+    """SSE 추천은 고정 안내·카드를 먼저, LLM 선택 팁을 그 아래에 보낸다."""
 
     store = InMemoryStateStore()
     providers = _providers()
@@ -312,7 +312,9 @@ async def test_recommend_stream_starts_template_before_showing_cards() -> None:
 
     names = [event for event, _ in events]
     assert names[:4] == ["progress", "progress", "progress", "progress"]
-    assert names.index("message_start") < names.index("message_delta") < names.index("result")
+    assert names.index("result") < names.index("message_start") < names.index("message_delta")
+    result_payload = next(payload for event, payload in events if event == "result")
+    assert result_payload["message"] == "이런 곳들을 찾아봤어요:"
     assert [payload["stage"] for event, payload in events if event == "progress"] == [
         "interpreting",
         "merging_conditions",

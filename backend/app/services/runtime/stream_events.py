@@ -63,8 +63,9 @@ async def begin_streamed_message(
 ) -> None:
     """LLM 답변이 시작되기 전, 로딩 말풍선을 먼저 연다.
 
-    RECOMMEND/MODIFY도 카드(result)를 첫 텍스트 조각 뒤에 보내므로, GENERAL/INFO와
-    마찬가지로 이 이벤트가 프론트의 움직이는 점 표시를 연다.
+    RECOMMEND/MODIFY는 카드(result)를 먼저 보낸 뒤 이 이벤트로 카드 아래의 선택 팁
+    로딩 말풍선을 연다. GENERAL/INFO는 카드가 없거나 본문이 먼저라 기존처럼 바로
+    답변 말풍선을 연다.
     """
 
     await emit_progress(sink, "composing_message", progress_message)

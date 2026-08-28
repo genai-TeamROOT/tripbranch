@@ -6,9 +6,9 @@
    "다만~"으로 마지막)로 이어붙인다. 문장 내용 자체는 재작문하지 않고 D가 만든
    그대로 쓴다.
 2) compose_chat_message(): 카드들을 감싸는 챗봇 말풍선 텍스트(AgentResponse.message).
-   Intent/status별로 고정 템플릿을 고르거나 GENERAL·INFO·COMPARE처럼 문장 생성 가치가
-   큰 응답에만 LLM을 호출한다. RECOMMEND/MODIFY의 카드 소개는 고정 템플릿으로 즉시
-   반환해, 이미 완성된 추천 결과를 위해 추가 LLM 대기 시간을 만들지 않는다.
+   Intent/status별로 고정 템플릿을 고르거나 LLM으로 문장을 생성한다. RECOMMEND/MODIFY는
+   검증된 후보·취향 리뷰 근거만 LLM에 넘겨 추천 후 선택 팁을 만든다. SSE에서는 고정
+   안내·카드를 먼저 보여주고, 이 요약을 카드 아래에서 이어서 스트리밍한다.
 """
 
 from __future__ import annotations
@@ -54,6 +54,47 @@ _TOOL_TERMINAL_STATUSES = frozenset(
 _RECOMMEND_WRAPPER_MESSAGE = "이런 곳들을 찾아봤어요:"
 
 MessageDeltaCallback = Callable[[str], Awaitable[None]]
+
+
+def recommendation_wrapper_message() -> str:
+    """RECOMMEND/MODIFY 카드 앞에 즉시 표시할 고정 안내문."""
+
+    return _RECOMMEND_WRAPPER_MESSAGE
+
+
+async def compose_recommendation_summary(
+    *,
+    intent: Intent,
+    recommendations: RecommendationResponse,
+    llm: LLMProvider,
+    on_message_delta: MessageDeltaCallback | None = None,
+) -> str | None:
+    """추천 카드 아래에 붙일 LLM 선택 팁을 만든다.
+
+    카드·순위 자체는 이미 D가 확정했으므로 LLM에는 후보별 검증된 카드 필드와 제한된
+    리뷰 근거만 전달된다. 실패 시 ``None``을 돌려 호출자가 고정 카드 안내만 유지하게
+    한다. 특히 SSE에서는 실패한 부가 요약 때문에 추천 카드 전체가 늦어지지 않는다.
+    """
+
+    if on_message_delta is not None:
+        try:
+            message = await _collect_message_stream(
+                llm.stream_recommendation_summary(intent, recommendations),
+                on_message_delta,
+            )
+            if message:
+                return message
+        except AppError:
+            logger.warning("추천 요약 스트리밍 실패", exc_info=True)
+
+    try:
+        result = await llm.generate_recommendation_summary(intent, recommendations)
+    except AppError:
+        logger.warning("추천 요약 LLM 생성 실패", exc_info=True)
+        return None
+    if on_message_delta is not None:
+        await on_message_delta(result.data)
+    return result.data
 
 # int-03-modify.md §11 "후보 부족 처리" 정책 그대로 재사용 — 시스템이 임의로 조건을
 # 완화하지 않고, 사용자에게 선택지를 제시한다.
@@ -812,7 +853,8 @@ async def compose_chat_message(
 
     docs/design/agent-response-generation.md의 결정을 구현한다. GENERAL·INFO·COMPARE는
     필요할 때 LLM으로 답변 본문을 생성하고, RECOMMEND/MODIFY 성공 경로는 추천 카드
-    wrapper를 LLM으로 생성한다. 추천 카드의 상세 내용은 여기서 길게 다시 풀어쓰지 않는다.
+    아래에 붙일 선택 팁을 LLM으로 생성한다. 추천 카드의 상세 내용은 여기서 길게 다시
+    풀어쓰지 않는다.
 
     schedule_time_available_min은 SCHEDULE 경로에서만 쓰인다(사용자가 요청한
     활동 가능 시간, 분) — compose_schedule_message에 그대로 전달해 "요청한
@@ -972,9 +1014,13 @@ async def _compose_chat_message(
         )
         if not shown:
             return _NO_DATA_MESSAGE
-        if on_message_delta is not None:
-            await on_message_delta(_RECOMMEND_WRAPPER_MESSAGE)
-        return _RECOMMEND_WRAPPER_MESSAGE
+        message = await compose_recommendation_summary(
+            intent=llm_output.intent,
+            recommendations=recommendations,
+            llm=llm,
+            on_message_delta=on_message_delta,
+        )
+        return message or recommendation_wrapper_message()
 
     # INFO/COMPARE — 별도 트랙(agent-response-generation.md §3/§6 3차), 지금은 안내만.
     return _NOT_YET_SUPPORTED_MESSAGE
@@ -982,6 +1028,7 @@ async def _compose_chat_message(
 
 __all__ = [
     "compose_recommendation_message",
+    "compose_recommendation_summary",
     "compose_chat_message",
     "compose_info_concentration_message",
     "compose_realtime_population_message",
@@ -991,5 +1038,6 @@ __all__ = [
     "compose_event_info_message",
     "compose_compare_message",
     "compose_schedule_message",
+    "recommendation_wrapper_message",
     "unsupported_region_footnote",
 ]

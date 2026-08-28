@@ -119,6 +119,8 @@ from app.services.runtime.recommendation_transform import to_travel_mode
 from app.services.runtime.response_composer import (
     compose_chat_message,
     compose_compare_message,
+    compose_recommendation_summary,
+    recommendation_wrapper_message,
     tool_clarification_message,
     unsupported_region_footnote,
 )
@@ -3227,14 +3229,14 @@ async def _finalize_recommendation_response(
             principal=principal,
         )
 
-    # 8) A: 추천 카드와 LLM 요약을 같은 시점부터 화면에 보인다. 이전에는 카드(result)를
-    #    먼저 내보내고 한참 뒤 요약을 시작해, 화면상 카드가 "답변 생성 중" 말풍선보다
-    #    먼저 나타났다. 스트리밍일 때는 첫 텍스트 조각을 보낸 직후 result를 내보내므로
-    #    답변이 실제로 시작되는 순간 카드도 함께 노출된다.
+    # 8) A: 추천 카드의 고정 안내는 즉시 노출하고, 그 아래의 선택 팁만 LLM으로
+    #    스트리밍한다. 카드의 순위·근거는 D 결과 그대로라 LLM 생성 대기 때문에
+    #    사용자가 추천 결과를 늦게 보지 않는다.
     result_payload = {
         "llm_output": llm_output.model_dump(mode="json"),
         "state": state_response.model_dump(mode="json"),
         "recommendations": recommendations.model_dump(mode="json"),
+        "message": recommendation_wrapper_message(),
     }
     result_emitted = False
 
@@ -3245,11 +3247,15 @@ async def _finalize_recommendation_response(
         await _emit_stream_event(stream_event_sink, "result", result_payload)
         result_emitted = True
 
-    if stream_recommendation_summary:
+    should_stream_summary = stream_recommendation_summary and bool(shown)
+    if should_stream_summary:
+        # 프론트는 result의 고정 안내문과 카드부터 추가한다. 그 다음 message_start가
+        # 카드 아래의 "추천 팁" 로딩 말풍선을 열어, 화면 순서가 안내 → 카드 → 팁이 된다.
+        await emit_recommendation_result()
         await _begin_streamed_message(
             stream_event_sink,
             intent=llm_output.intent,
-            progress_message="추천 결과를 안내하고 있어요.",
+            progress_message="추천 팁을 정리하고 있어요.",
         )
     else:
         # 스트리밍을 사용하지 않는 호출자는 기존처럼 결과를 즉시 관측한다.
@@ -3257,18 +3263,24 @@ async def _finalize_recommendation_response(
 
     async def emit_message_delta(text: str) -> None:
         await _emit_stream_event(stream_event_sink, "message_delta", {"text": text})
-        # 프론트는 message_delta를 먼저 처리해 답변 말풍선을 연 뒤 result를 처리한다.
-        # 따라서 카드가 말풍선보다 앞서 보이지 않는다.
-        await emit_recommendation_result()
 
-    message = await compose_chat_message(
-        llm_output,
-        recommendations=recommendations,
-        llm=llm,
-        on_message_delta=(emit_message_delta if stream_recommendation_summary else None),
-    )
-    # Provider가 빈 스트림을 반환하는 예외적 경우에도 카드가 영구히 보이지 않지 않도록
-    # 마지막에 한 번 보장한다. 정상 스트림에서는 첫 delta에서 이미 전송됐다.
+    if should_stream_summary:
+        message = await compose_recommendation_summary(
+            intent=llm_output.intent,
+            recommendations=recommendations,
+            llm=llm,
+            on_message_delta=emit_message_delta,
+        )
+        # 부가 설명 생성 실패는 추천 자체의 실패가 아니다. 카드 앞에 이미 나온
+        # 고정 안내문을 최종 message에도 남겨 단발 JSON 호출과의 계약을 유지한다.
+        message = message or recommendation_wrapper_message()
+    else:
+        message = await compose_chat_message(
+            llm_output,
+            recommendations=recommendations,
+            llm=llm,
+        )
+    # 빈 스트림·부가 설명 실패여도 result는 이미 보냈거나 여기서 한 번 보장한다.
     await emit_recommendation_result()
     return AgentResponse(
         llm_output=llm_output,

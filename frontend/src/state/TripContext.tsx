@@ -337,7 +337,13 @@ function tripReducer(state: TripState, action: TripAction): TripState {
     case "SET_AGENT_PROGRESS":
       return { ...state, agentProgress: action.payload };
     case "APPEND_STREAM_RESULT": {
-      const { recommendations, state: streamState, llm_output, elapsedMsClient } = action.payload;
+      const {
+        recommendations,
+        state: streamState,
+        llm_output,
+        elapsedMsClient,
+        message: wrapperMessage,
+      } = action.payload;
       const shownIds = [
         ...recommendations.recommendations,
         ...recommendations.unverified_recommendations,
@@ -351,8 +357,19 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         streamingIntent: llm_output.intent,
         messages: [
           ...state.messages,
-          // message_start/message_delta가 답변 말풍선을 먼저 만들고 난 뒤에만 이 이벤트가
-          // 온다. 여기서는 카드만 추가해 "카드 → 답변" 역전이 일어나지 않게 한다.
+          // SSE 추천은 고정 안내 → 카드 → LLM 선택 팁 순서다. result에만 담긴
+          // 고정 안내를 먼저 넣어, LLM이 길게 생성되는 동안에도 후보를 바로 보여준다.
+          ...(wrapperMessage
+            ? [
+                {
+                  id: createMessageId("assistant"),
+                  type: "assistant_text" as const,
+                  text: wrapperMessage,
+                  intent: llm_output.intent,
+                  status: llm_output.status,
+                },
+              ]
+            : []),
           {
             id: createMessageId("result"),
             type: "recommendation_result",
@@ -454,12 +471,12 @@ function tripReducer(state: TripState, action: TripAction): TripState {
                 ? {
                     ...streamingMessage,
                     text:
-                      response.message ||
-                      (streamingMessage.text === "…"
-                        ? state.language === "en"
-                          ? "Here are some places that match your preferences."
-                          : "이런 곳들을 찾아봤어요:"
-                        : streamingMessage.text),
+                      streamingMessage.text === "…"
+                        ? response.message ||
+                          (state.language === "en"
+                            ? "Here are some places that match your preferences."
+                            : "이런 곳들을 찾아봤어요:")
+                        : streamingMessage.text,
                     intent: response.llm_output.intent,
                     status: response.llm_output.status,
                     streaming: false,
