@@ -45,13 +45,12 @@ def test_find_district_by_gps_prefers_polygon_containment() -> None:
 
 
 def test_find_district_by_gps_falls_back_to_nearest_when_outside_all_polygons() -> None:
-    # 잠실역 — 어느 지원 구 폴리곤에도 안 들어가지만(송파구는 미지원),
-    # 가장 가까운 지원 구가 15km 이내라 그 구를 반환해야 한다.
-    # 강남역은 쓰지 않는다: 흔히 쓰는 좌표가 서초구 쪽이라 서초구가 지원에
-    # 들어오면서(2026-08-28) 폴리곤 안으로 판정된다.
-    district = find_district_by_gps(37.5133, 127.1001)
+    # 부천역(경기) — 어느 지원 구 폴리곤에도 안 들어가지만 가장 가까운 지원 구가
+    # 15km 이내라 그 구를 반환해야 한다. 서울 25개 구가 전부 지원 범위가 되면서
+    # (2026-08-29) 서울 안에는 폴리곤 밖 좌표가 남지 않아 경기 좌표를 쓴다.
+    district = find_district_by_gps(37.4844, 126.7830)
     assert district is not None
-    assert district.name == "광진구"
+    assert district.name == "양천구"
 
 
 def test_find_district_by_gps_returns_none_far_outside_seoul() -> None:

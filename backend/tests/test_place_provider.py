@@ -392,8 +392,10 @@ class TestSupportedDistrictFilter:
                 self._item("jung", "140"),
                 self._item("yongsan", "170"),
                 self._item("seongdong", "200"),
-                self._item("songpa", "710"),
-                self._item("gangnam", "680"),
+                # 서울 25개 구가 전부 지원 범위가 되면서(2026-08-29) "버려야 할"
+                # 표본은 서울 밖에서 고른다 — 부천(192)·성남(131).
+                self._item("bucheon", "192"),
+                self._item("seongnam", "131"),
             ]
         )
 

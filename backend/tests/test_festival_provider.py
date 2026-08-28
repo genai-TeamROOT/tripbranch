@@ -148,11 +148,11 @@ class TestRequest:
 
     @pytest.mark.asyncio
     async def test_지원하지_않는_구의_행사는_응답에서_버린다(self) -> None:
-        """서울 전체를 받으므로 거르지 않으면 송파·강남 행사가 그대로 실린다."""
-        songpa = {**REAL_ITEM, "contentid": "songpa-1", "lDongSignguCd": "710"}
+        """서울 전체를 받는데 서울 25개 구가 전부 지원 범위라, 이제 거를 대상은 경기 행사다."""
+        bucheon = {**REAL_ITEM, "contentid": "bucheon-1", "lDongSignguCd": "192"}
 
         def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json=_payload([REAL_ITEM, songpa]))
+            return httpx.Response(200, json=_payload([REAL_ITEM, bucheon]))
 
         transport = httpx.MockTransport(handler)
         async with httpx.AsyncClient(transport=transport) as client:
