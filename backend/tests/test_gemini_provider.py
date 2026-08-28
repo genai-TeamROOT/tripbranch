@@ -27,13 +27,20 @@ from app.providers.gemini import (
 from app.schedule.schemas import ScheduleLLMPlan, SchedulePlanningRequest
 from app.schemas import (
     CompareCriteria,
+    ComparePayload,
     ComparisonItem,
     ComparisonResult,
+    GeneralPayload,
     GeneralTopic,
+    InfoPayload,
     Intent,
     IntentClassificationResult,
     LLMOutput,
+    ModifyPayload,
+    ModifyType,
     OutputStatus,
+    PlaceContext,
+    QuestionType,
     RecommendationItem,
     RecommendationResponse,
     RecommendPayload,
@@ -532,6 +539,117 @@ async def test_extract_recommend_conditions_uses_thinking_budget_zero() -> None:
 
     with patch.object(provider._client.aio.models, "generate_content", side_effect=capture):
         await provider.extract_recommend_conditions("경복궁 근처 카페 추천해줘")
+
+    assert captured_config[0].thinking_config.thinking_level == genai_types.ThinkingLevel.MINIMAL
+
+
+# --- thinking_budget 확장 적용(나머지 추출 4곳, TP-179) ---
+#
+# D-066이 답변·요약 5곳과 classify_intent/extract_recommend_conditions에
+# thinking_budget=0을 적용하면서 명시적으로 범위 밖으로 남겨 둔 4곳이다. 실측
+# (2026-08-27)으로는 fast 모델(gemini-3.5-flash-lite)에서 지연 차이가 없었다 —
+# 그 모델은 설정 없이도 이미 가볍다. 그래도 명시하는 이유는 fast 모델이 다시
+# 무거운 모델로 바뀌는 순간 이 네 곳만 조용히 최적화가 빠지는 D-076류 사고를
+# 막기 위해서다.
+
+
+@pytest.mark.asyncio
+async def test_extract_modify_conditions_uses_thinking_budget_zero() -> None:
+    """extract_modify_conditions()가 실제로 thinking_budget=0을 끝까지 전달하는지
+    확인한다."""
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    captured_config: list[object] = []
+    output = LLMOutput(
+        intent=Intent.MODIFY,
+        status=OutputStatus.COMPLETE,
+        modify=ModifyPayload(modify_type=ModifyType.CHANGE_CONDITION),
+    )
+
+    async def capture(*args: object, **kwargs: object) -> _FakeResponse:
+        captured_config.append(kwargs["config"])
+        return _FakeResponse(output)
+
+    with patch.object(provider._client.aio.models, "generate_content", side_effect=capture):
+        await provider.extract_modify_conditions(
+            "광화문으로", UserConditions(search_center="경복궁")
+        )
+
+    assert captured_config[0].thinking_config.thinking_level == genai_types.ThinkingLevel.MINIMAL
+
+
+@pytest.mark.asyncio
+async def test_extract_info_query_uses_thinking_budget_zero() -> None:
+    """extract_info_query()가 실제로 thinking_budget=0을 끝까지 전달하는지 확인한다."""
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    captured_config: list[object] = []
+    output = LLMOutput(
+        intent=Intent.INFO,
+        status=OutputStatus.COMPLETE,
+        info=InfoPayload(
+            place_name="경복궁",
+            place_context=PlaceContext.EXPLICIT,
+            question_type=QuestionType.OPERATING_HOURS,
+        ),
+    )
+
+    async def capture(*args: object, **kwargs: object) -> _FakeResponse:
+        captured_config.append(kwargs["config"])
+        return _FakeResponse(output)
+
+    with patch.object(provider._client.aio.models, "generate_content", side_effect=capture):
+        await provider.extract_info_query(
+            "경복궁 오늘 열어?",
+            has_previous_recommendation=False,
+            reference_date=datetime(2026, 8, 27, tzinfo=ZoneInfo("Asia/Seoul")).date(),
+        )
+
+    assert captured_config[0].thinking_config.thinking_level == genai_types.ThinkingLevel.MINIMAL
+
+
+@pytest.mark.asyncio
+async def test_extract_compare_request_uses_thinking_budget_zero() -> None:
+    """extract_compare_request()가 실제로 thinking_budget=0을 끝까지 전달하는지
+    확인한다."""
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    captured_config: list[object] = []
+    output = LLMOutput(
+        intent=Intent.COMPARE,
+        status=OutputStatus.COMPLETE,
+        compare=ComparePayload(targets="all", criteria=CompareCriteria.TIME),
+    )
+
+    async def capture(*args: object, **kwargs: object) -> _FakeResponse:
+        captured_config.append(kwargs["config"])
+        return _FakeResponse(output)
+
+    with patch.object(provider._client.aio.models, "generate_content", side_effect=capture):
+        await provider.extract_compare_request(
+            "경복궁이랑 인사동 이동시간 비교해줘", shown_place_count=0
+        )
+
+    assert captured_config[0].thinking_config.thinking_level == genai_types.ThinkingLevel.MINIMAL
+
+
+@pytest.mark.asyncio
+async def test_extract_general_request_uses_thinking_budget_zero() -> None:
+    """extract_general_request()가 실제로 thinking_budget=0을 끝까지 전달하는지
+    확인한다."""
+    provider = RealGeminiProvider(api_key="dummy", model_names=["dummy"], timeout_seconds=1.0)
+    captured_config: list[object] = []
+    output = LLMOutput(
+        intent=Intent.GENERAL,
+        status=OutputStatus.COMPLETE,
+        general=GeneralPayload(
+            topic=GeneralTopic.SERVICE_IDENTITY, original_question="넌 누구야?"
+        ),
+    )
+
+    async def capture(*args: object, **kwargs: object) -> _FakeResponse:
+        captured_config.append(kwargs["config"])
+        return _FakeResponse(output)
+
+    with patch.object(provider._client.aio.models, "generate_content", side_effect=capture):
+        await provider.extract_general_request("넌 누구야?")
 
     assert captured_config[0].thinking_config.thinking_level == genai_types.ThinkingLevel.MINIMAL
 

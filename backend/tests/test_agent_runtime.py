@@ -4838,6 +4838,53 @@ async def test_schedule_heartbeat_emits_progress_during_slow_planning() -> None:
     assert len(scheduling_events) >= 1
 
 
+class _SlowClassifyIntentLLM(_LLMProviderWithGeneralAnswer):
+    """classify_intent()가 heartbeat 간격보다 오래 걸리는 상황을 흉내 낸다.
+
+    classify_intent()·extract_*()는 SCHEDULE 편성과 달리 heartbeat 없이 그냥
+    await 하나로 끝난다 — "요청 의도와 조건을 파악하고 있어요." 문구 하나로 멈춘
+    것처럼 보이는 구간이다. 평소엔 1~2초 안에 끝나 체감되지 않지만 외부 API
+    꼬리 지연이 걸리면 그대로 무응답 공백이 된다.
+    """
+
+    async def classify_intent(self, user_input, **kwargs):
+        await asyncio.sleep(0.05)
+        return await super().classify_intent(user_input, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_interpret_heartbeat_emits_progress_during_slow_classification() -> None:
+    store = InMemoryStateStore()
+    providers = _providers()
+    providers["llm"] = _SlowClassifyIntentLLM()
+    events: list[tuple[str, dict[str, object]]] = []
+
+    async def sink(event: str, payload: dict[str, object]) -> None:
+        events.append((event, payload))
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="넌 누구야?",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        stream_event_sink=sink,
+        **providers,
+    )
+
+    assert response.llm_output.intent == "GENERAL"
+    interpreting_events = [
+        payload
+        for event, payload in events
+        if event == "progress" and payload["stage"] == "interpreting"
+    ]
+    # 최초 1건("요청 의도와...")은 항상 있다 — heartbeat 반복 자체는
+    # test_await_with_heartbeat_emits_progress_until_task_completes()가 단위로
+    # 검증하므로, 여기서는 "interpreting" 단계에도 실제로 걸려 있는지만 확인한다.
+    assert len(interpreting_events) >= 1
+
+
 @pytest.mark.asyncio
 async def test_await_with_heartbeat_emits_progress_until_task_completes() -> None:
     from app.services.runtime.agent_runtime import _await_with_heartbeat

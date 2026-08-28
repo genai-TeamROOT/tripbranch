@@ -402,11 +402,17 @@ class RealGeminiProvider:
             shown_place_count=shown_place_count,
             shown_place_names=shown_place_names,
         )
+        # thinking_budget=0 — classify_intent()와 같은 이유(TP-179). 실측(2026-08-27)
+        # 으로는 fast 모델(gemini-3.5-flash-lite)에서 지연 차이가 없었다 — 그 모델은
+        # 설정 없이도 이미 가볍다. 그래도 명시해 두는 이유는 fast 모델이 다시 무거운
+        # 모델로 바뀌는 순간 이 네 곳만 조용히 최적화가 빠지는 것을 막기 위해서다
+        # (D-076이 겪은 것과 같은 함정).
         result = await self._call_structured(
             instruction,
             user_input,
             LLMOutput,
             operation="extract_modify_conditions",
+            thinking_budget=0,
             model_names=self._fast_model_names,
         )
         return provider_result(result, source=ProviderSource.GEMINI)
@@ -424,11 +430,13 @@ class RealGeminiProvider:
             reference_date=reference_date,
             conversation_place_name=conversation_place_name,
         )
+        # thinking_budget=0 — extract_modify_conditions()와 같은 이유(TP-179).
         result = await self._call_structured(
             instruction,
             user_input,
             LLMOutput,
             operation="extract_info_query",
+            thinking_budget=0,
             model_names=self._fast_model_names,
         )
         return provider_result(result, source=ProviderSource.GEMINI)
@@ -444,22 +452,26 @@ class RealGeminiProvider:
             shown_place_count=shown_place_count,
             shown_place_names=shown_place_names,
         )
+        # thinking_budget=0 — extract_modify_conditions()와 같은 이유(TP-179).
         result = await self._call_structured(
             instruction,
             user_input,
             LLMOutput,
             operation="extract_compare_request",
+            thinking_budget=0,
             model_names=self._fast_model_names,
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 
     async def extract_general_request(self, user_input: str) -> ProviderResult[LLMOutput]:
         instruction = gemini_prompts.build_general_extraction_instruction()
+        # thinking_budget=0 — extract_modify_conditions()와 같은 이유(TP-179).
         result = await self._call_structured(
             instruction,
             user_input,
             LLMOutput,
             operation="extract_general_request",
+            thinking_budget=0,
             model_names=self._fast_model_names,
         )
         return provider_result(result, source=ProviderSource.GEMINI)

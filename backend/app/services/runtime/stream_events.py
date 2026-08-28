@@ -33,6 +33,17 @@ SCHEDULING_HEARTBEAT_MESSAGES = (
 )
 SCHEDULING_HEARTBEAT_INTERVAL_SECONDS = 6.0
 
+# 인텐트 분류(classify_intent) + 조건 추출(extract_*)은 LLM을 순차로 최대 두 번
+# 호출하는데, 이 구간엔 heartbeat가 없어 "요청 의도와 조건을 파악하고 있어요."
+# 문구 하나로 멈춘 것처럼 보인다. 평소엔 1~2초 안에 끝나 이 heartbeat가 거의 안
+# 뜨지만, 외부 API 꼬리 지연(P95/P99)이 걸리면 그 구간이 그대로 무응답 공백이
+# 된다 — SCHEDULE과 같은 방식으로 채운다.
+INTERPRET_HEARTBEAT_MESSAGES = (
+    "말씀하신 내용을 조금 더 자세히 살펴보고 있어요.",
+    "조금만 더 기다려주세요, 거의 다 됐어요.",
+)
+INTERPRET_HEARTBEAT_INTERVAL_SECONDS = 4.0
+
 
 async def emit_stream_event(
     sink: StreamEventSink | None, event: str, payload: dict[str, object]
@@ -89,6 +100,8 @@ async def await_with_heartbeat(
 
 
 __all__ = [
+    "INTERPRET_HEARTBEAT_INTERVAL_SECONDS",
+    "INTERPRET_HEARTBEAT_MESSAGES",
     "SCHEDULING_HEARTBEAT_INTERVAL_SECONDS",
     "SCHEDULING_HEARTBEAT_MESSAGES",
     "StreamEventSink",

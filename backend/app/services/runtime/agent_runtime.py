@@ -123,6 +123,8 @@ from app.services.runtime.response_composer import (
     unsupported_region_footnote,
 )
 from app.services.runtime.stream_events import (
+    INTERPRET_HEARTBEAT_INTERVAL_SECONDS,
+    INTERPRET_HEARTBEAT_MESSAGES,
     SCHEDULING_HEARTBEAT_INTERVAL_SECONDS,
     SCHEDULING_HEARTBEAT_MESSAGES,
     StreamEventSink,
@@ -1824,7 +1826,17 @@ async def _run_agent_flow(
             shown_place_names=[item.name or "" for item in session_context.shown_recommendations],
             conversation_place_name=request.conversation_place_name,
         )
-        llm_output = await build_interpretation(interpret_request, llm)
+        # classify_intent()에 이어 intent별 extract_*()까지 순차 LLM 호출 최대
+        # 두 번이 이 안에서 일어난다. 평소엔 1~2초 안에 끝나 heartbeat가 거의 안
+        # 뜨지만, 꼬리 지연(P95/P99)이 걸리면 위 "interpreting" progress 이벤트
+        # 하나 이후로 무응답 공백이 생긴다 — SCHEDULE과 같은 방식으로 채운다.
+        llm_output = await _await_with_heartbeat(
+            build_interpretation(interpret_request, llm),
+            sink=stream_event_sink,
+            stage="interpreting",
+            messages=INTERPRET_HEARTBEAT_MESSAGES,
+            interval_seconds=INTERPRET_HEARTBEAT_INTERVAL_SECONDS,
+        )
     llm_latency_ms = int((time.monotonic() - llm_started_at) * 1000)
 
     # 3) A → B: 조건 병합. confirmed=False(= status가 complete가 아님)면 B가 State를
