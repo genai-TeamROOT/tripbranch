@@ -4317,6 +4317,67 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `backend/tests/test_agent_runtime.py`, `backend/tests/test_gemini_provider.py`,
   `backend/scripts/measure_unoptimized_extraction_thinking.py`
 
+### D-107 — 새 SCHEDULE 턴에서는 직전에 보여준 장소를 후보로 되살린다
+
+- 상태: `Accepted` — 구현 완료(TP-180). 사용자 문의로 발견해 실사용 재현까지 확인했다.
+- 배경: RECOMMEND로 장소를 추천받은 뒤 "이 장소들로 일정 짜줘"라고 하면 그 장소가
+  일정에 한 곳도 들어가지 않고 전부 새 장소로 채워졌다. 문의로 받은 실제 세션
+  (용산역 기준)에서 추천 5곳과 일정 4곳이 한 곳도 겹치지 않았다.
+  원인은 각각은 옳은 두 설계가 이 흐름에서 만나 생긴 충돌이다.
+  1. B의 제외 목록은 `recommended ∪ rejected ∪ closed_excluded`다
+     (`state/history.py` `get_exclusion_place_ids()`). 같은 곳을 반복 추천하지
+     않기 위한 장치이고 RECOMMEND 반복 흐름에서는 올바르게 동작한다. 다만 직전
+     턴에 추천한 장소가 곧바로 이 목록에 들어간다.
+  2. 일반 SCHEDULE 턴은 직전 노출분을 그대로 쓰지 않고 후보를 새로 채점한다
+     (`_run_schedule_branch()`의 `schedule_candidates`). `shown_recommendations`는
+     부분 재편성(`llm_output.modify is not None`) 경로에서 pinned_items로만 쓰인다.
+  둘이 겹치면서 "이 장소들로 짜줘"가 구조적으로 "이 장소들만 빼고 짜줘"가 됐다.
+- 결정:
+  1. **새 SCHEDULE 턴에 한해** 마지막 run의 노출분(`shown_place_ids`)을 제외
+     목록에서 뺀다(`_effective_excluded_place_ids()`). `get_exclusion_place_ids()`의
+     계약은 바꾸지 않는다 — 이 턴에 무엇을 넘길지만 조정한다.
+  2. 되살릴 대상은 `_revivable_shown_place_ids()`가 고른다. 재조정 턴
+     (REJECT_ALL "다른 곳 보여줘", REJECT_SPECIFIC "두 번째는 별로야")은 되살리지
+     않는다 — MODIFY로 분류된 뒤 SCHEDULE로 relabel되므로 `is_schedule`만으로는
+     새 일정 요청과 구분되지 않고, 거절 대상이 `shown_place_ids`에도 남아 있어
+     구분 없이 되살리면 REJECT 이력이 통째로 무력화된다. 판별에는
+     `llm_output.modify`를 쓴다 — `_run_schedule_branch()`가 pinned_items를 쓸지
+     정할 때 보는 것과 같은 신호다.
+  3. **조회(`_fetch_tool_context`)와 채점(`_score_recommendations`) 두 단계 모두**에
+     적용한다. 조회에서 걸러지면 채점 단계에는 후보 자체가 없고, 조회에서만
+     되살리면 채점에서 다시 걸러진다.
+  4. LangGraph 경로와 아직 남아 있는 구 경로의 호출부를 모두 배선한다 — 한쪽만
+     고치면 기능 플래그를 껐을 때만 재발하는 종류의 버그가 된다.
+- 근거: 사용자가 "이 장소들로"라고 명시한 의도가 반영되지 않는 것 자체가 결함이고,
+  일정에 들어간 장소를 사용자가 본 적이 없어 "왜 이게 나왔는지" 설명도 성립하지
+  않는다. 제외 목록의 의미를 바꾸는 대신 SCHEDULE 턴의 입력만 조정한 이유는, 중복
+  추천 방지는 다른 인텐트에서 그대로 필요하기 때문이다.
+- 채택하지 않은 것:
+  - **"이 장소들로"류 발화를 인식해 재검색 없이 직전 목록을 그대로 후보로 쓰기** —
+    사용자 의도에는 가장 충실하지만 발화 감지가 필요해 인텐트 분류 슬롯까지
+    걸린다. 되살리기만으로 증상이 닫히는지 먼저 확인하기로 했다.
+  - **SCHEDULE 턴에 제외 목록을 아예 적용하지 않기** — 거절·폐점 이력까지 함께
+    풀려 REJECT가 무의미해진다.
+  - **되살린 장소를 일정에 우선 배치하기** — 후보 복귀까지만 하고 배치는 기존
+    채점·편성에 맡긴다. 필요하면 측정 후 별도로 판단한다.
+- 검증: 단위 테스트 7건 추가(되살림/거절 유지/RECOMMEND 불변/순서 보존 등).
+  첫 구현은 재조정 턴까지 되살려 기존 SCHEDULE 재조정 테스트 4건이 실패했고, 그
+  실패가 결정 2의 근거가 됐다. 실사용 재현(용산역, 실제 provider)에서 추천 5곳 중
+  2곳이 일정에 포함되고(수정 전 0곳), 이어진 "다른 곳 보여줘"에서는 직전 일정과
+  0곳 겹치는 것을 확인했다. 브라우저 `/dev-chat`으로 부분 재조정("두 번째는
+  별로야")이 1·3번을 유지하는 것까지 확인. 전체 테스트 통과, ruff 통과.
+- 남은 것:
+  - 되살린 장소가 일정에 얼마나 반영되는지는 채점·편성에 맡겨져 있다. "본 장소가
+    한 곳도 안 들어간다"는 증상은 닫혔지만, 사용자가 기대하는 비율까지 맞추려면
+    우선 배치가 필요할 수 있다 — 실사용 관측 후 판단한다.
+  - LLM이 편성에서 제외한 후보가 기록되지 않는 문제(`int-07-schedule.md` 408행)는
+    별건으로 남아 있다.
+- 상세: `backend/app/services/runtime/agent_runtime.py`
+  (`_revivable_shown_place_ids()`, `_effective_excluded_place_ids()`,
+  `_fetch_tool_context()`, `_score_recommendations()`),
+  `backend/app/services/runtime/graph/nodes/pipeline.py`,
+  `backend/tests/test_agent_runtime.py`, `backend/app/state/history.py`
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -4423,3 +4484,4 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-27 | D-104 신설 — 숫자 없는 시간 표현을 `time_available` 분 단위로 고정 환산(TP-177, B). 같은 "반나절"이 발화에 지명이 있으면 240, 없으면 360으로 갈리고 "하루 종일"은 null로 떨어지던 것을 `recommend.extract` 2.4.0 → 2.5.0으로 닫았다 — 반나절/오전·오후 내내 240, 하루 종일 480, 잠깐 120, 범위 표현은 하한, 목록 밖은 null. 값은 `build_schedule_planning_instruction()`의 미지정 폴백("3~4시간 내외")과 일관되게 맞췄다. 흔들림·응답 모델·기대 일치를 따로 재는 `verify_schedule_condition_extraction.py`를 먼저 만들어 기준선을 확정한 뒤 프롬프트를 고쳤고, 그 과정에서 모델 폴백·모델 티어·`location_rules` 미커버·조건 병합 유실 네 가설을 모두 기각했다. 전후 비교 14/14 고정·기대 일치. SCHEDULE 전용 추출 슬롯은 신설하지 않았다("반나절 = 4시간"은 RECOMMEND에도 맞는 해석) |
 | 2026-08-27 | D-105 신설 — 끝나지 않던 장소 되묻기를 고친다(C). "운현궁 주차장 있어?"는 답이 나오는데 이어진 "근처 공영 주차장 자리 있어?"가 `여러 장소 중 어느 곳을 말씀하시는 건가요?`로 끝나고, "운현궁"이라고 답하면 같은 되묻기가 무한히 반복됐다. 원인은 두 겹이다 — (1) 네이버 지역검색이 "운현궁"에 **이름이 완전히 같은 후보를 3건**(중식당·궁궐·한식당) 돌려주는데, `_select_local_search_candidate`의 정확 일치 단계가 2건 이상이면 무조건 재질문으로 떨어뜨렸다. 식당·상점은 위치 후보로 쓰지 않는다는 규칙(`_is_location_pickable`)이 이미 있었지만 **되묻기 목록을 만들 때만 쓰이고 고르는 단계에서는 안 쓰였다.** (2) 그래서 뜬 되묻기는 버튼이 "운현궁" 하나뿐이었고, 그걸 누르면 같은 문자열로 같은 조회가 다시 돌아 같은 화면이 나왔다 — **답이 질문과 같아 입력이 하나도 바뀌지 않는다.** 정확 일치가 여러 건이면 pickable로 한 번 걸러 하나만 남을 때 그것을 고르고(걸러도 2건 이상이면 그대로 재질문), 후보 하나의 이름이 질의와 같으면 되묻지 않고 그것으로 해결한다. **후보 이름이 질의와 다르면 그대로 되묻는다** — "종각역"에 후보가 "종각역 1호선" 하나뿐인 경우는 답이 질의와 달라 다음 턴에 풀리므로, 첫 후보를 임의로 고르지 않는다는 이 파일의 원칙을 지킨다(넓게 고쳤다가 기존 테스트 2건이 깨져 좁혔다). 첫 질문만 됐던 이유는 `question_type`에 따라 목적이 갈려서다 — `parking`은 PLACE_IDENTITY라 저장소에서 `서울 운현궁`을 찾지만, `realtime_public_parking`은 REALTIME_CITYDATA라 저장소 조회를 건너뛴다(execute():385). 그 건너뛰기 자체는 그대로 두었다. **남은 문제:** 이름이 같은 서로 다른 장소가 둘 이상이면 여전히 되묻고 그 되묻기는 여전히 반복될 수 있다 — 저장소에도 제목이 같은 행이 20건 넘게 있다(`익선동 한옥거리`, `커먼그라운드` 등). "같은 이름의 다른 장소를 무엇으로 가를 것인가"가 정해져야 풀리는 별개 문제다 |
 | 2026-08-28 | D-106 신설 — 인텐트 분류·조건 추출 구간에 SSE 하트비트를 붙이고, 나머지 추출 4곳에 thinking_budget=0을 맞춘다(TP-179). "가끔 답변이 매우 느릴 때가 있다"는 체감 보고를 조사한 결과, D-066이 범위 밖으로 남긴 4곳(`extract_modify_conditions`/`extract_info_query`/`extract_compare_request`/`extract_general_request`)에 `thinking_budget=0`을 걸어도 실측상 지연 차이가 거의 없었다(fast 모델은 설정 없이도 이미 가벼움, D-076과 같은 패턴) — 진짜 원인은 `classify_intent()`+`extract_*()`(순차 LLM 호출 최대 2번)가 SCHEDULE과 달리 SSE 하트비트로 감싸지지 않아, 외부 API 꼬리 지연이 걸리면 그 구간이 무응답으로 멈춘 것처럼 보이는 것이었다. `build_interpretation()` 호출을 `_await_with_heartbeat()`로 감싸고(4초 간격), 4곳은 나머지 6곳과 통일해 `thinking_budget=0`을 마저 적용했다(지연 개선이 아니라 D-076류 사고 예방 목적) |
+| 2026-08-28 | D-107 신설 — 새 SCHEDULE 턴에서 직전에 보여준 장소를 후보로 되살린다(TP-180, B). 사용자 문의로 발견 — 추천 직후 "이 장소들로 일정 짜줘"가 그 장소를 한 곳도 넣지 않았다. 제외 목록(`recommended ∪ rejected ∪ closed_excluded`)에 직전 추천분이 들어 있는데 SCHEDULE이 후보를 새로 채점하며 그 목록을 그대로 적용해, "이 장소들로"가 "이 장소들만 빼고"로 동작했다. 새 SCHEDULE 턴에 한해 마지막 run의 노출분을 제외 목록에서 빼되, 재조정 턴(REJECT_ALL·REJECT_SPECIFIC)은 `llm_output.modify`로 걸러 거절 이력을 지킨다. 조회·채점 두 단계와 그래프·구 경로 두 호출부 모두에 적용. 실사용 재현에서 추천 5곳 중 2곳 포함(수정 전 0곳), "다른 곳 보여줘"는 0곳 겹침 유지 |
