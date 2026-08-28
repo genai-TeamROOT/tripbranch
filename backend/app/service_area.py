@@ -1,4 +1,4 @@
-"""좌표가 MVP 지원 지역(서울 22개 구, SUPPORTED_DISTRICTS 참고) 안인지 판정한다.
+"""좌표가 MVP 지원 지역(서울 25개 구 전체, SUPPORTED_DISTRICTS 참고) 안인지 판정한다.
 
 역할: 지원 범위 밖 위치를 해석 단계에서 걸러 낸다. 밖의 좌표가 들어오면 그 아래
 로직이 "결과 없음"으로만 끝나고 이유가 전달되지 않아서다(D-044).
@@ -61,7 +61,17 @@ class ServiceDistrict:
 # 표본 주소로 대조해 확인했다 — 코드 순서와 구 이름이 한 칸씩 어긋나 있어(530이
 # 영등포가 아니라 구로) 짐작하면 전부 틀린다.
 #
-# 스물두 곳 모두 서울특별시라 lDongRegnCd는 "11"로 같다.
+# 2026-08-29: 강남구·송파구·강동구를 추가해 서울 25개 구 전부가 지원 범위가 됐다.
+# district_code는 각 구 표본 주소로 대조해 확인했다. 강남구는 상세 조회가 322/1,133
+# 건에서 멈춘 상태로 들어온다 — 상세가 없어도 추천·혼잡도는 동작하고, 지원 목록에
+# 없으면 후보로 아예 나오지 않아 그쪽이 더 나쁘다. 남은 810건은 place-sync를 다시
+# 돌리면 detail_fetch_status=pending부터 이어받는다.
+#
+# 이제 경계 파일의 25개 구와 지원 목록이 같아졌다. 그래도 "파일에 있는 구를 전부
+# 지원"으로 바꾸지 않는다 — 지원 범위는 팀이 합의하는 결정이라 코드에 드러나야
+# 한다는 판단은 그대로다(D-083에서 두 번 기각).
+#
+# 스물다섯 곳 모두 서울특별시라 lDongRegnCd는 "11"로 같다.
 SUPPORTED_DISTRICTS: tuple[ServiceDistrict, ...] = (
     ServiceDistrict("110", "종로구"),
     ServiceDistrict("140", "중구"),
@@ -85,6 +95,9 @@ SUPPORTED_DISTRICTS: tuple[ServiceDistrict, ...] = (
     ServiceDistrict("590", "동작구"),
     ServiceDistrict("620", "관악구"),
     ServiceDistrict("650", "서초구"),
+    ServiceDistrict("680", "강남구"),
+    ServiceDistrict("710", "송파구"),
+    ServiceDistrict("740", "강동구"),
 )
 
 # 좌표 판정(폴리곤)과 장소 검색(TourAPI 응답의 lDongSignguCd)이 같은 목록을 봐야

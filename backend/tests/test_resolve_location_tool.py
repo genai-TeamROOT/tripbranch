@@ -148,12 +148,12 @@ async def test_local_search_result_outside_service_area_is_unsupported() -> None
     local_search = MemoryLocalSearchProvider(
         (
             LocalSearchPlace(
-                name="잠실역",
-                address="서울특별시 송파구 잠실동",
-                road_address="서울특별시 송파구 올림픽로 265",
+                name="부천역",
+                address="경기도 부천시 심곡동",
+                road_address="경기도 부천시 부천로 1",
                 category="지하철역",
-                latitude=37.5133,
-                longitude=127.1001,
+                latitude=37.4844,
+                longitude=126.7830,
             ),
         )
     )
@@ -163,7 +163,7 @@ async def test_local_search_result_outside_service_area_is_unsupported() -> None
         provider,
         MemoryPlaceLocationRepository(()),
         local_search,
-    ).execute(ResolveLocationQuery("잠실역"))
+    ).execute(ResolveLocationQuery("부천역"))
 
     assert result.status is ResolveLocationStatus.UNSUPPORTED
     assert result.location is None
@@ -279,20 +279,21 @@ async def test_place_identity_with_area_override_checks_database_first() -> None
 async def test_place_identity_with_area_override_false_allows_outside_service_area() -> None:
     """TP-171: 저장소 미스가 지역 검색으로 넘어가도, 끈 지역 제한은 그대로 유지된다.
 
-    잠실역처럼 지원 구 밖의 실시간 인구 허브가 이 경로다 — DB엔 없고
-    (지하철역이라 TourAPI 코퍼스 밖), 지역 검색으로 풀리는데 지원 구 밖이다.
-    표본으로 강남역을 쓰지 않는다: 흔히 쓰는 좌표 (37.4979, 127.0276)가
-    서초구 쪽이라 서초구가 지원에 들어오면서 "밖" 대조군이 못 된다.
+    지원 구 밖의 실시간 인구 허브가 이 경로다 — DB엔 없고(지하철역이라 TourAPI
+    코퍼스 밖), 지역 검색으로 풀리는데 지원 구 밖이다.
+
+    표본은 서울 밖(경기 부천)을 쓴다. 서울 25개 구가 전부 지원 범위가 되면서
+    (2026-08-29) 서울 안에는 "밖" 좌표가 하나도 남지 않는다.
     """
     local_search = MemoryLocalSearchProvider(
         (
             LocalSearchPlace(
-                name="잠실역",
-                address="서울특별시 송파구 잠실동",
+                name="부천역",
+                address="경기도 부천시 심곡동",
                 road_address=None,
                 category="지하철역",
-                latitude=37.5133,
-                longitude=127.1001,
+                latitude=37.4844,
+                longitude=126.7830,
             ),
         )
     )
@@ -303,7 +304,7 @@ async def test_place_identity_with_area_override_false_allows_outside_service_ar
         local_search,
     ).execute(
         ResolveLocationQuery(
-            "잠실역", purpose=LocationPurpose.PLACE_IDENTITY, enforce_service_area=False
+            "부천역", purpose=LocationPurpose.PLACE_IDENTITY, enforce_service_area=False
         )
     )
 
@@ -318,12 +319,12 @@ async def test_place_identity_without_override_still_enforces_service_area() -> 
     local_search = MemoryLocalSearchProvider(
         (
             LocalSearchPlace(
-                name="잠실역",
-                address="서울특별시 송파구 잠실동",
+                name="부천역",
+                address="경기도 부천시 심곡동",
                 road_address=None,
                 category="지하철역",
-                latitude=37.5133,
-                longitude=127.1001,
+                latitude=37.4844,
+                longitude=126.7830,
             ),
         )
     )
@@ -332,7 +333,7 @@ async def test_place_identity_without_override_still_enforces_service_area() -> 
         SequenceGeocodingProvider([]),
         MemoryPlaceLocationRepository(()),
         local_search,
-    ).execute(ResolveLocationQuery("잠실역", purpose=LocationPurpose.PLACE_IDENTITY))
+    ).execute(ResolveLocationQuery("부천역", purpose=LocationPurpose.PLACE_IDENTITY))
 
     assert result.status is ResolveLocationStatus.UNSUPPORTED
     assert result.error is not None
