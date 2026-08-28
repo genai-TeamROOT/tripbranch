@@ -467,8 +467,26 @@ async def plan_partial_schedule(
             round((timer() - started_at) * 1000, 2),
         )
 
+    # 유지 대상(pinned)이 후보에 섞여 있으면 그 자리에 같은 장소가 다시 뽑혀
+    # 한 일정에 중복으로 들어간다. 프롬프트도 "pinned_items의 place_id를 다시
+    # 고르지 마세요"라고 지시하지만(fill.md) LLM 지시는 구조적 보장이 아니다 —
+    # 여기서 후보 자체에서 빼서 고를 수 없게 만든다(basis_note·도착시각을 LLM에
+    # 맡기지 않는 것과 같은 기조).
+    #
+    # 지금까지는 호출부의 제외 목록(recommended ∪ rejected)이 pinned를 후보에서
+    # 먼저 걸러내 이 문제가 드러나지 않았다. 그 목록이 무엇을 담는지에 편성
+    # 정확성이 딸려 있으면 안 된다.
+    pinned_place_ids = {item.place_id for item in request.pinned_items}
+    fillable_candidates = [
+        candidate
+        for candidate in request.candidates
+        if candidate.place_id not in pinned_place_ids
+    ]
+    if len(fillable_candidates) != len(request.candidates):
+        request = request.model_copy(update={"candidates": fillable_candidates})
+
     if not request.candidates:
-        # 유지 대상(pinned)과 거절 대상을 제외하고 나니 채울 수 있는 새 후보가
+        # 유지 대상(pinned)과 거절 대상을 빼고 나니 채울 수 있는 새 후보가
         # 아예 없다 — "일정 전체 실패"가 아니라 "일부만 대체 실패"이므로 pinned은
         # 그대로 살리고 실패 사실만 안내한다(전체 재구성으로 덮어쓰지 않음).
         return _pinned_only_result(

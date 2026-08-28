@@ -305,6 +305,49 @@ def test_reject_specific_only_marks_targeted_index_as_rejected() -> None:
     assert [(r.place_id, r.reason_code) for r in request.rejected_places] == [
         ("B", "not_interested"),
     ]
+    # 유지 대상(A·C)이 직전 턴의 recommended로 제외 목록에 남아 있으면 다음 채점에서
+    # 함께 빠져 REJECT_ALL과 같은 결과가 된다 — history를 비워 되살린다.
+    assert request.reset_scope == "history"
+
+
+def test_reject_specific_resets_history_so_kept_places_survive() -> None:
+    """REJECT_SPECIFIC은 "history"를 돌려준다.
+
+    지목한 자리만 거절이고 나머지는 유지 대상인데, 그 나머지가 직전 턴의
+    recommended로 제외 목록(`recommended ∪ rejected ∪ closed_excluded`)에 남아
+    있으면 다음 채점에서 함께 빠진다 — "두 번째만 별로야"가 "다 바꿔줘"와 같은
+    결과를 내게 된다. CHANGE_CONDITION이 같은 이유로 이미 "history"를 쓰고 있고,
+    REJECT_SPECIFIC만 그 처리가 빠져 있었다(SCHEDULE-09 신설 당시 누락).
+
+    거절한 자리는 rejected로 계속 제외되므로 recommended를 비워도 되살아나지 않는다.
+    """
+    llm_output = LLMOutput(
+        intent=Intent.MODIFY,
+        status=OutputStatus.COMPLETE,
+        modify=ModifyPayload(modify_type=ModifyType.REJECT_SPECIFIC, target_indices=[2]),
+    )
+    context = _context(shown_place_ids=["A", "B", "C"])
+
+    request = transform(llm_output, context, "두 번째만 다른 데로")
+
+    assert request.reset_scope == "history"
+    assert [r.place_id for r in request.rejected_places] == ["B"]
+
+
+def test_reject_all_still_keeps_history() -> None:
+    """REJECT_ALL은 그대로 None이다 — rejected 기록으로 영구 제외를 이미 표현한다.
+
+    이 구분이 깨지면 "다른 곳 보여줘"가 거절한 장소를 다시 후보로 올린다.
+    """
+    llm_output = LLMOutput(
+        intent=Intent.MODIFY,
+        status=OutputStatus.COMPLETE,
+        modify=ModifyPayload(modify_type=ModifyType.REJECT_ALL),
+    )
+    context = _context(shown_place_ids=["A", "B", "C"])
+
+    request = transform(llm_output, context, "다른 곳 보여줘")
+
     assert request.reset_scope is None
 
 
