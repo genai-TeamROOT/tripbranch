@@ -131,6 +131,7 @@ export function streamChat(
       event === "message_start" ||
       event === "message_delta" ||
       event === "done" ||
+      event === "follow_ups" ||
       event === "error"
     ) {
       receivedEvent = true;

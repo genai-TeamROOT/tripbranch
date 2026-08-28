@@ -39,6 +39,10 @@ from typing import Any, Literal
 
 import httpx
 
+from app.config import settings
+from app.prompts.registry import operation_prompt_version
+from app.providers.gemini_prompts import PROMPT_VERSION
+
 ROOT_DIR = Path(__file__).resolve().parent.parent
 QUALITY_DIR = ROOT_DIR / "test_results" / "agent_quality"
 DATASET_PATHS = {
@@ -512,6 +516,15 @@ def write_markdown_report(
         f"- 실행 ID: `{summary['run_id']}`",
         f"- 실행 시각: {summary['created_at']}",
         f"- 프롬프트 기준선: `{summary.get('prompt_variant', 'current')}`",
+        f"- 프롬프트 버전: `{summary.get('extract_prompt_version', '?')}` · "
+        f"`{summary.get('classify_prompt_version', '?')}` · "
+        f"base `{summary.get('base_prompt_version', '?')}`"
+        + (
+            " — ⚠️ 레포 값이다. `LANGFUSE_PROMPTS_ENABLED=true`라 서버가 "
+            "Langfuse의 다른 버전으로 돌았을 수 있다"
+            if summary.get("prompt_source") == "langfuse"
+            else ""
+        ),
         f"- 평가셋: `{summary['split']}` · {summary['case_count']}건 / {summary['turn_count']}턴",
         f"- 골드셋 해시: `{summary['dataset_digest']}`",
         "",
@@ -636,11 +649,59 @@ def write_markdown_report(
     (run_dir / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _prompt_versions() -> dict[str, str]:
+    """이 회차가 어느 프롬프트로 돈 것인지 기록할 값을 모은다.
+
+    **왜 필요한가**: 지금까지 남는 건 골드셋 해시(`dataset_digest`)뿐이라, 같은
+    골드셋을 다른 프롬프트로 잰 회차들이 `history.csv`에서 구별되지 않았다.
+    2026-08-28에 실제로 문제가 됐다 — `recommend.extract` 2.5.0이 D의 문안에서
+    B의 환산표로 통째로 바뀌었는데, 그 전에 잰 4개 회차는 파일상 지금과 같은
+    조건처럼 보인다.
+
+    ⚠️ **`prompt_source`를 반드시 함께 읽어야 한다.** 여기 적히는 세 버전은
+    **레포의 값**이다. `LANGFUSE_PROMPTS_ENABLED=true`면 서버는 Langfuse를 먼저
+    읽으므로(`app/prompts/loader.py`) 실제로 돈 프롬프트가 이 값과 다를 수 있다 —
+    디스크만 고치고 `sync_langfuse_prompts --push`를 안 한 상태가 그렇다.
+    그때는 `prompt_source=langfuse`가 찍히므로 값을 그대로 믿지 말라는 표시가 된다.
+    서버가 자기 버전을 응답에 실어주면 이 한계는 없어진다(미구현 — 라우트 계약 변경).
+    """
+
+    return {
+        "extract_prompt_version": operation_prompt_version("extract_recommend_conditions") or "",
+        "classify_prompt_version": operation_prompt_version("classify_intent") or "",
+        "base_prompt_version": PROMPT_VERSION,
+        "prompt_source": "langfuse" if settings.langfuse_prompts_enabled else "repo",
+    }
+
+
 def _read_history() -> list[dict[str, str]]:
     if not HISTORY_PATH.exists():
         return []
     with HISTORY_PATH.open(encoding="utf-8-sig", newline="") as stream:
         return list(csv.DictReader(stream))
+
+
+def _migrate_history_header(header: list[str]) -> None:
+    """열이 늘어난 헤더로 기존 `history.csv`를 옮긴다.
+
+    `csv.DictWriter`는 파일이 이미 있으면 헤더를 다시 쓰지 않는다. 그래서 열을
+    추가하면 **헤더는 옛 열 수, 새 행은 새 열 수**가 되어 파일이 조용히 깨진다.
+    옛 행의 새 열은 빈 값으로 둔다 — 그 회차가 어느 프롬프트로 돈 것인지는 이제
+    복원할 수 없으므로 빈 값이 정직한 표기다.
+    """
+
+    if not HISTORY_PATH.exists():
+        return
+    with HISTORY_PATH.open(encoding="utf-8-sig", newline="") as stream:
+        reader = csv.DictReader(stream)
+        if reader.fieldnames == header:
+            return
+        rows = list(reader)
+    with HISTORY_PATH.open("w", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=header)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: row.get(key, "") for key in header})
 
 
 def append_history(summary: dict[str, Any]) -> dict[str, str] | None:
@@ -662,6 +723,10 @@ def append_history(summary: dict[str, Any]) -> dict[str, str] | None:
         "split",
         "dataset_digest",
         "prompt_variant",
+        "extract_prompt_version",
+        "classify_prompt_version",
+        "base_prompt_version",
+        "prompt_source",
         "case_count",
         "turn_count",
         "intent_accuracy",
@@ -677,6 +742,7 @@ def append_history(summary: dict[str, Any]) -> dict[str, str] | None:
         "client_latency_p95_ms",
     ]
     HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _migrate_history_header(header)
     exists = HISTORY_PATH.exists()
     with HISTORY_PATH.open("a", encoding="utf-8-sig", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=header)
@@ -774,6 +840,7 @@ def main() -> None:
                 "split": split,
                 "dataset_digest": digest,
                 "prompt_variant": args.prompt_variant,
+                **_prompt_versions(),
             }
         )
         previous = append_history(summary)

@@ -35,7 +35,7 @@ from app.schemas import (
 # 쓰였는지와 무관하게 단일 값으로 취급한다 — 함수별 개별 버전은 만들지 않는다. 판별·추출
 # 규칙에 영향을 주는 변경(6개 함수 중 하나라도) 시 버전을 올린다 — 사소한 문구·주석
 # 변경은 올리지 않는다.
-_BASE_PROMPT_VERSION = "agent-interpret-prompts-1.0.23"
+_BASE_PROMPT_VERSION = "agent-interpret-prompts-1.0.24"
 _ACTIVE_PROMPT_VARIANT = active_variant()
 PROMPT_VERSION = (
     _BASE_PROMPT_VERSION
@@ -263,6 +263,31 @@ def build_info_answer_instruction(question_type: str) -> str:
     )
 
 
+def build_follow_up_suggestion_instruction(
+    *, max_suggestions: int, max_label_length: int
+) -> str:
+    """방금 끝난 턴을 보고 다음 발화 후보를 만드는 system instruction.
+
+    다른 build_*와 달리 특정 Intent에 매이지 않는다 — 어떤 Intent로 끝난 턴이든 그
+    뒤에 한 번 돈다. 대신 `follow_up/capability_rules.md`가 서비스가 실제로 처리할 수
+    있는 요청 목록을 싣는다. 버튼을 누르면 그 문구가 그대로 사용자 발화로 전송되므로,
+    모델이 없는 기능을 권하면 사용자는 곧바로 OUT_OF_SCOPE 답변을 받게 된다.
+
+    개수·길이 상한을 지침에도 넣지만 이걸 지켰는지는 호출부
+    (`services/runtime/follow_up_suggester.py`)가 코드로 다시 검사한다 — 여기 적은
+    상한은 부탁이고, 그쪽 검사가 실제 계약이다.
+    """
+
+    return render_text(
+        "follow_up/suggest_instruction.md",
+        chatbot_name=CHATBOT_NAME,
+        persona=load_text("_shared/persona/trivi.md"),
+        capabilities=load_text("follow_up/capability_rules.md"),
+        max_suggestions=str(max_suggestions),
+        max_label_length=str(max_label_length),
+    )
+
+
 def build_recommendation_summary_instruction(intent: Intent) -> str:
     """RECOMMEND/MODIFY 결과를 감싸는 짧은 말풍선 생성 system instruction."""
 
@@ -473,6 +498,7 @@ __all__ = [
     "build_general_answer_instruction",
     "build_info_answer_instruction",
     "build_recommendation_summary_instruction",
+    "build_follow_up_suggestion_instruction",
     "build_compare_summary_instruction",
     "build_schedule_planning_instruction",
     "format_schedule_planning_context",

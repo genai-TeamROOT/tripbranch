@@ -93,6 +93,7 @@ from app.services.runtime.compare_transform import (
 )
 from app.services.runtime.context_transform import to_agent_context_request
 from app.services.runtime.enrichment_transform import to_candidate_enrichment_request
+from app.services.runtime.follow_up_suggester import suggest_follow_ups
 from app.services.runtime.graph import (
     PipelineDeps,
     concentration_source_rows,
@@ -960,12 +961,20 @@ def _candidate_pool_exhausted(context: RecommendationContext) -> bool:
 
     두 가지 신호를 본다.
 
-    1. `candidate_pool_truncated` 경고 — 제외분이 많아 C가 상한(100행)까지 받고도
-       요청한 개수를 못 채웠다는 뜻이다(nearby_place_details.py).
+    1. `candidate_pool_truncated` 경고 — C가 행 상한(100행)까지 받고도 요청한
+       개수를 못 채웠다는 뜻이다(nearby_place_details.py).
     2. 반환 후보 수가 `recommendation_candidate_limit`보다 적음 — C는
        min(가용 후보, limit)을 반환하므로, limit보다 적게 왔다면 반경 안을 이미
-       다 긁은 것이다. 1번 경고는 100행을 넘겨 받았을 때만 서기 때문에, 반경에
+       다 긁은 것이다. 1번 경고는 행 상한에 걸렸을 때만 서기 때문에, 반경에
        애초에 후보가 몇 개 없는 흔한 경우는 이 조건으로만 걸린다.
+
+    **2번이 성립하려면 C가 실제로 limit을 채워줘야 한다.** 예전에는 C가 TourAPI에
+    필요분만 요청하고 미지원 분류(숙박·여행코스)를 받은 뒤에 걸러내서, 반경에
+    후보가 수백 곳 남아 있어도 늘 limit보다 적게 돌려줬다. 그래서 이 판정이 항상
+    참이 되어 **보충 조회가 한 번도 돌지 않았다**(안국역 반경 2km 실측: TourAPI
+    totalCount 364곳인데 10 요청에 9곳 반환 → 소진 판정). 지금은 C가
+    `CANDIDATE_OVERFETCH_FACTOR`만큼 넉넉히 받아 채우므로 이 전제가 성립한다.
+    C 쪽 과요청을 되돌리면 이 판정도 함께 무너진다.
     """
     places = context.places
     if places is None:
@@ -1560,8 +1569,15 @@ async def run_agent_flow(
     principal: Principal | None = None,
     stream_event_sink: StreamEventSink | None = None,
     stream_recommendation_summary: bool = False,
+    generate_follow_ups: bool = True,
 ) -> AgentResponse:
     """한 턴 전체를 하나의 관측 trace로 묶고 본체(`_run_agent_flow`)에 넘긴다.
+
+    `generate_follow_ups=False`는 후속 질문(`suggested_follow_ups`)을 만들지 않고
+    빈 목록으로 둔다. **SSE 라우트만 쓴다.** 그 호출은 답변이 이미 화면에 다 뜬 뒤에
+    도는데, 여기서 응답을 붙잡고 있으면 `done`이 그만큼 늦어져 화면에는 답변과 카드
+    아래에 로딩 말풍선이 한 번 더 뜬 것처럼 보인다. 라우트가 `done`을 먼저 내보내
+    턴을 끝내고, 후속 질문은 뒤이어 별도 이벤트로 붙인다(D-102).
 
     **루트 span이 있어야 한 턴이 trace 하나가 된다.** 속성만 전파하고
     (`trace_attributes`) 루트를 안 만들면, 부모가 없는 observation이 저마다
@@ -1624,6 +1640,15 @@ async def run_agent_flow(
         # 역조회로는 1턴짜리 케이스(dev 35건 중 20건)의 trace를 못 찾는다.
         # 요약(아래 try)과 분리해 둔다 — 요약이 실패해도 연결은 살아야 한다.
         response.langfuse_trace_id = current_trace_id()
+        # **후속 질문은 여기 한 곳에서만 붙인다.** 응답을 만드는 자리
+        # (`AgentResponse(...)`)는 인텐트·실패 경로별로 열다섯 군데인데, 버튼은 그
+        # 전부에 똑같이 필요하다. 본체가 무엇을 돌려주든 반드시 지나는 이 지점에
+        # 두면 새 경로가 생겨도 따로 배선하지 않아도 된다.
+        #
+        # SSE 경로는 이걸 끄고(`generate_follow_ups=False`) 라우트가 done을 먼저
+        # 내보낸 뒤에 직접 만든다 — 아래 설명 참고.
+        if generate_follow_ups:
+            response.suggested_follow_ups = await suggest_follow_ups(request, response, llm=llm)
         try:
             summary = summarize_turn(response)
             turn.record(
@@ -3250,6 +3275,7 @@ async def run_agent(
     principal: Principal | None = None,
     stream_event_sink: StreamEventSink | None = None,
     stream_recommendation_summary: bool = False,
+    generate_follow_ups: bool = True,
 ) -> AgentResponse:
     """호출자가 쓰는 Fake/Real 공통 진입점.
 
@@ -3277,6 +3303,7 @@ async def run_agent(
             principal=principal,
             stream_event_sink=stream_event_sink,
             stream_recommendation_summary=stream_recommendation_summary,
+            generate_follow_ups=generate_follow_ups,
         )
 
 

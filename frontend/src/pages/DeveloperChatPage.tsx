@@ -252,6 +252,15 @@ export function DeveloperChatPage() {
               dispatch({ type: "APPEND_STREAM_MESSAGE_DELTA", payload: { text: event.data.text } });
               return;
             }
+            if (event.type === "follow_ups") {
+              // done 뒤에 오는 유일한 이벤트다. 턴은 이미 끝나 로딩이 사라진
+              // 상태이고, 버튼만 조금 늦게 붙는다.
+              dispatch({
+                type: "APPEND_FOLLOW_UP_SUGGESTIONS",
+                payload: { suggestions: event.data.suggestions },
+              });
+              return;
+            }
             if (event.type === "error") throw new ApiError(event.data);
             const response = event.data.response;
             const elapsedMsClient = performance.now() - startedAt;
@@ -480,6 +489,7 @@ export function DeveloperChatPage() {
               onRequestMore={() => void requestSend(text.requestMore)}
               onRelaxRadius={() => void requestSend(text.relaxRadius)}
               onSelectClarificationOption={(optionId, label) => void requestSend(label, optionId)}
+              onSelectFollowUpSuggestion={(suggestion) => void requestSend(suggestion)}
               onToggleTravelOrigin={(toggle) => {
                 const label = toggle.alternative_origin === "search_center"
                   ? text.basedOn(toggle.alternative_origin_name)
