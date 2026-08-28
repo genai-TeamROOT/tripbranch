@@ -109,7 +109,12 @@ def test_map_realtime_parking_response_labels_public_and_private_types() -> None
     lots = map_realtime_parking_response(
         _citydata_payload(
             [
-                {"PRK_NM": "교대역 동측 공영주차장(구)", "PRK_CD": "1", "PRK_TYPE": "NW"},
+                {
+                    "PRK_NM": "교대역 동측 공영주차장(구)",
+                    "PRK_CD": "1",
+                    "PRK_TYPE": "NW",
+                    "ADDR": "서울특별시 서초구 서초대로 1",
+                },
                 {"PRK_NM": "경남 공영주차장(구)", "PRK_CD": "2", "PRK_TYPE": "NS"},
                 {"PRK_NM": "하림인터네셔날 빌딩", "PRK_CD": "3", "PRK_TYPE": "BS"},
                 {"PRK_NM": "서초세움주차장(민영)", "PRK_CD": "4", "PRK_TYPE": "NP"},
@@ -120,6 +125,7 @@ def test_map_realtime_parking_response_labels_public_and_private_types() -> None
 
     by_name = {lot.name: lot for lot in lots}
     assert by_name["교대역 동측 공영주차장(구)"].lot_type == "공영"
+    assert by_name["교대역 동측 공영주차장(구)"].address == "서울특별시 서초구 서초대로 1"
     assert by_name["경남 공영주차장(구)"].lot_type == "공영"
     assert by_name["하림인터네셔날 빌딩"].lot_type == "민영"
     assert by_name["서초세움주차장(민영)"].lot_type == "민영"
@@ -156,6 +162,7 @@ def test_map_realtime_parking_response_dedupes_by_code_keeping_realtime_entry() 
     assert len(lots) == 1
     assert lots[0].current_available is True
     assert lots[0].current_parked_count == 0
+    assert lots[0].available_spaces == 257
     assert lots[0].observed_at == "2025-02-03 09:06:31"
 
 

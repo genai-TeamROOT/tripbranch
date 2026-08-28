@@ -4268,6 +4268,55 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   `backend/scripts/verify_schedule_condition_extraction.py`,
   `backend/tests/prompts/snapshots/recommend_extract.txt`
 
+### D-106 — 인텐트 분류·조건 추출 구간에 SSE 하트비트를 붙이고, 나머지 추출 4곳에 thinking_budget=0을 맞춘다
+
+- 상태: `Accepted` — 구현 완료(TP-179).
+- 배경: "가끔 답변이 매우 느릴 때가 있다"는 체감 보고를 실측으로 조사했다.
+- 실측으로 확정한 사실:
+  1. D-066(2026-08-20)이 답변·요약 5곳과 `classify_intent`/`extract_recommend_conditions`
+     에 `thinking_budget=0`을 적용하면서 `extract_modify_conditions`/
+     `extract_info_query`/`extract_compare_request`/`extract_general_request` 4곳은
+     "범위 밖"으로 명시적으로 남겨뒀다.
+  2. 위 4곳에 실제로 `thinking_budget=0`을 걸어 실측(2026-08-27)했더니 **지연
+     차이가 거의 없었다**(1.3~1.6초 vs 1.3~1.6초). fast 모델(`gemini-3.5-flash-lite`)
+     은 설정 없이도 이미 thinking이 가벼워서다 — D-076의 `classify_intent` 실측과
+     같은 패턴. (측정 스크립트 첫 실행에서 12~40초가 나왔던 건 스크립트가
+     `model_names`를 안 넘겨 무거운 생성 모델로 잘못 잰 스크립트 버그였다 — 프로덕션
+     코드는 처음부터 정상이었다. 수정 후 재측정으로 확인.)
+  3. **진짜 원인은 다른 곳이었다.** `classify_intent()` + intent별 `extract_*()`
+     (최대 2번의 순차 LLM 호출, `build_interpretation()`)는 SCHEDULE 편성
+     (`generate_schedule_plan/fill`)과 달리 SSE 하트비트(`await_with_heartbeat`)로
+     감싸지 않았다. 평소엔 1~2초 안에 끝나 문제없지만, 외부 API 꼬리 지연(P95/P99)
+     이 걸리면 "요청 의도와 조건을 파악하고 있어요." 문구 하나로 그 구간 전체가
+     무응답으로 멈춘 것처럼 보인다. D-066 changelog에도 "분류·추출 단계 하트비트
+     부재는 범위 밖"이라고 이미 남아 있던, 그동안 아무도 안 고친 문제였다.
+- 결정:
+  1. `agent_runtime.py`의 `build_interpretation(interpret_request, llm)` 호출을
+     `_await_with_heartbeat()`로 감쌌다 — SCHEDULE과 같은 패턴. `stream_events.py`
+     에 `INTERPRET_HEARTBEAT_MESSAGES`(4초 간격, SCHEDULE의 6초보다 짧게 — 평소
+     지연이 더 짧아 꼬리 지연을 더 빨리 감지해야 함)를 신설했다. RECOMMEND/MODIFY/
+     INFO/COMPARE/GENERAL 전 인텐트가 이 한 지점 수정으로 커버된다.
+  2. `extract_modify_conditions`/`extract_info_query`/`extract_compare_request`/
+     `extract_general_request` 4곳에 `thinking_budget=0`을 추가해 나머지 6곳과
+     통일했다. 지연 개선 목적이 아니라(실측상 효과 없음), fast 모델이 다시 무거운
+     모델로 바뀌는 순간 이 4곳만 조용히 최적화가 빠지는 D-076류 사고를 예방하는
+     정리다.
+- 검증: 백엔드 `pytest` 3,097 passed, `ruff` 클린. 프론트 `vitest` 27개 파일 208건
+  통과. 신규 테스트 17건(interpret 단계 하트비트 1건, 4곳 `thinking_budget=0` 배선
+  4건 + 관련 회귀).
+- 채택하지 않은 것: 호출부가 `thinking_level=MINIMAL`을 직접 쓰는 안 — 검토 중
+  제안됐으나 기각했다. `thinking_budget`(0/None)은 "꺼줘"라는 의도만 표현하는
+  모델-세대 무관 추상이고, 실제로 API에 뭘 실을지는 `_thinking_config_for()` 한
+  곳이 모델명을 보고 판단한다(gemini-3.x는 `thinking_level`만 받고 gemini-2.5는
+  반대로 그걸 거부한다 — D-076 "남은 것" 참고). 호출부가 직접 `thinking_level`을
+  쓰면 폴백 목록에 2.5 세대가 다시 들어오는 순간(장애 대응 등) 그 호출이 400으로
+  즉시 죽는다 — 로직이 흩어지면 흩어진 곳마다 따로 깨진다는, 이번 조사의 출발점이
+  된 D-076의 교훈 그대로다.
+- 상세: `backend/app/providers/gemini.py`, `backend/app/services/runtime/agent_runtime.py`,
+  `backend/app/services/runtime/stream_events.py`,
+  `backend/tests/test_agent_runtime.py`, `backend/tests/test_gemini_provider.py`,
+  `backend/scripts/measure_unoptimized_extraction_thinking.py`
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -4373,3 +4422,4 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-27 | D-103 신설 — Gemini 타임아웃을 전송 계층과 무관하게 잡는다. INFO 답변 스트림이 타임아웃하자 모델 폴백도, `AppError` 변환도 못 하고 턴 전체가 죽었다(C가 이미 가져온 장소 정보까지 함께 버려졌다). 원인은 `except httpx.TimeoutException`이 **죽은 코드**였다는 것 — google-genai는 `aiohttp`를 임포트할 수 있으면 그쪽으로 요청을 보내는데(`_use_aiohttp()`), aiohttp는 이 프로젝트의 의존성이 아니라 환경에 따라 다른 패키지(kubernetes, langchain-community)가 딸려 들여올 뿐이라 **어느 전송 계층으로 나가는지가 머신마다 다르다.** aiohttp는 `asyncio.TimeoutError`를, httpx는 `httpx.TimeoutException`을 던지고 둘은 상속 관계가 없다. aiohttp가 없는 환경에서는 같은 코드가 멀쩡히 돌아서 테스트로도 CI로도 드러나지 않았다. `_TIMEOUT_ERRORS = (httpx.TimeoutException, TimeoutError)`로 두 곳(`_stream_text`, `_run_attempts`)과 음성 전사(`gemini_audio.py`)를 함께 고치고, 테스트를 전송 계층별로 파라미터화해 aiohttp 예외에서 실제로 재시도·폴백이 도는지 잠갔다(수정 전 `[aiohttp]` 4건 실패·`[httpx]` 4건 통과로 확인). 공유 httpx 클라이언트를 쓰는 나머지 15곳의 handler는 그대로 둔다 — 그쪽은 전송 계층이 확정돼 있다. **남은 문제 2건은 이번 범위 밖:** (a) SDK가 `HttpOptions(timeout=)`을 aiohttp `ClientTimeout(total=)`로 넣어 10초가 응답 전체에 걸린다 — 정상 스트리밍도 10초를 넘기면 중간에 끊긴다. (b) 스트림 도중 실패 시 이미 내보낸 텍스트 뒤에 고정 안내문이 통째로 덧붙는다(기존 APIError 경로에서도 일어나던 동작) |
 | 2026-08-27 | D-104 신설 — 숫자 없는 시간 표현을 `time_available` 분 단위로 고정 환산(TP-177, B). 같은 "반나절"이 발화에 지명이 있으면 240, 없으면 360으로 갈리고 "하루 종일"은 null로 떨어지던 것을 `recommend.extract` 2.4.0 → 2.5.0으로 닫았다 — 반나절/오전·오후 내내 240, 하루 종일 480, 잠깐 120, 범위 표현은 하한, 목록 밖은 null. 값은 `build_schedule_planning_instruction()`의 미지정 폴백("3~4시간 내외")과 일관되게 맞췄다. 흔들림·응답 모델·기대 일치를 따로 재는 `verify_schedule_condition_extraction.py`를 먼저 만들어 기준선을 확정한 뒤 프롬프트를 고쳤고, 그 과정에서 모델 폴백·모델 티어·`location_rules` 미커버·조건 병합 유실 네 가설을 모두 기각했다. 전후 비교 14/14 고정·기대 일치. SCHEDULE 전용 추출 슬롯은 신설하지 않았다("반나절 = 4시간"은 RECOMMEND에도 맞는 해석) |
 | 2026-08-27 | D-105 신설 — 끝나지 않던 장소 되묻기를 고친다(C). "운현궁 주차장 있어?"는 답이 나오는데 이어진 "근처 공영 주차장 자리 있어?"가 `여러 장소 중 어느 곳을 말씀하시는 건가요?`로 끝나고, "운현궁"이라고 답하면 같은 되묻기가 무한히 반복됐다. 원인은 두 겹이다 — (1) 네이버 지역검색이 "운현궁"에 **이름이 완전히 같은 후보를 3건**(중식당·궁궐·한식당) 돌려주는데, `_select_local_search_candidate`의 정확 일치 단계가 2건 이상이면 무조건 재질문으로 떨어뜨렸다. 식당·상점은 위치 후보로 쓰지 않는다는 규칙(`_is_location_pickable`)이 이미 있었지만 **되묻기 목록을 만들 때만 쓰이고 고르는 단계에서는 안 쓰였다.** (2) 그래서 뜬 되묻기는 버튼이 "운현궁" 하나뿐이었고, 그걸 누르면 같은 문자열로 같은 조회가 다시 돌아 같은 화면이 나왔다 — **답이 질문과 같아 입력이 하나도 바뀌지 않는다.** 정확 일치가 여러 건이면 pickable로 한 번 걸러 하나만 남을 때 그것을 고르고(걸러도 2건 이상이면 그대로 재질문), 후보 하나의 이름이 질의와 같으면 되묻지 않고 그것으로 해결한다. **후보 이름이 질의와 다르면 그대로 되묻는다** — "종각역"에 후보가 "종각역 1호선" 하나뿐인 경우는 답이 질의와 달라 다음 턴에 풀리므로, 첫 후보를 임의로 고르지 않는다는 이 파일의 원칙을 지킨다(넓게 고쳤다가 기존 테스트 2건이 깨져 좁혔다). 첫 질문만 됐던 이유는 `question_type`에 따라 목적이 갈려서다 — `parking`은 PLACE_IDENTITY라 저장소에서 `서울 운현궁`을 찾지만, `realtime_public_parking`은 REALTIME_CITYDATA라 저장소 조회를 건너뛴다(execute():385). 그 건너뛰기 자체는 그대로 두었다. **남은 문제:** 이름이 같은 서로 다른 장소가 둘 이상이면 여전히 되묻고 그 되묻기는 여전히 반복될 수 있다 — 저장소에도 제목이 같은 행이 20건 넘게 있다(`익선동 한옥거리`, `커먼그라운드` 등). "같은 이름의 다른 장소를 무엇으로 가를 것인가"가 정해져야 풀리는 별개 문제다 |
+| 2026-08-28 | D-106 신설 — 인텐트 분류·조건 추출 구간에 SSE 하트비트를 붙이고, 나머지 추출 4곳에 thinking_budget=0을 맞춘다(TP-179). "가끔 답변이 매우 느릴 때가 있다"는 체감 보고를 조사한 결과, D-066이 범위 밖으로 남긴 4곳(`extract_modify_conditions`/`extract_info_query`/`extract_compare_request`/`extract_general_request`)에 `thinking_budget=0`을 걸어도 실측상 지연 차이가 거의 없었다(fast 모델은 설정 없이도 이미 가벼움, D-076과 같은 패턴) — 진짜 원인은 `classify_intent()`+`extract_*()`(순차 LLM 호출 최대 2번)가 SCHEDULE과 달리 SSE 하트비트로 감싸지지 않아, 외부 API 꼬리 지연이 걸리면 그 구간이 무응답으로 멈춘 것처럼 보이는 것이었다. `build_interpretation()` 호출을 `_await_with_heartbeat()`로 감싸고(4초 간격), 4곳은 나머지 6곳과 통일해 `thinking_budget=0`을 마저 적용했다(지연 개선이 아니라 D-076류 사고 예방 목적) |

@@ -146,12 +146,15 @@ class RealtimeParkingLot:
     current_available: bool
     paid: bool | None
     observed_at: str | None
+    # 공영주차장은 정적 카탈로그, 도시데이터는 응답이 주소를 줄 때만 채운다.
+    # 주소가 없는 민영 항목에 지오코딩을 추가하지 않아 실시간 조회 비용을 늘리지 않는다.
+    address: str | None = None
     # PRK_CD. 같은 주차장이 PRK_STTS에 중복으로 올 때 병합용 키로 쓴다.
     code: str | None = None
     # PRK_TYPE(NW/NS/BS/NP)을 "공영"/"민영"으로 정리한 값. 모르는 코드는 None.
     lot_type: str | None = None
-    # 총면수와 현재 주차 대수를 모두 제공할 때만 계산한다. 기존 citydata는 이 값을
-    # 직접 주지 않아 None이고, GetParkingInfo 경로가 결정적으로 채운다.
+    # 총 주차 대수와 현재 주차 대수를 모두 받으면 계산한다. GetParkingInfo와
+    # 도시데이터 PRK_STTS 모두 같은 방식으로 채울 수 있다.
     available_spaces: int | None = None
 
 

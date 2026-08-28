@@ -16,6 +16,7 @@
 | `last_run_id` | text | 예 | 이 세션에서 마지막으로 처리한 요청의 run_id입니다. | `run_1755840005000b2c3d4e5f6a7b` | 직전 응답을 다시 참조하거나 재조정할 때 기준으로 씁니다. |
 | `last_intent` | text | 예 | 마지막으로 분류된 인텐트입니다(예: `RECOMMEND`, `SCHEDULE`). SCHEDULE 재조정 시 relabel 직후 `set_last_intent()`로 재동기화됩니다. | `RECOMMEND` | 다음 발화가 이전 인텐트의 연속인지 판단하는 데 참고합니다. |
 | `pending_clarification` | text | 예 | 직전 턴이 되묻기로 끝났다면 그 사유 코드입니다(예: `location_required`). B는 판단하지 않고 A가 준 값을 보관만 합니다. | `location_required` | 사용자의 다음 답변을 "새 요청"이 아니라 "되묻기 답변"으로 처리할지 판단합니다. |
+| `pending_info_context` | jsonb object | 예 | INFO의 장소 후보 되묻기(`pending_clarification = "place_ambiguous"`)에서 원래 질문의 문맥을 보관합니다. `question_type`, `place_context`는 필수이고 `specific_question`, `visit_time`은 선택입니다. Package B는 값을 해석하지 않고 저장만 하며, 허용값 정의는 Package A의 책임입니다(D-100). | `{"question_type":"parking","place_context":"explicit","specific_question":"종각 주차장 정보"}` | 사용자가 후보 버튼을 누르면 장소명만으로 다시 분류하지 않고, 원래의 주차·혼잡도 등 질문 유형을 그대로 복원해 이어서 조회합니다. |
 | `ignore_operating_hours_until` | timestamptz | 예 | "운영 중이 아닌 곳도 볼게요"를 선택하면, 이 시각까지는 매 턴 다시 묻지 않고 폐점 후보도 포함합니다. | `2026-08-25T15:00:00+09:00` | 하드 필터(영업시간)를 일시적으로 완화할지 판단합니다. |
 | `status` | text | 아니오(기본값 `'active'`) | 세션 상태입니다. `active` 또는 `expired`만 허용됩니다. 만료 판정은 조회 시점에만 일어나는 lazy 방식이라, 실제로 30분간 활동이 없어도 이 컬럼 값이 즉시 `expired`로 바뀌진 않습니다. | `active` | 만료된 세션에 새 요청이 오면 오류 없이 새 세션을 자동 발급하도록 분기합니다. |
 | `created_at` | timestamptz | 아니오(기본값 `now()`) | 세션이 처음 생성된 시각입니다. | `2026-08-20T09:00:00+09:00` | 세션 생애주기 분석, 만료 정리 스크립트의 기준일 계산 등에 사용합니다. |
@@ -57,6 +58,7 @@
 ## 사용 시 유의사항
 
 - `user_conditions`/`api_context`는 애플리케이션이 통째로 읽고 통째로 다시 쓰는 JSONB 객체입니다 — 특정 하위 키만 부분 갱신(`jsonb_set` 등)하는 별도 경로는 없습니다.
+- `pending_info_context`는 `pending_clarification = "place_ambiguous"`일 때만 유효합니다. 다른 되묻기 코드로 바뀌거나 되묻기가 해제되면 애플리케이션이 함께 `NULL`로 비웁니다. 이 값만 남아 있다고 해서 활성 INFO 되묻기 상태라는 뜻은 아닙니다.
 - `status`가 `active`라고 해서 세션이 진짜로 살아있다는 보장은 없습니다 — 만료 판정이 조회 시점에만 일어나는 lazy 방식이라, `last_active_at` 기준 30분이 지났는데도 이 컬럼 값은 그대로 `active`로 남아 있을 수 있습니다.
 - `user_id`가 비어 있는 것은 정상입니다 — 게스트가 아직 신원 발급을 안 받았거나, `Authorization` 헤더 없이 온 요청일 수 있습니다.
 - 30일 이상 미사용 세션은 `scripts/cleanup_expired_sessions.py`가 `condition_change_logs`/`trace_records`/`recommendation_histories`를 먼저 지우고 마지막으로 이 테이블 행을 지웁니다(D-074) — 삭제된 `session_id`로의 조회는 "세션 없음"으로 처리됩니다.

@@ -9,8 +9,7 @@ import type { InfoPlaceCard as InfoPlaceCardData } from "../../types";
 import { PlaceInfoCard } from "./PlaceInfoCard";
 
 // 상세 모달이 useTripState(현재 위치)를 읽으므로 TripProvider로 감싼다.
-const renderWithTrip = (ui: Parameters<typeof render>[0]) =>
-  render(ui, { wrapper: TripProvider });
+const renderWithTrip = (ui: Parameters<typeof render>[0]) => render(ui, { wrapper: TripProvider });
 
 vi.mock("../../api/trip", () => ({
   fetchRecommendationPlaceDetails: vi.fn(),
@@ -74,9 +73,10 @@ it("관련 정보의 URL은 클릭 가능한 링크로 보여준다", async () =
   await user.click(screen.getByRole("button", { name: "경복궁 상세 보기" }));
 
   const dialog = within(screen.getByRole("dialog"));
-  expect(
-    dialog.getByRole("link", { name: "https://instagram.com/gyeongbokgung" }),
-  ).toHaveAttribute("href", "https://instagram.com/gyeongbokgung");
+  expect(dialog.getByRole("link", { name: "https://instagram.com/gyeongbokgung" })).toHaveAttribute(
+    "href",
+    "https://instagram.com/gyeongbokgung",
+  );
 });
 
 it("프로토콜 없는 www. 도메인도 https://를 붙여 링크로 보여준다", async () => {
@@ -94,7 +94,9 @@ it("프로토콜 없는 www. 도메인도 https://를 붙여 링크로 보여준
 });
 
 it("없는 값은 카드에 임의 문구나 빈 이미지로 표시하지 않는다", () => {
-  renderWithTrip(<PlaceInfoCard card={{ ...card, thumbnail_url: null, overview: null, pet: null }} />);
+  renderWithTrip(
+    <PlaceInfoCard card={{ ...card, thumbnail_url: null, overview: null, pet: null }} />,
+  );
 
   expect(screen.queryByRole("img")).not.toBeInTheDocument();
   expect(screen.queryByText("정보 없음")).not.toBeInTheDocument();
@@ -121,7 +123,15 @@ it("붙어 있는 월별 운영시간을 기간별 카드로 나눈다", async (
   const user = userEvent.setup();
   const operatingHours =
     "[1월~2월/11월~12월]09:00~17:00 (입장마감 16:00)[3월~5월/9월~10월]09:00~18:00 (입장마감 17:00)[6월~8월]09:00~18:30 (입장마감 17:30)";
-  renderWithTrip(<PlaceInfoCard card={{ ...card, answer_fields: { operating_hours: operatingHours }, operating_hours: operatingHours }} />);
+  renderWithTrip(
+    <PlaceInfoCard
+      card={{
+        ...card,
+        answer_fields: { operating_hours: operatingHours },
+        operating_hours: operatingHours,
+      }}
+    />,
+  );
 
   expect(screen.getByText("1월~2월 · 11월~12월")).toBeInTheDocument();
   expect(screen.getByText("09:00–17:00 · 입장 마감 16:00")).toBeInTheDocument();
@@ -250,6 +260,83 @@ it("실시간 도시데이터 카드는 모달에서 추가 항목과 출처를 
   );
 });
 
+it("실시간 주차 카드에는 데이터 출처와 서울시 주차정보 포털 링크를 함께 표시한다", async () => {
+  const user = userEvent.setup();
+  const parkingCard: InfoPlaceCardData = {
+    ...card,
+    question_type: "realtime_parking",
+    answer_fields: { "[공영] 세종로 공영주차장": "잔여 535대" },
+    thumbnail_url: null,
+    overview: null,
+    operating_hours: null,
+    rest_date: null,
+    parking: null,
+    parking_fee: null,
+    fee: null,
+    baby_carriage: null,
+    credit_card: null,
+    restroom: null,
+    homepage: null,
+    realtime_area_name: "종로구",
+    realtime_observed_at: "8월 27일 14:20",
+    realtime_source_url: "https://data.seoul.go.kr/dataList/OA-21709/S/1/datasetView.do",
+    realtime_detail_items: [
+      {
+        title: "세종로 공영주차장",
+        subtitle: "총 1,260대 · 535대 가능 · 유료",
+        details: {
+          유형: "공영",
+          주소: "서울특별시 종로구 세종대로 189",
+          거리: "약 300m",
+          // 백엔드 재시작 전 응답 키도 새 UI에서 읽어야 한다.
+          "잔여 면수": "535면",
+          "총 주차면": "1,260면",
+          "현재 주차": "725대",
+          요금: "유료",
+          "기준 시각": "2026-08-27 14:20",
+        },
+        thumbnail_url: null,
+        external_url: null,
+      },
+      {
+        title: "서울스퀘어 주차장",
+        subtitle: "총 461대 · 실시간 주차 대수 미제공 · 유료",
+        details: {
+          유형: "민영",
+          주소: "서울특별시 중구 남대문로5가 541-0",
+          "총 주차": "총 461대",
+          요금: "유료",
+        },
+        thumbnail_url: null,
+        external_url: null,
+      },
+    ],
+  };
+
+  renderWithTrip(<PlaceInfoCard card={parkingCard} />);
+  await user.click(screen.getByRole("button", { name: "경복궁 상세 보기" }));
+
+  const dialog = within(screen.getByRole("dialog"));
+  expect(dialog.getByRole("link", { name: "서울시 데이터 출처 ↗" })).toHaveAttribute(
+    "href",
+    parkingCard.realtime_source_url,
+  );
+  expect(dialog.getByRole("link", { name: "서울시 실시간 주차정보 ↗" })).toHaveAttribute(
+    "href",
+    "https://parking.seoul.go.kr/",
+  );
+  expect(dialog.getByText("535대 가능")).toBeInTheDocument();
+  expect(dialog.getByText("총 1,260대")).toBeInTheDocument();
+  expect(dialog.getByText("서울특별시 종로구 세종대로 189")).toBeInTheDocument();
+  expect(dialog.getByText("실시간 주차 가능")).toBeInTheDocument();
+  expect(dialog.getByText("실시간 잔여 현황 미제공")).toBeInTheDocument();
+
+  await user.click(dialog.getByRole("button", { name: "공영 1" }));
+  expect(dialog.queryByText("서울스퀘어 주차장")).not.toBeInTheDocument();
+  await user.click(dialog.getByRole("button", { name: "민영 1" }));
+  expect(dialog.getByText("서울스퀘어 주차장")).toBeInTheDocument();
+});
+
 it("실시간 인구 혼잡도 카드는 안내 문구와 서울시 지도 미리보기를 표시한다", async () => {
   const user = userEvent.setup();
   const populationCard: InfoPlaceCardData = {
@@ -270,7 +357,8 @@ it("실시간 인구 혼잡도 카드는 안내 문구와 서울시 지도 미�
     realtime_area_name: "성수카페거리",
     realtime_observed_at: "8월 20일 11:40",
     population_current_message: "사람이 몰려있을 수 있지만 크게 붐비지는 않아요.",
-    realtime_map_url: "https://data.seoul.go.kr/SeoulRtd/map?hotspotNm=%EC%84%B1%EC%88%98%EC%B9%B4%ED%8E%98%EA%B1%B0%EB%A6%AC&y=127.0&x=37.5",
+    realtime_map_url:
+      "https://data.seoul.go.kr/SeoulRtd/map?hotspotNm=%EC%84%B1%EC%88%98%EC%B9%B4%ED%8E%98%EA%B1%B0%EB%A6%AC&y=127.0&x=37.5",
     realtime_detail_items: [
       {
         title: "혼잡도 안내",
@@ -287,7 +375,9 @@ it("실시간 인구 혼잡도 카드는 안내 문구와 서울시 지도 미�
 
   const dialog = screen.getByRole("dialog");
   expect(within(dialog).getByText("혼잡도 안내")).toBeInTheDocument();
-  expect(within(dialog).getByText("사람이 몰려있을 수 있지만 크게 붐비지는 않아요.")).toBeInTheDocument();
+  expect(
+    within(dialog).getByText("사람이 몰려있을 수 있지만 크게 붐비지는 않아요."),
+  ).toBeInTheDocument();
   expect(within(dialog).getByRole("link", { name: "실시간 혼잡도 지도 ↗" })).toHaveAttribute(
     "href",
     populationCard.realtime_map_url,
@@ -309,10 +399,21 @@ it("인구 혼잡도 예측 그래프와 게이지는 요약 카드와 상세 �
     overview: null,
     population_current_level: "약간 붐빔",
     population_observed_at: "8월 20일 14:00",
-    population_peak_forecast_summary: "16시(2시간 후)에 가장 붐빌 것으로 예상돼요. 혼잡정도는 붐빔일 것으로 예상돼요.",
+    population_peak_forecast_summary:
+      "16시(2시간 후)에 가장 붐빌 것으로 예상돼요. 혼잡정도는 붐빔일 것으로 예상돼요.",
     population_forecasts: [
-      { forecast_at: "2026-08-20 15:00", congestion_level: "보통", population_min: 3000, population_max: 3500 },
-      { forecast_at: "2026-08-20 16:00", congestion_level: "붐빔", population_min: 5000, population_max: 5500 },
+      {
+        forecast_at: "2026-08-20 15:00",
+        congestion_level: "보통",
+        population_min: 3000,
+        population_max: 3500,
+      },
+      {
+        forecast_at: "2026-08-20 16:00",
+        congestion_level: "붐빔",
+        population_min: 5000,
+        population_max: 5500,
+      },
     ],
     realtime_map_url: "https://data.seoul.go.kr/SeoulRtd/map?hotspotNm=test&y=127&x=37",
     realtime_detail_items: [],
@@ -323,7 +424,9 @@ it("인구 혼잡도 예측 그래프와 게이지는 요약 카드와 상세 �
   // 요약 카드: 게이지가 "약간 붐빔"을 강조하고, 피크 시간 요약이 보인다.
   expect(screen.getByLabelText("현재 인구 혼잡도 약간 붐빔")).toBeInTheDocument();
   expect(
-    screen.getByText("16시(2시간 후)에 가장 붐빌 것으로 예상돼요. 혼잡정도는 붐빔일 것으로 예상돼요."),
+    screen.getByText(
+      "16시(2시간 후)에 가장 붐빌 것으로 예상돼요. 혼잡정도는 붐빔일 것으로 예상돼요.",
+    ),
   ).toBeInTheDocument();
 
   await user.click(screen.getByRole("button", { name: "경복궁 상세 보기" }));
@@ -332,7 +435,9 @@ it("인구 혼잡도 예측 그래프와 게이지는 요약 카드와 상세 �
   expect(dialog.getByLabelText("현재 인구 혼잡도 약간 붐빔")).toBeInTheDocument();
   expect(dialog.getByLabelText("현재부터 향후 12시간 인구 혼잡도 예측")).toBeInTheDocument();
   expect(
-    dialog.getByText("16시(2시간 후)에 가장 붐빌 것으로 예상돼요. 혼잡정도는 붐빔일 것으로 예상돼요."),
+    dialog.getByText(
+      "16시(2시간 후)에 가장 붐빌 것으로 예상돼요. 혼잡정도는 붐빔일 것으로 예상돼요.",
+    ),
   ).toBeInTheDocument();
 });
 
@@ -344,7 +449,7 @@ it("도로소통 카드는 단계 게이지를 요약 카드와 상세 모달 �
     answer_fields: {
       "도로소통 단계": "원활",
       "평균 주행속도": "32km/h",
-      "안내": "해당 장소로 이동·진입하는 도로가 크게 막히지 않아요.",
+      안내: "해당 장소로 이동·진입하는 도로가 크게 막히지 않아요.",
     },
     thumbnail_url: null,
     overview: null,
