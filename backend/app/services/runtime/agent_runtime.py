@@ -3311,6 +3311,7 @@ async def run_agent(
     from app.agent_context.factory import get_candidate_enrichment_service, get_context_provider
     from app.providers.factory import (
         get_llm_provider,
+        get_place_details_repository,
         get_place_evidence_provider,
         get_travel_route_tool,
     )
@@ -3321,7 +3322,10 @@ async def run_agent(
             request,
             llm=get_llm_provider(),
             tool_provider=get_context_provider(client),
-            recommendation_provider=RealRecommendationProvider(get_place_evidence_provider(client)),
+            recommendation_provider=RealRecommendationProvider(
+                get_place_evidence_provider(client),
+                get_place_details_repository(client),
+            ),
             enrichment_provider=get_candidate_enrichment_service(client),
             travel_route_tool=get_travel_route_tool(client),
             principal=principal,

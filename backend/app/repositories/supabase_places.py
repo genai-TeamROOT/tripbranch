@@ -459,6 +459,43 @@ class SupabasePlaceRepository:
         except ValueError:
             raise SupabaseRepositoryError("non-JSON response") from None
 
+    async def find_preference_tags(
+        self,
+        content_ids: Sequence[str],
+    ) -> dict[str, tuple[dict[str, object], ...]]:
+        """추천 카드에 표시할 장소별 상위 취향 태그를 읽는다."""
+        unique_ids = list(dict.fromkeys(content_ids))
+        if not unique_ids:
+            return {}
+
+        grouped: dict[str, list[dict[str, object]]] = {}
+        for start in range(0, len(unique_ids), _MOOD_PROFILE_CHUNK_SIZE):
+            chunk = unique_ids[start : start + _MOOD_PROFILE_CHUNK_SIZE]
+            response = await self._request(
+                "GET",
+                "/place_preference_tags",
+                params={
+                    "select": (
+                        "content_id,preference_code,preference_label,"
+                        "display_rank,mention_count"
+                    ),
+                    "content_id": "in.(" + ",".join(chunk) + ")",
+                    "order": "content_id.asc,display_rank.asc",
+                    "limit": str(len(chunk) * 5),
+                },
+            )
+            payload = self._json(response)
+            if not isinstance(payload, list):
+                raise SupabaseRepositoryError("invalid place_preference_tags response")
+            for row in payload:
+                if not isinstance(row, Mapping):
+                    raise SupabaseRepositoryError("invalid place_preference_tags row")
+                content_id = str(row.get("content_id") or "")
+                if not content_id:
+                    raise SupabaseRepositoryError("preference tag missing content_id")
+                grouped.setdefault(content_id, []).append(dict(row))
+        return {content_id: tuple(rows[:5]) for content_id, rows in grouped.items()}
+
     async def search_place_evidence(
         self,
         query_embedding: Sequence[float],
