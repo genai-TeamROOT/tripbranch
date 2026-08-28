@@ -61,6 +61,14 @@ export interface RecommendationItem {
    * 빈 배열이면 컷을 넘는 근거가 없었다는 뜻이다. 개발자 디버그 화면 전용.
    */
   taste_evidence: TasteEvidenceQuote[];
+  /** 리뷰·블로그에서 문서 단위로 집계한 장소별 상위 취향 태그. */
+  preference_tags?: PreferenceTagSummary[];
+}
+
+export interface PreferenceTagSummary {
+  code: string;
+  label: string;
+  mention_count: number;
 }
 
 export interface TasteEvidenceQuote {

@@ -57,33 +57,56 @@ it("운영시간 원문도 없는 후보만 확인 불가 섹션에 표시한다
   expect(screen.queryByText("현재 운영시간이 아닌 장소")).not.toBeInTheDocument();
 });
 
+it("장소별 취향 태그와 문서 단위 언급 수를 표로 표시한다", () => {
+  renderResult([
+    item({
+      preference_tags: [
+        { code: "quiet", label: "조용히 머물기 좋은", mention_count: 7 },
+        { code: "date", label: "데이트하기 좋은", mention_count: 4 },
+        { code: "walk", label: "산책하기 좋은", mention_count: 3 },
+        { code: "nature", label: "자연을 즐기기 좋은", mention_count: 2 },
+      ],
+    }),
+  ]);
+
+  const table = screen.getByRole("table", { name: "장소별 방문자 취향 태그" });
+  expect(
+    screen.getByText("네이버 블로그 후기와 구글 지도 리뷰 약 30건에서 언급된 태그입니다."),
+  ).toBeInTheDocument();
+  expect(within(table).getByText("아키비스트 서촌")).toBeInTheDocument();
+  expect(within(table).getByText("조용히 머물기 좋은 (7)")).toBeInTheDocument();
+  expect(within(table).getByText("데이트하기 좋은 (4)")).toBeInTheDocument();
+  expect(within(table).getByText("산책하기 좋은 (3)")).toBeInTheDocument();
+  expect(within(table).queryByText("자연을 즐기기 좋은 (2)")).not.toBeInTheDocument();
+});
+
 it("추천 카드를 클릭하면 C PlaceDetails가 채워진 상세 창을 연다", async () => {
   const user = userEvent.setup();
   const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        status: "success",
-        requested_place_id: "place-1",
-        place_card: {
-          question_type: "general_info",
-          answer_fields: { homepage: "https://example.test/archivist" },
-          place_id: "place-1",
-          place_name: "아키비스트 서촌",
-          thumbnail_url: "https://example.test/archivist.jpg",
-          overview: "서촌의 카페입니다.",
-          operating_hours: "11:00~21:00",
-          rest_date: "매주 화요일",
-          parking: null,
-          parking_fee: null,
-          fee: null,
-          baby_carriage: null,
-          pet: null,
-          credit_card: "가능",
-          restroom: null,
-          homepage: "https://example.test/archivist",
-        },
-      }),
-    });
+    ok: true,
+    json: async () => ({
+      status: "success",
+      requested_place_id: "place-1",
+      place_card: {
+        question_type: "general_info",
+        answer_fields: { homepage: "https://example.test/archivist" },
+        place_id: "place-1",
+        place_name: "아키비스트 서촌",
+        thumbnail_url: "https://example.test/archivist.jpg",
+        overview: "서촌의 카페입니다.",
+        operating_hours: "11:00~21:00",
+        rest_date: "매주 화요일",
+        parking: null,
+        parking_fee: null,
+        fee: null,
+        baby_carriage: null,
+        pet: null,
+        credit_card: "가능",
+        restroom: null,
+        homepage: "https://example.test/archivist",
+      },
+    }),
+  });
   vi.stubGlobal("fetch", fetchMock);
   window.fetch = fetchMock;
   render(
@@ -103,8 +126,12 @@ it("추천 카드를 클릭하면 C PlaceDetails가 채워진 상세 창을 연�
 
   const dialog = screen.getByRole("dialog", { name: "아키비스트 서촌" });
   expect(dialog).toBeInTheDocument();
-  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/chat/place-details", expect.anything()));
-  expect(await within(dialog).findByRole("img", { name: "아키비스트 서촌 이미지" })).toBeInTheDocument();
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith("/api/chat/place-details", expect.anything()),
+  );
+  expect(
+    await within(dialog).findByRole("img", { name: "아키비스트 서촌 이미지" }),
+  ).toBeInTheDocument();
   expect(within(dialog).getByText("서촌의 카페입니다.")).toBeInTheDocument();
   expect(within(dialog).getByText("매주 화요일")).toBeInTheDocument();
   expect(within(dialog).getByText("11:00~21:00 (현재 운영시간 아님)")).toBeInTheDocument();
@@ -202,7 +229,9 @@ it("영어 화면에서는 추천 카드의 고정 문구와 전환 버튼을 �
   expect(screen.getByText("Opening hours")).toBeInTheDocument();
   expect(screen.getByText("View place details →")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Show more places" })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "View results based on Myeongdong" })).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "View results based on Myeongdong" }),
+  ).toBeInTheDocument();
 });
 
 it("결과가 0건이어도 travelOriginToggle이 있으면 반경 확대 버튼과 함께 전환 버튼을 보여준다", () => {

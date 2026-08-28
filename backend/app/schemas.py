@@ -100,6 +100,14 @@ class TasteEvidenceQuote(BaseModel):
     similarity: float
 
 
+class PreferenceTagSummary(BaseModel):
+    """추천 카드에 표시할 장소별 취향 태그 요약."""
+
+    code: str
+    label: str
+    mention_count: int = Field(ge=0)
+
+
 class RecommendationItem(BaseModel):
     place_id: str
     name: str
@@ -130,6 +138,9 @@ class RecommendationItem(BaseModel):
     # 컷을 넘는 근거가 없었다는 뜻이다. 서비스 화면에는 원문을 직접 노출하지 않되,
     # RECOMMEND/MODIFY 말풍선 생성에는 후보별 일부 문장을 제한적으로 전달할 수 있다.
     taste_evidence: list[TasteEvidenceQuote] = Field(default_factory=list)
+    # 리뷰·블로그 원문은 보내지 않고 장소별 상위 태그와 문서 단위 언급 수만
+    # 서비스 화면에 노출한다. 태그 미수집 장소는 빈 배열이다.
+    preference_tags: list[PreferenceTagSummary] = Field(default_factory=list)
 
 
 class TravelOriginToggle(BaseModel):
