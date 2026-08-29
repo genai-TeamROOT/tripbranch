@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -44,6 +45,7 @@ from app.providers.tour_ldong_registry import find_district_name, list_districts
 from app.repositories.supabase_places import SupabasePlaceRepository
 from app.services import place_snapshot
 from app.services.place_sync import (
+    PlaceSyncResult,
     PlaceSyncService,
     SyncProgress,
     barrier_free_candidate_ids,
@@ -54,6 +56,8 @@ from app.services.place_sync_jobs import (
     SyncJobOutcome,
     get_job_registry,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/dev", tags=["dev"])
 
@@ -398,11 +402,196 @@ def _require_snapshot_region(
     )
 
 
+def _district_label(area_code: str, district_code: str) -> str:
+    """이력에 적을 구 표기. 이름을 못 찾으면 코드만 적는다."""
+    name = find_district_name(area_code, district_code)
+    slug = place_snapshot.region_slug(area_code, district_code)
+    return f"{name} {slug}" if name else slug
+
+
+def _record_history(row: dict[str, Any]) -> None:
+    """갱신 이력에 한 줄 남긴다. 실패해도 호출한 쪽을 막지 않는다.
+
+    대조와 반영은 TourAPI 일일 한도를 실제로 쓰는 작업이다. 기록을 못 남겼다고
+    그 결과까지 실패로 만들면 한도만 태우고 아무것도 남지 않는다 — 이력은 사람이
+    읽는 기록이지 대조의 입력이 아니다.
+    """
+    try:
+        place_snapshot.append_history_row(row)
+    except OSError:
+        logger.exception("갱신 이력을 남기지 못했다 (row=%s)", row)
+
+
+# 정리 화면의 기본 유지 개수. 1개만 남기면 같은 날 두 번째 대조가 기준을 잃는다 —
+# 파일명이 날짜라 첫 대조가 만든 파일을 덮어쓰고, 남은 것이 그것뿐이면
+# find_baseline이 빈손으로 돌아와 places 재구성 기준으로 떨어진다.
+DEFAULT_SNAPSHOT_KEEP = 2
+
+
 @router.get("/place-sync/snapshots")
-async def get_snapshots() -> dict[str, Any]:
+async def get_snapshots(keep: int = DEFAULT_SNAPSHOT_KEEP) -> dict[str, Any]:
+    """구별로 스냅샷과 대조 결과가 몇 개씩 있고, 그중 무엇을 지울 수 있는지.
+
+    `keep`을 받아 지울 후보를 함께 돌려준다. 화면이 "지울 파일 보기"를 따로
+    부르지 않아도 되고, 미리보기와 실제 정리가 같은 함수(`select_prunable`)를 써서
+    보여준 것과 지우는 것이 갈라지지 않는다.
+
+    구 목록은 파일에서 만든다 — DB에 행이 있어도 스냅샷 파일이 없는 구가 있고
+    (광진구·구로구·금천구), 그런 구는 정리할 것도 없다.
+    """
+    districts: dict[tuple[str, str], dict[str, Any]] = {}
+
+    for path in place_snapshot.list_snapshots():
+        codes = place_snapshot.district_from_snapshot_name(path.name)
+        if codes is None:
+            # 구가 이름에 없는 옛 스냅샷. 어느 구 것인지 알 수 없어 정리 후보로도
+            # 세지 않는다 — 잘못 묶으면 남의 구 기준을 지운다.
+            continue
+        districts.setdefault(codes, {"snapshots": [], "reconciliations": []})[
+            "snapshots"
+        ].append(path.name)
+
+    for codes, entry in districts.items():
+        entry["reconciliations"] = [
+            path.name
+            for path in place_snapshot.list_reconciliations(
+                area_code=codes[0], district_code=codes[1]
+            )
+        ]
+
+    rows = []
+    for codes in sorted(districts):
+        entry = districts[codes]
+        prunable_snapshots = place_snapshot.select_prunable(
+            area_code=codes[0], district_code=codes[1], keep=keep
+        )
+        prunable_reconciliations = place_snapshot.select_prunable(
+            area_code=codes[0],
+            district_code=codes[1],
+            keep=keep,
+            prefix=place_snapshot.RECONCILIATION_PREFIX,
+        )
+        rows.append(
+            {
+                "area_code": codes[0],
+                "district_code": codes[1],
+                "district_name": find_district_name(*codes),
+                "snapshot_count": len(entry["snapshots"]),
+                "reconciliation_count": len(entry["reconciliations"]),
+                "latest_snapshot": entry["snapshots"][0] if entry["snapshots"] else None,
+                "prunable_snapshots": [path.name for path in prunable_snapshots],
+                "prunable_reconciliations": [
+                    path.name for path in prunable_reconciliations
+                ],
+            }
+        )
+
     return {
         "snapshots": [path.name for path in place_snapshot.list_snapshots()],
         "data_dir": str(place_snapshot.DATA_DIR),
+        "keep": keep,
+        "districts": rows,
+    }
+
+
+class SnapshotPruneRequest(BaseModel):
+    """구별로 최근 몇 개만 남기고 나머지를 지운다."""
+
+    keep: int = Field(
+        default=DEFAULT_SNAPSHOT_KEEP,
+        ge=1,
+        description=(
+            "구별로 남길 개수. 1 미만은 받지 않는다 — 스냅샷이 0개가 되면 다음 "
+            "대조가 기준을 잃고 전량을 신규로 잡아 detailIntro2를 그만큼 낭비한다."
+        ),
+    )
+    include_reconciliations: bool = Field(
+        default=True,
+        description=(
+            "대조 결과 CSV도 같은 개수로 정리할지. 전 구 순회 한 번에 25개가 생겨 "
+            "스냅샷보다 빨리 쌓인다."
+        ),
+    )
+    confirm: str = Field(description="확인 문자열. 'PRUNE'이어야 한다.")
+
+
+@router.post("/place-sync/snapshots/prune")
+async def post_prune_snapshots(request: SnapshotPruneRequest) -> dict[str, Any]:
+    """구별로 최근 `keep`개만 남기고 옛 파일을 지운다.
+
+    지우기 **전에** 이력에 파일명을 남긴다. 순서를 뒤집으면 지우다 실패했을 때
+    무엇이 사라졌는지 아무 데도 안 남는다. 지운 파일은 git 추적 대상이라
+    `git show <커밋>:supabase/data/<파일명>`으로 되찾을 수 있는데, 그러려면 이름을
+    알아야 한다.
+
+    이름 규칙 밖의 파일은 후보에 오르지 않는다 — 후보는 `select_prunable`이
+    `places_api_snapshot_<지역>-<구>_*.csv` glob으로만 고른다.
+    """
+    if request.confirm.strip() != "PRUNE":
+        raise DevPanelError("확인 문자열이 일치하지 않습니다. 'PRUNE'을 입력하세요.")
+
+    districts: set[tuple[str, str]] = set()
+    for path in place_snapshot.list_snapshots():
+        codes = place_snapshot.district_from_snapshot_name(path.name)
+        if codes is not None:
+            districts.add(codes)
+
+    deleted: list[str] = []
+    failed: list[dict[str, str]] = []
+    now = datetime.now(place_snapshot.KST)
+
+    for codes in sorted(districts):
+        targets = place_snapshot.select_prunable(
+            area_code=codes[0], district_code=codes[1], keep=request.keep
+        )
+        if request.include_reconciliations:
+            targets += place_snapshot.select_prunable(
+                area_code=codes[0],
+                district_code=codes[1],
+                keep=request.keep,
+                prefix=place_snapshot.RECONCILIATION_PREFIX,
+            )
+        if not targets:
+            continue
+
+        removed: list[str] = []
+        for path in targets:
+            try:
+                path.unlink()
+            except OSError as exc:
+                # 한 파일이 안 지워져도 나머지는 계속 지운다. 거기서 멈추면 어떤
+                # 구는 정리되고 어떤 구는 안 된 채로 남고, 왜 그런지는 어디에도
+                # 안 적힌다.
+                logger.exception("스냅샷을 지우지 못했다 (path=%s)", path)
+                failed.append({"file": path.name, "error": str(exc)})
+                continue
+            removed.append(path.name)
+            deleted.append(path.name)
+
+        # 실제로 지운 것만 적는다. 지우기 전에 대상 목록을 적으면 실패한 파일까지
+        # "지웠다"로 남아, 이력을 보고 되찾으려 할 때 있는 파일을 찾게 된다.
+        # 되찾는 근거는 이력이 아니라 git이다 — 이 표는 어느 커밋을 뒤질지 알려준다.
+        if not removed:
+            continue
+        _record_history(
+            {
+                "일시": f"{now:%Y-%m-%d %H:%M}",
+                "구": _district_label(*codes),
+                "종류": "정리",
+                "기준 스냅샷": "",
+                "신규": "",
+                "수정": "",
+                "삭제": len(removed),
+                "상세조회": "",
+                "비고": f"구별 {request.keep}개 유지 · 지움 " + ", ".join(removed),
+            }
+        )
+
+    return {
+        "keep": request.keep,
+        "deleted": deleted,
+        "failed": failed,
+        "history_file": place_snapshot.HISTORY_FILE_NAME,
     }
 
 
@@ -624,7 +813,7 @@ async def post_reconcile(request: ReconcileRequest) -> dict[str, Any]:
         baseline_label = f"places@{now:%Y-%m-%d}" if baseline else None
 
     if not baseline:
-        return {
+        result = {
             "area_code": area,
             "district_code": district,
             "snapshot": snapshot_path.name,
@@ -642,6 +831,25 @@ async def post_reconcile(request: ReconcileRequest) -> dict[str, Any]:
             "rows": [],
             "message": _NO_BASELINE_MESSAGES[baseline_source],
         }
+        _record_history(
+            {
+                "일시": f"{now:%Y-%m-%d %H:%M}",
+                "구": _district_label(area, district),
+                "종류": "대조",
+                # 기준이 없으면 그 사실을 적는다. 빈 칸으로 두면 "기준이 있었는데
+                # 안 적었다"와 구분되지 않는다.
+                "기준 스냅샷": "없음",
+                "신규": len(current),
+                "수정": 0,
+                "삭제": 0,
+                "상세조회": len(current),
+                "비고": (
+                    f"새 스냅샷 {snapshot_path.name} ({len(current)}건) · "
+                    f"기준이 없어 전량 신규 · 무장애 {barrier_free_calls}"
+                ),
+            }
+        )
+        return result
 
     _require_snapshot_region(baseline, baseline_label or "", area, district)
     baseline_columns = list(next(iter(baseline.values()), {}).keys())
@@ -667,6 +875,25 @@ async def post_reconcile(request: ReconcileRequest) -> dict[str, Any]:
     for row in rows:
         counts[str(row["change_type"])] += 1
 
+    _record_history(
+        {
+            "일시": f"{now:%Y-%m-%d %H:%M}",
+            "구": _district_label(area, district),
+            "종류": "대조",
+            "기준 스냅샷": baseline_label,
+            "신규": counts["added"],
+            "수정": counts["updated"],
+            "삭제": counts["removed"],
+            # 반영이 실제로 부를 수 — 변경분에 지난 실행에서 못 채운 건이 더해진다.
+            # 변경분만 적으면 이력이 실제 호출량을 설명하지 못한다.
+            "상세조회": len(detail_ids) + len(backfill_ids),
+            "비고": (
+                f"새 스냅샷 {snapshot_path.name} ({len(current)}건) · "
+                f"보충 {len(backfill_ids)} · 제외 {len(excluded_ids)} · "
+                f"무장애 {barrier_free_calls}"
+            ),
+        }
+    )
     return {
         "area_code": area,
         "district_code": district,
@@ -886,6 +1113,51 @@ class _SnapshotListProvider:
         return await self._inner.get_operating_details(content_id, content_type_id)
 
 
+def _prune_reconciliations_after_apply(
+    area_code: str,
+    district_code: str,
+    result: PlaceSyncResult,
+    request: ApplyRequest,
+) -> list[str]:
+    """반영이 끝난 구의 대조 결과 CSV를 지운다. 지운 파일명을 돌려준다.
+
+    대조 CSV는 파생물이다 — 스냅샷 두 개를 `build_reconciliation_rows`에 넣으면
+    같은 내용이 다시 나오고, 외부 호출도 DB 조회도 없다. 반영이 끝났다면 그
+    변경분은 DB에 들어갔으므로 파일로 들고 있을 이유가 없다. git이 추적하므로
+    되짚어야 할 때는 `git show <커밋>:supabase/data/<파일명>`으로 꺼낸다.
+
+    스냅샷은 지우지 않는다. 그건 파생물이 아니라 다음 대조의 기준이다.
+
+    지우지 않는 경우가 둘 있다.
+
+    - `dry_run`: DB에 아무것도 안 썼다. 변경분은 그대로 남아 있다.
+    - `details_limit`이 걸린 실행: 비활성화를 건너뛰므로(place_sync.py) 대조가
+      찾은 "삭제" 행은 DB에 반영되지 않았다. 그 기록을 지우면 무엇이 남았는지
+      알 방법이 없다.
+
+    `partial_failure`는 지운다. 한도 소진으로 상세를 일부 못 채운 것이고, 목록
+    반영과 비활성화는 끝났다 — 대조 CSV가 담는 것은 목록 단위 변경이다.
+    """
+    if request.dry_run or request.details_limit is not None:
+        return []
+    if result.status == "failed":
+        return []
+
+    removed: list[str] = []
+    for path in place_snapshot.list_reconciliations(
+        area_code=area_code, district_code=district_code
+    ):
+        try:
+            path.unlink()
+        except OSError:
+            # 한 파일이 안 지워져도 반영 자체는 성공이다. 여기서 예외를 올리면
+            # DB에 다 쓴 실행이 실패로 기록된다.
+            logger.exception("대조 결과를 지우지 못했다 (path=%s)", path)
+            continue
+        removed.append(path.name)
+    return removed
+
+
 @router.post("/place-sync/apply")
 async def post_apply(request: ApplyRequest) -> dict[str, Any]:
     """대조가 정한 대상에만 상세조회를 보내 DB에 반영한다."""
@@ -955,6 +1227,52 @@ async def post_apply(request: ApplyRequest) -> dict[str, Any]:
             # 확인만 한다.
             unmapped = await repository.find_missing_concentration_mappings(
                 request.added_content_ids
+            )
+            # 대조 CSV는 파생물이라 반영이 끝나면 들고 있을 이유가 없다.
+            # 이력을 쓰기 전에 지워, 몇 개를 지웠는지가 같은 줄에 남게 한다.
+            pruned = _prune_reconciliations_after_apply(area, district, result, request)
+
+            # 반영도 이력에 남긴다. 대조만 하고 반영하지 않은 구가 생기므로
+            # (전 구 순회는 한도를 넘길 구를 건너뛴다), 대조 줄만 있으면 "이 변경이
+            # DB에 실제로 들어갔는가"를 이력으로 답할 수 없다.
+            _record_history(
+                {
+                    "일시": f"{datetime.now(place_snapshot.KST):%Y-%m-%d %H:%M}",
+                    "구": _district_label(area, district),
+                    "종류": "반영",
+                    "기준 스냅샷": snapshot_path.name,
+                    "신규": result.new_count,
+                    "수정": result.updated_count,
+                    # 상한이 걸린 실행은 비활성화를 건너뛴다. 0으로 적으면 "사라진
+                    # 장소가 없었다"로 읽히지만 실제로는 보지도 않았다.
+                    "삭제": (
+                        result.deactivated_count
+                        if request.details_limit is None
+                        else "미판정"
+                    ),
+                    "상세조회": result.detail_attempted_count,
+                    "비고": " · ".join(
+                        part
+                        for part in (
+                            result.status,
+                            f"무장애 {result.barrier_free_stored_count}/"
+                            f"{result.barrier_free_attempted_count}",
+                            f"실패 {result.failed_count}" if result.failed_count else "",
+                            (
+                                f"상한 {request.details_limit}건(비활성화 건너뜀)"
+                                if request.details_limit is not None
+                                else ""
+                            ),
+                            (
+                                ", ".join(sorted(result.error_summary))
+                                if result.error_summary
+                                else ""
+                            ),
+                            f"대조 CSV {len(pruned)}개 삭제" if pruned else "",
+                        )
+                        if part
+                    ),
+                }
             )
             return SyncJobOutcome(result=result, unmapped_new_place_ids=unmapped)
 

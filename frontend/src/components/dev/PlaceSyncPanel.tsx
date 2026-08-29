@@ -319,6 +319,7 @@ export function PlaceSyncPanel({
   reconciling,
   applying,
   detailCallsToday,
+  busy,
   onSelectDistrict,
   onReconcile,
   onApply,
@@ -333,6 +334,9 @@ export function PlaceSyncPanel({
   /** 오늘 detailIntro2 사용량. place_sync_runs에서 센 값이라 서버 재시작과
    *  scripts 실행을 견디지만, 여전히 하한이다. 집계가 없으면 null. */
   detailCallsToday: DbStatus["detail_calls_today"] | null;
+  /** 전 구 순회처럼 이 패널 밖의 실행이 돌고 있는지. 동기화 job은 서버에서 한
+   *  번에 하나만 돌아서, 여기서 막지 않으면 409로 거부되는 버튼을 누르게 된다. */
+  busy: boolean;
   onSelectDistrict: (district: SyncDistrict) => void;
   onReconcile: () => void;
   onApply: (input: {
@@ -380,7 +384,8 @@ export function PlaceSyncPanel({
   const barrierFreeTargets = reconcile?.barrier_free_detail_count ?? 0;
   const barrierFreeCalls =
     detailsLimit === null ? barrierFreeTargets : Math.min(barrierFreeTargets, detailsLimit);
-  const jobRunning = job?.status === "running";
+  // 이 패널의 job이든 전 구 순회든, 무언가 돌고 있으면 조작을 막는다.
+  const locked = job?.status === "running" || busy;
   const isNewDistrict =
     selected !== null && selected.place_count === 0 && selected.latest_snapshot === null;
 
@@ -397,7 +402,7 @@ export function PlaceSyncPanel({
         <button
           type="button"
           onClick={onReconcile}
-          disabled={reconciling || jobRunning || selected === null}
+          disabled={reconciling || locked || selected === null}
           className="rounded-md border border-gray-300 px-3 py-1.5 text-sm disabled:opacity-50 dark:border-gray-700"
         >
           {reconciling ? "대조 중…" : "1. 스냅샷 대조"}
@@ -409,7 +414,7 @@ export function PlaceSyncPanel({
           options={options}
           known={districts?.known ?? []}
           selected={selected}
-          disabled={reconciling || jobRunning}
+          disabled={reconciling || locked}
           onSelect={onSelectDistrict}
           onAdd={(district) => {
             setAdded((current) => [...current, district]);
@@ -554,7 +559,7 @@ export function PlaceSyncPanel({
                 setConfirm("");
                 setShowDialog(true);
               }}
-              disabled={applying || jobRunning}
+              disabled={applying || locked}
               className="ml-auto rounded-md bg-gray-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-gray-100 dark:text-gray-900"
             >
               2. 반영 실행
