@@ -1361,3 +1361,37 @@ async def test_complete_sync_run_does_not_overwrite_abandoned_run() -> None:
     assert seen
     # running인 행만 갱신한다 — 이미 failed로 마감된 행은 조건에서 빠진다.
     assert "status=eq.running" in seen[0]
+
+
+@pytest.mark.asyncio
+async def test_다른_구에서_비활성이던_장소도_되살린다() -> None:
+    """`existing_states`는 이 구의 장소만 담아서 "처음 보는 장소"와 "다른 구에 이미
+    있는 장소"가 구분되지 않는다. 장소는 구를 옮겨 다닌다.
+
+    2026-08-30에 "2025 제17회 서울건축문화제"가 종로구에서 사라져 비활성이 된 뒤
+    중구 목록에 나타났다. is_active만 켜면 inactive_reason이 남은 채로 활성이 되어
+    places_active_state_valid를 어기고, upsert가 400으로 튕겨 그 청크 전체가
+    실패한다 — 중구 반영이 그렇게 계속 실패했다.
+    """
+    payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payloads.extend(json.loads(request.content))
+        return httpx.Response(201)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        # 이 구에는 기록이 없다. 다른 구에 비활성으로 남아 있는 상태다.
+        await _repository(transport, client).upsert_place_list(
+            [_place("3528062")], {}, RUN_ID, NOW
+        )
+
+    row = payloads[0]
+    assert row["is_active"] is True
+    # 활성이면 두 값이 모두 null이어야 한다(places_active_state_valid).
+    assert row["inactive_reason"] is None
+    assert row["inactive_at"] is None
+    # failed였던 행을 pending으로 바꾸면서 오류 코드를 안 지우면
+    # places_detail_error_matches_status를 어긴다.
+    assert row["detail_fetch_status"] == "pending"
+    assert row["detail_error_code"] is None

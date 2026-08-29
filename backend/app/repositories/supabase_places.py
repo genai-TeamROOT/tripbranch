@@ -1084,7 +1084,28 @@ class SupabasePlaceRepository:
             }
             previous = existing_states.get(place.content_id)
             if previous is None:
-                row.update({"detail_fetch_status": "pending", "is_active": True})
+                # `existing_states`는 이 구의 장소만 담는다. 그래서 "처음 보는 장소"와
+                # "다른 구에 이미 있는 장소"가 여기서 구분되지 않는다 — 장소는 구를
+                # 옮겨 다닌다(2026-08-30 "2025 제17회 서울건축문화제"가 종로구에서
+                # 사라져 비활성이 된 뒤 중구 목록에 나타났다).
+                #
+                # 그런 행에 is_active만 켜면 inactive_reason이 남은 채로 활성이 되어
+                # places_active_state_valid를 어기고, upsert가 400으로 튕겨 그 청크
+                # 전체가 실패한다. detail_fetch_status도 같다 — failed였던 행을
+                # pending으로 바꾸면서 detail_error_code를 안 지우면
+                # places_detail_error_matches_status를 어긴다.
+                #
+                # 상태를 통째로 새 장소의 것으로 맞춘다. 행이 없으면 어차피 null이라
+                # 무해하고, 다른 구에 있던 행이면 새 구에서 되살아나는 것이 맞다.
+                row.update(
+                    {
+                        "detail_fetch_status": "pending",
+                        "detail_error_code": None,
+                        "is_active": True,
+                        "inactive_reason": None,
+                        "inactive_at": None,
+                    }
+                )
             elif previous.inactive_reason == "missing_from_source":
                 row.update(
                     {
