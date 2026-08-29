@@ -9,7 +9,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { ApiError } from "../api/client";
 import {
   applyPlaceSync,
@@ -46,6 +46,7 @@ import {
   type AllSyncState,
 } from "../components/dev/allDistrictSync";
 import { DbStatusPanel } from "../components/dev/DbStatusPanel";
+import { OpsNav, type OpsTab } from "../components/dev/OpsNav";
 import { FeedbackStatsPanel } from "../components/dev/FeedbackStatsPanel";
 import { PlaceSyncPanel } from "../components/dev/PlaceSyncPanel";
 import { SnapshotRetentionPanel } from "../components/dev/SnapshotRetentionPanel";
@@ -100,6 +101,18 @@ function toMessage(error: unknown, fallback: string) {
 
 export function DeveloperOpsPage() {
   const navigate = useNavigate();
+  /* 탭을 URL에 둔다. 새로고침해도 자리를 지키고 링크로 공유된다 — 전 구 순회는
+   * 오래 걸려서 도중에 새로고침할 일이 생긴다. */
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tab: OpsTab = searchParams.get("tab") === "sync" ? "sync" : "observe";
+  const selectTab = useCallback(
+    (next: OpsTab) => {
+      // replace로 바꾼다. 탭 전환을 뒤로가기 이력에 쌓으면 채팅 화면으로 돌아가는
+      // 데 뒤로가기를 여러 번 눌러야 한다.
+      setSearchParams(next === "sync" ? { tab: "sync" } : {}, { replace: true });
+    },
+    [setSearchParams],
+  );
   const [usage, setUsage] = useState<ApiUsageSnapshot | null>(null);
   const [usageError, setUsageError] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(false);
@@ -529,7 +542,7 @@ export function DeveloperOpsPage() {
         <div>
           <h1 className="text-xl font-bold">TripBranch Ops</h1>
           <p className="text-sm text-gray-500 dark:text-gray-400">
-            외부 API 호출량 · 장소 DB 상태 (로컬 전용)
+            외부 API 호출량 · 장소 DB 상태 · 동기화 (로컬 전용)
           </p>
         </div>
         <div className="flex gap-2">
@@ -550,76 +563,90 @@ export function DeveloperOpsPage() {
         </div>
       </header>
 
-      <div className="mx-auto flex max-w-6xl flex-col gap-4 px-5 py-5">
-        <ApiUsagePanel
-          snapshot={usage}
-          error={usageError}
-          autoRefresh={autoRefresh}
-          onToggleAutoRefresh={setAutoRefresh}
-          onRefresh={() => void loadUsage()}
-          onReset={() => void handleReset()}
-        />
-        <PlaceSyncPanel
-          districts={districts}
-          selected={selectedDistrict}
-          reconcile={reconcile}
-          job={job}
-          error={syncError}
-          reconciling={reconciling}
-          applying={applying}
-          /* 잔여를 계산하지 않는 이유: 이 값도 하한이다. 재시도가 안 세지고,
-           * 완료 처리를 못 한 실행은 사용량이 비어 있다. 한도에서 빼면 실제보다
-           * 여유가 있는 것처럼 보인다. */
-          detailCallsToday={dbStatus?.detail_calls_today ?? null}
-          /* 전 구 순회 중에는 구 단위 조작을 막는다. 서버가 job 하나만 허용해
-           * 409로 거부되긴 하지만, 화면이 그런 조작을 제안하는 것 자체가 잘못이다. */
-          busy={allBusy}
-          onSelectDistrict={handleSelectDistrict}
-          onReconcile={() => void handleReconcile()}
-          onApply={(input) => void handleApply(input)}
-        />
-        <AllDistrictSyncPanel
-          districts={districts?.loaded ?? []}
-          state={allSync}
-          detailCallsToday={dbStatus?.detail_calls_today ?? null}
-          busy={reconciling || applying || job?.status === "running"}
-          onReconcileAll={() => void handleReconcileAll("api")}
-          onReuseSnapshots={() => void handleReconcileAll("saved")}
-          onApplyAll={() => void handleApplyAll()}
-          onCancel={handleCancelAll}
-        />
-        <SnapshotRetentionPanel
-          retention={retention}
-          result={pruneResult}
-          error={retentionError}
-          loading={retentionLoading}
-          pruning={pruning}
-          keep={keep}
-          /* 반영은 대조가 남긴 스냅샷 파일을 읽는다. 그 사이 지우면 돌고 있는
-           * 동기화가 읽을 파일이 사라진다. */
-          busy={allBusy || reconciling || applying || job?.status === "running"}
-          onChangeKeep={handleChangeKeep}
-          onRefresh={() => void loadRetention(keep)}
-          onPrune={(input) => void handlePrune(input)}
-        />
-        <DbStatusPanel
-          status={dbStatus}
-          error={dbError}
-          loading={dbLoading}
-          onRefresh={() => void loadDbStatus()}
-        />
-        <FeedbackStatsPanel
-          stats={feedbackStats}
-          error={feedbackStatsError}
-          loading={feedbackStatsLoading}
-          onRefresh={() => void loadFeedbackStats()}
-        />
-        <TracePanel
-          stats={traceStats}
-          error={traceStatsError}
-          loading={traceStatsLoading}
-          onRefresh={() => void loadTraceStats()}
-        />
+      {/* 패널을 탭으로 가르되 상태와 순회 루프는 이 페이지가 그대로 들고 있다.
+       * 상태까지 자식으로 내리면 순회 도중에 탭을 옮기는 순간 컴포넌트가
+       * 언마운트되면서 25개 구를 돌던 루프가 끊긴다. */}
+      <div className="mx-auto flex max-w-6xl flex-col gap-4 px-5 py-5 sm:flex-row">
+        <OpsNav tab={tab} syncRunning={allBusy} onSelect={selectTab} />
+
+        <div className="flex min-w-0 flex-1 flex-col gap-4">
+          {tab === "observe" ? (
+            <>
+              <ApiUsagePanel
+                snapshot={usage}
+                error={usageError}
+                autoRefresh={autoRefresh}
+                onToggleAutoRefresh={setAutoRefresh}
+                onRefresh={() => void loadUsage()}
+                onReset={() => void handleReset()}
+              />
+              <DbStatusPanel
+                status={dbStatus}
+                error={dbError}
+                loading={dbLoading}
+                onRefresh={() => void loadDbStatus()}
+              />
+              <FeedbackStatsPanel
+                stats={feedbackStats}
+                error={feedbackStatsError}
+                loading={feedbackStatsLoading}
+                onRefresh={() => void loadFeedbackStats()}
+              />
+              <TracePanel
+                stats={traceStats}
+                error={traceStatsError}
+                loading={traceStatsLoading}
+                onRefresh={() => void loadTraceStats()}
+              />
+            </>
+          ) : (
+            <>
+              <PlaceSyncPanel
+                districts={districts}
+                selected={selectedDistrict}
+                reconcile={reconcile}
+                job={job}
+                error={syncError}
+                reconciling={reconciling}
+                applying={applying}
+                /* 잔여를 계산하지 않는 이유: 이 값도 하한이다. 재시도가 안 세지고,
+                 * 완료 처리를 못 한 실행은 사용량이 비어 있다. 한도에서 빼면 실제보다
+                 * 여유가 있는 것처럼 보인다. */
+                detailCallsToday={dbStatus?.detail_calls_today ?? null}
+                /* 전 구 순회 중에는 구 단위 조작을 막는다. 서버가 job 하나만 허용해
+                 * 409로 거부되긴 하지만, 화면이 그런 조작을 제안하는 것 자체가 잘못이다. */
+                busy={allBusy}
+                onSelectDistrict={handleSelectDistrict}
+                onReconcile={() => void handleReconcile()}
+                onApply={(input) => void handleApply(input)}
+              />
+              <AllDistrictSyncPanel
+                districts={districts?.loaded ?? []}
+                state={allSync}
+                detailCallsToday={dbStatus?.detail_calls_today ?? null}
+                busy={reconciling || applying || job?.status === "running"}
+                onReconcileAll={() => void handleReconcileAll("api")}
+                onReuseSnapshots={() => void handleReconcileAll("saved")}
+                onApplyAll={() => void handleApplyAll()}
+                onCancel={handleCancelAll}
+              />
+              <SnapshotRetentionPanel
+                retention={retention}
+                result={pruneResult}
+                error={retentionError}
+                loading={retentionLoading}
+                pruning={pruning}
+                keep={keep}
+                /* 반영은 대조가 남긴 스냅샷 파일을 읽는다. 그 사이 지우면 돌고 있는
+                 * 동기화가 읽을 파일이 사라진다. */
+                busy={allBusy || reconciling || applying || job?.status === "running"}
+                onChangeKeep={handleChangeKeep}
+                onRefresh={() => void loadRetention(keep)}
+                onPrune={(input) => void handlePrune(input)}
+              />
+            </>
+          )}
+        </div>
       </div>
     </main>
   );
