@@ -15,13 +15,17 @@ import {
   applyPlaceSync,
   fetchApiUsage,
   fetchDbStatus,
+  fetchSnapshotRetention,
   fetchSyncDistricts,
   fetchSyncJob,
+  pruneSnapshots,
   reconcilePlaces,
   resetApiUsage,
   type ApiUsageSnapshot,
   type DbStatus,
   type ReconcileResult,
+  type SnapshotPruneResult,
+  type SnapshotRetention,
   type SyncDistrict,
   type SyncDistricts,
   type SyncJob,
@@ -44,6 +48,8 @@ import {
 import { DbStatusPanel } from "../components/dev/DbStatusPanel";
 import { FeedbackStatsPanel } from "../components/dev/FeedbackStatsPanel";
 import { PlaceSyncPanel } from "../components/dev/PlaceSyncPanel";
+import { SnapshotRetentionPanel } from "../components/dev/SnapshotRetentionPanel";
+import { DEFAULT_KEEP, PRUNE_CONFIRM } from "../components/dev/snapshotRetention";
 import { TracePanel } from "../components/dev/TracePanel";
 
 const AUTO_REFRESH_INTERVAL_MS = 3000;
@@ -401,6 +407,60 @@ export function DeveloperOpsPage() {
     void loadDistricts();
   }, [allSync.entries, dbStatus, loadDbStatus, loadDistricts]);
 
+
+  /* 스냅샷 보관. 지울 후보 판정은 서버에만 둔다 — 화면이 따로 세면 미리보기와
+   * 실제 정리가 갈라져, 보여준 것과 다른 파일이 지워진다. */
+  const [retention, setRetention] = useState<SnapshotRetention | null>(null);
+  const [retentionError, setRetentionError] = useState<string | null>(null);
+  const [retentionLoading, setRetentionLoading] = useState(false);
+  const [pruneResult, setPruneResult] = useState<SnapshotPruneResult | null>(null);
+  const [pruning, setPruning] = useState(false);
+  const [keep, setKeep] = useState(DEFAULT_KEEP);
+
+  const loadRetention = useCallback(async (nextKeep: number) => {
+    setRetentionLoading(true);
+    try {
+      setRetention(await fetchSnapshotRetention(nextKeep));
+      setRetentionError(null);
+    } catch (error) {
+      setRetentionError(toMessage(error, "스냅샷 목록을 불러오지 못했어요."));
+    } finally {
+      setRetentionLoading(false);
+    }
+  }, []);
+
+  const handleChangeKeep = useCallback(
+    (nextKeep: number) => {
+      setKeep(nextKeep);
+      // 후보는 유지 개수에 따라 달라진다. 서버에 다시 물어야 표와 실제가 맞는다.
+      void loadRetention(nextKeep);
+    },
+    [loadRetention],
+  );
+
+  const handlePrune = useCallback(
+    async (input: { includeReconciliations: boolean }) => {
+      setPruning(true);
+      try {
+        setPruneResult(
+          await pruneSnapshots({
+            keep,
+            includeReconciliations: input.includeReconciliations,
+            confirm: PRUNE_CONFIRM,
+          }),
+        );
+        setRetentionError(null);
+        // 지운 뒤 개수가 바뀌었다. 다시 읽지 않으면 이미 없는 파일을 계속 보여준다.
+        await loadRetention(keep);
+      } catch (error) {
+        setRetentionError(toMessage(error, "정리하지 못했어요."));
+      } finally {
+        setPruning(false);
+      }
+    },
+    [keep, loadRetention],
+  );
+
   const allBusy = allSync.phase === "reconciling" || allSync.phase === "applying";
 
   const handleReset = useCallback(async () => {
@@ -418,7 +478,15 @@ export function DeveloperOpsPage() {
     void loadDistricts();
     void loadFeedbackStats();
     void loadTraceStats();
-  }, [loadDbStatus, loadDistricts, loadFeedbackStats, loadTraceStats, loadUsage]);
+    void loadRetention(DEFAULT_KEEP);
+  }, [
+    loadDbStatus,
+    loadDistricts,
+    loadFeedbackStats,
+    loadRetention,
+    loadTraceStats,
+    loadUsage,
+  ]);
 
   // 폴링은 호출량에만 건다. DB 상태는 844행을 훑어 Supabase 호출이 따라붙으므로
   // 3초마다 부르면 패널 자체가 트래픽을 만든다.
@@ -517,6 +585,20 @@ export function DeveloperOpsPage() {
           onReconcileAll={() => void handleReconcileAll()}
           onApplyAll={() => void handleApplyAll()}
           onCancel={handleCancelAll}
+        />
+        <SnapshotRetentionPanel
+          retention={retention}
+          result={pruneResult}
+          error={retentionError}
+          loading={retentionLoading}
+          pruning={pruning}
+          keep={keep}
+          /* 반영은 대조가 남긴 스냅샷 파일을 읽는다. 그 사이 지우면 돌고 있는
+           * 동기화가 읽을 파일이 사라진다. */
+          busy={allBusy || reconciling || applying || job?.status === "running"}
+          onChangeKeep={handleChangeKeep}
+          onRefresh={() => void loadRetention(keep)}
+          onPrune={(input) => void handlePrune(input)}
         />
         <DbStatusPanel
           status={dbStatus}

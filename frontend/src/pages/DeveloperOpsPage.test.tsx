@@ -190,9 +190,28 @@ const traceStats = {
   ],
 };
 
-/** 개발자 패널이 여는 조회 다섯 개를 한 곳에서 가른다. */
+const snapshotRetention = {
+  snapshots: ["places_api_snapshot_11-110_20260825.csv"],
+  data_dir: "/repo/supabase/data",
+  keep: 2,
+  districts: [
+    {
+      area_code: "11",
+      district_code: "110",
+      district_name: "종로구",
+      snapshot_count: 1,
+      reconciliation_count: 1,
+      latest_snapshot: "places_api_snapshot_11-110_20260825.csv",
+      prunable_snapshots: [],
+      prunable_reconciliations: [],
+    },
+  ],
+};
+
+/** 개발자 패널이 여는 조회 여섯 개를 한 곳에서 가른다. */
 function panelBody(url: string) {
   if (url.includes("api-usage")) return usageSnapshot;
+  if (url.includes("place-sync/snapshots")) return snapshotRetention;
   if (url.includes("place-sync/districts")) return syncDistricts;
   if (url.includes("feedback/stats")) return feedbackStats;
   if (url.includes("trace/stats")) return traceStats;

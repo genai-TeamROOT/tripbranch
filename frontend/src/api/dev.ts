@@ -357,6 +357,55 @@ export function releaseSyncLock(input: {
   });
 }
 
+/** 구 하나의 스냅샷 보관 상태. `prunable_*`는 지금 유지 개수로 지울 수 있는 파일이다. */
+export type SnapshotRetentionDistrict = {
+  area_code: string;
+  district_code: string;
+  district_name: string | null;
+  snapshot_count: number;
+  reconciliation_count: number;
+  latest_snapshot: string | null;
+  prunable_snapshots: string[];
+  prunable_reconciliations: string[];
+};
+
+export type SnapshotRetention = {
+  snapshots: string[];
+  data_dir: string;
+  keep: number;
+  districts: SnapshotRetentionDistrict[];
+};
+
+export type SnapshotPruneResult = {
+  keep: number;
+  deleted: string[];
+  failed: { file: string; error: string }[];
+  history_file: string;
+};
+
+/*
+ * 지울 후보를 서버가 함께 준다. 화면이 따로 계산하면 미리보기와 실제 정리가
+ * 갈라져, 보여준 것과 다른 파일이 지워질 수 있다. 판정은 서버의
+ * `select_prunable` 하나만 한다.
+ */
+export function fetchSnapshotRetention(keep: number) {
+  return apiClient.get<SnapshotRetention>(
+    `/dev/place-sync/snapshots?keep=${encodeURIComponent(keep)}`,
+  );
+}
+
+export function pruneSnapshots(input: {
+  keep: number;
+  includeReconciliations: boolean;
+  confirm: string;
+}) {
+  return apiClient.post<SnapshotPruneResult>("/dev/place-sync/snapshots/prune", {
+    keep: input.keep,
+    include_reconciliations: input.includeReconciliations,
+    confirm: input.confirm,
+  });
+}
+
 export function fetchSyncJob(jobId: string) {
   return apiClient.get<SyncJob>(`/dev/place-sync/jobs/${jobId}`);
 }

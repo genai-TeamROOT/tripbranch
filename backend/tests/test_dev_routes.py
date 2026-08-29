@@ -666,6 +666,143 @@ def test_apply_runs_job_and_reports_progress(
     assert job["unmapped_new_place_ids"] == ["1"]
 
 
+def _apply_with_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    *,
+    status: str,
+    body: dict,
+) -> dict:
+    """반영을 한 번 돌리고 job 스냅샷을 돌려준다. 대조 CSV 삭제 규칙 검증용."""
+    monkeypatch.setattr(dev_routes.place_snapshot, "DATA_DIR", tmp_path)
+    place_snapshot.write_snapshot(
+        {"1": _snapshot_row("1")},
+        tmp_path / "places_api_snapshot_11-110_20260830.csv",
+    )
+    (tmp_path / "places_reconciliation_11-110_20260829.csv").write_text(
+        "content_id\n", encoding="utf-8"
+    )
+    (tmp_path / "places_reconciliation_11-110_20260830.csv").write_text(
+        "content_id\n", encoding="utf-8"
+    )
+
+    class _FakeService:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def sync(self, area_code, district_code, **kwargs):
+            return PlaceSyncResult(
+                status=status,
+                dry_run=kwargs["dry_run"],
+                sync_run_id=None,
+                api_total_count=1,
+                processed_count=1,
+                success_count=1,
+                failed_count=0,
+                new_count=0,
+                updated_count=1,
+                deactivated_count=0,
+                detail_target_count=1,
+                detail_attempted_count=1,
+                reparse_count=0,
+                barrier_free_target_count=0,
+                barrier_free_attempted_count=0,
+                barrier_free_stored_count=0,
+                error_summary={},
+            )
+
+    monkeypatch.setattr(dev_routes, "PlaceSyncService", _FakeService)
+
+    async def fake_missing(self, content_ids):
+        return []
+
+    monkeypatch.setattr(
+        dev_routes.SupabasePlaceRepository,
+        "find_missing_concentration_mappings",
+        fake_missing,
+    )
+
+    with _client() as client:
+        started = client.post(
+            "/api/dev/place-sync/apply",
+            json={
+                "snapshot": "places_api_snapshot_11-110_20260830.csv",
+                "detail_content_ids": ["1"],
+                "confirm": "11-110",
+                **body,
+            },
+        ).json()
+        return client.get(f"/api/dev/place-sync/jobs/{started['job_id']}").json()
+
+
+def test_반영이_끝나면_대조_CSV를_지우고_스냅샷은_남긴다(
+    monkeypatch: pytest.MonkeyPatch, _real_place: None, tmp_path
+) -> None:
+    """대조 CSV는 스냅샷 두 개에서 다시 만들 수 있는 파생물이다.
+
+    스냅샷은 다르다 — 다음 대조의 기준이라 지우면 전량이 신규로 잡히고, 이미 DB에
+    있는 장소에 detailIntro2를 한 번씩 더 쓴다.
+    """
+    job = _apply_with_result(
+        monkeypatch, tmp_path, status="success", body={"dry_run": False}
+    )
+
+    assert job["status"] == "success"
+    assert list(tmp_path.glob("places_reconciliation_*.csv")) == []
+    assert (tmp_path / "places_api_snapshot_11-110_20260830.csv").exists()
+
+
+def test_한도_소진으로_끝난_반영도_대조_CSV를_지운다(
+    monkeypatch: pytest.MonkeyPatch, _real_place: None, tmp_path
+) -> None:
+    """partial_failure는 상세를 일부 못 채운 것이고 목록 반영과 비활성화는 끝났다.
+
+    대조 CSV가 담는 것은 목록 단위 변경이라, 그 기록은 이미 소비됐다.
+    """
+    _apply_with_result(
+        monkeypatch, tmp_path, status="partial_failure", body={"dry_run": False}
+    )
+
+    assert list(tmp_path.glob("places_reconciliation_*.csv")) == []
+
+
+def test_dry_run은_대조_CSV를_지우지_않는다(
+    monkeypatch: pytest.MonkeyPatch, _real_place: None, tmp_path
+) -> None:
+    """DB에 아무것도 쓰지 않았다. 변경분은 그대로 남아 있다."""
+    _apply_with_result(monkeypatch, tmp_path, status="success", body={"dry_run": True})
+
+    assert len(list(tmp_path.glob("places_reconciliation_*.csv"))) == 2
+
+
+def test_상한이_걸린_반영은_대조_CSV를_지우지_않는다(
+    monkeypatch: pytest.MonkeyPatch, _real_place: None, tmp_path
+) -> None:
+    """상한이 걸린 실행은 비활성화를 건너뛴다.
+
+    대조가 찾은 "삭제" 행이 DB에 반영되지 않은 채 남는데, 그 기록을 지우면 무엇이
+    남았는지 알 방법이 없다.
+    """
+    _apply_with_result(
+        monkeypatch,
+        tmp_path,
+        status="success",
+        body={"dry_run": False, "details_limit": 1},
+    )
+
+    assert len(list(tmp_path.glob("places_reconciliation_*.csv"))) == 2
+
+
+def test_실패한_반영은_대조_CSV를_지우지_않는다(
+    monkeypatch: pytest.MonkeyPatch, _real_place: None, tmp_path
+) -> None:
+    _apply_with_result(
+        monkeypatch, tmp_path, status="failed", body={"dry_run": False}
+    )
+
+    assert len(list(tmp_path.glob("places_reconciliation_*.csv"))) == 2
+
+
 def test_nearest_area_resolves_coordinate_to_area_name() -> None:
     """종로 한복판 좌표는 서울시 상권 지역 이름으로 근사된다."""
 

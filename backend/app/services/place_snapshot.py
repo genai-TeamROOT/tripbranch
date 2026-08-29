@@ -503,6 +503,117 @@ def find_baseline(
     return None
 
 
+# 사람이 읽는 갱신 이력. 대조·반영·정리가 한 줄씩 덧붙는다. 어떤 코드도 이 파일을
+# 읽지 않는다 — 대조의 입력은 스냅샷 CSV이고, 여기 적힌 것은 그 결과의 요약이다.
+# 그래서 이력에 남겼다는 사실이 스냅샷을 지워도 된다는 근거가 되지는 않는다.
+HISTORY_FILE_NAME = "snapshot-history.md"
+
+HISTORY_COLUMNS = (
+    "일시",
+    "구",
+    "종류",
+    "기준 스냅샷",
+    "신규",
+    "수정",
+    "삭제",
+    "상세조회",
+    "비고",
+)
+
+_HISTORY_HEADER = f"""# 스냅샷 갱신 이력
+
+`supabase/data/`의 장소 스냅샷에 무슨 일이 있었는지를 시간순으로 적는다. 대조가
+무엇을 발견했고, 반영이 그중 무엇을 DB에 넣었고, 정리가 어떤 파일을 지웠는지가
+한 줄씩 붙는다.
+
+장소 단위 내역은 여기 없다 — `places_reconciliation_*.csv`에 그대로 있고, 이
+표는 그 파일 하나를 한 줄로 접은 것이다. 지운 스냅샷은 git 이력에 남아
+`git show <커밋>:supabase/data/<파일명>`으로 되찾을 수 있다.
+
+| {" | ".join(HISTORY_COLUMNS)} |
+| {" | ".join("---" for _ in HISTORY_COLUMNS)} |
+"""
+
+
+def _history_cell(value: object) -> str:
+    """표 한 칸. 파이프는 표를 깨뜨리므로 이스케이프하고 줄바꿈은 없앤다."""
+    text = "" if value is None else str(value)
+    return text.replace("|", "\\|").replace("\n", " ").strip()
+
+
+def append_history_row(
+    row: Mapping[str, object],
+    directory: Path | None = None,
+) -> Path:
+    """갱신 이력에 한 줄을 덧붙인다. 파일이 없으면 설명과 표 머리를 함께 만든다.
+
+    파일 끝에 붙이기만 한다 — 최신을 위로 올리면 매번 파일 전체를 다시 써야 하고,
+    전 구 순회 한 번에 25~50줄이 붙는 상황에서 그 비용이 매 줄마다 든다.
+
+    이력 쓰기가 실패해도 호출한 쪽을 막지 않는다는 규칙은 여기가 아니라 호출부에
+    있다 — 대조와 반영은 외부 API 한도를 쓰는 작업이라, 기록을 못 남겼다고 그
+    결과까지 버리면 한도만 태우고 아무것도 남지 않는다.
+    """
+    target = directory if directory is not None else DATA_DIR
+    target.mkdir(parents=True, exist_ok=True)
+    path = target / HISTORY_FILE_NAME
+    if not path.exists():
+        path.write_text(_HISTORY_HEADER, encoding="utf-8")
+    cells = " | ".join(_history_cell(row.get(column)) for column in HISTORY_COLUMNS)
+    with path.open("a", encoding="utf-8") as fp:
+        fp.write(f"| {cells} |\n")
+    return path
+
+
+def list_reconciliations(
+    directory: Path | None = None,
+    *,
+    area_code: str,
+    district_code: str,
+) -> list[Path]:
+    """저장된 대조 결과를 최신순으로. 스냅샷과 같은 이름 규칙을 쓴다."""
+    target = directory if directory is not None else DATA_DIR
+    if not target.exists():
+        return []
+    pattern = (
+        f"{RECONCILIATION_PREFIX}{region_slug(area_code, district_code)}_*.csv"
+    )
+    return sorted(target.glob(pattern), key=lambda path: path.name, reverse=True)
+
+
+def select_prunable(
+    directory: Path | None = None,
+    *,
+    area_code: str,
+    district_code: str,
+    keep: int,
+    prefix: str = SNAPSHOT_PREFIX,
+) -> list[Path]:
+    """그 구에서 지워도 되는 파일을 오래된 것부터.
+
+    `keep`개를 최신순으로 남기고 나머지를 돌려준다. `keep`이 1 미만이면 빈 목록을
+    준다 — 스냅샷을 0개로 만들면 다음 대조가 기준을 잃고 전량을 신규로 잡아,
+    이미 DB에 있는 장소에 detailIntro2를 한 번씩 더 쓴다.
+
+    지역 코드를 반드시 받고 glob으로 그 구의 파일만 고른다. 디렉터리에는 이 이름
+    규칙 밖의 자료가 함께 있어(`seongdong_places.csv`,
+    `concentration_place_mapping_*.csv`, 구가 이름에 없는 옛 스냅샷) 후보에조차
+    올리면 안 된다.
+    """
+    if keep < 1:
+        return []
+    if prefix == RECONCILIATION_PREFIX:
+        newest_first = list_reconciliations(
+            directory, area_code=area_code, district_code=district_code
+        )
+    else:
+        newest_first = list_snapshots(
+            directory, area_code=area_code, district_code=district_code
+        )
+    # 오래된 것부터 돌려준다 — 화면과 이력이 "무엇을 먼저 버리는가" 순서로 읽힌다.
+    return list(reversed(newest_first[keep:]))
+
+
 def select_detail_targets(
     rows: Sequence[Mapping[str, object]],
 ) -> tuple[frozenset[str], tuple[str, ...]]:
@@ -538,18 +649,22 @@ __all__ = [
     "COMPARED_COLUMNS",
     "DATA_DIR",
     "DETAIL_TRIGGER_COLUMN",
+    "HISTORY_COLUMNS",
+    "HISTORY_FILE_NAME",
     "KST",
     "LIST_FETCH_TIMEOUT_SECONDS",
     "LIST_PAGE_SIZE",
     "RECONCILIATION_PREFIX",
     "SNAPSHOT_COLUMNS",
     "SNAPSHOT_PREFIX",
+    "append_history_row",
     "build_reconciliation_rows",
     "changed_columns",
     "comparable_columns",
     "district_from_snapshot_name",
     "fetch_place_rows",
     "find_baseline",
+    "list_reconciliations",
     "list_snapshots",
     "load_snapshot",
     "normalize",
@@ -557,6 +672,7 @@ __all__ = [
     "records_from_snapshot",
     "region_slug",
     "select_detail_targets",
+    "select_prunable",
     "snapshot_file_name",
     "snapshot_regions",
     "snapshot_rows_from_db",
