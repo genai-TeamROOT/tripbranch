@@ -790,6 +790,9 @@ async def _reconcile_from_saved(
     이 경로가 없애려던 외부 호출이다. `barrier_free_checked=False`로 돌려주어
     화면이 "0회"가 아니라 "확인하지 못했다"로 읽게 한다.
     """
+    logger.info(
+        "장소 대조 source=saved area=%s-%s (외부 호출 없음)", area, district
+    )
     snapshots = place_snapshot.list_snapshots(
         area_code=area, district_code=district
     )
@@ -907,6 +910,9 @@ async def post_reconcile(request: ReconcileRequest) -> dict[str, Any]:
 
     api_key = _require_real_place_provider()
     now = datetime.now(place_snapshot.KST)
+    # source를 로그에 남긴다. 두 모드가 같은 엔드포인트를 써서 접근 로그 한 줄만
+    # 보면 목록을 새로 받았는지 저장된 스냅샷을 읽었는지 구분되지 않는다.
+    logger.info("장소 대조 source=api area=%s-%s", area, district)
 
     async with create_external_client() as client:
         current = await place_snapshot.fetch_place_rows(
