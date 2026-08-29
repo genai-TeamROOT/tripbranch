@@ -666,6 +666,122 @@ def test_apply_runs_job_and_reports_progress(
     assert job["unmapped_new_place_ids"] == ["1"]
 
 
+def _clear_supabase(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Supabase를 못 보는 상태로 둔다. 테스트가 운영 DB에 붙지 않게 한다."""
+    monkeypatch.setattr(settings, "supabase_url", "")
+    monkeypatch.setattr(settings, "supabase_secret_key", "")
+
+
+def _write_snapshot_pair(tmp_path, region: str = "11-110") -> None:
+    """대조에 필요한 스냅샷 두 장. 앞 세대가 기준이 된다."""
+    place_snapshot.write_snapshot(
+        {"1": _snapshot_row("1"), "2": _snapshot_row("2")},
+        tmp_path / f"places_api_snapshot_{region}_20260828.csv",
+    )
+    place_snapshot.write_snapshot(
+        {"1": _snapshot_row("1"), "3": _snapshot_row("3")},
+        tmp_path / f"places_api_snapshot_{region}_20260829.csv",
+    )
+
+
+def test_저장된_스냅샷으로_대조하면_외부_호출이_없다(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """어제 뜬 스냅샷이 있으면 목록을 다시 받을 이유가 없다.
+
+    오늘 상세조회 한도가 없어 반영을 못 하고 다음 날 이어서 하는 경우가 이것이다.
+    """
+    monkeypatch.setattr(dev_routes.place_snapshot, "DATA_DIR", tmp_path)
+    _clear_supabase(monkeypatch)
+    _write_snapshot_pair(tmp_path)
+
+    def _explode(*args, **kwargs):
+        raise AssertionError("saved 모드는 TourAPI를 부르면 안 된다.")
+
+    monkeypatch.setattr(dev_routes.place_snapshot, "fetch_place_rows", _explode)
+
+    with _client() as client:
+        response = client.post(
+            "/api/dev/place-sync/reconcile",
+            json={"area_code": "11", "district_code": "110", "source": "saved"},
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["source"] == "saved"
+    assert payload["snapshot"] == "places_api_snapshot_11-110_20260829.csv"
+    assert payload["baseline"] == "places_api_snapshot_11-110_20260828.csv"
+    assert payload["counts"] == {"added": 1, "removed": 1, "updated": 0}
+    # 무장애는 목록을 불러야 셀 수 있는데 그게 없애려던 호출이다. 0회가 아니라
+    # "확인하지 못했다"로 돌려준다.
+    assert payload["barrier_free_checked"] is False
+
+
+def test_저장된_스냅샷으로_대조해도_파일을_새로_쓰지_않는다(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """오늘 날짜로 다시 쓰면 어제 목록이 오늘 것으로 둔갑한다.
+
+    그 파일이 다음 대조의 기준이 되면서 하루치 변화가 통째로 사라진다.
+    """
+    monkeypatch.setattr(dev_routes.place_snapshot, "DATA_DIR", tmp_path)
+    _clear_supabase(monkeypatch)
+    _write_snapshot_pair(tmp_path)
+    before = sorted(path.name for path in tmp_path.glob("places_*.csv"))
+
+    with _client() as client:
+        client.post(
+            "/api/dev/place-sync/reconcile",
+            json={"area_code": "11", "district_code": "110", "source": "saved"},
+        )
+
+    assert sorted(path.name for path in tmp_path.glob("places_*.csv")) == before
+
+
+def test_저장된_스냅샷이_없으면_실행하지_않는다(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.setattr(dev_routes.place_snapshot, "DATA_DIR", tmp_path)
+    _clear_supabase(monkeypatch)
+
+    with _client() as client:
+        response = client.post(
+            "/api/dev/place-sync/reconcile",
+            json={"area_code": "11", "district_code": "110", "source": "saved"},
+        )
+
+    assert response.status_code >= 400
+    assert "저장된 스냅샷이 없습니다" in response.text
+
+
+def test_기준을_세울_수_없으면_전량_신규로_진행하지_않는다(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """스냅샷이 한 장뿐이면 비교할 기준이 없다.
+
+    API 경로에서는 새 구를 처음 적재하는 정상 경로지만, 저장된 스냅샷을 다시 쓰는
+    자리에서 기준이 없다는 건 앞 세대가 지워졌다는 뜻이다. 그대로 진행하면 이미
+    DB에 있는 장소에 detailIntro2를 전량 다시 쓴다.
+    """
+    monkeypatch.setattr(dev_routes.place_snapshot, "DATA_DIR", tmp_path)
+    # DB 기준도 못 세우는 상태로 둔다. 자격증명이 있으면 places로 기준을 만들 수
+    # 있고, 그건 외부 호출이 아니라 막을 이유가 없는 정상 경로다.
+    _clear_supabase(monkeypatch)
+    place_snapshot.write_snapshot(
+        {"1": _snapshot_row("1")},
+        tmp_path / "places_api_snapshot_11-110_20260829.csv",
+    )
+
+    with _client() as client:
+        response = client.post(
+            "/api/dev/place-sync/reconcile",
+            json={"area_code": "11", "district_code": "110", "source": "saved"},
+        )
+
+    assert response.status_code >= 400
+    assert "앞 세대 스냅샷이 없습니다" in response.text
+
+
 def _apply_with_result(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,

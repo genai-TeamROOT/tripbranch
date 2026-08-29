@@ -22,7 +22,7 @@ import logging
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import httpx
@@ -319,6 +319,13 @@ class ReconcileRequest(BaseModel):
     baseline: str | None = Field(
         default=None,
         description="비교 기준 스냅샷 파일명. 생략하면 저장된 최신 스냅샷을 쓴다.",
+    )
+    source: Literal["api", "saved"] = Field(
+        default="api",
+        description=(
+            "api는 TourAPI 목록을 새로 받아 스냅샷을 남긴다. saved는 저장된 최신 "
+            "스냅샷을 그대로 읽어 대조만 다시 계산한다 — 외부 호출이 0회다."
+        ),
     )
 
 
@@ -764,6 +771,122 @@ async def post_sync_lock_release(request: SyncLockReleaseRequest) -> dict[str, A
         }
 
 
+async def _reconcile_from_saved(
+    area: str, district: str, request: ReconcileRequest
+) -> dict[str, Any]:
+    """저장된 스냅샷을 그대로 읽어 대조만 다시 계산한다. 외부 호출이 0회다.
+
+    대조 결과는 스냅샷 두 장에서 순수하게 계산된다 — `build_reconciliation_rows`는
+    파일만 읽고 API도 DB도 부르지 않는다. 그래서 어제 뜬 스냅샷이 남아 있으면
+    목록 조회를 다시 할 이유가 없다. 오늘 상세조회 한도가 없어 반영을 못 하고
+    다음 날 이어서 하는 경우가 바로 그것이다.
+
+    스냅샷 파일은 새로 쓰지 않는다. 오늘 날짜로 다시 쓰면 어제 목록이 오늘 것으로
+    둔갑하고, 그 파일이 다음 대조의 기준이 되면서 하루치 변화가 통째로 사라진다.
+    대조 결과 CSV도 쓰지 않는다 — 어제 스냅샷의 대조 결과가 오늘 날짜 파일로
+    남으면 어느 시점 자료인지 알 수 없게 된다.
+
+    무장애 예상 호출수는 세지 않는다. 그러려면 무장애 목록을 불러야 하는데, 그건
+    이 경로가 없애려던 외부 호출이다. `barrier_free_checked=False`로 돌려주어
+    화면이 "0회"가 아니라 "확인하지 못했다"로 읽게 한다.
+    """
+    snapshots = place_snapshot.list_snapshots(
+        area_code=area, district_code=district
+    )
+    if not snapshots:
+        raise DevPanelError(
+            f"{area}-{district}에 저장된 스냅샷이 없습니다. 전 구 대조를 먼저 "
+            "실행하세요."
+        )
+
+    snapshot_path = snapshots[0]
+    current = place_snapshot.load_snapshot(snapshot_path)
+    _require_snapshot_region(current, snapshot_path.name, area, district)
+
+    baseline_path = (
+        _snapshot_path(request.baseline)
+        if request.baseline
+        else place_snapshot.find_baseline(
+            area_code=area, district_code=district, exclude=snapshot_path
+        )
+    )
+    if baseline_path is not None:
+        baseline = place_snapshot.load_snapshot(baseline_path)
+        baseline_label = baseline_path.name
+        baseline_source = "file"
+    else:
+        baseline, baseline_source = await _baseline_from_database(area, district)
+        baseline_label = (
+            f"places@{datetime.now(place_snapshot.KST):%Y-%m-%d}" if baseline else None
+        )
+
+    if not baseline:
+        # 기준이 없으면 전량이 신규가 된다. API 경로에서는 새 구를 처음 적재하는
+        # 정상 경로지만, 저장된 스냅샷을 다시 쓰는 자리에서는 그럴 이유가 없다 —
+        # 스냅샷이 있는데 기준이 없다는 건 앞 세대가 지워졌다는 뜻이고, 그대로
+        # 진행하면 이미 DB에 있는 장소에 detailIntro2를 전량 다시 쓴다.
+        raise DevPanelError(
+            f"{area}-{district}는 기준으로 삼을 앞 세대 스냅샷이 없습니다. 그대로 "
+            f"진행하면 {len(current)}건 전부가 신규로 잡혀 상세조회를 그만큼 "
+            "씁니다. 스냅샷 보관 개수를 2 이상으로 두거나, 이 구만 전 구 대조로 "
+            "다시 받으세요."
+        )
+
+    _require_snapshot_region(baseline, baseline_label or "", area, district)
+    baseline_columns = list(next(iter(baseline.values()), {}).keys())
+    compared = place_snapshot.comparable_columns(baseline_columns)
+    skipped = [
+        column for column in place_snapshot.COMPARED_COLUMNS if column not in compared
+    ]
+    rows = place_snapshot.build_reconciliation_rows(baseline, current, compared)
+    detail_ids, excluded_ids = place_snapshot.select_detail_targets(rows)
+    backfill_ids, backfill_checked = await _detail_backfill_ids(
+        area, district, current, detail_ids
+    )
+
+    counts = {"added": 0, "removed": 0, "updated": 0}
+    for row in rows:
+        counts[str(row["change_type"])] += 1
+
+    _record_history(
+        {
+            "일시": f"{datetime.now(place_snapshot.KST):%Y-%m-%d %H:%M}",
+            "구": _district_label(area, district),
+            # "대조"와 가른다. 목록을 새로 받지 않았고 스냅샷도 안 남겼다.
+            "종류": "재사용",
+            "기준 스냅샷": baseline_label,
+            "신규": counts["added"],
+            "수정": counts["updated"],
+            "삭제": counts["removed"],
+            "상세조회": len(detail_ids) + len(backfill_ids),
+            "비고": (
+                f"저장된 {snapshot_path.name} ({len(current)}건) 재사용 · "
+                f"보충 {len(backfill_ids)} · 제외 {len(excluded_ids)} · 외부 호출 0회"
+            ),
+        }
+    )
+
+    return {
+        "area_code": area,
+        "district_code": district,
+        "snapshot": snapshot_path.name,
+        "snapshot_count": len(current),
+        "baseline": baseline_label,
+        "baseline_source": baseline_source,
+        "baseline_count": len(baseline),
+        "skipped_columns": skipped,
+        "counts": counts,
+        "detail_content_ids": sorted(detail_ids),
+        "detail_excluded_ids": sorted(excluded_ids),
+        "detail_backfill_ids": backfill_ids,
+        "detail_backfill_checked": backfill_checked,
+        "barrier_free_detail_count": 0,
+        "barrier_free_checked": False,
+        "rows": rows,
+        "source": "saved",
+    }
+
+
 @router.post("/place-sync/reconcile")
 async def post_reconcile(request: ReconcileRequest) -> dict[str, Any]:
     """목록을 1회 조회해 스냅샷을 남기고 이전 스냅샷과 대조한다. DB에는 쓰지 않는다.
@@ -776,9 +899,13 @@ async def post_reconcile(request: ReconcileRequest) -> dict[str, Any]:
     쓰는 파일과 이름이 같아, 만들자마자 덮어써지고 기준이 사라진다. 무엇과
     비교했는지는 대조 결과 CSV의 baseline 칸에 `places@2026-08-21` 꼴로 남긴다.
     """
-    api_key = _require_real_place_provider()
     area = request.area_code or settings.place_sync_area_code
     district = request.district_code or settings.place_sync_district_code
+    if request.source == "saved":
+        # 외부 호출이 없으므로 TourAPI 인증키도 요구하지 않는다.
+        return await _reconcile_from_saved(area, district, request)
+
+    api_key = _require_real_place_provider()
     now = datetime.now(place_snapshot.KST)
 
     async with create_external_client() as client:
@@ -830,6 +957,7 @@ async def post_reconcile(request: ReconcileRequest) -> dict[str, Any]:
             "barrier_free_checked": barrier_free_checked,
             "rows": [],
             "message": _NO_BASELINE_MESSAGES[baseline_source],
+            "source": "api",
         }
         _record_history(
             {
@@ -912,6 +1040,7 @@ async def post_reconcile(request: ReconcileRequest) -> dict[str, Any]:
         "barrier_free_detail_count": barrier_free_calls,
         "barrier_free_checked": barrier_free_checked,
         "rows": rows,
+        "source": "api",
     }
 
 

@@ -239,8 +239,46 @@ function renderPage() {
   );
 }
 
+/** 갱신 탭을 연 채로 띄운다. 동기화 패널은 관찰 탭에 없다.
+ *
+ *  탭을 URL에 두므로 초기 진입만 바꾸면 되고, 메뉴를 클릭할 필요가 없다 —
+ *  클릭으로 열면 테스트가 검증하려는 것과 무관한 단계가 앞에 붙는다. */
+function renderSyncPage() {
+  return render(
+    <MemoryRouter initialEntries={["/dev-ops?tab=sync"]}>
+      <DeveloperOpsPage />
+    </MemoryRouter>,
+  );
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+it("관찰 탭에서는 갱신 패널을 내주지 않는다", async () => {
+  mockFetch((url) => ({ status: 200, body: panelBody(url) }));
+
+  renderPage();
+
+  expect(await screen.findByRole("heading", { name: "외부 API 호출량" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "장소 DB 상태" })).toBeInTheDocument();
+  // 운영 DB와 파일을 바꾸는 패널은 관찰 탭에 없다.
+  expect(screen.queryByRole("heading", { name: "DB 갱신" })).toBeNull();
+  expect(screen.queryByRole("heading", { name: "전 구 갱신" })).toBeNull();
+  expect(screen.queryByRole("heading", { name: "스냅샷 보관" })).toBeNull();
+});
+
+it("갱신 메뉴를 누르면 동기화 패널로 바뀐다", async () => {
+  const user = userEvent.setup();
+  mockFetch((url) => ({ status: 200, body: panelBody(url) }));
+
+  renderPage();
+  await user.click(await screen.findByRole("button", { name: /데이터 갱신/ }));
+
+  expect(screen.getByRole("heading", { name: "DB 갱신" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "전 구 갱신" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "스냅샷 보관" })).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "외부 API 호출량" })).toBeNull();
 });
 
 it("호출량 표와 일일 한도 게이지를 보여준다", async () => {
@@ -620,7 +658,7 @@ function mockSyncFetch() {
 it("대조 결과와 상세조회 대상 건수를 보여준다", async () => {
   mockSyncFetch();
   const user = userEvent.setup();
-  renderPage();
+  renderSyncPage();
 
   await user.click(await screen.findByRole("button", { name: "1. 스냅샷 대조" }));
 
@@ -633,7 +671,7 @@ it("대조 결과와 상세조회 대상 건수를 보여준다", async () => {
 it("확인 문자열을 정확히 입력해야 반영이 시작된다", async () => {
   const posted = mockSyncFetch();
   const user = userEvent.setup();
-  renderPage();
+  renderSyncPage();
 
   await user.click(await screen.findByRole("button", { name: "1. 스냅샷 대조" }));
   await user.click(await screen.findByRole("button", { name: "2. 반영 실행" }));
@@ -669,13 +707,11 @@ it("확인 문자열을 정확히 입력해야 반영이 시작된다", async ()
 it("제외된 건을 포함하도록 체크하면 상세조회 대상에 들어간다", async () => {
   const posted = mockSyncFetch();
   const user = userEvent.setup();
-  renderPage();
+  renderSyncPage();
 
   await user.click(await screen.findByRole("button", { name: "1. 스냅샷 대조" }));
   await user.click(await screen.findByRole("checkbox", { name: /상세조회 제외 1건/ }));
-  expect(
-    screen.getByText(/예상 외부 호출: 목록 0회 \+ 상세조회 3회/),
-  ).toBeInTheDocument();
+  expect(screen.getByText(/예상 외부 호출: 목록 0회 \+ 상세조회 3회/)).toBeInTheDocument();
 
   await user.click(screen.getByRole("button", { name: "2. 반영 실행" }));
   await user.type(screen.getByLabelText("확인 문자열"), "11-110");
@@ -685,16 +721,12 @@ it("제외된 건을 포함하도록 체크하면 상세조회 대상에 들어�
   expect(applyCall?.body).toMatchObject({ detail_content_ids: ["3", "4", "1"] });
 });
 
-
 it("드롭다운에서 고른 구로 대조를 건다", async () => {
   const posted = mockSyncFetch();
   const user = userEvent.setup();
-  renderPage();
+  renderSyncPage();
 
-  await user.selectOptions(
-    await screen.findByLabelText("대상 구"),
-    "11-170",
-  );
+  await user.selectOptions(await screen.findByLabelText("대상 구"), "11-170");
   await user.click(screen.getByRole("button", { name: "1. 스냅샷 대조" }));
 
   const call = posted.find((posted) => posted.url.includes("reconcile"));
@@ -702,13 +734,16 @@ it("드롭다운에서 고른 구로 대조를 건다", async () => {
     area_code: "11",
     district_code: "170",
     baseline: null,
+    // 구 단위 패널은 늘 목록을 새로 받는다. 저장된 스냅샷 재사용은 전 구 순회에만
+    // 있다 — 구 하나를 다시 보려는 자리에서 어제 목록을 읽으면 의도와 어긋난다.
+    source: "api",
   });
 });
 
 it("구를 바꾸면 앞 구의 대조 결과를 지운다", async () => {
   mockSyncFetch();
   const user = userEvent.setup();
-  renderPage();
+  renderSyncPage();
 
   await user.click(await screen.findByRole("button", { name: "1. 스냅샷 대조" }));
   expect(await screen.findByText("새 장소")).toBeInTheDocument();
@@ -723,7 +758,7 @@ it("구를 바꾸면 앞 구의 대조 결과를 지운다", async () => {
 it("사전에 없는 구 코드는 추가되지 않는다", async () => {
   mockSyncFetch();
   const user = userEvent.setup();
-  renderPage();
+  renderSyncPage();
 
   await user.click(await screen.findByRole("button", { name: "구 추가" }));
   await user.type(screen.getByLabelText("추가할 구 코드"), "999");
@@ -737,7 +772,7 @@ it("사전에 없는 구 코드는 추가되지 않는다", async () => {
 it("추가한 구가 드롭다운에 들어가고 바로 선택된다", async () => {
   mockSyncFetch();
   const user = userEvent.setup();
-  renderPage();
+  renderSyncPage();
 
   await user.click(await screen.findByRole("button", { name: "구 추가" }));
   await user.type(screen.getByLabelText("추가할 구 코드"), "140");
@@ -753,14 +788,12 @@ it("추가한 구가 드롭다운에 들어가고 바로 선택된다", async ()
 it("상세조회 상한이 예상 호출수와 반영 요청에 반영된다", async () => {
   const posted = mockSyncFetch();
   const user = userEvent.setup();
-  renderPage();
+  renderSyncPage();
 
   await user.click(await screen.findByRole("button", { name: "1. 스냅샷 대조" }));
   await user.type(await screen.findByLabelText("상세조회 상한"), "1");
 
-  expect(
-    screen.getByText(/예상 외부 호출: 목록 0회 \+ 상세조회 1회/),
-  ).toBeInTheDocument();
+  expect(screen.getByText(/예상 외부 호출: 목록 0회 \+ 상세조회 1회/)).toBeInTheDocument();
 
   await user.click(screen.getByRole("button", { name: "2. 반영 실행" }));
   // 상한이 걸린 실행은 비활성화를 건너뛴다는 사실을 실행 전에 알려야 한다.
@@ -787,7 +820,7 @@ it("DB로 기준을 만든 대조는 그 사실을 알린다", async () => {
     }),
   );
   const user = userEvent.setup();
-  renderPage();
+  renderSyncPage();
 
   await user.click(await screen.findByRole("button", { name: "1. 스냅샷 대조" }));
 
@@ -795,7 +828,6 @@ it("DB로 기준을 만든 대조는 그 사실을 알린다", async () => {
   // 알 수 없다.
   expect(await screen.findByText(/places 테이블로 기준을 만들었어요/)).toBeInTheDocument();
 });
-
 
 it("지난 실행에서 못 채운 건까지 예상 호출수에 넣는다", async () => {
   const posted: { url: string; body: unknown }[] = [];
@@ -816,7 +848,7 @@ it("지난 실행에서 못 채운 건까지 예상 호출수에 넣는다", asy
     }),
   );
   const user = userEvent.setup();
-  renderPage();
+  renderSyncPage();
 
   await user.click(await screen.findByRole("button", { name: "1. 스냅샷 대조" }));
 
@@ -830,9 +862,13 @@ it("지난 실행에서 못 채운 건까지 예상 호출수에 넣는다", asy
   await user.click(screen.getByRole("button", { name: "실행" }));
 
   const applyCall = posted.find((call) => call.url.includes("place-sync/apply"));
-  expect((applyCall?.body as { detail_content_ids: string[] }).detail_content_ids).toEqual(
-    ["3", "4", "7", "8", "9"],
-  );
+  expect((applyCall?.body as { detail_content_ids: string[] }).detail_content_ids).toEqual([
+    "3",
+    "4",
+    "7",
+    "8",
+    "9",
+  ]);
 });
 
 it("못 채운 건을 확인하지 못하면 예상 호출수가 확정이 아님을 알린다", async () => {
@@ -850,7 +886,7 @@ it("못 채운 건을 확인하지 못하면 예상 호출수가 확정이 아�
     }),
   );
   const user = userEvent.setup();
-  renderPage();
+  renderSyncPage();
 
   await user.click(await screen.findByRole("button", { name: "1. 스냅샷 대조" }));
 
@@ -858,7 +894,6 @@ it("못 채운 건을 확인하지 못하면 예상 호출수가 확정이 아�
     await screen.findByText(/상세를 못 채운 장소가 DB에 얼마나 있는지 확인하지 못했어요/),
   ).toBeInTheDocument();
 });
-
 
 /* 무장애 목록을 못 부르면 예상 호출수가 0으로 나온다. 0건과 "못 봤다"를 뭉개면
  * 화면이 0회를 확정된 값처럼 보여준다. */
@@ -877,13 +912,12 @@ it("무장애 목록을 확인하지 못하면 0회가 확정이 아님을 알�
     }),
   );
   const user = userEvent.setup();
-  renderPage();
+  renderSyncPage();
 
   await user.click(await screen.findByRole("button", { name: "1. 스냅샷 대조" }));
 
   expect(await screen.findByText(/무장애 목록을 확인하지 못했어요/)).toBeInTheDocument();
 });
-
 
 /* 예상 호출수는 상한이 아니라 실제 수다. 대조가 무장애 목록을 1회 불러 교집합을
  * 내기 때문에, 여기에 "아직 확인 안 한 장소 수"가 그대로 뜨면 종로구 기준
@@ -901,15 +935,12 @@ it("무장애 예상 호출수를 목록·상세로 나눠 보여준다", async 
     }),
   );
   const user = userEvent.setup();
-  renderPage();
+  renderSyncPage();
 
   await user.click(await screen.findByRole("button", { name: "1. 스냅샷 대조" }));
 
-  expect(
-    await screen.findByText(/무장애 목록 1회 \+ 무장애 상세 164회/),
-  ).toBeInTheDocument();
+  expect(await screen.findByText(/무장애 목록 1회 \+ 무장애 상세 164회/)).toBeInTheDocument();
 });
-
 
 /* 패널에는 dry-run 선택지가 없지만 apply 엔드포인트는 여전히 받는다. 그렇게 돈
  * job이 화면에 오면 숫자가 실제 반영과 똑같이 보이므로, 결과 표기는 남겨둔다. */
@@ -953,7 +984,7 @@ it("dry-run으로 돈 job은 DB에 쓰지 않았다는 것과 한도를 썼다�
     }),
   );
   const user = userEvent.setup();
-  renderPage();
+  renderSyncPage();
 
   await user.click(await screen.findByRole("button", { name: "1. 스냅샷 대조" }));
   await user.click(screen.getByRole("button", { name: "2. 반영 실행" }));
@@ -961,9 +992,7 @@ it("dry-run으로 돈 job은 DB에 쓰지 않았다는 것과 한도를 썼다�
   await user.click(screen.getByRole("button", { name: "실행" }));
 
   // 숫자만 크게 띄우면 하지도 않은 일을 한 것처럼 보인다.
-  expect(
-    await screen.findByText(/dry-run이라 DB에는 아무것도 쓰지 않았어요/),
-  ).toBeInTheDocument();
+  expect(await screen.findByText(/dry-run이라 DB에는 아무것도 쓰지 않았어요/)).toBeInTheDocument();
   // "갱신"은 값이 바뀐 수가 아니라 DB에 이미 있던 수라 "기존"으로 쓴다.
   // (동기화 이력 표에도 같은 이름의 열이 있어 여러 개가 잡힌다.)
   expect(screen.getAllByText("기존").length).toBeGreaterThan(0);
@@ -971,11 +1000,10 @@ it("dry-run으로 돈 job은 DB에 쓰지 않았다는 것과 한도를 썼다�
   expect(screen.getByText("미판정")).toBeInTheDocument();
 });
 
-
 it("대조가 쓰는 목록 API 호출 수를 누르기 전에 알린다", async () => {
   mockFetch((url) => ({ status: 200, body: panelBody(url) }));
 
-  renderPage();
+  renderSyncPage();
 
   // areaBasedList2도 일일 한도가 있다. 한 번에 1회라도 구를 바꿔가며 누르면 쌓인다.
   expect(await screen.findByText(/대조는 목록 API를 1회 써요/)).toBeInTheDocument();
