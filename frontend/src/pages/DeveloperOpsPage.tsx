@@ -210,11 +210,7 @@ export function DeveloperOpsPage() {
   }, [selectedDistrict]);
 
   const handleApply = useCallback(
-    async (input: {
-      confirm: string;
-      includeExcluded: boolean;
-      detailsLimit: number | null;
-    }) => {
+    async (input: { confirm: string; includeExcluded: boolean; detailsLimit: number | null }) => {
       if (!reconcile) return;
       setApplying(true);
       try {
@@ -262,47 +258,58 @@ export function DeveloperOpsPage() {
     stopAllRef.current = true;
   }, []);
 
-  const handleReconcileAll = useCallback(async () => {
-    const loaded = districts?.loaded ?? [];
-    if (loaded.length === 0) return;
-    stopAllRef.current = false;
-    const entries = loaded.map(createEntry);
-    setAllSync({ ...EMPTY_ALL_SYNC_STATE, phase: "reconciling", entries });
+  /* source가 "saved"면 저장된 스냅샷을 그대로 읽어 대조만 다시 계산한다 —
+   * 외부 호출이 0회다. 오늘 상세조회 한도가 없어 반영을 못 하고 다음 날 이어서
+   * 할 때 쓴다. 스냅샷이 없거나 기준을 못 세우는 구는 서버가 거부하므로, 그 구만
+   * 실패로 남기고 순회는 계속한다. */
+  const handleReconcileAll = useCallback(
+    async (source: "api" | "saved") => {
+      const loaded = districts?.loaded ?? [];
+      if (loaded.length === 0) return;
+      stopAllRef.current = false;
+      const entries = loaded.map(createEntry);
+      setAllSync({ ...EMPTY_ALL_SYNC_STATE, phase: "reconciling", entries });
 
-    for (let index = 0; index < entries.length; index += 1) {
-      if (stopAllRef.current) break;
-      setAllSync((current) => ({ ...current, cursor: index }));
-      const entry = entries[index];
-      try {
-        entries[index] = {
-          ...entry,
-          reconcile: await reconcilePlaces({
-            areaCode: entry.areaCode,
-            districtCode: entry.districtCode,
-          }),
-          outcome: "reconciled",
-        };
-      } catch (error) {
-        // 한 구가 실패해도 멈추지 않는다. 나머지 구의 변경분은 그대로 볼 수 있고,
-        // 실패한 구는 표에 남아 반영 단계에서 건너뛴다.
-        entries[index] = {
-          ...entry,
-          outcome: "failed",
-          reconcileError: toMessage(error, "대조에 실패했어요."),
-        };
+      for (let index = 0; index < entries.length; index += 1) {
+        if (stopAllRef.current) break;
+        setAllSync((current) => ({ ...current, cursor: index }));
+        const entry = entries[index];
+        try {
+          entries[index] = {
+            ...entry,
+            reconcile: await reconcilePlaces({
+              areaCode: entry.areaCode,
+              districtCode: entry.districtCode,
+              source,
+            }),
+            outcome: "reconciled",
+          };
+        } catch (error) {
+          // 한 구가 실패해도 멈추지 않는다. 나머지 구의 변경분은 그대로 볼 수 있고,
+          // 실패한 구는 표에 남아 반영 단계에서 건너뛴다.
+          entries[index] = {
+            ...entry,
+            outcome: "failed",
+            reconcileError: toMessage(
+              error,
+              source === "saved" ? "저장된 스냅샷으로 대조하지 못했어요." : "대조에 실패했어요.",
+            ),
+          };
+        }
+        setAllSync((current) => ({
+          ...current,
+          entries: [...entries],
+          cursor: index + 1,
+        }));
       }
       setAllSync((current) => ({
         ...current,
+        phase: "reviewing",
         entries: [...entries],
-        cursor: index + 1,
       }));
-    }
-    setAllSync((current) => ({
-      ...current,
-      phase: "reviewing",
-      entries: [...entries],
-    }));
-  }, [districts]);
+    },
+    [districts],
+  );
 
   const handleApplyAll = useCallback(async () => {
     stopAllRef.current = false;
@@ -310,7 +317,13 @@ export function DeveloperOpsPage() {
     const entries = allSync.entries.map((entry) =>
       entry.reconcile === null
         ? entry
-        : { ...entry, outcome: "reconciled" as const, skipReason: null, job: null, applyError: null },
+        : {
+            ...entry,
+            outcome: "reconciled" as const,
+            skipReason: null,
+            job: null,
+            applyError: null,
+          },
     );
     const budget = remainingDetailBudget(dbStatus?.detail_calls_today ?? null);
     let spent = 0;
@@ -363,10 +376,7 @@ export function DeveloperOpsPage() {
           areaCode: reconcile.area_code,
           districtCode: reconcile.district_code,
           snapshot: reconcile.snapshot,
-          detailContentIds: [
-            ...reconcile.detail_content_ids,
-            ...reconcile.detail_backfill_ids,
-          ],
+          detailContentIds: [...reconcile.detail_content_ids, ...reconcile.detail_backfill_ids],
           addedContentIds: reconcile.rows
             .filter((row) => row.change_type === "added")
             .map((row) => row.content_id),
@@ -379,8 +389,7 @@ export function DeveloperOpsPage() {
         const finished = await waitForJob(started.job_id, () => stopAllRef.current);
         /* 실제 호출 수로 센다. 중단으로 아직 running인 job은 그 값이 없으므로
          * 예상치로 대신 센다 — 적게 세면 남은 구에서 한도를 넘긴다. */
-        spent +=
-          finished.result?.detail_attempted_count ?? plannedDetailCalls(reconcile);
+        spent += finished.result?.detail_attempted_count ?? plannedDetailCalls(reconcile);
         if (jobHitQuota(finished)) quotaExhausted = true;
         const { outcome, note } = jobOutcome(finished);
         entries[index] = { ...entry, outcome, job: finished, applyError: note };
@@ -406,7 +415,6 @@ export function DeveloperOpsPage() {
     void loadDbStatus();
     void loadDistricts();
   }, [allSync.entries, dbStatus, loadDbStatus, loadDistricts]);
-
 
   /* 스냅샷 보관. 지울 후보 판정은 서버에만 둔다 — 화면이 따로 세면 미리보기와
    * 실제 정리가 갈라져, 보여준 것과 다른 파일이 지워진다. */
@@ -479,14 +487,7 @@ export function DeveloperOpsPage() {
     void loadFeedbackStats();
     void loadTraceStats();
     void loadRetention(DEFAULT_KEEP);
-  }, [
-    loadDbStatus,
-    loadDistricts,
-    loadFeedbackStats,
-    loadRetention,
-    loadTraceStats,
-    loadUsage,
-  ]);
+  }, [loadDbStatus, loadDistricts, loadFeedbackStats, loadRetention, loadTraceStats, loadUsage]);
 
   // 폴링은 호출량에만 건다. DB 상태는 844행을 훑어 Supabase 호출이 따라붙으므로
   // 3초마다 부르면 패널 자체가 트래픽을 만든다.
@@ -582,7 +583,8 @@ export function DeveloperOpsPage() {
           state={allSync}
           detailCallsToday={dbStatus?.detail_calls_today ?? null}
           busy={reconciling || applying || job?.status === "running"}
-          onReconcileAll={() => void handleReconcileAll()}
+          onReconcileAll={() => void handleReconcileAll("api")}
+          onReuseSnapshots={() => void handleReconcileAll("saved")}
           onApplyAll={() => void handleApplyAll()}
           onCancel={handleCancelAll}
         />

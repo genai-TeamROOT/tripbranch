@@ -173,3 +173,23 @@ export function buildMappingCommand(district: UnmappedDistrict): string {
     `--area-code ${district.areaCode} --district-code ${district.concentrationCode}`
   );
 }
+
+/** 스냅샷 파일명에서 날짜를 읽는다. `..._11-110_20260829.csv` → `2026-08-29`. */
+export function snapshotDate(fileName: string): string | null {
+  const matched = /_(\d{4})(\d{2})(\d{2})\.csv$/.exec(fileName);
+  return matched ? `${matched[1]}-${matched[2]}-${matched[3]}` : null;
+}
+
+/** 재사용한 스냅샷의 날짜들. 며칠 전 자료로 반영하는지가 화면에 보여야 한다.
+ *
+ * 구마다 마지막 대조 날짜가 다를 수 있어 하나로 뭉치지 않는다 — "8/29"라고만
+ * 적으면 8/25에 멈춰 있던 구까지 어제 것으로 읽힌다. */
+export function reusedSnapshotDates(entries: AllSyncEntry[]): string[] {
+  const dates = new Set<string>();
+  for (const entry of entries) {
+    if (entry.reconcile?.source !== "saved") continue;
+    const date = snapshotDate(entry.reconcile.snapshot);
+    if (date) dates.add(date);
+  }
+  return [...dates].sort();
+}

@@ -218,6 +218,9 @@ export type ReconcileResult = {
   barrier_free_checked: boolean;
   rows: ReconcileRow[];
   message?: string;
+  /* 목록을 새로 받았는지(api), 저장된 스냅샷을 다시 읽었는지(saved).
+   * saved는 외부 호출이 0회라 무장애 예상 호출수를 세지 않는다. */
+  source: "api" | "saved";
 };
 
 export type SyncJob = {
@@ -297,11 +300,15 @@ export function reconcilePlaces(input: {
   areaCode: string;
   districtCode: string;
   baseline?: string;
+  /* saved는 저장된 최신 스냅샷을 그대로 읽어 대조만 다시 계산한다 — 외부 호출이
+   * 0회다. 오늘 상세조회 한도가 없어 반영을 못 하고 다음 날 이어서 할 때 쓴다. */
+  source?: "api" | "saved";
 }) {
   return apiClient.post<ReconcileResult>("/dev/place-sync/reconcile", {
     area_code: input.areaCode,
     district_code: input.districtCode,
     baseline: input.baseline ?? null,
+    source: input.source ?? "api",
   });
 }
 

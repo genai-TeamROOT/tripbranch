@@ -20,6 +20,8 @@ import {
   planDistrict,
   plannedDetailCalls,
   remainingDetailBudget,
+  reusedSnapshotDates,
+  snapshotDate,
   unmappedDistricts,
   type AllSyncEntry,
 } from "./allDistrictSync";
@@ -54,6 +56,7 @@ function _reconcile(fields: Partial<ReconcileResult> = {}): ReconcileResult {
     barrier_free_detail_count: 0,
     barrier_free_checked: true,
     rows: [],
+    source: "api",
     ...fields,
   };
 }
@@ -242,6 +245,40 @@ describe("unmappedDistricts", () => {
   });
 });
 
+describe("reusedSnapshotDates", () => {
+  function _saved(fileName: string): AllSyncEntry {
+    return {
+      ...createEntry(_district()),
+      reconcile: _reconcile({ snapshot: fileName, source: "saved" }),
+      outcome: "reconciled",
+    };
+  }
+
+  it("파일명에서 날짜를 읽는다", () => {
+    expect(snapshotDate("places_api_snapshot_11-110_20260829.csv")).toBe("2026-08-29");
+    expect(snapshotDate("seongdong_places.csv")).toBeNull();
+  });
+
+  it("구마다 날짜가 다르면 다 보여준다", () => {
+    // 하나로 뭉치면 8/25에 멈춰 있던 구까지 어제 것으로 읽힌다.
+    const dates = reusedSnapshotDates([
+      _saved("places_api_snapshot_11-110_20260829.csv"),
+      _saved("places_api_snapshot_11-140_20260825.csv"),
+      _saved("places_api_snapshot_11-170_20260829.csv"),
+    ]);
+    expect(dates).toEqual(["2026-08-25", "2026-08-29"]);
+  });
+
+  it("목록을 새로 받은 구는 재사용이 아니다", () => {
+    const entry: AllSyncEntry = {
+      ...createEntry(_district()),
+      reconcile: _reconcile({ source: "api" }),
+      outcome: "reconciled",
+    };
+    expect(reusedSnapshotDates([entry])).toEqual([]);
+  });
+});
+
 describe("AllDistrictSyncPanel", () => {
   it("합계가 남은 한도를 넘으면 건너뛴다는 사실을 알린다", () => {
     const entry: AllSyncEntry = {
@@ -258,6 +295,7 @@ describe("AllDistrictSyncPanel", () => {
         detailCallsToday={_detailCallsToday({ count: 400 })}
         busy={false}
         onReconcileAll={() => {}}
+        onReuseSnapshots={() => {}}
         onApplyAll={() => {}}
         onCancel={() => {}}
       />,
@@ -280,6 +318,7 @@ describe("AllDistrictSyncPanel", () => {
         detailCallsToday={_detailCallsToday()}
         busy={false}
         onReconcileAll={() => {}}
+        onReuseSnapshots={() => {}}
         onApplyAll={() => {}}
         onCancel={() => {}}
       />,
@@ -287,6 +326,48 @@ describe("AllDistrictSyncPanel", () => {
     expect(screen.getByText(/1개 구에 2건/)).toBeInTheDocument();
     // 표에 보이는 11-680이 아니라 스크립트가 받는 11680이어야 한다.
     expect(screen.getByText(/--district-code 11680/)).toBeInTheDocument();
+  });
+
+  it("저장된 스냅샷을 쓰면 목록 날짜와 무장애 미확인을 알린다", () => {
+    const entry: AllSyncEntry = {
+      ...createEntry(_district()),
+      reconcile: _reconcile({
+        snapshot: "places_api_snapshot_11-110_20260829.csv",
+        source: "saved",
+      }),
+      outcome: "reconciled",
+    };
+    render(
+      <AllDistrictSyncPanel
+        districts={[_district()]}
+        state={{ ...EMPTY_ALL_SYNC_STATE, phase: "reviewing", entries: [entry] }}
+        detailCallsToday={_detailCallsToday()}
+        busy={false}
+        onReconcileAll={() => {}}
+        onReuseSnapshots={() => {}}
+        onApplyAll={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    expect(screen.getByText(/2026-08-29/)).toBeInTheDocument();
+    expect(screen.getByText(/다음 대조로 넘어가요/)).toBeInTheDocument();
+  });
+
+  it("저장된 스냅샷 쓰기 버튼을 따로 낸다", () => {
+    render(
+      <AllDistrictSyncPanel
+        districts={[_district()]}
+        state={EMPTY_ALL_SYNC_STATE}
+        detailCallsToday={_detailCallsToday()}
+        busy={false}
+        onReconcileAll={() => {}}
+        onReuseSnapshots={() => {}}
+        onApplyAll={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "저장된 스냅샷 쓰기" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /전 구 대조/ })).toBeInTheDocument();
   });
 
   it("대조 전에는 반영 버튼을 내주지 않는다", () => {
@@ -297,6 +378,7 @@ describe("AllDistrictSyncPanel", () => {
         detailCallsToday={_detailCallsToday()}
         busy={false}
         onReconcileAll={() => {}}
+        onReuseSnapshots={() => {}}
         onApplyAll={() => {}}
         onCancel={() => {}}
       />,

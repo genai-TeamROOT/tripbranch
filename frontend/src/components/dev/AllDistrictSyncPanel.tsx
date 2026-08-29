@@ -25,6 +25,7 @@ import {
   buildMappingCommand,
   plannedDetailCalls,
   remainingDetailBudget,
+  reusedSnapshotDates,
   unmappedDistricts,
   type AllSyncEntry,
   type AllSyncOutcome,
@@ -67,6 +68,7 @@ export function AllDistrictSyncPanel({
   detailCallsToday,
   busy,
   onReconcileAll,
+  onReuseSnapshots,
   onApplyAll,
   onCancel,
 }: {
@@ -77,6 +79,8 @@ export function AllDistrictSyncPanel({
   /** 구 단위 패널이 대조·반영 중이면 참. 동기화 job은 서버에서 한 번에 하나만 돈다. */
   busy: boolean;
   onReconcileAll: () => void;
+  /** 저장된 스냅샷으로 대조만 다시 계산한다. 외부 호출이 0회다. */
+  onReuseSnapshots: () => void;
   onApplyAll: () => void;
   onCancel: () => void;
 }) {
@@ -118,6 +122,7 @@ export function AllDistrictSyncPanel({
   const failed = state.entries.filter((entry) => entry.outcome === "failed");
   const succeeded = state.entries.filter((entry) => entry.outcome === "success");
   const unmapped = useMemo(() => unmappedDistricts(state.entries), [state.entries]);
+  const reusedDates = useMemo(() => reusedSnapshotDates(state.entries), [state.entries]);
   const unmappedCount = unmapped.reduce((sum, district) => sum + district.count, 0);
 
   return (
@@ -140,14 +145,27 @@ export function AllDistrictSyncPanel({
               중단
             </button>
           ) : (
-            <button
-              type="button"
-              onClick={onReconcileAll}
-              disabled={busy || districts.length === 0}
-              className="rounded-md border border-gray-300 px-3 py-1.5 text-sm disabled:opacity-50 dark:border-gray-700"
-            >
-              1. 전 구 대조
-            </button>
+            <>
+              {/* 저장된 스냅샷이 있으면 목록을 다시 받을 이유가 없다. 대조 결과는
+                  스냅샷 두 장에서 순수하게 계산되므로 외부 호출이 0회다. 오늘
+                  상세조회 한도가 없어 반영을 못 하고 다음 날 이어서 할 때 쓴다. */}
+              <button
+                type="button"
+                onClick={onReuseSnapshots}
+                disabled={busy || districts.length === 0}
+                className="rounded-md border border-gray-300 px-3 py-1.5 text-sm disabled:opacity-50 dark:border-gray-700"
+              >
+                저장된 스냅샷 쓰기
+              </button>
+              <button
+                type="button"
+                onClick={onReconcileAll}
+                disabled={busy || districts.length === 0}
+                className="rounded-md border border-gray-300 px-3 py-1.5 text-sm disabled:opacity-50 dark:border-gray-700"
+              >
+                1. 전 구 대조
+              </button>
+            </>
           )}
         </div>
       </header>
@@ -156,6 +174,15 @@ export function AllDistrictSyncPanel({
         <strong>대조는 DB를 바꾸지 않아요.</strong> 구마다 목록 API를 부르고(합계 약 {listCalls}회)
         무장애 목록을 1회씩 불러 스냅샷 CSV를 남길 뿐이에요. 상세조회는 2단계 반영에서만 나갑니다.
       </p>
+
+      {reusedDates.length > 0 && (
+        <p className="mt-3 rounded-md border border-blue-300 bg-blue-50 p-3 text-xs text-blue-900 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-100">
+          <strong>저장된 스냅샷을 다시 읽었어요 — 외부 호출 0회.</strong> 목록 날짜는{" "}
+          {reusedDates.join(", ")}예요. 그 뒤에 생기거나 사라진 장소는 이번 반영에 들어가지 않고{" "}
+          <strong>다음 대조로 넘어가요</strong> — 놓치는 게 아니라 밀리는 거예요. 무장애 예상
+          호출수는 목록을 불러야 셀 수 있어서 세지 않았어요.
+        </p>
+      )}
 
       {state.error && (
         <p className="mt-3 rounded-md bg-red-50 p-3 text-xs text-red-900 dark:bg-red-950/40 dark:text-red-100">
