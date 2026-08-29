@@ -127,3 +127,69 @@ export function planDistrict(input: {
 export function jobHitQuota(job: SyncJob | null): boolean {
   return Boolean(job?.result?.error_summary?.[QUOTA_EXCEEDED_CODE]);
 }
+
+/** 집중률 API가 쓰는 시군구 코드. `places`의 코드와 자릿수가 다르다.
+ *
+ * 집중률 API는 법정동 시군구 5자리(시도 2 + 시군구 3)를 쓰고 `places`는 뒤 3자리만
+ * 담는다(`scripts/build_concentration_mappings.py`의 `places_district_code`가 그
+ * 변환을 반대 방향으로 한다). 화면에 보이는 `11-110`을 그대로 스크립트에 넣으면
+ * 먹지 않으므로, 안내 문구에는 붙인 형태로 내보낸다. */
+export function concentrationDistrictCode(areaCode: string, districtCode: string): string {
+  return `${areaCode}${districtCode}`;
+}
+
+export type UnmappedDistrict = {
+  label: string;
+  areaCode: string;
+  /** 집중률 API·스크립트가 받는 5자리 코드. */
+  concentrationCode: string;
+  count: number;
+};
+
+/** 집중률 매핑이 없는 신규 장소가 생긴 구. 건수가 많은 순으로.
+ *
+ * 매핑이 없으면 그 장소는 혼잡도 조회를 통째로 건너뛴다(enrichment_service).
+ * 오류가 나지 않고 그 장소만 조용히 판정에서 빠지므로, 알리지 않으면 아무도
+ * 모른다. 동기화는 매핑 테이블을 건드리지 않는다 — 적재는 별도 스크립트 소관이다. */
+export function unmappedDistricts(entries: AllSyncEntry[]): UnmappedDistrict[] {
+  const rows: UnmappedDistrict[] = [];
+  for (const entry of entries) {
+    const count = entry.job?.unmapped_new_place_ids.length ?? 0;
+    if (count === 0) continue;
+    rows.push({
+      label: `${entry.districtName ?? `구 ${entry.districtCode}`} ${entry.areaCode}-${entry.districtCode}`,
+      areaCode: entry.areaCode,
+      concentrationCode: concentrationDistrictCode(entry.areaCode, entry.districtCode),
+      count,
+    });
+  }
+  return rows.sort((left, right) => right.count - left.count);
+}
+
+/** 그 구의 매핑을 다시 만드는 명령. `--district-code`는 required라 구를 반드시 준다. */
+export function buildMappingCommand(district: UnmappedDistrict): string {
+  return (
+    "python -m scripts.build_concentration_mappings " +
+    `--area-code ${district.areaCode} --district-code ${district.concentrationCode}`
+  );
+}
+
+/** 스냅샷 파일명에서 날짜를 읽는다. `..._11-110_20260829.csv` → `2026-08-29`. */
+export function snapshotDate(fileName: string): string | null {
+  const matched = /_(\d{4})(\d{2})(\d{2})\.csv$/.exec(fileName);
+  return matched ? `${matched[1]}-${matched[2]}-${matched[3]}` : null;
+}
+
+/** 재사용한 스냅샷의 날짜들. 며칠 전 자료로 반영하는지가 화면에 보여야 한다.
+ *
+ * 구마다 마지막 대조 날짜가 다를 수 있어 하나로 뭉치지 않는다 — "8/29"라고만
+ * 적으면 8/25에 멈춰 있던 구까지 어제 것으로 읽힌다. */
+export function reusedSnapshotDates(entries: AllSyncEntry[]): string[] {
+  const dates = new Set<string>();
+  for (const entry of entries) {
+    if (entry.reconcile?.source !== "saved") continue;
+    const date = snapshotDate(entry.reconcile.snapshot);
+    if (date) dates.add(date);
+  }
+  return [...dates].sort();
+}
