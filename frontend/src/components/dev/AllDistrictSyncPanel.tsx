@@ -22,6 +22,10 @@
 import { useMemo, useState } from "react";
 import type { DbStatus, SyncDistrict } from "../../api/dev";
 import {
+  backfillUncheckedCount,
+  barrierFreeCell,
+  barrierFreeTotals,
+  barrierFreeUncheckedCount,
   buildMappingCommand,
   plannedDetailCalls,
   remainingDetailBudget,
@@ -109,7 +113,9 @@ export function AllDistrictSyncPanel({
       removed += result.counts.removed;
       updated += result.counts.updated;
       detail += plannedDetailCalls(result);
-      barrierFree += result.barrier_free_detail_count;
+      // 확인하지 못한 구는 합계에 넣지 않는다. 0을 더하면 "부를 게 없다"와
+      // "안 봤다"가 같은 수로 뭉개진다.
+      if (result.barrier_free_checked) barrierFree += result.barrier_free_detail_count;
       excluded += result.detail_excluded_ids.length;
     }
     return { added, removed, updated, detail, barrierFree, excluded };
@@ -122,6 +128,9 @@ export function AllDistrictSyncPanel({
   const failed = state.entries.filter((entry) => entry.outcome === "failed");
   const succeeded = state.entries.filter((entry) => entry.outcome === "success");
   const unmapped = useMemo(() => unmappedDistricts(state.entries), [state.entries]);
+  const barrierFreeUnchecked = barrierFreeUncheckedCount(state.entries);
+  const backfillUnchecked = backfillUncheckedCount(state.entries);
+  const barrierFreeDone = barrierFreeTotals(state.entries);
   const reusedDates = useMemo(() => reusedSnapshotDates(state.entries), [state.entries]);
   const unmappedCount = unmapped.reduce((sum, district) => sum + district.count, 0);
 
@@ -256,9 +265,7 @@ export function AllDistrictSyncPanel({
                     {entry.reconcile?.counts.removed ?? "—"}
                   </td>
                   <td className="py-1.5 pr-2 tabular-nums">{detailCell(entry)}</td>
-                  <td className="py-1.5 pr-2 tabular-nums">
-                    {entry.reconcile?.barrier_free_detail_count ?? "—"}
-                  </td>
+                  <td className="py-1.5 pr-2 tabular-nums">{barrierFreeCell(entry)}</td>
                   <td className="py-1.5 pr-2 tabular-nums">
                     {entry.job === null ? "—" : entry.job.unmapped_new_place_ids.length || "—"}
                   </td>
@@ -300,8 +307,27 @@ export function AllDistrictSyncPanel({
           <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
             무장애 상세(detailWithTour2)는 별도 오퍼레이션이라 한도도 따로예요 — 합계{" "}
             {totals.barrierFree}회.
+            {barrierFreeUnchecked > 0 && (
+              <>
+                {" "}
+                <strong>
+                  {barrierFreeUnchecked}개 구는 목록을 확인하지 못해 이 합계에 안 들어갔어요
+                </strong>{" "}
+                — 저장된 스냅샷을 재사용하면 무장애 목록을 부르지 않아요. 반영할 때는 정상적으로
+                조회하고 채웁니다.
+              </>
+            )}
             {totals.excluded > 0 &&
               ` 수정시각이 그대로라 상세조회에서 제외한 장소가 ${totals.excluded}건 있어요 (구 단위 패널에서 구별로 포함시킬 수 있어요).`}
+            {backfillUnchecked > 0 && (
+              <>
+                {" "}
+                <strong>
+                  {backfillUnchecked}개 구는 지난 실행에서 못 채운 건을 확인하지 못했어요
+                </strong>{" "}
+                — 상세조회 합계가 실제보다 적을 수 있어요.
+              </>
+            )}
           </p>
 
           {/* 남은 한도는 어림이다. 빼는 쪽 사용량이 하한이라 실제 잔여는 이보다
@@ -354,6 +380,13 @@ export function AllDistrictSyncPanel({
         <p className="mt-3 rounded-md bg-emerald-50 p-3 text-xs text-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-100">
           순회를 마쳤어요. 반영 {succeeded.length}개 구 · 건너뜀 {skipped.length}개 구 · 실패{" "}
           {failed.length}개 구. 이번 순회가 쓴 상세조회는 {state.spentDetailCalls}회예요.
+          {barrierFreeDone.attempted > 0 && (
+            <>
+              {" "}
+              무장애 정보는 {barrierFreeDone.attempted}회 불러 {barrierFreeDone.stored}건을 채웠어요
+              — 목록에 있어도 항목이 전부 빈 장소가 있어 두 수가 달라요.
+            </>
+          )}
           {state.quotaExhausted &&
             " 도중에 오늘 한도가 소진돼 남은 구는 상세조회 없이 건너뛰었어요."}
           {skipped.length > 0 && (

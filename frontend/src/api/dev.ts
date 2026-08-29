@@ -457,3 +457,96 @@ export function fetchNearestArea(location: string): Promise<NearestArea> {
   nearestAreaCache.set(location, pending);
   return pending;
 }
+
+/** 집중률 매핑 후보 한 건. */
+export type ConcentrationRow = {
+  content_id: string;
+  place_title: string;
+  concentration_title: string;
+  match_method: string;
+  aliases: string[];
+  search_key: string | null;
+  search_keys: string[];
+  /* 붙긴 했지만 검색어가 다른 집중률 장소도 끌어온다. 조회는 되고 응답을 정식
+   * 명칭으로 걸러야 한다 — 매칭 실패와는 다른 종류의 경고다. */
+  search_key_ambiguous: boolean;
+};
+
+export type ConcentrationBuildResult = {
+  area_code: string;
+  district_code: string;
+  /** 집중률 API가 쓰는 5자리 코드. places의 코드와 자릿수가 다르다. */
+  concentration_code: string;
+  concentration_name_count: number;
+  place_count: number;
+  /** manual·exact. 이름이 그대로 같거나 사람이 이미 적어둔 것이다. */
+  certain: ConcentrationRow[];
+  /** 규칙이 이름을 고쳐 붙인 것. 눈으로 보고 고른다. */
+  ambiguous: ConcentrationRow[];
+  unmatched: { content_id: string; title: string }[];
+  /** 집중률 API엔 있는데 우리 DB의 어느 장소와도 안 붙은 이름. */
+  leftover: string[];
+};
+
+export type ConcentrationDistrict = {
+  area_code: string;
+  district_code: string;
+  district_name: string | null;
+  concentration_code: string;
+  active_places: number;
+  mapping_count: number;
+  latest_csv: string | null;
+  /* 마지막 CSV 이후에 들어온 활성 장소 수. "CSV가 오래됐다"가 곧 "갱신이
+   * 필요하다"는 아니다 — 새 장소가 안 들어왔으면 다시 만들어도 결과가 같다.
+   * CSV가 아예 없는 구는 활성 장소 전부가 대상이다. */
+  new_places_since_csv: number;
+};
+
+export type ConcentrationStatus = {
+  districts: ConcentrationDistrict[];
+  rejection_count: number;
+};
+
+export type ConcentrationApplyResult = {
+  concentration_code: string;
+  csv: string;
+  imported_count: number;
+  rejected_count: number;
+  rejection_file: string;
+};
+
+export function fetchConcentrationStatus() {
+  return apiClient.get<ConcentrationStatus>("/dev/concentration/status");
+}
+
+/*
+ * 집중률 목록을 매번 새로 받는다. 저장해둔 목록으로 다시 계산하면 그사이 추가된
+ * 장소 때문에 모호해진 검색어를 놓친다(D-043). 구당 8~9회 나간다 — 응답 한 쪽
+ * 100행에 장소가 4곳뿐이라 이름을 다 모으려면 여러 쪽을 넘겨야 한다.
+ */
+export function buildConcentrationMapping(input: { areaCode: string; districtCode: string }) {
+  return apiClient.post<ConcentrationBuildResult>("/dev/concentration/build", {
+    area_code: input.areaCode,
+    district_code: input.districtCode,
+  });
+}
+
+/*
+ * 생성 단계가 돌려준 행을 그대로 되돌려 보낸다. 서버가 다시 계산하면 집중률 목록을
+ * 한 번 더 받아야 하고, 그 사이 목록이 바뀌면 화면이 보여준 것과 다른 값이 적재된다.
+ */
+export function applyConcentrationMapping(input: {
+  areaCode: string;
+  districtCode: string;
+  rows: ConcentrationRow[];
+  rejections: { place_title: string; concentration_title: string; note: string }[];
+  confirm: string;
+}) {
+  return apiClient.post<ConcentrationApplyResult>("/dev/concentration/apply", {
+    area_code: input.areaCode,
+    district_code: input.districtCode,
+    rows: input.rows,
+    rejections: input.rejections,
+    confirm: input.confirm,
+  });
+}

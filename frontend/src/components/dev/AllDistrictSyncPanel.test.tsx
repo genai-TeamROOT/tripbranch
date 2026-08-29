@@ -14,6 +14,9 @@ import type { DbStatus, ReconcileResult, SyncDistrict, SyncJob } from "../../api
 import { AllDistrictSyncPanel } from "./AllDistrictSyncPanel";
 import {
   EMPTY_ALL_SYNC_STATE,
+  barrierFreeCell,
+  barrierFreeTotals,
+  barrierFreeUncheckedCount,
   buildMappingCommand,
   createEntry,
   jobHitQuota,
@@ -279,6 +282,47 @@ describe("reusedSnapshotDates", () => {
   });
 });
 
+describe("무장애 표시", () => {
+  function _entry(fields: Partial<AllSyncEntry> = {}): AllSyncEntry {
+    return { ...createEntry(_district()), ...fields };
+  }
+
+  it("확인하지 못한 구는 0이 아니라 미확인이다", () => {
+    // 0으로 적으면 "부를 게 없다"로 읽힌다. 실제로는 안 본 것이다.
+    const entry = _entry({
+      reconcile: _reconcile({ barrier_free_checked: false, barrier_free_detail_count: 0 }),
+    });
+    expect(barrierFreeCell(entry)).toBe("미확인");
+    expect(barrierFreeUncheckedCount([entry])).toBe(1);
+  });
+
+  it("확인한 구는 예상치를 보여준다", () => {
+    const entry = _entry({
+      reconcile: _reconcile({ barrier_free_checked: true, barrier_free_detail_count: 36 }),
+    });
+    expect(barrierFreeCell(entry)).toBe("36 (예상)");
+    expect(barrierFreeUncheckedCount([entry])).toBe(0);
+  });
+
+  it("반영이 끝나면 실제로 저장한 수를 보여준다", () => {
+    // 목록에 있어도 항목이 전부 빈 장소가 있어 저장 수와 호출 수가 다르다.
+    const job = _job({});
+    const entry = _entry({
+      reconcile: _reconcile({ barrier_free_checked: false }),
+      job: {
+        ...job,
+        result: {
+          ...job.result!,
+          barrier_free_attempted_count: 40,
+          barrier_free_stored_count: 33,
+        },
+      },
+    });
+    expect(barrierFreeCell(entry)).toBe("33/40");
+    expect(barrierFreeTotals([entry])).toEqual({ stored: 33, attempted: 40 });
+  });
+});
+
 describe("AllDistrictSyncPanel", () => {
   it("합계가 남은 한도를 넘으면 건너뛴다는 사실을 알린다", () => {
     const entry: AllSyncEntry = {
@@ -368,6 +412,28 @@ describe("AllDistrictSyncPanel", () => {
     );
     expect(screen.getByRole("button", { name: "저장된 스냅샷 쓰기" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /전 구 대조/ })).toBeInTheDocument();
+  });
+
+  it("무장애를 확인하지 못한 구가 있으면 합계가 확정이 아님을 알린다", () => {
+    const entry: AllSyncEntry = {
+      ...createEntry(_district()),
+      reconcile: _reconcile({ source: "saved", barrier_free_checked: false }),
+      outcome: "reconciled",
+    };
+    render(
+      <AllDistrictSyncPanel
+        districts={[_district()]}
+        state={{ ...EMPTY_ALL_SYNC_STATE, phase: "reviewing", entries: [entry] }}
+        detailCallsToday={_detailCallsToday()}
+        busy={false}
+        onReconcileAll={() => {}}
+        onReuseSnapshots={() => {}}
+        onApplyAll={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    expect(screen.getByText(/이 합계에 안/)).toBeInTheDocument();
+    expect(screen.getByText(/반영할 때는 정상적으로 조회하고 채웁니다/)).toBeInTheDocument();
   });
 
   it("대조 전에는 반영 버튼을 내주지 않는다", () => {

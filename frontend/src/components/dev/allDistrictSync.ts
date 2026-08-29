@@ -193,3 +193,54 @@ export function reusedSnapshotDates(entries: AllSyncEntry[]): string[] {
   }
   return [...dates].sort();
 }
+
+/** 표에 적을 무장애 값.
+ *
+ * 반영이 끝난 구는 실제로 저장한 수를 보여준다. 아직이면 대조가 센 예상치인데,
+ * 저장된 스냅샷을 재사용한 대조는 무장애 목록을 부르지 않아 그 수를 모른다 —
+ * 0으로 적으면 "부를 게 없다"로 읽히므로 "미확인"이라고 적는다.
+ *
+ * 값이 있어 저장된 수와 실제 부른 수를 함께 보여준다. 무장애 목록에 있어도 15개
+ * 필드가 전부 빈 장소가 있어 둘이 다르다. */
+export function barrierFreeCell(entry: AllSyncEntry): string {
+  const result = entry.job?.result;
+  if (result) {
+    return `${result.barrier_free_stored_count}/${result.barrier_free_attempted_count}`;
+  }
+  if (entry.reconcile === null) return "—";
+  if (!entry.reconcile.barrier_free_checked) return "미확인";
+  return `${entry.reconcile.barrier_free_detail_count} (예상)`;
+}
+
+/** 대조가 무장애 목록을 확인하지 못한 구 수. 합계가 확정이 아님을 알리는 데 쓴다. */
+export function barrierFreeUncheckedCount(entries: AllSyncEntry[]): number {
+  return entries.filter(
+    (entry) => entry.reconcile !== null && !entry.reconcile.barrier_free_checked,
+  ).length;
+}
+
+/** 이번 순회가 실제로 저장한 무장애 정보와 부른 횟수. */
+export function barrierFreeTotals(entries: AllSyncEntry[]): {
+  stored: number;
+  attempted: number;
+} {
+  let stored = 0;
+  let attempted = 0;
+  for (const entry of entries) {
+    const result = entry.job?.result;
+    if (!result) continue;
+    stored += result.barrier_free_stored_count;
+    attempted += result.barrier_free_attempted_count;
+  }
+  return { stored, attempted };
+}
+
+/** 못 채운 건이 DB에 얼마나 있는지 확인하지 못한 구 수.
+ *
+ * 자격증명이 없어 못 본 것과 "보충할 게 없다"를 같은 0으로 뭉개면, 화면이 예상
+ * 호출수를 확정된 값처럼 보여준다. 실제로는 그보다 많이 나갈 수 있다. */
+export function backfillUncheckedCount(entries: AllSyncEntry[]): number {
+  return entries.filter(
+    (entry) => entry.reconcile !== null && !entry.reconcile.detail_backfill_checked,
+  ).length;
+}

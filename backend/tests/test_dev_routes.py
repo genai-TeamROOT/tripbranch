@@ -919,6 +919,242 @@ def test_실패한_반영은_대조_CSV를_지우지_않는다(
     assert len(list(tmp_path.glob("places_reconciliation_*.csv"))) == 2
 
 
+def _stub_concentration(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    *,
+    names: list[str],
+    places: list[tuple[str, str]],
+) -> list[list]:
+    """집중률 경로의 외부 호출을 막고 파일 자리를 tmp_path로 옮긴다.
+
+    올린 payload를 담은 목록을 돌려준다 — 적재가 실제로 무엇을 보냈는지 본다.
+    """
+    from app.services import concentration_mapping
+
+    monkeypatch.setattr(settings, "supabase_url", "https://project.supabase.co")
+    monkeypatch.setattr(settings, "supabase_secret_key", "secret")
+    monkeypatch.setattr(settings, "tour_api_service_key", "key")
+    monkeypatch.setattr(concentration_mapping, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(
+        concentration_mapping,
+        "DEFAULT_OVERRIDES",
+        tmp_path / "concentration_manual_overrides.csv",
+    )
+    monkeypatch.setattr(
+        concentration_mapping,
+        "DEFAULT_REJECTIONS",
+        tmp_path / "concentration_rejections.csv",
+    )
+
+    async def fake_names(_settings, _area, _district):
+        return names
+
+    async def fake_places(_settings, *, district_code):
+        return [
+            concentration_mapping.PlaceRow(content_id, title)
+            for content_id, title in places
+        ]
+
+    uploaded: list[list] = []
+
+    async def fake_upsert(_settings, rows):
+        uploaded.append(list(rows))
+        return len(rows)
+
+    monkeypatch.setattr(
+        concentration_mapping, "fetch_concentration_place_names", fake_names
+    )
+    monkeypatch.setattr(concentration_mapping, "load_places_from_supabase", fake_places)
+    monkeypatch.setattr(concentration_mapping, "upsert_mappings", fake_upsert)
+    return uploaded
+
+
+def test_집중률_생성이_확실한_것과_애매한_것을_가른다(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """규칙이 이름을 고쳐 붙인 것만 사람이 본다.
+
+    이름이 크게 다른 장소를 잘못 붙이면 엉뚱한 곳의 혼잡도를 답한다(D-043).
+    """
+    _stub_concentration(
+        monkeypatch,
+        tmp_path,
+        names=["경복궁", "종묘 [유네스코 세계유산]"],
+        places=[("1", "경복궁"), ("2", "종묘"), ("3", "이름없는카페")],
+    )
+
+    with _client() as client:
+        response = client.post(
+            "/api/dev/concentration/build",
+            json={"area_code": "11", "district_code": "110"},
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["concentration_code"] == "11110"
+    assert [row["place_title"] for row in payload["certain"]] == ["경복궁"]
+    assert [row["place_title"] for row in payload["ambiguous"]] == ["종묘"]
+    assert [place["title"] for place in payload["unmatched"]] == ["이름없는카페"]
+
+
+def test_집중률_생성은_CSV를_쓰지_않는다(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """사람이 걸러낸 뒤에 써야 CSV와 DB가 같아진다.
+
+    먼저 쓰면 승인 전 상태가 파일로 남고, 그 파일을 CLI로 적재하면 거절한 것까지
+    들어간다.
+    """
+    _stub_concentration(
+        monkeypatch, tmp_path, names=["경복궁"], places=[("1", "경복궁")]
+    )
+
+    with _client() as client:
+        client.post(
+            "/api/dev/concentration/build",
+            json={"area_code": "11", "district_code": "110"},
+        )
+
+    assert list(tmp_path.glob("concentration_place_mapping_*.csv")) == []
+
+
+def test_집중률_적재가_승인분만_올리고_거절을_남긴다(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from app.services import concentration_mapping
+
+    uploaded = _stub_concentration(
+        monkeypatch, tmp_path, names=["경복궁"], places=[("1", "경복궁")]
+    )
+
+    with _client() as client:
+        response = client.post(
+            "/api/dev/concentration/apply",
+            json={
+                "area_code": "11",
+                "district_code": "110",
+                "rows": [
+                    {
+                        "content_id": "1",
+                        "place_title": "경복궁",
+                        "concentration_title": "경복궁",
+                        "match_method": "exact",
+                        "aliases": [],
+                        "search_key": None,
+                        "search_keys": ["경복궁"],
+                    }
+                ],
+                "rejections": [
+                    {
+                        "place_title": "북촌생활사박물관",
+                        "concentration_title": "북촌",
+                        "note": "다른 장소",
+                    }
+                ],
+                "confirm": "11110",
+            },
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["imported_count"] == 1
+    assert [row.content_id for row in uploaded[0]] == ["1"]
+    # 승인분만 CSV로 남는다.
+    assert (tmp_path / payload["csv"]).exists()
+    # 거절은 파일에 남아 다음 생성에서 후보로 올라오지 않는다.
+    rejections = concentration_mapping.load_rejections(
+        tmp_path / "concentration_rejections.csv"
+    )
+    assert ("북촌생활사박물관", "북촌") in rejections
+
+
+def test_집중률_적재는_확인_문자열이_맞아야_한다(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """표에 보이는 11-110이 아니라 집중률 코드 11110이어야 한다."""
+    uploaded = _stub_concentration(
+        monkeypatch, tmp_path, names=["경복궁"], places=[("1", "경복궁")]
+    )
+
+    with _client() as client:
+        response = client.post(
+            "/api/dev/concentration/apply",
+            json={
+                "area_code": "11",
+                "district_code": "110",
+                "rows": [],
+                "confirm": "11-110",
+            },
+        )
+
+    assert response.status_code >= 400
+    assert uploaded == []
+
+
+def test_집중률_현황이_CSV_이후_신규_장소를_센다(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """CSV가 오래된 것과 갱신이 필요한 것은 다르다.
+
+    새 장소가 안 들어왔으면 매핑을 다시 만들어도 결과가 같다. 화면이 어느 구를
+    해야 하는지 답하려면 CSV 날짜가 아니라 그 뒤에 생긴 장소 수를 봐야 한다.
+    """
+    from app.services import concentration_mapping
+
+    monkeypatch.setattr(settings, "supabase_url", "https://project.supabase.co")
+    monkeypatch.setattr(settings, "supabase_secret_key", "secret")
+    monkeypatch.setattr(concentration_mapping, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(
+        concentration_mapping,
+        "DEFAULT_REJECTIONS",
+        tmp_path / "concentration_rejections.csv",
+    )
+    (tmp_path / "concentration_place_mapping_11110_20260808.csv").write_text(
+        "content_id\n", encoding="utf-8"
+    )
+
+    async def fake_summaries(self):
+        return {
+            "districts": [
+                {"area_code": "11", "district_code": "110", "active": 840},
+                # CSV가 없는 구는 통째로 안 해본 것이라 활성 장소 전부가 대상이다.
+                {"area_code": "11", "district_code": "140", "active": 896},
+            ]
+        }
+
+    monkeypatch.setattr(
+        dev_routes.SupabasePlaceRepository,
+        "get_place_summaries_by_district",
+        fake_summaries,
+    )
+
+    async def fake_counts(_settings, _codes):
+        return {"110": 101, "140": 49}
+
+    asked: list[tuple[str, str]] = []
+
+    async def fake_created_after(_settings, district_code, since):
+        asked.append((district_code, since))
+        return 12
+
+    monkeypatch.setattr(
+        concentration_mapping, "count_mappings_by_district", fake_counts
+    )
+    monkeypatch.setattr(
+        concentration_mapping, "count_places_created_after", fake_created_after
+    )
+
+    with _client() as client:
+        payload = client.get("/api/dev/concentration/status").json()
+
+    by_code = {row["district_code"]: row for row in payload["districts"]}
+    # 파일명 날짜를 ISO로 바꿔 물어본다.
+    assert asked == [("110", "2026-08-08")]
+    assert by_code["110"]["new_places_since_csv"] == 12
+    assert by_code["140"]["new_places_since_csv"] == 896
+
+
 def test_nearest_area_resolves_coordinate_to_area_name() -> None:
     """종로 한복판 좌표는 서울시 상권 지역 이름으로 근사된다."""
 

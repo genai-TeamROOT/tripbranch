@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any
@@ -33,6 +33,26 @@ _RETAINED_JOBS = 10
 
 class SyncJobConflictError(RuntimeError):
     """이미 실행 중인 job이 있다."""
+
+
+def _failure_detail(exc: BaseException) -> str:
+    """실패 사유. AppError는 사용자 문구 뒤에 상류 원문을 붙인다.
+
+    `SupabaseRepositoryError`의 메시지는 "장소 데이터 저장 중 문제가 발생했어요"라는
+    안내문이고, 실제 원인(`HTTP 400: 23514 - ...` 같은 제약 위반)은 details에만
+    있다. 그것을 안 꺼내면 로그가 무엇이 잘못됐는지 말하지 못해, 원인을 찾으려면 DB를
+    직접 뒤져야 한다(2026-08-30 중구 반영 실패).
+
+    키 값이 섞일 수 있는 자료는 넣지 않는다 — `upstream_detail`은 상류 응답의 code와
+    message만 담는다.
+    """
+    detail = f"{type(exc).__name__}: {exc}"
+    upstream = getattr(exc, "details", None)
+    if isinstance(upstream, Mapping):
+        text = str(upstream.get("upstream_detail") or "").strip()
+        if text:
+            return f"{detail} ({text})"
+    return detail
 
 
 @dataclass(frozen=True)
@@ -122,8 +142,10 @@ class SyncJobRegistry:
             except Exception as exc:
                 # 여기서 삼키면 태스크가 조용히 죽어 화면이 영원히 running으로 남는다.
                 job.status = "failed"
-                job.error = f"{type(exc).__name__}: {exc}"
-                logger.exception("장소 동기화 job 실패 (job_id=%s)", job.id)
+                job.error = _failure_detail(exc)
+                logger.exception(
+                    "장소 동기화 job 실패 (job_id=%s): %s", job.id, job.error
+                )
             finally:
                 job.finished_at = datetime.now(_KST)
                 if self._running_id == job.id:

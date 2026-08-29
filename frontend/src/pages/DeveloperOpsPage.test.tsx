@@ -208,9 +208,26 @@ const snapshotRetention = {
   ],
 };
 
-/** 개발자 패널이 여는 조회 여섯 개를 한 곳에서 가른다. */
+const concentrationStatus = {
+  districts: [
+    {
+      area_code: "11",
+      district_code: "110",
+      district_name: "종로구",
+      concentration_code: "11110",
+      active_places: 840,
+      mapping_count: 101,
+      latest_csv: "concentration_place_mapping_11110_20260808.csv",
+      new_places_since_csv: 0,
+    },
+  ],
+  rejection_count: 0,
+};
+
+/** 개발자 패널이 여는 조회 일곱 개를 한 곳에서 가른다. */
 function panelBody(url: string) {
   if (url.includes("api-usage")) return usageSnapshot;
+  if (url.includes("concentration/status")) return concentrationStatus;
   if (url.includes("place-sync/snapshots")) return snapshotRetention;
   if (url.includes("place-sync/districts")) return syncDistricts;
   if (url.includes("feedback/stats")) return feedbackStats;
