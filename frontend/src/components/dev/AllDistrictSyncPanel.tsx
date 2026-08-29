@@ -22,8 +22,10 @@
 import { useMemo, useState } from "react";
 import type { DbStatus, SyncDistrict } from "../../api/dev";
 import {
+  buildMappingCommand,
   plannedDetailCalls,
   remainingDetailBudget,
+  unmappedDistricts,
   type AllSyncEntry,
   type AllSyncOutcome,
   type AllSyncState,
@@ -115,6 +117,8 @@ export function AllDistrictSyncPanel({
   const skipped = state.entries.filter((entry) => entry.outcome === "skipped");
   const failed = state.entries.filter((entry) => entry.outcome === "failed");
   const succeeded = state.entries.filter((entry) => entry.outcome === "success");
+  const unmapped = useMemo(() => unmappedDistricts(state.entries), [state.entries]);
+  const unmappedCount = unmapped.reduce((sum, district) => sum + district.count, 0);
 
   return (
     <section className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900">
@@ -196,6 +200,10 @@ export function AllDistrictSyncPanel({
                 <th className="py-1.5 pr-2 font-medium">삭제</th>
                 <th className="py-1.5 pr-2 font-medium">상세조회</th>
                 <th className="py-1.5 pr-2 font-medium">무장애</th>
+                {/* 집중률 매핑이 없는 신규 장소. 건수만 보여준다 — 25줄짜리 표에
+                    content_id를 늘어놓으면 표를 읽을 수 없다. 어느 구에 무슨
+                    명령을 돌려야 하는지는 순회가 끝난 뒤 아래에서 알린다. */}
+                <th className="py-1.5 pr-2 font-medium">미매핑</th>
                 <th className="py-1.5 pr-2 font-medium">상태</th>
               </tr>
             </thead>
@@ -223,6 +231,9 @@ export function AllDistrictSyncPanel({
                   <td className="py-1.5 pr-2 tabular-nums">{detailCell(entry)}</td>
                   <td className="py-1.5 pr-2 tabular-nums">
                     {entry.reconcile?.barrier_free_detail_count ?? "—"}
+                  </td>
+                  <td className="py-1.5 pr-2 tabular-nums">
+                    {entry.job === null ? "—" : entry.job.unmapped_new_place_ids.length || "—"}
                   </td>
                   <td className="py-1.5 pr-2">
                     <span
@@ -327,6 +338,32 @@ export function AllDistrictSyncPanel({
             </>
           )}
         </p>
+      )}
+
+      {state.phase === "done" && unmapped.length > 0 && (
+        <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+          <p>
+            <strong>
+              집중률 매핑이 없는 신규 장소가 {unmapped.length}개 구에 {unmappedCount}건 생겼어요.
+            </strong>{" "}
+            매핑이 없으면 그 장소는 혼잡도 조회를 <strong>통째로 건너뜁니다</strong> — 오류 없이 그
+            장소만 판정에서 빠져요. 이 동기화는 매핑 테이블을 건드리지 않으니 아래를 실행하세요.
+          </p>
+          {/* 구 코드를 5자리로 붙여서 낸다. 집중률 API는 11110을 쓰고 places는 뒤
+              3자리만 담아서, 표에 보이는 11-110을 그대로 치면 스크립트가 받지 않는다. */}
+          <pre className="mt-2 overflow-x-auto rounded bg-amber-100/60 p-2 font-mono text-[11px] dark:bg-amber-950/40">
+            {unmapped
+              .map(
+                (district) =>
+                  `# ${district.label} (${district.count}건)\n${buildMappingCommand(district)}`,
+              )
+              .join("\n")}
+          </pre>
+          <p className="mt-2">
+            만든 CSV는 <code>python -m scripts.import_concentration_mappings</code> 로 적재해야
+            테이블에 들어가요.
+          </p>
+        </div>
       )}
 
       {showDialog && (

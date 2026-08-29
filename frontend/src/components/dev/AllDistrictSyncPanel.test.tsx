@@ -14,11 +14,13 @@ import type { DbStatus, ReconcileResult, SyncDistrict, SyncJob } from "../../api
 import { AllDistrictSyncPanel } from "./AllDistrictSyncPanel";
 import {
   EMPTY_ALL_SYNC_STATE,
+  buildMappingCommand,
   createEntry,
   jobHitQuota,
   planDistrict,
   plannedDetailCalls,
   remainingDetailBudget,
+  unmappedDistricts,
   type AllSyncEntry,
 } from "./allDistrictSync";
 
@@ -147,48 +149,48 @@ describe("planDistrict", () => {
   });
 });
 
-describe("jobHitQuota", () => {
-  function _job(errorSummary: Record<string, number>): SyncJob {
-    return {
-      job_id: "job-1",
-      params: {
-        area_code: "11",
-        district_code: "110",
-        snapshot: "s.csv",
-        dry_run: false,
-        detail_target_count: 3,
-        added_count: 0,
-        details_limit: null,
-      },
+function _job(errorSummary: Record<string, number>): SyncJob {
+  return {
+    job_id: "job-1",
+    params: {
+      area_code: "11",
+      district_code: "110",
+      snapshot: "s.csv",
+      dry_run: false,
+      detail_target_count: 3,
+      added_count: 0,
+      details_limit: null,
+    },
+    status: "partial_failure",
+    started_at: "2026-08-29T01:00:00+09:00",
+    finished_at: "2026-08-29T01:01:00+09:00",
+    phase: "done",
+    processed: 3,
+    total: 3,
+    result: {
       status: "partial_failure",
-      started_at: "2026-08-29T01:00:00+09:00",
-      finished_at: "2026-08-29T01:01:00+09:00",
-      phase: "done",
-      processed: 3,
-      total: 3,
-      result: {
-        status: "partial_failure",
-        dry_run: false,
-        sync_run_id: "run-1",
-        processed_count: 3,
-        success_count: 3,
-        failed_count: 1,
-        new_count: 0,
-        updated_count: 0,
-        deactivated_count: 0,
-        detail_target_count: 3,
-        detail_attempted_count: 1,
-        reparse_count: 0,
-        barrier_free_target_count: 0,
-        barrier_free_attempted_count: 0,
-        barrier_free_stored_count: 0,
-        error_summary: errorSummary,
-      },
-      error: null,
-      unmapped_new_place_ids: [],
-    };
-  }
+      dry_run: false,
+      sync_run_id: "run-1",
+      processed_count: 3,
+      success_count: 3,
+      failed_count: 1,
+      new_count: 0,
+      updated_count: 0,
+      deactivated_count: 0,
+      detail_target_count: 3,
+      detail_attempted_count: 1,
+      reparse_count: 0,
+      barrier_free_target_count: 0,
+      barrier_free_attempted_count: 0,
+      barrier_free_stored_count: 0,
+      error_summary: errorSummary,
+    },
+    error: null,
+    unmapped_new_place_ids: [],
+  };
+}
 
+describe("jobHitQuota", () => {
   it("한도 소진 코드가 있으면 참이다", () => {
     expect(jobHitQuota(_job({ TOUR_DETAIL_QUOTA_EXCEEDED: 1 }))).toBe(true);
   });
@@ -197,6 +199,46 @@ describe("jobHitQuota", () => {
     expect(jobHitQuota(_job({ BARRIER_FREE_QUOTA_EXCEEDED: 1 }))).toBe(false);
     expect(jobHitQuota(_job({ TOUR_DETAIL_TIMEOUT: 2 }))).toBe(false);
     expect(jobHitQuota(null)).toBe(false);
+  });
+});
+
+describe("unmappedDistricts", () => {
+  function _entryWithUnmapped(
+    districtCode: string,
+    districtName: string,
+    ids: string[],
+  ): AllSyncEntry {
+    return {
+      ...createEntry(_district({ district_code: districtCode, district_name: districtName })),
+      outcome: "success",
+      job: {
+        ..._job({}),
+        unmapped_new_place_ids: ids,
+      },
+    };
+  }
+
+  it("건수가 많은 구부터 돌려준다", () => {
+    const rows = unmappedDistricts([
+      _entryWithUnmapped("110", "종로구", ["1", "2"]),
+      _entryWithUnmapped("680", "강남구", ["3", "4", "5"]),
+      _entryWithUnmapped("140", "중구", []),
+    ]);
+    expect(rows.map((row) => row.label)).toEqual(["강남구 11-680", "종로구 11-110"]);
+    expect(rows.map((row) => row.count)).toEqual([3, 2]);
+  });
+
+  it("아직 반영하지 않은 구는 세지 않는다", () => {
+    const entry = createEntry(_district());
+    expect(unmappedDistricts([entry])).toEqual([]);
+  });
+
+  it("집중률 코드는 5자리로 붙인다 — places는 뒤 3자리만 담는다", () => {
+    const [row] = unmappedDistricts([_entryWithUnmapped("110", "종로구", ["1"])]);
+    expect(row.concentrationCode).toBe("11110");
+    expect(buildMappingCommand(row)).toBe(
+      "python -m scripts.build_concentration_mappings --area-code 11 --district-code 11110",
+    );
   });
 });
 
@@ -222,6 +264,29 @@ describe("AllDistrictSyncPanel", () => {
     );
     expect(screen.getByText(/합계가 남은 한도를 넘어요/)).toBeInTheDocument();
     expect(screen.getByText(/건너뛰고 다음 구로 가며/)).toBeInTheDocument();
+  });
+
+  it("순회가 끝나면 미매핑이 생긴 구와 실행할 명령을 알린다", () => {
+    const entry: AllSyncEntry = {
+      ...createEntry(_district({ district_code: "680", district_name: "강남구" })),
+      reconcile: _reconcile(),
+      outcome: "success",
+      job: { ..._job({}), unmapped_new_place_ids: ["1", "2"] },
+    };
+    render(
+      <AllDistrictSyncPanel
+        districts={[_district()]}
+        state={{ ...EMPTY_ALL_SYNC_STATE, phase: "done", entries: [entry] }}
+        detailCallsToday={_detailCallsToday()}
+        busy={false}
+        onReconcileAll={() => {}}
+        onApplyAll={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    expect(screen.getByText(/1개 구에 2건/)).toBeInTheDocument();
+    // 표에 보이는 11-680이 아니라 스크립트가 받는 11680이어야 한다.
+    expect(screen.getByText(/--district-code 11680/)).toBeInTheDocument();
   });
 
   it("대조 전에는 반영 버튼을 내주지 않는다", () => {
