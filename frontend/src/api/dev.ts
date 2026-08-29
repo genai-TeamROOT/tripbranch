@@ -496,6 +496,10 @@ export type ConcentrationDistrict = {
   active_places: number;
   mapping_count: number;
   latest_csv: string | null;
+  /* 마지막 CSV 이후에 들어온 활성 장소 수. "CSV가 오래됐다"가 곧 "갱신이
+   * 필요하다"는 아니다 — 새 장소가 안 들어왔으면 다시 만들어도 결과가 같다.
+   * CSV가 아예 없는 구는 활성 장소 전부가 대상이다. */
+  new_places_since_csv: number;
 };
 
 export type ConcentrationStatus = {

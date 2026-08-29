@@ -58,6 +58,7 @@ function _status(): ConcentrationStatus {
         active_places: 840,
         mapping_count: 101,
         latest_csv: "concentration_place_mapping_11110_20260808.csv",
+        new_places_since_csv: 12,
       },
     ],
     rejection_count: 3,
@@ -123,6 +124,14 @@ describe("ConcentrationMappingPanel", () => {
     render(_panel(null));
     expect(screen.getByText(/대상이 아닌 장소/)).toBeInTheDocument();
     expect(screen.getByText(/3건이 쌓여 있어요/)).toBeInTheDocument();
+  });
+
+  it("CSV 이후 신규가 0인 구는 할 필요가 없음을 알린다", () => {
+    render(_panel(null));
+    expect(screen.getByText(/다시 만들어도 결과가 같아요/)).toBeInTheDocument();
+    // 어느 구를 해야 하는지 표가 답해야 한다. CSV 날짜만으로는 알 수 없다.
+    expect(screen.getByRole("columnheader", { name: "CSV 이후 신규" })).toBeInTheDocument();
+    expect(screen.getByText("12")).toBeInTheDocument();
   });
 
   it("애매한 후보에만 체크박스를 낸다", () => {

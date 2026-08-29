@@ -1494,6 +1494,16 @@ def _latest_mapping_csv(concentration_code: str) -> str | None:
     return paths[0].name if paths else None
 
 
+def _csv_date(file_name: str | None) -> str | None:
+    """매핑 CSV 파일명에서 날짜를 ISO로. `..._11110_20260808.csv` → `2026-08-08`."""
+    if file_name is None:
+        return None
+    stem = file_name.rsplit("_", 1)[-1].removesuffix(".csv")
+    if len(stem) != 8 or not stem.isdigit():
+        return None
+    return f"{stem[:4]}-{stem[4:6]}-{stem[6:]}"
+
+
 @router.get("/concentration/status")
 async def get_concentration_status() -> dict[str, Any]:
     """구별로 활성 장소가 몇 건이고 그중 매핑이 몇 건인지.
@@ -1527,6 +1537,16 @@ async def get_concentration_status() -> dict[str, Any]:
         area_code = str(summary.get("area_code") or "")
         district_code = str(summary.get("district_code") or "")
         concentration_code = _concentration_district_code(area_code, district_code)
+        latest_csv = _latest_mapping_csv(concentration_code)
+        csv_date = _csv_date(latest_csv)
+        # CSV가 아예 없으면 그 구는 통째로 안 해본 것이라 활성 장소 전부가 대상이다.
+        new_since = (
+            await concentration_mapping.count_places_created_after(
+                settings, district_code, csv_date
+            )
+            if csv_date is not None
+            else int(summary.get("active", 0) or 0)
+        )
         rows.append(
             {
                 "area_code": area_code,
@@ -1535,7 +1555,11 @@ async def get_concentration_status() -> dict[str, Any]:
                 "concentration_code": concentration_code,
                 "active_places": int(summary.get("active", 0) or 0),
                 "mapping_count": mapping_counts.get(district_code, 0),
-                "latest_csv": _latest_mapping_csv(concentration_code),
+                "latest_csv": latest_csv,
+                # "CSV가 오래됐다"가 곧 "갱신이 필요하다"는 아니다. 그 구에 새 장소가
+                # 들어오지 않았으면 다시 만들어도 결과가 같다. 실제로 봐야 할 신호는
+                # 마지막 CSV 이후에 생긴 장소 수다.
+                "new_places_since_csv": new_since,
             }
         )
     return {

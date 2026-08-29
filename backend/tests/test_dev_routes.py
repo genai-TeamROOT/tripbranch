@@ -1092,6 +1092,69 @@ def test_집중률_적재는_확인_문자열이_맞아야_한다(
     assert uploaded == []
 
 
+def test_집중률_현황이_CSV_이후_신규_장소를_센다(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """CSV가 오래된 것과 갱신이 필요한 것은 다르다.
+
+    새 장소가 안 들어왔으면 매핑을 다시 만들어도 결과가 같다. 화면이 어느 구를
+    해야 하는지 답하려면 CSV 날짜가 아니라 그 뒤에 생긴 장소 수를 봐야 한다.
+    """
+    from app.services import concentration_mapping
+
+    monkeypatch.setattr(settings, "supabase_url", "https://project.supabase.co")
+    monkeypatch.setattr(settings, "supabase_secret_key", "secret")
+    monkeypatch.setattr(concentration_mapping, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(
+        concentration_mapping,
+        "DEFAULT_REJECTIONS",
+        tmp_path / "concentration_rejections.csv",
+    )
+    (tmp_path / "concentration_place_mapping_11110_20260808.csv").write_text(
+        "content_id\n", encoding="utf-8"
+    )
+
+    async def fake_summaries(self):
+        return {
+            "districts": [
+                {"area_code": "11", "district_code": "110", "active": 840},
+                # CSV가 없는 구는 통째로 안 해본 것이라 활성 장소 전부가 대상이다.
+                {"area_code": "11", "district_code": "140", "active": 896},
+            ]
+        }
+
+    monkeypatch.setattr(
+        dev_routes.SupabasePlaceRepository,
+        "get_place_summaries_by_district",
+        fake_summaries,
+    )
+
+    async def fake_counts(_settings, _codes):
+        return {"110": 101, "140": 49}
+
+    asked: list[tuple[str, str]] = []
+
+    async def fake_created_after(_settings, district_code, since):
+        asked.append((district_code, since))
+        return 12
+
+    monkeypatch.setattr(
+        concentration_mapping, "count_mappings_by_district", fake_counts
+    )
+    monkeypatch.setattr(
+        concentration_mapping, "count_places_created_after", fake_created_after
+    )
+
+    with _client() as client:
+        payload = client.get("/api/dev/concentration/status").json()
+
+    by_code = {row["district_code"]: row for row in payload["districts"]}
+    # 파일명 날짜를 ISO로 바꿔 물어본다.
+    assert asked == [("110", "2026-08-08")]
+    assert by_code["110"]["new_places_since_csv"] == 12
+    assert by_code["140"]["new_places_since_csv"] == 896
+
+
 def test_nearest_area_resolves_coordinate_to_area_name() -> None:
     """종로 한복판 좌표는 서울시 상권 지역 이름으로 근사된다."""
 

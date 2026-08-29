@@ -218,6 +218,7 @@ const concentrationStatus = {
       active_places: 840,
       mapping_count: 101,
       latest_csv: "concentration_place_mapping_11110_20260808.csv",
+      new_places_since_csv: 0,
     },
   ],
   rejection_count: 0,

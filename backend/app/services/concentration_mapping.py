@@ -30,6 +30,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from app.config import Settings
+from app.observability.api_usage import create_external_client
 from app.providers.concentration import _CONCENTRATION_URL
 
 _KST = ZoneInfo("Asia/Seoul")
@@ -382,9 +383,14 @@ def apply_search_keys(
 async def fetch_concentration_place_names(
     settings: Settings, area_code: str, district_code: str
 ) -> list[str]:
-    """집중률 API가 다루는 장소명을 페이지 끝까지 모은다."""
+    """집중률 API가 다루는 장소명을 페이지 끝까지 모은다.
+
+    계측 클라이언트로 부른다. 이 호출은 챗봇이 "지금 붐벼?"에 답할 때 쓰는 것과
+    **같은 오퍼레이션**이고 일일 한도도 같다. 계측을 빼면 구 하나에 8~9회를 쓰고도
+    호출량 패널에는 0으로 보여, 그날 혼잡도 한도가 왜 줄었는지 설명할 수 없다.
+    """
     names: dict[str, None] = {}
-    async with httpx.AsyncClient() as client:
+    async with create_external_client() as client:
         for page_no in range(1, _MAX_PAGES + 1):
             response = await client.get(
                 _CONCENTRATION_URL,
@@ -756,3 +762,40 @@ async def count_mappings_by_district(
                 response.headers.get("content-range", "")
             ) or 0
     return counts
+
+
+async def count_places_created_after(
+    settings: Settings, district_code: str, since: str
+) -> int:
+    """그 구에 `since` 이후 새로 들어온 활성 장소 수.
+
+    "CSV가 오래됐다"는 갱신이 필요하다는 뜻이 아니다 — 그 구에 새 장소가 들어오지
+    않았으면 매핑을 다시 만들어도 결과가 같다. 실제로 봐야 할 신호는 마지막 CSV
+    이후에 생긴 장소 수다.
+
+    행을 받지 않고 Content-Range의 전체 건수만 읽는다. 세는 데 장소를 다 받아올
+    이유가 없다.
+    """
+    url = settings.supabase_url.strip()
+    key = settings.supabase_secret_key.strip()
+    if not url or not key:
+        return 0
+
+    headers = {"apikey": key, "Authorization": f"Bearer {key}"}
+    async with httpx.AsyncClient(
+        base_url=url.rstrip("/"),
+        headers=headers,
+        timeout=max(settings.external_api_timeout_seconds, 30.0),
+    ) as client:
+        response = await client.get(
+            "/rest/v1/places",
+            params={
+                "select": "content_id",
+                "district_code": f"eq.{district_code}",
+                "is_active": "eq.true",
+                "created_at": f"gte.{since}",
+            },
+            headers={"Prefer": "count=exact", "Range": "0-0"},
+        )
+        response.raise_for_status()
+    return _parse_total_count(response.headers.get("content-range", "")) or 0

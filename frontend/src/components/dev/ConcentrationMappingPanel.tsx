@@ -48,6 +48,8 @@ function DistrictTable({
             <th className="py-1.5 pr-2 font-medium">활성 장소</th>
             <th className="py-1.5 pr-2 font-medium">매핑</th>
             <th className="py-1.5 pr-2 font-medium">최신 CSV</th>
+            {/* 어느 구를 해야 하는지 답하는 열이다. CSV 날짜만으로는 알 수 없다. */}
+            <th className="py-1.5 pr-2 font-medium">CSV 이후 신규</th>
           </tr>
         </thead>
         <tbody>
@@ -72,7 +74,16 @@ function DistrictTable({
                 <td className="py-1.5 pr-2 tabular-nums">{district.active_places}</td>
                 <td className="py-1.5 pr-2 tabular-nums">{district.mapping_count}</td>
                 <td className="py-1.5 pr-2 font-mono text-[11px] text-gray-500">
-                  {district.latest_csv?.slice(-12, -4) ?? "—"}
+                  {district.latest_csv?.slice(-12, -4) ?? "없음"}
+                </td>
+                <td
+                  className={`py-1.5 pr-2 tabular-nums ${
+                    district.new_places_since_csv > 0
+                      ? "font-semibold text-amber-700 dark:text-amber-300"
+                      : "text-gray-400"
+                  }`}
+                >
+                  {district.new_places_since_csv || "—"}
                 </td>
               </tr>
             );
@@ -177,15 +188,15 @@ export function ConcentrationMappingPanel({
           <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
             {/* 매핑이 활성 장소보다 훨씬 적은 것은 정상이다. 집중률 API가 관광지
              * 위주로만 다뤄서 나머지는 "매칭 실패"가 아니라 "대상이 아님"이다. */}
-            매핑 수가 활성 장소보다 훨씬 적은 건 정상이에요 — 집중률 API가 관광지 위주로만 다뤄서,
-            나머지는 실패가 아니라 대상이 아닌 장소예요. 거절 목록에 {status.rejection_count}건이
-            쌓여 있어요.
+            <strong>"CSV 이후 신규"가 0인 구는 다시 만들어도 결과가 같아요.</strong> 매핑 수가 활성
+            장소보다 훨씬 적은 건 정상이에요 — 집중률 API가 관광지 위주로만 다뤄서, 나머지는 실패가
+            아니라 대상이 아닌 장소예요. 거절 목록에 {status.rejection_count}건이 쌓여 있어요.
           </p>
 
           <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-gray-200 pt-3 dark:border-gray-800">
             <span className="text-xs text-gray-500 dark:text-gray-400">
               {selected
-                ? `${districtLabel(selected)} · 집중률 목록을 새로 받아요 (8~9회)`
+                ? `${districtLabel(selected)} · 집중률 목록을 새로 받아요 (8~9회, 챗봇 혼잡도와 같은 한도)`
                 : "구를 고르세요"}
             </span>
             <button
