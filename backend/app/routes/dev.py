@@ -43,7 +43,7 @@ from app.providers.real_place import RealPlaceProvider
 from app.providers.tour_barrier_free import RealBarrierFreeProvider
 from app.providers.tour_ldong_registry import find_district_name, list_districts
 from app.repositories.supabase_places import SupabasePlaceRepository
-from app.services import place_snapshot
+from app.services import concentration_mapping, place_snapshot
 from app.services.place_sync import (
     PlaceSyncResult,
     PlaceSyncService,
@@ -1437,3 +1437,246 @@ async def get_sync_job(job_id: str) -> dict[str, Any]:
 async def get_running_sync_job() -> dict[str, Any]:
     job = get_job_registry().running()
     return {"running": job.snapshot() if job is not None else None}
+
+
+# ── 집중률 매핑 ────────────────────────────────────────────────────────────────
+#
+# 매핑이 없는 장소는 혼잡도 조회를 통째로 건너뛴다(enrichment_service). 오류가
+# 나지 않고 그 장소만 조용히 판정에서 빠지므로, 장소 동기화 뒤에는 매핑을 새로
+# 만들어야 한다. 지금까지는 scripts 두 개를 손으로 돌렸다.
+#
+# job을 두지 않는다. 구 하나가 집중률 목록 8~9회 + Supabase 1~2회라 몇 초면 끝나서,
+# 전 구 갱신처럼 화면이 구를 하나씩 부르는 것으로 충분하다.
+
+
+def _concentration_district_code(area_code: str, district_code: str) -> str:
+    """집중률 API가 쓰는 시군구 5자리. `places`는 뒤 3자리만 담는다."""
+    return f"{area_code}{district_code}"
+
+
+def _mapping_row_json(row: concentration_mapping.MappingRow) -> dict[str, Any]:
+    return {
+        "content_id": row.content_id,
+        "place_title": row.place_title,
+        "concentration_title": row.concentration_title,
+        "match_method": row.match_method,
+        "aliases": list(row.aliases),
+        "search_key": row.search_key,
+        "search_keys": list(row.search_keys),
+    }
+
+
+def _mapping_row_from_json(payload: Mapping[str, Any]) -> concentration_mapping.MappingRow:
+    return concentration_mapping.MappingRow(
+        content_id=str(payload["content_id"]),
+        place_title=str(payload["place_title"]),
+        concentration_title=str(payload["concentration_title"]),
+        match_method=str(payload["match_method"]),
+        aliases=tuple(str(alias) for alias in payload.get("aliases") or []),
+        search_key=payload.get("search_key") or None,
+        search_keys=tuple(str(key) for key in payload.get("search_keys") or []),
+    )
+
+
+def _latest_mapping_csv(concentration_code: str) -> str | None:
+    paths = sorted(
+        concentration_mapping.DATA_DIR.glob(
+            f"concentration_place_mapping_{concentration_code}_*.csv"
+        ),
+        reverse=True,
+    )
+    return paths[0].name if paths else None
+
+
+@router.get("/concentration/status")
+async def get_concentration_status() -> dict[str, Any]:
+    """구별로 활성 장소가 몇 건이고 그중 매핑이 몇 건인지.
+
+    매핑이 활성 장소보다 훨씬 적은 것은 정상이다 — 집중률 API가 관광지 위주로만
+    다뤄서, 나머지는 "매칭 실패"가 아니라 "대상이 아님"이다. 화면이 그렇게 읽도록
+    실패 수가 아니라 두 수를 나란히 준다.
+    """
+    url, key = _require_supabase()
+
+    async with status_client() as client:
+        repository = SupabasePlaceRepository(
+            supabase_url=url,
+            secret_key=key,
+            client=client,
+            timeout_seconds=max(settings.external_api_timeout_seconds, 30.0),
+        )
+        summaries = await repository.get_place_summaries_by_district()
+
+    districts = _as_summary_list(summaries.get("districts"))
+    codes = [str(summary.get("district_code") or "") for summary in districts]
+    mapping_counts = await concentration_mapping.count_mappings_by_district(
+        settings, codes
+    )
+    rejections = concentration_mapping.load_rejections(
+        concentration_mapping.DEFAULT_REJECTIONS
+    )
+
+    rows = []
+    for summary in districts:
+        area_code = str(summary.get("area_code") or "")
+        district_code = str(summary.get("district_code") or "")
+        concentration_code = _concentration_district_code(area_code, district_code)
+        rows.append(
+            {
+                "area_code": area_code,
+                "district_code": district_code,
+                "district_name": find_district_name(area_code, district_code),
+                "concentration_code": concentration_code,
+                "active_places": int(summary.get("active", 0) or 0),
+                "mapping_count": mapping_counts.get(district_code, 0),
+                "latest_csv": _latest_mapping_csv(concentration_code),
+            }
+        )
+    return {
+        "districts": sorted(rows, key=lambda row: row["district_code"]),
+        "rejection_count": len(rejections),
+    }
+
+
+class ConcentrationBuildRequest(BaseModel):
+    area_code: str
+    district_code: str = Field(description="`places`의 시군구 코드(예: 종로구 110)")
+
+
+@router.post("/concentration/build")
+async def post_concentration_build(
+    request: ConcentrationBuildRequest,
+) -> dict[str, Any]:
+    """집중률 장소명을 받아 그 구의 활성 장소와 붙여 후보를 만든다. CSV는 쓰지 않는다.
+
+    CSV를 여기서 쓰지 않는 이유: 사람이 애매한 후보를 걸러낸 뒤에 써야 CSV와 DB가
+    같아진다. 여기서 먼저 쓰면 승인 전 상태가 파일로 남고, 그 파일을 CLI로 적재하면
+    거절한 것까지 들어간다.
+
+    장소명 목록은 매번 새로 받는다. 저장해둔 목록으로 다시 계산하면 그사이 추가된
+    장소 때문에 모호해진 검색어를 놓친다(D-043).
+    """
+    _require_supabase()
+    if not settings.tour_api_service_key:
+        raise DevPanelError("TOUR_API_SERVICE_KEY가 필요합니다.")
+
+    concentration_code = _concentration_district_code(
+        request.area_code, request.district_code
+    )
+    names = await concentration_mapping.fetch_concentration_place_names(
+        settings, request.area_code, concentration_code
+    )
+    places = await concentration_mapping.load_places_from_supabase(
+        settings, district_code=request.district_code
+    )
+    overrides = concentration_mapping.load_manual_overrides(
+        concentration_mapping.DEFAULT_OVERRIDES
+    )
+    rejections = concentration_mapping.load_rejections(
+        concentration_mapping.DEFAULT_REJECTIONS
+    )
+    matched, unmatched, leftover = concentration_mapping.match_places(
+        places, names, overrides, rejections
+    )
+    matched, unresolved = concentration_mapping.apply_search_keys(matched, names)
+    unresolved_ids = {row.content_id for row in unresolved}
+
+    # 확실한 것과 사람이 볼 것을 가른다. manual은 사람이 이미 적어둔 것이고 exact는
+    # 이름이 그대로 같다. 나머지는 규칙이 이름을 고쳐 붙인 것이라 눈으로 봐야 한다.
+    certain = [row for row in matched if row.match_method in ("manual", "exact")]
+    ambiguous = [row for row in matched if row.match_method not in ("manual", "exact")]
+
+    def _row_json(row: concentration_mapping.MappingRow) -> dict[str, Any]:
+        return {
+            **_mapping_row_json(row),
+            # 붙긴 했지만 검색어가 다른 집중률 장소도 끌어온다. 조회는 되고 응답을
+            # 정식 명칭으로 걸러야 한다 — 매칭 실패와는 다른 종류의 경고다.
+            "search_key_ambiguous": row.content_id in unresolved_ids,
+        }
+
+    return {
+        "area_code": request.area_code,
+        "district_code": request.district_code,
+        "concentration_code": concentration_code,
+        "concentration_name_count": len(names),
+        "place_count": len(places),
+        "certain": [_row_json(row) for row in certain],
+        "ambiguous": [_row_json(row) for row in ambiguous],
+        "unmatched": [
+            {"content_id": place.content_id, "title": place.title}
+            for place in unmatched
+        ],
+        "leftover": leftover,
+    }
+
+
+class ConcentrationRejection(BaseModel):
+    place_title: str
+    concentration_title: str
+    note: str = ""
+
+
+class ConcentrationApplyRequest(BaseModel):
+    """승인한 매핑을 CSV로 남기고 DB에 올린다."""
+
+    area_code: str
+    district_code: str
+    rows: list[dict[str, Any]] = Field(
+        description=(
+            "승인한 매핑. 생성 단계가 돌려준 행을 그대로 보낸다 — 다시 계산하면 "
+            "집중률 목록을 한 번 더 받아야 한다."
+        )
+    )
+    rejections: list[ConcentrationRejection] = Field(
+        default_factory=list,
+        description="이번에 체크를 푼 짝. 거절 목록 파일에 덧붙여 다음 생성에서 뺀다.",
+    )
+    confirm: str = Field(description="확인 문자열. 집중률 시군구 코드여야 한다.")
+
+
+@router.post("/concentration/apply")
+async def post_concentration_apply(
+    request: ConcentrationApplyRequest,
+) -> dict[str, Any]:
+    """승인분만 CSV로 쓰고 `place_concentration_mappings`에 올린다.
+
+    거절한 짝은 먼저 파일에 남긴다. 적재가 실패해도 사람의 판정은 남아야 한다 —
+    다시 시도할 때 같은 후보를 또 걸러내게 하지 않는다.
+    """
+    _require_supabase()
+    concentration_code = _concentration_district_code(
+        request.area_code, request.district_code
+    )
+    if request.confirm.strip() != concentration_code:
+        raise DevPanelError(
+            f"확인 문자열이 일치하지 않습니다. '{concentration_code}'를 입력하세요."
+        )
+
+    added = concentration_mapping.append_rejections(
+        [
+            concentration_mapping.Rejection(
+                place_title=rejection.place_title,
+                concentration_title=rejection.concentration_title,
+                note=rejection.note,
+            )
+            for rejection in request.rejections
+        ],
+        concentration_mapping.DEFAULT_REJECTIONS,
+    )
+
+    rows = [_mapping_row_from_json(row) for row in request.rows]
+    now = datetime.now(place_snapshot.KST)
+    csv_path = (
+        concentration_mapping.DATA_DIR
+        / f"concentration_place_mapping_{concentration_code}_{now:%Y%m%d}.csv"
+    )
+    concentration_mapping.write_mapping_csv(rows, csv_path)
+    imported = await concentration_mapping.upsert_mappings(settings, rows)
+
+    return {
+        "concentration_code": concentration_code,
+        "csv": csv_path.name,
+        "imported_count": imported,
+        "rejected_count": len(added),
+        "rejection_file": concentration_mapping.DEFAULT_REJECTIONS.name,
+    }

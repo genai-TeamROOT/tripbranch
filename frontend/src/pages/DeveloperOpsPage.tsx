@@ -12,8 +12,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { ApiError } from "../api/client";
 import {
+  applyConcentrationMapping,
   applyPlaceSync,
+  buildConcentrationMapping,
   fetchApiUsage,
+  fetchConcentrationStatus,
   fetchDbStatus,
   fetchSnapshotRetention,
   fetchSyncDistricts,
@@ -22,6 +25,10 @@ import {
   reconcilePlaces,
   resetApiUsage,
   type ApiUsageSnapshot,
+  type ConcentrationApplyResult,
+  type ConcentrationBuildResult,
+  type ConcentrationDistrict,
+  type ConcentrationStatus,
   type DbStatus,
   type ReconcileResult,
   type SnapshotPruneResult,
@@ -45,6 +52,8 @@ import {
   type AllSyncEntry,
   type AllSyncState,
 } from "../components/dev/allDistrictSync";
+import { ConcentrationMappingPanel } from "../components/dev/ConcentrationMappingPanel";
+import { splitApproval } from "../components/dev/concentrationMapping";
 import { DbStatusPanel } from "../components/dev/DbStatusPanel";
 import { OpsNav, type OpsTab } from "../components/dev/OpsNav";
 import { FeedbackStatsPanel } from "../components/dev/FeedbackStatsPanel";
@@ -482,6 +491,107 @@ export function DeveloperOpsPage() {
     [keep, loadRetention],
   );
 
+  /* 집중률 매핑. 매핑이 없는 장소는 혼잡도 조회를 통째로 건너뛰므로(enrichment_service)
+   * 장소 동기화 뒤에는 새로 만들어야 한다. 구 하나가 몇 초라 job을 두지 않고 화면이
+   * 구를 골라 부른다. */
+  const [concentration, setConcentration] = useState<ConcentrationStatus | null>(null);
+  const [concentrationDistrict, setConcentrationDistrict] = useState<ConcentrationDistrict | null>(
+    null,
+  );
+  const [concentrationResult, setConcentrationResult] = useState<ConcentrationBuildResult | null>(
+    null,
+  );
+  const [concentrationApplied, setConcentrationApplied] = useState<ConcentrationApplyResult | null>(
+    null,
+  );
+  const [concentrationError, setConcentrationError] = useState<string | null>(null);
+  const [concentrationLoading, setConcentrationLoading] = useState(false);
+  const [building, setBuilding] = useState(false);
+  const [applyingMapping, setApplyingMapping] = useState(false);
+  /* 승인한 애매한 후보. 기본은 전부 켠다 — 지금도 이 매칭들이 자동으로 CSV에
+   * 들어가고 있어서, 기본을 꺼두면 있던 매핑이 조용히 사라진다. */
+  const [approved, setApproved] = useState<Set<string>>(new Set());
+
+  const loadConcentration = useCallback(async () => {
+    setConcentrationLoading(true);
+    try {
+      const next = await fetchConcentrationStatus();
+      setConcentration(next);
+      setConcentrationDistrict((current) => current ?? next.districts[0] ?? null);
+      setConcentrationError(null);
+    } catch (error) {
+      setConcentrationError(toMessage(error, "집중률 매핑 현황을 불러오지 못했어요."));
+    } finally {
+      setConcentrationLoading(false);
+    }
+  }, []);
+
+  /* 구를 바꾸면 앞 구의 결과를 비운다. 남겨두면 종로구를 생성한 화면에서 중구를
+   * 적재하는 조작이 가능해 보인다 — 서버가 확인 문자열로 막지만, 화면이 그런
+   * 조작을 제안하는 것 자체가 잘못이다. */
+  const handleSelectConcentrationDistrict = useCallback((district: ConcentrationDistrict) => {
+    setConcentrationDistrict(district);
+    setConcentrationResult(null);
+    setConcentrationApplied(null);
+    setApproved(new Set());
+    setConcentrationError(null);
+  }, []);
+
+  const handleBuildConcentration = useCallback(async () => {
+    if (!concentrationDistrict) return;
+    setBuilding(true);
+    setConcentrationApplied(null);
+    try {
+      const next = await buildConcentrationMapping({
+        areaCode: concentrationDistrict.area_code,
+        districtCode: concentrationDistrict.district_code,
+      });
+      setConcentrationResult(next);
+      setApproved(new Set(next.ambiguous.map((row) => row.content_id)));
+      setConcentrationError(null);
+    } catch (error) {
+      setConcentrationError(toMessage(error, "매핑을 만들지 못했어요."));
+    } finally {
+      setBuilding(false);
+    }
+  }, [concentrationDistrict]);
+
+  const handleToggleApproved = useCallback((contentId: string) => {
+    setApproved((current) => {
+      const next = new Set(current);
+      if (next.has(contentId)) next.delete(contentId);
+      else next.add(contentId);
+      return next;
+    });
+  }, []);
+
+  const handleApplyConcentration = useCallback(
+    async (input: { confirm: string }) => {
+      if (!concentrationResult) return;
+      setApplyingMapping(true);
+      try {
+        const { rows, rejections } = splitApproval(concentrationResult, approved);
+        setConcentrationApplied(
+          await applyConcentrationMapping({
+            areaCode: concentrationResult.area_code,
+            districtCode: concentrationResult.district_code,
+            rows,
+            rejections,
+            confirm: input.confirm,
+          }),
+        );
+        setConcentrationError(null);
+        // 매핑 수가 바뀌었다. 다시 읽지 않으면 표가 적재 전 수를 계속 보여준다.
+        await loadConcentration();
+      } catch (error) {
+        setConcentrationError(toMessage(error, "매핑을 적재하지 못했어요."));
+      } finally {
+        setApplyingMapping(false);
+      }
+    },
+    [approved, concentrationResult, loadConcentration],
+  );
+
   const allBusy = allSync.phase === "reconciling" || allSync.phase === "applying";
 
   const handleReset = useCallback(async () => {
@@ -500,7 +610,16 @@ export function DeveloperOpsPage() {
     void loadFeedbackStats();
     void loadTraceStats();
     void loadRetention(DEFAULT_KEEP);
-  }, [loadDbStatus, loadDistricts, loadFeedbackStats, loadRetention, loadTraceStats, loadUsage]);
+    void loadConcentration();
+  }, [
+    loadConcentration,
+    loadDbStatus,
+    loadDistricts,
+    loadFeedbackStats,
+    loadRetention,
+    loadTraceStats,
+    loadUsage,
+  ]);
 
   // 폴링은 호출량에만 건다. DB 상태는 844행을 훑어 Supabase 호출이 따라붙으므로
   // 3초마다 부르면 패널 자체가 트래픽을 만든다.
@@ -643,6 +762,25 @@ export function DeveloperOpsPage() {
                 onChangeKeep={handleChangeKeep}
                 onRefresh={() => void loadRetention(keep)}
                 onPrune={(input) => void handlePrune(input)}
+              />
+              <ConcentrationMappingPanel
+                status={concentration}
+                selected={concentrationDistrict}
+                result={concentrationResult}
+                applyResult={concentrationApplied}
+                error={concentrationError}
+                loading={concentrationLoading}
+                building={building}
+                applying={applyingMapping}
+                /* 같은 구의 장소를 읽는 중에 매핑을 만들면 방금 들어온 장소가
+                 * 빠진 채로 붙는다. */
+                busy={allBusy || reconciling || applying || job?.status === "running"}
+                approved={approved}
+                onSelectDistrict={handleSelectConcentrationDistrict}
+                onToggleApproved={handleToggleApproved}
+                onRefresh={() => void loadConcentration()}
+                onBuild={() => void handleBuildConcentration()}
+                onApply={(input) => void handleApplyConcentration(input)}
               />
             </>
           )}
