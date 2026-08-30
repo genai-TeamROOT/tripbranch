@@ -22,7 +22,11 @@ async def static_answer_node(
 ) -> dict[str, object]:
     """답변 문자열을 한 번에 만들어 ``answer`` 칸에 담는다. 이벤트는 내지 않는다."""
 
-    message = await compose_chat_message(state["llm_output"], llm=llm_from_config(config))
+    message = await compose_chat_message(
+        state["llm_output"],
+        llm=llm_from_config(config),
+        rejected_offer_actions=state.get("rejected_offer_actions") or [],
+    )
     return {"answer": message}
 
 

@@ -20,8 +20,11 @@ from app.schemas import (
     GeneralPayload,
     GeneralTopic,
     Intent,
+    IntentClassificationResult,
+    InteractionMode,
     InterpretRequest,
     LLMOutput,
+    OutOfScopeCategory,
     OutOfScopePayload,
     OutputStatus,
     PlaceContext,
@@ -243,45 +246,65 @@ def _bare_restart_after_schedule_completed(request: InterpretRequest) -> LLMOutp
     )
 
 
-async def build_interpretation(
-    request: InterpretRequest, llm: LLMProvider
-) -> LLMOutput:
-    """Fake/Real LLMProvider를 인자로 받는 테스트 가능한 본체."""
+async def _general_output(user_input: str, llm: LLMProvider) -> LLMOutput:
+    """GENERAL 추출 결과를 반드시 GENERAL로 못 박아 돌려준다.
 
-    if _is_service_identity_question(request.user_input):
-        return LLMOutput(
-            intent=Intent.GENERAL,
-            status=OutputStatus.COMPLETE,
-            general=GeneralPayload(
-                topic=GeneralTopic.SERVICE_IDENTITY,
-                original_question=request.user_input,
+    extract_general_request()는 LLMOutput 전체를 모델이 채우게 두므로 intent도
+    모델이 정한다. 그래서 **분류기가 GENERAL이라고 판정한 뒤에도 추출기가 그 결정을
+    뒤집을 수 있다** — 실측(2026-08-30)에서 "너무 지친다"는 분류기가 GENERAL로 잘
+    보냈는데 추출기가 OUT_OF_SCOPE를 돌려줘 결국 거절 문구가 나갔다. 인텐트를 정하는
+    것은 분류 단계의 책임이므로 여기서 되돌린다(SCHEDULE 분기가
+    extract_recommend_conditions() 결과의 intent를 바꿔치기하는 것과 같은 처리다).
+
+    payload가 비어 있으면 답변 생성 단계가 쓸 수 없으므로 원문을 담아 채워 준다.
+    """
+
+    output = (await llm.extract_general_request(user_input)).data
+    if output.intent is Intent.GENERAL and output.general is not None:
+        return output
+    return output.model_copy(
+        update={
+            "intent": Intent.GENERAL,
+            "status": OutputStatus.COMPLETE,
+            "out_of_scope": None,
+            "general": output.general
+            or GeneralPayload(
+                topic=GeneralTopic.TRAVEL_TIP,
+                original_question=user_input,
             ),
-        )
-
-    # 케이스 4/5(PR 4, docs/design/clarification-options.md): 목적어 없는 "처음부터
-    # 다시"는 classify_intent() 호출 전에 결정적으로 되묻는다 — 글자만으로는 SCHEDULE
-    # 재진입인지, 조건 유지 재조회인지, 전체 초기화인지 LLM마다 판정이 갈린다.
-    bare_restart = (
-        _bare_restart_during_schedule_location_ask(request)
-        or _bare_restart_during_active_search(request)
-        or _bare_restart_after_schedule_completed(request)
+        }
     )
-    if bare_restart is not None:
-        return bare_restart
 
-    classification = (
-        await llm.classify_intent(
-            request.user_input,
-            has_previous_recommendation=request.has_previous_recommendation,
-            shown_place_count=request.shown_place_count,
-            pending_clarification=request.pending_clarification,
-            last_intent=request.last_intent,
-            shown_place_names=request.shown_place_names,
-            conversation_place_name=request.conversation_place_name,
-        )
-    ).data
+
+async def _extract_for_intent(
+    classification: IntentClassificationResult,
+    request: InterpretRequest,
+    llm: LLMProvider,
+) -> LLMOutput:
+    """분류된 Intent에 맞는 추출기를 골라 LLMOutput을 만든다.
+
+    build_interpretation()에서 떼어낸 이유는 상황 축(interaction_mode) 때문이다.
+    반환 경로가 8개인데 각 경로에서 축을 채우면 하나는 반드시 빠진다 — 여기서는
+    인텐트별 결과만 만들고, 축은 호출부가 한 번에 덧붙인다.
+    """
 
     if classification.intent is Intent.OUT_OF_SCOPE:
+        # 상황 발화는 거절하지 않는다. 분류기는 "너무 지친다"를 GENERAL로 잘
+        # 보내지만(2026-08-30 실측), 우선순위 1번이 다른 무엇보다 먼저 걸리는
+        # 캐스케이드라 비슷한 발화가 OUT_OF_SCOPE로 새는 일이 남는다. 같은
+        # 실측에서 interaction_mode 축은 8/8 정확했으므로 축을 근거로 뒤집는다 —
+        # _is_service_identity_question()이 Gemini의 알려진 오분류를 막는 것과
+        # 같은 성격의 가드다.
+        #
+        # **유해 발언·프롬프트 인젝션은 뒤집지 않는다.** "너 진짜 바보야?"가
+        # situational로 분류되는 것을 실측에서 확인했다 — 축만 보고 구제하면
+        # 욕설이 GENERAL 답변을 받는다. 차단이 먼저다.
+        rescuable = classification.out_of_scope_category not in {
+            OutOfScopeCategory.HARMFUL,
+            OutOfScopeCategory.PROMPT_INJECTION,
+        }
+        if classification.interaction_mode is InteractionMode.SITUATIONAL and rescuable:
+            return await _general_output(request.user_input, llm)
         return LLMOutput(
             intent=Intent.OUT_OF_SCOPE,
             status=OutputStatus.COMPLETE,
@@ -350,7 +373,53 @@ async def build_interpretation(
         ).data
 
     # 남은 경우는 Intent.GENERAL뿐 (RECOMMEND/MODIFY/INFO/COMPARE/OUT_OF_SCOPE는 위에서 처리).
-    return (await llm.extract_general_request(request.user_input)).data
+    return await _general_output(request.user_input, llm)
+
+
+async def build_interpretation(
+    request: InterpretRequest, llm: LLMProvider
+) -> LLMOutput:
+    """Fake/Real LLMProvider를 인자로 받는 테스트 가능한 본체."""
+
+    if _is_service_identity_question(request.user_input):
+        return LLMOutput(
+            intent=Intent.GENERAL,
+            status=OutputStatus.COMPLETE,
+            general=GeneralPayload(
+                topic=GeneralTopic.SERVICE_IDENTITY,
+                original_question=request.user_input,
+            ),
+        )
+
+    # 케이스 4/5(PR 4, docs/design/clarification-options.md): 목적어 없는 "처음부터
+    # 다시"는 classify_intent() 호출 전에 결정적으로 되묻는다 — 글자만으로는 SCHEDULE
+    # 재진입인지, 조건 유지 재조회인지, 전체 초기화인지 LLM마다 판정이 갈린다.
+    bare_restart = (
+        _bare_restart_during_schedule_location_ask(request)
+        or _bare_restart_during_active_search(request)
+        or _bare_restart_after_schedule_completed(request)
+    )
+    if bare_restart is not None:
+        return bare_restart
+
+    classification = (
+        await llm.classify_intent(
+            request.user_input,
+            has_previous_recommendation=request.has_previous_recommendation,
+            shown_place_count=request.shown_place_count,
+            pending_clarification=request.pending_clarification,
+            last_intent=request.last_intent,
+            shown_place_names=request.shown_place_names,
+            conversation_place_name=request.conversation_place_name,
+        )
+    ).data
+
+    output = await _extract_for_intent(classification, request, llm)
+    # 상황 축은 인텐트별 추출기가 모르는 값이라, 분류 결과에서 여기 한 곳에서만
+    # 옮겨 담는다 — 반환 경로가 8개라 각 경로에서 채우면 반드시 하나를 빠뜨린다.
+    return output.model_copy(
+        update={"interaction_mode": classification.interaction_mode}
+    )
 
 
 async def interpret_user_input(request: InterpretRequest) -> LLMOutput:

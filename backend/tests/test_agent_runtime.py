@@ -51,12 +51,17 @@ from app.schemas import (
     ComparisonItem,
     ComparisonResult,
     ConcentrationIntent,
+    GeneralPayload,
+    GeneralTopic,
     Intent,
     IntentClassificationResult,
+    InteractionMode,
+    LLMOutput,
     OutputStatus,
     RecommendationItem,
     RecommendationResponse,
     RecommendPayload,
+    SituationKind,
     Transport,
     TravelOrigin,
     UserConditions,
@@ -110,8 +115,46 @@ class _LLMProviderWithGeneralAnswer(FakeLLMProvider):
     최소 보강이다.
     """
 
-    async def generate_general_answer(self, topic, original_question):
-        return provider_result("(테스트용 고정 답변)", source=ProviderSource.FAKE_LLM)
+    async def generate_general_answer(self, topic, original_question, *, offer_content=None):
+        answer = "(테스트용 고정 답변)"
+        if offer_content:
+            answer = f"{answer} {offer_content}을(를) 찾아드릴까요?"
+        return provider_result(answer, source=ProviderSource.FAKE_LLM)
+
+
+class _LLMProviderWithSituationalOffer(_LLMProviderWithGeneralAnswer):
+    """대화층 3·4단계 회귀 테스트용 — classify_intent를 GENERAL+situational로,
+    extract_general_request를 지정한 situation으로 고정한다.
+
+    실제 분류·추출 정확도는 scripts/test_situational_utterances.py(실 Gemini)가
+    맡는다 — 이 더블은 그 결과가 나왔다는 전제 아래 orchestrator 이후
+    (조건 병합 → 되묻기/제안 상태 → 응답 조립) 배선만 결정적으로 검증한다.
+    """
+
+    def __init__(self, situation: SituationKind = SituationKind.FATIGUE) -> None:
+        self._situation = situation
+
+    async def classify_intent(self, user_input: str, **kwargs: object):
+        return provider_result(
+            IntentClassificationResult(
+                intent=Intent.GENERAL, interaction_mode=InteractionMode.SITUATIONAL
+            ),
+            source=ProviderSource.FAKE_LLM,
+        )
+
+    async def extract_general_request(self, user_input: str):
+        return provider_result(
+            LLMOutput(
+                intent=Intent.GENERAL,
+                status=OutputStatus.COMPLETE,
+                general=GeneralPayload(
+                    topic=GeneralTopic.TRAVEL_TIP,
+                    original_question=user_input,
+                    situation=self._situation,
+                ),
+            ),
+            source=ProviderSource.FAKE_LLM,
+        )
 
 
 class _LLMProviderForcingSearchCenter(_LLMProviderWithGeneralAnswer):
@@ -5436,3 +5479,134 @@ def test_replan_turn_does_not_revive_shown_places() -> None:
         )
         == ()
     )
+
+
+# ---------------------------------------------------------------- 대화층 3·4단계
+
+
+@pytest.mark.asyncio
+async def test_situational_general_turn_offers_a_button_and_records_pending_offer() -> None:
+    """상황 발화가 GENERAL로 끝나면 답변에 제안이 붙고, 버튼(suggested_follow_ups)이
+    나가고, 세션에 pending_offer가 남는다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+    providers["llm"] = _LLMProviderWithSituationalOffer(SituationKind.FATIGUE)
+
+    response = await run_agent_flow(
+        AgentRequest(user_input="너무 지친다", session_id=None, device_location=DEVICE_LOCATION),
+        store=store,
+        **providers,
+    )
+
+    assert response.llm_output.intent == "GENERAL"
+    assert "이동이 짧고 쉬기 편한 곳" in response.message
+    assert response.suggested_follow_ups == ["이동이 짧고 쉬기 편한 곳 찾아줘"]
+
+    context = get_session_context(response.state.session_id, store=store)
+    assert context.situation_state is not None
+    assert context.situation_state.pending_offer == "fatigue"
+
+
+@pytest.mark.asyncio
+async def test_bare_accept_resolves_to_recommend_without_reclassifying() -> None:
+    """"응"은 LLM을 다시 부르지 않고 결정적으로 RECOMMEND + 제안 조건이 된다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+    providers["llm"] = _LLMProviderWithSituationalOffer(SituationKind.FATIGUE)
+
+    first = await run_agent_flow(
+        AgentRequest(user_input="너무 지친다", session_id=None, device_location=DEVICE_LOCATION),
+        store=store,
+        **providers,
+    )
+
+    # 두 번째 턴은 GENERAL을 강제하는 더블을 쓰지 않는다 — accept 경로가 결정적
+    # 해소로 classify_intent()를 건너뛴다는 것 자체를 이 double 교체로 증명한다.
+    # (만약 정말로 재분류를 탄다면, FakeLLMProvider가 "응"을 GENERAL로 보내
+    # RECOMMEND가 나오지 않는다.)
+    second_providers = _providers()
+    second = await run_agent_flow(
+        AgentRequest(
+            user_input="응", session_id=first.state.session_id, device_location=DEVICE_LOCATION
+        ),
+        store=store,
+        **second_providers,
+    )
+
+    assert second.llm_output.intent == "RECOMMEND"
+    assert second.state.user_conditions.max_travel_time == 15
+
+    context = get_session_context(second.state.session_id, store=store)
+    assert context.situation_state is not None
+    assert context.situation_state.pending_offer is None
+
+
+@pytest.mark.asyncio
+async def test_bare_reject_records_rejection_and_offer_is_not_repeated() -> None:
+    """"아니"는 고정 문구로 끝나고, 같은 제안은 이 세션에서 다시 나오지 않는다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+    providers["llm"] = _LLMProviderWithSituationalOffer(SituationKind.FATIGUE)
+
+    first = await run_agent_flow(
+        AgentRequest(user_input="너무 지친다", session_id=None, device_location=DEVICE_LOCATION),
+        store=store,
+        **providers,
+    )
+
+    second = await run_agent_flow(
+        AgentRequest(
+            user_input="아니", session_id=first.state.session_id, device_location=DEVICE_LOCATION
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert second.message == "네, 필요하시면 언제든 말씀해주세요."
+    context = get_session_context(second.state.session_id, store=store)
+    assert context.situation_state is not None
+    assert "recommend_nearby_rest_place" in context.situation_state.rejected_actions
+    assert context.situation_state.pending_offer is None
+
+    # 같은 상황이 다시 감지돼도 이미 거절한 제안은 다시 권하지 않는다.
+    third = await run_agent_flow(
+        AgentRequest(
+            user_input="또 지친다",
+            session_id=second.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+    assert "이동이 짧고 쉬기 편한 곳" not in third.message
+    # 거절당한 그 제안 버튼만 다시 안 뜬다 — 후속 질문 자체를 아예 끄는 것은
+    # 아니다(그건 별개의 일반 후속 질문 제안, follow_up_suggester가 맡는다).
+    assert "이동이 짧고 쉬기 편한 곳 찾아줘" not in third.suggested_follow_ups
+
+
+@pytest.mark.asyncio
+async def test_unmatched_utterance_after_offer_falls_back_to_normal_classification() -> None:
+    """제안 뒤 "응"·"아니" 어느 쪽도 아니면 정상 분류 경로로 안전하게 폴백한다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+    providers["llm"] = _LLMProviderWithSituationalOffer(SituationKind.FATIGUE)
+
+    first = await run_agent_flow(
+        AgentRequest(user_input="너무 지친다", session_id=None, device_location=DEVICE_LOCATION),
+        store=store,
+        **providers,
+    )
+
+    fallback_providers = _providers()
+    second = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **fallback_providers,
+    )
+
+    assert second.llm_output.intent == "RECOMMEND"
+    assert second.state.user_conditions.max_travel_time != 15

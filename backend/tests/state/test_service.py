@@ -13,7 +13,14 @@ import pytest
 from app.auth.principal import Principal
 from app.state import service as svc
 from app.state.errors import SessionOwnershipError
-from app.state.schema import PendingInfoContext, now_kst
+from app.state.schema import (
+    MAX_RECENT_TURNS,
+    MAX_TURN_USER_INPUT_CHARS,
+    ConversationTurn,
+    PendingInfoContext,
+    SituationState,
+    now_kst,
+)
 from app.state.store import InMemoryStateStore
 
 
@@ -1236,3 +1243,118 @@ def test_set_pending_clarification_clears_pending_info_context_when_code_changes
     context = svc.get_session_context(session_id, store=store)
     assert context.pending_clarification == "location_required"
     assert context.pending_info_context is None
+
+
+# ---------------------------------------------------------------- 대화층 1단계
+
+
+def test_append_conversation_turn_stores_and_exposes_turn() -> None:
+    store = InMemoryStateStore()
+    session_id = _session(store)
+
+    result = svc.append_conversation_turn(
+        svc.AppendConversationTurnRequest(
+            session_id=session_id,
+            turn=ConversationTurn(user_input="다리를 다쳤어", intent="GENERAL"),
+        ),
+        store=store,
+    )
+
+    assert result is not None
+    assert [turn.user_input for turn in result.recent_turns] == ["다리를 다쳤어"]
+    context = svc.get_session_context(session_id, store=store)
+    assert [turn.user_input for turn in context.recent_turns] == ["다리를 다쳤어"]
+
+
+def test_append_conversation_turn_keeps_only_the_most_recent_turns() -> None:
+    """상한을 넘으면 오래된 것부터 버린다 — 자르는 책임은 B 한 곳에만 있다."""
+    store = InMemoryStateStore()
+    session_id = _session(store)
+
+    for index in range(MAX_RECENT_TURNS + 3):
+        svc.append_conversation_turn(
+            svc.AppendConversationTurnRequest(
+                session_id=session_id,
+                turn=ConversationTurn(user_input=f"발화 {index}"),
+            ),
+            store=store,
+        )
+
+    turns = svc.get_session_context(session_id, store=store).recent_turns
+    assert len(turns) == MAX_RECENT_TURNS
+    # 오래된 것이 앞. 마지막 MAX_RECENT_TURNS개만 남아야 한다.
+    assert [turn.user_input for turn in turns] == [
+        f"발화 {index}" for index in range(3, MAX_RECENT_TURNS + 3)
+    ]
+
+
+def test_append_conversation_turn_truncates_long_user_input() -> None:
+    """원문 상한은 노출 범위와 프롬프트 길이를 함께 묶는 장치다."""
+    store = InMemoryStateStore()
+    session_id = _session(store)
+
+    result = svc.append_conversation_turn(
+        svc.AppendConversationTurnRequest(
+            session_id=session_id,
+            turn=ConversationTurn(user_input="가" * (MAX_TURN_USER_INPUT_CHARS + 50)),
+        ),
+        store=store,
+    )
+
+    assert result is not None
+    assert len(result.recent_turns[0].user_input) == MAX_TURN_USER_INPUT_CHARS
+
+
+def test_append_conversation_turn_returns_none_for_missing_session() -> None:
+    store = InMemoryStateStore()
+
+    result = svc.append_conversation_turn(
+        svc.AppendConversationTurnRequest(
+            session_id="sess_missing",
+            turn=ConversationTurn(user_input="안녕"),
+        ),
+        store=store,
+    )
+
+    assert result is None
+
+
+def test_set_situation_state_stores_and_clears() -> None:
+    store = InMemoryStateStore()
+    session_id = _session(store)
+    situation = SituationState(
+        current_situation="fatigue",
+        recent_constraints=["minimize_walking"],
+        rejected_actions=["recommend_nearby_rest_place"],
+    )
+
+    svc.set_situation_state(
+        svc.SetSituationStateRequest(session_id=session_id, state=situation), store=store
+    )
+    assert svc.get_session_context(session_id, store=store).situation_state == situation
+
+    svc.set_situation_state(
+        svc.SetSituationStateRequest(session_id=session_id, state=None), store=store
+    )
+    assert svc.get_session_context(session_id, store=store).situation_state is None
+
+
+def test_set_situation_state_returns_none_for_missing_session() -> None:
+    store = InMemoryStateStore()
+
+    result = svc.set_situation_state(
+        svc.SetSituationStateRequest(session_id="sess_missing", state=None), store=store
+    )
+
+    assert result is None
+
+
+def test_conversation_memory_defaults_are_empty_for_new_session() -> None:
+    """기존 세션은 컬럼이 없던 시절 값이라 빈 값으로 읽혀야 한다."""
+    store = InMemoryStateStore()
+    session_id = _session(store)
+
+    context = svc.get_session_context(session_id, store=store)
+
+    assert context.recent_turns == []
+    assert context.situation_state is None

@@ -24,6 +24,7 @@ from app.schemas import (
     ScheduleItem,
     ScheduleResult,
     Severity,
+    SituationKind,
 )
 from app.services.runtime.context_schemas import Clarification
 from app.services.runtime.info_context_schemas import (
@@ -65,6 +66,7 @@ class _StubLLM:
         fail_compare_summary: bool = False,
     ) -> None:
         self.answer = answer
+        self.offer_content_received: str | None = None
         self.recommendation_summary = recommendation_summary
         self.fail_recommendation_summary = fail_recommendation_summary
         self.compare_summary = compare_summary
@@ -74,8 +76,11 @@ class _StubLLM:
         self.compare_received: ComparisonResult | None = None
         self.info_received: dict[str, str] | None = None
 
-    async def generate_general_answer(self, topic: GeneralTopic, original_question: str):
+    async def generate_general_answer(
+        self, topic: GeneralTopic, original_question: str, *, offer_content: str | None = None
+    ):
         self.received = (topic, original_question)
+        self.offer_content_received = offer_content
         return provider_result(self.answer, source=ProviderSource.FAKE_LLM)
 
     async def generate_recommendation_summary(
@@ -96,8 +101,12 @@ class _StubLLM:
         yield result.data[:midpoint]
         yield result.data[midpoint:]
 
-    async def stream_general_answer(self, topic: GeneralTopic, original_question: str):
-        result = await self.generate_general_answer(topic, original_question)
+    async def stream_general_answer(
+        self, topic: GeneralTopic, original_question: str, *, offer_content: str | None = None
+    ):
+        result = await self.generate_general_answer(
+            topic, original_question, offer_content=offer_content
+        )
         midpoint = max(1, len(result.data) // 2)
         yield result.data[:midpoint]
         yield result.data[midpoint:]
@@ -255,6 +264,63 @@ class TestComposeChatMessageGeneral:
 
         assert len(received) == 2
         assert message == "".join(received)
+
+    @pytest.mark.asyncio
+    async def test_passes_offer_content_when_situation_has_an_actionable_offer(self) -> None:
+        """대화층 3단계 — situational_offers가 상황에 맞는 도움을 찾으면 그 content를
+        답변 LLM 호출에 실어, 답변이 그 도움을 자연스러운 질문으로 제안하게 한다."""
+        llm_output = LLMOutput(
+            intent=Intent.GENERAL,
+            status=OutputStatus.COMPLETE,
+            general=GeneralPayload(
+                topic=GeneralTopic.TRAVEL_TIP,
+                original_question="너무 지친다",
+                situation=SituationKind.FATIGUE,
+            ),
+        )
+        stub = _StubLLM()
+
+        await compose_chat_message(llm_output, llm=stub)
+
+        assert stub.offer_content_received == "이동이 짧고 쉬기 편한 곳"
+
+    @pytest.mark.asyncio
+    async def test_omits_offer_content_for_vague_situation(self) -> None:
+        """실행 가능한 제안이 없는 상황(vague)은 offer_content를 만들지 않는다."""
+        llm_output = LLMOutput(
+            intent=Intent.GENERAL,
+            status=OutputStatus.COMPLETE,
+            general=GeneralPayload(
+                topic=GeneralTopic.TRAVEL_TIP,
+                original_question="오늘 진짜 되는 일이 없네",
+                situation=SituationKind.VAGUE,
+            ),
+        )
+        stub = _StubLLM()
+
+        await compose_chat_message(llm_output, llm=stub)
+
+        assert stub.offer_content_received is None
+
+    @pytest.mark.asyncio
+    async def test_omits_offer_content_for_already_rejected_action(self) -> None:
+        """이미 거절당한 제안은 같은 세션에서 답변 문구에도 다시 나오지 않는다."""
+        llm_output = LLMOutput(
+            intent=Intent.GENERAL,
+            status=OutputStatus.COMPLETE,
+            general=GeneralPayload(
+                topic=GeneralTopic.TRAVEL_TIP,
+                original_question="너무 지친다",
+                situation=SituationKind.FATIGUE,
+            ),
+        )
+        stub = _StubLLM()
+
+        await compose_chat_message(
+            llm_output, llm=stub, rejected_offer_actions=["recommend_nearby_rest_place"]
+        )
+
+        assert stub.offer_content_received is None
 
 
 class TestComposeChatMessageRecommendAndModify:

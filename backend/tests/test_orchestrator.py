@@ -7,15 +7,24 @@ conditions()를 재사용하도록 바뀌면서(docs/design/int-07-schedule.md 4
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
+from app.providers.contracts import ProviderSource, provider_result
 from app.providers.stub import FakeLLMProvider
 from app.schemas import (
     Intent,
+    IntentClassificationResult,
+    InteractionMode,
     InterpretRequest,
+    LLMOutput,
+    OutOfScopeCategory,
+    OutOfScopePayload,
     OutputStatus,
     PlaceContext,
     PlaceTag,
+    Severity,
     UserConditions,
 )
 from app.services.interpret.orchestrator import build_interpretation
@@ -225,3 +234,113 @@ async def test_bare_restart_after_schedule_completed_triggers_clarification() ->
     )
     option_ids = {option.id for option in output.clarification.options}
     assert option_ids == {"retry_schedule", "full_reset"}
+
+
+# ---------------------------------------------------------------- 대화층 2단계
+#
+# 상황 축(interaction_mode)이 인텐트 라벨보다 안정적이라는 실측
+# (2026-08-30, scripts/test_situational_utterances.py — 축 21/21)을 근거로
+# orchestrator가 두 가지를 결정적으로 보정한다. 그 두 규칙을 여기서 못 박는다.
+
+
+class _StubClassification:
+    """classify_intent만 원하는 값으로 바꾼 FakeLLMProvider."""
+
+    def __init__(self, intent: Intent, mode: InteractionMode, category=None) -> None:
+        self._inner = FakeLLMProvider()
+        self._result = IntentClassificationResult(
+            intent=intent,
+            interaction_mode=mode,
+            out_of_scope_category=category,
+            # 실제 분류기는 OUT_OF_SCOPE일 때 category와 severity를 함께 채운다.
+            out_of_scope_severity=Severity.MEDIUM if category is not None else None,
+        )
+
+    def __getattr__(self, name: str):
+        return getattr(self._inner, name)
+
+    async def classify_intent(self, *args: object, **kwargs: object):
+        return provider_result(self._result, source=ProviderSource.FAKE_LLM)
+
+
+@pytest.mark.asyncio
+async def test_situational_utterance_is_not_rejected_as_out_of_scope() -> None:
+    """분류가 OUT_OF_SCOPE로 새도 상황 발화는 거절 문구로 끝나지 않는다.
+
+    "너무 지친다" 같은 발화는 요청이 없어 범위 밖처럼 보이지만 우리가 도울 수
+    있는 상황이다. 거절 템플릿이 나가면 대화 자체가 끊긴다.
+    """
+    llm = _StubClassification(
+        Intent.OUT_OF_SCOPE, InteractionMode.SITUATIONAL, OutOfScopeCategory.UNRELATED
+    )
+
+    output = await build_interpretation(InterpretRequest(user_input="너무 지친다"), llm)
+
+    assert output.intent is Intent.GENERAL
+    assert output.out_of_scope is None
+    assert output.general is not None
+    assert output.interaction_mode is InteractionMode.SITUATIONAL
+
+
+@pytest.mark.parametrize(
+    "category", [OutOfScopeCategory.HARMFUL, OutOfScopeCategory.PROMPT_INJECTION]
+)
+@pytest.mark.asyncio
+async def test_harmful_utterance_stays_blocked_even_when_situational(
+    category: OutOfScopeCategory,
+) -> None:
+    """유해 발언·인젝션은 축이 situational이어도 차단이 우선이다.
+
+    실측에서 "너 진짜 바보야?"가 situational로 분류됐다 — 축만 보고 구제하면
+    욕설이 GENERAL 답변을 받는다.
+    """
+    llm = _StubClassification(Intent.OUT_OF_SCOPE, InteractionMode.SITUATIONAL, category)
+
+    output = await build_interpretation(InterpretRequest(user_input="너 진짜 바보야?"), llm)
+
+    assert output.intent is Intent.OUT_OF_SCOPE
+    assert output.out_of_scope is not None
+
+
+@pytest.mark.asyncio
+async def test_general_extraction_cannot_override_the_classified_intent() -> None:
+    """추출기가 OUT_OF_SCOPE를 돌려줘도 분류기의 GENERAL 판정을 뒤집지 못한다.
+
+    extract_general_request()는 LLMOutput 전체를 모델이 채우게 두므로 intent도
+    모델이 정한다. 실측에서 분류기가 GENERAL로 잘 보낸 "너무 지친다"를 추출기가
+    OUT_OF_SCOPE로 되돌려 결국 거절 문구가 나갔다 — 인텐트를 정하는 건 분류
+    단계의 책임이다.
+    """
+    llm = _StubClassification(Intent.GENERAL, InteractionMode.SITUATIONAL)
+    hijacked = LLMOutput(
+        intent=Intent.OUT_OF_SCOPE,
+        status=OutputStatus.COMPLETE,
+        out_of_scope=OutOfScopePayload(
+            category=OutOfScopeCategory.UNRELATED, severity=Severity.MEDIUM
+        ),
+    )
+    with patch.object(
+        llm._inner,
+        "extract_general_request",
+        AsyncMock(return_value=provider_result(hijacked, source=ProviderSource.FAKE_LLM)),
+    ):
+        output = await build_interpretation(InterpretRequest(user_input="너무 지친다"), llm)
+
+    assert output.intent is Intent.GENERAL
+    assert output.out_of_scope is None
+    # payload가 비면 답변 생성 단계가 쓸 수 없으므로 원문을 담아 채워 준다.
+    assert output.general is not None
+    assert output.general.original_question == "너무 지친다"
+
+
+@pytest.mark.asyncio
+async def test_direct_request_out_of_scope_still_rejects() -> None:
+    """평범한 범위 밖 요청은 지금까지처럼 거절된다(가드가 넓어지지 않았는지)."""
+    llm = _StubClassification(
+        Intent.OUT_OF_SCOPE, InteractionMode.DIRECT_REQUEST, OutOfScopeCategory.UNRELATED
+    )
+
+    output = await build_interpretation(InterpretRequest(user_input="주식 추천해줘"), llm)
+
+    assert output.intent is Intent.OUT_OF_SCOPE
+    assert output.out_of_scope is not None

@@ -73,6 +73,7 @@ from app.schemas import (
     RecommendationResponse,
     RecommendPayload,
     ScheduleItem,
+    SituationKind,
     ToolExecutionDebug,
     TravelOrigin,
     UserConditions,
@@ -85,6 +86,7 @@ from app.service_area_landmarks import (
 )
 from app.services.interpret.orchestrator import build_interpretation
 from app.services.interpret.session_orchestrator import ensure_current_context
+from app.services.interpret.situational_offers import offer_for
 from app.services.interpret.state_transform import to_user_conditions, transform
 from app.services.recommendation_pipeline import PreparedRecommendationResult
 from app.services.runtime.compare_transform import (
@@ -141,7 +143,7 @@ from app.services.runtime.tool_debug import (
     build_info_concentration_execution_debug,
     build_tool_execution_debug,
 )
-from app.state.schema import PendingInfoContext, now_kst
+from app.state.schema import PendingInfoContext, SituationState, now_kst
 from app.state.service import (
     ApiContextView,
     RecommendedPlace,
@@ -153,6 +155,7 @@ from app.state.service import (
     SetLastIntentRequest,
     SetPendingClarificationRequest,
     SetPendingInfoContextRequest,
+    SetSituationStateRequest,
     StateApplyResponse,
     UpdateApiContextRequest,
     apply,
@@ -163,6 +166,7 @@ from app.state.service import (
     set_last_intent,
     set_pending_clarification,
     set_pending_info_context,
+    set_situation_state,
     update_api_context,
 )
 from app.state.session import new_trace_id
@@ -281,6 +285,71 @@ def _remember_ignore_operating_hours(session_id: str, store: StateStore | None) 
             session_id=session_id, until=now_kst() + _IGNORE_OPERATING_HOURS_TTL
         ),
         store=store,
+    )
+
+
+def _next_situation_state(
+    *,
+    llm_output: LLMOutput,
+    prior: SituationState | None,
+    reject_offer_action: str | None,
+) -> SituationState:
+    """이번 턴이 끝난 뒤 상황 상태가 어떻게 바뀌어야 하는지 계산한다. (대화층 4단계)
+
+    순수 함수다 — 어느 반환 경로가 실행되든 apply() 직후 한 곳에서만 부르면 되게
+    하려고 llm_output 하나만으로 판단한다(_remember_clarification처럼 반환 경로마다
+    따로 부르면 하나는 반드시 빠뜨린다).
+
+    - 이번 턴이 직전 제안을 거절했으면(reject_offer_action) rejected_actions에
+      더하고 pending_offer는 지운다.
+    - 이번 턴이 GENERAL 상황 턴이고 아직 안 거절된 실행 가능한 제안을 냈으면 그
+      제안을 pending_offer로 남긴다.
+    - 그 외(수락/다른 요청/평범한 대화)는 pending_offer만 지운다 — 제안은 바로
+      다음 턴에만 유효하다. rejected_actions는 세션 내내(TTL까지) 유지한다.
+    """
+    rejected = list(prior.rejected_actions) if prior is not None else []
+    if reject_offer_action is not None and reject_offer_action not in rejected:
+        rejected.append(reject_offer_action)
+
+    pending_offer: str | None = None
+    if (
+        reject_offer_action is None
+        and llm_output.intent is Intent.GENERAL
+        and llm_output.general is not None
+    ):
+        offer = offer_for(llm_output.general.situation)
+        if offer is not None and offer.action_id not in rejected:
+            pending_offer = llm_output.general.situation.value
+
+    return SituationState(
+        current_situation=pending_offer,
+        rejected_actions=rejected,
+        pending_offer=pending_offer,
+    )
+
+
+def _sync_situation_state(
+    *,
+    session_id: str,
+    llm_output: LLMOutput,
+    session_context: SessionContextResponse,
+    reject_offer_action: str | None,
+    store: StateStore | None,
+) -> None:
+    """_next_situation_state()가 계산한 값을 필요할 때만 B에 쓴다.
+
+    대부분의 턴은 상황과 전혀 무관하다 — 매 턴 무조건 쓰면 관계없는 세션에도
+    Supabase 쓰기가 하나씩 더 생긴다. 바뀔 게 없으면(비어 있던 상태가 그대로
+    비어 있음) 건너뛴다.
+    """
+    prior = session_context.situation_state
+    next_state = _next_situation_state(
+        llm_output=llm_output, prior=prior, reject_offer_action=reject_offer_action
+    )
+    if (prior or SituationState()) == next_state:
+        return
+    set_situation_state(
+        SetSituationStateRequest(session_id=session_id, state=next_state), store=store
     )
 
 
@@ -535,6 +604,10 @@ class _ClarificationResolution:
     # pending_clarification is None 게이트는 되묻기 해소 turn엔 안 맞아 자동으로
     # relabel되지 않는다 — 그래서 여기서 명시적으로 신호를 준다.
     force_schedule: bool = False
+    # 대화층 4단계 — 직전 GENERAL 상황 턴이 낸 제안을 이번 턴이 거절했으면 그
+    # action_id. 채워지면 호출부가 situation_state.rejected_actions에 추가해
+    # 같은 세션에서 다시 제안하지 않는다.
+    reject_offer_action: str | None = None
 
 
 # no_data_empty/no_data_exhausted의 "다른 종류도 보기"/"다른 지역에서 찾기"/
@@ -580,6 +653,75 @@ def _clear_conditions_llm_output(fields: tuple[str, ...]) -> LLMOutput:
             changed_fields=list(fields),
         ),
     )
+
+
+# 대화층 4단계 — 직전 GENERAL 상황 턴이 낸 제안에 말로 답할 때만 쓰는 정확 일치
+# 화이트리스트. _is_bare_restart_phrase()와 같은 방식(전체 문자열 정확 일치)이다 —
+# 도구를 실행하는 자리라 부분일치로 오탐하면 안 된다. "응 근데 다른 데로"는 아래
+# 어느 목록과도 안 맞아 정상 분류(build_interpretation)로 폴백한다 — 그게 옳은
+# 안전 실패다.
+_OFFER_ACCEPT_MARKERS = ("응", "네", "그래", "좋아", "그렇게 해줘", "찾아줘", "찾아봐 줘")
+_OFFER_REJECT_MARKERS = ("아니", "괜찮아", "됐어", "필요없어", "필요 없어")
+_OFFER_DECLINED_MESSAGE = "네, 필요하시면 언제든 말씀해주세요."
+
+
+def _matches_offer_marker(user_input: str, markers: tuple[str, ...]) -> bool:
+    stripped = user_input.strip().rstrip("!?.~ ")
+    return any(stripped == marker or stripped == f"{marker}요" for marker in markers)
+
+
+def _resolve_offer_utterance(
+    *, user_input: str, session_context: SessionContextResponse
+) -> _ClarificationResolution | None:
+    """직전 GENERAL 상황 턴이 낸 제안에 대한 짧은 응답을 결정적으로 해석한다.
+
+    situation_state.pending_offer가 있을 때만 의미가 있다(_run_agent_flow가 그 조건을
+    확인하고서만 이 함수를 부른다). 수락/거절 어느 쪽에도 안 맞으면 None을 돌려 평소
+    build_interpretation() 경로로 폴백한다 — 새 요청("그건 말고 다른 걸로")이나 조건
+    변경은 그 경로가 정상적으로 처리한다.
+
+    수락은 LLM을 부르지 않고 세션에 이미 병합된 조건에 제안의 조건만 덮어써
+    RECOMMEND로 만든다 — situational_offers.SITUATION_OFFERS가 "실행 가능한 것만"을
+    보장하므로 이 경로가 못 하는 걸 약속할 위험이 없다.
+    """
+
+    situation_state = session_context.situation_state
+    if situation_state is None or situation_state.pending_offer is None:
+        return None
+    try:
+        situation = SituationKind(situation_state.pending_offer)
+    except ValueError:
+        return None
+    offer = offer_for(situation)
+    if offer is None:
+        return None
+
+    if _matches_offer_marker(user_input, _OFFER_REJECT_MARKERS):
+        return _ClarificationResolution(
+            llm_output=LLMOutput(
+                intent=Intent.GENERAL,
+                status=OutputStatus.COMPLETE,
+                general=GeneralPayload(
+                    topic=GeneralTopic.TRAVEL_TIP, original_question=user_input
+                ),
+            ),
+            terminal_message=_OFFER_DECLINED_MESSAGE,
+            reject_offer_action=offer.action_id,
+        )
+
+    if _matches_offer_marker(user_input, _OFFER_ACCEPT_MARKERS):
+        conditions = to_user_conditions(session_context.user_conditions).model_copy(
+            update=dict(offer.condition_overrides)
+        )
+        return _ClarificationResolution(
+            llm_output=LLMOutput(
+                intent=Intent.RECOMMEND,
+                status=OutputStatus.COMPLETE,
+                recommend=RecommendPayload(conditions=conditions),
+            )
+        )
+
+    return None
 
 
 def _resolve_clarification_choice(
@@ -1785,6 +1927,17 @@ async def _run_agent_flow(
             override=request.travel_origin_override,
             session_context=session_context,
         )
+    elif (
+        session_context.situation_state is not None
+        and session_context.situation_state.pending_offer is not None
+    ):
+        # 대화층 4단계 — 직전 GENERAL 상황 턴이 낸 제안에 대한 "응"/"아니" 같은
+        # 짧은 응답을 결정적으로 해석한다. 정확 일치 화이트리스트에 안 맞으면
+        # None이 와서 평소 경로로 폴백한다(위 두 분기와 같은 안전 실패 패턴).
+        clarification_resolution = _resolve_offer_utterance(
+            user_input=request.user_input,
+            session_context=session_context,
+        )
     else:
         clarification_resolution = None
     # 이번 턴에 막 선택했거나(clarification_resolution), 직전에 선택해서 아직
@@ -1863,6 +2016,21 @@ async def _run_agent_flow(
 
     if clarification_resolution is not None and clarification_resolution.ignore_operating_hours:
         _remember_ignore_operating_hours(state_response.session_id, store)
+
+    # 대화층 4단계 — 이번 턴이 상황 상태를 어떻게 바꾸는지는 어느 반환 경로로
+    # 끝나든 똑같으므로, 아래에서 갈라지는 여러 return보다 앞선 여기 한 곳에서만
+    # 계산·저장한다.
+    _sync_situation_state(
+        session_id=state_response.session_id,
+        llm_output=llm_output,
+        session_context=session_context,
+        reject_offer_action=(
+            clarification_resolution.reject_offer_action
+            if clarification_resolution is not None
+            else None
+        ),
+        store=store,
+    )
 
     # 2단계(LLM 호출) trace는 여기서 기록한다 — run_id/session_id가 apply() 안에서
     # 발급되므로 2단계 시점엔 아직 없다. latency만 미리 재뒀다가 여기서 기록.
@@ -2313,6 +2481,15 @@ async def _run_agent_flow(
         # terminal_message가 있는 경우는 위(3단계 직후)에서 이미 처리하고
         # 반환했으므로 여기서는 다시 안 본다.
         is_streaming_general = stream_recommendation_summary and llm_output.intent is Intent.GENERAL
+        # 대화층 3·4단계 — 이번 턴 이전에 이미 거절된 제안이면 답변 문구도, 버튼도
+        # 다시 권하지 않는다. session_context는 이번 턴 이전 상태이므로 이번 턴
+        # 자체가 방금 거절한 제안은 여기 안 잡히지만, 그 경로(터미널 메시지)는 이
+        # 분기에 도달하기 전에 이미 반환한다.
+        rejected_offer_actions = (
+            session_context.situation_state.rejected_actions
+            if session_context.situation_state is not None
+            else []
+        )
         if settings.use_langgraph_early_return:
             # 2단계: 조기 반환 경로(Tool/Scoring 없이 끝나는 턴) 전체를 라우팅
             # 그래프가 맡는다(langgraph-adoption.md §6.1). RECOMMEND/MODIFY/
@@ -2323,6 +2500,7 @@ async def _run_agent_flow(
                 llm=llm,
                 stream_event_sink=stream_event_sink,
                 stream_general=is_streaming_general,
+                rejected_offer_actions=rejected_offer_actions,
             )
         else:
             if is_streaming_general:
@@ -2339,12 +2517,24 @@ async def _run_agent_flow(
                 llm_output,
                 llm=llm,
                 on_message_delta=emit_general_message_delta if is_streaming_general else None,
+                rejected_offer_actions=rejected_offer_actions,
             )
+        # 상황 제안의 후속 버튼(대화층 4단계). LLM을 다시 부르지 않는다 — 무엇을
+        # 제안할지는 이미 situational_offers가 코드로 정했다. 버튼을 누르면 이
+        # 문구가 그대로 사용자 발화로 재전송되어(suggested_follow_ups의 기존 계약)
+        # 자연스러운 RECOMMEND 요청이 된다. follow_up_suggester.suggest_follow_ups()가
+        # 이 값이 이미 채워져 있으면 자기 LLM 호출을 건너뛰고 그대로 둔다.
+        offer_follow_up: list[str] = []
+        if llm_output.intent is Intent.GENERAL and llm_output.general is not None:
+            offer = offer_for(llm_output.general.situation)
+            if offer is not None and offer.action_id not in rejected_offer_actions:
+                offer_follow_up = [offer.button_label]
         return AgentResponse(
             llm_output=llm_output,
             state=state_response,
             recommendations=None,
             message=message,
+            suggested_follow_ups=offer_follow_up,
             llm_execution=get_llm_execution_metadata(),
         )
 

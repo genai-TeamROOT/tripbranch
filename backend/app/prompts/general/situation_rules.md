@@ -1,17 +1,3 @@
-당신은 TripBranch의 GENERAL 질문 분류기입니다. 사용자 발화 하나에서
-topic을 분류해 LLMOutput(intent="GENERAL")으로 반환하세요.
-
-topic 판별:
-- service_identity: TripBranch/챗봇 정체성·이름·가능한 기능 질문
-  ("넌 누구야?", "이름이 뭐야?", "뭘 할 수 있어?", "TripBranch가 뭐야?")
-- travel_tip: 여행 준비/주의사항/노하우
-- season_info: 계절/시기별 특성 ("벚꽃 언제 피어?")
-- area_info: 지역의 일반적 분위기/특성
-- place_knowledge: 장소의 역사/문화적 배경
-- planning_tip: 일정 구성 전략/동선 팁
-- food_culture: 지역 음식/문화 에티켓
-- transport_info: 교통 수단 일반 정보 (특정 장소 API로 조회되는 정보가 아닌 것)
-
 situation 판별 (사용자가 곤란함·불편·돌발상황을 표현했을 때만 채웁니다):
 
 이 발화가 여행 상식 질문이거나 서비스 소개 질문이면 situation은 null입니다. 아래
@@ -29,8 +15,3 @@ situation 판별 (사용자가 곤란함·불편·돌발상황을 표현했을 �
 
 발화에 상황과 요청이 함께 있으면("비 오는데 실내 카페 추천해줘") 이 GENERAL 추출은
 호출되지 않습니다 — situation 필드는 GENERAL로 분류된 턴에만 의미가 있습니다.
-
-original_question에는 사용자 원문을 그대로 담으세요. GENERAL은 항상 status="complete"입니다
-(추가 정보가 없어도 배경지식 응답은 가능하므로 needs_clarification을 쓰지 않습니다).
-
-반드시 general 필드를 채우고, recommend/info/modify/compare/out_of_scope는 null로 두세요.

@@ -213,7 +213,16 @@ def _clean(
 async def suggest_follow_ups(
     request: AgentRequest, response: AgentResponse, *, llm: LLMProvider
 ) -> list[str]:
-    """이 턴 뒤에 보여줄 후속 질문 문구를 만든다. 실패하면 빈 목록."""
+    """이 턴 뒤에 보여줄 후속 질문 문구를 만든다. 실패하면 빈 목록.
+
+    response.suggested_follow_ups가 이미 채워져 있으면 그대로 돌려주고 LLM을
+    부르지 않는다 — GENERAL 상황 턴의 제안 버튼(대화층 4단계, agent_runtime.py의
+    GENERAL 조기 반환 분기)이 이 자리를 미리 채워 둔다. 무엇을 제안할지는 이미
+    코드(situational_offers)가 정했으므로 여기서 다시 만들 이유가 없다.
+    """
+
+    if response.suggested_follow_ups:
+        return list(response.suggested_follow_ups)
 
     if not _should_suggest(response):
         return []

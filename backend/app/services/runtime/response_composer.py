@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 
 from app.domain.travel_route import TravelRoute
 from app.errors import AppError
@@ -33,6 +33,7 @@ from app.schemas import (
     ScheduleResult,
 )
 from app.service_area import supported_district_label
+from app.services.interpret.situational_offers import offer_for
 from app.services.runtime.context_schemas import Clarification
 from app.services.runtime.info_context_schemas import (
     EventInfoResult,
@@ -848,6 +849,7 @@ async def compose_chat_message(
     info_walking_origin_available: bool = False,
     llm: LLMProvider,
     on_message_delta: MessageDeltaCallback | None = None,
+    rejected_offer_actions: Sequence[str] = (),
 ) -> str:
     """AgentResponse.message(챗봇 말풍선 텍스트)를 조립한다.
 
@@ -882,6 +884,7 @@ async def compose_chat_message(
             info_walking_origin_available=info_walking_origin_available,
             llm=llm,
             on_message_delta=on_message_delta,
+            rejected_offer_actions=rejected_offer_actions,
         )
 
 
@@ -899,6 +902,7 @@ async def _compose_chat_message(
     info_walking_origin_available: bool = False,
     llm: LLMProvider,
     on_message_delta: MessageDeltaCallback | None = None,
+    rejected_offer_actions: Sequence[str] = (),
 ) -> str:
     """`compose_chat_message()`의 본체. 태그 범위 안에서 돈다."""
 
@@ -913,11 +917,22 @@ async def _compose_chat_message(
 
     if llm_output.intent is Intent.GENERAL:
         assert llm_output.general is not None
+        # 상황에 맞는 제안이 있으면(대화층 3단계) 답변 끝에 자연스러운 질문으로
+        # 붙인다. 무엇을 제안할지는 여기서 정하지 않는다 — situational_offers가
+        # 코드로 이미 정해 둔 것을 문장으로 바꾸는 것만 LLM에 맡긴다.
+        offer = offer_for(llm_output.general.situation)
+        offer_content = (
+            offer.content
+            if offer is not None and offer.action_id not in rejected_offer_actions
+            else None
+        )
         if on_message_delta is not None:
             try:
                 message = await _collect_message_stream(
                     llm.stream_general_answer(
-                        llm_output.general.topic, llm_output.general.original_question
+                        llm_output.general.topic,
+                        llm_output.general.original_question,
+                        offer_content=offer_content,
                     ),
                     on_message_delta,
                 )
@@ -926,7 +941,9 @@ async def _compose_chat_message(
             except AppError:
                 logger.warning("GENERAL 답변 스트리밍 실패, 단발 호출로 fallback", exc_info=True)
         result = await llm.generate_general_answer(
-            llm_output.general.topic, llm_output.general.original_question
+            llm_output.general.topic,
+            llm_output.general.original_question,
+            offer_content=offer_content,
         )
         if on_message_delta is not None:
             await on_message_delta(result.data)
