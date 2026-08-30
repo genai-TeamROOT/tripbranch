@@ -235,24 +235,50 @@ def build_compare_extraction_instruction(
 
 
 def build_general_extraction_instruction() -> str:
-    """int-05-general.md §5~6(GeneralRequest, topic) 기반."""
+    """int-05-general.md §5~6(GeneralRequest, topic) 기반.
 
-    return render_text("general/extract.md", topic_rules=load_text("general/topic_rules.md"))
+    situation_rules는 대화층 3단계(docs/design/conversational-layer.md) — situation은
+    닫힌 목록(SituationKind)이라 여기서는 값 설명만 주고, 그 상황에서 무엇을 제안할지는
+    app.services.interpret.situational_offers가 코드로만 정한다.
+    """
+
+    return render_text(
+        "general/extract.md",
+        topic_rules=load_text("general/topic_rules.md"),
+        situation_rules=load_text("general/situation_rules.md"),
+    )
 
 
-def build_general_answer_instruction(topic: GeneralTopic) -> str:
+def build_general_answer_instruction(
+    topic: GeneralTopic, *, offer_content: str | None = None
+) -> str:
     """GENERAL 발화에 실제로 답하는 system instruction(docs/design/agent-response-
     generation.md §3/§6 — 6개 Intent 중 실제 LLM 자유생성이 필요한 유일한 지점).
 
-    build_general_extraction_instruction()과 별개 호출이다 — 저건 topic만 분류하고,
-    이건 그 topic이 확정된 뒤 실제 답변 문장을 만든다.
+    build_general_extraction_instruction()과 별개 호출이다 — 저건 topic·situation만
+    분류하고, 이건 그 결과가 확정된 뒤 실제 답변 문장을 만든다.
+
+    offer_content는 대화층 3단계(conversational-layer.md) 제안 문구다.
+    situational_offers.offer_for()가 상황에 맞는 도움을 찾았을 때만 채워진다 — 무엇을
+    제안할지는 이미 코드가 정했고, 여기서는 그 내용을 트리비 말투로 자연스러운 질문
+    문장으로 바꾸는 것만 LLM에 맡긴다("제안 문장은 extract가 아니라 답변 단계가 쓴다",
+    conversational-layer.md 3단계).
     """
 
+    offer_block = (
+        f'- 이번 답변 마지막에 "{offer_content}을(를) 찾아드릴까요?"처럼, 지금 상황에 맞는 '
+        "도움을 자연스러운 질문 한 문장으로 제안하며 마무리하세요. 위 2~4문장 안에 포함되는 "
+        "문장이지, 별도로 덧붙이는 문장이 아닙니다. 이 제안 외에 다른 도움을 새로 지어내지 "
+        "마세요."
+        if offer_content
+        else ""
+    )
     return render_text(
         "general/answer_instruction.md",
         chatbot_name=CHATBOT_NAME,
         persona=load_text("_shared/persona/trivi.md"),
         topic=topic.value,
+        offer_block=offer_block,
     )
 
 

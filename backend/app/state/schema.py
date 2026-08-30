@@ -143,6 +143,13 @@ class SituationState(BaseModel):
     current_situation: str | None = None
     recent_constraints: list[str] = Field(default_factory=list)
     rejected_actions: list[str] = Field(default_factory=list)
+    # 직전 턴이 낸 제안이 아직 응답을 기다리고 있으면 그 SituationKind 값(문자열).
+    # pending_clarification과 같은 단발성 마커이지만 의미가 겹치지 않는 별도
+    # 상태 기계라 필드를 분리했다 — 하나로 합치면 위치 선택·장소 모호성 해소 같은
+    # 기존 되묻기 상태와 "제안 대기"가 같은 칸을 두고 서로 지웠다 켰다 하게 된다.
+    # 다음 턴에 이 값이 있으면(대화층 4단계) A가 사용자 응답을 결정적으로
+    # accept/reject로 해석하고, 그 외 응답이면 자연히 지워진다(딱 한 턴만 유효).
+    pending_offer: str | None = None
 
 
 # ---------------------------------------------------------------- 상태

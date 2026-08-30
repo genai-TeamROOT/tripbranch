@@ -648,9 +648,31 @@ class ComparisonResult(BaseModel):
     items: list[ComparisonItem] = Field(min_length=1)
 
 
+class SituationKind(StrEnum):
+    """GENERAL 상황 발화(interaction_mode=situational)에서 감지한 상황 종류.
+
+    (docs/design/conversational-layer.md 3단계) 닫힌 목록이다 — 여기 없는 값은
+    "상황이지만 우리가 실행 가능한 도움이 없다"는 뜻으로 다룬다(VAGUE).
+
+    이 값에서 실제로 무엇을 제안할지(actions/조건 override/버튼 문구)는 프롬프트가
+    아니라 코드(app.services.interpret.situational_offers)가 정한다 — "닫힌 목록"을
+    프롬프트 규칙으로만 두면 코드와 프롬프트가 언젠가 어긋난다. LLM은 상황을
+    분류하기만 하고, 무엇을 할 수 있는지는 절대 스스로 정하지 않는다.
+    """
+
+    FATIGUE = "fatigue"  # 지침, 다리·발 통증
+    BAD_WEATHER = "bad_weather"  # 비, 더위, 추위, 바람
+    CLOSED_OR_CROWDED = "closed_or_crowded"  # 휴관, 혼잡
+    COMPANION_DIFFICULTY = "companion_difficulty"  # 동행(아이·어르신 등)이 힘들어함
+    VAGUE = "vague"  # 막연한 답답함 — 실행 가능한 제안이 없다
+
+
 class GeneralPayload(BaseModel):
     topic: GeneralTopic
     original_question: str
+    # interaction_mode가 situational일 때만 채워진다. direct_request 턴(예: "서울
+    # 여행 팁")에서는 상황이 없으므로 None이다.
+    situation: SituationKind | None = None
 
 
 class OutOfScopePayload(BaseModel):

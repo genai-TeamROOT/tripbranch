@@ -24,6 +24,10 @@ class EarlyReturnState(TypedDict):
     # GENERAL 답변을 조각으로 흘려보낼지. SSE 경로에서만 True다
     # (단발 POST /api/chat은 False라 한 번에 완성 문자열만 만든다).
     stream_general: bool
+    # 이 세션에서 이미 거절된 상황 제안의 action_id 목록(대화층 4단계). GENERAL
+    # 답변이 같은 제안을 다시 권하지 않으려면 여기서부터 compose_chat_message()까지
+    # 전달돼야 한다 — 그래프 상태 밖(session_context)에는 접근할 수 없다.
+    rejected_offer_actions: list[str]
     # 답변 노드가 채우는 칸.
     answer: str | None
 

@@ -514,9 +514,11 @@ class RealGeminiProvider:
         return provider_result(result, source=ProviderSource.GEMINI)
 
     async def generate_general_answer(
-        self, topic: GeneralTopic, original_question: str
+        self, topic: GeneralTopic, original_question: str, *, offer_content: str | None = None
     ) -> ProviderResult[str]:
-        instruction = gemini_prompts.build_general_answer_instruction(topic)
+        instruction = gemini_prompts.build_general_answer_instruction(
+            topic, offer_content=offer_content
+        )
         result = await self._call_structured(
             instruction,
             original_question,
@@ -621,12 +623,14 @@ class RealGeminiProvider:
             yield text
 
     async def stream_general_answer(
-        self, topic: GeneralTopic, original_question: str
+        self, topic: GeneralTopic, original_question: str, *, offer_content: str | None = None
     ) -> AsyncIterator[str]:
         """GENERAL 자유 답변을 Gemini 스트림으로 전달한다."""
 
         async for text in self._stream_text(
-            instruction=gemini_prompts.build_general_answer_instruction(topic),
+            instruction=gemini_prompts.build_general_answer_instruction(
+                topic, offer_content=offer_content
+            ),
             user_input=original_question,
             operation="stream_general_answer",
             model_names=self._generation_model_names,

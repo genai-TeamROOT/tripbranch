@@ -897,7 +897,7 @@ class FakeLLMProvider:
         return provider_result(result, source=ProviderSource.FAKE_LLM)
 
     async def generate_general_answer(
-        self, topic: GeneralTopic, original_question: str
+        self, topic: GeneralTopic, original_question: str, *, offer_content: str | None = None
     ) -> ProviderResult[str]:
         if topic is GeneralTopic.SERVICE_IDENTITY:
             answer = (
@@ -907,6 +907,10 @@ class FakeLLMProvider:
             )
         else:
             answer = "국내 여행에 참고할 만한 정보를 간단히 알려드릴게요."
+        if offer_content:
+            # 실 프롬프트의 질문형 제안 문구를 그대로 흉내내지 않고, 테스트가
+            # offer_content 전달 여부만 확인할 수 있게 문자열로 남긴다.
+            answer = f"{answer} {offer_content}을(를) 찾아드릴까요?"
         return provider_result(answer, source=ProviderSource.FAKE_LLM)
 
     async def generate_recommendation_summary(
@@ -977,11 +981,13 @@ class FakeLLMProvider:
         yield text[midpoint:]
 
     async def stream_general_answer(
-        self, topic: GeneralTopic, original_question: str
+        self, topic: GeneralTopic, original_question: str, *, offer_content: str | None = None
     ) -> AsyncIterator[str]:
         """SSE 테스트용 GENERAL 답변을 결정적으로 두 조각으로 나눈다."""
 
-        answer = await self.generate_general_answer(topic, original_question)
+        answer = await self.generate_general_answer(
+            topic, original_question, offer_content=offer_content
+        )
         text = answer.data
         midpoint = max(1, len(text) // 2)
         yield text[:midpoint]

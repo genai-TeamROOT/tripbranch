@@ -145,12 +145,16 @@ class LLMProvider(Protocol):
         ...
 
     async def generate_general_answer(
-        self, topic: GeneralTopic, original_question: str
+        self, topic: GeneralTopic, original_question: str, *, offer_content: str | None = None
     ) -> ProviderResult[str]:
         """GENERAL 발화에 실제로 답할 배경지식 문장을 생성한다.
 
         다른 메서드와 달리 구조화 조건 추출이 아니라 자유 텍스트 답변이다 —
         docs/design/agent-response-generation.md §3/§6의 유일한 LLM 신규 호출 지점.
+
+        offer_content가 있으면(대화층 3단계) 답변 끝에 그 도움을 자연스러운 질문으로
+        제안하며 마무리한다. 무엇을 제안할지는 이미 호출자(situational_offers)가
+        정했고, 여기서는 문장으로 바꾸는 것만 한다.
         """
         ...
 
@@ -175,12 +179,13 @@ class LLMProvider(Protocol):
         ...
 
     def stream_general_answer(
-        self, topic: GeneralTopic, original_question: str
+        self, topic: GeneralTopic, original_question: str, *, offer_content: str | None = None
     ) -> AsyncIterator[str]:
         """GENERAL 답변을 텍스트 조각으로 전달한다.
 
         SSE 경로에서만 사용한다. 자유 답변은 추천 카드처럼 별도 결과가 없으므로,
-        호출자는 첫 조각 전에 로딩 말풍선을 먼저 열어야 한다.
+        호출자는 첫 조각 전에 로딩 말풍선을 먼저 열어야 한다. offer_content는
+        generate_general_answer()와 같다.
         """
         ...
 

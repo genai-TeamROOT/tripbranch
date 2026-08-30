@@ -54,20 +54,26 @@ class _RecordingLLMProvider(FakeLLMProvider):
     ATTEMPTED = ["gemini-3.5-flash", "gemini-3.5-flash-lite"]
     SERVED = "gemini-3.5-flash-lite"
 
-    async def generate_general_answer(self, topic: GeneralTopic, original_question: str):
+    async def generate_general_answer(
+        self, topic: GeneralTopic, original_question: str, *, offer_content: str | None = None
+    ):
         record_llm_call(
             operation="generate_general_answer",
             attempted_models=list(self.ATTEMPTED),
             served_model=self.SERVED,
             latency_ms=12,
         )
-        return await super().generate_general_answer(topic, original_question)
+        return await super().generate_general_answer(
+            topic, original_question, offer_content=offer_content
+        )
 
 
 class _FailingLLMProvider(FakeLLMProvider):
     """기록을 남긴 직후 실패하는 더블 — RealGeminiProvider의 실패 경로를 흉내 낸다."""
 
-    async def generate_general_answer(self, topic: GeneralTopic, original_question: str):
+    async def generate_general_answer(
+        self, topic: GeneralTopic, original_question: str, *, offer_content: str | None = None
+    ):
         record_llm_call(
             operation="generate_general_answer",
             attempted_models=["gemini-3.5-flash", "gemini-3.5-flash-lite"],
