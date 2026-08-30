@@ -87,6 +87,64 @@ class PendingInfoContext(BaseModel):
     visit_time: str | None = None
 
 
+# ---------------------------------------------------------------- 대화층
+
+# 최근 대화를 몇 턴까지 들고 갈지. 늘리면 프롬프트가 길어지고 노출 범위도 넓어져
+# 5턴으로 잡았다 — 되묻기 한 번을 사이에 두고 앞뒤 맥락이 이어질 최소 길이다.
+MAX_RECENT_TURNS = 5
+# 사용자 원문 상한. 넘으면 잘라서 저장한다 — 프롬프트 길이와 저장 범위를 동시에
+# 묶는 상한이지, 의미를 요약하는 장치가 아니다(아래 ConversationTurn 참고).
+MAX_TURN_USER_INPUT_CHARS = 300
+
+
+class ConversationTurn(BaseModel):
+    """주고받은 대화 한 턴. append-only 성격이지만 MAX_RECENT_TURNS개만 남는다.
+
+    B는 원칙적으로 대화 원문을 저장하지 않지만(ConditionChangeLog 참고),
+    FeedbackRecord가 그랬듯 여기서 예외를 둔다 — 상황을 알아채고 먼저 제안하려면
+    (docs/design/conversational-layer.md) 직전에 무슨 말이 오갔는지를 모델이
+    봐야 하는데, 누적 조건·추천 이력만으로는 "그냥 삐끗했어" 같은 이어지는 발화를
+    해석할 수 없다. 노출 범위를 좁히려고 두 가지를 지킨다.
+
+    1. 어시스턴트 쪽은 **원문을 담지 않는다.** 답변 문장은 이미 intent/
+       question_type/장소명/제안 같은 재료로 조립된 것이므로 그 재료만 남긴다.
+       LLM을 한 번 더 불러 요약하지 않고(호출이 늘어난다), 앞부분만 잘라 담지도
+       않는다(뜻이 날아간다). 재료 쪽이 다음 턴 판단에도 원문 산문보다 낫다.
+    2. 사용자 원문만 담되 MAX_TURN_USER_INPUT_CHARS로 자르고, 세션이 만료되면
+       상태와 함께 지워진다(session.py의 TTL 30분).
+
+    보안: 이 값은 신뢰할 수 없는 입력이다. 프롬프트에 넣을 때 system_instruction
+    문자열에 치환하지 말고 대화 내용(contents) 자리로 보내야 한다 — 서버에
+    저장했다는 사실이 입력을 안전하게 만들지 않는다.
+    """
+
+    user_input: str
+    # 그 턴을 무엇으로 처리했는지. B는 값을 해석하지 않고 A가 준 것을 보관만 한다.
+    intent: str | None = None
+    question_type: str | None = None
+    # 그 턴에 화면으로 나간 장소 이름. "거기" 같은 지시어를 이어받을 때 쓴다.
+    place_names: list[str] = Field(default_factory=list)
+    # 그 턴에 트리비가 먼저 제안한 action id(있었다면). 거절 판정의 근거가 된다.
+    offered_action: str | None = None
+    at: datetime = Field(default_factory=now_kst)
+
+
+class SituationState(BaseModel):
+    """지금 사용자가 처한 상황과, 그에 대해 이미 해본 시도.
+
+    대화 원문만으로는 판단이 흔들려서 구조화된 상태를 따로 둔다. 특히
+    rejected_actions는 "한 번 거절당한 제안은 같은 세션에서 다시 하지 않는다"는
+    절제 규칙(conversational-layer.md 5장)이 참조할 유일한 근거다 — 이 필드가
+    없으면 그 규칙은 지킬 방법이 없다.
+
+    값의 허용 목록은 Package A가 정한다(app.schemas). B는 보관만 한다.
+    """
+
+    current_situation: str | None = None
+    recent_constraints: list[str] = Field(default_factory=list)
+    rejected_actions: list[str] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------- 상태
 
 class AgentState(BaseModel):
@@ -113,6 +171,11 @@ class AgentState(BaseModel):
     # 묻지 않고 폐점 후보도 계속 포함한다(실사용 피드백, 2026-08-13 — 매 턴
     # 버튼을 다시 눌러야 하는 게 불편하다는 지적).
     ignore_operating_hours_until: datetime | None = None
+    # 최근 대화(오래된 것이 앞). MAX_RECENT_TURNS개를 넘으면 앞에서 버린다 —
+    # 자르는 책임은 append_conversation_turn() 한 곳에만 둔다.
+    recent_turns: list[ConversationTurn] = Field(default_factory=list)
+    # 상황 축이 잡은 현재 상태. 상황이 감지된 적이 없으면 None이다.
+    situation_state: SituationState | None = None
     status: Literal["active", "expired"] = "active"
     created_at: datetime = Field(default_factory=now_kst)
     updated_at: datetime = Field(default_factory=now_kst)

@@ -22,10 +22,14 @@ from app.state.errors import StateStoreError
 from app.state.merge import merge_conditions
 from app.state.operations import IgnoredOperation, Operation, validate_all
 from app.state.schema import (
+    MAX_RECENT_TURNS,
+    MAX_TURN_USER_INPUT_CHARS,
+    ConversationTurn,
     FeedbackReasonCode,
     PendingInfoContext,
     RecommendedItem,
     RecommendedItemInput,
+    SituationState,
     UserConditions,
     now_kst,
 )
@@ -117,6 +121,13 @@ class SessionContextResponse(BaseModel):
     # "운영 중이 아닌 곳도 볼게요"가 유효한 만료 시각. A가 now와 비교해서
     # 이번 턴에도 폐점 후보를 계속 포함할지 판정한다(state.py는 판단하지 않음).
     ignore_operating_hours_until: datetime | None = None
+    # 최근 대화(오래된 것이 앞, 최대 MAX_RECENT_TURNS개). A가 상황 판단과 이어지는
+    # 발화 해석에 쓴다. 신뢰할 수 없는 입력이라 프롬프트의 system_instruction에
+    # 치환하면 안 된다(ConversationTurn docstring 참고).
+    recent_turns: list[ConversationTurn] = Field(default_factory=list)
+    # 상황 축이 잡은 현재 상태. 이미 거절당한 제안을 다시 하지 않으려면 A가 이
+    # 값의 rejected_actions를 읽어야 한다.
+    situation_state: SituationState | None = None
     user_conditions: UserConditions = Field(default_factory=UserConditions)
     api_context: ApiContextView = Field(default_factory=ApiContextView)
     condition_version: int = 0
@@ -238,6 +249,34 @@ class SetPendingInfoContextRequest(BaseModel):
 class SetPendingInfoContextResponse(BaseModel):
     session_id: str
     pending_info_context: PendingInfoContext | None
+
+
+class AppendConversationTurnRequest(BaseModel):
+    """방금 끝난 대화 한 턴을 세션에 남기는 요청. (대화층 1단계)
+
+    A가 응답을 다 만든 뒤 한 번 호출한다. 자르기(MAX_RECENT_TURNS)와 원문 길이
+    상한은 B가 책임진다 — 호출부마다 다르게 자르면 상한이 의미를 잃는다.
+    """
+
+    session_id: str
+    turn: ConversationTurn
+
+
+class AppendConversationTurnResponse(BaseModel):
+    session_id: str
+    recent_turns: list[ConversationTurn]
+
+
+class SetSituationStateRequest(BaseModel):
+    """상황 상태를 저장하거나(state) 지운다(None). (대화층 1단계)"""
+
+    session_id: str
+    state: SituationState | None = None
+
+
+class SetSituationStateResponse(BaseModel):
+    session_id: str
+    situation_state: SituationState | None
 
 
 class SetIgnoreOperatingHoursRequest(BaseModel):
@@ -609,6 +648,8 @@ def get_session_context(
         pending_clarification=state.pending_clarification,
         pending_info_context=state.pending_info_context,
         ignore_operating_hours_until=state.ignore_operating_hours_until,
+        recent_turns=state.recent_turns,
+        situation_state=state.situation_state,
         user_conditions=state.user_conditions,
         api_context=_build_api_context_view(state),
         condition_version=state.condition_version,
@@ -817,6 +858,66 @@ def set_pending_info_context(
     return SetPendingInfoContextResponse(
         session_id=state.session_id,
         pending_info_context=state.pending_info_context,
+    )
+
+
+@_wrap_store_errors
+def append_conversation_turn(
+    request: AppendConversationTurnRequest,
+    store: StateStore | None = None,
+) -> AppendConversationTurnResponse | None:
+    """대화 한 턴을 남기고, 오래된 턴을 상한까지 버린다. (대화층 1단계)
+
+    자르는 책임을 여기 한 곳에만 둔다 — 호출부가 각자 자르면 상한이 곧 어긋난다.
+    세션이 없으면 None을 반환하며 세션을 생성하지 않는다(다른 갱신 함수들과 같은
+    방어 패턴).
+    """
+    store = store or get_store()
+
+    state = store.get_state(request.session_id)
+    if state is None:
+        return None
+
+    turn = request.turn
+    if len(turn.user_input) > MAX_TURN_USER_INPUT_CHARS:
+        # 자르는 것은 길이 상한을 지키기 위해서지 요약이 아니다 — 뒷부분이
+        # 사라진다는 사실을 감추지 않으려고 말줄임표를 붙이지 않는다.
+        turn = turn.model_copy(
+            update={"user_input": turn.user_input[:MAX_TURN_USER_INPUT_CHARS]}
+        )
+
+    state.recent_turns = [*state.recent_turns, turn][-MAX_RECENT_TURNS:]
+    session_module.touch(state)
+    store.save_state(state)
+
+    return AppendConversationTurnResponse(
+        session_id=state.session_id,
+        recent_turns=state.recent_turns,
+    )
+
+
+@_wrap_store_errors
+def set_situation_state(
+    request: SetSituationStateRequest,
+    store: StateStore | None = None,
+) -> SetSituationStateResponse | None:
+    """상황 상태를 저장하거나(state) 지운다(None). (대화층 1단계)
+
+    세션이 없으면 None을 반환하며 세션을 생성하지 않는다.
+    """
+    store = store or get_store()
+
+    state = store.get_state(request.session_id)
+    if state is None:
+        return None
+
+    state.situation_state = request.state
+    session_module.touch(state)
+    store.save_state(state)
+
+    return SetSituationStateResponse(
+        session_id=state.session_id,
+        situation_state=state.situation_state,
     )
 
 
