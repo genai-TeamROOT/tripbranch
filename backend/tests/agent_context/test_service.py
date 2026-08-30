@@ -1539,10 +1539,13 @@ async def test_info_concentration_today_question_resolves_via_database_first() -
 
 @pytest.mark.asyncio
 async def test_info_concentration_today_question_allows_realtime_hub_outside_service_area() -> None:
-    """TP-171: 강남역류 — DB엔 없고 지원 16개 구 밖이어도 위치 단계에서 막히지 않는다.
+    """TP-171: 지원 25개 구(D-107, 서울 전역) 밖의 실시간 인구 허브류 — DB엔
+    없고 지원 구 밖이어도 위치 단계에서 막히지 않는다.
 
     PLACE_IDENTITY로 바꾸면서 지역 제한까지 같이 켜졌다면 이 요청은 unsupported로
     끝났을 것이다 — enforce_service_area 오버라이드가 실제로 동작하는지 증명한다.
+    좌표는 서울 25개 구 전체 밖(경기 남부)의 합성값이라, 실제 지명이 무엇이든
+    이 판정에는 영향이 없다.
     """
     outside_lat, outside_lon = 37.30, 127.20
     local_search = _FixedLocalSearchProvider(

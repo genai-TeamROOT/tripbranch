@@ -45,12 +45,13 @@ def test_find_district_by_gps_prefers_polygon_containment() -> None:
 
 
 def test_find_district_by_gps_falls_back_to_nearest_when_outside_all_polygons() -> None:
-    # 부천역(경기) — 어느 지원 구 폴리곤에도 안 들어가지만 가장 가까운 지원 구가
-    # 15km 이내라 그 구를 반환해야 한다. 서울 25개 구가 전부 지원 범위가 되면서
-    # (2026-08-29) 서울 안에는 폴리곤 밖 좌표가 남지 않아 경기 좌표를 쓴다.
-    district = find_district_by_gps(37.4844, 126.7830)
+    # 구리역(경기 구리시) — 서울 25개 구 전체가 지원 구가 된 뒤에도(D-107)
+    # 여전히 어느 폴리곤에도 안 들어가는 서울 밖 지점이다(test_service_area.py
+    # _OUTSIDE 픽스처와 동일 좌표). 가장 가까운 지원 구가 15km 이내라 그
+    # 구(중랑구)를 반환해야 한다.
+    district = find_district_by_gps(37.5991, 127.1397)
     assert district is not None
-    assert district.name == "양천구"
+    assert district.name == "중랑구"
 
 
 def test_find_district_by_gps_returns_none_far_outside_seoul() -> None:
