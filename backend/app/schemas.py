@@ -253,6 +253,30 @@ class Intent(StrEnum):
     OUT_OF_SCOPE = "OUT_OF_SCOPE"
 
 
+class InteractionMode(StrEnum):
+    """사용자가 지금 무엇을 하고 있는지. Intent와 **직교하는 별개 축**이다.
+
+    (docs/design/conversational-layer.md) 상황은 Intent 중 하나가 아니다 —
+    "비 오는데 실내 카페 추천해줘"는 RECOMMEND면서 동시에 상황이고, "지쳤는데
+    경복궁 지금 붐벼?"는 INFO면서 동시에 상황이다. GENERAL 하위 주제로 넣으면
+    이런 발화를 잘못 처리하고, 이미 두 역할(정체성 질문·상식 폴백)을 지고 있는
+    GENERAL이 만능 라벨이 된다.
+
+    값을 둘로만 시작하는 것은 의도적이다. 모드를 처음부터 5개씩 만들면 인텐트
+    라벨에서 피하려던 과부하를 다른 필드에서 그대로 반복하게 된다. 실제로 구분이
+    필요해지는 시점에 늘린다.
+
+    실측(2026-08-30, scripts/test_situational_utterances.py)으로 확인한 현재
+    동작: 상황 발화는 한 곳으로 떨어지지 않고 흩어진다 — "다리를 다쳤어"와
+    "아 비 오네"는 RECOMMEND(조건 없이 조용히 검색을 시작한다), "너무 지친다"와
+    "오늘 진짜 되는 일이 없네"는 OUT_OF_SCOPE/unrelated(거절), "아 오늘
+    휴관이래"는 GENERAL. 이 축이 없으면 상황을 알아채는 일 자체가 불가능하다.
+    """
+
+    DIRECT_REQUEST = "direct_request"
+    SITUATIONAL = "situational"
+
+
 class OutputStatus(StrEnum):
     COMPLETE = "complete"
     NEEDS_CLARIFICATION = "needs_clarification"
@@ -673,6 +697,9 @@ class LLMOutput(BaseModel):
 
     intent: Intent
     status: OutputStatus
+    # Intent와 직교하는 축(대화층 2단계). 분류 단계가 정한 값을 그대로 옮겨
+    # 담기만 한다 — 이 envelope는 판단하지 않는다.
+    interaction_mode: InteractionMode = InteractionMode.DIRECT_REQUEST
     recommend: RecommendPayload | None = None
     info: InfoPayload | None = None
     modify: ModifyPayload | None = None
@@ -717,6 +744,9 @@ class IntentClassificationResult(BaseModel):
     """
 
     intent: Intent
+    # Intent와 나란한 별개 축. 기본값이 DIRECT_REQUEST라 이 필드를 안 채우는
+    # 모델·스텁도 지금까지와 똑같이 동작한다.
+    interaction_mode: InteractionMode = InteractionMode.DIRECT_REQUEST
     out_of_scope_category: OutOfScopeCategory | None = None
     out_of_scope_severity: Severity | None = None
 

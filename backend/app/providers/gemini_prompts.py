@@ -95,6 +95,10 @@ def build_intent_classification_instruction(
         intent_priority=load_text("router/intent_priority.md"),
         context_rules=load_text("router/context_rules.md"),
         boundary_cases=load_text("router/boundary_cases.md"),
+        # interaction_mode는 Intent와 직교하는 별개 축이라 판별 규칙도 따로
+        # 둔다(대화층 2단계) — 인텐트 우선순위 캐스케이드에 섞으면 GENERAL이
+        # 다시 만능 라벨이 된다.
+        interaction_mode=load_text("router/interaction_mode.md"),
         # OUT_OF_SCOPE 판정 자체는 분류기가 하지만, 규칙 문구의 소유는
         # out_of_scope/에 둔다 — 그래야 해당 인텐트 담당자도 자기 폴더만 열고
         # 수정·이력 관리를 할 수 있다.
