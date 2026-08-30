@@ -721,6 +721,22 @@ class IntentClassificationResult(BaseModel):
     out_of_scope_severity: Severity | None = None
 
 
+class ConversationTurnView(BaseModel):
+    """프롬프트에 넘길 최근 대화 한 턴. (대화층 1단계)
+
+    B가 보관하는 ConversationTurn은 어시스턴트 쪽을 원문이 아니라 재료(intent/
+    question_type/장소명/제안)로 들고 있다. 그 재료를 사람이 읽는 한 줄로 조립하는
+    건 A의 책임이고(agent_runtime), 조립은 순수 함수라 LLM 호출이 늘지 않는다.
+
+    **이 값은 신뢰할 수 없는 입력이다.** 프롬프트에 실을 때 system_instruction
+    문자열에 치환하면 사용자가 쓴 글이 시스템 지시문 내부에 박힌다 — 반드시
+    대화 내용(contents) 자리에 역할을 나눠 넣어야 한다.
+    """
+
+    user_input: str
+    assistant_summary: str | None = None
+
+
 class InterpretRequest(BaseModel):
     user_input: str = Field(..., min_length=1)
 
@@ -751,6 +767,9 @@ class InterpretRequest(BaseModel):
     # 상태 계약에 새 필드를 추가하지 않고도, 현재 대화 화면이 이미 받은 카드 정보를
     # 다음 턴의 해석에 재사용할 수 있게 한다.
     conversation_place_name: str | None = None
+    # 최근 대화(오래된 것이 앞). 라우터가 B의 SessionContextResponse.recent_turns를
+    # 조립해 채운다 — 호출자가 보낸 값은 무시된다(위 5개 필드와 같은 원칙).
+    recent_turns: list[ConversationTurnView] = Field(default_factory=list)
 
 
 # === Agent Runtime (A-03) ===
