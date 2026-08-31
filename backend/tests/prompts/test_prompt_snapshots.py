@@ -103,6 +103,15 @@ def test_schedule_plan_context_snapshot() -> None:
     _assert_snapshot("schedule_plan_context", rendered)
 
 
+def test_schedule_plan_context_with_must_include_snapshot() -> None:
+    """보관함에 담긴 장소가 [반드시 포함]에 이름과 함께 실린다. (SCHEDULE-12)"""
+
+    rendered = gemini_prompts.format_schedule_planning_context(
+        fixtures.planning_request_with_must_include(), fixtures.START_TIME
+    )
+    _assert_snapshot("schedule_plan_context__must_include", rendered)
+
+
 def test_schedule_fill_snapshot() -> None:
     _assert_snapshot("schedule_fill", gemini_prompts.build_schedule_fill_instruction())
 

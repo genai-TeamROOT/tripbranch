@@ -1,6 +1,6 @@
 begin;
 
--- 사진 검색에 평균 빼기를 더한다(D-114).
+-- 사진 검색에 평균 빼기를 더한다(D-115).
 --
 -- 왜. 사진 경로의 실패 11건이 전부 "종류·형태·구도는 맞고 분위기만 다름"이었다.
 -- 능인선원(실내 불상)에 성덕사(한옥 외관), 어수선한 주택가 골목에 정돈된 익선동
@@ -33,7 +33,7 @@ create table if not exists public.place_mood_center (
 );
 
 comment on table public.place_mood_center is
-  '사진 검색에서 빼는 전체 평균 벡터(D-114). 적재 후 refresh_place_mood_center()로 갱신한다.';
+  '사진 검색에서 빼는 전체 평균 벡터(D-115). 적재 후 refresh_place_mood_center()로 갱신한다.';
 
 -- place_mood_vectors와 같은 규칙이다. 클라이언트 직접 접근을 막고 FastAPI의
 -- 서버 권한으로만 쓴다. 새 테이블은 기본이 열린 상태라 여기서 닫지 않으면
@@ -93,7 +93,7 @@ create or replace function public.search_place_mood(
   p_latitude float default null,
   p_longitude float default null,
   p_radius_km float default null,
-  -- true면 질의와 장소 벡터에서 각각 전체 평균을 빼고 비교한다(D-114).
+  -- true면 질의와 장소 벡터에서 각각 전체 평균을 빼고 비교한다(D-115).
   -- 기본을 false로 둔 이유는 이 인자를 모르는 기존 호출이 동작을 바꾸지 않게
   -- 하려는 것이다 — 켜고 끄는 판단은 호출부(설정)가 한다.
   p_mean_center boolean default false

@@ -24,6 +24,7 @@ from app.domain.models import (
 )
 from app.errors import AppError
 from app.place_search_policy import PLACE_SEARCH_LDONG_REGION_CODE
+from app.providers.tour_category_registry import TourCategoryRegistry, get_tour_category_registry
 from app.service_area import SUPPORTED_DISTRICT_CODES
 
 # search_place_evidence RPC가 강제하는 후보 상한. 넘으면 RPC가 즉시 에러를
@@ -72,6 +73,12 @@ _PLACE_SUMMARY_COLUMNS = ",".join(
         "operating_parse_status",
         "operating_parser_version",
         "detail_fetched_at",
+        # Ops의 구별 카테고리 현황은 같은 전량 조회를 재사용한다. 원본 행은 응답에
+        # 내보내지 않고 대·중·소분류별 건수와 예시 두 개만 조립한다.
+        "title",
+        "lcls_systm1",
+        "lcls_systm2",
+        "lcls_systm3",
     )
 )
 _STATE_COLUMNS = ",".join(
@@ -162,6 +169,11 @@ _BARRIER_FREE_COLUMNS = ",".join(
 _BARRIER_FREE_FIELDS = tuple(_BARRIER_FREE_COLUMNS.split(","))
 _VALID_RUN_STATUSES = {"success", "partial_failure", "failed"}
 _VALID_PARSE_STATUSES = {"parsed", "partial", "unknown", "assumed"}
+# 사후면세점은 세금 환급이 가능한 일반 매장까지 대량 포함한다. 단순 가나다순 예시만
+# 보이면 면세점 성격으로 오해하기 쉬워, 대표적인 생활 쇼핑 브랜드를 먼저 보여준다.
+_CATEGORY_EXAMPLE_PREFIXES: dict[str, tuple[str, ...]] = {
+    "SH040300": ("다이소", "올리브영"),
+}
 T = TypeVar("T")
 
 
@@ -289,9 +301,7 @@ def _title_filters(name: str) -> list[str]:
     #
     # 와일드카드가 여는 괄호 뒤에만 있어 부분 일치로 넓어지지 않는다 — "조계사"가
     # "조계사터"나 "조계사길"에는 걸리지 않는다.
-    filters.extend(
-        [f"ilike.{name} [*", f"ilike.{name} (*", f"ilike.{name}(*"]
-    )
+    filters.extend([f"ilike.{name} [*", f"ilike.{name} (*", f"ilike.{name}(*"])
     return filters
 
 
@@ -330,9 +340,7 @@ def _title_filter_matcher(title_filter: str) -> Callable[[str], bool]:
     if operator == "eq":
         return lambda title: title == value
     # ilike: `*`만 와일드카드이고 나머지는 글자 그대로다.
-    pattern = "".join(
-        ".*" if part == "*" else re.escape(part) for part in re.split(r"(\*)", value)
-    )
+    pattern = "".join(".*" if part == "*" else re.escape(part) for part in re.split(r"(\*)", value))
     compiled = re.compile(f"^{pattern}$", re.IGNORECASE)
     return lambda title: compiled.match(title) is not None
 
@@ -359,9 +367,7 @@ def _select_by_filter_priority(
         title = row.get("title")
         if not isinstance(title, str):
             continue
-        rank = next(
-            (index for index, matches in enumerate(matchers) if matches(title)), None
-        )
+        rank = next((index for index, matches in enumerate(matchers) if matches(title)), None)
         if rank is None:
             continue
         if best_rank is None or rank < best_rank:
@@ -496,8 +502,7 @@ class SupabasePlaceRepository:
                 "/place_preference_tags",
                 params={
                     "select": (
-                        "content_id,preference_code,preference_label,"
-                        "display_rank,mention_count"
+                        "content_id,preference_code,preference_label,display_rank,mention_count"
                     ),
                     "content_id": "in.(" + ",".join(chunk) + ")",
                     "order": "content_id.asc,display_rank.asc",
@@ -622,7 +627,7 @@ class SupabasePlaceRepository:
         google/siglip2-base-patch16-224로 길이 1 정규화 상태에서 했다.
 
         `mean_center`를 켜면 질의와 장소 벡터에서 각각 전체 평균을 빼고
-        비교한다(D-114). **돌아오는 similarity의 눈금이 달라진다** — 공통
+        비교한다(D-115). **돌아오는 similarity의 눈금이 달라진다** — 공통
         성분이 빠져 값이 전반적으로 낮아지므로, 켠 결과와 끈 결과의 숫자를
         직접 견주면 안 된다. 순위만 쓴다.
         """
@@ -913,22 +918,16 @@ class SupabasePlaceRepository:
                     else None
                 ),
                 rest_date_raw=(
-                    str(raw["rest_date_raw"])
-                    if raw.get("rest_date_raw") is not None
-                    else None
+                    str(raw["rest_date_raw"]) if raw.get("rest_date_raw") is not None else None
                 ),
                 is_active=bool(raw.get("is_active")),
                 inactive_reason=(
-                    str(raw["inactive_reason"])
-                    if raw.get("inactive_reason") is not None
-                    else None
+                    str(raw["inactive_reason"]) if raw.get("inactive_reason") is not None else None
                 ),
             )
         return states
 
-    async def find_active_places_by_name(
-        self, name: str
-    ) -> tuple[StoredPlaceLocation, ...]:
+    async def find_active_places_by_name(self, name: str) -> tuple[StoredPlaceLocation, ...]:
         """TourAPI 기준 장소명을 정확히 일치시켜 검색 중심 좌표를 읽는다.
 
         장소명 검색은 지오코딩보다 먼저 수행한다. 좌표가 없는 행은 검색 중심점으로
@@ -1233,9 +1232,7 @@ class SupabasePlaceRepository:
         # 없고 주차만 있는 장소가 empty에서 success로 바뀌어 재조회 주기가 달라진다 —
         # 이 컬럼은 운영정보 확보 여부를 뜻하므로 기존 의미를 유지한다(D-056).
         detail_status = (
-            "empty"
-            if operating_hours_raw is None and rest_date_raw is None
-            else "success"
+            "empty" if operating_hours_raw is None and rest_date_raw is None else "success"
         )
         await self._request(
             "PATCH",
@@ -1339,10 +1336,7 @@ class SupabasePlaceRepository:
                 "area_code": f"eq.{area_code}",
                 "district_code": f"eq.{district_code}",
                 "is_active": "eq.true",
-                "or": (
-                    f"(last_sync_run_id.neq.{sync_run_id},"
-                    "last_sync_run_id.is.null)"
-                ),
+                "or": (f"(last_sync_run_id.neq.{sync_run_id},last_sync_run_id.is.null)"),
             },
             json={
                 "is_active": False,
@@ -1433,8 +1427,8 @@ class SupabasePlaceRepository:
         넣을 때마다 적재와 조회 두 곳을 고쳐야 한다. 전량을 한 번 훑어
         (area_code, district_code)로 묶으면 적재된 구가 결과에서 그대로 드러난다.
 
-        전량이라 해도 세 개 구 2,300행 남짓에 열은 일곱 개뿐이라, 상태별로 count
-        질의를 나누는 것보다 싸다.
+        전량이라 해도 세 개 구 2,300행 남짓에 상태·분류·제목 열만 읽으므로,
+        상태별로 count 질의를 나누는 것보다 싸다.
         """
         rows = await self._fetch_place_summary_rows()
 
@@ -1446,20 +1440,25 @@ class SupabasePlaceRepository:
             )
             grouped.setdefault(key, []).append(row)
 
+        registry = get_tour_category_registry()
         return {
-            "overall": _summarize_places(rows),
+            "overall": {
+                **_summarize_places(rows),
+                "category_coverage": _summarize_category_coverage(rows, registry),
+            },
             "districts": [
                 {
                     "area_code": area_code,
                     "district_code": district_code,
                     **_summarize_places(group),
+                    "category_coverage": _summarize_category_coverage(group, registry),
                 }
                 for (area_code, district_code), group in sorted(grouped.items())
             ],
         }
 
     async def _fetch_place_summary_rows(self) -> list[Mapping[str, object]]:
-        """요약에 필요한 일곱 열만 전량 받는다. PostgREST는 한 응답에 1000행까지다."""
+        """상태·분류·제목 요약에 필요한 열만 전량 받는다. PostgREST는 한 응답에 1000행까지다."""
         rows: list[Mapping[str, object]] = []
         offset = 0
         while True:
@@ -1562,9 +1561,7 @@ class SupabasePlaceRepository:
                 rows_by_id[str(raw["content_id"])] = raw
         return [rows_by_id[content_id] for content_id in unique_ids if content_id in rows_by_id]
 
-    async def list_detail_backfill_ids(
-        self, area_code: str, district_code: str
-    ) -> list[str]:
+    async def list_detail_backfill_ids(self, area_code: str, district_code: str) -> list[str]:
         """상세 정보를 아직 못 채운 장소의 content_id.
 
         동기화는 대조가 정한 변경분 외에 이 장소들도 함께 부른다
@@ -1654,9 +1651,7 @@ class SupabasePlaceRepository:
             raise SupabaseRepositoryError("invalid sync run list response")
         return [dict(row) for row in payload if isinstance(row, Mapping)]
 
-    async def find_missing_concentration_mappings(
-        self, content_ids: Sequence[str]
-    ) -> list[str]:
+    async def find_missing_concentration_mappings(self, content_ids: Sequence[str]) -> list[str]:
         """집중률 매핑이 없는 content_id를 가려낸다.
 
         매핑이 없는 장소는 혼잡도 조회를 **아예 하지 않고** no_data로 끝난다
@@ -1726,9 +1721,7 @@ class SupabasePlaceRepository:
                 return counts
             offset += _READ_PAGE_SIZE
 
-    async def list_barrier_free_fetched_at(
-        self, content_ids: Sequence[str]
-    ) -> dict[str, datetime]:
+    async def list_barrier_free_fetched_at(self, content_ids: Sequence[str]) -> dict[str, datetime]:
         """무장애 정보를 언제 확인했는지. 행이 없는 장소는 결과에도 없다.
 
         값이 비어 있는 행도 "확인했다"로 센다 — 무장애 목록에 있는데도 15개 필드가
@@ -1833,9 +1826,7 @@ class SupabasePlaceRepository:
             lock["run_api_total_count"] = run.get("api_total_count") if run else None
         return locks
 
-    async def _get_sync_runs_by_ids(
-        self, run_ids: Sequence[str]
-    ) -> dict[str, dict[str, object]]:
+    async def _get_sync_runs_by_ids(self, run_ids: Sequence[str]) -> dict[str, dict[str, object]]:
         """id로 동기화 실행을 찾아 id → 행으로 돌려준다."""
         response = await self._request(
             "GET",
@@ -1889,6 +1880,147 @@ def _summarize_places(rows: Sequence[Mapping[str, object]]) -> dict[str, object]
     }
 
 
+def _summarize_category_coverage(
+    rows: Sequence[Mapping[str, object]], registry: TourCategoryRegistry
+) -> dict[str, object]:
+    """활성 장소만 TourAPI 대·중·소분류 트리로 묶는다.
+
+    Ops 화면의 목적은 추천 가능한 관광 데이터가 어느 구에 얼마나 있는지 보는
+    것이다. 비활성 장소는 원본 목록에서 사라진 과거 행일 수 있어 제외한다.
+    다만 코드가 비어 있는 활성 행은 버리지 않고 ``분류 미확인`` 그룹으로 남겨
+    동기화·원본 데이터 누락을 확인할 수 있게 한다.
+    """
+    leaves: dict[tuple[str | None, str | None, str | None], dict[str, object]] = {}
+    for row in rows:
+        if not row.get("is_active"):
+            continue
+        large = _category_code(row.get("lcls_systm1"))
+        middle = _category_code(row.get("lcls_systm2"))
+        small = _category_code(row.get("lcls_systm3"))
+        leaf = leaves.setdefault(
+            (large, middle, small),
+            {"count": 0, "examples": set()},
+        )
+        leaf["count"] = int(leaf["count"]) + 1
+        title = str(row.get("title") or "").strip()
+        if title:
+            examples = leaf["examples"]
+            assert isinstance(examples, set)
+            examples.add(title)
+
+    middle_keys = {(large, middle) for large, middle, _small in leaves}
+    groups: list[dict[str, object]] = []
+    large_codes = {large for large, _middle, _small in leaves}
+    for large in sorted(large_codes, key=lambda code: _category_sort_key(code, "large")):
+        middle_groups: list[dict[str, object]] = []
+        middles = {middle for current_large, middle, _small in leaves if current_large == large}
+        for middle in sorted(middles, key=lambda code: _category_sort_key(code, "middle")):
+            small_groups: list[dict[str, object]] = []
+            smalls = {
+                small
+                for current_large, current_middle, small in leaves
+                if current_large == large and current_middle == middle
+            }
+            for small in sorted(smalls, key=lambda code: _category_sort_key(code, "small")):
+                leaf = leaves[(large, middle, small)]
+                examples = leaf["examples"]
+                assert isinstance(examples, set)
+                small_groups.append(
+                    {
+                        "code": small,
+                        "label": _category_label(registry, large, middle, small, "small"),
+                        "count": leaf["count"],
+                        "examples": _category_examples(small, examples),
+                    }
+                )
+            middle_groups.append(
+                {
+                    "code": middle,
+                    "label": _category_label(registry, large, middle, None, "middle"),
+                    "count": sum(int(item["count"]) for item in small_groups),
+                    "smalls": small_groups,
+                }
+            )
+        groups.append(
+            {
+                "code": large,
+                "label": _category_label(registry, large, None, None, "large"),
+                "count": sum(int(item["count"]) for item in middle_groups),
+                "middles": middle_groups,
+            }
+        )
+
+    groups.sort(key=lambda group: (-int(group["count"]), str(group["label"])))
+    for group in groups:
+        middles = group["middles"]
+        assert isinstance(middles, list)
+        middles.sort(key=lambda item: (-int(item["count"]), str(item["label"])))
+        for middle in middles:
+            smalls = middle["smalls"]
+            assert isinstance(smalls, list)
+            smalls.sort(key=lambda item: (-int(item["count"]), str(item["label"])))
+
+    return {
+        "active_place_count": sum(int(leaf["count"]) for leaf in leaves.values()),
+        "large_category_count": len(large_codes),
+        "middle_category_count": len(middle_keys),
+        "small_category_count": len(leaves),
+        "groups": groups,
+    }
+
+
+def _category_code(value: object) -> str | None:
+    code = str(value or "").strip()
+    return code or None
+
+
+def _category_examples(small_code: str | None, examples: set[object]) -> list[str]:
+    """소분류를 설명하기 좋은 대표 장소를 최대 두 개 고른다.
+
+    기본은 DB 순서와 무관한 제목순이다. 다만 사후면세점처럼 관광공사 코드명이
+    실제 포함 매장의 성격을 충분히 설명하지 못하는 경우는 대표 브랜드를 우선한다.
+    """
+    titles = sorted(str(example) for example in examples)
+    selected: list[str] = []
+    for prefix in _CATEGORY_EXAMPLE_PREFIXES.get(small_code or "", ()):
+        match = next((title for title in titles if title.startswith(prefix)), None)
+        if match is not None:
+            selected.append(match)
+    selected.extend(title for title in titles if title not in selected)
+    return selected[:2]
+
+
+def _category_sort_key(code: str | None, level: str) -> tuple[int, str]:
+    """정상 코드를 먼저, ``분류 미확인``은 각 단계의 마지막에 둔다."""
+    return (1 if code is None else 0, code or level)
+
+
+def _category_label(
+    registry: TourCategoryRegistry,
+    large: str | None,
+    middle: str | None,
+    small: str | None,
+    level: str,
+) -> str:
+    if level == "small" and small is not None:
+        category = registry.get_by_small_code(small)
+        if category is not None:
+            return category.lcls_systm3_name
+    if level == "middle" and middle is not None:
+        categories = registry.find_by_middle_code(middle)
+        if categories:
+            return categories[0].lcls_systm2_name
+    if level == "large" and large is not None:
+        categories = registry.find_by_large_code(large)
+        if categories:
+            return categories[0].lcls_systm1_name
+    return (
+        "분류 미확인"
+        if (large if level == "large" else middle if level == "middle" else small) is None
+        else f"코드 {large if level == 'large' else middle if level == 'middle' else small}"
+    )
+
+
 def _bump(counter: dict[str, int], value: object) -> None:
     key = str(value) if value is not None else "null"
     counter[key] = counter.get(key, 0) + 1
@@ -1919,9 +2051,7 @@ def _to_evidence_snippet(item: object) -> PlaceEvidenceSnippet:
         source_text=str(item.get("source_text") or ""),
         source_url=str(item["source_url"]) if item.get("source_url") else None,
         similarity=float(item["similarity"]),
-        published_at=(
-            datetime.fromisoformat(str(published_at)) if published_at else None
-        ),
+        published_at=(datetime.fromisoformat(str(published_at)) if published_at else None),
     )
 
 

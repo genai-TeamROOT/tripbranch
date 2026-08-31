@@ -26,6 +26,7 @@ from app.schemas import (
     ComparisonItem,
     ComparisonResult,
     ConversationTurnView,
+    GeneralTopic,
     Intent,
     LLMOutput,
     OutputStatus,
@@ -55,6 +56,47 @@ _TOOL_TERMINAL_STATUSES = frozenset(
 )
 
 _RECOMMEND_WRAPPER_MESSAGE = "이런 곳들을 찾아봤어요:"
+
+# 서비스 정체성 질문은 LLM이 매번 가능한 기능을 새로 나열하게 두지 않는다. 안내에
+# 없는 기능을 약속하면 곧바로 OUT_OF_SCOPE로 이어지므로, 실제 연결된 기능·질문만
+# 고정 카탈로그로 보여준다. GENERAL SERVICE_IDENTITY는 "넌 누구야?"도 포함하므로
+# 짧은 소개와 기능 안내를 한 답변에 함께 둔다.
+_SERVICE_IDENTITY_MESSAGE = """# TripBranch 여행 도우미
+
+국내 여행에서 갈 만한 장소를 찾고, 방문에 필요한 정보를 확인해드려요.
+
+## 장소 추천·조건 변경
+- 비를 피할 실내 카페 추천해줘
+- 조금 더 조용한 곳으로 바꿔줘
+- 박물관은 빼줘
+
+## 장소 비교·일정
+- 1번이랑 3번 중 어디가 더 가까워?
+- 추천한 곳으로 오후 일정 짜줘
+
+## 장소 상세정보
+- 경복궁 운영시간과 휴무일 알려줘
+- 경복궁 주차나 입장료 있어?
+- 휠체어로 이용하기 괜찮아?
+
+## 혼잡도
+- 경복궁 지금 사람 많아?
+- 경복궁 주말에 붐빌까?
+
+## 실시간 상권
+- 용리단길 식당 지금 사람 많아?
+- 성수 카페거리 카페 지금 사람 많아?
+
+## 실시간 주차
+- 경복궁 근처 주차할 곳 있어?
+- 종로구 공영주차장 자리 있어?
+
+## 실시간 행사·교통
+- 오늘 여의도 근처 행사 있어?
+- 강남역 지하철 언제 와?
+- 경복궁 가는 길 막혀?
+
+실시간 정보는 서울시 제공 지역과 데이터 제공 범위 안에서 확인할 수 있어요."""
 
 MessageDeltaCallback = Callable[[str], Awaitable[None]]
 
@@ -817,6 +859,22 @@ def _format_duration_label(total_minutes: int) -> str:
     return f"{minutes}분"
 
 
+def _with_omitted_note(message: str, schedule: ScheduleResult) -> str:
+    """담아둔 장소를 못 담았으면 그 사실을 한 문장으로 덧붙인다. (SCHEDULE-12)
+
+    빠진 장소가 없으면 message를 그대로 돌려준다 — 이게 정상 경로다.
+    """
+
+    names = schedule.omitted_saved_place_names
+    if not names:
+        return message
+    joined = ", ".join(names)
+    return (
+        f"{message} 담아두신 {joined}은 이번 일정에 넣지 못했어요 — "
+        "시간을 늘리거나 다른 곳을 빼고 다시 요청해보실래요?"
+    )
+
+
 def compose_schedule_message(
     schedule: ScheduleResult, *, time_available_min: int | None = None
 ) -> str:
@@ -834,10 +892,15 @@ def compose_schedule_message(
     total_duration_min과의 차이가 _DURATION_MATCH_TOLERANCE_MIN 이내면 요청
     시간을 그대로 보여준다("2시간 짜줘" → "2시간 코스를 짜봤어요"). 차이가 크면
     실제 편성 결과가 요청과 동떨어졌다는 뜻이므로 실제 계산값을 보여준다.
+
+    omitted_saved_place_names가 있으면 한 문장을 덧붙인다(SCHEDULE-12) — 담아둔
+    장소를 조용히 빠뜨리면 사용자는 자기가 고른 곳이 왜 없는지 알 수 없다.
+    items가 비어 있는 경우에도 붙인다: 일정을 아예 못 짠 이유가 담아둔 장소와
+    무관하지 않을 수 있어서다.
     """
 
     if not schedule.items:
-        return schedule.route_summary
+        return _with_omitted_note(schedule.route_summary, schedule)
 
     if (
         time_available_min is not None
@@ -846,7 +909,9 @@ def compose_schedule_message(
         duration_label = _format_duration_label(time_available_min)
     else:
         duration_label = _format_duration_label(schedule.total_duration_min)
-    return f"{duration_label} 코스를 짜봤어요. {schedule.route_summary}"
+    return _with_omitted_note(
+        f"{duration_label} 코스를 짜봤어요. {schedule.route_summary}", schedule
+    )
 
 
 async def compose_chat_message(
@@ -937,6 +1002,10 @@ async def _compose_chat_message(
 
     if llm_output.intent is Intent.GENERAL:
         assert llm_output.general is not None
+        if llm_output.general.topic is GeneralTopic.SERVICE_IDENTITY:
+            if on_message_delta is not None:
+                await on_message_delta(_SERVICE_IDENTITY_MESSAGE)
+            return _SERVICE_IDENTITY_MESSAGE
         # 상황에 맞는 제안이 있으면(대화층 3단계) 답변 끝에 자연스러운 질문으로
         # 붙인다. 무엇을 제안할지는 여기서 정하지 않는다 — situational_offers가
         # 코드로 이미 정해 둔 것을 문장으로 바꾸는 것만 LLM에 맡긴다.

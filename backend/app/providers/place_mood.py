@@ -75,7 +75,7 @@ def _search_summary(
     어디에 있나다.
 
     `mean_center`를 함께 싣는 이유는 그것이 유사도의 눈금을 바꾸기 때문이다
-    (D-114). 켠 요청과 끈 요청의 값을 한 눈금으로 보면 컷을 엉뚱하게 잡는다.
+    (D-115). 켠 요청과 끈 요청의 값을 한 눈금으로 보면 컷을 엉뚱하게 잡는다.
     """
     sims = [match.similarity for match in matches]
     single_photo = sum(
@@ -125,7 +125,7 @@ class PlaceMoodProvider:
         self._encoder = encoder
         self._match_count = match_count
         self._min_similarity = min_similarity
-        # 조회할 때 전체 평균을 뺄지(D-114). 사진 경로에만 걸린다 — 축 점수는
+        # 조회할 때 전체 평균을 뺄지(D-115). 사진 경로에만 걸린다 — 축 점수는
         # 이미 계산돼 저장돼 있고, 축 점수는 방향과의 내적이라 중심을 빼면
         # 값의 의미가 달라진다.
         self._mean_center = mean_center

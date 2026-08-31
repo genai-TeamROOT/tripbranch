@@ -5,7 +5,7 @@
 
 이 문서는 **지금 어떻게 동작하고 무엇을 해야 하는가**를 적는다. 왜 이 모델·이 축인지를
 고른 과정과 측정 기록은 저장소 밖 연구 기록에 있고, 결론만 `docs/decision-log.md`의
-D-082·D-087·D-094·D-114에 남아 있다.
+D-082·D-087·D-094·D-115에 남아 있다.
 
 ## 1. 두 경로
 
@@ -21,7 +21,7 @@ D-082·D-087·D-094·D-114에 남아 있다.
 | 읽는 값 | `axis_scores` (미리 계산됨) | `embedding` (실행 시 비교) |
 | 모델이 서버에 필요한가 | 아니오 | **예** (SigLIP 상주) |
 | 추천 채점을 타는가 | 예 | 아니오 — 사진 유사도만으로 줄 세운다 |
-| 평균 빼기 | 적용하지 않는다 | **적용한다** (D-114) |
+| 평균 빼기 | 적용하지 않는다 | **적용한다** (D-115) |
 
 **사진 경로가 축을 쓰지 않는 것이 요점이다.** 벡터를 통째로 비교하므로 축이 가르는
 차원(낡음·한산함 같은 것)이 "이것이 무슨 장면인가"라는 큰 신호에 묻힌다. 그래서 사진
@@ -53,7 +53,7 @@ place_mood_center        한 행뿐. 사진 검색에서 빼는 중심 벡터
 `anchors_version`은 축 정의의 해시다. 축 문구나 목록이 바뀌면 값이 달라지므로,
 섞인 버전이 있는지는 이 컬럼을 세어 확인한다.
 
-## 3. 평균 빼기 (D-114)
+## 3. 평균 빼기 (D-115)
 
 사진 검색은 질의와 장소 벡터에서 각각 **전체 평균을 빼고** 비교한다.
 
@@ -114,7 +114,7 @@ place_mood_center        한 행뿐. 사진 검색에서 빼는 중심 벡터
 | --- | --- | --- |
 | `PLACE_MOOD_ENABLED` | `false` | 두 경로를 함께 켜고 끈다 |
 | `PLACE_MOOD_WARMUP_ENABLED` | `false` | 기동 때 SigLIP을 미리 올린다 |
-| `PLACE_MOOD_MEAN_CENTER_ENABLED` | `true` | 사진 검색에서 평균을 뺀다(D-114) |
+| `PLACE_MOOD_MEAN_CENTER_ENABLED` | `true` | 사진 검색에서 평균을 뺀다(D-115) |
 
 `PLACE_MOOD_ENABLED`가 꺼져 있으면 나머지 둘은 무시된다.
 
@@ -153,7 +153,7 @@ POST /api/places/similar-by-photo   (multipart)
 - **사진 한 장짜리를 피하는 것.** DB의 56%가 한 장짜리인데 결과에는 5%만 나왔다.
   평균 빼기로 15%까지 올랐고, 새로 들어온 한 장짜리는 오히려 잘 맞았다(14칸 중
   9칸이 "비슷하다"). 피하는 것이 손해라는 쪽이지만 표본이 14건이다.
-- **평균 빼기의 표본.** 질의 28장에서 유의성이 0.05 언저리다(D-114). 다음 측정 때는
+- **평균 빼기의 표본.** 질의 28장에서 유의성이 0.05 언저리다(D-115). 다음 측정 때는
   질의를 새로 마련해야 한다 — 지금 홍보 사진 질의 12장이 강남 것이라, 강남을
   적재하면 그 사진들이 자기 자신을 1위로 찾게 되어 못 쓴다.
 - **사진별 최고점 방식.** 장소 평균 대신 사진 하나하나와 비교해 장소별 최고점을 쓰면
@@ -162,7 +162,7 @@ POST /api/places/similar-by-photo   (multipart)
 
 ## 8. 관련
 
-- `docs/decision-log.md` — D-082·D-087(적재와 색인), D-094(컷 없이 순위만), D-114(평균 빼기)
+- `docs/decision-log.md` — D-082·D-087(적재와 색인), D-094(컷 없이 순위만), D-115(평균 빼기)
 - `backend/app/providers/place_mood.py` · `place_mood_encoder.py`
 - `backend/app/services/photo_similar.py` · `backend/app/routes/photo_similar.py`
 - `backend/app/repositories/supabase_places.py` — `search_place_mood`

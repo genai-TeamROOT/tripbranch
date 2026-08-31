@@ -230,7 +230,7 @@ async def test_radius_is_passed_through() -> None:
 
 @pytest.mark.asyncio
 async def test_mean_center_is_passed_through() -> None:
-    """평균 빼기 설정이 저장소까지 내려간다(D-114).
+    """평균 빼기 설정이 저장소까지 내려간다(D-115).
 
     **여기서 못 박지 않으면 조용히 꺼진 채로 돈다.** 이 값은 응답 모양을 바꾸지
     않고 순위만 바꾸므로, 안 넘어가도 결과는 그럴듯하게 나오고 테스트도 통과한다.

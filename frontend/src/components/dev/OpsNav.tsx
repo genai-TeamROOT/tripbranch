@@ -12,11 +12,12 @@
  * 하나씩 도느라 오래 걸려서, 탭을 옮겨두고 잊기 쉽다.
  */
 
-export type OpsTab = "observe" | "sync";
+export type OpsTab = "observe" | "sync" | "categories";
 
 const TABS: { id: OpsTab; label: string; hint: string }[] = [
   { id: "observe", label: "데이터 관찰", hint: "호출량 · DB 상태 · 통계" },
   { id: "sync", label: "데이터 갱신", hint: "동기화 · 스냅샷 보관" },
+  { id: "categories", label: "구별 카테고리 현황", hint: "대·중·소분류 · 예시 장소" },
 ];
 
 export function OpsNav({

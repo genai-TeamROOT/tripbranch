@@ -17,6 +17,7 @@ from app.domain.models import (
 from app.repositories.supabase_places import (
     SupabasePlaceRepository,
     SupabaseRepositoryError,
+    _category_examples,
 )
 
 RUN_ID = UUID("11111111-1111-4111-8111-111111111111")
@@ -49,6 +50,12 @@ def _place(content_id: str) -> TourPlaceRecord:
         lcls_systm3="VE010100",
         source_modified_at=NOW,
     )
+
+
+def test_사후면세점_예시는_다이소와_올리브영을_우선한다() -> None:
+    examples = {"0914 도산공원 플래그십 스토어", "다이소 종로점", "올리브영 종로점"}
+
+    assert _category_examples("SH040300", examples) == ["다이소 종로점", "올리브영 종로점"]
 
 
 @pytest.mark.asyncio
@@ -84,9 +91,7 @@ async def test_lock_rpcs_send_exact_database_arguments() -> None:
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as client:
         repository = _repository(transport, client)
-        acquired = await repository.try_acquire_sync_lock(
-            "11", "110", RUN_ID, "2 hours"
-        )
+        acquired = await repository.try_acquire_sync_lock("11", "110", RUN_ID, "2 hours")
         released = await repository.release_sync_lock("11", "110", RUN_ID)
 
     assert acquired is True
@@ -114,18 +119,14 @@ async def test_find_active_places_by_name_reads_coordinates_and_mapping() -> Non
                     "address": "서울특별시 종로구 인사동길 44",
                     "latitude": 37.5743062352,
                     "longitude": 126.9848674428,
-                    "place_concentration_mappings": [
-                        {"primary_concentration_name": "쌈지길"}
-                    ],
+                    "place_concentration_mappings": [{"primary_concentration_name": "쌈지길"}],
                 }
             ],
         )
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as client:
-        locations = await _repository(transport, client).find_active_places_by_name(
-            "쌈지길"
-        )
+        locations = await _repository(transport, client).find_active_places_by_name("쌈지길")
 
     assert len(locations) == 1
     assert locations[0].content_id == "128553"
@@ -146,9 +147,7 @@ async def test_find_active_places_by_name_falls_back_through_title_variants() ->
 
     def handler(request: httpx.Request) -> httpx.Response:
         or_filter = request.url.params.get("or")
-        alias = request.url.params.get(
-            "place_concentration_mappings.concentration_aliases"
-        )
+        alias = request.url.params.get("place_concentration_mappings.concentration_aliases")
         seen.append(or_filter if or_filter is not None else f"alias:{alias}")
         if or_filter is None:
             return httpx.Response(200, json=[])
@@ -296,9 +295,7 @@ async def test_find_active_places_by_name_quotes_titles_with_commas() -> None:
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as client:
-        locations = await _repository(transport, client).find_active_places_by_name(
-            "꽃,밥에피다"
-        )
+        locations = await _repository(transport, client).find_active_places_by_name("꽃,밥에피다")
 
     assert seen == [
         '(title.eq."꽃,밥에피다",title.ilike."서울 꽃,밥에피다",'
@@ -372,9 +369,7 @@ async def test_find_active_places_by_name_finds_seoul_prefixed_title() -> None:
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as client:
-        locations = await _repository(transport, client).find_active_places_by_name(
-            "명동성당"
-        )
+        locations = await _repository(transport, client).find_active_places_by_name("명동성당")
 
     # 접두사 필터가 같은 조회에 실려 나간다.
     assert 'title.ilike."서울 명동성당"' in seen[0]
@@ -418,9 +413,7 @@ async def test_find_active_places_by_name_prefers_exact_title_over_prefix() -> N
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as client:
-        locations = await _repository(transport, client).find_active_places_by_name(
-            "명동성당"
-        )
+        locations = await _repository(transport, client).find_active_places_by_name("명동성당")
 
     assert len(locations) == 1
     assert locations[0].content_id == "999999"
@@ -446,16 +439,14 @@ async def test_find_active_places_by_name_does_not_double_prefix() -> None:
 
 @pytest.mark.asyncio
 async def test_find_active_places_by_name_uses_mapping_alias_as_last_resort() -> None:
-    """"창덕궁"은 저장소 제목이 "창덕궁과 후원 [유네스코 세계유산]"이라 제목 규칙으로
+    """ "창덕궁"은 저장소 제목이 "창덕궁과 후원 [유네스코 세계유산]"이라 제목 규칙으로
     닿지 않는다. 접두 매칭으로 넓히면 창덕궁 낙선재·약다방까지 걸리므로 사람이 지정한
     별칭으로만 잇는다.
     """
     alias_filters: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        alias = request.url.params.get(
-            "place_concentration_mappings.concentration_aliases"
-        )
+        alias = request.url.params.get("place_concentration_mappings.concentration_aliases")
         if alias is None:
             return httpx.Response(200, json=[])
         alias_filters.append(alias)
@@ -479,9 +470,7 @@ async def test_find_active_places_by_name_uses_mapping_alias_as_last_resort() ->
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as client:
-        locations = await _repository(transport, client).find_active_places_by_name(
-            "창덕궁"
-        )
+        locations = await _repository(transport, client).find_active_places_by_name("창덕궁")
 
     assert alias_filters == ["cs.{창덕궁}"]
     assert len(locations) == 1
@@ -513,14 +502,10 @@ async def test_get_region_place_states_maps_rows() -> None:
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as client:
-        states = await _repository(
-            transport, client
-        ).get_region_place_states("11", "110")
+        states = await _repository(transport, client).get_region_place_states("11", "110")
 
     assert states["126508"].detail_fetch_status == "pending"
-    assert states["126508"].source_modified_at == datetime(
-        2026, 7, 23, 15, 30, 45, tzinfo=UTC
-    )
+    assert states["126508"].source_modified_at == datetime(2026, 7, 23, 15, 30, 45, tzinfo=UTC)
 
 
 @pytest.mark.asyncio
@@ -554,10 +539,7 @@ async def test_upsert_chunks_by_100_and_preserves_existing_manual_state() -> Non
     assert len(requests) == 3
     request_payloads = [json.loads(request.content) for request in requests]
     assert [len(payload) for payload in request_payloads] == [1, 100, 100]
-    assert all(
-        len({frozenset(row) for row in payload}) == 1
-        for payload in request_payloads
-    )
+    assert all(len({frozenset(row) for row in payload}) == 1 for payload in request_payloads)
     first_row = request_payloads[0][0]
     assert "operating_hours_raw" not in first_row
     assert "detail_fetch_status" not in first_row
@@ -566,9 +548,7 @@ async def test_upsert_chunks_by_100_and_preserves_existing_manual_state() -> Non
     assert new_row["detail_fetch_status"] == "pending"
     assert new_row["is_active"] is True
     assert requests[0].url.params["on_conflict"] == "content_id"
-    assert requests[0].headers["prefer"] == (
-        "resolution=merge-duplicates,return=minimal"
-    )
+    assert requests[0].headers["prefer"] == ("resolution=merge-duplicates,return=minimal")
 
 
 @pytest.mark.asyncio
@@ -646,9 +626,7 @@ async def test_mark_detail_failed_does_not_overwrite_cached_details() -> None:
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as client:
-        await _repository(transport, client).mark_detail_failed(
-            "126508", "TOUR_DETAIL_TIMEOUT"
-        )
+        await _repository(transport, client).mark_detail_failed("126508", "TOUR_DETAIL_TIMEOUT")
 
     assert seen_payload == {
         "detail_fetch_status": "failed",
@@ -825,9 +803,7 @@ async def test_find_concentration_mapped_places_reads_every_page() -> None:
         repository = SupabasePlaceRepository(
             "https://project.supabase.co/", "sb_secret_test", client
         )
-        with mock.patch(
-            "app.repositories.supabase_places._READ_PAGE_SIZE", page_size
-        ):
+        with mock.patch("app.repositories.supabase_places._READ_PAGE_SIZE", page_size):
             places = await repository.find_concentration_mapped_places()
 
     assert len(places) == 7
@@ -852,9 +828,7 @@ async def test_find_concentration_mapped_places_stops_on_partial_page() -> None:
                     "address": None,
                     "latitude": 37.58,
                     "longitude": 127.0,
-                    "place_concentration_mappings": {
-                        "primary_concentration_name": "낙산공원"
-                    },
+                    "place_concentration_mappings": {"primary_concentration_name": "낙산공원"},
                 }
             ],
         )
@@ -883,9 +857,7 @@ async def test_find_concentration_mapped_places_also_reads_array_embed() -> None
                     "address": None,
                     "latitude": 37.58,
                     "longitude": 127.0,
-                    "place_concentration_mappings": [
-                        {"primary_concentration_name": "낙산공원"}
-                    ],
+                    "place_concentration_mappings": [{"primary_concentration_name": "낙산공원"}],
                 }
             ],
         )
@@ -939,6 +911,10 @@ async def test_place_summaries_split_by_district_and_total() -> None:
             "area_code": "11",
             "district_code": "110",
             "is_active": True,
+            "title": "한글 카페",
+            "lcls_systm1": "FD",
+            "lcls_systm2": "FD05",
+            "lcls_systm3": "FD050100",
             "detail_fetch_status": "succeeded",
             "operating_parse_status": "parsed",
             "operating_parser_version": "operating-hours-1.0.0",
@@ -948,6 +924,10 @@ async def test_place_summaries_split_by_district_and_total() -> None:
             "area_code": "11",
             "district_code": "110",
             "is_active": False,
+            "title": "비활성 카페",
+            "lcls_systm1": "FD",
+            "lcls_systm2": "FD05",
+            "lcls_systm3": "FD050100",
             "detail_fetch_status": "pending",
             "operating_parse_status": "unknown",
             "operating_parser_version": "operating-hours-0.9.0",
@@ -957,6 +937,10 @@ async def test_place_summaries_split_by_district_and_total() -> None:
             "area_code": "11",
             "district_code": "170",
             "is_active": True,
+            "title": "용산 미분류 장소",
+            "lcls_systm1": None,
+            "lcls_systm2": None,
+            "lcls_systm3": None,
             "detail_fetch_status": "failed",
             "operating_parse_status": "unknown",
             "operating_parser_version": "operating-hours-1.0.0",
@@ -991,10 +975,42 @@ async def test_place_summaries_split_by_district_and_total() -> None:
     assert (jongno["total"], jongno["active"], jongno["inactive"]) == (2, 1, 1)
     assert jongno["detail_fetch_status"] == {"succeeded": 1, "pending": 1}
     assert jongno["latest_detail_fetched_at"] == "2026-08-08T05:00:00+00:00"
+    assert jongno["category_coverage"] == {
+        "active_place_count": 1,
+        "large_category_count": 1,
+        "middle_category_count": 1,
+        "small_category_count": 1,
+        "groups": [
+            {
+                "code": "FD",
+                "label": "음식",
+                "count": 1,
+                "middles": [
+                    {
+                        "code": "FD05",
+                        "label": "카페/ 찻집",
+                        "count": 1,
+                        "smalls": [
+                            {
+                                "code": "FD050100",
+                                "label": "카페",
+                                "count": 1,
+                                "examples": ["한글 카페"],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
 
     yongsan = districts[1]
     assert (yongsan["total"], yongsan["active"], yongsan["inactive"]) == (1, 1, 0)
     assert yongsan["latest_detail_fetched_at"] == "2026-08-21T05:00:00+00:00"
+    assert yongsan["category_coverage"]["groups"][0]["label"] == "분류 미확인"
+    assert yongsan["category_coverage"]["groups"][0]["middles"][0]["smalls"][0]["examples"] == [
+        "용산 미분류 장소"
+    ]
 
     overall = summaries["overall"]
     assert isinstance(overall, dict)
@@ -1245,9 +1261,7 @@ def test_무장애_필드가_전부_마이그레이션에_있다() -> None:
     migration = migrations[0].read_text(encoding="utf-8")
 
     fields = {
-        name
-        for name in vars(PlaceBarrierFreeDetails(content_id="1"))
-        if name != "content_id"
+        name for name in vars(PlaceBarrierFreeDetails(content_id="1")) if name != "content_id"
     }
     missing = {field for field in fields if f"  {field} text" not in migration}
     assert missing == set()
@@ -1382,9 +1396,7 @@ async def test_다른_구에서_비활성이던_장소도_되살린다() -> None
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as client:
         # 이 구에는 기록이 없다. 다른 구에 비활성으로 남아 있는 상태다.
-        await _repository(transport, client).upsert_place_list(
-            [_place("3528062")], {}, RUN_ID, NOW
-        )
+        await _repository(transport, client).upsert_place_list([_place("3528062")], {}, RUN_ID, NOW)
 
     row = payloads[0]
     assert row["is_active"] is True
