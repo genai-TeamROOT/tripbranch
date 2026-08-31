@@ -73,9 +73,11 @@ from app.services.runtime.agent_runtime import (
     _MEASURED_ROUTE_CANDIDATE_LIMIT,
     _WIDEN_RADIUS_MAX_TRAVEL_TIME,
     _apply_concentration_rerank,
+    _build_pairwise_distances_km,
     _effective_excluded_place_ids,
     _fetch_compare_travel_routes,
-    _revivable_shown_place_ids,
+    _revivable_place_ids,
+    _snapshot_coordinates,
     run_agent_flow,
     summarize_turn,
 )
@@ -5654,7 +5656,7 @@ def test_exclusion_order_is_preserved() -> None:
 
 
 def _llm_output(*, modify: object) -> object:
-    """_revivable_shown_place_ids()가 보는 필드(modify)만 가진 최소 스텁."""
+    """_revivable_place_ids()가 보는 필드(modify)만 가진 최소 스텁."""
 
     class _Stub:
         pass
@@ -5664,25 +5666,30 @@ def _llm_output(*, modify: object) -> object:
     return stub
 
 
-def _session_context_stub(shown: list[str]) -> object:
+def _session_context_stub(shown: list[str], saved: list[str] | None = None) -> object:
     class _Stub:
         pass
 
+    class _Saved:
+        def __init__(self, place_id: str) -> None:
+            self.place_id = place_id
+
     stub = _Stub()
     stub.shown_place_ids = shown
+    stub.saved_places = [_Saved(place_id) for place_id in (saved or [])]
     return stub
 
 
 def test_new_schedule_turn_revives_shown_places() -> None:
     """새 SCHEDULE 턴("이 장소들로 일정 짜줘")은 직전 노출분을 되살린다."""
 
-    assert _revivable_shown_place_ids(
+    assert _revivable_place_ids(
         _llm_output(modify=None), _session_context_stub(["p1", "p2"])
     ) == ["p1", "p2"]
 
 
 def test_replan_turn_does_not_revive_shown_places() -> None:
-    """재조정 턴은 되살리지 않는다 — 방금 거절한 장소가 다시 나오면 안 된다.
+    """재조정 턴은 직전 노출분을 되살리지 않는다 — 방금 거절한 장소가 다시 나오면 안 된다.
 
     "다른 곳 보여줘"(REJECT_ALL)·"두 번째는 별로야"(REJECT_SPECIFIC)는 MODIFY로
     분류된 뒤 SCHEDULE로 relabel되므로 is_schedule만으로는 새 일정 요청과 구분되지
@@ -5691,11 +5698,42 @@ def test_replan_turn_does_not_revive_shown_places() -> None:
     """
 
     assert (
-        _revivable_shown_place_ids(
+        _revivable_place_ids(
             _llm_output(modify=object()), _session_context_stub(["p1", "p2"])
         )
-        == ()
+        == []
     )
+
+
+def test_saved_places_are_revived_on_new_schedule_turn() -> None:
+    """보관함은 shown과 합집합으로 되살아난다 (SCHEDULE-12).
+
+    shown_place_ids는 마지막 run만 담아, 3턴 전에 담은 장소는 여기 없다.
+    """
+
+    assert _revivable_place_ids(
+        _llm_output(modify=None), _session_context_stub(["p1"], saved=["p9"])
+    ) == ["p1", "p9"]
+
+
+def test_saved_places_are_revived_even_on_replan_turn() -> None:
+    """재조정 턴에도 보관함은 되살린다 — 사용자가 명시적으로 담아둔 것이다.
+
+    "두 번째는 별로야"가 담아둔 나머지까지 후보에서 뺄 이유가 없다. 거절과
+    겹칠 걱정은 record_rejected()가 보관함에서 자동으로 빼므로 없다.
+    """
+
+    assert _revivable_place_ids(
+        _llm_output(modify=object()), _session_context_stub(["p1", "p2"], saved=["p9"])
+    ) == ["p9"]
+
+
+def test_empty_saved_places_keeps_previous_behaviour() -> None:
+    """보관함이 비어 있으면 TP-180 동작과 완전히 같다."""
+
+    assert _revivable_place_ids(
+        _llm_output(modify=None), _session_context_stub(["p1", "p2"], saved=[])
+    ) == ["p1", "p2"]
 
 
 # ---------------------------------------------------------------- 대화층 3·4단계
@@ -6011,3 +6049,127 @@ async def test_measured_routes_cover_every_candidate_when_pool_is_small(
     assert len(route_tool.queries) == 1
     requested = {item.place_id for item in route_tool.queries[0].destinations}
     assert requested == {"refill-0", "refill-1", "refill-2"}
+
+
+# ---------------------------------------------- 좌표 스냅샷 폴백 (SCHEDULE-12)
+
+
+class _SavedStub:
+    def __init__(self, place_id: str, latitude: float | None, longitude: float | None) -> None:
+        self.place_id = place_id
+        self.latitude = latitude
+        self.longitude = longitude
+
+
+class _ShownStub(_SavedStub):
+    pass
+
+
+def _coordinate_context(shown: list[_ShownStub], saved: list[_SavedStub]) -> object:
+    class _Stub:
+        pass
+
+    stub = _Stub()
+    stub.shown_recommendations = shown
+    stub.saved_places = saved
+    return stub
+
+
+def test_snapshot_coordinates_reads_both_sources() -> None:
+    context = _coordinate_context(
+        [_ShownStub("p1", 37.1, 127.1)],
+        [_SavedStub("p9", 37.9, 127.9)],
+    )
+
+    assert _snapshot_coordinates(context) == {
+        "p1": (37.1, 127.1),
+        "p9": (37.9, 127.9),
+    }
+
+
+def test_snapshot_coordinates_skips_missing_values() -> None:
+    """좌표 도입 이전 세션과 C 컨텍스트를 안 거친 기록은 None으로 남는다."""
+
+    context = _coordinate_context(
+        [_ShownStub("p1", None, None)],
+        [_SavedStub("p9", 37.9, None)],
+    )
+
+    assert _snapshot_coordinates(context) == {}
+
+
+def test_snapshot_coordinates_prefers_saved_over_shown() -> None:
+    """같은 place_id면 보관함 쪽을 쓴다 — 사용자가 명시적으로 고른 것이다."""
+
+    context = _coordinate_context(
+        [_ShownStub("p1", 37.1, 127.1)],
+        [_SavedStub("p1", 37.5, 127.5)],
+    )
+
+    assert _snapshot_coordinates(context) == {"p1": (37.5, 127.5)}
+
+
+def _pairwise_candidate(place_id: str) -> RecommendationItem:
+    return RecommendationItem(
+        place_id=place_id,
+        name=f"장소 {place_id}",
+        category="attraction",
+        distance_km=0.3,
+        remaining_minutes=120,
+        environment_type="indoor",
+        recommendation_reason="테스트용 고정 후보입니다.",
+        explanations=[],
+        warnings=[],
+        score=0.5,
+        feature_scores={},
+        weights_used={},
+    )
+
+
+def test_pairwise_distances_use_snapshot_when_context_lacks_place() -> None:
+    """이번 턴 C 응답에 없는 보관함 장소도 B 스냅샷으로 거리를 잰다.
+
+    폴백이 없으면 그 쌍이 조용히 빠져 LLM이 거리 근거 없이 동선을 짠다.
+    """
+
+    candidates = [_pairwise_candidate("p1"), _pairwise_candidate("p9")]
+
+    without_fallback = _build_pairwise_distances_km(candidates, [])
+    with_fallback = _build_pairwise_distances_km(
+        candidates,
+        [],
+        fallback_coordinates={"p1": (37.5796, 126.9770), "p9": (37.4979, 127.0276)},
+    )
+
+    assert without_fallback == {}
+    assert ("p1", "p9") in with_fallback
+    assert with_fallback[("p1", "p9")] > 8.0
+
+
+def test_pairwise_distances_prefer_context_over_snapshot() -> None:
+    """C 응답이 있으면 그쪽을 쓴다 — 최신값이고 같은 턴 후보끼리 출처가 일관된다."""
+
+    candidates = [_pairwise_candidate("p1"), _pairwise_candidate("p2")]
+    places = [
+        PlaceCandidate(
+            place_id="p1",
+            name="장소 p1",
+            category="attraction",
+            location=Coordinates(latitude=37.5796, longitude=126.9770),
+        ),
+        PlaceCandidate(
+            place_id="p2",
+            name="장소 p2",
+            category="attraction",
+            location=Coordinates(latitude=37.5800, longitude=126.9780),
+        ),
+    ]
+
+    from_context = _build_pairwise_distances_km(candidates, places)
+    with_bogus_fallback = _build_pairwise_distances_km(
+        candidates,
+        places,
+        fallback_coordinates={"p1": (0.0, 0.0), "p2": (10.0, 10.0)},
+    )
+
+    assert from_context == with_bogus_fallback

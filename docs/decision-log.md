@@ -4763,6 +4763,89 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   10을 넘겨 실측 기준으로만 뒤집히는 후보가 얼마나 되는지는 재지 않았다.
 - 상세: `backend/app/services/runtime/agent_runtime.py`
 
+### D-114 — 보관함에 담은 장소는 후보로 되살리고 배치까지 구조적으로 보장한다
+
+- 상태: `Implemented` — D-110(보관함 상태·API)의 후속. 프론트와 구 간 이동 이동시간은
+  후속 카드로 남는다.
+- 배경: D-110으로 담을 수는 있게 됐지만 담아도 일정에 전혀 반영되지 않았다. 두 가지가
+  막고 있었다. (1) D-107이 되살리는 `shown_place_ids`는 **마지막 run만** 담아
+  (`history.get_shown_place_ids()`) 3턴 전에 담은 장소는 제외 목록에 그대로 남는다.
+  (2) 후보 풀에 들어가는 것과 일정에 배치되는 것은 다르다 — 채점 순위에서 밀리면
+  그대로 빠지고 사용자는 담은 이유를 잃는다.
+- 결정:
+  1. **`_revivable_shown_place_ids()` → `_revivable_place_ids()`.** 되살릴 대상에
+     보관함을 합집합으로 더한다. 직전 노출분은 새 SCHEDULE 턴에만(D-107 그대로),
+     **보관함은 재조정 턴에도** 되살린다.
+  2. **`record_rejected()`가 같은 place_id를 보관함에서 뺀다.** `saved ∩ rejected = ∅`
+     을 구조적으로 보장한다. 이 처리를 `service.py`가 아니라 `history.py`에 둔다.
+  3. **`RecommendedItem`·`SavedPlaceItem`에 위경도를 싣는다** — "B는 place_id만
+     저장한다" 원칙의 네 번째 문서화된 예외. `_build_pairwise_distances_km()`가 C
+     응답에 없는 place_id를 이 스냅샷으로 메운다(C 응답이 있으면 그쪽 우선).
+     `_finalize_recommendation_response()`에 `tool_context` 인자를 추가했다.
+  4. **`SchedulePlanningRequest.must_include_place_ids`** 신설. 프롬프트
+     (`schedule.plan` 1.1.0 → 1.2.0, `[반드시 포함]` 섹션)로 지시하고
+     `plan_schedule()`이 응답 직후 `set(must_include) ⊆ {item.place_id}`를 하드
+     검증한다. 누락 시 **1회만** 재시도하고, 그래도 빠지면 **결과를 살린다.**
+  5. **개수 충돌은 담은 순서로 자른다.** 보관함이 `target_item_range()`의 상한을
+     넘으면 앞에서부터 상한까지만 강제하고, 나머지는 이름을 `ScheduleResult.
+     omitted_saved_place_names`에 실어 말풍선으로 알린다.
+  6. 부분 재편성(`SchedulePartialFillRequest`, REJECT_SPECIFIC)에는 `must_include`를
+     넘기지 않는다.
+- 이유:
+  - 1번에서 보관함만 재조정 턴에도 되살리는 근거: 사용자가 명시적으로 담아둔 것이라
+    "두 번째는 별로야"가 담아둔 나머지까지 후보에서 뺄 이유가 없다. D-107이 직전
+    노출분을 재조정 턴에서 제외한 이유(거절 대상이 `shown_place_ids`에도 남아
+    있어 되살리면 REJECT가 무력화된다)는 보관함에는 2번 덕분에 적용되지 않는다.
+  - 2번을 `history.py`에 둔 이유: 호출부가 두 번 부르는 것을 잊으면 불변식이 조용히
+    깨진다. 지금 `record_rejected()`의 호출부는 `service.apply()` 한 곳뿐이지만,
+    불변식은 호출 규약이 아니라 코드로 지켜야 한다. 이 덕분에 `_revivable_place_ids()`
+    가 두 목록의 시간 순서를 비교할 필요가 없어졌다 — TP-180에서 테스트 4건이
+    깨졌던 지점("거절된 장소도 shown에 남아 있다")이 애초에 생기지 않는다.
+    순환 참조는 없다(`saved_places.py`는 `history.py`를 부르지 않는다).
+  - 3번: 보관함은 **담고 나서 여러 턴 뒤에 쓰이는 것이 정상**이라, 이번 턴 검색
+    반경 밖일 확률이 `recommended`보다 오히려 높다. 그러면 C 응답에 아예 없어
+    거리 근거가 통째로 사라지고, 강남 장소가 종로 일정의 2번째에 꽂혀도 막을 수
+    없다. 근거는 SCHEDULE-09에서 `name`을 예외로 넣은 것과 같다(지명 검색이
+    호출마다 다른 좌표로 resolve되므로 재검색에 의존하면 매번 실패한다).
+  - 4번에서 **부분 성공을 고른 이유**: `plan_partial_schedule()`은 같은 상황에서
+    `llm_output_invalid`로 하드 실패하지만, 저쪽은 "유지해야 할 기존 일정"이 걸려
+    있어 잘못된 응답이 기존 항목을 훼손한다. 보관함은 그렇지 않고, 장바구니에서
+    "일부를 못 담았다"는 전체 실패(502)보다 낫다. 대신 조용히 빠뜨리지 않는다.
+  - 5번에서 **점수 순이 아니라 담은 순**인 이유: 왜 그 곳이 빠졌는지 사용자에게
+    설명할 수 있어야 한다. D-110에서 `SavedPlaceList.items` 순서를 담은 순서로
+    고정한 것이 이 규칙의 전제다.
+  - 6번: 부분 재편성은 `pinned_items`가 이미 자리를 붙들고 있고 사용자가 지목한
+    자리만 새로 채우는 턴이라, 담아둔 장소를 그 자리에 밀어넣을 이유가 없다.
+- 기각한 안:
+  - `must_include`를 기존 `pinned_items`로 재사용 — 그건 order가 이미 정해진 기존
+    일정 항목을 그 자리에 유지하는 구조라, 순서가 미정인 보관함과 의미가 다르다.
+  - 후보 복귀 판정에서 담기·거절 타임스탬프를 비교해 나중 것이 이기게 하기 —
+    런타임 판정은 불변식보다 약하다. 2번으로 대체했다.
+  - 강제 포함 누락을 하드 실패로 처리 — 위 4번 이유로 기각.
+  - 좌표를 D의 `RecommendationItem`에 추가 — 그쪽은 `distance_km`가 검색 중심 기준
+    거리라 후보 간 거리를 못 구하는 것이 의도된 설계다. D 응답 계약을 넓히는 대신
+    B가 스냅샷을 들고 있는 쪽을 골랐다.
+- 남은 것:
+  - 후보 목록에 아예 없는 보관함 장소(폐점 하드 필터 등)는 `planner`가 이름을 알
+    방법이 없어 `agent_runtime`이 보관함 저장 이름으로 안내를 채운다. 안내 문구를
+    두 곳에서 조립하는 형태라, 세 번째 사유가 생기면 한곳으로 모으는 편이 낫다.
+  - 구 간 이동이 실제로 섞이기 시작하면 이동시간 가정(20km/h, 실측의 약 3.7배 낙관)
+    문제가 드러난다 — 후속 카드.
+  - `routes/recommendations.py:_record_shown()` 경로는 C 컨텍스트를 거치지 않아
+    좌표가 계속 None이다(의도된 동작).
+- 검증: 단위 테스트 추가(planner 6건, 보관함·거절 동기화 5건, 좌표 스냅샷·pairwise
+  폴백 5건, 후보 복귀 3건, 말풍선 3건). 프롬프트 스냅샷 `schedule_plan_context__
+  must_include` 신설.
+- 상세: `backend/app/state/schema.py`, `backend/app/state/history.py`,
+  `backend/app/state/service.py`, `backend/app/state/saved_places.py`,
+  `backend/app/schemas.py`, `backend/app/schedule/schemas.py`,
+  `backend/app/schedule/planner.py`, `backend/app/providers/gemini_prompts.py`,
+  `backend/app/prompts/schedule/plan.md`,
+  `backend/app/prompts/schedule/plan_context.md`,
+  `backend/app/services/runtime/agent_runtime.py`,
+  `backend/app/services/runtime/response_composer.py`,
+  `backend/app/services/runtime/graph/nodes/pipeline.py`
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -4876,3 +4959,4 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-31 | D-111 신설 — 추천 후보 상한을 20 → 30, 기본값을 10 → 30으로 올리고 `PLACE_DETAILS_SOURCE` 기본값을 tour_api → supabase로 바꿨다(C). 발화를 바꿔도 같은 곳이 나오는 원인이 후보 폭이었다 — 안국역 기준 후보 10곳은 반경 179m다. D-099가 상향을 기각한 근거 두 개(A/D 공유 정책, TourAPI 속도)가 모두 무너졌다: 소유는 추천 쪽이고, 속도 전제는 후보마다 상세를 부른다는 가정인데 supabase면 배치 1회다(후보 30곳 기준 외부 호출 2회 대 61회). 신선도는 활성 8,007곳 전량이 상세 30일 이내였다. 밤 시간대에 결과 5곳을 못 채우던 것이 관측돼(경복궁 21시 통과 1곳) 상향 근거가 됐다. `MAX_PLACE_PROVIDER_ROWS`는 100 → 300 — 100의 근거 주석('한 페이지 최대')이 틀렸고 실측으로 2000행까지 받는다. tour_api + 높은 한도 조합은 부팅에서 막는다(D-042와 같은 이유, 일일 한도 33요청 소진). SCHEDULE의 D 반환 수가 후보 상한을 따라 10 → 30으로 딸려 올라가 `SCHEDULE_RECOMMENDATION_LIMIT`으로 분리했다 — 그 10은 D 협의값이다. 곁가지로 도보 실측 조회도 후보 수에 정비례함이 드러났다(카카오 7~13건 → 25~35건). 2단 채점으로 분리해야 하며 별도 작업이다 |
 | 2026-08-31 | D-112 신설 — 후보 보충 조회가 Context 전체를 다시 부르지 않게 한다(C). 보충 1회가 fetch_context를 통째로 불러 외부 호출 7건이었는데, 그중 6건(날씨·공휴일·위치 해석)은 A가 병합에서 버리는 값이었다. AgentContextRequest에 resolved_search_center를 더해 A가 첫 조회의 기준점을 넘기면 C가 장소만 다시 준다. 위치 해석까지 건너뛰려고 좌표를 넘긴다 — 그 3건이 제일 크고 같은 턴이라 기준점이 바뀌지 않는다. 기존 ToolExecutionPlan에 places_only를 더해 얹었다. 실측 7건 → 2건, 보충 2회가 도는 요청은 21건 → 11건. 첫 요청을 크게 잡아 보충을 없애는 안은 C가 하드 필터 손실을 예측할 수 없어 기각했다 |
 | 2026-08-31 | D-113 신설 — 도보 실측을 1차 채점 상위 10곳에만 조회한다(C, TP-103 후속). 후보 전량에 붙이던 것을 1차(직선거리) → 상위 10곳 실측 → 2차(실측 반영) 순서로 바꿨다. 2차 대상을 실측 받은 후보로 한정하는 것이 핵심이다 — _consistent_routes()가 하나라도 실측이 없으면 전부 직선거리로 채점하므로, 좁히지 않으면 실측이 통째로 버려진다. 10인 이유는 5면 실측이 선택에 관여하지 못해서다: 6개 조합 중 3개에서 최종 5곳의 집합이 바뀌었고 안국역 14시는 3곳이 갈렸다. 우회 계수가 1.07~1.71배로 벌어져 직선 기준 순위가 실측에서 뒤집힌다. domain/scoring.py는 안 건드리고 부르는 순서만 바꿨다. 도보 호출 25~35건 → 10건 |
+| 2026-08-31 | D-114 신설 — 보관함에 담은 장소를 후보로 되살리고 배치까지 구조적으로 보장한다(D-110 후속, SCHEDULE-12, B). D-110으로 담을 수는 있게 됐지만 담아도 일정에 반영되지 않았다: D-107이 되살리는 `shown_place_ids`는 마지막 run만 담아 3턴 전에 담은 장소는 제외 목록에 남고, 후보 풀에 들어가는 것과 배치되는 것은 다르다(채점에서 밀리면 그대로 빠진다). `_revivable_place_ids()`가 보관함을 합집합으로 더하고, 직전 노출분은 새 SCHEDULE 턴에만·**보관함은 재조정 턴에도** 되살린다 — 사용자가 명시적으로 담아둔 것이라 "두 번째는 별로야"가 나머지까지 뺄 이유가 없다. 거절과의 충돌은 `record_rejected()`가 같은 place_id를 보관함에서 빼서 `saved ∩ rejected = ∅`을 구조적으로 보장하는 쪽으로 닫았다 — 이 처리를 service.py가 아니라 history.py에 둔 이유는 호출부가 두 번 부르는 것을 잊으면 불변식이 조용히 깨지기 때문이고, 덕분에 후보 복귀가 두 목록의 시간 순서를 비교할 필요가 없어졌다(TP-180에서 테스트 4건이 깨졌던 지점이 애초에 안 생긴다). `RecommendedItem`·`SavedPlaceItem`에 위경도를 실어 "place_id만 저장한다" 원칙의 네 번째 예외를 썼다 — 보관함은 담고 나서 여러 턴 뒤에 쓰이는 것이 정상이라 이번 턴 검색 반경 밖일 확률이 recommended보다 높고, 그러면 `_build_pairwise_distances_km()`가 좌표를 못 찾아 강남 장소가 종로 일정 2번째에 꽂혀도 막을 수 없다(C 응답이 있으면 그쪽 우선). `_finalize_recommendation_response()`에 `tool_context` 인자가 붙었다. 배치는 `SchedulePlanningRequest.must_include_place_ids` + 프롬프트(`schedule.plan` 1.2.0, `[반드시 포함]`) + `plan_schedule()`의 하드 검증으로 보장하고, 누락 시 1회 재시도 후에도 빠지면 **결과를 살린다** — `plan_partial_schedule()`의 하드 실패와 다른 선택이며, 저쪽은 유지해야 할 기존 일정이 걸려 있지만 장바구니는 부분 성공이 전체 실패보다 낫다. 대신 `ScheduleResult.omitted_saved_place_names`로 말풍선에 알린다. 개수 충돌은 `target_item_range()` 상한까지 **담은 순서로** 자른다(점수 순이면 왜 빠졌는지 설명할 수 없다). 부분 재편성에는 `must_include`를 넘기지 않는다 — pinned_items가 이미 자리를 붙들고 있다 |

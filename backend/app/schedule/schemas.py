@@ -26,6 +26,19 @@ class SchedulePlanningRequest(BaseModel):
     # D의 공개 응답 스키마(RecommendationItem)를 쓴다. D 내부 도메인 타입
     # (app.domain.scoring.RankedCandidate)은 레이어 경계를 넘어가므로 쓰지 않는다.
 
+    must_include_place_ids: list[str] = Field(default_factory=list)
+    # 사용자가 보관함에 담아 이번 일정에 반드시 들어가야 하는 장소 (SCHEDULE-12).
+    # 담은 순서(오래된 것이 앞)로 넘어온다 — 활동 가능 시간이 허용하는 항목 수
+    # 상한을 넘으면 planner.py가 이 순서로 앞에서부터 자르므로, 정렬을 바꾸면
+    # "왜 그 곳이 빠졌는지" 설명이 달라진다(SavedPlaceList.items docstring).
+    #
+    # 후보 풀에 들어가는 것과 일정에 배치되는 것은 다르다 — 채점 순위에서 밀리면
+    # 그대로 빠진다. 그래서 프롬프트로 지시하고 planner.py가 응답을 하드 검증한다
+    # (SCHEDULE-07의 "LLM 지시 준수보다 구조적 보장을 우선한다"와 같은 철학).
+    #
+    # 기본값이 빈 리스트라 이 필드를 모르는 기존 호출부는 동작이 전혀 바뀌지 않는다
+    # (co_visited_hints를 추가했을 때와 같은 방식).
+
     conditions: UserConditions
     # 기존 15개 조건 그대로 사용(time_available, transport 등 이미 있는 필드 재사용)
 

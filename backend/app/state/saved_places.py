@@ -9,6 +9,11 @@ append-only이고 `clear_recommended()`(계약 5.5절 history reset)의 대상�
 
 이 모듈은 place_id의 유효성(그 세션에서 추천된 적이 있는지)을 검증하지 않는다 —
 그 판정에는 추천 이력이 필요해 두 저장소를 함께 보는 service.py가 담당한다.
+
+반대 방향으로는 history.py가 이 모듈을 부른다. `record_rejected()`가 거절 시점에
+같은 place_id를 보관함에서 빼서 `saved ∩ rejected = ∅`을 지킨다(SCHEDULE-12) —
+불변식이라 호출 규약에 맡기지 않고 코드로 강제한다. 이 모듈은 history.py를 부르지
+않으므로 순환 참조가 생기지 않는다.
 """
 
 from app.auth.principal import Principal

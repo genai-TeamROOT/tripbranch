@@ -4,12 +4,14 @@
 
 이력은 append-only이며 기존 항목을 수정하지 않는다.
 B는 place_id만 저장하고 장소 상세 정보를 보관하지 않는다 — 단, SCHEDULE
-재조정(SCHEDULE-06)을 위해 일정 세부 필드(도착시각/체류시간/이동시간/이유)와,
+재조정(SCHEDULE-06)을 위해 일정 세부 필드(도착시각/체류시간/이동시간/이유),
 COMPARE 데이터 출처(2026-08-11)를 위해 추천 시점 Feature 스냅샷
-(거리/남은 운영시간/환경유형)만 예외적으로 저장한다. RecommendedItem 참고.
+(거리/남은 운영시간/환경유형), SCHEDULE-09 2단계를 위해 장소 이름,
+SCHEDULE-12를 위해 추천 시점 좌표만 예외적으로 저장한다. RecommendedItem 참고.
 """
 
 from app.auth.principal import Principal
+from app.state import saved_places as saved_places_module
 from app.state.schema import (
     ClosedExclusionItem,
     RecommendationHistory,
@@ -70,6 +72,8 @@ def record_recommended(
                 rank=item.rank,
                 shown_at=shown_at,
                 name=item.name,
+                latitude=item.latitude,
+                longitude=item.longitude,
                 estimated_arrival=item.estimated_arrival,
                 estimated_duration_min=item.estimated_duration_min,
                 travel_to_next_min=item.travel_to_next_min,
@@ -92,12 +96,22 @@ def record_rejected(
     items: list[tuple[str, str | None]],
     principal: Principal | None = None,
 ) -> int:
-    """거절 장소를 기록한다.
+    """거절 장소를 기록하고, 같은 장소를 보관함에서 뺀다.
 
     items는 (place_id, reason_code) 목록이다.
     reason_code는 Package A가 해석한 값을 그대로 저장하며 검증하지 않는다.
 
     추천 이력에 없는 place_id가 전달되어도 검증하지 않는다. (계약 3.3절)
+
+    **보관함 동기화(SCHEDULE-12)**: 거절한 장소는 보관함에서도 빠진다. 이 덕분에
+    `saved ∩ rejected = ∅`이 구조적으로 보장되고, 후보 복귀 판정
+    (`agent_runtime._revivable_place_ids()`)이 두 목록의 시간 순서를 비교할 필요가
+    없어진다 — 담아둔 것을 되살리면서 거절 이력을 무력화하는 경로(TP-180에서 실제로
+    테스트 4건이 깨졌던 지점)가 애초에 생기지 않는다.
+
+    이 처리를 service.py가 아니라 여기 두는 이유는, 호출부가 두 번 부르는 것을
+    잊으면 그 불변식이 조용히 깨지기 때문이다. 지금 `record_rejected()`의 호출부는
+    `service.apply()` 한 곳뿐이지만, 불변식은 호출 규약이 아니라 코드로 지켜야 한다.
     """
     history = get_or_create(store, session_id)
     attach_user_id(history, principal)
@@ -115,6 +129,11 @@ def record_rejected(
 
     history.updated_at = rejected_at
     store.save_history(history)
+
+    for place_id, _reason_code in items:
+        # 담겨 있지 않으면 아무 일도 하지 않는다(saved_places.remove는 멱등).
+        saved_places_module.remove(store, session_id, place_id, principal=principal)
+
     return len(items)
 
 

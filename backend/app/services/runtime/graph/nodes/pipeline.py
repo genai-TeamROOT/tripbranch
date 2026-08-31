@@ -46,7 +46,7 @@ async def tool_fetch_node(
 
     from app.services.runtime.agent_runtime import (
         _fetch_tool_context,
-        _revivable_shown_place_ids,
+        _revivable_place_ids,
     )
 
     deps: PipelineDeps = deps_from_config(config)
@@ -60,7 +60,7 @@ async def tool_fetch_node(
         tool_provider=deps.tool_provider,
         travel_route_tool=deps.travel_route_tool,
         store=deps.store,
-        shown_place_ids=_revivable_shown_place_ids(
+        shown_place_ids=_revivable_place_ids(
             state["llm_output"], state["session_context"]
         ),
         stream_event_sink=sink_from_config(config),
@@ -83,7 +83,7 @@ async def scoring_node(
 
     from app.schemas import Intent
     from app.services.runtime.agent_runtime import (
-        _revivable_shown_place_ids,
+        _revivable_place_ids,
         _score_recommendations,
     )
 
@@ -94,7 +94,7 @@ async def scoring_node(
         agent_conditions=state["agent_conditions"],
         context_gps=state["context_gps"],
         is_schedule=state["llm_output"].intent is Intent.SCHEDULE,
-        shown_place_ids=_revivable_shown_place_ids(
+        shown_place_ids=_revivable_place_ids(
             state["llm_output"], state["session_context"]
         ),
         tool_provider=deps.tool_provider,
@@ -151,6 +151,7 @@ async def finalize_node(
         llm=deps.llm,
         store=deps.store,
         principal=deps.principal,
+        tool_context=state["tool_context"],
         tool_execution=state["tool_execution"],
         tool_executions=state["tool_executions"],
         effective_ignore_operating_hours=state["effective_ignore_operating_hours"],
