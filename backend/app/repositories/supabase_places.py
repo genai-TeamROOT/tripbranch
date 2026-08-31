@@ -169,6 +169,11 @@ _BARRIER_FREE_COLUMNS = ",".join(
 _BARRIER_FREE_FIELDS = tuple(_BARRIER_FREE_COLUMNS.split(","))
 _VALID_RUN_STATUSES = {"success", "partial_failure", "failed"}
 _VALID_PARSE_STATUSES = {"parsed", "partial", "unknown", "assumed"}
+# 사후면세점은 세금 환급이 가능한 일반 매장까지 대량 포함한다. 단순 가나다순 예시만
+# 보이면 면세점 성격으로 오해하기 쉬워, 대표적인 생활 쇼핑 브랜드를 먼저 보여준다.
+_CATEGORY_EXAMPLE_PREFIXES: dict[str, tuple[str, ...]] = {
+    "SH040300": ("다이소", "올리브영"),
+}
 T = TypeVar("T")
 
 
@@ -1918,8 +1923,7 @@ def _summarize_category_coverage(
                         "code": small,
                         "label": _category_label(registry, large, middle, small, "small"),
                         "count": leaf["count"],
-                        # 원본 순서·DB 정렬에 따라 예시가 바뀌지 않게 제목순으로 고정한다.
-                        "examples": sorted(str(example) for example in examples)[:2],
+                        "examples": _category_examples(small, examples),
                     }
                 )
             middle_groups.append(
@@ -1961,6 +1965,22 @@ def _summarize_category_coverage(
 def _category_code(value: object) -> str | None:
     code = str(value or "").strip()
     return code or None
+
+
+def _category_examples(small_code: str | None, examples: set[object]) -> list[str]:
+    """소분류를 설명하기 좋은 대표 장소를 최대 두 개 고른다.
+
+    기본은 DB 순서와 무관한 제목순이다. 다만 사후면세점처럼 관광공사 코드명이
+    실제 포함 매장의 성격을 충분히 설명하지 못하는 경우는 대표 브랜드를 우선한다.
+    """
+    titles = sorted(str(example) for example in examples)
+    selected: list[str] = []
+    for prefix in _CATEGORY_EXAMPLE_PREFIXES.get(small_code or "", ()):
+        match = next((title for title in titles if title.startswith(prefix)), None)
+        if match is not None:
+            selected.append(match)
+    selected.extend(title for title in titles if title not in selected)
+    return selected[:2]
 
 
 def _category_sort_key(code: str | None, level: str) -> tuple[int, str]:

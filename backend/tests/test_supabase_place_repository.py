@@ -17,6 +17,7 @@ from app.domain.models import (
 from app.repositories.supabase_places import (
     SupabasePlaceRepository,
     SupabaseRepositoryError,
+    _category_examples,
 )
 
 RUN_ID = UUID("11111111-1111-4111-8111-111111111111")
@@ -49,6 +50,12 @@ def _place(content_id: str) -> TourPlaceRecord:
         lcls_systm3="VE010100",
         source_modified_at=NOW,
     )
+
+
+def test_사후면세점_예시는_다이소와_올리브영을_우선한다() -> None:
+    examples = {"0914 도산공원 플래그십 스토어", "다이소 종로점", "올리브영 종로점"}
+
+    assert _category_examples("SH040300", examples) == ["다이소 종로점", "올리브영 종로점"]
 
 
 @pytest.mark.asyncio
