@@ -20,6 +20,7 @@ from app.state.schema import (
     ConditionChangeLog,
     FeedbackRecord,
     RecommendationHistory,
+    SavedPlaceList,
     TraceRecord,
 )
 
@@ -41,6 +42,13 @@ class StateStore(Protocol):
     def get_history(self, session_id: str) -> RecommendationHistory | None: ...
     def save_history(self, history: RecommendationHistory) -> None: ...
     def delete_history(self, session_id: str) -> None: ...
+
+    # --- SavedPlaceList (가변 — 담기/빼기, SCHEDULE-12)
+    # RecommendationHistory와 같은 read-modify-write 패턴이지만 별도
+    # 엔티티다(SavedPlaceList docstring 참고).
+    def get_saved_places(self, session_id: str) -> SavedPlaceList | None: ...
+    def save_saved_places(self, saved: SavedPlaceList) -> None: ...
+    def delete_saved_places(self, session_id: str) -> None: ...
 
     # --- ConditionChangeLog (append-only)
     def append_change_logs(self, logs: list[ConditionChangeLog]) -> None: ...
@@ -78,6 +86,8 @@ class StateStore(Protocol):
     def list_stale_session_ids(self, cutoff: datetime) -> list[str]: ...
     def delete_change_logs(self, session_id: str) -> None: ...
     def delete_traces(self, session_id: str) -> None: ...
+    # delete_saved_places는 위 SavedPlaceList 섹션에 있다 — 만료 세션 정리
+    # (scripts/cleanup_expired_sessions.py)도 같은 메서드를 쓴다.
 
 
 class InMemoryStateStore:
@@ -90,6 +100,7 @@ class InMemoryStateStore:
     def __init__(self) -> None:
         self._states: dict[str, AgentState] = {}
         self._histories: dict[str, RecommendationHistory] = {}
+        self._saved_places: dict[str, SavedPlaceList] = {}
         self._change_logs: dict[str, list[ConditionChangeLog]] = {}
         self._traces: dict[str, list[TraceRecord]] = {}
         self._feedback: dict[str, list[FeedbackRecord]] = {}
@@ -117,6 +128,18 @@ class InMemoryStateStore:
 
     def delete_history(self, session_id: str) -> None:
         self._histories.pop(session_id, None)
+
+    # ------------------------------------------------------------ SavedPlaces
+
+    def get_saved_places(self, session_id: str) -> SavedPlaceList | None:
+        saved = self._saved_places.get(session_id)
+        return saved.model_copy(deep=True) if saved else None
+
+    def save_saved_places(self, saved: SavedPlaceList) -> None:
+        self._saved_places[saved.session_id] = saved.model_copy(deep=True)
+
+    def delete_saved_places(self, session_id: str) -> None:
+        self._saved_places.pop(session_id, None)
 
     # ------------------------------------------------------------ ChangeLog
 
@@ -210,6 +233,7 @@ class InMemoryStateStore:
         """전체 초기화. 테스트에서만 사용한다."""
         self._states.clear()
         self._histories.clear()
+        self._saved_places.clear()
         self._change_logs.clear()
         self._traces.clear()
         self._feedback.clear()

@@ -12,6 +12,8 @@ from app.state.schema import (
     ConditionChangeLog,
     PendingInfoContext,
     RecommendationHistory,
+    SavedPlaceItem,
+    SavedPlaceList,
     UserConditions,
 )
 from app.state.supabase_store import SupabaseStateStore
@@ -215,6 +217,84 @@ def test_save_history_sends_whole_object() -> None:
     request = seen["request"]
     assert isinstance(request, httpx.Request)
     assert request.url.params["on_conflict"] == "session_id"
+
+
+# ------------------------------------------------------------ SavedPlaces
+
+
+def test_get_saved_places_returns_none_when_not_found() -> None:
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=[]))
+    assert _store(transport).get_saved_places(SESSION_ID) is None
+
+
+def test_get_saved_places_parses_row() -> None:
+    row = {
+        "session_id": SESSION_ID,
+        "user_id": None,
+        "items": [
+            {
+                "place_id": "p1",
+                "name": "경복궁",
+                "saved_from_run_id": "run-1",
+                "saved_at": "2026-08-31T00:00:00+09:00",
+                "latitude": None,
+                "longitude": None,
+            }
+        ],
+        "updated_at": "2026-08-31T00:00:00+09:00",
+    }
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=[row]))
+    saved = _store(transport).get_saved_places(SESSION_ID)
+    assert saved is not None
+    assert [item.place_id for item in saved.items] == ["p1"]
+    assert saved.items[0].name == "경복궁"
+
+
+def test_get_saved_places_raises_on_invalid_row() -> None:
+    row = {"session_id": SESSION_ID, "items": "배열이_아니다"}
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=[row]))
+    with pytest.raises(StateStoreError):
+        _store(transport).get_saved_places(SESSION_ID)
+
+
+def test_save_saved_places_upserts_on_session_id() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["request"] = request
+        return httpx.Response(201)
+
+    transport = httpx.MockTransport(handler)
+    saved = SavedPlaceList(
+        session_id=SESSION_ID,
+        items=[
+            SavedPlaceItem(place_id="p1", name="경복궁", saved_from_run_id="run-1")
+        ],
+    )
+    _store(transport).save_saved_places(saved)
+
+    request = seen["request"]
+    assert isinstance(request, httpx.Request)
+    assert request.url.path.endswith("/saved_place_lists")
+    assert request.url.params["on_conflict"] == "session_id"
+    body = json.loads(request.content)
+    assert [item["place_id"] for item in body["items"]] == ["p1"]
+
+
+def test_delete_saved_places_filters_by_session_id() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["request"] = request
+        return httpx.Response(204)
+
+    transport = httpx.MockTransport(handler)
+    _store(transport).delete_saved_places(SESSION_ID)
+
+    request = seen["request"]
+    assert isinstance(request, httpx.Request)
+    assert request.method == "DELETE"
+    assert request.url.params["session_id"] == f"eq.{SESSION_ID}"
 
 
 # ------------------------------------------------------------ ChangeLog
