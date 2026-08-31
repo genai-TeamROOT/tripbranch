@@ -122,6 +122,7 @@ from app.tools.festival import FestivalQuery, GetFestivalsTool
 from app.tools.holiday import GetHolidaysTool, HolidayQuery
 from app.tools.municipal_parking import GetMunicipalParkingTool, MunicipalParkingQuery
 from app.tools.nearby_place_details import (
+    CANDIDATE_POOL_EXHAUSTED_WARNING,
     CANDIDATE_POOL_TRUNCATED_WARNING,
     EnrichedPlace,
     NearbyPlaceDetailsQuery,
@@ -2661,6 +2662,7 @@ def _place_warnings(
     excluded_plan: ExcludedCategoryPlan,
     *,
     truncated: bool = False,
+    exhausted: bool = False,
 ) -> tuple[str, ...]:
     warnings: list[str] = []
     if status is ToolStatus.PARTIAL:
@@ -2672,6 +2674,8 @@ def _place_warnings(
         # 분류 조회 중 하나라도 Provider 행 상한에 걸렸다. 합쳐진 결과가 비어도
         # "더 없음"이 아니라 "더 못 받아옴"이라는 뜻이라 A가 구분해야 한다.
         warnings.append(CANDIDATE_POOL_TRUNCATED_WARNING)
+    if exhausted:
+        warnings.append(CANDIDATE_POOL_EXHAUSTED_WARNING)
     return tuple(warnings)
 
 
@@ -2751,6 +2755,8 @@ def _merge_place_results(
             truncated=any(
                 CANDIDATE_POOL_TRUNCATED_WARNING in result.warnings for result in results
             ),
+            exhausted=bool(results)
+            and all(CANDIDATE_POOL_EXHAUSTED_WARNING in result.warnings for result in results),
         ),
         provider_metadata=tuple(
             metadata for result in results for metadata in result.provider_metadata

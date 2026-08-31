@@ -15,6 +15,8 @@
 | `condition_version` | integer | 아니오(기본값 `0`) | 조건이 몇 번 바뀌었는지 세는 카운터입니다. 0 이상이어야 합니다. | `4` | 클라이언트가 마지막으로 본 버전과 비교해 조건이 바뀐 걸 감지합니다. |
 | `last_run_id` | text | 예 | 이 세션에서 마지막으로 처리한 요청의 run_id입니다. | `run_1755840005000b2c3d4e5f6a7b` | 직전 응답을 다시 참조하거나 재조정할 때 기준으로 씁니다. |
 | `last_intent` | text | 예 | 마지막으로 분류된 인텐트입니다(예: `RECOMMEND`, `SCHEDULE`). SCHEDULE 재조정 시 relabel 직후 `set_last_intent()`로 재동기화됩니다. | `RECOMMEND` | 다음 발화가 이전 인텐트의 연속인지 판단하는 데 참고합니다. |
+| `recent_turns` | jsonb array | 아니오(기본값 `[]`) | 최근 완료된 대화 턴 최대 5개를 시간순으로 저장합니다. 각 원소는 `user_input`, `intent`, `question_type`, `place_names`, `offered_action`, `at`으로 구성됩니다. | `[{"user_input":"다리 다쳤어","intent":"GENERAL","offered_action":"recommend_nearby_pharmacy"}]` | 다음 턴의 "응", "그 근처" 같은 문맥을 해석할 때 사용합니다. Gemini 호출 시 이전 사용자 발화는 `user`, 구조화된 처리 요약은 `model` 역할로 전달합니다. |
+| `situation_state` | jsonb object | 예 | 상황형 대화에서만 쓰는 단기 상태입니다. `current_situation`, `recent_constraints`, `rejected_actions`, `pending_offer`를 담습니다. | `{"current_situation":"minor_injury","rejected_actions":["recommend_nearby_pharmacy"],"pending_offer":null}` | 다침·날씨·동행 불편 등 상황을 이어가고, 사용자가 거절한 제안을 반복하지 않으며, 직전 제안에 대한 짧은 수락/거절을 해석합니다. |
 | `pending_clarification` | text | 예 | 직전 턴이 되묻기로 끝났다면 그 사유 코드입니다(예: `location_required`). B는 판단하지 않고 A가 준 값을 보관만 합니다. | `location_required` | 사용자의 다음 답변을 "새 요청"이 아니라 "되묻기 답변"으로 처리할지 판단합니다. |
 | `pending_info_context` | jsonb object | 예 | INFO의 장소 후보 되묻기(`pending_clarification = "place_ambiguous"`)에서 원래 질문의 문맥을 보관합니다. `question_type`, `place_context`는 필수이고 `specific_question`, `visit_time`은 선택입니다. Package B는 값을 해석하지 않고 저장만 하며, 허용값 정의는 Package A의 책임입니다(D-100). | `{"question_type":"parking","place_context":"explicit","specific_question":"종각 주차장 정보"}` | 사용자가 후보 버튼을 누르면 장소명만으로 다시 분류하지 않고, 원래의 주차·혼잡도 등 질문 유형을 그대로 복원해 이어서 조회합니다. |
 | `ignore_operating_hours_until` | timestamptz | 예 | "운영 중이 아닌 곳도 볼게요"를 선택하면, 이 시각까지는 매 턴 다시 묻지 않고 폐점 후보도 포함합니다. | `2026-08-25T15:00:00+09:00` | 하드 필터(영업시간)를 일시적으로 완화할지 판단합니다. |
@@ -55,10 +57,29 @@
 | `api_weather_updated_at` | datetime \| null | 날씨 값이 갱신된 시각. |
 | `gps_location_confirmed_at` | datetime \| null | 사용자가 "현재 위치 다시 가져오기"로 실제 재확인한 시각(PR #188). `gps_location_updated_at`과 별개 — "N분 전 위치로 계속"을 선택하면 이 값은 갱신되지 않습니다. 기존 세션은 null(최초 재확인 대상). |
 
+### recent_turns 원소 / situation_state 하위 필드
+
+`recent_turns`는 원문 대화 로그 테이블이 아닙니다. 세션 문맥 유지에 필요한 최근 5턴만 남기며, 만료 세션 정리 시 `agent_states` 행과 함께 삭제됩니다. 응답 전문은 저장하지 않고, 다음 턴 해석에 필요한 구조화된 요약만 보관합니다.
+
+| 필드 | 타입 | 정의 |
+| --- | --- | --- |
+| `recent_turns[].user_input` | string | 해당 턴의 사용자 발화입니다. 저장 시 최대 300자로 제한합니다. |
+| `recent_turns[].intent` | string \| null | 해당 턴에서 최종 분류된 인텐트입니다. |
+| `recent_turns[].question_type` | string \| null | 정보 조회·추천 등의 세부 질문 유형입니다. |
+| `recent_turns[].place_names` | string[] | 응답에서 식별된 장소명 목록입니다. |
+| `recent_turns[].offered_action` | string \| null | 사용자에게 제안한 다음 행동/도구 코드입니다. |
+| `recent_turns[].at` | datetime | 턴이 완료된 시각입니다. |
+| `situation_state.current_situation` | string \| null | 현재 상황 코드(예: `minor_injury`, `rain`, `closed_place`)입니다. |
+| `situation_state.recent_constraints` | string[] | 상황에서 확인된 단기 제약(예: `walk_difficult`)입니다. |
+| `situation_state.rejected_actions` | string[] | 이번 세션에서 사용자가 거절한 제안/도구 코드입니다. 반복 제안을 막는 데 사용합니다. |
+| `situation_state.pending_offer` | string \| null | 다음 사용자 턴의 수락/거절을 기다리는 제안/도구 코드입니다. 처리 후 `null`로 비웁니다. |
+
 ## 사용 시 유의사항
 
 - `user_conditions`/`api_context`는 애플리케이션이 통째로 읽고 통째로 다시 쓰는 JSONB 객체입니다 — 특정 하위 키만 부분 갱신(`jsonb_set` 등)하는 별도 경로는 없습니다.
 - `pending_info_context`는 `pending_clarification = "place_ambiguous"`일 때만 유효합니다. 다른 되묻기 코드로 바뀌거나 되묻기가 해제되면 애플리케이션이 함께 `NULL`로 비웁니다. 이 값만 남아 있다고 해서 활성 INFO 되묻기 상태라는 뜻은 아닙니다.
+- `recent_turns`와 `situation_state`는 `pending_clarification`을 대체하지 않습니다. 전자는 대화 문맥, 후자는 상황형 제안 상태이고, 후자는 명시적 되묻기 사유 코드와 별도로 관리합니다.
+- `recent_turns[].user_input`은 외부 입력입니다. LLM에 보낼 때도 시스템 지시문에 합치지 않고 역할이 분리된 대화 이력으로만 전달합니다.
 - `status`가 `active`라고 해서 세션이 진짜로 살아있다는 보장은 없습니다 — 만료 판정이 조회 시점에만 일어나는 lazy 방식이라, `last_active_at` 기준 30분이 지났는데도 이 컬럼 값은 그대로 `active`로 남아 있을 수 있습니다.
 - `user_id`가 비어 있는 것은 정상입니다 — 게스트가 아직 신원 발급을 안 받았거나, `Authorization` 헤더 없이 온 요청일 수 있습니다.
 - 30일 이상 미사용 세션은 `scripts/cleanup_expired_sessions.py`가 `condition_change_logs`/`trace_records`/`recommendation_histories`를 먼저 지우고 마지막으로 이 테이블 행을 지웁니다(D-074) — 삭제된 `session_id`로의 조회는 "세션 없음"으로 처리됩니다.

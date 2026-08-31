@@ -10,7 +10,7 @@ TODO: 실제 provider(RealPlaceProvider 등)가 준비되면 팩토리에서 설
 from __future__ import annotations
 
 import math
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import date, datetime, timedelta
 from typing import Literal
 from zoneinfo import ZoneInfo
@@ -52,6 +52,7 @@ from app.schemas import (
     ComparisonItem,
     ComparisonResult,
     ConcentrationIntent,
+    ConversationTurnView,
     Environment,
     GeneralPayload,
     GeneralTopic,
@@ -59,6 +60,7 @@ from app.schemas import (
     Intent,
     IntentClassificationResult,
     LLMOutput,
+    MissingField,
     ModifyPayload,
     ModifyType,
     OutOfScopeCategory,
@@ -236,6 +238,12 @@ _EXPLICIT_RESTART_MARKERS = (
     "조건 다시 정하고 싶어",
     "새로 시작",
 )
+# schedule06_ambiguous_recommend 되묻기("일정 계속 짤까요, 장소만 추천할까요?")의 두
+# 선택지는 서로 다른 인텐트라, 위 _SCHEDULE_MARKERS 같은 "일단 SCHEDULE 유지" 규칙을
+# 그대로 적용하면 "추천만 해줘"류 답변까지 SCHEDULE로 잘못 강제된다(2026-08-31 실사용
+# 재현). context_rules.md의 같은 이름 규칙을 흉내낸다.
+_SCHEDULE06_RECOMMEND_ONLY_MARKERS = ("추천만", "장소만", "그냥 추천")
+_SCHEDULE06_CONTINUE_MARKERS = ("일정", "계속", "이어서")
 _INFO_QUESTION_MARKERS = (
     "열어",
     "몇 시",
@@ -388,6 +396,7 @@ class FakeLLMProvider:
         last_intent: str | None = None,
         shown_place_names: list[str] | None = None,
         conversation_place_name: str | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[IntentClassificationResult]:
         if any(marker in user_input for marker in _PROMPT_INJECTION_MARKERS):
             result = IntentClassificationResult(
@@ -409,6 +418,14 @@ class FakeLLMProvider:
             )
         elif any(marker in user_input for marker in _SCHEDULE_MARKERS):
             result = IntentClassificationResult(intent=Intent.SCHEDULE)
+        elif pending_clarification == "schedule06_ambiguous_recommend" and any(
+            marker in user_input for marker in _SCHEDULE06_RECOMMEND_ONLY_MARKERS
+        ):
+            result = IntentClassificationResult(intent=Intent.RECOMMEND)
+        elif pending_clarification == "schedule06_ambiguous_recommend" and any(
+            marker in user_input for marker in _SCHEDULE06_CONTINUE_MARKERS
+        ):
+            result = IntentClassificationResult(intent=Intent.SCHEDULE)
         elif (
             last_intent == Intent.SCHEDULE.value
             and pending_clarification is not None
@@ -418,6 +435,17 @@ class FakeLLMProvider:
             # 보충하는 짧은 답변도 새 MODIFY 요청이 아니라 그 SCHEDULE을 이어가는
             # 중이다. MODIFY 분기(바로 아래)보다 먼저 검사해 우선순위를 준다.
             result = IntentClassificationResult(intent=Intent.SCHEDULE)
+        elif (
+            last_intent == Intent.INFO.value
+            and pending_clarification is not None
+            and _find_known_place(user_input) is not None
+        ):
+            # 직전 INFO 되묻기(장소를 몰라서 되물었거나 후보가 여러 개라 되물은
+            # 경우) 뒤에 알려진 장소명이 나오면 검색 중심점 변경(MODIFY)이 아니라
+            # 방금 물어본 질문의 장소 답변이다 — context_rules.md의 같은 이름
+            # 규칙을 흉내낸다. 아래 "이전 추천 있음 + 지명 단독 → MODIFY" 규칙보다
+            # 먼저 검사해 우선순위를 준다(2026-08-31 실사용 재현).
+            result = IntentClassificationResult(intent=Intent.INFO)
         elif (
             last_intent in (Intent.RECOMMEND.value, Intent.MODIFY.value)
             and pending_clarification in _LOCATION_CLARIFICATION_CODES
@@ -455,6 +483,11 @@ class FakeLLMProvider:
             marker in user_input for marker in _INFO_QUESTION_MARKERS
         ):
             result = IntentClassificationResult(intent=Intent.INFO)
+        elif any(marker in user_input for marker in _INFO_QUESTION_MARKERS):
+            # 장소명 없이 정보 질문 마커만 있는 경우("사람 많아?")도 INFO다 —
+            # extract_info_query()가 place_name 없음을 이유로 되묻는다(info/
+            # extract.md와 같은 규칙). 위 분기와 달리 알려진 장소가 필요 없다.
+            result = IntentClassificationResult(intent=Intent.INFO)
         elif _is_simple_location_answer(user_input):
             result = IntentClassificationResult(
                 intent=Intent.MODIFY if has_previous_recommendation else Intent.RECOMMEND
@@ -463,7 +496,12 @@ class FakeLLMProvider:
             result = IntentClassificationResult(intent=Intent.RECOMMEND)
         return provider_result(result, source=ProviderSource.FAKE_LLM)
 
-    async def extract_recommend_conditions(self, user_input: str) -> ProviderResult[LLMOutput]:
+    async def extract_recommend_conditions(
+        self,
+        user_input: str,
+        *,
+        history: Sequence[ConversationTurnView] | None = None,
+    ) -> ProviderResult[LLMOutput]:
         conditions = UserConditions()
         place_name = _find_known_place(user_input)
         if place_name and (
@@ -539,6 +577,7 @@ class FakeLLMProvider:
         pending_clarification: str | None = None,
         shown_place_count: int = 0,
         shown_place_names: list[str] | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[LLMOutput]:
         ordinal_indices = {
             index for marker, index in _ORDINAL_TO_INDEX.items() if marker in user_input
@@ -734,6 +773,10 @@ class FakeLLMProvider:
         has_previous_recommendation: bool,
         reference_date: date,
         conversation_place_name: str | None = None,
+        pending_info_question_type: str | None = None,
+        pending_info_specific_question: str | None = None,
+        pending_info_visit_time: str | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[LLMOutput]:
         place_name = _find_known_place(user_input)
         if place_name:
@@ -747,6 +790,24 @@ class FakeLLMProvider:
 
         if place_context is PlaceContext.FROM_CONVERSATION and conversation_place_name:
             place_name = conversation_place_name
+
+        # 직전 턴이 장소명 없이 되물은 INFO 되묻기였고(pending_info_question_type),
+        # 이번 발화에서 알려진 장소명을 새로 찾았다면 그 질문에 대한 답으로 본다 —
+        # 실제 Gemini의 info/pending_question_block.md 지시와 같은 판단을 결정론으로
+        # 흉내낸다(회귀 테스트가 실제 API 없이도 이 병합을 검증할 수 있게 한다).
+        if pending_info_question_type and place_name and place_context is PlaceContext.EXPLICIT:
+            result = LLMOutput(
+                intent=Intent.INFO,
+                status=OutputStatus.COMPLETE,
+                info=InfoPayload(
+                    place_name=place_name,
+                    place_context=place_context,
+                    question_type=QuestionType(pending_info_question_type),
+                    specific_question=pending_info_specific_question or user_input,
+                    visit_time=pending_info_visit_time,
+                ),
+            )
+            return provider_result(result, source=ProviderSource.FAKE_LLM)
 
         if any(marker in user_input for marker in ("지하철", "전철")) and any(
             marker in user_input for marker in ("언제", "도착", "몇 분", "몇분")
@@ -797,6 +858,28 @@ class FakeLLMProvider:
             else None
         )
 
+        # 장소명도 없고 참조할 맥락(직전 대화 장소)도 없으면 실제 info/extract.md와
+        # 같은 규칙으로 되묻는다("반드시 info 필드를 채우고" — place_name만 비운다).
+        if place_name is None and place_context is PlaceContext.FROM_CONVERSATION:
+            result = LLMOutput(
+                intent=Intent.INFO,
+                status=OutputStatus.NEEDS_CLARIFICATION,
+                info=InfoPayload(
+                    place_name=None,
+                    place_context=place_context,
+                    question_type=question_type,
+                    specific_question=user_input,
+                    visit_time=visit_time,
+                ),
+                clarification=ClarificationPayload(
+                    missing_fields=[
+                        MissingField(field="place_name", reason="장소를 특정할 단서가 없습니다.")
+                    ],
+                    message="어떤 장소의 정보를 확인하고 싶으신가요?",
+                ),
+            )
+            return provider_result(result, source=ProviderSource.FAKE_LLM)
+
         result = LLMOutput(
             intent=Intent.INFO,
             status=OutputStatus.COMPLETE,
@@ -816,6 +899,7 @@ class FakeLLMProvider:
         *,
         shown_place_count: int,
         shown_place_names: list[str] | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[LLMOutput]:
         if "오래 열어" in user_input:
             criteria = CompareCriteria.TIME
@@ -871,7 +955,12 @@ class FakeLLMProvider:
         )
         return provider_result(result, source=ProviderSource.FAKE_LLM)
 
-    async def extract_general_request(self, user_input: str) -> ProviderResult[LLMOutput]:
+    async def extract_general_request(
+        self,
+        user_input: str,
+        *,
+        history: Sequence[ConversationTurnView] | None = None,
+    ) -> ProviderResult[LLMOutput]:
         if any(marker in user_input for marker in _SERVICE_IDENTITY_MARKERS):
             topic = GeneralTopic.SERVICE_IDENTITY
         elif "역사" in user_input or "언제 지어졌" in user_input:

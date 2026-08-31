@@ -4,10 +4,34 @@
 
 | 슬롯 | 관리 버전 | 템플릿 | 공유 규칙 |
 | --- | --- | --- | --- |
-| info.extract | v3.2.1 | extract.md, question_type_rules.md, place_context_rules.md, visit_time_rules.md | factuality |
+| info.extract | v3.3.0 | extract.md, question_type_rules.md, place_context_rules.md, visit_time_rules.md, pending_question_block.md | factuality |
 | info.answer | v1.0.0 | answer_instruction.md | persona, factuality |
 
 ## Draft
+
+### v3.3.0 (2026-08-31, 되묻기 자유 텍스트 이어받기)
+
+  장소명이 없어 되묻는 경우(예: "사람 많아?") 지금까지는 버튼도 없고 자유 텍스트로
+  답해도 이어받을 코드가 없어, 다음 턴이 장소명만으로 처음부터 재분류되며 "혼잡도
+  질문이었다"는 사실이 사라졌습니다(실사용 재현, 2026-08-31 — "사람많아?" 되묻기 뒤
+  "여의도 한강공원"이라고 답하면 라우터가 MODIFY로 오분류해 혼잡도와 무관한 식당
+  추천이 나왔습니다).
+
+  이 슬롯이 기존에 "반드시 info 필드를 채우고"(26행)라고 지시해 둔 덕분에, 장소명이
+  없어도 question_type/specific_question/visit_time은 이미 채워져 있었습니다 — 그
+  값을 세션에 저장해뒀다가, 다음 턴에 `pending_question_block.md`로 새로 만든
+  블록에 실어 되돌려줍니다. "이번 발화가 그 질문에 대한 장소 답변으로 보이면 이전
+  값을 유지하고 place_name만 채우라"고 지시합니다. 값이 없으면(직전이 이 되묻기가
+  아니었으면) 블록 자체가 빈 문자열로 생략되므로 기존 케이스의 렌더 결과는 그대로입니다
+  (`tests/prompts/snapshots/info_extract__default.txt` 등 기존 스냅샷 불변 확인).
+
+  같은 작업에서 라우터(`router/context_rules.md`)에도 짝이 되는 규칙을 추가했습니다 —
+  이 값을 프롬프트에 넣어도 라우터가 애초에 INFO를 유지하지 않으면 소용이 없기
+  때문입니다. 단위·e2e 테스트는 `tests/test_agent_runtime.py`의
+  `test_info_missing_place_free_text_answer_stays_info`,
+  `test_info_place_ambiguous_free_text_answer_resolves_without_button`,
+  `tests/test_orchestrator.py`의 `test_info_extraction_receives_pending_question_context`
+  참고. 실 서버 재확인 후 승인 이력으로 승격합니다.
 
 ### v3.2.1 (2026-08-27, 공영주차장 실시간 경로)
 
