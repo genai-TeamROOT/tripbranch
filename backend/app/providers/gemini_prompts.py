@@ -554,6 +554,12 @@ def format_schedule_planning_context(request: SchedulePlanningRequest, start_tim
     co_visited_lines = "\n".join(
         _co_visited_line(hint, name_by_place_id) for hint in request.co_visited_hints
     ) or "(없음)"
+    # 보관함에 담긴 장소(SCHEDULE-12). co_visited_lines와 같은 이유로 비어 있어도
+    # 섹션을 없애지 않고 "(없음)"을 채운다 — 프롬프트 구조가 요청마다 달라지지 않게.
+    must_include_lines = "\n".join(
+        f"- {name_by_place_id.get(place_id, place_id)}({place_id})"
+        for place_id in request.must_include_place_ids
+    ) or "(없음)"
     condition_lines = request.conditions.model_dump_json(exclude_none=True)
 
     return render_text(
@@ -562,6 +568,7 @@ def format_schedule_planning_context(request: SchedulePlanningRequest, start_tim
         candidate_lines=candidate_lines,
         distance_lines=distance_lines,
         co_visited_lines=co_visited_lines,
+        must_include_lines=must_include_lines,
         condition_lines=condition_lines,
     )
 

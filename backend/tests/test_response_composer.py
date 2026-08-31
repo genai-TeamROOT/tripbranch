@@ -1466,3 +1466,59 @@ class TestComposeEventInfoMessage:
         )
         message = await compose_chat_message(llm_output, info_response=response, llm=_StubLLM())
         assert "경복궁 별빛야행" in message
+
+
+# ------------------------------------- 담아둔 장소를 못 담았을 때 (SCHEDULE-12)
+
+
+def test_schedule_message_reports_omitted_saved_places() -> None:
+    """담아둔 장소를 조용히 빠뜨리지 않고 말풍선에 알린다."""
+
+    schedule = ScheduleResult(
+        items=[_schedule_item()],
+        total_duration_min=120,
+        route_summary="경복궁 근처 코스예요.",
+        basis_note="기준 시각 안내",
+        omitted_saved_place_names=["북촌한옥마을", "인사동"],
+        elapsed_ms=100.0,
+    )
+
+    message = compose_schedule_message(schedule)
+
+    assert "경복궁 근처 코스예요." in message
+    assert "북촌한옥마을, 인사동" in message
+    assert "넣지 못했어요" in message
+
+
+def test_schedule_message_unchanged_when_nothing_omitted() -> None:
+    """정상 경로 — 빠진 장소가 없으면 문구가 붙지 않는다."""
+
+    schedule = ScheduleResult(
+        items=[_schedule_item()],
+        total_duration_min=120,
+        route_summary="경복궁 근처 코스예요.",
+        basis_note="기준 시각 안내",
+        elapsed_ms=100.0,
+    )
+
+    message = compose_schedule_message(schedule)
+
+    assert "넣지 못했어요" not in message
+
+
+def test_schedule_message_reports_omitted_even_without_items() -> None:
+    """일정을 아예 못 짠 경우에도 알린다 — 그 이유가 담아둔 장소와 무관하지 않을 수 있다."""
+
+    schedule = ScheduleResult(
+        items=[],
+        total_duration_min=0,
+        route_summary="조건에 맞는 곳을 충분히 찾지 못했어요.",
+        basis_note="기준 시각 안내",
+        omitted_saved_place_names=["북촌한옥마을"],
+        elapsed_ms=100.0,
+    )
+
+    message = compose_schedule_message(schedule)
+
+    assert "조건에 맞는 곳을 충분히 찾지 못했어요." in message
+    assert "북촌한옥마을" in message

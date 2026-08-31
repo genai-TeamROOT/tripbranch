@@ -84,6 +84,18 @@ def planning_request() -> SchedulePlanningRequest:
     )
 
 
+def planning_request_with_must_include() -> SchedulePlanningRequest:
+    """보관함에 담긴 장소가 있는 요청. (SCHEDULE-12)
+
+    [반드시 포함] 섹션이 실제로 이름과 함께 렌더링되는지 스냅샷으로 잠근다 —
+    빈 경우("(없음)")는 planning_request()가 이미 덮는다.
+    """
+
+    return planning_request().model_copy(
+        update={"must_include_place_ids": ["place-2", "place-3"]}
+    )
+
+
 def fill_request() -> SchedulePartialFillRequest:
     return SchedulePartialFillRequest(
         pinned_items=[

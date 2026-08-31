@@ -230,6 +230,14 @@ class RecommendedItem(BaseModel):
     전체 재편성으로 조용히 폴백된다(2026-08-11 실사용 재현). name도 여기
     저장해두면 이 재검색에 의존하지 않아 안정적이다.
 
+    latitude/longitude는 네 번째 예외다(SCHEDULE-12). 일정 편성의 후보 간 거리
+    계산(`agent_runtime._build_pairwise_distances_km`)은 좌표를 이번 턴 C 응답에서만
+    찾고 못 찾으면 조용히 건너뛴다. RECOMMEND 직후 SCHEDULE로 이어지는 흐름에서는
+    후보가 같은 검색 결과라 그 전제가 성립했지만, 보관함(SavedPlaceList)으로 여러
+    턴에 걸쳐 담은 장소가 후보에 들어오면 깨진다 — 이번 턴 검색 반경 밖이면 C 응답에
+    아예 없어 LLM이 거리 근거 없이 동선을 짠다. 이 값도 name과 같은 "추천 시점
+    스냅샷"이라 나중에 실제와 달라져도 문제가 되지 않는다.
+
     rank가 이미 방문 순서(ScheduleItem.order)를 담으므로 별도 order
     필드는 두지 않는다.
     """
@@ -239,6 +247,10 @@ class RecommendedItem(BaseModel):
     rank: int
     shown_at: datetime = Field(default_factory=now_kst)
     name: str | None = None
+    # 추천 시점 좌표 스냅샷(SCHEDULE-12). C 응답에 좌표가 없던 경로로 기록된
+    # 항목(routes/recommendations.py)과 이 필드 도입 이전 세션에서는 None이다.
+    latitude: float | None = None
+    longitude: float | None = None
     estimated_arrival: str | None = None
     estimated_duration_min: int | None = None
     travel_to_next_min: int | None = None
@@ -252,13 +264,15 @@ class RecommendedItemInput(BaseModel):
     """history.record_recommended() 호출 시 넘기는 입력 1건.
 
     place_id/rank는 필수, 나머지는 SCHEDULE 전용(SCHEDULE-06),
-    COMPARE 전용(2026-08-11) 또는 SCHEDULE-09 2단계 전용(2026-08-11,
-    name) 선택 필드다.
+    COMPARE 전용(2026-08-11), SCHEDULE-09 2단계 전용(2026-08-11, name) 또는
+    SCHEDULE-12 전용(latitude/longitude) 선택 필드다.
     """
 
     place_id: str
     rank: int
     name: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
     estimated_arrival: str | None = None
     estimated_duration_min: int | None = None
     travel_to_next_min: int | None = None

@@ -859,6 +859,22 @@ def _format_duration_label(total_minutes: int) -> str:
     return f"{minutes}분"
 
 
+def _with_omitted_note(message: str, schedule: ScheduleResult) -> str:
+    """담아둔 장소를 못 담았으면 그 사실을 한 문장으로 덧붙인다. (SCHEDULE-12)
+
+    빠진 장소가 없으면 message를 그대로 돌려준다 — 이게 정상 경로다.
+    """
+
+    names = schedule.omitted_saved_place_names
+    if not names:
+        return message
+    joined = ", ".join(names)
+    return (
+        f"{message} 담아두신 {joined}은 이번 일정에 넣지 못했어요 — "
+        "시간을 늘리거나 다른 곳을 빼고 다시 요청해보실래요?"
+    )
+
+
 def compose_schedule_message(
     schedule: ScheduleResult, *, time_available_min: int | None = None
 ) -> str:
@@ -876,10 +892,15 @@ def compose_schedule_message(
     total_duration_min과의 차이가 _DURATION_MATCH_TOLERANCE_MIN 이내면 요청
     시간을 그대로 보여준다("2시간 짜줘" → "2시간 코스를 짜봤어요"). 차이가 크면
     실제 편성 결과가 요청과 동떨어졌다는 뜻이므로 실제 계산값을 보여준다.
+
+    omitted_saved_place_names가 있으면 한 문장을 덧붙인다(SCHEDULE-12) — 담아둔
+    장소를 조용히 빠뜨리면 사용자는 자기가 고른 곳이 왜 없는지 알 수 없다.
+    items가 비어 있는 경우에도 붙인다: 일정을 아예 못 짠 이유가 담아둔 장소와
+    무관하지 않을 수 있어서다.
     """
 
     if not schedule.items:
-        return schedule.route_summary
+        return _with_omitted_note(schedule.route_summary, schedule)
 
     if (
         time_available_min is not None
@@ -888,7 +909,9 @@ def compose_schedule_message(
         duration_label = _format_duration_label(time_available_min)
     else:
         duration_label = _format_duration_label(schedule.total_duration_min)
-    return f"{duration_label} 코스를 짜봤어요. {schedule.route_summary}"
+    return _with_omitted_note(
+        f"{duration_label} 코스를 짜봤어요. {schedule.route_summary}", schedule
+    )
 
 
 async def compose_chat_message(

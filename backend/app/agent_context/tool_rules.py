@@ -36,13 +36,23 @@ class ToolExecutionPlan:
         return tool in self.tools
 
 
-def build_tool_execution_plan(conditions: UserConditions) -> ToolExecutionPlan:
-    """MVP 조건에 따라 초기 Context 수집 Tool을 선택한다.
+def build_tool_execution_plan(
+    conditions: UserConditions, *, places_only: bool = False
+) -> ToolExecutionPlan:
+    """조건과 요청 성격에 따라 Context 수집 Tool을 선택한다.
 
-    위치·장소·공휴일은 추천과 운영정보 판단에 항상 필요하다. 날씨는 쓸 값이 없을
-    때만 조회한다 — 자세한 기준은 _requires_weather() 참고. Concentration은 D가
-    선정한 상위 후보를 보강하는 후조회이므로 초기 계획에 포함하지 않는다.
+    위치·장소·공휴일은 추천과 운영정보 판단에 필요하다. 날씨는 쓸 값이 없을 때만
+    조회한다 — 자세한 기준은 _requires_weather() 참고. Concentration은 D가 선정한
+    상위 후보를 보강하는 후조회이므로 초기 계획에 포함하지 않는다.
+
+    `places_only`는 같은 턴 안의 보충 조회다(`AgentContextRequest.resolved_search_center`).
+    **위치·날씨·공휴일을 계산해도 A가 버린다** — 보충 배치에서는 places만 합치고
+    나머지는 첫 배치 값을 그대로 쓰기 때문이다. 그래서 아예 부르지 않는다. 기준점은
+    A가 첫 조회에서 확정한 좌표를 그대로 넘겨받으므로 위치 해석도 필요 없다.
     """
+
+    if places_only:
+        return ToolExecutionPlan(tools=frozenset({ContextTool.SEARCH_PLACES}))
 
     tools = {
         ContextTool.RESOLVE_LOCATION,

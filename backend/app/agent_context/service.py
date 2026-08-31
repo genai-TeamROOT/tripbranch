@@ -256,9 +256,13 @@ class ContextService:
         request: AgentContextRequest,
     ) -> AgentContextResponse:
         conditions = request.conditions
-        execution_plan = build_tool_execution_plan(conditions)
+        # 보충 조회는 A가 기준점을 확정해 넘긴다 — 그때는 장소만 다시 받는다.
+        refill_center = request.resolved_search_center
+        execution_plan = build_tool_execution_plan(
+            conditions, places_only=refill_center is not None
+        )
         location_query = conditions.search_center or conditions.current_location
-        if location_query is None and request.gps_location is None:
+        if refill_center is None and location_query is None and request.gps_location is None:
             return assemble_agent_context_response(
                 ContextAssemblyInput(request=request, location_result=None),
                 rule_versions=_rule_versions(),
@@ -271,15 +275,20 @@ class ContextService:
         if category_plan.has_unsupported_conditions or category_plan.has_conflicts:
             return _unsupported_category_response(request, category_plan)
 
-        location_result = (
-            await self._tools.location.execute(
+        if refill_center is not None:
+            # 위치 해석을 건너뛴다. 같은 턴이라 기준점이 바뀔 일이 없고, 보충 배치의
+            # location은 A가 어차피 버린다(_merge_recommendation_context_places).
+            location_result = _resolved_center_location_result(
+                refill_center, self._clock()
+            )
+        elif location_query is not None:
+            location_result = await self._tools.location.execute(
                 # 추천은 반경 검색의 기준 좌표만 필요하다. 저장소 정체성 확정은
                 # 후보 보강 단계가 place_id로 따로 한다(enrichment_service).
                 ResolveLocationQuery(location_query, purpose=LocationPurpose.SEARCH_CENTER)
             )
-            if location_query is not None
-            else _gps_location_result(request, self._clock())
-        )
+        else:
+            location_result = _gps_location_result(request, self._clock())
         if location_result.status is not ToolStatus.SUCCESS or location_result.location is None:
             return assemble_agent_context_response(
                 ContextAssemblyInput(
@@ -295,12 +304,16 @@ class ContextService:
 
         visit_at = _as_kst(self._clock())
         location = location_result.location
-        user_location_task = asyncio.create_task(
-            self._resolve_user_location(
-                request,
-                location_query=location_query,
-                location_result=location_result,
+        user_location_task = (
+            asyncio.create_task(
+                self._resolve_user_location(
+                    request,
+                    location_query=location_query,
+                    location_result=location_result,
+                )
             )
+            if refill_center is None
+            else None
         )
         weather_task = (
             asyncio.create_task(
@@ -338,7 +351,9 @@ class ContextService:
         weather_result = await weather_task if weather_task is not None else None
         holidays_result = await holidays_task if holidays_task is not None else None
         places_result = await places_task
-        user_location_result = await user_location_task
+        user_location_result = (
+            await user_location_task if user_location_task is not None else None
+        )
 
         return assemble_agent_context_response(
             ContextAssemblyInput(
@@ -1957,6 +1972,35 @@ def _gps_location_result(
                 retrieved_at=_as_kst(retrieved_at).astimezone(UTC),
             ),
         ),
+    )
+
+
+def _resolved_center_location_result(
+    center: Coordinates, retrieved_at: datetime
+) -> ResolveLocationResult:
+    """보충 조회에서 A가 넘긴 검색 기준점을 위치 Tool 성공 결과로 정규화한다.
+
+    `_gps_location_result()`와 같은 모양이다 — 위치 Tool을 부르지 않고 좌표만으로
+    결과를 만든다. 다만 출처가 기기 GPS가 아니라 **같은 턴의 첫 조회에서 C가 이미
+    해석한 기준점**이라 source를 QUERY로 둔다.
+
+    이름을 실을 수 없어 resolved_name이 비는데, 그래도 되는 이유는 A가 보충 배치의
+    location을 쓰지 않기 때문이다(_merge_recommendation_context_places). 근거 문장에
+    나가는 기준점 이름은 첫 배치 값이다.
+    """
+    return ResolveLocationResult(
+        status=ToolStatus.SUCCESS,
+        location=ResolvedLocation(
+            requested_query="resolved_search_center",
+            provider_query="resolved_search_center",
+            resolved_name="",
+            latitude=center.latitude,
+            longitude=center.longitude,
+            resolution_method=ResolutionMethod.DIRECT,
+            confidence=ResolutionConfidence.EXACT,
+        ),
+        error=None,
+        provider_metadata=(),
     )
 
 

@@ -94,6 +94,7 @@ class AgentContextRequest(BaseModel):
     conditions: UserConditions
     gps_location: Coordinates | None = None
     excluded_place_ids: list[str] = Field(default_factory=list)
+    resolved_search_center: Coordinates | None = None
 ```
 
 ### 4.2 필드 설명
@@ -105,6 +106,7 @@ class AgentContextRequest(BaseModel):
 | `conditions` | 예 | LLM이 추출한 사용자 조건. A는 값을 임의로 Provider 형식으로 변환하지 않는다. |
 | `gps_location` | 아니오 | A가 전달하는 기기 GPS 좌표. 사용자 발화 위치와 분리한다. 장소명이 없으면 검색 중심 fallback으로 쓴다. 사용자 위치(`context.user_location`)로는 `conditions.current_location`이 우선하고, 이 값은 발화 위치가 없거나 해석에 실패했을 때 쓰인다(TP-112). |
 | `excluded_place_ids` | 아니오 | 이미 소진된 후보 id(노출분 ∪ 거절분). C는 이걸로 추천 여부를 판정하지 않고, 그만큼 후보를 더 받아와 새 후보가 요청 개수만큼 남게 하는 데만 쓴다. 2절의 "제외 판정은 D 책임"은 그대로다 — 아래 설명 참고. |
+| `resolved_search_center` | 아니오 | 같은 턴 안의 **보충 조회**에서만 채운다. A가 첫 조회에서 확정한 검색 기준점 좌표다. 값이 있으면 C는 장소만 다시 주고 위치 해석·날씨·공휴일을 건너뛴다 — 그 셋의 결과는 A가 보충 배치에서 버리기 때문이다(첫 배치 값을 그대로 쓴다). 보충 1회의 외부 호출이 7건에서 2건으로 준다. 값이 없으면 기존과 동일하게 전부 수집한다. |
 | `current_location` | 아니오 | 사용자가 말한 현재 위치. |
 | `search_center` | 아니오 | 추천 검색 중심 장소. |
 | `place_types`, `place_tags` | 아니오 | 사용자가 원하는 장소 유형·태그. C가 내부 분류 코드로 변환한다. |

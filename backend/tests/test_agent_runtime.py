@@ -70,11 +70,14 @@ from app.schemas import (
 from app.service_area import supported_district_label
 from app.services.runtime import agent_runtime as agent_runtime_module
 from app.services.runtime.agent_runtime import (
+    _MEASURED_ROUTE_CANDIDATE_LIMIT,
     _WIDEN_RADIUS_MAX_TRAVEL_TIME,
     _apply_concentration_rerank,
+    _build_pairwise_distances_km,
     _effective_excluded_place_ids,
     _fetch_compare_travel_routes,
-    _revivable_shown_place_ids,
+    _revivable_place_ids,
+    _snapshot_coordinates,
     run_agent_flow,
     summarize_turn,
 )
@@ -3735,6 +3738,24 @@ _CLOSED_ALL_WEEK_SCHEDULE = {
 }
 
 
+# _RefillPlacesToolProvider가 한 번에 돌려주는 후보 수.
+_REFILL_PAGE_SIZE = 10
+
+
+@pytest.fixture
+def refill_page_limit(monkeypatch: pytest.MonkeyPatch) -> int:
+    """보충 조회 대역의 페이지 크기와 후보 상한을 맞춘다.
+
+    `_RefillPlacesToolProvider`는 10곳 단위로 후보를 돌려주고 open_indexes도 그
+    경계에 맞춰 잡혀 있다. A의 소진 판정이 "반환 수 < recommendation_candidate_limit"
+    이라, 설정값이 페이지 크기보다 크면 첫 조회가 곧바로 소진으로 읽혀 보충이 아예
+    돌지 않는다. 이 테스트들이 보려는 것은 보충 메커니즘이지 운영 기본값이 아니므로
+    여기서 둘을 맞춘다 — 기본값을 10에서 30으로 올렸을 때 실제로 이렇게 깨졌다.
+    """
+    monkeypatch.setattr(settings, "recommendation_candidate_limit", _REFILL_PAGE_SIZE)
+    return _REFILL_PAGE_SIZE
+
+
 class _RefillPlacesToolProvider(FakeToolProvider):
     """제외 ID 다음의 후보를 페이지 단위로 반환하는 C 보충 조회 대역.
 
@@ -3747,7 +3768,7 @@ class _RefillPlacesToolProvider(FakeToolProvider):
         self,
         *,
         total: int = 25,
-        page_size: int = 10,
+        page_size: int = _REFILL_PAGE_SIZE,
         open_indexes: set[int] | None = None,
     ) -> None:
         self.requests: list[AgentContextRequest] = []
@@ -3973,7 +3994,9 @@ class _RecordingWalkingRoutesRecommendationProvider(RealRecommendationProvider):
 
 
 @pytest.mark.asyncio
-async def test_staged_recommendation_refills_candidates_up_to_target() -> None:
+async def test_staged_recommendation_refills_candidates_up_to_target(
+    refill_page_limit: int,
+) -> None:
     store = InMemoryStateStore()
     tool_provider = _RefillPlacesToolProvider()
 
@@ -4073,7 +4096,9 @@ async def test_repeated_reject_all_does_not_refetch_closed_candidates() -> None:
 
 
 @pytest.mark.asyncio
-async def test_staged_recommendation_passes_only_eligible_routes_to_d_after_refill() -> None:
+async def test_staged_recommendation_passes_only_eligible_routes_to_d_after_refill(
+    refill_page_limit: int,
+) -> None:
     context_provider = _RefillPlacesToolProvider()
     route_tool = _RecordingTravelRouteTool()
     recommendation_provider = _RecordingWalkingRoutesRecommendationProvider()
@@ -4223,7 +4248,9 @@ async def test_staged_recommendation_passes_empty_routes_when_route_tool_is_unav
 
 
 @pytest.mark.asyncio
-async def test_staged_recommendation_stops_after_max_refill_attempts() -> None:
+async def test_staged_recommendation_stops_after_max_refill_attempts(
+    refill_page_limit: int,
+) -> None:
     store = InMemoryStateStore()
     tool_provider = _RefillPlacesToolProvider()
     tool_provider._places = [
@@ -4352,7 +4379,9 @@ class _WeatherDivergingRefillToolProvider(_RefillPlacesToolProvider):
 
 
 @pytest.mark.asyncio
-async def test_staged_recommendation_reuses_first_batch_weather_for_refill_batches() -> None:
+async def test_staged_recommendation_reuses_first_batch_weather_for_refill_batches(
+    refill_page_limit: int,
+) -> None:
     """보충 조회에서 날씨가 빠져도 배치를 버리지 않고 첫 배치 판정을 재사용한다.
 
     보충 조회는 같은 요청·같은 시각·같은 좌표를 다시 조회하는 것이라, 날씨가
@@ -4395,7 +4424,9 @@ class _BrokenLocationRefillToolProvider(_RefillPlacesToolProvider):
 
 
 @pytest.mark.asyncio
-async def test_staged_recommendation_drops_refill_batch_when_prepare_raises() -> None:
+async def test_staged_recommendation_drops_refill_batch_when_prepare_raises(
+    refill_page_limit: int,
+) -> None:
     """보충 Context가 장소는 실었지만 location이 없으면 prepare()가 AppError를 던진다.
 
     응답 status와 place_id 유무만 보는 가드로는 이 조합이 안 걸려서, 보충 실패가
@@ -4415,7 +4446,9 @@ async def test_staged_recommendation_drops_refill_batch_when_prepare_raises() ->
 
 
 @pytest.mark.asyncio
-async def test_staged_recommendation_refill_progress_does_not_move_backwards() -> None:
+async def test_staged_recommendation_refill_progress_does_not_move_backwards(
+    refill_page_limit: int,
+) -> None:
     """보충 조회 중에도 progress stage는 scoring을 유지한다.
 
     프론트(AgentProgressMessage.tsx)는 stage로 진행 순서를 그리고 문구만 서버
@@ -4464,7 +4497,9 @@ async def test_staged_recommendation_all_closed_triggers_no_data_closed() -> Non
 
 
 @pytest.mark.asyncio
-async def test_staged_recommendation_merges_refill_places_into_tool_context() -> None:
+async def test_staged_recommendation_merges_refill_places_into_tool_context(
+    refill_page_limit: int,
+) -> None:
     """보충으로 받은 장소도 tool_context에 합쳐져 후속 C 보강 조회로 넘어가야 한다.
 
     to_candidate_enrichment_request()는 원본 places에서 place_id를 못 찾은 후보를
@@ -5621,7 +5656,7 @@ def test_exclusion_order_is_preserved() -> None:
 
 
 def _llm_output(*, modify: object) -> object:
-    """_revivable_shown_place_ids()가 보는 필드(modify)만 가진 최소 스텁."""
+    """_revivable_place_ids()가 보는 필드(modify)만 가진 최소 스텁."""
 
     class _Stub:
         pass
@@ -5631,25 +5666,30 @@ def _llm_output(*, modify: object) -> object:
     return stub
 
 
-def _session_context_stub(shown: list[str]) -> object:
+def _session_context_stub(shown: list[str], saved: list[str] | None = None) -> object:
     class _Stub:
         pass
 
+    class _Saved:
+        def __init__(self, place_id: str) -> None:
+            self.place_id = place_id
+
     stub = _Stub()
     stub.shown_place_ids = shown
+    stub.saved_places = [_Saved(place_id) for place_id in (saved or [])]
     return stub
 
 
 def test_new_schedule_turn_revives_shown_places() -> None:
     """새 SCHEDULE 턴("이 장소들로 일정 짜줘")은 직전 노출분을 되살린다."""
 
-    assert _revivable_shown_place_ids(
+    assert _revivable_place_ids(
         _llm_output(modify=None), _session_context_stub(["p1", "p2"])
     ) == ["p1", "p2"]
 
 
 def test_replan_turn_does_not_revive_shown_places() -> None:
-    """재조정 턴은 되살리지 않는다 — 방금 거절한 장소가 다시 나오면 안 된다.
+    """재조정 턴은 직전 노출분을 되살리지 않는다 — 방금 거절한 장소가 다시 나오면 안 된다.
 
     "다른 곳 보여줘"(REJECT_ALL)·"두 번째는 별로야"(REJECT_SPECIFIC)는 MODIFY로
     분류된 뒤 SCHEDULE로 relabel되므로 is_schedule만으로는 새 일정 요청과 구분되지
@@ -5658,11 +5698,42 @@ def test_replan_turn_does_not_revive_shown_places() -> None:
     """
 
     assert (
-        _revivable_shown_place_ids(
+        _revivable_place_ids(
             _llm_output(modify=object()), _session_context_stub(["p1", "p2"])
         )
-        == ()
+        == []
     )
+
+
+def test_saved_places_are_revived_on_new_schedule_turn() -> None:
+    """보관함은 shown과 합집합으로 되살아난다 (SCHEDULE-12).
+
+    shown_place_ids는 마지막 run만 담아, 3턴 전에 담은 장소는 여기 없다.
+    """
+
+    assert _revivable_place_ids(
+        _llm_output(modify=None), _session_context_stub(["p1"], saved=["p9"])
+    ) == ["p1", "p9"]
+
+
+def test_saved_places_are_revived_even_on_replan_turn() -> None:
+    """재조정 턴에도 보관함은 되살린다 — 사용자가 명시적으로 담아둔 것이다.
+
+    "두 번째는 별로야"가 담아둔 나머지까지 후보에서 뺄 이유가 없다. 거절과
+    겹칠 걱정은 record_rejected()가 보관함에서 자동으로 빼므로 없다.
+    """
+
+    assert _revivable_place_ids(
+        _llm_output(modify=object()), _session_context_stub(["p1", "p2"], saved=["p9"])
+    ) == ["p9"]
+
+
+def test_empty_saved_places_keeps_previous_behaviour() -> None:
+    """보관함이 비어 있으면 TP-180 동작과 완전히 같다."""
+
+    assert _revivable_place_ids(
+        _llm_output(modify=None), _session_context_stub(["p1", "p2"], saved=[])
+    ) == ["p1", "p2"]
 
 
 # ---------------------------------------------------------------- 대화층 3·4단계
@@ -5878,3 +5949,227 @@ async def test_unmatched_utterance_after_offer_falls_back_to_normal_classificati
 
     assert second.llm_output.intent == "RECOMMEND"
     assert second.state.user_conditions.max_travel_time != 15
+
+
+@pytest.mark.asyncio
+async def test_staged_recommendation_refill_passes_resolved_search_center(
+    refill_page_limit: int,
+) -> None:
+    """보충 조회는 첫 조회가 확정한 기준점을 넘긴다.
+
+    그래야 C가 위치 해석·날씨·공휴일을 건너뛰고 장소만 다시 준다. 그 셋의 결과는
+    보충 배치에서 어차피 버려지므로(_merge_recommendation_context_places가 첫 배치
+    값을 그대로 쓴다) 계산하지 않는 것뿐이다. 실측으로 보충 1회의 외부 호출이
+    7건에서 2건으로 준다.
+    """
+
+    store = InMemoryStateStore()
+    tool_provider = _RefillPlacesToolProvider()
+
+    await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=tool_provider,
+        recommendation_provider=RealRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=store,
+    )
+
+    first, *refills = tool_provider.requests
+    assert refills, "보충 조회가 돌아야 이 테스트가 뜻이 있다"
+    # 첫 조회는 기준점을 모른다 — C가 해석해야 한다.
+    assert first.resolved_search_center is None
+    # 보충은 전부 첫 조회가 확정한 좌표를 그대로 넘긴다.
+    for refill in refills:
+        assert refill.resolved_search_center is not None
+
+
+@pytest.mark.asyncio
+async def test_measured_routes_are_requested_only_for_the_shortlist(
+    refill_page_limit: int,
+) -> None:
+    """실측 도보는 1차 채점 상위 후보에만 조회한다.
+
+    `_fetch_travel_routes()`가 목적지마다 요청을 쏘므로(walking_route.py) 후보 전량에
+    붙이면 호출이 후보 수에 정비례한다. 결과에 나가는 것은 5곳뿐인데 나머지 몫까지
+    치를 이유가 없다 — 후보 상한을 30으로 올렸을 때 카카오 호출이 7~13건에서
+    25~35건이 됐다.
+    """
+
+    # 25곳 전부를 영업 중으로 둬서 하드 필터 통과 후보가 상위 목록보다 많게 만든다.
+    context_provider = _RefillPlacesToolProvider(open_indexes=set(range(25)))
+    route_tool = _RecordingTravelRouteTool()
+
+    await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=context_provider,
+        recommendation_provider=RealRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        travel_route_tool=route_tool,
+        store=InMemoryStateStore(),
+    )
+
+    assert len(route_tool.queries) == 1
+    requested = route_tool.queries[0].destinations
+    assert len(requested) == _MEASURED_ROUTE_CANDIDATE_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_measured_routes_cover_every_candidate_when_pool_is_small(
+    refill_page_limit: int,
+) -> None:
+    """통과 후보가 상위 목록보다 적으면 전부 실측한다 — 좁히기가 손해가 아니다."""
+
+    context_provider = _RefillPlacesToolProvider(open_indexes={0, 1, 2})
+    route_tool = _RecordingTravelRouteTool()
+
+    await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=context_provider,
+        recommendation_provider=RealRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        travel_route_tool=route_tool,
+        store=InMemoryStateStore(),
+    )
+
+    assert len(route_tool.queries) == 1
+    requested = {item.place_id for item in route_tool.queries[0].destinations}
+    assert requested == {"refill-0", "refill-1", "refill-2"}
+
+
+# ---------------------------------------------- 좌표 스냅샷 폴백 (SCHEDULE-12)
+
+
+class _SavedStub:
+    def __init__(self, place_id: str, latitude: float | None, longitude: float | None) -> None:
+        self.place_id = place_id
+        self.latitude = latitude
+        self.longitude = longitude
+
+
+class _ShownStub(_SavedStub):
+    pass
+
+
+def _coordinate_context(shown: list[_ShownStub], saved: list[_SavedStub]) -> object:
+    class _Stub:
+        pass
+
+    stub = _Stub()
+    stub.shown_recommendations = shown
+    stub.saved_places = saved
+    return stub
+
+
+def test_snapshot_coordinates_reads_both_sources() -> None:
+    context = _coordinate_context(
+        [_ShownStub("p1", 37.1, 127.1)],
+        [_SavedStub("p9", 37.9, 127.9)],
+    )
+
+    assert _snapshot_coordinates(context) == {
+        "p1": (37.1, 127.1),
+        "p9": (37.9, 127.9),
+    }
+
+
+def test_snapshot_coordinates_skips_missing_values() -> None:
+    """좌표 도입 이전 세션과 C 컨텍스트를 안 거친 기록은 None으로 남는다."""
+
+    context = _coordinate_context(
+        [_ShownStub("p1", None, None)],
+        [_SavedStub("p9", 37.9, None)],
+    )
+
+    assert _snapshot_coordinates(context) == {}
+
+
+def test_snapshot_coordinates_prefers_saved_over_shown() -> None:
+    """같은 place_id면 보관함 쪽을 쓴다 — 사용자가 명시적으로 고른 것이다."""
+
+    context = _coordinate_context(
+        [_ShownStub("p1", 37.1, 127.1)],
+        [_SavedStub("p1", 37.5, 127.5)],
+    )
+
+    assert _snapshot_coordinates(context) == {"p1": (37.5, 127.5)}
+
+
+def _pairwise_candidate(place_id: str) -> RecommendationItem:
+    return RecommendationItem(
+        place_id=place_id,
+        name=f"장소 {place_id}",
+        category="attraction",
+        distance_km=0.3,
+        remaining_minutes=120,
+        environment_type="indoor",
+        recommendation_reason="테스트용 고정 후보입니다.",
+        explanations=[],
+        warnings=[],
+        score=0.5,
+        feature_scores={},
+        weights_used={},
+    )
+
+
+def test_pairwise_distances_use_snapshot_when_context_lacks_place() -> None:
+    """이번 턴 C 응답에 없는 보관함 장소도 B 스냅샷으로 거리를 잰다.
+
+    폴백이 없으면 그 쌍이 조용히 빠져 LLM이 거리 근거 없이 동선을 짠다.
+    """
+
+    candidates = [_pairwise_candidate("p1"), _pairwise_candidate("p9")]
+
+    without_fallback = _build_pairwise_distances_km(candidates, [])
+    with_fallback = _build_pairwise_distances_km(
+        candidates,
+        [],
+        fallback_coordinates={"p1": (37.5796, 126.9770), "p9": (37.4979, 127.0276)},
+    )
+
+    assert without_fallback == {}
+    assert ("p1", "p9") in with_fallback
+    assert with_fallback[("p1", "p9")] > 8.0
+
+
+def test_pairwise_distances_prefer_context_over_snapshot() -> None:
+    """C 응답이 있으면 그쪽을 쓴다 — 최신값이고 같은 턴 후보끼리 출처가 일관된다."""
+
+    candidates = [_pairwise_candidate("p1"), _pairwise_candidate("p2")]
+    places = [
+        PlaceCandidate(
+            place_id="p1",
+            name="장소 p1",
+            category="attraction",
+            location=Coordinates(latitude=37.5796, longitude=126.9770),
+        ),
+        PlaceCandidate(
+            place_id="p2",
+            name="장소 p2",
+            category="attraction",
+            location=Coordinates(latitude=37.5800, longitude=126.9780),
+        ),
+    ]
+
+    from_context = _build_pairwise_distances_km(candidates, places)
+    with_bogus_fallback = _build_pairwise_distances_km(
+        candidates,
+        places,
+        fallback_coordinates={"p1": (0.0, 0.0), "p2": (10.0, 10.0)},
+    )
+
+    assert from_context == with_bogus_fallback
