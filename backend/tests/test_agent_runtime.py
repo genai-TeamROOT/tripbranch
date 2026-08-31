@@ -5642,3 +5642,40 @@ async def test_unmatched_utterance_after_offer_falls_back_to_normal_classificati
 
     assert second.llm_output.intent == "RECOMMEND"
     assert second.state.user_conditions.max_travel_time != 15
+
+
+@pytest.mark.asyncio
+async def test_staged_recommendation_refill_passes_resolved_search_center(
+    refill_page_limit: int,
+) -> None:
+    """보충 조회는 첫 조회가 확정한 기준점을 넘긴다.
+
+    그래야 C가 위치 해석·날씨·공휴일을 건너뛰고 장소만 다시 준다. 그 셋의 결과는
+    보충 배치에서 어차피 버려지므로(_merge_recommendation_context_places가 첫 배치
+    값을 그대로 쓴다) 계산하지 않는 것뿐이다. 실측으로 보충 1회의 외부 호출이
+    7건에서 2건으로 준다.
+    """
+
+    store = InMemoryStateStore()
+    tool_provider = _RefillPlacesToolProvider()
+
+    await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=tool_provider,
+        recommendation_provider=RealRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=store,
+    )
+
+    first, *refills = tool_provider.requests
+    assert refills, "보충 조회가 돌아야 이 테스트가 뜻이 있다"
+    # 첫 조회는 기준점을 모른다 — C가 해석해야 한다.
+    assert first.resolved_search_center is None
+    # 보충은 전부 첫 조회가 확정한 좌표를 그대로 넘긴다.
+    for refill in refills:
+        assert refill.resolved_search_center is not None

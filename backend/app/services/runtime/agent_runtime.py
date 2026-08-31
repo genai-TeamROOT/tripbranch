@@ -21,7 +21,11 @@ from dataclasses import field as dataclass_field
 from datetime import timedelta
 from typing import Any, TypeVar
 
-from app.agent_context.schemas import PlaceCandidate, RecommendationContext
+from app.agent_context.schemas import (
+    Coordinates,
+    PlaceCandidate,
+    RecommendationContext,
+)
 from app.auth.principal import Principal
 from app.config import settings
 from app.domain.ranking_origin import resolve_ranking_origin
@@ -1095,6 +1099,18 @@ _ENRICHMENT_TERMINAL_STATUSES = frozenset({"no_data", "unavailable"})
 def _context_place_ids(context: RecommendationContext) -> list[str]:
     places = context.places
     return [place.place_id for place in (places.data or [])] if places is not None else []
+
+
+def _search_center_of(context: RecommendationContext) -> Coordinates | None:
+    """첫 조회가 확정한 검색 기준점 좌표. 보충 조회에 그대로 넘긴다.
+
+    없으면 None을 돌려주고, 그때 C는 예전처럼 위치를 다시 해석한다 — 보충이 아예
+    못 돌게 만드는 것보다 한 번 더 해석하는 편이 낫다.
+    """
+    location = context.location
+    if location is None or location.data is None:
+        return None
+    return location.data.location
 
 
 def _merge_recommendation_context_places(
@@ -3058,6 +3074,11 @@ async def _score_recommendations(
                         if place_id not in excluded_place_ids
                     ),
                 ],
+                # 첫 조회가 확정한 기준점을 넘겨 C가 장소만 다시 주게 한다. 보충
+                # 배치의 위치·날씨·공휴일은 아래 병합에서 버려지므로(첫 배치 값을
+                # 그대로 쓴다) 계산할 이유가 없다 — 보충 1회가 외부 호출 7건에서
+                # 2건으로 준다.
+                resolved_search_center=_search_center_of(tool_context),
             )
             # stage는 "scoring"을 유지한다 — 프론트가 stage로 진행 순서를 그리므로
             # 여기서 fetching_context로 되돌리면 진행 표시가 뒤로 간다. 문구만 바꾼다
