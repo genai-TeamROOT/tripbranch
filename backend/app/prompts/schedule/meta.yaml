@@ -2,11 +2,11 @@ intent: SCHEDULE
 owner: B
 slots:
   schedule.plan:
-    version: "1.1.0"
+    version: "1.2.0"
     template: plan.md
     evals: evals/README.md
   schedule.plan_context:
-    version: "1.1.0"
+    version: "1.2.0"
     template: plan_context.md
   schedule.fill:
     version: "1.1.0"

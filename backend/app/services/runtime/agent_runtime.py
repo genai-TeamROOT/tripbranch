@@ -19,7 +19,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import timedelta
-from typing import Any, TypeVar
+from typing import Any, TypeAlias, TypeVar
 
 from app.agent_context.schemas import PlaceCandidate, RecommendationContext
 from app.auth.principal import Principal
@@ -1132,20 +1132,83 @@ def _candidate_pool_exhausted(context: RecommendationContext) -> bool:
     return len(places.data or []) < settings.recommendation_candidate_limit
 
 
+Coordinate: TypeAlias = tuple[float, float]
+
+
+def _place_coordinates(places: Sequence[PlaceCandidate]) -> dict[str, Coordinate]:
+    """C가 준 후보의 위경도를 place_id로 찾을 수 있게 펼친다."""
+
+    return {
+        place.place_id: (place.location.latitude, place.location.longitude)
+        for place in places
+    }
+
+
+def _snapshot_coordinates(session_context: SessionContextResponse) -> dict[str, Coordinate]:
+    """B에 남은 추천 시점 좌표 스냅샷을 place_id로 찾을 수 있게 펼친다 (SCHEDULE-12).
+
+    보관함에 담긴 장소는 여러 턴 전에 노출된 것일 수 있어, 이번 턴 C 응답에 아예
+    없을 수 있다(검색 반경 밖). 그때 후보 간 거리를 계산할 유일한 근거가 이 값이다.
+
+    보관함(`saved_places`)을 마지막 노출분(`shown_recommendations`)보다 나중에 넣어
+    덮어쓰게 한다 — 둘의 값은 같은 스냅샷에서 나오지만, 보관함 쪽이 "사용자가
+    명시적으로 고른 것"이라 우선순위를 명확히 해 둔다. 좌표가 없는 항목(이 필드
+    도입 이전 세션, C 컨텍스트를 안 거친 기록)은 건너뛴다.
+    """
+
+    coordinates: dict[str, Coordinate] = {}
+    for item in session_context.shown_recommendations:
+        if item.latitude is not None and item.longitude is not None:
+            coordinates[item.place_id] = (item.latitude, item.longitude)
+    for saved in session_context.saved_places:
+        if saved.latitude is not None and saved.longitude is not None:
+            coordinates[saved.place_id] = (saved.latitude, saved.longitude)
+    return coordinates
+
+
+def _coordinate_of(
+    place_id: str,
+    primary: Mapping[str, Coordinate],
+    fallback: Mapping[str, Coordinate],
+    axis: int,
+) -> float | None:
+    """place_id의 위도(axis=0) 또는 경도(axis=1). 어디에도 없으면 None. (SCHEDULE-12)
+
+    `_build_pairwise_distances_km()`과 같은 우선순위를 쓴다 — 이번 턴 C 응답이
+    있으면 그쪽, 없으면 B에 남은 이전 스냅샷. 이력에 기록할 때 fallback을 함께
+    보는 이유는, 한 번 확보한 좌표를 그 장소가 C 응답에서 빠진 턴에 잃지 않게
+    하려는 것이다.
+    """
+
+    coordinate = primary.get(place_id) or fallback.get(place_id)
+    return None if coordinate is None else coordinate[axis]
+
+
 def _build_pairwise_distances_km(
     candidates: list[RecommendationItem],
     places: list[PlaceCandidate],
+    *,
+    fallback_coordinates: Mapping[str, Coordinate] | None = None,
 ) -> dict[tuple[str, str], float]:
     """SCHEDULE 전용 — 후보 쌍 사이의 직선거리(km)를 계산한다.
 
     RecommendationItem에는 위경도가 없다(distance_km는 검색 중심 기준 거리라
     후보 간 거리를 못 구한다) — C가 준 PlaceCandidate(위경도 보유)를 place_id로
     매칭해 haversine_km()로 계산한다(docs/design/int-07-schedule.md 6.1절).
-    C 응답에 없는 place_id(매칭 실패)는 조용히 건너뛴다 — pairwise_distances_km는
+
+    `fallback_coordinates`는 C 응답에 없는 place_id를 위한 B의 추천 시점 스냅샷이다
+    (SCHEDULE-12, `_snapshot_coordinates()`). 보관함에 담긴 장소는 이번 턴 검색 반경
+    밖일 수 있어 C 응답에 아예 없는데, 그대로 건너뛰면 LLM이 그 장소의 거리 근거
+    없이 동선을 짠다 — 강남 장소가 종로 일정의 2번째에 꽂혀도 막을 수가 없다.
+    C 응답이 있으면 그쪽을 우선한다: 최신값이고, 같은 턴 후보끼리 같은 출처를 쓰는
+    편이 일관된다.
+
+    양쪽 어디에도 없는 place_id는 여전히 조용히 건너뛴다 — pairwise_distances_km는
     LLM에 참고 근거로만 쓰이므로 일부 누락되어도 편성 자체가 막히지 않는다.
     """
 
-    coordinates_by_place_id = {place.place_id: place.location for place in places}
+    coordinates_by_place_id = dict(fallback_coordinates or {})
+    coordinates_by_place_id.update(_place_coordinates(places))
     distances: dict[tuple[str, str], float] = {}
     for index, first in enumerate(candidates):
         first_location = coordinates_by_place_id.get(first.place_id)
@@ -1156,10 +1219,10 @@ def _build_pairwise_distances_km(
             if second_location is None:
                 continue
             distances[(first.place_id, second.place_id)] = haversine_km(
-                first_location.latitude,
-                first_location.longitude,
-                second_location.latitude,
-                second_location.longitude,
+                first_location[0],
+                first_location[1],
+                second_location[0],
+                second_location[1],
             )
     return distances
 
@@ -2739,7 +2802,7 @@ async def _run_agent_flow(
         tool_provider=tool_provider,
         travel_route_tool=travel_route_tool,
         store=store,
-        shown_place_ids=_revivable_shown_place_ids(llm_output, session_context),
+        shown_place_ids=_revivable_place_ids(llm_output, session_context),
         stream_event_sink=stream_event_sink,
     )
     if tool_outcome.terminal is not None:
@@ -2760,7 +2823,7 @@ async def _run_agent_flow(
         agent_conditions=agent_conditions,
         context_gps=context_gps,
         is_schedule=is_schedule,
-        shown_place_ids=_revivable_shown_place_ids(llm_output, session_context),
+        shown_place_ids=_revivable_place_ids(llm_output, session_context),
         tool_provider=tool_provider,
         recommendation_provider=recommendation_provider,
         enrichment_provider=enrichment_provider,
@@ -2796,6 +2859,7 @@ async def _run_agent_flow(
         llm=llm,
         store=store,
         principal=principal,
+        tool_context=tool_context,
         tool_execution=tool_execution,
         tool_executions=tool_executions,
         effective_ignore_operating_hours=effective_ignore_operating_hours,
@@ -3062,24 +3126,36 @@ async def _fetch_tool_context(
     )
 
 
-def _revivable_shown_place_ids(
+def _revivable_place_ids(
     llm_output: LLMOutput, session_context: SessionContextResponse
 ) -> Sequence[str]:
-    """직전 노출분 중 이번 턴에 후보로 되살려도 되는 것을 고른다 (TP-180).
+    """이번 턴에 후보로 되살려도 되는 place_id를 고른다 (TP-180 → SCHEDULE-12).
 
-    되살리는 것은 **새 SCHEDULE 턴**뿐이다. 재조정 턴(REJECT_ALL "다른 곳 보여줘",
-    REJECT_SPECIFIC "두 번째는 별로야")은 MODIFY로 분류된 뒤 SCHEDULE로 relabel되며,
-    사용자가 방금 그 장소들을 거절한 턴이다. 거절 대상은 `rejected`로 제외 목록에
-    들어가지만 `shown_place_ids`에도 그대로 남아 있어, 구분 없이 되살리면 REJECT
-    이력이 통째로 무력화된다(재조정해도 같은 장소가 다시 나온다).
+    두 출처를 합친다.
 
-    relabel된 재조정 턴은 `llm_output.modify`가 채워져 있다 — `_run_schedule_branch()`가
-    pinned_items를 쓸지 판단하는 것과 같은 신호를 쓴다.
+    **직전 노출분(`shown_place_ids`)** 은 **새 SCHEDULE 턴**에만 되살린다. 재조정
+    턴(REJECT_ALL "다른 곳 보여줘", REJECT_SPECIFIC "두 번째는 별로야")은 MODIFY로
+    분류된 뒤 SCHEDULE로 relabel되며, 사용자가 방금 그 장소들을 거절한 턴이다.
+    거절 대상은 `rejected`로 제외 목록에 들어가지만 `shown_place_ids`에도 그대로
+    남아 있어, 구분 없이 되살리면 REJECT 이력이 통째로 무력화된다(재조정해도 같은
+    장소가 다시 나온다). relabel된 재조정 턴은 `llm_output.modify`가 채워져 있다 —
+    `_run_schedule_branch()`가 pinned_items를 쓸지 판단하는 것과 같은 신호다.
+
+    **보관함(`saved_places`)** 은 재조정 턴에도 되살린다(SCHEDULE-12). 사용자가
+    명시적으로 담아둔 것이라, "두 번째는 별로야"가 담아둔 나머지까지 후보에서
+    빼야 할 이유가 없다. 거절과 겹칠 걱정도 없다 — `record_rejected()`가 거절
+    시점에 같은 place_id를 보관함에서 빼므로 `saved ∩ rejected = ∅`이 구조적으로
+    보장된다(state/history.py). 그래서 여기서 타임스탬프를 비교하지 않는다.
+
+    보관함이 `shown_place_ids`와 별도로 필요한 이유는 후자가 **마지막 run만**
+    담기 때문이다(`history.get_shown_place_ids()`) — 3턴 전에 담은 장소는 거기
+    없어서 제외 목록에 그대로 남고 후보에서 빠진다.
     """
 
+    saved_place_ids = [item.place_id for item in session_context.saved_places]
     if llm_output.modify is not None:
-        return ()
-    return session_context.shown_place_ids
+        return saved_place_ids
+    return [*session_context.shown_place_ids, *saved_place_ids]
 
 
 def _effective_excluded_place_ids(
@@ -3098,7 +3174,7 @@ def _effective_excluded_place_ids(
 
     그래서 SCHEDULE 턴에서만 마지막 run의 노출분을 후보 풀로 되살린다. 제외 목록의
     의미(`get_exclusion_place_ids()`의 계약)는 바꾸지 않는다 — 이 턴에 무엇을
-    넘길지만 조정한다. 무엇을 되살릴지는 `_revivable_shown_place_ids()`가 정한다 —
+    넘길지만 조정한다. 무엇을 되살릴지는 `_revivable_place_ids()`가 정한다 —
     거절된 장소도 shown에 남아 있어 그대로 되살리면 REJECT 이력이 무력화된다.
     RECOMMEND를 연속 요청하는 흐름은 `is_schedule=False`라 영향을 받지 않는다.
     """
@@ -3408,6 +3484,22 @@ async def _run_schedule_branch(
             tool_executions=tool_executions,
         )
     places = tool_context.places.data if tool_context.places and tool_context.places.data else []
+    # 이번 턴 C 응답에 없는 후보(보관함에 담긴 지 여러 턴 지난 장소 등)의 좌표는
+    # B에 남은 추천 시점 스냅샷으로 메운다(SCHEDULE-12).
+    snapshot_coordinates = _snapshot_coordinates(session_context)
+    place_coordinates = _place_coordinates(places)
+    # 보관함에 담긴 장소는 이번 일정에 반드시 들어가야 한다(SCHEDULE-12). 담은
+    # 순서를 그대로 넘긴다 — 항목 수 상한을 넘으면 planner가 이 순서로 앞에서부터
+    # 자르므로 정렬을 바꾸면 "왜 그 곳이 빠졌는지" 설명이 달라진다.
+    saved_place_ids = [item.place_id for item in session_context.saved_places]
+    # 후보 목록에 아예 없는 보관함 장소(폐점 하드 필터 등으로 D가 걸러낸 경우).
+    # planner는 이름을 알 방법이 없으므로 여기서 보관함에 저장된 이름으로 채운다.
+    candidate_place_ids = {c.place_id for c in schedule_candidates}
+    absent_saved_place_names = [
+        item.name
+        for item in session_context.saved_places
+        if item.place_id not in candidate_place_ids
+    ]
 
     # 6-2-1) SCHEDULE-09 2단계: REJECT_SPECIFIC으로 재라우팅된 턴이면 통째로
     #        새로 짜지 않고, target_indices가 가리키는 자리만 새로 채운다.
@@ -3466,7 +3558,9 @@ async def _run_schedule_branch(
             candidates=schedule_candidates,
             conditions=agent_conditions,
             visit_datetime=None,
-            pairwise_distances_km=_build_pairwise_distances_km(schedule_candidates, places),
+            pairwise_distances_km=_build_pairwise_distances_km(
+                schedule_candidates, places, fallback_coordinates=snapshot_coordinates
+            ),
         )
         await _emit_progress(
             stream_event_sink,
@@ -3483,9 +3577,15 @@ async def _run_schedule_branch(
     else:
         schedule_request = SchedulePlanningRequest(
             candidates=schedule_candidates,
+            # 부분 재편성(위 if 분기)에는 넘기지 않는다 — 그쪽은 pinned_items가
+            # 이미 자리를 붙들고 있고, 사용자가 지목한 자리만 새로 채우는
+            # 턴이라 담아둔 장소를 그 자리에 밀어넣을 이유가 없다.
+            must_include_place_ids=saved_place_ids,
             conditions=agent_conditions,
             visit_datetime=None,
-            pairwise_distances_km=_build_pairwise_distances_km(schedule_candidates, places),
+            pairwise_distances_km=_build_pairwise_distances_km(
+                schedule_candidates, places, fallback_coordinates=snapshot_coordinates
+            ),
         )
         await _emit_progress(
             stream_event_sink,
@@ -3496,6 +3596,18 @@ async def _run_schedule_branch(
             plan_schedule(schedule_request, llm, co_visited_fetcher=fetch_co_visited_hints),
             sink=stream_event_sink,
             stage="scheduling",
+        )
+
+    if absent_saved_place_names:
+        # planner가 채운 목록(상한 초과·LLM 누락) 앞에 붙인다 — 이쪽이 더
+        # 근본적인 사유("후보에 아예 없었다")라 먼저 알리는 게 자연스럽다.
+        schedule_result = schedule_result.model_copy(
+            update={
+                "omitted_saved_place_names": [
+                    *absent_saved_place_names,
+                    *schedule_result.omitted_saved_place_names,
+                ]
+            }
         )
 
     await _emit_progress(
@@ -3516,6 +3628,15 @@ async def _run_schedule_branch(
                         place_id=item.place_id,
                         rank=item.order,
                         name=item.place_name,
+                        # 다음 턴이 이 장소를 보관함에서 되살릴 때 쓸 좌표
+                        # 스냅샷(SCHEDULE-12). C 응답에 없으면 이전 스냅샷을
+                        # 그대로 이어 적어, 한 번 확보한 좌표를 잃지 않는다.
+                        latitude=_coordinate_of(
+                            item.place_id, place_coordinates, snapshot_coordinates, 0
+                        ),
+                        longitude=_coordinate_of(
+                            item.place_id, place_coordinates, snapshot_coordinates, 1
+                        ),
                         estimated_arrival=item.estimated_arrival,
                         estimated_duration_min=item.estimated_duration_min,
                         travel_to_next_min=item.travel_to_next_min,
@@ -3590,6 +3711,10 @@ async def _finalize_recommendation_response(
     llm: LLMProvider,
     store: StateStore | None,
     principal: Principal | None,
+    # 이번 턴 C 응답. 노출 이력에 추천 시점 좌표를 함께 남기는 데만 쓴다
+    # (SCHEDULE-12). 좌표를 못 구하는 경로(테스트 더블 등)는 None으로 둘 수 있고,
+    # 그때는 좌표만 비고 나머지 동작은 이전과 같다.
+    tool_context: RecommendationContext | None = None,
     tool_execution: ToolExecutionDebug | None,
     tool_executions: list[ToolExecutionDebug],
     effective_ignore_operating_hours: bool,
@@ -3600,8 +3725,9 @@ async def _finalize_recommendation_response(
 
     `run_agent_flow()`의 꼬리를 그대로 옮긴 것이다 — 라우팅 그래프가 이 단계를 노드로
     감쌀 수 있게 먼저 함수로 떼어냈다(docs/design/langgraph-adoption.md §6.1 3단계).
-    **본문은 한 줄도 바꾸지 않았다**: 이관은 출력이 같아야 하는 작업이라, 옮기는 것과
-    고치는 것을 같은 커밋에 섞지 않는다.
+    이관 당시에는 본문을 한 줄도 바꾸지 않았고, 이후 SCHEDULE-12로 노출 이력에 좌표를
+    싣는 인자(`tool_context`)가 붙었다 — `_run_schedule_branch()`가 같은 값을 받는
+    것과 같은 모양이다.
     """
 
     # 7) A → B: 실제로 화면에 노출된 결과만 기록한다. recommendations와
@@ -3627,6 +3753,11 @@ async def _finalize_recommendation_response(
             tool_executions=tool_executions,
         )
     if shown:
+        shown_coordinates = _place_coordinates(
+            tool_context.places.data
+            if tool_context is not None and tool_context.places and tool_context.places.data
+            else []
+        )
         record_recommendation(
             RecordRecommendationRequest(
                 session_id=state_response.session_id,
@@ -3636,6 +3767,10 @@ async def _finalize_recommendation_response(
                         place_id=item.place_id,
                         rank=index + 1,
                         name=item.name,
+                        # 다음 SCHEDULE 턴이 이 장소를 보관함에서 되살릴 때 쓸
+                        # 좌표 스냅샷(SCHEDULE-12).
+                        latitude=_coordinate_of(item.place_id, shown_coordinates, {}, 0),
+                        longitude=_coordinate_of(item.place_id, shown_coordinates, {}, 1),
                         distance_km=item.distance_km,
                         remaining_minutes=item.remaining_minutes,
                         environment_type=item.environment_type,

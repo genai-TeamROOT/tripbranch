@@ -207,6 +207,12 @@ class ScheduleResult(BaseModel):
     total_duration_min: int
     route_summary: str
     basis_note: str
+    # 보관함에 담겨 있었지만 이번 일정에 넣지 못한 장소 이름 (SCHEDULE-12).
+    # 담은 개수가 활동 가능 시간이 허용하는 항목 수 상한(target_item_range())을
+    # 넘었거나, LLM이 재시도 후에도 포함 지시를 지키지 못한 경우에 채워진다.
+    # 사용자에게 조용히 빠뜨리지 않고 말풍선으로 알리기 위한 값이라, 화면 문구를
+    # 조립하는 쪽(response_composer)이 읽는다. 빈 리스트가 정상이다.
+    omitted_saved_place_names: list[str] = Field(default_factory=list)
     elapsed_ms: float = Field(
         ge=0,
         description="일정 편성 파이프라인 시작부터 응답 조립 완료까지의 총 처리시간(ms)",

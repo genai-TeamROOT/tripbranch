@@ -162,11 +162,16 @@ class RecommendedPlace(BaseModel):
     지명 검색 좌표가 매 턴 흔들려도 이전 장소 이름을 안정적으로 재사용하기
     위한 것이다(schema.RecommendedItem 문서 참고). 항상 넘길 수 있으면
     넘기는 게 좋다.
+    latitude/longitude는 SCHEDULE-12 전용 선택 필드다 — 보관함에 담긴 장소가
+    나중 SCHEDULE 턴의 검색 반경 밖일 때, 후보 간 거리를 계산할 유일한 근거가
+    된다. C 응답(AgentContextResponse.places)에서 place_id로 매칭해 채운다.
     """
 
     place_id: str
     rank: int
     name: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
     estimated_arrival: str | None = None
     estimated_duration_min: int | None = None
     travel_to_next_min: int | None = None
@@ -712,6 +717,8 @@ def record_recommendation(
                 place_id=p.place_id,
                 rank=p.rank,
                 name=p.name,
+                latitude=p.latitude,
+                longitude=p.longitude,
                 estimated_arrival=p.estimated_arrival,
                 estimated_duration_min=p.estimated_duration_min,
                 travel_to_next_min=p.travel_to_next_min,
@@ -794,6 +801,11 @@ def save_place(
             # 담기 자체를 막을 이유는 아니다.
             name=recommended.name or recommended.place_id,
             saved_from_run_id=recommended.run_id,
+            # 추천 시점 좌표를 그대로 옮긴다(SCHEDULE-12). 담긴 장소가 나중
+            # SCHEDULE 턴의 검색 반경 밖이면 C 응답에 없어, 여기 남은 값이
+            # 후보 간 거리를 계산할 유일한 근거가 된다.
+            latitude=recommended.latitude,
+            longitude=recommended.longitude,
         ),
         principal=principal,
     )

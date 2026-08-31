@@ -24,6 +24,7 @@ from app.errors import AppError
 from app.providers.protocols import LLMProvider
 from app.schedule.associations import CoVisitedHint
 from app.schedule.schemas import (
+    ScheduleLLMPlan,
     SchedulePartialFillRequest,
     SchedulePlanningRequest,
     target_item_range,
@@ -251,6 +252,64 @@ async def _with_co_visited_hints(
     return request.model_copy(update={"co_visited_hints": hints})
 
 
+def _names_of(
+    place_ids: Iterable[str], candidates: Sequence[RecommendationItem]
+) -> list[str]:
+    """place_id를 후보 목록의 장소 이름으로 바꾼다. 후보에 없으면 건너뛴다.
+
+    사용자에게 보여줄 문구에 쓰는 값이라 place_id를 그대로 노출하지 않는다 —
+    후보에 없는 id는 이름을 알 방법이 없으므로 여기서 빼고, 그런 장소는
+    호출부(agent_runtime)가 보관함에 저장된 이름으로 따로 채운다(SCHEDULE-12).
+    """
+
+    name_by_place_id = {c.place_id: c.name for c in candidates}
+    return [
+        name_by_place_id[place_id]
+        for place_id in place_ids
+        if place_id in name_by_place_id
+    ]
+
+
+def _resolve_must_include(
+    request: SchedulePlanningRequest, max_items: int
+) -> tuple[list[str], list[str]]:
+    """이번 편성에서 실제로 강제할 place_id와, 상한 때문에 뺀 장소 이름을 가른다.
+    (SCHEDULE-12)
+
+    두 단계로 줄인다.
+
+    1. 후보 목록에 없는 id는 강제할 수 없다(폐점 하드 필터 등으로 D가 걸러낸
+       경우). 여기서는 이름도 알 수 없으므로 조용히 빼고, 호출부가 보관함에
+       저장된 이름으로 안내를 채운다.
+    2. 남은 것이 항목 수 상한(`target_item_range()`의 max)을 넘으면 **담은
+       순서대로** 앞에서부터 상한까지만 쓴다. 점수 순으로 자르지 않는 이유는
+       "왜 그 곳이 빠졌는지" 사용자에게 설명할 수 있어야 하기 때문이다
+       (SavedPlaceList.items docstring과 같은 근거).
+
+    반환값은 (강제할 place_id, 상한 때문에 못 담은 장소 이름)이다.
+    """
+
+    candidate_ids = {c.place_id for c in request.candidates}
+    present = [
+        place_id
+        for place_id in request.must_include_place_ids
+        if place_id in candidate_ids
+    ]
+    if len(present) <= max_items:
+        return present, []
+    return present[:max_items], _names_of(present[max_items:], request.candidates)
+
+
+def _missing_must_include(
+    must_include: Sequence[str], plan: ScheduleLLMPlan
+) -> set[str]:
+    """LLM 응답에서 빠진 강제 포함 place_id. 없으면 빈 집합. (SCHEDULE-12)"""
+
+    if not must_include:
+        return set()
+    return set(must_include) - {item.place_id for item in plan.items}
+
+
 async def plan_schedule(
     request: SchedulePlanningRequest,
     llm: LLMProvider,
@@ -280,11 +339,12 @@ async def plan_schedule(
     started_at = timer()
     effective_visit_datetime = request.visit_datetime or now_kst()
 
-    # 이번 요청의 time_available에 맞는 최소 개수를 구해서 후보 수와 비교한다
-    # (SCHEDULE-10). 후보가 그 최솟값보다 적으면 LLM을 부르지 않는다 —
-    # ScheduleLLMPlan.items가 그 개수를 애초에 만족시킬 수 없어 호출해도
-    # 재시도까지 실패로 끝날 뿐이다(SCHEDULE-07의 가드를 동적 최솟값으로 확장).
-    min_items, _max_items = target_item_range(request.conditions.time_available)
+    # 이번 요청의 time_available에 맞는 개수 범위를 구한다(SCHEDULE-10).
+    # 후보가 최솟값보다 적으면 LLM을 부르지 않는다 — ScheduleLLMPlan.items가 그
+    # 개수를 애초에 만족시킬 수 없어 호출해도 재시도까지 실패로 끝날 뿐이다
+    # (SCHEDULE-07의 가드를 동적 최솟값으로 확장). 상한은 보관함 개수 충돌
+    # 판정에 쓴다(SCHEDULE-12).
+    min_items, max_items = target_item_range(request.conditions.time_available)
     if len(request.candidates) < min_items:
         return ScheduleResult(
             items=[],
@@ -294,11 +354,17 @@ async def plan_schedule(
             elapsed_ms=round((timer() - started_at) * 1000, 2),
         )
 
+    must_include, omitted_names = _resolve_must_include(request, max_items)
+
     resolved_request = (
         request
         if request.visit_datetime is not None
         else request.model_copy(update={"visit_datetime": effective_visit_datetime})
     )
+    if list(must_include) != list(request.must_include_place_ids):
+        resolved_request = resolved_request.model_copy(
+            update={"must_include_place_ids": list(must_include)}
+        )
     resolved_request = await _with_co_visited_hints(
         resolved_request,
         [candidate.place_id for candidate in resolved_request.candidates],
@@ -307,6 +373,17 @@ async def plan_schedule(
     )
 
     plan = (await llm.generate_schedule_plan(resolved_request)).data
+    missing = _missing_must_include(must_include, plan)
+    if missing:
+        # 프롬프트 지시는 부탁이고 이 검증이 계약이다(SCHEDULE-07과 같은 철학).
+        # 한 번만 다시 부른다 — 같은 입력으로 무한히 조르지 않고, 두 번째도
+        # 실패하면 그 사실을 사용자에게 알린다(아래 omitted_names).
+        logger.info(
+            "schedule.must_include_missing retrying place_ids=%s",
+            sorted(missing),
+        )
+        plan = (await llm.generate_schedule_plan(resolved_request)).data
+        missing = _missing_must_include(must_include, plan)
 
     # LLM이 items는 빈 배열로 주면서 total_duration_min/route_summary는 그럴듯한
     # 문장으로 채워 보내는 비일관 응답이 실제로 관측됐다(2026-08-10 real Gemini
@@ -324,11 +401,27 @@ async def plan_schedule(
             elapsed_ms=round((timer() - started_at) * 1000, 2),
         )
 
+    if missing:
+        # 재시도 후에도 빠진 것은 502로 턴을 죽이지 않고 결과를 살린다 —
+        # plan_partial_schedule()의 하드 실패와 다른 선택이다. 저쪽은 "유지해야
+        # 할 기존 일정"이 걸려 있어 잘못된 응답이 기존 항목을 훼손하지만,
+        # 보관함은 그렇지 않고 장바구니에서 "일부를 못 담았다"는 전체 실패보다
+        # 낫다(SCHEDULE-12). 대신 조용히 빠뜨리지 않고 이름을 실어 보낸다.
+        logger.warning(
+            "schedule.must_include_missing after retry place_ids=%s",
+            sorted(missing),
+        )
+        omitted_names = [
+            *omitted_names,
+            *_names_of(missing, request.candidates),
+        ]
+
     return ScheduleResult(
         items=_finalize_items(plan.items, resolved_request.candidates),
         total_duration_min=plan.total_duration_min,
         route_summary=plan.route_summary,
         basis_note=_build_basis_note(effective_visit_datetime),
+        omitted_saved_place_names=omitted_names,
         elapsed_ms=round((timer() - started_at) * 1000, 2),
     )
 
