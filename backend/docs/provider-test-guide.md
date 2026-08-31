@@ -146,7 +146,7 @@ python -m compileall -q app tests
 ```env
 PROVIDER_MODE=real
 RECOMMENDATION_RESULT_LIMIT=5
-RECOMMENDATION_CANDIDATE_LIMIT=10
+RECOMMENDATION_CANDIDATE_LIMIT=30
 ```
 
 첫 번째 터미널에서 서버를 실행한다.

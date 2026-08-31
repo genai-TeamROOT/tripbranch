@@ -84,7 +84,25 @@ class Settings(BaseSettings):
 
     # 상세·운영정보 조회 출처. PLACE_PROVIDER=fake이면 Fake Provider가 상세까지
     # 담당하므로 이 값은 무시된다.
-    place_details_source: PlaceDetailsSource = "tour_api"
+    #
+    # 기본값을 tour_api에서 supabase로 바꿨다. 추천 경로는 후보 **전량**의 상세를
+    # 받아야 순위를 매길 수 있다 — 하드 필터(영업 종료)와 잔여 운영시간 Feature가
+    # 운영시간을 요구해서 "상위 5곳만 받기"가 성립하지 않는다. 그래서 이 값이 곧
+    # 호출 수를 정한다(안국역 반경 2km 실측, 2026-08-31):
+    #
+    #   후보 10곳 | supabase 2회 | tour_api 21회(detailCommon2 10 + detailIntro2 10)
+    #   후보 30곳 | supabase 2회 | tour_api 61회
+    #
+    # tour_api는 tour_api_daily_call_limit(오퍼레이션별 1000)을 후보 30 기준 33요청
+    # 만에 소진한다. supabase는 places를 content_id 목록으로 한 번에 읽어 후보 수와
+    # 무관하게 1회다. validate_provider_config()가 tour_api + 높은 후보 한도 조합을
+    # 부팅에서 막는 이유가 이것이다.
+    #
+    # 신선도 절충은 D-099가 "추천 쪽이 따로 판단할 일"로 남겨둔 것인데, 재보니
+    # 문제가 아니었다 — 활성 8,007곳 전량이 상세 조회 30일 이내이고(place_sync_
+    # detail_ttl_days와 같은 값) 68%가 7일 이내다. 운영시간·주차·요금은 자주 바뀌는
+    # 값이 아니고, TourAPI를 직접 불러도 같은 출처다.
+    place_details_source: PlaceDetailsSource = "supabase"
 
     # Package B State 저장소 백엔드. 기본값은 Phase 1 인메모리다.
     state_store_backend: StateStoreBackend = "memory"

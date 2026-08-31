@@ -15,10 +15,15 @@ from app.providers.stub import FakePlaceProvider
 from app.providers.supabase_place_details import SupabasePlaceDetailsProvider
 
 
-def test_defaults_to_tour_api() -> None:
+def test_defaults_to_supabase() -> None:
+    """기본값은 supabase다 — 추천이 후보 전량의 상세를 받기 때문이다.
+
+    tour_api로 두면 후보 1곳당 detailCommon2 + detailIntro2 2회가 나가 일일 한도를
+    금방 태운다(config.py::place_details_source 주석).
+    """
     settings = Settings(_env_file=None, provider_mode="real")
 
-    assert settings.resolved_place_details_source == "tour_api"
+    assert settings.resolved_place_details_source == "supabase"
 
 
 def test_supabase_source_is_resolved_when_place_provider_is_real() -> None:

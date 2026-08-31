@@ -45,6 +45,55 @@ const usageSnapshot = {
   ],
 };
 
+const categoryCoverage = {
+  active_place_count: 844,
+  large_category_count: 2,
+  middle_category_count: 2,
+  small_category_count: 2,
+  groups: [
+    {
+      code: "FD",
+      label: "음식",
+      count: 500,
+      middles: [
+        {
+          code: "FD05",
+          label: "카페/ 찻집",
+          count: 500,
+          smalls: [
+            {
+              code: "FD050100",
+              label: "카페",
+              count: 42,
+              examples: ["테라로사 서촌", "카페 레이어드"],
+            },
+          ],
+        },
+      ],
+    },
+    {
+      code: "VE",
+      label: "관람시설",
+      count: 344,
+      middles: [
+        {
+          code: "VE07",
+          label: "박물관",
+          count: 344,
+          smalls: [
+            {
+              code: "VE070100",
+              label: "미술관",
+              count: 12,
+              examples: ["국립현대미술관 서울"],
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
 const jongno = {
   area_code: "11",
   district_code: "110",
@@ -58,6 +107,7 @@ const jongno = {
   latest_detail_fetched_at: "2026-08-10T14:00:00+09:00",
   barrier_free_active: 164,
   barrier_free_total: 166,
+  category_coverage: categoryCoverage,
 };
 
 const yongsan = {
@@ -73,6 +123,7 @@ const yongsan = {
   latest_detail_fetched_at: "2026-08-21T13:00:00+09:00",
   barrier_free_active: 0,
   barrier_free_total: 0,
+  category_coverage: { ...categoryCoverage, active_place_count: 486 },
 };
 
 const dbStatus = {
@@ -86,6 +137,7 @@ const dbStatus = {
     latest_detail_fetched_at: "2026-08-21T13:00:00+09:00",
     barrier_free_active: 164,
     barrier_free_total: 166,
+    category_coverage: { ...categoryCoverage, active_place_count: 1330 },
   },
   districts: [jongno, yongsan],
   place_enrichments_count: 51,
@@ -268,6 +320,14 @@ function renderSyncPage() {
   );
 }
 
+function renderCategoryPage() {
+  return render(
+    <MemoryRouter initialEntries={["/dev-ops?tab=categories"]}>
+      <DeveloperOpsPage />
+    </MemoryRouter>,
+  );
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -296,6 +356,31 @@ it("갱신 메뉴를 누르면 동기화 패널로 바뀐다", async () => {
   expect(screen.getByRole("heading", { name: "전 구 갱신" })).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "스냅샷 보관" })).toBeInTheDocument();
   expect(screen.queryByRole("heading", { name: "외부 API 호출량" })).toBeNull();
+});
+
+it("구별 카테고리 현황에서 대·중·소분류와 예시 장소를 펼쳐 본다", async () => {
+  const user = userEvent.setup();
+  mockFetch((url) => ({ status: 200, body: panelBody(url) }));
+
+  renderCategoryPage();
+
+  expect(await screen.findByRole("heading", { name: "구별 카테고리 현황" })).toBeInTheDocument();
+  expect(screen.getByText("활성 장소")).toBeInTheDocument();
+  expect(screen.getByText("음식 · FD")).toBeInTheDocument();
+
+  const largeDetails = screen.getByText("음식 · FD").closest("details");
+  expect(largeDetails).toHaveAttribute("open");
+
+  const middleSummary = screen.getByText("카페/ 찻집 · FD05");
+  const middleDetails = middleSummary.closest("details");
+  expect(middleDetails).not.toHaveAttribute("open");
+  await user.click(middleSummary);
+  expect(middleDetails).toHaveAttribute("open");
+  expect(screen.getByText("카페 · FD050100")).toBeInTheDocument();
+  expect(screen.getByText("테라로사 서촌 · 카페 레이어드")).toBeInTheDocument();
+
+  await user.click(screen.getByRole("tab", { name: "종로구" }));
+  expect(screen.getByText("844개")).toBeInTheDocument();
 });
 
 it("호출량 표와 일일 한도 게이지를 보여준다", async () => {

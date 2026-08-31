@@ -12,6 +12,7 @@ from app.providers.contracts import (
     ProviderStatus,
     provider_result,
 )
+from app.recommendation_limits import MAX_RECOMMENDATION_CANDIDATE_LIMIT
 from app.schemas import PlaceCandidate
 from app.tools.nearby_place_details import (
     CANDIDATE_OVERFETCH_FACTOR,
@@ -233,18 +234,24 @@ async def test_tool_does_not_warn_when_row_cap_is_reached_but_limit_is_filled() 
     멈춘다 — 고치려던 것과 같은 종류의 오독이다.
     """
 
-    # 필요분 40곳(limit 20 + 제외 20) x 3 = 120이라 상한 100에 걸리지만,
-    # 받은 100행에서 제외분 20곳을 빼도 limit 20곳이 남는다.
-    excluded = frozenset(f"place-{index}" for index in range(20))
-    search = SearchProvider([_candidate(index) for index in range(200)])
+    # 필요분 x CANDIDATE_OVERFETCH_FACTOR가 행 상한을 넘도록 제외분을 잡되,
+    # 상한만큼 받으면 제외분을 건너뛰고도 limit이 남게 한다.
+    limit = MAX_RECOMMENDATION_CANDIDATE_LIMIT
+    excluded_count = (
+        MAX_PLACE_PROVIDER_ROWS // CANDIDATE_OVERFETCH_FACTOR - limit + 1
+    )
+    excluded = frozenset(f"place-{index}" for index in range(excluded_count))
+    search = SearchProvider(
+        [_candidate(index) for index in range(MAX_PLACE_PROVIDER_ROWS * 2)]
+    )
     tool = NearbyPlaceDetailsTool(search, DetailsProvider())
 
     result = await tool.execute(
-        NearbyPlaceDetailsQuery(37.5, 127.0, limit=20, excluded_place_ids=excluded)
+        NearbyPlaceDetailsQuery(37.5, 127.0, limit=limit, excluded_place_ids=excluded)
     )
 
     assert search.seen_limit == MAX_PLACE_PROVIDER_ROWS
-    assert len(result.places) == 20
+    assert len(result.places) == limit
     assert CANDIDATE_POOL_TRUNCATED_WARNING not in result.warnings
 
 
@@ -362,7 +369,7 @@ def test_query_validation(query) -> None:
     with pytest.raises(ValueError):
         query(37.5, 127, search_radius_km=0)
     with pytest.raises(ValueError):
-        query(37.5, 127, limit=21)
+        query(37.5, 127, limit=MAX_RECOMMENDATION_CANDIDATE_LIMIT + 1)
 
 
 def test_tool_validates_concurrency() -> None:
