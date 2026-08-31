@@ -1052,6 +1052,9 @@ class InfoPlaceCard(BaseModel):
     latitude: float | None = None
     longitude: float | None = None
     thumbnail_url: str | None = None
+    # 여러 장 보기용 사진 목록. 비어 있어도 thumbnail_url은 따로 있을 수 있어
+    # 프론트는 둘을 함께 본다 — 사진 목록이 있는 장소가 전체의 30%뿐이다.
+    photos: list[PlacePhotoItem] = Field(default_factory=list)
     overview: str | None = None
     operating_hours: str | None = None
     rest_date: str | None = None
@@ -1094,6 +1097,17 @@ class ConcentrationForecastBar(BaseModel):
     concentration_rate: float = Field(ge=0)
     concentration_level: str
     concentration_label: str
+
+
+class PlacePhotoItem(BaseModel):
+    """장소 상세 화면에 여러 장으로 보여줄 사진 한 장.
+
+    C의 ``PlacePhotoItem``을 그대로 옮긴 값이다. 목록 순서가 곧 보여줄 순서이고,
+    첫 번째가 가장 대표적이다.
+    """
+
+    url: str
+    image_name: str | None = None
 
 
 class RealtimeInfoDetailItem(BaseModel):

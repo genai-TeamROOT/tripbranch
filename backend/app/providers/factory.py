@@ -73,6 +73,7 @@ from app.repositories.fake_municipal_parking import FakeMunicipalParkingCatalogR
 from app.repositories.fake_places import (
     FakePlaceDetailsRepository,
     FakePlaceLocationRepository,
+    FakePlacePhotoRepository,
 )
 from app.repositories.municipal_parking import SupabaseMunicipalParkingRepository
 from app.repositories.supabase_places import SupabasePlaceRepository
@@ -285,6 +286,32 @@ def get_place_location_repository(
         or not settings.supabase_secret_key.strip()
     ):
         return FakePlaceLocationRepository()
+    return SupabasePlaceRepository(
+        supabase_url=settings.supabase_url,
+        secret_key=settings.supabase_secret_key,
+        client=client,
+        timeout_seconds=settings.external_api_timeout_seconds,
+    )
+
+
+def get_place_photo_repository(
+    client: httpx.AsyncClient,
+) -> SupabasePlaceRepository | FakePlacePhotoRepository:
+    """상세 화면에 보여줄 장소 사진을 읽을 저장소를 준비한다.
+
+    사진은 place_image_embeddings에만 있고 TourAPI 상세 응답에는 없다. 분위기
+    검색과 같은 테이블이지만 SigLIP도 임베딩도 필요 없어, 사진 검색이 꺼져 있어도
+    이 경로는 돈다.
+
+    Supabase 설정이 없으면 fake 저장소를 준다. 없는 상태로 두면 fake 환경에서
+    여러 장 경로가 한 번도 실행되지 않는다.
+    """
+    if (
+        settings.resolved_place_provider != "real"
+        or not settings.supabase_url.strip()
+        or not settings.supabase_secret_key.strip()
+    ):
+        return FakePlacePhotoRepository()
     return SupabasePlaceRepository(
         supabase_url=settings.supabase_url,
         secret_key=settings.supabase_secret_key,

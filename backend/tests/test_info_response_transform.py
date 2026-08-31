@@ -8,6 +8,7 @@ from app.agent_context.info_schemas import (
     InfoContextResponse,
     PlaceCard,
     PlaceInfoResult,
+    PlacePhotoItem,
     RealtimeCityInfoResult,
     RealtimeCommercialInfoResult,
     RealtimeInfoDetailItem,
@@ -325,3 +326,51 @@ def test_realtime_city_card_keeps_detail_items_and_data_source() -> None:
     assert card.realtime_observed_at == "8월 20일 16:20"
     assert card.realtime_source_url == "https://data.seoul.go.kr/example"
     assert card.realtime_detail_items[0].details["거리"] == "약 200m"
+
+
+def test_photos_reach_the_final_card_in_order() -> None:
+    """상세 화면이 여러 장을 그리려면 순서까지 그대로 넘어와야 한다."""
+    response = InfoContextResponse(
+        request_id="info-card-photos",
+        status="success",
+        result=PlaceInfoResult(
+            status="success",
+            question_type="general_info",
+            fields={"overview": "조선 왕조의 법궁이다."},
+            place_card=PlaceCard(
+                place_id="126508",
+                place_name="경복궁",
+                thumbnail_url="https://example.test/gyeongbokgung.jpg",
+                photos=[
+                    PlacePhotoItem(
+                        url="https://tong.visitkorea.or.kr/126508-1.jpg",
+                        image_name="경복궁 (1)",
+                    ),
+                    PlacePhotoItem(url="https://tong.visitkorea.or.kr/126508-2.jpg"),
+                ],
+            ),
+        ),
+    )
+
+    card = to_info_place_card(response)
+
+    assert card is not None
+    assert [photo.url for photo in card.photos] == [
+        "https://tong.visitkorea.or.kr/126508-1.jpg",
+        "https://tong.visitkorea.or.kr/126508-2.jpg",
+    ]
+    assert card.photos[0].image_name == "경복궁 (1)"
+    assert card.photos[1].image_name is None
+    # 대표 이미지는 사진 목록과 별개로 남는다.
+    assert card.thumbnail_url == "https://example.test/gyeongbokgung.jpg"
+
+
+def test_card_without_photos_has_empty_list() -> None:
+    """사진 목록이 없는 장소가 대부분이다.
+
+    None이 아니라 빈 목록이어야 소비 측이 장수만 세면 된다.
+    """
+    card = to_info_place_card(_response(fields={"parking": "가능"}))
+
+    assert card is not None
+    assert card.photos == []

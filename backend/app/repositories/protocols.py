@@ -12,6 +12,7 @@ from app.domain.models import (
     PlaceEvidenceMatch,
     PlaceMoodMatch,
     PlaceMoodProfile,
+    PlacePhoto,
     StoredMunicipalParkingLot,
     StoredPlaceDetail,
     StoredPlaceLocation,
@@ -226,3 +227,17 @@ class PlaceMoodRepository(Protocol):
         self,
         content_ids: Sequence[str],
     ) -> dict[str, str]: ...
+
+
+class PlacePhotoRepository(Protocol):
+    """장소 사진 목록을 읽는 읽기 전용 계약.
+
+    저장소는 PlaceMoodRepository와 같은 테이블(place_image_embeddings)이지만
+    계약을 나눈다. 사진을 보여주는 데는 임베딩도 SigLIP도 필요 없고, 분위기
+    검색이 꺼져 있어도 상세 화면의 사진은 나와야 한다.
+    """
+
+    async def find_place_photos(
+        self,
+        content_ids: Sequence[str],
+    ) -> dict[str, tuple[PlacePhoto, ...]]: ...
