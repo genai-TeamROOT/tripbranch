@@ -504,6 +504,43 @@ _RESOLVED_ATTRS: dict[str, str] = {
 }
 
 
+# tour_api 상세로 감당할 수 있는 후보 수의 상한. 이 값을 넘으면 부팅을 막는다.
+#
+# 10으로 잡은 근거는 TourAPI 일일 한도다. 추천 경로는 후보 전량의 상세를 받으므로
+# 후보 1곳당 detailCommon2 + detailIntro2 2회가 나가고, tour_api_daily_call_limit이
+# 오퍼레이션별 1000이라 후보 10곳이면 100요청, 30곳이면 33요청 만에 소진된다.
+# 이전 기본값이 10이었던 것도 사실상 이 선이었다.
+_MAX_TOUR_API_DETAIL_CANDIDATE_LIMIT = 10
+
+
+def _validate_details_source_against_candidate_limit(current: Settings) -> None:
+    """상세를 TourAPI로 받으면서 후보 한도를 높게 잡은 조합을 부팅에서 막는다.
+
+    조용히 도는 대신 부팅에서 끊는 이유는 D-042와 같다 — 이 조합은 오류를 내지
+    않고 **일일 한도만 빠르게 태운다**. 첫 요청이 아니라 부팅에서 드러나야 한다.
+
+    지연이 아니라 호출 수가 문제다(안국역 실측: 후보 30곳에 61회, 2.1초). 느린
+    것은 견딜 수 있지만 한도 소진은 그날 서비스가 멈추는 일이다.
+
+    fake 모드는 상세도 Fake가 담당하므로 검사하지 않는다
+    (`resolved_place_details_source`).
+    """
+    if current.resolved_place_provider != "real":
+        return
+    if current.resolved_place_details_source != "tour_api":
+        return
+    if current.recommendation_candidate_limit <= _MAX_TOUR_API_DETAIL_CANDIDATE_LIMIT:
+        return
+    raise ValueError(
+        "PLACE_DETAILS_SOURCE=tour_api에서는 "
+        f"RECOMMENDATION_CANDIDATE_LIMIT이 {_MAX_TOUR_API_DETAIL_CANDIDATE_LIMIT} "
+        f"이하여야 합니다(현재 {current.recommendation_candidate_limit}). "
+        "추천은 후보 전량의 상세를 조회하므로 후보 1곳당 TourAPI 호출 2회가 나가고, "
+        "일일 한도가 금방 소진됩니다. PLACE_DETAILS_SOURCE=supabase로 두거나 "
+        "후보 한도를 낮추세요."
+    )
+
+
 def validate_provider_config(target: Settings | None = None) -> None:
     """real 모드 provider에 필요한 자격증명이 모두 있는지 부팅 시점에 확인한다.
 
@@ -529,6 +566,8 @@ def validate_provider_config(target: Settings | None = None) -> None:
         raise ValueError(
             "real provider 설정에 필요한 환경변수가 비어 있습니다: " + ", ".join(missing)
         )
+
+    _validate_details_source_against_candidate_limit(current)
 
     # 폐지된 단일 모델 설정이 .env에 남아 있으면 부팅을 막는다. 값이 무시될 뿐 동작은
     # 하므로 그냥 두면 `.env`에 적힌 모델과 실제로 호출되는 모델이 다른 채로 돌고,

@@ -21,6 +21,7 @@ from app.domain.operating_hours import normalize_operating_schedule
 from app.errors import AppError, ProviderUnavailableError
 from app.place_search_policy import (
     DEFAULT_PLACE_PROVIDER_RESULT_LIMIT,
+    MAX_PLACE_PROVIDER_ROWS,
     MAX_PLACE_SEARCH_RADIUS_KM,
 )
 from app.providers.contracts import (
@@ -187,7 +188,7 @@ class RealPlaceProvider:
             "mapY": latitude,
             "radius": radius_m,
             "arrange": "E",
-            "numOfRows": max(1, min(limit, 100)),
+            "numOfRows": max(1, min(limit, MAX_PLACE_PROVIDER_ROWS)),
             "pageNo": 1,
         }
         if district_code and not region_code:
@@ -320,7 +321,7 @@ class RealPlaceProvider:
             **self._base_params(),
             "keyword": normalized_keyword,
             "arrange": "A",
-            "numOfRows": max(1, min(limit, 100)),
+            "numOfRows": max(1, min(limit, MAX_PLACE_PROVIDER_ROWS)),
             "pageNo": 1,
         }
         if region_code:

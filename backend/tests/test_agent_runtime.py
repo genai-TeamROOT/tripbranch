@@ -3555,6 +3555,24 @@ _CLOSED_ALL_WEEK_SCHEDULE = {
 }
 
 
+# _RefillPlacesToolProvider가 한 번에 돌려주는 후보 수.
+_REFILL_PAGE_SIZE = 10
+
+
+@pytest.fixture
+def refill_page_limit(monkeypatch: pytest.MonkeyPatch) -> int:
+    """보충 조회 대역의 페이지 크기와 후보 상한을 맞춘다.
+
+    `_RefillPlacesToolProvider`는 10곳 단위로 후보를 돌려주고 open_indexes도 그
+    경계에 맞춰 잡혀 있다. A의 소진 판정이 "반환 수 < recommendation_candidate_limit"
+    이라, 설정값이 페이지 크기보다 크면 첫 조회가 곧바로 소진으로 읽혀 보충이 아예
+    돌지 않는다. 이 테스트들이 보려는 것은 보충 메커니즘이지 운영 기본값이 아니므로
+    여기서 둘을 맞춘다 — 기본값을 10에서 30으로 올렸을 때 실제로 이렇게 깨졌다.
+    """
+    monkeypatch.setattr(settings, "recommendation_candidate_limit", _REFILL_PAGE_SIZE)
+    return _REFILL_PAGE_SIZE
+
+
 class _RefillPlacesToolProvider(FakeToolProvider):
     """제외 ID 다음의 후보를 페이지 단위로 반환하는 C 보충 조회 대역.
 
@@ -3567,7 +3585,7 @@ class _RefillPlacesToolProvider(FakeToolProvider):
         self,
         *,
         total: int = 25,
-        page_size: int = 10,
+        page_size: int = _REFILL_PAGE_SIZE,
         open_indexes: set[int] | None = None,
     ) -> None:
         self.requests: list[AgentContextRequest] = []
@@ -3793,7 +3811,9 @@ class _RecordingWalkingRoutesRecommendationProvider(RealRecommendationProvider):
 
 
 @pytest.mark.asyncio
-async def test_staged_recommendation_refills_candidates_up_to_target() -> None:
+async def test_staged_recommendation_refills_candidates_up_to_target(
+    refill_page_limit: int,
+) -> None:
     store = InMemoryStateStore()
     tool_provider = _RefillPlacesToolProvider()
 
@@ -3893,7 +3913,9 @@ async def test_repeated_reject_all_does_not_refetch_closed_candidates() -> None:
 
 
 @pytest.mark.asyncio
-async def test_staged_recommendation_passes_only_eligible_routes_to_d_after_refill() -> None:
+async def test_staged_recommendation_passes_only_eligible_routes_to_d_after_refill(
+    refill_page_limit: int,
+) -> None:
     context_provider = _RefillPlacesToolProvider()
     route_tool = _RecordingTravelRouteTool()
     recommendation_provider = _RecordingWalkingRoutesRecommendationProvider()
@@ -4043,7 +4065,9 @@ async def test_staged_recommendation_passes_empty_routes_when_route_tool_is_unav
 
 
 @pytest.mark.asyncio
-async def test_staged_recommendation_stops_after_max_refill_attempts() -> None:
+async def test_staged_recommendation_stops_after_max_refill_attempts(
+    refill_page_limit: int,
+) -> None:
     store = InMemoryStateStore()
     tool_provider = _RefillPlacesToolProvider()
     tool_provider._places = [
@@ -4172,7 +4196,9 @@ class _WeatherDivergingRefillToolProvider(_RefillPlacesToolProvider):
 
 
 @pytest.mark.asyncio
-async def test_staged_recommendation_reuses_first_batch_weather_for_refill_batches() -> None:
+async def test_staged_recommendation_reuses_first_batch_weather_for_refill_batches(
+    refill_page_limit: int,
+) -> None:
     """보충 조회에서 날씨가 빠져도 배치를 버리지 않고 첫 배치 판정을 재사용한다.
 
     보충 조회는 같은 요청·같은 시각·같은 좌표를 다시 조회하는 것이라, 날씨가
@@ -4215,7 +4241,9 @@ class _BrokenLocationRefillToolProvider(_RefillPlacesToolProvider):
 
 
 @pytest.mark.asyncio
-async def test_staged_recommendation_drops_refill_batch_when_prepare_raises() -> None:
+async def test_staged_recommendation_drops_refill_batch_when_prepare_raises(
+    refill_page_limit: int,
+) -> None:
     """보충 Context가 장소는 실었지만 location이 없으면 prepare()가 AppError를 던진다.
 
     응답 status와 place_id 유무만 보는 가드로는 이 조합이 안 걸려서, 보충 실패가
@@ -4235,7 +4263,9 @@ async def test_staged_recommendation_drops_refill_batch_when_prepare_raises() ->
 
 
 @pytest.mark.asyncio
-async def test_staged_recommendation_refill_progress_does_not_move_backwards() -> None:
+async def test_staged_recommendation_refill_progress_does_not_move_backwards(
+    refill_page_limit: int,
+) -> None:
     """보충 조회 중에도 progress stage는 scoring을 유지한다.
 
     프론트(AgentProgressMessage.tsx)는 stage로 진행 순서를 그리고 문구만 서버
@@ -4284,7 +4314,9 @@ async def test_staged_recommendation_all_closed_triggers_no_data_closed() -> Non
 
 
 @pytest.mark.asyncio
-async def test_staged_recommendation_merges_refill_places_into_tool_context() -> None:
+async def test_staged_recommendation_merges_refill_places_into_tool_context(
+    refill_page_limit: int,
+) -> None:
     """보충으로 받은 장소도 tool_context에 합쳐져 후속 C 보강 조회로 넘어가야 한다.
 
     to_candidate_enrichment_request()는 원본 places에서 place_id를 못 찾은 후보를

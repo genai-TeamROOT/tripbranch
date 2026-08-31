@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from app.config import Settings
 from app.providers.factory import validate_provider_config
+from app.recommendation_limits import MAX_RECOMMENDATION_CANDIDATE_LIMIT
 
 
 def test_provider_mode_applies_to_all_providers() -> None:
@@ -190,9 +191,11 @@ def test_fake_weather_settings_hold_kma_codes() -> None:
     "overrides",
     [
         {"recommendation_result_limit": 0},
-        {"recommendation_result_limit": 21},
+        # 상한 초과. 상한 값을 바꿔도 따라오도록 상수로 쓴다 — 21을 박아두었더니
+        # 상한을 20에서 30으로 올릴 때 이 케이스가 유효값이 되어 깨졌다.
+        {"recommendation_result_limit": MAX_RECOMMENDATION_CANDIDATE_LIMIT + 1},
         {"recommendation_candidate_limit": 0},
-        {"recommendation_candidate_limit": 21},
+        {"recommendation_candidate_limit": MAX_RECOMMENDATION_CANDIDATE_LIMIT + 1},
         {
             "recommendation_result_limit": 6,
             "recommendation_candidate_limit": 5,
@@ -208,6 +211,74 @@ def test_invalid_recommendation_limits_fail_at_construction(
 
 def test_validate_provider_config_allows_fake_mode_without_keys() -> None:
     validate_provider_config(Settings(_env_file=None, provider_mode="fake"))
+
+
+def _real_settings(**overrides: object) -> Settings:
+    """자격증명 검사를 통과하는 real 설정을 만든다."""
+    keys: dict[str, object] = {
+        "llm_api_key": "present",
+        "weather_api_key": "present",
+        "tour_api_service_key": "present",
+        "seoul_open_data_api_key": "present",
+        "kakao_map_rest_api_key": "present",
+        "naver_map_client_id": "present",
+        "naver_map_client_secret": "present",
+        "naver_local_search_client_id": "present",
+        "naver_local_search_client_secret": "present",
+        "supabase_url": "https://example.supabase.co",
+        "supabase_secret_key": "present",
+    }
+    keys.update(overrides)
+    return Settings(_env_file=None, provider_mode="real", **keys)
+
+
+def test_tour_api_details_rejects_high_candidate_limit_at_boot() -> None:
+    """상세를 TourAPI로 받으면서 후보 한도를 높게 잡으면 부팅에서 막는다.
+
+    이 조합은 오류를 내지 않고 일일 한도만 태운다 — 추천 1회에 후보 30곳이면
+    detailCommon2 + detailIntro2가 60회 나가서 33요청 만에 소진된다. 조용히
+    도는 대신 부팅에서 끊는다(D-042와 같은 이유).
+    """
+    settings = _real_settings(
+        place_details_source="tour_api", recommendation_candidate_limit=30
+    )
+
+    with pytest.raises(ValueError) as error:
+        validate_provider_config(settings)
+
+    message = str(error.value)
+    assert "PLACE_DETAILS_SOURCE" in message
+    assert "RECOMMENDATION_CANDIDATE_LIMIT" in message
+
+
+def test_tour_api_details_allows_low_candidate_limit() -> None:
+    """후보 한도가 낮으면 tour_api 상세도 그대로 허용한다."""
+    validate_provider_config(
+        _real_settings(
+            place_details_source="tour_api", recommendation_candidate_limit=10
+        )
+    )
+
+
+def test_supabase_details_allows_high_candidate_limit() -> None:
+    """supabase 상세는 후보 수와 무관하게 배치 1회라 한도를 막지 않는다."""
+    validate_provider_config(
+        _real_settings(
+            place_details_source="supabase", recommendation_candidate_limit=30
+        )
+    )
+
+
+def test_fake_place_mode_skips_details_source_check() -> None:
+    """fake 장소 모드는 상세도 Fake가 담당하므로 이 검사 대상이 아니다."""
+    validate_provider_config(
+        Settings(
+            _env_file=None,
+            provider_mode="fake",
+            place_details_source="tour_api",
+            recommendation_candidate_limit=30,
+        )
+    )
 
 
 def test_validate_provider_config_reports_every_missing_key_at_once() -> None:
@@ -311,16 +382,9 @@ def test_validate_provider_config_rejects_duplicate_fallback_model() -> None:
 
 
 def test_validate_provider_config_allows_distinct_fallback_models() -> None:
-    settings = Settings(
-        _env_file=None,
-        provider_mode="real",
-        llm_api_key="present",
-        weather_api_key="present",
-        tour_api_service_key="present",
-        naver_map_client_id="present",
-        naver_map_client_secret="present",
-        naver_local_search_client_id="present",
-        naver_local_search_client_secret="present",
+    # PLACE_DETAILS_SOURCE 기본값이 supabase가 되면서 real 모드는 Supabase 자격증명도
+    # 요구한다. 이 테스트는 모델 폴백만 보는 것이라 _real_settings로 그 부분을 채운다.
+    settings = _real_settings(
         llm_fast_model_name="gemini-3.5-flash-lite",
         llm_fast_fallback_model_names="gemini-3.5-flash",
         llm_generation_model_name="gemini-3.5-flash",

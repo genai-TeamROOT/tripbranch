@@ -1073,6 +1073,19 @@ _CONCENTRATION_RANK_INTENTS = frozenset({ConcentrationIntent.AVOID, Concentratio
 # 최초 조회는 포함하지 않으므로 전체 C 호출은 최대 3회다. 무한 반복과 외부 API
 # 호출 폭증을 막기 위해 상수로 명시한다.
 _MAX_CANDIDATE_REFILL_ATTEMPTS = 2
+
+# SCHEDULE이 D에게 받는 후보 수. 일정 편성 모듈이 이 목록에서 코스를 고른다.
+#
+# **후보 수집 상한(RECOMMENDATION_CANDIDATE_LIMIT)에서 떼어낸 상수다.** 예전에는
+# 그 설정을 그대로 썼는데, 두 값은 뜻이 다른데 우연히 같았을 뿐이다 — 하나는
+# "C에서 몇 곳을 모아올까"이고 이건 "일정 편성에 몇 곳을 넘길까"다. 후보 상한을
+# 올렸더니 이 값까지 따라 올라가면서 드러났다.
+#
+# 10인 근거는 D와의 협의다(int-07-schedule.md 135행 "D 반환 수: 상위 10개 전부",
+# 5절). 혼잡도 2차 재순위도 SCHEDULE에서는 이 개수 전부에 걸리므로(같은 문서
+# 201~206행) 늘리면 혼잡도 외부 조회가 비례해서 늘어난다. **바꾸려면 D와 다시
+# 협의해야 한다.**
+SCHEDULE_RECOMMENDATION_LIMIT = 10
 _CANDIDATE_POOL_TRUNCATED_WARNING = "candidate_pool_truncated"
 
 # 보강 응답 전체가 이 상태면 2차 Scoring을 시도할 실익이 없다(재조회할 데이터가 없음).
@@ -1199,7 +1212,7 @@ async def _apply_concentration_rerank(
 
     final_limit: 재순위 후 최종 노출 개수. 호출부가 1차 Scoring에 넘긴 limit과
     일치시켜야 한다. RECOMMEND/MODIFY는 recommendation_result_limit,
-    SCHEDULE은 recommendation_candidate_limit 설정을 사용한다. None이면
+    SCHEDULE은 SCHEDULE_RECOMMENDATION_LIMIT을 사용한다. None이면
     recommendation_result_limit을 이 시점에 읽는다.
 
     C 보강 조회(EnrichmentProvider.enrich())와 D의 2차 Scoring
@@ -2984,8 +2997,9 @@ async def _score_recommendations(
     )
 
     # 6) A → D: 1차 Scoring (Protocol을 통해서만 — D의 구체 클래스는 여기서 모른다).
-    #    최종 반환은 RECOMMEND/MODIFY가 recommendation_result_limit, SCHEDULE이
-    #    recommendation_candidate_limit을 쓴다(docs/design/int-07-schedule.md 2절/5절).
+    #    최종 반환은 RECOMMEND/MODIFY가 recommendation_result_limit,
+    #    SCHEDULE이 SCHEDULE_RECOMMENDATION_LIMIT을 쓴다
+    #    (docs/design/int-07-schedule.md 2절/5절).
     #
     #    보충 조회 목표(candidate_target)는 recommendation_candidate_limit이다 —
     #    하드 필터를 통과한 후보를 설정된 후보 상한만큼 모아두고 그 안에서 고른다.
@@ -2997,7 +3011,7 @@ async def _score_recommendations(
     #    잡아내 보충하지 않는다.)
     candidate_target = settings.recommendation_candidate_limit
     recommendation_limit = (
-        settings.recommendation_candidate_limit
+        SCHEDULE_RECOMMENDATION_LIMIT
         if is_schedule
         else settings.recommendation_result_limit
     )

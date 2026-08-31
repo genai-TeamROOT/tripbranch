@@ -12,6 +12,7 @@ from app.domain.models import PlaceCategoryFilter, PlaceDetails
 from app.errors import AppError
 from app.place_search_policy import (
     DEFAULT_PLACE_SEARCH_RADIUS_KM,
+    MAX_PLACE_PROVIDER_ROWS,
     MAX_PLACE_SEARCH_RADIUS_KM,
     PLACE_SEARCH_LDONG_REGION_CODE,
 )
@@ -28,9 +29,6 @@ from app.recommendation_limits import (
 )
 from app.schemas import PlaceCandidate
 from app.tools.contracts import ToolError, ToolStatus
-
-# TourAPI locationBasedList2가 한 페이지에 허용하는 최대 행 수.
-MAX_PLACE_PROVIDER_ROWS = 100
 
 # 필요한 후보 수의 몇 배를 Provider에 요청할지.
 #
