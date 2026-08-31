@@ -39,6 +39,13 @@ class MultiTurnCase:
     expected_second_intent: str
     expected_conditions: dict[str, object]
     expects_schedule: bool = False
+    # 2턴이 INFO로 이어질 때 유지되어야 하는 question_type. 인텐트만 맞고 질문
+    # 종류가 바뀌면(혼잡도 → 개요) 사용자가 물은 답이 아니다.
+    expected_second_question_type: str | None = None
+    # 2턴 말풍선에 반드시 들어가야 하는 낱말(누적 조건이 문장에 반영됐는지).
+    expected_message_contains: tuple[str, ...] = ()
+    # 2턴 말풍선에 나오면 안 되는 낱말(말한 조건과 어긋나는 표현).
+    forbidden_message_contains: tuple[str, ...] = ()
 
 
 CASES: tuple[MultiTurnCase, ...] = (
@@ -84,6 +91,30 @@ CASES: tuple[MultiTurnCase, ...] = (
         {"search_center": "경복궁"},
         expects_schedule=True,
     ),
+    # 아래 2건은 되묻기가 아니라 **완결된 턴 뒤에 이어지는 발화**다(2026-08-31
+    # 실사용 재현). 되묻기 상태가 없어 기존 규칙이 전부 비껴갔고, 대화 이력
+    # 사용법을 프롬프트에 명시한 뒤에야 이어지기 시작했다.
+    MultiTurnCase(
+        5,
+        "완결된 정보 질문 뒤 지명만 던지면 같은 질문을 이어간다",
+        "안국역 혼잡도 알려줘",
+        "인사동은?",
+        "INFO",
+        "INFO",
+        {},
+        expected_second_question_type="concentration",
+    ),
+    MultiTurnCase(
+        6,
+        "동행을 말하면 말풍선 문장에도 반영된다",
+        "경복궁 근처 카페 추천해줘",
+        "친구들이랑 갈거야",
+        "RECOMMEND",
+        "MODIFY",
+        {"companion": "friend"},
+        expected_message_contains=("친구",),
+        forbidden_message_contains=("혼자",),
+    ),
 )
 
 
@@ -125,6 +156,14 @@ def _status(body: dict[str, Any]) -> str:
     return str(output.get("status", "")) if isinstance(output, dict) else ""
 
 
+def _question_type(body: dict[str, Any]) -> str | None:
+    output = body.get("llm_output")
+    if not isinstance(output, dict):
+        return None
+    info = output.get("info")
+    return str(info.get("question_type")) if isinstance(info, dict) else None
+
+
 def _conditions(body: dict[str, Any]) -> dict[str, Any]:
     state = body.get("state")
     if not isinstance(state, dict):
@@ -164,6 +203,28 @@ def _check(case: MultiTurnCase, first: dict[str, Any], second: dict[str, Any]) -
             checks.append("일정 결과 반환")
         else:
             checks.append("FAIL: schedule 결과 없음")
+
+    if case.expected_second_question_type is not None:
+        actual_type = _question_type(second)
+        if actual_type == case.expected_second_question_type:
+            checks.append(f"question_type={actual_type} 유지")
+        else:
+            checks.append(
+                f"FAIL: question_type={actual_type!r} "
+                f"(기대 {case.expected_second_question_type!r})"
+            )
+
+    message = str(second.get("message") or "")
+    for word in case.expected_message_contains:
+        if word in message:
+            checks.append(f"말풍선에 '{word}' 반영")
+        else:
+            checks.append(f"FAIL: 말풍선에 '{word}' 없음")
+    for word in case.forbidden_message_contains:
+        if word in message:
+            checks.append(f"FAIL: 말풍선에 '{word}' 등장(말한 조건과 어긋남)")
+        else:
+            checks.append(f"말풍선에 '{word}' 없음")
 
     return checks
 

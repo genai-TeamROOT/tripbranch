@@ -95,6 +95,9 @@ MAX_RECENT_TURNS = 5
 # 사용자 원문 상한. 넘으면 잘라서 저장한다 — 프롬프트 길이와 저장 범위를 동시에
 # 묶는 상한이지, 의미를 요약하는 장치가 아니다(아래 ConversationTurn 참고).
 MAX_TURN_USER_INPUT_CHARS = 300
+# 어시스턴트 답변 상한. 사용자 원문과 같은 값으로 둔다 — 둘 다 프롬프트에 실리므로
+# 한쪽만 넉넉히 잡을 이유가 없다.
+MAX_TURN_ASSISTANT_MESSAGE_CHARS = 300
 
 
 class ConversationTurn(BaseModel):
@@ -106,12 +109,18 @@ class ConversationTurn(BaseModel):
     봐야 하는데, 누적 조건·추천 이력만으로는 "그냥 삐끗했어" 같은 이어지는 발화를
     해석할 수 없다. 노출 범위를 좁히려고 두 가지를 지킨다.
 
-    1. 어시스턴트 쪽은 **원문을 담지 않는다.** 답변 문장은 이미 intent/
-       question_type/장소명/제안 같은 재료로 조립된 것이므로 그 재료만 남긴다.
-       LLM을 한 번 더 불러 요약하지 않고(호출이 늘어난다), 앞부분만 잘라 담지도
-       않는다(뜻이 날아간다). 재료 쪽이 다음 턴 판단에도 원문 산문보다 낫다.
-    2. 사용자 원문만 담되 MAX_TURN_USER_INPUT_CHARS로 자르고, 세션이 만료되면
-       상태와 함께 지워진다(session.py의 TTL 30분).
+    1. 어시스턴트 쪽은 **화면에 나간 답변 문장과 처리 재료를 함께** 담는다.
+       처음에는 재료(intent/question_type/장소명/제안)만 담았는데, 그러면 모델이
+       "내가 방금 뭐라고 말했는지"를 알 수 없어 답변 문장이 앞 턴과 어긋났다
+       (2026-08-31 실사용: 동행을 friend로 잡아놓고도 "혼자서도 가기 좋고"로 답변).
+       강의교재 36강도 model 답변을 이력에 넣는 것을 멀티턴의 핵심으로 든다.
+       재료는 그대로 유지한다 — 분류 단계에는 "질문 유형: concentration"이 산문보다
+       정확한 신호다. LLM을 한 번 더 불러 요약하지는 않는다(호출이 늘어난다);
+       `AgentResponse.message`가 이미 만들어진 값이므로 그대로 옮긴다.
+    2. 사용자 원문과 어시스턴트 답변 모두 상한(MAX_TURN_*_CHARS)으로 자르고, 세션이
+       만료되면 상태와 함께 지워진다(session.py의 TTL 30분). 어시스턴트 답변 원문
+       저장은 FeedbackRecord.assistant_message가 이미 같은 값을 남기는 선례를 따른
+       것이라 새 정책 결정이 아니다.
 
     보안: 이 값은 신뢰할 수 없는 입력이다. 프롬프트에 넣을 때 system_instruction
     문자열에 치환하지 말고 대화 내용(contents) 자리로 보내야 한다 — 서버에
@@ -119,6 +128,9 @@ class ConversationTurn(BaseModel):
     """
 
     user_input: str
+    # 그 턴에 화면으로 나간 답변 문장(MAX_TURN_ASSISTANT_MESSAGE_CHARS로 잘림).
+    # 과거 세션에는 없으므로 None일 수 있다 — 그때는 재료만으로 조립한다.
+    assistant_message: str | None = None
     # 그 턴을 무엇으로 처리했는지. B는 값을 해석하지 않고 A가 준 것을 보관만 한다.
     intent: str | None = None
     question_type: str | None = None

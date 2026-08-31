@@ -2,13 +2,14 @@ intent: INFO
 owner: C
 slots:
   info.extract:
-    version: "3.3.0"
+    version: "3.4.0"
     template: extract.md
     bundle:
       - info/question_type_rules.md
       - info/place_context_rules.md
       - info/visit_time_rules.md
       - info/pending_question_block.md
+      - _shared/rules/conversation_history.md
     evals: evals/README.md
   info.answer:
     description: 검증된 place_name·specific_question·fields만 근거로 2~4문장 답변을 만든다.

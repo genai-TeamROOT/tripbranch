@@ -4,10 +4,25 @@
 
 | 슬롯 | 관리 버전 | 템플릿 | 공유 규칙 |
 | --- | --- | --- | --- |
-| recommend.extract | 2.5.0 | extract.md, location_rules.md, place_tag_rules.md | budget, weather, concentration, environment, transport |
-| recommend.summary | 1.1.0 | summary_instruction.md | persona |
+| recommend.extract | 2.6.0 | extract.md, location_rules.md, place_tag_rules.md | budget, weather, concentration, environment, transport |
+| recommend.summary | 1.2.0 | summary_instruction.md | persona |
 
 ## Draft
+
+- 2026-08-31(recommend.summary v1.2.0): 말풍선 생성이 **사용자가 말한 조건**을 받도록
+  했습니다. 그전까지 `compose_recommendation_summary → generate_recommendation_summary →
+  build_recommendation_summary_instruction` 전 구간이 카드 데이터만 받아서, 동행을
+  friend로 정확히 뽑아 놓고도 말풍선이 "혼자서도 가기 좋고"라고 답하는 일이 있었습니다
+  (2026-08-31 실사용). 프롬프트에서 "카드에 포함된 …만 근거로 쓰세요"가 조건 반영을
+  구조적으로 막고 있었으므로, **사실 주장은 카드에서만 / 강조점·말투는 조건에서**로
+  구분해 다시 썼습니다. 동행이 어긋나는 표현을 금지하는 문장도 함께 넣었습니다.
+
+  누적 조건(`UserConditions`)을 쓰는 이유: 강의교재 36강이 말하는 "오래된 중요 정보의
+  압축 요약"에 해당하는 값이 우리에겐 이미 이것이고, 최근 5턴 창 밖으로 밀려나도 살아
+  있어 원문 이력보다 견고합니다 — 그래서 별도 요약 LLM 호출을 만들지 않았습니다.
+  조건이 비어 있으면 블록 자체가 생략되어 기존 렌더 결과는 그대로입니다.
+  (recommend.extract v2.6.0은 `conversation_history` bundle 추가 — `_shared/HISTORY.md`
+  같은 날짜 항목 참고.)
 
 ### 1.1.0 (2026-08-28, 취향 리뷰 기반 추천 말풍선)
 

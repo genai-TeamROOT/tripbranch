@@ -24,6 +24,7 @@ from app.state.merge import merge_conditions
 from app.state.operations import IgnoredOperation, Operation, validate_all
 from app.state.schema import (
     MAX_RECENT_TURNS,
+    MAX_TURN_ASSISTANT_MESSAGE_CHARS,
     MAX_TURN_USER_INPUT_CHARS,
     ConversationTurn,
     FeedbackReasonCode,
@@ -1018,12 +1019,21 @@ def append_conversation_turn(
         return None
 
     turn = request.turn
+    # 자르는 것은 길이 상한을 지키기 위해서지 요약이 아니다 — 뒷부분이 사라진다는
+    # 사실을 감추지 않으려고 말줄임표를 붙이지 않는다. 사용자 원문과 어시스턴트
+    # 답변을 같은 자리에서 함께 자른다(상한 관리를 한 곳에 두는 위 원칙).
+    truncations: dict[str, str] = {}
     if len(turn.user_input) > MAX_TURN_USER_INPUT_CHARS:
-        # 자르는 것은 길이 상한을 지키기 위해서지 요약이 아니다 — 뒷부분이
-        # 사라진다는 사실을 감추지 않으려고 말줄임표를 붙이지 않는다.
-        turn = turn.model_copy(
-            update={"user_input": turn.user_input[:MAX_TURN_USER_INPUT_CHARS]}
-        )
+        truncations["user_input"] = turn.user_input[:MAX_TURN_USER_INPUT_CHARS]
+    if (
+        turn.assistant_message is not None
+        and len(turn.assistant_message) > MAX_TURN_ASSISTANT_MESSAGE_CHARS
+    ):
+        truncations["assistant_message"] = turn.assistant_message[
+            :MAX_TURN_ASSISTANT_MESSAGE_CHARS
+        ]
+    if truncations:
+        turn = turn.model_copy(update=truncations)
 
     state.recent_turns = [*state.recent_turns, turn][-MAX_RECENT_TURNS:]
     session_module.touch(state)

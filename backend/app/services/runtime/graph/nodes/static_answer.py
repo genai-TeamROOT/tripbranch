@@ -26,6 +26,7 @@ async def static_answer_node(
         state["llm_output"],
         llm=llm_from_config(config),
         rejected_offer_actions=state.get("rejected_offer_actions") or [],
+        history=state.get("history") or [],
     )
     return {"answer": message}
 

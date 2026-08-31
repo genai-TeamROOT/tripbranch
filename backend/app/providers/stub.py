@@ -986,7 +986,12 @@ class FakeLLMProvider:
         return provider_result(result, source=ProviderSource.FAKE_LLM)
 
     async def generate_general_answer(
-        self, topic: GeneralTopic, original_question: str, *, offer_content: str | None = None
+        self,
+        topic: GeneralTopic,
+        original_question: str,
+        *,
+        offer_content: str | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[str]:
         if topic is GeneralTopic.SERVICE_IDENTITY:
             answer = (
@@ -1003,7 +1008,12 @@ class FakeLLMProvider:
         return provider_result(answer, source=ProviderSource.FAKE_LLM)
 
     async def generate_recommendation_summary(
-        self, intent: Intent, recommendations: RecommendationResponse
+        self,
+        intent: Intent,
+        recommendations: RecommendationResponse,
+        *,
+        conditions: UserConditions | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[str]:
         shown = [*recommendations.recommendations, *recommendations.unverified_recommendations]
         if not shown:
@@ -1059,23 +1069,35 @@ class FakeLLMProvider:
         return provider_result(suggestions, source=ProviderSource.FAKE_LLM)
 
     async def stream_recommendation_summary(
-        self, intent: Intent, recommendations: RecommendationResponse
+        self,
+        intent: Intent,
+        recommendations: RecommendationResponse,
+        *,
+        conditions: UserConditions | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> AsyncIterator[str]:
         """SSE 테스트용: 결정적 요약을 두 조각으로 나눈다."""
 
-        summary = await self.generate_recommendation_summary(intent, recommendations)
+        summary = await self.generate_recommendation_summary(
+            intent, recommendations, conditions=conditions, history=history
+        )
         text = summary.data
         midpoint = max(1, len(text) // 2)
         yield text[:midpoint]
         yield text[midpoint:]
 
     async def stream_general_answer(
-        self, topic: GeneralTopic, original_question: str, *, offer_content: str | None = None
+        self,
+        topic: GeneralTopic,
+        original_question: str,
+        *,
+        offer_content: str | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> AsyncIterator[str]:
         """SSE 테스트용 GENERAL 답변을 결정적으로 두 조각으로 나눈다."""
 
         answer = await self.generate_general_answer(
-            topic, original_question, offer_content=offer_content
+            topic, original_question, offer_content=offer_content, history=history
         )
         text = answer.data
         midpoint = max(1, len(text) // 2)
@@ -1089,6 +1111,7 @@ class FakeLLMProvider:
         question_type: str,
         specific_question: str | None,
         fields: dict[str, str],
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> AsyncIterator[str]:
         """SSE 테스트용 INFO 답변. 전달된 C fields 밖의 사실은 만들지 않는다."""
 
@@ -1102,7 +1125,12 @@ class FakeLLMProvider:
         yield text[:midpoint]
         yield text[midpoint:]
 
-    async def generate_compare_summary(self, comparison: ComparisonResult) -> ProviderResult[str]:
+    async def generate_compare_summary(
+        self,
+        comparison: ComparisonResult,
+        *,
+        history: Sequence[ConversationTurnView] | None = None,
+    ) -> ProviderResult[str]:
         """COMPARE LLM 요약의 테스트용 결정적 대체 구현.
 
         실제 Gemini와 달리 문체 다양화는 하지 않되, 3줄 이상이라는 출력 계약과
