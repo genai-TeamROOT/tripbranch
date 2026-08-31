@@ -27,6 +27,7 @@ from app.agent_context.schemas import (
     Clarification,
     ContextError,
     ContextValue,
+    ContextWarning,
     Coordinates,
     PlaceCandidate,
     ProviderMetadata,
@@ -133,8 +134,11 @@ class _LLMProviderWithSituationalOffer(_LLMProviderWithGeneralAnswer):
 
     def __init__(self, situation: SituationKind = SituationKind.FATIGUE) -> None:
         self._situation = situation
+        self.classify_histories: list[object] = []
+        self.extract_histories: list[object] = []
 
     async def classify_intent(self, user_input: str, **kwargs: object):
+        self.classify_histories.append(kwargs.get("history"))
         return provider_result(
             IntentClassificationResult(
                 intent=Intent.GENERAL, interaction_mode=InteractionMode.SITUATIONAL
@@ -142,7 +146,8 @@ class _LLMProviderWithSituationalOffer(_LLMProviderWithGeneralAnswer):
             source=ProviderSource.FAKE_LLM,
         )
 
-    async def extract_general_request(self, user_input: str):
+    async def extract_general_request(self, user_input: str, **kwargs: object):
+        self.extract_histories.append(kwargs.get("history"))
         return provider_result(
             LLMOutput(
                 intent=Intent.GENERAL,
@@ -166,8 +171,8 @@ class _LLMProviderForcingSearchCenter(_LLMProviderWithGeneralAnswer):
     def __init__(self, search_center: str) -> None:
         self._search_center = search_center
 
-    async def extract_recommend_conditions(self, user_input):
-        result = await super().extract_recommend_conditions(user_input)
+    async def extract_recommend_conditions(self, user_input, **kwargs):
+        result = await super().extract_recommend_conditions(user_input, **kwargs)
         result.data.recommend.conditions.search_center = self._search_center
         return result
 
@@ -900,6 +905,90 @@ async def test_schedule_then_ambiguous_recommend_triggers_clarification() -> Non
 
     context = get_session_context(second.state.session_id, store=store)
     assert context.pending_clarification == "schedule06_ambiguous_recommend"
+    # apply()가 이 턴의 원본 intent(MODIFY)로 last_intent를 이미 저장했으므로, 여기서
+    # SCHEDULE로 바로잡지 않으면 다음 턴 classify_intent가 "직전 SCHEDULE 되묻기"라는
+    # 신호를 못 받는다(2026-08-31 실사용 재현, D-061과 같은 이유의 누락).
+    assert context.last_intent == "SCHEDULE"
+
+
+@pytest.mark.asyncio
+async def test_schedule06_ambiguous_free_text_recommend_only_switches_to_recommend() -> None:
+    """schedule06_ambiguous_recommend 되묻기에 "추천만 해줘"류 자유 텍스트로 답하면
+    RECOMMEND로 전환되어야 한다 — 두 선택지가 서로 다른 인텐트라 위 SCHEDULE 되묻기의
+    "SCHEDULE 유지" 규칙을 그대로 적용하면 틀린다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처에서 반나절 코스 짜줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+    ambiguous = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+    assert ambiguous.llm_output.status == OutputStatus.NEEDS_CLARIFICATION
+
+    answered = await run_agent_flow(
+        AgentRequest(
+            user_input="추천만 해줘",
+            session_id=ambiguous.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert answered.llm_output.intent == "RECOMMEND"
+
+
+@pytest.mark.asyncio
+async def test_schedule06_ambiguous_free_text_continue_keeps_schedule() -> None:
+    """같은 되묻기에 "이어서 계속"류로 답하면 SCHEDULE을 유지해야 한다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처에서 반나절 코스 짜줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+    ambiguous = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+    assert ambiguous.llm_output.status == OutputStatus.NEEDS_CLARIFICATION
+
+    answered = await run_agent_flow(
+        AgentRequest(
+            user_input="이어서 계속 진행해줘",
+            session_id=ambiguous.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert answered.llm_output.intent == "SCHEDULE"
 
 
 @pytest.mark.asyncio
@@ -2312,6 +2401,95 @@ async def test_info_concentration_falls_back_gracefully_without_fetch_info_conte
     assert response.llm_output.intent == "INFO"
     assert response.llm_output.info.question_type == "concentration"
     assert "준비 중" in response.message
+
+
+@pytest.mark.asyncio
+async def test_info_missing_place_free_text_answer_stays_info() -> None:
+    """장소명 없이 되묻는 INFO(버튼이 없는 유일한 케이스)에 자유 텍스트로 답해도
+    INFO가 이어져야 한다 — 이전엔 MODIFY로 새고 원래 질문(혼잡도)이 사라졌다
+    (2026-08-31 실사용 재현: "사람많아?" → "여의도 한강공원"이 엉뚱한 식당 추천으로
+    이어짐)."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    # 이전 추천 이력을 만들어 재현 사례의 전제조건("이전 추천 있음")을 맞춘다 —
+    # 그래야 "지명 단독 → MODIFY" 규칙과 실제로 경합한다.
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+    session_id = first.state.session_id
+
+    asked = await run_agent_flow(
+        AgentRequest(
+            user_input="사람 많아?", session_id=session_id, device_location=DEVICE_LOCATION
+        ),
+        store=store,
+        **providers,
+    )
+    assert asked.llm_output.intent == "INFO"
+    assert asked.llm_output.status == OutputStatus.NEEDS_CLARIFICATION
+    context = get_session_context(session_id, store=store)
+    assert context.pending_clarification == "missing:place_name"
+    assert context.pending_info_context is not None
+    assert context.pending_info_context.question_type == "concentration"
+
+    answered = await run_agent_flow(
+        AgentRequest(
+            user_input="창덕궁", session_id=session_id, device_location=DEVICE_LOCATION
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert answered.llm_output.intent == "INFO"
+    assert answered.llm_output.info.question_type == "concentration"
+    assert answered.llm_output.info.place_name == "창덕궁"
+    assert providers["tool_provider"].info_call_count == 1
+    assert "창덕궁" in answered.message
+
+
+@pytest.mark.asyncio
+async def test_info_place_ambiguous_free_text_answer_resolves_without_button() -> None:
+    """place_ambiguous도 버튼 없이 후보 이름을 그대로 타이핑하면 이어져야 한다 —
+    이전엔 clarification_choice가 없으면 pending_info_context를 읽는 경로 자체가
+    없어 장소명만으로 처음부터 재분류됐다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+    providers["tool_provider"] = _InfoPlaceAmbiguousToolProvider(
+        ["창덕궁 제1주차장", "창덕궁 제2주차장"]
+    )
+
+    ambiguous = await run_agent_flow(
+        AgentRequest(
+            user_input="창덕궁 주차장 정보 알려줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+    assert ambiguous.llm_output.status == OutputStatus.NEEDS_CLARIFICATION
+
+    providers["tool_provider"] = _CountingToolProvider()
+    resolved = await run_agent_flow(
+        AgentRequest(
+            user_input="창덕궁 제1주차장",
+            session_id=ambiguous.state.session_id,
+            device_location=DEVICE_LOCATION,
+            # clarification_choice를 일부러 보내지 않는다 — 자유 텍스트 경로를 검증한다.
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert resolved.llm_output.intent == "INFO"
+    assert resolved.llm_output.info.question_type == "parking"
 
 
 @pytest.mark.asyncio
@@ -3928,8 +4106,8 @@ class _LLMProviderWithTransport(_LLMProviderWithGeneralAnswer):
         self._transport = transport
         self._max_travel_time = max_travel_time
 
-    async def extract_recommend_conditions(self, user_input):
-        result = await super().extract_recommend_conditions(user_input)
+    async def extract_recommend_conditions(self, user_input, **kwargs):
+        result = await super().extract_recommend_conditions(user_input, **kwargs)
         output = result.data
         assert output.recommend is not None
         conditions = output.recommend.conditions.model_copy(
@@ -4544,10 +4722,8 @@ async def test_show_closed_choice_keeps_ignoring_operating_hours_on_later_turns(
 
 class _ExhaustedNoDataToolProvider:
     """C 대역 — TourAPI raw candidates는 있었지만 excluded_place_ids로 전부
-    소진된 상황(원인2)을 흉내 낸다. places.status는 "no_data"지만
-    provider_metadata.status는 "success"로 남긴다(nearby_place_details.py의
-    `if not selected:` 경로와 agent_context/mappers.py::map_places_context가
-    원본 metadata를 그대로 싣는 것을 흉내 낸다)."""
+    소진된 상황(원인2)을 흉내 낸다. C가 `candidate_pool_exhausted` 경고를
+    명시적으로 남겼을 때만 A가 소진 안내를 해야 한다."""
 
     def __init__(self) -> None:
         self.call_count = 0
@@ -4571,6 +4747,12 @@ class _ExhaustedNoDataToolProvider:
                 places=ContextValue(
                     status="no_data",
                     data=[],
+                    warnings=[
+                        ContextWarning(
+                            code="candidate_pool_exhausted",
+                            message="이미 본 장소를 제외하면 새 후보가 남아 있지 않습니다.",
+                        )
+                    ],
                     provider_metadata=[
                         ProviderMetadata(
                             source="tourapi",
@@ -5505,6 +5687,48 @@ async def test_situational_general_turn_offers_a_button_and_records_pending_offe
     context = get_session_context(response.state.session_id, store=store)
     assert context.situation_state is not None
     assert context.situation_state.pending_offer == "fatigue"
+    assert len(context.recent_turns) == 1
+    assert context.recent_turns[0].user_input == "너무 지친다"
+    assert context.recent_turns[0].intent == "GENERAL"
+    assert context.recent_turns[0].offered_action == "recommend_nearby_rest_place"
+
+
+@pytest.mark.asyncio
+async def test_second_turn_passes_saved_history_to_classify_and_extract() -> None:
+    """두 번째 자연어 턴은 첫 턴을 user/model 역할 이력으로 LLM에 전달한다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+    llm = _LLMProviderWithSituationalOffer(SituationKind.FATIGUE)
+    providers["llm"] = llm
+
+    first = await run_agent_flow(
+        AgentRequest(user_input="너무 지친다", session_id=None, device_location=DEVICE_LOCATION),
+        store=store,
+        **providers,
+    )
+    await run_agent_flow(
+        AgentRequest(
+            user_input="그냥 잠깐 쉬고 싶어",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert llm.classify_histories[0] is None
+    history = llm.classify_histories[1]
+    assert history is not None
+    assert len(history) == 1
+    assert history[0].user_input == "너무 지친다"
+    assert "제안한 기능: recommend_nearby_rest_place" in history[0].assistant_summary
+    assert llm.extract_histories[1] == history
+
+    context = get_session_context(first.state.session_id, store=store)
+    assert [turn.user_input for turn in context.recent_turns] == [
+        "너무 지친다",
+        "그냥 잠깐 쉬고 싶어",
+    ]
 
 
 @pytest.mark.asyncio

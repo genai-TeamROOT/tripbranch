@@ -822,6 +822,14 @@ class InterpretRequest(BaseModel):
     # 최근 대화(오래된 것이 앞). 라우터가 B의 SessionContextResponse.recent_turns를
     # 조립해 채운다 — 호출자가 보낸 값은 무시된다(위 5개 필드와 같은 원칙).
     recent_turns: list[ConversationTurnView] = Field(default_factory=list)
+    # 직전 턴이 INFO 되묻기(장소명 없음)로 끝났을 때 그때 이미 파악한 질문 정보.
+    # 라우터가 B의 SessionContextResponse.pending_info_context로 채운다 — 호출자가
+    # 보낸 값은 무시된다(위 5개 필드와 같은 원칙). 자유 텍스트로 장소명만 답해도
+    # extract_info_query()가 이 값을 참고해 question_type/specific_question을
+    # 이어받을 수 있게 한다.
+    pending_info_question_type: str | None = None
+    pending_info_specific_question: str | None = None
+    pending_info_visit_time: str | None = None
 
 
 # === Agent Runtime (A-03) ===
