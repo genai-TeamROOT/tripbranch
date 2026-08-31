@@ -16,6 +16,7 @@ from app.domain.models import (
     PlaceEvidenceSnippet,
     PlaceMoodMatch,
     PlaceMoodProfile,
+    PlacePhoto,
     StoredPlaceDetail,
     StoredPlaceLocation,
     StoredPlaceState,
@@ -37,6 +38,25 @@ _MAX_MOOD_CANDIDATES = 500
 # 발화 경로가 한 번에 읽는 장소 수. PostgREST의 in 필터는 URL에 그대로 실려서
 # 너무 길면 요청줄 길이 제한에 걸린다. content_id가 7자리라 200건이면 1.6KB다.
 _MOOD_PROFILE_CHUNK_SIZE = 200
+
+# 상세 화면에 보여줄 사진 수 상한. 지금 가장 많은 장소가 9장이라(국립중앙박물관·
+# 딜쿠샤 등, 2026-08-31 실측) 실제로 잘리는 장소는 없지만, 적재가 구 단위로
+# 계속 진행 중이라 상한 없이 두지 않는다.
+#
+# **번호가 아니라 순서로 자른다.** photo_order에 빈 번호가 있는 장소가 5,465곳 중
+# 7곳 있다(김희수아트센터 [1,2,3,4,5,6,8,12], 딜쿠샤 [1,2,3,4,5,7,9,10,11]).
+# `photo_order <= 10` 같은 조회 필터로 자르면 8장짜리 장소에서 12번 사진이 빠져
+# 7장만 나온다 — 앞에서 열 장을 고르는 것과 번호가 열 이하인 것을 고르는 것은
+# 다른 일이다.
+_PLACE_PHOTO_LIMIT = 10
+
+# 장소 하나에서 읽어 올 행 수의 상한. 위 상한은 순서로 자르므로 자르기 전
+# 행 수를 여기서 막는다. 지금 최대 장수가 9, 최대 번호가 12라 20이면 넉넉하다.
+_PLACE_PHOTO_ROW_BUDGET = 20
+
+# 사진 조회가 한 번에 읽는 장소 수. 장소당 최대 _PLACE_PHOTO_ROW_BUDGET행이라
+# 40곳이면 800행으로 _READ_PAGE_SIZE 안에 들어간다.
+_PLACE_PHOTO_CHUNK_SIZE = 40
 
 # PostgREST의 in 필터 값. 지원 구가 늘면 SUPPORTED_DISTRICT_CODES만 고치면 된다.
 _SUPPORTED_DISTRICT_FILTER = f"in.({','.join(sorted(SUPPORTED_DISTRICT_CODES))})"
@@ -668,6 +688,56 @@ class SupabasePlaceRepository:
                     urls[str(row["content_id"])] = str(row["origin_url"])
         return urls
 
+    async def find_place_photos(
+        self,
+        content_ids: Sequence[str],
+    ) -> dict[str, tuple[PlacePhoto, ...]]:
+        """장소별 사진 목록. 상세 화면이 여러 장을 보여주기 위해 읽는다.
+
+        ``find_first_photo_urls``와 같은 테이블을 읽지만 쓰임이 다르다. 그쪽은
+        "우리가 비교에 쓴 사진"을 사진 검색 결과에 근거로 붙이는 용도라 첫 장만
+        읽는다. 이쪽은 장소를 둘러보라고 보여주는 용도라 여러 장을 읽는다.
+
+        ``photo_order`` 오름차순으로 돌려준다 — 관광공사가 대표성 높은 사진을
+        앞에 주므로 이 순서가 곧 보여줄 순서다.
+
+        장소당 앞에서 ``_PLACE_PHOTO_LIMIT``장까지만 남긴다. 번호가 그 이하인
+        것을 고르는 게 아니라 정렬한 뒤 앞에서 세는 것이다 — 빈 번호가 있는
+        장소에서 두 판정이 갈린다(상수 주석 참고).
+
+        사진이 없는 장소는 **키 자체가 없다.** 빈 튜플로 자리를 채워 주면 호출
+        측이 "사진이 없는 장소"와 "조회하지 않은 장소"를 구분하지 못한다.
+        """
+        unique_ids = list(dict.fromkeys(content_ids))
+        if not unique_ids:
+            return {}
+
+        photos: dict[str, list[PlacePhoto]] = {}
+        for start in range(0, len(unique_ids), _PLACE_PHOTO_CHUNK_SIZE):
+            chunk = unique_ids[start : start + _PLACE_PHOTO_CHUNK_SIZE]
+            response = await self._request(
+                "GET",
+                "/place_image_embeddings",
+                params={
+                    "select": "content_id,photo_order,origin_url,image_name",
+                    "content_id": "in.(" + ",".join(chunk) + ")",
+                    "order": "content_id.asc,photo_order.asc",
+                    "limit": str(len(chunk) * _PLACE_PHOTO_ROW_BUDGET),
+                },
+            )
+            payload = self._json(response)
+            if not isinstance(payload, list):
+                raise SupabaseRepositoryError("invalid place_image_embeddings response")
+            for row in payload:
+                photo = _to_place_photo(row)
+                if photo is not None:
+                    photos.setdefault(photo.content_id, []).append(photo)
+        return {
+            content_id: tuple(
+                sorted(rows, key=lambda photo: photo.photo_order)[:_PLACE_PHOTO_LIMIT]
+            )
+            for content_id, rows in photos.items()
+        }
 
     async def create_sync_run(self, area_code: str, district_code: str) -> UUID:
         response = await self._request(
@@ -1865,6 +1935,29 @@ def _to_mood_profile(row: object) -> PlaceMoodProfile:
         content_id=str(row["content_id"]),
         axis_scores=scores,
         photo_count=int(row.get("photo_count") or 0),
+    )
+
+
+def _to_place_photo(row: object) -> PlacePhoto | None:
+    """사진 행 하나를 도메인 값으로 옮긴다. 쓸 수 없는 행은 건너뛴다.
+
+    ``origin_url``은 스키마상 not null이지만 빈 문자열까지 막지는 않는다. 주소가
+    비면 화면에 깨진 이미지가 뜨므로 여기서 뺀다 — 한 장이 빠지는 것과 상세
+    조회 전체가 실패하는 것은 무게가 다르다.
+    """
+    if not isinstance(row, Mapping):
+        return None
+    url = row.get("origin_url")
+    content_id = row.get("content_id")
+    photo_order = row.get("photo_order")
+    if not url or not content_id or photo_order is None:
+        return None
+    image_name = row.get("image_name")
+    return PlacePhoto(
+        content_id=str(content_id),
+        photo_order=int(photo_order),
+        url=str(url),
+        image_name=str(image_name) if image_name else None,
     )
 
 
