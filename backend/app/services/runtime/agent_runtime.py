@@ -16,12 +16,16 @@ import logging
 import math
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from datetime import timedelta
 from typing import Any, TypeVar
 
-from app.agent_context.schemas import PlaceCandidate, RecommendationContext
+from app.agent_context.schemas import (
+    Coordinates,
+    PlaceCandidate,
+    RecommendationContext,
+)
 from app.auth.principal import Principal
 from app.config import settings
 from app.domain.ranking_origin import resolve_ranking_origin
@@ -1075,6 +1079,19 @@ _CONCENTRATION_RANK_INTENTS = frozenset({ConcentrationIntent.AVOID, Concentratio
 # 최초 조회는 포함하지 않으므로 전체 C 호출은 최대 3회다. 무한 반복과 외부 API
 # 호출 폭증을 막기 위해 상수로 명시한다.
 _MAX_CANDIDATE_REFILL_ATTEMPTS = 2
+
+# SCHEDULE이 D에게 받는 후보 수. 일정 편성 모듈이 이 목록에서 코스를 고른다.
+#
+# **후보 수집 상한(RECOMMENDATION_CANDIDATE_LIMIT)에서 떼어낸 상수다.** 예전에는
+# 그 설정을 그대로 썼는데, 두 값은 뜻이 다른데 우연히 같았을 뿐이다 — 하나는
+# "C에서 몇 곳을 모아올까"이고 이건 "일정 편성에 몇 곳을 넘길까"다. 후보 상한을
+# 올렸더니 이 값까지 따라 올라가면서 드러났다.
+#
+# 10인 근거는 D와의 협의다(int-07-schedule.md 135행 "D 반환 수: 상위 10개 전부",
+# 5절). 혼잡도 2차 재순위도 SCHEDULE에서는 이 개수 전부에 걸리므로(같은 문서
+# 201~206행) 늘리면 혼잡도 외부 조회가 비례해서 늘어난다. **바꾸려면 D와 다시
+# 협의해야 한다.**
+SCHEDULE_RECOMMENDATION_LIMIT = 10
 _CANDIDATE_POOL_TRUNCATED_WARNING = "candidate_pool_truncated"
 
 # 보강 응답 전체가 이 상태면 2차 Scoring을 시도할 실익이 없다(재조회할 데이터가 없음).
@@ -1084,6 +1101,128 @@ _ENRICHMENT_TERMINAL_STATUSES = frozenset({"no_data", "unavailable"})
 def _context_place_ids(context: RecommendationContext) -> list[str]:
     places = context.places
     return [place.place_id for place in (places.data or [])] if places is not None else []
+
+
+# 실측 이동시간을 조회할 상위 후보 수. 1차 채점(직선거리)에서 이만큼만 추린다.
+#
+# **후보 전량에 실측을 붙이지 않는 이유는 호출이 후보 수에 정비례하기 때문이다.**
+# `_fetch_travel_routes()`가 하드 필터 통과 후보 전부를 목적지로 만들고 Provider가
+# 목적지마다 요청을 쏜다(walking_route.py의 asyncio.gather). 후보 상한을 30으로
+# 올리자 카카오 호출이 7~13건에서 25~35건이 됐다. 결과에 나가는 것은 5곳뿐인데
+# 나머지 몫까지 치르고 있었다.
+#
+# **노출 개수(5)로 맞추지 않는 이유가 이 상수의 핵심이다.** 5로 두면 1차가 고른
+# 5곳이 그대로 최종이 되어, 실측은 표시 시간과 그 5곳 내부 순서만 바꾼다 — 누구를
+# 보여줄지에는 관여하지 못한다. 10이면 직선 기준 6~10위가 실측으로 5위 안에 들어올
+# 수 있다.
+#
+# 그 일이 실제로 일어나는지 재봤다(2026-08-31, 안국역·경복궁·홍대입구 x 14시·19시,
+# 반경 2km). **6개 조합 중 3개에서 최종 5곳의 집합이 바뀌었다.** 안국역 14시는 5곳
+# 중 3곳이 갈렸다(인사동·개성만두 궁·모인화랑이 들어오고 인사동 옥정·꽃,밥에피다·
+# [백년가게] 선천집이 빠졌다).
+#
+# 직선거리와 실거리의 비율이 일정하지 않아서다 — 도심 우회 계수가 평균 1.31배,
+# 범위 1.07~1.71이다(2026-08-20, 종로 6개 지점). 직선 350m인 두 곳이 실제로는
+# 375m와 600m일 수 있다. 노출 5곳의 2배면 그 범위를 덮는다.
+#
+# 이 값이 노출 개수보다 작아지면 안 된다 — 2차 채점 대상이 노출 대상보다 적어진다.
+_MEASURED_ROUTE_CANDIDATE_LIMIT = 10
+
+
+def _narrow_prepared(
+    prepared: PreparedRecommendationResult, place_ids: Sequence[str]
+) -> PreparedRecommendationResult:
+    """채점 대상을 주어진 후보로 좁힌다. 하드 필터 결과는 그대로 둔다.
+
+    `excluded_candidates`를 손대지 않는 이유는 그것이 "왜 떨어졌나"의 기록이기
+    때문이다 — 좁히는 것은 이번 채점에 넣을 대상이지 필터 판정이 아니다. A가
+    `excluded_all_closed` 같은 신호를 그 기록으로 읽는다.
+    """
+    keep = set(place_ids)
+    narrowed = tuple(
+        candidate
+        for candidate in prepared.preparation.eligible_candidates
+        if candidate.candidate.place_id in keep
+    )
+    return replace(
+        prepared,
+        preparation=replace(prepared.preparation, eligible_candidates=narrowed),
+    )
+
+
+async def _score_with_measured_routes(
+    recommendation_provider: StagedRecommendationProvider,
+    conditions: UserConditions,
+    prepared: PreparedRecommendationResult,
+    *,
+    tool_context: RecommendationContext,
+    travel_route_tool: TravelRouteToolProvider | None,
+    recommendation_limit: int,
+) -> RecommendationResponse:
+    """직선거리로 한 번 줄 세운 뒤, 상위 후보에만 실측을 붙여 다시 채점한다.
+
+    ``1차 채점(직선거리) → 상위 N곳 실측 조회 → 2차 채점(실측 반영)``
+
+    집합이 바뀌는 게 아니라 순서가 바뀐다. 최종 정렬은 두 번 다 가중합 점수순이고,
+    실측은 거리 Feature의 입력만 바꾼다.
+
+    **2차 대상을 실측을 받은 후보로 한정하는 것이 핵심이다.** scoring의
+    `_consistent_routes()`가 "후보 중 하나라도 실측이 없으면 전부 직선거리로
+    채점한다"고 정해 두었기 때문에, 전체를 채점하면서 일부만 실측을 붙이면 실측이
+    통째로 버려진다. 좁혀 두면 그 안에서는 전원이 실측을 가져 규칙을 만족한다.
+
+    실측을 못 받으면(이동수단 미지정·조회 실패) 1차 결과를 그대로 쓴다 — 같은
+    후보를 실측 없이 두 번 채점할 이유가 없다.
+    """
+    mode = to_travel_mode(conditions)
+    if travel_route_tool is None or mode is None:
+        return await recommendation_provider.score_prepared(
+            conditions, prepared, limit=recommendation_limit
+        )
+
+    # 1차 — 실측 없이 직선거리로 줄을 세워 실측할 후보를 고른다.
+    shortlist_limit = max(recommendation_limit, _MEASURED_ROUTE_CANDIDATE_LIMIT)
+    first_pass = await recommendation_provider.score_prepared(
+        conditions, prepared, limit=shortlist_limit
+    )
+    shortlist_ids = [
+        item.place_id
+        for item in (
+            *first_pass.recommendations,
+            *first_pass.unverified_recommendations,
+        )
+    ]
+    if not shortlist_ids:
+        return first_pass
+
+    narrowed = _narrow_prepared(prepared, shortlist_ids)
+    travel_routes = await _fetch_travel_routes(
+        travel_route_tool, tool_context, narrowed, mode, conditions
+    )
+    if not travel_routes:
+        return await recommendation_provider.score_prepared(
+            conditions, narrowed, limit=recommendation_limit
+        )
+
+    # 2차 — 실측을 받은 후보끼리 다시 줄을 세운다.
+    return await recommendation_provider.score_prepared(
+        conditions,
+        narrowed,
+        travel_routes=travel_routes,
+        limit=recommendation_limit,
+    )
+
+
+def _search_center_of(context: RecommendationContext) -> Coordinates | None:
+    """첫 조회가 확정한 검색 기준점 좌표. 보충 조회에 그대로 넘긴다.
+
+    없으면 None을 돌려주고, 그때 C는 예전처럼 위치를 다시 해석한다 — 보충이 아예
+    못 돌게 만드는 것보다 한 번 더 해석하는 편이 낫다.
+    """
+    location = context.location
+    if location is None or location.data is None:
+        return None
+    return location.data.location
 
 
 def _merge_recommendation_context_places(
@@ -1201,7 +1340,7 @@ async def _apply_concentration_rerank(
 
     final_limit: 재순위 후 최종 노출 개수. 호출부가 1차 Scoring에 넘긴 limit과
     일치시켜야 한다. RECOMMEND/MODIFY는 recommendation_result_limit,
-    SCHEDULE은 recommendation_candidate_limit 설정을 사용한다. None이면
+    SCHEDULE은 SCHEDULE_RECOMMENDATION_LIMIT을 사용한다. None이면
     recommendation_result_limit을 이 시점에 읽는다.
 
     C 보강 조회(EnrichmentProvider.enrich())와 D의 2차 Scoring
@@ -3145,8 +3284,9 @@ async def _score_recommendations(
     )
 
     # 6) A → D: 1차 Scoring (Protocol을 통해서만 — D의 구체 클래스는 여기서 모른다).
-    #    최종 반환은 RECOMMEND/MODIFY가 recommendation_result_limit, SCHEDULE이
-    #    recommendation_candidate_limit을 쓴다(docs/design/int-07-schedule.md 2절/5절).
+    #    최종 반환은 RECOMMEND/MODIFY가 recommendation_result_limit,
+    #    SCHEDULE이 SCHEDULE_RECOMMENDATION_LIMIT을 쓴다
+    #    (docs/design/int-07-schedule.md 2절/5절).
     #
     #    보충 조회 목표(candidate_target)는 recommendation_candidate_limit이다 —
     #    하드 필터를 통과한 후보를 설정된 후보 상한만큼 모아두고 그 안에서 고른다.
@@ -3158,7 +3298,7 @@ async def _score_recommendations(
     #    잡아내 보충하지 않는다.)
     candidate_target = settings.recommendation_candidate_limit
     recommendation_limit = (
-        settings.recommendation_candidate_limit
+        SCHEDULE_RECOMMENDATION_LIMIT
         if is_schedule
         else settings.recommendation_result_limit
     )
@@ -3205,6 +3345,11 @@ async def _score_recommendations(
                         if place_id not in excluded_place_ids
                     ),
                 ],
+                # 첫 조회가 확정한 기준점을 넘겨 C가 장소만 다시 주게 한다. 보충
+                # 배치의 위치·날씨·공휴일은 아래 병합에서 버려지므로(첫 배치 값을
+                # 그대로 쓴다) 계산할 이유가 없다 — 보충 1회가 외부 호출 7건에서
+                # 2건으로 준다.
+                resolved_search_center=_search_center_of(tool_context),
             )
             # stage는 "scoring"을 유지한다 — 프론트가 stage로 진행 순서를 그리므로
             # 여기서 fetching_context로 되돌리면 진행 표시가 뒤로 간다. 문구만 바꾼다
@@ -3279,18 +3424,13 @@ async def _score_recommendations(
             candidate_pool_exhausted = _candidate_pool_exhausted(refill_context)
 
         merged_prepared = recommendation_provider.merge_prepared(prepared_batches)
-        travel_routes = await _fetch_travel_routes(
-            travel_route_tool,
-            tool_context,
-            merged_prepared,
-            to_travel_mode(agent_conditions),
-            agent_conditions,
-        )
-        recommendations = await recommendation_provider.score_prepared(
+        recommendations = await _score_with_measured_routes(
+            recommendation_provider,
             agent_conditions,
             merged_prepared,
-            travel_routes=travel_routes,
-            limit=recommendation_limit,
+            tool_context=tool_context,
+            travel_route_tool=travel_route_tool,
+            recommendation_limit=recommendation_limit,
         )
     else:
         recommendations = await recommendation_provider.recommend(

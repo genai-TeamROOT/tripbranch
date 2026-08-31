@@ -81,6 +81,18 @@ class AgentContextRequest(StrictModel):
     # 같은 조건으로 다시 부르면 같은 앞쪽 N건이 오고, D가 그걸 전부 제외해 0건이 된다.
     # C가 소진분을 알아야 그만큼 더 받아와서 새 후보를 채울 수 있다.
     excluded_place_ids: list[str] = Field(default_factory=list)
+    # 같은 턴 안의 보충 조회임을 알리고, A가 첫 조회에서 확정한 검색 기준점을 그대로
+    # 넘긴다. 값이 있으면 C는 **장소만** 다시 받는다 — 위치 해석·날씨·공휴일을
+    # 건너뛴다.
+    #
+    # 건너뛰어도 되는 이유는 A가 그 결과를 어차피 버리기 때문이다.
+    # `_merge_recommendation_context_places()`가 첫 배치에서 places만 갈아끼우고
+    # 나머지는 그대로 두며, `merge_prepared()`도 첫 배치의 판정 기준을 재사용한다.
+    # 즉 보충 1회마다 날씨(1) + 공휴일(1) + 위치 해석(3)을 계산해서 버리고 있었다.
+    #
+    # 좌표를 A가 넘기는 이유는 위치 해석까지 건너뛰기 위해서다. 그 3회가 제일 크고,
+    # 같은 턴이라 기준점이 바뀔 일도 없다. 값이 없으면 기존과 동일하게 동작한다.
+    resolved_search_center: Coordinates | None = None
 
     @field_validator("request_id")
     @classmethod

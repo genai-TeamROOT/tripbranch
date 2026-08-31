@@ -67,7 +67,7 @@ python -m pip install -e ".[dev]"
 | `CONCENTRATION_PROVIDER` | 빈 값 | Concentration 개별 Override |
 | `HOLIDAY_PROVIDER` | 빈 값 | Holiday 개별 Override |
 | `LLM_PROVIDER` | 빈 값 | Fake/Real LLM 개별 Override |
-| `PLACE_DETAILS_SOURCE` | `tour_api` | 장소 상세·운영정보 출처 (`supabase`/`tour_api`) |
+| `PLACE_DETAILS_SOURCE` | `supabase` | 장소 상세·운영정보 출처 (`supabase`/`tour_api`). 추천은 후보 전량의 상세를 받으므로 `tour_api`면 후보 1곳당 호출 2회가 나간다 |
 | `LLM_FAST_MODEL_NAME` | `gemini-3.5-flash-lite` | 짧은 구조화 판단(분류·조건 추출)용 1순위 모델 |
 | `LLM_FAST_FALLBACK_MODEL_NAMES` | `gemini-3.5-flash` | 위 모델 실패 시 폴백(콤마 구분) |
 | `LLM_GENERATION_MODEL_NAME` | `gemini-3.5-flash` | 사용자 문장·일정 생성용 1순위 모델 |
@@ -81,13 +81,13 @@ python -m pip install -e ".[dev]"
 | `WEATHER_API_KEY` | 빈 값 | Real Weather |
 | `TOUR_API_SERVICE_KEY` | 빈 값 | Place, Concentration, Holiday |
 | `LLM_API_KEY` | 빈 값 | Real Gemini |
-| `SUPABASE_URL` | 빈 값 | Place 동기화 저장소, `PLACE_DETAILS_SOURCE=supabase` |
-| `SUPABASE_SECRET_KEY` | 빈 값 | Place 동기화 저장소, `PLACE_DETAILS_SOURCE=supabase` |
+| `SUPABASE_URL` | 빈 값 | Place 동기화 저장소. `PLACE_DETAILS_SOURCE` 기본값이 `supabase`라 real 모드에서는 필수 |
+| `SUPABASE_SECRET_KEY` | 빈 값 | Place 동기화 저장소. `PLACE_DETAILS_SOURCE` 기본값이 `supabase`라 real 모드에서는 필수 |
 | `STATE_STORE_BACKEND` | `memory` | Package B State(세션·이력·트레이스) 저장소 (`memory`/`supabase`) |
 | `EXTERNAL_API_TIMEOUT_SECONDS` | `10` | Real Provider(TourAPI/Naver/Supabase 등, LLM 제외) timeout |
 | `LLM_API_TIMEOUT_SECONDS` | 빈 값(EXTERNAL_API_TIMEOUT_SECONDS로 폴백) | Gemini 전용 timeout — Tool/DB와 분리(2026-08-11, EXTERNAL_API_TIMEOUT_SECONDS를 Gemini 지연 대응으로 올리면 TourAPI/Naver/Supabase까지 같이 오래 기다리는 문제로 분리) |
 | `RECOMMENDATION_RESULT_LIMIT` | `5` | Scoring 후 반환할 최대 추천 수 |
-| `RECOMMENDATION_CANDIDATE_LIMIT` | `10` | 거리순으로 상세조회·평가할 후보 수 |
+| `RECOMMENDATION_CANDIDATE_LIMIT` | `30` | 거리순으로 상세조회·평가할 후보 수 (상한 30). `PLACE_DETAILS_SOURCE=tour_api`에서는 10을 넘기면 부팅이 막힌다 — 후보 1곳당 TourAPI 호출 2회라 일일 한도가 금방 소진된다 |
 | `EXTERNAL_API_RETRY_COUNT` | `2` | Gemini 호출에만 적용(재시도 루프 소비). 그 외 Real Provider는 이 값을 안 쓴다 |
 | `FAKE_WEATHER_SKY_CODE` | `4` | Fake Weather의 기상청 SKY 코드 (`1` 맑음/`3` 구름많음/`4` 흐림) |
 | `FAKE_WEATHER_PRECIPITATION_TYPE` | `0` | Fake Weather의 기상청 PTY 코드 (`0` 없음/`1` 비/`2` 비눈/`3` 눈) |
