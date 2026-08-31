@@ -17,6 +17,7 @@ import logging
 import math
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 
+from app.agent_context.seoul_realtime_areas import names_match
 from app.domain.travel_route import TravelRoute
 from app.errors import AppError
 from app.observability.langfuse_tracing import trace_attributes
@@ -371,6 +372,25 @@ def compose_realtime_commercial_message(response: InfoContextResponse) -> str:
     )
     observed_at = format_citydata_timestamp(result.observed_at)
     observed = f" {observed_at} 기준이에요." if observed_at else ""
+
+    # area(실제 데이터를 받아온 상권)와 place(사용자가 물은 장소)가 사실상 같은
+    # 이름이면 대체가 아니라 그 장소 자체의 값이다 — "떨어진 곳", "개별 매장
+    # 혼잡도는 확인할 수 없지만"을 그대로 붙이면 자기 자신을 다른 곳인 것처럼
+    # 말하는 문장이 된다(TP-141/D-084와 같은 패턴, "성수 카페거리" 실측
+    # 2026-08-31). 공백만 비교하면 "성수카페거리"↔"성수동카페거리"처럼 글자가
+    # 하나 끼어드는 표기 차이를 놓치므로 resolve_location.py와 같은 편집거리
+    # 기준(names_match)으로 비교한다.
+    if names_match(area, place):
+        if result.commercial_scope == "area_overall":
+            return (
+                f"{area}의 요청 업종 세부값은 현재 제공되지 않았어요. 대신 {area} 전체 상권은 "
+                f"현재 {level} 수준이에요. 이 값은 지역 전체 카드 소비 활동 기준이에요.{observed}"
+            )
+        return (
+            f"{area}의 {category} 상권은 현재 {level} 수준이에요. "
+            f"이 값은 지역·업종별 카드 소비 활동 기준이에요.{observed}"
+        )
+
     if result.commercial_scope == "area_overall":
         return (
             f"{place} 개별 매장 혼잡도는 확인할 수 없고, {distance}{area}의 요청 업종 "
@@ -408,8 +428,9 @@ def compose_realtime_population_message(response: InfoContextResponse) -> str:
     observed = f" {observed_at} 기준이에요." if observed_at else ""
 
     # 공백만 다른 같은 장소("여의도 한강공원" 지오코딩 결과 vs "여의도한강공원" 목록
-    # 표기)를 다른 곳으로 오판하지 않도록 공백을 지우고 비교한다.
-    if area.replace(" ", "") == place.replace(" ", ""):
+    # 표기)나 글자 하나 차이("성수카페거리" vs "성수동카페거리")를 다른 곳으로
+    # 오판하지 않도록 resolve_location.py와 같은 편집거리 기준으로 비교한다.
+    if names_match(area, place):
         return (
             f"{area} 기준으로는 현재 {level} 수준이에요. "
             f"향후 12시간 예상 변화는 아래 카드에서 확인해보세요.{observed}"
