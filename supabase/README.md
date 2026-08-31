@@ -107,6 +107,17 @@
   칸을 지웠는데, 저장소 파일은 그 결과까지 반영한 최종 형태라 별도 파일이 없다)
   (D-077. 같은 날 `202608250001`을 `create_place_google_profiles`가 먼저 써서
   번호가 겹쳤고, 2026-08-25에 이 파일을 `0002`로 옮겼다)
+- 장소 보관함 테이블 마이그레이션:
+  `202608310001_create_saved_place_lists.sql`
+  (아직 미적용 — Dashboard SQL Editor에서 실행 필요)
+  (D-110 / SCHEDULE-12. 사용자가 추천 카드에서 명시적으로 담은 장소를 세션 단위로
+  보관한다. `recommendation_histories`에 컬럼을 더하지 않고 별도 테이블로 둔 이유가
+  이 결정의 핵심이다 — history reset(`clear_recommended()`)이 `recommended`와
+  `closed_excluded`를 비우므로, 보관함이 그 테이블에 얹혀 있으면 "다른 곳 보여줘"
+  한 번에 사용자가 담아둔 장소가 함께 날아간다. `STATE_STORE_BACKEND=supabase`
+  환경에서는 이 테이블이 없으면 담기 요청이 502로 실패한다 — `save_saved_places()`가
+  `SavedPlaceList` 전체를 통째로 upsert하기 때문이다(202608130001·202608200001과
+  같은 이유). `memory` 백엔드는 영향이 없다)
 - 실제 DB 적용일: 2026-07-24, 2026-07-29, 2026-08-04, 2026-08-08, 2026-08-10,
   2026-08-18, 2026-08-21
 - 적용 방법: Supabase Dashboard SQL Editor 및 Supabase MCP `apply_migration`

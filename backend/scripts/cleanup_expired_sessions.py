@@ -51,12 +51,13 @@ def _delete_one(store: StateStore, session_id: str) -> None:
 
     도중에 실패해도 agent_states 행이 남아 있으면 다음 실행이 같은 session_id를
     다시 정리 대상으로 찾아낸다(list_stale_session_ids가 agent_states 기준이라)
-    — agent_states를 먼저 지우면 나머지 3개 테이블의 행이 영원히 못 찾는
-    고아가 된다.
+    — agent_states를 먼저 지우면 나머지 테이블의 행이 영원히 못 찾는 고아가 된다.
     """
     store.delete_change_logs(session_id)
     store.delete_traces(session_id)
     store.delete_history(session_id)
+    # 보관함도 세션 수명에 묶여 있다(SCHEDULE-12).
+    store.delete_saved_places(session_id)
     store.delete_state(session_id)
 
 

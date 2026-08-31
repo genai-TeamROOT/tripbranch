@@ -44,3 +44,26 @@ class SessionOwnershipError(AppError):
             message="이 세션에 접근할 권한이 없어요.",
             status_code=403,
         )
+
+class SavedPlaceNotRecommendedError(AppError):
+    """보관함에 담으려는 장소가 그 세션에서 노출된 적이 없을 때. (SCHEDULE-12)
+
+    보관함은 "화면에서 본 카드를 담는" 기능이므로, 담을 수 있는 것은 추천
+    이력에 있는 place_id뿐이다. 임의 id 주입을 막는 것이 1차 목적이고,
+    이름을 추천 시점 스냅샷에서 가져오기 위한 전제이기도 하다.
+
+    세션 자체가 없는 경우도 같은 오류로 답한다 — 호출자가 알아야 하는 사실은
+    양쪽 모두 "이 세션에서 그 장소를 담을 수 없다"로 같고, 세션 존재 여부를
+    별도 코드로 구분해 주면 session_id 유효성을 훑는 통로가 된다.
+
+    400을 쓴다 — 권한 문제(403)나 저장소 장애(502)가 아니라 요청 자체가
+    가리키는 대상이 잘못된 경우다.
+    """
+
+    def __init__(self, place_id: str) -> None:
+        super().__init__(
+            code="saved_place_not_recommended",
+            message="이 대화에서 추천된 적이 없는 장소는 담을 수 없어요.",
+            status_code=400,
+            details={"place_id": place_id},
+        )

@@ -225,6 +225,33 @@ def get_last_recommended_items(store: StateStore, session_id: str) -> list[Recom
     return items
 
 
+def find_recommended_item(
+    store: StateStore, session_id: str, place_id: str
+) -> RecommendedItem | None:
+    """그 세션에서 노출된 적이 있는 장소인지 확인하고, 가장 최근 항목을 돌려준다.
+    (SCHEDULE-12)
+
+    보관함에 담을 수 있는 것은 "이 세션에서 실제로 노출된 장소"뿐이다 — 임의
+    place_id 주입을 막고, 이름(RecommendedItem.name)을 그 스냅샷에서 그대로
+    가져오기 위한 조회다.
+
+    get_shown_place_ids()처럼 마지막 run으로 좁히지 않고 누적 이력 전체를 본다 —
+    화면에는 이전 턴의 추천 카드도 그대로 남아 있어, 사용자가 스크롤을 올려
+    3턴 전 카드를 담는 것이 정상 동작이기 때문이다. 마지막 run으로 좁히면 그
+    경로가 400으로 막힌다.
+
+    같은 place_id가 여러 run에 걸쳐 노출됐으면 **가장 최근 항목**을 쓴다. name이
+    비어 있던 과거 데이터보다 최신 스냅샷이 담을 값으로 정확하다.
+    """
+    history = store.get_history(session_id)
+    if history is None:
+        return None
+    for item in reversed(history.recommended):
+        if item.place_id == place_id:
+            return item
+    return None
+
+
 def get_last_recommended_run_id(store: StateStore, session_id: str) -> str | None:
     """마지막 추천이 발생한 실행 식별자."""
     history = store.get_history(session_id)
