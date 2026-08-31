@@ -95,6 +95,9 @@ MAX_RECENT_TURNS = 5
 # 사용자 원문 상한. 넘으면 잘라서 저장한다 — 프롬프트 길이와 저장 범위를 동시에
 # 묶는 상한이지, 의미를 요약하는 장치가 아니다(아래 ConversationTurn 참고).
 MAX_TURN_USER_INPUT_CHARS = 300
+# 어시스턴트 답변 상한. 사용자 원문과 같은 값으로 둔다 — 둘 다 프롬프트에 실리므로
+# 한쪽만 넉넉히 잡을 이유가 없다.
+MAX_TURN_ASSISTANT_MESSAGE_CHARS = 300
 
 
 class ConversationTurn(BaseModel):
@@ -106,12 +109,18 @@ class ConversationTurn(BaseModel):
     봐야 하는데, 누적 조건·추천 이력만으로는 "그냥 삐끗했어" 같은 이어지는 발화를
     해석할 수 없다. 노출 범위를 좁히려고 두 가지를 지킨다.
 
-    1. 어시스턴트 쪽은 **원문을 담지 않는다.** 답변 문장은 이미 intent/
-       question_type/장소명/제안 같은 재료로 조립된 것이므로 그 재료만 남긴다.
-       LLM을 한 번 더 불러 요약하지 않고(호출이 늘어난다), 앞부분만 잘라 담지도
-       않는다(뜻이 날아간다). 재료 쪽이 다음 턴 판단에도 원문 산문보다 낫다.
-    2. 사용자 원문만 담되 MAX_TURN_USER_INPUT_CHARS로 자르고, 세션이 만료되면
-       상태와 함께 지워진다(session.py의 TTL 30분).
+    1. 어시스턴트 쪽은 **화면에 나간 답변 문장과 처리 재료를 함께** 담는다.
+       처음에는 재료(intent/question_type/장소명/제안)만 담았는데, 그러면 모델이
+       "내가 방금 뭐라고 말했는지"를 알 수 없어 답변 문장이 앞 턴과 어긋났다
+       (2026-08-31 실사용: 동행을 friend로 잡아놓고도 "혼자서도 가기 좋고"로 답변).
+       강의교재 36강도 model 답변을 이력에 넣는 것을 멀티턴의 핵심으로 든다.
+       재료는 그대로 유지한다 — 분류 단계에는 "질문 유형: concentration"이 산문보다
+       정확한 신호다. LLM을 한 번 더 불러 요약하지는 않는다(호출이 늘어난다);
+       `AgentResponse.message`가 이미 만들어진 값이므로 그대로 옮긴다.
+    2. 사용자 원문과 어시스턴트 답변 모두 상한(MAX_TURN_*_CHARS)으로 자르고, 세션이
+       만료되면 상태와 함께 지워진다(session.py의 TTL 30분). 어시스턴트 답변 원문
+       저장은 FeedbackRecord.assistant_message가 이미 같은 값을 남기는 선례를 따른
+       것이라 새 정책 결정이 아니다.
 
     보안: 이 값은 신뢰할 수 없는 입력이다. 프롬프트에 넣을 때 system_instruction
     문자열에 치환하지 말고 대화 내용(contents) 자리로 보내야 한다 — 서버에
@@ -119,6 +128,9 @@ class ConversationTurn(BaseModel):
     """
 
     user_input: str
+    # 그 턴에 화면으로 나간 답변 문장(MAX_TURN_ASSISTANT_MESSAGE_CHARS로 잘림).
+    # 과거 세션에는 없으므로 None일 수 있다 — 그때는 재료만으로 조립한다.
+    assistant_message: str | None = None
     # 그 턴을 무엇으로 처리했는지. B는 값을 해석하지 않고 A가 준 것을 보관만 한다.
     intent: str | None = None
     question_type: str | None = None
@@ -296,6 +308,67 @@ class RecommendationHistory(BaseModel):
     # 분리된 별도 리스트다 — "노출했다"로 잘못 취급되면 COMPARE의 "첫 번째"가
     # 실제로 안 보여준 장소를 가리키게 된다(댓글/카드 참고).
     closed_excluded: list[ClosedExclusionItem] = Field(default_factory=list)
+    updated_at: datetime = Field(default_factory=now_kst)
+
+
+# ---------------------------------------------------------------- 보관함
+
+class SavedPlaceItem(BaseModel):
+    """사용자가 명시적으로 담은 장소 1건. (SCHEDULE-12)
+
+    RecommendedItem/RejectedItem과 결정적으로 다른 점은 "누가 골랐는가"다 —
+    recommended는 시스템이 보여준 것이고 rejected는 사용자가 물린 것이지만,
+    이건 사용자가 능동적으로 고른 것이다. 그래서 다음 SCHEDULE 턴의 후보
+    복귀(SCHEDULE-11/D-107)와 배치 보장에서 세 목록과 다르게 취급된다.
+
+    name은 "B는 place_id만 저장하고 장소 상세 정보를 보관하지 않는다"
+    (history.py) 원칙의 예외다 — RecommendedItem.name을 SCHEDULE-09
+    2단계에서 예외로 넣은 것과 같은 이유이며, 근거도 같다. "경복궁"류 지명
+    검색이 호출마다 조금씩 다른 좌표로 resolve돼 이번 턴 후보 목록이 매번
+    달라지는 사례가 실사용에서 확인됐고(2026-08-11), 그러면 담아둔 place_id를
+    이번 턴 후보에서 다시 못 찾아 이름을 못 채운다. 보관함은 담고 나서 여러
+    턴 뒤에 쓰이는 것이 정상이라 이 재검색 실패 확률이 recommended보다 오히려
+    높다.
+
+    latitude/longitude는 후속 카드에서 채운다 — 후보 간 거리 계산
+    (agent_runtime._build_pairwise_distances_km)이 이번 턴 C 응답에서만
+    좌표를 찾기 때문에 검색 반경 밖의 보관함 장소는 거리 근거를 잃는다.
+    지금은 필드만 열어두고 None으로 남긴다.
+    """
+
+    place_id: str
+    name: str
+    # 어느 실행에서 노출된 것을 담았는지. 이력(RecommendedItem.run_id)과 대조해
+    # "그때 본 그 장소"를 되짚을 수 있게 남긴다.
+    saved_from_run_id: str
+    saved_at: datetime = Field(default_factory=now_kst)
+    latitude: float | None = None
+    longitude: float | None = None
+
+
+class SavedPlaceList(BaseModel):
+    """세션 단위 장소 보관함. (SCHEDULE-12)
+
+    RecommendationHistory에 얹지 않고 별도 엔티티로 둔 이유가 두 가지다.
+
+    1. 이력은 append-only인데 보관함은 담기/빼기가 되는 가변 상태다.
+    2. `clear_recommended()`(계약 5.5절 history reset)가 recommended와
+       closed_excluded를 비우는데, 보관함이 거기 얹혀 있으면 "다른 곳
+       보여줘" 한 번에 사용자가 담아둔 것이 함께 날아간다.
+
+    items의 순서는 담은 순서다(오래된 것이 앞). 일정 편성에서 보관함 개수가
+    항목 수 상한을 넘을 때 무엇을 남길지 이 순서로 정하므로(SCHEDULE-12
+    설계안 4절) 정렬을 바꾸지 않는다 — 점수 순으로 자르면 왜 그 곳이 빠졌는지
+    사용자에게 설명할 수 없다.
+    """
+
+    session_id: str
+    # AgentState.user_id와 동일한 규칙(TP-101 3단계, D-063): 비어 있으면
+    # 채우고, 값이 있으면 덮어쓰지 않는다. FK는 걸지 않는다. 지금은 세션
+    # TTL과 함께 소멸하지만, 정식 인증(D-062 Phase 5) 이후 계정 단위로
+    # 옮길 때 이 필드가 이관 기준이 된다.
+    user_id: str | None = None
+    items: list[SavedPlaceItem] = Field(default_factory=list)
     updated_at: datetime = Field(default_factory=now_kst)
 
 

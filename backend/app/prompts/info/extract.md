@@ -6,6 +6,8 @@ LLMOutput(intent="INFO")으로 반환하세요.
 {{place_context_rules}}
 {{visit_time_rules}}
 
+{{conversation_history}}
+
 컨텍스트: 이전 추천 이력 존재 여부 = {{has_previous_recommendation}}.
 직전 INFO 대화 장소 = {{conversation_place_name}}.
 이전 추천 이력이 "없음"인데 발화가 "첫 번째 거기" 같은 지시어를 쓰면 place_context를

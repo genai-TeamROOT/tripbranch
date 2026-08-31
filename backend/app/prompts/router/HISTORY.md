@@ -4,9 +4,19 @@
 
 | 슬롯 | 관리 버전 | 템플릿 | 공유 규칙 |
 | --- | --- | --- | --- |
-| router.classify | v2 | intent_definitions.md, intent_priority.md, context_rules.md, boundary_cases.md | service_scope, safety |
+| router.classify | v2.4.0 | intent_definitions.md, intent_priority.md, context_rules.md, boundary_cases.md | service_scope, safety |
 
 ## Draft
+
+- 2026-08-31(v2.4.0): `_shared/rules/conversation_history.md`를 bundle에 넣고,
+  `context_rules.md`의 "이전 추천 있음 + 지명 단독 → MODIFY" 규칙에 단서를 달았습니다 —
+  "직전 턴이 정보 질문(INFO)이었고 이번 발화가 그 질문을 다른 장소로 이어가는 것으로
+  보이면 INFO를 유지한다(되묻기 상태가 아니어도 적용)". 8-31 이전 두 번의 수정은
+  **되묻기 상태(pending_clarification)가 있을 때**만 다뤘는데, 실사용에서 깨진 것은
+  되묻기 없이 완결된 INFO 턴 뒤였습니다("안국역 혼잡도 알려줘" → "인사동은?" → 장소
+  추천 5건). 규칙 22개 중 이 하나만 손댔습니다 — 나머지 예외 통폐합은 새 일반 원칙이
+  실측으로 안정된 뒤 별도 변경으로 합니다(사용자 결정, 2026-08-31).
+  실측·회귀 근거는 `_shared/HISTORY.md`의 같은 날짜 항목에 함께 적었습니다.
 
 - 2026-08-31: INFO/SCHEDULE 되묻기 자유 텍스트 이어받기 버그(실사용 재현: "사람많아?"
   되묻기 뒤 "여의도 한강공원"이라고 답하면 MODIFY로 새어 혼잡도와 무관한 식당 추천이

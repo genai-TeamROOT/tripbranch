@@ -1862,7 +1862,16 @@ def _conversation_place_names(response: AgentResponse) -> list[str]:
 
 
 def _assistant_summary(turn: ConversationTurn) -> str | None:
-    """저장된 구조화 재료를 다음 Gemini 호출의 model 메시지로 바꾼다."""
+    """저장된 답변 문장과 구조화 재료를 다음 Gemini 호출의 model 메시지로 바꾼다.
+
+    답변 문장을 앞에 두고 재료를 괄호 꼬리로 붙인다 — 둘의 역할이 다르다. 문장은
+    "내가 방금 사용자에게 뭐라고 말했나"(답변 연속성)를, 재료는 "그 턴을 무엇으로
+    처리했나"(분류 정확도)를 담는다. 재료가 앞에 오면 모델이 그 내부 문구를 답변에
+    그대로 흘릴 위험이 커서 순서를 이렇게 둔다(_shared/rules/conversation_history.md가
+    "처리 기록은 인용하지 말라"고 함께 지시한다).
+
+    과거 세션에는 assistant_message가 없으므로 그때는 재료만으로 조립한다.
+    """
 
     parts: list[str] = []
     if turn.intent:
@@ -1873,7 +1882,12 @@ def _assistant_summary(turn: ConversationTurn) -> str | None:
         parts.append(f"안내한 장소: {', '.join(turn.place_names)}")
     if turn.offered_action:
         parts.append(f"제안한 기능: {turn.offered_action}")
-    return "; ".join(parts) if parts else None
+    trace = "; ".join(parts)
+
+    message = (turn.assistant_message or "").strip()
+    if message and trace:
+        return f"{message}\n(처리 기록 — {trace})"
+    return message or trace or None
 
 
 def _conversation_history(session_context: SessionContextResponse) -> list[ConversationTurnView]:
@@ -1889,7 +1903,11 @@ def _conversation_history(session_context: SessionContextResponse) -> list[Conve
 
 
 def _conversation_turn(request: AgentRequest, response: AgentResponse) -> ConversationTurn:
-    """완성된 응답에서 원문을 복제하지 않고 다음 턴에 필요한 재료만 뽑는다."""
+    """완성된 응답에서 다음 턴에 필요한 것(답변 문장 + 처리 재료)을 뽑는다.
+
+    답변 문장은 `response.message`를 그대로 옮긴다 — 추가 LLM 호출 없이 이미 만들어진
+    값이다. 길이 상한은 append_conversation_turn()이 적용한다(자르는 책임을 한 곳에).
+    """
 
     llm_output = response.llm_output
     question_type = (
@@ -1903,6 +1921,7 @@ def _conversation_turn(request: AgentRequest, response: AgentResponse) -> Conver
         offered_action = offer.action_id if offer is not None else None
     return ConversationTurn(
         user_input=request.user_input,
+        assistant_message=response.message or None,
         intent=llm_output.intent.value,
         question_type=question_type,
         place_names=_conversation_place_names(response),
@@ -2126,6 +2145,10 @@ async def _run_agent_flow(
     session_context = await ensure_current_context(
         request.session_id, valid_gps, store=store, principal=principal
     )
+    # 이 턴 전체가 쓰는 대화 이력. 해석 단계(InterpretRequest)와 답변 생성 단계가
+    # **같은 값**을 봐야 한다 — 한쪽만 보면 "무엇을 물었는지"와 "무엇이라 답할지"가
+    # 어긋난다(2026-08-31 실사용에서 답변 단계만 이력을 못 받아 생긴 문제).
+    turn_history = _conversation_history(session_context)
 
     # 2) A: LLMOutput 생성 (Intent 분류 + Intent별 조건 추출). B가 준 현재 조건(순수 문자열)을
     #    A 쪽 enum 타입으로 변환해서 넘긴다 — MODIFY 추출이 이 타입을 요구한다.
@@ -2210,7 +2233,7 @@ async def _run_agent_flow(
             # 이름이 없는 항목(name 저장 이전의 과거 세션 등)은 빈 문자열로 채운다.
             shown_place_names=[item.name or "" for item in session_context.shown_recommendations],
             conversation_place_name=request.conversation_place_name,
-            recent_turns=_conversation_history(session_context),
+            recent_turns=turn_history,
             pending_info_question_type=pending_info.question_type if pending_info else None,
             pending_info_specific_question=pending_info.specific_question if pending_info else None,
             pending_info_visit_time=pending_info.visit_time if pending_info else None,
@@ -2568,6 +2591,7 @@ async def _run_agent_flow(
             info_walking_route=info_walking_route,
             info_walking_origin_available=info_origin_location is not None,
             on_message_delta=(emit_info_message_delta if stream_info_message else None),
+            history=turn_history,
         )
         return AgentResponse(
             llm_output=llm_output,
@@ -2767,6 +2791,7 @@ async def _run_agent_flow(
                 stream_event_sink=stream_event_sink,
                 stream_general=is_streaming_general,
                 rejected_offer_actions=rejected_offer_actions,
+                history=turn_history,
             )
         else:
             if is_streaming_general:
@@ -3787,11 +3812,18 @@ async def _finalize_recommendation_response(
     async def emit_message_delta(text: str) -> None:
         await _emit_stream_event(stream_event_sink, "message_delta", {"text": text})
 
+    # 말풍선은 지금까지 카드 데이터만 받아서, 동행을 friend로 정확히 뽑아 놓고도
+    # "혼자서도 가기 좋고"로 답하는 일이 있었다(2026-08-31 실사용). 누적 조건을 함께
+    # 넘긴다 — 사실 근거는 여전히 카드에서만 오고, 이 값은 강조점·말투만 고른다
+    # (recommend/summary_instruction.md). 새 파라미터를 만들지 않고 state_response에서
+    # 뽑으므로 두 호출부(직접 경로·그래프 노드)가 함께 혜택을 본다.
+    stated_conditions = to_user_conditions(state_response.user_conditions)
     if should_stream_summary:
         message = await compose_recommendation_summary(
             intent=llm_output.intent,
             recommendations=recommendations,
             llm=llm,
+            conditions=stated_conditions,
             on_message_delta=emit_message_delta,
         )
         # 부가 설명 생성 실패는 추천 자체의 실패가 아니다. 카드 앞에 이미 나온
@@ -3802,6 +3834,7 @@ async def _finalize_recommendation_response(
             llm_output,
             recommendations=recommendations,
             llm=llm,
+            conditions=stated_conditions,
         )
     # 빈 스트림·부가 설명 실패여도 result는 이미 보냈거나 여기서 한 번 보장한다.
     await emit_recommendation_result()

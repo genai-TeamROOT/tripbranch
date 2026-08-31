@@ -117,7 +117,9 @@ class _LLMProviderWithGeneralAnswer(FakeLLMProvider):
     최소 보강이다.
     """
 
-    async def generate_general_answer(self, topic, original_question, *, offer_content=None):
+    async def generate_general_answer(
+        self, topic, original_question, *, offer_content=None, history=None
+    ):
         answer = "(테스트용 고정 답변)"
         if offer_content:
             answer = f"{answer} {offer_content}을(를) 찾아드릴까요?"
@@ -5762,6 +5764,48 @@ async def test_second_turn_passes_saved_history_to_classify_and_extract() -> Non
         "너무 지친다",
         "그냥 잠깐 쉬고 싶어",
     ]
+
+
+@pytest.mark.asyncio
+async def test_history_model_turn_carries_the_answer_text_and_the_trace() -> None:
+    """model 쪽 이력에 **화면에 나간 답변 문장**과 처리 기록이 함께 실려야 한다.
+
+    처음에는 처리 기록만 담았는데, 그러면 모델이 "내가 방금 뭐라고 말했는지"를 알 수
+    없어 답변이 앞 턴과 어긋났다(2026-08-31 실사용). 강의교재 36강도 model 답변을
+    이력에 넣는 것을 멀티턴의 핵심으로 든다. 답변 문장이 먼저, 처리 기록이 꼬리다 —
+    순서가 뒤집히면 모델이 내부 문구를 사용자에게 흘릴 위험이 커진다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+    llm = _LLMProviderWithSituationalOffer(SituationKind.FATIGUE)
+    providers["llm"] = llm
+
+    first = await run_agent_flow(
+        AgentRequest(user_input="너무 지친다", session_id=None, device_location=DEVICE_LOCATION),
+        store=store,
+        **providers,
+    )
+    await run_agent_flow(
+        AgentRequest(
+            user_input="그냥 잠깐 쉬고 싶어",
+            session_id=first.state.session_id,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    summary = llm.classify_histories[1][0].assistant_summary
+    assert summary is not None
+    # 화면에 나간 문장이 그대로 앞에 온다.
+    assert summary.startswith(first.message)
+    # 처리 기록은 뒤에 괄호로 붙어 분류 신호도 함께 유지된다.
+    assert "(처리 기록 — " in summary
+    assert "처리 의도: GENERAL" in summary
+
+    # 세션에도 답변 문장이 남는다(다음 턴이 이 값을 읽는다).
+    context = get_session_context(first.state.session_id, store=store)
+    assert context.recent_turns[0].assistant_message == first.message
 
 
 @pytest.mark.asyncio
