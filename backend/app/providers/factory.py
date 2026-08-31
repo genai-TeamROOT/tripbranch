@@ -732,7 +732,11 @@ def get_place_mood_provider(
         client=client,
         timeout_seconds=settings.external_api_timeout_seconds,
     )
-    return PlaceMoodProvider(repository, _get_mood_encoder())
+    return PlaceMoodProvider(
+        repository,
+        _get_mood_encoder(),
+        mean_center=settings.place_mood_mean_center_enabled,
+    )
 
 
 def _get_mood_encoder() -> object | None:

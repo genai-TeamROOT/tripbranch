@@ -65,6 +65,7 @@ def _search_summary(
     candidate_count: int | None,
     min_similarity: float,
     match_count: int,
+    mean_center: bool = False,
 ) -> dict[str, object]:
     """사진 검색 한 번을 span에 실을 집계로 접는다.
 
@@ -72,6 +73,9 @@ def _search_summary(
     실제 요청에서 값이 어디에 몰리는지가 먼저 있어야 한다. 사진 자체도 사용자가
     올린 것이라 싣지 않는다 — 여기서 알고 싶은 건 몇 곳이 걸렸고 유사도가
     어디에 있나다.
+
+    `mean_center`를 함께 싣는 이유는 그것이 유사도의 눈금을 바꾸기 때문이다
+    (D-115). 켠 요청과 끈 요청의 값을 한 눈금으로 보면 컷을 엉뚱하게 잡는다.
     """
     sims = [match.similarity for match in matches]
     single_photo = sum(
@@ -79,6 +83,7 @@ def _search_summary(
     )
     return {
         "candidates": candidate_count,
+        "mean_center": mean_center,
         "matched": len(sims),
         "similarity_max": round(sims[0], 4) if sims else None,
         "similarity_min": round(sims[-1], 4) if sims else None,
@@ -112,6 +117,7 @@ class PlaceMoodProvider:
         *,
         match_count: int = DEFAULT_MATCH_COUNT,
         min_similarity: float = DEFAULT_MIN_SIMILARITY,
+        mean_center: bool = False,
     ) -> None:
         self._repository = repository
         # 인코더가 None이어도 발화 경로는 돌아간다. SigLIP이 선택 의존성이라
@@ -119,6 +125,10 @@ class PlaceMoodProvider:
         self._encoder = encoder
         self._match_count = match_count
         self._min_similarity = min_similarity
+        # 조회할 때 전체 평균을 뺄지(D-115). 사진 경로에만 걸린다 — 축 점수는
+        # 이미 계산돼 저장돼 있고, 축 점수는 방향과의 내적이라 중심을 빼면
+        # 값의 의미가 달라진다.
+        self._mean_center = mean_center
 
     @property
     def photo_search_available(self) -> bool:
@@ -239,6 +249,7 @@ class PlaceMoodProvider:
                 latitude=latitude,
                 longitude=longitude,
                 radius_km=radius_km,
+                mean_center=self._mean_center,
             )
             try:
                 step.record(
@@ -251,6 +262,7 @@ class PlaceMoodProvider:
                         ),
                         min_similarity=self._min_similarity,
                         match_count=match_count or self._match_count,
+                        mean_center=self._mean_center,
                     )
                 )
             except Exception:
