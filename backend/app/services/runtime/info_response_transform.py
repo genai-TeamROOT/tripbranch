@@ -19,6 +19,7 @@ from app.agent_context.info_schemas import (
 from app.schemas import (
     ConcentrationForecastBar,
     InfoPlaceCard,
+    PlacePhotoItem,
     PopulationForecastBar,
     QuestionType,
     RealtimeInfoDetailItem,
@@ -146,6 +147,10 @@ def _to_place_info_card(result: PlaceInfoResult) -> InfoPlaceCard:
             else None
         ),
         thumbnail_url=card.thumbnail_url,
+        photos=[
+            PlacePhotoItem(url=photo.url, image_name=photo.image_name)
+            for photo in card.photos
+        ],
         overview=card.overview,
         operating_hours=card.operating_hours,
         rest_date=card.rest_date,

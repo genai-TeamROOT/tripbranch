@@ -173,6 +173,7 @@ def test_recommendation_place_details_returns_matched_c_place_card(monkeypatch) 
             "latitude": 37.5796,
             "longitude": 126.977,
             "thumbnail_url": "https://example.test/gyeongbokgung.jpg",
+            "photos": [],
             "overview": "조선 왕조의 법궁",
             "operating_hours": "09:00~18:00",
             "rest_date": None,

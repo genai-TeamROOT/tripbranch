@@ -16,7 +16,7 @@ from app.agent_context.info_schemas import (
     PlaceInfoResult,
 )
 from app.agent_context.service import ContextService, ContextTools
-from app.domain.models import PlaceDetails
+from app.domain.models import PlaceDetails, PlacePhoto
 from app.providers.concentration import FakeConcentrationProvider
 from app.providers.contracts import (
     ProviderResult,
@@ -27,7 +27,10 @@ from app.providers.contracts import (
 from app.providers.geocoding import FakeGeocodingProvider
 from app.providers.holiday import FakeHolidayProvider
 from app.providers.stub import FakePlaceProvider, FakeWeatherProvider
-from app.repositories.fake_places import FakePlaceLocationRepository
+from app.repositories.fake_places import (
+    FakePlaceLocationRepository,
+    FakePlacePhotoRepository,
+)
 from app.tools.concentration import GetConcentrationTool
 from app.tools.holiday import GetHolidaysTool
 from app.tools.nearby_place_details import NearbyPlaceDetailsTool
@@ -75,7 +78,23 @@ class _Provider(FakePlaceProvider):
         )
 
 
-def _service(details: PlaceDetails) -> ContextService:
+def _photo(order: int) -> PlacePhoto:
+    return PlacePhoto(
+        content_id="126508",
+        photo_order=order,
+        url=f"https://tong.visitkorea.or.kr/126508-{order}.jpg",
+        image_name=f"경복궁 ({order})",
+    )
+
+
+class _FailingPhotoRepository:
+    """사진 조회가 실패하는 저장소. 상세 정보 전체를 잃지 않는지 보기 위한 것이다."""
+
+    async def find_place_photos(self, content_ids):  # noqa: ANN001, ANN201
+        raise RuntimeError("supabase unreachable")
+
+
+def _service(details: PlaceDetails, photos: object | None = None) -> ContextService:
     search_provider = FakePlaceProvider()
     return ContextService(
         ContextTools(
@@ -88,6 +107,7 @@ def _service(details: PlaceDetails) -> ContextService:
             holidays=GetHolidaysTool(FakeHolidayProvider()),
             concentration=GetConcentrationTool(FakeConcentrationProvider()),
             place_detail=GetPlaceDetailTool(_Provider(details)),
+            place_photos=photos,
         ),
         candidate_limit=10,
         clock=lambda: datetime.now(KST),
@@ -224,3 +244,62 @@ async def test_상세조회를_하지_않는_경로는_카드가_없다() -> Non
     response = await service.fetch_info_context(_request("location_info"))
 
     assert _result(response).place_card is None
+
+
+@pytest.mark.asyncio
+async def test_사진이_여러_장이면_순서대로_카드에_담긴다() -> None:
+    """첫 번째가 대표 사진이다 — 저장소가 준 순서를 바꾸지 않는다."""
+    service = _service(
+        _details(parking="가능"),
+        FakePlacePhotoRepository({"126508": (_photo(1), _photo(2), _photo(3))}),
+    )
+
+    response = await service.fetch_info_context(_request("parking"))
+
+    card = _result(response).place_card
+    assert card is not None
+    assert [photo.url for photo in card.photos] == [
+        "https://tong.visitkorea.or.kr/126508-1.jpg",
+        "https://tong.visitkorea.or.kr/126508-2.jpg",
+        "https://tong.visitkorea.or.kr/126508-3.jpg",
+    ]
+    assert card.photos[0].image_name == "경복궁 (1)"
+
+
+@pytest.mark.asyncio
+async def test_사진이_없어도_대표_이미지는_그대로_남는다() -> None:
+    """사진 목록이 비는 장소가 대부분이다. 목록만 보고 그리면 보이던 사진이 사라진다."""
+    service = _service(_details(parking="가능"), FakePlacePhotoRepository({}))
+
+    response = await service.fetch_info_context(_request("parking"))
+
+    card = _result(response).place_card
+    assert card is not None
+    assert card.photos == []
+    assert card.thumbnail_url == "https://example.test/thumb.jpg"
+
+
+@pytest.mark.asyncio
+async def test_사진_저장소가_없으면_기존_경로_그대로다() -> None:
+    """저장소를 안 주는 호출부(기존 테스트 포함)가 그대로 돌아야 한다."""
+    service = _service(_details(parking="가능"))
+
+    response = await service.fetch_info_context(_request("parking"))
+
+    card = _result(response).place_card
+    assert card is not None
+    assert card.photos == []
+
+
+@pytest.mark.asyncio
+async def test_사진_조회가_실패해도_상세_정보는_나온다() -> None:
+    """사진이 안 보이는 것과 상세 정보가 통째로 없는 것은 무게가 다르다."""
+    service = _service(_details(parking="가능 (240대)"), _FailingPhotoRepository())
+
+    response = await service.fetch_info_context(_request("parking"))
+
+    result = _result(response)
+    assert response.status == "success"
+    assert result.fields["parking"] == "가능 (240대)"
+    assert result.place_card is not None
+    assert result.place_card.photos == []
