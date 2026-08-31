@@ -191,6 +191,12 @@ export interface InfoPlaceCard {
   latitude: number | null;
   longitude: number | null;
   thumbnail_url: string | null;
+  /**
+   * 여러 장 보기용 사진 목록. 순서가 곧 보여줄 순서이고 첫 번째가 대표 사진이다.
+   * thumbnail_url을 대체하지 않는다 — 목록이 비어도 대표 이미지는 있는 장소가
+   * 대부분이라 둘을 함께 본다.
+   */
+  photos?: PlacePhotoItem[];
   overview: string | null;
   operating_hours: string | null;
   rest_date: string | null;
@@ -228,6 +234,13 @@ export interface ConcentrationForecastBar {
   concentration_rate: number;
   concentration_level: string;
   concentration_label: string;
+}
+
+/** 장소 상세 화면에 여러 장으로 보여줄 사진 한 장. */
+export interface PlacePhotoItem {
+  url: string;
+  /** detailImage2의 원본 파일명. 지금은 대체 텍스트 후보로만 쓴다. */
+  image_name: string | null;
 }
 
 /** 서울시 실시간 도시데이터를 상세 모달에 표시하는 항목. */

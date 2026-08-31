@@ -664,6 +664,87 @@ function RealtimeDetailEntries({ card }: { card: InfoPlaceCard }) {
   );
 }
 
+/**
+ * 상세 모달의 사진 영역. 여러 장이면 갤러리로, 한 장이면 지금까지처럼 한 장만 그린다.
+ *
+ * 두 출처를 합쳐서 본다. photos는 place_image_embeddings에 적재된 detailImage2
+ * 사진이고, thumbnail_url은 places 행의 대표 이미지다. 사진 목록이 있는 장소가
+ * 전체의 30%뿐이라(2026-08-31 실측) 목록만 보고 그리면 나머지 장소에서 지금
+ * 보이던 사진이 사라진다.
+ */
+function PlacePhotoGallery({ card, title }: { card: InfoPlaceCard; title: string }) {
+  const photos = card.photos ?? [];
+  // 목록이 비었을 때만 대표 이미지로 대체한다. 둘 다 있으면 목록이 이미 그
+  // 장소의 사진들이라 대표 이미지를 덧붙이면 같은 사진이 두 번 나올 수 있다.
+  const urls =
+    photos.length > 0
+      ? photos.map((photo) => photo.url)
+      : card.thumbnail_url
+        ? [card.thumbnail_url]
+        : [];
+  const [activeIndex, setActiveIndex] = useState(0);
+
+  // 모달을 연 채로 다른 장소의 상세가 도착하면 선택을 처음으로 되돌린다. 안 되돌리면
+  // 사진이 3장인 곳에서 3번째를 보다가 1장짜리 장소로 바뀌었을 때 빈 자리가 남는다.
+  const firstUrl = urls[0];
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [firstUrl]);
+
+  if (urls.length === 0) return null;
+
+  const safeIndex = Math.min(activeIndex, urls.length - 1);
+  const placeName = card.place_name ?? title;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="relative">
+        <img
+          src={urls[safeIndex]}
+          alt={
+            urls.length > 1 ? `${placeName} 사진 ${safeIndex + 1}번째` : `${placeName} 이미지`
+          }
+          className="h-56 w-full rounded-xl bg-gray-100 object-cover dark:bg-gray-800"
+        />
+        {urls.length > 1 && (
+          <span className="absolute bottom-2 right-2 rounded-full bg-black/60 px-2 py-0.5 text-xs font-medium text-white">
+            {safeIndex + 1} / {urls.length}
+          </span>
+        )}
+      </div>
+      {urls.length > 1 && (
+        <div
+          className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1"
+          role="group"
+          aria-label={`${placeName} 사진 목록`}
+        >
+          {urls.map((url, index) => (
+            <button
+              key={`${url}-${index}`}
+              type="button"
+              onClick={() => setActiveIndex(index)}
+              aria-label={`${placeName} 사진 ${index + 1}번째 보기`}
+              aria-current={index === safeIndex}
+              className={`h-14 w-14 shrink-0 overflow-hidden rounded-lg border-2 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                index === safeIndex
+                  ? "border-blue-600 dark:border-blue-400"
+                  : "border-transparent opacity-70 hover:opacity-100"
+              }`}
+            >
+              <img
+                src={url}
+                alt=""
+                loading="lazy"
+                className="h-full w-full bg-gray-100 object-cover dark:bg-gray-800"
+              />
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** 추천/INFO 어디서 열어도 같은 모양으로 PlaceDetails를 보여주는 상세 모달이다. */
 export function RecommendationDetailPreviewModal({
   item,
@@ -790,12 +871,8 @@ export function RecommendationDetailPreviewModal({
             <div className="flex h-56 animate-pulse items-center justify-center rounded-xl bg-gray-100 text-sm text-gray-500 dark:bg-gray-800 dark:text-gray-400">
               상세 정보를 불러오는 중...
             </div>
-          ) : detailCard?.thumbnail_url ? (
-            <img
-              src={detailCard.thumbnail_url}
-              alt={`${detailCard.place_name ?? title} 이미지`}
-              className="h-56 w-full rounded-xl bg-gray-100 object-cover dark:bg-gray-800"
-            />
+          ) : detailCard && (detailCard.photos?.length || detailCard.thumbnail_url) ? (
+            <PlacePhotoGallery card={detailCard} title={title} />
           ) : !hasRealtimeDetails ? (
             <div className="flex h-56 items-center justify-center rounded-xl border border-dashed border-gray-300 bg-gray-50 text-sm text-gray-500 dark:border-gray-700 dark:bg-gray-800/60 dark:text-gray-400">
               {detailStatus === "unavailable"
