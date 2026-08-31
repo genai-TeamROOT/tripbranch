@@ -168,7 +168,12 @@ class LLMProvider(Protocol):
         ...
 
     async def generate_general_answer(
-        self, topic: GeneralTopic, original_question: str, *, offer_content: str | None = None
+        self,
+        topic: GeneralTopic,
+        original_question: str,
+        *,
+        offer_content: str | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[str]:
         """GENERAL 발화에 실제로 답할 배경지식 문장을 생성한다.
 
@@ -182,7 +187,12 @@ class LLMProvider(Protocol):
         ...
 
     async def generate_recommendation_summary(
-        self, intent: Intent, recommendations: RecommendationResponse
+        self,
+        intent: Intent,
+        recommendations: RecommendationResponse,
+        *,
+        conditions: UserConditions | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[str]:
         """추천 카드 목록을 감싸는 짧은 챗봇 말풍선 문장을 생성한다.
 
@@ -192,7 +202,12 @@ class LLMProvider(Protocol):
         ...
 
     def stream_recommendation_summary(
-        self, intent: Intent, recommendations: RecommendationResponse
+        self,
+        intent: Intent,
+        recommendations: RecommendationResponse,
+        *,
+        conditions: UserConditions | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> AsyncIterator[str]:
         """추천 요약 문장을 Gemini 조각 단위로 전달한다.
 
@@ -202,7 +217,12 @@ class LLMProvider(Protocol):
         ...
 
     def stream_general_answer(
-        self, topic: GeneralTopic, original_question: str, *, offer_content: str | None = None
+        self,
+        topic: GeneralTopic,
+        original_question: str,
+        *,
+        offer_content: str | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> AsyncIterator[str]:
         """GENERAL 답변을 텍스트 조각으로 전달한다.
 
@@ -219,11 +239,17 @@ class LLMProvider(Protocol):
         question_type: str,
         specific_question: str | None,
         fields: dict[str, str],
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> AsyncIterator[str]:
         """검증된 INFO 필드만 근거로 한 안내 답변을 텍스트 조각으로 전달한다."""
         ...
 
-    async def generate_compare_summary(self, comparison: ComparisonResult) -> ProviderResult[str]:
+    async def generate_compare_summary(
+        self,
+        comparison: ComparisonResult,
+        *,
+        history: Sequence[ConversationTurnView] | None = None,
+    ) -> ProviderResult[str]:
         """C가 반환한 비교 사실을 3~6줄의 사용자용 설명으로 바꾼다.
 
         comparison 밖의 사실·점수·순위를 만들지 않는다. 호출부는 LLM 장애 시

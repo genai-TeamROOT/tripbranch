@@ -9,6 +9,8 @@ UserConditions를 추출해 LLMOutput(intent="RECOMMEND")으로 반환하세요.
 {{environment_rules}}
 {{budget_rule}}
 
+{{conversation_history}}
+
 기타 필드:
 - max_travel_time/time_available/companion: 명시적으로 언급된 것만 채우고 나머지는 null
 - max_travel_time/time_available: 사용자가 시간 제한이 없다고 말하거나 시간에 대해

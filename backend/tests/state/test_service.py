@@ -15,6 +15,7 @@ from app.state import service as svc
 from app.state.errors import SessionOwnershipError
 from app.state.schema import (
     MAX_RECENT_TURNS,
+    MAX_TURN_ASSISTANT_MESSAGE_CHARS,
     MAX_TURN_USER_INPUT_CHARS,
     ConversationTurn,
     PendingInfoContext,
@@ -1303,6 +1304,50 @@ def test_append_conversation_turn_truncates_long_user_input() -> None:
 
     assert result is not None
     assert len(result.recent_turns[0].user_input) == MAX_TURN_USER_INPUT_CHARS
+
+
+def test_append_conversation_turn_truncates_long_assistant_message() -> None:
+    """어시스턴트 답변도 사용자 원문과 같은 자리에서 같은 규칙으로 자른다.
+
+    한쪽만 자르면 프롬프트 길이 상한이 조용히 어긋난다 — 둘 다 프롬프트에 실린다.
+    """
+    store = InMemoryStateStore()
+    session_id = _session(store)
+
+    result = svc.append_conversation_turn(
+        svc.AppendConversationTurnRequest(
+            session_id=session_id,
+            turn=ConversationTurn(
+                user_input="사람 많아?",
+                assistant_message="나" * (MAX_TURN_ASSISTANT_MESSAGE_CHARS + 50),
+            ),
+        ),
+        store=store,
+    )
+
+    assert result is not None
+    stored = result.recent_turns[0]
+    assert len(stored.assistant_message or "") == MAX_TURN_ASSISTANT_MESSAGE_CHARS
+    # 사용자 원문은 상한 아래라 그대로 남는다.
+    assert stored.user_input == "사람 많아?"
+
+
+def test_append_conversation_turn_keeps_assistant_message_absent_for_old_sessions() -> None:
+    """답변을 안 넘긴 턴(과거 세션 등)은 None으로 남아야 한다 — 빈 문자열로 채우면
+    "답이 없었다"와 "답을 안 저장했다"가 섞인다."""
+    store = InMemoryStateStore()
+    session_id = _session(store)
+
+    result = svc.append_conversation_turn(
+        svc.AppendConversationTurnRequest(
+            session_id=session_id,
+            turn=ConversationTurn(user_input="안국역 혼잡해?", intent="INFO"),
+        ),
+        store=store,
+    )
+
+    assert result is not None
+    assert result.recent_turns[0].assistant_message is None
 
 
 def test_append_conversation_turn_returns_none_for_missing_session() -> None:

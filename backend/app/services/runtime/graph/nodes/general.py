@@ -46,6 +46,7 @@ async def general_answer_node(
         llm=llm,
         on_message_delta=on_delta,
         rejected_offer_actions=state.get("rejected_offer_actions") or [],
+        history=state.get("history") or [],
     )
     return {"answer": message}
 

@@ -25,12 +25,14 @@ from app.schemas import (
     CompareCriteria,
     ComparisonItem,
     ComparisonResult,
+    ConversationTurnView,
     Intent,
     LLMOutput,
     OutputStatus,
     RecommendationItem,
     RecommendationResponse,
     ScheduleResult,
+    UserConditions,
 )
 from app.service_area import supported_district_label
 from app.services.interpret.situational_offers import offer_for
@@ -68,19 +70,29 @@ async def compose_recommendation_summary(
     intent: Intent,
     recommendations: RecommendationResponse,
     llm: LLMProvider,
+    conditions: UserConditions | None = None,
+    history: Sequence[ConversationTurnView] = (),
     on_message_delta: MessageDeltaCallback | None = None,
 ) -> str | None:
     """추천 카드 아래에 붙일 LLM 선택 팁을 만든다.
 
-    카드·순위 자체는 이미 D가 확정했으므로 LLM에는 후보별 검증된 카드 필드와 제한된
-    리뷰 근거만 전달된다. 실패 시 ``None``을 돌려 호출자가 고정 카드 안내만 유지하게
-    한다. 특히 SSE에서는 실패한 부가 요약 때문에 추천 카드 전체가 늦어지지 않는다.
+    카드·순위 자체는 이미 D가 확정했으므로 **사실 근거**로는 후보별 검증된 카드 필드와
+    제한된 리뷰 근거만 전달된다. 실패 시 ``None``을 돌려 호출자가 고정 카드 안내만
+    유지하게 한다. 특히 SSE에서는 실패한 부가 요약 때문에 추천 카드 전체가 늦어지지 않는다.
+
+    conditions/history는 사실이 아니라 **말투와 강조점**을 위한 값이다. 이 두 개가
+    없던 동안, 동행을 friend로 정확히 뽑아 놓고도 말풍선이 "혼자서도 가기 좋고"라고
+    답하는 일이 있었다(2026-08-31 실사용) — 이 단계가 사용자가 무엇을 말했는지 전혀
+    몰랐기 때문이다. 누적 조건은 최근 5턴 창 밖으로 밀려나도 살아 있어 이력보다
+    견고하다(강의교재 36강의 "오래된 중요 정보 압축 요약"에 해당).
     """
 
     if on_message_delta is not None:
         try:
             message = await _collect_message_stream(
-                llm.stream_recommendation_summary(intent, recommendations),
+                llm.stream_recommendation_summary(
+                    intent, recommendations, conditions=conditions, history=history or None
+                ),
                 on_message_delta,
             )
             if message:
@@ -89,7 +101,9 @@ async def compose_recommendation_summary(
             logger.warning("추천 요약 스트리밍 실패", exc_info=True)
 
     try:
-        result = await llm.generate_recommendation_summary(intent, recommendations)
+        result = await llm.generate_recommendation_summary(
+            intent, recommendations, conditions=conditions, history=history or None
+        )
     except AppError:
         logger.warning("추천 요약 LLM 생성 실패", exc_info=True)
         return None
@@ -850,6 +864,8 @@ async def compose_chat_message(
     llm: LLMProvider,
     on_message_delta: MessageDeltaCallback | None = None,
     rejected_offer_actions: Sequence[str] = (),
+    conditions: UserConditions | None = None,
+    history: Sequence[ConversationTurnView] = (),
 ) -> str:
     """AgentResponse.message(챗봇 말풍선 텍스트)를 조립한다.
 
@@ -885,6 +901,8 @@ async def compose_chat_message(
             llm=llm,
             on_message_delta=on_message_delta,
             rejected_offer_actions=rejected_offer_actions,
+            conditions=conditions,
+            history=history,
         )
 
 
@@ -903,6 +921,8 @@ async def _compose_chat_message(
     llm: LLMProvider,
     on_message_delta: MessageDeltaCallback | None = None,
     rejected_offer_actions: Sequence[str] = (),
+    conditions: UserConditions | None = None,
+    history: Sequence[ConversationTurnView] = (),
 ) -> str:
     """`compose_chat_message()`의 본체. 태그 범위 안에서 돈다."""
 
@@ -933,6 +953,7 @@ async def _compose_chat_message(
                         llm_output.general.topic,
                         llm_output.general.original_question,
                         offer_content=offer_content,
+                        history=history or None,
                     ),
                     on_message_delta,
                 )
@@ -944,6 +965,7 @@ async def _compose_chat_message(
             llm_output.general.topic,
             llm_output.general.original_question,
             offer_content=offer_content,
+            history=history or None,
         )
         if on_message_delta is not None:
             await on_message_delta(result.data)
@@ -988,6 +1010,7 @@ async def _compose_chat_message(
                                 else None
                             ),
                             fields=display_fields,
+                            history=history or None,
                         ),
                         on_message_delta,
                     )
@@ -1035,6 +1058,8 @@ async def _compose_chat_message(
             intent=llm_output.intent,
             recommendations=recommendations,
             llm=llm,
+            conditions=conditions,
+            history=history,
             on_message_delta=on_message_delta,
         )
         return message or recommendation_wrapper_message()

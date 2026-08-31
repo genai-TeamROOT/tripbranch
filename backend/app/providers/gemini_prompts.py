@@ -35,7 +35,7 @@ from app.schemas import (
 # 쓰였는지와 무관하게 단일 값으로 취급한다 — 함수별 개별 버전은 만들지 않는다. 판별·추출
 # 규칙에 영향을 주는 변경(6개 함수 중 하나라도) 시 버전을 올린다 — 사소한 문구·주석
 # 변경은 올리지 않는다.
-_BASE_PROMPT_VERSION = "agent-interpret-prompts-1.0.25"
+_BASE_PROMPT_VERSION = "agent-interpret-prompts-1.0.26"
 _ACTIVE_PROMPT_VARIANT = active_variant()
 PROMPT_VERSION = (
     _BASE_PROMPT_VERSION
@@ -113,6 +113,11 @@ def build_intent_classification_instruction(
         # 둔다(대화층 2단계) — 인텐트 우선순위 캐스케이드에 섞으면 GENERAL이
         # 다시 만능 라벨이 된다.
         interaction_mode=load_text("router/interaction_mode.md"),
+        # 이력은 이미 contents로 전달되는데(gemini.py의 _build_contents) 지금까지
+        # 프롬프트는 그 존재를 몰랐다 — 그래서 "지명 단독 → MODIFY"처럼 명시된 규칙만
+        # 이겼고, 새 후속 발화 패턴마다 규칙을 손으로 추가해야 했다. 이 조각이 그
+        # 사용법을 한 번에 정한다(강의교재 36강의 "이력은 맥락(what)" 역할).
+        conversation_history=load_text("_shared/rules/conversation_history.md"),
         # OUT_OF_SCOPE 판정 자체는 분류기가 하지만, 규칙 문구의 소유는
         # out_of_scope/에 둔다 — 그래야 해당 인텐트 담당자도 자기 폴더만 열고
         # 수정·이력 관리를 할 수 있다.
@@ -137,6 +142,7 @@ def build_recommend_extraction_instruction() -> str:
         concentration_rules=load_text("_shared/rules/concentration_intent.md"),
         environment_rules=load_text("_shared/rules/environment.md"),
         budget_rule=load_text("_shared/rules/budget.md"),
+        conversation_history=load_text("_shared/rules/conversation_history.md"),
     )
 
 
@@ -198,6 +204,7 @@ def build_modify_extraction_instruction(
         concentration_rules=load_text("_shared/rules/concentration_intent.md"),
         environment_rules=load_text("_shared/rules/environment.md"),
         budget_rule=load_text("_shared/rules/budget.md"),
+        conversation_history=load_text("_shared/rules/conversation_history.md"),
     )
 
 
@@ -247,6 +254,7 @@ def build_info_extraction_instruction(
         question_type_rules=load_text("info/question_type_rules.md"),
         place_context_rules=load_text("info/place_context_rules.md"),
         visit_time_rules=_build_visit_time_rules(reference_date),
+        conversation_history=load_text("_shared/rules/conversation_history.md"),
         has_previous_recommendation="있음" if has_previous_recommendation else "없음",
         conversation_place_name=conversation_place_name or "없음",
         pending_question_block=_build_pending_info_block(
@@ -274,6 +282,7 @@ def build_compare_extraction_instruction(
         shown_list_block=_shown_place_list_block(shown_place_names),
         target_rules=load_text("compare/target_rules.md"),
         criteria_rules=load_text("compare/criteria_rules.md"),
+        conversation_history=load_text("_shared/rules/conversation_history.md"),
         shown_place_count=shown_place_count,
     )
 
@@ -290,6 +299,7 @@ def build_general_extraction_instruction() -> str:
         "general/extract.md",
         topic_rules=load_text("general/topic_rules.md"),
         situation_rules=load_text("general/situation_rules.md"),
+        conversation_history=load_text("_shared/rules/conversation_history.md"),
     )
 
 
@@ -362,7 +372,60 @@ def build_follow_up_suggestion_instruction(
     )
 
 
-def build_recommendation_summary_instruction(intent: Intent) -> str:
+_COMPANION_LABELS = {
+    "solo": "혼자",
+    "couple": "연인과",
+    "friend": "친구와",
+    "parent": "부모님과",
+    "child": "아이와",
+    "pet": "반려동물과",
+}
+_ENVIRONMENT_LABELS = {"indoor": "실내", "outdoor": "실외"}
+_TRANSPORT_LABELS = {"walk": "도보", "public": "대중교통", "car": "자동차"}
+
+
+def _stated_conditions_line(conditions: UserConditions | None) -> str:
+    """사용자가 지금까지 말한 조건을 한 줄로 요약한다(말풍선 톤 조정용).
+
+    누적 조건은 강의교재 36강이 말하는 "오래된 중요 정보의 압축 요약"에 해당한다 —
+    최근 5턴 창 밖으로 밀려나도 살아 있어서, 원문 이력만 보는 것보다 견고하다.
+    말풍선 생성 단계는 지금까지 카드 데이터만 받아서, 동행을 friend로 잡아 놓고도
+    "혼자서도 가기 좋고"로 답하는 일이 있었다(2026-08-31 실사용).
+
+    비어 있으면 빈 문자열 — 관련 없는 턴의 프롬프트를 늘리지 않는다.
+    """
+    if conditions is None:
+        return ""
+
+    parts: list[str] = []
+    if conditions.companion is not None:
+        parts.append(_COMPANION_LABELS.get(conditions.companion.value, conditions.companion.value))
+    if conditions.place_tags:
+        parts.append(", ".join(tag.value for tag in conditions.place_tags))
+    if conditions.taste_query:
+        parts.append(f"취향 표현 '{conditions.taste_query}'")
+    if conditions.environment is not None and conditions.environment.value != "any":
+        parts.append(_ENVIRONMENT_LABELS.get(conditions.environment.value, ""))
+    if conditions.transport is not None:
+        parts.append(f"{_TRANSPORT_LABELS.get(conditions.transport.value, '')} 이동")
+    if conditions.budget:
+        parts.append(f"예산 {conditions.budget}")
+    if conditions.max_travel_time:
+        parts.append(f"이동 {conditions.max_travel_time}분 이내")
+    if conditions.time_available:
+        parts.append(f"체류 {conditions.time_available}분")
+    if conditions.special_requirements:
+        parts.append(", ".join(conditions.special_requirements))
+
+    filled = [part for part in parts if part]
+    if not filled:
+        return ""
+    return "\n사용자가 말한 조건: " + " / ".join(filled)
+
+
+def build_recommendation_summary_instruction(
+    intent: Intent, *, conditions: UserConditions | None = None
+) -> str:
     """RECOMMEND/MODIFY 결과를 감싸는 짧은 말풍선 생성 system instruction."""
 
     return render_text(
@@ -370,6 +433,7 @@ def build_recommendation_summary_instruction(intent: Intent) -> str:
         chatbot_name=CHATBOT_NAME,
         persona=load_text("_shared/persona/trivi.md"),
         intent=intent.value,
+        stated_conditions=_stated_conditions_line(conditions),
     )
 
 

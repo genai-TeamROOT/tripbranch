@@ -8,6 +8,8 @@
 {{boundary_cases}}
 {{interaction_mode}}
 
+{{conversation_history}}
+
 현재 대화 컨텍스트:
 - 이전 추천 이력 존재 여부: {{has_previous_recommendation}}
 - 현재까지 노출된 추천 장소 수: {{shown_place_count}}

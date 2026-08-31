@@ -17,6 +17,7 @@ from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 
 from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
+from app.providers import gemini_prompts
 from app.providers.gemini import (
     _REJECTS_ZERO_THINKING_BUDGET,
     RealGeminiProvider,
@@ -26,6 +27,7 @@ from app.providers.gemini import (
 )
 from app.schedule.schemas import ScheduleLLMPlan, SchedulePlanningRequest
 from app.schemas import (
+    Companion,
     CompareCriteria,
     ComparePayload,
     ComparisonItem,
@@ -1347,3 +1349,52 @@ async def test_history_turn_without_assistant_summary_omits_the_model_part() -> 
         )
 
     assert [content.role for content in captured[0]["contents"]] == ["user", "user"]
+
+
+# --- 말풍선 요약이 사용자 조건을 받는지 (2026-08-31 실사용 버그) ---
+#
+# 동행을 friend로 정확히 뽑아 놓고도 말풍선이 "혼자서도 가기 좋고"로 답한 일이 있었다.
+# 원인은 요약 생성 단계가 UserConditions를 아예 인자로 받지 않던 것이라, 여기서
+# "조건이 프롬프트에 실제로 실린다"와 "조건이 없으면 블록이 생략된다"를 함께 잠근다.
+
+
+def test_summary_instruction_omits_the_conditions_block_when_nothing_was_stated() -> None:
+    """조건이 없으면 관련 없는 턴의 프롬프트를 늘리지 않는다."""
+
+    for conditions in (None, UserConditions()):
+        instruction = gemini_prompts.build_recommendation_summary_instruction(
+            Intent.RECOMMEND, conditions=conditions
+        )
+        # 규칙 본문에도 같은 낱말이 나오므로 동적으로 삽입되는 줄만 본다.
+        assert "사용자가 말한 조건: " not in instruction
+
+
+def test_summary_instruction_carries_the_stated_companion() -> None:
+    """동행을 말했으면 그 값이 사람이 읽는 라벨로 프롬프트에 실린다."""
+
+    instruction = gemini_prompts.build_recommendation_summary_instruction(
+        Intent.MODIFY,
+        conditions=UserConditions(companion=Companion.FRIEND),
+    )
+
+    assert "사용자가 말한 조건: " in instruction
+    # enum 값("friend")이 아니라 답변 문장에 쓸 수 있는 한국어 라벨로 들어간다.
+    assert "친구와" in instruction
+    assert "friend" not in instruction
+
+
+def test_summary_instruction_joins_multiple_stated_conditions() -> None:
+    """여러 조건을 말했으면 함께 실린다 — 하나만 남기면 나머지가 조용히 사라진다."""
+
+    instruction = gemini_prompts.build_recommendation_summary_instruction(
+        Intent.RECOMMEND,
+        conditions=UserConditions(
+            companion=Companion.PARENT,
+            taste_query="조용히 쉴 만한",
+            max_travel_time=15,
+        ),
+    )
+
+    assert "부모님과" in instruction
+    assert "조용히 쉴 만한" in instruction
+    assert "이동 15분 이내" in instruction

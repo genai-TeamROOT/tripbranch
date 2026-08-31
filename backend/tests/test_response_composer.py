@@ -75,37 +75,64 @@ class _StubLLM:
         self.summary_received: tuple[Intent, RecommendationResponse] | None = None
         self.compare_received: ComparisonResult | None = None
         self.info_received: dict[str, str] | None = None
+        self.conditions_received = None
+        self.history_received = None
 
     async def generate_general_answer(
-        self, topic: GeneralTopic, original_question: str, *, offer_content: str | None = None
+        self,
+        topic: GeneralTopic,
+        original_question: str,
+        *,
+        offer_content: str | None = None,
+        history=None,
     ):
         self.received = (topic, original_question)
         self.offer_content_received = offer_content
+        self.history_received = history
         return provider_result(self.answer, source=ProviderSource.FAKE_LLM)
 
     async def generate_recommendation_summary(
-        self, intent: Intent, recommendations: RecommendationResponse
+        self,
+        intent: Intent,
+        recommendations: RecommendationResponse,
+        *,
+        conditions=None,
+        history=None,
     ):
         self.summary_received = (intent, recommendations)
+        self.conditions_received = conditions
+        self.history_received = history
         if self.fail_recommendation_summary:
             raise ProviderUnavailableError("Gemini")
         return provider_result(self.recommendation_summary, source=ProviderSource.FAKE_LLM)
 
     async def stream_recommendation_summary(
-        self, intent: Intent, recommendations: RecommendationResponse
+        self,
+        intent: Intent,
+        recommendations: RecommendationResponse,
+        *,
+        conditions=None,
+        history=None,
     ):
         """SSE 경로 검증용: 같은 요약 문장을 두 조각으로 나눈다."""
 
-        result = await self.generate_recommendation_summary(intent, recommendations)
+        result = await self.generate_recommendation_summary(
+            intent, recommendations, conditions=conditions, history=history
+        )
         midpoint = max(1, len(result.data) // 2)
         yield result.data[:midpoint]
         yield result.data[midpoint:]
 
     async def stream_general_answer(
-        self, topic: GeneralTopic, original_question: str, *, offer_content: str | None = None
+        self,
+        topic: GeneralTopic,
+        original_question: str,
+        *,
+        offer_content: str | None = None,
+        history=None,
     ):
         result = await self.generate_general_answer(
-            topic, original_question, offer_content=offer_content
+            topic, original_question, offer_content=offer_content, history=history
         )
         midpoint = max(1, len(result.data) // 2)
         yield result.data[:midpoint]
@@ -118,16 +145,18 @@ class _StubLLM:
         question_type: str,
         specific_question: str | None,
         fields: dict[str, str],
+        history=None,
     ):
-        del place_name, question_type, specific_question
+        del place_name, question_type, specific_question, history
         self.info_received = fields
         text = "카드 기반 INFO 스트리밍 답변입니다."
         midpoint = max(1, len(text) // 2)
         yield text[:midpoint]
         yield text[midpoint:]
 
-    async def generate_compare_summary(self, comparison: ComparisonResult):
+    async def generate_compare_summary(self, comparison: ComparisonResult, *, history=None):
         self.compare_received = comparison
+        self.history_received = history
         if self.fail_compare_summary:
             raise ProviderUnavailableError("Gemini")
         return provider_result(self.compare_summary, source=ProviderSource.FAKE_LLM)
