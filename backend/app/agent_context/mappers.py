@@ -34,6 +34,7 @@ _WARNING_MESSAGES = {
     "candidate_pool_truncated": (
         "이미 본 장소가 많아 새 후보를 더 받아오지 못했습니다."
     ),
+    "candidate_pool_exhausted": "이미 본 장소를 제외하면 새 후보가 남아 있지 않습니다.",
 }
 _WEEKDAY_NAMES = (
     "monday",

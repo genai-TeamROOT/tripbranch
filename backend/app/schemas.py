@@ -822,6 +822,14 @@ class InterpretRequest(BaseModel):
     # 최근 대화(오래된 것이 앞). 라우터가 B의 SessionContextResponse.recent_turns를
     # 조립해 채운다 — 호출자가 보낸 값은 무시된다(위 5개 필드와 같은 원칙).
     recent_turns: list[ConversationTurnView] = Field(default_factory=list)
+    # 직전 턴이 INFO 되묻기(장소명 없음)로 끝났을 때 그때 이미 파악한 질문 정보.
+    # 라우터가 B의 SessionContextResponse.pending_info_context로 채운다 — 호출자가
+    # 보낸 값은 무시된다(위 5개 필드와 같은 원칙). 자유 텍스트로 장소명만 답해도
+    # extract_info_query()가 이 값을 참고해 question_type/specific_question을
+    # 이어받을 수 있게 한다.
+    pending_info_question_type: str | None = None
+    pending_info_specific_question: str | None = None
+    pending_info_visit_time: str | None = None
 
 
 # === Agent Runtime (A-03) ===
@@ -1052,6 +1060,9 @@ class InfoPlaceCard(BaseModel):
     latitude: float | None = None
     longitude: float | None = None
     thumbnail_url: str | None = None
+    # 여러 장 보기용 사진 목록. 비어 있어도 thumbnail_url은 따로 있을 수 있어
+    # 프론트는 둘을 함께 본다 — 사진 목록이 있는 장소가 전체의 30%뿐이다.
+    photos: list[PlacePhotoItem] = Field(default_factory=list)
     overview: str | None = None
     operating_hours: str | None = None
     rest_date: str | None = None
@@ -1094,6 +1105,17 @@ class ConcentrationForecastBar(BaseModel):
     concentration_rate: float = Field(ge=0)
     concentration_level: str
     concentration_label: str
+
+
+class PlacePhotoItem(BaseModel):
+    """장소 상세 화면에 여러 장으로 보여줄 사진 한 장.
+
+    C의 ``PlacePhotoItem``을 그대로 옮긴 값이다. 목록 순서가 곧 보여줄 순서이고,
+    첫 번째가 가장 대표적이다.
+    """
+
+    url: str
+    image_name: str | None = None
 
 
 class RealtimeInfoDetailItem(BaseModel):

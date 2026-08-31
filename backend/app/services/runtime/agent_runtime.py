@@ -61,6 +61,7 @@ from app.schemas import (
     ComparisonItem,
     ComparisonResult,
     ConcentrationIntent,
+    ConversationTurnView,
     GeneralPayload,
     GeneralTopic,
     InfoPayload,
@@ -147,9 +148,10 @@ from app.services.runtime.tool_debug import (
     build_info_concentration_execution_debug,
     build_tool_execution_debug,
 )
-from app.state.schema import PendingInfoContext, SituationState, now_kst
+from app.state.schema import ConversationTurn, PendingInfoContext, SituationState, now_kst
 from app.state.service import (
     ApiContextView,
+    AppendConversationTurnRequest,
     RecommendedPlace,
     RecordClosedExclusionsRequest,
     RecordRecommendationRequest,
@@ -162,6 +164,7 @@ from app.state.service import (
     SetSituationStateRequest,
     StateApplyResponse,
     UpdateApiContextRequest,
+    append_conversation_turn,
     apply,
     record_closed_exclusions,
     record_recommendation,
@@ -544,9 +547,8 @@ async def _respond_no_data_closed(
 # "카테고리에 맞는 곳이 없음"(원인1)과 "반경이 좁음"(원인3)은 신호가 동일해
 # 구분할 수 없지만(nearby_place_details.py의 `if not selected:`가 raw candidates
 # 자체가 없을 때도 NO_DATA를 반환), "이전 노출/거절로 다 소진됨"(원인2)은
-# `places.provider_metadata`의 원본 TourAPI 상태로 구분 가능하다 — raw candidates가
-# 있었는데 excluded_place_ids로 걸러졌다면 provider_metadata.status는 "success"로
-# 남는다(agent_context/mappers.py::map_places_context가 원본 metadata를 그대로 싣는다).
+# 명시 경고 `candidate_pool_exhausted`로만 구분한다. Provider 호출 성공은 단순히
+# 외부 호출이 성공했다는 뜻일 뿐, 후보가 이전 노출/거절로 소진됐다는 근거가 아니다.
 _NO_DATA_RESOLVABLE_INTENTS = _LOCATION_REQUIRED_RESOLVABLE_INTENTS | frozenset(
     {Intent.MODIFY.value}
 )
@@ -1732,6 +1734,82 @@ def summarize_turn(response: AgentResponse) -> dict[str, object]:
     }
 
 
+def _conversation_place_names(response: AgentResponse) -> list[str]:
+    """이번 턴에 실제로 노출한 장소명을 대화 기억용으로 짧게 모은다."""
+
+    names: list[str] = []
+    if response.recommendations is not None:
+        names.extend(
+            item.name
+            for item in [
+                *response.recommendations.recommendations,
+                *response.recommendations.unverified_recommendations,
+            ]
+        )
+    if response.schedule is not None:
+        names.extend(item.place_name for item in response.schedule.items)
+    if response.comparison is not None:
+        names.extend(item.place_name for item in response.comparison.items)
+    if response.info_place_card is not None and response.info_place_card.place_name:
+        names.append(response.info_place_card.place_name)
+
+    unique: list[str] = []
+    for name in names:
+        cleaned = name.strip()
+        if cleaned and cleaned not in unique:
+            unique.append(cleaned)
+    return unique[:5]
+
+
+def _assistant_summary(turn: ConversationTurn) -> str | None:
+    """저장된 구조화 재료를 다음 Gemini 호출의 model 메시지로 바꾼다."""
+
+    parts: list[str] = []
+    if turn.intent:
+        parts.append(f"처리 의도: {turn.intent}")
+    if turn.question_type:
+        parts.append(f"질문 유형: {turn.question_type}")
+    if turn.place_names:
+        parts.append(f"안내한 장소: {', '.join(turn.place_names)}")
+    if turn.offered_action:
+        parts.append(f"제안한 기능: {turn.offered_action}")
+    return "; ".join(parts) if parts else None
+
+
+def _conversation_history(session_context: SessionContextResponse) -> list[ConversationTurnView]:
+    """B가 보관한 최근 턴을 역할이 분리된 Gemini 대화 이력으로 변환한다."""
+
+    return [
+        ConversationTurnView(
+            user_input=turn.user_input,
+            assistant_summary=_assistant_summary(turn),
+        )
+        for turn in session_context.recent_turns
+    ]
+
+
+def _conversation_turn(request: AgentRequest, response: AgentResponse) -> ConversationTurn:
+    """완성된 응답에서 원문을 복제하지 않고 다음 턴에 필요한 재료만 뽑는다."""
+
+    llm_output = response.llm_output
+    question_type = (
+        llm_output.info.question_type.value
+        if llm_output.info is not None
+        else None
+    )
+    offered_action: str | None = None
+    if llm_output.general is not None:
+        offer = offer_for(llm_output.general.situation)
+        offered_action = offer.action_id if offer is not None else None
+    return ConversationTurn(
+        user_input=request.user_input,
+        intent=llm_output.intent.value,
+        question_type=question_type,
+        place_names=_conversation_place_names(response),
+        offered_action=offered_action,
+    )
+
+
 async def run_agent_flow(
     request: AgentRequest,
     *,
@@ -1824,6 +1902,20 @@ async def run_agent_flow(
         # 내보낸 뒤에 직접 만든다 — 아래 설명 참고.
         if generate_follow_ups:
             response.suggested_follow_ups = await suggest_follow_ups(request, response, llm=llm)
+        # 모든 정상 응답이 이 중앙 래퍼를 지나므로 여기서 한 번만 기록한다. 본체의
+        # 여러 조기 반환 지점마다 기록하면 새 경로가 생길 때 턴 하나가 빠지기 쉽다.
+        try:
+            append_conversation_turn(
+                AppendConversationTurnRequest(
+                    session_id=response.state.session_id,
+                    turn=_conversation_turn(request, response),
+                ),
+                store=store,
+            )
+        except Exception:
+            # 대화 기억은 응답 자체보다 부가 기능이다. 저장 장애가 이미 완성된 답변을
+            # 사용자에게 못 보내게 해서는 안 된다.
+            logger.warning("최근 대화 저장 실패(응답 흐름에는 영향 없음)", exc_info=True)
         try:
             summary = summarize_turn(response)
             turn.record(
@@ -1997,6 +2089,15 @@ async def _run_agent_flow(
             if session_context.has_recommendation or location_clarification_pending
             else None
         )
+        # 직전 턴이 INFO 되묻기(장소명 없음/장소 후보 모호)로 끝났을 때만 이전 질문
+        # 정보를 다음 턴 추출기에 건넨다 — 관련 없는 턴에 잘못 섞이지 않게 last_intent/
+        # pending_clarification/pending_info_context 세 조건을 모두 확인한다.
+        info_clarification_pending = (
+            session_context.last_intent == Intent.INFO.value
+            and session_context.pending_clarification is not None
+            and session_context.pending_info_context is not None
+        )
+        pending_info = session_context.pending_info_context if info_clarification_pending else None
         interpret_request = InterpretRequest(
             user_input=request.user_input,
             has_previous_recommendation=session_context.has_recommendation,
@@ -2009,6 +2110,10 @@ async def _run_agent_flow(
             # 이름이 없는 항목(name 저장 이전의 과거 세션 등)은 빈 문자열로 채운다.
             shown_place_names=[item.name or "" for item in session_context.shown_recommendations],
             conversation_place_name=request.conversation_place_name,
+            recent_turns=_conversation_history(session_context),
+            pending_info_question_type=pending_info.question_type if pending_info else None,
+            pending_info_specific_question=pending_info.specific_question if pending_info else None,
+            pending_info_visit_time=pending_info.visit_time if pending_info else None,
         )
         # classify_intent()에 이어 intent별 extract_*()까지 순차 LLM 호출 최대
         # 두 번이 이 안에서 일어난다. 평소엔 1~2초 안에 끝나 heartbeat가 거의 안
@@ -2187,6 +2292,17 @@ async def _run_agent_flow(
             )
             _remember_clarification(
                 state_response.session_id, "schedule06_ambiguous_recommend", store
+            )
+            # apply()(3번)는 이번 턴의 원본 intent(MODIFY)로 last_intent를 이미
+            # 저장했다 — 그대로 두면 다음 턴 classify_intent가 "직전 SCHEDULE
+            # 되묻기"라는 신호를 받지 못해 자유 텍스트 답변("추천만 해줘" 등)이
+            # 아무 맥락 없이 새로 분류된다(아래 8)의 SCHEDULE relabel과 같은 이유,
+            # D-061). 이 되묻기는 SCHEDULE 흐름에서 나온 것이므로 여기서도 바로잡는다.
+            set_last_intent(
+                SetLastIntentRequest(
+                    session_id=state_response.session_id, intent=Intent.SCHEDULE.value
+                ),
+                store=store,
             )
             message = await compose_chat_message(clarification_llm_output, llm=llm)
             return AgentResponse(
@@ -2507,6 +2623,27 @@ async def _run_agent_flow(
             _remember_clarification(
                 state_response.session_id, _llm_clarification_code(llm_output), store
             )
+            # INFO가 장소명이 없어 되묻는 경우(place_ambiguous와 달리 여기는 버튼이
+            # 없어 자유 텍스트가 유일한 응답 경로다) question_type 등 이미 파악한
+            # 정보를 저장해둔다 — 안 남기면 다음 턴이 장소명만으로 처음부터
+            # 재분류되어 "혼잡도 질문이었다"는 사실이 사라진다(2026-08-31 실사용
+            # 재현). info/extract.md가 "반드시 info 필드를 채우고"라고 지시하므로
+            # (place_name이 없어도) question_type/specific_question/visit_time은
+            # 채워져 있다. place_ambiguous는 이 지점 이전에 이미 별도로 저장하고
+            # 반환하므로 여기서 다시 저장되지 않는다.
+            if llm_output.intent is Intent.INFO and llm_output.info is not None:
+                set_pending_info_context(
+                    SetPendingInfoContextRequest(
+                        session_id=state_response.session_id,
+                        context=PendingInfoContext(
+                            question_type=llm_output.info.question_type.value,
+                            place_context=llm_output.info.place_context.value,
+                            specific_question=llm_output.info.specific_question,
+                            visit_time=llm_output.info.visit_time,
+                        ),
+                    ),
+                    store=store,
+                )
         # terminal_message가 있는 경우는 위(3단계 직후)에서 이미 처리하고
         # 반환했으므로 여기서는 다시 안 본다.
         is_streaming_general = stream_recommendation_summary and llm_output.intent is Intent.GENERAL
@@ -2838,15 +2975,14 @@ async def _fetch_tool_context(
                     }
                 )
         elif tool_response.status == "no_data":
-            # 원인2(이전 노출/거절로 소진)와 원인1+3(TourAPI 자체가 0건)을
-            # provider_metadata의 원본 상태로 구분한다 — 위 상수 블록 주석 참고.
+            # 원인2(이전 노출/거절로 소진)는 C가 실제 후보와 excluded_place_ids를
+            # 비교해 남긴 명시 경고로만 구분한다. Provider 성공만으로는 원인1+3과
+            # 구분할 수 없어 "다 보여드렸어요"라는 오안내를 만들 수 있다.
             places_value = (
                 tool_response.context.places if tool_response.context is not None else None
             )
-            provider_statuses = {
-                item.status for item in (places_value.provider_metadata if places_value else [])
-            }
-            if "success" in provider_statuses:
+            warning_codes = {item.code for item in (places_value.warnings if places_value else [])}
+            if "candidate_pool_exhausted" in warning_codes:
                 no_data_code = "no_data_exhausted"
                 no_data_message = _NO_DATA_EXHAUSTED_MESSAGE
                 no_data_options = _NO_DATA_EXHAUSTED_OPTIONS

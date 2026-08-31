@@ -15,7 +15,7 @@ from_conversation으로 두고 place_name은 null로 채우세요 (실제 해석
 가리키면 place_context="from_conversation"으로 두고 place_name에 직전 INFO 대화 장소를
 그대로 채우세요. 사용자가 이번 발화에 다른 장소명을 직접 말한 경우에는 그 명시 장소를
 우선합니다.
-
+{{pending_question_block}}
 specific_question에는 사용자 원문 질문을 그대로 담으세요.
 
 status 결정:

@@ -10,7 +10,7 @@ TODO: provider가 늘어나면 오류 타입, 비동기 계약, 메타데이터 
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from datetime import date
 from typing import Protocol, runtime_checkable
 
@@ -25,6 +25,7 @@ from app.domain.models import (
     PlaceCommonDetails,
     PlaceDetails,
     PlaceOperatingDetails,
+    PlacePhoto,
     RealtimeCityDataResult,
     RealtimeCommercialResult,
     TourPlacePage,
@@ -47,6 +48,7 @@ from app.schedule.schemas import (
 )
 from app.schemas import (
     ComparisonResult,
+    ConversationTurnView,
     GeneralTopic,
     Intent,
     IntentClassificationResult,
@@ -68,6 +70,7 @@ class LLMProvider(Protocol):
         last_intent: str | None = None,
         shown_place_names: list[str] | None = None,
         conversation_place_name: str | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[IntentClassificationResult]:
         """사용자 발화의 Intent를 1단계로 판정한다.
 
@@ -83,7 +86,12 @@ class LLMProvider(Protocol):
         """
         ...
 
-    async def extract_recommend_conditions(self, user_input: str) -> ProviderResult[LLMOutput]:
+    async def extract_recommend_conditions(
+        self,
+        user_input: str,
+        *,
+        history: Sequence[ConversationTurnView] | None = None,
+    ) -> ProviderResult[LLMOutput]:
         """RECOMMEND 발화에서 UserConditions를 추출한다."""
         ...
 
@@ -95,6 +103,7 @@ class LLMProvider(Protocol):
         pending_clarification: str | None = None,
         shown_place_count: int = 0,
         shown_place_names: list[str] | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[LLMOutput]:
         """MODIFY 발화에서 modify_type과 condition_changes를 추출한다.
 
@@ -115,6 +124,10 @@ class LLMProvider(Protocol):
         has_previous_recommendation: bool,
         reference_date: date,
         conversation_place_name: str | None = None,
+        pending_info_question_type: str | None = None,
+        pending_info_specific_question: str | None = None,
+        pending_info_visit_time: str | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[LLMOutput]:
         """INFO 발화에서 장소/질문 정보를 추출한다.
 
@@ -122,6 +135,11 @@ class LLMProvider(Protocol):
         visit_time을 실제 날짜로 환산하는 기준일(KST). concentration-conditions.md §3.2.
         conversation_place_name: 직전 INFO 카드의 장소명. "여기/이곳" 같은
         from_conversation 지시어가 있을 때만 장소를 해소하는 후보다.
+        pending_info_question_type/pending_info_specific_question/pending_info_visit_time:
+        직전 턴이 장소명이 없어 되물은 INFO 되묻기였을 때 그때 이미 파악한 질문 정보.
+        이번 발화가 그 답변(장소명만 던지는 짧은 응답)으로 보이면 question_type 등을
+        유지하고 place_name만 채우는 데 쓴다. 없으면(직전이 INFO 되묻기가 아니었으면)
+        모두 None이다.
         """
         ...
 
@@ -131,6 +149,7 @@ class LLMProvider(Protocol):
         *,
         shown_place_count: int,
         shown_place_names: list[str] | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[LLMOutput]:
         """COMPARE 발화에서 비교 대상과 기준을 추출한다.
 
@@ -140,7 +159,12 @@ class LLMProvider(Protocol):
         """
         ...
 
-    async def extract_general_request(self, user_input: str) -> ProviderResult[LLMOutput]:
+    async def extract_general_request(
+        self,
+        user_input: str,
+        *,
+        history: Sequence[ConversationTurnView] | None = None,
+    ) -> ProviderResult[LLMOutput]:
         """GENERAL 발화의 주제를 분류한다."""
         ...
 
@@ -374,6 +398,19 @@ class PlaceCommonDetailsProvider(Protocol):
     async def get_common_details(self, content_id: str) -> ProviderResult[PlaceCommonDetails]:
         """detailCommon2만 호출해 overview·homepage·tel을 반환한다."""
         ...
+
+
+class PlaceImageProvider(Protocol):
+    """장소 사진 목록을 주는 최소 계약(TourAPI detailImage2).
+
+    상세 조회 계약과 나눈다. 사진은 detailCommon2·detailIntro2와 다른
+    오퍼레이션이고 일일 한도도 따로 걸리므로, 사진만 필요한 호출부가 상세
+    provider 전체를 요구할 이유가 없다.
+    """
+
+    async def get_place_images(
+        self, content_id: str, limit: int
+    ) -> ProviderResult[tuple[PlacePhoto, ...]]: ...
 
 
 class PlaceDetailByNameProvider(Protocol):

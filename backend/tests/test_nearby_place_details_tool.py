@@ -16,6 +16,7 @@ from app.recommendation_limits import MAX_RECOMMENDATION_CANDIDATE_LIMIT
 from app.schemas import PlaceCandidate
 from app.tools.nearby_place_details import (
     CANDIDATE_OVERFETCH_FACTOR,
+    CANDIDATE_POOL_EXHAUSTED_WARNING,
     CANDIDATE_POOL_TRUNCATED_WARNING,
     MAX_PLACE_PROVIDER_ROWS,
     DetailStatus,
@@ -182,6 +183,22 @@ async def test_tool_applies_exclusions_limit_and_concurrency() -> None:
         "place-6",
     ]
     assert details.max_active <= 3
+
+
+@pytest.mark.asyncio
+async def test_tool_marks_exhausted_only_when_returned_candidates_are_all_excluded() -> None:
+    search = SearchProvider([_candidate(index) for index in range(3)])
+    result = await NearbyPlaceDetailsTool(search, DetailsProvider()).execute(
+        NearbyPlaceDetailsQuery(
+            37.5,
+            127.0,
+            limit=3,
+            excluded_place_ids=frozenset({"place-0", "place-1", "place-2"}),
+        )
+    )
+
+    assert result.status is ToolStatus.NO_DATA
+    assert CANDIDATE_POOL_EXHAUSTED_WARNING in result.warnings
 
 
 @pytest.mark.asyncio

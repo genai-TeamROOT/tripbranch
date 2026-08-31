@@ -53,6 +53,10 @@ CANDIDATE_OVERFETCH_FACTOR = 3
 # 상한(MAX_PLACE_PROVIDER_ROWS)까지 받고도 요청한 만큼 새 후보를 채우지 못했다.
 CANDIDATE_POOL_TRUNCATED_WARNING = "candidate_pool_truncated"
 
+# Provider가 실제 후보를 돌려줬지만, 모두 이전에 노출·거절한 place_id여서 남은
+# 후보가 없을 때만 붙인다. 단순히 Provider 호출이 성공했다는 것과는 다르다.
+CANDIDATE_POOL_EXHAUSTED_WARNING = "candidate_pool_exhausted"
+
 
 class DetailStatus(StrEnum):
     SUCCESS = "success"
@@ -183,6 +187,7 @@ class NearbyPlaceDetailsTool:
         # 이 표시가 붙은 결과는 "이 근처에 더 없음"이 아니라 "더 받아올 수 없음"이다
         # — 아직 후보가 남았는데 소진됐다고 답하는 걸 막는다.
         truncated = row_cap_reached and len(selected) < query.limit
+        exhausted = bool(candidates) and bool(query.excluded_place_ids) and not selected
 
         if not selected:
             return self._result(
@@ -191,6 +196,7 @@ class NearbyPlaceDetailsTool:
                 started_at=started_at,
                 provider_metadata=(search_result.metadata,),
                 truncated=truncated,
+                exhausted=exhausted,
             )
 
         if isinstance(self._details_provider, BatchPlaceDetailsProvider):
@@ -386,10 +392,13 @@ class NearbyPlaceDetailsTool:
         provider_metadata: tuple[ProviderMetadata, ...],
         error: ToolError | None = None,
         truncated: bool = False,
+        exhausted: bool = False,
     ) -> NearbyPlaceDetailsResult:
         warnings = ("partial_data",) if status is ToolStatus.PARTIAL else ()
         if truncated:
             warnings = (*warnings, CANDIDATE_POOL_TRUNCATED_WARNING)
+        if exhausted:
+            warnings = (*warnings, CANDIDATE_POOL_EXHAUSTED_WARNING)
         return NearbyPlaceDetailsResult(
             places=places,
             status=status,

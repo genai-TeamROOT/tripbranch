@@ -17,7 +17,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from app.domain.models import StoredPlaceDetail, StoredPlaceLocation
+from app.domain.models import PlacePhoto, StoredPlaceDetail, StoredPlaceLocation
 from app.providers.contracts import ProviderSource
 
 _FAKE_PLACES: tuple[StoredPlaceLocation, ...] = (
@@ -126,6 +126,36 @@ _FAKE_PLACE_DETAILS: tuple[StoredPlaceDetail, ...] = (
 )
 
 
+# 사진이 여러 장인 장소를 한 곳 둔다. 한 장뿐이면 상세 화면의 갤러리 분기가
+# fake 환경에서 한 번도 실행되지 않고, 그러면 여러 장을 그리는 코드가 실 저장소를
+# 붙이기 전까지 검증되지 않는다.
+#
+# fake-cafe-1은 키 자체를 두지 않는다 — 이미지가 없는 장소(실측 20%)를 대변하고,
+# 그쪽 이미지 필드도 이미 None이다.
+_FAKE_PLACE_PHOTOS: dict[str, tuple[PlacePhoto, ...]] = {
+    "fake-museum-1": (
+        PlacePhoto(
+            content_id="fake-museum-1",
+            photo_order=1,
+            url="https://example.test/fake-museum-1.jpg",
+            image_name="테스트 박물관 (1)",
+        ),
+        PlacePhoto(
+            content_id="fake-museum-1",
+            photo_order=2,
+            url="https://example.test/fake-museum-1-2.jpg",
+            image_name="테스트 박물관 (2)",
+        ),
+        PlacePhoto(
+            content_id="fake-museum-1",
+            photo_order=3,
+            url="https://example.test/fake-museum-1-3.jpg",
+            image_name="테스트 박물관 (3)",
+        ),
+    ),
+}
+
+
 def _key(value: str) -> str:
     return value.replace(" ", "").casefold()
 
@@ -178,4 +208,32 @@ class FakePlaceDetailsRepository:
         }
 
 
-__all__ = ["FakePlaceDetailsRepository", "FakePlaceLocationRepository"]
+class FakePlacePhotoRepository:
+    """장소 사진 목록을 메모리로 돌려주는 fake 저장소."""
+
+    # 응답 metadata에 실저장소로 보이면 안 된다(D-042).
+    provider_source = ProviderSource.FAKE_PLACES
+
+    def __init__(
+        self,
+        photos: dict[str, tuple[PlacePhoto, ...]] | None = None,
+    ) -> None:
+        self._photos = dict(_FAKE_PLACE_PHOTOS if photos is None else photos)
+
+    async def find_place_photos(
+        self,
+        content_ids: Sequence[str],
+    ) -> dict[str, tuple[PlacePhoto, ...]]:
+        # 실제 저장소와 같이 사진이 없는 id는 결과에서 빠진다.
+        return {
+            content_id: self._photos[content_id]
+            for content_id in content_ids
+            if content_id in self._photos
+        }
+
+
+__all__ = [
+    "FakePlaceDetailsRepository",
+    "FakePlaceLocationRepository",
+    "FakePlacePhotoRepository",
+]

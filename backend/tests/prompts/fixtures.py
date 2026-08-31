@@ -151,6 +151,24 @@ CLASSIFY_CASES: list[tuple[str, dict[str, object]]] = [
             "conversation_place_name": "경복궁",
         },
     ),
+    (
+        "classify__info_clarification_pending",
+        {
+            "has_previous_recommendation": True,
+            "shown_place_count": 3,
+            "pending_clarification": "missing:place_name",
+            "last_intent": "INFO",
+        },
+    ),
+    (
+        "classify__schedule06_choice_pending",
+        {
+            "has_previous_recommendation": False,
+            "shown_place_count": 0,
+            "pending_clarification": "schedule06_ambiguous_recommend",
+            "last_intent": "SCHEDULE",
+        },
+    ),
 ]
 
 MODIFY_CASES: list[tuple[str, dict[str, object]]] = [
@@ -184,6 +202,15 @@ INFO_CASES: list[tuple[str, dict[str, object]]] = [
             "has_previous_recommendation": True,
             "reference_date": REFERENCE_DATE,
             "conversation_place_name": "경복궁",
+        },
+    ),
+    (
+        "info_extract__pending_question",
+        {
+            "has_previous_recommendation": False,
+            "reference_date": REFERENCE_DATE,
+            "pending_info_question_type": "concentration",
+            "pending_info_specific_question": "사람많아?",
         },
     ),
 ]

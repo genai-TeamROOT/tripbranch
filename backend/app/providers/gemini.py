@@ -384,6 +384,7 @@ class RealGeminiProvider:
         last_intent: str | None = None,
         shown_place_names: list[str] | None = None,
         conversation_place_name: str | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[IntentClassificationResult]:
         instruction = gemini_prompts.build_intent_classification_instruction(
             has_previous_recommendation=has_previous_recommendation,
@@ -407,10 +408,16 @@ class RealGeminiProvider:
             operation="classify_intent",
             thinking_budget=0,
             model_names=self._fast_model_names,
+            history=history,
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 
-    async def extract_recommend_conditions(self, user_input: str) -> ProviderResult[LLMOutput]:
+    async def extract_recommend_conditions(
+        self,
+        user_input: str,
+        *,
+        history: Sequence[ConversationTurnView] | None = None,
+    ) -> ProviderResult[LLMOutput]:
         instruction = gemini_prompts.build_recommend_extraction_instruction()
         # thinking_budget=0 — classify_intent()와 같은 이유로 실측 확인
         # (평균 3122ms→1745ms, 1.8배, search_center 추출 정확도 4/4로 동일 유지).
@@ -421,6 +428,7 @@ class RealGeminiProvider:
             operation="extract_recommend_conditions",
             thinking_budget=0,
             model_names=self._fast_model_names,
+            history=history,
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 
@@ -432,6 +440,7 @@ class RealGeminiProvider:
         pending_clarification: str | None = None,
         shown_place_count: int = 0,
         shown_place_names: list[str] | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[LLMOutput]:
         instruction = gemini_prompts.build_modify_extraction_instruction(
             current_conditions,
@@ -451,6 +460,7 @@ class RealGeminiProvider:
             operation="extract_modify_conditions",
             thinking_budget=0,
             model_names=self._fast_model_names,
+            history=history,
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 
@@ -461,11 +471,18 @@ class RealGeminiProvider:
         has_previous_recommendation: bool,
         reference_date: date,
         conversation_place_name: str | None = None,
+        pending_info_question_type: str | None = None,
+        pending_info_specific_question: str | None = None,
+        pending_info_visit_time: str | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[LLMOutput]:
         instruction = gemini_prompts.build_info_extraction_instruction(
             has_previous_recommendation=has_previous_recommendation,
             reference_date=reference_date,
             conversation_place_name=conversation_place_name,
+            pending_info_question_type=pending_info_question_type,
+            pending_info_specific_question=pending_info_specific_question,
+            pending_info_visit_time=pending_info_visit_time,
         )
         # thinking_budget=0 — extract_modify_conditions()와 같은 이유(TP-179).
         result = await self._call_structured(
@@ -475,6 +492,7 @@ class RealGeminiProvider:
             operation="extract_info_query",
             thinking_budget=0,
             model_names=self._fast_model_names,
+            history=history,
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 
@@ -484,6 +502,7 @@ class RealGeminiProvider:
         *,
         shown_place_count: int,
         shown_place_names: list[str] | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[LLMOutput]:
         instruction = gemini_prompts.build_compare_extraction_instruction(
             shown_place_count=shown_place_count,
@@ -497,10 +516,16 @@ class RealGeminiProvider:
             operation="extract_compare_request",
             thinking_budget=0,
             model_names=self._fast_model_names,
+            history=history,
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 
-    async def extract_general_request(self, user_input: str) -> ProviderResult[LLMOutput]:
+    async def extract_general_request(
+        self,
+        user_input: str,
+        *,
+        history: Sequence[ConversationTurnView] | None = None,
+    ) -> ProviderResult[LLMOutput]:
         instruction = gemini_prompts.build_general_extraction_instruction()
         # thinking_budget=0 — extract_modify_conditions()와 같은 이유(TP-179).
         result = await self._call_structured(
@@ -510,6 +535,7 @@ class RealGeminiProvider:
             operation="extract_general_request",
             thinking_budget=0,
             model_names=self._fast_model_names,
+            history=history,
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 
