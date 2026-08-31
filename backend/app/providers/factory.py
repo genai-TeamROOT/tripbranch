@@ -8,6 +8,7 @@ validate_provider_config()가 담당한다.
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 import httpx
 
@@ -26,6 +27,7 @@ from app.providers.geocoding import FakeGeocodingProvider, RealGeocodingProvider
 from app.providers.google_translate import GoogleTranslateProvider
 from app.providers.holiday import FakeHolidayProvider, RealHolidayProvider
 from app.providers.hybrid_place_details import HybridPlaceDetailsProvider
+from app.providers.hybrid_place_photos import HybridPlacePhotoProvider
 from app.providers.kakao_transit_route import (
     FakeTransitRouteProvider,
     RealKakaoTransitRouteProvider,
@@ -48,6 +50,7 @@ from app.providers.protocols import (
     MunicipalParkingProvider,
     PlaceDetailByNameProvider,
     PlaceDetailsProvider,
+    PlaceImageProvider,
     PlaceProvider,
     PlaceSearchProvider,
     RealtimeCityDataProvider,
@@ -76,6 +79,7 @@ from app.repositories.fake_places import (
     FakePlacePhotoRepository,
 )
 from app.repositories.municipal_parking import SupabaseMunicipalParkingRepository
+from app.repositories.protocols import PlacePhotoRepository
 from app.repositories.supabase_places import SupabasePlaceRepository
 from app.tools.recommendation_cards import RecommendationCardTool
 from app.tools.travel_route import TravelRouteProviders, TravelRouteTool
@@ -296,12 +300,12 @@ def get_place_location_repository(
 
 def get_place_photo_repository(
     client: httpx.AsyncClient,
-) -> SupabasePlaceRepository | FakePlacePhotoRepository:
-    """상세 화면에 보여줄 장소 사진을 읽을 저장소를 준비한다.
+) -> PlacePhotoRepository:
+    """상세 화면에 보여줄 장소 사진의 출처를 준비한다.
 
-    사진은 place_image_embeddings에만 있고 TourAPI 상세 응답에는 없다. 분위기
-    검색과 같은 테이블이지만 SigLIP도 임베딩도 필요 없어, 사진 검색이 꺼져 있어도
-    이 경로는 돈다.
+    적재된 장소는 place_image_embeddings에서 읽고, 적재되지 않은 장소만
+    detailImage2로 채운다. 순서를 이렇게 두는 이유와 캐시·한도 처리는
+    hybrid_place_photos.py 모듈 문서를 본다.
 
     Supabase 설정이 없으면 fake 저장소를 준다. 없는 상태로 두면 fake 환경에서
     여러 장 경로가 한 번도 실행되지 않는다.
@@ -312,11 +316,17 @@ def get_place_photo_repository(
         or not settings.supabase_secret_key.strip()
     ):
         return FakePlacePhotoRepository()
-    return SupabasePlaceRepository(
-        supabase_url=settings.supabase_url,
-        secret_key=settings.supabase_secret_key,
-        client=client,
-        timeout_seconds=settings.external_api_timeout_seconds,
+    return HybridPlacePhotoProvider(
+        photo_repository=SupabasePlaceRepository(
+            supabase_url=settings.supabase_url,
+            secret_key=settings.supabase_secret_key,
+            client=client,
+            timeout_seconds=settings.external_api_timeout_seconds,
+        ),
+        # 여기 도달하면 place provider가 실 provider다(위 게이트에서 fake는 빠진다).
+        image_provider=cast(PlaceImageProvider, get_place_provider(client)),
+        display_limit=settings.place_photo_display_limit,
+        cache_ttl_seconds=settings.place_photo_api_cache_ttl_seconds,
     )
 
 

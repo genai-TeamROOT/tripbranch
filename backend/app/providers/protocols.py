@@ -25,6 +25,7 @@ from app.domain.models import (
     PlaceCommonDetails,
     PlaceDetails,
     PlaceOperatingDetails,
+    PlacePhoto,
     RealtimeCityDataResult,
     RealtimeCommercialResult,
     TourPlacePage,
@@ -397,6 +398,19 @@ class PlaceCommonDetailsProvider(Protocol):
     async def get_common_details(self, content_id: str) -> ProviderResult[PlaceCommonDetails]:
         """detailCommon2만 호출해 overview·homepage·tel을 반환한다."""
         ...
+
+
+class PlaceImageProvider(Protocol):
+    """장소 사진 목록을 주는 최소 계약(TourAPI detailImage2).
+
+    상세 조회 계약과 나눈다. 사진은 detailCommon2·detailIntro2와 다른
+    오퍼레이션이고 일일 한도도 따로 걸리므로, 사진만 필요한 호출부가 상세
+    provider 전체를 요구할 이유가 없다.
+    """
+
+    async def get_place_images(
+        self, content_id: str, limit: int
+    ) -> ProviderResult[tuple[PlacePhoto, ...]]: ...
 
 
 class PlaceDetailByNameProvider(Protocol):
