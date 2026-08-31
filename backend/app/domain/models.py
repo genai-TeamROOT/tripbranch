@@ -551,6 +551,31 @@ class PlaceMoodMatch:
 
 
 @dataclass(frozen=True)
+class PlacePhoto:
+    """장소 사진 한 장. 상세 화면에 여러 장을 보여주기 위한 값이다.
+
+    출처는 `place_image_embeddings`다. 분위기 임베딩을 적재하면서 함께 담아 둔
+    원본 주소(`origin_url`)이고, TourAPI `detailImage2`가 준 순서를 그대로
+    가지고 있다. 사진 파일 자체는 저장하지 않으므로 이 주소가 유일한 경로다.
+
+    **한 장뿐인 장소가 절반이 넘는다.** 5,465곳 중 3,074곳이고, 그중 2,749곳은
+    이 주소가 `places.first_image_url`과 같다 — `detailImage2`가 비어 대표
+    이미지 한 장으로 대체된 장소라 갤러리로 보여줄 것이 없다(2026-08-31 실측).
+    소비 측은 장수를 세어 한 장이면 지금처럼 한 장만 그린다.
+    """
+
+    content_id: str
+    # 장소 안에서 몇 번째 사진인가. 1이 가장 대표적이다 — 관광공사가 대표성 높은
+    # 사진을 앞에 주고, 적재가 그 순서를 바꾸지 않았다.
+    photo_order: int
+    url: str
+    # detailImage2의 imgname. 대부분 장소명이지만 무장애 실측 사진처럼 성격이
+    # 다른 사진이 이름으로 드러나는 경우가 있어(예: MouseRabbit_출입구자동문)
+    # 걸러낼 단서로 함께 나른다. 지금은 화면에서 쓰지 않는다.
+    image_name: str | None = None
+
+
+@dataclass(frozen=True)
 class StoredPlaceDetail:
     """요청 시 저장소에서 읽어오는 장소 상세·운영정보 한 건.
 

@@ -46,6 +46,7 @@ from app.agent_context.info_schemas import (
     InfoContextResponse,
     PlaceCard,
     PlaceInfoResult,
+    PlacePhotoItem,
     PopulationForecastInfo,
     RealtimeCityInfoResult,
     RealtimeCommercialInfoResult,
@@ -86,6 +87,7 @@ from app.domain.models import (
     ConcentrationResult,
     MunicipalParkingStatus,
     PlaceDetails,
+    PlacePhoto,
     RealtimeBusStop,
     RealtimeCityEvent,
     RealtimeCommercialCategory,
@@ -106,7 +108,10 @@ from app.recommendation_limits import (
     MAX_RECOMMENDATION_CANDIDATE_LIMIT,
     MIN_RECOMMENDATION_LIMIT,
 )
-from app.repositories.protocols import MunicipalParkingCatalogRepository
+from app.repositories.protocols import (
+    MunicipalParkingCatalogRepository,
+    PlacePhotoRepository,
+)
 from app.schemas import CompareCriteria, ComparisonItem, StaleAreaProbeDebug
 from app.service_area import SUPPORTED_DISTRICTS
 from app.tools.concentration import (
@@ -216,6 +221,9 @@ class ContextTools:
     # COMPARE의 place_id → 장소명 해석 전용. 추천 카드와 같은 Tool을 쓴다 —
     # 같은 places 행에서 같은 이름을 읽어야 카드와 비교 답변이 어긋나지 않는다.
     cards: RecommendationCardTool | None = None
+    # 상세 카드에 여러 장을 싣기 위한 사진 목록 저장소. 없으면 대표 이미지
+    # 한 장만 나가고 나머지 경로는 그대로다.
+    place_photos: PlacePhotoRepository | None = None
 
 
 class ContextService:
@@ -1788,9 +1796,32 @@ class ContextService:
             destination_coordinates=_to_info_destination_coordinates(resolved_location),
             fields=fields,
             # 카드는 질문 유형과 무관하게 채운다. status는 위 fields로만 정해진다.
-            place_card=_to_place_card(detail_result.details, resolved_location.place_id),
+            place_card=_to_place_card(
+                detail_result.details,
+                resolved_location.place_id,
+                photos=await self._fetch_place_photos(
+                    detail_result.details.content_id or resolved_location.place_id
+                ),
+            ),
             provider_metadata=(location_metadata, detail_result.provider_metadata),
         )
+
+    async def _fetch_place_photos(self, place_id: str | None) -> tuple[PlacePhoto, ...]:
+        """상세 카드에 실을 사진 목록을 읽는다. 실패는 사진 없음으로 삼킨다.
+
+        사진 조회가 실패했다고 상세 정보 전체를 못 보여주면 손해가 크다 — 운영시간·
+        주차·요금은 사진과 무관하게 이미 손에 있다. 대신 로그로 남겨 조회가 조용히
+        비는 상태를 알아챌 수 있게 한다.
+        """
+        repository = self._tools.place_photos
+        if repository is None or not place_id:
+            return ()
+        try:
+            found = await repository.find_place_photos([place_id])
+        except Exception:
+            logger.warning("장소 사진 목록을 읽지 못했습니다: place_id=%s", place_id, exc_info=True)
+            return ()
+        return found.get(place_id, ())
 
     async def _fetch_event_info(
         self,
@@ -2492,16 +2523,29 @@ def _to_info_destination_coordinates(location: ResolvedLocation) -> Coordinates:
     return Coordinates(latitude=location.latitude, longitude=location.longitude)
 
 
-def _to_place_card(details: PlaceDetails, place_id: str | None) -> PlaceCard:
+def _to_place_card(
+    details: PlaceDetails,
+    place_id: str | None,
+    *,
+    photos: tuple[PlacePhoto, ...] = (),
+) -> PlaceCard:
     """상세 조회 결과를 카드 표시용 묶음으로 옮긴다.
 
     fields와 같은 clean_text를 태워 HTML·엔티티 정리 결과가 두 곳에서 갈리지 않게
     한다. 값이 없으면 None으로 두고 문구를 지어내지 않는다.
+
+    사진은 상세 조회가 아니라 place_image_embeddings에서 따로 읽어 넘어온다.
+    thumbnail_url은 그대로 둔다 — 사진 목록이 비는 장소가 절반이 넘고, 그쪽은
+    대표 이미지 한 장이 유일한 그림이다.
     """
     return PlaceCard(
         place_id=details.content_id or place_id,
         place_name=clean_text(details.title),
         thumbnail_url=details.thumbnail_url,
+        photos=[
+            PlacePhotoItem(url=photo.url, image_name=photo.image_name)
+            for photo in photos
+        ],
         overview=clean_text(details.overview),
         operating_hours=clean_text(details.operating_hours),
         rest_date=clean_text(details.rest_date),

@@ -16,9 +16,10 @@ from app.auth.principal import Principal
 from app.errors import AppError
 from app.state import feedback as feedback_module
 from app.state import history as history_module
+from app.state import saved_places as saved_places_module
 from app.state import session as session_module
 from app.state import trace as trace_module
-from app.state.errors import StateStoreError
+from app.state.errors import SavedPlaceNotRecommendedError, StateStoreError
 from app.state.merge import merge_conditions
 from app.state.operations import IgnoredOperation, Operation, validate_all
 from app.state.schema import (
@@ -30,6 +31,7 @@ from app.state.schema import (
     PendingInfoContext,
     RecommendedItem,
     RecommendedItemInput,
+    SavedPlaceItem,
     SituationState,
     UserConditions,
     now_kst,
@@ -129,6 +131,11 @@ class SessionContextResponse(BaseModel):
     # 상황 축이 잡은 현재 상태. 이미 거절당한 제안을 다시 하지 않으려면 A가 이
     # 값의 rejected_actions를 읽어야 한다.
     situation_state: SituationState | None = None
+    # 사용자가 명시적으로 담은 장소(담은 순서, SCHEDULE-12). shown_place_ids와
+    # 달리 마지막 run으로 좁히지 않는다 — 여러 턴에 걸쳐 담은 것이 전부 들어
+    # 있어야 "담은 곳으로 일정 짜줘"가 성립한다. 소비(후보 복귀·배치 보장)는
+    # 후속 카드에서 A가 붙인다.
+    saved_places: list[SavedPlaceItem] = Field(default_factory=list)
     user_conditions: UserConditions = Field(default_factory=UserConditions)
     api_context: ApiContextView = Field(default_factory=ApiContextView)
     condition_version: int = 0
@@ -194,6 +201,29 @@ class RecordClosedExclusionsRequest(BaseModel):
 
 class RecordClosedExclusionsResponse(BaseModel):
     recorded: int
+
+
+class SavePlaceRequest(BaseModel):
+    """장소 보관함 담기 요청. (SCHEDULE-12)
+
+    session_id는 경로 파라미터로 받으므로 본문에 두지 않는다.
+    """
+
+    place_id: str = Field(min_length=1)
+
+
+class SavedPlacesResponse(BaseModel):
+    """보관함 담기/빼기 응답. (SCHEDULE-12)
+
+    담긴 목록 전체를 항상 함께 반환한다 — 프론트가 낙관적으로 갱신한 뒤 이
+    값으로 확정하면 되므로 별도 조회가 필요 없다.
+    """
+
+    session_id: str
+    items: list[SavedPlaceItem] = Field(default_factory=list)
+    # 이번 요청으로 실제 변화가 있었는지. 같은 장소를 두 번 담거나 담기지
+    # 않은 장소를 빼는 요청은 오류가 아니라 changed=False다(멱등).
+    changed: bool
 
 
 class UpdateApiContextRequest(BaseModel):
@@ -651,6 +681,7 @@ def get_session_context(
         ignore_operating_hours_until=state.ignore_operating_hours_until,
         recent_turns=state.recent_turns,
         situation_state=state.situation_state,
+        saved_places=saved_places_module.get_items(store, sid),
         user_conditions=state.user_conditions,
         api_context=_build_api_context_view(state),
         condition_version=state.condition_version,
@@ -723,6 +754,109 @@ def record_closed_exclusions(
     return RecordClosedExclusionsResponse(recorded=recorded)
 
 
+# ================================================================ SCHEDULE-12
+
+@_wrap_store_errors
+def save_place(
+    session_id: str,
+    request: SavePlaceRequest,
+    store: StateStore | None = None,
+    principal: Principal | None = None,
+) -> SavedPlacesResponse:
+    """장소를 보관함에 담는다. (SCHEDULE-12)
+
+    담을 수 있는 것은 그 세션에서 노출된 적이 있는 장소뿐이다 — 임의 place_id
+    주입을 막고, 이름을 추천 시점 스냅샷에서 그대로 가져오기 위해서다. 세션이
+    없거나 노출 이력에 없으면 SavedPlaceNotRecommendedError(400)를 던진다.
+
+    principal이 주어지면 소유권을 대조한다(D-063 결정 2 후속, D-073) — 세션에
+    쓰기를 하는 경로이므로 apply()·delete_session()과 같은 기준으로 막는다.
+    """
+    store = store or get_store()
+
+    state = session_module.peek_session(store, session_id)
+    if state is not None:
+        session_module.verify_ownership(state, principal)
+
+    recommended = history_module.find_recommended_item(
+        store, session_id, request.place_id
+    )
+    if recommended is None:
+        raise SavedPlaceNotRecommendedError(request.place_id)
+
+    changed = saved_places_module.add(
+        store,
+        session_id,
+        SavedPlaceItem(
+            place_id=recommended.place_id,
+            # 추천 시점 스냅샷을 그대로 쓴다. name이 없던 과거 데이터는
+            # place_id로 대체한다 — 화면에 빈 칸이 뜨는 것보다 낫고,
+            # 담기 자체를 막을 이유는 아니다.
+            name=recommended.name or recommended.place_id,
+            saved_from_run_id=recommended.run_id,
+        ),
+        principal=principal,
+    )
+    return SavedPlacesResponse(
+        session_id=session_id,
+        items=saved_places_module.get_items(store, session_id),
+        changed=changed,
+    )
+
+
+@_wrap_store_errors
+def remove_saved_place(
+    session_id: str,
+    place_id: str,
+    store: StateStore | None = None,
+    principal: Principal | None = None,
+) -> SavedPlacesResponse:
+    """장소를 보관함에서 뺀다. (SCHEDULE-12)
+
+    담기와 달리 추천 이력을 확인하지 않는다 — 빼는 대상은 이미 보관함에 있는
+    것이고, 없는 place_id를 빼달라는 요청은 멱등하게 changed=False로 답한다.
+    """
+    store = store or get_store()
+
+    state = session_module.peek_session(store, session_id)
+    if state is not None:
+        session_module.verify_ownership(state, principal)
+
+    changed = saved_places_module.remove(
+        store, session_id, place_id, principal=principal
+    )
+    return SavedPlacesResponse(
+        session_id=session_id,
+        items=saved_places_module.get_items(store, session_id),
+        changed=changed,
+    )
+
+
+@_wrap_store_errors
+def get_saved_places(
+    session_id: str,
+    store: StateStore | None = None,
+    principal: Principal | None = None,
+) -> SavedPlacesResponse:
+    """보관함을 조회한다. (SCHEDULE-12)
+
+    get_session_context()의 saved_places와 같은 값이다 — 프론트가 세션 전체를
+    다시 받지 않고 보관함만 새로 고칠 수 있게 하는 경로다. changed는 항상
+    False다(조회는 아무것도 바꾸지 않는다).
+    """
+    store = store or get_store()
+
+    state = session_module.peek_session(store, session_id)
+    if state is not None:
+        session_module.verify_ownership(state, principal)
+
+    return SavedPlacesResponse(
+        session_id=session_id,
+        items=saved_places_module.get_items(store, session_id),
+        changed=False,
+    )
+
+
 # ================================================================ 세션 삭제
 
 @_wrap_store_errors
@@ -748,6 +882,11 @@ def delete_session(
     existed = existing_state is not None or store.get_history(session_id) is not None
     store.delete_state(session_id)
     store.delete_history(session_id)
+    # 보관함도 세션 수명에 묶여 있다(SCHEDULE-12) — 남겨두면 같은 session_id가
+    # 재사용될 때 이전 사용자가 담아둔 장소가 되살아난다. existed 판정에는
+    # 넣지 않는다: 보관함만 있고 상태·이력이 없는 조합은 만들어질 수 없다
+    # (담기가 추천 이력을 전제로 하므로).
+    store.delete_saved_places(session_id)
     return DeleteSessionResponse(session_id=session_id, deleted=existed)
 
 

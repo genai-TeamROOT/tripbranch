@@ -25,6 +25,7 @@ from app.state.schema import (
     ConditionChangeLog,
     FeedbackRecord,
     RecommendationHistory,
+    SavedPlaceList,
     TraceRecord,
 )
 
@@ -211,6 +212,39 @@ class SupabaseStateStore:
         self._request(
             "DELETE",
             "/recommendation_histories",
+            params={"session_id": f"eq.{session_id}"},
+            prefer="return=minimal",
+        )
+
+    # ------------------------------------------------------------ SavedPlaces
+
+    def get_saved_places(self, session_id: str) -> SavedPlaceList | None:
+        response = self._request(
+            "GET",
+            "/saved_place_lists",
+            params={"session_id": f"eq.{session_id}", "select": "*", "limit": "1"},
+        )
+        row = self._one_or_none(self._json(response))
+        if row is None:
+            return None
+        try:
+            return SavedPlaceList.model_validate(row)
+        except Exception:
+            raise StateStoreError("invalid saved_place_lists row") from None
+
+    def save_saved_places(self, saved: SavedPlaceList) -> None:
+        self._request(
+            "POST",
+            "/saved_place_lists",
+            params={"on_conflict": "session_id"},
+            json=saved.model_dump(mode="json"),
+            prefer="resolution=merge-duplicates,return=minimal",
+        )
+
+    def delete_saved_places(self, session_id: str) -> None:
+        self._request(
+            "DELETE",
+            "/saved_place_lists",
             params={"session_id": f"eq.{session_id}"},
             prefer="return=minimal",
         )

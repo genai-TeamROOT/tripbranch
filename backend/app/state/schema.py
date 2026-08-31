@@ -311,6 +311,67 @@ class RecommendationHistory(BaseModel):
     updated_at: datetime = Field(default_factory=now_kst)
 
 
+# ---------------------------------------------------------------- 보관함
+
+class SavedPlaceItem(BaseModel):
+    """사용자가 명시적으로 담은 장소 1건. (SCHEDULE-12)
+
+    RecommendedItem/RejectedItem과 결정적으로 다른 점은 "누가 골랐는가"다 —
+    recommended는 시스템이 보여준 것이고 rejected는 사용자가 물린 것이지만,
+    이건 사용자가 능동적으로 고른 것이다. 그래서 다음 SCHEDULE 턴의 후보
+    복귀(SCHEDULE-11/D-107)와 배치 보장에서 세 목록과 다르게 취급된다.
+
+    name은 "B는 place_id만 저장하고 장소 상세 정보를 보관하지 않는다"
+    (history.py) 원칙의 예외다 — RecommendedItem.name을 SCHEDULE-09
+    2단계에서 예외로 넣은 것과 같은 이유이며, 근거도 같다. "경복궁"류 지명
+    검색이 호출마다 조금씩 다른 좌표로 resolve돼 이번 턴 후보 목록이 매번
+    달라지는 사례가 실사용에서 확인됐고(2026-08-11), 그러면 담아둔 place_id를
+    이번 턴 후보에서 다시 못 찾아 이름을 못 채운다. 보관함은 담고 나서 여러
+    턴 뒤에 쓰이는 것이 정상이라 이 재검색 실패 확률이 recommended보다 오히려
+    높다.
+
+    latitude/longitude는 후속 카드에서 채운다 — 후보 간 거리 계산
+    (agent_runtime._build_pairwise_distances_km)이 이번 턴 C 응답에서만
+    좌표를 찾기 때문에 검색 반경 밖의 보관함 장소는 거리 근거를 잃는다.
+    지금은 필드만 열어두고 None으로 남긴다.
+    """
+
+    place_id: str
+    name: str
+    # 어느 실행에서 노출된 것을 담았는지. 이력(RecommendedItem.run_id)과 대조해
+    # "그때 본 그 장소"를 되짚을 수 있게 남긴다.
+    saved_from_run_id: str
+    saved_at: datetime = Field(default_factory=now_kst)
+    latitude: float | None = None
+    longitude: float | None = None
+
+
+class SavedPlaceList(BaseModel):
+    """세션 단위 장소 보관함. (SCHEDULE-12)
+
+    RecommendationHistory에 얹지 않고 별도 엔티티로 둔 이유가 두 가지다.
+
+    1. 이력은 append-only인데 보관함은 담기/빼기가 되는 가변 상태다.
+    2. `clear_recommended()`(계약 5.5절 history reset)가 recommended와
+       closed_excluded를 비우는데, 보관함이 거기 얹혀 있으면 "다른 곳
+       보여줘" 한 번에 사용자가 담아둔 것이 함께 날아간다.
+
+    items의 순서는 담은 순서다(오래된 것이 앞). 일정 편성에서 보관함 개수가
+    항목 수 상한을 넘을 때 무엇을 남길지 이 순서로 정하므로(SCHEDULE-12
+    설계안 4절) 정렬을 바꾸지 않는다 — 점수 순으로 자르면 왜 그 곳이 빠졌는지
+    사용자에게 설명할 수 없다.
+    """
+
+    session_id: str
+    # AgentState.user_id와 동일한 규칙(TP-101 3단계, D-063): 비어 있으면
+    # 채우고, 값이 있으면 덮어쓰지 않는다. FK는 걸지 않는다. 지금은 세션
+    # TTL과 함께 소멸하지만, 정식 인증(D-062 Phase 5) 이후 계정 단위로
+    # 옮길 때 이 필드가 이관 기준이 된다.
+    user_id: str | None = None
+    items: list[SavedPlaceItem] = Field(default_factory=list)
+    updated_at: datetime = Field(default_factory=now_kst)
+
+
 # ---------------------------------------------------------------- 기록
 
 class ConditionChangeLog(BaseModel):

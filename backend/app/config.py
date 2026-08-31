@@ -240,6 +240,21 @@ class Settings(BaseSettings):
     tour_api_daily_call_limit: int = 1000
     concentration_daily_call_limit: int = 1000
 
+    # 장소 상세 화면에 보여줄 사진 수 상한. 저장소에 적재된 사진과 detailImage2로
+    # 즉석 조회한 사진에 같은 값을 쓴다 — 출처에 따라 장수가 달라지면 사용자에게는
+    # 같은 화면이 이유 없이 달라 보인다.
+    place_photo_display_limit: int = Field(default=10, ge=1, le=20)
+
+    # detailImage2 조회 결과를 프로세스 메모리에 들고 있는 시간(초). 기본 6시간.
+    #
+    # DB에 쓰지 않기로 해서 이 캐시가 유일한 재사용 수단이다. 없으면 같은 장소를
+    # 두 번 열 때 두 번 부른다. 특히 "사진이 없는 장소"가 잦아 그 빈 응답을 반복해서
+    # 받는 것이 문제다 — 적재된 5,465곳 중 2,749곳(50%)이 detailImage2가 비어 대표
+    # 이미지로 대체된 장소였다(2026-08-31 실측).
+    #
+    # 서버를 다시 띄우면 사라진다. 신선함은 이 값이 아니라 재적재 주기가 정한다.
+    place_photo_api_cache_ttl_seconds: int = Field(default=6 * 60 * 60, ge=0)
+
     # Recommendation pipeline budgets
     recommendation_result_limit: int = Field(
         default=DEFAULT_RECOMMENDATION_RESULT_LIMIT,

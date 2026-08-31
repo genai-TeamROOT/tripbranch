@@ -12,6 +12,8 @@ from app.state.schema import (
     ConditionChangeLog,
     RecommendationHistory,
     RecommendedItem,
+    SavedPlaceItem,
+    SavedPlaceList,
     TraceRecord,
     UserConditions,
     now_kst,
@@ -137,6 +139,53 @@ class TestHistory:
 
     def test_없는_세션의_이력은_None이다(self, store):
         assert store.get_history("sess_없음") is None
+
+
+class TestSavedPlaces:
+    """보관함은 이력과 별도 엔티티다. (SCHEDULE-12)"""
+
+    def test_보관함을_저장하고_조회한다(self, store):
+        store.save_saved_places(
+            SavedPlaceList(
+                session_id="sess_A",
+                items=[
+                    SavedPlaceItem(
+                        place_id="126511", name="경복궁", saved_from_run_id="r1"
+                    )
+                ],
+            )
+        )
+
+        got = store.get_saved_places("sess_A")
+        assert [item.place_id for item in got.items] == ["126511"]
+        assert got.items[0].name == "경복궁"
+
+    def test_보관함도_격리된다(self, store):
+        store.save_saved_places(SavedPlaceList(session_id="sess_A"))
+
+        got = store.get_saved_places("sess_A")
+        got.items.append(
+            SavedPlaceItem(place_id="x", name="x", saved_from_run_id="r")
+        )
+
+        assert store.get_saved_places("sess_A").items == []
+
+    def test_없는_세션의_보관함은_None이다(self, store):
+        assert store.get_saved_places("sess_없음") is None
+
+    def test_보관함_삭제가_이력에_영향을_주지_않는다(self, store):
+        store.save_history(
+            RecommendationHistory(
+                session_id="sess_A",
+                recommended=[RecommendedItem(place_id="126511", run_id="r1", rank=1)],
+            )
+        )
+        store.save_saved_places(SavedPlaceList(session_id="sess_A"))
+
+        store.delete_saved_places("sess_A")
+
+        assert store.get_saved_places("sess_A") is None
+        assert store.get_history("sess_A") is not None
 
 
 class TestChangeLog:
