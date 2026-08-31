@@ -35,7 +35,7 @@ from app.schemas import (
 # 쓰였는지와 무관하게 단일 값으로 취급한다 — 함수별 개별 버전은 만들지 않는다. 판별·추출
 # 규칙에 영향을 주는 변경(6개 함수 중 하나라도) 시 버전을 올린다 — 사소한 문구·주석
 # 변경은 올리지 않는다.
-_BASE_PROMPT_VERSION = "agent-interpret-prompts-1.0.24"
+_BASE_PROMPT_VERSION = "agent-interpret-prompts-1.0.25"
 _ACTIVE_PROMPT_VARIANT = active_variant()
 PROMPT_VERSION = (
     _BASE_PROMPT_VERSION
@@ -62,6 +62,12 @@ def build_intent_classification_instruction(
     근거를 준다. 없으면(이름 미저장 과거 세션 등) 이 블록은 생략된다.
     """
 
+    # schedule06_ambiguous_recommend는 last_intent와 무관하게 코드 자체로 특정된다
+    # (agent_runtime.py SCHEDULE-06 모호 되묻기) — 두 선택지가 SCHEDULE 계속/RECOMMEND
+    # 전환으로 서로 다른 인텐트라서, 아래 schedule_clarification_pending의 "SCHEDULE
+    # 유지" 지시를 그대로 적용하면 "추천만 해줘" 같은 답까지 SCHEDULE로 잘못 강제된다 —
+    # 그래서 이 검사를 먼저 한다.
+    schedule06_choice_pending = pending_clarification == "schedule06_ambiguous_recommend"
     schedule_clarification_pending = (
         last_intent == "SCHEDULE" and pending_clarification is not None
     )
@@ -69,11 +75,19 @@ def build_intent_classification_instruction(
         last_intent in {"RECOMMEND", "MODIFY"}
         and pending_clarification in {"location_required", "location_ambiguous"}
     )
+    # INFO 되묻기(장소명 없음/장소 후보 모호)는 last_intent="INFO"와 pending_clarification이
+    # 함께 있을 때만 성립한다 — B의 apply()가 매 턴 last_intent를 그 턴의 원본 intent로
+    # 저장하므로(D-061), INFO가 되물은 다음 턴엔 항상 last_intent="INFO"다.
+    info_clarification_pending = last_intent == "INFO" and pending_clarification is not None
     clarification_status = (
-        "예 (직전 SCHEDULE 요청의 되묻기)"
+        "예 (직전 질문: 일정 계속 진행 vs 장소만 추천 중 선택)"
+        if schedule06_choice_pending
+        else "예 (직전 SCHEDULE 요청의 되묻기)"
         if schedule_clarification_pending
         else "예 (직전 RECOMMEND/MODIFY 요청의 위치 되묻기)"
         if location_clarification_pending
+        else "예 (직전 INFO 요청의 되묻기)"
+        if info_clarification_pending
         else "아니오"
     )
     shown_names_line = ""
@@ -193,11 +207,38 @@ def _build_visit_time_rules(reference_date: date) -> str:
     return render_text("info/visit_time_rules.md", reference_date=reference_date.isoformat())
 
 
+def _build_pending_info_block(
+    question_type: str | None,
+    specific_question: str | None,
+    visit_time: str | None,
+) -> str:
+    """직전 INFO 되묻기(장소명 없음)가 이미 파악해둔 질문 정보를 프롬프트 블록으로 만든다.
+
+    셋 다 없으면(직전이 INFO 되묻기가 아니었으면) 빈 문자열 — shown_names_line과 같은
+    패턴으로, 관련 없는 턴에는 프롬프트에 아무것도 추가하지 않는다.
+    """
+    if not question_type and not specific_question:
+        return ""
+    return (
+        "\n"
+        + render_text(
+            "info/pending_question_block.md",
+            pending_question_type=question_type or "알 수 없음",
+            pending_specific_question=specific_question or "알 수 없음",
+            pending_visit_time=visit_time or "없음",
+        )
+        + "\n"
+    )
+
+
 def build_info_extraction_instruction(
     *,
     has_previous_recommendation: bool,
     reference_date: date,
     conversation_place_name: str | None = None,
+    pending_info_question_type: str | None = None,
+    pending_info_specific_question: str | None = None,
+    pending_info_visit_time: str | None = None,
 ) -> str:
     """int-02-info.md §4~7(InfoQuery, question_type, place_context) 기반."""
 
@@ -208,6 +249,9 @@ def build_info_extraction_instruction(
         visit_time_rules=_build_visit_time_rules(reference_date),
         has_previous_recommendation="있음" if has_previous_recommendation else "없음",
         conversation_place_name=conversation_place_name or "없음",
+        pending_question_block=_build_pending_info_block(
+            pending_info_question_type, pending_info_specific_question, pending_info_visit_time
+        ),
     )
 
 

@@ -14,6 +14,7 @@ import pytest
 from app.providers.contracts import ProviderSource, provider_result
 from app.providers.stub import FakeLLMProvider
 from app.schemas import (
+    InfoPayload,
     Intent,
     IntentClassificationResult,
     InteractionMode,
@@ -24,6 +25,7 @@ from app.schemas import (
     OutputStatus,
     PlaceContext,
     PlaceTag,
+    QuestionType,
     Severity,
     UserConditions,
 )
@@ -113,6 +115,48 @@ async def test_info_conversation_reference_does_not_overwrite_explicit_place() -
     assert output.info is not None
     assert output.info.place_context is PlaceContext.EXPLICIT
     assert output.info.place_name == "경복궁"
+
+
+@pytest.mark.asyncio
+async def test_info_extraction_receives_pending_question_context() -> None:
+    """직전 INFO 되묻기(장소명 없음)가 저장해둔 질문 정보가 extract_info_query()에
+    그대로 전달돼야 한다 — 안 넘기면 자유 텍스트로 장소만 답해도 원래 질문(혼잡도
+    등)이 사라진다(2026-08-31 실사용 재현)."""
+    llm = FakeLLMProvider()
+    with patch.object(
+        llm,
+        "extract_info_query",
+        AsyncMock(
+            return_value=provider_result(
+                LLMOutput(
+                    intent=Intent.INFO,
+                    status=OutputStatus.COMPLETE,
+                    info=InfoPayload(
+                        place_name="창덕궁",
+                        place_context=PlaceContext.EXPLICIT,
+                        question_type=QuestionType.CONCENTRATION,
+                        specific_question="사람많아?",
+                    ),
+                ),
+                source=ProviderSource.FAKE_LLM,
+            )
+        ),
+    ) as mocked_extract:
+        request = InterpretRequest(
+            user_input="창덕궁",
+            has_previous_recommendation=True,
+            pending_clarification="missing:place_name",
+            last_intent="INFO",
+            pending_info_question_type="concentration",
+            pending_info_specific_question="사람많아?",
+        )
+        output = await build_interpretation(request, llm)
+
+    assert output.intent is Intent.INFO
+    mocked_extract.assert_awaited_once()
+    _, kwargs = mocked_extract.call_args
+    assert kwargs["pending_info_question_type"] == "concentration"
+    assert kwargs["pending_info_specific_question"] == "사람많아?"
 
 
 # --- 케이스 4/5(PR 4, docs/design/clarification-options.md): 목적어 없는

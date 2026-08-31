@@ -8,6 +8,19 @@
 
 ## Draft
 
+- 2026-08-31: INFO/SCHEDULE 되묻기 자유 텍스트 이어받기 버그(실사용 재현: "사람많아?"
+  되묻기 뒤 "여의도 한강공원"이라고 답하면 MODIFY로 새어 혼잡도와 무관한 식당 추천이
+  나옴)를 고치며 `context_rules.md`에 규칙 2개를 추가했습니다. ① 직전 턴이 INFO
+  되묻기(장소 모름/후보 모호)로 끝났고 이번 발화가 그 답변으로 보이면 "이전 추천 있음 +
+  지명 단독 → MODIFY" 규칙보다 INFO 유지를 우선합니다. ② `schedule06_ambiguous_recommend`
+  되묻기("일정 계속 짤까요, 장소만 추천할까요?")는 두 선택지가 서로 다른 인텐트라 기존
+  "SCHEDULE 되묻기 → SCHEDULE 유지" 규칙을 그대로 적용하면 "추천만 해줘"류 답변까지
+  SCHEDULE로 잘못 강제되므로 전용 규칙을 별도로 뒀습니다. `interaction_mode.md`와 같은
+  방식으로 `clarification_status`에 전용 값을 추가해 분류 프롬프트에 신호를 줍니다.
+  `FakeLLMProvider`(테스트 대역)에도 같은 우선순위를 미러링했습니다
+  (`tests/test_agent_runtime.py`의 `test_info_missing_place_free_text_answer_stays_info`,
+  `test_schedule06_ambiguous_free_text_*` 참고). 실 서버 재확인 후 승인 이력으로
+  승격합니다.
 - 2026-08-20: 실시간 주차·지하철·버스정류장·행사 INFO 추가에 따라 API 조회 가능 사실
   정보의 범위와 지하철/주차/행사 경계 사례를 보강했습니다. 변경 전 INFO 정의 원문은
   `archive/intent_definitions__legacy-1.md`에 보관했습니다. INFO 추출 v3과 함께 단위
