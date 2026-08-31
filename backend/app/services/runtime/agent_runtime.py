@@ -16,7 +16,7 @@ import logging
 import math
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from datetime import timedelta
 from typing import Any, TypeVar
@@ -1101,6 +1101,106 @@ _ENRICHMENT_TERMINAL_STATUSES = frozenset({"no_data", "unavailable"})
 def _context_place_ids(context: RecommendationContext) -> list[str]:
     places = context.places
     return [place.place_id for place in (places.data or [])] if places is not None else []
+
+
+# 실측 이동시간을 조회할 상위 후보 수. 1차 채점(직선거리)에서 이만큼만 추린다.
+#
+# **후보 전량에 실측을 붙이지 않는 이유는 호출이 후보 수에 정비례하기 때문이다.**
+# `_fetch_travel_routes()`가 하드 필터 통과 후보 전부를 목적지로 만들고 Provider가
+# 목적지마다 요청을 쏜다(walking_route.py의 asyncio.gather). 후보 상한을 30으로
+# 올리자 카카오 호출이 7~13건에서 25~35건이 됐다. 결과에 나가는 것은 5곳뿐인데
+# 나머지 몫까지 치르고 있었다.
+#
+# 10인 근거는 경계 오차다. 1차를 직선거리로 매기므로 실측 기준으로는 상위 5에
+# 들었어야 할 후보가 잘릴 수 있는데, 도심 우회 계수가 평균 1.31배·범위 1.07~1.71이라
+# (2026-08-20, 종로 6개 지점) 노출 5곳의 2배를 받아두면 그 범위를 덮는다.
+#
+# 이 값이 노출 개수보다 작아지면 안 된다 — 2차 채점 대상이 노출 대상보다 적어진다.
+_MEASURED_ROUTE_CANDIDATE_LIMIT = 10
+
+
+def _narrow_prepared(
+    prepared: PreparedRecommendationResult, place_ids: Sequence[str]
+) -> PreparedRecommendationResult:
+    """채점 대상을 주어진 후보로 좁힌다. 하드 필터 결과는 그대로 둔다.
+
+    `excluded_candidates`를 손대지 않는 이유는 그것이 "왜 떨어졌나"의 기록이기
+    때문이다 — 좁히는 것은 이번 채점에 넣을 대상이지 필터 판정이 아니다. A가
+    `excluded_all_closed` 같은 신호를 그 기록으로 읽는다.
+    """
+    keep = set(place_ids)
+    narrowed = tuple(
+        candidate
+        for candidate in prepared.preparation.eligible_candidates
+        if candidate.candidate.place_id in keep
+    )
+    return replace(
+        prepared,
+        preparation=replace(prepared.preparation, eligible_candidates=narrowed),
+    )
+
+
+async def _score_with_measured_routes(
+    recommendation_provider: StagedRecommendationProvider,
+    conditions: UserConditions,
+    prepared: PreparedRecommendationResult,
+    *,
+    tool_context: RecommendationContext,
+    travel_route_tool: TravelRouteToolProvider | None,
+    recommendation_limit: int,
+) -> RecommendationResponse:
+    """직선거리로 한 번 줄 세운 뒤, 상위 후보에만 실측을 붙여 다시 채점한다.
+
+    ``1차 채점(직선거리) → 상위 N곳 실측 조회 → 2차 채점(실측 반영)``
+
+    집합이 바뀌는 게 아니라 순서가 바뀐다. 최종 정렬은 두 번 다 가중합 점수순이고,
+    실측은 거리 Feature의 입력만 바꾼다.
+
+    **2차 대상을 실측을 받은 후보로 한정하는 것이 핵심이다.** scoring의
+    `_consistent_routes()`가 "후보 중 하나라도 실측이 없으면 전부 직선거리로
+    채점한다"고 정해 두었기 때문에, 전체를 채점하면서 일부만 실측을 붙이면 실측이
+    통째로 버려진다. 좁혀 두면 그 안에서는 전원이 실측을 가져 규칙을 만족한다.
+
+    실측을 못 받으면(이동수단 미지정·조회 실패) 1차 결과를 그대로 쓴다 — 같은
+    후보를 실측 없이 두 번 채점할 이유가 없다.
+    """
+    mode = to_travel_mode(conditions)
+    if travel_route_tool is None or mode is None:
+        return await recommendation_provider.score_prepared(
+            conditions, prepared, limit=recommendation_limit
+        )
+
+    # 1차 — 실측 없이 직선거리로 줄을 세워 실측할 후보를 고른다.
+    shortlist_limit = max(recommendation_limit, _MEASURED_ROUTE_CANDIDATE_LIMIT)
+    first_pass = await recommendation_provider.score_prepared(
+        conditions, prepared, limit=shortlist_limit
+    )
+    shortlist_ids = [
+        item.place_id
+        for item in (
+            *first_pass.recommendations,
+            *first_pass.unverified_recommendations,
+        )
+    ]
+    if not shortlist_ids:
+        return first_pass
+
+    narrowed = _narrow_prepared(prepared, shortlist_ids)
+    travel_routes = await _fetch_travel_routes(
+        travel_route_tool, tool_context, narrowed, mode, conditions
+    )
+    if not travel_routes:
+        return await recommendation_provider.score_prepared(
+            conditions, narrowed, limit=recommendation_limit
+        )
+
+    # 2차 — 실측을 받은 후보끼리 다시 줄을 세운다.
+    return await recommendation_provider.score_prepared(
+        conditions,
+        narrowed,
+        travel_routes=travel_routes,
+        limit=recommendation_limit,
+    )
 
 
 def _search_center_of(context: RecommendationContext) -> Coordinates | None:
@@ -3289,18 +3389,13 @@ async def _score_recommendations(
             candidate_pool_exhausted = _candidate_pool_exhausted(refill_context)
 
         merged_prepared = recommendation_provider.merge_prepared(prepared_batches)
-        travel_routes = await _fetch_travel_routes(
-            travel_route_tool,
-            tool_context,
-            merged_prepared,
-            to_travel_mode(agent_conditions),
-            agent_conditions,
-        )
-        recommendations = await recommendation_provider.score_prepared(
+        recommendations = await _score_with_measured_routes(
+            recommendation_provider,
             agent_conditions,
             merged_prepared,
-            travel_routes=travel_routes,
-            limit=recommendation_limit,
+            tool_context=tool_context,
+            travel_route_tool=travel_route_tool,
+            recommendation_limit=recommendation_limit,
         )
     else:
         recommendations = await recommendation_provider.recommend(

@@ -70,6 +70,7 @@ from app.schemas import (
 from app.service_area import supported_district_label
 from app.services.runtime import agent_runtime as agent_runtime_module
 from app.services.runtime.agent_runtime import (
+    _MEASURED_ROUTE_CANDIDATE_LIMIT,
     _WIDEN_RADIUS_MAX_TRAVEL_TIME,
     _apply_concentration_rerank,
     _effective_excluded_place_ids,
@@ -5903,3 +5904,66 @@ async def test_staged_recommendation_refill_passes_resolved_search_center(
     # 보충은 전부 첫 조회가 확정한 좌표를 그대로 넘긴다.
     for refill in refills:
         assert refill.resolved_search_center is not None
+
+
+@pytest.mark.asyncio
+async def test_measured_routes_are_requested_only_for_the_shortlist(
+    refill_page_limit: int,
+) -> None:
+    """실측 도보는 1차 채점 상위 후보에만 조회한다.
+
+    `_fetch_travel_routes()`가 목적지마다 요청을 쏘므로(walking_route.py) 후보 전량에
+    붙이면 호출이 후보 수에 정비례한다. 결과에 나가는 것은 5곳뿐인데 나머지 몫까지
+    치를 이유가 없다 — 후보 상한을 30으로 올렸을 때 카카오 호출이 7~13건에서
+    25~35건이 됐다.
+    """
+
+    # 25곳 전부를 영업 중으로 둬서 하드 필터 통과 후보가 상위 목록보다 많게 만든다.
+    context_provider = _RefillPlacesToolProvider(open_indexes=set(range(25)))
+    route_tool = _RecordingTravelRouteTool()
+
+    await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=context_provider,
+        recommendation_provider=RealRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        travel_route_tool=route_tool,
+        store=InMemoryStateStore(),
+    )
+
+    assert len(route_tool.queries) == 1
+    requested = route_tool.queries[0].destinations
+    assert len(requested) == _MEASURED_ROUTE_CANDIDATE_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_measured_routes_cover_every_candidate_when_pool_is_small(
+    refill_page_limit: int,
+) -> None:
+    """통과 후보가 상위 목록보다 적으면 전부 실측한다 — 좁히기가 손해가 아니다."""
+
+    context_provider = _RefillPlacesToolProvider(open_indexes={0, 1, 2})
+    route_tool = _RecordingTravelRouteTool()
+
+    await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=context_provider,
+        recommendation_provider=RealRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        travel_route_tool=route_tool,
+        store=InMemoryStateStore(),
+    )
+
+    assert len(route_tool.queries) == 1
+    requested = {item.place_id for item in route_tool.queries[0].destinations}
+    assert requested == {"refill-0", "refill-1", "refill-2"}
