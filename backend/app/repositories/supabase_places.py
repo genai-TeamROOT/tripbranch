@@ -603,6 +603,7 @@ class SupabasePlaceRepository:
         latitude: float | None = None,
         longitude: float | None = None,
         radius_km: float | None = None,
+        mean_center: bool = False,
     ) -> tuple[PlaceMoodMatch, ...]:
         """올린 사진의 벡터로 분위기가 닮은 장소를 찾는다.
 
@@ -619,6 +620,11 @@ class SupabasePlaceRepository:
 
         질의 벡터는 적재와 **같은 모델·같은 정규화**여야 한다. 적재는
         google/siglip2-base-patch16-224로 길이 1 정규화 상태에서 했다.
+
+        `mean_center`를 켜면 질의와 장소 벡터에서 각각 전체 평균을 빼고
+        비교한다(D-114). **돌아오는 similarity의 눈금이 달라진다** — 공통
+        성분이 빠져 값이 전반적으로 낮아지므로, 켠 결과와 끈 결과의 숫자를
+        직접 견주면 안 된다. 순위만 쓴다.
         """
         payload_ids: list[str] | None = None
         if candidate_content_ids is not None:
@@ -642,6 +648,7 @@ class SupabasePlaceRepository:
                 "p_latitude": latitude,
                 "p_longitude": longitude,
                 "p_radius_km": radius_km,
+                "p_mean_center": mean_center,
             },
         )
         payload = self._json(response)

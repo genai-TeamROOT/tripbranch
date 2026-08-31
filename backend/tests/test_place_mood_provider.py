@@ -54,6 +54,7 @@ class _RecordingRepository:
         latitude: float | None = None,
         longitude: float | None = None,
         radius_km: float | None = None,
+        mean_center: bool = False,
     ) -> tuple[PlaceMoodMatch, ...]:
         self.search_calls.append(
             {
@@ -68,6 +69,7 @@ class _RecordingRepository:
                 "latitude": latitude,
                 "longitude": longitude,
                 "radius_km": radius_km,
+                "mean_center": mean_center,
             }
         )
         return self._matches
@@ -146,6 +148,7 @@ async def test_photo_search_passes_defaults_to_repository() -> None:
             "latitude": None,
             "longitude": None,
             "radius_km": None,
+            "mean_center": False,
         }
     ]
 
@@ -223,3 +226,36 @@ async def test_radius_is_passed_through() -> None:
     assert call["latitude"] == pytest.approx(37.57)
     assert call["radius_km"] == pytest.approx(2.0)
     assert call["match_count"] == 40
+
+
+@pytest.mark.asyncio
+async def test_mean_center_is_passed_through() -> None:
+    """평균 빼기 설정이 저장소까지 내려간다(D-114).
+
+    **여기서 못 박지 않으면 조용히 꺼진 채로 돈다.** 이 값은 응답 모양을 바꾸지
+    않고 순위만 바꾸므로, 안 넘어가도 결과는 그럴듯하게 나오고 테스트도 통과한다.
+    실제로는 47.1%짜리 옛 순위를 주면서 켠 줄 알게 된다.
+    """
+    repository = _RecordingRepository(matches=(_match("a", 0.9),))
+    provider = PlaceMoodProvider(
+        repository, _RecordingEncoder(), mean_center=True
+    )
+
+    await provider.search_by_photo(b"bytes", None)
+
+    assert repository.search_calls[0]["mean_center"] is True
+
+
+@pytest.mark.asyncio
+async def test_mean_center_defaults_to_off_in_provider() -> None:
+    """Provider 자체의 기본값은 꺼짐이다.
+
+    켜고 끄는 판단은 설정이 한다(`place_mood_mean_center_enabled`). Provider가
+    스스로 켜면 그 설정을 꺼도 안 꺼지는 경로가 생긴다.
+    """
+    repository = _RecordingRepository(matches=(_match("a", 0.9),))
+    provider = PlaceMoodProvider(repository, _RecordingEncoder())
+
+    await provider.search_by_photo(b"bytes", None)
+
+    assert repository.search_calls[0]["mean_center"] is False
