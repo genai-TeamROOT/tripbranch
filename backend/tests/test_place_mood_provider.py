@@ -55,6 +55,7 @@ class _RecordingRepository:
         longitude: float | None = None,
         radius_km: float | None = None,
         mean_center: bool = False,
+        axis_weight: float = 1.0,
     ) -> tuple[PlaceMoodMatch, ...]:
         self.search_calls.append(
             {
@@ -70,6 +71,7 @@ class _RecordingRepository:
                 "longitude": longitude,
                 "radius_km": radius_km,
                 "mean_center": mean_center,
+                "axis_weight": axis_weight,
             }
         )
         return self._matches
@@ -149,6 +151,7 @@ async def test_photo_search_passes_defaults_to_repository() -> None:
             "longitude": None,
             "radius_km": None,
             "mean_center": False,
+            "axis_weight": 1.0,
         }
     ]
 
@@ -259,3 +262,34 @@ async def test_mean_center_defaults_to_off_in_provider() -> None:
     await provider.search_by_photo(b"bytes", None)
 
     assert repository.search_calls[0]["mean_center"] is False
+
+
+@pytest.mark.asyncio
+async def test_axis_weight_is_passed_through() -> None:
+    """축 섞는 비율이 저장소까지 내려간다(TP-206).
+
+    `mean_center`와 같은 이유로 못 박는다 — 이 값은 응답 모양을 바꾸지 않고
+    순위만 바꾸므로, 안 넘어가도 결과가 그럴듯하게 나오고 테스트도 통과한다.
+    실제로는 축을 섞지 않은 옛 순위를 주면서 섞은 줄 알게 된다.
+    """
+    repository = _RecordingRepository(matches=(_match("a", 0.9),))
+    provider = PlaceMoodProvider(repository, _RecordingEncoder(), axis_weight=0.7)
+
+    await provider.search_by_photo(b"bytes", None)
+
+    assert repository.search_calls[0]["axis_weight"] == pytest.approx(0.7)
+
+
+@pytest.mark.asyncio
+async def test_axis_weight_defaults_to_one_in_provider() -> None:
+    """Provider 자체의 기본값은 1.0(축을 쓰지 않음)이다.
+
+    섞을 비율을 정하는 것은 설정이다(`place_mood_axis_weight`). Provider가
+    스스로 섞으면 그 설정을 1.0으로 되돌려도 안 꺼지는 경로가 생긴다.
+    """
+    repository = _RecordingRepository(matches=(_match("a", 0.9),))
+    provider = PlaceMoodProvider(repository, _RecordingEncoder())
+
+    await provider.search_by_photo(b"bytes", None)
+
+    assert repository.search_calls[0]["axis_weight"] == pytest.approx(1.0)

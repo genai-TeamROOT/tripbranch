@@ -881,19 +881,34 @@ def _format_duration_label(total_minutes: int) -> str:
 
 
 def _with_omitted_note(message: str, schedule: ScheduleResult) -> str:
-    """담아둔 장소를 못 담았으면 그 사실을 한 문장으로 덧붙인다. (SCHEDULE-12)
+    """담아둔 장소를 못 담았으면 그 사실을 덧붙인다. (SCHEDULE-12)
+
+    사유가 둘이고 해결책이 정반대라 문장을 따로 만든다.
+
+    - `absent_saved_place_names`: 이번 턴 후보 목록에 아예 없었다. 편성 조건을
+      바꿔도 결과가 같으므로 재시도를 권하지 않는다.
+    - `omitted_saved_place_names`: 항목 수 상한을 넘었거나 LLM이 재시도 후에도
+      빠뜨렸다. 시간을 늘리거나 다른 곳을 빼면 들어갈 수 있다.
 
     빠진 장소가 없으면 message를 그대로 돌려준다 — 이게 정상 경로다.
     """
 
-    names = schedule.omitted_saved_place_names
-    if not names:
-        return message
-    joined = ", ".join(names)
-    return (
-        f"{message} 담아두신 {joined}은 이번 일정에 넣지 못했어요 — "
-        "시간을 늘리거나 다른 곳을 빼고 다시 요청해보실래요?"
-    )
+    parts = [message]
+    # 후보에 아예 없었던 장소. 편성 조건을 바꿔도 결과가 같으므로 재시도를
+    # 권하지 않는다 — 권하면 사용자가 같은 실패를 반복하게 된다.
+    if schedule.absent_saved_place_names:
+        joined = ", ".join(schedule.absent_saved_place_names)
+        parts.append(
+            f"담아두신 {joined}은 이번에 찾은 후보에 없어서 일정에 넣지 못했어요."
+        )
+    # 상한 초과·LLM 누락. 이쪽은 조건을 바꾸면 들어갈 수 있다.
+    if schedule.omitted_saved_place_names:
+        joined = ", ".join(schedule.omitted_saved_place_names)
+        parts.append(
+            f"담아두신 {joined}은 이번 일정에 넣지 못했어요 — "
+            "시간을 늘리거나 다른 곳을 빼고 다시 요청해보실래요?"
+        )
+    return " ".join(parts)
 
 
 def compose_schedule_message(

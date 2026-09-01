@@ -17,6 +17,7 @@ import {
 import { fetchSessionState, streamChat, toDisplayConditions } from "../api/trip";
 import { ChatComposer } from "../components/chat/ChatComposer";
 import { ChatMessageList } from "../components/chat/ChatMessageList";
+import { SavedPlacesBar } from "../components/chat/SavedPlacesBar";
 import { ApiExchangePanel } from "../components/dev/ApiExchangePanel";
 import { DeveloperAuditPanel } from "../components/dev/DeveloperAuditPanel";
 import { StaleAreaBanner } from "../components/dev/StaleAreaBanner";
@@ -25,6 +26,7 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { LanguageSelector } from "../components/LanguageSelector";
 import { AuthStatusBadge } from "../auth/AuthStatusBadge";
 import { usePhotoSimilarSearch } from "../hooks/usePhotoSimilarSearch";
+import { useSavedPlaces } from "../hooks/useSavedPlaces";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import { buildAgentStageTimings } from "../utils/agentTiming";
 import { getLatestConversationPlaceName } from "../utils/conversationPlace";
@@ -176,6 +178,9 @@ export function DeveloperChatPage() {
     [dispatch, state.session_id],
   );
 
+  // 새로고침 직후 보관함을 서버 기준으로 다시 맞춘다(useSavedPlaces.ts 참고).
+  const { refreshIfAny: refreshSavedIfAny } = useSavedPlaces();
+
   const send = useCallback(
     async (
       text: string,
@@ -183,6 +188,7 @@ export function DeveloperChatPage() {
       deviceLocationOverride?: string,
       deviceLocationCapturedAt?: number,
       travelOriginOverride?: TravelOrigin,
+      options?: { scheduleFromSaved?: boolean },
     ) => {
       let deviceLocation = deviceLocationOverride ?? state.device_location;
       let capturedAt = deviceLocationCapturedAt;
@@ -225,6 +231,7 @@ export function DeveloperChatPage() {
             conversation_place_name: conversationPlaceName,
             clarification_choice: clarificationChoice ?? null,
             travel_origin_override: travelOriginOverride ?? null,
+            schedule_from_saved: options?.scheduleFromSaved ?? false,
             debug_ignore_operating_hours: debugIgnoreOperatingHours,
           },
           (event) => {
@@ -325,18 +332,31 @@ export function DeveloperChatPage() {
         // 외부 호출은 이 턴에서 발생하므로 턴이 끝난 직후에만 다시 읽는다.
         // 주기 폴링을 걸면 아무 일도 없는 동안 요청만 늘어난다.
         void loadExchanges();
+        // 이 턴에서 거절이 일어났다면 서버가 보관함에서도 뺐다(saved ∩ rejected = ∅).
+        void refreshSavedIfAny();
       }
     },
     [
       debugIgnoreOperatingHours,
       dispatch,
       loadExchanges,
+      refreshSavedIfAny,
       state.device_location,
       state.language,
       state.messages,
       state.session_id,
     ],
   );
+
+  /*
+   * 보관함 CTA. ChatPage와 같은 배선이다 — 이 화면에 둔 이유는 오른쪽 감사 패널이
+   * 여기 있기 때문이다. 카드 완료 조건("CTA 클릭 시 인텐트 분류 LLM 호출이 없다")을
+   * CTA와 Audit이 한 화면에 있어야 확인할 수 있다.
+   */
+  const planFromSaved = useCallback(() => {
+    const label = state.language === "en" ? "Plan a trip with these" : "이 장소들로 일정 짜기";
+    void send(label, undefined, undefined, undefined, undefined, { scheduleFromSaved: true });
+  }, [send, state.language]);
 
   const locationAgeMinutes = getLocationAgeMinutes(state.device_location_captured_at);
 
@@ -519,6 +539,11 @@ export function DeveloperChatPage() {
           */}
           {latestTurn && <StaleAreaBanner turn={latestTurn} />}
           {latestTurn && <TurnLocationBadges turn={latestTurn} />}
+          <SavedPlacesBar
+            onPlanFromSaved={planFromSaved}
+            isLoading={isLoading}
+            language={state.language}
+          />
           <ChatComposer
             disabled={isLoading}
             onSubmit={handleFollowUp}
