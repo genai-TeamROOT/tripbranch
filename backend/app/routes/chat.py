@@ -159,11 +159,14 @@ async def recommendation_place_details(
             preference_repository = get_place_details_repository(client)
             if preference_repository is not None:
                 try:
-                    insights = await preference_repository.find_preference_insights(place_card.place_id)
+                    insights = await preference_repository.find_preference_insights(
+                        place_card.place_id
+                    )
                     place_card = place_card.model_copy(
                         update={
                             "preference_insights": [
-                                PlacePreferenceInsight.model_validate(insight) for insight in insights
+                                PlacePreferenceInsight.model_validate(insight)
+                                for insight in insights
                             ]
                         }
                     )
