@@ -38,6 +38,16 @@ window.matchMedia ??= (query: string) =>
     dispatchEvent: () => false,
   }) as MediaQueryList;
 
+/* jsdom은 ResizeObserver도 구현하지 않는다(useAutoScrollToBottom이 쓴다).
+   실제 리사이즈 감지는 필요 없고, 생성자가 없어서 렌더가 죽는 것만 막으면
+   된다 — 콜백은 아무 때도 부르지 않는 빈 구현이면 충분하다. */
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+window.ResizeObserver ??= ResizeObserverStub as unknown as typeof ResizeObserver;
+
 beforeEach(() => {
   resetSupabaseMock();
 });

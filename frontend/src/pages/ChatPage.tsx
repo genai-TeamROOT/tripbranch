@@ -11,13 +11,14 @@
  * TODO: 스트리밍 응답이 생기면 메시지 append 경로를 확장한다.
  */
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
 import { fetchSessionState, streamChat, toDisplayConditions } from "../api/trip";
 import { ChatComposer } from "../components/chat/ChatComposer";
 import { ChatMessageList } from "../components/chat/ChatMessageList";
 import { SavedPlacesBar } from "../components/chat/SavedPlacesBar";
+import { useAutoScrollToBottom } from "../hooks/useAutoScrollToBottom";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { AppHeader } from "../components/layout/AppHeader";
 import { usePhotoSimilarSearch } from "../hooks/usePhotoSimilarSearch";
@@ -78,6 +79,8 @@ export function ChatPage() {
 
   const isLoading = state.phase === "interpreting" || state.phase === "recommending";
   const hasConversation = state.messages.length > 0;
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
+  useAutoScrollToBottom(messagesContainerRef, isLoading);
   const [pendingLocationRefresh, setPendingLocationRefresh] =
     useState<PendingLocationRefresh | null>(null);
 
@@ -374,7 +377,10 @@ export function ChatPage() {
     <main className="flex h-full flex-col">
       <AppHeader locationLabel={locationLabel} />
 
-      <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-4 px-4 pb-4">
+      <div
+        ref={messagesContainerRef}
+        className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-4 px-4 pb-4"
+      >
         {/* 브랜드 표기·언어 전환·신원 표시는 사이드바가 맡는다(DESIGN_SYSTEM.md
             6.17). "처음부터"는 사이드바 "홈"과 동작이 같아 중복이라 뺐다. */}
         <div className="flex items-center justify-between gap-3">
