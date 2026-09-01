@@ -770,6 +770,7 @@ def get_place_mood_provider(
         repository,
         _get_mood_encoder(),
         mean_center=settings.place_mood_mean_center_enabled,
+        axis_weight=settings.place_mood_axis_weight,
     )
 
 

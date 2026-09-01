@@ -48,6 +48,11 @@ export function usePhotoSimilarSearch() {
           sessionId: state.session_id,
           latitude: hasCoordinates ? latitude : null,
           longitude: hasCoordinates ? longitude : null,
+          // 다섯 곳만 보여준다. 일반 추천과 개수를 맞추고, 무엇보다 **품질이
+          // 아래로 갈수록 떨어진다** — 사람 눈가림 채점에서 상위 3곳과 5곳의
+          // 성적 차이가 뚜렷했다. 서버 기본값은 10이라 이 줄이 없으면 재본 적
+          // 없는 6~10위까지 화면에 실린다.
+          limit: 5,
         });
         dispatch({
           type: "RESOLVE_PHOTO_SIMILAR",

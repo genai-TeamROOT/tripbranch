@@ -253,6 +253,7 @@ class PlaceMoodRepository(Protocol):
         longitude: float | None = None,
         radius_km: float | None = None,
         mean_center: bool = False,
+        axis_weight: float = 1.0,
     ) -> tuple[PlaceMoodMatch, ...]: ...
 
     async def find_first_photo_urls(
