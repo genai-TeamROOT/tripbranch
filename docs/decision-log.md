@@ -4766,7 +4766,9 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 ### D-114 — 보관함에 담은 장소는 후보로 되살리고 배치까지 구조적으로 보장한다
 
 - 상태: `Implemented` — D-110(보관함 상태·API)의 후속. 프론트와 구 간 이동 이동시간은
-  후속 카드로 남는다.
+  후속 카드로 남는다. **정정(D-116)**: 아래 결정 4의 하드 검증은 담아둔 장소가
+  그 턴 후보 목록에 들어와 있을 때만 작동한다. 후보 주입이 없어 실제로는
+  무력했고, D-116에서 채점 이전 단계 주입을 더해 닫았다.
 - 배경: D-110으로 담을 수는 있게 됐지만 담아도 일정에 전혀 반영되지 않았다. 두 가지가
   막고 있었다. (1) D-107이 되살리는 `shown_place_ids`는 **마지막 run만** 담아
   (`history.get_shown_place_ids()`) 3턴 전에 담은 장소는 제외 목록에 그대로 남는다.
@@ -4928,6 +4930,54 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
   사진들이 자기 자신을 1위로 찾게 되어 못 쓴다.
 - 상세: `supabase/migrations/` `search_place_mood`, `backend/app/providers/`
 
+### D-116 — 보관함 장소는 채점 이전 단계에서 후보 컨텍스트에 주입한다
+
+- 상태: `Implemented` — D-114의 결함 수정. SCHEDULE-12 카드 3(담기 버튼) 검증 중
+  드러났다. 상세 경위는 SCHEDULE-14 Why 노트.
+- 배경: D-114가 `must_include_place_ids` + 하드 검증 + 1회 재시도로 배치를
+  보장한다고 적었지만 **그 보장이 무력했다.** 담아둔 장소가 그 턴 후보 목록
+  (`schedule_candidates`)에 없으면 `planner._resolve_must_include()`가 조용히
+  버리고, `_missing_must_include()`는 이미 줄어든 목록만 보므로 통과한다 —
+  재시도도 안 걸린다. 후보 목록은 그 턴 C 응답이 전부였다. D-114의 좌표
+  스냅샷은 `_build_pairwise_distances_km()`의 `fallback_coordinates`로만 쓰이지
+  후보를 만들지 않고, `_revivable_place_ids()`는 제외 목록에서 빼줄 뿐이라
+  이번 턴 검색이 그 장소를 다시 물어오지 못하면 애초에 후보가 되지 못한다.
+  인사동에서 4곳을 담고 일정을 요청하니 1곳만 들어간 실사용으로 드러났다 —
+  지역이 달라야만 나는 문제가 아니다. 같은 지역이어도 POI가 후보 상한보다
+  많으면 매 턴 다른 후보가 뽑힌다.
+- 결정:
+  1. **`_saved_places_context()` 신설.** 이번 턴 후보에 없는 보관함 장소를
+     `get_active_place_details()`로 조회해 `tool_context.places`에 주입한다.
+     Supabase 기반 일괄 조회라 TourAPI 쿼터를 쓰지 않고, `services/photo_similar.py`
+     가 같은 패턴(상세 조회 → Context 구성 → 같은 하드 필터)을 이미 돌리고 있다.
+  2. **`schedule_candidates`에 직접 꽂지 않는다.** 원소가 `RecommendationItem`이라
+     `score`·`feature_scores`·`recommendation_reason`을 지어내야 하는데, **그 값들이
+     편성 프롬프트에 그대로 들어간다** — 지어낸 점수와 사유로 LLM이 동선을 정하게
+     된다. 한 단계 앞(`context.places`)에 넣으면 D가 정상 채점하므로 지어낼 값이
+     없다. 후보 상한(`RECOMMENDATION_CANDIDATE_LIMIT`)을 올리는 안은 증상 완화라
+     기각했다.
+  3. **주입은 보충 조회 루프 뒤에, 보충 배치와 같은 방식으로 붙인다.** 루프 안이면
+     C가 뒤늦게 같은 장소를 돌려줄 때 `prepared_batches`에 후보가 두 번 들어가고,
+     `_candidate_pool_exhausted()`가 재는 값이 실제 C 응답과 어긋난다 — 그 함수는
+     C가 더 줄 게 있는지를 재는 것이지 후보 총량을 재는 것이 아니다. 주입한
+     개수만큼 `recommendation_limit`을 올린다(상위 N 자르기에서 다시 빠지면 헛수고).
+  4. **`ScheduleResult.absent_saved_place_names` 신설.** "후보에 아예 없었다"와
+     "항목 수 상한·LLM 누락"은 해결책이 정반대인데 `omitted_saved_place_names`
+     하나에 섞여 있어, `_with_omitted_note()`가 전자에게도 "시간을 늘리거나 다른
+     곳을 빼고 다시 요청해보실래요?"를 붙이고 있었다. 후보에 없던 장소는 재시도를
+     권하지 않는다.
+  5. **배선은 두 곳 모두.** `run_agent_flow()`뿐 아니라 `graph/nodes/pipeline.py`의
+     `PipelineDeps`·`scoring_node`까지 넘겨야 한다 — 같은 단계 함수를 두 곳에서
+     부르고 실제로 도는 것은 그래프 쪽이다. D-114에서 `_finalize_recommendation_
+     response()` 시그니처가 같은 함정을 냈던 것의 재발이다.
+- 한계: 주입은 Supabase `places`에 상세 행이 있는 장소만 된다 — 없으면 후보가
+  되지 못하고 `absent_saved_place_names`로 안내한다. "담은 장소가 반드시
+  배치된다"는 real LLM으로만 확인된다. fake 스텁의 `generate_schedule_plan`은
+  `must_include`를 보지 않고 후보 앞 3개를 그대로 고른다.
+- 상세: `backend/app/services/runtime/agent_runtime.py`,
+  `backend/app/services/runtime/graph/nodes/pipeline.py`,
+  `backend/app/services/runtime/response_composer.py`, `backend/app/schemas.py`
+
 ## 변경 이력
 
 | 날짜 | 변경 |
@@ -5043,3 +5093,4 @@ D도 함께 고쳐야 한다. 번역만 C가 하고 판정은 하지 않는다.
 | 2026-08-31 | D-113 신설 — 도보 실측을 1차 채점 상위 10곳에만 조회한다(C, TP-103 후속). 후보 전량에 붙이던 것을 1차(직선거리) → 상위 10곳 실측 → 2차(실측 반영) 순서로 바꿨다. 2차 대상을 실측 받은 후보로 한정하는 것이 핵심이다 — _consistent_routes()가 하나라도 실측이 없으면 전부 직선거리로 채점하므로, 좁히지 않으면 실측이 통째로 버려진다. 10인 이유는 5면 실측이 선택에 관여하지 못해서다: 6개 조합 중 3개에서 최종 5곳의 집합이 바뀌었고 안국역 14시는 3곳이 갈렸다. 우회 계수가 1.07~1.71배로 벌어져 직선 기준 순위가 실측에서 뒤집힌다. domain/scoring.py는 안 건드리고 부르는 순서만 바꿨다. 도보 호출 25~35건 → 10건 |
 | 2026-08-31 | D-114 신설 — 보관함에 담은 장소를 후보로 되살리고 배치까지 구조적으로 보장한다(D-110 후속, SCHEDULE-12, B). D-110으로 담을 수는 있게 됐지만 담아도 일정에 반영되지 않았다: D-107이 되살리는 `shown_place_ids`는 마지막 run만 담아 3턴 전에 담은 장소는 제외 목록에 남고, 후보 풀에 들어가는 것과 배치되는 것은 다르다(채점에서 밀리면 그대로 빠진다). `_revivable_place_ids()`가 보관함을 합집합으로 더하고, 직전 노출분은 새 SCHEDULE 턴에만·**보관함은 재조정 턴에도** 되살린다 — 사용자가 명시적으로 담아둔 것이라 "두 번째는 별로야"가 나머지까지 뺄 이유가 없다. 거절과의 충돌은 `record_rejected()`가 같은 place_id를 보관함에서 빼서 `saved ∩ rejected = ∅`을 구조적으로 보장하는 쪽으로 닫았다 — 이 처리를 service.py가 아니라 history.py에 둔 이유는 호출부가 두 번 부르는 것을 잊으면 불변식이 조용히 깨지기 때문이고, 덕분에 후보 복귀가 두 목록의 시간 순서를 비교할 필요가 없어졌다(TP-180에서 테스트 4건이 깨졌던 지점이 애초에 안 생긴다). `RecommendedItem`·`SavedPlaceItem`에 위경도를 실어 "place_id만 저장한다" 원칙의 네 번째 예외를 썼다 — 보관함은 담고 나서 여러 턴 뒤에 쓰이는 것이 정상이라 이번 턴 검색 반경 밖일 확률이 recommended보다 높고, 그러면 `_build_pairwise_distances_km()`가 좌표를 못 찾아 강남 장소가 종로 일정 2번째에 꽂혀도 막을 수 없다(C 응답이 있으면 그쪽 우선). `_finalize_recommendation_response()`에 `tool_context` 인자가 붙었다. 배치는 `SchedulePlanningRequest.must_include_place_ids` + 프롬프트(`schedule.plan` 1.2.0, `[반드시 포함]`) + `plan_schedule()`의 하드 검증으로 보장하고, 누락 시 1회 재시도 후에도 빠지면 **결과를 살린다** — `plan_partial_schedule()`의 하드 실패와 다른 선택이며, 저쪽은 유지해야 할 기존 일정이 걸려 있지만 장바구니는 부분 성공이 전체 실패보다 낫다. 대신 `ScheduleResult.omitted_saved_place_names`로 말풍선에 알린다. 개수 충돌은 `target_item_range()` 상한까지 **담은 순서로** 자른다(점수 순이면 왜 빠졌는지 설명할 수 없다). 부분 재편성에는 `must_include`를 넘기지 않는다 — pinned_items가 이미 자리를 붙들고 있다 |
 | 2026-08-31 | D-115 신설 — 사진 검색만 조회 시점에 전체 평균 벡터를 빼기로 했다(C, TP-197). 한 번 채택했다 취소한 결정을 뒤집는 것이라 근거가 핵심이다: 취소 근거였던 종로 631곳 평균 순위 15.2위 → 18.8위는 leave-one-out으로 잰 값인데, 그 과제는 "같은 장소의 다른 사진을 찾는" 일이라 공통 성분이 도움이 되고 분위기 맞추기는 그 공통 성분이 방해가 되는 과제다 — 다른 과제에서 잰 값으로 이 경로를 정했던 셈이다. 같은 질의 32장으로 사람이 눈가림 채점하니 48.2% → 53.2%, 직접 찍은 사진에서 44.3% → 51.9%로 개선이 더 컸다. 첫 측정은 채점 회차와 섞여 있어(빠진 곳은 옛 채점, 들어온 곳은 새 채점) 교체된 80칸을 한 회차에서 다시 매겼고, 겉보기 효과의 절반쯤이 회차였다 — 교체된 자리 27.5% 대 45.0%(p = 0.0812). 유의성이 0.05 언저리라 세 시험 중 하나만 통과하지만(0.0481 / 0.0730 / 0.0812) 방향이 모두 같고 나빠진 지표가 없으며 되돌리는 비용이 설정 하나라 채택한다. 덤으로 때깔 격차가 9.0%p → 3.1%p로 줄었다: 홍보 사진과 폰 사진을 가르던 것이 바로 그 공통 성분이었다. 허브는 늘지 않았고(1,500칸을 채운 장소 1,159 → 1,212곳) 사진 한 장짜리가 결과에 들어오기 시작했다(5.0% → 15.0%, DB 비율은 56%). 구현은 중심 벡터를 저장해 두고 뺀다 — 매번 avg()면 1,314ms, 저장하면 184ms(지금 60ms). 미리 뺀 컬럼을 따로 두지 않은 것은 원본과 두 벌이 되어 적재 때마다 어긋나기 때문이고, 응답이 문제가 되면 그때 옮긴다. 발화 경로(축 점수)와 적재된 벡터는 건드리지 않는다. 1위는 한 칸도 바뀌지 않았다 |
+| 2026-09-01 | D-116 신설 — 보관함 장소를 채점 이전 단계의 후보 컨텍스트에 주입한다(D-114 결함 수정, SCHEDULE-14, B). D-114가 하드 검증 + 1회 재시도로 배치를 보장한다고 적었지만 담아둔 장소가 그 턴 후보 목록에 없으면 `planner._resolve_must_include()`가 조용히 버리고 `_missing_must_include()`는 이미 줄어든 목록만 보므로 통과한다 — 보장이 통째로 무력했다. 좌표 스냅샷은 거리 계산 보정용이지 후보를 만들지 않고 `_revivable_place_ids()`는 제외 목록에서 빼줄 뿐이라 둘 다 이걸 막지 못한다. 인사동에서 4곳을 담고 1곳만 들어간 실사용으로 드러났다. `_saved_places_context()`가 `get_active_place_details()`로 상세를 받아 `tool_context.places`에 주입한다 — `schedule_candidates`에 직접 꽂지 않은 이유는 `score`·`recommendation_reason`을 지어내야 하고 그 값이 편성 프롬프트에 그대로 들어가기 때문이다(`photo_similar.py`가 쓰는 패턴을 한 곳 더 적용한 것). 주입은 보충 조회 루프 뒤에 보충 배치와 같은 방식으로 붙이고(루프 안이면 후보 중복·소진 판정 어긋남), 주입한 개수만큼 `recommendation_limit`을 올린다. `ScheduleResult.absent_saved_place_names`를 신설해 "후보에 아예 없었다"와 "시간이 모자랐다"를 갈랐다 — 해결책이 정반대인데 한 필드에 섞여 전자에게도 재시도를 권하고 있었다. 배선은 `run_agent_flow()`와 `graph/nodes/pipeline.py`의 `PipelineDeps`·`scoring_node` 둘 다 필요했다(실제로 도는 것은 그래프 쪽). 주입은 Supabase `places`에 상세 행이 있는 장소에 한하고, "반드시 배치된다"는 fake 스텁이 `must_include`를 보지 않으므로 real LLM 검증이 남는다 |
