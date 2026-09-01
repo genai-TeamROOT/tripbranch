@@ -66,7 +66,7 @@ export function PreferencesPage() {
   return (
     <main className="flex h-full flex-col overflow-y-auto">
       <AppHeader onBack={() => navigate(-1)} />
-      <div className="flex flex-1 flex-col gap-6 px-4 pb-10">
+      <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-6 px-4 pb-10">
         <h1 className="text-[24px] font-bold leading-snug text-ink">취향 설정</h1>
 
         <section className="flex flex-col gap-2">

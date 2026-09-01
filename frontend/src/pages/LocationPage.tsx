@@ -46,7 +46,7 @@ export function LocationPage() {
   return (
     <main className="flex h-full flex-col overflow-y-auto">
       <AppHeader onBack={() => navigate(-1)} />
-      <div className="flex flex-1 flex-col gap-4 px-4 pb-10">
+      <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-4 px-4 pb-10">
         <h1 className="text-[24px] font-bold leading-snug text-ink">위치 설정</h1>
 
         <section className="flex items-center gap-3 rounded-2xl bg-white p-4 shadow-resting">
