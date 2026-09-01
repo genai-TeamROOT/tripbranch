@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import math
 from collections.abc import AsyncIterator, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Literal
 from zoneinfo import ZoneInfo
 
 from app.domain.models import (
+    AccessibilityNeed,
     PlaceCategoryFilter,
     PlaceDetails,
     WeatherForecastResult,
@@ -30,6 +32,7 @@ from app.providers.contracts import (
     ProviderStatus,
     provider_result,
 )
+from app.providers.mappers import resolve_place_category
 from app.providers.tour_intro_keys import (
     BABY_CARRIAGE_KEYS,
     CREDIT_CARD_KEYS,
@@ -1338,6 +1341,150 @@ def _fake_intro(content_type_id: str) -> dict[str, object]:
         "chkpetculture": "불가",
         "chkcreditcardculture": "가능",
     }
+
+
+@dataclass(frozen=True)
+class _FakeBarrierFreePlace:
+    """Fake 무장애 후보 한 건. 어느 편의를 갖추었는지를 값으로 들고 있다."""
+
+    place_id: str
+    name: str
+    content_type_id: str
+    lcls_systm1: str | None
+    category: str
+    lat_offset: float
+    lng_offset: float
+    needs: frozenset[AccessibilityNeed]
+
+
+# **이 목록은 판정을 실제로 움직여야 한다.** 모든 장소가 모든 편의를 갖추게 두면
+# 필터가 한 번도 걸리지 않고, 테스트는 통과하는데 검증하려던 로직은 실행되지 않는다.
+# 그래서 편의 조합을 일부러 어긋나게 둔다.
+#
+#   무장애 카페      단차 없음 + 유아 시설  → 유모차 요청(둘 다)에 남는다
+#   유아쉼터         유아 시설만            → 유모차 요청에서 **빠진다**
+#   무장애 박물관    단차 없음 + 화장실 + 시각 안내
+#   무장애 게스트하우스  전부 갖췄지만 숙박(32)이라 분류 규칙이 버린다
+_FAKE_BARRIER_FREE_PLACES: tuple[_FakeBarrierFreePlace, ...] = (
+    _FakeBarrierFreePlace(
+        place_id="fake-bf-cafe-1",
+        name="테스트 무장애 카페",
+        content_type_id="39",
+        lcls_systm1="FD",
+        category="restaurant",
+        lat_offset=0.001,
+        lng_offset=0.0,
+        needs=frozenset(
+            {AccessibilityNeed.STEP_FREE_ACCESS, AccessibilityNeed.INFANT_FACILITIES}
+        ),
+    ),
+    _FakeBarrierFreePlace(
+        place_id="fake-bf-nursery-1",
+        name="테스트 유아쉼터",
+        content_type_id="12",
+        lcls_systm1="NA",
+        category="attraction",
+        lat_offset=0.002,
+        lng_offset=0.0,
+        # 단차 정보가 없다. 유모차를 끌고 갈 수 있는지는 이 장소에서 알 수 없다.
+        needs=frozenset({AccessibilityNeed.INFANT_FACILITIES}),
+    ),
+    _FakeBarrierFreePlace(
+        place_id="fake-bf-museum-1",
+        name="테스트 무장애 박물관",
+        content_type_id="14",
+        lcls_systm1="VE",
+        category="cultural_facility",
+        lat_offset=0.003,
+        lng_offset=0.0,
+        needs=frozenset(
+            {
+                AccessibilityNeed.STEP_FREE_ACCESS,
+                AccessibilityNeed.ACCESSIBLE_RESTROOM,
+                AccessibilityNeed.VISUAL_GUIDE,
+            }
+        ),
+    ),
+    _FakeBarrierFreePlace(
+        place_id="fake-bf-lodging-1",
+        name="테스트 무장애 게스트하우스",
+        content_type_id="32",
+        lcls_systm1="AC",
+        category="lodging",
+        lat_offset=0.004,
+        lng_offset=0.0,
+        # 편의는 다 갖췄지만 숙박이라 추천 대상이 아니다. 분류 규칙이 버려야 한다.
+        needs=frozenset(AccessibilityNeed),
+    ),
+)
+
+
+class FakeBarrierFreePlaceSearchProvider:
+    """무장애 후보 검색을 고정 목록으로 대체하는 fake provider.
+
+    실 provider와 같은 규칙을 적용한다 — 요구 편의를 **전부** 만족해야 하고,
+    거리순으로 정렬하며, 추천 대상이 아닌 유형은 버린다. 규칙이 다르면 Fake로
+    확인한 동작이 실 경로에서 달라진다.
+    """
+
+    async def search_places_with_accessibility(
+        self,
+        *,
+        latitude: float,
+        longitude: float,
+        search_radius_km: float,
+        needs: Sequence[AccessibilityNeed],
+        category_filter: PlaceCategoryFilter | None = None,
+        limit: int,
+    ) -> ProviderResult[list[PlaceCandidate]]:
+        required = frozenset(needs)
+        if not required:
+            raise ValueError(
+                "needs가 비어 있습니다. 무장애 조건이 없으면 이 provider를 부르지 않습니다."
+            )
+
+        selected: list[PlaceCandidate] = []
+        for place in _FAKE_BARRIER_FREE_PLACES:
+            if not required.issubset(place.needs):
+                continue
+            if resolve_place_category(place.content_type_id) is None:
+                continue
+            if category_filter and category_filter.content_type_id:
+                if place.content_type_id != category_filter.content_type_id:
+                    continue
+            if category_filter and category_filter.lcls_systm1:
+                if place.lcls_systm1 != category_filter.lcls_systm1:
+                    continue
+            selected.append(
+                PlaceCandidate(
+                    place_id=place.place_id,
+                    content_type_id=place.content_type_id,
+                    lcls_systm1=place.lcls_systm1,
+                    lcls_systm2=None,
+                    lcls_systm3=None,
+                    name=place.name,
+                    category=place.category,
+                    latitude=latitude + place.lat_offset,
+                    longitude=longitude + place.lng_offset,
+                    address="서울 종로구 어딘가",
+                    # 실 provider와 같이 비워 둔다. 운영시간은 상세 보완이 채운다.
+                    operating_hours=None,
+                    raw_source="fake_barrier_free",
+                )
+            )
+
+        # 목록이 이미 거리순이지만 정렬을 생략하지 않는다. 항목을 더할 때 순서를
+        # 지키지 않아도 동작이 같아야 한다.
+        selected.sort(
+            key=lambda candidate: (candidate.latitude - latitude) ** 2
+            + (candidate.longitude - longitude) ** 2
+        )
+        selected = selected[: max(1, limit)]
+        return provider_result(
+            selected,
+            source=ProviderSource.FAKE_BARRIER_FREE_PLACES,
+            status=ProviderStatus.SUCCESS if selected else ProviderStatus.NO_DATA,
+        )
 
 
 class FakePlaceProvider:

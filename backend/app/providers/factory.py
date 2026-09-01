@@ -41,6 +41,7 @@ from app.providers.place_evidence import PlaceEvidenceProvider
 from app.providers.place_evidence_encoder import get_shared_encoder
 from app.providers.place_mood import PlaceMoodProvider
 from app.providers.protocols import (
+    BarrierFreePlaceSearchProvider,
     ConcentrationProvider,
     FestivalProvider,
     GeocodingProvider,
@@ -65,7 +66,15 @@ from app.providers.seoul_citydata import (
     RealRealtimeCityDataProvider,
     RealRealtimeCommercialProvider,
 )
-from app.providers.stub import FakeLLMProvider, FakePlaceProvider, FakeWeatherProvider
+from app.providers.stub import (
+    FakeBarrierFreePlaceSearchProvider,
+    FakeLLMProvider,
+    FakePlaceProvider,
+    FakeWeatherProvider,
+)
+from app.providers.supabase_barrier_free_search import (
+    SupabaseBarrierFreePlaceSearchProvider,
+)
 from app.providers.supabase_place_details import SupabasePlaceDetailsProvider
 from app.providers.walking_route import (
     FakeWalkingRouteProvider,
@@ -273,6 +282,31 @@ def get_place_provider(client: httpx.AsyncClient) -> PlaceProvider:
 def get_place_search_provider(client: httpx.AsyncClient) -> PlaceSearchProvider:
     """장소 후보 목록 검색 provider. 상세조회 출처와 무관하게 기존 경로를 유지한다."""
     return get_place_provider(client)
+
+
+def get_barrier_free_place_search_provider(
+    client: httpx.AsyncClient,
+) -> BarrierFreePlaceSearchProvider:
+    """무장애 조건이 붙은 요청의 후보 검색 provider를 준비한다.
+
+    무장애 정보는 Supabase에만 있으므로 이 경로는 TourAPI로 대체할 수 없다.
+    그래서 실 provider 모드에서 Supabase 설정이 없으면 **Fake로 내려가지 않고
+    부팅에서 멈춘다**(D-042). 조용히 Fake로 바뀌면 무장애를 요구한 사용자가
+    `"테스트 무장애 카페"`를 추천받고, 그 사실이 오류 없이 지나간다.
+
+    조건이 없는 요청은 이 provider를 부르지 않는다 — 후보 수집은 여전히
+    `get_place_search_provider()`(TourAPI)가 맡는다.
+    """
+    if settings.resolved_place_provider == "fake":
+        return FakeBarrierFreePlaceSearchProvider()
+    return SupabaseBarrierFreePlaceSearchProvider(
+        SupabasePlaceRepository(
+            supabase_url=_require_key(settings.supabase_url, "SUPABASE_URL"),
+            secret_key=_require_key(settings.supabase_secret_key, "SUPABASE_SECRET_KEY"),
+            client=client,
+            timeout_seconds=settings.external_api_timeout_seconds,
+        )
+    )
 
 
 def get_place_location_repository(
@@ -732,7 +766,11 @@ def get_place_mood_provider(
         client=client,
         timeout_seconds=settings.external_api_timeout_seconds,
     )
-    return PlaceMoodProvider(repository, _get_mood_encoder())
+    return PlaceMoodProvider(
+        repository,
+        _get_mood_encoder(),
+        mean_center=settings.place_mood_mean_center_enabled,
+    )
 
 
 def _get_mood_encoder() -> object | None:

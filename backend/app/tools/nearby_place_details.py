@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from time import perf_counter
 
-from app.domain.models import PlaceCategoryFilter, PlaceDetails
+from app.domain.models import AccessibilityNeed, PlaceCategoryFilter, PlaceDetails
 from app.errors import AppError
 from app.place_search_policy import (
     DEFAULT_PLACE_SEARCH_RADIUS_KM,
@@ -18,6 +18,7 @@ from app.place_search_policy import (
 )
 from app.providers.contracts import ProviderMetadata
 from app.providers.protocols import (
+    BarrierFreePlaceSearchProvider,
     BatchPlaceDetailsProvider,
     PlaceDetailsProvider,
     PlaceSearchProvider,
@@ -57,6 +58,13 @@ CANDIDATE_POOL_TRUNCATED_WARNING = "candidate_pool_truncated"
 # 후보가 없을 때만 붙인다. 단순히 Provider 호출이 성공했다는 것과는 다르다.
 CANDIDATE_POOL_EXHAUSTED_WARNING = "candidate_pool_exhausted"
 
+# A가 보낸 무장애 어휘 중 C가 모르는 값이 있었다. 그 값은 무시하고 나머지로 좁힌다.
+#
+# **무시하되 조용히 넘기지는 않는다.** C의 조건 계약은 `list[str]`이라 A가 어휘를
+# 늘려도 요청이 깨지지 않는데(그게 의도다), 아무 흔적도 남기지 않으면 사용자가
+# 요구한 조건 하나가 사라진 것을 아무도 모른다. 결과는 정상으로 보이고 오류도 없다.
+UNKNOWN_ACCESSIBILITY_NEED_WARNING = "unknown_accessibility_need"
+
 
 class DetailStatus(StrEnum):
     SUCCESS = "success"
@@ -78,6 +86,12 @@ class NearbyPlaceDetailsQuery:
     preferred_categories: tuple[str, ...] = ()
     category_filter: PlaceCategoryFilter | None = None
     excluded_place_ids: frozenset[str] = frozenset()
+    # 요구된 무장애 편의. 비어 있으면 지금까지의 TourAPI 경로를 그대로 쓴다.
+    #
+    # 값이 있으면 후보 출처가 저장소로 바뀐다. 무장애 정보가 Supabase에만 있어
+    # TourAPI 목록 조회로는 이 조건을 표현할 수 없기 때문이다. 그 출처 변경을
+    # 무장애 요청에만 가두려고 조건부로 둔다.
+    accessibility_needs: tuple[AccessibilityNeed, ...] = ()
 
     def __post_init__(self) -> None:
         if not -90 <= self.latitude <= 90:
@@ -127,12 +141,16 @@ class NearbyPlaceDetailsTool:
         search_provider: PlaceSearchProvider,
         details_provider: PlaceDetailsProvider,
         max_concurrency: int = 3,
+        barrier_free_search_provider: BarrierFreePlaceSearchProvider | None = None,
     ) -> None:
         if not 1 <= max_concurrency <= 10:
             raise ValueError("max_concurrency는 1 이상 10 이하여야 합니다.")
         self._search_provider = search_provider
         self._details_provider = details_provider
         self._max_concurrency = max_concurrency
+        # 없으면 무장애 조건이 와도 좁히지 못한다. 그때는 조용히 넓은 결과를 주는
+        # 대신 unavailable로 답한다 — 아래 _search()를 본다.
+        self._barrier_free_search_provider = barrier_free_search_provider
 
     async def execute(
         self, query: NearbyPlaceDetailsQuery
@@ -146,17 +164,51 @@ class NearbyPlaceDetailsTool:
         wanted_rows = needed_rows * CANDIDATE_OVERFETCH_FACTOR
         provider_limit = min(MAX_PLACE_PROVIDER_ROWS, wanted_rows)
         row_cap_reached = wanted_rows > MAX_PLACE_PROVIDER_ROWS
-        try:
-            search_result = await self._search_provider.search_places(
-                latitude=query.latitude,
-                longitude=query.longitude,
-                preferred_categories=list(query.preferred_categories),
-                search_radius_km=query.search_radius_km,
-                region_code=query.region_code,
-                district_code=query.district_code,
-                category_filter=query.category_filter,
-                limit=provider_limit,
+
+        barrier_free_provider = self._barrier_free_search_provider
+        if query.accessibility_needs and barrier_free_provider is None:
+            # 무장애 조건을 좁힐 수단이 없다. 조건을 무시한 넓은 결과를 주면
+            # 사용자는 요구가 반영된 줄 알고 못 가는 곳을 받는다 — 실패를 첫
+            # 결과가 아니라 여기서 드러낸다(D-042와 같은 이유).
+            return self._result(
+                places=(),
+                status=ToolStatus.UNAVAILABLE,
+                started_at=started_at,
+                provider_metadata=(),
+                error=ToolError(
+                    code="unavailable",
+                    message="무장애 조건으로 장소를 검색할 수 없습니다.",
+                    cause="upstream_error",
+                    retryable=False,
+                ),
             )
+
+        try:
+            # **검색은 여기서만 갈린다.** 무장애 조건이 있으면 저장소, 없으면
+            # 지금까지의 TourAPI다. 아래 상세 보완·정렬·경고는 후보가 어디서
+            # 왔는지 모르므로 두 경로가 같은 코드를 탄다.
+            if query.accessibility_needs and barrier_free_provider is not None:
+                search_result = (
+                    await barrier_free_provider.search_places_with_accessibility(
+                        latitude=query.latitude,
+                        longitude=query.longitude,
+                        search_radius_km=query.search_radius_km,
+                        needs=query.accessibility_needs,
+                        category_filter=query.category_filter,
+                        limit=provider_limit,
+                    )
+                )
+            else:
+                search_result = await self._search_provider.search_places(
+                    latitude=query.latitude,
+                    longitude=query.longitude,
+                    preferred_categories=list(query.preferred_categories),
+                    search_radius_km=query.search_radius_km,
+                    region_code=query.region_code,
+                    district_code=query.district_code,
+                    category_filter=query.category_filter,
+                    limit=provider_limit,
+                )
         except AppError as exc:
             return self._result(
                 places=(),

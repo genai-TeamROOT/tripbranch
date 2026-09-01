@@ -11,7 +11,7 @@
  * 이유가 없다(개발자용 정보가 실서비스 화면에 새던 문제를 정리함).
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { AgentProgressEvent, ChatMessage, Language, TravelOriginToggle } from "../../types";
 import { AgentProgressMessage } from "./AgentProgressMessage";
 import { ClarificationMessage } from "./ClarificationMessage";
@@ -44,6 +44,48 @@ function StreamingDots({ language }: { language: Language }) {
   );
 }
 
+function MarkdownText({ text }: { text: string }) {
+  const lines = text.split("\n");
+  const elements: ReactNode[] = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!line) continue;
+    if (line.startsWith("# ")) {
+      elements.push(
+        <h2 key={`heading-${index}`} className="text-xl font-bold text-gray-950 dark:text-gray-50">
+          {line.slice(2)}
+        </h2>,
+      );
+      continue;
+    }
+    if (line.startsWith("## ")) {
+      elements.push(
+        <h3 key={`subheading-${index}`} className="mt-3 text-lg font-bold text-gray-900 dark:text-gray-100">
+          {line.slice(3)}
+        </h3>,
+      );
+      continue;
+    }
+    if (line.startsWith("- ")) {
+      elements.push(
+        <p key={`item-${index}`} className="flex gap-2 text-sm">
+          <span aria-hidden="true">•</span>
+          <span>{line.slice(2)}</span>
+        </p>,
+      );
+      continue;
+    }
+    elements.push(
+      <p key={`paragraph-${index}`} className="leading-6">
+        {line}
+      </p>,
+    );
+  }
+
+  return <div className="space-y-1.5">{elements}</div>;
+}
+
 function StreamingText({ text, streaming, language }: { text: string; streaming: boolean; language: Language }) {
   // Gemini는 단어·문장 단위 청크를 보내기도 한다. 화면에서는 청크 크기와 무관하게
   // 한 글자씩 이어 보여, 첫 텍스트가 도착한 뒤에도 생성 중이라는 감각을 유지한다.
@@ -68,7 +110,7 @@ function StreamingText({ text, streaming, language }: { text: string; streaming:
     language === "en" && text === "이런 곳들을 찾아봤어요:"
       ? "Here are some places that match your preferences."
       : visibleText;
-  return <p className="whitespace-pre-line leading-6">{displayText}</p>;
+  return <MarkdownText text={displayText} />;
 }
 
 interface ChatMessageListProps {

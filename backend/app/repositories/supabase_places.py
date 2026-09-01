@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
@@ -11,7 +12,10 @@ from uuid import UUID
 import httpx
 
 from app.domain.models import (
+    AccessibilityNeed,
+    BarrierFreePlaceRow,
     PlaceBarrierFreeDetails,
+    PlaceCategoryFilter,
     PlaceEvidenceMatch,
     PlaceEvidenceSnippet,
     PlaceMoodMatch,
@@ -169,6 +173,11 @@ _BARRIER_FREE_COLUMNS = ",".join(
 _BARRIER_FREE_FIELDS = tuple(_BARRIER_FREE_COLUMNS.split(","))
 _VALID_RUN_STATUSES = {"success", "partial_failure", "failed"}
 _VALID_PARSE_STATUSES = {"parsed", "partial", "unknown", "assumed"}
+# 사후면세점은 세금 환급이 가능한 일반 매장까지 대량 포함한다. 단순 가나다순 예시만
+# 보이면 면세점 성격으로 오해하기 쉬워, 대표적인 생활 쇼핑 브랜드를 먼저 보여준다.
+_CATEGORY_EXAMPLE_PREFIXES: dict[str, tuple[str, ...]] = {
+    "SH040300": ("다이소", "올리브영"),
+}
 T = TypeVar("T")
 
 
@@ -480,6 +489,76 @@ class SupabasePlaceRepository:
         except ValueError:
             raise SupabaseRepositoryError("non-JSON response") from None
 
+    async def find_preference_insights(self, content_id: str) -> list[dict[str, object]]:
+        """상세 카드용 태그 집계와 대표 후기 근거를 한 장소 단위로 읽는다."""
+        tag_response, evidence_response = await asyncio.gather(
+            self._request(
+                "GET",
+                "/place_preference_tags",
+                params={
+                    "select": (
+                        "preference_code,preference_label,display_rank,mention_count,"
+                        "positive_document_count,negative_document_count"
+                    ),
+                    "content_id": f"eq.{content_id}",
+                    "order": "display_rank.asc",
+                    "limit": "5",
+                },
+            ),
+            self._request(
+                "GET",
+                "/place_preference_evidence",
+                params={
+                    "select": (
+                        "preference_code,polarity,evidence_rank,evidence_text,"
+                        "source_type,source_url"
+                    ),
+                    "content_id": f"eq.{content_id}",
+                    "order": "preference_code.asc,polarity.asc,evidence_rank.asc",
+                    "limit": "30",
+                },
+            ),
+        )
+        tags = self._json(tag_response)
+        evidence_rows = self._json(evidence_response)
+        if not isinstance(tags, list) or not isinstance(evidence_rows, list):
+            raise SupabaseRepositoryError("invalid place preference insight response")
+
+        evidence_by_code: dict[str, list[dict[str, object]]] = {}
+        for row in evidence_rows:
+            if not isinstance(row, Mapping):
+                raise SupabaseRepositoryError("invalid place preference evidence row")
+            code = str(row.get("preference_code") or "")
+            if code:
+                evidence_by_code.setdefault(code, []).append(
+                    {
+                        "polarity": str(row.get("polarity") or "mixed"),
+                        "text": str(row.get("evidence_text") or ""),
+                        "source_type": str(row.get("source_type") or ""),
+                        "source_url": (
+                            str(row["source_url"]) if row.get("source_url") else None
+                        ),
+                    }
+                )
+        insights: list[dict[str, object]] = []
+        for row in tags:
+            if not isinstance(row, Mapping):
+                raise SupabaseRepositoryError("invalid place preference tag row")
+            code = str(row.get("preference_code") or "")
+            if not code:
+                continue
+            insights.append(
+                {
+                    "code": code,
+                    "label": str(row.get("preference_label") or ""),
+                    "mention_count": int(row.get("mention_count") or 0),
+                    "positive_document_count": int(row.get("positive_document_count") or 0),
+                    "negative_document_count": int(row.get("negative_document_count") or 0),
+                    "evidence": evidence_by_code.get(code, []),
+                }
+            )
+        return insights
+
     async def find_preference_tags(
         self,
         content_ids: Sequence[str],
@@ -603,6 +682,7 @@ class SupabasePlaceRepository:
         latitude: float | None = None,
         longitude: float | None = None,
         radius_km: float | None = None,
+        mean_center: bool = False,
     ) -> tuple[PlaceMoodMatch, ...]:
         """올린 사진의 벡터로 분위기가 닮은 장소를 찾는다.
 
@@ -619,6 +699,11 @@ class SupabasePlaceRepository:
 
         질의 벡터는 적재와 **같은 모델·같은 정규화**여야 한다. 적재는
         google/siglip2-base-patch16-224로 길이 1 정규화 상태에서 했다.
+
+        `mean_center`를 켜면 질의와 장소 벡터에서 각각 전체 평균을 빼고
+        비교한다(D-115). **돌아오는 similarity의 눈금이 달라진다** — 공통
+        성분이 빠져 값이 전반적으로 낮아지므로, 켠 결과와 끈 결과의 숫자를
+        직접 견주면 안 된다. 순위만 쓴다.
         """
         payload_ids: list[str] | None = None
         if candidate_content_ids is not None:
@@ -642,12 +727,68 @@ class SupabasePlaceRepository:
                 "p_latitude": latitude,
                 "p_longitude": longitude,
                 "p_radius_km": radius_km,
+                "p_mean_center": mean_center,
             },
         )
         payload = self._json(response)
         if not isinstance(payload, list):
             raise SupabaseRepositoryError("invalid search_place_mood response")
         return tuple(_to_mood_match(row) for row in payload)
+
+    async def search_places_barrier_free(
+        self,
+        *,
+        latitude: float,
+        longitude: float,
+        radius_km: float,
+        needs: Sequence[AccessibilityNeed],
+        category_filter: PlaceCategoryFilter | None = None,
+        limit: int,
+    ) -> tuple[BarrierFreePlaceRow, ...]:
+        """무장애 편의를 요구한 요청의 후보를 반경 안에서 거리순으로 찾는다.
+
+        **무장애 조건이 없는 요청은 이 메서드를 부르지 않는다.** 후보 출처가
+        TourAPI 실시간 조회에서 저장소 스냅샷으로 바뀌므로, 무장애 요청에만
+        한정한다. 빈 `needs`로 부르면 조건 없는 전체 반경 검색이 되는데 그건
+        호출부가 의도한 적 없는 동작이라, RPC가 예외를 던지기 전에 여기서 막는다.
+
+        `needs`가 여럿이면 **전부 만족**하는 장소만 돌아온다. "유모차 끌고 갈 만한
+        곳"이 STEP_FREE_ACCESS + INFANT_FACILITIES로 오는데, 둘 다 필요하다고 말한
+        것이기 때문이다.
+
+        어느 컬럼을 읽고 무엇을 있다고 볼지는 RPC의 판정 블록이 정한다. 여기서
+        같은 판정을 다시 쓰지 않는다 — 두 곳에 두면 한쪽만 바뀌었을 때 결과가
+        갈리고, 그건 오류 없이 결과만 틀리는 실패다.
+        """
+        unique_needs = list(dict.fromkeys(needs))
+        if not unique_needs:
+            raise ValueError(
+                "needs가 비어 있습니다. 무장애 조건이 없으면 이 메서드를 부르지 않습니다."
+            )
+        if limit <= 0:
+            raise ValueError("limit은 0보다 커야 합니다.")
+
+        response = await self._request(
+            "POST",
+            "/rpc/search_places_barrier_free",
+            json={
+                "p_latitude": latitude,
+                "p_longitude": longitude,
+                "p_radius_km": radius_km,
+                "p_needs": [need.value for need in unique_needs],
+                "p_content_type_id": (
+                    category_filter.content_type_id if category_filter else None
+                ),
+                "p_lcls_systm1": category_filter.lcls_systm1 if category_filter else None,
+                "p_lcls_systm2": category_filter.lcls_systm2 if category_filter else None,
+                "p_lcls_systm3": category_filter.lcls_systm3 if category_filter else None,
+                "p_limit": limit,
+            },
+        )
+        payload = self._json(response)
+        if not isinstance(payload, list):
+            raise SupabaseRepositoryError("invalid search_places_barrier_free response")
+        return tuple(_to_barrier_free_place_row(row) for row in payload)
 
     async def find_first_photo_urls(
         self,
@@ -1918,8 +2059,7 @@ def _summarize_category_coverage(
                         "code": small,
                         "label": _category_label(registry, large, middle, small, "small"),
                         "count": leaf["count"],
-                        # 원본 순서·DB 정렬에 따라 예시가 바뀌지 않게 제목순으로 고정한다.
-                        "examples": sorted(str(example) for example in examples)[:2],
+                        "examples": _category_examples(small, examples),
                     }
                 )
             middle_groups.append(
@@ -1961,6 +2101,22 @@ def _summarize_category_coverage(
 def _category_code(value: object) -> str | None:
     code = str(value or "").strip()
     return code or None
+
+
+def _category_examples(small_code: str | None, examples: set[object]) -> list[str]:
+    """소분류를 설명하기 좋은 대표 장소를 최대 두 개 고른다.
+
+    기본은 DB 순서와 무관한 제목순이다. 다만 사후면세점처럼 관광공사 코드명이
+    실제 포함 매장의 성격을 충분히 설명하지 못하는 경우는 대표 브랜드를 우선한다.
+    """
+    titles = sorted(str(example) for example in examples)
+    selected: list[str] = []
+    for prefix in _CATEGORY_EXAMPLE_PREFIXES.get(small_code or "", ()):
+        match = next((title for title in titles if title.startswith(prefix)), None)
+        if match is not None:
+            selected.append(match)
+    selected.extend(title for title in titles if title not in selected)
+    return selected[:2]
 
 
 def _category_sort_key(code: str | None, level: str) -> tuple[int, str]:
@@ -2026,6 +2182,48 @@ def _to_evidence_snippet(item: object) -> PlaceEvidenceSnippet:
         similarity=float(item["similarity"]),
         published_at=(datetime.fromisoformat(str(published_at)) if published_at else None),
     )
+
+
+def _to_barrier_free_place_row(row: object) -> BarrierFreePlaceRow:
+    """RPC 행을 후보 모델로 옮긴다.
+
+    좌표와 거리는 없으면 실패로 다룬다. RPC가 좌표 있는 행만 돌려주고 거리를 늘
+    계산하므로, 비어 있다면 응답 모양이 어긋난 것이지 "값이 없는 장소"가 아니다.
+    0.0으로 채우면 그 장소가 검색 중심에 있는 것으로 읽혀 맨 앞에 선다.
+    """
+    if not isinstance(row, Mapping):
+        raise SupabaseRepositoryError("invalid barrier free place row")
+    content_id = str(row.get("content_id") or "")
+    if not content_id:
+        raise SupabaseRepositoryError("barrier free place row missing content_id")
+    latitude = row.get("latitude")
+    longitude = row.get("longitude")
+    distance = row.get("distance_km")
+    if latitude is None or longitude is None or distance is None:
+        raise SupabaseRepositoryError(
+            f"barrier free place row missing coordinates or distance: {content_id}"
+        )
+    return BarrierFreePlaceRow(
+        content_id=content_id,
+        title=str(row.get("title") or ""),
+        address=_optional_str(row.get("address")),
+        latitude=float(latitude),
+        longitude=float(longitude),
+        content_type_id=_optional_str(row.get("content_type_id")),
+        lcls_systm1=_optional_str(row.get("lcls_systm1")),
+        lcls_systm2=_optional_str(row.get("lcls_systm2")),
+        lcls_systm3=_optional_str(row.get("lcls_systm3")),
+        first_image_url=_optional_str(row.get("first_image_url")),
+        distance_km=float(distance),
+    )
+
+
+def _optional_str(value: object) -> str | None:
+    """빈 문자열은 값이 없는 것으로 본다. 공백만 있는 값도 마찬가지다."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _to_mood_profile(row: object) -> PlaceMoodProfile:

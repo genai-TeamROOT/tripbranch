@@ -262,6 +262,36 @@ class TestComposeChatMessageOutOfScope:
 
 class TestComposeChatMessageGeneral:
     @pytest.mark.asyncio
+    async def test_service_identity_uses_fixed_capability_guide(self) -> None:
+        llm_output = LLMOutput(
+            intent=Intent.GENERAL,
+            status=OutputStatus.COMPLETE,
+            general=GeneralPayload(
+                topic=GeneralTopic.SERVICE_IDENTITY, original_question="넌 누구야?"
+            ),
+        )
+        stub = _StubLLM()
+        received: list[str] = []
+
+        async def on_delta(text: str) -> None:
+            received.append(text)
+
+        message = await compose_chat_message(llm_output, llm=stub, on_message_delta=on_delta)
+
+        assert "# TripBranch 여행 도우미" in message
+        assert "## 장소 추천·조건 변경" in message
+        assert "## 장소 비교·일정" in message
+        assert "## 장소 상세정보" in message
+        assert "## 혼잡도" in message
+        assert "## 실시간 상권" in message
+        assert "## 실시간 주차" in message
+        assert "## 실시간 행사·교통" in message
+        assert "용리단길 식당 지금 사람 많아?" in message
+        assert "성수 카페거리 카페 지금 사람 많아?" in message
+        assert received == [message]
+        assert stub.received is None
+
+    @pytest.mark.asyncio
     async def test_calls_llm_and_returns_its_answer(self) -> None:
         llm_output = LLMOutput(
             intent=Intent.GENERAL,

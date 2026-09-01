@@ -17,6 +17,7 @@ import logging
 import math
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 
+from app.agent_context.seoul_realtime_areas import names_match
 from app.domain.travel_route import TravelRoute
 from app.errors import AppError
 from app.observability.langfuse_tracing import trace_attributes
@@ -26,6 +27,7 @@ from app.schemas import (
     ComparisonItem,
     ComparisonResult,
     ConversationTurnView,
+    GeneralTopic,
     Intent,
     LLMOutput,
     OutputStatus,
@@ -55,6 +57,47 @@ _TOOL_TERMINAL_STATUSES = frozenset(
 )
 
 _RECOMMEND_WRAPPER_MESSAGE = "이런 곳들을 찾아봤어요:"
+
+# 서비스 정체성 질문은 LLM이 매번 가능한 기능을 새로 나열하게 두지 않는다. 안내에
+# 없는 기능을 약속하면 곧바로 OUT_OF_SCOPE로 이어지므로, 실제 연결된 기능·질문만
+# 고정 카탈로그로 보여준다. GENERAL SERVICE_IDENTITY는 "넌 누구야?"도 포함하므로
+# 짧은 소개와 기능 안내를 한 답변에 함께 둔다.
+_SERVICE_IDENTITY_MESSAGE = """# TripBranch 여행 도우미
+
+국내 여행에서 갈 만한 장소를 찾고, 방문에 필요한 정보를 확인해드려요.
+
+## 장소 추천·조건 변경
+- 비를 피할 실내 카페 추천해줘
+- 조금 더 조용한 곳으로 바꿔줘
+- 박물관은 빼줘
+
+## 장소 비교·일정
+- 1번이랑 3번 중 어디가 더 가까워?
+- 추천한 곳으로 오후 일정 짜줘
+
+## 장소 상세정보
+- 경복궁 운영시간과 휴무일 알려줘
+- 경복궁 주차나 입장료 있어?
+- 휠체어로 이용하기 괜찮아?
+
+## 혼잡도
+- 경복궁 지금 사람 많아?
+- 경복궁 주말에 붐빌까?
+
+## 실시간 상권
+- 용리단길 식당 지금 사람 많아?
+- 성수 카페거리 카페 지금 사람 많아?
+
+## 실시간 주차
+- 경복궁 근처 주차할 곳 있어?
+- 종로구 공영주차장 자리 있어?
+
+## 실시간 행사·교통
+- 오늘 여의도 근처 행사 있어?
+- 강남역 지하철 언제 와?
+- 경복궁 가는 길 막혀?
+
+실시간 정보는 서울시 제공 지역과 데이터 제공 범위 안에서 확인할 수 있어요."""
 
 MessageDeltaCallback = Callable[[str], Awaitable[None]]
 
@@ -329,6 +372,25 @@ def compose_realtime_commercial_message(response: InfoContextResponse) -> str:
     )
     observed_at = format_citydata_timestamp(result.observed_at)
     observed = f" {observed_at} 기준이에요." if observed_at else ""
+
+    # area(실제 데이터를 받아온 상권)와 place(사용자가 물은 장소)가 사실상 같은
+    # 이름이면 대체가 아니라 그 장소 자체의 값이다 — "떨어진 곳", "개별 매장
+    # 혼잡도는 확인할 수 없지만"을 그대로 붙이면 자기 자신을 다른 곳인 것처럼
+    # 말하는 문장이 된다(TP-141/D-084와 같은 패턴, "성수 카페거리" 실측
+    # 2026-08-31). 공백만 비교하면 "성수카페거리"↔"성수동카페거리"처럼 글자가
+    # 하나 끼어드는 표기 차이를 놓치므로 resolve_location.py와 같은 편집거리
+    # 기준(names_match)으로 비교한다.
+    if names_match(area, place):
+        if result.commercial_scope == "area_overall":
+            return (
+                f"{area}의 요청 업종 세부값은 현재 제공되지 않았어요. 대신 {area} 전체 상권은 "
+                f"현재 {level} 수준이에요. 이 값은 지역 전체 카드 소비 활동 기준이에요.{observed}"
+            )
+        return (
+            f"{area}의 {category} 상권은 현재 {level} 수준이에요. "
+            f"이 값은 지역·업종별 카드 소비 활동 기준이에요.{observed}"
+        )
+
     if result.commercial_scope == "area_overall":
         return (
             f"{place} 개별 매장 혼잡도는 확인할 수 없고, {distance}{area}의 요청 업종 "
@@ -366,8 +428,9 @@ def compose_realtime_population_message(response: InfoContextResponse) -> str:
     observed = f" {observed_at} 기준이에요." if observed_at else ""
 
     # 공백만 다른 같은 장소("여의도 한강공원" 지오코딩 결과 vs "여의도한강공원" 목록
-    # 표기)를 다른 곳으로 오판하지 않도록 공백을 지우고 비교한다.
-    if area.replace(" ", "") == place.replace(" ", ""):
+    # 표기)나 글자 하나 차이("성수카페거리" vs "성수동카페거리")를 다른 곳으로
+    # 오판하지 않도록 resolve_location.py와 같은 편집거리 기준으로 비교한다.
+    if names_match(area, place):
         return (
             f"{area} 기준으로는 현재 {level} 수준이에요. "
             f"향후 12시간 예상 변화는 아래 카드에서 확인해보세요.{observed}"
@@ -975,6 +1038,10 @@ async def _compose_chat_message(
 
     if llm_output.intent is Intent.GENERAL:
         assert llm_output.general is not None
+        if llm_output.general.topic is GeneralTopic.SERVICE_IDENTITY:
+            if on_message_delta is not None:
+                await on_message_delta(_SERVICE_IDENTITY_MESSAGE)
+            return _SERVICE_IDENTITY_MESSAGE
         # 상황에 맞는 제안이 있으면(대화층 3단계) 답변 끝에 자연스러운 질문으로
         # 붙인다. 무엇을 제안할지는 여기서 정하지 않는다 — situational_offers가
         # 코드로 이미 정해 둔 것을 문장으로 바꾸는 것만 LLM에 맡긴다.

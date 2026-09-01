@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from time import perf_counter
@@ -84,6 +84,7 @@ from app.concentration_policy import (
 )
 from app.config import settings
 from app.domain.models import (
+    AccessibilityNeed,
     ConcentrationResult,
     MunicipalParkingStatus,
     PlaceDetails,
@@ -124,6 +125,7 @@ from app.tools.municipal_parking import GetMunicipalParkingTool, MunicipalParkin
 from app.tools.nearby_place_details import (
     CANDIDATE_POOL_EXHAUSTED_WARNING,
     CANDIDATE_POOL_TRUNCATED_WARNING,
+    UNKNOWN_ACCESSIBILITY_NEED_WARNING,
     EnrichedPlace,
     NearbyPlaceDetailsQuery,
     NearbyPlaceDetailsResult,
@@ -346,6 +348,7 @@ class ContextService:
                     default_radius_km=self._search_radius_km,
                 ),
                 excluded_place_ids=frozenset(request.excluded_place_ids),
+                accessibility_needs=conditions.accessibility_needs,
             )
         )
         weather_result = await weather_task if weather_task is not None else None
@@ -764,6 +767,7 @@ class ContextService:
         nearest = select_nearest_population_area(
             latitude=resolved_location.latitude,
             longitude=resolved_location.longitude,
+            requested_name=resolved_location.resolved_name,
         )
         if nearest is None:
             return await self._fetch_concentration_info(
@@ -921,6 +925,7 @@ class ContextService:
         nearest = select_nearest_commercial_area(
             latitude=resolved_location.latitude,
             longitude=resolved_location.longitude,
+            requested_name=resolved_location.resolved_name,
         )
         if nearest is None:
             return _info_error_response(
@@ -1162,6 +1167,7 @@ class ContextService:
             latitude=resolved_location.latitude,
             longitude=resolved_location.longitude,
             max_distance_km=COMMERCIAL_AREA_PROXY_MAX_DISTANCE_KM,
+            requested_name=resolved_location.resolved_name,
         )
         if nearest is None:
             return _realtime_city_info_no_data_response(
@@ -1912,14 +1918,23 @@ class ContextService:
         longitude: float,
         search_radius_km: float,
         excluded_place_ids: frozenset[str] = frozenset(),
+        accessibility_needs: Sequence[str] = (),
     ) -> NearbyPlaceDetailsResult:
         """분류별 장소 조회를 병렬 실행하고 중복·제외 후보를 걸러 한 결과로 합친다.
 
         `excluded_place_ids`는 분류별 조회 각각에 같은 집합으로 넘긴다 — 분류마다
         결과 집합이 다르므로 "앞에서 몇 건"이 아니라 id로 걸러야 맞다.
+
+        `accessibility_needs`는 A가 보낸 문자열 그대로다. 여기서 C가 아는 어휘로
+        옮기고, 모르는 값은 버리되 경고로 남긴다 — 계약이 `list[str]`이라 A가
+        어휘를 늘려도 요청은 깨지지 않지만, 흔적 없이 버리면 사용자가 요구한
+        조건이 사라진 것을 아무도 모른다.
         """
 
         started_at = perf_counter()
+        needs, unknown_accessibility_need = _resolve_accessibility_needs(
+            accessibility_needs
+        )
         results = await asyncio.gather(
             *(
                 self._tools.places.execute(
@@ -1931,6 +1946,7 @@ class ContextService:
                         preferred_categories=plan.resolved_place_tags,
                         category_filter=category_filter,
                         excluded_place_ids=excluded_place_ids,
+                        accessibility_needs=needs,
                     )
                 )
                 for category_filter in plan.filters
@@ -1941,6 +1957,7 @@ class ContextService:
             limit=self._candidate_limit,
             started_at=started_at,
             excluded_plan=excluded_plan,
+            unknown_accessibility_need=unknown_accessibility_need,
         )
 
 
@@ -2386,14 +2403,18 @@ def _place_candidate_has_data(
     if question_type == "realtime_commercial":
         return (
             select_nearest_commercial_area(
-                latitude=location.latitude, longitude=location.longitude
+                latitude=location.latitude,
+                longitude=location.longitude,
+                requested_name=location.resolved_name,
             )
             is not None
         )
     if is_realtime_citydata_purpose:
         return (
             select_nearest_population_area(
-                latitude=location.latitude, longitude=location.longitude
+                latitude=location.latitude,
+                longitude=location.longitude,
+                requested_name=location.resolved_name,
             )
             is not None
         )
@@ -2405,7 +2426,9 @@ def _place_candidate_has_data(
         if current_population_candidate:
             return (
                 select_nearest_population_area(
-                    latitude=location.latitude, longitude=location.longitude
+                    latitude=location.latitude,
+                    longitude=location.longitude,
+                    requested_name=location.resolved_name,
                 )
                 is not None
             )
@@ -2707,6 +2730,7 @@ def _place_warnings(
     *,
     truncated: bool = False,
     exhausted: bool = False,
+    unknown_accessibility_need: bool = False,
 ) -> tuple[str, ...]:
     warnings: list[str] = []
     if status is ToolStatus.PARTIAL:
@@ -2720,7 +2744,39 @@ def _place_warnings(
         warnings.append(CANDIDATE_POOL_TRUNCATED_WARNING)
     if exhausted:
         warnings.append(CANDIDATE_POOL_EXHAUSTED_WARNING)
+    if unknown_accessibility_need:
+        # A가 보낸 무장애 어휘 중 C가 모르는 값이 있었다. 그 값은 좁히는 데 쓰지
+        # 못했으므로, 결과가 요구를 다 반영하지 못했다는 것을 A가 알아야 한다.
+        warnings.append(UNKNOWN_ACCESSIBILITY_NEED_WARNING)
     return tuple(warnings)
+
+
+def _resolve_accessibility_needs(
+    values: Sequence[str],
+) -> tuple[tuple[AccessibilityNeed, ...], bool]:
+    """A가 보낸 무장애 어휘를 C가 아는 값으로 옮긴다.
+
+    돌려주는 두 번째 값은 "모르는 값이 있었는가"다. 모르는 값은 좁히는 데 쓸 수
+    없으므로 버리되, 버렸다는 사실은 경고로 남겨야 한다 — C의 조건 계약이
+    `list[str]`이라 A가 어휘를 늘려도 요청이 깨지지 않는 대신(그게 의도다),
+    아무 흔적도 없으면 요구가 반영되지 않은 결과를 반영된 것으로 읽게 된다.
+
+    중복은 없앤다. 같은 값을 두 번 보내도 조건은 하나다.
+    """
+    known: list[AccessibilityNeed] = []
+    has_unknown = False
+    for value in values:
+        normalized = value.strip()
+        if not normalized:
+            continue
+        try:
+            need = AccessibilityNeed(normalized)
+        except ValueError:
+            has_unknown = True
+            continue
+        if need not in known:
+            known.append(need)
+    return tuple(known), has_unknown
 
 
 def _merge_place_results(
@@ -2729,6 +2785,7 @@ def _merge_place_results(
     limit: int,
     started_at: float,
     excluded_plan: ExcludedCategoryPlan | None = None,
+    unknown_accessibility_need: bool = False,
 ) -> NearbyPlaceDetailsResult:
     excluded_plan = excluded_plan or ExcludedCategoryPlan()
     if not results:
@@ -2801,6 +2858,7 @@ def _merge_place_results(
             ),
             exhausted=bool(results)
             and all(CANDIDATE_POOL_EXHAUSTED_WARNING in result.warnings for result in results),
+            unknown_accessibility_need=unknown_accessibility_need,
         ),
         provider_metadata=tuple(
             metadata for result in results for metadata in result.provider_metadata

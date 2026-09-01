@@ -180,6 +180,22 @@ export interface ComparisonResult {
   items: ComparisonItem[];
 }
 
+export interface PreferenceEvidenceQuote {
+  polarity: "positive" | "mixed" | "negative";
+  text: string;
+  source_type: string;
+  source_url?: string | null;
+}
+
+export interface PlacePreferenceInsight {
+  code: string;
+  label: string;
+  mention_count: number;
+  positive_document_count: number;
+  negative_document_count: number;
+  evidence: PreferenceEvidenceQuote[];
+}
+
 /** INFO 장소 질의에 함께 내려오는 펼침형 상세 카드 데이터. */
 export interface InfoPlaceCard {
   question_type: string;
@@ -208,6 +224,7 @@ export interface InfoPlaceCard {
   credit_card: string | null;
   restroom: string | null;
   homepage: string | null;
+  preference_insights?: PlacePreferenceInsight[];
   population_current_level?: string | null;
   population_current_message?: string | null;
   population_observed_at?: string | null;
