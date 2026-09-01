@@ -94,7 +94,9 @@ async def fetch_restaurant_content_ids(
             },
         )
         if response.status_code >= 400:
-            raise RuntimeError(f"음식점 목록 조회 실패 HTTP {response.status_code}: {response.text[:500]}")
+            raise RuntimeError(
+                f"음식점 목록 조회 실패 HTTP {response.status_code}: {response.text[:500]}"
+            )
         rows = response.json()
         if not isinstance(rows, list):
             raise RuntimeError("음식점 목록 응답 형식이 올바르지 않습니다.")
@@ -148,11 +150,19 @@ def load_payloads(
     active_keys = load_active_tag_keys(cards_path)
     grouped: dict[tuple[str, str, str], list[dict[str, object]]] = defaultdict(list)
     for row in _candidate_rows(evidence_path, active_keys, contexts, restaurant_content_ids):
-        grouped[(str(row["content_id"]), str(row["preference_code"]), str(row["polarity"]))].append(row)
+        grouped[
+            (str(row["content_id"]), str(row["preference_code"]), str(row["polarity"]))
+        ].append(row)
 
     payloads: list[dict[str, object]] = []
     for rows in grouped.values():
-        rows.sort(key=lambda row: (-int(row["match_strength"]), -len(str(row["evidence_text"])), str(row["source_evidence_id"])))
+        rows.sort(
+            key=lambda row: (
+                -int(row["match_strength"]),
+                -len(str(row["evidence_text"])),
+                str(row["source_evidence_id"]),
+            )
+        )
         seen_documents: set[str] = set()
         rank = 0
         for row in rows:
@@ -174,7 +184,9 @@ async def replace_existing_rows(client: httpx.AsyncClient) -> None:
         headers={"Prefer": "count=exact"},
     )
     if count_response.status_code >= 400:
-        raise RuntimeError(f"기존 건수 조회 실패 HTTP {count_response.status_code}: {count_response.text[:500]}")
+        raise RuntimeError(
+            f"기존 건수 조회 실패 HTTP {count_response.status_code}: {count_response.text[:500]}"
+        )
     print(f"기존 대표 근거 {count_response.headers.get('content-range', '알 수 없음')} 교체")
     response = await client.delete(
         "/rest/v1/place_preference_evidence",
@@ -182,7 +194,9 @@ async def replace_existing_rows(client: httpx.AsyncClient) -> None:
         headers={"Prefer": "return=minimal"},
     )
     if response.status_code >= 400:
-        raise RuntimeError(f"기존 대표 근거 삭제 실패 HTTP {response.status_code}: {response.text[:500]}")
+        raise RuntimeError(
+            f"기존 대표 근거 삭제 실패 HTTP {response.status_code}: {response.text[:500]}"
+        )
 
 
 async def run(args: argparse.Namespace) -> None:
@@ -190,11 +204,19 @@ async def run(args: argparse.Namespace) -> None:
     if not settings.supabase_url or not settings.supabase_secret_key:
         raise ValueError("SUPABASE_URL / SUPABASE_SECRET_KEY가 필요합니다.")
     contexts = load_document_contexts(args.documents_csv)
-    headers = {"apikey": settings.supabase_secret_key, "Authorization": f"Bearer {settings.supabase_secret_key}"}
-    async with httpx.AsyncClient(base_url=settings.supabase_url.rstrip("/"), headers=headers, timeout=60) as client:
+    headers = {
+        "apikey": settings.supabase_secret_key,
+        "Authorization": f"Bearer {settings.supabase_secret_key}",
+    }
+    async with httpx.AsyncClient(
+        base_url=settings.supabase_url.rstrip("/"), headers=headers, timeout=60
+    ) as client:
         restaurant_ids = await fetch_restaurant_content_ids(client, contexts)
         payloads = load_payloads(args.evidence_csv, args.cards_csv, contexts, restaurant_ids)
-        print(f"직접 관련 문서 {len(contexts):,}건 · 음식점 {len(restaurant_ids):,}곳 · 대표 근거 {len(payloads):,}건 준비 완료")
+        print(
+            f"직접 관련 문서 {len(contexts):,}건 · 음식점 {len(restaurant_ids):,}곳 "
+            f"· 대표 근거 {len(payloads):,}건 준비 완료"
+        )
         if args.dry_run:
             return
         if args.replace:
