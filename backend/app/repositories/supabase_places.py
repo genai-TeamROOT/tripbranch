@@ -13,6 +13,7 @@ import httpx
 
 from app.domain.models import (
     AccessibilityNeed,
+    AccessibilityVerdict,
     BarrierFreePlaceRow,
     PlaceBarrierFreeDetails,
     PlaceCategoryFilter,
@@ -2222,7 +2223,28 @@ def _to_barrier_free_place_row(row: object) -> BarrierFreePlaceRow:
         lcls_systm3=_optional_str(row.get("lcls_systm3")),
         first_image_url=_optional_str(row.get("first_image_url")),
         distance_km=float(distance),
+        wheelchair_access_verdict=_optional_verdict(row.get("wheelchair_access_verdict")),
+        stroller_access_verdict=_optional_verdict(row.get("stroller_access_verdict")),
+        visual_guide_verdict=_optional_verdict(row.get("visual_guide_verdict")),
     )
+
+
+def _optional_verdict(value: object) -> AccessibilityVerdict | None:
+    """판정 값을 어휘로 옮긴다. 모르는 값이면 실패로 다룬다.
+
+    None으로 넘기지 않는다. 컬럼에 검사 제약이 걸려 있어 모르는 값이 오면
+    RPC가 바뀌었거나 적재가 어긋난 것이고, 조용히 비우면 판정을 못 받은 장소가
+    "판정이 없는 장소"처럼 보여 안내에서 소리 없이 빠진다.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return AccessibilityVerdict(text)
+    except ValueError as exc:
+        raise SupabaseRepositoryError(f"unknown accessibility verdict: {text}") from exc
 
 
 def _optional_str(value: object) -> str | None:

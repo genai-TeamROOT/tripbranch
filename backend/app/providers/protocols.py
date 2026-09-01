@@ -11,11 +11,13 @@ TODO: provider가 늘어나면 오류 타입, 비동기 계약, 메타데이터 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass
 from datetime import date
 from typing import Protocol, runtime_checkable
 
 from app.domain.models import (
     AccessibilityNeed,
+    AccessibilityVerdict,
     ConcentrationResult,
     GeocodeResult,
     HolidayResult,
@@ -372,6 +374,23 @@ class PlaceSearchProvider(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class BarrierFreePlaceSearch:
+    """무장애 검색이 돌려주는 것: 후보와, 각 후보가 왜 후보인지.
+
+    후보만 돌려주면 `partial`과 `possible`이 같은 것이 된다. 둘 다 후보로 남기
+    때문이다 — 들어갈 수는 있는데 못 가는 구역이 남는 장소를 추천에서 빼는 것은
+    과하지만, 그 사실을 말하지 않고 추천하는 것도 옳지 않다.
+
+    `verdicts`의 열쇠는 `PlaceCandidate.place_id`이고, 값은 **요구한 어휘만**
+    담는다. 요구하지 않은 편의의 판정까지 올리면 사용자가 묻지 않은 것을 답변이
+    말하게 된다.
+    """
+
+    candidates: list[PlaceCandidate]
+    verdicts: dict[str, dict[AccessibilityNeed, AccessibilityVerdict]]
+
+
 class BarrierFreePlaceSearchProvider(Protocol):
     """무장애 편의를 요구한 요청의 후보를 찾는 검색 provider.
 
@@ -393,7 +412,7 @@ class BarrierFreePlaceSearchProvider(Protocol):
         needs: Sequence[AccessibilityNeed],
         category_filter: PlaceCategoryFilter | None = None,
         limit: int,
-    ) -> ProviderResult[list[PlaceCandidate]]:
+    ) -> ProviderResult[BarrierFreePlaceSearch]:
         """요구 편의를 **전부** 만족하는 후보를 거리순으로 반환한다.
 
         `needs`가 비어 있으면 구현체는 ValueError를 던진다. 조건 없는 검색으로

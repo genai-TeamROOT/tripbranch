@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from time import perf_counter
 
-from app.domain.models import AccessibilityNeed, PlaceCategoryFilter, PlaceDetails
+from app.domain.models import (
+    AccessibilityNeed,
+    AccessibilityVerdict,
+    PlaceCategoryFilter,
+    PlaceDetails,
+)
 from app.errors import AppError
 from app.place_search_policy import (
     DEFAULT_PLACE_SEARCH_RADIUS_KM,
@@ -18,6 +24,7 @@ from app.place_search_policy import (
 )
 from app.providers.contracts import ProviderMetadata
 from app.providers.protocols import (
+    BarrierFreePlaceSearch,
     BarrierFreePlaceSearchProvider,
     BatchPlaceDetailsProvider,
     PlaceDetailsProvider,
@@ -121,6 +128,14 @@ class EnrichedPlace:
     details: PlaceDetails | None
     detail_status: DetailStatus
     error_code: str | None = None
+    # 무장애 조건이 있는 요청에서만 채워진다. 후보에 남았다는 것은 접근 불가가
+    # 아니라는 뜻이지 온전히 가능하다는 뜻은 아니라서(`partial`도 후보로 남긴다),
+    # 답변이 "일부 구역은 접근이 어렵다"를 말할 수 있게 값을 함께 올린다.
+    #
+    # 요구한 어휘만 담는다. 판정표가 없는 여섯 어휘는 여기 오지 않는다.
+    accessibility_verdicts: Mapping[AccessibilityNeed, AccessibilityVerdict] | None = (
+        None
+    )
 
 
 @dataclass(frozen=True)
@@ -133,6 +148,31 @@ class NearbyPlaceDetailsResult:
     error: ToolError | None = None
     warnings: tuple[str, ...] = ()
     provider_metadata: tuple[ProviderMetadata, ...] = ()
+
+
+def _with_verdicts(
+    result: NearbyPlaceDetailsResult,
+    verdicts: Mapping[str, Mapping[AccessibilityNeed, AccessibilityVerdict]],
+) -> NearbyPlaceDetailsResult:
+    """무장애 판정을 결과에 붙인다. 판정이 없으면 결과를 그대로 돌려준다.
+
+    후보를 만들 때가 아니라 다 만든 뒤에 붙인다. `EnrichedPlace`는 상세 보완의
+    갈래마다 따로 만들어지는데(성공·상세 없음·조회 실패·유형 없음), 그 자리마다
+    판정을 넣으면 한 곳을 빠뜨렸을 때 그 갈래로 들어온 장소만 안내를 잃는다 —
+    오류는 나지 않고 안내만 사라진다.
+    """
+    if not verdicts:
+        return result
+    return replace(
+        result,
+        places=tuple(
+            replace(
+                place,
+                accessibility_verdicts=verdicts.get(place.candidate.place_id),
+            )
+            for place in result.places
+        ),
+    )
 
 
 class NearbyPlaceDetailsTool:
@@ -226,7 +266,12 @@ class NearbyPlaceDetailsTool:
                     retryable=exc.retryable,
                 ),
             )
-        candidates = search_result.data
+        if isinstance(search_result.data, BarrierFreePlaceSearch):
+            candidates = search_result.data.candidates
+            accessibility_verdicts = search_result.data.verdicts
+        else:
+            candidates = search_result.data
+            accessibility_verdicts = {}
         selected = tuple(
             candidate
             for candidate in candidates
@@ -252,9 +297,10 @@ class NearbyPlaceDetailsTool:
             )
 
         if isinstance(self._details_provider, BatchPlaceDetailsProvider):
-            return await self._enrich_in_batch(
+            batched = await self._enrich_in_batch(
                 selected, search_result.metadata, started_at, truncated=truncated
             )
+            return _with_verdicts(batched, accessibility_verdicts)
 
         semaphore = asyncio.Semaphore(self._max_concurrency)
 
@@ -319,12 +365,15 @@ class NearbyPlaceDetailsTool:
             if all(item.detail_status is DetailStatus.SUCCESS for item in places)
             else ToolStatus.PARTIAL
         )
-        return self._result(
-            places=places,
-            status=status,
-            started_at=started_at,
-            provider_metadata=provider_metadata,
-            truncated=truncated,
+        return _with_verdicts(
+            self._result(
+                places=places,
+                status=status,
+                started_at=started_at,
+                provider_metadata=provider_metadata,
+                truncated=truncated,
+            ),
+            accessibility_verdicts,
         )
 
     async def _enrich_in_batch(

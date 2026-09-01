@@ -159,6 +159,14 @@ def map_places_context(
             operating_schedule=_operating_schedule(
                 item.details.operating_schedule if item.details is not None else None
             ),
+            accessibility_verdicts=(
+                {
+                    need.value: verdict.value
+                    for need, verdict in item.accessibility_verdicts.items()
+                }
+                if item.accessibility_verdicts
+                else None
+            ),
         )
         for item in result.places
     ]

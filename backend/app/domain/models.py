@@ -486,6 +486,28 @@ class AccessibilityNeed(StrEnum):
     LOW_FLOOR_TRANSIT = "low_floor_transit"
 
 
+class AccessibilityVerdict(StrEnum):
+    """무장애 원문을 사람이 읽어 내린 접근 가능 판정.
+
+    원본은 `supabase/data/barrier_free_sentence_verdicts.csv`이고, 장소마다
+    펼친 값이 `place_barrier_free`의 판정 컬럼이다. 한 장소가 여러 문장을
+    가지면 **가장 나쁜 것**이 그 장소의 판정이다 — 접근로가 가능이어도
+    주출입구가 불가면 못 들어간다.
+
+    판정이 붙는 어휘는 셋뿐이다(휠체어·유모차·시각안내). 나머지 여섯은 아직
+    원문 규칙으로 거른다.
+    """
+
+    # 들어갈 수단이 있다. 리프트도 보조출입구도 수단이고, 불편하다는 말은
+    # 못 들어간다는 뜻이 아니다.
+    POSSIBLE = "possible"
+    # 들어가긴 하지만 못 가는 구역이 남는다. **후보에서 빼지 않는다** — 팔각정
+    # 하나 못 간다고 추천에서 빼는 것은 과하다. 대신 답변이 그 사실을 말한다.
+    PARTIAL = "partial"
+    # 아예 들어갈 수 없다. 후보에서 뺀다.
+    IMPOSSIBLE = "impossible"
+
+
 @dataclass(frozen=True)
 class BarrierFreePlaceRow:
     """무장애 후보 검색(`search_places_barrier_free`)이 돌려주는 장소 한 건.
@@ -510,6 +532,15 @@ class BarrierFreePlaceRow:
     lcls_systm3: str | None
     first_image_url: str | None
     distance_km: float
+    # 원문을 사람이 읽어 내린 판정. 후보에 남았다는 것은 impossible이 아니라는
+    # 뜻이지 possible이라는 뜻은 아니다 — partial도 후보로 남긴다. 그래서 값을
+    # 함께 올려 답변이 "일부 구역은 접근이 어렵다"고 말할 수 있게 한다.
+    #
+    # 판정표가 없는 여섯 어휘(화장실·주차장·유아·대여·좌석·저상버스)는 여기
+    # 없다. RPC가 아직 원문 규칙으로 거르므로 후보에 있다는 것 말고는 할 말이 없다.
+    wheelchair_access_verdict: AccessibilityVerdict | None = None
+    stroller_access_verdict: AccessibilityVerdict | None = None
+    visual_guide_verdict: AccessibilityVerdict | None = None
 
 
 @dataclass(frozen=True)

@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import math
 from collections.abc import AsyncIterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Literal
 from zoneinfo import ZoneInfo
 
 from app.domain.models import (
     AccessibilityNeed,
+    AccessibilityVerdict,
     PlaceCategoryFilter,
     PlaceDetails,
     WeatherForecastResult,
@@ -33,6 +34,7 @@ from app.providers.contracts import (
     provider_result,
 )
 from app.providers.mappers import resolve_place_category
+from app.providers.protocols import BarrierFreePlaceSearch
 from app.providers.tour_intro_keys import (
     BABY_CARRIAGE_KEYS,
     CREDIT_CARD_KEYS,
@@ -1355,6 +1357,12 @@ class _FakeBarrierFreePlace:
     lat_offset: float
     lng_offset: float
     needs: frozenset[AccessibilityNeed]
+    # 판정표가 있는 어휘(휠체어·유모차·시각안내)의 판정. 비워 두면 실 경로가
+    # 올리는 값을 Fake는 한 번도 만들지 않아, 안내 문구가 붙는지 확인할 길이 없다.
+    # 여기 없는 어휘는 실 경로에서도 판정을 올리지 않는다.
+    verdicts: dict[AccessibilityNeed, AccessibilityVerdict] = field(
+        default_factory=dict
+    )
 
 
 # **이 목록은 판정을 실제로 움직여야 한다.** 모든 장소가 모든 편의를 갖추게 두면
@@ -1383,6 +1391,13 @@ _FAKE_BARRIER_FREE_PLACES: tuple[_FakeBarrierFreePlace, ...] = (
                 AccessibilityNeed.INFANT_FACILITIES,
             }
         ),
+        # **판정이 어휘마다 갈리는 유일한 Fake다.** 좁은 통로가 휠체어만 막고
+        # 유모차는 지나가는 실제 문장을 본뜬 것이라, 같은 장소가 요구 어휘에 따라
+        # 다른 안내를 받는지 여기서 확인한다.
+        verdicts={
+            AccessibilityNeed.WHEELCHAIR_ACCESS: AccessibilityVerdict.PARTIAL,
+            AccessibilityNeed.STROLLER_ACCESS: AccessibilityVerdict.POSSIBLE,
+        },
     ),
     _FakeBarrierFreePlace(
         place_id="fake-bf-nursery-1",
@@ -1428,6 +1443,13 @@ _FAKE_BARRIER_FREE_PLACES: tuple[_FakeBarrierFreePlace, ...] = (
                 AccessibilityNeed.VISUAL_GUIDE,
             }
         ),
+        # 시각 안내만 부분이다. 점자블록이 일부 구역에만 있는 원문을 본뜬 것으로,
+        # 단차는 문제없는데 안내 시설만 모자란 경우가 실제로 있다.
+        verdicts={
+            AccessibilityNeed.WHEELCHAIR_ACCESS: AccessibilityVerdict.POSSIBLE,
+            AccessibilityNeed.STROLLER_ACCESS: AccessibilityVerdict.POSSIBLE,
+            AccessibilityNeed.VISUAL_GUIDE: AccessibilityVerdict.PARTIAL,
+        },
     ),
     _FakeBarrierFreePlace(
         place_id="fake-bf-lodging-1",
@@ -1460,13 +1482,14 @@ class FakeBarrierFreePlaceSearchProvider:
         needs: Sequence[AccessibilityNeed],
         category_filter: PlaceCategoryFilter | None = None,
         limit: int,
-    ) -> ProviderResult[list[PlaceCandidate]]:
+    ) -> ProviderResult[BarrierFreePlaceSearch]:
         required = frozenset(needs)
         if not required:
             raise ValueError(
                 "needs가 비어 있습니다. 무장애 조건이 없으면 이 provider를 부르지 않습니다."
             )
 
+        verdicts: dict[str, dict[AccessibilityNeed, AccessibilityVerdict]] = {}
         selected: list[PlaceCandidate] = []
         for place in _FAKE_BARRIER_FREE_PLACES:
             if not required.issubset(place.needs):
@@ -1496,6 +1519,15 @@ class FakeBarrierFreePlaceSearchProvider:
                     raw_source="fake_barrier_free",
                 )
             )
+            # 실 provider와 같이 **요구한 어휘만** 올린다. 전부 올리면 사용자가
+            # 묻지 않은 편의까지 답변이 말하게 된다.
+            requested = {
+                need: verdict
+                for need, verdict in place.verdicts.items()
+                if need in required
+            }
+            if requested:
+                verdicts[place.place_id] = requested
 
         # 목록이 이미 거리순이지만 정렬을 생략하지 않는다. 항목을 더할 때 순서를
         # 지키지 않아도 동작이 같아야 한다.
@@ -1504,8 +1536,16 @@ class FakeBarrierFreePlaceSearchProvider:
             + (candidate.longitude - longitude) ** 2
         )
         selected = selected[: max(1, limit)]
+        kept = {candidate.place_id for candidate in selected}
         return provider_result(
-            selected,
+            BarrierFreePlaceSearch(
+                candidates=selected,
+                verdicts={
+                    place_id: verdict
+                    for place_id, verdict in verdicts.items()
+                    if place_id in kept
+                },
+            ),
             source=ProviderSource.FAKE_BARRIER_FREE_PLACES,
             status=ProviderStatus.SUCCESS if selected else ProviderStatus.NO_DATA,
         )
