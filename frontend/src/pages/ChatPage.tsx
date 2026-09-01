@@ -45,7 +45,6 @@ const STATUS_COMMAND = "/status";
 
 const CHAT_TEXT = {
   ko: {
-    subtitle: "대화형 대체 장소 추천",
     developer: "개발자용 보기",
     requestError: "추천을 불러오지 못했어요. 다시 시도해주세요.",
     composer: "추가 조건을 입력해 주세요",
@@ -56,7 +55,6 @@ const CHAT_TEXT = {
     currentLocation: "현재 위치 기준으로 다시 보기",
   },
   en: {
-    subtitle: "Conversational Seoul travel recommendations",
     developer: "Developer view",
     requestError: "We couldn’t load recommendations. Please try again.",
     composer: "Add another condition or ask a follow-up",
@@ -386,9 +384,9 @@ export function ChatPage() {
         className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-4 px-4 pb-4"
       >
         {/* 브랜드 표기·언어 전환·신원 표시는 사이드바가 맡는다(DESIGN_SYSTEM.md
-            6.17). "처음부터"는 사이드바 "홈"과 동작이 같아 중복이라 뺐다. */}
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-sm text-muted">{text.subtitle}</p>
+            6.17). "처음부터"는 사이드바 "홈"과 동작이 같아 중복이라 뺐다.
+            화면 설명 문구도 뺐다 — 무엇을 하는 화면인지는 대화 자체로 드러난다. */}
+        <div className="flex items-center justify-end gap-3">
           <button
             type="button"
             onClick={() => navigate("/dev-chat")}
@@ -411,7 +409,6 @@ export function ChatPage() {
           messages={state.messages}
           showDebug={false}
           isLoading={isLoading}
-          hasDeviceLocation={Boolean(state.device_location)}
           deviceLocation={state.device_location}
           onRequestMore={() => void requestSend(text.requestMore)}
           onRelaxRadius={() => void requestSend(text.relaxRadius)}
