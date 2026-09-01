@@ -7,6 +7,7 @@
  * 호출 시점: HomePage와 ChatComposer의 음성 버튼 클릭.
  */
 
+import { Mic, Square } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ApiError } from "../../api/client";
 import { transcribeAudio } from "../../api/trip";
@@ -103,9 +104,7 @@ export function VoiceInputButton({
     const checkVolume = () => {
       analyser.getByteTimeDomainData(samples);
       const averageAmplitude =
-        samples.reduce((total, sample) => total + Math.abs(sample - 128), 0) /
-        samples.length /
-        128;
+        samples.reduce((total, sample) => total + Math.abs(sample - 128), 0) / samples.length / 128;
       const now = performance.now();
       if (averageAmplitude >= SPEECH_THRESHOLD) {
         if (!heardSpeechRef.current && noSpeechTimerRef.current) {
@@ -168,7 +167,10 @@ export function VoiceInputButton({
       recorder.start();
       monitorSilence(stream);
       setVoiceState("recording");
-      stopTimerRef.current = setTimeout(() => stopRecording("max-duration"), MAX_RECORDING_MILLISECONDS);
+      stopTimerRef.current = setTimeout(
+        () => stopRecording("max-duration"),
+        MAX_RECORDING_MILLISECONDS,
+      );
       noSpeechTimerRef.current = setTimeout(
         () => stopRecording("no-speech-timeout"),
         NO_SPEECH_TIMEOUT_MILLISECONDS,
@@ -234,41 +236,20 @@ export function VoiceInputButton({
       onClick={handleClick}
       aria-label={label}
       title={voiceState === "recording" ? "눌러서 녹음 마치기" : label}
-      className={`inline-flex size-10 shrink-0 items-center justify-center rounded-full transition disabled:opacity-50 ${
+      className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-50 ${
         voiceState === "recording"
-          ? "bg-gray-950 text-white shadow-md shadow-gray-400/40 dark:bg-gray-100 dark:text-gray-950"
-          : "text-gray-950 hover:bg-gray-100 dark:text-gray-100 dark:hover:bg-gray-800"
+          ? "animate-pulse bg-rust text-white"
+          : "bg-chip text-ink hover:bg-sky-light"
       }`}
     >
       {voiceState === "transcribing" ? (
         <span className="size-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
       ) : voiceState === "recording" ? (
-        <span aria-hidden="true">
-          <StopIcon />
-        </span>
+        <Square size={14} className="fill-current" aria-hidden />
       ) : (
-        <span aria-hidden="true">
-          <VoiceWaveIcon />
-        </span>
+        <Mic size={16} aria-hidden />
       )}
       <span className="sr-only">{label}</span>
     </button>
-  );
-}
-
-function VoiceWaveIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className="size-7" stroke="currentColor" strokeWidth="2.2">
-      <rect x="8.25" y="3" width="7.5" height="11.5" rx="3.75" />
-      <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M8.5 21h7" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function StopIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="currentColor" className="size-6">
-      <rect x="6" y="6" width="12" height="12" rx="2.5" />
-    </svg>
   );
 }

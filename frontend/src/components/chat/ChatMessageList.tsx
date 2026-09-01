@@ -35,7 +35,7 @@ function StreamingDots({ language }: { language: Language }) {
         <span
           key={index}
           aria-hidden="true"
-          className="h-2 w-2 animate-bounce rounded-full bg-gray-400 dark:bg-gray-500"
+          className="h-2 w-2 animate-bounce rounded-full bg-brand/60"
           style={{ animationDelay: `${index * 150}ms`, animationDuration: "900ms" }}
         />
       ))}
@@ -53,7 +53,7 @@ function MarkdownText({ text }: { text: string }) {
     if (!line) continue;
     if (line.startsWith("# ")) {
       elements.push(
-        <h2 key={`heading-${index}`} className="text-xl font-bold text-gray-950 dark:text-gray-50">
+        <h2 key={`heading-${index}`} className="text-xl font-bold text-ink">
           {line.slice(2)}
         </h2>,
       );
@@ -61,7 +61,7 @@ function MarkdownText({ text }: { text: string }) {
     }
     if (line.startsWith("## ")) {
       elements.push(
-        <h3 key={`subheading-${index}`} className="mt-3 text-lg font-bold text-gray-900 dark:text-gray-100">
+        <h3 key={`subheading-${index}`} className="mt-3 text-lg font-bold text-ink">
           {line.slice(3)}
         </h3>,
       );
@@ -77,7 +77,7 @@ function MarkdownText({ text }: { text: string }) {
       continue;
     }
     elements.push(
-      <p key={`paragraph-${index}`} className="leading-6">
+      <p key={`paragraph-${index}`} className="leading-relaxed text-ink">
         {line}
       </p>,
     );
@@ -86,7 +86,15 @@ function MarkdownText({ text }: { text: string }) {
   return <div className="space-y-1.5">{elements}</div>;
 }
 
-function StreamingText({ text, streaming, language }: { text: string; streaming: boolean; language: Language }) {
+function StreamingText({
+  text,
+  streaming,
+  language,
+}: {
+  text: string;
+  streaming: boolean;
+  language: Language;
+}) {
   // Gemini는 단어·문장 단위 청크를 보내기도 한다. 화면에서는 청크 크기와 무관하게
   // 한 글자씩 이어 보여, 첫 텍스트가 도착한 뒤에도 생성 중이라는 감각을 유지한다.
   const [visibleText, setVisibleText] = useState(() => (streaming ? "" : text));
@@ -157,28 +165,26 @@ export function ChatMessageList({
         .map((message, index, renderedMessages) => {
           if (message.type === "user_text") {
             return (
-              <p
-                key={message.id}
-                className="ml-auto max-w-xl rounded-md bg-gray-900 px-4 py-3 text-sm text-white dark:bg-gray-100 dark:text-gray-900"
-              >
-                {message.text}
-              </p>
+              <div key={message.id} className="flex justify-end">
+                <p className="max-w-[80%] rounded-2xl rounded-br-md bg-brand px-4 py-2.5 text-sm text-white">
+                  {message.text}
+                </p>
+              </div>
             );
           }
 
           if (message.type === "assistant_text" || message.type === "interpretation_summary") {
             return (
-              <div
-                key={message.id}
-                className="mr-auto flex max-w-xl flex-col gap-2 rounded-md bg-gray-100 px-4 py-3 text-sm text-gray-800 dark:bg-gray-800 dark:text-gray-100"
-              >
+              // 배경·패딩 없이 본문처럼 넓게 흐른다(DESIGN_SYSTEM.md §6.3) —
+              // 카드가 뒤따라 붙는 구조라 말풍선을 쓰지 않는다.
+              <div key={message.id} className="flex w-full flex-col gap-2 text-sm text-ink">
                 {isDeveloperView && message.type === "assistant_text" && message.intent && (
                   <div className="flex flex-wrap gap-2 text-xs">
-                    <span className="rounded bg-gray-900 px-2 py-0.5 font-semibold text-white dark:bg-gray-100 dark:text-gray-900">
+                    <span className="rounded-full bg-ink px-2 py-0.5 font-semibold text-white">
                       Intent: {message.intent}
                     </span>
                     {message.status && (
-                      <span className="rounded border border-gray-300 px-2 py-0.5 text-gray-600 dark:border-gray-700 dark:text-gray-300">
+                      <span className="rounded-full border border-border px-2 py-0.5 text-muted">
                         {message.status}
                       </span>
                     )}
@@ -194,7 +200,7 @@ export function ChatMessageList({
                   />
                 )}
                 {message.type === "assistant_text" && message.footnote && (
-                  <p className="text-xs text-gray-400 dark:text-gray-500">{message.footnote}</p>
+                  <p className="text-xs text-muted">{message.footnote}</p>
                 )}
               </div>
             );

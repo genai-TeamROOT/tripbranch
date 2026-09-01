@@ -187,7 +187,10 @@ test("user chat hides condition debug card and shows recommendations", async () 
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
 
   expect(screen.queryByText(/개발용 입력 해석 결과/)).not.toBeInTheDocument();
-  expect(screen.getAllByText("비 오는 날 갈 곳").length).toBeGreaterThan(0);
+  // 홈 컴포저가 ChatComposer와 공유되면서(HomePage/ChatComposer 통합) 제출이
+  // "칩으로 채우기 → 컴포저가 자기 state를 비우고 → 위치 조회 1틱을 더 거쳐"
+  // /chat으로 넘어가므로, 클릭 직후 동기 조회 대신 비동기로 기다린다.
+  expect((await screen.findAllByText("비 오는 날 갈 곳")).length).toBeGreaterThan(0);
   // Agent가 한 번에 끝내므로 중간 승인 버튼이 없고 추천이 함께 나온다.
   expect(screen.queryByRole("button", { name: "추천 진행" })).not.toBeInTheDocument();
   expect(await screen.findByText("테스트 박물관")).toBeInTheDocument();
