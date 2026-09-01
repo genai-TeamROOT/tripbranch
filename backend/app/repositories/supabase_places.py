@@ -683,6 +683,7 @@ class SupabasePlaceRepository:
         longitude: float | None = None,
         radius_km: float | None = None,
         mean_center: bool = False,
+        axis_weight: float = 1.0,
     ) -> tuple[PlaceMoodMatch, ...]:
         """올린 사진의 벡터로 분위기가 닮은 장소를 찾는다.
 
@@ -704,6 +705,11 @@ class SupabasePlaceRepository:
         비교한다(D-115). **돌아오는 similarity의 눈금이 달라진다** — 공통
         성분이 빠져 값이 전반적으로 낮아지므로, 켠 결과와 끈 결과의 숫자를
         직접 견주면 안 된다. 순위만 쓴다.
+
+        `axis_weight`가 1.0보다 작으면 분위기 축을 순위에 섞는다(TP-206).
+        **이때 돌아오는 similarity는 정렬 기준이 아니다** — 정렬은 유사도 순위와
+        축 순위를 섞은 값으로 하고, similarity는 참고로 실어 보낸다. 값이 큰
+        쪽이 위에 있다고 가정하면 안 된다.
         """
         payload_ids: list[str] | None = None
         if candidate_content_ids is not None:
@@ -728,6 +734,7 @@ class SupabasePlaceRepository:
                 "p_longitude": longitude,
                 "p_radius_km": radius_km,
                 "p_mean_center": mean_center,
+                "p_axis_weight": axis_weight,
             },
         )
         payload = self._json(response)

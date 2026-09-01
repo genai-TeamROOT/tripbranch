@@ -66,6 +66,7 @@ def _search_summary(
     min_similarity: float,
     match_count: int,
     mean_center: bool = False,
+    axis_weight: float = 1.0,
 ) -> dict[str, object]:
     """사진 검색 한 번을 span에 실을 집계로 접는다.
 
@@ -76,6 +77,10 @@ def _search_summary(
 
     `mean_center`를 함께 싣는 이유는 그것이 유사도의 눈금을 바꾸기 때문이다
     (D-115). 켠 요청과 끈 요청의 값을 한 눈금으로 보면 컷을 엉뚱하게 잡는다.
+
+    `axis_weight`도 같은 이유로 싣는다 — 1.0이 아니면 유사도가 정렬 기준이
+    아니게 되므로(축 순위와 섞어 정렬한다), 그 요청의 유사도 분포는 순위와
+    무관한 값이다(TP-206).
     """
     sims = [match.similarity for match in matches]
     single_photo = sum(
@@ -84,6 +89,7 @@ def _search_summary(
     return {
         "candidates": candidate_count,
         "mean_center": mean_center,
+        "axis_weight": axis_weight,
         "matched": len(sims),
         "similarity_max": round(sims[0], 4) if sims else None,
         "similarity_min": round(sims[-1], 4) if sims else None,
@@ -118,6 +124,7 @@ class PlaceMoodProvider:
         match_count: int = DEFAULT_MATCH_COUNT,
         min_similarity: float = DEFAULT_MIN_SIMILARITY,
         mean_center: bool = False,
+        axis_weight: float = 1.0,
     ) -> None:
         self._repository = repository
         # 인코더가 None이어도 발화 경로는 돌아간다. SigLIP이 선택 의존성이라
@@ -129,6 +136,8 @@ class PlaceMoodProvider:
         # 이미 계산돼 저장돼 있고, 축 점수는 방향과의 내적이라 중심을 빼면
         # 값의 의미가 달라진다.
         self._mean_center = mean_center
+        # 유사도와 축을 섞는 비율(TP-206). 1.0이면 축을 쓰지 않는다.
+        self._axis_weight = axis_weight
 
     @property
     def photo_search_available(self) -> bool:
@@ -250,6 +259,7 @@ class PlaceMoodProvider:
                 longitude=longitude,
                 radius_km=radius_km,
                 mean_center=self._mean_center,
+                axis_weight=self._axis_weight,
             )
             try:
                 step.record(
@@ -263,6 +273,7 @@ class PlaceMoodProvider:
                         min_similarity=self._min_similarity,
                         match_count=match_count or self._match_count,
                         mean_center=self._mean_center,
+                        axis_weight=self._axis_weight,
                     )
                 )
             except Exception:
