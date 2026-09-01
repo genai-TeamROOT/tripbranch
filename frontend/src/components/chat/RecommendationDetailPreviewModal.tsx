@@ -795,7 +795,7 @@ function PlacePhotoGallery({ card, title }: { card: InfoPlaceCard; title: string
         <img
           src={urls[safeIndex]}
           alt={urls.length > 1 ? `${placeName} 사진 ${safeIndex + 1}번째` : `${placeName} 이미지`}
-          className="h-52 w-full rounded-2xl bg-chip object-cover"
+          className="aspect-[5/3] w-full rounded-2xl bg-chip object-cover"
         />
         {urls.length > 1 && (
           <span className="absolute bottom-2 right-2 rounded-full bg-black/60 px-2 py-0.5 text-xs font-medium text-white">
@@ -974,13 +974,13 @@ export function RecommendationDetailPreviewModal({
 
         <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4 pb-5">
           {isLoading ? (
-            <div className="flex h-52 animate-pulse items-center justify-center rounded-2xl bg-chip text-sm text-muted">
+            <div className="flex aspect-[5/3] animate-pulse items-center justify-center rounded-2xl bg-chip text-sm text-muted">
               상세 정보를 불러오는 중...
             </div>
           ) : detailCard && (detailCard.photos?.length || detailCard.thumbnail_url) ? (
             <PlacePhotoGallery card={detailCard} title={title} />
           ) : !hasRealtimeDetails ? (
-            <div className="flex h-52 items-center justify-center rounded-2xl border border-dashed border-border bg-chip text-sm text-muted">
+            <div className="flex aspect-[5/3] items-center justify-center rounded-2xl border border-dashed border-border bg-chip text-sm text-muted">
               {detailStatus === "unavailable"
                 ? "상세 정보를 불러오지 못했어요."
                 : "등록된 이미지가 없어요."}
