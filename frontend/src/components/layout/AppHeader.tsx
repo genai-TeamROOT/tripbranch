@@ -10,7 +10,7 @@
 import { ChevronLeft, Menu, X } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useIsDesktopSidebar } from "../../hooks/useIsDesktopSidebar";
-import { isOpenAsSheet } from "../../state/sheetNav";
+import { isOpenAsSheet, sheetState } from "../../state/sheetNav";
 import { cn } from "../../utils/cn";
 import { useAppShell } from "./AppShellContext";
 
@@ -78,13 +78,18 @@ export function AppHeader({ locationLabel = null, onBack }: AppHeaderProps) {
           )}
 
           {locationLabel && (
-            <span className="flex items-center gap-1.5 rounded-full border border-white bg-white/60 px-3 py-1.5 text-sm font-medium text-ink shadow-resting backdrop-blur-md">
+            <button
+              type="button"
+              onClick={() => navigate("/location", { state: sheetState(location) })}
+              aria-label={`위치 설정으로 이동 (현재: ${locationLabel})`}
+              className="flex items-center gap-1.5 rounded-full border border-white bg-white/60 px-3 py-1.5 text-sm font-medium text-ink shadow-resting backdrop-blur-md transition-colors hover:bg-white/80"
+            >
               <span className="relative flex h-2.5 w-2.5" aria-hidden>
                 <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
                 <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-green-500" />
               </span>
               {locationLabel}
-            </span>
+            </button>
           )}
         </div>
       </div>
