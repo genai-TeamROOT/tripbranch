@@ -293,7 +293,7 @@ _IGNORE_OPERATING_HOURS_TTL = timedelta(hours=1)
 
 
 def _remember_ignore_operating_hours(session_id: str, store: StateStore | None) -> None:
-    """"운영 중이 아닌 곳도 볼게요" 선택을 TTL 동안 B에 남긴다."""
+    """ "운영 중이 아닌 곳도 볼게요" 선택을 TTL 동안 B에 남긴다."""
     set_ignore_operating_hours_until(
         SetIgnoreOperatingHoursRequest(
             session_id=session_id, until=now_kst() + _IGNORE_OPERATING_HOURS_TTL
@@ -470,6 +470,7 @@ def _location_ambiguous_quick_picks(
             return tuple(landmark.name for landmark in DISTRICT_LANDMARKS[district.name])
     return _location_required_quick_picks(context_gps)
 
+
 # location_required는 last_intent를 그대로 복원해 재사용한다. RECOMMEND/SCHEDULE는
 # 둘 다 llm_output.recommend(RecommendPayload)로 조건을 나르므로 이 지름길로 풀 수
 # 있다. MODIFY는 llm_output.modify(ModifyPayload)가 필요해 이 지름길에서 뺐다 — 그런
@@ -512,7 +513,7 @@ async def _respond_no_data_closed(
     tool_execution: object,
     tool_executions: object,
 ) -> AgentResponse:
-    """"운영 중이 아닌 곳도 볼게요" 되묻기 응답을 조립한다.
+    """ "운영 중이 아닌 곳도 볼게요" 되묻기 응답을 조립한다.
 
     RECOMMEND/MODIFY 경로와 SCHEDULE 경로 둘 다에서 쓴다 — SCHEDULE도 원인이
     "폐점 후보뿐"이면 "후보가 부족하니 지역/카테고리를 바꿔달라"는 일반 되묻기
@@ -714,9 +715,7 @@ def _resolve_offer_utterance(
             llm_output=LLMOutput(
                 intent=Intent.GENERAL,
                 status=OutputStatus.COMPLETE,
-                general=GeneralPayload(
-                    topic=GeneralTopic.TRAVEL_TIP, original_question=user_input
-                ),
+                general=GeneralPayload(topic=GeneralTopic.TRAVEL_TIP, original_question=user_input),
             ),
             terminal_message=_OFFER_DECLINED_MESSAGE,
             reject_offer_action=offer.action_id,
@@ -1033,7 +1032,7 @@ _TRAVEL_ORIGIN_OVERRIDE_RESOLVABLE_INTENTS = frozenset(
 def _resolve_travel_origin_override(
     *, override: TravelOrigin, session_context: SessionContextResponse
 ) -> _ClarificationResolution | None:
-    """"OO 기준으로 다시 보기" 버튼 클릭을 결정적으로 해소한다.
+    """ "OO 기준으로 다시 보기" 버튼 클릭을 결정적으로 해소한다.
 
     되묻기(_resolve_clarification_choice)와 달리 pending_clarification을 요구하지
     않는다 — 이 버튼은 완결된 답변 아래에 조건부로 붙는 비차단형 제안이라(D-071,
@@ -1386,9 +1385,7 @@ async def _saved_places_context(
 
     if not injected:
         return None
-    return tool_context.model_copy(
-        update={"places": places.model_copy(update={"data": injected})}
-    )
+    return tool_context.model_copy(update={"places": places.model_copy(update={"data": injected})})
 
 
 def _merge_recommendation_context_places(
@@ -1443,10 +1440,7 @@ Coordinate: TypeAlias = tuple[float, float]
 def _place_coordinates(places: Sequence[PlaceCandidate]) -> dict[str, Coordinate]:
     """C가 준 후보의 위경도를 place_id로 찾을 수 있게 펼친다."""
 
-    return {
-        place.place_id: (place.location.latitude, place.location.longitude)
-        for place in places
-    }
+    return {place.place_id: (place.location.latitude, place.location.longitude) for place in places}
 
 
 def _snapshot_coordinates(session_context: SessionContextResponse) -> dict[str, Coordinate]:
@@ -2149,11 +2143,7 @@ def _conversation_turn(request: AgentRequest, response: AgentResponse) -> Conver
     """
 
     llm_output = response.llm_output
-    question_type = (
-        llm_output.info.question_type.value
-        if llm_output.info is not None
-        else None
-    )
+    question_type = llm_output.info.question_type.value if llm_output.info is not None else None
     offered_action: str | None = None
     if llm_output.general is not None:
         offer = offer_for(llm_output.general.situation)
@@ -3565,9 +3555,7 @@ async def _score_recommendations(
     #    잡아내 보충하지 않는다.)
     candidate_target = settings.recommendation_candidate_limit
     recommendation_limit = (
-        SCHEDULE_RECOMMENDATION_LIMIT
-        if is_schedule
-        else settings.recommendation_result_limit
+        SCHEDULE_RECOMMENDATION_LIMIT if is_schedule else settings.recommendation_result_limit
     )
     await _emit_progress(
         stream_event_sink,
@@ -3616,11 +3604,7 @@ async def _score_recommendations(
                 gps_location=context_gps,
                 excluded_place_ids=[
                     *excluded_place_ids,
-                    *(
-                        place_id
-                        for place_id in run_seen_ids
-                        if place_id not in excluded_place_ids
-                    ),
+                    *(place_id for place_id in run_seen_ids if place_id not in excluded_place_ids),
                 ],
                 # 첫 조회가 확정한 기준점을 넘겨 C가 장소만 다시 주게 한다. 보충
                 # 배치의 위치·날씨·공휴일은 아래 병합에서 버려지므로(첫 배치 값을
@@ -3721,9 +3705,7 @@ async def _score_recommendations(
                 )
             )
             tool_context = _merge_recommendation_context_places(tool_context, saved_context)
-            injected_saved_ids = [
-                place.place_id for place in (saved_context.places.data or [])
-            ]
+            injected_saved_ids = [place.place_id for place in (saved_context.places.data or [])]
 
         merged_prepared = recommendation_provider.merge_prepared(prepared_batches)
         recommendations = await _score_with_measured_routes(
@@ -3743,9 +3725,7 @@ async def _score_recommendations(
                 _narrow_prepared(merged_prepared, cut_saved_ids),
                 limit=len(cut_saved_ids),
             )
-            recommendations = _with_pinned_recommendations(
-                recommendations, pinned, cut_saved_ids
-            )
+            recommendations = _with_pinned_recommendations(recommendations, pinned, cut_saved_ids)
     else:
         saved_context = await _saved_places_context(
             tool_context,
@@ -3754,9 +3734,7 @@ async def _score_recommendations(
         )
         if saved_context is not None:
             tool_context = _merge_recommendation_context_places(tool_context, saved_context)
-            injected_saved_ids = [
-                place.place_id for place in (saved_context.places.data or [])
-            ]
+            injected_saved_ids = [place.place_id for place in (saved_context.places.data or [])]
         recommendations = await recommendation_provider.recommend(
             agent_conditions,
             tool_context,
@@ -3776,9 +3754,7 @@ async def _score_recommendations(
                 limit=len(cut_saved_ids),
                 ignore_operating_hours=effective_ignore_operating_hours,
             )
-            recommendations = _with_pinned_recommendations(
-                recommendations, pinned, cut_saved_ids
-            )
+            recommendations = _with_pinned_recommendations(recommendations, pinned, cut_saved_ids)
     _record_trace_safely(
         session_id=state_response.session_id,
         run_id=state_response.run_id,
@@ -3971,9 +3947,7 @@ async def _run_schedule_branch(
             "기존 일정은 유지하고 바꿀 장소를 다시 편성하고 있어요.",
         )
         schedule_result = await _await_with_heartbeat(
-            plan_partial_schedule(
-                partial_request, llm, co_visited_fetcher=fetch_co_visited_hints
-            ),
+            plan_partial_schedule(partial_request, llm, co_visited_fetcher=fetch_co_visited_hints),
             sink=stream_event_sink,
             stage="scheduling",
         )
@@ -4273,6 +4247,7 @@ async def run_agent(
         get_llm_provider,
         get_place_details_repository,
         get_place_evidence_provider,
+        get_recommendation_card_tool,
         get_travel_route_tool,
     )
     from app.services.runtime.real_recommendation_provider import RealRecommendationProvider
@@ -4287,6 +4262,9 @@ async def run_agent(
             recommendation_provider=RealRecommendationProvider(
                 get_place_evidence_provider(client),
                 place_details_repository,
+                # 원래 COMPARE 전용 Tool(app/tools/recommendation_cards.py)이지만
+                # 썸네일 조회 로직은 그대로 재사용한다(TECH-02).
+                get_recommendation_card_tool(client),
             ),
             place_details_repository=place_details_repository,
             enrichment_provider=get_candidate_enrichment_service(client),

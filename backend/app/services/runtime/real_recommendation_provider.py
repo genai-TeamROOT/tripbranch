@@ -42,6 +42,7 @@ from app.services.recommendation_pipeline import (
 )
 from app.services.runtime.context_schemas import RecommendationContext
 from app.services.runtime.recommendation_transform import to_search_radius_km, to_travel_mode
+from app.tools.recommendation_cards import RecommendationCardTool
 
 _KST = ZoneInfo("Asia/Seoul")
 logger = logging.getLogger(__name__)
@@ -181,9 +182,7 @@ def _enrich_taste_query(conditions: UserConditions) -> str:
     `test_results/taste_companion_cofill.csv`,
     `scripts/measure_taste_condition_dominance.py --scope companion`.
     """
-    usable_tags = [
-        tag for tag in conditions.place_tags if tag not in _TASTE_QUERY_EXCLUDED_TAGS
-    ]
+    usable_tags = [tag for tag in conditions.place_tags if tag not in _TASTE_QUERY_EXCLUDED_TAGS]
     if usable_tags:
         return f"{conditions.taste_query} {' '.join(usable_tags)}"
     type_labels = [
@@ -225,11 +224,13 @@ class RealRecommendationProvider:
     # 두면 그쪽이 깨진다.
     _place_evidence: PlaceEvidenceProvider | None = None
     _preference_tags: SupabasePlaceRepository | None = None
+    _recommendation_cards: RecommendationCardTool | None = None
 
     def __init__(
         self,
         place_evidence: PlaceEvidenceProvider | None = None,
         preference_tags: SupabasePlaceRepository | None = None,
+        recommendation_cards: RecommendationCardTool | None = None,
     ) -> None:
         """취향 근거 Provider는 선택이다.
 
@@ -240,9 +241,14 @@ class RealRecommendationProvider:
         도보 경로와 달리 A가 조회해 넘기지 않고 D가 직접 부른다 — 취향 발화는
         `conditions.taste_query`로 이미 도착해 있고, 이 값을 쓰는 곳이 D의 점수
         계산뿐이라 A가 중계할 이유가 없다.
+
+        recommendation_cards(C의 RecommendationCardTool, 원래 COMPARE 전용)는
+        썸네일만 빌려 쓴다(TECH-02: D는 C의 Tool을 직접 못 부르니 A가 대신
+        불러 D의 결과에 병합한다). None이면 이미지 없이 추천한다.
         """
         self._place_evidence = place_evidence
         self._preference_tags = preference_tags
+        self._recommendation_cards = recommendation_cards
 
     def merge_prepared(
         self,
@@ -282,7 +288,41 @@ class RealRecommendationProvider:
             travel_routes=_measured_routes_for(conditions, travel_routes),
             taste_matches=await self._taste_matches_for(conditions, prepared),
         )
-        return await self._with_preference_tags(response)
+        response = await self._with_preference_tags(response)
+        return await self._with_thumbnails(response)
+
+    async def _with_thumbnails(self, response: RecommendationResponse) -> RecommendationResponse:
+        """추천 결과에 C의 RecommendationCardTool로 조회한 썸네일을 붙인다.
+
+        실패해도(조회 실패·설정 없음) 추천 자체는 그대로 유지한다 —
+        _with_preference_tags와 같은 원칙이다. 찾지 못한 장소는 image_url이
+        None으로 남고, 프론트는 그 경우 자리표시 칩을 그린다.
+        """
+        if self._recommendation_cards is None:
+            return response
+        items = [*response.recommendations, *response.unverified_recommendations]
+        try:
+            result = await self._recommendation_cards.get_cards([item.place_id for item in items])
+        except Exception:
+            logger.exception("추천 썸네일 조회 실패 — 이미지 없이 추천한다")
+            return response
+
+        thumbnails = {card.content_id: card.thumbnail_url for card in result.cards}
+
+        def attach(item: RecommendationItem) -> RecommendationItem:
+            image_url = thumbnails.get(item.place_id)
+            if image_url is None:
+                return item
+            return item.model_copy(update={"image_url": image_url})
+
+        return response.model_copy(
+            update={
+                "recommendations": [attach(item) for item in response.recommendations],
+                "unverified_recommendations": [
+                    attach(item) for item in response.unverified_recommendations
+                ],
+            }
+        )
 
     async def _with_preference_tags(
         self, response: RecommendationResponse
@@ -336,10 +376,7 @@ class RealRecommendationProvider:
         if self._place_evidence is None or not conditions.taste_query:
             return None
 
-        place_ids = [
-            item.candidate.place_id
-            for item in prepared.preparation.eligible_candidates
-        ]
+        place_ids = [item.candidate.place_id for item in prepared.preparation.eligible_candidates]
         if not place_ids:
             return None
 

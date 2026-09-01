@@ -141,6 +141,11 @@ class RecommendationItem(BaseModel):
     # 리뷰·블로그 원문은 보내지 않고 장소별 상위 태그와 문서 단위 언급 수만
     # 서비스 화면에 노출한다. 태그 미수집 장소는 빈 배열이다.
     preference_tags: list[PreferenceTagSummary] = Field(default_factory=list)
+    # D의 파이프라인은 이미지를 조회하지 않는다 — A가 응답 조립 단계에서 C의
+    # RecommendationCardTool(원래 COMPARE용, place_id 배치 조회)로 채워 넣는다
+    # (TECH-02: D가 C의 Tool을 직접 부르지 않는다). 채우지 못한 장소는 None이고,
+    # 프론트는 그 경우 자리표시 칩을 그린다.
+    image_url: str | None = None
 
 
 class TravelOriginToggle(BaseModel):
