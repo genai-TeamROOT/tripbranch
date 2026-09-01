@@ -374,7 +374,7 @@ export function ChatPage() {
   const locationLabel = state.interpreted_conditions?.location_query ?? "종로구";
 
   return (
-    <main className="flex h-full flex-col">
+    <main className="flex h-full flex-col overflow-y-auto">
       <AppHeader locationLabel={locationLabel} />
 
       <div

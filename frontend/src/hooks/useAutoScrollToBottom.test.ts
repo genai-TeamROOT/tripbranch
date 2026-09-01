@@ -33,7 +33,8 @@ afterEach(() => {
 
 function setUpShellAndContainer() {
   const shell = document.createElement("div");
-  shell.className = "tb-shell";
+  // findScrollableAncestor는 클래스명이 아니라 실제 overflow-y 계산값으로 찾는다.
+  shell.style.overflowY = "auto";
   Object.defineProperty(shell, "scrollHeight", { value: 2000, configurable: true });
   Object.defineProperty(shell, "clientHeight", { value: 500, configurable: true });
   shell.scrollTop = 0;
@@ -45,7 +46,7 @@ function setUpShellAndContainer() {
   return { shell, container };
 }
 
-it("스트리밍 중 내용이 자라면(리사이즈) .tb-shell을 바닥까지 스크롤한다", () => {
+it("스트리밍 중 내용이 자라면(리사이즈) 스크롤 조상을 바닥까지 스크롤한다", () => {
   const { shell, container } = setUpShellAndContainer();
 
   renderHook(() => useAutoScrollToBottom({ current: container }, true));
