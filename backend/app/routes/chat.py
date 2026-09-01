@@ -29,10 +29,15 @@ from app.agent_context.info_schemas import InfoContextRequest
 from app.auth.dependency import OptionalPrincipal
 from app.errors import AppError
 from app.observability.api_usage import create_external_client
-from app.providers.factory import get_google_translate_provider, get_llm_provider
+from app.providers.factory import (
+    get_google_translate_provider,
+    get_llm_provider,
+    get_place_details_repository,
+)
 from app.schemas import (
     AgentRequest,
     AgentResponse,
+    PlacePreferenceInsight,
     RecommendationPlaceDetailRequest,
     RecommendationPlaceDetailResponse,
 )
@@ -149,6 +154,24 @@ async def recommendation_place_details(
             status="no_data",
             requested_place_id=request.place_id,
         )
+    if place_card.place_id:
+        async with create_external_client() as client:
+            preference_repository = get_place_details_repository(client)
+            if preference_repository is not None:
+                try:
+                    insights = await preference_repository.find_preference_insights(
+                        place_card.place_id
+                    )
+                    place_card = place_card.model_copy(
+                        update={
+                            "preference_insights": [
+                                PlacePreferenceInsight.model_validate(insight)
+                                for insight in insights
+                            ]
+                        }
+                    )
+                except Exception:
+                    logger.exception("상세 카드 취향 근거 조회 실패 — 기본 카드로 응답한다")
     return RecommendationPlaceDetailResponse(
         status="success",
         requested_place_id=request.place_id,

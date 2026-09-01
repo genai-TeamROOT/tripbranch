@@ -185,6 +185,7 @@ def test_recommendation_place_details_returns_matched_c_place_card(monkeypatch) 
             "credit_card": None,
             "restroom": None,
             "homepage": None,
+            "preference_insights": [],
             "population_current_level": None,
             "population_current_message": None,
             "population_observed_at": None,

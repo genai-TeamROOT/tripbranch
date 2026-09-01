@@ -764,6 +764,7 @@ class ContextService:
         nearest = select_nearest_population_area(
             latitude=resolved_location.latitude,
             longitude=resolved_location.longitude,
+            requested_name=resolved_location.resolved_name,
         )
         if nearest is None:
             return await self._fetch_concentration_info(
@@ -921,6 +922,7 @@ class ContextService:
         nearest = select_nearest_commercial_area(
             latitude=resolved_location.latitude,
             longitude=resolved_location.longitude,
+            requested_name=resolved_location.resolved_name,
         )
         if nearest is None:
             return _info_error_response(
@@ -1162,6 +1164,7 @@ class ContextService:
             latitude=resolved_location.latitude,
             longitude=resolved_location.longitude,
             max_distance_km=COMMERCIAL_AREA_PROXY_MAX_DISTANCE_KM,
+            requested_name=resolved_location.resolved_name,
         )
         if nearest is None:
             return _realtime_city_info_no_data_response(
@@ -2386,14 +2389,18 @@ def _place_candidate_has_data(
     if question_type == "realtime_commercial":
         return (
             select_nearest_commercial_area(
-                latitude=location.latitude, longitude=location.longitude
+                latitude=location.latitude,
+                longitude=location.longitude,
+                requested_name=location.resolved_name,
             )
             is not None
         )
     if is_realtime_citydata_purpose:
         return (
             select_nearest_population_area(
-                latitude=location.latitude, longitude=location.longitude
+                latitude=location.latitude,
+                longitude=location.longitude,
+                requested_name=location.resolved_name,
             )
             is not None
         )
@@ -2405,7 +2412,9 @@ def _place_candidate_has_data(
         if current_population_candidate:
             return (
                 select_nearest_population_area(
-                    latitude=location.latitude, longitude=location.longitude
+                    latitude=location.latitude,
+                    longitude=location.longitude,
+                    requested_name=location.resolved_name,
                 )
                 is not None
             )

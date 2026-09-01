@@ -200,6 +200,91 @@ function DetailEntries({
   );
 }
 
+function sourceLabel(sourceType: string): string {
+  if (sourceType === "google_review") return "Google 리뷰";
+  if (sourceType === "naver_post") return "네이버 블로그";
+  if (sourceType === "tour_overview") return "관광공사 장소 정보";
+  return "방문자 후기";
+}
+
+function PreferenceInsightsSection({ card }: { card: InfoPlaceCard }) {
+  const insights = card.preference_insights ?? [];
+  if (insights.length === 0) return null;
+
+  return (
+    <section className="rounded-xl border border-blue-100 bg-blue-50/50 p-4 dark:border-blue-950/70 dark:bg-blue-950/20">
+      <div className="flex items-baseline justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+            방문자 후기에 나타난 특징
+          </h3>
+          <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-300">
+            같은 문서에서 반복된 표현은 한 번만 집계했어요.
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-3 space-y-2">
+        {insights.map((insight, index) => {
+          return (
+            <details
+              key={insight.code}
+              open={index === 0}
+              className="rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900"
+            >
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+                <p className="min-w-0 text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  {insight.label}
+                  <span className="ml-2 text-xs font-medium text-blue-600 dark:text-blue-300">
+                    {insight.mention_count}개 후기
+                  </span>
+                </p>
+              </summary>
+
+              <div className="mt-2 space-y-3 border-t border-gray-100 pt-2.5 dark:border-gray-800">
+                {insight.evidence.map((evidence, evidenceIndex) => (
+                  <blockquote
+                    key={`${evidence.text}-${evidenceIndex}`}
+                    className="border-l-2 border-blue-300 pl-3 text-sm leading-6 text-gray-700 dark:text-gray-300"
+                  >
+                    <p>“{evidence.text}”</p>
+                    <EvidenceSource evidence={evidence} />
+                  </blockquote>
+                ))}
+                {insight.evidence.length === 0 && (
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    대표 문장을 준비하고 있어요.
+                  </p>
+                )}
+              </div>
+            </details>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function EvidenceSource({
+  evidence,
+}: {
+  evidence: NonNullable<InfoPlaceCard["preference_insights"]>[number]["evidence"][number];
+}) {
+  const label = sourceLabel(evidence.source_type);
+  return evidence.source_url ? (
+    <a
+      href={evidence.source_url}
+      target="_blank"
+      rel="noreferrer"
+      className="mt-1 inline-block text-xs font-medium text-blue-700 hover:underline dark:text-blue-300"
+    >
+      {label} ↗
+    </a>
+  ) : (
+    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{label}</p>
+  );
+}
+
 // www.로 시작하는 프로토콜 없는 도메인도 잡는다(실측: TourAPI homepage 필드의
 // 3.6%가 이 형태 — "www.kh.or.kr"처럼 http(s):// 없이 온다). 일반 도메인 정규식은
 // 숫자·단위 표기(예: "3.5km")를 오탐할 수 있어 www. 접두만 좁게 잡는다.
@@ -955,6 +1040,7 @@ export function RecommendationDetailPreviewModal({
                   </p>
                 </section>
               )}
+              <PreferenceInsightsSection card={detailCard} />
               <DetailEntries card={detailCard} entries={DETAIL_FIELDS} />
               <DetailEntries card={detailCard} entries={FACILITY_FIELDS} />
             </section>

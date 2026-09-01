@@ -48,6 +48,48 @@ class SeoulRealtimeArea:
     longitude: float
 
 
+# 요청 장소 이름이 목록에 그대로(또는 오탈자 한 글자 차이로) 있는데도 중심좌표가
+# 소수점 단위로 어긋나 "N km 떨어진 곳"으로 잘못 대체하는 걸 막는다("성수 카페거리"
+# 지오코딩 결과 "성수동카페거리" vs 목록의 "성수카페거리", 2026-08-31 실측).
+# resolve_location.py의 편집거리 기준과 맞춘다 — 기준이 다르면 어떤 단계에서
+# "같은 장소"로 판단했다가 다음 단계에서 "다른 장소"로 뒤집히는 모순이 생긴다.
+_NAME_MATCH_EDIT_DISTANCE_LIMIT = 1
+_MIN_NAME_LEN_FOR_FUZZY_MATCH = 3
+
+
+def _normalize_area_name(value: str) -> str:
+    return value.casefold().replace(" ", "")
+
+
+def _bounded_edit_distance(a: str, b: str, *, limit: int) -> int:
+    if abs(len(a) - len(b)) > limit:
+        return limit + 1
+    previous_row = list(range(len(b) + 1))
+    for i, ca in enumerate(a, start=1):
+        current_row = [i] + [0] * len(b)
+        for j, cb in enumerate(b, start=1):
+            cost = 0 if ca == cb else 1
+            current_row[j] = min(
+                previous_row[j] + 1, current_row[j - 1] + 1, previous_row[j - 1] + cost
+            )
+        previous_row = current_row
+    return previous_row[-1]
+
+
+def names_match(a: str, b: str) -> bool:
+    """두 장소명이 사실상 같은 이름인지(공백 무시, 한 글자 차이까지 허용)."""
+
+    normalized_a, normalized_b = _normalize_area_name(a), _normalize_area_name(b)
+    if normalized_a == normalized_b:
+        return True
+    if min(len(normalized_a), len(normalized_b)) < _MIN_NAME_LEN_FOR_FUZZY_MATCH:
+        return False
+    return (
+        _bounded_edit_distance(normalized_a, normalized_b, limit=_NAME_MATCH_EDIT_DISTANCE_LIMIT)
+        <= _NAME_MATCH_EDIT_DISTANCE_LIMIT
+    )
+
+
 # 서울시 실시간 도시데이터 매뉴얼 V8.5(2026-04) 표 2-2/표 3-9에 실린 카테고리별
 # 개수. 로드한 파일이 이 개수와 어긋나면 우리 스냅샷이 매뉴얼과 다른 걸 뜻하므로
 # 조용히 넘어가지 않고 바로 예외로 끊는다.
@@ -128,7 +170,27 @@ def _select_nearest(
     latitude: float,
     longitude: float,
     max_distance_km: float,
+    requested_name: str | None = None,
 ) -> tuple[SeoulRealtimeArea, float] | None:
+    # 이름이 사실상 같은 지역이 목록에 있으면 좌표 최근접보다 그걸 우선한다 —
+    # 중심좌표 오차 때문에 같은 장소를 "N km 떨어진 곳"으로 잘못 대체하지
+    # 않기 위해서다. 이름 매칭은 82/121곳 안에서 편집거리 1 이내인 후보를
+    # 찾는 것뿐이라 서로 다른 실존 지역을 혼동할 위험이 낮다.
+    if requested_name:
+        name_match = next(
+            (candidate for candidate in areas if names_match(candidate.name, requested_name)),
+            None,
+        )
+        if name_match is not None:
+            distance_km = haversine_km(
+                latitude, longitude, name_match.latitude, name_match.longitude
+            )
+            # 이름이 같아도 여전히 max_distance_km는 지킨다 — 좌표가 아예 서비스
+            # 지역 밖(예: 지오코딩 오류)이면 "같은 이름"만으로 실제로는 대체
+            # 불가능한 지역을 정답처럼 반환하면 안 된다.
+            if distance_km <= max_distance_km:
+                return name_match, round(distance_km, 2)
+
     area = min(
         areas,
         key=lambda candidate: haversine_km(
@@ -146,11 +208,13 @@ def select_nearest_commercial_area(
     latitude: float,
     longitude: float,
     max_distance_km: float = COMMERCIAL_AREA_PROXY_MAX_DISTANCE_KM,
+    requested_name: str | None = None,
 ) -> tuple[SeoulRealtimeArea, float] | None:
     """좌표에서 가장 가까운 **상권**(``citydata_cmrcl``) 제공 지역을 반환한다.
 
     82개 목록만 본다 — 상권 데이터는 이 82곳 밖에는 애초에 없어서, 더 넓은 인구
-    목록을 봐도 대신할 데이터가 없다.
+    목록을 봐도 대신할 데이터가 없다. ``requested_name``을 주면 좌표가 조금 어긋나도
+    이름이 사실상 같은 지역을 최근접보다 우선한다.
     """
 
     return _select_nearest(
@@ -158,6 +222,7 @@ def select_nearest_commercial_area(
         latitude=latitude,
         longitude=longitude,
         max_distance_km=max_distance_km,
+        requested_name=requested_name,
     )
 
 
@@ -166,11 +231,14 @@ def select_nearest_population_area(
     latitude: float,
     longitude: float,
     max_distance_km: float = POPULATION_AREA_PROXY_MAX_DISTANCE_KM,
+    requested_name: str | None = None,
 ) -> tuple[SeoulRealtimeArea, float] | None:
     """좌표에서 가장 가까운 **인구 혼잡도**(``citydata``/``citydata_ppltn``) 제공 지역을 반환한다.
 
     121개 목록을 본다 — 상권 82개 목록에는 없는 경복궁·한강공원·고궁 등도 여기엔
     있어서, 상권 목록만 볼 때보다 더 가깝고 정확한 지역으로 맞힐 수 있다.
+    ``requested_name``을 주면 좌표가 조금 어긋나도 이름이 사실상 같은 지역을
+    최근접보다 우선한다.
     """
 
     return _select_nearest(
@@ -178,6 +246,7 @@ def select_nearest_population_area(
         latitude=latitude,
         longitude=longitude,
         max_distance_km=max_distance_km,
+        requested_name=requested_name,
     )
 
 
@@ -187,6 +256,7 @@ __all__ = [
     "POPULATION_AREAS",
     "POPULATION_AREA_PROXY_MAX_DISTANCE_KM",
     "SeoulRealtimeArea",
+    "names_match",
     "select_nearest_commercial_area",
     "select_nearest_population_area",
 ]

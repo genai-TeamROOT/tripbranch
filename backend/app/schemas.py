@@ -1048,6 +1048,24 @@ class ToolExecutionDebug(BaseModel):
     candidate_concentration: list[CandidateConcentrationDebug] = Field(default_factory=list)
 
 
+class PreferenceEvidenceQuote(BaseModel):
+    polarity: str
+    text: str
+    source_type: str
+    source_url: str | None = None
+
+
+class PlacePreferenceInsight(BaseModel):
+    """상세 카드에 표시할 장소별 취향 태그와 대표 후기 근거."""
+
+    code: str
+    label: str
+    mention_count: int = Field(ge=0)
+    positive_document_count: int = Field(ge=0)
+    negative_document_count: int = Field(ge=0)
+    evidence: list[PreferenceEvidenceQuote] = Field(default_factory=list)
+
+
 class InfoPlaceCard(BaseModel):
     """INFO 장소 상세 카드용 A의 최종 응답 모델.
 
@@ -1080,6 +1098,8 @@ class InfoPlaceCard(BaseModel):
     credit_card: str | None = None
     restroom: str | None = None
     homepage: str | None = None
+    # 후기에서 추출한 취향 태그·대표 근거. 상세 모달 요청에서만 채운다.
+    preference_insights: list[PlacePreferenceInsight] = Field(default_factory=list)
     population_current_level: str | None = None
     population_current_message: str | None = None
     population_observed_at: str | None = None
