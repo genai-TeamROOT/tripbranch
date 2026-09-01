@@ -1,5 +1,218 @@
-@import "tailwindcss";
+/*
+ * 역할: TripBranch 디자인 시스템의 토큰·기반 스타일을 정의한다.
+ * 근거: package_D/DESIGN_SYSTEM.md — §2 디자인 토큰, §3 토큰 이식, §4 레이아웃 셸.
+ * 주의: Tailwind 기본 팔레트는 "클래스명을 바꾸지 않고 값만 재정의"한다(§3.2).
+ *       테스트가 bg-emerald-500 같은 클래스명을 직접 단언하므로 이름을 바꾸면 깨진다.
+ */
 
-body {
-  margin: 0;
+@import "tailwindcss";
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@1.3.9/dist/web/static/pretendard.css");
+
+/* 다크 모드 미지원(라이트 전용, DESIGN_SYSTEM.md §1). 기존 코드의 dark: 클래스를
+   전부 지우는 대신 변형을 클래스 기반으로 바꿔서, .dark를 아무 데도 안 붙이면
+   자동으로 죽는다 — 나중에 다크 테마를 정식 지원하면 이 한 줄만 되돌리면 된다. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: "Pretendard", -apple-system, BlinkMacSystemFont, "Malgun Gothic", sans-serif;
+
+  --color-brand: #2454e0;
+  --color-brand-deep: #17348c;
+  --color-sky-soft: #a9c0f2;
+  --color-sky-light: #e6edfd;
+  --color-gold: #e0a83e;
+  --color-gold-tint: #fbeed3;
+  --color-calm: #2f9e5c;
+  --color-chip: #eef1f8;
+  --color-rust: #c0432c;
+  --color-rust-tint: #fbe4de;
+  --color-ink: #101828;
+  --color-ink-strong: #03060d;
+  --color-label: #1f2937;
+  --color-muted: #64748b;
+  --color-border: #e2e6ee;
+  --color-surface: #ffffff;
+  --color-bg: #ffffff;
+
+  --shadow-resting: 0 2px 12px rgba(36, 84, 224, 0.1);
+  --shadow-card: 0 12px 28px rgba(23, 52, 140, 0.16);
+
+  /* 중립 */
+  --color-gray-50: #f8fafc;
+  --color-gray-100: #eef1f8;
+  --color-gray-200: #e2e6ee;
+  --color-gray-300: #cbd3e1;
+  --color-gray-400: #94a3b8;
+  --color-gray-500: #64748b;
+  --color-gray-600: #475569;
+  --color-gray-700: #334155;
+  --color-gray-800: #1f2937;
+  --color-gray-900: #101828;
+  --color-gray-950: #03060d;
+
+  /* 파랑 → 브랜드 */
+  --color-blue-50: #eef3fe;
+  --color-blue-100: #e6edfd;
+  --color-blue-200: #cbdafa;
+  --color-blue-300: #a9c0f2;
+  --color-blue-400: #6389e9;
+  --color-blue-500: #2454e0;
+  --color-blue-600: #1e47c4;
+  --color-blue-700: #17348c;
+  --color-blue-800: #142c74;
+  --color-blue-900: #12276a;
+  --color-blue-950: #0b1840;
+
+  --color-sky-50: #eef3fe;
+  --color-sky-100: #e6edfd;
+  --color-sky-300: #a9c0f2;
+  --color-sky-500: #2454e0;
+  --color-sky-700: #17348c;
+  --color-sky-900: #12276a;
+
+  --color-indigo-50: #eef3fe;
+  --color-indigo-100: #e6edfd;
+  --color-indigo-300: #a9c0f2;
+  --color-indigo-500: #2454e0;
+  --color-indigo-600: #1e47c4;
+  --color-indigo-700: #17348c;
+  --color-indigo-900: #12276a;
+  --color-indigo-950: #0b1840;
+
+  /* 성공/여유 */
+  --color-emerald-50: #e9f7ef;
+  --color-emerald-100: #d3efdf;
+  --color-emerald-200: #a9dfbf;
+  --color-emerald-300: #7fcf9f;
+  --color-emerald-500: #2f9e5c;
+  --color-emerald-600: #268650;
+  --color-emerald-700: #1f6e42;
+  --color-emerald-900: #14452a;
+  --color-emerald-950: #0a2216;
+
+  /* 실패/혼잡 */
+  --color-red-50: #fdeeea;
+  --color-red-100: #fbe4de;
+  --color-red-300: #eda595;
+  --color-red-400: #dc7660;
+  --color-red-500: #c0432c;
+  --color-red-600: #a63823;
+  --color-red-700: #8c2f1d;
+  --color-red-900: #5a1e13;
+  --color-red-950: #2f0f09;
+
+  /* 경고/보통 */
+  --color-amber-50: #fdf6e9;
+  --color-amber-100: #fbeed3;
+  --color-amber-300: #efc978;
+  --color-amber-400: #e9b95a;
+  --color-amber-500: #e0a83e;
+  --color-amber-600: #c08c26;
+  --color-amber-700: #a97a24;
+  --color-amber-900: #6b4c16;
+  --color-amber-950: #3a2a0c;
+
+  --color-orange-100: #fbeed3;
+  --color-orange-500: #e0a83e;
+  --color-orange-700: #a97a24;
+}
+
+@layer base {
+  html {
+    color-scheme: light;
+    overflow-x: hidden;
+  }
+
+  body {
+    margin: 0;
+    font-family: var(--font-sans);
+    color: var(--color-ink);
+    background: var(--color-chip);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+  }
+
+  #root {
+    min-height: 100dvh;
+  }
+
+  /* ── 레이아웃 셸(§4) ──────────────────────────────────────────────
+   * 모바일은 가운데 한 칼럼, 768px 이상은 사이드바 + 본문이 화면 끝까지.
+   * 각 속성을 왜 넣었는지는 §4 "왜 이렇게 했는지" 표에 있다. 지우면 재발한다.
+   */
+  .tb-app-root {
+    display: flex;
+    justify-content: center;
+    min-height: 100dvh;
+    overflow-x: hidden;
+  }
+
+  .tb-shell {
+    width: 100%;
+    max-width: 640px;
+    /* min-height 가 아니라 height. 박스가 늘어나면 그 안의 position:fixed
+       하단 버튼이 늘어난 바닥에 붙어 화면 밖으로 스크롤돼 사라진다. */
+    height: 100dvh;
+    overflow-y: auto;
+    background: var(--color-bg);
+    position: relative;
+    /* SideDrawer 와 같은 z-index. 같으면 DOM 순서상 뒤가 이기므로 평소엔
+       셸이 드로어를 덮고, --pushed 로 밀려날 때만 드러난다. */
+    z-index: 10;
+    /* position:fixed 자식의 기준 박스가 된다. 데스크톱에서 하단바·모달이
+       브라우저 창 전체가 아니라 이 칼럼 안에 머문다. */
+    contain: layout;
+    box-shadow: 0 0 48px rgba(16, 24, 40, 0.08);
+    transition: transform 0.28s ease;
+    /* Chrome 이 transform 종료 후 합성 레이어를 애니메이션 중간 크기로
+       남기는 경우가 있다. 미리 승격해두면 안정적. */
+    will-change: transform;
+  }
+
+  @media (max-width: 767px) {
+    /* 오버레이 드로어가 아니다. 드로어는 왼쪽에 고정으로 있고 본문이 밀려나며
+       드러난다. 그림자는 드로어가 아니라 밀려나는 본문 왼쪽 모서리에 준다. */
+    .tb-shell--pushed {
+      transform: translateX(300px);
+      box-shadow: -16px 0 32px rgba(16, 24, 40, 0.1);
+    }
+  }
+
+  .tb-sidebar {
+    display: none;
+  }
+
+  @media (min-width: 768px) {
+    .tb-sidebar {
+      display: flex;
+      flex-direction: column;
+      width: 272px;
+      flex: none;
+      min-height: 100dvh;
+      background: var(--color-bg);
+      transition: width 0.2s ease;
+    }
+
+    .tb-sidebar--collapsed {
+      width: 72px;
+    }
+
+    .tb-shell {
+      max-width: none;
+      flex: 1;
+      box-shadow: none;
+    }
+  }
+}
+
+@layer utilities {
+  .scrollbar-none {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
 }
