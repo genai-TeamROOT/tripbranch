@@ -9,6 +9,7 @@ from app.agent_context.enrichment_service import CandidateEnrichmentService
 from app.agent_context.service import ContextService, ContextTools
 from app.config import settings
 from app.providers.factory import (
+    get_barrier_free_place_search_provider,
     get_concentration_provider,
     get_festival_provider,
     get_geocoding_provider,
@@ -51,6 +52,9 @@ def get_context_provider(client: httpx.AsyncClient) -> ContextService:
             places=NearbyPlaceDetailsTool(
                 search_provider=get_place_search_provider(client),
                 details_provider=get_place_details_provider(client),
+                # 무장애 조건이 붙은 요청만 이쪽으로 간다. 조건이 없으면 위의
+                # search_provider(TourAPI)가 그대로 후보를 모은다.
+                barrier_free_search_provider=get_barrier_free_place_search_provider(client),
             ),
             weather=GetWeatherForecastTool(get_weather_provider(client)),
             holidays=GetHolidaysTool(get_holiday_provider(client)),

@@ -12,7 +12,10 @@ from uuid import UUID
 import httpx
 
 from app.domain.models import (
+    AccessibilityNeed,
+    BarrierFreePlaceRow,
     PlaceBarrierFreeDetails,
+    PlaceCategoryFilter,
     PlaceEvidenceMatch,
     PlaceEvidenceSnippet,
     PlaceMoodMatch,
@@ -731,6 +734,61 @@ class SupabasePlaceRepository:
         if not isinstance(payload, list):
             raise SupabaseRepositoryError("invalid search_place_mood response")
         return tuple(_to_mood_match(row) for row in payload)
+
+    async def search_places_barrier_free(
+        self,
+        *,
+        latitude: float,
+        longitude: float,
+        radius_km: float,
+        needs: Sequence[AccessibilityNeed],
+        category_filter: PlaceCategoryFilter | None = None,
+        limit: int,
+    ) -> tuple[BarrierFreePlaceRow, ...]:
+        """무장애 편의를 요구한 요청의 후보를 반경 안에서 거리순으로 찾는다.
+
+        **무장애 조건이 없는 요청은 이 메서드를 부르지 않는다.** 후보 출처가
+        TourAPI 실시간 조회에서 저장소 스냅샷으로 바뀌므로, 무장애 요청에만
+        한정한다. 빈 `needs`로 부르면 조건 없는 전체 반경 검색이 되는데 그건
+        호출부가 의도한 적 없는 동작이라, RPC가 예외를 던지기 전에 여기서 막는다.
+
+        `needs`가 여럿이면 **전부 만족**하는 장소만 돌아온다. "유모차 끌고 갈 만한
+        곳"이 STEP_FREE_ACCESS + INFANT_FACILITIES로 오는데, 둘 다 필요하다고 말한
+        것이기 때문이다.
+
+        어느 컬럼을 읽고 무엇을 있다고 볼지는 RPC의 판정 블록이 정한다. 여기서
+        같은 판정을 다시 쓰지 않는다 — 두 곳에 두면 한쪽만 바뀌었을 때 결과가
+        갈리고, 그건 오류 없이 결과만 틀리는 실패다.
+        """
+        unique_needs = list(dict.fromkeys(needs))
+        if not unique_needs:
+            raise ValueError(
+                "needs가 비어 있습니다. 무장애 조건이 없으면 이 메서드를 부르지 않습니다."
+            )
+        if limit <= 0:
+            raise ValueError("limit은 0보다 커야 합니다.")
+
+        response = await self._request(
+            "POST",
+            "/rpc/search_places_barrier_free",
+            json={
+                "p_latitude": latitude,
+                "p_longitude": longitude,
+                "p_radius_km": radius_km,
+                "p_needs": [need.value for need in unique_needs],
+                "p_content_type_id": (
+                    category_filter.content_type_id if category_filter else None
+                ),
+                "p_lcls_systm1": category_filter.lcls_systm1 if category_filter else None,
+                "p_lcls_systm2": category_filter.lcls_systm2 if category_filter else None,
+                "p_lcls_systm3": category_filter.lcls_systm3 if category_filter else None,
+                "p_limit": limit,
+            },
+        )
+        payload = self._json(response)
+        if not isinstance(payload, list):
+            raise SupabaseRepositoryError("invalid search_places_barrier_free response")
+        return tuple(_to_barrier_free_place_row(row) for row in payload)
 
     async def find_first_photo_urls(
         self,
@@ -2124,6 +2182,48 @@ def _to_evidence_snippet(item: object) -> PlaceEvidenceSnippet:
         similarity=float(item["similarity"]),
         published_at=(datetime.fromisoformat(str(published_at)) if published_at else None),
     )
+
+
+def _to_barrier_free_place_row(row: object) -> BarrierFreePlaceRow:
+    """RPC 행을 후보 모델로 옮긴다.
+
+    좌표와 거리는 없으면 실패로 다룬다. RPC가 좌표 있는 행만 돌려주고 거리를 늘
+    계산하므로, 비어 있다면 응답 모양이 어긋난 것이지 "값이 없는 장소"가 아니다.
+    0.0으로 채우면 그 장소가 검색 중심에 있는 것으로 읽혀 맨 앞에 선다.
+    """
+    if not isinstance(row, Mapping):
+        raise SupabaseRepositoryError("invalid barrier free place row")
+    content_id = str(row.get("content_id") or "")
+    if not content_id:
+        raise SupabaseRepositoryError("barrier free place row missing content_id")
+    latitude = row.get("latitude")
+    longitude = row.get("longitude")
+    distance = row.get("distance_km")
+    if latitude is None or longitude is None or distance is None:
+        raise SupabaseRepositoryError(
+            f"barrier free place row missing coordinates or distance: {content_id}"
+        )
+    return BarrierFreePlaceRow(
+        content_id=content_id,
+        title=str(row.get("title") or ""),
+        address=_optional_str(row.get("address")),
+        latitude=float(latitude),
+        longitude=float(longitude),
+        content_type_id=_optional_str(row.get("content_type_id")),
+        lcls_systm1=_optional_str(row.get("lcls_systm1")),
+        lcls_systm2=_optional_str(row.get("lcls_systm2")),
+        lcls_systm3=_optional_str(row.get("lcls_systm3")),
+        first_image_url=_optional_str(row.get("first_image_url")),
+        distance_km=float(distance),
+    )
+
+
+def _optional_str(value: object) -> str | None:
+    """빈 문자열은 값이 없는 것으로 본다. 공백만 있는 값도 마찬가지다."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _to_mood_profile(row: object) -> PlaceMoodProfile:
