@@ -124,7 +124,7 @@ async def test_조건이_있으면_TourAPI를_부르지_않는다() -> None:
     """후보 출처가 저장소로 바뀐다. 두 경로를 겹쳐 부르면 호출만 낭비한다."""
     tour = _RecordingTourSearchProvider()
     result = await _tool(tour).execute(
-        _query(accessibility_needs=(AccessibilityNeed.STEP_FREE_ACCESS,))
+        _query(accessibility_needs=(AccessibilityNeed.WHEELCHAIR_ACCESS,))
     )
 
     assert tour.call_count == 0
@@ -135,7 +135,7 @@ async def test_조건이_있으면_TourAPI를_부르지_않는다() -> None:
 async def test_요구한_편의가_없는_곳은_빠진다() -> None:
     """유아 시설만 있고 단차 정보가 없는 곳은 휠체어 요구에 남으면 안 된다."""
     result = await _tool(_RecordingTourSearchProvider()).execute(
-        _query(accessibility_needs=(AccessibilityNeed.STEP_FREE_ACCESS,))
+        _query(accessibility_needs=(AccessibilityNeed.WHEELCHAIR_ACCESS,))
     )
 
     assert "fake-bf-nursery-1" not in {
@@ -157,7 +157,7 @@ async def test_유모차_요구는_단차와_유아시설을_모두_만족해야
     both = await tool.execute(
         _query(
             accessibility_needs=(
-                AccessibilityNeed.STEP_FREE_ACCESS,
+                AccessibilityNeed.STROLLER_ACCESS,
                 AccessibilityNeed.INFANT_FACILITIES,
             )
         )
@@ -186,7 +186,7 @@ async def test_추천_대상이_아닌_유형은_편의를_다_갖춰도_빠진�
 
 async def test_결과는_검색_중심에서_가까운_순이다() -> None:
     result = await _tool(_RecordingTourSearchProvider()).execute(
-        _query(accessibility_needs=(AccessibilityNeed.STEP_FREE_ACCESS,))
+        _query(accessibility_needs=(AccessibilityNeed.WHEELCHAIR_ACCESS,))
     )
 
     assert [place.candidate.place_id for place in result.places] == [
@@ -204,7 +204,7 @@ async def test_좁힐_수단이_없으면_넓은_결과_대신_unavailable로_�
     """
     tour = _RecordingTourSearchProvider()
     result = await _tool(tour, with_barrier_free=False).execute(
-        _query(accessibility_needs=(AccessibilityNeed.STEP_FREE_ACCESS,))
+        _query(accessibility_needs=(AccessibilityNeed.WHEELCHAIR_ACCESS,))
     )
 
     assert result.status is ToolStatus.UNAVAILABLE
@@ -229,9 +229,9 @@ async def test_계약은_모르는_어휘를_거부하지_않는다() -> None:
 
     걸러내는 것은 C의 몫이고, 걸러냈다는 사실은 경고로 남는다.
     """
-    conditions = UserConditions(accessibility_needs=["step_free_access", "hearing_loop"])
+    conditions = UserConditions(accessibility_needs=["wheelchair_access", "hearing_loop"])
 
-    assert conditions.accessibility_needs == ["step_free_access", "hearing_loop"]
+    assert conditions.accessibility_needs == ["wheelchair_access", "hearing_loop"]
 
 
 async def test_서비스가_모르는_어휘를_버리고_경고를_남긴다() -> None:
@@ -239,10 +239,10 @@ async def test_서비스가_모르는_어휘를_버리고_경고를_남긴다() 
     from app.agent_context.service import _resolve_accessibility_needs
 
     needs, has_unknown = _resolve_accessibility_needs(
-        ["step_free_access", "hearing_loop", "  ", "step_free_access"]
+        ["wheelchair_access", "hearing_loop", "  ", "wheelchair_access"]
     )
 
-    assert needs == (AccessibilityNeed.STEP_FREE_ACCESS,)
+    assert needs == (AccessibilityNeed.WHEELCHAIR_ACCESS,)
     assert has_unknown is True
 
 
@@ -250,11 +250,11 @@ async def test_아는_어휘만_오면_경고가_붙지_않는다() -> None:
     from app.agent_context.service import _resolve_accessibility_needs
 
     needs, has_unknown = _resolve_accessibility_needs(
-        ["step_free_access", "infant_facilities"]
+        ["stroller_access", "infant_facilities"]
     )
 
     assert needs == (
-        AccessibilityNeed.STEP_FREE_ACCESS,
+        AccessibilityNeed.STROLLER_ACCESS,
         AccessibilityNeed.INFANT_FACILITIES,
     )
     assert has_unknown is False
@@ -272,4 +272,62 @@ async def test_모르는_어휘만_오면_조건_없는_검색으로_바뀌지_�
 
     assert needs == ()
     assert has_unknown is True
+
+
+async def test_노인_동반에_쓰는_어휘가_단차와_따로_걸린다() -> None:
+    """의자식 테이블·저상버스·휠체어 대여는 휠체어 접근과 다른 자료다.
+
+    단차 정보가 없는 곳에도 이 값들이 있을 수 있고 그 반대도 마찬가지다. 한 묶음으로
+    합쳐 두면 오래 걷기 힘든 동행에게 쓸모 있는 곳이 휠체어 조건에 걸려 사라진다.
+    """
+    tool = _tool(_RecordingTourSearchProvider())
+
+    seating = await tool.execute(
+        _query(accessibility_needs=(AccessibilityNeed.SEATING_AVAILABLE,))
+    )
+    wheelchair = await tool.execute(
+        _query(accessibility_needs=(AccessibilityNeed.WHEELCHAIR_ACCESS,))
+    )
+
+    seating_ids = {place.candidate.place_id for place in seating.places}
+    wheelchair_ids = {place.candidate.place_id for place in wheelchair.places}
+
+    # 경로당은 의자식 테이블은 있지만 단차 정보가 없다.
+    assert "fake-bf-senior-1" in seating_ids
+    assert "fake-bf-senior-1" not in wheelchair_ids
+
+
+async def test_휠체어_대여는_휠체어_접근과_다른_조건이다() -> None:
+    """TourAPI의 `wheelchair` 응답 키가 대여를 뜻해 이름이 뒤집히기 쉽다."""
+    tool = _tool(_RecordingTourSearchProvider())
+
+    rental = await tool.execute(
+        _query(accessibility_needs=(AccessibilityNeed.WHEELCHAIR_RENTAL,))
+    )
+    access = await tool.execute(
+        _query(accessibility_needs=(AccessibilityNeed.WHEELCHAIR_ACCESS,))
+    )
+
+    assert {p.candidate.place_id for p in rental.places} == {"fake-bf-senior-1"}
+    assert "fake-bf-senior-1" not in {p.candidate.place_id for p in access.places}
+
+
+async def test_휠체어와_유모차는_아직_같은_후보를_준다() -> None:
+    """원문을 읽어 가르는 판정이 생기기 전까지는 두 값이 같다(TP-204).
+
+    같다는 것을 못 박아 두는 이유는, 판정이 붙었을 때 이 테스트가 깨지면서 두 값이
+    실제로 갈리기 시작했다는 것을 알려주기 때문이다.
+    """
+    tool = _tool(_RecordingTourSearchProvider())
+
+    wheelchair = await tool.execute(
+        _query(accessibility_needs=(AccessibilityNeed.WHEELCHAIR_ACCESS,))
+    )
+    stroller = await tool.execute(
+        _query(accessibility_needs=(AccessibilityNeed.STROLLER_ACCESS,))
+    )
+
+    assert [p.candidate.place_id for p in wheelchair.places] == [
+        p.candidate.place_id for p in stroller.places
+    ]
 

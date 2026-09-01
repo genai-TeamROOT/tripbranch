@@ -443,25 +443,47 @@ class PlaceBarrierFreeDetails:
 class AccessibilityNeed(StrEnum):
     """요청이 요구할 수 있는 무장애 편의. `place_barrier_free`의 컬럼 묶음과 1:1이다.
 
-    이름을 "누구인가"가 아니라 **"무엇이 필요한가"**로 지었다. 휠체어 사용자와
-    유모차 사용자는 사람이 다르지만 필요한 물리적 조건은 같은 컬럼이라, 사용자
-    유형으로 나누면 같은 조건이 두 이름을 갖는다. 그래서 "유모차 끌고 갈 만한 곳"은
-    STEP_FREE_ACCESS와 INFANT_FACILITIES 두 값으로 온다 — 단차 없이 들어갈 수
-    있는지와 수유실·기저귀교환대가 있는지는 다른 질문이다.
+    이름은 대개 **"무엇이 필요한가"**를 가리킨다. 다만 단차 접근만은 대상으로
+    나눈다 — 휠체어와 유모차는 같은 컬럼을 읽지만 판정이 갈리기 때문이다(각 값의
+    주석 참고). 나머지는 누가 요구하든 같은 값을 본다.
 
-    INFANT_FACILITIES만 요구하면 유아 시설은 있는데 계단으로 올라가야 하는 곳이
-    섞인다(유아 시설이 있는 275곳 중 24곳에 단차 정보가 없다).
+    "유모차 끌고 갈 만한 곳"은 STROLLER_ACCESS와 INFANT_FACILITIES 두 값으로
+    온다 — 유모차를 끌고 들어갈 수 있는지와 수유실·기저귀교환대가 있는지는 다른
+    질문이다. INFANT_FACILITIES만 요구하면 유아 시설은 있는데 계단으로 올라가야
+    하는 곳이 섞인다(유아 시설이 있는 275곳 중 24곳에 단차 정보가 없다).
 
     각 값이 어느 컬럼을 읽는지는 저장소가 아니라 **RPC의 판정 블록**이 정한다
     (`search_places_barrier_free`). 판정을 한 곳에 모아 두려는 것이므로 여기에
     컬럼 목록을 복제하지 않는다.
     """
 
-    STEP_FREE_ACCESS = "step_free_access"
+    # 단차 없이 들어갈 수 있는가. 두 값이 **같은 컬럼을 읽지만 판정이 다르다** —
+    # 계단은 휠체어만 막고(들어 올릴 수 없다), 흙·자갈은 바퀴가 작은 유모차에 더
+    # 불리하며, 좁은 통로는 유모차만 접어서 지날 수 있다. 원문은 휠체어 기준으로
+    # 쓰여 있어(477문장 중 253개가 휠체어·전동 스쿠터를 언급, 유모차는 0건) 유모차
+    # 판정은 그 서술로부터 따로 내려야 한다.
+    #
+    # **지금은 두 값이 같은 결과를 낸다.** 원문을 읽어 가르는 판정이 아직 없기
+    # 때문이다(TP-204). 어휘를 먼저 나눈 이유는 A가 조건 추출을 붙이기 전이라
+    # 지금이 가장 싼 시점이어서다.
+    WHEELCHAIR_ACCESS = "wheelchair_access"
+    STROLLER_ACCESS = "stroller_access"
+
     ACCESSIBLE_RESTROOM = "accessible_restroom"
     ACCESSIBLE_PARKING = "accessible_parking"
     VISUAL_GUIDE = "visual_guide"
+    # 수유실·기저귀교환대·유모차 대여. "유모차를 끌고 갈 수 있는가"가 아니라
+    # "아기와 있을 때 필요한 시설이 있는가"다 — 앞은 STROLLER_ACCESS가 답한다.
     INFANT_FACILITIES = "infant_facilities"
+
+    # 오래 걷기 힘든 동행(노인 등)에게 쓸모 있는 값들. 휠체어 사용자 전용이 아니다.
+    #
+    # WHEELCHAIR_RENTAL은 휠체어 **대여**다. 휠체어로 들어갈 수 있는지가 아니다 —
+    # TourAPI의 `wheelchair` 응답 키가 대여를 뜻한다.
+    # SEATING_AVAILABLE은 의자식(입식) 테이블이다. 좌식이 아니라는 뜻이다.
+    WHEELCHAIR_RENTAL = "wheelchair_rental"
+    SEATING_AVAILABLE = "seating_available"
+    LOW_FLOOR_TRANSIT = "low_floor_transit"
 
 
 @dataclass(frozen=True)

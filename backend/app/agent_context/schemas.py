@@ -44,10 +44,15 @@ class UserConditions(StrictModel):
     taste_query: str | None = None
     # 요구된 무장애 편의. 값이 있으면 C가 후보를 그 조건으로 좁힌다.
     #
-    # 어휘는 step_free_access / accessible_restroom / accessible_parking /
-    # visual_guide / infant_facilities 다섯이고, **여럿이면 전부 만족**해야 한다.
-    # "유모차 끌고 갈 만한 곳"은 step_free_access와 infant_facilities로 온다 —
-    # 단차 없이 들어갈 수 있는지와 수유실이 있는지는 다른 질문이다.
+    # 어휘는 아홉이고(app.domain.models.AccessibilityNeed) **여럿이면 전부
+    # 만족**해야 한다. "유모차 끌고 갈 만한 곳"은 stroller_access와
+    # infant_facilities로 온다 — 유모차를 끌고 들어갈 수 있는지와 수유실이 있는지는
+    # 다른 질문이다.
+    #
+    # wheelchair_access와 stroller_access를 나눈 이유는 같은 원문에서 판정이
+    # 갈리기 때문이다(계단은 휠체어만 막고, 흙길은 유모차에 더 불리하다).
+    # wheelchair_rental·seating_available·low_floor_transit은 휠체어 사용자
+    # 전용이 아니라 오래 걷기 힘든 동행에게 쓸모 있는 값이다.
     #
     # Literal로 조이지 않는 이유는 weather_intent와 같다. C가 A보다 먼저 값을
     # 받아들여야 A 배포 시점에 요청 전체가 깨지지 않는다. 대신 모르는 값은

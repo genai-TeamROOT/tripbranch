@@ -753,7 +753,7 @@ class SupabasePlaceRepository:
         호출부가 의도한 적 없는 동작이라, RPC가 예외를 던지기 전에 여기서 막는다.
 
         `needs`가 여럿이면 **전부 만족**하는 장소만 돌아온다. "유모차 끌고 갈 만한
-        곳"이 STEP_FREE_ACCESS + INFANT_FACILITIES로 오는데, 둘 다 필요하다고 말한
+        곳"이 STROLLER_ACCESS + INFANT_FACILITIES로 오는데, 둘 다 필요하다고 말한
         것이기 때문이다.
 
         어느 컬럼을 읽고 무엇을 있다고 볼지는 RPC의 판정 블록이 정한다. 여기서
