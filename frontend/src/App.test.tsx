@@ -6,7 +6,7 @@
  * TODO: 실제 다회 대화 의미 분석이 생기면 후속 입력 시나리오를 확장한다.
  */
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
 
@@ -90,7 +90,10 @@ function streamResponse(
   } = chatResponse(),
 ) {
   const events: Array<{ event: string; data: unknown }> = [
-    { event: "progress", data: { stage: "interpreting", message: "조건을 파악하고 있어요.", elapsed_ms: 1 } },
+    {
+      event: "progress",
+      data: { stage: "interpreting", message: "조건을 파악하고 있어요.", elapsed_ms: 1 },
+    },
   ];
   if (response.recommendations) {
     events.push(
@@ -188,8 +191,12 @@ test("user chat hides condition debug card and shows recommendations", async () 
   // Agent가 한 번에 끝내므로 중간 승인 버튼이 없고 추천이 함께 나온다.
   expect(screen.queryByRole("button", { name: "추천 진행" })).not.toBeInTheDocument();
   expect(await screen.findByText("테스트 박물관")).toBeInTheDocument();
-  // 채팅 화면 상단에도 신원 표시가 이어진다(D-062).
-  expect(screen.getByText("게스트로 이용 중")).toBeInTheDocument();
+  // 신원 표시는 사이드바에 상시 떠 있다(D-062) — 채팅 화면에서도 사이드바를 통해
+  // 이어진다. 데스크톱 사이드바(role=complementary)로 좁혀서 찾는다(모바일
+  // 드로어도 같은 SideDrawerContent를 렌더해 텍스트가 중복된다).
+  expect(
+    within(screen.getByRole("complementary")).getByText("게스트로 이용 중"),
+  ).toBeInTheDocument();
   expect(screen.getByText("운영시간 미확인 갤러리")).toBeInTheDocument();
   expect(screen.getByText("운영시간을 확인할 수 없는 장소")).toBeInTheDocument();
 });
@@ -203,7 +210,9 @@ test("streamed recommendation renders template, cards, then the LLM tip", async 
   const template = await screen.findByText("이런 곳들을 찾아봤어요:");
   const firstCard = screen.getByText("테스트 박물관");
   const tip = await screen.findByText("조건에 맞는 장소를 찾아봤어요.");
-  expect(template.compareDocumentPosition(firstCard) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(template.compareDocumentPosition(firstCard) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(
+    0,
+  );
   expect(firstCard.compareDocumentPosition(tip) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
 });
 
@@ -243,7 +252,9 @@ test("asks whether to refresh a location older than 30 minutes before a follow-u
   await userEvent.click(screen.getByRole("button", { name: "보내기" }));
 
   expect(
-    await screen.findByText("현재 위치를 확인한 지 30분이 지났어요. 이번 추천에 사용할 위치를 선택해주세요."),
+    await screen.findByText(
+      "현재 위치를 확인한 지 30분이 지났어요. 이번 추천에 사용할 위치를 선택해주세요.",
+    ),
   ).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "30분 전 위치로 계속" })).toBeInTheDocument();
   expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
@@ -270,7 +281,9 @@ test("does not ask again within 30 minutes after continuing with the previous lo
   now.mockReturnValue(30 * 60 * 1000 + 1_001);
   await userEvent.type(screen.getByPlaceholderText("추가 조건을 입력해 주세요"), "다른 곳 보여줘");
   await userEvent.click(screen.getByRole("button", { name: "보내기" }));
-  await screen.findByText("현재 위치를 확인한 지 30분이 지났어요. 이번 추천에 사용할 위치를 선택해주세요.");
+  await screen.findByText(
+    "현재 위치를 확인한 지 30분이 지났어요. 이번 추천에 사용할 위치를 선택해주세요.",
+  );
   await userEvent.click(screen.getByRole("button", { name: "30분 전 위치로 계속" }));
   await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2));
 
@@ -279,9 +292,7 @@ test("does not ask again within 30 minutes after continuing with the previous lo
   await userEvent.type(screen.getByPlaceholderText("추가 조건을 입력해 주세요"), "카페도 보여줘");
   await userEvent.click(screen.getByRole("button", { name: "보내기" }));
   await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3));
-  expect(
-    screen.queryByText(/현재 위치를 확인한 지 .*지났어요/),
-  ).not.toBeInTheDocument();
+  expect(screen.queryByText(/현재 위치를 확인한 지 .*지났어요/)).not.toBeInTheDocument();
   const secondFollowUpBody = JSON.parse(String(vi.mocked(fetch).mock.calls[2][1]?.body));
   expect(secondFollowUpBody.user_input).toBe("카페도 보여줘");
   expect(secondFollowUpBody.device_location).toBe("37.5788,126.977");
@@ -292,7 +303,9 @@ test("does not ask again within 30 minutes after continuing with the previous lo
   await userEvent.type(screen.getByPlaceholderText("추가 조건을 입력해 주세요"), "한 곳 더 보여줘");
   await userEvent.click(screen.getByRole("button", { name: "보내기" }));
   expect(
-    await screen.findByText("현재 위치를 확인한 지 60분이 지났어요. 이번 추천에 사용할 위치를 선택해주세요."),
+    await screen.findByText(
+      "현재 위치를 확인한 지 60분이 지났어요. 이번 추천에 사용할 위치를 선택해주세요.",
+    ),
   ).toBeInTheDocument();
   now.mockRestore();
 });
@@ -500,7 +513,9 @@ test("unsupported region reply shows a short message with the district list as a
   expect(
     await screen.findByText("이 위치는 지금 서비스 지역이 아니에요. 다른 위치를 말씀해 주세요."),
   ).toBeInTheDocument();
-  expect(screen.getByText("현재 서비스 지역: 서울특별시 종로구·중구·용산구·성동구")).toBeInTheDocument();
+  expect(
+    screen.getByText("현재 서비스 지역: 서울특별시 종로구·중구·용산구·성동구"),
+  ).toBeInTheDocument();
 });
 
 test("chat route redirects without stored state", async () => {
@@ -508,10 +523,8 @@ test("chat route redirects without stored state", async () => {
 
   await renderApp();
 
-  await waitFor(() => expect(screen.getByText("TripBranch")).toBeInTheDocument());
-  expect(screen.getByRole("button", { name: "추천 시작하기" })).toBeInTheDocument();
+  expect(await screen.findByRole("button", { name: "추천 시작하기" })).toBeInTheDocument();
 });
-
 
 test("shows follow-up suggestions after an answer and sends the label as the next message", async () => {
   /* 되묻기 버튼과 달리 clarification_choice 없이 문구만 발화로 나간다. */
@@ -549,7 +562,6 @@ test("keeps only the latest turn's follow-up suggestions", async () => {
   );
 });
 
-
 test("renders no follow-up buttons when the server sends no follow_ups event", async () => {
   /* done 응답에는 문구가 없다 — 버튼은 오직 done 뒤의 follow_ups 이벤트에서 온다. */
   vi.stubGlobal(
@@ -568,7 +580,5 @@ test("renders no follow-up buttons when the server sends no follow_ups event", a
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
   await screen.findByText("테스트 박물관");
 
-  expect(
-    screen.queryByRole("group", { name: "이어서 물어볼 만한 질문" }),
-  ).not.toBeInTheDocument();
+  expect(screen.queryByRole("group", { name: "이어서 물어볼 만한 질문" })).not.toBeInTheDocument();
 });

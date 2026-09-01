@@ -19,8 +19,6 @@ import { ChatComposer } from "../components/chat/ChatComposer";
 import { ChatMessageList } from "../components/chat/ChatMessageList";
 import { SavedPlacesBar } from "../components/chat/SavedPlacesBar";
 import { ErrorBanner } from "../components/ErrorBanner";
-import { AuthStatusBadge } from "../auth/AuthStatusBadge";
-import { LanguageSelector } from "../components/LanguageSelector";
 import { usePhotoSimilarSearch } from "../hooks/usePhotoSimilarSearch";
 import { useSavedPlaces } from "../hooks/useSavedPlaces";
 import { useTripDispatch, useTripState } from "../state/TripContext";
@@ -44,7 +42,6 @@ const CHAT_TEXT = {
   ko: {
     subtitle: "대화형 대체 장소 추천",
     developer: "개발자용 보기",
-    restart: "처음부터",
     requestError: "추천을 불러오지 못했어요. 다시 시도해주세요.",
     composer: "추가 조건을 입력해 주세요",
     clarificationComposer: "예: 경복궁 근처에서 찾아줘",
@@ -56,7 +53,6 @@ const CHAT_TEXT = {
   en: {
     subtitle: "Conversational Seoul travel recommendations",
     developer: "Developer view",
-    restart: "Start over",
     requestError: "We couldn’t load recommendations. Please try again.",
     composer: "Add another condition or ask a follow-up",
     clarificationComposer: "For example: Find somewhere near Gyeongbokgung",
@@ -80,9 +76,8 @@ export function ChatPage() {
 
   const isLoading = state.phase === "interpreting" || state.phase === "recommending";
   const hasConversation = state.messages.length > 0;
-  const [pendingLocationRefresh, setPendingLocationRefresh] = useState<PendingLocationRefresh | null>(
-    null,
-  );
+  const [pendingLocationRefresh, setPendingLocationRefresh] =
+    useState<PendingLocationRefresh | null>(null);
 
   const showStatus = useCallback(
     async (text: string) => {
@@ -138,7 +133,11 @@ export function ChatPage() {
       const conversationPlaceName = getLatestConversationPlaceName(state.messages);
       dispatch({
         type: "START_CHAT_TURN",
-        payload: { userInput: text, deviceLocation: deviceLocationOverride, deviceLocationCapturedAt },
+        payload: {
+          userInput: text,
+          deviceLocation: deviceLocationOverride,
+          deviceLocationCapturedAt,
+        },
       });
       // 사용자가 입력하거나 버튼을 누른 시점부터 결과를 dispatch할 때까지를 잰다.
       const startedAt = performance.now();
@@ -246,9 +245,7 @@ export function ChatPage() {
         dispatch({
           type: "SET_ERROR",
           payload:
-            error instanceof ApiError
-              ? error.message
-            : CHAT_TEXT[state.language].requestError,
+            error instanceof ApiError ? error.message : CHAT_TEXT[state.language].requestError,
         });
       }
       // 이 턴에서 거절이 일어났다면 서버가 보관함에서도 뺐다(saved ∩ rejected = ∅).
@@ -316,7 +313,13 @@ export function ChatPage() {
       type: "SNOOZE_LOCATION_REFRESH",
       payload: { until: Date.now() + LOCATION_RECONFIRM_AFTER_MS },
     });
-    void send(pending.text, pending.clarificationChoice, undefined, undefined, pending.travelOriginOverride);
+    void send(
+      pending.text,
+      pending.clarificationChoice,
+      undefined,
+      undefined,
+      pending.travelOriginOverride,
+    );
   }, [dispatch, pendingLocationRefresh, send]);
 
   const refreshBrowserLocation = useCallback(async () => {
@@ -356,36 +359,18 @@ export function ChatPage() {
 
   return (
     <main className="mx-auto flex min-h-screen max-w-3xl flex-col gap-4 px-4 py-6">
-      <header className="flex items-center justify-between gap-3 border-b border-gray-200 pb-4 dark:border-gray-800">
-        <div>
-          <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">TripBranch</h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400">{text.subtitle}</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <LanguageSelector
-            language={state.language}
-            onChange={(language) => dispatch({ type: "SET_LANGUAGE", payload: language })}
-          />
-          <AuthStatusBadge />
-          <button
-            type="button"
-            onClick={() => navigate("/dev-chat")}
-            className="rounded-md border border-gray-300 px-3 py-1.5 text-sm dark:border-gray-700"
-          >
-            {text.developer}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              dispatch({ type: "RESET" });
-              navigate("/");
-            }}
-            className="rounded-md border border-gray-300 px-3 py-1.5 text-sm dark:border-gray-700"
-          >
-            {text.restart}
-          </button>
-        </div>
-      </header>
+      {/* 브랜드 표기와 언어 전환은 사이드바가 맡는다(DESIGN_SYSTEM.md 6.17).
+          "처음부터"는 사이드바 "홈"과 동작이 같아 중복이라 뺐다. */}
+      <div className="flex items-center justify-between gap-3 border-b border-gray-200 pb-4 dark:border-gray-800">
+        <p className="text-sm text-gray-500 dark:text-gray-400">{text.subtitle}</p>
+        <button
+          type="button"
+          onClick={() => navigate("/dev-chat")}
+          className="rounded-md border border-gray-300 px-3 py-1.5 text-sm dark:border-gray-700"
+        >
+          {text.developer}
+        </button>
+      </div>
 
       {state.error && (
         <ErrorBanner
@@ -409,9 +394,10 @@ export function ChatPage() {
         // 것과 같은 경로로 분류를 태운다.
         onSelectFollowUpSuggestion={(suggestion) => void handleFollowUp(suggestion)}
         onToggleTravelOrigin={(toggle) => {
-          const label = toggle.alternative_origin === "search_center"
-            ? text.basedOn(toggle.alternative_origin_name)
-            : text.currentLocation;
+          const label =
+            toggle.alternative_origin === "search_center"
+              ? text.basedOn(toggle.alternative_origin_name)
+              : text.currentLocation;
           void requestSend(label, undefined, toggle.alternative_origin);
         }}
         locationRefresh={

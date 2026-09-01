@@ -12,8 +12,6 @@ import { ApiError } from "../api/client";
 import { streamChat, toDisplayConditions } from "../api/trip";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { VoiceInputButton } from "../components/chat/VoiceInputButton";
-import { AuthStatusBadge } from "../auth/AuthStatusBadge";
-import { LanguageSelector } from "../components/LanguageSelector";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import { buildAgentStageTimings } from "../utils/agentTiming";
 import { getBrowserDeviceLocation } from "../utils/geolocation";
@@ -21,8 +19,13 @@ import { getBrowserDeviceLocation } from "../utils/geolocation";
 const HOME_TEXT = {
   ko: {
     subtitle: "지금 상황을 말해주면 바로 대체 장소를 찾아볼게요.",
-    locationNotice: "추천 시작 시 브라우저가 위치 권한을 요청합니다. 허용한 위치는 현재 채팅 세션의 장소 탐색 기준으로 사용됩니다.",
-    prompts: ["비를 피할 실내 장소가 필요해", "남은 시간이 1시간 정도야", "근처 카페나 박물관을 찾고 싶어"],
+    locationNotice:
+      "추천 시작 시 브라우저가 위치 권한을 요청합니다. 허용한 위치는 현재 채팅 세션의 장소 탐색 기준으로 사용됩니다.",
+    prompts: [
+      "비를 피할 실내 장소가 필요해",
+      "남은 시간이 1시간 정도야",
+      "근처 카페나 박물관을 찾고 싶어",
+    ],
     placeholder: "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
     voiceHelp: "마이크를 누르고 말하면, 말이 끝난 뒤 자동으로 전송합니다.",
     locating: "현재 위치 확인 중...",
@@ -33,8 +36,13 @@ const HOME_TEXT = {
   },
   en: {
     subtitle: "Tell us what you need, and we’ll find a place to visit in Seoul.",
-    locationNotice: "Your browser will ask for location permission before starting. We use it as the search point for this chat session.",
-    prompts: ["I need an indoor place to avoid the rain", "I have about one hour left", "Find a café or museum nearby"],
+    locationNotice:
+      "Your browser will ask for location permission before starting. We use it as the search point for this chat session.",
+    prompts: [
+      "I need an indoor place to avoid the rain",
+      "I have about one hour left",
+      "Find a café or museum nearby",
+    ],
     placeholder: "For example: Find a museum or café near Gyeongbokgung where I can avoid the rain",
     voiceHelp: "Tap the microphone and we’ll send your speech after you finish speaking.",
     locating: "Getting your location...",
@@ -184,10 +192,7 @@ export function HomePage() {
     } catch (error) {
       dispatch({
         type: "SET_ERROR",
-        payload:
-          error instanceof ApiError
-            ? error.message
-            : text.requestError,
+        payload: error instanceof ApiError ? error.message : text.requestError,
       });
     }
   }
@@ -199,20 +204,10 @@ export function HomePage() {
 
   return (
     <main className="mx-auto flex min-h-screen max-w-xl flex-col justify-center gap-5 px-4 py-10">
+      {/* 브랜드 표기·언어 전환·신원 표시는 사이드바가 맡는다(DESIGN_SYSTEM.md
+          6.17). 셸 안에서는 중복이라 두지 않는다. */}
       <div className="flex flex-col gap-2">
-        <div className="flex items-center justify-between gap-2">
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">TripBranch</h1>
-          <div className="flex items-center gap-2">
-            <LanguageSelector
-              language={state.language}
-              onChange={(language) => dispatch({ type: "SET_LANGUAGE", payload: language })}
-            />
-            <AuthStatusBadge />
-          </div>
-        </div>
-        <p className="text-sm text-gray-600 dark:text-gray-400">
-          {text.subtitle}
-        </p>
+        <p className="text-sm text-gray-600 dark:text-gray-400">{text.subtitle}</p>
       </div>
 
       <section className="rounded-md border border-gray-200 p-3 text-sm text-gray-700 dark:border-gray-700 dark:text-gray-300">
@@ -258,9 +253,7 @@ export function HomePage() {
             }}
             onError={setErrorMessage}
           />
-          <p className="text-xs text-gray-500 dark:text-gray-400">
-            {text.voiceHelp}
-          </p>
+          <p className="text-xs text-gray-500 dark:text-gray-400">{text.voiceHelp}</p>
         </div>
 
         {errorMessage && <ErrorBanner message={errorMessage} />}
@@ -281,7 +274,6 @@ export function HomePage() {
           {text.developer}
         </button>
       </form>
-
     </main>
   );
 }
