@@ -1,13 +1,15 @@
 /*
- * 역할: 화면 상단의 프로스티드 헤더 — 모바일 전용 햄버거(드로어 열기) + 라벨이
- *   있을 때만 위치 pill + onBack이 있을 때만 뒤로가기.
- * 입력: 표시할 위치 라벨, 뒤로가기 콜백(있는 화면만).
+ * 역할: 화면 상단의 프로스티드 헤더 — 두 가지 모드로 스스로 판단해 모양을 바꾼다.
+ *   일반 모드: 모바일 전용 햄버거(드로어 열기) + 라벨이 있을 때만 위치 pill +
+ *   onBack이 있을 때만 뒤로가기. 시트 모드: 우측 X 버튼만.
+ * 입력: 표시할 위치 라벨, 뒤로가기/닫기 콜백(있는 화면만).
  * 호출 시점: 신원이 필요한 화면들이 상단에 렌더링할 때.
- * 근거: DESIGN_SYSTEM.md §6.1(일반 모드) — 시트 모드는 바텀시트 내비게이션을
- *   붙일 때(§5) 추가한다.
+ * 근거: DESIGN_SYSTEM.md §6.1, §5(isOpenAsSheet로 시트 여부 판정).
  */
 
-import { ChevronLeft, Menu } from "lucide-react";
+import { ChevronLeft, Menu, X } from "lucide-react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { isOpenAsSheet } from "../../state/sheetNav";
 import { cn } from "../../utils/cn";
 import { useAppShell } from "./AppShellContext";
 
@@ -16,8 +18,28 @@ interface AppHeaderProps {
   onBack?: () => void;
 }
 
+const FROSTED_BUTTON_CLASS =
+  "flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white bg-white/60 text-ink shadow-resting backdrop-blur-md transition-colors hover:bg-white/80";
+
 export function AppHeader({ locationLabel = null, onBack }: AppHeaderProps) {
   const { openDrawer } = useAppShell();
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  if (isOpenAsSheet(location)) {
+    return (
+      <div className="sticky top-0 z-20 flex justify-end px-4 pb-3 pt-5">
+        <button
+          type="button"
+          onClick={onBack ?? (() => navigate(-1))}
+          aria-label="닫기"
+          className={FROSTED_BUTTON_CLASS}
+        >
+          <X size={20} />
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -35,7 +57,7 @@ export function AppHeader({ locationLabel = null, onBack }: AppHeaderProps) {
             type="button"
             onClick={openDrawer}
             aria-label="메뉴 열기"
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white bg-white/60 text-ink shadow-resting backdrop-blur-md transition-colors hover:bg-white/80 md:hidden"
+            className={cn(FROSTED_BUTTON_CLASS, "md:hidden")}
           >
             <Menu size={18} />
           </button>
@@ -45,7 +67,7 @@ export function AppHeader({ locationLabel = null, onBack }: AppHeaderProps) {
               type="button"
               onClick={onBack}
               aria-label="뒤로가기"
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white bg-white/60 text-ink shadow-resting backdrop-blur-md transition-colors hover:bg-white/80"
+              className={FROSTED_BUTTON_CLASS}
             >
               <ChevronLeft size={20} />
             </button>

@@ -8,6 +8,7 @@
 
 import { useLocation, useNavigate } from "react-router-dom";
 import { Home, MapPin, PanelLeftClose, PanelLeftOpen, Route, Sparkles } from "lucide-react";
+import { sheetState } from "../../state/sheetNav";
 import { useTripDispatch, useTripState } from "../../state/TripContext";
 import { SideDrawerContent } from "./SideDrawerContent";
 
@@ -59,14 +60,15 @@ export function DesktopSidebar({ collapsed, onToggle }: DesktopSidebarProps) {
       label: "위치 설정",
       icon: MapPin,
       active: location.pathname === "/location",
-      onClick: () => navigate("/location"),
+      // 위치·일정은 새 페이지가 아니라 지금 화면 위에 바텀시트로 뜬다(§5).
+      onClick: () => navigate("/location", { state: sheetState(location) }),
     },
     {
       key: "schedule",
       label: "일정",
       icon: Route,
       active: location.pathname === "/schedule",
-      onClick: () => navigate("/schedule"),
+      onClick: () => navigate("/schedule", { state: sheetState(location) }),
     },
   ];
 

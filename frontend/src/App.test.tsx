@@ -585,3 +585,31 @@ test("renders no follow-up buttons when the server sends no follow_ups event", a
 
   expect(screen.queryByRole("group", { name: "이어서 물어볼 만한 질문" })).not.toBeInTheDocument();
 });
+
+// --- 바텀시트 내비게이션(package_D/DESIGN_SYSTEM.md §5) ---------------------
+
+test("사이드바에서 위치 설정을 열면 홈 위에 바텀시트로 뜨고, 닫으면 홈으로 돌아온다", async () => {
+  await renderApp();
+
+  // 데스크톱 사이드바(role=complementary)로 좁힌다 — 모바일 드로어도 같은
+  // SideDrawerContent를 렌더해 "위치 설정" 텍스트가 중복된다.
+  const sidebar = within(screen.getByRole("complementary"));
+  await userEvent.click(sidebar.getByRole("button", { name: "위치 설정" }));
+
+  // 사이드바 항목 라벨도 같은 문구라("위치 설정") heading 역할로 좁혀서 찾는다.
+  expect(await screen.findByRole("heading", { name: "위치 설정" })).toBeInTheDocument();
+  // 시트 모드 헤더는 햄버거·위치 pill 대신 닫기(X) 버튼만 보인다(§6.1). 뒤에
+  // 깔리는 어두운 배경도 같은 이름("닫기")의 버튼이라 두 개가 잡힌다(§5.2).
+  const closeButtons = screen.getAllByRole("button", { name: "닫기" });
+  expect(closeButtons).toHaveLength(2);
+  // 새 페이지로 갈아치운 게 아니라 위에 뜬 시트라, 밑에 깔린 홈이 여전히 DOM에 있다.
+  expect(screen.getByRole("button", { name: "추천 시작하기" })).toBeInTheDocument();
+
+  await userEvent.click(closeButtons[1]);
+
+  // 닫히는 애니메이션(AnimatePresence exit)이 끝나야 시트가 DOM에서 빠진다.
+  await waitFor(() =>
+    expect(screen.queryByRole("heading", { name: "위치 설정" })).not.toBeInTheDocument(),
+  );
+  expect(screen.getByRole("button", { name: "추천 시작하기" })).toBeInTheDocument();
+});
