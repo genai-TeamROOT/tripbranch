@@ -6,10 +6,17 @@
  *   시트로 열린 화면들.
  * 호출 시점: App.tsx가 신원이 필요한 라우트(path="*")의 element로 이걸 직접 쓴다.
  * 근거: package_D/DESIGN_SYSTEM.md §4(레이아웃 셸), §5.3(App.tsx 조립 — 2단 렌더링).
+ *
+ * 바텀시트는 모바일 전용 패턴이다 — 태블릿·데스크톱(사이드바가 상시 보이는
+ * 폭)에서는 위치·일정도 시트로 겹쳐 뜨우지 않고 그냥 지금 화면을 그대로
+ * 전체 페이지로 그린다. location.state.backgroundLocation은 계속 실려
+ * 있지만(모바일로 다시 좁아지면 바로 시트로 되돌아가야 하니 지우지 않는다),
+ * 데스크톱에서는 무시한다.
  */
 
 import { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { useIsDesktopSidebar } from "../../hooks/useIsDesktopSidebar";
 import { buildLocationStack } from "../../state/sheetNav";
 import { AppRoutes } from "./AppRoutes";
 import { AppShellProvider, useAppShell } from "./AppShellContext";
@@ -32,6 +39,7 @@ function AppShellInner() {
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const location = useLocation();
   const navigate = useNavigate();
+  const isDesktop = useIsDesktopSidebar();
 
   useEffect(() => {
     try {
@@ -42,8 +50,10 @@ function AppShellInner() {
   }, [collapsed]);
 
   const stack = buildLocationStack(location);
-  const baseLocation = stack[0];
-  const sheetLocations = stack.slice(1);
+  // 데스크톱은 지금 위치를 그대로 기반 화면으로 그린다 — 쌓인 시트가 있어도
+  // 겹쳐 띄우지 않는다(모바일 전용 패턴).
+  const baseLocation = isDesktop ? location : stack[0];
+  const sheetLocations = isDesktop ? [] : stack.slice(1);
 
   return (
     <div className="tb-app-root">

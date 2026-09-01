@@ -613,3 +613,28 @@ test("사이드바에서 위치 설정을 열면 홈 위에 바텀시트로 뜨�
   );
   expect(screen.getByRole("button", { name: "추천 시작하기" })).toBeInTheDocument();
 });
+
+test("사이드바 상시 패널이 보이는 폭(데스크톱)에서는 위치 설정이 시트가 아니라 전체 페이지로 뜬다", async () => {
+  // useIsDesktopSidebar가 참을 반환하도록 matchMedia를 데스크톱 폭으로 흉내낸다.
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: true,
+    media: query,
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => false,
+  }));
+  await renderApp();
+
+  const sidebar = within(screen.getByRole("complementary"));
+  await userEvent.click(sidebar.getByRole("button", { name: "위치 설정" }));
+
+  expect(await screen.findByRole("heading", { name: "위치 설정" })).toBeInTheDocument();
+  // 전체 페이지로 그려지므로 시트 모드의 닫기(X)가 아니라 일반 헤더의
+  // 뒤로가기가 보이고, 시트 배경에 가려졌던 홈은 더 이상 DOM에 없다.
+  expect(screen.queryByRole("button", { name: "닫기" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "뒤로가기" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "추천 시작하기" })).not.toBeInTheDocument();
+});

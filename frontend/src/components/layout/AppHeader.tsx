@@ -9,6 +9,7 @@
 
 import { ChevronLeft, Menu, X } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { useIsDesktopSidebar } from "../../hooks/useIsDesktopSidebar";
 import { isOpenAsSheet } from "../../state/sheetNav";
 import { cn } from "../../utils/cn";
 import { useAppShell } from "./AppShellContext";
@@ -25,8 +26,11 @@ export function AppHeader({ locationLabel = null, onBack }: AppHeaderProps) {
   const { openDrawer } = useAppShell();
   const location = useLocation();
   const navigate = useNavigate();
+  const isDesktop = useIsDesktopSidebar();
 
-  if (isOpenAsSheet(location)) {
+  // 바텀시트는 모바일 전용이라, 데스크톱에서는 시트로 열린 화면도 전체 페이지로
+  // 그려진다(AppShell 참고) — 헤더도 시트 모드(X만)가 아니라 일반 모드로 보인다.
+  if (isOpenAsSheet(location) && !isDesktop) {
     return (
       <div className="sticky top-0 z-20 flex justify-end px-4 pb-3 pt-5">
         <button
