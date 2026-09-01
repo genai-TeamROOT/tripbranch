@@ -130,7 +130,7 @@ export function PlaceCard({
             : undefined
         }
       >
-        <div className="group relative">
+        <div className="group relative overflow-hidden rounded-2xl">
           {item.image_url ? (
             <img
               src={item.image_url}
