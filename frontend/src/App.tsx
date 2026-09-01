@@ -19,6 +19,9 @@ import { AppShell } from "./components/layout/AppShell";
 import { HomePage } from "./pages/HomePage";
 import { ChatPage } from "./pages/ChatPage";
 import { LoginPage } from "./pages/LoginPage";
+import { SignupPage } from "./pages/SignupPage";
+import { FindIdPage } from "./pages/FindIdPage";
+import { ResetPasswordPage } from "./pages/ResetPasswordPage";
 import { PlaceholderPage } from "./pages/PlaceholderPage";
 import { DeveloperChatPage } from "./pages/DeveloperChatPage";
 import { DeveloperOpsPage } from "./pages/DeveloperOpsPage";
@@ -45,6 +48,10 @@ function App() {
         <BrowserRouter>
           <Routes>
             <Route path="/login" element={<LoginPage />} />
+            {/* 회원가입·아이디찾기·비밀번호찾기는 아직 백엔드가 없는 UI 목업이다(D-062 Phase 5). */}
+            <Route path="/signup" element={<SignupPage />} />
+            <Route path="/find-id" element={<FindIdPage />} />
+            <Route path="/reset-password" element={<ResetPasswordPage />} />
             <Route
               path="/dev-chat"
               element={
