@@ -596,8 +596,9 @@ test("사이드바에서 위치 설정을 열면 홈 위에 바텀시트로 뜨�
   const sidebar = within(screen.getByRole("complementary"));
   await userEvent.click(sidebar.getByRole("button", { name: "위치 설정" }));
 
-  // 사이드바 항목 라벨도 같은 문구라("위치 설정") heading 역할로 좁혀서 찾는다.
-  expect(await screen.findByRole("heading", { name: "위치 설정" })).toBeInTheDocument();
+  // LocationPage에는 별도 제목이 없다(Figma "Location (Sheet)") — 항상 있는
+  // "현재 위치 사용" 버튼으로 시트가 열렸는지 확인한다.
+  expect(await screen.findByRole("button", { name: "현재 위치 사용" })).toBeInTheDocument();
   // 시트 모드 헤더는 햄버거·위치 pill 대신 닫기(X) 버튼만 보인다(§6.1). 뒤에
   // 깔리는 어두운 배경도 같은 이름("닫기")의 버튼이라 두 개가 잡힌다(§5.2).
   const closeButtons = screen.getAllByRole("button", { name: "닫기" });
@@ -609,7 +610,7 @@ test("사이드바에서 위치 설정을 열면 홈 위에 바텀시트로 뜨�
 
   // 닫히는 애니메이션(AnimatePresence exit)이 끝나야 시트가 DOM에서 빠진다.
   await waitFor(() =>
-    expect(screen.queryByRole("heading", { name: "위치 설정" })).not.toBeInTheDocument(),
+    expect(screen.queryByRole("button", { name: "현재 위치 사용" })).not.toBeInTheDocument(),
   );
   expect(screen.getByRole("button", { name: "추천 시작하기" })).toBeInTheDocument();
 });
@@ -631,7 +632,7 @@ test("사이드바 상시 패널이 보이는 폭(데스크톱)에서는 위치 
   const sidebar = within(screen.getByRole("complementary"));
   await userEvent.click(sidebar.getByRole("button", { name: "위치 설정" }));
 
-  expect(await screen.findByRole("heading", { name: "위치 설정" })).toBeInTheDocument();
+  expect(await screen.findByRole("button", { name: "현재 위치 사용" })).toBeInTheDocument();
   // 전체 페이지로 그려지므로 시트 모드의 닫기(X)가 아니라 일반 헤더의
   // 뒤로가기가 보이고, 시트 배경에 가려졌던 홈은 더 이상 DOM에 없다.
   expect(screen.queryByRole("button", { name: "닫기" })).not.toBeInTheDocument();

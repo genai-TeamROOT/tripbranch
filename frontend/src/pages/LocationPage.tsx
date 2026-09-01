@@ -1,19 +1,24 @@
 /*
- * 역할: 지금 추천에 쓰이는 기기 위치 상태를 보여주고, 다시 받아올 수 있게 한다.
- * 입력: TripContext의 device_location/device_location_captured_at.
- * 출력: 좌표·마지막 확인 시각, "위치 다시 가져오기" 버튼(성공 시 SET_DEVICE_LOCATION
- *   디스패치 — 다음 채팅 턴부터 바로 반영된다).
+ * 역할: 위치 설정 화면. Figma "Location (Sheet)"(29:2) 화면 그대로 옮긴 것이다.
+ * 입력: TripContext의 device_location, localStorage의 즐겨찾기.
+ * 출력: "현재 위치 사용"(실제 브라우저 GPS 재조회 — SET_DEVICE_LOCATION
+ *   디스패치), 즐겨찾기 목록(사이드바와 같은 저장소 공유), 검색·최근 검색은
+ *   장소 검색 기능 자체가 없어 자리만 잡아 둔다.
  * 호출 시점: 사이드바 "위치 설정"에서 바텀시트로 열린다(DESIGN_SYSTEM.md §5).
- *
- * 수동 주소 입력이나 지역 선택은 아직 없다 — 이 앱이 가진 위치 개념은 브라우저
- * GPS 한 가지뿐이라, 그 상태를 보여주고 새로고침하는 것만 실제로 만들었다.
  */
 
-import { useState } from "react";
+import { Crosshair, Heart, Info, Plus, Search, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { MapPin, RefreshCw } from "lucide-react";
 import { AppHeader } from "../components/layout/AppHeader";
+import { AddFavoriteModal } from "../components/layout/AddFavoriteModal";
 import { useTripDispatch, useTripState } from "../state/TripContext";
+import {
+  createId,
+  loadFavorites,
+  saveFavorites,
+  type FavoritePlace,
+} from "../state/sidebarStorage";
 import { getLocationAgeMinutes } from "../utils/locationRefresh";
 import { getBrowserDeviceLocation } from "../utils/geolocation";
 
@@ -23,10 +28,14 @@ export function LocationPage() {
   const dispatch = useTripDispatch();
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [favorites, setFavorites] = useState<FavoritePlace[]>(() => loadFavorites());
+  const [showAddFavorite, setShowAddFavorite] = useState(false);
+
+  useEffect(() => saveFavorites(favorites), [favorites]);
 
   const ageMinutes = getLocationAgeMinutes(state.device_location_captured_at);
 
-  async function handleRefresh() {
+  async function handleUseCurrentLocation() {
     if (isRefreshing) return;
     setIsRefreshing(true);
     setErrorMessage(null);
@@ -46,48 +55,92 @@ export function LocationPage() {
   return (
     <main className="flex h-full flex-col overflow-y-auto">
       <AppHeader onBack={() => navigate(-1)} />
-      <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-4 px-4 pb-10">
-        <h1 className="text-[24px] font-bold leading-snug text-ink">위치 설정</h1>
-
-        <section className="flex items-center gap-3 rounded-2xl bg-white p-4 shadow-resting">
-          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-sky-light text-brand">
-            <MapPin size={20} />
-          </span>
-          <div className="min-w-0 flex-1">
-            {state.device_location ? (
-              <>
-                <p className="truncate text-sm font-semibold text-ink">{state.device_location}</p>
-                <p className="mt-0.5 text-xs text-muted">
-                  {ageMinutes === null ? "방금 확인했어요" : `${ageMinutes}분 전에 확인했어요`}
-                </p>
-              </>
-            ) : (
-              <p className="text-sm text-muted">아직 위치를 가져오지 않았어요</p>
-            )}
-          </div>
-        </section>
-
-        {errorMessage && (
-          <p role="alert" className="text-sm text-rust">
-            {errorMessage}
-          </p>
-        )}
+      <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-3 px-4 pb-10">
+        {/* 장소 검색은 아직 없다 — 자리만 잡아 둔 자리표시 입력(§10.6). */}
+        <div className="flex h-12 items-center gap-2 rounded-xl border border-border bg-white px-3.5">
+          <Search size={16} className="shrink-0 text-muted" />
+          <span className="truncate text-base text-muted">장소, 지하철역, 주소 검색</span>
+        </div>
 
         <button
           type="button"
           disabled={isRefreshing}
-          onClick={() => void handleRefresh()}
-          className="flex items-center justify-center gap-2 rounded-full bg-brand py-3 text-sm font-semibold text-white transition hover:bg-brand-deep active:scale-[0.98] disabled:opacity-50"
+          onClick={() => void handleUseCurrentLocation()}
+          className="flex items-center gap-2.5 rounded-xl bg-white px-3.5 py-3 text-left shadow-resting transition-opacity disabled:opacity-50"
         >
-          <RefreshCw size={16} className={isRefreshing ? "animate-spin" : undefined} />
-          {isRefreshing ? "위치를 가져오는 중이에요…" : "위치 다시 가져오기"}
+          <Crosshair
+            size={17}
+            className={`shrink-0 text-brand ${isRefreshing ? "animate-pulse" : ""}`}
+          />
+          <span className="text-sm font-bold text-brand">
+            {isRefreshing ? "위치를 가져오는 중이에요…" : "현재 위치 사용"}
+          </span>
         </button>
+        {state.device_location && (
+          <p className="px-1 text-xs text-muted">
+            {state.device_location}
+            {ageMinutes === null ? "" : ` · ${ageMinutes}분 전에 확인했어요`}
+          </p>
+        )}
+        {errorMessage && (
+          <p role="alert" className="px-1 text-xs text-rust">
+            {errorMessage}
+          </p>
+        )}
 
-        <p className="text-xs leading-relaxed text-muted">
-          여기서 새로고침한 위치는 다음 추천·검색부터 바로 쓰여요. 브라우저가 위치 권한을 물으면
-          허용해주세요.
-        </p>
+        <div className="flex items-start gap-2 rounded-xl bg-sky-light px-3.5 py-2.5">
+          <Info size={14} className="mt-0.5 shrink-0 text-brand-deep" />
+          <p className="text-xs leading-relaxed text-brand-deep">
+            현재 서울 지역 장소만 추천해 드리고 있어요
+          </p>
+        </div>
+
+        <div className="mt-2 flex items-center justify-between">
+          <h2 className="text-xs font-bold text-label">즐겨찾기</h2>
+          <button
+            type="button"
+            onClick={() => setShowAddFavorite(true)}
+            className="flex items-center gap-1 text-xs font-bold text-brand"
+          >
+            <Plus size={13} /> 추가
+          </button>
+        </div>
+        <div className="divide-y divide-border border-t border-border">
+          {favorites.length === 0 ? (
+            <p className="py-3 text-sm text-muted">등록된 즐겨찾기가 없어요</p>
+          ) : (
+            favorites.map((favorite) => (
+              <div key={favorite.id} className="flex items-center gap-2.5 py-3">
+                <Heart size={15} className="shrink-0 text-gold" />
+                <span className="min-w-0 flex-1 truncate text-sm text-ink">{favorite.label}</span>
+                <button
+                  type="button"
+                  aria-label={`${favorite.label} 즐겨찾기 삭제`}
+                  onClick={() =>
+                    setFavorites((prev) => prev.filter((item) => item.id !== favorite.id))
+                  }
+                  className="shrink-0 text-muted transition-colors hover:text-rust"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+
+        <h2 className="mt-2 text-xs font-bold text-label">최근 검색</h2>
+        <div className="border-t border-border">
+          {/* 장소 검색 기능이 없어 최근 검색 기록도 아직 없다. */}
+          <p className="py-3 text-sm text-muted">아직 검색한 장소가 없어요</p>
+        </div>
       </div>
+
+      {showAddFavorite && (
+        <AddFavoriteModal
+          onAdd={(label) => setFavorites((prev) => [...prev, { id: createId("fav"), label }])}
+          onClose={() => setShowAddFavorite(false)}
+        />
+      )}
     </main>
   );
 }
