@@ -3,7 +3,8 @@
  * 입력: RecommendationItem 데이터.
  * 출력: 장소명, 카테고리, 추천 이유, 주소, 검증 상태 UI.
  * 호출 시점: RecommendationResultMessage가 추천 목록과 검증 불가 목록을 표시할 때 호출된다.
- * TODO: 지도 링크, 저장/제외 액션, 실시간 영업 정보가 생기면 하위 UI를 확장한다.
+ * 담기/빼기 액션은 onToggleSave가 주어질 때만 노출한다(SCHEDULE-12 카드 3).
+ * TODO: 지도 링크, 제외 액션, 실시간 영업 정보가 생기면 하위 UI를 확장한다.
  */
 
 import type { Language, RecommendationItem } from "../types";
@@ -13,6 +14,13 @@ interface PlaceCardProps {
   item: RecommendationItem;
   /** 추천 결과의 현재 정보만으로 여는 1차 상세 미리보기. */
   onOpenDetail?: (item: RecommendationItem) => void;
+  /*
+   * 있을 때만 담기/빼기 토글을 노출한다(SCHEDULE-12). 보관함을 안 쓰는 화면
+   * (사진 유사 검색 결과 등)은 이 prop을 주지 않으면 기존과 동일하게 그려진다.
+   */
+  onToggleSave?: (item: RecommendationItem) => void;
+  /** 이 장소가 지금 보관함에 담겨 있는지. onToggleSave가 있을 때만 의미가 있다. */
+  isSaved?: boolean;
   language?: Language;
 }
 
@@ -81,14 +89,50 @@ function displayRecommendationReason(reason: string, language: Language): string
   return reason;
 }
 
-export function PlaceCard({ item, onOpenDetail, language = "ko" }: PlaceCardProps) {
+export function PlaceCard({
+  item,
+  onOpenDetail,
+  onToggleSave,
+  isSaved = false,
+  language = "ko",
+}: PlaceCardProps) {
+  const saveText =
+    language === "en"
+      ? { save: "Save", saved: "Saved", toggle: (n: string) => `Save ${n} for later` }
+      : { save: "담기", saved: "담김", toggle: (n: string) => `${n} 보관함에 담기` };
   const content = (
     <>
       <div className="flex items-start justify-between gap-2">
         <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">{item.name}</h3>
-        <span className="shrink-0 rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-300">
-          {item.category}
-        </span>
+        <div className="flex shrink-0 items-center gap-2">
+          <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+            {item.category}
+          </span>
+          {onToggleSave && (
+            /*
+             * 카드 전체가 상세 미리보기 클릭 대상이라(아래 li의 role="button")
+             * 클릭·키 입력을 전부 여기서 멈춘다. 안 그러면 담기 한 번에 상세
+             * 모달까지 함께 열린다.
+             */
+            <button
+              type="button"
+              aria-pressed={isSaved}
+              aria-label={saveText.toggle(item.name)}
+              className={`rounded-full border px-2.5 py-0.5 text-xs font-medium transition ${
+                isSaved
+                  ? "border-blue-600 bg-blue-600 text-white hover:bg-blue-700 dark:border-blue-500 dark:bg-blue-500"
+                  : "border-gray-300 bg-white text-gray-700 hover:border-blue-400 hover:text-blue-700 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-300"
+              }`}
+              onClick={(event) => {
+                event.stopPropagation();
+                onToggleSave(item);
+              }}
+              onKeyDown={(event) => event.stopPropagation()}
+            >
+              {isSaved ? saveText.saved : saveText.save}
+            </button>
+          )}
+        </div>
       </div>
 
       <p className="text-sm text-gray-600 dark:text-gray-400">

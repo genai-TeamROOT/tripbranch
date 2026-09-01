@@ -37,6 +37,9 @@ class PipelineDeps:
     travel_route_tool: TravelRouteToolProvider | None
     store: StateStore | None
     principal: object | None
+    # 보관함 장소를 편성 후보에 주입할 때만 쓴다(SCHEDULE-12 후속). 없으면
+    # 주입을 건너뛴다.
+    place_details_repository: object | None = None
 
 
 async def tool_fetch_node(
@@ -97,6 +100,8 @@ async def scoring_node(
         shown_place_ids=_revivable_place_ids(
             state["llm_output"], state["session_context"]
         ),
+        saved_places=state["session_context"].saved_places,
+        place_details_repository=deps.place_details_repository,
         tool_provider=deps.tool_provider,
         recommendation_provider=deps.recommendation_provider,
         enrichment_provider=deps.enrichment_provider,

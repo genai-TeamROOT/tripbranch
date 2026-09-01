@@ -21,6 +21,7 @@ const state: TripState = {
   recommendations: [],
   unverified_recommendations: [],
   shown_place_ids: [],
+  saved_places: [],
   auditTurns: [],
   messages: [
     {
@@ -229,4 +230,27 @@ test("restores a session that contains a clarification message", () => {
   saveState(stateWithClarification);
 
   expect(loadState()).toEqual(stateWithClarification);
+});
+
+/*
+ * 후속 질문 버튼은 턴마다 붙으므로(D-102), 이 타입을 모르면 사실상 모든 정상
+ * 대화가 새로고침에서 통째로 사라진다. 같은 사고가 schedule_result·
+ * place_info_result·feedback·photo_similar_result에서 이미 네 번 났다.
+ */
+test("restores a session that contains follow-up suggestions", () => {
+  const stateWithFollowUps: TripState = {
+    ...state,
+    messages: [
+      ...state.messages,
+      {
+        id: "message-3",
+        type: "follow_up_suggestions",
+        suggestions: ["경복궁 운영시간 알려줘", "근처 카페도 보여줘"],
+      },
+    ],
+  };
+
+  saveState(stateWithFollowUps);
+
+  expect(loadState()).toEqual(stateWithFollowUps);
 });

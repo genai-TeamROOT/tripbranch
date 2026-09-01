@@ -17,10 +17,12 @@ import { ApiError } from "../api/client";
 import { fetchSessionState, streamChat, toDisplayConditions } from "../api/trip";
 import { ChatComposer } from "../components/chat/ChatComposer";
 import { ChatMessageList } from "../components/chat/ChatMessageList";
+import { SavedPlacesBar } from "../components/chat/SavedPlacesBar";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { AuthStatusBadge } from "../auth/AuthStatusBadge";
 import { LanguageSelector } from "../components/LanguageSelector";
 import { usePhotoSimilarSearch } from "../hooks/usePhotoSimilarSearch";
+import { useSavedPlaces } from "../hooks/useSavedPlaces";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import type { TravelOrigin } from "../types";
 import { buildAgentStageTimings } from "../utils/agentTiming";
@@ -115,6 +117,9 @@ export function ChatPage() {
     [dispatch, state.session_id],
   );
 
+  // 새로고침 직후 보관함을 서버 기준으로 다시 맞춘다(useSavedPlaces.ts 참고).
+  const { refreshIfAny: refreshSavedIfAny } = useSavedPlaces();
+
   const send = useCallback(
     async (
       text: string,
@@ -122,6 +127,12 @@ export function ChatPage() {
       deviceLocationOverride?: string,
       deviceLocationCapturedAt?: number,
       travelOriginOverride?: TravelOrigin,
+      /*
+       * 위치 인자가 이미 다섯이라 여섯 번째를 또 붙이면 호출부에서
+       * `send(t, undefined, undefined, undefined, undefined, true)`가 된다.
+       * 이후 확장은 이 객체에 담는다.
+       */
+      options?: { scheduleFromSaved?: boolean },
     ) => {
       const deviceLocation = deviceLocationOverride ?? state.device_location;
       const conversationPlaceName = getLatestConversationPlaceName(state.messages);
@@ -146,6 +157,7 @@ export function ChatPage() {
             conversation_place_name: conversationPlaceName,
             clarification_choice: clarificationChoice ?? null,
             travel_origin_override: travelOriginOverride ?? null,
+            schedule_from_saved: options?.scheduleFromSaved ?? false,
           },
           (event) => {
             if (event.type === "progress") {
@@ -239,9 +251,33 @@ export function ChatPage() {
             : CHAT_TEXT[state.language].requestError,
         });
       }
+      // 이 턴에서 거절이 일어났다면 서버가 보관함에서도 뺐다(saved ∩ rejected = ∅).
+      // 그 결과는 AgentResponse.state(StateApplyResponse)에 실려 오지 않으므로
+      // 여기서 다시 읽는다. 담긴 것이 없으면 호출 자체를 건너뛴다.
+      await refreshSavedIfAny();
     },
-    [dispatch, state.device_location, state.language, state.messages, state.session_id],
+    [
+      dispatch,
+      refreshSavedIfAny,
+      state.device_location,
+      state.language,
+      state.messages,
+      state.session_id,
+    ],
   );
+
+  /*
+   * 보관함 CTA. 인텐트 분류를 건너뛰도록 schedule_from_saved만 세우고, user_input에는
+   * 버튼 label을 채운다 — 채팅 이력에 "무엇을 눌렀는지"가 남아야 하기 때문이다.
+   *
+   * requestSend가 아니라 send를 직접 부른다. 위치 재확인 게이트는 GPS 나이가
+   * 기준인데, 이 턴이 쓰는 좌표는 담을 때 찍힌 스냅샷이라 지금 위치를 다시
+   * 받아도 편성 결과가 달라지지 않는다.
+   */
+  const planFromSaved = useCallback(() => {
+    const label = state.language === "en" ? "Plan a trip with these" : "이 장소들로 일정 짜기";
+    void send(label, undefined, undefined, undefined, undefined, { scheduleFromSaved: true });
+  }, [send, state.language]);
 
   const handlePhotoSelect = usePhotoSimilarSearch();
 
@@ -388,6 +424,12 @@ export function ChatPage() {
             : null
         }
         progress={state.agentProgress}
+        language={state.language}
+      />
+
+      <SavedPlacesBar
+        onPlanFromSaved={planFromSaved}
+        isLoading={isLoading}
         language={state.language}
       />
 

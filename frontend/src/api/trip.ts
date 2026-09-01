@@ -27,6 +27,7 @@ import type {
   RecommendationPlaceDetailResponse,
   RecommendationsResponse,
   SessionContextResponse,
+  SavedPlacesResponse,
   TranscriptionResponse,
   WeatherCondition,
 } from "../types";
@@ -179,4 +180,32 @@ export function searchPlacesByPhoto(params: {
   if (params.longitude != null) form.append("longitude", String(params.longitude));
   if (params.limit != null) form.append("limit", String(params.limit));
   return apiClient.postForm<PhotoSimilarPlacesResponse>("/places/similar-by-photo", form);
+}
+
+
+/*
+ * 장소 보관함(SCHEDULE-12). 담기/빼기는 인텐트 분류를 거치지 않는 전용 REST다 —
+ * 버튼 클릭은 해석할 여지가 없는 결정적 동작이라 /chat을 통하면 오분류 위험과
+ * LLM 지연이 그대로 붙는다.
+ *
+ * 세 함수 모두 담긴 목록 전체를 반환하므로, 호출부는 낙관적으로 먼저 갱신하고
+ * 응답으로 확정하면 된다.
+ */
+export function fetchSavedPlaces(sessionId: string) {
+  return apiClient.get<SavedPlacesResponse>(
+    `/state/${encodeURIComponent(sessionId)}/saved-places`,
+  );
+}
+
+export function savePlace(sessionId: string, placeId: string) {
+  return apiClient.post<SavedPlacesResponse>(
+    `/state/${encodeURIComponent(sessionId)}/saved-places`,
+    { place_id: placeId },
+  );
+}
+
+export function removeSavedPlace(sessionId: string, placeId: string) {
+  return apiClient.del<SavedPlacesResponse>(
+    `/state/${encodeURIComponent(sessionId)}/saved-places/${encodeURIComponent(placeId)}`,
+  );
 }
