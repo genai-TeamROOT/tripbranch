@@ -22,7 +22,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from app.domain.models import AccessibilityNeed, BarrierFreePlaceRow, PlaceCategoryFilter
+from app.domain.models import (
+    AccessibilityNeed,
+    AccessibilityVerdict,
+    BarrierFreePlaceRow,
+    PlaceCategoryFilter,
+)
 from app.providers.contracts import (
     ProviderResult,
     ProviderSource,
@@ -30,6 +35,7 @@ from app.providers.contracts import (
     provider_result,
 )
 from app.providers.mappers import resolve_place_category
+from app.providers.protocols import BarrierFreePlaceSearch
 from app.repositories.protocols import BarrierFreePlaceSearchRepository
 from app.schemas import PlaceCandidate
 
@@ -51,7 +57,7 @@ class SupabaseBarrierFreePlaceSearchProvider:
         needs: Sequence[AccessibilityNeed],
         category_filter: PlaceCategoryFilter | None = None,
         limit: int,
-    ) -> ProviderResult[list[PlaceCandidate]]:
+    ) -> ProviderResult[BarrierFreePlaceSearch]:
         rows = await self._repository.search_places_barrier_free(
             latitude=latitude,
             longitude=longitude,
@@ -60,14 +66,49 @@ class SupabaseBarrierFreePlaceSearchProvider:
             category_filter=category_filter,
             limit=limit,
         )
-        candidates = [
-            candidate for candidate in (_to_candidate(row) for row in rows) if candidate
-        ]
+        candidates: list[PlaceCandidate] = []
+        verdicts: dict[str, dict[AccessibilityNeed, AccessibilityVerdict]] = {}
+        for row in rows:
+            candidate = _to_candidate(row)
+            if candidate is None:
+                continue
+            candidates.append(candidate)
+            resolved = _requested_verdicts(row, needs)
+            if resolved:
+                verdicts[candidate.place_id] = resolved
         return provider_result(
-            candidates,
+            BarrierFreePlaceSearch(candidates=candidates, verdicts=verdicts),
             source=ProviderSource.SUPABASE_BARRIER_FREE_PLACES,
             status=ProviderStatus.SUCCESS if candidates else ProviderStatus.NO_DATA,
         )
+
+
+# 어휘 → 그 판정을 담은 행의 필드. 판정표가 있는 셋만 있다. 나머지 여섯은
+# RPC가 원문 규칙으로 거르므로 "후보에 있다" 말고는 올릴 값이 없다.
+_VERDICT_FIELDS = {
+    AccessibilityNeed.WHEELCHAIR_ACCESS: "wheelchair_access_verdict",
+    AccessibilityNeed.STROLLER_ACCESS: "stroller_access_verdict",
+    AccessibilityNeed.VISUAL_GUIDE: "visual_guide_verdict",
+}
+
+
+def _requested_verdicts(
+    row: BarrierFreePlaceRow, needs: Sequence[AccessibilityNeed]
+) -> dict[AccessibilityNeed, AccessibilityVerdict]:
+    """요구한 어휘의 판정만 고른다.
+
+    요구하지 않은 편의의 판정까지 올리면 사용자가 묻지 않은 것을 답변이 말하게
+    된다. 시각안내를 물었는데 "유모차는 일부 구역이 어렵다"가 붙는 식이다.
+    """
+    resolved: dict[AccessibilityNeed, AccessibilityVerdict] = {}
+    for need in needs:
+        field = _VERDICT_FIELDS.get(need)
+        if field is None:
+            continue
+        verdict = getattr(row, field)
+        if verdict is not None:
+            resolved[need] = verdict
+    return resolved
 
 
 def _to_candidate(row: BarrierFreePlaceRow) -> PlaceCandidate | None:

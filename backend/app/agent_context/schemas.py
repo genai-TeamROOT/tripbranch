@@ -235,6 +235,20 @@ class PlaceCandidate(StrictModel):
     operating_hours_raw: str | None = None
     rest_date_raw: str | None = None
     operating_schedule: dict[str, Any] | None = None
+    # 무장애 조건이 있는 요청에서만 채워진다. 열쇠는 요구된 어휘
+    # (`accessibility_needs`와 같은 값), 값은 `possible`·`partial` 중 하나다.
+    #
+    # **후보에 있다는 것이 온전히 가능하다는 뜻은 아니다.** 들어갈 수는 있는데
+    # 못 가는 구역이 남는 곳(`partial`)도 후보로 남긴다 — 팔각정 하나 못 간다고
+    # 추천에서 빼는 것은 과하기 때문이다. 대신 이 값을 올려 답변이 그 사실을
+    # 말할 수 있게 한다. 값이 없으면 partial과 possible이 구분되지 않는다.
+    #
+    # `impossible`은 오지 않는다. RPC가 후보에서 이미 뺐다.
+    #
+    # 요구하지 않은 편의는 담지 않는다. 판정표가 있는 셋(휠체어·유모차·시각안내)
+    # 밖의 어휘도 담지 않는다 — 나머지 여섯은 아직 원문 규칙으로 거르므로
+    # "후보에 있다" 말고는 할 말이 없다.
+    accessibility_verdicts: dict[str, str] | None = None
 
 
 class HolidayInfo(StrictModel):

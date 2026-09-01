@@ -13,7 +13,12 @@ from __future__ import annotations
 import pytest
 
 from app.agent_context.schemas import UserConditions
-from app.domain.models import AccessibilityNeed, PlaceCategoryFilter, PlaceDetails
+from app.domain.models import (
+    AccessibilityNeed,
+    AccessibilityVerdict,
+    PlaceCategoryFilter,
+    PlaceDetails,
+)
 from app.providers.contracts import (
     ProviderResult,
     ProviderSource,
@@ -312,11 +317,12 @@ async def test_휠체어_대여는_휠체어_접근과_다른_조건이다() -> 
     assert "fake-bf-senior-1" not in {p.candidate.place_id for p in access.places}
 
 
-async def test_휠체어와_유모차는_아직_같은_후보를_준다() -> None:
-    """원문을 읽어 가르는 판정이 생기기 전까지는 두 값이 같다(TP-204).
+async def test_같은_장소가_휠체어와_유모차에_다른_판정을_준다() -> None:
+    """좁은 통로는 휠체어만 막고 유모차는 지나간다. 두 어휘를 나눈 이유다.
 
-    같다는 것을 못 박아 두는 이유는, 판정이 붙었을 때 이 테스트가 깨지면서 두 값이
-    실제로 갈리기 시작했다는 것을 알려주기 때문이다.
+    후보 목록은 아직 같을 수 있다 — `partial`은 후보로 남기기 때문이다. 갈리는
+    것은 **판정**이고, 그게 답변의 안내 문구를 가른다. 후보 수만 견주면 이 차이가
+    보이지 않는다.
     """
     tool = _tool(_RecordingTourSearchProvider())
 
@@ -327,7 +333,68 @@ async def test_휠체어와_유모차는_아직_같은_후보를_준다() -> Non
         _query(accessibility_needs=(AccessibilityNeed.STROLLER_ACCESS,))
     )
 
-    assert [p.candidate.place_id for p in wheelchair.places] == [
-        p.candidate.place_id for p in stroller.places
+    def verdict_of(result: object, place_id: str, need: AccessibilityNeed) -> object:
+        for place in result.places:  # type: ignore[attr-defined]
+            if place.candidate.place_id == place_id:
+                return (place.accessibility_verdicts or {}).get(need)
+        raise AssertionError(f"{place_id}가 후보에 없습니다.")
+
+    cafe = "fake-bf-cafe-1"
+    assert (
+        verdict_of(wheelchair, cafe, AccessibilityNeed.WHEELCHAIR_ACCESS)
+        is AccessibilityVerdict.PARTIAL
+    )
+    assert (
+        verdict_of(stroller, cafe, AccessibilityNeed.STROLLER_ACCESS)
+        is AccessibilityVerdict.POSSIBLE
+    )
+
+
+async def test_부분_판정도_후보로_남는다() -> None:
+    """들어갈 수는 있는데 못 가는 구역이 남는 곳을 추천에서 빼지 않는다.
+
+    빼면 팔각정 하나 못 간다고 장소가 통째로 사라진다. 대신 판정을 함께 올려
+    답변이 그 사실을 말하게 한다.
+    """
+    tool = _tool(_RecordingTourSearchProvider())
+
+    result = await tool.execute(
+        _query(accessibility_needs=(AccessibilityNeed.WHEELCHAIR_ACCESS,))
+    )
+
+    partial = [
+        place
+        for place in result.places
+        if (place.accessibility_verdicts or {}).get(AccessibilityNeed.WHEELCHAIR_ACCESS)
+        is AccessibilityVerdict.PARTIAL
     ]
+    assert partial, "부분 판정이 후보에서 빠졌습니다."
+
+
+async def test_요구하지_않은_어휘의_판정은_올리지_않는다() -> None:
+    """묻지 않은 편의를 답변이 말하게 두지 않는다.
+
+    무장애 박물관은 시각 안내가 `partial`이지만, 휠체어만 물었으면 그 값은
+    올라오면 안 된다.
+    """
+    tool = _tool(_RecordingTourSearchProvider())
+
+    result = await tool.execute(
+        _query(accessibility_needs=(AccessibilityNeed.WHEELCHAIR_ACCESS,))
+    )
+
+    for place in result.places:
+        assert set(place.accessibility_verdicts or {}) <= {
+            AccessibilityNeed.WHEELCHAIR_ACCESS
+        }
+
+
+async def test_무장애_조건이_없으면_판정도_없다() -> None:
+    """TourAPI 경로는 판정을 만들지 않는다. 빈 값이 아니라 아예 None이다."""
+    tool = _tool(_RecordingTourSearchProvider())
+
+    result = await tool.execute(_query())
+
+    assert result.places
+    assert all(place.accessibility_verdicts is None for place in result.places)
 
