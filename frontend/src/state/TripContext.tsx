@@ -156,6 +156,9 @@ type TripAction =
     }
   /* 사진을 고른 즉시. 결과를 기다리는 동안 사진과 "찾는 중"을 먼저 보여준다. */
   | { type: "START_PHOTO_SIMILAR"; payload: { messageId: string; imageUrl: string | null } }
+  /* 축소본은 만드는 데 시간이 걸려(createImageBitmap) START_PHOTO_SIMILAR보다
+     늦게 완성될 수 있다 — 완성되면 이 액션으로 그 메시지에만 채워 넣는다. */
+  | { type: "SET_PHOTO_SIMILAR_IMAGE"; payload: { messageId: string; imageUrl: string } }
   | {
       type: "RESOLVE_PHOTO_SIMILAR";
       payload: {
@@ -753,6 +756,15 @@ function tripReducer(state: TripState, action: TripAction): TripState {
             elapsedMs: 0,
           },
         ],
+      };
+    case "SET_PHOTO_SIMILAR_IMAGE":
+      return {
+        ...state,
+        messages: state.messages.map((message) =>
+          message.id === action.payload.messageId && message.type === "photo_similar_result"
+            ? { ...message, imageUrl: action.payload.imageUrl }
+            : message,
+        ),
       };
     case "RESOLVE_PHOTO_SIMILAR":
       return {

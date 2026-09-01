@@ -18,6 +18,7 @@ import { streamChat, toDisplayConditions } from "../api/trip";
 import { ChatComposer } from "../components/chat/ChatComposer";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { AppHeader } from "../components/layout/AppHeader";
+import { usePhotoSimilarSearch } from "../hooks/usePhotoSimilarSearch";
 import { beginChatRequest, endChatRequest } from "../state/chatAbortController";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import { buildAgentStageTimings } from "../utils/agentTiming";
@@ -67,6 +68,19 @@ export function HomePage() {
   const [userInput, setUserInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const searchByPhoto = usePhotoSimilarSearch();
+
+  /*
+   * ChatPage와 같은 훅을 쓴다(usePhotoSimilarSearch). searchByPhoto는 호출되자마자
+   * (첫 await 전까지) 대화에 메시지를 동기적으로 추가한다 — 그 뒤에 이동해야
+   * ChatPage의 hasConversation 가드가 "대화 없음"으로 보고 홈으로 되돌리지
+   * 않는다(먼저 이동부터 하면 메시지가 아직 없어 튕겨 나간다).
+   */
+  async function handlePhotoSelect(file: File) {
+    const pending = searchByPhoto(file);
+    navigate("/chat");
+    await pending;
+  }
 
   async function startChat(input: string, targetPath = "/chat") {
     const trimmed = input.trim();
@@ -277,6 +291,7 @@ export function HomePage() {
         placeholder={text.placeholder}
         language={state.language}
         sendLabel={text.start}
+        onPhotoSelect={handlePhotoSelect}
       />
     </main>
   );

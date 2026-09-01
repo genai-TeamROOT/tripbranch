@@ -6,7 +6,7 @@
  * TODO: 실제 다회 대화 의미 분석이 생기면 후속 입력 시나리오를 확장한다.
  */
 
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
 
@@ -748,4 +748,48 @@ test("텍스트가 이미 온 상태에서 중단하면 거기까지만 남기�
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   // done 뒤에만 오는 후속 질문은 연결이 끊겼으니 뜨지 않는다.
   expect(screen.queryByRole("group", { name: "이어서 물어볼 만한 질문" })).not.toBeInTheDocument();
+});
+
+// --- 홈 화면의 사진 추가 버튼 --------------------------------------------------
+
+test("홈 화면에서도 사진을 올릴 수 있고, 고르면 /chat으로 넘어가 결과를 보여준다", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/places/similar-by-photo")) {
+        return Response.json({
+          places: [
+            {
+              content_id: "photo-place-1",
+              title: "감성 카페",
+              similarity: 0.82,
+              photo_count: 3,
+              address: "서울 성동구",
+              image_url: null,
+            },
+          ],
+          center_name: "성수동",
+          candidate_count: 12,
+          truncated_count: 0,
+          elapsed_ms: 400,
+        });
+      }
+      return Response.json({ error: { message: "not found" } }, { status: 404 });
+    }),
+  );
+  await renderApp();
+
+  // 홈 컴포저에도 ChatPage와 같은 "+" 버튼이 있어야 한다(사진 없이는 대화
+  // 시작 전에는 이 버튼 자체가 안 그려지는 회귀가 있었다).
+  await userEvent.click(screen.getByRole("button", { name: "사진 추가" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "갤러리" }));
+
+  const file = new File(["x"], "cafe.jpg", { type: "image/jpeg" });
+  const galleryInput = screen.getByTestId("photo-gallery-input") as HTMLInputElement;
+  fireEvent.change(galleryInput, { target: { files: [file] } });
+
+  // 결과는 메시지로 쌓이므로 /chat으로 넘어가야 보인다.
+  expect(await screen.findByText("감성 카페")).toBeInTheDocument();
+  expect(screen.getByPlaceholderText("추가 조건을 입력해 주세요")).toBeInTheDocument();
 });
