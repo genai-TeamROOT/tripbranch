@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
@@ -484,6 +485,76 @@ class SupabasePlaceRepository:
             return response.json()
         except ValueError:
             raise SupabaseRepositoryError("non-JSON response") from None
+
+    async def find_preference_insights(self, content_id: str) -> list[dict[str, object]]:
+        """상세 카드용 태그 집계와 대표 후기 근거를 한 장소 단위로 읽는다."""
+        tag_response, evidence_response = await asyncio.gather(
+            self._request(
+                "GET",
+                "/place_preference_tags",
+                params={
+                    "select": (
+                        "preference_code,preference_label,display_rank,mention_count,"
+                        "positive_document_count,negative_document_count"
+                    ),
+                    "content_id": f"eq.{content_id}",
+                    "order": "display_rank.asc",
+                    "limit": "5",
+                },
+            ),
+            self._request(
+                "GET",
+                "/place_preference_evidence",
+                params={
+                    "select": (
+                        "preference_code,polarity,evidence_rank,evidence_text,"
+                        "source_type,source_url"
+                    ),
+                    "content_id": f"eq.{content_id}",
+                    "order": "preference_code.asc,polarity.asc,evidence_rank.asc",
+                    "limit": "30",
+                },
+            ),
+        )
+        tags = self._json(tag_response)
+        evidence_rows = self._json(evidence_response)
+        if not isinstance(tags, list) or not isinstance(evidence_rows, list):
+            raise SupabaseRepositoryError("invalid place preference insight response")
+
+        evidence_by_code: dict[str, list[dict[str, object]]] = {}
+        for row in evidence_rows:
+            if not isinstance(row, Mapping):
+                raise SupabaseRepositoryError("invalid place preference evidence row")
+            code = str(row.get("preference_code") or "")
+            if code:
+                evidence_by_code.setdefault(code, []).append(
+                    {
+                        "polarity": str(row.get("polarity") or "mixed"),
+                        "text": str(row.get("evidence_text") or ""),
+                        "source_type": str(row.get("source_type") or ""),
+                        "source_url": (
+                            str(row["source_url"]) if row.get("source_url") else None
+                        ),
+                    }
+                )
+        insights: list[dict[str, object]] = []
+        for row in tags:
+            if not isinstance(row, Mapping):
+                raise SupabaseRepositoryError("invalid place preference tag row")
+            code = str(row.get("preference_code") or "")
+            if not code:
+                continue
+            insights.append(
+                {
+                    "code": code,
+                    "label": str(row.get("preference_label") or ""),
+                    "mention_count": int(row.get("mention_count") or 0),
+                    "positive_document_count": int(row.get("positive_document_count") or 0),
+                    "negative_document_count": int(row.get("negative_document_count") or 0),
+                    "evidence": evidence_by_code.get(code, []),
+                }
+            )
+        return insights
 
     async def find_preference_tags(
         self,
