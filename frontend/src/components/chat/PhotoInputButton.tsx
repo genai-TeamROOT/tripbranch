@@ -80,7 +80,7 @@ export function PhotoInputButton({ disabled = false, onSelect, onError }: PhotoI
       {open && (
         <div
           role="menu"
-          className="absolute bottom-full left-0 z-30 mb-2 flex w-44 flex-col gap-0.5 rounded-2xl bg-white p-1.5 shadow-card"
+          className="absolute bottom-full left-0 z-30 mb-2 flex w-44 flex-col gap-0.5 rounded-2xl border border-white bg-white/60 p-1.5 shadow-card backdrop-blur-md"
         >
           <button
             type="button"
