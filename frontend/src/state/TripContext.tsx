@@ -173,6 +173,7 @@ type TripAction =
   | { type: "SET_SAVED_PLACES"; payload: { items: SavedPlaceItem[] } }
   | { type: "SNOOZE_LOCATION_REFRESH"; payload: { until: number } }
   | { type: "SET_DEVICE_LOCATION"; payload: { deviceLocation: string; capturedAt: number } }
+  | { type: "CANCEL_CHAT_TURN" }
   | { type: "RESET" };
 
 /* /api/chat 한 번의 응답을 화면 메시지로 옮기기 위한 입력. */
@@ -205,6 +206,15 @@ function createMessageId(prefix: string) {
     return `${prefix}-${crypto.randomUUID()}`;
   }
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+/** 지금 타이프라이터가 채우고 있는 assistant_text 메시지의 인덱스. 없으면 -1. */
+function findStreamingMessageIndex(messages: ChatMessage[]): number {
+  return messages.reduce(
+    (foundIndex, message, index) =>
+      message.type === "assistant_text" && message.streaming ? index : foundIndex,
+    -1,
+  );
 }
 
 function buildInterpretationSummary(conditions: InterpretedConditions) {
@@ -409,11 +419,7 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         ],
       };
     case "APPEND_STREAM_MESSAGE_DELTA": {
-      const streamIndex = state.messages.reduce(
-        (foundIndex, message, index) =>
-          message.type === "assistant_text" && message.streaming ? index : foundIndex,
-        -1,
-      );
+      const streamIndex = findStreamingMessageIndex(state.messages);
       const streamingMessage = state.messages[streamIndex];
       if (streamingMessage?.type === "assistant_text" && streamingMessage.streaming) {
         return {
@@ -470,11 +476,7 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         response,
         failure: null,
       };
-      const streamIndex = state.messages.reduce(
-        (foundIndex, message, index) =>
-          message.type === "assistant_text" && message.streaming ? index : foundIndex,
-        -1,
-      );
+      const streamIndex = findStreamingMessageIndex(state.messages);
       const streamingMessage = state.messages[streamIndex];
       const streamedMessages =
         streamingMessage?.type === "assistant_text" && streamingMessage.streaming
@@ -806,6 +808,30 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         device_location_captured_at: action.payload.capturedAt,
         device_location_snoozed_until: null,
       };
+    case "CANCEL_CHAT_TURN": {
+      // 응답 대기 중 "중단"을 눌렀을 때(§7.2). 아직 생각 중 단계라 타이프라이터
+      // 메시지가 없으면(로딩 버블만 있었으면) 아무 것도 안 남기고, 이미 일부
+      // 텍스트가 온 상태라면 거기까지만 확정해 얼린다 — 뒤이어 올 카드·후속
+      // 질문 이벤트는 연결이 끊겨 더 오지 않으므로 따로 걷어낼 것이 없다.
+      const streamIndex = findStreamingMessageIndex(state.messages);
+      const streamingMessage = state.messages[streamIndex];
+      let messages = state.messages;
+      if (streamingMessage?.type === "assistant_text" && streamingMessage.streaming) {
+        messages =
+          streamingMessage.text === "…"
+            ? state.messages.filter((_, index) => index !== streamIndex)
+            : state.messages.map((message, index) =>
+                index === streamIndex ? { ...streamingMessage, streaming: false } : message,
+              );
+      }
+      return {
+        ...state,
+        messages,
+        phase: messages.length > 0 ? "ready" : "idle",
+        agentProgress: null,
+        streamingIntent: null,
+      };
+    }
     case "RESET":
       clearState();
       // 새 대화여도 사용자가 고른 화면 언어는 유지한다.

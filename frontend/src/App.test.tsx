@@ -638,3 +638,113 @@ test("사이드바 상시 패널이 보이는 폭(데스크톱)에서는 위치 
   expect(screen.getByRole("button", { name: "뒤로가기" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "추천 시작하기" })).not.toBeInTheDocument();
 });
+
+// --- 응답 대기 중 취소(package_D/DESIGN_SYSTEM.md §7.2) ------------------------
+
+test("응답을 기다리는 동안 중단을 누르면 로딩이 멈추고 오류 없이 끝난다", async () => {
+  await renderApp();
+  await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+  await screen.findByText("테스트 박물관");
+
+  // 후속 발화는 일부러 끝나지 않는 스트림으로 받는다 — 곧바로 완료되면 중단이
+  // 실제로 완료 전에 걸리는지 확인할 수 없다.
+  let streamController!: ReadableStreamDefaultController<Uint8Array>;
+  const pendingStream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      streamController = controller;
+    },
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/chat/stream")) {
+        // 실제 fetch는 신호가 중단되면 응답 body 스트림도 함께 끊는다 — 이
+        // stub도 같은 계약을 흉내 내야 "중단" 버튼이 정말 읽기를 멈추는지
+        // 검증할 수 있다.
+        init?.signal?.addEventListener("abort", () => {
+          streamController.error(new DOMException("The operation was aborted.", "AbortError"));
+        });
+        return new Response(pendingStream, {
+          headers: { "Content-Type": "text/event-stream" },
+        });
+      }
+      return Response.json({ error: { message: "not found" } }, { status: 404 });
+    }),
+  );
+
+  await userEvent.type(screen.getByPlaceholderText("추가 조건을 입력해 주세요"), "다른 조건 추가");
+  await userEvent.click(screen.getByRole("button", { name: "보내기" }));
+
+  // progress 이벤트 하나를 흘려 "생각 중" 상태를 만든다.
+  streamController.enqueue(
+    new TextEncoder().encode(
+      `event: progress\ndata: ${JSON.stringify({
+        stage: "interpreting",
+        message: "조건을 파악하고 있어요.",
+        elapsed_ms: 1,
+      })}\n\n`,
+    ),
+  );
+
+  await userEvent.click(await screen.findByRole("button", { name: "중단" }));
+
+  // 컴포저가 다시 평소의 "보내기" 버튼으로 돌아오고, 오류 배너는 뜨지 않는다.
+  expect(await screen.findByRole("button", { name: "보내기" })).toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+test("텍스트가 이미 온 상태에서 중단하면 거기까지만 남기고 얼린다", async () => {
+  await renderApp();
+  await userEvent.click(screen.getByText("비를 피할 실내 장소가 필요해"));
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+  await screen.findByText("테스트 박물관");
+
+  let streamController!: ReadableStreamDefaultController<Uint8Array>;
+  const pendingStream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      streamController = controller;
+    },
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/chat/stream")) {
+        init?.signal?.addEventListener("abort", () => {
+          streamController.error(new DOMException("The operation was aborted.", "AbortError"));
+        });
+        return new Response(pendingStream, {
+          headers: { "Content-Type": "text/event-stream" },
+        });
+      }
+      return Response.json({ error: { message: "not found" } }, { status: 404 });
+    }),
+  );
+
+  await userEvent.type(screen.getByPlaceholderText("추가 조건을 입력해 주세요"), "다른 조건 추가");
+  await userEvent.click(screen.getByRole("button", { name: "보내기" }));
+
+  const encoder = new TextEncoder();
+  streamController.enqueue(
+    encoder.encode(
+      `event: message_start\ndata: ${JSON.stringify({ intent: "RECOMMEND", elapsed_ms: 1 })}\n\n`,
+    ),
+  );
+  streamController.enqueue(
+    encoder.encode(
+      `event: message_delta\ndata: ${JSON.stringify({ text: "여기까지 답했어요", elapsed_ms: 2 })}\n\n`,
+    ),
+  );
+
+  await screen.findByText("여기까지 답했어요");
+  await userEvent.click(await screen.findByRole("button", { name: "중단" }));
+
+  // 중단해도 이미 온 텍스트는 사라지지 않고 그대로 남는다.
+  expect(await screen.findByRole("button", { name: "보내기" })).toBeInTheDocument();
+  expect(screen.getByText("여기까지 답했어요")).toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  // done 뒤에만 오는 후속 질문은 연결이 끊겼으니 뜨지 않는다.
+  expect(screen.queryByRole("group", { name: "이어서 물어볼 만한 질문" })).not.toBeInTheDocument();
+});

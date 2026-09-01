@@ -123,22 +123,32 @@ export function transcribeAudio(audio: Blob) {
 export function streamChat(
   request: ChatRequest,
   onEvent: (event: AgentStreamEvent) => void,
+  /** 응답 중단 기능(§7.2)이 넘기는 신호. 중단되면 단발 API로 낮추지 않는다. */
+  signal?: AbortSignal,
 ) {
   let receivedEvent = false;
-  return streamPost<unknown>("/chat/stream", request, (event, data) => {
-    if (
-      event === "progress" ||
-      event === "result" ||
-      event === "message_start" ||
-      event === "message_delta" ||
-      event === "done" ||
-      event === "follow_ups" ||
-      event === "error"
-    ) {
-      receivedEvent = true;
-      onEvent({ type: event, data } as AgentStreamEvent);
-    }
-  }).catch(async (error: unknown) => {
+  return streamPost<unknown>(
+    "/chat/stream",
+    request,
+    (event, data) => {
+      if (
+        event === "progress" ||
+        event === "result" ||
+        event === "message_start" ||
+        event === "message_delta" ||
+        event === "done" ||
+        event === "follow_ups" ||
+        event === "error"
+      ) {
+        receivedEvent = true;
+        onEvent({ type: event, data } as AgentStreamEvent);
+      }
+    },
+    signal,
+  ).catch(async (error: unknown) => {
+    // 사용자가 직접 중단한 요청이면 낮추지 않고 그대로 알린다 — 여기서 단발
+    // API로 다시 보내면 "중단"을 눌렀는데 응답이 나오는 것으로 보인다.
+    if (error instanceof DOMException && error.name === "AbortError") throw error;
     // SSE endpoint 자체를 사용할 수 없는 구버전 배포·프록시 환경만 기존 단발 API로
     // 낮춘다. progress/result를 하나라도 받은 뒤의 오류는 이미 일부 화면이 그려진
     // 상태라, 중복 실행을 피하기 위해 호출자에게 그대로 전달한다.
@@ -155,7 +165,6 @@ export function streamChat(
 export function fetchSessionState(sessionId: string) {
   return apiClient.get<SessionContextResponse>(`/state/${encodeURIComponent(sessionId)}`);
 }
-
 
 /*
  * 올린 사진과 분위기가 닮은 장소를 찾는다(POST /api/places/similar-by-photo).
@@ -182,7 +191,6 @@ export function searchPlacesByPhoto(params: {
   return apiClient.postForm<PhotoSimilarPlacesResponse>("/places/similar-by-photo", form);
 }
 
-
 /*
  * 장소 보관함(SCHEDULE-12). 담기/빼기는 인텐트 분류를 거치지 않는 전용 REST다 —
  * 버튼 클릭은 해석할 여지가 없는 결정적 동작이라 /chat을 통하면 오분류 위험과
@@ -192,9 +200,7 @@ export function searchPlacesByPhoto(params: {
  * 응답으로 확정하면 된다.
  */
 export function fetchSavedPlaces(sessionId: string) {
-  return apiClient.get<SavedPlacesResponse>(
-    `/state/${encodeURIComponent(sessionId)}/saved-places`,
-  );
+  return apiClient.get<SavedPlacesResponse>(`/state/${encodeURIComponent(sessionId)}/saved-places`);
 }
 
 export function savePlace(sessionId: string, placeId: string) {

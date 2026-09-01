@@ -22,6 +22,7 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { AppHeader } from "../components/layout/AppHeader";
 import { usePhotoSimilarSearch } from "../hooks/usePhotoSimilarSearch";
 import { useSavedPlaces } from "../hooks/useSavedPlaces";
+import { beginChatRequest, cancelChatRequest, endChatRequest } from "../state/chatAbortController";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import type { TravelOrigin } from "../types";
 import { buildAgentStageTimings } from "../utils/agentTiming";
@@ -147,6 +148,7 @@ export function ChatPage() {
       let firstMessageDeltaElapsedMs: number | null = null;
       let receivedStreamResult = false;
       let receivedStreamMessage = false;
+      const controller = beginChatRequest();
       try {
         await streamChat(
           {
@@ -241,13 +243,21 @@ export function ChatPage() {
               },
             });
           },
+          controller.signal,
         );
       } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          // 사용자가 "중단"을 눌렀다 — 오류로 취급하지 않는다(§7.2).
+          dispatch({ type: "CANCEL_CHAT_TURN" });
+          return;
+        }
         dispatch({
           type: "SET_ERROR",
           payload:
             error instanceof ApiError ? error.message : CHAT_TEXT[state.language].requestError,
         });
+      } finally {
+        endChatRequest(controller);
       }
       // 이 턴에서 거절이 일어났다면 서버가 보관함에서도 뺐다(saved ∩ rejected = ∅).
       // 그 결과는 AgentResponse.state(StateApplyResponse)에 실려 오지 않으므로
@@ -429,6 +439,7 @@ export function ChatPage() {
       <ChatComposer
         disabled={isLoading}
         onSubmit={handleFollowUp}
+        onCancel={isLoading ? cancelChatRequest : undefined}
         placeholder={state.awaiting_clarification ? text.clarificationComposer : text.composer}
         language={state.language}
         onPhotoSelect={handlePhotoSelect}

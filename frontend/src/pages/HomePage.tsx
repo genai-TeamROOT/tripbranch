@@ -18,6 +18,7 @@ import { streamChat, toDisplayConditions } from "../api/trip";
 import { ChatComposer } from "../components/chat/ChatComposer";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { AppHeader } from "../components/layout/AppHeader";
+import { beginChatRequest, endChatRequest } from "../state/chatAbortController";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import { buildAgentStageTimings } from "../utils/agentTiming";
 import { getBrowserDeviceLocation } from "../utils/geolocation";
@@ -103,6 +104,10 @@ export function HomePage() {
     let firstMessageDeltaElapsedMs: number | null = null;
     let receivedStreamResult = false;
     let receivedStreamMessage = false;
+    // 발화를 보내자마자 /chat으로 이동하므로(위), 실제 요청은 이 화면이 언마운트된
+    // 뒤에도 계속 진행된다 — ChatPage의 "중단" 버튼이 닿을 수 있도록 이 요청도
+    // 같은 전역 컨트롤러에 등록한다(state/chatAbortController.ts).
+    const controller = beginChatRequest();
     try {
       await streamChat(
         {
@@ -192,12 +197,19 @@ export function HomePage() {
             },
           });
         },
+        controller.signal,
       );
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        dispatch({ type: "CANCEL_CHAT_TURN" });
+        return;
+      }
       dispatch({
         type: "SET_ERROR",
         payload: error instanceof ApiError ? error.message : text.requestError,
       });
+    } finally {
+      endChatRequest(controller);
     }
   }
 

@@ -6,7 +6,7 @@
  * TODO: 실제 다회 대화 의미 분석이 생기면 입력 종류와 컨텍스트 전달을 확장한다.
  */
 
-import { Send } from "lucide-react";
+import { Send, Square } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import type { Language } from "../../types";
 import { PhotoInputButton } from "./PhotoInputButton";
@@ -38,6 +38,12 @@ interface ChatComposerProps {
    * 다르다) — 안 넘기면(ChatPage 기본값) 그냥 "보내기"/"Send".
    */
   sendLabel?: string;
+  /*
+   * 있으면(=응답을 기다리는 중) 전송 버튼 자리가 "중단" 버튼으로 바뀐다
+   * (DESIGN_SYSTEM.md §7.2). HomePage의 최초 발화처럼 중단할 대상이 없는
+   * 화면은 이 prop을 안 넘기면 기존처럼 비활성 아이콘만 보인다.
+   */
+  onCancel?: () => void;
 }
 
 export function ChatComposer({
@@ -49,6 +55,7 @@ export function ChatComposer({
   value,
   onChange,
   sendLabel,
+  onCancel,
 }: ChatComposerProps) {
   const [internalText, setInternalText] = useState("");
   const text = value ?? internalText;
@@ -111,14 +118,25 @@ export function ChatComposer({
           }}
           onError={setVoiceError}
         />
-        <button
-          type="submit"
-          aria-label={resolvedSendLabel}
-          disabled={disabled || !text.trim()}
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brand text-white transition-colors hover:enabled:bg-brand-deep disabled:bg-brand/30"
-        >
-          <Send size={16} aria-hidden />
-        </button>
+        {disabled && onCancel ? (
+          <button
+            type="button"
+            onClick={onCancel}
+            aria-label={language === "en" ? "Stop" : "중단"}
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-rust text-white transition-colors hover:bg-rust/90"
+          >
+            <Square size={14} className="fill-current" aria-hidden />
+          </button>
+        ) : (
+          <button
+            type="submit"
+            aria-label={resolvedSendLabel}
+            disabled={disabled || !text.trim()}
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brand text-white transition-colors hover:enabled:bg-brand-deep disabled:bg-brand/30"
+          >
+            <Send size={16} aria-hidden />
+          </button>
+        )}
       </form>
     </div>
   );
