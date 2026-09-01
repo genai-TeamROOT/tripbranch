@@ -58,7 +58,7 @@ it("질문 답과 썸네일은 바로 보이고, 클릭하면 같은 상세 모�
   expect(within(dialog).getByText("성인 3,000원")).toBeInTheDocument();
   expect(
     within(dialog).getByText("※ 단, 정기휴일이 공휴일 및 대체공휴일과 겹치면 개방합니다."),
-  ).toHaveClass("text-xs", "text-gray-500");
+  ).toHaveClass("text-xs", "text-muted");
   // 홈페이지는 하단 별도 링크가 아니라 "관련 정보" 박스 안에 클릭 가능한 링크로 뜬다.
   // question_type이 "parking"이라 answer_fields엔 없지만(카드 최상위 필드), 박스가
   // 합성해서 보여준다.
@@ -122,7 +122,7 @@ it("요금 항목과 ※ 안내를 각각 줄바꿈해 표시한다", async () =
   const dialog = within(screen.getByRole("dialog"));
   expect(dialog.getByText("- 성인 10,000원")).toHaveClass("whitespace-pre-line");
   expect(dialog.getByText("- 학생 7,000원")).toHaveClass("whitespace-pre-line");
-  expect(dialog.getByText("※ 무료: 장애인")).toHaveClass("text-xs", "text-gray-500");
+  expect(dialog.getByText("※ 무료: 장애인")).toHaveClass("text-xs", "text-muted");
 });
 
 it("붙어 있는 월별 운영시간을 기간별 카드로 나눈다", async () => {

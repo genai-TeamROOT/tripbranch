@@ -134,7 +134,7 @@ it("추천 카드를 클릭하면 C PlaceDetails가 채워진 상세 창을 연�
   ).toBeInTheDocument();
   expect(within(dialog).getByText("서촌의 카페입니다.")).toBeInTheDocument();
   expect(within(dialog).getByText("매주 화요일")).toBeInTheDocument();
-  expect(within(dialog).getByText("11:00~21:00 (현재 운영시간 아님)")).toBeInTheDocument();
+  expect(within(dialog).getByText("11:00~21:00 · 운영 종료")).toBeInTheDocument();
   // 홈페이지는 "관련 정보" 박스 안에서 클릭 가능한 링크로만 노출된다(하단 중복 링크 제거).
   expect(
     within(dialog).getByRole("link", { name: "https://example.test/archivist" }),
