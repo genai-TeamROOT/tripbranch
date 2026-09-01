@@ -172,6 +172,7 @@ type TripAction =
   | { type: "CLEAR_ERROR" }
   | { type: "SET_SAVED_PLACES"; payload: { items: SavedPlaceItem[] } }
   | { type: "SNOOZE_LOCATION_REFRESH"; payload: { until: number } }
+  | { type: "SET_DEVICE_LOCATION"; payload: { deviceLocation: string; capturedAt: number } }
   | { type: "RESET" };
 
 /* /api/chat 한 번의 응답을 화면 메시지로 옮기기 위한 입력. */
@@ -447,7 +448,8 @@ function tripReducer(state: TripState, action: TripAction): TripState {
       };
     }
     case "COMPLETE_STREAM_CHAT_TURN": {
-      const { response, elapsedMsClient, serverElapsedMs, stageTimings, conditions } = action.payload;
+      const { response, elapsedMsClient, serverElapsedMs, stageTimings, conditions } =
+        action.payload;
       const recommendations = response.recommendations;
       const auditTurn: DeveloperAuditTurn = {
         id: createMessageId("audit"),
@@ -652,7 +654,10 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         deviceLocation: state.device_location,
         elapsedMsClient: action.payload.elapsedMsClient,
         serverElapsedMs:
-          action.payload.serverElapsedMs ?? recommendations?.elapsed_ms ?? schedule?.elapsed_ms ?? null,
+          action.payload.serverElapsedMs ??
+          recommendations?.elapsed_ms ??
+          schedule?.elapsed_ms ??
+          null,
         stageTimings: action.payload.stageTimings ?? [],
         extractedConditions: conditions,
         beforeConditions: state.auditTurns.at(-1)?.afterConditions ?? null,
@@ -792,6 +797,15 @@ function tripReducer(state: TripState, action: TripAction): TripState {
       return { ...state, saved_places: action.payload.items };
     case "SNOOZE_LOCATION_REFRESH":
       return { ...state, device_location_snoozed_until: action.payload.until };
+    case "SET_DEVICE_LOCATION":
+      // 위치 설정 화면에서 "위치 다시 가져오기"를 눌렀을 때. 채팅 턴을 거치지
+      // 않고도 다음 요청부터 새 좌표를 쓰도록 미리 갱신해 둔다.
+      return {
+        ...state,
+        device_location: action.payload.deviceLocation,
+        device_location_captured_at: action.payload.capturedAt,
+        device_location_snoozed_until: null,
+      };
     case "RESET":
       clearState();
       // 새 대화여도 사용자가 고른 화면 언어는 유지한다.

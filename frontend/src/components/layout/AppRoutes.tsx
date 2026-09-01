@@ -11,16 +11,18 @@
 import { Navigate, Route, Routes, type Location } from "react-router-dom";
 import { ChatPage } from "../../pages/ChatPage";
 import { HomePage } from "../../pages/HomePage";
-import { PlaceholderPage } from "../../pages/PlaceholderPage";
+import { LocationPage } from "../../pages/LocationPage";
+import { PreferencesPage } from "../../pages/PreferencesPage";
+import { SchedulePage } from "../../pages/SchedulePage";
 
 export function AppRoutes({ location }: { location: Location }) {
   return (
     <Routes location={location}>
       <Route path="/" element={<HomePage />} />
       <Route path="/chat" element={<ChatPage />} />
-      <Route path="/preferences" element={<PlaceholderPage title="취향 설정" />} />
-      <Route path="/location" element={<PlaceholderPage title="위치 설정" />} />
-      <Route path="/schedule" element={<PlaceholderPage title="일정" />} />
+      <Route path="/preferences" element={<PreferencesPage />} />
+      <Route path="/location" element={<LocationPage />} />
+      <Route path="/schedule" element={<SchedulePage />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
