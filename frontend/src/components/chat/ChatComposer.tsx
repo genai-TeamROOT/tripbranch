@@ -75,7 +75,7 @@ export function ChatComposer({
   const resolvedSendLabel = sendLabel ?? (language === "en" ? "Send" : "보내기");
 
   return (
-    <div className="sticky bottom-0 z-20 bg-gradient-to-t from-bg via-bg to-bg/0 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-6 md:mx-auto md:w-full md:max-w-2xl">
+    <div className="sticky bottom-0 z-20 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-6 md:mx-auto md:w-full md:max-w-2xl">
       {voiceError && (
         <p role="alert" className="mb-2 text-sm text-rust">
           {voiceError}
@@ -83,7 +83,7 @@ export function ChatComposer({
       )}
       <form
         onSubmit={handleSubmit}
-        className="flex items-center gap-1 rounded-full bg-white/70 p-1.5 shadow-card backdrop-blur-md"
+        className="flex items-center gap-1 rounded-full border border-white bg-white/60 p-1.5 shadow-card backdrop-blur-md"
       >
         {onPhotoSelect && (
           <PhotoInputButton
