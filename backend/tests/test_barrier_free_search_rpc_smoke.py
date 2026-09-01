@@ -46,7 +46,7 @@ _ANGUK_LONGITUDE = 126.9857
 
 # `출입구까지 턱이 없어 휠체어 접근 가능함`처럼 `없`이 긍정으로 쓰인 원문을 가진
 # 장소다. 단어로 부정을 판정하면 이 장소들이 사라진다.
-_STEP_FREE_EXPECTED_TITLES = {"대학로", "마로니에공원", "종묘광장공원"}
+_WHEELCHAIR_EXPECTED_TITLES = {"대학로", "마로니에공원", "종묘광장공원"}
 
 # `턱이 있어 접근 불가능한 구간 있음`. 명시적 불가라 빠져야 한다.
 _EXPLICIT_BLOCKER_TITLE = "사직공원(서울)"
@@ -67,11 +67,11 @@ async def test_단차_없음_조건이_충분한_후보를_돌려준다() -> Non
             latitude=_ANGUK_LATITUDE,
             longitude=_ANGUK_LONGITUDE,
             radius_km=2.0,
-            needs=(AccessibilityNeed.STEP_FREE_ACCESS,),
+            needs=(AccessibilityNeed.WHEELCHAIR_ACCESS,),
             limit=300,
         )
 
-    print(f"\n안국역 2km · step_free_access: {len(rows)}곳")
+    print(f"\n안국역 2km · wheelchair_access: {len(rows)}곳")
     # 2026-09-01 실측 206곳. 적재가 늘 수 있어 하한만 본다 — 판정이 단어 매칭으로
     # 뒤집히면 100곳 아래로 떨어진다.
     assert len(rows) >= 150
@@ -84,12 +84,12 @@ async def test_없다는_말이_긍정인_원문을_버리지_않는다() -> Non
             latitude=_ANGUK_LATITUDE,
             longitude=_ANGUK_LONGITUDE,
             radius_km=3.0,
-            needs=(AccessibilityNeed.STEP_FREE_ACCESS,),
+            needs=(AccessibilityNeed.WHEELCHAIR_ACCESS,),
             limit=500,
         )
 
     titles = {row.title for row in rows}
-    missing = _STEP_FREE_EXPECTED_TITLES - titles
+    missing = _WHEELCHAIR_EXPECTED_TITLES - titles
     assert not missing, (
         f"`없`이 긍정으로 쓰인 원문을 가진 장소가 빠졌습니다: {sorted(missing)}. "
         "판정에 단어 매칭이 들어갔는지 확인하세요."
@@ -102,7 +102,7 @@ async def test_명시적_접근_불가는_빠진다() -> None:
             latitude=_ANGUK_LATITUDE,
             longitude=_ANGUK_LONGITUDE,
             radius_km=3.0,
-            needs=(AccessibilityNeed.STEP_FREE_ACCESS,),
+            needs=(AccessibilityNeed.WHEELCHAIR_ACCESS,),
             limit=500,
         )
 
@@ -117,7 +117,7 @@ async def test_조건을_더하면_후보가_줄어든다() -> None:
             latitude=_ANGUK_LATITUDE,
             longitude=_ANGUK_LONGITUDE,
             radius_km=2.0,
-            needs=(AccessibilityNeed.STEP_FREE_ACCESS,),
+            needs=(AccessibilityNeed.WHEELCHAIR_ACCESS,),
             limit=500,
         )
         with_restroom = await repository.search_places_barrier_free(
@@ -125,14 +125,14 @@ async def test_조건을_더하면_후보가_줄어든다() -> None:
             longitude=_ANGUK_LONGITUDE,
             radius_km=2.0,
             needs=(
-                AccessibilityNeed.STEP_FREE_ACCESS,
+                AccessibilityNeed.WHEELCHAIR_ACCESS,
                 AccessibilityNeed.ACCESSIBLE_RESTROOM,
             ),
             limit=500,
         )
 
     print(
-        f"\nstep_free_access 단독 {len(step_free_only)}곳 → "
+        f"\nwheelchair_access 단독 {len(step_free_only)}곳 → "
         f"+accessible_restroom {len(with_restroom)}곳"
     )
     assert 0 < len(with_restroom) < len(step_free_only)
@@ -147,7 +147,7 @@ async def test_거리순으로_돌아온다() -> None:
             latitude=_ANGUK_LATITUDE,
             longitude=_ANGUK_LONGITUDE,
             radius_km=2.0,
-            needs=(AccessibilityNeed.STEP_FREE_ACCESS,),
+            needs=(AccessibilityNeed.WHEELCHAIR_ACCESS,),
             limit=50,
         )
 
@@ -163,7 +163,7 @@ async def test_반경_밖은_돌아오지_않는다() -> None:
             latitude=_ANGUK_LATITUDE,
             longitude=_ANGUK_LONGITUDE,
             radius_km=0.5,
-            needs=(AccessibilityNeed.STEP_FREE_ACCESS,),
+            needs=(AccessibilityNeed.WHEELCHAIR_ACCESS,),
             limit=500,
         )
 
@@ -180,3 +180,44 @@ async def test_빈_조건은_저장소에_닿기_전에_막힌다() -> None:
                 needs=(),
                 limit=10,
             )
+
+
+async def test_노인_동반_어휘가_다른_장소를_고른다() -> None:
+    """의자식 테이블·저상버스는 단차 정보와 다른 컬럼을 읽는다.
+
+    값 유무로 판정하면 안 되는 두 어휘라(의자식은 231행 중 142행, 저상버스는
+    126행 중 99행) 문구 판정이 실제로 걸리는지 여기서 확인한다.
+    """
+    async with httpx.AsyncClient() as client:
+        repository = _repository(client)
+        seating = await repository.search_places_barrier_free(
+            latitude=_ANGUK_LATITUDE, longitude=_ANGUK_LONGITUDE, radius_km=2.0,
+            needs=(AccessibilityNeed.SEATING_AVAILABLE,), limit=500,
+        )
+        transit = await repository.search_places_barrier_free(
+            latitude=_ANGUK_LATITUDE, longitude=_ANGUK_LONGITUDE, radius_km=2.0,
+            needs=(AccessibilityNeed.LOW_FLOOR_TRANSIT,), limit=500,
+        )
+
+    print(f"\n의자식 테이블 {len(seating)}곳 · 저상버스 {len(transit)}곳")
+    # 값 유무로 판정하면 각각 89곳·27곳이 더 들어온다. 그만큼 늘어나면 문구 판정이
+    # 빠진 것이다.
+    assert 0 < len(seating) < 60
+    assert 0 < len(transit) < 50
+
+
+async def test_휠체어와_유모차는_아직_같은_결과다() -> None:
+    """판정이 붙으면 이 테스트가 깨지면서 두 값이 갈리기 시작했음을 알려준다."""
+    async with httpx.AsyncClient() as client:
+        repository = _repository(client)
+        wheelchair = await repository.search_places_barrier_free(
+            latitude=_ANGUK_LATITUDE, longitude=_ANGUK_LONGITUDE, radius_km=2.0,
+            needs=(AccessibilityNeed.WHEELCHAIR_ACCESS,), limit=500,
+        )
+        stroller = await repository.search_places_barrier_free(
+            latitude=_ANGUK_LATITUDE, longitude=_ANGUK_LONGITUDE, radius_km=2.0,
+            needs=(AccessibilityNeed.STROLLER_ACCESS,), limit=500,
+        )
+
+    assert [r.content_id for r in wheelchair] == [r.content_id for r in stroller]
+

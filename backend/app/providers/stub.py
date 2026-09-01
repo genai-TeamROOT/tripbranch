@@ -1361,10 +1361,12 @@ class _FakeBarrierFreePlace:
 # 필터가 한 번도 걸리지 않고, 테스트는 통과하는데 검증하려던 로직은 실행되지 않는다.
 # 그래서 편의 조합을 일부러 어긋나게 둔다.
 #
-#   무장애 카페      단차 없음 + 유아 시설  → 유모차 요청(둘 다)에 남는다
-#   유아쉼터         유아 시설만            → 유모차 요청에서 **빠진다**
-#   무장애 박물관    단차 없음 + 화장실 + 시각 안내
-#   무장애 게스트하우스  전부 갖췄지만 숙박(32)이라 분류 규칙이 버린다
+#   무장애 카페      단차(휠체어·유모차) + 유아 시설 → 유모차 요청(둘 다)에 남는다
+#   유아쉼터         유아 시설만                     → 유모차 요청에서 **빠진다**
+#   경로당           의자식 테이블 + 저상버스 + 휠체어 대여 (단차 정보 없음)
+#                    → 노인 동반 조건에는 남고 휠체어 요청에서는 **빠진다**
+#   무장애 박물관    단차 + 화장실 + 시각 안내
+#   게스트하우스     전부 갖췄지만 숙박(32)이라 분류 규칙이 버린다
 _FAKE_BARRIER_FREE_PLACES: tuple[_FakeBarrierFreePlace, ...] = (
     _FakeBarrierFreePlace(
         place_id="fake-bf-cafe-1",
@@ -1375,7 +1377,11 @@ _FAKE_BARRIER_FREE_PLACES: tuple[_FakeBarrierFreePlace, ...] = (
         lat_offset=0.001,
         lng_offset=0.0,
         needs=frozenset(
-            {AccessibilityNeed.STEP_FREE_ACCESS, AccessibilityNeed.INFANT_FACILITIES}
+            {
+                AccessibilityNeed.WHEELCHAIR_ACCESS,
+                AccessibilityNeed.STROLLER_ACCESS,
+                AccessibilityNeed.INFANT_FACILITIES,
+            }
         ),
     ),
     _FakeBarrierFreePlace(
@@ -1390,6 +1396,23 @@ _FAKE_BARRIER_FREE_PLACES: tuple[_FakeBarrierFreePlace, ...] = (
         needs=frozenset({AccessibilityNeed.INFANT_FACILITIES}),
     ),
     _FakeBarrierFreePlace(
+        place_id="fake-bf-senior-1",
+        name="테스트 경로당",
+        content_type_id="14",
+        lcls_systm1="VE",
+        category="cultural_facility",
+        lat_offset=0.0025,
+        lng_offset=0.0,
+        # 오래 걷기 힘든 동행에게 쓸모 있는 값만 있고 단차 정보는 없다.
+        needs=frozenset(
+            {
+                AccessibilityNeed.SEATING_AVAILABLE,
+                AccessibilityNeed.LOW_FLOOR_TRANSIT,
+                AccessibilityNeed.WHEELCHAIR_RENTAL,
+            }
+        ),
+    ),
+    _FakeBarrierFreePlace(
         place_id="fake-bf-museum-1",
         name="테스트 무장애 박물관",
         content_type_id="14",
@@ -1399,7 +1422,8 @@ _FAKE_BARRIER_FREE_PLACES: tuple[_FakeBarrierFreePlace, ...] = (
         lng_offset=0.0,
         needs=frozenset(
             {
-                AccessibilityNeed.STEP_FREE_ACCESS,
+                AccessibilityNeed.WHEELCHAIR_ACCESS,
+                AccessibilityNeed.STROLLER_ACCESS,
                 AccessibilityNeed.ACCESSIBLE_RESTROOM,
                 AccessibilityNeed.VISUAL_GUIDE,
             }
