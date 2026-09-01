@@ -15,6 +15,7 @@ from datetime import date
 from typing import Protocol, runtime_checkable
 
 from app.domain.models import (
+    AccessibilityNeed,
     ConcentrationResult,
     GeocodeResult,
     HolidayResult,
@@ -368,6 +369,36 @@ class PlaceSearchProvider(Protocol):
         limit: int = DEFAULT_PLACE_PROVIDER_RESULT_LIMIT,
     ) -> ProviderResult[list[PlaceCandidate]]:
         """주어진 좌표/조건으로 장소 후보 목록을 조회해 공통 모델로 반환한다."""
+        ...
+
+
+class BarrierFreePlaceSearchProvider(Protocol):
+    """무장애 편의를 요구한 요청의 후보를 찾는 검색 provider.
+
+    `PlaceSearchProvider`에 인자를 더하지 않고 계약을 나눈 이유는 두 가지다.
+
+    첫째, 검색 인자가 다르다. 이쪽은 지역·구 코드를 쓰지 않고(저장소가 이미 서울
+    적재분만 담는다) 대신 요구 편의 목록을 받는다.
+
+    둘째, 인자를 더하면 `RealPlaceProvider`와 Fake까지 서명이 바뀐다. 무장애와
+    무관한 경로가 무장애 때문에 흔들리지 않게 둔다.
+    """
+
+    async def search_places_with_accessibility(
+        self,
+        *,
+        latitude: float,
+        longitude: float,
+        search_radius_km: float,
+        needs: Sequence[AccessibilityNeed],
+        category_filter: PlaceCategoryFilter | None = None,
+        limit: int,
+    ) -> ProviderResult[list[PlaceCandidate]]:
+        """요구 편의를 **전부** 만족하는 후보를 거리순으로 반환한다.
+
+        `needs`가 비어 있으면 구현체는 ValueError를 던진다. 조건 없는 검색으로
+        조용히 바뀌면 무장애를 요구한 요청이 조건 빠진 결과를 받고도 모른다.
+        """
         ...
 
 

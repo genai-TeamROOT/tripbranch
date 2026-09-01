@@ -8,7 +8,10 @@ from typing import Protocol
 from uuid import UUID
 
 from app.domain.models import (
+    AccessibilityNeed,
+    BarrierFreePlaceRow,
     PlaceBarrierFreeDetails,
+    PlaceCategoryFilter,
     PlaceEvidenceMatch,
     PlaceMoodMatch,
     PlaceMoodProfile,
@@ -172,6 +175,34 @@ class PlaceRepository(Protocol):
         error_summary: Mapping[str, object] | None = None,
         completed_at: datetime,
     ) -> None: ...
+
+
+class BarrierFreePlaceSearchRepository(Protocol):
+    """무장애 편의를 요구한 요청의 후보를 찾는 읽기 전용 계약.
+
+    PlaceLocationRepository와 계약을 나눈다. 그쪽은 이름으로 한 곳을 찾는
+    검색 중심점 해석이고, 이쪽은 좌표 둘레에서 조건을 만족하는 여러 곳을
+    거리순으로 모으는 후보 수집이다. 쓰는 테이블도 다르다 — 이 계약만
+    place_barrier_free를 읽는다.
+    """
+
+    async def search_places_barrier_free(
+        self,
+        *,
+        latitude: float,
+        longitude: float,
+        radius_km: float,
+        needs: Sequence[AccessibilityNeed],
+        category_filter: PlaceCategoryFilter | None = None,
+        limit: int,
+    ) -> tuple[BarrierFreePlaceRow, ...]:
+        """조건을 **전부** 만족하는 장소를 반경 안에서 거리순으로 돌려준다.
+
+        `needs`가 비어 있으면 구현체는 ValueError를 던진다. 조건 없는 전체 반경
+        검색으로 조용히 바뀌면, 무장애를 요구한 요청이 조건이 빠진 결과를 받고도
+        그 사실을 알 수 없다.
+        """
+        ...
 
 
 class PlaceEvidenceRepository(Protocol):

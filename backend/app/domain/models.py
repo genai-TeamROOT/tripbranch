@@ -440,6 +440,56 @@ class PlaceBarrierFreeDetails:
         )
 
 
+class AccessibilityNeed(StrEnum):
+    """요청이 요구할 수 있는 무장애 편의. `place_barrier_free`의 컬럼 묶음과 1:1이다.
+
+    이름을 "누구인가"가 아니라 **"무엇이 필요한가"**로 지었다. 휠체어 사용자와
+    유모차 사용자는 사람이 다르지만 필요한 물리적 조건은 같은 컬럼이라, 사용자
+    유형으로 나누면 같은 조건이 두 이름을 갖는다. 그래서 "유모차 끌고 갈 만한 곳"은
+    STEP_FREE_ACCESS와 INFANT_FACILITIES 두 값으로 온다 — 단차 없이 들어갈 수
+    있는지와 수유실·기저귀교환대가 있는지는 다른 질문이다.
+
+    INFANT_FACILITIES만 요구하면 유아 시설은 있는데 계단으로 올라가야 하는 곳이
+    섞인다(유아 시설이 있는 275곳 중 24곳에 단차 정보가 없다).
+
+    각 값이 어느 컬럼을 읽는지는 저장소가 아니라 **RPC의 판정 블록**이 정한다
+    (`search_places_barrier_free`). 판정을 한 곳에 모아 두려는 것이므로 여기에
+    컬럼 목록을 복제하지 않는다.
+    """
+
+    STEP_FREE_ACCESS = "step_free_access"
+    ACCESSIBLE_RESTROOM = "accessible_restroom"
+    ACCESSIBLE_PARKING = "accessible_parking"
+    VISUAL_GUIDE = "visual_guide"
+    INFANT_FACILITIES = "infant_facilities"
+
+
+@dataclass(frozen=True)
+class BarrierFreePlaceRow:
+    """무장애 후보 검색(`search_places_barrier_free`)이 돌려주는 장소 한 건.
+
+    `places`에서 읽은 값이라 TourAPI 목록 조회가 주는 것과 같은 자리를 채운다 —
+    provider가 이 값을 `PlaceCandidate`로 옮기면 그 뒤 경로(상세 보완·병합·조립)는
+    후보가 어디서 왔는지 몰라도 된다.
+
+    운영시간은 담지 않는다. TourAPI 후보도 검색 단계에서는 비워 두고 뒤이은 상세
+    보완이 채우므로, 여기서 미리 채우면 같은 값을 두 경로가 서로 다른 규칙으로
+    만들게 된다.
+    """
+
+    content_id: str
+    title: str
+    address: str | None
+    latitude: float
+    longitude: float
+    content_type_id: str | None
+    lcls_systm1: str | None
+    lcls_systm2: str | None
+    lcls_systm3: str | None
+    first_image_url: str | None
+    distance_km: float
+
+
 @dataclass(frozen=True)
 class PlaceCommonDetails:
     """detailCommon2에서만 얻을 수 있는 값. places 동기화 대상이 아니다.

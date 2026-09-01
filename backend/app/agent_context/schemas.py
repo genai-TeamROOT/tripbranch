@@ -42,6 +42,18 @@ class UserConditions(StrictModel):
     exclude_tags: list[str] = Field(default_factory=list)
     special_requirements: list[str] = Field(default_factory=list)
     taste_query: str | None = None
+    # 요구된 무장애 편의. 값이 있으면 C가 후보를 그 조건으로 좁힌다.
+    #
+    # 어휘는 step_free_access / accessible_restroom / accessible_parking /
+    # visual_guide / infant_facilities 다섯이고, **여럿이면 전부 만족**해야 한다.
+    # "유모차 끌고 갈 만한 곳"은 step_free_access와 infant_facilities로 온다 —
+    # 단차 없이 들어갈 수 있는지와 수유실이 있는지는 다른 질문이다.
+    #
+    # Literal로 조이지 않는 이유는 weather_intent와 같다. C가 A보다 먼저 값을
+    # 받아들여야 A 배포 시점에 요청 전체가 깨지지 않는다. 대신 모르는 값은
+    # 무시하고 warnings에 남긴다(nearby_place_details.py) — 조용히 버리면
+    # 사용자가 요구한 조건이 사라진 것을 아무도 모른다.
+    accessibility_needs: list[str] = Field(default_factory=list)
 
     @field_validator("current_location", "search_center", "budget", "taste_query")
     @classmethod
@@ -58,6 +70,7 @@ class UserConditions(StrictModel):
         "place_tags",
         "exclude_tags",
         "special_requirements",
+        "accessibility_needs",
     )
     @classmethod
     def normalize_text_list(cls, values: list[str]) -> list[str]:
