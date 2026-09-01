@@ -63,6 +63,11 @@ export interface RecommendationItem {
   taste_evidence: TasteEvidenceQuote[];
   /** 리뷰·블로그에서 문서 단위로 집계한 장소별 상위 취향 태그. */
   preference_tags?: PreferenceTagSummary[];
+  /**
+   * 대표 이미지. 백엔드가 COMPARE 전용 RecommendationCardTool을 빌려 채운다 —
+   * 못 찾은 장소는 null/undefined로 오고, 카드는 그때 자리표시 칩을 그린다.
+   */
+  image_url?: string | null;
 }
 
 export interface PreferenceTagSummary {
@@ -277,12 +282,7 @@ export interface RecommendationPlaceDetailResponse {
 }
 
 export type ChatPhase =
-  | "idle"
-  | "interpreting"
-  | "waiting_for_debug_confirmation"
-  | "recommending"
-  | "ready"
-  | "error";
+  "idle" | "interpreting" | "waiting_for_debug_confirmation" | "recommending" | "ready" | "error";
 
 export type ChatMessage =
   | {
@@ -334,7 +334,7 @@ export type ChatMessage =
       /*
        * B가 병합한 누적 조건. 실제 추천에 쓰이는 값이며, 되묻기 턴에서는 이번 턴
        * 추출분(conditions.raw_conditions)과 달라진다 — 앞 턴 조건이 살아 있기 때문.
-      */
+       */
       mergedConditions: UserConditions | null;
       /* 해당 사용자 발화에 대해 Agent가 최종 분류한 Intent. */
       intent?: Intent;
@@ -424,13 +424,7 @@ export interface ApiErrorBody {
 // 화면 표시에 필요한 최소한만 좁혀서 선언하며, enum 값은 string으로 느슨하게 받는다.
 
 export type Intent =
-  | "RECOMMEND"
-  | "INFO"
-  | "MODIFY"
-  | "COMPARE"
-  | "GENERAL"
-  | "OUT_OF_SCOPE"
-  | "SCHEDULE";
+  "RECOMMEND" | "INFO" | "MODIFY" | "COMPARE" | "GENERAL" | "OUT_OF_SCOPE" | "SCHEDULE";
 
 export type LLMOutputStatus = "complete" | "needs_clarification";
 
@@ -897,7 +891,14 @@ export interface LocationDebug {
 }
 
 export interface ToolExecutionDebug {
-  operation?: "context_fetch" | "info_concentration" | "info_realtime_commercial" | "info_realtime_population" | "info_realtime_citydata" | "candidate_enrichment" | "compare_fetch";
+  operation?:
+    | "context_fetch"
+    | "info_concentration"
+    | "info_realtime_commercial"
+    | "info_realtime_population"
+    | "info_realtime_citydata"
+    | "candidate_enrichment"
+    | "compare_fetch";
   request_id: string;
   status: string;
   latency_ms: number | null;

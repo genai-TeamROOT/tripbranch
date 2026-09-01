@@ -98,3 +98,23 @@ test("카드 본문 클릭은 여전히 상세 미리보기를 연다", async ()
 
   expect(onOpenDetail).toHaveBeenCalledTimes(1);
 });
+
+test("image_url이 있으면 이미지를, 없으면 카테고리 자리표시 칩을 보여준다", () => {
+  // 이미지는 장식용(alt="")이라 role="img"로 접근할 수 없다 — querySelector로 확인한다.
+  const { container, rerender } = render(
+    <ul>
+      <PlaceCard item={item({ image_url: null })} />
+    </ul>,
+  );
+
+  expect(container.querySelector("img")).not.toBeInTheDocument();
+  expect(screen.getByText("cafe")).toBeInTheDocument();
+
+  rerender(
+    <ul>
+      <PlaceCard item={item({ image_url: "https://img.test/place-1.jpg" })} />
+    </ul>,
+  );
+
+  expect(container.querySelector("img")).toHaveAttribute("src", "https://img.test/place-1.jpg");
+});

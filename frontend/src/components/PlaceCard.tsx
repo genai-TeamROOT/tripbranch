@@ -130,15 +130,25 @@ export function PlaceCard({
             : undefined
         }
       >
-        <div className="relative">
-          {/*
-           * RecommendationItem에는 이미지 URL이 없다(추천 결과는 사진 없이
-           * 텍스트로만 온다). 상세 모달에서만 썸네일을 조회해 보여준다 —
-           * 여기서는 자리표시용 칩만 그린다.
-           */}
-          <span className="flex h-28 w-full items-center justify-center rounded-2xl bg-chip text-xs text-muted">
-            {item.category}
-          </span>
+        <div className="group relative">
+          {item.image_url ? (
+            <img
+              src={item.image_url}
+              alt=""
+              loading="lazy"
+              className="h-28 w-full rounded-2xl object-cover transition-transform duration-300 group-hover:scale-105"
+              onError={(event) => {
+                // 원본이 사라졌을 수 있다(D-087과 같은 종류). 깨진 아이콘 대신 자리만 비운다.
+                event.currentTarget.style.visibility = "hidden";
+              }}
+            />
+          ) : (
+            // 배치 조회에서 못 찾은 장소는 image_url이 null/undefined로 온다 —
+            // 자리표시용 칩을 그린다.
+            <span className="flex h-28 w-full items-center justify-center rounded-2xl bg-chip text-xs text-muted">
+              {item.category}
+            </span>
+          )}
 
           {onToggleSave && (
             <button
