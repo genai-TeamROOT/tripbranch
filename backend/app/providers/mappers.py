@@ -32,6 +32,21 @@ _CONTENT_TYPE_TO_CATEGORY = {
 _UNSUPPORTED_CONTENT_TYPE_IDS = frozenset({"25", "32"})
 
 
+def resolve_place_category(content_type_id: str) -> str | None:
+    """contenttypeid를 후보의 `category` 값으로 옮긴다. 지원하지 않는 유형이면 None.
+
+    None은 "분류를 모르겠다"가 아니라 **후보에서 빼라**는 뜻이다. 모르는 코드는
+    `"unknown"`으로 남고 후보로는 살아 있다.
+
+    저장소에서 후보를 뽑는 경로(무장애 검색)도 같은 규칙을 써야 두 출처의 후보가
+    같은 어휘를 갖는다. 규칙을 양쪽에 복제하면 한쪽만 고쳤을 때 같은 장소가
+    경로에 따라 다른 분류로 나간다.
+    """
+    if content_type_id in _UNSUPPORTED_CONTENT_TYPE_IDS:
+        return None
+    return _CONTENT_TYPE_TO_CATEGORY.get(content_type_id, "unknown")
+
+
 def map_tour_api_item(
     item: dict,
     *,
@@ -64,9 +79,9 @@ def map_tour_api_item(
             return None
 
     content_type_id = str(item.get("contenttypeid", ""))
-    if content_type_id in _UNSUPPORTED_CONTENT_TYPE_IDS:
+    category = resolve_place_category(content_type_id)
+    if category is None:
         return None
-    category = _CONTENT_TYPE_TO_CATEGORY.get(content_type_id, "unknown")
 
     address = item.get("addr1") or None
     lcls_systm1 = str(item.get("lclsSystm1", "")).strip() or None
