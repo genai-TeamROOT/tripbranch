@@ -5,6 +5,7 @@
  * 호출 시점: RecommendationResultMessage의 추천 카드 클릭.
  */
 
+import { motion } from "framer-motion";
 import { useEffect, useState } from "react";
 import { fetchRecommendationPlaceDetails } from "../../api/trip";
 import { useTripState } from "../../state/TripContext";
@@ -786,9 +787,7 @@ function PlacePhotoGallery({ card, title }: { card: InfoPlaceCard; title: string
       <div className="relative">
         <img
           src={urls[safeIndex]}
-          alt={
-            urls.length > 1 ? `${placeName} 사진 ${safeIndex + 1}번째` : `${placeName} 이미지`
-          }
+          alt={urls.length > 1 ? `${placeName} 사진 ${safeIndex + 1}번째` : `${placeName} 이미지`}
           className="h-56 w-full rounded-xl bg-gray-100 object-cover dark:bg-gray-800"
         />
         {urls.length > 1 && (
@@ -843,6 +842,11 @@ export function RecommendationDetailPreviewModal({
   const [detailStatus, setDetailStatus] = useState<"loading" | "no_data" | "unavailable">(
     "loading",
   );
+  // 호출부 4곳 모두 {selected && <모달/>}로 조건부 렌더링한다 — AnimatePresence로
+  // 언마운트를 감지할 부모가 없다. 닫힐 때는 여기서 슬라이드다운을 먼저 재생하고,
+  // 애니메이션이 끝난 뒤에야 실제 onClose(부모의 상태 제거)를 부른다.
+  const [isClosing, setIsClosing] = useState(false);
+  const handleClose = () => setIsClosing(true);
   const placeId = card?.place_id ?? item?.place_id ?? placeIdProp;
   const placeName = card?.place_name ?? item?.name ?? placeNameProp;
   const title =
@@ -854,24 +858,25 @@ export function RecommendationDetailPreviewModal({
   // "관련 정보"(answer_fields)에서 개요는 아래 "개요" 섹션과 내용이 같아 제외한다(중복 제거).
   // 홈페이지는 answer_fields가 아니라 카드 최상위 필드다(질문 유형이 general_info가
   // 아니어도 백엔드가 채울 수 있다) — 하단 링크를 없앤 대신 여기서 합성해 넣는다.
-  const answerEntries = detailCard && !isRealtimeParkingCard(detailCard)
-    ? [
-        ...Object.entries(detailCard.answer_fields).filter(([key]) => key !== "overview"),
-        ...(detailCard.homepage && !("homepage" in detailCard.answer_fields)
-          ? ([["homepage", detailCard.homepage]] as [string, string][])
-          : []),
-      ]
-    : [];
+  const answerEntries =
+    detailCard && !isRealtimeParkingCard(detailCard)
+      ? [
+          ...Object.entries(detailCard.answer_fields).filter(([key]) => key !== "overview"),
+          ...(detailCard.homepage && !("homepage" in detailCard.answer_fields)
+            ? ([["homepage", detailCard.homepage]] as [string, string][])
+            : []),
+        ]
+      : [];
   const hasRealtimeDetails =
     (detailCard?.realtime_detail_items?.length ?? 0) > 0 || Boolean(detailCard?.realtime_map_url);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") setIsClosing(true);
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
+  }, []);
 
   useEffect(() => {
     const shouldEnrichCard = needsDetailEnrichment(card);
@@ -917,41 +922,48 @@ export function RecommendationDetailPreviewModal({
   }, [card, placeId, placeName]);
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-end bg-black/50 p-0 sm:items-center sm:justify-center sm:p-4"
-      role="presentation"
-      onMouseDown={onClose}
-    >
-      <section
+    <div className="fixed inset-0 z-50 flex flex-col justify-end" role="presentation">
+      <motion.button
+        type="button"
+        aria-label="닫기"
+        onClick={handleClose}
+        className="absolute inset-0 bg-ink-strong/35"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: isClosing ? 0 : 1 }}
+        transition={{ duration: 0.22 }}
+      />
+      <motion.section
         role="dialog"
         aria-modal="true"
         aria-labelledby="recommendation-detail-title"
-        className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-t-2xl bg-white shadow-xl dark:bg-gray-900 sm:rounded-2xl"
-        onMouseDown={(event) => event.stopPropagation()}
+        className="relative flex max-h-[88vh] w-full flex-col overflow-hidden rounded-t-3xl bg-bg shadow-card"
+        initial={{ y: "100%" }}
+        animate={{ y: isClosing ? "100%" : 0 }}
+        transition={{ type: "spring", damping: 32, stiffness: 320 }}
+        onAnimationComplete={() => {
+          if (isClosing) onClose();
+        }}
       >
-        <div className="flex items-center justify-between gap-3 border-b border-gray-100 px-5 py-4 dark:border-gray-800">
+        <span className="mx-auto mt-2.5 h-1.5 w-10 shrink-0 rounded-full bg-border" />
+
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-5 py-4">
           <div className="min-w-0">
-            <p className="text-xs text-gray-500 dark:text-gray-400">
-              {item ? "추천 장소 상세" : "장소 상세"}
-            </p>
-            <h2
-              id="recommendation-detail-title"
-              className="truncate text-lg font-bold text-gray-900 dark:text-gray-100"
-            >
+            <p className="text-xs text-muted">{item ? "추천 장소 상세" : "장소 상세"}</p>
+            <h2 id="recommendation-detail-title" className="truncate text-lg font-bold text-ink">
               {title}
             </h2>
           </div>
           <button
             type="button"
-            onClick={onClose}
-            className="rounded-full p-2 text-gray-500 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:hover:bg-gray-800"
+            onClick={handleClose}
+            className="rounded-full p-2 text-muted hover:bg-chip focus:outline-none focus:ring-2 focus:ring-brand"
             aria-label="상세 창 닫기"
           >
             ×
           </button>
         </div>
 
-        <div className="flex flex-col gap-5 p-5">
+        <div className="flex flex-col gap-5 overflow-y-auto p-5">
           {isLoading ? (
             <div className="flex h-56 animate-pulse items-center justify-center rounded-xl bg-gray-100 text-sm text-gray-500 dark:bg-gray-800 dark:text-gray-400">
               상세 정보를 불러오는 중...
@@ -1052,7 +1064,7 @@ export function RecommendationDetailPreviewModal({
             </p>
           )}
         </div>
-      </section>
+      </motion.section>
     </div>
   );
 }

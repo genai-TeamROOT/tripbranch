@@ -141,7 +141,7 @@ it("추천 카드를 클릭하면 C PlaceDetails가 채워진 상세 창을 연�
   ).toHaveAttribute("href", "https://example.test/archivist");
 
   await user.click(screen.getByRole("button", { name: "상세 창 닫기" }));
-  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
 });
 
 afterEach(() => {
