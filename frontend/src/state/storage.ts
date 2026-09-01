@@ -144,6 +144,12 @@ function isChatMessage(value: unknown): value is ChatMessage {
   if (message.type === "clarification") {
     return typeof message.text === "string" && Array.isArray(message.options);
   }
+  /* 턴이 끝날 때마다 붙는 후속 질문 버튼(D-102). 이 케이스가 없으면 후속 질문이
+     한 번이라도 뜬 대화 — 사실상 모든 정상 대화 — 가 새로고침에서 통째로 버려진다.
+     schedule_result/place_info_result/feedback과 같은 버그의 다섯 번째다. */
+  if (message.type === "follow_up_suggestions") {
+    return Array.isArray(message.suggestions);
+  }
   return false;
 }
 
