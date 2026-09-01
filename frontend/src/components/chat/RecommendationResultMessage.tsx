@@ -3,7 +3,9 @@
  * 입력: 정상 추천 목록, 운영시간 미확인 목록, 추가 추천 요청 콜백.
  * 출력: 추천 결과 메시지, PlaceCard 목록, 다른 장소 보기/반경 확대 버튼.
  * 호출 시점: ChatPage가 recommendation_result 메시지를 렌더링할 때 호출된다.
- * TODO: 지도/동선/저장 액션이 생기면 PlaceCard 주변 액션으로 확장한다.
+ * 담기/빼기는 useSavedPlaces()로 직접 읽고 쓴다 — 카드가 메시지 목록 깊숙이
+ * 있어 prop으로 내리면 중간 컴포넌트 셋을 전부 거쳐야 한다.
+ * TODO: 지도/동선 액션이 생기면 PlaceCard 주변 액션으로 확장한다.
  *
  * showElapsedTime이 false면(실사용자 화면) 지연시간(elapsedMs/serverElapsedMs)을
  * 아예 렌더링하지 않는다 — 개발자 확인용 숫자가 실서비스 화면에 새던 걸 정리함.
@@ -12,6 +14,7 @@
 
 import { useState } from "react";
 import type { Language, RecommendationItem, TravelOriginToggle } from "../../types";
+import { useSavedPlaces } from "../../hooks/useSavedPlaces";
 import { PlaceCard } from "../PlaceCard";
 import { PreferenceTagSummaryTable } from "./PreferenceTagSummaryTable";
 import { RecommendationDetailPreviewModal } from "./RecommendationDetailPreviewModal";
@@ -85,6 +88,7 @@ export function RecommendationResultMessage({
   const [selectedRecommendation, setSelectedRecommendation] = useState<RecommendationItem | null>(
     null,
   );
+  const { savedPlaceIds, toggleSaved } = useSavedPlaces();
   // D는 운영시간을 무시한 재검색에서 "현재는 폐점"인 후보도 unverified 목록에
   // 담는다. 하지만 이 후보는 운영시간 원문 자체가 없는 것이 아니다. 카드에서
   // 실제 구간을 보여 줄 수 있도록, display가 있는 폐점 후보와 진짜 결측 후보를
@@ -150,6 +154,8 @@ export function RecommendationResultMessage({
                     key={item.place_id}
                     item={item}
                     language={language}
+                    isSaved={savedPlaceIds.has(item.place_id)}
+                    onToggleSave={(selectedItem) => void toggleSaved(selectedItem)}
                     onOpenDetail={(selectedItem) => setSelectedRecommendation(selectedItem)}
                   />
                 ))}
@@ -168,6 +174,8 @@ export function RecommendationResultMessage({
                     key={item.place_id}
                     item={item}
                     language={language}
+                    isSaved={savedPlaceIds.has(item.place_id)}
+                    onToggleSave={(selectedItem) => void toggleSaved(selectedItem)}
                     onOpenDetail={(selectedItem) => setSelectedRecommendation(selectedItem)}
                   />
                 ))}
@@ -186,6 +194,8 @@ export function RecommendationResultMessage({
                     key={item.place_id}
                     item={item}
                     language={language}
+                    isSaved={savedPlaceIds.has(item.place_id)}
+                    onToggleSave={(selectedItem) => void toggleSaved(selectedItem)}
                     onOpenDetail={(selectedItem) => setSelectedRecommendation(selectedItem)}
                   />
                 ))}

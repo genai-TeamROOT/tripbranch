@@ -257,4 +257,7 @@ export const apiClient = {
   postBinary: <T>(path: string, body: Blob, contentType: string) =>
     requestBinary<T>(path, body, contentType),
   postForm: <T>(path: string, body: FormData) => requestForm<T>(path, body),
+  /* 보관함 빼기(DELETE .../saved-places/{place_id})가 첫 사용처다. 본문 없는
+     DELETE라 request()의 JSON 파싱 경로를 그대로 탄다 — 서버가 목록을 돌려준다. */
+  del: <T>(path: string) => request<T>(path, { method: "DELETE" }),
 };

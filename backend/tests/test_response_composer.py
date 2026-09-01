@@ -1476,6 +1476,49 @@ def test_schedule_message_unchanged_when_nothing_omitted() -> None:
     assert "넣지 못했어요" not in message
 
 
+def test_schedule_message_does_not_suggest_retry_for_absent_saved_places() -> None:
+    """후보에 아예 없던 장소는 재시도를 권하지 않는다. (SCHEDULE-12)
+
+    시간을 늘리거나 다른 곳을 빼도 결과가 같다 — 후보 수집 단계에서 안 잡힌
+    것이라 편성 조건과 무관하기 때문이다. 그런데도 "시간을 늘려보라"고 하면
+    사용자가 같은 실패를 반복한다.
+    """
+
+    schedule = ScheduleResult(
+        items=[_schedule_item()],
+        total_duration_min=120,
+        route_summary="경복궁 근처 코스예요.",
+        basis_note="기준 시각 안내",
+        absent_saved_place_names=["스태픽스", "아띠인력거"],
+        elapsed_ms=100.0,
+    )
+
+    message = compose_schedule_message(schedule)
+
+    assert "스태픽스, 아띠인력거" in message
+    assert "후보에 없어서" in message
+    assert "시간을 늘리거나" not in message
+
+
+def test_schedule_message_separates_the_two_omission_reasons() -> None:
+    """사유가 둘 다 있으면 각각 다른 문장으로 알린다."""
+
+    schedule = ScheduleResult(
+        items=[_schedule_item()],
+        total_duration_min=120,
+        route_summary="경복궁 근처 코스예요.",
+        basis_note="기준 시각 안내",
+        absent_saved_place_names=["스태픽스"],
+        omitted_saved_place_names=["북촌한옥마을"],
+        elapsed_ms=100.0,
+    )
+
+    message = compose_schedule_message(schedule)
+
+    assert "스태픽스은 이번에 찾은 후보에 없어서" in message
+    assert "북촌한옥마을은 이번 일정에 넣지 못했어요 — 시간을 늘리거나" in message
+
+
 def test_schedule_message_reports_omitted_even_without_items() -> None:
     """일정을 아예 못 짠 경우에도 알린다 — 그 이유가 담아둔 장소와 무관하지 않을 수 있다."""
 

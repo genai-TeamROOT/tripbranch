@@ -536,6 +536,13 @@ export interface AgentDebugRequest {
    */
   travel_origin_override?: TravelOrigin | null;
   /*
+   * 보관함 하단 바의 "이 장소들로 일정 짜기" 클릭(SCHEDULE-12 카드 3).
+   * user_input에는 버튼 label을 채워 보내되 라우팅은 이 필드만으로 결정된다 —
+   * classify_intent()를 다시 태우지 않는다. 보관함이 비어 있으면 서버가
+   * 평소 경로로 폴백한다.
+   */
+  schedule_from_saved?: boolean;
+  /*
    * 개발자용 채팅(/dev-chat) 전용 디버그 스위치. true면 이번 턴은 폐점 후보도
    * 항상 채점에 포함한다 — no_data_closed 되묻기를 매번 누르지 않고 강제로
    * 켤 수 있다.
@@ -591,6 +598,36 @@ export interface ApiContextView {
   weather_expired: boolean;
 }
 
+/*
+ * 사용자가 추천 카드에서 명시적으로 담은 장소 1건(SCHEDULE-12).
+ * backend/app/state/schema.py의 SavedPlaceItem 계약을 그대로 옮긴다.
+ *
+ * recommended/rejected와 결정적으로 다른 점은 "누가 골랐는가"다 — 이건
+ * 사용자가 능동적으로 고른 것이라 다음 SCHEDULE 턴에서 다르게 취급된다.
+ */
+export interface SavedPlaceItem {
+  place_id: string;
+  name: string;
+  /** 어느 실행에서 노출된 것을 담았는지. 이력과 대조해 되짚을 때 쓴다. */
+  saved_from_run_id: string;
+  saved_at: string;
+  latitude?: number | null;
+  longitude?: number | null;
+}
+
+/*
+ * 담기/빼기 응답. 담긴 목록 전체를 항상 함께 반환하므로 낙관적으로 갱신한 뒤
+ * 이 값으로 확정하면 되고 별도 재조회가 필요 없다.
+ *
+ * changed는 이번 요청으로 실제 변화가 있었는지다. 같은 장소를 두 번 담거나
+ * 담기지 않은 장소를 빼는 요청은 오류가 아니라 changed=false다(멱등).
+ */
+export interface SavedPlacesResponse {
+  session_id: string;
+  items: SavedPlaceItem[];
+  changed: boolean;
+}
+
 export interface SessionContextResponse {
   session_id: string | null;
   session_exists: boolean;
@@ -601,6 +638,11 @@ export interface SessionContextResponse {
   last_recommended_run_id: string | null;
   last_intent: string | null;
   pending_clarification: string | null;
+  /*
+   * 사용자가 담은 장소(담은 순서). shown_place_ids와 달리 마지막 run으로
+   * 좁히지 않아 여러 턴에 걸쳐 담은 것이 전부 들어 있다.
+   */
+  saved_places: SavedPlaceItem[];
   user_conditions: UserConditions;
   api_context: ApiContextView;
   condition_version: number;

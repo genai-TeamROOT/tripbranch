@@ -213,6 +213,12 @@ class ScheduleResult(BaseModel):
     # 사용자에게 조용히 빠뜨리지 않고 말풍선으로 알리기 위한 값이라, 화면 문구를
     # 조립하는 쪽(response_composer)이 읽는다. 빈 리스트가 정상이다.
     omitted_saved_place_names: list[str] = Field(default_factory=list)
+    # 담겨 있었지만 이번 턴 후보 목록에 아예 없어서 편성 대상이 되지 못한 장소
+    # 이름 (SCHEDULE-12). omitted_saved_place_names와 사유가 정반대다 — 이쪽은
+    # 시간을 늘리거나 다른 곳을 빼도 들어가지 않는다. 후보 수집(C) 단계에서
+    # 안 잡힌 것이라 편성 조건을 바꿔도 결과가 같기 때문이다. 두 사유를 한
+    # 리스트에 섞으면 화면이 "시간을 늘려보라"는 잘못된 안내를 하게 된다.
+    absent_saved_place_names: list[str] = Field(default_factory=list)
     elapsed_ms: float = Field(
         ge=0,
         description="일정 편성 파이프라인 시작부터 응답 조립 완료까지의 총 처리시간(ms)",
@@ -870,6 +876,12 @@ class AgentRequest(BaseModel):
     # classify_intent()/extract_recommend_conditions()를 다시 태우지 않는다.
     # 직전 턴 조건을 그대로 재사용해 travel_origin만 이 값으로 덮어써 재실행한다.
     travel_origin_override: TravelOrigin | None = None
+    # 보관함 하단 바의 "이 장소들로 일정 짜기" 클릭(SCHEDULE-12 카드 3).
+    # user_input에는 버튼 label을 채워 보내되(채팅 이력 표시용) 라우팅은 이
+    # 필드만으로 결정한다 — clarification_choice/travel_origin_override와 같은
+    # 이유로 classify_intent()/extract_*_conditions()를 다시 태우지 않는다.
+    # 보관함이 비어 있으면 평소 경로로 폴백한다(런타임이 판정).
+    schedule_from_saved: bool = False
     # 개발자용 채팅(/dev-chat) 전용 디버그 스위치. True면 이번 턴은 폐점 후보도
     # 항상 채점에 포함한다 — no_data_closed 되묻기 자체를 재현/우회하려고 매번
     # 버튼을 누르지 않고 강제로 켤 수 있게 한다(실사용 피드백, 2026-08-13).
