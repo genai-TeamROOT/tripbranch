@@ -368,7 +368,7 @@ export function ChatPage() {
     await requestSend(text);
   }
 
-  const locationLabel = `${state.interpreted_conditions?.location_query ?? "종로구"} 근처`;
+  const locationLabel = state.interpreted_conditions?.location_query ?? "종로구";
 
   return (
     <main className="flex h-full flex-col">

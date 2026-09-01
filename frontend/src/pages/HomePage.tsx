@@ -234,7 +234,7 @@ export function HomePage() {
    * 아직 해석된 지명이 없으면(첫 진입) 실제 서비스 지원 지역인 "종로구"를
    * 기본값으로 쓴다 — 헤더에 위치 버튼이 항상 보여야 한다.
    */
-  const locationLabel = `${state.interpreted_conditions?.location_query ?? "종로구"} 근처`;
+  const locationLabel = state.interpreted_conditions?.location_query ?? "종로구";
 
   return (
     <main className="flex h-full flex-col overflow-y-auto">
