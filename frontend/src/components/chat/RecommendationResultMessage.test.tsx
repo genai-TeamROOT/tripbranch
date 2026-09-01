@@ -226,8 +226,7 @@ it("영어 화면에서는 추천 카드의 고정 문구와 전환 버튼을 �
   expect(
     screen.getByText("Recommended #1 based on weather, opening hours, and distance."),
   ).toBeInTheDocument();
-  expect(screen.getByText("Opening hours")).toBeInTheDocument();
-  expect(screen.getByText("View place details →")).toBeInTheDocument();
+  expect(screen.getByText("Preview")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Show more places" })).toBeInTheDocument();
   expect(
     screen.getByRole("button", { name: "View results based on Myeongdong" }),

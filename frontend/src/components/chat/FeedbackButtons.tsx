@@ -12,6 +12,7 @@
  * 선택적으로 덧붙일 수 있어, 집계 가능한 값과 정성 의견을 함께 남길 수 있다.
  */
 
+import { ThumbsDown, ThumbsUp } from "lucide-react";
 import { useState } from "react";
 import { sendFeedback } from "../../api/feedback";
 import type { FeedbackReasonCode, RecordFeedbackRequest } from "../../types";
@@ -38,25 +39,6 @@ const DISLIKE_REASONS: ReadonlyArray<{ code: FeedbackReasonCode; label: string }
   { code: "other", label: "기타" },
 ];
 
-/* 손모양(엄지) 아이콘. dislike는 같은 path를 180도 회전해 재사용한다 — 두 방향의
-   손모양이 점대칭이라 별도 path를 유지하지 않아도 된다. */
-function ThumbIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.5}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <path d="M6.633 10.5c.806 0 1.533-.446 2.031-1.08a9.041 9.041 0 0 1 2.861-2.4c.723-.384 1.35-.956 1.653-1.715a4.498 4.498 0 0 0 .322-1.672V3a.75.75 0 0 1 .75-.75A2.25 2.25 0 0 1 16.5 4.5c0 1.152-.26 2.243-.723 3.218-.266.558.107 1.282.725 1.282h3.126c1.026 0 1.945.694 2.054 1.715.045.422.068.85.068 1.285a11.95 11.95 0 0 1-2.649 7.521c-.388.482-.987.729-1.605.729H13.48c-.483 0-.964-.078-1.423-.23l-3.114-1.04a4.501 4.501 0 0 0-1.423-.23H5.904M14.25 9h2.25M5.904 18.75c.083.205.173.405.27.602.197.4-.078.898-.523.898h-.908c-.889 0-1.713-.518-1.972-1.368a12 12 0 0 1-.521-3.507c0-1.553.295-3.036.831-4.398C3.387 10.203 4.167 9.75 5 9.75h1.053c.472 0 .745.556.5.96a8.958 8.958 0 0 0-1.302 4.665c0 1.194.232 2.333.654 3.375Z" />
-    </svg>
-  );
-}
-
 export function FeedbackButtons({
   sessionId,
   runId,
@@ -75,11 +57,7 @@ export function FeedbackButtons({
   // 어느 턴의 피드백인지 연결할 수 없으니 버튼 자체를 숨긴다.
   if (!sessionId || !runId) return null;
 
-  async function submit(
-    rating: Rating,
-    reasonCode?: FeedbackReasonCode,
-    commentText?: string,
-  ) {
+  async function submit(rating: Rating, reasonCode?: FeedbackReasonCode, commentText?: string) {
     if (isSubmitting) return;
     setIsSubmitting(true);
     setError(null);
@@ -132,8 +110,8 @@ export function FeedbackButtons({
   }
 
   return (
-    <div className="flex flex-col items-end gap-1.5">
-      <div className="flex items-center gap-1">
+    <div className="flex flex-col items-start gap-1.5">
+      <div className="flex items-center gap-2">
         <button
           type="button"
           disabled={isSubmitting}
@@ -141,13 +119,11 @@ export function FeedbackButtons({
           aria-label="좋아요"
           title="좋아요"
           onClick={handleLikeClick}
-          className={`flex h-9 w-9 items-center justify-center rounded-full disabled:opacity-50 ${
-            selected === "like"
-              ? "bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900"
-              : "text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-500 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+          className={`flex h-7 w-7 items-center justify-center transition-colors disabled:opacity-50 ${
+            selected === "like" ? "text-brand" : "text-muted hover:text-brand"
           }`}
         >
-          <ThumbIcon className="h-5 w-5" />
+          <ThumbsUp size={16} />
         </button>
         <button
           type="button"
@@ -157,19 +133,17 @@ export function FeedbackButtons({
           aria-label="별로예요"
           title="별로예요"
           onClick={handleDislikeClick}
-          className={`flex h-9 w-9 items-center justify-center rounded-full disabled:opacity-50 ${
-            selected === "dislike" || isReasonOpen
-              ? "bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900"
-              : "text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-500 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+          className={`flex h-7 w-7 items-center justify-center transition-colors disabled:opacity-50 ${
+            selected === "dislike" || isReasonOpen ? "text-rust" : "text-muted hover:text-rust"
           }`}
         >
-          <ThumbIcon className="h-5 w-5 rotate-180" />
+          <ThumbsDown size={16} />
         </button>
       </div>
 
       {isReasonOpen && (
-        <div className="flex w-72 flex-col gap-2 rounded-md border border-gray-200 bg-white p-2 shadow-sm dark:border-gray-700 dark:bg-gray-900">
-          <p className="text-sm font-medium text-gray-700 dark:text-gray-200">어떤 점이 아쉬웠나요?</p>
+        <div className="flex w-72 flex-col gap-2 rounded-2xl bg-white p-3 shadow-card">
+          <p className="text-sm font-bold text-ink">어떤 점이 아쉬웠나요?</p>
           <div className="grid gap-1">
             {DISLIKE_REASONS.map((reason) => (
               <button
@@ -177,10 +151,10 @@ export function FeedbackButtons({
                 type="button"
                 disabled={isSubmitting}
                 onClick={() => handleReasonSelect(reason.code)}
-                className={`rounded px-2 py-1.5 text-left text-sm disabled:opacity-50 ${
+                className={`rounded-lg px-2 py-1.5 text-left text-sm transition-colors disabled:opacity-50 ${
                   selectedReason === reason.code
-                    ? "bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900"
-                    : "bg-gray-50 text-gray-600 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
+                    ? "bg-brand text-white"
+                    : "bg-chip text-ink hover:bg-sky-light"
                 }`}
               >
                 {reason.label}
@@ -197,14 +171,14 @@ export function FeedbackButtons({
                 disabled={isSubmitting}
                 placeholder="추가 의견이 있다면 알려주세요. (선택)"
                 rows={2}
-                className="w-full resize-none rounded border border-gray-200 bg-transparent p-1.5 text-sm text-gray-700 placeholder:text-gray-400 focus:outline-none disabled:opacity-50 dark:border-gray-700 dark:text-gray-200"
+                className="w-full resize-none rounded-lg border border-border bg-transparent p-1.5 text-sm text-ink placeholder:text-muted focus:outline-none disabled:opacity-50"
               />
               <div className="flex justify-end gap-1.5">
                 <button
                   type="button"
                   disabled={isSubmitting}
                   onClick={handleDislikeClick}
-                  className="rounded px-2 py-1 text-sm text-gray-500 hover:text-gray-800 disabled:opacity-50 dark:text-gray-400 dark:hover:text-gray-100"
+                  className="rounded-lg px-2 py-1 text-sm text-muted hover:text-ink disabled:opacity-50"
                 >
                   취소
                 </button>
@@ -212,7 +186,7 @@ export function FeedbackButtons({
                   type="button"
                   disabled={isSubmitting}
                   onClick={() => void submit("dislike", selectedReason, comment)}
-                  className="rounded-md bg-gray-900 px-2.5 py-1 text-sm font-medium text-white disabled:opacity-50 dark:bg-gray-100 dark:text-gray-900"
+                  className="rounded-full bg-brand px-3 py-1 text-sm font-semibold text-white transition-colors hover:bg-brand-deep disabled:opacity-50"
                 >
                   제출
                 </button>
@@ -222,7 +196,7 @@ export function FeedbackButtons({
         </div>
       )}
 
-      {error && <span className="text-xs text-red-500">{error}</span>}
+      {error && <span className="text-xs text-rust">{error}</span>}
     </div>
   );
 }

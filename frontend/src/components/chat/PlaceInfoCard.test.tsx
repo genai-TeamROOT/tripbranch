@@ -320,7 +320,7 @@ it("실시간 주차 카드에는 데이터 출처와 서울시 주차정보 포
   };
 
   renderWithTrip(<PlaceInfoCard card={parkingCard} />);
-  expect(screen.getByText("현재 535대 주차 가능")).toHaveClass("text-emerald-700");
+  expect(screen.getByText("현재 535대 주차 가능")).toHaveClass("text-calm");
   await user.click(screen.getByRole("button", { name: "경복궁 상세 보기" }));
 
   const dialog = within(screen.getByRole("dialog"));

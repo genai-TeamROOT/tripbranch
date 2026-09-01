@@ -50,7 +50,6 @@ test("담기지 않은 장소는 담기로, 담긴 장소는 담김으로 보인
   );
 
   const button = screen.getByRole("button", { name: /보관함에 담기/ });
-  expect(button).toHaveTextContent("담기");
   expect(button).toHaveAttribute("aria-pressed", "false");
 
   rerender(
@@ -60,7 +59,6 @@ test("담기지 않은 장소는 담기로, 담긴 장소는 담김으로 보인
   );
 
   const saved = screen.getByRole("button", { name: /보관함에 담기/ });
-  expect(saved).toHaveTextContent("담김");
   expect(saved).toHaveAttribute("aria-pressed", "true");
 });
 

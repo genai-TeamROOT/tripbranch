@@ -265,7 +265,7 @@ export function ChatMessageList({
             // 계속 탐색하므로 이 메시지의 index를 그대로 넘겨도 된다).
             const { userInput, assistantMessage, intent } = findTurnText(renderedMessages, index);
             return (
-              <div key={message.id} className="mr-auto flex w-full max-w-2xl justify-end">
+              <div key={message.id} className="mr-auto flex w-full px-1">
                 <FeedbackButtons
                   sessionId={message.sessionId}
                   runId={message.runId}

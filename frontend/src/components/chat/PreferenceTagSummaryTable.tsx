@@ -26,19 +26,19 @@ const TAG_COLORS: Record<string, string> = {
   food_exploration: "bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-200",
 };
 
-const FALLBACK_COLOR = "bg-gray-50 text-gray-600 dark:bg-gray-900/40 dark:text-gray-200";
+const FALLBACK_COLOR = "bg-chip text-muted";
 
 export function PreferenceTagSummaryTable({ items, language }: PreferenceTagSummaryTableProps) {
   const taggedItems = items.filter((item) => (item.preference_tags?.length ?? 0) > 0);
   if (taggedItems.length === 0) return null;
 
   return (
-    <section className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
-      <div className="bg-gray-50 px-3 py-2 dark:bg-gray-800/70">
-        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200">
+    <section className="overflow-hidden rounded-2xl border border-border bg-white shadow-resting">
+      <div className="px-3.5 py-2.5">
+        <h3 className="text-sm font-bold text-ink">
           {language === "en" ? "Visitor preference tags by place" : "장소별 방문자 취향 태그"}
         </h3>
-        <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+        <p className="mt-0.5 text-xs text-muted">
           {language === "en"
             ? "These tags were mentioned across about 30 Naver Blog posts and Google Maps reviews."
             : "네이버 블로그 후기와 구글 지도 리뷰 약 30건에서 언급된 태그입니다."}
@@ -50,22 +50,21 @@ export function PreferenceTagSummaryTable({ items, language }: PreferenceTagSumm
           language === "en" ? "Visitor preference tags by place" : "장소별 방문자 취향 태그"
         }
       >
-        <thead className="border-y border-gray-200 bg-white text-xs text-gray-500 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-400">
+        <thead className="border-y border-border text-xs text-muted">
           <tr>
-            <th className="w-1/3 px-3 py-2 font-medium">{language === "en" ? "Place" : "장소"}</th>
-            <th className="px-3 py-2 font-medium">{language === "en" ? "Tags" : "취향 태그"}</th>
+            <th className="w-1/3 px-3.5 py-2 font-medium">
+              {language === "en" ? "Place" : "장소"}
+            </th>
+            <th className="px-3.5 py-2 font-medium">{language === "en" ? "Tags" : "취향 태그"}</th>
           </tr>
         </thead>
-        <tbody className="divide-y divide-gray-100 bg-white dark:divide-gray-800 dark:bg-gray-900">
+        <tbody className="divide-y divide-border">
           {taggedItems.map((item) => (
             <tr key={item.place_id}>
-              <th
-                scope="row"
-                className="px-3 py-2.5 align-top text-sm font-medium text-gray-800 dark:text-gray-200"
-              >
+              <th scope="row" className="px-3.5 py-2.5 align-top text-sm font-medium text-ink">
                 {item.name}
               </th>
-              <td className="px-3 py-2">
+              <td className="px-3.5 py-2">
                 <div className="flex flex-wrap gap-1.5">
                   {item.preference_tags?.slice(0, 3).map((tag) => (
                     <span
