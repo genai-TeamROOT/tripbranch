@@ -236,6 +236,10 @@ class _CountingRecommendationProvider:
     def __init__(self) -> None:
         self.call_count = 0
         self.last_limit: int | None = None
+        # 호출마다의 limit. 보관함 주입이 상한을 부풀리지 않는지 보려면 마지막
+        # 값만으로는 부족하다 — 자르기에서 빠진 것을 덧붙이는 호출이 뒤에 한 번
+        # 더 붙기 때문이다.
+        self.limits: list[int] = []
         self._inner = FakeRecommendationProvider()
 
     async def recommend(
@@ -243,6 +247,7 @@ class _CountingRecommendationProvider:
     ):
         self.call_count += 1
         self.last_limit = limit
+        self.limits.append(limit)
         return await self._inner.recommend(
             conditions, context, excluded_place_ids, limit, ignore_operating_hours
         )
@@ -1325,7 +1330,9 @@ class _FakePlaceDetailsRepository:
         return {cid: self._details[cid] for cid in ids if cid in self._details}
 
 
-def _stored_detail(place_id: str) -> StoredPlaceDetail:
+def _stored_detail(
+    place_id: str, *, latitude: float = 37.5796, longitude: float = 126.9770
+) -> StoredPlaceDetail:
     return StoredPlaceDetail(
         content_id=place_id,
         content_type_id="12",
@@ -1336,8 +1343,8 @@ def _stored_detail(place_id: str) -> StoredPlaceDetail:
         detail_fetch_status="success",
         detail_fetched_at=None,
         source_modified_at=None,
-        latitude=37.5796,
-        longitude=126.9770,
+        latitude=latitude,
+        longitude=longitude,
     )
 
 
@@ -1428,16 +1435,21 @@ async def test_saved_place_missing_from_candidates_is_injected() -> None:
         "픽스처가 의도한 상황을 못 만들었다 — 마지막 C 응답에 그 장소가 그대로 있다"
     )
     assert place_id in repository.requested_ids, "상세 조회 자체가 시도되지 않았다"
-    assert providers["recommendation_provider"].last_limit == (
-        agent_runtime_module.SCHEDULE_RECOMMENDATION_LIMIT + 1
-    ), "주입은 됐는데 상한이 안 올라갔다"
     # 후보에 들어갔으므로 "후보에 아예 없었다"는 안내는 나가지 않는다.
     assert response.schedule.absent_saved_place_names == []
 
 
 @pytest.mark.asyncio
-async def test_injected_saved_place_raises_the_scoring_limit() -> None:
-    """주입한 만큼 상한을 올린다 — 넣어놓고 상위 N에서 잘리면 헛수고다."""
+async def test_injected_saved_place_does_not_inflate_the_scoring_limit() -> None:
+    """주입했다고 채점 상한을 올리지 않는다.
+
+    한때 상한을 주입 개수만큼 올려서 자르기를 피하려 했는데 두 가지로 틀렸다.
+    후보 풀이 상한보다 크면 방어가 안 되고(그때는 하위권에 깔릴 뿐이다),
+    `_score_with_measured_routes()`의 `shortlist_limit`이 상한을 따라가므로
+    도보 실측 조회까지 함께 늘어난다 — D-113이 줄여놓은 호출 수가 되돌아간다.
+
+    지금은 상한을 그대로 두고, 자르기에서 빠진 것만 좁혀 다시 채점해 붙인다.
+    """
 
     store = InMemoryStateStore()
     providers = _providers()
@@ -1446,10 +1458,9 @@ async def test_injected_saved_place_raises_the_scoring_limit() -> None:
 
     session_id, place_id = await _recommend_then_save(store, providers)
     tool_provider.drop_place_id = place_id
-    baseline_limit = providers["recommendation_provider"].last_limit
     repository = _FakePlaceDetailsRepository({place_id: _stored_detail(place_id)})
 
-    await run_agent_flow(
+    response = await run_agent_flow(
         AgentRequest(
             user_input="이 장소들로 일정 짜기",
             session_id=session_id,
@@ -1461,11 +1472,15 @@ async def test_injected_saved_place_raises_the_scoring_limit() -> None:
         **providers,
     )
 
-    assert baseline_limit is not None
-    assert (
-        providers["recommendation_provider"].last_limit
-        == agent_runtime_module.SCHEDULE_RECOMMENDATION_LIMIT + 1
+    limits = providers["recommendation_provider"].limits
+    assert agent_runtime_module.SCHEDULE_RECOMMENDATION_LIMIT in limits, (
+        "SCHEDULE 채점이 일어나지 않았다"
     )
+    assert agent_runtime_module.SCHEDULE_RECOMMENDATION_LIMIT + 1 not in limits, (
+        "상한을 주입 개수만큼 올리면 실측 조회 대상까지 함께 커진다"
+    )
+    assert response.schedule is not None
+    assert response.schedule.absent_saved_place_names == []
 
 
 @pytest.mark.asyncio
@@ -4435,6 +4450,118 @@ async def test_staged_recommendation_passes_only_eligible_routes_to_d_after_refi
     assert requested_ids == ["refill-0", "refill-10", *[f"refill-{i}" for i in range(20, 25)]]
     assert [route.place_id for route in recommendation_provider.travel_routes] == requested_ids
     assert "refill-1" not in requested_ids
+
+
+class _DroppingRefillToolProvider(_RefillPlacesToolProvider):
+    """후보를 넉넉히 주면서 지정한 place_id만 응답에서 뺀다.
+
+    `_DroppingToolProvider`와 목적은 같지만 후보 풀이 자르기 상한보다 커야 하는
+    시나리오라 이쪽을 쓴다 — 주입한 장소가 상위 N에서 잘리는지 보려면 풀이 상한
+    이하로는 안 된다.
+    """
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.drop_place_id: str | None = None
+
+    async def fetch_context(self, request):
+        response = await super().fetch_context(request)
+        if self.drop_place_id is None or response.context is None:
+            return response
+        places = response.context.places
+        if places is None or places.data is None:
+            return response
+        kept = [place for place in places.data if place.place_id != self.drop_place_id]
+        return response.model_copy(
+            update={
+                "context": response.context.model_copy(
+                    update={"places": places.model_copy(update={"data": kept})}
+                )
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_injected_saved_place_survives_the_top_n_cut() -> None:
+    """후보 풀이 자르기 상한보다 커도 주입한 보관함 장소는 살아남아야 한다.
+
+    실사용 재현(2026-09-01): 인사동에서 담은 2곳으로 홍대 일정을 요청하니 둘 다
+    "이번에 찾은 후보에 없어서"로 빠졌다. Supabase에 행이 있고 영업 중이었으므로
+    주입 자체는 성공했고, 검색 반경(2km) 밖이라 거리 점수가 0이 되어 점수순
+    자르기(`recommendation_pipeline.py`의 `ranked[:recommendation_limit]`)에서
+    잘린 것이다.
+
+    주입 개수만큼 상한을 올리는 방어는 후보 풀이 딱 그 크기일 때만 유효하다.
+    하필 보관함의 주력 유스케이스가 구 간 이동(= 반경 밖)이라, 거리 점수가 0으로
+    깔리는 보관함 장소가 가장 확실하게 잘린다.
+
+    기존 주입 테스트들이 이걸 못 잡은 이유는 후보 더블이 몇 곳만 돌려줘서 풀이
+    상한보다 작았기 때문이다 — 자르기 자체가 일어나지 않았다.
+    """
+    store = InMemoryStateStore()
+    tool_provider = _DroppingRefillToolProvider(
+        total=20, page_size=20, open_indexes=set(range(20))
+    )
+    providers = {
+        "llm": _LLMProviderWithGeneralAnswer(),
+        "tool_provider": tool_provider,
+        "recommendation_provider": RealRecommendationProvider(),
+        "enrichment_provider": _CountingEnrichmentProvider(),
+    }
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+    assert first.recommendations is not None
+    shown = [
+        *first.recommendations.recommendations,
+        *first.recommendations.unverified_recommendations,
+    ]
+    assert shown
+    session_id = first.state.session_id
+    place_id = shown[0].place_id
+    state_service.save_place(
+        session_id,
+        state_service.SavePlaceRequest(place_id=place_id),
+        store=store,
+    )
+
+    # 담은 다음 턴 검색이 그 장소를 다시 못 물어온다(반경 밖).
+    tool_provider.drop_place_id = place_id
+    # 상세는 남아 있고 좌표만 검색 중심점에서 약 5km 떨어져 있다 — 종로에서 담고
+    # 홍대에서 일정을 짜는 상황 그대로다.
+    repository = _FakePlaceDetailsRepository(
+        {place_id: _stored_detail(place_id, latitude=37.5563, longitude=126.9236)}
+    )
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="이 장소들로 일정 짜기",
+            session_id=session_id,
+            device_location=DEVICE_LOCATION,
+            schedule_from_saved=True,
+        ),
+        store=store,
+        place_details_repository=repository,
+        **providers,
+    )
+
+    assert response.schedule is not None
+    # 진단 순서: 상황을 만들었는가 → 주입을 시도했는가 → 살아남았는가.
+    assert place_id not in tool_provider.requests[-1].excluded_place_ids, (
+        "보관함 장소가 제외 목록에 남아 있다 — _revivable_place_ids()가 안 돌았다"
+    )
+    assert place_id in repository.requested_ids, "상세 조회 자체가 시도되지 않았다"
+    assert response.schedule.absent_saved_place_names == [], (
+        "주입은 됐는데 상위 N 자르기에서 잘렸다 — 상한을 주입 개수만큼 올리는 것으로는 "
+        "후보 풀이 상한보다 클 때 방어가 되지 않는다"
+    )
 
 
 class _LLMProviderWithTransport(_LLMProviderWithGeneralAnswer):

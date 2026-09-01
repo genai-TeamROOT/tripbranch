@@ -1169,6 +1169,54 @@ def _context_place_ids(context: RecommendationContext) -> list[str]:
 _MEASURED_ROUTE_CANDIDATE_LIMIT = 10
 
 
+def _missing_place_ids(
+    recommendations: RecommendationResponse, place_ids: Sequence[str]
+) -> list[str]:
+    """채점 결과에 들어가지 못한 place_id만 순서대로 돌려준다."""
+
+    if not place_ids:
+        return []
+    present = {
+        item.place_id
+        for item in (
+            *recommendations.recommendations,
+            *recommendations.unverified_recommendations,
+        )
+    }
+    return [place_id for place_id in place_ids if place_id not in present]
+
+
+def _with_pinned_recommendations(
+    recommendations: RecommendationResponse,
+    pinned: RecommendationResponse,
+    keep_place_ids: Sequence[str],
+) -> RecommendationResponse:
+    """점수순 자르기에서 빠진 보관함 장소를 결과 뒤에 덧붙인다.
+
+    **왜 뒤에 붙이나.** 순위를 왜곡하지 않기 위해서다. 이 목록의 순서는 화면
+    노출 순서이자 편성 후보 순서이고, 보관함 장소는 검색 반경 밖이라 점수가
+    낮은 것이 정상이다. 배치는 `must_include_place_ids`가 보장하므로 여기서
+    순위를 올려줄 이유가 없다 — 필요한 것은 "후보 목록에 있기"뿐이다.
+
+    `excluded_all_closed`·`excluded_closed_place_ids`는 본 채점 결과를 그대로
+    둔다. 그 둘은 이번 회차 하드 필터 판정의 기록이라 덧붙이기와 무관하다.
+    """
+
+    keep = set(keep_place_ids)
+    added = [
+        item
+        for item in (*pinned.recommendations, *pinned.unverified_recommendations)
+        if item.place_id in keep
+    ]
+    if not added:
+        return recommendations
+    return recommendations.model_copy(
+        update={
+            "recommendations": [*recommendations.recommendations, *added],
+        }
+    )
+
+
 def _narrow_prepared(
     prepared: PreparedRecommendationResult, place_ids: Sequence[str]
 ) -> PreparedRecommendationResult:
@@ -3527,9 +3575,16 @@ async def _score_recommendations(
         "조건에 맞게 장소 순위를 계산하고 있어요.",
     )
     scoring_started_at = time.monotonic()
-    # 주입한 보관함 장소 수. 상한을 이만큼 올려야 D의 상위 N 자르기에서 다시
-    # 빠지지 않는다 — 주입해놓고 잘리면 헛수고다.
-    injected_saved_count = 0
+    # 주입한 보관함 장소 id. 채점이 끝난 뒤 상위 N 자르기에서 빠졌는지 확인해
+    # 다시 붙이는 데 쓴다(아래 두 분기).
+    #
+    # 처음에는 상한을 주입 개수만큼 올리는 것으로 막으려 했는데 방어가 되지
+    # 않는다 — 후보 풀이 상한보다 크면 주입분은 그냥 하위권에 깔린다. 하필
+    # 보관함의 주력 유스케이스가 구 간 이동(= 검색 반경 밖)이라 거리 점수가
+    # 0으로 깔려, 가장 확실하게 잘리는 것이 보관함 장소다. 게다가 상한을 올리면
+    # _score_with_measured_routes()의 shortlist_limit이 같이 커져 도보 실측
+    # 조회까지 늘어난다(D-113이 줄여놓은 것을 되돌린다).
+    injected_saved_ids: list[str] = []
     if isinstance(recommendation_provider, StagedRecommendationProvider):
         # 같은 실행의 모든 prepare가 동일한 운영시간 기준을 사용해야 한다. B 세션에는
         # 저장하지 않고 이 실행 동안만 고정한다.
@@ -3666,7 +3721,9 @@ async def _score_recommendations(
                 )
             )
             tool_context = _merge_recommendation_context_places(tool_context, saved_context)
-            injected_saved_count = len(saved_context.places.data or [])
+            injected_saved_ids = [
+                place.place_id for place in (saved_context.places.data or [])
+            ]
 
         merged_prepared = recommendation_provider.merge_prepared(prepared_batches)
         recommendations = await _score_with_measured_routes(
@@ -3675,8 +3732,20 @@ async def _score_recommendations(
             merged_prepared,
             tool_context=tool_context,
             travel_route_tool=travel_route_tool,
-            recommendation_limit=recommendation_limit + injected_saved_count,
+            recommendation_limit=recommendation_limit,
         )
+        # 자르기에서 빠진 보관함 장소만 좁혀서 한 번 더 채점해 붙인다. 점수를
+        # 지어내지 않는 것이 핵심이다 — D가 같은 공식으로 실제로 매긴다.
+        cut_saved_ids = _missing_place_ids(recommendations, injected_saved_ids)
+        if cut_saved_ids:
+            pinned = await recommendation_provider.score_prepared(
+                agent_conditions,
+                _narrow_prepared(merged_prepared, cut_saved_ids),
+                limit=len(cut_saved_ids),
+            )
+            recommendations = _with_pinned_recommendations(
+                recommendations, pinned, cut_saved_ids
+            )
     else:
         saved_context = await _saved_places_context(
             tool_context,
@@ -3685,14 +3754,31 @@ async def _score_recommendations(
         )
         if saved_context is not None:
             tool_context = _merge_recommendation_context_places(tool_context, saved_context)
-            injected_saved_count = len(saved_context.places.data or [])
+            injected_saved_ids = [
+                place.place_id for place in (saved_context.places.data or [])
+            ]
         recommendations = await recommendation_provider.recommend(
             agent_conditions,
             tool_context,
             excluded_place_ids,
-            limit=recommendation_limit + injected_saved_count,
+            limit=recommendation_limit,
             ignore_operating_hours=effective_ignore_operating_hours,
         )
+        # staged 분기와 같은 이유로 자르기에서 빠진 것만 다시 붙인다. 이쪽은
+        # prepare 결과가 없어 좁힐 대상이 Context뿐이라 주입 Context를 그대로
+        # 다시 채점하고, 실제로 빠졌던 id만 골라 붙인다.
+        cut_saved_ids = _missing_place_ids(recommendations, injected_saved_ids)
+        if cut_saved_ids and saved_context is not None:
+            pinned = await recommendation_provider.recommend(
+                agent_conditions,
+                saved_context,
+                [],
+                limit=len(cut_saved_ids),
+                ignore_operating_hours=effective_ignore_operating_hours,
+            )
+            recommendations = _with_pinned_recommendations(
+                recommendations, pinned, cut_saved_ids
+            )
     _record_trace_safely(
         session_id=state_response.session_id,
         run_id=state_response.run_id,
