@@ -182,7 +182,9 @@ def _enrich_taste_query(conditions: UserConditions) -> str:
     `test_results/taste_companion_cofill.csv`,
     `scripts/measure_taste_condition_dominance.py --scope companion`.
     """
-    usable_tags = [tag for tag in conditions.place_tags if tag not in _TASTE_QUERY_EXCLUDED_TAGS]
+    usable_tags = [
+        tag for tag in conditions.place_tags if tag not in _TASTE_QUERY_EXCLUDED_TAGS
+    ]
     if usable_tags:
         return f"{conditions.taste_query} {' '.join(usable_tags)}"
     type_labels = [
@@ -376,7 +378,10 @@ class RealRecommendationProvider:
         if self._place_evidence is None or not conditions.taste_query:
             return None
 
-        place_ids = [item.candidate.place_id for item in prepared.preparation.eligible_candidates]
+        place_ids = [
+            item.candidate.place_id
+            for item in prepared.preparation.eligible_candidates
+        ]
         if not place_ids:
             return None
 
