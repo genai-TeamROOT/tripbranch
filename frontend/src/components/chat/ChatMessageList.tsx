@@ -125,7 +125,6 @@ interface ChatMessageListProps {
   messages: ChatMessage[];
   showDebug: boolean;
   isLoading: boolean;
-  hasDeviceLocation: boolean;
   deviceLocation: string | null;
   isDeveloperView?: boolean;
   onRequestMore: () => void;
@@ -146,7 +145,6 @@ export function ChatMessageList({
   messages,
   showDebug,
   isLoading,
-  hasDeviceLocation,
   deviceLocation,
   isDeveloperView = false,
   onRequestMore,
@@ -341,7 +339,6 @@ export function ChatMessageList({
       )}
       {isLoading && (
         <AgentProgressMessage
-          hasDeviceLocation={hasDeviceLocation}
           schedulePlanning={progress?.stage === "scheduling"}
           progress={progress}
           language={language}

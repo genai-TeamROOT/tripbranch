@@ -384,8 +384,8 @@ test("main recommendation requests location permission before opening chat", asy
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
 
   expect(navigator.geolocation.getCurrentPosition).toHaveBeenCalledTimes(1);
-  expect(await screen.findByText("요청 의도와 조건 파악 중")).toBeInTheDocument();
-  expect(screen.getByText("기기 위치 확인 완료")).toBeInTheDocument();
+  // 응답을 기다리는 동안엔 안내 문구 한 줄만 뜬다(AgentProgressMessage).
+  expect(await screen.findByRole("status")).toHaveTextContent(/중…$/);
 
   resolveFetch?.(streamResponse());
   expect(await screen.findByText("테스트 박물관")).toBeInTheDocument();
