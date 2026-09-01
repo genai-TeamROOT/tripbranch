@@ -11,6 +11,7 @@
  * TODO: 스트리밍 응답이 생기면 메시지 append 경로를 확장한다.
  */
 
+import { ChevronDown, ChevronUp } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
@@ -19,6 +20,7 @@ import { ChatComposer } from "../components/chat/ChatComposer";
 import { ChatMessageList } from "../components/chat/ChatMessageList";
 import { SavedPlacesBar } from "../components/chat/SavedPlacesBar";
 import { useAutoScrollToBottom } from "../hooks/useAutoScrollToBottom";
+import { useScrollEdgeButton } from "../hooks/useScrollEdgeButton";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { AppHeader } from "../components/layout/AppHeader";
 import { usePhotoSimilarSearch } from "../hooks/usePhotoSimilarSearch";
@@ -81,6 +83,8 @@ export function ChatPage() {
   const hasConversation = state.messages.length > 0;
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   useAutoScrollToBottom(messagesContainerRef, isLoading);
+  const { isNearTop, isScrollable, scrollToTop, scrollToBottom } =
+    useScrollEdgeButton(messagesContainerRef);
   const [pendingLocationRefresh, setPendingLocationRefresh] =
     useState<PendingLocationRefresh | null>(null);
 
@@ -441,6 +445,19 @@ export function ChatPage() {
           language={state.language}
         />
       </div>
+
+      {isScrollable && (
+        <div className="pointer-events-none sticky bottom-20 z-30 mx-auto flex w-full max-w-2xl justify-end px-4 md:bottom-24">
+          <button
+            type="button"
+            onClick={isNearTop ? scrollToBottom : scrollToTop}
+            aria-label={isNearTop ? "대화 맨 아래로 이동" : "대화 맨 위로 이동"}
+            className="pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full border border-white bg-white/60 text-ink shadow-resting backdrop-blur-md transition-colors hover:bg-white/80"
+          >
+            {isNearTop ? <ChevronDown size={18} /> : <ChevronUp size={18} />}
+          </button>
+        </div>
+      )}
 
       <ChatComposer
         disabled={isLoading}

@@ -16,7 +16,7 @@ import { useEffect, useRef } from "react";
 
 const NEAR_BOTTOM_THRESHOLD_PX = 80;
 
-function findScrollableAncestor(element: HTMLElement | null): HTMLElement | null {
+export function findScrollableAncestor(element: HTMLElement | null): HTMLElement | null {
   let node = element?.parentElement ?? null;
   while (node) {
     const overflowY = getComputedStyle(node).overflowY;
@@ -26,12 +26,12 @@ function findScrollableAncestor(element: HTMLElement | null): HTMLElement | null
   return null;
 }
 
-function scrollToBottom(scroller: HTMLElement) {
+export function smoothScrollTo(scroller: HTMLElement, top: number) {
   if (typeof scroller.scrollTo === "function") {
-    scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
+    scroller.scrollTo({ top, behavior: "smooth" });
     return;
   }
-  scroller.scrollTop = scroller.scrollHeight;
+  scroller.scrollTop = top;
 }
 
 export function useAutoScrollToBottom(
@@ -64,7 +64,7 @@ export function useAutoScrollToBottom(
 
     const observer = new ResizeObserver(() => {
       if (!shouldFollowRef.current) return;
-      scrollToBottom(scroller);
+      smoothScrollTo(scroller, scroller.scrollHeight);
     });
     observer.observe(container);
     return () => observer.disconnect();
