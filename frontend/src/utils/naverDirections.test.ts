@@ -86,17 +86,17 @@ describe("openNaverDirections (데스크톱)", () => {
 });
 
 describe("openNaverMapSearch", () => {
-  it("주소와 주차장 이름으로 네이버지도 검색을 연다", () => {
+  it("주소만으로 네이버지도 검색을 연다 — 이름을 함께 넘기면 검색이 안 된다(2026-09-02 실사용)", () => {
     const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
 
-    expect(openNaverMapSearch("서울특별시 종로구 세종대로 189", "세종로 공영주차장")).toBe(true);
+    expect(openNaverMapSearch("서울특별시 종로구 세종대로 189")).toBe(true);
     expect(openSpy).toHaveBeenCalledWith(
       expect.stringContaining("map.naver.com/p/search/"),
       "_blank",
       "noopener",
     );
-    expect(openSpy.mock.calls[0]?.[0]).toContain(
-      encodeURIComponent("세종로 공영주차장 서울특별시 종로구 세종대로 189"),
+    expect(openSpy.mock.calls[0]?.[0]).toBe(
+      `https://map.naver.com/p/search/${encodeURIComponent("서울특별시 종로구 세종대로 189")}`,
     );
     openSpy.mockRestore();
   });
@@ -104,7 +104,7 @@ describe("openNaverMapSearch", () => {
   it("주소가 없으면 지도를 열지 않는다", () => {
     const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
 
-    expect(openNaverMapSearch("   ", "주차장")).toBe(false);
+    expect(openNaverMapSearch("   ")).toBe(false);
     expect(openSpy).not.toHaveBeenCalled();
     openSpy.mockRestore();
   });

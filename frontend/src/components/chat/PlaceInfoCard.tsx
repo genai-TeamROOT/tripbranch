@@ -105,24 +105,100 @@ function isRealtimeParkingCard(card: InfoPlaceCardData): boolean {
   return ["realtime_parking", "realtime_public_parking"].includes(card.question_type);
 }
 
+type ParkingLotType = "공영" | "민영" | "기타";
+
+const PARKING_TYPE_BADGE_STYLE: Record<ParkingLotType, string> = {
+  공영: "bg-sky-light text-brand-deep",
+  민영: "bg-gold-tint text-[#8a5a12]",
+  기타: "bg-chip text-muted",
+};
+
+// 서버는 이름 앞에 "[공영]"/"[민영]"을 붙여 보낸다(기타는 접두어 없음). 뱃지로
+// 따로 떼어 보여주는 편이 대괄호 텍스트보다 한눈에 들어온다.
+function splitParkingTitle(title: string): { type: ParkingLotType; name: string } {
+  const matched = title.match(/^\[(공영|민영)\]\s*(.+)$/);
+  if (!matched) return { type: "기타", name: title };
+  return { type: matched[1] as ParkingLotType, name: matched[2] };
+}
+
+// _format_realtime_parking()이 만드는 "상태(거리, 총 대수, 요금)" 형태를 상태 칩과
+// 메타 태그들로 나눈다. 괄호가 없으면(형식이 안 맞으면) 값 전체를 상태로 둔다.
+function parseParkingValue(value: string): { status: string; available: boolean; meta: string[] } {
+  const matched = value.match(/^(.+?)\(([^)]*)\)\s*$/);
+  if (!matched) return { status: value, available: false, meta: [] };
+  const status = matched[1].trim();
+  // 백엔드가 ", "로 이어 붙인다(_format_realtime_parking). 콤마 하나로 나누면
+  // "약 1,076m"처럼 숫자 자체에 천 단위 콤마가 있는 항목이 잘린다.
+  const meta = matched[2]
+    .split(", ")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const available = /^현재\s+[\d,]+대\s+주차\s*(가능|중)/.test(status);
+  return { status, available, meta };
+}
+
+// 근처 주차장 응답은 최대 9곳까지 나와, 이름 줄 + 값 줄로 다 펼치면 세로로 너무
+// 길어진다. 뱃지·상태 칩으로 밀도를 낮추고, 거리·대수·요금은 아래 한 줄에
+// 작은 태그로 모은다.
 function RealtimeParkingSummary({ title, value }: { title: string; value: string }) {
-  const matched = value.match(/^(현재\s+[\d,]+대\s+주차 가능)(.*)$/);
+  const { type, name } = splitParkingTitle(title);
+  const { status, available, meta } = parseParkingValue(value);
   return (
-    <article className="rounded-xl bg-chip px-3 py-2.5">
-      <h3 className="truncate text-sm font-bold text-ink" title={title}>
-        {title}
-      </h3>
-      <p className="mt-1 text-sm text-muted">
-        {matched ? (
-          <>
-            <strong className="font-semibold text-calm">{matched[1]}</strong>
-            {matched[2]}
-          </>
-        ) : (
-          value
-        )}
-      </p>
+    <article className="min-w-0 rounded-xl border border-border bg-white px-3 py-2.5">
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span
+            className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${PARKING_TYPE_BADGE_STYLE[type]}`}
+          >
+            {type}
+          </span>
+          <span className="min-w-0 truncate text-sm font-bold text-ink" title={name}>
+            {name}
+          </span>
+        </div>
+        <span
+          className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ${
+            available ? "bg-emerald-50 text-emerald-700" : "bg-chip text-muted"
+          }`}
+        >
+          {status}
+        </span>
+      </div>
+      {meta.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap gap-x-2.5 gap-y-1 pl-[calc(1.75rem+0.375rem)] text-xs text-muted">
+          {meta.map((part) => (
+            <span key={part}>{part}</span>
+          ))}
+        </div>
+      )}
     </article>
+  );
+}
+
+// 기본으로 보여줄 주차장 수. 근처 주차장(최대 9곳)·공영주차장(최대 5곳) 응답이
+// 전부 펼쳐지면 카드가 답변 흐름을 밀어내므로, 나머지는 펼쳐야 보이게 접는다.
+const REALTIME_PARKING_COLLAPSED_COUNT = 3;
+
+function RealtimeParkingList({ answers }: { answers: [string, string][] }) {
+  const [expanded, setExpanded] = useState(false);
+  const visible = expanded ? answers : answers.slice(0, REALTIME_PARKING_COLLAPSED_COUNT);
+  const hiddenCount = answers.length - visible.length;
+  return (
+    <section className="grid gap-2 px-4 py-3">
+      {visible.map(([title, value]) => (
+        <RealtimeParkingSummary key={title} title={title} value={value} />
+      ))}
+      {hiddenCount > 0 && (
+        <button
+          type="button"
+          className="flex items-center justify-center gap-1 rounded-lg py-1.5 text-xs font-semibold text-brand-deep hover:bg-chip"
+          onClick={() => setExpanded(true)}
+        >
+          {hiddenCount}곳 더 보기
+          <span aria-hidden="true">⌄</span>
+        </button>
+      )}
+    </section>
   );
 }
 
@@ -161,11 +237,7 @@ export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
       </button>
 
       {isRealtimeParkingCard(card) && answers.length > 0 ? (
-        <section className="grid gap-2 px-4 py-3">
-          {answers.map(([title, value]) => (
-            <RealtimeParkingSummary key={title} title={title} value={value} />
-          ))}
-        </section>
+        <RealtimeParkingList answers={answers} />
       ) : answers.length > 0 ? (
         <dl className="px-4 py-3 text-sm">
           {answers.map(([key, value]) => (

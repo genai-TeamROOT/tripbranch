@@ -47,6 +47,7 @@ from app.providers.driving_route import FakeDrivingRouteProvider
 from app.providers.kakao_transit_route import FakeTransitRouteProvider
 from app.providers.stub import FakeLLMProvider
 from app.providers.walking_route import FakeWalkingRouteProvider
+from app.schedule.schemas import SchedulePlanningRequest
 from app.schemas import (
     AgentRequest,
     CompareCriteria,
@@ -2870,6 +2871,35 @@ async def test_info_operating_hours_question_type_calls_tool_provider() -> None:
     assert response.info_place_card is not None
     assert response.info_place_card.answer_fields["operating_hours"] == "09:00~18:00"
     assert response.info_place_card.overview == "조선 왕조의 법궁으로 1395년에 창건된 궁궐이다."
+
+
+@pytest.mark.asyncio
+async def test_info_realtime_parking_pairs_with_public_parking_card() -> None:
+    """근처 주차장을 물으면 공영주차장도 이어서 조회해 둘째 카드로 붙인다(TP-115).
+
+    근처(area 응답)는 목록이 짧고 실시간 대수가 잘 안 보이는 반면, 공영(구 단위)은
+    목록이 길지만 멀 수 있다 — 하나만 보여주면 사용자는 다른 절반을 다시 물어야
+    했다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 주차할 곳 있어?",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.llm_output.info.question_type == "realtime_parking"
+    # 근처(1회) + 공영(짝, 1회) = 2번 C를 거친다.
+    assert providers["tool_provider"].info_call_count == 2
+    assert response.info_place_card is not None
+    assert response.secondary_info_place_card is not None
+    assert "공영주차장" in response.message
 
 
 @pytest.mark.asyncio
@@ -6625,3 +6655,125 @@ def test_pairwise_distances_prefer_context_over_snapshot() -> None:
     )
 
     assert from_context == with_bogus_fallback
+
+
+@pytest.mark.parametrize("use_graph", [False, True])
+@pytest.mark.asyncio
+async def test_refilled_candidates_reach_schedule_with_coordinates(
+    refill_page_limit: int,
+    monkeypatch: pytest.MonkeyPatch,
+    use_graph: bool,
+) -> None:
+    """TP-198: 보충 조회로 들어온 후보의 좌표가 일정 편성까지 간다.
+
+    `_score_recommendations()`가 보충 후보를 `tool_context`에 합치고도 그 값을
+    돌려주지 않던 동안, 일정 편성은 **합치기 전** 컨텍스트를 받았다. 후보는 합친
+    목록에서 뽑고 좌표는 합치기 전 목록에서 찾는 상태라, 보충으로 들어온 장소만
+    `_build_pairwise_distances_km()`에서 조용히 건너뛰어졌다.
+
+    거리 근거가 빠져도 편성은 성공하므로 응답만 봐서는 드러나지 않는다. 그래서
+    planner에 실제로 넘어간 `pairwise_distances_km`를 직접 본다.
+
+    직접 호출과 그래프 두 경로를 다 돈다 — 합친 컨텍스트를 넘기는 자리가 경로마다
+    달라서(호출부 인자 / 노드 반환 키), 한쪽만 고치면 나머지가 조용히 남는다.
+    """
+    monkeypatch.setattr(settings, "use_langgraph_pipeline", use_graph)
+    captured: list[SchedulePlanningRequest] = []
+    real_plan_schedule = agent_runtime_module.plan_schedule
+
+    async def capturing_plan_schedule(request, llm, **kwargs):
+        captured.append(request)
+        return await real_plan_schedule(request, llm, **kwargs)
+
+    monkeypatch.setattr(agent_runtime_module, "plan_schedule", capturing_plan_schedule)
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처에서 반나절 코스 짜줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=_RefillPlacesToolProvider(),
+        recommendation_provider=RealRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=InMemoryStateStore(),
+    )
+
+    assert response.schedule is not None
+    [schedule_request] = captured
+
+    candidate_ids = [item.place_id for item in schedule_request.candidates]
+    # 첫 페이지는 refill-0~9다. 그 뒤 번호는 보충 조회로만 들어올 수 있다.
+    refilled_ids = [
+        place_id
+        for place_id in candidate_ids
+        if int(place_id.removeprefix("refill-")) >= _REFILL_PAGE_SIZE
+    ]
+    # 보충 후보가 하나도 안 뽑히면 이 테스트는 아무것도 검증하지 못한다.
+    assert refilled_ids
+
+    # 보충 후보가 낀 쌍이 거리 근거에 들어가 있어야 한다. 좌표를 못 찾으면 그
+    # 장소가 낀 쌍이 통째로 사라진다.
+    paired_ids = {
+        place_id for pair in schedule_request.pairwise_distances_km for place_id in pair
+    }
+    assert set(refilled_ids) <= paired_ids
+
+    # 좌표를 가진 후보끼리는 모든 쌍이 나온다 — 하나라도 빠지면 위 조건만으로는
+    # 놓치는 부분 누락이 있다는 뜻이다.
+    expected_pairs = len(candidate_ids) * (len(candidate_ids) - 1) // 2
+    assert len(schedule_request.pairwise_distances_km) == expected_pairs
+
+
+@pytest.mark.parametrize("use_graph", [False, True])
+@pytest.mark.asyncio
+async def test_refilled_candidates_are_recorded_with_coordinates(
+    refill_page_limit: int,
+    monkeypatch: pytest.MonkeyPatch,
+    use_graph: bool,
+) -> None:
+    """TP-198: 보충 조회로 들어온 후보의 좌표가 노출 이력에도 남는다(D-114 후속).
+
+    이 스냅샷은 다음 턴의 안전망이다 — 보관함에 담긴 장소가 그때 검색 반경 밖이면
+    C 응답에 아예 없어서, `_snapshot_coordinates()`가 꺼내는 이 값이 후보 간 거리를
+    구할 유일한 근거가 된다.
+
+    좌표가 안 남아도 그 턴은 멀쩡하고 **다음 턴에** 그 장소만 거리 근거 없이
+    등장하므로, 응답을 봐서는 드러나지 않는다.
+    """
+    monkeypatch.setattr(settings, "use_langgraph_pipeline", use_graph)
+    store = InMemoryStateStore()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=_RefillPlacesToolProvider(),
+        recommendation_provider=RealRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=store,
+    )
+
+    assert response.recommendations is not None
+    shown_ids = [
+        item.place_id
+        for item in (
+            *response.recommendations.recommendations,
+            *response.recommendations.unverified_recommendations,
+        )
+    ]
+    # 첫 페이지는 refill-0~9다. 그 뒤 번호는 보충 조회로만 들어올 수 있다.
+    refilled_ids = {
+        place_id
+        for place_id in shown_ids
+        if int(place_id.removeprefix("refill-")) >= _REFILL_PAGE_SIZE
+    }
+    # 보충 후보가 하나도 안 뽑히면 이 테스트는 아무것도 검증하지 못한다.
+    assert refilled_ids
+
+    session = get_session_context(response.state.session_id, store=store)
+    assert refilled_ids <= set(_snapshot_coordinates(session))

@@ -1230,6 +1230,10 @@ class AgentResponse(BaseModel):
     # INFO의 장소 상세 질의에서만 채운다. 질문 답변(fields)과 펼침 카드 정보는
     # 목적이 달라 InfoPlaceCard.answer_fields와 카드 상세를 분리해 보존한다.
     info_place_card: InfoPlaceCard | None = None
+    # 근처 주차장/공영주차장처럼 서로 짝인 실시간 주차 질문을 하나 물으면 다른 쪽도
+    # 이어서 조회해 둘째 카드로 붙인다(TP-115). info_place_card 바로 뒤, 두 번째
+    # 말풍선 묶음으로 순차 표시된다 — message_footnote와 달리 카드 자체다.
+    secondary_info_place_card: InfoPlaceCard | None = None
     message: str
     # message 본문에 넣기엔 긴 부가 정보 — 지금은 서비스 지역 밖 안내에서 지원 구
     # 목록을 여기 담는다. 화면은 이 필드가 있으면 본문 아래 작고 옅은 글씨로 보여준다

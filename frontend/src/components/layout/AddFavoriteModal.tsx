@@ -6,7 +6,7 @@
  * 근거: package_D/DESIGN_SYSTEM.md §6.15(모달 — 바텀시트형).
  */
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 
@@ -17,6 +17,7 @@ interface AddFavoriteModalProps {
 
 export function AddFavoriteModal({ onAdd, onClose }: AddFavoriteModalProps) {
   const [label, setLabel] = useState("");
+  const titleId = useId();
 
   function handleSubmit() {
     const trimmed = label.trim();
@@ -33,9 +34,16 @@ export function AddFavoriteModal({ onAdd, onClose }: AddFavoriteModalProps) {
         onClick={onClose}
         className="absolute inset-0 bg-ink-strong/40"
       />
-      <div className="relative w-full max-w-md rounded-3xl bg-white p-5 pb-6 shadow-card">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        className="relative w-full max-w-md rounded-3xl bg-white p-5 pb-6 shadow-card"
+      >
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-base font-bold text-ink">즐겨찾기 추가</h2>
+          <h2 id={titleId} className="text-base font-bold text-ink">
+            즐겨찾기 추가
+          </h2>
           <button
             type="button"
             aria-label="닫기"

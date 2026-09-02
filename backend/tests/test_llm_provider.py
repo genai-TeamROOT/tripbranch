@@ -1241,11 +1241,8 @@ async def test_generate_schedule_plan_selects_up_to_three_candidates() -> None:
 
     assert len(result.items) == 3
     assert [item.place_id for item in result.items] == ["place-0", "place-1", "place-2"]
-    assert result.items[-1].travel_to_next_min is None
-    assert all(
-        item.travel_to_next_min is not None for item in result.items[:-1]
-    )
-    assert result.total_duration_min > 0
+    # 시각 필드는 LLM 응답 계약에서 빠졌다(TP-215) — 스텁도 만들지 않는다.
+    assert all(item.estimated_duration_min > 0 for item in result.items)
     assert result.route_summary
 
 
@@ -1312,9 +1309,15 @@ class TestSchedulePlanningContextIncludesOperatingHours:
         assert "운영시간" in instruction
         assert "마감했을 곳" in instruction
 
-    def test_instruction에_warnings는_항상_빈_배열로_두라는_지시가_있다(self) -> None:
+    def test_instruction이_시각을_계산하지_말라고_지시한다(self) -> None:
+        """TP-215 — 도착시각·이동시간·총 소요시간은 응답을 받은 뒤 엔진이 채운다.
+        warnings도 마찬가지라 아예 응답 스키마에서 빠졌다."""
+
         instruction = build_schedule_planning_instruction()
-        assert "warnings는 항상 빈 배열" in instruction
+        assert "시각은 계산하지 마세요" in instruction
+        assert "estimated_arrival" not in instruction
+        assert "travel_to_next_min" not in instruction
+        assert "total_duration_min" not in instruction
 
     def test_후보_목록에_운영시간이_포함된다(self) -> None:
         candidate = RecommendationItem(

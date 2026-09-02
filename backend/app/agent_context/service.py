@@ -1116,7 +1116,9 @@ class ContextService:
         entries = [
             _municipal_status_to_realtime_lot(lot, catalog.get(lot.code))
             for lot in tool_result.lots
-            if lot.is_live and lot.current_parked_count is not None
+            if lot.is_live
+            and lot.current_parked_count is not None
+            and not _is_bus_only_lot(lot.name)
         ]
         entries.sort(
             key=lambda item: (
@@ -1125,7 +1127,12 @@ class ContextService:
                 -(item.available_spaces or -1),
             )
         )
-        fields = {f"[공영] {item.name}": _format_realtime_parking(item) for item in entries[:5]}
+        fields = {
+            f"[공영] {item.name}": _format_realtime_parking(
+                item, distance_km=_parking_distance_km_or_none(resolved_location, item)
+            )
+            for item in entries[:5]
+        }
         observed_at = next((item.observed_at for item in entries if item.observed_at), None)
         return InfoContextResponse(
             request_id=request.request_id,
@@ -1207,7 +1214,7 @@ class ContextService:
         detail_items: list[RealtimeInfoDetailItem]
         if question_type == "realtime_parking":
             all_entries = sorted(
-                citydata.parking_lots,
+                (item for item in citydata.parking_lots if not _is_bus_only_lot(item.name)),
                 key=lambda item: haversine_km(
                     resolved_location.latitude,
                     resolved_location.longitude,
@@ -1246,7 +1253,9 @@ class ContextService:
                 for item in grouped_lots[label][:3]:
                     entries.append(item)
                     key = item.name if label == "기타" else f"[{label}] {item.name}"
-                    fields[key] = _format_realtime_parking(item)
+                    fields[key] = _format_realtime_parking(
+                        item, distance_km=_parking_distance_km_or_none(resolved_location, item)
+                    )
             observed_at = next((item.observed_at for item in entries if item.observed_at), None)
             detail_items = _to_parking_detail_items(
                 grouped_lots["공영"][:10] + grouped_lots["민영"][:10] + grouped_lots["기타"][:10],
@@ -2225,14 +2234,24 @@ def _seoul_realtime_map_url(area: SeoulRealtimeArea) -> str:
     )
 
 
-def _format_realtime_parking(item: RealtimeParkingLot) -> str:
+def _format_realtime_parking(item: RealtimeParkingLot, *, distance_km: float | None = None) -> str:
+    """카드 한 줄에 실을 요약. 거리를 붙이면 화면에서 가까움/멂을 바로 비교할 수 있다.
+
+    거리는 ``_parking_distance_or_inf``로 정렬에만 쓰고 버려지던 값이었다 —
+    좌표가 없는 항목(구 단위 API가 카탈로그에 없는 신규 주차장 코드를 준 경우)은
+    거리를 못 재므로 ``None``이면 그냥 뺀다.
+    """
     capacity = f"총 {item.capacity}대" if item.capacity is not None else "총 주차 대수 미제공"
     paid = "유료" if item.paid is True else "무료" if item.paid is False else "요금 정보 미제공"
+    distance = f"약 {round(distance_km * 1000):,}m" if distance_km is not None else None
     if item.available_spaces is not None:
-        return f"현재 {item.available_spaces}대 주차 가능({capacity}, {paid})"
+        status = f"현재 {item.available_spaces}대 주차 가능"
     elif item.current_available and item.current_parked_count is not None:
-        return f"현재 {item.current_parked_count}대 주차 중({capacity}, {paid})"
-    return f"실시간 주차 현황 미제공({capacity}, {paid})"
+        status = f"현재 {item.current_parked_count}대 주차 중"
+    else:
+        status = "실시간 주차 현황 미제공"
+    detail = ", ".join(part for part in (distance, capacity, paid) if part)
+    return f"{status}({detail})"
 
 
 def _district_from_address(address: str | None) -> str | None:
@@ -2284,6 +2303,22 @@ def _parking_distance_or_inf(location: ResolvedLocation, item: RealtimeParkingLo
     if item.latitude is None or item.longitude is None:
         return float("inf")
     return haversine_km(location.latitude, location.longitude, item.latitude, item.longitude)
+
+
+def _parking_distance_km_or_none(
+    location: ResolvedLocation, item: RealtimeParkingLot
+) -> float | None:
+    """카드 표시용 거리. 정렬용 ``_parking_distance_or_inf``와 달리 좌표가 없으면 None이다."""
+
+    if item.latitude is None or item.longitude is None:
+        return None
+    return haversine_km(location.latitude, location.longitude, item.latitude, item.longitude)
+
+
+# 관광버스 전용 주차장은 명칭에 "버스"가 들어간다("탑골공원 관광버스전용 주차장(시)").
+# 승용차로 온 사용자에게는 세울 수 없는 자리라 목록에서 빼는 편이 카드를 짧게 만든다.
+def _is_bus_only_lot(name: str) -> bool:
+    return "버스" in name
 
 
 def _subway_field_key(item: RealtimeSubwayArrival) -> str:

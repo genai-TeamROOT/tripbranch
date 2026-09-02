@@ -8,7 +8,12 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from app.schedule.schemas import ScheduleLLMPlan, SchedulePlanningRequest, target_item_range
+from app.schedule.schemas import (
+    ScheduleLLMItem,
+    ScheduleLLMPlan,
+    SchedulePlanningRequest,
+    target_item_range,
+)
 from app.schemas import (
     AgentResponse,
     Intent,
@@ -22,6 +27,18 @@ from app.schemas import (
 )
 from app.state.schema import UserConditions as StateUserConditions
 from app.state.service import ApiContextView, StateApplyResponse
+
+
+def _llm_item(place_id: str, order: int) -> ScheduleLLMItem:
+    """ScheduleLLMPlan에 실리는 항목 — 시각이 없다(TP-215)."""
+
+    return ScheduleLLMItem(
+        order=order,
+        place_id=place_id,
+        place_name=f"장소 {order}",
+        estimated_duration_min=60,
+        reason="테스트 이유",
+    )
 
 
 def _schedule_item(place_id: str, order: int) -> ScheduleItem:
@@ -169,24 +186,21 @@ class TestScheduleLLMPlanItemsCountConstraint:
 
     def test_1개면_통과한다(self):
         plan = ScheduleLLMPlan(
-            items=[_schedule_item("place-1", 1)],
-            total_duration_min=60,
+            items=[_llm_item("place-1", 1)],
             route_summary="테스트 동선",
         )
         assert len(plan.items) == 1
 
     def test_정확히_3개면_통과한다(self):
         plan = ScheduleLLMPlan(
-            items=[_schedule_item(f"place-{i}", i) for i in range(1, 4)],
-            total_duration_min=180,
+            items=[_llm_item(f"place-{i}", i) for i in range(1, 4)],
             route_summary="테스트 동선",
         )
         assert len(plan.items) == 3
 
     def test_정확히_5개면_통과한다(self):
         plan = ScheduleLLMPlan(
-            items=[_schedule_item(f"place-{i}", i) for i in range(1, 6)],
-            total_duration_min=300,
+            items=[_llm_item(f"place-{i}", i) for i in range(1, 6)],
             route_summary="테스트 동선",
         )
         assert len(plan.items) == 5
@@ -196,8 +210,7 @@ class TestScheduleLLMPlanItemsCountConstraint:
         허용된다 — 2개가 적절한지는 target_item_range()/프롬프트가 판단할
         몫이지 이 스키마가 판단할 몫이 아니다."""
         plan = ScheduleLLMPlan(
-            items=[_schedule_item(f"place-{i}", i) for i in range(1, 3)],
-            total_duration_min=120,
+            items=[_llm_item(f"place-{i}", i) for i in range(1, 3)],
             route_summary="테스트 동선",
         )
         assert len(plan.items) == 2
@@ -209,8 +222,7 @@ class TestScheduleLLMPlanItemsCountConstraint:
     def test_6개면_검증에_실패한다(self):
         with pytest.raises(ValidationError):
             ScheduleLLMPlan(
-                items=[_schedule_item(f"place-{i}", i) for i in range(1, 7)],
-                total_duration_min=360,
+                items=[_llm_item(f"place-{i}", i) for i in range(1, 7)],
                 route_summary="테스트 동선",
             )
 

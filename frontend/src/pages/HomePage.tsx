@@ -12,7 +12,7 @@
  */
 
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
 import { streamChat, toDisplayConditions } from "../api/trip";
 import { ChatComposer } from "../components/chat/ChatComposer";
@@ -20,6 +20,7 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { AppHeader } from "../components/layout/AppHeader";
 import { usePhotoSimilarSearch } from "../hooks/usePhotoSimilarSearch";
 import { beginChatRequest, endChatRequest } from "../state/chatAbortController";
+import { loadPreferences } from "../state/preferenceStorage";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import { buildAgentStageTimings } from "../utils/agentTiming";
 import { getBrowserDeviceLocation } from "../utils/geolocation";
@@ -40,6 +41,8 @@ const HOME_TEXT = {
     developer: "개발자용으로 시작",
     locationError: "위치를 가져오지 못했어요.",
     requestError: "입력을 처리하지 못했어요. 다시 시도해주세요.",
+    myPreferences: "내 취향",
+    changePreferences: "바꾸기",
   },
   en: {
     headline: "Did your plans change suddenly?",
@@ -56,6 +59,8 @@ const HOME_TEXT = {
     developer: "Start in developer view",
     locationError: "We couldn’t get your location.",
     requestError: "We couldn’t process your request. Please try again.",
+    myPreferences: "My preferences",
+    changePreferences: "Change",
   },
 } as const;
 
@@ -64,6 +69,12 @@ export function HomePage() {
   const state = useTripState();
   const navigate = useNavigate();
   const text = HOME_TEXT[state.language];
+
+  /*
+   * 저장해 둔 취향. 마운트할 때 한 번만 읽는다 — 취향 설정은 별도 전체 화면이라
+   * 갔다 오면 이 컴포넌트가 다시 마운트되고, 그때 최신 값을 읽는다.
+   */
+  const [preferences] = useState(loadPreferences);
 
   const [userInput, setUserInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -258,6 +269,38 @@ export function HomePage() {
           <h1 className="text-[24px] font-bold leading-snug text-ink">{text.headline}</h1>
           <p className="text-sm leading-relaxed text-muted">{text.subtitle}</p>
         </div>
+
+        {/*
+         * 저장해 둔 취향을 여기서 한 번 더 보여준다 — 확인하려고 취향 설정
+         * 화면까지 들어갔다 오지 않아도 되게. 읽기 전용이고, 고치려면 "바꾸기"로
+         * 간다(홈에서 실수로 지우는 일을 만들지 않는다).
+         *
+         * 아직 아무것도 저장하지 않았으면 줄 자체를 그리지 않는다. 빈 자리를
+         * 남기면 홈 첫 화면이 그만큼 밀린다.
+         */}
+        {preferences.length > 0 && (
+          <section className="flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xs font-bold text-label">{text.myPreferences}</h2>
+              <Link
+                to="/preferences"
+                className="text-xs font-bold text-brand transition-colors hover:text-brand-deep"
+              >
+                {text.changePreferences}
+              </Link>
+            </div>
+            <ul className="flex flex-wrap gap-2">
+              {preferences.map((preference) => (
+                <li
+                  key={preference.label}
+                  className="rounded-full bg-chip px-3 py-1.5 text-xs font-medium text-brand-deep"
+                >
+                  {preference.label}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
 
         <section className="rounded-2xl bg-sky-light p-3.5 text-sm leading-relaxed text-brand-deep">
           {text.locationNotice}

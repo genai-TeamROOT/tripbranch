@@ -127,6 +127,7 @@ from app.services.runtime.recommendation_transform import to_travel_mode
 from app.services.runtime.response_composer import (
     compose_chat_message,
     compose_compare_message,
+    compose_paired_parking_message,
     compose_recommendation_summary,
     recommendation_wrapper_message,
     tool_clarification_message,
@@ -1773,6 +1774,21 @@ def _is_info_walking_time_request(llm_output: LLMOutput) -> bool:
     return any(marker in normalized_question for marker in _INFO_WALKING_TIME_MARKERS)
 
 
+# 근처 주차장(area 응답, 목록이 짧다)과 공영주차장(구 전체, 목록이 길지만 멀 수도
+# 있다)은 서로 짝이다. 둘 다 실시간 주차 질문의 다른 절반이라, 한쪽을 물으면
+# 다른 쪽 InfoContextRequest.question_type을 여기서 얻어 이어서 조회한다.
+_PARKING_QUESTION_TYPE_PAIRS: dict[QuestionType, str] = {
+    QuestionType.REALTIME_PARKING: QuestionType.REALTIME_PUBLIC_PARKING.value,
+    QuestionType.REALTIME_PUBLIC_PARKING: QuestionType.REALTIME_PARKING.value,
+}
+
+
+def _paired_parking_question_type(info: InfoPayload | None) -> str | None:
+    if info is None:
+        return None
+    return _PARKING_QUESTION_TYPE_PAIRS.get(info.question_type)
+
+
 def _to_geo_coordinate(location: str | None) -> GeoCoordinate | None:
     """B에 저장된 ``위도,경도`` 문자열을 도보 경로 도메인 값으로 변환한다."""
 
@@ -2849,11 +2865,29 @@ async def _run_agent_flow(
             on_message_delta=(emit_info_message_delta if stream_info_message else None),
             history=turn_history,
         )
+
+        secondary_info_place_card = None
+        paired_question_type = _paired_parking_question_type(llm_output.info)
+        if paired_question_type is not None and info_response.status == "success":
+            # 근처 주차장(area 응답)과 공영주차장(구 전체)은 서로의 약점을 메운다 —
+            # 근처는 가깝지만 목록이 짧고, 공영은 목록이 길지만 멀 수 있다. 하나를
+            # 물으면 다른 쪽도 이어서 보여준다(TP-115 실사용 지적).
+            paired_response = await tool_provider.fetch_info_context(
+                info_request.model_copy(update={"question_type": paired_question_type})
+            )
+            if paired_response.status == "success":
+                secondary_info_place_card = to_info_place_card(paired_response)
+                if secondary_info_place_card is not None:
+                    message = compose_paired_parking_message(
+                        message, question_type=llm_output.info.question_type
+                    )
+
         return AgentResponse(
             llm_output=llm_output,
             state=state_response,
             recommendations=None,
             info_place_card=to_info_place_card(info_response),
+            secondary_info_place_card=secondary_info_place_card,
             message=message,
             message_footnote=unsupported_region_footnote(
                 info_response.error.code if info_response.error else None
@@ -3140,7 +3174,7 @@ async def _run_agent_flow(
 
     is_schedule = llm_output.intent is Intent.SCHEDULE
 
-    recommendations = await _score_recommendations(
+    scoring_outcome = await _score_recommendations(
         state_response,
         tool_context=tool_context,
         agent_conditions=agent_conditions,
@@ -3159,6 +3193,10 @@ async def _run_agent_flow(
         effective_ignore_operating_hours=effective_ignore_operating_hours,
         stream_event_sink=stream_event_sink,
     )
+    recommendations = scoring_outcome.recommendations
+    # 보충 조회·보관함 주입으로 좌표가 합쳐진 컨텍스트. 원본을 넘기면 그렇게 들어온
+    # 후보의 좌표를 아래 단계가 못 찾는다(TP-198).
+    tool_context = scoring_outcome.tool_context
 
     if is_schedule:
         return await _run_schedule_branch(
@@ -3207,6 +3245,24 @@ class _ToolFetchOutcome:
     context_gps: str | None = None
     tool_execution: ToolExecutionDebug | None = None
     tool_executions: list[ToolExecutionDebug] = dataclass_field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _ScoringOutcome:
+    """Scoring 결과와, 그 과정에서 좌표가 합쳐진 후보 컨텍스트.
+
+    `tool_context`를 함께 돌려주는 것이 요점이다. `_score_recommendations()`는
+    보충 조회(D-112)와 보관함 주입(D-114)으로 받은 후보를 `tool_context`에 합치는데,
+    예전에는 그 결과가 함수 안 지역 변수로만 남아 밖으로 나가지 못했다. 그래서
+    **후보는 합친 목록에서 뽑고 좌표는 합치기 전 목록에서 찾는** 상태였고,
+    보충·주입으로 들어온 장소는 `_build_pairwise_distances_km()`에서 조용히
+    건너뛰어져 거리 근거 없이 일정에 배치됐다(TP-198).
+
+    호출부는 원본이 아니라 이 `tool_context`를 다음 단계로 넘겨야 한다.
+    """
+
+    recommendations: RecommendationResponse
+    tool_context: RecommendationContext
 
 
 async def _fetch_tool_context(
@@ -3534,7 +3590,7 @@ async def _score_recommendations(
     tool_executions: list[ToolExecutionDebug],
     effective_ignore_operating_hours: bool,
     stream_event_sink: StreamEventSink | None,
-) -> RecommendationResponse:
+) -> _ScoringOutcome:
     """1차 Scoring과 후보 보충·혼잡도 재정렬까지 끝난 추천 결과를 돌려준다(6단계).
 
     `run_agent_flow()`의 6단계 블록을 그대로 옮긴 것이다 — 라우팅 그래프가 이 단계를
@@ -3542,6 +3598,11 @@ async def _score_recommendations(
     이 구간에는 중간 반환이 없어 결과 하나만 돌려주면 되는, 경계가 가장 깨끗한
     단계다. 떼어낼 당시에는 본문을 한 줄도 바꾸지 않았고, 이후 TP-180으로 제외
     목록을 고르는 한 줄(`_effective_excluded_place_ids()`)만 앞에 붙었다.
+
+    **추천 결과만이 아니라 `tool_context`도 함께 돌려준다**(TP-198). 이 함수는
+    보충 조회·보관함 주입으로 받은 후보 좌표를 `tool_context`에 합치는데, 그 값을
+    안 돌려주면 일정 편성과 노출 이력 기록이 합치기 전 원본을 받는다. 자세한 사정은
+    `_ScoringOutcome` docstring에 있다.
     """
 
     excluded_place_ids = _effective_excluded_place_ids(
@@ -3834,7 +3895,7 @@ async def _score_recommendations(
             store=store,
             principal=principal,
         )
-    return recommendations
+    return _ScoringOutcome(recommendations=recommendations, tool_context=tool_context)
 
 
 async def _run_schedule_branch(

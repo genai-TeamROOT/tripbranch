@@ -24,6 +24,7 @@ from app.providers.geocoding import RealGeocodingProvider
 from app.providers.holiday import RealHolidayProvider
 from app.providers.kakao_transit_route import RealKakaoTransitRouteProvider
 from app.providers.real_place import RealPlaceProvider
+from app.providers.walking_route import RealKakaoWalkingRouteProvider
 from app.providers.weather import RealWeatherProvider
 from app.schemas import Intent, PlaceType, UserConditions
 from app.tools.holiday import GetHolidaysTool
@@ -83,6 +84,42 @@ async def test_naver_geocoding_real_smoke() -> None:
     print(
         f"Naver Geocoding: {result.location.resolved_name} "
         f"({result.location.latitude:.4f}, {result.location.longitude:.4f})"
+    )
+
+
+async def test_kakao_walking_route_real_smoke() -> None:
+    """경복궁 → 인사동 도보 경로.
+
+    **확인하려는 것은 소요시간 값이 아니라 `source`다.** 세 이동수단 중 도보만
+    fallback으로 `FakeWalkingRouteProvider`가 붙어 있어(`get_travel_route_tool`),
+    카카오 호출이 실패해도 직선거리 추정이 조용히 자리를 메운다 — 응답은 정상으로
+    나가고 실측만 사라진다. 자동차·대중교통은 fallback이 없어 실패가 NO_DATA로
+    드러나지만 도보는 드러나지 않는다.
+
+    실제로 `route_measured_ratio`가 0%로 찍힌 적이 있다(`tools/travel_route.py`의
+    관측 주석). Provider를 직접 부르면 그 fallback을 지나지 않으므로, 키나
+    게이트웨이 문제가 여기서 그대로 드러난다.
+    """
+    async with httpx.AsyncClient() as client:
+        provider = RealKakaoWalkingRouteProvider(
+            api_key=_required_value("KAKAO_MAP_REST_API_KEY", settings.kakao_map_rest_api_key),
+            client=client,
+        )
+        result = await provider.get_routes(
+            GeoCoordinate(37.5796, 126.9770),
+            (RouteDestination("insadong", GeoCoordinate(37.5744, 126.9856)),),
+        )
+
+    route = result.data.routes[0]
+    assert route.status is RouteStatus.SUCCESS
+    # 추정으로 대체되면 STRAIGHT_LINE_ESTIMATE가 온다. 이 줄이 이 테스트의 목적이다.
+    assert route.source is RouteSource.KAKAO_WALKING
+    # 직선거리 약 0.85km 구간이라 보행 경로는 그보다 길다.
+    assert route.distance_m is not None and 500 < route.distance_m < 5_000
+    assert route.duration_seconds is not None and 300 < route.duration_seconds < 5_400
+    print(
+        f"Kakao Walking: {route.distance_m}m, "
+        f"{route.duration_seconds}s ({route.duration_seconds / 60:.1f}분)"
     )
 
 

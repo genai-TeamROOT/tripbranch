@@ -20,6 +20,7 @@ import { useIsDesktopSidebar } from "../../hooks/useIsDesktopSidebar";
 import { buildLocationStack } from "../../state/sheetNav";
 import { AppRoutes } from "./AppRoutes";
 import { AppShellProvider, useAppShell } from "./AppShellContext";
+import { PageTransition } from "./PageTransition";
 import { BottomSheetLayer } from "./BottomSheetLayer";
 import { DesktopSidebar } from "./DesktopSidebar";
 import { SideDrawer } from "./SideDrawer";
@@ -65,7 +66,17 @@ function AppShellInner() {
         // 누르면 바깥을 누른 것으로 보고 드로어를 닫는다(탭-투-클로즈).
         onClickCapture={drawerOpen ? closeDrawer : undefined}
       >
-        <AppRoutes location={baseLocation} />
+        {/*
+         * 기반 화면만 감싼다. 시트는 BottomSheetLayer가 이미 아래에서 올라오는
+         * 애니메이션을 가지고 있어서, 여기서 또 감싸면 두 번 움직인다.
+         *
+         * 키를 baseLocation.pathname으로 잡는 것이 중요하다. 실제 위치로 잡으면
+         * 시트를 열고 닫을 때마다 뒤에 있는 기반 화면이 다시 떠오르고, 게다가
+         * 다시 마운트되면서 스크롤 위치와 화면 상태를 잃는다.
+         */}
+        <PageTransition pathKey={baseLocation.pathname} fullHeight>
+          <AppRoutes location={baseLocation} />
+        </PageTransition>
         {sheetLocations.map((sheetLocation, depth) => (
           <BottomSheetLayer key={sheetLocation.key} depth={depth} onDismiss={() => navigate(-1)}>
             <AppRoutes location={sheetLocation} />
