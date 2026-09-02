@@ -34,6 +34,7 @@ from app.providers.factory import (
     get_place_details_repository,
     get_place_location_repository,
     get_place_mood_provider,
+    get_place_mood_reranker,
     get_place_provider,
 )
 from app.schemas import PhotoSimilarPlace, PhotoSimilarPlacesResponse
@@ -132,6 +133,8 @@ async def similar_by_photo(
             details_repository=get_place_details_repository(client),
             place_repository=get_place_location_repository(client),
             local_search_provider=get_local_search_provider(client),
+            # 꺼져 있으면 None이고, 그때는 임베딩 순서를 그대로 낸다.
+            reranker=get_place_mood_reranker(client),
         )
 
     return PhotoSimilarPlacesResponse(

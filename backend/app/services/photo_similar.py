@@ -31,6 +31,7 @@ MAX_RECOMMENDATION_CANDIDATE_LIMIT(도입 당시 20, 현재 30)곳으로 막혀 
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
@@ -42,9 +43,11 @@ from app.agent_context.schemas import (
     PlaceCandidate,
     RecommendationContext,
 )
+from app.config import settings
 from app.errors import AppError
 from app.place_search_policy import DEFAULT_PLACE_SEARCH_RADIUS_KM
 from app.providers.contracts import ProviderMetadata, ProviderSource, ProviderStatus
+from app.providers.gemini_vlm_rerank import RerankCandidate
 from app.providers.place_mood_encoder import UnreadableImageError
 from app.providers.protocols import GeocodingProvider, PlaceProvider
 from app.services.recommendation_pipeline import prepare_recommendation_from_context
@@ -59,6 +62,8 @@ from app.tools.resolve_location import (
     ResolveLocationResult,
     ResolveLocationTool,
 )
+
+logger = logging.getLogger(__name__)
 
 _KST = ZoneInfo("Asia/Seoul")
 
@@ -133,6 +138,7 @@ async def build_photo_similar_places(
     details_repository,
     place_repository=None,
     local_search_provider=None,
+    reranker=None,
 ) -> PhotoSimilarResult:
     """위치 해석부터 사진 순위까지 한 번에 실행한다."""
     if not query.image_bytes:
@@ -217,9 +223,13 @@ async def build_photo_similar_places(
     }
     skipped_closed = len(top_ids) - len(open_ids)
 
-    # ── 4단계: 사진 순위 그대로 상위 N곳만 남긴다 ─────────────────────
+    # ── 4단계: 사진 순위 그대로 후보 줄을 만든다 ─────────────────────
     # prepared는 후보를 다시 정렬하지 않지만, 순서를 ranked에서 가져와야 사진
     # 유사도 순서가 유지된다.
+    #
+    # **여기서는 limit까지 자르지 않는다.** 재랭킹이 뒤쪽 후보를 앞으로 끌어올릴
+    # 수 있어야 하기 때문이다. 보여줄 수만큼만 넘기면 VLM은 순서만 바꾸고 어떤
+    # 곳이 나올지는 못 바꾼다.
     rows: list[PhotoSimilarPlaceRow] = []
     for match in ranked.data:
         if match.content_id not in open_ids:
@@ -238,12 +248,30 @@ async def build_photo_similar_places(
                 address=detail.address,
             )
         )
-        if len(rows) >= query.limit:
-            break
 
-    # ── 5단계: 보여줄 것만 사진 주소를 붙인다 ─────────────────────────
-    photo_urls = await mood_provider.first_photo_urls([row.content_id for row in rows])
-    places = [replace(row, image_url=photo_urls.get(row.content_id)) for row in rows]
+    # ── 5단계: 사진 주소를 붙인다 ────────────────────────────────────
+    # 재랭킹에 후보 사진이 필요하므로 자르기 전에 붙인다. 재랭킹을 안 쓸 때는
+    # 보여줄 것보다 많이 조회하게 되는데, 같은 표를 한 번에 읽는 조회라 후보가
+    # 몇 곱절이어도 왕복 횟수는 그대로다.
+    lookup_rows = rows[: _rerank_candidate_count(reranker, query.limit)]
+    photo_urls = await mood_provider.first_photo_urls(
+        [row.content_id for row in lookup_rows]
+    )
+
+    # ── 6단계: VLM이 다시 줄 세운다 (꺼져 있으면 건너뛴다) ────────────
+    rows = await _rerank_rows(
+        rows,
+        reranker=reranker,
+        query=query,
+        photo_urls=photo_urls,
+        top_similarity=max((match.similarity for match in ranked.data), default=0.0),
+    )
+
+    # ── 7단계: 보여줄 수만큼 자른다 ──────────────────────────────────
+    places = [
+        replace(row, image_url=photo_urls.get(row.content_id))
+        for row in rows[: query.limit]
+    ]
 
     return PhotoSimilarResult(
         places=tuple(places),
@@ -256,6 +284,61 @@ async def build_photo_similar_places(
         # 영업시간에 걸려 빠진 수. 결과가 적을 때 왜인지 알 수 있어야 한다.
         truncated_count=skipped_closed,
     )
+
+
+def _rerank_candidate_count(reranker, limit: int) -> int:
+    """재랭킹에 넘길 후보 수. 재랭커가 없으면 보여줄 수만큼만 본다."""
+    if reranker is None:
+        return limit
+    # 보여줄 수보다 적게 보내면 재랭킹이 순서만 바꾸고 결과 집합은 그대로다.
+    return max(limit, settings.place_mood_rerank_candidate_count)
+
+
+async def _rerank_rows(
+    rows: list[PhotoSimilarPlaceRow],
+    *,
+    reranker,
+    query: PhotoSimilarQuery,
+    photo_urls: dict[str, str],
+    top_similarity: float,
+) -> list[PhotoSimilarPlaceRow]:
+    """VLM에게 순서를 다시 매기게 한다. 못 하면 받은 순서를 그대로 돌려준다.
+
+    **1위 유사도가 문턱 미만이면 부르지 않는다.** 닮은 곳이 DB에 아예 없다는
+    뜻이라 후보가 전부 안 맞는 곳이고, 순서를 바꿔봐야 나아지지 않는다 — 오히려
+    임베딩이 그나마 낫게 잡아둔 것을 흐트러뜨린다(TP-213 확인 22).
+
+    **1위 유사도는 max로 구한다.** place_mood_axis_weight가 1.0 미만이면 정렬
+    기준이 유사도가 아니게 되어 첫 행이 최댓값이 아닐 수 있다.
+    """
+    if reranker is None or len(rows) < 2:
+        return rows
+
+    threshold = settings.place_mood_rerank_min_top_similarity
+    if top_similarity < threshold:
+        logger.info(
+            "사진 검색 재랭킹 건너뜀: 1위 유사도 %.3f < 문턱 %.3f",
+            top_similarity,
+            threshold,
+        )
+        return rows
+
+    candidates = [
+        RerankCandidate(content_id=row.content_id, photo_url=photo_urls[row.content_id])
+        for row in rows[: _rerank_candidate_count(reranker, query.limit)]
+        if row.content_id in photo_urls
+    ]
+    order = await reranker.rerank(query_image=query.image_bytes, candidates=candidates)
+    if not order:
+        return rows
+
+    # 재랭커가 돌려준 순서를 앞에 놓고, 넘기지 않은 나머지는 원래 순서로 뒤에
+    # 붙인다. 사진이 없어 후보에서 빠진 곳도 여기서 살아난다.
+    by_id = {row.content_id: row for row in rows}
+    reranked = [by_id[content_id] for content_id in order if content_id in by_id]
+    seen = set(order)
+    return reranked + [row for row in rows if row.content_id not in seen]
+
 
 @dataclass(frozen=True)
 class _Center:
