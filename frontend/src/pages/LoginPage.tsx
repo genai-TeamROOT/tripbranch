@@ -8,12 +8,14 @@
  * 백엔드가 없어(D-062 Phase 5) 제출해도 동작하지 않는다 — ComingSoonNotice로 그
  * 사실을 밝힌다. 게스트 시작만 실제로 동작한다.
  *
- * Figma와 다른 두 곳(2026-09-02 사용자 결정):
+ * Figma와 다른 세 곳(2026-09-02 사용자 결정):
  * - Figma 하단은 "Google로 계속하기"인데 여기서는 **게스트 시작**이다. Google OAuth와
  *   "자동 로그인" 체크박스는 백엔드가 필요해 이번 범위에서 뺐다. 게스트 시작은 지금
  *   **유일하게 동작하는 진입 경로**라, Figma에 없다고 지우면 아무도 앱에 못 들어온다.
  * - 게스트 안내 문단은 뺐다("덜 눈에 띄게"). 고지 내용은 회원가입 도입 시 약관 화면으로
  *   옮긴다(D-062 9-3절).
+ * - **아이디 찾기 링크를 뺐다.** 회원가입이 이름·이메일·비밀번호만 받으므로 아이디가
+ *   곧 이메일이고, 찾을 대상이 따로 없다. 화면도 함께 지웠다.
  */
 
 import { useState, type FormEvent } from "react";
@@ -144,10 +146,6 @@ export function LoginPage() {
         </form>
 
         <div className="flex justify-center gap-3 text-xs text-muted">
-          <Link to="/find-id" className="hover:text-brand">
-            아이디 찾기
-          </Link>
-          <span aria-hidden="true">·</span>
           <Link to="/reset-password" className="hover:text-brand">
             비밀번호 찾기
           </Link>
