@@ -12,55 +12,93 @@
  * (package_D/DESIGN_SYSTEM.md §5.3).
  */
 
+import { lazy, Suspense } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "./auth/AuthContext";
 import { RequireUser } from "./auth/RequireUser";
 import { TripProvider } from "./state/TripContext";
 import { AppShell } from "./components/layout/AppShell";
-import { LoginPage } from "./pages/LoginPage";
-import { SignupPage } from "./pages/SignupPage";
-import { FindIdPage } from "./pages/FindIdPage";
-import { ResetPasswordPage } from "./pages/ResetPasswordPage";
-import { DeveloperChatPage } from "./pages/DeveloperChatPage";
-import { DeveloperOpsPage } from "./pages/DeveloperOpsPage";
+import { RouteErrorBoundary } from "./components/RouteErrorBoundary";
+
+/*
+ * 개발자 화면과 인증 화면은 따로 받아온다.
+ *
+ * - 개발자 화면(/dev-chat·/dev-ops)은 components/dev/ 17개를 끌고 오는데, 소스만
+ *   227KB로 앱에서 가장 큰 덩어리다. 사용자는 이 경로에 오지 않으므로 첫 화면에
+ *   실릴 이유가 없다.
+ * - 인증 화면 4종은 로그인한 사용자가 다시 볼 일이 없다.
+ *
+ * AppShell(홈·채팅·취향·위치·일정)은 그대로 즉시 로딩한다 — 첫 화면이고,
+ * 바텀시트로 뜨는 화면들이라 나중에 받아오면 시트가 빈 채로 올라온다.
+ */
+const LoginPage = lazy(() => import("./pages/LoginPage").then((m) => ({ default: m.LoginPage })));
+const SignupPage = lazy(() =>
+  import("./pages/SignupPage").then((m) => ({ default: m.SignupPage })),
+);
+const FindIdPage = lazy(() =>
+  import("./pages/FindIdPage").then((m) => ({ default: m.FindIdPage })),
+);
+const ResetPasswordPage = lazy(() =>
+  import("./pages/ResetPasswordPage").then((m) => ({ default: m.ResetPasswordPage })),
+);
+const DeveloperChatPage = lazy(() =>
+  import("./pages/DeveloperChatPage").then((m) => ({ default: m.DeveloperChatPage })),
+);
+const DeveloperOpsPage = lazy(() =>
+  import("./pages/DeveloperOpsPage").then((m) => ({ default: m.DeveloperOpsPage })),
+);
+
+/* RequireUser의 로딩 표시와 같은 문구를 쓴다 — 화면 전환 중 문구가 바뀌지 않게. */
+function RouteFallback() {
+  return (
+    <div className="flex min-h-screen items-center justify-center">
+      <p className="text-sm text-gray-600 dark:text-gray-400">불러오는 중이에요…</p>
+    </div>
+  );
+}
 
 function App() {
   return (
     <AuthProvider>
       <TripProvider>
         <BrowserRouter>
-          <Routes>
-            <Route path="/login" element={<LoginPage />} />
-            {/* 회원가입·아이디찾기·비밀번호찾기는 아직 백엔드가 없는 UI 목업이다(D-062 Phase 5). */}
-            <Route path="/signup" element={<SignupPage />} />
-            <Route path="/find-id" element={<FindIdPage />} />
-            <Route path="/reset-password" element={<ResetPasswordPage />} />
-            <Route
-              path="/dev-chat"
-              element={
-                <RequireUser>
-                  <DeveloperChatPage />
-                </RequireUser>
-              }
-            />
-            {/* 운영 점검 화면은 사용자 신원과 무관한 내부 도구라 관문 밖에 둔다. */}
-            <Route path="/dev-ops" element={<DeveloperOpsPage />} />
-            <Route path="/confirm" element={<Navigate to="/chat" replace />} />
-            <Route path="/results" element={<Navigate to="/chat" replace />} />
-            {/*
-             * 신원이 필요한 화면 전부(/, /chat, /preferences, /location, /schedule,
-             * 그리고 알 수 없는 경로)를 여기서 한 번에 받는다. AppShell 안의 AppRoutes가
-             * 실제 화면을 고른다 — RequireUser를 화면마다 반복하지 않기 위해서다.
-             */}
-            <Route
-              path="*"
-              element={
-                <RequireUser>
-                  <AppShell />
-                </RequireUser>
-              }
-            />
-          </Routes>
+          {/* 청크를 못 받으면 흰 화면 대신 안내가 뜬다 — Suspense 바깥이어야 잡는다. */}
+          <RouteErrorBoundary>
+            <Suspense fallback={<RouteFallback />}>
+              <Routes>
+                <Route path="/login" element={<LoginPage />} />
+                {/* 회원가입·아이디찾기·비밀번호찾기는 아직 백엔드가 없는 UI 목업이다(D-062 Phase 5). */}
+                <Route path="/signup" element={<SignupPage />} />
+                <Route path="/find-id" element={<FindIdPage />} />
+                <Route path="/reset-password" element={<ResetPasswordPage />} />
+                <Route
+                  path="/dev-chat"
+                  element={
+                    <RequireUser>
+                      <DeveloperChatPage />
+                    </RequireUser>
+                  }
+                />
+                {/* 운영 점검 화면은 사용자 신원과 무관한 내부 도구라 관문 밖에 둔다. */}
+                <Route path="/dev-ops" element={<DeveloperOpsPage />} />
+                <Route path="/confirm" element={<Navigate to="/chat" replace />} />
+                <Route path="/results" element={<Navigate to="/chat" replace />} />
+                {/*
+                 * 신원이 필요한 화면 전부(/, /chat, /preferences, /location, /schedule,
+                 * 그리고 알 수 없는 경로)를 여기서 한 번에 받는다. AppShell 안의 AppRoutes가
+                 * 실제 화면을 고른다 — RequireUser를 화면마다 반복하지 않기 위해서다.
+                 */}
+                <Route
+                  path="*"
+                  element={
+                    <RequireUser>
+                      <AppShell />
+                    </RequireUser>
+                  }
+                />
+              </Routes>
+            </Suspense>
+          </RouteErrorBoundary>
         </BrowserRouter>
       </TripProvider>
     </AuthProvider>
