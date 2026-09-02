@@ -342,10 +342,7 @@ it("실시간 주차 카드에는 데이터 출처와 서울시 주차정보 포
   expect(dialog.queryByRole("heading", { name: "관련 정보" })).not.toBeInTheDocument();
 
   await user.click(dialog.getAllByRole("button", { name: "네이버 지도로 길찾기" })[0]);
-  expect(openNaverMapSearch).toHaveBeenCalledWith(
-    "서울특별시 종로구 세종대로 189",
-    "세종로 공영주차장",
-  );
+  expect(openNaverMapSearch).toHaveBeenCalledWith("서울특별시 종로구 세종대로 189");
 
   await user.click(dialog.getByRole("button", { name: "공영 1" }));
   expect(dialog.queryByText("서울스퀘어 주차장")).not.toBeInTheDocument();

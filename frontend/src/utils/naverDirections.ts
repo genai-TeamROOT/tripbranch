@@ -22,7 +22,7 @@ export interface NaverDirectionsArgs {
  * 장소를 찾다가 실패해 검색 자체가 안 되는 경우가 있었다(2026-09-02 실사용).
  * 주소만 검색어로 넘긴다 — 지번·도로명 주소는 이름 없이도 특정된다.
  */
-export function openNaverMapSearch(destinationAddress: string, _destinationName: string): boolean {
+export function openNaverMapSearch(destinationAddress: string): boolean {
   const address = destinationAddress.trim();
   if (!address) return false;
 
