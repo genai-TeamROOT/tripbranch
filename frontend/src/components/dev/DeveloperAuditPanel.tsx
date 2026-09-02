@@ -935,7 +935,14 @@ export function DeveloperAuditPanel({
                 )}
                 <dl className="grid grid-cols-2 gap-2">
                   <DetailRow label="Intent" value={selectedTurn.intent} />
-                  <DetailRow label="Status" value={selectedTurn.status} />
+                  <DetailRow
+                    label="question_type"
+                    value={
+                      selectedTurn.response?.info_place_card?.question_type ??
+                      selectedTurn.response?.secondary_info_place_card?.question_type ??
+                      null
+                    }
+                  />
                   <DetailRow label="Session ID" value={selectedTurn.sessionId} />
                   <DetailRow label="Run ID" value={selectedTurn.runId} />
                   <DetailRow label="기기 GPS" value={selectedTurn.deviceLocation} />

@@ -574,6 +574,20 @@ class ContextService:
         if location_result.status is ToolStatus.NO_DATA:
             cause = location_result.error.cause if location_result.error else None
             if cause == "ambiguous_location":
+                if is_realtime_citydata_purpose:
+                    # "교대역"처럼 호선이 갈려 하나로 못 좁혀도, 실시간 행사·주차 같은
+                    # citydata 계열은 대표 좌표만으로 최인접 서울시 제공 지역을 찾아
+                    # 답할 수 있다(concentration의 이름 전용 폴백과 대칭, D-036 계열).
+                    fallback_response = await self._fetch_realtime_citydata_by_coords_only(
+                        request,
+                        place_name=place_name,
+                        error_details=(
+                            location_result.error.details if location_result.error else {}
+                        ),
+                        location_metadata=(location_result.provider_metadata,),
+                    )
+                    if fallback_response is not None:
+                        return fallback_response
                 candidate_names = parse_candidate_names(
                     location_result.error.details.get("candidate_names", "")
                     if location_result.error
@@ -1508,6 +1522,62 @@ class ContextService:
                 concentration_result.provider_metadata,
             ),
         )
+
+    async def _fetch_realtime_citydata_by_coords_only(
+        self,
+        request: InfoContextRequest,
+        *,
+        place_name: str,
+        error_details: dict[str, str],
+        location_metadata: tuple[ProviderMetadata, ...],
+    ) -> InfoContextResponse | None:
+        """지명이 여럿으로 갈려도(예: "교대역" 2/3호선) 대표 좌표로 citydata를 찾는다.
+
+        resolve_location.py가 ambiguous_location에 실어 보낸 1순위 후보 좌표를 쓴다.
+        좌표가 없으면 None을 돌려줘 호출부가 기존 되묻기로 진행하게 한다.
+        """
+
+        raw_latitude = error_details.get("fallback_latitude")
+        raw_longitude = error_details.get("fallback_longitude")
+        if raw_latitude is None or raw_longitude is None:
+            return None
+        try:
+            latitude = float(raw_latitude)
+            longitude = float(raw_longitude)
+        except ValueError:
+            return None
+
+        resolved_location = ResolvedLocation(
+            requested_query=place_name,
+            provider_query=place_name,
+            resolved_name=place_name,
+            latitude=latitude,
+            longitude=longitude,
+            resolution_method=ResolutionMethod.FALLBACK,
+            confidence=ResolutionConfidence.APPROXIMATE,
+        )
+        if request.question_type == "realtime_commercial":
+            return await self._fetch_realtime_commercial_info(
+                request,
+                place_name=place_name,
+                resolved_location=resolved_location,
+                location_metadata=location_metadata,
+            )
+        if request.question_type == _PUBLIC_PARKING_QUESTION_TYPE:
+            return await self._fetch_realtime_public_parking_info(
+                request,
+                place_name=place_name,
+                resolved_location=resolved_location,
+                location_metadata=location_metadata,
+            )
+        if request.question_type in _REALTIME_CITYDATA_QUESTION_TYPES:
+            return await self._fetch_realtime_city_info(
+                request,
+                place_name=place_name,
+                resolved_location=resolved_location,
+                location_metadata=location_metadata,
+            )
+        return None
 
     async def _fetch_concentration_by_name_only(
         self,
@@ -2490,15 +2560,58 @@ def _info_no_data_response(
     request: InfoContextRequest,
     *provider_metadata: tuple[ProviderMetadata, ...],
 ) -> InfoContextResponse:
-    """직접 조회 결과가 없을 때의 INFO 응답을 한 형태로 유지한다."""
+    """위치 해석 자체가 실패했을 때의 INFO 응답을 question_type에 맞는 결과 타입으로 만든다.
+
+    예전에는 question_type과 무관하게 항상 ConcentrationInfoResult를 반환해서,
+    "교대쪽 오늘 열리는 행사 알려줘"처럼 event/realtime_event 질문도 "혼잡도 데이터가
+    없어요"라는 엉뚱한 메시지로 나갔다(response_composer의 결과 타입 기반 디스패치가
+    ConcentrationInfoResult를 catch-all로 받기 때문). question_type을 보존해야
+    올바른 no_data 메시지가 나간다.
+    """
+
+    question_type = request.question_type
+    if question_type == "event":
+        result: (
+            ConcentrationInfoResult
+            | EventInfoResult
+            | RealtimeCityInfoResult
+            | RealtimeCommercialInfoResult
+            | RealtimePopulationInfoResult
+            | PlaceInfoResult
+        ) = EventInfoResult(
+            status="no_data",
+            requested_place_name=request.place_name,
+        )
+    elif (
+        question_type in _REALTIME_CITYDATA_QUESTION_TYPES
+        or question_type == _PUBLIC_PARKING_QUESTION_TYPE
+    ):
+        result = RealtimeCityInfoResult(
+            status="no_data",
+            question_type=question_type,
+            requested_place_name=request.place_name,
+        )
+    elif question_type == "realtime_commercial":
+        result = RealtimeCommercialInfoResult(
+            status="no_data",
+            requested_place_name=request.place_name,
+        )
+    elif question_type == "concentration":
+        result = ConcentrationInfoResult(
+            status="no_data",
+            requested_place_name=request.place_name,
+        )
+    else:
+        result = PlaceInfoResult(
+            status="no_data",
+            question_type=question_type,
+            requested_place_name=request.place_name,
+        )
 
     return InfoContextResponse(
         request_id=request.request_id,
         status="no_data",
-        result=ConcentrationInfoResult(
-            status="no_data",
-            requested_place_name=request.place_name,
-        ),
+        result=result,
         metadata=_info_response_metadata(*provider_metadata),
     )
 
@@ -2578,6 +2691,7 @@ def _to_event_items(
             address=event.address,
             distance_km=round(distance, 2) if distance is not None else None,
             is_direct_match=direct,
+            image_url=event.image_url,
         )
         for event, distance, direct in scored[:INFO_EVENT_RESULT_LIMIT]
     ]

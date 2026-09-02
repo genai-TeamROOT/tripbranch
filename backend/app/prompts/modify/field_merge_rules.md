@@ -1,6 +1,10 @@
 필드 병합 규칙 — condition_changes에는 이번 발화로 실제로 바뀌는 필드만 값을 채우고,
-그 외 모든 필드는 null(목록형 필드는 빈 배열)로 두세요. 현재 조건 값을 복사해서 채우지
-마세요 — 바뀌지 않은 필드는 서버가 별도로 유지하므로, 여기서 다시 채울 필요가 없습니다.
+그 외 모든 필드는 null(목록형 필드는 빈 배열)로 두세요. 현재 조건 값(current_json)을
+그대로 복사해서 채우지 마세요 — 바뀌지 않은 필드는 서버가 별도로 유지하므로, 여기서
+다시 채울 필요가 없습니다. 단, 대화 이력 규칙에 따라 직전(또는 전전) 턴의 대화 흐름상
+실제로 이어지는 조건이 있다면(예: 직전 INFO 턴에서 물은 장소 유형), 그건 current_json을
+복사하는 것이 아니라 이번 발화가 실질적으로 요구하는 값이므로 채우고 changed_fields에도
+넣으세요.
 
 - current_location/search_center/weather/weather_intent/concentration_intent/transport/
   max_travel_time/time_available/environment/companion: 언급된 필드만 새 값으로 채운다

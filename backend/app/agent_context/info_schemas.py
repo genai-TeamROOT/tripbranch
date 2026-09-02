@@ -315,6 +315,7 @@ class EventItem(BaseModel):
     # 장소의 행사가 아니라 근처에서 열리는 행사다 — A는 이 구분을 반드시 문구에
     # 반영해야 한다(집중률 is_proxy와 같은 취지).
     is_direct_match: bool = False
+    image_url: str | None = None
 
 
 class EventInfoResult(BaseModel):

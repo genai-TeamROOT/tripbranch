@@ -82,6 +82,7 @@ def _event(
     latitude: float | None = 37.5718,
     longitude: float | None = 126.9761,
     address: str | None = "서울특별시 종로구 세종대로 175",
+    image_url: str | None = None,
 ) -> FestivalEvent:
     return FestivalEvent(
         content_id=f"id-{title}",
@@ -91,6 +92,7 @@ def _event(
         address=address,
         latitude=latitude,
         longitude=longitude,
+        image_url=image_url,
     )
 
 
