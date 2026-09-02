@@ -2,7 +2,7 @@
 
 ## 1. 요구 환경
 
-- Node.js 20 이상 (`package.json`의 `engines` 기준)
+- Node.js 24 이상 (`.nvmrc`, `package.json`의 `engines` 기준)
 - Python 3.11 이상 (`backend/pyproject.toml` 기준)
 - npm
 - macOS/Linux 명령을 기준으로 작성; Windows는 가상환경 활성화 명령이 다름
