@@ -1,10 +1,17 @@
 /*
- * 역할: 취향 설정 화면. Figma "Preferences"(28:2) 화면 그대로 옮긴 것으로,
- *   사용자 단위 취향 설정이라는 개념이 프론트·백엔드 어디에도 아직 없어(추천
- *   카드의 "장소별 방문자 취향 태그"는 리뷰에서 뽑은 장소 쪽 태그라 이것과
- *   다르다) 선택 자체는 이 화면 안에서만 기억되고 저장되지 않는다.
+ * 역할: 취향 설정 화면. Figma "Preferences"(28:2) 화면을 옮긴 것이다.
+ *   저장하면 이 기기에 남고(state/preferenceStorage.ts) 홈 화면이 그 값을
+ *   다시 보여준다 — 확인하러 이 화면까지 들어오지 않아도 되게.
  * 호출 시점: 사이드바 "취향 설정"에서 전체 페이지로 연다(시트 아님 — §5.1의
  *   SHEET_PATH_PATTERNS에 /preferences가 없다).
+ *
+ * **저장해도 추천 순위는 아직 달라지지 않는다.** 고른 값을 추천 요청에 싣는
+ * 경로는 순위가 바뀌는 변경이라 실측한 뒤에 넣기로 했다. 그래서 부제도 Figma의
+ * "상황별 추천에 반영돼요"를 그대로 쓰지 않았다 — 안 되는 일을 된다고 말하는
+ * 문구가 된다.
+ *
+ * 칩 목록과 각 칩이 대응하는 DB 코드는 preferenceOptions.ts에 있다 —
+ * 근거가 있는 문구만 남긴 목록이라 그 배경도 거기 적혀 있다.
  */
 
 import { Compass, Plus, Sparkles, Users } from "lucide-react";
@@ -12,44 +19,22 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AppHeader } from "../components/layout/AppHeader";
 import { AddKeywordModal } from "../components/layout/AddKeywordModal";
+import {
+  clearPreferences,
+  loadPreferences,
+  savePreferences,
+  type SavedPreference,
+} from "../state/preferenceStorage";
+import {
+  COMPANION_OPTIONS,
+  MOOD_OPTIONS,
+  PREFERENCE_GROUPS,
+  THEME_OPTIONS,
+  type PreferenceOption,
+} from "./preferenceOptions";
 
 const MIN_SELECTED = 3;
 const MAX_SELECTED = 5;
-
-const MOOD_OPTIONS = [
-  "조용한 곳",
-  "아늑한 공간",
-  "야경 명소",
-  "사진 명소",
-  "감성 인테리어",
-  "한적한 골목",
-  "뷰 맛집",
-  "힙한 분위기",
-];
-
-const THEME_OPTIONS = [
-  "자연·공원",
-  "카페",
-  "전시·문화",
-  "로컬 맛집",
-  "실내 활동",
-  "액티비티",
-  "서점·문구",
-  "마켓·소품샵",
-  "브런치",
-  "디저트 맛집",
-  "전통·역사",
-  "루프탑",
-];
-
-const COMPANION_OPTIONS = [
-  "아이와 함께",
-  "반려동물 동반",
-  "혼자 가기 좋은",
-  "데이트 코스",
-  "친구와 함께",
-  "단체 모임",
-];
 
 function ChipGroup({
   icon: Icon,
@@ -60,7 +45,7 @@ function ChipGroup({
 }: {
   icon: typeof Sparkles;
   label: string;
-  options: string[];
+  options: readonly PreferenceOption[];
   selected: Set<string>;
   onToggle: (option: string) => void;
 }) {
@@ -72,18 +57,18 @@ function ChipGroup({
       </div>
       <div className="flex flex-wrap gap-2">
         {options.map((option) => {
-          const isSelected = selected.has(option);
+          const isSelected = selected.has(option.label);
           return (
             <button
-              key={option}
+              key={option.label}
               type="button"
               aria-pressed={isSelected}
-              onClick={() => onToggle(option)}
+              onClick={() => onToggle(option.label)}
               className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${
                 isSelected ? "bg-brand text-white" : "bg-white text-ink shadow-resting"
               }`}
             >
-              {option}
+              {option.label}
             </button>
           );
         })}
@@ -92,14 +77,30 @@ function ChipGroup({
   );
 }
 
+/** 라벨로 옵션을 되찾는다. 목록에 없으면 사용자가 직접 넣은 키워드다. */
+function toSavedPreference(label: string): SavedPreference {
+  const option = PREFERENCE_GROUPS.flat().find((candidate) => candidate.label === label);
+  return option
+    ? { label, source: option.source, codes: option.codes }
+    : { label, source: "custom", codes: [] };
+}
+
 export function PreferencesPage() {
   const navigate = useNavigate();
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [customKeywords, setCustomKeywords] = useState<string[]>([]);
+
+  /* 저장해 둔 값이 있으면 그 상태로 열린다 — 다시 고르게 하지 않는다. */
+  const [restored] = useState(loadPreferences);
+  const [selected, setSelected] = useState<Set<string>>(
+    () => new Set(restored.map((preference) => preference.label)),
+  );
+  const [customKeywords, setCustomKeywords] = useState<string[]>(() =>
+    restored.filter((preference) => preference.source === "custom").map(({ label }) => label),
+  );
   const [showAddKeyword, setShowAddKeyword] = useState(false);
-  const [showComingSoon, setShowComingSoon] = useState(false);
+  const [cleared, setCleared] = useState(false);
 
   function toggle(option: string) {
+    setCleared(false);
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(option)) {
@@ -111,15 +112,35 @@ export function PreferencesPage() {
     });
   }
 
+  /*
+   * 초기화는 저장해 둔 값까지 지운다. 화면만 비우면 저장값을 되돌릴 방법이
+   * 없어서다 — 저장 버튼은 3개 미만이면 눌리지 않으므로 "다 빼고 저장"이라는
+   * 경로가 존재하지 않는다.
+   */
   function handleReset() {
     setSelected(new Set());
     setCustomKeywords([]);
+    const hadSaved = loadPreferences().length > 0;
+    clearPreferences();
+    setCleared(hadSaved);
   }
 
   function handleAddKeyword(keyword: string) {
     if (selected.size >= MAX_SELECTED || selected.has(keyword)) return;
+    setCleared(false);
     setCustomKeywords((prev) => (prev.includes(keyword) ? prev : [...prev, keyword]));
     setSelected((prev) => new Set(prev).add(keyword));
+  }
+
+  /*
+   * 저장하면 홈으로 보낸다. 저장했다는 안내를 이 화면에 띄우고 머무르게 하면
+   * 결과를 보려고 사용자가 한 번 더 홈으로 이동해야 한다 — 그 왕복을 없애려고
+   * 만든 기능이라 여기서 끝내면 앞뒤가 안 맞는다. 홈에 뜬 "내 취향" 줄 자체가
+   * 저장됐다는 확인이다.
+   */
+  function handleSave() {
+    savePreferences([...selected].map(toSavedPreference));
+    navigate("/");
   }
 
   const remaining = MIN_SELECTED - selected.size;
@@ -127,13 +148,22 @@ export function PreferencesPage() {
 
   return (
     <main className="relative flex h-full flex-col overflow-y-auto">
+      {/*
+       * 260px 띠가 위에서 옅게 시작해 30% 지점에서 가장 진하고 다시 사라진다.
+       * 정점을 가운데(50%)에 두면 파란 기가 제목 아래까지 내려온다 — Figma 28:3의
+       * 실제 픽셀을 재보면 정점이 위에서 70px, 즉 27% 지점이다.
+       */}
       <div
         aria-hidden
-        className="pointer-events-none absolute inset-x-0 top-0 h-[260px] bg-gradient-to-b from-sky-light/0 via-sky-light to-sky-light/0"
+        className="pointer-events-none absolute inset-x-0 top-0 h-[260px] bg-gradient-to-b from-sky-light/0 via-sky-light via-30% to-sky-light/0"
       />
       <div className="relative z-10 flex flex-1 flex-col">
         <AppHeader onBack={() => navigate(-1)} />
-        <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-6 px-4 pb-32">
+        {/*
+         * 세로 간격은 Figma Preferences(28:2)의 gap 프레임을 그대로 따른다 —
+         * 헤더 아래 24(56:2), 묶음 사이 24, 마지막 요소와 BottomBar 사이 24(28:102).
+         */}
+        <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-6 px-4 pb-6 pt-6">
           <div>
             <h1 className="text-2xl font-bold leading-snug text-ink">
               어떤 순간에
@@ -141,23 +171,24 @@ export function PreferencesPage() {
               끌리시나요?
             </h1>
             <p className="mt-2 text-sm leading-relaxed text-muted">
-              선택한 취향은 상황별 추천에 반영돼요. 최소 {MIN_SELECTED}개, 최대 {MAX_SELECTED}개까지
-              골라주세요.
+              고른 취향은 홈 화면에서 다시 볼 수 있어요. 추천 결과에 반영하는 건 아직 준비 중이에요.
+              최소 {MIN_SELECTED}개, 최대 {MAX_SELECTED}개까지 골라주세요.
             </p>
-          </div>
 
-          <div className="flex items-center justify-between">
-            <span className="rounded-full bg-chip px-3 py-1.5 text-xs font-bold text-brand-deep">
-              {selected.size} / {MAX_SELECTED}개 선택됨
-            </span>
-            <button
-              type="button"
-              onClick={handleReset}
-              disabled={selected.size === 0}
-              className="text-xs font-bold text-muted transition-colors hover:text-ink disabled:opacity-40"
-            >
-              선택 초기화
-            </button>
+            {/* 부제와 Meta 사이만 12다(28:20) — 컨테이너 gap 24를 쓰면 두 배로 벌어진다. */}
+            <div className="mt-3 flex items-center justify-between">
+              <span className="rounded-full bg-chip px-3 py-1.5 text-xs font-bold text-brand-deep">
+                {selected.size} / {MAX_SELECTED}개 선택됨
+              </span>
+              <button
+                type="button"
+                onClick={handleReset}
+                disabled={selected.size === 0}
+                className="text-xs font-bold text-muted transition-colors hover:text-ink disabled:opacity-40"
+              >
+                선택 초기화
+              </button>
+            </div>
           </div>
 
           <ChipGroup
@@ -210,13 +241,12 @@ export function PreferencesPage() {
             <Plus size={16} /> 키워드 직접 입력
           </button>
 
-          {showComingSoon && (
+          {cleared && (
             <p
               role="status"
-              className="rounded-xl bg-sky-light px-3.5 py-2.5 text-xs text-brand-deep"
+              className="rounded-xl bg-chip px-3.5 py-2.5 text-xs leading-relaxed text-ink"
             >
-              아직 취향을 저장해 추천에 반영하는 기능은 준비 중이에요. 지금은 채팅으로 조건을
-              말해주시면 그때그때 반영해드려요.
+              저장해 둔 취향을 지웠어요. 홈 화면에서도 사라져요.
             </p>
           )}
         </div>
@@ -225,7 +255,7 @@ export function PreferencesPage() {
           <button
             type="button"
             disabled={!canSave}
-            onClick={() => setShowComingSoon(true)}
+            onClick={handleSave}
             className="flex h-[52px] w-full items-center justify-center rounded-full bg-brand text-base font-bold text-white transition-colors disabled:bg-brand/40"
           >
             {canSave ? "저장하기" : `${remaining}개 더 골라주세요`}
