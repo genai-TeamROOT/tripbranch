@@ -113,7 +113,7 @@
 ## 기술 스택
 
 - Backend: Python 3.11+, FastAPI, Pydantic 2, httpx, sse-starlette, pytest, Ruff
-- Frontend: Node.js 20+, React 19, TypeScript, Vite, React Router, Tailwind CSS
+- Frontend: Node.js 24+, React 19, TypeScript, Vite, React Router, Tailwind CSS
 - 개발 실행: npm, Node.js 스크립트, Uvicorn
 - 저장소: Supabase(PostgreSQL), 프로세스 내 State Store
 - LLM Provider: Fake, Google Gemini (`google-genai`)
