@@ -504,7 +504,6 @@ export function DeveloperChatPage() {
               showDebug={false}
               isDeveloperView
               isLoading={isLoading}
-              hasDeviceLocation={Boolean(state.device_location)}
               deviceLocation={state.device_location}
               onRequestMore={() => void requestSend(text.requestMore)}
               onRelaxRadius={() => void requestSend(text.relaxRadius)}

@@ -134,14 +134,14 @@ it("추천 카드를 클릭하면 C PlaceDetails가 채워진 상세 창을 연�
   ).toBeInTheDocument();
   expect(within(dialog).getByText("서촌의 카페입니다.")).toBeInTheDocument();
   expect(within(dialog).getByText("매주 화요일")).toBeInTheDocument();
-  expect(within(dialog).getByText("11:00~21:00 (현재 운영시간 아님)")).toBeInTheDocument();
+  expect(within(dialog).getByText("11:00~21:00 · 운영 종료")).toBeInTheDocument();
   // 홈페이지는 "관련 정보" 박스 안에서 클릭 가능한 링크로만 노출된다(하단 중복 링크 제거).
   expect(
     within(dialog).getByRole("link", { name: "https://example.test/archivist" }),
   ).toHaveAttribute("href", "https://example.test/archivist");
 
   await user.click(screen.getByRole("button", { name: "상세 창 닫기" }));
-  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
 });
 
 afterEach(() => {
@@ -226,8 +226,7 @@ it("영어 화면에서는 추천 카드의 고정 문구와 전환 버튼을 �
   expect(
     screen.getByText("Recommended #1 based on weather, opening hours, and distance."),
   ).toBeInTheDocument();
-  expect(screen.getByText("Opening hours")).toBeInTheDocument();
-  expect(screen.getByText("View place details →")).toBeInTheDocument();
+  expect(screen.getByText("Preview")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Show more places" })).toBeInTheDocument();
   expect(
     screen.getByRole("button", { name: "View results based on Myeongdong" }),

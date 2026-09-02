@@ -1,0 +1,74 @@
+/*
+ * 역할: 취향 설정 화면의 선택 개수 제한(최소 3·최대 5)과 초기화·직접 입력을 검증한다.
+ * 호출 시점: vitest 실행 시.
+ */
+
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { expect, test } from "vitest";
+import { MemoryRouter } from "react-router-dom";
+import { AppShellProvider } from "../components/layout/AppShellContext";
+import { PreferencesPage } from "./PreferencesPage";
+
+function renderPage() {
+  render(
+    <MemoryRouter>
+      <AppShellProvider>
+        <PreferencesPage />
+      </AppShellProvider>
+    </MemoryRouter>,
+  );
+}
+
+test("3개 미만이면 저장 버튼이 남은 개수를 안내하며 비활성 상태다", async () => {
+  const user = userEvent.setup();
+  renderPage();
+
+  const saveButton = screen.getByRole("button", { name: "3개 더 골라주세요" });
+  expect(saveButton).toBeDisabled();
+
+  await user.click(screen.getByRole("button", { name: "조용한 곳" }));
+  await user.click(screen.getByRole("button", { name: "카페" }));
+
+  expect(screen.getByRole("button", { name: "1개 더 골라주세요" })).toBeDisabled();
+
+  await user.click(screen.getByRole("button", { name: "아이와 함께" }));
+
+  const enabled = screen.getByRole("button", { name: "저장하기" });
+  expect(enabled).not.toBeDisabled();
+  expect(screen.getByText("3 / 5개 선택됨")).toBeInTheDocument();
+});
+
+test("6번째 칩은 선택되지 않고, 초기화하면 전부 풀린다", async () => {
+  const user = userEvent.setup();
+  renderPage();
+
+  const options = ["조용한 곳", "아늑한 공간", "야경 명소", "사진 명소", "감성 인테리어"];
+  for (const label of options) {
+    await user.click(screen.getByRole("button", { name: label }));
+  }
+  expect(screen.getByText("5 / 5개 선택됨")).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "한적한 골목" }));
+  expect(screen.getByText("5 / 5개 선택됨")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "한적한 골목" })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+
+  await user.click(screen.getByRole("button", { name: "선택 초기화" }));
+  expect(screen.getByText("0 / 5개 선택됨")).toBeInTheDocument();
+});
+
+test("키워드 직접 입력으로 새 칩을 추가하면 선택된 채로 나타난다", async () => {
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.click(screen.getByRole("button", { name: "키워드 직접 입력" }));
+  await user.type(screen.getByPlaceholderText("예: 조용한 서점"), "조용한 서점");
+  await user.click(screen.getByRole("button", { name: "추가" }));
+
+  const chip = await screen.findByRole("button", { name: "조용한 서점" });
+  expect(chip).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByText("1 / 5개 선택됨")).toBeInTheDocument();
+});

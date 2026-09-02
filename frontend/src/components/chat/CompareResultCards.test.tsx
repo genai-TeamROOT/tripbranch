@@ -98,7 +98,7 @@ it("카드를 누르면 현재 위치에서 그 장소까지 네이버 지도 �
   render(<CompareResultCards comparison={comparison} deviceLocation="37.5788,126.9770" />);
 
   const card = screen.getByRole("button", { name: "서울공예박물관까지 네이버 지도로 길찾기" });
-  expect(screen.getByText("🧭 네이버 지도로 길찾기 →")).toBeInTheDocument();
+  expect(screen.getByText("네이버 지도로 길찾기")).toBeInTheDocument();
 
   fireEvent.click(card);
 
@@ -119,7 +119,7 @@ it("좌표가 없는 장소는 클릭할 수 없다", () => {
   render(<CompareResultCards comparison={comparison} deviceLocation="37.5788,126.9770" />);
 
   expect(screen.queryByRole("button")).not.toBeInTheDocument();
-  expect(screen.queryByText("🧭 네이버 지도로 길찾기 →")).not.toBeInTheDocument();
+  expect(screen.queryByText("네이버 지도로 길찾기")).not.toBeInTheDocument();
 });
 
 it("현재 위치가 없으면 좌표가 있어도 클릭할 수 없다", () => {

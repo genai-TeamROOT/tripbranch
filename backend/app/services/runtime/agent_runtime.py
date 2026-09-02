@@ -4273,6 +4273,7 @@ async def run_agent(
         get_llm_provider,
         get_place_details_repository,
         get_place_evidence_provider,
+        get_recommendation_card_tool,
         get_travel_route_tool,
     )
     from app.services.runtime.real_recommendation_provider import RealRecommendationProvider
@@ -4287,6 +4288,9 @@ async def run_agent(
             recommendation_provider=RealRecommendationProvider(
                 get_place_evidence_provider(client),
                 place_details_repository,
+                # 원래 COMPARE 전용 Tool(app/tools/recommendation_cards.py)이지만
+                # 썸네일 조회 로직은 그대로 재사용한다(TECH-02).
+                get_recommendation_card_tool(client),
             ),
             place_details_repository=place_details_repository,
             enrichment_provider=get_candidate_enrichment_service(client),

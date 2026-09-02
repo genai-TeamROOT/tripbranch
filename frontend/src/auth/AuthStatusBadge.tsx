@@ -8,9 +8,9 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import type { Session } from "@supabase/supabase-js";
 import { useTripDispatch } from "../state/TripContext";
 import { useAuth } from "./AuthContext";
+import { identityLabel, isGuestSession } from "./identityLabel";
 
 export function AuthStatusBadge() {
   const { session, status, signOut } = useAuth();
@@ -49,11 +49,8 @@ export function AuthStatusBadge() {
 
   if (status !== "ready" || !session) return null;
 
-  /* is_anonymous는 Supabase가 익명 사용자에게 붙이는 표식이다. 계정을 연결하면
-     같은 uid를 유지한 채 false가 되므로(D-062 2절), 이 분기만으로 승격 후 표시가
-     자동으로 바뀐다. */
-  const isGuest = session.user?.is_anonymous === true;
-  const label = isGuest ? "게스트로 이용 중" : accountLabel(session);
+  const isGuest = isGuestSession(session);
+  const label = identityLabel(session);
 
   async function handleSignOut() {
     if (isWorking) return;
@@ -90,8 +87,8 @@ export function AuthStatusBadge() {
         >
           {isGuest ? (
             <p className="mb-2">
-              가입 없이 이용 중이에요. 나중에 계정을 연결하면 지금까지의 기록을 그대로
-              이어서 쓸 수 있어요.
+              가입 없이 이용 중이에요. 나중에 계정을 연결하면 지금까지의 기록을 그대로 이어서 쓸 수
+              있어요.
             </p>
           ) : (
             <p className="mb-2">{label} 계정으로 이용 중이에요.</p>
@@ -140,22 +137,4 @@ export function AuthStatusBadge() {
       ) : null}
     </div>
   );
-}
-
-/* 계정 표시에 쓸 값. provider마다 채워주는 필드가 달라서 후보를 순서대로 본다 —
-   이메일 로그인은 email, 카카오·구글은 user_metadata의 이름 계열만 오는 경우가 있고
-   전화번호 로그인은 phone만 온다. 전부 비면 신원이 있다는 사실만 알린다. */
-function accountLabel(session: Session): string {
-  const metadata = (session.user?.user_metadata ?? {}) as Record<string, unknown>;
-  const candidates = [
-    session.user?.email,
-    metadata.name,
-    metadata.nickname,
-    metadata.preferred_username,
-    session.user?.phone,
-  ];
-  const label = candidates.find(
-    (value) => typeof value === "string" && value.trim().length > 0,
-  );
-  return (label as string | undefined) ?? "로그인됨";
 }

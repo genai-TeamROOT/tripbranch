@@ -113,6 +113,25 @@ it("사진 목록이 비면 대표 이미지 한 장을 그대로 보여준다",
   expect(screen.queryByText("1 / 1")).not.toBeInTheDocument();
 });
 
+it("닫기 버튼을 누르면 슬라이드다운이 끝난 뒤 onClose를 부른다", async () => {
+  const user = userEvent.setup();
+  const onClose = vi.fn();
+  mockedFetch.mockResolvedValue({
+    status: "success",
+    requested_place_id: "126508",
+    place_card: card(),
+  });
+  render(
+    <RecommendationDetailPreviewModal placeId="126508" placeName="경복궁" onClose={onClose} />,
+    { wrapper: TripProvider },
+  );
+
+  await screen.findByRole("heading", { name: "경복궁" });
+  await user.click(screen.getByRole("button", { name: "상세 창 닫기" }));
+
+  await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+});
+
 it("사진도 대표 이미지도 없으면 안내 문구를 보여준다", async () => {
   renderModal(card({ photos: [], thumbnail_url: null }));
 

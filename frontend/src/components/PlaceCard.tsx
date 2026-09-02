@@ -1,17 +1,20 @@
 /*
- * 역할: 추천 장소 하나를 카드 형태로 렌더링한다.
+ * 역할: 추천 장소 하나를 가로 스크롤 카드로 렌더링한다(DESIGN_SYSTEM.md §6.5).
  * 입력: RecommendationItem 데이터.
- * 출력: 장소명, 카테고리, 추천 이유, 주소, 검증 상태 UI.
- * 호출 시점: RecommendationResultMessage가 추천 목록과 검증 불가 목록을 표시할 때 호출된다.
+ * 출력: 이미지, 순위, 장소명, 거리, 남은 운영시간, 추천 사유·주의사항, 담기 토글.
+ * 호출 시점: PlaceCardRow가 추천/검증 불가 목록을 한 줄씩 그릴 때 호출된다.
  * 담기/빼기 액션은 onToggleSave가 주어질 때만 노출한다(SCHEDULE-12 카드 3).
  * TODO: 지도 링크, 제외 액션, 실시간 영업 정보가 생기면 하위 UI를 확장한다.
  */
 
+import { ChevronRight, Heart, MapPin } from "lucide-react";
 import type { Language, RecommendationItem } from "../types";
-import { travelLabel, travelValue } from "../utils/travelDisplay";
+import { travelValue } from "../utils/travelDisplay";
 
 interface PlaceCardProps {
   item: RecommendationItem;
+  /** 1위부터 매기는 순위. 검증 불가 목록처럼 순위 의미가 없으면 생략한다. */
+  rank?: number;
   /** 추천 결과의 현재 정보만으로 여는 1차 상세 미리보기. */
   onOpenDetail?: (item: RecommendationItem) => void;
   /*
@@ -55,7 +58,7 @@ function isAlwaysOpen(operatingHours: string): boolean {
   );
 }
 
-function formatOperatingHours(item: RecommendationItem, language: Language): string {
+function hoursRemainingLabel(item: RecommendationItem, language: Language): string {
   // D가 제공하는 당일 적용 운영 구간을 우선 표시한다. 이전 응답 또는 구간을
   // 판별할 수 없는 후보는 기존의 종료 예정 시각 표기로 자연스럽게 폴백한다.
   // 운영시간 무시로 폐점 후보를 함께 보여주는 경우에도 이 값은 남아 있다. 이때
@@ -91,6 +94,7 @@ function displayRecommendationReason(reason: string, language: Language): string
 
 export function PlaceCard({
   item,
+  rank,
   onOpenDetail,
   onToggleSave,
   isSaved = false,
@@ -98,30 +102,61 @@ export function PlaceCard({
 }: PlaceCardProps) {
   const saveText =
     language === "en"
-      ? { save: "Save", saved: "Saved", toggle: (n: string) => `Save ${n} for later` }
-      : { save: "담기", saved: "담김", toggle: (n: string) => `${n} 보관함에 담기` };
-  const content = (
-    <>
-      <div className="flex items-start justify-between gap-2">
-        <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">{item.name}</h3>
-        <div className="flex shrink-0 items-center gap-2">
-          <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-300">
-            {item.category}
-          </span>
+      ? { toggle: (n: string) => `Save ${n} for later` }
+      : { toggle: (n: string) => `${n} 보관함에 담기` };
+
+  return (
+    <li className="w-40 shrink-0">
+      <div
+        className={`relative w-full text-left${onOpenDetail ? " cursor-pointer" : ""}`}
+        role={onOpenDetail ? "button" : undefined}
+        tabIndex={onOpenDetail ? 0 : undefined}
+        aria-label={
+          onOpenDetail
+            ? language === "en"
+              ? `View details for ${item.name}`
+              : `${item.name} 장소 정보 미리 보기`
+            : undefined
+        }
+        onClick={onOpenDetail ? () => onOpenDetail(item) : undefined}
+        onKeyDown={
+          onOpenDetail
+            ? (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onOpenDetail(item);
+                }
+              }
+            : undefined
+        }
+      >
+        <div className="group relative overflow-hidden rounded-2xl">
+          {item.image_url ? (
+            <img
+              src={item.image_url}
+              alt=""
+              loading="lazy"
+              className="h-28 w-full rounded-2xl object-cover transition-transform duration-300 group-hover:scale-105"
+              onError={(event) => {
+                // 원본이 사라졌을 수 있다(D-087과 같은 종류). 깨진 아이콘 대신 자리만 비운다.
+                event.currentTarget.style.visibility = "hidden";
+              }}
+            />
+          ) : (
+            // 배치 조회에서 못 찾은 장소는 image_url이 null/undefined로 온다 —
+            // 자리표시용 칩을 그린다.
+            <span className="flex h-28 w-full items-center justify-center rounded-2xl bg-chip text-xs text-muted">
+              {item.category}
+            </span>
+          )}
+
           {onToggleSave && (
-            /*
-             * 카드 전체가 상세 미리보기 클릭 대상이라(아래 li의 role="button")
-             * 클릭·키 입력을 전부 여기서 멈춘다. 안 그러면 담기 한 번에 상세
-             * 모달까지 함께 열린다.
-             */
             <button
               type="button"
               aria-pressed={isSaved}
               aria-label={saveText.toggle(item.name)}
-              className={`rounded-full border px-2.5 py-0.5 text-xs font-medium transition ${
-                isSaved
-                  ? "border-blue-600 bg-blue-600 text-white hover:bg-blue-700 dark:border-blue-500 dark:bg-blue-500"
-                  : "border-gray-300 bg-white text-gray-700 hover:border-blue-400 hover:text-blue-700 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-300"
+              className={`absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-full bg-white/80 backdrop-blur-sm transition-colors ${
+                isSaved ? "text-rust" : "text-muted hover:text-rust"
               }`}
               onClick={(event) => {
                 event.stopPropagation();
@@ -129,77 +164,32 @@ export function PlaceCard({
               }}
               onKeyDown={(event) => event.stopPropagation()}
             >
-              {isSaved ? saveText.saved : saveText.save}
+              <Heart size={14} className={isSaved ? "fill-current" : undefined} />
             </button>
           )}
         </div>
+        <div className="pt-2">
+          <p className="truncate text-sm font-bold text-ink">
+            {typeof rank === "number" && <span className="text-brand">{rank}위 </span>}
+            {item.name}
+          </p>
+          <p className="mt-1 flex items-center gap-1 text-[11px] text-muted">
+            <MapPin size={10} /> {travelValue(item, language)}
+          </p>
+          <p className="mt-1 text-[11px] text-muted">{hoursRemainingLabel(item, language)}</p>
+          <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-muted">
+            {displayRecommendationReason(item.recommendation_reason, language)}
+          </p>
+          {item.warnings.length > 0 && (
+            <p className="mt-1 truncate text-[11px] text-gold">{item.warnings[0]}</p>
+          )}
+          {onOpenDetail && (
+            <p className="mt-1.5 flex items-center gap-0.5 text-[11px] font-semibold text-brand">
+              {language === "en" ? "Preview" : "장소 미리보기"} <ChevronRight size={11} />
+            </p>
+          )}
+        </div>
       </div>
-
-      <p className="text-sm text-gray-600 dark:text-gray-400">
-        {displayRecommendationReason(item.recommendation_reason, language)}
-      </p>
-
-      <dl className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-700 dark:text-gray-300">
-        <div className="flex gap-1">
-          <dt className="text-gray-400">{travelLabel(item, language)}</dt>
-          <dd>{travelValue(item, language)}</dd>
-        </div>
-        <div className="flex gap-1">
-          <dt className="text-gray-400">{language === "en" ? "Opening hours" : "운영시간"}</dt>
-          <dd>{formatOperatingHours(item, language)}</dd>
-        </div>
-      </dl>
-
-      {item.warnings.length > 0 && (
-        <ul className="flex flex-col gap-1">
-          {item.warnings.map((warning) => (
-            <li
-              key={warning}
-              className="w-fit rounded bg-amber-50 px-2 py-0.5 text-xs text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
-            >
-              {warning}
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {onOpenDetail && (
-        <span className="w-fit text-xs font-medium text-blue-700 dark:text-blue-300">
-          {language === "en" ? "View place details →" : "장소 정보 미리 보기 →"}
-        </span>
-      )}
-    </>
-  );
-
-  return (
-    <li
-      className={`flex flex-col gap-2 rounded-lg border border-gray-200 p-4 shadow-sm dark:border-gray-700${
-        onOpenDetail
-          ? " cursor-pointer text-left transition hover:border-blue-300 hover:bg-blue-50/30 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:hover:border-blue-700 dark:hover:bg-blue-950/20"
-          : ""
-      }`}
-      role={onOpenDetail ? "button" : undefined}
-      tabIndex={onOpenDetail ? 0 : undefined}
-      aria-label={
-        onOpenDetail
-          ? language === "en"
-            ? `View details for ${item.name}`
-            : `${item.name} 장소 정보 미리 보기`
-          : undefined
-      }
-      onClick={onOpenDetail ? () => onOpenDetail(item) : undefined}
-      onKeyDown={
-        onOpenDetail
-          ? (event) => {
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                onOpenDetail(item);
-              }
-            }
-          : undefined
-      }
-    >
-      {content}
     </li>
   );
 }

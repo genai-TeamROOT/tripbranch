@@ -5,12 +5,29 @@
  * 호출 시점: RecommendationResultMessage의 추천 카드 클릭.
  */
 
+import { motion } from "framer-motion";
+import {
+  Baby,
+  Bath,
+  CalendarOff,
+  Car,
+  Clock,
+  CreditCard,
+  type LucideIcon,
+  MapPin,
+  Navigation,
+  PawPrint,
+  Sparkles,
+  Wallet,
+  X,
+} from "lucide-react";
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { fetchRecommendationPlaceDetails } from "../../api/trip";
 import { useTripState } from "../../state/TripContext";
 import type { InfoPlaceCard, RecommendationItem } from "../../types";
 import { openNaverDirections, openNaverMapSearch } from "../../utils/naverDirections";
-import { travelLabel, travelValue } from "../../utils/travelDisplay";
+import { travelShortLabel } from "../../utils/travelDisplay";
 import {
   ConcentrationForecastBars,
   PopulationForecastBars,
@@ -42,29 +59,29 @@ function needsDetailEnrichment(card: InfoPlaceCard | undefined): boolean {
   return Boolean(card && ["location_info", "concentration", "event"].includes(card.question_type));
 }
 
-function formatOperatingHours(item: RecommendationItem): string {
-  if (item.operating_hours_display) {
-    return item.remaining_minutes === null
-      ? `${item.operating_hours_display} (현재 운영시간 아님)`
-      : item.operating_hours_display;
-  }
-  return "확인 불가";
+/** Figma "PlaceDetail (Sheet)"(29:180)의 InfoTable 행 순서·아이콘. */
+const INFO_TABLE_FIELDS: Array<[keyof InfoPlaceCard, string, LucideIcon]> = [
+  ["operating_hours", "운영시간", Clock],
+  ["rest_date", "휴무일", CalendarOff],
+  ["fee", "요금", Wallet],
+  ["parking", "주차", Car],
+  ["parking_fee", "주차 요금", Wallet],
+  ["baby_carriage", "유모차", Baby],
+  ["pet", "반려동물 동반", PawPrint],
+  ["credit_card", "카드 결제", CreditCard],
+  ["restroom", "화장실", Bath],
+];
+
+/**
+ * "영업 중"/"운영 종료" 표시는 실시간으로 계산된 값이 있을 때만 붙인다.
+ * detailCard.operating_hours는 원문 텍스트일 뿐 개장 여부를 담지 않는다 —
+ * 그 판정은 item.remaining_minutes(D가 계산)로만 할 수 있다. item 없이 연
+ * INFO·사진 검색 경로에서는 근거 없이 "영업 중"을 지어내지 않는다.
+ */
+function operatingStatusSuffix(item: RecommendationItem | undefined): string | null {
+  if (!item) return null;
+  return item.remaining_minutes === null ? "운영 종료" : "영업 중";
 }
-
-const DETAIL_FIELDS: Array<[keyof InfoPlaceCard, string]> = [
-  ["operating_hours", "운영시간"],
-  ["rest_date", "휴무일"],
-  ["parking", "주차"],
-  ["parking_fee", "주차 요금"],
-  ["fee", "요금"],
-];
-
-const FACILITY_FIELDS: Array<[keyof InfoPlaceCard, string]> = [
-  ["baby_carriage", "유모차"],
-  ["pet", "반려동물 동반"],
-  ["credit_card", "카드 결제"],
-  ["restroom", "화장실"],
-];
 
 const SEOUL_PARKING_PORTAL_URL = "https://parking.seoul.go.kr/";
 
@@ -101,25 +118,19 @@ function DetailText({ fieldKey, value }: { fieldKey: keyof InfoPlaceCard; value:
   // 모달이 이 컴포넌트를 거치므로 추천 카드와 INFO 카드의 가독성도 함께 맞춰진다.
   const lines = formatDetailValue(fieldKey, value).split("\n");
   return (
-    <dd className="mt-1 space-y-1">
+    <div className="space-y-1">
       {lines.map((line, index) =>
         line.startsWith("※") ? (
-          <p
-            key={`${line}-${index}`}
-            className="pt-1 text-xs leading-5 text-gray-500 dark:text-gray-400"
-          >
+          <p key={`${line}-${index}`} className="pt-1 text-xs leading-5 text-muted">
             {line}
           </p>
         ) : (
-          <p
-            key={`${line}-${index}`}
-            className="whitespace-pre-line text-gray-900 dark:text-gray-100"
-          >
+          <p key={`${line}-${index}`} className="whitespace-pre-line text-ink">
             {line}
           </p>
         ),
       )}
-    </dd>
+    </div>
   );
 }
 
@@ -145,58 +156,55 @@ function parseOperatingHours(value: string): OperatingHoursRow[] | null {
 
 function OperatingHoursRows({ rows }: { rows: OperatingHoursRow[] }) {
   return (
-    <div className="mt-2 grid gap-2 sm:grid-cols-2">
+    <div className="mt-1 grid gap-2">
       {rows.map(({ period, hours }) => (
-        <div
-          key={period}
-          className="rounded border border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900"
-        >
-          <p className="text-xs font-semibold text-gray-700 dark:text-gray-200">{period}</p>
-          <p className="mt-0.5 text-sm text-gray-900 dark:text-gray-100">{hours}</p>
+        <div key={period} className="rounded-lg border border-border bg-bg px-3 py-2 text-left">
+          <p className="text-xs font-semibold text-ink">{period}</p>
+          <p className="mt-0.5 text-sm text-ink">{hours}</p>
         </div>
       ))}
     </div>
   );
 }
 
-function DetailEntries({
-  card,
-  entries,
-}: {
-  card: InfoPlaceCard;
-  entries: Array<[keyof InfoPlaceCard, string]>;
-}) {
-  const visibleEntries = entries.filter(([key]) => {
+/** Figma InfoTable(29:203) — 아이콘+라벨 / 값을 한 줄씩, 실선으로 나눈다. */
+function InfoTable({ card, item }: { card: InfoPlaceCard; item?: RecommendationItem }) {
+  const visibleEntries = INFO_TABLE_FIELDS.filter(([key]) => {
     const value = card[key];
     return typeof value === "string" && value.trim();
   });
   if (visibleEntries.length === 0) return null;
 
   return (
-    <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
-      {visibleEntries.map(([key, label]) => {
+    <div className="flex flex-col divide-y divide-border rounded-xl bg-white px-4 shadow-resting">
+      {visibleEntries.map(([key, label, Icon]) => {
         const value = card[key];
         if (typeof value !== "string") return null;
         const operatingHours = key === "operating_hours" ? parseOperatingHours(value) : null;
+        const statusSuffix = key === "operating_hours" ? operatingStatusSuffix(item) : null;
         return (
-          <div
-            key={key}
-            className={`rounded-lg bg-gray-50 p-3 dark:bg-gray-800/70${
-              operatingHours ? " sm:col-span-2" : ""
-            }`}
-          >
-            <dt className="text-xs text-gray-500 dark:text-gray-400">{label}</dt>
-            {operatingHours ? (
-              <dd>
+          <div key={key} className="flex items-start justify-between gap-3 py-3">
+            <div className="flex shrink-0 items-center gap-2 pt-0.5">
+              <Icon size={15} className="text-muted" />
+              <span className="text-sm text-ink">{label}</span>
+            </div>
+            <div
+              className={`min-w-0 flex-1 text-right text-sm ${
+                statusSuffix ? "font-bold text-brand" : "text-ink"
+              }`}
+            >
+              {operatingHours ? (
                 <OperatingHoursRows rows={operatingHours} />
-              </dd>
-            ) : (
-              <DetailText fieldKey={key} value={value} />
-            )}
+              ) : statusSuffix ? (
+                `${value} · ${statusSuffix}`
+              ) : (
+                <DetailText fieldKey={key} value={value} />
+              )}
+            </div>
           </div>
         );
       })}
-    </dl>
+    </div>
   );
 }
 
@@ -786,10 +794,8 @@ function PlacePhotoGallery({ card, title }: { card: InfoPlaceCard; title: string
       <div className="relative">
         <img
           src={urls[safeIndex]}
-          alt={
-            urls.length > 1 ? `${placeName} 사진 ${safeIndex + 1}번째` : `${placeName} 이미지`
-          }
-          className="h-56 w-full rounded-xl bg-gray-100 object-cover dark:bg-gray-800"
+          alt={urls.length > 1 ? `${placeName} 사진 ${safeIndex + 1}번째` : `${placeName} 이미지`}
+          className="aspect-[5/3] w-full rounded-2xl bg-chip object-cover"
         />
         {urls.length > 1 && (
           <span className="absolute bottom-2 right-2 rounded-full bg-black/60 px-2 py-0.5 text-xs font-medium text-white">
@@ -843,6 +849,11 @@ export function RecommendationDetailPreviewModal({
   const [detailStatus, setDetailStatus] = useState<"loading" | "no_data" | "unavailable">(
     "loading",
   );
+  // 호출부 4곳 모두 {selected && <모달/>}로 조건부 렌더링한다 — AnimatePresence로
+  // 언마운트를 감지할 부모가 없다. 닫힐 때는 여기서 슬라이드다운을 먼저 재생하고,
+  // 애니메이션이 끝난 뒤에야 실제 onClose(부모의 상태 제거)를 부른다.
+  const [isClosing, setIsClosing] = useState(false);
+  const handleClose = () => setIsClosing(true);
   const placeId = card?.place_id ?? item?.place_id ?? placeIdProp;
   const placeName = card?.place_name ?? item?.name ?? placeNameProp;
   const title =
@@ -851,27 +862,32 @@ export function RecommendationDetailPreviewModal({
   // 목적지 좌표와 현재 위치가 모두 있어야 길찾기 딥링크를 만들 수 있다.
   const canRoute =
     detailCard?.latitude != null && detailCard?.longitude != null && Boolean(device_location);
+  // 주소는 제목 바로 아래 전용 줄로 뺐으니 "관련 정보"에서는 뺀다(중복 제거).
+  const addressText = detailCard?.answer_fields.address;
   // "관련 정보"(answer_fields)에서 개요는 아래 "개요" 섹션과 내용이 같아 제외한다(중복 제거).
   // 홈페이지는 answer_fields가 아니라 카드 최상위 필드다(질문 유형이 general_info가
   // 아니어도 백엔드가 채울 수 있다) — 하단 링크를 없앤 대신 여기서 합성해 넣는다.
-  const answerEntries = detailCard && !isRealtimeParkingCard(detailCard)
-    ? [
-        ...Object.entries(detailCard.answer_fields).filter(([key]) => key !== "overview"),
-        ...(detailCard.homepage && !("homepage" in detailCard.answer_fields)
-          ? ([["homepage", detailCard.homepage]] as [string, string][])
-          : []),
-      ]
-    : [];
+  const answerEntries =
+    detailCard && !isRealtimeParkingCard(detailCard)
+      ? [
+          ...Object.entries(detailCard.answer_fields).filter(
+            ([key]) => key !== "overview" && key !== "address",
+          ),
+          ...(detailCard.homepage && !("homepage" in detailCard.answer_fields)
+            ? ([["homepage", detailCard.homepage]] as [string, string][])
+            : []),
+        ]
+      : [];
   const hasRealtimeDetails =
     (detailCard?.realtime_detail_items?.length ?? 0) > 0 || Boolean(detailCard?.realtime_map_url);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") setIsClosing(true);
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
+  }, []);
 
   useEffect(() => {
     const shouldEnrichCard = needsDetailEnrichment(card);
@@ -916,57 +932,143 @@ export function RecommendationDetailPreviewModal({
     };
   }, [card, placeId, placeName]);
 
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-end bg-black/50 p-0 sm:items-center sm:justify-center sm:p-4"
-      role="presentation"
-      onMouseDown={onClose}
-    >
-      <section
+  // .tb-shell의 contain:layout에 기대는 대신 document.body로 포탈해, 채팅
+  // 스크롤 위치나 조상 요소의 overflow/포지셔닝과 무관하게 지금 보고 있는
+  // 화면(진짜 뷰포트) 하단에 항상 붙는다(D-102: 채팅이 길어지면 시트가 화면
+  // 기준이 아니라 문서 어딘가에 떨어져 붙는 것처럼 보이던 문제).
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex flex-col items-center justify-end" role="presentation">
+      <motion.button
+        type="button"
+        aria-label="닫기"
+        onClick={handleClose}
+        className="absolute inset-0 bg-ink-strong/35"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: isClosing ? 0 : 1 }}
+        transition={{ duration: 0.22 }}
+      />
+      <motion.section
         role="dialog"
         aria-modal="true"
         aria-labelledby="recommendation-detail-title"
-        className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-t-2xl bg-white shadow-xl dark:bg-gray-900 sm:rounded-2xl"
-        onMouseDown={(event) => event.stopPropagation()}
+        className="relative flex max-h-[88vh] w-full max-w-[640px] flex-col overflow-hidden rounded-t-3xl bg-bg shadow-card"
+        initial={{ y: "100%" }}
+        animate={{ y: isClosing ? "100%" : 0 }}
+        transition={{ type: "spring", damping: 32, stiffness: 320 }}
+        onAnimationComplete={() => {
+          if (isClosing) onClose();
+        }}
       >
-        <div className="flex items-center justify-between gap-3 border-b border-gray-100 px-5 py-4 dark:border-gray-800">
-          <div className="min-w-0">
-            <p className="text-xs text-gray-500 dark:text-gray-400">
-              {item ? "추천 장소 상세" : "장소 상세"}
-            </p>
-            <h2
-              id="recommendation-detail-title"
-              className="truncate text-lg font-bold text-gray-900 dark:text-gray-100"
-            >
-              {title}
-            </h2>
-          </div>
+        <span className="mx-auto mt-2.5 h-1.5 w-10 shrink-0 rounded-full bg-border" />
+
+        <div className="flex shrink-0 justify-end px-4 pb-3 pt-5">
           <button
             type="button"
-            onClick={onClose}
-            className="rounded-full p-2 text-gray-500 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:hover:bg-gray-800"
+            onClick={handleClose}
+            className="flex h-10 w-10 items-center justify-center rounded-full bg-white text-ink shadow-resting transition-colors hover:bg-chip focus:outline-none focus:ring-2 focus:ring-brand"
             aria-label="상세 창 닫기"
           >
-            ×
+            <X size={20} />
           </button>
         </div>
 
-        <div className="flex flex-col gap-5 p-5">
+        <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4 pb-5">
           {isLoading ? (
-            <div className="flex h-56 animate-pulse items-center justify-center rounded-xl bg-gray-100 text-sm text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+            <div className="flex aspect-[5/3] animate-pulse items-center justify-center rounded-2xl bg-chip text-sm text-muted">
               상세 정보를 불러오는 중...
             </div>
           ) : detailCard && (detailCard.photos?.length || detailCard.thumbnail_url) ? (
             <PlacePhotoGallery card={detailCard} title={title} />
           ) : !hasRealtimeDetails ? (
-            <div className="flex h-56 items-center justify-center rounded-xl border border-dashed border-gray-300 bg-gray-50 text-sm text-gray-500 dark:border-gray-700 dark:bg-gray-800/60 dark:text-gray-400">
+            <div className="flex aspect-[5/3] items-center justify-center rounded-2xl border border-dashed border-border bg-chip text-sm text-muted">
               {detailStatus === "unavailable"
                 ? "상세 정보를 불러오지 못했어요."
                 : "등록된 이미지가 없어요."}
             </div>
           ) : null}
 
-          {canRoute && detailCard && (
+          <div className="flex flex-col gap-1.5">
+            {item?.category && (
+              <span className="w-fit rounded-full bg-chip px-2.5 py-1 text-xs font-bold text-brand">
+                {item.category}
+              </span>
+            )}
+            <h2 id="recommendation-detail-title" className="text-xl font-bold text-ink">
+              {title}
+            </h2>
+            {item && (
+              <div className="flex items-center gap-1.5 text-sm text-muted">
+                <MapPin size={13} />
+                <span>{travelShortLabel(item)}</span>
+              </div>
+            )}
+            {addressText && <p className="text-xs text-muted">{addressText}</p>}
+          </div>
+
+          {isLoading ? (
+            <div className="h-44 animate-pulse rounded-xl bg-chip" />
+          ) : (
+            detailCard && <InfoTable card={detailCard} item={item} />
+          )}
+
+          {item?.recommendation_reason && (
+            <section className="flex flex-col gap-1.5 rounded-2xl bg-sky-light p-4">
+              <div className="flex items-center gap-1.5">
+                <Sparkles size={14} className="text-brand-deep" />
+                <p className="text-xs font-bold text-brand-deep">AI가 추천하는 이유</p>
+              </div>
+              <p className="text-sm leading-relaxed text-ink">{item.recommendation_reason}</p>
+            </section>
+          )}
+
+          {detailCard?.overview && (
+            <section className="flex flex-col gap-1.5">
+              <h3 className="text-xs font-bold text-label">개요</h3>
+              <p className="whitespace-pre-line text-sm leading-relaxed text-ink">
+                {detailCard.overview}
+              </p>
+            </section>
+          )}
+
+          {!isLoading &&
+            (detailCard ? (
+              <>
+                {answerEntries.length > 0 && (
+                  <section className="rounded-xl bg-sky-light p-3">
+                    <h3 className="text-sm font-semibold text-ink">관련 정보</h3>
+                    <dl className="mt-2 space-y-2 text-sm">
+                      {answerEntries.map(([key, value]) => (
+                        <div key={key} className="flex gap-2">
+                          <dt className="shrink-0 text-muted">{ANSWER_FIELD_LABELS[key] ?? key}</dt>
+                          <AnswerValue value={value} />
+                        </div>
+                      ))}
+                    </dl>
+                  </section>
+                )}
+                <RealtimeDetailEntries card={detailCard} />
+                {((detailCard.population_forecasts?.length ?? 0) > 0 ||
+                  (detailCard.concentration_forecasts?.length ?? 0) > 0 ||
+                  detailCard.question_type === "realtime_traffic") && (
+                  <section className="overflow-hidden rounded-xl border border-border bg-white">
+                    <ConcentrationForecastBars card={detailCard} />
+                    <PopulationForecastBars card={detailCard} />
+                    <RoadTrafficStatusSection card={detailCard} />
+                  </section>
+                )}
+                <PreferenceInsightsSection card={detailCard} />
+              </>
+            ) : (
+              <p className="rounded-xl border border-dashed border-border p-4 text-sm text-muted">
+                {detailStatus === "unavailable"
+                  ? "상세 정보를 불러오지 못했어요. 잠시 후 다시 시도해주세요."
+                  : "이 장소의 상세 정보는 아직 제공되지 않아요."}
+              </p>
+            ))}
+        </div>
+
+        {canRoute && detailCard && (
+          <div className="shrink-0 bg-bg px-4 pb-7 pt-4">
             <button
               type="button"
               onClick={() =>
@@ -977,82 +1079,15 @@ export function RecommendationDetailPreviewModal({
                   destName: detailCard.place_name ?? title,
                 })
               }
-              className="flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="flex h-[52px] w-full items-center justify-center gap-2 rounded-full bg-brand text-base font-bold text-white transition-colors hover:bg-brand-deep"
             >
-              <span aria-hidden="true">🧭</span>
+              <Navigation size={18} />
               네이버 지도로 길찾기
             </button>
-          )}
-
-          {item && (
-            <dl className="grid grid-cols-2 gap-3 text-sm">
-              <div className="rounded-lg bg-gray-50 p-3 dark:bg-gray-800/70">
-                <dt className="text-xs text-gray-500 dark:text-gray-400">{travelLabel(item)}</dt>
-                <dd className="mt-1 font-medium text-gray-900 dark:text-gray-100">
-                  {travelValue(item)}
-                </dd>
-              </div>
-              <div className="rounded-lg bg-gray-50 p-3 dark:bg-gray-800/70">
-                <dt className="text-xs text-gray-500 dark:text-gray-400">운영시간</dt>
-                <dd className="mt-1 font-medium text-gray-900 dark:text-gray-100">
-                  {formatOperatingHours(item)}
-                </dd>
-              </div>
-            </dl>
-          )}
-
-          {isLoading ? (
-            <div className="h-44 animate-pulse rounded-xl bg-gray-100 dark:bg-gray-800" />
-          ) : detailCard ? (
-            <section className="flex flex-col gap-4">
-              {answerEntries.length > 0 && (
-                <section className="rounded-xl bg-blue-50 p-3 dark:bg-blue-950/30">
-                  <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                    관련 정보
-                  </h3>
-                  <dl className="mt-2 space-y-2 text-sm">
-                    {answerEntries.map(([key, value]) => (
-                      <div key={key} className="flex gap-2">
-                        <dt className="shrink-0 text-gray-500 dark:text-gray-400">
-                          {ANSWER_FIELD_LABELS[key] ?? key}
-                        </dt>
-                        <AnswerValue value={value} />
-                      </div>
-                    ))}
-                  </dl>
-                </section>
-              )}
-              <RealtimeDetailEntries card={detailCard} />
-              {((detailCard.population_forecasts?.length ?? 0) > 0 ||
-                (detailCard.concentration_forecasts?.length ?? 0) > 0 ||
-                detailCard.question_type === "realtime_traffic") && (
-                <section className="overflow-hidden rounded-xl border border-gray-100 bg-white dark:border-gray-800 dark:bg-gray-900">
-                  <ConcentrationForecastBars card={detailCard} />
-                  <PopulationForecastBars card={detailCard} />
-                  <RoadTrafficStatusSection card={detailCard} />
-                </section>
-              )}
-              {detailCard.overview && (
-                <section>
-                  <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">개요</h3>
-                  <p className="mt-1 whitespace-pre-line text-sm leading-6 text-gray-700 dark:text-gray-300">
-                    {detailCard.overview}
-                  </p>
-                </section>
-              )}
-              <PreferenceInsightsSection card={detailCard} />
-              <DetailEntries card={detailCard} entries={DETAIL_FIELDS} />
-              <DetailEntries card={detailCard} entries={FACILITY_FIELDS} />
-            </section>
-          ) : (
-            <p className="rounded-xl border border-dashed border-gray-300 p-4 text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
-              {detailStatus === "unavailable"
-                ? "상세 정보를 불러오지 못했어요. 잠시 후 다시 시도해주세요."
-                : "이 장소의 상세 정보는 아직 제공되지 않아요."}
-            </p>
-          )}
-        </div>
-      </section>
-    </div>
+          </div>
+        )}
+      </motion.section>
+    </div>,
+    document.body,
   );
 }

@@ -1,43 +1,57 @@
 /*
  * 역할: 첫 사용자 질문을 입력받아 해석 API를 호출하고 채팅 흐름을 시작한다.
- * 입력: 질문 입력창의 user_input 문자열과 상황 버튼 선택.
+ * 입력: 컴포저의 user_input 문자열과 상황 버튼 선택.
  * 출력: TripContext 메시지/조건 저장, /chat 이동, 로딩/오류 상태.
  * 호출 시점: 사용자가 루트 화면에서 여행 상황을 제출할 때 호출된다.
  * TODO: 위치 권한과 추천 예시를 실제 서비스 데이터에 맞게 보강한다.
+ * 근거: package_D/DESIGN_SYSTEM.md §10.1·§10.5.
+ *
+ * ChatPage와 같은 ChatComposer를 쓴다 — Figma가 홈도 채팅형 하단 고정 바를 쓰기
+ * 때문이다. 상황 예시 칩은 입력창을 채우기만 하고 전송하지 않는다(§10.5) —
+ * "개발자용으로 시작"도 같은 텍스트로 고를 수 있어야 해서다.
  */
 
-import { useState, type FormEvent } from "react";
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
 import { streamChat, toDisplayConditions } from "../api/trip";
+import { ChatComposer } from "../components/chat/ChatComposer";
 import { ErrorBanner } from "../components/ErrorBanner";
-import { VoiceInputButton } from "../components/chat/VoiceInputButton";
-import { AuthStatusBadge } from "../auth/AuthStatusBadge";
-import { LanguageSelector } from "../components/LanguageSelector";
+import { AppHeader } from "../components/layout/AppHeader";
+import { usePhotoSimilarSearch } from "../hooks/usePhotoSimilarSearch";
+import { beginChatRequest, endChatRequest } from "../state/chatAbortController";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import { buildAgentStageTimings } from "../utils/agentTiming";
 import { getBrowserDeviceLocation } from "../utils/geolocation";
 
 const HOME_TEXT = {
   ko: {
+    headline: "갑자기 일정이 바뀌셨나요?",
     subtitle: "지금 상황을 말해주면 바로 대체 장소를 찾아볼게요.",
-    locationNotice: "추천 시작 시 브라우저가 위치 권한을 요청합니다. 허용한 위치는 현재 채팅 세션의 장소 탐색 기준으로 사용됩니다.",
-    prompts: ["비를 피할 실내 장소가 필요해", "남은 시간이 1시간 정도야", "근처 카페나 박물관을 찾고 싶어"],
+    locationNotice:
+      "추천 시작 시 브라우저가 위치 권한을 요청합니다. 허용한 위치는 현재 채팅 세션의 장소 탐색 기준으로 사용됩니다.",
+    prompts: [
+      "비를 피할 실내 장소가 필요해",
+      "남은 시간이 1시간 정도야",
+      "근처 카페나 박물관을 찾고 싶어",
+    ],
     placeholder: "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
-    voiceHelp: "마이크를 누르고 말하면, 말이 끝난 뒤 자동으로 전송합니다.",
-    locating: "현재 위치 확인 중...",
     start: "추천 시작하기",
     developer: "개발자용으로 시작",
     locationError: "위치를 가져오지 못했어요.",
     requestError: "입력을 처리하지 못했어요. 다시 시도해주세요.",
   },
   en: {
+    headline: "Did your plans change suddenly?",
     subtitle: "Tell us what you need, and we’ll find a place to visit in Seoul.",
-    locationNotice: "Your browser will ask for location permission before starting. We use it as the search point for this chat session.",
-    prompts: ["I need an indoor place to avoid the rain", "I have about one hour left", "Find a café or museum nearby"],
+    locationNotice:
+      "Your browser will ask for location permission before starting. We use it as the search point for this chat session.",
+    prompts: [
+      "I need an indoor place to avoid the rain",
+      "I have about one hour left",
+      "Find a café or museum nearby",
+    ],
     placeholder: "For example: Find a museum or café near Gyeongbokgung where I can avoid the rain",
-    voiceHelp: "Tap the microphone and we’ll send your speech after you finish speaking.",
-    locating: "Getting your location...",
     start: "Start recommendations",
     developer: "Start in developer view",
     locationError: "We couldn’t get your location.",
@@ -54,6 +68,19 @@ export function HomePage() {
   const [userInput, setUserInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const searchByPhoto = usePhotoSimilarSearch();
+
+  /*
+   * ChatPage와 같은 훅을 쓴다(usePhotoSimilarSearch). searchByPhoto는 호출되자마자
+   * (첫 await 전까지) 대화에 메시지를 동기적으로 추가한다 — 그 뒤에 이동해야
+   * ChatPage의 hasConversation 가드가 "대화 없음"으로 보고 홈으로 되돌리지
+   * 않는다(먼저 이동부터 하면 메시지가 아직 없어 튕겨 나간다).
+   */
+  async function handlePhotoSelect(file: File) {
+    const pending = searchByPhoto(file);
+    navigate("/chat");
+    await pending;
+  }
 
   async function startChat(input: string, targetPath = "/chat") {
     const trimmed = input.trim();
@@ -91,6 +118,10 @@ export function HomePage() {
     let firstMessageDeltaElapsedMs: number | null = null;
     let receivedStreamResult = false;
     let receivedStreamMessage = false;
+    // 발화를 보내자마자 /chat으로 이동하므로(위), 실제 요청은 이 화면이 언마운트된
+    // 뒤에도 계속 진행된다 — ChatPage의 "중단" 버튼이 닿을 수 있도록 이 요청도
+    // 같은 전역 컨트롤러에 등록한다(state/chatAbortController.ts).
+    const controller = beginChatRequest();
     try {
       await streamChat(
         {
@@ -180,108 +211,88 @@ export function HomePage() {
             },
           });
         },
+        controller.signal,
       );
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        dispatch({ type: "CANCEL_CHAT_TURN" });
+        return;
+      }
       dispatch({
         type: "SET_ERROR",
-        payload:
-          error instanceof ApiError
-            ? error.message
-            : text.requestError,
+        payload: error instanceof ApiError ? error.message : text.requestError,
       });
+    } finally {
+      endChatRequest(controller);
     }
   }
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    await startChat(userInput);
-  }
+  /*
+   * ChatPage와 같은 계산이다(같은 세션 조건이 아직 남아 있으면 홈으로 돌아와도
+   * 보여준다) — 브라우저 뒤로가기로 대화가 있던 홈에 돌아오는 경우가 그렇다.
+   * "홈"을 새로 눌렀다면 사이드바 goHome()이 RESET을 먼저 보내 이 값도 비운다.
+   * 아직 해석된 지명이 없으면(첫 진입) 실제 서비스 지원 지역인 "종로구"를
+   * 기본값으로 쓴다 — 헤더에 위치 버튼이 항상 보여야 한다.
+   */
+  const locationLabel = state.interpreted_conditions?.location_query ?? "종로구";
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-xl flex-col justify-center gap-5 px-4 py-10">
-      <div className="flex flex-col gap-2">
-        <div className="flex items-center justify-between gap-2">
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">TripBranch</h1>
-          <div className="flex items-center gap-2">
-            <LanguageSelector
-              language={state.language}
-              onChange={(language) => dispatch({ type: "SET_LANGUAGE", payload: language })}
-            />
-            <AuthStatusBadge />
-          </div>
-        </div>
-        <p className="text-sm text-gray-600 dark:text-gray-400">
-          {text.subtitle}
-        </p>
-      </div>
+    <main className="flex h-full flex-col overflow-y-auto">
+      <AppHeader locationLabel={locationLabel} />
 
-      <section className="rounded-md border border-gray-200 p-3 text-sm text-gray-700 dark:border-gray-700 dark:text-gray-300">
-        {text.locationNotice}
-      </section>
-
-      <div className="flex flex-wrap gap-2">
-        {text.prompts.map((prompt) => (
+      <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-5 px-4 pb-4 pt-2">
+        <div className="flex items-center justify-end">
+          {/* 채우기만 하고 전송은 안 한다(§10.5) — 입력이 있어야 의미 있어
+              비어 있으면 비활성. */}
           <button
-            key={prompt}
             type="button"
-            disabled={isLoading}
-            onClick={() => setUserInput(prompt)}
-            className="rounded-full border border-gray-300 px-3 py-1.5 text-xs text-gray-700 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300"
+            disabled={isLoading || !userInput.trim()}
+            onClick={() => void startChat(userInput, "/dev-chat")}
+            className="rounded-full bg-chip px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-sky-light disabled:opacity-50"
           >
-            {prompt}
+            {text.developer}
           </button>
-        ))}
-      </div>
-
-      <form onSubmit={handleSubmit} className="flex flex-col gap-3">
-        <textarea
-          value={userInput}
-          onChange={(event) => setUserInput(event.target.value)}
-          rows={5}
-          placeholder={text.placeholder}
-          className="w-full resize-none rounded-md border border-gray-300 p-3 text-sm focus:border-gray-500 focus:outline-none dark:border-gray-700 dark:bg-gray-900"
-        />
-
-        <div className="flex items-center gap-2">
-          <VoiceInputButton
-            disabled={isLoading}
-            onTranscript={() => {
-              setErrorMessage(null);
-            }}
-            onAutoSubmit={async (transcript) => {
-              setErrorMessage(null);
-              await startChat(transcript);
-            }}
-            onManualStop={(transcript) => {
-              setErrorMessage(null);
-              setUserInput(transcript);
-            }}
-            onError={setErrorMessage}
-          />
-          <p className="text-xs text-gray-500 dark:text-gray-400">
-            {text.voiceHelp}
-          </p>
         </div>
+
+        <div className="flex flex-col gap-2">
+          <h1 className="text-[24px] font-bold leading-snug text-ink">{text.headline}</h1>
+          <p className="text-sm leading-relaxed text-muted">{text.subtitle}</p>
+        </div>
+
+        <section className="rounded-2xl bg-sky-light p-3.5 text-sm leading-relaxed text-brand-deep">
+          {text.locationNotice}
+        </section>
 
         {errorMessage && <ErrorBanner message={errorMessage} />}
 
-        <button
-          type="submit"
-          disabled={isLoading || !userInput.trim()}
-          className="rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-gray-100 dark:text-gray-900"
-        >
-          {isLoading ? text.locating : text.start}
-        </button>
-        <button
-          type="button"
-          disabled={isLoading || !userInput.trim()}
-          onClick={() => void startChat(userInput, "/dev-chat")}
-          className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-800 disabled:opacity-50 dark:border-gray-700 dark:text-gray-100"
-        >
-          {text.developer}
-        </button>
-      </form>
+        <div className="flex flex-wrap items-start gap-3">
+          {text.prompts.map((prompt) => (
+            <button
+              key={prompt}
+              type="button"
+              disabled={isLoading}
+              onClick={() => setUserInput(prompt)}
+              className="rounded-full bg-white px-4 py-2.5 text-left text-sm font-medium text-ink shadow-resting transition-colors hover:bg-chip disabled:opacity-50"
+            >
+              {prompt}
+            </button>
+          ))}
+        </div>
+      </div>
 
+      <ChatComposer
+        disabled={isLoading}
+        value={userInput}
+        onChange={setUserInput}
+        onSubmit={async (submitted) => {
+          setErrorMessage(null);
+          await startChat(submitted);
+        }}
+        placeholder={text.placeholder}
+        language={state.language}
+        sendLabel={text.start}
+        onPhotoSelect={handlePhotoSelect}
+      />
     </main>
   );
 }

@@ -11,6 +11,7 @@
  * 같아지는 것을 정상으로 본다.
  */
 
+import { Camera, ImageIcon, Plus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 /** 서버 상한과 같다(app/routes/photo_similar.py). 올리기 전에 걸러 왕복을 아낀다. */
@@ -71,33 +72,31 @@ export function PhotoInputButton({ disabled = false, onSelect, onError }: PhotoI
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
-        className="rounded-md border border-gray-300 px-3 py-2 text-gray-700 disabled:opacity-50 dark:border-gray-700 dark:text-gray-200"
+        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-ink transition-colors hover:bg-chip disabled:opacity-50"
       >
-        <span aria-hidden="true">
-          <PlusIcon />
-        </span>
+        <Plus size={18} aria-hidden />
       </button>
 
       {open && (
         <div
           role="menu"
-          className="absolute bottom-full left-0 z-10 mb-2 w-36 overflow-hidden rounded-md border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
+          className="absolute bottom-full left-0 z-30 mb-2 flex w-44 flex-col gap-0.5 rounded-2xl border border-white bg-white/60 p-1.5 shadow-card backdrop-blur-md"
         >
           <button
             type="button"
             role="menuitem"
             onClick={() => cameraRef.current?.click()}
-            className="block w-full px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-800"
+            className="flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-sm font-medium text-ink transition-colors hover:bg-chip"
           >
-            사진
+            <Camera size={16} className="text-brand" aria-hidden /> 사진
           </button>
           <button
             type="button"
             role="menuitem"
             onClick={() => galleryRef.current?.click()}
-            className="block w-full px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-800"
+            className="flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-sm font-medium text-ink transition-colors hover:bg-chip"
           >
-            갤러리
+            <ImageIcon size={16} className="text-brand" aria-hidden /> 갤러리
           </button>
         </div>
       )}
@@ -121,13 +120,5 @@ export function PhotoInputButton({ disabled = false, onSelect, onError }: PhotoI
         data-testid="photo-gallery-input"
       />
     </div>
-  );
-}
-
-function PlusIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className="size-5" stroke="currentColor" strokeWidth="2.2">
-      <path d="M12 5v14M5 12h14" strokeLinecap="round" />
-    </svg>
   );
 }

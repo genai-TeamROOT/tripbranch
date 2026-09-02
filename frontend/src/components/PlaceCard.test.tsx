@@ -50,7 +50,6 @@ test("담기지 않은 장소는 담기로, 담긴 장소는 담김으로 보인
   );
 
   const button = screen.getByRole("button", { name: /보관함에 담기/ });
-  expect(button).toHaveTextContent("담기");
   expect(button).toHaveAttribute("aria-pressed", "false");
 
   rerender(
@@ -60,7 +59,6 @@ test("담기지 않은 장소는 담기로, 담긴 장소는 담김으로 보인
   );
 
   const saved = screen.getByRole("button", { name: /보관함에 담기/ });
-  expect(saved).toHaveTextContent("담김");
   expect(saved).toHaveAttribute("aria-pressed", "true");
 });
 
@@ -99,4 +97,24 @@ test("카드 본문 클릭은 여전히 상세 미리보기를 연다", async ()
   await user.click(screen.getByText("아키비스트 서촌"));
 
   expect(onOpenDetail).toHaveBeenCalledTimes(1);
+});
+
+test("image_url이 있으면 이미지를, 없으면 카테고리 자리표시 칩을 보여준다", () => {
+  // 이미지는 장식용(alt="")이라 role="img"로 접근할 수 없다 — querySelector로 확인한다.
+  const { container, rerender } = render(
+    <ul>
+      <PlaceCard item={item({ image_url: null })} />
+    </ul>,
+  );
+
+  expect(container.querySelector("img")).not.toBeInTheDocument();
+  expect(screen.getByText("cafe")).toBeInTheDocument();
+
+  rerender(
+    <ul>
+      <PlaceCard item={item({ image_url: "https://img.test/place-1.jpg" })} />
+    </ul>,
+  );
+
+  expect(container.querySelector("img")).toHaveAttribute("src", "https://img.test/place-1.jpg");
 });

@@ -11,18 +11,21 @@
  * TODO: 스트리밍 응답이 생기면 메시지 append 경로를 확장한다.
  */
 
-import { useCallback, useState } from "react";
+import { ChevronDown, ChevronUp } from "lucide-react";
+import { useCallback, useRef, useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
 import { fetchSessionState, streamChat, toDisplayConditions } from "../api/trip";
 import { ChatComposer } from "../components/chat/ChatComposer";
 import { ChatMessageList } from "../components/chat/ChatMessageList";
 import { SavedPlacesBar } from "../components/chat/SavedPlacesBar";
+import { useAutoScrollToBottom } from "../hooks/useAutoScrollToBottom";
+import { useScrollEdgeButton } from "../hooks/useScrollEdgeButton";
 import { ErrorBanner } from "../components/ErrorBanner";
-import { AuthStatusBadge } from "../auth/AuthStatusBadge";
-import { LanguageSelector } from "../components/LanguageSelector";
+import { AppHeader } from "../components/layout/AppHeader";
 import { usePhotoSimilarSearch } from "../hooks/usePhotoSimilarSearch";
 import { useSavedPlaces } from "../hooks/useSavedPlaces";
+import { beginChatRequest, cancelChatRequest, endChatRequest } from "../state/chatAbortController";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import type { TravelOrigin } from "../types";
 import { buildAgentStageTimings } from "../utils/agentTiming";
@@ -42,9 +45,7 @@ const STATUS_COMMAND = "/status";
 
 const CHAT_TEXT = {
   ko: {
-    subtitle: "대화형 대체 장소 추천",
     developer: "개발자용 보기",
-    restart: "처음부터",
     requestError: "추천을 불러오지 못했어요. 다시 시도해주세요.",
     composer: "추가 조건을 입력해 주세요",
     clarificationComposer: "예: 경복궁 근처에서 찾아줘",
@@ -54,9 +55,7 @@ const CHAT_TEXT = {
     currentLocation: "현재 위치 기준으로 다시 보기",
   },
   en: {
-    subtitle: "Conversational Seoul travel recommendations",
     developer: "Developer view",
-    restart: "Start over",
     requestError: "We couldn’t load recommendations. Please try again.",
     composer: "Add another condition or ask a follow-up",
     clarificationComposer: "For example: Find somewhere near Gyeongbokgung",
@@ -80,9 +79,12 @@ export function ChatPage() {
 
   const isLoading = state.phase === "interpreting" || state.phase === "recommending";
   const hasConversation = state.messages.length > 0;
-  const [pendingLocationRefresh, setPendingLocationRefresh] = useState<PendingLocationRefresh | null>(
-    null,
-  );
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
+  useAutoScrollToBottom(messagesContainerRef, isLoading);
+  const { isNearTop, isScrollable, scrollToTop, scrollToBottom } =
+    useScrollEdgeButton(messagesContainerRef);
+  const [pendingLocationRefresh, setPendingLocationRefresh] =
+    useState<PendingLocationRefresh | null>(null);
 
   const showStatus = useCallback(
     async (text: string) => {
@@ -138,7 +140,11 @@ export function ChatPage() {
       const conversationPlaceName = getLatestConversationPlaceName(state.messages);
       dispatch({
         type: "START_CHAT_TURN",
-        payload: { userInput: text, deviceLocation: deviceLocationOverride, deviceLocationCapturedAt },
+        payload: {
+          userInput: text,
+          deviceLocation: deviceLocationOverride,
+          deviceLocationCapturedAt,
+        },
       });
       // 사용자가 입력하거나 버튼을 누른 시점부터 결과를 dispatch할 때까지를 잰다.
       const startedAt = performance.now();
@@ -147,6 +153,7 @@ export function ChatPage() {
       let firstMessageDeltaElapsedMs: number | null = null;
       let receivedStreamResult = false;
       let receivedStreamMessage = false;
+      const controller = beginChatRequest();
       try {
         await streamChat(
           {
@@ -241,15 +248,21 @@ export function ChatPage() {
               },
             });
           },
+          controller.signal,
         );
       } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          // 사용자가 "중단"을 눌렀다 — 오류로 취급하지 않는다(§7.2).
+          dispatch({ type: "CANCEL_CHAT_TURN" });
+          return;
+        }
         dispatch({
           type: "SET_ERROR",
           payload:
-            error instanceof ApiError
-              ? error.message
-            : CHAT_TEXT[state.language].requestError,
+            error instanceof ApiError ? error.message : CHAT_TEXT[state.language].requestError,
         });
+      } finally {
+        endChatRequest(controller);
       }
       // 이 턴에서 거절이 일어났다면 서버가 보관함에서도 뺐다(saved ∩ rejected = ∅).
       // 그 결과는 AgentResponse.state(StateApplyResponse)에 실려 오지 않으므로
@@ -316,7 +329,13 @@ export function ChatPage() {
       type: "SNOOZE_LOCATION_REFRESH",
       payload: { until: Date.now() + LOCATION_RECONFIRM_AFTER_MS },
     });
-    void send(pending.text, pending.clarificationChoice, undefined, undefined, pending.travelOriginOverride);
+    void send(
+      pending.text,
+      pending.clarificationChoice,
+      undefined,
+      undefined,
+      pending.travelOriginOverride,
+    );
   }, [dispatch, pendingLocationRefresh, send]);
 
   const refreshBrowserLocation = useCallback(async () => {
@@ -354,88 +373,93 @@ export function ChatPage() {
     await requestSend(text);
   }
 
+  const locationLabel = state.interpreted_conditions?.location_query ?? "종로구";
+
   return (
-    <main className="mx-auto flex min-h-screen max-w-3xl flex-col gap-4 px-4 py-6">
-      <header className="flex items-center justify-between gap-3 border-b border-gray-200 pb-4 dark:border-gray-800">
-        <div>
-          <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">TripBranch</h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400">{text.subtitle}</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <LanguageSelector
-            language={state.language}
-            onChange={(language) => dispatch({ type: "SET_LANGUAGE", payload: language })}
-          />
-          <AuthStatusBadge />
+    <main className="flex h-full flex-col overflow-y-auto">
+      <AppHeader locationLabel={locationLabel} />
+
+      <div
+        ref={messagesContainerRef}
+        className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-4 px-4 pb-4"
+      >
+        {/* 브랜드 표기·언어 전환·신원 표시는 사이드바가 맡는다(DESIGN_SYSTEM.md
+            6.17). "처음부터"는 사이드바 "홈"과 동작이 같아 중복이라 뺐다.
+            화면 설명 문구도 뺐다 — 무엇을 하는 화면인지는 대화 자체로 드러난다. */}
+        <div className="flex items-center justify-end gap-3">
           <button
             type="button"
             onClick={() => navigate("/dev-chat")}
-            className="rounded-md border border-gray-300 px-3 py-1.5 text-sm dark:border-gray-700"
+            className="rounded-full bg-chip px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-sky-light"
           >
             {text.developer}
           </button>
+        </div>
+
+        {state.error && (
+          <ErrorBanner
+            message={state.error}
+            onRetry={() => {
+              if (state.user_input) void requestSend(state.user_input);
+            }}
+          />
+        )}
+
+        <ChatMessageList
+          messages={state.messages}
+          showDebug={false}
+          isLoading={isLoading}
+          deviceLocation={state.device_location}
+          onRequestMore={() => void requestSend(text.requestMore)}
+          onRelaxRadius={() => void requestSend(text.relaxRadius)}
+          onSelectClarificationOption={(optionId, label) => void requestSend(label, optionId)}
+          // 되묻기 버튼과 달리 override 없이 문구만 보낸다 — 사용자가 직접 입력한
+          // 것과 같은 경로로 분류를 태운다.
+          onSelectFollowUpSuggestion={(suggestion) => void handleFollowUp(suggestion)}
+          onToggleTravelOrigin={(toggle) => {
+            const label =
+              toggle.alternative_origin === "search_center"
+                ? text.basedOn(toggle.alternative_origin_name)
+                : text.currentLocation;
+            void requestSend(label, undefined, toggle.alternative_origin);
+          }}
+          locationRefresh={
+            pendingLocationRefresh
+              ? {
+                  ageMinutes: locationAgeMinutes,
+                  onUsePrevious: usePreviousLocation,
+                  onRefreshLocation: () => void refreshBrowserLocation(),
+                }
+              : null
+          }
+          progress={state.agentProgress}
+          language={state.language}
+        />
+
+        <SavedPlacesBar
+          onPlanFromSaved={planFromSaved}
+          isLoading={isLoading}
+          language={state.language}
+        />
+      </div>
+
+      {isScrollable && (
+        <div className="pointer-events-none sticky bottom-20 z-30 mx-auto flex w-full max-w-2xl justify-end px-4 md:bottom-24">
           <button
             type="button"
-            onClick={() => {
-              dispatch({ type: "RESET" });
-              navigate("/");
-            }}
-            className="rounded-md border border-gray-300 px-3 py-1.5 text-sm dark:border-gray-700"
+            onClick={isNearTop ? scrollToBottom : scrollToTop}
+            aria-label={isNearTop ? "대화 맨 아래로 이동" : "대화 맨 위로 이동"}
+            className="pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full border border-white bg-white/60 text-ink shadow-resting backdrop-blur-md transition-colors hover:bg-white/80"
           >
-            {text.restart}
+            {isNearTop ? <ChevronDown size={18} /> : <ChevronUp size={18} />}
           </button>
         </div>
-      </header>
-
-      {state.error && (
-        <ErrorBanner
-          message={state.error}
-          onRetry={() => {
-            if (state.user_input) void requestSend(state.user_input);
-          }}
-        />
       )}
-
-      <ChatMessageList
-        messages={state.messages}
-        showDebug={false}
-        isLoading={isLoading}
-        hasDeviceLocation={Boolean(state.device_location)}
-        deviceLocation={state.device_location}
-        onRequestMore={() => void requestSend(text.requestMore)}
-        onRelaxRadius={() => void requestSend(text.relaxRadius)}
-        onSelectClarificationOption={(optionId, label) => void requestSend(label, optionId)}
-        // 되묻기 버튼과 달리 override 없이 문구만 보낸다 — 사용자가 직접 입력한
-        // 것과 같은 경로로 분류를 태운다.
-        onSelectFollowUpSuggestion={(suggestion) => void handleFollowUp(suggestion)}
-        onToggleTravelOrigin={(toggle) => {
-          const label = toggle.alternative_origin === "search_center"
-            ? text.basedOn(toggle.alternative_origin_name)
-            : text.currentLocation;
-          void requestSend(label, undefined, toggle.alternative_origin);
-        }}
-        locationRefresh={
-          pendingLocationRefresh
-            ? {
-                ageMinutes: locationAgeMinutes,
-                onUsePrevious: usePreviousLocation,
-                onRefreshLocation: () => void refreshBrowserLocation(),
-              }
-            : null
-        }
-        progress={state.agentProgress}
-        language={state.language}
-      />
-
-      <SavedPlacesBar
-        onPlanFromSaved={planFromSaved}
-        isLoading={isLoading}
-        language={state.language}
-      />
 
       <ChatComposer
         disabled={isLoading}
         onSubmit={handleFollowUp}
+        onCancel={isLoading ? cancelChatRequest : undefined}
         placeholder={state.awaiting_clarification ? text.clarificationComposer : text.composer}
         language={state.language}
         onPhotoSelect={handlePhotoSelect}

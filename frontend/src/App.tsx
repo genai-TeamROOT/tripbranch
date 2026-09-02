@@ -1,18 +1,26 @@
 /*
  * 역할: TripBranch 프론트엔드의 관문/홈/채팅 라우팅을 구성한다.
  * 입력: 브라우저 URL, AuthProvider가 확보한 신원.
- * 출력: LoginPage, 신원이 있어야 들어갈 수 있는 HomePage/ChatPage, 이전 URL 호환 리다이렉트.
+ * 출력: LoginPage, 신원이 있어야 들어갈 수 있는 화면들(AppShell로 감싼 홈·채팅·
+ *   취향 설정·위치 설정·일정), 이전 URL 호환 리다이렉트.
  * 호출 시점: main.tsx가 앱을 렌더링할 때 최상위 컴포넌트로 호출된다.
  * TODO: 실제 세션 라우트가 생기면 /chat/:sessionId를 별도 보호 라우트로 추가한다.
+ *
+ * 셸 안 화면 표(홈·채팅·취향 설정·위치 설정·일정)는 AppShell이 감싸는
+ * AppRoutes에 있다 — AppShell이 URL을 baseLocation(기반 화면)/sheetLocations
+ * (위에 쌓인 바텀시트들)로 나눠 AppRoutes를 각각 다시 호출한다
+ * (package_D/DESIGN_SYSTEM.md §5.3).
  */
 
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "./auth/AuthContext";
 import { RequireUser } from "./auth/RequireUser";
 import { TripProvider } from "./state/TripContext";
-import { HomePage } from "./pages/HomePage";
-import { ChatPage } from "./pages/ChatPage";
+import { AppShell } from "./components/layout/AppShell";
 import { LoginPage } from "./pages/LoginPage";
+import { SignupPage } from "./pages/SignupPage";
+import { FindIdPage } from "./pages/FindIdPage";
+import { ResetPasswordPage } from "./pages/ResetPasswordPage";
 import { DeveloperChatPage } from "./pages/DeveloperChatPage";
 import { DeveloperOpsPage } from "./pages/DeveloperOpsPage";
 
@@ -23,22 +31,10 @@ function App() {
         <BrowserRouter>
           <Routes>
             <Route path="/login" element={<LoginPage />} />
-            <Route
-              path="/"
-              element={
-                <RequireUser>
-                  <HomePage />
-                </RequireUser>
-              }
-            />
-            <Route
-              path="/chat"
-              element={
-                <RequireUser>
-                  <ChatPage />
-                </RequireUser>
-              }
-            />
+            {/* 회원가입·아이디찾기·비밀번호찾기는 아직 백엔드가 없는 UI 목업이다(D-062 Phase 5). */}
+            <Route path="/signup" element={<SignupPage />} />
+            <Route path="/find-id" element={<FindIdPage />} />
+            <Route path="/reset-password" element={<ResetPasswordPage />} />
             <Route
               path="/dev-chat"
               element={
@@ -51,7 +47,19 @@ function App() {
             <Route path="/dev-ops" element={<DeveloperOpsPage />} />
             <Route path="/confirm" element={<Navigate to="/chat" replace />} />
             <Route path="/results" element={<Navigate to="/chat" replace />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
+            {/*
+             * 신원이 필요한 화면 전부(/, /chat, /preferences, /location, /schedule,
+             * 그리고 알 수 없는 경로)를 여기서 한 번에 받는다. AppShell 안의 AppRoutes가
+             * 실제 화면을 고른다 — RequireUser를 화면마다 반복하지 않기 위해서다.
+             */}
+            <Route
+              path="*"
+              element={
+                <RequireUser>
+                  <AppShell />
+                </RequireUser>
+              }
+            />
           </Routes>
         </BrowserRouter>
       </TripProvider>
