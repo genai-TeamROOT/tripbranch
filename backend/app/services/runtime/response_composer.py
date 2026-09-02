@@ -935,6 +935,34 @@ def _with_omitted_note(message: str, schedule: ScheduleResult) -> str:
     return " ".join(parts)
 
 
+def _with_over_budget_note(
+    message: str, schedule: ScheduleResult, time_available_min: int | None
+) -> str:
+    """편성 결과가 요청한 활동 가능 시간을 넘으면 그 사실을 덧붙인다. (TP-216)
+
+    **탈락시키지 않고 안내만 한다.** 총 소요시간은 구간 이동시간 위에서 계산되는데
+    그 값이 실측일 때도 추정일 때도 있어(`ScheduleItem.travel_to_next_measured`),
+    넘었다는 이유로 장소를 빼면 추정 오차 때문에 멀쩡한 일정이 깎인다. 사용자가
+    보고 판단할 수 있게 수치만 밝힌다.
+
+    **문턱은 라벨이 바뀌는 지점과 같은 값이다**(`_DURATION_MATCH_TOLERANCE_MIN`).
+    허용 오차 안이면 위에서 요청 시간을 그대로 라벨로 쓰므로("3시간 코스를
+    짜봤어요"), 거기에 초과 안내가 붙으면 한 문장 안에서 3시간이라고 해놓고
+    3시간을 넘었다고 말하게 된다. 두 판단이 같은 상수를 보게 묶어둔다.
+    """
+
+    if time_available_min is None:
+        return message
+    over_min = schedule.total_duration_min - time_available_min
+    if over_min <= _DURATION_MATCH_TOLERANCE_MIN:
+        return message
+    return (
+        f"{message} 요청하신 {_format_duration_label(time_available_min)}보다 "
+        f"{_format_duration_label(over_min)} 정도 길어요 — "
+        "빼고 싶은 곳이 있으면 말씀해주세요."
+    )
+
+
 def compose_schedule_message(
     schedule: ScheduleResult, *, time_available_min: int | None = None
 ) -> str:
@@ -953,6 +981,9 @@ def compose_schedule_message(
     시간을 그대로 보여준다("2시간 짜줘" → "2시간 코스를 짜봤어요"). 차이가 크면
     실제 편성 결과가 요청과 동떨어졌다는 뜻이므로 실제 계산값을 보여준다.
 
+    총 소요시간이 요청한 활동 가능 시간을 허용 오차 이상으로 넘으면 한 문장을
+    덧붙인다(TP-216) — 넘었다는 이유로 장소를 빼지는 않는다.
+
     omitted_saved_place_names가 있으면 한 문장을 덧붙인다(SCHEDULE-12) — 담아둔
     장소를 조용히 빠뜨리면 사용자는 자기가 고른 곳이 왜 없는지 알 수 없다.
     items가 비어 있는 경우에도 붙인다: 일정을 아예 못 짠 이유가 담아둔 장소와
@@ -970,7 +1001,12 @@ def compose_schedule_message(
     else:
         duration_label = _format_duration_label(schedule.total_duration_min)
     return _with_omitted_note(
-        f"{duration_label} 코스를 짜봤어요. {schedule.route_summary}", schedule
+        _with_over_budget_note(
+            f"{duration_label} 코스를 짜봤어요. {schedule.route_summary}",
+            schedule,
+            time_available_min,
+        ),
+        schedule,
     )
 
 

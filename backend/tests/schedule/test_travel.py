@@ -8,6 +8,7 @@ from app.config import Settings
 from app.domain.schedule_travel import (
     ScheduleTravelCandidate,
     ScheduleTravelEdge,
+    ScheduleTravelWarning,
     TravelConfidence,
 )
 from app.domain.travel_route import (
@@ -28,10 +29,13 @@ from app.schedule.travel import (
     NON_WALKING_SPEED_MPS,
     WALKING_SPEED_MPS,
     consecutive_pairs,
+    is_measured,
     resolve_schedule_travel_edges,
+    summarize_schedule_travel,
     travel_minutes_from_edges,
 )
 from app.schemas import Transport, UserConditions
+from app.tools.schedule_travel import SCHEDULE_TRAVEL_MEASURE_BUDGET_EXCEEDED_WARNING
 from app.tools.travel_route import TravelRouteProviders, TravelRouteTool
 
 
@@ -232,3 +236,186 @@ class Test구간_이동정보_확정:
         )
         assert len(edges) == 1
         assert edges[0].duration_min > 0
+
+
+def _estimated_edge(from_id: str, to_id: str, minutes: int = 12) -> ScheduleTravelEdge:
+    return ScheduleTravelEdge(
+        from_place_id=from_id,
+        to_place_id=to_id,
+        mode=TravelMode.TRANSIT,
+        status=RouteStatus.SUCCESS,
+        source=RouteSource.STRAIGHT_LINE_ESTIMATE,
+        duration_min=minutes,
+        distance_m=4_300,
+        confidence=TravelConfidence.LOW,
+    )
+
+
+class Test실측_판정:
+    def test_confidence로_판정한다(self) -> None:
+        assert is_measured(_edge("a", "b", 10)) is True
+        assert is_measured(_estimated_edge("a", "b")) is False
+
+
+class Test지표_요약:
+    def test_실측과_추정_구간을_센다(self) -> None:
+        summary = summarize_schedule_travel(
+            edges=[_edge("a", "b", 10), _estimated_edge("b", "c")],
+            warnings=[],
+            measure_attempted=True,
+        )
+        assert summary["segments"] == 2
+        assert summary["measured"] == 1
+        assert summary["estimated"] == 1
+        assert summary["measured_ratio"] == 0.5
+        assert summary["by_mode"] == {"transit": 1, "walking": 1}
+        # 추정이 섞인 턴은 열어볼 이유가 있다.
+        assert summary["level"] == "WARNING"
+
+    def test_전부_실측이면_경고_수준이_아니다(self) -> None:
+        summary = summarize_schedule_travel(
+            edges=[_edge("a", "b", 10)], warnings=[], measure_attempted=True
+        )
+        assert summary["measured_ratio"] == 1.0
+        assert summary["level"] == "DEFAULT"
+
+    def test_실측을_시도하지_않은_턴은_성공률이_None이다(self) -> None:
+        """0.0으로 적으면 "전부 실패한 턴"과 구분되지 않아 추세가 왜곡된다."""
+
+        summary = summarize_schedule_travel(
+            edges=[_estimated_edge("a", "b")], warnings=[], measure_attempted=False
+        )
+        assert summary["measured_ratio"] is None
+        assert summary["measure_attempted"] is False
+        # 실측을 안 한 것은 이상 상황이 아니다.
+        assert summary["level"] == "DEFAULT"
+        assert "실측 미시도" in summary["headline"]
+
+    def test_구간이_없으면_성공률이_None이다(self) -> None:
+        summary = summarize_schedule_travel(
+            edges=[], warnings=[], measure_attempted=True
+        )
+        assert summary["segments"] == 0
+        assert summary["measured_ratio"] is None
+
+    def test_상한_초과_구간을_센다(self) -> None:
+        summary = summarize_schedule_travel(
+            edges=[_edge("a", "b", 10), _estimated_edge("b", "c")],
+            warnings=[
+                ScheduleTravelWarning(
+                    code=SCHEDULE_TRAVEL_MEASURE_BUDGET_EXCEEDED_WARNING,
+                    from_place_id="b",
+                    to_place_id="c",
+                )
+            ],
+            measure_attempted=True,
+        )
+        assert summary["budget_exceeded"] == 1
+        assert summary["warning_codes"] == {
+            SCHEDULE_TRAVEL_MEASURE_BUDGET_EXCEEDED_WARNING: 1
+        }
+        assert "상한초과 1" in summary["headline"]
+
+    def test_place_id와_좌표를_싣지_않는다(self) -> None:
+        """어디를 갔느냐는 이 요약의 관심사가 아니다(원문 수집 스위치 우회 방지)."""
+
+        summary = summarize_schedule_travel(
+            edges=[_edge("place-a", "place-b", 10)],
+            warnings=[
+                ScheduleTravelWarning(
+                    code=SCHEDULE_TRAVEL_MEASURE_BUDGET_EXCEEDED_WARNING,
+                    from_place_id="place-a",
+                    to_place_id="place-b",
+                )
+            ],
+            measure_attempted=True,
+        )
+        assert "place-a" not in repr(summary)
+        assert "place-b" not in repr(summary)
+
+
+class Test지표_방출:
+    """완료 조건 "실측 성공률과 예산 초과 빈도 지표가 나간다"의 배선 가드.
+
+    Score는 꺼져 있으면 no-op이라 값만 봐서는 호출 자체가 사라진 것을 알 수 없다.
+    """
+
+    _conditions = UserConditions(transport=Transport.WALK)
+
+    @pytest.mark.asyncio
+    async def test_실측을_시도한_턴에_두_지표가_나간다(self, monkeypatch) -> None:
+        recorded: list[tuple[str, float | bool]] = []
+        monkeypatch.setattr(
+            "app.schedule.travel.record_score",
+            lambda name, value: recorded.append((name, value)),
+        )
+
+        await resolve_schedule_travel_edges(
+            candidates=[_candidate("a", 127.0), _candidate("b", 127.01)],
+            place_ids=["a", "b"],
+            conditions=self._conditions,
+            settings=Settings(),
+            travel_route_tool=_tool(),
+        )
+
+        assert ("schedule_travel_measured_ratio", 1.0) in recorded
+        assert ("schedule_travel_budget_exceeded", False) in recorded
+
+    @pytest.mark.asyncio
+    async def test_경로_Tool이_없으면_성공률을_적지_않는다(self, monkeypatch) -> None:
+        recorded: list[tuple[str, float | bool]] = []
+        monkeypatch.setattr(
+            "app.schedule.travel.record_score",
+            lambda name, value: recorded.append((name, value)),
+        )
+
+        await resolve_schedule_travel_edges(
+            candidates=[_candidate("a", 127.0), _candidate("b", 127.01)],
+            place_ids=["a", "b"],
+            conditions=self._conditions,
+            settings=Settings(),
+            travel_route_tool=None,
+        )
+
+        assert recorded == []
+
+    @pytest.mark.asyncio
+    async def test_상한을_넘기면_초과_지표가_참으로_나간다(self, monkeypatch) -> None:
+        recorded: list[tuple[str, float | bool]] = []
+        monkeypatch.setattr(
+            "app.schedule.travel.record_score",
+            lambda name, value: recorded.append((name, value)),
+        )
+
+        await resolve_schedule_travel_edges(
+            candidates=[
+                _candidate("a", 127.0),
+                _candidate("b", 127.01),
+                _candidate("c", 127.02),
+            ],
+            place_ids=["a", "b", "c"],
+            conditions=self._conditions,
+            settings=Settings(schedule_max_measured_segments=1),
+            travel_route_tool=_tool(),
+        )
+
+        assert ("schedule_travel_budget_exceeded", True) in recorded
+        assert ("schedule_travel_measured_ratio", 0.5) in recorded
+
+    @pytest.mark.asyncio
+    async def test_관측이_실패해도_편성은_계속된다(self, monkeypatch) -> None:
+        def _explode(name: str, value: float | bool) -> None:
+            raise RuntimeError("langfuse down")
+
+        monkeypatch.setattr("app.schedule.travel.record_score", _explode)
+
+        edges = await resolve_schedule_travel_edges(
+            candidates=[_candidate("a", 127.0), _candidate("b", 127.01)],
+            place_ids=["a", "b"],
+            conditions=self._conditions,
+            settings=Settings(),
+            travel_route_tool=_tool(),
+        )
+
+        assert len(edges) == 1
+        assert edges[0].confidence is TravelConfidence.HIGH

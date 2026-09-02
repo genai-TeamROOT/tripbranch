@@ -197,6 +197,27 @@ class ScheduleItem(BaseModel):
     # 같은 이유). 폐점 시각이 지난 도착 예정 스탑을 사용자에게 알리는 용도다
     # (docs/design/int-07-schedule.md 9절, "폐점 스탑 감지" 항목 해소).
     warnings: list[str] = Field(default_factory=list)
+    # 다음 장소까지의 이동을 무엇으로 어떻게 잰 값인지. (TP-216)
+    #
+    # travel_to_next_min만으로는 화면이 이동수단을 알 수 없어 "도보 이동 약 N분"으로
+    # 고정 표기해 왔는데, 도보 예상시간이 임계값을 넘는 구간은 편성 단계에서
+    # 대중교통으로 전환된다(tools/schedule_travel._select_mode) — 그 구간까지 도보로
+    # 적히면 화면이 사실과 다른 말을 한다. RecommendationItem.travel_mode를 함께
+    # 내려주는 것과 같은 이유다("프론트가 스스로 추측하지 않게 한다").
+    travel_to_next_mode: TravelMode | None = None
+    # 그 값이 경로 API 실측인지(True) 직선거리 추정인지(False).
+    #
+    # ScheduleTravelEdge는 source(provider 이름)와 confidence(high/low) 두 필드로 같은
+    # 사실을 말하지만, 화면에 필요한 것은 "실측이냐"는 한 비트뿐이라 여기서 좁힌다 —
+    # 어느 provider가 답했는지는 사용자에게 의미가 없고 관측 지표에서 본다
+    # (schedule_travel_measured_ratio). 추정 구간에서 시간을 숨기지는 않는다:
+    # 일정은 이동시간 없이 성립하지 않으므로 값을 보여주고 추정임을 함께 밝힌다
+    # (추천 카드는 실측이 없으면 시간을 아예 말하지 않는다 — 거기서는 거리만으로도
+    # 카드가 성립하기 때문이고, 같은 규칙을 일정에 그대로 옮길 수 없다).
+    #
+    # 이동정보를 아예 못 구한 구간(좌표 없음 → 시간표 폴백 15분)은 mode가 None이고
+    # 이 값도 False다. 화면은 mode가 None인 것으로 그 경우를 구분한다.
+    travel_to_next_measured: bool = False
 
 
 class ScheduleResult(BaseModel):

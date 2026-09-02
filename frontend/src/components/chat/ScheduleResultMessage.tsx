@@ -77,6 +77,8 @@ export function ScheduleResultMessage({
                   <ScheduleTravelSegment
                     key={`${item.place_id}-travel`}
                     minutes={item.travel_to_next_min}
+                    mode={item.travel_to_next_mode}
+                    measured={item.travel_to_next_measured}
                   />,
                 );
               }

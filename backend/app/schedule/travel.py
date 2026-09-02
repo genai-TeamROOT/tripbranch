@@ -18,6 +18,7 @@ LLM이 순서를 정한 뒤에야 정해진다. 그래서 "순서가 정해진 �
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from collections.abc import Sequence
 
 from app.config import Settings
@@ -25,7 +26,10 @@ from app.domain.schedule_travel import (
     ScheduleTravelCandidate,
     ScheduleTravelEdge,
     ScheduleTravelPair,
+    ScheduleTravelWarning,
+    TravelConfidence,
 )
+from app.observability.langfuse_tracing import observe_step, record_score
 from app.place_search_policy import (
     NON_WALKING_SPEED_KM_PER_MINUTE,
     WALKING_SPEED_KM_PER_MINUTE,
@@ -33,6 +37,7 @@ from app.place_search_policy import (
 from app.schedule.timeline import TravelMinutes
 from app.schemas import UserConditions
 from app.tools.schedule_travel import (
+    SCHEDULE_TRAVEL_MEASURE_BUDGET_EXCEEDED_WARNING,
     estimate_schedule_travel_edges,
     measure_schedule_travel_edges,
 )
@@ -50,6 +55,78 @@ def _to_mps(km_per_minute: float) -> float:
 # 반경 산정과 같은 가정을 mps로 옮긴 값. 여기서만 환산하고 다른 곳에 복사하지 않는다.
 WALKING_SPEED_MPS = _to_mps(WALKING_SPEED_KM_PER_MINUTE)
 NON_WALKING_SPEED_MPS = _to_mps(NON_WALKING_SPEED_KM_PER_MINUTE)
+
+
+def is_measured(edge: ScheduleTravelEdge) -> bool:
+    """이 구간이 경로 API 실측으로 채워졌는지.
+
+    `confidence`만 본다. `source`로도 같은 판정이 되지만(추정은 항상
+    `STRAIGHT_LINE_ESTIMATE`) 그러려면 provider 이름 목록을 여기에 한 벌 더 적어야
+    하고, provider가 늘 때마다 두 곳이 갈린다. TP-219가 실측 성공에만 `HIGH`를
+    싣기로 한 자리를 그대로 읽는다.
+    """
+
+    return edge.confidence is TravelConfidence.HIGH
+
+
+def summarize_schedule_travel(
+    *,
+    edges: Sequence[ScheduleTravelEdge],
+    warnings: Sequence[ScheduleTravelWarning],
+    measure_attempted: bool,
+) -> dict[str, object]:
+    """구간 이동정보 확정 한 번을 span에 실을 집계로 접는다. (TP-216)
+
+    **실측 성공률과 상한 초과가 이 요약의 존재 이유다.** 실측하지 못한 구간은
+    추정값 그대로 남아 응답에서는 성공처럼 보인다 — 도착시각과 총 소요시간은
+    나오고 어디가 추정이었는지는 화면에만 남는다. 추세로 봐야 하는 값이라
+    span의 output만으로는 부족해 `record_score()`로 함께 올린다
+    (`tools/travel_route.summarize_fanout()`과 같은 구조).
+
+    place_id와 좌표는 싣지 않는다. 여기서 알고 싶은 건 개수와 분포지 어디를
+    갔느냐가 아니다 — 경고의 방향 쌍도 코드별 건수로만 접는다.
+    """
+
+    measured = sum(1 for edge in edges if is_measured(edge))
+    estimated = len(edges) - measured
+    by_code = Counter(warning.code for warning in warnings)
+    budget_exceeded = by_code.get(SCHEDULE_TRAVEL_MEASURE_BUDGET_EXCEEDED_WARNING, 0)
+
+    if not measure_attempted:
+        level = "DEFAULT"
+    elif estimated:
+        level = "WARNING"
+    else:
+        level = "DEFAULT"
+
+    return {
+        "segments": len(edges),
+        "measured": measured,
+        "estimated": estimated,
+        # 실측을 시도하지 않은 턴(경로 Tool 미주입)에는 None이다. 0.0으로 적으면
+        # "실측이 전부 실패한 턴"과 구분되지 않아 성공률 추세가 통째로 왜곡된다.
+        "measured_ratio": (
+            round(measured / len(edges), 3) if edges and measure_attempted else None
+        ),
+        "measure_attempted": measure_attempted,
+        # 실측 구간 수 상한에 걸려 아예 호출하지 않은 구간 수. 지금 상한은 4이고
+        # 일정 항목 상한이 5곳이라 간선은 최대 4개다 — 0이 정상이고, 0이 아니면
+        # 일정이 길어졌거나 상한 설정이 어긋났다는 뜻이다.
+        "budget_exceeded": budget_exceeded,
+        "by_mode": dict(sorted(Counter(edge.mode.value for edge in edges).items())),
+        "by_source": dict(sorted(Counter(edge.source.value for edge in edges).items())),
+        "warning_codes": dict(sorted(by_code.items())),
+        "error_causes": dict(
+            sorted(Counter(edge.error_code for edge in edges if edge.error_code).items())
+        ),
+        "level": level,
+        # 마스킹을 타지 않는 자리(status_message)에 실을 한 줄.
+        "headline": (
+            f"구간 {len(edges)}개 · 실측 {measured} · 추정 {estimated}"
+            + (f" · 상한초과 {budget_exceeded}" if budget_exceeded else "")
+            + ("" if measure_attempted else " · 실측 미시도")
+        ),
+    }
 
 
 def consecutive_pairs(place_ids: Sequence[str]) -> tuple[ScheduleTravelPair, ...]:
@@ -110,6 +187,57 @@ async def resolve_schedule_travel_edges(
     if not pairs:
         return ()
 
+    with observe_step("schedule_travel") as step:
+        edges, warnings, measure_attempted = await _resolve_edges(
+            candidates=candidates,
+            pairs=pairs,
+            conditions=conditions,
+            settings=settings,
+            travel_route_tool=travel_route_tool,
+        )
+        try:
+            summary = summarize_schedule_travel(
+                edges=edges,
+                warnings=warnings,
+                measure_attempted=measure_attempted,
+            )
+            step.record(
+                output=summary,
+                level=summary["level"],
+                status_message=summary["headline"],
+            )
+            # 추세로 봐야 하는 두 값만 Score로 올린다. span의 output은 그 턴을
+            # 열어봤을 때 읽는 값이고, 실측 성공률이 언제부터 떨어졌는지는
+            # 여러 턴에 걸쳐 집계돼야 보인다(`record_score` docstring).
+            if summary["measured_ratio"] is not None:
+                record_score(
+                    "schedule_travel_measured_ratio", float(summary["measured_ratio"])
+                )
+            if measure_attempted:
+                record_score(
+                    "schedule_travel_budget_exceeded", bool(summary["budget_exceeded"])
+                )
+        except Exception:
+            logger.warning(
+                "일정 구간 이동정보 관측 요약 실패(응답 흐름에는 영향 없음)", exc_info=True
+            )
+        return edges
+
+
+async def _resolve_edges(
+    *,
+    candidates: Sequence[ScheduleTravelCandidate],
+    pairs: Sequence[ScheduleTravelPair],
+    conditions: UserConditions,
+    settings: Settings,
+    travel_route_tool: TravelRouteTool | None,
+) -> tuple[tuple[ScheduleTravelEdge, ...], tuple[ScheduleTravelWarning, ...], bool]:
+    """추정·실측 본체. 관측에 쓸 경고와 "실측을 시도했나"까지 함께 돌려준다.
+
+    실측 시도 여부를 결과로 남기는 이유는 지표 때문이다 — 경로 Tool이 주입되지
+    않은 턴의 실측률 0%와 실측이 전부 실패한 턴의 0%는 같은 수가 아니다.
+    """
+
     try:
         estimated = estimate_schedule_travel_edges(
             candidates=candidates,
@@ -123,10 +251,10 @@ async def resolve_schedule_travel_edges(
     except ValueError:
         # 후보 목록이 잘못 만들어진 경우(중복 place_id 등)까지 편성을 막지 않는다.
         logger.warning("schedule_travel.estimate_failed", exc_info=True)
-        return ()
+        return (), (), False
 
     if travel_route_tool is None or not estimated.edges:
-        return estimated.edges
+        return estimated.edges, estimated.warnings, False
 
     try:
         measured = await measure_schedule_travel_edges(
@@ -138,15 +266,19 @@ async def resolve_schedule_travel_edges(
     except Exception:
         # 실측이 통째로 실패해도 추정값으로 일정을 낸다("구조적 보장 우선").
         logger.warning("schedule_travel.measure_failed", exc_info=True)
-        return estimated.edges
+        return estimated.edges, estimated.warnings, True
 
-    return measured.edges
+    # 추정 단계의 경고(중복·자기 쌍·좌표 없음)는 실측 결과에 다시 담기지 않으므로
+    # 두 단계를 합쳐 넘긴다 — 한쪽만 보면 건너뛴 구간의 사유가 사라진다.
+    return measured.edges, (*estimated.warnings, *measured.warnings), True
 
 
 __all__ = [
     "NON_WALKING_SPEED_MPS",
     "WALKING_SPEED_MPS",
     "consecutive_pairs",
+    "is_measured",
     "resolve_schedule_travel_edges",
+    "summarize_schedule_travel",
     "travel_minutes_from_edges",
 ]

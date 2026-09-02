@@ -21,6 +21,7 @@ from time import perf_counter
 from typing import TypeAlias, TypeVar
 
 from app.config import Settings
+from app.domain.schedule_travel import ScheduleTravelEdge
 from app.errors import AppError
 from app.providers.protocols import LLMProvider
 from app.schedule.associations import CoVisitedHint
@@ -40,6 +41,7 @@ from app.schedule.timeline import (
     travel_speed_km_per_minute,
 )
 from app.schedule.travel import (
+    is_measured,
     resolve_schedule_travel_edges,
     travel_minutes_from_edges,
 )
@@ -177,6 +179,20 @@ class _ItemDraft:
     visit_duration_min: int
 
 
+@dataclass(frozen=True)
+class _ResolvedTravel:
+    """이번 편성에 쓸 구간 이동시간과 그 근거. (TP-216)
+
+    시간표는 콜러블(`minutes`)만 있으면 되지만, 화면은 그 값이 실측인지 추정인지와
+    어떤 이동수단으로 잰 값인지를 함께 보여줘야 한다. 콜러블은 숫자 하나만
+    돌려주므로 근거를 실을 자리가 없어 `edges`를 함께 들고 다닌다 — 시간표가
+    쓴 값과 화면이 설명하는 근거가 같은 표에서 나오게 하려는 것이다.
+    """
+
+    minutes: TravelMinutes
+    edges: tuple[ScheduleTravelEdge, ...]
+
+
 def _draft_from_llm_item(
     item: ScheduleLLMItem, candidate: RecommendationItem | None, order: int
 ) -> _ItemDraft:
@@ -240,8 +256,15 @@ def _compose_items(
     drafts: Sequence[_ItemDraft],
     timeline: Timeline,
     candidates: Iterable[RecommendationItem],
+    travel_edges: Sequence[ScheduleTravelEdge] = (),
 ) -> list[ScheduleItem]:
     """초안 + 시간표를 화면에 실리는 ScheduleItem으로 합친다.
+
+    구간 이동정보(`travel_edges`)는 **시간표가 쓴 그 표를 그대로 읽는다**(TP-216).
+    이동수단과 실측 여부를 여기서 다시 판정하지 않는다 — 다시 판정하면 화면이
+    설명하는 근거와 도착시각을 만든 근거가 갈릴 수 있다. 표에 없는 구간(좌표를
+    못 구해 시간표가 폴백값을 쓴 자리)은 두 필드가 기본값으로 남고, 화면은
+    이동수단이 None인 것으로 그 경우를 구분한다.
 
     운영시간 경고는 **방문 시작 시각** 기준으로 판단한다(도착 시각이 아니라).
     개장 전에 도착하면 시간표가 이미 대기를 잡아 방문 시작을 개장 시각으로
@@ -254,10 +277,17 @@ def _compose_items(
     """
 
     display_by_place = {c.place_id: c.operating_hours_display for c in candidates}
+    edge_by_pair = {(edge.from_place_id, edge.to_place_id): edge for edge in travel_edges}
     items: list[ScheduleItem] = []
-    for draft, stop in zip(drafts, timeline.stops, strict=True):
+    for index, (draft, stop) in enumerate(zip(drafts, timeline.stops, strict=True)):
         visit_start = stop.visit_start_at.strftime("%H:%M")
         warning = _operating_hours_warning(display_by_place.get(draft.place_id), visit_start)
+        next_draft = drafts[index + 1] if index + 1 < len(drafts) else None
+        edge = (
+            None
+            if next_draft is None
+            else edge_by_pair.get((draft.place_id, next_draft.place_id))
+        )
         items.append(
             ScheduleItem(
                 order=draft.order,
@@ -268,6 +298,8 @@ def _compose_items(
                 travel_to_next_min=stop.travel_to_next_min,
                 reason=draft.reason,
                 warnings=[warning] if warning is not None else [],
+                travel_to_next_mode=None if edge is None else edge.mode,
+                travel_to_next_measured=edge is not None and is_measured(edge),
             )
         )
     return items
@@ -296,7 +328,7 @@ async def _resolve_travel_minutes(
     *,
     settings: Settings | None,
     travel_route_tool: TravelRouteTool | None,
-) -> TravelMinutes:
+) -> _ResolvedTravel:
     """확정된 방문 순서의 구간 이동시간을 만든다. (TP-216)
 
     **순서가 정해진 뒤에 부른다.** 어느 구간을 잴지는 LLM이 순서를 고른 뒤에야
@@ -315,8 +347,8 @@ async def _resolve_travel_minutes(
         travel_route_tool=travel_route_tool,
     )
     if edges:
-        return travel_minutes_from_edges(edges)
-    return _travel_minutes_for(request)
+        return _ResolvedTravel(minutes=travel_minutes_from_edges(edges), edges=edges)
+    return _ResolvedTravel(minutes=_travel_minutes_for(request), edges=())
 
 
 def _drop_unknown_places(
@@ -579,20 +611,21 @@ async def plan_schedule(
         _draft_from_llm_item(item, candidate_by_id.get(item.place_id), order)
         for order, item in enumerate(llm_items, start=1)
     ]
+    travel = await _resolve_travel_minutes(
+        resolved_request,
+        [draft.place_id for draft in drafts],
+        settings=settings,
+        travel_route_tool=travel_route_tool,
+    )
     timeline = _build_schedule_timeline(
         drafts,
         start_at=_round_up_start(effective_visit_datetime),
-        travel_minutes=await _resolve_travel_minutes(
-            resolved_request,
-            [draft.place_id for draft in drafts],
-            settings=settings,
-            travel_route_tool=travel_route_tool,
-        ),
+        travel_minutes=travel.minutes,
         candidates=resolved_request.candidates,
     )
 
     return ScheduleResult(
-        items=_compose_items(drafts, timeline, resolved_request.candidates),
+        items=_compose_items(drafts, timeline, resolved_request.candidates, travel.edges),
         total_duration_min=timeline.total_duration_min,
         route_summary=plan.route_summary,
         basis_note=_build_basis_note(effective_visit_datetime),
@@ -646,19 +679,20 @@ async def _pinned_only_result(
         _draft_from_schedule_item(item, order)
         for order, item in enumerate(ordered, start=1)
     ]
+    travel = await _resolve_travel_minutes(
+        request,
+        [draft.place_id for draft in drafts],
+        settings=settings,
+        travel_route_tool=travel_route_tool,
+    )
     timeline = _build_schedule_timeline(
         drafts,
         start_at=_anchor_start(ordered, visit_datetime),
-        travel_minutes=await _resolve_travel_minutes(
-            request,
-            [draft.place_id for draft in drafts],
-            settings=settings,
-            travel_route_tool=travel_route_tool,
-        ),
+        travel_minutes=travel.minutes,
         candidates=request.candidates,
     )
     return ScheduleResult(
-        items=_compose_items(drafts, timeline, request.candidates),
+        items=_compose_items(drafts, timeline, request.candidates, travel.edges),
         total_duration_min=timeline.total_duration_min,
         route_summary=route_summary,
         basis_note=_build_basis_note(visit_datetime),
@@ -824,15 +858,16 @@ async def plan_partial_schedule(
         if first_pinned is not None
         else _round_up_start(effective_visit_datetime)
     )
+    travel = await _resolve_travel_minutes(
+        resolved_request,
+        [draft.place_id for draft in drafts],
+        settings=settings,
+        travel_route_tool=travel_route_tool,
+    )
     timeline = _build_schedule_timeline(
         drafts,
         start_at=start_at,
-        travel_minutes=await _resolve_travel_minutes(
-            resolved_request,
-            [draft.place_id for draft in drafts],
-            settings=settings,
-            travel_route_tool=travel_route_tool,
-        ),
+        travel_minutes=travel.minutes,
         candidates=resolved_request.candidates,
     )
 
@@ -841,7 +876,7 @@ async def plan_partial_schedule(
     route_summary = f"{kept}곳은 그대로 유지하고 {replaced}곳을 새로운 장소로 바꿨어요."
 
     return ScheduleResult(
-        items=_compose_items(drafts, timeline, resolved_request.candidates),
+        items=_compose_items(drafts, timeline, resolved_request.candidates, travel.edges),
         total_duration_min=timeline.total_duration_min,
         route_summary=route_summary,
         basis_note=_build_basis_note(effective_visit_datetime),
