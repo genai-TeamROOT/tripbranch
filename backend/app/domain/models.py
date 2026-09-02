@@ -810,3 +810,17 @@ class ScoringCandidate:
     distance_km: float
     operating_hours: OperatingHours | None
     raw_source: str = "unknown"
+    # 무장애 조건이 붙은 요청에서만 채워진다. 열쇠는 요구된 어휘, 값은
+    # `possible`·`partial` 중 하나다(`AccessibilityVerdict`).
+    #
+    # **후보에 있다는 것이 온전히 갈 수 있다는 뜻은 아니다.** 들어갈 수는 있는데
+    # 못 가는 구역이 남는 곳(`partial`)도 후보로 남기기 때문이다 — 팔각정 하나
+    # 못 간다고 추천에서 빼는 것은 과하다. 그래서 이 값을 읽어 경고 한 줄로
+    # 알린다(`scoring.py`의 `_accessibility_warnings`).
+    #
+    # **채점에는 쓰지 않는다.** `partial`이 "덜 좋은 곳"이 아니라 "한 군데를 못
+    # 가는 곳"이라, 점수를 깎으면 갈 수 있는 좋은 장소를 뒤로 미는 셈이 된다.
+    # 사용자에게 필요한 것은 순위 조정이 아니라 그 사실을 아는 것이다.
+    #
+    # `impossible`은 오지 않는다. 저장소 조회가 이미 후보에서 뺐다.
+    accessibility_verdicts: Mapping[str, str] | None = None

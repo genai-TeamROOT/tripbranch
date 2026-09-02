@@ -129,6 +129,10 @@ def map_context_to_scoring_candidates(
                 visit_at,
             ),
             raw_source=source,
+            # 무장애 조건이 없는 요청에서는 None이다. 값이 있으면 그대로 옮기고
+            # 여기서 판정하지 않는다 — 원문을 읽어 내린 판정은 저장소에 있고,
+            # D가 다시 해석하면 같은 장소에 두 규칙이 생긴다.
+            accessibility_verdicts=place.accessibility_verdicts,
         )
         for place in places_value.data
     )
