@@ -5,14 +5,19 @@
 
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { expect, test } from "vitest";
+import { beforeEach, expect, test } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { AppShellProvider } from "../components/layout/AppShellContext";
+import { loadPreferences } from "../state/preferenceStorage";
 import { PreferencesPage } from "./PreferencesPage";
 import { PREFERENCE_GROUPS } from "./preferenceOptions";
 
+beforeEach(() => {
+  localStorage.clear();
+});
+
 function renderPage() {
-  render(
+  return render(
     <MemoryRouter>
       <AppShellProvider>
         <PreferencesPage />
@@ -95,4 +100,85 @@ test("칩 라벨이 축을 넘어 중복되지 않는다", () => {
   // 선택 상태를 label로 들고 있어서, 라벨이 겹치면 두 칩이 같이 눌린다.
   const labels = PREFERENCE_GROUPS.flat().map((option) => option.label);
   expect(new Set(labels).size).toBe(labels.length);
+});
+
+test("저장하면 이 기기에 남고, 다시 열면 고른 채로 시작한다", async () => {
+  const user = userEvent.setup();
+  const { unmount } = renderPage();
+
+  for (const label of ["조용한 곳", "카페", "데이트 코스"]) {
+    await user.click(screen.getByRole("button", { name: label }));
+  }
+  await user.click(screen.getByRole("button", { name: "저장하기" }));
+
+  expect(loadPreferences()).toEqual([
+    { label: "조용한 곳", source: "preference", codes: ["quiet"] },
+    { label: "카페", source: "place_tag", codes: ["카페", "찻집"] },
+    { label: "데이트 코스", source: "preference", codes: ["date"] },
+  ]);
+
+  unmount();
+  renderPage();
+  expect(screen.getByText("3 / 5개 선택됨")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "카페" })).toHaveAttribute("aria-pressed", "true");
+});
+
+test("직접 입력한 키워드는 custom으로 저장되고 다시 열어도 남는다", async () => {
+  const user = userEvent.setup();
+  const { unmount } = renderPage();
+
+  await user.click(screen.getByRole("button", { name: "키워드 직접 입력" }));
+  await user.type(screen.getByPlaceholderText("예: 조용한 서점"), "조용한 서점");
+  await user.click(screen.getByRole("button", { name: "추가" }));
+  for (const label of ["조용한 곳", "카페"]) {
+    await user.click(screen.getByRole("button", { name: label }));
+  }
+  await user.click(screen.getByRole("button", { name: "저장하기" }));
+
+  expect(loadPreferences()).toContainEqual({
+    label: "조용한 서점",
+    source: "custom",
+    codes: [],
+  });
+
+  unmount();
+  renderPage();
+  expect(screen.getByRole("button", { name: "조용한 서점" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+});
+
+/*
+ * 저장 버튼은 3개 미만이면 눌리지 않아서 "다 빼고 저장"이라는 경로가 없다.
+ * 초기화가 저장값까지 지우지 않으면 한번 저장한 취향을 되돌릴 방법이 사라진다.
+ */
+test("선택 초기화는 저장해 둔 값까지 지운다", async () => {
+  const user = userEvent.setup();
+  renderPage();
+
+  for (const label of ["조용한 곳", "카페", "데이트 코스"]) {
+    await user.click(screen.getByRole("button", { name: label }));
+  }
+  await user.click(screen.getByRole("button", { name: "저장하기" }));
+  expect(loadPreferences()).toHaveLength(3);
+
+  await user.click(screen.getByRole("button", { name: "선택 초기화" }));
+
+  expect(loadPreferences()).toEqual([]);
+  expect(screen.getByRole("status")).toHaveTextContent("저장해 둔 취향을 지웠어요");
+});
+
+test("저장 안내는 추천에 아직 반영되지 않는다는 사실도 함께 밝힌다", async () => {
+  const user = userEvent.setup();
+  renderPage();
+
+  for (const label of ["조용한 곳", "카페", "데이트 코스"]) {
+    await user.click(screen.getByRole("button", { name: label }));
+  }
+  await user.click(screen.getByRole("button", { name: "저장하기" }));
+
+  const status = screen.getByRole("status");
+  expect(status).toHaveTextContent("취향을 저장했어요");
+  expect(status).toHaveTextContent("추천 결과에 반영하는 건 아직 준비 중");
 });
