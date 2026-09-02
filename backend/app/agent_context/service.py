@@ -1360,7 +1360,9 @@ class ContextService:
                 fields=fields,
                 detail_items=detail_items,
                 source_url=_CITYDATA_SOURCE_URL,
-                map_url=_seoul_realtime_map_url(area) if question_type == "realtime_traffic" else None,
+                map_url=(
+                    _seoul_realtime_map_url(area) if question_type == "realtime_traffic" else None
+                ),
             ),
             metadata=_info_response_metadata(location_metadata, tool_result.provider_metadata),
         )
