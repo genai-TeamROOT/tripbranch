@@ -287,7 +287,14 @@ async def build_photo_similar_places(
 
 
 def _rerank_candidate_count(reranker, limit: int) -> int:
-    """재랭킹에 넘길 후보 수. 재랭커가 없으면 보여줄 수만큼만 본다."""
+    """재랭킹에 넘길 후보 수. 재랭커가 없으면 보여줄 수만큼만 본다.
+
+    **설정값만큼 실제로 넘어간다는 보장은 없다.** 이 앞에 영업시간 하드 필터가
+    있어 RPC가 준 20곳(`limit × _OVERFETCH_FACTOR`) 중 실측 35%만 살아남는다 —
+    설정이 8이어도 7곳만 남는 일이 잦다. 그때는 여유가 3곳이 아니라 2곳이 된다.
+    `_OVERFETCH_FACTOR`를 올리면 채워지지만 그 값은 재랭킹을 꺼도 사진 검색
+    전체에 걸리므로, 재측정에서 실제 통과 개수를 재고 정한다(D-117).
+    """
     if reranker is None:
         return limit
     # 보여줄 수보다 적게 보내면 재랭킹이 순서만 바꾸고 결과 집합은 그대로다.
