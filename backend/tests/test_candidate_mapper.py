@@ -208,3 +208,28 @@ def test_context_mapper_returns_empty_without_usable_location_or_places() -> Non
         )
         == ()
     )
+
+
+def test_무장애_판정을_후보로_옮긴다() -> None:
+    """C가 올린 판정이 D 후보까지 와야 안내를 만들 수 있다.
+
+    중간에서 떨어지면 오류는 나지 않고 안내만 사라진다 — 부분 가능인 장소가
+    온전히 갈 수 있는 곳처럼 추천된다.
+    """
+    context = _context(schedule=None)
+    context.places.data[0].accessibility_verdicts = {"wheelchair_access": "partial"}
+
+    candidate = map_context_to_scoring_candidates(
+        context, visit_at=datetime(2026, 7, 24, 12, 0)
+    )[0]
+
+    assert candidate.accessibility_verdicts == {"wheelchair_access": "partial"}
+
+
+def test_무장애_조건이_없으면_판정도_비어_있다() -> None:
+    """빈 dict가 아니라 None이다. "안 물어봤다"와 "물었는데 값이 없다"는 다르다."""
+    candidate = map_context_to_scoring_candidates(
+        _context(schedule=None), visit_at=datetime(2026, 7, 24, 12, 0)
+    )[0]
+
+    assert candidate.accessibility_verdicts is None
