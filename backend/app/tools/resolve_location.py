@@ -554,7 +554,13 @@ class ResolveLocationTool:
                 # 후보를 하나로 못 좁혀도 대표 좌표(1순위 후보)는 실어 보낸다 —
                 # 실시간 행사 등 좌표만으로 답할 수 있는 폴백이 이걸로 계속 조회할 수
                 # 있게 한다(concentration의 이름 전용 폴백과 대칭).
-                fallback = names_source[0]
+                #
+                # names_source는 지하철역/명소로 좁힌 목록이라 비어 있을 수 있다 —
+                # 동명 후보가 전부 식당·상점인 경우(예: "쌈지길" 2건, has_exact_match만
+                # True)다. 이때도 좌표 자체는 candidates에 있으므로 그쪽으로 넓혀서
+                # names_source[0]가 빈 리스트를 인덱싱하지 않게 한다.
+                fallback_candidates = names_source or list(candidates)
+                fallback = fallback_candidates[0]
                 return self._error_result(
                     status=ResolveLocationStatus.NO_DATA,
                     code="no_data",
@@ -563,7 +569,7 @@ class ResolveLocationTool:
                     details={
                         "reason": "ambiguous_location",
                         "candidate_names": _join_candidate_names(
-                            item.name for item in names_source
+                            item.name for item in fallback_candidates
                         ),
                         "fallback_latitude": str(fallback.latitude),
                         "fallback_longitude": str(fallback.longitude),
