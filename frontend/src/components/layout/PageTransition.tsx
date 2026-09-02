@@ -17,8 +17,9 @@
  * 재생되지 않는다 — 시트가 열려 기반 화면이 그대로일 때 뒤에서 다시 떠오르면
  * 안 된다.
  *
- * `prefers-reduced-motion: reduce`인 환경에서는 CSS 쪽에서 애니메이션이 아예
- * 걸리지 않는다(index.css).
+ * `prefers-reduced-motion: reduce`인 환경에서는 떠오르는 동작만 빠지고, 서서히
+ * 나타나는 것은 남는다(index.css) — 그 설정이 줄이려는 것은 화면이 움직이는
+ * 동작이고 페이드는 그 대상이 아니다.
  */
 
 import type { ReactNode } from "react";
