@@ -17,15 +17,16 @@ export interface NaverDirectionsArgs {
 
 /** 주소만 가진 항목을 네이버지도에서 바로 찾는다.
  *
- * 실시간 주차장 목록은 일부 민영 주차장에 좌표가 없고 주소만 있다. 이 경우에도
- * 사용자가 같은 이름의 다른 주차장을 고르지 않도록 주소를 검색어로 넘긴다.
- * 네이버지도 화면에서 현재 위치를 기준으로 길찾기를 바로 선택할 수 있다.
+ * 실시간 주차장 목록은 일부 민영 주차장에 좌표가 없고 주소만 있다. 이름을 함께
+ * 넘기면(예: "탑골공원 관광버스전용 주차장") 네이버지도가 그 이름으로 등록된
+ * 장소를 찾다가 실패해 검색 자체가 안 되는 경우가 있었다(2026-09-02 실사용).
+ * 주소만 검색어로 넘긴다 — 지번·도로명 주소는 이름 없이도 특정된다.
  */
-export function openNaverMapSearch(destinationAddress: string, destinationName: string): boolean {
+export function openNaverMapSearch(destinationAddress: string, _destinationName: string): boolean {
   const address = destinationAddress.trim();
   if (!address) return false;
 
-  const query = encodeURIComponent(`${destinationName} ${address}`);
+  const query = encodeURIComponent(address);
   const webUrl = `https://map.naver.com/p/search/${query}`;
   window.open(webUrl, "_blank", "noopener");
   return true;

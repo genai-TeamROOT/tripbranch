@@ -759,6 +759,9 @@ export interface AgentResponse {
   schedule?: ScheduleResult | null;
   comparison?: ComparisonResult | null;
   info_place_card?: InfoPlaceCard | null;
+  /** 근처 주차장/공영주차장처럼 짝인 실시간 질문을 하나 물으면 다른 쪽도 이어서
+   * 조회해 둘째 카드로 붙인다(TP-115). info_place_card 다음 말풍선으로 순차 표시한다. */
+  secondary_info_place_card?: InfoPlaceCard | null;
   message: string;
   /** message에 넣기엔 긴 부가 정보(D-085). 있으면 본문 아래 작고 옅은 글씨로 보여준다. */
   message_footnote?: string | null;

@@ -320,7 +320,9 @@ it("실시간 주차 카드에는 데이터 출처와 서울시 주차정보 포
   };
 
   renderWithTrip(<PlaceInfoCard card={parkingCard} />);
-  expect(screen.getByText("현재 535대 주차 가능")).toHaveClass("text-calm");
+  expect(screen.getByText("현재 535대 주차 가능")).toHaveClass("text-emerald-700");
+  expect(screen.getByText("세종로 공영주차장")).toBeInTheDocument();
+  expect(screen.getByText("공영")).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "경복궁 상세 보기" }));
 
   const dialog = within(screen.getByRole("dialog"));
@@ -349,6 +351,43 @@ it("실시간 주차 카드에는 데이터 출처와 서울시 주차정보 포
   expect(dialog.queryByText("서울스퀘어 주차장")).not.toBeInTheDocument();
   await user.click(dialog.getByRole("button", { name: "민영 1" }));
   expect(dialog.getByText("서울스퀘어 주차장")).toBeInTheDocument();
+});
+
+it("근처 주차장이 3곳을 넘으면 접어두고 눌러야 나머지가 보인다", async () => {
+  const user = userEvent.setup();
+  const manyLotsCard: InfoPlaceCardData = {
+    ...card,
+    question_type: "realtime_parking",
+    answer_fields: {
+      "[공영] 세종로 공영주차장": "현재 535대 주차 가능(약 300m, 총 1,260대, 유료)",
+      "[공영] 서울글로벌센터 공영주차장": "현재 20대 주차 가능(약 500m, 총 44대, 유료)",
+      "[민영] 경복궁 주차장": "실시간 주차 현황 미제공(약 250m, 총 266대, 유료)",
+      "[민영] 삼청 주차장": "실시간 주차 현황 미제공(약 700m, 총 80대, 유료)",
+    },
+    thumbnail_url: null,
+    overview: null,
+    operating_hours: null,
+    rest_date: null,
+    parking: null,
+    parking_fee: null,
+    fee: null,
+    baby_carriage: null,
+    credit_card: null,
+    restroom: null,
+    homepage: null,
+    realtime_area_name: "경복궁",
+    realtime_observed_at: "8월 27일 14:20",
+    realtime_source_url: "https://data.seoul.go.kr/dataList/OA-21285/S/1/datasetView.do",
+    realtime_detail_items: [],
+  };
+
+  renderWithTrip(<PlaceInfoCard card={manyLotsCard} />);
+
+  expect(screen.getByText("세종로 공영주차장")).toBeInTheDocument();
+  expect(screen.queryByText("삼청 주차장")).not.toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "1곳 더 보기" }));
+  expect(screen.getByText("삼청 주차장")).toBeInTheDocument();
 });
 
 it("실시간 인구 혼잡도 카드는 안내 문구와 서울시 지도 미리보기를 표시한다", async () => {

@@ -509,6 +509,19 @@ function tripReducer(state: TripState, action: TripAction): TripState {
           card: response.info_place_card,
         });
       }
+      if (
+        response.secondary_info_place_card !== null &&
+        response.secondary_info_place_card !== undefined
+      ) {
+        // 근처 주차장 → 공영주차장처럼 짝인 실시간 질문의 둘째 카드다(TP-115). 같은
+        // 말풍선에 합치지 않고 별도 메시지로 순차 표시해, 답변 아래로 하나씩
+        // 쌓이는 기존 카드 흐름과 동일하게 보이게 한다.
+        trailingMessages.push({
+          id: createMessageId("place-info-secondary"),
+          type: "place_info_result",
+          card: response.secondary_info_place_card,
+        });
+      }
       if (response.comparison !== null && response.comparison !== undefined) {
         trailingMessages.push({
           id: createMessageId("compare"),
@@ -554,6 +567,8 @@ function tripReducer(state: TripState, action: TripAction): TripState {
     case "APPEND_CHAT_TURN": {
       const { conditions, intent, message, recommendations, schedule, showDebug } = action.payload;
       const infoPlaceCard = action.payload.agentResponse.info_place_card ?? null;
+      const secondaryInfoPlaceCard =
+        action.payload.agentResponse.secondary_info_place_card ?? null;
       const comparison = action.payload.agentResponse.comparison ?? null;
       const messages: ChatMessage[] = [];
       // 옵션 A: 조건 카드는 유지하되 확인 버튼은 없다 — Agent가 해석과 추천을 한 번에
@@ -614,6 +629,14 @@ function tripReducer(state: TripState, action: TripAction): TripState {
           id: createMessageId("info-place"),
           type: "place_info_result",
           card: infoPlaceCard,
+        });
+      }
+      if (secondaryInfoPlaceCard) {
+        // 근처 주차장 → 공영주차장처럼 짝인 실시간 질문의 둘째 카드다(TP-115).
+        messages.push({
+          id: createMessageId("info-place-secondary"),
+          type: "place_info_result",
+          card: secondaryInfoPlaceCard,
         });
       }
       if (comparison) {

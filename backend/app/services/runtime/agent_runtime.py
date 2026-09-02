@@ -127,6 +127,7 @@ from app.services.runtime.recommendation_transform import to_travel_mode
 from app.services.runtime.response_composer import (
     compose_chat_message,
     compose_compare_message,
+    compose_paired_parking_message,
     compose_recommendation_summary,
     recommendation_wrapper_message,
     tool_clarification_message,
@@ -1773,6 +1774,21 @@ def _is_info_walking_time_request(llm_output: LLMOutput) -> bool:
     return any(marker in normalized_question for marker in _INFO_WALKING_TIME_MARKERS)
 
 
+# 근처 주차장(area 응답, 목록이 짧다)과 공영주차장(구 전체, 목록이 길지만 멀 수도
+# 있다)은 서로 짝이다. 둘 다 실시간 주차 질문의 다른 절반이라, 한쪽을 물으면
+# 다른 쪽 InfoContextRequest.question_type을 여기서 얻어 이어서 조회한다.
+_PARKING_QUESTION_TYPE_PAIRS: dict[QuestionType, str] = {
+    QuestionType.REALTIME_PARKING: QuestionType.REALTIME_PUBLIC_PARKING.value,
+    QuestionType.REALTIME_PUBLIC_PARKING: QuestionType.REALTIME_PARKING.value,
+}
+
+
+def _paired_parking_question_type(info: InfoPayload | None) -> str | None:
+    if info is None:
+        return None
+    return _PARKING_QUESTION_TYPE_PAIRS.get(info.question_type)
+
+
 def _to_geo_coordinate(location: str | None) -> GeoCoordinate | None:
     """B에 저장된 ``위도,경도`` 문자열을 도보 경로 도메인 값으로 변환한다."""
 
@@ -2849,11 +2865,29 @@ async def _run_agent_flow(
             on_message_delta=(emit_info_message_delta if stream_info_message else None),
             history=turn_history,
         )
+
+        secondary_info_place_card = None
+        paired_question_type = _paired_parking_question_type(llm_output.info)
+        if paired_question_type is not None and info_response.status == "success":
+            # 근처 주차장(area 응답)과 공영주차장(구 전체)은 서로의 약점을 메운다 —
+            # 근처는 가깝지만 목록이 짧고, 공영은 목록이 길지만 멀 수 있다. 하나를
+            # 물으면 다른 쪽도 이어서 보여준다(TP-115 실사용 지적).
+            paired_response = await tool_provider.fetch_info_context(
+                info_request.model_copy(update={"question_type": paired_question_type})
+            )
+            if paired_response.status == "success":
+                secondary_info_place_card = to_info_place_card(paired_response)
+                if secondary_info_place_card is not None:
+                    message = compose_paired_parking_message(
+                        message, question_type=llm_output.info.question_type
+                    )
+
         return AgentResponse(
             llm_output=llm_output,
             state=state_response,
             recommendations=None,
             info_place_card=to_info_place_card(info_response),
+            secondary_info_place_card=secondary_info_place_card,
             message=message,
             message_footnote=unsupported_region_footnote(
                 info_response.error.code if info_response.error else None
