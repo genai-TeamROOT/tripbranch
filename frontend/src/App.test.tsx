@@ -640,6 +640,24 @@ test("사이드바 상시 패널이 보이는 폭(데스크톱)에서는 위치 
   expect(screen.queryByRole("button", { name: "추천 시작하기" })).not.toBeInTheDocument();
 });
 
+/*
+ * 일정도 위치와 같은 시트 경로를 탄다(state/sheetNav.ts의 SHEET_PATH_PATTERNS).
+ * SchedulePage 자체는 별도 파일에서 직접 렌더해 검증하고, 여기서는 "사이드바에서
+ * 눌렀을 때 홈을 갈아치우지 않고 그 위에 뜨는가"만 본다 — 이 배선이 빠지면
+ * 대화가 사라진다.
+ */
+test("사이드바에서 일정을 열면 홈 위에 바텀시트로 뜬다", async () => {
+  await renderApp();
+
+  const sidebar = within(screen.getByRole("complementary"));
+  await userEvent.click(sidebar.getByRole("button", { name: "일정" }));
+
+  expect(await screen.findByText("아직 짠 일정이 없어요.")).toBeInTheDocument();
+  // 밑에 깔린 홈이 그대로 있어야 시트다(전체 페이지 전환이면 사라진다).
+  expect(screen.getByRole("button", { name: "추천 시작하기" })).toBeInTheDocument();
+  expect(screen.getAllByRole("button", { name: "닫기" })).toHaveLength(2);
+});
+
 // --- 응답 대기 중 취소(package_D/DESIGN_SYSTEM.md §7.2) ------------------------
 
 test("응답을 기다리는 동안 중단을 누르면 로딩이 멈추고 오류 없이 끝난다", async () => {
