@@ -62,6 +62,8 @@ function seedScheduleState() {
                   estimated_arrival: "15:02",
                   estimated_duration_min: 60,
                   travel_to_next_min: 12,
+                  travel_to_next_mode: "transit",
+                  travel_to_next_measured: true,
                   reason: "실내라 비를 피하며 둘러보기 좋아요",
                 },
                 {
@@ -112,9 +114,10 @@ test("짠 일정이 있으면 정류장 타임라인과 피드백 토글을 보�
 
   expect(screen.getByText("역삼 아트뮤지엄")).toBeInTheDocument();
   expect(screen.getByText("대림창고")).toBeInTheDocument();
-  expect(screen.getByText("도보 이동 약 12분")).toBeInTheDocument();
-  // 마지막 정류장은 다음 이동이 없다(travel_to_next_min === null).
-  expect(screen.queryByText(/대림창고.*도보 이동/)).not.toBeInTheDocument();
+  // 서버가 내려준 이동수단을 그대로 쓴다 — 예전에는 전 구간을 도보로 고정 표기했다(TP-216).
+  expect(screen.getByText("대중교통 이동 12분")).toBeInTheDocument();
+  // 마지막 정류장은 다음 이동이 없다(travel_to_next_min === null) — 구간 표기는 한 줄뿐이다.
+  expect(screen.queryAllByText(/이동 \d+분$/)).toHaveLength(1);
 
   const helpful = screen.getByRole("button", { name: "도움이 됐어요" });
   expect(helpful).toHaveAttribute("aria-pressed", "false");

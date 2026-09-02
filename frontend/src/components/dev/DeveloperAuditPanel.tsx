@@ -6,6 +6,7 @@
  */
 
 import { useMemo, useState } from "react";
+import { scheduleTravelLabel } from "../../utils/scheduleTravel";
 import type {
   CandidateConcentrationDebug,
   DeveloperAuditTurn,
@@ -935,7 +936,14 @@ export function DeveloperAuditPanel({
                 )}
                 <dl className="grid grid-cols-2 gap-2">
                   <DetailRow label="Intent" value={selectedTurn.intent} />
-                  <DetailRow label="Status" value={selectedTurn.status} />
+                  <DetailRow
+                    label="question_type"
+                    value={
+                      selectedTurn.response?.info_place_card?.question_type ??
+                      selectedTurn.response?.secondary_info_place_card?.question_type ??
+                      null
+                    }
+                  />
                   <DetailRow label="Session ID" value={selectedTurn.sessionId} />
                   <DetailRow label="Run ID" value={selectedTurn.runId} />
                   <DetailRow label="기기 GPS" value={selectedTurn.deviceLocation} />
@@ -1088,7 +1096,11 @@ export function DeveloperAuditPanel({
                         <p className="mt-1 text-xs text-gray-500">
                           머무는 시간 {item.estimated_duration_min}분
                           {item.travel_to_next_min !== null &&
-                            ` · 다음 장소까지 이동 약 ${item.travel_to_next_min}분`}
+                            ` · 다음 장소까지 ${scheduleTravelLabel(
+                              item.travel_to_next_min,
+                              item.travel_to_next_mode,
+                              item.travel_to_next_measured,
+                            )}`}
                         </p>
                         <p className="mt-1 text-xs text-gray-700 dark:text-gray-300">{item.reason}</p>
                         {item.warnings != null && item.warnings.length > 0 && (

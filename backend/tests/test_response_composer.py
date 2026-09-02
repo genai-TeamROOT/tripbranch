@@ -774,6 +774,75 @@ class TestComposeScheduleMessage:
         assert message == "조건에 맞는 곳을 충분히 찾지 못해 일정을 만들지 못했어요."
 
 
+class Test가용시간_초과_안내:
+    """TP-216 완료 조건 — 총합이 가용시간을 넘으면 안내하되 탈락시키지 않는다."""
+
+    @staticmethod
+    def _schedule(total_duration_min: int) -> ScheduleResult:
+        return ScheduleResult(
+            items=[_schedule_item()],
+            total_duration_min=total_duration_min,
+            route_summary="동선 요약입니다.",
+            basis_note="기준 시각 안내",
+            elapsed_ms=100.0,
+        )
+
+    def test_허용_오차를_넘게_길면_얼마나_넘었는지_말한다(self) -> None:
+        message = compose_schedule_message(self._schedule(240), time_available_min=180)
+
+        assert message == (
+            "4시간 코스를 짜봤어요. 동선 요약입니다. "
+            "요청하신 3시간보다 1시간 정도 길어요 — 빼고 싶은 곳이 있으면 말씀해주세요."
+        )
+
+    def test_일정을_깎지_않는다(self) -> None:
+        """안내만 하고 항목은 그대로 나간다 — 문구는 결과를 바꾸지 않는다."""
+
+        schedule = self._schedule(240)
+
+        compose_schedule_message(schedule, time_available_min=180)
+
+        assert len(schedule.items) == 1
+
+    def test_허용_오차_안이면_붙지_않는다(self) -> None:
+        """경계값. 라벨이 요청 시간("2시간")으로 나오는 바로 그 구간이라,
+        여기에 초과 안내가 붙으면 한 문장 안에서 두 수가 어긋난다."""
+
+        message = compose_schedule_message(self._schedule(150), time_available_min=120)
+
+        assert message == "2시간 코스를 짜봤어요. 동선 요약입니다."
+
+    def test_한_분_더_넘으면_붙는다(self) -> None:
+        message = compose_schedule_message(self._schedule(151), time_available_min=120)
+
+        assert "요청하신 2시간보다 31분 정도 길어요" in message
+        # 라벨도 함께 실제값으로 바뀐다.
+        assert message.startswith("2시간 31분 코스를 짜봤어요.")
+
+    def test_짧게_편성되면_붙지_않는다(self) -> None:
+        message = compose_schedule_message(self._schedule(60), time_available_min=300)
+
+        assert "길어요" not in message
+
+    def test_요청_시간이_없으면_붙지_않는다(self) -> None:
+        message = compose_schedule_message(self._schedule(600))
+
+        assert "길어요" not in message
+
+    def test_일정을_못_짠_턴에는_붙지_않는다(self) -> None:
+        schedule = ScheduleResult(
+            items=[],
+            total_duration_min=0,
+            route_summary="조건에 맞는 곳을 충분히 찾지 못했어요.",
+            basis_note="기준 시각 안내",
+            elapsed_ms=100.0,
+        )
+
+        message = compose_schedule_message(schedule, time_available_min=120)
+
+        assert message == "조건에 맞는 곳을 충분히 찾지 못했어요."
+
+
 class TestComposeInfoConcentrationMessage:
     """concentration-conditions.md §3.3/§7의 고지 규칙 — is_proxy=True일 때만
     "근처 [관광지] 기준" 문구가 나와야 하고, 절대 요청 장소 자체의 값처럼

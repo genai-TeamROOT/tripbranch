@@ -20,6 +20,7 @@ import { AppHeader } from "../components/layout/AppHeader";
 import { RecommendationDetailPreviewModal } from "../components/chat/RecommendationDetailPreviewModal";
 import { useTripState } from "../state/TripContext";
 import type { ScheduleItem } from "../types";
+import { scheduleTravelLabel } from "../utils/scheduleTravel";
 
 function ScheduleStop({ item, isLast }: { item: ScheduleItem; isLast: boolean }) {
   const [showDetail, setShowDetail] = useState(false);
@@ -43,9 +44,15 @@ function ScheduleStop({ item, isLast }: { item: ScheduleItem; isLast: boolean })
           <span className="rounded-full bg-chip px-2 py-0.5 text-[11px] font-bold text-brand">
             {item.estimated_arrival} 도착
           </span>
+          {/* break-keep — 이 칸이 w-20(80px)이라 "대중교통 이동 17분 · 추정"이 두 줄로
+              접히는데, 그대로 두면 "17" / "분"이나 "추" / "정" 사이가 끊긴다(TP-216). */}
           {item.travel_to_next_min !== null && (
-            <span className="text-center text-[11px] leading-tight text-muted">
-              도보 이동 약 {item.travel_to_next_min}분
+            <span className="break-keep text-center text-[11px] leading-tight text-muted">
+              {scheduleTravelLabel(
+                item.travel_to_next_min,
+                item.travel_to_next_mode,
+                item.travel_to_next_measured,
+              )}
             </span>
           )}
         </div>
