@@ -142,6 +142,7 @@ def build_recommend_extraction_instruction() -> str:
         concentration_rules=load_text("_shared/rules/concentration_intent.md"),
         environment_rules=load_text("_shared/rules/environment.md"),
         budget_rule=load_text("_shared/rules/budget.md"),
+        accessibility_needs_rules=load_text("_shared/rules/accessibility_needs.md"),
         conversation_history=load_text("_shared/rules/conversation_history.md"),
     )
 

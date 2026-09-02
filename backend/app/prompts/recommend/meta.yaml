@@ -2,7 +2,7 @@ intent: RECOMMEND
 owner: D
 slots:
   recommend.extract:
-    version: "2.6.0"
+    version: "2.7.0"
     template: extract.md
     bundle:
       - recommend/location_rules.md
@@ -12,6 +12,7 @@ slots:
       - _shared/rules/weather_intent.md
       - _shared/rules/concentration_intent.md
       - _shared/rules/environment.md
+      - _shared/rules/accessibility_needs.md
       - _shared/rules/conversation_history.md
     evals: evals/README.md
   recommend.summary:

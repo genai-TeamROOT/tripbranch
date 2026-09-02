@@ -18,4 +18,4 @@
 (없음)
 
 [사용자 조건]
-{"search_center":"경복궁","place_types":[],"place_tags":["카페"],"weather_intent":"AVOID","time_available":240,"environment":"indoor","exclude_tags":[],"special_requirements":[]}
+{"search_center":"경복궁","place_types":[],"place_tags":["카페"],"weather_intent":"AVOID","time_available":240,"environment":"indoor","exclude_tags":[],"special_requirements":[],"accessibility_needs":[]}
