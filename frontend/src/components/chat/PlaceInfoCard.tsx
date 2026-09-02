@@ -175,6 +175,29 @@ function RealtimeParkingSummary({ title, value }: { title: string; value: string
   );
 }
 
+// 목록형 실시간 카드(주차·행사)가 공유하는 "더 보기" 자리. 접힌 채로 시작해
+// 답변 흐름을 밀어내지 않다가, 누르면 나머지를 펼친다.
+function MoreItemsButton({
+  hiddenCount,
+  unit,
+  onClick,
+}: {
+  hiddenCount: number;
+  unit: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="flex items-center justify-center gap-1 rounded-lg py-1.5 text-xs font-semibold text-brand-deep hover:bg-chip"
+      onClick={onClick}
+    >
+      {hiddenCount}{unit} 더 보기
+      <span aria-hidden="true">⌄</span>
+    </button>
+  );
+}
+
 // 기본으로 보여줄 주차장 수. 근처 주차장(최대 9곳)·공영주차장(최대 5곳) 응답이
 // 전부 펼쳐지면 카드가 답변 흐름을 밀어내므로, 나머지는 펼쳐야 보이게 접는다.
 const REALTIME_PARKING_COLLAPSED_COUNT = 3;
@@ -189,14 +212,50 @@ function RealtimeParkingList({ answers }: { answers: [string, string][] }) {
         <RealtimeParkingSummary key={title} title={title} value={value} />
       ))}
       {hiddenCount > 0 && (
-        <button
-          type="button"
-          className="flex items-center justify-center gap-1 rounded-lg py-1.5 text-xs font-semibold text-brand-deep hover:bg-chip"
-          onClick={() => setExpanded(true)}
-        >
-          {hiddenCount}곳 더 보기
-          <span aria-hidden="true">⌄</span>
-        </button>
+        <MoreItemsButton hiddenCount={hiddenCount} unit="곳" onClick={() => setExpanded(true)} />
+      )}
+    </section>
+  );
+}
+
+function isRealtimeEventCard(card: InfoPlaceCardData): boolean {
+  return card.question_type === "realtime_event";
+}
+
+// 서울시 응답의 값은 "기간 · 장소"로 이미 합쳐져 있다(service.py의
+// " · ".join(...)). 행사명과 달리 기간·장소는 라벨을 나눌 만큼 형태가
+// 고정적이지 않아(장소가 요일별로 갈리는 경우도 있다) 하나로 묶어 보여준다.
+function RealtimeEventSummary({ name, meta }: { name: string; meta: string }) {
+  return (
+    <article className="min-w-0 rounded-xl border border-border bg-white px-3 py-2.5">
+      <div className="flex min-w-0 items-start gap-1.5">
+        <span className="mt-0.5 shrink-0 rounded-full bg-gold-tint px-1.5 py-0.5 text-[10px] font-semibold text-[#8a5a12]">
+          행사
+        </span>
+        <span className="min-w-0 text-sm font-bold text-ink">{name}</span>
+      </div>
+      {meta && (
+        <p className="mt-1.5 pl-[calc(1.75rem+0.375rem)] text-xs text-muted">{meta}</p>
+      )}
+    </article>
+  );
+}
+
+// 행사는 이름 자체가 길어 주차장처럼 3곳으로 접으면 답변보다 목록이 먼저
+// 눈에 띈다. 행사 카드에는 조금 더 넉넉하게 4건까지 기본으로 보여준다.
+const REALTIME_EVENT_COLLAPSED_COUNT = 4;
+
+function RealtimeEventList({ answers }: { answers: [string, string][] }) {
+  const [expanded, setExpanded] = useState(false);
+  const visible = expanded ? answers : answers.slice(0, REALTIME_EVENT_COLLAPSED_COUNT);
+  const hiddenCount = answers.length - visible.length;
+  return (
+    <section className="grid gap-2 px-4 py-3">
+      {visible.map(([name, meta]) => (
+        <RealtimeEventSummary key={name} name={name} meta={meta} />
+      ))}
+      {hiddenCount > 0 && (
+        <MoreItemsButton hiddenCount={hiddenCount} unit="건" onClick={() => setExpanded(true)} />
       )}
     </section>
   );
@@ -238,6 +297,8 @@ export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
 
       {isRealtimeParkingCard(card) && answers.length > 0 ? (
         <RealtimeParkingList answers={answers} />
+      ) : isRealtimeEventCard(card) && answers.length > 0 ? (
+        <RealtimeEventList answers={answers} />
       ) : answers.length > 0 ? (
         <dl className="px-4 py-3 text-sm">
           {answers.map(([key, value]) => (

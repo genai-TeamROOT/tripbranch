@@ -579,3 +579,46 @@ it("무장애 항목을 한글 라벨로 보여준다", () => {
   // 영문 계약 키가 화면에 남아 있으면 안 된다.
   expect(screen.queryByText("wheelchair_access")).not.toBeInTheDocument();
 });
+
+it("실시간 행사가 4건을 넘으면 접어두고, 뱃지와 기간·장소를 함께 보여준다", async () => {
+  const user = userEvent.setup();
+  const manyEventsCard: InfoPlaceCardData = {
+    ...card,
+    question_type: "realtime_event",
+    answer_fields: {
+      "집옥재 작은 도서관 개방": "2026-04-01~2026-10-31 · 경복궁 집옥재·팔우정",
+      "경회루·향원정 특별관람": "2026-04-01~2026-10-30 · 경복궁 경회루·향원정",
+      "수문장 순라의식": "2026-03-01~2026-11-29 · 경복궁 내부",
+      "고궁 야간개장": "2026-05-01~2026-05-31 · 경복궁",
+      "봄맞이 한복 체험": "2026-04-01~2026-04-30 · 경복궁 근정전",
+    },
+    thumbnail_url: null,
+    overview: null,
+    operating_hours: null,
+    rest_date: null,
+    parking: null,
+    parking_fee: null,
+    fee: null,
+    baby_carriage: null,
+    credit_card: null,
+    restroom: null,
+    homepage: null,
+    realtime_area_name: "경복궁",
+    realtime_observed_at: "9월 2일 11:00",
+    realtime_source_url: "https://data.seoul.go.kr/example",
+    realtime_detail_items: [],
+  };
+
+  renderWithTrip(<PlaceInfoCard card={manyEventsCard} />);
+
+  expect(screen.getAllByText("행사").length).toBe(4);
+  expect(screen.getByText("집옥재 작은 도서관 개방")).toBeInTheDocument();
+  expect(
+    screen.getByText("2026-04-01~2026-10-31 · 경복궁 집옥재·팔우정"),
+  ).toBeInTheDocument();
+  expect(screen.queryByText("봄맞이 한복 체험")).not.toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "1건 더 보기" }));
+  expect(screen.getByText("봄맞이 한복 체험")).toBeInTheDocument();
+  expect(screen.getAllByText("행사").length).toBe(5);
+});
