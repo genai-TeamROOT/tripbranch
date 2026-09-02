@@ -551,6 +551,10 @@ class ResolveLocationTool:
                 # 필요가 없었다.
                 return None
             else:
+                # 후보를 하나로 못 좁혀도 대표 좌표(1순위 후보)는 실어 보낸다 —
+                # 실시간 행사 등 좌표만으로 답할 수 있는 폴백이 이걸로 계속 조회할 수
+                # 있게 한다(concentration의 이름 전용 폴백과 대칭).
+                fallback = names_source[0]
                 return self._error_result(
                     status=ResolveLocationStatus.NO_DATA,
                     code="no_data",
@@ -561,6 +565,8 @@ class ResolveLocationTool:
                         "candidate_names": _join_candidate_names(
                             item.name for item in names_source
                         ),
+                        "fallback_latitude": str(fallback.latitude),
+                        "fallback_longitude": str(fallback.longitude),
                     },
                     provider_metadata=(result.metadata,),
                 )

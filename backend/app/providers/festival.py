@@ -54,6 +54,7 @@ class FestivalEvent:
     address: str | None
     latitude: float | None
     longitude: float | None
+    image_url: str | None
 
     def is_ongoing(self, reference_date: date) -> bool:
         return self.start_date <= reference_date <= self.end_date
@@ -138,6 +139,7 @@ def map_festival_items(
                 address=_text(item.get("addr1")),
                 latitude=_parse_coordinate(item.get("mapy")),
                 longitude=_parse_coordinate(item.get("mapx")),
+                image_url=_text(item.get("firstimage")) or _text(item.get("firstimage2")),
             )
         )
     return events
@@ -273,6 +275,7 @@ class FakeFestivalProvider:
                 address="서울특별시 종로구 세종대로 175 (세종로)",
                 latitude=37.5718478585,
                 longitude=126.9761682759,
+                image_url="http://tong.visitkorea.or.kr/cms/resource/40/3419040_image2_1.jpg",
             ),
             # 진행 중 — 제목에 장소명이 들어가 직접 매칭이 되는 사례.
             FestivalEvent(
@@ -283,8 +286,9 @@ class FakeFestivalProvider:
                 address="서울특별시 종로구 사직로 161 (세종로)",
                 latitude=37.5796,
                 longitude=126.9770,
+                image_url="http://tong.visitkorea.or.kr/cms/resource/60/2648460_image2_1.jpg",
             ),
-            # 종료됨 — 걸러져야 한다.
+            # 종료됨 — 걸러져야 한다. 실측 20%가 image 없음도 함께 대표한다.
             FestivalEvent(
                 content_id="3312721",
                 title="북촌의 날",
@@ -293,6 +297,7 @@ class FakeFestivalProvider:
                 address="서울특별시 종로구 계동길 37",
                 latitude=37.5826,
                 longitude=126.9850,
+                image_url=None,
             ),
             # 예정 — 걸러져야 한다.
             FestivalEvent(
@@ -303,6 +308,7 @@ class FakeFestivalProvider:
                 address="서울특별시 종로구 동숭길 122",
                 latitude=37.5820,
                 longitude=127.0030,
+                image_url=None,
             ),
         ]
         return provider_result(

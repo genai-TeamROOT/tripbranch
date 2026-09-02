@@ -191,7 +191,12 @@ def _to_concentration_card(result: ConcentrationInfoResult) -> InfoPlaceCard | N
 
 
 def _to_event_card(result: EventInfoResult) -> InfoPlaceCard | None:
-    """행사 INFO도 확정된 장소명을 중심으로 최소 카드를 보여준다."""
+    """행사 INFO도 확정된 장소명을 중심으로 최소 카드를 보여준다.
+
+    realtime_event 카드와 같은 가로 스크롤 사진 카드로 그리도록, event 항목도
+    realtime_detail_items(제목/부제/썸네일) 모양으로 옮긴다 — 프론트가 이미
+    그 모양으로 PlaceCardRow를 그리는 컴포넌트를 갖고 있다.
+    """
 
     place_name = result.resolved_place_name or result.requested_place_name
     if place_name is None:
@@ -204,6 +209,14 @@ def _to_event_card(result: EventInfoResult) -> InfoPlaceCard | None:
         question_type=QuestionType.EVENT,
         answer_fields={"event": "\n".join(event_lines)} if event_lines else {},
         place_name=place_name,
+        realtime_detail_items=[
+            RealtimeInfoDetailItem(
+                title=event.title,
+                subtitle=f"{event.start_date}~{event.end_date}",
+                thumbnail_url=event.image_url,
+            )
+            for event in result.events
+        ],
     )
 
 
