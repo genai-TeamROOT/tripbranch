@@ -146,6 +146,7 @@ function mockFetch() {
 
 beforeEach(() => {
   sessionStorage.clear();
+  localStorage.clear();
   window.history.pushState({}, "", "/");
   // 로컬 .env의 Codex 테스트 좌표가 브라우저 권한 회귀 테스트에 영향을 주지 않게 한다.
   vi.stubEnv("VITE_TEST_DEVICE_LOCATION", "");
@@ -810,4 +811,38 @@ test("홈 화면에서도 사진을 올릴 수 있고, 고르면 /chat으로 넘
   // 결과는 메시지로 쌓이므로 /chat으로 넘어가야 보인다.
   expect(await screen.findByText("감성 카페")).toBeInTheDocument();
   expect(screen.getByPlaceholderText("추가 조건을 입력해 주세요")).toBeInTheDocument();
+});
+
+/*
+ * 취향 설정은 별도 전체 화면이라, 뭘 골라뒀는지 확인하려면 거기까지 들어갔다
+ * 와야 했다. 홈에서 한 번 더 보여줘 그 왕복을 없앤다.
+ */
+test("저장해 둔 취향을 홈 화면에서 다시 보여준다", async () => {
+  localStorage.setItem(
+    "tb_preferences",
+    JSON.stringify([
+      { label: "조용한 곳", source: "preference", codes: ["quiet"] },
+      { label: "카페", source: "place_tag", codes: ["카페", "찻집"] },
+      { label: "데이트 코스", source: "preference", codes: ["date"] },
+    ]),
+  );
+  await renderApp();
+
+  const section = screen.getByRole("heading", { name: "내 취향" }).closest("section");
+  expect(section).not.toBeNull();
+  expect(within(section as HTMLElement).getByText("조용한 곳")).toBeInTheDocument();
+  expect(within(section as HTMLElement).getByText("카페")).toBeInTheDocument();
+  expect(within(section as HTMLElement).getByText("데이트 코스")).toBeInTheDocument();
+
+  // 홈에서는 읽기만 한다 — 고치려면 취향 설정 화면으로 간다.
+  expect(within(section as HTMLElement).getByRole("link", { name: "바꾸기" })).toHaveAttribute(
+    "href",
+    "/preferences",
+  );
+});
+
+test("저장해 둔 취향이 없으면 홈에 그 줄을 그리지 않는다", async () => {
+  await renderApp();
+
+  expect(screen.queryByRole("heading", { name: "내 취향" })).not.toBeInTheDocument();
 });

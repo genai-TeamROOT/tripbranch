@@ -18,6 +18,7 @@ import { AuthProvider } from "./auth/AuthContext";
 import { RequireUser } from "./auth/RequireUser";
 import { TripProvider } from "./state/TripContext";
 import { AppShell } from "./components/layout/AppShell";
+import { PageTransition } from "./components/layout/PageTransition";
 import { RouteErrorBoundary } from "./components/RouteErrorBoundary";
 
 /*
@@ -26,7 +27,7 @@ import { RouteErrorBoundary } from "./components/RouteErrorBoundary";
  * - 개발자 화면(/dev-chat·/dev-ops)은 components/dev/ 17개를 끌고 오는데, 소스만
  *   227KB로 앱에서 가장 큰 덩어리다. 사용자는 이 경로에 오지 않으므로 첫 화면에
  *   실릴 이유가 없다.
- * - 인증 화면 4종은 로그인한 사용자가 다시 볼 일이 없다.
+ * - 인증 화면 3종은 로그인한 사용자가 다시 볼 일이 없다.
  *
  * AppShell(홈·채팅·취향·위치·일정)은 그대로 즉시 로딩한다 — 첫 화면이고,
  * 바텀시트로 뜨는 화면들이라 나중에 받아오면 시트가 빈 채로 올라온다.
@@ -34,9 +35,6 @@ import { RouteErrorBoundary } from "./components/RouteErrorBoundary";
 const LoginPage = lazy(() => import("./pages/LoginPage").then((m) => ({ default: m.LoginPage })));
 const SignupPage = lazy(() =>
   import("./pages/SignupPage").then((m) => ({ default: m.SignupPage })),
-);
-const FindIdPage = lazy(() =>
-  import("./pages/FindIdPage").then((m) => ({ default: m.FindIdPage })),
 );
 const ResetPasswordPage = lazy(() =>
   import("./pages/ResetPasswordPage").then((m) => ({ default: m.ResetPasswordPage })),
@@ -66,11 +64,41 @@ function App() {
           <RouteErrorBoundary>
             <Suspense fallback={<RouteFallback />}>
               <Routes>
-                <Route path="/login" element={<LoginPage />} />
+                {/*
+                 * 인증 화면 셋은 서로 오가는 흐름이라(로그인 -> 회원가입 ->
+                 * 되돌아오기) 전환이 특히 눈에 띈다. pathKey를 경로 문자열로
+                 * 직접 주는 이유는, 같은 PageTransition 자리에 다른 화면이
+                 * 들어오면 React가 래퍼를 재사용해 애니메이션이 다시 재생되지
+                 * 않기 때문이다.
+                 *
+                 * 셸 밖이라 fullHeight는 켜지 않는다 — 각 화면이 min-h-dvh로
+                 * 스스로 높이를 잡는다.
+                 */}
+                <Route
+                  path="/login"
+                  element={
+                    <PageTransition pathKey="/login">
+                      <LoginPage />
+                    </PageTransition>
+                  }
+                />
                 {/* 회원가입·아이디찾기·비밀번호찾기는 아직 백엔드가 없는 UI 목업이다(D-062 Phase 5). */}
-                <Route path="/signup" element={<SignupPage />} />
-                <Route path="/find-id" element={<FindIdPage />} />
-                <Route path="/reset-password" element={<ResetPasswordPage />} />
+                <Route
+                  path="/signup"
+                  element={
+                    <PageTransition pathKey="/signup">
+                      <SignupPage />
+                    </PageTransition>
+                  }
+                />
+                <Route
+                  path="/reset-password"
+                  element={
+                    <PageTransition pathKey="/reset-password">
+                      <ResetPasswordPage />
+                    </PageTransition>
+                  }
+                />
                 <Route
                   path="/dev-chat"
                   element={
