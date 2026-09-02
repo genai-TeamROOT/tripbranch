@@ -74,6 +74,18 @@ def test_schedule_walk_transfer_threshold_is_bounded() -> None:
         Settings(_env_file=None, schedule_walk_transfer_threshold_min=121)
 
 
+def test_schedule_max_measured_segments_is_bounded() -> None:
+    settings = Settings(_env_file=None, schedule_max_measured_segments=4)
+
+    assert settings.schedule_max_measured_segments == 4
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, schedule_max_measured_segments=0)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, schedule_max_measured_segments=51)
+
+
 def test_validate_provider_config_requires_kakao_key_for_real_walking_route() -> None:
     with pytest.raises(ValueError, match="KAKAO_MAP_REST_API_KEY"):
         validate_provider_config(Settings(_env_file=None, travel_route_provider="real"))

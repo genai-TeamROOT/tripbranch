@@ -175,10 +175,57 @@ class ScheduleTravelWarning:
 실제 경로 조회 실패 시 직선거리 기반 추정값이 전달될 수 있으므로 일정 엔진은
 `source`와 `confidence`를 이용해 경고 또는 불확실성 감점을 적용한다.
 
-TP-217 시점에는 추정값 생성기만 있고 실측 보강(TP-216)은 아직 없다. 생성기는 속도
-셋과 도보 전환 임계값(`SCHEDULE_WALK_TRANSFER_THRESHOLD_MIN`, 기본 20분)을 설정에서
-직접 읽지 않고 인자로 받으므로, 일정 엔진이 이 함수를 부를 때 `Settings` 값을 넘겨야
-한다. 넘기는 호출자가 생기기 전까지는 그 설정을 바꿔도 동작이 달라지지 않는다.
+추정 생성기는 속도 셋과 도보 전환 임계값(`SCHEDULE_WALK_TRANSFER_THRESHOLD_MIN`,
+기본 20분)을 설정에서 직접 읽지 않고 인자로 받으므로, 일정 엔진이 이 함수를 부를 때
+`Settings` 값을 넘겨야 한다. 넘기는 호출자가 생기기 전까지는 그 설정을 바꿔도
+동작이 달라지지 않는다.
+
+### 4.2.1 유력 일정 구간의 실측 (TP-219)
+
+추정 Edge 중 **실제로 쓰인 구간만** 경로 API로 다시 재는 함수가 같은 모듈에 있다.
+출력이 추정과 같은 `ScheduleTravelEstimateResult`라 소비 코드는 하나로 쓴다.
+
+```python
+result = await measure_schedule_travel_edges(   # app.tools.schedule_travel
+    tool=travel_route_tool,                     # factory.get_travel_route_tool()
+    candidates=candidates,
+    estimated_edges=estimated.edges,            # 추정 생성기의 결과
+    max_measured_segments=settings.schedule_max_measured_segments,
+)
+```
+
+넘기는 방향 쌍을 고르는 일은 일정 엔진 몫이다. 후보 전체 행렬(10곳이면 90간선)은
+실측하지 않는다는 것이 TP-216·TP-217이 함께 정한 방향이므로, 유력 일정에 실제로
+쓰인 인접 구간만 넘긴다.
+
+**이동수단을 다시 고르지 않는다.** 추정 Edge에 박힌 `mode`를 그대로 써서 잰다.
+같은 구간의 추정값과 실측값이 항상 같은 이동수단 기준이므로, 값이 바뀌었다면 그건
+경로 때문이지 이동수단이 바뀐 탓이 아니다.
+
+**요청한 구간은 반드시 돌아온다.** 실측에 실패해도 Edge가 사라지거나 0분이 되지
+않고 추정값 그대로 남는다. 구분은 이렇게 한다.
+
+| 결과 | `source` | `confidence` | `error_code` |
+| --- | --- | --- | --- |
+| 실측 성공 | `kakao_walking` 등 | `high` | 없음 |
+| 실측 실패 → 추정 유지 | `straight_line_estimate` | `low` | 실패 사유 |
+| 상한 초과로 안 잼 | `straight_line_estimate` | `low` | 없음 |
+
+`status`는 이 경우에도 `success`로 남는다. **이 Edge에 쓸 수 있는 이동시간이 들어
+있는가**를 말하는 자리이고 추정값도 쓸 수 있는 값이기 때문이다. 실측 여부는
+`source`·`confidence`로, 실패 사유는 `error_code`로 판단한다 — `status`가
+`success`라는 이유로 실측이라고 읽으면 안 된다.
+
+실측하지 못한 구간은 `result.warnings`에도 남는다.
+
+| 경고 코드 | 뜻 |
+| --- | --- |
+| `schedule_travel_measure_failed` | 그 구간의 경로 조회가 실패했다 |
+| `schedule_travel_measure_unavailable` | 이동수단 Provider가 통째로 죽어 그룹 전체가 못 왔다 |
+| `schedule_travel_measure_budget_exceeded` | 실측 구간 수 상한을 넘겨 호출하지 않았다 |
+
+상한은 `SCHEDULE_MAX_MEASURED_SEGMENTS`(기본 12)이고 **입력 순서 앞에서부터** 채운다.
+어느 구간을 먼저 실측할지는 넘기는 순서로 정하면 된다.
 
 ---
 

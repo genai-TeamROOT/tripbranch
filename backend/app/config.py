@@ -89,6 +89,14 @@ class Settings(BaseSettings):
     # 이 생성기를 부르기 전(TP-215·TP-216)까지는 값을 바꿔도 동작이 달라지지 않는다.
     schedule_walk_transfer_threshold_min: int = Field(default=20, ge=1, le=120)
 
+    # 한 번의 실측 요청에서 실제 경로 API로 잴 일정 구간 수 상한.
+    #
+    # 일정 하나가 3~5곳이면 구간은 2~4개다. 기본 12는 유력 일정 3개까지는 그대로
+    # 실측된다는 뜻이다. 상한을 넘는 구간은 호출하지 않고 추정값으로 남으므로,
+    # 이 값을 올리면 외부 호출 수가 그만큼 늘어난다. 후보 전체 행렬(10곳이면
+    # 90간선)을 실측하지 않겠다는 것이 TP-216·TP-217이 함께 정한 방향이다.
+    schedule_max_measured_segments: int = Field(default=12, ge=1, le=50)
+
     # 상세·운영정보 조회 출처. PLACE_PROVIDER=fake이면 Fake Provider가 상세까지
     # 담당하므로 이 값은 무시된다.
     #
