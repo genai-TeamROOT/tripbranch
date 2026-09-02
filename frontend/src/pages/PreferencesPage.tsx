@@ -97,10 +97,10 @@ export function PreferencesPage() {
     restored.filter((preference) => preference.source === "custom").map(({ label }) => label),
   );
   const [showAddKeyword, setShowAddKeyword] = useState(false);
-  const [status, setStatus] = useState<"saved" | "cleared" | null>(null);
+  const [cleared, setCleared] = useState(false);
 
   function toggle(option: string) {
-    setStatus(null);
+    setCleared(false);
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(option)) {
@@ -122,19 +122,25 @@ export function PreferencesPage() {
     setCustomKeywords([]);
     const hadSaved = loadPreferences().length > 0;
     clearPreferences();
-    setStatus(hadSaved ? "cleared" : null);
+    setCleared(hadSaved);
   }
 
   function handleAddKeyword(keyword: string) {
     if (selected.size >= MAX_SELECTED || selected.has(keyword)) return;
-    setStatus(null);
+    setCleared(false);
     setCustomKeywords((prev) => (prev.includes(keyword) ? prev : [...prev, keyword]));
     setSelected((prev) => new Set(prev).add(keyword));
   }
 
+  /*
+   * 저장하면 홈으로 보낸다. 저장했다는 안내를 이 화면에 띄우고 머무르게 하면
+   * 결과를 보려고 사용자가 한 번 더 홈으로 이동해야 한다 — 그 왕복을 없애려고
+   * 만든 기능이라 여기서 끝내면 앞뒤가 안 맞는다. 홈에 뜬 "내 취향" 줄 자체가
+   * 저장됐다는 확인이다.
+   */
   function handleSave() {
     savePreferences([...selected].map(toSavedPreference));
-    setStatus("saved");
+    navigate("/");
   }
 
   const remaining = MIN_SELECTED - selected.size;
@@ -165,8 +171,8 @@ export function PreferencesPage() {
               끌리시나요?
             </h1>
             <p className="mt-2 text-sm leading-relaxed text-muted">
-              고른 취향은 홈 화면에서 다시 볼 수 있어요. 최소 {MIN_SELECTED}개, 최대 {MAX_SELECTED}
-              개까지 골라주세요.
+              고른 취향은 홈 화면에서 다시 볼 수 있어요. 추천 결과에 반영하는 건 아직 준비 중이에요.
+              최소 {MIN_SELECTED}개, 최대 {MAX_SELECTED}개까지 골라주세요.
             </p>
 
             {/* 부제와 Meta 사이만 12다(28:20) — 컨테이너 gap 24를 쓰면 두 배로 벌어진다. */}
@@ -235,21 +241,7 @@ export function PreferencesPage() {
             <Plus size={16} /> 키워드 직접 입력
           </button>
 
-          {/*
-           * 저장은 이 기기에만 남고, 아직 추천 순위를 바꾸지 않는다. 저장했다는
-           * 말만 하고 넘어가면 "골랐으니 추천이 달라지겠지"로 읽히므로 어디까지
-           * 되는지를 같이 밝힌다.
-           */}
-          {status === "saved" && (
-            <p
-              role="status"
-              className="rounded-xl bg-sky-light px-3.5 py-2.5 text-xs leading-relaxed text-brand-deep"
-            >
-              취향을 저장했어요. 홈 화면에서 다시 볼 수 있어요. 추천 결과에 반영하는 건 아직 준비
-              중이라, 지금은 채팅으로 조건을 말해주시면 그때그때 반영해드려요.
-            </p>
-          )}
-          {status === "cleared" && (
+          {cleared && (
             <p
               role="status"
               className="rounded-xl bg-chip px-3.5 py-2.5 text-xs leading-relaxed text-ink"

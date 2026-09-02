@@ -6,7 +6,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test } from "vitest";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { AppShellProvider } from "../components/layout/AppShellContext";
 import { loadPreferences } from "../state/preferenceStorage";
 import { PreferencesPage } from "./PreferencesPage";
@@ -16,11 +16,17 @@ beforeEach(() => {
   localStorage.clear();
 });
 
+/** 저장 뒤 어디로 갔는지 보려고 현재 경로를 화면에 흘려둔다. */
+function LocationProbe() {
+  return <span data-testid="probe">{useLocation().pathname}</span>;
+}
+
 function renderPage() {
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={["/preferences"]}>
       <AppShellProvider>
         <PreferencesPage />
+        <LocationProbe />
       </AppShellProvider>
     </MemoryRouter>,
   );
@@ -169,16 +175,27 @@ test("선택 초기화는 저장해 둔 값까지 지운다", async () => {
   expect(screen.getByRole("status")).toHaveTextContent("저장해 둔 취향을 지웠어요");
 });
 
-test("저장 안내는 추천에 아직 반영되지 않는다는 사실도 함께 밝힌다", async () => {
+test("저장하면 홈 화면으로 보낸다", async () => {
   const user = userEvent.setup();
   renderPage();
 
+  expect(screen.getByTestId("probe")).toHaveTextContent("/preferences");
   for (const label of ["조용한 곳", "카페", "데이트 코스"]) {
     await user.click(screen.getByRole("button", { name: label }));
   }
   await user.click(screen.getByRole("button", { name: "저장하기" }));
 
-  const status = screen.getByRole("status");
-  expect(status).toHaveTextContent("취향을 저장했어요");
-  expect(status).toHaveTextContent("추천 결과에 반영하는 건 아직 준비 중");
+  // 결과를 보려고 사용자가 한 번 더 홈으로 이동하게 두지 않는다.
+  expect(screen.getByTestId("probe")).toHaveTextContent("/");
+});
+
+/*
+ * 저장 뒤 화면을 떠나므로 "추천엔 아직 반영되지 않는다"를 저장 안내로 띄울 수
+ * 없다. 그래서 부제가 그 사실을 항상 들고 있어야 한다 — 빠지면 홈에 취향이
+ * 뜬 것만 보고 추천이 달라졌다고 읽는다.
+ */
+test("부제가 추천에 아직 반영되지 않는다는 사실을 항상 밝힌다", () => {
+  renderPage();
+
+  expect(screen.getByText(/추천 결과에 반영하는 건 아직 준비 중이에요/)).toBeInTheDocument();
 });
