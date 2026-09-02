@@ -1,28 +1,115 @@
 /*
  * 역할: 회원가입 화면. Figma의 Signup 프레임(27:52)을 옮긴 것이다.
- * 백엔드에 아직 회원가입 API가 없어(D-062 Phase 5) UI만 미리 자리 잡아 둔다 —
- * 제출해도 계정이 만들어지지 않고 ComingSoonNotice만 뜬다.
+ * 입력: 이름·이메일·비밀번호·비밀번호 확인·약관 동의.
+ * 출력: 가입 요청 → "메일을 보냈어요" 안내, 실패 시 오류 문구.
+ * 호출 시점: /signup 라우트. 로그인 화면의 "회원가입" 링크로 들어온다.
  *
- * 약관 "보기"는 아직 갈 곳이 없다. Figma에는 링크로 있지만 약관 화면 자체가
- * 없어서(D-062 9-3절) 눌러도 준비 중 안내만 띄운다 — 죽은 링크를 만들지 않는다.
+ * **가입해도 바로 로그인되지 않는다.** 이메일 확인이 켜져 있어(Supabase 대시보드,
+ * `mailer_autoconfirm: false`) 메일의 링크를 눌러야 계정이 열린다. 그래서 성공하면
+ * 홈으로 보내지 않고 이 화면에서 안내로 바꾼다 — 로그인된 것처럼 굴면 사용자는
+ * 메일을 확인하지 않고 떠난다.
+ *
+ * 약관 "보기"는 TermsModal을 연다(Figma 64:2). **본문은 아직 비어 있고 목차만
+ * 있다** — 지키지 못하는 문장을 약관에 적는 것이 안 적는 것보다 나쁘다(TermsModal
+ * 서두 참고). 동의 체크박스는 그대로 필수다.
  */
 
 import { useState, type FormEvent } from "react";
-import { Eye, EyeOff } from "lucide-react";
-import { AuthLayout, ComingSoonNotice } from "../auth/AuthLayout";
+import { Eye, EyeOff, MailCheck } from "lucide-react";
+import { useAuth } from "../auth/AuthContext";
+import { AuthLayout } from "../auth/AuthLayout";
+import { ErrorBanner } from "../components/ErrorBanner";
 import { Button } from "../components/ui/button";
 import { Checkbox } from "../components/ui/checkbox";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
+import { TermsModal } from "../components/layout/TermsModal";
 
 export function SignupPage() {
+  const { signUpWithEmail } = useAuth();
+
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [passwordConfirm, setPasswordConfirm] = useState("");
   const [agreed, setAgreed] = useState(false);
-  const [showComingSoon, setShowComingSoon] = useState(false);
+
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [sentTo, setSentTo] = useState<string | null>(null);
+  const [showTerms, setShowTerms] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  /*
+   * 화면에서 거르는 것은 **서버가 판단할 수 없는 것뿐이다.** 두 번 입력한 값이
+   * 같은지는 서버로 가지 않으므로 여기서 봐야 하고, 길이·문자 종류·유출 여부는
+   * Supabase 정책이 정본이라 서버에 맡긴다(authErrors가 사유별로 풀어 준다).
+   * 여기에 길이 검사를 또 두면 대시보드 설정을 바꾸는 순간 두 곳이 갈린다.
+   */
+  function localError(): string | null {
+    if (!name.trim()) return "이름을 입력해주세요.";
+    if (!email.trim()) return "이메일을 입력해주세요.";
+    if (!password) return "비밀번호를 입력해주세요.";
+    if (password !== passwordConfirm) return "두 번 입력한 비밀번호가 서로 달라요.";
+    return null;
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setShowComingSoon(true);
+    if (isSubmitting) return;
+
+    const invalid = localError();
+    if (invalid) {
+      setErrorMessage(invalid);
+      return;
+    }
+
+    setIsSubmitting(true);
+    setErrorMessage(null);
+    try {
+      await signUpWithEmail({ name: name.trim(), email: email.trim(), password });
+      setSentTo(email.trim());
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "가입하지 못했어요.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  /*
+   * 메일을 보낸 뒤에는 폼을 치운다. 같은 화면에 폼이 남아 있으면 "한 번 더 눌러야
+   * 하나" 싶어 다시 제출하게 되고, 그때마다 확인 메일이 또 나간다(발송 한도에 걸린다).
+   */
+  if (sentTo) {
+    return (
+      <AuthLayout
+        title="메일을 확인해주세요"
+        backTo="/login"
+        footer={
+          <Button type="button" size="lg" onClick={() => setSentTo(null)}>
+            다른 이메일로 가입하기
+          </Button>
+        }
+      >
+        <p
+          role="status"
+          className="flex items-start gap-2.5 rounded-xl bg-sky-light p-4 text-sm leading-relaxed text-brand-deep"
+        >
+          <MailCheck size={18} className="mt-0.5 shrink-0" aria-hidden />
+          {/*
+           * 이메일 뒤에 조사를 붙이지 않는다. 받침이 있느냐에 따라 "로/으로"가
+           * 갈리는데 주소 끝 글자는 사용자마다 달라서 어느 쪽을 고정해도 절반은
+           * 틀린다("…co.kr 으로"처럼). "이 주소로"로 받아 조사를 주소에서 떼어낸다.
+           */}
+          <span>
+            <strong className="font-bold">{sentTo}</strong>
+            <br />이 주소로 확인 메일을 보냈어요. 메일의 링크를 눌러야 가입이 끝나요.
+            <br />
+            메일이 안 보이면 스팸함도 확인해주세요.
+          </span>
+        </p>
+      </AuthLayout>
+    );
   }
 
   return (
@@ -30,16 +117,20 @@ export function SignupPage() {
       title="회원가입"
       backTo="/login"
       footer={
-        <Button type="submit" form="signup-form" size="lg" disabled={!agreed}>
-          가입하고 시작하기
+        <Button type="submit" form="signup-form" size="lg" disabled={!agreed || isSubmitting}>
+          {isSubmitting ? "가입하는 중이에요…" : "가입하고 시작하기"}
         </Button>
       }
     >
-      <form id="signup-form" onSubmit={handleSubmit} className="flex flex-col gap-4">
+      <form id="signup-form" onSubmit={handleSubmit} className="flex flex-col gap-4" noValidate>
+        {errorMessage ? <ErrorBanner message={errorMessage} /> : null}
+
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="signup-name">이름</Label>
           <Input
             id="signup-name"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
             placeholder="이름을 입력하세요"
             autoComplete="name"
             aria-describedby="signup-name-help"
@@ -60,6 +151,8 @@ export function SignupPage() {
           <Input
             id="signup-email"
             type="email"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
             placeholder="example@email.com"
             autoComplete="email"
           />
@@ -72,8 +165,11 @@ export function SignupPage() {
             <Input
               id="signup-password"
               type={showPassword ? "text" : "password"}
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
               placeholder="8자 이상 입력하세요"
               autoComplete="new-password"
+              aria-describedby="signup-password-help"
               className="pr-11"
             />
             <button
@@ -86,6 +182,15 @@ export function SignupPage() {
               {showPassword ? <EyeOff size={17} aria-hidden /> : <Eye size={17} aria-hidden />}
             </button>
           </div>
+          {/*
+           * 서버가 실제로 요구하는 조건을 미리 밝힌다. Supabase 비밀번호 정책이
+           * 길이 8 외에 **문자 종류 4종**까지 걸려 있어서(2026-09-02 대시보드 설정),
+           * "8자 이상"만 보고 소문자로만 채운 사람은 제출한 뒤에야 거부된다.
+           * 조건을 아는 쪽이 화면이니 미리 적는다.
+           */}
+          <p id="signup-password-help" className="text-xs leading-relaxed text-muted">
+            8자 이상, 대문자·소문자·숫자·기호를 각각 하나 이상 넣어주세요.
+          </p>
         </div>
 
         <div className="flex flex-col gap-1.5">
@@ -93,6 +198,8 @@ export function SignupPage() {
           <Input
             id="signup-password-confirm"
             type="password"
+            value={passwordConfirm}
+            onChange={(event) => setPasswordConfirm(event.target.value)}
             placeholder="비밀번호를 한 번 더 입력하세요"
             autoComplete="new-password"
           />
@@ -110,15 +217,15 @@ export function SignupPage() {
           </Label>
           <button
             type="button"
-            onClick={() => setShowComingSoon(true)}
+            onClick={() => setShowTerms(true)}
             className="shrink-0 text-xs text-muted transition-colors hover:text-brand"
           >
             보기
           </button>
         </div>
-
-        {showComingSoon && <ComingSoonNotice />}
       </form>
+
+      {showTerms && <TermsModal onClose={() => setShowTerms(false)} />}
     </AuthLayout>
   );
 }

@@ -1,12 +1,13 @@
 /*
- * 역할: 서비스 진입 관문. 정식 로그인이 들어오기 전까지 게스트 신원만 발급한다.
- * 입력: 게스트 시작 버튼 클릭, 리다이렉트로 넘어온 원래 목적지.
- * 출력: 게스트 세션 발급 후 원래 목적지로 이동, 실패 시 오류 문구.
+ * 역할: 서비스 진입 관문. 이메일 로그인과 게스트 시작을 함께 제공한다.
+ * 입력: 이메일·비밀번호, 게스트 시작 버튼, 리다이렉트로 넘어온 원래 목적지.
+ * 출력: 세션 발급 후 원래 목적지로 이동, 실패 시 오류 문구.
  * 호출 시점: 신원 없이 보호 라우트에 접근했거나 /login으로 직접 들어올 때 호출된다.
  *
- * 이메일·비밀번호 입력은 Figma의 Login 프레임(27:6)을 그대로 옮긴 것으로, 아직
- * 백엔드가 없어(D-062 Phase 5) 제출해도 동작하지 않는다 — ComingSoonNotice로 그
- * 사실을 밝힌다. 게스트 시작만 실제로 동작한다.
+ * **아직 확인하지 않은 계정은 로그인할 수 없다.** 이메일 확인이 켜져 있어서
+ * 가입만 하고 메일 링크를 누르지 않으면 `email_not_confirmed`로 막힌다 —
+ * authErrors가 "받은 메일의 링크를 눌러주세요"로 풀어 준다. 실패를 뭉뚱그리면
+ * 사용자는 비밀번호가 틀린 줄 알고 계속 다시 친다.
  *
  * Figma와 다른 세 곳(2026-09-02 사용자 결정):
  * - Figma 하단은 "Google로 계속하기"인데 여기서는 **게스트 시작**이다. Google OAuth와
@@ -22,20 +23,21 @@ import { useState, type FormEvent } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
-import { AuthLayout, ComingSoonNotice } from "../auth/AuthLayout";
+import { AuthLayout } from "../auth/AuthLayout";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 
 export function LoginPage() {
-  const { session, status, error: authError, signInAsGuest } = useAuth();
+  const { session, status, error: authError, linkError, signInAsGuest, signInWithEmail } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [showComingSoon, setShowComingSoon] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
   /* RequireUser가 넘겨준 원래 목적지. 직접 들어온 경우엔 홈으로 보낸다. */
@@ -45,9 +47,27 @@ export function LoginPage() {
     return <Navigate to={from} replace />;
   }
 
-  function handleLoginSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleLoginSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setShowComingSoon(true);
+    if (isLoading) return;
+
+    /* 빈 값으로 보내면 서버가 invalid_credentials로 돌려주는데, 그러면 "비밀번호가
+       틀렸나" 싶어진다. 안 채운 것과 틀린 것은 다른 상태다. */
+    if (!email.trim() || !password) {
+      setErrorMessage("이메일과 비밀번호를 모두 입력해주세요.");
+      return;
+    }
+
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      await signInWithEmail(email.trim(), password);
+      navigate(from, { replace: true });
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "로그인하지 못했어요.");
+    } finally {
+      setIsLoading(false);
+    }
   }
 
   async function handleGuestStart() {
@@ -71,8 +91,8 @@ export function LoginPage() {
       footer={
         <>
           {/* 폼 밖에 있으므로 form 속성으로 연결한다 — Figma에서 버튼이 하단 바에 있다. */}
-          <Button type="submit" form="login-form" size="lg">
-            로그인
+          <Button type="submit" form="login-form" size="lg" disabled={isLoading}>
+            {isLoading ? "로그인하는 중이에요…" : "로그인"}
           </Button>
 
           <div className="flex items-center gap-3 text-xs text-muted">
@@ -103,14 +123,25 @@ export function LoginPage() {
           </section>
         ) : null}
 
-        {errorMessage ? <ErrorBanner message={errorMessage} /> : null}
+        {/* 방금 누른 버튼의 실패가 먼저다. 링크 오류는 그 아래로 밀린다 —
+            이미 지나간 일이라 지금 하려는 동작을 가리면 안 된다. */}
+        {errorMessage ?? linkError ? (
+          <ErrorBanner message={errorMessage ?? linkError ?? ""} />
+        ) : null}
 
-        <form id="login-form" onSubmit={handleLoginSubmit} className="flex flex-col gap-4">
+        <form
+          id="login-form"
+          onSubmit={handleLoginSubmit}
+          className="flex flex-col gap-4"
+          noValidate
+        >
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="login-email">이메일</Label>
             <Input
               id="login-email"
               type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
               placeholder="example@email.com"
               autoComplete="email"
             />
@@ -126,6 +157,8 @@ export function LoginPage() {
               <Input
                 id="login-password"
                 type={showPassword ? "text" : "password"}
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
                 placeholder="비밀번호를 입력하세요"
                 autoComplete="current-password"
                 className="pr-11"
@@ -141,8 +174,6 @@ export function LoginPage() {
               </button>
             </div>
           </div>
-
-          {showComingSoon && <ComingSoonNotice />}
         </form>
 
         <div className="flex justify-center gap-3 text-xs text-muted">
