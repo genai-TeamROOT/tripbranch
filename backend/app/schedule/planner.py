@@ -39,8 +39,13 @@ from app.schedule.timeline import (
     estimated_travel_minutes,
     travel_speed_km_per_minute,
 )
+from app.schedule.travel import (
+    resolve_schedule_travel_edges,
+    travel_minutes_from_edges,
+)
 from app.schemas import RecommendationItem, ScheduleItem, ScheduleResult
 from app.state.schema import now_kst
+from app.tools.travel_route import TravelRouteTool
 
 logger = logging.getLogger(__name__)
 
@@ -273,20 +278,45 @@ def _travel_minutes_for(
 ) -> TravelMinutes:
     """이번 요청의 구간 이동시간 계산기.
 
-    지금은 직선거리를 가정 속도로 나눈 추정값이다. 실측 경로로 바꾸는 것은
-    TP-216이고, 그때 이 함수만 갈아끼우면 된다 — 시간표 계산기는 이동시간을
-    콜러블로 주입받으므로 바뀌지 않는다.
-
-    TP-217이 만든 `estimate_schedule_travel_edges()`를 아직 쓰지 않는 이유는
-    그쪽이 장소 좌표를 요구하는데 SchedulePlanningRequest에는 좌표가 없기
-    때문이다(RecommendationItem에 위경도가 없다). 좌표를 넘기려면 요청 스키마와
-    agent_runtime 배선을 함께 고쳐야 해서 이 카드의 경계를 넘는다.
+    **좌표가 없을 때만 쓰는 폴백이다.** 좌표(`travel_candidates`)가 오면
+    `_resolve_travel_minutes()`가 추정·실측 Edge로 계산한다(TP-216). 이 경로는
+    좌표를 못 채운 호출부(과거 세션 재생, 단위 테스트 등)를 위해 남겨둔다 —
+    직선거리를 가정 속도로 나눈 값이고 방향이 없다.
     """
 
     return estimated_travel_minutes(
         request.pairwise_distances_km,
         speed_km_per_minute=travel_speed_km_per_minute(request.conditions),
     )
+
+
+async def _resolve_travel_minutes(
+    request: SchedulePlanningRequest | SchedulePartialFillRequest,
+    place_ids: Sequence[str],
+    *,
+    settings: Settings | None,
+    travel_route_tool: TravelRouteTool | None,
+) -> TravelMinutes:
+    """확정된 방문 순서의 구간 이동시간을 만든다. (TP-216)
+
+    **순서가 정해진 뒤에 부른다.** 어느 구간을 잴지는 LLM이 순서를 고른 뒤에야
+    정해지고, 실측은 비동기라 시간표의 동기 콜러블 안에서 할 수 없다. 그래서
+    필요한 구간만 미리 확정해 표로 만들고, 시간표에는 그 표를 읽는 콜러블을 넘긴다.
+
+    좌표(`travel_candidates`)가 없으면 예전처럼 직선거리 ÷ 가정 속도로 계산한다 —
+    이 필드를 안 채우는 호출부는 동작이 바뀌지 않는다.
+    """
+
+    edges = await resolve_schedule_travel_edges(
+        candidates=request.travel_candidates,
+        place_ids=place_ids,
+        conditions=request.conditions,
+        settings=settings or Settings(),
+        travel_route_tool=travel_route_tool,
+    )
+    if edges:
+        return travel_minutes_from_edges(edges)
+    return _travel_minutes_for(request)
 
 
 def _drop_unknown_places(
@@ -435,6 +465,7 @@ async def plan_schedule(
     timer: Timer = perf_counter,
     co_visited_fetcher: CoVisitedFetcher | None = None,
     settings: Settings | None = None,
+    travel_route_tool: TravelRouteTool | None = None,
 ) -> ScheduleResult:
     """SchedulePlanningRequest로 LLM을 호출해 ScheduleResult를 만든다.
 
@@ -551,7 +582,12 @@ async def plan_schedule(
     timeline = _build_schedule_timeline(
         drafts,
         start_at=_round_up_start(effective_visit_datetime),
-        travel_minutes=_travel_minutes_for(resolved_request),
+        travel_minutes=await _resolve_travel_minutes(
+            resolved_request,
+            [draft.place_id for draft in drafts],
+            settings=settings,
+            travel_route_tool=travel_route_tool,
+        ),
         candidates=resolved_request.candidates,
     )
 
@@ -590,13 +626,20 @@ def _anchor_start(items: Sequence[ScheduleItem], fallback: datetime) -> datetime
     return midnight + timedelta(minutes=minutes)
 
 
-def _pinned_only_result(
+async def _pinned_only_result(
     request: SchedulePartialFillRequest,
     visit_datetime: datetime,
     route_summary: str,
     elapsed_ms: float,
+    *,
+    settings: Settings | None = None,
+    travel_route_tool: TravelRouteTool | None = None,
 ) -> ScheduleResult:
-    """새로 채운 자리 없이 기존 항목만으로 결과를 만든다."""
+    """새로 채운 자리 없이 기존 항목만으로 결과를 만든다.
+
+    유지 항목만 남아도 구간 이동시간은 같은 경로로 확정한다(TP-216) — 여기만
+    직선거리 추정을 쓰면 같은 일정이 실패 여부에 따라 다른 시각을 갖게 된다.
+    """
 
     ordered = sorted(request.pinned_items, key=lambda item: item.order)
     drafts = [
@@ -606,7 +649,12 @@ def _pinned_only_result(
     timeline = _build_schedule_timeline(
         drafts,
         start_at=_anchor_start(ordered, visit_datetime),
-        travel_minutes=_travel_minutes_for(request),
+        travel_minutes=await _resolve_travel_minutes(
+            request,
+            [draft.place_id for draft in drafts],
+            settings=settings,
+            travel_route_tool=travel_route_tool,
+        ),
         candidates=request.candidates,
     )
     return ScheduleResult(
@@ -625,6 +673,7 @@ async def plan_partial_schedule(
     timer: Timer = perf_counter,
     co_visited_fetcher: CoVisitedFetcher | None = None,
     settings: Settings | None = None,
+    travel_route_tool: TravelRouteTool | None = None,
 ) -> ScheduleResult:
     """SchedulePartialFillRequest로 일부 슬롯만 새로 채운 ScheduleResult를 만든다.
 
@@ -652,11 +701,13 @@ async def plan_partial_schedule(
     if not request.target_orders:
         # 파싱 단계(SCHEDULE-09 1단계)가 REJECT_SPECIFIC일 때 항상 target_indices를
         # 채우므로 정상 흐름에서는 발생하지 않는다 — 방어적으로만 처리한다.
-        return _pinned_only_result(
+        return await _pinned_only_result(
             request,
             effective_visit_datetime,
             _NO_FILL_CANDIDATES_ROUTE_SUMMARY,
             round((timer() - started_at) * 1000, 2),
+            settings=settings,
+            travel_route_tool=travel_route_tool,
         )
 
     # 유지 대상(pinned)이 후보에 섞여 있으면 그 자리에 같은 장소가 다시 뽑혀
@@ -681,11 +732,13 @@ async def plan_partial_schedule(
         # 유지 대상(pinned)과 거절 대상을 빼고 나니 채울 수 있는 새 후보가
         # 아예 없다 — "일정 전체 실패"가 아니라 "일부만 대체 실패"이므로 pinned은
         # 그대로 살리고 실패 사실만 안내한다(전체 재구성으로 덮어쓰지 않음).
-        return _pinned_only_result(
+        return await _pinned_only_result(
             request,
             effective_visit_datetime,
             _NO_FILL_CANDIDATES_ROUTE_SUMMARY,
             round((timer() - started_at) * 1000, 2),
+            settings=settings,
+            travel_route_tool=travel_route_tool,
         )
 
     resolved_request = (
@@ -774,7 +827,12 @@ async def plan_partial_schedule(
     timeline = _build_schedule_timeline(
         drafts,
         start_at=start_at,
-        travel_minutes=_travel_minutes_for(resolved_request),
+        travel_minutes=await _resolve_travel_minutes(
+            resolved_request,
+            [draft.place_id for draft in drafts],
+            settings=settings,
+            travel_route_tool=travel_route_tool,
+        ),
         candidates=resolved_request.candidates,
     )
 
