@@ -2872,15 +2872,37 @@ async def _run_agent_flow(
             # 근처 주차장(area 응답)과 공영주차장(구 전체)은 서로의 약점을 메운다 —
             # 근처는 가깝지만 목록이 짧고, 공영은 목록이 길지만 멀 수 있다. 하나를
             # 물으면 다른 쪽도 이어서 보여준다(TP-115 실사용 지적).
-            paired_response = await tool_provider.fetch_info_context(
-                info_request.model_copy(update={"question_type": paired_question_type})
-            )
-            if paired_response.status == "success":
+            #
+            # 이 조회는 부가 기능이다 — 실패해도 이미 확정된 1차 답변을 물릴 이유가
+            # 없다. 위치 재해석부터 다시 하는 두 번째 fetch_info_context() 호출이라
+            # 실제 서울시 API(GetParkingInfo/도시데이터) 쪽 타임아웃·장애를 그대로
+            # 물려받는데, 감싸지 않으면 부가 카드 하나 때문에 턴 전체가 죽는다
+            # (2026-09-02 실사용 — follow_up_suggester.py와 같은 원칙).
+            try:
+                paired_response = await tool_provider.fetch_info_context(
+                    info_request.model_copy(update={"question_type": paired_question_type})
+                )
+            except AppError:
+                logger.warning(
+                    "짝 주차 정보 조회 실패(1차 답변에는 영향 없음): %s → %s",
+                    llm_output.info.question_type.value,
+                    paired_question_type,
+                    exc_info=True,
+                )
+                paired_response = None
+            if paired_response is not None and paired_response.status == "success":
                 secondary_info_place_card = to_info_place_card(paired_response)
                 if secondary_info_place_card is not None:
                     message = compose_paired_parking_message(
                         message, question_type=llm_output.info.question_type
                     )
+            elif paired_response is not None:
+                logger.info(
+                    "짝 주차 정보 없음(%s): %s → %s",
+                    paired_response.status,
+                    llm_output.info.question_type.value,
+                    paired_question_type,
+                )
 
         return AgentResponse(
             llm_output=llm_output,
