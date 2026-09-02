@@ -9,6 +9,7 @@ import { expect, test } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { AppShellProvider } from "../components/layout/AppShellContext";
 import { PreferencesPage } from "./PreferencesPage";
+import { PREFERENCE_GROUPS } from "./preferenceOptions";
 
 function renderPage() {
   render(
@@ -43,15 +44,15 @@ test("6번째 칩은 선택되지 않고, 초기화하면 전부 풀린다", asy
   const user = userEvent.setup();
   renderPage();
 
-  const options = ["조용한 곳", "아늑한 공간", "야경 명소", "사진 명소", "감성 인테리어"];
+  const options = ["조용한 곳", "아늑한 공간", "야경 명소", "사진 명소", "힐링하기 좋은"];
   for (const label of options) {
     await user.click(screen.getByRole("button", { name: label }));
   }
   expect(screen.getByText("5 / 5개 선택됨")).toBeInTheDocument();
 
-  await user.click(screen.getByRole("button", { name: "한적한 골목" }));
+  await user.click(screen.getByRole("button", { name: "넓고 쾌적한" }));
   expect(screen.getByText("5 / 5개 선택됨")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "한적한 골목" })).toHaveAttribute(
+  expect(screen.getByRole("button", { name: "넓고 쾌적한" })).toHaveAttribute(
     "aria-pressed",
     "false",
   );
@@ -71,4 +72,27 @@ test("키워드 직접 입력으로 새 칩을 추가하면 선택된 채로 나
   const chip = await screen.findByRole("button", { name: "조용한 서점" });
   expect(chip).toHaveAttribute("aria-pressed", "true");
   expect(screen.getByText("1 / 5개 선택됨")).toBeInTheDocument();
+});
+
+/*
+ * 이 화면의 칩은 예시 문구가 아니라 DB에 대응이 있는 것만 남긴 목록이다.
+ * 근거 없는 문구가 다시 섞여 들어오는 것을 여기서 막는다 — 예전 목록에는
+ * 대응이 0건인 칩이 5개 있었다(반려동물 동반·감성 인테리어·브런치 등).
+ */
+test("모든 칩이 대응하는 DB 코드를 하나 이상 갖는다", () => {
+  const options = PREFERENCE_GROUPS.flat();
+  expect(options.length).toBeGreaterThan(0);
+
+  for (const option of options) {
+    expect(option.codes.length, `${option.label}에 코드가 없다`).toBeGreaterThan(0);
+    for (const code of option.codes) {
+      expect(code.trim(), `${option.label}의 코드가 비었다`).not.toBe("");
+    }
+  }
+});
+
+test("칩 라벨이 축을 넘어 중복되지 않는다", () => {
+  // 선택 상태를 label로 들고 있어서, 라벨이 겹치면 두 칩이 같이 눌린다.
+  const labels = PREFERENCE_GROUPS.flat().map((option) => option.label);
+  expect(new Set(labels).size).toBe(labels.length);
 });

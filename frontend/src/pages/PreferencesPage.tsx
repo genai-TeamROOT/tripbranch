@@ -1,10 +1,12 @@
 /*
- * 역할: 취향 설정 화면. Figma "Preferences"(28:2) 화면 그대로 옮긴 것으로,
- *   사용자 단위 취향 설정이라는 개념이 프론트·백엔드 어디에도 아직 없어(추천
- *   카드의 "장소별 방문자 취향 태그"는 리뷰에서 뽑은 장소 쪽 태그라 이것과
- *   다르다) 선택 자체는 이 화면 안에서만 기억되고 저장되지 않는다.
+ * 역할: 취향 설정 화면. Figma "Preferences"(28:2) 화면을 옮긴 것으로,
+ *   사용자 단위 취향을 받아 줄 자리가 프론트·백엔드 어디에도 아직 없어
+ *   선택은 이 화면 안에서만 기억되고 저장되지 않는다.
  * 호출 시점: 사이드바 "취향 설정"에서 전체 페이지로 연다(시트 아님 — §5.1의
  *   SHEET_PATH_PATTERNS에 /preferences가 없다).
+ *
+ * 칩 목록과 각 칩이 대응하는 DB 코드는 preferenceOptions.ts에 있다 —
+ * 근거가 있는 문구만 남긴 목록이라 그 배경도 거기 적혀 있다.
  */
 
 import { Compass, Plus, Sparkles, Users } from "lucide-react";
@@ -12,44 +14,15 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AppHeader } from "../components/layout/AppHeader";
 import { AddKeywordModal } from "../components/layout/AddKeywordModal";
+import {
+  COMPANION_OPTIONS,
+  MOOD_OPTIONS,
+  THEME_OPTIONS,
+  type PreferenceOption,
+} from "./preferenceOptions";
 
 const MIN_SELECTED = 3;
 const MAX_SELECTED = 5;
-
-const MOOD_OPTIONS = [
-  "조용한 곳",
-  "아늑한 공간",
-  "야경 명소",
-  "사진 명소",
-  "감성 인테리어",
-  "한적한 골목",
-  "뷰 맛집",
-  "힙한 분위기",
-];
-
-const THEME_OPTIONS = [
-  "자연·공원",
-  "카페",
-  "전시·문화",
-  "로컬 맛집",
-  "실내 활동",
-  "액티비티",
-  "서점·문구",
-  "마켓·소품샵",
-  "브런치",
-  "디저트 맛집",
-  "전통·역사",
-  "루프탑",
-];
-
-const COMPANION_OPTIONS = [
-  "아이와 함께",
-  "반려동물 동반",
-  "혼자 가기 좋은",
-  "데이트 코스",
-  "친구와 함께",
-  "단체 모임",
-];
 
 function ChipGroup({
   icon: Icon,
@@ -60,7 +33,7 @@ function ChipGroup({
 }: {
   icon: typeof Sparkles;
   label: string;
-  options: string[];
+  options: readonly PreferenceOption[];
   selected: Set<string>;
   onToggle: (option: string) => void;
 }) {
@@ -72,18 +45,18 @@ function ChipGroup({
       </div>
       <div className="flex flex-wrap gap-2">
         {options.map((option) => {
-          const isSelected = selected.has(option);
+          const isSelected = selected.has(option.label);
           return (
             <button
-              key={option}
+              key={option.label}
               type="button"
               aria-pressed={isSelected}
-              onClick={() => onToggle(option)}
+              onClick={() => onToggle(option.label)}
               className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${
                 isSelected ? "bg-brand text-white" : "bg-white text-ink shadow-resting"
               }`}
             >
-              {option}
+              {option.label}
             </button>
           );
         })}
