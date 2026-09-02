@@ -81,6 +81,13 @@ class Settings(BaseSettings):
     # 이동수단으로 가르지 않고 _OTHER_KM_PER_MIN 하나로 처리하기 때문이다.
     transit_speed_mps: float = Field(default=5.5, gt=0)
     travel_route_max_concurrency: int = Field(default=5, ge=1, le=10)
+    # SCHEDULE에서 이동수단 미지정·대중교통 명시 구간을 도보로 연결할 최대 예상시간.
+    # 이 값을 넘는 구간은 대중교통 추정으로 전환한다. 도보 명시는 전환하지 않는다.
+    #
+    # TP-217은 계약과 추정 생성기까지만 만들었고, 이 값을
+    # `estimate_schedule_travel_edges()`에 넘기는 호출자는 아직 없다. 일정 편성이
+    # 이 생성기를 부르기 전(TP-215·TP-216)까지는 값을 바꿔도 동작이 달라지지 않는다.
+    schedule_walk_transfer_threshold_min: int = Field(default=20, ge=1, le=120)
 
     # 상세·운영정보 조회 출처. PLACE_PROVIDER=fake이면 Fake Provider가 상세까지
     # 담당하므로 이 값은 무시된다.
