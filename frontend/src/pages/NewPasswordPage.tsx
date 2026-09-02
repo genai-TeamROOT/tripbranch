@@ -33,7 +33,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 
 export function NewPasswordPage() {
-  const { session, status, isPasswordRecovery, updatePassword } = useAuth();
+  const { session, status, isPasswordRecovery, linkError, updatePassword } = useAuth();
   const navigate = useNavigate();
 
   const [password, setPassword] = useState("");
@@ -90,8 +90,9 @@ export function NewPasswordPage() {
           </Button>
         }
       >
+        {/* 서버가 이유를 알려줬으면 그걸 쓴다. 뭉뚱그린 문구보다 "만료됐다"가 낫다. */}
         <p role="status" className="rounded-xl bg-chip p-4 text-sm leading-relaxed text-ink">
-          링크가 만료되었거나 올바르지 않아요. 재설정 메일을 다시 받아 새 링크로 들어와주세요.
+          {linkError ?? "링크가 만료되었거나 올바르지 않아요. 재설정 메일을 다시 받아 새 링크로 들어와주세요."}
         </p>
       </AuthLayout>
     );

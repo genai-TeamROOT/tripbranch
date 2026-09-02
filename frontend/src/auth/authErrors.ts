@@ -94,6 +94,29 @@ const BY_MESSAGE: Array<[RegExp, string]> = [
   [/signups not allowed|signup is disabled/i, BY_CODE.signup_disabled],
 ];
 
+/*
+ * 메일 링크가 실패했을 때 주소창에 실려 오는 오류다. 위 오류들과 성격이 다르다 —
+ * 사용자가 방금 누른 버튼의 실패가 아니라 **이미 지나간 링크**의 실패라서, 문구도
+ * "다시 시도"가 아니라 "메일을 다시 받아라"가 돼야 한다.
+ *
+ * `error_description`은 영어 원문이라 그대로 띄우지 않는다.
+ */
+const BY_LINK_ERROR_CODE: Record<string, string> = {
+  otp_expired: "링크가 만료됐어요. 메일을 다시 받아 새 링크로 들어와주세요.",
+  server_error: "서버가 링크를 처리하지 못했어요. 잠시 후 메일을 다시 받아주세요.",
+  unexpected_failure: "링크를 처리하는 중에 문제가 생겼어요. 메일을 다시 받아주세요.",
+};
+
+export function authLinkErrorMessage(error: { kind: string; code: string }): string {
+  if (BY_LINK_ERROR_CODE[error.code]) return BY_LINK_ERROR_CODE[error.code];
+  /* 링크가 한 번 쓰였거나 취소된 경우가 여기로 온다. 만료와 구분해 말할 근거가
+     없으므로 뭉뚱그리되, 다음에 할 일은 똑같이 알려준다. */
+  if (error.kind === "access_denied") {
+    return "링크가 더 이상 쓸 수 없는 상태예요. 메일을 다시 받아 새 링크로 들어와주세요.";
+  }
+  return "링크를 확인하지 못했어요. 메일을 다시 받아 새 링크로 들어와주세요.";
+}
+
 export function authErrorMessage(error: SupabaseAuthErrorLike | null | undefined): string {
   if (!error) return FALLBACK;
 

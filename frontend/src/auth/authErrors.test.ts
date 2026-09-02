@@ -5,7 +5,7 @@
  */
 
 import { expect, test } from "vitest";
-import { authErrorMessage } from "./authErrors";
+import { authErrorMessage, authLinkErrorMessage } from "./authErrors";
 
 test("code로 문구를 고른다", () => {
   expect(authErrorMessage({ code: "invalid_credentials" })).toBe(
@@ -136,4 +136,28 @@ test("계정이 있는지 없는지 알려주는 문구를 만들지 않는다",
       expect(message).not.toMatch(pattern);
     }
   }
+});
+
+/*
+ * 메일 링크 실패는 성격이 다르다 — 방금 누른 버튼의 실패가 아니라 이미 지나간
+ * 링크의 실패다. 그래서 "다시 시도"가 아니라 "메일을 다시 받아라"가 돼야 한다.
+ */
+test("만료된 링크는 메일을 다시 받으라고 안내한다", () => {
+  const message = authLinkErrorMessage({ kind: "access_denied", code: "otp_expired" });
+
+  expect(message).toContain("만료");
+  expect(message).toContain("메일을 다시 받아");
+});
+
+test("사유를 모르는 access_denied도 다음에 할 일은 알려준다", () => {
+  const message = authLinkErrorMessage({ kind: "access_denied", code: "" });
+
+  expect(message).toContain("메일을 다시 받아");
+});
+
+test("처음 보는 코드여도 영어 원문을 띄우지 않는다", () => {
+  const message = authLinkErrorMessage({ kind: "", code: "some_new_code" });
+
+  expect(message).toContain("링크를 확인하지 못했어요");
+  expect(message).not.toMatch(/[a-z]{4,}/);
 });

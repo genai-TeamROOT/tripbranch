@@ -31,6 +31,7 @@ beforeEach(() => {
 afterEach(() => {
   resetSupabaseMock();
   resetSupabaseClient();
+  window.location.hash = "";
 });
 
 function renderLogin() {
@@ -114,4 +115,33 @@ test("이미 로그인돼 있으면 폼을 보여주지 않는다", async () => 
 
   expect(await screen.findByText("홈 화면")).toBeInTheDocument();
   expect(screen.queryByLabelText("이메일")).not.toBeInTheDocument();
+});
+
+/*
+ * 가입 확인 메일의 링크가 이 화면으로 돌아온다. 실패하면 Supabase가 오류를 조각에
+ * 실어 보내는데, 그동안 아무도 안 읽어서 화면에 아무 말도 안 나왔다 — 사용자는
+ * 링크를 눌렀는데 그냥 로그인 화면이 뜬 것으로만 보였다.
+ */
+test("만료된 확인 링크로 돌아오면 이유를 보여준다", async () => {
+  window.location.hash =
+    "#error=access_denied&error_code=otp_expired&error_description=Email+link+is+invalid+or+has+expired";
+
+  renderLogin();
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("만료");
+});
+
+/* 지나간 링크 오류가 지금 하려는 동작의 실패를 가리면 안 된다. */
+test("로그인 실패 문구가 링크 오류보다 앞선다", async () => {
+  window.location.hash = "#error=access_denied&error_code=otp_expired";
+  setMockEmailAuthError({ message: "bad", code: "invalid_credentials" });
+  renderLogin();
+
+  await userEvent.type(screen.getByLabelText("이메일"), "trip@example.com");
+  await userEvent.type(screen.getByLabelText("비밀번호"), "Ab3!xyzw");
+  await userEvent.click(screen.getByRole("button", { name: "로그인" }));
+
+  await waitFor(() =>
+    expect(screen.getByRole("alert")).toHaveTextContent("이메일 또는 비밀번호가 맞지 않아요"),
+  );
 });

@@ -21,6 +21,68 @@ export class SupabaseConfigError extends Error {
 let cached: SupabaseClient | null = null;
 
 /*
+ * 링크가 실패하면 Supabase는 세션 대신 오류를 조각에 실어 돌려보낸다.
+ *
+ *   /login#error=access_denied&error_code=otp_expired&error_description=…
+ *
+ * 지금까지 이 값은 아무도 안 읽어서 화면에 아무 말도 안 나왔다. 사용자는 링크를
+ * 눌렀는데 그냥 로그인 화면이 뜬 것으로만 보인다.
+ *
+ * **토큰은 읽지 않는다.** 여기서 보는 것은 error·error_code·error_description
+ * 셋뿐이고, 이 값들로 신원을 판단하지도 않는다 — 화면에 뭐라고 적을지만 고른다.
+ */
+export interface AuthLinkError {
+  /** 예: access_denied */
+  kind: string;
+  /** 예: otp_expired */
+  code: string;
+  /** 서버가 준 영어 원문. 화면에 그대로 띄우지 않는다. */
+  description: string;
+}
+
+/* undefined는 "아직 안 읽음", null은 "읽었고 오류가 없었음"이다. 둘을 구분해야
+   StrictMode가 effect를 두 번 돌려도 같은 답이 나온다. */
+let linkErrorSnapshot: AuthLinkError | null | undefined;
+
+function parseLinkError(raw: string): AuthLinkError | null {
+  if (!raw) return null;
+  const params = new URLSearchParams(raw);
+  const kind = params.get("error");
+  const code = params.get("error_code");
+  if (!kind && !code) return null;
+  return {
+    kind: kind ?? "",
+    code: code ?? "",
+    description: params.get("error_description") ?? "",
+  };
+}
+
+/*
+ * 주소창에 실려 온 링크 오류를 돌려준다. **클라이언트를 만들기 전에 불러야 한다** —
+ * auth-js가 주소를 정리하고 나면 사라진다.
+ *
+ * 여러 번 불러도 같은 값을 준다. 읽고 나면 주소창에서 조각을 지우는데, 새로고침할
+ * 때마다 지난 오류가 되살아나지 않게 하기 위해서다. 오류가 실려 있을 때만 지우므로
+ * 정상 링크의 토큰을 건드릴 일은 없다.
+ */
+export function authLinkError(): AuthLinkError | null {
+  if (linkErrorSnapshot !== undefined) return linkErrorSnapshot;
+  if (typeof window === "undefined") {
+    linkErrorSnapshot = null;
+    return null;
+  }
+
+  linkErrorSnapshot =
+    parseLinkError(window.location.hash.replace(/^#/, "")) ??
+    parseLinkError(window.location.search.replace(/^\?/, ""));
+
+  if (linkErrorSnapshot) {
+    window.history.replaceState(window.history.state, "", window.location.pathname);
+  }
+  return linkErrorSnapshot;
+}
+
+/*
  * 재설정 링크로 들어온 세션인지를 기억한다.
  *
  * **왜 모듈에 두는가.** PASSWORD_RECOVERY는 클라이언트가 처음 초기화되면서 URL
@@ -98,4 +160,5 @@ export function getSupabaseClient(): SupabaseClient {
 export function resetSupabaseClient(): void {
   cached = null;
   passwordRecovery = false;
+  linkErrorSnapshot = undefined;
 }

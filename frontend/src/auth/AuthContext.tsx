@@ -25,13 +25,14 @@ import {
 import type { Session } from "@supabase/supabase-js";
 import { setAuthTokenProvider } from "../api/client";
 import {
+  authLinkError,
   clearPasswordRecovery,
   getSupabaseClient,
   isPasswordRecoveryActive,
   onPasswordRecoveryChange,
   SupabaseConfigError,
 } from "./supabaseClient";
-import { authErrorMessage } from "./authErrors";
+import { authErrorMessage, authLinkErrorMessage } from "./authErrors";
 
 /* loading: 저장된 세션을 확인 중. ready: 확인 끝(session이 null일 수 있다).
    unconfigured: 환경변수가 없어 인증 자체를 시작할 수 없다. */
@@ -57,6 +58,11 @@ interface AuthContextValue {
    * 않고 새 비밀번호를 정할 수 있게 된다.
    */
   isPasswordRecovery: boolean;
+  /**
+   * 메일 링크가 실패해서 주소창에 실려 온 오류의 한국어 문구. 링크를 눌렀는데
+   * 아무 말 없이 로그인 화면만 뜨는 상황을 없앤다.
+   */
+  linkError: string | null;
   sendPasswordReset: (email: string) => Promise<void>;
   /** 재설정 링크로 세션이 선 상태에서 새 비밀번호를 저장한다. */
   updatePassword: (password: string) => Promise<void>;
@@ -70,6 +76,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>("loading");
   const [error, setError] = useState<string | null>(null);
   const [isPasswordRecovery, setIsPasswordRecovery] = useState(isPasswordRecoveryActive);
+  /* 주소창은 클라이언트를 만들기 전에 읽어야 한다 — auth-js가 정리하고 나면 사라진다.
+     그래서 effect가 아니라 첫 렌더에서 읽는다. authLinkError()는 여러 번 불러도 같은
+     값을 주므로 StrictMode가 두 번 돌려도 안전하다. */
+  const [linkError] = useState(() => {
+    const found = authLinkError();
+    return found ? authLinkErrorMessage(found) : null;
+  });
 
   /* 신호를 붙잡는 곳은 supabaseClient다(초기화보다 먼저 붙어야 해서). 여기서는
      그 값을 화면 상태로 옮겨오기만 한다. 구독 직전에 한 번 읽는 이유는 클라이언트가
@@ -214,6 +227,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signUpWithEmail,
       signInWithEmail,
       isPasswordRecovery,
+      linkError,
       sendPasswordReset,
       updatePassword,
       signOut,
@@ -226,6 +240,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signUpWithEmail,
       signInWithEmail,
       isPasswordRecovery,
+      linkError,
       sendPasswordReset,
       updatePassword,
       signOut,

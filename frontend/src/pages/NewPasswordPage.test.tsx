@@ -30,6 +30,7 @@ beforeEach(() => {
 afterEach(() => {
   resetSupabaseMock();
   resetSupabaseClient();
+  window.location.hash = "";
 });
 
 function renderPage() {
@@ -138,4 +139,15 @@ test("회원가입 화면과 같은 비밀번호 조건을 안내한다", async 
   expect(
     await screen.findByText("8자 이상, 대문자·소문자·숫자·기호를 각각 하나 이상 넣어주세요."),
   ).toBeInTheDocument();
+});
+
+/* 뭉뚱그린 "만료되었거나 올바르지 않아요"보다 서버가 알려준 이유가 낫다. */
+test("서버가 만료라고 알려주면 그 이유를 보여준다", async () => {
+  window.location.hash = "#error=access_denied&error_code=otp_expired";
+  setMockSession(null);
+
+  renderPage();
+
+  expect(await screen.findByText(/링크가 만료됐어요/)).toBeInTheDocument();
+  expect(screen.queryByLabelText("새 비밀번호")).not.toBeInTheDocument();
 });

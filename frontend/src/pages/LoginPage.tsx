@@ -30,7 +30,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 
 export function LoginPage() {
-  const { session, status, error: authError, signInAsGuest, signInWithEmail } = useAuth();
+  const { session, status, error: authError, linkError, signInAsGuest, signInWithEmail } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -123,7 +123,11 @@ export function LoginPage() {
           </section>
         ) : null}
 
-        {errorMessage ? <ErrorBanner message={errorMessage} /> : null}
+        {/* 방금 누른 버튼의 실패가 먼저다. 링크 오류는 그 아래로 밀린다 —
+            이미 지나간 일이라 지금 하려는 동작을 가리면 안 된다. */}
+        {errorMessage ?? linkError ? (
+          <ErrorBanner message={errorMessage ?? linkError ?? ""} />
+        ) : null}
 
         <form
           id="login-form"
