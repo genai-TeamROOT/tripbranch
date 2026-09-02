@@ -81,6 +81,10 @@ FIELD_SPECS: dict[str, FieldSpec] = {
     # 태그
     "exclude_tags":         _multi("exclude_tags", OP_ADD, OP_REMOVE),
     "special_requirements": _multi("special_requirements", OP_ADD, OP_REMOVE),
+
+    # 무장애 요구(TP-207). exclude_tags와 동일 스펙 — 여럿이면 AND로 좁히는 목록이라
+    # Update가 아니라 Add/Remove로 부분 변경한다.
+    "accessibility_needs":  _multi("accessibility_needs", OP_ADD, OP_REMOVE),
 }
 
 # api_context 필드. operations 대상이 아니며 별도 경로로 갱신한다.

@@ -521,6 +521,13 @@ class UserConditions(BaseModel):
     budget: str | None = None
     exclude_tags: list[str] = Field(default_factory=list)
     special_requirements: list[str] = Field(default_factory=list)
+    # 요구된 무장애 편의(app.domain.models.AccessibilityNeed의 9개 값). weather_intent와
+    # 같은 이유로 Literal이 아닌 list[str]이다 — C(app.agent_context.schemas.UserConditions)가
+    # A보다 먼저 이 필드를 열어 뒀으므로, 어휘를 늘려도 요청 전체가 깨지지 않는다.
+    # "휠체어"는 wheelchair_access, "유모차"는 stroller_access로 분리해서 넣는다 — 같은
+    # 원문이라도 통로 폭·흙길 판정이 갈린다. "유모차 끌고 갈 만한 곳"은 stroller_access +
+    # infant_facilities 두 값으로 채운다.
+    accessibility_needs: list[str] = Field(default_factory=list)
     # 취향 발화 원문. 벡터 검색(search_place_evidence) 질의로 쓴다.
     # special_requirements와 분리한 이유는 그 필드가 "기타 전부"를 받아
     # 일정·교통 조건이 섞이고, 그대로 임베딩하면 취향이 아닌 문장이 근거를

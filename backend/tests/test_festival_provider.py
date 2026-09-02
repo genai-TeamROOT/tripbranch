@@ -148,11 +148,15 @@ class TestRequest:
 
     @pytest.mark.asyncio
     async def test_지원하지_않는_구의_행사는_응답에서_버린다(self) -> None:
-        """서울 전체를 받는데 서울 25개 구가 전부 지원 범위라, 이제 거를 대상은 경기 행사다."""
-        bucheon = {**REAL_ITEM, "contentid": "bucheon-1", "lDongSignguCd": "192"}
+        """서울 전체를 받으므로 거르지 않으면 미지원 구 행사가 그대로 실린다.
+
+        D-107으로 서울 25개 구 전체가 지원 구가 돼 실제 미지원 구 예시가 서울
+        안에는 더 없다 — 존재하지 않는 코드("999")로 미지원 상태를 흉내낸다.
+        """
+        unsupported = {**REAL_ITEM, "contentid": "unsupported-1", "lDongSignguCd": "999"}
 
         def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json=_payload([REAL_ITEM, bucheon]))
+            return httpx.Response(200, json=_payload([REAL_ITEM, unsupported]))
 
         transport = httpx.MockTransport(handler)
         async with httpx.AsyncClient(transport=transport) as client:

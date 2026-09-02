@@ -8,6 +8,7 @@ UserConditions를 추출해 LLMOutput(intent="RECOMMEND")으로 반환하세요.
 {{concentration_rules}}
 {{environment_rules}}
 {{budget_rule}}
+{{accessibility_needs_rules}}
 
 {{conversation_history}}
 

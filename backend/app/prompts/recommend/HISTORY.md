@@ -4,10 +4,18 @@
 
 | 슬롯 | 관리 버전 | 템플릿 | 공유 규칙 |
 | --- | --- | --- | --- |
-| recommend.extract | 2.6.0 | extract.md, location_rules.md, place_tag_rules.md | budget, weather, concentration, environment, transport |
+| recommend.extract | 2.7.0 | extract.md, location_rules.md, place_tag_rules.md | budget, weather, concentration, environment, transport, accessibility_needs |
 | recommend.summary | 1.2.0 | summary_instruction.md | persona |
 
 ## Draft
+
+- 2026-09-02(recommend.extract v2.7.0, TP-207): `accessibility_needs` 추출을 추가했습니다.
+  `UserConditions.accessibility_needs`(app/schemas.py)와 C(`app.agent_context.schemas`)는
+  이미 열려 있었는데(TP-202/204) A가 값을 채우지 않아 그 경로가 한 번도 돌지 않았습니다.
+  `_shared/rules/accessibility_needs.md`에 휠체어/유모차 구분, "유모차 끌고 갈 만한
+  곳"의 두 값 조합, 노인 동반과 wheelchair_access를 섞지 않는 규칙을 담았습니다.
+  B(대화 상태 저장, `app/state/schema.py`)에는 아직 이 필드가 없어 멀티턴 유지는
+  별도 작업이 필요합니다.
 
 - 2026-08-31(recommend.summary v1.2.0): 말풍선 생성이 **사용자가 말한 조건**을 받도록
   했습니다. 그전까지 `compose_recommendation_summary → generate_recommendation_summary →

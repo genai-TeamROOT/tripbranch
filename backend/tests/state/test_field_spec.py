@@ -20,10 +20,11 @@ class TestSchemaConsistency:
         spec_fields = set(fs.FIELD_SPECS.keys())
         assert schema_fields == spec_fields
 
-    def test_필드는_17개다(self):
+    def test_필드는_18개다(self):
         # 2026-08-19: taste_query 추가(취향 발화 전용). 15 -> 16.
         # 2026-08-22: travel_origin 추가(이동시간 출발점 판정, D-071). 16 -> 17.
-        assert len(fs.FIELD_SPECS) == 17
+        # 2026-09-02: accessibility_needs 추가(무장애 요구, TP-207). 17 -> 18.
+        assert len(fs.FIELD_SPECS) == 18
 
     def test_api_context_필드가_스키마와_일치한다(self):
         schema_fields = set(ApiContext.model_fields.keys())
@@ -59,13 +60,25 @@ class TestAllowedOperations:
 
     @pytest.mark.parametrize(
         "field",
-        ["place_types", "place_tags", "exclude_tags", "special_requirements"],
+        [
+            "place_types",
+            "place_tags",
+            "exclude_tags",
+            "special_requirements",
+            "accessibility_needs",
+        ],
     )
-    def test_복수_필드는_4개다(self, field):
+    def test_복수_필드는_5개다(self, field):
         assert fs.is_multi(field)
 
     def test_나머지는_모두_단일_필드다(self):
-        multi = {"place_types", "place_tags", "exclude_tags", "special_requirements"}
+        multi = {
+            "place_types",
+            "place_tags",
+            "exclude_tags",
+            "special_requirements",
+            "accessibility_needs",
+        }
         for field in fs.FIELD_SPECS:
             assert fs.is_multi(field) == (field in multi)
 

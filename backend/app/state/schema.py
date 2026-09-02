@@ -40,6 +40,7 @@ class UserConditions(BaseModel):
     exclude_tags: list[str] = Field(default_factory=list)
     special_requirements: list[str] = Field(default_factory=list)
     taste_query: str | None = None
+    accessibility_needs: list[str] = Field(default_factory=list)
     # "이번 요청의 이동시간을 어디서부터 잴까"의 판정. 값은 "user_location" |
     # "search_center"(app.schemas.TravelOrigin) 중 하나며 B는 검증하지 않는다.
     travel_origin: str | None = None
