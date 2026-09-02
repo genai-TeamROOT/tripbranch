@@ -11,9 +11,6 @@
  *
  * backTo를 주면 헤더형, 안 주면 브랜드형이다. 넷 다 footer(하단 고정 동작 영역)를
  * 갖는다 — Figma의 BottomBar.
- *
- * footer가 없으면 종전 가운데 정렬로 그린다. 화면을 하나씩 옮기는 중이라 아직 안 옮긴
- * 화면이 어정쩡해지지 않게 남겨 둔 전환용 분기이고, 넷 다 옮기면 지운다.
  */
 
 import type { ReactNode } from "react";
@@ -25,26 +22,12 @@ interface AuthLayoutProps {
   description?: string;
   children: ReactNode;
   /** 화면 하단에 붙일 동작 영역(주 버튼·구분선 등). Figma의 BottomBar. */
-  footer?: ReactNode;
+  footer: ReactNode;
   /** 주면 뒤로가기 헤더로 그린다(Figma의 BackHeader). 값은 돌아갈 경로. */
   backTo?: string;
 }
 
 export function AuthLayout({ title, description, children, footer, backTo }: AuthLayoutProps) {
-  if (!footer) {
-    return (
-      <main className="min-h-dvh bg-bg">
-        <div className="mx-auto flex min-h-dvh w-full max-w-sm flex-col justify-center gap-6 px-6 py-10">
-          <div className="flex flex-col gap-2">
-            <h1 className="text-2xl font-bold text-ink">{title}</h1>
-            {description && <p className="text-sm text-muted">{description}</p>}
-          </div>
-          {children}
-        </div>
-      </main>
-    );
-  }
-
   return (
     <main className="min-h-dvh bg-bg">
       <div className="mx-auto flex min-h-dvh w-full max-w-sm flex-col px-4">
