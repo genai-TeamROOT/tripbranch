@@ -14,9 +14,17 @@ import pytest
 
 from app.config import Settings
 from app.domain.schedule_travel import ScheduleTravelCandidate
-from app.domain.travel_route import GeoCoordinate
+from app.domain.travel_route import (
+    GeoCoordinate,
+    RouteDestination,
+    RouteSource,
+    RouteStatus,
+    TravelMode,
+    TravelRoute,
+    TravelRouteBatch,
+)
 from app.errors import AppError
-from app.providers.contracts import ProviderSource, provider_result
+from app.providers.contracts import ProviderSource, ProviderStatus, provider_result
 from app.schedule.associations import CoVisitedHint
 from app.schedule.planner import _round_up_start, plan_partial_schedule, plan_schedule
 from app.schedule.schemas import (
@@ -27,6 +35,7 @@ from app.schedule.schemas import (
     SchedulePlanningRequest,
 )
 from app.schemas import RecommendationItem, ScheduleItem, UserConditions
+from app.tools.travel_route import TravelRouteProviders, TravelRouteTool
 
 _KST = ZoneInfo("Asia/Seoul")
 
@@ -1395,3 +1404,155 @@ class Test구간_이동정보_배선:
         result = await plan_schedule(request, llm)
 
         assert result.total_duration_min == 210
+
+
+class _WalkingMeasureProvider:
+    """도보 구간 실측이 성공한 상황."""
+
+    async def get_routes(
+        self,
+        origin: GeoCoordinate,
+        destinations: tuple[RouteDestination, ...],
+        *,
+        mode: TravelMode = TravelMode.WALKING,
+        radius_m: int | None = None,
+    ):
+        routes = tuple(
+            TravelRoute(
+                place_id=item.place_id,
+                mode=mode,
+                status=RouteStatus.SUCCESS,
+                source=RouteSource.KAKAO_WALKING,
+                distance_m=1_200,
+                duration_seconds=540,
+            )
+            for item in destinations
+        )
+        return provider_result(
+            TravelRouteBatch(routes=routes),
+            source=ProviderSource.KAKAO_WALKING_ROUTE,
+            status=ProviderStatus.SUCCESS,
+        )
+
+
+class Test구간_표기_배선:
+    """TP-216 완료 조건 — 실측/추정 구분이 응답에 실린다.
+
+    화면이 이동수단을 스스로 추측하지 않게 하는 것이 이 필드들의 목적이다.
+    예전에는 프론트가 전 구간을 "도보 이동"으로 고정 표기했고, 편성이 긴 구간을
+    대중교통으로 전환하기 시작하면서 그 표기가 사실과 어긋났다.
+    """
+
+    @staticmethod
+    def _travel_candidates() -> list[ScheduleTravelCandidate]:
+        return [
+            ScheduleTravelCandidate(
+                place_id=f"place-{index}",
+                coordinate=GeoCoordinate(latitude=37.5, longitude=127.0 + 0.01 * index),
+            )
+            for index in (1, 2, 3)
+        ]
+
+    def _request(self) -> SchedulePlanningRequest:
+        return SchedulePlanningRequest(
+            candidates=_three_candidates(),
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 7, 15, 30, tzinfo=_KST),
+            pairwise_distances_km={},
+            travel_candidates=self._travel_candidates(),
+        )
+
+    @pytest.mark.asyncio
+    async def test_추정_구간은_이동수단을_싣고_실측이_아니라고_말한다(self) -> None:
+        result = await plan_schedule(self._request(), _RecordingLLM(_sample_plan()))
+
+        assert [item.travel_to_next_mode for item in result.items] == [
+            TravelMode.WALKING,
+            TravelMode.WALKING,
+            None,
+        ]
+        assert [item.travel_to_next_measured for item in result.items] == [
+            False,
+            False,
+            False,
+        ]
+
+    @pytest.mark.asyncio
+    async def test_실측_구간은_실측이라고_말한다(self) -> None:
+        tool = TravelRouteTool({TravelMode.WALKING: TravelRouteProviders(
+            primary=_WalkingMeasureProvider()
+        )})
+
+        result = await plan_schedule(
+            self._request(), _RecordingLLM(_sample_plan()), travel_route_tool=tool
+        )
+
+        assert [item.travel_to_next_measured for item in result.items] == [
+            True,
+            True,
+            False,
+        ]
+        # 실측이 도착시각까지 움직였는지 함께 본다 — 표기만 바뀌고 값이 그대로면
+        # 사용자에게는 거짓말이 된다.
+        assert [item.travel_to_next_min for item in result.items] == [9, 9, None]
+
+    @pytest.mark.asyncio
+    async def test_마지막_항목은_이동_표기가_없다(self) -> None:
+        result = await plan_schedule(self._request(), _RecordingLLM(_sample_plan()))
+
+        last = result.items[-1]
+        assert last.travel_to_next_min is None
+        assert last.travel_to_next_mode is None
+        assert last.travel_to_next_measured is False
+
+    @pytest.mark.asyncio
+    async def test_좌표가_없으면_이동수단을_말하지_않는다(self) -> None:
+        """시간표 폴백(15분)을 쓴 구간이다. 근거가 없으므로 수단도 말하지 않는다."""
+
+        request = SchedulePlanningRequest(
+            candidates=_three_candidates(),
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 7, 15, 30, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, _RecordingLLM(_sample_plan()))
+
+        assert [item.travel_to_next_min for item in result.items] == [15, 15, None]
+        assert all(item.travel_to_next_mode is None for item in result.items)
+        assert all(item.travel_to_next_measured is False for item in result.items)
+
+    @pytest.mark.asyncio
+    async def test_부분_재편성_결과에도_실린다(self) -> None:
+        """유지 항목만 남는 경로에서도 같은 표에서 나와야 한다."""
+
+        llm = _RecordingFillLLM(
+            SchedulePartialLLMPlan(
+                new_items=[
+                    ScheduleLLMItem(
+                        order=2,
+                        place_id="place-2",
+                        place_name="장소 2",
+                        estimated_duration_min=60,
+                        reason="이유",
+                    )
+                ]
+            )
+        )
+        request = SchedulePartialFillRequest(
+            pinned_items=[_pinned("place-1", 1), _pinned("place-3", 3)],
+            target_orders=[2],
+            candidates=_three_candidates(),
+            conditions=UserConditions(),
+            pairwise_distances_km={},
+            travel_candidates=self._travel_candidates(),
+        )
+
+        result = await plan_partial_schedule(request, llm)
+
+        assert [item.travel_to_next_mode for item in result.items] == [
+            TravelMode.WALKING,
+            TravelMode.WALKING,
+            None,
+        ]
+        assert all(item.travel_to_next_measured is False for item in result.items)
