@@ -15,6 +15,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from app.domain.schedule_travel import ScheduleTravelCandidate
 from app.schedule.associations import CoVisitedHint
 from app.schemas import RecommendationItem, ScheduleItem, UserConditions
 
@@ -52,6 +53,12 @@ class SchedulePlanningRequest(BaseModel):
     # (위경도 보유)를 place_id로 매칭해 계산해서 넘긴다. 내부 함수 인자로만 쓰여
     # JSON으로 직렬화되지 않으므로 튜플 키를 그대로 써도 된다.
 
+    travel_candidates: list[ScheduleTravelCandidate] = Field(default_factory=list)
+    # 구간 이동시간을 추정·실측하기 위한 후보 좌표 (TP-216). pairwise_distances_km와
+    # 출처가 같지만 쓰임이 다르다 — 저쪽은 LLM에 주는 참고 근거이고, 이쪽은 엔진이
+    # 도착시각을 계산하는 입력이다. 비어 있으면 시간표가 구간마다 폴백값을 쓰므로
+    # 이 필드를 모르는 기존 호출부는 동작이 바뀌지 않는다.
+
     co_visited_hints: list[CoVisitedHint] = Field(default_factory=list)
     # place_associations(D-088) 기반 "이 후보들은 실제로 함께 방문됐다" 힌트.
     # A가 채우지 않는다 — planner.py의 plan_schedule()이 co_visited_fetcher가
@@ -78,6 +85,12 @@ class SchedulePartialFillRequest(BaseModel):
     conditions: UserConditions
     visit_datetime: datetime | None = None
     pairwise_distances_km: dict[tuple[str, str], float]
+
+    travel_candidates: list[ScheduleTravelCandidate] = Field(default_factory=list)
+    # 구간 이동시간을 추정·실측하기 위한 후보 좌표 (TP-216). pairwise_distances_km와
+    # 출처가 같지만 쓰임이 다르다 — 저쪽은 LLM에 주는 참고 근거이고, 이쪽은 엔진이
+    # 도착시각을 계산하는 입력이다. 비어 있으면 시간표가 구간마다 폴백값을 쓰므로
+    # 이 필드를 모르는 기존 호출부는 동작이 바뀌지 않는다.
 
     co_visited_hints: list[CoVisitedHint] = Field(default_factory=list)
     # SchedulePlanningRequest.co_visited_hints와 동일한 용도(D-088/D-091) — 부분

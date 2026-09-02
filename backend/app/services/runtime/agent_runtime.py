@@ -29,6 +29,7 @@ from app.agent_context.schemas import (
 from app.auth.principal import Principal
 from app.config import settings
 from app.domain.ranking_origin import resolve_ranking_origin
+from app.domain.schedule_travel import ScheduleTravelCandidate
 from app.domain.scoring import SCORING_VERSION
 from app.domain.travel_route import (
     GeoCoordinate,
@@ -1531,6 +1532,43 @@ def _build_pairwise_distances_km(
                 second_location[1],
             )
     return distances
+
+
+def _build_travel_candidates(
+    candidates: list[RecommendationItem],
+    places: list[PlaceCandidate],
+    *,
+    fallback_coordinates: Mapping[str, Coordinate] | None = None,
+) -> list[ScheduleTravelCandidate]:
+    """SCHEDULE 전용 — 구간 이동정보 계산에 넘길 후보 좌표. (TP-216)
+
+    좌표 우선순위는 `_build_pairwise_distances_km()`과 같다(이번 턴 C 응답 →
+    B의 추천 시점 스냅샷). 두 함수가 같은 좌표를 봐야 LLM에 준 거리 근거와
+    엔진이 계산한 이동시간이 어긋나지 않는다.
+
+    좌표가 없는 place_id는 건너뛴다 — 그 구간은 Edge가 안 만들어지고 시간표가
+    폴백값으로 메운다. 값을 지어내지 않는다.
+    """
+
+    coordinates_by_place_id = dict(fallback_coordinates or {})
+    coordinates_by_place_id.update(_place_coordinates(places))
+    result: list[ScheduleTravelCandidate] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate.place_id in seen:
+            # 같은 place_id가 두 번 오면 _candidate_index()가 ValueError를 낸다.
+            continue
+        location = coordinates_by_place_id.get(candidate.place_id)
+        if location is None:
+            continue
+        seen.add(candidate.place_id)
+        result.append(
+            ScheduleTravelCandidate(
+                place_id=candidate.place_id,
+                coordinate=GeoCoordinate(latitude=location[0], longitude=location[1]),
+            )
+        )
+    return result
 
 
 def _valid_location(device_location: str | None) -> str | None:
@@ -3235,6 +3273,7 @@ async def _run_agent_flow(
             tool_executions=tool_executions,
             effective_ignore_operating_hours=effective_ignore_operating_hours,
             stream_event_sink=stream_event_sink,
+            travel_route_tool=travel_route_tool,
         )
 
     return await _finalize_recommendation_response(
@@ -3935,6 +3974,7 @@ async def _run_schedule_branch(
     tool_executions: list[ToolExecutionDebug],
     effective_ignore_operating_hours: bool,
     stream_event_sink: StreamEventSink | None,
+    travel_route_tool: TravelRouteToolProvider | None = None,
 ) -> AgentResponse:
     """SCHEDULE 편성 분기(6-2단계)를 처리한다.
 
@@ -4047,6 +4087,9 @@ async def _run_schedule_branch(
             pairwise_distances_km=_build_pairwise_distances_km(
                 schedule_candidates, places, fallback_coordinates=snapshot_coordinates
             ),
+            travel_candidates=_build_travel_candidates(
+                schedule_candidates, places, fallback_coordinates=snapshot_coordinates
+            ),
         )
         await _emit_progress(
             stream_event_sink,
@@ -4055,7 +4098,10 @@ async def _run_schedule_branch(
         )
         schedule_result = await _await_with_heartbeat(
             plan_partial_schedule(
-                partial_request, llm, co_visited_fetcher=fetch_co_visited_hints
+                partial_request,
+                llm,
+                co_visited_fetcher=fetch_co_visited_hints,
+                travel_route_tool=travel_route_tool,
             ),
             sink=stream_event_sink,
             stage="scheduling",
@@ -4072,6 +4118,9 @@ async def _run_schedule_branch(
             pairwise_distances_km=_build_pairwise_distances_km(
                 schedule_candidates, places, fallback_coordinates=snapshot_coordinates
             ),
+            travel_candidates=_build_travel_candidates(
+                schedule_candidates, places, fallback_coordinates=snapshot_coordinates
+            ),
         )
         await _emit_progress(
             stream_event_sink,
@@ -4079,7 +4128,12 @@ async def _run_schedule_branch(
             "장소 순서와 머무는 시간을 구성하고 있어요.",
         )
         schedule_result = await _await_with_heartbeat(
-            plan_schedule(schedule_request, llm, co_visited_fetcher=fetch_co_visited_hints),
+            plan_schedule(
+                schedule_request,
+                llm,
+                co_visited_fetcher=fetch_co_visited_hints,
+                travel_route_tool=travel_route_tool,
+            ),
             sink=stream_event_sink,
             stage="scheduling",
         )

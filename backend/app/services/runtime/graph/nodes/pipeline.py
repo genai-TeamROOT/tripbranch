@@ -143,6 +143,9 @@ async def schedule_node(
         tool_executions=state["tool_executions"],
         effective_ignore_operating_hours=state["effective_ignore_operating_hours"],
         stream_event_sink=sink_from_config(config),
+        # 구간 실측 조회에 쓴다(TP-216). 구 경로도 같은 값을 넘긴다 — 두 경로가
+        # 다른 이동시간을 내면 같은 발화가 화면마다 다른 시각을 갖는다.
+        travel_route_tool=deps.travel_route_tool,
     )
     return {"response": response}
 

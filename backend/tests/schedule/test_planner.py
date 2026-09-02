@@ -13,6 +13,8 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from app.config import Settings
+from app.domain.schedule_travel import ScheduleTravelCandidate
+from app.domain.travel_route import GeoCoordinate
 from app.errors import AppError
 from app.providers.contracts import ProviderSource, provider_result
 from app.schedule.associations import CoVisitedHint
@@ -1323,3 +1325,73 @@ class TestPlanScheduleTimelineIntegration:
         await plan_schedule(request, llm)
 
         assert llm.call_count == 1
+
+
+class Test구간_이동정보_배선:
+    """TP-216 — 좌표가 오면 직선거리 추정 대신 구간 Edge로 시각을 계산한다."""
+
+    @staticmethod
+    def _travel_candidates() -> list[ScheduleTravelCandidate]:
+        # 경도 0.01도 ~= 880m. 세 곳을 일렬로 둔다.
+        return [
+            ScheduleTravelCandidate(
+                place_id=f"place-{index}",
+                coordinate=GeoCoordinate(latitude=37.5, longitude=127.0 + 0.01 * index),
+            )
+            for index in (1, 2, 3)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_좌표가_오면_폴백_15분을_쓰지_않는다(self) -> None:
+        """좌표가 없을 때의 총합(210분)과 달라야 Edge가 실제로 쓰인 것이다."""
+
+        llm = _RecordingLLM(_sample_plan())
+        request = SchedulePlanningRequest(
+            candidates=_three_candidates(),
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 7, 15, 30, tzinfo=_KST),
+            pairwise_distances_km={},
+            travel_candidates=self._travel_candidates(),
+        )
+
+        result = await plan_schedule(request, llm)
+
+        assert result.total_duration_min != 210
+        assert all(
+            item.travel_to_next_min is not None for item in result.items[:-1]
+        )
+        assert result.items[-1].travel_to_next_min is None
+
+    @pytest.mark.asyncio
+    async def test_도착시각이_구간_이동시간_누적과_일치한다(self) -> None:
+        llm = _RecordingLLM(_sample_plan())
+        request = SchedulePlanningRequest(
+            candidates=_three_candidates(),
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 7, 15, 30, tzinfo=_KST),
+            pairwise_distances_km={},
+            travel_candidates=self._travel_candidates(),
+        )
+
+        result = await plan_schedule(request, llm)
+
+        minutes = 15 * 60 + 30
+        for previous, current in zip(result.items, result.items[1:], strict=False):
+            minutes += previous.estimated_duration_min + (previous.travel_to_next_min or 0)
+            assert current.estimated_arrival == f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+    @pytest.mark.asyncio
+    async def test_좌표를_안_넘기면_예전_계산_그대로다(self) -> None:
+        """이 필드를 모르는 호출부의 동작이 바뀌지 않는다."""
+
+        llm = _RecordingLLM(_sample_plan())
+        request = SchedulePlanningRequest(
+            candidates=_three_candidates(),
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 8, 7, 15, 30, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, llm)
+
+        assert result.total_duration_min == 210
