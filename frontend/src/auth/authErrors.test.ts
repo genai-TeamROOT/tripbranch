@@ -80,6 +80,22 @@ test("모르는 사유만 오면 뭉뚱그린 문구로 돌아간다", () => {
   );
 });
 
+/*
+ * 실제로 부딪힌 오류다(2026-09-02 브라우저 검증). Supabase 기본 SMTP는 시간당
+ * 발송 한도가 낮아서, 가입을 몇 번 시도하면 바로 429가 온다. 사용자에게는
+ * "가입에 실패했다"가 아니라 "잠시 후 다시"로 읽혀야 한다.
+ */
+test("메일 발송 한도는 잠시 후 재시도로 안내한다", () => {
+  const message = authErrorMessage({
+    code: "over_email_send_rate_limit",
+    message: "email rate limit exceeded",
+    status: 429,
+  });
+  expect(message).toContain("잠시 후");
+  /* 원문을 그대로 노출하지 않는다. */
+  expect(message).not.toContain("rate limit");
+});
+
 test("429는 code가 없어도 요청 과다로 읽는다", () => {
   expect(authErrorMessage({ status: 429, message: "..." })).toContain("잠시 후");
 });
