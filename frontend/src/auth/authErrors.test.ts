@@ -24,6 +24,62 @@ test("code가 없으면 message 원문으로 맞춘다", () => {
   );
 });
 
+/*
+ * 비밀번호 정책이 셋(길이·문자 종류·유출 여부)이라 뭉뚱그리면 사용자가 무엇을
+ * 고쳐야 하는지 모른다. 서버가 주는 reasons로 갈리는지 고정한다.
+ */
+test("비밀번호 거부 사유를 갈라서 알려준다", () => {
+  const 문자종류 = authErrorMessage({
+    code: "weak_password",
+    weak_password: { reasons: ["characters"] },
+  });
+  expect(문자종류).toContain("대문자");
+  expect(문자종류).toContain("기호");
+
+  const 유출 = authErrorMessage({ code: "weak_password", reasons: ["pwned"] });
+  expect(유출).toContain("유출");
+});
+
+/* 최소 길이는 대시보드 설정이라 바뀔 수 있다. 서버가 알려준 숫자를 그대로 쓴다. */
+test("길이 사유는 서버가 알려준 숫자를 쓴다", () => {
+  expect(
+    authErrorMessage({
+      code: "weak_password",
+      message: "Password should be at least 8 characters.",
+      weak_password: { reasons: ["length"] },
+    }),
+  ).toContain("8자 이상");
+
+  expect(
+    authErrorMessage({
+      code: "weak_password",
+      message: "Password should be at least 12 characters.",
+      weak_password: { reasons: ["length"] },
+    }),
+  ).toContain("12자 이상");
+});
+
+test("사유가 여러 개면 모두 알려준다", () => {
+  const message = authErrorMessage({
+    code: "weak_password",
+    message: "Password should be at least 8 characters.",
+    weak_password: { reasons: ["length", "characters"] },
+  });
+  expect(message).toContain("8자 이상");
+  expect(message).toContain("대문자");
+});
+
+/* 우리가 모르는 사유만 오면 조용히 빈 문구를 내지 말고 뭉뚱그린 안내로 돌아간다. */
+test("모르는 사유만 오면 뭉뚱그린 문구로 돌아간다", () => {
+  const message = authErrorMessage({
+    code: "weak_password",
+    weak_password: { reasons: ["무엇인지_모를_사유"] },
+  });
+  expect(message).toBe(
+    "비밀번호가 너무 쉬워요. 8자 이상으로, 다른 곳에서 쓰지 않는 값으로 정해주세요.",
+  );
+});
+
 test("429는 code가 없어도 요청 과다로 읽는다", () => {
   expect(authErrorMessage({ status: 429, message: "..." })).toContain("잠시 후");
 });

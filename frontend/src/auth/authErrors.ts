@@ -19,9 +19,53 @@ export interface SupabaseAuthErrorLike {
   message?: string;
   code?: string;
   status?: number;
+  /**
+   * weak_password일 때만 온다. 같은 자리가 두 모양으로 오므로 둘 다 본다 —
+   * supabase-js의 AuthWeakPasswordError는 `reasons`를 객체에 바로 달고,
+   * REST 응답 본문은 `weak_password.reasons`로 감싼다.
+   */
+  reasons?: string[];
+  weak_password?: { reasons?: string[] };
 }
 
 const FALLBACK = "요청을 처리하지 못했어요. 잠시 후 다시 시도해주세요.";
+
+/*
+ * 비밀번호 정책은 Supabase 대시보드에 있고 코드에 없다. 2026-09-02 실측 기준
+ * **길이 8 이상 · 대문자·소문자·숫자·기호 4종 전부 · 유출 목록에 없을 것** 셋이
+ * 걸려 있다. 셋을 하나로 뭉쳐 "비밀번호가 너무 쉬워요"라고만 말하면 사용자는
+ * 무엇을 고쳐야 하는지 모른 채 같은 값을 다시 넣는다.
+ *
+ * 다행히 서버가 사유를 배열로 준다(`reasons: ["characters"]`). 영어 문장을
+ * 정규식으로 긁지 않고 이 배열로 가른다 — 문구가 바뀌어도 안 깨진다.
+ */
+const WEAK_PASSWORD_REASON: Record<string, string> = {
+  characters: "대문자·소문자·숫자·기호를 각각 하나 이상 넣어주세요.",
+  pwned: "이미 유출된 적이 있는 비밀번호예요. 다른 값으로 정해주세요.",
+};
+
+/* 최소 길이는 대시보드 설정이라 언제든 바뀐다. 서버가 알려준 숫자를 그대로 쓰고,
+   못 읽으면 지금 설정값인 8로 적는다. 여기에 숫자를 박아두면 설정을 바꾼 날부터
+   화면이 거짓말을 시작한다. */
+function lengthReason(message: string): string {
+  const found = /at least (\d+) characters/i.exec(message);
+  return `${found ? found[1] : "8"}자 이상으로 입력해주세요.`;
+}
+
+function weakPasswordMessage(error: SupabaseAuthErrorLike): string | null {
+  const reasons = error.reasons ?? error.weak_password?.reasons;
+  if (!reasons?.length) return null;
+
+  const parts = reasons
+    .map((reason) =>
+      reason === "length" ? lengthReason(error.message ?? "") : WEAK_PASSWORD_REASON[reason],
+    )
+    .filter((part): part is string => Boolean(part));
+
+  /* 사유가 왔는데 우리가 모르는 값뿐이면 뭉뚱그린 문구로 돌아간다. */
+  if (parts.length === 0) return null;
+  return `비밀번호를 다시 정해주세요. ${parts.join(" ")}`;
+}
 
 /*
  * code로 먼저 맞춰 본다. Supabase가 code를 안 채우는 경로가 남아 있어서
@@ -52,6 +96,10 @@ const BY_MESSAGE: Array<[RegExp, string]> = [
 
 export function authErrorMessage(error: SupabaseAuthErrorLike | null | undefined): string {
   if (!error) return FALLBACK;
+
+  /* 사유가 붙어 온 비밀번호 오류가 가장 구체적이다. code 매핑보다 먼저 본다. */
+  const weak = weakPasswordMessage(error);
+  if (weak) return weak;
 
   if (error.code && BY_CODE[error.code]) return BY_CODE[error.code];
 

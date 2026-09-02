@@ -74,6 +74,7 @@ export function SignupPage() {
               type={showPassword ? "text" : "password"}
               placeholder="8자 이상 입력하세요"
               autoComplete="new-password"
+              aria-describedby="signup-password-help"
               className="pr-11"
             />
             <button
@@ -86,6 +87,15 @@ export function SignupPage() {
               {showPassword ? <EyeOff size={17} aria-hidden /> : <Eye size={17} aria-hidden />}
             </button>
           </div>
+          {/*
+           * 서버가 실제로 요구하는 조건을 미리 밝힌다. Supabase 비밀번호 정책이
+           * 길이 8 외에 **문자 종류 4종**까지 걸려 있어서(2026-09-02 대시보드 설정),
+           * "8자 이상"만 보고 소문자로만 채운 사람은 제출한 뒤에야 거부된다.
+           * 조건을 아는 쪽이 화면이니 미리 적는다.
+           */}
+          <p id="signup-password-help" className="text-xs leading-relaxed text-muted">
+            8자 이상, 대문자·소문자·숫자·기호를 각각 하나 이상 넣어주세요.
+          </p>
         </div>
 
         <div className="flex flex-col gap-1.5">
