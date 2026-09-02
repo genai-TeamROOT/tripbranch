@@ -484,7 +484,7 @@ function ParkingLotCard({ parkingItem }: { parkingItem: ParkingCardItem }) {
       {address && (
         <button
           type="button"
-          onClick={() => openNaverMapSearch(address, item.title)}
+          onClick={() => openNaverMapSearch(address)}
           className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 transition-colors hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-300 dark:hover:bg-blue-950/60"
         >
           <span aria-hidden="true">🧭</span>

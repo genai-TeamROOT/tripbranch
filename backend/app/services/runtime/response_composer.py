@@ -469,6 +469,30 @@ def compose_realtime_city_info_message(response: InfoContextResponse) -> str:
     return f"{place} 주변의 {label}를 찾았어요. 아래 카드에서 확인해보세요."
 
 
+# 근처 주차장(area 응답)과 공영주차장(구 전체)을 짝으로 보여줄 때 둘째 카드로
+# 넘어간다는 것을 알리는 한 줄. 트리비 페르소나 톤을 유지하되 카드 형태를 바꾸는
+# LLM 호출을 새로 걸지 않는다 — 문구 두 개뿐이라 고정 문장으로 충분하다.
+_PAIRED_PARKING_FOLLOW_UP = {
+    "realtime_parking": "조금 멀어도 지금 자리가 있는 공영주차장도 같이 보여드릴게요.",
+    "realtime_public_parking": "더 가까운 주차장도 있는지 같이 찾아봤어요.",
+}
+
+
+def compose_paired_parking_message(message: str, *, question_type: object) -> str:
+    """실시간 주차 답변 뒤에 짝 카드로 이어진다는 한 문장을 붙인다.
+
+    ``question_type``은 ``app.schemas.QuestionType``이지만 이 파일은 그 계약을
+    모르는 편이 낫다(순환 임포트) — ``.value``가 있으면 쓰고 없으면 문자열
+    그대로 받는다.
+    """
+
+    key = getattr(question_type, "value", question_type)
+    follow_up = _PAIRED_PARKING_FOLLOW_UP.get(key)
+    if follow_up is None:
+        return message
+    return f"{message} {follow_up}"
+
+
 def _compose_realtime_traffic_message(place: str, result: RealtimeCityInfoResult) -> str:
     """도로소통은 카드로 안내를 미루지 않고, 값 자체를 말풍선에 바로 담는다.
 
@@ -1181,6 +1205,7 @@ __all__ = [
     "compose_realtime_population_message",
     "compose_realtime_commercial_message",
     "compose_realtime_city_info_message",
+    "compose_paired_parking_message",
     "compose_place_info_message",
     "compose_event_info_message",
     "compose_compare_message",
