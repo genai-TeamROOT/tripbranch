@@ -66,18 +66,3 @@ export function AuthLayout({ title, description, children, footer, backTo }: Aut
     </main>
   );
 }
-
-/*
- * 아직 없는 화면·동작 자리에 붙인다 — 눌러도 아무 일도 안 일어나는 이유를 알려준다.
- *
- * 기본 문구는 "게스트로만 시작할 수 있어요"인데, 이건 **인증 자체가 목업이던 때의
- * 문장이다.** 회원가입이 실제로 동작하기 시작하면(2026-09-02) 그 문장이 맞지 않는
- * 자리가 생기므로, 자리마다 이유를 직접 적을 수 있게 message를 받는다.
- */
-export function ComingSoonNotice({ message }: { message?: string }) {
-  return (
-    <p role="status" className="rounded-xl bg-sky-light px-3.5 py-2.5 text-xs text-brand-deep">
-      {message ?? "아직 준비 중인 기능이에요. 지금은 게스트로만 시작할 수 있어요."}
-    </p>
-  );
-}

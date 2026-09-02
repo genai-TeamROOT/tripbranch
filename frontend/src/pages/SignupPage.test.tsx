@@ -131,10 +131,23 @@ test("서버가 거부한 비밀번호 사유를 그대로 보여준다", async 
   expect(emailAuthCalls()).toHaveLength(1);
 });
 
-test("약관 보기는 아직 갈 곳이 없다고 밝힌다", async () => {
+test("약관 보기를 누르면 약관 모달이 열린다", async () => {
   renderSignup();
 
   await userEvent.click(screen.getByRole("button", { name: "보기" }));
 
-  expect(await screen.findByText(/약관 전문은 아직 준비 중/)).toBeInTheDocument();
+  const dialog = await screen.findByRole("dialog");
+  expect(dialog).toHaveAccessibleName("이용약관 및 개인정보처리방침");
+  expect(dialog).toHaveTextContent("준비 중");
+});
+
+/* 모달을 읽었다고 동의가 켜지면 안 된다 — 동의는 사용자가 직접 눌러야 한다. */
+test("약관을 읽어도 동의 체크는 켜지지 않는다", async () => {
+  renderSignup();
+
+  await userEvent.click(screen.getByRole("button", { name: "보기" }));
+  await userEvent.click(await screen.findByRole("button", { name: "확인했어요" }));
+
+  expect(screen.getByRole("checkbox")).not.toBeChecked();
+  expect(screen.getByRole("button", { name: "가입하고 시작하기" })).toBeDisabled();
 });

@@ -9,19 +9,21 @@
  * 홈으로 보내지 않고 이 화면에서 안내로 바꾼다 — 로그인된 것처럼 굴면 사용자는
  * 메일을 확인하지 않고 떠난다.
  *
- * 약관 "보기"는 아직 갈 곳이 없다. Figma에는 링크로 있지만 약관 화면 자체가
- * 없어서(D-062 9-3절) 눌러도 준비 중 안내만 띄운다 — 죽은 링크를 만들지 않는다.
+ * 약관 "보기"는 TermsModal을 연다(Figma 64:2). **본문은 아직 비어 있고 목차만
+ * 있다** — 지키지 못하는 문장을 약관에 적는 것이 안 적는 것보다 나쁘다(TermsModal
+ * 서두 참고). 동의 체크박스는 그대로 필수다.
  */
 
 import { useState, type FormEvent } from "react";
 import { Eye, EyeOff, MailCheck } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
-import { AuthLayout, ComingSoonNotice } from "../auth/AuthLayout";
+import { AuthLayout } from "../auth/AuthLayout";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { Button } from "../components/ui/button";
 import { Checkbox } from "../components/ui/checkbox";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
+import { TermsModal } from "../components/layout/TermsModal";
 
 export function SignupPage() {
   const { signUpWithEmail } = useAuth();
@@ -35,7 +37,7 @@ export function SignupPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [sentTo, setSentTo] = useState<string | null>(null);
-  const [showComingSoon, setShowComingSoon] = useState(false);
+  const [showTerms, setShowTerms] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
   /*
@@ -215,17 +217,15 @@ export function SignupPage() {
           </Label>
           <button
             type="button"
-            onClick={() => setShowComingSoon(true)}
+            onClick={() => setShowTerms(true)}
             className="shrink-0 text-xs text-muted transition-colors hover:text-brand"
           >
             보기
           </button>
         </div>
-
-        {showComingSoon && (
-          <ComingSoonNotice message="약관 전문은 아직 준비 중이에요. 곧 이 자리에서 볼 수 있게 할게요." />
-        )}
       </form>
+
+      {showTerms && <TermsModal onClose={() => setShowTerms(false)} />}
     </AuthLayout>
   );
 }
