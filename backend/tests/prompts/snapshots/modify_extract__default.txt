@@ -22,6 +22,7 @@ modify_type과 condition_changes를 추출해 LLMOutput(intent="MODIFY")으로 �
   "budget": null,
   "exclude_tags": [],
   "special_requirements": [],
+  "accessibility_needs": [],
   "taste_query": null
 }
 ```

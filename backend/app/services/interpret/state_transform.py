@@ -53,7 +53,7 @@ _SINGLE_FIELDS = (
 # Add/Update/Remove 다 허용 — 둘 다 Update로 둔다. exclude_tags/special_requirements는
 # Add/Remove만 허용해 Update를 보내면 unsupported_operation으로 조용히 드롭된다.
 _MULTI_FIELDS_UPDATE = ("place_types", "place_tags")
-_MULTI_FIELDS_ADD = ("exclude_tags", "special_requirements")
+_MULTI_FIELDS_ADD = ("exclude_tags", "special_requirements", "accessibility_needs")
 _MULTI_FIELDS = _MULTI_FIELDS_UPDATE + _MULTI_FIELDS_ADD  # _KNOWN_FIELDS 계산용
 _KNOWN_FIELDS = frozenset(_SINGLE_FIELDS) | frozenset(_MULTI_FIELDS)
 

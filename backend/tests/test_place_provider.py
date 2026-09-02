@@ -386,16 +386,15 @@ class TestSupportedDistrictFilter:
 
     @pytest.mark.asyncio
     async def test_지원_구는_남고_나머지는_버린다(self) -> None:
+        """D-107으로 서울 25개 구 전체가 지원 구가 돼, 실제 미지원 구 예시가
+        서울 안에는 더 없다 — 존재하지 않는 코드("999")로 미지원 상태를 흉내낸다."""
         place_ids = await self._search(
             [
                 self._item("jongno", "110"),
                 self._item("jung", "140"),
                 self._item("yongsan", "170"),
                 self._item("seongdong", "200"),
-                # 서울 25개 구가 전부 지원 범위가 되면서(2026-08-29) "버려야 할"
-                # 표본은 서울 밖에서 고른다 — 부천(192)·성남(131).
-                self._item("bucheon", "192"),
-                self._item("seongnam", "131"),
+                self._item("unsupported", "999"),
             ]
         )
 
