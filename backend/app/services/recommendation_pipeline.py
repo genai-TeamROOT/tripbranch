@@ -47,6 +47,7 @@ from app.domain.weather_judgment import (
     judge_weather_condition_from_stated,
 )
 from app.errors import AppError
+from app.place_search_policy import WALKING_SPEED_KM_PER_MINUTE
 from app.recommendation_limits import DEFAULT_RECOMMENDATION_RESULT_LIMIT
 from app.schemas import (
     RecommendationItem,
@@ -283,8 +284,15 @@ async def score_prepared_recommendation(
     *,
     search_radius_km: float,
     recommendation_limit: int = DEFAULT_RECOMMENDATION_RESULT_LIMIT,
-    # A가 조회한 실측 도보 경로. 비어 있으면 거리 Feature가 직선거리로 계산된다.
+    # A가 조회한 실측 경로. 비어 있으면 거리 Feature가 직선거리로 계산된다.
+    # 후보마다 이동수단이 다를 수 있다(D-118) — 도보권은 도보, 그 밖은 대중교통.
     travel_routes: Sequence[TravelRoute] = (),
+    # `search_radius_km`을 만들 때 쓴 속도(km/분). 거리 점수의 시간 예산이 이
+    # 값으로 반경을 소요시간으로 되돌린다. **측정한 이동수단의 속도가 아니다** —
+    # 반경과 예산이 같은 속도를 써야 사용자가 말한 이동시간이 그대로 예산이 된다
+    # (D-118, `scoring.py::_travel_minutes_budget`). 호출자는 A의
+    # `to_search_radius_speed_km_per_min()` 값을 그대로 넘긴다.
+    travel_budget_speed_km_per_min: float = WALKING_SPEED_KM_PER_MINUTE,
     # 취향 근거 검색 결과. None이면 사용자가 취향을 말하지 않은 것으로 보고
     # taste Feature를 아예 쓰지 않는다. 빈 dict는 "말했는데 근거를 못 찾았다"라
     # Feature는 켜지고 모든 후보가 0점이 된다 — 둘을 구분한다.
@@ -309,6 +317,7 @@ async def score_prepared_recommendation(
         max_distance_km=search_radius_km + prepared.distance_denominator_offset_km,
         requested_environment=prepared.requested_environment,
         travel_routes=travel_routes,
+        travel_budget_speed_km_per_min=travel_budget_speed_km_per_min,
         taste_matches=taste_matches,
     )
     ranked = scoring.ranked[:recommendation_limit]

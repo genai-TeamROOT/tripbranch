@@ -151,6 +151,8 @@ def test_get_walking_route_provider_builds_real_provider(monkeypatch) -> None:
         "client": client,
         "timeout_seconds": 7.0,
         "max_concurrency": 4,
+        # 단독 호출은 공유 세마포어가 없다 — 그때는 Provider가 자기 몫만 제한한다.
+        "semaphore": None,
     }
 
 
@@ -159,18 +161,34 @@ def _capture_travel_route_tool(monkeypatch, settings_override: Settings) -> dict
     driving_primary = object()
     transit_primary = object()
     captured: dict[object, object] = {}
+    semaphores: dict[str, object] = {}
 
     class _RecordingTravelRouteTool:
         def __init__(self, providers: dict[object, object]) -> None:
             captured.update(providers)
 
     monkeypatch.setattr(factory, "TravelRouteTool", _RecordingTravelRouteTool)
-    monkeypatch.setattr(factory, "get_walking_route_provider", lambda client: walking_primary)
+    monkeypatch.setattr(
+        factory,
+        "get_walking_route_provider",
+        lambda client, semaphore=None: (
+            semaphores.setdefault("walking", semaphore),
+            walking_primary,
+        )[1],
+    )
     monkeypatch.setattr(factory, "get_driving_route_provider", lambda client: driving_primary)
-    monkeypatch.setattr(factory, "get_transit_route_provider", lambda client: transit_primary)
+    monkeypatch.setattr(
+        factory,
+        "get_transit_route_provider",
+        lambda client, semaphore=None: (
+            semaphores.setdefault("transit", semaphore),
+            transit_primary,
+        )[1],
+    )
     monkeypatch.setattr(factory, "settings", settings_override)
 
     factory.get_travel_route_tool(object())  # type: ignore[arg-type]
+    captured["_semaphores"] = semaphores
     return captured
 
 
@@ -186,10 +204,33 @@ def test_get_travel_route_tool_adds_fallback_only_in_real_mode(monkeypatch) -> N
 
     # 도보·자동차·대중교통 셋을 등록한다. 미등록 이동수단은 Tool이 호출 없이
     # NO_DATA로 답하므로, 등록 누락은 조용한 오답이 아니라 값 없음으로 드러난다.
-    assert list(captured) == [TravelMode.WALKING, TravelMode.DRIVING, TravelMode.TRANSIT]
+    assert [key for key in captured if isinstance(key, TravelMode)] == [
+        TravelMode.WALKING,
+        TravelMode.DRIVING,
+        TravelMode.TRANSIT,
+    ]
     walking = captured[TravelMode.WALKING]
     assert isinstance(walking.fallback, FakeWalkingRouteProvider)
     assert walking.fallback._walking_speed_mps == 1.1
+
+
+def test_get_travel_route_tool_shares_one_semaphore_between_kakao_providers(
+    monkeypatch,
+) -> None:
+    """도보와 대중교통은 같은 카카오 키를 쓰므로 동시 요청 한도를 함께 나눈다.
+
+    따로 만들면 한 후보를 두 수단으로 조회할 때(D-118) 동시 요청이 5+5로 합산돼
+    카카오가 `API limit has been exceeded.`를 낸다 — 2026-09-02 실측에서 40건 중
+    대부분이 그렇게 거절됐다.
+    """
+    captured = _capture_travel_route_tool(
+        monkeypatch,
+        Settings(_env_file=None, travel_route_max_concurrency=3),
+    )
+
+    semaphores = captured["_semaphores"]
+    assert semaphores["walking"] is not None
+    assert semaphores["walking"] is semaphores["transit"]
 
 
 def test_get_travel_route_tool_gives_driving_no_fallback(monkeypatch) -> None:

@@ -7,6 +7,7 @@ validate_provider_config()가 담당한다.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import cast
 
@@ -189,7 +190,9 @@ def get_weather_provider(client: httpx.AsyncClient) -> WeatherProvider:
     )
 
 
-def get_walking_route_provider(client: httpx.AsyncClient) -> TravelRouteProvider:
+def get_walking_route_provider(
+    client: httpx.AsyncClient, semaphore: asyncio.Semaphore | None = None
+) -> TravelRouteProvider:
     """설정에 맞는 도보 경로 Provider를 반환한다."""
     if settings.travel_route_provider == "fake":
         return FakeWalkingRouteProvider(walking_speed_mps=settings.walking_speed_mps)
@@ -201,6 +204,7 @@ def get_walking_route_provider(client: httpx.AsyncClient) -> TravelRouteProvider
         client=client,
         timeout_seconds=settings.external_api_timeout_seconds,
         max_concurrency=settings.travel_route_max_concurrency,
+        semaphore=semaphore,
     )
 
 
@@ -217,7 +221,9 @@ def get_driving_route_provider(client: httpx.AsyncClient) -> TravelRouteProvider
     )
 
 
-def get_transit_route_provider(client: httpx.AsyncClient) -> TravelRouteProvider:
+def get_transit_route_provider(
+    client: httpx.AsyncClient, semaphore: asyncio.Semaphore | None = None
+) -> TravelRouteProvider:
     """설정에 맞는 대중교통 경로 Provider를 반환한다.
 
     도보와 같은 카카오 키를 쓴다 — 같은 `Authorization: KakaoAK` 헤더의 다른
@@ -233,6 +239,7 @@ def get_transit_route_provider(client: httpx.AsyncClient) -> TravelRouteProvider
         client=client,
         timeout_seconds=settings.external_api_timeout_seconds,
         max_concurrency=settings.travel_route_max_concurrency,
+        semaphore=semaphore,
     )
 
 
@@ -252,10 +259,16 @@ def get_travel_route_tool(client: httpx.AsyncClient) -> TravelRouteTool:
         if settings.travel_route_provider == "real"
         else None
     )
+    # 도보와 대중교통은 **같은 카카오 키**를 쓰므로 동시 요청 한도를 함께 나눈다.
+    # 인스턴스마다 세마포어를 두면 한 후보를 두 수단으로 조회할 때(D-118) 동시
+    # 요청이 5+5로 합산돼 카카오가 `API limit has been exceeded.`를 낸다 —
+    # 2026-09-02 실측에서 40건 중 대부분이 그렇게 거절됐다. 자동차(네이버)는
+    # 벤더가 달라 여기 묶지 않는다.
+    kakao_route_semaphore = asyncio.Semaphore(settings.travel_route_max_concurrency)
     return TravelRouteTool(
         {
             TravelMode.WALKING: TravelRouteProviders(
-                primary=get_walking_route_provider(client),
+                primary=get_walking_route_provider(client, kakao_route_semaphore),
                 fallback=walking_fallback,
             ),
             TravelMode.DRIVING: TravelRouteProviders(
@@ -263,7 +276,7 @@ def get_travel_route_tool(client: httpx.AsyncClient) -> TravelRouteTool:
                 fallback=None,
             ),
             TravelMode.TRANSIT: TravelRouteProviders(
-                primary=get_transit_route_provider(client),
+                primary=get_transit_route_provider(client, kakao_route_semaphore),
                 fallback=None,
             ),
         }
