@@ -48,6 +48,15 @@ export function setMockSession(session: Session | null): void {
   listeners.forEach((listener) => listener("SIGNED_IN", session));
 }
 
+/*
+ * auth 이벤트를 손으로 쏜다. 재설정 링크가 도착하는 상황은 세션만 세워서는 흉내
+ * 낼 수 없다 — "세션이 있다"와 "재설정 링크로 왔다"를 구분하는 것이 이 화면의
+ * 보호 장치라서, 테스트도 그 둘을 따로 만들 수 있어야 한다.
+ */
+export function emitMockAuthEvent(event: string, session: Session | null = currentSession): void {
+  listeners.forEach((listener) => listener(event, session));
+}
+
 export function setMockSignInError(message: string | null): void {
   signInError = message;
 }

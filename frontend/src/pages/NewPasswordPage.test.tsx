@@ -1,14 +1,14 @@
 /*
- * 역할: 재설정 링크로 돌아온 화면이 세션 유무를 먼저 가르는지, 새 비밀번호를
- *   실제로 저장하는지 검증한다.
+ * 역할: 재설정 화면이 **누구에게 폼을 여는지**를 가르는 규칙과, 새 비밀번호를 실제로
+ *   저장하는 흐름을 검증한다.
  * 호출 시점: vitest 실행 시.
  *
- * **세션이 없으면 폼을 보여주지 않는 것이 핵심이다.** 링크 없이 들어왔거나 링크가
- * 만료된 경우인데, 폼을 띄우고 제출 시점에 실패시키면 사용자는 비밀번호를 다
- * 입력한 뒤에야 헛수고였음을 안다.
+ * **세션이 있다고 폼을 열면 안 된다.** 평범하게 로그인한 사람이 이 주소를 치기만
+ * 해도 현재 비밀번호 없이 새 비밀번호를 정할 수 있게 되기 때문이다. 재설정 링크가
+ * 세운 세션(PASSWORD_RECOVERY)인지까지 봐야 한다.
  */
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -16,11 +16,12 @@ import { AuthProvider } from "../auth/AuthContext";
 import { NewPasswordPage } from "./NewPasswordPage";
 import {
   emailAuthCalls,
+  emitMockAuthEvent,
   resetSupabaseMock,
   setMockEmailAuthError,
   setMockSession,
 } from "../test/supabaseMock";
-import { resetSupabaseClient } from "../auth/supabaseClient";
+import { isPasswordRecoveryActive, resetSupabaseClient } from "../auth/supabaseClient";
 
 beforeEach(() => {
   localStorage.clear();
@@ -45,6 +46,14 @@ function renderPage() {
   );
 }
 
+/* 재설정 링크를 눌러 들어온 상태. Supabase가 링크의 토큰을 서버에 확인시킨 뒤에만
+   쏘는 이벤트라, 주소창을 손으로 고쳐서는 만들 수 없는 상태다. */
+function renderAfterResetLink() {
+  const result = renderPage();
+  act(() => emitMockAuthEvent("PASSWORD_RECOVERY"));
+  return result;
+}
+
 async function fill(password: string, confirm = password) {
   await userEvent.type(await screen.findByLabelText("새 비밀번호"), password);
   await userEvent.type(screen.getByLabelText("새 비밀번호 확인"), confirm);
@@ -52,6 +61,13 @@ async function fill(password: string, confirm = password) {
 }
 
 /* 이 파일에서 가장 중요한 테스트다. */
+test("그냥 로그인만 되어 있으면 폼을 열지 않는다", async () => {
+  renderPage(); // mock 기본값은 세션 있음 — 다만 재설정 링크로 온 세션이 아니다
+
+  expect(await screen.findByText(/링크가 만료되었거나/)).toBeInTheDocument();
+  expect(screen.queryByLabelText("새 비밀번호")).not.toBeInTheDocument();
+});
+
 test("링크 없이 들어오면 폼 대신 만료 안내를 보여준다", async () => {
   setMockSession(null);
   renderPage();
@@ -69,8 +85,14 @@ test("만료 안내에서 재설정 요청 화면으로 돌아갈 수 있다", a
   expect(await screen.findByText("재설정 요청 화면")).toBeInTheDocument();
 });
 
+test("재설정 링크로 들어오면 폼을 연다", async () => {
+  renderAfterResetLink();
+
+  expect(await screen.findByLabelText("새 비밀번호")).toBeInTheDocument();
+});
+
 test("새 비밀번호를 저장하고 홈으로 간다", async () => {
-  renderPage(); // mock 기본값이 세션 있음 — 링크로 세션이 선 상태다
+  renderAfterResetLink();
   await fill("Ab3!xyzw");
 
   await waitFor(() => expect(emailAuthCalls()).toHaveLength(1));
@@ -81,8 +103,19 @@ test("새 비밀번호를 저장하고 홈으로 간다", async () => {
   expect(await screen.findByText("홈 화면")).toBeInTheDocument();
 });
 
+/* 링크 한 번에 변경 한 번이다. 신호가 남아 있으면 같은 탭에서 그 주소로 다시 들어가
+   비밀번호를 계속 바꿀 수 있다. */
+test("비밀번호를 바꾸고 나면 재설정 신호가 꺼진다", async () => {
+  renderAfterResetLink();
+  expect(isPasswordRecoveryActive()).toBe(true);
+
+  await fill("Ab3!xyzw");
+
+  await waitFor(() => expect(isPasswordRecoveryActive()).toBe(false));
+});
+
 test("두 번 입력한 비밀번호가 다르면 요청을 보내지 않는다", async () => {
-  renderPage();
+  renderAfterResetLink();
   await fill("Ab3!xyzw", "Ab3!xyzz");
 
   expect(await screen.findByRole("alert")).toHaveTextContent("서로 달라요");
@@ -92,7 +125,7 @@ test("두 번 입력한 비밀번호가 다르면 요청을 보내지 않는다"
 /* 정책 위반은 가입 화면과 같은 문구로 나와야 한다 — 두 화면이 다른 말을 하면 안 된다. */
 test("서버가 거부한 비밀번호 사유를 그대로 보여준다", async () => {
   setMockEmailAuthError({ message: "weak", code: "weak_password" });
-  renderPage();
+  renderAfterResetLink();
   await fill("Ab3!xyzw");
 
   expect(await screen.findByRole("alert")).toHaveTextContent("비밀번호");
@@ -100,7 +133,7 @@ test("서버가 거부한 비밀번호 사유를 그대로 보여준다", async 
 });
 
 test("회원가입 화면과 같은 비밀번호 조건을 안내한다", async () => {
-  renderPage();
+  renderAfterResetLink();
 
   expect(
     await screen.findByText("8자 이상, 대문자·소문자·숫자·기호를 각각 하나 이상 넣어주세요."),

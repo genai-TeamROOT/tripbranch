@@ -24,7 +24,13 @@ import {
 } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { setAuthTokenProvider } from "../api/client";
-import { getSupabaseClient, SupabaseConfigError } from "./supabaseClient";
+import {
+  clearPasswordRecovery,
+  getSupabaseClient,
+  isPasswordRecoveryActive,
+  onPasswordRecoveryChange,
+  SupabaseConfigError,
+} from "./supabaseClient";
 import { authErrorMessage } from "./authErrors";
 
 /* loading: 저장된 세션을 확인 중. ready: 확인 끝(session이 null일 수 있다).
@@ -45,6 +51,12 @@ interface AuthContextValue {
   /** 가입 요청을 보낸다. 확인 메일이 나가고, 세션은 아직 생기지 않는다. */
   signUpWithEmail: (input: SignUpInput) => Promise<void>;
   signInWithEmail: (email: string, password: string) => Promise<void>;
+  /**
+   * 지금 세션이 **재설정 링크로 선 것**인지. 세션이 있다는 것만으로는 부족하다 —
+   * 평범하게 로그인한 사람이 /reset-password/new에 들어오면 현재 비밀번호를 대지
+   * 않고 새 비밀번호를 정할 수 있게 된다.
+   */
+  isPasswordRecovery: boolean;
   sendPasswordReset: (email: string) => Promise<void>;
   /** 재설정 링크로 세션이 선 상태에서 새 비밀번호를 저장한다. */
   updatePassword: (password: string) => Promise<void>;
@@ -57,6 +69,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [status, setStatus] = useState<AuthStatus>("loading");
   const [error, setError] = useState<string | null>(null);
+  const [isPasswordRecovery, setIsPasswordRecovery] = useState(isPasswordRecoveryActive);
+
+  /* 신호를 붙잡는 곳은 supabaseClient다(초기화보다 먼저 붙어야 해서). 여기서는
+     그 값을 화면 상태로 옮겨오기만 한다. 구독 직전에 한 번 읽는 이유는 클라이언트가
+     이미 만들어져 이벤트가 지나갔을 수 있기 때문이다. */
+  useEffect(() => {
+    setIsPasswordRecovery(isPasswordRecoveryActive());
+    return onPasswordRecoveryChange(setIsPasswordRecovery);
+  }, []);
 
   useEffect(() => {
     let client;
@@ -167,6 +188,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const client = getSupabaseClient();
     const { data, error: updateError } = await client.auth.updateUser({ password });
     if (updateError) throw new Error(authErrorMessage(updateError));
+    /* 링크 한 번에 변경 한 번이다. 끄지 않으면 같은 탭에서 그 화면으로 다시 들어가
+       비밀번호를 계속 바꿀 수 있다. */
+    clearPasswordRecovery();
     if (data.user) setSession((current) => (current ? { ...current, user: data.user } : current));
   }, []);
 
@@ -189,6 +213,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signInAsGuest,
       signUpWithEmail,
       signInWithEmail,
+      isPasswordRecovery,
       sendPasswordReset,
       updatePassword,
       signOut,
@@ -200,6 +225,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signInAsGuest,
       signUpWithEmail,
       signInWithEmail,
+      isPasswordRecovery,
       sendPasswordReset,
       updatePassword,
       signOut,

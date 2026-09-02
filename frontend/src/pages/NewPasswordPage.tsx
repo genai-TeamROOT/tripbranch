@@ -8,13 +8,18 @@
  * 골격은 다른 인증 화면과 같다 — AuthLayout 헤더형(뒤로가기 + 제목) + 하단 버튼.
  *
  * **토큰을 직접 다루지 않는다.** Supabase 클라이언트가 링크의 조각(#access_token=…)을
- * 읽어 세션을 세우고 PASSWORD_RECOVERY 이벤트를 쏜다. 우리는 그 결과인 session만
- * 보면 된다 — URL에서 토큰을 꺼내 손으로 처리하면 이미 검증된 경로를 다시 만드는
- * 셈이고, 그 과정에서 토큰이 히스토리나 로그에 남을 여지가 생긴다.
+ * 읽어 세션을 세우고 PASSWORD_RECOVERY 이벤트를 쏜다(supabaseClient의
+ * detectSessionInUrl). URL에서 토큰을 꺼내 손으로 처리하면 이미 검증된 경로를 다시
+ * 만드는 셈이고, 그 과정에서 토큰이 히스토리나 로그에 남을 여지가 생긴다.
  *
- * 그래서 세션이 없으면 폼을 보여주지 않는다. 링크 없이 이 주소로 직접 들어왔거나,
- * 링크가 만료된 경우다. 폼을 보여주고 제출 시점에 실패시키면 사용자는 비밀번호를
- * 다 입력한 뒤에야 헛수고였음을 안다.
+ * **세션이 있는 것만으로는 폼을 열지 않는다.** 그렇게 두면 평범하게 로그인한 사람이
+ * 이 주소를 치기만 해도 현재 비밀번호 없이 새 비밀번호를 정할 수 있다 — 잠깐 기기를
+ * 만진 사람이 계정을 가져가는 길이다. 그래서 "재설정 링크가 세운 세션"인지
+ * (isPasswordRecovery)까지 본다. 그 값은 주소창이 아니라 Supabase가 토큰을 서버에
+ * 확인시킨 뒤 쏘는 이벤트에서 온다.
+ *
+ * 링크 없이 들어왔거나 링크가 만료됐으면 폼 대신 안내를 보여준다. 폼을 띄우고
+ * 제출 시점에 실패시키면 사용자는 비밀번호를 다 입력한 뒤에야 헛수고였음을 안다.
  */
 
 import { useState, type FormEvent } from "react";
@@ -28,7 +33,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 
 export function NewPasswordPage() {
-  const { session, status, updatePassword } = useAuth();
+  const { session, status, isPasswordRecovery, updatePassword } = useAuth();
   const navigate = useNavigate();
 
   const [password, setPassword] = useState("");
@@ -74,7 +79,7 @@ export function NewPasswordPage() {
     );
   }
 
-  if (!session) {
+  if (!session || !isPasswordRecovery) {
     return (
       <AuthLayout
         title="비밀번호 재설정"
