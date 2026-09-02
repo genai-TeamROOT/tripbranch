@@ -22,29 +22,33 @@ interface AuthLayoutProps {
 export function AuthLayout({ title, description, children, footer }: AuthLayoutProps) {
   if (!footer) {
     return (
-      <main className="mx-auto flex min-h-dvh w-full max-w-sm flex-col justify-center gap-6 px-6 py-10">
-        <div className="flex flex-col gap-2">
-          <h1 className="text-2xl font-bold text-ink">{title}</h1>
-          {description && <p className="text-sm text-muted">{description}</p>}
+      <main className="min-h-dvh bg-bg">
+        <div className="mx-auto flex min-h-dvh w-full max-w-sm flex-col justify-center gap-6 px-6 py-10">
+          <div className="flex flex-col gap-2">
+            <h1 className="text-2xl font-bold text-ink">{title}</h1>
+            {description && <p className="text-sm text-muted">{description}</p>}
+          </div>
+          {children}
         </div>
-        {children}
       </main>
     );
   }
 
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-sm flex-col px-4">
-      {/* Body — 위에서부터 쌓는다(Figma: Column y=64, Brand와 본문 사이 32). */}
-      <div className="flex flex-1 flex-col gap-8 pt-16">
-        <div className="flex flex-col gap-2 text-center">
-          <h1 className="text-2xl font-bold text-brand">{title}</h1>
-          {description && <p className="text-sm text-muted">{description}</p>}
+    <main className="min-h-dvh bg-bg">
+      <div className="mx-auto flex min-h-dvh w-full max-w-sm flex-col px-4">
+        {/* Body — 위에서부터 쌓는다(Figma: Column y=64, Brand와 본문 사이 32). */}
+        <div className="flex flex-1 flex-col gap-8 pt-16">
+          <div className="flex flex-col gap-2 text-center">
+            <h1 className="text-2xl font-bold text-brand">{title}</h1>
+            {description && <p className="text-sm text-muted">{description}</p>}
+          </div>
+          {children}
         </div>
-        {children}
-      </div>
 
-      {/* BottomBar — 화면 하단 고정. 본문이 길어지면 자연스럽게 아래로 밀린다. */}
-      <div className="flex flex-col gap-3 pb-6 pt-4">{footer}</div>
+        {/* BottomBar — 화면 하단 고정. 본문이 길어지면 자연스럽게 아래로 밀린다. */}
+        <div className="flex flex-col gap-3 pb-6 pt-4">{footer}</div>
+      </div>
     </main>
   );
 }
