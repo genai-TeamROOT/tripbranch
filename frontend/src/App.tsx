@@ -18,6 +18,7 @@ import { AuthProvider } from "./auth/AuthContext";
 import { RequireUser } from "./auth/RequireUser";
 import { TripProvider } from "./state/TripContext";
 import { AppShell } from "./components/layout/AppShell";
+import { RouteErrorBoundary } from "./components/RouteErrorBoundary";
 
 /*
  * 개발자 화면과 인증 화면은 따로 받아온다.
@@ -61,40 +62,43 @@ function App() {
     <AuthProvider>
       <TripProvider>
         <BrowserRouter>
-          <Suspense fallback={<RouteFallback />}>
-            <Routes>
-              <Route path="/login" element={<LoginPage />} />
-              {/* 회원가입·아이디찾기·비밀번호찾기는 아직 백엔드가 없는 UI 목업이다(D-062 Phase 5). */}
-              <Route path="/signup" element={<SignupPage />} />
-              <Route path="/find-id" element={<FindIdPage />} />
-              <Route path="/reset-password" element={<ResetPasswordPage />} />
-              <Route
-                path="/dev-chat"
-                element={
-                  <RequireUser>
-                    <DeveloperChatPage />
-                  </RequireUser>
-                }
-              />
-              {/* 운영 점검 화면은 사용자 신원과 무관한 내부 도구라 관문 밖에 둔다. */}
-              <Route path="/dev-ops" element={<DeveloperOpsPage />} />
-              <Route path="/confirm" element={<Navigate to="/chat" replace />} />
-              <Route path="/results" element={<Navigate to="/chat" replace />} />
-              {/*
-               * 신원이 필요한 화면 전부(/, /chat, /preferences, /location, /schedule,
-               * 그리고 알 수 없는 경로)를 여기서 한 번에 받는다. AppShell 안의 AppRoutes가
-               * 실제 화면을 고른다 — RequireUser를 화면마다 반복하지 않기 위해서다.
-               */}
-              <Route
-                path="*"
-                element={
-                  <RequireUser>
-                    <AppShell />
-                  </RequireUser>
-                }
-              />
-            </Routes>
-          </Suspense>
+          {/* 청크를 못 받으면 흰 화면 대신 안내가 뜬다 — Suspense 바깥이어야 잡는다. */}
+          <RouteErrorBoundary>
+            <Suspense fallback={<RouteFallback />}>
+              <Routes>
+                <Route path="/login" element={<LoginPage />} />
+                {/* 회원가입·아이디찾기·비밀번호찾기는 아직 백엔드가 없는 UI 목업이다(D-062 Phase 5). */}
+                <Route path="/signup" element={<SignupPage />} />
+                <Route path="/find-id" element={<FindIdPage />} />
+                <Route path="/reset-password" element={<ResetPasswordPage />} />
+                <Route
+                  path="/dev-chat"
+                  element={
+                    <RequireUser>
+                      <DeveloperChatPage />
+                    </RequireUser>
+                  }
+                />
+                {/* 운영 점검 화면은 사용자 신원과 무관한 내부 도구라 관문 밖에 둔다. */}
+                <Route path="/dev-ops" element={<DeveloperOpsPage />} />
+                <Route path="/confirm" element={<Navigate to="/chat" replace />} />
+                <Route path="/results" element={<Navigate to="/chat" replace />} />
+                {/*
+                 * 신원이 필요한 화면 전부(/, /chat, /preferences, /location, /schedule,
+                 * 그리고 알 수 없는 경로)를 여기서 한 번에 받는다. AppShell 안의 AppRoutes가
+                 * 실제 화면을 고른다 — RequireUser를 화면마다 반복하지 않기 위해서다.
+                 */}
+                <Route
+                  path="*"
+                  element={
+                    <RequireUser>
+                      <AppShell />
+                    </RequireUser>
+                  }
+                />
+              </Routes>
+            </Suspense>
+          </RouteErrorBoundary>
         </BrowserRouter>
       </TripProvider>
     </AuthProvider>
