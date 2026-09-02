@@ -640,3 +640,56 @@ it("실시간 행사는 추천 카드처럼 사진과 함께 가로로 늘어놓
   expect(openSpy).toHaveBeenCalledWith("https://example.test/jipokjae", "_blank", "noopener");
   openSpy.mockRestore();
 });
+
+it("실시간 지하철 도착은 호선 색으로 묶고, 상행·하행을 별도 칸으로 나눈다", () => {
+  const subwayCard: InfoPlaceCardData = {
+    ...card,
+    question_type: "realtime_subway",
+    answer_fields: {
+      "종로3가 3호선 · 상행": "대화행 · 상행 · 9분 30초 후 (옥수)",
+      "종로3가 3호선 · 하행": "오금행 · 하행 · 도착 정보 미제공",
+    },
+    thumbnail_url: null,
+    overview: null,
+    operating_hours: null,
+    rest_date: null,
+    parking: null,
+    parking_fee: null,
+    fee: null,
+    baby_carriage: null,
+    credit_card: null,
+    restroom: null,
+    homepage: null,
+    realtime_area_name: "종로3가",
+    realtime_observed_at: "9월 2일 16:00",
+    realtime_source_url: "https://data.seoul.go.kr/example",
+    realtime_detail_items: [
+      {
+        title: "종로3가 3호선",
+        subtitle: "대화행 · 상행 · 9분 30초 후 (옥수)",
+        details: { 방면: "상행", 종착역: "대화", "도착 안내": "9분 30초 후 (옥수)" },
+        thumbnail_url: null,
+        external_url: null,
+      },
+      {
+        title: "종로3가 3호선",
+        subtitle: "오금행 · 하행 · 도착 정보 미제공",
+        details: { 방면: "하행", 종착역: "오금" },
+        thumbnail_url: null,
+        external_url: null,
+      },
+    ],
+  };
+
+  renderWithTrip(<PlaceInfoCard card={subwayCard} />);
+
+  // 역+호선은 한 번만 나오고, 상행/하행이 그 아래 별도 칸으로 갈린다.
+  expect(screen.getAllByText("종로3가 3호선").length).toBe(1);
+  expect(screen.getByText("상행")).toBeInTheDocument();
+  expect(screen.getByText("하행")).toBeInTheDocument();
+  expect(screen.getByText("대화행")).toBeInTheDocument();
+  expect(screen.getByText("오금행")).toBeInTheDocument();
+  expect(screen.getByText("9분 30초 후 (옥수)")).toHaveClass("text-emerald-700");
+  // 도착 정보가 없으면 초록이 아니라 중립색 칩이다.
+  expect(screen.getByText("도착 정보 미제공")).not.toHaveClass("text-emerald-700");
+});

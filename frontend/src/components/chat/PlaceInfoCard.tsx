@@ -7,6 +7,12 @@
 
 import { useState } from "react";
 import type { InfoPlaceCard as InfoPlaceCardData, RealtimeInfoDetailItem } from "../../types";
+import {
+  groupSubwayArrivals,
+  parseSubwayArrival,
+  subwayLineColor,
+  type SubwayLineGroup,
+} from "../../utils/subwayDisplay";
 import { PlaceCardRow } from "./PlaceCardRow";
 import {
   ConcentrationForecastBars,
@@ -219,8 +225,11 @@ function RealtimeParkingList({ answers }: { answers: [string, string][] }) {
   );
 }
 
-function isRealtimeEventCard(card: InfoPlaceCardData): boolean {
-  return card.question_type === "realtime_event";
+// event(TourAPI 행사)도 realtime_event(서울시 실시간 행사)와 같은 가로 스크롤
+// 사진 카드로 보여준다 — 둘 다 realtime_detail_items 모양(제목/부제/썸네일)으로
+// 내려오므로 렌더는 공유하고 판정만 question_type을 더 받는다.
+function isEventCardRow(card: InfoPlaceCardData): boolean {
+  return card.question_type === "realtime_event" || card.question_type === "event";
 }
 
 // 추천 카드(PlaceCard)와 같은 너비·비율의 사진 카드다 — 폭이 다르면 같은 줄에
@@ -295,6 +304,78 @@ function RealtimeEventCardRow({ items }: { items: RealtimeInfoDetailItem[] }) {
   );
 }
 
+function isRealtimeSubwayCard(card: InfoPlaceCardData): boolean {
+  return card.question_type === "realtime_subway";
+}
+
+// 한 방면(상행/하행 등) 안의 도착 한 건. 행선지(종착역)와 도착 안내를
+// 한 줄에 놓는다 — 방면 묶음 헤더가 이미 방향을 말해주므로 여기서는
+// 반복하지 않는다.
+function SubwayArrivalRow({ item }: { item: RealtimeInfoDetailItem }) {
+  const { arrival } = parseSubwayArrival(item.subtitle ?? "");
+  const arrivalKnown = arrival !== null && !arrival.includes("미제공");
+  const destination = item.details["종착역"] ? `${item.details["종착역"]}행` : "행선지 정보 미제공";
+  return (
+    <div className="flex min-w-0 items-center justify-between gap-2">
+      <span className="min-w-0 truncate text-xs text-ink">{destination}</span>
+      {arrival && (
+        <span
+          className={`shrink-0 rounded-full px-1.5 py-0.5 text-[11px] font-semibold ${
+            arrivalKnown ? "bg-emerald-50 text-emerald-700" : "bg-white text-muted"
+          }`}
+        >
+          {arrival}
+        </span>
+      )}
+    </div>
+  );
+}
+
+// 같은 역·같은 호선이라도 상행/하행은 다른 방향이라, 방면마다 별도 칸으로
+// 나눠 나란히 보여준다(2026-09-02 실사용 지적) — 나열 순서만으로는 구분이
+// 안 됐다.
+function SubwayLineGroupCard({ group }: { group: SubwayLineGroup }) {
+  return (
+    <article className="min-w-0 rounded-xl border border-border bg-white px-3 py-2.5">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span
+          className="h-2.5 w-2.5 shrink-0 rounded-full"
+          style={{ backgroundColor: subwayLineColor(group.stationLine) }}
+          aria-hidden="true"
+        />
+        <span className="min-w-0 truncate text-sm font-bold text-ink" title={group.stationLine}>
+          {group.stationLine}
+        </span>
+      </div>
+      <div
+        className={`mt-2 grid gap-2 ${group.directions.length > 1 ? "grid-cols-2" : "grid-cols-1"}`}
+      >
+        {group.directions.map((direction) => (
+          <div key={direction.direction} className="min-w-0 rounded-lg bg-chip px-2 py-1.5">
+            <p className="text-[11px] font-semibold text-muted">{direction.direction}</p>
+            <div className="mt-1 grid gap-1">
+              {direction.items.map((item, index) => (
+                <SubwayArrivalRow key={`${item.title}-${index}`} item={item} />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </article>
+  );
+}
+
+function SubwayArrivalList({ items }: { items: RealtimeInfoDetailItem[] }) {
+  const groups = groupSubwayArrivals(items);
+  return (
+    <section className="grid gap-2 px-4 py-3">
+      {groups.map((group) => (
+        <SubwayLineGroupCard key={group.stationLine} group={group} />
+      ))}
+    </section>
+  );
+}
+
 export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
   const [showDetail, setShowDetail] = useState(false);
   const answers = Object.entries(card.answer_fields);
@@ -331,8 +412,10 @@ export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
 
       {isRealtimeParkingCard(card) && answers.length > 0 ? (
         <RealtimeParkingList answers={answers} />
-      ) : isRealtimeEventCard(card) && (card.realtime_detail_items?.length ?? 0) > 0 ? (
+      ) : isEventCardRow(card) && (card.realtime_detail_items?.length ?? 0) > 0 ? (
         <RealtimeEventCardRow items={card.realtime_detail_items ?? []} />
+      ) : isRealtimeSubwayCard(card) && (card.realtime_detail_items?.length ?? 0) > 0 ? (
+        <SubwayArrivalList items={card.realtime_detail_items ?? []} />
       ) : answers.length > 0 ? (
         <dl className="px-4 py-3 text-sm">
           {answers.map(([key, value]) => (
