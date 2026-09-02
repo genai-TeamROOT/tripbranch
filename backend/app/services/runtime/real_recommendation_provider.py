@@ -41,41 +41,16 @@ from app.services.recommendation_pipeline import (
     score_prepared_recommendation,
 )
 from app.services.runtime.context_schemas import RecommendationContext
-from app.services.runtime.recommendation_transform import to_search_radius_km, to_travel_mode
+from app.services.runtime.recommendation_transform import (
+    to_search_radius_km,
+    to_search_radius_speed_km_per_min,
+)
 from app.tools.recommendation_cards import RecommendationCardTool
 
 _KST = ZoneInfo("Asia/Seoul")
 logger = logging.getLogger(__name__)
 
 _RECOMMENDATION_LIMIT = 5
-
-
-def _measured_routes_for(
-    conditions: UserConditions,
-    travel_routes: tuple[TravelRoute, ...],
-) -> tuple[TravelRoute, ...]:
-    """실측을 거리 Feature에 쓸 수 있는 요청인지 판정한다.
-
-    거리 점수의 분모는 검색 반경을 이동수단 속도로 되돌린 값이라(`scoring.py::
-    _travel_minutes_budget()`), 반경을 만든 속도와 실측한 이동수단의 속도가 같은
-    요청에서만 분자와 단위가 맞는다. 그 두 선택을 한 조건으로 묶는 것이
-    `to_travel_mode()`이므로, 그것이 이동수단을 정하지 못한 요청(None)만 버린다.
-
-    조건을 여기 다시 적지 않는 이유가 그것이다 — 같은 판정이 두 군데 있으면
-    한쪽만 바뀌었을 때 조용히 어긋난다. 새 이동수단은 속도
-    (`TRAVEL_SPEED_KM_PER_MINUTE`)만 채우면 여기까지 자동으로 열린다.
-
-    지금 버려지는 것은 이동시간을 말했지만 이동수단을 말하지 않은 요청이다.
-    반경이 20km/h 가정으로 커져 있는데 그 20km/h가 무엇인지 발화에 없어서
-    `to_travel_mode()`가 조회 자체를 건너뛰므로, 애초에 실측이 오지 않는다.
-
-    속도가 아직 없는 이동수단(대중교통)은 **여기서 막지 않는다.** 그런 경로가
-    채점까지 오면 `_travel_minutes_budget()`이 KeyError로 멈추는 편이 낫다는 것이
-    이미 선 결정이다(place_search_policy.TRAVEL_SPEED_KM_PER_MINUTE 주석). 여기서
-    조용히 걸러내면 그 신호가 사라진다 — 지금은 Provider가 미등록이라 실측 자체가
-    오지 않으므로 실제로 그 경로는 만들어지지 않는다.
-    """
-    return travel_routes if to_travel_mode(conditions) is not None else ()
 
 
 # 단어 하나짜리 질의("조용한")는 문장형 리뷰 텍스트와 임베딩이 잘 안 맞는다.
@@ -287,7 +262,13 @@ class RealRecommendationProvider:
             prepared,
             search_radius_km=to_search_radius_km(conditions),
             recommendation_limit=limit,
-            travel_routes=_measured_routes_for(conditions, travel_routes),
+            # 실측을 요청 단위로 버리던 판정(옛 `_measured_routes_for()`)은
+            # 없앴다. 그것은 "반경을 만든 속도와 실측한 이동수단의 속도가 같은
+            # 요청에서만 쓸 수 있다"는 제약 때문이었는데, 예산이 더 이상 측정
+            # 수단을 보지 않으므로(D-118) 어떤 수단으로 잰 값이든 같은 자로
+            # 채점된다.
+            travel_routes=travel_routes,
+            travel_budget_speed_km_per_min=to_search_radius_speed_km_per_min(conditions),
             taste_matches=await self._taste_matches_for(conditions, prepared),
         )
         response = await self._with_preference_tags(response)

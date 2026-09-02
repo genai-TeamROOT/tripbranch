@@ -93,6 +93,11 @@ class RealKakaoTransitRouteProvider:
         client: httpx.AsyncClient,
         timeout_seconds: float = 10.0,
         max_concurrency: int = 5,
+        # 여러 Provider가 같은 카카오 키를 쓸 때 넘긴다. 도보와 대중교통을 함께
+        # 조회하면 인스턴스마다 세마포어를 만드는 동안 동시 요청이 합산돼(5+5)
+        # 카카오가 `API limit has been exceeded.`로 대부분 거절한다(2026-09-02
+        # 실측). 넘기지 않으면 예전처럼 자기 몫만 제한한다.
+        semaphore: asyncio.Semaphore | None = None,
     ) -> None:
         if not api_key:
             raise ValueError("KAKAO_MAP_REST_API_KEY가 필요합니다.")
@@ -102,6 +107,7 @@ class RealKakaoTransitRouteProvider:
         self._client = client
         self._timeout_seconds = timeout_seconds
         self._max_concurrency = max_concurrency
+        self._semaphore = semaphore
 
     async def get_routes(
         self,
@@ -119,7 +125,7 @@ class RealKakaoTransitRouteProvider:
                 status=ProviderStatus.NO_DATA,
             )
 
-        semaphore = asyncio.Semaphore(self._max_concurrency)
+        semaphore = self._semaphore or asyncio.Semaphore(self._max_concurrency)
 
         async def fetch(destination: RouteDestination) -> TravelRoute:
             async with semaphore:

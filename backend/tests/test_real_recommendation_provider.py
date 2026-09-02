@@ -17,6 +17,7 @@ from app.agent_context.schemas import ContextError
 from app.domain.models import WeatherCondition
 from app.domain.travel_route import RouteSource, RouteStatus, TravelMode, TravelRoute
 from app.errors import AppError
+from app.place_search_policy import WALKING_SPEED_KM_PER_MINUTE
 from app.schemas import (
     ConcentrationIntent,
     RecommendationResponse,
@@ -465,6 +466,16 @@ async def _captured_routes(
     conditions: UserConditions,
     route: TravelRoute = _WALKING_ROUTE,
 ) -> object:
+    captured = await _captured_call(monkeypatch, conditions, route=route)
+    return captured["travel_routes"]
+
+
+async def _captured_call(
+    monkeypatch: pytest.MonkeyPatch,
+    conditions: UserConditions,
+    route: TravelRoute = _WALKING_ROUTE,
+) -> dict[str, object]:
+    """D 채점 진입점에 실제로 넘어간 인자를 그대로 돌려준다."""
     captured: dict[str, object] = {}
     original = module.score_prepared_recommendation
 
@@ -482,7 +493,7 @@ async def _captured_routes(
         visit_at=module.datetime.now(module._KST),
     )
     await provider.score_prepared(conditions, prepared, travel_routes=(route,))
-    return captured["travel_routes"]
+    return captured
 
 
 @pytest.mark.asyncio
@@ -521,13 +532,38 @@ async def test_driving_routes_are_used_when_transport_is_car(
 
 
 @pytest.mark.asyncio
-async def test_routes_are_dropped_when_transport_is_unspecified_with_travel_time(
+async def test_routes_are_kept_when_transport_is_unspecified_with_travel_time(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """이동시간만 말하고 수단을 말하지 않으면 무엇으로 잰 값인지 알 수 없다."""
+    """이동시간만 말한 요청도 실측을 그대로 쓴다 (D-118).
+
+    예전에는 버렸다 — 예산이 측정 수단의 속도로 나뉘던 시절에는 "반경을 만든
+    속도와 실측한 수단이 같은 요청"에서만 쓸 수 있었기 때문이다. 예산이 더 이상
+    측정 수단을 보지 않으므로 그 제약이 사라졌다.
+    """
     routes = await _captured_routes(monkeypatch, UserConditions(max_travel_time=30))
 
-    assert routes == ()
+    assert routes == (_WALKING_ROUTE,)
+
+
+@pytest.mark.asyncio
+async def test_budget_speed_follows_the_radius_not_the_measured_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """예산 속도는 반경을 만든 속도로 넘어간다 (D-118).
+
+    도보 실측을 받았더라도, 반경이 20km/h로 만들어진 요청이면 예산도 20km/h다 —
+    측정 수단이 아니라 요청이 자를 정한다.
+    """
+    captured = await _captured_call(
+        monkeypatch, UserConditions(transport=Transport.PUBLIC, max_travel_time=30)
+    )
+    assert captured["travel_budget_speed_km_per_min"] == pytest.approx(20 / 60)
+
+    captured = await _captured_call(monkeypatch, UserConditions())
+    assert captured["travel_budget_speed_km_per_min"] == pytest.approx(
+        WALKING_SPEED_KM_PER_MINUTE
+    )
 
 
 # --- 썸네일 병합(A가 C의 RecommendationCardTool을 빌려 D 결과에 붙인다) --------

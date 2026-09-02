@@ -15,7 +15,7 @@ import asyncio
 import logging
 import math
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from datetime import timedelta
@@ -32,6 +32,7 @@ from app.domain.ranking_origin import resolve_ranking_origin
 from app.domain.schedule_travel import ScheduleTravelCandidate
 from app.domain.scoring import SCORING_VERSION
 from app.domain.travel_route import (
+    MEASURED_ROUTE_SOURCES,
     GeoCoordinate,
     RouteDestination,
     RouteStatus,
@@ -47,7 +48,11 @@ from app.observability.langfuse_tracing import (
     record_score,
     trace_attributes,
 )
-from app.place_search_policy import MAX_PLACE_SEARCH_RADIUS_KM, WALKING_SPEED_KM_PER_MINUTE
+from app.place_search_policy import (
+    MAX_PLACE_SEARCH_RADIUS_KM,
+    WALKING_SPEED_KM_PER_MINUTE,
+    transit_switch_straight_line_km,
+)
 from app.prompts.registry import turn_prompt_version
 from app.providers.protocols import LLMProvider
 from app.repositories.protocols import PlaceDetailsReadRepository
@@ -124,7 +129,7 @@ from app.services.runtime.protocols import (
     ToolProvider,
     TravelRouteToolProvider,
 )
-from app.services.runtime.recommendation_transform import to_travel_mode
+from app.services.runtime.recommendation_transform import to_measured_travel_modes
 from app.services.runtime.response_composer import (
     compose_chat_message,
     compose_compare_message,
@@ -1261,11 +1266,15 @@ async def _score_with_measured_routes(
     채점한다"고 정해 두었기 때문에, 전체를 채점하면서 일부만 실측을 붙이면 실측이
     통째로 버려진다. 좁혀 두면 그 안에서는 전원이 실측을 가져 규칙을 만족한다.
 
-    실측을 못 받으면(이동수단 미지정·조회 실패) 1차 결과를 그대로 쓴다 — 같은
+    실측을 못 받으면(경로 Tool 없음·조회 실패) 1차 결과를 그대로 쓴다 — 같은
     후보를 실측 없이 두 번 채점할 이유가 없다.
+
+    **이동수단은 요청 단위가 아니라 후보 단위로 정해진다(D-118).** 도보권 후보는
+    도보로, 임계를 넘은 후보는 도보·대중교통을 둘 다 조회해 빠른 쪽으로 잰다
+    (`_fetch_travel_routes()`). 한 순위표에 수단이 섞이지만 거리 점수의 시간
+    예산이 측정 수단을 보지 않으므로 자는 하나로 유지된다.
     """
-    mode = to_travel_mode(conditions)
-    if travel_route_tool is None or mode is None:
+    if travel_route_tool is None:
         return await recommendation_provider.score_prepared(
             conditions, prepared, limit=recommendation_limit
         )
@@ -1287,7 +1296,7 @@ async def _score_with_measured_routes(
 
     narrowed = _narrow_prepared(prepared, shortlist_ids)
     travel_routes = await _fetch_travel_routes(
-        travel_route_tool, tool_context, narrowed, mode, conditions
+        travel_route_tool, tool_context, narrowed, conditions
     )
     if not travel_routes:
         return await recommendation_provider.score_prepared(
@@ -1756,15 +1765,22 @@ async def _fetch_travel_routes(
     route_tool: TravelRouteToolProvider | None,
     context: RecommendationContext,
     prepared: PreparedRecommendationResult,
-    mode: TravelMode | None,
     conditions: UserConditions | None = None,
 ) -> tuple[TravelRoute, ...]:
-    """하드 필터 통과 후보만 실측 조회하고 D에 넘길 도메인 결과를 반환한다.
+    """하드 필터 통과 후보를 후보별 이동수단으로 실측하고 D에 넘길 결과를 만든다.
 
-    `mode`가 None이면 조회하지 않는다 — 무엇으로 재야 할지 정할 수 없는
-    요청이다(to_travel_mode 참고).
+    수단은 `to_measured_travel_modes()`가 후보의 직선거리로 고른다(D-118). 임계를
+    넘은 후보는 도보와 대중교통을 **둘 다** 조회하고 `_fastest_routes()`가 빠른
+    쪽을 남긴다 — 카카오 대중교통이 근거리에서 도보보다 느린 값을 주는 경우가
+    있어서(2026-09-02 실측), 전환했다는 이유만으로 느린 값을 쓰지 않게 한다.
+
+    이동수단별로 Tool을 한 번씩 부른다. `TravelRouteQuery`가 수단 하나를 받기
+    때문이고, 세 수단을 팬아웃하는 `_fetch_compare_travel_routes()`와 같은 방식이다.
+    두 수단을 동시에 쏘는 것이 안전한 이유는 카카오 Provider들이 세마포어를
+    공유하기 때문이다(`factory.get_travel_route_tool()`) — 공유하지 않으면 같은
+    키로 동시 10건이 나가 대부분 거절당한다.
     """
-    if mode is None or route_tool is None or context.location is None or context.places is None:
+    if route_tool is None or context.location is None or context.places is None:
         return ()
     resolved_location = context.location.data
     places = context.places.data
@@ -1772,34 +1788,93 @@ async def _fetch_travel_routes(
         return ()
 
     eligible_ids = {item.candidate.place_id for item in prepared.preparation.eligible_candidates}
-    destinations = tuple(
-        RouteDestination(
+
+    # 실측 경로도 거리 계산과 같은 기준점에서 잰다 — 한쪽만 사용자 기준이면
+    # 실측이 있는 후보와 없는 후보가 서로 다른 자로 채점된다(TP-112).
+    origin = (resolve_ranking_origin(context, conditions) or resolved_location).location
+    switch_threshold_km = transit_switch_straight_line_km(
+        settings.schedule_walk_transfer_threshold_min
+    )
+
+    destinations_by_mode: dict[TravelMode, list[RouteDestination]] = {}
+    for place in places:
+        if place.place_id not in eligible_ids:
+            continue
+        destination = RouteDestination(
             place_id=place.place_id,
             coordinate=GeoCoordinate(
                 latitude=place.location.latitude,
                 longitude=place.location.longitude,
             ),
         )
-        for place in places
-        if place.place_id in eligible_ids
-    )
-    if not destinations:
+        straight_line_km = haversine_km(
+            origin.latitude,
+            origin.longitude,
+            place.location.latitude,
+            place.location.longitude,
+        )
+        modes = to_measured_travel_modes(
+            conditions,
+            straight_line_km=straight_line_km,
+            switch_threshold_km=switch_threshold_km,
+        )
+        for mode in modes:
+            destinations_by_mode.setdefault(mode, []).append(destination)
+    if not destinations_by_mode:
         return ()
 
-    # 실측 경로도 거리 계산과 같은 기준점에서 잰다 — 한쪽만 사용자 기준이면
-    # 실측이 있는 후보와 없는 후보가 서로 다른 자로 채점된다(TP-112).
-    origin = (resolve_ranking_origin(context, conditions) or resolved_location).location
-    result = await route_tool.execute(
-        TravelRouteQuery(
-            origin=GeoCoordinate(
-                latitude=origin.latitude,
-                longitude=origin.longitude,
-            ),
-            destinations=destinations,
-            mode=mode,
+    origin_coordinate = GeoCoordinate(latitude=origin.latitude, longitude=origin.longitude)
+    results = await asyncio.gather(
+        *(
+            route_tool.execute(
+                TravelRouteQuery(
+                    origin=origin_coordinate,
+                    destinations=tuple(destinations),
+                    mode=mode,
+                )
+            )
+            for mode, destinations in destinations_by_mode.items()
         )
     )
-    return result.routes
+    return _fastest_routes(route for result in results for route in result.routes)
+
+
+def _fastest_routes(routes: Iterable[TravelRoute]) -> tuple[TravelRoute, ...]:
+    """한 후보를 두 수단으로 조회했을 때 어느 값을 채점에 넘길지 고른다.
+
+    **실측이 추정을 이긴다. 소요시간 비교는 그 다음이다.** 도보 조회에는 직선거리
+    추정 fallback이 붙어 있어(`factory.get_travel_route_tool()`) 실패해도 SUCCESS로
+    돌아오는데, 그 추정값은 실제 대중교통 실측보다 짧게 나오기 쉽다. 시간만 보고
+    고르면 추정이 이기고, 채점은 추정을 버리므로(`scoring._applied_travel_route()`)
+    후보 하나가 실측을 잃고 그 때문에 `_consistent_routes()`가 회차 전체를
+    직선거리로 내린다 — 대중교통을 부른 값을 그대로 버리는 셈이다.
+
+    실측이 하나도 없으면 성공한 것 중 하나를, 그것도 없으면 처음 것을 남긴다.
+    소비 측이 실패를 볼 수 있어야 하므로 후보를 통째로 빼지는 않는다.
+    """
+
+    best: dict[str, TravelRoute] = {}
+    for route in routes:
+        current = best.get(route.place_id)
+        if current is None or _route_priority(route) < _route_priority(current):
+            best[route.place_id] = route
+    return tuple(best.values())
+
+
+def _route_priority(route: TravelRoute) -> tuple[int, int]:
+    """작을수록 채점에 쓰기 좋은 경로. (등급, 소요시간)으로 비교한다."""
+
+    measured = (
+        route.status is RouteStatus.SUCCESS
+        and route.source in MEASURED_ROUTE_SOURCES
+        and route.duration_seconds is not None
+    )
+    if measured:
+        assert route.duration_seconds is not None
+        return (0, route.duration_seconds)
+    if route.status is RouteStatus.SUCCESS and route.duration_seconds is not None:
+        return (1, route.duration_seconds)
+    return (2, 0)
 
 
 def _is_info_walking_time_request(llm_output: LLMOutput) -> bool:

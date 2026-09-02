@@ -4617,11 +4617,12 @@ class _LLMProviderWithTransport(_LLMProviderWithGeneralAnswer):
 
 @pytest.mark.asyncio
 async def test_staged_recommendation_asks_driving_mode_and_gets_nothing_for_car_request() -> None:
-    """자동차 요청은 자동차 mode로 묻고, 등록된 Provider가 없어 값 없이 돌아온다.
+    """자동차 요청은 자동차 mode로만 묻고, 등록된 Provider가 없어 값 없이 돌아온다.
 
-    도보 실측을 자동차 요청에 쓰지 않는다는 결과는 이전과 같고(D가 버렸다),
-    이제 그 판단이 Tool에서 나므로 카카오 도보 호출이 일어나지 않는다 — 호출이
-    0건인지는 test_travel_route_tool.py가 Provider 호출 수로 못 박는다.
+    도보를 함께 묻지 않는 것이 핵심이다 — 자동차라고 말한 사용자에게 도보 시간을
+    보여줄 이유가 없다. 거리가 임계를 넘어도 대중교통을 덧붙이지 않는다(D-118).
+    카카오 도보 호출이 0건인지는 test_travel_route_tool.py가 Provider 호출 수로
+    못 박는다.
     """
     route_tool = _RecordingTravelRouteTool()
     recommendation_provider = _RecordingWalkingRoutesRecommendationProvider()
@@ -4645,11 +4646,15 @@ async def test_staged_recommendation_asks_driving_mode_and_gets_nothing_for_car_
 
 
 @pytest.mark.asyncio
-async def test_staged_recommendation_skips_route_lookup_when_transport_is_unstated() -> None:
-    """이동수단 미언급 + 이동시간 언급은 무엇으로 재야 할지 정할 수 없어 조회하지 않는다.
+async def test_staged_recommendation_measures_walking_when_transport_is_unstated() -> None:
+    """이동수단 미언급 + 이동시간 언급도 실측한다 (D-118).
 
-    반경이 20km/h 가정으로 커져 있는데 그게 대중교통인지 자동차인지는 발화에
-    없다(to_travel_mode). 지금도 D가 이 경우 도보 실측을 버렸으므로 결과는 같다.
+    예전에는 조회하지 않았다 — 반경이 20km/h 가정으로 커져 있는데 그게 대중교통인지
+    자동차인지 발화에 없어서, 무엇으로 재도 예산과 단위가 안 맞았기 때문이다.
+    예산이 측정 수단을 보지 않게 되면서 그 이유가 사라졌다.
+
+    이 픽스처의 후보는 전부 기준점에서 0.3km 안이라 임계(0.85km) 아래다. 그래서
+    대중교통은 묻지 않고 도보만 조회한다.
     """
     route_tool = _RecordingTravelRouteTool()
     recommendation_provider = _RecordingWalkingRoutesRecommendationProvider()
@@ -4668,8 +4673,7 @@ async def test_staged_recommendation_skips_route_lookup_when_transport_is_unstat
         store=InMemoryStateStore(),
     )
 
-    assert route_tool.queries == []
-    assert recommendation_provider.travel_routes == ()
+    assert [query.mode for query in route_tool.queries] == [TravelMode.WALKING]
 
 
 @pytest.mark.asyncio

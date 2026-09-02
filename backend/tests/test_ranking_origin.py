@@ -25,7 +25,6 @@ from app.domain.ranking_origin import (
     resolve_travel_origin_toggle,
     resolve_user_to_target_km,
 )
-from app.domain.travel_route import TravelMode
 from app.schemas import TravelOrigin, UserConditions
 from app.services.recommendation_pipeline import (
     prepare_recommendation_from_context,
@@ -283,7 +282,11 @@ async def test_distance_feature_survives_a_far_user() -> None:
 
 
 class _RecordingRouteTool:
-    """경로 조회가 어느 좌표에서 출발했는지만 기록하는 더블."""
+    """경로 조회가 어느 좌표에서 출발했는지만 기록하는 더블.
+
+    호출 수는 보지 않는다 — 임계를 넘은 후보는 도보·대중교통으로 두 번 조회되므로
+    (D-118) 여기서 확인할 것은 "모든 조회가 같은 기준점에서 출발했는가"뿐이다.
+    """
 
     def __init__(self) -> None:
         self.origins: list[tuple[float, float]] = []
@@ -306,9 +309,9 @@ async def test_travel_routes_start_from_the_user() -> None:
     )
     tool = _RecordingRouteTool()
 
-    await _fetch_travel_routes(tool, context, prepared, TravelMode.WALKING)
+    await _fetch_travel_routes(tool, context, prepared)
 
-    assert tool.origins == [(_USER.latitude, _USER.longitude)]
+    assert set(tool.origins) == {(_USER.latitude, _USER.longitude)}
 
 
 @pytest.mark.asyncio
@@ -319,9 +322,9 @@ async def test_travel_routes_fall_back_to_search_center() -> None:
     )
     tool = _RecordingRouteTool()
 
-    await _fetch_travel_routes(tool, context, prepared, TravelMode.WALKING)
+    await _fetch_travel_routes(tool, context, prepared)
 
-    assert tool.origins == [(_TARGET.latitude, _TARGET.longitude)]
+    assert set(tool.origins) == {(_TARGET.latitude, _TARGET.longitude)}
 
 
 def test_haversine_km_matches_latitude_degrees() -> None:
@@ -394,9 +397,9 @@ async def test_travel_routes_start_from_search_center_when_travel_origin_overrid
     )
     tool = _RecordingRouteTool()
 
-    await _fetch_travel_routes(tool, context, prepared, TravelMode.WALKING, conditions)
+    await _fetch_travel_routes(tool, context, prepared, conditions)
 
-    assert tool.origins == [(_TARGET.latitude, _TARGET.longitude)]
+    assert set(tool.origins) == {(_TARGET.latitude, _TARGET.longitude)}
 
 
 # --- 비차단형 전환 제안(TravelOriginToggle, D-071) ---------------------------
