@@ -6695,3 +6695,56 @@ async def test_refilled_candidates_reach_schedule_with_coordinates(
     # 놓치는 부분 누락이 있다는 뜻이다.
     expected_pairs = len(candidate_ids) * (len(candidate_ids) - 1) // 2
     assert len(schedule_request.pairwise_distances_km) == expected_pairs
+
+
+@pytest.mark.parametrize("use_graph", [False, True])
+@pytest.mark.asyncio
+async def test_refilled_candidates_are_recorded_with_coordinates(
+    refill_page_limit: int,
+    monkeypatch: pytest.MonkeyPatch,
+    use_graph: bool,
+) -> None:
+    """TP-198: 보충 조회로 들어온 후보의 좌표가 노출 이력에도 남는다(D-114 후속).
+
+    이 스냅샷은 다음 턴의 안전망이다 — 보관함에 담긴 장소가 그때 검색 반경 밖이면
+    C 응답에 아예 없어서, `_snapshot_coordinates()`가 꺼내는 이 값이 후보 간 거리를
+    구할 유일한 근거가 된다.
+
+    좌표가 안 남아도 그 턴은 멀쩡하고 **다음 턴에** 그 장소만 거리 근거 없이
+    등장하므로, 응답을 봐서는 드러나지 않는다.
+    """
+    monkeypatch.setattr(settings, "use_langgraph_pipeline", use_graph)
+    store = InMemoryStateStore()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=_RefillPlacesToolProvider(),
+        recommendation_provider=RealRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=store,
+    )
+
+    assert response.recommendations is not None
+    shown_ids = [
+        item.place_id
+        for item in (
+            *response.recommendations.recommendations,
+            *response.recommendations.unverified_recommendations,
+        )
+    ]
+    # 첫 페이지는 refill-0~9다. 그 뒤 번호는 보충 조회로만 들어올 수 있다.
+    refilled_ids = {
+        place_id
+        for place_id in shown_ids
+        if int(place_id.removeprefix("refill-")) >= _REFILL_PAGE_SIZE
+    }
+    # 보충 후보가 하나도 안 뽑히면 이 테스트는 아무것도 검증하지 못한다.
+    assert refilled_ids
+
+    session = get_session_context(response.state.session_id, store=store)
+    assert refilled_ids <= set(_snapshot_coordinates(session))
