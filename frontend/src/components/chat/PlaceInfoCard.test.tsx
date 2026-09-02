@@ -580,17 +580,15 @@ it("무장애 항목을 한글 라벨로 보여준다", () => {
   expect(screen.queryByText("wheelchair_access")).not.toBeInTheDocument();
 });
 
-it("실시간 행사가 4건을 넘으면 접어두고, 뱃지와 기간·장소를 함께 보여준다", async () => {
+it("실시간 행사는 추천 카드처럼 사진과 함께 가로로 늘어놓는다", async () => {
   const user = userEvent.setup();
-  const manyEventsCard: InfoPlaceCardData = {
+  const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+  const eventsCard: InfoPlaceCardData = {
     ...card,
     question_type: "realtime_event",
     answer_fields: {
       "집옥재 작은 도서관 개방": "2026-04-01~2026-10-31 · 경복궁 집옥재·팔우정",
-      "경회루·향원정 특별관람": "2026-04-01~2026-10-30 · 경복궁 경회루·향원정",
       "수문장 순라의식": "2026-03-01~2026-11-29 · 경복궁 내부",
-      "고궁 야간개장": "2026-05-01~2026-05-31 · 경복궁",
-      "봄맞이 한복 체험": "2026-04-01~2026-04-30 · 경복궁 근정전",
     },
     thumbnail_url: null,
     overview: null,
@@ -606,19 +604,39 @@ it("실시간 행사가 4건을 넘으면 접어두고, 뱃지와 기간·장소
     realtime_area_name: "경복궁",
     realtime_observed_at: "9월 2일 11:00",
     realtime_source_url: "https://data.seoul.go.kr/example",
-    realtime_detail_items: [],
+    realtime_detail_items: [
+      {
+        title: "집옥재 작은 도서관 개방",
+        subtitle: "2026-04-01~2026-10-31 · 경복궁 집옥재·팔우정",
+        details: { 기간: "2026-04-01~2026-10-31", 장소: "경복궁 집옥재·팔우정" },
+        thumbnail_url: "https://example.test/jipokjae.jpg",
+        external_url: "https://example.test/jipokjae",
+      },
+      {
+        // 서울시 응답에 THUMBNAIL이 비는 경우가 있다 — 이미지 대신 자리표시 칩을 보여준다.
+        title: "수문장 순라의식",
+        subtitle: "2026-03-01~2026-11-29 · 경복궁 내부",
+        details: { 기간: "2026-03-01~2026-11-29", 장소: "경복궁 내부" },
+        thumbnail_url: null,
+        external_url: null,
+      },
+    ],
   };
 
-  renderWithTrip(<PlaceInfoCard card={manyEventsCard} />);
+  renderWithTrip(<PlaceInfoCard card={eventsCard} />);
 
-  expect(screen.getAllByText("행사").length).toBe(4);
+  expect(
+    screen.getByRole("link", { name: "집옥재 작은 도서관 개방 행사 정보 보기" }).querySelector("img"),
+  ).toHaveAttribute("src", "https://example.test/jipokjae.jpg");
   expect(screen.getByText("집옥재 작은 도서관 개방")).toBeInTheDocument();
   expect(
     screen.getByText("2026-04-01~2026-10-31 · 경복궁 집옥재·팔우정"),
   ).toBeInTheDocument();
-  expect(screen.queryByText("봄맞이 한복 체험")).not.toBeInTheDocument();
+  // 링크가 없는 행사는 자리표시 칩("행사")만 보이고 누를 수 없다.
+  expect(screen.getByText("수문장 순라의식")).toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "수문장 순라의식 행사 정보 보기" })).toBeNull();
 
-  await user.click(screen.getByRole("button", { name: "1건 더 보기" }));
-  expect(screen.getByText("봄맞이 한복 체험")).toBeInTheDocument();
-  expect(screen.getAllByText("행사").length).toBe(5);
+  await user.click(screen.getByRole("link", { name: "집옥재 작은 도서관 개방 행사 정보 보기" }));
+  expect(openSpy).toHaveBeenCalledWith("https://example.test/jipokjae", "_blank", "noopener");
+  openSpy.mockRestore();
 });

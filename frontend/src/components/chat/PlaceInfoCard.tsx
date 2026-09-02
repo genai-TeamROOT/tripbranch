@@ -6,7 +6,8 @@
  */
 
 import { useState } from "react";
-import type { InfoPlaceCard as InfoPlaceCardData } from "../../types";
+import type { InfoPlaceCard as InfoPlaceCardData, RealtimeInfoDetailItem } from "../../types";
+import { PlaceCardRow } from "./PlaceCardRow";
 import {
   ConcentrationForecastBars,
   PopulationForecastBars,
@@ -222,42 +223,75 @@ function isRealtimeEventCard(card: InfoPlaceCardData): boolean {
   return card.question_type === "realtime_event";
 }
 
-// 서울시 응답의 값은 "기간 · 장소"로 이미 합쳐져 있다(service.py의
-// " · ".join(...)). 행사명과 달리 기간·장소는 라벨을 나눌 만큼 형태가
-// 고정적이지 않아(장소가 요일별로 갈리는 경우도 있다) 하나로 묶어 보여준다.
-function RealtimeEventSummary({ name, meta }: { name: string; meta: string }) {
+// 추천 카드(PlaceCard)와 같은 너비·비율의 사진 카드다 — 폭이 다르면 같은 줄에
+// 섞였을 때(추천 결과 다음에 행사가 오는 경우 등) 스크롤 리듬이 어긋난다.
+function RealtimeEventCard({ item }: { item: RealtimeInfoDetailItem }) {
+  const openable = Boolean(item.external_url);
   return (
-    <article className="min-w-0 rounded-xl border border-border bg-white px-3 py-2.5">
-      <div className="flex min-w-0 items-start gap-1.5">
-        <span className="mt-0.5 shrink-0 rounded-full bg-gold-tint px-1.5 py-0.5 text-[10px] font-semibold text-[#8a5a12]">
-          행사
-        </span>
-        <span className="min-w-0 text-sm font-bold text-ink">{name}</span>
+    <li className="w-40 shrink-0">
+      <div
+        className={`relative w-full text-left${openable ? " cursor-pointer" : ""}`}
+        role={openable ? "link" : undefined}
+        tabIndex={openable ? 0 : undefined}
+        aria-label={openable ? `${item.title} 행사 정보 보기` : undefined}
+        onClick={
+          openable
+            ? () => window.open(item.external_url as string, "_blank", "noopener")
+            : undefined
+        }
+        onKeyDown={
+          openable
+            ? (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  window.open(item.external_url as string, "_blank", "noopener");
+                }
+              }
+            : undefined
+        }
+      >
+        <div className="group relative overflow-hidden rounded-2xl">
+          {item.thumbnail_url ? (
+            <img
+              src={item.thumbnail_url}
+              alt=""
+              loading="lazy"
+              className="h-28 w-full rounded-2xl object-cover transition-transform duration-300 group-hover:scale-105"
+              onError={(event) => {
+                event.currentTarget.style.visibility = "hidden";
+              }}
+            />
+          ) : (
+            <span className="flex h-28 w-full items-center justify-center rounded-2xl bg-chip text-xs text-muted">
+              행사
+            </span>
+          )}
+        </div>
+        <div className="pt-2">
+          <p className="line-clamp-2 text-sm font-bold text-ink">{item.title}</p>
+          {item.subtitle && (
+            <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-muted">
+              {item.subtitle}
+            </p>
+          )}
+        </div>
       </div>
-      {meta && (
-        <p className="mt-1.5 pl-[calc(1.75rem+0.375rem)] text-xs text-muted">{meta}</p>
-      )}
-    </article>
+    </li>
   );
 }
 
 // 행사는 이름 자체가 길어 주차장처럼 3곳으로 접으면 답변보다 목록이 먼저
-// 눈에 띈다. 행사 카드에는 조금 더 넉넉하게 4건까지 기본으로 보여준다.
-const REALTIME_EVENT_COLLAPSED_COUNT = 4;
-
-function RealtimeEventList({ answers }: { answers: [string, string][] }) {
-  const [expanded, setExpanded] = useState(false);
-  const visible = expanded ? answers : answers.slice(0, REALTIME_EVENT_COLLAPSED_COUNT);
-  const hiddenCount = answers.length - visible.length;
+// 눈에 띈다. 대신 가로 스크롤이라 접을 필요가 없다 — 추천 결과와 같은 방식
+// (PlaceCardRow)으로 한 줄에 늘어놓고 옆으로 넘겨 보게 한다.
+function RealtimeEventCardRow({ items }: { items: RealtimeInfoDetailItem[] }) {
   return (
-    <section className="grid gap-2 px-4 py-3">
-      {visible.map(([name, meta]) => (
-        <RealtimeEventSummary key={name} name={name} meta={meta} />
-      ))}
-      {hiddenCount > 0 && (
-        <MoreItemsButton hiddenCount={hiddenCount} unit="건" onClick={() => setExpanded(true)} />
-      )}
-    </section>
+    <div className="px-4 py-3">
+      <PlaceCardRow>
+        {items.map((item) => (
+          <RealtimeEventCard key={item.title} item={item} />
+        ))}
+      </PlaceCardRow>
+    </div>
   );
 }
 
@@ -297,8 +331,8 @@ export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
 
       {isRealtimeParkingCard(card) && answers.length > 0 ? (
         <RealtimeParkingList answers={answers} />
-      ) : isRealtimeEventCard(card) && answers.length > 0 ? (
-        <RealtimeEventList answers={answers} />
+      ) : isRealtimeEventCard(card) && (card.realtime_detail_items?.length ?? 0) > 0 ? (
+        <RealtimeEventCardRow items={card.realtime_detail_items ?? []} />
       ) : answers.length > 0 ? (
         <dl className="px-4 py-3 text-sm">
           {answers.map(([key, value]) => (
