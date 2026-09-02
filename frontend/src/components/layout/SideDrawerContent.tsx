@@ -236,6 +236,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                 {renamingId === entry.id ? (
                   <input
                     ref={renameInputRef}
+                    aria-label="대화 이름"
                     value={renameDraft}
                     onChange={(event) => setRenameDraft(event.target.value)}
                     onBlur={() => commitRename(entry.id)}

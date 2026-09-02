@@ -49,18 +49,6 @@ function sidebar() {
   return screen.getByRole("complementary");
 }
 
-/*
- * 즐겨찾기 추가 모달에는 role="dialog"가 없어서 getByRole("dialog")로 못 잡는다
- * (접근성 개선 여지 — 별도 작업으로 남겼다). 제목에서 위로 올라가며 입력칸을
- * 품은 첫 조상을 모달로 본다. 사이드바의 "추가" 버튼과 이름이 같아 범위를 좁혀야 한다.
- */
-function favoriteModal(): HTMLElement {
-  let node: HTMLElement | null = screen.getByRole("heading", { name: "즐겨찾기 추가" });
-  while (node && !node.querySelector("input")) node = node.parentElement;
-  if (!node) throw new Error("즐겨찾기 추가 모달을 찾지 못했다");
-  return node;
-}
-
 test("저장된 즐겨찾기가 사이드바에 보인다", async () => {
   await renderApp();
 
@@ -74,7 +62,8 @@ test("즐겨찾기를 추가하면 목록에 남는다", async () => {
 
   await user.click(within(sidebar()).getByRole("button", { name: "추가" }));
 
-  const modal = favoriteModal();
+  // 모달의 제출 버튼과 사이드바의 "+ 추가"가 이름이 같다. 모달 안으로 범위를 좁힌다.
+  const modal = screen.getByRole("dialog", { name: "즐겨찾기 추가" });
   await user.type(within(modal).getByRole("textbox"), "학교 (신촌)");
   await user.click(within(modal).getByRole("button", { name: "추가" }));
 
@@ -100,11 +89,7 @@ test("채팅 히스토리 이름을 바꾸면 새 이름이 남는다", async ()
   );
   await user.click(screen.getByRole("menuitem", { name: "이름 바꾸기" }));
 
-  /*
-   * 이름 바꾸기 입력칸에도 접근성 이름이 없다(위 모달과 같은 건). 편집 중에는
-   * 사이드바 안의 유일한 입력칸이라 그것으로 잡는다.
-   */
-  const input = within(sidebar()).getByRole("textbox");
+  const input = screen.getByRole("textbox", { name: "대화 이름" });
   await user.clear(input);
   await user.type(input, "비 오는 날 실내 코스{Enter}");
 
