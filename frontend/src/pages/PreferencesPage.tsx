@@ -127,13 +127,22 @@ export function PreferencesPage() {
 
   return (
     <main className="relative flex h-full flex-col overflow-y-auto">
+      {/*
+       * 260px 띠가 위에서 옅게 시작해 30% 지점에서 가장 진하고 다시 사라진다.
+       * 정점을 가운데(50%)에 두면 파란 기가 제목 아래까지 내려온다 — Figma 28:3의
+       * 실제 픽셀을 재보면 정점이 위에서 70px, 즉 27% 지점이다.
+       */}
       <div
         aria-hidden
-        className="pointer-events-none absolute inset-x-0 top-0 h-[260px] bg-gradient-to-b from-sky-light/0 via-sky-light to-sky-light/0"
+        className="pointer-events-none absolute inset-x-0 top-0 h-[260px] bg-gradient-to-b from-sky-light/0 via-sky-light via-30% to-sky-light/0"
       />
       <div className="relative z-10 flex flex-1 flex-col">
         <AppHeader onBack={() => navigate(-1)} />
-        <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-6 px-4 pb-32">
+        {/*
+         * 세로 간격은 Figma Preferences(28:2)의 gap 프레임을 그대로 따른다 —
+         * 헤더 아래 24(56:2), 묶음 사이 24, 마지막 요소와 BottomBar 사이 24(28:102).
+         */}
+        <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-6 px-4 pb-6 pt-6">
           <div>
             <h1 className="text-2xl font-bold leading-snug text-ink">
               어떤 순간에
@@ -144,20 +153,21 @@ export function PreferencesPage() {
               선택한 취향은 상황별 추천에 반영돼요. 최소 {MIN_SELECTED}개, 최대 {MAX_SELECTED}개까지
               골라주세요.
             </p>
-          </div>
 
-          <div className="flex items-center justify-between">
-            <span className="rounded-full bg-chip px-3 py-1.5 text-xs font-bold text-brand-deep">
-              {selected.size} / {MAX_SELECTED}개 선택됨
-            </span>
-            <button
-              type="button"
-              onClick={handleReset}
-              disabled={selected.size === 0}
-              className="text-xs font-bold text-muted transition-colors hover:text-ink disabled:opacity-40"
-            >
-              선택 초기화
-            </button>
+            {/* 부제와 Meta 사이만 12다(28:20) — 컨테이너 gap 24를 쓰면 두 배로 벌어진다. */}
+            <div className="mt-3 flex items-center justify-between">
+              <span className="rounded-full bg-chip px-3 py-1.5 text-xs font-bold text-brand-deep">
+                {selected.size} / {MAX_SELECTED}개 선택됨
+              </span>
+              <button
+                type="button"
+                onClick={handleReset}
+                disabled={selected.size === 0}
+                className="text-xs font-bold text-muted transition-colors hover:text-ink disabled:opacity-40"
+              >
+                선택 초기화
+              </button>
+            </div>
           </div>
 
           <ChipGroup
