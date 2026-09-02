@@ -20,7 +20,7 @@ from langgraph.graph import END, START, StateGraph
 
 from app.observability.langfuse_tracing import observe_step, trace_attributes
 from app.providers.protocols import LLMProvider
-from app.schemas import AgentResponse, LLMOutput
+from app.schemas import AgentResponse, ConversationTurnView, LLMOutput
 from app.services.runtime.graph.nodes.general import general_answer_node
 from app.services.runtime.graph.nodes.pipeline import (
     PipelineDeps,
@@ -380,16 +380,28 @@ async def run_early_return_graph(
     llm: LLMProvider,
     stream_event_sink: StreamEventSink | None = None,
     stream_general: bool = False,
+    rejected_offer_actions: list[str] | None = None,
+    history: list[ConversationTurnView] | None = None,
 ) -> str:
     """조기 반환 경로의 답변 문구를 그래프로 만들어 문자열로 돌려준다.
 
     호출부(`run_agent_flow()`)가 기대하는 것은 기존 `compose_chat_message()`와 같은
     문자열 하나다 — 그래프로 바뀐 것을 호출부가 알 필요가 없게 시그니처를 맞췄다.
+
+    rejected_offer_actions는 대화층 4단계 — GENERAL 답변이 이미 거절된 상황 제안을
+    다시 권하지 않도록 session_context에서 여기까지 그대로 옮긴다. history도 같은
+    이유로 함께 옮긴다 — 답변 문장이 앞 턴과 이어지려면 생성 단계가 대화를 봐야 한다.
     """
 
     with trace_attributes(tags=_intent_tag(llm_output)):
         result = await _EARLY_RETURN_GRAPH.ainvoke(
-            {"llm_output": llm_output, "stream_general": stream_general, "answer": None},
+            {
+                "llm_output": llm_output,
+                "stream_general": stream_general,
+                "rejected_offer_actions": rejected_offer_actions or [],
+                "history": history or [],
+                "answer": None,
+            },
             config={
                 "configurable": {
                     SINK_CONFIG_KEY: stream_event_sink,

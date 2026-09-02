@@ -53,6 +53,7 @@ import {
   type AllSyncState,
 } from "../components/dev/allDistrictSync";
 import { ConcentrationMappingPanel } from "../components/dev/ConcentrationMappingPanel";
+import { CategoryCoveragePanel } from "../components/dev/CategoryCoveragePanel";
 import { splitApproval } from "../components/dev/concentrationMapping";
 import { DbStatusPanel } from "../components/dev/DbStatusPanel";
 import { OpsNav, type OpsTab } from "../components/dev/OpsNav";
@@ -113,12 +114,13 @@ export function DeveloperOpsPage() {
   /* 탭을 URL에 둔다. 새로고침해도 자리를 지키고 링크로 공유된다 — 전 구 순회는
    * 오래 걸려서 도중에 새로고침할 일이 생긴다. */
   const [searchParams, setSearchParams] = useSearchParams();
-  const tab: OpsTab = searchParams.get("tab") === "sync" ? "sync" : "observe";
+  const tabParam = searchParams.get("tab");
+  const tab: OpsTab = tabParam === "sync" || tabParam === "categories" ? tabParam : "observe";
   const selectTab = useCallback(
     (next: OpsTab) => {
       // replace로 바꾼다. 탭 전환을 뒤로가기 이력에 쌓으면 채팅 화면으로 돌아가는
       // 데 뒤로가기를 여러 번 눌러야 한다.
-      setSearchParams(next === "sync" ? { tab: "sync" } : {}, { replace: true });
+      setSearchParams(next === "observe" ? {} : { tab: next }, { replace: true });
     },
     [setSearchParams],
   );
@@ -718,6 +720,13 @@ export function DeveloperOpsPage() {
                 onRefresh={() => void loadTraceStats()}
               />
             </>
+          ) : tab === "categories" ? (
+            <CategoryCoveragePanel
+              status={dbStatus}
+              error={dbError}
+              loading={dbLoading}
+              onRefresh={() => void loadDbStatus()}
+            />
           ) : (
             <>
               <PlaceSyncPanel

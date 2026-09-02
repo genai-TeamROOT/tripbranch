@@ -24,6 +24,7 @@ from app.schemas import (
     ScheduleItem,
     ScheduleResult,
     Severity,
+    SituationKind,
 )
 from app.services.runtime.context_schemas import Clarification
 from app.services.runtime.info_context_schemas import (
@@ -65,6 +66,7 @@ class _StubLLM:
         fail_compare_summary: bool = False,
     ) -> None:
         self.answer = answer
+        self.offer_content_received: str | None = None
         self.recommendation_summary = recommendation_summary
         self.fail_recommendation_summary = fail_recommendation_summary
         self.compare_summary = compare_summary
@@ -73,31 +75,65 @@ class _StubLLM:
         self.summary_received: tuple[Intent, RecommendationResponse] | None = None
         self.compare_received: ComparisonResult | None = None
         self.info_received: dict[str, str] | None = None
+        self.conditions_received = None
+        self.history_received = None
 
-    async def generate_general_answer(self, topic: GeneralTopic, original_question: str):
+    async def generate_general_answer(
+        self,
+        topic: GeneralTopic,
+        original_question: str,
+        *,
+        offer_content: str | None = None,
+        history=None,
+    ):
         self.received = (topic, original_question)
+        self.offer_content_received = offer_content
+        self.history_received = history
         return provider_result(self.answer, source=ProviderSource.FAKE_LLM)
 
     async def generate_recommendation_summary(
-        self, intent: Intent, recommendations: RecommendationResponse
+        self,
+        intent: Intent,
+        recommendations: RecommendationResponse,
+        *,
+        conditions=None,
+        history=None,
     ):
         self.summary_received = (intent, recommendations)
+        self.conditions_received = conditions
+        self.history_received = history
         if self.fail_recommendation_summary:
             raise ProviderUnavailableError("Gemini")
         return provider_result(self.recommendation_summary, source=ProviderSource.FAKE_LLM)
 
     async def stream_recommendation_summary(
-        self, intent: Intent, recommendations: RecommendationResponse
+        self,
+        intent: Intent,
+        recommendations: RecommendationResponse,
+        *,
+        conditions=None,
+        history=None,
     ):
         """SSE 경로 검증용: 같은 요약 문장을 두 조각으로 나눈다."""
 
-        result = await self.generate_recommendation_summary(intent, recommendations)
+        result = await self.generate_recommendation_summary(
+            intent, recommendations, conditions=conditions, history=history
+        )
         midpoint = max(1, len(result.data) // 2)
         yield result.data[:midpoint]
         yield result.data[midpoint:]
 
-    async def stream_general_answer(self, topic: GeneralTopic, original_question: str):
-        result = await self.generate_general_answer(topic, original_question)
+    async def stream_general_answer(
+        self,
+        topic: GeneralTopic,
+        original_question: str,
+        *,
+        offer_content: str | None = None,
+        history=None,
+    ):
+        result = await self.generate_general_answer(
+            topic, original_question, offer_content=offer_content, history=history
+        )
         midpoint = max(1, len(result.data) // 2)
         yield result.data[:midpoint]
         yield result.data[midpoint:]
@@ -109,16 +145,18 @@ class _StubLLM:
         question_type: str,
         specific_question: str | None,
         fields: dict[str, str],
+        history=None,
     ):
-        del place_name, question_type, specific_question
+        del place_name, question_type, specific_question, history
         self.info_received = fields
         text = "카드 기반 INFO 스트리밍 답변입니다."
         midpoint = max(1, len(text) // 2)
         yield text[:midpoint]
         yield text[midpoint:]
 
-    async def generate_compare_summary(self, comparison: ComparisonResult):
+    async def generate_compare_summary(self, comparison: ComparisonResult, *, history=None):
         self.compare_received = comparison
+        self.history_received = history
         if self.fail_compare_summary:
             raise ProviderUnavailableError("Gemini")
         return provider_result(self.compare_summary, source=ProviderSource.FAKE_LLM)
@@ -224,6 +262,36 @@ class TestComposeChatMessageOutOfScope:
 
 class TestComposeChatMessageGeneral:
     @pytest.mark.asyncio
+    async def test_service_identity_uses_fixed_capability_guide(self) -> None:
+        llm_output = LLMOutput(
+            intent=Intent.GENERAL,
+            status=OutputStatus.COMPLETE,
+            general=GeneralPayload(
+                topic=GeneralTopic.SERVICE_IDENTITY, original_question="넌 누구야?"
+            ),
+        )
+        stub = _StubLLM()
+        received: list[str] = []
+
+        async def on_delta(text: str) -> None:
+            received.append(text)
+
+        message = await compose_chat_message(llm_output, llm=stub, on_message_delta=on_delta)
+
+        assert "# TripBranch 여행 도우미" in message
+        assert "## 장소 추천·조건 변경" in message
+        assert "## 장소 비교·일정" in message
+        assert "## 장소 상세정보" in message
+        assert "## 혼잡도" in message
+        assert "## 실시간 상권" in message
+        assert "## 실시간 주차" in message
+        assert "## 실시간 행사·교통" in message
+        assert "용리단길 식당 지금 사람 많아?" in message
+        assert "성수 카페거리 카페 지금 사람 많아?" in message
+        assert received == [message]
+        assert stub.received is None
+
+    @pytest.mark.asyncio
     async def test_calls_llm_and_returns_its_answer(self) -> None:
         llm_output = LLMOutput(
             intent=Intent.GENERAL,
@@ -255,6 +323,63 @@ class TestComposeChatMessageGeneral:
 
         assert len(received) == 2
         assert message == "".join(received)
+
+    @pytest.mark.asyncio
+    async def test_passes_offer_content_when_situation_has_an_actionable_offer(self) -> None:
+        """대화층 3단계 — situational_offers가 상황에 맞는 도움을 찾으면 그 content를
+        답변 LLM 호출에 실어, 답변이 그 도움을 자연스러운 질문으로 제안하게 한다."""
+        llm_output = LLMOutput(
+            intent=Intent.GENERAL,
+            status=OutputStatus.COMPLETE,
+            general=GeneralPayload(
+                topic=GeneralTopic.TRAVEL_TIP,
+                original_question="너무 지친다",
+                situation=SituationKind.FATIGUE,
+            ),
+        )
+        stub = _StubLLM()
+
+        await compose_chat_message(llm_output, llm=stub)
+
+        assert stub.offer_content_received == "이동이 짧고 쉬기 편한 곳"
+
+    @pytest.mark.asyncio
+    async def test_omits_offer_content_for_vague_situation(self) -> None:
+        """실행 가능한 제안이 없는 상황(vague)은 offer_content를 만들지 않는다."""
+        llm_output = LLMOutput(
+            intent=Intent.GENERAL,
+            status=OutputStatus.COMPLETE,
+            general=GeneralPayload(
+                topic=GeneralTopic.TRAVEL_TIP,
+                original_question="오늘 진짜 되는 일이 없네",
+                situation=SituationKind.VAGUE,
+            ),
+        )
+        stub = _StubLLM()
+
+        await compose_chat_message(llm_output, llm=stub)
+
+        assert stub.offer_content_received is None
+
+    @pytest.mark.asyncio
+    async def test_omits_offer_content_for_already_rejected_action(self) -> None:
+        """이미 거절당한 제안은 같은 세션에서 답변 문구에도 다시 나오지 않는다."""
+        llm_output = LLMOutput(
+            intent=Intent.GENERAL,
+            status=OutputStatus.COMPLETE,
+            general=GeneralPayload(
+                topic=GeneralTopic.TRAVEL_TIP,
+                original_question="너무 지친다",
+                situation=SituationKind.FATIGUE,
+            ),
+        )
+        stub = _StubLLM()
+
+        await compose_chat_message(
+            llm_output, llm=stub, rejected_offer_actions=["recommend_nearby_rest_place"]
+        )
+
+        assert stub.offer_content_received is None
 
 
 class TestComposeChatMessageRecommendAndModify:
@@ -1341,3 +1466,102 @@ class TestComposeEventInfoMessage:
         )
         message = await compose_chat_message(llm_output, info_response=response, llm=_StubLLM())
         assert "경복궁 별빛야행" in message
+
+
+# ------------------------------------- 담아둔 장소를 못 담았을 때 (SCHEDULE-12)
+
+
+def test_schedule_message_reports_omitted_saved_places() -> None:
+    """담아둔 장소를 조용히 빠뜨리지 않고 말풍선에 알린다."""
+
+    schedule = ScheduleResult(
+        items=[_schedule_item()],
+        total_duration_min=120,
+        route_summary="경복궁 근처 코스예요.",
+        basis_note="기준 시각 안내",
+        omitted_saved_place_names=["북촌한옥마을", "인사동"],
+        elapsed_ms=100.0,
+    )
+
+    message = compose_schedule_message(schedule)
+
+    assert "경복궁 근처 코스예요." in message
+    assert "북촌한옥마을, 인사동" in message
+    assert "넣지 못했어요" in message
+
+
+def test_schedule_message_unchanged_when_nothing_omitted() -> None:
+    """정상 경로 — 빠진 장소가 없으면 문구가 붙지 않는다."""
+
+    schedule = ScheduleResult(
+        items=[_schedule_item()],
+        total_duration_min=120,
+        route_summary="경복궁 근처 코스예요.",
+        basis_note="기준 시각 안내",
+        elapsed_ms=100.0,
+    )
+
+    message = compose_schedule_message(schedule)
+
+    assert "넣지 못했어요" not in message
+
+
+def test_schedule_message_does_not_suggest_retry_for_absent_saved_places() -> None:
+    """후보에 아예 없던 장소는 재시도를 권하지 않는다. (SCHEDULE-12)
+
+    시간을 늘리거나 다른 곳을 빼도 결과가 같다 — 후보 수집 단계에서 안 잡힌
+    것이라 편성 조건과 무관하기 때문이다. 그런데도 "시간을 늘려보라"고 하면
+    사용자가 같은 실패를 반복한다.
+    """
+
+    schedule = ScheduleResult(
+        items=[_schedule_item()],
+        total_duration_min=120,
+        route_summary="경복궁 근처 코스예요.",
+        basis_note="기준 시각 안내",
+        absent_saved_place_names=["스태픽스", "아띠인력거"],
+        elapsed_ms=100.0,
+    )
+
+    message = compose_schedule_message(schedule)
+
+    assert "스태픽스, 아띠인력거" in message
+    assert "후보에 없어서" in message
+    assert "시간을 늘리거나" not in message
+
+
+def test_schedule_message_separates_the_two_omission_reasons() -> None:
+    """사유가 둘 다 있으면 각각 다른 문장으로 알린다."""
+
+    schedule = ScheduleResult(
+        items=[_schedule_item()],
+        total_duration_min=120,
+        route_summary="경복궁 근처 코스예요.",
+        basis_note="기준 시각 안내",
+        absent_saved_place_names=["스태픽스"],
+        omitted_saved_place_names=["북촌한옥마을"],
+        elapsed_ms=100.0,
+    )
+
+    message = compose_schedule_message(schedule)
+
+    assert "스태픽스은 이번에 찾은 후보에 없어서" in message
+    assert "북촌한옥마을은 이번 일정에 넣지 못했어요 — 시간을 늘리거나" in message
+
+
+def test_schedule_message_reports_omitted_even_without_items() -> None:
+    """일정을 아예 못 짠 경우에도 알린다 — 그 이유가 담아둔 장소와 무관하지 않을 수 있다."""
+
+    schedule = ScheduleResult(
+        items=[],
+        total_duration_min=0,
+        route_summary="조건에 맞는 곳을 충분히 찾지 못했어요.",
+        basis_note="기준 시각 안내",
+        omitted_saved_place_names=["북촌한옥마을"],
+        elapsed_ms=100.0,
+    )
+
+    message = compose_schedule_message(schedule)
+
+    assert "조건에 맞는 곳을 충분히 찾지 못했어요." in message
+    assert "북촌한옥마을" in message

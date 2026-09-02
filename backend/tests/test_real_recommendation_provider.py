@@ -135,8 +135,7 @@ async def test_provider_merges_multiple_prepared_batches() -> None:
     result = await provider.score_prepared(conditions, merged)
 
     assert {
-        item.place_id
-        for item in [*result.recommendations, *result.unverified_recommendations]
+        item.place_id for item in [*result.recommendations, *result.unverified_recommendations]
     } == {"a", "b"}
 
 
@@ -194,9 +193,7 @@ async def test_conditions_are_passed_to_pipeline(
     monkeypatch.setattr(module, "prepare_recommendation_from_context", _capture)
 
     provider = RealRecommendationProvider()
-    conditions = UserConditions(
-        weather_intent=WeatherIntent.AVOID, weather=StatedWeather.RAIN
-    )
+    conditions = UserConditions(weather_intent=WeatherIntent.AVOID, weather=StatedWeather.RAIN)
 
     await provider.recommend(conditions, _context(place_ids=["a"]), excluded_place_ids=[])
 
@@ -360,9 +357,7 @@ async def test_rerank_with_concentration_uses_resolve_weather_condition(
     # context.weather는 비워둔다 — AVOID/ENJOY라 C가 조회를 생략하고 발화 값을 쓴
     # 상황(tool_rules.py)을 재현한다. resolve_weather_condition()은 이때
     # conditions.weather로 대신 판정해야 한다.
-    conditions = UserConditions(
-        weather_intent=WeatherIntent.ENJOY, weather=StatedWeather.RAIN
-    )
+    conditions = UserConditions(weather_intent=WeatherIntent.ENJOY, weather=StatedWeather.RAIN)
     context = _context(place_ids=["a"])
 
     await provider.rerank_with_concentration(
@@ -533,3 +528,87 @@ async def test_routes_are_dropped_when_transport_is_unspecified_with_travel_time
     routes = await _captured_routes(monkeypatch, UserConditions(max_travel_time=30))
 
     assert routes == ()
+
+
+# --- 썸네일 병합(A가 C의 RecommendationCardTool을 빌려 D 결과에 붙인다) --------
+
+
+class _FakeCard:
+    def __init__(self, content_id: str, thumbnail_url: str | None) -> None:
+        self.content_id = content_id
+        self.thumbnail_url = thumbnail_url
+
+
+class _FakeCardResult:
+    def __init__(self, cards: list[_FakeCard]) -> None:
+        self.cards = cards
+        self.missing_content_ids: tuple[str, ...] = ()
+
+
+class _FakeRecommendationCardTool:
+    """RecommendationCardTool을 흉내 낸다 — get_cards만 duck-typing으로 만족한다."""
+
+    def __init__(self, thumbnails: dict[str, str]) -> None:
+        self._thumbnails = thumbnails
+        self.requested_place_ids: list[str] | None = None
+
+    async def get_cards(self, content_ids: list[str]) -> _FakeCardResult:
+        self.requested_place_ids = list(content_ids)
+        return _FakeCardResult(
+            [
+                _FakeCard(place_id, self._thumbnails[place_id])
+                for place_id in content_ids
+                if place_id in self._thumbnails
+            ]
+        )
+
+
+class _RaisingRecommendationCardTool:
+    async def get_cards(self, content_ids: list[str]) -> _FakeCardResult:
+        raise RuntimeError("thumbnail lookup boom")
+
+
+@pytest.mark.asyncio
+async def test_recommend_attaches_thumbnails_from_recommendation_card_tool() -> None:
+    cards = _FakeRecommendationCardTool({"a": "https://img.test/a.jpg"})
+    provider = RealRecommendationProvider(recommendation_cards=cards)
+    conditions = UserConditions(max_travel_time=30)
+    context = _context(place_ids=["a", "b"])
+
+    result = await provider.recommend(conditions, context, excluded_place_ids=[])
+
+    by_id = {
+        item.place_id: item
+        for item in [*result.recommendations, *result.unverified_recommendations]
+    }
+    assert by_id["a"].image_url == "https://img.test/a.jpg"
+    # 썸네일이 없는 장소는 None으로 남는다 — 지어내지 않는다.
+    assert by_id["b"].image_url is None
+    assert set(cards.requested_place_ids or []) == {"a", "b"}
+
+
+@pytest.mark.asyncio
+async def test_recommend_leaves_image_url_none_without_recommendation_card_tool() -> None:
+    """recommendation_cards를 안 넘기면(None) 기존처럼 이미지 없이 추천한다."""
+    provider = RealRecommendationProvider()
+    conditions = UserConditions(max_travel_time=30)
+    context = _context(place_ids=["a"])
+
+    result = await provider.recommend(conditions, context, excluded_place_ids=[])
+
+    all_items = [*result.recommendations, *result.unverified_recommendations]
+    assert all_items[0].image_url is None
+
+
+@pytest.mark.asyncio
+async def test_recommend_survives_thumbnail_lookup_failure() -> None:
+    """썸네일 조회가 실패해도(_with_preference_tags와 같은 원칙) 추천 자체는 유지된다."""
+    provider = RealRecommendationProvider(recommendation_cards=_RaisingRecommendationCardTool())
+    conditions = UserConditions(max_travel_time=30)
+    context = _context(place_ids=["a"])
+
+    result = await provider.recommend(conditions, context, excluded_place_ids=[])
+
+    all_items = [*result.recommendations, *result.unverified_recommendations]
+    assert all_items[0].place_id == "a"
+    assert all_items[0].image_url is None

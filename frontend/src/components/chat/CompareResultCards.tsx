@@ -11,6 +11,7 @@
  * — 사용자 요청은 "이동 용이성 비교가 텍스트로만 오니 안 와닿는다"는 것이었다.
  */
 
+import { ChevronRight, MapPin, Navigation } from "lucide-react";
 import type { ComparisonItem, ComparisonResult } from "../../types";
 import { openNaverDirections } from "../../utils/naverDirections";
 
@@ -48,9 +49,10 @@ function CompareTravelCard({
   isFastest: boolean;
   deviceLocation?: string | null;
 }) {
-  const modeEntries = TRAVEL_MODES.map(({ label, field }) => ({ label, minutes: item[field] })).filter(
-    (entry): entry is { label: string; minutes: number } => entry.minutes !== null,
-  );
+  const modeEntries = TRAVEL_MODES.map(({ label, field }) => ({
+    label,
+    minutes: item[field],
+  })).filter((entry): entry is { label: string; minutes: number } => entry.minutes !== null);
 
   // RECOMMEND 상세 카드의 canRoute 가드와 같은 조건이다 — 좌표와 출발점이 둘 다 있어야 연다.
   const canRoute = item.latitude != null && item.longitude != null && Boolean(deviceLocation);
@@ -67,15 +69,9 @@ function CompareTravelCard({
 
   return (
     <li
-      className={`flex flex-col gap-2 rounded-lg border p-3 shadow-sm ${
-        isFastest
-          ? "border-blue-300 bg-blue-50/40 dark:border-blue-700 dark:bg-blue-950/20"
-          : "border-gray-200 dark:border-gray-700"
-      }${
-        canRoute
-          ? " cursor-pointer transition hover:border-blue-400 hover:bg-blue-50/30 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:hover:border-blue-600 dark:hover:bg-blue-950/20"
-          : ""
-      }`}
+      className={`flex flex-col gap-2 rounded-2xl p-3.5 shadow-resting ${
+        isFastest ? "bg-sky-light" : "bg-white"
+      }${canRoute ? " cursor-pointer transition-colors hover:bg-chip" : ""}`}
       role={canRoute ? "button" : undefined}
       tabIndex={canRoute ? 0 : undefined}
       aria-label={canRoute ? `${item.place_name}까지 네이버 지도로 길찾기` : undefined}
@@ -92,34 +88,39 @@ function CompareTravelCard({
       }
     >
       <div className="flex items-baseline justify-between gap-2">
-        <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">{item.place_name}</p>
+        <p className="text-sm font-bold text-ink">{item.place_name}</p>
         {isFastest && (
-          <span className="rounded bg-blue-600 px-1.5 py-0.5 text-[11px] font-medium text-white">
+          <span className="rounded-full bg-brand px-2 py-0.5 text-[11px] font-semibold text-white">
             가장 빠름
           </span>
         )}
       </div>
 
       {item.travel_distance_km !== null && (
-        <p className="text-xs text-gray-500 dark:text-gray-400">약 {item.travel_distance_km}km</p>
+        <p className="flex items-center gap-1 text-xs text-muted">
+          <MapPin size={11} /> 약 {item.travel_distance_km}km
+        </p>
       )}
 
       {modeEntries.length > 0 ? (
         <dl className="grid grid-cols-3 gap-2">
           {modeEntries.map(({ label, minutes }) => (
-            <div key={label} className="flex flex-col items-center gap-0.5 rounded bg-gray-50 py-1.5 dark:bg-gray-800">
-              <dt className="text-[11px] text-gray-500 dark:text-gray-400">{label}</dt>
-              <dd className="text-sm font-medium text-gray-900 dark:text-gray-100">{minutes}분</dd>
+            <div
+              key={label}
+              className="flex flex-col items-center gap-0.5 rounded-xl bg-chip py-1.5"
+            >
+              <dt className="text-[11px] text-muted">{label}</dt>
+              <dd className="text-sm font-semibold text-ink">{minutes}분</dd>
             </div>
           ))}
         </dl>
       ) : (
-        <p className="text-xs text-gray-500 dark:text-gray-400">이동 경로를 확인하지 못했어요.</p>
+        <p className="text-xs text-muted">이동 경로를 확인하지 못했어요.</p>
       )}
 
       {canRoute && (
-        <span className="w-fit text-xs font-medium text-blue-700 dark:text-blue-300">
-          🧭 네이버 지도로 길찾기 →
+        <span className="flex w-fit items-center gap-0.5 text-xs font-semibold text-brand">
+          <Navigation size={12} /> 네이버 지도로 길찾기 <ChevronRight size={12} />
         </span>
       )}
     </li>
@@ -134,7 +135,7 @@ export function CompareResultCards({ comparison, deviceLocation }: CompareResult
   );
 
   return (
-    <ul className="mr-auto grid w-full max-w-xl grid-cols-1 gap-2 sm:grid-cols-2">
+    <ul className="mr-auto grid w-full grid-cols-1 gap-2.5 sm:grid-cols-2">
       {comparison.items.map((item) => (
         <CompareTravelCard
           key={item.place_id}

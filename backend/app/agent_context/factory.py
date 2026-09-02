@@ -9,6 +9,7 @@ from app.agent_context.enrichment_service import CandidateEnrichmentService
 from app.agent_context.service import ContextService, ContextTools
 from app.config import settings
 from app.providers.factory import (
+    get_barrier_free_place_search_provider,
     get_concentration_provider,
     get_festival_provider,
     get_geocoding_provider,
@@ -19,6 +20,7 @@ from app.providers.factory import (
     get_municipal_parking_provider,
     get_place_details_provider,
     get_place_location_repository,
+    get_place_photo_repository,
     get_place_search_provider,
     get_realtime_citydata_provider,
     get_realtime_commercial_provider,
@@ -50,6 +52,9 @@ def get_context_provider(client: httpx.AsyncClient) -> ContextService:
             places=NearbyPlaceDetailsTool(
                 search_provider=get_place_search_provider(client),
                 details_provider=get_place_details_provider(client),
+                # 무장애 조건이 붙은 요청만 이쪽으로 간다. 조건이 없으면 위의
+                # search_provider(TourAPI)가 그대로 후보를 모은다.
+                barrier_free_search_provider=get_barrier_free_place_search_provider(client),
             ),
             weather=GetWeatherForecastTool(get_weather_provider(client)),
             holidays=GetHolidaysTool(get_holiday_provider(client)),
@@ -64,6 +69,8 @@ def get_context_provider(client: httpx.AsyncClient) -> ContextService:
             municipal_parking_catalog=get_municipal_parking_catalog_repository(client),
             # COMPARE의 place_id → 장소명 해석. 추천 카드와 같은 Tool을 공유한다.
             cards=get_recommendation_card_tool(client),
+            # 상세 카드의 사진 목록. 상세 조회와 다른 테이블이라 저장소를 따로 준다.
+            place_photos=get_place_photo_repository(client),
         ),
         candidate_limit=settings.recommendation_candidate_limit,
         concentration_mapping_cache=_concentration_mapping_cache(client),

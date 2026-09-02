@@ -3,7 +3,9 @@
  * 입력: 정상 추천 목록, 운영시간 미확인 목록, 추가 추천 요청 콜백.
  * 출력: 추천 결과 메시지, PlaceCard 목록, 다른 장소 보기/반경 확대 버튼.
  * 호출 시점: ChatPage가 recommendation_result 메시지를 렌더링할 때 호출된다.
- * TODO: 지도/동선/저장 액션이 생기면 PlaceCard 주변 액션으로 확장한다.
+ * 담기/빼기는 useSavedPlaces()로 직접 읽고 쓴다 — 카드가 메시지 목록 깊숙이
+ * 있어 prop으로 내리면 중간 컴포넌트 셋을 전부 거쳐야 한다.
+ * TODO: 지도/동선 액션이 생기면 PlaceCard 주변 액션으로 확장한다.
  *
  * showElapsedTime이 false면(실사용자 화면) 지연시간(elapsedMs/serverElapsedMs)을
  * 아예 렌더링하지 않는다 — 개발자 확인용 숫자가 실서비스 화면에 새던 걸 정리함.
@@ -12,7 +14,9 @@
 
 import { useState } from "react";
 import type { Language, RecommendationItem, TravelOriginToggle } from "../../types";
+import { useSavedPlaces } from "../../hooks/useSavedPlaces";
 import { PlaceCard } from "../PlaceCard";
+import { PlaceCardRow } from "./PlaceCardRow";
 import { PreferenceTagSummaryTable } from "./PreferenceTagSummaryTable";
 import { RecommendationDetailPreviewModal } from "./RecommendationDetailPreviewModal";
 
@@ -85,6 +89,7 @@ export function RecommendationResultMessage({
   const [selectedRecommendation, setSelectedRecommendation] = useState<RecommendationItem | null>(
     null,
   );
+  const { savedPlaceIds, toggleSaved } = useSavedPlaces();
   // D는 운영시간을 무시한 재검색에서 "현재는 폐점"인 후보도 unverified 목록에
   // 담는다. 하지만 이 후보는 운영시간 원문 자체가 없는 것이 아니다. 카드에서
   // 실제 구간을 보여 줄 수 있도록, display가 있는 폐점 후보와 진짜 결측 후보를
@@ -101,11 +106,11 @@ export function RecommendationResultMessage({
     unknownHoursRecommendations.length === 0;
 
   return (
-    <article className="mr-auto flex w-full max-w-2xl flex-col gap-4 rounded-md border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-900">
+    <article className="mr-auto flex w-full flex-col gap-3">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{text.summary}</p>
+        <p className="text-sm text-ink">{text.summary}</p>
         {showElapsedTime && (
-          <p className="text-xs text-gray-500 dark:text-gray-400">
+          <p className="text-xs text-muted">
             {formatDuration(elapsedMs)} 소요 (서버 {formatDuration(serverElapsedMs)})
           </p>
         )}
@@ -113,13 +118,13 @@ export function RecommendationResultMessage({
 
       {hasNoResults ? (
         <div className="flex flex-col gap-3 text-sm">
-          <p className="text-gray-700 dark:text-gray-300">{text.noResults}</p>
+          <p className="text-ink">{text.noResults}</p>
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
               disabled={isLoading}
               onClick={onRelaxRadius}
-              className="w-fit rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-gray-100 dark:text-gray-900"
+              className="w-fit rounded-full bg-rust px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-rust/90 active:scale-[0.98] disabled:opacity-50"
             >
               {text.widen}
             </button>
@@ -128,7 +133,7 @@ export function RecommendationResultMessage({
                 type="button"
                 disabled={isLoading}
                 onClick={() => onToggleTravelOrigin(travelOriginToggle)}
-                className="w-fit rounded-md border border-gray-300 px-4 py-2 text-sm font-medium disabled:opacity-50 dark:border-gray-700"
+                className="w-fit rounded-full border border-border bg-white px-4 py-2.5 text-sm font-medium text-ink transition-colors hover:border-brand hover:text-brand disabled:opacity-50"
               >
                 {travelOriginToggle.alternative_origin === "search_center"
                   ? text.basedOn(travelOriginToggle.alternative_origin_name)
@@ -140,65 +145,57 @@ export function RecommendationResultMessage({
       ) : (
         <>
           {recommendations.length > 0 && (
-            <section className="flex flex-col gap-3">
-              <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400">
-                {text.recommendations}
-              </h3>
-              <ul className="flex flex-col gap-3">
-                {recommendations.map((item) => (
-                  <PlaceCard
-                    key={item.place_id}
-                    item={item}
-                    language={language}
-                    onOpenDetail={(selectedItem) => setSelectedRecommendation(selectedItem)}
-                  />
-                ))}
-              </ul>
-            </section>
+            <PlaceCardRow caption={text.recommendations}>
+              {recommendations.map((item, index) => (
+                <PlaceCard
+                  key={item.place_id}
+                  item={item}
+                  rank={index + 1}
+                  language={language}
+                  isSaved={savedPlaceIds.has(item.place_id)}
+                  onToggleSave={(selectedItem) => void toggleSaved(selectedItem)}
+                  onOpenDetail={(selectedItem) => setSelectedRecommendation(selectedItem)}
+                />
+              ))}
+            </PlaceCardRow>
           )}
 
           {closedRecommendations.length > 0 && (
-            <section className="flex flex-col gap-3">
-              <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400">
-                {text.closed}
-              </h3>
-              <ul className="flex flex-col gap-3">
-                {closedRecommendations.map((item) => (
-                  <PlaceCard
-                    key={item.place_id}
-                    item={item}
-                    language={language}
-                    onOpenDetail={(selectedItem) => setSelectedRecommendation(selectedItem)}
-                  />
-                ))}
-              </ul>
-            </section>
+            <PlaceCardRow caption={text.closed}>
+              {closedRecommendations.map((item) => (
+                <PlaceCard
+                  key={item.place_id}
+                  item={item}
+                  language={language}
+                  isSaved={savedPlaceIds.has(item.place_id)}
+                  onToggleSave={(selectedItem) => void toggleSaved(selectedItem)}
+                  onOpenDetail={(selectedItem) => setSelectedRecommendation(selectedItem)}
+                />
+              ))}
+            </PlaceCardRow>
           )}
 
           {unknownHoursRecommendations.length > 0 && (
-            <section className="flex flex-col gap-3">
-              <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400">
-                {text.hoursUnknown}
-              </h3>
-              <ul className="flex flex-col gap-3">
-                {unknownHoursRecommendations.map((item) => (
-                  <PlaceCard
-                    key={item.place_id}
-                    item={item}
-                    language={language}
-                    onOpenDetail={(selectedItem) => setSelectedRecommendation(selectedItem)}
-                  />
-                ))}
-              </ul>
-            </section>
+            <PlaceCardRow caption={text.hoursUnknown}>
+              {unknownHoursRecommendations.map((item) => (
+                <PlaceCard
+                  key={item.place_id}
+                  item={item}
+                  language={language}
+                  isSaved={savedPlaceIds.has(item.place_id)}
+                  onToggleSave={(selectedItem) => void toggleSaved(selectedItem)}
+                  onOpenDetail={(selectedItem) => setSelectedRecommendation(selectedItem)}
+                />
+              ))}
+            </PlaceCardRow>
           )}
 
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               disabled={isLoading}
               onClick={onRequestMore}
-              className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium disabled:opacity-50 dark:border-gray-700"
+              className="rounded-full border border-border bg-white px-4 py-2.5 text-sm font-medium text-ink transition-colors hover:border-brand hover:text-brand disabled:opacity-50"
             >
               {isLoading ? text.loading : text.more}
             </button>
@@ -207,16 +204,14 @@ export function RecommendationResultMessage({
                 type="button"
                 disabled={isLoading}
                 onClick={() => onToggleTravelOrigin(travelOriginToggle)}
-                className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium disabled:opacity-50 dark:border-gray-700"
+                className="rounded-full border border-border bg-white px-4 py-2.5 text-sm font-medium text-ink transition-colors hover:border-brand hover:text-brand disabled:opacity-50"
               >
                 {travelOriginToggle.alternative_origin === "search_center"
                   ? text.basedOn(travelOriginToggle.alternative_origin_name)
                   : text.currentLocation}
               </button>
             )}
-            <span className="self-center text-xs text-gray-500 dark:text-gray-400">
-              {text.hint}
-            </span>
+            <span className="text-xs text-muted">{text.hint}</span>
           </div>
 
           <PreferenceTagSummaryTable

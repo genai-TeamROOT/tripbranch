@@ -47,10 +47,10 @@ const FIELD_LABELS: Record<string, string> = {
   event: "행사",
   "상권 지역": "상권 지역",
   "상권 기준": "상권 기준",
-  "업종": "업종",
+  업종: "업종",
   "실시간 활동": "실시간 활동",
   "기준 시각": "기준 시각",
-  "안내": "안내",
+  안내: "안내",
 };
 
 interface PlaceInfoCardProps {
@@ -82,12 +82,9 @@ function OperatingHoursRows({ rows }: { rows: OperatingHoursRow[] }) {
   return (
     <div className="mt-2 grid gap-2 sm:grid-cols-2">
       {rows.map(({ period, hours }) => (
-        <div
-          key={period}
-          className="rounded border border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900"
-        >
-          <p className="text-xs font-semibold text-gray-700 dark:text-gray-200">{period}</p>
-          <p className="mt-0.5 text-sm text-gray-900 dark:text-gray-100">{hours}</p>
+        <div key={period} className="rounded-xl bg-chip px-3 py-2">
+          <p className="text-xs font-semibold text-label">{period}</p>
+          <p className="mt-0.5 text-sm text-ink">{hours}</p>
         </div>
       ))}
     </div>
@@ -111,14 +108,14 @@ function isRealtimeParkingCard(card: InfoPlaceCardData): boolean {
 function RealtimeParkingSummary({ title, value }: { title: string; value: string }) {
   const matched = value.match(/^(현재\s+[\d,]+대\s+주차 가능)(.*)$/);
   return (
-    <article className="rounded-xl border border-emerald-100 bg-emerald-50/50 px-3 py-2.5 dark:border-emerald-900/60 dark:bg-emerald-950/20">
-      <h3 className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100" title={title}>
+    <article className="rounded-xl bg-chip px-3 py-2.5">
+      <h3 className="truncate text-sm font-bold text-ink" title={title}>
         {title}
       </h3>
-      <p className="mt-1 text-sm text-gray-700 dark:text-gray-200">
+      <p className="mt-1 text-sm text-muted">
         {matched ? (
           <>
-            <strong className="font-semibold text-emerald-700 dark:text-emerald-300">{matched[1]}</strong>
+            <strong className="font-semibold text-calm">{matched[1]}</strong>
             {matched[2]}
           </>
         ) : (
@@ -134,11 +131,11 @@ export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
   const answers = Object.entries(card.answer_fields);
 
   return (
-    <article className="mr-auto w-full max-w-xl overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900">
+    <article className="mr-auto w-full overflow-hidden rounded-2xl bg-white shadow-resting">
       {card.thumbnail_url && (
         // 기본 카드에서 장소를 바로 알아볼 수 있도록, 작은 아이콘보다 충분히 큰
         // 중간 높이 썸네일을 카드 상단에 둔다. 상세 영역에서는 중복하지 않는다.
-        <div className="flex h-44 w-full items-center justify-center overflow-hidden bg-gray-100 dark:bg-gray-800">
+        <div className="flex h-44 w-full items-center justify-center overflow-hidden bg-chip">
           <img
             src={card.thumbnail_url}
             alt={`${card.place_name ?? "장소"} 이미지`}
@@ -154,29 +151,27 @@ export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
         aria-label={`${card.place_name ?? "장소"} 상세 보기`}
         onClick={() => setShowDetail(true)}
       >
-        <span className="min-w-0 text-sm font-semibold text-gray-900 dark:text-gray-100">
+        <span className="min-w-0 text-sm font-bold text-ink">
           {card.place_name ?? "장소 상세 정보"}
         </span>
-        <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-300">
+        <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-sky-light px-3 py-1 text-xs font-semibold text-brand-deep">
           상세 보기
           <span aria-hidden="true">↗</span>
         </span>
       </button>
 
       {isRealtimeParkingCard(card) && answers.length > 0 ? (
-        <section className="grid gap-2 border-t border-gray-100 px-4 py-3 dark:border-gray-800">
+        <section className="grid gap-2 px-4 py-3">
           {answers.map(([title, value]) => (
             <RealtimeParkingSummary key={title} title={title} value={value} />
           ))}
         </section>
       ) : answers.length > 0 ? (
-        <dl className="border-t border-gray-100 px-4 py-3 text-sm dark:border-gray-800">
+        <dl className="px-4 py-3 text-sm">
           {answers.map(([key, value]) => (
             <div key={key} className="flex gap-2">
-              <dt className="shrink-0 text-gray-500 dark:text-gray-400">
-                {FIELD_LABELS[key] ?? key}
-              </dt>
-              <dd className="min-w-0 flex-1 whitespace-pre-line text-gray-800 dark:text-gray-100">
+              <dt className="shrink-0 text-muted">{FIELD_LABELS[key] ?? key}</dt>
+              <dd className="min-w-0 flex-1 whitespace-pre-line text-ink">
                 {key === "operating_hours" && parseOperatingHours(value) ? (
                   <OperatingHoursRows rows={parseOperatingHours(value) ?? []} />
                 ) : (

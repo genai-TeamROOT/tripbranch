@@ -15,7 +15,7 @@ import json
 import logging
 import random
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, date, datetime
 from typing import TypeVar
 
@@ -40,6 +40,7 @@ from app.schedule.schemas import (
 )
 from app.schemas import (
     ComparisonResult,
+    ConversationTurnView,
     GeneralTopic,
     Intent,
     IntentClassificationResult,
@@ -217,6 +218,42 @@ def _backoff_seconds(attempt: int) -> float:
     return _BACKOFF_BASE_SECONDS * (2**attempt) + random.uniform(0, 0.25)
 
 
+def _build_contents(
+    user_input: str, history: Sequence[ConversationTurnView] | None
+) -> str | list[genai_types.Content]:
+    """이번 발화와 최근 대화를 `contents`로 만든다. (대화층 1단계)
+
+    이력이 없으면 지금까지와 똑같이 문자열 하나를 그대로 넘긴다 — 기존 호출
+    전부의 동작을 바꾸지 않기 위해서다.
+
+    이력이 있으면 **system_instruction에 치환하지 않고** user/model 역할을 나눈
+    Content 목록으로 만든다. 이 구분이 핵심이다: 사용자가 쓴 글을 시스템 지시문
+    문자열 안에 끼워 넣으면 "이전 지시는 무시하고 ~해라" 같은 문장이 지시문처럼
+    읽힐 수 있다. 서버 DB에 저장했다는 사실은 그 입력을 안전하게 만들지 않는다.
+
+    assistant_summary가 없는 턴(응답을 만들다 실패한 턴 등)은 model 쪽을 비운
+    채 사용자 발화만 싣는다 — 빈 model 파트를 넣으면 API가 거부한다.
+    """
+    if not history:
+        return user_input
+
+    contents: list[genai_types.Content] = []
+    for turn in history:
+        contents.append(
+            genai_types.Content(role="user", parts=[genai_types.Part(text=turn.user_input)])
+        )
+        if turn.assistant_summary:
+            contents.append(
+                genai_types.Content(
+                    role="model", parts=[genai_types.Part(text=turn.assistant_summary)]
+                )
+            )
+    contents.append(
+        genai_types.Content(role="user", parts=[genai_types.Part(text=user_input)])
+    )
+    return contents
+
+
 def _record_gemini_call(model_name: str, started: float, *, ok: bool, status: str) -> None:
     """Gemini 호출 한 번을 관측 집계에 남긴다(추천 판정과 무관)."""
     record_call(
@@ -347,6 +384,7 @@ class RealGeminiProvider:
         last_intent: str | None = None,
         shown_place_names: list[str] | None = None,
         conversation_place_name: str | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[IntentClassificationResult]:
         instruction = gemini_prompts.build_intent_classification_instruction(
             has_previous_recommendation=has_previous_recommendation,
@@ -370,10 +408,16 @@ class RealGeminiProvider:
             operation="classify_intent",
             thinking_budget=0,
             model_names=self._fast_model_names,
+            history=history,
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 
-    async def extract_recommend_conditions(self, user_input: str) -> ProviderResult[LLMOutput]:
+    async def extract_recommend_conditions(
+        self,
+        user_input: str,
+        *,
+        history: Sequence[ConversationTurnView] | None = None,
+    ) -> ProviderResult[LLMOutput]:
         instruction = gemini_prompts.build_recommend_extraction_instruction()
         # thinking_budget=0 — classify_intent()와 같은 이유로 실측 확인
         # (평균 3122ms→1745ms, 1.8배, search_center 추출 정확도 4/4로 동일 유지).
@@ -384,6 +428,7 @@ class RealGeminiProvider:
             operation="extract_recommend_conditions",
             thinking_budget=0,
             model_names=self._fast_model_names,
+            history=history,
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 
@@ -395,6 +440,7 @@ class RealGeminiProvider:
         pending_clarification: str | None = None,
         shown_place_count: int = 0,
         shown_place_names: list[str] | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[LLMOutput]:
         instruction = gemini_prompts.build_modify_extraction_instruction(
             current_conditions,
@@ -414,6 +460,7 @@ class RealGeminiProvider:
             operation="extract_modify_conditions",
             thinking_budget=0,
             model_names=self._fast_model_names,
+            history=history,
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 
@@ -424,11 +471,18 @@ class RealGeminiProvider:
         has_previous_recommendation: bool,
         reference_date: date,
         conversation_place_name: str | None = None,
+        pending_info_question_type: str | None = None,
+        pending_info_specific_question: str | None = None,
+        pending_info_visit_time: str | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[LLMOutput]:
         instruction = gemini_prompts.build_info_extraction_instruction(
             has_previous_recommendation=has_previous_recommendation,
             reference_date=reference_date,
             conversation_place_name=conversation_place_name,
+            pending_info_question_type=pending_info_question_type,
+            pending_info_specific_question=pending_info_specific_question,
+            pending_info_visit_time=pending_info_visit_time,
         )
         # thinking_budget=0 — extract_modify_conditions()와 같은 이유(TP-179).
         result = await self._call_structured(
@@ -438,6 +492,7 @@ class RealGeminiProvider:
             operation="extract_info_query",
             thinking_budget=0,
             model_names=self._fast_model_names,
+            history=history,
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 
@@ -447,6 +502,7 @@ class RealGeminiProvider:
         *,
         shown_place_count: int,
         shown_place_names: list[str] | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[LLMOutput]:
         instruction = gemini_prompts.build_compare_extraction_instruction(
             shown_place_count=shown_place_count,
@@ -460,10 +516,16 @@ class RealGeminiProvider:
             operation="extract_compare_request",
             thinking_budget=0,
             model_names=self._fast_model_names,
+            history=history,
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 
-    async def extract_general_request(self, user_input: str) -> ProviderResult[LLMOutput]:
+    async def extract_general_request(
+        self,
+        user_input: str,
+        *,
+        history: Sequence[ConversationTurnView] | None = None,
+    ) -> ProviderResult[LLMOutput]:
         instruction = gemini_prompts.build_general_extraction_instruction()
         # thinking_budget=0 — extract_modify_conditions()와 같은 이유(TP-179).
         result = await self._call_structured(
@@ -473,13 +535,21 @@ class RealGeminiProvider:
             operation="extract_general_request",
             thinking_budget=0,
             model_names=self._fast_model_names,
+            history=history,
         )
         return provider_result(result, source=ProviderSource.GEMINI)
 
     async def generate_general_answer(
-        self, topic: GeneralTopic, original_question: str
+        self,
+        topic: GeneralTopic,
+        original_question: str,
+        *,
+        offer_content: str | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[str]:
-        instruction = gemini_prompts.build_general_answer_instruction(topic)
+        instruction = gemini_prompts.build_general_answer_instruction(
+            topic, offer_content=offer_content
+        )
         result = await self._call_structured(
             instruction,
             original_question,
@@ -496,13 +566,21 @@ class RealGeminiProvider:
             # 페르소나·자기소개("트리비")·문장 수 규칙을 그대로 지켰다(수동 확인,
             # 결과: test_results/answer_thinking_budget_latency.csv).
             thinking_budget=0,
+            history=history,
         )
         return provider_result(result.answer, source=ProviderSource.GEMINI)
 
     async def generate_recommendation_summary(
-        self, intent: Intent, recommendations: RecommendationResponse
+        self,
+        intent: Intent,
+        recommendations: RecommendationResponse,
+        *,
+        conditions: UserConditions | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[str]:
-        instruction = gemini_prompts.build_recommendation_summary_instruction(intent)
+        instruction = gemini_prompts.build_recommendation_summary_instruction(
+            intent, conditions=conditions
+        )
         payload = {
             "recommendations": [
                 self._recommendation_summary_item(item)
@@ -520,6 +598,7 @@ class RealGeminiProvider:
             model_names=self._generation_model_names,
             # thinking_budget=0 — generate_general_answer()와 같은 이유로 실측 확인.
             thinking_budget=0,
+            history=history,
         )
         return provider_result(result.message, source=ProviderSource.GEMINI)
 
@@ -561,9 +640,16 @@ class RealGeminiProvider:
         return provider_result(result.suggestions, source=ProviderSource.GEMINI)
 
     async def stream_recommendation_summary(
-        self, intent: Intent, recommendations: RecommendationResponse
+        self,
+        intent: Intent,
+        recommendations: RecommendationResponse,
+        *,
+        conditions: UserConditions | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> AsyncIterator[str]:
-        instruction = gemini_prompts.build_recommendation_summary_instruction(intent)
+        instruction = gemini_prompts.build_recommendation_summary_instruction(
+            intent, conditions=conditions
+        )
         payload = {
             "recommendations": [
                 self._recommendation_summary_item(item)
@@ -580,21 +666,30 @@ class RealGeminiProvider:
             model_names=self._generation_model_names,
             # thinking_budget=0 — generate_general_answer()와 같은 이유로 실측 확인.
             thinking_budget=0,
+            history=history,
         ):
             yield text
 
     async def stream_general_answer(
-        self, topic: GeneralTopic, original_question: str
+        self,
+        topic: GeneralTopic,
+        original_question: str,
+        *,
+        offer_content: str | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> AsyncIterator[str]:
         """GENERAL 자유 답변을 Gemini 스트림으로 전달한다."""
 
         async for text in self._stream_text(
-            instruction=gemini_prompts.build_general_answer_instruction(topic),
+            instruction=gemini_prompts.build_general_answer_instruction(
+                topic, offer_content=offer_content
+            ),
             user_input=original_question,
             operation="stream_general_answer",
             model_names=self._generation_model_names,
             # thinking_budget=0 — generate_general_answer()와 같은 이유로 실측 확인.
             thinking_budget=0,
+            history=history,
         ):
             yield text
 
@@ -605,6 +700,7 @@ class RealGeminiProvider:
         question_type: str,
         specific_question: str | None,
         fields: dict[str, str],
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> AsyncIterator[str]:
         """C가 검증한 장소 INFO 필드만 근거로 답변을 스트리밍한다."""
 
@@ -620,6 +716,7 @@ class RealGeminiProvider:
             model_names=self._generation_model_names,
             # thinking_budget=0 — generate_general_answer()와 같은 이유로 실측 확인.
             thinking_budget=0,
+            history=history,
         ):
             yield text
 
@@ -631,6 +728,7 @@ class RealGeminiProvider:
         operation: str,
         model_names: list[str] | None = None,
         thinking_budget: int | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> AsyncIterator[str]:
         """일반 텍스트 Gemini 스트림의 모델 폴백·관측을 공통 처리한다.
 
@@ -674,7 +772,7 @@ class RealGeminiProvider:
                 try:
                     stream = await self._client.aio.models.generate_content_stream(
                         model=model_name,
-                        contents=user_input,
+                        contents=_build_contents(user_input, history),
                         config=genai_types.GenerateContentConfig(
                             system_instruction=instruction,
                             temperature=0.0,
@@ -758,7 +856,12 @@ class RealGeminiProvider:
         assert last_error is not None
         raise last_error
 
-    async def generate_compare_summary(self, comparison: ComparisonResult) -> ProviderResult[str]:
+    async def generate_compare_summary(
+        self,
+        comparison: ComparisonResult,
+        *,
+        history: Sequence[ConversationTurnView] | None = None,
+    ) -> ProviderResult[str]:
         """C가 반환한 공개 비교 사실만 Gemini에 전달해 설명 문장을 생성한다."""
 
         instruction = gemini_prompts.build_compare_summary_instruction(comparison.criteria)
@@ -770,6 +873,7 @@ class RealGeminiProvider:
             model_names=self._generation_model_names,
             # thinking_budget=0 — generate_general_answer()와 같은 이유로 실측 확인.
             thinking_budget=0,
+            history=history,
         )
         return provider_result("\n".join(result.lines), source=ProviderSource.GEMINI)
 
@@ -853,6 +957,7 @@ class RealGeminiProvider:
         operation: str,
         thinking_budget: int | None = None,
         model_names: list[str] | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> T:
         """호출별 thinking 예산과 모델 목록을 함께 전달한다.
 
@@ -867,6 +972,8 @@ class RealGeminiProvider:
         목록(D-052 fast/generation 구분)을 쓴다.
         """
         generate_kwargs = {"model_names": model_names} if model_names is not None else {}
+        if history:
+            generate_kwargs["history"] = history
         try:
             return await self._generate(
                 system_instruction,
@@ -908,6 +1015,7 @@ class RealGeminiProvider:
         *,
         thinking_budget: int | None = None,
         model_names: list[str] | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> T:
         """1순위 모델부터 순서대로 시도한다(D-052). 각 모델에서 타임아웃/429/5xx는
         _try_model()이 지수 백오프로 재시도하고, 그 예산이 소진되면 다음 모델로
@@ -938,6 +1046,7 @@ class RealGeminiProvider:
                     operation=operation,
                     thinking_budget=thinking_budget,
                     usage_sink=usage,
+                    history=history,
                 )
             except _RetryableExhaustedError as exc:
                 last_error = exc.original
@@ -1019,6 +1128,7 @@ class RealGeminiProvider:
         operation: str,
         thinking_budget: int | None = None,
         usage_sink: dict[str, int] | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> tuple[T, int]:
         """모델 하나에 대해서만 타임아웃/429/5xx를 지수 백오프로 최대
         self._max_retries회 재시도한다. 재시도가 소진되면 _RetryableExhaustedError로
@@ -1073,6 +1183,7 @@ class RealGeminiProvider:
                 thinking_config=thinking_config,
                 usage_sink=usage_sink,
                 generation=generation,
+                history=history,
             )
 
     async def _run_attempts(
@@ -1086,9 +1197,11 @@ class RealGeminiProvider:
         thinking_config: object,
         usage_sink: dict[str, int] | None,
         generation: object,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> T:
         """한 모델에 대한 재시도 루프. 계측은 호출부(_try_model)가 감싼다."""
 
+        contents = _build_contents(user_input, history)
         for attempt in range(self._max_retries + 1):
             # google-genai는 자체 전송 계층을 써서 MeteredTransport를 거치지 않는다.
             # 재시도 한 번도 별개의 과금·쿼터 소모라 시도 단위로 센다.
@@ -1096,7 +1209,7 @@ class RealGeminiProvider:
             try:
                 response = await self._client.aio.models.generate_content(
                     model=model_name,
-                    contents=user_input,
+                    contents=contents,
                     config=genai_types.GenerateContentConfig(
                         system_instruction=system_instruction,
                         response_mime_type="application/json",

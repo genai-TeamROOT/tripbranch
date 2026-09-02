@@ -83,12 +83,14 @@ def _request(
     gps_location: Coordinates | None = None,
     exclude_tags: list[str] | None = None,
     excluded_place_ids: list[str] | None = None,
+    resolved_search_center: Coordinates | None = None,
 ) -> AgentContextRequest:
     return AgentContextRequest(
         request_id="request-1",
         intent="RECOMMEND",
         gps_location=gps_location,
         excluded_place_ids=excluded_place_ids or [],
+        resolved_search_center=resolved_search_center,
         conditions=UserConditions(
             search_center=search_center,
             current_location=current_location,
@@ -1957,3 +1959,65 @@ async def test_info_place_ambiguous_keeps_candidate_when_re_resolve_is_itself_am
     # "정자역"은 재해석도 애매하지만(동명 타이틀 2건) 조회 불가로 단정하지 않고
     # 후보로 유지된다. "정자동카페거리"는 저장소에 없어(place_id 없음) 걸러진다.
     assert response.clarification.candidates == ["정자역"]
+
+
+class _CountingWeatherProvider:
+    """날씨 조회가 실제로 호출됐는지 세는 더블."""
+
+    def __init__(self) -> None:
+        self._delegate = FakeWeatherProvider()
+        self.calls = 0
+
+    async def get_forecast_slots(self, *args: object, **kwargs: object) -> object:
+        self.calls += 1
+        return await self._delegate.get_forecast_slots(*args, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_resolved_search_center_skips_location_and_weather() -> None:
+    """보충 조회는 장소만 다시 받는다.
+
+    A가 첫 조회에서 확정한 기준점을 넘기면 위치 해석·날씨·공휴일을 건너뛴다.
+    그 셋의 결과는 보충 배치에서 어차피 버려지므로(A가 첫 배치 값을 그대로 쓴다)
+    계산하지 않는 것뿐이고, 후보는 그대로 와야 한다.
+
+    실측으로 보충 1회의 외부 호출이 7건에서 2건으로 준다.
+    """
+
+    geocoding = _CountingGeocodingProvider()
+    weather = _CountingWeatherProvider()
+    service = _service(weather, geocoding_provider=geocoding)
+
+    response = await service.fetch_context(
+        _request(resolved_search_center=Coordinates(latitude=37.5796, longitude=126.9770))
+    )
+
+    assert geocoding.queries == []
+    assert weather.calls == 0
+    assert response.context is not None
+    assert response.context.weather is None
+    assert response.context.holidays is None
+    # 장소는 그대로 와야 한다 — 건너뛴 것은 쓰이지 않는 값뿐이다.
+    assert response.context.places is not None
+    assert response.context.places.data
+
+
+@pytest.mark.asyncio
+async def test_without_resolved_search_center_full_context_is_collected() -> None:
+    """기준점을 안 넘기면 예전대로 전부 모은다(첫 조회 경로).
+
+    위 테스트의 대조군이다. 지오코딩 호출로 대조하지 않는 이유는 종로구 랜드마크가
+    저장소에서 먼저 풀려(D-097) 지오코딩까지 가지 않기 때문이다 — 위치가 해석됐다는
+    것은 날씨·공휴일이 함께 모였다는 것으로 확인한다.
+    """
+
+    weather = _CountingWeatherProvider()
+    service = _service(weather)
+
+    response = await service.fetch_context(_request())
+
+    assert weather.calls == 1
+    assert response.context is not None
+    assert response.context.location is not None
+    assert response.context.weather is not None
+    assert response.context.holidays is not None

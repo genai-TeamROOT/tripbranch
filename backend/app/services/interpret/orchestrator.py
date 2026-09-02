@@ -17,11 +17,15 @@ from app.providers.protocols import LLMProvider
 from app.schemas import (
     ClarificationOption,
     ClarificationPayload,
+    ConversationTurnView,
     GeneralPayload,
     GeneralTopic,
     Intent,
+    IntentClassificationResult,
+    InteractionMode,
     InterpretRequest,
     LLMOutput,
+    OutOfScopeCategory,
     OutOfScopePayload,
     OutputStatus,
     PlaceContext,
@@ -60,6 +64,42 @@ def _is_service_identity_question(user_input: str) -> bool:
 # 구분한다 — 후자는 D-053/기존 MODIFY 규칙이 이미 잘 처리하므로 여기서 손대지 않는다
 # (docs/design/clarification-options.md 케이스 4/5).
 _BARE_RESTART_MARKERS = ("처음부터 다시", "다시 처음부터")
+
+# 이전 추천이 있어도, 새 장소 유형을 명시하며 다시 찾아 달라는 발화는 기존 결과의
+# 단순 수정이 아니라 새 추천으로 다룬다. 다만 "그중", "말고", "바꿔"처럼 직전
+# 결과를 가리키는 표현이 있으면 MODIFY를 보존한다.
+_FRESH_RECOMMEND_REQUEST_MARKERS = ("추천", "알려줘", "찾아줘", "찾아봐", "골라줘")
+_FRESH_RECOMMEND_PLACE_MARKERS = (
+    "카페", "식당", "맛집", "박물관", "미술관", "전시", "공원", "시장", "쇼핑몰",
+    "서점", "산책", "공연",
+)
+_MODIFY_REFERENCE_MARKERS = ("그중", "그 곳", "그곳", "말고", "빼", "제외", "바꿔", "더 ")
+
+
+def _is_fresh_recommendation_request(request: InterpretRequest) -> bool:
+    """이전 추천과 독립적인 새 추천 요청인지 보수적으로 판별한다."""
+
+    normalized = request.user_input.replace(" ", "")
+    has_request = any(marker in normalized for marker in _FRESH_RECOMMEND_REQUEST_MARKERS)
+    has_place_type = any(marker in normalized for marker in _FRESH_RECOMMEND_PLACE_MARKERS)
+    refers_to_previous = any(
+        marker.replace(" ", "") in normalized for marker in _MODIFY_REFERENCE_MARKERS
+    )
+    # 일정 직후 "카페 추천"은 일정 재조정인지 단순 추천인지 되물어야 하는 기존
+    # 계약을 보존한다. 같은 검색 중심을 다시 말한 경우도 "비 오는데 경복궁 카페"처럼
+    # 기존 조건 수정일 가능성이 높아 자동으로 새 검색으로 승격하지 않는다.
+    current_center = (
+        request.current_conditions.search_center if request.current_conditions is not None else None
+    )
+    names_new_center = current_center is None or current_center not in request.user_input
+    return (
+        request.last_intent != Intent.SCHEDULE.value
+        and request.pending_clarification is None
+        and has_request
+        and has_place_type
+        and names_new_center
+        and not refers_to_previous
+    )
 
 
 def _resolve_info_conversation_reference(
@@ -243,6 +283,162 @@ def _bare_restart_after_schedule_completed(request: InterpretRequest) -> LLMOutp
     )
 
 
+async def _general_output(
+    user_input: str,
+    llm: LLMProvider,
+    *,
+    history: list[ConversationTurnView] | None = None,
+) -> LLMOutput:
+    """GENERAL 추출 결과를 반드시 GENERAL로 못 박아 돌려준다.
+
+    extract_general_request()는 LLMOutput 전체를 모델이 채우게 두므로 intent도
+    모델이 정한다. 그래서 **분류기가 GENERAL이라고 판정한 뒤에도 추출기가 그 결정을
+    뒤집을 수 있다** — 실측(2026-08-30)에서 "너무 지친다"는 분류기가 GENERAL로 잘
+    보냈는데 추출기가 OUT_OF_SCOPE를 돌려줘 결국 거절 문구가 나갔다. 인텐트를 정하는
+    것은 분류 단계의 책임이므로 여기서 되돌린다(SCHEDULE 분기가
+    extract_recommend_conditions() 결과의 intent를 바꿔치기하는 것과 같은 처리다).
+
+    payload가 비어 있으면 답변 생성 단계가 쓸 수 없으므로 원문을 담아 채워 준다.
+    """
+
+    history_kwargs = {"history": history} if history else {}
+    output = (await llm.extract_general_request(user_input, **history_kwargs)).data
+    if output.intent is Intent.GENERAL and output.general is not None:
+        return output
+    return output.model_copy(
+        update={
+            "intent": Intent.GENERAL,
+            "status": OutputStatus.COMPLETE,
+            "out_of_scope": None,
+            "general": output.general
+            or GeneralPayload(
+                topic=GeneralTopic.TRAVEL_TIP,
+                original_question=user_input,
+            ),
+        }
+    )
+
+
+async def _extract_for_intent(
+    classification: IntentClassificationResult,
+    request: InterpretRequest,
+    llm: LLMProvider,
+) -> LLMOutput:
+    """분류된 Intent에 맞는 추출기를 골라 LLMOutput을 만든다.
+
+    build_interpretation()에서 떼어낸 이유는 상황 축(interaction_mode) 때문이다.
+    반환 경로가 8개인데 각 경로에서 축을 채우면 하나는 반드시 빠진다 — 여기서는
+    인텐트별 결과만 만들고, 축은 호출부가 한 번에 덧붙인다.
+    """
+
+    history_kwargs = {"history": request.recent_turns} if request.recent_turns else {}
+
+    if classification.intent is Intent.OUT_OF_SCOPE:
+        # 상황 발화는 거절하지 않는다. 분류기는 "너무 지친다"를 GENERAL로 잘
+        # 보내지만(2026-08-30 실측), 우선순위 1번이 다른 무엇보다 먼저 걸리는
+        # 캐스케이드라 비슷한 발화가 OUT_OF_SCOPE로 새는 일이 남는다. 같은
+        # 실측에서 interaction_mode 축은 8/8 정확했으므로 축을 근거로 뒤집는다 —
+        # _is_service_identity_question()이 Gemini의 알려진 오분류를 막는 것과
+        # 같은 성격의 가드다.
+        #
+        # **유해 발언·프롬프트 인젝션은 뒤집지 않는다.** "너 진짜 바보야?"가
+        # situational로 분류되는 것을 실측에서 확인했다 — 축만 보고 구제하면
+        # 욕설이 GENERAL 답변을 받는다. 차단이 먼저다.
+        rescuable = classification.out_of_scope_category not in {
+            OutOfScopeCategory.HARMFUL,
+            OutOfScopeCategory.PROMPT_INJECTION,
+        }
+        if classification.interaction_mode is InteractionMode.SITUATIONAL and rescuable:
+            return await _general_output(
+                request.user_input, llm, history=request.recent_turns
+            )
+        return LLMOutput(
+            intent=Intent.OUT_OF_SCOPE,
+            status=OutputStatus.COMPLETE,
+            out_of_scope=OutOfScopePayload(
+                category=classification.out_of_scope_category,
+                severity=classification.out_of_scope_severity,
+            ),
+        )
+
+    # SCHEDULE도 RECOMMEND와 같은 15개 조건(time_available, place_tags 등)을 쓴다
+    # (docs/design/int-07-schedule.md 6.1절) — 별도 추출 메서드를 새로 만들지 않고
+    # extract_recommend_conditions()를 그대로 재사용한 뒤 intent만 SCHEDULE로
+    # 바꿔치기한다. status(complete/needs_clarification)와 clarification은 그대로
+    # 유지된다 — RECOMMEND와 동일한 되묻기 흐름을 탄다.
+    if classification.intent is Intent.SCHEDULE:
+        result = (
+            await llm.extract_recommend_conditions(
+                request.user_input, **history_kwargs
+            )
+        ).data
+        return result.model_copy(update={"intent": Intent.SCHEDULE})
+
+    if classification.intent is Intent.RECOMMEND:
+        return (
+            await llm.extract_recommend_conditions(
+                request.user_input, **history_kwargs
+            )
+        ).data
+
+    if classification.intent is Intent.MODIFY:
+        if request.current_conditions is None:
+            return LLMOutput(
+                intent=Intent.MODIFY,
+                status=OutputStatus.NEEDS_CLARIFICATION,
+                clarification=ClarificationPayload(
+                    missing_fields=[
+                        {
+                            "field": "current_conditions",
+                            "reason": "변경할 기존 조건 정보가 없어 어떤 추천을 기준으로 "
+                            "바꿔야 할지 확인할 수 없습니다.",
+                        }
+                    ],
+                    message="아직 추천한 결과가 없어요. 어떤 장소를 찾고 계신가요?",
+                ),
+            )
+        return (
+            await llm.extract_modify_conditions(
+                request.user_input,
+                request.current_conditions,
+                pending_clarification=request.pending_clarification,
+                shown_place_count=request.shown_place_count,
+                shown_place_names=request.shown_place_names,
+                **history_kwargs,
+            )
+        ).data
+
+    if classification.intent is Intent.INFO:
+        output = (
+            await llm.extract_info_query(
+                request.user_input,
+                has_previous_recommendation=request.has_previous_recommendation,
+                reference_date=now_kst().date(),
+                conversation_place_name=request.conversation_place_name,
+                pending_info_question_type=request.pending_info_question_type,
+                pending_info_specific_question=request.pending_info_specific_question,
+                pending_info_visit_time=request.pending_info_visit_time,
+                **history_kwargs,
+            )
+        ).data
+        return _resolve_info_conversation_reference(output, request.conversation_place_name)
+
+    if classification.intent is Intent.COMPARE:
+        return (
+            await llm.extract_compare_request(
+                request.user_input,
+                shown_place_count=request.shown_place_count,
+                shown_place_names=request.shown_place_names,
+                **history_kwargs,
+            )
+        ).data
+
+    # 남은 경우는 Intent.GENERAL뿐 (RECOMMEND/MODIFY/INFO/COMPARE/OUT_OF_SCOPE는 위에서 처리).
+    return await _general_output(
+        request.user_input, llm, history=request.recent_turns
+    )
+
+
 async def build_interpretation(
     request: InterpretRequest, llm: LLMProvider
 ) -> LLMOutput:
@@ -278,79 +474,25 @@ async def build_interpretation(
             last_intent=request.last_intent,
             shown_place_names=request.shown_place_names,
             conversation_place_name=request.conversation_place_name,
+            **({"history": request.recent_turns} if request.recent_turns else {}),
         )
     ).data
 
-    if classification.intent is Intent.OUT_OF_SCOPE:
-        return LLMOutput(
-            intent=Intent.OUT_OF_SCOPE,
-            status=OutputStatus.COMPLETE,
-            out_of_scope=OutOfScopePayload(
-                category=classification.out_of_scope_category,
-                severity=classification.out_of_scope_severity,
-            ),
-        )
+    # LLM이 이전 추천 이력만 보고 MODIFY로 기울더라도, "안국역 카페 추천해줘"처럼
+    # 새 장소 유형을 명시한 독립 검색은 RECOMMEND 추출기로 보낸다. 이 경로는
+    # state_transform에서 soft reset되어 이전의 동행·거리·제외 이력이 섞이지 않는다.
+    if (
+        classification.intent is Intent.MODIFY
+        and _is_fresh_recommendation_request(request)
+    ):
+        classification = classification.model_copy(update={"intent": Intent.RECOMMEND})
 
-    # SCHEDULE도 RECOMMEND와 같은 15개 조건(time_available, place_tags 등)을 쓴다
-    # (docs/design/int-07-schedule.md 6.1절) — 별도 추출 메서드를 새로 만들지 않고
-    # extract_recommend_conditions()를 그대로 재사용한 뒤 intent만 SCHEDULE로
-    # 바꿔치기한다. status(complete/needs_clarification)와 clarification은 그대로
-    # 유지된다 — RECOMMEND와 동일한 되묻기 흐름을 탄다.
-    if classification.intent is Intent.SCHEDULE:
-        result = (await llm.extract_recommend_conditions(request.user_input)).data
-        return result.model_copy(update={"intent": Intent.SCHEDULE})
-
-    if classification.intent is Intent.RECOMMEND:
-        return (await llm.extract_recommend_conditions(request.user_input)).data
-
-    if classification.intent is Intent.MODIFY:
-        if request.current_conditions is None:
-            return LLMOutput(
-                intent=Intent.MODIFY,
-                status=OutputStatus.NEEDS_CLARIFICATION,
-                clarification=ClarificationPayload(
-                    missing_fields=[
-                        {
-                            "field": "current_conditions",
-                            "reason": "변경할 기존 조건 정보가 없어 어떤 추천을 기준으로 "
-                            "바꿔야 할지 확인할 수 없습니다.",
-                        }
-                    ],
-                    message="아직 추천한 결과가 없어요. 어떤 장소를 찾고 계신가요?",
-                ),
-            )
-        return (
-            await llm.extract_modify_conditions(
-                request.user_input,
-                request.current_conditions,
-                pending_clarification=request.pending_clarification,
-                shown_place_count=request.shown_place_count,
-                shown_place_names=request.shown_place_names,
-            )
-        ).data
-
-    if classification.intent is Intent.INFO:
-        output = (
-            await llm.extract_info_query(
-                request.user_input,
-                has_previous_recommendation=request.has_previous_recommendation,
-                reference_date=now_kst().date(),
-                conversation_place_name=request.conversation_place_name,
-            )
-        ).data
-        return _resolve_info_conversation_reference(output, request.conversation_place_name)
-
-    if classification.intent is Intent.COMPARE:
-        return (
-            await llm.extract_compare_request(
-                request.user_input,
-                shown_place_count=request.shown_place_count,
-                shown_place_names=request.shown_place_names,
-            )
-        ).data
-
-    # 남은 경우는 Intent.GENERAL뿐 (RECOMMEND/MODIFY/INFO/COMPARE/OUT_OF_SCOPE는 위에서 처리).
-    return (await llm.extract_general_request(request.user_input)).data
+    output = await _extract_for_intent(classification, request, llm)
+    # 상황 축은 인텐트별 추출기가 모르는 값이라, 분류 결과에서 여기 한 곳에서만
+    # 옮겨 담는다 — 반환 경로가 8개라 각 경로에서 채우면 반드시 하나를 빠뜨린다.
+    return output.model_copy(
+        update={"interaction_mode": classification.interaction_mode}
+    )
 
 
 async def interpret_user_input(request: InterpretRequest) -> LLMOutput:

@@ -8,6 +8,7 @@ validate_provider_config()가 담당한다.
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 import httpx
 
@@ -26,6 +27,7 @@ from app.providers.geocoding import FakeGeocodingProvider, RealGeocodingProvider
 from app.providers.google_translate import GoogleTranslateProvider
 from app.providers.holiday import FakeHolidayProvider, RealHolidayProvider
 from app.providers.hybrid_place_details import HybridPlaceDetailsProvider
+from app.providers.hybrid_place_photos import HybridPlacePhotoProvider
 from app.providers.kakao_transit_route import (
     FakeTransitRouteProvider,
     RealKakaoTransitRouteProvider,
@@ -39,6 +41,7 @@ from app.providers.place_evidence import PlaceEvidenceProvider
 from app.providers.place_evidence_encoder import get_shared_encoder
 from app.providers.place_mood import PlaceMoodProvider
 from app.providers.protocols import (
+    BarrierFreePlaceSearchProvider,
     ConcentrationProvider,
     FestivalProvider,
     GeocodingProvider,
@@ -48,6 +51,7 @@ from app.providers.protocols import (
     MunicipalParkingProvider,
     PlaceDetailByNameProvider,
     PlaceDetailsProvider,
+    PlaceImageProvider,
     PlaceProvider,
     PlaceSearchProvider,
     RealtimeCityDataProvider,
@@ -62,7 +66,15 @@ from app.providers.seoul_citydata import (
     RealRealtimeCityDataProvider,
     RealRealtimeCommercialProvider,
 )
-from app.providers.stub import FakeLLMProvider, FakePlaceProvider, FakeWeatherProvider
+from app.providers.stub import (
+    FakeBarrierFreePlaceSearchProvider,
+    FakeLLMProvider,
+    FakePlaceProvider,
+    FakeWeatherProvider,
+)
+from app.providers.supabase_barrier_free_search import (
+    SupabaseBarrierFreePlaceSearchProvider,
+)
 from app.providers.supabase_place_details import SupabasePlaceDetailsProvider
 from app.providers.walking_route import (
     FakeWalkingRouteProvider,
@@ -73,8 +85,10 @@ from app.repositories.fake_municipal_parking import FakeMunicipalParkingCatalogR
 from app.repositories.fake_places import (
     FakePlaceDetailsRepository,
     FakePlaceLocationRepository,
+    FakePlacePhotoRepository,
 )
 from app.repositories.municipal_parking import SupabaseMunicipalParkingRepository
+from app.repositories.protocols import PlacePhotoRepository
 from app.repositories.supabase_places import SupabasePlaceRepository
 from app.tools.recommendation_cards import RecommendationCardTool
 from app.tools.travel_route import TravelRouteProviders, TravelRouteTool
@@ -270,6 +284,31 @@ def get_place_search_provider(client: httpx.AsyncClient) -> PlaceSearchProvider:
     return get_place_provider(client)
 
 
+def get_barrier_free_place_search_provider(
+    client: httpx.AsyncClient,
+) -> BarrierFreePlaceSearchProvider:
+    """무장애 조건이 붙은 요청의 후보 검색 provider를 준비한다.
+
+    무장애 정보는 Supabase에만 있으므로 이 경로는 TourAPI로 대체할 수 없다.
+    그래서 실 provider 모드에서 Supabase 설정이 없으면 **Fake로 내려가지 않고
+    부팅에서 멈춘다**(D-042). 조용히 Fake로 바뀌면 무장애를 요구한 사용자가
+    `"테스트 무장애 카페"`를 추천받고, 그 사실이 오류 없이 지나간다.
+
+    조건이 없는 요청은 이 provider를 부르지 않는다 — 후보 수집은 여전히
+    `get_place_search_provider()`(TourAPI)가 맡는다.
+    """
+    if settings.resolved_place_provider == "fake":
+        return FakeBarrierFreePlaceSearchProvider()
+    return SupabaseBarrierFreePlaceSearchProvider(
+        SupabasePlaceRepository(
+            supabase_url=_require_key(settings.supabase_url, "SUPABASE_URL"),
+            secret_key=_require_key(settings.supabase_secret_key, "SUPABASE_SECRET_KEY"),
+            client=client,
+            timeout_seconds=settings.external_api_timeout_seconds,
+        )
+    )
+
+
 def get_place_location_repository(
     client: httpx.AsyncClient,
 ) -> SupabasePlaceRepository | FakePlaceLocationRepository | None:
@@ -290,6 +329,38 @@ def get_place_location_repository(
         secret_key=settings.supabase_secret_key,
         client=client,
         timeout_seconds=settings.external_api_timeout_seconds,
+    )
+
+
+def get_place_photo_repository(
+    client: httpx.AsyncClient,
+) -> PlacePhotoRepository:
+    """상세 화면에 보여줄 장소 사진의 출처를 준비한다.
+
+    적재된 장소는 place_image_embeddings에서 읽고, 적재되지 않은 장소만
+    detailImage2로 채운다. 순서를 이렇게 두는 이유와 캐시·한도 처리는
+    hybrid_place_photos.py 모듈 문서를 본다.
+
+    Supabase 설정이 없으면 fake 저장소를 준다. 없는 상태로 두면 fake 환경에서
+    여러 장 경로가 한 번도 실행되지 않는다.
+    """
+    if (
+        settings.resolved_place_provider != "real"
+        or not settings.supabase_url.strip()
+        or not settings.supabase_secret_key.strip()
+    ):
+        return FakePlacePhotoRepository()
+    return HybridPlacePhotoProvider(
+        photo_repository=SupabasePlaceRepository(
+            supabase_url=settings.supabase_url,
+            secret_key=settings.supabase_secret_key,
+            client=client,
+            timeout_seconds=settings.external_api_timeout_seconds,
+        ),
+        # 여기 도달하면 place provider가 실 provider다(위 게이트에서 fake는 빠진다).
+        image_provider=cast(PlaceImageProvider, get_place_provider(client)),
+        display_limit=settings.place_photo_display_limit,
+        cache_ttl_seconds=settings.place_photo_api_cache_ttl_seconds,
     )
 
 
@@ -504,6 +575,43 @@ _RESOLVED_ATTRS: dict[str, str] = {
 }
 
 
+# tour_api 상세로 감당할 수 있는 후보 수의 상한. 이 값을 넘으면 부팅을 막는다.
+#
+# 10으로 잡은 근거는 TourAPI 일일 한도다. 추천 경로는 후보 전량의 상세를 받으므로
+# 후보 1곳당 detailCommon2 + detailIntro2 2회가 나가고, tour_api_daily_call_limit이
+# 오퍼레이션별 1000이라 후보 10곳이면 100요청, 30곳이면 33요청 만에 소진된다.
+# 이전 기본값이 10이었던 것도 사실상 이 선이었다.
+_MAX_TOUR_API_DETAIL_CANDIDATE_LIMIT = 10
+
+
+def _validate_details_source_against_candidate_limit(current: Settings) -> None:
+    """상세를 TourAPI로 받으면서 후보 한도를 높게 잡은 조합을 부팅에서 막는다.
+
+    조용히 도는 대신 부팅에서 끊는 이유는 D-042와 같다 — 이 조합은 오류를 내지
+    않고 **일일 한도만 빠르게 태운다**. 첫 요청이 아니라 부팅에서 드러나야 한다.
+
+    지연이 아니라 호출 수가 문제다(안국역 실측: 후보 30곳에 61회, 2.1초). 느린
+    것은 견딜 수 있지만 한도 소진은 그날 서비스가 멈추는 일이다.
+
+    fake 모드는 상세도 Fake가 담당하므로 검사하지 않는다
+    (`resolved_place_details_source`).
+    """
+    if current.resolved_place_provider != "real":
+        return
+    if current.resolved_place_details_source != "tour_api":
+        return
+    if current.recommendation_candidate_limit <= _MAX_TOUR_API_DETAIL_CANDIDATE_LIMIT:
+        return
+    raise ValueError(
+        "PLACE_DETAILS_SOURCE=tour_api에서는 "
+        f"RECOMMENDATION_CANDIDATE_LIMIT이 {_MAX_TOUR_API_DETAIL_CANDIDATE_LIMIT} "
+        f"이하여야 합니다(현재 {current.recommendation_candidate_limit}). "
+        "추천은 후보 전량의 상세를 조회하므로 후보 1곳당 TourAPI 호출 2회가 나가고, "
+        "일일 한도가 금방 소진됩니다. PLACE_DETAILS_SOURCE=supabase로 두거나 "
+        "후보 한도를 낮추세요."
+    )
+
+
 def validate_provider_config(target: Settings | None = None) -> None:
     """real 모드 provider에 필요한 자격증명이 모두 있는지 부팅 시점에 확인한다.
 
@@ -529,6 +637,8 @@ def validate_provider_config(target: Settings | None = None) -> None:
         raise ValueError(
             "real provider 설정에 필요한 환경변수가 비어 있습니다: " + ", ".join(missing)
         )
+
+    _validate_details_source_against_candidate_limit(current)
 
     # 폐지된 단일 모델 설정이 .env에 남아 있으면 부팅을 막는다. 값이 무시될 뿐 동작은
     # 하므로 그냥 두면 `.env`에 적힌 모델과 실제로 호출되는 모델이 다른 채로 돌고,
@@ -656,7 +766,12 @@ def get_place_mood_provider(
         client=client,
         timeout_seconds=settings.external_api_timeout_seconds,
     )
-    return PlaceMoodProvider(repository, _get_mood_encoder())
+    return PlaceMoodProvider(
+        repository,
+        _get_mood_encoder(),
+        mean_center=settings.place_mood_mean_center_enabled,
+        axis_weight=settings.place_mood_axis_weight,
+    )
 
 
 def _get_mood_encoder() -> object | None:

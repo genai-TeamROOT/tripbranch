@@ -43,16 +43,12 @@ export function PhotoSimilarResultMessage({
   return (
     <>
       {imageUrl && (
-        <img
-          src={imageUrl}
-          alt="올린 사진"
-          className="ml-auto max-h-48 rounded-md object-cover"
-        />
+        <img src={imageUrl} alt="올린 사진" className="ml-auto max-h-48 rounded-md object-cover" />
       )}
 
-      <div className="mr-auto max-w-full rounded-md bg-gray-100 px-4 py-3 text-sm text-gray-800 dark:bg-gray-800 dark:text-gray-100">
+      <div className="mr-auto max-w-full text-sm text-ink">
         {status === "loading" ? (
-          <p className="flex items-center gap-2">
+          <p className="flex items-center gap-2 text-muted">
             <Spinner />
             분위기가 닮은 곳을 찾고 있어요…
           </p>
@@ -67,13 +63,13 @@ export function PhotoSimilarResultMessage({
           <p>
             {candidateCount === 0 ? (
               <>
-                <span className="font-medium">{centerName}</span> 주변에서 지금 갈 수 있는 곳을
-                찾지 못했어요. 다른 지역으로 찾아볼까요?
+                <span className="font-medium">{centerName}</span> 주변에서 지금 갈 수 있는 곳을 찾지
+                못했어요. 다른 지역으로 찾아볼까요?
               </>
             ) : (
               <>
-                <span className="font-medium">{centerName}</span> 주변 {candidateCount}곳을
-                봤는데 사진과 비교할 수 있는 곳이 없었어요. 아직 사진을 모으지 못한 지역이에요.
+                <span className="font-medium">{centerName}</span> 주변 {candidateCount}곳을 봤는데
+                사진과 비교할 수 있는 곳이 없었어요. 아직 사진을 모으지 못한 지역이에요.
               </>
             )}
           </p>
@@ -84,13 +80,13 @@ export function PhotoSimilarResultMessage({
               눌러서 사진을 확인해 보세요.
             </p>
             {/* 좁은 화면에서는 가로 스크롤로 흘린다. 줄바꿈하면 다시 세로로 길어진다. */}
-            <ul className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
+            <ul className="scrollbar-none -mx-1 flex gap-3 overflow-x-auto px-1 pb-1">
               {places.map((place, index) => (
-                <li key={place.content_id} className="shrink-0">
+                <li key={place.content_id} className="w-28 shrink-0">
                   <button
                     type="button"
                     onClick={() => setSelected(place)}
-                    className="flex w-28 flex-col gap-1 rounded-md bg-white p-2 text-left hover:bg-gray-50 dark:bg-gray-900 dark:hover:bg-gray-800"
+                    className="group text-left"
                   >
                     {place.image_url ? (
                       /*
@@ -102,26 +98,22 @@ export function PhotoSimilarResultMessage({
                         src={place.image_url}
                         alt=""
                         loading="lazy"
-                        className="h-20 w-full rounded object-cover"
+                        className="h-28 w-full rounded-2xl object-cover transition-transform duration-300 group-hover:scale-105"
                         onError={(event) => {
                           // 관광공사 원본이 사라진 경우가 있다. 깨진 아이콘 대신 자리만 비운다.
                           event.currentTarget.style.visibility = "hidden";
                         }}
                       />
                     ) : (
-                      <span className="h-20 w-full rounded bg-gray-100 dark:bg-gray-800" />
+                      <span className="block h-28 w-full rounded-2xl bg-chip" />
                     )}
-                    <span className="flex items-baseline gap-1">
-                      <span className="text-xs tabular-nums text-gray-400">{index + 1}</span>
-                      <span className="line-clamp-2 text-xs font-medium text-gray-900 dark:text-gray-100">
-                        {place.title}
-                      </span>
+                    <span className="mt-2 flex items-baseline gap-1">
+                      <span className="text-[11px] tabular-nums text-brand">{index + 1}</span>
+                      <span className="line-clamp-2 text-xs font-bold text-ink">{place.title}</span>
                     </span>
                     {place.photo_count < RELIABLE_PHOTO_COUNT && (
                       /* 사진 한 장으로 만든 벡터라 덜 믿을 만하다는 것을 숨기지 않는다. */
-                      <span className="text-[11px] leading-tight text-gray-400 dark:text-gray-500">
-                        사진 1장 비교
-                      </span>
+                      <span className="text-[11px] leading-tight text-muted">사진 1장 비교</span>
                     )}
                   </button>
                 </li>
@@ -146,7 +138,7 @@ function Spinner() {
   return (
     <svg
       viewBox="0 0 24 24"
-      className="size-4 animate-spin text-gray-400"
+      className="size-4 animate-spin text-muted"
       fill="none"
       aria-hidden="true"
     >

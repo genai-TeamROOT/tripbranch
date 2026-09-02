@@ -211,6 +211,21 @@ class PopulationForecastInfo(BaseModel):
     population_max: int | None = Field(default=None, ge=0)
 
 
+class PlacePhotoItem(BaseModel):
+    """상세 화면에 보여줄 장소 사진 한 장.
+
+    순서는 목록의 순서가 그대로 뜻을 갖는다 — TourAPI가 대표성 높은 사진을 앞에
+    주므로 첫 번째가 가장 대표적이다. photo_order 값을 그대로 싣지 않는 이유는
+    소비 측이 그 숫자로 할 일이 없기 때문이다(빠진 번호도 없다).
+
+    image_name은 "중구_남대문 종합상가 (5)"처럼 원본 파일명이다. 화면에 그대로
+    쓰기에는 거칠어 지금은 대체 텍스트 후보로만 나른다.
+    """
+
+    url: str
+    image_name: str | None = None
+
+
 class PlaceCard(BaseModel):
     """장소 상세 카드가 펼쳐질 때 표시할 전체 묶음.
 
@@ -232,6 +247,15 @@ class PlaceCard(BaseModel):
     place_name: str | None = None
     # 실측 844건 중 169건(20%)은 이미지가 없다. 소비 측은 이미지 영역을 숨긴다.
     thumbnail_url: str | None = None
+    # 여러 장 보기용 사진 목록. 출처가 thumbnail_url과 다르다 — 이쪽은
+    # place_image_embeddings에 적재된 detailImage2 사진이고, thumbnail_url은
+    # places 행의 대표 이미지다.
+    #
+    # **thumbnail_url을 대체하지 않는다.** 사진이 있는 5,465곳 중 3,074곳이 한
+    # 장뿐이고 전체 8,060곳 중 2,595곳은 아예 없다(2026-08-31 실측). 목록이 비어도
+    # 대표 이미지는 있는 장소가 대부분이라, 목록만 보고 그리면 지금 보이던 사진이
+    # 사라진다.
+    photos: list[PlacePhotoItem] = Field(default_factory=list)
     overview: str | None = None
     operating_hours: str | None = None
     rest_date: str | None = None

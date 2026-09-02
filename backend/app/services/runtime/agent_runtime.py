@@ -16,12 +16,16 @@ import logging
 import math
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from datetime import timedelta
-from typing import Any, TypeVar
+from typing import Any, TypeAlias, TypeVar
 
-from app.agent_context.schemas import PlaceCandidate, RecommendationContext
+from app.agent_context.schemas import (
+    Coordinates,
+    PlaceCandidate,
+    RecommendationContext,
+)
 from app.auth.principal import Principal
 from app.config import settings
 from app.domain.ranking_origin import resolve_ranking_origin
@@ -45,6 +49,7 @@ from app.observability.langfuse_tracing import (
 from app.place_search_policy import MAX_PLACE_SEARCH_RADIUS_KM, WALKING_SPEED_KM_PER_MINUTE
 from app.prompts.registry import turn_prompt_version
 from app.providers.protocols import LLMProvider
+from app.repositories.protocols import PlaceDetailsReadRepository
 from app.schedule.associations import fetch_co_visited_hints
 from app.schedule.planner import plan_partial_schedule, plan_schedule
 from app.schedule.schemas import SchedulePartialFillRequest, SchedulePlanningRequest
@@ -57,6 +62,7 @@ from app.schemas import (
     ComparisonItem,
     ComparisonResult,
     ConcentrationIntent,
+    ConversationTurnView,
     GeneralPayload,
     GeneralTopic,
     InfoPayload,
@@ -73,6 +79,7 @@ from app.schemas import (
     RecommendationResponse,
     RecommendPayload,
     ScheduleItem,
+    SituationKind,
     ToolExecutionDebug,
     TravelOrigin,
     UserConditions,
@@ -85,6 +92,7 @@ from app.service_area_landmarks import (
 )
 from app.services.interpret.orchestrator import build_interpretation
 from app.services.interpret.session_orchestrator import ensure_current_context
+from app.services.interpret.situational_offers import offer_for
 from app.services.interpret.state_transform import to_user_conditions, transform
 from app.services.recommendation_pipeline import PreparedRecommendationResult
 from app.services.runtime.compare_transform import (
@@ -141,9 +149,16 @@ from app.services.runtime.tool_debug import (
     build_info_concentration_execution_debug,
     build_tool_execution_debug,
 )
-from app.state.schema import PendingInfoContext, now_kst
+from app.state.schema import (
+    ConversationTurn,
+    PendingInfoContext,
+    SavedPlaceItem,
+    SituationState,
+    now_kst,
+)
 from app.state.service import (
     ApiContextView,
+    AppendConversationTurnRequest,
     RecommendedPlace,
     RecordClosedExclusionsRequest,
     RecordRecommendationRequest,
@@ -153,8 +168,10 @@ from app.state.service import (
     SetLastIntentRequest,
     SetPendingClarificationRequest,
     SetPendingInfoContextRequest,
+    SetSituationStateRequest,
     StateApplyResponse,
     UpdateApiContextRequest,
+    append_conversation_turn,
     apply,
     record_closed_exclusions,
     record_recommendation,
@@ -163,6 +180,7 @@ from app.state.service import (
     set_last_intent,
     set_pending_clarification,
     set_pending_info_context,
+    set_situation_state,
     update_api_context,
 )
 from app.state.session import new_trace_id
@@ -281,6 +299,71 @@ def _remember_ignore_operating_hours(session_id: str, store: StateStore | None) 
             session_id=session_id, until=now_kst() + _IGNORE_OPERATING_HOURS_TTL
         ),
         store=store,
+    )
+
+
+def _next_situation_state(
+    *,
+    llm_output: LLMOutput,
+    prior: SituationState | None,
+    reject_offer_action: str | None,
+) -> SituationState:
+    """이번 턴이 끝난 뒤 상황 상태가 어떻게 바뀌어야 하는지 계산한다. (대화층 4단계)
+
+    순수 함수다 — 어느 반환 경로가 실행되든 apply() 직후 한 곳에서만 부르면 되게
+    하려고 llm_output 하나만으로 판단한다(_remember_clarification처럼 반환 경로마다
+    따로 부르면 하나는 반드시 빠뜨린다).
+
+    - 이번 턴이 직전 제안을 거절했으면(reject_offer_action) rejected_actions에
+      더하고 pending_offer는 지운다.
+    - 이번 턴이 GENERAL 상황 턴이고 아직 안 거절된 실행 가능한 제안을 냈으면 그
+      제안을 pending_offer로 남긴다.
+    - 그 외(수락/다른 요청/평범한 대화)는 pending_offer만 지운다 — 제안은 바로
+      다음 턴에만 유효하다. rejected_actions는 세션 내내(TTL까지) 유지한다.
+    """
+    rejected = list(prior.rejected_actions) if prior is not None else []
+    if reject_offer_action is not None and reject_offer_action not in rejected:
+        rejected.append(reject_offer_action)
+
+    pending_offer: str | None = None
+    if (
+        reject_offer_action is None
+        and llm_output.intent is Intent.GENERAL
+        and llm_output.general is not None
+    ):
+        offer = offer_for(llm_output.general.situation)
+        if offer is not None and offer.action_id not in rejected:
+            pending_offer = llm_output.general.situation.value
+
+    return SituationState(
+        current_situation=pending_offer,
+        rejected_actions=rejected,
+        pending_offer=pending_offer,
+    )
+
+
+def _sync_situation_state(
+    *,
+    session_id: str,
+    llm_output: LLMOutput,
+    session_context: SessionContextResponse,
+    reject_offer_action: str | None,
+    store: StateStore | None,
+) -> None:
+    """_next_situation_state()가 계산한 값을 필요할 때만 B에 쓴다.
+
+    대부분의 턴은 상황과 전혀 무관하다 — 매 턴 무조건 쓰면 관계없는 세션에도
+    Supabase 쓰기가 하나씩 더 생긴다. 바뀔 게 없으면(비어 있던 상태가 그대로
+    비어 있음) 건너뛴다.
+    """
+    prior = session_context.situation_state
+    next_state = _next_situation_state(
+        llm_output=llm_output, prior=prior, reject_offer_action=reject_offer_action
+    )
+    if (prior or SituationState()) == next_state:
+        return
+    set_situation_state(
+        SetSituationStateRequest(session_id=session_id, state=next_state), store=store
     )
 
 
@@ -471,9 +554,8 @@ async def _respond_no_data_closed(
 # "카테고리에 맞는 곳이 없음"(원인1)과 "반경이 좁음"(원인3)은 신호가 동일해
 # 구분할 수 없지만(nearby_place_details.py의 `if not selected:`가 raw candidates
 # 자체가 없을 때도 NO_DATA를 반환), "이전 노출/거절로 다 소진됨"(원인2)은
-# `places.provider_metadata`의 원본 TourAPI 상태로 구분 가능하다 — raw candidates가
-# 있었는데 excluded_place_ids로 걸러졌다면 provider_metadata.status는 "success"로
-# 남는다(agent_context/mappers.py::map_places_context가 원본 metadata를 그대로 싣는다).
+# 명시 경고 `candidate_pool_exhausted`로만 구분한다. Provider 호출 성공은 단순히
+# 외부 호출이 성공했다는 뜻일 뿐, 후보가 이전 노출/거절로 소진됐다는 근거가 아니다.
 _NO_DATA_RESOLVABLE_INTENTS = _LOCATION_REQUIRED_RESOLVABLE_INTENTS | frozenset(
     {Intent.MODIFY.value}
 )
@@ -535,6 +617,10 @@ class _ClarificationResolution:
     # pending_clarification is None 게이트는 되묻기 해소 turn엔 안 맞아 자동으로
     # relabel되지 않는다 — 그래서 여기서 명시적으로 신호를 준다.
     force_schedule: bool = False
+    # 대화층 4단계 — 직전 GENERAL 상황 턴이 낸 제안을 이번 턴이 거절했으면 그
+    # action_id. 채워지면 호출부가 situation_state.rejected_actions에 추가해
+    # 같은 세션에서 다시 제안하지 않는다.
+    reject_offer_action: str | None = None
 
 
 # no_data_empty/no_data_exhausted의 "다른 종류도 보기"/"다른 지역에서 찾기"/
@@ -580,6 +666,75 @@ def _clear_conditions_llm_output(fields: tuple[str, ...]) -> LLMOutput:
             changed_fields=list(fields),
         ),
     )
+
+
+# 대화층 4단계 — 직전 GENERAL 상황 턴이 낸 제안에 말로 답할 때만 쓰는 정확 일치
+# 화이트리스트. _is_bare_restart_phrase()와 같은 방식(전체 문자열 정확 일치)이다 —
+# 도구를 실행하는 자리라 부분일치로 오탐하면 안 된다. "응 근데 다른 데로"는 아래
+# 어느 목록과도 안 맞아 정상 분류(build_interpretation)로 폴백한다 — 그게 옳은
+# 안전 실패다.
+_OFFER_ACCEPT_MARKERS = ("응", "네", "그래", "좋아", "그렇게 해줘", "찾아줘", "찾아봐 줘")
+_OFFER_REJECT_MARKERS = ("아니", "괜찮아", "됐어", "필요없어", "필요 없어")
+_OFFER_DECLINED_MESSAGE = "네, 필요하시면 언제든 말씀해주세요."
+
+
+def _matches_offer_marker(user_input: str, markers: tuple[str, ...]) -> bool:
+    stripped = user_input.strip().rstrip("!?.~ ")
+    return any(stripped == marker or stripped == f"{marker}요" for marker in markers)
+
+
+def _resolve_offer_utterance(
+    *, user_input: str, session_context: SessionContextResponse
+) -> _ClarificationResolution | None:
+    """직전 GENERAL 상황 턴이 낸 제안에 대한 짧은 응답을 결정적으로 해석한다.
+
+    situation_state.pending_offer가 있을 때만 의미가 있다(_run_agent_flow가 그 조건을
+    확인하고서만 이 함수를 부른다). 수락/거절 어느 쪽에도 안 맞으면 None을 돌려 평소
+    build_interpretation() 경로로 폴백한다 — 새 요청("그건 말고 다른 걸로")이나 조건
+    변경은 그 경로가 정상적으로 처리한다.
+
+    수락은 LLM을 부르지 않고 세션에 이미 병합된 조건에 제안의 조건만 덮어써
+    RECOMMEND로 만든다 — situational_offers.SITUATION_OFFERS가 "실행 가능한 것만"을
+    보장하므로 이 경로가 못 하는 걸 약속할 위험이 없다.
+    """
+
+    situation_state = session_context.situation_state
+    if situation_state is None or situation_state.pending_offer is None:
+        return None
+    try:
+        situation = SituationKind(situation_state.pending_offer)
+    except ValueError:
+        return None
+    offer = offer_for(situation)
+    if offer is None:
+        return None
+
+    if _matches_offer_marker(user_input, _OFFER_REJECT_MARKERS):
+        return _ClarificationResolution(
+            llm_output=LLMOutput(
+                intent=Intent.GENERAL,
+                status=OutputStatus.COMPLETE,
+                general=GeneralPayload(
+                    topic=GeneralTopic.TRAVEL_TIP, original_question=user_input
+                ),
+            ),
+            terminal_message=_OFFER_DECLINED_MESSAGE,
+            reject_offer_action=offer.action_id,
+        )
+
+    if _matches_offer_marker(user_input, _OFFER_ACCEPT_MARKERS):
+        conditions = to_user_conditions(session_context.user_conditions).model_copy(
+            update=dict(offer.condition_overrides)
+        )
+        return _ClarificationResolution(
+            llm_output=LLMOutput(
+                intent=Intent.RECOMMEND,
+                status=OutputStatus.COMPLETE,
+                recommend=RecommendPayload(conditions=conditions),
+            )
+        )
+
+    return None
 
 
 def _resolve_clarification_choice(
@@ -907,6 +1062,39 @@ def _resolve_travel_origin_override(
     )
 
 
+def _resolve_schedule_from_saved(
+    *, session_context: SessionContextResponse
+) -> _ClarificationResolution | None:
+    """보관함 하단 바의 "이 장소들로 일정 짜기" 클릭을 결정적으로 해소한다.
+
+    _resolve_travel_origin_override와 같은 비차단형 버튼이라 pending_clarification을
+    요구하지 않는다 — 완결된 추천 답변 아래에 붙는 상시 CTA다. 세션에 이미 병합된
+    조건(session_context.user_conditions)을 그대로 재사용해 intent만 SCHEDULE로
+    확정한다. classify_intent()/extract_*_conditions() 호출을 통째로 건너뛰므로
+    체감 지연에 직접 영향을 준다.
+
+    must_include_place_ids를 여기서 넘기지 않는다 — 보관함 반영(후보 복귀·배치
+    보장, D-114)은 이미 모든 SCHEDULE 턴에 적용되므로 이 버튼만 특별 취급하면
+    자유입력 "담은 곳으로 일정 짜줘"와 동작이 갈린다.
+
+    보관함이 비어 있으면 None을 반환해 평소 build_interpretation() 경로로
+    폴백한다 — 새로고침 뒤 남은 화면에서 눌렀거나, 마지막 항목을 빼는 요청과
+    클릭이 겹친 경우다. 빈 보관함으로 편성에 들어가면 "담은 곳"이 하나도 없는
+    일정이 나가 사용자에게는 버튼이 오작동한 것처럼 보인다.
+    """
+    if not session_context.saved_places:
+        return None
+    return _ClarificationResolution(
+        llm_output=LLMOutput(
+            intent=Intent.SCHEDULE,
+            status=OutputStatus.COMPLETE,
+            recommend=RecommendPayload(
+                conditions=to_user_conditions(session_context.user_conditions)
+            ),
+        )
+    )
+
+
 # C 단계에서 Recommendation으로 못 넘어가는 status. needs_clarification은 조건 재질문(사용자
 # 응답 필요), unsupported/unavailable은 그 자체로 안내만 하고 끝나는 상태다(계약 문서 §5.4).
 # no_data도 후보가 없어 D에 넘길 것이 없다 — 빈 후보로 Scoring을 돌려도 결과는 같으므로
@@ -931,6 +1119,19 @@ _CONCENTRATION_RANK_INTENTS = frozenset({ConcentrationIntent.AVOID, Concentratio
 # 최초 조회는 포함하지 않으므로 전체 C 호출은 최대 3회다. 무한 반복과 외부 API
 # 호출 폭증을 막기 위해 상수로 명시한다.
 _MAX_CANDIDATE_REFILL_ATTEMPTS = 2
+
+# SCHEDULE이 D에게 받는 후보 수. 일정 편성 모듈이 이 목록에서 코스를 고른다.
+#
+# **후보 수집 상한(RECOMMENDATION_CANDIDATE_LIMIT)에서 떼어낸 상수다.** 예전에는
+# 그 설정을 그대로 썼는데, 두 값은 뜻이 다른데 우연히 같았을 뿐이다 — 하나는
+# "C에서 몇 곳을 모아올까"이고 이건 "일정 편성에 몇 곳을 넘길까"다. 후보 상한을
+# 올렸더니 이 값까지 따라 올라가면서 드러났다.
+#
+# 10인 근거는 D와의 협의다(int-07-schedule.md 135행 "D 반환 수: 상위 10개 전부",
+# 5절). 혼잡도 2차 재순위도 SCHEDULE에서는 이 개수 전부에 걸리므로(같은 문서
+# 201~206행) 늘리면 혼잡도 외부 조회가 비례해서 늘어난다. **바꾸려면 D와 다시
+# 협의해야 한다.**
+SCHEDULE_RECOMMENDATION_LIMIT = 10
 _CANDIDATE_POOL_TRUNCATED_WARNING = "candidate_pool_truncated"
 
 # 보강 응답 전체가 이 상태면 2차 Scoring을 시도할 실익이 없다(재조회할 데이터가 없음).
@@ -940,6 +1141,254 @@ _ENRICHMENT_TERMINAL_STATUSES = frozenset({"no_data", "unavailable"})
 def _context_place_ids(context: RecommendationContext) -> list[str]:
     places = context.places
     return [place.place_id for place in (places.data or [])] if places is not None else []
+
+
+# 실측 이동시간을 조회할 상위 후보 수. 1차 채점(직선거리)에서 이만큼만 추린다.
+#
+# **후보 전량에 실측을 붙이지 않는 이유는 호출이 후보 수에 정비례하기 때문이다.**
+# `_fetch_travel_routes()`가 하드 필터 통과 후보 전부를 목적지로 만들고 Provider가
+# 목적지마다 요청을 쏜다(walking_route.py의 asyncio.gather). 후보 상한을 30으로
+# 올리자 카카오 호출이 7~13건에서 25~35건이 됐다. 결과에 나가는 것은 5곳뿐인데
+# 나머지 몫까지 치르고 있었다.
+#
+# **노출 개수(5)로 맞추지 않는 이유가 이 상수의 핵심이다.** 5로 두면 1차가 고른
+# 5곳이 그대로 최종이 되어, 실측은 표시 시간과 그 5곳 내부 순서만 바꾼다 — 누구를
+# 보여줄지에는 관여하지 못한다. 10이면 직선 기준 6~10위가 실측으로 5위 안에 들어올
+# 수 있다.
+#
+# 그 일이 실제로 일어나는지 재봤다(2026-08-31, 안국역·경복궁·홍대입구 x 14시·19시,
+# 반경 2km). **6개 조합 중 3개에서 최종 5곳의 집합이 바뀌었다.** 안국역 14시는 5곳
+# 중 3곳이 갈렸다(인사동·개성만두 궁·모인화랑이 들어오고 인사동 옥정·꽃,밥에피다·
+# [백년가게] 선천집이 빠졌다).
+#
+# 직선거리와 실거리의 비율이 일정하지 않아서다 — 도심 우회 계수가 평균 1.31배,
+# 범위 1.07~1.71이다(2026-08-20, 종로 6개 지점). 직선 350m인 두 곳이 실제로는
+# 375m와 600m일 수 있다. 노출 5곳의 2배면 그 범위를 덮는다.
+#
+# 이 값이 노출 개수보다 작아지면 안 된다 — 2차 채점 대상이 노출 대상보다 적어진다.
+_MEASURED_ROUTE_CANDIDATE_LIMIT = 10
+
+
+def _missing_place_ids(
+    recommendations: RecommendationResponse, place_ids: Sequence[str]
+) -> list[str]:
+    """채점 결과에 들어가지 못한 place_id만 순서대로 돌려준다."""
+
+    if not place_ids:
+        return []
+    present = {
+        item.place_id
+        for item in (
+            *recommendations.recommendations,
+            *recommendations.unverified_recommendations,
+        )
+    }
+    return [place_id for place_id in place_ids if place_id not in present]
+
+
+def _with_pinned_recommendations(
+    recommendations: RecommendationResponse,
+    pinned: RecommendationResponse,
+    keep_place_ids: Sequence[str],
+) -> RecommendationResponse:
+    """점수순 자르기에서 빠진 보관함 장소를 결과 뒤에 덧붙인다.
+
+    **왜 뒤에 붙이나.** 순위를 왜곡하지 않기 위해서다. 이 목록의 순서는 화면
+    노출 순서이자 편성 후보 순서이고, 보관함 장소는 검색 반경 밖이라 점수가
+    낮은 것이 정상이다. 배치는 `must_include_place_ids`가 보장하므로 여기서
+    순위를 올려줄 이유가 없다 — 필요한 것은 "후보 목록에 있기"뿐이다.
+
+    `excluded_all_closed`·`excluded_closed_place_ids`는 본 채점 결과를 그대로
+    둔다. 그 둘은 이번 회차 하드 필터 판정의 기록이라 덧붙이기와 무관하다.
+    """
+
+    keep = set(keep_place_ids)
+    added = [
+        item
+        for item in (*pinned.recommendations, *pinned.unverified_recommendations)
+        if item.place_id in keep
+    ]
+    if not added:
+        return recommendations
+    return recommendations.model_copy(
+        update={
+            "recommendations": [*recommendations.recommendations, *added],
+        }
+    )
+
+
+def _narrow_prepared(
+    prepared: PreparedRecommendationResult, place_ids: Sequence[str]
+) -> PreparedRecommendationResult:
+    """채점 대상을 주어진 후보로 좁힌다. 하드 필터 결과는 그대로 둔다.
+
+    `excluded_candidates`를 손대지 않는 이유는 그것이 "왜 떨어졌나"의 기록이기
+    때문이다 — 좁히는 것은 이번 채점에 넣을 대상이지 필터 판정이 아니다. A가
+    `excluded_all_closed` 같은 신호를 그 기록으로 읽는다.
+    """
+    keep = set(place_ids)
+    narrowed = tuple(
+        candidate
+        for candidate in prepared.preparation.eligible_candidates
+        if candidate.candidate.place_id in keep
+    )
+    return replace(
+        prepared,
+        preparation=replace(prepared.preparation, eligible_candidates=narrowed),
+    )
+
+
+async def _score_with_measured_routes(
+    recommendation_provider: StagedRecommendationProvider,
+    conditions: UserConditions,
+    prepared: PreparedRecommendationResult,
+    *,
+    tool_context: RecommendationContext,
+    travel_route_tool: TravelRouteToolProvider | None,
+    recommendation_limit: int,
+) -> RecommendationResponse:
+    """직선거리로 한 번 줄 세운 뒤, 상위 후보에만 실측을 붙여 다시 채점한다.
+
+    ``1차 채점(직선거리) → 상위 N곳 실측 조회 → 2차 채점(실측 반영)``
+
+    집합이 바뀌는 게 아니라 순서가 바뀐다. 최종 정렬은 두 번 다 가중합 점수순이고,
+    실측은 거리 Feature의 입력만 바꾼다.
+
+    **2차 대상을 실측을 받은 후보로 한정하는 것이 핵심이다.** scoring의
+    `_consistent_routes()`가 "후보 중 하나라도 실측이 없으면 전부 직선거리로
+    채점한다"고 정해 두었기 때문에, 전체를 채점하면서 일부만 실측을 붙이면 실측이
+    통째로 버려진다. 좁혀 두면 그 안에서는 전원이 실측을 가져 규칙을 만족한다.
+
+    실측을 못 받으면(이동수단 미지정·조회 실패) 1차 결과를 그대로 쓴다 — 같은
+    후보를 실측 없이 두 번 채점할 이유가 없다.
+    """
+    mode = to_travel_mode(conditions)
+    if travel_route_tool is None or mode is None:
+        return await recommendation_provider.score_prepared(
+            conditions, prepared, limit=recommendation_limit
+        )
+
+    # 1차 — 실측 없이 직선거리로 줄을 세워 실측할 후보를 고른다.
+    shortlist_limit = max(recommendation_limit, _MEASURED_ROUTE_CANDIDATE_LIMIT)
+    first_pass = await recommendation_provider.score_prepared(
+        conditions, prepared, limit=shortlist_limit
+    )
+    shortlist_ids = [
+        item.place_id
+        for item in (
+            *first_pass.recommendations,
+            *first_pass.unverified_recommendations,
+        )
+    ]
+    if not shortlist_ids:
+        return first_pass
+
+    narrowed = _narrow_prepared(prepared, shortlist_ids)
+    travel_routes = await _fetch_travel_routes(
+        travel_route_tool, tool_context, narrowed, mode, conditions
+    )
+    if not travel_routes:
+        return await recommendation_provider.score_prepared(
+            conditions, narrowed, limit=recommendation_limit
+        )
+
+    # 2차 — 실측을 받은 후보끼리 다시 줄을 세운다.
+    return await recommendation_provider.score_prepared(
+        conditions,
+        narrowed,
+        travel_routes=travel_routes,
+        limit=recommendation_limit,
+    )
+
+
+def _search_center_of(context: RecommendationContext) -> Coordinates | None:
+    """첫 조회가 확정한 검색 기준점 좌표. 보충 조회에 그대로 넘긴다.
+
+    없으면 None을 돌려주고, 그때 C는 예전처럼 위치를 다시 해석한다 — 보충이 아예
+    못 돌게 만드는 것보다 한 번 더 해석하는 편이 낫다.
+    """
+    location = context.location
+    if location is None or location.data is None:
+        return None
+    return location.data.location
+
+
+async def _saved_places_context(
+    tool_context: RecommendationContext,
+    *,
+    saved_places: Sequence[SavedPlaceItem],
+    place_details_repository: PlaceDetailsReadRepository | None,
+) -> RecommendationContext | None:
+    """보관함 장소 중 이번 턴 후보에 없는 것만 담은 Context를 만든다. (SCHEDULE-12 후속)
+
+    **왜 필요한가.** 한 턴의 후보 풀은 C가 이번 반경에서 모아온 것이 전부다
+    (`recommendation_candidate_limit`개). 보관함 장소를 여기에 넣어주는 단계가
+    없어서, 이전 턴에 담은 장소는 이번 수집분에 안 들어오면 후보가 되지 못하고
+    `planner._resolve_must_include()`가 조용히 버린다 — D-114의 배치 보장이
+    통째로 무력해진다. 같은 지역이어도 POI가 후보 상한보다 많으면 매 턴 다른
+    후보가 뽑히므로 흔하게 재현된다(2026-09-01, 인사동 4곳 중 3곳 누락).
+
+    **왜 후보 목록이 아니라 Context인가.** `schedule_candidates`에 직접 꽂으려면
+    `RecommendationItem`의 score·feature_scores·recommendation_reason을 만들어
+    내야 하는데, 그 값들이 편성 프롬프트에 그대로 들어가 LLM 판단을 왜곡한다.
+    한 단계 앞에 넣으면 D가 정상 채점하므로 지어낼 값이 없다.
+
+    좌표는 상세를 우선하고, 없으면 담을 때 찍어둔 스냅샷(`SavedPlaceItem`)으로
+    메운다. 둘 다 없으면 거리 계산을 할 수 없어 넣지 않는다 — 호출부가
+    `absent_saved_place_names`로 안내한다.
+
+    상세 조회가 실패해도 편성을 막지 않는다. 주입을 포기하고 기존 후보로 진행하며,
+    빠진 장소는 역시 안내로 나간다.
+    """
+
+    if not saved_places or place_details_repository is None:
+        return None
+    places = tool_context.places
+    if places is None or places.data is None:
+        # C가 이번 턴 후보를 아예 못 준 경우다. 주입해도 채점을 태울 자리가 없다.
+        return None
+
+    present = {place.place_id for place in places.data}
+    missing = [item for item in saved_places if item.place_id not in present]
+    if not missing:
+        return None
+
+    try:
+        details = await place_details_repository.get_active_place_details(
+            [item.place_id for item in missing]
+        )
+    except Exception:  # noqa: BLE001 - 주입 실패가 편성을 막으면 안 된다
+        logger.warning("보관함 장소 상세 조회 실패 — 후보 주입을 건너뛴다", exc_info=True)
+        return None
+
+    injected: list[PlaceCandidate] = []
+    for item in missing:
+        detail = details.get(item.place_id)
+        if detail is None:
+            continue
+        latitude = detail.latitude if detail.latitude is not None else item.latitude
+        longitude = detail.longitude if detail.longitude is not None else item.longitude
+        if latitude is None or longitude is None:
+            continue
+        injected.append(
+            PlaceCandidate(
+                place_id=item.place_id,
+                name=detail.title or item.name,
+                category=detail.content_type_id,
+                lcls_systm1=detail.lcls_systm1,
+                lcls_systm2=detail.lcls_systm2,
+                lcls_systm3=detail.lcls_systm3,
+                location=Coordinates(latitude=latitude, longitude=longitude),
+                operating_hours_raw=detail.operating_hours_raw,
+                rest_date_raw=detail.rest_date_raw,
+            )
+        )
+
+    if not injected:
+        return None
+    return tool_context.model_copy(
+        update={"places": places.model_copy(update={"data": injected})}
+    )
 
 
 def _merge_recommendation_context_places(
@@ -988,20 +1437,83 @@ def _candidate_pool_exhausted(context: RecommendationContext) -> bool:
     return len(places.data or []) < settings.recommendation_candidate_limit
 
 
+Coordinate: TypeAlias = tuple[float, float]
+
+
+def _place_coordinates(places: Sequence[PlaceCandidate]) -> dict[str, Coordinate]:
+    """C가 준 후보의 위경도를 place_id로 찾을 수 있게 펼친다."""
+
+    return {
+        place.place_id: (place.location.latitude, place.location.longitude)
+        for place in places
+    }
+
+
+def _snapshot_coordinates(session_context: SessionContextResponse) -> dict[str, Coordinate]:
+    """B에 남은 추천 시점 좌표 스냅샷을 place_id로 찾을 수 있게 펼친다 (SCHEDULE-12).
+
+    보관함에 담긴 장소는 여러 턴 전에 노출된 것일 수 있어, 이번 턴 C 응답에 아예
+    없을 수 있다(검색 반경 밖). 그때 후보 간 거리를 계산할 유일한 근거가 이 값이다.
+
+    보관함(`saved_places`)을 마지막 노출분(`shown_recommendations`)보다 나중에 넣어
+    덮어쓰게 한다 — 둘의 값은 같은 스냅샷에서 나오지만, 보관함 쪽이 "사용자가
+    명시적으로 고른 것"이라 우선순위를 명확히 해 둔다. 좌표가 없는 항목(이 필드
+    도입 이전 세션, C 컨텍스트를 안 거친 기록)은 건너뛴다.
+    """
+
+    coordinates: dict[str, Coordinate] = {}
+    for item in session_context.shown_recommendations:
+        if item.latitude is not None and item.longitude is not None:
+            coordinates[item.place_id] = (item.latitude, item.longitude)
+    for saved in session_context.saved_places:
+        if saved.latitude is not None and saved.longitude is not None:
+            coordinates[saved.place_id] = (saved.latitude, saved.longitude)
+    return coordinates
+
+
+def _coordinate_of(
+    place_id: str,
+    primary: Mapping[str, Coordinate],
+    fallback: Mapping[str, Coordinate],
+    axis: int,
+) -> float | None:
+    """place_id의 위도(axis=0) 또는 경도(axis=1). 어디에도 없으면 None. (SCHEDULE-12)
+
+    `_build_pairwise_distances_km()`과 같은 우선순위를 쓴다 — 이번 턴 C 응답이
+    있으면 그쪽, 없으면 B에 남은 이전 스냅샷. 이력에 기록할 때 fallback을 함께
+    보는 이유는, 한 번 확보한 좌표를 그 장소가 C 응답에서 빠진 턴에 잃지 않게
+    하려는 것이다.
+    """
+
+    coordinate = primary.get(place_id) or fallback.get(place_id)
+    return None if coordinate is None else coordinate[axis]
+
+
 def _build_pairwise_distances_km(
     candidates: list[RecommendationItem],
     places: list[PlaceCandidate],
+    *,
+    fallback_coordinates: Mapping[str, Coordinate] | None = None,
 ) -> dict[tuple[str, str], float]:
     """SCHEDULE 전용 — 후보 쌍 사이의 직선거리(km)를 계산한다.
 
     RecommendationItem에는 위경도가 없다(distance_km는 검색 중심 기준 거리라
     후보 간 거리를 못 구한다) — C가 준 PlaceCandidate(위경도 보유)를 place_id로
     매칭해 haversine_km()로 계산한다(docs/design/int-07-schedule.md 6.1절).
-    C 응답에 없는 place_id(매칭 실패)는 조용히 건너뛴다 — pairwise_distances_km는
+
+    `fallback_coordinates`는 C 응답에 없는 place_id를 위한 B의 추천 시점 스냅샷이다
+    (SCHEDULE-12, `_snapshot_coordinates()`). 보관함에 담긴 장소는 이번 턴 검색 반경
+    밖일 수 있어 C 응답에 아예 없는데, 그대로 건너뛰면 LLM이 그 장소의 거리 근거
+    없이 동선을 짠다 — 강남 장소가 종로 일정의 2번째에 꽂혀도 막을 수가 없다.
+    C 응답이 있으면 그쪽을 우선한다: 최신값이고, 같은 턴 후보끼리 같은 출처를 쓰는
+    편이 일관된다.
+
+    양쪽 어디에도 없는 place_id는 여전히 조용히 건너뛴다 — pairwise_distances_km는
     LLM에 참고 근거로만 쓰이므로 일부 누락되어도 편성 자체가 막히지 않는다.
     """
 
-    coordinates_by_place_id = {place.place_id: place.location for place in places}
+    coordinates_by_place_id = dict(fallback_coordinates or {})
+    coordinates_by_place_id.update(_place_coordinates(places))
     distances: dict[tuple[str, str], float] = {}
     for index, first in enumerate(candidates):
         first_location = coordinates_by_place_id.get(first.place_id)
@@ -1012,10 +1524,10 @@ def _build_pairwise_distances_km(
             if second_location is None:
                 continue
             distances[(first.place_id, second.place_id)] = haversine_km(
-                first_location.latitude,
-                first_location.longitude,
-                second_location.latitude,
-                second_location.longitude,
+                first_location[0],
+                first_location[1],
+                second_location[0],
+                second_location[1],
             )
     return distances
 
@@ -1057,7 +1569,7 @@ async def _apply_concentration_rerank(
 
     final_limit: 재순위 후 최종 노출 개수. 호출부가 1차 Scoring에 넘긴 limit과
     일치시켜야 한다. RECOMMEND/MODIFY는 recommendation_result_limit,
-    SCHEDULE은 recommendation_candidate_limit 설정을 사용한다. None이면
+    SCHEDULE은 SCHEDULE_RECOMMENDATION_LIMIT을 사용한다. None이면
     recommendation_result_limit을 이 시점에 읽는다.
 
     C 보강 조회(EnrichmentProvider.enrich())와 D의 2차 Scoring
@@ -1561,6 +2073,101 @@ def summarize_turn(response: AgentResponse) -> dict[str, object]:
     }
 
 
+def _conversation_place_names(response: AgentResponse) -> list[str]:
+    """이번 턴에 실제로 노출한 장소명을 대화 기억용으로 짧게 모은다."""
+
+    names: list[str] = []
+    if response.recommendations is not None:
+        names.extend(
+            item.name
+            for item in [
+                *response.recommendations.recommendations,
+                *response.recommendations.unverified_recommendations,
+            ]
+        )
+    if response.schedule is not None:
+        names.extend(item.place_name for item in response.schedule.items)
+    if response.comparison is not None:
+        names.extend(item.place_name for item in response.comparison.items)
+    if response.info_place_card is not None and response.info_place_card.place_name:
+        names.append(response.info_place_card.place_name)
+
+    unique: list[str] = []
+    for name in names:
+        cleaned = name.strip()
+        if cleaned and cleaned not in unique:
+            unique.append(cleaned)
+    return unique[:5]
+
+
+def _assistant_summary(turn: ConversationTurn) -> str | None:
+    """저장된 답변 문장과 구조화 재료를 다음 Gemini 호출의 model 메시지로 바꾼다.
+
+    답변 문장을 앞에 두고 재료를 괄호 꼬리로 붙인다 — 둘의 역할이 다르다. 문장은
+    "내가 방금 사용자에게 뭐라고 말했나"(답변 연속성)를, 재료는 "그 턴을 무엇으로
+    처리했나"(분류 정확도)를 담는다. 재료가 앞에 오면 모델이 그 내부 문구를 답변에
+    그대로 흘릴 위험이 커서 순서를 이렇게 둔다(_shared/rules/conversation_history.md가
+    "처리 기록은 인용하지 말라"고 함께 지시한다).
+
+    과거 세션에는 assistant_message가 없으므로 그때는 재료만으로 조립한다.
+    """
+
+    parts: list[str] = []
+    if turn.intent:
+        parts.append(f"처리 의도: {turn.intent}")
+    if turn.question_type:
+        parts.append(f"질문 유형: {turn.question_type}")
+    if turn.place_names:
+        parts.append(f"안내한 장소: {', '.join(turn.place_names)}")
+    if turn.offered_action:
+        parts.append(f"제안한 기능: {turn.offered_action}")
+    trace = "; ".join(parts)
+
+    message = (turn.assistant_message or "").strip()
+    if message and trace:
+        return f"{message}\n(처리 기록 — {trace})"
+    return message or trace or None
+
+
+def _conversation_history(session_context: SessionContextResponse) -> list[ConversationTurnView]:
+    """B가 보관한 최근 턴을 역할이 분리된 Gemini 대화 이력으로 변환한다."""
+
+    return [
+        ConversationTurnView(
+            user_input=turn.user_input,
+            assistant_summary=_assistant_summary(turn),
+        )
+        for turn in session_context.recent_turns
+    ]
+
+
+def _conversation_turn(request: AgentRequest, response: AgentResponse) -> ConversationTurn:
+    """완성된 응답에서 다음 턴에 필요한 것(답변 문장 + 처리 재료)을 뽑는다.
+
+    답변 문장은 `response.message`를 그대로 옮긴다 — 추가 LLM 호출 없이 이미 만들어진
+    값이다. 길이 상한은 append_conversation_turn()이 적용한다(자르는 책임을 한 곳에).
+    """
+
+    llm_output = response.llm_output
+    question_type = (
+        llm_output.info.question_type.value
+        if llm_output.info is not None
+        else None
+    )
+    offered_action: str | None = None
+    if llm_output.general is not None:
+        offer = offer_for(llm_output.general.situation)
+        offered_action = offer.action_id if offer is not None else None
+    return ConversationTurn(
+        user_input=request.user_input,
+        assistant_message=response.message or None,
+        intent=llm_output.intent.value,
+        question_type=question_type,
+        place_names=_conversation_place_names(response),
+        offered_action=offered_action,
+    )
+
+
 async def run_agent_flow(
     request: AgentRequest,
     *,
@@ -1569,6 +2176,10 @@ async def run_agent_flow(
     recommendation_provider: RecommendationProvider,
     enrichment_provider: EnrichmentProvider,
     travel_route_tool: TravelRouteToolProvider | None = None,
+    # 보관함 장소를 편성 후보에 주입할 때만 쓴다(SCHEDULE-12 후속). 없으면 주입을
+    # 건너뛰고 기존 동작 그대로다 — Supabase가 없는 환경이나 테스트 더블에서
+    # 흐름이 깨지지 않도록 optional로 둔다.
+    place_details_repository: PlaceDetailsReadRepository | None = None,
     store: StateStore | None = None,
     principal: Principal | None = None,
     stream_event_sink: StreamEventSink | None = None,
@@ -1623,6 +2234,7 @@ async def run_agent_flow(
                 recommendation_provider=recommendation_provider,
                 enrichment_provider=enrichment_provider,
                 travel_route_tool=travel_route_tool,
+                place_details_repository=place_details_repository,
                 store=store,
                 principal=principal,
                 stream_event_sink=stream_event_sink,
@@ -1653,6 +2265,20 @@ async def run_agent_flow(
         # 내보낸 뒤에 직접 만든다 — 아래 설명 참고.
         if generate_follow_ups:
             response.suggested_follow_ups = await suggest_follow_ups(request, response, llm=llm)
+        # 모든 정상 응답이 이 중앙 래퍼를 지나므로 여기서 한 번만 기록한다. 본체의
+        # 여러 조기 반환 지점마다 기록하면 새 경로가 생길 때 턴 하나가 빠지기 쉽다.
+        try:
+            append_conversation_turn(
+                AppendConversationTurnRequest(
+                    session_id=response.state.session_id,
+                    turn=_conversation_turn(request, response),
+                ),
+                store=store,
+            )
+        except Exception:
+            # 대화 기억은 응답 자체보다 부가 기능이다. 저장 장애가 이미 완성된 답변을
+            # 사용자에게 못 보내게 해서는 안 된다.
+            logger.warning("최근 대화 저장 실패(응답 흐름에는 영향 없음)", exc_info=True)
         try:
             summary = summarize_turn(response)
             turn.record(
@@ -1679,7 +2305,8 @@ def _turn_input(request: AgentRequest) -> dict[str, Any]:
     **좌표는 싣지 않는다.** `device_location`은 팀원이 테스트하는 자리의 실좌표라
     있고 없음만 남긴다(2026-08-26 결정, `graph/__init__.py::_location`과 같은 규칙).
 
-    `clarification_choice`·`travel_origin_override`는 **값이 있을 때만** 넣는다.
+    `clarification_choice`·`travel_origin_override`·`schedule_from_saved`는
+    **값이 있을 때만** 넣는다.
     이 둘이 채워진 턴은 LLM 분류를 건너뛰므로, 없는데 `classify_intent` span이
     안 보이면 그게 이상한 것이고 있으면 정상이다 — 그 구분이 여기서 된다.
     """
@@ -1694,6 +2321,8 @@ def _turn_input(request: AgentRequest) -> dict[str, Any]:
         payload["clarification_choice"] = request.clarification_choice
     if request.travel_origin_override is not None:
         payload["travel_origin_override"] = request.travel_origin_override.value
+    if request.schedule_from_saved:
+        payload["schedule_from_saved"] = True
     return payload
 
 
@@ -1736,6 +2365,7 @@ async def _run_agent_flow(
     recommendation_provider: RecommendationProvider,
     enrichment_provider: EnrichmentProvider,
     travel_route_tool: TravelRouteToolProvider | None = None,
+    place_details_repository: PlaceDetailsReadRepository | None = None,
     store: StateStore | None = None,
     principal: Principal | None = None,
     stream_event_sink: StreamEventSink | None = None,
@@ -1763,6 +2393,10 @@ async def _run_agent_flow(
     session_context = await ensure_current_context(
         request.session_id, valid_gps, store=store, principal=principal
     )
+    # 이 턴 전체가 쓰는 대화 이력. 해석 단계(InterpretRequest)와 답변 생성 단계가
+    # **같은 값**을 봐야 한다 — 한쪽만 보면 "무엇을 물었는지"와 "무엇이라 답할지"가
+    # 어긋난다(2026-08-31 실사용에서 답변 단계만 이력을 못 받아 생긴 문제).
+    turn_history = _conversation_history(session_context)
 
     # 2) A: LLMOutput 생성 (Intent 분류 + Intent별 조건 추출). B가 준 현재 조건(순수 문자열)을
     #    A 쪽 enum 타입으로 변환해서 넘긴다 — MODIFY 추출이 이 타입을 요구한다.
@@ -1775,14 +2409,33 @@ async def _run_agent_flow(
     # "OO 기준으로 다시 보기" 버튼(travel_origin_override, D-071)도 같은 이유로
     # 결정적으로 해소한다 — 둘 다 세션에 온 요청이면 클라리피케이션 쪽을 우선한다
     # (두 필드가 같은 턴에 함께 오는 경우는 없다).
+    # 보관함 CTA(schedule_from_saved, 카드 3)도 같은 비차단형이다. 우선순위는
+    # "사용자가 얼마나 명확히 고른 것인가" 순이다 — 되묻기 답변(질문에 대한 직접
+    # 응답) > 보관함 CTA(자기 payload를 가진 새 행동) > 기준 전환(직전 턴 재실행)
+    # > 제안 수락 발화(자유 텍스트 휴리스틱).
     if request.clarification_choice is not None:
         clarification_resolution = _resolve_clarification_choice(
             choice_id=request.clarification_choice,
             session_context=session_context,
         )
+    elif request.schedule_from_saved:
+        clarification_resolution = _resolve_schedule_from_saved(
+            session_context=session_context,
+        )
     elif request.travel_origin_override is not None:
         clarification_resolution = _resolve_travel_origin_override(
             override=request.travel_origin_override,
+            session_context=session_context,
+        )
+    elif (
+        session_context.situation_state is not None
+        and session_context.situation_state.pending_offer is not None
+    ):
+        # 대화층 4단계 — 직전 GENERAL 상황 턴이 낸 제안에 대한 "응"/"아니" 같은
+        # 짧은 응답을 결정적으로 해석한다. 정확 일치 화이트리스트에 안 맞으면
+        # None이 와서 평소 경로로 폴백한다(위 두 분기와 같은 안전 실패 패턴).
+        clarification_resolution = _resolve_offer_utterance(
+            user_input=request.user_input,
             session_context=session_context,
         )
     else:
@@ -1815,6 +2468,15 @@ async def _run_agent_flow(
             if session_context.has_recommendation or location_clarification_pending
             else None
         )
+        # 직전 턴이 INFO 되묻기(장소명 없음/장소 후보 모호)로 끝났을 때만 이전 질문
+        # 정보를 다음 턴 추출기에 건넨다 — 관련 없는 턴에 잘못 섞이지 않게 last_intent/
+        # pending_clarification/pending_info_context 세 조건을 모두 확인한다.
+        info_clarification_pending = (
+            session_context.last_intent == Intent.INFO.value
+            and session_context.pending_clarification is not None
+            and session_context.pending_info_context is not None
+        )
+        pending_info = session_context.pending_info_context if info_clarification_pending else None
         interpret_request = InterpretRequest(
             user_input=request.user_input,
             has_previous_recommendation=session_context.has_recommendation,
@@ -1827,6 +2489,10 @@ async def _run_agent_flow(
             # 이름이 없는 항목(name 저장 이전의 과거 세션 등)은 빈 문자열로 채운다.
             shown_place_names=[item.name or "" for item in session_context.shown_recommendations],
             conversation_place_name=request.conversation_place_name,
+            recent_turns=turn_history,
+            pending_info_question_type=pending_info.question_type if pending_info else None,
+            pending_info_specific_question=pending_info.specific_question if pending_info else None,
+            pending_info_visit_time=pending_info.visit_time if pending_info else None,
         )
         # classify_intent()에 이어 intent별 extract_*()까지 순차 LLM 호출 최대
         # 두 번이 이 안에서 일어난다. 평소엔 1~2초 안에 끝나 heartbeat가 거의 안
@@ -1863,6 +2529,21 @@ async def _run_agent_flow(
 
     if clarification_resolution is not None and clarification_resolution.ignore_operating_hours:
         _remember_ignore_operating_hours(state_response.session_id, store)
+
+    # 대화층 4단계 — 이번 턴이 상황 상태를 어떻게 바꾸는지는 어느 반환 경로로
+    # 끝나든 똑같으므로, 아래에서 갈라지는 여러 return보다 앞선 여기 한 곳에서만
+    # 계산·저장한다.
+    _sync_situation_state(
+        session_id=state_response.session_id,
+        llm_output=llm_output,
+        session_context=session_context,
+        reject_offer_action=(
+            clarification_resolution.reject_offer_action
+            if clarification_resolution is not None
+            else None
+        ),
+        store=store,
+    )
 
     # 2단계(LLM 호출) trace는 여기서 기록한다 — run_id/session_id가 apply() 안에서
     # 발급되므로 2단계 시점엔 아직 없다. latency만 미리 재뒀다가 여기서 기록.
@@ -1990,6 +2671,17 @@ async def _run_agent_flow(
             )
             _remember_clarification(
                 state_response.session_id, "schedule06_ambiguous_recommend", store
+            )
+            # apply()(3번)는 이번 턴의 원본 intent(MODIFY)로 last_intent를 이미
+            # 저장했다 — 그대로 두면 다음 턴 classify_intent가 "직전 SCHEDULE
+            # 되묻기"라는 신호를 받지 못해 자유 텍스트 답변("추천만 해줘" 등)이
+            # 아무 맥락 없이 새로 분류된다(아래 8)의 SCHEDULE relabel과 같은 이유,
+            # D-061). 이 되묻기는 SCHEDULE 흐름에서 나온 것이므로 여기서도 바로잡는다.
+            set_last_intent(
+                SetLastIntentRequest(
+                    session_id=state_response.session_id, intent=Intent.SCHEDULE.value
+                ),
+                store=store,
             )
             message = await compose_chat_message(clarification_llm_output, llm=llm)
             return AgentResponse(
@@ -2155,6 +2847,7 @@ async def _run_agent_flow(
             info_walking_route=info_walking_route,
             info_walking_origin_available=info_origin_location is not None,
             on_message_delta=(emit_info_message_delta if stream_info_message else None),
+            history=turn_history,
         )
         return AgentResponse(
             llm_output=llm_output,
@@ -2310,9 +3003,39 @@ async def _run_agent_flow(
             _remember_clarification(
                 state_response.session_id, _llm_clarification_code(llm_output), store
             )
+            # INFO가 장소명이 없어 되묻는 경우(place_ambiguous와 달리 여기는 버튼이
+            # 없어 자유 텍스트가 유일한 응답 경로다) question_type 등 이미 파악한
+            # 정보를 저장해둔다 — 안 남기면 다음 턴이 장소명만으로 처음부터
+            # 재분류되어 "혼잡도 질문이었다"는 사실이 사라진다(2026-08-31 실사용
+            # 재현). info/extract.md가 "반드시 info 필드를 채우고"라고 지시하므로
+            # (place_name이 없어도) question_type/specific_question/visit_time은
+            # 채워져 있다. place_ambiguous는 이 지점 이전에 이미 별도로 저장하고
+            # 반환하므로 여기서 다시 저장되지 않는다.
+            if llm_output.intent is Intent.INFO and llm_output.info is not None:
+                set_pending_info_context(
+                    SetPendingInfoContextRequest(
+                        session_id=state_response.session_id,
+                        context=PendingInfoContext(
+                            question_type=llm_output.info.question_type.value,
+                            place_context=llm_output.info.place_context.value,
+                            specific_question=llm_output.info.specific_question,
+                            visit_time=llm_output.info.visit_time,
+                        ),
+                    ),
+                    store=store,
+                )
         # terminal_message가 있는 경우는 위(3단계 직후)에서 이미 처리하고
         # 반환했으므로 여기서는 다시 안 본다.
         is_streaming_general = stream_recommendation_summary and llm_output.intent is Intent.GENERAL
+        # 대화층 3·4단계 — 이번 턴 이전에 이미 거절된 제안이면 답변 문구도, 버튼도
+        # 다시 권하지 않는다. session_context는 이번 턴 이전 상태이므로 이번 턴
+        # 자체가 방금 거절한 제안은 여기 안 잡히지만, 그 경로(터미널 메시지)는 이
+        # 분기에 도달하기 전에 이미 반환한다.
+        rejected_offer_actions = (
+            session_context.situation_state.rejected_actions
+            if session_context.situation_state is not None
+            else []
+        )
         if settings.use_langgraph_early_return:
             # 2단계: 조기 반환 경로(Tool/Scoring 없이 끝나는 턴) 전체를 라우팅
             # 그래프가 맡는다(langgraph-adoption.md §6.1). RECOMMEND/MODIFY/
@@ -2323,6 +3046,8 @@ async def _run_agent_flow(
                 llm=llm,
                 stream_event_sink=stream_event_sink,
                 stream_general=is_streaming_general,
+                rejected_offer_actions=rejected_offer_actions,
+                history=turn_history,
             )
         else:
             if is_streaming_general:
@@ -2339,12 +3064,24 @@ async def _run_agent_flow(
                 llm_output,
                 llm=llm,
                 on_message_delta=emit_general_message_delta if is_streaming_general else None,
+                rejected_offer_actions=rejected_offer_actions,
             )
+        # 상황 제안의 후속 버튼(대화층 4단계). LLM을 다시 부르지 않는다 — 무엇을
+        # 제안할지는 이미 situational_offers가 코드로 정했다. 버튼을 누르면 이
+        # 문구가 그대로 사용자 발화로 재전송되어(suggested_follow_ups의 기존 계약)
+        # 자연스러운 RECOMMEND 요청이 된다. follow_up_suggester.suggest_follow_ups()가
+        # 이 값이 이미 채워져 있으면 자기 LLM 호출을 건너뛰고 그대로 둔다.
+        offer_follow_up: list[str] = []
+        if llm_output.intent is Intent.GENERAL and llm_output.general is not None:
+            offer = offer_for(llm_output.general.situation)
+            if offer is not None and offer.action_id not in rejected_offer_actions:
+                offer_follow_up = [offer.button_label]
         return AgentResponse(
             llm_output=llm_output,
             state=state_response,
             recommendations=None,
             message=message,
+            suggested_follow_ups=offer_follow_up,
             llm_execution=get_llm_execution_metadata(),
         )
 
@@ -2373,6 +3110,7 @@ async def _run_agent_flow(
                 travel_route_tool=travel_route_tool,
                 store=store,
                 principal=principal,
+                place_details_repository=place_details_repository,
             ),
             stream_event_sink=stream_event_sink,
         )
@@ -2387,7 +3125,7 @@ async def _run_agent_flow(
         tool_provider=tool_provider,
         travel_route_tool=travel_route_tool,
         store=store,
-        shown_place_ids=_revivable_shown_place_ids(llm_output, session_context),
+        shown_place_ids=_revivable_place_ids(llm_output, session_context),
         stream_event_sink=stream_event_sink,
     )
     if tool_outcome.terminal is not None:
@@ -2408,7 +3146,9 @@ async def _run_agent_flow(
         agent_conditions=agent_conditions,
         context_gps=context_gps,
         is_schedule=is_schedule,
-        shown_place_ids=_revivable_shown_place_ids(llm_output, session_context),
+        shown_place_ids=_revivable_place_ids(llm_output, session_context),
+        saved_places=session_context.saved_places,
+        place_details_repository=place_details_repository,
         tool_provider=tool_provider,
         recommendation_provider=recommendation_provider,
         enrichment_provider=enrichment_provider,
@@ -2444,6 +3184,7 @@ async def _run_agent_flow(
         llm=llm,
         store=store,
         principal=principal,
+        tool_context=tool_context,
         tool_execution=tool_execution,
         tool_executions=tool_executions,
         effective_ignore_operating_hours=effective_ignore_operating_hours,
@@ -2619,15 +3360,14 @@ async def _fetch_tool_context(
                     }
                 )
         elif tool_response.status == "no_data":
-            # 원인2(이전 노출/거절로 소진)와 원인1+3(TourAPI 자체가 0건)을
-            # provider_metadata의 원본 상태로 구분한다 — 위 상수 블록 주석 참고.
+            # 원인2(이전 노출/거절로 소진)는 C가 실제 후보와 excluded_place_ids를
+            # 비교해 남긴 명시 경고로만 구분한다. Provider 성공만으로는 원인1+3과
+            # 구분할 수 없어 "다 보여드렸어요"라는 오안내를 만들 수 있다.
             places_value = (
                 tool_response.context.places if tool_response.context is not None else None
             )
-            provider_statuses = {
-                item.status for item in (places_value.provider_metadata if places_value else [])
-            }
-            if "success" in provider_statuses:
+            warning_codes = {item.code for item in (places_value.warnings if places_value else [])}
+            if "candidate_pool_exhausted" in warning_codes:
                 no_data_code = "no_data_exhausted"
                 no_data_message = _NO_DATA_EXHAUSTED_MESSAGE
                 no_data_options = _NO_DATA_EXHAUSTED_OPTIONS
@@ -2711,24 +3451,36 @@ async def _fetch_tool_context(
     )
 
 
-def _revivable_shown_place_ids(
+def _revivable_place_ids(
     llm_output: LLMOutput, session_context: SessionContextResponse
 ) -> Sequence[str]:
-    """직전 노출분 중 이번 턴에 후보로 되살려도 되는 것을 고른다 (TP-180).
+    """이번 턴에 후보로 되살려도 되는 place_id를 고른다 (TP-180 → SCHEDULE-12).
 
-    되살리는 것은 **새 SCHEDULE 턴**뿐이다. 재조정 턴(REJECT_ALL "다른 곳 보여줘",
-    REJECT_SPECIFIC "두 번째는 별로야")은 MODIFY로 분류된 뒤 SCHEDULE로 relabel되며,
-    사용자가 방금 그 장소들을 거절한 턴이다. 거절 대상은 `rejected`로 제외 목록에
-    들어가지만 `shown_place_ids`에도 그대로 남아 있어, 구분 없이 되살리면 REJECT
-    이력이 통째로 무력화된다(재조정해도 같은 장소가 다시 나온다).
+    두 출처를 합친다.
 
-    relabel된 재조정 턴은 `llm_output.modify`가 채워져 있다 — `_run_schedule_branch()`가
-    pinned_items를 쓸지 판단하는 것과 같은 신호를 쓴다.
+    **직전 노출분(`shown_place_ids`)** 은 **새 SCHEDULE 턴**에만 되살린다. 재조정
+    턴(REJECT_ALL "다른 곳 보여줘", REJECT_SPECIFIC "두 번째는 별로야")은 MODIFY로
+    분류된 뒤 SCHEDULE로 relabel되며, 사용자가 방금 그 장소들을 거절한 턴이다.
+    거절 대상은 `rejected`로 제외 목록에 들어가지만 `shown_place_ids`에도 그대로
+    남아 있어, 구분 없이 되살리면 REJECT 이력이 통째로 무력화된다(재조정해도 같은
+    장소가 다시 나온다). relabel된 재조정 턴은 `llm_output.modify`가 채워져 있다 —
+    `_run_schedule_branch()`가 pinned_items를 쓸지 판단하는 것과 같은 신호다.
+
+    **보관함(`saved_places`)** 은 재조정 턴에도 되살린다(SCHEDULE-12). 사용자가
+    명시적으로 담아둔 것이라, "두 번째는 별로야"가 담아둔 나머지까지 후보에서
+    빼야 할 이유가 없다. 거절과 겹칠 걱정도 없다 — `record_rejected()`가 거절
+    시점에 같은 place_id를 보관함에서 빼므로 `saved ∩ rejected = ∅`이 구조적으로
+    보장된다(state/history.py). 그래서 여기서 타임스탬프를 비교하지 않는다.
+
+    보관함이 `shown_place_ids`와 별도로 필요한 이유는 후자가 **마지막 run만**
+    담기 때문이다(`history.get_shown_place_ids()`) — 3턴 전에 담은 장소는 거기
+    없어서 제외 목록에 그대로 남고 후보에서 빠진다.
     """
 
+    saved_place_ids = [item.place_id for item in session_context.saved_places]
     if llm_output.modify is not None:
-        return ()
-    return session_context.shown_place_ids
+        return saved_place_ids
+    return [*session_context.shown_place_ids, *saved_place_ids]
 
 
 def _effective_excluded_place_ids(
@@ -2747,7 +3499,7 @@ def _effective_excluded_place_ids(
 
     그래서 SCHEDULE 턴에서만 마지막 run의 노출분을 후보 풀로 되살린다. 제외 목록의
     의미(`get_exclusion_place_ids()`의 계약)는 바꾸지 않는다 — 이 턴에 무엇을
-    넘길지만 조정한다. 무엇을 되살릴지는 `_revivable_shown_place_ids()`가 정한다 —
+    넘길지만 조정한다. 무엇을 되살릴지는 `_revivable_place_ids()`가 정한다 —
     거절된 장소도 shown에 남아 있어 그대로 되살리면 REJECT 이력이 무력화된다.
     RECOMMEND를 연속 요청하는 흐름은 `is_schedule=False`라 영향을 받지 않는다.
     """
@@ -2768,6 +3520,11 @@ async def _score_recommendations(
     # 마지막 run에서 사용자에게 보여준 place_id(rank 순). SCHEDULE 턴에서
     # 제외 목록을 되살리는 데만 쓴다(TP-180).
     shown_place_ids: Sequence[str] = (),
+    # 사용자가 담아둔 장소(담은 순서). SCHEDULE 턴에서 이번 후보에 없는 것을
+    # 후보 컨텍스트에 주입하는 데만 쓴다 — 안 넣으면 D-114의 배치 보장이
+    # `planner._resolve_must_include()`에서 조용히 무력해진다.
+    saved_places: Sequence[SavedPlaceItem] = (),
+    place_details_repository: PlaceDetailsReadRepository | None = None,
     tool_provider: ToolProvider,
     recommendation_provider: RecommendationProvider,
     enrichment_provider: EnrichmentProvider,
@@ -2794,8 +3551,9 @@ async def _score_recommendations(
     )
 
     # 6) A → D: 1차 Scoring (Protocol을 통해서만 — D의 구체 클래스는 여기서 모른다).
-    #    최종 반환은 RECOMMEND/MODIFY가 recommendation_result_limit, SCHEDULE이
-    #    recommendation_candidate_limit을 쓴다(docs/design/int-07-schedule.md 2절/5절).
+    #    최종 반환은 RECOMMEND/MODIFY가 recommendation_result_limit,
+    #    SCHEDULE이 SCHEDULE_RECOMMENDATION_LIMIT을 쓴다
+    #    (docs/design/int-07-schedule.md 2절/5절).
     #
     #    보충 조회 목표(candidate_target)는 recommendation_candidate_limit이다 —
     #    하드 필터를 통과한 후보를 설정된 후보 상한만큼 모아두고 그 안에서 고른다.
@@ -2807,7 +3565,7 @@ async def _score_recommendations(
     #    잡아내 보충하지 않는다.)
     candidate_target = settings.recommendation_candidate_limit
     recommendation_limit = (
-        settings.recommendation_candidate_limit
+        SCHEDULE_RECOMMENDATION_LIMIT
         if is_schedule
         else settings.recommendation_result_limit
     )
@@ -2817,6 +3575,16 @@ async def _score_recommendations(
         "조건에 맞게 장소 순위를 계산하고 있어요.",
     )
     scoring_started_at = time.monotonic()
+    # 주입한 보관함 장소 id. 채점이 끝난 뒤 상위 N 자르기에서 빠졌는지 확인해
+    # 다시 붙이는 데 쓴다(아래 두 분기).
+    #
+    # 처음에는 상한을 주입 개수만큼 올리는 것으로 막으려 했는데 방어가 되지
+    # 않는다 — 후보 풀이 상한보다 크면 주입분은 그냥 하위권에 깔린다. 하필
+    # 보관함의 주력 유스케이스가 구 간 이동(= 검색 반경 밖)이라 거리 점수가
+    # 0으로 깔려, 가장 확실하게 잘리는 것이 보관함 장소다. 게다가 상한을 올리면
+    # _score_with_measured_routes()의 shortlist_limit이 같이 커져 도보 실측
+    # 조회까지 늘어난다(D-113이 줄여놓은 것을 되돌린다).
+    injected_saved_ids: list[str] = []
     if isinstance(recommendation_provider, StagedRecommendationProvider):
         # 같은 실행의 모든 prepare가 동일한 운영시간 기준을 사용해야 한다. B 세션에는
         # 저장하지 않고 이 실행 동안만 고정한다.
@@ -2854,6 +3622,11 @@ async def _score_recommendations(
                         if place_id not in excluded_place_ids
                     ),
                 ],
+                # 첫 조회가 확정한 기준점을 넘겨 C가 장소만 다시 주게 한다. 보충
+                # 배치의 위치·날씨·공휴일은 아래 병합에서 버려지므로(첫 배치 값을
+                # 그대로 쓴다) 계산할 이유가 없다 — 보충 1회가 외부 호출 7건에서
+                # 2건으로 준다.
+                resolved_search_center=_search_center_of(tool_context),
             )
             # stage는 "scoring"을 유지한다 — 프론트가 stage로 진행 순서를 그리므로
             # 여기서 fetching_context로 되돌리면 진행 표시가 뒤로 간다. 문구만 바꾼다
@@ -2927,21 +3700,63 @@ async def _score_recommendations(
             )
             candidate_pool_exhausted = _candidate_pool_exhausted(refill_context)
 
-        merged_prepared = recommendation_provider.merge_prepared(prepared_batches)
-        travel_routes = await _fetch_travel_routes(
-            travel_route_tool,
+        # 보충 루프가 끝난 뒤에 붙인다. 루프 안에서 넣으면 C가 뒤늦게 같은 장소를
+        # 돌려줬을 때 배치가 겹치고, 소진 판정(_candidate_pool_exhausted)이 보는
+        # 후보 수도 실제 C 응답과 어긋난다.
+        saved_context = await _saved_places_context(
             tool_context,
-            merged_prepared,
-            to_travel_mode(agent_conditions),
-            agent_conditions,
+            saved_places=saved_places if is_schedule else (),
+            place_details_repository=place_details_repository,
         )
-        recommendations = await recommendation_provider.score_prepared(
+        if saved_context is not None:
+            # 제외 목록을 넘기지 않는다 — 보관함은 사용자가 직접 고른 것이고,
+            # record_rejected()가 거절과의 교집합을 구조적으로 비워둔다.
+            prepared_batches.append(
+                await recommendation_provider.prepare(
+                    agent_conditions,
+                    saved_context,
+                    [],
+                    visit_at=visit_at,
+                    ignore_operating_hours=effective_ignore_operating_hours,
+                )
+            )
+            tool_context = _merge_recommendation_context_places(tool_context, saved_context)
+            injected_saved_ids = [
+                place.place_id for place in (saved_context.places.data or [])
+            ]
+
+        merged_prepared = recommendation_provider.merge_prepared(prepared_batches)
+        recommendations = await _score_with_measured_routes(
+            recommendation_provider,
             agent_conditions,
             merged_prepared,
-            travel_routes=travel_routes,
-            limit=recommendation_limit,
+            tool_context=tool_context,
+            travel_route_tool=travel_route_tool,
+            recommendation_limit=recommendation_limit,
         )
+        # 자르기에서 빠진 보관함 장소만 좁혀서 한 번 더 채점해 붙인다. 점수를
+        # 지어내지 않는 것이 핵심이다 — D가 같은 공식으로 실제로 매긴다.
+        cut_saved_ids = _missing_place_ids(recommendations, injected_saved_ids)
+        if cut_saved_ids:
+            pinned = await recommendation_provider.score_prepared(
+                agent_conditions,
+                _narrow_prepared(merged_prepared, cut_saved_ids),
+                limit=len(cut_saved_ids),
+            )
+            recommendations = _with_pinned_recommendations(
+                recommendations, pinned, cut_saved_ids
+            )
     else:
+        saved_context = await _saved_places_context(
+            tool_context,
+            saved_places=saved_places if is_schedule else (),
+            place_details_repository=place_details_repository,
+        )
+        if saved_context is not None:
+            tool_context = _merge_recommendation_context_places(tool_context, saved_context)
+            injected_saved_ids = [
+                place.place_id for place in (saved_context.places.data or [])
+            ]
         recommendations = await recommendation_provider.recommend(
             agent_conditions,
             tool_context,
@@ -2949,6 +3764,21 @@ async def _score_recommendations(
             limit=recommendation_limit,
             ignore_operating_hours=effective_ignore_operating_hours,
         )
+        # staged 분기와 같은 이유로 자르기에서 빠진 것만 다시 붙인다. 이쪽은
+        # prepare 결과가 없어 좁힐 대상이 Context뿐이라 주입 Context를 그대로
+        # 다시 채점하고, 실제로 빠졌던 id만 골라 붙인다.
+        cut_saved_ids = _missing_place_ids(recommendations, injected_saved_ids)
+        if cut_saved_ids and saved_context is not None:
+            pinned = await recommendation_provider.recommend(
+                agent_conditions,
+                saved_context,
+                [],
+                limit=len(cut_saved_ids),
+                ignore_operating_hours=effective_ignore_operating_hours,
+            )
+            recommendations = _with_pinned_recommendations(
+                recommendations, pinned, cut_saved_ids
+            )
     _record_trace_safely(
         session_id=state_response.session_id,
         run_id=state_response.run_id,
@@ -3057,6 +3887,22 @@ async def _run_schedule_branch(
             tool_executions=tool_executions,
         )
     places = tool_context.places.data if tool_context.places and tool_context.places.data else []
+    # 이번 턴 C 응답에 없는 후보(보관함에 담긴 지 여러 턴 지난 장소 등)의 좌표는
+    # B에 남은 추천 시점 스냅샷으로 메운다(SCHEDULE-12).
+    snapshot_coordinates = _snapshot_coordinates(session_context)
+    place_coordinates = _place_coordinates(places)
+    # 보관함에 담긴 장소는 이번 일정에 반드시 들어가야 한다(SCHEDULE-12). 담은
+    # 순서를 그대로 넘긴다 — 항목 수 상한을 넘으면 planner가 이 순서로 앞에서부터
+    # 자르므로 정렬을 바꾸면 "왜 그 곳이 빠졌는지" 설명이 달라진다.
+    saved_place_ids = [item.place_id for item in session_context.saved_places]
+    # 후보 목록에 아예 없는 보관함 장소(폐점 하드 필터 등으로 D가 걸러낸 경우).
+    # planner는 이름을 알 방법이 없으므로 여기서 보관함에 저장된 이름으로 채운다.
+    candidate_place_ids = {c.place_id for c in schedule_candidates}
+    absent_saved_place_names = [
+        item.name
+        for item in session_context.saved_places
+        if item.place_id not in candidate_place_ids
+    ]
 
     # 6-2-1) SCHEDULE-09 2단계: REJECT_SPECIFIC으로 재라우팅된 턴이면 통째로
     #        새로 짜지 않고, target_indices가 가리키는 자리만 새로 채운다.
@@ -3115,7 +3961,9 @@ async def _run_schedule_branch(
             candidates=schedule_candidates,
             conditions=agent_conditions,
             visit_datetime=None,
-            pairwise_distances_km=_build_pairwise_distances_km(schedule_candidates, places),
+            pairwise_distances_km=_build_pairwise_distances_km(
+                schedule_candidates, places, fallback_coordinates=snapshot_coordinates
+            ),
         )
         await _emit_progress(
             stream_event_sink,
@@ -3132,9 +3980,15 @@ async def _run_schedule_branch(
     else:
         schedule_request = SchedulePlanningRequest(
             candidates=schedule_candidates,
+            # 부분 재편성(위 if 분기)에는 넘기지 않는다 — 그쪽은 pinned_items가
+            # 이미 자리를 붙들고 있고, 사용자가 지목한 자리만 새로 채우는
+            # 턴이라 담아둔 장소를 그 자리에 밀어넣을 이유가 없다.
+            must_include_place_ids=saved_place_ids,
             conditions=agent_conditions,
             visit_datetime=None,
-            pairwise_distances_km=_build_pairwise_distances_km(schedule_candidates, places),
+            pairwise_distances_km=_build_pairwise_distances_km(
+                schedule_candidates, places, fallback_coordinates=snapshot_coordinates
+            ),
         )
         await _emit_progress(
             stream_event_sink,
@@ -3145,6 +3999,14 @@ async def _run_schedule_branch(
             plan_schedule(schedule_request, llm, co_visited_fetcher=fetch_co_visited_hints),
             sink=stream_event_sink,
             stage="scheduling",
+        )
+
+    if absent_saved_place_names:
+        # planner가 채운 목록과 합치지 않는다 — 사유가 정반대라, 섞으면 화면이
+        # 두 경우에 같은 해결책("시간을 늘려보라")을 안내하게 된다. 후보에 아예
+        # 없었던 장소는 시간을 늘려도 들어가지 않는다.
+        schedule_result = schedule_result.model_copy(
+            update={"absent_saved_place_names": absent_saved_place_names}
         )
 
     await _emit_progress(
@@ -3165,6 +4027,15 @@ async def _run_schedule_branch(
                         place_id=item.place_id,
                         rank=item.order,
                         name=item.place_name,
+                        # 다음 턴이 이 장소를 보관함에서 되살릴 때 쓸 좌표
+                        # 스냅샷(SCHEDULE-12). C 응답에 없으면 이전 스냅샷을
+                        # 그대로 이어 적어, 한 번 확보한 좌표를 잃지 않는다.
+                        latitude=_coordinate_of(
+                            item.place_id, place_coordinates, snapshot_coordinates, 0
+                        ),
+                        longitude=_coordinate_of(
+                            item.place_id, place_coordinates, snapshot_coordinates, 1
+                        ),
                         estimated_arrival=item.estimated_arrival,
                         estimated_duration_min=item.estimated_duration_min,
                         travel_to_next_min=item.travel_to_next_min,
@@ -3239,6 +4110,10 @@ async def _finalize_recommendation_response(
     llm: LLMProvider,
     store: StateStore | None,
     principal: Principal | None,
+    # 이번 턴 C 응답. 노출 이력에 추천 시점 좌표를 함께 남기는 데만 쓴다
+    # (SCHEDULE-12). 좌표를 못 구하는 경로(테스트 더블 등)는 None으로 둘 수 있고,
+    # 그때는 좌표만 비고 나머지 동작은 이전과 같다.
+    tool_context: RecommendationContext | None = None,
     tool_execution: ToolExecutionDebug | None,
     tool_executions: list[ToolExecutionDebug],
     effective_ignore_operating_hours: bool,
@@ -3249,8 +4124,9 @@ async def _finalize_recommendation_response(
 
     `run_agent_flow()`의 꼬리를 그대로 옮긴 것이다 — 라우팅 그래프가 이 단계를 노드로
     감쌀 수 있게 먼저 함수로 떼어냈다(docs/design/langgraph-adoption.md §6.1 3단계).
-    **본문은 한 줄도 바꾸지 않았다**: 이관은 출력이 같아야 하는 작업이라, 옮기는 것과
-    고치는 것을 같은 커밋에 섞지 않는다.
+    이관 당시에는 본문을 한 줄도 바꾸지 않았고, 이후 SCHEDULE-12로 노출 이력에 좌표를
+    싣는 인자(`tool_context`)가 붙었다 — `_run_schedule_branch()`가 같은 값을 받는
+    것과 같은 모양이다.
     """
 
     # 7) A → B: 실제로 화면에 노출된 결과만 기록한다. recommendations와
@@ -3276,6 +4152,11 @@ async def _finalize_recommendation_response(
             tool_executions=tool_executions,
         )
     if shown:
+        shown_coordinates = _place_coordinates(
+            tool_context.places.data
+            if tool_context is not None and tool_context.places and tool_context.places.data
+            else []
+        )
         record_recommendation(
             RecordRecommendationRequest(
                 session_id=state_response.session_id,
@@ -3285,6 +4166,10 @@ async def _finalize_recommendation_response(
                         place_id=item.place_id,
                         rank=index + 1,
                         name=item.name,
+                        # 다음 SCHEDULE 턴이 이 장소를 보관함에서 되살릴 때 쓸
+                        # 좌표 스냅샷(SCHEDULE-12).
+                        latitude=_coordinate_of(item.place_id, shown_coordinates, {}, 0),
+                        longitude=_coordinate_of(item.place_id, shown_coordinates, {}, 1),
                         distance_km=item.distance_km,
                         remaining_minutes=item.remaining_minutes,
                         environment_type=item.environment_type,
@@ -3331,11 +4216,18 @@ async def _finalize_recommendation_response(
     async def emit_message_delta(text: str) -> None:
         await _emit_stream_event(stream_event_sink, "message_delta", {"text": text})
 
+    # 말풍선은 지금까지 카드 데이터만 받아서, 동행을 friend로 정확히 뽑아 놓고도
+    # "혼자서도 가기 좋고"로 답하는 일이 있었다(2026-08-31 실사용). 누적 조건을 함께
+    # 넘긴다 — 사실 근거는 여전히 카드에서만 오고, 이 값은 강조점·말투만 고른다
+    # (recommend/summary_instruction.md). 새 파라미터를 만들지 않고 state_response에서
+    # 뽑으므로 두 호출부(직접 경로·그래프 노드)가 함께 혜택을 본다.
+    stated_conditions = to_user_conditions(state_response.user_conditions)
     if should_stream_summary:
         message = await compose_recommendation_summary(
             intent=llm_output.intent,
             recommendations=recommendations,
             llm=llm,
+            conditions=stated_conditions,
             on_message_delta=emit_message_delta,
         )
         # 부가 설명 생성 실패는 추천 자체의 실패가 아니다. 카드 앞에 이미 나온
@@ -3346,6 +4238,7 @@ async def _finalize_recommendation_response(
             llm_output,
             recommendations=recommendations,
             llm=llm,
+            conditions=stated_conditions,
         )
     # 빈 스트림·부가 설명 실패여도 result는 이미 보냈거나 여기서 한 번 보장한다.
     await emit_recommendation_result()
@@ -3380,19 +4273,26 @@ async def run_agent(
         get_llm_provider,
         get_place_details_repository,
         get_place_evidence_provider,
+        get_recommendation_card_tool,
         get_travel_route_tool,
     )
     from app.services.runtime.real_recommendation_provider import RealRecommendationProvider
 
     async with create_external_client() as client:
+        # D의 채점기와 보관함 주입이 같은 저장소를 쓴다 — 두 번 만들 이유가 없다.
+        place_details_repository = get_place_details_repository(client)
         return await run_agent_flow(
             request,
             llm=get_llm_provider(),
             tool_provider=get_context_provider(client),
             recommendation_provider=RealRecommendationProvider(
                 get_place_evidence_provider(client),
-                get_place_details_repository(client),
+                place_details_repository,
+                # 원래 COMPARE 전용 Tool(app/tools/recommendation_cards.py)이지만
+                # 썸네일 조회 로직은 그대로 재사용한다(TECH-02).
+                get_recommendation_card_tool(client),
             ),
+            place_details_repository=place_details_repository,
             enrichment_provider=get_candidate_enrichment_service(client),
             travel_route_tool=get_travel_route_tool(client),
             principal=principal,

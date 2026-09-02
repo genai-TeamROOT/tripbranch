@@ -982,3 +982,155 @@ class TestRoundUpArrival:
 
     def test_형식이_깨진_값은_그대로_돌려준다(self) -> None:
         assert _round_up_arrival("점심시간") == "점심시간"
+
+
+# ------------------------------------------------ 보관함 강제 포함 (SCHEDULE-12)
+
+
+class _SequenceLLM:
+    """호출마다 다른 plan을 돌려주는 더블. must_include 재시도 검증용."""
+
+    def __init__(self, *plans: ScheduleLLMPlan) -> None:
+        self._plans = list(plans)
+        self.received_requests: list[SchedulePlanningRequest] = []
+
+    @property
+    def call_count(self) -> int:
+        return len(self.received_requests)
+
+    async def generate_schedule_plan(self, request: SchedulePlanningRequest):
+        self.received_requests.append(request)
+        plan = self._plans[min(self.call_count - 1, len(self._plans) - 1)]
+        return provider_result(plan, source=ProviderSource.FAKE_LLM)
+
+
+def _plan_of(*place_ids: str) -> ScheduleLLMPlan:
+    return ScheduleLLMPlan(
+        items=[
+            _sample_item(place_id, order) for order, place_id in enumerate(place_ids, start=1)
+        ],
+        total_duration_min=60,
+        route_summary="테스트 동선 요약",
+    )
+
+
+@pytest.mark.asyncio
+async def test_must_include_is_passed_to_llm() -> None:
+    """강제 포함 목록이 LLM 요청에 그대로 실린다."""
+    llm = _RecordingLLM(_plan_of("place-1", "place-2", "place-3"))
+    request = SchedulePlanningRequest(
+        candidates=_three_candidates(),
+        must_include_place_ids=["place-2"],
+        conditions=UserConditions(),
+        pairwise_distances_km={},
+    )
+
+    result = await plan_schedule(request, llm)
+
+    assert llm.received_request is not None
+    assert llm.received_request.must_include_place_ids == ["place-2"]
+    assert result.omitted_saved_place_names == []
+
+
+@pytest.mark.asyncio
+async def test_must_include_not_in_candidates_is_dropped_silently() -> None:
+    """후보에 없는 id는 강제할 수 없다 — 이름을 모르므로 안내도 여기서 채우지 않는다.
+
+    폐점 하드 필터 등으로 D가 걸러낸 경우다. 안내 문구는 호출부(agent_runtime)가
+    보관함에 저장된 이름으로 따로 채운다.
+    """
+    llm = _RecordingLLM(_plan_of("place-1", "place-2", "place-3"))
+    request = SchedulePlanningRequest(
+        candidates=_three_candidates(),
+        must_include_place_ids=["place-2", "없는-장소"],
+        conditions=UserConditions(),
+        pairwise_distances_km={},
+    )
+
+    result = await plan_schedule(request, llm)
+
+    assert llm.received_request is not None
+    assert llm.received_request.must_include_place_ids == ["place-2"]
+    assert result.omitted_saved_place_names == []
+
+
+@pytest.mark.asyncio
+async def test_must_include_over_item_cap_is_trimmed_in_saved_order() -> None:
+    """상한을 넘으면 담은 순서대로 앞에서부터만 쓰고, 나머지는 이름으로 알린다.
+
+    time_available=100분이면 target_item_range()가 최대 2개다.
+    점수 순이 아니라 담은 순으로 자르는 이유는 "왜 그 곳이 빠졌는지" 설명할 수
+    있어야 하기 때문이다.
+    """
+    llm = _RecordingLLM(_plan_of("place-1", "place-2"))
+    request = SchedulePlanningRequest(
+        candidates=_three_candidates(),
+        must_include_place_ids=["place-1", "place-2", "place-3"],
+        conditions=UserConditions(time_available=100),
+        pairwise_distances_km={},
+    )
+
+    result = await plan_schedule(request, llm)
+
+    assert llm.received_request is not None
+    assert llm.received_request.must_include_place_ids == ["place-1", "place-2"]
+    assert result.omitted_saved_place_names == ["장소 place-3"]
+
+
+@pytest.mark.asyncio
+async def test_must_include_missing_triggers_one_retry() -> None:
+    """LLM이 강제 포함을 빠뜨리면 한 번 다시 부른다. 두 번째가 맞으면 안내는 없다."""
+    llm = _SequenceLLM(
+        _plan_of("place-1", "place-2", "place-3"),
+        _plan_of("place-1", "place-2", "place-9"),
+    )
+    request = SchedulePlanningRequest(
+        candidates=[*_three_candidates(), _candidate("place-9")],
+        must_include_place_ids=["place-9"],
+        conditions=UserConditions(),
+        pairwise_distances_km={},
+    )
+
+    result = await plan_schedule(request, llm)
+
+    assert llm.call_count == 2
+    assert result.omitted_saved_place_names == []
+    assert [item.place_id for item in result.items] == ["place-1", "place-2", "place-9"]
+
+
+@pytest.mark.asyncio
+async def test_must_include_missing_after_retry_keeps_result_and_reports() -> None:
+    """재시도 후에도 빠지면 502로 죽이지 않고 결과를 살리되 이름을 실어 보낸다.
+
+    plan_partial_schedule()의 하드 실패와 다른 선택이다 — 저쪽은 유지해야 할
+    기존 일정이 걸려 있지만, 보관함은 부분 성공이 전체 실패보다 낫다.
+    """
+    llm = _SequenceLLM(_plan_of("place-1", "place-2", "place-3"))
+    request = SchedulePlanningRequest(
+        candidates=[*_three_candidates(), _candidate("place-9")],
+        must_include_place_ids=["place-9"],
+        conditions=UserConditions(),
+        pairwise_distances_km={},
+    )
+
+    result = await plan_schedule(request, llm)
+
+    assert llm.call_count == 2
+    assert result.items != []
+    assert result.omitted_saved_place_names == ["장소 place-9"]
+
+
+@pytest.mark.asyncio
+async def test_empty_must_include_does_not_retry() -> None:
+    """강제 포함이 없으면 검증도 재시도도 없다 — 기존 동작과 완전히 같다."""
+    llm = _SequenceLLM(_plan_of("place-1", "place-2", "place-3"))
+    request = SchedulePlanningRequest(
+        candidates=_three_candidates(),
+        conditions=UserConditions(),
+        pairwise_distances_km={},
+    )
+
+    result = await plan_schedule(request, llm)
+
+    assert llm.call_count == 1
+    assert result.omitted_saved_place_names == []

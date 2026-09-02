@@ -33,6 +33,7 @@ import type {
   RecommendationsResponse,
   ScheduleResult,
   SessionContextResponse,
+  SavedPlaceItem,
   UserConditions,
 } from "../types";
 import { clearState, loadState, saveState } from "./storage";
@@ -69,6 +70,13 @@ export interface TripState {
    * TODO: Agent가 되묻기 맥락을 이어받게 되면 이 우회는 제거한다.
    */
   awaiting_clarification: boolean;
+  /*
+   * 사용자가 담은 장소(담은 순서). 서버가 보관하는 상태를 화면이 비추기만 하며,
+   * 진실의 원천은 항상 서버다 — 담기/빼기 응답과 세션 조회 결과로만 갱신한다.
+   * 순서는 서버가 준 그대로 유지한다. 개수 상한 초과 시 이 순서로 잘리므로
+   * 화면에서 정렬을 바꾸면 "왜 그 곳이 빠졌는지" 설명이 어긋난다.
+   */
+  saved_places: SavedPlaceItem[];
   agentProgress: AgentProgressEvent | null;
   streamingIntent: Intent | null;
 }
@@ -89,6 +97,7 @@ const initialTripState: TripState = {
   device_location_captured_at: null,
   device_location_snoozed_until: null,
   awaiting_clarification: false,
+  saved_places: [],
   agentProgress: null,
   streamingIntent: null,
 };
@@ -147,6 +156,9 @@ type TripAction =
     }
   /* 사진을 고른 즉시. 결과를 기다리는 동안 사진과 "찾는 중"을 먼저 보여준다. */
   | { type: "START_PHOTO_SIMILAR"; payload: { messageId: string; imageUrl: string | null } }
+  /* 축소본은 만드는 데 시간이 걸려(createImageBitmap) START_PHOTO_SIMILAR보다
+     늦게 완성될 수 있다 — 완성되면 이 액션으로 그 메시지에만 채워 넣는다. */
+  | { type: "SET_PHOTO_SIMILAR_IMAGE"; payload: { messageId: string; imageUrl: string } }
   | {
       type: "RESOLVE_PHOTO_SIMILAR";
       payload: {
@@ -161,7 +173,10 @@ type TripAction =
   | { type: "FAIL_PHOTO_SIMILAR"; payload: { messageId: string } }
   | { type: "SET_ERROR"; payload: string }
   | { type: "CLEAR_ERROR" }
+  | { type: "SET_SAVED_PLACES"; payload: { items: SavedPlaceItem[] } }
   | { type: "SNOOZE_LOCATION_REFRESH"; payload: { until: number } }
+  | { type: "SET_DEVICE_LOCATION"; payload: { deviceLocation: string; capturedAt: number } }
+  | { type: "CANCEL_CHAT_TURN" }
   | { type: "RESET" };
 
 /* /api/chat 한 번의 응답을 화면 메시지로 옮기기 위한 입력. */
@@ -194,6 +209,15 @@ function createMessageId(prefix: string) {
     return `${prefix}-${crypto.randomUUID()}`;
   }
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+/** 지금 타이프라이터가 채우고 있는 assistant_text 메시지의 인덱스. 없으면 -1. */
+function findStreamingMessageIndex(messages: ChatMessage[]): number {
+  return messages.reduce(
+    (foundIndex, message, index) =>
+      message.type === "assistant_text" && message.streaming ? index : foundIndex,
+    -1,
+  );
 }
 
 function buildInterpretationSummary(conditions: InterpretedConditions) {
@@ -398,11 +422,7 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         ],
       };
     case "APPEND_STREAM_MESSAGE_DELTA": {
-      const streamIndex = state.messages.reduce(
-        (foundIndex, message, index) =>
-          message.type === "assistant_text" && message.streaming ? index : foundIndex,
-        -1,
-      );
+      const streamIndex = findStreamingMessageIndex(state.messages);
       const streamingMessage = state.messages[streamIndex];
       if (streamingMessage?.type === "assistant_text" && streamingMessage.streaming) {
         return {
@@ -437,7 +457,8 @@ function tripReducer(state: TripState, action: TripAction): TripState {
       };
     }
     case "COMPLETE_STREAM_CHAT_TURN": {
-      const { response, elapsedMsClient, serverElapsedMs, stageTimings, conditions } = action.payload;
+      const { response, elapsedMsClient, serverElapsedMs, stageTimings, conditions } =
+        action.payload;
       const recommendations = response.recommendations;
       const auditTurn: DeveloperAuditTurn = {
         id: createMessageId("audit"),
@@ -458,11 +479,7 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         response,
         failure: null,
       };
-      const streamIndex = state.messages.reduce(
-        (foundIndex, message, index) =>
-          message.type === "assistant_text" && message.streaming ? index : foundIndex,
-        -1,
-      );
+      const streamIndex = findStreamingMessageIndex(state.messages);
       const streamingMessage = state.messages[streamIndex];
       const streamedMessages =
         streamingMessage?.type === "assistant_text" && streamingMessage.streaming
@@ -642,7 +659,10 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         deviceLocation: state.device_location,
         elapsedMsClient: action.payload.elapsedMsClient,
         serverElapsedMs:
-          action.payload.serverElapsedMs ?? recommendations?.elapsed_ms ?? schedule?.elapsed_ms ?? null,
+          action.payload.serverElapsedMs ??
+          recommendations?.elapsed_ms ??
+          schedule?.elapsed_ms ??
+          null,
         stageTimings: action.payload.stageTimings ?? [],
         extractedConditions: conditions,
         beforeConditions: state.auditTurns.at(-1)?.afterConditions ?? null,
@@ -737,6 +757,15 @@ function tripReducer(state: TripState, action: TripAction): TripState {
           },
         ],
       };
+    case "SET_PHOTO_SIMILAR_IMAGE":
+      return {
+        ...state,
+        messages: state.messages.map((message) =>
+          message.id === action.payload.messageId && message.type === "photo_similar_result"
+            ? { ...message, imageUrl: action.payload.imageUrl }
+            : message,
+        ),
+      };
     case "RESOLVE_PHOTO_SIMILAR":
       return {
         ...state,
@@ -778,8 +807,43 @@ function tripReducer(state: TripState, action: TripAction): TripState {
       return { ...state, phase: "error", error: action.payload };
     case "CLEAR_ERROR":
       return { ...state, error: null, phase: state.messages.length > 0 ? "ready" : "idle" };
+    case "SET_SAVED_PLACES":
+      return { ...state, saved_places: action.payload.items };
     case "SNOOZE_LOCATION_REFRESH":
       return { ...state, device_location_snoozed_until: action.payload.until };
+    case "SET_DEVICE_LOCATION":
+      // 위치 설정 화면에서 "위치 다시 가져오기"를 눌렀을 때. 채팅 턴을 거치지
+      // 않고도 다음 요청부터 새 좌표를 쓰도록 미리 갱신해 둔다.
+      return {
+        ...state,
+        device_location: action.payload.deviceLocation,
+        device_location_captured_at: action.payload.capturedAt,
+        device_location_snoozed_until: null,
+      };
+    case "CANCEL_CHAT_TURN": {
+      // 응답 대기 중 "중단"을 눌렀을 때(§7.2). 아직 생각 중 단계라 타이프라이터
+      // 메시지가 없으면(로딩 버블만 있었으면) 아무 것도 안 남기고, 이미 일부
+      // 텍스트가 온 상태라면 거기까지만 확정해 얼린다 — 뒤이어 올 카드·후속
+      // 질문 이벤트는 연결이 끊겨 더 오지 않으므로 따로 걷어낼 것이 없다.
+      const streamIndex = findStreamingMessageIndex(state.messages);
+      const streamingMessage = state.messages[streamIndex];
+      let messages = state.messages;
+      if (streamingMessage?.type === "assistant_text" && streamingMessage.streaming) {
+        messages =
+          streamingMessage.text === "…"
+            ? state.messages.filter((_, index) => index !== streamIndex)
+            : state.messages.map((message, index) =>
+                index === streamIndex ? { ...streamingMessage, streaming: false } : message,
+              );
+      }
+      return {
+        ...state,
+        messages,
+        phase: messages.length > 0 ? "ready" : "idle",
+        agentProgress: null,
+        streamingIntent: null,
+      };
+    }
     case "RESET":
       clearState();
       // 새 대화여도 사용자가 고른 화면 언어는 유지한다.
@@ -796,7 +860,10 @@ export function TripProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(
     tripReducer,
     initialTripState,
-    () => loadState() ?? initialTripState,
+    // 기본값 위에 저장본을 덮는다. 그냥 `loadState() ?? initial`로 두면 새 필드를
+    // 추가할 때마다 구버전 저장본에서 그 필드가 undefined로 복원돼, 처음 읽는
+    // 쪽에서 터진다(storage.ts가 과거에 겪은 것과 같은 종류의 문제다).
+    () => ({ ...initialTripState, ...(loadState() ?? {}) }),
   );
   const value = useMemo(() => state, [state]);
 

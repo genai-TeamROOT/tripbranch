@@ -35,7 +35,7 @@ from app.schemas import (
 # 쓰였는지와 무관하게 단일 값으로 취급한다 — 함수별 개별 버전은 만들지 않는다. 판별·추출
 # 규칙에 영향을 주는 변경(6개 함수 중 하나라도) 시 버전을 올린다 — 사소한 문구·주석
 # 변경은 올리지 않는다.
-_BASE_PROMPT_VERSION = "agent-interpret-prompts-1.0.24"
+_BASE_PROMPT_VERSION = "agent-interpret-prompts-1.0.26"
 _ACTIVE_PROMPT_VARIANT = active_variant()
 PROMPT_VERSION = (
     _BASE_PROMPT_VERSION
@@ -62,6 +62,12 @@ def build_intent_classification_instruction(
     근거를 준다. 없으면(이름 미저장 과거 세션 등) 이 블록은 생략된다.
     """
 
+    # schedule06_ambiguous_recommend는 last_intent와 무관하게 코드 자체로 특정된다
+    # (agent_runtime.py SCHEDULE-06 모호 되묻기) — 두 선택지가 SCHEDULE 계속/RECOMMEND
+    # 전환으로 서로 다른 인텐트라서, 아래 schedule_clarification_pending의 "SCHEDULE
+    # 유지" 지시를 그대로 적용하면 "추천만 해줘" 같은 답까지 SCHEDULE로 잘못 강제된다 —
+    # 그래서 이 검사를 먼저 한다.
+    schedule06_choice_pending = pending_clarification == "schedule06_ambiguous_recommend"
     schedule_clarification_pending = (
         last_intent == "SCHEDULE" and pending_clarification is not None
     )
@@ -69,11 +75,19 @@ def build_intent_classification_instruction(
         last_intent in {"RECOMMEND", "MODIFY"}
         and pending_clarification in {"location_required", "location_ambiguous"}
     )
+    # INFO 되묻기(장소명 없음/장소 후보 모호)는 last_intent="INFO"와 pending_clarification이
+    # 함께 있을 때만 성립한다 — B의 apply()가 매 턴 last_intent를 그 턴의 원본 intent로
+    # 저장하므로(D-061), INFO가 되물은 다음 턴엔 항상 last_intent="INFO"다.
+    info_clarification_pending = last_intent == "INFO" and pending_clarification is not None
     clarification_status = (
-        "예 (직전 SCHEDULE 요청의 되묻기)"
+        "예 (직전 질문: 일정 계속 진행 vs 장소만 추천 중 선택)"
+        if schedule06_choice_pending
+        else "예 (직전 SCHEDULE 요청의 되묻기)"
         if schedule_clarification_pending
         else "예 (직전 RECOMMEND/MODIFY 요청의 위치 되묻기)"
         if location_clarification_pending
+        else "예 (직전 INFO 요청의 되묻기)"
+        if info_clarification_pending
         else "아니오"
     )
     shown_names_line = ""
@@ -95,6 +109,15 @@ def build_intent_classification_instruction(
         intent_priority=load_text("router/intent_priority.md"),
         context_rules=load_text("router/context_rules.md"),
         boundary_cases=load_text("router/boundary_cases.md"),
+        # interaction_mode는 Intent와 직교하는 별개 축이라 판별 규칙도 따로
+        # 둔다(대화층 2단계) — 인텐트 우선순위 캐스케이드에 섞으면 GENERAL이
+        # 다시 만능 라벨이 된다.
+        interaction_mode=load_text("router/interaction_mode.md"),
+        # 이력은 이미 contents로 전달되는데(gemini.py의 _build_contents) 지금까지
+        # 프롬프트는 그 존재를 몰랐다 — 그래서 "지명 단독 → MODIFY"처럼 명시된 규칙만
+        # 이겼고, 새 후속 발화 패턴마다 규칙을 손으로 추가해야 했다. 이 조각이 그
+        # 사용법을 한 번에 정한다(강의교재 36강의 "이력은 맥락(what)" 역할).
+        conversation_history=load_text("_shared/rules/conversation_history.md"),
         # OUT_OF_SCOPE 판정 자체는 분류기가 하지만, 규칙 문구의 소유는
         # out_of_scope/에 둔다 — 그래야 해당 인텐트 담당자도 자기 폴더만 열고
         # 수정·이력 관리를 할 수 있다.
@@ -119,6 +142,7 @@ def build_recommend_extraction_instruction() -> str:
         concentration_rules=load_text("_shared/rules/concentration_intent.md"),
         environment_rules=load_text("_shared/rules/environment.md"),
         budget_rule=load_text("_shared/rules/budget.md"),
+        conversation_history=load_text("_shared/rules/conversation_history.md"),
     )
 
 
@@ -180,6 +204,7 @@ def build_modify_extraction_instruction(
         concentration_rules=load_text("_shared/rules/concentration_intent.md"),
         environment_rules=load_text("_shared/rules/environment.md"),
         budget_rule=load_text("_shared/rules/budget.md"),
+        conversation_history=load_text("_shared/rules/conversation_history.md"),
     )
 
 
@@ -189,11 +214,38 @@ def _build_visit_time_rules(reference_date: date) -> str:
     return render_text("info/visit_time_rules.md", reference_date=reference_date.isoformat())
 
 
+def _build_pending_info_block(
+    question_type: str | None,
+    specific_question: str | None,
+    visit_time: str | None,
+) -> str:
+    """직전 INFO 되묻기(장소명 없음)가 이미 파악해둔 질문 정보를 프롬프트 블록으로 만든다.
+
+    셋 다 없으면(직전이 INFO 되묻기가 아니었으면) 빈 문자열 — shown_names_line과 같은
+    패턴으로, 관련 없는 턴에는 프롬프트에 아무것도 추가하지 않는다.
+    """
+    if not question_type and not specific_question:
+        return ""
+    return (
+        "\n"
+        + render_text(
+            "info/pending_question_block.md",
+            pending_question_type=question_type or "알 수 없음",
+            pending_specific_question=specific_question or "알 수 없음",
+            pending_visit_time=visit_time or "없음",
+        )
+        + "\n"
+    )
+
+
 def build_info_extraction_instruction(
     *,
     has_previous_recommendation: bool,
     reference_date: date,
     conversation_place_name: str | None = None,
+    pending_info_question_type: str | None = None,
+    pending_info_specific_question: str | None = None,
+    pending_info_visit_time: str | None = None,
 ) -> str:
     """int-02-info.md §4~7(InfoQuery, question_type, place_context) 기반."""
 
@@ -202,8 +254,12 @@ def build_info_extraction_instruction(
         question_type_rules=load_text("info/question_type_rules.md"),
         place_context_rules=load_text("info/place_context_rules.md"),
         visit_time_rules=_build_visit_time_rules(reference_date),
+        conversation_history=load_text("_shared/rules/conversation_history.md"),
         has_previous_recommendation="있음" if has_previous_recommendation else "없음",
         conversation_place_name=conversation_place_name or "없음",
+        pending_question_block=_build_pending_info_block(
+            pending_info_question_type, pending_info_specific_question, pending_info_visit_time
+        ),
     )
 
 
@@ -226,29 +282,57 @@ def build_compare_extraction_instruction(
         shown_list_block=_shown_place_list_block(shown_place_names),
         target_rules=load_text("compare/target_rules.md"),
         criteria_rules=load_text("compare/criteria_rules.md"),
+        conversation_history=load_text("_shared/rules/conversation_history.md"),
         shown_place_count=shown_place_count,
     )
 
 
 def build_general_extraction_instruction() -> str:
-    """int-05-general.md §5~6(GeneralRequest, topic) 기반."""
+    """int-05-general.md §5~6(GeneralRequest, topic) 기반.
 
-    return render_text("general/extract.md", topic_rules=load_text("general/topic_rules.md"))
+    situation_rules는 대화층 3단계(docs/design/conversational-layer.md) — situation은
+    닫힌 목록(SituationKind)이라 여기서는 값 설명만 주고, 그 상황에서 무엇을 제안할지는
+    app.services.interpret.situational_offers가 코드로만 정한다.
+    """
+
+    return render_text(
+        "general/extract.md",
+        topic_rules=load_text("general/topic_rules.md"),
+        situation_rules=load_text("general/situation_rules.md"),
+        conversation_history=load_text("_shared/rules/conversation_history.md"),
+    )
 
 
-def build_general_answer_instruction(topic: GeneralTopic) -> str:
+def build_general_answer_instruction(
+    topic: GeneralTopic, *, offer_content: str | None = None
+) -> str:
     """GENERAL 발화에 실제로 답하는 system instruction(docs/design/agent-response-
     generation.md §3/§6 — 6개 Intent 중 실제 LLM 자유생성이 필요한 유일한 지점).
 
-    build_general_extraction_instruction()과 별개 호출이다 — 저건 topic만 분류하고,
-    이건 그 topic이 확정된 뒤 실제 답변 문장을 만든다.
+    build_general_extraction_instruction()과 별개 호출이다 — 저건 topic·situation만
+    분류하고, 이건 그 결과가 확정된 뒤 실제 답변 문장을 만든다.
+
+    offer_content는 대화층 3단계(conversational-layer.md) 제안 문구다.
+    situational_offers.offer_for()가 상황에 맞는 도움을 찾았을 때만 채워진다 — 무엇을
+    제안할지는 이미 코드가 정했고, 여기서는 그 내용을 트리비 말투로 자연스러운 질문
+    문장으로 바꾸는 것만 LLM에 맡긴다("제안 문장은 extract가 아니라 답변 단계가 쓴다",
+    conversational-layer.md 3단계).
     """
 
+    offer_block = (
+        f'- 이번 답변 마지막에 "{offer_content}을(를) 찾아드릴까요?"처럼, 지금 상황에 맞는 '
+        "도움을 자연스러운 질문 한 문장으로 제안하며 마무리하세요. 위 2~4문장 안에 포함되는 "
+        "문장이지, 별도로 덧붙이는 문장이 아닙니다. 이 제안 외에 다른 도움을 새로 지어내지 "
+        "마세요."
+        if offer_content
+        else ""
+    )
     return render_text(
         "general/answer_instruction.md",
         chatbot_name=CHATBOT_NAME,
         persona=load_text("_shared/persona/trivi.md"),
         topic=topic.value,
+        offer_block=offer_block,
     )
 
 
@@ -288,7 +372,60 @@ def build_follow_up_suggestion_instruction(
     )
 
 
-def build_recommendation_summary_instruction(intent: Intent) -> str:
+_COMPANION_LABELS = {
+    "solo": "혼자",
+    "couple": "연인과",
+    "friend": "친구와",
+    "parent": "부모님과",
+    "child": "아이와",
+    "pet": "반려동물과",
+}
+_ENVIRONMENT_LABELS = {"indoor": "실내", "outdoor": "실외"}
+_TRANSPORT_LABELS = {"walk": "도보", "public": "대중교통", "car": "자동차"}
+
+
+def _stated_conditions_line(conditions: UserConditions | None) -> str:
+    """사용자가 지금까지 말한 조건을 한 줄로 요약한다(말풍선 톤 조정용).
+
+    누적 조건은 강의교재 36강이 말하는 "오래된 중요 정보의 압축 요약"에 해당한다 —
+    최근 5턴 창 밖으로 밀려나도 살아 있어서, 원문 이력만 보는 것보다 견고하다.
+    말풍선 생성 단계는 지금까지 카드 데이터만 받아서, 동행을 friend로 잡아 놓고도
+    "혼자서도 가기 좋고"로 답하는 일이 있었다(2026-08-31 실사용).
+
+    비어 있으면 빈 문자열 — 관련 없는 턴의 프롬프트를 늘리지 않는다.
+    """
+    if conditions is None:
+        return ""
+
+    parts: list[str] = []
+    if conditions.companion is not None:
+        parts.append(_COMPANION_LABELS.get(conditions.companion.value, conditions.companion.value))
+    if conditions.place_tags:
+        parts.append(", ".join(tag.value for tag in conditions.place_tags))
+    if conditions.taste_query:
+        parts.append(f"취향 표현 '{conditions.taste_query}'")
+    if conditions.environment is not None and conditions.environment.value != "any":
+        parts.append(_ENVIRONMENT_LABELS.get(conditions.environment.value, ""))
+    if conditions.transport is not None:
+        parts.append(f"{_TRANSPORT_LABELS.get(conditions.transport.value, '')} 이동")
+    if conditions.budget:
+        parts.append(f"예산 {conditions.budget}")
+    if conditions.max_travel_time:
+        parts.append(f"이동 {conditions.max_travel_time}분 이내")
+    if conditions.time_available:
+        parts.append(f"체류 {conditions.time_available}분")
+    if conditions.special_requirements:
+        parts.append(", ".join(conditions.special_requirements))
+
+    filled = [part for part in parts if part]
+    if not filled:
+        return ""
+    return "\n사용자가 말한 조건: " + " / ".join(filled)
+
+
+def build_recommendation_summary_instruction(
+    intent: Intent, *, conditions: UserConditions | None = None
+) -> str:
     """RECOMMEND/MODIFY 결과를 감싸는 짧은 말풍선 생성 system instruction."""
 
     return render_text(
@@ -296,6 +433,7 @@ def build_recommendation_summary_instruction(intent: Intent) -> str:
         chatbot_name=CHATBOT_NAME,
         persona=load_text("_shared/persona/trivi.md"),
         intent=intent.value,
+        stated_conditions=_stated_conditions_line(conditions),
     )
 
 
@@ -416,6 +554,12 @@ def format_schedule_planning_context(request: SchedulePlanningRequest, start_tim
     co_visited_lines = "\n".join(
         _co_visited_line(hint, name_by_place_id) for hint in request.co_visited_hints
     ) or "(없음)"
+    # 보관함에 담긴 장소(SCHEDULE-12). co_visited_lines와 같은 이유로 비어 있어도
+    # 섹션을 없애지 않고 "(없음)"을 채운다 — 프롬프트 구조가 요청마다 달라지지 않게.
+    must_include_lines = "\n".join(
+        f"- {name_by_place_id.get(place_id, place_id)}({place_id})"
+        for place_id in request.must_include_place_ids
+    ) or "(없음)"
     condition_lines = request.conditions.model_dump_json(exclude_none=True)
 
     return render_text(
@@ -424,6 +568,7 @@ def format_schedule_planning_context(request: SchedulePlanningRequest, start_tim
         candidate_lines=candidate_lines,
         distance_lines=distance_lines,
         co_visited_lines=co_visited_lines,
+        must_include_lines=must_include_lines,
         condition_lines=condition_lines,
     )
 

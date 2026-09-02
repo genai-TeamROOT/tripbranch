@@ -84,6 +84,18 @@ def planning_request() -> SchedulePlanningRequest:
     )
 
 
+def planning_request_with_must_include() -> SchedulePlanningRequest:
+    """보관함에 담긴 장소가 있는 요청. (SCHEDULE-12)
+
+    [반드시 포함] 섹션이 실제로 이름과 함께 렌더링되는지 스냅샷으로 잠근다 —
+    빈 경우("(없음)")는 planning_request()가 이미 덮는다.
+    """
+
+    return planning_request().model_copy(
+        update={"must_include_place_ids": ["place-2", "place-3"]}
+    )
+
+
 def fill_request() -> SchedulePartialFillRequest:
     return SchedulePartialFillRequest(
         pinned_items=[
@@ -151,6 +163,24 @@ CLASSIFY_CASES: list[tuple[str, dict[str, object]]] = [
             "conversation_place_name": "경복궁",
         },
     ),
+    (
+        "classify__info_clarification_pending",
+        {
+            "has_previous_recommendation": True,
+            "shown_place_count": 3,
+            "pending_clarification": "missing:place_name",
+            "last_intent": "INFO",
+        },
+    ),
+    (
+        "classify__schedule06_choice_pending",
+        {
+            "has_previous_recommendation": False,
+            "shown_place_count": 0,
+            "pending_clarification": "schedule06_ambiguous_recommend",
+            "last_intent": "SCHEDULE",
+        },
+    ),
 ]
 
 MODIFY_CASES: list[tuple[str, dict[str, object]]] = [
@@ -184,6 +214,15 @@ INFO_CASES: list[tuple[str, dict[str, object]]] = [
             "has_previous_recommendation": True,
             "reference_date": REFERENCE_DATE,
             "conversation_place_name": "경복궁",
+        },
+    ),
+    (
+        "info_extract__pending_question",
+        {
+            "has_previous_recommendation": False,
+            "reference_date": REFERENCE_DATE,
+            "pending_info_question_type": "concentration",
+            "pending_info_specific_question": "사람많아?",
         },
     ),
 ]

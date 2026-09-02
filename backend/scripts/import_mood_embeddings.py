@@ -70,6 +70,7 @@ class MoodEmbeddingImportResult:
     model_name: str
     imported_photos: int
     imported_places: int
+    imported_axes: int
     dry_run: bool
 
 
@@ -148,7 +149,12 @@ def batch_files(batch: str) -> tuple[str, str]:
 def build_payloads(
     input_dir: Path,
     batch: str,
-) -> tuple[list[dict[str, object]], list[dict[str, object]], MoodEmbeddingImportResult]:
+) -> tuple[
+    list[dict[str, object]],
+    list[dict[str, object]],
+    list[dict[str, object]],
+    MoodEmbeddingImportResult,
+]:
     manifest_name, vectors_name = batch_files(batch)
     for name in (manifest_name, vectors_name, "mood_anchors.json"):
         if not (input_dir / name).exists():
@@ -245,6 +251,29 @@ def build_payloads(
             }
         )
 
+    # 축 방향 벡터도 함께 올린다(TP-206). 사진 검색이 올린 사진의 축 점수를
+    # 실행 시점에 계산하려면 이 벡터가 DB에 있어야 한다 — 장소 쪽은 위에서
+    # axis_scores로 미리 계산해 두지만, 질의는 미리 계산할 수 없다.
+    #
+    # **여기서 채우는 이유가 있다.** anchors_version을 만드는 곳이 여기라, 같은
+    # 파일로 표까지 채우면 축 정의와 판본이 절대 어긋나지 않는다. 마이그레이션에
+    # 벡터를 박아 두면 축 문구를 고칠 때 두 곳을 따로 고쳐야 한다.
+    axis_payloads = [
+        {
+            "name": name,
+            "embedding": anchors["axes"][name]["vector"],
+            "enabled": name in enabled,
+            "positive_text": anchors["axes"][name]["positive_text"],
+            "negative_text": anchors["axes"][name]["negative_text"],
+            "positive_label": anchors["axes"][name].get("positive_label"),
+            "negative_label": anchors["axes"][name].get("negative_label"),
+            "anchors_version": anchors_version,
+        }
+        # 꺼진 축도 올린다. 나중에 켤 때 벡터를 다시 구할 필요가 없고, enabled를
+        # 보면 지금 무엇이 쓰이는지 표만 봐도 알 수 있다.
+        for name in sorted(anchors["axes"])
+    ]
+
     summary = MoodEmbeddingImportResult(
         batch=batch,
         photo_count=len(photo_payloads),
@@ -256,9 +285,10 @@ def build_payloads(
         model_name=model_name,
         imported_photos=0,
         imported_places=0,
+        imported_axes=0,
         dry_run=True,
     )
-    return photo_payloads, place_payloads, summary
+    return photo_payloads, place_payloads, axis_payloads, summary
 
 
 async def _validate_places_exist(
@@ -319,7 +349,9 @@ async def run(
     if not settings.supabase_secret_key:
         raise ValueError("SUPABASE_SECRET_KEY가 필요합니다.")
 
-    photo_payloads, place_payloads, summary = build_payloads(args.input_dir, args.batch)
+    photo_payloads, place_payloads, axis_payloads, summary = build_payloads(
+        args.input_dir, args.batch
+    )
     summary.dry_run = args.dry_run
 
     base_url = settings.supabase_url
@@ -344,6 +376,9 @@ async def run(
             )
             summary.imported_places = await _upsert(
                 client, "place_mood_vectors", "content_id", place_payloads
+            )
+            summary.imported_axes = await _upsert(
+                client, "place_mood_axes", "name", axis_payloads
             )
     return summary
 

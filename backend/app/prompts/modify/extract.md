@@ -14,6 +14,9 @@ search_center에 채우고 changed_fields에는 "search_center"만 넣으세요.
 {{shown_list_block}}
 {{type_rules}}
 {{target_rules}}
+
+{{conversation_history}}
+
 현재 노출된 일정/추천 항목 수: {{shown_place_count}}. modify_type이 REJECT_SPECIFIC인데
 사용자가 이 범위를 벗어나는 순번을 언급하면(예: 2개만 노출됐는데 "세 번째") status를
 needs_clarification으로 두고 clarification.message에 몇 번까지 있는지 안내하는

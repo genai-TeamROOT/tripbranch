@@ -34,6 +34,7 @@ _WARNING_MESSAGES = {
     "candidate_pool_truncated": (
         "이미 본 장소가 많아 새 후보를 더 받아오지 못했습니다."
     ),
+    "candidate_pool_exhausted": "이미 본 장소를 제외하면 새 후보가 남아 있지 않습니다.",
 }
 _WEEKDAY_NAMES = (
     "monday",
@@ -157,6 +158,14 @@ def map_places_context(
             rest_date_raw=(item.details.rest_date if item.details is not None else None),
             operating_schedule=_operating_schedule(
                 item.details.operating_schedule if item.details is not None else None
+            ),
+            accessibility_verdicts=(
+                {
+                    need.value: verdict.value
+                    for need, verdict in item.accessibility_verdicts.items()
+                }
+                if item.accessibility_verdicts
+                else None
             ),
         )
         for item in result.places

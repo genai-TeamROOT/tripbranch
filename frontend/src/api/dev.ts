@@ -37,6 +37,37 @@ export type ApiUsageSnapshot = {
   entries: ApiUsageEntry[];
 };
 
+/** TourAPI 대·중·소분류별 활성 장소 커버리지. Ops에서만 쓰는 집계 값이다. */
+export type CategorySmallCoverage = {
+  code: string | null;
+  label: string;
+  count: number;
+  /** 같은 소분류의 대표 장소명 최대 두 개. 원본 장소 목록은 응답에 싣지 않는다. */
+  examples: string[];
+};
+
+export type CategoryMiddleCoverage = {
+  code: string | null;
+  label: string;
+  count: number;
+  smalls: CategorySmallCoverage[];
+};
+
+export type CategoryLargeCoverage = {
+  code: string | null;
+  label: string;
+  count: number;
+  middles: CategoryMiddleCoverage[];
+};
+
+export type CategoryCoverage = {
+  active_place_count: number;
+  large_category_count: number;
+  middle_category_count: number;
+  small_category_count: number;
+  groups: CategoryLargeCoverage[];
+};
+
 /** 장소 행 묶음 하나의 요약. 구 하나일 수도, 전 구 합계일 수도 있다. */
 export type PlaceSummary = {
   total: number;
@@ -51,6 +82,8 @@ export type PlaceSummary = {
    * 달린 것이다. */
   barrier_free_active: number;
   barrier_free_total: number;
+  /** 구별 카테고리 현황용. 구버전 백엔드 응답과의 전환 중에는 없을 수 있다. */
+  category_coverage?: CategoryCoverage;
 };
 
 /** 구 하나의 요약. district_name은 코드 자료에 없는 구면 null이라 코드로 표시한다. */

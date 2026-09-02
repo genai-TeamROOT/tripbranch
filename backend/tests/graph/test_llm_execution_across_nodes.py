@@ -54,20 +54,36 @@ class _RecordingLLMProvider(FakeLLMProvider):
     ATTEMPTED = ["gemini-3.5-flash", "gemini-3.5-flash-lite"]
     SERVED = "gemini-3.5-flash-lite"
 
-    async def generate_general_answer(self, topic: GeneralTopic, original_question: str):
+    async def generate_general_answer(
+        self,
+        topic: GeneralTopic,
+        original_question: str,
+        *,
+        offer_content: str | None = None,
+        history=None,
+    ):
         record_llm_call(
             operation="generate_general_answer",
             attempted_models=list(self.ATTEMPTED),
             served_model=self.SERVED,
             latency_ms=12,
         )
-        return await super().generate_general_answer(topic, original_question)
+        return await super().generate_general_answer(
+            topic, original_question, offer_content=offer_content, history=history
+        )
 
 
 class _FailingLLMProvider(FakeLLMProvider):
     """기록을 남긴 직후 실패하는 더블 — RealGeminiProvider의 실패 경로를 흉내 낸다."""
 
-    async def generate_general_answer(self, topic: GeneralTopic, original_question: str):
+    async def generate_general_answer(
+        self,
+        topic: GeneralTopic,
+        original_question: str,
+        *,
+        offer_content: str | None = None,
+        history=None,
+    ):
         record_llm_call(
             operation="generate_general_answer",
             attempted_models=["gemini-3.5-flash", "gemini-3.5-flash-lite"],
@@ -90,8 +106,15 @@ def _providers(llm):
     }
 
 
-def _general_request() -> AgentRequest:
-    return AgentRequest(user_input="넌 누구야?", session_id=None)
+def _llm_backed_general_request() -> AgentRequest:
+    """고정 안내문이 아닌, LLM으로 답하는 GENERAL 발화를 만든다.
+
+    ``넌 누구야?``는 서비스 기능 안내를 결정적으로 보여주는
+    ``SERVICE_IDENTITY`` 경로라 LLM을 호출하지 않는다. 이 파일은 LLM 실행 기록의
+    전달을 검증하므로, 실제 생성 경로인 여행 팁 질문을 사용한다.
+    """
+
+    return AgentRequest(user_input="서울 여행 팁 알려줘", session_id=None)
 
 
 # ── 1. 조기 반환 경로 — 노드 안 기록이 그래프 밖까지 온다 ──────────────
@@ -117,7 +140,9 @@ async def test_general_llm_record_survives_the_graph(graph_on: bool) -> None:
 
     settings.use_langgraph_early_return = graph_on
     response = await run_agent_flow(
-        _general_request(), store=InMemoryStateStore(), **_providers(_RecordingLLMProvider())
+        _llm_backed_general_request(),
+        store=InMemoryStateStore(),
+        **_providers(_RecordingLLMProvider()),
     )
 
     assert response.llm_output.intent is Intent.GENERAL
@@ -140,7 +165,7 @@ async def test_graph_and_legacy_report_the_same_records() -> None:
     async def _run(*, graph_on: bool) -> list[str]:
         settings.use_langgraph_early_return = graph_on
         response = await run_agent_flow(
-            _general_request(),
+            _llm_backed_general_request(),
             store=InMemoryStateStore(),
             **_providers(_RecordingLLMProvider()),
         )
@@ -168,7 +193,7 @@ async def test_failure_inside_node_leaves_records_for_the_error_handler(
 
     with pytest.raises(AppError):
         await run_agent_flow(
-            _general_request(),
+            _llm_backed_general_request(),
             store=InMemoryStateStore(),
             **_providers(_FailingLLMProvider()),
         )

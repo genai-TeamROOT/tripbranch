@@ -10,12 +10,15 @@ TODO: 실제 provider(RealPlaceProvider 등)가 준비되면 팩토리에서 설
 from __future__ import annotations
 
 import math
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Literal
 from zoneinfo import ZoneInfo
 
 from app.domain.models import (
+    AccessibilityNeed,
+    AccessibilityVerdict,
     PlaceCategoryFilter,
     PlaceDetails,
     WeatherForecastResult,
@@ -30,6 +33,8 @@ from app.providers.contracts import (
     ProviderStatus,
     provider_result,
 )
+from app.providers.mappers import resolve_place_category
+from app.providers.protocols import BarrierFreePlaceSearch
 from app.providers.tour_intro_keys import (
     BABY_CARRIAGE_KEYS,
     CREDIT_CARD_KEYS,
@@ -52,6 +57,7 @@ from app.schemas import (
     ComparisonItem,
     ComparisonResult,
     ConcentrationIntent,
+    ConversationTurnView,
     Environment,
     GeneralPayload,
     GeneralTopic,
@@ -59,6 +65,7 @@ from app.schemas import (
     Intent,
     IntentClassificationResult,
     LLMOutput,
+    MissingField,
     ModifyPayload,
     ModifyType,
     OutOfScopeCategory,
@@ -236,6 +243,12 @@ _EXPLICIT_RESTART_MARKERS = (
     "조건 다시 정하고 싶어",
     "새로 시작",
 )
+# schedule06_ambiguous_recommend 되묻기("일정 계속 짤까요, 장소만 추천할까요?")의 두
+# 선택지는 서로 다른 인텐트라, 위 _SCHEDULE_MARKERS 같은 "일단 SCHEDULE 유지" 규칙을
+# 그대로 적용하면 "추천만 해줘"류 답변까지 SCHEDULE로 잘못 강제된다(2026-08-31 실사용
+# 재현). context_rules.md의 같은 이름 규칙을 흉내낸다.
+_SCHEDULE06_RECOMMEND_ONLY_MARKERS = ("추천만", "장소만", "그냥 추천")
+_SCHEDULE06_CONTINUE_MARKERS = ("일정", "계속", "이어서")
 _INFO_QUESTION_MARKERS = (
     "열어",
     "몇 시",
@@ -388,6 +401,7 @@ class FakeLLMProvider:
         last_intent: str | None = None,
         shown_place_names: list[str] | None = None,
         conversation_place_name: str | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[IntentClassificationResult]:
         if any(marker in user_input for marker in _PROMPT_INJECTION_MARKERS):
             result = IntentClassificationResult(
@@ -409,6 +423,14 @@ class FakeLLMProvider:
             )
         elif any(marker in user_input for marker in _SCHEDULE_MARKERS):
             result = IntentClassificationResult(intent=Intent.SCHEDULE)
+        elif pending_clarification == "schedule06_ambiguous_recommend" and any(
+            marker in user_input for marker in _SCHEDULE06_RECOMMEND_ONLY_MARKERS
+        ):
+            result = IntentClassificationResult(intent=Intent.RECOMMEND)
+        elif pending_clarification == "schedule06_ambiguous_recommend" and any(
+            marker in user_input for marker in _SCHEDULE06_CONTINUE_MARKERS
+        ):
+            result = IntentClassificationResult(intent=Intent.SCHEDULE)
         elif (
             last_intent == Intent.SCHEDULE.value
             and pending_clarification is not None
@@ -418,6 +440,17 @@ class FakeLLMProvider:
             # 보충하는 짧은 답변도 새 MODIFY 요청이 아니라 그 SCHEDULE을 이어가는
             # 중이다. MODIFY 분기(바로 아래)보다 먼저 검사해 우선순위를 준다.
             result = IntentClassificationResult(intent=Intent.SCHEDULE)
+        elif (
+            last_intent == Intent.INFO.value
+            and pending_clarification is not None
+            and _find_known_place(user_input) is not None
+        ):
+            # 직전 INFO 되묻기(장소를 몰라서 되물었거나 후보가 여러 개라 되물은
+            # 경우) 뒤에 알려진 장소명이 나오면 검색 중심점 변경(MODIFY)이 아니라
+            # 방금 물어본 질문의 장소 답변이다 — context_rules.md의 같은 이름
+            # 규칙을 흉내낸다. 아래 "이전 추천 있음 + 지명 단독 → MODIFY" 규칙보다
+            # 먼저 검사해 우선순위를 준다(2026-08-31 실사용 재현).
+            result = IntentClassificationResult(intent=Intent.INFO)
         elif (
             last_intent in (Intent.RECOMMEND.value, Intent.MODIFY.value)
             and pending_clarification in _LOCATION_CLARIFICATION_CODES
@@ -455,6 +488,11 @@ class FakeLLMProvider:
             marker in user_input for marker in _INFO_QUESTION_MARKERS
         ):
             result = IntentClassificationResult(intent=Intent.INFO)
+        elif any(marker in user_input for marker in _INFO_QUESTION_MARKERS):
+            # 장소명 없이 정보 질문 마커만 있는 경우("사람 많아?")도 INFO다 —
+            # extract_info_query()가 place_name 없음을 이유로 되묻는다(info/
+            # extract.md와 같은 규칙). 위 분기와 달리 알려진 장소가 필요 없다.
+            result = IntentClassificationResult(intent=Intent.INFO)
         elif _is_simple_location_answer(user_input):
             result = IntentClassificationResult(
                 intent=Intent.MODIFY if has_previous_recommendation else Intent.RECOMMEND
@@ -463,7 +501,12 @@ class FakeLLMProvider:
             result = IntentClassificationResult(intent=Intent.RECOMMEND)
         return provider_result(result, source=ProviderSource.FAKE_LLM)
 
-    async def extract_recommend_conditions(self, user_input: str) -> ProviderResult[LLMOutput]:
+    async def extract_recommend_conditions(
+        self,
+        user_input: str,
+        *,
+        history: Sequence[ConversationTurnView] | None = None,
+    ) -> ProviderResult[LLMOutput]:
         conditions = UserConditions()
         place_name = _find_known_place(user_input)
         if place_name and (
@@ -539,6 +582,7 @@ class FakeLLMProvider:
         pending_clarification: str | None = None,
         shown_place_count: int = 0,
         shown_place_names: list[str] | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[LLMOutput]:
         ordinal_indices = {
             index for marker, index in _ORDINAL_TO_INDEX.items() if marker in user_input
@@ -734,6 +778,10 @@ class FakeLLMProvider:
         has_previous_recommendation: bool,
         reference_date: date,
         conversation_place_name: str | None = None,
+        pending_info_question_type: str | None = None,
+        pending_info_specific_question: str | None = None,
+        pending_info_visit_time: str | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[LLMOutput]:
         place_name = _find_known_place(user_input)
         if place_name:
@@ -747,6 +795,24 @@ class FakeLLMProvider:
 
         if place_context is PlaceContext.FROM_CONVERSATION and conversation_place_name:
             place_name = conversation_place_name
+
+        # 직전 턴이 장소명 없이 되물은 INFO 되묻기였고(pending_info_question_type),
+        # 이번 발화에서 알려진 장소명을 새로 찾았다면 그 질문에 대한 답으로 본다 —
+        # 실제 Gemini의 info/pending_question_block.md 지시와 같은 판단을 결정론으로
+        # 흉내낸다(회귀 테스트가 실제 API 없이도 이 병합을 검증할 수 있게 한다).
+        if pending_info_question_type and place_name and place_context is PlaceContext.EXPLICIT:
+            result = LLMOutput(
+                intent=Intent.INFO,
+                status=OutputStatus.COMPLETE,
+                info=InfoPayload(
+                    place_name=place_name,
+                    place_context=place_context,
+                    question_type=QuestionType(pending_info_question_type),
+                    specific_question=pending_info_specific_question or user_input,
+                    visit_time=pending_info_visit_time,
+                ),
+            )
+            return provider_result(result, source=ProviderSource.FAKE_LLM)
 
         if any(marker in user_input for marker in ("지하철", "전철")) and any(
             marker in user_input for marker in ("언제", "도착", "몇 분", "몇분")
@@ -797,6 +863,28 @@ class FakeLLMProvider:
             else None
         )
 
+        # 장소명도 없고 참조할 맥락(직전 대화 장소)도 없으면 실제 info/extract.md와
+        # 같은 규칙으로 되묻는다("반드시 info 필드를 채우고" — place_name만 비운다).
+        if place_name is None and place_context is PlaceContext.FROM_CONVERSATION:
+            result = LLMOutput(
+                intent=Intent.INFO,
+                status=OutputStatus.NEEDS_CLARIFICATION,
+                info=InfoPayload(
+                    place_name=None,
+                    place_context=place_context,
+                    question_type=question_type,
+                    specific_question=user_input,
+                    visit_time=visit_time,
+                ),
+                clarification=ClarificationPayload(
+                    missing_fields=[
+                        MissingField(field="place_name", reason="장소를 특정할 단서가 없습니다.")
+                    ],
+                    message="어떤 장소의 정보를 확인하고 싶으신가요?",
+                ),
+            )
+            return provider_result(result, source=ProviderSource.FAKE_LLM)
+
         result = LLMOutput(
             intent=Intent.INFO,
             status=OutputStatus.COMPLETE,
@@ -816,6 +904,7 @@ class FakeLLMProvider:
         *,
         shown_place_count: int,
         shown_place_names: list[str] | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[LLMOutput]:
         if "오래 열어" in user_input:
             criteria = CompareCriteria.TIME
@@ -871,7 +960,12 @@ class FakeLLMProvider:
         )
         return provider_result(result, source=ProviderSource.FAKE_LLM)
 
-    async def extract_general_request(self, user_input: str) -> ProviderResult[LLMOutput]:
+    async def extract_general_request(
+        self,
+        user_input: str,
+        *,
+        history: Sequence[ConversationTurnView] | None = None,
+    ) -> ProviderResult[LLMOutput]:
         if any(marker in user_input for marker in _SERVICE_IDENTITY_MARKERS):
             topic = GeneralTopic.SERVICE_IDENTITY
         elif "역사" in user_input or "언제 지어졌" in user_input:
@@ -897,7 +991,12 @@ class FakeLLMProvider:
         return provider_result(result, source=ProviderSource.FAKE_LLM)
 
     async def generate_general_answer(
-        self, topic: GeneralTopic, original_question: str
+        self,
+        topic: GeneralTopic,
+        original_question: str,
+        *,
+        offer_content: str | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[str]:
         if topic is GeneralTopic.SERVICE_IDENTITY:
             answer = (
@@ -907,10 +1006,19 @@ class FakeLLMProvider:
             )
         else:
             answer = "국내 여행에 참고할 만한 정보를 간단히 알려드릴게요."
+        if offer_content:
+            # 실 프롬프트의 질문형 제안 문구를 그대로 흉내내지 않고, 테스트가
+            # offer_content 전달 여부만 확인할 수 있게 문자열로 남긴다.
+            answer = f"{answer} {offer_content}을(를) 찾아드릴까요?"
         return provider_result(answer, source=ProviderSource.FAKE_LLM)
 
     async def generate_recommendation_summary(
-        self, intent: Intent, recommendations: RecommendationResponse
+        self,
+        intent: Intent,
+        recommendations: RecommendationResponse,
+        *,
+        conditions: UserConditions | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[str]:
         shown = [*recommendations.recommendations, *recommendations.unverified_recommendations]
         if not shown:
@@ -966,22 +1074,36 @@ class FakeLLMProvider:
         return provider_result(suggestions, source=ProviderSource.FAKE_LLM)
 
     async def stream_recommendation_summary(
-        self, intent: Intent, recommendations: RecommendationResponse
+        self,
+        intent: Intent,
+        recommendations: RecommendationResponse,
+        *,
+        conditions: UserConditions | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> AsyncIterator[str]:
         """SSE 테스트용: 결정적 요약을 두 조각으로 나눈다."""
 
-        summary = await self.generate_recommendation_summary(intent, recommendations)
+        summary = await self.generate_recommendation_summary(
+            intent, recommendations, conditions=conditions, history=history
+        )
         text = summary.data
         midpoint = max(1, len(text) // 2)
         yield text[:midpoint]
         yield text[midpoint:]
 
     async def stream_general_answer(
-        self, topic: GeneralTopic, original_question: str
+        self,
+        topic: GeneralTopic,
+        original_question: str,
+        *,
+        offer_content: str | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> AsyncIterator[str]:
         """SSE 테스트용 GENERAL 답변을 결정적으로 두 조각으로 나눈다."""
 
-        answer = await self.generate_general_answer(topic, original_question)
+        answer = await self.generate_general_answer(
+            topic, original_question, offer_content=offer_content, history=history
+        )
         text = answer.data
         midpoint = max(1, len(text) // 2)
         yield text[:midpoint]
@@ -994,6 +1116,7 @@ class FakeLLMProvider:
         question_type: str,
         specific_question: str | None,
         fields: dict[str, str],
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> AsyncIterator[str]:
         """SSE 테스트용 INFO 답변. 전달된 C fields 밖의 사실은 만들지 않는다."""
 
@@ -1007,7 +1130,12 @@ class FakeLLMProvider:
         yield text[:midpoint]
         yield text[midpoint:]
 
-    async def generate_compare_summary(self, comparison: ComparisonResult) -> ProviderResult[str]:
+    async def generate_compare_summary(
+        self,
+        comparison: ComparisonResult,
+        *,
+        history: Sequence[ConversationTurnView] | None = None,
+    ) -> ProviderResult[str]:
         """COMPARE LLM 요약의 테스트용 결정적 대체 구현.
 
         실제 Gemini와 달리 문체 다양화는 하지 않되, 3줄 이상이라는 출력 계약과
@@ -1215,6 +1343,212 @@ def _fake_intro(content_type_id: str) -> dict[str, object]:
         "chkpetculture": "불가",
         "chkcreditcardculture": "가능",
     }
+
+
+@dataclass(frozen=True)
+class _FakeBarrierFreePlace:
+    """Fake 무장애 후보 한 건. 어느 편의를 갖추었는지를 값으로 들고 있다."""
+
+    place_id: str
+    name: str
+    content_type_id: str
+    lcls_systm1: str | None
+    category: str
+    lat_offset: float
+    lng_offset: float
+    needs: frozenset[AccessibilityNeed]
+    # 판정표가 있는 어휘(휠체어·유모차·시각안내)의 판정. 비워 두면 실 경로가
+    # 올리는 값을 Fake는 한 번도 만들지 않아, 안내 문구가 붙는지 확인할 길이 없다.
+    # 여기 없는 어휘는 실 경로에서도 판정을 올리지 않는다.
+    verdicts: dict[AccessibilityNeed, AccessibilityVerdict] = field(
+        default_factory=dict
+    )
+
+
+# **이 목록은 판정을 실제로 움직여야 한다.** 모든 장소가 모든 편의를 갖추게 두면
+# 필터가 한 번도 걸리지 않고, 테스트는 통과하는데 검증하려던 로직은 실행되지 않는다.
+# 그래서 편의 조합을 일부러 어긋나게 둔다.
+#
+#   무장애 카페      단차(휠체어·유모차) + 유아 시설 → 유모차 요청(둘 다)에 남는다
+#   유아쉼터         유아 시설만                     → 유모차 요청에서 **빠진다**
+#   경로당           의자식 테이블 + 저상버스 + 휠체어 대여 (단차 정보 없음)
+#                    → 노인 동반 조건에는 남고 휠체어 요청에서는 **빠진다**
+#   무장애 박물관    단차 + 화장실 + 시각 안내
+#   게스트하우스     전부 갖췄지만 숙박(32)이라 분류 규칙이 버린다
+_FAKE_BARRIER_FREE_PLACES: tuple[_FakeBarrierFreePlace, ...] = (
+    _FakeBarrierFreePlace(
+        place_id="fake-bf-cafe-1",
+        name="테스트 무장애 카페",
+        content_type_id="39",
+        lcls_systm1="FD",
+        category="restaurant",
+        lat_offset=0.001,
+        lng_offset=0.0,
+        needs=frozenset(
+            {
+                AccessibilityNeed.WHEELCHAIR_ACCESS,
+                AccessibilityNeed.STROLLER_ACCESS,
+                AccessibilityNeed.INFANT_FACILITIES,
+            }
+        ),
+        # **판정이 어휘마다 갈리는 유일한 Fake다.** 좁은 통로가 휠체어만 막고
+        # 유모차는 지나가는 실제 문장을 본뜬 것이라, 같은 장소가 요구 어휘에 따라
+        # 다른 안내를 받는지 여기서 확인한다.
+        verdicts={
+            AccessibilityNeed.WHEELCHAIR_ACCESS: AccessibilityVerdict.PARTIAL,
+            AccessibilityNeed.STROLLER_ACCESS: AccessibilityVerdict.POSSIBLE,
+        },
+    ),
+    _FakeBarrierFreePlace(
+        place_id="fake-bf-nursery-1",
+        name="테스트 유아쉼터",
+        content_type_id="12",
+        lcls_systm1="NA",
+        category="attraction",
+        lat_offset=0.002,
+        lng_offset=0.0,
+        # 단차 정보가 없다. 유모차를 끌고 갈 수 있는지는 이 장소에서 알 수 없다.
+        needs=frozenset({AccessibilityNeed.INFANT_FACILITIES}),
+    ),
+    _FakeBarrierFreePlace(
+        place_id="fake-bf-senior-1",
+        name="테스트 경로당",
+        content_type_id="14",
+        lcls_systm1="VE",
+        category="cultural_facility",
+        lat_offset=0.0025,
+        lng_offset=0.0,
+        # 오래 걷기 힘든 동행에게 쓸모 있는 값만 있고 단차 정보는 없다.
+        needs=frozenset(
+            {
+                AccessibilityNeed.SEATING_AVAILABLE,
+                AccessibilityNeed.LOW_FLOOR_TRANSIT,
+                AccessibilityNeed.WHEELCHAIR_RENTAL,
+            }
+        ),
+    ),
+    _FakeBarrierFreePlace(
+        place_id="fake-bf-museum-1",
+        name="테스트 무장애 박물관",
+        content_type_id="14",
+        lcls_systm1="VE",
+        category="cultural_facility",
+        lat_offset=0.003,
+        lng_offset=0.0,
+        needs=frozenset(
+            {
+                AccessibilityNeed.WHEELCHAIR_ACCESS,
+                AccessibilityNeed.STROLLER_ACCESS,
+                AccessibilityNeed.ACCESSIBLE_RESTROOM,
+                AccessibilityNeed.VISUAL_GUIDE,
+            }
+        ),
+        # 시각 안내만 부분이다. 점자블록이 일부 구역에만 있는 원문을 본뜬 것으로,
+        # 단차는 문제없는데 안내 시설만 모자란 경우가 실제로 있다.
+        verdicts={
+            AccessibilityNeed.WHEELCHAIR_ACCESS: AccessibilityVerdict.POSSIBLE,
+            AccessibilityNeed.STROLLER_ACCESS: AccessibilityVerdict.POSSIBLE,
+            AccessibilityNeed.VISUAL_GUIDE: AccessibilityVerdict.PARTIAL,
+        },
+    ),
+    _FakeBarrierFreePlace(
+        place_id="fake-bf-lodging-1",
+        name="테스트 무장애 게스트하우스",
+        content_type_id="32",
+        lcls_systm1="AC",
+        category="lodging",
+        lat_offset=0.004,
+        lng_offset=0.0,
+        # 편의는 다 갖췄지만 숙박이라 추천 대상이 아니다. 분류 규칙이 버려야 한다.
+        needs=frozenset(AccessibilityNeed),
+    ),
+)
+
+
+class FakeBarrierFreePlaceSearchProvider:
+    """무장애 후보 검색을 고정 목록으로 대체하는 fake provider.
+
+    실 provider와 같은 규칙을 적용한다 — 요구 편의를 **전부** 만족해야 하고,
+    거리순으로 정렬하며, 추천 대상이 아닌 유형은 버린다. 규칙이 다르면 Fake로
+    확인한 동작이 실 경로에서 달라진다.
+    """
+
+    async def search_places_with_accessibility(
+        self,
+        *,
+        latitude: float,
+        longitude: float,
+        search_radius_km: float,
+        needs: Sequence[AccessibilityNeed],
+        category_filter: PlaceCategoryFilter | None = None,
+        limit: int,
+    ) -> ProviderResult[BarrierFreePlaceSearch]:
+        required = frozenset(needs)
+        if not required:
+            raise ValueError(
+                "needs가 비어 있습니다. 무장애 조건이 없으면 이 provider를 부르지 않습니다."
+            )
+
+        verdicts: dict[str, dict[AccessibilityNeed, AccessibilityVerdict]] = {}
+        selected: list[PlaceCandidate] = []
+        for place in _FAKE_BARRIER_FREE_PLACES:
+            if not required.issubset(place.needs):
+                continue
+            if resolve_place_category(place.content_type_id) is None:
+                continue
+            if category_filter and category_filter.content_type_id:
+                if place.content_type_id != category_filter.content_type_id:
+                    continue
+            if category_filter and category_filter.lcls_systm1:
+                if place.lcls_systm1 != category_filter.lcls_systm1:
+                    continue
+            selected.append(
+                PlaceCandidate(
+                    place_id=place.place_id,
+                    content_type_id=place.content_type_id,
+                    lcls_systm1=place.lcls_systm1,
+                    lcls_systm2=None,
+                    lcls_systm3=None,
+                    name=place.name,
+                    category=place.category,
+                    latitude=latitude + place.lat_offset,
+                    longitude=longitude + place.lng_offset,
+                    address="서울 종로구 어딘가",
+                    # 실 provider와 같이 비워 둔다. 운영시간은 상세 보완이 채운다.
+                    operating_hours=None,
+                    raw_source="fake_barrier_free",
+                )
+            )
+            # 실 provider와 같이 **요구한 어휘만** 올린다. 전부 올리면 사용자가
+            # 묻지 않은 편의까지 답변이 말하게 된다.
+            requested = {
+                need: verdict
+                for need, verdict in place.verdicts.items()
+                if need in required
+            }
+            if requested:
+                verdicts[place.place_id] = requested
+
+        # 목록이 이미 거리순이지만 정렬을 생략하지 않는다. 항목을 더할 때 순서를
+        # 지키지 않아도 동작이 같아야 한다.
+        selected.sort(
+            key=lambda candidate: (candidate.latitude - latitude) ** 2
+            + (candidate.longitude - longitude) ** 2
+        )
+        selected = selected[: max(1, limit)]
+        kept = {candidate.place_id for candidate in selected}
+        return provider_result(
+            BarrierFreePlaceSearch(
+                candidates=selected,
+                verdicts={
+                    place_id: verdict
+                    for place_id, verdict in verdicts.items()
+                    if place_id in kept
+                },
+            ),
+            source=ProviderSource.FAKE_BARRIER_FREE_PLACES,
+            status=ProviderStatus.SUCCESS if selected else ProviderStatus.NO_DATA,
+        )
 
 
 class FakePlaceProvider:

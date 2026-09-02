@@ -14,6 +14,7 @@ from app.domain.models import (
     PlaceCommonDetails,
     PlaceDetails,
     PlaceOperatingDetails,
+    PlacePhoto,
     TourPlacePage,
     TourPlaceRecord,
 )
@@ -21,6 +22,7 @@ from app.domain.operating_hours import normalize_operating_schedule
 from app.errors import AppError, ProviderUnavailableError
 from app.place_search_policy import (
     DEFAULT_PLACE_PROVIDER_RESULT_LIMIT,
+    MAX_PLACE_PROVIDER_ROWS,
     MAX_PLACE_SEARCH_RADIUS_KM,
 )
 from app.providers.contracts import (
@@ -61,6 +63,7 @@ _LOCATION_BASED_LIST_PATH = "/locationBasedList2"
 _SEARCH_KEYWORD_PATH = "/searchKeyword2"
 _DETAIL_COMMON_PATH = "/detailCommon2"
 _DETAIL_INTRO_PATH = "/detailIntro2"
+_DETAIL_IMAGE_PATH = "/detailImage2"
 
 # 목록 조회 numOfRows 상한. TourAPI가 실제로 받아주는 값이다.
 _MAX_LIST_ROWS = 1000
@@ -141,6 +144,36 @@ def _map_area_place(
     )
 
 
+def _to_place_photos(
+    items: tuple[Mapping[str, object], ...], content_id: str
+) -> tuple[PlacePhoto, ...]:
+    """detailImage2 항목을 사진 값으로 옮긴다. 주소가 없는 항목은 건너뛴다.
+
+    **photo_order는 응답이 온 순서다.** `serialnum`은 관광공사의 사진 식별자라
+    장소 안의 순번이 아니고, 값이 비어 있는 항목도 있다. 적재분
+    (place_image_embeddings)도 같은 규칙으로 번호를 매겼기 때문에 두 출처의
+    순서가 같은 뜻을 갖는다.
+
+    `originimgurl`은 원본, `smallimageurl`은 축소본이다. 화면이 크게 쓰므로
+    원본을 택하고, 없는 항목은 뺀다 — 축소본으로 대체하면 같은 갤러리 안에서
+    화질이 들쭉날쭉해진다.
+    """
+    photos: list[PlacePhoto] = []
+    for item in items:
+        url = first_text(item, ("originimgurl",))
+        if not url:
+            continue
+        photos.append(
+            PlacePhoto(
+                content_id=content_id,
+                photo_order=len(photos) + 1,
+                url=url,
+                image_name=first_text(item, ("imgname",)),
+            )
+        )
+    return tuple(photos)
+
+
 class RealPlaceProvider:
     def __init__(
         self,
@@ -187,7 +220,7 @@ class RealPlaceProvider:
             "mapY": latitude,
             "radius": radius_m,
             "arrange": "E",
-            "numOfRows": max(1, min(limit, 100)),
+            "numOfRows": max(1, min(limit, MAX_PLACE_PROVIDER_ROWS)),
             "pageNo": 1,
         }
         if district_code and not region_code:
@@ -320,7 +353,7 @@ class RealPlaceProvider:
             **self._base_params(),
             "keyword": normalized_keyword,
             "arrange": "A",
-            "numOfRows": max(1, min(limit, 100)),
+            "numOfRows": max(1, min(limit, MAX_PLACE_PROVIDER_ROWS)),
             "pageNo": 1,
         }
         if region_code:
@@ -367,6 +400,48 @@ class RealPlaceProvider:
             details,
             source=ProviderSource.TOUR_API_PLACE,
             status=ProviderStatus.SUCCESS if has_data else ProviderStatus.NO_DATA,
+        )
+
+    async def get_place_images(
+        self, content_id: str, limit: int
+    ) -> ProviderResult[tuple[PlacePhoto, ...]]:
+        """detailImage2로 장소 사진 목록을 받는다.
+
+        상세 화면이 여러 장을 보여주는 데 쓴다. `places` 캐시가 나르는 대표 이미지
+        (firstimage)와 다른 것으로, 관광공사가 장소마다 따로 등록해 둔 사진들이다.
+
+        **오퍼레이션 단위로 일일 1,000회 한도가 걸려 있다.** 소진 판정과 호출을
+        멈추는 일은 이 provider가 아니라 호출부(HybridPlacePhotoProvider)가 한다 —
+        여기서 멈추면 적재 스크립트처럼 다른 정책이 필요한 호출부까지 같은 규칙에
+        묶인다.
+
+        `imageYN=Y`는 "장소 사진"을 뜻한다. N으로 주면 음식점 메뉴판 같은 다른
+        분류가 돌아온다.
+
+        몇 장까지 받을지는 호출부가 정한다. 화면에 몇 장을 쓸지는 표시 정책이고
+        이 provider가 알 일이 아니다.
+        """
+        normalized_content_id = content_id.strip()
+        if not normalized_content_id:
+            raise ValueError("content_id가 필요합니다.")
+        if limit < 1:
+            raise ValueError("limit은 1 이상이어야 합니다.")
+
+        payload = await self._request_json(
+            _DETAIL_IMAGE_PATH,
+            {
+                **self._base_params(),
+                "contentId": normalized_content_id,
+                "imageYN": "Y",
+                "numOfRows": limit,
+                "pageNo": 1,
+            },
+        )
+        photos = _to_place_photos(response_items(payload), normalized_content_id)
+        return provider_result(
+            photos,
+            source=ProviderSource.TOUR_API_PLACE,
+            status=ProviderStatus.SUCCESS if photos else ProviderStatus.NO_DATA,
         )
 
     async def get_details(

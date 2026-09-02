@@ -154,8 +154,14 @@ export async function streamPost<T>(
   path: string,
   body: unknown,
   onEvent: (event: string, data: T) => void,
+  /** 호출자가 요청을 중단할 수 있게 하는 외부 신호(응답 중단 기능, §7.2). */
+  externalSignal?: AbortSignal,
 ): Promise<void> {
   const controller = new AbortController();
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort();
+    else externalSignal.addEventListener("abort", () => controller.abort(), { once: true });
+  }
   // 서버가 첫 progress를 보낸 뒤 프로세스 재시작·네트워크 단절 등으로 다음 이벤트를
   // 못 보내면 fetch 스트림은 닫히지 않은 채 대기할 수 있다. 단순 ping이 아니라 실제
   // 업무 이벤트(progress/result/delta/done/error) 기준으로만 시간을 갱신한다.
@@ -178,7 +184,10 @@ export async function streamPost<T>(
       body: JSON.stringify(body),
       signal: controller.signal,
     });
-  } catch {
+  } catch (error) {
+    // 응답이 오기 전에 사용자가 중단했을 수 있다 — AbortError를 일반 오류로
+    // 감싸면 호출자가 "중단"과 "연결 실패"를 구분하지 못한다.
+    if (error instanceof DOMException && error.name === "AbortError") throw error;
     throw new ApiError({
       code: "internal_server_error",
       message: "서버에 연결할 수 없어요.",
@@ -206,7 +215,10 @@ export async function streamPost<T>(
 
   const consumeFrame = (frame: string) => {
     const lines = frame.replace(/\r/g, "").split("\n");
-    const event = lines.find((line) => line.startsWith("event:"))?.slice(6).trim();
+    const event = lines
+      .find((line) => line.startsWith("event:"))
+      ?.slice(6)
+      .trim();
     const data = lines
       .filter((line) => line.startsWith("data:"))
       .map((line) => line.slice(5).trimStart())
@@ -257,4 +269,7 @@ export const apiClient = {
   postBinary: <T>(path: string, body: Blob, contentType: string) =>
     requestBinary<T>(path, body, contentType),
   postForm: <T>(path: string, body: FormData) => requestForm<T>(path, body),
+  /* 보관함 빼기(DELETE .../saved-places/{place_id})가 첫 사용처다. 본문 없는
+     DELETE라 request()의 JSON 파싱 경로를 그대로 탄다 — 서버가 목록을 돌려준다. */
+  del: <T>(path: string) => request<T>(path, { method: "DELETE" }),
 };

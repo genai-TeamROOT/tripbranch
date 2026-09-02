@@ -87,6 +87,83 @@ class PendingInfoContext(BaseModel):
     visit_time: str | None = None
 
 
+# ---------------------------------------------------------------- 대화층
+
+# 최근 대화를 몇 턴까지 들고 갈지. 늘리면 프롬프트가 길어지고 노출 범위도 넓어져
+# 5턴으로 잡았다 — 되묻기 한 번을 사이에 두고 앞뒤 맥락이 이어질 최소 길이다.
+MAX_RECENT_TURNS = 5
+# 사용자 원문 상한. 넘으면 잘라서 저장한다 — 프롬프트 길이와 저장 범위를 동시에
+# 묶는 상한이지, 의미를 요약하는 장치가 아니다(아래 ConversationTurn 참고).
+MAX_TURN_USER_INPUT_CHARS = 300
+# 어시스턴트 답변 상한. 사용자 원문과 같은 값으로 둔다 — 둘 다 프롬프트에 실리므로
+# 한쪽만 넉넉히 잡을 이유가 없다.
+MAX_TURN_ASSISTANT_MESSAGE_CHARS = 300
+
+
+class ConversationTurn(BaseModel):
+    """주고받은 대화 한 턴. append-only 성격이지만 MAX_RECENT_TURNS개만 남는다.
+
+    B는 원칙적으로 대화 원문을 저장하지 않지만(ConditionChangeLog 참고),
+    FeedbackRecord가 그랬듯 여기서 예외를 둔다 — 상황을 알아채고 먼저 제안하려면
+    (docs/design/conversational-layer.md) 직전에 무슨 말이 오갔는지를 모델이
+    봐야 하는데, 누적 조건·추천 이력만으로는 "그냥 삐끗했어" 같은 이어지는 발화를
+    해석할 수 없다. 노출 범위를 좁히려고 두 가지를 지킨다.
+
+    1. 어시스턴트 쪽은 **화면에 나간 답변 문장과 처리 재료를 함께** 담는다.
+       처음에는 재료(intent/question_type/장소명/제안)만 담았는데, 그러면 모델이
+       "내가 방금 뭐라고 말했는지"를 알 수 없어 답변 문장이 앞 턴과 어긋났다
+       (2026-08-31 실사용: 동행을 friend로 잡아놓고도 "혼자서도 가기 좋고"로 답변).
+       강의교재 36강도 model 답변을 이력에 넣는 것을 멀티턴의 핵심으로 든다.
+       재료는 그대로 유지한다 — 분류 단계에는 "질문 유형: concentration"이 산문보다
+       정확한 신호다. LLM을 한 번 더 불러 요약하지는 않는다(호출이 늘어난다);
+       `AgentResponse.message`가 이미 만들어진 값이므로 그대로 옮긴다.
+    2. 사용자 원문과 어시스턴트 답변 모두 상한(MAX_TURN_*_CHARS)으로 자르고, 세션이
+       만료되면 상태와 함께 지워진다(session.py의 TTL 30분). 어시스턴트 답변 원문
+       저장은 FeedbackRecord.assistant_message가 이미 같은 값을 남기는 선례를 따른
+       것이라 새 정책 결정이 아니다.
+
+    보안: 이 값은 신뢰할 수 없는 입력이다. 프롬프트에 넣을 때 system_instruction
+    문자열에 치환하지 말고 대화 내용(contents) 자리로 보내야 한다 — 서버에
+    저장했다는 사실이 입력을 안전하게 만들지 않는다.
+    """
+
+    user_input: str
+    # 그 턴에 화면으로 나간 답변 문장(MAX_TURN_ASSISTANT_MESSAGE_CHARS로 잘림).
+    # 과거 세션에는 없으므로 None일 수 있다 — 그때는 재료만으로 조립한다.
+    assistant_message: str | None = None
+    # 그 턴을 무엇으로 처리했는지. B는 값을 해석하지 않고 A가 준 것을 보관만 한다.
+    intent: str | None = None
+    question_type: str | None = None
+    # 그 턴에 화면으로 나간 장소 이름. "거기" 같은 지시어를 이어받을 때 쓴다.
+    place_names: list[str] = Field(default_factory=list)
+    # 그 턴에 트리비가 먼저 제안한 action id(있었다면). 거절 판정의 근거가 된다.
+    offered_action: str | None = None
+    at: datetime = Field(default_factory=now_kst)
+
+
+class SituationState(BaseModel):
+    """지금 사용자가 처한 상황과, 그에 대해 이미 해본 시도.
+
+    대화 원문만으로는 판단이 흔들려서 구조화된 상태를 따로 둔다. 특히
+    rejected_actions는 "한 번 거절당한 제안은 같은 세션에서 다시 하지 않는다"는
+    절제 규칙(conversational-layer.md 5장)이 참조할 유일한 근거다 — 이 필드가
+    없으면 그 규칙은 지킬 방법이 없다.
+
+    값의 허용 목록은 Package A가 정한다(app.schemas). B는 보관만 한다.
+    """
+
+    current_situation: str | None = None
+    recent_constraints: list[str] = Field(default_factory=list)
+    rejected_actions: list[str] = Field(default_factory=list)
+    # 직전 턴이 낸 제안이 아직 응답을 기다리고 있으면 그 SituationKind 값(문자열).
+    # pending_clarification과 같은 단발성 마커이지만 의미가 겹치지 않는 별도
+    # 상태 기계라 필드를 분리했다 — 하나로 합치면 위치 선택·장소 모호성 해소 같은
+    # 기존 되묻기 상태와 "제안 대기"가 같은 칸을 두고 서로 지웠다 켰다 하게 된다.
+    # 다음 턴에 이 값이 있으면(대화층 4단계) A가 사용자 응답을 결정적으로
+    # accept/reject로 해석하고, 그 외 응답이면 자연히 지워진다(딱 한 턴만 유효).
+    pending_offer: str | None = None
+
+
 # ---------------------------------------------------------------- 상태
 
 class AgentState(BaseModel):
@@ -113,6 +190,11 @@ class AgentState(BaseModel):
     # 묻지 않고 폐점 후보도 계속 포함한다(실사용 피드백, 2026-08-13 — 매 턴
     # 버튼을 다시 눌러야 하는 게 불편하다는 지적).
     ignore_operating_hours_until: datetime | None = None
+    # 최근 대화(오래된 것이 앞). MAX_RECENT_TURNS개를 넘으면 앞에서 버린다 —
+    # 자르는 책임은 append_conversation_turn() 한 곳에만 둔다.
+    recent_turns: list[ConversationTurn] = Field(default_factory=list)
+    # 상황 축이 잡은 현재 상태. 상황이 감지된 적이 없으면 None이다.
+    situation_state: SituationState | None = None
     status: Literal["active", "expired"] = "active"
     created_at: datetime = Field(default_factory=now_kst)
     updated_at: datetime = Field(default_factory=now_kst)
@@ -148,6 +230,14 @@ class RecommendedItem(BaseModel):
     전체 재편성으로 조용히 폴백된다(2026-08-11 실사용 재현). name도 여기
     저장해두면 이 재검색에 의존하지 않아 안정적이다.
 
+    latitude/longitude는 네 번째 예외다(SCHEDULE-12). 일정 편성의 후보 간 거리
+    계산(`agent_runtime._build_pairwise_distances_km`)은 좌표를 이번 턴 C 응답에서만
+    찾고 못 찾으면 조용히 건너뛴다. RECOMMEND 직후 SCHEDULE로 이어지는 흐름에서는
+    후보가 같은 검색 결과라 그 전제가 성립했지만, 보관함(SavedPlaceList)으로 여러
+    턴에 걸쳐 담은 장소가 후보에 들어오면 깨진다 — 이번 턴 검색 반경 밖이면 C 응답에
+    아예 없어 LLM이 거리 근거 없이 동선을 짠다. 이 값도 name과 같은 "추천 시점
+    스냅샷"이라 나중에 실제와 달라져도 문제가 되지 않는다.
+
     rank가 이미 방문 순서(ScheduleItem.order)를 담으므로 별도 order
     필드는 두지 않는다.
     """
@@ -157,6 +247,10 @@ class RecommendedItem(BaseModel):
     rank: int
     shown_at: datetime = Field(default_factory=now_kst)
     name: str | None = None
+    # 추천 시점 좌표 스냅샷(SCHEDULE-12). C 응답에 좌표가 없던 경로로 기록된
+    # 항목(routes/recommendations.py)과 이 필드 도입 이전 세션에서는 None이다.
+    latitude: float | None = None
+    longitude: float | None = None
     estimated_arrival: str | None = None
     estimated_duration_min: int | None = None
     travel_to_next_min: int | None = None
@@ -170,13 +264,15 @@ class RecommendedItemInput(BaseModel):
     """history.record_recommended() 호출 시 넘기는 입력 1건.
 
     place_id/rank는 필수, 나머지는 SCHEDULE 전용(SCHEDULE-06),
-    COMPARE 전용(2026-08-11) 또는 SCHEDULE-09 2단계 전용(2026-08-11,
-    name) 선택 필드다.
+    COMPARE 전용(2026-08-11), SCHEDULE-09 2단계 전용(2026-08-11, name) 또는
+    SCHEDULE-12 전용(latitude/longitude) 선택 필드다.
     """
 
     place_id: str
     rank: int
     name: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
     estimated_arrival: str | None = None
     estimated_duration_min: int | None = None
     travel_to_next_min: int | None = None
@@ -226,6 +322,67 @@ class RecommendationHistory(BaseModel):
     # 분리된 별도 리스트다 — "노출했다"로 잘못 취급되면 COMPARE의 "첫 번째"가
     # 실제로 안 보여준 장소를 가리키게 된다(댓글/카드 참고).
     closed_excluded: list[ClosedExclusionItem] = Field(default_factory=list)
+    updated_at: datetime = Field(default_factory=now_kst)
+
+
+# ---------------------------------------------------------------- 보관함
+
+class SavedPlaceItem(BaseModel):
+    """사용자가 명시적으로 담은 장소 1건. (SCHEDULE-12)
+
+    RecommendedItem/RejectedItem과 결정적으로 다른 점은 "누가 골랐는가"다 —
+    recommended는 시스템이 보여준 것이고 rejected는 사용자가 물린 것이지만,
+    이건 사용자가 능동적으로 고른 것이다. 그래서 다음 SCHEDULE 턴의 후보
+    복귀(SCHEDULE-11/D-107)와 배치 보장에서 세 목록과 다르게 취급된다.
+
+    name은 "B는 place_id만 저장하고 장소 상세 정보를 보관하지 않는다"
+    (history.py) 원칙의 예외다 — RecommendedItem.name을 SCHEDULE-09
+    2단계에서 예외로 넣은 것과 같은 이유이며, 근거도 같다. "경복궁"류 지명
+    검색이 호출마다 조금씩 다른 좌표로 resolve돼 이번 턴 후보 목록이 매번
+    달라지는 사례가 실사용에서 확인됐고(2026-08-11), 그러면 담아둔 place_id를
+    이번 턴 후보에서 다시 못 찾아 이름을 못 채운다. 보관함은 담고 나서 여러
+    턴 뒤에 쓰이는 것이 정상이라 이 재검색 실패 확률이 recommended보다 오히려
+    높다.
+
+    latitude/longitude는 후속 카드에서 채운다 — 후보 간 거리 계산
+    (agent_runtime._build_pairwise_distances_km)이 이번 턴 C 응답에서만
+    좌표를 찾기 때문에 검색 반경 밖의 보관함 장소는 거리 근거를 잃는다.
+    지금은 필드만 열어두고 None으로 남긴다.
+    """
+
+    place_id: str
+    name: str
+    # 어느 실행에서 노출된 것을 담았는지. 이력(RecommendedItem.run_id)과 대조해
+    # "그때 본 그 장소"를 되짚을 수 있게 남긴다.
+    saved_from_run_id: str
+    saved_at: datetime = Field(default_factory=now_kst)
+    latitude: float | None = None
+    longitude: float | None = None
+
+
+class SavedPlaceList(BaseModel):
+    """세션 단위 장소 보관함. (SCHEDULE-12)
+
+    RecommendationHistory에 얹지 않고 별도 엔티티로 둔 이유가 두 가지다.
+
+    1. 이력은 append-only인데 보관함은 담기/빼기가 되는 가변 상태다.
+    2. `clear_recommended()`(계약 5.5절 history reset)가 recommended와
+       closed_excluded를 비우는데, 보관함이 거기 얹혀 있으면 "다른 곳
+       보여줘" 한 번에 사용자가 담아둔 것이 함께 날아간다.
+
+    items의 순서는 담은 순서다(오래된 것이 앞). 일정 편성에서 보관함 개수가
+    항목 수 상한을 넘을 때 무엇을 남길지 이 순서로 정하므로(SCHEDULE-12
+    설계안 4절) 정렬을 바꾸지 않는다 — 점수 순으로 자르면 왜 그 곳이 빠졌는지
+    사용자에게 설명할 수 없다.
+    """
+
+    session_id: str
+    # AgentState.user_id와 동일한 규칙(TP-101 3단계, D-063): 비어 있으면
+    # 채우고, 값이 있으면 덮어쓰지 않는다. FK는 걸지 않는다. 지금은 세션
+    # TTL과 함께 소멸하지만, 정식 인증(D-062 Phase 5) 이후 계정 단위로
+    # 옮길 때 이 필드가 이관 기준이 된다.
+    user_id: str | None = None
+    items: list[SavedPlaceItem] = Field(default_factory=list)
     updated_at: datetime = Field(default_factory=now_kst)
 
 

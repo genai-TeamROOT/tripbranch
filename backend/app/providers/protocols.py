@@ -10,11 +10,14 @@ TODO: provider가 늘어나면 오류 타입, 비동기 계약, 메타데이터 
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass
 from datetime import date
 from typing import Protocol, runtime_checkable
 
 from app.domain.models import (
+    AccessibilityNeed,
+    AccessibilityVerdict,
     ConcentrationResult,
     GeocodeResult,
     HolidayResult,
@@ -25,6 +28,7 @@ from app.domain.models import (
     PlaceCommonDetails,
     PlaceDetails,
     PlaceOperatingDetails,
+    PlacePhoto,
     RealtimeCityDataResult,
     RealtimeCommercialResult,
     TourPlacePage,
@@ -47,6 +51,7 @@ from app.schedule.schemas import (
 )
 from app.schemas import (
     ComparisonResult,
+    ConversationTurnView,
     GeneralTopic,
     Intent,
     IntentClassificationResult,
@@ -68,6 +73,7 @@ class LLMProvider(Protocol):
         last_intent: str | None = None,
         shown_place_names: list[str] | None = None,
         conversation_place_name: str | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[IntentClassificationResult]:
         """사용자 발화의 Intent를 1단계로 판정한다.
 
@@ -83,7 +89,12 @@ class LLMProvider(Protocol):
         """
         ...
 
-    async def extract_recommend_conditions(self, user_input: str) -> ProviderResult[LLMOutput]:
+    async def extract_recommend_conditions(
+        self,
+        user_input: str,
+        *,
+        history: Sequence[ConversationTurnView] | None = None,
+    ) -> ProviderResult[LLMOutput]:
         """RECOMMEND 발화에서 UserConditions를 추출한다."""
         ...
 
@@ -95,6 +106,7 @@ class LLMProvider(Protocol):
         pending_clarification: str | None = None,
         shown_place_count: int = 0,
         shown_place_names: list[str] | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[LLMOutput]:
         """MODIFY 발화에서 modify_type과 condition_changes를 추출한다.
 
@@ -115,6 +127,10 @@ class LLMProvider(Protocol):
         has_previous_recommendation: bool,
         reference_date: date,
         conversation_place_name: str | None = None,
+        pending_info_question_type: str | None = None,
+        pending_info_specific_question: str | None = None,
+        pending_info_visit_time: str | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[LLMOutput]:
         """INFO 발화에서 장소/질문 정보를 추출한다.
 
@@ -122,6 +138,11 @@ class LLMProvider(Protocol):
         visit_time을 실제 날짜로 환산하는 기준일(KST). concentration-conditions.md §3.2.
         conversation_place_name: 직전 INFO 카드의 장소명. "여기/이곳" 같은
         from_conversation 지시어가 있을 때만 장소를 해소하는 후보다.
+        pending_info_question_type/pending_info_specific_question/pending_info_visit_time:
+        직전 턴이 장소명이 없어 되물은 INFO 되묻기였을 때 그때 이미 파악한 질문 정보.
+        이번 발화가 그 답변(장소명만 던지는 짧은 응답)으로 보이면 question_type 등을
+        유지하고 place_name만 채우는 데 쓴다. 없으면(직전이 INFO 되묻기가 아니었으면)
+        모두 None이다.
         """
         ...
 
@@ -131,6 +152,7 @@ class LLMProvider(Protocol):
         *,
         shown_place_count: int,
         shown_place_names: list[str] | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[LLMOutput]:
         """COMPARE 발화에서 비교 대상과 기준을 추출한다.
 
@@ -140,22 +162,41 @@ class LLMProvider(Protocol):
         """
         ...
 
-    async def extract_general_request(self, user_input: str) -> ProviderResult[LLMOutput]:
+    async def extract_general_request(
+        self,
+        user_input: str,
+        *,
+        history: Sequence[ConversationTurnView] | None = None,
+    ) -> ProviderResult[LLMOutput]:
         """GENERAL 발화의 주제를 분류한다."""
         ...
 
     async def generate_general_answer(
-        self, topic: GeneralTopic, original_question: str
+        self,
+        topic: GeneralTopic,
+        original_question: str,
+        *,
+        offer_content: str | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[str]:
         """GENERAL 발화에 실제로 답할 배경지식 문장을 생성한다.
 
         다른 메서드와 달리 구조화 조건 추출이 아니라 자유 텍스트 답변이다 —
         docs/design/agent-response-generation.md §3/§6의 유일한 LLM 신규 호출 지점.
+
+        offer_content가 있으면(대화층 3단계) 답변 끝에 그 도움을 자연스러운 질문으로
+        제안하며 마무리한다. 무엇을 제안할지는 이미 호출자(situational_offers)가
+        정했고, 여기서는 문장으로 바꾸는 것만 한다.
         """
         ...
 
     async def generate_recommendation_summary(
-        self, intent: Intent, recommendations: RecommendationResponse
+        self,
+        intent: Intent,
+        recommendations: RecommendationResponse,
+        *,
+        conditions: UserConditions | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> ProviderResult[str]:
         """추천 카드 목록을 감싸는 짧은 챗봇 말풍선 문장을 생성한다.
 
@@ -165,7 +206,12 @@ class LLMProvider(Protocol):
         ...
 
     def stream_recommendation_summary(
-        self, intent: Intent, recommendations: RecommendationResponse
+        self,
+        intent: Intent,
+        recommendations: RecommendationResponse,
+        *,
+        conditions: UserConditions | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> AsyncIterator[str]:
         """추천 요약 문장을 Gemini 조각 단위로 전달한다.
 
@@ -175,12 +221,18 @@ class LLMProvider(Protocol):
         ...
 
     def stream_general_answer(
-        self, topic: GeneralTopic, original_question: str
+        self,
+        topic: GeneralTopic,
+        original_question: str,
+        *,
+        offer_content: str | None = None,
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> AsyncIterator[str]:
         """GENERAL 답변을 텍스트 조각으로 전달한다.
 
         SSE 경로에서만 사용한다. 자유 답변은 추천 카드처럼 별도 결과가 없으므로,
-        호출자는 첫 조각 전에 로딩 말풍선을 먼저 열어야 한다.
+        호출자는 첫 조각 전에 로딩 말풍선을 먼저 열어야 한다. offer_content는
+        generate_general_answer()와 같다.
         """
         ...
 
@@ -191,11 +243,17 @@ class LLMProvider(Protocol):
         question_type: str,
         specific_question: str | None,
         fields: dict[str, str],
+        history: Sequence[ConversationTurnView] | None = None,
     ) -> AsyncIterator[str]:
         """검증된 INFO 필드만 근거로 한 안내 답변을 텍스트 조각으로 전달한다."""
         ...
 
-    async def generate_compare_summary(self, comparison: ComparisonResult) -> ProviderResult[str]:
+    async def generate_compare_summary(
+        self,
+        comparison: ComparisonResult,
+        *,
+        history: Sequence[ConversationTurnView] | None = None,
+    ) -> ProviderResult[str]:
         """C가 반환한 비교 사실을 3~6줄의 사용자용 설명으로 바꾼다.
 
         comparison 밖의 사실·점수·순위를 만들지 않는다. 호출부는 LLM 장애 시
@@ -316,6 +374,53 @@ class PlaceSearchProvider(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class BarrierFreePlaceSearch:
+    """무장애 검색이 돌려주는 것: 후보와, 각 후보가 왜 후보인지.
+
+    후보만 돌려주면 `partial`과 `possible`이 같은 것이 된다. 둘 다 후보로 남기
+    때문이다 — 들어갈 수는 있는데 못 가는 구역이 남는 장소를 추천에서 빼는 것은
+    과하지만, 그 사실을 말하지 않고 추천하는 것도 옳지 않다.
+
+    `verdicts`의 열쇠는 `PlaceCandidate.place_id`이고, 값은 **요구한 어휘만**
+    담는다. 요구하지 않은 편의의 판정까지 올리면 사용자가 묻지 않은 것을 답변이
+    말하게 된다.
+    """
+
+    candidates: list[PlaceCandidate]
+    verdicts: dict[str, dict[AccessibilityNeed, AccessibilityVerdict]]
+
+
+class BarrierFreePlaceSearchProvider(Protocol):
+    """무장애 편의를 요구한 요청의 후보를 찾는 검색 provider.
+
+    `PlaceSearchProvider`에 인자를 더하지 않고 계약을 나눈 이유는 두 가지다.
+
+    첫째, 검색 인자가 다르다. 이쪽은 지역·구 코드를 쓰지 않고(저장소가 이미 서울
+    적재분만 담는다) 대신 요구 편의 목록을 받는다.
+
+    둘째, 인자를 더하면 `RealPlaceProvider`와 Fake까지 서명이 바뀐다. 무장애와
+    무관한 경로가 무장애 때문에 흔들리지 않게 둔다.
+    """
+
+    async def search_places_with_accessibility(
+        self,
+        *,
+        latitude: float,
+        longitude: float,
+        search_radius_km: float,
+        needs: Sequence[AccessibilityNeed],
+        category_filter: PlaceCategoryFilter | None = None,
+        limit: int,
+    ) -> ProviderResult[BarrierFreePlaceSearch]:
+        """요구 편의를 **전부** 만족하는 후보를 거리순으로 반환한다.
+
+        `needs`가 비어 있으면 구현체는 ValueError를 던진다. 조건 없는 검색으로
+        조용히 바뀌면 무장애를 요구한 요청이 조건 빠진 결과를 받고도 모른다.
+        """
+        ...
+
+
 class PlaceDetailsProvider(Protocol):
     async def get_details(
         self, content_id: str, content_type_id: str
@@ -369,6 +474,19 @@ class PlaceCommonDetailsProvider(Protocol):
     async def get_common_details(self, content_id: str) -> ProviderResult[PlaceCommonDetails]:
         """detailCommon2만 호출해 overview·homepage·tel을 반환한다."""
         ...
+
+
+class PlaceImageProvider(Protocol):
+    """장소 사진 목록을 주는 최소 계약(TourAPI detailImage2).
+
+    상세 조회 계약과 나눈다. 사진은 detailCommon2·detailIntro2와 다른
+    오퍼레이션이고 일일 한도도 따로 걸리므로, 사진만 필요한 호출부가 상세
+    provider 전체를 요구할 이유가 없다.
+    """
+
+    async def get_place_images(
+        self, content_id: str, limit: int
+    ) -> ProviderResult[tuple[PlacePhoto, ...]]: ...
 
 
 class PlaceDetailByNameProvider(Protocol):

@@ -42,7 +42,11 @@ async def general_answer_node(
         await emit_stream_event(sink, "message_delta", {"text": text})
 
     message = await compose_chat_message(
-        state["llm_output"], llm=llm, on_message_delta=on_delta
+        state["llm_output"],
+        llm=llm,
+        on_message_delta=on_delta,
+        rejected_offer_actions=state.get("rejected_offer_actions") or [],
+        history=state.get("history") or [],
     )
     return {"answer": message}
 

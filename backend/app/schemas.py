@@ -141,6 +141,11 @@ class RecommendationItem(BaseModel):
     # 리뷰·블로그 원문은 보내지 않고 장소별 상위 태그와 문서 단위 언급 수만
     # 서비스 화면에 노출한다. 태그 미수집 장소는 빈 배열이다.
     preference_tags: list[PreferenceTagSummary] = Field(default_factory=list)
+    # D의 파이프라인은 이미지를 조회하지 않는다 — A가 응답 조립 단계에서 C의
+    # RecommendationCardTool(원래 COMPARE용, place_id 배치 조회)로 채워 넣는다
+    # (TECH-02: D가 C의 Tool을 직접 부르지 않는다). 채우지 못한 장소는 None이고,
+    # 프론트는 그 경우 자리표시 칩을 그린다.
+    image_url: str | None = None
 
 
 class TravelOriginToggle(BaseModel):
@@ -207,6 +212,18 @@ class ScheduleResult(BaseModel):
     total_duration_min: int
     route_summary: str
     basis_note: str
+    # 보관함에 담겨 있었지만 이번 일정에 넣지 못한 장소 이름 (SCHEDULE-12).
+    # 담은 개수가 활동 가능 시간이 허용하는 항목 수 상한(target_item_range())을
+    # 넘었거나, LLM이 재시도 후에도 포함 지시를 지키지 못한 경우에 채워진다.
+    # 사용자에게 조용히 빠뜨리지 않고 말풍선으로 알리기 위한 값이라, 화면 문구를
+    # 조립하는 쪽(response_composer)이 읽는다. 빈 리스트가 정상이다.
+    omitted_saved_place_names: list[str] = Field(default_factory=list)
+    # 담겨 있었지만 이번 턴 후보 목록에 아예 없어서 편성 대상이 되지 못한 장소
+    # 이름 (SCHEDULE-12). omitted_saved_place_names와 사유가 정반대다 — 이쪽은
+    # 시간을 늘리거나 다른 곳을 빼도 들어가지 않는다. 후보 수집(C) 단계에서
+    # 안 잡힌 것이라 편성 조건을 바꿔도 결과가 같기 때문이다. 두 사유를 한
+    # 리스트에 섞으면 화면이 "시간을 늘려보라"는 잘못된 안내를 하게 된다.
+    absent_saved_place_names: list[str] = Field(default_factory=list)
     elapsed_ms: float = Field(
         ge=0,
         description="일정 편성 파이프라인 시작부터 응답 조립 완료까지의 총 처리시간(ms)",
@@ -251,6 +268,30 @@ class Intent(StrEnum):
     COMPARE = "COMPARE"
     GENERAL = "GENERAL"
     OUT_OF_SCOPE = "OUT_OF_SCOPE"
+
+
+class InteractionMode(StrEnum):
+    """사용자가 지금 무엇을 하고 있는지. Intent와 **직교하는 별개 축**이다.
+
+    (docs/design/conversational-layer.md) 상황은 Intent 중 하나가 아니다 —
+    "비 오는데 실내 카페 추천해줘"는 RECOMMEND면서 동시에 상황이고, "지쳤는데
+    경복궁 지금 붐벼?"는 INFO면서 동시에 상황이다. GENERAL 하위 주제로 넣으면
+    이런 발화를 잘못 처리하고, 이미 두 역할(정체성 질문·상식 폴백)을 지고 있는
+    GENERAL이 만능 라벨이 된다.
+
+    값을 둘로만 시작하는 것은 의도적이다. 모드를 처음부터 5개씩 만들면 인텐트
+    라벨에서 피하려던 과부하를 다른 필드에서 그대로 반복하게 된다. 실제로 구분이
+    필요해지는 시점에 늘린다.
+
+    실측(2026-08-30, scripts/test_situational_utterances.py)으로 확인한 현재
+    동작: 상황 발화는 한 곳으로 떨어지지 않고 흩어진다 — "다리를 다쳤어"와
+    "아 비 오네"는 RECOMMEND(조건 없이 조용히 검색을 시작한다), "너무 지친다"와
+    "오늘 진짜 되는 일이 없네"는 OUT_OF_SCOPE/unrelated(거절), "아 오늘
+    휴관이래"는 GENERAL. 이 축이 없으면 상황을 알아채는 일 자체가 불가능하다.
+    """
+
+    DIRECT_REQUEST = "direct_request"
+    SITUATIONAL = "situational"
 
 
 class OutputStatus(StrEnum):
@@ -624,9 +665,31 @@ class ComparisonResult(BaseModel):
     items: list[ComparisonItem] = Field(min_length=1)
 
 
+class SituationKind(StrEnum):
+    """GENERAL 상황 발화(interaction_mode=situational)에서 감지한 상황 종류.
+
+    (docs/design/conversational-layer.md 3단계) 닫힌 목록이다 — 여기 없는 값은
+    "상황이지만 우리가 실행 가능한 도움이 없다"는 뜻으로 다룬다(VAGUE).
+
+    이 값에서 실제로 무엇을 제안할지(actions/조건 override/버튼 문구)는 프롬프트가
+    아니라 코드(app.services.interpret.situational_offers)가 정한다 — "닫힌 목록"을
+    프롬프트 규칙으로만 두면 코드와 프롬프트가 언젠가 어긋난다. LLM은 상황을
+    분류하기만 하고, 무엇을 할 수 있는지는 절대 스스로 정하지 않는다.
+    """
+
+    FATIGUE = "fatigue"  # 지침, 다리·발 통증
+    BAD_WEATHER = "bad_weather"  # 비, 더위, 추위, 바람
+    CLOSED_OR_CROWDED = "closed_or_crowded"  # 휴관, 혼잡
+    COMPANION_DIFFICULTY = "companion_difficulty"  # 동행(아이·어르신 등)이 힘들어함
+    VAGUE = "vague"  # 막연한 답답함 — 실행 가능한 제안이 없다
+
+
 class GeneralPayload(BaseModel):
     topic: GeneralTopic
     original_question: str
+    # interaction_mode가 situational일 때만 채워진다. direct_request 턴(예: "서울
+    # 여행 팁")에서는 상황이 없으므로 None이다.
+    situation: SituationKind | None = None
 
 
 class OutOfScopePayload(BaseModel):
@@ -673,6 +736,9 @@ class LLMOutput(BaseModel):
 
     intent: Intent
     status: OutputStatus
+    # Intent와 직교하는 축(대화층 2단계). 분류 단계가 정한 값을 그대로 옮겨
+    # 담기만 한다 — 이 envelope는 판단하지 않는다.
+    interaction_mode: InteractionMode = InteractionMode.DIRECT_REQUEST
     recommend: RecommendPayload | None = None
     info: InfoPayload | None = None
     modify: ModifyPayload | None = None
@@ -717,8 +783,27 @@ class IntentClassificationResult(BaseModel):
     """
 
     intent: Intent
+    # Intent와 나란한 별개 축. 기본값이 DIRECT_REQUEST라 이 필드를 안 채우는
+    # 모델·스텁도 지금까지와 똑같이 동작한다.
+    interaction_mode: InteractionMode = InteractionMode.DIRECT_REQUEST
     out_of_scope_category: OutOfScopeCategory | None = None
     out_of_scope_severity: Severity | None = None
+
+
+class ConversationTurnView(BaseModel):
+    """프롬프트에 넘길 최근 대화 한 턴. (대화층 1단계)
+
+    B가 보관하는 ConversationTurn은 어시스턴트 쪽을 원문이 아니라 재료(intent/
+    question_type/장소명/제안)로 들고 있다. 그 재료를 사람이 읽는 한 줄로 조립하는
+    건 A의 책임이고(agent_runtime), 조립은 순수 함수라 LLM 호출이 늘지 않는다.
+
+    **이 값은 신뢰할 수 없는 입력이다.** 프롬프트에 실을 때 system_instruction
+    문자열에 치환하면 사용자가 쓴 글이 시스템 지시문 내부에 박힌다 — 반드시
+    대화 내용(contents) 자리에 역할을 나눠 넣어야 한다.
+    """
+
+    user_input: str
+    assistant_summary: str | None = None
 
 
 class InterpretRequest(BaseModel):
@@ -751,6 +836,17 @@ class InterpretRequest(BaseModel):
     # 상태 계약에 새 필드를 추가하지 않고도, 현재 대화 화면이 이미 받은 카드 정보를
     # 다음 턴의 해석에 재사용할 수 있게 한다.
     conversation_place_name: str | None = None
+    # 최근 대화(오래된 것이 앞). 라우터가 B의 SessionContextResponse.recent_turns를
+    # 조립해 채운다 — 호출자가 보낸 값은 무시된다(위 5개 필드와 같은 원칙).
+    recent_turns: list[ConversationTurnView] = Field(default_factory=list)
+    # 직전 턴이 INFO 되묻기(장소명 없음)로 끝났을 때 그때 이미 파악한 질문 정보.
+    # 라우터가 B의 SessionContextResponse.pending_info_context로 채운다 — 호출자가
+    # 보낸 값은 무시된다(위 5개 필드와 같은 원칙). 자유 텍스트로 장소명만 답해도
+    # extract_info_query()가 이 값을 참고해 question_type/specific_question을
+    # 이어받을 수 있게 한다.
+    pending_info_question_type: str | None = None
+    pending_info_specific_question: str | None = None
+    pending_info_visit_time: str | None = None
 
 
 # === Agent Runtime (A-03) ===
@@ -785,6 +881,12 @@ class AgentRequest(BaseModel):
     # classify_intent()/extract_recommend_conditions()를 다시 태우지 않는다.
     # 직전 턴 조건을 그대로 재사용해 travel_origin만 이 값으로 덮어써 재실행한다.
     travel_origin_override: TravelOrigin | None = None
+    # 보관함 하단 바의 "이 장소들로 일정 짜기" 클릭(SCHEDULE-12 카드 3).
+    # user_input에는 버튼 label을 채워 보내되(채팅 이력 표시용) 라우팅은 이
+    # 필드만으로 결정한다 — clarification_choice/travel_origin_override와 같은
+    # 이유로 classify_intent()/extract_*_conditions()를 다시 태우지 않는다.
+    # 보관함이 비어 있으면 평소 경로로 폴백한다(런타임이 판정).
+    schedule_from_saved: bool = False
     # 개발자용 채팅(/dev-chat) 전용 디버그 스위치. True면 이번 턴은 폐점 후보도
     # 항상 채점에 포함한다 — no_data_closed 되묻기 자체를 재현/우회하려고 매번
     # 버튼을 누르지 않고 강제로 켤 수 있게 한다(실사용 피드백, 2026-08-13).
@@ -963,6 +1065,24 @@ class ToolExecutionDebug(BaseModel):
     candidate_concentration: list[CandidateConcentrationDebug] = Field(default_factory=list)
 
 
+class PreferenceEvidenceQuote(BaseModel):
+    polarity: str
+    text: str
+    source_type: str
+    source_url: str | None = None
+
+
+class PlacePreferenceInsight(BaseModel):
+    """상세 카드에 표시할 장소별 취향 태그와 대표 후기 근거."""
+
+    code: str
+    label: str
+    mention_count: int = Field(ge=0)
+    positive_document_count: int = Field(ge=0)
+    negative_document_count: int = Field(ge=0)
+    evidence: list[PreferenceEvidenceQuote] = Field(default_factory=list)
+
+
 class InfoPlaceCard(BaseModel):
     """INFO 장소 상세 카드용 A의 최종 응답 모델.
 
@@ -981,6 +1101,9 @@ class InfoPlaceCard(BaseModel):
     latitude: float | None = None
     longitude: float | None = None
     thumbnail_url: str | None = None
+    # 여러 장 보기용 사진 목록. 비어 있어도 thumbnail_url은 따로 있을 수 있어
+    # 프론트는 둘을 함께 본다 — 사진 목록이 있는 장소가 전체의 30%뿐이다.
+    photos: list[PlacePhotoItem] = Field(default_factory=list)
     overview: str | None = None
     operating_hours: str | None = None
     rest_date: str | None = None
@@ -992,6 +1115,8 @@ class InfoPlaceCard(BaseModel):
     credit_card: str | None = None
     restroom: str | None = None
     homepage: str | None = None
+    # 후기에서 추출한 취향 태그·대표 근거. 상세 모달 요청에서만 채운다.
+    preference_insights: list[PlacePreferenceInsight] = Field(default_factory=list)
     population_current_level: str | None = None
     population_current_message: str | None = None
     population_observed_at: str | None = None
@@ -1023,6 +1148,17 @@ class ConcentrationForecastBar(BaseModel):
     concentration_rate: float = Field(ge=0)
     concentration_level: str
     concentration_label: str
+
+
+class PlacePhotoItem(BaseModel):
+    """장소 상세 화면에 여러 장으로 보여줄 사진 한 장.
+
+    C의 ``PlacePhotoItem``을 그대로 옮긴 값이다. 목록 순서가 곧 보여줄 순서이고,
+    첫 번째가 가장 대표적이다.
+    """
+
+    url: str
+    image_name: str | None = None
 
 
 class RealtimeInfoDetailItem(BaseModel):

@@ -440,6 +440,109 @@ class PlaceBarrierFreeDetails:
         )
 
 
+class AccessibilityNeed(StrEnum):
+    """요청이 요구할 수 있는 무장애 편의. `place_barrier_free`의 컬럼 묶음과 1:1이다.
+
+    이름은 대개 **"무엇이 필요한가"**를 가리킨다. 다만 단차 접근만은 대상으로
+    나눈다 — 휠체어와 유모차는 같은 컬럼을 읽지만 판정이 갈리기 때문이다(각 값의
+    주석 참고). 나머지는 누가 요구하든 같은 값을 본다.
+
+    "유모차 끌고 갈 만한 곳"은 STROLLER_ACCESS와 INFANT_FACILITIES 두 값으로
+    온다 — 유모차를 끌고 들어갈 수 있는지와 수유실·기저귀교환대가 있는지는 다른
+    질문이다. INFANT_FACILITIES만 요구하면 유아 시설은 있는데 계단으로 올라가야
+    하는 곳이 섞인다(유아 시설이 있는 275곳 중 24곳에 단차 정보가 없다).
+
+    각 값이 어느 컬럼을 읽는지는 저장소가 아니라 **RPC의 판정 블록**이 정한다
+    (`search_places_barrier_free`). 판정을 한 곳에 모아 두려는 것이므로 여기에
+    컬럼 목록을 복제하지 않는다.
+    """
+
+    # 단차 없이 들어갈 수 있는가. 두 값이 **같은 컬럼을 읽지만 판정이 다르다** —
+    # 계단은 휠체어만 막고(들어 올릴 수 없다), 흙·자갈은 바퀴가 작은 유모차에 더
+    # 불리하며, 좁은 통로는 유모차만 접어서 지날 수 있다. 원문은 휠체어 기준으로
+    # 쓰여 있어(477문장 중 253개가 휠체어·전동 스쿠터를 언급, 유모차는 0건) 유모차
+    # 판정은 그 서술로부터 따로 내려야 한다.
+    #
+    # **지금은 두 값이 같은 결과를 낸다.** 원문을 읽어 가르는 판정이 아직 없기
+    # 때문이다(TP-204). 어휘를 먼저 나눈 이유는 A가 조건 추출을 붙이기 전이라
+    # 지금이 가장 싼 시점이어서다.
+    WHEELCHAIR_ACCESS = "wheelchair_access"
+    STROLLER_ACCESS = "stroller_access"
+
+    ACCESSIBLE_RESTROOM = "accessible_restroom"
+    ACCESSIBLE_PARKING = "accessible_parking"
+    VISUAL_GUIDE = "visual_guide"
+    # 수유실·기저귀교환대·유모차 대여. "유모차를 끌고 갈 수 있는가"가 아니라
+    # "아기와 있을 때 필요한 시설이 있는가"다 — 앞은 STROLLER_ACCESS가 답한다.
+    INFANT_FACILITIES = "infant_facilities"
+
+    # 오래 걷기 힘든 동행(노인 등)에게 쓸모 있는 값들. 휠체어 사용자 전용이 아니다.
+    #
+    # WHEELCHAIR_RENTAL은 휠체어 **대여**다. 휠체어로 들어갈 수 있는지가 아니다 —
+    # TourAPI의 `wheelchair` 응답 키가 대여를 뜻한다.
+    # SEATING_AVAILABLE은 의자식(입식) 테이블이다. 좌식이 아니라는 뜻이다.
+    WHEELCHAIR_RENTAL = "wheelchair_rental"
+    SEATING_AVAILABLE = "seating_available"
+    LOW_FLOOR_TRANSIT = "low_floor_transit"
+
+
+class AccessibilityVerdict(StrEnum):
+    """무장애 원문을 사람이 읽어 내린 접근 가능 판정.
+
+    원본은 `supabase/data/barrier_free_sentence_verdicts.csv`이고, 장소마다
+    펼친 값이 `place_barrier_free`의 판정 컬럼이다. 한 장소가 여러 문장을
+    가지면 **가장 나쁜 것**이 그 장소의 판정이다 — 접근로가 가능이어도
+    주출입구가 불가면 못 들어간다.
+
+    판정이 붙는 어휘는 셋뿐이다(휠체어·유모차·시각안내). 나머지 여섯은 아직
+    원문 규칙으로 거른다.
+    """
+
+    # 들어갈 수단이 있다. 리프트도 보조출입구도 수단이고, 불편하다는 말은
+    # 못 들어간다는 뜻이 아니다.
+    POSSIBLE = "possible"
+    # 들어가긴 하지만 못 가는 구역이 남는다. **후보에서 빼지 않는다** — 팔각정
+    # 하나 못 간다고 추천에서 빼는 것은 과하다. 대신 답변이 그 사실을 말한다.
+    PARTIAL = "partial"
+    # 아예 들어갈 수 없다. 후보에서 뺀다.
+    IMPOSSIBLE = "impossible"
+
+
+@dataclass(frozen=True)
+class BarrierFreePlaceRow:
+    """무장애 후보 검색(`search_places_barrier_free`)이 돌려주는 장소 한 건.
+
+    `places`에서 읽은 값이라 TourAPI 목록 조회가 주는 것과 같은 자리를 채운다 —
+    provider가 이 값을 `PlaceCandidate`로 옮기면 그 뒤 경로(상세 보완·병합·조립)는
+    후보가 어디서 왔는지 몰라도 된다.
+
+    운영시간은 담지 않는다. TourAPI 후보도 검색 단계에서는 비워 두고 뒤이은 상세
+    보완이 채우므로, 여기서 미리 채우면 같은 값을 두 경로가 서로 다른 규칙으로
+    만들게 된다.
+    """
+
+    content_id: str
+    title: str
+    address: str | None
+    latitude: float
+    longitude: float
+    content_type_id: str | None
+    lcls_systm1: str | None
+    lcls_systm2: str | None
+    lcls_systm3: str | None
+    first_image_url: str | None
+    distance_km: float
+    # 원문을 사람이 읽어 내린 판정. 후보에 남았다는 것은 impossible이 아니라는
+    # 뜻이지 possible이라는 뜻은 아니다 — partial도 후보로 남긴다. 그래서 값을
+    # 함께 올려 답변이 "일부 구역은 접근이 어렵다"고 말할 수 있게 한다.
+    #
+    # 판정표가 없는 여섯 어휘(화장실·주차장·유아·대여·좌석·저상버스)는 여기
+    # 없다. RPC가 아직 원문 규칙으로 거르므로 후보에 있다는 것 말고는 할 말이 없다.
+    wheelchair_access_verdict: AccessibilityVerdict | None = None
+    stroller_access_verdict: AccessibilityVerdict | None = None
+    visual_guide_verdict: AccessibilityVerdict | None = None
+
+
 @dataclass(frozen=True)
 class PlaceCommonDetails:
     """detailCommon2에서만 얻을 수 있는 값. places 동기화 대상이 아니다.
@@ -548,6 +651,31 @@ class PlaceMoodMatch:
     profile: PlaceMoodProfile
     # 검색 중심에서의 거리. 반경으로 좁혀 부른 경우에만 채워진다.
     distance_km: float | None = None
+
+
+@dataclass(frozen=True)
+class PlacePhoto:
+    """장소 사진 한 장. 상세 화면에 여러 장을 보여주기 위한 값이다.
+
+    출처는 `place_image_embeddings`다. 분위기 임베딩을 적재하면서 함께 담아 둔
+    원본 주소(`origin_url`)이고, TourAPI `detailImage2`가 준 순서를 그대로
+    가지고 있다. 사진 파일 자체는 저장하지 않으므로 이 주소가 유일한 경로다.
+
+    **한 장뿐인 장소가 절반이 넘는다.** 5,465곳 중 3,074곳이고, 그중 2,749곳은
+    이 주소가 `places.first_image_url`과 같다 — `detailImage2`가 비어 대표
+    이미지 한 장으로 대체된 장소라 갤러리로 보여줄 것이 없다(2026-08-31 실측).
+    소비 측은 장수를 세어 한 장이면 지금처럼 한 장만 그린다.
+    """
+
+    content_id: str
+    # 장소 안에서 몇 번째 사진인가. 1이 가장 대표적이다 — 관광공사가 대표성 높은
+    # 사진을 앞에 주고, 적재가 그 순서를 바꾸지 않았다.
+    photo_order: int
+    url: str
+    # detailImage2의 imgname. 대부분 장소명이지만 무장애 실측 사진처럼 성격이
+    # 다른 사진이 이름으로 드러나는 경우가 있어(예: MouseRabbit_출입구자동문)
+    # 걸러낼 단서로 함께 나른다. 지금은 화면에서 쓰지 않는다.
+    image_name: str | None = None
 
 
 @dataclass(frozen=True)

@@ -30,7 +30,9 @@ export function travelLabel(item: RecommendationItem, language: Language = "ko")
     return language === "en" ? "Straight-line distance" : STRAIGHT_LINE_LABEL;
   }
   const labels = language === "en" ? MODE_LABEL_EN : MODE_LABEL;
-  return labels[item.travel_mode] ?? (language === "en" ? "Straight-line distance" : STRAIGHT_LINE_LABEL);
+  return (
+    labels[item.travel_mode] ?? (language === "en" ? "Straight-line distance" : STRAIGHT_LINE_LABEL)
+  );
 }
 
 export function travelValue(item: RecommendationItem, language: Language = "ko"): string {
@@ -38,7 +40,31 @@ export function travelValue(item: RecommendationItem, language: Language = "ko")
   if (measured === null) {
     return formatDistance(item.distance_km, language);
   }
-  return language === "en" ? `About ${formatMinutes(measured, language)}` : `약 ${formatMinutes(measured, language)}`;
+  return language === "en"
+    ? `About ${formatMinutes(measured, language)}`
+    : `약 ${formatMinutes(measured, language)}`;
+}
+
+const MODE_SHORT_LABEL: Record<TravelMode, string> = {
+  walking: "도보",
+  transit: "대중교통",
+  driving: "자동차",
+};
+
+const MODE_SHORT_LABEL_EN: Record<TravelMode, string> = {
+  walking: "Walking",
+  transit: "Transit",
+  driving: "Driving",
+};
+
+/** 상세 시트의 한 줄짜리 이동 표기(예: "도보 9분"). 실측이 없으면 직선거리만 말한다. */
+export function travelShortLabel(item: RecommendationItem, language: Language = "ko"): string {
+  const measured = measuredMinutes(item);
+  if (measured === null || !item.travel_mode) {
+    return formatDistance(item.distance_km, language);
+  }
+  const labels = language === "en" ? MODE_SHORT_LABEL_EN : MODE_SHORT_LABEL;
+  return `${labels[item.travel_mode]} ${formatMinutes(measured, language)}`;
 }
 
 function measuredMinutes(item: RecommendationItem): number | null {
@@ -68,7 +94,9 @@ function formatMinutes(minutes: number, language: Language): string {
 
 function formatDistance(distanceKm: number, language: Language): string {
   if (distanceKm < 1) {
-    return language === "en" ? `About ${Math.round(distanceKm * 1000)}m` : `약 ${Math.round(distanceKm * 1000)}m`;
+    return language === "en"
+      ? `About ${Math.round(distanceKm * 1000)}m`
+      : `약 ${Math.round(distanceKm * 1000)}m`;
   }
   const rounded = Math.round(distanceKm * 10) / 10;
   const value = `${Number.isInteger(rounded) ? rounded : rounded.toFixed(1)}km`;

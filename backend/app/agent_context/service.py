@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from time import perf_counter
@@ -46,6 +46,7 @@ from app.agent_context.info_schemas import (
     InfoContextResponse,
     PlaceCard,
     PlaceInfoResult,
+    PlacePhotoItem,
     PopulationForecastInfo,
     RealtimeCityInfoResult,
     RealtimeCommercialInfoResult,
@@ -83,9 +84,11 @@ from app.concentration_policy import (
 )
 from app.config import settings
 from app.domain.models import (
+    AccessibilityNeed,
     ConcentrationResult,
     MunicipalParkingStatus,
     PlaceDetails,
+    PlacePhoto,
     RealtimeBusStop,
     RealtimeCityEvent,
     RealtimeCommercialCategory,
@@ -106,7 +109,10 @@ from app.recommendation_limits import (
     MAX_RECOMMENDATION_CANDIDATE_LIMIT,
     MIN_RECOMMENDATION_LIMIT,
 )
-from app.repositories.protocols import MunicipalParkingCatalogRepository
+from app.repositories.protocols import (
+    MunicipalParkingCatalogRepository,
+    PlacePhotoRepository,
+)
 from app.schemas import CompareCriteria, ComparisonItem, StaleAreaProbeDebug
 from app.service_area import SUPPORTED_DISTRICTS
 from app.tools.concentration import (
@@ -117,7 +123,9 @@ from app.tools.festival import FestivalQuery, GetFestivalsTool
 from app.tools.holiday import GetHolidaysTool, HolidayQuery
 from app.tools.municipal_parking import GetMunicipalParkingTool, MunicipalParkingQuery
 from app.tools.nearby_place_details import (
+    CANDIDATE_POOL_EXHAUSTED_WARNING,
     CANDIDATE_POOL_TRUNCATED_WARNING,
+    UNKNOWN_ACCESSIBILITY_NEED_WARNING,
     EnrichedPlace,
     NearbyPlaceDetailsQuery,
     NearbyPlaceDetailsResult,
@@ -215,6 +223,9 @@ class ContextTools:
     # COMPARE의 place_id → 장소명 해석 전용. 추천 카드와 같은 Tool을 쓴다 —
     # 같은 places 행에서 같은 이름을 읽어야 카드와 비교 답변이 어긋나지 않는다.
     cards: RecommendationCardTool | None = None
+    # 상세 카드에 여러 장을 싣기 위한 사진 목록 저장소. 없으면 대표 이미지
+    # 한 장만 나가고 나머지 경로는 그대로다.
+    place_photos: PlacePhotoRepository | None = None
 
 
 class ContextService:
@@ -247,9 +258,13 @@ class ContextService:
         request: AgentContextRequest,
     ) -> AgentContextResponse:
         conditions = request.conditions
-        execution_plan = build_tool_execution_plan(conditions)
+        # 보충 조회는 A가 기준점을 확정해 넘긴다 — 그때는 장소만 다시 받는다.
+        refill_center = request.resolved_search_center
+        execution_plan = build_tool_execution_plan(
+            conditions, places_only=refill_center is not None
+        )
         location_query = conditions.search_center or conditions.current_location
-        if location_query is None and request.gps_location is None:
+        if refill_center is None and location_query is None and request.gps_location is None:
             return assemble_agent_context_response(
                 ContextAssemblyInput(request=request, location_result=None),
                 rule_versions=_rule_versions(),
@@ -262,15 +277,20 @@ class ContextService:
         if category_plan.has_unsupported_conditions or category_plan.has_conflicts:
             return _unsupported_category_response(request, category_plan)
 
-        location_result = (
-            await self._tools.location.execute(
+        if refill_center is not None:
+            # 위치 해석을 건너뛴다. 같은 턴이라 기준점이 바뀔 일이 없고, 보충 배치의
+            # location은 A가 어차피 버린다(_merge_recommendation_context_places).
+            location_result = _resolved_center_location_result(
+                refill_center, self._clock()
+            )
+        elif location_query is not None:
+            location_result = await self._tools.location.execute(
                 # 추천은 반경 검색의 기준 좌표만 필요하다. 저장소 정체성 확정은
                 # 후보 보강 단계가 place_id로 따로 한다(enrichment_service).
                 ResolveLocationQuery(location_query, purpose=LocationPurpose.SEARCH_CENTER)
             )
-            if location_query is not None
-            else _gps_location_result(request, self._clock())
-        )
+        else:
+            location_result = _gps_location_result(request, self._clock())
         if location_result.status is not ToolStatus.SUCCESS or location_result.location is None:
             return assemble_agent_context_response(
                 ContextAssemblyInput(
@@ -286,12 +306,16 @@ class ContextService:
 
         visit_at = _as_kst(self._clock())
         location = location_result.location
-        user_location_task = asyncio.create_task(
-            self._resolve_user_location(
-                request,
-                location_query=location_query,
-                location_result=location_result,
+        user_location_task = (
+            asyncio.create_task(
+                self._resolve_user_location(
+                    request,
+                    location_query=location_query,
+                    location_result=location_result,
+                )
             )
+            if refill_center is None
+            else None
         )
         weather_task = (
             asyncio.create_task(
@@ -324,12 +348,15 @@ class ContextService:
                     default_radius_km=self._search_radius_km,
                 ),
                 excluded_place_ids=frozenset(request.excluded_place_ids),
+                accessibility_needs=conditions.accessibility_needs,
             )
         )
         weather_result = await weather_task if weather_task is not None else None
         holidays_result = await holidays_task if holidays_task is not None else None
         places_result = await places_task
-        user_location_result = await user_location_task
+        user_location_result = (
+            await user_location_task if user_location_task is not None else None
+        )
 
         return assemble_agent_context_response(
             ContextAssemblyInput(
@@ -741,6 +768,7 @@ class ContextService:
         nearest = select_nearest_population_area(
             latitude=resolved_location.latitude,
             longitude=resolved_location.longitude,
+            requested_name=resolved_location.resolved_name,
         )
         if nearest is None:
             return await self._fetch_concentration_info(
@@ -898,6 +926,7 @@ class ContextService:
         nearest = select_nearest_commercial_area(
             latitude=resolved_location.latitude,
             longitude=resolved_location.longitude,
+            requested_name=resolved_location.resolved_name,
         )
         if nearest is None:
             return _info_error_response(
@@ -1139,6 +1168,7 @@ class ContextService:
             latitude=resolved_location.latitude,
             longitude=resolved_location.longitude,
             max_distance_km=COMMERCIAL_AREA_PROXY_MAX_DISTANCE_KM,
+            requested_name=resolved_location.resolved_name,
         )
         if nearest is None:
             return _realtime_city_info_no_data_response(
@@ -1788,9 +1818,32 @@ class ContextService:
             destination_coordinates=_to_info_destination_coordinates(resolved_location),
             fields=fields,
             # 카드는 질문 유형과 무관하게 채운다. status는 위 fields로만 정해진다.
-            place_card=_to_place_card(detail_result.details, resolved_location.place_id),
+            place_card=_to_place_card(
+                detail_result.details,
+                resolved_location.place_id,
+                photos=await self._fetch_place_photos(
+                    detail_result.details.content_id or resolved_location.place_id
+                ),
+            ),
             provider_metadata=(location_metadata, detail_result.provider_metadata),
         )
+
+    async def _fetch_place_photos(self, place_id: str | None) -> tuple[PlacePhoto, ...]:
+        """상세 카드에 실을 사진 목록을 읽는다. 실패는 사진 없음으로 삼킨다.
+
+        사진 조회가 실패했다고 상세 정보 전체를 못 보여주면 손해가 크다 — 운영시간·
+        주차·요금은 사진과 무관하게 이미 손에 있다. 대신 로그로 남겨 조회가 조용히
+        비는 상태를 알아챌 수 있게 한다.
+        """
+        repository = self._tools.place_photos
+        if repository is None or not place_id:
+            return ()
+        try:
+            found = await repository.find_place_photos([place_id])
+        except Exception:
+            logger.warning("장소 사진 목록을 읽지 못했습니다: place_id=%s", place_id, exc_info=True)
+            return ()
+        return found.get(place_id, ())
 
     async def _fetch_event_info(
         self,
@@ -1866,14 +1919,23 @@ class ContextService:
         longitude: float,
         search_radius_km: float,
         excluded_place_ids: frozenset[str] = frozenset(),
+        accessibility_needs: Sequence[str] = (),
     ) -> NearbyPlaceDetailsResult:
         """분류별 장소 조회를 병렬 실행하고 중복·제외 후보를 걸러 한 결과로 합친다.
 
         `excluded_place_ids`는 분류별 조회 각각에 같은 집합으로 넘긴다 — 분류마다
         결과 집합이 다르므로 "앞에서 몇 건"이 아니라 id로 걸러야 맞다.
+
+        `accessibility_needs`는 A가 보낸 문자열 그대로다. 여기서 C가 아는 어휘로
+        옮기고, 모르는 값은 버리되 경고로 남긴다 — 계약이 `list[str]`이라 A가
+        어휘를 늘려도 요청은 깨지지 않지만, 흔적 없이 버리면 사용자가 요구한
+        조건이 사라진 것을 아무도 모른다.
         """
 
         started_at = perf_counter()
+        needs, unknown_accessibility_need = _resolve_accessibility_needs(
+            accessibility_needs
+        )
         results = await asyncio.gather(
             *(
                 self._tools.places.execute(
@@ -1885,6 +1947,7 @@ class ContextService:
                         preferred_categories=plan.resolved_place_tags,
                         category_filter=category_filter,
                         excluded_place_ids=excluded_place_ids,
+                        accessibility_needs=needs,
                     )
                 )
                 for category_filter in plan.filters
@@ -1895,6 +1958,7 @@ class ContextService:
             limit=self._candidate_limit,
             started_at=started_at,
             excluded_plan=excluded_plan,
+            unknown_accessibility_need=unknown_accessibility_need,
         )
 
 
@@ -1926,6 +1990,35 @@ def _gps_location_result(
                 retrieved_at=_as_kst(retrieved_at).astimezone(UTC),
             ),
         ),
+    )
+
+
+def _resolved_center_location_result(
+    center: Coordinates, retrieved_at: datetime
+) -> ResolveLocationResult:
+    """보충 조회에서 A가 넘긴 검색 기준점을 위치 Tool 성공 결과로 정규화한다.
+
+    `_gps_location_result()`와 같은 모양이다 — 위치 Tool을 부르지 않고 좌표만으로
+    결과를 만든다. 다만 출처가 기기 GPS가 아니라 **같은 턴의 첫 조회에서 C가 이미
+    해석한 기준점**이라 source를 QUERY로 둔다.
+
+    이름을 실을 수 없어 resolved_name이 비는데, 그래도 되는 이유는 A가 보충 배치의
+    location을 쓰지 않기 때문이다(_merge_recommendation_context_places). 근거 문장에
+    나가는 기준점 이름은 첫 배치 값이다.
+    """
+    return ResolveLocationResult(
+        status=ToolStatus.SUCCESS,
+        location=ResolvedLocation(
+            requested_query="resolved_search_center",
+            provider_query="resolved_search_center",
+            resolved_name="",
+            latitude=center.latitude,
+            longitude=center.longitude,
+            resolution_method=ResolutionMethod.DIRECT,
+            confidence=ResolutionConfidence.EXACT,
+        ),
+        error=None,
+        provider_metadata=(),
     )
 
 
@@ -2311,14 +2404,18 @@ def _place_candidate_has_data(
     if question_type == "realtime_commercial":
         return (
             select_nearest_commercial_area(
-                latitude=location.latitude, longitude=location.longitude
+                latitude=location.latitude,
+                longitude=location.longitude,
+                requested_name=location.resolved_name,
             )
             is not None
         )
     if is_realtime_citydata_purpose:
         return (
             select_nearest_population_area(
-                latitude=location.latitude, longitude=location.longitude
+                latitude=location.latitude,
+                longitude=location.longitude,
+                requested_name=location.resolved_name,
             )
             is not None
         )
@@ -2330,7 +2427,9 @@ def _place_candidate_has_data(
         if current_population_candidate:
             return (
                 select_nearest_population_area(
-                    latitude=location.latitude, longitude=location.longitude
+                    latitude=location.latitude,
+                    longitude=location.longitude,
+                    requested_name=location.resolved_name,
                 )
                 is not None
             )
@@ -2492,16 +2591,29 @@ def _to_info_destination_coordinates(location: ResolvedLocation) -> Coordinates:
     return Coordinates(latitude=location.latitude, longitude=location.longitude)
 
 
-def _to_place_card(details: PlaceDetails, place_id: str | None) -> PlaceCard:
+def _to_place_card(
+    details: PlaceDetails,
+    place_id: str | None,
+    *,
+    photos: tuple[PlacePhoto, ...] = (),
+) -> PlaceCard:
     """상세 조회 결과를 카드 표시용 묶음으로 옮긴다.
 
     fields와 같은 clean_text를 태워 HTML·엔티티 정리 결과가 두 곳에서 갈리지 않게
     한다. 값이 없으면 None으로 두고 문구를 지어내지 않는다.
+
+    사진은 상세 조회가 아니라 place_image_embeddings에서 따로 읽어 넘어온다.
+    thumbnail_url은 그대로 둔다 — 사진 목록이 비는 장소가 절반이 넘고, 그쪽은
+    대표 이미지 한 장이 유일한 그림이다.
     """
     return PlaceCard(
         place_id=details.content_id or place_id,
         place_name=clean_text(details.title),
         thumbnail_url=details.thumbnail_url,
+        photos=[
+            PlacePhotoItem(url=photo.url, image_name=photo.image_name)
+            for photo in photos
+        ],
         overview=clean_text(details.overview),
         operating_hours=clean_text(details.operating_hours),
         rest_date=clean_text(details.rest_date),
@@ -2618,6 +2730,8 @@ def _place_warnings(
     excluded_plan: ExcludedCategoryPlan,
     *,
     truncated: bool = False,
+    exhausted: bool = False,
+    unknown_accessibility_need: bool = False,
 ) -> tuple[str, ...]:
     warnings: list[str] = []
     if status is ToolStatus.PARTIAL:
@@ -2629,7 +2743,41 @@ def _place_warnings(
         # 분류 조회 중 하나라도 Provider 행 상한에 걸렸다. 합쳐진 결과가 비어도
         # "더 없음"이 아니라 "더 못 받아옴"이라는 뜻이라 A가 구분해야 한다.
         warnings.append(CANDIDATE_POOL_TRUNCATED_WARNING)
+    if exhausted:
+        warnings.append(CANDIDATE_POOL_EXHAUSTED_WARNING)
+    if unknown_accessibility_need:
+        # A가 보낸 무장애 어휘 중 C가 모르는 값이 있었다. 그 값은 좁히는 데 쓰지
+        # 못했으므로, 결과가 요구를 다 반영하지 못했다는 것을 A가 알아야 한다.
+        warnings.append(UNKNOWN_ACCESSIBILITY_NEED_WARNING)
     return tuple(warnings)
+
+
+def _resolve_accessibility_needs(
+    values: Sequence[str],
+) -> tuple[tuple[AccessibilityNeed, ...], bool]:
+    """A가 보낸 무장애 어휘를 C가 아는 값으로 옮긴다.
+
+    돌려주는 두 번째 값은 "모르는 값이 있었는가"다. 모르는 값은 좁히는 데 쓸 수
+    없으므로 버리되, 버렸다는 사실은 경고로 남겨야 한다 — C의 조건 계약이
+    `list[str]`이라 A가 어휘를 늘려도 요청이 깨지지 않는 대신(그게 의도다),
+    아무 흔적도 없으면 요구가 반영되지 않은 결과를 반영된 것으로 읽게 된다.
+
+    중복은 없앤다. 같은 값을 두 번 보내도 조건은 하나다.
+    """
+    known: list[AccessibilityNeed] = []
+    has_unknown = False
+    for value in values:
+        normalized = value.strip()
+        if not normalized:
+            continue
+        try:
+            need = AccessibilityNeed(normalized)
+        except ValueError:
+            has_unknown = True
+            continue
+        if need not in known:
+            known.append(need)
+    return tuple(known), has_unknown
 
 
 def _merge_place_results(
@@ -2638,6 +2786,7 @@ def _merge_place_results(
     limit: int,
     started_at: float,
     excluded_plan: ExcludedCategoryPlan | None = None,
+    unknown_accessibility_need: bool = False,
 ) -> NearbyPlaceDetailsResult:
     excluded_plan = excluded_plan or ExcludedCategoryPlan()
     if not results:
@@ -2708,6 +2857,9 @@ def _merge_place_results(
             truncated=any(
                 CANDIDATE_POOL_TRUNCATED_WARNING in result.warnings for result in results
             ),
+            exhausted=bool(results)
+            and all(CANDIDATE_POOL_EXHAUSTED_WARNING in result.warnings for result in results),
+            unknown_accessibility_need=unknown_accessibility_need,
         ),
         provider_metadata=tuple(
             metadata for result in results for metadata in result.provider_metadata

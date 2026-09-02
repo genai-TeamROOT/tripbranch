@@ -29,6 +29,7 @@ from app.providers.contracts import (
     ProviderSource,
     ProviderStatus,
 )
+from app.recommendation_limits import MAX_RECOMMENDATION_CANDIDATE_LIMIT
 from app.tools.concentration import GetConcentrationTool
 
 RETRIEVED_AT = datetime(2026, 7, 28, 1, tzinfo=UTC)
@@ -144,11 +145,12 @@ class _ScriptedConcentrationProvider:
 def test_request_enforces_system_limit_and_concentration_only() -> None:
     """Schema 절대 상한과 지원 feature를 계약 단계에서 거부한다."""
 
-    valid = _request(*(_target(index) for index in range(1, 21)))
+    limit = MAX_RECOMMENDATION_CANDIDATE_LIMIT
+    valid = _request(*(_target(index) for index in range(1, limit + 1)))
 
-    assert len(valid.candidates) == 20
+    assert len(valid.candidates) == limit
     with pytest.raises(ValidationError):
-        _request(*(_target(index) for index in range(1, 22)))
+        _request(*(_target(index) for index in range(1, limit + 2)))
     with pytest.raises(ValidationError):
         CandidateEnrichmentRequest(
             request_id="request-unsupported",

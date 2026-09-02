@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 
+from app.agent_context.seoul_realtime_areas import names_match
 from app.domain.travel_route import TravelRoute
 from app.errors import AppError
 from app.observability.langfuse_tracing import trace_attributes
@@ -25,14 +26,18 @@ from app.schemas import (
     CompareCriteria,
     ComparisonItem,
     ComparisonResult,
+    ConversationTurnView,
+    GeneralTopic,
     Intent,
     LLMOutput,
     OutputStatus,
     RecommendationItem,
     RecommendationResponse,
     ScheduleResult,
+    UserConditions,
 )
 from app.service_area import supported_district_label
+from app.services.interpret.situational_offers import offer_for
 from app.services.runtime.context_schemas import Clarification
 from app.services.runtime.info_context_schemas import (
     EventInfoResult,
@@ -53,6 +58,47 @@ _TOOL_TERMINAL_STATUSES = frozenset(
 
 _RECOMMEND_WRAPPER_MESSAGE = "이런 곳들을 찾아봤어요:"
 
+# 서비스 정체성 질문은 LLM이 매번 가능한 기능을 새로 나열하게 두지 않는다. 안내에
+# 없는 기능을 약속하면 곧바로 OUT_OF_SCOPE로 이어지므로, 실제 연결된 기능·질문만
+# 고정 카탈로그로 보여준다. GENERAL SERVICE_IDENTITY는 "넌 누구야?"도 포함하므로
+# 짧은 소개와 기능 안내를 한 답변에 함께 둔다.
+_SERVICE_IDENTITY_MESSAGE = """# TripBranch 여행 도우미
+
+국내 여행에서 갈 만한 장소를 찾고, 방문에 필요한 정보를 확인해드려요.
+
+## 장소 추천·조건 변경
+- 비를 피할 실내 카페 추천해줘
+- 조금 더 조용한 곳으로 바꿔줘
+- 박물관은 빼줘
+
+## 장소 비교·일정
+- 1번이랑 3번 중 어디가 더 가까워?
+- 추천한 곳으로 오후 일정 짜줘
+
+## 장소 상세정보
+- 경복궁 운영시간과 휴무일 알려줘
+- 경복궁 주차나 입장료 있어?
+- 휠체어로 이용하기 괜찮아?
+
+## 혼잡도
+- 경복궁 지금 사람 많아?
+- 경복궁 주말에 붐빌까?
+
+## 실시간 상권
+- 용리단길 식당 지금 사람 많아?
+- 성수 카페거리 카페 지금 사람 많아?
+
+## 실시간 주차
+- 경복궁 근처 주차할 곳 있어?
+- 종로구 공영주차장 자리 있어?
+
+## 실시간 행사·교통
+- 오늘 여의도 근처 행사 있어?
+- 강남역 지하철 언제 와?
+- 경복궁 가는 길 막혀?
+
+실시간 정보는 서울시 제공 지역과 데이터 제공 범위 안에서 확인할 수 있어요."""
+
 MessageDeltaCallback = Callable[[str], Awaitable[None]]
 
 
@@ -67,19 +113,29 @@ async def compose_recommendation_summary(
     intent: Intent,
     recommendations: RecommendationResponse,
     llm: LLMProvider,
+    conditions: UserConditions | None = None,
+    history: Sequence[ConversationTurnView] = (),
     on_message_delta: MessageDeltaCallback | None = None,
 ) -> str | None:
     """추천 카드 아래에 붙일 LLM 선택 팁을 만든다.
 
-    카드·순위 자체는 이미 D가 확정했으므로 LLM에는 후보별 검증된 카드 필드와 제한된
-    리뷰 근거만 전달된다. 실패 시 ``None``을 돌려 호출자가 고정 카드 안내만 유지하게
-    한다. 특히 SSE에서는 실패한 부가 요약 때문에 추천 카드 전체가 늦어지지 않는다.
+    카드·순위 자체는 이미 D가 확정했으므로 **사실 근거**로는 후보별 검증된 카드 필드와
+    제한된 리뷰 근거만 전달된다. 실패 시 ``None``을 돌려 호출자가 고정 카드 안내만
+    유지하게 한다. 특히 SSE에서는 실패한 부가 요약 때문에 추천 카드 전체가 늦어지지 않는다.
+
+    conditions/history는 사실이 아니라 **말투와 강조점**을 위한 값이다. 이 두 개가
+    없던 동안, 동행을 friend로 정확히 뽑아 놓고도 말풍선이 "혼자서도 가기 좋고"라고
+    답하는 일이 있었다(2026-08-31 실사용) — 이 단계가 사용자가 무엇을 말했는지 전혀
+    몰랐기 때문이다. 누적 조건은 최근 5턴 창 밖으로 밀려나도 살아 있어 이력보다
+    견고하다(강의교재 36강의 "오래된 중요 정보 압축 요약"에 해당).
     """
 
     if on_message_delta is not None:
         try:
             message = await _collect_message_stream(
-                llm.stream_recommendation_summary(intent, recommendations),
+                llm.stream_recommendation_summary(
+                    intent, recommendations, conditions=conditions, history=history or None
+                ),
                 on_message_delta,
             )
             if message:
@@ -88,7 +144,9 @@ async def compose_recommendation_summary(
             logger.warning("추천 요약 스트리밍 실패", exc_info=True)
 
     try:
-        result = await llm.generate_recommendation_summary(intent, recommendations)
+        result = await llm.generate_recommendation_summary(
+            intent, recommendations, conditions=conditions, history=history or None
+        )
     except AppError:
         logger.warning("추천 요약 LLM 생성 실패", exc_info=True)
         return None
@@ -314,6 +372,25 @@ def compose_realtime_commercial_message(response: InfoContextResponse) -> str:
     )
     observed_at = format_citydata_timestamp(result.observed_at)
     observed = f" {observed_at} 기준이에요." if observed_at else ""
+
+    # area(실제 데이터를 받아온 상권)와 place(사용자가 물은 장소)가 사실상 같은
+    # 이름이면 대체가 아니라 그 장소 자체의 값이다 — "떨어진 곳", "개별 매장
+    # 혼잡도는 확인할 수 없지만"을 그대로 붙이면 자기 자신을 다른 곳인 것처럼
+    # 말하는 문장이 된다(TP-141/D-084와 같은 패턴, "성수 카페거리" 실측
+    # 2026-08-31). 공백만 비교하면 "성수카페거리"↔"성수동카페거리"처럼 글자가
+    # 하나 끼어드는 표기 차이를 놓치므로 resolve_location.py와 같은 편집거리
+    # 기준(names_match)으로 비교한다.
+    if names_match(area, place):
+        if result.commercial_scope == "area_overall":
+            return (
+                f"{area}의 요청 업종 세부값은 현재 제공되지 않았어요. 대신 {area} 전체 상권은 "
+                f"현재 {level} 수준이에요. 이 값은 지역 전체 카드 소비 활동 기준이에요.{observed}"
+            )
+        return (
+            f"{area}의 {category} 상권은 현재 {level} 수준이에요. "
+            f"이 값은 지역·업종별 카드 소비 활동 기준이에요.{observed}"
+        )
+
     if result.commercial_scope == "area_overall":
         return (
             f"{place} 개별 매장 혼잡도는 확인할 수 없고, {distance}{area}의 요청 업종 "
@@ -351,8 +428,9 @@ def compose_realtime_population_message(response: InfoContextResponse) -> str:
     observed = f" {observed_at} 기준이에요." if observed_at else ""
 
     # 공백만 다른 같은 장소("여의도 한강공원" 지오코딩 결과 vs "여의도한강공원" 목록
-    # 표기)를 다른 곳으로 오판하지 않도록 공백을 지우고 비교한다.
-    if area.replace(" ", "") == place.replace(" ", ""):
+    # 표기)나 글자 하나 차이("성수카페거리" vs "성수동카페거리")를 다른 곳으로
+    # 오판하지 않도록 resolve_location.py와 같은 편집거리 기준으로 비교한다.
+    if names_match(area, place):
         return (
             f"{area} 기준으로는 현재 {level} 수준이에요. "
             f"향후 12시간 예상 변화는 아래 카드에서 확인해보세요.{observed}"
@@ -802,6 +880,37 @@ def _format_duration_label(total_minutes: int) -> str:
     return f"{minutes}분"
 
 
+def _with_omitted_note(message: str, schedule: ScheduleResult) -> str:
+    """담아둔 장소를 못 담았으면 그 사실을 덧붙인다. (SCHEDULE-12)
+
+    사유가 둘이고 해결책이 정반대라 문장을 따로 만든다.
+
+    - `absent_saved_place_names`: 이번 턴 후보 목록에 아예 없었다. 편성 조건을
+      바꿔도 결과가 같으므로 재시도를 권하지 않는다.
+    - `omitted_saved_place_names`: 항목 수 상한을 넘었거나 LLM이 재시도 후에도
+      빠뜨렸다. 시간을 늘리거나 다른 곳을 빼면 들어갈 수 있다.
+
+    빠진 장소가 없으면 message를 그대로 돌려준다 — 이게 정상 경로다.
+    """
+
+    parts = [message]
+    # 후보에 아예 없었던 장소. 편성 조건을 바꿔도 결과가 같으므로 재시도를
+    # 권하지 않는다 — 권하면 사용자가 같은 실패를 반복하게 된다.
+    if schedule.absent_saved_place_names:
+        joined = ", ".join(schedule.absent_saved_place_names)
+        parts.append(
+            f"담아두신 {joined}은 이번에 찾은 후보에 없어서 일정에 넣지 못했어요."
+        )
+    # 상한 초과·LLM 누락. 이쪽은 조건을 바꾸면 들어갈 수 있다.
+    if schedule.omitted_saved_place_names:
+        joined = ", ".join(schedule.omitted_saved_place_names)
+        parts.append(
+            f"담아두신 {joined}은 이번 일정에 넣지 못했어요 — "
+            "시간을 늘리거나 다른 곳을 빼고 다시 요청해보실래요?"
+        )
+    return " ".join(parts)
+
+
 def compose_schedule_message(
     schedule: ScheduleResult, *, time_available_min: int | None = None
 ) -> str:
@@ -819,10 +928,15 @@ def compose_schedule_message(
     total_duration_min과의 차이가 _DURATION_MATCH_TOLERANCE_MIN 이내면 요청
     시간을 그대로 보여준다("2시간 짜줘" → "2시간 코스를 짜봤어요"). 차이가 크면
     실제 편성 결과가 요청과 동떨어졌다는 뜻이므로 실제 계산값을 보여준다.
+
+    omitted_saved_place_names가 있으면 한 문장을 덧붙인다(SCHEDULE-12) — 담아둔
+    장소를 조용히 빠뜨리면 사용자는 자기가 고른 곳이 왜 없는지 알 수 없다.
+    items가 비어 있는 경우에도 붙인다: 일정을 아예 못 짠 이유가 담아둔 장소와
+    무관하지 않을 수 있어서다.
     """
 
     if not schedule.items:
-        return schedule.route_summary
+        return _with_omitted_note(schedule.route_summary, schedule)
 
     if (
         time_available_min is not None
@@ -831,7 +945,9 @@ def compose_schedule_message(
         duration_label = _format_duration_label(time_available_min)
     else:
         duration_label = _format_duration_label(schedule.total_duration_min)
-    return f"{duration_label} 코스를 짜봤어요. {schedule.route_summary}"
+    return _with_omitted_note(
+        f"{duration_label} 코스를 짜봤어요. {schedule.route_summary}", schedule
+    )
 
 
 async def compose_chat_message(
@@ -848,6 +964,9 @@ async def compose_chat_message(
     info_walking_origin_available: bool = False,
     llm: LLMProvider,
     on_message_delta: MessageDeltaCallback | None = None,
+    rejected_offer_actions: Sequence[str] = (),
+    conditions: UserConditions | None = None,
+    history: Sequence[ConversationTurnView] = (),
 ) -> str:
     """AgentResponse.message(챗봇 말풍선 텍스트)를 조립한다.
 
@@ -882,6 +1001,9 @@ async def compose_chat_message(
             info_walking_origin_available=info_walking_origin_available,
             llm=llm,
             on_message_delta=on_message_delta,
+            rejected_offer_actions=rejected_offer_actions,
+            conditions=conditions,
+            history=history,
         )
 
 
@@ -899,6 +1021,9 @@ async def _compose_chat_message(
     info_walking_origin_available: bool = False,
     llm: LLMProvider,
     on_message_delta: MessageDeltaCallback | None = None,
+    rejected_offer_actions: Sequence[str] = (),
+    conditions: UserConditions | None = None,
+    history: Sequence[ConversationTurnView] = (),
 ) -> str:
     """`compose_chat_message()`의 본체. 태그 범위 안에서 돈다."""
 
@@ -913,11 +1038,27 @@ async def _compose_chat_message(
 
     if llm_output.intent is Intent.GENERAL:
         assert llm_output.general is not None
+        if llm_output.general.topic is GeneralTopic.SERVICE_IDENTITY:
+            if on_message_delta is not None:
+                await on_message_delta(_SERVICE_IDENTITY_MESSAGE)
+            return _SERVICE_IDENTITY_MESSAGE
+        # 상황에 맞는 제안이 있으면(대화층 3단계) 답변 끝에 자연스러운 질문으로
+        # 붙인다. 무엇을 제안할지는 여기서 정하지 않는다 — situational_offers가
+        # 코드로 이미 정해 둔 것을 문장으로 바꾸는 것만 LLM에 맡긴다.
+        offer = offer_for(llm_output.general.situation)
+        offer_content = (
+            offer.content
+            if offer is not None and offer.action_id not in rejected_offer_actions
+            else None
+        )
         if on_message_delta is not None:
             try:
                 message = await _collect_message_stream(
                     llm.stream_general_answer(
-                        llm_output.general.topic, llm_output.general.original_question
+                        llm_output.general.topic,
+                        llm_output.general.original_question,
+                        offer_content=offer_content,
+                        history=history or None,
                     ),
                     on_message_delta,
                 )
@@ -926,7 +1067,10 @@ async def _compose_chat_message(
             except AppError:
                 logger.warning("GENERAL 답변 스트리밍 실패, 단발 호출로 fallback", exc_info=True)
         result = await llm.generate_general_answer(
-            llm_output.general.topic, llm_output.general.original_question
+            llm_output.general.topic,
+            llm_output.general.original_question,
+            offer_content=offer_content,
+            history=history or None,
         )
         if on_message_delta is not None:
             await on_message_delta(result.data)
@@ -971,6 +1115,7 @@ async def _compose_chat_message(
                                 else None
                             ),
                             fields=display_fields,
+                            history=history or None,
                         ),
                         on_message_delta,
                     )
@@ -1018,6 +1163,8 @@ async def _compose_chat_message(
             intent=llm_output.intent,
             recommendations=recommendations,
             llm=llm,
+            conditions=conditions,
+            history=history,
             on_message_delta=on_message_delta,
         )
         return message or recommendation_wrapper_message()

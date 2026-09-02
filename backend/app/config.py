@@ -84,7 +84,25 @@ class Settings(BaseSettings):
 
     # 상세·운영정보 조회 출처. PLACE_PROVIDER=fake이면 Fake Provider가 상세까지
     # 담당하므로 이 값은 무시된다.
-    place_details_source: PlaceDetailsSource = "tour_api"
+    #
+    # 기본값을 tour_api에서 supabase로 바꿨다. 추천 경로는 후보 **전량**의 상세를
+    # 받아야 순위를 매길 수 있다 — 하드 필터(영업 종료)와 잔여 운영시간 Feature가
+    # 운영시간을 요구해서 "상위 5곳만 받기"가 성립하지 않는다. 그래서 이 값이 곧
+    # 호출 수를 정한다(안국역 반경 2km 실측, 2026-08-31):
+    #
+    #   후보 10곳 | supabase 2회 | tour_api 21회(detailCommon2 10 + detailIntro2 10)
+    #   후보 30곳 | supabase 2회 | tour_api 61회
+    #
+    # tour_api는 tour_api_daily_call_limit(오퍼레이션별 1000)을 후보 30 기준 33요청
+    # 만에 소진한다. supabase는 places를 content_id 목록으로 한 번에 읽어 후보 수와
+    # 무관하게 1회다. validate_provider_config()가 tour_api + 높은 후보 한도 조합을
+    # 부팅에서 막는 이유가 이것이다.
+    #
+    # 신선도 절충은 D-099가 "추천 쪽이 따로 판단할 일"로 남겨둔 것인데, 재보니
+    # 문제가 아니었다 — 활성 8,007곳 전량이 상세 조회 30일 이내이고(place_sync_
+    # detail_ttl_days와 같은 값) 68%가 7일 이내다. 운영시간·주차·요금은 자주 바뀌는
+    # 값이 아니고, TourAPI를 직접 불러도 같은 출처다.
+    place_details_source: PlaceDetailsSource = "supabase"
 
     # Package B State 저장소 백엔드. 기본값은 Phase 1 인메모리다.
     state_store_backend: StateStoreBackend = "memory"
@@ -114,6 +132,33 @@ class Settings(BaseSettings):
     # 축 점수와 사진 검색이 같은 테이블·같은 축을 쓰기 때문이다 — 하나만 켜서
     # 얻는 게 없다.
     place_mood_enabled: bool = False
+
+    # 사진 검색에서 전체 평균 벡터를 빼고 비교할지(D-115). 사진 경로에만
+    # 걸리고 발화 경로(축 점수)와는 무관하다.
+    #
+    # 기본 on인 이유는 사람 눈가림 채점에서 48.2% → 53.2%로 올랐기 때문이다.
+    # 교체된 자리만 보면 빠진 곳 27.5% 대 들어온 곳 45.0%이고, 실제 사용 조건인
+    # 직접 찍은 사진에서 44.3% → 51.9%로 개선이 더 크다.
+    #
+    # **유의성은 0.05 언저리다**(p = 0.0481 / 0.0730 / 0.0812). 질의가 28장뿐이라
+    # 표본을 늘려 다시 봐야 한다. 그럼에도 켜 둔 것은 방향이 세 시험에서 모두
+    # 같고 나빠진 지표가 없으며, 되돌리려면 이 값만 끄면 되기 때문이다 —
+    # 적재된 벡터는 그대로다.
+    #
+    # 끄면 조회가 빨라진다(184ms → 60ms, 5,465곳 기준). 전체를 훑으므로 장소
+    # 수에 정비례한다.
+    place_mood_mean_center_enabled: bool = True
+
+    # 사진 검색 순위에서 벡터 유사도와 분위기 축을 섞는 비율(TP-206).
+    # 1.0이면 지금처럼 유사도만 본다. 0.5면 반반이다.
+    #
+    # **1.0이 기본인 이유는 아직 값을 정하지 못했기 때문이다.** 실패한 결과가
+    # 모두 축이 가르는 차원에서 갈렸으므로 섞을 값어치는 있어 보이지만, 얼마가
+    # 좋은지는 사람 채점으로 정해야 한다. 정하기 전에 켜면 근거 없는 숫자가
+    # 서비스에 남는다(유사도 컷을 두지 않은 것과 같은 이유, D-094).
+    #
+    # 0은 쓸 수 없다 — 축이 다섯 개뿐이라 "애초에 같은 종류인가"를 구분하지 못한다.
+    place_mood_axis_weight: float = 1.0
 
     # 사진 임베딩 모델을 서버 기동 때 미리 올릴지. off면 첫 사진 요청이 적재
     # 시간을 그대로 뒤집어쓴다. place_mood_enabled가 꺼져 있으면 무시된다.
@@ -239,6 +284,21 @@ class Settings(BaseSettings):
     # 호출을 막는 값이 아니라 개발자 패널 게이지의 기준선이다.
     tour_api_daily_call_limit: int = 1000
     concentration_daily_call_limit: int = 1000
+
+    # 장소 상세 화면에 보여줄 사진 수 상한. 저장소에 적재된 사진과 detailImage2로
+    # 즉석 조회한 사진에 같은 값을 쓴다 — 출처에 따라 장수가 달라지면 사용자에게는
+    # 같은 화면이 이유 없이 달라 보인다.
+    place_photo_display_limit: int = Field(default=10, ge=1, le=20)
+
+    # detailImage2 조회 결과를 프로세스 메모리에 들고 있는 시간(초). 기본 6시간.
+    #
+    # DB에 쓰지 않기로 해서 이 캐시가 유일한 재사용 수단이다. 없으면 같은 장소를
+    # 두 번 열 때 두 번 부른다. 특히 "사진이 없는 장소"가 잦아 그 빈 응답을 반복해서
+    # 받는 것이 문제다 — 적재된 5,465곳 중 2,749곳(50%)이 detailImage2가 비어 대표
+    # 이미지로 대체된 장소였다(2026-08-31 실측).
+    #
+    # 서버를 다시 띄우면 사라진다. 신선함은 이 값이 아니라 재적재 주기가 정한다.
+    place_photo_api_cache_ttl_seconds: int = Field(default=6 * 60 * 60, ge=0)
 
     # Recommendation pipeline budgets
     recommendation_result_limit: int = Field(

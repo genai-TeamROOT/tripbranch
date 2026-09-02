@@ -13,10 +13,10 @@ interface ScheduleTravelSegmentProps {
 export function ScheduleTravelSegment({ minutes }: ScheduleTravelSegmentProps) {
   return (
     <li className="flex gap-3">
-      <div className="flex w-6 shrink-0 justify-center">
-        <span className="h-4 w-0.5 bg-gray-300 dark:bg-gray-700" />
+      <div className="flex w-7 shrink-0 justify-center">
+        <span className="h-4 w-px bg-border" />
       </div>
-      <p className="flex flex-1 items-center pb-2 text-xs text-gray-400 dark:text-gray-500">
+      <p className="flex flex-1 items-center pb-2 text-[11px] text-muted">
         도보 이동 약 {minutes}분
       </p>
     </li>

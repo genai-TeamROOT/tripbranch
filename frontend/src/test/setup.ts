@@ -23,6 +23,31 @@ vi.mock("@supabase/supabase-js", async () => {
 vi.stubEnv("VITE_SUPABASE_URL", "https://test.supabase.co");
 vi.stubEnv("VITE_SUPABASE_PUBLISHABLE_KEY", "sb_publishable_test");
 
+/* jsdom은 matchMedia를 구현하지 않는다(useIsDesktopSidebar가 쓴다). 항상
+   "일치하지 않음"으로 응답해 기본적으로 모바일 레이아웃 기준으로 렌더링되게
+   한다 — 데스크톱 분기를 검증하는 테스트는 개별적으로 matches:true를 덮어쓴다. */
+window.matchMedia ??= (query: string) =>
+  ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => false,
+  }) as MediaQueryList;
+
+/* jsdom은 ResizeObserver도 구현하지 않는다(useAutoScrollToBottom이 쓴다).
+   실제 리사이즈 감지는 필요 없고, 생성자가 없어서 렌더가 죽는 것만 막으면
+   된다 — 콜백은 아무 때도 부르지 않는 빈 구현이면 충분하다. */
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+window.ResizeObserver ??= ResizeObserverStub as unknown as typeof ResizeObserver;
+
 beforeEach(() => {
   resetSupabaseMock();
 });

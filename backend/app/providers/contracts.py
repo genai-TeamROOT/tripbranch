@@ -29,6 +29,7 @@ class ProviderSource(StrEnum):
     SUPABASE_PLACES = "supabase_places"
     SUPABASE_PLACE_EVIDENCE = "supabase_place_evidence"
     SUPABASE_PLACE_MOOD = "supabase_place_mood"
+    SUPABASE_BARRIER_FREE_PLACES = "supabase_barrier_free_places"
     TOUR_API_CONCENTRATION = "tour_api_concentration"
     SEOUL_CITYDATA_COMMERCIAL = "seoul_citydata_commercial"
     SEOUL_CITYDATA_POPULATION = "seoul_citydata_population"
@@ -51,6 +52,7 @@ class ProviderSource(StrEnum):
     FAKE_WALKING_ROUTE = "fake_walking_route"
     FAKE_DRIVING_ROUTE = "fake_driving_route"
     FAKE_TRANSIT_ROUTE = "fake_transit_route"
+    FAKE_BARRIER_FREE_PLACES = "fake_barrier_free_places"
     FAKE_LLM = "fake_llm"
 
 

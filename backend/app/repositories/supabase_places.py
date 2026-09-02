@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
@@ -11,11 +12,16 @@ from uuid import UUID
 import httpx
 
 from app.domain.models import (
+    AccessibilityNeed,
+    AccessibilityVerdict,
+    BarrierFreePlaceRow,
     PlaceBarrierFreeDetails,
+    PlaceCategoryFilter,
     PlaceEvidenceMatch,
     PlaceEvidenceSnippet,
     PlaceMoodMatch,
     PlaceMoodProfile,
+    PlacePhoto,
     StoredPlaceDetail,
     StoredPlaceLocation,
     StoredPlaceState,
@@ -23,6 +29,7 @@ from app.domain.models import (
 )
 from app.errors import AppError
 from app.place_search_policy import PLACE_SEARCH_LDONG_REGION_CODE
+from app.providers.tour_category_registry import TourCategoryRegistry, get_tour_category_registry
 from app.service_area import SUPPORTED_DISTRICT_CODES
 
 # search_place_evidence RPC가 강제하는 후보 상한. 넘으면 RPC가 즉시 에러를
@@ -38,6 +45,25 @@ _MAX_MOOD_CANDIDATES = 500
 # 너무 길면 요청줄 길이 제한에 걸린다. content_id가 7자리라 200건이면 1.6KB다.
 _MOOD_PROFILE_CHUNK_SIZE = 200
 
+# 상세 화면에 보여줄 사진 수 상한. 지금 가장 많은 장소가 9장이라(국립중앙박물관·
+# 딜쿠샤 등, 2026-08-31 실측) 실제로 잘리는 장소는 없지만, 적재가 구 단위로
+# 계속 진행 중이라 상한 없이 두지 않는다.
+#
+# **번호가 아니라 순서로 자른다.** photo_order에 빈 번호가 있는 장소가 5,465곳 중
+# 7곳 있다(김희수아트센터 [1,2,3,4,5,6,8,12], 딜쿠샤 [1,2,3,4,5,7,9,10,11]).
+# `photo_order <= 10` 같은 조회 필터로 자르면 8장짜리 장소에서 12번 사진이 빠져
+# 7장만 나온다 — 앞에서 열 장을 고르는 것과 번호가 열 이하인 것을 고르는 것은
+# 다른 일이다.
+_PLACE_PHOTO_LIMIT = 10
+
+# 장소 하나에서 읽어 올 행 수의 상한. 위 상한은 순서로 자르므로 자르기 전
+# 행 수를 여기서 막는다. 지금 최대 장수가 9, 최대 번호가 12라 20이면 넉넉하다.
+_PLACE_PHOTO_ROW_BUDGET = 20
+
+# 사진 조회가 한 번에 읽는 장소 수. 장소당 최대 _PLACE_PHOTO_ROW_BUDGET행이라
+# 40곳이면 800행으로 _READ_PAGE_SIZE 안에 들어간다.
+_PLACE_PHOTO_CHUNK_SIZE = 40
+
 # PostgREST의 in 필터 값. 지원 구가 늘면 SUPPORTED_DISTRICT_CODES만 고치면 된다.
 _SUPPORTED_DISTRICT_FILTER = f"in.({','.join(sorted(SUPPORTED_DISTRICT_CODES))})"
 
@@ -52,6 +78,12 @@ _PLACE_SUMMARY_COLUMNS = ",".join(
         "operating_parse_status",
         "operating_parser_version",
         "detail_fetched_at",
+        # Ops의 구별 카테고리 현황은 같은 전량 조회를 재사용한다. 원본 행은 응답에
+        # 내보내지 않고 대·중·소분류별 건수와 예시 두 개만 조립한다.
+        "title",
+        "lcls_systm1",
+        "lcls_systm2",
+        "lcls_systm3",
     )
 )
 _STATE_COLUMNS = ",".join(
@@ -142,6 +174,11 @@ _BARRIER_FREE_COLUMNS = ",".join(
 _BARRIER_FREE_FIELDS = tuple(_BARRIER_FREE_COLUMNS.split(","))
 _VALID_RUN_STATUSES = {"success", "partial_failure", "failed"}
 _VALID_PARSE_STATUSES = {"parsed", "partial", "unknown", "assumed"}
+# 사후면세점은 세금 환급이 가능한 일반 매장까지 대량 포함한다. 단순 가나다순 예시만
+# 보이면 면세점 성격으로 오해하기 쉬워, 대표적인 생활 쇼핑 브랜드를 먼저 보여준다.
+_CATEGORY_EXAMPLE_PREFIXES: dict[str, tuple[str, ...]] = {
+    "SH040300": ("다이소", "올리브영"),
+}
 T = TypeVar("T")
 
 
@@ -269,9 +306,7 @@ def _title_filters(name: str) -> list[str]:
     #
     # 와일드카드가 여는 괄호 뒤에만 있어 부분 일치로 넓어지지 않는다 — "조계사"가
     # "조계사터"나 "조계사길"에는 걸리지 않는다.
-    filters.extend(
-        [f"ilike.{name} [*", f"ilike.{name} (*", f"ilike.{name}(*"]
-    )
+    filters.extend([f"ilike.{name} [*", f"ilike.{name} (*", f"ilike.{name}(*"])
     return filters
 
 
@@ -310,9 +345,7 @@ def _title_filter_matcher(title_filter: str) -> Callable[[str], bool]:
     if operator == "eq":
         return lambda title: title == value
     # ilike: `*`만 와일드카드이고 나머지는 글자 그대로다.
-    pattern = "".join(
-        ".*" if part == "*" else re.escape(part) for part in re.split(r"(\*)", value)
-    )
+    pattern = "".join(".*" if part == "*" else re.escape(part) for part in re.split(r"(\*)", value))
     compiled = re.compile(f"^{pattern}$", re.IGNORECASE)
     return lambda title: compiled.match(title) is not None
 
@@ -339,9 +372,7 @@ def _select_by_filter_priority(
         title = row.get("title")
         if not isinstance(title, str):
             continue
-        rank = next(
-            (index for index, matches in enumerate(matchers) if matches(title)), None
-        )
+        rank = next((index for index, matches in enumerate(matchers) if matches(title)), None)
         if rank is None:
             continue
         if best_rank is None or rank < best_rank:
@@ -459,6 +490,76 @@ class SupabasePlaceRepository:
         except ValueError:
             raise SupabaseRepositoryError("non-JSON response") from None
 
+    async def find_preference_insights(self, content_id: str) -> list[dict[str, object]]:
+        """상세 카드용 태그 집계와 대표 후기 근거를 한 장소 단위로 읽는다."""
+        tag_response, evidence_response = await asyncio.gather(
+            self._request(
+                "GET",
+                "/place_preference_tags",
+                params={
+                    "select": (
+                        "preference_code,preference_label,display_rank,mention_count,"
+                        "positive_document_count,negative_document_count"
+                    ),
+                    "content_id": f"eq.{content_id}",
+                    "order": "display_rank.asc",
+                    "limit": "5",
+                },
+            ),
+            self._request(
+                "GET",
+                "/place_preference_evidence",
+                params={
+                    "select": (
+                        "preference_code,polarity,evidence_rank,evidence_text,"
+                        "source_type,source_url"
+                    ),
+                    "content_id": f"eq.{content_id}",
+                    "order": "preference_code.asc,polarity.asc,evidence_rank.asc",
+                    "limit": "30",
+                },
+            ),
+        )
+        tags = self._json(tag_response)
+        evidence_rows = self._json(evidence_response)
+        if not isinstance(tags, list) or not isinstance(evidence_rows, list):
+            raise SupabaseRepositoryError("invalid place preference insight response")
+
+        evidence_by_code: dict[str, list[dict[str, object]]] = {}
+        for row in evidence_rows:
+            if not isinstance(row, Mapping):
+                raise SupabaseRepositoryError("invalid place preference evidence row")
+            code = str(row.get("preference_code") or "")
+            if code:
+                evidence_by_code.setdefault(code, []).append(
+                    {
+                        "polarity": str(row.get("polarity") or "mixed"),
+                        "text": str(row.get("evidence_text") or ""),
+                        "source_type": str(row.get("source_type") or ""),
+                        "source_url": (
+                            str(row["source_url"]) if row.get("source_url") else None
+                        ),
+                    }
+                )
+        insights: list[dict[str, object]] = []
+        for row in tags:
+            if not isinstance(row, Mapping):
+                raise SupabaseRepositoryError("invalid place preference tag row")
+            code = str(row.get("preference_code") or "")
+            if not code:
+                continue
+            insights.append(
+                {
+                    "code": code,
+                    "label": str(row.get("preference_label") or ""),
+                    "mention_count": int(row.get("mention_count") or 0),
+                    "positive_document_count": int(row.get("positive_document_count") or 0),
+                    "negative_document_count": int(row.get("negative_document_count") or 0),
+                    "evidence": evidence_by_code.get(code, []),
+                }
+            )
+        return insights
+
     async def find_preference_tags(
         self,
         content_ids: Sequence[str],
@@ -476,8 +577,7 @@ class SupabasePlaceRepository:
                 "/place_preference_tags",
                 params={
                     "select": (
-                        "content_id,preference_code,preference_label,"
-                        "display_rank,mention_count"
+                        "content_id,preference_code,preference_label,display_rank,mention_count"
                     ),
                     "content_id": "in.(" + ",".join(chunk) + ")",
                     "order": "content_id.asc,display_rank.asc",
@@ -583,6 +683,8 @@ class SupabasePlaceRepository:
         latitude: float | None = None,
         longitude: float | None = None,
         radius_km: float | None = None,
+        mean_center: bool = False,
+        axis_weight: float = 1.0,
     ) -> tuple[PlaceMoodMatch, ...]:
         """올린 사진의 벡터로 분위기가 닮은 장소를 찾는다.
 
@@ -599,6 +701,16 @@ class SupabasePlaceRepository:
 
         질의 벡터는 적재와 **같은 모델·같은 정규화**여야 한다. 적재는
         google/siglip2-base-patch16-224로 길이 1 정규화 상태에서 했다.
+
+        `mean_center`를 켜면 질의와 장소 벡터에서 각각 전체 평균을 빼고
+        비교한다(D-115). **돌아오는 similarity의 눈금이 달라진다** — 공통
+        성분이 빠져 값이 전반적으로 낮아지므로, 켠 결과와 끈 결과의 숫자를
+        직접 견주면 안 된다. 순위만 쓴다.
+
+        `axis_weight`가 1.0보다 작으면 분위기 축을 순위에 섞는다(TP-206).
+        **이때 돌아오는 similarity는 정렬 기준이 아니다** — 정렬은 유사도 순위와
+        축 순위를 섞은 값으로 하고, similarity는 참고로 실어 보낸다. 값이 큰
+        쪽이 위에 있다고 가정하면 안 된다.
         """
         payload_ids: list[str] | None = None
         if candidate_content_ids is not None:
@@ -622,12 +734,69 @@ class SupabasePlaceRepository:
                 "p_latitude": latitude,
                 "p_longitude": longitude,
                 "p_radius_km": radius_km,
+                "p_mean_center": mean_center,
+                "p_axis_weight": axis_weight,
             },
         )
         payload = self._json(response)
         if not isinstance(payload, list):
             raise SupabaseRepositoryError("invalid search_place_mood response")
         return tuple(_to_mood_match(row) for row in payload)
+
+    async def search_places_barrier_free(
+        self,
+        *,
+        latitude: float,
+        longitude: float,
+        radius_km: float,
+        needs: Sequence[AccessibilityNeed],
+        category_filter: PlaceCategoryFilter | None = None,
+        limit: int,
+    ) -> tuple[BarrierFreePlaceRow, ...]:
+        """무장애 편의를 요구한 요청의 후보를 반경 안에서 거리순으로 찾는다.
+
+        **무장애 조건이 없는 요청은 이 메서드를 부르지 않는다.** 후보 출처가
+        TourAPI 실시간 조회에서 저장소 스냅샷으로 바뀌므로, 무장애 요청에만
+        한정한다. 빈 `needs`로 부르면 조건 없는 전체 반경 검색이 되는데 그건
+        호출부가 의도한 적 없는 동작이라, RPC가 예외를 던지기 전에 여기서 막는다.
+
+        `needs`가 여럿이면 **전부 만족**하는 장소만 돌아온다. "유모차 끌고 갈 만한
+        곳"이 STROLLER_ACCESS + INFANT_FACILITIES로 오는데, 둘 다 필요하다고 말한
+        것이기 때문이다.
+
+        어느 컬럼을 읽고 무엇을 있다고 볼지는 RPC의 판정 블록이 정한다. 여기서
+        같은 판정을 다시 쓰지 않는다 — 두 곳에 두면 한쪽만 바뀌었을 때 결과가
+        갈리고, 그건 오류 없이 결과만 틀리는 실패다.
+        """
+        unique_needs = list(dict.fromkeys(needs))
+        if not unique_needs:
+            raise ValueError(
+                "needs가 비어 있습니다. 무장애 조건이 없으면 이 메서드를 부르지 않습니다."
+            )
+        if limit <= 0:
+            raise ValueError("limit은 0보다 커야 합니다.")
+
+        response = await self._request(
+            "POST",
+            "/rpc/search_places_barrier_free",
+            json={
+                "p_latitude": latitude,
+                "p_longitude": longitude,
+                "p_radius_km": radius_km,
+                "p_needs": [need.value for need in unique_needs],
+                "p_content_type_id": (
+                    category_filter.content_type_id if category_filter else None
+                ),
+                "p_lcls_systm1": category_filter.lcls_systm1 if category_filter else None,
+                "p_lcls_systm2": category_filter.lcls_systm2 if category_filter else None,
+                "p_lcls_systm3": category_filter.lcls_systm3 if category_filter else None,
+                "p_limit": limit,
+            },
+        )
+        payload = self._json(response)
+        if not isinstance(payload, list):
+            raise SupabaseRepositoryError("invalid search_places_barrier_free response")
+        return tuple(_to_barrier_free_place_row(row) for row in payload)
 
     async def find_first_photo_urls(
         self,
@@ -668,6 +837,56 @@ class SupabasePlaceRepository:
                     urls[str(row["content_id"])] = str(row["origin_url"])
         return urls
 
+    async def find_place_photos(
+        self,
+        content_ids: Sequence[str],
+    ) -> dict[str, tuple[PlacePhoto, ...]]:
+        """장소별 사진 목록. 상세 화면이 여러 장을 보여주기 위해 읽는다.
+
+        ``find_first_photo_urls``와 같은 테이블을 읽지만 쓰임이 다르다. 그쪽은
+        "우리가 비교에 쓴 사진"을 사진 검색 결과에 근거로 붙이는 용도라 첫 장만
+        읽는다. 이쪽은 장소를 둘러보라고 보여주는 용도라 여러 장을 읽는다.
+
+        ``photo_order`` 오름차순으로 돌려준다 — 관광공사가 대표성 높은 사진을
+        앞에 주므로 이 순서가 곧 보여줄 순서다.
+
+        장소당 앞에서 ``_PLACE_PHOTO_LIMIT``장까지만 남긴다. 번호가 그 이하인
+        것을 고르는 게 아니라 정렬한 뒤 앞에서 세는 것이다 — 빈 번호가 있는
+        장소에서 두 판정이 갈린다(상수 주석 참고).
+
+        사진이 없는 장소는 **키 자체가 없다.** 빈 튜플로 자리를 채워 주면 호출
+        측이 "사진이 없는 장소"와 "조회하지 않은 장소"를 구분하지 못한다.
+        """
+        unique_ids = list(dict.fromkeys(content_ids))
+        if not unique_ids:
+            return {}
+
+        photos: dict[str, list[PlacePhoto]] = {}
+        for start in range(0, len(unique_ids), _PLACE_PHOTO_CHUNK_SIZE):
+            chunk = unique_ids[start : start + _PLACE_PHOTO_CHUNK_SIZE]
+            response = await self._request(
+                "GET",
+                "/place_image_embeddings",
+                params={
+                    "select": "content_id,photo_order,origin_url,image_name",
+                    "content_id": "in.(" + ",".join(chunk) + ")",
+                    "order": "content_id.asc,photo_order.asc",
+                    "limit": str(len(chunk) * _PLACE_PHOTO_ROW_BUDGET),
+                },
+            )
+            payload = self._json(response)
+            if not isinstance(payload, list):
+                raise SupabaseRepositoryError("invalid place_image_embeddings response")
+            for row in payload:
+                photo = _to_place_photo(row)
+                if photo is not None:
+                    photos.setdefault(photo.content_id, []).append(photo)
+        return {
+            content_id: tuple(
+                sorted(rows, key=lambda photo: photo.photo_order)[:_PLACE_PHOTO_LIMIT]
+            )
+            for content_id, rows in photos.items()
+        }
 
     async def create_sync_run(self, area_code: str, district_code: str) -> UUID:
         response = await self._request(
@@ -836,22 +1055,16 @@ class SupabasePlaceRepository:
                     else None
                 ),
                 rest_date_raw=(
-                    str(raw["rest_date_raw"])
-                    if raw.get("rest_date_raw") is not None
-                    else None
+                    str(raw["rest_date_raw"]) if raw.get("rest_date_raw") is not None else None
                 ),
                 is_active=bool(raw.get("is_active")),
                 inactive_reason=(
-                    str(raw["inactive_reason"])
-                    if raw.get("inactive_reason") is not None
-                    else None
+                    str(raw["inactive_reason"]) if raw.get("inactive_reason") is not None else None
                 ),
             )
         return states
 
-    async def find_active_places_by_name(
-        self, name: str
-    ) -> tuple[StoredPlaceLocation, ...]:
+    async def find_active_places_by_name(self, name: str) -> tuple[StoredPlaceLocation, ...]:
         """TourAPI 기준 장소명을 정확히 일치시켜 검색 중심 좌표를 읽는다.
 
         장소명 검색은 지오코딩보다 먼저 수행한다. 좌표가 없는 행은 검색 중심점으로
@@ -1156,9 +1369,7 @@ class SupabasePlaceRepository:
         # 없고 주차만 있는 장소가 empty에서 success로 바뀌어 재조회 주기가 달라진다 —
         # 이 컬럼은 운영정보 확보 여부를 뜻하므로 기존 의미를 유지한다(D-056).
         detail_status = (
-            "empty"
-            if operating_hours_raw is None and rest_date_raw is None
-            else "success"
+            "empty" if operating_hours_raw is None and rest_date_raw is None else "success"
         )
         await self._request(
             "PATCH",
@@ -1262,10 +1473,7 @@ class SupabasePlaceRepository:
                 "area_code": f"eq.{area_code}",
                 "district_code": f"eq.{district_code}",
                 "is_active": "eq.true",
-                "or": (
-                    f"(last_sync_run_id.neq.{sync_run_id},"
-                    "last_sync_run_id.is.null)"
-                ),
+                "or": (f"(last_sync_run_id.neq.{sync_run_id},last_sync_run_id.is.null)"),
             },
             json={
                 "is_active": False,
@@ -1356,8 +1564,8 @@ class SupabasePlaceRepository:
         넣을 때마다 적재와 조회 두 곳을 고쳐야 한다. 전량을 한 번 훑어
         (area_code, district_code)로 묶으면 적재된 구가 결과에서 그대로 드러난다.
 
-        전량이라 해도 세 개 구 2,300행 남짓에 열은 일곱 개뿐이라, 상태별로 count
-        질의를 나누는 것보다 싸다.
+        전량이라 해도 세 개 구 2,300행 남짓에 상태·분류·제목 열만 읽으므로,
+        상태별로 count 질의를 나누는 것보다 싸다.
         """
         rows = await self._fetch_place_summary_rows()
 
@@ -1369,20 +1577,25 @@ class SupabasePlaceRepository:
             )
             grouped.setdefault(key, []).append(row)
 
+        registry = get_tour_category_registry()
         return {
-            "overall": _summarize_places(rows),
+            "overall": {
+                **_summarize_places(rows),
+                "category_coverage": _summarize_category_coverage(rows, registry),
+            },
             "districts": [
                 {
                     "area_code": area_code,
                     "district_code": district_code,
                     **_summarize_places(group),
+                    "category_coverage": _summarize_category_coverage(group, registry),
                 }
                 for (area_code, district_code), group in sorted(grouped.items())
             ],
         }
 
     async def _fetch_place_summary_rows(self) -> list[Mapping[str, object]]:
-        """요약에 필요한 일곱 열만 전량 받는다. PostgREST는 한 응답에 1000행까지다."""
+        """상태·분류·제목 요약에 필요한 열만 전량 받는다. PostgREST는 한 응답에 1000행까지다."""
         rows: list[Mapping[str, object]] = []
         offset = 0
         while True:
@@ -1485,9 +1698,7 @@ class SupabasePlaceRepository:
                 rows_by_id[str(raw["content_id"])] = raw
         return [rows_by_id[content_id] for content_id in unique_ids if content_id in rows_by_id]
 
-    async def list_detail_backfill_ids(
-        self, area_code: str, district_code: str
-    ) -> list[str]:
+    async def list_detail_backfill_ids(self, area_code: str, district_code: str) -> list[str]:
         """상세 정보를 아직 못 채운 장소의 content_id.
 
         동기화는 대조가 정한 변경분 외에 이 장소들도 함께 부른다
@@ -1577,9 +1788,7 @@ class SupabasePlaceRepository:
             raise SupabaseRepositoryError("invalid sync run list response")
         return [dict(row) for row in payload if isinstance(row, Mapping)]
 
-    async def find_missing_concentration_mappings(
-        self, content_ids: Sequence[str]
-    ) -> list[str]:
+    async def find_missing_concentration_mappings(self, content_ids: Sequence[str]) -> list[str]:
         """집중률 매핑이 없는 content_id를 가려낸다.
 
         매핑이 없는 장소는 혼잡도 조회를 **아예 하지 않고** no_data로 끝난다
@@ -1649,9 +1858,7 @@ class SupabasePlaceRepository:
                 return counts
             offset += _READ_PAGE_SIZE
 
-    async def list_barrier_free_fetched_at(
-        self, content_ids: Sequence[str]
-    ) -> dict[str, datetime]:
+    async def list_barrier_free_fetched_at(self, content_ids: Sequence[str]) -> dict[str, datetime]:
         """무장애 정보를 언제 확인했는지. 행이 없는 장소는 결과에도 없다.
 
         값이 비어 있는 행도 "확인했다"로 센다 — 무장애 목록에 있는데도 15개 필드가
@@ -1756,9 +1963,7 @@ class SupabasePlaceRepository:
             lock["run_api_total_count"] = run.get("api_total_count") if run else None
         return locks
 
-    async def _get_sync_runs_by_ids(
-        self, run_ids: Sequence[str]
-    ) -> dict[str, dict[str, object]]:
+    async def _get_sync_runs_by_ids(self, run_ids: Sequence[str]) -> dict[str, dict[str, object]]:
         """id로 동기화 실행을 찾아 id → 행으로 돌려준다."""
         response = await self._request(
             "GET",
@@ -1812,6 +2017,147 @@ def _summarize_places(rows: Sequence[Mapping[str, object]]) -> dict[str, object]
     }
 
 
+def _summarize_category_coverage(
+    rows: Sequence[Mapping[str, object]], registry: TourCategoryRegistry
+) -> dict[str, object]:
+    """활성 장소만 TourAPI 대·중·소분류 트리로 묶는다.
+
+    Ops 화면의 목적은 추천 가능한 관광 데이터가 어느 구에 얼마나 있는지 보는
+    것이다. 비활성 장소는 원본 목록에서 사라진 과거 행일 수 있어 제외한다.
+    다만 코드가 비어 있는 활성 행은 버리지 않고 ``분류 미확인`` 그룹으로 남겨
+    동기화·원본 데이터 누락을 확인할 수 있게 한다.
+    """
+    leaves: dict[tuple[str | None, str | None, str | None], dict[str, object]] = {}
+    for row in rows:
+        if not row.get("is_active"):
+            continue
+        large = _category_code(row.get("lcls_systm1"))
+        middle = _category_code(row.get("lcls_systm2"))
+        small = _category_code(row.get("lcls_systm3"))
+        leaf = leaves.setdefault(
+            (large, middle, small),
+            {"count": 0, "examples": set()},
+        )
+        leaf["count"] = int(leaf["count"]) + 1
+        title = str(row.get("title") or "").strip()
+        if title:
+            examples = leaf["examples"]
+            assert isinstance(examples, set)
+            examples.add(title)
+
+    middle_keys = {(large, middle) for large, middle, _small in leaves}
+    groups: list[dict[str, object]] = []
+    large_codes = {large for large, _middle, _small in leaves}
+    for large in sorted(large_codes, key=lambda code: _category_sort_key(code, "large")):
+        middle_groups: list[dict[str, object]] = []
+        middles = {middle for current_large, middle, _small in leaves if current_large == large}
+        for middle in sorted(middles, key=lambda code: _category_sort_key(code, "middle")):
+            small_groups: list[dict[str, object]] = []
+            smalls = {
+                small
+                for current_large, current_middle, small in leaves
+                if current_large == large and current_middle == middle
+            }
+            for small in sorted(smalls, key=lambda code: _category_sort_key(code, "small")):
+                leaf = leaves[(large, middle, small)]
+                examples = leaf["examples"]
+                assert isinstance(examples, set)
+                small_groups.append(
+                    {
+                        "code": small,
+                        "label": _category_label(registry, large, middle, small, "small"),
+                        "count": leaf["count"],
+                        "examples": _category_examples(small, examples),
+                    }
+                )
+            middle_groups.append(
+                {
+                    "code": middle,
+                    "label": _category_label(registry, large, middle, None, "middle"),
+                    "count": sum(int(item["count"]) for item in small_groups),
+                    "smalls": small_groups,
+                }
+            )
+        groups.append(
+            {
+                "code": large,
+                "label": _category_label(registry, large, None, None, "large"),
+                "count": sum(int(item["count"]) for item in middle_groups),
+                "middles": middle_groups,
+            }
+        )
+
+    groups.sort(key=lambda group: (-int(group["count"]), str(group["label"])))
+    for group in groups:
+        middles = group["middles"]
+        assert isinstance(middles, list)
+        middles.sort(key=lambda item: (-int(item["count"]), str(item["label"])))
+        for middle in middles:
+            smalls = middle["smalls"]
+            assert isinstance(smalls, list)
+            smalls.sort(key=lambda item: (-int(item["count"]), str(item["label"])))
+
+    return {
+        "active_place_count": sum(int(leaf["count"]) for leaf in leaves.values()),
+        "large_category_count": len(large_codes),
+        "middle_category_count": len(middle_keys),
+        "small_category_count": len(leaves),
+        "groups": groups,
+    }
+
+
+def _category_code(value: object) -> str | None:
+    code = str(value or "").strip()
+    return code or None
+
+
+def _category_examples(small_code: str | None, examples: set[object]) -> list[str]:
+    """소분류를 설명하기 좋은 대표 장소를 최대 두 개 고른다.
+
+    기본은 DB 순서와 무관한 제목순이다. 다만 사후면세점처럼 관광공사 코드명이
+    실제 포함 매장의 성격을 충분히 설명하지 못하는 경우는 대표 브랜드를 우선한다.
+    """
+    titles = sorted(str(example) for example in examples)
+    selected: list[str] = []
+    for prefix in _CATEGORY_EXAMPLE_PREFIXES.get(small_code or "", ()):
+        match = next((title for title in titles if title.startswith(prefix)), None)
+        if match is not None:
+            selected.append(match)
+    selected.extend(title for title in titles if title not in selected)
+    return selected[:2]
+
+
+def _category_sort_key(code: str | None, level: str) -> tuple[int, str]:
+    """정상 코드를 먼저, ``분류 미확인``은 각 단계의 마지막에 둔다."""
+    return (1 if code is None else 0, code or level)
+
+
+def _category_label(
+    registry: TourCategoryRegistry,
+    large: str | None,
+    middle: str | None,
+    small: str | None,
+    level: str,
+) -> str:
+    if level == "small" and small is not None:
+        category = registry.get_by_small_code(small)
+        if category is not None:
+            return category.lcls_systm3_name
+    if level == "middle" and middle is not None:
+        categories = registry.find_by_middle_code(middle)
+        if categories:
+            return categories[0].lcls_systm2_name
+    if level == "large" and large is not None:
+        categories = registry.find_by_large_code(large)
+        if categories:
+            return categories[0].lcls_systm1_name
+    return (
+        "분류 미확인"
+        if (large if level == "large" else middle if level == "middle" else small) is None
+        else f"코드 {large if level == 'large' else middle if level == 'middle' else small}"
+    )
+
+
 def _bump(counter: dict[str, int], value: object) -> None:
     key = str(value) if value is not None else "null"
     counter[key] = counter.get(key, 0) + 1
@@ -1842,10 +2188,71 @@ def _to_evidence_snippet(item: object) -> PlaceEvidenceSnippet:
         source_text=str(item.get("source_text") or ""),
         source_url=str(item["source_url"]) if item.get("source_url") else None,
         similarity=float(item["similarity"]),
-        published_at=(
-            datetime.fromisoformat(str(published_at)) if published_at else None
-        ),
+        published_at=(datetime.fromisoformat(str(published_at)) if published_at else None),
     )
+
+
+def _to_barrier_free_place_row(row: object) -> BarrierFreePlaceRow:
+    """RPC 행을 후보 모델로 옮긴다.
+
+    좌표와 거리는 없으면 실패로 다룬다. RPC가 좌표 있는 행만 돌려주고 거리를 늘
+    계산하므로, 비어 있다면 응답 모양이 어긋난 것이지 "값이 없는 장소"가 아니다.
+    0.0으로 채우면 그 장소가 검색 중심에 있는 것으로 읽혀 맨 앞에 선다.
+    """
+    if not isinstance(row, Mapping):
+        raise SupabaseRepositoryError("invalid barrier free place row")
+    content_id = str(row.get("content_id") or "")
+    if not content_id:
+        raise SupabaseRepositoryError("barrier free place row missing content_id")
+    latitude = row.get("latitude")
+    longitude = row.get("longitude")
+    distance = row.get("distance_km")
+    if latitude is None or longitude is None or distance is None:
+        raise SupabaseRepositoryError(
+            f"barrier free place row missing coordinates or distance: {content_id}"
+        )
+    return BarrierFreePlaceRow(
+        content_id=content_id,
+        title=str(row.get("title") or ""),
+        address=_optional_str(row.get("address")),
+        latitude=float(latitude),
+        longitude=float(longitude),
+        content_type_id=_optional_str(row.get("content_type_id")),
+        lcls_systm1=_optional_str(row.get("lcls_systm1")),
+        lcls_systm2=_optional_str(row.get("lcls_systm2")),
+        lcls_systm3=_optional_str(row.get("lcls_systm3")),
+        first_image_url=_optional_str(row.get("first_image_url")),
+        distance_km=float(distance),
+        wheelchair_access_verdict=_optional_verdict(row.get("wheelchair_access_verdict")),
+        stroller_access_verdict=_optional_verdict(row.get("stroller_access_verdict")),
+        visual_guide_verdict=_optional_verdict(row.get("visual_guide_verdict")),
+    )
+
+
+def _optional_verdict(value: object) -> AccessibilityVerdict | None:
+    """판정 값을 어휘로 옮긴다. 모르는 값이면 실패로 다룬다.
+
+    None으로 넘기지 않는다. 컬럼에 검사 제약이 걸려 있어 모르는 값이 오면
+    RPC가 바뀌었거나 적재가 어긋난 것이고, 조용히 비우면 판정을 못 받은 장소가
+    "판정이 없는 장소"처럼 보여 안내에서 소리 없이 빠진다.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return AccessibilityVerdict(text)
+    except ValueError as exc:
+        raise SupabaseRepositoryError(f"unknown accessibility verdict: {text}") from exc
+
+
+def _optional_str(value: object) -> str | None:
+    """빈 문자열은 값이 없는 것으로 본다. 공백만 있는 값도 마찬가지다."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _to_mood_profile(row: object) -> PlaceMoodProfile:
@@ -1865,6 +2272,29 @@ def _to_mood_profile(row: object) -> PlaceMoodProfile:
         content_id=str(row["content_id"]),
         axis_scores=scores,
         photo_count=int(row.get("photo_count") or 0),
+    )
+
+
+def _to_place_photo(row: object) -> PlacePhoto | None:
+    """사진 행 하나를 도메인 값으로 옮긴다. 쓸 수 없는 행은 건너뛴다.
+
+    ``origin_url``은 스키마상 not null이지만 빈 문자열까지 막지는 않는다. 주소가
+    비면 화면에 깨진 이미지가 뜨므로 여기서 뺀다 — 한 장이 빠지는 것과 상세
+    조회 전체가 실패하는 것은 무게가 다르다.
+    """
+    if not isinstance(row, Mapping):
+        return None
+    url = row.get("origin_url")
+    content_id = row.get("content_id")
+    photo_order = row.get("photo_order")
+    if not url or not content_id or photo_order is None:
+        return None
+    image_name = row.get("image_name")
+    return PlacePhoto(
+        content_id=str(content_id),
+        photo_order=int(photo_order),
+        url=str(url),
+        image_name=str(image_name) if image_name else None,
     )
 
 

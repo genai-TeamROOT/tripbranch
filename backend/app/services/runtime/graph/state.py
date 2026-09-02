@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import TypedDict
 
-from app.schemas import LLMOutput
+from app.schemas import ConversationTurnView, LLMOutput
 
 
 class EarlyReturnState(TypedDict):
@@ -24,6 +24,14 @@ class EarlyReturnState(TypedDict):
     # GENERAL 답변을 조각으로 흘려보낼지. SSE 경로에서만 True다
     # (단발 POST /api/chat은 False라 한 번에 완성 문자열만 만든다).
     stream_general: bool
+    # 이 세션에서 이미 거절된 상황 제안의 action_id 목록(대화층 4단계). GENERAL
+    # 답변이 같은 제안을 다시 권하지 않으려면 여기서부터 compose_chat_message()까지
+    # 전달돼야 한다 — 그래프 상태 밖(session_context)에는 접근할 수 없다.
+    rejected_offer_actions: list[str]
+    # 최근 대화(오래된 것이 앞). 답변 문장이 앞 턴과 이어지도록 생성 단계까지
+    # 전달한다 — rejected_offer_actions와 같은 이유로 그래프 상태에 실어야 한다
+    # (노드는 session_context에 접근할 수 없다).
+    history: list[ConversationTurnView]
     # 답변 노드가 채우는 칸.
     answer: str | None
 

@@ -1,56 +1,73 @@
+/*
+ * 역할: 대기 중 문구가 (1) 시간이 지나면 바뀌고 (2) 실제 progress 단계를 따라가는지
+ * 검증한다. 카드·체크리스트·경과 시간을 걷어낸 뒤로는 "문구 한 줄"이 전부라,
+ * 그 한 줄이 멈춰 있지 않은지가 이 컴포넌트의 전부다.
+ */
+
 import { render, screen } from "@testing-library/react";
 import { act } from "react";
-import { vi } from "vitest";
+import { expect, it, vi } from "vitest";
 
 import { AgentProgressMessage } from "./AgentProgressMessage";
 
-it("안내 단계를 한 번 순차적으로 전환한 뒤 마지막 단계에 머문다", () => {
+function statusText() {
+  return screen.getByRole("status").textContent;
+}
+
+it("시간이 지나면 안내 문구가 계속 바뀐다", () => {
   vi.useFakeTimers();
-  render(<AgentProgressMessage hasDeviceLocation />);
+  render(<AgentProgressMessage />);
 
-  expect(screen.getByText("요청 의도와 조건 파악 중")).toBeInTheDocument();
+  const seen = new Set<string | null>([statusText()]);
+  for (let i = 0; i < 5; i += 1) {
+    act(() => {
+      vi.advanceTimersByTime(1_800);
+    });
+    seen.add(statusText());
+  }
 
-  act(() => {
-    vi.advanceTimersByTime(1_700);
-  });
-  expect(screen.getByText("대화 조건 병합 중")).toBeInTheDocument();
-
-  act(() => {
-    vi.advanceTimersByTime(1_700 * 4);
-  });
-  expect(screen.getByText("답변 정리 중")).toBeInTheDocument();
+  // 한 단계에 머무를 때도 문구가 돌아가야 "멈춘 화면"으로 보이지 않는다.
+  expect(seen.size).toBeGreaterThan(1);
   vi.useRealTimers();
 });
 
-it("일정 편성 중이면 로딩 단계 목록에 일정 편성을 추가한다", () => {
-  render(<AgentProgressMessage hasDeviceLocation schedulePlanning />);
+it("박스·체크리스트·초시계 없이 문구 한 줄만 보여준다", () => {
+  render(<AgentProgressMessage />);
 
-  expect(screen.getByText("일정 편성")).toBeInTheDocument();
+  const status = screen.getByRole("status");
+  expect(status.tagName).toBe("P");
+  expect(status.querySelector("ol")).toBeNull();
+  expect(status.textContent).not.toMatch(/초 경과/);
 });
 
-it("실제 progress 이벤트가 있으면 가상 타이머 대신 그 단계·문구를 그대로 보여준다", () => {
+it("실제 progress 이벤트가 있으면 그 단계의 문구를 보여준다", () => {
   vi.useFakeTimers();
-  const { rerender } = render(
+  render(
     <AgentProgressMessage
-      hasDeviceLocation
       schedulePlanning
-      progress={{ stage: "scheduling", message: "장소 순서를 계산하고 있어요.", elapsed_ms: 12_000 }}
+      progress={{
+        stage: "scheduling",
+        message: "장소 순서를 계산하고 있어요.",
+        elapsed_ms: 12_000,
+      }}
     />,
   );
 
-  // 경과 시간(12초)만 보면 가상 회전 로직은 이미 마지막 단계로 넘어가 있어야
-  // 하지만, 실제 progress가 "scheduling"을 가리키면 그 단계에 머물러야 한다.
-  expect(screen.getByText("일정 편성 중")).toBeInTheDocument();
-  expect(screen.getByText("장소 순서를 계산하고 있어요.")).toBeInTheDocument();
+  // 경과 시간(12초)만 보면 가상 회전은 이미 마지막 단계로 갔겠지만,
+  // 실제 progress가 "scheduling"을 가리키면 그 단계 문구에 머문다.
+  const schedulingLines = ["지도를 접었다 폈다 하는 중…", "몇 시에 어디 있을지 세어보는 중…"];
+  expect(schedulingLines).toContain(statusText());
 
-  // heartbeat로 문구만 바뀌어도 즉시 반영된다(타이머 진행과 무관).
-  rerender(
-    <AgentProgressMessage
-      hasDeviceLocation
-      schedulePlanning
-      progress={{ stage: "scheduling", message: "거의 다 됐어요.", elapsed_ms: 18_000 }}
-    />,
-  );
-  expect(screen.getByText("거의 다 됐어요.")).toBeInTheDocument();
+  act(() => {
+    vi.advanceTimersByTime(1_800);
+  });
+  expect(schedulingLines).toContain(statusText());
   vi.useRealTimers();
+});
+
+it("영어 화면에서는 영어 문구가 나온다", () => {
+  render(<AgentProgressMessage language="en" />);
+
+  expect(statusText()).toMatch(/[A-Za-z]/);
+  expect(statusText()).not.toMatch(/[가-힣]/);
 });
