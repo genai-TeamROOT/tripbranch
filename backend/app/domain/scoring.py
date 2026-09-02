@@ -178,6 +178,43 @@ _ENVIRONMENT_PREFERENCES = frozenset({"indoor", "outdoor"})
 _UNVERIFIED_WARNING = "방문 전에 운영 여부를 확인해주세요."
 _CLOSED_NOW_WARNING = "지금은 운영시간이 아니에요. 방문 전에 다시 확인해주세요."
 
+# 무장애 판정이 `partial`인 후보에 붙이는 안내. 어휘마다 막히는 것이 달라
+# 문구도 나눈다 — "일부 구역이 어렵다"만으로는 휠체어가 못 가는 것인지 점자
+# 안내가 없는 것인지 알 수 없다.
+#
+# 판정이 붙는 어휘는 셋뿐이다. 나머지 여섯(화장실·주차장·유아·대여·좌석·저상버스)은
+# 아직 원문 규칙으로 거르므로 후보에 있다는 것 말고는 할 말이 없다.
+_ACCESSIBILITY_PARTIAL_WARNINGS: Mapping[str, str] = {
+    "wheelchair_access": "일부 구역은 휠체어 접근이 어려워요.",
+    "stroller_access": "일부 구역은 유모차로 다니기 어려워요.",
+    "visual_guide": "점자·음성 안내가 일부 구역에만 있어요.",
+}
+
+# 이 판정만 안내한다. `possible`은 할 말이 없고, `impossible`은 저장소 조회가
+# 이미 후보에서 뺐으므로 여기까지 오지 않는다.
+_PARTIAL_VERDICT = "partial"
+
+
+def _accessibility_warnings(candidate: ScoringCandidate) -> tuple[str, ...]:
+    """무장애 판정이 `partial`인 어휘마다 안내 한 줄을 만든다.
+
+    요구하지 않은 어휘는 애초에 판정이 오지 않으므로(저장소 조회가 요구한 것만
+    올린다) 여기서 다시 거르지 않는다.
+
+    문구가 없는 어휘는 건너뛴다. 판정표가 셋에만 있어 지금은 일어나지 않지만,
+    나중에 어휘가 늘었을 때 빈 문자열이 경고 목록에 끼어 카드가 빈 줄을 띄우는
+    것보다 낫다.
+    """
+    verdicts = candidate.accessibility_verdicts
+    if not verdicts:
+        return ()
+    return tuple(
+        warning
+        for need, verdict in sorted(verdicts.items())
+        if verdict == _PARTIAL_VERDICT
+        and (warning := _ACCESSIBILITY_PARTIAL_WARNINGS.get(need))
+    )
+
 
 class ExclusionReason(StrEnum):
     """하드 필터에서 후보를 제외한 이유."""
@@ -639,9 +676,14 @@ def prepare_candidates(
             continue
 
         is_unverified = candidate.operating_hours is None or is_closed
-        warnings = (
+        operating_warnings = (
             (_CLOSED_NOW_WARNING,) if is_closed else (_UNVERIFIED_WARNING,)
         ) if is_unverified else ()
+        # **무장애 안내를 앞에 둔다.** 표시 측은 첫 줄만 보여주는데(PlaceCard.tsx),
+        # 운영시간은 "가서 닫혀 있을 수 있다"이고 무장애는 "가도 못 들어가는 데가
+        # 있다"라 무게가 다르다. 뒤에 두면 운영시간 미확인 후보에서 무장애 안내가
+        # 통째로 가려진다.
+        warnings = _accessibility_warnings(candidate) + operating_warnings
         eligible.append(
             PreparedCandidate(
                 candidate=candidate,
