@@ -116,6 +116,7 @@ def to_info_place_card(response: InfoContextResponse) -> InfoPlaceCard | None:
             realtime_area_name=result.area_name,
             realtime_observed_at=format_citydata_timestamp(result.observed_at),
             realtime_source_url=result.source_url,
+            realtime_map_url=result.map_url,
             realtime_detail_items=_to_realtime_detail_items(result.detail_items),
         )
     return None

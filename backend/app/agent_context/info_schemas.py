@@ -201,6 +201,10 @@ class RealtimeCityInfoResult(BaseModel):
     fields: dict[str, str] = Field(default_factory=dict)
     detail_items: list[RealtimeInfoDetailItem] = Field(default_factory=list)
     source_url: str | None = None
+    # realtime_traffic만 채운다(2026-09-02 실사용 요청) — 인구 혼잡도 카드가 쓰는
+    # 서울시 실시간 도시데이터 지도 미리보기와 같은 링크다. 도로소통은 핫스팟
+    # 지역 하나에 대응하는 단일 스냅샷이라 지도로 위치를 바로 확인하고 싶어한다.
+    map_url: str | None = None
     error: ContextError | None = None
 
 
