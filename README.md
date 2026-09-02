@@ -350,6 +350,7 @@ JSON 변경이 자동 반영되지 않으며, MVP에서는 서버 재시작 시 
 - [API 및 내부 계약](docs/api-contracts.md)
 - [개발 가이드](docs/development-guide.md)
 - [의사결정 로그](docs/decision-log.md)
+- [Scoring 버전 이력](docs/scoring-version.md)
 - [Intent 정의](docs/design/intent-definition.md)
 - [패키지별 업무 분담](docs/design/package_work_breakdown.md)
 - [Provider Contract v1](backend/docs/provider-contract-v1.md)
