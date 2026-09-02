@@ -34,7 +34,7 @@ let listeners: AuthListener[] = [];
 /* 이메일 인증 호출을 기록한다. 이메일 확인이 켜져 있어 signUp은 세션을 만들지
    않으므로, 세션 상태만 봐서는 "가입 요청이 나갔는지"를 알 수 없다. */
 interface AuthCall {
-  method: "signUp" | "signInWithPassword" | "resetPasswordForEmail";
+  method: "signUp" | "signInWithPassword" | "resetPasswordForEmail" | "updateUser";
   email: string;
   password?: string;
   name?: string;
@@ -125,6 +125,15 @@ export function createMockSupabaseClient(): SupabaseClient {
         currentSession = account;
         listeners.forEach((listener) => listener("SIGNED_IN", account));
         return { data: { session: account, user: account.user }, error: null };
+      },
+      updateUser: async (input: { password?: string }) => {
+        authCalls.push({
+          method: "updateUser",
+          email: currentSession?.user?.email ?? "",
+          password: input.password,
+        });
+        if (emailAuthError) return { data: { user: null }, error: emailAuthError };
+        return { data: { user: currentSession?.user ?? null }, error: null };
       },
       resetPasswordForEmail: async (email: string, options?: { redirectTo?: string }) => {
         authCalls.push({ method: "resetPasswordForEmail", email, redirectTo: options?.redirectTo });

@@ -46,6 +46,8 @@ interface AuthContextValue {
   signUpWithEmail: (input: SignUpInput) => Promise<void>;
   signInWithEmail: (email: string, password: string) => Promise<void>;
   sendPasswordReset: (email: string) => Promise<void>;
+  /** 재설정 링크로 세션이 선 상태에서 새 비밀번호를 저장한다. */
+  updatePassword: (password: string) => Promise<void>;
   signOut: () => Promise<void>;
 }
 
@@ -153,6 +155,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (resetError) throw new Error(authErrorMessage(resetError));
   }, []);
 
+  /*
+   * 새 비밀번호를 저장한다. 재설정 링크가 세운 세션(PASSWORD_RECOVERY)이 있어야
+   * 동작한다 — 토큰을 인자로 받지 않는 이유는 Supabase 클라이언트가 링크의 조각을
+   * 읽어 이미 세션을 세워 두기 때문이다.
+   *
+   * 비밀번호 정책 위반은 여기서도 weak_password로 온다. authErrors가 사유별로
+   * 풀어 주므로 가입 화면과 같은 문구가 나온다.
+   */
+  const updatePassword = useCallback(async (password: string) => {
+    const client = getSupabaseClient();
+    const { data, error: updateError } = await client.auth.updateUser({ password });
+    if (updateError) throw new Error(authErrorMessage(updateError));
+    if (data.user) setSession((current) => (current ? { ...current, user: data.user } : current));
+  }, []);
+
   /* 게스트에게 이 동작은 "나갔다 다시 들어오기"가 아니다 — 다시 로그인할 수단이
      없어 그 uid로 돌아갈 길이 사라진다. 호출부에서 확인을 받고 부른다. */
   const signOut = useCallback(async () => {
@@ -173,6 +190,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signUpWithEmail,
       signInWithEmail,
       sendPasswordReset,
+      updatePassword,
       signOut,
     }),
     [
@@ -183,6 +201,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signUpWithEmail,
       signInWithEmail,
       sendPasswordReset,
+      updatePassword,
       signOut,
     ],
   );
