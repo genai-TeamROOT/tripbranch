@@ -2874,6 +2874,35 @@ async def test_info_operating_hours_question_type_calls_tool_provider() -> None:
 
 
 @pytest.mark.asyncio
+async def test_info_realtime_parking_pairs_with_public_parking_card() -> None:
+    """근처 주차장을 물으면 공영주차장도 이어서 조회해 둘째 카드로 붙인다(TP-115).
+
+    근처(area 응답)는 목록이 짧고 실시간 대수가 잘 안 보이는 반면, 공영(구 단위)은
+    목록이 길지만 멀 수 있다 — 하나만 보여주면 사용자는 다른 절반을 다시 물어야
+    했다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 주차할 곳 있어?",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.llm_output.info.question_type == "realtime_parking"
+    # 근처(1회) + 공영(짝, 1회) = 2번 C를 거친다.
+    assert providers["tool_provider"].info_call_count == 2
+    assert response.info_place_card is not None
+    assert response.secondary_info_place_card is not None
+    assert "공영주차장" in response.message
+
+
+@pytest.mark.asyncio
 async def test_info_walking_time_uses_current_gps_and_route_tool() -> None:
     """INFO location_info도 현재 GPS가 있으면 카카오 도보 경로 계약을 재사용한다."""
     store = InMemoryStateStore()
