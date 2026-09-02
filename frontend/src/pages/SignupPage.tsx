@@ -38,7 +38,21 @@ export function SignupPage() {
       <form id="signup-form" onSubmit={handleSubmit} className="flex flex-col gap-4">
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="signup-name">이름</Label>
-          <Input id="signup-name" placeholder="이름을 입력하세요" autoComplete="name" />
+          <Input
+            id="signup-name"
+            placeholder="이름을 입력하세요"
+            autoComplete="name"
+            aria-describedby="signup-name-help"
+          />
+          {/*
+           * 이름을 왜 받는지 그 자리에서 밝힌다. 인증에 쓰이는 값이 아니라
+           * 대화에서 부르는 호칭이라, 묻는 이유를 적어 두지 않으면 굳이 왜
+           * 필요한지 알 수 없다. aria-describedby로 묶어 스크린 리더도 입력칸을
+           * 읽을 때 함께 듣는다.
+           */}
+          <p id="signup-name-help" className="text-xs leading-relaxed text-muted">
+            AI가 추천할 때 이 이름으로 불러드려요.
+          </p>
         </div>
 
         <div className="flex flex-col gap-1.5">
