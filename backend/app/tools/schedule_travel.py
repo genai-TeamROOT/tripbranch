@@ -1,9 +1,10 @@
-"""외부 API 없이 일정 구간의 거리·이동시간 추정값을 만든다."""
+"""일정 구간의 거리·이동시간을 추정하고, 요청된 구간만 실제 경로로 실측한다."""
 
 from __future__ import annotations
 
 import math
 from collections.abc import Sequence
+from dataclasses import replace
 
 from app.domain.schedule_travel import (
     ScheduleTravelCandidate,
@@ -13,13 +14,26 @@ from app.domain.schedule_travel import (
     ScheduleTravelWarning,
     TravelConfidence,
 )
-from app.domain.travel_route import RouteSource, RouteStatus, TravelMode
+from app.domain.travel_route import (
+    RouteDestination,
+    RouteSource,
+    RouteStatus,
+    TravelMode,
+    TravelRoute,
+)
 from app.geo import haversine_km
 from app.schemas import Transport
+from app.tools.travel_route import TravelRouteQuery, TravelRouteTool
 
 SCHEDULE_TRAVEL_DUPLICATE_PAIR_WARNING = "schedule_travel_duplicate_pair"
 SCHEDULE_TRAVEL_SELF_PAIR_WARNING = "schedule_travel_self_pair"
 SCHEDULE_TRAVEL_UNKNOWN_PLACE_WARNING = "schedule_travel_unknown_place"
+# 구간 하나의 실측이 실패했거나, 경로 Tool이 직선거리 추정으로 이미 메운 경우.
+SCHEDULE_TRAVEL_MEASURE_FAILED_WARNING = "schedule_travel_measure_failed"
+# 이동수단 Provider가 통째로 죽어 그 그룹의 구간이 하나도 돌아오지 않은 경우.
+SCHEDULE_TRAVEL_MEASURE_UNAVAILABLE_WARNING = "schedule_travel_measure_unavailable"
+# 실측 구간 수 상한을 넘겨 아예 호출하지 않은 구간.
+SCHEDULE_TRAVEL_MEASURE_BUDGET_EXCEEDED_WARNING = "schedule_travel_measure_budget_exceeded"
 
 
 def _validate_speeds(
@@ -174,9 +188,178 @@ def estimate_schedule_travel_edges(
     return ScheduleTravelEstimateResult(edges=tuple(edges), warnings=tuple(warnings))
 
 
+def _fall_back_to_estimate(
+    estimated: ScheduleTravelEdge, error_code: str | None
+) -> ScheduleTravelEdge:
+    """실측하지 못한 구간을 추정값 그대로 두고 사유만 심는다.
+
+    `status`는 `SUCCESS`로 남는다 — 이 Edge에 **쓸 수 있는 이동시간이 들어 있는가**를
+    말하는 자리이고, 추정값도 쓸 수 있는 값이기 때문이다. "실측이 아니다"는
+    `source`·`confidence`가, "왜 실측이 아닌가"는 `error_code`가 말한다. 같은 사실을
+    두 필드가 나눠 말하면 소비 측이 한쪽만 보고 쓸 수 있는 구간을 버린다.
+    """
+    return replace(estimated, error_code=error_code)
+
+
+def _resolve_measured_edge(
+    estimated: ScheduleTravelEdge,
+    route: TravelRoute | None,
+    *,
+    fallback_error_code: str | None,
+    tool_error_code: str | None,
+) -> tuple[ScheduleTravelEdge, str | None]:
+    """경로 조회 결과 한 건을 Edge와 경고 코드로 옮긴다."""
+    if route is None:
+        # Provider가 통째로 실패하면 Tool이 routes를 비워 돌려준다(D-042 — 자동차·
+        # 대중교통은 추정 Provider로 자동 전환하지 않는다).
+        return (
+            _fall_back_to_estimate(estimated, tool_error_code),
+            SCHEDULE_TRAVEL_MEASURE_UNAVAILABLE_WARNING,
+        )
+    if route.status is not RouteStatus.SUCCESS:
+        return (
+            _fall_back_to_estimate(estimated, route.error_code or tool_error_code),
+            SCHEDULE_TRAVEL_MEASURE_FAILED_WARNING,
+        )
+    if route.source is RouteSource.STRAIGHT_LINE_ESTIMATE:
+        # 도보만 추정 fallback이 등록돼 있어 Tool 안에서 이미 대체된 경우다. 값은
+        # 채워져 왔지만 실측이 아니므로 추정으로 취급한다 — 원인은 개별 route가
+        # 아니라 결과의 fallback_causes에 남는다.
+        return (
+            _fall_back_to_estimate(estimated, fallback_error_code),
+            SCHEDULE_TRAVEL_MEASURE_FAILED_WARNING,
+        )
+
+    # RouteStatus.SUCCESS는 거리와 소요시간이 모두 있음을 보장한다(TravelRoute 검증).
+    assert route.distance_m is not None and route.duration_seconds is not None
+    return (
+        replace(
+            estimated,
+            source=route.source,
+            duration_min=math.ceil(route.duration_seconds / 60),
+            distance_m=route.distance_m,
+            confidence=TravelConfidence.HIGH,
+            error_code=None,
+        ),
+        None,
+    )
+
+
+async def measure_schedule_travel_edges(
+    *,
+    tool: TravelRouteTool,
+    candidates: Sequence[ScheduleTravelCandidate],
+    estimated_edges: Sequence[ScheduleTravelEdge],
+    max_measured_segments: int,
+) -> ScheduleTravelEstimateResult:
+    """추정 Edge 중 요청된 구간만 실제 경로 API로 다시 잰다.
+
+    **이동수단을 다시 고르지 않는다.** 입력으로 받은 추정 Edge의 `mode`를 그대로
+    쓴다. 여기서 `_select_mode()`를 다시 부르면 추정과 실측이 서로 다른 이동수단을
+    고를 수 있고, 그러면 소비 측은 값이 바뀐 이유가 경로 때문인지 이동수단이 바뀐
+    탓인지 구분할 수 없다. 실측에 실패했을 때 되돌릴 값도 그 추정 Edge에 있다.
+
+    `TravelRouteQuery`가 **출발지 하나에 목적지 여럿** 모양이라, 출발지가 매번 다른
+    일정 구간은 `(출발지, 이동수단)`으로 묶어 그룹마다 따로 부른다. 결과는 목적지
+    `place_id`로만 오므로 그룹의 출발지를 되붙여 방향 쌍 키를 복원한다.
+
+    그룹은 **순차로 호출한다.** Provider마다 동시 요청 제한이 이미 걸려 있어
+    그룹까지 동시에 돌리면 그 곱만큼 나가고, 전역 동시성 제어는 이 함수의 범위가
+    아니다. 일정 하나의 구간이 2~4개라 순차로도 지연이 크지 않다.
+
+    실측하지 못한 구간은 **조용히 사라지지도, 0분이 되지도 않는다.** 추정값 그대로
+    남고 `error_code`와 경고에 사유가 실린다. 반환 순서는 입력 순서와 같다.
+    """
+    if max_measured_segments < 1:
+        raise ValueError("실측 구간 수 상한은 1 이상이어야 합니다.")
+    candidate_by_id = _candidate_index(candidates)
+
+    # (방향 쌍, 그대로 내보낼 Edge, 경고). Edge가 None이면 내보내지 않고 경고만 남긴다.
+    plan: list[tuple[ScheduleTravelPair, ScheduleTravelEdge | None, str | None]] = []
+    measurable: list[ScheduleTravelEdge] = []
+    seen_pairs: set[tuple[str, str]] = set()
+
+    for edge in estimated_edges:
+        pair = ScheduleTravelPair(edge.from_place_id, edge.to_place_id)
+        key = (edge.from_place_id, edge.to_place_id)
+        if key in seen_pairs:
+            plan.append((pair, None, SCHEDULE_TRAVEL_DUPLICATE_PAIR_WARNING))
+            continue
+        seen_pairs.add(key)
+
+        if edge.from_place_id not in candidate_by_id or edge.to_place_id not in candidate_by_id:
+            # 좌표를 모르면 경로 API에 넘길 수가 없다. 상한을 깎지도 않는다.
+            plan.append((pair, edge, SCHEDULE_TRAVEL_UNKNOWN_PLACE_WARNING))
+            continue
+        if len(measurable) >= max_measured_segments:
+            # 어느 구간을 실측할지 고르는 일은 이 함수 밖이므로 입력 순서를 존중해
+            # 앞에서부터 채우고 나머지를 남긴다.
+            plan.append((pair, edge, SCHEDULE_TRAVEL_MEASURE_BUDGET_EXCEEDED_WARNING))
+            continue
+
+        measurable.append(edge)
+        plan.append((pair, edge, None))
+
+    groups: dict[tuple[str, TravelMode], list[ScheduleTravelEdge]] = {}
+    for edge in measurable:
+        groups.setdefault((edge.from_place_id, edge.mode), []).append(edge)
+
+    resolved: dict[tuple[str, str], tuple[ScheduleTravelEdge, str | None]] = {}
+    for (origin_place_id, mode), group_edges in groups.items():
+        result = await tool.execute(
+            TravelRouteQuery(
+                origin=candidate_by_id[origin_place_id].coordinate,
+                destinations=tuple(
+                    RouteDestination(
+                        edge.to_place_id, candidate_by_id[edge.to_place_id].coordinate
+                    )
+                    for edge in group_edges
+                ),
+                mode=mode,
+            )
+        )
+        route_by_place_id = {route.place_id: route for route in result.routes}
+        fallback_error_code = (
+            result.fallback_causes[0][0] if result.fallback_causes else None
+        )
+        tool_error_code = result.error.code if result.error is not None else None
+        for edge in group_edges:
+            resolved[(edge.from_place_id, edge.to_place_id)] = _resolve_measured_edge(
+                edge,
+                route_by_place_id.get(edge.to_place_id),
+                fallback_error_code=fallback_error_code,
+                tool_error_code=tool_error_code,
+            )
+
+    edges: list[ScheduleTravelEdge] = []
+    warnings: list[ScheduleTravelWarning] = []
+    for pair, planned_edge, planned_warning in plan:
+        code = planned_warning
+        if planned_edge is not None:
+            edge, measured_warning = resolved.get(
+                (pair.from_place_id, pair.to_place_id), (planned_edge, None)
+            )
+            edges.append(edge)
+            code = code or measured_warning
+        if code is not None:
+            warnings.append(
+                ScheduleTravelWarning(
+                    code=code,
+                    from_place_id=pair.from_place_id,
+                    to_place_id=pair.to_place_id,
+                )
+            )
+
+    return ScheduleTravelEstimateResult(edges=tuple(edges), warnings=tuple(warnings))
+
+
 __all__ = [
     "SCHEDULE_TRAVEL_DUPLICATE_PAIR_WARNING",
+    "SCHEDULE_TRAVEL_MEASURE_BUDGET_EXCEEDED_WARNING",
+    "SCHEDULE_TRAVEL_MEASURE_FAILED_WARNING",
+    "SCHEDULE_TRAVEL_MEASURE_UNAVAILABLE_WARNING",
     "SCHEDULE_TRAVEL_SELF_PAIR_WARNING",
     "SCHEDULE_TRAVEL_UNKNOWN_PLACE_WARNING",
     "estimate_schedule_travel_edges",
+    "measure_schedule_travel_edges",
 ]
