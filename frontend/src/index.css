@@ -219,3 +219,33 @@
     display: none;
   }
 }
+
+/*
+ * 화면 전환 — 새 화면이 살짝 떠오르며 나타난다(PageTransition).
+ *
+ * 들어올 때만 움직인다. 나가는 화면까지 기다리면 이동이 그만큼 늦어져서,
+ * 부드러워지는 대신 느려진 것처럼 느껴진다.
+ *
+ * 8px만 올린다. 더 크게 움직이면 페이지가 "튀어 오르는" 느낌이 되고, 하단
+ * 고정 바(position:fixed)까지 같이 흔들려서 눈에 걸린다.
+ */
+@keyframes tb-page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/*
+ * 움직임을 줄이도록 설정한 사용자에게는 애니메이션을 걸지 않는다. 화면은
+ * 그대로 즉시 나타난다 — 전환 자체가 정보를 담고 있지 않으므로 잃는 게 없다.
+ */
+@media (prefers-reduced-motion: no-preference) {
+  .tb-page-enter {
+    animation: tb-page-enter 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+}
