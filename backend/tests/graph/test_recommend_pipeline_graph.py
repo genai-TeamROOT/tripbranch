@@ -90,10 +90,13 @@ async def test_flag_on_routes_through_the_graph() -> None:
 def test_pipeline_routing_table() -> None:
     """조건부 엣지 판정을 표로 고정한다."""
 
-    from app.schemas import LLMOutput, OutputStatus
+    from types import SimpleNamespace
+
+    from app.schemas import ClarificationPayload, LLMOutput, OutputStatus
     from app.services.runtime.graph.routing import (
         ROUTE_DONE,
         ROUTE_FINALIZE,
+        ROUTE_RETRY_TOOL_FETCH,
         ROUTE_SCHEDULE,
         ROUTE_SCORING,
         route_after_scoring,
@@ -102,6 +105,24 @@ def test_pipeline_routing_table() -> None:
 
     assert route_after_tool_fetch({"response": object()}) == ROUTE_DONE
     assert route_after_tool_fetch({"response": None}) == ROUTE_SCORING
+
+    def _clarified(code: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            llm_output=SimpleNamespace(clarification=ClarificationPayload(code=code, message=""))
+        )
+
+    # A-1: no_data_empty는 아직 재시도 전이면(retry_count 없음/0) 곧장 안 끝내고
+    # widen_search_retry로 보낸다. 한 번 재시도한 뒤에는 다른 종료 status처럼 끝낸다.
+    assert (
+        route_after_tool_fetch({"response": _clarified("no_data_empty")}) == ROUTE_RETRY_TOOL_FETCH
+    )
+    assert (
+        route_after_tool_fetch({"response": _clarified("no_data_empty"), "retry_count": 1})
+        == ROUTE_DONE
+    )
+    # no_data_exhausted(카테고리 확대 등 다른 처방이 필요)는 반경을 넓혀도 소용없어
+    # 자동 재시도하지 않는다.
+    assert route_after_tool_fetch({"response": _clarified("no_data_exhausted")}) == ROUTE_DONE
 
     schedule = LLMOutput(intent=Intent.SCHEDULE, status=OutputStatus.COMPLETE)
     recommend = LLMOutput(intent=Intent.RECOMMEND, status=OutputStatus.COMPLETE)

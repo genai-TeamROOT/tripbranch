@@ -44,17 +44,36 @@ function StreamingDots({ language }: { language: Language }) {
   );
 }
 
+// 줄 안의 인라인 마크다운. 지금은 **강조**만 처리한다 — 백엔드 답변 생성
+// 프롬프트가 실제로 쓰는 문법이 이것뿐이라, 더 넓은 문법(링크·이탤릭 등)은
+// 필요해지면 그때 추가한다.
+function renderInline(text: string): ReactNode {
+  const segments = text.split(/(\*\*[^*]+\*\*)/g).filter((segment) => segment !== "");
+  return segments.map((segment, index) =>
+    segment.startsWith("**") && segment.endsWith("**") ? (
+      <strong key={index}>{segment.slice(2, -2)}</strong>
+    ) : (
+      <span key={index}>{segment}</span>
+    ),
+  );
+}
+
+// "- "/"* "/"• " 셋 다 불릿으로 본다 — 같은 답변 안에서도 모델이 섞어 쓴다.
+const BULLET_PREFIXES = ["- ", "* ", "• "];
+
 function MarkdownText({ text }: { text: string }) {
   const lines = text.split("\n");
   const elements: ReactNode[] = [];
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
-    if (!line) continue;
+    // 불릿 기호만 있고 내용은 다음 줄에 오는 경우(모델이 가끔 이렇게 끊어 보냄) —
+    // 빈 불릿을 그리지 않고 건너뛴다.
+    if (!line || line.trim() === "•" || line.trim() === "*") continue;
     if (line.startsWith("# ")) {
       elements.push(
         <h2 key={`heading-${index}`} className="text-xl font-bold text-ink">
-          {line.slice(2)}
+          {renderInline(line.slice(2))}
         </h2>,
       );
       continue;
@@ -62,23 +81,24 @@ function MarkdownText({ text }: { text: string }) {
     if (line.startsWith("## ")) {
       elements.push(
         <h3 key={`subheading-${index}`} className="mt-3 text-lg font-bold text-ink">
-          {line.slice(3)}
+          {renderInline(line.slice(3))}
         </h3>,
       );
       continue;
     }
-    if (line.startsWith("- ")) {
+    const bulletPrefix = BULLET_PREFIXES.find((prefix) => line.startsWith(prefix));
+    if (bulletPrefix) {
       elements.push(
         <p key={`item-${index}`} className="flex gap-2 text-sm">
           <span aria-hidden="true">•</span>
-          <span>{line.slice(2)}</span>
+          <span>{renderInline(line.slice(bulletPrefix.length))}</span>
         </p>,
       );
       continue;
     }
     elements.push(
       <p key={`paragraph-${index}`} className="leading-relaxed text-ink">
-        {line}
+        {renderInline(line)}
       </p>,
     );
   }
