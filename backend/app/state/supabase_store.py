@@ -26,7 +26,9 @@ from app.state.schema import (
     FeedbackRecord,
     RecommendationHistory,
     SavedPlaceList,
+    SessionMessage,
     TraceRecord,
+    UserPreferenceList,
 )
 
 
@@ -249,6 +251,60 @@ class SupabaseStateStore:
             prefer="return=minimal",
         )
 
+    # ------------------------------------------------------------ Preferences
+
+    def list_sessions_for_user(self, user_id: str, limit: int) -> list[AgentState]:
+        """사용자의 대화를 최근 순으로. 제목 없는 세션은 대화가 아니라 제외한다.
+
+        **만료 여부로는 거르지 않는다.** 만료는 "낡은 조건을 버렸다"는 뜻이지
+        "그 대화가 없었다"는 뜻이 아니다 — 거르면 오래된 대화일수록 목록에서
+        사라지는데, 그런 대화를 열어 이어가는 것이 이 목록의 목적이다.
+
+        agent_states_user_recent_idx(user_id, last_active_at desc)를 그대로 탄다.
+        """
+        response = self._request(
+            "GET",
+            "/agent_states",
+            params={
+                "user_id": f"eq.{user_id}",
+                "title": "not.is.null",
+                "select": "*",
+                "order": "last_active_at.desc",
+                "limit": str(limit),
+            },
+        )
+        rows = self._json(response)
+        if not isinstance(rows, list):
+            raise StateStoreError("invalid agent_states rows")
+        try:
+            return [AgentState.model_validate(row) for row in rows]
+        except Exception:
+            raise StateStoreError("invalid agent_states row") from None
+
+    def get_preferences(self, user_id: str) -> UserPreferenceList | None:
+        """계정 단위 취향. 다른 조회와 달리 키가 user_id다."""
+        response = self._request(
+            "GET",
+            "/user_preferences",
+            params={"user_id": f"eq.{user_id}", "select": "*", "limit": "1"},
+        )
+        row = self._one_or_none(self._json(response))
+        if row is None:
+            return None
+        try:
+            return UserPreferenceList.model_validate(row)
+        except Exception:
+            raise StateStoreError("invalid user_preferences row") from None
+
+    def save_preferences(self, preferences: UserPreferenceList) -> None:
+        self._request(
+            "POST",
+            "/user_preferences",
+            params={"on_conflict": "user_id"},
+            json=preferences.model_dump(mode="json"),
+            prefer="resolution=merge-duplicates,return=minimal",
+        )
+
     # ------------------------------------------------------------ ChangeLog
 
     def append_change_logs(self, logs: list[ConditionChangeLog]) -> None:
@@ -281,6 +337,50 @@ class SupabaseStateStore:
             raise StateStoreError(
                 "invalid condition_change_logs row"
             ) from None
+
+    # ------------------------------------------------------------ 화면 기록
+
+    def append_session_messages(self, messages: list[SessionMessage]) -> None:
+        """append-only. (TP-222 후속)
+
+        recorded_at을 보내지 않고 서버 기본값에 맡기지 않는다 — 다른 append-only
+        테이블과 같이 모델이 만든 시각을 그대로 싣는다. 복원 순서는 id로 정하므로
+        이 값이 화면 순서를 좌우하지는 않는다.
+        """
+        if not messages:
+            return
+        self._request(
+            "POST",
+            "/session_messages",
+            json=[message.model_dump(mode="json") for message in messages],
+            prefer="return=minimal",
+        )
+
+    def get_session_messages(self, session_id: str) -> list[SessionMessage]:
+        response = self._request(
+            "GET",
+            "/session_messages",
+            params={
+                "session_id": f"eq.{session_id}",
+                "select": "*",
+                "order": "id.asc",
+            },
+        )
+        payload = self._json(response)
+        if not isinstance(payload, list):
+            raise StateStoreError("invalid session_messages response")
+        try:
+            return [SessionMessage.model_validate(row) for row in payload]
+        except Exception:
+            raise StateStoreError("invalid session_messages row") from None
+
+    def delete_session_messages(self, session_id: str) -> None:
+        self._request(
+            "DELETE",
+            "/session_messages",
+            params={"session_id": f"eq.{session_id}"},
+            prefer="return=minimal",
+        )
 
     # ------------------------------------------------------------ Trace
 

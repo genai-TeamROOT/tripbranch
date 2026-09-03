@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 
 import pytest
@@ -347,3 +349,163 @@ def test_stream_still_completes_when_follow_ups_blow_up(monkeypatch) -> None:
     names = [name for name, _ in _sse_events(response.text)]
     assert names[-1] == "done"
     assert "error" not in names
+
+
+# ---------------------------------------------------------------- 화면 기록
+
+
+def _start_owned_session() -> str:
+    """세션을 하나 만들어 둔다. 화면 기록은 세션이 있어야 남는다."""
+    from app.state import service as state_service
+
+    applied = state_service.apply(
+        state_service.StateApplyRequest(intent="RECOMMEND", confirmed=True)
+    )
+    return applied.session_id
+
+
+def _recorded(session_id: str):
+    from app.state.store import get_store
+
+    return get_store().get_session_messages(session_id)
+
+
+def test_턴이_끝나면_화면_기록이_남는다(monkeypatch) -> None:
+    """배선이 빠지면 지난 대화가 조용히 빈 채로 복원되므로 라우트에서 확인한다."""
+    session_id = _start_owned_session()
+
+    async def fake_run_agent(request: AgentRequest, *, principal=None) -> AgentResponse:
+        return _fake_response(session_id)
+
+    monkeypatch.setattr(chat_route, "run_agent", fake_run_agent)
+
+    TestClient(app).post("/api/chat", json={"user_input": "안녕", "session_id": session_id})
+
+    messages = _recorded(session_id)
+    assert len(messages) == 1
+    assert messages[0].user_input == "안녕"
+    assert messages[0].payload["message"] == "테스트 응답"
+
+
+# Runtime 안에서 남기면 이 값이 늘 비어 있었다 — 후속 질문은 라우트가 done 뒤에
+# 붙이기 때문이다(실측: 그렇게 저장된 8건 전부 후속 질문 없음).
+def test_화면_기록에_후속_질문이_담긴다(monkeypatch) -> None:
+    session_id = _start_owned_session()
+
+    async def fake_run_agent(request: AgentRequest, *, principal=None) -> AgentResponse:
+        response = _fake_response(session_id)
+        response.suggested_follow_ups = ["근처 카페도 볼까요?"]
+        return response
+
+    monkeypatch.setattr(chat_route, "run_agent", fake_run_agent)
+
+    TestClient(app).post("/api/chat", json={"user_input": "안녕", "session_id": session_id})
+
+    assert _recorded(session_id)[0].payload["suggested_follow_ups"] == ["근처 카페도 볼까요?"]
+
+
+# 영어 화면의 번역도 Runtime 밖에서 일어난다. 안에서 남기면 영어로 대화한
+# 사람이 지난 대화를 열었을 때 한국어가 나온다.
+def test_영어_대화는_영어로_기록된다(monkeypatch) -> None:
+    session_id = _start_owned_session()
+
+    async def fake_run_agent(request: AgentRequest, *, principal=None) -> AgentResponse:
+        return _fake_response(session_id)
+
+    async def fake_localize(response: AgentResponse, *, language: str) -> AgentResponse:
+        translated = response.model_copy(deep=True)
+        translated.message = "Translated answer"
+        return translated
+
+    async def fake_request_for_runtime(request: AgentRequest) -> AgentRequest:
+        """영어 입력을 한국어로 옮기는 단계. 여기 관심사가 아니라 그대로 넘긴다."""
+        return request
+
+    monkeypatch.setattr(chat_route, "run_agent", fake_run_agent)
+    monkeypatch.setattr(chat_route, "_request_for_runtime", fake_request_for_runtime)
+    monkeypatch.setattr(chat_route, "_response_for_user", fake_localize)
+
+    TestClient(app).post(
+        "/api/chat",
+        json={"user_input": "hi", "session_id": session_id, "language": "en"},
+    )
+
+    assert _recorded(session_id)[0].payload["message"] == "Translated answer"
+
+
+def test_없는_세션에는_화면_기록을_남기지_않는다(monkeypatch) -> None:
+    async def fake_run_agent(request: AgentRequest, *, principal=None) -> AgentResponse:
+        return _fake_response("sess_없는세션")
+
+    monkeypatch.setattr(chat_route, "run_agent", fake_run_agent)
+
+    TestClient(app).post("/api/chat", json={"user_input": "안녕"})
+
+    assert _recorded("sess_없는세션") == []
+
+
+def test_스트리밍_턴도_화면_기록을_남긴다(streaming, monkeypatch) -> None:
+    """실사용 경로는 SSE다 — 여기서 빠지면 기록이 사실상 안 쌓인다."""
+    session_id = _start_owned_session()
+
+    async def fake_run_agent(request: AgentRequest, **kwargs) -> AgentResponse:
+        return _fake_response(session_id)
+
+    monkeypatch.setattr(chat_route, "run_agent", fake_run_agent)
+
+    TestClient(app).post(
+        "/api/chat/stream", json={"user_input": "경복궁 근처 카페", "session_id": session_id}
+    )
+
+    messages = _recorded(session_id)
+    assert len(messages) == 1
+    # 후속 질문은 done 뒤에 정해진다. 그 뒤에 기록해야 담긴다.
+    assert messages[0].payload["suggested_follow_ups"] == ["여기 주차되나요?", "다른 곳도 보여줘"]
+
+
+# done을 내보낸 뒤 후속 질문을 만드는 사이에 창을 닫으면 이 제너레이터가 그대로
+# 닫힌다. 그 턴만 기록에서 빠지면 그 대화는 영영 "온전하지 않음"으로 판정돼
+# 근사치로만 복원된다.
+def test_done_뒤에_끊겨도_그_턴의_기록은_남는다(streaming, monkeypatch) -> None:
+    session_id = _start_owned_session()
+
+    async def fake_run_agent(request: AgentRequest, **kwargs) -> AgentResponse:
+        return _fake_response(session_id)
+
+    async def connection_dropped(*args, **kwargs):
+        """창을 닫으면 이 자리에서 제너레이터가 취소된다.
+
+        CancelledError는 BaseException이라 후속 질문을 감싼 except Exception이
+        잡지 못한다 — 정확히 그 경로를 흉내 낸다.
+        """
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(chat_route, "run_agent", fake_run_agent)
+    monkeypatch.setattr(chat_route, "_follow_ups_for_user", connection_dropped)
+
+    with contextlib.suppress(asyncio.CancelledError):
+        TestClient(app).post(
+            "/api/chat/stream", json={"user_input": "경복궁 근처 카페", "session_id": session_id}
+        )
+
+    assert len(_recorded(session_id)) == 1
+
+
+# 화면은 api_context를 읽지 않는다. 그대로 담으면 턴마다 좌표 사본이 쌓여
+# 세션 하나가 곧 이동 경로가 된다 — 현재 위치는 agent_states에 한 벌 있으면 된다.
+def test_화면_기록에_gps_좌표를_담지_않는다(monkeypatch) -> None:
+    session_id = _start_owned_session()
+
+    async def fake_run_agent(request: AgentRequest, *, principal=None) -> AgentResponse:
+        response = _fake_response(session_id)
+        response.state.api_context = ApiContextView(gps_location="37.5796,126.9770")
+        return response
+
+    monkeypatch.setattr(chat_route, "run_agent", fake_run_agent)
+
+    TestClient(app).post("/api/chat", json={"user_input": "안녕", "session_id": session_id})
+
+    payload = _recorded(session_id)[0].payload
+    assert "api_context" not in payload["state"]
+    # 나머지는 그대로다 — 화면이 그리는 값을 함께 깎으면 안 된다.
+    assert payload["message"] == "테스트 응답"
