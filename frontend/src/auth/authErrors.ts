@@ -82,6 +82,18 @@ const BY_CODE: Record<string, string> = {
   signup_disabled: "지금은 회원가입을 받고 있지 않아요.",
   email_provider_disabled: "지금은 이메일로 가입할 수 없어요.",
   same_password: "지금 쓰고 있는 비밀번호와 달라야 해요.",
+  /*
+   * **위 계정 열거 원칙의 유일한 예외다.** 이 오류는 게스트가 자기 계정을 만드는
+   * 경로(updateUser)에서만 온다 — 가입(signUp)은 Supabase가 이미 뭉개서 돌려주므로
+   * 여기까지 오지 않는다.
+   *
+   * 예외를 두는 이유는 두 가지다. 첫째, 이 경로는 게스트 세션이 있어야 도달하므로
+   * 주소를 하나씩 넣어 캐내려면 매번 세션을 새로 발급해야 한다 — 익명 가입이 그
+   * 자체로 한도에 걸린다. 둘째, 여기서 뭉개면 사용자가 무엇을 해야 할지 알 수 없다:
+   * 가입은 실패했는데 게스트 상태는 그대로라 화면상 아무 일도 안 일어난 것처럼
+   * 보인다. guest-auth-design.md 8절이 "무엇을 잃는지 알려주고 끊는다"로 정한 지점이다.
+   */
+  email_exists: "이미 가입된 이메일이에요. 그 계정으로 로그인해주세요.",
 };
 
 /* message 원문 조각 → 문구. code가 비어 있을 때만 쓴다. */
@@ -92,6 +104,7 @@ const BY_MESSAGE: Array<[RegExp, string]> = [
   [/rate limit|too many requests/i, BY_CODE.over_request_rate_limit],
   [/unable to validate email|invalid format/i, BY_CODE.email_address_invalid],
   [/signups not allowed|signup is disabled/i, BY_CODE.signup_disabled],
+  [/email address (is )?already (been )?registered|already exists/i, BY_CODE.email_exists],
 ];
 
 /*
