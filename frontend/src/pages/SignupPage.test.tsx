@@ -15,6 +15,7 @@ import { AuthProvider } from "../auth/AuthContext";
 import { SignupPage } from "./SignupPage";
 import {
   emailAuthCalls,
+  GUEST_SESSION,
   resetSupabaseMock,
   setMockEmailAuthError,
   setMockSession,
@@ -150,4 +151,53 @@ test("약관을 읽어도 동의 체크는 켜지지 않는다", async () => {
 
   expect(screen.getByRole("checkbox")).not.toBeChecked();
   expect(screen.getByRole("button", { name: "가입하고 시작하기" })).toBeDisabled();
+});
+
+/*
+ * 게스트 승계(D-062 8절). 아래 세 건이 이 카드의 계약이다 — **uid가 유지되는 것**이
+ * 핵심이라, 요청이 나갔는지만 보는 것으로는 부족하고 어느 uid에서 나갔는지를 본다.
+ */
+
+test("게스트가 가입하면 새 계정을 만들지 않고 지금 uid에 이메일을 붙인다", async () => {
+  setMockSession(GUEST_SESSION);
+  renderSignup();
+  await fill();
+
+  await userEvent.click(screen.getByRole("button", { name: "가입하고 시작하기" }));
+
+  await waitFor(() => expect(emailAuthCalls()).toHaveLength(1));
+  const call = emailAuthCalls()[0];
+  /* signUp이면 uid가 갈려 게스트로 쌓은 대화 목록이 통째로 빈다. */
+  expect(call.method).toBe("updateUser");
+  expect(call.userId).toBe(GUEST_SESSION.user.id);
+  expect(call.email).toBe("trip@example.com");
+  expect(call.password).toBe("Ab3!xyzw");
+  expect(call.name).toBe("나종원");
+});
+
+/* 승계도 이메일 확인을 거친다. 링크를 눌러야 이메일이 붙으므로 화면은 가입과 똑같이
+   중간 상태에 머물러야 한다 — 여기서 홈으로 보내면 확인하지 않고 떠난다. */
+test("게스트 승계도 바로 계정이 된 것처럼 굴지 않는다", async () => {
+  setMockSession(GUEST_SESSION);
+  renderSignup();
+  await fill();
+
+  await userEvent.click(screen.getByRole("button", { name: "가입하고 시작하기" }));
+
+  expect(await screen.findByText(/확인 메일을 보냈어요/)).toBeInTheDocument();
+});
+
+/* 가입 경로는 계정 열거를 막으려고 이미 있는 이메일도 성공처럼 처리하지만, 승계는
+   게스트 세션이 있어야 닿는 경로라 사유를 알려준다(authErrors.ts의 email_exists 주석).
+   뭉개면 게스트 상태 그대로인데 화면만 성공으로 보여 사용자가 할 일을 알 수 없다. */
+test("이미 가입된 이메일로 승계하면 무엇을 해야 하는지 알려준다", async () => {
+  setMockSession(GUEST_SESSION);
+  setMockEmailAuthError({ message: "email address already registered", code: "email_exists" });
+  renderSignup();
+  await fill();
+
+  await userEvent.click(screen.getByRole("button", { name: "가입하고 시작하기" }));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("이미 가입된 이메일");
+  expect(screen.queryByText(/확인 메일을 보냈어요/)).not.toBeInTheDocument();
 });

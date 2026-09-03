@@ -9,8 +9,9 @@
  * 않는다 — 사용자가 메일의 링크를 눌러야 계정이 열린다. 화면은 그 사실을 알리는
  * 중간 상태를 반드시 거쳐야 하고, 가입 직후 로그인된 것처럼 굴면 안 된다.
  *
- * TODO: 게스트→계정 승계(updateUser로 uid 유지, D-062 8절)는 2차 범위다. 지금은
- *   관문에서 처음부터 가입하는 경로만 있다.
+ * **게스트가 가입하면 새 계정을 만들지 않고 지금 uid에 이메일을 붙인다**
+ * (updateUser, D-062 8절). uid가 유지돼야 게스트로 쌓은 대화·일정이 계정에
+ * 그대로 이어진다 — 새로 signUp을 태우면 uid가 갈려 사이드바 목록이 통째로 빈다.
  */
 
 import {
@@ -155,13 +156,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
    */
   const signUpWithEmail = useCallback(async ({ name, email, password }: SignUpInput) => {
     const client = getSupabaseClient();
+    const redirectTo = `${window.location.origin}/login`;
+
+    /* 화면 상태(session)가 아니라 클라이언트에서 다시 읽는다. 상태는 한 렌더 늦을 수
+       있고, 여기서 한 번 잘못 갈리면 게스트 기록이 조용히 버려진다. */
+    const { data: current } = await client.auth.getSession();
+    if (current.session?.user?.is_anonymous) {
+      /*
+       * 게스트를 계정으로 승격한다. signUp이 아니라 updateUser라 **uid가 그대로**이고,
+       * 백엔드는 손댈 것이 없다 — user_id가 이미 채워져 있어 대화 목록도 보관함도
+       * 그대로 이어진다(guest-auth-design.md 8절).
+       *
+       * 이메일 확인은 여기서도 켜져 있다. 링크를 눌러야 이메일이 실제로 붙으므로
+       * 호출부는 가입과 똑같이 "메일을 보냈다" 화면으로 넘어가면 된다.
+       */
+      const { error: linkError } = await client.auth.updateUser(
+        { email, password, data: { name } },
+        { emailRedirectTo: redirectTo },
+      );
+      if (linkError) throw new Error(authErrorMessage(linkError));
+      return;
+    }
+
     const { error: signUpError } = await client.auth.signUp({
       email,
       password,
       options: {
         /* identityLabel이 user_metadata.name을 읽는다 — 사이드바 표시가 바로 붙는다. */
         data: { name },
-        emailRedirectTo: `${window.location.origin}/login`,
+        emailRedirectTo: redirectTo,
       },
     });
     if (signUpError) throw new Error(authErrorMessage(signUpError));

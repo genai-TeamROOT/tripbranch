@@ -148,6 +148,11 @@ _DETAIL_COLUMNS = ",".join(
         "longitude",
         "operating_hours_raw",
         "rest_date_raw",
+        # 적재 배치가 넣어둔 파싱 결과와 그때의 파서 버전. 읽기 경로가 원문을
+        # 매번 다시 파싱하지 않게 한다(`resolve_operating_schedule()`). 버전이
+        # 지금 파서와 다르면 이 값을 믿지 않고 원문을 다시 읽는다.
+        "operating_schedule",
+        "operating_parser_version",
         "detail_fetch_status",
         "detail_fetched_at",
         "source_modified_at",
@@ -1330,6 +1335,14 @@ class SupabasePlaceRepository:
                     pet_raw=_optional_text(raw.get("pet_raw")),
                     credit_card_raw=_optional_text(raw.get("credit_card_raw")),
                     restroom_raw=_optional_text(raw.get("restroom_raw")),
+                    operating_schedule_raw=(
+                        raw.get("operating_schedule")
+                        if isinstance(raw.get("operating_schedule"), dict)
+                        else None
+                    ),
+                    operating_parser_version=_optional_text(
+                        raw.get("operating_parser_version")
+                    ),
                     **_barrier_free_fields(raw.get("place_barrier_free")),
                 )
         return details

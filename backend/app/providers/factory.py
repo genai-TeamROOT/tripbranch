@@ -97,6 +97,7 @@ from app.repositories.fake_places import (
 from app.repositories.municipal_parking import SupabaseMunicipalParkingRepository
 from app.repositories.protocols import PlacePhotoRepository
 from app.repositories.supabase_places import SupabasePlaceRepository
+from app.tools.closure_extract import ClosureExtractor
 from app.tools.recommendation_cards import RecommendationCardTool
 from app.tools.travel_route import TravelRouteProviders, TravelRouteTool
 
@@ -122,6 +123,43 @@ def get_llm_provider() -> LLMProvider:
         timeout_seconds=settings.resolved_llm_timeout_seconds,
         max_retries=settings.external_api_retry_count,
     )
+
+
+def get_closure_extractor() -> ClosureExtractor | None:
+    """적재 배치가 쓸 휴무 추출기를 만든다. 꺼져 있거나 못 쓰면 None이다.
+
+    None이면 지금까지와 같이 정규식만 쓴다 — 주차가 섞인 문구를 못 읽을 뿐
+    적재는 정상이다. 그래서 부팅을 막지 않는다.
+
+    **Fake LLM 모드에서는 만들지 않는다.** 가짜 응답으로 휴무를 채우면 근거
+    없는 쉬는 날이 DB에 남는데, 오류가 없어 알아채기 어렵다. 게다가 이건
+    화면에 잠깐 뜨고 마는 값이 아니라 **저장되는 값**이라, 끄고 다시 켜도
+    남는다(D-042와 같은 성격의 조용한 fake다).
+    """
+    if not settings.closure_extract_enabled:
+        return None
+    if settings.resolved_llm_provider != "real":
+        logger.warning(
+            "CLOSURE_EXTRACT_ENABLED=true인데 LLM이 fake 모드라 휴무 추출을"
+            " 끕니다. 주차가 섞인 휴무 문구는 정규식이 못 읽은 채 저장됩니다."
+        )
+        return None
+    if not settings.llm_api_key:
+        logger.warning(
+            "CLOSURE_EXTRACT_ENABLED=true인데 LLM_API_KEY가 비어 있어 휴무"
+            " 추출을 끕니다."
+        )
+        return None
+    provider = get_llm_provider()
+    # LLMProvider 규약에는 휴무 추출이 없다 — 발화 이해·카드 생성에 쓰는 계약이라
+    # 적재 배치용 메서드를 거기 얹지 않았다. 그래서 실제 구현을 확인하고 넘긴다.
+    # 메서드가 없는 것을 넘기면 장소마다 조용히 되돌아가므로, 여기서 걸러 낸다.
+    if not isinstance(provider, RealGeminiProvider):
+        logger.warning(
+            "LLM이 real인데 %s라 휴무 추출을 끕니다.", type(provider).__name__
+        )
+        return None
+    return provider
 
 
 def get_google_translate_provider(client: httpx.AsyncClient) -> GoogleTranslateProvider:
