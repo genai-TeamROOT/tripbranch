@@ -12,6 +12,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { Home, LogOut, MapPin, MoreHorizontal, Plus, Route, Sparkles, Trash2 } from "lucide-react";
 import { useAuth } from "../../auth/AuthContext";
 import { identityLabel } from "../../auth/identityLabel";
+import { discardChatRequest } from "../../state/chatAbortController";
 import { sheetState } from "../../state/sheetNav";
 import { useTripDispatch, useTripState } from "../../state/TripContext";
 import type { Language } from "../../types";
@@ -123,6 +124,9 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
    * 다시 누르면 세션을 지우는 파괴적 동작이라, "이미 여기 있음"으로 보이면 안 된다(6.17).
    */
   function goHome() {
+    /* openConversation과 같은 이유다 — 홈으로 돌아가면 대화가 비워지는데,
+       오던 답변이 그 빈 화면에 붙으면 안 된다. */
+    discardChatRequest();
     dispatch({ type: "RESET" });
     navigate("/");
     onNavigate?.();
@@ -149,6 +153,9 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
    * 조건으로 남으면 안 되기 때문이다.
    */
   async function openConversation(sessionId: string) {
+    /* 답변이 오는 중에 다른 대화를 열면 그 답변이 여기 붙는다. 화면을 바꾸기
+       전에 진행 중인 요청을 버린다. */
+    discardChatRequest();
     try {
       const detail = await resumeChatSession(sessionId);
       dispatch({ type: "RESTORE_SESSION", payload: detail });

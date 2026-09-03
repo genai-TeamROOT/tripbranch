@@ -12,7 +12,7 @@
  * 사라지고 서버에 남으면 다음에 열었을 때 되살아난다.
  */
 
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 import App from "../../App";
@@ -67,6 +67,10 @@ const server = vi.hoisted(() => ({
   chatSessionIds: [] as (string | null)[],
   /** GET /api/sessions를 실제로 부른 횟수. 사이드바 두 벌이 겹쳐 부르는지 본다. */
   listCalls: 0,
+  /** 켜면 streamChat이 응답을 붙들고 있는다 — 답변 대기 중 상황을 만든다. */
+  holdStream: false,
+  pending: null as ((event: { type: string; data: unknown }) => void) | null,
+  releaseStream: null as (() => void) | null,
 }));
 
 vi.mock("../../api/trip", async (importOriginal) => {
@@ -107,7 +111,23 @@ vi.mock("../../api/trip", async (importOriginal) => {
     streamChat: async (
       request: { session_id: string | null; user_input: string },
       onEvent: (event: { type: string; data: unknown }) => void,
+      signal?: AbortSignal,
     ) => {
+      /* 응답이 늦게 오는 상황을 만든다. 테스트가 직접 done을 쏠 수 있게 콜백을
+         넘겨두고, 실제 SSE와 같이 끊기면 AbortError로 끝난다. */
+      if (server.holdStream) {
+        server.pending = (event) => {
+          if (signal?.aborted) return;
+          onEvent(event);
+        };
+        await new Promise<void>((resolve, reject) => {
+          server.releaseStream = resolve;
+          signal?.addEventListener("abort", () =>
+            reject(new DOMException("aborted", "AbortError")),
+          );
+        });
+        return;
+      }
       server.chatSessionIds.push(request.session_id);
       /* 서버는 첫 턴에 세션을 만들고 그 발화를 제목으로 붙인다. */
       const sessionId = request.session_id ?? "chat-new";
@@ -175,6 +195,9 @@ beforeEach(() => {
   server.resumed = [];
   server.chatSessionIds = [];
   server.listCalls = 0;
+  server.holdStream = false;
+  server.pending = null;
+  server.releaseStream = null;
 });
 
 /*
@@ -413,4 +436,53 @@ test("새 대화를 시작하면 새로고침 없이 목록에 뜬다", async ()
   );
   /* 두 벌이 동시에 물어도 요청은 하나다. */
   expect(server.listCalls - before).toBe(1);
+});
+
+
+/*
+ * 답변을 기다리는 중에 다른 대화를 열면, 오던 답변이 **그 대화에** 붙는 버그가
+ * 있었다. 요청은 앞 대화의 것이라 서버에는 앞 대화로 저장되는데 화면만 다른
+ * 대화에 나타난다 — 사용자는 하지도 않은 질문의 답을 보게 된다.
+ */
+test("답변 대기 중에 다른 대화를 열면 그 답변이 따라오지 않는다", async () => {
+  const user = userEvent.setup();
+  await renderApp();
+  server.holdStream = true;
+
+  await user.type(
+    screen.getByPlaceholderText(
+      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+    ),
+    "앞 대화의 질문",
+  );
+  await user.click(screen.getByRole("button", { name: "추천 시작하기" }));
+  await waitFor(() => expect(server.pending).not.toBeNull());
+
+  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
+  await screen.findByText("실내를 찾아볼게요");
+
+  /* 뒤늦게 도착한 앞 대화의 답변. 끊긴 요청이라 화면에 닿으면 안 된다. */
+  server.pending?.({
+    type: "done",
+    data: {
+      elapsed_ms: 10,
+      response: {
+        ...server.transcript.payload,
+        state: { session_id: "chat-앞", run_id: "run_앞" },
+        message: "앞 대화의 답변",
+        recommendations: null,
+      },
+    },
+  });
+  server.releaseStream?.();
+
+  /* **없음을 확인하려면 먼저 흘려보내야 한다.** waitFor는 조건이 처음부터
+     참이면 그 자리에서 끝나므로, 늦게 도착할 답변을 기다리지 않고 통과한다. */
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  expect(screen.queryByText("앞 대화의 답변")).not.toBeInTheDocument();
+  expect(screen.getByText("실내를 찾아볼게요")).toBeInTheDocument();
 });

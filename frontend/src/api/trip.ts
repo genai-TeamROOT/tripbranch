@@ -136,6 +136,10 @@ export function streamChat(
     "/chat/stream",
     request,
     (event, data) => {
+      /* 끊긴 요청의 이벤트는 흘리지 않는다. 지난 대화를 열면 그 요청을 버리는데
+         (discardChatRequest), 이미 읽던 청크가 뒤늦게 콜백을 부르면 방금 연
+         대화에 앞 대화의 답변이 붙는다. */
+      if (signal?.aborted) return;
       if (
         event === "progress" ||
         event === "result" ||

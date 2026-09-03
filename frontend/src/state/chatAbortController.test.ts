@@ -4,7 +4,13 @@
  */
 
 import { expect, test } from "vitest";
-import { beginChatRequest, cancelChatRequest, endChatRequest } from "./chatAbortController";
+import {
+  beginChatRequest,
+  cancelChatRequest,
+  discardChatRequest,
+  endChatRequest,
+  wasCancelledByUser,
+} from "./chatAbortController";
 
 test("cancelChatRequest는 마지막으로 시작한 요청을 중단시킨다", () => {
   const controller = beginChatRequest();
@@ -39,4 +45,44 @@ test("이미 다른 요청이 시작된 뒤에는 예전 컨트롤러로 endChat
   cancelChatRequest();
 
   expect(second.signal.aborted).toBe(true);
+});
+
+/*
+ * 중단에는 두 종류가 있고 뒷정리가 다르다. "중단" 버튼은 오던 말풍선을 거기까지
+ * 얼려 남기고, 화면을 떠나 밀려난 요청은 아무것도 건드리면 안 된다 — 화면에는
+ * 이미 다른 대화가 그려져 있기 때문이다.
+ */
+test("중단 버튼으로 끊긴 요청만 사용자 취소로 표시된다", () => {
+  const controller = beginChatRequest();
+
+  cancelChatRequest();
+
+  expect(wasCancelledByUser(controller)).toBe(true);
+});
+
+test("화면을 떠나 버려진 요청은 사용자 취소가 아니다", () => {
+  const controller = beginChatRequest();
+
+  discardChatRequest();
+
+  expect(controller.signal.aborted).toBe(true);
+  expect(wasCancelledByUser(controller)).toBe(false);
+});
+
+test("새 요청에 밀려난 요청도 사용자 취소가 아니다", () => {
+  const first = beginChatRequest();
+
+  beginChatRequest();
+
+  expect(first.signal.aborted).toBe(true);
+  expect(wasCancelledByUser(first)).toBe(false);
+});
+
+test("버린 뒤에는 중단 버튼이 그 요청을 다시 표시하지 않는다", () => {
+  const controller = beginChatRequest();
+  discardChatRequest();
+
+  cancelChatRequest();
+
+  expect(wasCancelledByUser(controller)).toBe(false);
 });

@@ -19,7 +19,11 @@ import { ChatComposer } from "../components/chat/ChatComposer";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { AppHeader } from "../components/layout/AppHeader";
 import { usePhotoSimilarSearch } from "../hooks/usePhotoSimilarSearch";
-import { beginChatRequest, endChatRequest } from "../state/chatAbortController";
+import {
+  beginChatRequest,
+  endChatRequest,
+  wasCancelledByUser,
+} from "../state/chatAbortController";
 import { loadPreferences } from "../state/preferenceStorage";
 import { syncPreferences } from "../state/preferenceSync";
 import { useTripDispatch, useTripState } from "../state/TripContext";
@@ -238,7 +242,8 @@ export function HomePage() {
       );
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
-        dispatch({ type: "CANCEL_CHAT_TURN" });
+        // ChatPage와 같은 이유다 — "중단" 버튼일 때만 뒷정리한다.
+        if (wasCancelledByUser(controller)) dispatch({ type: "CANCEL_CHAT_TURN" });
         return;
       }
       dispatch({
