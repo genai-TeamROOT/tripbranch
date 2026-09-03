@@ -399,6 +399,19 @@ def format_mode_judge_context(
     return "\n".join(lines)
 
 
+def build_closure_extraction_instruction() -> str:
+    """휴무 원문에서 정기 휴무를 뽑는 system instruction. (TP-231)
+
+    적재 배치에서만 부른다 — 읽기 경로는 저장된 결과를 쓴다
+    (`resolve_operating_schedule()`). 그래서 지연이 사용자 요청에 붙지 않는다.
+    """
+
+    return render_text(
+        "closure/extract.md",
+        pattern_rules=load_text("closure/pattern_rules.md"),
+    )
+
+
 def build_mode_judge_instruction() -> str:
     """구간 이동수단을 정하는 system instruction. (TP-227)
 
@@ -751,6 +764,7 @@ __all__ = [
     "build_info_answer_instruction",
     "build_recommendation_summary_instruction",
     "build_follow_up_suggestion_instruction",
+    "build_closure_extraction_instruction",
     "build_mode_judge_instruction",
     "format_mode_judge_context",
     "build_compare_summary_instruction",

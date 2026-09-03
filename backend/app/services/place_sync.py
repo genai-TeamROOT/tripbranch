@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import random
 from collections import Counter
@@ -30,6 +31,11 @@ from app.errors import ProviderTimeoutError, ProviderUnavailableError
 from app.providers.protocols import BarrierFreeProvider, TourAreaPlaceProvider
 from app.providers.upstream_errors import is_daily_quota_exceeded
 from app.repositories.protocols import PlaceRepository
+from app.tools.closure_extract import (
+    ClosureExtractor,
+    merge_extracted_closures,
+    needs_extraction,
+)
 
 _ERROR_TIMEOUT = "TOUR_DETAIL_TIMEOUT"
 _ERROR_RATE_LIMITED = "TOUR_DETAIL_RATE_LIMITED"
@@ -165,6 +171,33 @@ class _BarrierFreeOutcome:
     failures: Counter[str]
 
 
+async def _enrich_closures(
+    schedule: OperatingSchedule, extractor: ClosureExtractor | None
+) -> OperatingSchedule:
+    """정규식이 못 읽은 휴무를 LLM으로 채운다. 실패하면 정규식 결과를 그대로 쓴다.
+
+    **적재를 실패시키지 않는다.** 휴무 하나를 못 읽었다고 그 장소가 통째로 빠지는
+    것보다, 지금까지와 같은 결과로 저장하는 편이 낫다. 되돌아간 사실은 로그에
+    남긴다 — 안 남기면 LLM이 한 번도 안 도는 채로 정상처럼 보인다.
+    """
+
+    if extractor is None or not needs_extraction(schedule):
+        return schedule
+    rest = schedule.cleaned_rest_date or ""
+    try:
+        result = await extractor.extract_closure_rules(rest)
+    except Exception:
+        logger.warning("place_sync.closure_extract_failed", exc_info=True)
+        return schedule
+    extracted = getattr(result, "data", None)
+    if not isinstance(extracted, Mapping):
+        return schedule
+    return merge_extracted_closures(schedule, extracted)
+
+
+logger = logging.getLogger(__name__)
+
+
 def serialize_operating_schedule(
     schedule: OperatingSchedule,
 ) -> dict[str, object]:
@@ -232,7 +265,12 @@ class PlaceSyncService:
         retry_count: int = 2,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         now: Callable[[], datetime] | None = None,
+        # 휴무 원문을 LLM으로 읽어 정규식이 놓친 주기 휴무를 채운다(TP-231).
+        # 안 넘기면 지금까지처럼 정규식 결과만 저장한다 — 적재는 그대로 돌고
+        # 휴무만 덜 채워진다.
+        closure_extractor: ClosureExtractor | None = None,
     ) -> None:
+        self._closure_extractor = closure_extractor
         if not 1 <= page_size <= 100:
             raise ValueError("page_size는 1 이상 100 이하여야 합니다.")
         if detail_concurrency < 1:
@@ -455,10 +493,13 @@ class PlaceSyncService:
         report("reparse", 0, len(reparse_targets))
         for reparsed, state in enumerate(reparse_targets, start=1):
             try:
-                schedule = normalize_operating_schedule(
-                    content_type_id=content_types[state.content_id],
-                    operating_hours=state.operating_hours_raw,
-                    rest_date=state.rest_date_raw,
+                schedule = await _enrich_closures(
+                    normalize_operating_schedule(
+                        content_type_id=content_types[state.content_id],
+                        operating_hours=state.operating_hours_raw,
+                        rest_date=state.rest_date_raw,
+                    ),
+                    self._closure_extractor,
                 )
                 if sync_run_id is not None:
                     await self._repository.update_parsed_schedule(
@@ -709,10 +750,13 @@ class PlaceSyncService:
                 details = await self._provider.get_operating_details(
                     place.content_id, place.content_type_id
                 )
-                schedule = normalize_operating_schedule(
-                    content_type_id=details.content_type_id,
-                    operating_hours=details.operating_hours_raw,
-                    rest_date=details.rest_date_raw,
+                schedule = await _enrich_closures(
+                    normalize_operating_schedule(
+                        content_type_id=details.content_type_id,
+                        operating_hours=details.operating_hours_raw,
+                        rest_date=details.rest_date_raw,
+                    ),
+                    self._closure_extractor,
                 )
                 return _DetailOutcome(
                     place.content_id,

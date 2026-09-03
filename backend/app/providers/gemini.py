@@ -79,6 +79,25 @@ class _ComparisonSummary(BaseModel):
     lines: list[str] = Field(min_length=3, max_length=6)
 
 
+class _NthWeekday(BaseModel):
+    weekday: str = ""
+    ordinals: list[int] = Field(default_factory=list)
+
+
+class _ClosureExtraction(BaseModel):
+    """extract_closure_rules() 전용 wire 모델.
+
+    어휘 검증을 여기서 하지 않는다 — 호출부가 어느 원문의 답인지 아는 자리에서
+    한다. 여기서 ValidationError를 내면 배치 한 건이 통째로 실패하고, 무엇이
+    이상했는지는 사라진다.
+    """
+
+    weekly: list[str] = Field(default_factory=list)
+    nth_weekday: list[_NthWeekday] = Field(default_factory=list)
+    uncertain_weekdays: list[str] = Field(default_factory=list)
+    note: str = ""
+
+
 class _TravelModePlan(BaseModel):
     """judge_travel_modes() 전용 wire 모델.
 
@@ -986,6 +1005,31 @@ class RealGeminiProvider:
         if review_evidence:
             summary_item["review_evidence"] = review_evidence
         return summary_item
+
+    async def extract_closure_rules(
+        self, rest_date: str
+    ) -> ProviderResult[dict[str, object]]:
+        """휴무 안내 원문에서 정기 휴무를 뽑는다. (TP-231)
+
+        **적재 배치에서만 부른다.** 읽기 경로는 저장된 결과를 쓰므로
+        (`resolve_operating_schedule()`) 이 호출이 사용자 요청 지연에 붙지 않는다.
+
+        빠른 모델을 쓴다 — 원문이 한 줄짜리 짧은 텍스트이고, 어려운 8건을 실측한
+        결과 빠른 모델로도 전부 맞혔다. thinking은 끈다.
+
+        검증하지 않은 값을 그대로 돌려준다. 어휘와 모양은 호출부가 확인한다.
+        """
+
+        instruction = gemini_prompts.build_closure_extraction_instruction()
+        result = await self._call_structured(
+            instruction,
+            rest_date,
+            _ClosureExtraction,
+            operation="extract_closure_rules",
+            thinking_budget=0,
+            model_names=self._fast_model_names,
+        )
+        return provider_result(result.model_dump(), source=ProviderSource.GEMINI)
 
     async def judge_travel_modes(
         self,
