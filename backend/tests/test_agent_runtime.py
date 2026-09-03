@@ -1167,6 +1167,51 @@ async def test_selected_search_center_fills_location_the_utterance_omitted() -> 
 
 
 @pytest.mark.asyncio
+async def test_selected_current_location_fills_the_travel_origin() -> None:
+    """화면에서 정한 출발지는 검색 기준과 다른 자리에 들어간다.
+
+    "어디 있는가"(current_location)와 "어디를 찾을까"(search_center)는 다른 질문이라
+    (D-067), 화면이 안국역을 출발지로 정했으면 검색 기준까지 안국역이 되면 안 된다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+            selected_current_location="안국역",
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.state.user_conditions.current_location == "안국역"
+    assert response.state.user_conditions.search_center == "경복궁"
+
+
+@pytest.mark.asyncio
+async def test_spoken_origin_beats_selected_current_location() -> None:
+    """"나 지금 OO인데"처럼 발화가 출발지를 말하면 그쪽이 이긴다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="나 지금 경복궁인데 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+            selected_current_location="안국역",
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.state.user_conditions.current_location == "경복궁"
+
+
+@pytest.mark.asyncio
 async def test_spoken_location_beats_selected_search_center() -> None:
     """그 턴에 말한 위치가 화면 설정을 이긴다 — 더 명확한 의사이기 때문이다."""
     store = InMemoryStateStore()

@@ -1057,35 +1057,44 @@ _TRAVEL_ORIGIN_OVERRIDE_RESOLVABLE_INTENTS = frozenset(
 )
 
 
-def _apply_selected_search_center(llm_output: LLMOutput, selected: str | None) -> LLMOutput:
-    """위치 설정 화면에서 고른 검색 위치를 이번 턴 조건에 채운다.
+def _apply_selected_locations(llm_output: LLMOutput, request: AgentRequest) -> LLMOutput:
+    """위치 설정 화면에서 정한 출발지·검색 기준을 이번 턴 조건에 채운다.
+
+    두 값은 서로 다른 질문의 답이다 — `current_location`은 "사용자가 어디 있는가"
+    (이동시간의 출발점), `search_center`는 "어디 주변을 찾을까"(후보를 모으는 중심)다.
+    D-067이 둘을 분리한 이유가 여기 있다.
 
     **발화가 이긴다.** 화면에 안국역이 설정돼 있어도 "성수동 카페 알려줘"라고
     말했으면 성수동이다 — 그 턴에 사용자가 직접 말한 쪽이 더 명확한 의사이기
-    때문이다. 그래서 추출된 conditions.search_center가 이미 있으면 손대지 않는다.
+    때문이다. 그래서 추출된 값이 이미 있으면 손대지 않는다.
 
     RECOMMEND에만 적용한다. UserConditions를 직접 들고 있는 payload가 그것뿐이고,
     이어지는 MODIFY/SCHEDULE 턴은 B가 병합해 둔 세션 조건에서 이 값을 물려받는다.
 
-    조건을 채우면 위치 되묻기(location_required)도 함께 사라진다 — 사용자가 이미
-    화면에서 위치를 정했으니 다시 물을 이유가 없다.
+    검색 기준을 채우면 위치 되묻기(location_required)도 함께 사라진다 — 사용자가
+    이미 화면에서 정했으니 다시 물을 이유가 없다.
     """
-    if selected is None or llm_output.recommend is None:
+    if llm_output.recommend is None:
         return llm_output
-    normalized = selected.strip()
-    if not normalized:
-        return llm_output
+
     conditions = llm_output.recommend.conditions
-    if conditions.search_center is not None:
+    filled: dict[str, str] = {}
+    for field, selected in (
+        ("current_location", request.selected_current_location),
+        ("search_center", request.selected_search_center),
+    ):
+        if selected is None or getattr(conditions, field) is not None:
+            continue
+        normalized = selected.strip()
+        if normalized:
+            filled[field] = normalized
+    if not filled:
         return llm_output
+
     return llm_output.model_copy(
         update={
             "recommend": llm_output.recommend.model_copy(
-                update={
-                    "conditions": conditions.model_copy(
-                        update={"search_center": normalized}
-                    )
-                }
+                update={"conditions": conditions.model_copy(update=filled)}
             )
         }
     )
@@ -2928,8 +2937,10 @@ def _turn_input(request: AgentRequest) -> dict[str, Any]:
     }
     if request.selected_search_center:
         # 좌표가 아니라 사용자가 고른 장소 이름이고, 어차피 조건(search_center)으로
-        # 관측에 남는 값이라 여기서도 그대로 싣는다.
+        # 관측에 남는 값이라 여기서도 그대로 싣는다. 출발지도 같다.
         payload["selected_search_center"] = request.selected_search_center
+    if request.selected_current_location:
+        payload["selected_current_location"] = request.selected_current_location
     if request.conversation_place_name:
         payload["conversation_place_name"] = request.conversation_place_name
     if request.clarification_choice:
@@ -3126,7 +3137,7 @@ async def _run_agent_flow(
     # 위치 판정과 다음 턴이 물려받을 세션 조건에 모두 반영된다. 되묻기 버튼으로
     # 해소된 턴(clarification_resolution)도 같이 지나가는데, 그때는 세션 조건을
     # 재사용하므로 search_center가 이미 차 있어 이 함수가 손대지 않는다.
-    llm_output = _apply_selected_search_center(llm_output, request.selected_search_center)
+    llm_output = _apply_selected_locations(llm_output, request)
 
     # 3) A → B: 조건 병합. confirmed=False(= status가 complete가 아님)면 B가 State를
     #    바꾸지 않고 현재 상태만 돌려주도록 이미 구현되어 있다(계약 2.6절) — 따로 걸러서

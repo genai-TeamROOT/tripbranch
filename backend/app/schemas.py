@@ -950,6 +950,14 @@ class AgentRequest(BaseModel):
     # ResolveLocationTool 하나로 정리돼 있어서다. 좌표를 직접 받으면 검색 기준점을
     # 정하는 길이 두 개가 된다.
     selected_search_center: str | None = None
+    # 위치 설정 화면에서 사용자가 직접 정한 출발지의 이름(예: "안국역").
+    # selected_search_center와 다른 질문의 답이다 — 이쪽은 "사용자가 어디 있는가"라
+    # 이동시간을 재는 시작점이 되고, 저쪽은 "어디 주변을 찾을까"다(D-067이 둘을
+    # 분리한 이유). 화면이 같은 목록에서 둘 중 무엇으로 쓸지 물어 정한다.
+    #
+    # 발화가 출발지를 말했으면("나 지금 혜화역인데") 그쪽이 이긴다. 비어 있으면
+    # 기기 좌표(device_location)가 그대로 사용자 위치가 된다.
+    selected_current_location: str | None = None
     # 직전 INFO 카드의 장소명. 현재 화면이 "여기/이곳"을 보낼 때에만 A가 INFO
     # from_conversation 해소 후보로 사용한다.
     conversation_place_name: str | None = None
