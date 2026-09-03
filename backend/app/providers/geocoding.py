@@ -96,6 +96,18 @@ def _supported_district_in(value: str) -> ServiceDistrict | None:
     )
 
 
+# 후보가 여럿이라 되묻기로 끝나는 지명. 실제 Naver 응답과 같은 모양을 로컬에서도
+# 밟게 하려고 둔다(TP-182).
+#
+# 이게 없으면 되묻기 후보를 싣는 경로가 Fake에서 한 번도 안 돌면서 테스트는
+# 통과한다 — 이 저장소에서 반복된 실패다. 값은 실제 호출로 확인한 것이다
+# (2026-09-03: "익선동" 2건, "연희동" 2건).
+_FAKE_AMBIGUOUS_LOCATIONS: dict[str, tuple[tuple[str, ...], float, float]] = {
+    "익선동": (("종로구 익선동", "창원시 진해구 익선동"), 37.57457, 126.98940),
+    "연희동": (("서대문구 연희동", "서해구 연희동"), 37.57391, 126.93518),
+}
+
+
 class FakeGeocodingProvider:
     """정해진 소수의 지명만 좌표로 변환하는 가짜 구현."""
 
@@ -126,6 +138,22 @@ class FakeGeocodingProvider:
                     latitude=lat,
                     longitude=lon,
                     administrative_district="종로구",
+                ),
+                source=ProviderSource.FAKE_GEOCODING,
+            )
+
+        ambiguous = _FAKE_AMBIGUOUS_LOCATIONS.get(normalized)
+        if ambiguous is not None:
+            labels, latitude, longitude = ambiguous
+            return provider_result(
+                GeocodeResult(
+                    query=location_query,
+                    resolved_name=f"서울특별시 {labels[0]}",
+                    latitude=latitude,
+                    longitude=longitude,
+                    candidate_count=len(labels),
+                    administrative_district=labels[0].split()[0],
+                    candidate_labels=labels,
                 ),
                 source=ProviderSource.FAKE_GEOCODING,
             )
@@ -279,9 +307,44 @@ class RealGeocodingProvider:
                 longitude=float(top["x"]),
                 candidate_count=max(candidate_count, len(addresses)),
                 administrative_district=_extract_district(top, resolved_name),
+                # 후보가 하나면 되묻지 않으므로 채우지 않는다.
+                candidate_labels=(
+                    tuple(_candidate_label(item) for item in addresses)
+                    if len(addresses) > 1
+                    else ()
+                ),
             ),
             source=ProviderSource.NAVER_GEOCODING,
         )
+
+
+def _candidate_label(address: dict) -> str:
+    """되묻기 버튼에 쓸 짧은 후보 이름. "서울특별시 종로구 익선동" -> "종로구 익선동".
+
+    시도를 떼는 이유는 버튼 글자가 곧 다음 검색어이기 때문이다. 짧으면서도 혼자서
+    찾아져야 하는데, 실측하면 시도를 떼도 후보 1건으로 확정된다(2026-09-03).
+    반대로 동 이름만 남기면 다시 여럿이 되어 되묻기가 반복된다.
+
+    응답이 주소를 조각으로 나눠 주므로 글자를 자르지 않고 조각을 골라 붙인다 —
+    자르면 "서울특별시"와 "세종특별자치시"처럼 길이가 다른 시도에서 어긋난다.
+    조각이 없으면 전체 주소를 그대로 쓴다. 길지만 틀리지는 않는다.
+    """
+    parts: dict[str, str] = {}
+    for element in address.get("addressElements") or []:
+        if not isinstance(element, dict):
+            continue
+        name = element.get("longName") or element.get("shortName")
+        if not name:
+            continue
+        for kind in element.get("types") or []:
+            parts.setdefault(str(kind), str(name).strip())
+    picked = [
+        parts[kind] for kind in ("SIGUGUN", "DONGMYUN", "RI") if parts.get(kind)
+    ]
+    if picked:
+        return " ".join(picked)
+    full = address.get("roadAddress") or address.get("jibunAddress") or ""
+    return str(full).strip()
 
 
 def _extract_district(address: dict, resolved_name: str) -> str | None:
