@@ -22,7 +22,10 @@
  * plan_partial_schedule()이 측정)를 서버 소요로, elapsedMs를 클라이언트 소요로 쓴다.
  */
 
+import { useState } from "react";
+import { saveSchedule } from "../../api/trip";
 import type { ScheduleResult } from "../../types";
+import { defaultScheduleTitle } from "../../utils/scheduleTitle";
 import { ScheduleCard } from "../ScheduleCard";
 import { ScheduleTravelSegment } from "../ScheduleTravelSegment";
 
@@ -40,7 +43,16 @@ interface ScheduleResultMessageProps {
   isLoading: boolean;
   onRequestMore: () => void;
   onRelaxRadius: () => void;
+  /* 저장에 함께 보낸다. run_id는 같은 턴을 두 번 저장하지 않기 위한 열쇠이고
+     session_id는 출처 표시다. 응답이 run_id 없이 끝나는 경로가 있어 둘 다 선택. */
+  runId?: string;
+  sessionId?: string;
+  /* 저장이 끝났을 때. 사이드바 목록을 다시 받아오는 데 쓴다. */
+  onSaved?: () => void;
 }
+
+/* idle → saving → saved. 실패는 error로 빠지고 다시 누를 수 있다. */
+type SaveState = "idle" | "saving" | "saved" | "error";
 
 export function ScheduleResultMessage({
   schedule,
@@ -49,8 +61,34 @@ export function ScheduleResultMessage({
   isLoading,
   onRequestMore,
   onRelaxRadius,
+  runId,
+  sessionId,
+  onSaved,
 }: ScheduleResultMessageProps) {
   const hasItems = schedule.items.length > 0;
+  const [saveState, setSaveState] = useState<SaveState>("idle");
+
+  /*
+   * 저장은 낙관적으로 그리지 않는다. 보관함 담기와 달리 이건 목록에 새 줄을
+   * 만드는 동작이라, 실패했는데 저장된 것처럼 보이면 사용자가 나중에 목록에서
+   * 찾다가 없는 것을 겪는다.
+   */
+  async function handleSave() {
+    if (saveState === "saving" || saveState === "saved") return;
+    setSaveState("saving");
+    try {
+      await saveSchedule({
+        title: defaultScheduleTitle(schedule.items),
+        payload: schedule,
+        sessionId,
+        runId,
+      });
+      setSaveState("saved");
+      onSaved?.();
+    } catch {
+      setSaveState("error");
+    }
+  }
 
   return (
     <article className="mr-auto flex w-full flex-col gap-3.5">
@@ -101,9 +139,31 @@ export function ScheduleResultMessage({
             >
               {isLoading ? "불러오는 중..." : "다른 코스 보기"}
             </button>
-            <span className="text-xs text-muted">
-              다른 조건이 있으면 아래 입력창에 이어서 적어주세요.
-            </span>
+            {/*
+              같은 턴을 두 번 저장해도 서버가 한 줄로 받지만(멱등), 버튼을 잠가
+              사용자가 "눌렸나?" 하고 다시 누르지 않게 한다.
+            */}
+            <button
+              type="button"
+              disabled={saveState === "saving" || saveState === "saved"}
+              onClick={() => void handleSave()}
+              className="rounded-full border border-border bg-white px-4 py-2.5 text-sm font-medium text-ink transition-colors hover:border-brand hover:text-brand disabled:opacity-50"
+            >
+              {saveState === "saved"
+                ? "저장했어요"
+                : saveState === "saving"
+                  ? "저장하는 중..."
+                  : "이 일정 저장"}
+            </button>
+            {saveState === "error" ? (
+              <span role="alert" className="text-xs text-rust">
+                저장하지 못했어요. 다시 눌러주세요.
+              </span>
+            ) : (
+              <span className="text-xs text-muted">
+                다른 조건이 있으면 아래 입력창에 이어서 적어주세요.
+              </span>
+            )}
           </div>
         </>
       ) : (

@@ -28,6 +28,7 @@ import { useTripDispatch, useTripState } from "../../state/TripContext";
 import type { Language } from "../../types";
 import { deleteChatSession, renameChatSession, resumeChatSession } from "../../api/trip";
 import { loadChatSessions, refreshChatSessions } from "../../state/chatSessions";
+import { loadSavedSchedules, type SavedScheduleEntry } from "../../state/savedSchedules";
 import {
   createId,
   loadFavorites,
@@ -72,6 +73,9 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
    * 서버가 안다. 목록만 로컬에 복사해두면 지운 대화가 되살아나는 쪽이 더 나쁘다.
    */
   const [history, setHistory] = useState<ChatHistoryEntry[]>([]);
+  /* 저장한 일정도 계정에서 온다(GET /api/schedules). 대화 목록과 별도 저장소라
+     따로 받는다 — 세션이 30일 뒤 정리돼도 이쪽은 남는다. */
+  const [schedules, setSchedules] = useState<SavedScheduleEntry[]>([]);
   const [showAddFavorite, setShowAddFavorite] = useState(false);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -86,6 +90,9 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
     let active = true;
     void loadChatSessions().then((entries) => {
       if (active) setHistory(entries);
+    });
+    void loadSavedSchedules().then((entries) => {
+      if (active) setSchedules(entries);
     });
     return () => {
       active = false;
@@ -467,7 +474,41 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
         )}
       </section>
 
-      {/* 5. 신원 라벨 + 계정 만들기(게스트만) + 로그아웃 — 맨 아래 */}
+      {/*
+        5. 저장한 일정 (SCHEDULE 카드 2)
+
+        채팅 히스토리 **아래**에 둔다. 대화가 일정보다 먼저 생기고 개수도 많아,
+        위에 두면 대화 목록이 접힌 화면에서 스크롤 밖으로 밀린다.
+
+        이름 바꾸기·삭제 메뉴는 아직 붙이지 않았다 — 대화 쪽 메뉴(openMenuId)를
+        그대로 쓰면 두 목록이 같은 상태를 공유해 한쪽을 열면 다른 쪽이 닫힌다.
+        분리해서 다음에 붙인다.
+      */}
+      <section className="flex flex-col gap-1.5">
+        <h2 className="text-xs font-bold text-label">저장한 일정</h2>
+        {schedules.length === 0 ? (
+          <p className="py-1 text-xs text-muted">아직 저장한 일정이 없어요</p>
+        ) : (
+          <ul className="flex flex-col gap-0.5">
+            {schedules.map((entry) => (
+              <li key={entry.id}>
+                <button
+                  type="button"
+                  onClick={() => go(`/schedule?saved=${encodeURIComponent(entry.id)}`, { sheet: true })}
+                  className="flex w-full flex-col items-start gap-0.5 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-chip"
+                >
+                  <span className="w-full truncate text-sm font-medium text-ink">
+                    {entry.label}
+                  </span>
+                  {entry.date && <span className="text-[11px] text-muted">{entry.date} 저장</span>}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {/* 6. 신원 라벨 + 계정 만들기(게스트만) + 로그아웃 — 맨 아래 */}
       <div className="mt-auto flex flex-col items-start gap-1">
         {status === "ready" && session && (
           <p className="px-1 text-xs text-muted">{identityLabel(session)}</p>

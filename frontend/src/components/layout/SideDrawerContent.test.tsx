@@ -17,6 +17,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 import App from "../../App";
 import { resetChatSessionsCache } from "../../state/chatSessions";
+import { resetSavedSchedulesCache } from "../../state/savedSchedules";
 import { isDetachedRequest } from "../../state/chatAbortController";
 import { GUEST_SESSION, setMockSession } from "../../test/supabaseMock";
 
@@ -69,6 +70,8 @@ const server = vi.hoisted(() => ({
   chatSessionIds: [] as (string | null)[],
   /** GET /api/sessions를 실제로 부른 횟수. 사이드바 두 벌이 겹쳐 부르는지 본다. */
   listCalls: 0,
+  /** 계정에 저장한 일정(SCHEDULE 카드 2). 대화와 별도 저장소라 따로 심는다. */
+  schedules: [] as { id: string; title: string; session_id: string | null; created_at: string; updated_at: string }[],
   /*
    * 두 턴짜리 화면 기록. 두 턴 모두 후속 질문을 달아 둔다 — 복원했을 때
    * 마지막 턴에만 버튼이 남아야 한다.
@@ -112,6 +115,7 @@ vi.mock("../../api/trip", async (importOriginal) => {
       server.listCalls += 1;
       return { sessions: server.sessions };
     },
+    fetchSavedSchedules: async () => ({ items: server.schedules }),
     /* 사이드바는 조회가 아니라 resume을 부른다 — 만료된 대화를 되살려야 이어
        물었을 때 같은 세션에 붙는다. resume의 응답은 항상 resumable: true다. */
     resumeChatSession: async (sessionId: string) => {
@@ -222,6 +226,8 @@ beforeEach(() => {
   localStorage.setItem("tb_favorites", JSON.stringify(SEED_FAVORITES));
   window.history.pushState({}, "", "/");
   resetChatSessionsCache();
+  resetSavedSchedulesCache();
+  server.schedules = [];
   server.sessions = [
     {
       session_id: "chat-1",
@@ -795,4 +801,53 @@ test("계정 사용자는 확인 없이 로그아웃된다", async () => {
   await userEvent.click(within(sidebar()).getByRole("button", { name: /로그아웃/ }));
 
   expect(await screen.findByRole("button", { name: "게스트로 시작하기" })).toBeInTheDocument();
+});
+
+/* 저장한 일정 목록. (SCHEDULE 카드 2) */
+
+test("저장한 일정이 없으면 그 사실을 알린다", async () => {
+  await renderApp();
+
+  expect(within(sidebar()).getByText("아직 저장한 일정이 없어요")).toBeInTheDocument();
+});
+
+test("저장한 일정이 목록에 뜨고 누르면 그 일정이 열린다", async () => {
+  server.schedules = [
+    {
+      id: "sched-1",
+      title: "종로 반나절",
+      session_id: "chat-1",
+      created_at: "2026-08-31T14:30:00+09:00",
+      updated_at: "2026-08-31T14:30:00+09:00",
+    },
+  ];
+
+  await renderApp();
+
+  const entry = await within(sidebar()).findByRole("button", { name: /종로 반나절/ });
+  await userEvent.click(entry);
+
+  /* 저장한 일정은 SchedulePage가 ?saved=로 받아 연다 — 대화와 다른 화면이다. */
+  await waitFor(() => expect(window.location.search).toContain("saved=sched-1"));
+});
+
+/* 대화 목록과 별도 저장소다. 세션이 30일 뒤 정리돼도 저장한 일정은 남으므로
+   한쪽이 비어도 다른 쪽은 그려져야 한다. */
+test("대화가 없어도 저장한 일정은 보인다", async () => {
+  server.sessions = [];
+  server.schedules = [
+    {
+      id: "sched-1",
+      title: "종로 반나절",
+      session_id: null,
+      created_at: "2026-08-31T14:30:00+09:00",
+      updated_at: "2026-08-31T14:30:00+09:00",
+    },
+  ];
+
+  render(<App />);
+  await screen.findByRole("button", { name: "추천 시작하기" });
+
+  expect(await within(sidebar()).findByText("종로 반나절")).toBeInTheDocument();
+  expect(within(sidebar()).getByText("아직 대화 기록이 없어요")).toBeInTheDocument();
 });

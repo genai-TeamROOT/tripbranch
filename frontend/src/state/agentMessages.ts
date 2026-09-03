@@ -90,6 +90,10 @@ export function buildAgentMessages(
       type: "schedule_result",
       schedule: response.schedule,
       elapsed_ms: elapsedMsClient,
+      /* 저장 버튼이 쓴다(SCHEDULE 카드 2). 복원된 대화에서도 payload에 그대로
+         들어 있어 지난 일정을 나중에 저장할 수 있다. */
+      run_id: response.state?.run_id ?? undefined,
+      session_id: response.state?.session_id ?? undefined,
     });
   }
 
