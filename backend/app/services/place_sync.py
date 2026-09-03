@@ -202,10 +202,20 @@ def _serialize_rule(rule: OperatingRule) -> dict[str, object]:
 
 
 def _serialize_closure_rule(rule: ClosureRule) -> dict[str, object]:
-    return {
+    """휴무 규칙 한 줄을 DB JSON으로 옮긴다.
+
+    `week_ordinals`가 없으면 키를 넣지 않는다. 넣으면 "매주"인 기존 행과 모양이
+    달라지고, 읽는 쪽은 어차피 없는 키를 매주로 읽는다(`_is_regular_closure()`).
+    """
+    payload: dict[str, object] = {
         "weekdays": sorted(rule.weekdays),
         "source_text": rule.source_text,
     }
+    if rule.week_ordinals is not None:
+        payload["week_ordinals"] = sorted(rule.week_ordinals)
+    if rule.uncertain:
+        payload["uncertain"] = True
+    return payload
 
 
 class PlaceSyncService:

@@ -182,6 +182,12 @@ _ENVIRONMENT_PREFERENCES = frozenset({"indoor", "outdoor"})
 
 _UNVERIFIED_WARNING = "방문 전에 운영 여부를 확인해주세요."
 _CLOSED_NOW_WARNING = "지금은 운영시간이 아니에요. 방문 전에 다시 확인해주세요."
+# 주기 휴무인 것은 알지만 몇 번째인지 원문에 없는 후보에 붙인다(`월 1회 월요일`).
+#
+# 그날 닫을 수도 있지만 **확인할 수 없다.** 매주로 치면 안 쉬는 주에 멀쩡한 장소가
+# 사라지고, 무시하면 휴무일에 추천이 나간다. 후보는 살리고 사실만 말한다 —
+# 확인하지 못한 것을 확인한 척하지 않는다(D-042와 같은 원칙).
+_UNCERTAIN_CLOSURE_WARNING = "이곳은 주기적으로 쉬는 날이 있어요. 방문 전에 확인해주세요."
 
 # 무장애 판정이 `partial`인 후보에 붙이는 안내. 어휘마다 막히는 것이 달라
 # 문구도 나눈다 — "일부 구역이 어렵다"만으로는 휠체어가 못 가는 것인지 점자
@@ -692,7 +698,18 @@ def prepare_candidates(
         # 운영시간은 "가서 닫혀 있을 수 있다"이고 무장애는 "가도 못 들어가는 데가
         # 있다"라 무게가 다르다. 뒤에 두면 운영시간 미확인 후보에서 무장애 안내가
         # 통째로 가려진다.
-        warnings = _accessibility_warnings(candidate) + operating_warnings
+        # 주기 휴무 안내는 폐점·미확인 안내와 겹치지 않을 때만 붙인다. 이미
+        # "방문 전에 확인해주세요"라고 말한 후보에 같은 말을 두 번 하지 않는다.
+        uncertain_warnings = (
+            (_UNCERTAIN_CLOSURE_WARNING,)
+            if candidate.operating_hours is not None
+            and candidate.operating_hours.has_uncertain_closure
+            and not is_unverified
+            else ()
+        )
+        warnings = (
+            _accessibility_warnings(candidate) + uncertain_warnings + operating_warnings
+        )
         eligible.append(
             PreparedCandidate(
                 candidate=candidate,

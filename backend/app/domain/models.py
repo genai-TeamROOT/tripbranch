@@ -58,6 +58,13 @@ class OperatingHours:
     open_time: time
     close_time: time
     is_regular_closure: bool = False
+    # 방문 요일에 "몇 번째인지 모르는" 주기 휴무가 걸려 있다(`월 1회 월요일`).
+    #
+    # **`is_regular_closure`와 다르다.** 저쪽은 그날 확실히 닫는다는 뜻이라 폐점으로
+    # 걸러지지만, 이쪽은 **닫을 수도 있는데 확인할 수 없다**는 뜻이다. 후보는
+    # 살리고 경고만 붙인다 — 매주로 치면 안 쉬는 주에 멀쩡한 장소가 사라지고,
+    # 무시하면 휴무일에 추천이 나간다. 둘 다 아닌 자리가 이것이다.
+    has_uncertain_closure: bool = False
 
 
 @dataclass(frozen=True)
