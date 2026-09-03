@@ -37,6 +37,7 @@ import type {
   SavedPlaceItem,
   UserConditions,
 } from "../types";
+import { attachRecommendationsToTurns } from "./pastRecommendations";
 import { clearState, loadState, saveState } from "./storage";
 
 export interface TripState {
@@ -353,12 +354,18 @@ function tripReducer(state: TripState, action: TripAction): TripState {
      * 물러난 경우에는 false로 오고, 그때 id를 채우면 화면은 "이어진다"고
      * 말하는데 백엔드는 새 세션을 만드는 상태가 된다.
      *
-     * 추천 카드는 복원하지 않는다. 저장된 것은 주고받은 말뿐이고, 카드에 필요한
-     * 값을 지어내면 눌러도 동작하지 않는 카드가 생긴다.
+     * 그때 화면에 나갔던 장소도 함께 되돌린다. 다만 **저장된 값만** 쓴다 —
+     * 점수·사진·카테고리·운영시간은 기록 자체가 없어서, RecommendationItem으로
+     * 빈 칸을 채우는 대신 past_recommendation_result라는 별도 메시지로 그린다.
      */
     case "RESTORE_SESSION": {
       const restored: ChatMessage[] = [];
-      for (const turn of action.payload.turns) {
+      const attached = attachRecommendationsToTurns(
+        action.payload.turns,
+        action.payload.recommendations,
+      );
+
+      action.payload.turns.forEach((turn, index) => {
         restored.push({
           id: createMessageId("user"),
           type: "user_text",
@@ -371,7 +378,15 @@ function tripReducer(state: TripState, action: TripAction): TripState {
             text: turn.assistant_message,
           });
         }
-      }
+        for (const group of attached[index]) {
+          restored.push({
+            id: createMessageId("past-places"),
+            type: "past_recommendation_result",
+            places: group,
+          });
+        }
+      });
+
       return {
         ...initialTripState,
         language: state.language,

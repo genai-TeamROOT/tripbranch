@@ -369,6 +369,17 @@ export type ChatMessage =
       server_elapsed_ms: number;
     }
   | {
+      /*
+       * 지난 대화를 펼쳤을 때만 나온다. recommendation_result와 구조가 비슷해
+       * 보이지만 합치지 않는다 — 이쪽은 점수·사진·운영시간이 없고, 특히
+       * remaining_minutes로 "지금 영업 중"을 그리면 사흘 전 스냅샷으로 현재를
+       * 말하는 것이 된다.
+       */
+      id: string;
+      type: "past_recommendation_result";
+      places: PastRecommendation[];
+    }
+  | {
       id: string;
       type: "schedule_result";
       schedule: ScheduleResult;
@@ -696,10 +707,32 @@ export interface StoredConversationTurn {
  * resumable이 false면 세션 TTL(30분)이 지나 이어서 대화할 수 없다. 화면이 그
  * 사실을 밝혀야 한다.
  */
+/*
+ * 지난 대화에서 화면에 나갔던 장소 하나.
+ *
+ * **그때 본 카드를 그대로 되살릴 수는 없다.** 백엔드가 저장하는 것은 여기 있는
+ * 값뿐이고 점수·근거 문장·사진·카테고리·운영시간은 기록 자체가 없다
+ * (실측 459건: 이름 100%, 거리·실내외 87%, 이유 13%). 그래서 RecommendationItem이
+ * 아니라 별도 타입이다 — 없는 필드를 빈 값으로 채워 넣으면 화면이 "그때 그
+ * 카드"인 척하게 된다.
+ */
+export interface PastRecommendation {
+  place_id: string;
+  /** 같은 턴에 함께 나간 장소를 한 묶음으로 되돌리는 열쇠. */
+  run_id: string;
+  name: string;
+  rank: number;
+  distance_km: number | null;
+  environment_type: string | null;
+  reason: string | null;
+  shown_at: string;
+}
+
 export interface ChatSessionDetail {
   session_id: string;
   title: string;
   turns: StoredConversationTurn[];
+  recommendations: PastRecommendation[];
   last_active_at: string;
   resumable: boolean;
 }

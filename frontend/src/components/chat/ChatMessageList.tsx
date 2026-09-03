@@ -21,6 +21,7 @@ import { ConditionDebugMessage } from "./ConditionDebugMessage";
 import { FeedbackButtons } from "./FeedbackButtons";
 import { PlaceInfoCard } from "./PlaceInfoCard";
 import { PhotoSimilarResultMessage } from "./PhotoSimilarResultMessage";
+import { PastRecommendationMessage } from "./PastRecommendationMessage";
 import { RecommendationResultMessage } from "./RecommendationResultMessage";
 import { ScheduleResultMessage } from "./ScheduleResultMessage";
 import { SessionStatusMessage } from "./SessionStatusMessage";
@@ -308,6 +309,16 @@ export function ChatMessageList({
                 centerName={message.centerName}
                 places={message.places}
                 candidateCount={message.candidateCount}
+              />
+            );
+          }
+
+          if (message.type === "past_recommendation_result") {
+            return (
+              <PastRecommendationMessage
+                key={message.id}
+                places={message.places}
+                language={language}
               />
             );
           }

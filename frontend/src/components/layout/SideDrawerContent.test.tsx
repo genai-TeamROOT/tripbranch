@@ -50,6 +50,10 @@ vi.mock("../../api/trip", async (importOriginal) => {
         turns: [
           { user_input: "비 오는데 어디 갈까", assistant_message: "실내를 찾아볼게요", intent: "RECOMMEND", place_names: [], at: "2026-09-03T09:00:00+09:00" },
         ],
+        /* 추천은 그 턴이 기록되기 전에 남는다(실측 평균 97초 먼저). */
+        recommendations: [
+          { place_id: "p1", run_id: "run_1", name: "국립중앙박물관", rank: 1, distance_km: 1.2, environment_type: "indoor", reason: null, shown_at: "2026-09-03T08:58:23+09:00" },
+        ],
         last_active_at: found.last_active_at,
         resumable: true,
       };
@@ -247,6 +251,19 @@ test("지난 대화를 열면 마지막 부분이라고 밝힌다", async () => 
   await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
 
   expect(await screen.findByText(/마지막 부분이에요/)).toBeInTheDocument();
+});
+
+/* 말풍선만 돌려주면 "추천을 받았다"는 사실만 남고 무엇을 받았는지가 사라진다. */
+test("지난 대화에 그때 본 장소가 함께 펼쳐진다", async () => {
+  const user = userEvent.setup();
+  await renderApp();
+
+  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
+
+  expect(await screen.findByText("그때 추천받은 곳")).toBeInTheDocument();
+  expect(screen.getByText("국립중앙박물관")).toBeInTheDocument();
+  /* 저장된 값만 보여준다 — 거리·실내외는 있고 점수·운영시간은 기록이 없다. */
+  expect(screen.getByText("1.2km · 실내")).toBeInTheDocument();
 });
 
 /*
