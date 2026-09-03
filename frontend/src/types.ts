@@ -359,6 +359,16 @@ export type ChatMessage =
   | {
       id: string;
       type: "recommendation_result";
+      /*
+       * 이 카드가 **언제 기준의 값**인지. 지난 대화를 되돌릴 때만 채워진다.
+       *
+       * 카드 안의 값은 그 턴에 계산된 스냅샷이다 — 남은 운영시간, 실시간 주차
+       * 대수, 혼잡도는 시간이 지나면 틀린다. 그걸 아무 표시 없이 다시 그리면
+       * 지금 상태를 잘못 말하게 된다. 값을 가리지는 않는다(그러면 그때 본
+       * 화면과 달라진다) — 언제 기준인지만 밝힌다.
+       */
+      as_of?: string;
+
       recommendations: RecommendationItem[];
       unverified_recommendations: RecommendationItem[];
       /* 있을 때만 "OO 기준으로 다시 보기" 버튼을 노출한다(D-071). */
@@ -382,6 +392,16 @@ export type ChatMessage =
   | {
       id: string;
       type: "schedule_result";
+      /*
+       * 이 카드가 **언제 기준의 값**인지. 지난 대화를 되돌릴 때만 채워진다.
+       *
+       * 카드 안의 값은 그 턴에 계산된 스냅샷이다 — 남은 운영시간, 실시간 주차
+       * 대수, 혼잡도는 시간이 지나면 틀린다. 그걸 아무 표시 없이 다시 그리면
+       * 지금 상태를 잘못 말하게 된다. 값을 가리지는 않는다(그러면 그때 본
+       * 화면과 달라진다) — 언제 기준인지만 밝힌다.
+       */
+      as_of?: string;
+
       schedule: ScheduleResult;
       /* 일정 요청 클릭부터 응답 수신까지의 클라이언트 실측 시간(ms).
          recommendation_result의 elapsed_ms와 같은 역할이다. */
@@ -390,11 +410,31 @@ export type ChatMessage =
   | {
       id: string;
       type: "place_info_result";
+      /*
+       * 이 카드가 **언제 기준의 값**인지. 지난 대화를 되돌릴 때만 채워진다.
+       *
+       * 카드 안의 값은 그 턴에 계산된 스냅샷이다 — 남은 운영시간, 실시간 주차
+       * 대수, 혼잡도는 시간이 지나면 틀린다. 그걸 아무 표시 없이 다시 그리면
+       * 지금 상태를 잘못 말하게 된다. 값을 가리지는 않는다(그러면 그때 본
+       * 화면과 달라진다) — 언제 기준인지만 밝힌다.
+       */
+      as_of?: string;
+
       card: InfoPlaceCard;
     }
   | {
       id: string;
       type: "compare_result";
+      /*
+       * 이 카드가 **언제 기준의 값**인지. 지난 대화를 되돌릴 때만 채워진다.
+       *
+       * 카드 안의 값은 그 턴에 계산된 스냅샷이다 — 남은 운영시간, 실시간 주차
+       * 대수, 혼잡도는 시간이 지나면 틀린다. 그걸 아무 표시 없이 다시 그리면
+       * 지금 상태를 잘못 말하게 된다. 값을 가리지는 않는다(그러면 그때 본
+       * 화면과 달라진다) — 언제 기준인지만 밝힌다.
+       */
+      as_of?: string;
+
       comparison: ComparisonResult;
     }
   /*

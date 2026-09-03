@@ -674,3 +674,37 @@ test("다른 대화를 지워도 보고 있는 대화는 그대로다", async ()
 
   expect(screen.getByText("실내를 찾아볼게요")).toBeInTheDocument();
 });
+
+
+/*
+ * 카드 안에는 남은 운영시간·실시간 주차 대수처럼 시간이 지나면 틀리는 값이
+ * 들어 있다. 그대로 다시 그리면서 아무 말도 안 하면 지금 상태를 잘못 말하게
+ * 된다 — 값은 가리지 않고(가리면 그때와 달라진다) 언제 기준인지만 밝힌다.
+ */
+test("복원한 대화의 카드에 언제 기준인지 표시한다", async () => {
+  const user = userEvent.setup();
+  await renderApp();
+
+  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
+  await screen.findByText("국립중앙박물관");
+
+  /* transcript의 recorded_at은 2026-09-03이다. */
+  expect(screen.getByText("9월 3일 대화 기준")).toBeInTheDocument();
+});
+
+/* 실시간 응답에는 "언제 기준"이라고 밝힐 것이 없다 — 지금이 기준이다. */
+test("방금 받은 답변에는 기준 시각을 붙이지 않는다", async () => {
+  const user = userEvent.setup();
+  await renderApp();
+
+  await user.type(
+    screen.getByPlaceholderText(
+      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+    ),
+    "방금 한 질문",
+  );
+  await user.click(screen.getByRole("button", { name: "추천 시작하기" }));
+  await screen.findByText("찾아볼게요");
+
+  expect(screen.queryByText(/대화 기준/)).not.toBeInTheDocument();
+});

@@ -31,11 +31,16 @@ interface BuildOptions {
    * 복원에는 잴 대상이 없으므로 0이 넘어온다.
    */
   elapsedMsClient: number;
+  /**
+   * 이 턴이 기록된 시각. **지난 대화를 되돌릴 때만 넘긴다** — 실시간 응답에는
+   * "언제 기준"이라고 밝힐 것이 없다(지금이 기준이다).
+   */
+  asOf?: string;
 }
 
 export function buildAgentMessages(
   response: AgentResponse,
-  { userInput, elapsedMsClient }: BuildOptions,
+  { userInput, elapsedMsClient, asOf }: BuildOptions,
 ): ChatMessage[] {
   const messages: ChatMessage[] = [];
   const intent = response.llm_output.intent;
@@ -55,6 +60,7 @@ export function buildAgentMessages(
     messages.push({
       id: createMessageId("result"),
       type: "recommendation_result",
+      as_of: asOf,
       recommendations: response.recommendations.recommendations,
       unverified_recommendations: response.recommendations.unverified_recommendations,
       travel_origin_toggle: response.recommendations.travel_origin_toggle,
@@ -88,6 +94,7 @@ export function buildAgentMessages(
     messages.push({
       id: createMessageId("schedule"),
       type: "schedule_result",
+      as_of: asOf,
       schedule: response.schedule,
       elapsed_ms: elapsedMsClient,
     });
@@ -97,6 +104,7 @@ export function buildAgentMessages(
     messages.push({
       id: createMessageId("info-place"),
       type: "place_info_result",
+      as_of: asOf,
       card: response.info_place_card,
     });
   }
@@ -106,6 +114,7 @@ export function buildAgentMessages(
     messages.push({
       id: createMessageId("info-place-secondary"),
       type: "place_info_result",
+      as_of: asOf,
       card: response.secondary_info_place_card,
     });
   }
@@ -114,6 +123,7 @@ export function buildAgentMessages(
     messages.push({
       id: createMessageId("compare"),
       type: "compare_result",
+      as_of: asOf,
       comparison: response.comparison,
     });
   }

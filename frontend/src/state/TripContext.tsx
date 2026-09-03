@@ -372,6 +372,8 @@ function tripReducer(state: TripState, action: TripAction): TripState {
           const turn = buildAgentMessages(record.payload, {
             userInput: record.user_input ?? "",
             elapsedMsClient: 0,
+            /* 카드 안의 값은 이 시각 기준의 스냅샷이다. 화면이 그 사실을 밝힌다. */
+            asOf: record.recorded_at,
           });
           /*
            * 후속 질문 버튼은 마지막 답변에만 남긴다. 실시간에서도 새 발화가
