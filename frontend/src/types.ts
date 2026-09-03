@@ -139,6 +139,25 @@ export interface PhotoSimilarPlacesResponse {
   elapsed_ms: number;
 }
 
+export interface PlaceSearchCandidate {
+  name: string;
+  address: string | null;
+  road_address: string | null;
+  category: string | null;
+  latitude: number;
+  longitude: number;
+}
+
+export interface PlaceSearchResponse {
+  places: PlaceSearchCandidate[];
+  /**
+   * 좌표는 있는데 서울 밖이라 서버가 뺀 수. 0인지 아닌지에 따라 화면 문구가
+   * 갈린다 - 0이면 "찾은 곳이 없어요"이고, 0이 아니면 "서울 지역만 검색할 수
+   * 있어요"다. 사용자가 오타를 고쳐야 할지 지역을 바꿔야 할지가 다르다.
+   */
+  outside_service_area_count: number;
+}
+
 export interface ScheduleItem {
   order: number;
   place_id: string;
@@ -595,6 +614,19 @@ export interface AgentDebugRequest {
   language?: Language;
   session_id?: string | null;
   device_location?: string | null;
+  /*
+   * 위치 설정 화면에서 고른 검색 위치의 이름(예: "안국역"). device_location이
+   * "사용자가 지금 있는 곳"이라면 이쪽은 "어디를 기준으로 찾을지"다. 이번 턴
+   * 발화가 위치를 말하지 않았을 때에만 검색 위치로 쓰인다 - 발화가 이긴다.
+   */
+  selected_search_center?: string | null;
+  /*
+   * 위치 설정 화면에서 정한 출발지의 이름. selected_search_center와 다른 질문의
+   * 답이다 - 이쪽은 "사용자가 어디 있는가"라 이동 시간을 재는 시작점이 되고,
+   * 저쪽은 "어디 주변을 찾을까"다(D-067이 둘을 분리한 이유). 발화가 출발지를
+   * 말했으면 발화가 이긴다.
+   */
+  selected_current_location?: string | null;
   /** 직전 INFO 상세 카드의 장소명. "여기/이곳" 같은 대화 지시어 해소 후보다. */
   conversation_place_name?: string | null;
   /*

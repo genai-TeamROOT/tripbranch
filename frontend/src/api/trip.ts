@@ -16,6 +16,7 @@ import { apiClient, streamPost } from "./client";
 import { isDetachedRequest } from "../state/chatAbortController";
 import type {
   PhotoSimilarPlacesResponse,
+  PlaceSearchResponse,
   AgentDebugRequest,
   AgentResponse,
   AgentStreamEvent,
@@ -204,6 +205,17 @@ export function searchPlacesByPhoto(params: {
   if (params.longitude != null) form.append("longitude", String(params.longitude));
   if (params.limit != null) form.append("limit", String(params.limit));
   return apiClient.postForm<PhotoSimilarPlacesResponse>("/places/similar-by-photo", form);
+}
+
+/*
+ * 위치 설정 화면의 장소 검색. 서버가 Naver 지역 검색 결과를 서울 안으로 좁혀
+ * 돌려준다 - 이 화면이 정하는 값은 사용자의 현재 위치가 아니라 추천을 찾을
+ * 위치이고, 지원 지역이 서울 25개 구이기 때문이다.
+ */
+export function searchPlaces(query: string) {
+  return apiClient.get<PlaceSearchResponse>(
+    `/places/search?query=${encodeURIComponent(query)}`,
+  );
 }
 
 /*
