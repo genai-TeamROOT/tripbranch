@@ -308,6 +308,20 @@ export type ChatMessage =
       footnote?: string;
     }
   | {
+      /*
+       * 대화가 언제 오간 것인지 알리는 가운데 정렬 한 줄. 지난 대화를 되돌릴 때만
+       * 넣는다 — 실시간 대화는 지금 오가는 중이라 밝힐 것이 없다.
+       *
+       * 배너로 "지난 대화예요"라고 문장을 띄우던 것을 대신한다. 메신저에서 늘
+       * 보던 모양이라 읽지 않아도 뜻이 통하고, 화면을 덜 차지한다.
+       */
+      id: string;
+      type: "time_separator";
+      at: string;
+      /** 앞부분이 남아 있지 않은 대화(화면 기록이 온전하지 않음). */
+      partial?: boolean;
+    }
+  | {
       id: string;
       type: "interpretation_summary";
       text: string;

@@ -17,6 +17,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 import App from "../../App";
 import { resetChatSessionsCache } from "../../state/chatSessions";
+import { isDetachedRequest } from "../../state/chatAbortController";
 
 const SEED_FAVORITES = [
   { id: "fav-1", label: "회사 (역삼동)" },
@@ -157,8 +158,11 @@ vi.mock("../../api/trip", async (importOriginal) => {
       /* 응답이 늦게 오는 상황을 만든다. 테스트가 직접 done을 쏠 수 있게 콜백을
          넘겨두고, 실제 SSE와 같이 끊기면 AbortError로 끝난다. */
       if (server.holdStream) {
+        /* 실제 streamChat과 같은 판정이다 — 끊겼거나 화면에서 떼어진 요청의
+           이벤트는 흘리지 않는다. 떼어내기는 요청을 끊지 않으므로 aborted만
+           보면 이 경우를 놓친다. */
         server.pending = (event) => {
-          if (signal?.aborted) return;
+          if (signal?.aborted || isDetachedRequest(signal)) return;
           onEvent(event);
         };
         await new Promise<void>((resolve, reject) => {
@@ -387,13 +391,13 @@ test("히스토리를 누르면 지난 대화가 채팅 화면에 펼쳐진다",
 
 /* 보이는 말풍선은 최근 5턴뿐이라 대화 전체가 아니다. 말없이 두면 사용자는
    이게 전부인 줄로 안다. */
-test("옛 대화를 열면 마지막 부분이라고 밝힌다", async () => {
+test("옛 대화를 열면 앞부분이 없다고 밝힌다", async () => {
   const user = userEvent.setup();
   await renderApp();
 
   await user.click(within(sidebar()).getByRole("button", { name: "갑자기 뜬 2시간, 카페 추천 대화 열기" }));
 
-  expect(await screen.findByText(/마지막 부분이에요/)).toBeInTheDocument();
+  expect(await screen.findByText(/앞부분은 남아 있지 않아요/)).toBeInTheDocument();
 });
 
 /*
@@ -429,14 +433,17 @@ test("화면 기록이 없는 옛 대화는 저장된 조각으로 펼쳐진다"
 });
 
 /* 옛 대화만 "마지막 부분"이다. 전체가 나오는데 그렇게 말하면 거짓이 된다. */
-test("화면 기록이 있으면 마지막 부분이라고 말하지 않는다", async () => {
+/* 기록이 온전한 대화에는 시각만 뜨고, 빠진 게 있다는 말은 붙지 않는다. */
+test("화면 기록이 온전하면 앞부분이 없다고 말하지 않는다", async () => {
   const user = userEvent.setup();
   await renderApp();
 
   await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
 
-  expect(await screen.findByText(/이 대화에 이어져요/)).toBeInTheDocument();
-  expect(screen.queryByText(/마지막 부분이에요/)).not.toBeInTheDocument();
+  /* 날짜 표기는 오늘·어제면 그렇게 부르므로 실행 날짜에 따라 달라진다.
+     이 테스트가 보는 것은 "시각이 뜨고, 빠진 게 있다는 말은 없다"다. */
+  expect(await screen.findByText(/오전 8:58/)).toBeInTheDocument();
+  expect(screen.queryByText(/앞부분은 남아 있지 않아요/)).not.toBeInTheDocument();
 });
 
 /*
@@ -603,7 +610,7 @@ test("기록이 온전하지 않으면 예전 방식으로 되돌린다", async 
   /* 기록에 없던 턴까지 나온다 — 저장된 말풍선으로 되돌렸다는 뜻이다. */
   expect(await screen.findByText("빠진 질문")).toBeInTheDocument();
   /* 그리고 전부가 아니라는 것을 화면이 밝힌다. */
-  expect(screen.getByText(/마지막 부분이에요/)).toBeInTheDocument();
+  expect(screen.getByText(/앞부분은 남아 있지 않아요/)).toBeInTheDocument();
 });
 
 

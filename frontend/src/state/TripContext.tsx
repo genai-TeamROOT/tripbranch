@@ -56,16 +56,6 @@ export interface TripState {
   error: string | null;
   /* Agent(B)가 발급한 대화 세션. 후속 발화에서 그대로 돌려보낸다. */
   session_id: string | null;
-  /*
-   * 사이드바 히스토리에서 불러온 지난 대화의 제목. 화면이 "지난 대화를 이어보고
-   * 있다"고 밝히는 데 쓴다. 새 발화가 나가면 비운다.
-   */
-  restored_title: string | null;
-  /*
-   * 되돌린 대화가 일부뿐인지. 화면 기록(session_messages)이 쌓이기 전의 옛
-   * 대화는 남은 말풍선 5개로만 복원되므로 화면이 그 사실을 밝혀야 한다.
-   */
-  restored_partial: boolean;
   /* 최초 추천 시작 시 허용받은 브라우저 위치. 같은 세션의 후속 요청에도 재사용한다. */
   device_location: string | null;
   /** 브라우저에서 device_location을 마지막으로 받아온 시각(ms). */
@@ -107,8 +97,6 @@ const initialTripState: TripState = {
   phase: "idle",
   error: null,
   session_id: null,
-  restored_title: null,
-  restored_partial: false,
   device_location: null,
   device_location_captured_at: null,
   device_location_snoozed_until: null,
@@ -359,6 +347,26 @@ function tripReducer(state: TripState, action: TripAction): TripState {
     case "RESTORE_SESSION": {
       const restored: ChatMessage[] = [];
 
+      /*
+       * 언제 오간 대화인지 맨 위에 한 줄로 밝힌다. 예전에는 "지난 대화예요"라는
+       * 배너였는데, 메신저의 시각 구분선이 읽지 않아도 뜻이 통하고 화면도 덜
+       * 차지한다. 첫 턴의 시각 하나만 둔다 — 턴마다 붙이면 몇 분 간격의 줄이
+       * 계속 끼어들어 대화가 끊겨 보인다.
+       */
+      const startedAt = action.payload.restore_from_messages
+        ? action.payload.messages[0]?.recorded_at
+        : action.payload.turns[0]?.at;
+      if (startedAt) {
+        restored.push({
+          id: createMessageId("time"),
+          type: "time_separator",
+          at: startedAt,
+          /* 옛 대화는 남은 말풍선으로만 되돌아온다. 앞부분이 없다는 사실을
+             배너 대신 이 줄에 붙여 밝힌다. */
+          partial: !action.payload.restore_from_messages,
+        });
+      }
+
       if (action.payload.restore_from_messages) {
         const lastIndex = action.payload.messages.length - 1;
         action.payload.messages.forEach((record, index) => {
@@ -423,17 +431,12 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         device_location_captured_at: state.device_location_captured_at,
         messages: restored,
         session_id: action.payload.resumable ? action.payload.session_id : null,
-        restored_title: action.payload.title,
-        restored_partial: !action.payload.restore_from_messages,
         phase: "idle",
       };
     }
     case "START_CHAT_TURN":
       return {
         ...state,
-        /* 새로 물으면 더 이상 "지난 대화를 이어보는 중"이 아니다. */
-        restored_title: null,
-        restored_partial: false,
         user_input: action.payload.userInput,
         device_location: action.payload.deviceLocation ?? state.device_location,
         device_location_captured_at:

@@ -58,8 +58,6 @@ const CHAT_TEXT = {
     relaxRadius: "검색 범위를 넓혀서 다시 추천해줘",
     basedOn: (name: string) => `${name} 기준으로 다시 보기`,
     currentLocation: "현재 위치 기준으로 다시 보기",
-    resumedNotice: "지난 대화예요. 이어서 물어보시면 이 대화에 이어져요.",
-    resumedPartialNotice: "지난 대화의 마지막 부분이에요. 이어서 물어보시면 이 대화에 이어져요.",
   },
   en: {
     developer: "Developer view",
@@ -70,9 +68,6 @@ const CHAT_TEXT = {
     relaxRadius: "Search in a wider area",
     basedOn: (name: string) => `View results based on ${name}`,
     currentLocation: "View results based on my current location",
-    resumedNotice: "An earlier chat. Ask anything to pick it back up.",
-    resumedPartialNotice:
-      "This is the tail end of an earlier chat. Ask anything to pick it back up.",
   },
 } as const;
 interface PendingLocationRefresh {
@@ -407,24 +402,6 @@ export function ChatPage() {
             {text.developer}
           </button>
         </div>
-
-        {/*
-          지난 대화를 불러온 상태다. 이어 물으면 같은 대화에 붙는다(사이드바가
-          resume을 부른다). 다만 날씨·위치 같은 조건은 되살릴 때 버려지므로,
-          필요하면 다시 물어보는 게 정상이다.
-
-          화면 기록이 쌓이기 전의 옛 대화(restored_partial)는 남은 말풍선 5개로만
-          복원된다 — 그때는 이게 전부가 아니라는 것을 밝혀야 한다.
-        */}
-        {state.restored_title && (
-          <p
-            role="status"
-            className="rounded-xl bg-chip px-3.5 py-2.5 text-xs leading-relaxed text-ink"
-          >
-            <strong className="font-bold">{state.restored_title}</strong>
-            {` — ${state.restored_partial ? text.resumedPartialNotice : text.resumedNotice}`}
-          </p>
-        )}
 
         {state.error && (
           <ErrorBanner

@@ -166,6 +166,46 @@ function AsOfNotice({ at, language }: { at: string; language: Language }) {
   return <p className="px-1 text-[11px] text-muted">{label}</p>;
 }
 
+/*
+ * 대화가 언제 오간 것인지 알리는 가운데 정렬 한 줄. 메신저에서 늘 보던 모양이라
+ * 읽지 않아도 뜻이 통한다 — "지난 대화예요"라는 배너를 대신한다.
+ *
+ * 오늘·어제는 날짜 대신 그렇게 부른다. 그편이 "9월 3일"보다 빨리 읽힌다.
+ */
+function TimeSeparator({
+  at,
+  partial,
+  language,
+}: {
+  at: string;
+  partial?: boolean;
+  language: Language;
+}) {
+  const when = new Date(at);
+  if (Number.isNaN(when.getTime())) return null;
+
+  const locale = language === "en" ? "en-US" : "ko-KR";
+  const time = when.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" });
+  const startOfDay = (value: Date) =>
+    new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+  const daysAgo = Math.round((startOfDay(new Date()) - startOfDay(when)) / 86_400_000);
+
+  let day: string;
+  if (daysAgo === 0) day = language === "en" ? "Today" : "오늘";
+  else if (daysAgo === 1) day = language === "en" ? "Yesterday" : "어제";
+  else day = when.toLocaleDateString(locale, { month: "long", day: "numeric" });
+
+  /* 옛 대화는 남은 말풍선으로만 되돌아온다. 앞부분이 없다는 사실을 여기서 밝힌다. */
+  const note = partial ? (language === "en" ? " · earlier part not kept" : " · 앞부분은 남아 있지 않아요") : "";
+
+  return (
+    <p className="py-1 text-center text-xs text-muted">
+      {day} {time}
+      {note}
+    </p>
+  );
+}
+
 interface ChatMessageListProps {
   messages: ChatMessage[];
   showDebug: boolean;
@@ -220,6 +260,17 @@ export function ChatMessageList({
             ) : (
               node
             );
+
+          if (message.type === "time_separator") {
+            return (
+              <TimeSeparator
+                key={message.id}
+                at={message.at}
+                partial={message.partial}
+                language={language}
+              />
+            );
+          }
 
           if (message.type === "user_text") {
             return (
