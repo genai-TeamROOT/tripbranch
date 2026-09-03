@@ -12,6 +12,7 @@ from app.agent_context.schemas import (
 from app.domain.candidate_mapper import map_context_to_scoring_candidates
 from app.domain.operating_hours import (
     DERIVED_CLOSURE_SOURCE_TEXT,
+    ClosureRule,
     OperatingAvailability,
     OperatingParseStatus,
     clean_operating_text,
@@ -427,3 +428,17 @@ def test_derived_closure_does_not_duplicate_declared_rest_date() -> None:
 
     assert [rule.weekdays for rule in schedule.closure_rules] == [frozenset({6})]
     assert schedule.closure_rules[0].source_text == "매주 일요일"
+
+
+class Test주기_휴무를_담는_자리:
+    """`2,4주 일요일`·`월 1회 월요일`을 담을 자리. (TP-231)
+
+    이 카드는 자리만 만든다 — 채우는 것은 다음 카드의 LLM 추출이다. 그래서 여기
+    테스트는 "담으면 판정이 따라오는가"와 "안 담으면 예전과 같은가"를 본다.
+    """
+
+    def test_기본값은_매주다(self) -> None:
+        """이 필드를 모르는 기존 데이터가 그대로 매주로 읽혀야 한다."""
+        rule = ClosureRule(weekdays=frozenset({0}), source_text="매주 월요일")
+        assert rule.week_ordinals is None
+        assert rule.uncertain is False

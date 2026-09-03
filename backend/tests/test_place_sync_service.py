@@ -1029,3 +1029,24 @@ async def test_진행률_분모는_실제로_부를_수다() -> None:
     assert progress[0] == (0, 2)
     assert progress[-1] == (2, 2)
     assert {total for _, total in progress} == {2}
+
+
+def test_휴무_추출기에_메서드가_없으면_만들_때_막는다() -> None:
+    """8,000곳을 다 돌고 나서 "하나도 안 채워졌다"를 알게 되면 늦다. (TP-231)
+
+    실행 중에는 실패를 삼키고 정규식 결과로 되돌아가므로, 모양이 틀린 것은
+    부르기 전에 걸러야 한다.
+    """
+
+    class _NotAnExtractor:
+        pass
+
+    provider = FakeAreaProvider([_place(1)])
+    repository = FakePlaceRepository({})
+    with pytest.raises(TypeError, match="extract_closure_rules"):
+        PlaceSyncService(
+            provider,
+            repository,
+            closure_extractor=_NotAnExtractor(),
+            now=lambda: NOW,
+        )
