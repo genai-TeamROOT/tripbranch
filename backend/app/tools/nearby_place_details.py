@@ -9,6 +9,10 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from time import perf_counter
 
+from app.agent_context.district_selection import (
+    MIN_TURN_CANDIDATES,
+    select_district_candidates,
+)
 from app.domain.models import (
     AccessibilityNeed,
     AccessibilityVerdict,
@@ -27,6 +31,7 @@ from app.providers.protocols import (
     BarrierFreePlaceSearch,
     BarrierFreePlaceSearchProvider,
     BatchPlaceDetailsProvider,
+    DistrictPlaceSearchProvider,
     PlaceDetailsProvider,
     PlaceSearchProvider,
 )
@@ -89,6 +94,19 @@ class NearbyPlaceDetailsQuery:
     # 한 구로 좁히면 반경 안에 있는 옆 지원 구 후보가 잘리고, 구마다 호출하면
     # 호출 수가 구 수만큼 늘어난다.
     district_code: str | None = None
+    # 값이 있으면 **반경을 버리고 그 구 전체를 후보 모집단으로 삼는다**(D-1XX).
+    # 위 district_code와 다른 것이다 — 저쪽은 TourAPI 반경 검색에 구 필터를 얹는
+    # 인자이고(지금 아무도 안 쓴다), 이쪽은 검색 방식 자체를 바꾼다.
+    #
+    # 이 모드에서 latitude·longitude는 쓰이지 않는다. 구 이름을 푼 대표점이 그대로
+    # 들어오지만 후보 수집에도 정렬에도 관여하지 않는다 — 필드를 지우지 않은 것은
+    # Context 조립이 기준점 좌표를 그대로 싣기 때문이다.
+    district_scope: str | None = None
+    # 구 단위 모드에서만 쓴다. 사용자가 말한 분류 조건 전부를 한 번에 받는다.
+    # 반경 검색은 분류마다 따로 호출하지만(위 category_filter) 구 단위는 한 번에
+    # 모아야 한다 — 분류마다 부르면 구 전량을 그 수만큼 읽고, 무엇보다 분류 몫이
+    # 호출마다 따로 적용돼 합친 결과가 몫을 넘는다.
+    category_filters: tuple[PlaceCategoryFilter | None, ...] = ()
     limit: int = DEFAULT_RECOMMENDATION_CANDIDATE_LIMIT
     preferred_categories: tuple[str, ...] = ()
     category_filter: PlaceCategoryFilter | None = None
@@ -150,6 +168,22 @@ class NearbyPlaceDetailsResult:
     provider_metadata: tuple[ProviderMetadata, ...] = ()
 
 
+def _matches_category(candidate: PlaceCandidate, category_filter: PlaceCategoryFilter) -> bool:
+    """후보가 그 분류 조건에 드는지. 지정된 자리만 대조한다.
+
+    반경 검색은 이 판정을 TourAPI가 해주지만(요청에 분류 코드를 실는다) 구 단위는
+    저장소에서 구 전량을 받으므로 여기서 한다. 조건에 없는(None) 자리는 보지 않는다
+    — "음식점"만 지정한 조건이 소분류까지 같아야 하는 것으로 좁혀지면 안 된다.
+    """
+    pairs = (
+        (category_filter.content_type_id, candidate.content_type_id),
+        (category_filter.lcls_systm1, candidate.lcls_systm1),
+        (category_filter.lcls_systm2, candidate.lcls_systm2),
+        (category_filter.lcls_systm3, candidate.lcls_systm3),
+    )
+    return all(required is None or required == actual for required, actual in pairs)
+
+
 def _with_verdicts(
     result: NearbyPlaceDetailsResult,
     verdicts: Mapping[str, Mapping[AccessibilityNeed, AccessibilityVerdict]],
@@ -182,12 +216,16 @@ class NearbyPlaceDetailsTool:
         details_provider: PlaceDetailsProvider,
         max_concurrency: int = 3,
         barrier_free_search_provider: BarrierFreePlaceSearchProvider | None = None,
+        district_search_provider: DistrictPlaceSearchProvider | None = None,
     ) -> None:
         if not 1 <= max_concurrency <= 10:
             raise ValueError("max_concurrency는 1 이상 10 이하여야 합니다.")
         self._search_provider = search_provider
         self._details_provider = details_provider
         self._max_concurrency = max_concurrency
+        # 없으면 구 단위 요청을 처리하지 못한다. 그때는 반경 검색으로 조용히
+        # 되돌아가지 않고 unavailable로 답한다 — 아래 _search_district()를 본다.
+        self._district_search_provider = district_search_provider
         # 없으면 무장애 조건이 와도 좁히지 못한다. 그때는 조용히 넓은 결과를 주는
         # 대신 unavailable로 답한다 — 아래 _search()를 본다.
         self._barrier_free_search_provider = barrier_free_search_provider
@@ -196,6 +234,9 @@ class NearbyPlaceDetailsTool:
         self, query: NearbyPlaceDetailsQuery
     ) -> NearbyPlaceDetailsResult:
         started_at = perf_counter()
+        if query.district_scope is not None:
+            return await self._execute_district(query, started_at)
+
         # 제외분만큼 더 받아야 새 후보가 limit만큼 남는다. 장소 검색은 거리순 고정
         # 정렬이라 행 수만 늘리면 이전 결과의 상위집합이 와서 페이지 번호가 필요 없다.
         # 여기에 CANDIDATE_OVERFETCH_FACTOR를 곱하는 이유는 그 상수 주석에 있다 —
@@ -296,11 +337,112 @@ class NearbyPlaceDetailsTool:
                 exhausted=exhausted,
             )
 
-        if isinstance(self._details_provider, BatchPlaceDetailsProvider):
-            batched = await self._enrich_in_batch(
+        return _with_verdicts(
+            await self._enrich_selected(
                 selected, search_result.metadata, started_at, truncated=truncated
+            ),
+            accessibility_verdicts,
+        )
+
+    async def _execute_district(
+        self, query: NearbyPlaceDetailsQuery, started_at: float
+    ) -> NearbyPlaceDetailsResult:
+        """구 전체를 후보 모집단으로 삼는 경로(D-1XX).
+
+        반경 검색과 갈리는 것은 **후보를 어디서 얼마나 가져오느냐** 두 가지뿐이다.
+        저장소에서 구 전량을 받고, 앞에서 자르는 대신 `select_district_candidates()`가
+        고른다. 상세 보완부터는 같은 코드를 탄다.
+
+        과요청(CANDIDATE_OVERFETCH_FACTOR)을 하지 않는다. 그건 Provider가 필터링
+        뒤에 돌려줘서 필요분만 요청하면 모자라는 반경 검색의 사정이고, 여기서는
+        구 전량을 이미 손에 들고 있다.
+        """
+        provider = self._district_search_provider
+        if provider is None:
+            # 반경 검색으로 조용히 되돌아가면 "강남구"가 대표점 주변 수백 미터로
+            # 좁혀진 결과를 내면서 사용자도 우리도 그 사실을 모른다(D-042와 같은 이유).
+            return self._result(
+                places=(),
+                status=ToolStatus.UNAVAILABLE,
+                started_at=started_at,
+                provider_metadata=(),
+                error=ToolError(
+                    code="unavailable",
+                    message="구 단위로 장소를 검색할 수 없습니다.",
+                    cause="upstream_error",
+                    retryable=False,
+                ),
             )
-            return _with_verdicts(batched, accessibility_verdicts)
+
+        try:
+            search_result = await provider.search_places_in_district(
+                district_code=query.district_scope or ""
+            )
+        except AppError as exc:
+            return self._result(
+                places=(),
+                status=ToolStatus.UNAVAILABLE,
+                started_at=started_at,
+                provider_metadata=(),
+                error=ToolError(
+                    code="unavailable",
+                    message="구 단위로 장소를 검색하지 못했습니다.",
+                    cause=("timeout" if exc.code == "provider_timeout" else "upstream_error"),
+                    retryable=exc.retryable,
+                ),
+            )
+
+        filters = tuple(item for item in query.category_filters if item is not None)
+        pool = tuple(
+            candidate
+            for candidate in search_result.data
+            if not filters or any(_matches_category(candidate, item) for item in filters)
+        )
+        selected = select_district_candidates(
+            pool,
+            excluded_place_ids=query.excluded_place_ids,
+            limit=query.limit,
+            has_category_condition=bool(filters),
+        )
+        # 이 구에서 더 줄 것이 남지 않았다는 신호. 반경 검색의 "행 상한에 걸렸다"와는
+        # 다른 사정이라 truncated가 아니라 exhausted로 표시한다.
+        exhausted = len(selected) < MIN_TURN_CANDIDATES
+        if not selected:
+            return self._result(
+                places=(),
+                status=ToolStatus.NO_DATA,
+                started_at=started_at,
+                provider_metadata=(search_result.metadata,),
+                exhausted=bool(query.excluded_place_ids),
+            )
+        enriched = await self._enrich_selected(
+            selected, search_result.metadata, started_at
+        )
+        if not exhausted:
+            return enriched
+        return replace(
+            enriched,
+            warnings=(*enriched.warnings, CANDIDATE_POOL_EXHAUSTED_WARNING),
+        )
+
+    async def _enrich_selected(
+        self,
+        selected: tuple[PlaceCandidate, ...],
+        search_metadata: ProviderMetadata,
+        started_at: float,
+        *,
+        truncated: bool = False,
+    ) -> NearbyPlaceDetailsResult:
+        """고른 후보에 상세정보를 붙인다.
+
+        **후보가 어디서 왔는지 모른다.** 반경 검색·무장애 저장소·구 단위 저장소가
+        모두 이 한 곳으로 모인다 — 검색만 갈리고 그 뒤는 같은 코드를 타야 세 경로의
+        결과 모양이 어긋나지 않는다.
+        """
+        if isinstance(self._details_provider, BatchPlaceDetailsProvider):
+            return await self._enrich_in_batch(
+                selected, search_metadata, started_at, truncated=truncated
+            )
 
         semaphore = asyncio.Semaphore(self._max_concurrency)
 
@@ -357,7 +499,7 @@ class NearbyPlaceDetailsTool:
 
         enriched = tuple(await asyncio.gather(*(enrich(item) for item in selected)))
         places = tuple(item for item, _ in enriched)
-        provider_metadata = (search_result.metadata,) + tuple(
+        provider_metadata = (search_metadata,) + tuple(
             metadata for _, metadata in enriched if metadata is not None
         )
         status = (
@@ -365,15 +507,12 @@ class NearbyPlaceDetailsTool:
             if all(item.detail_status is DetailStatus.SUCCESS for item in places)
             else ToolStatus.PARTIAL
         )
-        return _with_verdicts(
-            self._result(
-                places=places,
-                status=status,
-                started_at=started_at,
-                provider_metadata=provider_metadata,
-                truncated=truncated,
-            ),
-            accessibility_verdicts,
+        return self._result(
+            places=places,
+            status=status,
+            started_at=started_at,
+            provider_metadata=provider_metadata,
+            truncated=truncated,
         )
 
     async def _enrich_in_batch(

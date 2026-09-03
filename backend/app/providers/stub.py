@@ -1545,6 +1545,76 @@ class FakeBarrierFreePlaceSearchProvider:
         )
 
 
+# Fake 구가 담는 분류별 장소 수. 강남구 실측 구성을 줄여서 흉내 낸 것이다
+# (관광지 39·문화시설 69·음식점 260·쇼핑 713·레포츠 6·축제 13).
+#
+# **비율을 살리는 것이 이 Fake의 전부다.** 쇼핑이 압도적으로 많고 레포츠·축제가
+# 한 자릿수라는 그 모양이 선택 로직이 실제로 하는 일을 결정한다. 분류를 고르게
+# 채우거나 좌표를 한 점에 몰아 두면 몫·격자·소진율이 한 줄도 작동하지 않는데
+# 테스트는 통과한다 — 이 저장소에서 반복된 실패다(D-042 계열).
+_FAKE_DISTRICT_COMPOSITION: tuple[tuple[str, int], ...] = (
+    ("12", 12),  # 관광지
+    ("14", 9),  # 문화시설
+    ("39", 40),  # 음식점
+    ("38", 90),  # 쇼핑
+    ("28", 3),  # 레포츠
+    ("15", 4),  # 축제공연
+)
+
+# Fake 구가 차지하는 좌표 범위. 종로구 언저리에 실제 구만 한 크기로 편다.
+_FAKE_DISTRICT_ORIGIN = (37.56, 126.96)
+_FAKE_DISTRICT_SPAN = 0.04
+
+
+class FakeDistrictPlaceSearchProvider:
+    """구 단위 후보 조회를 만들어 낸 목록으로 대체하는 fake provider.
+
+    실 provider와 같은 규칙을 적용한다 — 추천 대상이 아닌 유형은 버리고, 개수를
+    자르지 않고 구 전량을 올린다. 자르는 일은 선택 단계가 한다.
+
+    좌표는 한 점에 몰지 않고 격자 전체에 편다. 몰아 두면 격자 분산이 아무 일도
+    하지 않게 되어, Fake로 확인한 동작이 실 경로와 달라진다.
+    """
+
+    async def search_places_in_district(
+        self, *, district_code: str
+    ) -> ProviderResult[list[PlaceCandidate]]:
+        candidates: list[PlaceCandidate] = []
+        index = 0
+        base_latitude, base_longitude = _FAKE_DISTRICT_ORIGIN
+        for content_type_id, count in _FAKE_DISTRICT_COMPOSITION:
+            category = resolve_place_category(content_type_id)
+            if category is None:
+                continue
+            for _ in range(count):
+                # 4x4 격자를 골고루 밟도록 두 축을 서로 다른 주기로 돌린다.
+                latitude = base_latitude + (index % 4) * (_FAKE_DISTRICT_SPAN / 4)
+                longitude = base_longitude + ((index // 4) % 4) * (_FAKE_DISTRICT_SPAN / 4)
+                candidates.append(
+                    PlaceCandidate(
+                        place_id=f"fake-{district_code}-{index:04d}",
+                        content_type_id=content_type_id,
+                        lcls_systm1=None,
+                        lcls_systm2=None,
+                        lcls_systm3=None,
+                        name=f"테스트 {category} {index}",
+                        category=category,
+                        latitude=latitude,
+                        longitude=longitude,
+                        address=f"서울특별시 어느구 {index}",
+                        # 실 provider와 같이 비워 둔다. 운영시간은 상세 보완이 채운다.
+                        operating_hours=None,
+                        raw_source="fake_district",
+                    )
+                )
+                index += 1
+        return provider_result(
+            candidates,
+            source=ProviderSource.FAKE_PLACES,
+            status=ProviderStatus.SUCCESS if candidates else ProviderStatus.NO_DATA,
+        )
+
+
 class FakePlaceProvider:
     """장소 검색 결과를 고정 후보 목록으로 대체하는 fake provider."""
 

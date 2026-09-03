@@ -509,6 +509,29 @@ class AccessibilityVerdict(StrEnum):
 
 
 @dataclass(frozen=True)
+class DistrictPlaceRow:
+    """구 단위 후보 조회가 돌려주는 장소 한 건.
+
+    `BarrierFreePlaceRow`와 같은 자리를 채우되 `distance_km`이 없다. 구 단위 요청은
+    기준점이 없어 거리를 잴 대상이 없기 때문이다(D-1XX).
+
+    운영시간은 담지 않는다. 다른 후보 경로와 같은 이유다 — 뒤이은 상세 보완이
+    채우므로 여기서 미리 넣으면 같은 값을 두 경로가 서로 다른 규칙으로 만든다.
+    """
+
+    content_id: str
+    title: str
+    address: str | None
+    latitude: float
+    longitude: float
+    content_type_id: str | None
+    lcls_systm1: str | None
+    lcls_systm2: str | None
+    lcls_systm3: str | None
+    first_image_url: str | None
+
+
+@dataclass(frozen=True)
 class BarrierFreePlaceRow:
     """무장애 후보 검색(`search_places_barrier_free`)이 돌려주는 장소 한 건.
 

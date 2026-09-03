@@ -15,6 +15,7 @@ from app.domain.models import (
     AccessibilityNeed,
     AccessibilityVerdict,
     BarrierFreePlaceRow,
+    DistrictPlaceRow,
     PlaceBarrierFreeDetails,
     PlaceCategoryFilter,
     PlaceEvidenceMatch,
@@ -30,7 +31,7 @@ from app.domain.models import (
 from app.errors import AppError
 from app.place_search_policy import PLACE_SEARCH_LDONG_REGION_CODE
 from app.providers.tour_category_registry import TourCategoryRegistry, get_tour_category_registry
-from app.service_area import SUPPORTED_DISTRICT_CODES
+from app.service_area import SUPPORTED_DISTRICT_CODES, is_plausible_seoul_coordinate
 
 # search_place_evidence RPC가 강제하는 후보 상한. 넘으면 RPC가 즉시 에러를
 # 던진다 — 여기서 미리 막아 왕복 한 번을 아끼고, 실패 지점을 호출부 가까이 둔다.
@@ -44,6 +45,26 @@ _MAX_MOOD_CANDIDATES = 500
 # 발화 경로가 한 번에 읽는 장소 수. PostgREST의 in 필터는 URL에 그대로 실려서
 # 너무 길면 요청줄 길이 제한에 걸린다. content_id가 7자리라 200건이면 1.6KB다.
 _MOOD_PROFILE_CHUNK_SIZE = 200
+
+# 구 단위 후보 조회가 한 번에 받는 행 수. 가장 큰 구가 1,133곳(강남구)이라 두
+# 페이지면 끝난다. PostgREST 기본 상한이 1,000이라 그보다 크게 잡아도 소용없다.
+_DISTRICT_PAGE_SIZE = 1000
+
+# 구 단위 후보 한 건에 필요한 컬럼. `DistrictPlaceRow`가 채우는 자리와 같다.
+_DISTRICT_PLACE_COLUMNS = ",".join(
+    (
+        "content_id",
+        "title",
+        "address",
+        "latitude",
+        "longitude",
+        "content_type_id",
+        "lcls_systm1",
+        "lcls_systm2",
+        "lcls_systm3",
+        "first_image_url",
+    )
+)
 
 # 상세 화면에 보여줄 사진 수 상한. 지금 가장 많은 장소가 9장이라(국립중앙박물관·
 # 딜쿠샤 등, 2026-08-31 실측) 실제로 잘리는 장소는 없지만, 적재가 구 단위로
@@ -797,6 +818,54 @@ class SupabasePlaceRepository:
         if not isinstance(payload, list):
             raise SupabaseRepositoryError("invalid search_places_barrier_free response")
         return tuple(_to_barrier_free_place_row(row) for row in payload)
+
+    async def list_active_places_in_district(
+        self, district_code: str
+    ) -> tuple[DistrictPlaceRow, ...]:
+        """그 구의 활성 장소를 전부 읽는다(D-1XX).
+
+        **개수를 자르지 않는다.** 몇 곳을 쓸지는 `agent_context.district_selection`이
+        정한다. 여기서 앞의 N곳만 주면 그 자름의 순서가 결과를 정해버리는데, 구
+        단위에는 의미 있는 순서가 없다 — 거리 기준점이 없고, 저장소 기본 순서는
+        content_id다.
+
+        한 구가 최대 1,133곳이라(강남구, 2026-09-01) 한 번에 다 오지 않을 수 있어
+        페이지를 이어 받는다.
+
+        좌표가 말이 안 되는 행은 여기서 뺀다. 전 구에 12건 있고, 반경 검색에서는
+        어떤 중심점에서도 안 걸려 드러나지 않던 것들이다 — 구 전량 조회가 그 전제를
+        깨는 첫 경로다. 판정을 폴리곤이 아니라 사각형으로 하는 이유는
+        `service_area.SEOUL_MIN_LATITUDE` 주석에 있다.
+        """
+        normalized_code = district_code.strip()
+        if not normalized_code:
+            raise ValueError("district_code가 필요합니다.")
+
+        rows: list[DistrictPlaceRow] = []
+        offset = 0
+        while True:
+            response = await self._request(
+                "GET",
+                "/places",
+                params={
+                    "select": _DISTRICT_PLACE_COLUMNS,
+                    "district_code": f"eq.{normalized_code}",
+                    "is_active": "eq.true",
+                    "order": "content_id.asc",
+                    "limit": str(_DISTRICT_PAGE_SIZE),
+                    "offset": str(offset),
+                },
+            )
+            payload = self._json(response)
+            if not isinstance(payload, list):
+                raise SupabaseRepositoryError("invalid places response")
+            for row in payload:
+                mapped = _to_district_place_row(row)
+                if mapped is not None:
+                    rows.append(mapped)
+            if len(payload) < _DISTRICT_PAGE_SIZE:
+                return tuple(rows)
+            offset += _DISTRICT_PAGE_SIZE
 
     async def find_first_photo_urls(
         self,
@@ -2189,6 +2258,46 @@ def _to_evidence_snippet(item: object) -> PlaceEvidenceSnippet:
         source_url=str(item["source_url"]) if item.get("source_url") else None,
         similarity=float(item["similarity"]),
         published_at=(datetime.fromisoformat(str(published_at)) if published_at else None),
+    )
+
+
+def _to_district_place_row(row: object) -> DistrictPlaceRow | None:
+    """구 단위 조회의 행 하나를 후보 모델로 옮긴다. 쓸 수 없는 행이면 None.
+
+    무장애 경로와 달리 예외로 끊지 않고 그 행만 버린다. 저쪽은 RPC가 좌표 있는
+    행만 준다는 약속이 있어 비어 있으면 응답이 어긋난 것이지만, 이쪽은 `places`를
+    그대로 읽으므로 **적재된 값이 원래 이상한 경우가 실재한다**. 한 건 때문에 구
+    전체 추천을 못 하게 만드는 것은 과하다.
+
+    버리는 경우는 둘이다.
+
+    - 좌표가 없거나 서울 언저리 밖 — 원본 데이터 오류다(전 구 12건). 격자가 이
+      좌표 하나로 통째로 망가진다. 실제로 걸러내기 전에는 강남구 격자의 대각이
+      2,174km로 잡혔다.
+    - content_id나 좌표가 숫자가 아님 — 후보로 쓸 수 없다.
+    """
+    if not isinstance(row, Mapping):
+        return None
+    content_id = str(row.get("content_id") or "")
+    if not content_id:
+        return None
+    latitude = _optional_float(row.get("latitude"))
+    longitude = _optional_float(row.get("longitude"))
+    if not is_plausible_seoul_coordinate(latitude, longitude):
+        return None
+    # is_plausible_seoul_coordinate가 None을 걸렀으므로 여기서는 확정값이다.
+    assert latitude is not None and longitude is not None
+    return DistrictPlaceRow(
+        content_id=content_id,
+        title=str(row.get("title") or ""),
+        address=_optional_str(row.get("address")),
+        latitude=latitude,
+        longitude=longitude,
+        content_type_id=_optional_str(row.get("content_type_id")),
+        lcls_systm1=_optional_str(row.get("lcls_systm1")),
+        lcls_systm2=_optional_str(row.get("lcls_systm2")),
+        lcls_systm3=_optional_str(row.get("lcls_systm3")),
+        first_image_url=_optional_str(row.get("first_image_url")),
     )
 
 

@@ -18,6 +18,7 @@ from app.agent_context.schemas import (
     Clarification,
     ContextError,
     ContextWarning,
+    DistrictScope,
     RecommendationContext,
     parse_candidate_names,
 )
@@ -42,6 +43,8 @@ class ContextAssemblyInput:
     holidays_result: HolidayToolResult | None = None
     weather_requested: bool = True
     holidays_requested: bool = True
+    # 구 단위로 후보를 모은 요청이면 그 사실. 반경 검색이면 None이다(D-1XX).
+    district_scope: DistrictScope | None = None
 
 
 def assemble_agent_context_response(
@@ -140,6 +143,7 @@ def assemble_agent_context_response(
         weather=weather,
         places=places,
         holidays=holidays,
+        district_scope=assembly_input.district_scope,
     )
 
     if assembly_input.places_result is None:

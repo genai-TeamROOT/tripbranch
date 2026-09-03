@@ -16,7 +16,11 @@ from app.domain.models import GeocodeResult
 from app.errors import AppError
 from app.providers.contracts import ProviderResult, ProviderSource, provider_result
 from app.providers.upstream_errors import upstream_error_detail
-from app.service_area import SUPPORTED_DISTRICTS
+from app.service_area import (
+    SUPPORTED_DISTRICTS,
+    ServiceDistrict,
+    district_representative_point,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +87,15 @@ _KNOWN_LOCATIONS: dict[str, tuple[str, float, float]] = {
 }
 
 
+def _supported_district_in(value: str) -> ServiceDistrict | None:
+    """질의에 지원 구 이름이 들어 있으면 그 구. "서울특별시 강남구"도 "강남구"도 받는다."""
+    normalized = value.replace(" ", "")
+    return next(
+        (district for district in SUPPORTED_DISTRICTS if district.name in normalized),
+        None,
+    )
+
+
 class FakeGeocodingProvider:
     """정해진 소수의 지명만 좌표로 변환하는 가짜 구현."""
 
@@ -116,6 +129,25 @@ class FakeGeocodingProvider:
                 ),
                 source=ProviderSource.FAKE_GEOCODING,
             )
+
+        # 행정구역 이름은 표에 두지 않고 경계 파일에서 푼다. 실제 Naver Geocoding이
+        # "서울특별시 강남구"를 인식하므로(docs/api-samples.md의 행정동/법정동 항목)
+        # Fake만 못 풀면 구 단위 경로가 로컬·테스트에서 아예 돌지 않는다.
+        district = _supported_district_in(provider_query)
+        if district is not None:
+            point = district_representative_point(district.district_code)
+            if point is not None:
+                latitude, longitude = point
+                return provider_result(
+                    GeocodeResult(
+                        query=location_query,
+                        resolved_name=f"서울특별시 {district.name}",
+                        latitude=latitude,
+                        longitude=longitude,
+                        administrative_district=district.name,
+                    ),
+                    source=ProviderSource.FAKE_GEOCODING,
+                )
 
         for name, (resolved_name, lat, lon) in _KNOWN_LOCATIONS.items():
             if name in provider_query:

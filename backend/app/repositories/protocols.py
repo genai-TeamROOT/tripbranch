@@ -10,6 +10,7 @@ from uuid import UUID
 from app.domain.models import (
     AccessibilityNeed,
     BarrierFreePlaceRow,
+    DistrictPlaceRow,
     PlaceBarrierFreeDetails,
     PlaceCategoryFilter,
     PlaceEvidenceMatch,
@@ -175,6 +176,24 @@ class PlaceRepository(Protocol):
         error_summary: Mapping[str, object] | None = None,
         completed_at: datetime,
     ) -> None: ...
+
+
+class DistrictPlaceRepository(Protocol):
+    """구 하나의 활성 장소를 전부 읽는 읽기 전용 계약(D-1XX).
+
+    다른 후보 수집 계약과 나눈 이유는 **모으는 단위가 다르기** 때문이다. 좌표와
+    반경을 받지 않고 구 코드 하나만 받는다 — 구 단위 요청은 기준점이 없다.
+
+    개수 제한도 받지 않는다. 몇 곳을 쓸지 고르는 일은 저장소가 아니라
+    `agent_context.district_selection`이 한다. 여기서 앞의 N곳만 잘라 주면 그
+    자름이 무슨 순서인지가 결과를 정해버리는데, 구 단위에는 의미 있는 순서가 없다.
+    """
+
+    async def list_active_places_in_district(
+        self, district_code: str
+    ) -> tuple[DistrictPlaceRow, ...]:
+        """그 구의 활성 장소 전량. 좌표가 말이 안 되는 행은 빼고 돌려준다."""
+        ...
 
 
 class BarrierFreePlaceSearchRepository(Protocol):
