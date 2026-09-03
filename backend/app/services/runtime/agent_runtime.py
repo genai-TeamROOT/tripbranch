@@ -29,7 +29,7 @@ from app.agent_context.schemas import (
 from app.auth.principal import Principal
 from app.config import settings
 from app.domain.ranking_origin import resolve_ranking_origin
-from app.domain.schedule_travel import ScheduleTravelCandidate
+from app.domain.schedule_travel import ScheduleTravelCandidate, SegmentWeather
 from app.domain.scoring import SCORING_VERSION
 from app.domain.travel_route import (
     MEASURED_ROUTE_SOURCES,
@@ -1541,6 +1541,31 @@ def _build_pairwise_distances_km(
                 second_location[1],
             )
     return distances
+
+
+def _segment_weather(tool_context: RecommendationContext) -> SegmentWeather | None:
+    """C가 조회한 예보를 일정 구간 판정이 쓰는 사실로 옮긴다 (TP-226).
+
+    `conditions.weather`(사용자가 발화에서 말한 값)가 아니라 조회한 예보를 쓴다 —
+    비 오는 날 20분을 걷게 할지는 말한 적 없는 사용자에게도 판단해야 한다.
+
+    판정(좋다/나쁘다)은 옮기지 않는다. D-051대로 사실만 넘기고, 그 사실을 어떻게
+    읽을지는 판정하는 쪽이 정한다. `resolve_weather_condition()`이 만드는
+    WeatherCondition을 쓰지 않는 것도 같은 이유다 — 그건 "이 날씨가 이 사용자
+    목적에 맞는가"라는 다른 질문의 답이다.
+    """
+
+    weather = tool_context.weather
+    if weather is None or weather.status not in {"success", "partial"}:
+        return None
+    data = weather.data
+    if data is None:
+        return None
+    return SegmentWeather(
+        precipitation=data.precipitation,
+        sky=data.sky,
+        temperature_celsius=data.temperature_celsius,
+    )
 
 
 def _build_travel_candidates(
@@ -4165,6 +4190,7 @@ async def _run_schedule_branch(
             travel_candidates=_build_travel_candidates(
                 schedule_candidates, places, fallback_coordinates=snapshot_coordinates
             ),
+            weather=_segment_weather(tool_context),
         )
         await _emit_progress(
             stream_event_sink,
@@ -4196,6 +4222,7 @@ async def _run_schedule_branch(
             travel_candidates=_build_travel_candidates(
                 schedule_candidates, places, fallback_coordinates=snapshot_coordinates
             ),
+            weather=_segment_weather(tool_context),
         )
         await _emit_progress(
             stream_event_sink,

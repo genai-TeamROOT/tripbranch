@@ -343,6 +343,9 @@ async def _resolve_travel_minutes(
         candidates=request.travel_candidates,
         place_ids=place_ids,
         conditions=request.conditions,
+        # 구간 이동수단 판정에 쓴다(TP-226). 두 요청 스키마가 같은 필드를 가지므로
+        # 전체 편성과 부분 재편성이 같은 값을 넘긴다.
+        weather=request.weather,
         settings=settings or Settings(),
         travel_route_tool=travel_route_tool,
     )

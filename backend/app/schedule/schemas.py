@@ -15,7 +15,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from app.domain.schedule_travel import ScheduleTravelCandidate
+from app.domain.schedule_travel import ScheduleTravelCandidate, SegmentWeather
 from app.schedule.associations import CoVisitedHint
 from app.schemas import RecommendationItem, ScheduleItem, UserConditions
 
@@ -59,6 +59,15 @@ class SchedulePlanningRequest(BaseModel):
     # 도착시각을 계산하는 입력이다. 비어 있으면 시간표가 구간마다 폴백값을 쓰므로
     # 이 필드를 모르는 기존 호출부는 동작이 바뀌지 않는다.
 
+    weather: SegmentWeather | None = None
+    # C가 조회한 예보. 구간 이동수단 판정에 쓴다(TP-226). `conditions.weather`와
+    # 다르다 — 그쪽은 사용자가 발화에서 말한 값이고 이쪽은 실제로 조회한 사실이다.
+    # 비 오는 날 20분을 걷게 할지 판단하려면 발화가 아니라 조회한 값이 필요하다.
+    #
+    # **두 요청 스키마에 같이 둔다.** 한쪽만 채우면 같은 사용자가 전체 편성과 부분
+    # 수정에서 다른 판정을 받는다. 기본값이 None이라 이 필드를 모르는 기존 호출부는
+    # 동작이 바뀌지 않는다(travel_candidates를 추가했을 때와 같은 방식).
+
     co_visited_hints: list[CoVisitedHint] = Field(default_factory=list)
     # place_associations(D-088) 기반 "이 후보들은 실제로 함께 방문됐다" 힌트.
     # A가 채우지 않는다 — planner.py의 plan_schedule()이 co_visited_fetcher가
@@ -91,6 +100,15 @@ class SchedulePartialFillRequest(BaseModel):
     # 출처가 같지만 쓰임이 다르다 — 저쪽은 LLM에 주는 참고 근거이고, 이쪽은 엔진이
     # 도착시각을 계산하는 입력이다. 비어 있으면 시간표가 구간마다 폴백값을 쓰므로
     # 이 필드를 모르는 기존 호출부는 동작이 바뀌지 않는다.
+
+    weather: SegmentWeather | None = None
+    # C가 조회한 예보. 구간 이동수단 판정에 쓴다(TP-226). `conditions.weather`와
+    # 다르다 — 그쪽은 사용자가 발화에서 말한 값이고 이쪽은 실제로 조회한 사실이다.
+    # 비 오는 날 20분을 걷게 할지 판단하려면 발화가 아니라 조회한 값이 필요하다.
+    #
+    # **두 요청 스키마에 같이 둔다.** 한쪽만 채우면 같은 사용자가 전체 편성과 부분
+    # 수정에서 다른 판정을 받는다. 기본값이 None이라 이 필드를 모르는 기존 호출부는
+    # 동작이 바뀌지 않는다(travel_candidates를 추가했을 때와 같은 방식).
 
     co_visited_hints: list[CoVisitedHint] = Field(default_factory=list)
     # SchedulePlanningRequest.co_visited_hints와 동일한 용도(D-088/D-091) — 부분
