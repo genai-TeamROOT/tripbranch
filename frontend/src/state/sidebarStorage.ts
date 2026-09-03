@@ -55,7 +55,24 @@ export function loadFavorites(): FavoritePlace[] {
   return readJsonArray<FavoritePlace>(FAVORITES_KEY);
 }
 
+/* 로그아웃에서 이 기기의 즐겨찾기를 비운다(state/localUserData.ts). 서버에 사본이
+   없어 되돌릴 수 없는 삭제다 — 신원이 바뀔 때만 부른다. */
+export function clearFavorites(): void {
+  try {
+    localStorage.removeItem(FAVORITES_KEY);
+  } catch {
+    /* 저장소가 막혀 있어도(시크릿 모드 등) 로그아웃 자체는 끝나야 한다. */
+  }
+}
+
+/* 빈 목록은 키 자체를 지운다. "[]"를 남기면 로그아웃 직후 화면이 다시 마운트하면서
+   방금 지운 키가 되살아나, 저장소만 보고는 비워졌는지 알 수 없다(값은 비어 있어도
+   눈에는 남아 있는 것으로 보인다). 없는 키는 읽을 때 빈 목록으로 취급된다. */
 export function saveFavorites(favorites: FavoritePlace[]): void {
+  if (favorites.length === 0) {
+    clearFavorites();
+    return;
+  }
   writeJsonArray(FAVORITES_KEY, favorites);
 }
 

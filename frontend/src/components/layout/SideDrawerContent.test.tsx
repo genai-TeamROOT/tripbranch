@@ -287,6 +287,26 @@ function sidebar() {
   return screen.getByRole("complementary");
 }
 
+/*
+ * 로그아웃은 이 기기에 남은 값을 전부 지워야 한다 — 같은 브라우저에서 다음 사람이
+ * 앞사람의 취향·즐겨찾기를 이어받으면 안 된다. 화면에서 실제로 눌러 확인한다.
+ */
+test("로그아웃하면 이 기기의 취향·즐겨찾기가 남지 않는다", async () => {
+  const user = userEvent.setup();
+  localStorage.setItem(
+    "tb_preferences",
+    JSON.stringify([{ label: "조용한 곳", source: "preference", codes: ["quiet"] }]),
+  );
+  sessionStorage.setItem("tb_search_center", "안국역");
+  await renderApp();
+
+  await user.click(within(sidebar()).getByRole("button", { name: /로그아웃/ }));
+
+  await waitFor(() => expect(localStorage.getItem("tb_preferences")).toBeNull());
+  expect(localStorage.getItem("tb_favorites")).toBeNull();
+  expect(sessionStorage.getItem("tb_search_center")).toBeNull();
+});
+
 test("저장된 즐겨찾기가 사이드바에 보인다", async () => {
   await renderApp();
 

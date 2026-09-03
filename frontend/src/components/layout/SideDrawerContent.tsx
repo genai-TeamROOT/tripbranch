@@ -18,6 +18,7 @@ import { useTripDispatch, useTripState } from "../../state/TripContext";
 import type { Language } from "../../types";
 import { deleteChatSession, renameChatSession, resumeChatSession } from "../../api/trip";
 import { loadChatSessions, refreshChatSessions } from "../../state/chatSessions";
+import { clearLocalUserData } from "../../state/localUserData";
 import {
   createId,
   loadFavorites,
@@ -135,7 +136,9 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
   async function handleSignOut() {
     try {
       await signOut();
-      /* 신원만 끊고 대화를 두면 다음 신원의 화면에 이전 대화가 남는다. 함께 비운다. */
+      /* 신원만 끊고 이 기기의 데이터를 두면 다음 신원의 화면에 앞사람의 대화·취향·
+         즐겨찾기·검색 위치가 그대로 남는다. 함께 비운다(state/localUserData.ts). */
+      clearLocalUserData();
       dispatch({ type: "RESET" });
       /* 이동은 따로 시키지 않는다 — 세션이 사라지면 RequireUser가 관문으로 보낸다. */
     } finally {
