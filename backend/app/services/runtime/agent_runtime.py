@@ -1427,6 +1427,29 @@ def _merge_recommendation_context_places(
     return first.model_copy(update={"places": merged_places})
 
 
+def _narrow_recommendation_context_places(
+    context: RecommendationContext, place_ids: Sequence[str]
+) -> RecommendationContext | None:
+    """후보 Context를 주어진 place_id만 남기고 좁힌다. 남는 게 없으면 None.
+
+    자르기에서 밀린 보관함 장소만 다시 채점할 때 쓴다(TP-223). 주입 Context
+    (`_saved_places_context()`)를 그대로 쓰면 **이번 턴 후보에 원래 들어 있던**
+    보관함 장소는 거기 없어서 되붙일 수 없다 — 주입 대상이 "후보에 없는 것"뿐이기
+    때문이다. 병합이 끝난 `tool_context`를 좁히면 주입분과 원래 후보를 함께 담는다.
+    """
+
+    places = context.places
+    if places is None or not places.data:
+        return None
+    keep = set(place_ids)
+    narrowed = [place for place in places.data if place.place_id in keep]
+    if not narrowed:
+        return None
+    return context.model_copy(
+        update={"places": places.model_copy(update={"data": narrowed})}
+    )
+
+
 def _candidate_pool_exhausted(context: RecommendationContext) -> bool:
     """이 반경에서 C가 더 줄 후보가 없는지 판정한다 — 참이면 보충 조회를 멈춘다.
 
@@ -4065,7 +4088,14 @@ async def _score_recommendations(
     # 0으로 깔려, 가장 확실하게 잘리는 것이 보관함 장소다. 게다가 상한을 올리면
     # _score_with_measured_routes()의 shortlist_limit이 같이 커져 도보 실측
     # 조회까지 늘어난다(D-113이 줄여놓은 것을 되돌린다).
-    injected_saved_ids: list[str] = []
+    # **주입한 것만 지키면 절반만 지키는 것이다**(TP-223). `_saved_places_context()`는
+    # "이번 턴 후보에 없는" 보관함 장소만 주입하므로, 후보에 이미 들어 있던 보관함
+    # 장소는 주입 대상도 복구 대상도 아니었다 — 자르기에 밀리면 아무도 되붙이지
+    # 않았고 사용자에게는 "이번에 찾은 후보에 없어서"로 나갔다. 담은 것은 후보에
+    # 있었든 주입됐든 똑같이 지킨다.
+    protected_saved_ids = (
+        [item.place_id for item in saved_places] if is_schedule else []
+    )
     if isinstance(recommendation_provider, StagedRecommendationProvider):
         # 같은 실행의 모든 prepare가 동일한 운영시간 기준을 사용해야 한다. B 세션에는
         # 저장하지 않고 이 실행 동안만 고정한다.
@@ -4202,9 +4232,6 @@ async def _score_recommendations(
                 )
             )
             tool_context = _merge_recommendation_context_places(tool_context, saved_context)
-            injected_saved_ids = [
-                place.place_id for place in (saved_context.places.data or [])
-            ]
 
         merged_prepared = recommendation_provider.merge_prepared(prepared_batches)
         recommendations = await _score_with_measured_routes(
@@ -4217,8 +4244,10 @@ async def _score_recommendations(
         )
         # 자르기에서 빠진 보관함 장소만 좁혀서 한 번 더 채점해 붙인다. 점수를
         # 지어내지 않는 것이 핵심이다 — D가 같은 공식으로 실제로 매긴다.
-        cut_saved_ids = _missing_place_ids(recommendations, injected_saved_ids)
+        cut_saved_ids = _missing_place_ids(recommendations, protected_saved_ids)
         if cut_saved_ids:
+            # merged_prepared에는 원래 후보 배치와 주입 배치가 함께 들어 있어
+            # 좁히는 것만으로 두 출처를 모두 덮는다.
             pinned = await recommendation_provider.score_prepared(
                 agent_conditions,
                 _narrow_prepared(merged_prepared, cut_saved_ids),
@@ -4235,9 +4264,6 @@ async def _score_recommendations(
         )
         if saved_context is not None:
             tool_context = _merge_recommendation_context_places(tool_context, saved_context)
-            injected_saved_ids = [
-                place.place_id for place in (saved_context.places.data or [])
-            ]
         recommendations = await recommendation_provider.recommend(
             agent_conditions,
             tool_context,
@@ -4246,13 +4272,19 @@ async def _score_recommendations(
             ignore_operating_hours=effective_ignore_operating_hours,
         )
         # staged 분기와 같은 이유로 자르기에서 빠진 것만 다시 붙인다. 이쪽은
-        # prepare 결과가 없어 좁힐 대상이 Context뿐이라 주입 Context를 그대로
-        # 다시 채점하고, 실제로 빠졌던 id만 골라 붙인다.
-        cut_saved_ids = _missing_place_ids(recommendations, injected_saved_ids)
-        if cut_saved_ids and saved_context is not None:
+        # prepare 결과가 없어 좁힐 대상이 Context뿐이라, **병합이 끝난
+        # tool_context**를 그 id로 좁혀 다시 채점한다 — 주입 Context만 쓰면 후보에
+        # 원래 있던 보관함 장소를 되붙일 수 없다(TP-223).
+        cut_saved_ids = _missing_place_ids(recommendations, protected_saved_ids)
+        narrowed_context = (
+            _narrow_recommendation_context_places(tool_context, cut_saved_ids)
+            if cut_saved_ids
+            else None
+        )
+        if narrowed_context is not None:
             pinned = await recommendation_provider.recommend(
                 agent_conditions,
-                saved_context,
+                narrowed_context,
                 [],
                 limit=len(cut_saved_ids),
                 ignore_operating_hours=effective_ignore_operating_hours,
