@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import Protocol
 
 from app.domain.schedule_travel import (
+    ModeJudgmentContext,
     ScheduleTravelCandidate,
     ScheduleTravelEdge,
     ScheduleTravelEstimateResult,
     ScheduleTravelPair,
     ScheduleTravelWarning,
-    SegmentWeather,
+    SegmentModeInput,
     TravelConfidence,
 )
 from app.domain.travel_route import (
@@ -63,7 +64,20 @@ def _candidate_index(
 
 # 사용자가 이동수단을 콕 집어 말한 경우. 거리와 무관하게 그대로 가므로 판정하는
 # 쪽에 물어볼 것이 없고, 물어보면 사용자가 말한 것을 뒤집을 여지가 생긴다.
-_JUDGE_SKIPPED_TRANSPORTS = frozenset({Transport.WALK, Transport.CAR})
+JUDGE_SKIPPED_TRANSPORTS = frozenset({Transport.WALK, Transport.CAR})
+
+# 판정이 **고를 수 있는** 이동수단. 자동차는 여기 없다.
+#
+# 자동차는 사용자가 "차로 간다"고 말했을 때만 쓰는데, 그 경우는 위
+# `JUDGE_SKIPPED_TRANSPORTS`에 걸려 판정을 아예 부르지 않는다. 그래서 판정이
+# 자동차를 고를 상황 자체가 없다.
+#
+# **프롬프트에 적는 것만으로는 부족하다.** 거기 적은 것은 부탁이고 이 집합이
+# 계약이다 — `TravelMode`에 driving이 있어 어휘 검증만으로는 통과해버리고, 그러면
+# 차로 가겠다고 말한 적 없는 사용자에게 자동차 실측이 붙는다.
+JUDGEABLE_MODES: frozenset[TravelMode] = frozenset(
+    {TravelMode.WALKING, TravelMode.TRANSIT}
+)
 
 
 def _select_mode(
@@ -82,45 +96,6 @@ def _select_mode(
     if walking_seconds <= walk_transfer_threshold_min * 60:
         return TravelMode.WALKING
     return TravelMode.TRANSIT
-
-
-@dataclass(frozen=True)
-class SegmentModeInput:
-    """이동수단을 정할 구간 한 줄. 판정하는 쪽이 보는 유일한 재료다.
-
-    **누적 도보량을 여기 담지 않는다.** "이 구간 전까지 몇 분 걸었나"는 앞 구간이
-    도보인지 이미 정해져 있어야 나오는 값인데, 그게 지금 정하려는 값이라 순환이다.
-    대신 구간마다 `walk_minutes`("걸으면 몇 분")만 주고, 누적은 판정하는 쪽이 표
-    전체를 보고 직접 더한다 — 전 구간을 한 번에 넘기는 설계라 가능하다.
-    """
-
-    from_place_id: str
-    to_place_id: str
-    # 추려낸 구간 안에서의 순번(1부터). `pairs`의 인덱스가 아니다 — 중복·자기쌍·
-    # 좌표 없는 장소가 빠지므로 둘이 어긋난다.
-    order: int
-    distance_m: int
-    # 이 구간을 도보로 갔을 때의 예상 분. 실제로 도보로 갈지는 아직 모른다.
-    walk_minutes: float
-
-    @property
-    def key(self) -> tuple[str, str]:
-        return (self.from_place_id, self.to_place_id)
-
-
-@dataclass(frozen=True)
-class ModeJudgmentContext:
-    """전 구간이 공유하는 판정 조건.
-
-    `UserConditions`를 그대로 넘기지 않는다. 판정에 쓰는 값만 옮겨 담아야 나중에
-    "이 판정이 무엇을 보고 정했나"가 타입에 그대로 드러난다.
-    """
-
-    transport: Transport | None
-    companion: str | None = None
-    accessibility_needs: tuple[str, ...] = ()
-    # 조회된 예보. 조회에 실패했거나 값이 없는 턴에서는 비어 있다.
-    weather: SegmentWeather | None = None
 
 
 class ModeJudge(Protocol):
@@ -235,7 +210,7 @@ async def select_modes_for_segments(
     if not segments:
         return {}
 
-    if judge is None or context.transport in _JUDGE_SKIPPED_TRANSPORTS:
+    if judge is None or context.transport in JUDGE_SKIPPED_TRANSPORTS:
         return {
             segment.key: _select_mode(
                 context.transport,
@@ -261,6 +236,10 @@ async def select_modes_for_segments(
         if not isinstance(mode, TravelMode):
             raise ValueError(
                 f"알 수 없는 이동수단입니다: {mode!r} (구간 {segment.order})"
+            )
+        if mode not in JUDGEABLE_MODES:
+            raise ValueError(
+                f"판정이 고를 수 없는 이동수단입니다: {mode} (구간 {segment.order})"
             )
         modes[segment.key] = mode
     return modes
@@ -535,6 +514,8 @@ __all__ = [
     "SCHEDULE_TRAVEL_SELF_PAIR_WARNING",
     "SCHEDULE_TRAVEL_UNKNOWN_PLACE_WARNING",
     "ModeJudge",
+    "JUDGEABLE_MODES",
+    "JUDGE_SKIPPED_TRANSPORTS",
     "ModeJudgmentContext",
     "SegmentModeInput",
     "build_segment_inputs",

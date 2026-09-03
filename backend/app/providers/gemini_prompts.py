@@ -10,8 +10,10 @@ app/providers/gemini.py에 두고, 이 모듈은 프롬프트 텍스트만 담�
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
 
+from app.domain.schedule_travel import ModeJudgmentContext, SegmentModeInput
 from app.prompts.loader import active_variant, load_text, render_text
 from app.schedule.associations import CoVisitedHint
 from app.schedule.schemas import (
@@ -35,7 +37,7 @@ from app.schemas import (
 # 쓰였는지와 무관하게 단일 값으로 취급한다 — 함수별 개별 버전은 만들지 않는다. 판별·추출
 # 규칙에 영향을 주는 변경(6개 함수 중 하나라도) 시 버전을 올린다 — 사소한 문구·주석
 # 변경은 올리지 않는다.
-_BASE_PROMPT_VERSION = "agent-interpret-prompts-1.0.27"
+_BASE_PROMPT_VERSION = "agent-interpret-prompts-1.0.28"
 _ACTIVE_PROMPT_VARIANT = active_variant()
 PROMPT_VERSION = (
     _BASE_PROMPT_VERSION
@@ -200,6 +202,7 @@ def build_modify_extraction_instruction(
         shown_place_count=shown_place_count,
         relative_expression_rules=load_text("modify/relative_expression_rules.md"),
         field_merge_rules=load_text("modify/field_merge_rules.md"),
+        accessibility_needs_rules=load_text("_shared/rules/accessibility_needs.md"),
         transport_rules=load_text("_shared/rules/transport.md"),
         weather_intent_rules=load_text("_shared/rules/weather_intent.md"),
         concentration_rules=load_text("_shared/rules/concentration_intent.md"),
@@ -345,6 +348,74 @@ def build_info_answer_instruction(question_type: str) -> str:
         chatbot_name=CHATBOT_NAME,
         persona=load_text("_shared/persona/trivi.md"),
         question_type=question_type,
+    )
+
+
+def format_mode_judge_context(
+    segments: Sequence[SegmentModeInput], context: ModeJudgmentContext
+) -> str:
+    """구간 표와 공유 조건을 판정 LLM이 읽을 텍스트로 만든다. (TP-227)
+
+    **조회하지 못한 값은 줄 자체를 넣지 않는다.** "날씨: 없음"처럼 적으면 모델이
+    그것을 사실로 읽고 판단에 쓴다 — 날씨를 모르는 것과 날씨가 없는 것은 다르다.
+
+    도보 시간에 "직선 기준"을 붙여 둔다. 값 자체에 우회계수를 곱하지 않는 이유는
+    규칙 폴백 경로(`_select_mode()`)가 쓰는 값과 갈리면 같은 구간을 두 자로 재게
+    되기 때문이다(D-118이 시간 예산을 두고 지킨 원칙과 같다).
+    """
+
+    lines: list[str] = ["## 조건"]
+    if context.companion is not None:
+        lines.append(f"- 동행: {context.companion}")
+    if context.accessibility_needs:
+        lines.append(f"- 무장애 요구: {', '.join(context.accessibility_needs)}")
+    weather = context.weather
+    if weather is not None:
+        facts = [
+            f"강수 {weather.precipitation}" if weather.precipitation else None,
+            f"하늘 {weather.sky}" if weather.sky else None,
+            (
+                f"기온 {weather.temperature_celsius:g}도"
+                if weather.temperature_celsius is not None
+                else None
+            ),
+        ]
+        stated = [fact for fact in facts if fact is not None]
+        if stated:
+            lines.append(f"- 날씨: {', '.join(stated)}")
+    if len(lines) == 1:
+        lines.append("- 없음 (거리만 보고 정한다)")
+
+    lines.append("")
+    if context.sequential:
+        lines.append("## 구간 (순서대로 이어진다)")
+    else:
+        lines.append("## 후보 (서로 대안이다. 사용자는 이 중 한 곳만 간다)")
+    for segment in segments:
+        lines.append(
+            f"{segment.order}. {segment.distance_m}m"
+            f" (직선 기준 도보 {segment.walk_minutes:g}분)"
+        )
+    return "\n".join(lines)
+
+
+def build_mode_judge_instruction() -> str:
+    """구간 이동수단을 정하는 system instruction. (TP-227)
+
+    특정 Intent에 매이지 않는다 — 일정 편성(SCHEDULE)과 추천(RECOMMEND)이 같은
+    판정을 쓴다. 두 임계값이 환산 관계라(도보 20분 x 우회계수 1.65배 = 직선
+    0.85km, D-118) 한쪽만 다른 판정을 쓰면 같은 거리를 두고 서로 다른 이동수단을
+    말하게 된다.
+
+    `prompts/schedule/`에 두지 않은 이유가 이것이다. 그쪽은 OWNERS.md상 B 소유이고
+    담는 내용도 "장소 순서와 머무는 시간"이라 다른 질문인데, 거기 두면 추천이 일정
+    프롬프트를 읽는 모양이 된다.
+    """
+
+    return render_text(
+        "mode_judge/select_instruction.md",
+        mode_rules=load_text("mode_judge/mode_rules.md"),
+        condition_rules=load_text("mode_judge/condition_rules.md"),
     )
 
 
@@ -645,6 +716,8 @@ __all__ = [
     "build_info_answer_instruction",
     "build_recommendation_summary_instruction",
     "build_follow_up_suggestion_instruction",
+    "build_mode_judge_instruction",
+    "format_mode_judge_context",
     "build_compare_summary_instruction",
     "build_schedule_planning_instruction",
     "format_schedule_planning_context",

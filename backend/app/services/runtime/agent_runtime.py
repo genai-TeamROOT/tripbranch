@@ -29,7 +29,12 @@ from app.agent_context.schemas import (
 from app.auth.principal import Principal
 from app.config import settings
 from app.domain.ranking_origin import resolve_ranking_origin
-from app.domain.schedule_travel import ScheduleTravelCandidate, SegmentWeather
+from app.domain.schedule_travel import (
+    ModeJudgmentContext,
+    ScheduleTravelCandidate,
+    SegmentModeInput,
+    SegmentWeather,
+)
 from app.domain.scoring import SCORING_VERSION
 from app.domain.travel_route import (
     MEASURED_ROUTE_SOURCES,
@@ -135,7 +140,10 @@ from app.services.runtime.protocols import (
     ToolProvider,
     TravelRouteToolProvider,
 )
-from app.services.runtime.recommendation_transform import to_measured_travel_modes
+from app.services.runtime.recommendation_transform import (
+    modes_for_judged_choice,
+    to_measured_travel_modes,
+)
 from app.services.runtime.response_composer import (
     compose_chat_message,
     compose_compare_message,
@@ -198,6 +206,11 @@ from app.state.service import (
 )
 from app.state.session import new_trace_id
 from app.state.store import StateStore
+from app.tools.mode_judge import LlmModeJudge, narrow_accessibility_needs
+from app.tools.schedule_travel import (
+    JUDGE_SKIPPED_TRANSPORTS,
+    select_modes_for_segments,
+)
 from app.tools.travel_route import TravelRouteQuery
 
 logger = logging.getLogger(__name__)
@@ -1260,6 +1273,7 @@ async def _score_with_measured_routes(
     tool_context: RecommendationContext,
     travel_route_tool: TravelRouteToolProvider | None,
     recommendation_limit: int,
+    llm: LLMProvider | None = None,
 ) -> RecommendationResponse:
     """직선거리로 한 번 줄 세운 뒤, 상위 후보에만 실측을 붙여 다시 채점한다.
 
@@ -1303,7 +1317,13 @@ async def _score_with_measured_routes(
 
     narrowed = _narrow_prepared(prepared, shortlist_ids)
     travel_routes = await _fetch_travel_routes(
-        travel_route_tool, tool_context, narrowed, conditions
+        travel_route_tool,
+        tool_context,
+        narrowed,
+        conditions,
+        # 후보별 실측 수단을 일정과 같은 판정으로 정한다(TP-227). 안 넘기면 기존
+        # 거리 규칙으로 돌아간다.
+        llm=llm,
     )
     if not travel_routes:
         return await recommendation_provider.score_prepared(
@@ -1816,11 +1836,113 @@ async def _apply_co_visited_rerank(
     )
 
 
+@dataclass(frozen=True)
+class _RecommendationModePlan:
+    """후보별로 무엇을 재고, 판정이 무엇을 골랐는지. (TP-227)
+
+    둘을 따로 담는 이유는 **규칙 경로와 판정 경로에서 뒤 단계가 달라야** 하기
+    때문이다. 규칙으로 정한 `(도보, 대중교통)`은 D-118대로 빠른 쪽을 쓰지만,
+    판정이 대중교통을 고른 경우는 도보가 더 빨라도 그 값을 쓴다. 재는 집합만
+    보면 둘을 구분할 수 없다 — 모양이 같기 때문이다.
+    """
+
+    measure: dict[str, tuple[TravelMode, ...]]
+    # 판정이 고른 수단. 규칙으로 정한 회차는 비어 있다.
+    judged: dict[str, TravelMode]
+
+
+async def _judge_recommendation_modes(
+    candidates: Sequence[tuple[RouteDestination, float]],
+    *,
+    conditions: UserConditions | None,
+    context: RecommendationContext,
+    switch_threshold_km: float,
+    llm: LLMProvider | None,
+) -> _RecommendationModePlan:
+    """후보별로 어떤 이동수단을 실측할지 정한다. (TP-227)
+
+    일정과 **같은 판정**을 쓴다. 두 임계값이 환산 관계라(D-118) 한쪽만 다른 판정을
+    쓰면 같은 거리를 두고 일정은 "타세요" 추천은 "걸으세요"라고 하게 된다.
+
+    다만 후보는 서로 대안이라 `sequential=False`로 넘긴다 — 사용자는 그중 한 곳만
+    가므로, 앞 후보를 근거로 삼으면 목록에서 몇 번째냐에 따라 같은 거리가 다르게
+    판정된다.
+
+    `llm`이 없거나 판정이 실패하면 기존 거리 규칙(`to_measured_travel_modes()`)으로
+    되돌아간다. 되돌아간 사실은 관측에 남긴다 — 안 남기면 판정이 한 번도 안 도는
+    채로 정상처럼 보인다.
+    """
+
+    def _by_rule() -> _RecommendationModePlan:
+        # judged를 비워 둔다 — 뒤 단계가 D-118대로 빠른 쪽을 고르게 하려는 것이다.
+        return _RecommendationModePlan(
+            measure={
+                destination.place_id: to_measured_travel_modes(
+                    conditions,
+                    straight_line_km=straight_line_km,
+                    switch_threshold_km=switch_threshold_km,
+                )
+                for destination, straight_line_km in candidates
+            },
+            judged={},
+        )
+
+    transport = conditions.transport if conditions is not None else None
+    if llm is None or transport in JUDGE_SKIPPED_TRANSPORTS:
+        return _by_rule()
+
+    segments = tuple(
+        SegmentModeInput(
+            # 출발지는 랭킹 기준점 하나뿐이라 후보 id로 구분한다.
+            from_place_id="origin",
+            to_place_id=destination.place_id,
+            order=index,
+            distance_m=round(straight_line_km * 1000),
+            walk_minutes=round(
+                straight_line_km / WALKING_SPEED_KM_PER_MINUTE, 1
+            ),
+        )
+        for index, (destination, straight_line_km) in enumerate(candidates, start=1)
+    )
+    judgment_context = ModeJudgmentContext(
+        transport=transport,
+        companion=conditions.companion if conditions is not None else None,
+        accessibility_needs=narrow_accessibility_needs(
+            conditions.accessibility_needs if conditions is not None else ()
+        ),
+        weather=_segment_weather(context),
+        sequential=False,
+    )
+    try:
+        chosen = await select_modes_for_segments(
+            segments,
+            judgment_context,
+            judge=LlmModeJudge(llm),
+            walking_speed_mps=WALKING_SPEED_KM_PER_MINUTE * 1000 / 60,
+            walk_transfer_threshold_min=settings.schedule_walk_transfer_threshold_min,
+        )
+    except (AppError, ValueError):
+        # 일정 쪽(`schedule/travel.py::_resolve_edges`)과 같은 이유로 좁게 잡는다 —
+        # 없는 메서드(AttributeError)는 배선이 끊긴 것이라 시끄럽게 터져야 한다.
+        logger.warning("recommend_travel.mode_judge_failed", exc_info=True)
+        record_score("recommend_mode_judge_fallback", 1.0)
+        return _by_rule()
+
+    return _RecommendationModePlan(
+        measure={
+            segment.to_place_id: modes_for_judged_choice(conditions, chosen[segment.key])
+            for segment in segments
+        },
+        judged={segment.to_place_id: chosen[segment.key] for segment in segments},
+    )
+
+
 async def _fetch_travel_routes(
     route_tool: TravelRouteToolProvider | None,
     context: RecommendationContext,
     prepared: PreparedRecommendationResult,
     conditions: UserConditions | None = None,
+    llm: LLMProvider | None = None,
 ) -> tuple[TravelRoute, ...]:
     """하드 필터 통과 후보를 후보별 이동수단으로 실측하고 D에 넘길 결과를 만든다.
 
@@ -1851,29 +1973,43 @@ async def _fetch_travel_routes(
         settings.schedule_walk_transfer_threshold_min
     )
 
-    destinations_by_mode: dict[TravelMode, list[RouteDestination]] = {}
+    # 후보별 직선거리를 먼저 모은다. 판정을 후보 루프 안에서 부르면 후보 수만큼
+    # LLM을 부르게 되고, 그건 일정 쪽에서 구간별 호출을 피한 이유와 같다(TP-227).
+    candidates: list[tuple[RouteDestination, float]] = []
     for place in places:
         if place.place_id not in eligible_ids:
             continue
-        destination = RouteDestination(
-            place_id=place.place_id,
-            coordinate=GeoCoordinate(
-                latitude=place.location.latitude,
-                longitude=place.location.longitude,
-            ),
+        candidates.append(
+            (
+                RouteDestination(
+                    place_id=place.place_id,
+                    coordinate=GeoCoordinate(
+                        latitude=place.location.latitude,
+                        longitude=place.location.longitude,
+                    ),
+                ),
+                haversine_km(
+                    origin.latitude,
+                    origin.longitude,
+                    place.location.latitude,
+                    place.location.longitude,
+                ),
+            )
         )
-        straight_line_km = haversine_km(
-            origin.latitude,
-            origin.longitude,
-            place.location.latitude,
-            place.location.longitude,
-        )
-        modes = to_measured_travel_modes(
-            conditions,
-            straight_line_km=straight_line_km,
-            switch_threshold_km=switch_threshold_km,
-        )
-        for mode in modes:
+    if not candidates:
+        return ()
+
+    plan = await _judge_recommendation_modes(
+        candidates,
+        conditions=conditions,
+        context=context,
+        switch_threshold_km=switch_threshold_km,
+        llm=llm,
+    )
+
+    destinations_by_mode: dict[TravelMode, list[RouteDestination]] = {}
+    for destination, _ in candidates:
+        for mode in plan.measure[destination.place_id]:
             destinations_by_mode.setdefault(mode, []).append(destination)
     if not destinations_by_mode:
         return ()
@@ -1891,10 +2027,15 @@ async def _fetch_travel_routes(
             for mode, destinations in destinations_by_mode.items()
         )
     )
-    return _fastest_routes(route for result in results for route in result.routes)
+    return _fastest_routes(
+        (route for result in results for route in result.routes), plan.judged
+    )
 
 
-def _fastest_routes(routes: Iterable[TravelRoute]) -> tuple[TravelRoute, ...]:
+def _fastest_routes(
+    routes: Iterable[TravelRoute],
+    judged_modes: Mapping[str, TravelMode] | None = None,
+) -> tuple[TravelRoute, ...]:
     """한 후보를 두 수단으로 조회했을 때 어느 값을 채점에 넘길지 고른다.
 
     **실측이 추정을 이긴다. 소요시간 비교는 그 다음이다.** 도보 조회에는 직선거리
@@ -1909,16 +2050,35 @@ def _fastest_routes(routes: Iterable[TravelRoute]) -> tuple[TravelRoute, ...]:
     """
 
     best: dict[str, TravelRoute] = {}
+    judged = judged_modes or {}
     for route in routes:
         current = best.get(route.place_id)
-        if current is None or _route_priority(route) < _route_priority(current):
+        preferred = judged.get(route.place_id)
+        if current is None or _route_priority(route, preferred) < _route_priority(
+            current, preferred
+        ):
             best[route.place_id] = route
     return tuple(best.values())
 
 
-def _route_priority(route: TravelRoute) -> tuple[int, int]:
-    """작을수록 채점에 쓰기 좋은 경로. (등급, 소요시간)으로 비교한다."""
+def _route_priority(
+    route: TravelRoute, preferred_mode: TravelMode | None = None
+) -> tuple[int, int, int]:
+    """작을수록 채점에 쓰기 좋은 경로. (실측 등급, 판정 일치, 소요시간)으로 비교한다.
 
+    **실측 등급이 여전히 맨 앞이다.** 판정이 대중교통을 골랐어도 추정 도보가 실측
+    대중교통을 이기면 안 된다 — 채점이 추정을 버리므로(`_applied_travel_route()`)
+    후보 하나가 실측을 잃고, `_consistent_routes()`가 회차 전체를 직선거리로 내린다.
+
+    판정 일치는 그 다음이다(TP-227). 판정이 "이 사람에겐 대중교통"이라고 봤으면
+    도보가 더 빨라도 그 값을 쓴다 — 유모차 사용자에게 "걸어서 10분"은 사실 10분이
+    아니고, 그 숫자를 보여주면 일정이 "대중교통 20분"이라고 말하는 것과 어긋난다.
+
+    **판정이 없으면(규칙 경로) 이 자리가 0으로 같아져 예전처럼 소요시간이 정한다** —
+    D-118의 "양쪽 조회 후 빠른 쪽"이 그대로 유지된다.
+    """
+
+    matches_judgment = 0 if preferred_mode is None or route.mode is preferred_mode else 1
     measured = (
         route.status is RouteStatus.SUCCESS
         and route.source in MEASURED_ROUTE_SOURCES
@@ -1926,10 +2086,10 @@ def _route_priority(route: TravelRoute) -> tuple[int, int]:
     )
     if measured:
         assert route.duration_seconds is not None
-        return (0, route.duration_seconds)
+        return (0, matches_judgment, route.duration_seconds)
     if route.status is RouteStatus.SUCCESS and route.duration_seconds is not None:
-        return (1, route.duration_seconds)
-    return (2, 0)
+        return (1, matches_judgment, route.duration_seconds)
+    return (2, matches_judgment, 0)
 
 
 def _is_info_walking_time_request(llm_output: LLMOutput) -> bool:
@@ -4033,6 +4193,8 @@ async def _score_recommendations(
     tool_executions: list[ToolExecutionDebug],
     effective_ignore_operating_hours: bool,
     stream_event_sink: StreamEventSink | None,
+    # 후보별 실측 이동수단 판정에 쓴다(TP-227). 없으면 기존 거리 규칙으로 돈다.
+    llm: LLMProvider | None = None,
 ) -> _ScoringOutcome:
     """1차 Scoring과 후보 보충·혼잡도 재정렬까지 끝난 추천 결과를 돌려준다(6단계).
 
@@ -4241,6 +4403,7 @@ async def _score_recommendations(
             tool_context=tool_context,
             travel_route_tool=travel_route_tool,
             recommendation_limit=recommendation_limit,
+            llm=llm,
         )
         # 자르기에서 빠진 보관함 장소만 좁혀서 한 번 더 채점해 붙인다. 점수를
         # 지어내지 않는 것이 핵심이다 — D가 같은 공식으로 실제로 매긴다.

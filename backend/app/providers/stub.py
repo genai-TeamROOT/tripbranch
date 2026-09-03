@@ -25,6 +25,7 @@ from app.domain.models import (
     WeatherForecastSlot,
 )
 from app.domain.operating_hours import normalize_operating_schedule
+from app.domain.schedule_travel import ModeJudgmentContext, SegmentModeInput
 from app.errors import AppError
 from app.place_search_policy import DEFAULT_PLACE_PROVIDER_RESULT_LIMIT
 from app.providers.contracts import (
@@ -1051,6 +1052,34 @@ class FakeLLMProvider:
             f"{first.name}을(를) 중심으로 지금 가볼 만한 곳을 골라봤어요.",
             source=ProviderSource.FAKE_LLM,
         )
+
+    async def judge_travel_modes(
+        self,
+        segments: Sequence[SegmentModeInput],
+        context: ModeJudgmentContext,
+    ) -> ProviderResult[tuple[str, ...]]:
+        """이동수단 판정의 테스트용 결정적 대체 구현. (TP-227)
+
+        **호출부가 실제로 읽는 것을 채운다.** 전부 도보로 돌려주면 소비 측
+        (`select_modes_for_segments()`)의 검증과 표 조립이 돌긴 해도 "판정이 규칙과
+        다른 답을 냈을 때"를 한 번도 안 지난다. 그래서 조건을 실제로 보고 가른다 —
+        비가 오거나 동행·무장애 요구가 있으면 먼 구간을 대중교통으로 바꾼다.
+
+        Fake가 조건을 안 읽으면 조건을 나르는 배선이 끊겨도 테스트가 통과한다.
+        """
+
+        has_reason = bool(
+            context.companion
+            or context.accessibility_needs
+            or (context.weather is not None and context.weather.precipitation
+                not in (None, "none"))
+        )
+        threshold = 10.0 if has_reason else 20.0
+        modes = tuple(
+            "transit" if segment.walk_minutes > threshold else "walking"
+            for segment in segments
+        )
+        return provider_result(modes, source=ProviderSource.FAKE_LLM)
 
     async def generate_follow_up_suggestions(
         self,
