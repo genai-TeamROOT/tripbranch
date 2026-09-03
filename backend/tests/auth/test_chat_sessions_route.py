@@ -25,14 +25,26 @@ def _headers(signing_key, sub: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {make_token(signing_key, sub=sub)}"}
 
 
-def _start_chat(sub: str, *inputs: str, place: str | None = None) -> str:
-    """세션을 만들고 대화를 몇 턴 넣는다. 첫 입력이 제목이 된다."""
+def _start_chat(sub: str, *inputs: str, location: str | None = None) -> str:
+    """세션을 만들고 대화를 몇 턴 넣는다. 첫 입력이 제목이 된다.
+
+    location을 주면 그 턴의 조건에 search_center로 실린다 — 실제 흐름에서 A가
+    조건을 병합한 뒤 턴을 남기는 순서와 같다.
+    """
     owner = Principal(user_id=sub, is_anonymous=True)
     applied = state_service.apply(
         state_service.StateApplyRequest(intent="RECOMMEND", confirmed=True),
         principal=owner,
     )
-    for index, user_input in enumerate(inputs):
+    if location is not None:
+        from app.state.store import get_store
+
+        store = get_store()
+        state = store.get_state(applied.session_id)
+        assert state is not None
+        state.user_conditions.search_center = location
+        store.save_state(state)
+    for user_input in inputs:
         state_service.append_conversation_turn(
             state_service.AppendConversationTurnRequest(
                 session_id=applied.session_id,
@@ -40,7 +52,6 @@ def _start_chat(sub: str, *inputs: str, place: str | None = None) -> str:
                     user_input=user_input,
                     assistant_message="네",
                     intent="RECOMMEND",
-                    place_names=[place] if place and index == len(inputs) - 1 else [],
                 ),
             )
         )
@@ -53,15 +64,53 @@ def test_토큰_없이_목록을_부르면_401(signing_key) -> None:
     assert TestClient(app).get("/api/sessions").status_code == 401
 
 
-def test_내_대화가_제목과_함께_나온다(signing_key) -> None:
-    _start_chat(ME, "비 오는데 실내 어디 갈까", place="국립중앙박물관")
+def test_내_대화가_제목과_위치와_함께_나온다(signing_key) -> None:
+    _start_chat(ME, "비 오는데 실내 어디 갈까", location="경복궁")
 
     response = TestClient(app).get("/api/sessions", headers=_headers(signing_key, ME))
 
     assert response.status_code == 200
     sessions = response.json()["sessions"]
     assert sessions[0]["title"] == "비 오는데 실내 어디 갈까"
-    assert sessions[0]["place_name"] == "국립중앙박물관"
+    assert sessions[0]["location"] == "경복궁"
+
+
+# 위치는 처음 잡힌 값으로 굳는다. 제목이 첫 질문인 것과 짝을 맞춘 규칙이다 —
+# 대화 도중에 지역을 옮겨도 목록의 한 줄이 저절로 바뀌지 않는다.
+def test_대화_도중_지역을_옮겨도_목록의_위치는_그대로다(signing_key) -> None:
+    from app.state.store import get_store
+
+    session_id = _start_chat(ME, "경복궁 근처", location="경복궁")
+    store = get_store()
+    state = store.get_state(session_id)
+    assert state is not None
+    state.user_conditions.search_center = "홍대"
+    store.save_state(state)
+    state_service.append_conversation_turn(
+        state_service.AppendConversationTurnRequest(
+            session_id=session_id,
+            turn=state_service.ConversationTurn(user_input="홍대는 어때"),
+        )
+    )
+
+    sessions = (
+        TestClient(app).get("/api/sessions", headers=_headers(signing_key, ME)).json()["sessions"]
+    )
+
+    assert sessions[0]["location"] == "경복궁"
+
+
+# 이어가기는 낡은 조건을 버리면서 user_conditions를 비운다. 위치를 거기서
+# 그때그때 읽었다면 지난 대화를 한 번 여는 것만으로 목록에서 사라졌을 것이다.
+def test_대화를_이어가도_목록의_위치가_남는다(signing_key) -> None:
+    session_id = _start_chat(ME, "경복궁 근처", location="경복궁")
+    _expire(session_id)
+    client = TestClient(app)
+
+    client.post(f"/api/sessions/{session_id}/resume", headers=_headers(signing_key, ME))
+
+    sessions = client.get("/api/sessions", headers=_headers(signing_key, ME)).json()["sessions"]
+    assert sessions[0]["location"] == "경복궁"
 
 
 # 이 파일에서 가장 중요한 테스트다.

@@ -166,6 +166,26 @@ def attach_title(state: AgentState, user_input: str) -> None:
     state.title = trimmed[:MAX_TITLE_CHARS]
 
 
+def attach_location(state: AgentState, search_center: str | None) -> None:
+    """그 대화의 위치를 붙인다. (TP-222 후속 — 채팅 히스토리)
+
+    attach_title과 같은 규칙이다 — **비어 있으면 채우고, 값이 있으면 절대
+    덮어쓰지 않는다.** 제목이 첫 질문인 것과 짝을 맞춰 위치도 처음 잡힌 값을
+    쓴다. 대화 도중에 지역을 옮겨도 목록의 한 줄이 저절로 바뀌지는 않는다.
+
+    조건(user_conditions)에서 그때그때 읽지 않고 여기 옮겨 두는 이유는 resume()이
+    낡은 조건을 버릴 때 그 값이 함께 사라지기 때문이다.
+    """
+    if state.location is not None:
+        return
+    if search_center is None:
+        return
+    trimmed = search_center.strip()
+    if not trimmed:
+        return
+    state.location = trimmed[:MAX_TITLE_CHARS]
+
+
 def rename(state: AgentState, title: str) -> bool:
     """사용자가 대화 이름을 바꾼다. 빈 이름은 무시한다.
 

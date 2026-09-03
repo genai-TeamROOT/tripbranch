@@ -1119,6 +1119,9 @@ def append_conversation_turn(
 
     state.recent_turns = [*state.recent_turns, turn][-MAX_RECENT_TURNS:]
     session_module.attach_title(state, turn.user_input)
+    # 위치도 같은 자리에서 붙인다. 이 시점이면 이번 턴의 조건 병합이 끝나 있어
+    # search_center가 잡혀 있다.
+    session_module.attach_location(state, state.user_conditions.search_center)
     session_module.touch(state)
     store.save_state(state)
 
@@ -1555,22 +1558,17 @@ class ChatSessionSummary(BaseModel):
 
     session_id: str
     title: str
-    # 마지막 턴에서 언급된 장소 하나. 목록에서 "무엇에 대한 대화였는지"를
+    # 그 대화의 위치(처음 잡힌 search_center). 목록에서 "어디 얘기였는지"를
     # 제목만으로 알기 어려울 때의 보조 단서다. 없으면 None.
-    place_name: str | None = None
+    #
+    # 장소 이름(마지막 턴에서 언급된 곳)을 쓰다가 위치로 바꿨다 —
+    # "블루보틀 성수"는 그 대화가 무엇이었는지 말해주지 않지만 "성수동"은 말해준다.
+    location: str | None = None
     last_active_at: datetime
 
 
 class ChatSessionsResponse(BaseModel):
     sessions: list[ChatSessionSummary] = Field(default_factory=list)
-
-
-def _latest_place_name(state: AgentState) -> str | None:
-    """가장 최근 턴부터 거슬러 올라가며 처음 나오는 장소 이름."""
-    for turn in reversed(state.recent_turns):
-        if turn.place_names:
-            return turn.place_names[0]
-    return None
 
 
 @_wrap_store_errors
@@ -1592,7 +1590,7 @@ def list_user_sessions(
             ChatSessionSummary(
                 session_id=state.session_id,
                 title=state.title or "",
-                place_name=_latest_place_name(state),
+                location=state.location,
                 last_active_at=state.last_active_at,
             )
             for state in states
@@ -1627,7 +1625,7 @@ def rename_session(
     return ChatSessionSummary(
         session_id=state.session_id,
         title=state.title or "",
-        place_name=_latest_place_name(state),
+        location=state.location,
         last_active_at=state.last_active_at,
     )
 

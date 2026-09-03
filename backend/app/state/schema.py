@@ -200,6 +200,14 @@ class AgentState(BaseModel):
     # recent_turns에서 파생하지 않는 이유는 그 배열이 MAX_RECENT_TURNS개만 남기
     # 때문이다. 첫 질문이 밀려나면 제목이 저절로 바뀐다.
     title: str | None = None
+    # 그 대화의 위치(user_conditions.search_center에서 온다). 사이드바가 목록
+    # 한 줄에 날짜와 함께 보여준다. title과 같은 규칙으로 **비어 있으면 채우고
+    # 덮어쓰지 않는다.**
+    #
+    # user_conditions에서 그때그때 읽지 않고 여기 박는 이유는 이어가기(resume)가
+    # 낡은 조건을 버리면서 user_conditions를 비우기 때문이다 — 지난 대화를 한 번
+    # 열면 목록에서 위치가 사라지게 된다.
+    location: str | None = None
     recent_turns: list[ConversationTurn] = Field(default_factory=list)
     # 상황 축이 잡은 현재 상태. 상황이 감지된 적이 없으면 None이다.
     situation_state: SituationState | None = None
