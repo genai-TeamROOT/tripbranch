@@ -1804,6 +1804,7 @@ def _paired_parking_question_type(info: InfoPayload | None) -> str | None:
 _AGENTIC_REALTIME_QUESTION_TYPES = frozenset(
     {
         QuestionType.REALTIME_PARKING.value,
+        QuestionType.REALTIME_PUBLIC_PARKING.value,
         QuestionType.REALTIME_SUBWAY.value,
         QuestionType.REALTIME_BUS.value,
         QuestionType.REALTIME_EVENT.value,
@@ -1825,6 +1826,19 @@ def _describe_realtime_attempt(response: InfoContextResponse, area_name: str) ->
     사유를 담는다 — 24강 04절의 "예외 대신 안내 문자열" 원칙과 같다.
     """
 
+    if response.status == "needs_clarification":
+        # place_ambiguous — "강남"처럼 넓은 지명이라 후보가 여럿이다. 여기서 곧장
+        # 사용자에게 되묻지 않는다 — 후보를 그대로 LLM에게 보여줘서 그중 하나로
+        # 스스로 재시도하게 한다(agent_runtime.py의 기존 place_ambiguous 되묻기는
+        # LLM이 끝내 못 고를 때만 최후 수단으로 살아 있다).
+        candidates = response.clarification.candidates if response.clarification else []
+        if candidates:
+            names = ", ".join(candidates[:5])
+            return (
+                f"'{area_name}'은(는) 범위가 넓어 여러 곳으로 해석돼요. 후보: {names}. "
+                "이 중 사용자 질문과 가장 관련 있어 보이는 곳으로 다시 조회해보세요."
+            )
+        return f"'{area_name}'가 정확히 어디인지 확인하지 못했어요."
     result = response.result
     if response.status != "success" or result is None:
         return f"'{area_name}'에서는 관련 정보를 찾지 못했어요."
@@ -1918,13 +1932,24 @@ async def _fetch_realtime_info_agentic(
     get_realtime_commercial_data.__annotations__ = get_type_hints(get_realtime_commercial_data)
 
     original_place_name = info_request.place_name or "요청하신 지역"
+    # TODO(팀 리뷰 후): 다른 답변 생성 프롬프트처럼 Markdown 파일 + meta.yaml로 정식
+    # 프롬프트 자산화한다. 지금은 실험 단계(기본 off, 아직 develop에 안 올림)라
+    # 인라인 문자열로 둔다. 페르소나·엄격한 문장 수·마크다운 전면 금지를 한 번
+    # 넣어봤는데 답이 고객센터 템플릿처럼 딱딱해져서(실사용 확인, 2026-09-03) 뺐다 —
+    # 자유롭게 서술하게 두는 편이 이 에이전트다운 답을 만든다.
     instruction = (
-        "너는 서울 실시간 정보 안내 비서다. 사용자가 "
-        f"'{original_place_name}' 근처의 정보를 물었지만 그 지역엔 데이터가 없을 수 "
-        "있다. 가진 도구로 조회해보고, 없으면 근처의 잘 알려진 다른 지역명으로 다시 "
-        "시도해봐라. 도구 결과로 확인되지 않은 사실은 지어내지 말고, 찾은 지역이 "
-        "원래 물어본 곳과 다르면 그 사실을 답변에 밝혀라. 아무 데서도 못 찾았으면 "
-        "그렇다고 솔직히 답하라.\n"
+        "너는 서울 실시간 정보 안내 비서다. 사용자가 실시간 정보를 물었지만 "
+        f"'{original_place_name}' 지역엔 데이터가 없거나, 범위가 넓어 여러 후보로 "
+        "해석될 수 있다. 가진 도구로 조회해보고, 없으면 근처의 잘 알려진 다른 "
+        "지역명으로 다시 시도해봐라. 도구가 '여러 곳으로 해석된다'며 후보 목록을 "
+        "주면, 사용자에게 되묻지 말고 그중 질문과 가장 관련 있어 보이는 곳(보통 "
+        "대표 지하철역이나 랜드마크)을 스스로 골라 다시 조회해봐라.\n"
+        "도구 결과로 확인되지 않은 사실은 지어내지 말고, 찾은 지역이 원래 물어본 "
+        "곳과 다르면 그 사실을 답변에 자연스럽게 밝혀라. 도구 결과에 있는 구체적인 "
+        "수치·이름·거리·시간은 최대한 활용해서 친절하게 설명하고, 강조하고 싶은 "
+        "부분엔 **굵게**나 목록처럼 마크다운을 적절히 써도 좋다. 목록은 중첩하지 "
+        "말고 각 항목을 '이름: 값' 형태로 한 줄에 담아라. 아무 데서도 못 찾았으면 "
+        "그렇다고 솔직히 답하되, 빈 답변으로 끝내지는 마라.\n"
         f"사용자 질문: {info_request.specific_question or '해당 지역의 실시간 정보를 알려줘'}"
     )
     result = await llm.answer_with_tools(
@@ -1947,12 +1972,52 @@ async def _fetch_realtime_info_agentic(
     if not agent_message:
         # 실측: 도구를 한 번 불러보고 no_data를 받은 뒤 최종 문장 없이 빈 텍스트로
         # 끝내는 경우가 있다(자동 함수 호출 + 빈 마무리 턴). 빈 말풍선을 보내는
-        # 대신 마지막 시도 결과로 안내 문장을 채운다.
+        # 대신 사람이 읽기 좋은 형태로 다시 포맷한 안내 문장을 채운다.
         fallback_area_name = getattr(final_response.result, "area_name", None)
-        agent_message = _describe_realtime_attempt(
+        agent_message = _format_realtime_result_for_user(
             final_response, fallback_area_name or original_place_name
         )
     return final_response, agent_message
+
+
+def _format_realtime_result_for_user(response: InfoContextResponse, area_name: str) -> str:
+    """LLM이 최종 문장을 안 써줬을 때 쓰는 안전장치 문구를 사람이 읽기 좋게 만든다.
+
+    `_describe_realtime_attempt()`는 LLM이 다음 행동을 판단하는 내부용이라 대괄호·
+    가운뎃점 같은 축약 표기를 쓴다 — 그걸 사용자에게 그대로 보내면 다듬어지지 않은
+    느낌을 준다(실사용 확인, 2026-09-03). 이 함수는 같은 데이터를 문장·목록으로
+    다시 풀어 쓴다.
+    """
+
+    result = response.result
+    if response.status != "success" or result is None:
+        return (
+            f"{area_name} 근처에서는 관련 정보를 찾지 못했어요. 다른 지역이나 "
+            "표현으로 다시 물어봐 주시면 다시 찾아볼게요."
+        )
+    if isinstance(result, RealtimeCityInfoResult) and result.fields:
+        items = "\n".join(f"- {name}: {detail}" for name, detail in result.fields.items())
+        return f"{area_name} 근처 정보를 확인했어요.\n\n{items}"
+    if isinstance(result, RealtimeCommercialInfoResult):
+        parts = [
+            part
+            for part in (
+                f"업종은 {result.category_label}" if result.category_label else None,
+                f"상권 활동 수준은 {result.commercial_level}" if result.commercial_level else None,
+                (
+                    f"인구 혼잡도는 {result.population_current_level}"
+                    if result.population_current_level
+                    else None
+                ),
+            )
+            if part is not None
+        ]
+        if parts:
+            return f"{area_name} 근처 상권 정보를 확인했어요. " + ", ".join(parts) + "예요."
+    return (
+        f"{area_name} 근처에서는 관련 정보를 찾지 못했어요. 다른 지역이나 표현으로 "
+        "다시 물어봐 주시면 다시 찾아볼게요."
+    )
 
 
 def _to_geo_coordinate(location: str | None) -> GeoCoordinate | None:

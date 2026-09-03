@@ -61,6 +61,10 @@ function renderInline(text: string): ReactNode {
 // "- "/"* "/"• " 셋 다 불릿으로 본다 — 같은 답변 안에서도 모델이 섞어 쓴다.
 const BULLET_PREFIXES = ["- ", "* ", "• "];
 
+// "#"/"##"/"###"... 몇 개든 제목으로 본다 — 모델이 h1~h3를 섞어 쓴다. 1~2단계는
+// 크게, 3단계부터는 한 크기로 묶는다(더 잘게 나눠봐야 챗 버블 안에서 구분이 안 감).
+const HEADING_PATTERN = /^(#{1,6})\s+(.*)$/;
+
 function MarkdownText({ text }: { text: string }) {
   const lines = text.split("\n");
   const elements: ReactNode[] = [];
@@ -70,19 +74,20 @@ function MarkdownText({ text }: { text: string }) {
     // 불릿 기호만 있고 내용은 다음 줄에 오는 경우(모델이 가끔 이렇게 끊어 보냄) —
     // 빈 불릿을 그리지 않고 건너뛴다.
     if (!line || line.trim() === "•" || line.trim() === "*") continue;
-    if (line.startsWith("# ")) {
+    const headingMatch = HEADING_PATTERN.exec(line);
+    if (headingMatch) {
+      const level = headingMatch[1].length;
+      const content = renderInline(headingMatch[2]);
       elements.push(
-        <h2 key={`heading-${index}`} className="text-xl font-bold text-ink">
-          {renderInline(line.slice(2))}
-        </h2>,
-      );
-      continue;
-    }
-    if (line.startsWith("## ")) {
-      elements.push(
-        <h3 key={`subheading-${index}`} className="mt-3 text-lg font-bold text-ink">
-          {renderInline(line.slice(3))}
-        </h3>,
+        level === 1 ? (
+          <h2 key={`heading-${index}`} className="text-xl font-bold text-ink">
+            {content}
+          </h2>
+        ) : (
+          <h3 key={`heading-${index}`} className="mt-3 text-lg font-bold text-ink">
+            {content}
+          </h3>
+        ),
       );
       continue;
     }
