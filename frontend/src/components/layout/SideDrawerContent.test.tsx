@@ -67,6 +67,31 @@ const server = vi.hoisted(() => ({
   chatSessionIds: [] as (string | null)[],
   /** GET /api/sessions를 실제로 부른 횟수. 사이드바 두 벌이 겹쳐 부르는지 본다. */
   listCalls: 0,
+  /*
+   * 두 턴짜리 화면 기록. 두 턴 모두 후속 질문을 달아 둔다 — 복원했을 때
+   * 마지막 턴에만 버튼이 남아야 한다.
+   */
+  transcriptTurns() {
+    return [
+      {
+        ...server.transcript,
+        user_input: "첫 질문",
+        payload: {
+          ...server.transcript.payload,
+          message: "첫 답변",
+          recommendations: null,
+          suggested_follow_ups: ["첫 턴의 후속 질문"],
+        },
+      },
+      {
+        ...server.transcript,
+        payload: {
+          ...server.transcript.payload,
+          suggested_follow_ups: ["마지막 턴의 후속 질문"],
+        },
+      },
+    ];
+  },
   /** 켜면 streamChat이 응답을 붙들고 있는다 — 답변 대기 중 상황을 만든다. */
   holdStream: false,
   pending: null as ((event: { type: string; data: unknown }) => void) | null,
@@ -99,7 +124,7 @@ vi.mock("../../api/trip", async (importOriginal) => {
         ],
         /* 화면 기록. 있으면 화면은 turns/recommendations 대신 이것만 쓴다.
            chat-1에만 둬서 두 경로를 한 파일에서 함께 본다. */
-        messages: sessionId === "chat-1" ? [server.transcript] : [],
+        messages: sessionId === "chat-1" ? server.transcriptTurns() : [],
         last_active_at: found.last_active_at,
         resumable: true,
       };
@@ -513,4 +538,33 @@ test("대화를 열기 전에는 켜진 줄이 없다", async () => {
 
   const rows = within(sidebar()).getAllByRole("listitem");
   expect(rows.filter((row) => row.getAttribute("aria-current") === "true")).toEqual([]);
+});
+
+
+/* 실시간에서도 새 발화가 나가면 옛 버튼은 걷힌다. 전부 되살리면 지난 답변
+   기준의 문구를 눌러 지금 맥락과 어긋난 요청이 나간다. */
+test("복원한 대화의 후속 질문은 마지막 답변에만 남는다", async () => {
+  const user = userEvent.setup();
+  await renderApp();
+
+  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
+  await screen.findByText("첫 답변");
+
+  expect(screen.getByRole("button", { name: "마지막 턴의 후속 질문" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "첫 턴의 후속 질문" })).not.toBeInTheDocument();
+});
+
+/*
+ * 화면에 실제로 나가는 순서는 카드가 먼저고 답변이 그 아래다(스트리밍이 result를
+ * 먼저 내보낸다). 되돌릴 때 답변을 위에 놓으면 그때 본 화면과 위아래가 뒤집힌다.
+ */
+test("복원한 대화에서 추천 카드가 답변보다 위에 온다", async () => {
+  const user = userEvent.setup();
+  await renderApp();
+
+  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
+
+  const card = await screen.findByText("국립중앙박물관");
+  const answer = screen.getByText("실내를 찾아볼게요");
+  expect(card.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });

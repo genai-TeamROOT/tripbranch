@@ -366,7 +366,8 @@ function tripReducer(state: TripState, action: TripAction): TripState {
       const restored: ChatMessage[] = [];
 
       if (action.payload.messages.length > 0) {
-        for (const record of action.payload.messages) {
+        const lastIndex = action.payload.messages.length - 1;
+        action.payload.messages.forEach((record, index) => {
           if (record.user_input) {
             restored.push({
               id: createMessageId("user"),
@@ -374,13 +375,22 @@ function tripReducer(state: TripState, action: TripAction): TripState {
               text: record.user_input,
             });
           }
+          const turn = buildAgentMessages(record.payload, {
+            userInput: record.user_input ?? "",
+            elapsedMsClient: 0,
+          });
+          /*
+           * 후속 질문 버튼은 마지막 답변에만 남긴다. 실시간에서도 새 발화가
+           * 나가는 순간 옛 버튼을 걷어내므로(START_CHAT_TURN), 대화가 끝난
+           * 모습은 마지막 턴에만 버튼이 붙어 있는 상태다. 전부 되살리면 지난
+           * 답변 기준의 문구를 눌러 지금 맥락과 어긋난 요청이 나간다.
+           */
           restored.push(
-            ...buildAgentMessages(record.payload, {
-              userInput: record.user_input ?? "",
-              elapsedMsClient: 0,
-            }),
+            ...(index === lastIndex
+              ? turn
+              : turn.filter((item) => item.type !== "follow_up_suggestions")),
           );
-        }
+        });
       } else {
         const attached = attachRecommendationsToTurns(
           action.payload.turns,

@@ -42,6 +42,27 @@ export function buildAgentMessages(
   const message = response.message;
   const clarificationOptions = response.llm_output.clarification?.options;
 
+  /*
+   * **추천 카드가 답변보다 먼저다.** 화면에 실제로 나가는 순서가 그렇다 —
+   * 스트리밍 경로는 카드를 담은 result를 먼저 내보내고, 그 아래에 "추천 팁"
+   * 말풍선을 연다(agent_runtime의 "화면 순서가 안내 → 카드 → 팁"). 저장된
+   * 대화를 되돌릴 때 답변을 위에 놓으면 그때 본 화면과 위아래가 뒤집힌다.
+   *
+   * 일정·장소정보·비교는 반대다. 그쪽은 스트리밍 result가 없어 답변이 먼저
+   * 나가고 카드가 뒤따르므로 아래 순서를 그대로 둔다.
+   */
+  if (response.recommendations) {
+    messages.push({
+      id: createMessageId("result"),
+      type: "recommendation_result",
+      recommendations: response.recommendations.recommendations,
+      unverified_recommendations: response.recommendations.unverified_recommendations,
+      travel_origin_toggle: response.recommendations.travel_origin_toggle,
+      elapsed_ms: elapsedMsClient,
+      server_elapsed_ms: response.recommendations.elapsed_ms,
+    });
+  }
+
   if (message && clarificationOptions && clarificationOptions.length > 0) {
     // 인텐트가 모호해 되묻기 버튼이 붙은 턴 — assistant_text 대신 clarification
     // 메시지로 push해서 같은 문구가 두 번 렌더링되지 않게 한다
@@ -60,18 +81,6 @@ export function buildAgentMessages(
       intent,
       status: response.llm_output.status,
       footnote: response.message_footnote ?? undefined,
-    });
-  }
-
-  if (response.recommendations) {
-    messages.push({
-      id: createMessageId("result"),
-      type: "recommendation_result",
-      recommendations: response.recommendations.recommendations,
-      unverified_recommendations: response.recommendations.unverified_recommendations,
-      travel_origin_toggle: response.recommendations.travel_origin_toggle,
-      elapsed_ms: elapsedMsClient,
-      server_elapsed_ms: response.recommendations.elapsed_ms,
     });
   }
 
