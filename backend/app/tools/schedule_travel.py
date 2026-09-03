@@ -13,6 +13,7 @@ from app.domain.schedule_travel import (
     ScheduleTravelEstimateResult,
     ScheduleTravelPair,
     ScheduleTravelWarning,
+    SegmentWeather,
     TravelConfidence,
 )
 from app.domain.travel_route import (
@@ -118,9 +119,8 @@ class ModeJudgmentContext:
     transport: Transport | None
     companion: str | None = None
     accessibility_needs: tuple[str, ...] = ()
-    # 조회된 날씨. 지금은 일정까지 내려오는 경로가 없어 항상 None이고, PR 2에서
-    # `SchedulePlanningRequest`에 필드를 뚫어 채운다.
-    weather: str | None = None
+    # 조회된 예보. 조회에 실패했거나 값이 없는 턴에서는 비어 있다.
+    weather: SegmentWeather | None = None
 
 
 class ModeJudge(Protocol):

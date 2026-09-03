@@ -27,6 +27,7 @@ from app.domain.schedule_travel import (
     ScheduleTravelEdge,
     ScheduleTravelPair,
     ScheduleTravelWarning,
+    SegmentWeather,
     TravelConfidence,
 )
 from app.observability.langfuse_tracing import observe_step, record_score
@@ -38,8 +39,12 @@ from app.schedule.timeline import TravelMinutes
 from app.schemas import UserConditions
 from app.tools.schedule_travel import (
     SCHEDULE_TRAVEL_MEASURE_BUDGET_EXCEEDED_WARNING,
+    ModeJudge,
+    ModeJudgmentContext,
+    build_segment_inputs,
     estimate_schedule_travel_edges,
     measure_schedule_travel_edges,
+    select_modes_for_segments,
 )
 from app.tools.travel_route import TravelRouteTool
 
@@ -166,8 +171,10 @@ async def resolve_schedule_travel_edges(
     candidates: Sequence[ScheduleTravelCandidate],
     place_ids: Sequence[str],
     conditions: UserConditions,
+    weather: SegmentWeather | None = None,
     settings: Settings,
     travel_route_tool: TravelRouteTool | None,
+    mode_judge: ModeJudge | None = None,
 ) -> tuple[ScheduleTravelEdge, ...]:
     """확정된 방문 순서의 구간 이동정보를 만든다. 실패해도 예외를 올리지 않는다.
 
@@ -192,8 +199,10 @@ async def resolve_schedule_travel_edges(
             candidates=candidates,
             pairs=pairs,
             conditions=conditions,
+            weather=weather,
             settings=settings,
             travel_route_tool=travel_route_tool,
+            mode_judge=mode_judge,
         )
         try:
             summary = summarize_schedule_travel(
@@ -229,8 +238,10 @@ async def _resolve_edges(
     candidates: Sequence[ScheduleTravelCandidate],
     pairs: Sequence[ScheduleTravelPair],
     conditions: UserConditions,
+    weather: SegmentWeather | None = None,
     settings: Settings,
     travel_route_tool: TravelRouteTool | None,
+    mode_judge: ModeJudge | None = None,
 ) -> tuple[tuple[ScheduleTravelEdge, ...], tuple[ScheduleTravelWarning, ...], bool]:
     """추정·실측 본체. 관측에 쓸 경고와 "실측을 시도했나"까지 함께 돌려준다.
 
@@ -238,11 +249,33 @@ async def _resolve_edges(
     않은 턴의 실측률 0%와 실측이 전부 실패한 턴의 0%는 같은 수가 아니다.
     """
 
+    # 구간 이동수단을 먼저 정하고 그 표를 넘긴다(TP-226). 판정을 구간 루프 밖에서
+    # 하는 이유는 누적 도보량처럼 구간 사이 관계를 보려면 전 구간이 한 번에
+    # 손에 있어야 하기 때문이다(TP-225).
+    #
+    # `mode_judge`가 없으면 구간마다 기존 규칙을 그대로 부르므로 **결과가 배선
+    # 전과 같다.** 실제 판정은 TP-224의 세 번째 PR에서 주입한다.
     try:
+        segments, _ = build_segment_inputs(
+            candidates, pairs, walking_speed_mps=WALKING_SPEED_MPS
+        )
+        modes = await select_modes_for_segments(
+            segments,
+            ModeJudgmentContext(
+                transport=conditions.transport,
+                companion=conditions.companion,
+                accessibility_needs=tuple(conditions.accessibility_needs),
+                weather=weather,
+            ),
+            judge=mode_judge,
+            walking_speed_mps=WALKING_SPEED_MPS,
+            walk_transfer_threshold_min=settings.schedule_walk_transfer_threshold_min,
+        )
         estimated = estimate_schedule_travel_edges(
             candidates=candidates,
             pairs=pairs,
             transport=conditions.transport,
+            modes=modes,
             walking_speed_mps=WALKING_SPEED_MPS,
             transit_speed_mps=NON_WALKING_SPEED_MPS,
             driving_speed_mps=NON_WALKING_SPEED_MPS,
