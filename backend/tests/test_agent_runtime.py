@@ -3859,6 +3859,59 @@ async def test_clarification_choice_location_ambiguous_candidate_resolves_search
     assert context.pending_clarification is None
 
 
+@pytest.mark.asyncio
+async def test_clarification_choice_with_district_prefix_keeps_full_name() -> None:
+    """TP-182 (2026-09-03 임기민 실측): "종로구 익선동"처럼 후보 이름에 상위
+    행정구역이 붙어 있어도 버튼 클릭은 그 이름을 그대로 써야 한다.
+
+    실사용에서는 GPS가 강서구인 채로 "익선동"을 물으면 지오코딩 후보로
+    [종로구 익선동, 창원시 진해구 익선동]이 뜨는데, 버튼을 눌러도 결정적
+    해소를 안 타고 발화("종로구 익선동")가 다시 classify_intent()로 흘러가면
+    실 LLM이 "익선동"으로 줄여버려 같은 되묻기가 반복됐다. 여기서는 그 재해석
+    손실을 흉내 내려고 두 번째 턴 LLM을 일부러 "익선동"만 돌려주게 강제한다 —
+    결정적 해소가 제대로 타면 이 가짜 LLM은 아예 호출되지 않아야 하므로,
+    search_center가 줄어들지 않고 "종로구 익선동" 그대로 남는 것으로 검증한다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+    providers["tool_provider"] = _LocationAmbiguousToolProvider(
+        ["종로구 익선동", "창원시 진해구 익선동"]
+    )
+    gangseo_gps = "37.5509,126.8495"
+
+    ambiguous = await run_agent_flow(
+        AgentRequest(
+            user_input="익선동에서 갈 만한 곳 추천해줘",
+            session_id=None,
+            device_location=gangseo_gps,
+        ),
+        store=store,
+        **providers,
+    )
+    assert ambiguous.llm_output.status == OutputStatus.NEEDS_CLARIFICATION
+    option_ids = {option.id for option in ambiguous.llm_output.clarification.options}
+    assert option_ids == {"종로구 익선동", "창원시 진해구 익선동"}
+
+    providers["llm"] = _LLMProviderForcingSearchCenter("익선동")
+    providers["tool_provider"] = _CountingToolProvider()
+    resolved = await run_agent_flow(
+        AgentRequest(
+            user_input="종로구 익선동",
+            session_id=ambiguous.state.session_id,
+            device_location=gangseo_gps,
+            clarification_choice="종로구 익선동",
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert resolved.llm_output.intent == "RECOMMEND"
+    assert resolved.llm_output.status == OutputStatus.COMPLETE
+    assert resolved.state.user_conditions.search_center == "종로구 익선동"
+    context = get_session_context(resolved.state.session_id, store=store)
+    assert context.pending_clarification is None
+
+
 class _InfoPlaceAmbiguousToolProvider:
     """C 대역 — INFO의 place_ambiguous를 후보 이름과 함께 돌려준다.
 

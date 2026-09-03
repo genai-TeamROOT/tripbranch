@@ -2827,6 +2827,20 @@ async def _run_agent_flow(
             choice_id=request.clarification_choice,
             session_context=session_context,
         )
+        if clarification_resolution is None:
+            # TP-182: 버튼 클릭인데도 결정적 해소를 못 타면 발화가 다시 LLM으로
+            # 흘러가 행정구역이 잘리는 등 재해석 손실이 생긴다(예: "종로구 익선동"
+            # → "익선동"). pending_clarification/last_intent 둘 중 어느 조건이
+            # 안 맞았는지가 원인 특정의 핵심인데 재현이 안 돼 실측으로만 확인
+            # 가능하므로, 폴백이 실제로 일어나는 순간을 여기서 반드시 남긴다.
+            logger.warning(
+                "되묻기 버튼 클릭이 결정적 해소를 못 타 재해석 경로로 폴백함: "
+                "session_id=%s choice_id=%r pending_clarification=%r last_intent=%r",
+                session_context.session_id,
+                request.clarification_choice,
+                session_context.pending_clarification,
+                session_context.last_intent,
+            )
     elif request.schedule_from_saved:
         clarification_resolution = _resolve_schedule_from_saved(
             session_context=session_context,
