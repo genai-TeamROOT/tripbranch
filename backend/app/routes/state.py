@@ -4,7 +4,10 @@
 사용자가 추천 카드에서 담은 장소를 보관함에 넣고 뺀다(SCHEDULE-12).
 입력: GET/DELETE /api/state/{session_id},
       GET/POST /api/state/{session_id}/saved-places,
-      DELETE /api/state/{session_id}/saved-places/{place_id}
+      DELETE /api/state/{session_id}/saved-places/{place_id},
+      GET /api/sessions, GET /api/sessions/{session_id},
+      POST /api/sessions/{session_id}/resume,
+      PATCH /api/state/{session_id}/title
 출력: SessionContextResponse / DeleteSessionResponse / SavedPlacesResponse.
 호출 시점: 프론트가 상태 동기화·채팅 초기화를 수행할 때, 또는 사용자가 추천
 카드의 담기 버튼을 누를 때.
@@ -54,6 +57,21 @@ async def get_session_detail(
     모든 항목이 열리지 않는다.
     """
     return state_service.get_user_session_detail(session_id, principal)
+
+
+@router.post("/sessions/{session_id}/resume", response_model=state_service.ChatSessionDetail)
+async def resume_session(
+    session_id: str, principal: RequiredPrincipal
+) -> state_service.ChatSessionDetail:
+    """지난 대화를 이어갈 수 있게 되살린다. (TP-222 후속)
+
+    GET /sessions/{id}과 같은 내용을 돌려주지만 쓰기다 — 만료된 세션을 다시
+    active로 돌리고 낡은 조건을 버린다. 그래서 응답의 resumable은 항상 true다.
+
+    조회와 나눠 둔 이유는 "열어만 보는 것"과 "이어서 말하는 것"이 다른 동작이기
+    때문이다. GET이 쓰기를 겸하면 목록을 미리 불러오기만 해도 세션이 되살아난다.
+    """
+    return state_service.resume_user_session(session_id, principal)
 
 
 @router.patch(

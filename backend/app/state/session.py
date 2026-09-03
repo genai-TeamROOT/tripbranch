@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from app.auth.principal import Principal
 from app.state import history as history_module
 from app.state.errors import SessionOwnershipError
-from app.state.schema import AgentState, now_kst
+from app.state.schema import AgentState, ApiContext, UserConditions, now_kst
 from app.state.store import StateStore
 
 # ---------------------------------------------------------------- 설정
@@ -225,6 +225,42 @@ def touch(state: AgentState) -> None:
     조건 변경 여부와 무관하게 요청 수신 시마다 호출한다.
     updated_at은 갱신하지 않는다. (계약 5.3절)
     """
+    state.last_active_at = now_kst()
+
+
+def resume(state: AgentState) -> None:
+    """만료된 대화를 이어간다. (TP-222 후속 — 채팅 히스토리)
+
+    **만료를 없던 일로 되돌리는 함수가 아니다.** 세션 만료가 하는 일은 두 가지가
+    한데 묶여 있었다 — "대화를 끊는 것"과 "낡은 조건을 버리는 것". 사이드바에서
+    지난 대화를 열어 이어 물을 때 필요한 것은 앞의 하나뿐이라, 여기서 둘을
+    나눈다: **대화는 잇고 조건은 버린다.**
+
+    버리는 값은 전부 "그때"에 묶여 있어 오늘 쓰면 틀리는 것들이다.
+      - user_conditions: 사흘 전 "비 오는데"가 오늘의 조건으로 남으면 안 된다.
+      - api_context: GPS·날씨는 자체 TTL이 1시간이다(API_CONTEXT_TTL).
+      - pending_clarification/pending_info_context: 사흘 전에 물은 되묻기의
+        답으로 오늘의 발화를 해석하면 엉뚱한 곳에 붙는다.
+      - situation_state, ignore_operating_hours_until: 같은 이유다.
+      - last_run_id/last_intent: 지난 턴을 가리키는 값이라 함께 비운다.
+
+    남기는 값은 시간이 지나도 틀리지 않는 것들이다 — session_id, user_id,
+    title, recent_turns. 이 넷이 남아야 "같은 대화"가 성립한다. 추천 이력은 이
+    함수가 아니라 호출 측(service.resume_user_session)이 clear_recommended로
+    비운다 — 이력은 별도 저장소에 있고, 거절 이력은 남겨야 하기 때문이다.
+
+    조건을 통째로 갈아치우므로 condition_version을 올린다.
+    """
+    state.user_conditions = UserConditions()
+    state.api_context = ApiContext()
+    state.pending_clarification = None
+    state.pending_info_context = None
+    state.situation_state = None
+    state.ignore_operating_hours_until = None
+    state.last_run_id = None
+    state.last_intent = None
+    state.condition_version += 1
+    state.status = "active"
     state.last_active_at = now_kst()
 
 

@@ -241,3 +241,169 @@ def test_신원이_안_붙은_세션은_열리지_않는다(signing_key) -> None
     )
 
     assert response.status_code == 403
+
+
+# ---------------------------------------------------------------- 이어서 대화하기
+
+
+def _expire(session_id: str, *, days: int = 3):
+    """세션을 오래 묵혀 만료 상태로 만든다."""
+    from datetime import timedelta
+
+    from app.state.schema import now_kst
+    from app.state.store import get_store
+
+    store = get_store()
+    state = store.get_state(session_id)
+    assert state is not None
+    state.last_active_at = now_kst() - timedelta(days=days)
+    store.save_state(state)
+    return store
+
+
+def test_만료된_대화도_이어갈_수_있다(signing_key) -> None:
+    session_id = _start_chat(ME, "사흘 전 질문")
+    _expire(session_id)
+
+    response = TestClient(app).post(
+        f"/api/sessions/{session_id}/resume", headers=_headers(signing_key, ME)
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["session_id"] == session_id
+    assert body["resumable"] is True
+    # 대화는 그대로 남는다 — 이어간다는 건 앞의 말이 남는다는 뜻이다.
+    assert body["turns"][0]["user_input"] == "사흘 전 질문"
+
+
+# 이 절에서 가장 중요한 테스트다. 이어가기가 실제로 하는 일은 "다음 턴이 같은
+# 세션에 붙는 것"이고, 그 판정은 apply()의 get_or_create_session이 한다 —
+# 되살리지 않으면 여기서 새 session_id가 발급되어 목록에 줄이 하나 더 생긴다.
+# (append_conversation_turn으로는 이 테스트가 성립하지 않는다. 그 함수는 TTL을
+#  보지 않고 행에 바로 붙이므로 되살리지 않아도 통과한다.)
+def test_이어간_뒤_다음_턴이_같은_세션에_붙는다(signing_key) -> None:
+    owner = Principal(user_id=ME, is_anonymous=True)
+    session_id = _start_chat(ME, "이어갈 대화")
+    _expire(session_id)
+
+    TestClient(app).post(f"/api/sessions/{session_id}/resume", headers=_headers(signing_key, ME))
+    applied = state_service.apply(
+        state_service.StateApplyRequest(
+            session_id=session_id, intent="RECOMMEND", confirmed=True
+        ),
+        principal=owner,
+    )
+
+    assert applied.session_id == session_id
+    assert applied.session_created is False
+
+
+def test_되살리지_않으면_다음_턴이_새_세션으로_간다(signing_key) -> None:
+    """위 테스트의 대조군이다. 지금 화면이 '새 대화로 시작된다'고 밝히는 이유다."""
+    owner = Principal(user_id=ME, is_anonymous=True)
+    session_id = _start_chat(ME, "만료된 대화")
+    _expire(session_id)
+
+    applied = state_service.apply(
+        state_service.StateApplyRequest(
+            session_id=session_id, intent="RECOMMEND", confirmed=True
+        ),
+        principal=owner,
+    )
+
+    assert applied.session_id != session_id
+    assert applied.session_created is True
+
+
+def test_이어갈_때_낡은_조건은_버린다(signing_key) -> None:
+    """만료가 하던 두 일 중 '낡은 조건 버리기'는 그대로 한다.
+
+    사흘 전 "비 오는데"가 오늘의 조건으로 남으면 실내만 추천하게 된다.
+    """
+    session_id = _start_chat(ME, "비 오는데 어디 갈까")
+    store = _expire(session_id)
+    state = store.get_state(session_id)
+    assert state is not None
+    state.user_conditions.weather = "rain"
+    state.user_conditions.place_types = ["cafe"]
+    state.api_context.gps_location = "37.5,127.0"
+    state.pending_clarification = "location_required"
+    store.save_state(state)
+
+    TestClient(app).post(f"/api/sessions/{session_id}/resume", headers=_headers(signing_key, ME))
+
+    resumed = store.get_state(session_id)
+    assert resumed is not None
+    assert resumed.user_conditions.weather is None
+    assert resumed.user_conditions.place_types == []
+    assert resumed.api_context.gps_location is None
+    assert resumed.pending_clarification is None
+    assert resumed.status == "active"
+
+
+def test_이어갈_때_거절한_곳은_계속_제외된다(signing_key) -> None:
+    """추천 이력은 비우고 거절 이력은 남긴다.
+
+    사흘 전에 본 곳을 오늘 다시 보여주는 건 문제가 아니지만, 싫다고 한 곳을
+    다시 보여주는 건 문제다.
+    """
+    from app.state import history as history_module
+    from app.state.schema import RecommendedItemInput
+
+    session_id = _start_chat(ME, "추천받은 대화")
+    store = _expire(session_id)
+    history_module.record_recommended(
+        store,
+        session_id,
+        "run_1",
+        [
+            RecommendedItemInput(place_id="본곳", rank=1),
+            RecommendedItemInput(place_id="싫은곳", rank=2),
+        ],
+    )
+    history_module.record_rejected(store, session_id, "run_1", [("싫은곳", "not_interested")])
+
+    TestClient(app).post(f"/api/sessions/{session_id}/resume", headers=_headers(signing_key, ME))
+
+    excluded = history_module.get_exclusion_place_ids(store, session_id)
+    assert "싫은곳" in excluded
+    assert "본곳" not in excluded
+
+
+def test_살아있는_대화는_조건을_건드리지_않는다(signing_key) -> None:
+    """TTL 이내면 방금까지 하던 대화다 — 버릴 낡은 조건이 없다."""
+    from app.state.store import get_store
+
+    session_id = _start_chat(ME, "방금 한 대화")
+    store = get_store()
+    state = store.get_state(session_id)
+    assert state is not None
+    state.user_conditions.weather = "rain"
+    store.save_state(state)
+
+    response = TestClient(app).post(
+        f"/api/sessions/{session_id}/resume", headers=_headers(signing_key, ME)
+    )
+
+    assert response.json()["resumable"] is True
+    kept = store.get_state(session_id)
+    assert kept is not None
+    assert kept.user_conditions.weather == "rain"
+
+
+def test_남의_대화는_이어갈_수_없다(signing_key) -> None:
+    session_id = _start_chat(OTHER, "남의 대화")
+    _expire(session_id)
+
+    response = TestClient(app).post(
+        f"/api/sessions/{session_id}/resume", headers=_headers(signing_key, ME)
+    )
+
+    assert response.status_code == 403
+
+
+def test_토큰_없이는_이어갈_수_없다(signing_key) -> None:
+    session_id = _start_chat(ME, "내 대화")
+
+    assert TestClient(app).post(f"/api/sessions/{session_id}/resume").status_code == 401

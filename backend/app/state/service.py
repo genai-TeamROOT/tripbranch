@@ -1604,18 +1604,66 @@ def get_user_session_detail(
     대화"만 다루므로 신원이 붙지 않은 세션은 내 것이 아니다.
     """
     store = store or get_store()
+    state = _load_own_conversation(session_id, principal, store)
+    return _to_session_detail(state)
 
+
+def _load_own_conversation(
+    session_id: str,
+    principal: Principal,
+    store: StateStore,
+) -> AgentState:
+    """내 대화 하나를 TTL 없이 읽는다. 없거나 남의 것이면 예외."""
     state = store.get_state(session_id)
     if state is None or state.title is None:
         raise SessionNotFoundError(session_id)
     if state.user_id != principal.user_id:
         raise SessionOwnershipError()
+    return state
 
+
+def _to_session_detail(state: AgentState) -> ChatSessionDetail:
     return ChatSessionDetail(
         session_id=state.session_id,
-        title=state.title,
+        title=state.title or "",
         turns=list(state.recent_turns),
         last_active_at=state.last_active_at,
         resumable=state.status != "expired"
         and not session_module.is_session_expired(state),
     )
+
+
+@_wrap_store_errors
+def resume_user_session(
+    session_id: str,
+    principal: Principal,
+    store: StateStore | None = None,
+) -> ChatSessionDetail:
+    """지난 대화를 이어갈 수 있게 되살린다. (TP-222 후속 — 채팅 히스토리)
+
+    사이드바에서 지난 대화를 열 때 부른다. 실측으로 신원이 붙은 대화 106개 중
+    지금 이어갈 수 있는 것은 1개뿐이라(TTL 30분), 되살리지 않으면 히스토리에서
+    연 대화는 사실상 전부 "읽기 전용"이다. 이어 물으면 새 세션이 생겨 **목록에
+    줄이 하나 더 늘고 맥락도 끊긴다.**
+
+    되살리는 방식은 session.resume()에 적혀 있다 — 대화(session_id·title·
+    recent_turns)는 잇고 낡은 조건은 버린다. 추천 이력을 여기서 비우는 이유는
+    두 가지다: 이력이 State가 아니라 별도 저장소에 있고, **거절 이력은 남겨야**
+    하기 때문이다(clear_recommended가 정확히 그 구분을 한다). 사흘 전에 본 곳을
+    오늘 다시 보여주는 것은 문제가 아니지만, 사용자가 싫다고 한 곳을 다시
+    보여주는 것은 문제다.
+
+    아직 살아 있는 세션(TTL 이내)은 **건드리지 않는다.** 조건이 낡지 않았으므로
+    버릴 이유가 없고, 방금까지 하던 대화를 여는 것뿐이다.
+    """
+    store = store or get_store()
+    state = _load_own_conversation(session_id, principal, store)
+
+    if state.status != "expired" and not session_module.is_session_expired(state):
+        return _to_session_detail(state)
+
+    session_module.resume(state)
+    store.save_state(state)
+    history_module.clear_recommended(store, session_id)
+
+    return _to_session_detail(state)
