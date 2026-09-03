@@ -11,7 +11,7 @@
  * "개발자용으로 시작"도 같은 텍스트로 고를 수 있어야 해서다.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
 import { streamChat, toDisplayConditions } from "../api/trip";
@@ -21,6 +21,7 @@ import { AppHeader } from "../components/layout/AppHeader";
 import { usePhotoSimilarSearch } from "../hooks/usePhotoSimilarSearch";
 import { beginChatRequest, endChatRequest } from "../state/chatAbortController";
 import { loadPreferences } from "../state/preferenceStorage";
+import { syncPreferences } from "../state/preferenceSync";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import { buildAgentStageTimings } from "../utils/agentTiming";
 import { getBrowserDeviceLocation } from "../utils/geolocation";
@@ -71,10 +72,21 @@ export function HomePage() {
   const text = HOME_TEXT[state.language];
 
   /*
-   * 저장해 둔 취향. 마운트할 때 한 번만 읽는다 — 취향 설정은 별도 전체 화면이라
-   * 갔다 오면 이 컴포넌트가 다시 마운트되고, 그때 최신 값을 읽는다.
+   * 저장해 둔 취향. 이 기기 값으로 먼저 그리고 계정 값으로 맞춘다 — 로딩 표시를
+   * 두지 않는 이유는 대부분 둘이 같아 깜빡임만 남기 때문이다. 다른 기기에서 바꾼
+   * 경우에만 줄이 바뀌고, 그때는 바뀌는 것이 맞다.
    */
-  const [preferences] = useState(loadPreferences);
+  const [preferences, setPreferences] = useState(loadPreferences);
+
+  useEffect(() => {
+    let active = true;
+    void syncPreferences().then((synced) => {
+      if (active) setPreferences(synced);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const [userInput, setUserInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);

@@ -22,6 +22,8 @@ import type {
   ChatResponse,
   InterpretDebugRequest,
   InterpretResponse,
+  PreferencesResponse,
+  SavedPreferenceItem,
   InterpretedConditions,
   LLMOutput,
   RecommendationPlaceDetailResponse,
@@ -214,4 +216,21 @@ export function removeSavedPlace(sessionId: string, placeId: string) {
   return apiClient.del<SavedPlacesResponse>(
     `/state/${encodeURIComponent(sessionId)}/saved-places/${encodeURIComponent(placeId)}`,
   );
+}
+
+/*
+ * 계정 단위 취향(TP-222 후속). 세션 API들과 달리 경로에 session_id가 없다 —
+ * 취향은 세션에 속하지 않고 사람에게 붙는 값이라 대화를 새로 시작해도 유지된다.
+ *
+ * **이 두 호출만 토큰이 없으면 401이다.** 다른 엔드포인트는 토큰 없는 요청도
+ * 통과시키지만(백엔드 Phase 4 전 과도기), 취향은 신원이 곧 저장 키라 어디에
+ * 저장할지가 정해지지 않는다. 호출부는 실패를 삼키지 말고 로컬 값으로
+ * 되돌아가야 한다(state/preferenceSync.ts).
+ */
+export function fetchPreferences() {
+  return apiClient.get<PreferencesResponse>("/preferences");
+}
+
+export function replacePreferences(items: readonly SavedPreferenceItem[]) {
+  return apiClient.put<PreferencesResponse>("/preferences", { items });
 }

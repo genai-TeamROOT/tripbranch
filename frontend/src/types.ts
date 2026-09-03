@@ -645,6 +645,27 @@ export interface SavedPlacesResponse {
   changed: boolean;
 }
 
+/*
+ * 계정 단위 취향(GET·PUT /api/preferences).
+ *
+ * session_id가 없다 — 이 값은 세션에 속하지 않고 사람에게 붙는다.
+ * updated_at이 null이면 **그 계정이 한 번도 저장한 적이 없다는 뜻**이다.
+ * 빈 목록을 저장한 경우("전부 해제")와 구분되며, 로컬 값을 올려보낼지
+ * 판단하는 기준이 된다(state/preferenceSync.ts).
+ */
+export interface PreferencesResponse {
+  items: SavedPreferenceItem[];
+  updated_at: string | null;
+}
+
+export interface SavedPreferenceItem {
+  label: string;
+  source: "preference" | "place_tag" | "custom";
+  /* preferenceStorage의 SavedPreference와 같은 모양을 유지한다 — 두 타입 사이를
+     복사 없이 주고받으려면 codes의 readonly 여부까지 같아야 한다. */
+  codes: readonly string[];
+}
+
 export interface SessionContextResponse {
   session_id: string | null;
   session_exists: boolean;
