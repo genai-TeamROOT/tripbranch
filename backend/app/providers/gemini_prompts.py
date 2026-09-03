@@ -35,7 +35,7 @@ from app.schemas import (
 # 쓰였는지와 무관하게 단일 값으로 취급한다 — 함수별 개별 버전은 만들지 않는다. 판별·추출
 # 규칙에 영향을 주는 변경(6개 함수 중 하나라도) 시 버전을 올린다 — 사소한 문구·주석
 # 변경은 올리지 않는다.
-_BASE_PROMPT_VERSION = "agent-interpret-prompts-1.0.27"
+_BASE_PROMPT_VERSION = "agent-interpret-prompts-1.0.28"
 _ACTIVE_PROMPT_VARIANT = active_variant()
 PROMPT_VERSION = (
     _BASE_PROMPT_VERSION
@@ -200,6 +200,7 @@ def build_modify_extraction_instruction(
         shown_place_count=shown_place_count,
         relative_expression_rules=load_text("modify/relative_expression_rules.md"),
         field_merge_rules=load_text("modify/field_merge_rules.md"),
+        accessibility_needs_rules=load_text("_shared/rules/accessibility_needs.md"),
         transport_rules=load_text("_shared/rules/transport.md"),
         weather_intent_rules=load_text("_shared/rules/weather_intent.md"),
         concentration_rules=load_text("_shared/rules/concentration_intent.md"),

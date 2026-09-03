@@ -45,14 +45,21 @@ class PipelineDeps:
 async def tool_fetch_node(
     state: RecommendPipelineState, config: RunnableConfig
 ) -> dict[str, object]:
-    """A → C Tool 조회(5단계). 종료 상태면 ``response``를 채워 그 턴을 끝낸다."""
+    """A → C Tool 조회(5단계). 종료 상태면 ``response``를 채워 그 턴을 끝낸다.
+
+    `retry_count`가 1 이상이면 A-1 자기 교정 재시도다 — `widen_search_retry_node`가
+    되묻기 응답을 지우고 이리로 되돌려보낸 것이므로, C에 보내기 전에 반경을
+    `_WIDEN_RADIUS_MAX_TRAVEL_TIME`까지 넓힌다(route_after_tool_fetch 참고).
+    """
 
     from app.services.runtime.agent_runtime import (
+        _WIDEN_RADIUS_MAX_TRAVEL_TIME,
         _fetch_tool_context,
         _revivable_place_ids,
     )
 
     deps: PipelineDeps = deps_from_config(config)
+    retry_count = state.get("retry_count", 0)
     outcome = await _fetch_tool_context(
         state["request"],
         state["llm_output"],
@@ -66,17 +73,45 @@ async def tool_fetch_node(
         shown_place_ids=_revivable_place_ids(
             state["llm_output"], state["session_context"]
         ),
+        radius_override_max_travel_time=(
+            _WIDEN_RADIUS_MAX_TRAVEL_TIME if retry_count > 0 else None
+        ),
         stream_event_sink=sink_from_config(config),
     )
+    # A-1 재시도 시 이전 시도의 tool_executions를 이어 붙인다 — LangGraph는 노드
+    # 반환값으로 state 칸을 통째로 덮어쓰므로, 첫 시도가 되묻기(response)로 끝나며
+    # state["tool_executions"]를 안 갱신하면 그 시도 기록 자체가 증발한다. 그래서
+    # 되묻기로 끝나든 아니든 매번 누적값을 state에 남긴다 — 이번 시도가 재시도로
+    # 이어지면 다음 tool_fetch_node 호출이 이 값을 이어받는다(실측: "강남 술집
+    # 추천해줘"가 두 번째 시도까지 갔는데도 tool_executions가 1건으로만 보였다).
+    prior_executions = state.get("tool_executions", [])
     if outcome.terminal is not None:
-        return {"response": outcome.terminal}
+        merged_executions = [*prior_executions, *outcome.terminal.tool_executions]
+        return {
+            "response": outcome.terminal.model_copy(update={"tool_executions": merged_executions}),
+            "tool_executions": merged_executions,
+        }
     return {
         "tool_context": outcome.tool_context,
         "agent_conditions": outcome.agent_conditions,
         "context_gps": outcome.context_gps,
         "tool_execution": outcome.tool_execution,
-        "tool_executions": outcome.tool_executions,
+        "tool_executions": [*prior_executions, *outcome.tool_executions],
     }
+
+
+async def widen_search_retry_node(
+    state: RecommendPipelineState, config: RunnableConfig
+) -> dict[str, object]:
+    """A-1 자기 교정: no_data_empty 되묻기를 지우고 재시도 횟수를 올린다.
+
+    실제 반경 확대·재조회는 `tool_fetch_node`가 한다 — 이 노드는 그 앞에서
+    "한 번 더 시도한다"는 결정만 상태에 남기는 얇은 판정 노드다. `config`는 쓰지
+    않지만, LangGraph가 노드 시그니처로 config 전달 여부를 판단하므로 다른 노드와
+    시그니처를 맞춰 둔다.
+    """
+
+    return {"retry_count": state.get("retry_count", 0) + 1, "response": None}
 
 
 async def scoring_node(
@@ -181,4 +216,5 @@ __all__ = [
     "schedule_node",
     "scoring_node",
     "tool_fetch_node",
+    "widen_search_retry_node",
 ]

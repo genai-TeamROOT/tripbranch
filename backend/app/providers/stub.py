@@ -10,7 +10,7 @@ TODO: 실제 provider(RealPlaceProvider 등)가 준비되면 팩토리에서 설
 from __future__ import annotations
 
 import math
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Literal
@@ -380,6 +380,12 @@ def _stub_visit_time(user_input: str, reference_date: date) -> str:
         days_ahead = days_until_saturday or 7
         return (reference_date + timedelta(days=days_ahead)).isoformat()
     return reference_date.isoformat()
+
+
+# answer_with_tools() 기본 구현이 도구를 한 번씩 호출해볼 때 쓰는 자리표시자 인자.
+# 실제로 유효한 지역명일 필요는 없다 — 이 기본 구현을 그대로 쓰는 테스트는 도구
+# 자체의 동작(성공/실패 문자열)까지는 검증하지 않는다는 뜻이다.
+_FAKE_TOOL_PROBE_ARG = "테스트지역"
 
 
 class FakeLLMProvider:
@@ -897,6 +903,21 @@ class FakeLLMProvider:
             ),
         )
         return provider_result(result, source=ProviderSource.FAKE_LLM)
+
+    async def answer_with_tools(
+        self,
+        instruction: str,
+        *,
+        tools: Sequence[Callable[..., Awaitable[str]]],
+        max_tool_calls: int = 3,
+    ) -> ProviderResult[str]:
+        """도구를 실제로 순서대로 호출해보는 최소 흉내 — 실 LLM의 판단(어떤 도구를,
+        어떤 인자로, 언제 멈출지)은 흉내 내지 않는다. 이 경로를 자세히 검증하는
+        테스트는 이 클래스를 상속해 직접 override한다."""
+
+        del instruction
+        outputs = [await tool(_FAKE_TOOL_PROBE_ARG) for tool in tools[:max_tool_calls]]
+        return provider_result("\n".join(outputs), source=ProviderSource.FAKE_LLM)
 
     async def extract_compare_request(
         self,
@@ -1542,6 +1563,76 @@ class FakeBarrierFreePlaceSearchProvider:
             ),
             source=ProviderSource.FAKE_BARRIER_FREE_PLACES,
             status=ProviderStatus.SUCCESS if selected else ProviderStatus.NO_DATA,
+        )
+
+
+# Fake 구가 담는 분류별 장소 수. 강남구 실측 구성을 줄여서 흉내 낸 것이다
+# (관광지 39·문화시설 69·음식점 260·쇼핑 713·레포츠 6·축제 13).
+#
+# **비율을 살리는 것이 이 Fake의 전부다.** 쇼핑이 압도적으로 많고 레포츠·축제가
+# 한 자릿수라는 그 모양이 선택 로직이 실제로 하는 일을 결정한다. 분류를 고르게
+# 채우거나 좌표를 한 점에 몰아 두면 몫·격자·소진율이 한 줄도 작동하지 않는데
+# 테스트는 통과한다 — 이 저장소에서 반복된 실패다(D-042 계열).
+_FAKE_DISTRICT_COMPOSITION: tuple[tuple[str, int], ...] = (
+    ("12", 12),  # 관광지
+    ("14", 9),  # 문화시설
+    ("39", 40),  # 음식점
+    ("38", 90),  # 쇼핑
+    ("28", 3),  # 레포츠
+    ("15", 4),  # 축제공연
+)
+
+# Fake 구가 차지하는 좌표 범위. 종로구 언저리에 실제 구만 한 크기로 편다.
+_FAKE_DISTRICT_ORIGIN = (37.56, 126.96)
+_FAKE_DISTRICT_SPAN = 0.04
+
+
+class FakeDistrictPlaceSearchProvider:
+    """구 단위 후보 조회를 만들어 낸 목록으로 대체하는 fake provider.
+
+    실 provider와 같은 규칙을 적용한다 — 추천 대상이 아닌 유형은 버리고, 개수를
+    자르지 않고 구 전량을 올린다. 자르는 일은 선택 단계가 한다.
+
+    좌표는 한 점에 몰지 않고 격자 전체에 편다. 몰아 두면 격자 분산이 아무 일도
+    하지 않게 되어, Fake로 확인한 동작이 실 경로와 달라진다.
+    """
+
+    async def search_places_in_district(
+        self, *, district_code: str
+    ) -> ProviderResult[list[PlaceCandidate]]:
+        candidates: list[PlaceCandidate] = []
+        index = 0
+        base_latitude, base_longitude = _FAKE_DISTRICT_ORIGIN
+        for content_type_id, count in _FAKE_DISTRICT_COMPOSITION:
+            category = resolve_place_category(content_type_id)
+            if category is None:
+                continue
+            for _ in range(count):
+                # 4x4 격자를 골고루 밟도록 두 축을 서로 다른 주기로 돌린다.
+                latitude = base_latitude + (index % 4) * (_FAKE_DISTRICT_SPAN / 4)
+                longitude = base_longitude + ((index // 4) % 4) * (_FAKE_DISTRICT_SPAN / 4)
+                candidates.append(
+                    PlaceCandidate(
+                        place_id=f"fake-{district_code}-{index:04d}",
+                        content_type_id=content_type_id,
+                        lcls_systm1=None,
+                        lcls_systm2=None,
+                        lcls_systm3=None,
+                        name=f"테스트 {category} {index}",
+                        category=category,
+                        latitude=latitude,
+                        longitude=longitude,
+                        address=f"서울특별시 어느구 {index}",
+                        # 실 provider와 같이 비워 둔다. 운영시간은 상세 보완이 채운다.
+                        operating_hours=None,
+                        raw_source="fake_district",
+                    )
+                )
+                index += 1
+        return provider_result(
+            candidates,
+            source=ProviderSource.FAKE_PLACES,
+            status=ProviderStatus.SUCCESS if candidates else ProviderStatus.NO_DATA,
         )
 
 

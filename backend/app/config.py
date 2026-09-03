@@ -47,6 +47,14 @@ class Settings(BaseSettings):
 
     app_env: str = "local"
 
+    # 브라우저에서 이 API를 부를 수 있는 출처. 쉼표로 여러 개를 준다.
+    #
+    # 기본값은 지금까지 코드에 박혀 있던 값 그대로다. 설정으로 뺀 이유는 워킹트리를
+    # 여러 개 띄울 때다 — 두 번째 프론트엔드는 5173을 못 쓰므로 다른 포트로 뜨는데,
+    # 그러면 교차 출처가 되어 브라우저가 막는다. 백엔드는 멀쩡하고 curl도 되는데
+    # 화면만 안 되는 모양이라 원인을 찾기 어렵다.
+    cors_allow_origins: str = "http://localhost:5173"
+
     # Provider selection: 개별 값이 비어 있으면 provider_mode를 공통 기본값으로 사용한다.
     provider_mode: ProviderMode = "fake"
     llm_provider: ProviderMode | None = None
@@ -132,6 +140,13 @@ class Settings(BaseSettings):
     # 태울지 여부(3단계). 위와 같은 이유로 되돌릴 스위치를 따로 둔다 — 조기 반환과
     # 파이프라인은 범위가 달라 한쪽만 끄고 싶을 수 있다.
     use_langgraph_pipeline: bool = True
+
+    # INFO의 실시간 지역 조회(주차·지하철·버스·행사·교통·상권, 서울시 폐쇄목록
+    # 121/82개)를 LLM 에이전트 루프로 태울지 여부(로드맵 24번, 강의교재 90강
+    # ReAct 패턴). 기본 off — 이 provider 최초의 실제 function calling 경로라
+    # 검증 전에는 기존 단발 조회(no_data 되묻기)가 안전한 기본값이다. 켜면 no_data
+    # 시 곧장 되묻지 않고 LLM이 다른 지역명으로 스스로 재시도한 뒤 문장까지 쓴다.
+    agentic_realtime_info: bool = False
 
     # 취향 근거 벡터 검색 사용 여부. 기본 off인 이유는 임베딩 모델이 선택
     # 의존성(`pip install -e ".[embeddings]"`)이고 서버 프로세스에 상주하기
@@ -424,6 +439,15 @@ class Settings(BaseSettings):
                 "RECOMMENDATION_RESULT_LIMIT은 RECOMMENDATION_CANDIDATE_LIMIT 이하여야 합니다."
             )
         return self
+
+    @property
+    def resolved_cors_allow_origins(self) -> list[str]:
+        """빈 항목을 뺀 허용 출처 목록."""
+        return [
+            origin.strip()
+            for origin in self.cors_allow_origins.split(",")
+            if origin.strip()
+        ]
 
     @property
     def resolved_llm_provider(self) -> ProviderMode:

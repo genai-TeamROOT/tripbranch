@@ -4,10 +4,18 @@
 
 | 슬롯 | 관리 버전 | 템플릿 | 공유 규칙 |
 | --- | --- | --- | --- |
-| modify.extract | 1.2.0 | extract.md, type_rules.md, target_rules.md, relative_expression_rules.md, field_merge_rules.md | budget, weather, concentration, environment, transport, shown_place_list |
+| modify.extract | 1.3.0 | extract.md, type_rules.md, target_rules.md, relative_expression_rules.md, field_merge_rules.md | budget, weather, concentration, environment, accessibility_needs, transport, shown_place_list |
 
 ## Draft
 
+- 2026-09-03(modify.extract v1.3.0): `_shared/rules/accessibility_needs.md`를 bundle에 추가하고
+  `field_merge_rules.md`에 accessibility_needs 병합 규칙을 더했습니다 — TP-207 리뷰(김진형,
+  2026-09-03)에서 MODIFY가 이 규칙 파일 없이 어휘를 추측해 "장애인 화장실"을 존재하지 않는
+  `accessible_toilet`으로 지어내는 문제가 확인됐습니다(RECOMMEND는 이미 이 파일을 포함해
+  17/17 통과, MODIFY만 누락). 같은 리뷰에서 "유모차 끌고 갈 수 있는 곳으로 바꿔줘"처럼 교체
+  의도인 발화에서 기존 `wheelchair_access`가 안 빠지고 AND로 남는 문제도 지적되어,
+  place_types와 같은 교체/추가 구분 규칙을 accessibility_needs에도 적용했습니다. 실 서버
+  재확인 후 승인 이력으로 승격합니다.
 - 2026-08-31(modify.extract v1.2.0): `_shared/rules/conversation_history.md`를 bundle에 추가했습니다 —
   최근 대화가 이미 API contents로 전달되는데 프롬프트가 그 존재를 몰라 생략된 후속
   발화를 이어받지 못했습니다. 변경 이유·실측·회귀 근거는 `_shared/HISTORY.md`의 같은

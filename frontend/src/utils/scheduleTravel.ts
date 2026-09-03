@@ -32,6 +32,11 @@ export function scheduleTravelLabel(
   return `${MODE_LABEL[mode]} ${minutes}분${measured ? "" : " · 추정"}`;
 }
 
-/** 추정 구간에 붙는 설명. 왜 실측이 아닌지까지는 사용자에게 말하지 않는다. */
+/**
+ * 추정 구간에 붙는 설명. 왜 실측이 아닌지(어느 API가 실패했는지)까지는 말하지 않는다.
+ *
+ * 한 문장으로 둔다 — 두 문장이던 것이 "…예상값이에요. …구간입니다."로 문체가 섞여
+ * 있었다.
+ */
 export const SCHEDULE_TRAVEL_ESTIMATE_HINT =
-  "직선거리로 계산한 예상값이에요. 실제 경로 조회가 안 된 구간입니다.";
+  "실제 경로를 못 불러와서 직선거리로 어림한 시간이에요.";

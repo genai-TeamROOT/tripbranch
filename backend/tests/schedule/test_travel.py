@@ -9,6 +9,7 @@ from app.domain.schedule_travel import (
     ScheduleTravelCandidate,
     ScheduleTravelEdge,
     ScheduleTravelWarning,
+    SegmentWeather,
     TravelConfidence,
 )
 from app.domain.travel_route import (
@@ -419,3 +420,95 @@ class Test지표_방출:
 
         assert len(edges) == 1
         assert edges[0].confidence is TravelConfidence.HIGH
+
+
+class Test판정_배선:
+    """TP-226 — 판정 단계가 실제 확정 경로를 지나가는지.
+
+    이 카드는 판정하는 쪽을 주입하지 않으므로 결과가 배선 전과 같아야 한다.
+    그래서 "안 바뀐다"와 "그래도 표는 실제로 흐른다"를 함께 본다.
+    """
+
+    _far = [_candidate("a", 127.0), _candidate("b", 127.03)]  # 임계를 넘는 거리
+
+    @pytest.mark.asyncio
+    async def test_판정을_주입하지_않으면_기존_규칙과_같다(self) -> None:
+        edges = await resolve_schedule_travel_edges(
+            candidates=self._far,
+            place_ids=["a", "b"],
+            conditions=UserConditions(),
+            settings=Settings(),
+            travel_route_tool=None,
+        )
+        # 이동수단을 말하지 않았고 도보 예상시간이 임계를 넘으므로 대중교통이다.
+        assert [edge.mode for edge in edges] == [TravelMode.TRANSIT]
+
+    @pytest.mark.asyncio
+    async def test_주입한_판정이_실제_구간_이동수단을_바꾼다(self) -> None:
+        """표가 확정 경로까지 실제로 흐르는지 본다.
+
+        값을 날랐는데 아무도 안 읽으면 다음 카드에서 LLM을 붙여도 결과가 안 바뀐다.
+        그 실패는 테스트도 로그도 통과하므로 여기서 못 박는다.
+        """
+
+        class _AlwaysWalking:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def judge(self, segments, context):
+                self.calls += 1
+                return [TravelMode.WALKING] * len(segments)
+
+        judge = _AlwaysWalking()
+        edges = await resolve_schedule_travel_edges(
+            candidates=self._far,
+            place_ids=["a", "b"],
+            conditions=UserConditions(),
+            settings=Settings(),
+            travel_route_tool=None,
+            mode_judge=judge,
+        )
+
+        assert judge.calls == 1
+        # 규칙대로면 대중교통인 구간을 판정이 도보로 뒤집었다.
+        assert [edge.mode for edge in edges] == [TravelMode.WALKING]
+
+    @pytest.mark.asyncio
+    async def test_조회된_날씨와_동행_무장애가_판정_조건까지_닿는다(self) -> None:
+        """필드만 뚫고 소비 측에 안 닿는 상태를 막는다."""
+        received: list[object] = []
+
+        class _Recording:
+            async def judge(self, segments, context):
+                received.append(context)
+                return [TravelMode.WALKING] * len(segments)
+
+        weather = SegmentWeather(precipitation="rain", sky="overcast", temperature_celsius=8.0)
+        await resolve_schedule_travel_edges(
+            candidates=self._far,
+            place_ids=["a", "b"],
+            conditions=UserConditions(
+                companion="parent", accessibility_needs=["stroller_access"]
+            ),
+            weather=weather,
+            settings=Settings(),
+            travel_route_tool=None,
+            mode_judge=_Recording(),
+        )
+
+        context = received[0]
+        assert context.weather == weather
+        assert context.companion == "parent"
+        assert context.accessibility_needs == ("stroller_access",)
+
+    @pytest.mark.asyncio
+    async def test_날씨가_없어도_편성이_그대로_돈다(self) -> None:
+        edges = await resolve_schedule_travel_edges(
+            candidates=self._far,
+            place_ids=["a", "b"],
+            conditions=UserConditions(),
+            weather=None,
+            settings=Settings(),
+            travel_route_tool=None,
+        )
+        assert len(edges) == 1

@@ -78,6 +78,8 @@ from app.services.runtime.agent_runtime import (
     _build_pairwise_distances_km,
     _effective_excluded_place_ids,
     _fetch_compare_travel_routes,
+    _fetch_realtime_info_agentic,
+    _narrow_recommendation_context_places,
     _revivable_place_ids,
     _snapshot_coordinates,
     run_agent_flow,
@@ -88,7 +90,11 @@ from app.services.runtime.compare_context_schemas import (
     CompareContextResponse,
 )
 from app.services.runtime.follow_up_suggester import MAX_LABEL_LENGTH, MAX_SUGGESTIONS
-from app.services.runtime.info_context_schemas import InfoContextRequest, InfoContextResponse
+from app.services.runtime.info_context_schemas import (
+    InfoContextRequest,
+    InfoContextResponse,
+    RealtimeCityInfoResult,
+)
 from app.services.runtime.real_recommendation_provider import RealRecommendationProvider
 from app.services.runtime.stubs import (
     FakeEnrichmentProvider,
@@ -2902,6 +2908,189 @@ async def test_info_realtime_parking_pairs_with_public_parking_card() -> None:
     assert "공영주차장" in response.message
 
 
+class _ScriptedAreaToolProvider:
+    """place_name별로 미리 정해둔 InfoContextResponse를 돌려주는 대역(로드맵 24번
+    자기 교정 재시도 검증용) — 실제 서울시 폐쇄목록 조회는 흉내 내지 않는다."""
+
+    def __init__(self, responses_by_place_name: dict[str, InfoContextResponse]) -> None:
+        self._responses = responses_by_place_name
+
+    async def fetch_info_context(self, request: InfoContextRequest) -> InfoContextResponse:
+        return self._responses[request.place_name]
+
+
+class _ScriptedToolCallingLLMProvider(FakeLLMProvider):
+    """실제 LLM 판단 대신, 정해진 순서(원래 지역 실패 → 다른 지역 성공)로 도구를
+    불러보는 대역."""
+
+    def __init__(self, *, original_area_name: str, retry_area_name: str) -> None:
+        self._original_area_name = original_area_name
+        self._retry_area_name = retry_area_name
+
+    async def answer_with_tools(
+        self,
+        instruction: str,
+        *,
+        tools,
+        max_tool_calls: int = 3,
+    ):
+        del instruction, max_tool_calls
+        population_tool = tools[0]
+        first_attempt = await population_tool(self._original_area_name)
+        assert "찾지 못했" in first_attempt
+        second_attempt = await population_tool(self._retry_area_name)
+        return provider_result(
+            f"{self._original_area_name}엔 없었지만 {self._retry_area_name}엔 있어요: "
+            f"{second_attempt}",
+            source=ProviderSource.FAKE_LLM,
+        )
+
+
+@pytest.mark.asyncio
+async def test_agentic_realtime_info_retries_with_different_area() -> None:
+    """no_data_empty처럼 곧장 되묻지 않고, LLM이 스스로 다른 지역으로 재조회한
+    결과를 최종 응답·문장으로 쓴다(로드맵 24번, 강의교재 90강 자기 교정)."""
+
+    no_data_response = InfoContextResponse(
+        request_id="r1",
+        status="no_data",
+        result=RealtimeCityInfoResult(
+            status="no_data",
+            question_type="realtime_event",
+            requested_place_name="교대",
+            resolved_place_name="교대",
+        ),
+    )
+    success_response = InfoContextResponse(
+        request_id="r2",
+        status="success",
+        result=RealtimeCityInfoResult(
+            status="success",
+            question_type="realtime_event",
+            requested_place_name="교대",
+            resolved_place_name="강남역",
+            area_name="강남역",
+            fields={"강남 페스티벌": "9/1~9/10 · 강남역 광장"},
+        ),
+    )
+    tool_provider = _ScriptedAreaToolProvider(
+        {"교대": no_data_response, "강남역": success_response}
+    )
+    info_request = InfoContextRequest(
+        request_id="req-1",
+        place_name="교대",
+        place_context="explicit",
+        question_type="realtime_event",
+        specific_question="근처에 행사 있어?",
+    )
+
+    final_response, message = await _fetch_realtime_info_agentic(
+        info_request,
+        llm=_ScriptedToolCallingLLMProvider(original_area_name="교대", retry_area_name="강남역"),
+        tool_provider=tool_provider,
+    )
+
+    assert final_response.status == "success"
+    assert final_response.result.area_name == "강남역"
+    assert "강남역" in message
+
+
+@pytest.mark.asyncio
+async def test_agentic_realtime_info_flag_off_uses_single_call() -> None:
+    """settings.agentic_realtime_info가 기본값(off)이면 재시도 경로를 아예 안 탄다."""
+
+    assert settings.agentic_realtime_info is False
+
+    class _SingleCallToolProvider:
+        def __init__(self) -> None:
+            self.call_count = 0
+
+        async def fetch_info_context(self, request: InfoContextRequest) -> InfoContextResponse:
+            self.call_count += 1
+            return InfoContextResponse(
+                request_id="r1",
+                status="no_data",
+                result=RealtimeCityInfoResult(
+                    status="no_data",
+                    question_type="realtime_event",
+                    requested_place_name=request.place_name,
+                    resolved_place_name=request.place_name,
+                ),
+            )
+
+    tool_provider = _SingleCallToolProvider()
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처에 지금 행사 있어?",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=tool_provider,
+        recommendation_provider=_CountingRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=InMemoryStateStore(),
+    )
+
+    assert tool_provider.call_count == 1
+    assert response.llm_output.info.question_type == "realtime_event"
+
+
+@pytest.mark.asyncio
+async def test_agentic_realtime_info_flag_on_end_to_end() -> None:
+    """플래그를 켜면 run_agent_flow() 전체 경로에서도 자기 교정 재시도가 실제로
+    발동해 최종 메시지가 에이전트 문장으로 대체된다."""
+
+    original = settings.agentic_realtime_info
+    settings.agentic_realtime_info = True
+    try:
+        no_data_response = InfoContextResponse(
+            request_id="r1",
+            status="no_data",
+            result=RealtimeCityInfoResult(
+                status="no_data",
+                question_type="realtime_event",
+                requested_place_name="경복궁",
+                resolved_place_name="경복궁",
+            ),
+        )
+        success_response = InfoContextResponse(
+            request_id="r2",
+            status="success",
+            result=RealtimeCityInfoResult(
+                status="success",
+                question_type="realtime_event",
+                requested_place_name="경복궁",
+                resolved_place_name="강남역",
+                area_name="강남역",
+                fields={"강남 페스티벌": "9/1~9/10 · 강남역 광장"},
+            ),
+        )
+        tool_provider = _ScriptedAreaToolProvider(
+            {"경복궁": no_data_response, "강남역": success_response}
+        )
+
+        response = await run_agent_flow(
+            AgentRequest(
+                user_input="경복궁 근처에 지금 행사 있어?",
+                session_id=None,
+                device_location=DEVICE_LOCATION,
+            ),
+            llm=_ScriptedToolCallingLLMProvider(
+                original_area_name="경복궁", retry_area_name="강남역"
+            ),
+            tool_provider=tool_provider,
+            recommendation_provider=_CountingRecommendationProvider(),
+            enrichment_provider=_CountingEnrichmentProvider(),
+            store=InMemoryStateStore(),
+        )
+    finally:
+        settings.agentic_realtime_info = original
+
+    assert response.info_place_card is not None
+    assert "강남역" in response.message
+
+
 @pytest.mark.asyncio
 async def test_info_walking_time_uses_current_gps_and_route_tool() -> None:
     """INFO location_info도 현재 GPS가 있으면 카카오 도보 경로 계약을 재사용한다."""
@@ -3807,22 +3996,24 @@ class _FixedStatusToolProvider:
 
 
 @pytest.mark.parametrize(
-    ("tool_status", "reaches_recommendation"),
+    ("tool_status", "reaches_recommendation", "expected_tool_calls"),
     [
-        ("success", True),
+        ("success", True, 1),
         # partial은 "가능한 데이터로 계속"이라 D까지 간다(계약 §5.4).
-        ("partial", True),
+        ("partial", True, 1),
         # 아래 넷은 _TOOL_TERMINAL_STATUSES — 안내만 하고 끝난다.
-        # no_data는 넘길 후보가 없어 D를 부르지 않고 조건 조정을 되묻는다.
-        ("no_data", False),
-        ("needs_clarification", False),
-        ("unsupported", False),
-        ("unavailable", False),
+        # no_data(원인 구분 신호 없음 → no_data_empty)는 넘길 후보가 없어 D를 부르지
+        # 않지만, 되묻기 전에 A-1 자기 교정으로 반경을 넓혀 한 번 더 스스로
+        # 조회한다 — 그래서 다른 종료 status와 달리 호출이 2번이다.
+        ("no_data", False, 2),
+        ("needs_clarification", False, 1),
+        ("unsupported", False, 1),
+        ("unavailable", False, 1),
     ],
 )
 @pytest.mark.asyncio
 async def test_tool_status_decides_whether_recommendation_runs(
-    tool_status: str, reaches_recommendation: bool
+    tool_status: str, reaches_recommendation: bool, expected_tool_calls: int
 ) -> None:
     """C의 6개 status가 D 호출 여부를 어떻게 가르는지 한곳에 고정한다.
 
@@ -3845,7 +4036,7 @@ async def test_tool_status_decides_whether_recommendation_runs(
         store=InMemoryStateStore(),
     )
 
-    assert tool_provider.call_count == 1
+    assert tool_provider.call_count == expected_tool_calls
     assert recommendation_provider.call_count == (1 if reaches_recommendation else 0)
     assert (response.recommendations is not None) is reaches_recommendation
 
@@ -4592,6 +4783,273 @@ async def test_injected_saved_place_survives_the_top_n_cut() -> None:
         "주입은 됐는데 상위 N 자르기에서 잘렸다 — 상한을 주입 개수만큼 올리는 것으로는 "
         "후보 풀이 상한보다 클 때 방어가 되지 않는다"
     )
+
+
+class _FarPlaceRefillToolProvider(_RefillPlacesToolProvider):
+    """후보를 넉넉히 주면서 지정한 place_id만 검색 중심에서 멀리 옮긴다.
+
+    `_DroppingRefillToolProvider`와 정반대 상황이다 — 저쪽은 보관함 장소가 이번 턴
+    후보에서 **빠져서** 주입 경로를 타지만, 이쪽은 후보에 **그대로 남아** 주입 대상이
+    아니면서 점수순 자르기에서만 밀린다.
+    """
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.far_place_id: str | None = None
+        # 비-staged(Fake) 분기용. 저쪽은 거리로 채점하지 않고 Context 순서를 그대로
+        # 잘라내므로(`stubs.FakeRecommendationProvider`), 뒤로 미는 것이 "자르기에
+        # 밀린다"를 만드는 유일한 방법이다.
+        self.tail_place_id: str | None = None
+
+    async def fetch_context(self, request):
+        response = await super().fetch_context(request)
+        if response.context is None:
+            return response
+        places = response.context.places
+        if places is None or places.data is None:
+            return response
+        if self.tail_place_id is not None:
+            reordered = [
+                place for place in places.data if place.place_id != self.tail_place_id
+            ] + [
+                place for place in places.data if place.place_id == self.tail_place_id
+            ]
+            return response.model_copy(
+                update={
+                    "context": response.context.model_copy(
+                        update={"places": places.model_copy(update={"data": reordered})}
+                    )
+                }
+            )
+        if self.far_place_id is None:
+            return response
+        moved = [
+            (
+                place.model_copy(
+                    update={
+                        # 종로에서 담고 홍대에서 일정을 짜는 상황과 같은 거리(약 5km).
+                        "location": Coordinates(latitude=37.5563, longitude=126.9236)
+                    }
+                )
+                if place.place_id == self.far_place_id
+                else place
+            )
+            for place in places.data
+        ]
+        return response.model_copy(
+            update={
+                "context": response.context.model_copy(
+                    update={"places": places.model_copy(update={"data": moved})}
+                )
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_saved_place_already_in_candidates_survives_the_top_n_cut() -> None:
+    """이번 턴 후보에 **이미 들어 있는** 보관함 장소도 자르기에서 살아남아야 한다. (TP-223)
+
+    D-116 정정이 넣은 자르기 복구는 `injected_saved_ids`, 즉 `_saved_places_context()`가
+    **주입한** 장소만 되붙인다. 그런데 그 함수는 "이번 턴 후보에 없는" 보관함 장소만
+    주입 대상으로 삼는다(`agent_runtime.py`의 `missing = [...] not in present`).
+
+    그래서 보관함 장소가 이번 턴 후보에 이미 들어 있으면 주입도 안 되고 복구 대상도
+    아니다 — 점수순 상한(`SCHEDULE_RECOMMENDATION_LIMIT`)에서 잘리면 아무도 되붙이지
+    않는다. 사용자에게는 "이번에 찾은 후보에 없어서"로 보인다.
+
+    실사용 재현(TP-223, 2026-09-02): 6곳을 담았는데 세종문화회관·인사동 문화의 거리가
+    빠졌다. 둘 다 Supabase에 행이 있고 좌표가 있었으며, 운영시간 원문이 파싱되지 않아
+    (`매장 별로 상이함`) 폐점 필터에는 애초에 걸리지 않는다 — 같은 원문을 가진 남대문
+    두 곳은 들어갔다. 남은 차이는 "이번 턴 후보에 있었느냐"뿐이다.
+
+    기존 `test_injected_saved_place_survives_the_top_n_cut`이 이걸 못 잡은 이유는
+    더블이 보관함 장소를 응답에서 **빼서** 항상 주입 경로만 태웠기 때문이다.
+    """
+    store = InMemoryStateStore()
+    tool_provider = _FarPlaceRefillToolProvider(
+        total=20, page_size=20, open_indexes=set(range(20))
+    )
+    providers = {
+        "llm": _LLMProviderWithGeneralAnswer(),
+        "tool_provider": tool_provider,
+        "recommendation_provider": RealRecommendationProvider(),
+        "enrichment_provider": _CountingEnrichmentProvider(),
+    }
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+    assert first.recommendations is not None
+    shown = [
+        *first.recommendations.recommendations,
+        *first.recommendations.unverified_recommendations,
+    ]
+    assert shown
+    session_id = first.state.session_id
+    place_id = shown[0].place_id
+    state_service.save_place(
+        session_id,
+        state_service.SavePlaceRequest(place_id=place_id),
+        store=store,
+    )
+
+    # 담은 다음 턴에도 그 장소는 후보에 그대로 있다 — 다만 거리 점수가 0으로 깔린다.
+    tool_provider.far_place_id = place_id
+    repository = _FakePlaceDetailsRepository(
+        {place_id: _stored_detail(place_id, latitude=37.5563, longitude=126.9236)}
+    )
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="이 장소들로 일정 짜기",
+            session_id=session_id,
+            device_location=DEVICE_LOCATION,
+            schedule_from_saved=True,
+        ),
+        store=store,
+        place_details_repository=repository,
+        **providers,
+    )
+
+    assert response.schedule is not None
+    # 진단 순서: 상황을 만들었는가 → 주입 경로가 아닌가 → 그래도 살아남았는가.
+    assert place_id not in tool_provider.requests[-1].excluded_place_ids, (
+        "보관함 장소가 제외 목록에 남아 있다 — _revivable_place_ids()가 안 돌았다"
+    )
+    assert place_id not in repository.requested_ids, (
+        "후보에 이미 있는데도 주입을 시도했다 — 이 테스트가 겨냥한 경로가 아니다"
+    )
+    assert response.schedule.absent_saved_place_names == [], (
+        "후보에 이미 있던 보관함 장소가 상위 N 자르기에서 잘렸다 — 자르기 복구가 "
+        "주입된 것(injected_saved_ids)만 보고 있어 이 경로를 보호하지 못한다"
+    )
+
+
+@pytest.mark.asyncio
+async def test_saved_place_already_in_candidates_survives_the_cut_without_staging() -> None:
+    """비-staged 분기(Fake D)에서도 후보에 있던 보관함 장소가 살아남아야 한다. (TP-223)
+
+    staged 분기는 `merged_prepared`를 좁히면 원래 후보와 주입분을 함께 덮지만,
+    이쪽은 prepare 결과가 없어 좁힐 대상이 Context뿐이다. 예전에는 **주입
+    Context**만 다시 채점해서, 후보에 원래 있던 보관함 장소는 되붙일 방법이
+    아예 없었다.
+    """
+    store = InMemoryStateStore()
+    tool_provider = _FarPlaceRefillToolProvider(
+        total=20, page_size=20, open_indexes=set(range(20))
+    )
+    providers = {
+        "llm": _LLMProviderWithGeneralAnswer(),
+        "tool_provider": tool_provider,
+        "recommendation_provider": FakeRecommendationProvider(),
+        "enrichment_provider": _CountingEnrichmentProvider(),
+    }
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+    assert first.recommendations is not None
+    shown = [
+        *first.recommendations.recommendations,
+        *first.recommendations.unverified_recommendations,
+    ]
+    assert shown
+    session_id = first.state.session_id
+    place_id = shown[0].place_id
+    state_service.save_place(
+        session_id,
+        state_service.SavePlaceRequest(place_id=place_id),
+        store=store,
+    )
+
+    # 후보에는 그대로 있지만 맨 뒤로 밀려 상한 밖에 놓인다.
+    tool_provider.tail_place_id = place_id
+    repository = _FakePlaceDetailsRepository(
+        {place_id: _stored_detail(place_id)}
+    )
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="이 장소들로 일정 짜기",
+            session_id=session_id,
+            device_location=DEVICE_LOCATION,
+            schedule_from_saved=True,
+        ),
+        store=store,
+        place_details_repository=repository,
+        **providers,
+    )
+
+    assert response.schedule is not None
+    assert place_id not in repository.requested_ids, (
+        "후보에 이미 있는데도 주입을 시도했다 — 이 테스트가 겨냥한 경로가 아니다"
+    )
+    assert response.schedule.absent_saved_place_names == [], (
+        "비-staged 분기에서 후보에 있던 보관함 장소가 잘렸다"
+    )
+
+
+class Test후보_Context_좁히기:
+    """`_narrow_recommendation_context_places()` — 되붙일 후보만 남긴다. (TP-223)"""
+
+    @staticmethod
+    def _context(*place_ids: str) -> RecommendationContext:
+        return RecommendationContext(
+            location=ContextValue(
+                status="success",
+                data=ResolvedLocation(
+                    requested_query="경복궁",
+                    resolved_name="경복궁",
+                    source="query",
+                    location=Coordinates(latitude=37.5788, longitude=126.9770),
+                ),
+            ),
+            places=ContextValue(
+                status="success",
+                data=[
+                    PlaceCandidate(
+                        place_id=place_id,
+                        name=f"장소 {place_id}",
+                        category="cafe",
+                        location=Coordinates(latitude=37.5, longitude=127.0),
+                    )
+                    for place_id in place_ids
+                ],
+            ),
+        )
+
+    def test_지정한_id만_남긴다(self) -> None:
+        narrowed = _narrow_recommendation_context_places(
+            self._context("a", "b", "c"), ["b"]
+        )
+
+        assert narrowed is not None
+        assert narrowed.places is not None
+        assert [place.place_id for place in (narrowed.places.data or [])] == ["b"]
+
+    def test_남는_것이_없으면_None이다(self) -> None:
+        """빈 Context로 채점을 부르지 않게 호출부가 분기할 수 있어야 한다."""
+
+        assert _narrow_recommendation_context_places(self._context("a"), ["z"]) is None
+
+    def test_후보가_없으면_None이다(self) -> None:
+        context = self._context("a").model_copy(
+            update={"places": ContextValue(status="success", data=[])}
+        )
+
+        assert _narrow_recommendation_context_places(context, ["a"]) is None
 
 
 class _LLMProviderWithTransport(_LLMProviderWithGeneralAnswer):
