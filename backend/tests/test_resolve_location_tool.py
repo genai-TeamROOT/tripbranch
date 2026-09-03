@@ -44,6 +44,7 @@ def _result(
     query: str = "서울특별시 종로구 사직로 161",
     district: str | None = "종로구",
     count: int = 1,
+    labels: tuple[str, ...] = (),
 ) -> GeocodeResult:
     return GeocodeResult(
         query=query,
@@ -52,6 +53,7 @@ def _result(
         longitude=126.9770,
         candidate_count=count,
         administrative_district=district,
+        candidate_labels=labels,
     )
 
 
@@ -1221,3 +1223,48 @@ async def test_still_asks_when_two_real_locations_share_the_name() -> None:
     assert result.status is ResolveLocationStatus.NO_DATA
     assert result.error is not None
     assert result.error.cause == "ambiguous_location"
+
+
+@pytest.mark.asyncio
+async def test_지오코딩_후보가_여럿이면_되묻기에_후보를_싣는다() -> None:
+    """후보를 안 실으면 그 위층이 GPS로 짐작한 구의 스팟으로 버튼을 메운다(TP-182).
+
+    "익선동"을 물은 사람에게 강서구 장소가 나가던 문제다. 진짜 답을 손에 들고도
+    짐작을 보여주는 셈이라, 버튼이 비는 것보다 나쁘다.
+    """
+    provider = SequenceGeocodingProvider(
+        [
+            _result(
+                query="서울특별시 종로구 익선동",
+                count=2,
+                labels=("종로구 익선동", "창원시 진해구 익선동"),
+            )
+        ]
+    )
+    tool = ResolveLocationTool(provider)
+
+    result = await tool.execute(
+        ResolveLocationQuery("익선동", purpose=LocationPurpose.SEARCH_CENTER)
+    )
+
+    assert result.status is ResolveLocationStatus.NO_DATA
+    assert result.error is not None
+    assert result.error.cause == "ambiguous_location"
+    assert (
+        result.error.details["candidate_names"]
+        == "종로구 익선동|창원시 진해구 익선동"
+    )
+
+
+@pytest.mark.asyncio
+async def test_후보_이름이_없으면_되묻기_후보도_비운다() -> None:
+    """Provider가 이름을 못 주면 없는 대로 둔다 — 빈 버튼을 만들지 않는다."""
+    provider = SequenceGeocodingProvider([_result(count=2)])
+    tool = ResolveLocationTool(provider)
+
+    result = await tool.execute(
+        ResolveLocationQuery("익선동", purpose=LocationPurpose.SEARCH_CENTER)
+    )
+
+    assert result.error is not None
+    assert "candidate_names" not in result.error.details

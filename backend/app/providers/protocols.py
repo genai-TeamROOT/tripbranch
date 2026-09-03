@@ -34,6 +34,7 @@ from app.domain.models import (
     TourPlacePage,
     WeatherForecastResult,
 )
+from app.domain.schedule_travel import ModeJudgmentContext, SegmentModeInput
 from app.domain.travel_route import (
     GeoCoordinate,
     RouteDestination,
@@ -281,6 +282,22 @@ class LLMProvider(Protocol):
 
         comparison 밖의 사실·점수·순위를 만들지 않는다. 호출부는 LLM 장애 시
         고정 템플릿으로 fallback해 비교 데이터 응답 자체를 유지해야 한다.
+        """
+        ...
+
+    async def judge_travel_modes(
+        self,
+        segments: Sequence[SegmentModeInput],
+        context: ModeJudgmentContext,
+    ) -> ProviderResult[tuple[str, ...]]:
+        """구간별 이동수단을 전 구간 한 번에 정한다. (TP-227)
+
+        Intent에 매이지 않는다 — SCHEDULE의 구간과 RECOMMEND의 후보가 같은 판정을
+        쓴다. 두 임계값이 환산 관계라(D-118) 한쪽만 다른 판정을 쓰면 같은 거리를
+        두고 서로 다른 이동수단을 말하게 된다.
+
+        돌려주는 것은 **검증하지 않은 문자열 목록**이다. 개수와 어휘는 호출부가
+        확인한다 — 어느 구간의 답인지 아는 쪽이 거기다.
         """
         ...
 

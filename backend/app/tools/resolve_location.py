@@ -730,12 +730,20 @@ class ResolveLocationTool:
             if outside is not None:
                 return outside
         if method is not ResolutionMethod.ALIAS and result.candidate_count > 1:
+            # 후보를 함께 싣는다(TP-182). 안 실으면 그 위층이 GPS로 짐작한 구의
+            # 대표 스팟으로 버튼을 메워, "익선동"을 물은 사람에게 강서구 장소가
+            # 나간다 — 진짜 답을 손에 들고도 짐작을 보여주는 셈이다.
+            details = {"reason": "ambiguous_location"}
+            if result.candidate_labels:
+                details["candidate_names"] = _join_candidate_names(
+                    result.candidate_labels
+                )
             return self._error_result(
                 status=ResolveLocationStatus.NO_DATA,
                 code="no_data",
                 cause="ambiguous_location",
                 retryable=False,
-                details={"reason": "ambiguous_location"},
+                details=details,
                 provider_metadata=provider_metadata,
             )
         return ResolveLocationResult(

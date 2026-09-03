@@ -146,6 +146,8 @@ async def scoring_node(
         tool_executions=state["tool_executions"],
         effective_ignore_operating_hours=state["effective_ignore_operating_hours"],
         stream_event_sink=sink_from_config(config),
+        # 후보별 실측 이동수단을 일정과 같은 판정으로 정한다(TP-227).
+        llm=deps.llm,
     )
     return {
         "recommendations": outcome.recommendations,

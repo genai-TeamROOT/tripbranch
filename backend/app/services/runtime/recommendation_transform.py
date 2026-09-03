@@ -114,6 +114,30 @@ def to_measured_travel_modes(
     return (TravelMode.WALKING,)
 
 
+def modes_for_judged_choice(
+    conditions: UserConditions | None, choice: TravelMode
+) -> tuple[TravelMode, ...]:
+    """판정이 고른 수단을 **실측할 수단 집합**으로 옮긴다. (TP-227)
+
+    추천에서 판정이 답하는 질문은 일정과 다르다. 일정은 "무엇으로 갈까"이지만
+    추천은 **"대중교통도 재볼까"**다 — 임계를 넘은 후보는 도보와 대중교통을 둘 다
+    조회하고 `_fastest_routes()`가 빠른 쪽을 남기기 때문이다(D-118). 카카오
+    대중교통이 근거리에서 도보보다 느린 값을 주는 경우가 실측으로 확인돼 있어,
+    판정이 대중교통을 골랐다고 그것만 재면 더 느린 값을 쓰게 된다.
+
+    그래서 `TRANSIT` 판정은 `(WALKING, TRANSIT)`로 옮긴다. 양쪽 조회라는 D-118의
+    설계를 그대로 두고, **어느 후보에 그 비용을 쓸지만** 판정이 정하는 것이다.
+
+    도보·자동차 명시는 판정을 거치지 않으므로 여기 오지 않는다
+    (`select_modes_for_segments()`가 그 두 경우에 판정을 부르지 않는다).
+    """
+
+    del conditions
+    if choice is TravelMode.TRANSIT:
+        return (TravelMode.WALKING, TravelMode.TRANSIT)
+    return (choice,)
+
+
 def to_search_radius_km(conditions: UserConditions) -> float:
     """A의 이동시간과 이동수단 조건을 검색 반경(km)으로 변환한다.
 
@@ -191,6 +215,7 @@ def to_record_recommendation_request(
 
 
 __all__ = [
+    "modes_for_judged_choice",
     "to_search_radius_km",
     "to_concentration_entries",
     "to_record_recommendation_request",

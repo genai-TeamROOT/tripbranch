@@ -57,12 +57,18 @@ def _service(*, with_district_provider: bool = True) -> ContextService:
     )
 
 
-def _request(search_center: str, *, place_tags: list[str] | None = None) -> AgentContextRequest:
+def _request(
+    search_center: str,
+    *,
+    place_types: list[str] | None = None,
+    place_tags: list[str] | None = None,
+) -> AgentContextRequest:
     return AgentContextRequest(
         request_id="request-1",
         intent="RECOMMEND",
         conditions=UserConditions(
             search_center=search_center,
+            place_types=place_types or [],
             place_tags=place_tags or [],
         ),
     )
@@ -126,3 +132,38 @@ async def test_구_단위_provider가_없으면_반경_검색으로_돌아가지
     response = await _service(with_district_provider=False).fetch_context(_request("강남구"))
 
     assert response.status in {"unavailable", "no_data"}
+
+
+@pytest.mark.asyncio
+async def test_분류를_말한_구_요청은_그_분류만_나온다() -> None:
+    """"강남구 맛집"에 관광지를 섞어 넣으면 요청을 무시하는 것이 된다."""
+    response = await _service().fetch_context(
+        _request("강남구", place_types=["restaurant"])
+    )
+
+    assert response.context is not None
+    assert response.context.places is not None
+    places = response.context.places.data or []
+
+    assert places, "분류 조건이 붙으면 후보가 통째로 사라진다"
+    assert {place.category for place in places} == {"restaurant"}
+
+
+@pytest.mark.asyncio
+async def test_분류를_말하면_소진율_상한을_걸지_않는다() -> None:
+    """지목한 분류는 다 보여준다.
+
+    Fake 구의 레포츠는 3곳뿐이라, 조건 없는 요청에 걸리는 규칙이 여기에도 걸리면
+    수가 줄어든다 — 몫 2에 잘리거나 소진율 60%(= 1곳)에 잘린다. 사용자가 직접
+    지목한 분류는 그 둘 다 적용하지 않는다는 것을 이 수로 못 박는다.
+    """
+    response = await _service().fetch_context(
+        _request("강남구", place_types=["leisure"])
+    )
+
+    assert response.context is not None
+    assert response.context.places is not None
+    places = response.context.places.data or []
+
+    assert len(places) == 3
+    assert {place.category for place in places} == {"leisure"}

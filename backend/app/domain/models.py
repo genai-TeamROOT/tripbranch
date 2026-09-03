@@ -68,6 +68,15 @@ class GeocodeResult:
     longitude: float
     candidate_count: int = 1
     administrative_district: str | None = None
+    # 후보가 여럿일 때 되묻기 버튼에 쓸 이름들. 대표 한 곳(resolved_name)만으로는
+    # "어느 쪽이냐"를 물을 수 없어서 함께 나른다(TP-182).
+    #
+    # **시도를 뗀 짧은 이름이다** ("서울특별시 종로구 익선동"이 아니라 "종로구
+    # 익선동"). 버튼 글자가 곧 다음 검색어라 혼자서도 찾아져야 하는데, 실측하면
+    # 시도를 떼도 후보 1건으로 확정된다(2026-09-03: "익선동" 2건 → "종로구 익선동"
+    # 1건, "연희동" 2건 → "서대문구 연희동" 1건). 반대로 동 이름만 남기면 다시
+    # 여럿이 되어 되묻기가 반복된다.
+    candidate_labels: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
