@@ -20,13 +20,18 @@ from app.state import preferences as preferences_module
 from app.state import saved_places as saved_places_module
 from app.state import session as session_module
 from app.state import trace as trace_module
-from app.state.errors import SavedPlaceNotRecommendedError, StateStoreError
+from app.state.errors import (
+    SavedPlaceNotRecommendedError,
+    SessionNotFoundError,
+    StateStoreError,
+)
 from app.state.merge import merge_conditions
 from app.state.operations import IgnoredOperation, Operation, validate_all
 from app.state.schema import (
     MAX_RECENT_TURNS,
     MAX_TURN_ASSISTANT_MESSAGE_CHARS,
     MAX_TURN_USER_INPUT_CHARS,
+    AgentState,
     ConversationTurn,
     FeedbackReasonCode,
     PendingInfoContext,
@@ -1050,6 +1055,7 @@ def append_conversation_turn(
         turn = turn.model_copy(update=truncations)
 
     state.recent_turns = [*state.recent_turns, turn][-MAX_RECENT_TURNS:]
+    session_module.attach_title(state, turn.user_input)
     session_module.touch(state)
     store.save_state(state)
 
@@ -1469,3 +1475,95 @@ def replace_user_preferences(
 
     stored = preferences_module.replace(store, user_id, items)
     return UserPreferencesResponse(items=list(stored.items), updated_at=stored.updated_at)
+
+
+# ================================================================ 대화 목록
+
+
+MAX_LISTED_SESSIONS = 50
+
+
+class ChatSessionSummary(BaseModel):
+    """사이드바 채팅 히스토리의 한 줄. (TP-222 후속)
+
+    대화 내용을 담지 않는다 — 목록을 그리는 데 필요한 것만 준다. 사용자가
+    한 줄을 누르면 그때 /state/{session_id}로 전체를 받는다.
+    """
+
+    session_id: str
+    title: str
+    # 마지막 턴에서 언급된 장소 하나. 목록에서 "무엇에 대한 대화였는지"를
+    # 제목만으로 알기 어려울 때의 보조 단서다. 없으면 None.
+    place_name: str | None = None
+    last_active_at: datetime
+
+
+class ChatSessionsResponse(BaseModel):
+    sessions: list[ChatSessionSummary] = Field(default_factory=list)
+
+
+def _latest_place_name(state: AgentState) -> str | None:
+    """가장 최근 턴부터 거슬러 올라가며 처음 나오는 장소 이름."""
+    for turn in reversed(state.recent_turns):
+        if turn.place_names:
+            return turn.place_names[0]
+    return None
+
+
+@_wrap_store_errors
+def list_user_sessions(
+    user_id: str,
+    store: StateStore | None = None,
+) -> ChatSessionsResponse:
+    """내 대화를 최근 순으로. (TP-222 후속)
+
+    소유권 검증이 따로 없는 이유는 키가 곧 신원이기 때문이다 — 라우트가
+    RequiredPrincipal로 받은 user_id만 여기 들어오므로 남의 대화가 섞일
+    경로가 없다.
+    """
+    store = store or get_store()
+
+    states = store.list_sessions_for_user(user_id, MAX_LISTED_SESSIONS)
+    return ChatSessionsResponse(
+        sessions=[
+            ChatSessionSummary(
+                session_id=state.session_id,
+                title=state.title or "",
+                place_name=_latest_place_name(state),
+                last_active_at=state.last_active_at,
+            )
+            for state in states
+            if state.title
+        ]
+    )
+
+
+@_wrap_store_errors
+def rename_session(
+    session_id: str,
+    title: str,
+    principal: Principal | None = None,
+    store: StateStore | None = None,
+) -> ChatSessionSummary:
+    """대화 이름을 바꾼다.
+
+    여기서는 소유권을 대조해야 한다 — 경로에 session_id가 들어와, 남의 대화
+    이름을 바꾸라는 요청이 만들어질 수 있기 때문이다(list_user_sessions와
+    다른 점이다).
+    """
+    store = store or get_store()
+
+    state = session_module.peek_session(store, session_id)
+    if state is None:
+        raise SessionNotFoundError(session_id)
+    session_module.verify_ownership(state, principal)
+
+    if session_module.rename(state, title):
+        store.save_state(state)
+
+    return ChatSessionSummary(
+        session_id=state.session_id,
+        title=state.title or "",
+        place_name=_latest_place_name(state),
+        last_active_at=state.last_active_at,
+    )

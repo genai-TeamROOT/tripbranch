@@ -194,6 +194,14 @@ supabase migration list
 
 ## 주의사항
 
+- 대화 제목 마이그레이션:
+  `202609030002_add_agent_states_title.sql`
+  (TP-222 후속. 사이드바 채팅 히스토리가 목록에 쓸 제목이다. `recent_turns`에서
+  파생하지 않는 이유는 그 배열이 MAX_RECENT_TURNS(=5)개만 남아, 대화를 이어갈수록
+  첫 질문이 밀려나 제목이 저절로 바뀌기 때문이다 — 신원이 붙은 대화 105개 중
+  22개(21%)가 이미 그 상태였다. 채우는 규칙은 `user_id`와 같다: 비어 있으면
+  채우고 값이 있으면 덮어쓰지 않는다)
+
 - 계정 단위 취향 마이그레이션:
   `202609030001_create_user_preferences.sql`
   (TP-222 후속. `user_preferences` 신설 — **이 프로젝트에서 세션이 아니라 계정을
@@ -216,6 +224,10 @@ supabase migration list
   상태다. 위와 같은 이유로 재실행하지 않는다.
 - `202609030001_create_user_preferences.sql`도 적용 완료 상태다(2026-09-03, MCP
   `apply_migration`, 원격 이력에는 `create_user_preferences`로 기록).
+- `202609030002_add_agent_states_title.sql`도 적용 완료 상태다(2026-09-03).
+  `agent_states.title` 추가 + 기존 283건 backfill + `(user_id, last_active_at desc)`
+  부분 인덱스. **backfill 값은 근사치다** — 남아 있는 가장 오래된 턴이라
+  MAX_RECENT_TURNS(=5)를 채운 대화에서는 실제 첫 질문이 아니다.
 - 기존 마이그레이션 파일은 적용 후 수정하지 않는다.
 - 이후 스키마 변경은 새 타임스탬프를 가진 마이그레이션 파일로 추가한다.
 - 새 마이그레이션은 가능한 한 Supabase CLI `db push` 또는 MCP

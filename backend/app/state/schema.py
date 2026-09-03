@@ -193,6 +193,13 @@ class AgentState(BaseModel):
     ignore_operating_hours_until: datetime | None = None
     # 최근 대화(오래된 것이 앞). MAX_RECENT_TURNS개를 넘으면 앞에서 버린다 —
     # 자르는 책임은 append_conversation_turn() 한 곳에만 둔다.
+    # 대화 제목. 사이드바 채팅 히스토리가 목록에 쓴다. user_id와 같은 규칙으로
+    # **비어 있으면 채우고 값이 있으면 덮어쓰지 않는다** — 첫 턴의 사용자 발화가
+    # 제목이 되고, 사용자가 이름을 바꾸면 그 값이 남는다.
+    #
+    # recent_turns에서 파생하지 않는 이유는 그 배열이 MAX_RECENT_TURNS개만 남기
+    # 때문이다. 첫 질문이 밀려나면 제목이 저절로 바뀐다.
+    title: str | None = None
     recent_turns: list[ConversationTurn] = Field(default_factory=list)
     # 상황 축이 잡은 현재 상태. 상황이 감지된 적이 없으면 None이다.
     situation_state: SituationState | None = None

@@ -145,6 +145,43 @@ def attach_user_id(state: AgentState, principal: Principal | None) -> None:
     state.user_id = principal.user_id
 
 
+MAX_TITLE_CHARS = 200
+
+
+def attach_title(state: AgentState, user_input: str) -> None:
+    """첫 턴의 사용자 발화를 대화 제목으로 붙인다. (TP-222 후속 — 채팅 히스토리)
+
+    attach_user_id와 같은 규칙이다 — **비어 있으면 채우고, 값이 있으면 절대
+    덮어쓰지 않는다.** 사용자가 사이드바에서 이름을 바꾼 뒤 대화를 이어가도
+    그 이름이 유지된다.
+
+    recent_turns에서 파생하지 않는 이유는 그 배열이 MAX_RECENT_TURNS개만 남기
+    때문이다. 첫 질문이 밀려나면 사이드바의 제목이 저절로 바뀐다.
+    """
+    if state.title is not None:
+        return
+    trimmed = user_input.strip()
+    if not trimmed:
+        return
+    state.title = trimmed[:MAX_TITLE_CHARS]
+
+
+def rename(state: AgentState, title: str) -> bool:
+    """사용자가 대화 이름을 바꾼다. 빈 이름은 무시한다.
+
+    attach_title과 달리 기존 값을 덮어쓴다 — 사용자가 명시적으로 요청한
+    변경이기 때문이다. 반환값은 실제로 바뀌었는지다.
+    """
+    trimmed = title.strip()
+    if not trimmed:
+        return False
+    next_title = trimmed[:MAX_TITLE_CHARS]
+    if state.title == next_title:
+        return False
+    state.title = next_title
+    return True
+
+
 def verify_ownership(state: AgentState, principal: Principal | None) -> None:
     """이 세션이 요청을 보낸 신원의 것인지 대조한다. (D-063 결정 2 후속, D-073)
 

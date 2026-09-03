@@ -58,6 +58,12 @@ class StateStore(Protocol):
     def get_preferences(self, user_id: str) -> UserPreferenceList | None: ...
     def save_preferences(self, preferences: UserPreferenceList) -> None: ...
 
+    # -- 사용자의 대화 목록 --
+    # 사이드바 채팅 히스토리가 쓴다. 제목이 없는 세션(대화를 시작하지 않고
+    # 만들어지기만 한 세션)은 목록에 넣지 않는다 — 사용자가 보기에 그건
+    # 대화가 아니다.
+    def list_sessions_for_user(self, user_id: str, limit: int) -> list[AgentState]: ...
+
     # --- ConditionChangeLog (append-only)
     def append_change_logs(self, logs: list[ConditionChangeLog]) -> None: ...
     def get_change_logs(self, session_id: str) -> list[ConditionChangeLog]: ...
@@ -151,6 +157,15 @@ class InMemoryStateStore:
         self._saved_places.pop(session_id, None)
 
     # ------------------------------------------------------------ Preferences
+
+    def list_sessions_for_user(self, user_id: str, limit: int) -> list[AgentState]:
+        owned = [
+            state
+            for state in self._states.values()
+            if state.user_id == user_id and state.title is not None and state.status != "expired"
+        ]
+        owned.sort(key=lambda state: state.last_active_at, reverse=True)
+        return [state.model_copy(deep=True) for state in owned[:limit]]
 
     def get_preferences(self, user_id: str) -> UserPreferenceList | None:
         preferences = self._preferences.get(user_id)

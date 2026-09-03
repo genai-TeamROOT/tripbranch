@@ -252,6 +252,31 @@ class SupabaseStateStore:
 
     # ------------------------------------------------------------ Preferences
 
+    def list_sessions_for_user(self, user_id: str, limit: int) -> list[AgentState]:
+        """사용자의 대화를 최근 순으로. 제목 없는 세션은 대화가 아니라 제외한다.
+
+        agent_states_user_recent_idx(user_id, last_active_at desc)를 그대로 탄다.
+        """
+        response = self._request(
+            "GET",
+            "/agent_states",
+            params={
+                "user_id": f"eq.{user_id}",
+                "title": "not.is.null",
+                "status": "neq.expired",
+                "select": "*",
+                "order": "last_active_at.desc",
+                "limit": str(limit),
+            },
+        )
+        rows = self._json(response)
+        if not isinstance(rows, list):
+            raise StateStoreError("invalid agent_states rows")
+        try:
+            return [AgentState.model_validate(row) for row in rows]
+        except Exception:
+            raise StateStoreError("invalid agent_states row") from None
+
     def get_preferences(self, user_id: str) -> UserPreferenceList | None:
         """계정 단위 취향. 다른 조회와 달리 키가 user_id다."""
         response = self._request(

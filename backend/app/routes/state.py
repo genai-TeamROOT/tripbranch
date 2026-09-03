@@ -17,11 +17,47 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
+from pydantic import BaseModel
 
-from app.auth.dependency import OptionalPrincipal
+from app.auth.dependency import OptionalPrincipal, RequiredPrincipal
 from app.state import service as state_service
 
 router = APIRouter(tags=["state"])
+
+
+class RenameSessionRequest(BaseModel):
+    title: str
+
+
+@router.get("/sessions", response_model=state_service.ChatSessionsResponse)
+async def list_sessions(principal: RequiredPrincipal) -> state_service.ChatSessionsResponse:
+    """내 대화 목록. 사이드바 채팅 히스토리가 쓴다. (TP-222 후속)
+
+    경로가 /state/{session_id} 아래가 아닌 이유는 이 목록이 특정 세션에 속하지
+    않기 때문이다 — 넣었다면 /state/{session_id}가 "sessions"를 session_id로
+    받아 삼켰을 것이다.
+
+    /preferences와 같이 RequiredPrincipal을 쓴다. 신원이 곧 조회 키라, 토큰이
+    없으면 누구의 목록인지가 정해지지 않는다.
+    """
+    return state_service.list_user_sessions(principal.user_id)
+
+
+@router.patch(
+    "/state/{session_id}/title",
+    response_model=state_service.ChatSessionSummary,
+)
+async def rename_session(
+    session_id: str,
+    request: RenameSessionRequest,
+    principal: RequiredPrincipal,
+) -> state_service.ChatSessionSummary:
+    """대화 이름을 바꾼다.
+
+    여기는 경로에 session_id가 들어오므로 남의 대화를 지목할 수 있다 —
+    서비스가 소유권을 대조한다.
+    """
+    return state_service.rename_session(session_id, request.title, principal=principal)
 
 
 @router.get("/state/{session_id}", response_model=state_service.SessionContextResponse)
