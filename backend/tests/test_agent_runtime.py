@@ -78,6 +78,7 @@ from app.services.runtime.agent_runtime import (
     _build_pairwise_distances_km,
     _effective_excluded_place_ids,
     _fetch_compare_travel_routes,
+    _narrow_recommendation_context_places,
     _revivable_place_ids,
     _snapshot_coordinates,
     run_agent_flow,
@@ -4592,6 +4593,273 @@ async def test_injected_saved_place_survives_the_top_n_cut() -> None:
         "주입은 됐는데 상위 N 자르기에서 잘렸다 — 상한을 주입 개수만큼 올리는 것으로는 "
         "후보 풀이 상한보다 클 때 방어가 되지 않는다"
     )
+
+
+class _FarPlaceRefillToolProvider(_RefillPlacesToolProvider):
+    """후보를 넉넉히 주면서 지정한 place_id만 검색 중심에서 멀리 옮긴다.
+
+    `_DroppingRefillToolProvider`와 정반대 상황이다 — 저쪽은 보관함 장소가 이번 턴
+    후보에서 **빠져서** 주입 경로를 타지만, 이쪽은 후보에 **그대로 남아** 주입 대상이
+    아니면서 점수순 자르기에서만 밀린다.
+    """
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.far_place_id: str | None = None
+        # 비-staged(Fake) 분기용. 저쪽은 거리로 채점하지 않고 Context 순서를 그대로
+        # 잘라내므로(`stubs.FakeRecommendationProvider`), 뒤로 미는 것이 "자르기에
+        # 밀린다"를 만드는 유일한 방법이다.
+        self.tail_place_id: str | None = None
+
+    async def fetch_context(self, request):
+        response = await super().fetch_context(request)
+        if response.context is None:
+            return response
+        places = response.context.places
+        if places is None or places.data is None:
+            return response
+        if self.tail_place_id is not None:
+            reordered = [
+                place for place in places.data if place.place_id != self.tail_place_id
+            ] + [
+                place for place in places.data if place.place_id == self.tail_place_id
+            ]
+            return response.model_copy(
+                update={
+                    "context": response.context.model_copy(
+                        update={"places": places.model_copy(update={"data": reordered})}
+                    )
+                }
+            )
+        if self.far_place_id is None:
+            return response
+        moved = [
+            (
+                place.model_copy(
+                    update={
+                        # 종로에서 담고 홍대에서 일정을 짜는 상황과 같은 거리(약 5km).
+                        "location": Coordinates(latitude=37.5563, longitude=126.9236)
+                    }
+                )
+                if place.place_id == self.far_place_id
+                else place
+            )
+            for place in places.data
+        ]
+        return response.model_copy(
+            update={
+                "context": response.context.model_copy(
+                    update={"places": places.model_copy(update={"data": moved})}
+                )
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_saved_place_already_in_candidates_survives_the_top_n_cut() -> None:
+    """이번 턴 후보에 **이미 들어 있는** 보관함 장소도 자르기에서 살아남아야 한다. (TP-223)
+
+    D-116 정정이 넣은 자르기 복구는 `injected_saved_ids`, 즉 `_saved_places_context()`가
+    **주입한** 장소만 되붙인다. 그런데 그 함수는 "이번 턴 후보에 없는" 보관함 장소만
+    주입 대상으로 삼는다(`agent_runtime.py`의 `missing = [...] not in present`).
+
+    그래서 보관함 장소가 이번 턴 후보에 이미 들어 있으면 주입도 안 되고 복구 대상도
+    아니다 — 점수순 상한(`SCHEDULE_RECOMMENDATION_LIMIT`)에서 잘리면 아무도 되붙이지
+    않는다. 사용자에게는 "이번에 찾은 후보에 없어서"로 보인다.
+
+    실사용 재현(TP-223, 2026-09-02): 6곳을 담았는데 세종문화회관·인사동 문화의 거리가
+    빠졌다. 둘 다 Supabase에 행이 있고 좌표가 있었으며, 운영시간 원문이 파싱되지 않아
+    (`매장 별로 상이함`) 폐점 필터에는 애초에 걸리지 않는다 — 같은 원문을 가진 남대문
+    두 곳은 들어갔다. 남은 차이는 "이번 턴 후보에 있었느냐"뿐이다.
+
+    기존 `test_injected_saved_place_survives_the_top_n_cut`이 이걸 못 잡은 이유는
+    더블이 보관함 장소를 응답에서 **빼서** 항상 주입 경로만 태웠기 때문이다.
+    """
+    store = InMemoryStateStore()
+    tool_provider = _FarPlaceRefillToolProvider(
+        total=20, page_size=20, open_indexes=set(range(20))
+    )
+    providers = {
+        "llm": _LLMProviderWithGeneralAnswer(),
+        "tool_provider": tool_provider,
+        "recommendation_provider": RealRecommendationProvider(),
+        "enrichment_provider": _CountingEnrichmentProvider(),
+    }
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+    assert first.recommendations is not None
+    shown = [
+        *first.recommendations.recommendations,
+        *first.recommendations.unverified_recommendations,
+    ]
+    assert shown
+    session_id = first.state.session_id
+    place_id = shown[0].place_id
+    state_service.save_place(
+        session_id,
+        state_service.SavePlaceRequest(place_id=place_id),
+        store=store,
+    )
+
+    # 담은 다음 턴에도 그 장소는 후보에 그대로 있다 — 다만 거리 점수가 0으로 깔린다.
+    tool_provider.far_place_id = place_id
+    repository = _FakePlaceDetailsRepository(
+        {place_id: _stored_detail(place_id, latitude=37.5563, longitude=126.9236)}
+    )
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="이 장소들로 일정 짜기",
+            session_id=session_id,
+            device_location=DEVICE_LOCATION,
+            schedule_from_saved=True,
+        ),
+        store=store,
+        place_details_repository=repository,
+        **providers,
+    )
+
+    assert response.schedule is not None
+    # 진단 순서: 상황을 만들었는가 → 주입 경로가 아닌가 → 그래도 살아남았는가.
+    assert place_id not in tool_provider.requests[-1].excluded_place_ids, (
+        "보관함 장소가 제외 목록에 남아 있다 — _revivable_place_ids()가 안 돌았다"
+    )
+    assert place_id not in repository.requested_ids, (
+        "후보에 이미 있는데도 주입을 시도했다 — 이 테스트가 겨냥한 경로가 아니다"
+    )
+    assert response.schedule.absent_saved_place_names == [], (
+        "후보에 이미 있던 보관함 장소가 상위 N 자르기에서 잘렸다 — 자르기 복구가 "
+        "주입된 것(injected_saved_ids)만 보고 있어 이 경로를 보호하지 못한다"
+    )
+
+
+@pytest.mark.asyncio
+async def test_saved_place_already_in_candidates_survives_the_cut_without_staging() -> None:
+    """비-staged 분기(Fake D)에서도 후보에 있던 보관함 장소가 살아남아야 한다. (TP-223)
+
+    staged 분기는 `merged_prepared`를 좁히면 원래 후보와 주입분을 함께 덮지만,
+    이쪽은 prepare 결과가 없어 좁힐 대상이 Context뿐이다. 예전에는 **주입
+    Context**만 다시 채점해서, 후보에 원래 있던 보관함 장소는 되붙일 방법이
+    아예 없었다.
+    """
+    store = InMemoryStateStore()
+    tool_provider = _FarPlaceRefillToolProvider(
+        total=20, page_size=20, open_indexes=set(range(20))
+    )
+    providers = {
+        "llm": _LLMProviderWithGeneralAnswer(),
+        "tool_provider": tool_provider,
+        "recommendation_provider": FakeRecommendationProvider(),
+        "enrichment_provider": _CountingEnrichmentProvider(),
+    }
+
+    first = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+    assert first.recommendations is not None
+    shown = [
+        *first.recommendations.recommendations,
+        *first.recommendations.unverified_recommendations,
+    ]
+    assert shown
+    session_id = first.state.session_id
+    place_id = shown[0].place_id
+    state_service.save_place(
+        session_id,
+        state_service.SavePlaceRequest(place_id=place_id),
+        store=store,
+    )
+
+    # 후보에는 그대로 있지만 맨 뒤로 밀려 상한 밖에 놓인다.
+    tool_provider.tail_place_id = place_id
+    repository = _FakePlaceDetailsRepository(
+        {place_id: _stored_detail(place_id)}
+    )
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="이 장소들로 일정 짜기",
+            session_id=session_id,
+            device_location=DEVICE_LOCATION,
+            schedule_from_saved=True,
+        ),
+        store=store,
+        place_details_repository=repository,
+        **providers,
+    )
+
+    assert response.schedule is not None
+    assert place_id not in repository.requested_ids, (
+        "후보에 이미 있는데도 주입을 시도했다 — 이 테스트가 겨냥한 경로가 아니다"
+    )
+    assert response.schedule.absent_saved_place_names == [], (
+        "비-staged 분기에서 후보에 있던 보관함 장소가 잘렸다"
+    )
+
+
+class Test후보_Context_좁히기:
+    """`_narrow_recommendation_context_places()` — 되붙일 후보만 남긴다. (TP-223)"""
+
+    @staticmethod
+    def _context(*place_ids: str) -> RecommendationContext:
+        return RecommendationContext(
+            location=ContextValue(
+                status="success",
+                data=ResolvedLocation(
+                    requested_query="경복궁",
+                    resolved_name="경복궁",
+                    source="query",
+                    location=Coordinates(latitude=37.5788, longitude=126.9770),
+                ),
+            ),
+            places=ContextValue(
+                status="success",
+                data=[
+                    PlaceCandidate(
+                        place_id=place_id,
+                        name=f"장소 {place_id}",
+                        category="cafe",
+                        location=Coordinates(latitude=37.5, longitude=127.0),
+                    )
+                    for place_id in place_ids
+                ],
+            ),
+        )
+
+    def test_지정한_id만_남긴다(self) -> None:
+        narrowed = _narrow_recommendation_context_places(
+            self._context("a", "b", "c"), ["b"]
+        )
+
+        assert narrowed is not None
+        assert narrowed.places is not None
+        assert [place.place_id for place in (narrowed.places.data or [])] == ["b"]
+
+    def test_남는_것이_없으면_None이다(self) -> None:
+        """빈 Context로 채점을 부르지 않게 호출부가 분기할 수 있어야 한다."""
+
+        assert _narrow_recommendation_context_places(self._context("a"), ["z"]) is None
+
+    def test_후보가_없으면_None이다(self) -> None:
+        context = self._context("a").model_copy(
+            update={"places": ContextValue(status="success", data=[])}
+        )
+
+        assert _narrow_recommendation_context_places(context, ["a"]) is None
 
 
 class _LLMProviderWithTransport(_LLMProviderWithGeneralAnswer):
