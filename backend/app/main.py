@@ -41,6 +41,7 @@ from app.routes.health import router as health_router
 from app.routes.interpret import router as interpret_router
 from app.routes.photo_similar import router as photo_similar_router
 from app.routes.place_search import router as place_search_router
+from app.routes.preferences import router as preferences_router
 from app.routes.recommendations import router as recommendations_router
 from app.routes.state import router as state_router
 from app.routes.trace import router as trace_router
@@ -242,6 +243,7 @@ def create_app() -> FastAPI:
     app.include_router(photo_similar_router, prefix="/api")
     app.include_router(place_search_router, prefix="/api")
     app.include_router(state_router, prefix="/api")
+    app.include_router(preferences_router, prefix="/api")
     app.include_router(feedback_router, prefix="/api")
     app.include_router(trace_router, prefix="/api")
     # 개발자 Ops 패널은 DB 쓰기까지 하는 엔드포인트를 갖는다. 설정 플래그로

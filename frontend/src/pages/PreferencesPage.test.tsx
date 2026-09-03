@@ -3,17 +3,50 @@
  * 호출 시점: vitest 실행 시.
  */
 
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, expect, test } from "vitest";
+import { beforeEach, expect, test, vi } from "vitest";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { AppShellProvider } from "../components/layout/AppShellContext";
 import { loadPreferences } from "../state/preferenceStorage";
+import { resetPreferenceSync } from "../state/preferenceSync";
 import { PreferencesPage } from "./PreferencesPage";
 import { PREFERENCE_GROUPS } from "./preferenceOptions";
 
+/*
+ * 계정 저장소를 인메모리로 흉내 낸다. 취향은 이제 이 기기와 계정 양쪽에 남고,
+ * 저장이 계정까지 닿아야 화면이 홈으로 넘어간다 — 실제 fetch를 그대로 두면 매번
+ * 실패 경로만 타서 성공 흐름을 한 번도 안 밟는다.
+ */
+const server = vi.hoisted(() => ({
+  items: [] as { label: string; source: string; codes: readonly string[] }[],
+  updatedAt: null as string | null,
+  failNext: false,
+  calls: 0,
+}));
+
+vi.mock("../api/trip", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api/trip")>();
+  return {
+    ...actual,
+    fetchPreferences: async () => ({ items: server.items, updated_at: server.updatedAt }),
+    replacePreferences: async (items: { label: string; source: string; codes: readonly string[] }[]) => {
+      server.calls += 1;
+      if (server.failNext) throw new Error("네트워크 실패");
+      server.items = [...items];
+      server.updatedAt = "2026-09-03T00:00:00+09:00";
+      return { items: server.items, updated_at: server.updatedAt };
+    },
+  };
+});
+
 beforeEach(() => {
   localStorage.clear();
+  resetPreferenceSync();
+  server.items = [];
+  server.updatedAt = null;
+  server.failNext = false;
+  server.calls = 0;
 });
 
 /** 저장 뒤 어디로 갔는지 보려고 현재 경로를 화면에 흘려둔다. */
@@ -185,8 +218,9 @@ test("저장하면 홈 화면으로 보낸다", async () => {
   }
   await user.click(screen.getByRole("button", { name: "저장하기" }));
 
-  // 결과를 보려고 사용자가 한 번 더 홈으로 이동하게 두지 않는다.
-  expect(screen.getByTestId("probe")).toHaveTextContent("/");
+  /* 계정까지 저장된 뒤에 넘어간다. 결과를 보려고 사용자가 한 번 더 홈으로
+     이동하게 두지 않는다. */
+  await waitFor(() => expect(screen.getByTestId("probe").textContent).toBe("/"));
 });
 
 /*
@@ -198,4 +232,72 @@ test("부제가 추천에 아직 반영되지 않는다는 사실을 항상 밝�
   renderPage();
 
   expect(screen.getByText(/추천 결과에 반영하는 건 아직 준비 중이에요/)).toBeInTheDocument();
+});
+
+
+/* ------------------------------------------------------------ 계정 연결 */
+
+test("저장하면 계정에도 올라간다", async () => {
+  const user = userEvent.setup();
+  renderPage();
+
+  for (const label of ["조용한 곳", "카페", "데이트 코스"]) {
+    await user.click(screen.getByRole("button", { name: label }));
+  }
+  await user.click(screen.getByRole("button", { name: "저장하기" }));
+
+  await waitFor(() => expect(server.items.map((item) => item.label)).toEqual([
+    "조용한 곳",
+    "카페",
+    "데이트 코스",
+  ]));
+});
+
+/*
+ * 이 파일에서 가장 중요한 테스트다. 계정에 못 올렸는데 조용히 넘어가면
+ * 사용자는 다른 기기에서도 취향이 따라올 거라고 믿는다.
+ */
+test("계정에 저장하지 못하면 알리고 화면에 머문다", async () => {
+  const user = userEvent.setup();
+  server.failNext = true;
+  renderPage();
+
+  for (const label of ["조용한 곳", "카페", "데이트 코스"]) {
+    await user.click(screen.getByRole("button", { name: label }));
+  }
+  await user.click(screen.getByRole("button", { name: "저장하기" }));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("계정에 저장하지 못했어요");
+  expect(screen.getByTestId("probe").textContent).toBe("/preferences");
+  /* 고른 값 자체는 잃지 않는다 — 이 기기에는 남아 있어야 한다. */
+  expect(loadPreferences()).toHaveLength(3);
+});
+
+test("계정에 저장된 취향이 있으면 그 상태로 열린다", async () => {
+  server.items = [
+    { label: "조용한 곳", source: "preference", codes: ["quiet"] },
+    { label: "카페", source: "place_tag", codes: ["카페", "찻집"] },
+    { label: "야경 명소", source: "preference", codes: ["night_view"] },
+  ];
+  server.updatedAt = "2026-09-03T00:00:00+09:00";
+
+  renderPage();
+
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "야경 명소" })).toHaveAttribute("aria-pressed", "true"),
+  );
+  expect(screen.getByText("3 / 5개 선택됨")).toBeInTheDocument();
+});
+
+/* 다른 기기에서 전부 해제한 사람의 계정은 "빈 목록"이 정본이다. 이 기기의 낡은
+   값을 되살리면 안 된다. */
+test("계정이 비어 있으면 이 기기 값을 계정으로 올린다", async () => {
+  localStorage.setItem(
+    "tb_preferences",
+    JSON.stringify([{ label: "조용한 곳", source: "preference", codes: ["quiet"] }]),
+  );
+
+  renderPage();
+
+  await waitFor(() => expect(server.items.map((item) => item.label)).toEqual(["조용한 곳"]));
 });

@@ -50,4 +50,8 @@ window.ResizeObserver ??= ResizeObserverStub as unknown as typeof ResizeObserver
 
 beforeEach(() => {
   resetSupabaseMock();
+  /* 취향 동기화 캐시(state/preferenceSync.ts)는 여기서 비우지 않는다 — 이 파일이
+     그 모듈을 import하면 테스트 파일의 vi.mock보다 먼저 api/trip이 묶여, 취향
+     API를 갈아끼울 수 없게 된다. 필요한 테스트 파일이 직접 resetPreferenceSync()를
+     부른다. */
 });

@@ -327,6 +327,20 @@ export type ChatMessage =
       footnote?: string;
     }
   | {
+      /*
+       * 대화가 언제 오간 것인지 알리는 가운데 정렬 한 줄. 지난 대화를 되돌릴 때만
+       * 넣는다 — 실시간 대화는 지금 오가는 중이라 밝힐 것이 없다.
+       *
+       * 배너로 "지난 대화예요"라고 문장을 띄우던 것을 대신한다. 메신저에서 늘
+       * 보던 모양이라 읽지 않아도 뜻이 통하고, 화면을 덜 차지한다.
+       */
+      id: string;
+      type: "time_separator";
+      at: string;
+      /** 앞부분이 남아 있지 않은 대화(화면 기록이 온전하지 않음). */
+      partial?: boolean;
+    }
+  | {
       id: string;
       type: "interpretation_summary";
       text: string;
@@ -386,6 +400,17 @@ export type ChatMessage =
       elapsed_ms: number;
       /* 백엔드가 보고한 서버 처리 시간(ms). 네트워크·렌더 시간은 포함하지 않는다. */
       server_elapsed_ms: number;
+    }
+  | {
+      /*
+       * 지난 대화를 펼쳤을 때만 나온다. recommendation_result와 구조가 비슷해
+       * 보이지만 합치지 않는다 — 이쪽은 점수·사진·운영시간이 없고, 특히
+       * remaining_minutes로 "지금 영업 중"을 그리면 사흘 전 스냅샷으로 현재를
+       * 말하는 것이 된다.
+       */
+      id: string;
+      type: "past_recommendation_result";
+      places: PastRecommendation[];
     }
   | {
       id: string;
@@ -668,6 +693,119 @@ export interface SavedPlacesResponse {
   session_id: string;
   items: SavedPlaceItem[];
   changed: boolean;
+}
+
+/*
+ * 계정 단위 취향(GET·PUT /api/preferences).
+ *
+ * session_id가 없다 — 이 값은 세션에 속하지 않고 사람에게 붙는다.
+ * updated_at이 null이면 **그 계정이 한 번도 저장한 적이 없다는 뜻**이다.
+ * 빈 목록을 저장한 경우("전부 해제")와 구분되며, 로컬 값을 올려보낼지
+ * 판단하는 기준이 된다(state/preferenceSync.ts).
+ */
+export interface PreferencesResponse {
+  items: SavedPreferenceItem[];
+  updated_at: string | null;
+}
+
+export interface SavedPreferenceItem {
+  label: string;
+  source: "preference" | "place_tag" | "custom";
+  /* preferenceStorage의 SavedPreference와 같은 모양을 유지한다 — 두 타입 사이를
+     복사 없이 주고받으려면 codes의 readonly 여부까지 같아야 한다. */
+  codes: readonly string[];
+}
+
+/*
+ * 사이드바 채팅 히스토리의 한 줄(GET /api/sessions).
+ *
+ * 대화 내용은 담기지 않는다 — 목록을 그리는 데 필요한 것만 온다.
+ * title은 첫 턴의 사용자 발화이거나 사용자가 바꾼 이름이고, 대화를 이어가도
+ * 바뀌지 않는다(백엔드가 agent_states.title에 박아둔다).
+ */
+export interface ChatSessionSummary {
+  session_id: string;
+  title: string;
+  /* 그 대화의 위치(처음 잡힌 search_center). 장소 이름이 아니다 — "블루보틀 성수"는
+     그 대화가 무엇이었는지 말해주지 않지만 "성수동"은 말해준다. */
+  location: string | null;
+  last_active_at: string;
+}
+
+/** 저장된 대화 한 턴. 백엔드 app/state/schema.py의 ConversationTurn과 대응. */
+export interface StoredConversationTurn {
+  user_input: string;
+  assistant_message: string | null;
+  intent: string | null;
+  place_names: string[];
+  at: string;
+}
+
+/*
+ * 지난 대화 하나(GET /api/sessions/{id}).
+ *
+ * turns는 **대화 전체가 아니다** — 백엔드가 MAX_RECENT_TURNS개만 보관한다.
+ * resumable이 false면 세션 TTL(30분)이 지나 이어서 대화할 수 없다. 화면이 그
+ * 사실을 밝혀야 한다.
+ */
+/*
+ * 지난 대화에서 화면에 나갔던 장소 하나.
+ *
+ * **그때 본 카드를 그대로 되살릴 수는 없다.** 백엔드가 저장하는 것은 여기 있는
+ * 값뿐이고 점수·근거 문장·사진·카테고리·운영시간은 기록 자체가 없다
+ * (실측 459건: 이름 100%, 거리·실내외 87%, 이유 13%). 그래서 RecommendationItem이
+ * 아니라 별도 타입이다 — 없는 필드를 빈 값으로 채워 넣으면 화면이 "그때 그
+ * 카드"인 척하게 된다.
+ */
+export interface PastRecommendation {
+  place_id: string;
+  /** 같은 턴에 함께 나간 장소를 한 묶음으로 되돌리는 열쇠. */
+  run_id: string;
+  name: string;
+  rank: number;
+  distance_km: number | null;
+  environment_type: string | null;
+  reason: string | null;
+  shown_at: string;
+}
+
+/*
+ * 그 턴에 화면으로 나갔던 것 전부(session_messages 한 행).
+ *
+ * payload는 그 턴의 AgentResponse 그대로다. 백엔드는 이걸 열어보지 않고
+ * 보관만 한다 — 화면이 실시간과 **같은 함수**(buildAgentMessages)로 다시
+ * 그리기 위한 것이라, 해석하는 쪽이 프론트 하나뿐이어야 갈라지지 않는다.
+ */
+export interface StoredSessionMessage {
+  session_id: string;
+  run_id: string | null;
+  user_id: string | null;
+  user_input: string | null;
+  payload: AgentResponse;
+  recorded_at: string;
+}
+
+export interface ChatSessionDetail {
+  session_id: string;
+  title: string;
+  /* 모델 맥락. 최근 5턴만 남는다 — restore_from_messages면 화면은 이걸 쓰지 않는다. */
+  turns: StoredConversationTurn[];
+  /* 저장된 조각으로 만든 근사치. restore_from_messages가 false일 때만 채워진다. */
+  recommendations: PastRecommendation[];
+  /* 화면 기록. 그때 화면에 나갔던 것 그대로다. */
+  messages: StoredSessionMessage[];
+  /*
+   * messages만으로 대화를 그대로 되돌릴 수 있는지. **판정은 백엔드 한 곳에서만
+   * 한다** — 같은 계산을 여기에도 두면 한쪽만 바뀌는 순간 조용히 갈라진다.
+   * false면 turns/recommendations로 되돌리고 "마지막 부분"이라고 밝혀야 한다.
+   */
+  restore_from_messages: boolean;
+  last_active_at: string;
+  resumable: boolean;
+}
+
+export interface ChatSessionsResponse {
+  sessions: ChatSessionSummary[];
 }
 
 export interface SessionContextResponse {

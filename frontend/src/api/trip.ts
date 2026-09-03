@@ -13,6 +13,7 @@
  */
 
 import { apiClient, streamPost } from "./client";
+import { isDetachedRequest } from "../state/chatAbortController";
 import type {
   PhotoSimilarPlacesResponse,
   PlaceSearchResponse,
@@ -23,6 +24,11 @@ import type {
   ChatResponse,
   InterpretDebugRequest,
   InterpretResponse,
+  ChatSessionDetail,
+  ChatSessionSummary,
+  ChatSessionsResponse,
+  PreferencesResponse,
+  SavedPreferenceItem,
   InterpretedConditions,
   LLMOutput,
   RecommendationPlaceDetailResponse,
@@ -132,6 +138,11 @@ export function streamChat(
     "/chat/stream",
     request,
     (event, data) => {
+      /* 화면에서 떼어졌거나 끊긴 요청의 이벤트는 흘리지 않는다. 지난 대화를 열면
+         그 요청을 화면에서 떼어내는데(detachChatRequest — 서버가 답변을 저장할 수
+         있게 요청 자체는 계속 둔다), 그대로 두면 방금 연 대화에 앞 대화의 답변이
+         붙는다. */
+      if (signal?.aborted || isDetachedRequest(signal)) return;
       if (
         event === "progress" ||
         event === "result" ||
@@ -225,5 +236,64 @@ export function savePlace(sessionId: string, placeId: string) {
 export function removeSavedPlace(sessionId: string, placeId: string) {
   return apiClient.del<SavedPlacesResponse>(
     `/state/${encodeURIComponent(sessionId)}/saved-places/${encodeURIComponent(placeId)}`,
+  );
+}
+
+/*
+ * 계정 단위 취향(TP-222 후속). 세션 API들과 달리 경로에 session_id가 없다 —
+ * 취향은 세션에 속하지 않고 사람에게 붙는 값이라 대화를 새로 시작해도 유지된다.
+ *
+ * **이 두 호출만 토큰이 없으면 401이다.** 다른 엔드포인트는 토큰 없는 요청도
+ * 통과시키지만(백엔드 Phase 4 전 과도기), 취향은 신원이 곧 저장 키라 어디에
+ * 저장할지가 정해지지 않는다. 호출부는 실패를 삼키지 말고 로컬 값으로
+ * 되돌아가야 한다(state/preferenceSync.ts).
+ */
+export function fetchPreferences() {
+  return apiClient.get<PreferencesResponse>("/preferences");
+}
+
+export function replacePreferences(items: readonly SavedPreferenceItem[]) {
+  return apiClient.put<PreferencesResponse>("/preferences", { items });
+}
+
+/*
+ * 사이드바 채팅 히스토리(TP-222 후속). 목록은 세션에 속하지 않아 경로에
+ * session_id가 없다 — /state/{session_id} 아래에 두면 "sessions"를 session_id로
+ * 받아 삼킨다.
+ *
+ * fetchChatSessions는 preferences와 같이 **토큰이 없으면 401**이다. 신원이 곧
+ * 조회 키라 누구의 목록인지가 정해지지 않기 때문이다.
+ */
+export function fetchChatSessions() {
+  return apiClient.get<ChatSessionsResponse>("/sessions");
+}
+
+export function renameChatSession(sessionId: string, title: string) {
+  return apiClient.patch<ChatSessionSummary>(
+    `/state/${encodeURIComponent(sessionId)}/title`,
+    { title },
+  );
+}
+
+/* 세션 전체를 지운다. 대화 목록에서 한 줄을 지우는 것이 곧 그 대화를 지우는 것이다. */
+export function deleteChatSession(sessionId: string) {
+  return apiClient.del<{ session_id: string; deleted: boolean }>(
+    `/state/${encodeURIComponent(sessionId)}`,
+  );
+}
+
+/*
+ * 지난 대화를 이어갈 수 있게 되살린다. 사이드바에서 한 줄을 눌렀을 때 쓴다.
+ *
+ * **쓰기다.** 만료된 세션을 다시 active로 돌리고 낡은 조건(날씨·GPS·되묻기)을
+ * 버린다. 그래서 응답의 resumable은 항상 true다. 백엔드에는 같은 내용을 돌려주는
+ * GET /sessions/{id}도 있는데 화면은 쓰지 않는다 — 조회가 쓰기를 겸하면 목록을
+ * 미리 불러오기만 해도 세션이 되살아나기 때문에 나눠 둔 것이고, 이쪽이 화면이
+ * 필요로 하는 동작이다.
+ */
+export function resumeChatSession(sessionId: string) {
+  return apiClient.post<ChatSessionDetail>(
+    `/sessions/${encodeURIComponent(sessionId)}/resume`,
+    {},
   );
 }

@@ -50,6 +50,7 @@ function seed(sessionId: string | null, items: SavedPlaceItem[]): void {
     phase: "ready",
     error: null,
     session_id: sessionId,
+    last_turn_at: null,
     device_location: null,
     device_location_captured_at: null,
     device_location_snoozed_until: null,
@@ -92,6 +93,7 @@ test("세션이 있으면 서버 목록으로 교체한다", async () => {
   seed("session-1", [saved("p1", "아키비스트 서촌")]);
   fetchSavedPlaces.mockResolvedValue({
     session_id: "session-1",
+    last_turn_at: null,
     items: [saved("p1", "아키비스트 서촌"), saved("p2", "통인시장")],
     changed: false,
   });

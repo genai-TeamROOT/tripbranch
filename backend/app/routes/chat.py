@@ -49,6 +49,7 @@ from app.services.runtime.localization import (
     localize_request_for_runtime,
     localize_response_for_user,
 )
+from app.state.service import RecordSessionMessageRequest, record_session_message
 from app.state.session import new_trace_id
 
 router = APIRouter(tags=["chat"])
@@ -73,6 +74,37 @@ async def _response_for_user(response: AgentResponse, *, language: str) -> Agent
         return await localize_response_for_user(
             response, language=language, translator=get_google_translate_provider(client)
         )
+
+
+def _record_transcript(request: AgentRequest, response: AgentResponse) -> None:
+    """그 턴에 화면으로 나간 것을 그대로 남긴다. (TP-222 후속 — 화면 기록)
+
+    **Runtime이 아니라 라우트가 남기는 이유는 시점 때문이다.** Runtime을 빠져나온
+    응답은 아직 사용자가 볼 모양이 아니다 — 후속 질문은 스트리밍 경로에서 done
+    뒤에 붙고, 영어 화면의 번역도 그 뒤에 일어난다. 화면 기록은 "그때 화면에
+    나갔던 것"이어야 하므로 그 둘이 모두 끝난 자리에서 부른다.
+
+    실패는 삼킨다. 기록은 이미 사용자에게 다 보여준 답변의 부가 기능이라, 저장
+    장애가 완결된 턴을 뒤집으면 안 된다.
+    """
+    payload = response.model_dump(mode="json")
+    # **그 턴의 GPS 좌표는 담지 않는다.** 화면은 이 값을 읽지 않는데(복원은
+    # 말풍선과 카드만 그린다), 그대로 두면 턴마다 좌표 사본이 쌓여 세션 하나가
+    # 곧 이동 경로가 된다. 현재 위치는 agent_states.api_context에 이미 한 벌
+    # 있고 그쪽은 갱신될 뿐 누적되지 않는다.
+    payload.get("state", {}).pop("api_context", None)
+
+    try:
+        record_session_message(
+            RecordSessionMessageRequest(
+                session_id=response.state.session_id,
+                run_id=response.state.run_id,
+                user_input=request.user_input,
+                payload=payload,
+            )
+        )
+    except Exception:
+        logger.warning("화면 기록 저장 실패(응답 흐름에는 영향 없음)", exc_info=True)
 
 
 async def _follow_ups_for_user(
@@ -104,7 +136,9 @@ async def _follow_ups_for_user(
 async def chat(request: AgentRequest, principal: OptionalPrincipal) -> AgentResponse:
     runtime_request = await _request_for_runtime(request)
     response = await run_agent(runtime_request, principal=principal)
-    return await _response_for_user(response, language=request.language)
+    for_user = await _response_for_user(response, language=request.language)
+    _record_transcript(request, for_user)
+    return for_user
 
 
 @router.post("/chat/place-details", response_model=RecommendationPlaceDetailResponse)
@@ -194,6 +228,18 @@ async def chat_stream(
         queue: asyncio.Queue[tuple[str, dict[str, object]]] = asyncio.Queue()
         started_at = time.monotonic()
         task: asyncio.Task[AgentResponse] | None = None
+        # 화면 기록은 done을 내보낸 **뒤에** 남긴다(후속 질문이 그때 정해진다).
+        # 그 사이에 사용자가 창을 닫으면 이 제너레이터가 그대로 닫혀 그 턴의
+        # 기록만 빠지고, 그러면 그 대화는 영영 "온전하지 않음"으로 판정돼
+        # 근사치로만 복원된다. finally에서 한 번 더 부를 수 있게 붙잡아 둔다.
+        to_record: AgentResponse | None = None
+
+        def record_once() -> None:
+            nonlocal to_record
+            if to_record is None:
+                return
+            recorded, to_record = to_record, None
+            _record_transcript(request, recorded)
 
         async def emit(event: str, payload: dict[str, object]) -> None:
             # 영어 응답은 마지막에 문장 묶음을 한 번에 번역한다. Runtime의 한국어
@@ -277,6 +323,11 @@ async def chat_stream(
                 )
                 return
 
+            # done을 내보내기 전에 잡아 둔다. 여기부터는 언제 끊겨도 finally가
+            # 기록을 남긴다(후속 질문이 붙기 전 모양일 수는 있어도, 그 턴이
+            # 통째로 빠지지는 않는다).
+            to_record = response
+
             yield ServerSentEvent(
                 event="done",
                 data=json.dumps(
@@ -301,6 +352,12 @@ async def chat_stream(
                 # 새면 완결된 턴이 스트림 오류로 뒤집힌다.
                 logger.warning("후속 질문 전달 실패(답변에는 영향 없음)", exc_info=True)
                 suggestions = []
+
+            # 여기가 응답이 화면과 같아지는 지점이다 — 번역이 끝났고 후속 질문도
+            # 정해졌다. 화면 기록은 이 모양으로 남긴다.
+            response.suggested_follow_ups = suggestions
+            record_once()
+
             if suggestions:
                 yield ServerSentEvent(
                     event="follow_ups",
@@ -313,6 +370,9 @@ async def chat_stream(
                     ),
                 )
         finally:
+            # 정상 경로에서는 이미 남겼으므로 no-op이다. done 뒤에 끊긴 경우에만
+            # 여기서 실제로 기록한다.
+            record_once()
             if task is not None and not task.done():
                 task.cancel()
                 try:

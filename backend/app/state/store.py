@@ -21,7 +21,9 @@ from app.state.schema import (
     FeedbackRecord,
     RecommendationHistory,
     SavedPlaceList,
+    SessionMessage,
     TraceRecord,
+    UserPreferenceList,
 )
 
 
@@ -50,6 +52,23 @@ class StateStore(Protocol):
     def save_saved_places(self, saved: SavedPlaceList) -> None: ...
     def delete_saved_places(self, session_id: str) -> None: ...
 
+    # -- UserPreferenceList (계정 단위) --
+    # 이 둘만 session_id가 아니라 user_id로 조회한다. 삭제 메서드를 두지 않은
+    # 이유는 "취향을 비운다"가 빈 목록 저장이기 때문이다 — 행을 지우면 다음
+    # 조회에서 "아직 고른 적 없음"과 "다 지웠음"이 구분되지 않는다.
+    def get_preferences(self, user_id: str) -> UserPreferenceList | None: ...
+    def save_preferences(self, preferences: UserPreferenceList) -> None: ...
+
+    # -- 사용자의 대화 목록 --
+    # 사이드바 채팅 히스토리가 쓴다. 제목이 없는 세션(대화를 시작하지 않고
+    # 만들어지기만 한 세션)은 목록에 넣지 않는다 — 사용자가 보기에 그건
+    # 대화가 아니다.
+    #
+    # **만료(status='expired') 여부로는 거르지 않는다.** 만료는 "낡은 조건을
+    # 버렸다"는 뜻이지 "그 대화가 없었다"는 뜻이 아니고, 지난 대화를 열어
+    # 이어가는 것이 이 목록의 목적이다. 거르면 오래된 대화일수록 안 보인다.
+    def list_sessions_for_user(self, user_id: str, limit: int) -> list[AgentState]: ...
+
     # --- ConditionChangeLog (append-only)
     def append_change_logs(self, logs: list[ConditionChangeLog]) -> None: ...
     def get_change_logs(self, session_id: str) -> list[ConditionChangeLog]: ...
@@ -64,6 +83,13 @@ class StateStore(Protocol):
     def list_traces_for_stats(
         self, since: datetime | None = None, until: datetime | None = None
     ) -> list[TraceRecord]: ...
+
+    # --- SessionMessage (append-only, TP-222 후속 — 화면 기록)
+    # recent_turns(모델 맥락)·추천 이력(제외 목록)과 달리 자르지도 비우지도
+    # 않는다. 지난 대화를 화면에 그대로 되돌리는 유일한 근거다.
+    def append_session_messages(self, messages: list[SessionMessage]) -> None: ...
+    def get_session_messages(self, session_id: str) -> list[SessionMessage]: ...
+    def delete_session_messages(self, session_id: str) -> None: ...
 
     # --- FeedbackRecord (append-only)
     def append_feedback(self, records: list[FeedbackRecord]) -> None: ...
@@ -86,6 +112,7 @@ class StateStore(Protocol):
     def list_stale_session_ids(self, cutoff: datetime) -> list[str]: ...
     def delete_change_logs(self, session_id: str) -> None: ...
     def delete_traces(self, session_id: str) -> None: ...
+    # delete_session_messages는 위 SessionMessage 섹션에 있다.
     # delete_saved_places는 위 SavedPlaceList 섹션에 있다 — 만료 세션 정리
     # (scripts/cleanup_expired_sessions.py)도 같은 메서드를 쓴다.
 
@@ -101,9 +128,11 @@ class InMemoryStateStore:
         self._states: dict[str, AgentState] = {}
         self._histories: dict[str, RecommendationHistory] = {}
         self._saved_places: dict[str, SavedPlaceList] = {}
+        self._preferences: dict[str, UserPreferenceList] = {}
         self._change_logs: dict[str, list[ConditionChangeLog]] = {}
         self._traces: dict[str, list[TraceRecord]] = {}
         self._feedback: dict[str, list[FeedbackRecord]] = {}
+        self._session_messages: dict[str, list[SessionMessage]] = {}
 
     # ------------------------------------------------------------ State
 
@@ -140,6 +169,24 @@ class InMemoryStateStore:
 
     def delete_saved_places(self, session_id: str) -> None:
         self._saved_places.pop(session_id, None)
+
+    # ------------------------------------------------------------ Preferences
+
+    def list_sessions_for_user(self, user_id: str, limit: int) -> list[AgentState]:
+        owned = [
+            state
+            for state in self._states.values()
+            if state.user_id == user_id and state.title is not None
+        ]
+        owned.sort(key=lambda state: state.last_active_at, reverse=True)
+        return [state.model_copy(deep=True) for state in owned[:limit]]
+
+    def get_preferences(self, user_id: str) -> UserPreferenceList | None:
+        preferences = self._preferences.get(user_id)
+        return preferences.model_copy(deep=True) if preferences else None
+
+    def save_preferences(self, preferences: UserPreferenceList) -> None:
+        self._preferences[preferences.user_id] = preferences.model_copy(deep=True)
 
     # ------------------------------------------------------------ ChangeLog
 
@@ -178,6 +225,22 @@ class InMemoryStateStore:
         if until is not None:
             all_records = [r for r in all_records if r.recorded_at < until]
         return [record.model_copy(deep=True) for record in all_records]
+
+    # ------------------------------------------------------------ 화면 기록
+
+    def append_session_messages(self, messages: list[SessionMessage]) -> None:
+        """append-only. 기존 기록을 수정하거나 삭제하지 않는다."""
+        for message in messages:
+            self._session_messages.setdefault(message.session_id, []).append(
+                message.model_copy(deep=True)
+            )
+
+    def get_session_messages(self, session_id: str) -> list[SessionMessage]:
+        messages = self._session_messages.get(session_id, [])
+        return [message.model_copy(deep=True) for message in messages]
+
+    def delete_session_messages(self, session_id: str) -> None:
+        self._session_messages.pop(session_id, None)
 
     # ------------------------------------------------------------ Feedback
 
@@ -235,6 +298,7 @@ class InMemoryStateStore:
         self._histories.clear()
         self._saved_places.clear()
         self._change_logs.clear()
+        self._session_messages.clear()
         self._traces.clear()
         self._feedback.clear()
 
