@@ -16,6 +16,7 @@ import pytest
 from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 
+from app.domain.models import AccessibilityNeed
 from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
 from app.providers import gemini_prompts
 from app.providers.gemini import (
@@ -1381,6 +1382,58 @@ def test_summary_instruction_carries_the_stated_companion() -> None:
     # enum 값("friend")이 아니라 답변 문장에 쓸 수 있는 한국어 라벨로 들어간다.
     assert "친구와" in instruction
     assert "friend" not in instruction
+
+
+def test_summary_instruction_carries_the_stated_accessibility_needs() -> None:
+    """무장애를 말했으면 말풍선이 그것을 안다.
+
+    빠져 있던 동안 "휠체어 타고 관광할 수 있는 곳"에 "아이와 함께 걸어서 편하게
+    이동할 수 있는"이라고 답했다(2026-09-03 실사용). 조건이 비면 강조점을 정할 근거가
+    없어 `review_evidence`의 표현을 그대로 집어 온다.
+    """
+
+    instruction = gemini_prompts.build_recommendation_summary_instruction(
+        Intent.RECOMMEND,
+        conditions=UserConditions(accessibility_needs=["wheelchair_access"]),
+    )
+
+    assert "사용자가 말한 조건: " in instruction
+    # 어휘("wheelchair_access")가 아니라 답변 문장에 쓸 수 있는 한국어 라벨로 들어간다.
+    assert "휠체어 접근" in instruction
+    assert "wheelchair_access" not in instruction
+
+
+def test_summary_instruction_carries_every_accessibility_need() -> None:
+    """9개 어휘 전부에 라벨이 있다 — 빠진 값은 어휘가 그대로 나가 문장이 어색해진다.
+
+    이동수단 판정(TP-227)이 이동 관련 셋만 넘기는 것과 다른 판단이다. 말풍선은
+    사용자가 무엇을 요구했는지를 말투에 반영하는 자리라 요구한 것을 다 알아야 한다.
+    """
+
+    needs = list(AccessibilityNeed)
+    instruction = gemini_prompts.build_recommendation_summary_instruction(
+        Intent.RECOMMEND,
+        conditions=UserConditions(accessibility_needs=[need.value for need in needs]),
+    )
+
+    for need in needs:
+        assert need.value not in instruction, f"{need.value}에 라벨이 없다"
+
+
+def test_summary_instruction_keeps_accessibility_next_to_other_conditions() -> None:
+    """다른 조건과 함께 말했으면 둘 다 실린다."""
+
+    instruction = gemini_prompts.build_recommendation_summary_instruction(
+        Intent.RECOMMEND,
+        conditions=UserConditions(
+            companion=Companion.PARENT,
+            accessibility_needs=["stroller_access", "infant_facilities"],
+        ),
+    )
+
+    assert "부모님과" in instruction
+    assert "유모차 접근" in instruction
+    assert "유아 시설" in instruction
 
 
 def test_summary_instruction_joins_multiple_stated_conditions() -> None:
