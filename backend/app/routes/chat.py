@@ -87,13 +87,20 @@ def _record_transcript(request: AgentRequest, response: AgentResponse) -> None:
     실패는 삼킨다. 기록은 이미 사용자에게 다 보여준 답변의 부가 기능이라, 저장
     장애가 완결된 턴을 뒤집으면 안 된다.
     """
+    payload = response.model_dump(mode="json")
+    # **그 턴의 GPS 좌표는 담지 않는다.** 화면은 이 값을 읽지 않는데(복원은
+    # 말풍선과 카드만 그린다), 그대로 두면 턴마다 좌표 사본이 쌓여 세션 하나가
+    # 곧 이동 경로가 된다. 현재 위치는 agent_states.api_context에 이미 한 벌
+    # 있고 그쪽은 갱신될 뿐 누적되지 않는다.
+    payload.get("state", {}).pop("api_context", None)
+
     try:
         record_session_message(
             RecordSessionMessageRequest(
                 session_id=response.state.session_id,
                 run_id=response.state.run_id,
                 user_input=request.user_input,
-                payload=response.model_dump(mode="json"),
+                payload=payload,
             )
         )
     except Exception:

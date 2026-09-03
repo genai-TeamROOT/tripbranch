@@ -269,20 +269,13 @@ export function deleteChatSession(sessionId: string) {
 }
 
 /*
- * 지난 대화 하나. /state/{session_id}와 달리 세션 TTL(30분)을 적용하지 않는다 —
- * 히스토리는 그보다 오래된 대화를 보여주는 것이 목적이다.
- */
-export function fetchChatSession(sessionId: string) {
-  return apiClient.get<ChatSessionDetail>(`/sessions/${encodeURIComponent(sessionId)}`);
-}
-
-/*
  * 지난 대화를 이어갈 수 있게 되살린다. 사이드바에서 한 줄을 눌렀을 때 쓴다.
  *
- * 조회(fetchChatSession)와 나눠 둔 이유는 이쪽이 **쓰기**이기 때문이다 — 만료된
- * 세션을 다시 active로 돌리고 낡은 조건(날씨·GPS·되묻기)을 버린다. 그래서 응답의
- * resumable은 항상 true다. GET이 이 일을 겸하면 목록을 미리 불러오기만 해도
- * 세션이 되살아난다.
+ * **쓰기다.** 만료된 세션을 다시 active로 돌리고 낡은 조건(날씨·GPS·되묻기)을
+ * 버린다. 그래서 응답의 resumable은 항상 true다. 백엔드에는 같은 내용을 돌려주는
+ * GET /sessions/{id}도 있는데 화면은 쓰지 않는다 — 조회가 쓰기를 겸하면 목록을
+ * 미리 불러오기만 해도 세션이 되살아나기 때문에 나눠 둔 것이고, 이쪽이 화면이
+ * 필요로 하는 동작이다.
  */
 export function resumeChatSession(sessionId: string) {
   return apiClient.post<ChatSessionDetail>(

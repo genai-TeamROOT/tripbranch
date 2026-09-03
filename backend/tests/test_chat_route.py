@@ -489,3 +489,23 @@ def test_done_뒤에_끊겨도_그_턴의_기록은_남는다(streaming, monkeyp
         )
 
     assert len(_recorded(session_id)) == 1
+
+
+# 화면은 api_context를 읽지 않는다. 그대로 담으면 턴마다 좌표 사본이 쌓여
+# 세션 하나가 곧 이동 경로가 된다 — 현재 위치는 agent_states에 한 벌 있으면 된다.
+def test_화면_기록에_gps_좌표를_담지_않는다(monkeypatch) -> None:
+    session_id = _start_owned_session()
+
+    async def fake_run_agent(request: AgentRequest, *, principal=None) -> AgentResponse:
+        response = _fake_response(session_id)
+        response.state.api_context = ApiContextView(gps_location="37.5796,126.9770")
+        return response
+
+    monkeypatch.setattr(chat_route, "run_agent", fake_run_agent)
+
+    TestClient(app).post("/api/chat", json={"user_input": "안녕", "session_id": session_id})
+
+    payload = _recorded(session_id)[0].payload
+    assert "api_context" not in payload["state"]
+    # 나머지는 그대로다 — 화면이 그리는 값을 함께 깎으면 안 된다.
+    assert payload["message"] == "테스트 응답"

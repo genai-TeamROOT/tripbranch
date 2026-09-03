@@ -19,7 +19,7 @@ import type { PastRecommendation, StoredConversationTurn } from "../types";
  * 답으로 보인다. 10분은 실측 간격에 넉넉히 여유를 둔 값이고, 창을 벗어난 묶음은
  * 어디에도 붙이지 않고 버린다 — 말풍선 없이 카드만 뜬 블록보다 낫다.
  */
-export const RECOMMENDATION_ATTACH_WINDOW_MS = 10 * 60 * 1000;
+const RECOMMENDATION_ATTACH_WINDOW_MS = 10 * 60 * 1000;
 
 export function attachRecommendationsToTurns(
   turns: StoredConversationTurn[],

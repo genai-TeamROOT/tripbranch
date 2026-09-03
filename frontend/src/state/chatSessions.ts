@@ -23,7 +23,7 @@ import type { ChatHistoryEntry } from "./sidebarStorage";
  * 날짜에서 연도를 뺀다 — 목록 한 줄에 제목·날짜·장소가 함께 들어가야 해서 자리가
  * 좁고, 대부분은 최근 대화다.
  */
-export function toHistoryEntry(session: ChatSessionSummary): ChatHistoryEntry {
+function toHistoryEntry(session: ChatSessionSummary): ChatHistoryEntry {
   const at = new Date(session.last_active_at);
   return {
     id: session.session_id,
