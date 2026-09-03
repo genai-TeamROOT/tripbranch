@@ -26,10 +26,11 @@
  */
 
 import { resetChatSessionsCache } from "./chatSessions";
+import { clearRecentSearches } from "./recentSearchesStorage";
 import { resetSavedSchedulesCache } from "./savedSchedules";
 import { clearPreferences } from "./preferenceStorage";
 import { resetPreferenceSync } from "./preferenceSync";
-import { saveSearchCenter } from "./searchCenterStorage";
+import { clearLocationSettings } from "./locationSettings";
 import { clearFavorites } from "./sidebarStorage";
 import { clearState } from "./storage";
 
@@ -38,7 +39,8 @@ export function clearLocalUserData(): void {
   clearState();
   clearPreferences();
   clearFavorites();
-  saveSearchCenter(null);
+  clearLocationSettings();
+  clearRecentSearches();
   /* 화면이 이미 받아 둔 사본. 저장소를 지워도 이게 남아 있으면 다음 사람이 본다. */
   resetPreferenceSync();
   resetChatSessionsCache();

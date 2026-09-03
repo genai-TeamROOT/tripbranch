@@ -18,6 +18,19 @@ const FAVORITES_KEY = "tb_favorites";
 export interface FavoritePlace {
   id: string;
   label: string;
+  /**
+   * 검색 위치로 보낼 장소 이름. 위치 설정 화면의 검색 결과에서 담은 항목만 가진다.
+   *
+   * label과 나눠 두는 이유는 사이드바에서 자유 입력으로 만든 즐겨찾기 때문이다 —
+   * "회사 (역삼동)" 같은 라벨을 그대로 검색 위치로 보내면 엉뚱한 곳으로 풀린다.
+   * 이 값이 없는 항목은 label로 떨어지므로, 예전에 저장된 즐겨찾기도 그대로 읽힌다.
+   */
+  searchCenterName?: string;
+  /**
+   * 담을 때의 도로명주소. 목록에서 이름만으로는 어디인지 알기 어려워 함께 보여준다
+   * ("스타벅스 종로점"이 여러 개일 때 특히). 자유 입력으로 만든 항목에는 없다.
+   */
+  address?: string | null;
 }
 
 export interface ChatHistoryEntry {

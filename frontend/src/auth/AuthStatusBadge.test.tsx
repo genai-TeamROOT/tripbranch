@@ -16,7 +16,7 @@ import { resetSupabaseClient } from "./supabaseClient";
 import { AuthProvider } from "./AuthContext";
 import { AuthStatusBadge } from "./AuthStatusBadge";
 import { loadPreferences, savePreferences } from "../state/preferenceStorage";
-import { loadSearchCenter, saveSearchCenter } from "../state/searchCenterStorage";
+import { loadLocationSettings, setLocationCenter } from "../state/locationSettings";
 import { loadFavorites, saveFavorites } from "../state/sidebarStorage";
 import { TripProvider } from "../state/TripContext";
 import { GUEST_SESSION, setMockSession } from "../test/supabaseMock";
@@ -83,7 +83,7 @@ test("해제하면 이 기기에 남은 취향·즐겨찾기·검색 위치도 �
   const user = userEvent.setup();
   savePreferences([{ label: "조용한 곳", source: "preference", codes: ["quiet"] }]);
   saveFavorites([{ id: "fav-1", label: "회사 (역삼동)" }]);
-  saveSearchCenter("안국역");
+  setLocationCenter("안국역");
   renderBadge();
 
   await user.click(await screen.findByRole("button", { name: "게스트로 이용 중" }));
@@ -92,7 +92,7 @@ test("해제하면 이 기기에 남은 취향·즐겨찾기·검색 위치도 �
 
   await waitFor(() => expect(loadPreferences()).toEqual([]));
   expect(loadFavorites()).toEqual([]);
-  expect(loadSearchCenter()).toBeNull();
+  expect(loadLocationSettings().center).toBeNull();
 });
 
 test("메뉴는 Esc로 닫히고 확인 단계도 함께 되돌아간다", async () => {

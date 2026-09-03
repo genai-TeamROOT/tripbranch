@@ -1,8 +1,9 @@
 /*
- * 역할: 위치 설정 화면의 장소 검색, "현재 위치 사용" 동작, 즐겨찾기 목록을 검증한다.
+ * 역할: 위치 설정 화면의 장소 검색과 검색 위치 지정, "현재 위치 사용" 동작,
+ *   즐겨찾기·최근 검색 목록을 검증한다.
  * 입력: mocked navigator.geolocation, mocked searchPlaces().
- * 출력: 검색 결과 목록과 빈 결과 문구, 좌표 갱신, 실패 시 오류 문구,
- *   즐겨찾기 추가/삭제.
+ * 출력: 검색 결과 목록과 빈 결과 문구, 고른 장소가 검색 위치·최근 검색·즐겨찾기로
+ *   이어지는지, 좌표 갱신, 실패 시 오류 문구, 즐겨찾기 추가/삭제.
  * 호출 시점: vitest 실행 시.
  */
 
@@ -14,11 +15,27 @@ import { AppShellProvider } from "../components/layout/AppShellContext";
 import { TripProvider } from "../state/TripContext";
 import { LocationPage } from "./LocationPage";
 import { searchPlaces } from "../api/trip";
-import { loadSearchCenter, saveSearchCenter } from "../state/searchCenterStorage";
+import {
+  loadLocationSettings,
+  setLocationCenter,
+  setLocationOrigin,
+} from "../state/locationSettings";
+import { loadRecentSearches } from "../state/recentSearchesStorage";
+import { loadFavorites, saveFavorites } from "../state/sidebarStorage";
 
 vi.mock("../api/trip", () => ({ searchPlaces: vi.fn() }));
 
 const searchPlacesMock = vi.mocked(searchPlaces);
+
+/* 서버가 돌려주는 후보 한 건. 여러 테스트가 같은 장소를 쓴다. */
+const ANGUK = {
+  name: "안국역",
+  address: "서울특별시 종로구 견지동",
+  road_address: "서울특별시 종로구 율곡로 62",
+  category: "교통,지하철",
+  latitude: 37.5765389,
+  longitude: 126.9856,
+};
 
 function renderPage() {
   render(
@@ -45,7 +62,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-test("현재 위치 사용을 누르면 새 좌표를 받아 화면에 반영한다", async () => {
+test('현재 위치 사용을 누르면 좌표 대신 "현재 위치"로 표시하고, 고른 검색 위치를 내려놓는다', async () => {
   const user = userEvent.setup();
   vi.stubGlobal("navigator", {
     geolocation: {
@@ -61,10 +78,14 @@ test("현재 위치 사용을 누르면 새 좌표를 받아 화면에 반영한
 
   await user.click(screen.getByRole("button", { name: "현재 위치 사용" }));
 
-  expect(await screen.findByText(/37.5,127/)).toBeInTheDocument();
+  /* 좌표는 사용자에게 숫자 두 개일 뿐이라 화면에 싣지 않는다. */
+  expect(await screen.findByText(/^현재 위치 · /)).toBeInTheDocument();
+  expect(screen.queryByText(/37.5,127/)).not.toBeInTheDocument();
   // getLocationAgeMinutes는 최소 1분으로 올림한다(utils/locationRefresh.ts) —
   // 방금 받아온 위치도 "1분 전"으로 보인다.
   expect(screen.getByText(/1분 전에 확인했어요/)).toBeInTheDocument();
+  /* 내 위치로 찾겠다는 뜻이므로 골라둔 검색 위치는 함께 풀린다. */
+  expect(loadLocationSettings().center).toBeNull();
 });
 
 test("위치를 가져오지 못하면 오류 문구를 보여준다", async () => {
@@ -129,12 +150,16 @@ test("검색하면 찾은 장소의 이름과 주소를 목록으로 보여준�
   await user.type(screen.getByLabelText("장소 검색"), "안국역");
   await user.click(screen.getByRole("button", { name: "검색" }));
 
-  expect(await screen.findByText("안국역")).toBeInTheDocument();
+  /* 검색어("안국역")가 최근 검색에도 같은 글자로 남으므로 결과 줄은 그 줄의
+     라벨로 집는다. */
+  expect(
+    await screen.findByRole("button", { name: "안국역 검색 위치로 설정" }),
+  ).toBeInTheDocument();
   expect(screen.getByText("서울특별시 종로구 율곡로 62")).toBeInTheDocument();
   expect(searchPlacesMock).toHaveBeenCalledWith("안국역");
 });
 
-test("검색 결과를 고르면 검색 위치로 잡히고, 해제하면 풀린다", async () => {
+test("검색 결과를 고르면 검색 위치로 잡히고 결과 목록이 닫힌다", async () => {
   const user = userEvent.setup();
   searchPlacesMock.mockResolvedValue({
     places: [
@@ -153,27 +178,204 @@ test("검색 결과를 고르면 검색 위치로 잡히고, 해제하면 풀린
 
   await user.type(screen.getByLabelText("장소 검색"), "안국역");
   await user.click(screen.getByRole("button", { name: "검색" }));
-  await user.click(await screen.findByRole("button", { name: /안국역/ }));
+  await user.click(await screen.findByRole("button", { name: "안국역 검색 위치로 설정" }));
+  /* 고른 장소를 출발지로 쓸지 검색 기준으로 쓸지 이어서 묻는다(D-067). */
+  await user.click(screen.getByRole("button", { name: /안국역 주변에서 찾아주세요/ }));
 
-  expect(screen.getByText("이 위치를 기준으로 찾아요")).toBeInTheDocument();
   // 고르고 나면 결과 목록은 닫힌다 — 이미 정했으니 계속 띄워 둘 이유가 없다.
   expect(screen.queryByText("검색 결과")).not.toBeInTheDocument();
 
-  // 저장소가 진실이다 — 발화를 보낼 때 HomePage·ChatPage가 여기서 읽어 간다.
-  expect(loadSearchCenter()).toBe("안국역");
-
-  await user.click(screen.getByRole("button", { name: "해제" }));
-
-  expect(screen.queryByText("이 위치를 기준으로 찾아요")).not.toBeInTheDocument();
-  expect(loadSearchCenter()).toBeNull();
+  /* 저장소가 진실이다 — 발화를 보낼 때 HomePage·ChatPage가 여기서 읽어 가고,
+     상단 위치 pill도 같은 값을 구독한다. 이 화면에는 따로 표시하지 않는다. */
+  expect(loadLocationSettings().center).toBe("안국역");
+  expect(screen.queryByRole("button", { name: "안국역 검색 위치로 설정" })).not.toBeInTheDocument();
 });
 
-test("이전에 고른 검색 위치가 있으면 화면을 열자마자 보여준다", () => {
-  saveSearchCenter("서울역");
+test("친 검색어가 최근 검색에 남고, 다시 누르면 그 검색어로 재검색한다", async () => {
+  const user = userEvent.setup();
+  searchPlacesMock.mockResolvedValue({ places: [], outside_service_area_count: 0 });
   renderPage();
 
-  expect(screen.getByText("이 위치를 기준으로 찾아요")).toBeInTheDocument();
-  expect(screen.getByText("서울역")).toBeInTheDocument();
+  expect(screen.getByText("아직 검색한 장소가 없어요")).toBeInTheDocument();
+
+  await user.type(screen.getByLabelText("장소 검색"), "익선동 골목");
+  await user.click(screen.getByRole("button", { name: "검색" }));
+
+  /* 못 찾은 검색어도 남는다 - 오히려 그런 검색어를 다시 꺼내 고쳐 쓰게 된다. */
+  await waitFor(() => expect(loadRecentSearches()).toEqual(["익선동 골목"]));
+
+  searchPlacesMock.mockClear();
+  searchPlacesMock.mockResolvedValue({ places: [ANGUK], outside_service_area_count: 0 });
+  await user.click(screen.getByRole("button", { name: "익선동 골목" }));
+
+  expect(searchPlacesMock).toHaveBeenCalledWith("익선동 골목");
+  expect(await screen.findByText("안국역")).toBeInTheDocument();
+});
+
+test("칩이 출발지와 검색 기준을 각각 보여주고, 하나만 되돌린다", async () => {
+  const user = userEvent.setup();
+  setLocationOrigin("혜화역");
+  setLocationCenter("안국역");
+  renderPage();
+
+  expect(screen.getByText(/혜화역에서 출발/)).toBeInTheDocument();
+  expect(screen.getByText(/안국역 주변/)).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "검색 기준 되돌리기" }));
+
+  /* 검색 기준만 풀리고 출발지는 그대로다 - 서로 다른 질문의 답이라서다. */
+  expect(loadLocationSettings()).toEqual({ origin: "혜화역", center: null });
+  /* 검색 기준을 비우면 출발지가 그 자리를 이어받는다(agent_context의 사다리).
+     "없음"이 아니라 실제로 뒤지는 곳을 그대로 말한다. */
+  expect(screen.getByText(/혜화역 주변/)).toBeInTheDocument();
+  expect(screen.getByText(/혜화역에서 출발/)).toBeInTheDocument();
+});
+
+test("아무것도 정하지 않았으면 둘 다 현재 위치라고 말한다", () => {
+  renderPage();
+
+  expect(screen.getByText(/현재 위치에서 출발/)).toBeInTheDocument();
+  expect(screen.getByText(/현재 위치 주변/)).toBeInTheDocument();
+});
+
+test("같은 장소라도 출발지로 고르면 검색 기준은 그대로 둔다", async () => {
+  /* 출발지("어디서 출발하나")와 검색 기준("어디 주변을 찾나")은 다른 질문이라
+     한쪽을 정해도 다른 쪽이 따라 바뀌면 안 된다(D-067). */
+  const user = userEvent.setup();
+  searchPlacesMock.mockResolvedValue({ places: [ANGUK], outside_service_area_count: 0 });
+  renderPage();
+
+  await user.type(screen.getByLabelText("장소 검색"), "안국역");
+  await user.click(screen.getByRole("button", { name: "검색" }));
+  await user.click(await screen.findByRole("button", { name: "안국역 검색 위치로 설정" }));
+  await user.click(screen.getByRole("button", { name: /안국역에서 출발할게요/ }));
+
+  expect(loadLocationSettings()).toEqual({ origin: "안국역", center: null });
+});
+
+test("현재 위치 사용은 되묻지 않고 출발지만 기기 좌표로 되돌린다", async () => {
+  /* 이 버튼의 뜻은 "내 위치는 기기 좌표다" 하나뿐이라 쓰임새를 물을 것이 없다.
+     검색 기준으로 잡아둔 곳은 그대로 남는다 - 그건 다른 질문의 답이다. */
+  const user = userEvent.setup();
+  setLocationOrigin("혜화역");
+  setLocationCenter("안국역");
+  vi.stubGlobal("navigator", {
+    geolocation: {
+      getCurrentPosition: vi.fn((success: PositionCallback) =>
+        success({
+          coords: { latitude: 37.5, longitude: 127.0 },
+          timestamp: Date.now(),
+        } as GeolocationPosition),
+      ),
+    },
+  });
+  renderPage();
+
+  await user.click(screen.getByRole("button", { name: "현재 위치 사용" }));
+
+  await waitFor(() => expect(loadLocationSettings()).toEqual({ origin: null, center: "안국역" }));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(await screen.findByText(/^현재 위치 · /)).toBeInTheDocument();
+  expect(screen.getByText(/현재 위치에서 출발/)).toBeInTheDocument();
+  expect(screen.getByText(/안국역 주변/)).toBeInTheDocument();
+});
+
+test("검색 결과의 별을 누르면 즐겨찾기에 담기고 다시 누르면 빠진다", async () => {
+  const user = userEvent.setup();
+  searchPlacesMock.mockResolvedValue({ places: [ANGUK], outside_service_area_count: 0 });
+  renderPage();
+
+  await user.type(screen.getByLabelText("장소 검색"), "안국역");
+  await user.click(screen.getByRole("button", { name: "검색" }));
+  await user.click(await screen.findByRole("button", { name: "안국역 즐겨찾기 추가" }));
+
+  // 사이드바와 같은 저장소를 쓴다 - 여기서 담으면 사이드바 목록에도 함께 보인다.
+  expect(loadFavorites()).toEqual([
+    {
+      id: expect.any(String),
+      label: "안국역",
+      searchCenterName: "안국역",
+      address: "서울특별시 종로구 율곡로 62",
+    },
+  ]);
+  expect(screen.queryByText("등록된 즐겨찾기가 없어요")).not.toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "안국역 즐겨찾기 해제" }));
+
+  expect(loadFavorites()).toEqual([]);
+});
+
+test("즐겨찾기 줄을 누르면 검색 기준이 되고 주소·칩에 함께 드러난다", async () => {
+  const user = userEvent.setup();
+  saveFavorites([
+    {
+      id: "fav-1",
+      label: "회사 (역삼동)",
+      searchCenterName: "역삼역",
+      address: "서울특별시 강남구 테헤란로 152",
+    },
+  ]);
+  renderPage();
+
+  expect(screen.getByText("서울특별시 강남구 테헤란로 152")).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "회사 (역삼동)을 검색 위치로 설정" }));
+  await user.click(screen.getByRole("button", { name: /역삼역 주변에서 찾아주세요/ }));
+
+  // 라벨이 아니라 담을 때의 장소 이름을 보낸다 - "회사 (역삼동)"은 위치로 안 풀린다.
+  expect(loadLocationSettings().center).toBe("역삼역");
+  /* 지금 잡힌 곳은 아이콘이 바뀌어 목록에서 바로 구분된다. */
+  /* 목록에서도, 위쪽 칩에서도 지금 무엇이 검색 기준인지 보인다. */
+  expect(
+    screen.getByRole("button", { name: "회사 (역삼동)이 지금 검색 기준이에요" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByText(/역삼역 주변/)).toBeInTheDocument();
+});
+
+test("이름을 고치는 중에는 스페이스·엔터가 모달을 열지 않는다", async () => {
+  /* 줄 전체가 "이 장소를 쓰겠다" 버튼이라, 안에서 누른 키가 위로 올라가면 이름에
+     띄어쓰기 한 번 넣을 때마다 모달이 뜬다. */
+  const user = userEvent.setup();
+  saveFavorites([{ id: "fav-1", label: "역삼역", searchCenterName: "역삼역" }]);
+  renderPage();
+
+  await user.click(screen.getByRole("button", { name: "역삼역 이름 바꾸기" }));
+  await user.clear(screen.getByRole("textbox", { name: "역삼역 이름 바꾸기" }));
+  await user.type(screen.getByRole("textbox", { name: "역삼역 이름 바꾸기" }), "회사 앞{Enter}");
+
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(loadFavorites()[0].label).toBe("회사 앞");
+});
+
+test("예전에 자유 입력으로 만든 즐겨찾기는 라벨을 그대로 쓴다", async () => {
+  const user = userEvent.setup();
+  saveFavorites([{ id: "fav-1", label: "안국역" }]);
+  renderPage();
+
+  await user.click(screen.getByRole("button", { name: "안국역을 검색 위치로 설정" }));
+  await user.click(screen.getByRole("button", { name: /안국역 주변에서 찾아주세요/ }));
+
+  expect(loadLocationSettings().center).toBe("안국역");
+});
+
+test("즐겨찾기 이름을 눌러 원하는 이름으로 바꾼다", async () => {
+  const user = userEvent.setup();
+  saveFavorites([{ id: "fav-1", label: "역삼역", searchCenterName: "역삼역" }]);
+  renderPage();
+
+  await user.click(screen.getByRole("button", { name: "역삼역 이름 바꾸기" }));
+  await user.clear(screen.getByRole("textbox", { name: "역삼역 이름 바꾸기" }));
+  await user.type(screen.getByRole("textbox", { name: "역삼역 이름 바꾸기" }), "회사");
+  await user.click(screen.getByRole("button", { name: "이름 저장" }));
+
+  expect(screen.getByText("회사")).toBeInTheDocument();
+  expect(loadFavorites()).toEqual([{ id: "fav-1", label: "회사", searchCenterName: "역삼역" }]);
+
+  /* 이름을 바꿔도 검색 위치로 보내는 값은 담을 때의 장소 이름 그대로다. */
+  await user.click(screen.getByRole("button", { name: "회사을 검색 위치로 설정" }));
+  await user.click(screen.getByRole("button", { name: /역삼역 주변에서 찾아주세요/ }));
+
+  expect(loadLocationSettings().center).toBe("역삼역");
 });
 
 test("서울 밖 결과만 걸러졌으면 지역 제한을 알려준다", async () => {
@@ -197,6 +399,36 @@ test("서울 밖도 아니고 찾지도 못했으면 검색어 문제로 안내�
   await user.click(screen.getByRole("button", { name: "검색" }));
 
   expect(await screen.findByText("찾은 장소가 없어요")).toBeInTheDocument();
+});
+
+/*
+ * 결과 목록은 검색창 아래에 떠 있다(문서 흐름을 차지하지 않는다). 그래서 스스로
+ * 닫히지 않으므로 바깥 클릭과 Esc로 닫는 길을 둔다 - 열어둔 채로 아래 즐겨찾기를
+ * 누르려다 가려지면 곤란하다.
+ */
+test("결과 목록은 바깥을 누르거나 Esc를 누르면 닫힌다", async () => {
+  const user = userEvent.setup();
+  searchPlacesMock.mockResolvedValue({ places: [ANGUK], outside_service_area_count: 0 });
+  renderPage();
+
+  await user.type(screen.getByLabelText("장소 검색"), "안국역");
+  await user.click(screen.getByRole("button", { name: "검색" }));
+  expect(
+    await screen.findByRole("button", { name: "안국역 검색 위치로 설정" }),
+  ).toBeInTheDocument();
+
+  await user.click(screen.getByText("현재 서울 지역 장소만 추천해 드리고 있어요"));
+
+  expect(screen.queryByRole("button", { name: "안국역 검색 위치로 설정" })).not.toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "검색" }));
+  expect(
+    await screen.findByRole("button", { name: "안국역 검색 위치로 설정" }),
+  ).toBeInTheDocument();
+
+  await user.keyboard("{Escape}");
+
+  expect(screen.queryByRole("button", { name: "안국역 검색 위치로 설정" })).not.toBeInTheDocument();
 });
 
 test("검색 전에는 결과 영역 자체를 보여주지 않는다", () => {

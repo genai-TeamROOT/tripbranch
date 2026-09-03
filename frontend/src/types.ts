@@ -620,6 +620,13 @@ export interface AgentDebugRequest {
    * 발화가 위치를 말하지 않았을 때에만 검색 위치로 쓰인다 - 발화가 이긴다.
    */
   selected_search_center?: string | null;
+  /*
+   * 위치 설정 화면에서 정한 출발지의 이름. selected_search_center와 다른 질문의
+   * 답이다 - 이쪽은 "사용자가 어디 있는가"라 이동 시간을 재는 시작점이 되고,
+   * 저쪽은 "어디 주변을 찾을까"다(D-067이 둘을 분리한 이유). 발화가 출발지를
+   * 말했으면 발화가 이긴다.
+   */
+  selected_current_location?: string | null;
   /** 직전 INFO 상세 카드의 장소명. "여기/이곳" 같은 대화 지시어 해소 후보다. */
   conversation_place_name?: string | null;
   /*

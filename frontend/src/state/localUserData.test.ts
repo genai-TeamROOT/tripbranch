@@ -10,7 +10,8 @@ import { beforeEach, expect, test } from "vitest";
 import { clearLocalUserData } from "./localUserData";
 import { loadPreferences, savePreferences } from "./preferenceStorage";
 import { syncPreferences } from "./preferenceSync";
-import { loadSearchCenter, saveSearchCenter } from "./searchCenterStorage";
+import { loadRecentSearches, rememberRecentSearch } from "./recentSearchesStorage";
+import { loadLocationSettings, setLocationCenter } from "./locationSettings";
 import { loadFavorites, saveFavorites } from "./sidebarStorage";
 import { clearState } from "./storage";
 
@@ -22,7 +23,8 @@ beforeEach(() => {
 function seedEverything() {
   savePreferences([{ label: "조용한 곳", source: "preference", codes: ["quiet"] }]);
   saveFavorites([{ id: "fav-1", label: "회사 (역삼동)" }]);
-  saveSearchCenter("안국역");
+  setLocationCenter("안국역");
+  rememberRecentSearch("안국역");
   sessionStorage.setItem("tripbranch_state", JSON.stringify({ version: 6, state: {} }));
 }
 
@@ -33,7 +35,8 @@ test("로그아웃하면 취향·즐겨찾기·검색 위치·대화가 모두 �
 
   expect(loadPreferences()).toEqual([]);
   expect(loadFavorites()).toEqual([]);
-  expect(loadSearchCenter()).toBeNull();
+  expect(loadLocationSettings().center).toBeNull();
+  expect(loadRecentSearches()).toEqual([]);
   expect(sessionStorage.getItem("tripbranch_state")).toBeNull();
 });
 
@@ -65,7 +68,7 @@ test("새 대화로 대화를 비워도 검색 위치는 남는다", () => {
   clearState();
 
   expect(sessionStorage.getItem("tripbranch_state")).toBeNull();
-  expect(loadSearchCenter()).toBe("안국역");
+  expect(loadLocationSettings().center).toBe("안국역");
 });
 
 /*
@@ -74,7 +77,7 @@ test("새 대화로 대화를 비워도 검색 위치는 남는다", () => {
  */
 test("인증 키는 건드리지 않는다", () => {
   seedEverything();
-  localStorage.setItem("sb-abcdefgh-auth-token", "{\"access_token\":\"…\"}");
+  localStorage.setItem("sb-abcdefgh-auth-token", '{"access_token":"…"}');
 
   clearLocalUserData();
 

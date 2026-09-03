@@ -304,7 +304,7 @@ test("로그아웃하면 이 기기의 취향·즐겨찾기가 남지 않는다"
     "tb_preferences",
     JSON.stringify([{ label: "조용한 곳", source: "preference", codes: ["quiet"] }]),
   );
-  sessionStorage.setItem("tb_search_center", "안국역");
+  sessionStorage.setItem("tb_location_settings", JSON.stringify({ origin: null, center: "안국역" }));
   await renderApp();
 
   await user.click(within(sidebar()).getByRole("button", { name: /로그아웃/ }));
@@ -314,7 +314,7 @@ test("로그아웃하면 이 기기의 취향·즐겨찾기가 남지 않는다"
 
   await waitFor(() => expect(localStorage.getItem("tb_preferences")).toBeNull());
   expect(localStorage.getItem("tb_favorites")).toBeNull();
-  expect(sessionStorage.getItem("tb_search_center")).toBeNull();
+  expect(sessionStorage.getItem("tb_location_settings")).toBeNull();
 });
 
 test("저장된 즐겨찾기가 사이드바에 보인다", async () => {
@@ -324,18 +324,17 @@ test("저장된 즐겨찾기가 사이드바에 보인다", async () => {
   expect(within(sidebar()).getByText("집 (성수동)")).toBeInTheDocument();
 });
 
-test("즐겨찾기를 추가하면 목록에 남는다", async () => {
+/*
+ * 즐겨찾기는 검색해서 담는다. 여기서 이름만 받으면 좌표도 주소도 없어 위치로 쓸 수
+ * 없으므로, "추가"는 검색이 있는 위치 설정 화면으로 보낸다.
+ */
+test("즐겨찾기 추가를 누르면 위치 설정 화면으로 보낸다", async () => {
   const user = userEvent.setup();
   await renderApp();
 
   await user.click(within(sidebar()).getByRole("button", { name: "추가" }));
 
-  // 모달의 제출 버튼과 사이드바의 "+ 추가"가 이름이 같다. 모달 안으로 범위를 좁힌다.
-  const modal = screen.getByRole("dialog", { name: "즐겨찾기 추가" });
-  await user.type(within(modal).getByRole("textbox"), "학교 (신촌)");
-  await user.click(within(modal).getByRole("button", { name: "추가" }));
-
-  expect(within(sidebar()).getByText("학교 (신촌)")).toBeInTheDocument();
+  expect(await screen.findByLabelText("장소 검색")).toBeInTheDocument();
 });
 
 test("즐겨찾기를 삭제하면 목록에서 빠진다", async () => {

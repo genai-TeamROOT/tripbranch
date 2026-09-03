@@ -35,13 +35,11 @@ import {
   type SavedScheduleEntry,
 } from "../../state/savedSchedules";
 import {
-  createId,
   loadFavorites,
   saveFavorites,
   type ChatHistoryEntry,
   type FavoritePlace,
 } from "../../state/sidebarStorage";
-import { AddFavoriteModal } from "./AddFavoriteModal";
 
 interface SideDrawerContentProps {
   /** 모바일 드로어에서만 넘긴다 — 링크를 누르면 드로어를 닫기 위해서다. */
@@ -81,7 +79,6 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
   /* 저장한 일정도 계정에서 온다(GET /api/schedules). 대화 목록과 별도 저장소라
      따로 받는다 — 세션이 30일 뒤 정리돼도 이쪽은 남는다. */
   const [schedules, setSchedules] = useState<SavedScheduleEntry[]>([]);
-  const [showAddFavorite, setShowAddFavorite] = useState(false);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
@@ -316,9 +313,11 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
       <section className="flex flex-col gap-1.5">
         <div className="flex items-center justify-between">
           <h2 className="text-xs font-bold text-label">즐겨찾기</h2>
+          {/* 즐겨찾기는 검색해서 담는다 — 여기서 이름만 받으면 좌표도 주소도 없어
+              위치로 쓸 수 없다. 검색이 있는 위치 설정 화면으로 보낸다. */}
           <button
             type="button"
-            onClick={() => setShowAddFavorite(true)}
+            onClick={() => go("/location", { sheet: true })}
             className="flex items-center gap-0.5 text-xs font-semibold text-brand transition-colors hover:text-brand-deep"
           >
             <Plus size={12} aria-hidden /> 추가
@@ -580,12 +579,6 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
         )}
       </div>
 
-      {showAddFavorite && (
-        <AddFavoriteModal
-          onAdd={(label) => setFavorites((prev) => [...prev, { id: createId("fav"), label }])}
-          onClose={() => setShowAddFavorite(false)}
-        />
-      )}
     </div>
   );
 }
