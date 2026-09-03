@@ -249,6 +249,90 @@ async def test_radius_context_keeps_the_distance_feature() -> None:
         assert item.feature_scores["distance"] is not None
         assert item.weights_used["distance"] > 0
 
+def _weathered_district_context(*, scoped: bool) -> RecommendationContext:
+    """날씨까지 실은 구 단위 컨텍스트 — 세 축이 모두 살아 있어야 몫을 검증할 수 있다."""
+    return RecommendationContext(
+        location=_context_location(),
+        places=AgentContextValue(status="success", data=[_context_place()]),
+        weather=AgentContextValue(
+            status="success",
+            data=WeatherForecast(forecast_for=_CONTEXT_VISIT_AT, precipitation="rain"),
+        ),
+        district_scope=(
+            DistrictScope(district_code="680", district_name="강남구") if scoped else None
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_district_scoped_first_and_second_pass_use_the_same_ruler() -> None:
+    """1차와 2차가 같은 가중치 규칙을 써야 한다(1.9.0).
+
+    2차에 `district_scoped`를 안 넘기면 거리 결측을 비례 재분배해 취향이
+    1/3에서 0.1667로 깎인다 — **취향으로 후보를 골라 놓고 최종 순위에서
+    취향 비중을 반으로 줄이는** 셈이다. 2026-08-20에 같은 계열의 사고가
+    있었고(CONCENTRATION_WEIGHTS에 taste 키가 없었다) 합이 1.0이라 아무
+    예외도 안 났다. 그래서 합이 아니라 **각 축의 몫**을 본다.
+    """
+    context = _weathered_district_context(scoped=True)
+    prepared = await prepare_recommendation_from_context(context, visit_at=_CONTEXT_VISIT_AT)
+    first_pass = await score_prepared_recommendation(
+        prepared,
+        search_radius_km=2.0,
+        # 빈 dict는 "취향을 켰는데 근거를 못 찾았다" — 축은 켜진다.
+        taste_matches={},
+    )
+
+    items = [*first_pass.recommendations, *first_pass.unverified_recommendations]
+    assert items
+    for item in items:
+        assert item.weights_used["taste"] == pytest.approx(1 / 3)
+
+    concentration = CandidateEnrichmentResponse(
+        request_id="req-district",
+        status="success",
+        candidates=[_concentration_result(item.place_id, rate=50.0) for item in items],
+    )
+    second_pass = await rerank_with_concentration(
+        first_pass,
+        None,
+        concentration,
+        seek=False,
+        district_scoped=prepared.district_scoped,
+    )
+
+    for item in second_pass.recommendations:
+        # 축이 4개가 됐으니 균등이면 0.25씩이다. 비례 재분배면 취향이 0.1667이 된다.
+        assert item.weights_used["taste"] == pytest.approx(0.25)
+        assert item.weights_used["concentration"] == pytest.approx(0.25)
+        assert item.weights_used["weather"] == pytest.approx(0.25)
+        assert "distance" not in item.weights_used
+
+
+@pytest.mark.asyncio
+async def test_radius_second_pass_keeps_proportional_weights() -> None:
+    """반경 검색 2차는 지금까지와 같아야 한다 — 균등 배분이 새는지 본다."""
+    context = _weathered_district_context(scoped=False)
+    prepared = await prepare_recommendation_from_context(context, visit_at=_CONTEXT_VISIT_AT)
+    first_pass = await score_prepared_recommendation(
+        prepared, search_radius_km=2.0, taste_matches={}
+    )
+    items = [*first_pass.recommendations, *first_pass.unverified_recommendations]
+    concentration = CandidateEnrichmentResponse(
+        request_id="req-radius",
+        status="success",
+        candidates=[_concentration_result(item.place_id, rate=50.0) for item in items],
+    )
+
+    second_pass = await rerank_with_concentration(
+        first_pass, None, concentration, seek=False, district_scoped=False
+    )
+
+    for item in second_pass.recommendations:
+        assert item.weights_used["distance"] == pytest.approx(0.10)
+        assert item.weights_used["taste"] == pytest.approx(0.15)
+        assert item.weights_used["concentration"] == pytest.approx(0.15)
+
 @pytest.mark.asyncio
 async def test_split_pipeline_matches_compatibility_entrypoint() -> None:
     context = RecommendationContext(

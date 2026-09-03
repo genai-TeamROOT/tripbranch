@@ -263,6 +263,92 @@ def test_구_단위_요청에서는_거리가_순위를_바꾸지_못한다() ->
     assert len({ranked.score for ranked in scoped.ranked}) == 1
 
 
+def test_구_단위_요청은_남은_축을_균등하게_나눈다() -> None:
+    """1.9.0: 비례 재분배가 아니라 균등이다.
+
+    비례로 나누면 날씨 0.41 / 영업시간 0.41 / 취향 0.18이 되어, 값이 3갈래뿐인
+    날씨가 14~16갈래인 취향을 압도한다(equalize_weights 주석 참고).
+    """
+    prepared = prepare_candidates([MUSEUM_OPEN, CAFE_CLOSING_SOON], now=NOW)
+
+    result = score_prepared_candidates(
+        prepared.eligible_candidates,
+        weather_condition=WeatherCondition.BAD,
+        max_distance_km=1.5,
+        district_scoped=True,
+        # 빈 dict는 "취향을 켰는데 근거를 못 찾았다" — 축은 켜진다.
+        taste_matches={},
+    )
+
+    for ranked in result.ranked:
+        assert "distance" not in ranked.weights_used
+        assert ranked.weights_used == pytest.approx(
+            {
+                "weather": 1 / 3,
+                "remaining_operating_time": 1 / 3,
+                "taste": 1 / 3,
+            }
+        )
+
+
+def test_반경_검색은_균등_배분을_쓰지_않는다() -> None:
+    """거리 축이 살아 있으면 기본 3축 비율(0.35/0.35/0.15)이 그대로다."""
+    prepared = prepare_candidates([MUSEUM_OPEN, CAFE_CLOSING_SOON], now=NOW)
+
+    result = score_prepared_candidates(
+        prepared.eligible_candidates,
+        weather_condition=WeatherCondition.BAD,
+        max_distance_km=1.5,
+        taste_matches={},
+    )
+
+    for ranked in result.ranked:
+        assert ranked.weights_used == pytest.approx(
+            {
+                "weather": 0.35,
+                "remaining_operating_time": 0.35,
+                "distance": 0.15,
+                "taste": 0.15,
+            }
+        )
+
+
+def test_구_단위_취향이_없으면_균등과_비례가_같다() -> None:
+    """축이 2개면 두 방식이 같은 값을 낸다 — 1.8.0 동작이 그대로 유지된다."""
+    prepared = prepare_candidates([MUSEUM_OPEN, CAFE_CLOSING_SOON], now=NOW)
+
+    result = score_prepared_candidates(
+        prepared.eligible_candidates,
+        weather_condition=WeatherCondition.BAD,
+        max_distance_km=1.5,
+        district_scoped=True,
+    )
+
+    for ranked in result.ranked:
+        assert ranked.weights_used["weather"] == 0.5
+        assert ranked.weights_used["remaining_operating_time"] == 0.5
+
+
+def test_균등_배분은_결측_축까지_함께_뺀다() -> None:
+    """영업시간을 모르는 후보는 그 축도 빠지고 남은 둘이 반씩 갖는다.
+
+    이 후보와 아는 후보의 점수 격차가 0.1235에서 0.1667로 벌어지는 것이
+    1.9.0의 알려진 대가다(equalize_weights 주석).
+    """
+    prepared = prepare_candidates([GALLERY_UNKNOWN_HOURS], now=NOW)
+
+    result = score_prepared_candidates(
+        prepared.eligible_candidates,
+        weather_condition=WeatherCondition.BAD,
+        max_distance_km=1.5,
+        district_scoped=True,
+        taste_matches={},
+    )
+
+    ranked = result.ranked[0]
+    assert ranked.feature_scores["remaining_operating_time"] is None
+    assert ranked.weights_used == pytest.approx({"weather": 0.5, "taste": 0.5})
+
 def test_scores_and_sorts_fixed_candidates() -> None:
     result = score_candidates(
         [MUSEUM_OPEN, CAFE_CLOSING_SOON, GALLERY_UNKNOWN_HOURS, RESTAURANT_FAR],

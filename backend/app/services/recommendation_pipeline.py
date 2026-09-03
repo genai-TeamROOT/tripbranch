@@ -35,6 +35,7 @@ from app.domain.scoring import (
     RankedCandidate,
     co_visited_score,
     concentration_score,
+    equalize_weights,
     prepare_candidates,
     redistribute_weights,
     score_prepared_candidates,
@@ -407,6 +408,11 @@ async def rerank_with_concentration(
     *,
     seek: bool,
     weather_reason: WeatherReason = None,
+    # 1차와 같은 값. 안 넘기면 2차가 거리 결측을 비례 재분배해 **1차와 다른 자를
+    # 쓴다** — 구 단위 요청에서 취향이 1/3에서 0.17로 깎인다(1.9.0). 2026-08-20에
+    # 같은 계열의 사고가 있었다(CONCENTRATION_WEIGHTS에 taste 키가 없어 취향으로
+    # 후보를 골라 놓고 최종 순위에서 취향을 뺐다).
+    district_scoped: bool = False,
     # 1차와 같은 기준점 이름. 안 넘기면 근거 문장이 "현재 위치"로 폴백해 1차와
     # 2차가 같은 요청에서 다른 문장을 말하게 되므로, 호출자가 반드시 1차에 쓴
     # 값을 그대로 넘긴다(real_recommendation_provider.py).
@@ -476,7 +482,11 @@ async def rerank_with_concentration(
         base_weights = weights_for_feature_scores(feature_scores)
         missing = [feature for feature in base_weights if feature_scores.get(feature) is None]
         weights_used = (
-            redistribute_weights(base_weights, missing) if missing else dict(base_weights)
+            equalize_weights(base_weights, missing)
+            if district_scoped
+            else redistribute_weights(base_weights, missing)
+            if missing
+            else dict(base_weights)
         )
         score = round(
             sum(
@@ -606,6 +616,8 @@ async def rerank_with_co_visited(
     *,
     weather_reason: WeatherReason = None,
     origin_name: str | None = None,
+    # `rerank_with_concentration()`과 같은 이유로 받는다 — 1차와 자를 맞춘다.
+    district_scoped: bool = False,
     timer: Timer = perf_counter,
 ) -> RecommendationResponse:
     """D-092: RECOMMEND의 2차 Scoring 진입점. place_associations(B-owned, D-088)
@@ -668,7 +680,11 @@ async def rerank_with_co_visited(
         base_weights = weights_for_feature_scores(feature_scores)
         missing = [feature for feature in base_weights if feature_scores.get(feature) is None]
         weights_used = (
-            redistribute_weights(base_weights, missing) if missing else dict(base_weights)
+            equalize_weights(base_weights, missing)
+            if district_scoped
+            else redistribute_weights(base_weights, missing)
+            if missing
+            else dict(base_weights)
         )
         score = round(
             sum(

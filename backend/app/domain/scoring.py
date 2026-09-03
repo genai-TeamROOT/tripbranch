@@ -48,7 +48,7 @@ from app.place_search_policy import WALKING_SPEED_KM_PER_MINUTE
 # 두 곳이 전부 실재 여부로 거른다(build_weights는 `in set(requested)`,
 # weights_for_feature_scores는 `in feature_scores`). 올릴 근거는 그 키를
 # feature_scores에 실제로 채우는 **새 경로**다 — 1.7.0이 그 예다.
-SCORING_VERSION = "recommendation-scoring-1.8.0"
+SCORING_VERSION = "recommendation-scoring-1.9.0"
 
 WEATHER_FEATURE = "weather"
 ENVIRONMENT_FEATURE = "environment"
@@ -650,6 +650,40 @@ def redistribute_weights(
     return {feature: weight / total_remaining for feature, weight in remaining.items()}
 
 
+def equalize_weights(
+    weights: Mapping[str, float], missing_features: Iterable[str]
+) -> dict[str, float]:
+    """결측을 뺀 나머지 축에 가중치를 **균등하게** 나눈다(구 단위 요청, D-119 후속).
+
+    `redistribute_weights()`와 나누는 이유는 **축마다 값이 몇 갈래로 나오는지가
+    다르기 때문이다.** 날씨는 판정표 조회라 한 날씨 조건에서 실내·실외·모름 3갈래
+    밖에 안 나오고, 남은 운영시간은 120분만 넘으면 전부 1.0이다. 반면 취향은
+    유사도 연속값이라 후보 30곳에서 14~16갈래로 갈린다.
+
+    비례 재분배는 그 가장 성긴 축에 가장 큰 몫을 남긴다 — 거리가 빠진 구 단위에서
+    날씨 0.41 / 영업시간 0.41 / 취향 0.18이 되어, 3갈래 축이 1차 정렬을 하고
+    14갈래 축은 그 덩어리 안에서만 미세조정한다. 실측에서 종로구 "야경 보기 좋은
+    곳" 질의의 2위가 서울특별시교육청이었다(실내라 비 오는 날 날씨 만점).
+    균등(1/3씩)으로 옮기면 북악하늘길·창덕궁 달빛기행·인왕산이 올라온다.
+
+    **반경 검색에는 쓰지 않는다.** 거리 축이 살아 있으면 기본 3축 0.35/0.35/0.15가
+    그대로고, 그 비율은 `_OPTIONAL_WEIGHT` 주석대로 기존 세트에서 읽어낸 값이다.
+    축이 2개만 남는 경우(취향이 없는 구 단위 요청)에는 비례 재분배도 0.5/0.5라
+    이 함수와 결과가 같다 — 갈리는 것은 축이 3개 이상일 때뿐이다.
+
+    딸린 대가: 영업시간을 모르는 후보(그 축이 결측)와 아는 후보의 점수 격차가
+    0.1235에서 0.1667로 벌어진다. 방향은 맞지만(미확인은 문이 닫혀 있을 수도
+    있다) 의도해서 고른 값이 아니라 균등 배분의 부산물이고, 영업시간 적재가
+    끝나면 줄어든다.
+    """
+    missing = set(missing_features)
+    remaining = [feature for feature in weights if feature not in missing]
+    if not remaining:
+        return {}
+    share = 1.0 / len(remaining)
+    return {feature: share for feature in remaining}
+
+
 def _is_closed(candidate: ScoringCandidate, now: datetime) -> bool:
     if candidate.operating_hours is None:
         return False  # 운영시간 미확인은 폐점이 아니다.
@@ -764,6 +798,11 @@ def score_prepared_candidates(
     *,
     weather_condition: WeatherCondition | None,
     max_distance_km: float,
+    # 안 넘기면 요청에서 켜진 선택 Feature로 조립한다(`build_weights`).
+    #
+    # **`district_scoped=True`와 함께 넘기면 여기 적은 비율은 버려진다** —
+    # 그 모드는 남은 축을 균등하게 나누므로(`equalize_weights`) 키 목록만 쓰인다.
+    # 지금 이 인자를 넘기는 프로덕션 호출부는 없고 테스트뿐이다.
     weights: Mapping[str, float] | None = None,
     weather_reason: WeatherReason = None,
     requested_environment: str | None = None,
@@ -856,8 +895,11 @@ def score_prepared_candidates(
         # 용산 34.2%다. 그 후보들은 전부 0점이 되어 2.1km와 8km가 구분되지 않는다.
         #
         # **"축이 없다"가 아니라 "값이 없다"로 다룬다.** 요청 전체가 함께 빠지므로
-        # 한 순위 안에서 자를 두 개 쓰는 문제가 생기지 않고, 날씨 조회 실패와 같은
-        # 경로(`redistribute_weights`)를 그대로 탄다 — 날씨·영업시간이 0.5씩 된다.
+        # 한 순위 안에서 자를 두 개 쓰는 문제가 생기지 않는다.
+        #
+        # 다만 나누는 방식은 날씨 조회 실패와 다르다 — 남은 축에 **균등하게**
+        # 나눈다(`equalize_weights`, 1.9.0). 비례 재분배가 가장 성긴 축(날씨,
+        # 3갈래)에 가장 큰 몫을 남기는 문제를 그 함수 주석에 적었다.
         #
         # 사용자 위치를 아는 요청에서는 거리 축이 노이즈가 아니다 — 그래도
         # 구 단위 요청은 "이 구 전체에서 골라 달라"는 뜻이라 가까운 순을 우선하지
@@ -867,7 +909,9 @@ def score_prepared_candidates(
             missing_features.append("distance")
 
         weights_used = (
-            redistribute_weights(base_weights, missing_features)
+            equalize_weights(base_weights, missing_features)
+            if district_scoped
+            else redistribute_weights(base_weights, missing_features)
             if missing_features
             else dict(base_weights)
         )
