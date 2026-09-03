@@ -45,6 +45,23 @@ class SessionOwnershipError(AppError):
             status_code=403,
         )
 
+class SessionNotFoundError(AppError):
+    """없는(또는 만료된) 세션을 지목했을 때. (TP-222 후속 — 대화 이름 바꾸기)
+
+    조회·삭제는 없는 세션을 오류로 보지 않는다 — "없다"가 정상적인 답이고
+    멱등이기 때문이다. 반면 이름 바꾸기는 바꿀 대상이 있어야 성립하므로,
+    조용히 성공한 척하면 사용자가 바뀐 줄 알고 넘어간다.
+    """
+
+    def __init__(self, session_id: str) -> None:
+        super().__init__(
+            code="session_not_found",
+            message="그 대화를 찾을 수 없어요. 이미 지워졌을 수 있어요.",
+            status_code=404,
+            details={"session_id": session_id},
+        )
+
+
 class SavedPlaceNotRecommendedError(AppError):
     """보관함에 담으려는 장소가 그 세션에서 노출된 적이 없을 때. (SCHEDULE-12)
 

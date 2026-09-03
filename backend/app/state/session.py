@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from app.auth.principal import Principal
 from app.state import history as history_module
 from app.state.errors import SessionOwnershipError
-from app.state.schema import AgentState, now_kst
+from app.state.schema import AgentState, ApiContext, UserConditions, now_kst
 from app.state.store import StateStore
 
 # ---------------------------------------------------------------- 설정
@@ -145,6 +145,63 @@ def attach_user_id(state: AgentState, principal: Principal | None) -> None:
     state.user_id = principal.user_id
 
 
+MAX_TITLE_CHARS = 200
+
+
+def attach_title(state: AgentState, user_input: str) -> None:
+    """첫 턴의 사용자 발화를 대화 제목으로 붙인다. (TP-222 후속 — 채팅 히스토리)
+
+    attach_user_id와 같은 규칙이다 — **비어 있으면 채우고, 값이 있으면 절대
+    덮어쓰지 않는다.** 사용자가 사이드바에서 이름을 바꾼 뒤 대화를 이어가도
+    그 이름이 유지된다.
+
+    recent_turns에서 파생하지 않는 이유는 그 배열이 MAX_RECENT_TURNS개만 남기
+    때문이다. 첫 질문이 밀려나면 사이드바의 제목이 저절로 바뀐다.
+    """
+    if state.title is not None:
+        return
+    trimmed = user_input.strip()
+    if not trimmed:
+        return
+    state.title = trimmed[:MAX_TITLE_CHARS]
+
+
+def attach_location(state: AgentState, search_center: str | None) -> None:
+    """그 대화의 위치를 붙인다. (TP-222 후속 — 채팅 히스토리)
+
+    attach_title과 같은 규칙이다 — **비어 있으면 채우고, 값이 있으면 절대
+    덮어쓰지 않는다.** 제목이 첫 질문인 것과 짝을 맞춰 위치도 처음 잡힌 값을
+    쓴다. 대화 도중에 지역을 옮겨도 목록의 한 줄이 저절로 바뀌지는 않는다.
+
+    조건(user_conditions)에서 그때그때 읽지 않고 여기 옮겨 두는 이유는 resume()이
+    낡은 조건을 버릴 때 그 값이 함께 사라지기 때문이다.
+    """
+    if state.location is not None:
+        return
+    if search_center is None:
+        return
+    trimmed = search_center.strip()
+    if not trimmed:
+        return
+    state.location = trimmed[:MAX_TITLE_CHARS]
+
+
+def rename(state: AgentState, title: str) -> bool:
+    """사용자가 대화 이름을 바꾼다. 빈 이름은 무시한다.
+
+    attach_title과 달리 기존 값을 덮어쓴다 — 사용자가 명시적으로 요청한
+    변경이기 때문이다. 반환값은 실제로 바뀌었는지다.
+    """
+    trimmed = title.strip()
+    if not trimmed:
+        return False
+    next_title = trimmed[:MAX_TITLE_CHARS]
+    if state.title == next_title:
+        return False
+    state.title = next_title
+    return True
+
+
 def verify_ownership(state: AgentState, principal: Principal | None) -> None:
     """이 세션이 요청을 보낸 신원의 것인지 대조한다. (D-063 결정 2 후속, D-073)
 
@@ -188,6 +245,42 @@ def touch(state: AgentState) -> None:
     조건 변경 여부와 무관하게 요청 수신 시마다 호출한다.
     updated_at은 갱신하지 않는다. (계약 5.3절)
     """
+    state.last_active_at = now_kst()
+
+
+def resume(state: AgentState) -> None:
+    """만료된 대화를 이어간다. (TP-222 후속 — 채팅 히스토리)
+
+    **만료를 없던 일로 되돌리는 함수가 아니다.** 세션 만료가 하는 일은 두 가지가
+    한데 묶여 있었다 — "대화를 끊는 것"과 "낡은 조건을 버리는 것". 사이드바에서
+    지난 대화를 열어 이어 물을 때 필요한 것은 앞의 하나뿐이라, 여기서 둘을
+    나눈다: **대화는 잇고 조건은 버린다.**
+
+    버리는 값은 전부 "그때"에 묶여 있어 오늘 쓰면 틀리는 것들이다.
+      - user_conditions: 사흘 전 "비 오는데"가 오늘의 조건으로 남으면 안 된다.
+      - api_context: GPS·날씨는 자체 TTL이 1시간이다(API_CONTEXT_TTL).
+      - pending_clarification/pending_info_context: 사흘 전에 물은 되묻기의
+        답으로 오늘의 발화를 해석하면 엉뚱한 곳에 붙는다.
+      - situation_state, ignore_operating_hours_until: 같은 이유다.
+      - last_run_id/last_intent: 지난 턴을 가리키는 값이라 함께 비운다.
+
+    남기는 값은 시간이 지나도 틀리지 않는 것들이다 — session_id, user_id,
+    title, recent_turns. 이 넷이 남아야 "같은 대화"가 성립한다. 추천 이력은 이
+    함수가 아니라 호출 측(service.resume_user_session)이 clear_recommended로
+    비운다 — 이력은 별도 저장소에 있고, 거절 이력은 남겨야 하기 때문이다.
+
+    조건을 통째로 갈아치우므로 condition_version을 올린다.
+    """
+    state.user_conditions = UserConditions()
+    state.api_context = ApiContext()
+    state.pending_clarification = None
+    state.pending_info_context = None
+    state.situation_state = None
+    state.ignore_operating_hours_until = None
+    state.last_run_id = None
+    state.last_intent = None
+    state.condition_version += 1
+    state.status = "active"
     state.last_active_at = now_kst()
 
 

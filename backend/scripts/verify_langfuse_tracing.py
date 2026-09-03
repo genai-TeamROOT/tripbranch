@@ -121,7 +121,13 @@ def _emit_nested() -> str | None:
 # `fields`는 필드명이 아니라 **그룹명**을 받는다(4.14.5 문서). 기본값에는 `usage`가
 # 없어서 `usage_details`가 전부 `None`으로 온다 — 그러면 "토큰이 안 실렸다"는 판정이
 # 항상 참이 되어 검증이 거짓 합격한다.
-_OBSERVATION_FIELDS: Final = "core,basic,usage"
+#
+# **`io`도 반드시 넣는다.** 기본값은 `core`+`basic`뿐이고 `input`/`output`은 `io`
+# 그룹에만 들어 있다(SDK 4.15.1 `api/observations/client.py` 필드 그룹 표). 빼면
+# 마커가 실린 자리를 아예 안 받아와서, (c)는 항상 실패하고 **(b)는 "마커가 없다"로
+# 거짓 합격한다** — 마스킹이 깨져도 통과한다. 이 스크립트의 존재 이유가 (b)이므로
+# 그 거짓 합격이 제일 위험하다.
+_OBSERVATION_FIELDS: Final = "core,basic,io,usage"
 
 
 def _fetch(client: Any, trace_id: str, ready: Callable[[Any], bool]) -> Any | None:

@@ -16,24 +16,33 @@ from app.auth.principal import Principal
 from app.errors import AppError
 from app.state import feedback as feedback_module
 from app.state import history as history_module
+from app.state import preferences as preferences_module
 from app.state import saved_places as saved_places_module
 from app.state import session as session_module
 from app.state import trace as trace_module
-from app.state.errors import SavedPlaceNotRecommendedError, StateStoreError
+from app.state.errors import (
+    SavedPlaceNotRecommendedError,
+    SessionNotFoundError,
+    SessionOwnershipError,
+    StateStoreError,
+)
 from app.state.merge import merge_conditions
 from app.state.operations import IgnoredOperation, Operation, validate_all
 from app.state.schema import (
     MAX_RECENT_TURNS,
     MAX_TURN_ASSISTANT_MESSAGE_CHARS,
     MAX_TURN_USER_INPUT_CHARS,
+    AgentState,
     ConversationTurn,
     FeedbackReasonCode,
     PendingInfoContext,
     RecommendedItem,
     RecommendedItemInput,
     SavedPlaceItem,
+    SessionMessage,
     SituationState,
     UserConditions,
+    UserPreference,
     now_kst,
 )
 from app.state.store import StateStore, get_store
@@ -301,6 +310,23 @@ class AppendConversationTurnRequest(BaseModel):
 class AppendConversationTurnResponse(BaseModel):
     session_id: str
     recent_turns: list[ConversationTurn]
+
+
+class RecordSessionMessageRequest(BaseModel):
+    """한 턴에 화면으로 나간 것 전부를 기록하는 요청. (TP-222 후속 — 화면 기록)
+
+    append_conversation_turn과 같은 자리에서 호출하지만 **다른 저장소에 다른
+    목적으로 쌓인다.** 저쪽은 모델에 넣을 맥락이라 5턴에서 잘리고, 이쪽은 사람이
+    다시 볼 화면이라 자르지 않는다.
+
+    payload는 A의 AgentResponse를 직렬화한 dict다. B는 열어보지 않는다 —
+    파싱하면 A의 스키마 변경을 B가 따라가야 한다.
+    """
+
+    session_id: str
+    run_id: str | None = None
+    user_input: str | None = None
+    payload: dict[str, Any]
 
 
 class SetSituationStateRequest(BaseModel):
@@ -877,7 +903,7 @@ def delete_session(
     store: StateStore | None = None,
     principal: Principal | None = None,
 ) -> DeleteSessionResponse:
-    """세션 상태와 추천 이력을 삭제한다.
+    """세션 상태·추천 이력·보관함·화면 기록·조건 변경 기록을 삭제한다.
 
     세션이 없어도 오류를 내지 않고 deleted=False를 반환한다.
 
@@ -899,6 +925,17 @@ def delete_session(
     # 넣지 않는다: 보관함만 있고 상태·이력이 없는 조합은 만들어질 수 없다
     # (담기가 추천 이력을 전제로 하므로).
     store.delete_saved_places(session_id)
+    # 화면 기록에는 대화 원문이 그대로 들어 있다(TP-222 후속). 여기서 지우지
+    # 않으면 사용자가 대화를 지워도 주고받은 말이 DB에 남는다 — 목록에서
+    # 사라지는 것과 지워지는 것이 달라지면 안 된다.
+    store.delete_session_messages(session_id)
+    # 조건 변경 기록의 before/after 값에는 사용자 발화에서 나온 문자열이 들어간다
+    # (예: 검색 중심 "경복궁"). 대화를 지웠는데 그 흔적이 남을 이유가 없다.
+    store.delete_change_logs(session_id)
+    # **trace_records는 남긴다.** step·지연시간·프롬프트 버전만 담고 사용자
+    # 텍스트가 없으며, list_traces_for_stats가 LLMOps 통계에 쓴다 — 사용자가
+    # 대화를 지울 때마다 지표가 조용히 빠지면 집계가 사실과 달라진다. 이쪽은
+    # 30일 정리 스크립트가 세션 수명에 맞춰 지운다.
     return DeleteSessionResponse(session_id=session_id, deleted=existed)
 
 
@@ -1014,6 +1051,39 @@ def set_pending_info_context(
 
 
 @_wrap_store_errors
+def record_session_message(
+    request: RecordSessionMessageRequest,
+    store: StateStore | None = None,
+) -> None:
+    """한 턴의 화면 기록을 남긴다. (TP-222 후속)
+
+    세션이 없으면 아무것도 하지 않는다 — append_conversation_turn과 같은 방어
+    패턴이고, 여기서 세션을 만들면 A의 실패 경로가 유령 세션을 남긴다.
+
+    user_id는 세션에서 베껴 온다. 접근 통제는 agent_states 쪽에서 하므로 이 값이
+    검사에 쓰이지는 않지만, 세션 행이 먼저 지워져도 이 기록의 주인을 알 수 있어야
+    정리 스크립트가 판단할 근거가 남는다.
+    """
+    store = store or get_store()
+
+    state = store.get_state(request.session_id)
+    if state is None:
+        return
+
+    store.append_session_messages(
+        [
+            SessionMessage(
+                session_id=request.session_id,
+                run_id=request.run_id,
+                user_id=state.user_id,
+                user_input=request.user_input,
+                payload=request.payload,
+            )
+        ]
+    )
+
+
+@_wrap_store_errors
 def append_conversation_turn(
     request: AppendConversationTurnRequest,
     store: StateStore | None = None,
@@ -1048,6 +1118,10 @@ def append_conversation_turn(
         turn = turn.model_copy(update=truncations)
 
     state.recent_turns = [*state.recent_turns, turn][-MAX_RECENT_TURNS:]
+    session_module.attach_title(state, turn.user_input)
+    # 위치도 같은 자리에서 붙인다. 이 시점이면 이번 턴의 조건 병합이 끝나 있어
+    # search_center가 잡혀 있다.
+    session_module.attach_location(state, state.user_conditions.search_center)
     session_module.touch(state)
     store.save_state(state)
 
@@ -1414,3 +1488,365 @@ def get_trace_stats(
         step_stats=step_stats,
         recent_errors=recent_errors,
     )
+
+
+# ================================================================ 취향 (계정 단위)
+
+
+class UserPreferencesResponse(BaseModel):
+    """계정 단위 취향 조회·저장 응답. (TP-222 후속)
+
+    session_id를 담지 않는다 — 이 값은 세션에 속하지 않는다. 다른 상태 응답과
+    모양이 다른 것은 의도된 것이고, 그래서 라우트도 /state/{session_id} 아래가
+    아니라 /preferences로 따로 나 있다.
+    """
+
+    items: list[UserPreference] = Field(default_factory=list)
+    updated_at: datetime | None = None
+
+
+@_wrap_store_errors
+def get_user_preferences(
+    user_id: str,
+    store: StateStore | None = None,
+) -> UserPreferencesResponse:
+    """계정의 취향을 조회한다.
+
+    아직 고른 적이 없으면 빈 목록에 updated_at=None으로 답한다. 404가 아닌
+    이유는 "취향을 안 고른 계정"이 정상 상태이기 때문이다 — 화면은 어느 쪽이든
+    빈 선택으로 그리면 된다.
+    """
+    store = store or get_store()
+
+    stored = store.get_preferences(user_id)
+    if stored is None:
+        return UserPreferencesResponse()
+    return UserPreferencesResponse(items=list(stored.items), updated_at=stored.updated_at)
+
+
+@_wrap_store_errors
+def replace_user_preferences(
+    user_id: str,
+    items: list[UserPreference],
+    store: StateStore | None = None,
+) -> UserPreferencesResponse:
+    """계정의 취향을 통째로 바꾼다.
+
+    빈 목록도 정상적인 저장이다(전부 해제한 경우). 소유권 검증이 따로 없는
+    이유는 키가 곧 신원이기 때문이다 — 라우트가 RequiredPrincipal로 받은
+    user_id만 여기 들어오므로 남의 취향에 닿을 경로가 없다. session_id를
+    받아 state.user_id와 대조해야 하는 세션 API들과 다른 점이다.
+    """
+    store = store or get_store()
+
+    stored = preferences_module.replace(store, user_id, items)
+    return UserPreferencesResponse(items=list(stored.items), updated_at=stored.updated_at)
+
+
+# ================================================================ 대화 목록
+
+
+MAX_LISTED_SESSIONS = 50
+
+
+class ChatSessionSummary(BaseModel):
+    """사이드바 채팅 히스토리의 한 줄. (TP-222 후속)
+
+    대화 내용을 담지 않는다 — 목록을 그리는 데 필요한 것만 준다. 사용자가
+    한 줄을 누르면 그때 /state/{session_id}로 전체를 받는다.
+    """
+
+    session_id: str
+    title: str
+    # 그 대화의 위치(처음 잡힌 search_center). 목록에서 "어디 얘기였는지"를
+    # 제목만으로 알기 어려울 때의 보조 단서다. 없으면 None.
+    #
+    # 장소 이름(마지막 턴에서 언급된 곳)을 쓰다가 위치로 바꿨다 —
+    # "블루보틀 성수"는 그 대화가 무엇이었는지 말해주지 않지만 "성수동"은 말해준다.
+    location: str | None = None
+    last_active_at: datetime
+
+
+class ChatSessionsResponse(BaseModel):
+    sessions: list[ChatSessionSummary] = Field(default_factory=list)
+
+
+@_wrap_store_errors
+def list_user_sessions(
+    user_id: str,
+    store: StateStore | None = None,
+) -> ChatSessionsResponse:
+    """내 대화를 최근 순으로. (TP-222 후속)
+
+    소유권 검증이 따로 없는 이유는 키가 곧 신원이기 때문이다 — 라우트가
+    RequiredPrincipal로 받은 user_id만 여기 들어오므로 남의 대화가 섞일
+    경로가 없다.
+    """
+    store = store or get_store()
+
+    states = store.list_sessions_for_user(user_id, MAX_LISTED_SESSIONS)
+    return ChatSessionsResponse(
+        sessions=[
+            ChatSessionSummary(
+                session_id=state.session_id,
+                title=state.title or "",
+                location=state.location,
+                last_active_at=state.last_active_at,
+            )
+            for state in states
+            if state.title
+        ]
+    )
+
+
+@_wrap_store_errors
+def rename_session(
+    session_id: str,
+    title: str,
+    principal: Principal,
+    store: StateStore | None = None,
+) -> ChatSessionSummary:
+    """대화 이름을 바꾼다.
+
+    **목록을 여는 것·이어가는 것과 같은 방식으로 대화를 집는다**
+    (_load_own_conversation). 이름 바꾸기는 사이드바 목록의 한 줄에 대한 동작이라,
+    그 목록에 뜨는 대화는 전부 여기서도 집혀야 한다. 예전에는 peek_session +
+    verify_ownership을 썼는데 둘 다 이 자리에 맞지 않았다.
+
+    - peek_session은 TTL이 지난 세션을 없는 것으로 취급한다(계약 5.4절). 그런데
+      목록은 만료된 대화도 보여주므로(list_sessions_for_user), **목록에 뜨는
+      대화의 이름을 바꾸면 404가 났다** — 실측으로 신원이 붙은 대화 106개 중
+      살아 있는 것이 1개뿐이라 사실상 거의 항상 실패했다. 화면은 낙관적으로
+      먼저 바꿔 놓고 실패하면 되돌리므로, 이름이 바뀌었다가 되돌아갔다.
+    - verify_ownership은 state.user_id가 비어 있으면 통과시킨다(Phase 4 전
+      과도기). 이 엔드포인트는 "내 대화"만 다루므로 신원이 붙지 않은 세션은 내
+      것이 아니다 — GET /sessions/{id}·resume과 같은 기준으로 본다.
+
+    principal에 기본값을 두지 않는 이유도 같다. 신원 없이 부를 수 있게 두면
+    소유권 대조가 그대로 통과하는 경로가 남는다.
+    """
+    store = store or get_store()
+
+    state = _load_own_conversation(session_id, principal, store)
+
+    if session_module.rename(state, title):
+        store.save_state(state)
+
+    return ChatSessionSummary(
+        session_id=state.session_id,
+        title=state.title or "",
+        location=state.location,
+        last_active_at=state.last_active_at,
+    )
+
+
+class PastRecommendation(BaseModel):
+    """지난 대화에서 실제로 화면에 나갔던 장소 하나. (TP-222 후속)
+
+    **저장돼 있는 값만 담는다.** 그때 본 카드를 그대로 되살릴 수는 없다 —
+    점수·근거 문장·사진·카테고리·운영시간은 애초에 기록하지 않고, trace_records도
+    단계별 지표만 남기지 카드 원본을 갖고 있지 않다. 없는 값을 지어내면 눌러도
+    맞지 않는 카드가 생기므로 여기 없는 것은 화면에도 없다.
+
+    실측(신원이 붙은 대화의 추천 459건): 이름 100%, 거리·실내외 87%, 좌표 71%,
+    추천 이유 13%.
+
+    특히 remaining_minutes를 내보내지 않는다. 화면의 PlaceCard는 그 값으로
+    "지금 영업 중 / N분 후 마감"을 그리는데, 사흘 전 스냅샷으로 그리면 거짓말이
+    된다. 지난 추천은 전용 카드로 그린다.
+    """
+
+    place_id: str
+    # 같은 턴에 함께 나간 장소들을 한 묶음으로 되돌리는 열쇠다. 대화 턴에는
+    # run_id가 없으므로 화면은 이 값으로 묶고 shown_at으로 말풍선 사이에 끼운다.
+    run_id: str
+    name: str
+    rank: int
+    distance_km: float | None = None
+    environment_type: str | None = None
+    reason: str | None = None
+    shown_at: datetime
+
+
+class ChatSessionDetail(BaseModel):
+    """지난 대화 하나. 사이드바에서 한 줄을 눌렀을 때 보여줄 내용이다.
+
+    저장된 턴은 MAX_RECENT_TURNS개뿐이라 **대화 전체가 아니다.** 화면이 그
+    사실을 밝혀야 한다.
+    """
+
+    session_id: str
+    title: str
+    turns: list[ConversationTurn] = Field(default_factory=list)
+    # 그 대화에서 화면에 나갔던 장소들. 저장된 조각으로 만든 **근사치**라
+    # restore_from_messages가 False일 때만 채운다 — 화면 기록으로 되돌릴 수 있는
+    # 대화에는 쓰이지 않으므로 계산도 전송도 하지 않는다.
+    recommendations: list[PastRecommendation] = Field(default_factory=list)
+    # 그 턴에 화면으로 나간 것 전부. 오래된 것이 앞이다.
+    messages: list[SessionMessage] = Field(default_factory=list)
+    # messages만으로 대화를 그대로 되돌릴 수 있는지. **판정은 여기 한 곳에서만
+    # 한다** — 같은 계산을 화면에도 두면 한쪽만 바뀌는 순간 조용히 갈라진다.
+    #
+    # 기록 저장은 실패해도 응답을 막지 않고 로그만 남기므로(이미 사용자에게 다
+    # 보여준 답변을 저장 장애로 뒤집을 수 없다) 턴 하나가 빠진 기록이 있을 수
+    # 있다. recent_turns는 최근 MAX_RECENT_TURNS개만 남고 기록은 자르지 않으니,
+    # 정상이라면 기록 수가 남은 턴 수 이상이다. 모자라면 무언가 빠진 것이고,
+    # 그때는 화면이 turns/recommendations로 되돌린 뒤 "마지막 부분"이라고 밝힌다.
+    restore_from_messages: bool = False
+    last_active_at: datetime
+    # 이 세션으로 대화를 이어갈 수 있는지. TTL(30분)이 지났으면 False이고,
+    # 그때 사용자가 무언가를 물으면 새 세션에서 시작된다.
+    resumable: bool
+
+
+@_wrap_store_errors
+def get_user_session_detail(
+    session_id: str,
+    principal: Principal,
+    store: StateStore | None = None,
+) -> ChatSessionDetail:
+    """내 지난 대화를 읽는다. (TP-222 후속)
+
+    **peek_session을 쓰지 않는다.** 그 함수는 TTL이 지난 세션을 없는 것으로
+    취급하는데(계약 5.4절), 채팅 히스토리는 30분보다 오래된 대화를 보여주는 것이
+    목적이라 그렇게 하면 목록의 거의 모든 항목이 열리지 않는다. 행은 그대로
+    남아 있으므로 직접 읽는다.
+
+    소유권은 verify_ownership보다 엄격하게 본다 — 그 함수는 state.user_id가
+    비어 있으면 통과시키는데(Phase 4 전 과도기), 이 엔드포인트는 애초에 "내
+    대화"만 다루므로 신원이 붙지 않은 세션은 내 것이 아니다.
+    """
+    store = store or get_store()
+    state = _load_own_conversation(session_id, principal, store)
+    return _to_session_detail(state, store)
+
+
+def _load_own_conversation(
+    session_id: str,
+    principal: Principal,
+    store: StateStore,
+) -> AgentState:
+    """내 대화 하나를 TTL 없이 읽는다. 없거나 남의 것이면 예외."""
+    state = store.get_state(session_id)
+    if state is None or state.title is None:
+        raise SessionNotFoundError(session_id)
+    if state.user_id != principal.user_id:
+        raise SessionOwnershipError()
+    return state
+
+
+def _past_recommendations(store: StateStore, state: AgentState) -> list[PastRecommendation]:
+    """그 대화에서 화면에 나갔던 장소들. 오래된 것이 앞이다.
+
+    **여기서 턴과 짝지어 자르지 않는다.** recent_turns는 MAX_RECENT_TURNS(=5)개만
+    남는데 추천 이력에는 상한이 없어 남은 말풍선보다 오래된 추천이 섞여 있는데,
+    "남은 가장 오래된 턴보다 먼저 나간 것을 버린다"는 단순한 규칙은 틀린다 —
+    추천은 그 턴이 기록되기 **전에** 남기 때문이다(실측 102쌍 중 97쌍이 턴보다
+    0~120초 먼저, 평균 97초). 그 규칙을 쓰면 가장 오래된 턴의 추천이 통째로
+    사라진다.
+
+    짝짓기는 두 목록을 함께 들고 순서를 만드는 화면 쪽에서 한다. 여기서는 저장된
+    것을 시간순으로 그대로 준다.
+
+    이름이 없는 항목만 버린다. 카드에 쓸 이름이 없으면 그릴 것이 없다(실측으로는
+    459건 전부 이름이 있었지만, 이 필드는 스키마상 선택이다).
+    """
+    history = store.get_history(state.session_id)
+    if history is None:
+        return []
+
+    kept = [
+        PastRecommendation(
+            place_id=item.place_id,
+            run_id=item.run_id,
+            name=item.name,
+            rank=item.rank,
+            distance_km=item.distance_km,
+            environment_type=item.environment_type,
+            reason=item.reason,
+            shown_at=item.shown_at,
+        )
+        for item in history.recommended
+        if item.name
+    ]
+    kept.sort(key=lambda item: (item.shown_at, item.rank))
+    return kept
+
+
+def _to_session_detail(
+    state: AgentState,
+    store: StateStore,
+    fallback_recommendations: list[PastRecommendation] | None = None,
+) -> ChatSessionDetail:
+    """지난 대화 하나를 화면이 되돌릴 수 있는 모양으로 만든다.
+
+    화면 기록으로 되돌릴 수 있으면 근사치 카드는 **만들지 않는다** — 쓰이지 않는
+    값이라 이력을 한 번 더 읽을 이유가 없다.
+
+    fallback_recommendations는 이어가기가 넘긴다. 그쪽은 추천 이력을 비우기 전에
+    미리 읽어둔 값이 있어서, 여기서 다시 읽으면 이미 빈 목록이 된다.
+    """
+    messages = store.get_session_messages(state.session_id)
+    restore_from_messages = bool(messages) and len(messages) >= len(state.recent_turns)
+
+    if restore_from_messages:
+        recommendations: list[PastRecommendation] = []
+    elif fallback_recommendations is not None:
+        recommendations = fallback_recommendations
+    else:
+        recommendations = _past_recommendations(store, state)
+
+    return ChatSessionDetail(
+        session_id=state.session_id,
+        title=state.title or "",
+        turns=list(state.recent_turns),
+        recommendations=recommendations,
+        messages=messages,
+        restore_from_messages=restore_from_messages,
+        last_active_at=state.last_active_at,
+        resumable=state.status != "expired"
+        and not session_module.is_session_expired(state),
+    )
+
+
+@_wrap_store_errors
+def resume_user_session(
+    session_id: str,
+    principal: Principal,
+    store: StateStore | None = None,
+) -> ChatSessionDetail:
+    """지난 대화를 이어갈 수 있게 되살린다. (TP-222 후속 — 채팅 히스토리)
+
+    사이드바에서 지난 대화를 열 때 부른다. 실측으로 신원이 붙은 대화 106개 중
+    지금 이어갈 수 있는 것은 1개뿐이라(TTL 30분), 되살리지 않으면 히스토리에서
+    연 대화는 사실상 전부 "읽기 전용"이다. 이어 물으면 새 세션이 생겨 **목록에
+    줄이 하나 더 늘고 맥락도 끊긴다.**
+
+    되살리는 방식은 session.resume()에 적혀 있다 — 대화(session_id·title·
+    recent_turns)는 잇고 낡은 조건은 버린다. 추천 이력을 여기서 비우는 이유는
+    두 가지다: 이력이 State가 아니라 별도 저장소에 있고, **거절 이력은 남겨야**
+    하기 때문이다(clear_recommended가 정확히 그 구분을 한다). 사흘 전에 본 곳을
+    오늘 다시 보여주는 것은 문제가 아니지만, 사용자가 싫다고 한 곳을 다시
+    보여주는 것은 문제다.
+
+    아직 살아 있는 세션(TTL 이내)은 **건드리지 않는다.** 조건이 낡지 않았으므로
+    버릴 이유가 없고, 방금까지 하던 대화를 여는 것뿐이다.
+    """
+    store = store or get_store()
+    state = _load_own_conversation(session_id, principal, store)
+
+    if state.status != "expired" and not session_module.is_session_expired(state):
+        return _to_session_detail(state, store)
+
+    # 비우기 **전에** 읽는다. 화면에 그릴 "그때 본 곳"과 다음 추천에서 뺄 "이미
+    # 보여준 곳"은 같은 데이터에서 나오지만 쓰임이 반대다 — 하나는 남겨야 하고
+    # 하나는 지워야 한다.
+    shown = _past_recommendations(store, state)
+
+    session_module.resume(state)
+    store.save_state(state)
+    history_module.clear_recommended(store, session_id)
+
+    # 화면 기록은 비우지 않는다. resume이 지우는 것은 '다음 추천에서 뺄 곳'이지
+    # '그때 화면에 나갔던 것'이 아니다.
+    return _to_session_detail(state, store, fallback_recommendations=shown)

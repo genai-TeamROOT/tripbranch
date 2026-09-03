@@ -25,7 +25,12 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { AppHeader } from "../components/layout/AppHeader";
 import { usePhotoSimilarSearch } from "../hooks/usePhotoSimilarSearch";
 import { useSavedPlaces } from "../hooks/useSavedPlaces";
-import { beginChatRequest, cancelChatRequest, endChatRequest } from "../state/chatAbortController";
+import {
+  beginChatRequest,
+  cancelChatRequest,
+  endChatRequest,
+  wasCancelledByUser,
+} from "../state/chatAbortController";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import type { TravelOrigin } from "../types";
 import { buildAgentStageTimings } from "../utils/agentTiming";
@@ -252,8 +257,10 @@ export function ChatPage() {
         );
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") {
-          // 사용자가 "중단"을 눌렀다 — 오류로 취급하지 않는다(§7.2).
-          dispatch({ type: "CANCEL_CHAT_TURN" });
+          // 끊긴 이유가 두 가지다. "중단" 버튼이면 오던 말풍선을 거기까지 얼려
+          // 남기고(§7.2), 지난 대화를 열어 밀려난 것이면 아무것도 건드리지
+          // 않는다 — 화면에는 이미 다른 대화가 그려져 있다.
+          if (wasCancelledByUser(controller)) dispatch({ type: "CANCEL_CHAT_TURN" });
           return;
         }
         dispatch({
