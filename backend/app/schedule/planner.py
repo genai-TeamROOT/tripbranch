@@ -57,8 +57,8 @@ CoVisitedFetcher: TypeAlias = Callable[
 ]
 
 _NO_CANDIDATES_ROUTE_SUMMARY = (
-    "조건에 맞는 곳을 충분히 찾지 못해 일정을 만들지 못했어요. "
-    "다른 지역이나 다른 종류의 장소로 다시 요청해볼까요?"
+    "일정을 짤 만한 곳을 충분히 찾지 못했어요. "
+    "지역을 조금 넓히거나 다른 종류의 장소로 다시 말씀해 주세요."
 )
 
 # ScheduleLLMPlan.items의 최소 개수가 이번 요청의 time_available에 따라 달라지므로
@@ -117,9 +117,10 @@ def _round_up_start(moment: datetime) -> datetime:
 # 주석 참고) 여기서 같은 문자열을 별도로 둔다 — 화면 표시 문자열이라 자주 바뀌지 않는다.
 _ALL_DAY_OPERATING_HOURS_DISPLAY = "24시간"
 
+# 사용자가 카드에서 먼저 보는 것은 도착 시각이라 그 순서로 쓴다. "운영 중이 아닐 수
+# 있어요"는 완곡 표현이 겹쳐 있어(아닐 + 수 있다) 사실만 남겼다.
 _OPERATING_HOURS_WARNING_TEMPLATE = (
-    "운영시간({display}) 기준으로 도착 예정 시각({arrival})엔 운영 중이 아닐 수 있어요. "
-    "방문 전에 다시 확인해주세요."
+    "{arrival} 도착 예정인데 이곳은 {display} 운영이에요. 가시기 전에 한 번 확인해 주세요."
 )
 
 
@@ -390,8 +391,8 @@ def _build_basis_note(visit_datetime: datetime) -> str:
 
     formatted = visit_datetime.strftime("%H:%M")
     return (
-        f"이 정보는 현재시각({formatted}) 기준으로 계산됐어요. "
-        "실제 방문 시간에는 운영시간·날씨 상황이 달라질 수 있어요."
+        f"{formatted} 기준으로 짠 일정이에요. "
+        "실제로 가시는 시간에는 운영시간이나 날씨가 달라질 수 있어요."
     )
 
 
@@ -446,6 +447,99 @@ def _names_of(
         for place_id in place_ids
         if place_id in name_by_place_id
     ]
+
+
+# 밀려난 보관함 장소를 되돌릴 때 그 자리에 쓰는 이유. LLM이 쓴 문장은 원래 그 자리에
+# 있던 다른 장소를 설명하는 글이라 그대로 둘 수 없고, 새로 지어내지도 않는다 —
+# 사용자가 직접 담았다는 것은 지어낸 값이 아니라 사실이다.
+_RESTORED_ITEM_REASON = "보관함에 담아두신 곳이에요."
+
+# 자리를 되돌린 턴의 동선 요약. LLM이 쓴 요약은 빠진 장소를 이름으로 언급할 수 있어
+# ("…덕수궁 돌담길로 마무리하는 동선이에요") 그대로 쓰면 화면에 없는 곳을 말하게 된다.
+# 앞에 "N시간 코스를 짜봤어요."가 붙으므로 "짜봤어요"를 다시 쓰지 않는다.
+_RESTORED_ROUTE_SUMMARY = "담아두신 곳들을 순서대로 이어봤어요."
+
+
+def _restore_displaced_must_include(
+    items: Sequence[ScheduleLLMItem],
+    missing: set[str],
+    *,
+    must_include: Sequence[str],
+    saved_place_ids: Sequence[str],
+    candidates: Sequence[RecommendationItem],
+) -> tuple[list[ScheduleLLMItem], set[str], int]:
+    """담지 않은 장소가 차지한 자리를 밀려난 보관함 장소에게 되돌린다. (TP-223)
+
+    **왜 필요한가.** LLM이 `[반드시 포함]`을 재시도 후에도 어기면, 담아둔 곳이
+    빠진 자리에 담지 않은 곳이 들어앉는다. 항목 수가 상한 이하이므로 이 조합은
+    "자리가 없어서 뺐다"가 아니라 **"자리를 남에게 줬다"**는 뜻이다. 실제로
+    관측된 상태다(TP-223: 6곳을 담았는데 2곳이 빠지고 안 담은 곳이 하나 들어옴).
+
+    지금까지는 그 사실을 로그와 안내 문구로 알리기만 했다. 이 저장소는 반대로
+    해왔다 — `_drop_unknown_places()`는 지어낸 id를 버리고,
+    `plan_partial_schedule()`은 pinned를 LLM echo 대신 구조적으로 병합한다
+    ("LLM 지시 준수보다 구조적 보장을 우선한다", SCHEDULE-07).
+
+    **자리 수는 그대로다.** place_id·이름·이유만 바꾼다. 도착시각은 시간표가
+    좌표로 다시 계산하므로 저절로 맞는다.
+
+    **대기 중인 장소는 담은 순서로 꺼낸다**(`must_include` 순). 자르기와 같은
+    기준이라 "왜 그 곳이 먼저인지"를 같은 말로 설명할 수 있다. 낯선 자리는 앞에서
+    부터 채운다 — 순서는 시간표가 아니라 동선의 문제이고, LLM이 정한 방문 순서를
+    최소한으로 흔든다.
+
+    **자리가 남아서 들어온 장소는 건드리지 않는다.** 밀려난 보관함 장소가 없으면
+    (missing이 비면) 아무것도 바꾸지 않는다 — 그건 설계된 동작이다
+    (`prompts/schedule/plan.md`, "남는 자리를 다른 후보로 채우세요").
+
+    반환값은 (바뀐 items, 아직 못 되돌린 missing, 되돌린 자리 수)이다.
+    """
+
+    if not missing:
+        return list(items), missing, 0
+
+    waiting = [place_id for place_id in must_include if place_id in missing]
+    saved = set(saved_place_ids)
+    name_by_place_id = {c.place_id: c.name for c in candidates}
+
+    restored: list[ScheduleLLMItem] = []
+    swapped = 0
+    for item in items:
+        if item.place_id in saved or not waiting:
+            restored.append(item)
+            continue
+        place_id = waiting.pop(0)
+        restored.append(
+            item.model_copy(
+                update={
+                    "place_id": place_id,
+                    "place_name": name_by_place_id.get(place_id, item.place_name),
+                    "reason": _RESTORED_ITEM_REASON,
+                }
+            )
+        )
+        swapped += 1
+
+    return restored, set(waiting), swapped
+
+
+def _added_place_names(
+    request: SchedulePlanningRequest, items: Sequence[ScheduleItem]
+) -> list[str]:
+    """보관함에 없었는데 편성에 들어간 장소 이름. (TP-223)
+
+    **자르기 전 원본 목록과 비교한다.** `_resolve_must_include()`가 상한 때문에
+    줄인 목록과 비교하면, 잘린 보관함 장소를 LLM이 그래도 골랐을 때 그 곳이
+    "새로 찾은 곳"으로 잘못 안내된다 — 사용자가 담아둔 곳인데도.
+
+    보관함을 쓰지 않은 턴에는 빈 리스트다. 그때는 모든 장소가 새로 찾은 곳이라
+    알릴 내용이 아니다.
+    """
+
+    if not request.must_include_place_ids:
+        return []
+    saved = set(request.must_include_place_ids)
+    return [item.place_name for item in items if item.place_id not in saved]
 
 
 def _resolve_must_include(
@@ -538,7 +632,11 @@ async def plan_schedule(
             elapsed_ms=round((timer() - started_at) * 1000, 2),
         )
 
-    must_include, omitted_names = _resolve_must_include(request, max_items)
+    # 두 사유를 끝까지 갈라서 들고 간다(TP-223). 예전에는 여기서 나온 "상한 초과"와
+    # 아래 "재시도 후에도 LLM이 빠뜨림"을 한 리스트에 합쳐 넘겨, 화면이 두 경우에
+    # 같은 문장을 냈다 — 사용자가 할 수 있는 일이 서로 다른데도.
+    must_include, over_capacity_names = _resolve_must_include(request, max_items)
+    omitted_names: list[str] = []
 
     resolved_request = (
         request
@@ -591,8 +689,25 @@ async def plan_schedule(
             total_duration_min=0,
             route_summary=_NO_CANDIDATES_ROUTE_SUMMARY,
             basis_note=_build_basis_note(effective_visit_datetime),
+            # 일정을 못 짠 턴에도 상한 초과는 알린다 — 담아둔 곳이 왜 안 보이는지는
+            # 일정이 나왔든 안 나왔든 사용자가 똑같이 궁금해한다
+            # (response_composer.compose_schedule_message docstring과 같은 근거).
+            over_capacity_place_names=over_capacity_names,
             elapsed_ms=round((timer() - started_at) * 1000, 2),
         )
+
+    # 담지 않은 장소가 차지한 자리를 밀려난 보관함 장소에게 되돌린다(TP-223).
+    # 재시도 뒤에 둔다 — 먼저 LLM에게 한 번 더 기회를 주고, 그래도 안 지키면 코드가
+    # 고친다. 자리가 남아서 들어온 장소는 건드리지 않는다.
+    llm_items, missing, restored_count = _restore_displaced_must_include(
+        llm_items,
+        missing,
+        must_include=must_include,
+        saved_place_ids=request.must_include_place_ids,
+        candidates=resolved_request.candidates,
+    )
+    if restored_count:
+        logger.info("schedule.must_include_restored slots=%d", restored_count)
 
     if missing:
         # 재시도 후에도 빠진 것은 502로 턴을 죽이지 않고 결과를 살린다 —
@@ -604,10 +719,7 @@ async def plan_schedule(
             "schedule.must_include_missing after retry place_ids=%s",
             sorted(missing),
         )
-        omitted_names = [
-            *omitted_names,
-            *_names_of(missing, request.candidates),
-        ]
+        omitted_names = _names_of(missing, request.candidates)
 
     candidate_by_id = {c.place_id: c for c in resolved_request.candidates}
     drafts = [
@@ -627,20 +739,25 @@ async def plan_schedule(
         candidates=resolved_request.candidates,
     )
 
+    items = _compose_items(drafts, timeline, resolved_request.candidates, travel.edges)
     return ScheduleResult(
-        items=_compose_items(drafts, timeline, resolved_request.candidates, travel.edges),
+        items=items,
         total_duration_min=timeline.total_duration_min,
-        route_summary=plan.route_summary,
+        # 자리를 되돌렸으면 LLM 요약을 쓰지 않는다 — 그 문장은 지금 일정에 없는
+        # 장소를 이름으로 언급할 수 있다.
+        route_summary=_RESTORED_ROUTE_SUMMARY if restored_count else plan.route_summary,
         basis_note=_build_basis_note(effective_visit_datetime),
         omitted_saved_place_names=omitted_names,
+        over_capacity_place_names=over_capacity_names,
+        added_place_names=_added_place_names(request, items),
         elapsed_ms=round((timer() - started_at) * 1000, 2),
     )
 
 
 # SCHEDULE-09 2단계 — 부분 재편성(REJECT_SPECIFIC) 전용.
 _NO_FILL_CANDIDATES_ROUTE_SUMMARY = (
-    "대체할 새로운 곳을 찾지 못해 나머지 일정은 그대로 유지했어요. "
-    "조건을 조금 넓혀서 다시 요청해볼까요?"
+    "바꿀 만한 곳을 찾지 못해서 일정은 그대로 뒀어요. "
+    "조건을 조금 넓혀서 다시 말씀해 주시겠어요?"
 )
 
 
@@ -876,7 +993,7 @@ async def plan_partial_schedule(
 
     kept = len(request.pinned_items)
     replaced = len(plan.new_items)
-    route_summary = f"{kept}곳은 그대로 유지하고 {replaced}곳을 새로운 장소로 바꿨어요."
+    route_summary = f"{kept}곳은 그대로 두고 {replaced}곳만 다른 곳으로 바꿨어요."
 
     return ScheduleResult(
         items=_compose_items(drafts, timeline, resolved_request.candidates, travel.edges),

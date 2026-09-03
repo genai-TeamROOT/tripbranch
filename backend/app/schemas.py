@@ -245,6 +245,25 @@ class ScheduleResult(BaseModel):
     # 안 잡힌 것이라 편성 조건을 바꿔도 결과가 같기 때문이다. 두 사유를 한
     # 리스트에 섞으면 화면이 "시간을 늘려보라"는 잘못된 안내를 하게 된다.
     absent_saved_place_names: list[str] = Field(default_factory=list)
+    # 담겨 있었지만 **항목 수 상한**(target_item_range()의 max)을 넘겨 이번 편성 대상에서
+    # 잘린 장소 이름 (TP-223). 담은 순서로 뒤에서부터 잘린다.
+    #
+    # omitted_saved_place_names와 갈라 둔 이유는 사유가 다르고 사용자가 할 수 있는 일이
+    # 다르기 때문이다 — 이쪽은 "보관함에서 다른 곳을 빼면 들어간다"가 확정적으로 참이고,
+    # 저쪽은 다시 요청하면 들어갈 수도 있다는 정도다. 예전에는 planner가 두 사유를 한
+    # 리스트에 합쳐 넘겨서 화면이 "시간을 늘리거나 다른 곳을 빼고"라는 한 문장으로
+    # 뭉뚱그렸고, 사용자는 자기 경우가 어느 쪽인지 알 수 없었다.
+    over_capacity_place_names: list[str] = Field(default_factory=list)
+    # 보관함에 없었는데 편성에 새로 들어간 장소 이름 (TP-223).
+    #
+    # 빈 자리를 다른 후보로 채우는 것은 설계된 동작이다(prompts/schedule/plan.md —
+    # "남는 자리를 다른 후보로 채우세요"). 다만 "이 장소들로 일정 짜기" 버튼을 누른
+    # 사용자에게는 담지 않은 곳이 말없이 끼어든 것으로 보여 버그로 신고됐다(TP-223).
+    # 동작을 바꾸는 대신 그 사실을 말하기로 했다.
+    #
+    # 보관함을 쓰지 않은 턴(must_include가 비어 있음)에는 채우지 않는다 — 그때는 모든
+    # 장소가 "새로 찾은 곳"이라 알릴 내용이 아니다.
+    added_place_names: list[str] = Field(default_factory=list)
     elapsed_ms: float = Field(
         ge=0,
         description="일정 편성 파이프라인 시작부터 응답 조립 완료까지의 총 처리시간(ms)",
