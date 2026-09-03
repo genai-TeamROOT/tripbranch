@@ -141,6 +141,13 @@ class Settings(BaseSettings):
     # 파이프라인은 범위가 달라 한쪽만 끄고 싶을 수 있다.
     use_langgraph_pipeline: bool = True
 
+    # INFO의 실시간 지역 조회(주차·지하철·버스·행사·교통·상권, 서울시 폐쇄목록
+    # 121/82개)를 LLM 에이전트 루프로 태울지 여부(로드맵 24번, 강의교재 90강
+    # ReAct 패턴). 기본 off — 이 provider 최초의 실제 function calling 경로라
+    # 검증 전에는 기존 단발 조회(no_data 되묻기)가 안전한 기본값이다. 켜면 no_data
+    # 시 곧장 되묻지 않고 LLM이 다른 지역명으로 스스로 재시도한 뒤 문장까지 쓴다.
+    agentic_realtime_info: bool = False
+
     # 취향 근거 벡터 검색 사용 여부. 기본 off인 이유는 임베딩 모델이 선택
     # 의존성(`pip install -e ".[embeddings]"`)이고 서버 프로세스에 상주하기
     # 때문이다 — 실측 RSS 537MB, 적재 9.4초(2026-08-19). 모델을 올릴 수 없는

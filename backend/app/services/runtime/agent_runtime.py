@@ -19,7 +19,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from datetime import timedelta
-from typing import Any, TypeAlias, TypeVar
+from typing import Any, TypeAlias, TypeVar, get_type_hints
 
 from app.agent_context.schemas import (
     Coordinates,
@@ -29,7 +29,7 @@ from app.agent_context.schemas import (
 from app.auth.principal import Principal
 from app.config import settings
 from app.domain.ranking_origin import resolve_ranking_origin
-from app.domain.schedule_travel import ScheduleTravelCandidate
+from app.domain.schedule_travel import ScheduleTravelCandidate, SegmentWeather
 from app.domain.scoring import SCORING_VERSION
 from app.domain.travel_route import (
     MEASURED_ROUTE_SOURCES,
@@ -114,7 +114,13 @@ from app.services.runtime.graph import (
     run_early_return_graph,
     run_recommend_pipeline_graph,
 )
-from app.services.runtime.info_context_schemas import InfoContextResponse, PlaceInfoResult
+from app.services.runtime.info_context_schemas import (
+    InfoContextRequest,
+    InfoContextResponse,
+    PlaceInfoResult,
+    RealtimeCityInfoResult,
+    RealtimeCommercialInfoResult,
+)
 from app.services.runtime.info_context_transform import to_info_context_request
 from app.services.runtime.info_response_transform import to_info_place_card
 from app.services.runtime.llm_execution import (
@@ -644,9 +650,10 @@ _CLEARED_CONDITION_VALUES: dict[str, object] = {
 # SCHEDULE 실패(후보 부족) 시 되묻기 버튼 ID 및 텍스트.
 _SCHEDULE_RELAX_AREA = "schedule_relax_area"
 _SCHEDULE_RELAX_CATEGORY = "schedule_relax_category"
+# 아래 버튼이 함께 나가므로 "다른 지역이나 다른 종류로" 같은 방법 안내를 문장에
+# 다시 적지 않는다 — 버튼이 이미 그 두 가지를 말한다.
 _SCHEDULE_NO_CANDIDATES_MESSAGE = (
-    "조건에 맞는 곳을 충분히 찾지 못해 일정을 만들지 못했어요. "
-    "다른 지역이나 다른 종류의 장소로 다시 요청해볼까요?"
+    "일정을 짤 만한 곳을 충분히 찾지 못했어요. 범위를 넓혀서 다시 찾아볼까요?"
 )
 _SCHEDULE_NO_CANDIDATES_OPTIONS = (
     (_SCHEDULE_RELAX_AREA, "다른 지역에서 찾기"),
@@ -1543,6 +1550,31 @@ def _build_pairwise_distances_km(
     return distances
 
 
+def _segment_weather(tool_context: RecommendationContext) -> SegmentWeather | None:
+    """C가 조회한 예보를 일정 구간 판정이 쓰는 사실로 옮긴다 (TP-226).
+
+    `conditions.weather`(사용자가 발화에서 말한 값)가 아니라 조회한 예보를 쓴다 —
+    비 오는 날 20분을 걷게 할지는 말한 적 없는 사용자에게도 판단해야 한다.
+
+    판정(좋다/나쁘다)은 옮기지 않는다. D-051대로 사실만 넘기고, 그 사실을 어떻게
+    읽을지는 판정하는 쪽이 정한다. `resolve_weather_condition()`이 만드는
+    WeatherCondition을 쓰지 않는 것도 같은 이유다 — 그건 "이 날씨가 이 사용자
+    목적에 맞는가"라는 다른 질문의 답이다.
+    """
+
+    weather = tool_context.weather
+    if weather is None or weather.status not in {"success", "partial"}:
+        return None
+    data = weather.data
+    if data is None:
+        return None
+    return SegmentWeather(
+        precipitation=data.precipitation,
+        sky=data.sky,
+        temperature_celsius=data.temperature_celsius,
+    )
+
+
 def _build_travel_candidates(
     candidates: list[RecommendationItem],
     places: list[PlaceCandidate],
@@ -1900,6 +1932,231 @@ def _paired_parking_question_type(info: InfoPayload | None) -> str | None:
     if info is None:
         return None
     return _PARKING_QUESTION_TYPE_PAIRS.get(info.question_type)
+
+
+# 서울시 실시간 도시데이터(인구 121목록 공용)와 실시간 상권(82목록)이 각각 폐쇄된
+# 지원 지역 목록을 쓴다(seoul_realtime_areas.py) — 두 목록 다 좌표 최근접 1곳만
+# 보고 그 밖이면 no_data로 끝나, "그 지역엔 없음 → 다른 지역은?"을 되묻기 없이
+# 스스로 해볼 경로가 없었다(로드맵 24번). 대상은 이 6종 — 상권은
+# agent_context.service._REALTIME_CITYDATA_QUESTION_TYPES에 없지만 같은 문제라
+# 여기 합쳐 다룬다.
+_AGENTIC_REALTIME_QUESTION_TYPES = frozenset(
+    {
+        QuestionType.REALTIME_PARKING.value,
+        QuestionType.REALTIME_PUBLIC_PARKING.value,
+        QuestionType.REALTIME_SUBWAY.value,
+        QuestionType.REALTIME_BUS.value,
+        QuestionType.REALTIME_EVENT.value,
+        QuestionType.REALTIME_TRAFFIC.value,
+        QuestionType.REALTIME_COMMERCIAL.value,
+    }
+)
+
+# LLM이 다른 지역명으로 재시도할 수 있는 최대 횟수(자동 함수 호출 상한). 90강
+# 04절의 반복 한계와 같은 안전장치 — 무한정 넓히면 엉뚱한 지역까지 뒤진다.
+_AGENTIC_REALTIME_MAX_TOOL_CALLS = 3
+
+
+def _describe_realtime_attempt(response: InfoContextResponse, area_name: str) -> str:
+    """C 응답 하나를 LLM이 읽고 판단할 수 있는 한국어 문장으로 편다.
+
+    LLM이 이 문장을 보고 "이 지역엔 있다/없다"를 판단해 다음 행동(다른 지역
+    재시도 또는 최종 답변 작성)을 정하므로, 성공 시엔 실제 값을 담고 실패 시엔
+    사유를 담는다 — 24강 04절의 "예외 대신 안내 문자열" 원칙과 같다.
+    """
+
+    if response.status == "needs_clarification":
+        # place_ambiguous — "강남"처럼 넓은 지명이라 후보가 여럿이다. 여기서 곧장
+        # 사용자에게 되묻지 않는다 — 후보를 그대로 LLM에게 보여줘서 그중 하나로
+        # 스스로 재시도하게 한다(agent_runtime.py의 기존 place_ambiguous 되묻기는
+        # LLM이 끝내 못 고를 때만 최후 수단으로 살아 있다).
+        candidates = response.clarification.candidates if response.clarification else []
+        if candidates:
+            names = ", ".join(candidates[:5])
+            return (
+                f"'{area_name}'은(는) 범위가 넓어 여러 곳으로 해석돼요. 후보: {names}. "
+                "이 중 사용자 질문과 가장 관련 있어 보이는 곳으로 다시 조회해보세요."
+            )
+        return f"'{area_name}'가 정확히 어디인지 확인하지 못했어요."
+    result = response.result
+    if response.status != "success" or result is None:
+        return f"'{area_name}'에서는 관련 정보를 찾지 못했어요."
+    if isinstance(result, RealtimeCityInfoResult):
+        if not result.fields:
+            return f"'{area_name}'에서는 관련 정보를 찾지 못했어요."
+        details = "; ".join(f"{key}: {value}" for key, value in result.fields.items())
+        return f"'{area_name}'({result.area_name}) 기준 정보: {details}"
+    if isinstance(result, RealtimeCommercialInfoResult):
+        parts = [
+            part
+            for part in (
+                f"업종: {result.category_label}" if result.category_label else None,
+                f"상권 활동 수준: {result.commercial_level}" if result.commercial_level else None,
+                (
+                    f"인구 혼잡도: {result.population_current_level}"
+                    if result.population_current_level
+                    else None
+                ),
+            )
+            if part is not None
+        ]
+        if not parts:
+            return f"'{area_name}'에서는 관련 정보를 찾지 못했어요."
+        return f"'{area_name}'({result.area_name}) 기준 상권 정보: " + "; ".join(parts)
+    return f"'{area_name}'에서는 관련 정보를 찾지 못했어요."
+
+
+async def _fetch_realtime_info_agentic(
+    info_request: InfoContextRequest,
+    *,
+    llm: LLMProvider,
+    tool_provider: ToolProvider,
+) -> tuple[InfoContextResponse, str]:
+    """로드맵 24번: no_data를 곧장 되묻는 대신, LLM이 스스로 다른 지역명으로
+    재조회해보고 최종 답변 문장까지 직접 쓰게 한다(강의교재 90강 자기 교정 에이전트).
+
+    C(`fetch_info_context`)는 손대지 않는다 — A가 place_name만 바꿔가며 여러 번
+    부른다. 지역 해석·서울시 폐쇄목록 매칭·카드 포맷팅은 기존 로직을 그대로
+    재사용한다. 최대 호출 수는 `answer_with_tools`의 SDK 자동 함수 호출이 막는다
+    (`_AGENTIC_REALTIME_MAX_TOOL_CALLS`) — 전부 실패하면 마지막 시도의 no_data
+    응답을 그대로 최종 응답으로 쓴다.
+    """
+
+    attempts: list[InfoContextResponse] = []
+
+    async def _try_area(area_name: str, *, question_type: str) -> InfoContextResponse:
+        # request_id도 새로 발급한다 — 원래 요청 것을 그대로 재사용하면 두 번째
+        # 시도부터 트레이스 기록이 같은 id로 충돌한다(실측: 재시도가 매번 "시스템
+        # 오류"로 실패).
+        candidate_request = info_request.model_copy(
+            update={
+                "request_id": new_trace_id(),
+                "place_name": area_name,
+                "place_context": "explicit",
+                "question_type": question_type,
+            }
+        )
+        response = await tool_provider.fetch_info_context(candidate_request)
+        attempts.append(response)
+        return response
+
+    async def get_realtime_population_data(area_name: str) -> str:
+        """서울시 실시간 도시데이터(주차·지하철·버스·행사·도로소통) 지원 지역
+        한 곳을 조회한다.
+
+        area_name: 정확한 지역명(예: '강남역', '홍대입구역'). 지원 지역이 아니면
+        그 사실만 알려주니, 원래 질문과 관련된 다른 근처 지역명으로 다시
+        시도해본다."""
+
+        response = await _try_area(area_name, question_type=info_request.question_type)
+        return _describe_realtime_attempt(response, area_name)
+
+    async def get_realtime_commercial_data(area_name: str) -> str:
+        """서울시 실시간 상권현황(업종별 소비 활동 수준) 지원 지역 한 곳을
+        조회한다.
+
+        area_name: 정확한 지역명. 지원 지역이 아니면 그 사실만 알려준다."""
+
+        response = await _try_area(area_name, question_type="realtime_commercial")
+        return _describe_realtime_attempt(response, area_name)
+
+    # google-genai의 automatic function calling이 파이썬 함수 하나하나를 스키마로
+    # 바꿀 때, 파일 전체에 걸린 `from __future__ import annotations` 때문에
+    # `__annotations__`가 실제 타입이 아니라 문자열("str")로 남아 있으면
+    # `isinstance(값, "str")`을 그대로 시도해 TypeError로 죽는다(실측: 두 도구
+    # 호출 모두 "isinstance() arg 2 must be a type..."로 실패하고, LLM은 그 실패를
+    # "시스템 오류"로 뭉뚱그려 답했다). `get_type_hints()`로 실제 타입 객체를
+    # 되돌려 넣어야 한다.
+    get_realtime_population_data.__annotations__ = get_type_hints(get_realtime_population_data)
+    get_realtime_commercial_data.__annotations__ = get_type_hints(get_realtime_commercial_data)
+
+    original_place_name = info_request.place_name or "요청하신 지역"
+    # TODO(팀 리뷰 후): 다른 답변 생성 프롬프트처럼 Markdown 파일 + meta.yaml로 정식
+    # 프롬프트 자산화한다. 지금은 실험 단계(기본 off, 아직 develop에 안 올림)라
+    # 인라인 문자열로 둔다. 페르소나·엄격한 문장 수·마크다운 전면 금지를 한 번
+    # 넣어봤는데 답이 고객센터 템플릿처럼 딱딱해져서(실사용 확인, 2026-09-03) 뺐다 —
+    # 자유롭게 서술하게 두는 편이 이 에이전트다운 답을 만든다.
+    instruction = (
+        "너는 서울 실시간 정보 안내 비서다. 사용자가 실시간 정보를 물었지만 "
+        f"'{original_place_name}' 지역엔 데이터가 없거나, 범위가 넓어 여러 후보로 "
+        "해석될 수 있다. 가진 도구로 조회해보고, 없으면 근처의 잘 알려진 다른 "
+        "지역명으로 다시 시도해봐라. 도구가 '여러 곳으로 해석된다'며 후보 목록을 "
+        "주면, 사용자에게 되묻지 말고 그중 질문과 가장 관련 있어 보이는 곳(보통 "
+        "대표 지하철역이나 랜드마크)을 스스로 골라 다시 조회해봐라.\n"
+        "도구 결과로 확인되지 않은 사실은 지어내지 말고, 찾은 지역이 원래 물어본 "
+        "곳과 다르면 그 사실을 답변에 자연스럽게 밝혀라. 도구 결과에 있는 구체적인 "
+        "수치·이름·거리·시간은 최대한 활용해서 친절하게 설명하고, 강조하고 싶은 "
+        "부분엔 **굵게**나 목록처럼 마크다운을 적절히 써도 좋다. 목록은 중첩하지 "
+        "말고 각 항목을 '이름: 값' 형태로 한 줄에 담아라. 아무 데서도 못 찾았으면 "
+        "그렇다고 솔직히 답하되, 빈 답변으로 끝내지는 마라.\n"
+        f"사용자 질문: {info_request.specific_question or '해당 지역의 실시간 정보를 알려줘'}"
+    )
+    result = await llm.answer_with_tools(
+        instruction,
+        tools=[get_realtime_population_data, get_realtime_commercial_data],
+        max_tool_calls=_AGENTIC_REALTIME_MAX_TOOL_CALLS,
+    )
+    successful = next(
+        (response for response in reversed(attempts) if response.status == "success"), None
+    )
+    if successful is not None:
+        final_response = successful
+    elif attempts:
+        final_response = attempts[-1]
+    else:
+        # 도구가 한 번도 호출되지 않았다(LLM이 곧장 "모른다"고 답한 경우) — 원래
+        # 지역으로라도 조회해 기존 no_data 응답 형태를 유지한다.
+        final_response = await tool_provider.fetch_info_context(info_request)
+    agent_message = result.data.strip()
+    if not agent_message:
+        # 실측: 도구를 한 번 불러보고 no_data를 받은 뒤 최종 문장 없이 빈 텍스트로
+        # 끝내는 경우가 있다(자동 함수 호출 + 빈 마무리 턴). 빈 말풍선을 보내는
+        # 대신 사람이 읽기 좋은 형태로 다시 포맷한 안내 문장을 채운다.
+        fallback_area_name = getattr(final_response.result, "area_name", None)
+        agent_message = _format_realtime_result_for_user(
+            final_response, fallback_area_name or original_place_name
+        )
+    return final_response, agent_message
+
+
+def _format_realtime_result_for_user(response: InfoContextResponse, area_name: str) -> str:
+    """LLM이 최종 문장을 안 써줬을 때 쓰는 안전장치 문구를 사람이 읽기 좋게 만든다.
+
+    `_describe_realtime_attempt()`는 LLM이 다음 행동을 판단하는 내부용이라 대괄호·
+    가운뎃점 같은 축약 표기를 쓴다 — 그걸 사용자에게 그대로 보내면 다듬어지지 않은
+    느낌을 준다(실사용 확인, 2026-09-03). 이 함수는 같은 데이터를 문장·목록으로
+    다시 풀어 쓴다.
+    """
+
+    result = response.result
+    if response.status != "success" or result is None:
+        return (
+            f"{area_name} 근처에서는 관련 정보를 찾지 못했어요. 다른 지역이나 "
+            "표현으로 다시 물어봐 주시면 다시 찾아볼게요."
+        )
+    if isinstance(result, RealtimeCityInfoResult) and result.fields:
+        items = "\n".join(f"- {name}: {detail}" for name, detail in result.fields.items())
+        return f"{area_name} 근처 정보를 확인했어요.\n\n{items}"
+    if isinstance(result, RealtimeCommercialInfoResult):
+        parts = [
+            part
+            for part in (
+                f"업종은 {result.category_label}" if result.category_label else None,
+                f"상권 활동 수준은 {result.commercial_level}" if result.commercial_level else None,
+                (
+                    f"인구 혼잡도는 {result.population_current_level}"
+                    if result.population_current_level
+                    else None
+                ),
+            )
+            if part is not None
+        ]
+        if parts:
+            return f"{area_name} 근처 상권 정보를 확인했어요. " + ", ".join(parts) + "예요."
+    return (
+        f"{area_name} 근처에서는 관련 정보를 찾지 못했어요. 다른 지역이나 표현으로 "
+        "다시 물어봐 주시면 다시 찾아볼게요."
+    )
 
 
 def _to_geo_coordinate(location: str | None) -> GeoCoordinate | None:
@@ -2871,7 +3128,19 @@ async def _run_agent_flow(
             "장소 상세 정보를 찾고 있어요.",
         )
         info_started_at = time.monotonic()
-        info_response = await tool_provider.fetch_info_context(info_request)
+        # 로드맵 24번(A-1/A-2 후속): no_data를 곧장 되묻는 대신 LLM이 스스로 다른
+        # 지역명으로 재시도하게 하는 경로. 기본 off — settings.agentic_realtime_info
+        # 참고.
+        agentic_realtime_message: str | None = None
+        if (
+            settings.agentic_realtime_info
+            and info_request.question_type in _AGENTIC_REALTIME_QUESTION_TYPES
+        ):
+            info_response, agentic_realtime_message = await _fetch_realtime_info_agentic(
+                info_request, llm=llm, tool_provider=tool_provider
+            )
+        else:
+            info_response = await tool_provider.fetch_info_context(info_request)
         info_execution = build_info_concentration_execution_debug(
             info_response,
             latency_ms=int((time.monotonic() - info_started_at) * 1000),
@@ -2969,15 +3238,20 @@ async def _run_agent_flow(
             # place_ambiguous는 INFO 자신의 되묻기라 INFO가 정리할 책임이 있다.
             _remember_clarification(state_response.session_id, None, store)
 
-        message = await compose_chat_message(
-            llm_output,
-            info_response=info_response,
-            llm=llm,
-            info_walking_route=info_walking_route,
-            info_walking_origin_available=info_origin_location is not None,
-            on_message_delta=(emit_info_message_delta if stream_info_message else None),
-            history=turn_history,
-        )
+        if agentic_realtime_message is not None:
+            # 에이전트가 이미 도구 결과를 종합해 최종 문장을 직접 썼다 — 별도
+            # compose_chat_message() 합성을 다시 거치지 않는다(사용자 결정).
+            message = agentic_realtime_message
+        else:
+            message = await compose_chat_message(
+                llm_output,
+                info_response=info_response,
+                llm=llm,
+                info_walking_route=info_walking_route,
+                info_walking_origin_available=info_origin_location is not None,
+                on_message_delta=(emit_info_message_delta if stream_info_message else None),
+                history=turn_history,
+            )
 
         secondary_info_place_card = None
         paired_question_type = _paired_parking_question_type(llm_output.info)
@@ -3415,6 +3689,11 @@ async def _fetch_tool_context(
     # 마지막 run에서 보여준 place_id. 새 SCHEDULE 턴에서 제외 목록을 되살리는 데만
     # 쓴다(TP-180). 조회 단계에서 이미 걸러지면 채점 단계에는 후보 자체가 없다.
     shown_place_ids: Sequence[str] = (),
+    # A-1(자기 교정 루프): no_data_empty 1차 재시도에서 그래프가 넘겨준다. 값이 있으면
+    # C에 보내기 전에 max_travel_time을 이 값으로 덮어써 반경을 넓힌다 — 수동
+    # "검색 범위 넓히기" 버튼(_WIDEN_RADIUS)과 같은 처방을 사람 개입 없이 먼저 한 번
+    # 시도하는 것뿐이라, 값 자체는 기존 _WIDEN_RADIUS_MAX_TRAVEL_TIME을 그대로 쓴다.
+    radius_override_max_travel_time: int | None = None,
     stream_event_sink: StreamEventSink | None,
 ) -> _ToolFetchOutcome:
     """A → C Tool 조회와 종료 상태 판정(5단계).
@@ -3422,7 +3701,8 @@ async def _fetch_tool_context(
     `run_agent_flow()`의 5단계 블록을 그대로 옮긴 것이다 — 라우팅 그래프가 이 단계를
     노드로 감쌀 수 있게 먼저 함수로 떼어냈다(langgraph-adoption.md §6.1 3단계).
     떼어낼 당시에는 본문을 한 줄도 바꾸지 않고 중간 반환만 `_ToolFetchOutcome`으로
-    포장했다. 이후 TP-180으로 C에 넘기는 제외 목록을 고르는 한 줄이 붙었다.
+    포장했다. 이후 TP-180으로 C에 넘기는 제외 목록을 고르는 한 줄과, A-1의 반경
+    확대 재시도(radius_override_max_travel_time)가 붙었다.
     """
 
     # 5) A → C: Tool 결과 확보 (Protocol을 통해서만 — C의 구체 클래스는 여기서 모른다).
@@ -3431,6 +3711,10 @@ async def _fetch_tool_context(
     #    (3단계 good/neutral/bad, Provider 정규화 값)는 여기 관여하지 않는다. GPS는
     #    사용자 조건과 별도 인자로 전달되어 Coordinates로 변환된다(계약 §5.2).
     agent_conditions = to_user_conditions(state_response.user_conditions)
+    if radius_override_max_travel_time is not None:
+        agent_conditions = agent_conditions.model_copy(
+            update={"max_travel_time": radius_override_max_travel_time}
+        )
     # 이번 요청의 유효한 GPS를 우선하고, 없으면 B에 저장된 신선한 GPS를 재사용한다.
     # 문자열은 A→C 변환 경계에서 Coordinates로 바뀌며 C는 원본 문자열을 알지 않는다.
     context_gps = valid_gps
@@ -4165,6 +4449,7 @@ async def _run_schedule_branch(
             travel_candidates=_build_travel_candidates(
                 schedule_candidates, places, fallback_coordinates=snapshot_coordinates
             ),
+            weather=_segment_weather(tool_context),
         )
         await _emit_progress(
             stream_event_sink,
@@ -4196,6 +4481,7 @@ async def _run_schedule_branch(
             travel_candidates=_build_travel_candidates(
                 schedule_candidates, places, fallback_coordinates=snapshot_coordinates
             ),
+            weather=_segment_weather(tool_context),
         )
         await _emit_progress(
             stream_event_sink,

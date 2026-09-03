@@ -28,6 +28,7 @@ from app.services.runtime.graph.nodes.pipeline import (
     schedule_node,
     scoring_node,
     tool_fetch_node,
+    widen_search_retry_node,
 )
 from app.services.runtime.graph.nodes.static_answer import static_answer_node
 from app.services.runtime.graph.pipeline_state import RecommendPipelineState
@@ -35,6 +36,7 @@ from app.services.runtime.graph.routing import (
     ROUTE_DONE,
     ROUTE_FINALIZE,
     ROUTE_GENERAL,
+    ROUTE_RETRY_TOOL_FETCH,
     ROUTE_SCHEDULE,
     ROUTE_SCORING,
     ROUTE_STATIC,
@@ -413,27 +415,39 @@ async def run_early_return_graph(
 
 
 def build_recommend_pipeline_graph():
-    """추천 파이프라인 그래프를 조립한다(3단계).
+    """추천 파이프라인 그래프를 조립한다(3단계, A-1로 자기 교정 사이클 추가).
 
     ```
-    START → [tool_fetch] → ◇route_after_tool_fetch
-                              ├─ done    →────────────────┐  (C가 되묻기/no_data로 끝냄)
-                              └─ scoring → [scoring]      │
-                                              ↓            │
-                                     ◇route_after_scoring  │
-                                       ├─ schedule → [schedule] ┤
-                                       └─ finalize → [finalize] ┤
-                                                                ↓
-                                                               END
+    START → [tool_fetch] ←────────────────────┐ (반경 넓혀 재조회)
+              ↓                                │
+       ◇route_after_tool_fetch                 │
+         ├─ retry_tool_fetch → [widen_search_retry] ┘
+         ├─ done    →────────────────┐  (그래도 no_data거나, no_data_empty가 아님)
+         └─ scoring → [scoring]      │
+                         ↓            │
+                ◇route_after_scoring  │
+                  ├─ schedule → [schedule] ┤
+                  └─ finalize → [finalize] ┤
+                                           ↓
+                                          END
     ```
 
-    갈림길이 둘 생겼다 — 조기 반환 그래프(`build_early_return_graph`)와 달리 여기는
-    단계가 순차로 이어지는 파이프라인이라, 조건부 엣지는 "중간에 끝나는가"와
-    "SCHEDULE인가" 두 판정에만 쓴다(§9.8).
+    `tool_fetch`↔`widen_search_retry` 사이클이 A-1(자기 교정 루프)이다 — no_data_empty
+    (반경 안에 후보가 아예 없음)면 곧장 사용자에게 되묻는 대신, 반경을 한 번 넓혀
+    스스로 다시 조회해보고 그래도 없을 때만 되묻는다(route_after_tool_fetch·
+    `_MAX_TOOL_FETCH_RETRIES`가 재시도를 1회로 막아 무한 루프를 막는다). "부족하면
+    스스로 다시 찾아본다"는 강의교재 90강의 자기 교정과 같은 결이지만, 범위는 이미
+    있던 "검색 범위 넓히기" 되묻기 버튼(`_WIDEN_RADIUS`)이 사람 개입 없이 자동으로
+    한 번 먼저 실행되는 것뿐이라 새 도구·새 되묻기 문구를 만들지 않는다.
+
+    나머지 갈림길(중간에 끝나는가·SCHEDULE인가)은 그대로다 — 조기 반환 그래프
+    (`build_early_return_graph`)와 달리 여기는 단계가 순차로 이어지는 파이프라인이라
+    조건부 엣지를 최소한으로 쓴다(§9.8).
     """
 
     graph = StateGraph(RecommendPipelineState)
     graph.add_node("tool_fetch", _observed("tool_fetch", tool_fetch_node, _summarize_tool_fetch))
+    graph.add_node("widen_search_retry", _observed("widen_search_retry", widen_search_retry_node))
     graph.add_node("scoring", _observed("scoring", scoring_node, _summarize_scoring))
     graph.add_node("schedule", _observed("schedule", schedule_node))
     graph.add_node("finalize", _observed("finalize", finalize_node, _summarize_finalize))
@@ -442,8 +456,13 @@ def build_recommend_pipeline_graph():
     graph.add_conditional_edges(
         "tool_fetch",
         route_after_tool_fetch,
-        {ROUTE_DONE: END, ROUTE_SCORING: "scoring"},
+        {
+            ROUTE_DONE: END,
+            ROUTE_SCORING: "scoring",
+            ROUTE_RETRY_TOOL_FETCH: "widen_search_retry",
+        },
     )
+    graph.add_edge("widen_search_retry", "tool_fetch")
     graph.add_conditional_edges(
         "scoring",
         route_after_scoring,

@@ -116,8 +116,8 @@ async def test_plan_schedule_fills_basis_note_from_visit_datetime() -> None:
     result = await plan_schedule(request, llm)
 
     assert result.basis_note == (
-        "이 정보는 현재시각(15:30) 기준으로 계산됐어요. "
-        "실제 방문 시간에는 운영시간·날씨 상황이 달라질 수 있어요."
+        "15:30 기준으로 짠 일정이에요. "
+        "실제로 가시는 시간에는 운영시간이나 날씨가 달라질 수 있어요."
     )
     assert [item.place_id for item in result.items] == [
         item.place_id for item in _sample_plan().items
@@ -193,11 +193,11 @@ async def test_plan_schedule_normalizes_inconsistent_empty_plan() -> None:
     assert result.items == []
     assert result.total_duration_min == 0
     assert result.route_summary == (
-        "조건에 맞는 곳을 충분히 찾지 못해 일정을 만들지 못했어요. "
-        "다른 지역이나 다른 종류의 장소로 다시 요청해볼까요?"
+        "일정을 짤 만한 곳을 충분히 찾지 못했어요. "
+        "지역을 조금 넓히거나 다른 종류의 장소로 다시 말씀해 주세요."
     )
     # basis_note는 items 유무와 무관하게 계속 채워진다
-    assert "현재시각(15:00)" in result.basis_note
+    assert result.basis_note.startswith("15:00 기준으로")
     assert result.elapsed_ms >= 0
 
 
@@ -303,11 +303,11 @@ class TestPlanScheduleSkipsLLMWhenCandidatesTooFew:
         assert result.items == []
         assert result.total_duration_min == 0
         assert result.route_summary == (
-            "조건에 맞는 곳을 충분히 찾지 못해 일정을 만들지 못했어요. "
-            "다른 지역이나 다른 종류의 장소로 다시 요청해볼까요?"
+            "일정을 짤 만한 곳을 충분히 찾지 못했어요. "
+            "지역을 조금 넓히거나 다른 종류의 장소로 다시 말씀해 주세요."
         )
         assert result.elapsed_ms >= 0
-        assert "현재시각(15:00)" in result.basis_note
+        assert result.basis_note.startswith("15:00 기준으로")
 
     @pytest.mark.asyncio
     async def test_llm_called_when_exactly_three_candidates(self) -> None:
@@ -415,8 +415,8 @@ class TestPlanScheduleFlagsClosedStops:
         result = await plan_schedule(request, llm)
 
         assert result.items[0].warnings == [
-            "운영시간(09:00~18:00) 기준으로 도착 예정 시각(19:00)엔 운영 중이 아닐 수 있어요. "
-            "방문 전에 다시 확인해주세요."
+            "19:00 도착 예정인데 이곳은 09:00~18:00 운영이에요. "
+            "가시기 전에 한 번 확인해 주세요."
         ]
         assert result.items[1].warnings == []
         assert result.items[2].warnings == []
@@ -543,14 +543,14 @@ class TestPlanPartialSchedule:
 
         assert [item.place_id for item in result.items] == ["place-1", "place-2", "place-3"]
         assert [item.order for item in result.items] == [1, 2, 3]
-        assert result.route_summary == "2곳은 그대로 유지하고 1곳을 새로운 장소로 바꿨어요."
+        assert result.route_summary == "2곳은 그대로 두고 1곳만 다른 곳으로 바꿨어요."
         # 이동시간은 이번 순서 기준으로 전부 다시 계산된다(TP-215) — 예전처럼
         # stale한 값을 None으로 무효화하고 넘어가지 않는다. 거리 정보가 없으므로
         # 구간마다 폴백(15분)이 들어가고, 마지막 항목만 None이다.
         assert [item.travel_to_next_min for item in result.items] == [15, 15, None]
         # 체류 60분 x 3 + 이동 15분 x 2
         assert result.total_duration_min == 210
-        assert "현재시각(15:00)" in result.basis_note
+        assert result.basis_note.startswith("15:00 기준으로")
         assert result.elapsed_ms >= 0
 
     @pytest.mark.asyncio
@@ -701,7 +701,7 @@ class TestPlanPartialSchedule:
 
         assert llm.call_count == 0
         assert [item.place_id for item in result.items] == ["place-1", "place-3"]
-        assert "그대로 유지" in result.route_summary
+        assert "그대로 뒀어요" in result.route_summary
         assert result.elapsed_ms >= 0
 
     @pytest.mark.asyncio
@@ -1075,7 +1075,10 @@ async def test_must_include_over_item_cap_is_trimmed_in_saved_order() -> None:
 
     assert llm.received_request is not None
     assert llm.received_request.must_include_place_ids == ["place-1", "place-2"]
-    assert result.omitted_saved_place_names == ["장소 place-3"]
+    # 상한 자르기는 omitted(동선 누락)와 다른 필드로 나간다 — 사용자가 할 수 있는
+    # 일이 다르다("보관함에서 다른 곳을 빼면 들어간다"가 여기서만 확정적으로 참). TP-223
+    assert result.over_capacity_place_names == ["장소 place-3"]
+    assert result.omitted_saved_place_names == []
 
 
 @pytest.mark.asyncio
@@ -1100,11 +1103,15 @@ async def test_must_include_missing_triggers_one_retry() -> None:
 
 
 @pytest.mark.asyncio
-async def test_must_include_missing_after_retry_keeps_result_and_reports() -> None:
-    """재시도 후에도 빠지면 502로 죽이지 않고 결과를 살리되 이름을 실어 보낸다.
+async def test_must_include_missing_after_retry_keeps_result() -> None:
+    """재시도 후에도 빠지면 502로 죽이지 않고 결과를 살린다.
 
     plan_partial_schedule()의 하드 실패와 다른 선택이다 — 저쪽은 유지해야 할
     기존 일정이 걸려 있지만, 보관함은 부분 성공이 전체 실패보다 낫다.
+
+    **살린 결과를 그대로 내보내지는 않는다**(TP-223). LLM이 담아둔 곳 대신 담지
+    않은 곳을 넣었으므로 그 자리를 되돌린다 — 되돌릴 자리조차 없을 때만 이름을
+    실어 안내한다(`Test밀려난_보관함_장소_되돌리기`).
     """
     llm = _SequenceLLM(_plan_of("place-1", "place-2", "place-3"))
     request = SchedulePlanningRequest(
@@ -1117,8 +1124,13 @@ async def test_must_include_missing_after_retry_keeps_result_and_reports() -> No
     result = await plan_schedule(request, llm)
 
     assert llm.call_count == 2
-    assert result.items != []
-    assert result.omitted_saved_place_names == ["장소 place-9"]
+    # 첫 낯선 자리가 담아둔 곳으로 바뀌고 나머지 자리는 그대로다.
+    assert [item.place_id for item in result.items] == [
+        "place-9",
+        "place-2",
+        "place-3",
+    ]
+    assert result.omitted_saved_place_names == []
 
 
 @pytest.mark.asyncio
@@ -1211,7 +1223,7 @@ class TestPlanScheduleRejectsUnknownPlaceIds:
 
         assert result.items == []
         assert result.total_duration_min == 0
-        assert "찾지 못해" in result.route_summary
+        assert "찾지 못했어요" in result.route_summary
 
     @pytest.mark.asyncio
     async def test_부분_재편성에서는_하드_실패한다(self) -> None:
@@ -1556,3 +1568,226 @@ class Test구간_표기_배선:
             None,
         ]
         assert all(item.travel_to_next_measured is False for item in result.items)
+
+
+class Test제외_사유_분리:
+    """빠진 이유와 새로 들어온 것을 사유별로 갈라 내보낸다. (TP-223)
+
+    담지 않은 장소가 빈 자리를 채우는 것 자체는 설계된 동작이다
+    (prompts/schedule/plan.md — "남는 자리를 다른 후보로 채우세요"). 말하지 않으면
+    사용자에게는 끼어든 것으로 보여 버그로 신고된다.
+    """
+
+    @pytest.mark.asyncio
+    async def test_담지_않은_장소가_들어가면_이름을_알린다(self) -> None:
+        llm = _RecordingLLM(_plan_of("place-1", "place-2", "place-3"))
+        request = SchedulePlanningRequest(
+            candidates=_three_candidates(),
+            must_include_place_ids=["place-1"],
+            conditions=UserConditions(),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, llm)
+
+        assert result.added_place_names == ["장소 place-2", "장소 place-3"]
+
+    @pytest.mark.asyncio
+    async def test_보관함을_안_쓴_턴에는_비어_있다(self) -> None:
+        """그때는 모든 장소가 새로 찾은 곳이라 알릴 내용이 아니다."""
+
+        llm = _RecordingLLM(_plan_of("place-1", "place-2", "place-3"))
+        request = SchedulePlanningRequest(
+            candidates=_three_candidates(),
+            conditions=UserConditions(),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, llm)
+
+        assert result.added_place_names == []
+
+    @pytest.mark.asyncio
+    async def test_상한으로_잘린_보관함_장소는_새로_찾은_곳이_아니다(self) -> None:
+        """자르기 **전** 목록과 비교해야 한다.
+
+        time_available=100분이면 상한이 2곳이라 must_include는 place-1·place-2로
+        줄지만, LLM이 잘린 place-3을 고르면 그 곳은 사용자가 담아둔 곳이다.
+        줄어든 목록과 비교하면 "새로 찾아 넣었어요"라고 거짓말을 하게 된다.
+        """
+
+        llm = _SequenceLLM(
+            _plan_of("place-1", "place-3"),
+            _plan_of("place-1", "place-3"),
+        )
+        request = SchedulePlanningRequest(
+            candidates=_three_candidates(),
+            must_include_place_ids=["place-1", "place-2", "place-3"],
+            conditions=UserConditions(time_available=100),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, llm)
+
+        assert result.added_place_names == []
+
+    @pytest.mark.asyncio
+    async def test_상한_초과와_동선_누락이_서로_다른_필드로_나간다(self) -> None:
+        """해결책이 다르다 — 상한은 "다른 곳을 빼면 들어간다"가 확정적으로 참이다."""
+
+        llm = _SequenceLLM(
+            _plan_of("place-1", "place-3"),
+            _plan_of("place-1", "place-3"),
+        )
+        request = SchedulePlanningRequest(
+            candidates=_three_candidates(),
+            must_include_place_ids=["place-1", "place-2", "place-3"],
+            conditions=UserConditions(time_available=100),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, llm)
+
+        # place-3은 상한으로 잘렸고, place-2는 재시도 후에도 LLM이 빠뜨렸다.
+        assert result.over_capacity_place_names == ["장소 place-3"]
+        assert result.omitted_saved_place_names == ["장소 place-2"]
+
+    @pytest.mark.asyncio
+    async def test_일정을_못_짠_턴에도_상한_초과는_알린다(self) -> None:
+        """담아둔 곳이 왜 안 보이는지는 일정이 나왔든 아니든 똑같이 궁금하다."""
+
+        # 후보에 없는 id만 오면 _drop_unknown_places()가 전부 버려 items가 빈다
+        # (ScheduleLLMPlan은 min_length=1이라 빈 배열을 직접 만들 수 없다).
+        llm = _SequenceLLM(_plan_of("place-999"), _plan_of("place-999"))
+        request = SchedulePlanningRequest(
+            candidates=_three_candidates(),
+            must_include_place_ids=["place-1", "place-2", "place-3"],
+            conditions=UserConditions(time_available=100),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, llm)
+
+        assert result.items == []
+        assert result.over_capacity_place_names == ["장소 place-3"]
+
+
+class Test밀려난_보관함_장소_되돌리기:
+    """담지 않은 장소가 차지한 자리는 밀려난 보관함 장소에게 돌려준다. (TP-223)
+
+    항목 수가 상한 이하인데 담아둔 곳이 빠지고 안 담은 곳이 들어갔다면, 그것은
+    "자리가 없어서"가 아니라 "자리를 남에게 줬다"는 뜻이다.
+    """
+
+    @staticmethod
+    def _four_candidates() -> list[RecommendationItem]:
+        return [_candidate(f"place-{index}") for index in (1, 2, 3, 4)]
+
+    @pytest.mark.asyncio
+    async def test_낯선_장소_자리를_되돌린다(self) -> None:
+        # 보관함 [1,2], LLM은 place-2를 빼고 담지 않은 place-4를 넣는다(재시도해도 동일).
+        llm = _SequenceLLM(
+            _plan_of("place-1", "place-4"),
+            _plan_of("place-1", "place-4"),
+        )
+        request = SchedulePlanningRequest(
+            candidates=self._four_candidates(),
+            must_include_place_ids=["place-1", "place-2"],
+            conditions=UserConditions(),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, llm)
+
+        assert [item.place_id for item in result.items] == ["place-1", "place-2"]
+        # 자리 수는 그대로다 — 되돌리기지 삭제가 아니다.
+        assert len(result.items) == 2
+        assert result.omitted_saved_place_names == []
+        assert result.added_place_names == []
+
+    @pytest.mark.asyncio
+    async def test_되돌린_자리의_이유를_바꾼다(self) -> None:
+        """LLM이 쓴 문장은 원래 그 자리에 있던 다른 장소를 설명하는 글이다."""
+
+        llm = _SequenceLLM(
+            _plan_of("place-1", "place-4"),
+            _plan_of("place-1", "place-4"),
+        )
+        request = SchedulePlanningRequest(
+            candidates=self._four_candidates(),
+            must_include_place_ids=["place-1", "place-2"],
+            conditions=UserConditions(),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, llm)
+
+        restored = next(item for item in result.items if item.place_id == "place-2")
+        assert restored.reason == "보관함에 담아두신 곳이에요."
+        assert restored.place_name == "장소 place-2"
+
+    @pytest.mark.asyncio
+    async def test_동선_요약도_바꾼다(self) -> None:
+        """LLM 요약은 지금 일정에 없는 장소를 이름으로 언급할 수 있다."""
+
+        llm = _SequenceLLM(
+            _plan_of("place-1", "place-4"),
+            _plan_of("place-1", "place-4"),
+        )
+        request = SchedulePlanningRequest(
+            candidates=self._four_candidates(),
+            must_include_place_ids=["place-1", "place-2"],
+            conditions=UserConditions(),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, llm)
+
+        assert result.route_summary == "담아두신 곳들을 순서대로 이어봤어요."
+
+    @pytest.mark.asyncio
+    async def test_자리가_남아서_들어온_장소는_건드리지_않는다(self) -> None:
+        """밀려난 보관함 장소가 없으면 설계된 동작 그대로다."""
+
+        llm = _RecordingLLM(_plan_of("place-1", "place-2", "place-4"))
+        request = SchedulePlanningRequest(
+            candidates=self._four_candidates(),
+            must_include_place_ids=["place-1", "place-2"],
+            conditions=UserConditions(),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, llm)
+
+        assert [item.place_id for item in result.items] == [
+            "place-1",
+            "place-2",
+            "place-4",
+        ]
+        assert result.added_place_names == ["장소 place-4"]
+        assert result.omitted_saved_place_names == []
+        # 요약을 뺏지 않는다 — 되돌린 자리가 없다.
+        assert result.route_summary != "담아두신 곳들을 순서대로 이어봤어요."
+
+    @pytest.mark.asyncio
+    async def test_되돌릴_자리가_모자라면_나머지는_안내로_남는다(self) -> None:
+        """낯선 자리가 하나뿐인데 밀려난 곳이 둘이면 하나만 되돌아온다."""
+
+        # 보관함 [1,2,3], LLM은 place-1과 낯선 place-4만 준다 → 2·3이 빠졌다.
+        llm = _SequenceLLM(
+            _plan_of("place-1", "place-4"),
+            _plan_of("place-1", "place-4"),
+        )
+        request = SchedulePlanningRequest(
+            candidates=self._four_candidates(),
+            must_include_place_ids=["place-1", "place-2", "place-3"],
+            conditions=UserConditions(),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, llm)
+
+        # 담은 순서로 앞의 것이 먼저 돌아온다 — 자르기와 같은 기준이다.
+        assert [item.place_id for item in result.items] == ["place-1", "place-2"]
+        assert result.omitted_saved_place_names == ["장소 place-3"]
+        assert result.added_place_names == []
