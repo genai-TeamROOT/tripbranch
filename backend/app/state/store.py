@@ -21,9 +21,11 @@ from app.state.schema import (
     FeedbackRecord,
     RecommendationHistory,
     SavedPlaceList,
+    SavedSchedule,
     SessionMessage,
     TraceRecord,
     UserPreferenceList,
+    now_kst,
 )
 
 
@@ -91,6 +93,17 @@ class StateStore(Protocol):
     def get_session_messages(self, session_id: str) -> list[SessionMessage]: ...
     def delete_session_messages(self, session_id: str) -> None: ...
 
+    # --- SavedSchedule (계정 단위, SCHEDULE 카드 2)
+    # UserPreferenceList와 같이 session_id가 아니라 user_id로 조회한다. 세션
+    # TTL·30일 정리와 무관하게 남는다 — 사용자가 이름 붙여 저장한 것이 조용히
+    # 사라지면 그것은 저장이 아니다. 그래서 만료 세션 정리(_delete_one)에도
+    # 넣지 않는다. 계정이 지워질 때 DB의 FK cascade가 걷어간다.
+    def save_schedule(self, schedule: SavedSchedule) -> SavedSchedule: ...
+    def list_schedules_for_user(self, user_id: str, limit: int) -> list[SavedSchedule]: ...
+    def get_schedule(self, schedule_id: str) -> SavedSchedule | None: ...
+    def rename_schedule(self, schedule_id: str, title: str) -> SavedSchedule | None: ...
+    def delete_schedule(self, schedule_id: str) -> bool: ...
+
     # --- FeedbackRecord (append-only)
     def append_feedback(self, records: list[FeedbackRecord]) -> None: ...
     def get_feedback(self, session_id: str) -> list[FeedbackRecord]: ...
@@ -133,6 +146,8 @@ class InMemoryStateStore:
         self._traces: dict[str, list[TraceRecord]] = {}
         self._feedback: dict[str, list[FeedbackRecord]] = {}
         self._session_messages: dict[str, list[SessionMessage]] = {}
+        self._saved_schedules: dict[str, SavedSchedule] = {}
+        self._saved_schedule_seq = 0
 
     # ------------------------------------------------------------ State
 
@@ -242,6 +257,49 @@ class InMemoryStateStore:
     def delete_session_messages(self, session_id: str) -> None:
         self._session_messages.pop(session_id, None)
 
+    # ------------------------------------------------------------ 저장한 일정
+
+    def save_schedule(self, schedule: SavedSchedule) -> SavedSchedule:
+        """저장하고 id가 채워진 것을 돌려준다.
+
+        같은 (user_id, run_id)가 이미 있으면 **새로 만들지 않고 그것을 돌려준다.**
+        DB의 부분 유니크 인덱스와 같은 판단이다 — 저장 버튼을 두 번 누르거나
+        요청이 재시도되면 목록에 같은 일정이 두 줄로 보이는데, 사용자에게 그것은
+        그 자체로 버그다(saved_places.add의 멱등 처리와 같은 이유).
+        """
+        if schedule.run_id is not None:
+            for existing in self._saved_schedules.values():
+                if existing.user_id == schedule.user_id and existing.run_id == schedule.run_id:
+                    return existing.model_copy(deep=True)
+        self._saved_schedule_seq += 1
+        stored = schedule.model_copy(deep=True)
+        stored.id = f"sched_{self._saved_schedule_seq:08d}"
+        self._saved_schedules[stored.id] = stored
+        return stored.model_copy(deep=True)
+
+    def list_schedules_for_user(self, user_id: str, limit: int) -> list[SavedSchedule]:
+        """내 일정을 최근 저장순으로. 남의 것은 애초에 걸리지 않는다."""
+        mine = [s for s in self._saved_schedules.values() if s.user_id == user_id]
+        mine.sort(key=lambda s: s.created_at, reverse=True)
+        return [s.model_copy(deep=True) for s in mine[:limit]]
+
+    def get_schedule(self, schedule_id: str) -> SavedSchedule | None:
+        """**소유권을 여기서 보지 않는다.** 저장소는 행을 돌려주고, 남의 것인지는
+        service가 principal과 대조한다 — 저장소가 신원을 알면 계층이 섞인다."""
+        found = self._saved_schedules.get(schedule_id)
+        return found.model_copy(deep=True) if found else None
+
+    def rename_schedule(self, schedule_id: str, title: str) -> SavedSchedule | None:
+        found = self._saved_schedules.get(schedule_id)
+        if found is None:
+            return None
+        found.title = title
+        found.updated_at = now_kst()
+        return found.model_copy(deep=True)
+
+    def delete_schedule(self, schedule_id: str) -> bool:
+        return self._saved_schedules.pop(schedule_id, None) is not None
+
     # ------------------------------------------------------------ Feedback
 
     def append_feedback(self, records: list[FeedbackRecord]) -> None:
@@ -299,6 +357,8 @@ class InMemoryStateStore:
         self._saved_places.clear()
         self._change_logs.clear()
         self._session_messages.clear()
+        self._saved_schedules.clear()
+        self._saved_schedule_seq = 0
         self._traces.clear()
         self._feedback.clear()
 
