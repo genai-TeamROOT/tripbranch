@@ -153,11 +153,12 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
    * 조건으로 남으면 안 되기 때문이다.
    */
   async function openConversation(sessionId: string) {
-    /* 답변이 오는 중에 다른 대화를 열면 그 답변이 여기 붙는다. 화면을 바꾸기
-       전에 진행 중인 요청을 버린다. */
-    discardChatRequest();
     try {
       const detail = await resumeChatSession(sessionId);
+      /* 답변이 오는 중에 다른 대화를 열면 그 답변이 여기 붙는다. 화면을 바꾸기
+         직전에 진행 중인 요청을 버린다 — **resume이 성공한 뒤다.** 먼저 버리면
+         열기가 실패했을 때 화면은 그대로인데 오던 답변만 사라진다. */
+      discardChatRequest();
       dispatch({ type: "RESTORE_SESSION", payload: detail });
       go("/chat");
     } catch {

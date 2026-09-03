@@ -92,6 +92,10 @@ const server = vi.hoisted(() => ({
       },
     ];
   },
+  /** 켜면 기록이 말풍선보다 모자란 대화를 흉내 낸다(저장이 한 번 실패한 경우). */
+  partialTranscript: false,
+  /** 켜면 지난 대화 열기가 실패한다. */
+  resumeFails: false,
   /** 켜면 streamChat이 응답을 붙들고 있는다 — 답변 대기 중 상황을 만든다. */
   holdStream: false,
   pending: null as ((event: { type: string; data: unknown }) => void) | null,
@@ -110,21 +114,32 @@ vi.mock("../../api/trip", async (importOriginal) => {
        물었을 때 같은 세션에 붙는다. resume의 응답은 항상 resumable: true다. */
     resumeChatSession: async (sessionId: string) => {
       const found = server.sessions.find((item) => item.session_id === sessionId);
-      if (!found) throw new Error("없는 대화");
+      if (!found || server.resumeFails) throw new Error("없는 대화");
       server.resumed.push(sessionId);
       return {
         session_id: sessionId,
         title: found.title,
-        turns: [
-          { user_input: "비 오는데 어디 갈까", assistant_message: "실내를 찾아볼게요", intent: "RECOMMEND", place_names: [], at: "2026-09-03T09:00:00+09:00" },
-        ],
         /* 추천은 그 턴이 기록되기 전에 남는다(실측 평균 97초 먼저). */
         recommendations: [
           { place_id: "p1", run_id: "run_1", name: "국립중앙박물관", rank: 1, distance_km: 1.2, environment_type: "indoor", reason: null, shown_at: "2026-09-03T08:58:23+09:00" },
         ],
         /* 화면 기록. 있으면 화면은 turns/recommendations 대신 이것만 쓴다.
            chat-1에만 둬서 두 경로를 한 파일에서 함께 본다. */
-        messages: sessionId === "chat-1" ? server.transcriptTurns() : [],
+        messages:
+          sessionId === "chat-1"
+            ? server.transcriptTurns()
+            : /* 기록 한 개, 말풍선 두 개 — 저장이 한 번 실패한 대화다. */
+              server.partialTranscript
+              ? [server.transcriptTurns()[0]]
+              : [],
+        turns: server.partialTranscript
+          ? [
+              { user_input: "첫 질문", assistant_message: "첫 답변", intent: "RECOMMEND", place_names: [], at: "2026-09-03T09:00:00+09:00" },
+              { user_input: "빠진 질문", assistant_message: "빠진 답변", intent: "RECOMMEND", place_names: [], at: "2026-09-03T09:05:00+09:00" },
+            ]
+          : [
+              { user_input: "비 오는데 어디 갈까", assistant_message: "실내를 찾아볼게요", intent: "RECOMMEND", place_names: [], at: "2026-09-03T09:00:00+09:00" },
+            ],
         last_active_at: found.last_active_at,
         resumable: true,
       };
@@ -220,6 +235,8 @@ beforeEach(() => {
   server.resumed = [];
   server.chatSessionIds = [];
   server.listCalls = 0;
+  server.partialTranscript = false;
+  server.resumeFails = false;
   server.holdStream = false;
   server.pending = null;
   server.releaseStream = null;
@@ -567,4 +584,62 @@ test("복원한 대화에서 추천 카드가 답변보다 위에 온다", async
   const card = await screen.findByText("국립중앙박물관");
   const answer = screen.getByText("실내를 찾아볼게요");
   expect(card.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+
+/*
+ * 기록 저장이 실패해도 응답은 막지 않는다(그게 맞다). 그래서 턴 하나가 빠진
+ * 기록이 있을 수 있는데, "하나라도 있으면 기록만 쓴다"로 판정하면 그 대화는
+ * **조용히 일부만** 보인다 — 사용자는 자기가 한 말이 사라진 것으로 본다.
+ */
+test("기록이 말풍선보다 모자라면 예전 방식으로 되돌린다", async () => {
+  const user = userEvent.setup();
+  server.partialTranscript = true;
+  await renderApp();
+
+  await user.click(within(sidebar()).getByRole("button", { name: "갑자기 뜬 2시간, 카페 추천 대화 열기" }));
+
+  /* 기록에 없던 턴까지 나온다 — 저장된 말풍선으로 되돌렸다는 뜻이다. */
+  expect(await screen.findByText("빠진 질문")).toBeInTheDocument();
+  /* 그리고 전부가 아니라는 것을 화면이 밝힌다. */
+  expect(screen.getByText(/마지막 부분이에요/)).toBeInTheDocument();
+});
+
+
+/* 열기가 실패하면 화면은 그대로 남는다. 그런데 오던 답변까지 버리면, 아무 일도
+   일어나지 않은 것처럼 보이면서 기다리던 답변만 사라진다. */
+test("지난 대화 열기가 실패하면 오던 답변을 버리지 않는다", async () => {
+  const user = userEvent.setup();
+  await renderApp();
+  server.holdStream = true;
+
+  await user.type(
+    screen.getByPlaceholderText(
+      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+    ),
+    "기다리던 질문",
+  );
+  await user.click(screen.getByRole("button", { name: "추천 시작하기" }));
+  await waitFor(() => expect(server.pending).not.toBeNull());
+
+  server.resumeFails = true;
+  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
+  await waitFor(() => expect(server.listCalls).toBeGreaterThan(1));
+
+  /* 열기는 실패했으니 답변은 그대로 도착해야 한다. */
+  server.pending?.({
+    type: "done",
+    data: {
+      elapsed_ms: 10,
+      response: {
+        ...server.transcript.payload,
+        state: { session_id: "chat-대기", run_id: "run_대기" },
+        message: "기다리던 답변",
+        recommendations: null,
+      },
+    },
+  });
+  server.releaseStream?.();
+
+  expect(await screen.findByText("기다리던 답변")).toBeInTheDocument();
 });
