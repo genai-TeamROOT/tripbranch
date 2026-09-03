@@ -29,17 +29,13 @@ import type { Language } from "../../types";
 import { deleteChatSession, renameChatSession, resumeChatSession } from "../../api/trip";
 import { loadChatSessions, refreshChatSessions } from "../../state/chatSessions";
 import { clearLocalUserData } from "../../state/localUserData";
+import { useFavorites } from "../../hooks/useFavorites";
 import {
   loadSavedSchedules,
   subscribeSavedSchedules,
   type SavedScheduleEntry,
 } from "../../state/savedSchedules";
-import {
-  loadFavorites,
-  saveFavorites,
-  type ChatHistoryEntry,
-  type FavoritePlace,
-} from "../../state/sidebarStorage";
+import { type ChatHistoryEntry } from "../../state/sidebarStorage";
 
 interface SideDrawerContentProps {
   /** 모바일 드로어에서만 넘긴다 — 링크를 누르면 드로어를 닫기 위해서다. */
@@ -66,7 +62,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
   const state = useTripState();
   const { session, status, signOut } = useAuth();
 
-  const [favorites, setFavorites] = useState<FavoritePlace[]>(() => loadFavorites());
+  const [favorites, setFavorites] = useFavorites();
   /*
    * 채팅 히스토리는 계정에서 온다(GET /api/sessions). 예전에는 localStorage
    * 목업이었는데 **항목을 넣는 코드가 아예 없어** 늘 비어 있었다.
@@ -86,7 +82,6 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
   const [confirmingSignOut, setConfirmingSignOut] = useState(false);
   const renameInputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => saveFavorites(favorites), [favorites]);
 
   useEffect(() => {
     let active = true;

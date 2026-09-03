@@ -68,6 +68,23 @@ export function loadFavorites(): FavoritePlace[] {
   return readJsonArray<FavoritePlace>(FAVORITES_KEY);
 }
 
+/*
+ * 목록이 바뀌면 알려준다. 사이드바와 위치 설정 화면이 함께 구독한다.
+ *
+ * 저장소는 값이 바뀌어도 React에 알려주지 않는다. 두 화면이 각자 사본을 들고 있어,
+ * 한쪽에서 담아도 다른 쪽은 새로고침해야 보였다 — 같은 목록이 두 군데서 다르게
+ * 보이는 셈이다(searchCenter를 구독으로 바꾼 것과 같은 이유).
+ */
+type Listener = (favorites: FavoritePlace[]) => void;
+const listeners = new Set<Listener>();
+
+export function subscribeFavorites(listener: Listener): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
 /* 로그아웃에서 이 기기의 즐겨찾기를 비운다(state/localUserData.ts). 서버에 사본이
    없어 되돌릴 수 없는 삭제다 — 신원이 바뀔 때만 부른다. */
 export function clearFavorites(): void {
@@ -76,6 +93,7 @@ export function clearFavorites(): void {
   } catch {
     /* 저장소가 막혀 있어도(시크릿 모드 등) 로그아웃 자체는 끝나야 한다. */
   }
+  listeners.forEach((listener) => listener([]));
 }
 
 /* 빈 목록은 키 자체를 지운다. "[]"를 남기면 로그아웃 직후 화면이 다시 마운트하면서
@@ -87,5 +105,5 @@ export function saveFavorites(favorites: FavoritePlace[]): void {
     return;
   }
   writeJsonArray(FAVORITES_KEY, favorites);
+  listeners.forEach((listener) => listener(favorites));
 }
-

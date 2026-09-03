@@ -35,12 +35,7 @@ import { useNavigate } from "react-router-dom";
 import { AppHeader } from "../components/layout/AppHeader";
 import { AddFavoriteModal } from "../components/layout/AddFavoriteModal";
 import { useTripDispatch, useTripState } from "../state/TripContext";
-import {
-  createId,
-  loadFavorites,
-  saveFavorites,
-  type FavoritePlace,
-} from "../state/sidebarStorage";
+import { createId, type FavoritePlace } from "../state/sidebarStorage";
 import { getLocationAgeMinutes } from "../utils/locationRefresh";
 import { getBrowserDeviceLocation } from "../utils/geolocation";
 import { setLocationCenter, setLocationOrigin } from "../state/locationSettings";
@@ -48,6 +43,7 @@ import {
   LocationPurposeModal,
   type LocationPurpose,
 } from "../components/layout/LocationPurposeModal";
+import { useFavorites } from "../hooks/useFavorites";
 import { useLocationSettings } from "../hooks/useLocationSettings";
 import { loadRecentSearches, rememberRecentSearch } from "../state/recentSearchesStorage";
 import { searchPlaces } from "../api/trip";
@@ -59,7 +55,7 @@ export function LocationPage() {
   const dispatch = useTripDispatch();
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [favorites, setFavorites] = useState<FavoritePlace[]>(() => loadFavorites());
+  const [favorites, setFavorites] = useFavorites();
   const [showAddFavorite, setShowAddFavorite] = useState(false);
   const [query, setQuery] = useState("");
   /* null은 "아직 검색하지 않았다"이고 빈 배열은 "찾았는데 없었다"다. 둘을 하나로
@@ -80,7 +76,6 @@ export function LocationPage() {
   const [renameDraft, setRenameDraft] = useState("");
   const searchBoxRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => saveFavorites(favorites), [favorites]);
 
   const ageMinutes = getLocationAgeMinutes(state.device_location_captured_at);
 
