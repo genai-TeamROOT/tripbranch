@@ -244,7 +244,7 @@ class Test추천_경로에서_판정이_실제로_불린다:
             for index, distance_km in enumerate((0.3, 2.0), start=1)
         ]
 
-        modes = await _judge_recommendation_modes(
+        plan = await _judge_recommendation_modes(
             candidates,
             conditions=UserConditions(),
             context=_empty_context(),
@@ -259,8 +259,8 @@ class Test추천_경로에서_판정이_실제로_불린다:
         # 후보는 서로 대안이므로 앞 줄을 근거로 삼지 않게 한다.
         assert context.sequential is False
         # 대중교통 판정은 양쪽을 다 재는 것으로 옮겨진다(D-118의 양쪽 조회 유지).
-        assert modes["p1"] == (TravelMode.WALKING, TravelMode.TRANSIT)
-        assert modes["p2"] == (TravelMode.WALKING, TravelMode.TRANSIT)
+        assert plan.measure["p1"] == (TravelMode.WALKING, TravelMode.TRANSIT)
+        assert plan.measure["p2"] == (TravelMode.WALKING, TravelMode.TRANSIT)
 
     @pytest.mark.asyncio
     async def test_명시_이동수단이면_판정을_부르지_않는다(self) -> None:
@@ -280,14 +280,14 @@ class Test추천_경로에서_판정이_실제로_불린다:
                 2.0,
             )
         ]
-        modes = await _judge_recommendation_modes(
+        plan = await _judge_recommendation_modes(
             candidates,
             conditions=UserConditions(transport=Transport.WALK),
             context=_empty_context(),
             switch_threshold_km=0.85,
             llm=_Never(),
         )
-        assert modes["p1"] == (TravelMode.WALKING,)
+        assert plan.measure["p1"] == (TravelMode.WALKING,)
 
     @pytest.mark.asyncio
     async def test_판정이_실패하면_거리_규칙으로_되돌아간다(self) -> None:
@@ -315,7 +315,7 @@ class Test추천_경로에서_판정이_실제로_불린다:
                 2.0,
             ),
         ]
-        modes = await _judge_recommendation_modes(
+        plan = await _judge_recommendation_modes(
             candidates,
             conditions=UserConditions(),
             context=_empty_context(),
@@ -323,8 +323,8 @@ class Test추천_경로에서_판정이_실제로_불린다:
             llm=_Broken(),
         )
         # 임계 아래는 도보만, 위는 양쪽 — 판정 도입 전과 같다.
-        assert modes["near"] == (TravelMode.WALKING,)
-        assert modes["far"] == (TravelMode.WALKING, TravelMode.TRANSIT)
+        assert plan.measure["near"] == (TravelMode.WALKING,)
+        assert plan.measure["far"] == (TravelMode.WALKING, TravelMode.TRANSIT)
 
 
 def _empty_context():
@@ -364,3 +364,96 @@ class Test자동차는_판정이_고를_수_없다:
                 walking_speed_mps=1.17,
                 walk_transfer_threshold_min=20,
             )
+
+
+class Test판정이_속도_비교를_이긴다:
+    """판정이 대중교통을 골랐으면 도보가 더 빨라도 그 값을 쓴다. (TP-227)
+
+    유모차 사용자에게 "걸어서 10분"은 사실 10분이 아니고, 그 숫자를 보여주면
+    일정이 "대중교통 20분"이라고 말하는 것과 어긋난다.
+    """
+
+    @staticmethod
+    def _route(mode: TravelMode, seconds: int):
+        from app.domain.travel_route import RouteSource, RouteStatus, TravelRoute
+
+        source = (
+            RouteSource.KAKAO_WALKING
+            if mode is TravelMode.WALKING
+            else RouteSource.KAKAO_TRANSIT
+        )
+        return TravelRoute(
+            place_id="p1",
+            mode=mode,
+            status=RouteStatus.SUCCESS,
+            source=source,
+            distance_m=700,
+            duration_seconds=seconds,
+        )
+
+    def test_판정이_없으면_빠른_쪽을_고른다(self) -> None:
+        """규칙 경로는 D-118 그대로다."""
+        from app.services.runtime.agent_runtime import _fastest_routes
+
+        routes = (
+            self._route(TravelMode.WALKING, 576),  # 9.6분
+            self._route(TravelMode.TRANSIT, 672),  # 11.2분
+        )
+        assert _fastest_routes(routes)[0].mode is TravelMode.WALKING
+
+    def test_판정이_있으면_느려도_그것을_쓴다(self) -> None:
+        from app.services.runtime.agent_runtime import _fastest_routes
+
+        routes = (
+            self._route(TravelMode.WALKING, 576),
+            self._route(TravelMode.TRANSIT, 672),
+        )
+        chosen = _fastest_routes(routes, {"p1": TravelMode.TRANSIT})
+        assert chosen[0].mode is TravelMode.TRANSIT
+
+    def test_추정은_판정과_맞아도_실측을_이기지_못한다(self) -> None:
+        """실측 등급이 판정보다 앞이다 — 추정이 채택되면 회차 전체가 직선거리로 내려간다."""
+        from app.domain.travel_route import RouteSource, RouteStatus, TravelRoute
+        from app.services.runtime.agent_runtime import _fastest_routes
+
+        estimate = TravelRoute(
+            place_id="p1",
+            mode=TravelMode.TRANSIT,
+            status=RouteStatus.SUCCESS,
+            source=RouteSource.STRAIGHT_LINE_ESTIMATE,
+            distance_m=700,
+            duration_seconds=60,
+        )
+        measured_walking = self._route(TravelMode.WALKING, 576)
+        chosen = _fastest_routes(
+            (estimate, measured_walking), {"p1": TravelMode.TRANSIT}
+        )
+        assert chosen[0].source is RouteSource.KAKAO_WALKING
+
+    @pytest.mark.asyncio
+    async def test_규칙으로_되돌아가면_판정_목록이_비어_있다(self) -> None:
+        """비어 있어야 뒤 단계가 예전처럼 빠른 쪽을 고른다."""
+        from app.domain.travel_route import GeoCoordinate, RouteDestination
+        from app.errors import ProviderUnavailableError
+        from app.services.runtime.agent_runtime import _judge_recommendation_modes
+
+        class _Broken:
+            async def judge_travel_modes(self, segments, context):
+                raise ProviderUnavailableError("판정 실패")
+
+        plan = await _judge_recommendation_modes(
+            [
+                (
+                    RouteDestination(
+                        place_id="p1",
+                        coordinate=GeoCoordinate(latitude=37.5, longitude=127.0),
+                    ),
+                    2.0,
+                )
+            ],
+            conditions=UserConditions(),
+            context=_empty_context(),
+            switch_threshold_km=0.85,
+            llm=_Broken(),
+        )
+        assert plan.judged == {}
