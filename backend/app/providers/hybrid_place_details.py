@@ -21,7 +21,7 @@ question_type 전부를 덮게 됐다. overview/homepage만 detailCommon2에 남
 from __future__ import annotations
 
 from app.domain.models import PlaceCommonDetails, PlaceDetails, StoredPlaceDetail
-from app.domain.operating_hours import normalize_operating_schedule
+from app.domain.operating_hours import resolve_operating_schedule
 from app.errors import AppError
 from app.providers.contracts import (
     ProviderResult,
@@ -125,10 +125,14 @@ def _to_place_details(
         # 값은 아래 정규화 필드가 나르고, 소비 측도 raw_intro를 읽지 않는다(D-060).
         raw_intro={},
         provider=_PROVIDER_NAME,
-        operating_schedule=normalize_operating_schedule(
+        # 적재 배치가 저장한 파싱 결과를 쓰되 파서 버전이 다르면 원문을 다시
+        # 읽는다(supabase_place_details.py와 동일).
+        operating_schedule=resolve_operating_schedule(
             content_type_id=row.content_type_id,
             operating_hours=row.operating_hours_raw,
             rest_date=row.rest_date_raw,
+            stored=row.operating_schedule_raw,
+            stored_parser_version=row.operating_parser_version,
         ),
         parking=row.parking_info_raw,
         parking_fee=row.parking_fee_raw,

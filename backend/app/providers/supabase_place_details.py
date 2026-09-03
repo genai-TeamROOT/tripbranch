@@ -4,11 +4,15 @@
 TourAPI(RealPlaceProvider)가 담당하고, 이 Provider는 검색으로 얻은 content_id의
 상세·운영정보만 저장소에서 조회한다.
 
-운영시간은 DB의 operating_schedule JSON을 읽지 않고 원문(operating_hours_raw,
-rest_date_raw)을 normalize_operating_schedule()로 다시 정규화한다. TourAPI 경로와
-같은 함수를 쓰므로 두 경로의 결과가 구조적으로 일치하고, 파서가 개선되면 재동기화
-없이 즉시 반영된다. (DB의 operating_schedule 컬럼은 동기화 배치가 계속 채우지만
-이 읽기 경로에서는 사용하지 않는다.)
+운영시간은 적재 배치가 저장한 operating_schedule JSON을 읽는다. 저장된
+operating_parser_version이 지금 파서와 다르면 그 값을 믿지 않고 원문
+(operating_hours_raw, rest_date_raw)을 다시 정규화한다 —
+`resolve_operating_schedule()`이 그 판단을 한다.
+
+**예전에는 늘 원문을 다시 정규화했다.** 파서가 자주 바뀌던 동안 "고치면 재동기화
+없이 즉시 반영"이 필요했기 때문인데, 후보 수만큼 정규식이 돌았고 파싱을 LLM으로
+옮기면 그 자리에서는 아예 부를 수 없다. 그 걱정은 파서 버전 게이트로 옮겨 담았다.
+TourAPI 경로(real_place.py)는 방금 받은 응답이라 저장된 값이 없어 그대로 정규화한다.
 
 입력: content_id 목록.
 출력: content_id를 키로 하는 PlaceDetails dict.
@@ -21,7 +25,7 @@ from collections.abc import Iterable
 from datetime import datetime
 
 from app.domain.models import PlaceDetails, StoredPlaceDetail
-from app.domain.operating_hours import normalize_operating_schedule
+from app.domain.operating_hours import resolve_operating_schedule
 from app.providers.contracts import (
     ProviderResult,
     ProviderSource,
@@ -137,10 +141,15 @@ def _to_place_details(row: StoredPlaceDetail) -> PlaceDetails:
         # first_image_url)를 우선한다 — hybrid_place_details.py와 동일한 이유
         # (2026-08-13). first_image_url이 없는 장소만 thumbnail_url로 대체한다.
         thumbnail_url=row.first_image_url or row.thumbnail_url,
-        operating_schedule=normalize_operating_schedule(
+        # 적재 배치가 저장한 파싱 결과를 쓰되, 파서가 그 사이 바뀌었으면 원문을
+        # 다시 읽는다. 예전에는 늘 원문을 다시 파싱했다 — 후보 수만큼 정규식이
+        # 돌았고, 파싱을 LLM으로 옮기면 그 자리에서는 부를 수 없다.
+        operating_schedule=resolve_operating_schedule(
             content_type_id=row.content_type_id,
             operating_hours=row.operating_hours_raw,
             rest_date=row.rest_date_raw,
+            stored=row.operating_schedule_raw,
+            stored_parser_version=row.operating_parser_version,
         ),
     )
 

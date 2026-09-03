@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, time
 from enum import StrEnum
+from typing import Any
 
 from app.domain.operating_hours import OperatingSchedule
 
@@ -757,6 +758,9 @@ class StoredPlaceDetail:
     pet_raw: str | None = None
     credit_card_raw: str | None = None
     restroom_raw: str | None = None
+    # 적재 배치가 저장한 파싱 결과와 그때의 파서 버전(위 docstring 참고).
+    operating_schedule_raw: Mapping[str, Any] | None = None
+    operating_parser_version: str | None = None
     # 무장애 여행 정보(place_barrier_free, D-077). 무장애 목록에 등록된 장소만
     # 행이 있어 대부분의 장소에서는 전부 None이다 — 4개 구 실측 커버리지가 19%다.
     #

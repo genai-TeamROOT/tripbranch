@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import time
 from enum import StrEnum
 from html.parser import HTMLParser
+from typing import Any
 
 _COURSE_CONTENT_TYPE_ID = "25"
+logger = logging.getLogger(__name__)
+
 OPERATING_PARSER_VERSION = "operating-hours-1.2.0"
 # 원문에 적힌 휴무와 구분하기 위한 유도 휴무 표식. `_derive_unlisted_weekday_closures()` 참고.
 DERIVED_CLOSURE_SOURCE_TEXT = "운영시간에 열거되지 않은 요일"
@@ -198,6 +203,127 @@ def clean_operating_text(value: str | None) -> str | None:
     ]
     cleaned = "\n".join(line for line in lines if line)
     return cleaned or None
+
+
+def resolve_operating_schedule(
+    *,
+    content_type_id: str,
+    operating_hours: str | None,
+    rest_date: str | None,
+    stored: Mapping[str, Any] | None = None,
+    stored_parser_version: str | None = None,
+) -> OperatingSchedule:
+    """저장된 파싱 결과를 쓰되, 파서가 그 사이 바뀌었으면 원문을 다시 읽는다.
+
+    **읽기 경로가 요청마다 원문을 파싱하던 것을 대체한다.** 후보 30곳이면 그만큼
+    정규식이 돌았고, 파싱이 LLM으로 바뀌면 그 자리에서는 아예 부를 수 없다.
+
+    `stored_parser_version`이 지금 버전과 다르면 저장된 값을 **믿지 않는다.** 파서를
+    고치고 재적재를 잊었을 때 옛 결과가 조용히 나가는 것을 막는다 — 원래 원문
+    재파싱이 있던 이유가 그 걱정이었고, 그것을 버전 게이트로 옮겨 담은 것이다.
+
+    저장된 값이 없거나 모양이 깨졌어도 원문 파싱으로 되돌아간다. 이 함수는 항상
+    결과를 돌려주므로 호출부가 폴백을 따로 쓰지 않는다.
+    """
+
+    if stored is not None and stored_parser_version == OPERATING_PARSER_VERSION:
+        restored = deserialize_operating_schedule(
+            stored, raw_operating_hours=operating_hours, raw_rest_date=rest_date
+        )
+        if restored is not None:
+            return restored
+    return normalize_operating_schedule(
+        content_type_id=content_type_id,
+        operating_hours=operating_hours,
+        rest_date=rest_date,
+    )
+
+
+def deserialize_operating_schedule(
+    stored: Mapping[str, Any] | None,
+    *,
+    raw_operating_hours: str | None,
+    raw_rest_date: str | None,
+) -> OperatingSchedule | None:
+    """적재 배치가 저장한 JSON을 다시 `OperatingSchedule`로 읽는다.
+
+    **읽기 경로가 원문을 매번 다시 파싱하지 않게 하려고 만든 함수다.** 그동안은
+    파서가 자주 바뀌어 "고치면 즉시 반영"이 필요했지만, 저장된 값을 그대로 쓰려면
+    되돌릴 방법이 있어야 한다.
+
+    모양이 예상과 다르면 `None`을 돌려준다 — 호출부가 원문 파싱으로 되돌아간다.
+    여기서 예외를 올리면 행 하나가 망가졌을 때 그 요청 전체가 죽는다.
+
+    직렬화(`place_sync.serialize_operating_schedule()`)와 짝이다. 한쪽만 바뀌면
+    조용히 폴백으로 떨어져 "왜 느린가"로만 나타나므로 테스트로 왕복을 잠근다.
+    """
+
+    if not isinstance(stored, Mapping):
+        return None
+    try:
+        availability = OperatingAvailability(str(stored.get("availability")))
+        rules = tuple(_deserialize_rule(item) for item in stored.get("rules") or ())
+        closure_rules = tuple(
+            _deserialize_closure_rule(item) for item in stored.get("closure_rules") or ()
+        )
+    except (ValueError, TypeError, KeyError, AttributeError):
+        logger.warning("operating_schedule 역직렬화 실패 — 원문 파싱으로 돌아간다", exc_info=True)
+        return None
+
+    warnings = tuple(str(item) for item in stored.get("warnings") or ())
+    assumption_reason = stored.get("assumption_reason")
+    return OperatingSchedule(
+        raw_operating_hours=raw_operating_hours,
+        raw_rest_date=raw_rest_date,
+        cleaned_operating_hours=clean_operating_text(raw_operating_hours),
+        cleaned_rest_date=clean_operating_text(raw_rest_date),
+        availability=availability,
+        rules=rules,
+        closure_rules=closure_rules,
+        # 저장된 값에는 상태가 없다 — 배치가 넣은 시점의 판정이므로 파싱 성공으로
+        # 본다. 상태는 warnings로 이미 드러나 있다.
+        parse_status=(
+            OperatingParseStatus.ASSUMED
+            if assumption_reason
+            else OperatingParseStatus.PARSED
+        ),
+        assumption_reason=str(assumption_reason) if assumption_reason else None,
+        warnings=warnings,
+    )
+
+
+def _deserialize_rule(item: Any) -> OperatingRule:
+    months = item.get("months")
+    weekdays = item.get("weekdays")
+    last_admission = item.get("last_admission")
+    return OperatingRule(
+        months=frozenset(int(m) for m in months) if months is not None else None,
+        weekdays=frozenset(int(w) for w in weekdays) if weekdays is not None else None,
+        time_ranges=tuple(
+            TimeRange(
+                start=time.fromisoformat(str(entry["start"])),
+                end=time.fromisoformat(str(entry["end"])),
+                crosses_midnight=bool(entry.get("crosses_midnight")),
+            )
+            for entry in item.get("time_ranges") or ()
+        ),
+        last_admission=(
+            time.fromisoformat(str(last_admission)) if last_admission else None
+        ),
+        source_text=str(item.get("source_text", "")),
+    )
+
+
+def _deserialize_closure_rule(item: Any) -> ClosureRule:
+    ordinals = item.get("week_ordinals")
+    return ClosureRule(
+        weekdays=frozenset(int(w) for w in item.get("weekdays") or ()),
+        source_text=str(item.get("source_text", "")),
+        week_ordinals=(
+            frozenset(int(o) for o in ordinals) if ordinals is not None else None
+        ),
+        uncertain=bool(item.get("uncertain")),
+    )
 
 
 def normalize_operating_schedule(
