@@ -30,6 +30,40 @@ jobs:
       - name: pytest
         run: pytest
 
+  scoring-version:
+    # 점수 로직이 바뀌었는데 SCORING_VERSION이 그대로면 PR 파일에 경고를 단다.
+    #
+    # **막지 않고 알리기만 한다.** 1.6.0 이후 scoring.py를 바꾼 4건 중 2건은
+    # warnings 문자열만 더해 순위를 못 바꾸는 변경이었다 — 그런 PR까지 막으면
+    # 우회하는 습관이 생긴다. 판단은 사람이 하고, 여기서는 놓치지 않게만 한다.
+    # 판단 기준은 docs/scoring-version.md §2에 있다.
+    name: Scoring version notice
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 세 점 diff에 base 쪽 히스토리가 필요하다. 기본 shallow로는 안 된다.
+          fetch-depth: 0
+
+      - name: 점수 로직 변경에 버전이 따라왔는지 본다
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          set -eu
+          file=backend/app/domain/scoring.py
+          git fetch --no-tags origin "$BASE"
+          if git diff --quiet "origin/$BASE...HEAD" -- "$file"; then
+            echo "scoring.py 변경 없음 — 확인할 것 없음"
+            exit 0
+          fi
+          if git diff "origin/$BASE...HEAD" -- "$file" | grep -qE '^[+-]SCORING_VERSION'; then
+            echo "SCORING_VERSION이 함께 바뀌었음"
+            exit 0
+          fi
+          line=$(grep -n 'SCORING_VERSION = ' "$file" | cut -d: -f1)
+          echo "::warning file=$file,line=$line::점수 로직이 바뀌었는데 SCORING_VERSION은 그대로입니다. 순위가 바뀌지 않는 변경이면 그대로 두어도 됩니다 — 판단 기준은 docs/scoring-version.md 2절."
+
   frontend:
     name: Frontend (ESLint + Vitest + build)
     runs-on: ubuntu-latest
