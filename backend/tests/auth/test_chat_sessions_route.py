@@ -608,3 +608,21 @@ def test_정리_스크립트가_화면_기록도_지운다(signing_key) -> None:
     _delete_one(store, session_id)
 
     assert store.get_session_messages(session_id) == []
+
+
+# 대화를 지우면 화면 기록도 지워져야 한다. 목록에서 사라지는 것과 실제로
+# 지워지는 것이 다르면, 사용자는 지웠다고 믿는데 원문이 DB에 남는다.
+def test_대화를_지우면_화면_기록도_지워진다(signing_key) -> None:
+    from app.state.store import get_store
+
+    session_id = _start_chat(ME, "지울 대화")
+    _record_message(session_id, "질문", "답변")
+    store = get_store()
+    assert store.get_session_messages(session_id) != []
+
+    response = TestClient(app).delete(
+        f"/api/state/{session_id}", headers=_headers(signing_key, ME)
+    )
+
+    assert response.status_code == 200
+    assert store.get_session_messages(session_id) == []

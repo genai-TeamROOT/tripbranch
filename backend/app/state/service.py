@@ -903,7 +903,7 @@ def delete_session(
     store: StateStore | None = None,
     principal: Principal | None = None,
 ) -> DeleteSessionResponse:
-    """세션 상태와 추천 이력을 삭제한다.
+    """세션 상태·추천 이력·보관함·화면 기록을 삭제한다.
 
     세션이 없어도 오류를 내지 않고 deleted=False를 반환한다.
 
@@ -925,6 +925,10 @@ def delete_session(
     # 넣지 않는다: 보관함만 있고 상태·이력이 없는 조합은 만들어질 수 없다
     # (담기가 추천 이력을 전제로 하므로).
     store.delete_saved_places(session_id)
+    # 화면 기록에는 대화 원문이 그대로 들어 있다(TP-222 후속). 여기서 지우지
+    # 않으면 사용자가 대화를 지워도 주고받은 말이 DB에 남는다 — 목록에서
+    # 사라지는 것과 지워지는 것이 달라지면 안 된다.
+    store.delete_session_messages(session_id)
     return DeleteSessionResponse(session_id=session_id, deleted=existed)
 
 
