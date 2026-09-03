@@ -242,6 +242,54 @@ test("user chat needs only one chat call", async () => {
   expect(requestBody.device_location).toBe("37.5788,126.977");
 });
 
+test("sends the search center picked on the location screen with the chat request", async () => {
+  /* 위치 설정 화면에서 고른 값은 sessionStorage에 남는다(state/storage.ts) —
+     화면을 다시 거치지 않고 저장 형식을 직접 심어, 발화 요청에 그 값이 실려
+     나가는지만 본다. 필드 이름이 어긋나면 화면은 멀쩡한데 위치만 조용히
+     무시되므로 요청 본문으로 못 박는다. */
+  sessionStorage.setItem(
+    "tripbranch_state",
+    JSON.stringify({
+      version: 7,
+      state: {
+        language: "ko",
+        user_input: "",
+        interpreted_conditions: null,
+        recommendations: [],
+        unverified_recommendations: [],
+        shown_place_ids: [],
+        messages: [],
+        auditTurns: [],
+        phase: "idle",
+        error: null,
+        session_id: null,
+        device_location: null,
+        device_location_captured_at: null,
+        device_location_snoozed_until: null,
+        selected_search_center: "안국역",
+        awaiting_clarification: false,
+        saved_places: [],
+        agentProgress: null,
+        streamingIntent: null,
+      },
+    }),
+  );
+  await renderApp();
+
+  await userEvent.type(
+    screen.getByPlaceholderText(
+      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+    ),
+    "카페 추천해줘",
+  );
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+
+  const fetchMock = vi.mocked(fetch);
+  await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+  const requestBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+  expect(requestBody.selected_search_center).toBe("안국역");
+});
+
 test("asks whether to refresh a location older than 30 minutes before a follow-up", async () => {
   const now = vi.spyOn(Date, "now");
   now.mockReturnValue(1_000);

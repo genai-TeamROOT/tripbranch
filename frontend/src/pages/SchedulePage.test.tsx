@@ -40,7 +40,7 @@ function seedScheduleState() {
   sessionStorage.setItem(
     "tripbranch_state",
     JSON.stringify({
-      version: 6,
+      version: 7,
       state: {
         language: "ko",
         user_input: "",

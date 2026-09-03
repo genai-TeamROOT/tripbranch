@@ -40,6 +40,7 @@ from app.routes.feedback import router as feedback_router
 from app.routes.health import router as health_router
 from app.routes.interpret import router as interpret_router
 from app.routes.photo_similar import router as photo_similar_router
+from app.routes.place_search import router as place_search_router
 from app.routes.recommendations import router as recommendations_router
 from app.routes.state import router as state_router
 from app.routes.trace import router as trace_router
@@ -239,6 +240,7 @@ def create_app() -> FastAPI:
     app.include_router(chat_router, prefix="/api")
     app.include_router(transcribe_router, prefix="/api")
     app.include_router(photo_similar_router, prefix="/api")
+    app.include_router(place_search_router, prefix="/api")
     app.include_router(state_router, prefix="/api")
     app.include_router(feedback_router, prefix="/api")
     app.include_router(trace_router, prefix="/api")

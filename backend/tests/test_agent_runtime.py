@@ -1140,6 +1140,74 @@ async def test_stale_location_clarification_choice_falls_back_to_normal_classifi
 
 
 @pytest.mark.asyncio
+async def test_selected_search_center_fills_location_the_utterance_omitted() -> None:
+    """위치 설정 화면에서 고른 검색 위치는 발화에 위치가 없을 때 조건을 채운다.
+
+    "카페 추천해줘"는 위치가 전혀 없어 평소라면 location_required 되묻기로 끝난다
+    (test_tool_needs_clarification_skips_recommendation). 화면에서 이미 위치를
+    골랐다면 다시 물을 이유가 없으므로 그대로 추천까지 가야 한다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+            selected_search_center="경복궁",
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.llm_output.status == OutputStatus.COMPLETE
+    assert response.state.user_conditions.search_center == "경복궁"
+    assert response.recommendations is not None
+
+
+@pytest.mark.asyncio
+async def test_spoken_location_beats_selected_search_center() -> None:
+    """그 턴에 말한 위치가 화면 설정을 이긴다 — 더 명확한 의사이기 때문이다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+            selected_search_center="인사동",
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.state.user_conditions.search_center == "경복궁"
+
+
+@pytest.mark.asyncio
+async def test_blank_selected_search_center_is_ignored() -> None:
+    """공백만 온 값은 위치를 고른 것으로 치지 않는다 — 평소 되묻기로 끝나야 한다."""
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+            selected_search_center="   ",
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.llm_output.status is OutputStatus.NEEDS_CLARIFICATION
+    assert response.state.user_conditions.search_center is None
+
+
+@pytest.mark.asyncio
 async def test_travel_origin_override_resolves_without_classification() -> None:
     """"OO 기준으로 다시 보기" 버튼(travel_origin_override, D-071)은
     classify_intent()를 건너뛰고 직전 조건에 travel_origin만 덮어써 재실행해야

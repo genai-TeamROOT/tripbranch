@@ -79,6 +79,29 @@ class PhotoSimilarPlacesResponse(BaseModel):
     elapsed_ms: int = Field(ge=0)
 
 
+class PlaceSearchCandidate(BaseModel):
+    """위치 설정 화면의 장소 검색 결과 한 곳."""
+
+    name: str
+    address: str | None = None
+    road_address: str | None = None
+    category: str | None = None
+    # 좌표가 없는 후보는 검색 위치로 쓸 수 없어 라우터가 이미 빼고 보낸다.
+    # 그래서 여기서는 optional이 아니다.
+    latitude: float
+    longitude: float
+
+
+class PlaceSearchResponse(BaseModel):
+    """검색어로 찾은 서울 안의 장소 목록."""
+
+    places: list[PlaceSearchCandidate]
+    # 좌표는 있는데 서울 밖이라 뺀 수. 0인지 아닌지에 따라 화면 문구가 갈린다 —
+    # 0이면 "찾은 곳이 없어요"이고, 0이 아니면 "서울 지역만 검색할 수 있어요"다.
+    # 하나로 뭉치면 사용자가 오타를 고쳐야 할지 지역을 바꿔야 할지 알 수 없다.
+    outside_service_area_count: int = Field(default=0, ge=0)
+
+
 class InterpretedConditions(BaseModel):
     location_query: str
     preferred_categories: list[str]
@@ -915,6 +938,18 @@ class AgentRequest(BaseModel):
     language: Literal["ko", "en"] = "ko"
     session_id: str | None = None
     device_location: str | None = None  # "위도,경도" 문자열, api_context.gps_location과 동일 포맷
+    # 위치 설정 화면에서 사용자가 직접 고른 검색 위치의 이름(예: "안국역").
+    # device_location과 다른 값이다 — 그쪽은 "사용자가 지금 있는 곳"이고 이쪽은
+    # "어디를 기준으로 찾을지"다. 화면이 세션마다 들고 있다가 매 턴 함께 보낸다.
+    #
+    # 이번 턴 발화가 검색 위치를 말하지 않았을 때에만 조건에 채운다 — 화면에
+    # 안국역이 설정돼 있어도 "성수동 카페 알려줘"는 성수동이 맞다
+    # (agent_runtime._apply_selected_search_center).
+    #
+    # 좌표가 아니라 이름을 받는 이유는, 이름을 좌표로 바꾸는 경로가 이미
+    # ResolveLocationTool 하나로 정리돼 있어서다. 좌표를 직접 받으면 검색 기준점을
+    # 정하는 길이 두 개가 된다.
+    selected_search_center: str | None = None
     # 직전 INFO 카드의 장소명. 현재 화면이 "여기/이곳"을 보낼 때에만 A가 INFO
     # from_conversation 해소 후보로 사용한다.
     conversation_place_name: str | None = None

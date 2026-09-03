@@ -12,7 +12,8 @@ import type { ChatMessage, ChatPhase } from "../types";
 const STORAGE_KEY = "tripbranch_state";
 // 5: 개발자용 발화별 감사 기록(auditTurns)을 함께 저장.
 // 6: 위치 재확인 스누즈 마감 시각(device_location_snoozed_until) 추가.
-const STORAGE_VERSION = 6;
+// 7: 위치 설정 화면에서 고른 검색 위치(selected_search_center) 추가.
+const STORAGE_VERSION = 7;
 
 interface StoredState {
   version: number;
@@ -38,6 +39,9 @@ function isTripState(value: unknown): value is TripState {
     (state.device_location_snoozed_until === undefined ||
       state.device_location_snoozed_until === null ||
       typeof state.device_location_snoozed_until === "number") &&
+    (state.selected_search_center === undefined ||
+      state.selected_search_center === null ||
+      typeof state.selected_search_center === "string") &&
     (state.error === null || typeof state.error === "string") &&
     (state.language === undefined || state.language === "ko" || state.language === "en")
   );
@@ -169,6 +173,9 @@ export function loadState(): TripState | null {
       // 기존 저장본(v5 이하)은 스누즈 마감이 없다. null이면 정상적으로 재확인
       // 여부를 다시 판단한다.
       device_location_snoozed_until: parsed.state.device_location_snoozed_until ?? null,
+      // 기존 저장본(v6 이하)에는 고른 검색 위치가 없다. null이면 발화나 GPS로
+      // 위치를 정하던 기존 동작 그대로다.
+      selected_search_center: parsed.state.selected_search_center ?? null,
       // 기존 저장본에는 언어가 없으므로 한국어로 자연스럽게 이어간다.
       language: parsed.state.language ?? "ko",
       agentProgress: null,

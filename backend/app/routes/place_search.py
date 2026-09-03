@@ -1,0 +1,119 @@
+"""위치 설정 화면의 장소 검색 API.
+
+`GET /api/places/search`는 검색어 하나를 받아 Naver 지역 검색 후보를 서울 안으로
+좁혀 돌려준다. 위치 설정 화면(프론트 `LocationPage`)에서 "어디를 기준으로 찾을지"를
+사용자가 직접 고르게 하는 목록이다.
+
+**서울 밖 후보는 내보내지 않는다.** 이 화면이 정하는 값은 사용자의 현재 위치가
+아니라 추천을 찾을 위치이고, 지원 지역은 서울 25개 구다(`app.service_area`).
+밖을 고를 수 있게 두면 그 뒤 추천이 이유 없이 "결과 없음"으로만 끝난다(D-044).
+
+**검색어 앞에 "서울"을 붙여 부른다.** 지역 검색은 전국을 뒤지는데 한 번에 받을 수
+있는 결과가 5건뿐이라(Naver API 상한, `providers/local_search.py`), "중앙동 카페"
+같은 검색어에서는 지방 결과 다섯 개가 서울 결과를 통째로 밀어낸다. 사용자가 이미
+"서울"이나 구 이름을 적었으면 그대로 둔다.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Annotated
+
+from fastapi import APIRouter, Query
+
+from app.auth.dependency import OptionalPrincipal
+from app.domain.models import LocalSearchPlace
+from app.errors import AppError
+from app.observability.api_usage import create_external_client
+from app.providers.factory import get_local_search_provider
+from app.schemas import PlaceSearchCandidate, PlaceSearchResponse
+from app.service_area import SUPPORTED_DISTRICTS, is_within_service_area
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(tags=["place-search"])
+
+# Naver 지역 검색이 한 번에 주는 최대 건수. providers/local_search.py가 6 이상을
+# ValueError로 거부한다.
+_DISPLAY = 5
+
+# 이 말이 검색어에 이미 들어 있으면 "서울"을 덧붙이지 않는다. 구 이름을 목록에서
+# 읽으므로 지원 구가 늘어도 여기를 고칠 일이 없다.
+_SEOUL_KEYWORDS: tuple[str, ...] = ("서울",) + tuple(
+    district.name for district in SUPPORTED_DISTRICTS
+)
+
+
+def seoul_scoped_query(query: str) -> str:
+    """검색어를 서울로 좁힌다. 이미 서울을 가리키고 있으면 그대로 둔다."""
+    if any(keyword in query for keyword in _SEOUL_KEYWORDS):
+        return query
+    return f"서울 {query}"
+
+
+def _to_candidate(place: LocalSearchPlace) -> PlaceSearchCandidate | None:
+    """서울 안의 장소면 응답 항목으로 바꾸고, 아니면 None."""
+    if place.latitude is None or place.longitude is None:
+        return None
+    if not is_within_service_area(place.latitude, place.longitude):
+        return None
+    return PlaceSearchCandidate(
+        name=place.name,
+        address=place.address,
+        road_address=place.road_address,
+        category=place.category,
+        latitude=place.latitude,
+        longitude=place.longitude,
+    )
+
+
+@router.get("/places/search", response_model=PlaceSearchResponse)
+async def search_places(
+    principal: OptionalPrincipal,
+    query: Annotated[
+        str, Query(min_length=1, max_length=100, description='검색어. 예: "안국역"')
+    ],
+) -> PlaceSearchResponse:
+    """검색어로 서울 안의 장소 후보를 찾는다.
+
+    좌표가 없는 후보는 검색 위치로 쓸 수 없어 뺀다. 서울 밖이라 뺀 수는 따로
+    세어 돌려준다 — 화면이 "찾은 곳이 없어요"와 "서울 지역만 검색할 수 있어요"를
+    갈라 말할 수 있어야 한다.
+    """
+    normalized_query = query.strip()
+    # 공백만 들어온 요청은 여기서 끊는다. 그대로 두면 "서울 "만 남은 질의로 외부
+    # API를 부르게 된다. Query(min_length=1)은 공백도 한 글자로 세서 못 막는다.
+    if not normalized_query:
+        raise AppError(
+            code="invalid_request",
+            message="검색할 장소를 입력해주세요.",
+            status_code=400,
+        )
+
+    async with create_external_client() as client:
+        provider = get_local_search_provider(client)
+        result = await provider.search_places_by_name(
+            seoul_scoped_query(normalized_query), display=_DISPLAY
+        )
+
+    candidates: list[PlaceSearchCandidate] = []
+    outside_count = 0
+    for place in result.data:
+        candidate = _to_candidate(place)
+        if candidate is None:
+            # 좌표가 아예 없는 경우와 서울 밖인 경우를 가른다. 좌표 없는 후보는
+            # 화면이 안내할 것이 없어 그냥 빠지지만, 서울 밖은 이유를 말해야 한다.
+            if place.latitude is not None and place.longitude is not None:
+                outside_count += 1
+            continue
+        candidates.append(candidate)
+
+    logger.info(
+        "장소 검색: 질의=%s 후보=%d 서울밖=%d",
+        normalized_query,
+        len(candidates),
+        outside_count,
+    )
+    return PlaceSearchResponse(
+        places=candidates, outside_service_area_count=outside_count
+    )

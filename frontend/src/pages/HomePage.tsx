@@ -140,6 +140,7 @@ export function HomePage() {
           language: state.language,
           session_id: null,
           device_location: deviceLocation,
+          selected_search_center: state.selected_search_center,
         },
         (event) => {
           if (event.type === "progress") {
