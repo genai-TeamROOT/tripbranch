@@ -12,7 +12,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { Home, LogOut, MapPin, MoreHorizontal, Plus, Route, Sparkles, Trash2 } from "lucide-react";
 import { useAuth } from "../../auth/AuthContext";
 import { identityLabel } from "../../auth/identityLabel";
-import { discardChatRequest } from "../../state/chatAbortController";
+import { detachChatRequest } from "../../state/chatAbortController";
 import { sheetState } from "../../state/sheetNav";
 import { useTripDispatch, useTripState } from "../../state/TripContext";
 import type { Language } from "../../types";
@@ -125,8 +125,8 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
    */
   function goHome() {
     /* openConversation과 같은 이유다 — 홈으로 돌아가면 대화가 비워지는데,
-       오던 답변이 그 빈 화면에 붙으면 안 된다. */
-    discardChatRequest();
+       오던 답변이 그 빈 화면에 붙으면 안 된다. 여기서도 끊지 않는다. */
+    detachChatRequest();
     dispatch({ type: "RESET" });
     navigate("/");
     onNavigate?.();
@@ -156,9 +156,10 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
     try {
       const detail = await resumeChatSession(sessionId);
       /* 답변이 오는 중에 다른 대화를 열면 그 답변이 여기 붙는다. 화면을 바꾸기
-         직전에 진행 중인 요청을 버린다 — **resume이 성공한 뒤다.** 먼저 버리면
-         열기가 실패했을 때 화면은 그대로인데 오던 답변만 사라진다. */
-      discardChatRequest();
+         직전에 화면에서 떼어낸다 — **resume이 성공한 뒤다.** 먼저 떼면 열기가
+         실패했을 때 화면은 그대로인데 오던 답변만 사라진다. 끊지는 않으므로
+         서버는 답변을 끝내 저장하고, 나중에 그 대화를 열면 거기 있다. */
+      detachChatRequest();
       dispatch({ type: "RESTORE_SESSION", payload: detail });
       go("/chat");
     } catch {
@@ -414,10 +415,10 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                              * 두지 않으면 지운 대화가 그대로 남아 있고, 이어
                              * 물으면 없는 session_id가 나가 백엔드가 조용히 새
                              * 세션을 만든다 — 사용자는 같은 대화를 이어간 줄로
-                             * 안다. 오던 답변도 그 대화의 것이라 함께 버린다.
+                             * 안다. 오던 답변도 그 대화의 것이라 화면에서 뗀다.
                              */
                             if (state.session_id === entry.id) {
-                              discardChatRequest();
+                              detachChatRequest();
                               dispatch({ type: "RESET" });
                             }
                             void deleteChatSession(entry.id).catch(() => {

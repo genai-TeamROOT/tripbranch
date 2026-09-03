@@ -7,7 +7,8 @@ import { expect, test } from "vitest";
 import {
   beginChatRequest,
   cancelChatRequest,
-  discardChatRequest,
+  detachChatRequest,
+  isDetachedRequest,
   endChatRequest,
   wasCancelledByUser,
 } from "./chatAbortController";
@@ -60,12 +61,17 @@ test("중단 버튼으로 끊긴 요청만 사용자 취소로 표시된다", ()
   expect(wasCancelledByUser(controller)).toBe(true);
 });
 
-test("화면을 떠나 버려진 요청은 사용자 취소가 아니다", () => {
+/*
+ * 떼어낸 요청을 끊으면 서버가 실행을 취소해 턴이 저장되지 않는다 — 방금 한
+ * 질문이 히스토리에서 통째로 사라진다. 화면에만 안 그리고 요청은 끝까지 둔다.
+ */
+test("화면에서 떼어낸 요청은 끊지 않는다", () => {
   const controller = beginChatRequest();
 
-  discardChatRequest();
+  detachChatRequest();
 
-  expect(controller.signal.aborted).toBe(true);
+  expect(controller.signal.aborted).toBe(false);
+  expect(isDetachedRequest(controller.signal)).toBe(true);
   expect(wasCancelledByUser(controller)).toBe(false);
 });
 
@@ -78,11 +84,18 @@ test("새 요청에 밀려난 요청도 사용자 취소가 아니다", () => {
   expect(wasCancelledByUser(first)).toBe(false);
 });
 
-test("버린 뒤에는 중단 버튼이 그 요청을 다시 표시하지 않는다", () => {
+test("떼어낸 뒤에는 중단 버튼이 그 요청을 건드리지 않는다", () => {
   const controller = beginChatRequest();
-  discardChatRequest();
+  detachChatRequest();
 
   cancelChatRequest();
 
+  expect(controller.signal.aborted).toBe(false);
   expect(wasCancelledByUser(controller)).toBe(false);
+});
+
+test("떼어내지 않은 요청은 화면에 그대로 흘린다", () => {
+  const controller = beginChatRequest();
+
+  expect(isDetachedRequest(controller.signal)).toBe(false);
 });

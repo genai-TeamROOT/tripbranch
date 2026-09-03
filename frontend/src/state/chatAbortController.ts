@@ -47,15 +47,36 @@ export function cancelChatRequest(): void {
   currentController.abort();
 }
 
+/*
+ * 화면에서 떼어낸 요청. **끊지는 않는다.**
+ *
+ * 답변을 기다리는 중에 다른 대화를 열면 예전에는 요청을 끊었다. 그러면 서버가
+ * 실행을 취소해서(라우트가 연결 끊김을 보고 task.cancel) 턴이 저장되지 않고,
+ * 제목도 안 붙어 그 대화가 히스토리에서 통째로 사라졌다 — 사용자는 방금 한
+ * 질문이 없어진 것으로 본다.
+ *
+ * 그래서 화면에만 안 그리고 요청은 끝까지 둔다. 서버가 답변을 완성해 저장하므로
+ * 나중에 그 대화를 열면 답변이 거기 있다. 대가는 아무도 안 읽을 수 있는 답변의
+ * LLM 비용이고, 대화가 사라지는 것보다 낫다고 봤다.
+ */
+const detached = new WeakSet<AbortSignal>();
+
 /**
- * 화면을 떠나며 진행 중인 요청을 버린다 — 지난 대화를 열거나 홈으로 돌아갈 때다.
+ * 화면을 떠나며 진행 중인 요청을 화면에서 떼어낸다 — 지난 대화를 열거나 홈으로
+ * 돌아갈 때다. 요청 자체는 계속 진행돼 서버가 답변을 저장한다.
  *
  * cancelChatRequest와 달리 표시를 남기지 않는다. 이 요청의 뒷정리는 이미 다른
  * 대화가 그려진 화면에서 일어나므로, 아무것도 하지 않는 것이 맞다.
  */
-export function discardChatRequest(): void {
-  currentController?.abort();
+export function detachChatRequest(): void {
+  if (!currentController) return;
+  detached.add(currentController.signal);
   currentController = null;
+}
+
+/** 이 요청이 화면에서 떼어졌는지. 떼어졌으면 이벤트를 화면에 흘리지 않는다. */
+export function isDetachedRequest(signal: AbortSignal | undefined): boolean {
+  return signal !== undefined && detached.has(signal);
 }
 
 /** 이 요청이 "중단" 버튼으로 끊겼는지. 아니면 다른 것에 밀려난 것이다. */

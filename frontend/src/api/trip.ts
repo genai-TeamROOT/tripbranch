@@ -13,6 +13,7 @@
  */
 
 import { apiClient, streamPost } from "./client";
+import { isDetachedRequest } from "../state/chatAbortController";
 import type {
   PhotoSimilarPlacesResponse,
   AgentDebugRequest,
@@ -136,10 +137,11 @@ export function streamChat(
     "/chat/stream",
     request,
     (event, data) => {
-      /* 끊긴 요청의 이벤트는 흘리지 않는다. 지난 대화를 열면 그 요청을 버리는데
-         (discardChatRequest), 이미 읽던 청크가 뒤늦게 콜백을 부르면 방금 연
-         대화에 앞 대화의 답변이 붙는다. */
-      if (signal?.aborted) return;
+      /* 화면에서 떼어졌거나 끊긴 요청의 이벤트는 흘리지 않는다. 지난 대화를 열면
+         그 요청을 화면에서 떼어내는데(detachChatRequest — 서버가 답변을 저장할 수
+         있게 요청 자체는 계속 둔다), 그대로 두면 방금 연 대화에 앞 대화의 답변이
+         붙는다. */
+      if (signal?.aborted || isDetachedRequest(signal)) return;
       if (
         event === "progress" ||
         event === "result" ||
