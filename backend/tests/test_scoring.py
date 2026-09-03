@@ -198,6 +198,71 @@ def test_score_prepared_candidates_uses_remaining_minutes_from_prepare() -> None
     assert result.ranked[0].feature_scores["remaining_operating_time"] == 0.25
 
 
+# ---------------------------------------------------------------- 구 단위 요청 (D-119 후속)
+
+
+def test_구_단위_요청은_거리_축을_쓰지_않는다() -> None:
+    """C가 구 전량에서 후보를 모은 요청은 기준점이 없어 거리로 줄 세울 수 없다.
+
+    "축이 없다"가 아니라 "값이 없다"로 다룬다 — 날씨 조회 실패와 같은 경로로
+    나머지 가중치가 재분배된다.
+    """
+    prepared = prepare_candidates([MUSEUM_OPEN, CAFE_CLOSING_SOON], now=NOW)
+
+    result = score_prepared_candidates(
+        prepared.eligible_candidates,
+        weather_condition=WeatherCondition.BAD,
+        max_distance_km=1.5,
+        district_scoped=True,
+    )
+
+    for ranked in result.ranked:
+        assert "distance" not in ranked.weights_used
+        assert ranked.feature_scores["distance"] is None
+        # 남은 두 축이 0.5씩 나눠 갖는다(0.40/0.40을 재분배한 결과).
+        assert ranked.weights_used["weather"] == 0.5
+        assert ranked.weights_used["remaining_operating_time"] == 0.5
+
+
+def test_구_단위가_아니면_거리_축이_그대로다() -> None:
+    """반경 검색 요청은 지금까지와 똑같아야 한다 — 이 변경이 새는지 본다."""
+    prepared = prepare_candidates([MUSEUM_OPEN, CAFE_CLOSING_SOON], now=NOW)
+
+    result = score_prepared_candidates(
+        prepared.eligible_candidates,
+        weather_condition=WeatherCondition.BAD,
+        max_distance_km=1.5,
+    )
+
+    for ranked in result.ranked:
+        assert ranked.weights_used["distance"] == 0.2
+        assert ranked.feature_scores["distance"] is not None
+
+
+def test_구_단위_요청에서는_거리가_순위를_바꾸지_못한다() -> None:
+    """거리만 다른 두 후보가 동점이 되어야 한다.
+
+    가까운 쪽이 이기던 것을 실제로 멈췄는지 본다 — 가중치 표만 보면 놓친다.
+    """
+    prepared = prepare_candidates([MUSEUM_OPEN, RESTAURANT_FAR], now=NOW)
+
+    scoped = score_prepared_candidates(
+        prepared.eligible_candidates,
+        weather_condition=WeatherCondition.NEUTRAL,
+        max_distance_km=1.5,
+        district_scoped=True,
+    )
+    radius = score_prepared_candidates(
+        prepared.eligible_candidates,
+        weather_condition=WeatherCondition.NEUTRAL,
+        max_distance_km=1.5,
+    )
+
+    # 반경 검색에서는 거리가 점수를 갈랐는데, 구 단위에서는 안 가른다.
+    assert len({ranked.score for ranked in radius.ranked}) > 1
+    assert len({ranked.score for ranked in scoped.ranked}) == 1
+
+
 def test_scores_and_sorts_fixed_candidates() -> None:
     result = score_candidates(
         [MUSEUM_OPEN, CAFE_CLOSING_SOON, GALLERY_UNKNOWN_HOURS, RESTAURANT_FAR],

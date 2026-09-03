@@ -110,6 +110,10 @@ class PreparedRecommendationResult:
     # "OO 기준으로 다시 보기" 비차단형 전환 제안(D-071). 위와 같은 이유로
     # 첫 배치 값을 쓴다 — resolve_travel_origin_toggle() 참고.
     travel_origin_toggle: TravelOriginToggle | None = None
+    # 후보를 구 하나에서 통째로 모았는가(C의 district_scope, D-119). 거리 Feature를
+    # 쓸지 정하는 값이라 채점까지 그대로 흘린다. 위와 같은 이유로 첫 배치 값을 쓴다 —
+    # 한 요청의 배치들은 같은 방식으로 후보를 모았다.
+    district_scoped: bool = False
 
     @property
     def filter_context(self) -> tuple[object, ...]:
@@ -188,6 +192,7 @@ def merge_prepared_recommendations(
         origin_name=first.origin_name,
         distance_denominator_offset_km=first.distance_denominator_offset_km,
         travel_origin_toggle=first.travel_origin_toggle,
+        district_scoped=first.district_scoped,
     )
 
 
@@ -273,6 +278,9 @@ async def prepare_recommendation_from_context(
         visit_at=visit_at,
         weather_ignored=_is_weather_explicitly_ignored(context, conditions),
         ignore_operating_hours=ignore_operating_hours,
+        # C가 "후보를 구 전체에서 모았다"는 **사실만** 실어 보낸다(D-119). 그것을
+        # 점수에 어떻게 반영할지는 D가 정한다 — 거리 Feature를 쓰지 않는다.
+        district_scoped=context.district_scope is not None,
         origin_name=resolve_origin_name(context, conditions),
         distance_denominator_offset_km=_distance_denominator_offset_km(context, conditions),
         travel_origin_toggle=resolve_travel_origin_toggle(context, conditions),
@@ -318,6 +326,7 @@ async def score_prepared_recommendation(
         requested_environment=prepared.requested_environment,
         travel_routes=travel_routes,
         travel_budget_speed_km_per_min=travel_budget_speed_km_per_min,
+        district_scoped=prepared.district_scoped,
         taste_matches=taste_matches,
     )
     ranked = scoring.ranked[:recommendation_limit]

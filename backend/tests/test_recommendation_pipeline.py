@@ -10,6 +10,7 @@ from app.agent_context.enrichment_schemas import (
 from app.agent_context.mappers import _operating_schedule
 from app.agent_context.schemas import (
     ContextError,
+    DistrictScope,
     RecommendationContext,
     ResolvedLocation,
     WeatherForecast,
@@ -192,6 +193,61 @@ async def test_distance_explanation_uses_requested_query_not_resolved_name() -> 
     assert sentence.startswith("경복궁에서 ")
     assert "사직로" not in sentence
 
+
+
+# --- 구 단위 요청 (D-119 후속) ---------------------------------------------
+#
+# `context.district_scope` → `prepared.district_scoped` → 거리 Feature 제거.
+# 이 사슬의 가운데 한 줄(prepare_recommendation_from_context)은 여기서만 깨진다 —
+# test_scoring.py는 플래그를 직접 넘겨 채점부만 보고, C의 test_district_context.py는
+# 발화에서 district_scope가 생기는 데까지만 본다. 그래서 두 방향을 다 건다.
+
+
+def _district_context(*, scoped: bool) -> RecommendationContext:
+    return RecommendationContext(
+        location=_context_location(),
+        places=AgentContextValue(status="success", data=[_context_place()]),
+        district_scope=(
+            DistrictScope(district_code="680", district_name="강남구") if scoped else None
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_district_scoped_context_drops_the_distance_feature() -> None:
+    """구 전량에서 모은 후보는 기준점이 없어 거리로 줄 세우지 않는다."""
+    response = await run_recommendation_pipeline_from_context(
+        _district_context(scoped=True),
+        visit_at=_CONTEXT_VISIT_AT,
+        search_radius_km=2.0,
+    )
+
+    items = [*response.recommendations, *response.unverified_recommendations]
+    assert items, "후보가 없으면 축이 빠졌는지 확인할 수 없다"
+    for item in items:
+        assert item.feature_scores["distance"] is None
+        assert "distance" not in item.weights_used
+        # 점수에 안 쓴 축이 근거 문장으로 새지 않는다 — build_explanations는
+        # feature_scores를 보고 고른다.
+        assert not [text for text in item.explanations if "거리" in text], item.explanations
+        # 카드의 거리 표시는 남는다. 점수에서 뺀 것이지 정보를 감춘 게 아니다.
+        assert item.distance_km >= 0
+
+
+@pytest.mark.asyncio
+async def test_radius_context_keeps_the_distance_feature() -> None:
+    """반경 검색 요청은 지금까지와 똑같아야 한다 — 이 변경이 새는지 본다."""
+    response = await run_recommendation_pipeline_from_context(
+        _district_context(scoped=False),
+        visit_at=_CONTEXT_VISIT_AT,
+        search_radius_km=2.0,
+    )
+
+    items = [*response.recommendations, *response.unverified_recommendations]
+    assert items
+    for item in items:
+        assert item.feature_scores["distance"] is not None
+        assert item.weights_used["distance"] > 0
 
 @pytest.mark.asyncio
 async def test_split_pipeline_matches_compatibility_entrypoint() -> None:

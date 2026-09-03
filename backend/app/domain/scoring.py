@@ -48,7 +48,7 @@ from app.place_search_policy import WALKING_SPEED_KM_PER_MINUTE
 # 두 곳이 전부 실재 여부로 거른다(build_weights는 `in set(requested)`,
 # weights_for_feature_scores는 `in feature_scores`). 올릴 근거는 그 키를
 # feature_scores에 실제로 채우는 **새 경로**다 — 1.7.0이 그 예다.
-SCORING_VERSION = "recommendation-scoring-1.7.0"
+SCORING_VERSION = "recommendation-scoring-1.8.0"
 
 WEATHER_FEATURE = "weather"
 ENVIRONMENT_FEATURE = "environment"
@@ -775,6 +775,9 @@ def score_prepared_candidates(
     # 속도가 아니다(D-118, `_travel_minutes_budget()` 참고). 기본값은 도보로,
     # 넘기지 않는 호출부는 기본 반경(도보 기준) 요청과 같은 자를 쓴다.
     travel_budget_speed_km_per_min: float = WALKING_SPEED_KM_PER_MINUTE,
+    # 후보를 구 하나에서 통째로 모은 요청인가(C의 RecommendationContext.district_scope,
+    # D-119). True면 거리 Feature를 **결측으로 다룬다** — 아래 루프 참고.
+    district_scoped: bool = False,
     # 취향 근거 검색 결과(place_id = content_id 기준). 비어 있으면 사용자가
     # 취향을 말하지 않았거나 검색이 실패한 것으로 보고 taste Feature를 아예
     # 쓰지 않는다 — 후보 단위가 아니라 **요청 단위** 판단이다.
@@ -841,6 +844,28 @@ def score_prepared_candidates(
         else:
             remaining_time_score = _remaining_time_score(remaining_minutes)
 
+        # 구 단위 요청은 거리 Feature를 쓰지 않는다(D-119 후속).
+        #
+        # **후보를 모은 방식이 반경 검색이 아니기 때문이다.** C가 구 전량에서
+        # 격자로 흩어 뽑으므로 기준점이 없고, 그 요청의 `location`은 구 이름을 푼
+        # 대표점이라 후보 수집에도 정렬에도 쓰이지 않았다 — 그 좌표와의 거리는
+        # 사용자가 말한 것과 아무 관계가 없다.
+        #
+        # 분모도 맞지 않는다. 실측(2026-09-03, 좌표 정상인 행 기준)으로 구 중심에서
+        # 기본 반경 2km를 넘는 장소가 강남 16.6% · 서초 26.8% · 송파 33.3% ·
+        # 용산 34.2%다. 그 후보들은 전부 0점이 되어 2.1km와 8km가 구분되지 않는다.
+        #
+        # **"축이 없다"가 아니라 "값이 없다"로 다룬다.** 요청 전체가 함께 빠지므로
+        # 한 순위 안에서 자를 두 개 쓰는 문제가 생기지 않고, 날씨 조회 실패와 같은
+        # 경로(`redistribute_weights`)를 그대로 탄다 — 날씨·영업시간이 0.5씩 된다.
+        #
+        # 사용자 위치를 아는 요청에서는 거리 축이 노이즈가 아니다 — 그래도
+        # 구 단위 요청은 "이 구 전체에서 골라 달라"는 뜻이라 가까운 순을 우선하지
+        # 않기로 팀에서 정했다. 카드의 거리 표시(`distance_km`)는 그대로 남는다 —
+        # 점수에서 뺀 것이지 정보를 감춘 것이 아니다.
+        if district_scoped:
+            missing_features.append("distance")
+
         weights_used = (
             redistribute_weights(base_weights, missing_features)
             if missing_features
@@ -850,12 +875,19 @@ def score_prepared_candidates(
         feature_scores: dict[str, float | None] = {
             primary_feature: primary_score,
             "remaining_operating_time": remaining_time_score,
-            "distance": _proximity_score(
-                candidate,
-                routes_by_place_id.get(candidate.place_id),
-                max_distance_km,
-                travel_budget_speed_km_per_min,
-            ),  # 실측 이동시간 우선, 없으면 직선거리
+            # 실측 이동시간 우선, 없으면 직선거리. 구 단위 요청에서는 None이다 —
+            # 점수를 안 쓰는데 값만 채우면 개발자 패널과 근거 문장이 "거리 때문에
+            # 뽑혔다"고 말하게 된다(build_explanations가 score로 고른다).
+            "distance": (
+                None
+                if district_scoped
+                else _proximity_score(
+                    candidate,
+                    routes_by_place_id.get(candidate.place_id),
+                    max_distance_km,
+                    travel_budget_speed_km_per_min,
+                )
+            ),
         }
         taste_match = taste_by_place_id.get(candidate.place_id) if uses_taste else None
         if uses_taste:
