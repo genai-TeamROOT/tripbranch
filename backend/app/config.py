@@ -47,6 +47,14 @@ class Settings(BaseSettings):
 
     app_env: str = "local"
 
+    # 브라우저에서 이 API를 부를 수 있는 출처. 쉼표로 여러 개를 준다.
+    #
+    # 기본값은 지금까지 코드에 박혀 있던 값 그대로다. 설정으로 뺀 이유는 워킹트리를
+    # 여러 개 띄울 때다 — 두 번째 프론트엔드는 5173을 못 쓰므로 다른 포트로 뜨는데,
+    # 그러면 교차 출처가 되어 브라우저가 막는다. 백엔드는 멀쩡하고 curl도 되는데
+    # 화면만 안 되는 모양이라 원인을 찾기 어렵다.
+    cors_allow_origins: str = "http://localhost:5173"
+
     # Provider selection: 개별 값이 비어 있으면 provider_mode를 공통 기본값으로 사용한다.
     provider_mode: ProviderMode = "fake"
     llm_provider: ProviderMode | None = None
@@ -424,6 +432,15 @@ class Settings(BaseSettings):
                 "RECOMMENDATION_RESULT_LIMIT은 RECOMMENDATION_CANDIDATE_LIMIT 이하여야 합니다."
             )
         return self
+
+    @property
+    def resolved_cors_allow_origins(self) -> list[str]:
+        """빈 항목을 뺀 허용 출처 목록."""
+        return [
+            origin.strip()
+            for origin in self.cors_allow_origins.split(",")
+            if origin.strip()
+        ]
 
     @property
     def resolved_llm_provider(self) -> ProviderMode:
