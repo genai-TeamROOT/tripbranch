@@ -639,9 +639,10 @@ _CLEARED_CONDITION_VALUES: dict[str, object] = {
 # SCHEDULE 실패(후보 부족) 시 되묻기 버튼 ID 및 텍스트.
 _SCHEDULE_RELAX_AREA = "schedule_relax_area"
 _SCHEDULE_RELAX_CATEGORY = "schedule_relax_category"
+# 아래 버튼이 함께 나가므로 "다른 지역이나 다른 종류로" 같은 방법 안내를 문장에
+# 다시 적지 않는다 — 버튼이 이미 그 두 가지를 말한다.
 _SCHEDULE_NO_CANDIDATES_MESSAGE = (
-    "조건에 맞는 곳을 충분히 찾지 못해 일정을 만들지 못했어요. "
-    "다른 지역이나 다른 종류의 장소로 다시 요청해볼까요?"
+    "일정을 짤 만한 곳을 충분히 찾지 못했어요. 범위를 넓혀서 다시 찾아볼까요?"
 )
 _SCHEDULE_NO_CANDIDATES_OPTIONS = (
     (_SCHEDULE_RELAX_AREA, "다른 지역에서 찾기"),
