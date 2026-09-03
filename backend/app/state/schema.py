@@ -387,6 +387,43 @@ class SavedPlaceList(BaseModel):
     updated_at: datetime = Field(default_factory=now_kst)
 
 
+# ---------------------------------------------------------------- 취향
+
+class UserPreference(BaseModel):
+    """사용자가 취향 설정 화면에서 고른 항목 하나.
+
+    프론트 `state/preferenceStorage.ts`의 SavedPreference와 같은 모양이다.
+    백엔드는 이 값을 해석하지 않고 그대로 보관한다 — 칩과 DB 코드의 대응은
+    화면이 갖고 있고(`pages/preferenceOptions.ts`), 여기서 다시 검증하면
+    칩 목록을 고칠 때마다 두 곳이 갈린다.
+    """
+
+    label: str
+    # preference | place_tag | custom. custom은 사용자가 직접 넣은 키워드라
+    # 대응 코드가 없다(codes가 빈 배열).
+    source: str
+    codes: list[str] = Field(default_factory=list)
+
+
+class UserPreferenceList(BaseModel):
+    """계정 단위 취향. (TP-222 후속)
+
+    **이 모델만 session_id가 아니라 user_id로 키를 잡는다.** 다른 상태
+    엔티티(AgentState·RecommendationHistory·SavedPlaceList)는 전부 세션 단위이고
+    세션 TTL과 함께 사라지지만, 취향은 세션을 넘어 사람에게 붙는 값이다 —
+    세션에 얹으면 대화를 새로 시작할 때마다 다시 골라야 한다.
+
+    그래서 user_id가 `str | None`이 아니라 필수다. 신원이 없으면 저장할 자리가
+    정해지지 않으므로, 라우트도 RequiredPrincipal을 쓴다.
+
+    items의 순서는 사용자가 고른 순서이고 화면이 그대로 보여준다.
+    """
+
+    user_id: str
+    items: list[UserPreference] = Field(default_factory=list)
+    updated_at: datetime = Field(default_factory=now_kst)
+
+
 # ---------------------------------------------------------------- 기록
 
 class ConditionChangeLog(BaseModel):

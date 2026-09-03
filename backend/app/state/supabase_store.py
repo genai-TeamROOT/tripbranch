@@ -27,6 +27,7 @@ from app.state.schema import (
     RecommendationHistory,
     SavedPlaceList,
     TraceRecord,
+    UserPreferenceList,
 )
 
 
@@ -247,6 +248,32 @@ class SupabaseStateStore:
             "/saved_place_lists",
             params={"session_id": f"eq.{session_id}"},
             prefer="return=minimal",
+        )
+
+    # ------------------------------------------------------------ Preferences
+
+    def get_preferences(self, user_id: str) -> UserPreferenceList | None:
+        """계정 단위 취향. 다른 조회와 달리 키가 user_id다."""
+        response = self._request(
+            "GET",
+            "/user_preferences",
+            params={"user_id": f"eq.{user_id}", "select": "*", "limit": "1"},
+        )
+        row = self._one_or_none(self._json(response))
+        if row is None:
+            return None
+        try:
+            return UserPreferenceList.model_validate(row)
+        except Exception:
+            raise StateStoreError("invalid user_preferences row") from None
+
+    def save_preferences(self, preferences: UserPreferenceList) -> None:
+        self._request(
+            "POST",
+            "/user_preferences",
+            params={"on_conflict": "user_id"},
+            json=preferences.model_dump(mode="json"),
+            prefer="resolution=merge-duplicates,return=minimal",
         )
 
     # ------------------------------------------------------------ ChangeLog

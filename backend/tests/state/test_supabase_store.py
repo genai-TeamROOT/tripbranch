@@ -15,10 +15,13 @@ from app.state.schema import (
     SavedPlaceItem,
     SavedPlaceList,
     UserConditions,
+    UserPreference,
+    UserPreferenceList,
 )
 from app.state.supabase_store import SupabaseStateStore
 
 SESSION_ID = "session-1"
+USER_ID = "3f1a9c04-0000-4000-8000-000000000001"
 
 
 def _store(transport: httpx.MockTransport) -> SupabaseStateStore:
@@ -826,3 +829,69 @@ def test_http_error_raises_state_store_error() -> None:
     )
     with pytest.raises(StateStoreError):
         _store(transport).get_state(SESSION_ID)
+
+# ------------------------------------------------------------ UserPreferenceList
+
+
+def test_get_preferences_returns_none_when_not_found() -> None:
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=[]))
+    assert _store(transport).get_preferences(USER_ID) is None
+
+
+def test_get_preferences_queries_by_user_id_not_session_id() -> None:
+    """이 저장소만 키가 user_id다. session_id로 조회하면 남의 취향에 닿는다."""
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json=[])
+
+    _store(httpx.MockTransport(handler)).get_preferences(USER_ID)
+
+    assert "/user_preferences" in seen["url"]
+    assert f"user_id=eq.{USER_ID}" in seen["url"]
+    assert "session_id" not in seen["url"]
+
+
+def test_get_preferences_parses_row() -> None:
+    row = {
+        "user_id": USER_ID,
+        "items": [{"label": "조용한 곳", "source": "preference", "codes": ["quiet"]}],
+        "updated_at": "2026-09-03T00:00:00+09:00",
+    }
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=[row]))
+
+    preferences = _store(transport).get_preferences(USER_ID)
+
+    assert preferences is not None
+    assert preferences.user_id == USER_ID
+    assert preferences.items[0].label == "조용한 곳"
+    assert preferences.items[0].codes == ["quiet"]
+
+
+def test_get_preferences_raises_on_broken_row() -> None:
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=[{"items": "x"}]))
+
+    with pytest.raises(StateStoreError):
+        _store(transport).get_preferences(USER_ID)
+
+
+def test_save_preferences_upserts_on_user_id() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(201, json=[])
+
+    preferences = UserPreferenceList(
+        user_id=USER_ID,
+        items=[UserPreference(label="산책하기 좋은", source="place_tag", codes=["walk"])],
+    )
+    _store(httpx.MockTransport(handler)).save_preferences(preferences)
+
+    assert "on_conflict=user_id" in str(seen["url"])
+    body = seen["body"]
+    assert isinstance(body, dict)
+    assert body["user_id"] == USER_ID
+    assert body["items"][0]["codes"] == ["walk"]

@@ -16,6 +16,7 @@ from app.auth.principal import Principal
 from app.errors import AppError
 from app.state import feedback as feedback_module
 from app.state import history as history_module
+from app.state import preferences as preferences_module
 from app.state import saved_places as saved_places_module
 from app.state import session as session_module
 from app.state import trace as trace_module
@@ -34,6 +35,7 @@ from app.state.schema import (
     SavedPlaceItem,
     SituationState,
     UserConditions,
+    UserPreference,
     now_kst,
 )
 from app.state.store import StateStore, get_store
@@ -1414,3 +1416,56 @@ def get_trace_stats(
         step_stats=step_stats,
         recent_errors=recent_errors,
     )
+
+
+# ================================================================ 취향 (계정 단위)
+
+
+class UserPreferencesResponse(BaseModel):
+    """계정 단위 취향 조회·저장 응답. (TP-222 후속)
+
+    session_id를 담지 않는다 — 이 값은 세션에 속하지 않는다. 다른 상태 응답과
+    모양이 다른 것은 의도된 것이고, 그래서 라우트도 /state/{session_id} 아래가
+    아니라 /preferences로 따로 나 있다.
+    """
+
+    items: list[UserPreference] = Field(default_factory=list)
+    updated_at: datetime | None = None
+
+
+@_wrap_store_errors
+def get_user_preferences(
+    user_id: str,
+    store: StateStore | None = None,
+) -> UserPreferencesResponse:
+    """계정의 취향을 조회한다.
+
+    아직 고른 적이 없으면 빈 목록에 updated_at=None으로 답한다. 404가 아닌
+    이유는 "취향을 안 고른 계정"이 정상 상태이기 때문이다 — 화면은 어느 쪽이든
+    빈 선택으로 그리면 된다.
+    """
+    store = store or get_store()
+
+    stored = store.get_preferences(user_id)
+    if stored is None:
+        return UserPreferencesResponse()
+    return UserPreferencesResponse(items=list(stored.items), updated_at=stored.updated_at)
+
+
+@_wrap_store_errors
+def replace_user_preferences(
+    user_id: str,
+    items: list[UserPreference],
+    store: StateStore | None = None,
+) -> UserPreferencesResponse:
+    """계정의 취향을 통째로 바꾼다.
+
+    빈 목록도 정상적인 저장이다(전부 해제한 경우). 소유권 검증이 따로 없는
+    이유는 키가 곧 신원이기 때문이다 — 라우트가 RequiredPrincipal로 받은
+    user_id만 여기 들어오므로 남의 취향에 닿을 경로가 없다. session_id를
+    받아 state.user_id와 대조해야 하는 세션 API들과 다른 점이다.
+    """
+    store = store or get_store()
+
+    stored = preferences_module.replace(store, user_id, items)
+    return UserPreferencesResponse(items=list(stored.items), updated_at=stored.updated_at)

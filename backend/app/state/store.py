@@ -22,6 +22,7 @@ from app.state.schema import (
     RecommendationHistory,
     SavedPlaceList,
     TraceRecord,
+    UserPreferenceList,
 )
 
 
@@ -49,6 +50,13 @@ class StateStore(Protocol):
     def get_saved_places(self, session_id: str) -> SavedPlaceList | None: ...
     def save_saved_places(self, saved: SavedPlaceList) -> None: ...
     def delete_saved_places(self, session_id: str) -> None: ...
+
+    # -- UserPreferenceList (계정 단위) --
+    # 이 둘만 session_id가 아니라 user_id로 조회한다. 삭제 메서드를 두지 않은
+    # 이유는 "취향을 비운다"가 빈 목록 저장이기 때문이다 — 행을 지우면 다음
+    # 조회에서 "아직 고른 적 없음"과 "다 지웠음"이 구분되지 않는다.
+    def get_preferences(self, user_id: str) -> UserPreferenceList | None: ...
+    def save_preferences(self, preferences: UserPreferenceList) -> None: ...
 
     # --- ConditionChangeLog (append-only)
     def append_change_logs(self, logs: list[ConditionChangeLog]) -> None: ...
@@ -101,6 +109,7 @@ class InMemoryStateStore:
         self._states: dict[str, AgentState] = {}
         self._histories: dict[str, RecommendationHistory] = {}
         self._saved_places: dict[str, SavedPlaceList] = {}
+        self._preferences: dict[str, UserPreferenceList] = {}
         self._change_logs: dict[str, list[ConditionChangeLog]] = {}
         self._traces: dict[str, list[TraceRecord]] = {}
         self._feedback: dict[str, list[FeedbackRecord]] = {}
@@ -140,6 +149,15 @@ class InMemoryStateStore:
 
     def delete_saved_places(self, session_id: str) -> None:
         self._saved_places.pop(session_id, None)
+
+    # ------------------------------------------------------------ Preferences
+
+    def get_preferences(self, user_id: str) -> UserPreferenceList | None:
+        preferences = self._preferences.get(user_id)
+        return preferences.model_copy(deep=True) if preferences else None
+
+    def save_preferences(self, preferences: UserPreferenceList) -> None:
+        self._preferences[preferences.user_id] = preferences.model_copy(deep=True)
 
     # ------------------------------------------------------------ ChangeLog
 
