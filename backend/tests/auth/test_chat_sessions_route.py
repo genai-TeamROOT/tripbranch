@@ -508,3 +508,103 @@ def test_추천을_받지_않은_대화는_빈_목록이다(signing_key) -> None
     response = TestClient(app).get(f"/api/sessions/{session_id}", headers=_headers(signing_key, ME))
 
     assert response.json()["recommendations"] == []
+
+
+# ---------------------------------------------------------------- 화면 기록
+
+
+def _record_message(session_id: str, user_input: str, message: str) -> None:
+    """A가 한 턴을 마치고 남기는 화면 기록. payload는 AgentResponse 직렬화다."""
+    state_service.record_session_message(
+        state_service.RecordSessionMessageRequest(
+            session_id=session_id,
+            run_id="run_1",
+            user_input=user_input,
+            payload={"message": message, "recommendations": None},
+        )
+    )
+
+
+def test_지난_대화에_화면_기록이_함께_온다(signing_key) -> None:
+    session_id = _start_chat(ME, "실내 어디 갈까")
+    _record_message(session_id, "실내 어디 갈까", "박물관을 찾아봤어요")
+
+    response = TestClient(app).get(f"/api/sessions/{session_id}", headers=_headers(signing_key, ME))
+
+    messages = response.json()["messages"]
+    assert [item["payload"]["message"] for item in messages] == ["박물관을 찾아봤어요"]
+    assert messages[0]["user_input"] == "실내 어디 갈까"
+
+
+# 이 절에서 가장 중요한 테스트다. 화면 기록을 따로 둔 이유가 정확히 이것이다 —
+# recent_turns는 MAX_RECENT_TURNS(=5)에서 잘리지만 화면은 대화 전체를 보여야 한다.
+def test_다섯_턴을_넘겨도_화면_기록은_잘리지_않는다(signing_key) -> None:
+    session_id = _start_chat(ME, "첫 질문", "둘", "셋", "넷", "다섯", "여섯", "일곱")
+    for index in range(7):
+        _record_message(session_id, f"{index}번 질문", f"{index}번 답변")
+
+    body = TestClient(app).get(
+        f"/api/sessions/{session_id}", headers=_headers(signing_key, ME)
+    ).json()
+
+    assert len(body["turns"]) == 5  # 모델 맥락은 잘린 채로 그대로다
+    assert len(body["messages"]) == 7  # 화면은 전부 남는다
+
+
+def test_되살려도_화면_기록은_지워지지_않는다(signing_key) -> None:
+    """resume이 지우는 것은 '다음 추천에서 뺄 곳'이지 '그때 화면에 나갔던 것'이 아니다."""
+    session_id = _start_chat(ME, "실내 어디 갈까")
+    _record_message(session_id, "실내 어디 갈까", "박물관을 찾아봤어요")
+    _expire(session_id)
+
+    response = TestClient(app).post(
+        f"/api/sessions/{session_id}/resume", headers=_headers(signing_key, ME)
+    )
+
+    assert [item["payload"]["message"] for item in response.json()["messages"]] == [
+        "박물관을 찾아봤어요"
+    ]
+
+
+def test_화면_기록은_오래된_것이_앞이다(signing_key) -> None:
+    session_id = _start_chat(ME, "실내 어디 갈까")
+    _record_message(session_id, "먼저", "먼저 답변")
+    _record_message(session_id, "나중", "나중 답변")
+
+    body = TestClient(app).get(
+        f"/api/sessions/{session_id}", headers=_headers(signing_key, ME)
+    ).json()
+
+    assert [item["payload"]["message"] for item in body["messages"]] == ["먼저 답변", "나중 답변"]
+
+
+def test_없는_세션에는_화면_기록을_남기지_않는다(signing_key) -> None:
+    """A의 실패 경로가 유령 세션을 만들지 않게 한다."""
+    from app.state.store import get_store
+
+    _record_message("sess_없는세션", "질문", "답변")
+
+    assert get_store().get_session_messages("sess_없는세션") == []
+
+
+def test_화면_기록에_세션의_주인이_함께_남는다(signing_key) -> None:
+    from app.state.store import get_store
+
+    session_id = _start_chat(ME, "내 대화")
+    _record_message(session_id, "질문", "답변")
+
+    assert get_store().get_session_messages(session_id)[0].user_id == ME
+
+
+def test_정리_스크립트가_화면_기록도_지운다(signing_key) -> None:
+    """세션 행만 지우고 화면 기록을 남기면 대화 원문이 살아남는다."""
+    from app.state.store import get_store
+    from scripts.cleanup_expired_sessions import _delete_one
+
+    session_id = _start_chat(ME, "지워질 대화")
+    _record_message(session_id, "질문", "답변")
+    store = get_store()
+
+    _delete_one(store, session_id)
+
+    assert store.get_session_messages(session_id) == []

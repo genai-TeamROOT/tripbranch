@@ -21,6 +21,7 @@ from app.state.schema import (
     FeedbackRecord,
     RecommendationHistory,
     SavedPlaceList,
+    SessionMessage,
     TraceRecord,
     UserPreferenceList,
 )
@@ -79,6 +80,13 @@ class StateStore(Protocol):
         self, since: datetime | None = None, until: datetime | None = None
     ) -> list[TraceRecord]: ...
 
+    # --- SessionMessage (append-only, TP-222 후속 — 화면 기록)
+    # recent_turns(모델 맥락)·추천 이력(제외 목록)과 달리 자르지도 비우지도
+    # 않는다. 지난 대화를 화면에 그대로 되돌리는 유일한 근거다.
+    def append_session_messages(self, messages: list[SessionMessage]) -> None: ...
+    def get_session_messages(self, session_id: str) -> list[SessionMessage]: ...
+    def delete_session_messages(self, session_id: str) -> None: ...
+
     # --- FeedbackRecord (append-only)
     def append_feedback(self, records: list[FeedbackRecord]) -> None: ...
     def get_feedback(self, session_id: str) -> list[FeedbackRecord]: ...
@@ -100,6 +108,7 @@ class StateStore(Protocol):
     def list_stale_session_ids(self, cutoff: datetime) -> list[str]: ...
     def delete_change_logs(self, session_id: str) -> None: ...
     def delete_traces(self, session_id: str) -> None: ...
+    # delete_session_messages는 위 SessionMessage 섹션에 있다.
     # delete_saved_places는 위 SavedPlaceList 섹션에 있다 — 만료 세션 정리
     # (scripts/cleanup_expired_sessions.py)도 같은 메서드를 쓴다.
 
@@ -119,6 +128,7 @@ class InMemoryStateStore:
         self._change_logs: dict[str, list[ConditionChangeLog]] = {}
         self._traces: dict[str, list[TraceRecord]] = {}
         self._feedback: dict[str, list[FeedbackRecord]] = {}
+        self._session_messages: dict[str, list[SessionMessage]] = {}
 
     # ------------------------------------------------------------ State
 
@@ -212,6 +222,22 @@ class InMemoryStateStore:
             all_records = [r for r in all_records if r.recorded_at < until]
         return [record.model_copy(deep=True) for record in all_records]
 
+    # ------------------------------------------------------------ 화면 기록
+
+    def append_session_messages(self, messages: list[SessionMessage]) -> None:
+        """append-only. 기존 기록을 수정하거나 삭제하지 않는다."""
+        for message in messages:
+            self._session_messages.setdefault(message.session_id, []).append(
+                message.model_copy(deep=True)
+            )
+
+    def get_session_messages(self, session_id: str) -> list[SessionMessage]:
+        messages = self._session_messages.get(session_id, [])
+        return [message.model_copy(deep=True) for message in messages]
+
+    def delete_session_messages(self, session_id: str) -> None:
+        self._session_messages.pop(session_id, None)
+
     # ------------------------------------------------------------ Feedback
 
     def append_feedback(self, records: list[FeedbackRecord]) -> None:
@@ -268,6 +294,7 @@ class InMemoryStateStore:
         self._histories.clear()
         self._saved_places.clear()
         self._change_logs.clear()
+        self._session_messages.clear()
         self._traces.clear()
         self._feedback.clear()
 

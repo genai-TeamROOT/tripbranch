@@ -26,6 +26,7 @@ from app.state.schema import (
     FeedbackRecord,
     RecommendationHistory,
     SavedPlaceList,
+    SessionMessage,
     TraceRecord,
     UserPreferenceList,
 )
@@ -333,6 +334,50 @@ class SupabaseStateStore:
             raise StateStoreError(
                 "invalid condition_change_logs row"
             ) from None
+
+    # ------------------------------------------------------------ 화면 기록
+
+    def append_session_messages(self, messages: list[SessionMessage]) -> None:
+        """append-only. (TP-222 후속)
+
+        recorded_at을 보내지 않고 서버 기본값에 맡기지 않는다 — 다른 append-only
+        테이블과 같이 모델이 만든 시각을 그대로 싣는다. 복원 순서는 id로 정하므로
+        이 값이 화면 순서를 좌우하지는 않는다.
+        """
+        if not messages:
+            return
+        self._request(
+            "POST",
+            "/session_messages",
+            json=[message.model_dump(mode="json") for message in messages],
+            prefer="return=minimal",
+        )
+
+    def get_session_messages(self, session_id: str) -> list[SessionMessage]:
+        response = self._request(
+            "GET",
+            "/session_messages",
+            params={
+                "session_id": f"eq.{session_id}",
+                "select": "*",
+                "order": "id.asc",
+            },
+        )
+        payload = self._json(response)
+        if not isinstance(payload, list):
+            raise StateStoreError("invalid session_messages response")
+        try:
+            return [SessionMessage.model_validate(row) for row in payload]
+        except Exception:
+            raise StateStoreError("invalid session_messages row") from None
+
+    def delete_session_messages(self, session_id: str) -> None:
+        self._request(
+            "DELETE",
+            "/session_messages",
+            params={"session_id": f"eq.{session_id}"},
+            prefer="return=minimal",
+        )
 
     # ------------------------------------------------------------ Trace
 

@@ -1,8 +1,8 @@
 """만료된 익명 세션·이력을 정리한다 (TP-134, D-074).
 
 역할: agent_states.last_active_at 기준으로 오래(기본 30일) 활동이 없는 세션을
-찾아, 그 세션에 딸린 4개 테이블(agent_states/recommendation_histories/
-condition_change_logs/trace_records) 행을 전부 지운다. response_feedback은
+찾아, 그 세션에 딸린 5개 테이블(agent_states/recommendation_histories/
+condition_change_logs/trace_records/session_messages) 행을 전부 지운다. response_feedback은
 세션 생애주기와 무관한 별도 분석 데이터라 대상에서 제외한다.
 
 세션 TTL(30분, session.py::SESSION_TTL)은 세션이 다시 조회될 때만 상태를
@@ -55,6 +55,9 @@ def _delete_one(store: StateStore, session_id: str) -> None:
     """
     store.delete_change_logs(session_id)
     store.delete_traces(session_id)
+    # 화면 기록도 세션 수명에 묶여 있다(TP-222 후속). 여기서 지우지 않으면
+    # 세션 행이 사라진 뒤에도 대화 원문이 남는다.
+    store.delete_session_messages(session_id)
     store.delete_history(session_id)
     # 보관함도 세션 수명에 묶여 있다(SCHEDULE-12).
     store.delete_saved_places(session_id)

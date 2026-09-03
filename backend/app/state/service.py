@@ -39,6 +39,7 @@ from app.state.schema import (
     RecommendedItem,
     RecommendedItemInput,
     SavedPlaceItem,
+    SessionMessage,
     SituationState,
     UserConditions,
     UserPreference,
@@ -309,6 +310,23 @@ class AppendConversationTurnRequest(BaseModel):
 class AppendConversationTurnResponse(BaseModel):
     session_id: str
     recent_turns: list[ConversationTurn]
+
+
+class RecordSessionMessageRequest(BaseModel):
+    """한 턴에 화면으로 나간 것 전부를 기록하는 요청. (TP-222 후속 — 화면 기록)
+
+    append_conversation_turn과 같은 자리에서 호출하지만 **다른 저장소에 다른
+    목적으로 쌓인다.** 저쪽은 모델에 넣을 맥락이라 5턴에서 잘리고, 이쪽은 사람이
+    다시 볼 화면이라 자르지 않는다.
+
+    payload는 A의 AgentResponse를 직렬화한 dict다. B는 열어보지 않는다 —
+    파싱하면 A의 스키마 변경을 B가 따라가야 한다.
+    """
+
+    session_id: str
+    run_id: str | None = None
+    user_input: str | None = None
+    payload: dict[str, Any]
 
 
 class SetSituationStateRequest(BaseModel):
@@ -1022,6 +1040,39 @@ def set_pending_info_context(
 
 
 @_wrap_store_errors
+def record_session_message(
+    request: RecordSessionMessageRequest,
+    store: StateStore | None = None,
+) -> None:
+    """한 턴의 화면 기록을 남긴다. (TP-222 후속)
+
+    세션이 없으면 아무것도 하지 않는다 — append_conversation_turn과 같은 방어
+    패턴이고, 여기서 세션을 만들면 A의 실패 경로가 유령 세션을 남긴다.
+
+    user_id는 세션에서 베껴 온다. 접근 통제는 agent_states 쪽에서 하므로 이 값이
+    검사에 쓰이지는 않지만, 세션 행이 먼저 지워져도 이 기록의 주인을 알 수 있어야
+    정리 스크립트가 판단할 근거가 남는다.
+    """
+    store = store or get_store()
+
+    state = store.get_state(request.session_id)
+    if state is None:
+        return
+
+    store.append_session_messages(
+        [
+            SessionMessage(
+                session_id=request.session_id,
+                run_id=request.run_id,
+                user_id=state.user_id,
+                user_input=request.user_input,
+                payload=request.payload,
+            )
+        ]
+    )
+
+
+@_wrap_store_errors
 def append_conversation_turn(
     request: AppendConversationTurnRequest,
     store: StateStore | None = None,
@@ -1610,7 +1661,14 @@ class ChatSessionDetail(BaseModel):
     turns: list[ConversationTurn] = Field(default_factory=list)
     # 그 대화에서 화면에 나갔던 장소들. 말풍선만 돌려주면 "추천을 받았다"는
     # 사실만 남고 무엇을 받았는지가 사라진다.
+    #
+    # 화면 기록(messages)이 쌓이기 전에 만들어진 대화를 위해 남겨 둔다 —
+    # 저장된 조각으로 최선을 다한 근사치다. messages가 있으면 화면은 그쪽을
+    # 쓴다(그쪽이 그때 나간 것 그대로다).
     recommendations: list[PastRecommendation] = Field(default_factory=list)
+    # 그 턴에 화면으로 나간 것 전부. 오래된 것이 앞이다. 이 목록이 비어 있지
+    # 않으면 화면은 turns/recommendations 대신 이것으로 대화를 되돌린다.
+    messages: list[SessionMessage] = Field(default_factory=list)
     last_active_at: datetime
     # 이 세션으로 대화를 이어갈 수 있는지. TTL(30분)이 지났으면 False이고,
     # 그때 사용자가 무언가를 물으면 새 세션에서 시작된다.
@@ -1636,7 +1694,9 @@ def get_user_session_detail(
     """
     store = store or get_store()
     state = _load_own_conversation(session_id, principal, store)
-    return _to_session_detail(state, _past_recommendations(store, state))
+    return _to_session_detail(
+        state, _past_recommendations(store, state), store.get_session_messages(session_id)
+    )
 
 
 def _load_own_conversation(
@@ -1694,12 +1754,14 @@ def _past_recommendations(store: StateStore, state: AgentState) -> list[PastReco
 def _to_session_detail(
     state: AgentState,
     recommendations: list[PastRecommendation],
+    messages: list[SessionMessage],
 ) -> ChatSessionDetail:
     return ChatSessionDetail(
         session_id=state.session_id,
         title=state.title or "",
         turns=list(state.recent_turns),
         recommendations=recommendations,
+        messages=messages,
         last_active_at=state.last_active_at,
         resumable=state.status != "expired"
         and not session_module.is_session_expired(state),
@@ -1733,7 +1795,11 @@ def resume_user_session(
     state = _load_own_conversation(session_id, principal, store)
 
     if state.status != "expired" and not session_module.is_session_expired(state):
-        return _to_session_detail(state, _past_recommendations(store, state))
+        return _to_session_detail(
+            state,
+            _past_recommendations(store, state),
+            store.get_session_messages(session_id),
+        )
 
     # 비우기 **전에** 읽는다. 화면에 그릴 "그때 본 곳"과 다음 추천에서 뺄 "이미
     # 보여준 곳"은 같은 데이터에서 나오지만 쓰임이 반대다 — 하나는 남겨야 하고
@@ -1744,4 +1810,6 @@ def resume_user_session(
     store.save_state(state)
     history_module.clear_recommended(store, session_id)
 
-    return _to_session_detail(state, shown)
+    # 화면 기록은 비우지 않는다. resume이 지우는 것은 '다음 추천에서 뺄 곳'
+    # 이지 '그때 화면에 나갔던 것'이 아니다.
+    return _to_session_detail(state, shown, store.get_session_messages(session_id))

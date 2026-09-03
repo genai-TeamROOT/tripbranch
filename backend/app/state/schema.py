@@ -450,6 +450,38 @@ class ConditionChangeLog(BaseModel):
     applied_at: datetime = Field(default_factory=now_kst)
 
 
+class SessionMessage(BaseModel):
+    """한 턴에 화면으로 나갔던 것 전부. append-only. (TP-222 후속 — 화면 기록)
+
+    **recent_turns와 역할이 다르다.** 저것은 모델에 넣을 맥락이라
+    MAX_RECENT_TURNS(=5)에서 잘리고, 이것은 사람이 다시 볼 화면이라 자르지
+    않는다. 추천 이력과도 다르다 — 그것은 "다음 추천에서 뺄 곳"이라 대화를
+    이어갈 때 비워진다. 셋을 한 데이터로 겸하는 동안은 지난 대화를 되돌릴 때
+    손실이 구조적으로 생겼다.
+
+    payload는 A의 AgentResponse를 직렬화한 그대로다. **B는 열어보지 않는다** —
+    파싱하면 A의 스키마가 바뀔 때마다 B가 따라가야 하고, 지금 B는 app.schemas에
+    의존하지 않는다. trace_records의 step 등을 다루는 방식과 같다.
+
+    계약(agent-state-contract-v1.md)의 두 금지를 여는 자리다: 전제의 "사용자
+    원문 발화와 LLM 원문 응답은 저장하지 않는다"와 3.2절의 "B는 place_id만
+    저장한다". 원칙이 지키려던 것("과거 정보가 현재 정보로 오인되는" 상황)은
+    저장이 아니라 표시에서 지킨다 — 운영시간처럼 시간이 지나면 틀리는 값은
+    복원 화면에서 다시 그리지 않는다.
+    """
+
+    session_id: str
+    # 그 턴의 run_id. 같은 턴의 다른 기록과 잇는 열쇠다. 응답이 run_id 없이
+    # 끝나는 경로가 있어 선택이다.
+    run_id: str | None = None
+    user_id: str | None = None
+    # payload 안에도 있지만 밖으로 꺼내 둔다 — 목록을 훑을 때 payload 전체를
+    # 열지 않으려는 것이다.
+    user_input: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+    recorded_at: datetime = Field(default_factory=now_kst)
+
+
 class TraceRecord(BaseModel):
     """실행 단계 1건. append-only. (docs/package-b/llmops-trace-contract-v1.md 2절)
 
