@@ -9,6 +9,15 @@ from app.domain.models import LocalSearchPlace
 from app.main import app
 from app.providers.contracts import ProviderSource, provider_result
 from app.routes import place_search as route
+from app.tools.contracts import ToolError, ToolStatus
+from app.tools.resolve_location import (
+    LocationPurpose,
+    ResolutionConfidence,
+    ResolutionMethod,
+    ResolvedLocation,
+    ResolveLocationQuery,
+    ResolveLocationResult,
+)
 
 _URL = "/api/places/search"
 
@@ -106,6 +115,119 @@ def test_query_is_scoped_to_seoul_before_calling_provider(client, monkeypatch) -
 @pytest.mark.parametrize("query", ["서울 중앙동", "종로구 카페", "강남구청역"])
 def test_query_already_pointing_at_seoul_is_left_alone(query: str) -> None:
     assert route.seoul_scoped_query(query) == query
+
+
+class _FakeResolveTool:
+    """위치 해석 사다리 대역. 라우터가 무엇을 넘기고 무엇을 읽는지만 본다."""
+
+    received_queries: list[str] = []
+
+    def __init__(self, **_kwargs) -> None:
+        pass
+
+    result = ResolveLocationResult(status=ToolStatus.NO_DATA, location=None, error=None)
+
+    async def execute(self, query: ResolveLocationQuery) -> ResolveLocationResult:
+        type(self).received_queries.append(query.location_query)
+        assert query.purpose is LocationPurpose.SEARCH_CENTER
+        return type(self).result
+
+
+def _install_resolve_tool(monkeypatch, result: ResolveLocationResult) -> type[_FakeResolveTool]:
+    tool = type("_ScopedFakeResolveTool", (_FakeResolveTool,), {})
+    tool.received_queries = []
+    tool.result = result
+    monkeypatch.setattr(route, "ResolveLocationTool", tool)
+    return tool
+
+
+def _resolved(name: str, latitude: float, longitude: float) -> ResolveLocationResult:
+    return ResolveLocationResult(
+        status=ToolStatus.SUCCESS,
+        location=ResolvedLocation(
+            requested_query=name,
+            provider_query=name,
+            resolved_name=name,
+            latitude=latitude,
+            longitude=longitude,
+            resolution_method=ResolutionMethod.DIRECT,
+            confidence=ResolutionConfidence.EXACT,
+            address="서울특별시 종로구 율곡로 62",
+        ),
+        error=None,
+    )
+
+
+def test_address_falls_back_to_the_location_ladder(client, monkeypatch) -> None:
+    """지역 검색은 상호만 찾는다 - 주소는 사다리(ResolveLocationTool)가 푼다."""
+    _install(monkeypatch)  # 지역 검색은 0건
+    tool = _install_resolve_tool(
+        monkeypatch, _resolved("서울특별시 종로구 율곡로 62", _SEOUL_LATITUDE, _SEOUL_LONGITUDE)
+    )
+
+    body = client.get(_URL, params={"query": "율곡로 62"}).json()
+
+    assert [place["name"] for place in body["places"]] == ["서울특별시 종로구 율곡로 62"]
+    assert body["places"][0]["address"] == "서울특별시 종로구 율곡로 62"
+    # 사다리에는 "서울"을 덧붙이지 않은 원래 검색어를 넘긴다.
+    assert tool.received_queries == ["율곡로 62"]
+
+
+def test_ladder_is_not_called_when_local_search_found_places(client, monkeypatch) -> None:
+    """상호로 찾았으면 사다리를 부르지 않는다 - 외부 호출을 한 번 더 낼 이유가 없다."""
+    _install(monkeypatch, _place("안국역", _SEOUL_LATITUDE, _SEOUL_LONGITUDE))
+    tool = _install_resolve_tool(
+        monkeypatch, _resolved("안국역", _SEOUL_LATITUDE, _SEOUL_LONGITUDE)
+    )
+
+    client.get(_URL, params={"query": "안국역"})
+
+    assert tool.received_queries == []
+
+
+def test_ladder_result_outside_seoul_is_counted(client, monkeypatch) -> None:
+    _install(monkeypatch)
+    _install_resolve_tool(
+        monkeypatch,
+        ResolveLocationResult(
+            status=ToolStatus.UNSUPPORTED,
+            location=None,
+            error=ToolError(
+                code="unsupported_region",
+                message="지원하지 않는 지역이에요.",
+                cause="outside_supported_region",
+                retryable=False,
+            ),
+        ),
+    )
+
+    body = client.get(_URL, params={"query": "해운대해수욕장로 264"}).json()
+
+    assert body["places"] == []
+    assert body["outside_service_area_count"] == 1
+
+
+def test_ladder_failure_is_reported_as_a_failure(client, monkeypatch) -> None:
+    """외부 조회 실패를 "찾은 곳이 없어요"로 감추지 않는다 - 사용자가 검색어만 고치게 된다."""
+    _install(monkeypatch)
+    _install_resolve_tool(
+        monkeypatch,
+        ResolveLocationResult(
+            status=ToolStatus.UNAVAILABLE,
+            location=None,
+            error=ToolError(
+                code="provider_unavailable",
+                message="지도 서비스를 사용할 수 없어요.",
+                cause="upstream_error",
+                retryable=True,
+            ),
+        ),
+    )
+
+    response = client.get(_URL, params={"query": "율곡로 62"})
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "provider_unavailable"
 
 
 def test_blank_query_is_rejected_before_calling_provider(client, monkeypatch) -> None:

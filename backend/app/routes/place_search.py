@@ -12,6 +12,15 @@
 있는 결과가 5건뿐이라(Naver API 상한, `providers/local_search.py`), "중앙동 카페"
 같은 검색어에서는 지방 결과 다섯 개가 서울 결과를 통째로 밀어낸다. 사용자가 이미
 "서울"이나 구 이름을 적었으면 그대로 둔다.
+
+**후보가 하나도 없으면 `ResolveLocationTool`에 넘긴다.** 지역 검색은 상호·시설
+이름만 찾아서 "율곡로 62" 같은 주소를 못 푼다(실측 2026-09-03: 0건). 그 도구가
+저장소·지역 검색·지오코딩을 순서대로 쓰는 위치 해석 사다리를 이미 갖고 있으므로,
+여기서 같은 사다리를 다시 만들지 않고 그대로 부른다 — 두 벌이 되면 같은 검색어에
+답이 갈리고, 그쪽에 들어가는 개선(LLM 질의 정리 등)이 이 화면에 오지 않는다.
+
+결과가 한 곳뿐인 것은 이 경로에서는 문제가 되지 않는다. 주소는 원래 한 곳이고,
+고를 것이 여럿인 검색어는 위에서 이미 지역 검색이 목록으로 돌려줬다.
 """
 
 from __future__ import annotations
@@ -19,15 +28,26 @@ from __future__ import annotations
 import logging
 from typing import Annotated
 
+import httpx
 from fastapi import APIRouter, Query
 
 from app.auth.dependency import OptionalPrincipal
 from app.domain.models import LocalSearchPlace
 from app.errors import AppError
 from app.observability.api_usage import create_external_client
-from app.providers.factory import get_local_search_provider
+from app.providers.factory import (
+    get_geocoding_provider,
+    get_local_search_provider,
+    get_place_location_repository,
+)
 from app.schemas import PlaceSearchCandidate, PlaceSearchResponse
 from app.service_area import SUPPORTED_DISTRICTS, is_within_service_area
+from app.tools.contracts import ToolStatus
+from app.tools.resolve_location import (
+    LocationPurpose,
+    ResolveLocationQuery,
+    ResolveLocationTool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +87,54 @@ def _to_candidate(place: LocalSearchPlace) -> PlaceSearchCandidate | None:
     )
 
 
+async def _resolve_single_place(
+    query: str, client: httpx.AsyncClient
+) -> tuple[PlaceSearchCandidate | None, int]:
+    """위치 해석 사다리로 한 곳을 푼다. (후보, 서울 밖이라 뺀 수)를 돌려준다.
+
+    도구가 예외 대신 상태로 답한다 — 못 찾으면 NO_DATA, 서울 밖이면 UNSUPPORTED다.
+    서울 밖은 개수로 세어 화면이 "서울 지역만 검색할 수 있어요"라고 말하게 한다.
+    """
+    tool = ResolveLocationTool(
+        provider=get_geocoding_provider(client),
+        place_repository=get_place_location_repository(client),
+        local_search_provider=get_local_search_provider(client),
+    )
+    result = await tool.execute(
+        ResolveLocationQuery(location_query=query, purpose=LocationPurpose.SEARCH_CENTER)
+    )
+
+    if result.status is ToolStatus.SUCCESS and result.location is not None:
+        location = result.location
+        return (
+            PlaceSearchCandidate(
+                name=location.resolved_name,
+                address=location.address,
+                road_address=None,
+                category=location.place_category,
+                latitude=location.latitude,
+                longitude=location.longitude,
+            ),
+            0,
+        )
+    if result.status is ToolStatus.UNSUPPORTED:
+        return None, 1
+    if result.status is ToolStatus.UNAVAILABLE:
+        # 외부 조회가 실패한 것을 "찾은 곳이 없어요"로 보여주면 사용자는 검색어를
+        # 고치며 헤맨다. 실패는 실패로 알린다(D-042와 같은 방향).
+        raise AppError(
+            code=result.error.code if result.error else "provider_unavailable",
+            message=(
+                result.error.message
+                if result.error
+                else "장소를 찾는 중에 문제가 생겼어요. 잠시 후 다시 시도해주세요."
+            ),
+            status_code=503,
+            retryable=True,
+        )
+    return None, 0
+
+
 @router.get("/places/search", response_model=PlaceSearchResponse)
 async def search_places(
     principal: OptionalPrincipal,
@@ -96,17 +164,25 @@ async def search_places(
             seoul_scoped_query(normalized_query), display=_DISPLAY
         )
 
-    candidates: list[PlaceSearchCandidate] = []
-    outside_count = 0
-    for place in result.data:
-        candidate = _to_candidate(place)
-        if candidate is None:
-            # 좌표가 아예 없는 경우와 서울 밖인 경우를 가른다. 좌표 없는 후보는
-            # 화면이 안내할 것이 없어 그냥 빠지지만, 서울 밖은 이유를 말해야 한다.
-            if place.latitude is not None and place.longitude is not None:
-                outside_count += 1
-            continue
-        candidates.append(candidate)
+        candidates: list[PlaceSearchCandidate] = []
+        outside_count = 0
+        for place in result.data:
+            candidate = _to_candidate(place)
+            if candidate is None:
+                # 좌표가 아예 없는 경우와 서울 밖인 경우를 가른다. 좌표 없는 후보는
+                # 화면이 안내할 것이 없어 그냥 빠지지만, 서울 밖은 이유를 말해야 한다.
+                if place.latitude is not None and place.longitude is not None:
+                    outside_count += 1
+                continue
+            candidates.append(candidate)
+
+        if not candidates and outside_count == 0:
+            # 상호로는 못 찾았다. 주소이거나, 사다리의 다른 단계가 아는 이름일 수
+            # 있다. 서울 밖이라 걸러낸 것이 있으면 이유가 이미 분명하므로 넘어간다.
+            resolved, resolved_outside = await _resolve_single_place(normalized_query, client)
+            if resolved is not None:
+                candidates.append(resolved)
+            outside_count += resolved_outside
 
     logger.info(
         "장소 검색: 질의=%s 후보=%d 서울밖=%d",
