@@ -169,7 +169,6 @@ from app.state.service import (
     RecommendedPlace,
     RecordClosedExclusionsRequest,
     RecordRecommendationRequest,
-    RecordSessionMessageRequest,
     RecordTraceRequest,
     SessionContextResponse,
     SetIgnoreOperatingHoursRequest,
@@ -183,7 +182,6 @@ from app.state.service import (
     apply,
     record_closed_exclusions,
     record_recommendation,
-    record_session_message,
     record_trace,
     set_ignore_operating_hours_until,
     set_last_intent,
@@ -2410,23 +2408,14 @@ async def run_agent_flow(
             # 대화 기억은 응답 자체보다 부가 기능이다. 저장 장애가 이미 완성된 답변을
             # 사용자에게 못 보내게 해서는 안 된다.
             logger.warning("최근 대화 저장 실패(응답 흐름에는 영향 없음)", exc_info=True)
-        # 화면 기록(TP-222 후속). 바로 위 append_conversation_turn과 같은 자리에서
-        # 부르지만 목적이 다르다 — 저것은 모델에 넣을 맥락이라 5턴에서 잘리고,
-        # 이것은 사용자가 나중에 다시 볼 화면이라 자르지 않는다. try를 따로 두는
-        # 이유는 둘의 실패를 옮기지 않기 위해서다(화면 기록이 실패해도 대화 맥락은
-        # 남아야 한다).
-        try:
-            record_session_message(
-                RecordSessionMessageRequest(
-                    session_id=response.state.session_id,
-                    run_id=response.state.run_id,
-                    user_input=request.user_input,
-                    payload=response.model_dump(mode="json"),
-                ),
-                store=store,
-            )
-        except Exception:
-            logger.warning("화면 기록 저장 실패(응답 흐름에는 영향 없음)", exc_info=True)
+        # 화면 기록(TP-222 후속)은 **여기서 남기지 않는다.** 이 지점의 response는
+        # 아직 사용자가 볼 모양이 아니다 — 후속 질문은 SSE 경로에서 done 뒤에
+        # 붙고(routes/chat.py), 영어 화면의 번역도 이 함수가 끝난 뒤에 일어난다.
+        # 여기서 저장하면 후속 질문이 빠지고 영어 대화가 한국어로 복원된다
+        # (실측: 저장된 턴 8건 전부 후속 질문 없음).
+        #
+        # 그래서 기록은 화면용 응답을 완성하는 라우트 두 곳이 남긴다. /agent-debug
+        # 같은 개발용 호출이 사용자 대화 기록에 섞이지 않는 효과도 함께 얻는다.
         try:
             summary = summarize_turn(response)
             turn.record(

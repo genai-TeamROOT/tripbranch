@@ -6253,31 +6253,6 @@ async def test_situational_general_turn_offers_a_button_and_records_pending_offe
 
 
 @pytest.mark.asyncio
-async def test_turn_records_the_screen_transcript() -> None:
-    """턴이 끝나면 화면 기록이 함께 남는다. (TP-222 후속)
-
-    recent_turns와 같은 자리에서 부르지만 다른 저장소에 다른 목적으로 쌓인다 —
-    저것은 5턴에서 잘리는 모델 맥락이고, 이것은 사용자가 나중에 다시 볼 화면이다.
-    배선이 빠지면 지난 대화가 조용히 빈 채로 복원되므로 여기서 확인한다.
-    """
-    store = InMemoryStateStore()
-    providers = _providers()
-    providers["llm"] = _LLMProviderWithSituationalOffer(SituationKind.FATIGUE)
-
-    response = await run_agent_flow(
-        AgentRequest(user_input="너무 지친다", session_id=None, device_location=DEVICE_LOCATION),
-        store=store,
-        **providers,
-    )
-
-    messages = store.get_session_messages(response.state.session_id)
-    assert len(messages) == 1
-    assert messages[0].user_input == "너무 지친다"
-    # payload는 AgentResponse 직렬화 그대로다 — 화면이 실시간과 같은 함수로 그린다.
-    assert messages[0].payload["message"] == response.message
-
-
-@pytest.mark.asyncio
 async def test_second_turn_passes_saved_history_to_classify_and_extract() -> None:
     """두 번째 자연어 턴은 첫 턴을 user/model 역할 이력으로 LLM에 전달한다."""
     store = InMemoryStateStore()

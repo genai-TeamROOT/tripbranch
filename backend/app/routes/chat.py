@@ -49,6 +49,7 @@ from app.services.runtime.localization import (
     localize_request_for_runtime,
     localize_response_for_user,
 )
+from app.state.service import RecordSessionMessageRequest, record_session_message
 from app.state.session import new_trace_id
 
 router = APIRouter(tags=["chat"])
@@ -73,6 +74,30 @@ async def _response_for_user(response: AgentResponse, *, language: str) -> Agent
         return await localize_response_for_user(
             response, language=language, translator=get_google_translate_provider(client)
         )
+
+
+def _record_transcript(request: AgentRequest, response: AgentResponse) -> None:
+    """그 턴에 화면으로 나간 것을 그대로 남긴다. (TP-222 후속 — 화면 기록)
+
+    **Runtime이 아니라 라우트가 남기는 이유는 시점 때문이다.** Runtime을 빠져나온
+    응답은 아직 사용자가 볼 모양이 아니다 — 후속 질문은 스트리밍 경로에서 done
+    뒤에 붙고, 영어 화면의 번역도 그 뒤에 일어난다. 화면 기록은 "그때 화면에
+    나갔던 것"이어야 하므로 그 둘이 모두 끝난 자리에서 부른다.
+
+    실패는 삼킨다. 기록은 이미 사용자에게 다 보여준 답변의 부가 기능이라, 저장
+    장애가 완결된 턴을 뒤집으면 안 된다.
+    """
+    try:
+        record_session_message(
+            RecordSessionMessageRequest(
+                session_id=response.state.session_id,
+                run_id=response.state.run_id,
+                user_input=request.user_input,
+                payload=response.model_dump(mode="json"),
+            )
+        )
+    except Exception:
+        logger.warning("화면 기록 저장 실패(응답 흐름에는 영향 없음)", exc_info=True)
 
 
 async def _follow_ups_for_user(
@@ -104,7 +129,9 @@ async def _follow_ups_for_user(
 async def chat(request: AgentRequest, principal: OptionalPrincipal) -> AgentResponse:
     runtime_request = await _request_for_runtime(request)
     response = await run_agent(runtime_request, principal=principal)
-    return await _response_for_user(response, language=request.language)
+    for_user = await _response_for_user(response, language=request.language)
+    _record_transcript(request, for_user)
+    return for_user
 
 
 @router.post("/chat/place-details", response_model=RecommendationPlaceDetailResponse)
@@ -301,6 +328,12 @@ async def chat_stream(
                 # 새면 완결된 턴이 스트림 오류로 뒤집힌다.
                 logger.warning("후속 질문 전달 실패(답변에는 영향 없음)", exc_info=True)
                 suggestions = []
+
+            # 여기가 응답이 화면과 같아지는 지점이다 — 번역이 끝났고 후속 질문도
+            # 정해졌다. 화면 기록은 이 모양으로 남긴다.
+            response.suggested_follow_ups = suggestions
+            _record_transcript(request, response)
+
             if suggestions:
                 yield ServerSentEvent(
                     event="follow_ups",
