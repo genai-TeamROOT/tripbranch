@@ -3,7 +3,7 @@
  * 입력: setMockSession/setMockSignInError로 지정한 세션·오류 상태.
  * 출력: createClient 대체 함수와 상태 제어 헬퍼.
  * 호출 시점: src/test/setup.ts가 @supabase/supabase-js를 이 모듈로 mock할 때 로드된다.
- * TODO: 게스트→계정 승계(2차)가 들어오면 updateUser/linkIdentity도 여기에 추가한다.
+ * TODO: 소셜 승계(linkIdentity)가 들어오면 여기에 추가한다. 이메일 승계는 updateUser로 되어 있다.
  */
 
 import type { Session, SupabaseClient } from "@supabase/supabase-js";
@@ -39,6 +39,9 @@ interface AuthCall {
   password?: string;
   name?: string;
   redirectTo?: string;
+  /* 호출 시점의 uid. 게스트 승계가 uid를 지키는지 보려면 이 값이 있어야 한다 —
+     승계 전후를 세션만 비교하면 "새 계정이 만들어졌다"와 구분되지 않는다. */
+  userId?: string;
 }
 let authCalls: AuthCall[] = [];
 let emailAuthError: { message: string; code?: string } | null = null;
@@ -135,11 +138,23 @@ export function createMockSupabaseClient(): SupabaseClient {
         listeners.forEach((listener) => listener("SIGNED_IN", account));
         return { data: { session: account, user: account.user }, error: null };
       },
-      updateUser: async (input: { password?: string }) => {
+      /*
+       * 두 곳이 쓴다 — 비밀번호 재설정(password만)과 게스트 승계(email·password·data).
+       * 승계 쪽은 이메일 확인이 켜져 있어 **여기서 is_anonymous가 바로 false가 되지
+       * 않는다.** 링크를 눌러야 바뀐다. 그걸 흉내 내지 않고 세션을 바로 승격시키면
+       * "가입하자마자 계정이 됨"이라는 존재하지 않는 흐름을 테스트가 통과시킨다.
+       */
+      updateUser: async (
+        input: { email?: string; password?: string; data?: { name?: string } },
+        options?: { emailRedirectTo?: string },
+      ) => {
         authCalls.push({
           method: "updateUser",
-          email: currentSession?.user?.email ?? "",
+          email: input.email ?? currentSession?.user?.email ?? "",
           password: input.password,
+          name: input.data?.name,
+          redirectTo: options?.emailRedirectTo,
+          userId: currentSession?.user?.id,
         });
         if (emailAuthError) return { data: { user: null }, error: emailAuthError };
         return { data: { user: currentSession?.user ?? null }, error: null };
