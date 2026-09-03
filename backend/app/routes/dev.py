@@ -39,6 +39,7 @@ from app.observability.api_usage import (
     get_usage_snapshot,
     reset_usage,
 )
+from app.providers.factory import get_closure_extractor
 from app.providers.real_place import RealPlaceProvider
 from app.providers.tour_barrier_free import RealBarrierFreeProvider
 from app.providers.tour_ldong_registry import find_district_name, list_districts
@@ -1343,6 +1344,11 @@ async def post_apply(request: ApplyRequest) -> dict[str, Any]:
                     client=client,
                     timeout_seconds=settings.external_api_timeout_seconds,
                 ),
+                # 정규식이 못 읽은 휴무 문구는 이 실행에서 LLM이 읽는다(TP-231).
+                # 상세조회와 같은 실행에서 채워야 "장소는 들어왔는데 휴무만 옛
+                # 파서 결과인" 상태가 남지 않는다 — 무장애를 여기서 채우는 것과
+                # 같은 이유다. 꺼져 있으면 None이고 정규식 결과만 저장한다.
+                closure_extractor=get_closure_extractor(),
                 page_size=settings.place_sync_page_size,
                 detail_concurrency=settings.place_sync_detail_concurrency,
                 detail_ttl_days=settings.place_sync_detail_ttl_days,

@@ -8,6 +8,8 @@ Naver/Supabase까지 같은 값을 물려받는 문제로 분리).
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from app.config import Settings
@@ -293,3 +295,64 @@ def test_get_travel_route_tool_keeps_driving_fake_unless_explicitly_enabled(monk
 
     assert settings_override.travel_route_provider == "real"
     assert settings_override.travel_route_driving_provider == "fake"
+
+
+class Test휴무_추출기_생성:
+    """적재 배치에 LLM 휴무 추출기를 넘길지 정하는 규칙. (TP-231)
+
+    None을 돌려주는 것은 기능이 하나 빠질 뿐 적재는 정상이라는 뜻이다. 그래서
+    어느 경우에도 예외를 던져 부팅을 막지 않는다.
+    """
+
+    @staticmethod
+    def _settings(**overrides: object) -> Settings:
+        base: dict[str, object] = {
+            "_env_file": None,
+            "provider_mode": "real",
+            "llm_api_key": "present",
+        }
+        base.update(overrides)
+        return Settings(**base)
+
+    def test_스위치를_끄면_안_만든다(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            factory, "settings", self._settings(closure_extract_enabled=False)
+        )
+        assert factory.get_closure_extractor() is None
+
+    def test_fake_LLM이면_안_만든다(self, monkeypatch, caplog) -> None:
+        """가짜 휴무가 DB에 저장되면 끄고 다시 켜도 남는다 (D-042).
+
+        왜 껐는지를 로그로 확인한다 — 켠 줄 알았는데 안 도는 상황에서
+        `.env`를 볼지 키를 볼지가 이 한 줄로 갈린다.
+        """
+        monkeypatch.setattr(
+            factory, "settings", self._settings(provider_mode="fake", llm_api_key="")
+        )
+        with caplog.at_level(logging.WARNING, logger=factory.logger.name):
+            assert factory.get_closure_extractor() is None
+        assert "fake 모드" in caplog.text
+
+    def test_키가_없으면_안_만든다(self, monkeypatch) -> None:
+        monkeypatch.setattr(factory, "settings", self._settings(llm_api_key=""))
+        assert factory.get_closure_extractor() is None
+
+    def test_켜져_있으면_실제_Gemini를_만든다(self, monkeypatch) -> None:
+        monkeypatch.setattr(factory, "settings", self._settings())
+        extractor = factory.get_closure_extractor()
+        assert isinstance(extractor, factory.RealGeminiProvider)
+        assert hasattr(extractor, "extract_closure_rules")
+
+    def test_기본값은_켜짐이다(self) -> None:
+        """끄면 주차가 섞인 휴무 399곳이 지금처럼 안 읽힌 채 남는다."""
+        assert Settings(_env_file=None).closure_extract_enabled is True
+
+    def test_휴무_추출을_모르는_구현이면_안_넘긴다(self, monkeypatch) -> None:
+        """LLMProvider 규약에는 휴무 추출이 없다 — 넘기기 전에 확인한다."""
+
+        class _NoClosure:
+            pass
+
+        monkeypatch.setattr(factory, "settings", self._settings())
+        monkeypatch.setattr(factory, "get_llm_provider", lambda: _NoClosure())
+        assert factory.get_closure_extractor() is None

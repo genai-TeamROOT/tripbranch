@@ -228,6 +228,13 @@ supabase migration list
   `agent_states.title` 추가 + 기존 283건 backfill + `(user_id, last_active_at desc)`
   부분 인덱스. **backfill 값은 근사치다** — 남아 있는 가장 오래된 턴이라
   MAX_RECENT_TURNS(=5)를 채운 대화에서는 실제 첫 질문이 아니다.
+- `202609030005_create_saved_schedules.sql`도 적용 완료 상태다(2026-09-03,
+  **Supabase Dashboard SQL Editor**). 저장한 일정 테이블 + `(user_id, created_at desc)`
+  인덱스 + `(user_id, run_id) where run_id is not null` 부분 유니크 인덱스.
+  **CLI/MCP가 아니라 SQL Editor로 적용해 원격 마이그레이션 이력에는 남지 않는다** —
+  다음 사람이 `db push`를 돌리면 미적용으로 보고 다시 실행하려 할 수 있는데,
+  `create table`이라 재실행하면 오류가 난다. 그때는 실행하지 말고 이 줄을 근거로
+  건너뛴다.
 - 기존 마이그레이션 파일은 적용 후 수정하지 않는다.
 - 이후 스키마 변경은 새 타임스탬프를 가진 마이그레이션 파일로 추가한다.
 - 새 마이그레이션은 가능한 한 Supabase CLI `db push` 또는 MCP

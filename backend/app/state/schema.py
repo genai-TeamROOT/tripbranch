@@ -490,6 +490,39 @@ class SessionMessage(BaseModel):
     recorded_at: datetime = Field(default_factory=now_kst)
 
 
+class SavedSchedule(BaseModel):
+    """사용자가 저장한 일정 1건. (SCHEDULE, 카드 2)
+
+    **화면 기록(SessionMessage)과 겸하지 않는다.** 저쪽은 "그때 화면에 나갔던 것"
+    이고 현재 상태로 다시 읽는 소비자를 두지 않는다는 전제 위에 있다. 이것은
+    사용자가 "이 일정을 쓰겠다"고 고른 것이라 이름을 붙이고 나중에 열고 고칠 수
+    있어야 한다 — 스냅샷을 편집 대상으로 겸하게 하면 그 전제가 깨진다. 보관함
+    (SavedPlaceList)을 추천 이력과 분리한 것과 같은 판단이다.
+
+    **UserPreferenceList와 같은 계정 단위 엔티티다.** user_id가 필수이고 세션
+    TTL과 무관하게 남는다. 라우트도 RequiredPrincipal을 쓴다.
+
+    payload는 ScheduleResult를 직렬화한 그대로이며 **B는 열어보지 않는다**
+    (SessionMessage.payload와 같은 취급 — app.schemas에 의존하지 않는다).
+
+    session_id/run_id는 출처 표시일 뿐이다. 세션은 30일 뒤 정리되지만 이 행은
+    남으므로, 이 값으로 원본 대화를 열려는 화면은 **없을 수 있다**를 전제로 다뤄야
+    한다.
+    """
+
+    # 서버(DB 기본값)가 만든다. 저장 요청을 만들 때는 아직 없다.
+    id: str | None = None
+    user_id: str
+    session_id: str | None = None
+    run_id: str | None = None
+    # 목록에 보여줄 이름. payload 안의 route_summary는 LLM이 쓴 문장이고
+    # 이것은 사용자의 것이다.
+    title: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=now_kst)
+    updated_at: datetime = Field(default_factory=now_kst)
+
+
 class TraceRecord(BaseModel):
     """실행 단계 1건. append-only. (docs/package-b/llmops-trace-contract-v1.md 2절)
 

@@ -5,7 +5,7 @@
 
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { AppShellProvider } from "../components/layout/AppShellContext";
 import { TripProvider } from "../state/TripContext";
@@ -13,6 +13,10 @@ import { SchedulePage } from "./SchedulePage";
 
 beforeEach(() => {
   sessionStorage.clear();
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 test("짠 일정이 없으면 채팅으로 돌아가자는 안내를 보여준다", async () => {
@@ -123,4 +127,86 @@ test("짠 일정이 있으면 정류장 타임라인과 피드백 토글을 보�
   expect(helpful).toHaveAttribute("aria-pressed", "false");
   await user.click(helpful);
   expect(helpful).toHaveAttribute("aria-pressed", "true");
+});
+
+/*
+ * 저장한 일정 열기. (SCHEDULE 카드 2)
+ *
+ * **이 화면을 재사용하는 이유**는 사이드바 "일정"이 이미 여기를 열기 때문이다.
+ * 목록에서 고른 일정이 다른 모양으로 열리면 같은 것을 두 가지로 그리게 된다.
+ */
+
+const SAVED_DETAIL = {
+  id: "11111111-2222-4333-8444-555555555555",
+  title: "종로 반나절",
+  session_id: "sess_1",
+  created_at: "2026-08-31T14:30:00+09:00",
+  updated_at: "2026-08-31T14:30:00+09:00",
+  payload: {
+    items: [
+      {
+        order: 1,
+        place_id: "p1",
+        place_name: "경복궁",
+        estimated_arrival: "14:30",
+        estimated_duration_min: 90,
+        reason: "조용히 걷기 좋아요",
+        travel_to_next_min: null,
+        travel_to_next_mode: null,
+        travel_to_next_measured: null,
+        warnings: [],
+      },
+    ],
+    total_duration_min: 90,
+    route_summary: "경복궁 한 바퀴",
+    basis_note: "8월 31일 14:30 기준",
+    elapsed_ms: 1200,
+  },
+};
+
+function renderSaved(id: string) {
+  return render(
+    <MemoryRouter initialEntries={[`/schedule?saved=${id}`]}>
+      <AppShellProvider>
+        <TripProvider>
+          <SchedulePage />
+        </TripProvider>
+      </AppShellProvider>
+    </MemoryRouter>,
+  );
+}
+
+test("저장한 일정을 열면 그때 편성이 그대로 보인다", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json(SAVED_DETAIL)));
+
+  renderSaved(SAVED_DETAIL.id);
+
+  expect(await screen.findByText("경복궁")).toBeInTheDocument();
+  expect(screen.getByText("경복궁 한 바퀴")).toBeInTheDocument();
+});
+
+/*
+ * **여기가 이 기능에서 제일 틀리기 쉬운 곳이다.** 도착 시각·이동 시간은 저장
+ * 시점 값이라, 화면이 지금 시각을 얹으면 사흘 전 일정이 방금 짠 것처럼 보인다.
+ */
+test("저장한 일정에는 지금 시각이 아니라 저장한 시각을 밝힌다", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json(SAVED_DETAIL)));
+
+  renderSaved(SAVED_DETAIL.id);
+
+  expect(await screen.findByText(/저장한 일정이에요/)).toBeInTheDocument();
+  expect(screen.queryByText(/기준으로 짠 동선이에요/)).not.toBeInTheDocument();
+});
+
+test("저장한 일정을 못 불러오면 그 사실을 알린다", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => Response.json({ error: { message: "not found" } }, { status: 404 })),
+  );
+
+  renderSaved(SAVED_DETAIL.id);
+
+  expect(await screen.findByText(/불러오지 못했어요/)).toBeInTheDocument();
+  /* "아직 짠 일정이 없어요"로 뭉뚱그리면 사용자는 저장이 안 된 줄 안다. */
+  expect(screen.queryByText("아직 짠 일정이 없어요.")).not.toBeInTheDocument();
 });

@@ -189,6 +189,32 @@ export interface ScheduleResult {
   elapsed_ms: number;
 }
 
+/*
+ * 저장한 일정. (SCHEDULE 카드 2)
+ *
+ * 화면 기록(session_messages)과 다르다 — 저것은 "그때 화면에 나갔던 것"이고
+ * 이것은 사용자가 "이 일정을 쓰겠다"고 고른 것이라 이름을 붙이고 나중에 연다.
+ */
+export interface SavedScheduleSummary {
+  id: string;
+  title: string;
+  /* 어느 대화에서 나왔는지. 세션은 30일 뒤 정리되지만 이 일정은 남으므로
+     **없을 수 있다**를 전제로 쓴다. */
+  session_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SavedScheduleDetail extends SavedScheduleSummary {
+  /* 저장 시점의 ScheduleResult 그대로다. **지금 기준으로 다시 계산한 값이 아니다** —
+     도착 시각·이동 시간은 그때 기준이라 화면이 그 사실을 밝혀야 한다. */
+  payload: ScheduleResult;
+}
+
+export interface SavedSchedulesResponse {
+  items: SavedScheduleSummary[];
+}
+
 export interface ComparisonItem {
   place_id: string;
   place_name: string;
@@ -416,6 +442,11 @@ export type ChatMessage =
       id: string;
       type: "schedule_result";
       schedule: ScheduleResult;
+      /* 이 일정을 저장할 때 함께 보낸다. run_id는 같은 턴을 두 번 저장하지 않기
+         위한 열쇠이고, session_id는 "어느 대화에서 나왔는지"를 남긴다. 응답이
+         run_id 없이 끝나는 경로가 있어 둘 다 선택이다. */
+      run_id?: string;
+      session_id?: string;
       /* 일정 요청 클릭부터 응답 수신까지의 클라이언트 실측 시간(ms).
          recommendation_result의 elapsed_ms와 같은 역할이다. */
       elapsed_ms: number;

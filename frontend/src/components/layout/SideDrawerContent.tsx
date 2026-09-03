@@ -9,9 +9,19 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Home, LogOut, MapPin, MoreHorizontal, Plus, Route, Sparkles, Trash2 } from "lucide-react";
+import {
+  Home,
+  LogOut,
+  MapPin,
+  MoreHorizontal,
+  Plus,
+  Route,
+  Sparkles,
+  Trash2,
+  UserPlus,
+} from "lucide-react";
 import { useAuth } from "../../auth/AuthContext";
-import { identityLabel } from "../../auth/identityLabel";
+import { identityLabel, isGuestSession } from "../../auth/identityLabel";
 import { detachChatRequest } from "../../state/chatAbortController";
 import { sheetState } from "../../state/sheetNav";
 import { useTripDispatch, useTripState } from "../../state/TripContext";
@@ -19,6 +29,11 @@ import type { Language } from "../../types";
 import { deleteChatSession, renameChatSession, resumeChatSession } from "../../api/trip";
 import { loadChatSessions, refreshChatSessions } from "../../state/chatSessions";
 import { clearLocalUserData } from "../../state/localUserData";
+import {
+  loadSavedSchedules,
+  subscribeSavedSchedules,
+  type SavedScheduleEntry,
+} from "../../state/savedSchedules";
 import {
   createId,
   loadFavorites,
@@ -63,10 +78,15 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
    * 서버가 안다. 목록만 로컬에 복사해두면 지운 대화가 되살아나는 쪽이 더 나쁘다.
    */
   const [history, setHistory] = useState<ChatHistoryEntry[]>([]);
+  /* 저장한 일정도 계정에서 온다(GET /api/schedules). 대화 목록과 별도 저장소라
+     따로 받는다 — 세션이 30일 뒤 정리돼도 이쪽은 남는다. */
+  const [schedules, setSchedules] = useState<SavedScheduleEntry[]>([]);
   const [showAddFavorite, setShowAddFavorite] = useState(false);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
+  /* 게스트 로그아웃은 되돌릴 수 없어 한 번 끊는다 — handleSignOut 주석 참고. */
+  const [confirmingSignOut, setConfirmingSignOut] = useState(false);
   const renameInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => saveFavorites(favorites), [favorites]);
@@ -76,8 +96,15 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
     void loadChatSessions().then((entries) => {
       if (active) setHistory(entries);
     });
+    void loadSavedSchedules().then((entries) => {
+      if (active) setSchedules(entries);
+    });
+    /* 일정을 저장하면 목록이 바로 바뀐다. 대화 목록처럼 TripContext 상태를 볼 수
+       없는 이유는 savedSchedules.subscribeSavedSchedules 주석에 있다. */
+    const unsubscribe = subscribeSavedSchedules(setSchedules);
     return () => {
       active = false;
+      unsubscribe();
     };
   }, [session?.user?.id]);
   /*
@@ -112,6 +139,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
   }, [renamingId]);
 
   const hasConversation = state.messages.length > 0;
+  const isGuest = status === "ready" && session ? isGuestSession(session) : false;
 
   function go(path: string, options?: { sheet?: boolean }) {
     // 위치·일정은 새 페이지가 아니라 지금 화면 위에 바텀시트로 뜬다(§5) — 지금
@@ -133,7 +161,22 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
     onNavigate?.();
   }
 
+  /*
+   * 게스트에게 로그아웃은 되돌릴 수 없다 — 다시 로그인할 수단이 없어 그 uid로
+   * 돌아갈 길이 사라지고, 그 uid에 달린 대화·보관함도 함께 닿을 수 없게 된다
+   * (AuthContext.signOut 주석과 같은 근거). 그래서 게스트일 때만 한 번 끊는다.
+   *
+   * 계정 사용자는 확인을 받지 않는다. 다시 로그인하면 그대로 돌아오므로, 되돌릴 수
+   * 있는 동작에까지 확인을 붙이면 확인이라는 신호 자체가 값싸진다.
+   *
+   * AuthStatusBadge가 이미 같은 확인을 갖고 있는데 그 배지는 개발자 화면에서만
+   * 쓰인다. 사용자가 실제로 누르는 것은 이쪽 버튼이었고, 여기엔 확인이 없었다.
+   */
   async function handleSignOut() {
+    if (session && isGuestSession(session) && !confirmingSignOut) {
+      setConfirmingSignOut(true);
+      return;
+    }
     try {
       await signOut();
       /* 신원만 끊고 이 기기의 데이터를 두면 다음 신원의 화면에 앞사람의 대화·취향·
@@ -442,18 +485,99 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
         )}
       </section>
 
-      {/* 5. 신원 라벨 + 로그아웃 — 맨 아래 */}
+      {/*
+        5. 저장한 일정 (SCHEDULE 카드 2)
+
+        채팅 히스토리 **아래**에 둔다. 대화가 일정보다 먼저 생기고 개수도 많아,
+        위에 두면 대화 목록이 접힌 화면에서 스크롤 밖으로 밀린다.
+
+        이름 바꾸기·삭제 메뉴는 아직 붙이지 않았다 — 대화 쪽 메뉴(openMenuId)를
+        그대로 쓰면 두 목록이 같은 상태를 공유해 한쪽을 열면 다른 쪽이 닫힌다.
+        분리해서 다음에 붙인다.
+      */}
+      <section className="flex flex-col gap-1.5">
+        <h2 className="text-xs font-bold text-label">저장한 일정</h2>
+        {schedules.length === 0 ? (
+          <p className="py-1 text-xs text-muted">아직 저장한 일정이 없어요</p>
+        ) : (
+          <ul className="flex flex-col gap-0.5">
+            {schedules.map((entry) => (
+              <li key={entry.id}>
+                <button
+                  type="button"
+                  onClick={() => go(`/schedule?saved=${encodeURIComponent(entry.id)}`, { sheet: true })}
+                  className="flex w-full flex-col items-start gap-0.5 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-chip"
+                >
+                  <span className="w-full truncate text-sm font-medium text-ink">
+                    {entry.label}
+                  </span>
+                  {entry.date && <span className="text-[11px] text-muted">{entry.date} 저장</span>}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {/* 6. 신원 라벨 + 계정 만들기(게스트만) + 로그아웃 — 맨 아래 */}
       <div className="mt-auto flex flex-col items-start gap-1">
         {status === "ready" && session && (
           <p className="px-1 text-xs text-muted">{identityLabel(session)}</p>
         )}
-        <button
-          type="button"
-          onClick={() => void handleSignOut()}
-          className="flex items-center gap-2 self-start px-1 py-2 text-sm font-medium text-muted transition-colors hover:text-rust"
-        >
-          <LogOut size={15} aria-hidden /> 로그아웃
-        </button>
+        {/*
+          게스트에게만 보인다. **이 버튼이 없으면 승계 경로에 닿을 방법이 없었다** —
+          /signup으로 가는 링크가 로그인 관문에만 있는데 게스트는 세션이 있어서 그
+          화면으로 못 들어간다(LoginPage의 Navigate). 그래서 가입하려면 먼저
+          로그아웃해야 했고, 로그아웃하면 그 uid로 돌아갈 길이 없어 이어받을 기록
+          자체가 사라졌다.
+
+          문구를 "로그인"이 아니라 "계정 만들기"로 둔다. 게스트에게 필요한 동작은
+          지금 쓰던 것을 계정으로 굳히는 것이지 다른 계정으로 갈아타는 것이 아니고,
+          가입 화면이 게스트 세션을 그대로 승격시킨다(AuthContext.signUpWithEmail).
+        */}
+        {isGuest && (
+          <button
+            type="button"
+            onClick={() => go("/signup")}
+            className="flex items-center gap-2 self-start px-1 py-2 text-sm font-medium text-muted transition-colors hover:text-brand"
+          >
+            <UserPlus size={15} aria-hidden /> 계정 만들기
+          </button>
+        )}
+        {confirmingSignOut ? (
+          /* 잃는 것과 대신 할 수 있는 것을 함께 말한다. "정말 하시겠어요?"만 물으면
+             사용자는 무엇을 잃는지 모른 채 고른다. */
+          <div className="flex flex-col items-start gap-2 px-1 py-2">
+            <p role="alert" className="text-xs text-rust">
+              로그아웃하면 지금까지의 대화로 돌아올 수 없어요. 계정을 만들면 그대로
+              이어서 쓸 수 있어요.
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => void handleSignOut()}
+                className="rounded px-2 py-1 text-sm font-medium text-rust"
+              >
+                로그아웃
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmingSignOut(false)}
+                className="rounded px-2 py-1 text-sm font-medium text-muted"
+              >
+                취소
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => void handleSignOut()}
+            className="flex items-center gap-2 self-start px-1 py-2 text-sm font-medium text-muted transition-colors hover:text-rust"
+          >
+            <LogOut size={15} aria-hidden /> 로그아웃
+          </button>
+        )}
       </div>
 
       {showAddFavorite && (

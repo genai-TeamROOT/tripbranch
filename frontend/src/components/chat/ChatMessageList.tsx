@@ -315,6 +315,8 @@ export function ChatMessageList({
                 isLoading={isLoading}
                 onRequestMore={onRequestMore}
                 onRelaxRadius={onRelaxRadius}
+                runId={message.run_id}
+                sessionId={message.session_id}
               />
             );
           }

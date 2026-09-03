@@ -13,6 +13,7 @@ import httpx
 
 from app.config import Settings
 from app.domain.models import TourPlacePage
+from app.providers.factory import get_closure_extractor
 from app.providers.real_place import RealPlaceProvider
 from app.repositories.supabase_places import SupabasePlaceRepository
 from app.services.place_snapshot import records_from_snapshot
@@ -116,6 +117,9 @@ async def run(args: argparse.Namespace, settings: Settings) -> int:
             ),
             detail_ttl_days=settings.place_sync_detail_ttl_days,
             retry_count=settings.external_api_retry_count,
+            # 정규식이 못 읽은 휴무 문구를 LLM으로 읽는다(TP-231). 꺼져 있거나
+            # fake LLM이면 None이고, 그때는 정규식 결과만 저장한다.
+            closure_extractor=get_closure_extractor(),
         )
         result = await service.sync(
             area_code,

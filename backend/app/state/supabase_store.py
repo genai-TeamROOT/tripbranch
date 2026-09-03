@@ -26,9 +26,11 @@ from app.state.schema import (
     FeedbackRecord,
     RecommendationHistory,
     SavedPlaceList,
+    SavedSchedule,
     SessionMessage,
     TraceRecord,
     UserPreferenceList,
+    now_kst,
 )
 
 
@@ -381,6 +383,99 @@ class SupabaseStateStore:
             params={"session_id": f"eq.{session_id}"},
             prefer="return=minimal",
         )
+
+    # ------------------------------------------------------------ 저장한 일정
+
+    def save_schedule(self, schedule: SavedSchedule) -> SavedSchedule:
+        """저장하고 id가 채워진 것을 돌려준다. (SCHEDULE 카드 2)
+
+        **on_conflict로 멱등을 만들지 않고 먼저 조회한다.** 유니크 인덱스가
+        `where run_id is not null`인 부분 인덱스라 PostgREST의 on_conflict가
+        그 조건까지 실어 보낼 수 없다 — 중재 인덱스를 못 찾아 실패한다. 왕복이
+        한 번 늘지만 저장은 사용자가 버튼을 누를 때만 일어나므로 값이 싸다.
+
+        id는 보내지 않는다. DB 기본값(gen_random_uuid)이 만든다.
+        """
+        if schedule.run_id is not None:
+            found = self._request(
+                "GET",
+                "/saved_schedules",
+                params={
+                    "user_id": f"eq.{schedule.user_id}",
+                    "run_id": f"eq.{schedule.run_id}",
+                    "select": "*",
+                    "limit": "1",
+                },
+            )
+            row = self._one_or_none(self._json(found))
+            if row is not None:
+                return self._schedule_row(row)
+
+        response = self._request(
+            "POST",
+            "/saved_schedules",
+            json=schedule.model_dump(mode="json", exclude={"id"}),
+            prefer="return=representation",
+        )
+        row = self._one_or_none(self._json(response))
+        if row is None:
+            raise StateStoreError("invalid saved_schedules insert response")
+        return self._schedule_row(row)
+
+    def list_schedules_for_user(self, user_id: str, limit: int) -> list[SavedSchedule]:
+        response = self._request(
+            "GET",
+            "/saved_schedules",
+            params={
+                "user_id": f"eq.{user_id}",
+                "select": "*",
+                "order": "created_at.desc",
+                "limit": str(limit),
+            },
+        )
+        payload = self._json(response)
+        if not isinstance(payload, list):
+            raise StateStoreError("invalid saved_schedules response")
+        return [self._schedule_row(row) for row in payload]
+
+    def get_schedule(self, schedule_id: str) -> SavedSchedule | None:
+        """**소유권을 여기서 보지 않는다.** 저장소는 행을 돌려주고, 남의 것인지는
+        service가 principal과 대조한다 — 저장소가 신원을 알면 계층이 섞인다."""
+        response = self._request(
+            "GET",
+            "/saved_schedules",
+            params={"id": f"eq.{schedule_id}", "select": "*", "limit": "1"},
+        )
+        row = self._one_or_none(self._json(response))
+        return self._schedule_row(row) if row is not None else None
+
+    def rename_schedule(self, schedule_id: str, title: str) -> SavedSchedule | None:
+        response = self._request(
+            "PATCH",
+            "/saved_schedules",
+            params={"id": f"eq.{schedule_id}"},
+            json={"title": title, "updated_at": now_kst().isoformat()},
+            prefer="return=representation",
+        )
+        row = self._one_or_none(self._json(response))
+        return self._schedule_row(row) if row is not None else None
+
+    def delete_schedule(self, schedule_id: str) -> bool:
+        """지웠으면 True. 없으면 오류가 아니라 False다(다른 삭제와 같이 멱등)."""
+        response = self._request(
+            "DELETE",
+            "/saved_schedules",
+            params={"id": f"eq.{schedule_id}"},
+            prefer="return=representation",
+        )
+        return self._one_or_none(self._json(response)) is not None
+
+    @staticmethod
+    def _schedule_row(row: Mapping[str, object]) -> SavedSchedule:
+        try:
+            return SavedSchedule.model_validate(row)
+        except Exception:
+            raise StateStoreError("invalid saved_schedules row") from None
 
     # ------------------------------------------------------------ Trace
 

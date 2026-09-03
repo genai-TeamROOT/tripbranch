@@ -5,9 +5,20 @@
 | 슬롯 | 관리 버전 | 템플릿 | 공유 규칙 |
 | --- | --- | --- | --- |
 | recommend.extract | 2.7.0 | extract.md, location_rules.md, place_tag_rules.md | budget, weather, concentration, environment, transport, accessibility_needs |
-| recommend.summary | 1.2.0 | summary_instruction.md | persona |
+| recommend.summary | 1.3.0 | summary_instruction.md | persona |
 
 ## Draft
+
+- 2026-09-03(recommend.summary v1.3.0): 말풍선 마지막 문장이 "~해 보시겠습니까?" 같은
+  격식체 의문형으로 고정되지 않도록 대화체로 다양하게 끝맺는 규칙을 넣었습니다.
+
+  **이 항목은 레포를 실제와 맞추려고 먼저 적습니다.** 규칙 자체는 이미 Langfuse
+  production(v5)에서 돌고 있었는데 레포에는 없었습니다. 그 상태로 두면 `--check`가
+  계속 어긋난다고 잡고, 레포에 없는 지침으로 답변이 나가는 상태가 이어집니다.
+
+  **바꾼 이유와 개선 결과는 A(@kiminlim)가 채워주세요.** 원래 작업은 `4ecd44a`
+  (feature/llm-interpret)이고, 여기서는 문구와 판 번호만 그대로 옮겼습니다. 어떤
+  표본에서 어떻게 나아졌는지는 측정한 쪽이 적는 것이 이 파일의 관습입니다.
 
 - 2026-09-02(recommend.extract v2.7.0, TP-207): `accessibility_needs` 추출을 추가했습니다.
   `UserConditions.accessibility_needs`(app/schemas.py)와 C(`app.agent_context.schemas`)는

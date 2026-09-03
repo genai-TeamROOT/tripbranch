@@ -11,6 +11,8 @@ import userEvent from "@testing-library/user-event";
 import App from "./App";
 import { saveSearchCenter } from "./state/searchCenterStorage";
 import { resetChatSessionsCache } from "./state/chatSessions";
+import { resetSavedSchedulesCache } from "./state/savedSchedules";
+import { resetPreferenceSync } from "./state/preferenceSync";
 
 // 실사용 흐름은 /api/chat 한 번으로 해석과 추천을 함께 받는다(AgentResponse).
 // llm_output.recommend.conditions가 조건 카드 표시에 쓰이고, recommendations가
@@ -156,6 +158,10 @@ function mockFetch() {
     if (url.endsWith("/sessions")) {
       return Response.json({ sessions: [] });
     }
+    /* 저장한 일정 목록도 사이드바가 마운트되면 항상 나간다(SCHEDULE 카드 2). */
+    if (url.endsWith("/schedules")) {
+      return Response.json({ items: [] });
+    }
     return Response.json({ error: { message: "not found" } }, { status: 404 });
   });
 }
@@ -164,6 +170,7 @@ beforeEach(() => {
   sessionStorage.clear();
   localStorage.clear();
   resetChatSessionsCache();
+  resetSavedSchedulesCache();
   window.history.pushState({}, "", "/");
   // 로컬 .env의 Codex 테스트 좌표가 브라우저 권한 회귀 테스트에 영향을 주지 않게 한다.
   vi.stubEnv("VITE_TEST_DEVICE_LOCATION", "");
@@ -861,6 +868,13 @@ test("홈 화면에서도 사진을 올릴 수 있고, 고르면 /chat으로 넘
  * 와야 했다. 홈에서 한 번 더 보여줘 그 왕복을 없앤다.
  */
 test("저장해 둔 취향을 홈 화면에서 다시 보여준다", async () => {
+  /*
+   * 취향 동기화는 페이지 로드당 한 번만 도는 모듈 캐시다. 앞 테스트들이 이미
+   * 빈 결과로 채워두므로, 여기서 비우지 않으면 심어둔 값이 그 빈 결과로 덮인다.
+   * beforeEach에 넣지 않는 이유는 자기만의 fetch를 세우는 테스트들이 /preferences
+   * 응답까지 흉내 내지 않아, 동기화가 실제로 돌면 그쪽이 깨지기 때문이다.
+   */
+  resetPreferenceSync();
   localStorage.setItem(
     "tb_preferences",
     JSON.stringify([
@@ -885,6 +899,8 @@ test("저장해 둔 취향을 홈 화면에서 다시 보여준다", async () =>
 });
 
 test("저장해 둔 취향이 없으면 홈에 그 줄을 그리지 않는다", async () => {
+  /* 앞 테스트가 심어둔 값이 모듈 캐시에 남는다 — 위와 같은 이유로 여기서도 비운다. */
+  resetPreferenceSync();
   await renderApp();
 
   expect(screen.queryByRole("heading", { name: "내 취향" })).not.toBeInTheDocument();

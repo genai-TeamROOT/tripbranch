@@ -20,7 +20,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from app.domain.models import StoredPlaceDetail
-from app.domain.operating_hours import OperatingSchedule, normalize_operating_schedule
+from app.domain.operating_hours import OperatingSchedule, resolve_operating_schedule
 from app.domain.parking import ParkingAvailability, normalize_parking
 from app.errors import AppError
 from app.providers.tour_category_registry import (
@@ -122,13 +122,15 @@ class RecommendationCardTool:
             category_label=self._category_label(row),
             parking_status=parking.availability,
             parking_note=parking.note,
-            # DB의 operating_schedule 컬럼이 아니라 원문을 다시 정규화한다 —
-            # TourAPI를 직접 부르는 경로와 같은 함수를 써야 결과가 갈리지 않고,
-            # 파서가 개선되면 재동기화 없이 반영된다(supabase_place_details.py와 동일).
-            operating_schedule=normalize_operating_schedule(
+            # 적재 배치가 저장한 파싱 결과를 쓰되 파서 버전이 다르면 원문을 다시
+            # 읽는다(supabase_place_details.py와 동일). TourAPI를 직접 부르는 경로와
+            # 같은 함수를 거치므로 두 경로의 결과가 갈리지 않는다.
+            operating_schedule=resolve_operating_schedule(
                 content_type_id=row.content_type_id,
                 operating_hours=row.operating_hours_raw,
                 rest_date=row.rest_date_raw,
+                stored=row.operating_schedule_raw,
+                stored_parser_version=row.operating_parser_version,
             ),
             latitude=row.latitude,
             longitude=row.longitude,

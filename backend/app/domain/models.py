@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, time
 from enum import StrEnum
+from typing import Any
 
 from app.domain.operating_hours import OperatingSchedule
 
@@ -58,6 +59,13 @@ class OperatingHours:
     open_time: time
     close_time: time
     is_regular_closure: bool = False
+    # 방문 요일에 "몇 번째인지 모르는" 주기 휴무가 걸려 있다(`월 1회 월요일`).
+    #
+    # **`is_regular_closure`와 다르다.** 저쪽은 그날 확실히 닫는다는 뜻이라 폐점으로
+    # 걸러지지만, 이쪽은 **닫을 수도 있는데 확인할 수 없다**는 뜻이다. 후보는
+    # 살리고 경고만 붙인다 — 매주로 치면 안 쉬는 주에 멀쩡한 장소가 사라지고,
+    # 무시하면 휴무일에 추천이 나간다. 둘 다 아닌 자리가 이것이다.
+    has_uncertain_closure: bool = False
 
 
 @dataclass(frozen=True)
@@ -750,6 +758,9 @@ class StoredPlaceDetail:
     pet_raw: str | None = None
     credit_card_raw: str | None = None
     restroom_raw: str | None = None
+    # 적재 배치가 저장한 파싱 결과와 그때의 파서 버전(위 docstring 참고).
+    operating_schedule_raw: Mapping[str, Any] | None = None
+    operating_parser_version: str | None = None
     # 무장애 여행 정보(place_barrier_free, D-077). 무장애 목록에 등록된 장소만
     # 행이 있어 대부분의 장소에서는 전부 None이다 — 4개 구 실측 커버리지가 19%다.
     #
