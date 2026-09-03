@@ -18,6 +18,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 import App from "../../App";
 import { resetChatSessionsCache } from "../../state/chatSessions";
 import { isDetachedRequest } from "../../state/chatAbortController";
+import { GUEST_SESSION, setMockSession } from "../../test/supabaseMock";
 
 const SEED_FAVORITES = [
   { id: "fav-1", label: "회사 (역삼동)" },
@@ -723,4 +724,75 @@ test("지난 대화를 이어가면 새 발화 위에 지금 시각이 뜬다", 
   await user.type(screen.getByPlaceholderText("추가 조건을 입력해 주세요"), "이어서 물어봄{Enter}");
 
   await waitFor(() => expect(screen.getAllByText(/오전|오후/).length).toBe(before + 1));
+});
+
+/*
+ * 게스트가 계정으로 넘어가는 유일한 입구다(D-062 8절).
+ *
+ * **이 입구가 없으면 승계 코드가 있어도 도달할 수 없다.** /signup 링크는 로그인
+ * 관문에만 있는데 게스트는 세션이 있어서 그 화면에서 곧바로 되돌려보내진다
+ * (LoginPage의 Navigate). 그래서 가입하려면 먼저 로그아웃해야 했고, 로그아웃하면
+ * 그 uid로 돌아갈 길이 없어 이어받을 기록 자체가 사라졌다.
+ */
+
+test("게스트에게는 계정 만들기 입구가 보이고 가입 화면으로 간다", async () => {
+  await renderApp();
+
+  const enter = within(sidebar()).getByRole("button", { name: /계정 만들기/ });
+  await userEvent.click(enter);
+
+  /* 가입 화면이 열려야 승계가 시작된다. */
+  expect(await screen.findByRole("button", { name: "가입하고 시작하기" })).toBeInTheDocument();
+});
+
+test("이미 계정이 있으면 계정 만들기 입구를 보여주지 않는다", async () => {
+  setMockSession({
+    ...GUEST_SESSION,
+    user: { ...GUEST_SESSION.user, is_anonymous: false, email: "trip@example.com" },
+  } as typeof GUEST_SESSION);
+
+  await renderApp();
+
+  expect(within(sidebar()).queryByRole("button", { name: /계정 만들기/ })).not.toBeInTheDocument();
+  expect(within(sidebar()).getByText("trip@example.com")).toBeInTheDocument();
+});
+
+/*
+ * 게스트에게 로그아웃은 되돌릴 수 없다 — 다시 로그인할 수단이 없어 그 uid로
+ * 돌아갈 길이 사라지고, 거기 달린 대화도 함께 닿을 수 없게 된다. 사이드바
+ * 버튼에는 확인이 없었다(AuthStatusBadge에만 있었는데 그 배지는 개발자 화면 전용).
+ */
+
+test("게스트가 로그아웃을 누르면 바로 나가지 않고 무엇을 잃는지 알려준다", async () => {
+  await renderApp();
+
+  await userEvent.click(within(sidebar()).getByRole("button", { name: /로그아웃/ }));
+
+  expect(await within(sidebar()).findByRole("alert")).toHaveTextContent("돌아올 수 없어요");
+  /* 아직 나가지 않았다 — 관문으로 넘어갔으면 사이드바 자체가 사라진다. */
+  expect(within(sidebar()).getByRole("button", { name: "취소" })).toBeInTheDocument();
+});
+
+test("확인에서 취소하면 로그아웃하지 않는다", async () => {
+  await renderApp();
+
+  await userEvent.click(within(sidebar()).getByRole("button", { name: /로그아웃/ }));
+  await userEvent.click(await within(sidebar()).findByRole("button", { name: "취소" }));
+
+  expect(within(sidebar()).queryByRole("alert")).not.toBeInTheDocument();
+  expect(within(sidebar()).getByRole("button", { name: /로그아웃/ })).toBeInTheDocument();
+});
+
+/* 계정 사용자는 다시 로그인하면 그대로 돌아온다. 되돌릴 수 있는 동작에까지 확인을
+   붙이면 확인이라는 신호가 값싸진다. */
+test("계정 사용자는 확인 없이 로그아웃된다", async () => {
+  setMockSession({
+    ...GUEST_SESSION,
+    user: { ...GUEST_SESSION.user, is_anonymous: false, email: "trip@example.com" },
+  } as typeof GUEST_SESSION);
+  await renderApp();
+
+  await userEvent.click(within(sidebar()).getByRole("button", { name: /로그아웃/ }));
+
+  expect(await screen.findByRole("button", { name: "게스트로 시작하기" })).toBeInTheDocument();
 });
