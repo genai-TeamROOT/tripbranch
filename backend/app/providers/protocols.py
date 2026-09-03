@@ -10,7 +10,7 @@ TODO: provider가 늘어나면 오류 타입, 비동기 계약, 메타데이터 
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import date
 from typing import Protocol, runtime_checkable
@@ -143,6 +143,29 @@ class LLMProvider(Protocol):
         이번 발화가 그 답변(장소명만 던지는 짧은 응답)으로 보이면 question_type 등을
         유지하고 place_name만 채우는 데 쓴다. 없으면(직전이 INFO 되묻기가 아니었으면)
         모두 None이다.
+        """
+        ...
+
+    async def answer_with_tools(
+        self,
+        instruction: str,
+        *,
+        tools: Sequence[Callable[..., Awaitable[str]]],
+        max_tool_calls: int = 3,
+    ) -> ProviderResult[str]:
+        """도구 목록을 주고, LLM이 스스로 호출·판단해 최종 답변 문장을 쓰게 한다.
+
+        다른 메서드와 달리 정해진 스키마로 구조화 추출을 하는 게 아니라, LLM이
+        `tools`를 몇 번이든(최대 max_tool_calls회) 스스로 골라 호출하고 그 결과를
+        보고 다음 행동을 정하는 자동 함수 호출(automatic function calling) 루프다
+        (강의교재 90강 ReAct 패턴). 반복 자체는 SDK가 돌리므로 호출부는 반복문을
+        짜지 않는다.
+
+        각 tool은 실패해도 예외를 던지지 말고 사람이 읽을 안내 문자열(예: "이
+        지역엔 없어요, 가까운 후보: ...")을 돌려줘야 한다 — 그래야 LLM이 그 문장을
+        보고 스스로 다른 값으로 재시도한다(24강 04절의 입력 검증 원칙과 동일).
+        max_tool_calls는 무한 반복을 막는 안전장치이지, 한도에 닿아도 예외를
+        던지지 않고 그때까지의 정보로 최종 답변을 만든다.
         """
         ...
 

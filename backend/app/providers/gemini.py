@@ -15,7 +15,7 @@ import json
 import logging
 import random
 import time
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from datetime import UTC, date, datetime
 from typing import TypeVar
 
@@ -495,6 +495,41 @@ class RealGeminiProvider:
             history=history,
         )
         return provider_result(result, source=ProviderSource.GEMINI)
+
+    async def answer_with_tools(
+        self,
+        instruction: str,
+        *,
+        tools: Sequence[Callable[..., Awaitable[str]]],
+        max_tool_calls: int = 3,
+    ) -> ProviderResult[str]:
+        """자동 함수 호출(automatic function calling) — 이 provider 최초의 tool-calling
+        호출이라 구조화 출력 전용인 `_generate()`/`_call_structured()`를 거치지 않고
+        SDK를 직접 부른다(response_schema와 tools는 같은 호출에서 함께 못 쓴다).
+
+        단순화한 점(첫 슬라이스라 의도적으로 뺀 것들, 로드맵 24번 후속 과제):
+        모델 폴백 없이 fast 모델 1개만 쓰고, 타임아웃/API 오류를 백오프 없이
+        1회로 바로 실패 처리하며, Langfuse generation 기록을 안 남긴다.
+        """
+
+        try:
+            response = await self._client.aio.models.generate_content(
+                model=self._fast_model_names[0],
+                contents=instruction,
+                config=genai_types.GenerateContentConfig(
+                    tools=list(tools),
+                    automatic_function_calling=genai_types.AutomaticFunctionCallingConfig(
+                        maximum_remote_calls=max_tool_calls
+                    ),
+                    temperature=0.0,
+                ),
+            )
+        except _TIMEOUT_ERRORS:
+            raise ProviderTimeoutError("Gemini") from None
+        except genai_errors.APIError as exc:
+            status = f" {exc.status}" if hasattr(exc, "status") else ""
+            raise ProviderUnavailableError("Gemini", detail=f"{exc.code}{status}") from None
+        return provider_result(response.text or "", source=ProviderSource.GEMINI)
 
     async def extract_compare_request(
         self,

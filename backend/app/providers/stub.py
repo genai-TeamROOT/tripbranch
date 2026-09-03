@@ -10,7 +10,7 @@ TODO: 실제 provider(RealPlaceProvider 등)가 준비되면 팩토리에서 설
 from __future__ import annotations
 
 import math
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Literal
@@ -380,6 +380,12 @@ def _stub_visit_time(user_input: str, reference_date: date) -> str:
         days_ahead = days_until_saturday or 7
         return (reference_date + timedelta(days=days_ahead)).isoformat()
     return reference_date.isoformat()
+
+
+# answer_with_tools() 기본 구현이 도구를 한 번씩 호출해볼 때 쓰는 자리표시자 인자.
+# 실제로 유효한 지역명일 필요는 없다 — 이 기본 구현을 그대로 쓰는 테스트는 도구
+# 자체의 동작(성공/실패 문자열)까지는 검증하지 않는다는 뜻이다.
+_FAKE_TOOL_PROBE_ARG = "테스트지역"
 
 
 class FakeLLMProvider:
@@ -897,6 +903,21 @@ class FakeLLMProvider:
             ),
         )
         return provider_result(result, source=ProviderSource.FAKE_LLM)
+
+    async def answer_with_tools(
+        self,
+        instruction: str,
+        *,
+        tools: Sequence[Callable[..., Awaitable[str]]],
+        max_tool_calls: int = 3,
+    ) -> ProviderResult[str]:
+        """도구를 실제로 순서대로 호출해보는 최소 흉내 — 실 LLM의 판단(어떤 도구를,
+        어떤 인자로, 언제 멈출지)은 흉내 내지 않는다. 이 경로를 자세히 검증하는
+        테스트는 이 클래스를 상속해 직접 override한다."""
+
+        del instruction
+        outputs = [await tool(_FAKE_TOOL_PROBE_ARG) for tool in tools[:max_tool_calls]]
+        return provider_result("\n".join(outputs), source=ProviderSource.FAKE_LLM)
 
     async def extract_compare_request(
         self,

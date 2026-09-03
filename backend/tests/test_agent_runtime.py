@@ -78,6 +78,7 @@ from app.services.runtime.agent_runtime import (
     _build_pairwise_distances_km,
     _effective_excluded_place_ids,
     _fetch_compare_travel_routes,
+    _fetch_realtime_info_agentic,
     _revivable_place_ids,
     _snapshot_coordinates,
     run_agent_flow,
@@ -88,7 +89,11 @@ from app.services.runtime.compare_context_schemas import (
     CompareContextResponse,
 )
 from app.services.runtime.follow_up_suggester import MAX_LABEL_LENGTH, MAX_SUGGESTIONS
-from app.services.runtime.info_context_schemas import InfoContextRequest, InfoContextResponse
+from app.services.runtime.info_context_schemas import (
+    InfoContextRequest,
+    InfoContextResponse,
+    RealtimeCityInfoResult,
+)
 from app.services.runtime.real_recommendation_provider import RealRecommendationProvider
 from app.services.runtime.stubs import (
     FakeEnrichmentProvider,
@@ -2902,6 +2907,189 @@ async def test_info_realtime_parking_pairs_with_public_parking_card() -> None:
     assert "공영주차장" in response.message
 
 
+class _ScriptedAreaToolProvider:
+    """place_name별로 미리 정해둔 InfoContextResponse를 돌려주는 대역(로드맵 24번
+    자기 교정 재시도 검증용) — 실제 서울시 폐쇄목록 조회는 흉내 내지 않는다."""
+
+    def __init__(self, responses_by_place_name: dict[str, InfoContextResponse]) -> None:
+        self._responses = responses_by_place_name
+
+    async def fetch_info_context(self, request: InfoContextRequest) -> InfoContextResponse:
+        return self._responses[request.place_name]
+
+
+class _ScriptedToolCallingLLMProvider(FakeLLMProvider):
+    """실제 LLM 판단 대신, 정해진 순서(원래 지역 실패 → 다른 지역 성공)로 도구를
+    불러보는 대역."""
+
+    def __init__(self, *, original_area_name: str, retry_area_name: str) -> None:
+        self._original_area_name = original_area_name
+        self._retry_area_name = retry_area_name
+
+    async def answer_with_tools(
+        self,
+        instruction: str,
+        *,
+        tools,
+        max_tool_calls: int = 3,
+    ):
+        del instruction, max_tool_calls
+        population_tool = tools[0]
+        first_attempt = await population_tool(self._original_area_name)
+        assert "찾지 못했" in first_attempt
+        second_attempt = await population_tool(self._retry_area_name)
+        return provider_result(
+            f"{self._original_area_name}엔 없었지만 {self._retry_area_name}엔 있어요: "
+            f"{second_attempt}",
+            source=ProviderSource.FAKE_LLM,
+        )
+
+
+@pytest.mark.asyncio
+async def test_agentic_realtime_info_retries_with_different_area() -> None:
+    """no_data_empty처럼 곧장 되묻지 않고, LLM이 스스로 다른 지역으로 재조회한
+    결과를 최종 응답·문장으로 쓴다(로드맵 24번, 강의교재 90강 자기 교정)."""
+
+    no_data_response = InfoContextResponse(
+        request_id="r1",
+        status="no_data",
+        result=RealtimeCityInfoResult(
+            status="no_data",
+            question_type="realtime_event",
+            requested_place_name="교대",
+            resolved_place_name="교대",
+        ),
+    )
+    success_response = InfoContextResponse(
+        request_id="r2",
+        status="success",
+        result=RealtimeCityInfoResult(
+            status="success",
+            question_type="realtime_event",
+            requested_place_name="교대",
+            resolved_place_name="강남역",
+            area_name="강남역",
+            fields={"강남 페스티벌": "9/1~9/10 · 강남역 광장"},
+        ),
+    )
+    tool_provider = _ScriptedAreaToolProvider(
+        {"교대": no_data_response, "강남역": success_response}
+    )
+    info_request = InfoContextRequest(
+        request_id="req-1",
+        place_name="교대",
+        place_context="explicit",
+        question_type="realtime_event",
+        specific_question="근처에 행사 있어?",
+    )
+
+    final_response, message = await _fetch_realtime_info_agentic(
+        info_request,
+        llm=_ScriptedToolCallingLLMProvider(original_area_name="교대", retry_area_name="강남역"),
+        tool_provider=tool_provider,
+    )
+
+    assert final_response.status == "success"
+    assert final_response.result.area_name == "강남역"
+    assert "강남역" in message
+
+
+@pytest.mark.asyncio
+async def test_agentic_realtime_info_flag_off_uses_single_call() -> None:
+    """settings.agentic_realtime_info가 기본값(off)이면 재시도 경로를 아예 안 탄다."""
+
+    assert settings.agentic_realtime_info is False
+
+    class _SingleCallToolProvider:
+        def __init__(self) -> None:
+            self.call_count = 0
+
+        async def fetch_info_context(self, request: InfoContextRequest) -> InfoContextResponse:
+            self.call_count += 1
+            return InfoContextResponse(
+                request_id="r1",
+                status="no_data",
+                result=RealtimeCityInfoResult(
+                    status="no_data",
+                    question_type="realtime_event",
+                    requested_place_name=request.place_name,
+                    resolved_place_name=request.place_name,
+                ),
+            )
+
+    tool_provider = _SingleCallToolProvider()
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처에 지금 행사 있어?",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=tool_provider,
+        recommendation_provider=_CountingRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=InMemoryStateStore(),
+    )
+
+    assert tool_provider.call_count == 1
+    assert response.llm_output.info.question_type == "realtime_event"
+
+
+@pytest.mark.asyncio
+async def test_agentic_realtime_info_flag_on_end_to_end() -> None:
+    """플래그를 켜면 run_agent_flow() 전체 경로에서도 자기 교정 재시도가 실제로
+    발동해 최종 메시지가 에이전트 문장으로 대체된다."""
+
+    original = settings.agentic_realtime_info
+    settings.agentic_realtime_info = True
+    try:
+        no_data_response = InfoContextResponse(
+            request_id="r1",
+            status="no_data",
+            result=RealtimeCityInfoResult(
+                status="no_data",
+                question_type="realtime_event",
+                requested_place_name="경복궁",
+                resolved_place_name="경복궁",
+            ),
+        )
+        success_response = InfoContextResponse(
+            request_id="r2",
+            status="success",
+            result=RealtimeCityInfoResult(
+                status="success",
+                question_type="realtime_event",
+                requested_place_name="경복궁",
+                resolved_place_name="강남역",
+                area_name="강남역",
+                fields={"강남 페스티벌": "9/1~9/10 · 강남역 광장"},
+            ),
+        )
+        tool_provider = _ScriptedAreaToolProvider(
+            {"경복궁": no_data_response, "강남역": success_response}
+        )
+
+        response = await run_agent_flow(
+            AgentRequest(
+                user_input="경복궁 근처에 지금 행사 있어?",
+                session_id=None,
+                device_location=DEVICE_LOCATION,
+            ),
+            llm=_ScriptedToolCallingLLMProvider(
+                original_area_name="경복궁", retry_area_name="강남역"
+            ),
+            tool_provider=tool_provider,
+            recommendation_provider=_CountingRecommendationProvider(),
+            enrichment_provider=_CountingEnrichmentProvider(),
+            store=InMemoryStateStore(),
+        )
+    finally:
+        settings.agentic_realtime_info = original
+
+    assert response.info_place_card is not None
+    assert "강남역" in response.message
+
+
 @pytest.mark.asyncio
 async def test_info_walking_time_uses_current_gps_and_route_tool() -> None:
     """INFO location_info도 현재 GPS가 있으면 카카오 도보 경로 계약을 재사용한다."""
@@ -3807,22 +3995,24 @@ class _FixedStatusToolProvider:
 
 
 @pytest.mark.parametrize(
-    ("tool_status", "reaches_recommendation"),
+    ("tool_status", "reaches_recommendation", "expected_tool_calls"),
     [
-        ("success", True),
+        ("success", True, 1),
         # partial은 "가능한 데이터로 계속"이라 D까지 간다(계약 §5.4).
-        ("partial", True),
+        ("partial", True, 1),
         # 아래 넷은 _TOOL_TERMINAL_STATUSES — 안내만 하고 끝난다.
-        # no_data는 넘길 후보가 없어 D를 부르지 않고 조건 조정을 되묻는다.
-        ("no_data", False),
-        ("needs_clarification", False),
-        ("unsupported", False),
-        ("unavailable", False),
+        # no_data(원인 구분 신호 없음 → no_data_empty)는 넘길 후보가 없어 D를 부르지
+        # 않지만, 되묻기 전에 A-1 자기 교정으로 반경을 넓혀 한 번 더 스스로
+        # 조회한다 — 그래서 다른 종료 status와 달리 호출이 2번이다.
+        ("no_data", False, 2),
+        ("needs_clarification", False, 1),
+        ("unsupported", False, 1),
+        ("unavailable", False, 1),
     ],
 )
 @pytest.mark.asyncio
 async def test_tool_status_decides_whether_recommendation_runs(
-    tool_status: str, reaches_recommendation: bool
+    tool_status: str, reaches_recommendation: bool, expected_tool_calls: int
 ) -> None:
     """C의 6개 status가 D 호출 여부를 어떻게 가르는지 한곳에 고정한다.
 
@@ -3845,7 +4035,7 @@ async def test_tool_status_decides_whether_recommendation_runs(
         store=InMemoryStateStore(),
     )
 
-    assert tool_provider.call_count == 1
+    assert tool_provider.call_count == expected_tool_calls
     assert recommendation_provider.call_count == (1 if reaches_recommendation else 0)
     assert (response.recommendations is not None) is reaches_recommendation
 

@@ -45,6 +45,12 @@ class RecommendPipelineState(TypedDict, total=False):
     tool_execution: ToolExecutionDebug | None
     tool_executions: list[ToolExecutionDebug]
 
+    # A-1(자기 교정 루프): no_data_empty를 되묻지 않고 반경을 넓혀 한 번 더
+    # 조회했는지 센다. 없으면(.get 기본값) 0 — 아직 재시도 전이라는 뜻이다.
+    # widen_search_retry 노드가 올리고, tool_fetch 노드가 읽어 반경을 넓힐지
+    # 정하고, route_after_tool_fetch가 상한(도달 시 되묻기로 종료)을 판단한다.
+    retry_count: int
+
     # scoring 노드가 채운다.
     recommendations: RecommendationResponse | None
 
