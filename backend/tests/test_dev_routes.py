@@ -1658,3 +1658,73 @@ def test_sync_lock_release_rejects_unknown_owner(
 
     assert response.status_code == 404
     assert ("DELETE", "/rest/v1/place_sync_locks") not in calls
+
+
+def test_apply_passes_closure_extractor_to_sync_service(
+    monkeypatch: pytest.MonkeyPatch, _real_place: None, tmp_path
+) -> None:
+    """반영 실행이 휴무 추출기를 실제로 넘기는지. (TP-231)
+
+    안 넘기면 오류 없이 지금까지와 같은 결과가 나온다 — 주차가 섞인 휴무만
+    조용히 빠진 채 저장된다. 그래서 넘기는 것 자체를 못 박는다.
+    """
+    monkeypatch.setattr(dev_routes.place_snapshot, "DATA_DIR", tmp_path)
+    place_snapshot.write_snapshot(
+        {"1": _snapshot_row("1")}, tmp_path / "places_api_snapshot_20260809.csv"
+    )
+
+    sentinel = object()
+    captured: dict[str, object] = {}
+
+    class _FakeService:
+        def __init__(self, *args, **kwargs) -> None:
+            captured.update(kwargs)
+
+        async def sync(self, area_code, district_code, **kwargs):
+            kwargs["on_progress"](SyncProgress(phase="details", processed=1, total=1))
+            return PlaceSyncResult(
+                status="success",
+                dry_run=True,
+                sync_run_id=None,
+                api_total_count=1,
+                processed_count=1,
+                success_count=1,
+                failed_count=0,
+                new_count=0,
+                updated_count=1,
+                deactivated_count=0,
+                detail_target_count=1,
+                detail_attempted_count=1,
+                reparse_count=0,
+                barrier_free_target_count=0,
+                barrier_free_attempted_count=0,
+                barrier_free_stored_count=0,
+                error_summary={},
+            )
+
+    monkeypatch.setattr(dev_routes, "PlaceSyncService", _FakeService)
+    monkeypatch.setattr(dev_routes, "get_closure_extractor", lambda: sentinel)
+
+    async def fake_missing(self, content_ids):
+        return []
+
+    monkeypatch.setattr(
+        dev_routes.SupabasePlaceRepository,
+        "find_missing_concentration_mappings",
+        fake_missing,
+    )
+
+    with _client() as client:
+        started = client.post(
+            "/api/dev/place-sync/apply",
+            json={
+                "snapshot": "places_api_snapshot_20260809.csv",
+                "detail_content_ids": ["1"],
+                "added_content_ids": ["1"],
+                "dry_run": True,
+                "confirm": "11-110",
+            },
+        ).json()
+        client.get(f"/api/dev/place-sync/jobs/{started['job_id']}")
+
+    assert captured["closure_extractor"] is sentinel

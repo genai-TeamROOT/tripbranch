@@ -270,6 +270,16 @@ class PlaceSyncService:
         # 휴무만 덜 채워진다.
         closure_extractor: ClosureExtractor | None = None,
     ) -> None:
+        # 넘겼는데 메서드가 없으면 **여기서 멈춘다.** 실행 중에는 실패를 삼키고
+        # 정규식 결과로 되돌아가므로(_enrich_closures), 모양이 틀린 것을 그대로
+        # 받으면 8,000곳을 다 돌고 나서야 "하나도 안 채워졌다"를 알게 된다.
+        if closure_extractor is not None and not hasattr(
+            closure_extractor, "extract_closure_rules"
+        ):
+            raise TypeError(
+                "closure_extractor에 extract_closure_rules가 없습니다:"
+                f" {type(closure_extractor).__name__}"
+            )
         self._closure_extractor = closure_extractor
         if not 1 <= page_size <= 100:
             raise ValueError("page_size는 1 이상 100 이하여야 합니다.")
