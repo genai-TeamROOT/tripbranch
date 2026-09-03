@@ -30,6 +30,7 @@ from app.domain.schedule_travel import (
     SegmentWeather,
     TravelConfidence,
 )
+from app.errors import AppError
 from app.observability.langfuse_tracing import observe_step, record_score
 from app.place_search_policy import (
     NON_WALKING_SPEED_KM_PER_MINUTE,
@@ -37,6 +38,7 @@ from app.place_search_policy import (
 )
 from app.schedule.timeline import TravelMinutes
 from app.schemas import UserConditions
+from app.tools.mode_judge import narrow_accessibility_needs
 from app.tools.schedule_travel import (
     SCHEDULE_TRAVEL_MEASURE_BUDGET_EXCEEDED_WARNING,
     ModeJudge,
@@ -259,18 +261,50 @@ async def _resolve_edges(
         segments, _ = build_segment_inputs(
             candidates, pairs, walking_speed_mps=WALKING_SPEED_MPS
         )
-        modes = await select_modes_for_segments(
-            segments,
-            ModeJudgmentContext(
-                transport=conditions.transport,
-                companion=conditions.companion,
-                accessibility_needs=tuple(conditions.accessibility_needs),
-                weather=weather,
+        judgment_context = ModeJudgmentContext(
+            transport=conditions.transport,
+            companion=conditions.companion,
+            # 9개 중 이동에 관련되는 셋만 넘긴다(TP-227). 나머지는 "그 장소가
+            # 어떤가"라 판정과 무관하다.
+            accessibility_needs=narrow_accessibility_needs(
+                conditions.accessibility_needs
             ),
-            judge=mode_judge,
-            walking_speed_mps=WALKING_SPEED_MPS,
-            walk_transfer_threshold_min=settings.schedule_walk_transfer_threshold_min,
+            weather=weather,
         )
+        try:
+            modes = await select_modes_for_segments(
+                segments,
+                judgment_context,
+                judge=mode_judge,
+                walking_speed_mps=WALKING_SPEED_MPS,
+                walk_transfer_threshold_min=(
+                    settings.schedule_walk_transfer_threshold_min
+                ),
+            )
+        except (AppError, ValueError):
+            # **판정 실패는 편성 실패가 아니다.** 규칙으로 되돌아가면 결과가 예전과
+            # 같아지므로 그 턴은 정상으로 끝난다. 다만 되돌아갔다는 사실을 남기지
+            # 않으면 판정이 한 번도 안 도는 채로 정상처럼 보인다.
+            #
+            # **`Exception`으로 넓게 잡지 않는다.** 처음에 그렇게 뒀더니 판정
+            # 메서드가 없는 LLM 이중체에서 AttributeError가 그대로 삼켜져, 판정이
+            # 한 번도 안 도는데 테스트 6건이 통과했다. 없는 메서드는 실행 중 실패가
+            # 아니라 배선이 끊긴 것이므로 시끄럽게 터져야 한다.
+            #
+            # 아래 `except ValueError`와 따로 잡는 이유가 이것이다. 저쪽은 후보
+            # 목록이 잘못된 경우이고 이쪽은 판정이 실패한 경우라, 같은 로그로
+            # 뭉뚱그리면 어느 쪽인지 알 수 없다(TP-226에서 넘어온 항목).
+            logger.warning("schedule_travel.mode_judge_failed", exc_info=True)
+            record_score("schedule_mode_judge_fallback", 1.0)
+            modes = await select_modes_for_segments(
+                segments,
+                judgment_context,
+                judge=None,
+                walking_speed_mps=WALKING_SPEED_MPS,
+                walk_transfer_threshold_min=(
+                    settings.schedule_walk_transfer_threshold_min
+                ),
+            )
         estimated = estimate_schedule_travel_edges(
             candidates=candidates,
             pairs=pairs,
