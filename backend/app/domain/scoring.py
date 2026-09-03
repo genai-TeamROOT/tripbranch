@@ -43,7 +43,12 @@ from app.place_search_policy import WALKING_SPEED_KM_PER_MINUTE
 # OPERATING_PARSER_VERSION과 동일한 semver 패턴. 점수 산출에 영향을 주는 변경
 # (가중치, Feature 추가/제거, environment_type 판정표 등) 시 버전을 올린다 —
 # 사소한 리팩터링·주석 변경은 올리지 않는다.
-SCORING_VERSION = "recommendation-scoring-1.6.0"
+#
+# **OPTIONAL_FEATURES에 이름을 넣는 것만으로는 올릴 근거가 되지 않는다.** 조립부
+# 두 곳이 전부 실재 여부로 거른다(build_weights는 `in set(requested)`,
+# weights_for_feature_scores는 `in feature_scores`). 올릴 근거는 그 키를
+# feature_scores에 실제로 채우는 **새 경로**다 — 1.7.0이 그 예다.
+SCORING_VERSION = "recommendation-scoring-1.7.0"
 
 WEATHER_FEATURE = "weather"
 ENVIRONMENT_FEATURE = "environment"
