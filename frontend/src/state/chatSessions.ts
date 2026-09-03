@@ -31,7 +31,7 @@ export function toHistoryEntry(session: ChatSessionSummary): ChatHistoryEntry {
     date: Number.isNaN(at.getTime())
       ? ""
       : at.toLocaleDateString("ko-KR", { month: "long", day: "numeric" }),
-    placeName: session.place_name,
+    location: session.location,
   };
 }
 

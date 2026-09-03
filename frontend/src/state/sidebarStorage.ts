@@ -24,7 +24,8 @@ export interface ChatHistoryEntry {
   id: string;
   label: string;
   date: string;
-  placeName: string | null;
+  /** 그 대화의 위치. 장소 이름이 아니라 "어디 얘기였는지"다. */
+  location: string | null;
 }
 
 export function createId(prefix: string): string {

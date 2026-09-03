@@ -310,98 +310,118 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
           <p className="py-1 text-xs text-muted">아직 대화 기록이 없어요</p>
         ) : (
           <ul className="flex flex-col gap-0.5">
-            {history.map((entry) => (
-              <li key={entry.id} className="relative rounded-xl px-3 py-2 hover:bg-chip">
-                {renamingId === entry.id ? (
-                  <input
-                    ref={renameInputRef}
-                    aria-label="대화 이름"
-                    value={renameDraft}
-                    onChange={(event) => setRenameDraft(event.target.value)}
-                    onBlur={() => commitRename(entry.id)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") commitRename(entry.id);
-                      if (event.key === "Escape") setRenamingId(null);
-                    }}
-                    className="w-full rounded-md border border-border px-2 py-1 text-sm"
-                  />
-                ) : (
-                  <div className="flex items-start justify-between gap-2">
-                    {/* 한 줄 전체가 버튼이다 — 제목만 누를 수 있게 하면 날짜·장소
-                        쪽을 눌렀을 때 아무 일도 안 나 고장으로 보인다. */}
-                    <button
-                      type="button"
-                      aria-label={`${entry.label} 대화 열기`}
-                      onClick={() => openConversation(entry.id)}
-                      className="min-w-0 flex-1 text-left"
-                    >
-                      <p className="truncate text-sm font-medium text-ink">{entry.label}</p>
-                      <p className="truncate text-xs text-muted">
-                        {entry.date}
-                        {entry.placeName && (
-                          <>
-                            {" · "}
-                            <span className="text-brand">{entry.placeName}</span>
-                          </>
-                        )}
-                      </p>
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`${entry.label} 메뉴`}
-                      onClick={() => setOpenMenuId((id) => (id === entry.id ? null : entry.id))}
-                      className="shrink-0 text-muted hover:text-ink"
-                    >
-                      <MoreHorizontal size={15} />
-                    </button>
-                  </div>
-                )}
-
-                {openMenuId === entry.id && (
-                  <>
-                    <button
-                      type="button"
-                      aria-label="메뉴 닫기"
-                      onClick={() => setOpenMenuId(null)}
-                      className="fixed inset-0 z-20 cursor-default"
+            {history.map((entry) => {
+              /*
+               * 지금 보고 있는 대화. 목록에 여러 줄이 있는데 어느 것이 열려
+               * 있는지 표시가 없으면, 대화를 이어가면서도 자기가 어디 있는지
+               * 모른다. 홈처럼 세션이 없는 화면에서는 아무 줄도 켜지지 않는다.
+               */
+              const isCurrent = state.session_id === entry.id;
+              return (
+                <li
+                  key={entry.id}
+                  aria-current={isCurrent ? "true" : undefined}
+                  className={`relative rounded-xl px-3 py-2 ${
+                    isCurrent ? "bg-chip" : "hover:bg-chip"
+                  }`}
+                >
+                  {renamingId === entry.id ? (
+                    <input
+                      ref={renameInputRef}
+                      aria-label="대화 이름"
+                      value={renameDraft}
+                      onChange={(event) => setRenameDraft(event.target.value)}
+                      onBlur={() => commitRename(entry.id)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") commitRename(entry.id);
+                        if (event.key === "Escape") setRenamingId(null);
+                      }}
+                      className="w-full rounded-md border border-border px-2 py-1 text-sm"
                     />
-                    <div
-                      role="menu"
-                      className="absolute right-0 top-full z-30 flex w-36 flex-col gap-0.5 rounded-2xl bg-white p-1.5 shadow-card"
-                    >
+                  ) : (
+                    <div className="flex items-start justify-between gap-2">
+                      {/* 한 줄 전체가 버튼이다 — 제목만 누를 수 있게 하면 날짜·장소
+                        쪽을 눌렀을 때 아무 일도 안 나 고장으로 보인다. */}
                       <button
                         type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          setRenameDraft(entry.label);
-                          setRenamingId(entry.id);
-                          setOpenMenuId(null);
-                        }}
-                        className="rounded-xl px-3 py-2 text-left text-sm font-medium text-ink transition-colors hover:bg-chip"
+                        aria-label={`${entry.label} 대화 열기`}
+                        onClick={() => openConversation(entry.id)}
+                        className="min-w-0 flex-1 text-left"
                       >
-                        이름 바꾸기
+                        <p
+                          className={`truncate text-sm text-ink ${
+                            isCurrent ? "font-bold" : "font-medium"
+                          }`}
+                        >
+                          {entry.label}
+                        </p>
+                        <p className="truncate text-xs text-muted">
+                          {entry.date}
+                          {entry.location && (
+                            <>
+                              {" · "}
+                              <span className="text-brand">{entry.location}</span>
+                            </>
+                          )}
+                        </p>
                       </button>
                       <button
                         type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          /* 목록에서 한 줄을 지우는 것이 곧 그 대화를 지우는
-                             것이다. 화면에서 먼저 빼고 서버에 보낸다. */
-                          setHistory((prev) => prev.filter((item) => item.id !== entry.id));
-                          setOpenMenuId(null);
-                          void deleteChatSession(entry.id).catch(() => {
-                            void refreshChatSessions().then(setHistory);
-                          });
-                        }}
-                        className="rounded-xl px-3 py-2 text-left text-sm font-medium text-rust transition-colors hover:bg-chip"
+                        aria-label={`${entry.label} 메뉴`}
+                        onClick={() => setOpenMenuId((id) => (id === entry.id ? null : entry.id))}
+                        className="shrink-0 text-muted hover:text-ink"
                       >
-                        삭제
+                        <MoreHorizontal size={15} />
                       </button>
                     </div>
-                  </>
-                )}
-              </li>
-            ))}
+                  )}
+
+                  {openMenuId === entry.id && (
+                    <>
+                      <button
+                        type="button"
+                        aria-label="메뉴 닫기"
+                        onClick={() => setOpenMenuId(null)}
+                        className="fixed inset-0 z-20 cursor-default"
+                      />
+                      <div
+                        role="menu"
+                        className="absolute right-0 top-full z-30 flex w-36 flex-col gap-0.5 rounded-2xl bg-white p-1.5 shadow-card"
+                      >
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            setRenameDraft(entry.label);
+                            setRenamingId(entry.id);
+                            setOpenMenuId(null);
+                          }}
+                          className="rounded-xl px-3 py-2 text-left text-sm font-medium text-ink transition-colors hover:bg-chip"
+                        >
+                          이름 바꾸기
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            /* 목록에서 한 줄을 지우는 것이 곧 그 대화를 지우는
+                             것이다. 화면에서 먼저 빼고 서버에 보낸다. */
+                            setHistory((prev) => prev.filter((item) => item.id !== entry.id));
+                            setOpenMenuId(null);
+                            void deleteChatSession(entry.id).catch(() => {
+                              void refreshChatSessions().then(setHistory);
+                            });
+                          }}
+                          className="rounded-xl px-3 py-2 text-left text-sm font-medium text-rust transition-colors hover:bg-chip"
+                        >
+                          삭제
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>

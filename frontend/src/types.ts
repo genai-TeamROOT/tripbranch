@@ -687,7 +687,9 @@ export interface SavedPreferenceItem {
 export interface ChatSessionSummary {
   session_id: string;
   title: string;
-  place_name: string | null;
+  /* 그 대화의 위치(처음 잡힌 search_center). 장소 이름이 아니다 — "블루보틀 성수"는
+     그 대화가 무엇이었는지 말해주지 않지만 "성수동"은 말해준다. */
+  location: string | null;
   last_active_at: string;
 }
 

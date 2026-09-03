@@ -25,7 +25,7 @@ const SEED_FAVORITES = [
 
 /** 계정에 쌓인 대화. 서버가 주는 모양 그대로다. */
 const server = vi.hoisted(() => ({
-  sessions: [] as { session_id: string; title: string; place_name: string | null; last_active_at: string }[],
+  sessions: [] as { session_id: string; title: string; location: string | null; last_active_at: string }[],
   renamed: [] as { id: string; title: string }[],
   deleted: [] as string[],
   resumed: [] as string[],
@@ -136,7 +136,7 @@ vi.mock("../../api/trip", async (importOriginal) => {
           {
             session_id: sessionId,
             title: request.user_input,
-            place_name: null,
+            location: null,
             last_active_at: "2026-09-03T10:00:00+09:00",
           },
           ...server.sessions,
@@ -180,13 +180,13 @@ beforeEach(() => {
     {
       session_id: "chat-1",
       title: "비 오는 날 아이와 함께 갈 곳",
-      place_name: null,
+      location: null,
       last_active_at: "2026-09-03T09:00:00+09:00",
     },
     {
       session_id: "chat-2",
       title: "갑자기 뜬 2시간, 카페 추천",
-      place_name: "블루보틀 성수",
+      location: "성수동",
       last_active_at: "2026-09-02T09:00:00+09:00",
     },
   ];
@@ -322,10 +322,12 @@ test("이름 바꾸기와 삭제가 서버까지 간다", async () => {
   await waitFor(() => expect(server.deleted).toEqual(["chat-2"]));
 });
 
-test("대화에 언급된 장소가 목록에 함께 보인다", async () => {
+/* 장소 이름이 아니라 위치다 — "블루보틀 성수"는 그 대화가 무엇이었는지
+   말해주지 않지만 "성수동"은 말해준다. */
+test("대화의 위치가 목록에 함께 보인다", async () => {
   await renderApp();
 
-  expect(within(sidebar()).getByText("블루보틀 성수")).toBeInTheDocument();
+  expect(within(sidebar()).getByText("성수동")).toBeInTheDocument();
 });
 
 
@@ -485,4 +487,30 @@ test("답변 대기 중에 다른 대화를 열면 그 답변이 따라오지 �
 
   expect(screen.queryByText("앞 대화의 답변")).not.toBeInTheDocument();
   expect(screen.getByText("실내를 찾아볼게요")).toBeInTheDocument();
+});
+
+
+/*
+ * 목록에 여러 줄이 있는데 어느 것이 열려 있는지 표시가 없으면, 대화를
+ * 이어가면서도 자기가 어디 있는지 모른다.
+ */
+test("지금 보고 있는 대화가 목록에서 표시된다", async () => {
+  const user = userEvent.setup();
+  await renderApp();
+
+  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
+  await screen.findByText("실내를 찾아볼게요");
+
+  const rows = within(sidebar()).getAllByRole("listitem");
+  const current = rows.filter((row) => row.getAttribute("aria-current") === "true");
+  expect(current).toHaveLength(1);
+  expect(current[0]).toHaveTextContent("비 오는 날 아이와 함께 갈 곳");
+});
+
+/* 홈처럼 세션이 없는 화면에서는 아무 줄도 켜지지 않아야 한다. */
+test("대화를 열기 전에는 켜진 줄이 없다", async () => {
+  await renderApp();
+
+  const rows = within(sidebar()).getAllByRole("listitem");
+  expect(rows.filter((row) => row.getAttribute("aria-current") === "true")).toEqual([]);
 });
