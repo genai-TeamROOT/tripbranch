@@ -245,6 +245,27 @@ beforeEach(() => {
   server.holdStream = false;
   server.pending = null;
   server.releaseStream = null;
+  /*
+   * 홈의 첫 발화는 위치를 먼저 얻고 나서야 streamChat을 부른다. 위치를 못 얻으면
+   * 안내 문구만 뜨고 요청이 나가지 않는다 — 그 경로를 쓰는 테스트가 통째로 죽는다.
+   *
+   * 두 갈래를 모두 테스트 안에서 고정한다. 로컬 .env의 테스트 좌표
+   * (VITE_TEST_DEVICE_LOCATION)에 기대면 그 파일이 없는 CI에서만 깨지고,
+   * jsdom에는 navigator.geolocation이 없다(App.test.tsx와 같은 이유).
+   */
+  vi.stubEnv("VITE_TEST_DEVICE_LOCATION", "");
+  /* navigator를 통째로 갈아끼우지 않는다 — userEvent가 쓰는 clipboard·userAgent가
+     함께 사라진다. 없는 속성 하나만 얹는다. */
+  Object.defineProperty(navigator, "geolocation", {
+    configurable: true,
+    value: {
+      getCurrentPosition: (success: PositionCallback) =>
+        success({
+          coords: { latitude: 37.5788, longitude: 126.977 },
+          timestamp: Date.now(),
+        } as GeolocationPosition),
+    },
+  });
 });
 
 /*
@@ -441,8 +462,13 @@ test("화면 기록이 온전하면 앞부분이 없다고 말하지 않는다",
   await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
 
   /* 날짜 표기는 오늘·어제면 그렇게 부르므로 실행 날짜에 따라 달라진다.
-     이 테스트가 보는 것은 "시각이 뜨고, 빠진 게 있다는 말은 없다"다. */
-  expect(await screen.findByText(/오전 8:58/)).toBeInTheDocument();
+     이 테스트가 보는 것은 "시각이 뜨고, 빠진 게 있다는 말은 없다"다.
+     **시각도 브라우저 시간대를 따른다** — KST 기준으로 적어 두면 UTC로 도는
+     CI에서만 깨진다. 기록된 시각을 화면과 같은 방식으로 포맷해 견준다. */
+  const shownAt = new Date(server.transcript.recorded_at)
+    .toLocaleTimeString("ko-KR", { hour: "numeric", minute: "2-digit" })
+    .replace(/\s+/g, " ");
+  expect(await screen.findByText(new RegExp(shownAt))).toBeInTheDocument();
   expect(screen.queryByText(/앞부분은 남아 있지 않아요/)).not.toBeInTheDocument();
 });
 
