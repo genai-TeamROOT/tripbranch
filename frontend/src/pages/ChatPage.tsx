@@ -396,6 +396,22 @@ export function ChatPage() {
           </button>
         </div>
 
+        {/*
+          지난 대화를 불러온 상태다. **이어서 물으면 새 대화가 시작된다**는 것을
+          미리 밝힌다 — 세션 TTL이 30분이라 목록의 대화는 대부분 이미 만료됐고,
+          말없이 새 대화로 넘어가면 사용자는 앞의 맥락이 이어진 줄로 안다.
+          저장된 턴도 최대 5개뿐이라 대화 전체가 아니다.
+        */}
+        {state.restored_title && (
+          <p
+            role="status"
+            className="rounded-xl bg-chip px-3.5 py-2.5 text-xs leading-relaxed text-ink"
+          >
+            <strong className="font-bold">{state.restored_title}</strong>
+            {" — 지난 대화의 마지막 부분이에요. 이어서 물어보시면 새 대화로 시작돼요."}
+          </p>
+        )}
+
         {state.error && (
           <ErrorBanner
             message={state.error}

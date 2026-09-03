@@ -15,7 +15,7 @@ import { identityLabel } from "../../auth/identityLabel";
 import { sheetState } from "../../state/sheetNav";
 import { useTripDispatch, useTripState } from "../../state/TripContext";
 import type { Language } from "../../types";
-import { deleteChatSession, renameChatSession } from "../../api/trip";
+import { deleteChatSession, fetchChatSession, renameChatSession } from "../../api/trip";
 import { loadChatSessions, refreshChatSessions } from "../../state/chatSessions";
 import {
   createId,
@@ -109,6 +109,23 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
       /* 이동은 따로 시키지 않는다 — 세션이 사라지면 RequireUser가 관문으로 보낸다. */
     } finally {
       onNavigate?.();
+    }
+  }
+
+  /*
+   * 지난 대화를 펼쳐 보여준다. 이어서 대화하지는 못한다 — 세션 TTL이 30분이라
+   * 목록의 대화는 대부분 이미 만료됐다. 사용자가 무언가를 물으면 새 대화가
+   * 시작되고, 채팅 화면이 그 사실을 배너로 밝힌다.
+   */
+  async function openConversation(sessionId: string) {
+    try {
+      const detail = await fetchChatSession(sessionId);
+      dispatch({ type: "RESTORE_SESSION", payload: detail });
+      go("/chat");
+    } catch {
+      /* 이미 지워졌거나 서버에 못 닿는 경우다. 목록을 다시 받아 화면과 서버를
+         맞춘다 — 없는 대화가 목록에 남아 있으면 눌러도 계속 실패한다. */
+      void refreshChatSessions().then(setHistory);
     }
   }
 
@@ -272,7 +289,14 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                   />
                 ) : (
                   <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
+                    {/* 한 줄 전체가 버튼이다 — 제목만 누를 수 있게 하면 날짜·장소
+                        쪽을 눌렀을 때 아무 일도 안 나 고장으로 보인다. */}
+                    <button
+                      type="button"
+                      aria-label={`${entry.label} 대화 열기`}
+                      onClick={() => openConversation(entry.id)}
+                      className="min-w-0 flex-1 text-left"
+                    >
                       <p className="truncate text-sm font-medium text-ink">{entry.label}</p>
                       <p className="truncate text-xs text-muted">
                         {entry.date}
@@ -283,7 +307,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                           </>
                         )}
                       </p>
-                    </div>
+                    </button>
                     <button
                       type="button"
                       aria-label={`${entry.label} 메뉴`}

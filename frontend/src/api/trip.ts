@@ -22,6 +22,7 @@ import type {
   ChatResponse,
   InterpretDebugRequest,
   InterpretResponse,
+  ChatSessionDetail,
   ChatSessionSummary,
   ChatSessionsResponse,
   PreferencesResponse,
@@ -261,4 +262,12 @@ export function deleteChatSession(sessionId: string) {
   return apiClient.del<{ session_id: string; deleted: boolean }>(
     `/state/${encodeURIComponent(sessionId)}`,
   );
+}
+
+/*
+ * 지난 대화 하나. /state/{session_id}와 달리 세션 TTL(30분)을 적용하지 않는다 —
+ * 히스토리는 그보다 오래된 대화를 보여주는 것이 목적이다.
+ */
+export function fetchChatSession(sessionId: string) {
+  return apiClient.get<ChatSessionDetail>(`/sessions/${encodeURIComponent(sessionId)}`);
 }

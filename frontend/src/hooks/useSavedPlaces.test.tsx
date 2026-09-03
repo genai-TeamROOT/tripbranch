@@ -50,6 +50,7 @@ function seed(sessionId: string | null, items: SavedPlaceItem[]): void {
     phase: "ready",
     error: null,
     session_id: sessionId,
+    restored_title: null,
     device_location: null,
     device_location_captured_at: null,
     device_location_snoozed_until: null,

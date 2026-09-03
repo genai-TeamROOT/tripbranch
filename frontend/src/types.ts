@@ -680,6 +680,30 @@ export interface ChatSessionSummary {
   last_active_at: string;
 }
 
+/** 저장된 대화 한 턴. 백엔드 app/state/schema.py의 ConversationTurn과 대응. */
+export interface StoredConversationTurn {
+  user_input: string;
+  assistant_message: string | null;
+  intent: string | null;
+  place_names: string[];
+  at: string;
+}
+
+/*
+ * 지난 대화 하나(GET /api/sessions/{id}).
+ *
+ * turns는 **대화 전체가 아니다** — 백엔드가 MAX_RECENT_TURNS개만 보관한다.
+ * resumable이 false면 세션 TTL(30분)이 지나 이어서 대화할 수 없다. 화면이 그
+ * 사실을 밝혀야 한다.
+ */
+export interface ChatSessionDetail {
+  session_id: string;
+  title: string;
+  turns: StoredConversationTurn[];
+  last_active_at: string;
+  resumable: boolean;
+}
+
 export interface ChatSessionsResponse {
   sessions: ChatSessionSummary[];
 }

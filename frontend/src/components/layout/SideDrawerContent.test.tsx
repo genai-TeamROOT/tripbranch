@@ -35,6 +35,19 @@ vi.mock("../../api/trip", async (importOriginal) => {
   return {
     ...actual,
     fetchChatSessions: async () => ({ sessions: server.sessions }),
+    fetchChatSession: async (sessionId: string) => {
+      const found = server.sessions.find((item) => item.session_id === sessionId);
+      if (!found) throw new Error("없는 대화");
+      return {
+        session_id: sessionId,
+        title: found.title,
+        turns: [
+          { user_input: "비 오는데 어디 갈까", assistant_message: "실내를 찾아볼게요", intent: "RECOMMEND", place_names: [], at: "2026-09-03T09:00:00+09:00" },
+        ],
+        last_active_at: found.last_active_at,
+        resumable: false,
+      };
+    },
     renameChatSession: async (sessionId: string, title: string) => {
       server.renamed.push({ id: sessionId, title });
       server.sessions = server.sessions.map((item) =>
@@ -200,4 +213,27 @@ test("대화에 언급된 장소가 목록에 함께 보인다", async () => {
   await renderApp();
 
   expect(within(sidebar()).getByText("블루보틀 성수")).toBeInTheDocument();
+});
+
+
+/* 목록만 만들고 못 열게 두면 "눌러도 아무 일이 없는" 화면이 된다. */
+test("히스토리를 누르면 지난 대화가 채팅 화면에 펼쳐진다", async () => {
+  const user = userEvent.setup();
+  await renderApp();
+
+  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
+
+  expect(await screen.findByText("비 오는데 어디 갈까")).toBeInTheDocument();
+  expect(screen.getByText("실내를 찾아볼게요")).toBeInTheDocument();
+});
+
+/* 세션 TTL이 30분이라 목록의 대화는 대부분 이미 만료됐다. 말없이 새 대화로
+   넘어가면 사용자는 앞의 맥락이 이어진 줄로 안다. */
+test("지난 대화를 열면 새 대화로 시작된다고 밝힌다", async () => {
+  const user = userEvent.setup();
+  await renderApp();
+
+  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
+
+  expect(await screen.findByText(/새 대화로 시작돼요/)).toBeInTheDocument();
 });

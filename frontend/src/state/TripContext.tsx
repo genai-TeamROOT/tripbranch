@@ -17,6 +17,7 @@ import {
   type ReactNode,
 } from "react";
 import type {
+  ChatSessionDetail,
   PhotoSimilarPlace,
   AgentProgressEvent,
   AgentResponse,
@@ -52,6 +53,15 @@ export interface TripState {
   error: string | null;
   /* Agent(B)가 발급한 대화 세션. 후속 발화에서 그대로 돌려보낸다. */
   session_id: string | null;
+  /*
+   * 사이드바 히스토리에서 불러온 지난 대화의 제목. 화면이 "지난 대화를 보고
+   * 있다"고 밝히는 데 쓴다.
+   *
+   * 불러와도 session_id를 채우지 않는다 — 세션 TTL은 30분이라 목록의 대화는
+   * 대부분 이미 만료돼 있고, 만료된 id로 이어 보내면 백엔드가 어차피 새 세션을
+   * 만든다. 비워 두면 "이어서 물으면 새 대화"라는 실제 동작과 화면이 일치한다.
+   */
+  restored_title: string | null;
   /* 최초 추천 시작 시 허용받은 브라우저 위치. 같은 세션의 후속 요청에도 재사용한다. */
   device_location: string | null;
   /** 브라우저에서 device_location을 마지막으로 받아온 시각(ms). */
@@ -93,6 +103,7 @@ const initialTripState: TripState = {
   phase: "idle",
   error: null,
   session_id: null,
+  restored_title: null,
   device_location: null,
   device_location_captured_at: null,
   device_location_snoozed_until: null,
@@ -104,6 +115,7 @@ const initialTripState: TripState = {
 
 type TripAction =
   | { type: "SET_LANGUAGE"; payload: Language }
+  | { type: "RESTORE_SESSION"; payload: ChatSessionDetail }
   | { type: "START_INTERPRETING" }
   | { type: "ADD_INTERPRETATION"; payload: InterpretedPayload }
   | { type: "UPDATE_CONDITIONS"; payload: Partial<InterpretedConditions> }
@@ -333,9 +345,48 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         error: null,
       };
     }
+    /*
+     * 사이드바 히스토리에서 지난 대화를 불러온다.
+     *
+     * 저장된 턴을 말풍선으로 펼치고 session_id는 비워 둔다 — 목록의 대화는
+     * 대부분 세션 TTL(30분)이 지나 이어 보낼 수 없고, 만료된 id를 보내면
+     * 백엔드가 어차피 새 세션을 만든다. 비워 두는 편이 "이어서 물으면 새
+     * 대화"라는 실제 동작과 화면을 일치시킨다.
+     *
+     * 추천 카드는 복원하지 않는다. 저장된 것은 주고받은 말뿐이고, 카드에 필요한
+     * 값을 지어내면 눌러도 동작하지 않는 카드가 생긴다.
+     */
+    case "RESTORE_SESSION": {
+      const restored: ChatMessage[] = [];
+      for (const turn of action.payload.turns) {
+        restored.push({
+          id: createMessageId("user"),
+          type: "user_text",
+          text: turn.user_input,
+        });
+        if (turn.assistant_message) {
+          restored.push({
+            id: createMessageId("assistant"),
+            type: "assistant_text",
+            text: turn.assistant_message,
+          });
+        }
+      }
+      return {
+        ...initialTripState,
+        language: state.language,
+        device_location: state.device_location,
+        device_location_captured_at: state.device_location_captured_at,
+        messages: restored,
+        restored_title: action.payload.title,
+        phase: "idle",
+      };
+    }
     case "START_CHAT_TURN":
       return {
         ...state,
+        /* 새로 물으면 더 이상 "지난 대화를 보는 중"이 아니다. */
+        restored_title: null,
         user_input: action.payload.userInput,
         device_location: action.payload.deviceLocation ?? state.device_location,
         device_location_captured_at:
