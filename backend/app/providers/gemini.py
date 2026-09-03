@@ -509,26 +509,62 @@ class RealGeminiProvider:
 
         단순화한 점(첫 슬라이스라 의도적으로 뺀 것들, 로드맵 24번 후속 과제):
         모델 폴백 없이 fast 모델 1개만 쓰고, 타임아웃/API 오류를 백오프 없이
-        1회로 바로 실패 처리하며, Langfuse generation 기록을 안 남긴다.
+        1회로 바로 실패 처리한다. 다만 Langfuse generation 기록과 개발자 감사
+        패널(`record_llm_call`)은 다른 메서드와 같은 방식으로 남긴다.
+
+        **확인 필요**: automatic function calling은 내부적으로 여러 번 API를
+        왕복할 수 있는데, `response.usage_metadata`가 그 왕복들을 전부 합산한
+        값인지 마지막 왕복 한 번만의 값인지 SDK 문서로 확인하지 못했다(실측 몇
+        건은 재시도 유무와 무관하게 비슷한 토큰 수를 보여 마지막 왕복만 잡을
+        가능성이 있다). 재시도가 잦은 실제 사용량을 정확히 보려면 이 부분을
+        먼저 확인해야 한다.
         """
 
-        try:
-            response = await self._client.aio.models.generate_content(
-                model=self._fast_model_names[0],
-                contents=instruction,
-                config=genai_types.GenerateContentConfig(
-                    tools=list(tools),
-                    automatic_function_calling=genai_types.AutomaticFunctionCallingConfig(
-                        maximum_remote_calls=max_tool_calls
+        model_name = self._fast_model_names[0]
+        operation = "answer_with_tools"
+        started = time.perf_counter()
+        with observe_generation(operation, model=model_name, input=instruction) as generation:
+            try:
+                response = await self._client.aio.models.generate_content(
+                    model=model_name,
+                    contents=instruction,
+                    config=genai_types.GenerateContentConfig(
+                        tools=list(tools),
+                        automatic_function_calling=genai_types.AutomaticFunctionCallingConfig(
+                            maximum_remote_calls=max_tool_calls
+                        ),
+                        temperature=0.0,
                     ),
-                    temperature=0.0,
-                ),
+                )
+            except _TIMEOUT_ERRORS:
+                _record_gemini_call(model_name, started, ok=False, status="timeout")
+                record_llm_call(
+                    operation=operation,
+                    attempted_models=[model_name],
+                    served_model=None,
+                    latency_ms=round((time.perf_counter() - started) * 1000),
+                )
+                raise ProviderTimeoutError("Gemini") from None
+            except genai_errors.APIError as exc:
+                status = f" {exc.status}" if hasattr(exc, "status") else ""
+                _record_gemini_call(model_name, started, ok=False, status=str(exc.code))
+                record_llm_call(
+                    operation=operation,
+                    attempted_models=[model_name],
+                    served_model=None,
+                    latency_ms=round((time.perf_counter() - started) * 1000),
+                )
+                raise ProviderUnavailableError("Gemini", detail=f"{exc.code}{status}") from None
+            _record_gemini_call(model_name, started, ok=True, status="ok")
+            usage = _token_usage(getattr(response, "usage_metadata", None))
+            generation.record(output=response.text, usage_details=_usage_details(usage))
+            record_llm_call(
+                operation=operation,
+                attempted_models=[model_name],
+                served_model=model_name,
+                latency_ms=round((time.perf_counter() - started) * 1000),
+                **usage,
             )
-        except _TIMEOUT_ERRORS:
-            raise ProviderTimeoutError("Gemini") from None
-        except genai_errors.APIError as exc:
-            status = f" {exc.status}" if hasattr(exc, "status") else ""
-            raise ProviderUnavailableError("Gemini", detail=f"{exc.code}{status}") from None
         return provider_result(response.text or "", source=ProviderSource.GEMINI)
 
     async def extract_compare_request(
