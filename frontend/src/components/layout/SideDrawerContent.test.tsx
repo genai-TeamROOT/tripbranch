@@ -308,6 +308,9 @@ test("로그아웃하면 이 기기의 취향·즐겨찾기가 남지 않는다"
   await renderApp();
 
   await user.click(within(sidebar()).getByRole("button", { name: /로그아웃/ }));
+  /* 게스트는 한 번 더 확인한다 - 돌아올 수단이 없어서다(feature/guest-account-link). */
+  await within(sidebar()).findByText(/돌아올 수 없어요/);
+  await user.click(within(sidebar()).getByRole("button", { name: "로그아웃" }));
 
   await waitFor(() => expect(localStorage.getItem("tb_preferences")).toBeNull());
   expect(localStorage.getItem("tb_favorites")).toBeNull();
