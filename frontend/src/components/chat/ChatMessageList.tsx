@@ -148,25 +148,6 @@ function StreamingText({
 }
 
 /*
- * 카드가 언제 기준의 값인지 밝히는 한 줄. 지난 대화를 되돌렸을 때만 붙는다.
- *
- * 카드 안에는 남은 운영시간·실시간 주차 대수·혼잡도처럼 시간이 지나면 틀리는
- * 값이 들어 있다. 그때 본 화면을 그대로 보여주는 것이 목적이라 값을 가리지는
- * 않고(가리면 그때와 달라진다) 언제 기준인지만 앞에 밝힌다.
- *
- * 한 곳에서만 그린다 — 카드 종류마다 따로 붙이면 새 카드가 생길 때 빠뜨린다.
- */
-function AsOfNotice({ at, language }: { at: string; language: Language }) {
-  const when = new Date(at);
-  if (Number.isNaN(when.getTime())) return null;
-  const label =
-    language === "en"
-      ? `As of ${when.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`
-      : `${when.toLocaleDateString("ko-KR", { month: "long", day: "numeric" })} 대화 기준`;
-  return <p className="px-1 text-[11px] text-muted">{label}</p>;
-}
-
-/*
  * 대화가 언제 오간 것인지 알리는 가운데 정렬 한 줄. 메신저에서 늘 보던 모양이라
  * 읽지 않아도 뜻이 통한다 — "지난 대화예요"라는 배너를 대신한다.
  *
@@ -246,21 +227,6 @@ export function ChatMessageList({
       {messages
         .filter((message) => showDebug || message.type !== "condition_debug")
         .map((message, index, renderedMessages) => {
-          /*
-           * 지난 대화의 카드에는 "언제 기준"인지를 앞에 붙인다. 여기 한 곳에서
-           * 감싸므로 카드 종류가 늘어도 따로 배선하지 않아도 된다.
-           */
-          const asOf = "as_of" in message ? message.as_of : undefined;
-          const withAsOf = (node: ReactNode) =>
-            asOf ? (
-              <div key={message.id} className="flex flex-col gap-1.5">
-                <AsOfNotice at={asOf} language={language} />
-                {node}
-              </div>
-            ) : (
-              node
-            );
-
           if (message.type === "time_separator") {
             return (
               <TimeSeparator
@@ -340,7 +306,7 @@ export function ChatMessageList({
           }
 
           if (message.type === "schedule_result") {
-            return withAsOf(
+            return (
               <ScheduleResultMessage
                 key={message.id}
                 schedule={message.schedule}
@@ -354,11 +320,11 @@ export function ChatMessageList({
           }
 
           if (message.type === "place_info_result") {
-            return withAsOf(<PlaceInfoCard key={message.id} card={message.card} />);
+            return <PlaceInfoCard key={message.id} card={message.card} />;
           }
 
           if (message.type === "compare_result") {
-            return withAsOf(
+            return (
               <CompareResultCards
                 key={message.id}
                 comparison={message.comparison}
@@ -433,7 +399,7 @@ export function ChatMessageList({
             );
           }
 
-          return withAsOf(
+          return (
             <RecommendationResultMessage
               key={message.id}
               recommendations={message.recommendations}

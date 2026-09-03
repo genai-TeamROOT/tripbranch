@@ -38,6 +38,7 @@ import type {
   UserConditions,
 } from "../types";
 import { buildAgentMessages, createMessageId } from "./agentMessages";
+import { hasTimeGap } from "./timeSeparator";
 import { findStreamingMessageIndex, freezeStreamingMessage } from "./streamingMessage";
 import { attachRecommendationsToTurns } from "./pastRecommendations";
 import { clearState, loadState, saveState } from "./storage";
@@ -56,6 +57,14 @@ export interface TripState {
   error: string | null;
   /* Agent(B)가 발급한 대화 세션. 후속 발화에서 그대로 돌려보낸다. */
   session_id: string | null;
+  /*
+   * 마지막 턴이 오간 시각. 다음 발화 위에 시각 구분선을 넣을지 판단하는 데 쓴다.
+   *
+   * 지난 대화를 열면 그 대화의 마지막 턴 시각이 들어온다 — 몇 시간 뒤에 이어서
+   * 물으면 그 발화 위에 지금 시각이 뜬다. 자리를 비웠다가 돌아온 것을 화면이
+   * 그대로 보여주는 것이고, 메신저에서 늘 보던 모양이다.
+   */
+  last_turn_at: string | null;
   /* 최초 추천 시작 시 허용받은 브라우저 위치. 같은 세션의 후속 요청에도 재사용한다. */
   device_location: string | null;
   /** 브라우저에서 device_location을 마지막으로 받아온 시각(ms). */
@@ -97,6 +106,7 @@ const initialTripState: TripState = {
   phase: "idle",
   error: null,
   session_id: null,
+  last_turn_at: null,
   device_location: null,
   device_location_captured_at: null,
   device_location_snoozed_until: null,
@@ -380,8 +390,6 @@ function tripReducer(state: TripState, action: TripAction): TripState {
           const turn = buildAgentMessages(record.payload, {
             userInput: record.user_input ?? "",
             elapsedMsClient: 0,
-            /* 카드 안의 값은 이 시각 기준의 스냅샷이다. 화면이 그 사실을 밝힌다. */
-            asOf: record.recorded_at,
           });
           /*
            * 후속 질문 버튼은 마지막 답변에만 남긴다. 실시간에서도 새 발화가
@@ -431,10 +439,14 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         device_location_captured_at: state.device_location_captured_at,
         messages: restored,
         session_id: action.payload.resumable ? action.payload.session_id : null,
+        last_turn_at: action.payload.restore_from_messages
+          ? (action.payload.messages.at(-1)?.recorded_at ?? null)
+          : (action.payload.turns.at(-1)?.at ?? null),
         phase: "idle",
       };
     }
-    case "START_CHAT_TURN":
+    case "START_CHAT_TURN": {
+      const nowIso = new Date().toISOString();
       return {
         ...state,
         user_input: action.payload.userInput,
@@ -450,10 +462,17 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         // 옛 턴의 후속 질문 버튼은 새 발화가 나가는 순간 걷어낸다. 남겨두면 대화를
         // 위로 올렸을 때 어느 답변에 대한 제안인지 알 수 없고, 지난 답변 기준의
         // 문구를 눌러 지금 맥락과 어긋난 요청이 나간다.
+        last_turn_at: nowIso,
         messages: [
           ...freezeStreamingMessage(
             state.messages.filter((message) => message.type !== "follow_up_suggestions"),
           ),
+          /* 자리를 비웠다가 돌아와 이어 묻는 발화라면 그 위에 지금 시각을 둔다.
+             바로 이어지는 발화에는 넣지 않는다 — 몇 분 간격의 줄이 계속 끼어들면
+             대화가 끊겨 보인다. */
+          ...(hasTimeGap(state.last_turn_at, nowIso)
+            ? [{ id: createMessageId("time"), type: "time_separator" as const, at: nowIso }]
+            : []),
           { id: createMessageId("user"), type: "user_text", text: action.payload.userInput },
         ],
         phase: "recommending",
@@ -461,6 +480,7 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         agentProgress: null,
         streamingIntent: null,
       };
+    }
     case "SET_AGENT_PROGRESS":
       return { ...state, agentProgress: action.payload };
     case "APPEND_STREAM_RESULT": {
