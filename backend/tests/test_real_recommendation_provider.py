@@ -13,7 +13,7 @@ from app.agent_context.enrichment_schemas import (
     CandidateEnrichmentResponse,
     CandidateEnrichmentResult,
 )
-from app.agent_context.schemas import ContextError
+from app.agent_context.schemas import ContextError, DistrictScope
 from app.domain.models import WeatherCondition
 from app.domain.travel_route import RouteSource, RouteStatus, TravelMode, TravelRoute
 from app.errors import AppError
@@ -62,6 +62,68 @@ def _context(*, place_ids: list[str]) -> RecommendationContext:
             ],
         ),
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("scope", "expected"),
+    [
+        (DistrictScope(district_code="680", district_name="강남구"), True),
+        (None, False),
+    ],
+)
+async def test_rerank_passes_district_scope_to_both_second_passes(
+    monkeypatch: pytest.MonkeyPatch,
+    scope: DistrictScope | None,
+    expected: bool,
+) -> None:
+    """2차가 1차와 같은 가중치 규칙을 쓰려면 이 배선이 있어야 한다(1.9.0).
+
+    파이프라인 함수에 직접 넘기는 테스트로는 이 줄이 지워져도 안 잡힌다 —
+    되돌려 확인했다. 그래서 provider가 context에서 실제로 뽑아 넘기는지를
+    여기서 따로 못 박는다. 날씨 판정·기준점 이름과 같은 자리다.
+    """
+    captured: dict[str, object] = {}
+
+    async def _fake_concentration_rerank(
+        first_pass,
+        weather_condition,
+        concentration,
+        *,
+        seek,
+        weather_reason=None,
+        origin_name=None,
+        district_scoped=False,
+    ):
+        captured["concentration"] = district_scoped
+        return first_pass
+
+    async def _fake_co_visited_rerank(
+        first_pass,
+        co_visited_pairs,
+        weather_condition,
+        *,
+        weather_reason=None,
+        origin_name=None,
+        district_scoped=False,
+    ):
+        captured["co_visited"] = district_scoped
+        return first_pass
+
+    monkeypatch.setattr(module, "rerank_with_concentration", _fake_concentration_rerank)
+    monkeypatch.setattr(module, "rerank_with_co_visited", _fake_co_visited_rerank)
+
+    provider = RealRecommendationProvider()
+    conditions = UserConditions(concentration_intent=ConcentrationIntent.AVOID)
+    context = _context(place_ids=["a"]).model_copy(update={"district_scope": scope})
+
+    await provider.rerank_with_concentration(
+        conditions, context, _empty_first_pass(), _unavailable_concentration()
+    )
+    await provider.rerank_with_co_visited(conditions, context, _empty_first_pass(), [])
+
+    assert captured["concentration"] is expected
+    assert captured["co_visited"] is expected
 
 
 @pytest.mark.asyncio
@@ -243,6 +305,7 @@ async def test_rerank_with_concentration_passes_origin_name_from_context(
         seek,
         weather_reason=None,
         origin_name=None,
+        district_scoped=False,
     ):
         captured["origin_name"] = origin_name
         return first_pass
@@ -279,6 +342,7 @@ async def test_rerank_with_concentration_derives_seek_true_from_intent(
         seek,
         weather_reason=None,
         origin_name=None,
+        district_scoped=False,
     ):
         captured["seek"] = seek
         return first_pass
@@ -310,6 +374,7 @@ async def test_rerank_with_concentration_derives_seek_false_from_avoid_intent(
         seek,
         weather_reason=None,
         origin_name=None,
+        district_scoped=False,
     ):
         captured["seek"] = seek
         return first_pass
@@ -347,6 +412,7 @@ async def test_rerank_with_concentration_uses_resolve_weather_condition(
         seek,
         weather_reason=None,
         origin_name=None,
+        district_scoped=False,
     ):
         captured["weather_condition"] = weather_condition
         captured["weather_reason"] = weather_reason
@@ -387,6 +453,7 @@ async def test_rerank_with_co_visited_passes_origin_name_from_context(
         *,
         weather_reason=None,
         origin_name=None,
+        district_scoped=False,
     ):
         captured["origin_name"] = origin_name
         captured["co_visited_pairs"] = co_visited_pairs
@@ -422,6 +489,7 @@ async def test_rerank_with_co_visited_uses_resolve_weather_condition(
         *,
         weather_reason=None,
         origin_name=None,
+        district_scoped=False,
     ):
         captured["weather_condition"] = weather_condition
         captured["weather_reason"] = weather_reason
