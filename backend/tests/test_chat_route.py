@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 
 import pytest
@@ -440,3 +442,50 @@ def test_없는_세션에는_화면_기록을_남기지_않는다(monkeypatch) -
     TestClient(app).post("/api/chat", json={"user_input": "안녕"})
 
     assert _recorded("sess_없는세션") == []
+
+
+def test_스트리밍_턴도_화면_기록을_남긴다(streaming, monkeypatch) -> None:
+    """실사용 경로는 SSE다 — 여기서 빠지면 기록이 사실상 안 쌓인다."""
+    session_id = _start_owned_session()
+
+    async def fake_run_agent(request: AgentRequest, **kwargs) -> AgentResponse:
+        return _fake_response(session_id)
+
+    monkeypatch.setattr(chat_route, "run_agent", fake_run_agent)
+
+    TestClient(app).post(
+        "/api/chat/stream", json={"user_input": "경복궁 근처 카페", "session_id": session_id}
+    )
+
+    messages = _recorded(session_id)
+    assert len(messages) == 1
+    # 후속 질문은 done 뒤에 정해진다. 그 뒤에 기록해야 담긴다.
+    assert messages[0].payload["suggested_follow_ups"] == ["여기 주차되나요?", "다른 곳도 보여줘"]
+
+
+# done을 내보낸 뒤 후속 질문을 만드는 사이에 창을 닫으면 이 제너레이터가 그대로
+# 닫힌다. 그 턴만 기록에서 빠지면 그 대화는 영영 "온전하지 않음"으로 판정돼
+# 근사치로만 복원된다.
+def test_done_뒤에_끊겨도_그_턴의_기록은_남는다(streaming, monkeypatch) -> None:
+    session_id = _start_owned_session()
+
+    async def fake_run_agent(request: AgentRequest, **kwargs) -> AgentResponse:
+        return _fake_response(session_id)
+
+    async def connection_dropped(*args, **kwargs):
+        """창을 닫으면 이 자리에서 제너레이터가 취소된다.
+
+        CancelledError는 BaseException이라 후속 질문을 감싼 except Exception이
+        잡지 못한다 — 정확히 그 경로를 흉내 낸다.
+        """
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(chat_route, "run_agent", fake_run_agent)
+    monkeypatch.setattr(chat_route, "_follow_ups_for_user", connection_dropped)
+
+    with contextlib.suppress(asyncio.CancelledError):
+        TestClient(app).post(
+            "/api/chat/stream", json={"user_input": "경복궁 근처 카페", "session_id": session_id}
+        )
+
+    assert len(_recorded(session_id)) == 1

@@ -221,6 +221,18 @@ async def chat_stream(
         queue: asyncio.Queue[tuple[str, dict[str, object]]] = asyncio.Queue()
         started_at = time.monotonic()
         task: asyncio.Task[AgentResponse] | None = None
+        # 화면 기록은 done을 내보낸 **뒤에** 남긴다(후속 질문이 그때 정해진다).
+        # 그 사이에 사용자가 창을 닫으면 이 제너레이터가 그대로 닫혀 그 턴의
+        # 기록만 빠지고, 그러면 그 대화는 영영 "온전하지 않음"으로 판정돼
+        # 근사치로만 복원된다. finally에서 한 번 더 부를 수 있게 붙잡아 둔다.
+        to_record: AgentResponse | None = None
+
+        def record_once() -> None:
+            nonlocal to_record
+            if to_record is None:
+                return
+            recorded, to_record = to_record, None
+            _record_transcript(request, recorded)
 
         async def emit(event: str, payload: dict[str, object]) -> None:
             # 영어 응답은 마지막에 문장 묶음을 한 번에 번역한다. Runtime의 한국어
@@ -304,6 +316,11 @@ async def chat_stream(
                 )
                 return
 
+            # done을 내보내기 전에 잡아 둔다. 여기부터는 언제 끊겨도 finally가
+            # 기록을 남긴다(후속 질문이 붙기 전 모양일 수는 있어도, 그 턴이
+            # 통째로 빠지지는 않는다).
+            to_record = response
+
             yield ServerSentEvent(
                 event="done",
                 data=json.dumps(
@@ -332,7 +349,7 @@ async def chat_stream(
             # 여기가 응답이 화면과 같아지는 지점이다 — 번역이 끝났고 후속 질문도
             # 정해졌다. 화면 기록은 이 모양으로 남긴다.
             response.suggested_follow_ups = suggestions
-            _record_transcript(request, response)
+            record_once()
 
             if suggestions:
                 yield ServerSentEvent(
@@ -346,6 +363,9 @@ async def chat_stream(
                     ),
                 )
         finally:
+            # 정상 경로에서는 이미 남겼으므로 no-op이다. done 뒤에 끊긴 경우에만
+            # 여기서 실제로 기록한다.
+            record_once()
             if task is not None and not task.done():
                 task.cancel()
                 try:
