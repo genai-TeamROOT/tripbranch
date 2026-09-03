@@ -54,12 +54,8 @@ export interface TripState {
   /* Agent(B)가 발급한 대화 세션. 후속 발화에서 그대로 돌려보낸다. */
   session_id: string | null;
   /*
-   * 사이드바 히스토리에서 불러온 지난 대화의 제목. 화면이 "지난 대화를 보고
-   * 있다"고 밝히는 데 쓴다.
-   *
-   * 불러와도 session_id를 채우지 않는다 — 세션 TTL은 30분이라 목록의 대화는
-   * 대부분 이미 만료돼 있고, 만료된 id로 이어 보내면 백엔드가 어차피 새 세션을
-   * 만든다. 비워 두면 "이어서 물으면 새 대화"라는 실제 동작과 화면이 일치한다.
+   * 사이드바 히스토리에서 불러온 지난 대화의 제목. 화면이 "지난 대화를 이어보고
+   * 있다"고 밝히는 데 쓴다. 새 발화가 나가면 비운다.
    */
   restored_title: string | null;
   /* 최초 추천 시작 시 허용받은 브라우저 위치. 같은 세션의 후속 요청에도 재사용한다. */
@@ -348,10 +344,14 @@ function tripReducer(state: TripState, action: TripAction): TripState {
     /*
      * 사이드바 히스토리에서 지난 대화를 불러온다.
      *
-     * 저장된 턴을 말풍선으로 펼치고 session_id는 비워 둔다 — 목록의 대화는
-     * 대부분 세션 TTL(30분)이 지나 이어 보낼 수 없고, 만료된 id를 보내면
-     * 백엔드가 어차피 새 세션을 만든다. 비워 두는 편이 "이어서 물으면 새
-     * 대화"라는 실제 동작과 화면을 일치시킨다.
+     * **session_id를 채운다** — 사이드바가 부르는 것은 조회가 아니라
+     * POST /sessions/{id}/resume이고, 그 응답이 온 시점의 세션은 살아 있다.
+     * 그래서 이어 물으면 같은 대화에 붙는다(목록에 줄이 하나 더 생기지 않고,
+     * 저장된 턴이 그대로 맥락으로 넘어간다).
+     *
+     * 그래도 resumable을 확인하고 넣는다. 되살리기가 실패해 조회 응답으로
+     * 물러난 경우에는 false로 오고, 그때 id를 채우면 화면은 "이어진다"고
+     * 말하는데 백엔드는 새 세션을 만드는 상태가 된다.
      *
      * 추천 카드는 복원하지 않는다. 저장된 것은 주고받은 말뿐이고, 카드에 필요한
      * 값을 지어내면 눌러도 동작하지 않는 카드가 생긴다.
@@ -378,6 +378,7 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         device_location: state.device_location,
         device_location_captured_at: state.device_location_captured_at,
         messages: restored,
+        session_id: action.payload.resumable ? action.payload.session_id : null,
         restored_title: action.payload.title,
         phase: "idle",
       };
@@ -385,7 +386,7 @@ function tripReducer(state: TripState, action: TripAction): TripState {
     case "START_CHAT_TURN":
       return {
         ...state,
-        /* 새로 물으면 더 이상 "지난 대화를 보는 중"이 아니다. */
+        /* 새로 물으면 더 이상 "지난 대화를 이어보는 중"이 아니다. */
         restored_title: null,
         user_input: action.payload.userInput,
         device_location: action.payload.deviceLocation ?? state.device_location,

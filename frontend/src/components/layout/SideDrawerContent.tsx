@@ -15,7 +15,7 @@ import { identityLabel } from "../../auth/identityLabel";
 import { sheetState } from "../../state/sheetNav";
 import { useTripDispatch, useTripState } from "../../state/TripContext";
 import type { Language } from "../../types";
-import { deleteChatSession, fetchChatSession, renameChatSession } from "../../api/trip";
+import { deleteChatSession, renameChatSession, resumeChatSession } from "../../api/trip";
 import { loadChatSessions, refreshChatSessions } from "../../state/chatSessions";
 import {
   createId,
@@ -113,13 +113,17 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
   }
 
   /*
-   * 지난 대화를 펼쳐 보여준다. 이어서 대화하지는 못한다 — 세션 TTL이 30분이라
-   * 목록의 대화는 대부분 이미 만료됐다. 사용자가 무언가를 물으면 새 대화가
-   * 시작되고, 채팅 화면이 그 사실을 배너로 밝힌다.
+   * 지난 대화를 펼치고 **이어서 대화할 수 있게 되살린다.**
+   *
+   * 조회가 아니라 resume을 부른다. 세션 TTL이 30분이라 목록의 대화는 거의 전부
+   * 만료돼 있고(실측: 106개 중 1개만 살아 있었다), 조회만 하면 이어 물었을 때
+   * 새 세션이 생겨 목록에 줄이 하나 더 늘고 맥락도 끊긴다. resume은 대화를
+   * 되살리되 낡은 조건(날씨·GPS·되묻기)은 버린다 — 사흘 전 "비 오는데"가 오늘의
+   * 조건으로 남으면 안 되기 때문이다.
    */
   async function openConversation(sessionId: string) {
     try {
-      const detail = await fetchChatSession(sessionId);
+      const detail = await resumeChatSession(sessionId);
       dispatch({ type: "RESTORE_SESSION", payload: detail });
       go("/chat");
     } catch {

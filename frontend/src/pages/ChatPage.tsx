@@ -53,6 +53,7 @@ const CHAT_TEXT = {
     relaxRadius: "검색 범위를 넓혀서 다시 추천해줘",
     basedOn: (name: string) => `${name} 기준으로 다시 보기`,
     currentLocation: "현재 위치 기준으로 다시 보기",
+    resumedNotice: "지난 대화의 마지막 부분이에요. 이어서 물어보시면 이 대화에 이어져요.",
   },
   en: {
     developer: "Developer view",
@@ -63,6 +64,7 @@ const CHAT_TEXT = {
     relaxRadius: "Search in a wider area",
     basedOn: (name: string) => `View results based on ${name}`,
     currentLocation: "View results based on my current location",
+    resumedNotice: "This is the tail end of an earlier chat. Ask anything to pick it back up.",
   },
 } as const;
 interface PendingLocationRefresh {
@@ -397,10 +399,12 @@ export function ChatPage() {
         </div>
 
         {/*
-          지난 대화를 불러온 상태다. **이어서 물으면 새 대화가 시작된다**는 것을
-          미리 밝힌다 — 세션 TTL이 30분이라 목록의 대화는 대부분 이미 만료됐고,
-          말없이 새 대화로 넘어가면 사용자는 앞의 맥락이 이어진 줄로 안다.
-          저장된 턴도 최대 5개뿐이라 대화 전체가 아니다.
+          지난 대화를 불러온 상태다. 위에 보이는 말풍선이 **대화 전체가 아니라
+          마지막 부분**이라는 것을 밝힌다 — 백엔드가 최근 5턴만 보관하므로 앞부분은
+          없다. 말없이 두면 사용자는 이게 전부인 줄로 안다.
+
+          이어 물으면 같은 대화에 붙는다(sidebar가 resume을 부른다). 다만 날씨·위치
+          같은 조건은 되살릴 때 버려지므로, 필요하면 다시 물어보는 게 정상이다.
         */}
         {state.restored_title && (
           <p
@@ -408,7 +412,7 @@ export function ChatPage() {
             className="rounded-xl bg-chip px-3.5 py-2.5 text-xs leading-relaxed text-ink"
           >
             <strong className="font-bold">{state.restored_title}</strong>
-            {" — 지난 대화의 마지막 부분이에요. 이어서 물어보시면 새 대화로 시작돼요."}
+            {` — ${text.resumedNotice}`}
           </p>
         )}
 

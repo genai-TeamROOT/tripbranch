@@ -28,6 +28,9 @@ const server = vi.hoisted(() => ({
   sessions: [] as { session_id: string; title: string; place_name: string | null; last_active_at: string }[],
   renamed: [] as { id: string; title: string }[],
   deleted: [] as string[],
+  resumed: [] as string[],
+  /** 이어서 보낸 발화가 실어 나간 session_id. null이면 새 대화로 간 것이다. */
+  chatSessionIds: [] as (string | null)[],
 }));
 
 vi.mock("../../api/trip", async (importOriginal) => {
@@ -35,9 +38,12 @@ vi.mock("../../api/trip", async (importOriginal) => {
   return {
     ...actual,
     fetchChatSessions: async () => ({ sessions: server.sessions }),
-    fetchChatSession: async (sessionId: string) => {
+    /* 사이드바는 조회가 아니라 resume을 부른다 — 만료된 대화를 되살려야 이어
+       물었을 때 같은 세션에 붙는다. resume의 응답은 항상 resumable: true다. */
+    resumeChatSession: async (sessionId: string) => {
       const found = server.sessions.find((item) => item.session_id === sessionId);
       if (!found) throw new Error("없는 대화");
+      server.resumed.push(sessionId);
       return {
         session_id: sessionId,
         title: found.title,
@@ -45,8 +51,11 @@ vi.mock("../../api/trip", async (importOriginal) => {
           { user_input: "비 오는데 어디 갈까", assistant_message: "실내를 찾아볼게요", intent: "RECOMMEND", place_names: [], at: "2026-09-03T09:00:00+09:00" },
         ],
         last_active_at: found.last_active_at,
-        resumable: false,
+        resumable: true,
       };
+    },
+    streamChat: async (request: { session_id: string | null }) => {
+      server.chatSessionIds.push(request.session_id);
     },
     renameChatSession: async (sessionId: string, title: string) => {
       server.renamed.push({ id: sessionId, title });
@@ -85,6 +94,8 @@ beforeEach(() => {
   ];
   server.renamed = [];
   server.deleted = [];
+  server.resumed = [];
+  server.chatSessionIds = [];
 });
 
 /*
@@ -227,13 +238,30 @@ test("히스토리를 누르면 지난 대화가 채팅 화면에 펼쳐진다",
   expect(screen.getByText("실내를 찾아볼게요")).toBeInTheDocument();
 });
 
-/* 세션 TTL이 30분이라 목록의 대화는 대부분 이미 만료됐다. 말없이 새 대화로
-   넘어가면 사용자는 앞의 맥락이 이어진 줄로 안다. */
-test("지난 대화를 열면 새 대화로 시작된다고 밝힌다", async () => {
+/* 보이는 말풍선은 최근 5턴뿐이라 대화 전체가 아니다. 말없이 두면 사용자는
+   이게 전부인 줄로 안다. */
+test("지난 대화를 열면 마지막 부분이라고 밝힌다", async () => {
   const user = userEvent.setup();
   await renderApp();
 
   await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
 
-  expect(await screen.findByText(/새 대화로 시작돼요/)).toBeInTheDocument();
+  expect(await screen.findByText(/마지막 부분이에요/)).toBeInTheDocument();
+});
+
+/*
+ * 이 파일에서 가장 중요한 테스트다. 지난 대화를 여는 목적은 읽는 것이 아니라
+ * 이어가는 것이고, 그건 다음 발화가 **같은 session_id**를 실어 나가야만
+ * 성립한다. 비어서 나가면 백엔드가 새 세션을 만들어 목록에 줄이 하나 더 생긴다.
+ */
+test("지난 대화를 열고 이어 물으면 같은 세션으로 나간다", async () => {
+  const user = userEvent.setup();
+  await renderApp();
+
+  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
+  await screen.findByText("비 오는데 어디 갈까");
+  await user.type(screen.getByPlaceholderText("추가 조건을 입력해 주세요"), "그럼 근처 카페는?{Enter}");
+
+  await waitFor(() => expect(server.chatSessionIds).toEqual(["chat-1"]));
+  expect(server.resumed).toEqual(["chat-1"]);
 });

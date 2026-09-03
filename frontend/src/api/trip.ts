@@ -271,3 +271,18 @@ export function deleteChatSession(sessionId: string) {
 export function fetchChatSession(sessionId: string) {
   return apiClient.get<ChatSessionDetail>(`/sessions/${encodeURIComponent(sessionId)}`);
 }
+
+/*
+ * 지난 대화를 이어갈 수 있게 되살린다. 사이드바에서 한 줄을 눌렀을 때 쓴다.
+ *
+ * 조회(fetchChatSession)와 나눠 둔 이유는 이쪽이 **쓰기**이기 때문이다 — 만료된
+ * 세션을 다시 active로 돌리고 낡은 조건(날씨·GPS·되묻기)을 버린다. 그래서 응답의
+ * resumable은 항상 true다. GET이 이 일을 겸하면 목록을 미리 불러오기만 해도
+ * 세션이 되살아난다.
+ */
+export function resumeChatSession(sessionId: string) {
+  return apiClient.post<ChatSessionDetail>(
+    `/sessions/${encodeURIComponent(sessionId)}/resume`,
+    {},
+  );
+}
