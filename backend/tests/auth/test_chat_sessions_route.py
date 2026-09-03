@@ -407,3 +407,104 @@ def test_토큰_없이는_이어갈_수_없다(signing_key) -> None:
     session_id = _start_chat(ME, "내 대화")
 
     assert TestClient(app).post(f"/api/sessions/{session_id}/resume").status_code == 401
+
+
+# ---------------------------------------------------------------- 그때 본 곳
+
+
+def _record(session_id: str, run_id: str, *names: str):
+    """추천 이력을 남긴다. 실제 흐름에서 A가 하는 일이다."""
+    from app.state import history as history_module
+    from app.state.schema import RecommendedItemInput
+    from app.state.store import get_store
+
+    store = get_store()
+    history_module.record_recommended(
+        store,
+        session_id,
+        run_id,
+        [
+            RecommendedItemInput(place_id=f"place_{name}", rank=index + 1, name=name)
+            for index, name in enumerate(names)
+        ],
+    )
+    return store
+
+
+def test_지난_대화에_그때_본_곳이_함께_온다(signing_key) -> None:
+    session_id = _start_chat(ME, "실내 어디 갈까")
+    _record(session_id, "run_1", "국립중앙박물관", "리움미술관")
+
+    response = TestClient(app).get(f"/api/sessions/{session_id}", headers=_headers(signing_key, ME))
+
+    names = [item["name"] for item in response.json()["recommendations"]]
+    assert names == ["국립중앙박물관", "리움미술관"]
+
+
+# 이 절에서 가장 중요한 테스트다. 되살리기는 추천 이력을 비우는데(다음 추천에서
+# 뺄 목록), 화면에 그릴 "그때 본 곳"은 그 같은 데이터에서 나온다. 비운 뒤에
+# 읽으면 카드가 통째로 사라진다.
+def test_되살려도_그때_본_곳은_응답에_남는다(signing_key) -> None:
+    session_id = _start_chat(ME, "실내 어디 갈까")
+    _record(session_id, "run_1", "국립중앙박물관")
+    _expire(session_id)
+
+    response = TestClient(app).post(
+        f"/api/sessions/{session_id}/resume", headers=_headers(signing_key, ME)
+    )
+
+    assert [item["name"] for item in response.json()["recommendations"]] == ["국립중앙박물관"]
+
+
+def test_되살린_뒤에는_그_곳이_제외_목록에서_빠진다(signing_key) -> None:
+    """위 테스트의 짝이다. 화면에는 남기고 제외 목록에서는 지운다."""
+    from app.state import history as history_module
+
+    session_id = _start_chat(ME, "실내 어디 갈까")
+    store = _record(session_id, "run_1", "국립중앙박물관")
+    _expire(session_id)
+
+    TestClient(app).post(f"/api/sessions/{session_id}/resume", headers=_headers(signing_key, ME))
+
+    assert history_module.get_exclusion_place_ids(store, session_id) == []
+
+
+# 추천은 그 턴이 기록되기 **전에** 남는다(실측 102쌍 중 97쌍이 0~120초 먼저).
+# 그래서 "남은 가장 오래된 턴보다 먼저 나간 것을 버린다"로 자르면 안 된다 —
+# 서버는 시간순으로 그대로 주고, 말풍선과 짝짓는 일은 화면이 한다.
+def test_턴보다_먼저_기록된_추천도_그대로_준다(signing_key) -> None:
+    from datetime import timedelta
+
+    from app.state.schema import now_kst
+    from app.state.store import get_store
+
+    session_id = _start_chat(ME, "실내 어디 갈까")
+    _record(session_id, "run_1", "턴보다먼저")
+    store = get_store()
+    history = store.get_history(session_id)
+    assert history is not None
+    history.recommended[0].shown_at = now_kst() - timedelta(seconds=97)
+    store.save_history(history)
+
+    response = TestClient(app).get(f"/api/sessions/{session_id}", headers=_headers(signing_key, ME))
+
+    assert [item["name"] for item in response.json()["recommendations"]] == ["턴보다먼저"]
+
+
+def test_추천은_시간순으로_온다(signing_key) -> None:
+    session_id = _start_chat(ME, "실내 어디 갈까")
+    _record(session_id, "run_1", "먼저 본 곳")
+    _record(session_id, "run_2", "나중에 본 곳")
+
+    response = TestClient(app).get(f"/api/sessions/{session_id}", headers=_headers(signing_key, ME))
+
+    names = [item["name"] for item in response.json()["recommendations"]]
+    assert names == ["먼저 본 곳", "나중에 본 곳"]
+
+
+def test_추천을_받지_않은_대화는_빈_목록이다(signing_key) -> None:
+    session_id = _start_chat(ME, "그냥 물어본 대화")
+
+    response = TestClient(app).get(f"/api/sessions/{session_id}", headers=_headers(signing_key, ME))
+
+    assert response.json()["recommendations"] == []

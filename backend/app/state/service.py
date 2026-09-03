@@ -1570,6 +1570,34 @@ def rename_session(
     )
 
 
+class PastRecommendation(BaseModel):
+    """지난 대화에서 실제로 화면에 나갔던 장소 하나. (TP-222 후속)
+
+    **저장돼 있는 값만 담는다.** 그때 본 카드를 그대로 되살릴 수는 없다 —
+    점수·근거 문장·사진·카테고리·운영시간은 애초에 기록하지 않고, trace_records도
+    단계별 지표만 남기지 카드 원본을 갖고 있지 않다. 없는 값을 지어내면 눌러도
+    맞지 않는 카드가 생기므로 여기 없는 것은 화면에도 없다.
+
+    실측(신원이 붙은 대화의 추천 459건): 이름 100%, 거리·실내외 87%, 좌표 71%,
+    추천 이유 13%.
+
+    특히 remaining_minutes를 내보내지 않는다. 화면의 PlaceCard는 그 값으로
+    "지금 영업 중 / N분 후 마감"을 그리는데, 사흘 전 스냅샷으로 그리면 거짓말이
+    된다. 지난 추천은 전용 카드로 그린다.
+    """
+
+    place_id: str
+    # 같은 턴에 함께 나간 장소들을 한 묶음으로 되돌리는 열쇠다. 대화 턴에는
+    # run_id가 없으므로 화면은 이 값으로 묶고 shown_at으로 말풍선 사이에 끼운다.
+    run_id: str
+    name: str
+    rank: int
+    distance_km: float | None = None
+    environment_type: str | None = None
+    reason: str | None = None
+    shown_at: datetime
+
+
 class ChatSessionDetail(BaseModel):
     """지난 대화 하나. 사이드바에서 한 줄을 눌렀을 때 보여줄 내용이다.
 
@@ -1580,6 +1608,9 @@ class ChatSessionDetail(BaseModel):
     session_id: str
     title: str
     turns: list[ConversationTurn] = Field(default_factory=list)
+    # 그 대화에서 화면에 나갔던 장소들. 말풍선만 돌려주면 "추천을 받았다"는
+    # 사실만 남고 무엇을 받았는지가 사라진다.
+    recommendations: list[PastRecommendation] = Field(default_factory=list)
     last_active_at: datetime
     # 이 세션으로 대화를 이어갈 수 있는지. TTL(30분)이 지났으면 False이고,
     # 그때 사용자가 무언가를 물으면 새 세션에서 시작된다.
@@ -1605,7 +1636,7 @@ def get_user_session_detail(
     """
     store = store or get_store()
     state = _load_own_conversation(session_id, principal, store)
-    return _to_session_detail(state)
+    return _to_session_detail(state, _past_recommendations(store, state))
 
 
 def _load_own_conversation(
@@ -1622,11 +1653,53 @@ def _load_own_conversation(
     return state
 
 
-def _to_session_detail(state: AgentState) -> ChatSessionDetail:
+def _past_recommendations(store: StateStore, state: AgentState) -> list[PastRecommendation]:
+    """그 대화에서 화면에 나갔던 장소들. 오래된 것이 앞이다.
+
+    **여기서 턴과 짝지어 자르지 않는다.** recent_turns는 MAX_RECENT_TURNS(=5)개만
+    남는데 추천 이력에는 상한이 없어 남은 말풍선보다 오래된 추천이 섞여 있는데,
+    "남은 가장 오래된 턴보다 먼저 나간 것을 버린다"는 단순한 규칙은 틀린다 —
+    추천은 그 턴이 기록되기 **전에** 남기 때문이다(실측 102쌍 중 97쌍이 턴보다
+    0~120초 먼저, 평균 97초). 그 규칙을 쓰면 가장 오래된 턴의 추천이 통째로
+    사라진다.
+
+    짝짓기는 두 목록을 함께 들고 순서를 만드는 화면 쪽에서 한다. 여기서는 저장된
+    것을 시간순으로 그대로 준다.
+
+    이름이 없는 항목만 버린다. 카드에 쓸 이름이 없으면 그릴 것이 없다(실측으로는
+    459건 전부 이름이 있었지만, 이 필드는 스키마상 선택이다).
+    """
+    history = store.get_history(state.session_id)
+    if history is None:
+        return []
+
+    kept = [
+        PastRecommendation(
+            place_id=item.place_id,
+            run_id=item.run_id,
+            name=item.name,
+            rank=item.rank,
+            distance_km=item.distance_km,
+            environment_type=item.environment_type,
+            reason=item.reason,
+            shown_at=item.shown_at,
+        )
+        for item in history.recommended
+        if item.name
+    ]
+    kept.sort(key=lambda item: (item.shown_at, item.rank))
+    return kept
+
+
+def _to_session_detail(
+    state: AgentState,
+    recommendations: list[PastRecommendation],
+) -> ChatSessionDetail:
     return ChatSessionDetail(
         session_id=state.session_id,
         title=state.title or "",
         turns=list(state.recent_turns),
+        recommendations=recommendations,
         last_active_at=state.last_active_at,
         resumable=state.status != "expired"
         and not session_module.is_session_expired(state),
@@ -1660,10 +1733,15 @@ def resume_user_session(
     state = _load_own_conversation(session_id, principal, store)
 
     if state.status != "expired" and not session_module.is_session_expired(state):
-        return _to_session_detail(state)
+        return _to_session_detail(state, _past_recommendations(store, state))
+
+    # 비우기 **전에** 읽는다. 화면에 그릴 "그때 본 곳"과 다음 추천에서 뺄 "이미
+    # 보여준 곳"은 같은 데이터에서 나오지만 쓰임이 반대다 — 하나는 남겨야 하고
+    # 하나는 지워야 한다.
+    shown = _past_recommendations(store, state)
 
     session_module.resume(state)
     store.save_state(state)
     history_module.clear_recommended(store, session_id)
 
-    return _to_session_detail(state)
+    return _to_session_detail(state, shown)
