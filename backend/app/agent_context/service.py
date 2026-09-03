@@ -59,6 +59,7 @@ from app.agent_context.schemas import (
     Clarification,
     ContextError,
     Coordinates,
+    DistrictScope,
     ResponseMetadata,
     parse_candidate_names,
 )
@@ -114,7 +115,7 @@ from app.repositories.protocols import (
     PlacePhotoRepository,
 )
 from app.schemas import CompareCriteria, ComparisonItem, StaleAreaProbeDebug
-from app.service_area import SUPPORTED_DISTRICTS
+from app.service_area import SUPPORTED_DISTRICTS, ServiceDistrict
 from app.tools.concentration import (
     GetConcentrationTool,
 )
@@ -277,6 +278,17 @@ class ContextService:
         if category_plan.has_unsupported_conditions or category_plan.has_conflicts:
             return _unsupported_category_response(request, category_plan)
 
+        # "강남구"처럼 구 이름으로 들어온 요청은 후보를 그 구 전체에서 모은다(D-119).
+        # 반경 검색으로 풀면 대표점 주변 수백 미터만 보게 된다 — 반경 2km 원은
+        # 12.6km²인데 강남구는 39.5km²다.
+        #
+        # 보충 조회(refill_center)는 같은 턴의 이어받기라 이미 정해진 기준점을 쓴다.
+        district = (
+            _supported_district(location_query)
+            if refill_center is None and location_query
+            else None
+        )
+
         if refill_center is not None:
             # 위치 해석을 건너뛴다. 같은 턴이라 기준점이 바뀔 일이 없고, 보충 배치의
             # location은 A가 어차피 버린다(_merge_recommendation_context_places).
@@ -287,7 +299,15 @@ class ContextService:
             location_result = await self._tools.location.execute(
                 # 추천은 반경 검색의 기준 좌표만 필요하다. 저장소 정체성 확정은
                 # 후보 보강 단계가 place_id로 따로 한다(enrichment_service).
-                ResolveLocationQuery(location_query, purpose=LocationPurpose.SEARCH_CENTER)
+                #
+                # 구 이름은 행정구역 좌표로 바로 확정한다. 지역 검색에 걸면 주변
+                # 명소·역 후보가 여럿 잡혀 불필요한 되묻기가 된다 — 주차장 경로가
+                # 같은 이유로 같은 처리를 한다(fetch_info_context).
+                ResolveLocationQuery(
+                    f"서울특별시 {district.name}" if district else location_query,
+                    purpose=LocationPurpose.SEARCH_CENTER,
+                    skip_local_search=district is not None,
+                )
             )
         else:
             location_result = _gps_location_result(request, self._clock())
@@ -349,6 +369,7 @@ class ContextService:
                 ),
                 excluded_place_ids=frozenset(request.excluded_place_ids),
                 accessibility_needs=conditions.accessibility_needs,
+                district_code=district.district_code if district else None,
             )
         )
         weather_result = await weather_task if weather_task is not None else None
@@ -368,6 +389,13 @@ class ContextService:
                 holidays_result=holidays_result,
                 weather_requested=execution_plan.requires(ContextTool.GET_WEATHER),
                 holidays_requested=execution_plan.requires(ContextTool.GET_HOLIDAYS),
+                district_scope=(
+                    DistrictScope(
+                        district_code=district.district_code, district_name=district.name
+                    )
+                    if district
+                    else None
+                ),
             ),
             rule_versions=_rule_versions(),
         )
@@ -2002,6 +2030,7 @@ class ContextService:
         search_radius_km: float,
         excluded_place_ids: frozenset[str] = frozenset(),
         accessibility_needs: Sequence[str] = (),
+        district_code: str | None = None,
     ) -> NearbyPlaceDetailsResult:
         """분류별 장소 조회를 병렬 실행하고 중복·제외 후보를 걸러 한 결과로 합친다.
 
@@ -2018,6 +2047,31 @@ class ContextService:
         needs, unknown_accessibility_need = _resolve_accessibility_needs(
             accessibility_needs
         )
+        if district_code is not None:
+            # 구 단위는 분류마다 따로 부르지 않는다. 분류 수만큼 구 전량을 다시 읽는
+            # 것도 있지만, 그보다 분류 몫이 호출마다 따로 적용돼 합친 결과가 몫을
+            # 넘는 것이 문제다. 조건은 한 번에 넘기고 Tool 안에서 건다.
+            district_result = await self._tools.places.execute(
+                NearbyPlaceDetailsQuery(
+                    latitude=latitude,
+                    longitude=longitude,
+                    search_radius_km=search_radius_km,
+                    limit=self._candidate_limit,
+                    preferred_categories=plan.resolved_place_tags,
+                    category_filters=plan.filters,
+                    district_scope=district_code,
+                    excluded_place_ids=excluded_place_ids,
+                    accessibility_needs=needs,
+                )
+            )
+            return _merge_place_results(
+                [district_result],
+                limit=self._candidate_limit,
+                started_at=started_at,
+                excluded_plan=excluded_plan,
+                unknown_accessibility_need=unknown_accessibility_need,
+            )
+
         results = await asyncio.gather(
             *(
                 self._tools.places.execute(
@@ -2449,6 +2503,24 @@ def _normalize_place_name(value: str) -> str:
     """공백·대소문자 차이를 무시하고 장소명을 대조한다(TP-171 이름-일치 폴백 전용)."""
 
     return value.casefold().replace(" ", "")
+
+
+def _supported_district(value: str) -> ServiceDistrict | None:
+    """추천 요청의 위치 표현이 지원 구를 통째로 가리키는지 본다(D-119).
+
+    `_supported_district_name()`과 같은 정규화를 쓰되 구 코드까지 필요해서 객체를
+    돌려준다 — 구 단위 후보 조회가 lDongSignguCd로 읽기 때문이다.
+
+    임의 지명까지 넓히지 않는다. "강남"은 받지만 "강남역"은 받지 않는다 — 역은
+    지금까지처럼 그 좌표 둘레를 반경으로 보는 것이 맞다.
+    """
+
+    normalized = _supported_district_name(value)
+    if normalized is None:
+        return None
+    return next(
+        district for district in SUPPORTED_DISTRICTS if district.name == normalized
+    )
 
 
 def _supported_district_name(value: str) -> str | None:

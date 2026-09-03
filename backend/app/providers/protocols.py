@@ -414,6 +414,23 @@ class BarrierFreePlaceSearch:
     verdicts: dict[str, dict[AccessibilityNeed, AccessibilityVerdict]]
 
 
+class DistrictPlaceSearchProvider(Protocol):
+    """구 이름으로 들어온 요청의 후보를 모으는 검색 provider(D-119).
+
+    `PlaceSearchProvider`와 계약을 나눈 이유는 무장애 경로와 같다 — 검색 인자가
+    다르고, 인자를 더하면 무관한 경로의 서명까지 바뀐다.
+
+    이쪽은 좌표도 반경도 받지 않는다. 구 단위 요청에는 기준점이 없기 때문이다.
+    개수도 받지 않는다 — 몇 곳을 쓸지는 후보를 다 받은 뒤 선택 단계가 정한다.
+    """
+
+    async def search_places_in_district(
+        self, *, district_code: str
+    ) -> ProviderResult[list[PlaceCandidate]]:
+        """그 구의 활성 장소 전량을 후보로 돌려준다. 순서에 의미는 없다."""
+        ...
+
+
 class BarrierFreePlaceSearchProvider(Protocol):
     """무장애 편의를 요구한 요청의 후보를 찾는 검색 provider.
 

@@ -294,6 +294,17 @@ def _is_empty_data(value: object) -> bool:
     )
 
 
+class DistrictScope(StrictModel):
+    """후보를 구 하나에서 통째로 모았다는 사실(D-119).
+
+    구 이름을 정규화한 값이라 사용자가 "강남"이라고 해도 여기는 "강남구"다.
+    """
+
+    # TourAPI 법정동 코드의 시군구 부분(lDongSignguCd, 강남구 "680").
+    district_code: str = Field(min_length=1)
+    district_name: str = Field(min_length=1)
+
+
 class RecommendationContext(StrictModel):
     # 반경 검색으로 후보를 **모은** 중심. 사용자가 있는 곳이 아니라 "이번 검색을
     # 어디를 중심으로 했는가"다. search_center → current_location → 기기 GPS 순으로
@@ -316,6 +327,15 @@ class RecommendationContext(StrictModel):
     weather: ContextValue[WeatherForecast] | None = None
     places: ContextValue[list[PlaceCandidate]] | None = None
     holidays: ContextValue[list[HolidayInfo]] | None = None
+    # 후보를 어디에서 모았는가. None이면 지금까지처럼 location을 중심으로 한 반경
+    # 검색이고, 값이 있으면 그 구 전체에서 모은 것이다(D-119).
+    #
+    # **판정이 아니라 사실만 싣는다**(D-051). "거리 점수를 쓰지 마라"가 아니라
+    # "이 후보들에는 기준점이 없다"는 사실이다. 구 단위 요청의 location은 구 이름을
+    # 푼 대표점이라 후보 수집에도 정렬에도 쓰이지 않았다 — 그 좌표와의 거리는
+    # 사용자가 말한 것과 아무 관계가 없다. 그것을 어떻게 채점에 반영할지는 D가
+    # 정한다.
+    district_scope: DistrictScope | None = None
 
 
 class ResponseMetadata(StrictModel):

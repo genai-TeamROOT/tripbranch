@@ -214,11 +214,102 @@ def supported_district_label(*, with_city: bool = False) -> str:
     return f"서울특별시 {names}" if with_city else names
 
 
+@lru_cache(maxsize=1)
+def _representative_points() -> dict[str, tuple[float, float]]:
+    """지원 구마다 그 구 **안**의 한 점. (위도, 경도).
+
+    구 이름을 좌표로 풀어야 하는 곳이 쓴다. 실제 지오코딩은 네이버가 하지만 Fake와
+    로컬 개발에는 그 답이 없어서, 경계 파일에서 직접 만든다.
+
+    무게중심을 그대로 쓰지 않는다. 오목한 구에서는 무게중심이 구 밖으로 나간다 —
+    그러면 지원 지역 판정에 걸려 "지원하지 않는 지역"이 된다. 밖으로 나가면 그
+    위도에서 가로로 반직선을 그어 가장 넓은 내부 구간의 가운데를 쓴다.
+    """
+    points: dict[str, tuple[float, float]] = {}
+    for district_code, polygons in _service_area_polygons():
+        ring = max((polygon[0] for polygon in polygons), key=len)
+        latitude = sum(point[1] for point in ring) / len(ring)
+        longitude = sum(point[0] for point in ring) / len(ring)
+        if not any(
+            _is_inside_polygon(longitude, latitude, polygon) for polygon in polygons
+        ):
+            longitude = _widest_inside_longitude(polygons, latitude, longitude)
+        points[district_code] = (latitude, longitude)
+    return points
+
+
+def _widest_inside_longitude(
+    polygons: tuple[_Polygon, ...], latitude: float, fallback_longitude: float
+) -> float:
+    """그 위도에서 구 안을 지나는 가장 넓은 구간의 가운데 경도."""
+    crossings: list[float] = []
+    for polygon in polygons:
+        for ring in polygon:
+            count = len(ring)
+            for index in range(count):
+                x1, y1 = ring[index]
+                x2, y2 = ring[(index + 1) % count]
+                if (y1 > latitude) != (y2 > latitude):
+                    crossings.append((x2 - x1) * (latitude - y1) / (y2 - y1) + x1)
+    crossings.sort()
+    widest: tuple[float, float] | None = None
+    for start, end in zip(crossings[::2], crossings[1::2], strict=False):
+        if widest is None or (end - start) > (widest[1] - widest[0]):
+            widest = (start, end)
+    return fallback_longitude if widest is None else (widest[0] + widest[1]) / 2
+
+
+def district_representative_point(district_code: str) -> tuple[float, float] | None:
+    """지원 구의 대표 좌표 (위도, 경도). 지원 구가 아니면 None."""
+    return _representative_points().get(district_code)
+
+
+# 서울을 넉넉히 감싸는 사각형. 폴리곤 판정과 **목적이 다르다.**
+#
+# 폴리곤은 "이 좌표가 어느 구인가"를 답하고, 이건 "이 좌표가 아예 말이 안 되는가"만
+# 본다. 원본 데이터에 좌표가 깨진 장소가 있어서 필요하다(2026-09-01 실측, 활성
+# 8,007곳 중 12건) — 10건이 (19.69, 117.99)라는 같은 값을 갖고 있고(남중국해),
+# 삼각산은 경기 광주에 찍혀 있으며, 한 건은 위도 칸이 비고 경도 칸에 위도가 들어 있다.
+#
+# **여기에 폴리곤을 쓰지 않는 이유가 있다.** 셋 다 12건을 똑같이 걸러내지만 정상
+# 장소를 잃는 수가 다르다 — 사각형 0곳, 서울 폴리곤 4곳, "자기 구 안" 82곳이다.
+# 폴리곤이 잃는 4곳은 아차산성·망우산·청계산 옛골토성·서울둘레길 5코스로, 경기도와
+# 맞닿은 산이라 좌표가 경계 밖으로 조금 넘어간 것들이다. 깨진 좌표는 경계에서 몇십
+# 미터가 아니라 나라 밖에 있으므로 정밀한 경계선이 필요하지 않다.
+#
+# 한계도 분명하다. 서울 안쪽 어딘가에 잘못 찍힌 좌표는 이걸로 못 잡는다. 지금
+# 관측된 12건이 전부 멀리 떨어져 있어 문제가 안 될 뿐이다.
+SEOUL_MIN_LATITUDE = 37.40
+SEOUL_MAX_LATITUDE = 37.72
+SEOUL_MIN_LONGITUDE = 126.73
+SEOUL_MAX_LONGITUDE = 127.19
+
+
+def is_plausible_seoul_coordinate(latitude: float | None, longitude: float | None) -> bool:
+    """좌표가 서울 언저리에 있기는 한지. 지원 지역 판정이 아니다.
+
+    지원 지역 판정은 `is_within_service_area()`가 폴리곤으로 한다. 이 함수는 적재된
+    값이 좌표로서 말이 되는지만 본다 — 위 상수 주석에 두 판정을 나눈 이유가 있다.
+    """
+    if latitude is None or longitude is None:
+        return False
+    return (
+        SEOUL_MIN_LATITUDE <= latitude <= SEOUL_MAX_LATITUDE
+        and SEOUL_MIN_LONGITUDE <= longitude <= SEOUL_MAX_LONGITUDE
+    )
+
+
 __all__ = [
+    "SEOUL_MAX_LATITUDE",
+    "SEOUL_MAX_LONGITUDE",
+    "SEOUL_MIN_LATITUDE",
+    "SEOUL_MIN_LONGITUDE",
     "SUPPORTED_DISTRICTS",
     "SUPPORTED_DISTRICT_CODES",
     "ServiceDistrict",
+    "district_representative_point",
     "find_containing_district",
+    "is_plausible_seoul_coordinate",
     "is_within_service_area",
     "supported_district_label",
 ]
