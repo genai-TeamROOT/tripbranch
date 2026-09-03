@@ -49,6 +49,7 @@ function seed(items: SavedPlaceItem[]): void {
     error: null,
     session_id: "session-1",
     restored_title: null,
+  restored_partial: false,
     device_location: null,
     device_location_captured_at: null,
     device_location_snoozed_until: null,

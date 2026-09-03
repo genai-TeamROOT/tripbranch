@@ -37,6 +37,7 @@ import type {
   SavedPlaceItem,
   UserConditions,
 } from "../types";
+import { buildAgentMessages, createMessageId } from "./agentMessages";
 import { attachRecommendationsToTurns } from "./pastRecommendations";
 import { clearState, loadState, saveState } from "./storage";
 
@@ -59,6 +60,11 @@ export interface TripState {
    * 있다"고 밝히는 데 쓴다. 새 발화가 나가면 비운다.
    */
   restored_title: string | null;
+  /*
+   * 되돌린 대화가 일부뿐인지. 화면 기록(session_messages)이 쌓이기 전의 옛
+   * 대화는 남은 말풍선 5개로만 복원되므로 화면이 그 사실을 밝혀야 한다.
+   */
+  restored_partial: boolean;
   /* 최초 추천 시작 시 허용받은 브라우저 위치. 같은 세션의 후속 요청에도 재사용한다. */
   device_location: string | null;
   /** 브라우저에서 device_location을 마지막으로 받아온 시각(ms). */
@@ -101,6 +107,7 @@ const initialTripState: TripState = {
   error: null,
   session_id: null,
   restored_title: null,
+  restored_partial: false,
   device_location: null,
   device_location_captured_at: null,
   device_location_snoozed_until: null,
@@ -211,13 +218,6 @@ interface InterpretedPayload {
   userInput: string;
   conditions: InterpretedConditions;
   showDebug: boolean;
-}
-
-function createMessageId(prefix: string) {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return `${prefix}-${crypto.randomUUID()}`;
-  }
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 /** 지금 타이프라이터가 채우고 있는 assistant_text 메시지의 인덱스. 없으면 -1. */
@@ -354,38 +354,61 @@ function tripReducer(state: TripState, action: TripAction): TripState {
      * 물러난 경우에는 false로 오고, 그때 id를 채우면 화면은 "이어진다"고
      * 말하는데 백엔드는 새 세션을 만드는 상태가 된다.
      *
-     * 그때 화면에 나갔던 장소도 함께 되돌린다. 다만 **저장된 값만** 쓴다 —
-     * 점수·사진·카테고리·운영시간은 기록 자체가 없어서, RecommendationItem으로
-     * 빈 칸을 채우는 대신 past_recommendation_result라는 별도 메시지로 그린다.
+     * **화면 기록(messages)이 있으면 그것만 쓴다.** 그 안에 그 턴의 AgentResponse가
+     * 통째로 들어 있어, 실시간과 같은 buildAgentMessages를 다시 태우면 그때 본
+     * 화면이 그대로 나온다. 지연시간만 0으로 넘긴다 — 복원에는 잴 대상이 없다.
+     *
+     * 기록이 없는 옛 대화는 예전 방식으로 되돌린다(말풍선 + 저장된 조각으로 만든
+     * 장소 카드). 그 경로는 손실이 있지만, session_messages가 쌓이기 전의 대화가
+     * 통째로 안 보이는 것보다는 낫다.
      */
     case "RESTORE_SESSION": {
       const restored: ChatMessage[] = [];
-      const attached = attachRecommendationsToTurns(
-        action.payload.turns,
-        action.payload.recommendations,
-      );
 
-      action.payload.turns.forEach((turn, index) => {
-        restored.push({
-          id: createMessageId("user"),
-          type: "user_text",
-          text: turn.user_input,
+      if (action.payload.messages.length > 0) {
+        for (const record of action.payload.messages) {
+          if (record.user_input) {
+            restored.push({
+              id: createMessageId("user"),
+              type: "user_text",
+              text: record.user_input,
+            });
+          }
+          restored.push(
+            ...buildAgentMessages(record.payload, {
+              userInput: record.user_input ?? "",
+              elapsedMsClient: 0,
+            }),
+          );
+        }
+      } else {
+        const attached = attachRecommendationsToTurns(
+          action.payload.turns,
+          action.payload.recommendations,
+        );
+
+        action.payload.turns.forEach((turn, index) => {
+          restored.push({
+            id: createMessageId("user"),
+            type: "user_text",
+            text: turn.user_input,
+          });
+          if (turn.assistant_message) {
+            restored.push({
+              id: createMessageId("assistant"),
+              type: "assistant_text",
+              text: turn.assistant_message,
+            });
+          }
+          for (const group of attached[index]) {
+            restored.push({
+              id: createMessageId("past-places"),
+              type: "past_recommendation_result",
+              places: group,
+            });
+          }
         });
-        if (turn.assistant_message) {
-          restored.push({
-            id: createMessageId("assistant"),
-            type: "assistant_text",
-            text: turn.assistant_message,
-          });
-        }
-        for (const group of attached[index]) {
-          restored.push({
-            id: createMessageId("past-places"),
-            type: "past_recommendation_result",
-            places: group,
-          });
-        }
-      });
+      }
 
       return {
         ...initialTripState,
@@ -395,6 +418,7 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         messages: restored,
         session_id: action.payload.resumable ? action.payload.session_id : null,
         restored_title: action.payload.title,
+        restored_partial: action.payload.messages.length === 0,
         phase: "idle",
       };
     }
@@ -403,6 +427,7 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         ...state,
         /* 새로 물으면 더 이상 "지난 대화를 이어보는 중"이 아니다. */
         restored_title: null,
+        restored_partial: false,
         user_input: action.payload.userInput,
         device_location: action.payload.deviceLocation ?? state.device_location,
         device_location_captured_at:
@@ -633,10 +658,6 @@ function tripReducer(state: TripState, action: TripAction): TripState {
     }
     case "APPEND_CHAT_TURN": {
       const { conditions, intent, message, recommendations, schedule, showDebug } = action.payload;
-      const infoPlaceCard = action.payload.agentResponse.info_place_card ?? null;
-      const secondaryInfoPlaceCard =
-        action.payload.agentResponse.secondary_info_place_card ?? null;
-      const comparison = action.payload.agentResponse.comparison ?? null;
       const messages: ChatMessage[] = [];
       // 옵션 A: 조건 카드는 유지하되 확인 버튼은 없다 — Agent가 해석과 추천을 한 번에
       // 끝내므로 중간에 사용자가 진행을 승인할 지점이 없다.
@@ -651,87 +672,12 @@ function tripReducer(state: TripState, action: TripAction): TripState {
           status: "confirmed",
         });
       }
-      const clarificationOptions = action.payload.agentResponse.llm_output.clarification?.options;
-      if (message && clarificationOptions && clarificationOptions.length > 0) {
-        // 인텐트가 모호해 되묻기 버튼이 붙은 턴 — assistant_text 대신 clarification
-        // 메시지로 push해서 같은 문구가 두 번 렌더링되지 않게 한다
-        // (docs/design/clarification-options.md 6절).
-        messages.push({
-          id: createMessageId("clarification"),
-          type: "clarification",
-          text: message,
-          options: clarificationOptions,
-        });
-      } else if (message) {
-        messages.push({
-          id: createMessageId("assistant"),
-          type: "assistant_text",
-          text: message,
-          intent,
-          status: action.payload.status,
-          footnote: action.payload.agentResponse.message_footnote ?? undefined,
-        });
-      }
-      if (recommendations) {
-        messages.push({
-          id: createMessageId("result"),
-          type: "recommendation_result",
-          recommendations: recommendations.recommendations,
-          unverified_recommendations: recommendations.unverified_recommendations,
-          travel_origin_toggle: recommendations.travel_origin_toggle,
-          elapsed_ms: action.payload.elapsedMsClient,
-          server_elapsed_ms: recommendations.elapsed_ms,
-        });
-      }
-      if (schedule) {
-        messages.push({
-          id: createMessageId("schedule"),
-          type: "schedule_result",
-          schedule,
-          elapsed_ms: action.payload.elapsedMsClient,
-        });
-      }
-      if (infoPlaceCard) {
-        messages.push({
-          id: createMessageId("info-place"),
-          type: "place_info_result",
-          card: infoPlaceCard,
-        });
-      }
-      if (secondaryInfoPlaceCard) {
-        // 근처 주차장 → 공영주차장처럼 짝인 실시간 질문의 둘째 카드다(TP-115).
-        messages.push({
-          id: createMessageId("info-place-secondary"),
-          type: "place_info_result",
-          card: secondaryInfoPlaceCard,
-        });
-      }
-      if (comparison) {
-        messages.push({
-          id: createMessageId("compare"),
-          type: "compare_result",
-          comparison,
-        });
-      }
-      if (action.payload.agentResponse.state.run_id) {
-        messages.push({
-          id: createMessageId("feedback"),
-          type: "feedback",
-          sessionId: action.payload.agentResponse.state.session_id,
-          runId: action.payload.agentResponse.state.run_id,
-          intent,
+      messages.push(
+        ...buildAgentMessages(action.payload.agentResponse, {
           userInput: action.payload.userInput,
-          assistantMessage: message,
-        });
-      }
-      const followUps = action.payload.agentResponse.suggested_follow_ups;
-      if (followUps && followUps.length > 0) {
-        messages.push({
-          id: createMessageId("follow-up"),
-          type: "follow_up_suggestions",
-          suggestions: followUps,
-        });
-      }
+          elapsedMsClient: action.payload.elapsedMsClient,
+        }),
+      );
 
       const shownIds = recommendations
         ? [...recommendations.recommendations, ...recommendations.unverified_recommendations].map(

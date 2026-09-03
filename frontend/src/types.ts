@@ -728,11 +728,31 @@ export interface PastRecommendation {
   shown_at: string;
 }
 
+/*
+ * 그 턴에 화면으로 나갔던 것 전부(session_messages 한 행).
+ *
+ * payload는 그 턴의 AgentResponse 그대로다. 백엔드는 이걸 열어보지 않고
+ * 보관만 한다 — 화면이 실시간과 **같은 함수**(buildAgentMessages)로 다시
+ * 그리기 위한 것이라, 해석하는 쪽이 프론트 하나뿐이어야 갈라지지 않는다.
+ */
+export interface StoredSessionMessage {
+  session_id: string;
+  run_id: string | null;
+  user_id: string | null;
+  user_input: string | null;
+  payload: AgentResponse;
+  recorded_at: string;
+}
+
 export interface ChatSessionDetail {
   session_id: string;
   title: string;
+  /* 모델 맥락. 최근 5턴만 남는다 — messages가 있으면 화면은 이걸 쓰지 않는다. */
   turns: StoredConversationTurn[];
+  /* 저장된 조각으로 만든 근사치. messages가 없는 옛 대화에만 쓴다. */
   recommendations: PastRecommendation[];
+  /* 화면 기록. 비어 있지 않으면 이것만으로 대화를 그대로 되돌린다. */
+  messages: StoredSessionMessage[];
   last_active_at: string;
   resumable: boolean;
 }

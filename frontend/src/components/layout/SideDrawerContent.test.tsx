@@ -29,6 +29,40 @@ const server = vi.hoisted(() => ({
   renamed: [] as { id: string; title: string }[],
   deleted: [] as string[],
   resumed: [] as string[],
+  /* 한 턴의 화면 기록. payload는 그 턴의 AgentResponse 그대로다. */
+  transcript: {
+    session_id: "chat-1",
+    run_id: "run_1",
+    user_id: null,
+    user_input: "비 오는데 어디 갈까",
+    recorded_at: "2026-09-03T08:58:23+09:00",
+    payload: {
+      llm_output: { intent: "RECOMMEND", status: "complete" },
+      state: { session_id: "chat-1", run_id: "run_1" },
+      message: "실내를 찾아볼게요",
+      recommendations: {
+        recommendations: [
+          {
+            place_id: "p1",
+            name: "국립중앙박물관",
+            category: "문화시설",
+            distance_km: 1.2,
+            remaining_minutes: 180,
+            environment_type: "indoor",
+            recommendation_reason: "비 오는 날 실내에서 오래 머물기 좋아요",
+            explanations: [],
+            warnings: [],
+            score: 0.81,
+            feature_scores: {},
+            weights_used: {},
+            taste_evidence: [],
+          },
+        ],
+        unverified_recommendations: [],
+        elapsed_ms: 1200,
+      },
+    },
+  } as never,
   /** 이어서 보낸 발화가 실어 나간 session_id. null이면 새 대화로 간 것이다. */
   chatSessionIds: [] as (string | null)[],
 }));
@@ -54,6 +88,9 @@ vi.mock("../../api/trip", async (importOriginal) => {
         recommendations: [
           { place_id: "p1", run_id: "run_1", name: "국립중앙박물관", rank: 1, distance_km: 1.2, environment_type: "indoor", reason: null, shown_at: "2026-09-03T08:58:23+09:00" },
         ],
+        /* 화면 기록. 있으면 화면은 turns/recommendations 대신 이것만 쓴다.
+           chat-1에만 둬서 두 경로를 한 파일에서 함께 본다. */
+        messages: sessionId === "chat-1" ? [server.transcript] : [],
         last_active_at: found.last_active_at,
         resumable: true,
       };
@@ -244,26 +281,56 @@ test("히스토리를 누르면 지난 대화가 채팅 화면에 펼쳐진다",
 
 /* 보이는 말풍선은 최근 5턴뿐이라 대화 전체가 아니다. 말없이 두면 사용자는
    이게 전부인 줄로 안다. */
-test("지난 대화를 열면 마지막 부분이라고 밝힌다", async () => {
+test("옛 대화를 열면 마지막 부분이라고 밝힌다", async () => {
   const user = userEvent.setup();
   await renderApp();
 
-  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
+  await user.click(within(sidebar()).getByRole("button", { name: "갑자기 뜬 2시간, 카페 추천 대화 열기" }));
 
   expect(await screen.findByText(/마지막 부분이에요/)).toBeInTheDocument();
 });
 
-/* 말풍선만 돌려주면 "추천을 받았다"는 사실만 남고 무엇을 받았는지가 사라진다. */
-test("지난 대화에 그때 본 장소가 함께 펼쳐진다", async () => {
+/*
+ * 이 파일에서 가장 중요한 테스트다. 화면 기록을 따로 저장한 목적이 이것이다 —
+ * 지난 대화가 "비슷하게"가 아니라 **그때 그대로** 나와야 한다. 실시간과 같은
+ * buildAgentMessages를 태우므로 진짜 추천 카드가 그려진다.
+ */
+test("화면 기록이 있으면 그때 본 화면 그대로 펼쳐진다", async () => {
   const user = userEvent.setup();
   await renderApp();
 
   await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
+
+  expect(await screen.findByText("실내를 찾아볼게요")).toBeInTheDocument();
+  /* 근사치 카드("그때 추천받은 곳")가 아니라 실제 추천 카드다 — 추천 이유까지 나온다. */
+  expect(screen.getByText("추천 장소")).toBeInTheDocument();
+  expect(screen.getByText("국립중앙박물관")).toBeInTheDocument();
+  expect(screen.getByText("비 오는 날 실내에서 오래 머물기 좋아요")).toBeInTheDocument();
+  expect(screen.queryByText("그때 추천받은 곳")).not.toBeInTheDocument();
+});
+
+/* 화면 기록이 쌓이기 전의 옛 대화. 손실은 있지만 통째로 안 보이는 것보다 낫다. */
+test("화면 기록이 없는 옛 대화는 저장된 조각으로 펼쳐진다", async () => {
+  const user = userEvent.setup();
+  await renderApp();
+
+  await user.click(within(sidebar()).getByRole("button", { name: "갑자기 뜬 2시간, 카페 추천 대화 열기" }));
 
   expect(await screen.findByText("그때 추천받은 곳")).toBeInTheDocument();
   expect(screen.getByText("국립중앙박물관")).toBeInTheDocument();
   /* 저장된 값만 보여준다 — 거리·실내외는 있고 점수·운영시간은 기록이 없다. */
   expect(screen.getByText("1.2km · 실내")).toBeInTheDocument();
+});
+
+/* 옛 대화만 "마지막 부분"이다. 전체가 나오는데 그렇게 말하면 거짓이 된다. */
+test("화면 기록이 있으면 마지막 부분이라고 말하지 않는다", async () => {
+  const user = userEvent.setup();
+  await renderApp();
+
+  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
+
+  expect(await screen.findByText(/이 대화에 이어져요/)).toBeInTheDocument();
+  expect(screen.queryByText(/마지막 부분이에요/)).not.toBeInTheDocument();
 });
 
 /*
