@@ -125,13 +125,14 @@ vi.mock("../../api/trip", async (importOriginal) => {
         ],
         /* 화면 기록. 있으면 화면은 turns/recommendations 대신 이것만 쓴다.
            chat-1에만 둬서 두 경로를 한 파일에서 함께 본다. */
-        messages:
-          sessionId === "chat-1"
-            ? server.transcriptTurns()
-            : /* 기록 한 개, 말풍선 두 개 — 저장이 한 번 실패한 대화다. */
-              server.partialTranscript
-              ? [server.transcriptTurns()[0]]
-              : [],
+        /* 화면 기록으로 되돌릴 수 있는지는 **백엔드가 판정해서 알려준다.**
+           chat-1은 기록이 온전하고, chat-2는 기록이 없는 옛 대화다.
+           partialTranscript를 켜면 저장이 한 번 실패한 대화가 된다. */
+        restore_from_messages: sessionId === "chat-1" && !server.partialTranscript,
+        /* **온전하지 않아도 기록은 함께 온다.** 서버는 있는 것을 그대로 주고
+           쓸지 말지는 restore_from_messages가 정한다 — 화면이 messages가
+           비었는지로 판단하면 이 경우를 놓친다. */
+        messages: sessionId === "chat-1" ? server.transcriptTurns() : [],
         turns: server.partialTranscript
           ? [
               { user_input: "첫 질문", assistant_message: "첫 답변", intent: "RECOMMEND", place_names: [], at: "2026-09-03T09:00:00+09:00" },
@@ -592,12 +593,12 @@ test("복원한 대화에서 추천 카드가 답변보다 위에 온다", async
  * 기록이 있을 수 있는데, "하나라도 있으면 기록만 쓴다"로 판정하면 그 대화는
  * **조용히 일부만** 보인다 — 사용자는 자기가 한 말이 사라진 것으로 본다.
  */
-test("기록이 말풍선보다 모자라면 예전 방식으로 되돌린다", async () => {
+test("기록이 온전하지 않으면 예전 방식으로 되돌린다", async () => {
   const user = userEvent.setup();
   server.partialTranscript = true;
   await renderApp();
 
-  await user.click(within(sidebar()).getByRole("button", { name: "갑자기 뜬 2시간, 카페 추천 대화 열기" }));
+  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
 
   /* 기록에 없던 턴까지 나온다 — 저장된 말풍선으로 되돌렸다는 뜻이다. */
   expect(await screen.findByText("빠진 질문")).toBeInTheDocument();

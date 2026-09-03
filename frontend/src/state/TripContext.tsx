@@ -222,22 +222,6 @@ interface InterpretedPayload {
 }
 
 /** 지금 타이프라이터가 채우고 있는 assistant_text 메시지의 인덱스. 없으면 -1. */
-/*
- * 화면 기록이 이 대화를 온전히 담고 있는지.
- *
- * 기록 저장은 실패해도 응답을 막지 않고 로그만 남긴다(그게 맞다 — 이미 사용자에게
- * 다 보여준 답변을 저장 장애로 뒤집을 수는 없다). 그래서 턴 하나가 빠진 기록이
- * 있을 수 있는데, "하나라도 있으면 기록만 쓴다"로 판정하면 그 대화는 **조용히
- * 일부만** 보인다. 사용자는 자기가 한 말이 사라진 것으로 본다.
- *
- * recent_turns는 최근 MAX_RECENT_TURNS(=5)개만 남고 기록은 자르지 않으므로,
- * 정상이라면 기록 수가 남은 말풍선 수 이상이다. 모자라면 무언가 빠진 것이다.
- * 화면 기록이 쌓이기 전에 시작한 대화도 이 규칙에 걸려 예전 방식으로 간다.
- */
-function hasCompleteTranscript(detail: ChatSessionDetail): boolean {
-  return detail.messages.length > 0 && detail.messages.length >= detail.turns.length;
-}
-
 function buildInterpretationSummary(conditions: InterpretedConditions) {
   const categories =
     conditions.preferred_categories.length > 0
@@ -363,19 +347,19 @@ function tripReducer(state: TripState, action: TripAction): TripState {
      * 물러난 경우에는 false로 오고, 그때 id를 채우면 화면은 "이어진다"고
      * 말하는데 백엔드는 새 세션을 만드는 상태가 된다.
      *
-     * **화면 기록(messages)이 온전하면 그것만 쓴다.** 그 안에 그 턴의
-     * AgentResponse가 통째로 들어 있어, 실시간과 같은 buildAgentMessages를 다시
-     * 태우면 그때 본 화면이 그대로 나온다. 지연시간만 0으로 넘긴다 — 복원에는
-     * 잴 대상이 없다.
+     * **restore_from_messages면 화면 기록만 쓴다.** 그 안에 그 턴의 AgentResponse가
+     * 통째로 들어 있어, 실시간과 같은 buildAgentMessages를 다시 태우면 그때 본
+     * 화면이 그대로 나온다. 지연시간만 0으로 넘긴다 — 복원에는 잴 대상이 없다.
      *
-     * 기록이 없거나 모자란 옛 대화는 예전 방식으로 되돌린다(말풍선 + 저장된
-     * 조각으로 만든 장소 카드). 손실이 있지만, 통째로 안 보이거나 턴이 조용히
-     * 빠진 채로 보이는 것보다는 낫다.
+     * 아니면 예전 방식으로 되돌린다(말풍선 + 저장된 조각으로 만든 장소 카드).
+     * 기록이 없는 옛 대화와, 저장이 한 번 실패해 턴이 빠진 대화가 여기로 온다.
+     * 손실이 있지만 통째로 안 보이거나 턴이 조용히 빠진 채로 보이는 것보다 낫다.
+     * 온전한지 판정하는 것은 백엔드다 — 같은 계산을 두 군데 두지 않는다.
      */
     case "RESTORE_SESSION": {
       const restored: ChatMessage[] = [];
 
-      if (hasCompleteTranscript(action.payload)) {
+      if (action.payload.restore_from_messages) {
         const lastIndex = action.payload.messages.length - 1;
         action.payload.messages.forEach((record, index) => {
           if (record.user_input) {
@@ -438,7 +422,7 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         messages: restored,
         session_id: action.payload.resumable ? action.payload.session_id : null,
         restored_title: action.payload.title,
-        restored_partial: !hasCompleteTranscript(action.payload),
+        restored_partial: !action.payload.restore_from_messages,
         phase: "idle",
       };
     }

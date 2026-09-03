@@ -749,12 +749,18 @@ export interface StoredSessionMessage {
 export interface ChatSessionDetail {
   session_id: string;
   title: string;
-  /* 모델 맥락. 최근 5턴만 남는다 — messages가 있으면 화면은 이걸 쓰지 않는다. */
+  /* 모델 맥락. 최근 5턴만 남는다 — restore_from_messages면 화면은 이걸 쓰지 않는다. */
   turns: StoredConversationTurn[];
-  /* 저장된 조각으로 만든 근사치. messages가 없는 옛 대화에만 쓴다. */
+  /* 저장된 조각으로 만든 근사치. restore_from_messages가 false일 때만 채워진다. */
   recommendations: PastRecommendation[];
-  /* 화면 기록. 비어 있지 않으면 이것만으로 대화를 그대로 되돌린다. */
+  /* 화면 기록. 그때 화면에 나갔던 것 그대로다. */
   messages: StoredSessionMessage[];
+  /*
+   * messages만으로 대화를 그대로 되돌릴 수 있는지. **판정은 백엔드 한 곳에서만
+   * 한다** — 같은 계산을 여기에도 두면 한쪽만 바뀌는 순간 조용히 갈라진다.
+   * false면 turns/recommendations로 되돌리고 "마지막 부분"이라고 밝혀야 한다.
+   */
+  restore_from_messages: boolean;
   last_active_at: string;
   resumable: boolean;
 }

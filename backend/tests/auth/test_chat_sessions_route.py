@@ -721,3 +721,60 @@ def test_대화를_지워도_trace는_남는다(signing_key) -> None:
     TestClient(app).delete(f"/api/state/{session_id}", headers=_headers(signing_key, ME))
 
     assert len(store.get_traces(session_id)) == 1
+
+
+# 근사치 카드는 화면 기록으로 되돌릴 수 없는 대화에만 쓰인다. 기록이 온전한
+# 대화에까지 실어 보내면 이력을 한 번 더 읽고 쓰이지도 않는 값을 전송한다.
+def test_기록이_온전하면_근사치_카드를_보내지_않는다(signing_key) -> None:
+    session_id = _start_chat(ME, "실내 어디 갈까")
+    _record(session_id, "run_1", "국립중앙박물관")
+    _record_message(session_id, "실내 어디 갈까", "박물관을 찾아봤어요")
+
+    body = TestClient(app).get(
+        f"/api/sessions/{session_id}", headers=_headers(signing_key, ME)
+    ).json()
+
+    assert body["restore_from_messages"] is True
+    assert body["recommendations"] == []
+    assert len(body["messages"]) == 1
+
+
+def test_기록이_없으면_근사치_카드로_되돌린다(signing_key) -> None:
+    session_id = _start_chat(ME, "실내 어디 갈까")
+    _record(session_id, "run_1", "국립중앙박물관")
+
+    body = TestClient(app).get(
+        f"/api/sessions/{session_id}", headers=_headers(signing_key, ME)
+    ).json()
+
+    assert body["restore_from_messages"] is False
+    assert [item["name"] for item in body["recommendations"]] == ["국립중앙박물관"]
+
+
+# 저장이 한 번 실패해 턴 하나가 빠진 기록. 이걸 온전한 것으로 취급하면 그
+# 대화가 조용히 일부만 보인다.
+def test_기록이_말풍선보다_모자라면_온전하지_않다고_알린다(signing_key) -> None:
+    session_id = _start_chat(ME, "첫 질문", "둘째 질문")
+    _record(session_id, "run_1", "국립중앙박물관")
+    _record_message(session_id, "첫 질문", "첫 답변")  # 둘째 턴의 기록이 빠졌다
+
+    body = TestClient(app).get(
+        f"/api/sessions/{session_id}", headers=_headers(signing_key, ME)
+    ).json()
+
+    assert body["restore_from_messages"] is False
+    assert [item["name"] for item in body["recommendations"]] == ["국립중앙박물관"]
+
+
+def test_이어간_대화도_기록이_온전하면_그것만_준다(signing_key) -> None:
+    session_id = _start_chat(ME, "실내 어디 갈까")
+    _record(session_id, "run_1", "국립중앙박물관")
+    _record_message(session_id, "실내 어디 갈까", "박물관을 찾아봤어요")
+    _expire(session_id)
+
+    body = TestClient(app).post(
+        f"/api/sessions/{session_id}/resume", headers=_headers(signing_key, ME)
+    ).json()
+
+    assert body["restore_from_messages"] is True
+    assert body["recommendations"] == []

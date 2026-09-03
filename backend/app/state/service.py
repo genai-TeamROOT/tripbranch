@@ -1668,16 +1668,21 @@ class ChatSessionDetail(BaseModel):
     session_id: str
     title: str
     turns: list[ConversationTurn] = Field(default_factory=list)
-    # 그 대화에서 화면에 나갔던 장소들. 말풍선만 돌려주면 "추천을 받았다"는
-    # 사실만 남고 무엇을 받았는지가 사라진다.
-    #
-    # 화면 기록(messages)이 쌓이기 전에 만들어진 대화를 위해 남겨 둔다 —
-    # 저장된 조각으로 최선을 다한 근사치다. messages가 있으면 화면은 그쪽을
-    # 쓴다(그쪽이 그때 나간 것 그대로다).
+    # 그 대화에서 화면에 나갔던 장소들. 저장된 조각으로 만든 **근사치**라
+    # restore_from_messages가 False일 때만 채운다 — 화면 기록으로 되돌릴 수 있는
+    # 대화에는 쓰이지 않으므로 계산도 전송도 하지 않는다.
     recommendations: list[PastRecommendation] = Field(default_factory=list)
-    # 그 턴에 화면으로 나간 것 전부. 오래된 것이 앞이다. 이 목록이 비어 있지
-    # 않으면 화면은 turns/recommendations 대신 이것으로 대화를 되돌린다.
+    # 그 턴에 화면으로 나간 것 전부. 오래된 것이 앞이다.
     messages: list[SessionMessage] = Field(default_factory=list)
+    # messages만으로 대화를 그대로 되돌릴 수 있는지. **판정은 여기 한 곳에서만
+    # 한다** — 같은 계산을 화면에도 두면 한쪽만 바뀌는 순간 조용히 갈라진다.
+    #
+    # 기록 저장은 실패해도 응답을 막지 않고 로그만 남기므로(이미 사용자에게 다
+    # 보여준 답변을 저장 장애로 뒤집을 수 없다) 턴 하나가 빠진 기록이 있을 수
+    # 있다. recent_turns는 최근 MAX_RECENT_TURNS개만 남고 기록은 자르지 않으니,
+    # 정상이라면 기록 수가 남은 턴 수 이상이다. 모자라면 무언가 빠진 것이고,
+    # 그때는 화면이 turns/recommendations로 되돌린 뒤 "마지막 부분"이라고 밝힌다.
+    restore_from_messages: bool = False
     last_active_at: datetime
     # 이 세션으로 대화를 이어갈 수 있는지. TTL(30분)이 지났으면 False이고,
     # 그때 사용자가 무언가를 물으면 새 세션에서 시작된다.
@@ -1703,9 +1708,7 @@ def get_user_session_detail(
     """
     store = store or get_store()
     state = _load_own_conversation(session_id, principal, store)
-    return _to_session_detail(
-        state, _past_recommendations(store, state), store.get_session_messages(session_id)
-    )
+    return _to_session_detail(state, store)
 
 
 def _load_own_conversation(
@@ -1762,15 +1765,34 @@ def _past_recommendations(store: StateStore, state: AgentState) -> list[PastReco
 
 def _to_session_detail(
     state: AgentState,
-    recommendations: list[PastRecommendation],
-    messages: list[SessionMessage],
+    store: StateStore,
+    fallback_recommendations: list[PastRecommendation] | None = None,
 ) -> ChatSessionDetail:
+    """지난 대화 하나를 화면이 되돌릴 수 있는 모양으로 만든다.
+
+    화면 기록으로 되돌릴 수 있으면 근사치 카드는 **만들지 않는다** — 쓰이지 않는
+    값이라 이력을 한 번 더 읽을 이유가 없다.
+
+    fallback_recommendations는 이어가기가 넘긴다. 그쪽은 추천 이력을 비우기 전에
+    미리 읽어둔 값이 있어서, 여기서 다시 읽으면 이미 빈 목록이 된다.
+    """
+    messages = store.get_session_messages(state.session_id)
+    restore_from_messages = bool(messages) and len(messages) >= len(state.recent_turns)
+
+    if restore_from_messages:
+        recommendations: list[PastRecommendation] = []
+    elif fallback_recommendations is not None:
+        recommendations = fallback_recommendations
+    else:
+        recommendations = _past_recommendations(store, state)
+
     return ChatSessionDetail(
         session_id=state.session_id,
         title=state.title or "",
         turns=list(state.recent_turns),
         recommendations=recommendations,
         messages=messages,
+        restore_from_messages=restore_from_messages,
         last_active_at=state.last_active_at,
         resumable=state.status != "expired"
         and not session_module.is_session_expired(state),
@@ -1804,11 +1826,7 @@ def resume_user_session(
     state = _load_own_conversation(session_id, principal, store)
 
     if state.status != "expired" and not session_module.is_session_expired(state):
-        return _to_session_detail(
-            state,
-            _past_recommendations(store, state),
-            store.get_session_messages(session_id),
-        )
+        return _to_session_detail(state, store)
 
     # 비우기 **전에** 읽는다. 화면에 그릴 "그때 본 곳"과 다음 추천에서 뺄 "이미
     # 보여준 곳"은 같은 데이터에서 나오지만 쓰임이 반대다 — 하나는 남겨야 하고
@@ -1819,6 +1837,6 @@ def resume_user_session(
     store.save_state(state)
     history_module.clear_recommended(store, session_id)
 
-    # 화면 기록은 비우지 않는다. resume이 지우는 것은 '다음 추천에서 뺄 곳'
-    # 이지 '그때 화면에 나갔던 것'이 아니다.
-    return _to_session_detail(state, shown, store.get_session_messages(session_id))
+    # 화면 기록은 비우지 않는다. resume이 지우는 것은 '다음 추천에서 뺄 곳'이지
+    # '그때 화면에 나갔던 것'이 아니다.
+    return _to_session_detail(state, store, fallback_recommendations=shown)
