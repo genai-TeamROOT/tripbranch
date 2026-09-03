@@ -54,13 +54,31 @@ export function loadChatSessions(): Promise<ChatHistoryEntry[]> {
   return cached;
 }
 
-/** 서버에서 다시 받아온다. 이름 바꾸기·삭제가 실패해 화면과 서버가 갈렸을 때 쓴다. */
+let inflight: Promise<ChatHistoryEntry[]> | null = null;
+
+/**
+ * 서버에서 다시 받아온다. 이름 바꾸기·삭제가 실패해 화면과 서버가 갈렸을 때,
+ * 그리고 새 대화가 생겨 목록에 넣어야 할 때 쓴다.
+ *
+ * **진행 중인 요청이 있으면 그것을 함께 쓴다.** 사이드바는 데스크톱과 모바일
+ * 드로어 두 벌이 동시에 마운트돼 있어(CSS로 하나만 보일 뿐이다) 같은 계기에
+ * 둘 다 이 함수를 부른다 — 막지 않으면 같은 목록을 두 번 받아온다.
+ */
 export function refreshChatSessions(): Promise<ChatHistoryEntry[]> {
-  cached = load().catch(() => []);
-  return cached;
+  if (inflight) return inflight;
+  const request = load()
+    .catch(() => [] as ChatHistoryEntry[])
+    .then((entries) => {
+      inflight = null;
+      return entries;
+    });
+  inflight = request;
+  cached = request;
+  return request;
 }
 
 /** 테스트가 페이지 로드 경계를 흉내 낼 수 있게 캐시를 비운다. */
 export function resetChatSessionsCache(): void {
   cached = null;
+  inflight = null;
 }

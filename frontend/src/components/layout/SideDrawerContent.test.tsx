@@ -62,16 +62,21 @@ const server = vi.hoisted(() => ({
         elapsed_ms: 1200,
       },
     },
-  } as never,
+  },
   /** 이어서 보낸 발화가 실어 나간 session_id. null이면 새 대화로 간 것이다. */
   chatSessionIds: [] as (string | null)[],
+  /** GET /api/sessions를 실제로 부른 횟수. 사이드바 두 벌이 겹쳐 부르는지 본다. */
+  listCalls: 0,
 }));
 
 vi.mock("../../api/trip", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../api/trip")>();
   return {
     ...actual,
-    fetchChatSessions: async () => ({ sessions: server.sessions }),
+    fetchChatSessions: async () => {
+      server.listCalls += 1;
+      return { sessions: server.sessions };
+    },
     /* 사이드바는 조회가 아니라 resume을 부른다 — 만료된 대화를 되살려야 이어
        물었을 때 같은 세션에 붙는다. resume의 응답은 항상 resumable: true다. */
     resumeChatSession: async (sessionId: string) => {
@@ -95,8 +100,40 @@ vi.mock("../../api/trip", async (importOriginal) => {
         resumable: true,
       };
     },
-    streamChat: async (request: { session_id: string | null }) => {
+    /*
+     * 한 턴을 끝까지 흉내 낸다. done을 보내지 않으면 phase가 ready가 되지 않아
+     * "턴이 끝났을 때"에 걸린 동작(사이드바 목록 갱신)을 볼 수 없다.
+     */
+    streamChat: async (
+      request: { session_id: string | null; user_input: string },
+      onEvent: (event: { type: string; data: unknown }) => void,
+    ) => {
       server.chatSessionIds.push(request.session_id);
+      /* 서버는 첫 턴에 세션을 만들고 그 발화를 제목으로 붙인다. */
+      const sessionId = request.session_id ?? "chat-new";
+      if (!server.sessions.some((item) => item.session_id === sessionId)) {
+        server.sessions = [
+          {
+            session_id: sessionId,
+            title: request.user_input,
+            place_name: null,
+            last_active_at: "2026-09-03T10:00:00+09:00",
+          },
+          ...server.sessions,
+        ];
+      }
+      onEvent({
+        type: "done",
+        data: {
+          elapsed_ms: 10,
+          response: {
+            ...server.transcript.payload,
+            state: { session_id: sessionId, run_id: "run_new" },
+            message: "찾아볼게요",
+            recommendations: null,
+          },
+        },
+      });
     },
     renameChatSession: async (sessionId: string, title: string) => {
       server.renamed.push({ id: sessionId, title });
@@ -137,6 +174,7 @@ beforeEach(() => {
   server.deleted = [];
   server.resumed = [];
   server.chatSessionIds = [];
+  server.listCalls = 0;
 });
 
 /*
@@ -348,4 +386,31 @@ test("지난 대화를 열고 이어 물으면 같은 세션으로 나간다", a
 
   await waitFor(() => expect(server.chatSessionIds).toEqual(["chat-1"]));
   expect(server.resumed).toEqual(["chat-1"]);
+});
+
+
+/*
+ * 새로고침해야 목록에 나타나면 방금 한 대화가 없는 것처럼 보인다.
+ *
+ * 사이드바가 두 벌 마운트돼 있어(데스크톱 패널 + 모바일 드로어) 같은 계기에
+ * 둘 다 목록을 다시 받아오려 하는데, 겹쳐도 서버는 한 번만 부른다.
+ */
+test("새 대화를 시작하면 새로고침 없이 목록에 뜬다", async () => {
+  const user = userEvent.setup();
+  await renderApp();
+  const before = server.listCalls;
+
+  await user.type(
+    screen.getByPlaceholderText(
+      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+    ),
+    "방금 시작한 대화",
+  );
+  await user.click(screen.getByRole("button", { name: "추천 시작하기" }));
+
+  await waitFor(() =>
+    expect(within(sidebar()).getByText("방금 시작한 대화")).toBeInTheDocument(),
+  );
+  /* 두 벌이 동시에 물어도 요청은 하나다. */
+  expect(server.listCalls - before).toBe(1);
 });

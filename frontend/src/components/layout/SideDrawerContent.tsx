@@ -78,6 +78,33 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
       active = false;
     };
   }, [session?.user?.id]);
+  /*
+   * 새 대화가 생기면 목록에 바로 넣는다. 새로고침해야 나타나면 방금 한 대화가
+   * 없는 것처럼 보인다.
+   *
+   * **턴이 끝난 뒤에 받아온다.** session_id는 스트리밍 도중에 먼저 도착하는데,
+   * 목록에 들어가려면 제목이 있어야 하고(제목 없는 세션은 대화로 치지 않는다)
+   * 제목은 백엔드가 턴을 저장할 때 붙는다 — 그전에 물으면 방금 만든 대화가
+   * 목록에서 빠진 채로 온다.
+   *
+   * 세션 하나당 한 번만 받아온다. 매 턴 받아오면 날짜·장소가 함께 최신이 되지만,
+   * 그건 목록에 이미 있는 줄의 겉모습일 뿐이라 요청을 더 낼 이유가 못 된다.
+   */
+  const listedSessionRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (state.phase !== "ready" || !state.session_id) return;
+    if (listedSessionRef.current === state.session_id) return;
+    listedSessionRef.current = state.session_id;
+
+    let active = true;
+    void refreshChatSessions().then((entries) => {
+      if (active) setHistory(entries);
+    });
+    return () => {
+      active = false;
+    };
+  }, [state.phase, state.session_id]);
+
   useEffect(() => {
     if (renamingId) renameInputRef.current?.focus();
   }, [renamingId]);
