@@ -47,6 +47,8 @@ from app.schedule.travel import (
 )
 from app.schemas import RecommendationItem, ScheduleItem, ScheduleResult
 from app.state.schema import now_kst
+from app.tools.mode_judge import LlmModeJudge
+from app.tools.schedule_travel import ModeJudge
 from app.tools.travel_route import TravelRouteTool
 
 logger = logging.getLogger(__name__)
@@ -329,6 +331,7 @@ async def _resolve_travel_minutes(
     *,
     settings: Settings | None,
     travel_route_tool: TravelRouteTool | None,
+    mode_judge: ModeJudge | None = None,
 ) -> _ResolvedTravel:
     """확정된 방문 순서의 구간 이동시간을 만든다. (TP-216)
 
@@ -344,6 +347,7 @@ async def _resolve_travel_minutes(
         candidates=request.travel_candidates,
         place_ids=place_ids,
         conditions=request.conditions,
+        mode_judge=mode_judge,
         # 구간 이동수단 판정에 쓴다(TP-226). 두 요청 스키마가 같은 필드를 가지므로
         # 전체 편성과 부분 재편성이 같은 값을 넘긴다.
         weather=request.weather,
@@ -731,6 +735,10 @@ async def plan_schedule(
         [draft.place_id for draft in drafts],
         settings=settings,
         travel_route_tool=travel_route_tool,
+        # 구간 이동수단을 거리뿐 아니라 날씨·동행·무장애까지 보고 정한다(TP-227).
+        # 편성에 쓰는 LLM을 그대로 쓴다 — 판정만 다른 Provider로 두면 한 턴 안에서
+        # 모델이 갈려 관측·비용이 두 곳으로 흩어진다.
+        mode_judge=LlmModeJudge(llm),
     )
     timeline = _build_schedule_timeline(
         drafts,
@@ -787,6 +795,9 @@ async def _pinned_only_result(
     *,
     settings: Settings | None = None,
     travel_route_tool: TravelRouteTool | None = None,
+    # 전체 편성과 같은 판정을 쓴다(TP-227). 안 넘기면 같은 사용자가 전체 편성과
+    # 부분 수정에서 다른 이동수단을 받는다.
+    mode_judge: ModeJudge | None = None,
 ) -> ScheduleResult:
     """새로 채운 자리 없이 기존 항목만으로 결과를 만든다.
 
@@ -804,6 +815,7 @@ async def _pinned_only_result(
         [draft.place_id for draft in drafts],
         settings=settings,
         travel_route_tool=travel_route_tool,
+        mode_judge=mode_judge,
     )
     timeline = _build_schedule_timeline(
         drafts,
@@ -862,6 +874,7 @@ async def plan_partial_schedule(
             round((timer() - started_at) * 1000, 2),
             settings=settings,
             travel_route_tool=travel_route_tool,
+            mode_judge=LlmModeJudge(llm),
         )
 
     # 유지 대상(pinned)이 후보에 섞여 있으면 그 자리에 같은 장소가 다시 뽑혀
@@ -893,6 +906,7 @@ async def plan_partial_schedule(
             round((timer() - started_at) * 1000, 2),
             settings=settings,
             travel_route_tool=travel_route_tool,
+            mode_judge=LlmModeJudge(llm),
         )
 
     resolved_request = (
@@ -983,6 +997,10 @@ async def plan_partial_schedule(
         [draft.place_id for draft in drafts],
         settings=settings,
         travel_route_tool=travel_route_tool,
+        # 구간 이동수단을 거리뿐 아니라 날씨·동행·무장애까지 보고 정한다(TP-227).
+        # 편성에 쓰는 LLM을 그대로 쓴다 — 판정만 다른 Provider로 두면 한 턴 안에서
+        # 모델이 갈려 관측·비용이 두 곳으로 흩어진다.
+        mode_judge=LlmModeJudge(llm),
     )
     timeline = _build_schedule_timeline(
         drafts,

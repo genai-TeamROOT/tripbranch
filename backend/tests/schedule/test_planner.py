@@ -66,6 +66,26 @@ class _RecordingLLM:
         self.received_request: SchedulePlanningRequest | None = None
         self.call_count = 0
 
+    async def judge_travel_modes(self, segments, context):
+        """구간 이동수단 판정(TP-227). 규칙과 같은 답을 내 이 이중체를 쓰는 테스트가
+        판정 도입 전과 같은 결과를 보게 한다.
+
+        **없으면 안 된다.** 이 메서드가 빠지면 판정 경로가 AttributeError로 끊기고,
+        예전에는 그것이 규칙 폴백으로 삼켜져 판정이 한 번도 안 도는데 테스트가
+        통과했다(TP-227에서 6건 발견).
+        """
+
+        from app.providers.contracts import ProviderSource, provider_result
+
+        del context
+        return provider_result(
+            tuple(
+                "transit" if segment.walk_minutes > 20.0 else "walking"
+                for segment in segments
+            ),
+            source=ProviderSource.FAKE_LLM,
+        )
+
     async def generate_schedule_plan(self, request: SchedulePlanningRequest):
         self.received_request = request
         self.call_count += 1
@@ -500,6 +520,26 @@ class _RecordingFillLLM:
         self._plan = plan
         self.received_request: SchedulePartialFillRequest | None = None
         self.call_count = 0
+
+    async def judge_travel_modes(self, segments, context):
+        """구간 이동수단 판정(TP-227). 규칙과 같은 답을 내 이 이중체를 쓰는 테스트가
+        판정 도입 전과 같은 결과를 보게 한다.
+
+        **없으면 안 된다.** 이 메서드가 빠지면 판정 경로가 AttributeError로 끊기고,
+        예전에는 그것이 규칙 폴백으로 삼켜져 판정이 한 번도 안 도는데 테스트가
+        통과했다(TP-227에서 6건 발견).
+        """
+
+        from app.providers.contracts import ProviderSource, provider_result
+
+        del context
+        return provider_result(
+            tuple(
+                "transit" if segment.walk_minutes > 20.0 else "walking"
+                for segment in segments
+            ),
+            source=ProviderSource.FAKE_LLM,
+        )
 
     async def generate_schedule_fill(self, request: SchedulePartialFillRequest):
         self.received_request = request
@@ -999,6 +1039,26 @@ class _SequenceLLM:
     @property
     def call_count(self) -> int:
         return len(self.received_requests)
+
+    async def judge_travel_modes(self, segments, context):
+        """구간 이동수단 판정(TP-227). 규칙과 같은 답을 내 이 이중체를 쓰는 테스트가
+        판정 도입 전과 같은 결과를 보게 한다.
+
+        **없으면 안 된다.** 이 메서드가 빠지면 판정 경로가 AttributeError로 끊기고,
+        예전에는 그것이 규칙 폴백으로 삼켜져 판정이 한 번도 안 도는데 테스트가
+        통과했다(TP-227에서 6건 발견).
+        """
+
+        from app.providers.contracts import ProviderSource, provider_result
+
+        del context
+        return provider_result(
+            tuple(
+                "transit" if segment.walk_minutes > 20.0 else "walking"
+                for segment in segments
+            ),
+            source=ProviderSource.FAKE_LLM,
+        )
 
     async def generate_schedule_plan(self, request: SchedulePlanningRequest):
         self.received_requests.append(request)

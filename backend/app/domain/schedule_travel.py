@@ -11,6 +11,7 @@ from app.domain.travel_route import (
     RouteStatus,
     TravelMode,
 )
+from app.schemas import Transport
 
 
 class TravelConfidence(StrEnum):
@@ -48,6 +49,51 @@ class SegmentWeather:
     precipitation: str | None = None
     sky: str | None = None
     temperature_celsius: float | None = None
+
+
+@dataclass(frozen=True)
+class SegmentModeInput:
+    """이동수단을 정할 구간 한 줄. 판정하는 쪽이 보는 유일한 재료다.
+
+    **누적 도보량을 여기 담지 않는다.** "이 구간 전까지 몇 분 걸었나"는 앞 구간이
+    도보인지 이미 정해져 있어야 나오는 값인데, 그게 지금 정하려는 값이라 순환이다.
+    대신 구간마다 `walk_minutes`("걸으면 몇 분")만 주고, 누적은 판정하는 쪽이 표
+    전체를 보고 직접 더한다 — 전 구간을 한 번에 넘기는 설계라 가능하다.
+    """
+
+    from_place_id: str
+    to_place_id: str
+    # 추려낸 구간 안에서의 순번(1부터). `pairs`의 인덱스가 아니다 — 중복·자기쌍·
+    # 좌표 없는 장소가 빠지므로 둘이 어긋난다.
+    order: int
+    distance_m: int
+    # 이 구간을 도보로 갔을 때의 예상 분. 실제로 도보로 갈지는 아직 모른다.
+    walk_minutes: float
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return (self.from_place_id, self.to_place_id)
+
+
+@dataclass(frozen=True)
+class ModeJudgmentContext:
+    """전 구간이 공유하는 판정 조건.
+
+    `UserConditions`를 그대로 넘기지 않는다. 판정에 쓰는 값만 옮겨 담아야 나중에
+    "이 판정이 무엇을 보고 정했나"가 타입에 그대로 드러난다.
+    """
+
+    transport: Transport | None
+    companion: str | None = None
+    accessibility_needs: tuple[str, ...] = ()
+    # 구간이 순서대로 이어지는가. 일정은 전 구간을 다 지나가므로 True이고, 추천은
+    # 후보가 서로 대안이라 False다 — 사용자는 그중 한 곳만 간다.
+    #
+    # **이 값이 앞 구간을 봐도 되는지를 가른다.** 독립인데 앞 후보를 근거로 삼으면
+    # 목록에서 몇 번째냐에 따라 같은 거리가 다르게 판정된다.
+    sequential: bool = True
+    # 조회된 예보. 조회에 실패했거나 값이 없는 턴에서는 비어 있다.
+    weather: SegmentWeather | None = None
 
 
 @dataclass(frozen=True)
@@ -119,7 +165,9 @@ __all__ = [
     "ScheduleTravelEdge",
     "ScheduleTravelEstimateResult",
     "ScheduleTravelPair",
+    "ModeJudgmentContext",
     "ScheduleTravelWarning",
+    "SegmentModeInput",
     "SegmentWeather",
     "TravelConfidence",
 ]

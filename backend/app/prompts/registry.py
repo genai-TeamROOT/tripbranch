@@ -67,6 +67,7 @@ OPERATION_SLOTS: dict[str, str] = {
     "generate_schedule_plan": "schedule.plan",
     "generate_schedule_fill": "schedule.fill",
     "generate_follow_up_suggestions": "follow_up.suggest",
+    "judge_travel_modes": "mode_judge.select",
 }
 
 # 슬롯 하나가 조립을 시작하는 **진입 템플릿**. 조각(`_shared/rules/*`)은 이 템플릿의
@@ -88,6 +89,7 @@ SLOT_ENTRY_TEMPLATES: dict[str, str] = {
     "general.extract": "general/extract.md",
     "general.answer": "general/answer_instruction.md",
     "info.answer": "info/answer_instruction.md",
+    "mode_judge.select": "mode_judge/select_instruction.md",
     "recommend.summary": "recommend/summary_instruction.md",
     "compare.summary": "compare/summary_instruction.md",
     "schedule.plan": "schedule/plan.md",

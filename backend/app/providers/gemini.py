@@ -25,6 +25,7 @@ from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 from pydantic import BaseModel, Field, ValidationError
 
+from app.domain.schedule_travel import ModeJudgmentContext, SegmentModeInput
 from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
 from app.observability import langfuse_prompts
 from app.observability.api_usage import record_call
@@ -76,6 +77,18 @@ class _ComparisonSummary(BaseModel):
     """
 
     lines: list[str] = Field(min_length=3, max_length=6)
+
+
+class _TravelModePlan(BaseModel):
+    """judge_travel_modes() 전용 wire 모델.
+
+    개수를 스키마로 묶지 않는다 — 구간 수가 요청마다 다르고, 개수 검증은 호출부
+    (`tools/schedule_travel.py::select_modes_for_segments()`)가 어느 구간의 답인지
+    아는 자리에서 한다. 여기서 ValidationError를 내면 "몇 개가 왔는지"만 남고
+    "어느 구간이 빠졌는지"가 사라진다.
+    """
+
+    modes: list[str] = Field(default_factory=list)
 
 
 class _FollowUpSuggestions(BaseModel):
@@ -937,6 +950,37 @@ class RealGeminiProvider:
         if review_evidence:
             summary_item["review_evidence"] = review_evidence
         return summary_item
+
+    async def judge_travel_modes(
+        self,
+        segments: Sequence[SegmentModeInput],
+        context: ModeJudgmentContext,
+    ) -> ProviderResult[tuple[str, ...]]:
+        """구간별 이동수단을 전 구간 한 번에 정한다. (TP-227)
+
+        구간 하나씩 부르지 않는 이유는 앞 구간을 봐야 뒤 구간의 강도를 조절할 수
+        있기 때문이다. 구간별로 부르면 호출이 구간 수만큼 늘고 같은 문제가 남는다.
+
+        thinking_budget=0 — 일정 편성(`generate_schedule_plan`)과 같은 이유다.
+        판정 근거(거리·도보시간·조건)를 프롬프트에 이미 명시적으로 주고 있어
+        thinking 없이도 고를 수 있고, 이 호출은 SCHEDULE·RECOMMEND 턴의 지연에
+        그대로 더해진다.
+
+        **값 검증은 여기서 하지 않는다.** 문자열 목록을 그대로 돌려주고, 개수와
+        어휘는 호출부가 확인한다 — 어느 구간의 답인지 아는 쪽이 거기이기 때문이다.
+        """
+
+        instruction = gemini_prompts.build_mode_judge_instruction()
+        context_text = gemini_prompts.format_mode_judge_context(segments, context)
+        result = await self._call_structured(
+            instruction,
+            context_text,
+            _TravelModePlan,
+            operation="judge_travel_modes",
+            thinking_budget=0,
+            model_names=self._generation_model_names,
+        )
+        return provider_result(tuple(result.modes), source=ProviderSource.GEMINI)
 
     async def generate_schedule_plan(
         self, request: SchedulePlanningRequest
