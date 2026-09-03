@@ -227,6 +227,56 @@ def test_없는_대화_이름을_바꾸면_404(signing_key) -> None:
     assert response.json()["error"]["code"] == "session_not_found"
 
 
+def test_만료된_대화도_이름을_바꿀_수_있다(signing_key) -> None:
+    """목록에 뜨는 대화는 전부 이름을 바꿀 수 있어야 한다.
+
+    TTL로 거르던 동안에는 여기가 404였다. 실측으로 신원이 붙은 대화 106개 중
+    살아 있는 것이 1개뿐이라, 목록의 거의 모든 줄에서 이름 바꾸기가 실패했다.
+    """
+    from app.state.store import get_store
+
+    session_id = _start_chat(ME, "만료된 대화")
+    store = get_store()
+    state = store.get_state(session_id)
+    assert state is not None
+    state.status = "expired"
+    store.save_state(state)
+
+    response = TestClient(app).patch(
+        f"/api/state/{session_id}/title",
+        json={"title": "바꾼 이름"},
+        headers=_headers(signing_key, ME),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["title"] == "바꾼 이름"
+
+
+def test_신원이_안_붙은_세션은_이름을_못_바꾼다(signing_key) -> None:
+    """주인이 없는 세션은 누구의 것도 아니다.
+
+    verify_ownership은 이 경우를 통과시키는데(Phase 4 전 과도기), 이 엔드포인트는
+    "내 대화"만 다룬다 — 열기·이어가기와 같은 기준으로 막는다.
+    """
+    from app.state.store import get_store
+
+    session_id = _start_chat(ME, "주인 없는 대화")
+    store = get_store()
+    state = store.get_state(session_id)
+    assert state is not None
+    state.user_id = None
+    store.save_state(state)
+
+    response = TestClient(app).patch(
+        f"/api/state/{session_id}/title",
+        json={"title": "가로채기"},
+        headers=_headers(signing_key, ME),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "session_ownership_mismatch"
+
+
 # ---------------------------------------------------------------- 지난 대화 열기
 
 

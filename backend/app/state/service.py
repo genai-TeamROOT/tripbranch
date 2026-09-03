@@ -1603,21 +1603,31 @@ def list_user_sessions(
 def rename_session(
     session_id: str,
     title: str,
-    principal: Principal | None = None,
+    principal: Principal,
     store: StateStore | None = None,
 ) -> ChatSessionSummary:
     """대화 이름을 바꾼다.
 
-    여기서는 소유권을 대조해야 한다 — 경로에 session_id가 들어와, 남의 대화
-    이름을 바꾸라는 요청이 만들어질 수 있기 때문이다(list_user_sessions와
-    다른 점이다).
+    **목록을 여는 것·이어가는 것과 같은 방식으로 대화를 집는다**
+    (_load_own_conversation). 이름 바꾸기는 사이드바 목록의 한 줄에 대한 동작이라,
+    그 목록에 뜨는 대화는 전부 여기서도 집혀야 한다. 예전에는 peek_session +
+    verify_ownership을 썼는데 둘 다 이 자리에 맞지 않았다.
+
+    - peek_session은 TTL이 지난 세션을 없는 것으로 취급한다(계약 5.4절). 그런데
+      목록은 만료된 대화도 보여주므로(list_sessions_for_user), **목록에 뜨는
+      대화의 이름을 바꾸면 404가 났다** — 실측으로 신원이 붙은 대화 106개 중
+      살아 있는 것이 1개뿐이라 사실상 거의 항상 실패했다. 화면은 낙관적으로
+      먼저 바꿔 놓고 실패하면 되돌리므로, 이름이 바뀌었다가 되돌아갔다.
+    - verify_ownership은 state.user_id가 비어 있으면 통과시킨다(Phase 4 전
+      과도기). 이 엔드포인트는 "내 대화"만 다루므로 신원이 붙지 않은 세션은 내
+      것이 아니다 — GET /sessions/{id}·resume과 같은 기준으로 본다.
+
+    principal에 기본값을 두지 않는 이유도 같다. 신원 없이 부를 수 있게 두면
+    소유권 대조가 그대로 통과하는 경로가 남는다.
     """
     store = store or get_store()
 
-    state = session_module.peek_session(store, session_id)
-    if state is None:
-        raise SessionNotFoundError(session_id)
-    session_module.verify_ownership(state, principal)
+    state = _load_own_conversation(session_id, principal, store)
 
     if session_module.rename(state, title):
         store.save_state(state)
