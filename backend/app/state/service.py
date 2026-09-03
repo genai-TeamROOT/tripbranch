@@ -18,10 +18,13 @@ from app.state import feedback as feedback_module
 from app.state import history as history_module
 from app.state import preferences as preferences_module
 from app.state import saved_places as saved_places_module
+from app.state import saved_schedules as saved_schedules_module
 from app.state import session as session_module
 from app.state import trace as trace_module
 from app.state.errors import (
     SavedPlaceNotRecommendedError,
+    SavedScheduleNotFoundError,
+    SavedScheduleOwnershipError,
     SessionNotFoundError,
     SessionOwnershipError,
     StateStoreError,
@@ -39,6 +42,7 @@ from app.state.schema import (
     RecommendedItem,
     RecommendedItemInput,
     SavedPlaceItem,
+    SavedSchedule,
     SessionMessage,
     SituationState,
     UserConditions,
@@ -1850,3 +1854,200 @@ def resume_user_session(
     # 화면 기록은 비우지 않는다. resume이 지우는 것은 '다음 추천에서 뺄 곳'이지
     # '그때 화면에 나갔던 것'이 아니다.
     return _to_session_detail(state, store, fallback_recommendations=shown)
+
+
+# ================================================================ 저장한 일정
+
+
+class SavedScheduleSummary(BaseModel):
+    """저장한 일정 목록의 한 줄. (SCHEDULE 카드 2)
+
+    **payload를 담지 않는다.** 목록은 최대 MAX_LISTED_SCHEDULES(50)줄인데 일정
+    하나가 장소·이동구간·경고를 다 들고 있어 전부 실으면 목록 한 번에 수백 KB가
+    나간다. 한 줄을 누르면 그때 상세를 받는다 — ChatSessionSummary가 대화 내용을
+    담지 않는 것과 같은 이유다.
+    """
+
+    id: str
+    title: str
+    # 어느 대화에서 나왔는지. 세션은 30일 뒤 정리되지만 이 일정은 남으므로
+    # **없을 수 있다**를 전제로 쓴다(마이그레이션 202609030005 주석).
+    session_id: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class SavedSchedulesResponse(BaseModel):
+    items: list[SavedScheduleSummary] = Field(default_factory=list)
+
+
+class SavedScheduleDetail(SavedScheduleSummary):
+    """저장한 일정 하나. 목록에서 한 줄을 눌렀을 때 보여줄 내용이다.
+
+    payload는 저장 시점의 ScheduleResult 그대로다. **지금 기준으로 다시 계산한
+    값이 아니다** — 도착 시각·이동 시간은 그때 기준이므로 화면이 그 사실을
+    밝혀야 한다.
+    """
+
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class SaveScheduleRequest(BaseModel):
+    """일정 저장 요청.
+
+    **제목을 서버가 만들지 않는다.** payload를 열어보지 않는 것이 이 저장소의
+    전제라(saved_schedules 모듈 docstring), 일정 내용에서 제목을 유도하려면 그
+    전제를 깨야 한다. 일정을 그리고 있는 화면이 기본 제목을 제안한다.
+    """
+
+    title: str = Field(min_length=1, max_length=200)
+    payload: dict[str, Any]
+    session_id: str | None = None
+    # 같은 턴을 두 번 저장하지 않기 위한 열쇠다. 없으면 멱등 판정을 할 수 없어
+    # 그대로 새로 만든다.
+    run_id: str | None = None
+
+
+class RenameScheduleRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+
+
+class DeleteScheduleResponse(BaseModel):
+    id: str
+    deleted: bool
+
+
+def _to_schedule_summary(schedule: SavedSchedule) -> SavedScheduleSummary:
+    return SavedScheduleSummary(
+        id=schedule.id or "",
+        title=schedule.title,
+        session_id=schedule.session_id,
+        created_at=schedule.created_at,
+        updated_at=schedule.updated_at,
+    )
+
+
+def _load_own_schedule(
+    schedule_id: str,
+    principal: Principal,
+    store: StateStore,
+) -> SavedSchedule:
+    """내 저장 일정 하나를 읽는다. 없거나 남의 것이면 예외.
+
+    **verify_ownership을 쓰지 않는다.** 그 함수는 AgentState를 받고, state.user_id가
+    비어 있으면 통과시킨다(Phase 4 전 과도기). 이 저장소는 애초에 user_id 없이는
+    행이 만들어지지 않으므로 그 관용이 필요 없고, 있으면 오히려 구멍이 된다.
+    """
+    schedule = saved_schedules_module.get(store, schedule_id)
+    if schedule is None:
+        raise SavedScheduleNotFoundError(schedule_id)
+    if schedule.user_id != principal.user_id:
+        raise SavedScheduleOwnershipError()
+    return schedule
+
+
+@_wrap_store_errors
+def list_user_schedules(
+    user_id: str,
+    store: StateStore | None = None,
+) -> SavedSchedulesResponse:
+    """내 저장 일정을 최근 저장순으로.
+
+    소유권 검증이 따로 없는 이유는 키가 곧 신원이기 때문이다 — 라우트가
+    RequiredPrincipal로 받은 user_id만 여기 들어오므로 남의 일정이 섞일 경로가
+    없다(list_user_sessions와 같은 근거).
+    """
+    store = store or get_store()
+    return SavedSchedulesResponse(
+        items=[
+            _to_schedule_summary(schedule)
+            for schedule in saved_schedules_module.list_for_user(store, user_id)
+        ]
+    )
+
+
+@_wrap_store_errors
+def save_user_schedule(
+    user_id: str,
+    request: SaveScheduleRequest,
+    store: StateStore | None = None,
+) -> SavedScheduleDetail:
+    """일정을 저장한다.
+
+    같은 (user_id, run_id)를 다시 저장하면 이미 있는 것을 그대로 돌려준다.
+    실패가 아니라 성공이며, 응답도 처음 저장한 것과 같다 — 화면은 두 경우를
+    구분할 필요가 없다(보관함 담기가 멱등인 것과 같은 취급).
+    """
+    store = store or get_store()
+    saved = saved_schedules_module.save(
+        store,
+        user_id,
+        title=request.title.strip(),
+        payload=request.payload,
+        session_id=request.session_id,
+        run_id=request.run_id,
+    )
+    return SavedScheduleDetail(
+        **_to_schedule_summary(saved).model_dump(), payload=saved.payload
+    )
+
+
+@_wrap_store_errors
+def get_user_schedule(
+    schedule_id: str,
+    principal: Principal,
+    store: StateStore | None = None,
+) -> SavedScheduleDetail:
+    """내 저장 일정 하나를 읽는다."""
+    store = store or get_store()
+    schedule = _load_own_schedule(schedule_id, principal, store)
+    return SavedScheduleDetail(
+        **_to_schedule_summary(schedule).model_dump(), payload=schedule.payload
+    )
+
+
+@_wrap_store_errors
+def rename_user_schedule(
+    schedule_id: str,
+    title: str,
+    principal: Principal,
+    store: StateStore | None = None,
+) -> SavedScheduleSummary:
+    """저장 일정의 이름을 바꾼다.
+
+    **소유권을 먼저 대조한 뒤에 바꾼다.** 저장소의 rename은 id만 보므로,
+    여기서 대조를 건너뛰면 남의 일정 이름을 바꿀 수 있다.
+    """
+    store = store or get_store()
+    _load_own_schedule(schedule_id, principal, store)
+
+    renamed = saved_schedules_module.rename(store, schedule_id, title.strip())
+    if renamed is None:
+        # 대조와 변경 사이에 지워진 경우다. 조용히 성공한 척하면 사용자는
+        # 이름이 바뀐 줄 알고 넘어간다.
+        raise SavedScheduleNotFoundError(schedule_id)
+    return _to_schedule_summary(renamed)
+
+
+@_wrap_store_errors
+def delete_user_schedule(
+    schedule_id: str,
+    principal: Principal,
+    store: StateStore | None = None,
+) -> DeleteScheduleResponse:
+    """저장 일정을 지운다.
+
+    이미 없으면 오류가 아니라 `deleted=False`다 — 사용자가 원한 결과가 이미
+    성립한다(delete_session과 같은 취급). 다만 **남의 것을 지우려는 것은 오류다**:
+    존재하는데 내 것이 아닌 경우는 멱등의 범위가 아니다.
+    """
+    store = store or get_store()
+    schedule = saved_schedules_module.get(store, schedule_id)
+    if schedule is None:
+        return DeleteScheduleResponse(id=schedule_id, deleted=False)
+    if schedule.user_id != principal.user_id:
+        raise SavedScheduleOwnershipError()
+
+    return DeleteScheduleResponse(
+        id=schedule_id, deleted=saved_schedules_module.remove(store, schedule_id)
+    )
