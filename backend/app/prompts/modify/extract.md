@@ -10,7 +10,8 @@ modify_type과 condition_changes를 추출해 LLMOutput(intent="MODIFY")으로 �
 위 값이 "예"이고 사용자가 단순 지명만 답했다면, 그 지명을 search_center에 채우고
 changed_fields에는 "search_center"만 넣으세요. 기존 조건은 변경하지 않습니다.
 위치 되묻기 상태가 아니어도, 이전 추천 뒤 사용자가 단순 지명만 말하면 해당 지명을
-search_center에 채우고 changed_fields에는 "search_center"만 넣으세요.
+search_center에 채우고 changed_fields에는 "search_center"만 넣으세요. 단, 아래
+대화 흐름 규칙을 먼저 확인해 그 규칙이 적용된다면 이 기본 규칙보다 그것을 우선하세요.
 {{shown_list_block}}
 {{type_rules}}
 {{target_rules}}

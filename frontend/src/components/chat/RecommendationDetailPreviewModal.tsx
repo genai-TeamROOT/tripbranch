@@ -27,6 +27,7 @@ import { fetchRecommendationPlaceDetails } from "../../api/trip";
 import { useTripState } from "../../state/TripContext";
 import type { InfoPlaceCard, RecommendationItem } from "../../types";
 import { openNaverDirections, openNaverMapSearch } from "../../utils/naverDirections";
+import { groupSubwayArrivals, parseSubwayArrival, subwayLineColor } from "../../utils/subwayDisplay";
 import { travelShortLabel } from "../../utils/travelDisplay";
 import {
   ConcentrationForecastBars,
@@ -344,6 +345,89 @@ interface ParkingCardItem {
 
 function isRealtimeParkingCard(card: InfoPlaceCard): boolean {
   return ["realtime_parking", "realtime_public_parking"].includes(card.question_type);
+}
+
+function isRealtimeSubwayCard(card: InfoPlaceCard): boolean {
+  return card.question_type === "realtime_subway";
+}
+
+function SubwayModalArrivalRow({ item }: { item: RealtimeDetailItem }) {
+  const { arrival } = parseSubwayArrival(item.subtitle ?? "");
+  const arrivalKnown = arrival !== null && !arrival.includes("미제공");
+  const destination = item.details["종착역"] ? `${item.details["종착역"]}행` : "행선지 정보 미제공";
+  return (
+    <div className="flex min-w-0 items-center justify-between gap-2">
+      <span className="min-w-0 truncate text-sm text-ink">{destination}</span>
+      {arrival && (
+        <span
+          className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ${
+            arrivalKnown ? "bg-emerald-50 text-emerald-700" : "bg-white text-muted"
+          }`}
+        >
+          {arrival}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function RealtimeSubwayEntries({ card }: { card: InfoPlaceCard }) {
+  const items = card.realtime_detail_items ?? [];
+  const groups = groupSubwayArrivals(items);
+  return (
+    <section className="rounded-xl border border-border bg-chip/60 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-semibold text-ink">실시간 지하철 도착 정보</h3>
+          <p className="mt-0.5 text-xs text-muted">
+            {card.realtime_area_name ?? "가까운 역"}
+            {card.realtime_observed_at ? ` · ${card.realtime_observed_at} 기준` : ""}
+          </p>
+        </div>
+        <RealtimeDetailLinks card={card} />
+      </div>
+      <div className="mt-3 grid gap-3">
+        {groups.map((group) => (
+          <article
+            key={group.stationLine}
+            className="min-w-0 rounded-lg border border-border bg-white px-3 py-2.5"
+          >
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span
+                className="h-2.5 w-2.5 shrink-0 rounded-full"
+                style={{ backgroundColor: subwayLineColor(group.stationLine) }}
+                aria-hidden="true"
+              />
+              <span className="min-w-0 truncate text-sm font-bold text-ink" title={group.stationLine}>
+                {group.stationLine}
+              </span>
+            </div>
+            {/* 같은 역·같은 호선이라도 상행/하행은 다른 방향이라 칸을 나눠 보여준다
+                (2026-09-02 실사용 지적) — 나열 순서만으로는 구분이 안 됐다. */}
+            <div
+              className={`mt-2 grid gap-2 ${group.directions.length > 1 ? "sm:grid-cols-2" : "grid-cols-1"}`}
+            >
+              {group.directions.map((direction) => (
+                <div key={direction.direction} className="min-w-0 rounded-lg bg-chip px-2.5 py-2">
+                  <p className="text-xs font-semibold text-muted">{direction.direction}</p>
+                  <div className="mt-1 grid gap-1">
+                    {direction.items.map((item, index) => (
+                      <SubwayModalArrivalRow key={`${item.title}-${index}`} item={item} />
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </article>
+        ))}
+        {items.length === 0 && (
+          <p className="rounded-lg bg-white px-3 py-4 text-center text-sm text-muted">
+            지하철 도착 정보를 제공하지 않는 역이에요.
+          </p>
+        )}
+      </div>
+    </section>
+  );
 }
 
 function extractParkingCount(value: string | undefined): number | null {
@@ -679,6 +763,7 @@ function RealtimeDetailEntries({ card }: { card: InfoPlaceCard }) {
   const items = card.realtime_detail_items ?? [];
   if (items.length === 0 && !card.realtime_map_url && !card.realtime_source_url) return null;
   if (isRealtimeParkingCard(card)) return <RealtimeParkingEntries card={card} />;
+  if (isRealtimeSubwayCard(card)) return <RealtimeSubwayEntries card={card} />;
 
   return (
     <section className="rounded-xl border border-sky-100 bg-sky-50/70 p-4 dark:border-sky-900/60 dark:bg-sky-950/20">
@@ -868,7 +953,7 @@ export function RecommendationDetailPreviewModal({
   // 홈페이지는 answer_fields가 아니라 카드 최상위 필드다(질문 유형이 general_info가
   // 아니어도 백엔드가 채울 수 있다) — 하단 링크를 없앤 대신 여기서 합성해 넣는다.
   const answerEntries =
-    detailCard && !isRealtimeParkingCard(detailCard)
+    detailCard && !isRealtimeParkingCard(detailCard) && !isRealtimeSubwayCard(detailCard)
       ? [
           ...Object.entries(detailCard.answer_fields).filter(
             ([key]) => key !== "overview" && key !== "address",

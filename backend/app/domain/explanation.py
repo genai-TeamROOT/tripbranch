@@ -61,6 +61,7 @@ def _format_travel_duration(duration_seconds: int) -> str:
 _TRAVEL_MODE_PHRASES: dict[TravelMode, str] = {
     TravelMode.WALKING: "걸어서",
     TravelMode.DRIVING: "차로",
+    TravelMode.TRANSIT: "대중교통으로",
 }
 
 
@@ -74,7 +75,11 @@ def _distance_sentence(evidence: RecommendationEvidence) -> str:
 
     이동수단 문구는 실측한 수단으로만 쓴다. `_TRAVEL_MODE_PHRASES`에 없는
     수단은 직선거리 문구로 돌아가므로, 자동차 실측을 "걸어서"라고 말하거나
-    도보 실측을 "차로"라고 말하는 일은 없다. 대중교통은 그 카드에서 추가한다.
+    도보 실측을 "차로"라고 말하는 일은 없다.
+
+    대중교통 문구는 D-118에서 채웠다. 그 전까지는 표에 없어서, 대중교통으로 잰
+    후보가 카드에는 "대중교통 18분"이라고 적히고 문장은 직선거리로 돌아가
+    같은 후보를 두 숫자로 말할 수 있었다.
     """
     origin = evidence.origin_name or "현재 위치"
     phrase = _TRAVEL_MODE_PHRASES.get(evidence.travel_mode)

@@ -41,6 +41,23 @@ class RouteStatus(StrEnum):
     UNAVAILABLE = "unavailable"
 
 
+# 외부 API로 실제 경로를 잰 source. 여기 없는 source(직선거리 추정)는 채점에도
+# 근거 문장에도 쓰지 않는다.
+#
+# 이 집합이 도메인 계약에 있는 이유는 읽는 곳이 둘이기 때문이다 — 채점
+# (`domain/scoring.py::_applied_travel_route`)과, 한 후보를 두 이동수단으로
+# 조회했을 때 어느 값을 쓸지 고르는 쪽(`agent_runtime.py::_fastest_routes`)이다.
+# 양쪽에 따로 적으면 한쪽만 바뀌었을 때 조용히 어긋난다: 고르는 쪽이 추정을
+# 실측보다 빠르다고 채택하면, 채점이 그 값을 버려 회차 전체가 직선거리로 내려간다.
+MEASURED_ROUTE_SOURCES = frozenset(
+    {
+        RouteSource.KAKAO_WALKING,
+        RouteSource.NAVER_DRIVING,
+        RouteSource.KAKAO_TRANSIT,
+    }
+)
+
+
 @dataclass(frozen=True)
 class RouteDestination:
     place_id: str

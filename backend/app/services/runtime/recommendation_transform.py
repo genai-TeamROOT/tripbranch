@@ -12,9 +12,9 @@
 import하지 않는다 — D 호출은 app.services.runtime.real_recommendation_provider가
 담당한다. 예외는 순수 도메인 계약인 app.domain.travel_route(TravelMode)뿐이다.
 
-to_travel_mode()는 A→C(경로 Tool 질의)에 쓰이지만 여기 둔다. 반경 산정과 같은
-조건을 봐야만 실측 이동수단과 거리 점수 분모의 단위가 맞기 때문에(D-042 성격의
-조용한 불일치를 막는다), 두 함수를 떼어놓지 않는 것을 우선했다.
+to_measured_travel_modes()는 A→C(경로 Tool 질의)에 쓰이지만 여기 둔다. 검색 반경·
+시간 예산 속도·실측 이동수단이 한 요청의 세 얼굴이라, 흩어놓으면 한쪽만 바뀌었을
+때 조용히 어긋나기 때문이다(D-042 성격의 불일치).
 """
 
 from __future__ import annotations
@@ -43,32 +43,75 @@ _OTHER_KM_PER_MIN = 20 / 60  # 임시: 대중교통/자동차/미언급 공통 �
 def _radius_uses_walking_speed(conditions: UserConditions) -> bool:
     """검색 반경이 도보 속도로 만들어지는 요청인지 판정한다.
 
-    반경 산정(to_search_radius_km)과 실측 이동수단 선택(to_travel_mode)이 같은
-    조건을 봐야 한다 — 거리 점수의 분모가 반경을 이동수단 속도로 되돌린 값이라
+    반경 산정(to_search_radius_km)과 시간 예산 속도(to_search_radius_speed_km_per_min)가
+    같은 조건을 봐야 한다 — 거리 점수의 분모가 반경을 이 속도로 되돌린 값이라
     (scoring.py::_travel_minutes_budget) 둘이 어긋나면 분자와 단위가 맞지 않는다.
+
+    실측 이동수단 선택(to_measured_travel_modes)은 D-118부터 이 조건을 보지 않는다.
+    예산이 측정 수단과 무관해졌으므로 수단은 후보의 거리로만 고르면 된다.
     """
     return conditions.transport is Transport.WALK or conditions.max_travel_time is None
 
 
-def to_travel_mode(conditions: UserConditions) -> TravelMode | None:
-    """실측 경로를 어떤 이동수단으로 조회할지 정한다. None이면 조회하지 않는다.
+def to_search_radius_speed_km_per_min(conditions: UserConditions) -> float:
+    """이 요청이 검색 반경을 만들 때 쓴 속도(km/분)를 돌려준다 (D-118).
 
-    반경이 도보 속도로 만들어진 요청(도보 명시 또는 이동시간 미언급의 기본
-    반경)은 도보로 조회한다.
+    거리 점수의 시간 예산이 이 값으로 반경을 소요시간으로 되돌린다
+    (`domain/scoring.py::_travel_minutes_budget`). **예산을 측정한 이동수단이
+    아니라 반경을 만든 속도로 나누는 것이 D-118의 핵심이다** — 한 순위표 안에서
+    도보와 대중교통을 섞어 재면서 예산만 수단별로 고르면, 기본 반경 2.0km에서
+    대중교통 예산이 6.0분이 되어 전환된 후보만 0점이 된다.
 
-    이동수단을 말하지 않고 이동시간만 말한 요청은 반경이 20km/h 가정으로
-    커져 있지만(_OTHER_KM_PER_MIN) 그 20km/h가 대중교통인지 자동차인지는
-    발화에 없다. 무엇으로 재야 할지 모르므로 실측하지 않는다 — 지금도 그
-    경우 D가 도보 실측을 버리므로(real_recommendation_provider.py의
-    _walking_routes_for) 결과는 같고, 낭비 호출만 사라진다.
+    `to_search_radius_km()`과 같은 분기(`_radius_uses_walking_speed()`)를 쓴다.
+    두 함수가 다른 속도를 고르면 분자와 분모의 단위가 어긋난다.
     """
-    if _radius_uses_walking_speed(conditions):
-        return TravelMode.WALKING
-    if conditions.transport is Transport.PUBLIC:
-        return TravelMode.TRANSIT
-    if conditions.transport is Transport.CAR:
-        return TravelMode.DRIVING
-    return None
+    return (
+        WALKING_SPEED_KM_PER_MINUTE
+        if _radius_uses_walking_speed(conditions)
+        else _OTHER_KM_PER_MIN
+    )
+
+
+def to_measured_travel_modes(
+    conditions: UserConditions | None,
+    *,
+    straight_line_km: float,
+    switch_threshold_km: float,
+) -> tuple[TravelMode, ...]:
+    """후보 한 곳을 어떤 이동수단으로 실측할지 정한다 (D-118).
+
+    **요청당 하나가 아니라 후보마다 고른다.** 같은 요청 안에서도 걸어갈 만한 곳과
+    그렇지 않은 곳이 섞이기 때문이다. 판정 입력은 1차 채점이 이미 계산한
+    직선거리이고, 호출부는 `_score_with_measured_routes()`가 상위 후보를 추린
+    직후다.
+
+    ```
+    transport == WALK  → 도보 (거리 무관)
+    transport == CAR   → 자동차 (거리 무관, 이동시간을 말하지 않았어도)
+    그 외(PUBLIC·미지정):
+        직선거리 ≤ 임계 → 도보
+        직선거리 >  임계 → 도보·대중교통 둘 다 (호출부가 빠른 쪽을 고른다)
+    ```
+
+    `tools/schedule_travel.py::_select_mode()`와 같은 판정이다. 다른 점은 둘 다
+    조회한다는 것뿐인데, 카카오 대중교통이 근거리에서 도보보다 느린 값을 주는
+    경우가 실측으로 확인됐기 때문이다(2026-09-02, 아띠인력거 직선 0.42km에서
+    대중교통 11.2분 대 도보 9.6분).
+
+    **자동차 명시가 거리와 무관한 이유.** 예전에는 이동시간을 말하지 않은 요청을
+    `transport`와 상관없이 도보로 쟀다 — 반경이 도보 기준이라는 이유였지만,
+    자동차로 가겠다고 말한 사용자에게 도보 시간을 보여주고 있었다.
+
+    빈 튜플은 돌려주지 않는다. 어떤 요청이든 최소한 도보 하나로는 잰다.
+    """
+    transport = conditions.transport if conditions is not None else None
+    if transport is Transport.WALK:
+        return (TravelMode.WALKING,)
+    if transport is Transport.CAR:
+        return (TravelMode.DRIVING,)
+    if straight_line_km > switch_threshold_km:
+        return (TravelMode.WALKING, TravelMode.TRANSIT)
+    return (TravelMode.WALKING,)
 
 
 def to_search_radius_km(conditions: UserConditions) -> float:

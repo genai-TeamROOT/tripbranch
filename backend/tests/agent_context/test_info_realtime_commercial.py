@@ -297,6 +297,44 @@ async def test_realtime_citydata_question_types_return_card_fields(
 
 
 @pytest.mark.asyncio
+async def test_realtime_traffic_includes_map_preview_url_but_others_do_not() -> None:
+    """도로소통 카드만 인구 혼잡도처럼 서울시 실시간 지도 미리보기 링크를 싣는다(2026-09-02 실사용
+    요청).
+
+    도로소통은 핫스팟 지역 하나에 대응하는 단일 스냅샷이라 지도로 위치를 바로
+    확인하고 싶어한다는 요청이었다. 다른 도시데이터 유형(주차·지하철·버스·행사)은
+    이미 카드 안에 여러 항목을 나열하므로 지도 링크가 없어도 위치를 잃지 않는다.
+    """
+
+    traffic_response = await _service(latitude=37.5311, longitude=126.9715).fetch_info_context(
+        InfoContextRequest(
+            request_id="citydata-traffic-map-url",
+            place_name="용리단길",
+            place_context="explicit",
+            question_type="realtime_traffic",
+            specific_question="지금 가는길 막혀?",
+        )
+    )
+    assert isinstance(traffic_response.result, RealtimeCityInfoResult)
+    assert traffic_response.result.map_url is not None
+    assert traffic_response.result.map_url.startswith(
+        "https://data.seoul.go.kr/SeoulRtd/map?hotspotNm="
+    )
+
+    parking_response = await _service(latitude=37.5311, longitude=126.9715).fetch_info_context(
+        InfoContextRequest(
+            request_id="citydata-parking-no-map-url",
+            place_name="용리단길",
+            place_context="explicit",
+            question_type="realtime_parking",
+            specific_question="지금 주차 자리 있어?",
+        )
+    )
+    assert isinstance(parking_response.result, RealtimeCityInfoResult)
+    assert parking_response.result.map_url is None
+
+
+@pytest.mark.asyncio
 async def test_realtime_subway_keeps_both_directions_of_same_station() -> None:
     """방향 충돌 버그(D-091) 회귀 — 같은 역·같은 호선의 두 방향이 모두 살아남아야 한다."""
 

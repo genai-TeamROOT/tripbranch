@@ -579,3 +579,117 @@ it("무장애 항목을 한글 라벨로 보여준다", () => {
   // 영문 계약 키가 화면에 남아 있으면 안 된다.
   expect(screen.queryByText("wheelchair_access")).not.toBeInTheDocument();
 });
+
+it("실시간 행사는 추천 카드처럼 사진과 함께 가로로 늘어놓는다", async () => {
+  const user = userEvent.setup();
+  const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+  const eventsCard: InfoPlaceCardData = {
+    ...card,
+    question_type: "realtime_event",
+    answer_fields: {
+      "집옥재 작은 도서관 개방": "2026-04-01~2026-10-31 · 경복궁 집옥재·팔우정",
+      "수문장 순라의식": "2026-03-01~2026-11-29 · 경복궁 내부",
+    },
+    thumbnail_url: null,
+    overview: null,
+    operating_hours: null,
+    rest_date: null,
+    parking: null,
+    parking_fee: null,
+    fee: null,
+    baby_carriage: null,
+    credit_card: null,
+    restroom: null,
+    homepage: null,
+    realtime_area_name: "경복궁",
+    realtime_observed_at: "9월 2일 11:00",
+    realtime_source_url: "https://data.seoul.go.kr/example",
+    realtime_detail_items: [
+      {
+        title: "집옥재 작은 도서관 개방",
+        subtitle: "2026-04-01~2026-10-31 · 경복궁 집옥재·팔우정",
+        details: { 기간: "2026-04-01~2026-10-31", 장소: "경복궁 집옥재·팔우정" },
+        thumbnail_url: "https://example.test/jipokjae.jpg",
+        external_url: "https://example.test/jipokjae",
+      },
+      {
+        // 서울시 응답에 THUMBNAIL이 비는 경우가 있다 — 이미지 대신 자리표시 칩을 보여준다.
+        title: "수문장 순라의식",
+        subtitle: "2026-03-01~2026-11-29 · 경복궁 내부",
+        details: { 기간: "2026-03-01~2026-11-29", 장소: "경복궁 내부" },
+        thumbnail_url: null,
+        external_url: null,
+      },
+    ],
+  };
+
+  renderWithTrip(<PlaceInfoCard card={eventsCard} />);
+
+  expect(
+    screen.getByRole("link", { name: "집옥재 작은 도서관 개방 행사 정보 보기" }).querySelector("img"),
+  ).toHaveAttribute("src", "https://example.test/jipokjae.jpg");
+  expect(screen.getByText("집옥재 작은 도서관 개방")).toBeInTheDocument();
+  expect(
+    screen.getByText("2026-04-01~2026-10-31 · 경복궁 집옥재·팔우정"),
+  ).toBeInTheDocument();
+  // 링크가 없는 행사는 자리표시 칩("행사")만 보이고 누를 수 없다.
+  expect(screen.getByText("수문장 순라의식")).toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "수문장 순라의식 행사 정보 보기" })).toBeNull();
+
+  await user.click(screen.getByRole("link", { name: "집옥재 작은 도서관 개방 행사 정보 보기" }));
+  expect(openSpy).toHaveBeenCalledWith("https://example.test/jipokjae", "_blank", "noopener");
+  openSpy.mockRestore();
+});
+
+it("실시간 지하철 도착은 호선 색으로 묶고, 상행·하행을 별도 칸으로 나눈다", () => {
+  const subwayCard: InfoPlaceCardData = {
+    ...card,
+    question_type: "realtime_subway",
+    answer_fields: {
+      "종로3가 3호선 · 상행": "대화행 · 상행 · 9분 30초 후 (옥수)",
+      "종로3가 3호선 · 하행": "오금행 · 하행 · 도착 정보 미제공",
+    },
+    thumbnail_url: null,
+    overview: null,
+    operating_hours: null,
+    rest_date: null,
+    parking: null,
+    parking_fee: null,
+    fee: null,
+    baby_carriage: null,
+    credit_card: null,
+    restroom: null,
+    homepage: null,
+    realtime_area_name: "종로3가",
+    realtime_observed_at: "9월 2일 16:00",
+    realtime_source_url: "https://data.seoul.go.kr/example",
+    realtime_detail_items: [
+      {
+        title: "종로3가 3호선",
+        subtitle: "대화행 · 상행 · 9분 30초 후 (옥수)",
+        details: { 방면: "상행", 종착역: "대화", "도착 안내": "9분 30초 후 (옥수)" },
+        thumbnail_url: null,
+        external_url: null,
+      },
+      {
+        title: "종로3가 3호선",
+        subtitle: "오금행 · 하행 · 도착 정보 미제공",
+        details: { 방면: "하행", 종착역: "오금" },
+        thumbnail_url: null,
+        external_url: null,
+      },
+    ],
+  };
+
+  renderWithTrip(<PlaceInfoCard card={subwayCard} />);
+
+  // 역+호선은 한 번만 나오고, 상행/하행이 그 아래 별도 칸으로 갈린다.
+  expect(screen.getAllByText("종로3가 3호선").length).toBe(1);
+  expect(screen.getByText("상행")).toBeInTheDocument();
+  expect(screen.getByText("하행")).toBeInTheDocument();
+  expect(screen.getByText("대화행")).toBeInTheDocument();
+  expect(screen.getByText("오금행")).toBeInTheDocument();
+  expect(screen.getByText("9분 30초 후 (옥수)")).toHaveClass("text-emerald-700");
+  // 도착 정보가 없으면 초록이 아니라 중립색 칩이다.
+  expect(screen.getByText("도착 정보 미제공")).not.toHaveClass("text-emerald-700");
+});

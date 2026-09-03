@@ -59,6 +59,7 @@ from app.agent_context.schemas import (
     Clarification,
     ContextError,
     Coordinates,
+    DistrictScope,
     ResponseMetadata,
     parse_candidate_names,
 )
@@ -114,7 +115,7 @@ from app.repositories.protocols import (
     PlacePhotoRepository,
 )
 from app.schemas import CompareCriteria, ComparisonItem, StaleAreaProbeDebug
-from app.service_area import SUPPORTED_DISTRICTS
+from app.service_area import SUPPORTED_DISTRICTS, ServiceDistrict
 from app.tools.concentration import (
     GetConcentrationTool,
 )
@@ -277,6 +278,17 @@ class ContextService:
         if category_plan.has_unsupported_conditions or category_plan.has_conflicts:
             return _unsupported_category_response(request, category_plan)
 
+        # "강남구"처럼 구 이름으로 들어온 요청은 후보를 그 구 전체에서 모은다(D-119).
+        # 반경 검색으로 풀면 대표점 주변 수백 미터만 보게 된다 — 반경 2km 원은
+        # 12.6km²인데 강남구는 39.5km²다.
+        #
+        # 보충 조회(refill_center)는 같은 턴의 이어받기라 이미 정해진 기준점을 쓴다.
+        district = (
+            _supported_district(location_query)
+            if refill_center is None and location_query
+            else None
+        )
+
         if refill_center is not None:
             # 위치 해석을 건너뛴다. 같은 턴이라 기준점이 바뀔 일이 없고, 보충 배치의
             # location은 A가 어차피 버린다(_merge_recommendation_context_places).
@@ -287,7 +299,15 @@ class ContextService:
             location_result = await self._tools.location.execute(
                 # 추천은 반경 검색의 기준 좌표만 필요하다. 저장소 정체성 확정은
                 # 후보 보강 단계가 place_id로 따로 한다(enrichment_service).
-                ResolveLocationQuery(location_query, purpose=LocationPurpose.SEARCH_CENTER)
+                #
+                # 구 이름은 행정구역 좌표로 바로 확정한다. 지역 검색에 걸면 주변
+                # 명소·역 후보가 여럿 잡혀 불필요한 되묻기가 된다 — 주차장 경로가
+                # 같은 이유로 같은 처리를 한다(fetch_info_context).
+                ResolveLocationQuery(
+                    f"서울특별시 {district.name}" if district else location_query,
+                    purpose=LocationPurpose.SEARCH_CENTER,
+                    skip_local_search=district is not None,
+                )
             )
         else:
             location_result = _gps_location_result(request, self._clock())
@@ -349,6 +369,7 @@ class ContextService:
                 ),
                 excluded_place_ids=frozenset(request.excluded_place_ids),
                 accessibility_needs=conditions.accessibility_needs,
+                district_code=district.district_code if district else None,
             )
         )
         weather_result = await weather_task if weather_task is not None else None
@@ -368,6 +389,13 @@ class ContextService:
                 holidays_result=holidays_result,
                 weather_requested=execution_plan.requires(ContextTool.GET_WEATHER),
                 holidays_requested=execution_plan.requires(ContextTool.GET_HOLIDAYS),
+                district_scope=(
+                    DistrictScope(
+                        district_code=district.district_code, district_name=district.name
+                    )
+                    if district
+                    else None
+                ),
             ),
             rule_versions=_rule_versions(),
         )
@@ -574,6 +602,20 @@ class ContextService:
         if location_result.status is ToolStatus.NO_DATA:
             cause = location_result.error.cause if location_result.error else None
             if cause == "ambiguous_location":
+                if is_realtime_citydata_purpose:
+                    # "교대역"처럼 호선이 갈려 하나로 못 좁혀도, 실시간 행사·주차 같은
+                    # citydata 계열은 대표 좌표만으로 최인접 서울시 제공 지역을 찾아
+                    # 답할 수 있다(concentration의 이름 전용 폴백과 대칭, D-036 계열).
+                    fallback_response = await self._fetch_realtime_citydata_by_coords_only(
+                        request,
+                        place_name=place_name,
+                        error_details=(
+                            location_result.error.details if location_result.error else {}
+                        ),
+                        location_metadata=(location_result.provider_metadata,),
+                    )
+                    if fallback_response is not None:
+                        return fallback_response
                 candidate_names = parse_candidate_names(
                     location_result.error.details.get("candidate_names", "")
                     if location_result.error
@@ -1360,6 +1402,9 @@ class ContextService:
                 fields=fields,
                 detail_items=detail_items,
                 source_url=_CITYDATA_SOURCE_URL,
+                map_url=(
+                    _seoul_realtime_map_url(area) if question_type == "realtime_traffic" else None
+                ),
             ),
             metadata=_info_response_metadata(location_metadata, tool_result.provider_metadata),
         )
@@ -1505,6 +1550,62 @@ class ContextService:
                 concentration_result.provider_metadata,
             ),
         )
+
+    async def _fetch_realtime_citydata_by_coords_only(
+        self,
+        request: InfoContextRequest,
+        *,
+        place_name: str,
+        error_details: dict[str, str],
+        location_metadata: tuple[ProviderMetadata, ...],
+    ) -> InfoContextResponse | None:
+        """지명이 여럿으로 갈려도(예: "교대역" 2/3호선) 대표 좌표로 citydata를 찾는다.
+
+        resolve_location.py가 ambiguous_location에 실어 보낸 1순위 후보 좌표를 쓴다.
+        좌표가 없으면 None을 돌려줘 호출부가 기존 되묻기로 진행하게 한다.
+        """
+
+        raw_latitude = error_details.get("fallback_latitude")
+        raw_longitude = error_details.get("fallback_longitude")
+        if raw_latitude is None or raw_longitude is None:
+            return None
+        try:
+            latitude = float(raw_latitude)
+            longitude = float(raw_longitude)
+        except ValueError:
+            return None
+
+        resolved_location = ResolvedLocation(
+            requested_query=place_name,
+            provider_query=place_name,
+            resolved_name=place_name,
+            latitude=latitude,
+            longitude=longitude,
+            resolution_method=ResolutionMethod.FALLBACK,
+            confidence=ResolutionConfidence.APPROXIMATE,
+        )
+        if request.question_type == "realtime_commercial":
+            return await self._fetch_realtime_commercial_info(
+                request,
+                place_name=place_name,
+                resolved_location=resolved_location,
+                location_metadata=location_metadata,
+            )
+        if request.question_type == _PUBLIC_PARKING_QUESTION_TYPE:
+            return await self._fetch_realtime_public_parking_info(
+                request,
+                place_name=place_name,
+                resolved_location=resolved_location,
+                location_metadata=location_metadata,
+            )
+        if request.question_type in _REALTIME_CITYDATA_QUESTION_TYPES:
+            return await self._fetch_realtime_city_info(
+                request,
+                place_name=place_name,
+                resolved_location=resolved_location,
+                location_metadata=location_metadata,
+            )
+        return None
 
     async def _fetch_concentration_by_name_only(
         self,
@@ -1929,6 +2030,7 @@ class ContextService:
         search_radius_km: float,
         excluded_place_ids: frozenset[str] = frozenset(),
         accessibility_needs: Sequence[str] = (),
+        district_code: str | None = None,
     ) -> NearbyPlaceDetailsResult:
         """분류별 장소 조회를 병렬 실행하고 중복·제외 후보를 걸러 한 결과로 합친다.
 
@@ -1945,6 +2047,31 @@ class ContextService:
         needs, unknown_accessibility_need = _resolve_accessibility_needs(
             accessibility_needs
         )
+        if district_code is not None:
+            # 구 단위는 분류마다 따로 부르지 않는다. 분류 수만큼 구 전량을 다시 읽는
+            # 것도 있지만, 그보다 분류 몫이 호출마다 따로 적용돼 합친 결과가 몫을
+            # 넘는 것이 문제다. 조건은 한 번에 넘기고 Tool 안에서 건다.
+            district_result = await self._tools.places.execute(
+                NearbyPlaceDetailsQuery(
+                    latitude=latitude,
+                    longitude=longitude,
+                    search_radius_km=search_radius_km,
+                    limit=self._candidate_limit,
+                    preferred_categories=plan.resolved_place_tags,
+                    category_filters=plan.filters,
+                    district_scope=district_code,
+                    excluded_place_ids=excluded_place_ids,
+                    accessibility_needs=needs,
+                )
+            )
+            return _merge_place_results(
+                [district_result],
+                limit=self._candidate_limit,
+                started_at=started_at,
+                excluded_plan=excluded_plan,
+                unknown_accessibility_need=unknown_accessibility_need,
+            )
+
         results = await asyncio.gather(
             *(
                 self._tools.places.execute(
@@ -2378,6 +2505,24 @@ def _normalize_place_name(value: str) -> str:
     return value.casefold().replace(" ", "")
 
 
+def _supported_district(value: str) -> ServiceDistrict | None:
+    """추천 요청의 위치 표현이 지원 구를 통째로 가리키는지 본다(D-119).
+
+    `_supported_district_name()`과 같은 정규화를 쓰되 구 코드까지 필요해서 객체를
+    돌려준다 — 구 단위 후보 조회가 lDongSignguCd로 읽기 때문이다.
+
+    임의 지명까지 넓히지 않는다. "강남"은 받지만 "강남역"은 받지 않는다 — 역은
+    지금까지처럼 그 좌표 둘레를 반경으로 보는 것이 맞다.
+    """
+
+    normalized = _supported_district_name(value)
+    if normalized is None:
+        return None
+    return next(
+        district for district in SUPPORTED_DISTRICTS if district.name == normalized
+    )
+
+
 def _supported_district_name(value: str) -> str | None:
     """'종로'·'종로구'처럼 지원 구를 가리키는 짧은 권역명을 정규화한다.
 
@@ -2487,15 +2632,58 @@ def _info_no_data_response(
     request: InfoContextRequest,
     *provider_metadata: tuple[ProviderMetadata, ...],
 ) -> InfoContextResponse:
-    """직접 조회 결과가 없을 때의 INFO 응답을 한 형태로 유지한다."""
+    """위치 해석 자체가 실패했을 때의 INFO 응답을 question_type에 맞는 결과 타입으로 만든다.
+
+    예전에는 question_type과 무관하게 항상 ConcentrationInfoResult를 반환해서,
+    "교대쪽 오늘 열리는 행사 알려줘"처럼 event/realtime_event 질문도 "혼잡도 데이터가
+    없어요"라는 엉뚱한 메시지로 나갔다(response_composer의 결과 타입 기반 디스패치가
+    ConcentrationInfoResult를 catch-all로 받기 때문). question_type을 보존해야
+    올바른 no_data 메시지가 나간다.
+    """
+
+    question_type = request.question_type
+    if question_type == "event":
+        result: (
+            ConcentrationInfoResult
+            | EventInfoResult
+            | RealtimeCityInfoResult
+            | RealtimeCommercialInfoResult
+            | RealtimePopulationInfoResult
+            | PlaceInfoResult
+        ) = EventInfoResult(
+            status="no_data",
+            requested_place_name=request.place_name,
+        )
+    elif (
+        question_type in _REALTIME_CITYDATA_QUESTION_TYPES
+        or question_type == _PUBLIC_PARKING_QUESTION_TYPE
+    ):
+        result = RealtimeCityInfoResult(
+            status="no_data",
+            question_type=question_type,
+            requested_place_name=request.place_name,
+        )
+    elif question_type == "realtime_commercial":
+        result = RealtimeCommercialInfoResult(
+            status="no_data",
+            requested_place_name=request.place_name,
+        )
+    elif question_type == "concentration":
+        result = ConcentrationInfoResult(
+            status="no_data",
+            requested_place_name=request.place_name,
+        )
+    else:
+        result = PlaceInfoResult(
+            status="no_data",
+            question_type=question_type,
+            requested_place_name=request.place_name,
+        )
 
     return InfoContextResponse(
         request_id=request.request_id,
         status="no_data",
-        result=ConcentrationInfoResult(
-            status="no_data",
-            requested_place_name=request.place_name,
-        ),
+        result=result,
         metadata=_info_response_metadata(*provider_metadata),
     )
 
@@ -2575,6 +2763,7 @@ def _to_event_items(
             address=event.address,
             distance_km=round(distance, 2) if distance is not None else None,
             is_direct_match=direct,
+            image_url=event.image_url,
         )
         for event, distance, direct in scored[:INFO_EVENT_RESULT_LIMIT]
     ]

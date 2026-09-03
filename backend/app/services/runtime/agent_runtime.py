@@ -15,11 +15,11 @@ import asyncio
 import logging
 import math
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from datetime import timedelta
-from typing import Any, TypeAlias, TypeVar
+from typing import Any, TypeAlias, TypeVar, get_type_hints
 
 from app.agent_context.schemas import (
     Coordinates,
@@ -29,9 +29,10 @@ from app.agent_context.schemas import (
 from app.auth.principal import Principal
 from app.config import settings
 from app.domain.ranking_origin import resolve_ranking_origin
-from app.domain.schedule_travel import ScheduleTravelCandidate
+from app.domain.schedule_travel import ScheduleTravelCandidate, SegmentWeather
 from app.domain.scoring import SCORING_VERSION
 from app.domain.travel_route import (
+    MEASURED_ROUTE_SOURCES,
     GeoCoordinate,
     RouteDestination,
     RouteStatus,
@@ -47,7 +48,11 @@ from app.observability.langfuse_tracing import (
     record_score,
     trace_attributes,
 )
-from app.place_search_policy import MAX_PLACE_SEARCH_RADIUS_KM, WALKING_SPEED_KM_PER_MINUTE
+from app.place_search_policy import (
+    MAX_PLACE_SEARCH_RADIUS_KM,
+    WALKING_SPEED_KM_PER_MINUTE,
+    transit_switch_straight_line_km,
+)
 from app.prompts.registry import turn_prompt_version
 from app.providers.protocols import LLMProvider
 from app.repositories.protocols import PlaceDetailsReadRepository
@@ -109,7 +114,13 @@ from app.services.runtime.graph import (
     run_early_return_graph,
     run_recommend_pipeline_graph,
 )
-from app.services.runtime.info_context_schemas import InfoContextResponse, PlaceInfoResult
+from app.services.runtime.info_context_schemas import (
+    InfoContextRequest,
+    InfoContextResponse,
+    PlaceInfoResult,
+    RealtimeCityInfoResult,
+    RealtimeCommercialInfoResult,
+)
 from app.services.runtime.info_context_transform import to_info_context_request
 from app.services.runtime.info_response_transform import to_info_place_card
 from app.services.runtime.llm_execution import (
@@ -124,7 +135,7 @@ from app.services.runtime.protocols import (
     ToolProvider,
     TravelRouteToolProvider,
 )
-from app.services.runtime.recommendation_transform import to_travel_mode
+from app.services.runtime.recommendation_transform import to_measured_travel_modes
 from app.services.runtime.response_composer import (
     compose_chat_message,
     compose_compare_message,
@@ -1262,11 +1273,15 @@ async def _score_with_measured_routes(
     채점한다"고 정해 두었기 때문에, 전체를 채점하면서 일부만 실측을 붙이면 실측이
     통째로 버려진다. 좁혀 두면 그 안에서는 전원이 실측을 가져 규칙을 만족한다.
 
-    실측을 못 받으면(이동수단 미지정·조회 실패) 1차 결과를 그대로 쓴다 — 같은
+    실측을 못 받으면(경로 Tool 없음·조회 실패) 1차 결과를 그대로 쓴다 — 같은
     후보를 실측 없이 두 번 채점할 이유가 없다.
+
+    **이동수단은 요청 단위가 아니라 후보 단위로 정해진다(D-118).** 도보권 후보는
+    도보로, 임계를 넘은 후보는 도보·대중교통을 둘 다 조회해 빠른 쪽으로 잰다
+    (`_fetch_travel_routes()`). 한 순위표에 수단이 섞이지만 거리 점수의 시간
+    예산이 측정 수단을 보지 않으므로 자는 하나로 유지된다.
     """
-    mode = to_travel_mode(conditions)
-    if travel_route_tool is None or mode is None:
+    if travel_route_tool is None:
         return await recommendation_provider.score_prepared(
             conditions, prepared, limit=recommendation_limit
         )
@@ -1288,7 +1303,7 @@ async def _score_with_measured_routes(
 
     narrowed = _narrow_prepared(prepared, shortlist_ids)
     travel_routes = await _fetch_travel_routes(
-        travel_route_tool, tool_context, narrowed, mode, conditions
+        travel_route_tool, tool_context, narrowed, conditions
     )
     if not travel_routes:
         return await recommendation_provider.score_prepared(
@@ -1558,6 +1573,31 @@ def _build_pairwise_distances_km(
     return distances
 
 
+def _segment_weather(tool_context: RecommendationContext) -> SegmentWeather | None:
+    """C가 조회한 예보를 일정 구간 판정이 쓰는 사실로 옮긴다 (TP-226).
+
+    `conditions.weather`(사용자가 발화에서 말한 값)가 아니라 조회한 예보를 쓴다 —
+    비 오는 날 20분을 걷게 할지는 말한 적 없는 사용자에게도 판단해야 한다.
+
+    판정(좋다/나쁘다)은 옮기지 않는다. D-051대로 사실만 넘기고, 그 사실을 어떻게
+    읽을지는 판정하는 쪽이 정한다. `resolve_weather_condition()`이 만드는
+    WeatherCondition을 쓰지 않는 것도 같은 이유다 — 그건 "이 날씨가 이 사용자
+    목적에 맞는가"라는 다른 질문의 답이다.
+    """
+
+    weather = tool_context.weather
+    if weather is None or weather.status not in {"success", "partial"}:
+        return None
+    data = weather.data
+    if data is None:
+        return None
+    return SegmentWeather(
+        precipitation=data.precipitation,
+        sky=data.sky,
+        temperature_celsius=data.temperature_celsius,
+    )
+
+
 def _build_travel_candidates(
     candidates: list[RecommendationItem],
     places: list[PlaceCandidate],
@@ -1780,15 +1820,22 @@ async def _fetch_travel_routes(
     route_tool: TravelRouteToolProvider | None,
     context: RecommendationContext,
     prepared: PreparedRecommendationResult,
-    mode: TravelMode | None,
     conditions: UserConditions | None = None,
 ) -> tuple[TravelRoute, ...]:
-    """하드 필터 통과 후보만 실측 조회하고 D에 넘길 도메인 결과를 반환한다.
+    """하드 필터 통과 후보를 후보별 이동수단으로 실측하고 D에 넘길 결과를 만든다.
 
-    `mode`가 None이면 조회하지 않는다 — 무엇으로 재야 할지 정할 수 없는
-    요청이다(to_travel_mode 참고).
+    수단은 `to_measured_travel_modes()`가 후보의 직선거리로 고른다(D-118). 임계를
+    넘은 후보는 도보와 대중교통을 **둘 다** 조회하고 `_fastest_routes()`가 빠른
+    쪽을 남긴다 — 카카오 대중교통이 근거리에서 도보보다 느린 값을 주는 경우가
+    있어서(2026-09-02 실측), 전환했다는 이유만으로 느린 값을 쓰지 않게 한다.
+
+    이동수단별로 Tool을 한 번씩 부른다. `TravelRouteQuery`가 수단 하나를 받기
+    때문이고, 세 수단을 팬아웃하는 `_fetch_compare_travel_routes()`와 같은 방식이다.
+    두 수단을 동시에 쏘는 것이 안전한 이유는 카카오 Provider들이 세마포어를
+    공유하기 때문이다(`factory.get_travel_route_tool()`) — 공유하지 않으면 같은
+    키로 동시 10건이 나가 대부분 거절당한다.
     """
-    if mode is None or route_tool is None or context.location is None or context.places is None:
+    if route_tool is None or context.location is None or context.places is None:
         return ()
     resolved_location = context.location.data
     places = context.places.data
@@ -1796,34 +1843,93 @@ async def _fetch_travel_routes(
         return ()
 
     eligible_ids = {item.candidate.place_id for item in prepared.preparation.eligible_candidates}
-    destinations = tuple(
-        RouteDestination(
+
+    # 실측 경로도 거리 계산과 같은 기준점에서 잰다 — 한쪽만 사용자 기준이면
+    # 실측이 있는 후보와 없는 후보가 서로 다른 자로 채점된다(TP-112).
+    origin = (resolve_ranking_origin(context, conditions) or resolved_location).location
+    switch_threshold_km = transit_switch_straight_line_km(
+        settings.schedule_walk_transfer_threshold_min
+    )
+
+    destinations_by_mode: dict[TravelMode, list[RouteDestination]] = {}
+    for place in places:
+        if place.place_id not in eligible_ids:
+            continue
+        destination = RouteDestination(
             place_id=place.place_id,
             coordinate=GeoCoordinate(
                 latitude=place.location.latitude,
                 longitude=place.location.longitude,
             ),
         )
-        for place in places
-        if place.place_id in eligible_ids
-    )
-    if not destinations:
+        straight_line_km = haversine_km(
+            origin.latitude,
+            origin.longitude,
+            place.location.latitude,
+            place.location.longitude,
+        )
+        modes = to_measured_travel_modes(
+            conditions,
+            straight_line_km=straight_line_km,
+            switch_threshold_km=switch_threshold_km,
+        )
+        for mode in modes:
+            destinations_by_mode.setdefault(mode, []).append(destination)
+    if not destinations_by_mode:
         return ()
 
-    # 실측 경로도 거리 계산과 같은 기준점에서 잰다 — 한쪽만 사용자 기준이면
-    # 실측이 있는 후보와 없는 후보가 서로 다른 자로 채점된다(TP-112).
-    origin = (resolve_ranking_origin(context, conditions) or resolved_location).location
-    result = await route_tool.execute(
-        TravelRouteQuery(
-            origin=GeoCoordinate(
-                latitude=origin.latitude,
-                longitude=origin.longitude,
-            ),
-            destinations=destinations,
-            mode=mode,
+    origin_coordinate = GeoCoordinate(latitude=origin.latitude, longitude=origin.longitude)
+    results = await asyncio.gather(
+        *(
+            route_tool.execute(
+                TravelRouteQuery(
+                    origin=origin_coordinate,
+                    destinations=tuple(destinations),
+                    mode=mode,
+                )
+            )
+            for mode, destinations in destinations_by_mode.items()
         )
     )
-    return result.routes
+    return _fastest_routes(route for result in results for route in result.routes)
+
+
+def _fastest_routes(routes: Iterable[TravelRoute]) -> tuple[TravelRoute, ...]:
+    """한 후보를 두 수단으로 조회했을 때 어느 값을 채점에 넘길지 고른다.
+
+    **실측이 추정을 이긴다. 소요시간 비교는 그 다음이다.** 도보 조회에는 직선거리
+    추정 fallback이 붙어 있어(`factory.get_travel_route_tool()`) 실패해도 SUCCESS로
+    돌아오는데, 그 추정값은 실제 대중교통 실측보다 짧게 나오기 쉽다. 시간만 보고
+    고르면 추정이 이기고, 채점은 추정을 버리므로(`scoring._applied_travel_route()`)
+    후보 하나가 실측을 잃고 그 때문에 `_consistent_routes()`가 회차 전체를
+    직선거리로 내린다 — 대중교통을 부른 값을 그대로 버리는 셈이다.
+
+    실측이 하나도 없으면 성공한 것 중 하나를, 그것도 없으면 처음 것을 남긴다.
+    소비 측이 실패를 볼 수 있어야 하므로 후보를 통째로 빼지는 않는다.
+    """
+
+    best: dict[str, TravelRoute] = {}
+    for route in routes:
+        current = best.get(route.place_id)
+        if current is None or _route_priority(route) < _route_priority(current):
+            best[route.place_id] = route
+    return tuple(best.values())
+
+
+def _route_priority(route: TravelRoute) -> tuple[int, int]:
+    """작을수록 채점에 쓰기 좋은 경로. (등급, 소요시간)으로 비교한다."""
+
+    measured = (
+        route.status is RouteStatus.SUCCESS
+        and route.source in MEASURED_ROUTE_SOURCES
+        and route.duration_seconds is not None
+    )
+    if measured:
+        assert route.duration_seconds is not None
+        return (0, route.duration_seconds)
+    if route.status is RouteStatus.SUCCESS and route.duration_seconds is not None:
+        return (1, route.duration_seconds)
+    return (2, 0)
 
 
 def _is_info_walking_time_request(llm_output: LLMOutput) -> bool:
@@ -1849,6 +1955,231 @@ def _paired_parking_question_type(info: InfoPayload | None) -> str | None:
     if info is None:
         return None
     return _PARKING_QUESTION_TYPE_PAIRS.get(info.question_type)
+
+
+# 서울시 실시간 도시데이터(인구 121목록 공용)와 실시간 상권(82목록)이 각각 폐쇄된
+# 지원 지역 목록을 쓴다(seoul_realtime_areas.py) — 두 목록 다 좌표 최근접 1곳만
+# 보고 그 밖이면 no_data로 끝나, "그 지역엔 없음 → 다른 지역은?"을 되묻기 없이
+# 스스로 해볼 경로가 없었다(로드맵 24번). 대상은 이 6종 — 상권은
+# agent_context.service._REALTIME_CITYDATA_QUESTION_TYPES에 없지만 같은 문제라
+# 여기 합쳐 다룬다.
+_AGENTIC_REALTIME_QUESTION_TYPES = frozenset(
+    {
+        QuestionType.REALTIME_PARKING.value,
+        QuestionType.REALTIME_PUBLIC_PARKING.value,
+        QuestionType.REALTIME_SUBWAY.value,
+        QuestionType.REALTIME_BUS.value,
+        QuestionType.REALTIME_EVENT.value,
+        QuestionType.REALTIME_TRAFFIC.value,
+        QuestionType.REALTIME_COMMERCIAL.value,
+    }
+)
+
+# LLM이 다른 지역명으로 재시도할 수 있는 최대 횟수(자동 함수 호출 상한). 90강
+# 04절의 반복 한계와 같은 안전장치 — 무한정 넓히면 엉뚱한 지역까지 뒤진다.
+_AGENTIC_REALTIME_MAX_TOOL_CALLS = 3
+
+
+def _describe_realtime_attempt(response: InfoContextResponse, area_name: str) -> str:
+    """C 응답 하나를 LLM이 읽고 판단할 수 있는 한국어 문장으로 편다.
+
+    LLM이 이 문장을 보고 "이 지역엔 있다/없다"를 판단해 다음 행동(다른 지역
+    재시도 또는 최종 답변 작성)을 정하므로, 성공 시엔 실제 값을 담고 실패 시엔
+    사유를 담는다 — 24강 04절의 "예외 대신 안내 문자열" 원칙과 같다.
+    """
+
+    if response.status == "needs_clarification":
+        # place_ambiguous — "강남"처럼 넓은 지명이라 후보가 여럿이다. 여기서 곧장
+        # 사용자에게 되묻지 않는다 — 후보를 그대로 LLM에게 보여줘서 그중 하나로
+        # 스스로 재시도하게 한다(agent_runtime.py의 기존 place_ambiguous 되묻기는
+        # LLM이 끝내 못 고를 때만 최후 수단으로 살아 있다).
+        candidates = response.clarification.candidates if response.clarification else []
+        if candidates:
+            names = ", ".join(candidates[:5])
+            return (
+                f"'{area_name}'은(는) 범위가 넓어 여러 곳으로 해석돼요. 후보: {names}. "
+                "이 중 사용자 질문과 가장 관련 있어 보이는 곳으로 다시 조회해보세요."
+            )
+        return f"'{area_name}'가 정확히 어디인지 확인하지 못했어요."
+    result = response.result
+    if response.status != "success" or result is None:
+        return f"'{area_name}'에서는 관련 정보를 찾지 못했어요."
+    if isinstance(result, RealtimeCityInfoResult):
+        if not result.fields:
+            return f"'{area_name}'에서는 관련 정보를 찾지 못했어요."
+        details = "; ".join(f"{key}: {value}" for key, value in result.fields.items())
+        return f"'{area_name}'({result.area_name}) 기준 정보: {details}"
+    if isinstance(result, RealtimeCommercialInfoResult):
+        parts = [
+            part
+            for part in (
+                f"업종: {result.category_label}" if result.category_label else None,
+                f"상권 활동 수준: {result.commercial_level}" if result.commercial_level else None,
+                (
+                    f"인구 혼잡도: {result.population_current_level}"
+                    if result.population_current_level
+                    else None
+                ),
+            )
+            if part is not None
+        ]
+        if not parts:
+            return f"'{area_name}'에서는 관련 정보를 찾지 못했어요."
+        return f"'{area_name}'({result.area_name}) 기준 상권 정보: " + "; ".join(parts)
+    return f"'{area_name}'에서는 관련 정보를 찾지 못했어요."
+
+
+async def _fetch_realtime_info_agentic(
+    info_request: InfoContextRequest,
+    *,
+    llm: LLMProvider,
+    tool_provider: ToolProvider,
+) -> tuple[InfoContextResponse, str]:
+    """로드맵 24번: no_data를 곧장 되묻는 대신, LLM이 스스로 다른 지역명으로
+    재조회해보고 최종 답변 문장까지 직접 쓰게 한다(강의교재 90강 자기 교정 에이전트).
+
+    C(`fetch_info_context`)는 손대지 않는다 — A가 place_name만 바꿔가며 여러 번
+    부른다. 지역 해석·서울시 폐쇄목록 매칭·카드 포맷팅은 기존 로직을 그대로
+    재사용한다. 최대 호출 수는 `answer_with_tools`의 SDK 자동 함수 호출이 막는다
+    (`_AGENTIC_REALTIME_MAX_TOOL_CALLS`) — 전부 실패하면 마지막 시도의 no_data
+    응답을 그대로 최종 응답으로 쓴다.
+    """
+
+    attempts: list[InfoContextResponse] = []
+
+    async def _try_area(area_name: str, *, question_type: str) -> InfoContextResponse:
+        # request_id도 새로 발급한다 — 원래 요청 것을 그대로 재사용하면 두 번째
+        # 시도부터 트레이스 기록이 같은 id로 충돌한다(실측: 재시도가 매번 "시스템
+        # 오류"로 실패).
+        candidate_request = info_request.model_copy(
+            update={
+                "request_id": new_trace_id(),
+                "place_name": area_name,
+                "place_context": "explicit",
+                "question_type": question_type,
+            }
+        )
+        response = await tool_provider.fetch_info_context(candidate_request)
+        attempts.append(response)
+        return response
+
+    async def get_realtime_population_data(area_name: str) -> str:
+        """서울시 실시간 도시데이터(주차·지하철·버스·행사·도로소통) 지원 지역
+        한 곳을 조회한다.
+
+        area_name: 정확한 지역명(예: '강남역', '홍대입구역'). 지원 지역이 아니면
+        그 사실만 알려주니, 원래 질문과 관련된 다른 근처 지역명으로 다시
+        시도해본다."""
+
+        response = await _try_area(area_name, question_type=info_request.question_type)
+        return _describe_realtime_attempt(response, area_name)
+
+    async def get_realtime_commercial_data(area_name: str) -> str:
+        """서울시 실시간 상권현황(업종별 소비 활동 수준) 지원 지역 한 곳을
+        조회한다.
+
+        area_name: 정확한 지역명. 지원 지역이 아니면 그 사실만 알려준다."""
+
+        response = await _try_area(area_name, question_type="realtime_commercial")
+        return _describe_realtime_attempt(response, area_name)
+
+    # google-genai의 automatic function calling이 파이썬 함수 하나하나를 스키마로
+    # 바꿀 때, 파일 전체에 걸린 `from __future__ import annotations` 때문에
+    # `__annotations__`가 실제 타입이 아니라 문자열("str")로 남아 있으면
+    # `isinstance(값, "str")`을 그대로 시도해 TypeError로 죽는다(실측: 두 도구
+    # 호출 모두 "isinstance() arg 2 must be a type..."로 실패하고, LLM은 그 실패를
+    # "시스템 오류"로 뭉뚱그려 답했다). `get_type_hints()`로 실제 타입 객체를
+    # 되돌려 넣어야 한다.
+    get_realtime_population_data.__annotations__ = get_type_hints(get_realtime_population_data)
+    get_realtime_commercial_data.__annotations__ = get_type_hints(get_realtime_commercial_data)
+
+    original_place_name = info_request.place_name or "요청하신 지역"
+    # TODO(팀 리뷰 후): 다른 답변 생성 프롬프트처럼 Markdown 파일 + meta.yaml로 정식
+    # 프롬프트 자산화한다. 지금은 실험 단계(기본 off, 아직 develop에 안 올림)라
+    # 인라인 문자열로 둔다. 페르소나·엄격한 문장 수·마크다운 전면 금지를 한 번
+    # 넣어봤는데 답이 고객센터 템플릿처럼 딱딱해져서(실사용 확인, 2026-09-03) 뺐다 —
+    # 자유롭게 서술하게 두는 편이 이 에이전트다운 답을 만든다.
+    instruction = (
+        "너는 서울 실시간 정보 안내 비서다. 사용자가 실시간 정보를 물었지만 "
+        f"'{original_place_name}' 지역엔 데이터가 없거나, 범위가 넓어 여러 후보로 "
+        "해석될 수 있다. 가진 도구로 조회해보고, 없으면 근처의 잘 알려진 다른 "
+        "지역명으로 다시 시도해봐라. 도구가 '여러 곳으로 해석된다'며 후보 목록을 "
+        "주면, 사용자에게 되묻지 말고 그중 질문과 가장 관련 있어 보이는 곳(보통 "
+        "대표 지하철역이나 랜드마크)을 스스로 골라 다시 조회해봐라.\n"
+        "도구 결과로 확인되지 않은 사실은 지어내지 말고, 찾은 지역이 원래 물어본 "
+        "곳과 다르면 그 사실을 답변에 자연스럽게 밝혀라. 도구 결과에 있는 구체적인 "
+        "수치·이름·거리·시간은 최대한 활용해서 친절하게 설명하고, 강조하고 싶은 "
+        "부분엔 **굵게**나 목록처럼 마크다운을 적절히 써도 좋다. 목록은 중첩하지 "
+        "말고 각 항목을 '이름: 값' 형태로 한 줄에 담아라. 아무 데서도 못 찾았으면 "
+        "그렇다고 솔직히 답하되, 빈 답변으로 끝내지는 마라.\n"
+        f"사용자 질문: {info_request.specific_question or '해당 지역의 실시간 정보를 알려줘'}"
+    )
+    result = await llm.answer_with_tools(
+        instruction,
+        tools=[get_realtime_population_data, get_realtime_commercial_data],
+        max_tool_calls=_AGENTIC_REALTIME_MAX_TOOL_CALLS,
+    )
+    successful = next(
+        (response for response in reversed(attempts) if response.status == "success"), None
+    )
+    if successful is not None:
+        final_response = successful
+    elif attempts:
+        final_response = attempts[-1]
+    else:
+        # 도구가 한 번도 호출되지 않았다(LLM이 곧장 "모른다"고 답한 경우) — 원래
+        # 지역으로라도 조회해 기존 no_data 응답 형태를 유지한다.
+        final_response = await tool_provider.fetch_info_context(info_request)
+    agent_message = result.data.strip()
+    if not agent_message:
+        # 실측: 도구를 한 번 불러보고 no_data를 받은 뒤 최종 문장 없이 빈 텍스트로
+        # 끝내는 경우가 있다(자동 함수 호출 + 빈 마무리 턴). 빈 말풍선을 보내는
+        # 대신 사람이 읽기 좋은 형태로 다시 포맷한 안내 문장을 채운다.
+        fallback_area_name = getattr(final_response.result, "area_name", None)
+        agent_message = _format_realtime_result_for_user(
+            final_response, fallback_area_name or original_place_name
+        )
+    return final_response, agent_message
+
+
+def _format_realtime_result_for_user(response: InfoContextResponse, area_name: str) -> str:
+    """LLM이 최종 문장을 안 써줬을 때 쓰는 안전장치 문구를 사람이 읽기 좋게 만든다.
+
+    `_describe_realtime_attempt()`는 LLM이 다음 행동을 판단하는 내부용이라 대괄호·
+    가운뎃점 같은 축약 표기를 쓴다 — 그걸 사용자에게 그대로 보내면 다듬어지지 않은
+    느낌을 준다(실사용 확인, 2026-09-03). 이 함수는 같은 데이터를 문장·목록으로
+    다시 풀어 쓴다.
+    """
+
+    result = response.result
+    if response.status != "success" or result is None:
+        return (
+            f"{area_name} 근처에서는 관련 정보를 찾지 못했어요. 다른 지역이나 "
+            "표현으로 다시 물어봐 주시면 다시 찾아볼게요."
+        )
+    if isinstance(result, RealtimeCityInfoResult) and result.fields:
+        items = "\n".join(f"- {name}: {detail}" for name, detail in result.fields.items())
+        return f"{area_name} 근처 정보를 확인했어요.\n\n{items}"
+    if isinstance(result, RealtimeCommercialInfoResult):
+        parts = [
+            part
+            for part in (
+                f"업종은 {result.category_label}" if result.category_label else None,
+                f"상권 활동 수준은 {result.commercial_level}" if result.commercial_level else None,
+                (
+                    f"인구 혼잡도는 {result.population_current_level}"
+                    if result.population_current_level
+                    else None
+                ),
+            )
+            if part is not None
+        ]
+        if parts:
+            return f"{area_name} 근처 상권 정보를 확인했어요. " + ", ".join(parts) + "예요."
+    return (
+        f"{area_name} 근처에서는 관련 정보를 찾지 못했어요. 다른 지역이나 표현으로 "
+        "다시 물어봐 주시면 다시 찾아볼게요."
+    )
 
 
 def _to_geo_coordinate(location: str | None) -> GeoCoordinate | None:
@@ -2820,7 +3151,19 @@ async def _run_agent_flow(
             "장소 상세 정보를 찾고 있어요.",
         )
         info_started_at = time.monotonic()
-        info_response = await tool_provider.fetch_info_context(info_request)
+        # 로드맵 24번(A-1/A-2 후속): no_data를 곧장 되묻는 대신 LLM이 스스로 다른
+        # 지역명으로 재시도하게 하는 경로. 기본 off — settings.agentic_realtime_info
+        # 참고.
+        agentic_realtime_message: str | None = None
+        if (
+            settings.agentic_realtime_info
+            and info_request.question_type in _AGENTIC_REALTIME_QUESTION_TYPES
+        ):
+            info_response, agentic_realtime_message = await _fetch_realtime_info_agentic(
+                info_request, llm=llm, tool_provider=tool_provider
+            )
+        else:
+            info_response = await tool_provider.fetch_info_context(info_request)
         info_execution = build_info_concentration_execution_debug(
             info_response,
             latency_ms=int((time.monotonic() - info_started_at) * 1000),
@@ -2918,15 +3261,20 @@ async def _run_agent_flow(
             # place_ambiguous는 INFO 자신의 되묻기라 INFO가 정리할 책임이 있다.
             _remember_clarification(state_response.session_id, None, store)
 
-        message = await compose_chat_message(
-            llm_output,
-            info_response=info_response,
-            llm=llm,
-            info_walking_route=info_walking_route,
-            info_walking_origin_available=info_origin_location is not None,
-            on_message_delta=(emit_info_message_delta if stream_info_message else None),
-            history=turn_history,
-        )
+        if agentic_realtime_message is not None:
+            # 에이전트가 이미 도구 결과를 종합해 최종 문장을 직접 썼다 — 별도
+            # compose_chat_message() 합성을 다시 거치지 않는다(사용자 결정).
+            message = agentic_realtime_message
+        else:
+            message = await compose_chat_message(
+                llm_output,
+                info_response=info_response,
+                llm=llm,
+                info_walking_route=info_walking_route,
+                info_walking_origin_available=info_origin_location is not None,
+                on_message_delta=(emit_info_message_delta if stream_info_message else None),
+                history=turn_history,
+            )
 
         secondary_info_place_card = None
         paired_question_type = _paired_parking_question_type(llm_output.info)
@@ -2934,15 +3282,37 @@ async def _run_agent_flow(
             # 근처 주차장(area 응답)과 공영주차장(구 전체)은 서로의 약점을 메운다 —
             # 근처는 가깝지만 목록이 짧고, 공영은 목록이 길지만 멀 수 있다. 하나를
             # 물으면 다른 쪽도 이어서 보여준다(TP-115 실사용 지적).
-            paired_response = await tool_provider.fetch_info_context(
-                info_request.model_copy(update={"question_type": paired_question_type})
-            )
-            if paired_response.status == "success":
+            #
+            # 이 조회는 부가 기능이다 — 실패해도 이미 확정된 1차 답변을 물릴 이유가
+            # 없다. 위치 재해석부터 다시 하는 두 번째 fetch_info_context() 호출이라
+            # 실제 서울시 API(GetParkingInfo/도시데이터) 쪽 타임아웃·장애를 그대로
+            # 물려받는데, 감싸지 않으면 부가 카드 하나 때문에 턴 전체가 죽는다
+            # (2026-09-02 실사용 — follow_up_suggester.py와 같은 원칙).
+            try:
+                paired_response = await tool_provider.fetch_info_context(
+                    info_request.model_copy(update={"question_type": paired_question_type})
+                )
+            except AppError:
+                logger.warning(
+                    "짝 주차 정보 조회 실패(1차 답변에는 영향 없음): %s → %s",
+                    llm_output.info.question_type.value,
+                    paired_question_type,
+                    exc_info=True,
+                )
+                paired_response = None
+            if paired_response is not None and paired_response.status == "success":
                 secondary_info_place_card = to_info_place_card(paired_response)
                 if secondary_info_place_card is not None:
                     message = compose_paired_parking_message(
                         message, question_type=llm_output.info.question_type
                     )
+            elif paired_response is not None:
+                logger.info(
+                    "짝 주차 정보 없음(%s): %s → %s",
+                    paired_response.status,
+                    llm_output.info.question_type.value,
+                    paired_question_type,
+                )
 
         return AgentResponse(
             llm_output=llm_output,
@@ -3342,6 +3712,11 @@ async def _fetch_tool_context(
     # 마지막 run에서 보여준 place_id. 새 SCHEDULE 턴에서 제외 목록을 되살리는 데만
     # 쓴다(TP-180). 조회 단계에서 이미 걸러지면 채점 단계에는 후보 자체가 없다.
     shown_place_ids: Sequence[str] = (),
+    # A-1(자기 교정 루프): no_data_empty 1차 재시도에서 그래프가 넘겨준다. 값이 있으면
+    # C에 보내기 전에 max_travel_time을 이 값으로 덮어써 반경을 넓힌다 — 수동
+    # "검색 범위 넓히기" 버튼(_WIDEN_RADIUS)과 같은 처방을 사람 개입 없이 먼저 한 번
+    # 시도하는 것뿐이라, 값 자체는 기존 _WIDEN_RADIUS_MAX_TRAVEL_TIME을 그대로 쓴다.
+    radius_override_max_travel_time: int | None = None,
     stream_event_sink: StreamEventSink | None,
 ) -> _ToolFetchOutcome:
     """A → C Tool 조회와 종료 상태 판정(5단계).
@@ -3349,7 +3724,8 @@ async def _fetch_tool_context(
     `run_agent_flow()`의 5단계 블록을 그대로 옮긴 것이다 — 라우팅 그래프가 이 단계를
     노드로 감쌀 수 있게 먼저 함수로 떼어냈다(langgraph-adoption.md §6.1 3단계).
     떼어낼 당시에는 본문을 한 줄도 바꾸지 않고 중간 반환만 `_ToolFetchOutcome`으로
-    포장했다. 이후 TP-180으로 C에 넘기는 제외 목록을 고르는 한 줄이 붙었다.
+    포장했다. 이후 TP-180으로 C에 넘기는 제외 목록을 고르는 한 줄과, A-1의 반경
+    확대 재시도(radius_override_max_travel_time)가 붙었다.
     """
 
     # 5) A → C: Tool 결과 확보 (Protocol을 통해서만 — C의 구체 클래스는 여기서 모른다).
@@ -3358,6 +3734,10 @@ async def _fetch_tool_context(
     #    (3단계 good/neutral/bad, Provider 정규화 값)는 여기 관여하지 않는다. GPS는
     #    사용자 조건과 별도 인자로 전달되어 Coordinates로 변환된다(계약 §5.2).
     agent_conditions = to_user_conditions(state_response.user_conditions)
+    if radius_override_max_travel_time is not None:
+        agent_conditions = agent_conditions.model_copy(
+            update={"max_travel_time": radius_override_max_travel_time}
+        )
     # 이번 요청의 유효한 GPS를 우선하고, 없으면 B에 저장된 신선한 GPS를 재사용한다.
     # 문자열은 A→C 변환 경계에서 Coordinates로 바뀌며 C는 원본 문자열을 알지 않는다.
     context_gps = valid_gps
@@ -4101,6 +4481,7 @@ async def _run_schedule_branch(
             travel_candidates=_build_travel_candidates(
                 schedule_candidates, places, fallback_coordinates=snapshot_coordinates
             ),
+            weather=_segment_weather(tool_context),
         )
         await _emit_progress(
             stream_event_sink,
@@ -4132,6 +4513,7 @@ async def _run_schedule_branch(
             travel_candidates=_build_travel_candidates(
                 schedule_candidates, places, fallback_coordinates=snapshot_coordinates
             ),
+            weather=_segment_weather(tool_context),
         )
         await _emit_progress(
             stream_event_sink,

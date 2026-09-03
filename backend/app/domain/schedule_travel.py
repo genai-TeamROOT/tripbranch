@@ -33,6 +33,24 @@ class ScheduleTravelCandidate:
 
 
 @dataclass(frozen=True)
+class SegmentWeather:
+    """구간 이동수단 판정에 쓰는 날씨 **사실**. 좋다/나쁘다는 담지 않는다(D-051).
+
+    C의 계약 타입(`agent_context.schemas.WeatherForecast`)을 그대로 쓰지 않는
+    이유는 방향이다 — 이 모듈은 순수 계약이라 위쪽 계약을 import하면 의존이
+    거꾸로 서고, `app.schedule.schemas`가 이 타입을 쓰는 순간 순환이 된다.
+    담는 사실은 같고, 옮겨 담는 것은 A(`agent_runtime._segment_weather()`)가 한다.
+
+    사용자가 발화에서 말한 날씨(`UserConditions.weather`)와 다르다. 그쪽은
+    "말했다"는 사실이고 이쪽은 조회한 예보다.
+    """
+
+    precipitation: str | None = None
+    sky: str | None = None
+    temperature_celsius: float | None = None
+
+
+@dataclass(frozen=True)
 class ScheduleTravelPair:
     """이동정보가 필요한 방향성 장소 쌍."""
 
@@ -102,5 +120,6 @@ __all__ = [
     "ScheduleTravelEstimateResult",
     "ScheduleTravelPair",
     "ScheduleTravelWarning",
+    "SegmentWeather",
     "TravelConfidence",
 ]

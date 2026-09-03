@@ -66,12 +66,3 @@ export function AuthLayout({ title, description, children, footer, backTo }: Aut
     </main>
   );
 }
-
-/** 백엔드가 아직 없는 제출 동작 자리에 붙인다 — 눌러도 아무 일도 안 일어나는 이유를 알려준다. */
-export function ComingSoonNotice() {
-  return (
-    <p role="status" className="rounded-xl bg-sky-light px-3.5 py-2.5 text-xs text-brand-deep">
-      아직 준비 중인 기능이에요. 지금은 게스트로만 시작할 수 있어요.
-    </p>
-  );
-}

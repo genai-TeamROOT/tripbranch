@@ -1,4 +1,4 @@
-"""to_search_radius_km/to_travel_mode/to_concentration_entries/
+"""to_search_radius_km/to_measured_travel_modes/to_concentration_entries/
 to_record_recommendation_request 단위 테스트.
 
 날씨 조건 변환(옛 to_weather_condition())은 D-051로 D에 이관돼 제거됐다 —
@@ -14,7 +14,11 @@ import pytest
 
 from app.agent_context.service import _resolve_search_radius_km as _c_resolve_search_radius_km
 from app.domain.travel_route import TravelMode
-from app.place_search_policy import DEFAULT_PLACE_SEARCH_RADIUS_KM
+from app.place_search_policy import (
+    DEFAULT_PLACE_SEARCH_RADIUS_KM,
+    WALKING_SPEED_KM_PER_MINUTE,
+    transit_switch_straight_line_km,
+)
 from app.schemas import (
     RecommendationItem,
     RecommendationResponse,
@@ -24,9 +28,10 @@ from app.schemas import (
 from app.services.runtime.context_schemas import RecommendationContext
 from app.services.runtime.recommendation_transform import (
     to_concentration_entries,
+    to_measured_travel_modes,
     to_record_recommendation_request,
     to_search_radius_km,
-    to_travel_mode,
+    to_search_radius_speed_km_per_min,
 )
 
 
@@ -47,35 +52,98 @@ def _item(place_id: str) -> RecommendationItem:
     )
 
 
-class TestToTravelMode:
-    """실측 이동수단 선택. 반경 산정과 같은 조건을 봐야 단위가 맞는다."""
+# D-118 실측 기준 임계값(직선 0.85km). 판정만 보는 테스트라 상수를 그대로 쓴다.
+_SWITCH_KM = transit_switch_straight_line_km(20)
 
-    def test_walk_uses_walking(self) -> None:
+
+def _modes(
+    conditions: UserConditions | None, straight_line_km: float
+) -> tuple[TravelMode, ...]:
+    return to_measured_travel_modes(
+        conditions,
+        straight_line_km=straight_line_km,
+        switch_threshold_km=_SWITCH_KM,
+    )
+
+
+class TestToMeasuredTravelModes:
+    """후보별 실측 이동수단 선택 (D-118)."""
+
+    @pytest.mark.parametrize("straight_line_km", [0.1, 0.8, 1.5, 5.0])
+    def test_walk_always_uses_walking(self, straight_line_km: float) -> None:
+        """도보 명시는 거리와 무관하게 도보다 — 사용자가 걷겠다고 말했다."""
         conditions = UserConditions(transport=Transport.WALK, max_travel_time=30)
-        assert to_travel_mode(conditions) is TravelMode.WALKING
+        assert _modes(conditions, straight_line_km) == (TravelMode.WALKING,)
+
+    @pytest.mark.parametrize("straight_line_km", [0.1, 0.8, 1.5, 5.0])
+    def test_car_always_uses_driving(self, straight_line_km: float) -> None:
+        """자동차 명시는 거리와 무관하게 자동차다.
+
+        D-118 이전에는 `max_travel_time`이 없으면 자동차라고 말해도 도보로 쟀다.
+        """
+        conditions = UserConditions(transport=Transport.CAR)
+        assert _modes(conditions, straight_line_km) == (TravelMode.DRIVING,)
+
+    @pytest.mark.parametrize("transport", [Transport.PUBLIC, None])
+    def test_near_candidate_uses_walking_only(self, transport: Transport | None) -> None:
+        """임계 이하는 대중교통 명시여도 도보 하나만 조회한다.
+
+        SCHEDULE의 `_select_mode()`와 같은 판정이다 — 가까운 구간까지 대중교통으로
+        안내하면 대기·환승이 붙어 오히려 느리다.
+        """
+        conditions = UserConditions(transport=transport, max_travel_time=30)
+        assert _modes(conditions, _SWITCH_KM - 0.01) == (TravelMode.WALKING,)
+
+    @pytest.mark.parametrize("transport", [Transport.PUBLIC, None])
+    def test_far_candidate_adds_transit(self, transport: Transport | None) -> None:
+        """임계 초과는 둘 다 조회한다 — 호출부가 빠른 쪽을 고른다."""
+        conditions = UserConditions(transport=transport, max_travel_time=30)
+        assert _modes(conditions, _SWITCH_KM + 0.01) == (
+            TravelMode.WALKING,
+            TravelMode.TRANSIT,
+        )
+
+    def test_threshold_is_inclusive_for_walking(self) -> None:
+        """임계값과 같으면 아직 도보다 — 규칙이 '20분을 넘으면'이기 때문이다."""
+        assert _modes(UserConditions(), _SWITCH_KM) == (TravelMode.WALKING,)
+
+    def test_none_conditions_falls_back_to_distance_rule(self) -> None:
+        """조건을 모르면 이동수단 명시가 없는 것으로 본다 — 빈 결과는 내지 않는다."""
+        assert _modes(None, 0.1) == (TravelMode.WALKING,)
+        assert _modes(None, 5.0) == (TravelMode.WALKING, TravelMode.TRANSIT)
+
+
+class TestToSearchRadiusSpeed:
+    """시간 예산 속도. 반경을 만든 속도와 같아야 한다 (D-118)."""
 
     @pytest.mark.parametrize("transport", [Transport.WALK, Transport.PUBLIC, Transport.CAR, None])
-    def test_no_travel_time_uses_walking_like_the_default_radius(
-        self,
-        transport: Transport | None,
-    ) -> None:
-        """이동시간 미언급은 기본 반경(도보 기준)이므로 이동수단과 무관하게 도보로 잰다.
+    def test_no_travel_time_uses_walking_speed(self, transport: Transport | None) -> None:
+        """이동시간 미언급은 기본 반경(도보 기준)이므로 예산도 도보 속도로 만든다."""
+        conditions = UserConditions(transport=transport)
+        assert to_search_radius_speed_km_per_min(conditions) == pytest.approx(
+            WALKING_SPEED_KM_PER_MINUTE
+        )
 
-        이 케이스는 카드 이전 동작과 같아야 한다 — 그때도 D가 도보 실측을 받았다.
+    def test_walk_with_travel_time_uses_walking_speed(self) -> None:
+        conditions = UserConditions(transport=Transport.WALK, max_travel_time=30)
+        assert to_search_radius_speed_km_per_min(conditions) == pytest.approx(
+            WALKING_SPEED_KM_PER_MINUTE
+        )
+
+    @pytest.mark.parametrize("transport", [Transport.PUBLIC, Transport.CAR, None])
+    def test_non_walking_with_travel_time_uses_20kmh(self, transport: Transport | None) -> None:
+        conditions = UserConditions(transport=transport, max_travel_time=30)
+        assert to_search_radius_speed_km_per_min(conditions) == pytest.approx(20 / 60)
+
+    def test_budget_matches_the_stated_travel_time(self) -> None:
+        """반경을 이 속도로 되돌리면 사용자가 말한 이동시간이 그대로 나온다.
+
+        이 성질이 깨지면 거리 점수의 분모가 "사용자 약속"이 아니게 된다.
         """
-        assert to_travel_mode(UserConditions(transport=transport)) is TravelMode.WALKING
-
-    def test_public_uses_transit(self) -> None:
         conditions = UserConditions(transport=Transport.PUBLIC, max_travel_time=30)
-        assert to_travel_mode(conditions) is TravelMode.TRANSIT
-
-    def test_car_uses_driving(self) -> None:
-        conditions = UserConditions(transport=Transport.CAR, max_travel_time=30)
-        assert to_travel_mode(conditions) is TravelMode.DRIVING
-
-    def test_unstated_transport_with_travel_time_has_no_mode(self) -> None:
-        """20km/h 가정이 대중교통인지 자동차인지 발화에 없으므로 실측하지 않는다."""
-        assert to_travel_mode(UserConditions(max_travel_time=30)) is None
+        radius_km = to_search_radius_km(conditions)
+        speed = to_search_radius_speed_km_per_min(conditions)
+        assert radius_km / speed == pytest.approx(30)
 
 
 class TestToSearchRadiusKm:
