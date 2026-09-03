@@ -273,6 +273,10 @@ export const apiClient = {
      교체라서 POST가 아니라 PUT이다 — 같은 요청을 두 번 보내도 결과가 같다. */
   put: <T>(path: string, body: unknown) =>
     request<T>(path, { method: "PUT", body: JSON.stringify(body) }),
+  /* 대화 이름 바꾸기(PATCH /state/{id}/title)가 첫 사용처다. 자원의 일부만
+     바꾸므로 PUT이 아니라 PATCH다. */
+  patch: <T>(path: string, body: unknown) =>
+    request<T>(path, { method: "PATCH", body: JSON.stringify(body) }),
   /* 보관함 빼기(DELETE .../saved-places/{place_id})가 첫 사용처다. 본문 없는
      DELETE라 request()의 JSON 파싱 경로를 그대로 탄다 — 서버가 목록을 돌려준다. */
   del: <T>(path: string) => request<T>(path, { method: "DELETE" }),

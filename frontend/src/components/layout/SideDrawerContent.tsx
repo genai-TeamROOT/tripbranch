@@ -15,11 +15,11 @@ import { identityLabel } from "../../auth/identityLabel";
 import { sheetState } from "../../state/sheetNav";
 import { useTripDispatch, useTripState } from "../../state/TripContext";
 import type { Language } from "../../types";
+import { deleteChatSession, renameChatSession } from "../../api/trip";
+import { loadChatSessions, refreshChatSessions } from "../../state/chatSessions";
 import {
   createId,
-  loadChatHistory,
   loadFavorites,
-  saveChatHistory,
   saveFavorites,
   type ChatHistoryEntry,
   type FavoritePlace,
@@ -52,7 +52,15 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
   const { session, status, signOut } = useAuth();
 
   const [favorites, setFavorites] = useState<FavoritePlace[]>(() => loadFavorites());
-  const [history, setHistory] = useState<ChatHistoryEntry[]>(() => loadChatHistory());
+  /*
+   * 채팅 히스토리는 계정에서 온다(GET /api/sessions). 예전에는 localStorage
+   * 목업이었는데 **항목을 넣는 코드가 아예 없어** 늘 비어 있었다.
+   *
+   * 로컬 거울을 두지 않는다 — 취향(preferenceSync)과 다른 점이다. 취향은 게스트가
+   * 가입할 때 넘겨줘야 할 값이지만, 대화는 이미 서버에 있고 그 세션의 소유자도
+   * 서버가 안다. 목록만 로컬에 복사해두면 지운 대화가 되살아나는 쪽이 더 나쁘다.
+   */
+  const [history, setHistory] = useState<ChatHistoryEntry[]>([]);
   const [showAddFavorite, setShowAddFavorite] = useState(false);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -60,7 +68,16 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
   const renameInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => saveFavorites(favorites), [favorites]);
-  useEffect(() => saveChatHistory(history), [history]);
+
+  useEffect(() => {
+    let active = true;
+    void loadChatSessions().then((entries) => {
+      if (active) setHistory(entries);
+    });
+    return () => {
+      active = false;
+    };
+  }, [session?.user?.id]);
   useEffect(() => {
     if (renamingId) renameInputRef.current?.focus();
   }, [renamingId]);
@@ -98,9 +115,16 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
   function commitRename(id: string) {
     const trimmed = renameDraft.trim();
     if (trimmed) {
+      /* 화면을 먼저 바꾸고 서버에 보낸다 — 이름 바꾸기는 되돌릴 수 있는 동작이라
+         응답을 기다리는 동안 입력칸을 붙잡아 둘 이유가 없다. */
       setHistory((prev) =>
         prev.map((item) => (item.id === id ? { ...item, label: trimmed } : item)),
       );
+      void renameChatSession(id, trimmed).catch(() => {
+        /* 실패하면 서버 값으로 되돌린다 — 바뀐 척 남겨두면 다음에 열었을 때
+           예전 이름이 돌아와 있어 더 혼란스럽다. */
+        void refreshChatSessions().then(setHistory);
+      });
     }
     setRenamingId(null);
   }
@@ -299,8 +323,13 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                         type="button"
                         role="menuitem"
                         onClick={() => {
+                          /* 목록에서 한 줄을 지우는 것이 곧 그 대화를 지우는
+                             것이다. 화면에서 먼저 빼고 서버에 보낸다. */
                           setHistory((prev) => prev.filter((item) => item.id !== entry.id));
                           setOpenMenuId(null);
+                          void deleteChatSession(entry.id).catch(() => {
+                            void refreshChatSessions().then(setHistory);
+                          });
                         }}
                         className="rounded-xl px-3 py-2 text-left text-sm font-medium text-rust transition-colors hover:bg-chip"
                       >

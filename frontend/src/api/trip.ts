@@ -22,6 +22,8 @@ import type {
   ChatResponse,
   InterpretDebugRequest,
   InterpretResponse,
+  ChatSessionSummary,
+  ChatSessionsResponse,
   PreferencesResponse,
   SavedPreferenceItem,
   InterpretedConditions,
@@ -233,4 +235,30 @@ export function fetchPreferences() {
 
 export function replacePreferences(items: readonly SavedPreferenceItem[]) {
   return apiClient.put<PreferencesResponse>("/preferences", { items });
+}
+
+/*
+ * 사이드바 채팅 히스토리(TP-222 후속). 목록은 세션에 속하지 않아 경로에
+ * session_id가 없다 — /state/{session_id} 아래에 두면 "sessions"를 session_id로
+ * 받아 삼킨다.
+ *
+ * fetchChatSessions는 preferences와 같이 **토큰이 없으면 401**이다. 신원이 곧
+ * 조회 키라 누구의 목록인지가 정해지지 않기 때문이다.
+ */
+export function fetchChatSessions() {
+  return apiClient.get<ChatSessionsResponse>("/sessions");
+}
+
+export function renameChatSession(sessionId: string, title: string) {
+  return apiClient.patch<ChatSessionSummary>(
+    `/state/${encodeURIComponent(sessionId)}/title`,
+    { title },
+  );
+}
+
+/* 세션 전체를 지운다. 대화 목록에서 한 줄을 지우는 것이 곧 그 대화를 지우는 것이다. */
+export function deleteChatSession(sessionId: string) {
+  return apiClient.del<{ session_id: string; deleted: boolean }>(
+    `/state/${encodeURIComponent(sessionId)}`,
+  );
 }

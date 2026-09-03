@@ -4,35 +4,74 @@
  * 출력: 즐겨찾기·채팅 히스토리 편집, 접힘 전환, 라우트 이동에 대한 assertion.
  * 호출 시점: vitest 실행 시.
  *
- * 즐겨찾기와 채팅 히스토리는 아직 백엔드가 없는 localStorage 목업이다
- * (state/sidebarStorage.ts). 여기서 검증하는 것은 "화면이 목록을 제대로
- * 편집하고 보존하는가"까지다.
+ * **즐겨찾기와 채팅 히스토리는 사는 곳이 다르다.** 즐겨찾기는 아직 localStorage
+ * 목업이고(state/sidebarStorage.ts), 채팅 히스토리는 계정에서 온다
+ * (GET /api/sessions, TP-222 후속). 그래서 씨앗도 각각 다른 곳에 심는다.
  *
- * 예전에는 화면이 기본 예시 항목을 들고 있어 그대로 눌러볼 수 있었는데, 지금은
- * 빈 목록에서 시작한다. 그래서 테스트가 localStorage에 직접 씨앗을 심는다 —
- * 저장 키가 바뀌면 여기도 같이 깨지므로 sidebarStorage.ts와 짝으로 본다.
+ * 이름 바꾸기·삭제는 화면만 바꾸는 것이 아니라 서버에도 보내야 한다 — 화면에서만
+ * 사라지고 서버에 남으면 다음에 열었을 때 되살아난다.
  */
 
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, expect, test } from "vitest";
+import { beforeEach, expect, test, vi } from "vitest";
 import App from "../../App";
+import { resetChatSessionsCache } from "../../state/chatSessions";
 
 const SEED_FAVORITES = [
   { id: "fav-1", label: "회사 (역삼동)" },
   { id: "fav-2", label: "집 (성수동)" },
 ];
-const SEED_HISTORY = [
-  { id: "chat-1", label: "비 오는 날 아이와 함께 갈 곳" },
-  { id: "chat-2", label: "갑자기 뜬 2시간, 카페 추천" },
-];
+
+/** 계정에 쌓인 대화. 서버가 주는 모양 그대로다. */
+const server = vi.hoisted(() => ({
+  sessions: [] as { session_id: string; title: string; place_name: string | null; last_active_at: string }[],
+  renamed: [] as { id: string; title: string }[],
+  deleted: [] as string[],
+}));
+
+vi.mock("../../api/trip", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../api/trip")>();
+  return {
+    ...actual,
+    fetchChatSessions: async () => ({ sessions: server.sessions }),
+    renameChatSession: async (sessionId: string, title: string) => {
+      server.renamed.push({ id: sessionId, title });
+      server.sessions = server.sessions.map((item) =>
+        item.session_id === sessionId ? { ...item, title } : item,
+      );
+      return { ...server.sessions[0], title };
+    },
+    deleteChatSession: async (sessionId: string) => {
+      server.deleted.push(sessionId);
+      server.sessions = server.sessions.filter((item) => item.session_id !== sessionId);
+      return { session_id: sessionId, deleted: true };
+    },
+  };
+});
 
 beforeEach(() => {
   sessionStorage.clear();
   localStorage.clear();
   localStorage.setItem("tb_favorites", JSON.stringify(SEED_FAVORITES));
-  localStorage.setItem("tb_chat_history", JSON.stringify(SEED_HISTORY));
   window.history.pushState({}, "", "/");
+  resetChatSessionsCache();
+  server.sessions = [
+    {
+      session_id: "chat-1",
+      title: "비 오는 날 아이와 함께 갈 곳",
+      place_name: null,
+      last_active_at: "2026-09-03T09:00:00+09:00",
+    },
+    {
+      session_id: "chat-2",
+      title: "갑자기 뜬 2시간, 카페 추천",
+      place_name: "블루보틀 성수",
+      last_active_at: "2026-09-02T09:00:00+09:00",
+    },
+  ];
+  server.renamed = [];
+  server.deleted = [];
 });
 
 /*
@@ -42,6 +81,11 @@ beforeEach(() => {
 async function renderApp() {
   render(<App />);
   await screen.findByRole("button", { name: "추천 시작하기" });
+  /* 채팅 히스토리는 계정에서 비동기로 온다. 셸만 기다리면 목록이 아직 비어 있어
+     "메뉴" 버튼을 찾을 수 없다. */
+  await waitFor(() =>
+    expect(within(sidebar()).getByText("비 오는 날 아이와 함께 갈 곳")).toBeInTheDocument(),
+  );
 }
 
 /** 사이드바는 셸 안에 상시 렌더된다. jsdom에는 CSS가 없어 폭 분기와 무관하게 잡힌다. */
@@ -129,4 +173,31 @@ test("취향 설정으로 이동하면 취향 선택 화면이 뜬다", async ()
   await user.click(within(sidebar()).getByRole("button", { name: "취향 설정" }));
 
   expect(screen.getByText(/끌리시나요/)).toBeInTheDocument();
+});
+
+/* 화면에서만 지우고 서버에 남기면 다음에 열었을 때 되살아난다. */
+test("이름 바꾸기와 삭제가 서버까지 간다", async () => {
+  const user = userEvent.setup();
+  await renderApp();
+
+  await user.click(
+    within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 메뉴" }),
+  );
+  await user.click(screen.getByRole("menuitem", { name: "이름 바꾸기" }));
+  const input = screen.getByRole("textbox", { name: "대화 이름" });
+  await user.clear(input);
+  await user.type(input, "새 이름{Enter}");
+
+  await waitFor(() => expect(server.renamed).toEqual([{ id: "chat-1", title: "새 이름" }]));
+
+  await user.click(within(sidebar()).getByRole("button", { name: "갑자기 뜬 2시간, 카페 추천 메뉴" }));
+  await user.click(screen.getByRole("menuitem", { name: "삭제" }));
+
+  await waitFor(() => expect(server.deleted).toEqual(["chat-2"]));
+});
+
+test("대화에 언급된 장소가 목록에 함께 보인다", async () => {
+  await renderApp();
+
+  expect(within(sidebar()).getByText("블루보틀 성수")).toBeInTheDocument();
 });

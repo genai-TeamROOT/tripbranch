@@ -666,6 +666,24 @@ export interface SavedPreferenceItem {
   codes: readonly string[];
 }
 
+/*
+ * 사이드바 채팅 히스토리의 한 줄(GET /api/sessions).
+ *
+ * 대화 내용은 담기지 않는다 — 목록을 그리는 데 필요한 것만 온다.
+ * title은 첫 턴의 사용자 발화이거나 사용자가 바꾼 이름이고, 대화를 이어가도
+ * 바뀌지 않는다(백엔드가 agent_states.title에 박아둔다).
+ */
+export interface ChatSessionSummary {
+  session_id: string;
+  title: string;
+  place_name: string | null;
+  last_active_at: string;
+}
+
+export interface ChatSessionsResponse {
+  sessions: ChatSessionSummary[];
+}
+
 export interface SessionContextResponse {
   session_id: string | null;
   session_exists: boolean;
