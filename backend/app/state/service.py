@@ -903,7 +903,7 @@ def delete_session(
     store: StateStore | None = None,
     principal: Principal | None = None,
 ) -> DeleteSessionResponse:
-    """세션 상태·추천 이력·보관함·화면 기록을 삭제한다.
+    """세션 상태·추천 이력·보관함·화면 기록·조건 변경 기록을 삭제한다.
 
     세션이 없어도 오류를 내지 않고 deleted=False를 반환한다.
 
@@ -929,6 +929,13 @@ def delete_session(
     # 않으면 사용자가 대화를 지워도 주고받은 말이 DB에 남는다 — 목록에서
     # 사라지는 것과 지워지는 것이 달라지면 안 된다.
     store.delete_session_messages(session_id)
+    # 조건 변경 기록의 before/after 값에는 사용자 발화에서 나온 문자열이 들어간다
+    # (예: 검색 중심 "경복궁"). 대화를 지웠는데 그 흔적이 남을 이유가 없다.
+    store.delete_change_logs(session_id)
+    # **trace_records는 남긴다.** step·지연시간·프롬프트 버전만 담고 사용자
+    # 텍스트가 없으며, list_traces_for_stats가 LLMOps 통계에 쓴다 — 사용자가
+    # 대화를 지울 때마다 지표가 조용히 빠지면 집계가 사실과 달라진다. 이쪽은
+    # 30일 정리 스크립트가 세션 수명에 맞춰 지운다.
     return DeleteSessionResponse(session_id=session_id, deleted=existed)
 
 

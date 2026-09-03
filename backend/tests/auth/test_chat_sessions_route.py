@@ -626,3 +626,49 @@ def test_대화를_지우면_화면_기록도_지워진다(signing_key) -> None:
 
     assert response.status_code == 200
     assert store.get_session_messages(session_id) == []
+
+
+def test_대화를_지우면_조건_변경_기록도_지워진다(signing_key) -> None:
+    """before/after 값에 사용자 발화에서 나온 문자열이 들어간다."""
+    from app.state.schema import ConditionChangeLog
+    from app.state.store import get_store
+
+    session_id = _start_chat(ME, "경복궁 근처")
+    store = get_store()
+    store.append_change_logs(
+        [
+            ConditionChangeLog(
+                session_id=session_id,
+                run_id="run_1",
+                seq=1,
+                op="set",
+                field="search_center",
+                after_value="경복궁",
+            )
+        ]
+    )
+
+    TestClient(app).delete(f"/api/state/{session_id}", headers=_headers(signing_key, ME))
+
+    assert store.get_change_logs(session_id) == []
+
+
+# trace_records는 일부러 남긴다. 사용자 텍스트가 없고 LLMOps 통계가 읽는
+# 지표라, 대화를 지울 때마다 빠지면 집계가 사실과 달라진다.
+def test_대화를_지워도_trace는_남는다(signing_key) -> None:
+    from app.state.schema import TraceRecord
+    from app.state.store import get_store
+
+    session_id = _start_chat(ME, "지울 대화")
+    store = get_store()
+    store.append_traces(
+        [
+            TraceRecord(
+                session_id=session_id, run_id="run_1", trace_id="trace_1", step="llm_extract"
+            )
+        ]
+    )
+
+    TestClient(app).delete(f"/api/state/{session_id}", headers=_headers(signing_key, ME))
+
+    assert len(store.get_traces(session_id)) == 1
