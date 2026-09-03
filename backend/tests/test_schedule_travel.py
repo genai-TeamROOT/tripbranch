@@ -31,8 +31,12 @@ from app.tools.schedule_travel import (
     SCHEDULE_TRAVEL_MEASURE_UNAVAILABLE_WARNING,
     SCHEDULE_TRAVEL_SELF_PAIR_WARNING,
     SCHEDULE_TRAVEL_UNKNOWN_PLACE_WARNING,
+    ModeJudgmentContext,
+    SegmentModeInput,
+    build_segment_inputs,
     estimate_schedule_travel_edges,
     measure_schedule_travel_edges,
+    select_modes_for_segments,
 )
 from app.tools.travel_route import TravelRouteProviders, TravelRouteTool
 
@@ -522,4 +526,198 @@ async def test_measure_rejects_non_positive_budget() -> None:
             candidates=[],
             estimated_edges=[],
             max_measured_segments=0,
+        )
+
+
+# ── 판정 갈아끼우기 자리 (TP-225) ──────────────────────────────────────
+
+
+class _RecordingJudge:
+    """호출됐는지와 무엇을 받았는지를 남기는 가짜 판정."""
+
+    def __init__(self, decided: list[TravelMode] | None = None) -> None:
+        self.decided = decided
+        self.calls: list[tuple[tuple[SegmentModeInput, ...], ModeJudgmentContext]] = []
+
+    async def judge(self, segments, context):
+        self.calls.append((tuple(segments), context))
+        if self.decided is None:
+            return [TravelMode.WALKING] * len(segments)
+        return self.decided
+
+
+async def _select(
+    segments,
+    *,
+    judge=None,
+    transport: Transport | None = None,
+):
+    return await select_modes_for_segments(
+        segments,
+        ModeJudgmentContext(transport=transport),
+        judge=judge,
+        walking_speed_mps=WALKING_SPEED_MPS,
+        walk_transfer_threshold_min=WALK_THRESHOLD_MIN,
+    )
+
+
+def test_build_segment_inputs_drops_duplicate_self_and_unknown_pairs() -> None:
+    """추려내기가 기존 루프와 같은 세 가지를 거르고 사유를 남긴다."""
+    candidates = [_candidate("a", 126.90), _candidate("b", 126.91)]
+    pairs = [
+        ScheduleTravelPair("a", "b"),
+        ScheduleTravelPair("a", "b"),  # 중복
+        ScheduleTravelPair("a", "a"),  # 자기 자신
+        ScheduleTravelPair("a", "zzz"),  # 좌표를 모르는 장소
+        ScheduleTravelPair("b", "a"),
+    ]
+
+    segments, warnings = build_segment_inputs(
+        candidates, pairs, walking_speed_mps=WALKING_SPEED_MPS
+    )
+
+    assert [segment.key for segment in segments] == [("a", "b"), ("b", "a")]
+    # order는 `pairs`의 인덱스가 아니라 추려낸 뒤의 순번이다.
+    assert [segment.order for segment in segments] == [1, 2]
+    assert [warning.code for warning in warnings] == [
+        SCHEDULE_TRAVEL_DUPLICATE_PAIR_WARNING,
+        SCHEDULE_TRAVEL_SELF_PAIR_WARNING,
+        SCHEDULE_TRAVEL_UNKNOWN_PLACE_WARNING,
+    ]
+
+
+def test_build_segment_inputs_reports_walking_minutes_for_each_segment() -> None:
+    """실제로 도보로 갈지와 무관하게 "걸으면 몇 분"을 싣는다."""
+    candidates = [_candidate("a", 126.90), _candidate("b", 126.95)]
+
+    segments, _ = build_segment_inputs(
+        candidates, [ScheduleTravelPair("a", "b")], walking_speed_mps=WALKING_SPEED_MPS
+    )
+
+    segment = segments[0]
+    assert segment.walk_minutes == pytest.approx(
+        segment.distance_m / WALKING_SPEED_MPS / 60, abs=0.05
+    )
+    # 이 거리는 임계를 넘어 대중교통으로 전환되는 구간이다 — 그래도 도보 기준 분이다.
+    assert segment.walk_minutes > WALK_THRESHOLD_MIN
+
+
+@pytest.mark.asyncio
+async def test_select_modes_without_judge_matches_existing_estimate() -> None:
+    """판정하는 쪽이 없으면 지금까지의 결과와 정확히 같다. 이 카드의 회귀 기준이다."""
+    candidates = [
+        _candidate("a", 126.90),
+        _candidate("b", 126.905),  # 가까움 → 도보
+        _candidate("c", 126.99),  # 멀리 → 대중교통
+    ]
+    pairs = [ScheduleTravelPair("a", "b"), ScheduleTravelPair("b", "c")]
+
+    segments, _ = build_segment_inputs(
+        candidates, pairs, walking_speed_mps=WALKING_SPEED_MPS
+    )
+    modes = await _select(segments)
+
+    baseline = _estimate(candidates, pairs)
+    assert modes == {(edge.from_place_id, edge.to_place_id): edge.mode for edge in baseline.edges}
+    # 두 이동수단이 다 나오는 표본이어야 이 동치가 의미를 갖는다.
+    assert set(modes.values()) == {TravelMode.WALKING, TravelMode.TRANSIT}
+
+
+@pytest.mark.asyncio
+async def test_judged_modes_actually_change_estimated_edges() -> None:
+    """표가 실제로 소비되는지 본다.
+
+    표를 만들었는데 아무도 읽지 않으면 다음 PR에서 LLM을 붙여도 결과가 안 바뀐다.
+    그 실패는 테스트도 로그도 통과하므로 여기서 못 박는다.
+    """
+    candidates = [_candidate("a", 126.90), _candidate("b", 126.905)]
+    pairs = [ScheduleTravelPair("a", "b")]
+
+    # 규칙대로면 가까워서 도보인 구간이다.
+    assert _estimate(candidates, pairs).edges[0].mode is TravelMode.WALKING
+
+    segments, _ = build_segment_inputs(
+        candidates, pairs, walking_speed_mps=WALKING_SPEED_MPS
+    )
+    judge = _RecordingJudge([TravelMode.TRANSIT])
+    modes = await _select(segments, judge=judge)
+
+    result = estimate_schedule_travel_edges(
+        candidates=candidates,
+        pairs=pairs,
+        transport=None,
+        modes=modes,
+        walking_speed_mps=WALKING_SPEED_MPS,
+        transit_speed_mps=TRANSIT_SPEED_MPS,
+        driving_speed_mps=DRIVING_SPEED_MPS,
+        walk_transfer_threshold_min=WALK_THRESHOLD_MIN,
+    )
+
+    assert judge.calls
+    assert result.edges[0].mode is TravelMode.TRANSIT
+    # 이동수단이 바뀌면 소요시간도 그 속도로 다시 계산돼야 한다.
+    assert result.edges[0].duration_min < _estimate(candidates, pairs).edges[0].duration_min
+
+
+@pytest.mark.asyncio
+async def test_select_modes_rejects_wrong_result_count() -> None:
+    candidates = [_candidate("a", 126.90), _candidate("b", 126.905), _candidate("c", 126.91)]
+    segments, _ = build_segment_inputs(
+        candidates,
+        [ScheduleTravelPair("a", "b"), ScheduleTravelPair("b", "c")],
+        walking_speed_mps=WALKING_SPEED_MPS,
+    )
+
+    with pytest.raises(ValueError, match="구간 수와 다릅니다"):
+        await _select(segments, judge=_RecordingJudge([TravelMode.WALKING]))
+
+
+@pytest.mark.asyncio
+async def test_select_modes_rejects_unknown_mode_value() -> None:
+    """StrEnum이라 문자열이 그대로 통과할 수 있어 여기서 막는다."""
+    candidates = [_candidate("a", 126.90), _candidate("b", 126.905)]
+    segments, _ = build_segment_inputs(
+        candidates, [ScheduleTravelPair("a", "b")], walking_speed_mps=WALKING_SPEED_MPS
+    )
+
+    with pytest.raises(ValueError, match="알 수 없는 이동수단"):
+        await _select(segments, judge=_RecordingJudge(["보행"]))  # type: ignore[list-item]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("transport", "expected"),
+    [(Transport.WALK, TravelMode.WALKING), (Transport.CAR, TravelMode.DRIVING)],
+)
+async def test_explicit_transport_never_asks_the_judge(
+    transport: Transport, expected: TravelMode
+) -> None:
+    """사용자가 말한 이동수단을 판정이 뒤집으면 안 된다."""
+    candidates = [_candidate("a", 126.90), _candidate("b", 126.99)]  # 임계를 넘는 거리
+    segments, _ = build_segment_inputs(
+        candidates, [ScheduleTravelPair("a", "b")], walking_speed_mps=WALKING_SPEED_MPS
+    )
+    judge = _RecordingJudge([TravelMode.TRANSIT])
+
+    modes = await _select(segments, judge=judge, transport=transport)
+
+    assert judge.calls == []
+    assert modes[("a", "b")] is expected
+
+
+def test_estimate_rejects_modes_table_missing_a_segment() -> None:
+    """반쪽짜리 표를 조용히 규칙으로 메우지 않는다."""
+    candidates = [_candidate("a", 126.90), _candidate("b", 126.905), _candidate("c", 126.91)]
+    pairs = [ScheduleTravelPair("a", "b"), ScheduleTravelPair("b", "c")]
+
+    with pytest.raises(ValueError, match="이동수단 표에 없는 구간"):
+        estimate_schedule_travel_edges(
+            candidates=candidates,
+            pairs=pairs,
+            transport=None,
+            modes={("a", "b"): TravelMode.WALKING},
+            walking_speed_mps=WALKING_SPEED_MPS,
+            transit_speed_mps=TRANSIT_SPEED_MPS,
+            driving_speed_mps=DRIVING_SPEED_MPS,
+            walk_transfer_threshold_min=WALK_THRESHOLD_MIN,
         )
