@@ -25,6 +25,7 @@ from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 from pydantic import BaseModel, Field, ValidationError
 
+from app.domain.schedule_travel import ModeJudgmentContext, SegmentModeInput
 from app.errors import AppError, ProviderTimeoutError, ProviderUnavailableError
 from app.observability import langfuse_prompts
 from app.observability.api_usage import record_call
@@ -76,6 +77,18 @@ class _ComparisonSummary(BaseModel):
     """
 
     lines: list[str] = Field(min_length=3, max_length=6)
+
+
+class _TravelModePlan(BaseModel):
+    """judge_travel_modes() 전용 wire 모델.
+
+    개수를 스키마로 묶지 않는다 — 구간 수가 요청마다 다르고, 개수 검증은 호출부
+    (`tools/schedule_travel.py::select_modes_for_segments()`)가 어느 구간의 답인지
+    아는 자리에서 한다. 여기서 ValidationError를 내면 "몇 개가 왔는지"만 남고
+    "어느 구간이 빠졌는지"가 사라진다.
+    """
+
+    modes: list[str] = Field(default_factory=list)
 
 
 class _FollowUpSuggestions(BaseModel):
@@ -509,26 +522,62 @@ class RealGeminiProvider:
 
         단순화한 점(첫 슬라이스라 의도적으로 뺀 것들, 로드맵 24번 후속 과제):
         모델 폴백 없이 fast 모델 1개만 쓰고, 타임아웃/API 오류를 백오프 없이
-        1회로 바로 실패 처리하며, Langfuse generation 기록을 안 남긴다.
+        1회로 바로 실패 처리한다. 다만 Langfuse generation 기록과 개발자 감사
+        패널(`record_llm_call`)은 다른 메서드와 같은 방식으로 남긴다.
+
+        **확인 필요**: automatic function calling은 내부적으로 여러 번 API를
+        왕복할 수 있는데, `response.usage_metadata`가 그 왕복들을 전부 합산한
+        값인지 마지막 왕복 한 번만의 값인지 SDK 문서로 확인하지 못했다(실측 몇
+        건은 재시도 유무와 무관하게 비슷한 토큰 수를 보여 마지막 왕복만 잡을
+        가능성이 있다). 재시도가 잦은 실제 사용량을 정확히 보려면 이 부분을
+        먼저 확인해야 한다.
         """
 
-        try:
-            response = await self._client.aio.models.generate_content(
-                model=self._fast_model_names[0],
-                contents=instruction,
-                config=genai_types.GenerateContentConfig(
-                    tools=list(tools),
-                    automatic_function_calling=genai_types.AutomaticFunctionCallingConfig(
-                        maximum_remote_calls=max_tool_calls
+        model_name = self._fast_model_names[0]
+        operation = "answer_with_tools"
+        started = time.perf_counter()
+        with observe_generation(operation, model=model_name, input=instruction) as generation:
+            try:
+                response = await self._client.aio.models.generate_content(
+                    model=model_name,
+                    contents=instruction,
+                    config=genai_types.GenerateContentConfig(
+                        tools=list(tools),
+                        automatic_function_calling=genai_types.AutomaticFunctionCallingConfig(
+                            maximum_remote_calls=max_tool_calls
+                        ),
+                        temperature=0.0,
                     ),
-                    temperature=0.0,
-                ),
+                )
+            except _TIMEOUT_ERRORS:
+                _record_gemini_call(model_name, started, ok=False, status="timeout")
+                record_llm_call(
+                    operation=operation,
+                    attempted_models=[model_name],
+                    served_model=None,
+                    latency_ms=round((time.perf_counter() - started) * 1000),
+                )
+                raise ProviderTimeoutError("Gemini") from None
+            except genai_errors.APIError as exc:
+                status = f" {exc.status}" if hasattr(exc, "status") else ""
+                _record_gemini_call(model_name, started, ok=False, status=str(exc.code))
+                record_llm_call(
+                    operation=operation,
+                    attempted_models=[model_name],
+                    served_model=None,
+                    latency_ms=round((time.perf_counter() - started) * 1000),
+                )
+                raise ProviderUnavailableError("Gemini", detail=f"{exc.code}{status}") from None
+            _record_gemini_call(model_name, started, ok=True, status="ok")
+            usage = _token_usage(getattr(response, "usage_metadata", None))
+            generation.record(output=response.text, usage_details=_usage_details(usage))
+            record_llm_call(
+                operation=operation,
+                attempted_models=[model_name],
+                served_model=model_name,
+                latency_ms=round((time.perf_counter() - started) * 1000),
+                **usage,
             )
-        except _TIMEOUT_ERRORS:
-            raise ProviderTimeoutError("Gemini") from None
-        except genai_errors.APIError as exc:
-            status = f" {exc.status}" if hasattr(exc, "status") else ""
-            raise ProviderUnavailableError("Gemini", detail=f"{exc.code}{status}") from None
         return provider_result(response.text or "", source=ProviderSource.GEMINI)
 
     async def extract_compare_request(
@@ -937,6 +986,37 @@ class RealGeminiProvider:
         if review_evidence:
             summary_item["review_evidence"] = review_evidence
         return summary_item
+
+    async def judge_travel_modes(
+        self,
+        segments: Sequence[SegmentModeInput],
+        context: ModeJudgmentContext,
+    ) -> ProviderResult[tuple[str, ...]]:
+        """구간별 이동수단을 전 구간 한 번에 정한다. (TP-227)
+
+        구간 하나씩 부르지 않는 이유는 앞 구간을 봐야 뒤 구간의 강도를 조절할 수
+        있기 때문이다. 구간별로 부르면 호출이 구간 수만큼 늘고 같은 문제가 남는다.
+
+        thinking_budget=0 — 일정 편성(`generate_schedule_plan`)과 같은 이유다.
+        판정 근거(거리·도보시간·조건)를 프롬프트에 이미 명시적으로 주고 있어
+        thinking 없이도 고를 수 있고, 이 호출은 SCHEDULE·RECOMMEND 턴의 지연에
+        그대로 더해진다.
+
+        **값 검증은 여기서 하지 않는다.** 문자열 목록을 그대로 돌려주고, 개수와
+        어휘는 호출부가 확인한다 — 어느 구간의 답인지 아는 쪽이 거기이기 때문이다.
+        """
+
+        instruction = gemini_prompts.build_mode_judge_instruction()
+        context_text = gemini_prompts.format_mode_judge_context(segments, context)
+        result = await self._call_structured(
+            instruction,
+            context_text,
+            _TravelModePlan,
+            operation="judge_travel_modes",
+            thinking_budget=0,
+            model_names=self._generation_model_names,
+        )
+        return provider_result(tuple(result.modes), source=ProviderSource.GEMINI)
 
     async def generate_schedule_plan(
         self, request: SchedulePlanningRequest

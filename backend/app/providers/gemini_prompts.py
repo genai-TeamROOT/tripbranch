@@ -10,8 +10,10 @@ app/providers/gemini.py에 두고, 이 모듈은 프롬프트 텍스트만 담�
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
 
+from app.domain.schedule_travel import ModeJudgmentContext, SegmentModeInput
 from app.prompts.loader import active_variant, load_text, render_text
 from app.schedule.associations import CoVisitedHint
 from app.schedule.schemas import (
@@ -349,6 +351,74 @@ def build_info_answer_instruction(question_type: str) -> str:
     )
 
 
+def format_mode_judge_context(
+    segments: Sequence[SegmentModeInput], context: ModeJudgmentContext
+) -> str:
+    """구간 표와 공유 조건을 판정 LLM이 읽을 텍스트로 만든다. (TP-227)
+
+    **조회하지 못한 값은 줄 자체를 넣지 않는다.** "날씨: 없음"처럼 적으면 모델이
+    그것을 사실로 읽고 판단에 쓴다 — 날씨를 모르는 것과 날씨가 없는 것은 다르다.
+
+    도보 시간에 "직선 기준"을 붙여 둔다. 값 자체에 우회계수를 곱하지 않는 이유는
+    규칙 폴백 경로(`_select_mode()`)가 쓰는 값과 갈리면 같은 구간을 두 자로 재게
+    되기 때문이다(D-118이 시간 예산을 두고 지킨 원칙과 같다).
+    """
+
+    lines: list[str] = ["## 조건"]
+    if context.companion is not None:
+        lines.append(f"- 동행: {context.companion}")
+    if context.accessibility_needs:
+        lines.append(f"- 무장애 요구: {', '.join(context.accessibility_needs)}")
+    weather = context.weather
+    if weather is not None:
+        facts = [
+            f"강수 {weather.precipitation}" if weather.precipitation else None,
+            f"하늘 {weather.sky}" if weather.sky else None,
+            (
+                f"기온 {weather.temperature_celsius:g}도"
+                if weather.temperature_celsius is not None
+                else None
+            ),
+        ]
+        stated = [fact for fact in facts if fact is not None]
+        if stated:
+            lines.append(f"- 날씨: {', '.join(stated)}")
+    if len(lines) == 1:
+        lines.append("- 없음 (거리만 보고 정한다)")
+
+    lines.append("")
+    if context.sequential:
+        lines.append("## 구간 (순서대로 이어진다)")
+    else:
+        lines.append("## 후보 (서로 대안이다. 사용자는 이 중 한 곳만 간다)")
+    for segment in segments:
+        lines.append(
+            f"{segment.order}. {segment.distance_m}m"
+            f" (직선 기준 도보 {segment.walk_minutes:g}분)"
+        )
+    return "\n".join(lines)
+
+
+def build_mode_judge_instruction() -> str:
+    """구간 이동수단을 정하는 system instruction. (TP-227)
+
+    특정 Intent에 매이지 않는다 — 일정 편성(SCHEDULE)과 추천(RECOMMEND)이 같은
+    판정을 쓴다. 두 임계값이 환산 관계라(도보 20분 x 우회계수 1.65배 = 직선
+    0.85km, D-118) 한쪽만 다른 판정을 쓰면 같은 거리를 두고 서로 다른 이동수단을
+    말하게 된다.
+
+    `prompts/schedule/`에 두지 않은 이유가 이것이다. 그쪽은 OWNERS.md상 B 소유이고
+    담는 내용도 "장소 순서와 머무는 시간"이라 다른 질문인데, 거기 두면 추천이 일정
+    프롬프트를 읽는 모양이 된다.
+    """
+
+    return render_text(
+        "mode_judge/select_instruction.md",
+        mode_rules=load_text("mode_judge/mode_rules.md"),
+        condition_rules=load_text("mode_judge/condition_rules.md"),
+    )
+
+
 def build_follow_up_suggestion_instruction(
     *, max_suggestions: int, max_label_length: int
 ) -> str:
@@ -384,6 +454,25 @@ _COMPANION_LABELS = {
 }
 _ENVIRONMENT_LABELS = {"indoor": "실내", "outdoor": "실외"}
 _TRANSPORT_LABELS = {"walk": "도보", "public": "대중교통", "car": "자동차"}
+# 무장애 어휘를 말풍선이 읽을 한국어로 옮긴다.
+#
+# **9개를 전부 싣는다.** 이동수단 판정(TP-227)이 셋만 넘기는 것과 다른 판단이다 —
+# 저쪽은 "어떻게 갈까"를 정하는 자리라 장소 조건이 판단을 흐리지만, 말풍선은 사용자가
+# 무엇을 요구했는지를 말투와 강조점에 반영하는 자리라 요구한 것을 다 알아야 한다.
+# 장애인 화장실을 찾는 사람에게 그 요구를 모른 채 답하면 같은 문제가 난다.
+#
+# 어휘가 늘면 여기도 늘린다. 없는 값은 원문을 그대로 쓰므로 조용히 사라지지는 않는다.
+_ACCESSIBILITY_LABELS = {
+    "wheelchair_access": "휠체어 접근",
+    "stroller_access": "유모차 접근",
+    "accessible_restroom": "장애인 화장실",
+    "accessible_parking": "장애인 주차구역",
+    "visual_guide": "점자·음성 안내",
+    "infant_facilities": "유아 시설",
+    "wheelchair_rental": "휠체어 대여",
+    "seating_available": "의자식 좌석",
+    "low_floor_transit": "저상버스·역 엘리베이터",
+}
 
 
 def _stated_conditions_line(conditions: UserConditions | None) -> str:
@@ -393,6 +482,15 @@ def _stated_conditions_line(conditions: UserConditions | None) -> str:
     최근 5턴 창 밖으로 밀려나도 살아 있어서, 원문 이력만 보는 것보다 견고하다.
     말풍선 생성 단계는 지금까지 카드 데이터만 받아서, 동행을 friend로 잡아 놓고도
     "혼자서도 가기 좋고"로 답하는 일이 있었다(2026-08-31 실사용).
+
+    **무장애가 빠져 같은 사고가 한 번 더 났다**(2026-09-03 실사용). "휠체어 타고
+    관광할 수 있는 곳"에 "아이와 함께 걸어서 편하게 이동할 수 있는"이라고 답했다 —
+    조건이 비어 있으니 강조점을 정할 근거가 없어, 남은 재료 중 제일 강한 신호인
+    `review_evidence`("아이와 함께 걷기 좋은")를 잡고 문단 전체를 그쪽으로 썼다.
+    조건 추출과 무장애 검색은 정상이었고 말풍선만 틀렸다.
+
+    **조건을 하나 더할 때는 여기도 함께 본다.** 이 함수가 비면 오류가 아니라 엉뚱한
+    강조점이 나오고, 그건 테스트로도 로그로도 안 잡힌다.
 
     비어 있으면 빈 문자열 — 관련 없는 턴의 프롬프트를 늘리지 않는다.
     """
@@ -416,6 +514,13 @@ def _stated_conditions_line(conditions: UserConditions | None) -> str:
         parts.append(f"이동 {conditions.max_travel_time}분 이내")
     if conditions.time_available:
         parts.append(f"체류 {conditions.time_available}분")
+    if conditions.accessibility_needs:
+        parts.append(
+            ", ".join(
+                _ACCESSIBILITY_LABELS.get(need, need)
+                for need in conditions.accessibility_needs
+            )
+        )
     if conditions.special_requirements:
         parts.append(", ".join(conditions.special_requirements))
 
@@ -646,6 +751,8 @@ __all__ = [
     "build_info_answer_instruction",
     "build_recommendation_summary_instruction",
     "build_follow_up_suggestion_instruction",
+    "build_mode_judge_instruction",
+    "format_mode_judge_context",
     "build_compare_summary_instruction",
     "build_schedule_planning_instruction",
     "format_schedule_planning_context",
