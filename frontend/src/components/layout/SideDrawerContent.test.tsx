@@ -644,3 +644,33 @@ test("지난 대화 열기가 실패하면 오던 답변을 버리지 않는다"
 
   expect(await screen.findByText("기다리던 답변")).toBeInTheDocument();
 });
+
+
+/*
+ * 보고 있는 대화를 지웠는데 화면에 그대로 두면, 이어 물었을 때 없는 session_id가
+ * 나가 백엔드가 조용히 새 세션을 만든다 — 사용자는 같은 대화를 이어간 줄로 안다.
+ */
+test("보고 있는 대화를 지우면 화면도 비운다", async () => {
+  const user = userEvent.setup();
+  await renderApp();
+  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
+  await screen.findByText("실내를 찾아볼게요");
+
+  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 메뉴" }));
+  await user.click(screen.getByRole("menuitem", { name: "삭제" }));
+
+  await waitFor(() => expect(screen.queryByText("실내를 찾아볼게요")).not.toBeInTheDocument());
+});
+
+/* 다른 대화를 지우는 것은 보고 있는 대화에 영향이 없어야 한다. */
+test("다른 대화를 지워도 보고 있는 대화는 그대로다", async () => {
+  const user = userEvent.setup();
+  await renderApp();
+  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
+  await screen.findByText("실내를 찾아볼게요");
+
+  await user.click(within(sidebar()).getByRole("button", { name: "갑자기 뜬 2시간, 카페 추천 메뉴" }));
+  await user.click(screen.getByRole("menuitem", { name: "삭제" }));
+
+  expect(screen.getByText("실내를 찾아볼게요")).toBeInTheDocument();
+});

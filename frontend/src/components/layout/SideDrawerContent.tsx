@@ -409,6 +409,17 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                              것이다. 화면에서 먼저 빼고 서버에 보낸다. */
                             setHistory((prev) => prev.filter((item) => item.id !== entry.id));
                             setOpenMenuId(null);
+                            /*
+                             * 지금 보고 있는 대화를 지웠으면 화면도 비운다.
+                             * 두지 않으면 지운 대화가 그대로 남아 있고, 이어
+                             * 물으면 없는 session_id가 나가 백엔드가 조용히 새
+                             * 세션을 만든다 — 사용자는 같은 대화를 이어간 줄로
+                             * 안다. 오던 답변도 그 대화의 것이라 함께 버린다.
+                             */
+                            if (state.session_id === entry.id) {
+                              discardChatRequest();
+                              dispatch({ type: "RESET" });
+                            }
                             void deleteChatSession(entry.id).catch(() => {
                               void refreshChatSessions().then(setHistory);
                             });
