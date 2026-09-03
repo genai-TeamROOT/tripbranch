@@ -24,6 +24,7 @@ from app.state.schema import (
     SavedSchedule,
     SessionMessage,
     TraceRecord,
+    UserFavoriteList,
     UserPreferenceList,
     now_kst,
 )
@@ -60,6 +61,12 @@ class StateStore(Protocol):
     # 조회에서 "아직 고른 적 없음"과 "다 지웠음"이 구분되지 않는다.
     def get_preferences(self, user_id: str) -> UserPreferenceList | None: ...
     def save_preferences(self, preferences: UserPreferenceList) -> None: ...
+
+    # -- UserFavoriteList (계정 단위) --
+    # 취향과 같은 자리의 값이라 같은 모양으로 둔다. 삭제 메서드가 없는 이유도
+    # 같다 — "즐겨찾기를 비운다"는 빈 목록 저장이다.
+    def get_favorites(self, user_id: str) -> UserFavoriteList | None: ...
+    def save_favorites(self, favorites: UserFavoriteList) -> None: ...
 
     # -- 사용자의 대화 목록 --
     # 사이드바 채팅 히스토리가 쓴다. 제목이 없는 세션(대화를 시작하지 않고
@@ -142,6 +149,7 @@ class InMemoryStateStore:
         self._histories: dict[str, RecommendationHistory] = {}
         self._saved_places: dict[str, SavedPlaceList] = {}
         self._preferences: dict[str, UserPreferenceList] = {}
+        self._favorites: dict[str, UserFavoriteList] = {}
         self._change_logs: dict[str, list[ConditionChangeLog]] = {}
         self._traces: dict[str, list[TraceRecord]] = {}
         self._feedback: dict[str, list[FeedbackRecord]] = {}
@@ -202,6 +210,13 @@ class InMemoryStateStore:
 
     def save_preferences(self, preferences: UserPreferenceList) -> None:
         self._preferences[preferences.user_id] = preferences.model_copy(deep=True)
+
+    def get_favorites(self, user_id: str) -> UserFavoriteList | None:
+        favorites = self._favorites.get(user_id)
+        return favorites.model_copy(deep=True) if favorites else None
+
+    def save_favorites(self, favorites: UserFavoriteList) -> None:
+        self._favorites[favorites.user_id] = favorites.model_copy(deep=True)
 
     # ------------------------------------------------------------ ChangeLog
 

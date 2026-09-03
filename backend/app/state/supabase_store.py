@@ -29,6 +29,7 @@ from app.state.schema import (
     SavedSchedule,
     SessionMessage,
     TraceRecord,
+    UserFavoriteList,
     UserPreferenceList,
     now_kst,
 )
@@ -304,6 +305,32 @@ class SupabaseStateStore:
             "/user_preferences",
             params={"on_conflict": "user_id"},
             json=preferences.model_dump(mode="json"),
+            prefer="resolution=merge-duplicates,return=minimal",
+        )
+
+    # ------------------------------------------------------------ Favorites
+
+    def get_favorites(self, user_id: str) -> UserFavoriteList | None:
+        """계정 단위 즐겨찾기. 취향과 같이 키가 user_id다."""
+        response = self._request(
+            "GET",
+            "/user_favorites",
+            params={"user_id": f"eq.{user_id}", "select": "*", "limit": "1"},
+        )
+        row = self._one_or_none(self._json(response))
+        if row is None:
+            return None
+        try:
+            return UserFavoriteList.model_validate(row)
+        except Exception:
+            raise StateStoreError("invalid user_favorites row") from None
+
+    def save_favorites(self, favorites: UserFavoriteList) -> None:
+        self._request(
+            "POST",
+            "/user_favorites",
+            params={"on_conflict": "user_id"},
+            json=favorites.model_dump(mode="json"),
             prefer="resolution=merge-duplicates,return=minimal",
         )
 

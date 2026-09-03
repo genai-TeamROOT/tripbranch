@@ -15,6 +15,7 @@ import { AppShellProvider } from "../components/layout/AppShellContext";
 import { TripProvider } from "../state/TripContext";
 import { LocationPage } from "./LocationPage";
 import { searchPlaces } from "../api/trip";
+import { resetFavoritesSync } from "../state/favoritesSync";
 import {
   loadLocationSettings,
   setLocationCenter,
@@ -23,7 +24,13 @@ import {
 import { loadRecentSearches } from "../state/recentSearchesStorage";
 import { loadFavorites, saveFavorites } from "../state/sidebarStorage";
 
-vi.mock("../api/trip", () => ({ searchPlaces: vi.fn() }));
+vi.mock("../api/trip", () => ({
+  searchPlaces: vi.fn(),
+  /* 이 화면은 즐겨찾기를 계정과 맞춘다(favoritesSync). 서버가 없으면 이 기기의
+     값으로 도는 것이 정상 동작이라, 실패로 두고 로컬 경로를 그대로 본다. */
+  fetchFavorites: vi.fn(() => Promise.reject(new Error("no server"))),
+  replaceFavorites: vi.fn(() => Promise.reject(new Error("no server"))),
+}));
 
 const searchPlacesMock = vi.mocked(searchPlaces);
 
@@ -56,6 +63,8 @@ beforeEach(() => {
   // 않게 한다(App.test.tsx와 같은 이유 — utils/geolocation.ts의 개발 전용 우회).
   vi.stubEnv("VITE_TEST_DEVICE_LOCATION", "");
   searchPlacesMock.mockReset();
+  /* 계정 동기화 결과는 페이지 로드당 한 번만 계산된다 — 테스트마다 그 경계를 만든다. */
+  resetFavoritesSync();
 });
 
 afterEach(() => {

@@ -199,7 +199,7 @@ export interface SavedScheduleSummary {
   id: string;
   title: string;
   /* 어느 대화에서 나왔는지. 세션은 30일 뒤 정리되지만 이 일정은 남으므로
-     **없을 수 있다**를 전제로 쓴다. */
+   **없을 수 있다**를 전제로 쓴다. */
   session_id: string | null;
   created_at: string;
   updated_at: string;
@@ -744,6 +744,25 @@ export interface SavedPlacesResponse {
 export interface PreferencesResponse {
   items: SavedPreferenceItem[];
   updated_at: string | null;
+}
+
+/*
+ * 계정 단위 즐겨찾기(GET/PUT /api/favorites). PreferencesResponse와 같은 모양이고,
+ * updated_at이 null이면 "이 계정이 한 번도 저장한 적 없다"는 뜻이다 - 빈 목록을
+ * 저장한 경우("전부 지움")와 구분되며, 이 기기의 값을 올릴지 판단하는 기준이
+ * 된다(state/favoritesSync.ts).
+ */
+export interface FavoritesResponse {
+  items: FavoritePlaceItem[];
+  updated_at: string | null;
+}
+
+export interface FavoritePlaceItem {
+  id: string;
+  label: string;
+  /* 검색에 나가는 장소 이름. 사용자가 label을 바꿔도 이 값은 그대로 둔다. */
+  search_center_name?: string | null;
+  address?: string | null;
 }
 
 export interface SavedPreferenceItem {
