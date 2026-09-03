@@ -34,6 +34,10 @@ import type {
   RecommendationsResponse,
   SessionContextResponse,
   SavedPlacesResponse,
+  SavedScheduleDetail,
+  SavedScheduleSummary,
+  SavedSchedulesResponse,
+  ScheduleResult,
   TranscriptionResponse,
   WeatherCondition,
 } from "../types";
@@ -254,6 +258,59 @@ export function replacePreferences(items: readonly SavedPreferenceItem[]) {
  */
 export function fetchChatSessions() {
   return apiClient.get<ChatSessionsResponse>("/sessions");
+}
+
+/*
+ * 저장한 일정. (SCHEDULE 카드 2)
+ *
+ * 다섯 다 **토큰이 없으면 401**이다 — 신원이 곧 저장 키라, 누구의 일정인지가
+ * 정해지지 않으면 저장할 자리도 돌려줄 목록도 없다(/preferences·/sessions와 같다).
+ *
+ * 경로가 /state/{sessionId} 아래가 아닌 이유는 저장한 일정이 특정 세션에 속하지
+ * 않기 때문이다. 세션은 30일 뒤 정리되지만 저장한 일정은 남는다.
+ */
+export function fetchSavedSchedules() {
+  return apiClient.get<SavedSchedulesResponse>("/schedules");
+}
+
+/*
+ * 일정을 저장한다. **제목을 화면이 만들어 보낸다** — 서버는 payload를 열어보지
+ * 않기로 되어 있어(saved_schedules 모듈) 일정 내용에서 제목을 뽑을 수 없다.
+ *
+ * 같은 (신원, run_id)를 다시 보내면 새로 만들지 않고 이미 있는 것을 돌려준다.
+ * 실패가 아니라 성공이며 응답도 처음 저장한 것과 같으므로, 화면은 두 경우를
+ * 구분할 필요가 없다.
+ */
+export function saveSchedule(input: {
+  title: string;
+  payload: ScheduleResult;
+  sessionId?: string;
+  runId?: string;
+}) {
+  return apiClient.post<SavedScheduleDetail>("/schedules", {
+    title: input.title,
+    payload: input.payload,
+    session_id: input.sessionId ?? null,
+    run_id: input.runId ?? null,
+  });
+}
+
+export function fetchSavedSchedule(scheduleId: string) {
+  return apiClient.get<SavedScheduleDetail>(`/schedules/${encodeURIComponent(scheduleId)}`);
+}
+
+export function renameSavedSchedule(scheduleId: string, title: string) {
+  return apiClient.patch<SavedScheduleSummary>(
+    `/schedules/${encodeURIComponent(scheduleId)}/title`,
+    { title },
+  );
+}
+
+/* 이미 없으면 오류가 아니라 deleted=false다. 남의 것을 지우려 하면 403이다. */
+export function deleteSavedSchedule(scheduleId: string) {
+  return apiClient.del<{ id: string; deleted: boolean }>(
+    `/schedules/${encodeURIComponent(scheduleId)}`,
+  );
 }
 
 export function renameChatSession(sessionId: string, title: string) {
