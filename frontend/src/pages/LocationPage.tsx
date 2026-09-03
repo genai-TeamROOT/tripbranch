@@ -2,7 +2,7 @@
  * 역할: 위치 설정 화면. Figma "Location (Sheet)"(29:2) 화면 그대로 옮긴 것이다.
  * 입력: TripContext의 device_location, localStorage의 즐겨찾기, 검색어.
  * 출력: 장소 검색 결과 목록(GET /api/places/search — 서버가 서울 안으로 좁혀
- *   준다)과 그중 고른 검색 위치(SET_SEARCH_CENTER 디스패치 → 다음 요청부터
+ *   준다)과 그중 고른 검색 위치(searchCenterStorage에 저장 → 다음 요청부터
  *   AgentRequest.selected_search_center로 실려 간다), "현재 위치 사용"(실제
  *   브라우저 GPS 재조회 — SET_DEVICE_LOCATION 디스패치), 즐겨찾기 목록(사이드바와
  *   같은 저장소 공유). 최근 검색은 검색 기록을 아직 저장하지 않아 자리만 잡아 둔다.
@@ -27,6 +27,7 @@ import {
 } from "../state/sidebarStorage";
 import { getLocationAgeMinutes } from "../utils/locationRefresh";
 import { getBrowserDeviceLocation } from "../utils/geolocation";
+import { loadSearchCenter, saveSearchCenter } from "../state/searchCenterStorage";
 import { searchPlaces } from "../api/trip";
 import type { PlaceSearchCandidate } from "../types";
 
@@ -45,6 +46,9 @@ export function LocationPage() {
   const [outsideServiceAreaCount, setOutsideServiceAreaCount] = useState(0);
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
+  /* 저장소가 진실이고 이 state는 화면을 다시 그리기 위한 사본이다 — 발화를 보낼
+     때는 HomePage·ChatPage가 저장소를 직접 읽는다. */
+  const [searchCenter, setSearchCenter] = useState<string | null>(() => loadSearchCenter());
 
   useEffect(() => saveFavorites(favorites), [favorites]);
 
@@ -69,11 +73,16 @@ export function LocationPage() {
 
   /* 입력할 때마다 부르지 않고 제출할 때만 부른다. Naver 지역 검색은 호출 한도가
      있는 유료 API라 글자마다 부르면 한 번 검색에 열 번 넘게 나간다. */
+  function updateSearchCenter(name: string | null) {
+    saveSearchCenter(name);
+    setSearchCenter(name);
+  }
+
   function handleSelect(place: PlaceSearchCandidate) {
-    /* 좌표가 아니라 이름을 넘긴다 — 이름을 좌표로 바꾸는 경로는 백엔드의
+    /* 좌표가 아니라 이름을 저장한다 — 이름을 좌표로 바꾸는 경로는 백엔드의
        ResolveLocationTool 하나로 이미 정리돼 있다(AgentRequest.
        selected_search_center 주석 참고). */
-    dispatch({ type: "SET_SEARCH_CENTER", payload: { name: place.name } });
+    updateSearchCenter(place.name);
     setSearchResults(null);
     setQuery("");
   }
@@ -121,18 +130,16 @@ export function LocationPage() {
           </button>
         </form>
 
-        {state.selected_search_center && (
+        {searchCenter && (
           <div className="flex items-center gap-2.5 rounded-xl bg-white px-3.5 py-3 shadow-resting">
             <MapPin size={17} className="shrink-0 text-brand" />
             <div className="min-w-0 flex-1">
               <p className="text-xs text-muted">이 위치를 기준으로 찾아요</p>
-              <p className="truncate text-sm font-bold text-ink">
-                {state.selected_search_center}
-              </p>
+              <p className="truncate text-sm font-bold text-ink">{searchCenter}</p>
             </div>
             <button
               type="button"
-              onClick={() => dispatch({ type: "SET_SEARCH_CENTER", payload: { name: null } })}
+              onClick={() => updateSearchCenter(null)}
               className="shrink-0 text-xs font-bold text-muted transition-colors hover:text-rust"
             >
               해제

@@ -14,6 +14,7 @@ import { AppShellProvider } from "../components/layout/AppShellContext";
 import { TripProvider } from "../state/TripContext";
 import { LocationPage } from "./LocationPage";
 import { searchPlaces } from "../api/trip";
+import { loadSearchCenter, saveSearchCenter } from "../state/searchCenterStorage";
 
 vi.mock("../api/trip", () => ({ searchPlaces: vi.fn() }));
 
@@ -158,9 +159,21 @@ test("검색 결과를 고르면 검색 위치로 잡히고, 해제하면 풀린
   // 고르고 나면 결과 목록은 닫힌다 — 이미 정했으니 계속 띄워 둘 이유가 없다.
   expect(screen.queryByText("검색 결과")).not.toBeInTheDocument();
 
+  // 저장소가 진실이다 — 발화를 보낼 때 HomePage·ChatPage가 여기서 읽어 간다.
+  expect(loadSearchCenter()).toBe("안국역");
+
   await user.click(screen.getByRole("button", { name: "해제" }));
 
   expect(screen.queryByText("이 위치를 기준으로 찾아요")).not.toBeInTheDocument();
+  expect(loadSearchCenter()).toBeNull();
+});
+
+test("이전에 고른 검색 위치가 있으면 화면을 열자마자 보여준다", () => {
+  saveSearchCenter("서울역");
+  renderPage();
+
+  expect(screen.getByText("이 위치를 기준으로 찾아요")).toBeInTheDocument();
+  expect(screen.getByText("서울역")).toBeInTheDocument();
 });
 
 test("서울 밖 결과만 걸러졌으면 지역 제한을 알려준다", async () => {

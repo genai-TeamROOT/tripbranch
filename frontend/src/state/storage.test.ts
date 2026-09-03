@@ -49,7 +49,6 @@ const state: TripState = {
   device_location: "37.5788,126.9770",
   device_location_captured_at: 1_785_000_000_000,
   device_location_snoozed_until: null,
-  selected_search_center: null,
   awaiting_clarification: false,
   agentProgress: null,
   streamingIntent: null,

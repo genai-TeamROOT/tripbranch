@@ -25,6 +25,7 @@ import {
   wasCancelledByUser,
 } from "../state/chatAbortController";
 import { loadPreferences } from "../state/preferenceStorage";
+import { loadSearchCenter } from "../state/searchCenterStorage";
 import { syncPreferences } from "../state/preferenceSync";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import { buildAgentStageTimings } from "../utils/agentTiming";
@@ -156,7 +157,7 @@ export function HomePage() {
           language: state.language,
           session_id: null,
           device_location: deviceLocation,
-          selected_search_center: state.selected_search_center,
+          selected_search_center: loadSearchCenter(),
         },
         (event) => {
           if (event.type === "progress") {

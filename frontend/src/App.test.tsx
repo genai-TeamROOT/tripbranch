@@ -9,6 +9,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
+import { saveSearchCenter } from "./state/searchCenterStorage";
 import { resetChatSessionsCache } from "./state/chatSessions";
 
 // 실사용 흐름은 /api/chat 한 번으로 해석과 추천을 함께 받는다(AgentResponse).
@@ -258,37 +259,11 @@ test("user chat needs only one chat call", async () => {
 });
 
 test("sends the search center picked on the location screen with the chat request", async () => {
-  /* 위치 설정 화면에서 고른 값은 sessionStorage에 남는다(state/storage.ts) —
-     화면을 다시 거치지 않고 저장 형식을 직접 심어, 발화 요청에 그 값이 실려
-     나가는지만 본다. 필드 이름이 어긋나면 화면은 멀쩡한데 위치만 조용히
-     무시되므로 요청 본문으로 못 박는다. */
-  sessionStorage.setItem(
-    "tripbranch_state",
-    JSON.stringify({
-      version: 7,
-      state: {
-        language: "ko",
-        user_input: "",
-        interpreted_conditions: null,
-        recommendations: [],
-        unverified_recommendations: [],
-        shown_place_ids: [],
-        messages: [],
-        auditTurns: [],
-        phase: "idle",
-        error: null,
-        session_id: null,
-        device_location: null,
-        device_location_captured_at: null,
-        device_location_snoozed_until: null,
-        selected_search_center: "안국역",
-        awaiting_clarification: false,
-        saved_places: [],
-        agentProgress: null,
-        streamingIntent: null,
-      },
-    }),
-  );
+  /* 위치 설정 화면에서 고른 값은 sessionStorage에 남는다(state/searchCenterStorage) —
+     화면을 다시 거치지 않고 저장소에 직접 넣고, 발화 요청에 그 값이 실려 나가는지만
+     본다. 필드 이름이 어긋나면 화면은 멀쩡한데 위치만 조용히 무시되므로 요청
+     본문으로 못 박는다. */
+  saveSearchCenter("안국역");
   await renderApp();
 
   await userEvent.type(
@@ -299,9 +274,14 @@ test("sends the search center picked on the location screen with the chat reques
   );
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
 
+  /* 이 화면은 발화 말고도 다른 요청을 보내므로(취향 조회 등) 순서로 집지 않고
+     /chat 요청을 찾아 본문을 확인한다. */
   const fetchMock = vi.mocked(fetch);
-  await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-  const requestBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+  await waitFor(() =>
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("/chat"))).toBe(true),
+  );
+  const chatCall = fetchMock.mock.calls.find((call) => String(call[0]).includes("/chat"));
+  const requestBody = JSON.parse(String(chatCall?.[1]?.body));
   expect(requestBody.selected_search_center).toBe("안국역");
 });
 

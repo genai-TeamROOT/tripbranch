@@ -52,7 +52,6 @@ function seed(items: SavedPlaceItem[]): void {
     device_location: null,
     device_location_captured_at: null,
     device_location_snoozed_until: null,
-    selected_search_center: null,
     awaiting_clarification: false,
     saved_places: items,
     agentProgress: null,

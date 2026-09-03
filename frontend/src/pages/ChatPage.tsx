@@ -31,6 +31,7 @@ import {
   endChatRequest,
   wasCancelledByUser,
 } from "../state/chatAbortController";
+import { loadSearchCenter } from "../state/searchCenterStorage";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import type { TravelOrigin } from "../types";
 import { buildAgentStageTimings } from "../utils/agentTiming";
@@ -166,7 +167,7 @@ export function ChatPage() {
             language: state.language,
             session_id: state.session_id,
             device_location: deviceLocation,
-            selected_search_center: state.selected_search_center,
+            selected_search_center: loadSearchCenter(),
             conversation_place_name: conversationPlaceName,
             clarification_choice: clarificationChoice ?? null,
             travel_origin_override: travelOriginOverride ?? null,
@@ -283,7 +284,6 @@ export function ChatPage() {
       state.device_location,
       state.language,
       state.messages,
-      state.selected_search_center,
       state.session_id,
     ],
   );

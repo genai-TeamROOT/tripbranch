@@ -77,14 +77,6 @@ export interface TripState {
    */
   device_location_snoozed_until: number | null;
   /*
-   * 위치 설정 화면에서 사용자가 직접 고른 검색 위치의 이름(예: "안국역").
-   * device_location과 다른 값이다 — 그쪽은 "사용자가 지금 있는 곳"이고 이쪽은
-   * "어디를 기준으로 찾을지"다. 매 요청에 함께 보내면, 발화가 위치를 말하지
-   * 않은 턴에서 백엔드가 이 값을 검색 위치로 채운다(AgentRequest.
-   * selected_search_center). 발화가 위치를 말했으면 발화가 이긴다.
-   */
-  selected_search_center: string | null;
-  /*
    * 직전 턴이 추천 없이 되묻기로 끝났는지. Agent는 "직전에 무엇을 되물었는지"를
    * 다음 턴 Intent 분류에 넘기지 않아서, 사용자가 "경복궁"처럼 짧게 답하면 INFO로
    * 분류돼 추천이 나오지 않는다. 입력창 placeholder로 더 온전한 문장을 유도한다.
@@ -118,7 +110,6 @@ const initialTripState: TripState = {
   device_location: null,
   device_location_captured_at: null,
   device_location_snoozed_until: null,
-  selected_search_center: null,
   awaiting_clarification: false,
   saved_places: [],
   agentProgress: null,
@@ -200,7 +191,6 @@ type TripAction =
   | { type: "SET_SAVED_PLACES"; payload: { items: SavedPlaceItem[] } }
   | { type: "SNOOZE_LOCATION_REFRESH"; payload: { until: number } }
   | { type: "SET_DEVICE_LOCATION"; payload: { deviceLocation: string; capturedAt: number } }
-  | { type: "SET_SEARCH_CENTER"; payload: { name: string | null } }
   | { type: "CANCEL_CHAT_TURN" }
   | { type: "RESET" };
 
@@ -897,10 +887,6 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         device_location_captured_at: action.payload.capturedAt,
         device_location_snoozed_until: null,
       };
-    case "SET_SEARCH_CENTER":
-      // 위치 설정 화면에서 검색 결과를 골랐을 때(또는 해제했을 때). 채팅 턴을
-      // 거치지 않고도 다음 요청부터 이 위치를 기준으로 찾도록 미리 담아 둔다.
-      return { ...state, selected_search_center: action.payload.name };
     case "CANCEL_CHAT_TURN": {
       // 응답 대기 중 "중단"을 눌렀을 때(§7.2). 아직 생각 중 단계라 타이프라이터
       // 메시지가 없으면(로딩 버블만 있었으면) 아무 것도 안 남기고, 이미 일부
