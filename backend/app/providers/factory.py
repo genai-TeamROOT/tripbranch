@@ -306,7 +306,7 @@ def get_place_search_provider(client: httpx.AsyncClient) -> PlaceSearchProvider:
 def get_district_place_search_provider(
     client: httpx.AsyncClient,
 ) -> DistrictPlaceSearchProvider:
-    """구 이름으로 들어온 요청의 후보 검색 provider를 준비한다(D-1XX).
+    """구 이름으로 들어온 요청의 후보 검색 provider를 준비한다(D-119).
 
     구 전량 후보는 Supabase에만 있으므로 이 경로는 TourAPI로 대체할 수 없다 —
     locationBasedList2는 좌표와 반경이 필수다. 그래서 실 provider 모드에서 Supabase

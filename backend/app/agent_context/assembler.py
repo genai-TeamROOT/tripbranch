@@ -43,7 +43,7 @@ class ContextAssemblyInput:
     holidays_result: HolidayToolResult | None = None
     weather_requested: bool = True
     holidays_requested: bool = True
-    # 구 단위로 후보를 모은 요청이면 그 사실. 반경 검색이면 None이다(D-1XX).
+    # 구 단위로 후보를 모은 요청이면 그 사실. 반경 검색이면 None이다(D-119).
     district_scope: DistrictScope | None = None
 
 

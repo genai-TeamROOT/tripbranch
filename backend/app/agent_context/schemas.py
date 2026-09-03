@@ -295,7 +295,7 @@ def _is_empty_data(value: object) -> bool:
 
 
 class DistrictScope(StrictModel):
-    """후보를 구 하나에서 통째로 모았다는 사실(D-1XX).
+    """후보를 구 하나에서 통째로 모았다는 사실(D-119).
 
     구 이름을 정규화한 값이라 사용자가 "강남"이라고 해도 여기는 "강남구"다.
     """
@@ -328,7 +328,7 @@ class RecommendationContext(StrictModel):
     places: ContextValue[list[PlaceCandidate]] | None = None
     holidays: ContextValue[list[HolidayInfo]] | None = None
     # 후보를 어디에서 모았는가. None이면 지금까지처럼 location을 중심으로 한 반경
-    # 검색이고, 값이 있으면 그 구 전체에서 모은 것이다(D-1XX).
+    # 검색이고, 값이 있으면 그 구 전체에서 모은 것이다(D-119).
     #
     # **판정이 아니라 사실만 싣는다**(D-051). "거리 점수를 쓰지 마라"가 아니라
     # "이 후보들에는 기준점이 없다"는 사실이다. 구 단위 요청의 location은 구 이름을

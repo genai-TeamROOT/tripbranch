@@ -179,7 +179,7 @@ class PlaceRepository(Protocol):
 
 
 class DistrictPlaceRepository(Protocol):
-    """구 하나의 활성 장소를 전부 읽는 읽기 전용 계약(D-1XX).
+    """구 하나의 활성 장소를 전부 읽는 읽기 전용 계약(D-119).
 
     다른 후보 수집 계약과 나눈 이유는 **모으는 단위가 다르기** 때문이다. 좌표와
     반경을 받지 않고 구 코드 하나만 받는다 — 구 단위 요청은 기준점이 없다.

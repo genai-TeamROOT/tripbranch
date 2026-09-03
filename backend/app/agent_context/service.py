@@ -278,7 +278,7 @@ class ContextService:
         if category_plan.has_unsupported_conditions or category_plan.has_conflicts:
             return _unsupported_category_response(request, category_plan)
 
-        # "강남구"처럼 구 이름으로 들어온 요청은 후보를 그 구 전체에서 모은다(D-1XX).
+        # "강남구"처럼 구 이름으로 들어온 요청은 후보를 그 구 전체에서 모은다(D-119).
         # 반경 검색으로 풀면 대표점 주변 수백 미터만 보게 된다 — 반경 2km 원은
         # 12.6km²인데 강남구는 39.5km²다.
         #
@@ -2506,7 +2506,7 @@ def _normalize_place_name(value: str) -> str:
 
 
 def _supported_district(value: str) -> ServiceDistrict | None:
-    """추천 요청의 위치 표현이 지원 구를 통째로 가리키는지 본다(D-1XX).
+    """추천 요청의 위치 표현이 지원 구를 통째로 가리키는지 본다(D-119).
 
     `_supported_district_name()`과 같은 정규화를 쓰되 구 코드까지 필요해서 객체를
     돌려준다 — 구 단위 후보 조회가 lDongSignguCd로 읽기 때문이다.

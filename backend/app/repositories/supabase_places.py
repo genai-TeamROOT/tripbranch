@@ -822,7 +822,7 @@ class SupabasePlaceRepository:
     async def list_active_places_in_district(
         self, district_code: str
     ) -> tuple[DistrictPlaceRow, ...]:
-        """그 구의 활성 장소를 전부 읽는다(D-1XX).
+        """그 구의 활성 장소를 전부 읽는다(D-119).
 
         **개수를 자르지 않는다.** 몇 곳을 쓸지는 `agent_context.district_selection`이
         정한다. 여기서 앞의 N곳만 주면 그 자름의 순서가 결과를 정해버리는데, 구

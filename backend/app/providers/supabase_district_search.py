@@ -1,4 +1,4 @@
-"""구 단위 요청의 후보를 Supabase에서 모으는 Provider(D-1XX).
+"""구 단위 요청의 후보를 Supabase에서 모으는 Provider(D-119).
 
 역할: `RealPlaceProvider.search_places`(TourAPI locationBasedList2)를 **대체하지
 않고 나란히 선다.** 구 이름으로 들어온 요청만 이쪽으로 오고, 장소·역 이름으로 들어온

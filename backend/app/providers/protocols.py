@@ -392,7 +392,7 @@ class BarrierFreePlaceSearch:
 
 
 class DistrictPlaceSearchProvider(Protocol):
-    """구 이름으로 들어온 요청의 후보를 모으는 검색 provider(D-1XX).
+    """구 이름으로 들어온 요청의 후보를 모으는 검색 provider(D-119).
 
     `PlaceSearchProvider`와 계약을 나눈 이유는 무장애 경로와 같다 — 검색 인자가
     다르고, 인자를 더하면 무관한 경로의 서명까지 바뀐다.

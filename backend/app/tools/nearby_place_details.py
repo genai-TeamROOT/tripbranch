@@ -94,7 +94,7 @@ class NearbyPlaceDetailsQuery:
     # 한 구로 좁히면 반경 안에 있는 옆 지원 구 후보가 잘리고, 구마다 호출하면
     # 호출 수가 구 수만큼 늘어난다.
     district_code: str | None = None
-    # 값이 있으면 **반경을 버리고 그 구 전체를 후보 모집단으로 삼는다**(D-1XX).
+    # 값이 있으면 **반경을 버리고 그 구 전체를 후보 모집단으로 삼는다**(D-119).
     # 위 district_code와 다른 것이다 — 저쪽은 TourAPI 반경 검색에 구 필터를 얹는
     # 인자이고(지금 아무도 안 쓴다), 이쪽은 검색 방식 자체를 바꾼다.
     #
@@ -347,7 +347,7 @@ class NearbyPlaceDetailsTool:
     async def _execute_district(
         self, query: NearbyPlaceDetailsQuery, started_at: float
     ) -> NearbyPlaceDetailsResult:
-        """구 전체를 후보 모집단으로 삼는 경로(D-1XX).
+        """구 전체를 후보 모집단으로 삼는 경로(D-119).
 
         반경 검색과 갈리는 것은 **후보를 어디서 얼마나 가져오느냐** 두 가지뿐이다.
         저장소에서 구 전량을 받고, 앞에서 자르는 대신 `select_district_candidates()`가
