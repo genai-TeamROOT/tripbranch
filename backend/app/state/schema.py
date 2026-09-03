@@ -439,6 +439,38 @@ class UserPreferenceList(BaseModel):
     updated_at: datetime = Field(default_factory=now_kst)
 
 
+# ---------------------------------------------------------------- 즐겨찾기
+
+class UserFavorite(BaseModel):
+    """사용자가 즐겨찾기에 담은 장소 하나. (위치 설정 화면)
+
+    프론트 `state/sidebarStorage.ts`의 FavoritePlace와 같은 모양이다. 백엔드는
+    이 값을 해석하지 않고 그대로 보관한다 — UserPreference와 같은 판단이다.
+
+    `label`과 `search_center_name`을 나눠 두는 이유는 사용자가 이름을 바꾸기
+    때문이다. "역삼역"을 담아 "회사"로 고쳐도 검색에는 담을 때의 장소 이름이
+    나가야 한다. 사이드바에서 자유 입력으로 만든 옛 항목에는 이 값이 없어
+    label로 떨어진다.
+    """
+
+    id: str
+    label: str
+    search_center_name: str | None = None
+    address: str | None = None
+
+
+class UserFavoriteList(BaseModel):
+    """계정 단위 즐겨찾기.
+
+    UserPreferenceList와 같은 모양이다 — 세션이 아니라 사람에게 붙는 값이라
+    키가 user_id이고, items의 순서는 담은 순서이며 화면이 그대로 보여준다.
+    """
+
+    user_id: str
+    items: list[UserFavorite] = Field(default_factory=list)
+    updated_at: datetime = Field(default_factory=now_kst)
+
+
 # ---------------------------------------------------------------- 기록
 
 class ConditionChangeLog(BaseModel):

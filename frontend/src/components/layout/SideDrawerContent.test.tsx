@@ -17,6 +17,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 import App from "../../App";
 import { resetChatSessionsCache } from "../../state/chatSessions";
+import { resetFavoritesSync } from "../../state/favoritesSync";
 import { resetSavedSchedulesCache } from "../../state/savedSchedules";
 import { isDetachedRequest } from "../../state/chatAbortController";
 import { GUEST_SESSION, setMockSession } from "../../test/supabaseMock";
@@ -264,6 +265,7 @@ beforeEach(() => {
   localStorage.setItem("tb_favorites", JSON.stringify(SEED_FAVORITES));
   window.history.pushState({}, "", "/");
   resetChatSessionsCache();
+  resetFavoritesSync();
   resetSavedSchedulesCache();
   server.schedules = [];
   server.sessions = [

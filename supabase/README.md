@@ -211,6 +211,14 @@ supabase migration list
   걷어가지만 이 테이블은 아무것도 치우지 않아 계정이 지워져도 남기 때문이다.
   RLS는 켜고 정책은 만들지 않는다: 프론트가 직접 붙지 않고 FastAPI만 접근한다)
 
+- 계정 단위 즐겨찾기 마이그레이션:
+  `202609030006_create_user_favorites.sql`
+  (위치 설정 화면, PR #361 후속. `user_favorites` 신설 — `user_preferences`와 같은
+  모양이다. 세션이 아니라 사람에게 붙는 값이라 `user_id`를 PK로 `auth.users(id)`에
+  `on delete cascade`로 건다. 항목마다 행을 두지 않고 `items jsonb` 배열 하나로
+  두는 이유도 같다 — 화면이 순서·이름 변경을 목록 단위로 다룬다. RLS는 켜고
+  정책은 만들지 않는다: 프론트가 직접 붙지 않고 FastAPI만 접근한다)
+
 - `202607240001_create_place_tables.sql`을 현재 프로젝트에 다시 실행하지 않는다.
   테이블과 관련 객체가 이미 존재하므로 중복 생성 오류가 발생한다.
 - `202607240002_add_place_sync_locks.sql`도 현재 프로젝트에 다시 실행하지 않는다.
@@ -224,6 +232,8 @@ supabase migration list
   상태다. 위와 같은 이유로 재실행하지 않는다.
 - `202609030001_create_user_preferences.sql`도 적용 완료 상태다(2026-09-03, MCP
   `apply_migration`, 원격 이력에는 `create_user_preferences`로 기록).
+- `202609030006_create_user_favorites.sql`도 적용 완료 상태다(2026-09-03, MCP
+  `apply_migration`, 원격 이력에는 `create_user_favorites`로 기록).
 - `202609030002_add_agent_states_title.sql`도 적용 완료 상태다(2026-09-03).
   `agent_states.title` 추가 + 기존 283건 backfill + `(user_id, last_active_at desc)`
   부분 인덱스. **backfill 값은 근사치다** — 남아 있는 가장 오래된 턴이라

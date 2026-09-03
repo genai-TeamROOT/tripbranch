@@ -15,6 +15,8 @@
 import { apiClient, streamPost } from "./client";
 import { isDetachedRequest } from "../state/chatAbortController";
 import type {
+  FavoritePlaceItem,
+  FavoritesResponse,
   PhotoSimilarPlacesResponse,
   PlaceSearchResponse,
   AgentDebugRequest,
@@ -213,9 +215,7 @@ export function searchPlacesByPhoto(params: {
  * 위치이고, 지원 지역이 서울 25개 구이기 때문이다.
  */
 export function searchPlaces(query: string) {
-  return apiClient.get<PlaceSearchResponse>(
-    `/places/search?query=${encodeURIComponent(query)}`,
-  );
+  return apiClient.get<PlaceSearchResponse>(`/places/search?query=${encodeURIComponent(query)}`);
 }
 
 /*
@@ -258,6 +258,18 @@ export function fetchPreferences() {
 
 export function replacePreferences(items: readonly SavedPreferenceItem[]) {
   return apiClient.put<PreferencesResponse>("/preferences", { items });
+}
+
+/*
+ * 계정 단위 즐겨찾기. 취향과 같은 자리의 값이라 경로에 session_id가 없고,
+ * **토큰이 없으면 401**이다 - 신원이 곧 저장 키다.
+ */
+export function fetchFavorites() {
+  return apiClient.get<FavoritesResponse>("/favorites");
+}
+
+export function replaceFavorites(items: readonly FavoritePlaceItem[]) {
+  return apiClient.put<FavoritesResponse>("/favorites", { items });
 }
 
 /*
@@ -326,10 +338,9 @@ export function deleteSavedSchedule(scheduleId: string) {
 }
 
 export function renameChatSession(sessionId: string, title: string) {
-  return apiClient.patch<ChatSessionSummary>(
-    `/state/${encodeURIComponent(sessionId)}/title`,
-    { title },
-  );
+  return apiClient.patch<ChatSessionSummary>(`/state/${encodeURIComponent(sessionId)}/title`, {
+    title,
+  });
 }
 
 /* 세션 전체를 지운다. 대화 목록에서 한 줄을 지우는 것이 곧 그 대화를 지우는 것이다. */
@@ -349,8 +360,5 @@ export function deleteChatSession(sessionId: string) {
  * 필요로 하는 동작이다.
  */
 export function resumeChatSession(sessionId: string) {
-  return apiClient.post<ChatSessionDetail>(
-    `/sessions/${encodeURIComponent(sessionId)}/resume`,
-    {},
-  );
+  return apiClient.post<ChatSessionDetail>(`/sessions/${encodeURIComponent(sessionId)}/resume`, {});
 }

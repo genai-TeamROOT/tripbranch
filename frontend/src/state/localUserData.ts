@@ -13,19 +13,19 @@
  * 들어 있어 통째로 비우면 로그인 흐름이 깨진다. 저장소별 모듈이 자기 키만 지운다.
  *
  * **저장소만 지우면 부족하다.** 취향(preferenceSync)·지난 대화 목록(chatSessions)·
- * 저장한 일정(savedSchedules)은 "페이지 로드당 한 번만 받아온다"고 모듈 변수에
+ * 저장한 일정(savedSchedules)·즐겨찾기(favoritesSync)는 "페이지 로드당 한 번만 받아온다"고 모듈 변수에
  * 담아 두는데, 이 변수는 로그아웃을 넘어 살아남는다. 저장소를 비워도 다음 사람
  * 화면에 앞사람의 취향·대화 제목·일정이 그대로 뜨고, 취향은 그 상태로 새 계정에
  * 저장될 수도 있다. 캐시도 함께 비운다.
  *
  * 계정에서 받아오는 목록을 새로 만들면 여기에 그 캐시 비우기를 더해야 한다.
  *
- * 즐겨찾기는 서버에 사본이 없어 지우면 돌아오지 않는다. 그래도 지우는 쪽을
- * 택했다 — 남의 계정 화면에 앞사람의 데이터가 남는 편이 더 나쁘다. 취향은
- * 서버에 있어 같은 계정으로 다시 로그인하면 되받아온다.
+ * 즐겨찾기도 이제 계정에 저장되므로(favoritesSync), 취향과 마찬가지로 같은
+ * 계정으로 다시 로그인하면 되받아온다 — 이 기기에서 지우는 것은 사본이다.
  */
 
 import { resetChatSessionsCache } from "./chatSessions";
+import { resetFavoritesSync } from "./favoritesSync";
 import { clearRecentSearches } from "./recentSearchesStorage";
 import { resetSavedSchedulesCache } from "./savedSchedules";
 import { clearPreferences } from "./preferenceStorage";
@@ -45,4 +45,5 @@ export function clearLocalUserData(): void {
   resetPreferenceSync();
   resetChatSessionsCache();
   resetSavedSchedulesCache();
+  resetFavoritesSync();
 }

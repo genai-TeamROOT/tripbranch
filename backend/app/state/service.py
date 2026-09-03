@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.auth.principal import Principal
 from app.errors import AppError
+from app.state import favorites as favorites_module
 from app.state import feedback as feedback_module
 from app.state import history as history_module
 from app.state import preferences as preferences_module
@@ -46,6 +47,7 @@ from app.state.schema import (
     SessionMessage,
     SituationState,
     UserConditions,
+    UserFavorite,
     UserPreference,
     now_kst,
 )
@@ -1545,6 +1547,58 @@ def replace_user_preferences(
 
     stored = preferences_module.replace(store, user_id, items)
     return UserPreferencesResponse(items=list(stored.items), updated_at=stored.updated_at)
+
+
+# ================================================================ 즐겨찾기 (계정 단위)
+
+
+class UserFavoritesResponse(BaseModel):
+    """계정 단위 즐겨찾기 조회·저장 응답.
+
+    UserPreferencesResponse와 같은 모양이다 — session_id를 담지 않고, 라우트도
+    /state/{session_id} 아래가 아니라 /favorites로 따로 나 있다.
+    """
+
+    items: list[UserFavorite] = Field(default_factory=list)
+    updated_at: datetime | None = None
+
+
+@_wrap_store_errors
+def get_user_favorites(
+    user_id: str,
+    store: StateStore | None = None,
+) -> UserFavoritesResponse:
+    """계정의 즐겨찾기를 조회한다.
+
+    아직 담은 적이 없으면 빈 목록에 updated_at=None으로 답한다. 프론트가 이
+    None으로 "한 번도 저장한 적 없는 계정"을 판정해 이 기기의 값을 올릴지
+    정한다 — 목록 길이로 판정하면 다른 기기에서 전부 지운 사람의 빈 목록이
+    낡은 로컬 값으로 되살아난다(favoritesSync).
+    """
+    store = store or get_store()
+
+    stored = store.get_favorites(user_id)
+    if stored is None:
+        return UserFavoritesResponse()
+    return UserFavoritesResponse(items=list(stored.items), updated_at=stored.updated_at)
+
+
+@_wrap_store_errors
+def replace_user_favorites(
+    user_id: str,
+    items: list[UserFavorite],
+    store: StateStore | None = None,
+) -> UserFavoritesResponse:
+    """계정의 즐겨찾기를 통째로 바꾼다.
+
+    빈 목록도 정상적인 저장이다(전부 지운 경우). 소유권 검증이 따로 없는 이유는
+    키가 곧 신원이기 때문이다 — 라우트가 RequiredPrincipal로 받은 user_id만
+    여기 들어오므로 남의 즐겨찾기에 닿을 경로가 없다.
+    """
+    store = store or get_store()
+
+    stored = favorites_module.replace(store, user_id, items)
+    return UserFavoritesResponse(items=list(stored.items), updated_at=stored.updated_at)
 
 
 # ================================================================ 대화 목록
