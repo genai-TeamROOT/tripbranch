@@ -43,6 +43,19 @@ async def list_sessions(principal: RequiredPrincipal) -> state_service.ChatSessi
     return state_service.list_user_sessions(principal.user_id)
 
 
+@router.get("/sessions/{session_id}", response_model=state_service.ChatSessionDetail)
+async def get_session_detail(
+    session_id: str, principal: RequiredPrincipal
+) -> state_service.ChatSessionDetail:
+    """지난 대화 하나. 사이드바에서 한 줄을 눌렀을 때 쓴다. (TP-222 후속)
+
+    /state/{session_id}와 달리 **TTL을 적용하지 않는다.** 채팅 히스토리는 30분보다
+    오래된 대화를 보여주는 것이 목적이라, 만료를 없는 것으로 취급하면 목록의 거의
+    모든 항목이 열리지 않는다.
+    """
+    return state_service.get_user_session_detail(session_id, principal)
+
+
 @router.patch(
     "/state/{session_id}/title",
     response_model=state_service.ChatSessionSummary,

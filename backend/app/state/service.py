@@ -23,6 +23,7 @@ from app.state import trace as trace_module
 from app.state.errors import (
     SavedPlaceNotRecommendedError,
     SessionNotFoundError,
+    SessionOwnershipError,
     StateStoreError,
 )
 from app.state.merge import merge_conditions
@@ -1566,4 +1567,55 @@ def rename_session(
         title=state.title or "",
         place_name=_latest_place_name(state),
         last_active_at=state.last_active_at,
+    )
+
+
+class ChatSessionDetail(BaseModel):
+    """지난 대화 하나. 사이드바에서 한 줄을 눌렀을 때 보여줄 내용이다.
+
+    저장된 턴은 MAX_RECENT_TURNS개뿐이라 **대화 전체가 아니다.** 화면이 그
+    사실을 밝혀야 한다.
+    """
+
+    session_id: str
+    title: str
+    turns: list[ConversationTurn] = Field(default_factory=list)
+    last_active_at: datetime
+    # 이 세션으로 대화를 이어갈 수 있는지. TTL(30분)이 지났으면 False이고,
+    # 그때 사용자가 무언가를 물으면 새 세션에서 시작된다.
+    resumable: bool
+
+
+@_wrap_store_errors
+def get_user_session_detail(
+    session_id: str,
+    principal: Principal,
+    store: StateStore | None = None,
+) -> ChatSessionDetail:
+    """내 지난 대화를 읽는다. (TP-222 후속)
+
+    **peek_session을 쓰지 않는다.** 그 함수는 TTL이 지난 세션을 없는 것으로
+    취급하는데(계약 5.4절), 채팅 히스토리는 30분보다 오래된 대화를 보여주는 것이
+    목적이라 그렇게 하면 목록의 거의 모든 항목이 열리지 않는다. 행은 그대로
+    남아 있으므로 직접 읽는다.
+
+    소유권은 verify_ownership보다 엄격하게 본다 — 그 함수는 state.user_id가
+    비어 있으면 통과시키는데(Phase 4 전 과도기), 이 엔드포인트는 애초에 "내
+    대화"만 다루므로 신원이 붙지 않은 세션은 내 것이 아니다.
+    """
+    store = store or get_store()
+
+    state = store.get_state(session_id)
+    if state is None or state.title is None:
+        raise SessionNotFoundError(session_id)
+    if state.user_id != principal.user_id:
+        raise SessionOwnershipError()
+
+    return ChatSessionDetail(
+        session_id=state.session_id,
+        title=state.title,
+        turns=list(state.recent_turns),
+        last_active_at=state.last_active_at,
+        resumable=state.status != "expired"
+        and not session_module.is_session_expired(state),
     )

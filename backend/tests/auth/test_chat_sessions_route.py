@@ -176,3 +176,68 @@ def test_없는_대화_이름을_바꾸면_404(signing_key) -> None:
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "session_not_found"
+
+
+# ---------------------------------------------------------------- 지난 대화 열기
+
+
+def test_지난_대화를_열면_주고받은_말이_나온다(signing_key) -> None:
+    session_id = _start_chat(ME, "비 오는 날 갈 곳", "실내가 좋아")
+
+    response = TestClient(app).get(f"/api/sessions/{session_id}", headers=_headers(signing_key, ME))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["title"] == "비 오는 날 갈 곳"
+    assert [turn["user_input"] for turn in body["turns"]] == ["비 오는 날 갈 곳", "실내가 좋아"]
+
+
+# 이 파일에서 두 번째로 중요한 테스트다. TTL을 적용하면 목록의 거의 모든 항목이
+# 열리지 않는다 — 세션은 30분이면 만료되는데 히스토리는 그보다 오래된 대화를
+# 보여주는 것이 목적이다.
+def test_만료된_대화도_내용은_열린다(signing_key) -> None:
+    from datetime import timedelta
+
+    from app.state.schema import now_kst
+    from app.state.store import get_store
+
+    session_id = _start_chat(ME, "아주 오래된 질문")
+    store = get_store()
+    state = store.get_state(session_id)
+    assert state is not None
+    state.last_active_at = now_kst() - timedelta(days=3)
+    store.save_state(state)
+
+    response = TestClient(app).get(f"/api/sessions/{session_id}", headers=_headers(signing_key, ME))
+
+    assert response.status_code == 200
+    assert response.json()["turns"][0]["user_input"] == "아주 오래된 질문"
+    # 다만 이어서 대화할 수는 없다 — 화면이 그 사실을 밝혀야 한다.
+    assert response.json()["resumable"] is False
+
+
+def test_남의_대화는_열리지_않는다(signing_key) -> None:
+    session_id = _start_chat(OTHER, "남의 대화")
+
+    response = TestClient(app).get(f"/api/sessions/{session_id}", headers=_headers(signing_key, ME))
+
+    assert response.status_code == 403
+
+
+def test_신원이_안_붙은_세션은_열리지_않는다(signing_key) -> None:
+    """verify_ownership은 user_id가 비면 통과시키지만, 여기는 '내 대화'만 다룬다."""
+    applied = state_service.apply(
+        state_service.StateApplyRequest(intent="RECOMMEND", confirmed=True)
+    )
+    state_service.append_conversation_turn(
+        state_service.AppendConversationTurnRequest(
+            session_id=applied.session_id,
+            turn=state_service.ConversationTurn(user_input="주인 없는 대화"),
+        )
+    )
+
+    response = TestClient(app).get(
+        f"/api/sessions/{applied.session_id}", headers=_headers(signing_key, ME)
+    )
+
+    assert response.status_code == 403
