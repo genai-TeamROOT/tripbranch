@@ -5,9 +5,16 @@
 | 슬롯 | 관리 버전 | 템플릿 | 공유 규칙 |
 | --- | --- | --- | --- |
 | recommend.extract | 2.7.0 | extract.md, location_rules.md, place_tag_rules.md | budget, weather, concentration, environment, transport, accessibility_needs |
-| recommend.summary | 1.2.0 | summary_instruction.md | persona |
+| recommend.summary | 1.3.0 | summary_instruction.md | persona |
 
 ## Draft
+
+- 2026-09-03(recommend.summary v1.3.0): 마지막 문장이 "~해 보시겠습니까?" 같은 격식체
+  의문형으로 고정되던 것을 지적받아, 이 패턴을 반복하지 말고 "~해보세요", "~는 게
+  좋아요"처럼 자연스러운 대화체로 다양하게 끝맺으라는 규칙을 추가했습니다. 기존
+  31번째 줄 규칙("선택 기준·확인할 한 가지를 덧붙이라")은 내용만 지시하고 톤은
+  지시하지 않아, 모델이 안전한 디폴트로 같은 어미를 반복 생성한 것으로 보입니다.
+  실 LLM 검증은 아직 하지 않았습니다.
 
 - 2026-09-02(recommend.extract v2.7.0, TP-207): `accessibility_needs` 추출을 추가했습니다.
   `UserConditions.accessibility_needs`(app/schemas.py)와 C(`app.agent_context.schemas`)는
