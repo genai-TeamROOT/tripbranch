@@ -11,6 +11,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import { ScheduleResultMessage } from "./ScheduleResultMessage";
+import { resetSavedSchedulesCache, subscribeSavedSchedules } from "../../state/savedSchedules";
 import type { ScheduleResult } from "../../types";
 
 const saved: { calls: unknown[]; fails: boolean } = { calls: [], fails: false };
@@ -21,6 +22,7 @@ vi.mock("../../api/trip", () => ({
     saved.calls.push(input);
     return { id: "sched-1" };
   },
+  fetchSavedSchedules: async () => ({ items: [] }),
 }));
 
 const SCHEDULE = {
@@ -59,6 +61,7 @@ const SCHEDULE = {
 afterEach(() => {
   saved.calls = [];
   saved.fails = false;
+  resetSavedSchedulesCache();
 });
 
 function renderMessage() {
@@ -120,4 +123,19 @@ test("저장에 실패하면 저장된 것처럼 보이지 않는다", async () 
   expect(await screen.findByRole("alert")).toHaveTextContent("저장하지 못했어요");
   /* 다시 누를 수 있어야 한다 — 잠긴 채로 두면 사용자가 할 수 있는 일이 없다. */
   expect(screen.getByRole("button", { name: "이 일정 저장" })).toBeEnabled();
+});
+
+/*
+ * 저장하면 사이드바 목록이 바로 바뀌어야 한다. 새로고침해야 보이면 사용자는
+ * 저장이 안 된 줄 안다 — 실제로 그랬다(브라우저 검증 2026-09-03).
+ */
+test("저장하면 목록을 다시 받아온다", async () => {
+  const seen: unknown[] = [];
+  const unsubscribe = subscribeSavedSchedules((entries) => seen.push(entries));
+  renderMessage();
+
+  await userEvent.click(screen.getByRole("button", { name: "이 일정 저장" }));
+
+  await waitFor(() => expect(seen).toHaveLength(1));
+  unsubscribe();
 });

@@ -24,6 +24,7 @@
 
 import { useState } from "react";
 import { saveSchedule } from "../../api/trip";
+import { refreshSavedSchedules } from "../../state/savedSchedules";
 import type { ScheduleResult } from "../../types";
 import { defaultScheduleTitle } from "../../utils/scheduleTitle";
 import { ScheduleCard } from "../ScheduleCard";
@@ -47,8 +48,6 @@ interface ScheduleResultMessageProps {
      session_id는 출처 표시다. 응답이 run_id 없이 끝나는 경로가 있어 둘 다 선택. */
   runId?: string;
   sessionId?: string;
-  /* 저장이 끝났을 때. 사이드바 목록을 다시 받아오는 데 쓴다. */
-  onSaved?: () => void;
 }
 
 /* idle → saving → saved. 실패는 error로 빠지고 다시 누를 수 있다. */
@@ -63,7 +62,6 @@ export function ScheduleResultMessage({
   onRelaxRadius,
   runId,
   sessionId,
-  onSaved,
 }: ScheduleResultMessageProps) {
   const hasItems = schedule.items.length > 0;
   const [saveState, setSaveState] = useState<SaveState>("idle");
@@ -84,7 +82,9 @@ export function ScheduleResultMessage({
         runId,
       });
       setSaveState("saved");
-      onSaved?.();
+      /* 사이드바 목록을 바로 갱신한다. 저장하고 사이드바를 봤는데 없으면
+         사용자는 저장이 안 된 줄 안다 — 실제로 새로고침해야 보였다. */
+      void refreshSavedSchedules();
     } catch {
       setSaveState("error");
     }

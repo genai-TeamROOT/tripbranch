@@ -28,7 +28,11 @@ import { useTripDispatch, useTripState } from "../../state/TripContext";
 import type { Language } from "../../types";
 import { deleteChatSession, renameChatSession, resumeChatSession } from "../../api/trip";
 import { loadChatSessions, refreshChatSessions } from "../../state/chatSessions";
-import { loadSavedSchedules, type SavedScheduleEntry } from "../../state/savedSchedules";
+import {
+  loadSavedSchedules,
+  subscribeSavedSchedules,
+  type SavedScheduleEntry,
+} from "../../state/savedSchedules";
 import {
   createId,
   loadFavorites,
@@ -94,8 +98,12 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
     void loadSavedSchedules().then((entries) => {
       if (active) setSchedules(entries);
     });
+    /* 일정을 저장하면 목록이 바로 바뀐다. 대화 목록처럼 TripContext 상태를 볼 수
+       없는 이유는 savedSchedules.subscribeSavedSchedules 주석에 있다. */
+    const unsubscribe = subscribeSavedSchedules(setSchedules);
     return () => {
       active = false;
+      unsubscribe();
     };
   }, [session?.user?.id]);
   /*

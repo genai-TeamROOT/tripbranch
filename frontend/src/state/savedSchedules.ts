@@ -54,13 +54,40 @@ export function loadSavedSchedules(): Promise<SavedScheduleEntry[]> {
 
 let inflight: Promise<SavedScheduleEntry[]> | null = null;
 
-/** 서버에서 다시 받아온다. 일정을 저장했거나 지웠을 때 쓴다. */
+type Listener = (entries: SavedScheduleEntry[]) => void;
+const listeners = new Set<Listener>();
+
+/**
+ * 목록이 갱신되면 알려준다. 사이드바가 구독한다.
+ *
+ * **대화 목록과 방식이 다른 이유.** 저쪽은 새 대화가 생기는 계기가 TripContext의
+ * 상태 변화(턴 완료)라 사이드바가 그걸 보면 됐다. 저장은 일정 카드의 버튼
+ * 클릭이고 그 컴포넌트는 사이드바와 멀리 떨어져 있어, 상태를 타고 전달하려면
+ * 전역 상태에 저장 전용 필드를 하나 더 만들어야 한다. 목록 캐시가 이미 이
+ * 모듈에 있으니 여기서 알리는 편이 작다.
+ *
+ * 반환값은 구독 해제 함수다.
+ */
+export function subscribeSavedSchedules(listener: Listener): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+/**
+ * 서버에서 다시 받아온다. 일정을 저장했거나 지웠을 때 쓴다.
+ *
+ * 받아온 뒤 구독자에게 알린다 — 저장하고 사이드바를 봤는데 없으면 사용자는
+ * 저장이 안 된 줄 안다(실제로 새로고침해야 보였다).
+ */
 export function refreshSavedSchedules(): Promise<SavedScheduleEntry[]> {
   if (inflight) return inflight;
   const request = load()
     .catch(() => [] as SavedScheduleEntry[])
     .then((entries) => {
       inflight = null;
+      listeners.forEach((listener) => listener(entries));
       return entries;
     });
   inflight = request;
@@ -72,4 +99,5 @@ export function refreshSavedSchedules(): Promise<SavedScheduleEntry[]> {
 export function resetSavedSchedulesCache(): void {
   cached = null;
   inflight = null;
+  listeners.clear();
 }
