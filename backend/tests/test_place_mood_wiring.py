@@ -76,3 +76,48 @@ def test_warmup_runs_only_when_enabled(monkeypatch) -> None:
     monkeypatch.setattr(factory.settings, "place_mood_warmup_enabled", True)
     factory._get_mood_encoder()
     assert calls == ["warmup"]
+
+
+def _allow_reranker(monkeypatch) -> None:
+    """재랭커가 만들어지는 조건을 모두 갖춘 상태."""
+    monkeypatch.setattr(factory.settings, "place_mood_rerank_enabled", True)
+    monkeypatch.setattr(factory.settings, "llm_api_key", "key")
+    monkeypatch.setattr(
+        factory.settings.__class__, "resolved_llm_provider", property(lambda self: "real")
+    )
+    monkeypatch.setattr(
+        "app.providers.gemini_vlm_rerank.genai.Client", lambda **kw: object()
+    )
+
+
+def test_reranker_is_none_when_disabled(client, monkeypatch) -> None:
+    """기본은 꺼져 있다. 검색 한 번에 16~47원이 드는 기능이라 명시적으로 켠다."""
+    monkeypatch.setattr(factory.settings, "place_mood_rerank_enabled", False)
+    assert factory.get_place_mood_reranker(client) is None
+
+
+def test_reranker_is_none_in_fake_llm_mode(client, monkeypatch) -> None:
+    """Fake LLM에서는 만들지 않는다.
+
+    가짜 응답으로 순서를 바꾸면 임베딩이 낸 순서가 근거 없이 뒤집히는데 오류가
+    없어 알아채기 어렵다 — D-042가 나온 사건과 같은 성격이다.
+    """
+    _allow_reranker(monkeypatch)
+    monkeypatch.setattr(
+        factory.settings.__class__, "resolved_llm_provider", property(lambda self: "fake")
+    )
+    assert factory.get_place_mood_reranker(client) is None
+
+
+def test_reranker_is_none_without_api_key(client, monkeypatch) -> None:
+    """키가 없으면 만들지 않는다. 부팅은 막지 않되 왜 안 켜졌는지는 남긴다."""
+    _allow_reranker(monkeypatch)
+    monkeypatch.setattr(factory.settings, "llm_api_key", "")
+    assert factory.get_place_mood_reranker(client) is None
+
+
+def test_reranker_is_built_when_enabled(client, monkeypatch) -> None:
+    _allow_reranker(monkeypatch)
+    reranker = factory.get_place_mood_reranker(client)
+    assert reranker is not None
+    assert reranker.model_name == factory.settings.resolved_place_mood_rerank_model_name

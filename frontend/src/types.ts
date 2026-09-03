@@ -146,6 +146,12 @@ export interface ScheduleItem {
   estimated_arrival: string;
   estimated_duration_min: number;
   travel_to_next_min: number | null;
+  // 그 이동을 무엇으로 어떻게 잰 값인지 (TP-216). 백엔드는 항상 채워 보내지만
+  // (app.schemas.ScheduleItem, 기본값 None/False) 기존 테스트 픽스처와 이 필드
+  // 이전에 저장된 세션 복원분과도 호환되도록 optional로 둔다.
+  // mode가 없으면 서버가 좌표를 못 구해 시간표 폴백값을 쓴 구간이다.
+  travel_to_next_mode?: TravelMode | null;
+  travel_to_next_measured?: boolean;
   reason: string;
   // 백엔드가 항상 채워 보내지만(app.schemas.ScheduleItem, 기본값 []), 기존
   // 테스트 픽스처가 이 필드 없이 만든 객체와도 호환되도록 optional로 둔다.

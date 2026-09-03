@@ -126,7 +126,7 @@ async def scoring_node(
     )
 
     deps: PipelineDeps = deps_from_config(config)
-    recommendations = await _score_recommendations(
+    outcome = await _score_recommendations(
         state["state_response"],
         tool_context=state["tool_context"],
         agent_conditions=state["agent_conditions"],
@@ -147,7 +147,13 @@ async def scoring_node(
         effective_ignore_operating_hours=state["effective_ignore_operating_hours"],
         stream_event_sink=sink_from_config(config),
     )
-    return {"recommendations": recommendations}
+    return {
+        "recommendations": outcome.recommendations,
+        # 보충 조회·보관함 주입으로 좌표가 합쳐진 컨텍스트로 state를 덮는다. 안
+        # 덮으면 schedule_node·finalize_node가 tool_fetch_node가 넣은 원본을 읽어
+        # 그렇게 들어온 후보의 좌표를 못 찾는다(TP-198).
+        "tool_context": outcome.tool_context,
+    }
 
 
 async def schedule_node(
@@ -172,6 +178,9 @@ async def schedule_node(
         tool_executions=state["tool_executions"],
         effective_ignore_operating_hours=state["effective_ignore_operating_hours"],
         stream_event_sink=sink_from_config(config),
+        # 구간 실측 조회에 쓴다(TP-216). 구 경로도 같은 값을 넘긴다 — 두 경로가
+        # 다른 이동시간을 내면 같은 발화가 화면마다 다른 시각을 갖는다.
+        travel_route_tool=deps.travel_route_tool,
     )
     return {"response": response}
 

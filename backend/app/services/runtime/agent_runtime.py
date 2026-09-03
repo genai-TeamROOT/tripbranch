@@ -15,7 +15,7 @@ import asyncio
 import logging
 import math
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from datetime import timedelta
@@ -29,8 +29,10 @@ from app.agent_context.schemas import (
 from app.auth.principal import Principal
 from app.config import settings
 from app.domain.ranking_origin import resolve_ranking_origin
+from app.domain.schedule_travel import ScheduleTravelCandidate, SegmentWeather
 from app.domain.scoring import SCORING_VERSION
 from app.domain.travel_route import (
+    MEASURED_ROUTE_SOURCES,
     GeoCoordinate,
     RouteDestination,
     RouteStatus,
@@ -46,7 +48,11 @@ from app.observability.langfuse_tracing import (
     record_score,
     trace_attributes,
 )
-from app.place_search_policy import MAX_PLACE_SEARCH_RADIUS_KM, WALKING_SPEED_KM_PER_MINUTE
+from app.place_search_policy import (
+    MAX_PLACE_SEARCH_RADIUS_KM,
+    WALKING_SPEED_KM_PER_MINUTE,
+    transit_switch_straight_line_km,
+)
 from app.prompts.registry import turn_prompt_version
 from app.providers.protocols import LLMProvider
 from app.repositories.protocols import PlaceDetailsReadRepository
@@ -129,7 +135,7 @@ from app.services.runtime.protocols import (
     ToolProvider,
     TravelRouteToolProvider,
 )
-from app.services.runtime.recommendation_transform import to_travel_mode
+from app.services.runtime.recommendation_transform import to_measured_travel_modes
 from app.services.runtime.response_composer import (
     compose_chat_message,
     compose_compare_message,
@@ -644,9 +650,10 @@ _CLEARED_CONDITION_VALUES: dict[str, object] = {
 # SCHEDULE 실패(후보 부족) 시 되묻기 버튼 ID 및 텍스트.
 _SCHEDULE_RELAX_AREA = "schedule_relax_area"
 _SCHEDULE_RELAX_CATEGORY = "schedule_relax_category"
+# 아래 버튼이 함께 나가므로 "다른 지역이나 다른 종류로" 같은 방법 안내를 문장에
+# 다시 적지 않는다 — 버튼이 이미 그 두 가지를 말한다.
 _SCHEDULE_NO_CANDIDATES_MESSAGE = (
-    "조건에 맞는 곳을 충분히 찾지 못해 일정을 만들지 못했어요. "
-    "다른 지역이나 다른 종류의 장소로 다시 요청해볼까요?"
+    "일정을 짤 만한 곳을 충분히 찾지 못했어요. 범위를 넓혀서 다시 찾아볼까요?"
 )
 _SCHEDULE_NO_CANDIDATES_OPTIONS = (
     (_SCHEDULE_RELAX_AREA, "다른 지역에서 찾기"),
@@ -1266,11 +1273,15 @@ async def _score_with_measured_routes(
     채점한다"고 정해 두었기 때문에, 전체를 채점하면서 일부만 실측을 붙이면 실측이
     통째로 버려진다. 좁혀 두면 그 안에서는 전원이 실측을 가져 규칙을 만족한다.
 
-    실측을 못 받으면(이동수단 미지정·조회 실패) 1차 결과를 그대로 쓴다 — 같은
+    실측을 못 받으면(경로 Tool 없음·조회 실패) 1차 결과를 그대로 쓴다 — 같은
     후보를 실측 없이 두 번 채점할 이유가 없다.
+
+    **이동수단은 요청 단위가 아니라 후보 단위로 정해진다(D-118).** 도보권 후보는
+    도보로, 임계를 넘은 후보는 도보·대중교통을 둘 다 조회해 빠른 쪽으로 잰다
+    (`_fetch_travel_routes()`). 한 순위표에 수단이 섞이지만 거리 점수의 시간
+    예산이 측정 수단을 보지 않으므로 자는 하나로 유지된다.
     """
-    mode = to_travel_mode(conditions)
-    if travel_route_tool is None or mode is None:
+    if travel_route_tool is None:
         return await recommendation_provider.score_prepared(
             conditions, prepared, limit=recommendation_limit
         )
@@ -1292,7 +1303,7 @@ async def _score_with_measured_routes(
 
     narrowed = _narrow_prepared(prepared, shortlist_ids)
     travel_routes = await _fetch_travel_routes(
-        travel_route_tool, tool_context, narrowed, mode, conditions
+        travel_route_tool, tool_context, narrowed, conditions
     )
     if not travel_routes:
         return await recommendation_provider.score_prepared(
@@ -1539,6 +1550,68 @@ def _build_pairwise_distances_km(
     return distances
 
 
+def _segment_weather(tool_context: RecommendationContext) -> SegmentWeather | None:
+    """C가 조회한 예보를 일정 구간 판정이 쓰는 사실로 옮긴다 (TP-226).
+
+    `conditions.weather`(사용자가 발화에서 말한 값)가 아니라 조회한 예보를 쓴다 —
+    비 오는 날 20분을 걷게 할지는 말한 적 없는 사용자에게도 판단해야 한다.
+
+    판정(좋다/나쁘다)은 옮기지 않는다. D-051대로 사실만 넘기고, 그 사실을 어떻게
+    읽을지는 판정하는 쪽이 정한다. `resolve_weather_condition()`이 만드는
+    WeatherCondition을 쓰지 않는 것도 같은 이유다 — 그건 "이 날씨가 이 사용자
+    목적에 맞는가"라는 다른 질문의 답이다.
+    """
+
+    weather = tool_context.weather
+    if weather is None or weather.status not in {"success", "partial"}:
+        return None
+    data = weather.data
+    if data is None:
+        return None
+    return SegmentWeather(
+        precipitation=data.precipitation,
+        sky=data.sky,
+        temperature_celsius=data.temperature_celsius,
+    )
+
+
+def _build_travel_candidates(
+    candidates: list[RecommendationItem],
+    places: list[PlaceCandidate],
+    *,
+    fallback_coordinates: Mapping[str, Coordinate] | None = None,
+) -> list[ScheduleTravelCandidate]:
+    """SCHEDULE 전용 — 구간 이동정보 계산에 넘길 후보 좌표. (TP-216)
+
+    좌표 우선순위는 `_build_pairwise_distances_km()`과 같다(이번 턴 C 응답 →
+    B의 추천 시점 스냅샷). 두 함수가 같은 좌표를 봐야 LLM에 준 거리 근거와
+    엔진이 계산한 이동시간이 어긋나지 않는다.
+
+    좌표가 없는 place_id는 건너뛴다 — 그 구간은 Edge가 안 만들어지고 시간표가
+    폴백값으로 메운다. 값을 지어내지 않는다.
+    """
+
+    coordinates_by_place_id = dict(fallback_coordinates or {})
+    coordinates_by_place_id.update(_place_coordinates(places))
+    result: list[ScheduleTravelCandidate] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate.place_id in seen:
+            # 같은 place_id가 두 번 오면 _candidate_index()가 ValueError를 낸다.
+            continue
+        location = coordinates_by_place_id.get(candidate.place_id)
+        if location is None:
+            continue
+        seen.add(candidate.place_id)
+        result.append(
+            ScheduleTravelCandidate(
+                place_id=candidate.place_id,
+                coordinate=GeoCoordinate(latitude=location[0], longitude=location[1]),
+            )
+        )
+    return result
+
+
 def _valid_location(device_location: str | None) -> str | None:
     """'위도,경도' 형식이 아니면 None으로 낮춘다.
 
@@ -1724,15 +1797,22 @@ async def _fetch_travel_routes(
     route_tool: TravelRouteToolProvider | None,
     context: RecommendationContext,
     prepared: PreparedRecommendationResult,
-    mode: TravelMode | None,
     conditions: UserConditions | None = None,
 ) -> tuple[TravelRoute, ...]:
-    """하드 필터 통과 후보만 실측 조회하고 D에 넘길 도메인 결과를 반환한다.
+    """하드 필터 통과 후보를 후보별 이동수단으로 실측하고 D에 넘길 결과를 만든다.
 
-    `mode`가 None이면 조회하지 않는다 — 무엇으로 재야 할지 정할 수 없는
-    요청이다(to_travel_mode 참고).
+    수단은 `to_measured_travel_modes()`가 후보의 직선거리로 고른다(D-118). 임계를
+    넘은 후보는 도보와 대중교통을 **둘 다** 조회하고 `_fastest_routes()`가 빠른
+    쪽을 남긴다 — 카카오 대중교통이 근거리에서 도보보다 느린 값을 주는 경우가
+    있어서(2026-09-02 실측), 전환했다는 이유만으로 느린 값을 쓰지 않게 한다.
+
+    이동수단별로 Tool을 한 번씩 부른다. `TravelRouteQuery`가 수단 하나를 받기
+    때문이고, 세 수단을 팬아웃하는 `_fetch_compare_travel_routes()`와 같은 방식이다.
+    두 수단을 동시에 쏘는 것이 안전한 이유는 카카오 Provider들이 세마포어를
+    공유하기 때문이다(`factory.get_travel_route_tool()`) — 공유하지 않으면 같은
+    키로 동시 10건이 나가 대부분 거절당한다.
     """
-    if mode is None or route_tool is None or context.location is None or context.places is None:
+    if route_tool is None or context.location is None or context.places is None:
         return ()
     resolved_location = context.location.data
     places = context.places.data
@@ -1740,34 +1820,93 @@ async def _fetch_travel_routes(
         return ()
 
     eligible_ids = {item.candidate.place_id for item in prepared.preparation.eligible_candidates}
-    destinations = tuple(
-        RouteDestination(
+
+    # 실측 경로도 거리 계산과 같은 기준점에서 잰다 — 한쪽만 사용자 기준이면
+    # 실측이 있는 후보와 없는 후보가 서로 다른 자로 채점된다(TP-112).
+    origin = (resolve_ranking_origin(context, conditions) or resolved_location).location
+    switch_threshold_km = transit_switch_straight_line_km(
+        settings.schedule_walk_transfer_threshold_min
+    )
+
+    destinations_by_mode: dict[TravelMode, list[RouteDestination]] = {}
+    for place in places:
+        if place.place_id not in eligible_ids:
+            continue
+        destination = RouteDestination(
             place_id=place.place_id,
             coordinate=GeoCoordinate(
                 latitude=place.location.latitude,
                 longitude=place.location.longitude,
             ),
         )
-        for place in places
-        if place.place_id in eligible_ids
-    )
-    if not destinations:
+        straight_line_km = haversine_km(
+            origin.latitude,
+            origin.longitude,
+            place.location.latitude,
+            place.location.longitude,
+        )
+        modes = to_measured_travel_modes(
+            conditions,
+            straight_line_km=straight_line_km,
+            switch_threshold_km=switch_threshold_km,
+        )
+        for mode in modes:
+            destinations_by_mode.setdefault(mode, []).append(destination)
+    if not destinations_by_mode:
         return ()
 
-    # 실측 경로도 거리 계산과 같은 기준점에서 잰다 — 한쪽만 사용자 기준이면
-    # 실측이 있는 후보와 없는 후보가 서로 다른 자로 채점된다(TP-112).
-    origin = (resolve_ranking_origin(context, conditions) or resolved_location).location
-    result = await route_tool.execute(
-        TravelRouteQuery(
-            origin=GeoCoordinate(
-                latitude=origin.latitude,
-                longitude=origin.longitude,
-            ),
-            destinations=destinations,
-            mode=mode,
+    origin_coordinate = GeoCoordinate(latitude=origin.latitude, longitude=origin.longitude)
+    results = await asyncio.gather(
+        *(
+            route_tool.execute(
+                TravelRouteQuery(
+                    origin=origin_coordinate,
+                    destinations=tuple(destinations),
+                    mode=mode,
+                )
+            )
+            for mode, destinations in destinations_by_mode.items()
         )
     )
-    return result.routes
+    return _fastest_routes(route for result in results for route in result.routes)
+
+
+def _fastest_routes(routes: Iterable[TravelRoute]) -> tuple[TravelRoute, ...]:
+    """한 후보를 두 수단으로 조회했을 때 어느 값을 채점에 넘길지 고른다.
+
+    **실측이 추정을 이긴다. 소요시간 비교는 그 다음이다.** 도보 조회에는 직선거리
+    추정 fallback이 붙어 있어(`factory.get_travel_route_tool()`) 실패해도 SUCCESS로
+    돌아오는데, 그 추정값은 실제 대중교통 실측보다 짧게 나오기 쉽다. 시간만 보고
+    고르면 추정이 이기고, 채점은 추정을 버리므로(`scoring._applied_travel_route()`)
+    후보 하나가 실측을 잃고 그 때문에 `_consistent_routes()`가 회차 전체를
+    직선거리로 내린다 — 대중교통을 부른 값을 그대로 버리는 셈이다.
+
+    실측이 하나도 없으면 성공한 것 중 하나를, 그것도 없으면 처음 것을 남긴다.
+    소비 측이 실패를 볼 수 있어야 하므로 후보를 통째로 빼지는 않는다.
+    """
+
+    best: dict[str, TravelRoute] = {}
+    for route in routes:
+        current = best.get(route.place_id)
+        if current is None or _route_priority(route) < _route_priority(current):
+            best[route.place_id] = route
+    return tuple(best.values())
+
+
+def _route_priority(route: TravelRoute) -> tuple[int, int]:
+    """작을수록 채점에 쓰기 좋은 경로. (등급, 소요시간)으로 비교한다."""
+
+    measured = (
+        route.status is RouteStatus.SUCCESS
+        and route.source in MEASURED_ROUTE_SOURCES
+        and route.duration_seconds is not None
+    )
+    if measured:
+        assert route.duration_seconds is not None
+        return (0, route.duration_seconds)
+    if route.status is RouteStatus.SUCCESS and route.duration_seconds is not None:
+        return (1, route.duration_seconds)
+    return (2, 0)
 
 
 def _is_info_walking_time_request(llm_output: LLMOutput) -> bool:
@@ -3444,7 +3583,7 @@ async def _run_agent_flow(
 
     is_schedule = llm_output.intent is Intent.SCHEDULE
 
-    recommendations = await _score_recommendations(
+    scoring_outcome = await _score_recommendations(
         state_response,
         tool_context=tool_context,
         agent_conditions=agent_conditions,
@@ -3463,6 +3602,10 @@ async def _run_agent_flow(
         effective_ignore_operating_hours=effective_ignore_operating_hours,
         stream_event_sink=stream_event_sink,
     )
+    recommendations = scoring_outcome.recommendations
+    # 보충 조회·보관함 주입으로 좌표가 합쳐진 컨텍스트. 원본을 넘기면 그렇게 들어온
+    # 후보의 좌표를 아래 단계가 못 찾는다(TP-198).
+    tool_context = scoring_outcome.tool_context
 
     if is_schedule:
         return await _run_schedule_branch(
@@ -3479,6 +3622,7 @@ async def _run_agent_flow(
             tool_executions=tool_executions,
             effective_ignore_operating_hours=effective_ignore_operating_hours,
             stream_event_sink=stream_event_sink,
+            travel_route_tool=travel_route_tool,
         )
 
     return await _finalize_recommendation_response(
@@ -3511,6 +3655,24 @@ class _ToolFetchOutcome:
     context_gps: str | None = None
     tool_execution: ToolExecutionDebug | None = None
     tool_executions: list[ToolExecutionDebug] = dataclass_field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _ScoringOutcome:
+    """Scoring 결과와, 그 과정에서 좌표가 합쳐진 후보 컨텍스트.
+
+    `tool_context`를 함께 돌려주는 것이 요점이다. `_score_recommendations()`는
+    보충 조회(D-112)와 보관함 주입(D-114)으로 받은 후보를 `tool_context`에 합치는데,
+    예전에는 그 결과가 함수 안 지역 변수로만 남아 밖으로 나가지 못했다. 그래서
+    **후보는 합친 목록에서 뽑고 좌표는 합치기 전 목록에서 찾는** 상태였고,
+    보충·주입으로 들어온 장소는 `_build_pairwise_distances_km()`에서 조용히
+    건너뛰어져 거리 근거 없이 일정에 배치됐다(TP-198).
+
+    호출부는 원본이 아니라 이 `tool_context`를 다음 단계로 넘겨야 한다.
+    """
+
+    recommendations: RecommendationResponse
+    tool_context: RecommendationContext
 
 
 async def _fetch_tool_context(
@@ -3848,7 +4010,7 @@ async def _score_recommendations(
     tool_executions: list[ToolExecutionDebug],
     effective_ignore_operating_hours: bool,
     stream_event_sink: StreamEventSink | None,
-) -> RecommendationResponse:
+) -> _ScoringOutcome:
     """1차 Scoring과 후보 보충·혼잡도 재정렬까지 끝난 추천 결과를 돌려준다(6단계).
 
     `run_agent_flow()`의 6단계 블록을 그대로 옮긴 것이다 — 라우팅 그래프가 이 단계를
@@ -3856,6 +4018,11 @@ async def _score_recommendations(
     이 구간에는 중간 반환이 없어 결과 하나만 돌려주면 되는, 경계가 가장 깨끗한
     단계다. 떼어낼 당시에는 본문을 한 줄도 바꾸지 않았고, 이후 TP-180으로 제외
     목록을 고르는 한 줄(`_effective_excluded_place_ids()`)만 앞에 붙었다.
+
+    **추천 결과만이 아니라 `tool_context`도 함께 돌려준다**(TP-198). 이 함수는
+    보충 조회·보관함 주입으로 받은 후보 좌표를 `tool_context`에 합치는데, 그 값을
+    안 돌려주면 일정 편성과 노출 이력 기록이 합치기 전 원본을 받는다. 자세한 사정은
+    `_ScoringOutcome` docstring에 있다.
     """
 
     excluded_place_ids = _effective_excluded_place_ids(
@@ -4148,7 +4315,7 @@ async def _score_recommendations(
             store=store,
             principal=principal,
         )
-    return recommendations
+    return _ScoringOutcome(recommendations=recommendations, tool_context=tool_context)
 
 
 async def _run_schedule_branch(
@@ -4166,6 +4333,7 @@ async def _run_schedule_branch(
     tool_executions: list[ToolExecutionDebug],
     effective_ignore_operating_hours: bool,
     stream_event_sink: StreamEventSink | None,
+    travel_route_tool: TravelRouteToolProvider | None = None,
 ) -> AgentResponse:
     """SCHEDULE 편성 분기(6-2단계)를 처리한다.
 
@@ -4278,6 +4446,10 @@ async def _run_schedule_branch(
             pairwise_distances_km=_build_pairwise_distances_km(
                 schedule_candidates, places, fallback_coordinates=snapshot_coordinates
             ),
+            travel_candidates=_build_travel_candidates(
+                schedule_candidates, places, fallback_coordinates=snapshot_coordinates
+            ),
+            weather=_segment_weather(tool_context),
         )
         await _emit_progress(
             stream_event_sink,
@@ -4286,7 +4458,10 @@ async def _run_schedule_branch(
         )
         schedule_result = await _await_with_heartbeat(
             plan_partial_schedule(
-                partial_request, llm, co_visited_fetcher=fetch_co_visited_hints
+                partial_request,
+                llm,
+                co_visited_fetcher=fetch_co_visited_hints,
+                travel_route_tool=travel_route_tool,
             ),
             sink=stream_event_sink,
             stage="scheduling",
@@ -4303,6 +4478,10 @@ async def _run_schedule_branch(
             pairwise_distances_km=_build_pairwise_distances_km(
                 schedule_candidates, places, fallback_coordinates=snapshot_coordinates
             ),
+            travel_candidates=_build_travel_candidates(
+                schedule_candidates, places, fallback_coordinates=snapshot_coordinates
+            ),
+            weather=_segment_weather(tool_context),
         )
         await _emit_progress(
             stream_event_sink,
@@ -4310,7 +4489,12 @@ async def _run_schedule_branch(
             "장소 순서와 머무는 시간을 구성하고 있어요.",
         )
         schedule_result = await _await_with_heartbeat(
-            plan_schedule(schedule_request, llm, co_visited_fetcher=fetch_co_visited_hints),
+            plan_schedule(
+                schedule_request,
+                llm,
+                co_visited_fetcher=fetch_co_visited_hints,
+                travel_route_tool=travel_route_tool,
+            ),
             sink=stream_event_sink,
             stage="scheduling",
         )

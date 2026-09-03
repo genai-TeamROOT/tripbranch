@@ -15,6 +15,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from app.domain.schedule_travel import ScheduleTravelCandidate, SegmentWeather
 from app.schedule.associations import CoVisitedHint
 from app.schemas import RecommendationItem, ScheduleItem, UserConditions
 
@@ -52,6 +53,21 @@ class SchedulePlanningRequest(BaseModel):
     # (위경도 보유)를 place_id로 매칭해 계산해서 넘긴다. 내부 함수 인자로만 쓰여
     # JSON으로 직렬화되지 않으므로 튜플 키를 그대로 써도 된다.
 
+    travel_candidates: list[ScheduleTravelCandidate] = Field(default_factory=list)
+    # 구간 이동시간을 추정·실측하기 위한 후보 좌표 (TP-216). pairwise_distances_km와
+    # 출처가 같지만 쓰임이 다르다 — 저쪽은 LLM에 주는 참고 근거이고, 이쪽은 엔진이
+    # 도착시각을 계산하는 입력이다. 비어 있으면 시간표가 구간마다 폴백값을 쓰므로
+    # 이 필드를 모르는 기존 호출부는 동작이 바뀌지 않는다.
+
+    weather: SegmentWeather | None = None
+    # C가 조회한 예보. 구간 이동수단 판정에 쓴다(TP-226). `conditions.weather`와
+    # 다르다 — 그쪽은 사용자가 발화에서 말한 값이고 이쪽은 실제로 조회한 사실이다.
+    # 비 오는 날 20분을 걷게 할지 판단하려면 발화가 아니라 조회한 값이 필요하다.
+    #
+    # **두 요청 스키마에 같이 둔다.** 한쪽만 채우면 같은 사용자가 전체 편성과 부분
+    # 수정에서 다른 판정을 받는다. 기본값이 None이라 이 필드를 모르는 기존 호출부는
+    # 동작이 바뀌지 않는다(travel_candidates를 추가했을 때와 같은 방식).
+
     co_visited_hints: list[CoVisitedHint] = Field(default_factory=list)
     # place_associations(D-088) 기반 "이 후보들은 실제로 함께 방문됐다" 힌트.
     # A가 채우지 않는다 — planner.py의 plan_schedule()이 co_visited_fetcher가
@@ -79,6 +95,21 @@ class SchedulePartialFillRequest(BaseModel):
     visit_datetime: datetime | None = None
     pairwise_distances_km: dict[tuple[str, str], float]
 
+    travel_candidates: list[ScheduleTravelCandidate] = Field(default_factory=list)
+    # 구간 이동시간을 추정·실측하기 위한 후보 좌표 (TP-216). pairwise_distances_km와
+    # 출처가 같지만 쓰임이 다르다 — 저쪽은 LLM에 주는 참고 근거이고, 이쪽은 엔진이
+    # 도착시각을 계산하는 입력이다. 비어 있으면 시간표가 구간마다 폴백값을 쓰므로
+    # 이 필드를 모르는 기존 호출부는 동작이 바뀌지 않는다.
+
+    weather: SegmentWeather | None = None
+    # C가 조회한 예보. 구간 이동수단 판정에 쓴다(TP-226). `conditions.weather`와
+    # 다르다 — 그쪽은 사용자가 발화에서 말한 값이고 이쪽은 실제로 조회한 사실이다.
+    # 비 오는 날 20분을 걷게 할지 판단하려면 발화가 아니라 조회한 값이 필요하다.
+    #
+    # **두 요청 스키마에 같이 둔다.** 한쪽만 채우면 같은 사용자가 전체 편성과 부분
+    # 수정에서 다른 판정을 받는다. 기본값이 None이라 이 필드를 모르는 기존 호출부는
+    # 동작이 바뀌지 않는다(travel_candidates를 추가했을 때와 같은 방식).
+
     co_visited_hints: list[CoVisitedHint] = Field(default_factory=list)
     # SchedulePlanningRequest.co_visited_hints와 동일한 용도(D-088/D-091) — 부분
     # 재편성에서 새로 채울 자리(candidates)를 고를 때도 같은 힌트를 참고할 수
@@ -99,7 +130,12 @@ class SchedulePartialLLMPlan(BaseModel):
     나중에 추가한다).
     """
 
-    new_items: list[ScheduleItem]
+    new_items: list[ScheduleLLMItem]
+    # ScheduleItem이 아니라 ScheduleLLMItem이다(TP-215) — 새로 채운 자리든 유지되는
+    # 자리든 시각은 병합 후 app.schedule.timeline이 전체를 한 번에 다시 계산한다.
+    # 예전에는 LLM이 준 new_items의 도착시각을 앵커로 믿고 그 뒤 pinned 항목만
+    # 다시 맞췄다(_resync_downstream_arrivals) — 앵커 자체가 검증되지 않은 값이라
+    # 앞자리가 틀리면 전체가 조용히 틀렸다.
 
 
 def target_item_range(time_available_min: int | None) -> tuple[int, int]:
@@ -125,13 +161,42 @@ def target_item_range(time_available_min: int | None) -> tuple[int, int]:
     return 3, 5
 
 
+class ScheduleLLMItem(BaseModel):
+    """LLM이 만드는 일정 항목 1건. **시각이 들어 있지 않다.** (TP-215)
+
+    app.schemas.ScheduleItem에서 estimated_arrival·travel_to_next_min·warnings를
+    뺀 형태다. 셋 다 LLM이 만들면 안 되는 값이다.
+
+    - estimated_arrival / travel_to_next_min: 순서와 체류시간이 정해지면 나머지
+      시각은 전부 결정된다. LLM이 따로 만들면 항목들의 합과 총합이 서로 맞는지
+      확인하는 곳이 없어진다 — 실제로 없었다. app.schedule.timeline이 계산한다.
+    - warnings: 시스템이 운영시간을 대조해 채운다(기존과 동일).
+
+    estimated_duration_min은 **제안값**이다. app.schedule.duration의 카테고리별
+    정책이 최소~최대 범위로 클램프하므로 LLM이 "카페 10분"을 주더라도 그대로
+    실리지 않는다. 값을 아예 안 받지 않는 이유는 같은 카테고리 안에서도 장소마다
+    적정 체류시간이 다르고(작은 전시관과 국립박물관), 그 판단은 LLM이 후보 설명을
+    보고 하는 편이 낫기 때문이다 — 판단은 LLM, 계산은 코드라는 이 카드의 구분과
+    같은 선이다.
+    """
+
+    order: int
+    place_id: str
+    place_name: str
+    estimated_duration_min: int
+    reason: str
+
+
 class ScheduleLLMPlan(BaseModel):
     """generate_schedule_plan() 구조화 출력 전용 모델.
 
-    app.schemas.ScheduleResult에서 basis_note만 뺀 형태다. basis_note는 LLM이
-    생성하지 않고 app.schedule.planner가 visit_datetime 값으로 결정적으로
-    채운다(docs/design/int-07-schedule.md 6.2.1절) — 이 모델은 LLM 응답 검증에만
-    쓰이고 AgentResponse에는 직접 실리지 않는다.
+    basis_note는 LLM이 생성하지 않고 app.schedule.planner가 visit_datetime 값으로
+    결정적으로 채운다(docs/design/int-07-schedule.md 6.2.1절) — 이 모델은 LLM 응답
+    검증에만 쓰이고 AgentResponse에는 직접 실리지 않는다.
+
+    total_duration_min도 여기 없다(TP-215). 예전에는 LLM이 준 값을 그대로 실었고,
+    항목들의 체류·이동 합과 일치하는지 검사하는 곳이 없었다 — 지금은
+    app.schedule.timeline이 첫 도착부터 마지막 체류 종료까지로 계산한다.
 
     items에는 구조적으로 min_length=1/max_length=5만 건다 — "이번 요청에 맞는"
     목표 개수는 사용자의 time_available에 따라 1~5 사이에서 달라져
@@ -145,13 +210,13 @@ class ScheduleLLMPlan(BaseModel):
     app.providers.gemini.py의 _call_structured()가 이미 한 번 자동 재시도한다.
     """
 
-    items: list[ScheduleItem] = Field(min_length=1, max_length=5)
-    total_duration_min: int
+    items: list[ScheduleLLMItem] = Field(min_length=1, max_length=5)
     route_summary: str
 
 
 __all__ = [
     "SchedulePlanningRequest",
+    "ScheduleLLMItem",
     "ScheduleLLMPlan",
     "SchedulePartialFillRequest",
     "SchedulePartialLLMPlan",

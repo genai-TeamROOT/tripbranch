@@ -385,3 +385,141 @@ async def test_unreadable_image_is_a_user_error_not_a_server_error(patched) -> N
     assert error.value.code == "unreadable_image"
     assert error.value.status_code == 422
     assert error.value.retryable is True
+
+
+class _RecordingReranker:
+    """VLM 대역. 넘어온 후보를 기록하고 정해진 순서를 돌려준다."""
+
+    def __init__(self, order: tuple[str, ...] | None = None) -> None:
+        self.calls: list[list[str]] = []
+        self._order = order
+
+    async def rerank(self, *, query_image, candidates):
+        self.calls.append([c.content_id for c in candidates])
+        return self._order
+
+
+def _three_places() -> tuple[_RecordingMood, _RecordingDetails]:
+    matches = (_match("a", 0.80), _match("b", 0.70), _match("c", 0.60))
+    mood = _RecordingMood(
+        matches=matches,
+        photo_urls={"a": "https://x/a.jpg", "b": "https://x/b.jpg", "c": "https://x/c.jpg"},
+    )
+    details = _RecordingDetails(
+        {cid: _Detail(cid, f"장소 {cid}") for cid in ("a", "b", "c")}
+    )
+    return mood, details
+
+
+@pytest.mark.asyncio
+async def test_rerank_reorders_and_can_pull_up_a_lower_candidate(patched) -> None:
+    """재랭커가 뒤쪽 후보를 앞으로 끌어올릴 수 있다.
+
+    **자르기 전에 재랭킹해야 한다.** 보여줄 수만큼 먼저 자르면 VLM은 순서만
+    바꾸고 어떤 곳이 나올지는 못 바꾼다 — 그러면 개선의 절반이 사라진다.
+    """
+    mood, details = _three_places()
+    reranker = _RecordingReranker(order=("c", "a", "b"))
+
+    result = await build_photo_similar_places(
+        PhotoSimilarQuery(image_bytes=b"jpeg", latitude=37.57, longitude=126.98, limit=2),
+        geocoding_provider=object(),
+        place_provider=object(),
+        mood_provider=mood,
+        details_repository=details,
+        reranker=reranker,
+    )
+
+    # limit이 2인데 3곳 전부가 재랭커에 넘어갔다.
+    assert reranker.calls == [["a", "b", "c"]]
+    # 임베딩 3위였던 c가 1위로 올라와 결과에 들어왔다.
+    assert [row.content_id for row in result.places] == ["c", "a"]
+
+
+@pytest.mark.asyncio
+async def test_rerank_skipped_when_top_similarity_below_threshold(patched, monkeypatch) -> None:
+    """1위 유사도가 문턱 미만이면 부르지 않는다.
+
+    닮은 곳이 DB에 없다는 뜻이라 후보가 전부 안 맞는 곳이고, 순서를 바꿔봐야
+    나아지지 않는다(TP-213 확인 22).
+    """
+    monkeypatch.setattr(
+        photo_similar.settings, "place_mood_rerank_min_top_similarity", 0.90
+    )
+    mood, details = _three_places()  # 1위가 0.80이라 문턱 아래다
+    reranker = _RecordingReranker(order=("c", "a", "b"))
+
+    result = await build_photo_similar_places(
+        PhotoSimilarQuery(image_bytes=b"jpeg", latitude=37.57, longitude=126.98, limit=3),
+        geocoding_provider=object(),
+        place_provider=object(),
+        mood_provider=mood,
+        details_repository=details,
+        reranker=reranker,
+    )
+
+    assert reranker.calls == []
+    assert [row.content_id for row in result.places] == ["a", "b", "c"]
+
+
+@pytest.mark.asyncio
+async def test_rerank_failure_keeps_embedding_order(patched) -> None:
+    """재랭커가 None을 주면 임베딩 순서를 그대로 낸다.
+
+    재랭킹은 보강이지 필수가 아니다. 실패가 검색 실패가 되면 안 된다.
+    """
+    mood, details = _three_places()
+    reranker = _RecordingReranker(order=None)
+
+    result = await build_photo_similar_places(
+        PhotoSimilarQuery(image_bytes=b"jpeg", latitude=37.57, longitude=126.98, limit=3),
+        geocoding_provider=object(),
+        place_provider=object(),
+        mood_provider=mood,
+        details_repository=details,
+        reranker=reranker,
+    )
+
+    assert reranker.calls == [["a", "b", "c"]]
+    assert [row.content_id for row in result.places] == ["a", "b", "c"]
+
+
+@pytest.mark.asyncio
+async def test_without_reranker_only_shown_places_get_photo_urls(patched) -> None:
+    """재랭커가 없으면 사진 주소를 보여줄 곳에만 붙인다.
+
+    후보 전체에 붙이면 재랭킹을 안 쓰는 환경이 값을 더 치른다.
+    """
+    mood, details = _three_places()
+
+    await build_photo_similar_places(
+        PhotoSimilarQuery(image_bytes=b"jpeg", latitude=37.57, longitude=126.98, limit=1),
+        geocoding_provider=object(),
+        place_provider=object(),
+        mood_provider=mood,
+        details_repository=details,
+    )
+
+    assert mood.photo_url_calls == [["a"]]
+
+
+@pytest.mark.asyncio
+async def test_rerank_keeps_places_the_model_did_not_return(patched) -> None:
+    """재랭커가 빠뜨린 곳은 원래 순서로 뒤에 붙는다.
+
+    사진을 못 받아 후보에서 빠지는 일이 있다 — 그때 그 장소가 결과에서 통째로
+    사라지면 안 된다.
+    """
+    mood, details = _three_places()
+    reranker = _RecordingReranker(order=("c", "a"))  # b가 빠졌다
+
+    result = await build_photo_similar_places(
+        PhotoSimilarQuery(image_bytes=b"jpeg", latitude=37.57, longitude=126.98, limit=3),
+        geocoding_provider=object(),
+        place_provider=object(),
+        mood_provider=mood,
+        details_repository=details,
+        reranker=reranker,
+    )
+
+    assert [row.content_id for row in result.places] == ["c", "a", "b"]

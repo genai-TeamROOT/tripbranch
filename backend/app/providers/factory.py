@@ -7,6 +7,7 @@ validate_provider_config()가 담당한다.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import cast
 
@@ -23,6 +24,7 @@ from app.providers.driving_route import (
 from app.providers.festival import FakeFestivalProvider, RealFestivalProvider
 from app.providers.gemini import RealGeminiProvider
 from app.providers.gemini_audio import GeminiAudioTranscriber
+from app.providers.gemini_vlm_rerank import GeminiPhotoReranker
 from app.providers.geocoding import FakeGeocodingProvider, RealGeocodingProvider
 from app.providers.google_translate import GoogleTranslateProvider
 from app.providers.holiday import FakeHolidayProvider, RealHolidayProvider
@@ -188,7 +190,9 @@ def get_weather_provider(client: httpx.AsyncClient) -> WeatherProvider:
     )
 
 
-def get_walking_route_provider(client: httpx.AsyncClient) -> TravelRouteProvider:
+def get_walking_route_provider(
+    client: httpx.AsyncClient, semaphore: asyncio.Semaphore | None = None
+) -> TravelRouteProvider:
     """설정에 맞는 도보 경로 Provider를 반환한다."""
     if settings.travel_route_provider == "fake":
         return FakeWalkingRouteProvider(walking_speed_mps=settings.walking_speed_mps)
@@ -200,6 +204,7 @@ def get_walking_route_provider(client: httpx.AsyncClient) -> TravelRouteProvider
         client=client,
         timeout_seconds=settings.external_api_timeout_seconds,
         max_concurrency=settings.travel_route_max_concurrency,
+        semaphore=semaphore,
     )
 
 
@@ -216,7 +221,9 @@ def get_driving_route_provider(client: httpx.AsyncClient) -> TravelRouteProvider
     )
 
 
-def get_transit_route_provider(client: httpx.AsyncClient) -> TravelRouteProvider:
+def get_transit_route_provider(
+    client: httpx.AsyncClient, semaphore: asyncio.Semaphore | None = None
+) -> TravelRouteProvider:
     """설정에 맞는 대중교통 경로 Provider를 반환한다.
 
     도보와 같은 카카오 키를 쓴다 — 같은 `Authorization: KakaoAK` 헤더의 다른
@@ -232,6 +239,7 @@ def get_transit_route_provider(client: httpx.AsyncClient) -> TravelRouteProvider
         client=client,
         timeout_seconds=settings.external_api_timeout_seconds,
         max_concurrency=settings.travel_route_max_concurrency,
+        semaphore=semaphore,
     )
 
 
@@ -251,10 +259,16 @@ def get_travel_route_tool(client: httpx.AsyncClient) -> TravelRouteTool:
         if settings.travel_route_provider == "real"
         else None
     )
+    # 도보와 대중교통은 **같은 카카오 키**를 쓰므로 동시 요청 한도를 함께 나눈다.
+    # 인스턴스마다 세마포어를 두면 한 후보를 두 수단으로 조회할 때(D-118) 동시
+    # 요청이 5+5로 합산돼 카카오가 `API limit has been exceeded.`를 낸다 —
+    # 2026-09-02 실측에서 40건 중 대부분이 그렇게 거절됐다. 자동차(네이버)는
+    # 벤더가 달라 여기 묶지 않는다.
+    kakao_route_semaphore = asyncio.Semaphore(settings.travel_route_max_concurrency)
     return TravelRouteTool(
         {
             TravelMode.WALKING: TravelRouteProviders(
-                primary=get_walking_route_provider(client),
+                primary=get_walking_route_provider(client, kakao_route_semaphore),
                 fallback=walking_fallback,
             ),
             TravelMode.DRIVING: TravelRouteProviders(
@@ -262,7 +276,7 @@ def get_travel_route_tool(client: httpx.AsyncClient) -> TravelRouteTool:
                 fallback=None,
             ),
             TravelMode.TRANSIT: TravelRouteProviders(
-                primary=get_transit_route_provider(client),
+                primary=get_transit_route_provider(client, kakao_route_semaphore),
                 fallback=None,
             ),
         }
@@ -771,6 +785,40 @@ def get_place_mood_provider(
         _get_mood_encoder(),
         mean_center=settings.place_mood_mean_center_enabled,
         axis_weight=settings.place_mood_axis_weight,
+    )
+
+
+def get_place_mood_reranker(
+    client: httpx.AsyncClient,
+) -> GeminiPhotoReranker | None:
+    """사진 검색 VLM 재랭커를 만든다. 꺼져 있거나 못 쓰면 None이다.
+
+    None이면 사진 검색이 임베딩 순서를 그대로 낸다 — 기능이 하나 빠질 뿐 검색은
+    정상이다. 그래서 부팅을 막지 않는다.
+
+    **Fake LLM 모드에서는 만들지 않는다.** 가짜 응답으로 순서를 바꾸면 임베딩이
+    낸 순서가 근거 없이 뒤집히는데, 오류가 없어 알아채기 어렵다(D-042와 같은
+    성격의 조용한 fake다).
+    """
+    if not settings.place_mood_rerank_enabled:
+        return None
+    if settings.resolved_llm_provider != "real":
+        logger.warning(
+            "PLACE_MOOD_RERANK_ENABLED=true인데 LLM이 fake 모드라 사진 검색"
+            " 재랭킹을 끕니다."
+        )
+        return None
+    if not settings.llm_api_key:
+        logger.warning(
+            "PLACE_MOOD_RERANK_ENABLED=true인데 LLM_API_KEY가 비어 있어 사진 검색"
+            " 재랭킹을 끕니다."
+        )
+        return None
+    return GeminiPhotoReranker(
+        api_key=settings.llm_api_key,
+        model_name=settings.resolved_place_mood_rerank_model_name,
+        timeout_seconds=settings.resolved_llm_timeout_seconds,
+        http_client=client,
     )
 
 

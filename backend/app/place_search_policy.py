@@ -50,6 +50,38 @@ TRAVEL_SPEED_KM_PER_MINUTE: dict[TravelMode, float] = {
     TravelMode.TRANSIT: NON_WALKING_SPEED_KM_PER_MINUTE,
 }
 
+# 직선거리로 잰 도보 예상시간을 실제 보행 경로 길이에 맞추는 우회 계수.
+#
+# 카카오 도보 실 API 실측값이다(2026-08-19, 종로 5개 지점): 직선 대비 실제 보행
+# 경로가 평균 **1.65배**, 범위 1.37~2.13.
+#
+# **채점의 시간 예산(domain/scoring.py::_travel_minutes_budget)은 이 계수를 쓰지
+# 않는다.** 거기서 보정하면 사용자가 말한 "30분"이 사실상 50분이 된다. 여기서만
+# 쓰는 이유는 이동수단을 고르는 시점에 실거리를 아직 모르기 때문이다 — 실측을
+# 부르기 전이라 가진 것이 직선거리뿐이다.
+WALKING_DETOUR_FACTOR = 1.65
+
+
+def transit_switch_straight_line_km(walk_transfer_threshold_min: int) -> float:
+    """도보 전환 임계(분)를 이동수단 판정에 쓸 직선거리(km)로 바꾼다 (D-118).
+
+    임계값 자체는 `Settings.schedule_walk_transfer_threshold_min`(기본 20분)이다.
+    SCHEDULE의 구간 이동수단 판정(`tools/schedule_travel.py::_select_mode`)과 같은
+    값을 쓴다 — 같은 사용자에게 "이 정도 거리는 걸어요"를 두 기능이 다르게 말하지
+    않게 하려는 것이다.
+
+    **직선거리로 환산할 때 우회 계수를 나눈다.** 20분 × 0.07km/분 = 1.4km인데 그건
+    실제 보행 경로 길이고, 직선거리로는 1.4 ÷ 1.65 ≈ **0.85km**다. 나누지 않으면
+    규칙에는 "도보 20분 초과"라고 적어놓고 실제로는 33분짜리부터 전환하게 된다.
+
+    낮은 쪽을 택한 또 하나의 이유는 전환된 후보를 도보·대중교통 양쪽으로 조회해
+    빠른 쪽을 쓰기 때문이다(D-118 결정 3). 임계를 낮게 잡아 걷는 게 빠른 구간까지
+    대중교통에 물어봐도 틀린 답이 나오지 않는다 — 늘어나는 것은 호출 수뿐이다.
+    """
+    if walk_transfer_threshold_min <= 0:
+        raise ValueError("도보 전환 임계값은 0보다 커야 합니다.")
+    return walk_transfer_threshold_min * WALKING_SPEED_KM_PER_MINUTE / WALKING_DETOUR_FACTOR
+
 # 이동시간 조건이 없을 때 A와 C가 공통으로 사용하는 기본 장소 검색 반경(km).
 DEFAULT_PLACE_SEARCH_RADIUS_KM = 2.0
 

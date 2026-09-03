@@ -28,9 +28,14 @@ from app.domain.models import (
     ScoringCandidate,
     WeatherCondition,
 )
-from app.domain.travel_route import RouteSource, RouteStatus, TravelMode, TravelRoute
+from app.domain.travel_route import (
+    MEASURED_ROUTE_SOURCES,
+    RouteStatus,
+    TravelMode,
+    TravelRoute,
+)
 from app.domain.weather_judgment import WeatherReason
-from app.place_search_policy import TRAVEL_SPEED_KM_PER_MINUTE
+from app.place_search_policy import WALKING_SPEED_KM_PER_MINUTE
 
 # B의 LLMOps Trace(record_trace(scoring_version=...))에 넘길 값 —
 # backend/docs/package-b/llmops-trace-contract-v1.md §7 Q2. B는 이 값의 의미를
@@ -177,6 +182,43 @@ _ENVIRONMENT_PREFERENCES = frozenset({"indoor", "outdoor"})
 
 _UNVERIFIED_WARNING = "방문 전에 운영 여부를 확인해주세요."
 _CLOSED_NOW_WARNING = "지금은 운영시간이 아니에요. 방문 전에 다시 확인해주세요."
+
+# 무장애 판정이 `partial`인 후보에 붙이는 안내. 어휘마다 막히는 것이 달라
+# 문구도 나눈다 — "일부 구역이 어렵다"만으로는 휠체어가 못 가는 것인지 점자
+# 안내가 없는 것인지 알 수 없다.
+#
+# 판정이 붙는 어휘는 셋뿐이다. 나머지 여섯(화장실·주차장·유아·대여·좌석·저상버스)은
+# 아직 원문 규칙으로 거르므로 후보에 있다는 것 말고는 할 말이 없다.
+_ACCESSIBILITY_PARTIAL_WARNINGS: Mapping[str, str] = {
+    "wheelchair_access": "일부 구역은 휠체어 접근이 어려워요.",
+    "stroller_access": "일부 구역은 유모차로 다니기 어려워요.",
+    "visual_guide": "점자·음성 안내가 일부 구역에만 있어요.",
+}
+
+# 이 판정만 안내한다. `possible`은 할 말이 없고, `impossible`은 저장소 조회가
+# 이미 후보에서 뺐으므로 여기까지 오지 않는다.
+_PARTIAL_VERDICT = "partial"
+
+
+def _accessibility_warnings(candidate: ScoringCandidate) -> tuple[str, ...]:
+    """무장애 판정이 `partial`인 어휘마다 안내 한 줄을 만든다.
+
+    요구하지 않은 어휘는 애초에 판정이 오지 않으므로(저장소 조회가 요구한 것만
+    올린다) 여기서 다시 거르지 않는다.
+
+    문구가 없는 어휘는 건너뛴다. 판정표가 셋에만 있어 지금은 일어나지 않지만,
+    나중에 어휘가 늘었을 때 빈 문자열이 경고 목록에 끼어 카드가 빈 줄을 띄우는
+    것보다 낫다.
+    """
+    verdicts = candidate.accessibility_verdicts
+    if not verdicts:
+        return ()
+    return tuple(
+        warning
+        for need, verdict in sorted(verdicts.items())
+        if verdict == _PARTIAL_VERDICT
+        and (warning := _ACCESSIBILITY_PARTIAL_WARNINGS.get(need))
+    )
 
 
 class ExclusionReason(StrEnum):
@@ -420,21 +462,29 @@ def _taste_evidence_snippets(
     return match.snippets
 
 
-def _travel_minutes_budget(max_distance_km: float, mode: TravelMode) -> float:
-    """검색 반경을 그 이동수단의 소요시간 예산(분)으로 되돌린다.
+def _travel_minutes_budget(max_distance_km: float, budget_speed_km_per_min: float) -> float:
+    """검색 반경을 소요시간 예산(분)으로 되돌린다.
 
-    호출부(`to_search_radius_km()`)가 `max_travel_time × 이동수단 속도`로 반경을
-    만들었으므로, 같은 속도로 나누면 **사용자가 말한 이동시간이 그대로** 나온다.
-    그래서 여기서 쓰는 속도는 반경을 만든 속도와 반드시 같아야 한다
-    (`to_travel_mode()`가 두 선택을 한 조건으로 묶는다).
+    호출부(`to_search_radius_km()`)가 `max_travel_time × 속도`로 반경을 만들었으므로,
+    같은 속도로 나누면 **사용자가 말한 이동시간이 그대로** 나온다. 그래서 여기 쓰는
+    속도는 반경을 만든 속도와 반드시 같아야 하고, 호출부가
+    `to_search_radius_speed_km_per_min()`으로 그 값을 넘긴다.
 
-    이동시간을 말하지 않은 요청은 기본 반경(2.0km)에서 약 28.6분이 된다.
+    **측정한 이동수단의 속도로 나누지 않는다(D-118).** 예전에는 실측 결과에 적힌
+    mode로 `TRAVEL_SPEED_KM_PER_MINUTE`를 찾아 나눴는데, 그러면 반경을 만든 속도와
+    나누는 속도가 갈린다. 기본 반경 2.0km는 도보 속도로 만든 값이라 대중교통
+    속도(20km/h)로 나누면 예산이 **6.0분**이 되고, 그건 사용자가 약속한 적 없는
+    숫자다 — "20km/h로 2km를 가면 6분"이라는 계산일 뿐이다. 반경 안의 대중교통
+    실측은 대부분 10~19분이라 `_travel_time_score()`의 clamp에 전부 0으로 잘리고,
+    그 손해가 **다른 수단으로 전환된 후보에만** 간다(도보 후보는 28.6분 예산으로
+    채점되므로). 한 순위표 안에서 후보마다 이동수단이 다를 수 있게 되면서
+    (`to_measured_travel_modes()`), 자는 요청당 하나로 고정해야 한다.
 
-    속도가 정의되지 않은 이동수단이 오면 KeyError로 멈춘다 — 조용히 도보 속도로
-    재는 것보다 낫다. 지금 그런 경로가 만들어지지 않는 이유는 Provider가 도보 외
-    mode를 거부하고 `TravelRouteTool`이 미등록 mode를 조회하지 않는 것이다.
-    `_applied_travel_route()`는 source만 보므로 이 역할을 하지 않는다
-    (place_search_policy.TRAVEL_SPEED_KM_PER_MINUTE 주석 참고).
+    이동시간을 말한 요청은 이 변경으로 값이 바뀌지 않는다 — 반경이 `시간 × 속도`라
+    같은 속도로 나누면 그 시간이 그대로 나온다. 말하지 않은 요청은 기본 반경
+    2.0km에서 약 28.6분이 되고, 대중교통·자동차로 잰 후보도 같은 28.6분으로 잰다.
+
+    속도가 0 이하면 ValueError로 멈춘다 — 조용히 도보 속도로 재는 것보다 낫다.
 
     분모가 사용자 약속 그 자체라는 게 이 방식의 핵심이다. 우회 계수를 추정해
     보정하는 안도 있었지만, 그 계수의 근거가 약해서 택하지 않았다.
@@ -461,25 +511,18 @@ def _travel_minutes_budget(max_distance_km: float, mode: TravelMode) -> float:
     4.20km/h로 잡아 **검색 반경 자체가 도보 기준으로 과대**하다는 데 있다.
     반경 산정을 조정하려면 C·A와 협의가 필요하다.
     """
-    return max_distance_km / TRAVEL_SPEED_KM_PER_MINUTE[mode]
+    if budget_speed_km_per_min <= 0:
+        raise ValueError("시간 예산 속도는 0보다 커야 합니다.")
+    return max_distance_km / budget_speed_km_per_min
 
 
-def _travel_time_score(duration_seconds: int, max_distance_km: float, mode: TravelMode) -> float:
-    budget_minutes = _travel_minutes_budget(max_distance_km, mode)
+def _travel_time_score(
+    duration_seconds: int, max_distance_km: float, budget_speed_km_per_min: float
+) -> float:
+    budget_minutes = _travel_minutes_budget(max_distance_km, budget_speed_km_per_min)
     if budget_minutes <= 0:
         return 0.0
     return _clamp(1.0 - (duration_seconds / 60.0) / budget_minutes, 0.0, 1.0)
-
-
-# 외부 API로 실제 경로를 잰 source만 모은다. 여기 없는 source(직선거리 추정)는
-# 채점에도 근거 문장에도 쓰지 않는다.
-_MEASURED_ROUTE_SOURCES = frozenset(
-    {
-        RouteSource.KAKAO_WALKING,
-        RouteSource.NAVER_DRIVING,
-        RouteSource.KAKAO_TRANSIT,
-    }
-)
 
 
 def _applied_travel_route(route: TravelRoute | None) -> TravelRoute | None:
@@ -495,7 +538,7 @@ def _applied_travel_route(route: TravelRoute | None) -> TravelRoute | None:
       전부 이 값을 내보낸다. 그런데 둘 다 `status`는 `SUCCESS`라 상태만으로는
       실측과 구분되지 않는다(C 리뷰 지적, 2026-08-19).
 
-      이동수단을 추가할 때 `_MEASURED_ROUTE_SOURCES`에 그 벤더 source를 넣지
+      이동수단을 추가할 때 `MEASURED_ROUTE_SOURCES`에 그 벤더 source를 넣지
       않으면, 실측을 받아놓고도 전부 직선거리로 떨어진다.
 
     `source`를 빠뜨리면 두 가지가 깨진다. (1) 직선거리 추정이 실측인 척
@@ -509,7 +552,7 @@ def _applied_travel_route(route: TravelRoute | None) -> TravelRoute | None:
     if (
         route is not None
         and route.status is RouteStatus.SUCCESS
-        and route.source in _MEASURED_ROUTE_SOURCES
+        and route.source in MEASURED_ROUTE_SOURCES
         and route.duration_seconds is not None
     ):
         return route
@@ -535,6 +578,7 @@ def _proximity_score(
     candidate: ScoringCandidate,
     route: TravelRoute | None,
     max_distance_km: float,
+    budget_speed_km_per_min: float,
 ) -> float:
     """거리 Feature 점수. 실측 도보 시간이 있으면 쓰고, 없으면 직선거리로 돌아간다.
 
@@ -545,7 +589,9 @@ def _proximity_score(
     applied = _applied_travel_route(route)
     if applied is not None:
         assert applied.duration_seconds is not None
-        return _travel_time_score(applied.duration_seconds, max_distance_km, applied.mode)
+        return _travel_time_score(
+            applied.duration_seconds, max_distance_km, budget_speed_km_per_min
+        )
     return _distance_score(candidate.distance_km, max_distance_km)
 
 
@@ -639,9 +685,14 @@ def prepare_candidates(
             continue
 
         is_unverified = candidate.operating_hours is None or is_closed
-        warnings = (
+        operating_warnings = (
             (_CLOSED_NOW_WARNING,) if is_closed else (_UNVERIFIED_WARNING,)
         ) if is_unverified else ()
+        # **무장애 안내를 앞에 둔다.** 표시 측은 첫 줄만 보여주는데(PlaceCard.tsx),
+        # 운영시간은 "가서 닫혀 있을 수 있다"이고 무장애는 "가도 못 들어가는 데가
+        # 있다"라 무게가 다르다. 뒤에 두면 운영시간 미확인 후보에서 무장애 안내가
+        # 통째로 가려진다.
+        warnings = _accessibility_warnings(candidate) + operating_warnings
         eligible.append(
             PreparedCandidate(
                 candidate=candidate,
@@ -694,9 +745,14 @@ def score_prepared_candidates(
     weights: Mapping[str, float] | None = None,
     weather_reason: WeatherReason = None,
     requested_environment: str | None = None,
-    # A가 조회해 넘긴 실측 도보 경로. 해당 후보가 없거나 조회에 실패했으면
+    # A가 조회해 넘긴 실측 경로. 해당 후보가 없거나 조회에 실패했으면
     # 직선거리로 돌아간다(`_proximity_score()`).
     travel_routes: Sequence[TravelRoute] = (),
+    # 거리 점수의 시간 예산을 만들 속도(km/분) — **이 요청이 검색 반경을 만들 때
+    # 쓴 속도**여야 한다(`to_search_radius_speed_km_per_min()`). 측정한 이동수단의
+    # 속도가 아니다(D-118, `_travel_minutes_budget()` 참고). 기본값은 도보로,
+    # 넘기지 않는 호출부는 기본 반경(도보 기준) 요청과 같은 자를 쓴다.
+    travel_budget_speed_km_per_min: float = WALKING_SPEED_KM_PER_MINUTE,
     # 취향 근거 검색 결과(place_id = content_id 기준). 비어 있으면 사용자가
     # 취향을 말하지 않았거나 검색이 실패한 것으로 보고 taste Feature를 아예
     # 쓰지 않는다 — 후보 단위가 아니라 **요청 단위** 판단이다.
@@ -773,8 +829,11 @@ def score_prepared_candidates(
             primary_feature: primary_score,
             "remaining_operating_time": remaining_time_score,
             "distance": _proximity_score(
-                candidate, routes_by_place_id.get(candidate.place_id), max_distance_km
-            ),  # 실측 도보 시간 우선, 없으면 직선거리
+                candidate,
+                routes_by_place_id.get(candidate.place_id),
+                max_distance_km,
+                travel_budget_speed_km_per_min,
+            ),  # 실측 이동시간 우선, 없으면 직선거리
         }
         taste_match = taste_by_place_id.get(candidate.place_id) if uses_taste else None
         if uses_taste:
@@ -865,9 +924,11 @@ def score_candidates(
     # 사용자가 명시한 실내/실외. indoor/outdoor면 날씨 대신 이 조건으로 같은
     # 자리의 Feature를 채점한다(호출부가 날씨 언급이 없을 때만 넘긴다).
     requested_environment: str | None = None,
-    # A가 조회한 실측 도보 경로. 분리 진입점(score_prepared_candidates)과 같은 규칙을
+    # A가 조회한 실측 경로. 분리 진입점(score_prepared_candidates)과 같은 규칙을
     # 따른다 — 후보 중 하나라도 실측이 없으면 전부 직선거리로 채점한다.
     travel_routes: Sequence[TravelRoute] = (),
+    # 거리 점수의 시간 예산 속도. 분리 진입점과 같은 의미다(D-118).
+    travel_budget_speed_km_per_min: float = WALKING_SPEED_KM_PER_MINUTE,
 ) -> ScoringResult:
     """기존 하드 필터와 점수 계산을 연속 실행하는 호환 진입점."""
     prepared_result = prepare_candidates(
@@ -882,6 +943,7 @@ def score_candidates(
         weather_condition=weather_condition,
         max_distance_km=max_distance_km,
         travel_routes=travel_routes,
+        travel_budget_speed_km_per_min=travel_budget_speed_km_per_min,
         weights=weights,
         weather_reason=weather_reason,
         requested_environment=requested_environment,

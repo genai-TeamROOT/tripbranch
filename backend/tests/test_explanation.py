@@ -9,6 +9,7 @@ D-06 구체화 요청(`package_D/[D-06]explainability_detail.txt`) 이후에는 
 
 from datetime import time
 
+import pytest
 from fixtures.scoring_fixture_v1 import (
     _CAFE_CLOSING_SOON,
     _GALLERY_UNKNOWN_HOURS,
@@ -18,6 +19,7 @@ from fixtures.scoring_fixture_v1 import (
 )
 
 from app.concentration_policy import ConcentrationLevel
+from app.domain import explanation
 from app.domain.evidence import (
     CONCENTRATION_FEATURE_ORDER,
     FeatureContribution,
@@ -555,11 +557,27 @@ def test_distance_sentence_says_by_car_for_a_driving_measurement() -> None:
     assert sentences == ("현재 위치에서 차로 약 10분 거리예요.",)
 
 
-def test_distance_sentence_falls_back_for_a_mode_without_a_phrase() -> None:
-    """문구가 없는 이동수단(대중교통)은 실측 시간을 말하지 않고 직선거리로 답한다.
+def test_distance_sentence_speaks_transit() -> None:
+    """대중교통 실측도 그 수단으로 말한다 (D-118).
 
-    그 이동수단을 연결하는 카드가 _TRAVEL_MODE_PHRASES에 문구를 추가한다.
+    문구가 없던 시절에는 카드에 "대중교통 10분"이 적히고 문장은 직선거리로
+    돌아가, 같은 후보를 두 숫자로 말했다.
     """
+    sentences = build_explanations(_travel_evidence(TravelMode.TRANSIT))
+
+    assert sentences == ("현재 위치에서 대중교통으로 약 10분 거리예요.",)
+
+
+def test_distance_sentence_falls_back_when_the_mode_has_no_phrase(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """문구가 없는 이동수단은 실측 시간을 말하지 않고 직선거리로 답한다.
+
+    지금은 세 수단 모두 문구가 있으므로 하나를 지워서 확인한다 — 새 수단이
+    늘어도 "문구가 없으면 지어내지 않는다"는 성질은 남아야 한다.
+    """
+    monkeypatch.delitem(explanation._TRAVEL_MODE_PHRASES, TravelMode.TRANSIT)
+
     sentences = build_explanations(_travel_evidence(TravelMode.TRANSIT))
 
     assert sentences == ("현재 위치에서 직선거리 약 1.4km예요.",)

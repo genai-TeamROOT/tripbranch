@@ -18,6 +18,7 @@ import { AuthProvider } from "./auth/AuthContext";
 import { RequireUser } from "./auth/RequireUser";
 import { TripProvider } from "./state/TripContext";
 import { AppShell } from "./components/layout/AppShell";
+import { PageTransition } from "./components/layout/PageTransition";
 import { RouteErrorBoundary } from "./components/RouteErrorBoundary";
 
 /*
@@ -35,11 +36,11 @@ const LoginPage = lazy(() => import("./pages/LoginPage").then((m) => ({ default:
 const SignupPage = lazy(() =>
   import("./pages/SignupPage").then((m) => ({ default: m.SignupPage })),
 );
-const FindIdPage = lazy(() =>
-  import("./pages/FindIdPage").then((m) => ({ default: m.FindIdPage })),
-);
 const ResetPasswordPage = lazy(() =>
   import("./pages/ResetPasswordPage").then((m) => ({ default: m.ResetPasswordPage })),
+);
+const NewPasswordPage = lazy(() =>
+  import("./pages/NewPasswordPage").then((m) => ({ default: m.NewPasswordPage })),
 );
 const DeveloperChatPage = lazy(() =>
   import("./pages/DeveloperChatPage").then((m) => ({ default: m.DeveloperChatPage })),
@@ -66,11 +67,51 @@ function App() {
           <RouteErrorBoundary>
             <Suspense fallback={<RouteFallback />}>
               <Routes>
-                <Route path="/login" element={<LoginPage />} />
+                {/*
+                 * 인증 화면들은 서로 오가는 흐름이라(로그인 -> 회원가입 ->
+                 * 되돌아오기) 전환이 특히 눈에 띈다. pathKey를 경로 문자열로
+                 * 직접 주는 이유는, 같은 PageTransition 자리에 다른 화면이
+                 * 들어오면 React가 래퍼를 재사용해 애니메이션이 다시 재생되지
+                 * 않기 때문이다.
+                 *
+                 * 셸 밖이라 fullHeight는 켜지 않는다 — 각 화면이 min-h-dvh로
+                 * 스스로 높이를 잡는다.
+                 */}
+                <Route
+                  path="/login"
+                  element={
+                    <PageTransition pathKey="/login">
+                      <LoginPage />
+                    </PageTransition>
+                  }
+                />
                 {/* 회원가입·아이디찾기·비밀번호찾기는 아직 백엔드가 없는 UI 목업이다(D-062 Phase 5). */}
-                <Route path="/signup" element={<SignupPage />} />
-                <Route path="/find-id" element={<FindIdPage />} />
-                <Route path="/reset-password" element={<ResetPasswordPage />} />
+                <Route
+                  path="/signup"
+                  element={
+                    <PageTransition pathKey="/signup">
+                      <SignupPage />
+                    </PageTransition>
+                  }
+                />
+                <Route
+                  path="/reset-password"
+                  element={
+                    <PageTransition pathKey="/reset-password">
+                      <ResetPasswordPage />
+                    </PageTransition>
+                  }
+                />
+                {/* 재설정 메일의 링크가 돌아오는 자리. Supabase 대시보드의
+                    Redirect URLs에 이 주소가 있어야 실제로 여기로 온다. */}
+                <Route
+                  path="/reset-password/new"
+                  element={
+                    <PageTransition pathKey="/reset-password/new">
+                      <NewPasswordPage />
+                    </PageTransition>
+                  }
+                />
                 <Route
                   path="/dev-chat"
                   element={

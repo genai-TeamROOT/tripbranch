@@ -15,22 +15,39 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Sequence
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from time import perf_counter
 from typing import TypeAlias, TypeVar
 
 from app.config import Settings
+from app.domain.schedule_travel import ScheduleTravelEdge
 from app.errors import AppError
 from app.providers.protocols import LLMProvider
 from app.schedule.associations import CoVisitedHint
+from app.schedule.duration import resolve_visit_duration
 from app.schedule.schemas import (
-    ScheduleLLMPlan,
+    ScheduleLLMItem,
     SchedulePartialFillRequest,
     SchedulePlanningRequest,
     target_item_range,
 )
+from app.schedule.timeline import (
+    Timeline,
+    TimelineStop,
+    TravelMinutes,
+    build_timeline,
+    estimated_travel_minutes,
+    travel_speed_km_per_minute,
+)
+from app.schedule.travel import (
+    is_measured,
+    resolve_schedule_travel_edges,
+    travel_minutes_from_edges,
+)
 from app.schemas import RecommendationItem, ScheduleItem, ScheduleResult
 from app.state.schema import now_kst
+from app.tools.travel_route import TravelRouteTool
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +57,8 @@ CoVisitedFetcher: TypeAlias = Callable[
 ]
 
 _NO_CANDIDATES_ROUTE_SUMMARY = (
-    "조건에 맞는 곳을 충분히 찾지 못해 일정을 만들지 못했어요. "
-    "다른 지역이나 다른 종류의 장소로 다시 요청해볼까요?"
+    "일정을 짤 만한 곳을 충분히 찾지 못했어요. "
+    "지역을 조금 넓히거나 다른 종류의 장소로 다시 말씀해 주세요."
 )
 
 # ScheduleLLMPlan.items의 최소 개수가 이번 요청의 time_available에 따라 달라지므로
@@ -68,43 +85,30 @@ def _parse_hhmm_minutes(hhmm: str) -> int | None:
         return None
 
 
-def _format_minutes_hhmm(total_minutes: int) -> str:
-    wrapped = total_minutes % (24 * 60)
-    return f"{wrapped // 60:02d}:{wrapped % 60:02d}"
+# 시작 시각만 10분 단위로 올린다(TP-215).
+#
+# 예전에는 항목마다 estimated_arrival을 10분 단위로 올렸다 — LLM이 준 값이
+# 11:59처럼 가짜 정밀도를 달고 나와 그대로 보여주기 어색했기 때문이다(팀 제안,
+# 2026-08-12). 지금은 도착시각이 시작 시각 + 누적(이동 + 대기 + 체류)으로
+# 계산되므로, 항목마다 올리면 화면의 시각이 그 누적과 어긋난다 — 이 카드가
+# 없애려던 바로 그 불일치가 표시 단계에서 다시 생긴다.
+#
+# 그래서 올림은 **시작 시각 한 번**만 한다. 기준 시각이 보통 now_kst()라 13:47
+# 같은 값으로 시작하는데, 13:50으로 올려두면 이후 시각이 전부 그 위에서
+# 정확하게 누적된다. 읽기 좋은 값은 유지하면서 합은 깨지지 않는다.
+_START_ROUNDING_MIN = 10
 
 
-def _round_up_arrival(hhmm: str) -> str:
-    """estimated_arrival("HH:MM")을 다음 10분 단위로 올림한다(예: "11:59" -> "12:00").
+def _round_up_start(moment: datetime) -> datetime:
+    """방문 시작 시각을 다음 10분 단위로 올린다."""
 
-    도착시각은 LLM이 시작 시각부터 체류·이동시간을 누적해 계산한 추정치일
-    뿐이라(estimated_duration_min/travel_to_next_min 둘 다 아직 실측 Tool이
-    없는 LLM 추정값 — travel_to_next_min도 마찬가지다), 11:59처럼 딱 떨어지지
-    않는 값보다 10분 단위로 보여주는 게 사용자에게 더 자연스럽게 읽힌다(팀 제안,
-    2026-08-12). estimated_duration_min/travel_to_next_min은 세부 소요시간
-    정보라 그대로 둔다 — 반올림 대상은 "도착 체크포인트"인 estimated_arrival뿐이다.
-
-    이미 24시(1440분)를 넘기며 자정을 넘어가는 경우 다음날 00:xx로 감싼다.
-    형식이 "HH:MM"이 아니면(LLM이 지시를 안 지킨 방어적 상황) 원본을 그대로
-    돌려준다 — 화면 표시용 후처리가 튼튼한 값까지 망가뜨리면 안 된다.
-    """
-
-    try:
-        hour_str, minute_str = hhmm.split(":", 1)
-        total_minutes = int(hour_str) * 60 + int(minute_str)
-    except (ValueError, AttributeError):
-        return hhmm
-    rounded = -(-total_minutes // 10) * 10
-    rounded %= 24 * 60
-    return f"{rounded // 60:02d}:{rounded % 60:02d}"
-
-
-def _round_up_items_arrival(items: list[ScheduleItem]) -> list[ScheduleItem]:
-    """items 각 항목의 estimated_arrival만 10분 단위로 올림한 새 리스트를 만든다."""
-
-    return [
-        item.model_copy(update={"estimated_arrival": _round_up_arrival(item.estimated_arrival)})
-        for item in items
-    ]
+    truncated = moment.replace(second=0, microsecond=0)
+    if truncated != moment:
+        truncated += timedelta(minutes=1)
+    remainder = truncated.minute % _START_ROUNDING_MIN
+    if remainder:
+        truncated += timedelta(minutes=_START_ROUNDING_MIN - remainder)
+    return truncated
 
 
 # recommendation_pipeline._operating_hours_display()가 "상시 운영"을 나타낼 때 쓰는
@@ -113,9 +117,10 @@ def _round_up_items_arrival(items: list[ScheduleItem]) -> list[ScheduleItem]:
 # 주석 참고) 여기서 같은 문자열을 별도로 둔다 — 화면 표시 문자열이라 자주 바뀌지 않는다.
 _ALL_DAY_OPERATING_HOURS_DISPLAY = "24시간"
 
+# 사용자가 카드에서 먼저 보는 것은 도착 시각이라 그 순서로 쓴다. "운영 중이 아닐 수
+# 있어요"는 완곡 표현이 겹쳐 있어(아닐 + 수 있다) 사실만 남겼다.
 _OPERATING_HOURS_WARNING_TEMPLATE = (
-    "운영시간({display}) 기준으로 도착 예정 시각({arrival})엔 운영 중이 아닐 수 있어요. "
-    "방문 전에 다시 확인해주세요."
+    "{arrival} 도착 예정인데 이곳은 {display} 운영이에요. 가시기 전에 한 번 확인해 주세요."
 )
 
 
@@ -164,42 +169,216 @@ def _operating_hours_warning(display: str | None, estimated_arrival: str) -> str
     return _OPERATING_HOURS_WARNING_TEMPLATE.format(display=display, arrival=estimated_arrival)
 
 
-def _apply_operating_hours_warnings(
-    items: list[ScheduleItem], candidates: Iterable[RecommendationItem]
-) -> list[ScheduleItem]:
-    """items 각 항목의 estimated_arrival을 후보의 operating_hours_display와
-    대조해, 어긋나는 항목에만 경고를 붙인 새 리스트를 만든다.
+@dataclass(frozen=True)
+class _ItemDraft:
+    """시간표 계산에 넣기 직전의 항목. 시각만 아직 없다."""
 
-    근거 데이터(운영시간)가 단일 시각 기준이라는 한계는 그대로 남는다
-    (basis_note가 이미 안내한다, docs/design/int-07-schedule.md 6.2.1절) —
-    이 함수는 "LLM이 이미 계산해 준 도착 예정 시각과, 원래 알고 있던 운영시간이
-    서로 모순되는가"만 결정적으로 검사한다. candidates에 없는 place_id(예:
-    REJECT_SPECIFIC 부분 재편성의 pinned 항목)는 운영시간 정보 자체가 없으므로
-    검사하지 않고 그대로 둔다.
+    order: int
+    place_id: str
+    place_name: str
+    reason: str
+    visit_duration_min: int
+
+
+@dataclass(frozen=True)
+class _ResolvedTravel:
+    """이번 편성에 쓸 구간 이동시간과 그 근거. (TP-216)
+
+    시간표는 콜러블(`minutes`)만 있으면 되지만, 화면은 그 값이 실측인지 추정인지와
+    어떤 이동수단으로 잰 값인지를 함께 보여줘야 한다. 콜러블은 숫자 하나만
+    돌려주므로 근거를 실을 자리가 없어 `edges`를 함께 들고 다닌다 — 시간표가
+    쓴 값과 화면이 설명하는 근거가 같은 표에서 나오게 하려는 것이다.
     """
+
+    minutes: TravelMinutes
+    edges: tuple[ScheduleTravelEdge, ...]
+
+
+def _draft_from_llm_item(
+    item: ScheduleLLMItem, candidate: RecommendationItem | None, order: int
+) -> _ItemDraft:
+    """LLM이 제안한 항목을 체류시간 정책으로 클램프해 초안으로 만든다."""
+
+    return _ItemDraft(
+        order=order,
+        place_id=item.place_id,
+        place_name=item.place_name,
+        reason=item.reason,
+        visit_duration_min=resolve_visit_duration(
+            category=candidate.category if candidate is not None else None,
+            proposed_min=item.estimated_duration_min,
+        ),
+    )
+
+
+def _draft_from_schedule_item(item: ScheduleItem, order: int) -> _ItemDraft:
+    """이미 확정된 항목(부분 재편성의 pinned)을 초안으로 만든다.
+
+    체류시간은 **다시 클램프하지 않는다.** 직전 편성에서 이미 정책을 통과한
+    값이고, 사용자가 유지하기로 한 자리를 이번 턴에 조용히 줄이거나 늘리면
+    "그대로 뒀다"는 약속이 깨진다. 정책이 바뀌어도 마찬가지다 — 새 정책은 새로
+    고르는 자리에만 적용한다.
+    """
+
+    return _ItemDraft(
+        order=order,
+        place_id=item.place_id,
+        place_name=item.place_name,
+        reason=item.reason,
+        visit_duration_min=item.estimated_duration_min,
+    )
+
+
+def _build_schedule_timeline(
+    drafts: Sequence[_ItemDraft],
+    *,
+    start_at: datetime,
+    travel_minutes: TravelMinutes,
+    candidates: Iterable[RecommendationItem],
+) -> Timeline:
+    """초안 목록으로 시간표를 계산한다. 운영시간은 개장 전 대기 판정에만 쓴다."""
+
     display_by_place = {c.place_id: c.operating_hours_display for c in candidates}
-    result: list[ScheduleItem] = []
-    for item in items:
-        warning = _operating_hours_warning(
-            display_by_place.get(item.place_id), item.estimated_arrival
+    stops: list[TimelineStop] = []
+    for draft in drafts:
+        hours = _parse_operating_hours_range(display_by_place.get(draft.place_id))
+        stops.append(
+            TimelineStop(
+                place_id=draft.place_id,
+                visit_duration_min=draft.visit_duration_min,
+                opens_at_min=hours[0] if hours is not None else None,
+                closes_at_min=hours[1] if hours is not None else None,
+            )
         )
-        if warning is None:
-            result.append(item)
-        else:
-            result.append(item.model_copy(update={"warnings": [*item.warnings, warning]}))
-    return result
+    return build_timeline(stops, start_at=start_at, travel_minutes=travel_minutes)
 
 
-def _finalize_items(
-    items: list[ScheduleItem], candidates: Iterable[RecommendationItem]
+def _compose_items(
+    drafts: Sequence[_ItemDraft],
+    timeline: Timeline,
+    candidates: Iterable[RecommendationItem],
+    travel_edges: Sequence[ScheduleTravelEdge] = (),
 ) -> list[ScheduleItem]:
-    """estimated_arrival을 표시용으로 다듬고 운영시간 경고를 붙여 최종 items를 만든다.
+    """초안 + 시간표를 화면에 실리는 ScheduleItem으로 합친다.
 
-    두 처리를 한 함수로 묶은 이유: 운영시간 경고는 사용자에게 실제로 보이는
-    도착 시각(10분 단위로 올림된 값) 기준으로 판단해야 화면 표시와 근거가
-    어긋나지 않는다.
+    구간 이동정보(`travel_edges`)는 **시간표가 쓴 그 표를 그대로 읽는다**(TP-216).
+    이동수단과 실측 여부를 여기서 다시 판정하지 않는다 — 다시 판정하면 화면이
+    설명하는 근거와 도착시각을 만든 근거가 갈릴 수 있다. 표에 없는 구간(좌표를
+    못 구해 시간표가 폴백값을 쓴 자리)은 두 필드가 기본값으로 남고, 화면은
+    이동수단이 None인 것으로 그 경우를 구분한다.
+
+    운영시간 경고는 **방문 시작 시각** 기준으로 판단한다(도착 시각이 아니라).
+    개장 전에 도착하면 시간표가 이미 대기를 잡아 방문 시작을 개장 시각으로
+    미뤄두므로, 도착 시각으로 검사하면 정상적으로 기다리는 일정에까지 "운영 중이
+    아닐 수 있다"는 경고가 붙는다. 마감 이후 도착이나 자정을 넘겨 도착한 경우는
+    대기가 잡히지 않아 방문 시작 = 도착이고, 그때는 예전과 똑같이 경고가 붙는다.
+
+    candidates에 없는 place_id(부분 재편성의 pinned 항목)는 운영시간 정보 자체가
+    없으므로 검사하지 않고 그대로 둔다 — 기존 동작과 같다.
     """
-    return _apply_operating_hours_warnings(_round_up_items_arrival(items), candidates)
+
+    display_by_place = {c.place_id: c.operating_hours_display for c in candidates}
+    edge_by_pair = {(edge.from_place_id, edge.to_place_id): edge for edge in travel_edges}
+    items: list[ScheduleItem] = []
+    for index, (draft, stop) in enumerate(zip(drafts, timeline.stops, strict=True)):
+        visit_start = stop.visit_start_at.strftime("%H:%M")
+        warning = _operating_hours_warning(display_by_place.get(draft.place_id), visit_start)
+        next_draft = drafts[index + 1] if index + 1 < len(drafts) else None
+        edge = (
+            None
+            if next_draft is None
+            else edge_by_pair.get((draft.place_id, next_draft.place_id))
+        )
+        items.append(
+            ScheduleItem(
+                order=draft.order,
+                place_id=draft.place_id,
+                place_name=draft.place_name,
+                estimated_arrival=stop.arrival_at.strftime("%H:%M"),
+                estimated_duration_min=stop.visit_duration_min,
+                travel_to_next_min=stop.travel_to_next_min,
+                reason=draft.reason,
+                warnings=[warning] if warning is not None else [],
+                travel_to_next_mode=None if edge is None else edge.mode,
+                travel_to_next_measured=edge is not None and is_measured(edge),
+            )
+        )
+    return items
+
+
+def _travel_minutes_for(
+    request: SchedulePlanningRequest | SchedulePartialFillRequest,
+) -> TravelMinutes:
+    """이번 요청의 구간 이동시간 계산기.
+
+    **좌표가 없을 때만 쓰는 폴백이다.** 좌표(`travel_candidates`)가 오면
+    `_resolve_travel_minutes()`가 추정·실측 Edge로 계산한다(TP-216). 이 경로는
+    좌표를 못 채운 호출부(과거 세션 재생, 단위 테스트 등)를 위해 남겨둔다 —
+    직선거리를 가정 속도로 나눈 값이고 방향이 없다.
+    """
+
+    return estimated_travel_minutes(
+        request.pairwise_distances_km,
+        speed_km_per_minute=travel_speed_km_per_minute(request.conditions),
+    )
+
+
+async def _resolve_travel_minutes(
+    request: SchedulePlanningRequest | SchedulePartialFillRequest,
+    place_ids: Sequence[str],
+    *,
+    settings: Settings | None,
+    travel_route_tool: TravelRouteTool | None,
+) -> _ResolvedTravel:
+    """확정된 방문 순서의 구간 이동시간을 만든다. (TP-216)
+
+    **순서가 정해진 뒤에 부른다.** 어느 구간을 잴지는 LLM이 순서를 고른 뒤에야
+    정해지고, 실측은 비동기라 시간표의 동기 콜러블 안에서 할 수 없다. 그래서
+    필요한 구간만 미리 확정해 표로 만들고, 시간표에는 그 표를 읽는 콜러블을 넘긴다.
+
+    좌표(`travel_candidates`)가 없으면 예전처럼 직선거리 ÷ 가정 속도로 계산한다 —
+    이 필드를 안 채우는 호출부는 동작이 바뀌지 않는다.
+    """
+
+    edges = await resolve_schedule_travel_edges(
+        candidates=request.travel_candidates,
+        place_ids=place_ids,
+        conditions=request.conditions,
+        # 구간 이동수단 판정에 쓴다(TP-226). 두 요청 스키마가 같은 필드를 가지므로
+        # 전체 편성과 부분 재편성이 같은 값을 넘긴다.
+        weather=request.weather,
+        settings=settings or Settings(),
+        travel_route_tool=travel_route_tool,
+    )
+    if edges:
+        return _ResolvedTravel(minutes=travel_minutes_from_edges(edges), edges=edges)
+    return _ResolvedTravel(minutes=_travel_minutes_for(request), edges=())
+
+
+def _drop_unknown_places(
+    items: Sequence[ScheduleLLMItem], candidate_ids: set[str]
+) -> tuple[list[ScheduleLLMItem], list[str]]:
+    """후보 목록에 없는 place_id를 가진 항목을 버린다. (TP-215)
+
+    **지어낸 id가 통과하면 되돌릴 수 없다.** 그대로 record_recommendation()에
+    들어가 "추천됨"으로 기록되고, 이후 턴의 제외 목록에 올라 실재하는 장소를
+    영구히 가린다. find_recommended_item()을 타고 보관함에도 담긴다. 화면에는
+    상세가 없는 카드가 뜬다.
+
+    지금까지 이 결함이 드러나지 않은 건 FakeLLMProvider가 candidates 앞에서
+    고르기 때문일 뿐이다 — 실제 모델이 지어내면 막는 것이 아무것도 없었다.
+
+    반환값은 (남긴 항목, 버린 place_id)이다. order는 호출부가 다시 매긴다.
+    """
+
+    kept: list[ScheduleLLMItem] = []
+    dropped: list[str] = []
+    for item in items:
+        if item.place_id in candidate_ids:
+            kept.append(item)
+        else:
+            dropped.append(item.place_id)
+    return kept, dropped
 
 
 def _build_basis_note(visit_datetime: datetime) -> str:
@@ -212,8 +391,8 @@ def _build_basis_note(visit_datetime: datetime) -> str:
 
     formatted = visit_datetime.strftime("%H:%M")
     return (
-        f"이 정보는 현재시각({formatted}) 기준으로 계산됐어요. "
-        "실제 방문 시간에는 운영시간·날씨 상황이 달라질 수 있어요."
+        f"{formatted} 기준으로 짠 일정이에요. "
+        "실제로 가시는 시간에는 운영시간이나 날씨가 달라질 수 있어요."
     )
 
 
@@ -270,6 +449,99 @@ def _names_of(
     ]
 
 
+# 밀려난 보관함 장소를 되돌릴 때 그 자리에 쓰는 이유. LLM이 쓴 문장은 원래 그 자리에
+# 있던 다른 장소를 설명하는 글이라 그대로 둘 수 없고, 새로 지어내지도 않는다 —
+# 사용자가 직접 담았다는 것은 지어낸 값이 아니라 사실이다.
+_RESTORED_ITEM_REASON = "보관함에 담아두신 곳이에요."
+
+# 자리를 되돌린 턴의 동선 요약. LLM이 쓴 요약은 빠진 장소를 이름으로 언급할 수 있어
+# ("…덕수궁 돌담길로 마무리하는 동선이에요") 그대로 쓰면 화면에 없는 곳을 말하게 된다.
+# 앞에 "N시간 코스를 짜봤어요."가 붙으므로 "짜봤어요"를 다시 쓰지 않는다.
+_RESTORED_ROUTE_SUMMARY = "담아두신 곳들을 순서대로 이어봤어요."
+
+
+def _restore_displaced_must_include(
+    items: Sequence[ScheduleLLMItem],
+    missing: set[str],
+    *,
+    must_include: Sequence[str],
+    saved_place_ids: Sequence[str],
+    candidates: Sequence[RecommendationItem],
+) -> tuple[list[ScheduleLLMItem], set[str], int]:
+    """담지 않은 장소가 차지한 자리를 밀려난 보관함 장소에게 되돌린다. (TP-223)
+
+    **왜 필요한가.** LLM이 `[반드시 포함]`을 재시도 후에도 어기면, 담아둔 곳이
+    빠진 자리에 담지 않은 곳이 들어앉는다. 항목 수가 상한 이하이므로 이 조합은
+    "자리가 없어서 뺐다"가 아니라 **"자리를 남에게 줬다"**는 뜻이다. 실제로
+    관측된 상태다(TP-223: 6곳을 담았는데 2곳이 빠지고 안 담은 곳이 하나 들어옴).
+
+    지금까지는 그 사실을 로그와 안내 문구로 알리기만 했다. 이 저장소는 반대로
+    해왔다 — `_drop_unknown_places()`는 지어낸 id를 버리고,
+    `plan_partial_schedule()`은 pinned를 LLM echo 대신 구조적으로 병합한다
+    ("LLM 지시 준수보다 구조적 보장을 우선한다", SCHEDULE-07).
+
+    **자리 수는 그대로다.** place_id·이름·이유만 바꾼다. 도착시각은 시간표가
+    좌표로 다시 계산하므로 저절로 맞는다.
+
+    **대기 중인 장소는 담은 순서로 꺼낸다**(`must_include` 순). 자르기와 같은
+    기준이라 "왜 그 곳이 먼저인지"를 같은 말로 설명할 수 있다. 낯선 자리는 앞에서
+    부터 채운다 — 순서는 시간표가 아니라 동선의 문제이고, LLM이 정한 방문 순서를
+    최소한으로 흔든다.
+
+    **자리가 남아서 들어온 장소는 건드리지 않는다.** 밀려난 보관함 장소가 없으면
+    (missing이 비면) 아무것도 바꾸지 않는다 — 그건 설계된 동작이다
+    (`prompts/schedule/plan.md`, "남는 자리를 다른 후보로 채우세요").
+
+    반환값은 (바뀐 items, 아직 못 되돌린 missing, 되돌린 자리 수)이다.
+    """
+
+    if not missing:
+        return list(items), missing, 0
+
+    waiting = [place_id for place_id in must_include if place_id in missing]
+    saved = set(saved_place_ids)
+    name_by_place_id = {c.place_id: c.name for c in candidates}
+
+    restored: list[ScheduleLLMItem] = []
+    swapped = 0
+    for item in items:
+        if item.place_id in saved or not waiting:
+            restored.append(item)
+            continue
+        place_id = waiting.pop(0)
+        restored.append(
+            item.model_copy(
+                update={
+                    "place_id": place_id,
+                    "place_name": name_by_place_id.get(place_id, item.place_name),
+                    "reason": _RESTORED_ITEM_REASON,
+                }
+            )
+        )
+        swapped += 1
+
+    return restored, set(waiting), swapped
+
+
+def _added_place_names(
+    request: SchedulePlanningRequest, items: Sequence[ScheduleItem]
+) -> list[str]:
+    """보관함에 없었는데 편성에 들어간 장소 이름. (TP-223)
+
+    **자르기 전 원본 목록과 비교한다.** `_resolve_must_include()`가 상한 때문에
+    줄인 목록과 비교하면, 잘린 보관함 장소를 LLM이 그래도 골랐을 때 그 곳이
+    "새로 찾은 곳"으로 잘못 안내된다 — 사용자가 담아둔 곳인데도.
+
+    보관함을 쓰지 않은 턴에는 빈 리스트다. 그때는 모든 장소가 새로 찾은 곳이라
+    알릴 내용이 아니다.
+    """
+
+    if not request.must_include_place_ids:
+        return []
+    saved = set(request.must_include_place_ids)
+    return [item.place_name for item in items if item.place_id not in saved]
+
+
 def _resolve_must_include(
     request: SchedulePlanningRequest, max_items: int
 ) -> tuple[list[str], list[str]]:
@@ -301,13 +573,18 @@ def _resolve_must_include(
 
 
 def _missing_must_include(
-    must_include: Sequence[str], plan: ScheduleLLMPlan
+    must_include: Sequence[str], items: Sequence[ScheduleLLMItem]
 ) -> set[str]:
-    """LLM 응답에서 빠진 강제 포함 place_id. 없으면 빈 집합. (SCHEDULE-12)"""
+    """LLM 응답에서 빠진 강제 포함 place_id. 없으면 빈 집합. (SCHEDULE-12)
+
+    후보에 없는 항목을 걸러낸 뒤(_drop_unknown_places) 판정한다 — must_include는
+    이미 후보 안의 id만 남긴 것이라 결과는 같지만, 순서를 뒤집으면 지어낸 id가
+    강제 포함을 만족시킨 것처럼 보일 여지가 생긴다.
+    """
 
     if not must_include:
         return set()
-    return set(must_include) - {item.place_id for item in plan.items}
+    return set(must_include) - {item.place_id for item in items}
 
 
 async def plan_schedule(
@@ -317,6 +594,7 @@ async def plan_schedule(
     timer: Timer = perf_counter,
     co_visited_fetcher: CoVisitedFetcher | None = None,
     settings: Settings | None = None,
+    travel_route_tool: TravelRouteTool | None = None,
 ) -> ScheduleResult:
     """SchedulePlanningRequest로 LLM을 호출해 ScheduleResult를 만든다.
 
@@ -354,7 +632,11 @@ async def plan_schedule(
             elapsed_ms=round((timer() - started_at) * 1000, 2),
         )
 
-    must_include, omitted_names = _resolve_must_include(request, max_items)
+    # 두 사유를 끝까지 갈라서 들고 간다(TP-223). 예전에는 여기서 나온 "상한 초과"와
+    # 아래 "재시도 후에도 LLM이 빠뜨림"을 한 리스트에 합쳐 넘겨, 화면이 두 경우에
+    # 같은 문장을 냈다 — 사용자가 할 수 있는 일이 서로 다른데도.
+    must_include, over_capacity_names = _resolve_must_include(request, max_items)
+    omitted_names: list[str] = []
 
     resolved_request = (
         request
@@ -372,8 +654,11 @@ async def plan_schedule(
         settings,
     )
 
+    candidate_ids = {candidate.place_id for candidate in resolved_request.candidates}
+
     plan = (await llm.generate_schedule_plan(resolved_request)).data
-    missing = _missing_must_include(must_include, plan)
+    llm_items, hallucinated = _drop_unknown_places(plan.items, candidate_ids)
+    missing = _missing_must_include(must_include, llm_items)
     if missing:
         # 프롬프트 지시는 부탁이고 이 검증이 계약이다(SCHEDULE-07과 같은 철학).
         # 한 번만 다시 부른다 — 같은 입력으로 무한히 조르지 않고, 두 번째도
@@ -383,7 +668,13 @@ async def plan_schedule(
             sorted(missing),
         )
         plan = (await llm.generate_schedule_plan(resolved_request)).data
-        missing = _missing_must_include(must_include, plan)
+        llm_items, hallucinated = _drop_unknown_places(plan.items, candidate_ids)
+        missing = _missing_must_include(must_include, llm_items)
+
+    if hallucinated:
+        logger.warning(
+            "schedule.unknown_place_ids dropped=%s", sorted(set(hallucinated))
+        )
 
     # LLM이 items는 빈 배열로 주면서 total_duration_min/route_summary는 그럴듯한
     # 문장으로 채워 보내는 비일관 응답이 실제로 관측됐다(2026-08-10 real Gemini
@@ -392,14 +683,31 @@ async def plan_schedule(
     # 발생하지 않지만(검증 실패 시 gemini.py의 재시도 후에도 실패하면 예외로
     # 올라간다), FakeLLMProvider 등 스키마 검증을 안 거치는 테스트 더블까지
     # 방어하기 위해 남겨둔다.
-    if not plan.items:
+    if not llm_items:
         return ScheduleResult(
             items=[],
             total_duration_min=0,
             route_summary=_NO_CANDIDATES_ROUTE_SUMMARY,
             basis_note=_build_basis_note(effective_visit_datetime),
+            # 일정을 못 짠 턴에도 상한 초과는 알린다 — 담아둔 곳이 왜 안 보이는지는
+            # 일정이 나왔든 안 나왔든 사용자가 똑같이 궁금해한다
+            # (response_composer.compose_schedule_message docstring과 같은 근거).
+            over_capacity_place_names=over_capacity_names,
             elapsed_ms=round((timer() - started_at) * 1000, 2),
         )
+
+    # 담지 않은 장소가 차지한 자리를 밀려난 보관함 장소에게 되돌린다(TP-223).
+    # 재시도 뒤에 둔다 — 먼저 LLM에게 한 번 더 기회를 주고, 그래도 안 지키면 코드가
+    # 고친다. 자리가 남아서 들어온 장소는 건드리지 않는다.
+    llm_items, missing, restored_count = _restore_displaced_must_include(
+        llm_items,
+        missing,
+        must_include=must_include,
+        saved_place_ids=request.must_include_place_ids,
+        candidates=resolved_request.candidates,
+    )
+    if restored_count:
+        logger.info("schedule.must_include_restored slots=%d", restored_count)
 
     if missing:
         # 재시도 후에도 빠진 것은 502로 턴을 죽이지 않고 결과를 살린다 —
@@ -411,107 +719,101 @@ async def plan_schedule(
             "schedule.must_include_missing after retry place_ids=%s",
             sorted(missing),
         )
-        omitted_names = [
-            *omitted_names,
-            *_names_of(missing, request.candidates),
-        ]
+        omitted_names = _names_of(missing, request.candidates)
 
+    candidate_by_id = {c.place_id: c for c in resolved_request.candidates}
+    drafts = [
+        _draft_from_llm_item(item, candidate_by_id.get(item.place_id), order)
+        for order, item in enumerate(llm_items, start=1)
+    ]
+    travel = await _resolve_travel_minutes(
+        resolved_request,
+        [draft.place_id for draft in drafts],
+        settings=settings,
+        travel_route_tool=travel_route_tool,
+    )
+    timeline = _build_schedule_timeline(
+        drafts,
+        start_at=_round_up_start(effective_visit_datetime),
+        travel_minutes=travel.minutes,
+        candidates=resolved_request.candidates,
+    )
+
+    items = _compose_items(drafts, timeline, resolved_request.candidates, travel.edges)
     return ScheduleResult(
-        items=_finalize_items(plan.items, resolved_request.candidates),
-        total_duration_min=plan.total_duration_min,
-        route_summary=plan.route_summary,
+        items=items,
+        total_duration_min=timeline.total_duration_min,
+        # 자리를 되돌렸으면 LLM 요약을 쓰지 않는다 — 그 문장은 지금 일정에 없는
+        # 장소를 이름으로 언급할 수 있다.
+        route_summary=_RESTORED_ROUTE_SUMMARY if restored_count else plan.route_summary,
         basis_note=_build_basis_note(effective_visit_datetime),
         omitted_saved_place_names=omitted_names,
+        over_capacity_place_names=over_capacity_names,
+        added_place_names=_added_place_names(request, items),
         elapsed_ms=round((timer() - started_at) * 1000, 2),
     )
 
 
 # SCHEDULE-09 2단계 — 부분 재편성(REJECT_SPECIFIC) 전용.
 _NO_FILL_CANDIDATES_ROUTE_SUMMARY = (
-    "대체할 새로운 곳을 찾지 못해 나머지 일정은 그대로 유지했어요. "
-    "조건을 조금 넓혀서 다시 요청해볼까요?"
+    "바꿀 만한 곳을 찾지 못해서 일정은 그대로 뒀어요. "
+    "조건을 조금 넓혀서 다시 말씀해 주시겠어요?"
 )
 
 
-def _total_duration_from_items(items: list[ScheduleItem]) -> int:
-    """items의 체류시간 합 + 마지막을 제외한 이동시간 합.
+def _anchor_start(items: Sequence[ScheduleItem], fallback: datetime) -> datetime:
+    """부분 재편성 시간표의 시작 시각.
 
-    LLM이 부분 재편성에서는 전체 route 관점의 total_duration_min을 직접
-    계산해주지 않으므로(new_items만 보고 있어 pinned_items를 포함한 전체를
-    모른다) planner.py가 병합 후 항목 값만으로 직접 계산한다.
-    """
-    duration_sum = sum(item.estimated_duration_min for item in items)
-    travel_sum = sum(
-        item.travel_to_next_min for item in items if item.travel_to_next_min is not None
-    )
-    return duration_sum + travel_sum
-
-
-def _resync_downstream_arrivals(
-    merged: list[ScheduleItem], expected_orders: set[int]
-) -> list[ScheduleItem]:
-    """교체된 자리(new_items) 뒤에 이어지는 pinned 항목들의 estimated_arrival을
-    실제 duration/travel 체인 기준으로 다시 계산한다.
-
-    pinned 항목의 estimated_arrival은 "직전 전체/부분 편성 때 그 앞자리에 있던
-    장소" 기준으로 계산된 값이라, 그 앞자리가 이번 REJECT_SPECIFIC으로 새 장소로
-    바뀌면(새 장소의 체류·이동 시간이 원래 있던 장소와 다를 수 있으므로) 더 이상
-    맞지 않을 수 있다 — travel_to_next_min이 stale해지는 것과 같은 원인이다
-    (실사용 리뷰로 발견, 2026-08-13. 관련 수정: 교체 직전 pinned 항목의
-    travel_to_next_min 무효화).
-
-    순서대로 훑으면서, 이번에 새로 채워진 자리(new_items)는 LLM이 이미
-    pinned 이웃의 도착 시각을 근거로 직접 계산해준 값이니 그대로 앵커로
-    신뢰한다(다시 계산하지 않음 — LLM 출력을 임의로 덮어쓰지 않는다). 그 다음에
-    오는 pinned 항목들은 앵커의 도착 시각에 앵커 자신의 duration·travel_to_next_min을
-    누적해 다시 계산한다. 이 anchor가 실은 그 앞자리부터 안 바뀐 pinned
-    항목이라도(즉 이번에 아무것도 안 바뀐 구간) 같은 값·같은 공식으로 다시
-    계산하는 것이라 결과가 그대로 재현된다 — 안전하다.
-
-    파싱 실패(anchor의 estimated_arrival이 "HH:MM"이 아닌 방어적 상황)가
-    생기면 그 시점부터는 재계산을 포기하고 남은 항목을 원본 그대로 둔다 —
-    화면 표시용 후처리가 이미 있는 값까지 망가뜨리면 안 된다는 기존 원칙과
-    동일하다.
+    첫 항목이 유지되는 자리(pinned)라면 그 자리의 도착 시각이 이미 사용자에게
+    보인 값이므로 그대로 기준점으로 쓴다 — 자리 하나를 바꿨다고 일정 전체가 앞뒤로
+    움직이면 "나머지는 그대로 뒀다"는 말이 안 맞는다. 파싱에 실패하면(방어적
+    상황) 편성 기준 시각으로 되돌아간다.
     """
 
-    result: list[ScheduleItem] = []
-    running_minutes: int | None = None
-    prev_duration = 0
-    prev_travel = 0
-
-    for item in merged:
-        is_anchor = not result or item.order in expected_orders
-        if is_anchor:
-            resolved_item = item
-            running_minutes = _parse_hhmm_minutes(item.estimated_arrival)
-        elif running_minutes is None:
-            # 이전 앵커 파싱이 실패했다 — 더 이상 신뢰할 기준점이 없으니 원본 유지.
-            resolved_item = item
-        else:
-            running_minutes += prev_duration + prev_travel
-            resolved_item = item.model_copy(
-                update={"estimated_arrival": _format_minutes_hhmm(running_minutes)}
-            )
-            running_minutes = _parse_hhmm_minutes(resolved_item.estimated_arrival)
-
-        result.append(resolved_item)
-        prev_duration = resolved_item.estimated_duration_min
-        prev_travel = resolved_item.travel_to_next_min or 0
-
-    return result
+    if not items:
+        return _round_up_start(fallback)
+    minutes = _parse_hhmm_minutes(items[0].estimated_arrival)
+    if minutes is None:
+        return _round_up_start(fallback)
+    midnight = fallback.replace(hour=0, minute=0, second=0, microsecond=0)
+    return midnight + timedelta(minutes=minutes)
 
 
-def _pinned_only_result(
-    pinned_items: list[ScheduleItem],
-    candidates: Iterable[RecommendationItem],
+async def _pinned_only_result(
+    request: SchedulePartialFillRequest,
     visit_datetime: datetime,
     route_summary: str,
     elapsed_ms: float,
+    *,
+    settings: Settings | None = None,
+    travel_route_tool: TravelRouteTool | None = None,
 ) -> ScheduleResult:
-    ordered = sorted(pinned_items, key=lambda item: item.order)
+    """새로 채운 자리 없이 기존 항목만으로 결과를 만든다.
+
+    유지 항목만 남아도 구간 이동시간은 같은 경로로 확정한다(TP-216) — 여기만
+    직선거리 추정을 쓰면 같은 일정이 실패 여부에 따라 다른 시각을 갖게 된다.
+    """
+
+    ordered = sorted(request.pinned_items, key=lambda item: item.order)
+    drafts = [
+        _draft_from_schedule_item(item, order)
+        for order, item in enumerate(ordered, start=1)
+    ]
+    travel = await _resolve_travel_minutes(
+        request,
+        [draft.place_id for draft in drafts],
+        settings=settings,
+        travel_route_tool=travel_route_tool,
+    )
+    timeline = _build_schedule_timeline(
+        drafts,
+        start_at=_anchor_start(ordered, visit_datetime),
+        travel_minutes=travel.minutes,
+        candidates=request.candidates,
+    )
     return ScheduleResult(
-        items=_finalize_items(ordered, candidates),
-        total_duration_min=_total_duration_from_items(ordered) if ordered else 0,
+        items=_compose_items(drafts, timeline, request.candidates, travel.edges),
+        total_duration_min=timeline.total_duration_min,
         route_summary=route_summary,
         basis_note=_build_basis_note(visit_datetime),
         elapsed_ms=elapsed_ms,
@@ -525,6 +827,7 @@ async def plan_partial_schedule(
     timer: Timer = perf_counter,
     co_visited_fetcher: CoVisitedFetcher | None = None,
     settings: Settings | None = None,
+    travel_route_tool: TravelRouteTool | None = None,
 ) -> ScheduleResult:
     """SchedulePartialFillRequest로 일부 슬롯만 새로 채운 ScheduleResult를 만든다.
 
@@ -552,12 +855,13 @@ async def plan_partial_schedule(
     if not request.target_orders:
         # 파싱 단계(SCHEDULE-09 1단계)가 REJECT_SPECIFIC일 때 항상 target_indices를
         # 채우므로 정상 흐름에서는 발생하지 않는다 — 방어적으로만 처리한다.
-        return _pinned_only_result(
-            request.pinned_items,
-            request.candidates,
+        return await _pinned_only_result(
+            request,
             effective_visit_datetime,
             _NO_FILL_CANDIDATES_ROUTE_SUMMARY,
             round((timer() - started_at) * 1000, 2),
+            settings=settings,
+            travel_route_tool=travel_route_tool,
         )
 
     # 유지 대상(pinned)이 후보에 섞여 있으면 그 자리에 같은 장소가 다시 뽑혀
@@ -582,12 +886,13 @@ async def plan_partial_schedule(
         # 유지 대상(pinned)과 거절 대상을 빼고 나니 채울 수 있는 새 후보가
         # 아예 없다 — "일정 전체 실패"가 아니라 "일부만 대체 실패"이므로 pinned은
         # 그대로 살리고 실패 사실만 안내한다(전체 재구성으로 덮어쓰지 않음).
-        return _pinned_only_result(
-            request.pinned_items,
-            request.candidates,
+        return await _pinned_only_result(
+            request,
             effective_visit_datetime,
             _NO_FILL_CANDIDATES_ROUTE_SUMMARY,
             round((timer() - started_at) * 1000, 2),
+            settings=settings,
+            travel_route_tool=travel_route_tool,
         )
 
     resolved_request = (
@@ -622,39 +927,77 @@ async def plan_partial_schedule(
             },
         )
 
-    merged = sorted([*request.pinned_items, *plan.new_items], key=lambda item: item.order)
+    # 후보에 없는 place_id는 여기서 하드 실패다(TP-215). plan_schedule()은 그런
+    # 항목만 버리고 나머지로 일정을 살리지만, 이쪽은 "유지해야 할 기존 일정"이
+    # 걸려 있어 자리 하나를 못 채우면 order 집합이 어긋난다 — 조용히 자리를 비우면
+    # 그 뒤 항목들의 순서가 밀려 사용자가 유지하기로 한 일정이 망가진다.
+    candidate_ids = {candidate.place_id for candidate in resolved_request.candidates}
+    unknown = [item.place_id for item in plan.new_items if item.place_id not in candidate_ids]
+    if unknown:
+        logger.warning("schedule.fill_unknown_place_ids place_ids=%s", sorted(set(unknown)))
+        raise AppError(
+            code="llm_output_invalid",
+            message="일정 재구성 응답을 해석하지 못했습니다.",
+            status_code=502,
+            retryable=True,
+            provider="Gemini",
+            details={"unknown_place_ids": sorted(set(unknown))},
+        )
 
-    # 교체된 자리(new_items) 뒤에 이어지는 pinned 항목들의 도착 시각이 새 장소의
-    # 실제 체류·이동 시간과 안 맞을 수 있다 — travel_to_next_min 무효화와 같은
-    # 원인으로 발견된 별도 증상이다. travel_to_next_min을 아직 무효화하기 전인
-    # 지금(원본 값 그대로) 재계산해야 앵커 이후 체인의 누적 합산이 정확하다.
-    merged = _resync_downstream_arrivals(merged, expected_orders)
+    # 유지 항목과 새 항목을 order로 합치고, 시각은 전체를 한 번에 다시 계산한다.
+    #
+    # 예전에는 세 가지를 따로 손봤다 — 새 항목의 도착 시각은 LLM이 준 값을 앵커로
+    # 믿고, 그 뒤 pinned 항목만 누적으로 다시 맞추고(_resync_downstream_arrivals),
+    # 바뀐 자리 바로 앞 pinned의 travel_to_next_min은 stale이라 None으로 지웠다.
+    # 셋 다 "LLM이 준 시각 일부는 맞다"는 전제 위에 서 있었다. 지금은 시간표를
+    # 통째로 다시 계산하므로 앵커도 stale도 없다 — 구간 이동시간은 이번 순서
+    # 기준으로 전부 새로 구한다.
+    candidate_by_id = {c.place_id: c for c in resolved_request.candidates}
+    new_by_order = {item.order: item for item in plan.new_items}
+    pinned_by_order = {item.order: item for item in request.pinned_items}
 
-    # pinned 항목의 travel_to_next_min은 "직전 전체/부분 편성 때 그 다음 자리에
-    # 있던 장소까지의 이동시간"을 그대로 들고 있다(agent_runtime.py가
-    # session_context.shown_recommendations에서 재계산 없이 복사). 이번
-    # target_orders 교체로 바로 다음 자리(order+1)가 새 장소로 바뀌었다면 그
-    # 값은 더 이상 맞지 않는 이웃을 가리키는 stale 값이다 — LLM은 pinned
-    # 항목을 다시 보지 않으므로(에코 신뢰 안 함 원칙) 이 함수가 재계산할 수
-    # 없고, 재계산 없이 그대로 두면 잘못된 이동시간이 total_duration_min과
-    # 프론트 표시에 그대로 섞여 들어간다. 새 값을 추정하기보다 모른다는 걸
-    # 명시적으로 드러내는 게 "구조적 보장 우선" 원칙에 맞아 None으로 무효화한다
-    # (실사용 리뷰로 발견, 2026-08-13).
-    pinned_orders = {item.order for item in request.pinned_items}
-    merged = [
-        item.model_copy(update={"travel_to_next_min": None})
-        if item.order in pinned_orders and (item.order + 1) in expected_orders
-        else item
-        for item in merged
-    ]
+    drafts: list[_ItemDraft] = []
+    for order, source_order in enumerate(sorted([*new_by_order, *pinned_by_order]), start=1):
+        new_item = new_by_order.get(source_order)
+        if new_item is not None:
+            drafts.append(
+                _draft_from_llm_item(
+                    new_item, candidate_by_id.get(new_item.place_id), order
+                )
+            )
+        else:
+            drafts.append(_draft_from_schedule_item(pinned_by_order[source_order], order))
+
+    # 첫 자리가 그대로 유지되는 자리면 그 도착 시각을 기준점으로 삼는다. 첫 자리가
+    # 이번에 교체됐다면 기준으로 삼을 값이 없으므로(그 자리의 옛 도착 시각은 이제
+    # 다른 장소의 것이다) 편성 기준 시각에서 새로 시작한다.
+    first_order = min([*new_by_order, *pinned_by_order])
+    first_pinned = pinned_by_order.get(first_order)
+    start_at = (
+        _anchor_start([first_pinned], effective_visit_datetime)
+        if first_pinned is not None
+        else _round_up_start(effective_visit_datetime)
+    )
+    travel = await _resolve_travel_minutes(
+        resolved_request,
+        [draft.place_id for draft in drafts],
+        settings=settings,
+        travel_route_tool=travel_route_tool,
+    )
+    timeline = _build_schedule_timeline(
+        drafts,
+        start_at=start_at,
+        travel_minutes=travel.minutes,
+        candidates=resolved_request.candidates,
+    )
 
     kept = len(request.pinned_items)
     replaced = len(plan.new_items)
-    route_summary = f"{kept}곳은 그대로 유지하고 {replaced}곳을 새로운 장소로 바꿨어요."
+    route_summary = f"{kept}곳은 그대로 두고 {replaced}곳만 다른 곳으로 바꿨어요."
 
     return ScheduleResult(
-        items=_finalize_items(merged, resolved_request.candidates),
-        total_duration_min=_total_duration_from_items(merged),
+        items=_compose_items(drafts, timeline, resolved_request.candidates, travel.edges),
+        total_duration_min=timeline.total_duration_min,
         route_summary=route_summary,
         basis_note=_build_basis_note(effective_visit_datetime),
         elapsed_ms=round((timer() - started_at) * 1000, 2),

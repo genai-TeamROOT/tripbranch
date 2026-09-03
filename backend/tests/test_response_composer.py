@@ -774,6 +774,75 @@ class TestComposeScheduleMessage:
         assert message == "조건에 맞는 곳을 충분히 찾지 못해 일정을 만들지 못했어요."
 
 
+class Test가용시간_초과_안내:
+    """TP-216 완료 조건 — 총합이 가용시간을 넘으면 안내하되 탈락시키지 않는다."""
+
+    @staticmethod
+    def _schedule(total_duration_min: int) -> ScheduleResult:
+        return ScheduleResult(
+            items=[_schedule_item()],
+            total_duration_min=total_duration_min,
+            route_summary="동선 요약입니다.",
+            basis_note="기준 시각 안내",
+            elapsed_ms=100.0,
+        )
+
+    def test_허용_오차를_넘게_길면_얼마나_넘었는지_말한다(self) -> None:
+        message = compose_schedule_message(self._schedule(240), time_available_min=180)
+
+        assert message == (
+            "4시간 코스를 짜봤어요. 동선 요약입니다. "
+            "3시간으로 말씀하셨는데 1시간쯤 길어졌어요. 빼고 싶은 곳이 있으면 알려주세요."
+        )
+
+    def test_일정을_깎지_않는다(self) -> None:
+        """안내만 하고 항목은 그대로 나간다 — 문구는 결과를 바꾸지 않는다."""
+
+        schedule = self._schedule(240)
+
+        compose_schedule_message(schedule, time_available_min=180)
+
+        assert len(schedule.items) == 1
+
+    def test_허용_오차_안이면_붙지_않는다(self) -> None:
+        """경계값. 라벨이 요청 시간("2시간")으로 나오는 바로 그 구간이라,
+        여기에 초과 안내가 붙으면 한 문장 안에서 두 수가 어긋난다."""
+
+        message = compose_schedule_message(self._schedule(150), time_available_min=120)
+
+        assert message == "2시간 코스를 짜봤어요. 동선 요약입니다."
+
+    def test_한_분_더_넘으면_붙는다(self) -> None:
+        message = compose_schedule_message(self._schedule(151), time_available_min=120)
+
+        assert "2시간으로 말씀하셨는데 31분쯤 길어졌어요" in message
+        # 라벨도 함께 실제값으로 바뀐다.
+        assert message.startswith("2시간 31분 코스를 짜봤어요.")
+
+    def test_짧게_편성되면_붙지_않는다(self) -> None:
+        message = compose_schedule_message(self._schedule(60), time_available_min=300)
+
+        assert "길어요" not in message
+
+    def test_요청_시간이_없으면_붙지_않는다(self) -> None:
+        message = compose_schedule_message(self._schedule(600))
+
+        assert "길어요" not in message
+
+    def test_일정을_못_짠_턴에는_붙지_않는다(self) -> None:
+        schedule = ScheduleResult(
+            items=[],
+            total_duration_min=0,
+            route_summary="조건에 맞는 곳을 충분히 찾지 못했어요.",
+            basis_note="기준 시각 안내",
+            elapsed_ms=100.0,
+        )
+
+        message = compose_schedule_message(schedule, time_available_min=120)
+
+        assert message == "조건에 맞는 곳을 충분히 찾지 못했어요."
+
+
 class TestComposeInfoConcentrationMessage:
     """concentration-conditions.md §3.3/§7의 고지 규칙 — is_proxy=True일 때만
     "근처 [관광지] 기준" 문구가 나와야 하고, 절대 요청 장소 자체의 값처럼
@@ -1487,7 +1556,7 @@ def test_schedule_message_reports_omitted_saved_places() -> None:
 
     assert "경복궁 근처 코스예요." in message
     assert "북촌한옥마을, 인사동" in message
-    assert "넣지 못했어요" in message
+    assert "자리를 못 잡았어요" in message
 
 
 def test_schedule_message_unchanged_when_nothing_omitted() -> None:
@@ -1507,11 +1576,12 @@ def test_schedule_message_unchanged_when_nothing_omitted() -> None:
 
 
 def test_schedule_message_does_not_suggest_retry_for_absent_saved_places() -> None:
-    """후보에 아예 없던 장소는 재시도를 권하지 않는다. (SCHEDULE-12)
+    """후보에 아예 없던 장소에 무조건적인 재시도를 권하지 않는다. (SCHEDULE-12, D-116)
 
-    시간을 늘리거나 다른 곳을 빼도 결과가 같다 — 후보 수집 단계에서 안 잡힌
-    것이라 편성 조건과 무관하기 때문이다. 그런데도 "시간을 늘려보라"고 하면
-    사용자가 같은 실패를 반복한다.
+    "시간을 늘려보라"는 이 경우에 통하지 않는다 — 후보 수집 단계에서 안 잡힌
+    것이라 편성 조건과 무관하기 때문이다. 그런데도 권하면 같은 실패를 반복한다.
+    시간대 변경만은 사유가 영업시간일 때 실제로 통하므로 **조건을 단 채로**
+    제시한다(TP-223).
     """
 
     schedule = ScheduleResult(
@@ -1526,12 +1596,21 @@ def test_schedule_message_does_not_suggest_retry_for_absent_saved_places() -> No
     message = compose_schedule_message(schedule)
 
     assert "스태픽스, 아띠인력거" in message
-    assert "후보에 없어서" in message
     assert "시간을 늘리거나" not in message
+    # 사유를 한쪽으로 단정하지 않는다 — 둘 다 말한다.
+    assert "문을 닫는 시간이거나 장소 정보를 못 찾은 경우라" in message
+    assert "시간대를 바꾸면 들어갈 수도 있어요" in message
+    # 내부 용어를 쓰지 않는다.
+    assert "후보" not in message
 
 
-def test_schedule_message_separates_the_two_omission_reasons() -> None:
-    """사유가 둘 다 있으면 각각 다른 문장으로 알린다."""
+def test_schedule_message_separates_every_omission_reason() -> None:
+    """사유가 셋 다 있으면 각각 다른 문장으로, 서로 다른 해결책과 함께 알린다. (TP-223)
+
+    `added_place_names`를 함께 두지 않았다. 담은 곳이 밀려난 자리는 planner가
+    되돌리므로(`_restore_displaced_must_include()`) "못 넣었다"와 "새로 넣었다"가
+    동시에 나가는 상태는 만들어지지 않는다.
+    """
 
     schedule = ScheduleResult(
         items=[_schedule_item()],
@@ -1539,14 +1618,147 @@ def test_schedule_message_separates_the_two_omission_reasons() -> None:
         route_summary="경복궁 근처 코스예요.",
         basis_note="기준 시각 안내",
         absent_saved_place_names=["스태픽스"],
-        omitted_saved_place_names=["북촌한옥마을"],
+        over_capacity_place_names=["북촌한옥마을"],
+        omitted_saved_place_names=["아띠인력거"],
         elapsed_ms=100.0,
     )
 
     message = compose_schedule_message(schedule)
 
-    assert "스태픽스은 이번에 찾은 후보에 없어서" in message
-    assert "북촌한옥마을은 이번 일정에 넣지 못했어요 — 시간을 늘리거나" in message
+    assert "스태픽스는 이번엔 넣지 못했어요" in message
+    # 상한 초과만 "다른 곳을 빼면 들어간다"가 확정적으로 참이다.
+    assert "북촌한옥마을은 이번엔 빠졌어요" in message
+    assert "보관함에서 다른 곳을 빼면" in message
+    # 동선 누락은 확정적인 해결책이 없어 재요청만 권한다. 첫 문장이 absent와 겹치지
+    # 않아야 사용자가 둘을 갈라 읽는다.
+    assert "아띠인력거는 이번엔 자리를 못 잡았어요. 다시 말씀해 주시면" in message
+
+
+class Test조사_선택:
+    """장소 이름 뒤 조사를 받침에 따라 고른다. (TP-223)
+
+    예전에는 "은"을 문자열에 박아둬서 "인사동 문화의거리은"이 나갔다 — 그 문구가
+    테스트에도 그대로 굳어 있었다.
+    """
+
+    @staticmethod
+    def _schedule(**names: list[str]) -> ScheduleResult:
+        return ScheduleResult(
+            items=[_schedule_item()],
+            total_duration_min=120,
+            route_summary="동선 요약입니다.",
+            basis_note="기준 시각 안내",
+            elapsed_ms=100.0,
+            **names,
+        )
+
+    def test_받침이_없으면_는을_쓴다(self) -> None:
+        message = compose_schedule_message(
+            self._schedule(absent_saved_place_names=["인사동 문화의거리"])
+        )
+
+        assert "인사동 문화의거리는" in message
+        assert "인사동 문화의거리은" not in message
+
+    def test_받침이_있으면_은을_쓴다(self) -> None:
+        message = compose_schedule_message(
+            self._schedule(absent_saved_place_names=["세종문화회관"])
+        )
+
+        assert "세종문화회관은" in message
+
+    def test_받침을_안_타는_문구는_조사를_고르지_않는다(self) -> None:
+        """새로 넣은 장소 안내는 "도"로 이어서 받침과 무관하다."""
+
+        with_batchim = compose_schedule_message(
+            self._schedule(added_place_names=["덕수궁 돌담길"])
+        )
+        without_batchim = compose_schedule_message(
+            self._schedule(added_place_names=["메종브리크"])
+        )
+
+        assert "덕수궁 돌담길도 함께 넣어봤어요" in with_batchim
+        assert "메종브리크도 함께 넣어봤어요" in without_batchim
+
+    def test_여러_곳이면_마지막_이름을_따른다(self) -> None:
+        """쉼표로 이어 붙인 목록의 끝 글자가 조사를 정한다."""
+
+        message = compose_schedule_message(
+            self._schedule(absent_saved_place_names=["세종문화회관", "인사동 문화의거리"])
+        )
+
+        assert "세종문화회관, 인사동 문화의거리는" in message
+
+
+class Test새로_넣은_장소_안내:
+    """담지 않은 장소가 빈 자리를 채웠으면 말한다. (TP-223)"""
+
+    @staticmethod
+    def _schedule(added: list[str]) -> ScheduleResult:
+        return ScheduleResult(
+            items=[_schedule_item()],
+            total_duration_min=120,
+            route_summary="동선 요약입니다.",
+            basis_note="기준 시각 안내",
+            added_place_names=added,
+            elapsed_ms=100.0,
+        )
+
+    def test_이름을_밝힌다(self) -> None:
+        """개수만 말하면 사용자가 목록에서 어느 것인지 되짚어야 한다."""
+
+        message = compose_schedule_message(self._schedule(["덕수궁 돌담길"]))
+
+        assert "자리가 남아 덕수궁 돌담길도 함께 넣어봤어요." in message
+
+    def test_없으면_붙지_않는다(self) -> None:
+        message = compose_schedule_message(self._schedule([]))
+
+        assert "함께 넣어봤어요" not in message
+
+    def test_못_넣은_것을_먼저_말한다(self) -> None:
+        """사용자가 먼저 찾는 것은 자기가 담은 곳이다."""
+
+        schedule = ScheduleResult(
+            items=[_schedule_item()],
+            total_duration_min=120,
+            route_summary="동선 요약입니다.",
+            basis_note="기준 시각 안내",
+            absent_saved_place_names=["세종문화회관"],
+            added_place_names=["덕수궁 돌담길"],
+            elapsed_ms=100.0,
+        )
+
+        message = compose_schedule_message(schedule)
+
+        assert message.index("세종문화회관") < message.index("덕수궁 돌담길")
+
+
+class Test상한_안내:
+    """항목 수 상한은 활동 가능 시간에 따라 달라진다. (TP-223)"""
+
+    @staticmethod
+    def _schedule() -> ScheduleResult:
+        return ScheduleResult(
+            items=[_schedule_item()],
+            total_duration_min=120,
+            route_summary="동선 요약입니다.",
+            basis_note="기준 시각 안내",
+            over_capacity_place_names=["북촌한옥마을"],
+            elapsed_ms=100.0,
+        )
+
+    def test_시간_미언급이면_5곳이라고_말한다(self) -> None:
+        message = compose_schedule_message(self._schedule())
+
+        assert "한 번에 5곳까지만 넣을 수 있어서" in message
+
+    def test_짧은_시간이면_그에_맞는_수를_말한다(self) -> None:
+        """숫자를 문자열에 박으면 "2시간 코스"에서 틀린 수를 말하게 된다."""
+
+        message = compose_schedule_message(self._schedule(), time_available_min=100)
+
+        assert "한 번에 2곳까지만 넣을 수 있어서" in message
 
 
 def test_schedule_message_reports_omitted_even_without_items() -> None:

@@ -47,6 +47,7 @@ from app.providers.driving_route import FakeDrivingRouteProvider
 from app.providers.kakao_transit_route import FakeTransitRouteProvider
 from app.providers.stub import FakeLLMProvider
 from app.providers.walking_route import FakeWalkingRouteProvider
+from app.schedule.schemas import SchedulePlanningRequest
 from app.schemas import (
     AgentRequest,
     CompareCriteria,
@@ -4806,11 +4807,12 @@ class _LLMProviderWithTransport(_LLMProviderWithGeneralAnswer):
 
 @pytest.mark.asyncio
 async def test_staged_recommendation_asks_driving_mode_and_gets_nothing_for_car_request() -> None:
-    """자동차 요청은 자동차 mode로 묻고, 등록된 Provider가 없어 값 없이 돌아온다.
+    """자동차 요청은 자동차 mode로만 묻고, 등록된 Provider가 없어 값 없이 돌아온다.
 
-    도보 실측을 자동차 요청에 쓰지 않는다는 결과는 이전과 같고(D가 버렸다),
-    이제 그 판단이 Tool에서 나므로 카카오 도보 호출이 일어나지 않는다 — 호출이
-    0건인지는 test_travel_route_tool.py가 Provider 호출 수로 못 박는다.
+    도보를 함께 묻지 않는 것이 핵심이다 — 자동차라고 말한 사용자에게 도보 시간을
+    보여줄 이유가 없다. 거리가 임계를 넘어도 대중교통을 덧붙이지 않는다(D-118).
+    카카오 도보 호출이 0건인지는 test_travel_route_tool.py가 Provider 호출 수로
+    못 박는다.
     """
     route_tool = _RecordingTravelRouteTool()
     recommendation_provider = _RecordingWalkingRoutesRecommendationProvider()
@@ -4834,11 +4836,15 @@ async def test_staged_recommendation_asks_driving_mode_and_gets_nothing_for_car_
 
 
 @pytest.mark.asyncio
-async def test_staged_recommendation_skips_route_lookup_when_transport_is_unstated() -> None:
-    """이동수단 미언급 + 이동시간 언급은 무엇으로 재야 할지 정할 수 없어 조회하지 않는다.
+async def test_staged_recommendation_measures_walking_when_transport_is_unstated() -> None:
+    """이동수단 미언급 + 이동시간 언급도 실측한다 (D-118).
 
-    반경이 20km/h 가정으로 커져 있는데 그게 대중교통인지 자동차인지는 발화에
-    없다(to_travel_mode). 지금도 D가 이 경우 도보 실측을 버렸으므로 결과는 같다.
+    예전에는 조회하지 않았다 — 반경이 20km/h 가정으로 커져 있는데 그게 대중교통인지
+    자동차인지 발화에 없어서, 무엇으로 재도 예산과 단위가 안 맞았기 때문이다.
+    예산이 측정 수단을 보지 않게 되면서 그 이유가 사라졌다.
+
+    이 픽스처의 후보는 전부 기준점에서 0.3km 안이라 임계(0.85km) 아래다. 그래서
+    대중교통은 묻지 않고 도보만 조회한다.
     """
     route_tool = _RecordingTravelRouteTool()
     recommendation_provider = _RecordingWalkingRoutesRecommendationProvider()
@@ -4857,8 +4863,7 @@ async def test_staged_recommendation_skips_route_lookup_when_transport_is_unstat
         store=InMemoryStateStore(),
     )
 
-    assert route_tool.queries == []
-    assert recommendation_provider.travel_routes == ()
+    assert [query.mode for query in route_tool.queries] == [TravelMode.WALKING]
 
 
 @pytest.mark.asyncio
@@ -6844,3 +6849,125 @@ def test_pairwise_distances_prefer_context_over_snapshot() -> None:
     )
 
     assert from_context == with_bogus_fallback
+
+
+@pytest.mark.parametrize("use_graph", [False, True])
+@pytest.mark.asyncio
+async def test_refilled_candidates_reach_schedule_with_coordinates(
+    refill_page_limit: int,
+    monkeypatch: pytest.MonkeyPatch,
+    use_graph: bool,
+) -> None:
+    """TP-198: 보충 조회로 들어온 후보의 좌표가 일정 편성까지 간다.
+
+    `_score_recommendations()`가 보충 후보를 `tool_context`에 합치고도 그 값을
+    돌려주지 않던 동안, 일정 편성은 **합치기 전** 컨텍스트를 받았다. 후보는 합친
+    목록에서 뽑고 좌표는 합치기 전 목록에서 찾는 상태라, 보충으로 들어온 장소만
+    `_build_pairwise_distances_km()`에서 조용히 건너뛰어졌다.
+
+    거리 근거가 빠져도 편성은 성공하므로 응답만 봐서는 드러나지 않는다. 그래서
+    planner에 실제로 넘어간 `pairwise_distances_km`를 직접 본다.
+
+    직접 호출과 그래프 두 경로를 다 돈다 — 합친 컨텍스트를 넘기는 자리가 경로마다
+    달라서(호출부 인자 / 노드 반환 키), 한쪽만 고치면 나머지가 조용히 남는다.
+    """
+    monkeypatch.setattr(settings, "use_langgraph_pipeline", use_graph)
+    captured: list[SchedulePlanningRequest] = []
+    real_plan_schedule = agent_runtime_module.plan_schedule
+
+    async def capturing_plan_schedule(request, llm, **kwargs):
+        captured.append(request)
+        return await real_plan_schedule(request, llm, **kwargs)
+
+    monkeypatch.setattr(agent_runtime_module, "plan_schedule", capturing_plan_schedule)
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처에서 반나절 코스 짜줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=_RefillPlacesToolProvider(),
+        recommendation_provider=RealRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=InMemoryStateStore(),
+    )
+
+    assert response.schedule is not None
+    [schedule_request] = captured
+
+    candidate_ids = [item.place_id for item in schedule_request.candidates]
+    # 첫 페이지는 refill-0~9다. 그 뒤 번호는 보충 조회로만 들어올 수 있다.
+    refilled_ids = [
+        place_id
+        for place_id in candidate_ids
+        if int(place_id.removeprefix("refill-")) >= _REFILL_PAGE_SIZE
+    ]
+    # 보충 후보가 하나도 안 뽑히면 이 테스트는 아무것도 검증하지 못한다.
+    assert refilled_ids
+
+    # 보충 후보가 낀 쌍이 거리 근거에 들어가 있어야 한다. 좌표를 못 찾으면 그
+    # 장소가 낀 쌍이 통째로 사라진다.
+    paired_ids = {
+        place_id for pair in schedule_request.pairwise_distances_km for place_id in pair
+    }
+    assert set(refilled_ids) <= paired_ids
+
+    # 좌표를 가진 후보끼리는 모든 쌍이 나온다 — 하나라도 빠지면 위 조건만으로는
+    # 놓치는 부분 누락이 있다는 뜻이다.
+    expected_pairs = len(candidate_ids) * (len(candidate_ids) - 1) // 2
+    assert len(schedule_request.pairwise_distances_km) == expected_pairs
+
+
+@pytest.mark.parametrize("use_graph", [False, True])
+@pytest.mark.asyncio
+async def test_refilled_candidates_are_recorded_with_coordinates(
+    refill_page_limit: int,
+    monkeypatch: pytest.MonkeyPatch,
+    use_graph: bool,
+) -> None:
+    """TP-198: 보충 조회로 들어온 후보의 좌표가 노출 이력에도 남는다(D-114 후속).
+
+    이 스냅샷은 다음 턴의 안전망이다 — 보관함에 담긴 장소가 그때 검색 반경 밖이면
+    C 응답에 아예 없어서, `_snapshot_coordinates()`가 꺼내는 이 값이 후보 간 거리를
+    구할 유일한 근거가 된다.
+
+    좌표가 안 남아도 그 턴은 멀쩡하고 **다음 턴에** 그 장소만 거리 근거 없이
+    등장하므로, 응답을 봐서는 드러나지 않는다.
+    """
+    monkeypatch.setattr(settings, "use_langgraph_pipeline", use_graph)
+    store = InMemoryStateStore()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=_RefillPlacesToolProvider(),
+        recommendation_provider=RealRecommendationProvider(),
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=store,
+    )
+
+    assert response.recommendations is not None
+    shown_ids = [
+        item.place_id
+        for item in (
+            *response.recommendations.recommendations,
+            *response.recommendations.unverified_recommendations,
+        )
+    ]
+    # 첫 페이지는 refill-0~9다. 그 뒤 번호는 보충 조회로만 들어올 수 있다.
+    refilled_ids = {
+        place_id
+        for place_id in shown_ids
+        if int(place_id.removeprefix("refill-")) >= _REFILL_PAGE_SIZE
+    }
+    # 보충 후보가 하나도 안 뽑히면 이 테스트는 아무것도 검증하지 못한다.
+    assert refilled_ids
+
+    session = get_session_context(response.state.session_id, store=store)
+    assert refilled_ids <= set(_snapshot_coordinates(session))

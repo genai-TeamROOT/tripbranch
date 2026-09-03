@@ -197,6 +197,27 @@ class ScheduleItem(BaseModel):
     # 같은 이유). 폐점 시각이 지난 도착 예정 스탑을 사용자에게 알리는 용도다
     # (docs/design/int-07-schedule.md 9절, "폐점 스탑 감지" 항목 해소).
     warnings: list[str] = Field(default_factory=list)
+    # 다음 장소까지의 이동을 무엇으로 어떻게 잰 값인지. (TP-216)
+    #
+    # travel_to_next_min만으로는 화면이 이동수단을 알 수 없어 "도보 이동 약 N분"으로
+    # 고정 표기해 왔는데, 도보 예상시간이 임계값을 넘는 구간은 편성 단계에서
+    # 대중교통으로 전환된다(tools/schedule_travel._select_mode) — 그 구간까지 도보로
+    # 적히면 화면이 사실과 다른 말을 한다. RecommendationItem.travel_mode를 함께
+    # 내려주는 것과 같은 이유다("프론트가 스스로 추측하지 않게 한다").
+    travel_to_next_mode: TravelMode | None = None
+    # 그 값이 경로 API 실측인지(True) 직선거리 추정인지(False).
+    #
+    # ScheduleTravelEdge는 source(provider 이름)와 confidence(high/low) 두 필드로 같은
+    # 사실을 말하지만, 화면에 필요한 것은 "실측이냐"는 한 비트뿐이라 여기서 좁힌다 —
+    # 어느 provider가 답했는지는 사용자에게 의미가 없고 관측 지표에서 본다
+    # (schedule_travel_measured_ratio). 추정 구간에서 시간을 숨기지는 않는다:
+    # 일정은 이동시간 없이 성립하지 않으므로 값을 보여주고 추정임을 함께 밝힌다
+    # (추천 카드는 실측이 없으면 시간을 아예 말하지 않는다 — 거기서는 거리만으로도
+    # 카드가 성립하기 때문이고, 같은 규칙을 일정에 그대로 옮길 수 없다).
+    #
+    # 이동정보를 아예 못 구한 구간(좌표 없음 → 시간표 폴백 15분)은 mode가 None이고
+    # 이 값도 False다. 화면은 mode가 None인 것으로 그 경우를 구분한다.
+    travel_to_next_measured: bool = False
 
 
 class ScheduleResult(BaseModel):
@@ -224,6 +245,25 @@ class ScheduleResult(BaseModel):
     # 안 잡힌 것이라 편성 조건을 바꿔도 결과가 같기 때문이다. 두 사유를 한
     # 리스트에 섞으면 화면이 "시간을 늘려보라"는 잘못된 안내를 하게 된다.
     absent_saved_place_names: list[str] = Field(default_factory=list)
+    # 담겨 있었지만 **항목 수 상한**(target_item_range()의 max)을 넘겨 이번 편성 대상에서
+    # 잘린 장소 이름 (TP-223). 담은 순서로 뒤에서부터 잘린다.
+    #
+    # omitted_saved_place_names와 갈라 둔 이유는 사유가 다르고 사용자가 할 수 있는 일이
+    # 다르기 때문이다 — 이쪽은 "보관함에서 다른 곳을 빼면 들어간다"가 확정적으로 참이고,
+    # 저쪽은 다시 요청하면 들어갈 수도 있다는 정도다. 예전에는 planner가 두 사유를 한
+    # 리스트에 합쳐 넘겨서 화면이 "시간을 늘리거나 다른 곳을 빼고"라는 한 문장으로
+    # 뭉뚱그렸고, 사용자는 자기 경우가 어느 쪽인지 알 수 없었다.
+    over_capacity_place_names: list[str] = Field(default_factory=list)
+    # 보관함에 없었는데 편성에 새로 들어간 장소 이름 (TP-223).
+    #
+    # 빈 자리를 다른 후보로 채우는 것은 설계된 동작이다(prompts/schedule/plan.md —
+    # "남는 자리를 다른 후보로 채우세요"). 다만 "이 장소들로 일정 짜기" 버튼을 누른
+    # 사용자에게는 담지 않은 곳이 말없이 끼어든 것으로 보여 버그로 신고됐다(TP-223).
+    # 동작을 바꾸는 대신 그 사실을 말하기로 했다.
+    #
+    # 보관함을 쓰지 않은 턴(must_include가 비어 있음)에는 채우지 않는다 — 그때는 모든
+    # 장소가 "새로 찾은 곳"이라 알릴 내용이 아니다.
+    added_place_names: list[str] = Field(default_factory=list)
     elapsed_ms: float = Field(
         ge=0,
         description="일정 편성 파이프라인 시작부터 응답 조립 완료까지의 총 처리시간(ms)",

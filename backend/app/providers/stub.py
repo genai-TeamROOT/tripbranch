@@ -45,6 +45,7 @@ from app.providers.tour_intro_keys import (
     USE_FEE_KEYS,
 )
 from app.schedule.schemas import (
+    ScheduleLLMItem,
     ScheduleLLMPlan,
     SchedulePartialFillRequest,
     SchedulePartialLLMPlan,
@@ -77,7 +78,6 @@ from app.schemas import (
     QuestionType,
     RecommendationResponse,
     RecommendPayload,
-    ScheduleItem,
     Severity,
     StatedWeather,
     Transport,
@@ -1213,21 +1213,17 @@ class FakeLLMProvider:
         고정 일정을 반환한다 — 회귀 테스트용, 실제 편성 판단이 아니다."""
         selected = request.candidates[:3]
         items = [
-            ScheduleItem(
+            ScheduleLLMItem(
                 order=index + 1,
                 place_id=candidate.place_id,
                 place_name=candidate.name,
-                estimated_arrival=f"{14 + index}:00",
                 estimated_duration_min=60,
-                travel_to_next_min=15 if index < len(selected) - 1 else None,
                 reason="Agent Runtime 골격 검증용 고정 일정입니다.",
             )
             for index, candidate in enumerate(selected)
         ]
-        total_duration = 60 * len(items) + 15 * max(len(items) - 1, 0)
         result = ScheduleLLMPlan(
             items=items,
-            total_duration_min=total_duration,
             route_summary="고정 스텁 동선입니다.",
         )
         return provider_result(result, source=ProviderSource.FAKE_LLM)
@@ -1246,16 +1242,14 @@ class FakeLLMProvider:
         orders = sorted(request.target_orders)
         selected = request.candidates[: len(orders)]
         new_items = [
-            ScheduleItem(
+            ScheduleLLMItem(
                 order=order,
                 place_id=candidate.place_id,
                 place_name=candidate.name,
-                estimated_arrival=f"{15 + index}:00",
                 estimated_duration_min=60,
-                travel_to_next_min=15,
                 reason="Agent Runtime 골격 검증용 고정 대체 항목입니다.",
             )
-            for index, (order, candidate) in enumerate(zip(orders, selected, strict=False))
+            for order, candidate in zip(orders, selected, strict=False)
         ]
         result = SchedulePartialLLMPlan(new_items=new_items)
         return provider_result(result, source=ProviderSource.FAKE_LLM)

@@ -22,6 +22,7 @@ from app.domain.travel_route import TravelRoute
 from app.errors import AppError
 from app.observability.langfuse_tracing import trace_attributes
 from app.providers.protocols import LLMProvider
+from app.schedule.schemas import target_item_range
 from app.schemas import (
     CompareCriteria,
     ComparisonItem,
@@ -904,35 +905,120 @@ def _format_duration_label(total_minutes: int) -> str:
     return f"{minutes}분"
 
 
-def _with_omitted_note(message: str, schedule: ScheduleResult) -> str:
-    """담아둔 장소를 못 담았으면 그 사실을 덧붙인다. (SCHEDULE-12)
+def _topic_particle(word: str) -> str:
+    """마지막 한글 음절의 받침 유무에 따라 주제 조사(은/는)를 고른다. (TP-223)
 
-    사유가 둘이고 해결책이 정반대라 문장을 따로 만든다.
+    예전에는 `은`을 문자열에 그대로 박아둬서 받침 없는 이름이 오면
+    "인사동 문화의거리은"이 나갔다. 장소 이름은 사용자가 담은 것이라 목록 끝에
+    무엇이 올지 코드가 고를 수 없다.
 
-    - `absent_saved_place_names`: 이번 턴 후보 목록에 아예 없었다. 편성 조건을
-      바꿔도 결과가 같으므로 재시도를 권하지 않는다.
-    - `omitted_saved_place_names`: 항목 수 상한을 넘었거나 LLM이 재시도 후에도
-      빠뜨렸다. 시간을 늘리거나 다른 곳을 빼면 들어갈 수 있다.
+    한글이 아닌 문자로 끝나면(영문 상호 등) `는`으로 둔다 — 발음 규칙을 흉내 내는
+    것보다 한쪽으로 고정하는 편이 덜 틀린다. 목적격 조사(을/를)는 이 파일의
+    `_object_particle()`이 같은 방식으로 판별한다.
+    """
 
-    빠진 장소가 없으면 message를 그대로 돌려준다 — 이게 정상 경로다.
+    codepoint = ord(word[-1]) if word else 0
+    if 0xAC00 <= codepoint <= 0xD7A3:
+        return "은" if (codepoint - 0xAC00) % 28 else "는"
+    return "는"
+
+
+def _with_saved_place_notes(
+    message: str, schedule: ScheduleResult, time_available_min: int | None
+) -> str:
+    """보관함과 편성 결과가 어긋난 부분을 사용자 말로 덧붙인다. (SCHEDULE-12, TP-223)
+
+    **사유마다 사용자가 할 수 있는 일이 다르므로 문장을 따로 만든다.** 예전에는
+    상한 초과와 LLM 누락이 한 필드에 합쳐져 "시간을 늘리거나 다른 곳을 빼고"라는
+    한 문장으로 나갔고, 자기 경우가 어느 쪽인지 알 수 없었다.
+
+    - `absent_saved_place_names`: 후보 목록에 아예 없었다. 사유는 방문 시각의
+      영업시간 하드 필터이거나 장소 상세를 못 가져온 경우다. **둘 다 말한다** —
+      한쪽으로 단정하면 절반은 틀린 안내가 된다. 해결책도 **사유를 단 채로**
+      제시한다("문 닫는 시간 때문이라면"): D-116이 이 필드를 만든 이유가 "시간을
+      늘려보라"는 무조건적 재시도 권유를 없애는 것이었는데, 시간대 변경은 영업시간이
+      원인일 때 실제로 통하므로 조건을 붙여 말하면 그 결정과 어긋나지 않는다.
+    - `over_capacity_place_names`: 항목 수 상한을 넘겨 잘렸다. "보관함에서 다른
+      곳을 빼면 들어간다"가 확정적으로 참인 유일한 경우다.
+    - `omitted_saved_place_names`: 재시도 후에도 LLM이 빠뜨렸다. 확정적인 해결책이
+      없으므로 재요청만 권한다.
+    - `added_place_names`: 담지 않은 장소가 빈 자리를 채웠다. 설계된 동작이지만
+      (prompts/schedule/plan.md) 말하지 않으면 끼어든 것으로 보인다(TP-223).
+      **"자리가 남아"로 문장을 연다** — 그 자리에서 사용자가 떠올리는 질문이 "왜 안
+      담은 곳이 있지"이고 답이 곧 그 한 마디다. planner가 밀려난 자리를 되돌리므로
+      (`_restore_displaced_must_include()`) 이 문구가 나갈 때는 대기 중인 보관함
+      장소가 하나도 없다 — "자리가 남았다"가 실제로 참이다.
+
+    두 사유가 같은 말로 시작하지 않게 첫 문장을 다르게 연다("넣지 못했어요" /
+    "자리를 못 잡았어요") — 함께 나갈 수 있어서 같은 말이 두 번 나오면 사용자가
+    무엇이 다른지 읽어내지 못한다.
+
+    "후보"·"편성" 같은 내부 용어를 쓰지 않는다. 순서는 **못 넣은 것 먼저, 새로
+    넣은 것 나중**이다 — 사용자가 먼저 찾는 것은 자기가 담은 곳이다.
+
+    어긋난 것이 없으면 message를 그대로 돌려준다. 이게 정상 경로다.
     """
 
     parts = [message]
-    # 후보에 아예 없었던 장소. 편성 조건을 바꿔도 결과가 같으므로 재시도를
-    # 권하지 않는다 — 권하면 사용자가 같은 실패를 반복하게 된다.
     if schedule.absent_saved_place_names:
         joined = ", ".join(schedule.absent_saved_place_names)
         parts.append(
-            f"담아두신 {joined}은 이번에 찾은 후보에 없어서 일정에 넣지 못했어요."
+            f"담아두신 {joined}{_topic_particle(joined)} 이번엔 넣지 못했어요. "
+            "문을 닫는 시간이거나 장소 정보를 못 찾은 경우라, "
+            "시간대를 바꾸면 들어갈 수도 있어요."
         )
-    # 상한 초과·LLM 누락. 이쪽은 조건을 바꾸면 들어갈 수 있다.
+    if schedule.over_capacity_place_names:
+        joined = ", ".join(schedule.over_capacity_place_names)
+        # 상한은 활동 가능 시간에 따라 달라진다(1~2 / 2~4 / 3~5곳). 숫자를 문자열에
+        # 박으면 "2시간 코스"에서 틀린 수를 말하게 되므로 같은 함수를 다시 부른다.
+        _, max_items = target_item_range(time_available_min)
+        parts.append(
+            f"한 번에 {max_items}곳까지만 넣을 수 있어서 "
+            f"담아두신 {joined}{_topic_particle(joined)} 이번엔 빠졌어요. "
+            "보관함에서 다른 곳을 빼면 다음엔 넣어드릴게요."
+        )
     if schedule.omitted_saved_place_names:
         joined = ", ".join(schedule.omitted_saved_place_names)
         parts.append(
-            f"담아두신 {joined}은 이번 일정에 넣지 못했어요 — "
-            "시간을 늘리거나 다른 곳을 빼고 다시 요청해보실래요?"
+            f"담아두신 {joined}{_topic_particle(joined)} 이번엔 자리를 못 잡았어요. "
+            "다시 말씀해 주시면 넣어볼게요."
+        )
+    if schedule.added_place_names:
+        joined = ", ".join(schedule.added_place_names)
+        parts.append(
+            f"자리가 남아 {joined}도 함께 넣어봤어요."
         )
     return " ".join(parts)
+
+
+def _with_over_budget_note(
+    message: str, schedule: ScheduleResult, time_available_min: int | None
+) -> str:
+    """편성 결과가 요청한 활동 가능 시간을 넘으면 그 사실을 덧붙인다. (TP-216)
+
+    **탈락시키지 않고 안내만 한다.** 총 소요시간은 구간 이동시간 위에서 계산되는데
+    그 값이 실측일 때도 추정일 때도 있어(`ScheduleItem.travel_to_next_measured`),
+    넘었다는 이유로 장소를 빼면 추정 오차 때문에 멀쩡한 일정이 깎인다. 사용자가
+    보고 판단할 수 있게 수치만 밝힌다.
+
+    **문턱은 라벨이 바뀌는 지점과 같은 값이다**(`_DURATION_MATCH_TOLERANCE_MIN`).
+    허용 오차 안이면 위에서 요청 시간을 그대로 라벨로 쓰므로("3시간 코스를
+    짜봤어요"), 거기에 초과 안내가 붙으면 한 문장 안에서 3시간이라고 해놓고
+    3시간을 넘었다고 말하게 된다. 두 판단이 같은 상수를 보게 묶어둔다.
+    """
+
+    if time_available_min is None:
+        return message
+    over_min = schedule.total_duration_min - time_available_min
+    if over_min <= _DURATION_MATCH_TOLERANCE_MIN:
+        return message
+    # `_format_duration_label()`은 항상 "시간"이나 "분"으로 끝나고 둘 다 받침이 있어
+    # 조사는 "으로"로 고정해도 된다.
+    return (
+        f"{message} {_format_duration_label(time_available_min)}으로 말씀하셨는데 "
+        f"{_format_duration_label(over_min)}쯤 길어졌어요. "
+        "빼고 싶은 곳이 있으면 알려주세요."
+    )
 
 
 def compose_schedule_message(
@@ -953,14 +1039,19 @@ def compose_schedule_message(
     시간을 그대로 보여준다("2시간 짜줘" → "2시간 코스를 짜봤어요"). 차이가 크면
     실제 편성 결과가 요청과 동떨어졌다는 뜻이므로 실제 계산값을 보여준다.
 
-    omitted_saved_place_names가 있으면 한 문장을 덧붙인다(SCHEDULE-12) — 담아둔
-    장소를 조용히 빠뜨리면 사용자는 자기가 고른 곳이 왜 없는지 알 수 없다.
-    items가 비어 있는 경우에도 붙인다: 일정을 아예 못 짠 이유가 담아둔 장소와
-    무관하지 않을 수 있어서다.
+    총 소요시간이 요청한 활동 가능 시간을 허용 오차 이상으로 넘으면 한 문장을
+    덧붙인다(TP-216) — 넘었다는 이유로 장소를 빼지는 않는다.
+
+    보관함과 편성 결과가 어긋난 부분은 사유별로 문장을 덧붙인다(SCHEDULE-12,
+    TP-223, `_with_saved_place_notes()`) — 담아둔 장소를 조용히 빠뜨리거나 담지
+    않은 장소를 말없이 끼워 넣으면 사용자는 이유를 알 수 없다. items가 비어 있는
+    경우에도 붙인다: 일정을 아예 못 짠 이유가 담아둔 장소와 무관하지 않을 수 있다.
     """
 
     if not schedule.items:
-        return _with_omitted_note(schedule.route_summary, schedule)
+        return _with_saved_place_notes(
+            schedule.route_summary, schedule, time_available_min
+        )
 
     if (
         time_available_min is not None
@@ -969,8 +1060,14 @@ def compose_schedule_message(
         duration_label = _format_duration_label(time_available_min)
     else:
         duration_label = _format_duration_label(schedule.total_duration_min)
-    return _with_omitted_note(
-        f"{duration_label} 코스를 짜봤어요. {schedule.route_summary}", schedule
+    return _with_saved_place_notes(
+        _with_over_budget_note(
+            f"{duration_label} 코스를 짜봤어요. {schedule.route_summary}",
+            schedule,
+            time_available_min,
+        ),
+        schedule,
+        time_available_min,
     )
 
 
