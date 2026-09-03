@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
-from dataclasses import replace
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
+from typing import Protocol
 
 from app.domain.schedule_travel import (
     ScheduleTravelCandidate,
@@ -59,6 +60,11 @@ def _candidate_index(
     return result
 
 
+# 사용자가 이동수단을 콕 집어 말한 경우. 거리와 무관하게 그대로 가므로 판정하는
+# 쪽에 물어볼 것이 없고, 물어보면 사용자가 말한 것을 뒤집을 여지가 생긴다.
+_JUDGE_SKIPPED_TRANSPORTS = frozenset({Transport.WALK, Transport.CAR})
+
+
 def _select_mode(
     transport: Transport | None,
     *,
@@ -77,52 +83,84 @@ def _select_mode(
     return TravelMode.TRANSIT
 
 
-def _speed_for_mode(
-    mode: TravelMode,
-    *,
-    walking_speed_mps: float,
-    transit_speed_mps: float,
-    driving_speed_mps: float,
-) -> float:
-    if mode is TravelMode.WALKING:
-        return walking_speed_mps
-    if mode is TravelMode.TRANSIT:
-        return transit_speed_mps
-    return driving_speed_mps
+@dataclass(frozen=True)
+class SegmentModeInput:
+    """이동수단을 정할 구간 한 줄. 판정하는 쪽이 보는 유일한 재료다.
 
-
-def estimate_schedule_travel_edges(
-    *,
-    candidates: Sequence[ScheduleTravelCandidate],
-    pairs: Sequence[ScheduleTravelPair],
-    transport: Transport | None,
-    walking_speed_mps: float,
-    transit_speed_mps: float,
-    driving_speed_mps: float,
-    walk_transfer_threshold_min: int,
-) -> ScheduleTravelEstimateResult:
-    """요청된 방향 쌍만 직선거리 기반 일정 이동정보로 변환한다.
-
-    이동수단 미지정과 대중교통 명시는 가까운 구간을 도보로 연결하고, 도보 예상시간이
-    임계값을 넘는 구간만 대중교통으로 전환한다. 도보·자동차 명시는 그대로 유지한다.
-    잘못된 일부 쌍은 전체 요청을 실패시키지 않고 건너뛰며, 사유와 그 방향 쌍을 담은
-    `ScheduleTravelWarning`으로 드러낸다.
-
-    속도 셋과 도보 전환 임계값은 이 함수가 설정을 직접 읽지 않고 인자로 받는다.
-    호출자가 `Settings.walking_speed_mps`, `Settings.transit_speed_mps`,
-    `Settings.driving_speed_mps`, `Settings.schedule_walk_transfer_threshold_min`을
-    넘겨야 `.env` 값이 실제로 반영된다.
+    **누적 도보량을 여기 담지 않는다.** "이 구간 전까지 몇 분 걸었나"는 앞 구간이
+    도보인지 이미 정해져 있어야 나오는 값인데, 그게 지금 정하려는 값이라 순환이다.
+    대신 구간마다 `walk_minutes`("걸으면 몇 분")만 주고, 누적은 판정하는 쪽이 표
+    전체를 보고 직접 더한다 — 전 구간을 한 번에 넘기는 설계라 가능하다.
     """
 
-    _validate_speeds(
-        walking_speed_mps,
-        transit_speed_mps,
-        driving_speed_mps,
-        walk_transfer_threshold_min,
-    )
+    from_place_id: str
+    to_place_id: str
+    # 추려낸 구간 안에서의 순번(1부터). `pairs`의 인덱스가 아니다 — 중복·자기쌍·
+    # 좌표 없는 장소가 빠지므로 둘이 어긋난다.
+    order: int
+    distance_m: int
+    # 이 구간을 도보로 갔을 때의 예상 분. 실제로 도보로 갈지는 아직 모른다.
+    walk_minutes: float
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return (self.from_place_id, self.to_place_id)
+
+
+@dataclass(frozen=True)
+class ModeJudgmentContext:
+    """전 구간이 공유하는 판정 조건.
+
+    `UserConditions`를 그대로 넘기지 않는다. 판정에 쓰는 값만 옮겨 담아야 나중에
+    "이 판정이 무엇을 보고 정했나"가 타입에 그대로 드러난다.
+    """
+
+    transport: Transport | None
+    companion: str | None = None
+    accessibility_needs: tuple[str, ...] = ()
+    # 조회된 날씨. 지금은 일정까지 내려오는 경로가 없어 항상 None이고, PR 2에서
+    # `SchedulePlanningRequest`에 필드를 뚫어 채운다.
+    weather: str | None = None
+
+
+class ModeJudge(Protocol):
+    """구간별 이동수단을 정하는 쪽. LLM 구현은 PR 3에서 붙인다.
+
+    구간 하나씩이 아니라 **표 전체**를 받는다. 누적 도보량처럼 구간 사이 관계를
+    보려면 전부 손에 있어야 하고, 구간마다 부르면 호출 수만 늘고 같은 문제가
+    남는다.
+    """
+
+    async def judge(
+        self,
+        segments: Sequence[SegmentModeInput],
+        context: ModeJudgmentContext,
+    ) -> Sequence[TravelMode]: ...
+
+
+def build_segment_inputs(
+    candidates: Sequence[ScheduleTravelCandidate],
+    pairs: Sequence[ScheduleTravelPair],
+    *,
+    walking_speed_mps: float,
+) -> tuple[tuple[SegmentModeInput, ...], tuple[ScheduleTravelWarning, ...]]:
+    """쓸 수 있는 구간만 추려 판정 입력 표로 만든다.
+
+    중복 쌍·자기 자신 쌍·좌표를 모르는 장소를 걸러내고, 그 사유를 경고로 남긴다.
+    걸러내는 기준은 `estimate_schedule_travel_edges()`가 쓰던 것 그대로다.
+
+    **추려내기가 여기 한 곳에만 있어야 한다.** 판정하는 쪽과 구간 정보를 만드는
+    쪽이 각자 거르면 "어느 구간이 유효한가"의 답이 둘이 되고, 갈리는 순간 판정
+    결과의 키가 실제 구간과 안 맞는다. 그래서 `estimate_schedule_travel_edges()`도
+    이 함수를 쓴다.
+    """
+
+    if walking_speed_mps <= 0:
+        raise ValueError("도보 속도는 0보다 커야 합니다.")
+
     candidate_by_id = _candidate_index(candidates)
     seen_pairs: set[tuple[str, str]] = set()
-    edges: list[ScheduleTravelEdge] = []
+    segments: list[SegmentModeInput] = []
     warnings: list[ScheduleTravelWarning] = []
 
     def _warn(code: str, pair: ScheduleTravelPair) -> None:
@@ -144,6 +182,7 @@ def estimate_schedule_travel_edges(
         if pair.from_place_id == pair.to_place_id:
             _warn(SCHEDULE_TRAVEL_SELF_PAIR_WARNING, pair)
             continue
+
         origin = candidate_by_id.get(pair.from_place_id)
         destination = candidate_by_id.get(pair.to_place_id)
         if origin is None or destination is None:
@@ -159,33 +198,168 @@ def estimate_schedule_travel_edges(
             )
             * 1000
         )
-        mode = _select_mode(
-            transport,
-            distance_m=distance_m,
-            walking_speed_mps=walking_speed_mps,
-            walk_transfer_threshold_min=walk_transfer_threshold_min,
+        segments.append(
+            SegmentModeInput(
+                from_place_id=pair.from_place_id,
+                to_place_id=pair.to_place_id,
+                order=len(segments) + 1,
+                distance_m=distance_m,
+                # 판정하는 쪽이 읽을 값이라 소수 한 자리로 끊는다. 규칙 판정은 이
+                # 값이 아니라 `distance_m`을 그대로 쓰므로 반올림이 결과를 바꾸지
+                # 않는다.
+                walk_minutes=round(distance_m / walking_speed_mps / 60, 1),
+            )
         )
+
+    return tuple(segments), tuple(warnings)
+
+
+async def select_modes_for_segments(
+    segments: Sequence[SegmentModeInput],
+    context: ModeJudgmentContext,
+    *,
+    judge: ModeJudge | None,
+    walking_speed_mps: float,
+    walk_transfer_threshold_min: int,
+) -> dict[tuple[str, str], TravelMode]:
+    """구간별 이동수단을 정해 표로 돌려준다.
+
+    `judge`가 없으면 구간마다 `_select_mode()`를 부른다 — **지금까지와 같은
+    결과다.** 판정하는 쪽을 붙이기 전까지 이 경로로 돈다.
+
+    사용자가 도보나 자동차를 명시했으면 `judge`가 있어도 부르지 않는다. 사용자가
+    말한 이동수단을 판정이 뒤집으면 안 되고, 그 두 경우는 거리와도 무관해서
+    물어볼 것이 없다(`_select_mode()`의 맨 위 두 줄과 같은 이유).
+    """
+
+    if not segments:
+        return {}
+
+    if judge is None or context.transport in _JUDGE_SKIPPED_TRANSPORTS:
+        return {
+            segment.key: _select_mode(
+                context.transport,
+                distance_m=segment.distance_m,
+                walking_speed_mps=walking_speed_mps,
+                walk_transfer_threshold_min=walk_transfer_threshold_min,
+            )
+            for segment in segments
+        }
+
+    decided = await judge.judge(segments, context)
+    # 개수가 다르면 어느 구간의 답인지 알 수 없다. 앞에서부터 짝지어 남는 쪽을
+    # 버리면 엉뚱한 구간에 엉뚱한 이동수단이 붙는다.
+    if len(decided) != len(segments):
+        raise ValueError(
+            f"판정 결과 수가 구간 수와 다릅니다: "
+            f"구간 {len(segments)}개, 결과 {len(decided)}개"
+        )
+    modes: dict[tuple[str, str], TravelMode] = {}
+    for segment, mode in zip(segments, decided, strict=True):
+        # StrEnum이라 문자열이 그대로 통과할 수 있다. 모르는 값이 표에 들어가면
+        # 속도를 찾는 단계에서야 터지고, 그때는 어느 구간이었는지가 사라진다.
+        if not isinstance(mode, TravelMode):
+            raise ValueError(
+                f"알 수 없는 이동수단입니다: {mode!r} (구간 {segment.order})"
+            )
+        modes[segment.key] = mode
+    return modes
+
+
+def _speed_for_mode(
+    mode: TravelMode,
+    *,
+    walking_speed_mps: float,
+    transit_speed_mps: float,
+    driving_speed_mps: float,
+) -> float:
+    if mode is TravelMode.WALKING:
+        return walking_speed_mps
+    if mode is TravelMode.TRANSIT:
+        return transit_speed_mps
+    return driving_speed_mps
+
+
+def estimate_schedule_travel_edges(
+    *,
+    candidates: Sequence[ScheduleTravelCandidate],
+    pairs: Sequence[ScheduleTravelPair],
+    transport: Transport | None,
+    modes: Mapping[tuple[str, str], TravelMode] | None = None,
+    walking_speed_mps: float,
+    transit_speed_mps: float,
+    driving_speed_mps: float,
+    walk_transfer_threshold_min: int,
+) -> ScheduleTravelEstimateResult:
+    """요청된 방향 쌍만 직선거리 기반 일정 이동정보로 변환한다.
+
+    이동수단 미지정과 대중교통 명시는 가까운 구간을 도보로 연결하고, 도보 예상시간이
+    임계값을 넘는 구간만 대중교통으로 전환한다. 도보·자동차 명시는 그대로 유지한다.
+    잘못된 일부 쌍은 전체 요청을 실패시키지 않고 건너뛰며, 사유와 그 방향 쌍을 담은
+    `ScheduleTravelWarning`으로 드러낸다.
+
+    속도 셋과 도보 전환 임계값은 이 함수가 설정을 직접 읽지 않고 인자로 받는다.
+    호출자가 `Settings.walking_speed_mps`, `Settings.transit_speed_mps`,
+    `Settings.driving_speed_mps`, `Settings.schedule_walk_transfer_threshold_min`을
+    넘겨야 `.env` 값이 실제로 반영된다.
+
+    `modes`를 주면 그 표에서 구간별 이동수단을 꺼내 쓰고, 안 주면 지금까지처럼
+    `_select_mode()`로 직접 정한다. 표는 `select_modes_for_segments()`가 만든다.
+    **이 함수는 동기·순수로 남는다** — 판정에 LLM이 붙으면 async가 되어야 하는데,
+    그러면 설정을 인자로만 받는 위 설계가 함께 깨진다. 판정은 밖에서 하고 결과만
+    받는다.
+    """
+
+    _validate_speeds(
+        walking_speed_mps,
+        transit_speed_mps,
+        driving_speed_mps,
+        walk_transfer_threshold_min,
+    )
+    segments, warnings = build_segment_inputs(
+        candidates, pairs, walking_speed_mps=walking_speed_mps
+    )
+    edges: list[ScheduleTravelEdge] = []
+
+    for segment in segments:
+        if modes is None:
+            mode = _select_mode(
+                transport,
+                distance_m=segment.distance_m,
+                walking_speed_mps=walking_speed_mps,
+                walk_transfer_threshold_min=walk_transfer_threshold_min,
+            )
+        elif segment.key in modes:
+            mode = modes[segment.key]
+        else:
+            # 조용히 `_select_mode()`로 떨어지면 판정이 절반만 적용된 채 정상처럼
+            # 돌아간다. 표를 준 쪽과 여기가 같은 구간 목록을 봤어야 하므로
+            # (양쪽 다 build_segment_inputs()를 쓴다) 빠진 키는 버그다.
+            raise ValueError(
+                f"이동수단 표에 없는 구간입니다: {segment.from_place_id}"
+                f" -> {segment.to_place_id}"
+            )
         speed_mps = _speed_for_mode(
             mode,
             walking_speed_mps=walking_speed_mps,
             transit_speed_mps=transit_speed_mps,
             driving_speed_mps=driving_speed_mps,
         )
-        duration_min = math.ceil(distance_m / speed_mps / 60)
+        duration_min = math.ceil(segment.distance_m / speed_mps / 60)
         edges.append(
             ScheduleTravelEdge(
-                from_place_id=pair.from_place_id,
-                to_place_id=pair.to_place_id,
+                from_place_id=segment.from_place_id,
+                to_place_id=segment.to_place_id,
                 mode=mode,
                 status=RouteStatus.SUCCESS,
                 source=RouteSource.STRAIGHT_LINE_ESTIMATE,
                 duration_min=duration_min,
-                distance_m=distance_m,
+                distance_m=segment.distance_m,
                 confidence=TravelConfidence.LOW,
             )
         )
 
-    return ScheduleTravelEstimateResult(edges=tuple(edges), warnings=tuple(warnings))
+    return ScheduleTravelEstimateResult(edges=tuple(edges), warnings=warnings)
 
 
 def _fall_back_to_estimate(
@@ -360,6 +534,11 @@ __all__ = [
     "SCHEDULE_TRAVEL_MEASURE_UNAVAILABLE_WARNING",
     "SCHEDULE_TRAVEL_SELF_PAIR_WARNING",
     "SCHEDULE_TRAVEL_UNKNOWN_PLACE_WARNING",
+    "ModeJudge",
+    "ModeJudgmentContext",
+    "SegmentModeInput",
+    "build_segment_inputs",
     "estimate_schedule_travel_edges",
     "measure_schedule_travel_edges",
+    "select_modes_for_segments",
 ]
