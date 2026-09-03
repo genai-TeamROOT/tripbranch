@@ -256,6 +256,10 @@ class SupabaseStateStore:
     def list_sessions_for_user(self, user_id: str, limit: int) -> list[AgentState]:
         """사용자의 대화를 최근 순으로. 제목 없는 세션은 대화가 아니라 제외한다.
 
+        **만료 여부로는 거르지 않는다.** 만료는 "낡은 조건을 버렸다"는 뜻이지
+        "그 대화가 없었다"는 뜻이 아니다 — 거르면 오래된 대화일수록 목록에서
+        사라지는데, 그런 대화를 열어 이어가는 것이 이 목록의 목적이다.
+
         agent_states_user_recent_idx(user_id, last_active_at desc)를 그대로 탄다.
         """
         response = self._request(
@@ -264,7 +268,6 @@ class SupabaseStateStore:
             params={
                 "user_id": f"eq.{user_id}",
                 "title": "not.is.null",
-                "status": "neq.expired",
                 "select": "*",
                 "order": "last_active_at.desc",
                 "limit": str(limit),

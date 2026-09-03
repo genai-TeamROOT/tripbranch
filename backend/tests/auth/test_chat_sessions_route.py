@@ -778,3 +778,23 @@ def test_이어간_대화도_기록이_온전하면_그것만_준다(signing_key
 
     assert body["restore_from_messages"] is True
     assert body["recommendations"] == []
+
+
+# 만료는 "낡은 조건을 버렸다"는 뜻이지 "그 대화가 없었다"는 뜻이 아니다.
+# 거르면 오래된 대화일수록 목록에서 사라지는데, 그런 대화를 열어 이어가는 것이
+# 이 목록의 목적이다(실측: 신원 붙은 대화 11개가 이 필터로 가려져 있었다).
+def test_만료된_대화도_목록에_나온다(signing_key) -> None:
+    from app.state.store import get_store
+
+    session_id = _start_chat(ME, "만료된 대화")
+    store = get_store()
+    state = store.get_state(session_id)
+    assert state is not None
+    state.status = "expired"
+    store.save_state(state)
+
+    sessions = (
+        TestClient(app).get("/api/sessions", headers=_headers(signing_key, ME)).json()["sessions"]
+    )
+
+    assert session_id in {item["session_id"] for item in sessions}

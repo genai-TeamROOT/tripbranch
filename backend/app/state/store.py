@@ -63,6 +63,10 @@ class StateStore(Protocol):
     # 사이드바 채팅 히스토리가 쓴다. 제목이 없는 세션(대화를 시작하지 않고
     # 만들어지기만 한 세션)은 목록에 넣지 않는다 — 사용자가 보기에 그건
     # 대화가 아니다.
+    #
+    # **만료(status='expired') 여부로는 거르지 않는다.** 만료는 "낡은 조건을
+    # 버렸다"는 뜻이지 "그 대화가 없었다"는 뜻이 아니고, 지난 대화를 열어
+    # 이어가는 것이 이 목록의 목적이다. 거르면 오래된 대화일수록 안 보인다.
     def list_sessions_for_user(self, user_id: str, limit: int) -> list[AgentState]: ...
 
     # --- ConditionChangeLog (append-only)
@@ -172,7 +176,7 @@ class InMemoryStateStore:
         owned = [
             state
             for state in self._states.values()
-            if state.user_id == user_id and state.title is not None and state.status != "expired"
+            if state.user_id == user_id and state.title is not None
         ]
         owned.sort(key=lambda state: state.last_active_at, reverse=True)
         return [state.model_copy(deep=True) for state in owned[:limit]]
