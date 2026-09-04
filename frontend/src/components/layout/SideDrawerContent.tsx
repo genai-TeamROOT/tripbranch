@@ -28,32 +28,20 @@ import { useTripDispatch, useTripState } from "../../state/TripContext";
 import type { Language } from "../../types";
 import {
   deleteChatSession,
-  deleteSavedSchedule,
   renameChatSession,
-  renameSavedSchedule,
   resumeChatSession,
 } from "../../api/trip";
 import { loadChatSessions, refreshChatSessions } from "../../state/chatSessions";
 import { clearLocalUserData } from "../../state/localUserData";
 import { useFavorites } from "../../hooks/useFavorites";
-import {
-  loadSavedSchedules,
-  refreshSavedSchedules,
-  subscribeSavedSchedules,
-  type SavedScheduleEntry,
-} from "../../state/savedSchedules";
 import { type ChatHistoryEntry } from "../../state/sidebarStorage";
 
 /*
- * 사이드바에는 줄마다 메뉴가 붙는 목록이 둘이다 — 대화와 저장한 일정. 어느
- * 목록의 어느 줄인지를 함께 들고 있어야 한쪽을 열 때 다른 쪽이 닫힌다.
- * `openMenu` 주석 참고.
+ * 줄마다 메뉴가 붙는 목록은 대화 하나다. 예전에는 저장한 일정도 여기 있어서
+ * `MenuTarget = { kind, id }`와 `isTarget()`으로 어느 목록인지 구분했는데, 일정
+ * 목록이 일정 화면으로 옮겨가(`components/schedule/SavedScheduleList`) 구분할
+ * 대상이 없어졌다 — 이제 열린 줄의 id 하나만 든다.
  */
-type MenuTarget = { kind: "chat" | "schedule"; id: string };
-
-function isTarget(target: MenuTarget | null, kind: MenuTarget["kind"], id: string): boolean {
-  return target !== null && target.kind === kind && target.id === id;
-}
 
 interface SideDrawerContentProps {
   /** 모바일 드로어에서만 넘긴다 — 링크를 누르면 드로어를 닫기 위해서다. */
@@ -91,9 +79,6 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
    * 서버가 안다. 목록만 로컬에 복사해두면 지운 대화가 되살아나는 쪽이 더 나쁘다.
    */
   const [history, setHistory] = useState<ChatHistoryEntry[]>([]);
-  /* 저장한 일정도 계정에서 온다(GET /api/schedules). 대화 목록과 별도 저장소라
-     따로 받는다 — 세션이 30일 뒤 정리돼도 이쪽은 남는다. */
-  const [schedules, setSchedules] = useState<SavedScheduleEntry[]>([]);
   /*
    * 메뉴와 이름 바꾸기는 **어느 목록의 어느 줄인지**를 함께 들고 있다.
    *
@@ -106,8 +91,8 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
    * 때문이다. 두 벌이면 대화 메뉴를 열어둔 채 일정 메뉴도 열려 메뉴 두 개가
    * 동시에 떠 있게 된다.
    */
-  const [openMenu, setOpenMenu] = useState<MenuTarget | null>(null);
-  const [renaming, setRenaming] = useState<MenuTarget | null>(null);
+  const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   /* 게스트 로그아웃은 되돌릴 수 없어 한 번 끊는다 — handleSignOut 주석 참고. */
   const [confirmingSignOut, setConfirmingSignOut] = useState(false);
@@ -119,15 +104,8 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
     void loadChatSessions().then((entries) => {
       if (active) setHistory(entries);
     });
-    void loadSavedSchedules().then((entries) => {
-      if (active) setSchedules(entries);
-    });
-    /* 일정을 저장하면 목록이 바로 바뀐다. 대화 목록처럼 TripContext 상태를 볼 수
-       없는 이유는 savedSchedules.subscribeSavedSchedules 주석에 있다. */
-    const unsubscribe = subscribeSavedSchedules(setSchedules);
     return () => {
       active = false;
-      unsubscribe();
     };
   }, [session?.user?.id]);
   /*
@@ -238,28 +216,19 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
     }
   }
 
-  function commitRename(target: MenuTarget) {
+  function commitRename(id: string) {
     const trimmed = renameDraft.trim();
     if (trimmed) {
       /* 화면을 먼저 바꾸고 서버에 보낸다 — 이름 바꾸기는 되돌릴 수 있는 동작이라
          응답을 기다리는 동안 입력칸을 붙잡아 둘 이유가 없다. 실패하면 서버 값으로
          되돌린다 — 바뀐 척 남겨두면 다음에 열었을 때 예전 이름이 돌아와 있어 더
-         혼란스럽다. 두 목록이 같은 규칙을 쓴다. */
-      if (target.kind === "chat") {
-        setHistory((prev) =>
-          prev.map((item) => (item.id === target.id ? { ...item, label: trimmed } : item)),
-        );
-        void renameChatSession(target.id, trimmed).catch(() => {
-          void refreshChatSessions().then(setHistory);
-        });
-      } else {
-        setSchedules((prev) =>
-          prev.map((item) => (item.id === target.id ? { ...item, label: trimmed } : item)),
-        );
-        void renameSavedSchedule(target.id, trimmed).catch(() => {
-          void refreshSavedSchedules();
-        });
-      }
+         혼란스럽다. 일정 목록도 같은 규칙을 쓴다(`SavedScheduleList`). */
+      setHistory((prev) =>
+        prev.map((item) => (item.id === id ? { ...item, label: trimmed } : item)),
+      );
+      void renameChatSession(id, trimmed).catch(() => {
+        void refreshChatSessions().then(setHistory);
+      });
     }
     setRenaming(null);
   }
@@ -414,15 +383,15 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                     isCurrent ? "bg-chip" : "hover:bg-chip"
                   }`}
                 >
-                  {isTarget(renaming, "chat", entry.id) ? (
+                  {renaming === entry.id ? (
                     <input
                       ref={renameInputRef}
                       aria-label={isEn ? "Conversation name" : "대화 이름"}
                       value={renameDraft}
                       onChange={(event) => setRenameDraft(event.target.value)}
-                      onBlur={() => commitRename({ kind: "chat", id: entry.id })}
+                      onBlur={() => commitRename(entry.id)}
                       onKeyDown={(event) => {
-                        if (event.key === "Enter") commitRename({ kind: "chat", id: entry.id });
+                        if (event.key === "Enter") commitRename(entry.id);
                         if (event.key === "Escape") setRenaming(null);
                       }}
                       className="w-full rounded-md border border-border px-2 py-1 text-sm"
@@ -459,7 +428,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                         aria-label={isEn ? `${entry.label} menu` : `${entry.label} 메뉴`}
                         onClick={() =>
                           setOpenMenu((open) =>
-                            isTarget(open, "chat", entry.id) ? null : { kind: "chat", id: entry.id },
+                            open === entry.id ? null : entry.id,
                           )
                         }
                         className="shrink-0 text-muted hover:text-ink"
@@ -469,7 +438,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                     </div>
                   )}
 
-                  {isTarget(openMenu, "chat", entry.id) && (
+                  {openMenu === entry.id && (
                     <>
                       <button
                         type="button"
@@ -486,7 +455,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                           role="menuitem"
                           onClick={() => {
                             setRenameDraft(entry.label);
-                            setRenaming({ kind: "chat", id: entry.id });
+                            setRenaming(entry.id);
                             setOpenMenu(null);
                           }}
                           className="rounded-xl px-3 py-2 text-left text-sm font-medium text-ink transition-colors hover:bg-chip"
@@ -526,123 +495,6 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                 </li>
               );
             })}
-          </ul>
-        )}
-      </section>
-
-      {/*
-        5. 저장한 일정 (SCHEDULE 카드 2)
-
-        채팅 히스토리 **아래**에 둔다. 대화가 일정보다 먼저 생기고 개수도 많아,
-        위에 두면 대화 목록이 접힌 화면에서 스크롤 밖으로 밀린다.
-
-        이름 바꾸기·삭제 메뉴는 대화 쪽과 **같은 상태를 공유하되 목록을 구분한다**
-        (`MenuTarget`). 상태를 두 벌 만들지 않은 이유는 openMenu 주석에 있다.
-      */}
-      <section className="flex flex-col gap-1.5">
-        <h2 className="text-xs font-bold text-label">{isEn ? "Saved schedules" : "저장한 일정"}</h2>
-        {schedules.length === 0 ? (
-          <p className="py-1 text-xs text-muted">
-            {isEn ? "No saved schedules yet" : "아직 저장한 일정이 없어요"}
-          </p>
-        ) : (
-          <ul className="flex flex-col gap-0.5">
-            {schedules.map((entry) => (
-              <li key={entry.id} className="relative rounded-xl px-2.5 py-2 hover:bg-chip">
-                {isTarget(renaming, "schedule", entry.id) ? (
-                  <input
-                    ref={renameInputRef}
-                    aria-label={isEn ? "Schedule name" : "일정 이름"}
-                    value={renameDraft}
-                    onChange={(event) => setRenameDraft(event.target.value)}
-                    onBlur={() => commitRename({ kind: "schedule", id: entry.id })}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") commitRename({ kind: "schedule", id: entry.id });
-                      if (event.key === "Escape") setRenaming(null);
-                    }}
-                    className="w-full rounded-md border border-border px-2 py-1 text-sm"
-                  />
-                ) : (
-                  <div className="flex items-start justify-between gap-2">
-                    {/* 대화 목록과 같은 이유로 한 줄 전체가 버튼이다 — 날짜 쪽을
-                      눌렀을 때 아무 일도 안 나면 고장으로 보인다. */}
-                    <button
-                      type="button"
-                      aria-label={isEn ? `Open schedule ${entry.label}` : `${entry.label} 일정 열기`}
-                      onClick={() =>
-                        go(`/schedule?saved=${encodeURIComponent(entry.id)}`, { sheet: true })
-                      }
-                      className="min-w-0 flex-1 text-left"
-                    >
-                      <p className="truncate text-sm font-medium text-ink">{entry.label}</p>
-                      {entry.date && (
-                        <p className="truncate text-[11px] text-muted">
-                          {isEn ? `Saved ${entry.date}` : `${entry.date} 저장`}
-                        </p>
-                      )}
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={isEn ? `${entry.label} menu` : `${entry.label} 메뉴`}
-                      onClick={() =>
-                        setOpenMenu((open) =>
-                          isTarget(open, "schedule", entry.id)
-                            ? null
-                            : { kind: "schedule", id: entry.id },
-                        )
-                      }
-                      className="shrink-0 text-muted hover:text-ink"
-                    >
-                      <MoreHorizontal size={15} />
-                    </button>
-                  </div>
-                )}
-
-                {isTarget(openMenu, "schedule", entry.id) && (
-                  <>
-                    <button
-                      type="button"
-                      aria-label={isEn ? "Close menu" : "메뉴 닫기"}
-                      onClick={() => setOpenMenu(null)}
-                      className="fixed inset-0 z-20 cursor-default"
-                    />
-                    <div
-                      role="menu"
-                      className="absolute right-0 top-full z-30 flex w-36 flex-col gap-0.5 rounded-2xl bg-white p-1.5 shadow-card"
-                    >
-                      <button
-                        type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          setRenameDraft(entry.label);
-                          setRenaming({ kind: "schedule", id: entry.id });
-                          setOpenMenu(null);
-                        }}
-                        className="rounded-xl px-3 py-2 text-left text-sm font-medium text-ink transition-colors hover:bg-chip"
-                      >
-                        {isEn ? "Rename" : "이름 바꾸기"}
-                      </button>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          /* 화면에서 먼저 빼고 서버에 보낸다(대화 삭제와 같은 규칙).
-                             실패하면 서버 목록으로 되돌린다. */
-                          setSchedules((prev) => prev.filter((item) => item.id !== entry.id));
-                          setOpenMenu(null);
-                          void deleteSavedSchedule(entry.id).catch(() => {
-                            void refreshSavedSchedules();
-                          });
-                        }}
-                        className="rounded-xl px-3 py-2 text-left text-sm font-medium text-rust transition-colors hover:bg-chip"
-                      >
-                        {isEn ? "Delete" : "삭제"}
-                      </button>
-                    </div>
-                  </>
-                )}
-              </li>
-            ))}
           </ul>
         )}
       </section>
