@@ -52,7 +52,10 @@ export default defineConfig({
     strictPort: Boolean(process.env.PORT),
     proxy: {
       "/api": {
-        target: "http://localhost:8000",
+        // 백엔드 주소도 PORT와 같은 이유로 환경변수를 따른다 — 워크트리에서
+        // 다른 포트로 띄운 백엔드를 보게 하려면 이 값이 필요하다. 여기가 고정이면
+        // 프론트만 포트를 옮겨도 요청은 8000의 다른 백엔드로 간다.
+        target: process.env.API_PROXY_TARGET ?? "http://localhost:8000",
         changeOrigin: true,
       },
     },

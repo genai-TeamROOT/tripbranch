@@ -139,6 +139,25 @@ export interface PhotoSimilarPlacesResponse {
   elapsed_ms: number;
 }
 
+export interface PlaceSearchCandidate {
+  name: string;
+  address: string | null;
+  road_address: string | null;
+  category: string | null;
+  latitude: number;
+  longitude: number;
+}
+
+export interface PlaceSearchResponse {
+  places: PlaceSearchCandidate[];
+  /**
+   * 좌표는 있는데 서울 밖이라 서버가 뺀 수. 0인지 아닌지에 따라 화면 문구가
+   * 갈린다 - 0이면 "찾은 곳이 없어요"이고, 0이 아니면 "서울 지역만 검색할 수
+   * 있어요"다. 사용자가 오타를 고쳐야 할지 지역을 바꿔야 할지가 다르다.
+   */
+  outside_service_area_count: number;
+}
+
 export interface ScheduleItem {
   order: number;
   place_id: string;
@@ -168,6 +187,32 @@ export interface ScheduleResult {
   /* 백엔드가 보고한 일정 편성 파이프라인 처리 시간(ms). RecommendationResult의
      server_elapsed_ms와 같은 역할이다(SCHEDULE-10 후속). */
   elapsed_ms: number;
+}
+
+/*
+ * 저장한 일정. (SCHEDULE 카드 2)
+ *
+ * 화면 기록(session_messages)과 다르다 — 저것은 "그때 화면에 나갔던 것"이고
+ * 이것은 사용자가 "이 일정을 쓰겠다"고 고른 것이라 이름을 붙이고 나중에 연다.
+ */
+export interface SavedScheduleSummary {
+  id: string;
+  title: string;
+  /* 어느 대화에서 나왔는지. 세션은 30일 뒤 정리되지만 이 일정은 남으므로
+   **없을 수 있다**를 전제로 쓴다. */
+  session_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SavedScheduleDetail extends SavedScheduleSummary {
+  /* 저장 시점의 ScheduleResult 그대로다. **지금 기준으로 다시 계산한 값이 아니다** —
+     도착 시각·이동 시간은 그때 기준이라 화면이 그 사실을 밝혀야 한다. */
+  payload: ScheduleResult;
+}
+
+export interface SavedSchedulesResponse {
+  items: SavedScheduleSummary[];
 }
 
 export interface ComparisonItem {
@@ -397,6 +442,11 @@ export type ChatMessage =
       id: string;
       type: "schedule_result";
       schedule: ScheduleResult;
+      /* 이 일정을 저장할 때 함께 보낸다. run_id는 같은 턴을 두 번 저장하지 않기
+         위한 열쇠이고, session_id는 "어느 대화에서 나왔는지"를 남긴다. 응답이
+         run_id 없이 끝나는 경로가 있어 둘 다 선택이다. */
+      run_id?: string;
+      session_id?: string;
       /* 일정 요청 클릭부터 응답 수신까지의 클라이언트 실측 시간(ms).
          recommendation_result의 elapsed_ms와 같은 역할이다. */
       elapsed_ms: number;
@@ -564,6 +614,19 @@ export interface AgentDebugRequest {
   language?: Language;
   session_id?: string | null;
   device_location?: string | null;
+  /*
+   * 위치 설정 화면에서 고른 검색 위치의 이름(예: "안국역"). device_location이
+   * "사용자가 지금 있는 곳"이라면 이쪽은 "어디를 기준으로 찾을지"다. 이번 턴
+   * 발화가 위치를 말하지 않았을 때에만 검색 위치로 쓰인다 - 발화가 이긴다.
+   */
+  selected_search_center?: string | null;
+  /*
+   * 위치 설정 화면에서 정한 출발지의 이름. selected_search_center와 다른 질문의
+   * 답이다 - 이쪽은 "사용자가 어디 있는가"라 이동 시간을 재는 시작점이 되고,
+   * 저쪽은 "어디 주변을 찾을까"다(D-067이 둘을 분리한 이유). 발화가 출발지를
+   * 말했으면 발화가 이긴다.
+   */
+  selected_current_location?: string | null;
   /** 직전 INFO 상세 카드의 장소명. "여기/이곳" 같은 대화 지시어 해소 후보다. */
   conversation_place_name?: string | null;
   /*
@@ -681,6 +744,25 @@ export interface SavedPlacesResponse {
 export interface PreferencesResponse {
   items: SavedPreferenceItem[];
   updated_at: string | null;
+}
+
+/*
+ * 계정 단위 즐겨찾기(GET/PUT /api/favorites). PreferencesResponse와 같은 모양이고,
+ * updated_at이 null이면 "이 계정이 한 번도 저장한 적 없다"는 뜻이다 - 빈 목록을
+ * 저장한 경우("전부 지움")와 구분되며, 이 기기의 값을 올릴지 판단하는 기준이
+ * 된다(state/favoritesSync.ts).
+ */
+export interface FavoritesResponse {
+  items: FavoritePlaceItem[];
+  updated_at: string | null;
+}
+
+export interface FavoritePlaceItem {
+  id: string;
+  label: string;
+  /* 검색에 나가는 장소 이름. 사용자가 label을 바꿔도 이 값은 그대로 둔다. */
+  search_center_name?: string | null;
+  address?: string | null;
 }
 
 export interface SavedPreferenceItem {

@@ -35,6 +35,7 @@ from app.domain.scoring import (
     RankedCandidate,
     co_visited_score,
     concentration_score,
+    equalize_weights,
     prepare_candidates,
     redistribute_weights,
     score_prepared_candidates,
@@ -110,6 +111,10 @@ class PreparedRecommendationResult:
     # "OO 기준으로 다시 보기" 비차단형 전환 제안(D-071). 위와 같은 이유로
     # 첫 배치 값을 쓴다 — resolve_travel_origin_toggle() 참고.
     travel_origin_toggle: TravelOriginToggle | None = None
+    # 후보를 구 하나에서 통째로 모았는가(C의 district_scope, D-119). 거리 Feature를
+    # 쓸지 정하는 값이라 채점까지 그대로 흘린다. 위와 같은 이유로 첫 배치 값을 쓴다 —
+    # 한 요청의 배치들은 같은 방식으로 후보를 모았다.
+    district_scoped: bool = False
 
     @property
     def filter_context(self) -> tuple[object, ...]:
@@ -188,6 +193,7 @@ def merge_prepared_recommendations(
         origin_name=first.origin_name,
         distance_denominator_offset_km=first.distance_denominator_offset_km,
         travel_origin_toggle=first.travel_origin_toggle,
+        district_scoped=first.district_scoped,
     )
 
 
@@ -273,6 +279,9 @@ async def prepare_recommendation_from_context(
         visit_at=visit_at,
         weather_ignored=_is_weather_explicitly_ignored(context, conditions),
         ignore_operating_hours=ignore_operating_hours,
+        # C가 "후보를 구 전체에서 모았다"는 **사실만** 실어 보낸다(D-119). 그것을
+        # 점수에 어떻게 반영할지는 D가 정한다 — 거리 Feature를 쓰지 않는다.
+        district_scoped=context.district_scope is not None,
         origin_name=resolve_origin_name(context, conditions),
         distance_denominator_offset_km=_distance_denominator_offset_km(context, conditions),
         travel_origin_toggle=resolve_travel_origin_toggle(context, conditions),
@@ -318,6 +327,7 @@ async def score_prepared_recommendation(
         requested_environment=prepared.requested_environment,
         travel_routes=travel_routes,
         travel_budget_speed_km_per_min=travel_budget_speed_km_per_min,
+        district_scoped=prepared.district_scoped,
         taste_matches=taste_matches,
     )
     ranked = scoring.ranked[:recommendation_limit]
@@ -398,6 +408,11 @@ async def rerank_with_concentration(
     *,
     seek: bool,
     weather_reason: WeatherReason = None,
+    # 1차와 같은 값. 안 넘기면 2차가 거리 결측을 비례 재분배해 **1차와 다른 자를
+    # 쓴다** — 구 단위 요청에서 취향이 1/3에서 0.17로 깎인다(1.9.0). 2026-08-20에
+    # 같은 계열의 사고가 있었다(CONCENTRATION_WEIGHTS에 taste 키가 없어 취향으로
+    # 후보를 골라 놓고 최종 순위에서 취향을 뺐다).
+    district_scoped: bool = False,
     # 1차와 같은 기준점 이름. 안 넘기면 근거 문장이 "현재 위치"로 폴백해 1차와
     # 2차가 같은 요청에서 다른 문장을 말하게 되므로, 호출자가 반드시 1차에 쓴
     # 값을 그대로 넘긴다(real_recommendation_provider.py).
@@ -467,7 +482,11 @@ async def rerank_with_concentration(
         base_weights = weights_for_feature_scores(feature_scores)
         missing = [feature for feature in base_weights if feature_scores.get(feature) is None]
         weights_used = (
-            redistribute_weights(base_weights, missing) if missing else dict(base_weights)
+            equalize_weights(base_weights, missing)
+            if district_scoped
+            else redistribute_weights(base_weights, missing)
+            if missing
+            else dict(base_weights)
         )
         score = round(
             sum(
@@ -597,6 +616,8 @@ async def rerank_with_co_visited(
     *,
     weather_reason: WeatherReason = None,
     origin_name: str | None = None,
+    # `rerank_with_concentration()`과 같은 이유로 받는다 — 1차와 자를 맞춘다.
+    district_scoped: bool = False,
     timer: Timer = perf_counter,
 ) -> RecommendationResponse:
     """D-092: RECOMMEND의 2차 Scoring 진입점. place_associations(B-owned, D-088)
@@ -659,7 +680,11 @@ async def rerank_with_co_visited(
         base_weights = weights_for_feature_scores(feature_scores)
         missing = [feature for feature in base_weights if feature_scores.get(feature) is None]
         weights_used = (
-            redistribute_weights(base_weights, missing) if missing else dict(base_weights)
+            equalize_weights(base_weights, missing)
+            if district_scoped
+            else redistribute_weights(base_weights, missing)
+            if missing
+            else dict(base_weights)
         )
         score = round(
             sum(

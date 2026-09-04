@@ -211,6 +211,14 @@ supabase migration list
   걷어가지만 이 테이블은 아무것도 치우지 않아 계정이 지워져도 남기 때문이다.
   RLS는 켜고 정책은 만들지 않는다: 프론트가 직접 붙지 않고 FastAPI만 접근한다)
 
+- 계정 단위 즐겨찾기 마이그레이션:
+  `202609030006_create_user_favorites.sql`
+  (위치 설정 화면, PR #361 후속. `user_favorites` 신설 — `user_preferences`와 같은
+  모양이다. 세션이 아니라 사람에게 붙는 값이라 `user_id`를 PK로 `auth.users(id)`에
+  `on delete cascade`로 건다. 항목마다 행을 두지 않고 `items jsonb` 배열 하나로
+  두는 이유도 같다 — 화면이 순서·이름 변경을 목록 단위로 다룬다. RLS는 켜고
+  정책은 만들지 않는다: 프론트가 직접 붙지 않고 FastAPI만 접근한다)
+
 - `202607240001_create_place_tables.sql`을 현재 프로젝트에 다시 실행하지 않는다.
   테이블과 관련 객체가 이미 존재하므로 중복 생성 오류가 발생한다.
 - `202607240002_add_place_sync_locks.sql`도 현재 프로젝트에 다시 실행하지 않는다.
@@ -224,10 +232,19 @@ supabase migration list
   상태다. 위와 같은 이유로 재실행하지 않는다.
 - `202609030001_create_user_preferences.sql`도 적용 완료 상태다(2026-09-03, MCP
   `apply_migration`, 원격 이력에는 `create_user_preferences`로 기록).
+- `202609030006_create_user_favorites.sql`도 적용 완료 상태다(2026-09-03, MCP
+  `apply_migration`, 원격 이력에는 `create_user_favorites`로 기록).
 - `202609030002_add_agent_states_title.sql`도 적용 완료 상태다(2026-09-03).
   `agent_states.title` 추가 + 기존 283건 backfill + `(user_id, last_active_at desc)`
   부분 인덱스. **backfill 값은 근사치다** — 남아 있는 가장 오래된 턴이라
   MAX_RECENT_TURNS(=5)를 채운 대화에서는 실제 첫 질문이 아니다.
+- `202609030005_create_saved_schedules.sql`도 적용 완료 상태다(2026-09-03,
+  **Supabase Dashboard SQL Editor**). 저장한 일정 테이블 + `(user_id, created_at desc)`
+  인덱스 + `(user_id, run_id) where run_id is not null` 부분 유니크 인덱스.
+  **CLI/MCP가 아니라 SQL Editor로 적용해 원격 마이그레이션 이력에는 남지 않는다** —
+  다음 사람이 `db push`를 돌리면 미적용으로 보고 다시 실행하려 할 수 있는데,
+  `create table`이라 재실행하면 오류가 난다. 그때는 실행하지 말고 이 줄을 근거로
+  건너뛴다.
 - 기존 마이그레이션 파일은 적용 후 수정하지 않는다.
 - 이후 스키마 변경은 새 타임스탬프를 가진 마이그레이션 파일로 추가한다.
 - 새 마이그레이션은 가능한 한 Supabase CLI `db push` 또는 MCP

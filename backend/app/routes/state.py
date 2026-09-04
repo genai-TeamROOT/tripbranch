@@ -91,6 +91,74 @@ async def rename_session(
     return state_service.rename_session(session_id, request.title, principal=principal)
 
 
+# ---------------------------------------------------------------- 저장한 일정
+#
+# /sessions와 같은 이유로 /state/{session_id} 아래에 두지 않는다 — 저장한 일정은
+# 특정 세션에 속하지 않는다. 세션이 30일 뒤 정리돼도 일정은 남는다.
+#
+# 넷 다 RequiredPrincipal이다. 신원이 없으면 누구의 일정인지가 정해지지 않는다.
+
+
+@router.get("/schedules", response_model=state_service.SavedSchedulesResponse)
+async def list_schedules(principal: RequiredPrincipal) -> state_service.SavedSchedulesResponse:
+    """내 저장 일정 목록. 최근 저장순이다. (SCHEDULE 카드 2)
+
+    payload를 싣지 않는다 — 한 줄을 누르면 그때 상세를 받는다.
+    """
+    return state_service.list_user_schedules(principal.user_id)
+
+
+@router.post("/schedules", response_model=state_service.SavedScheduleDetail)
+async def save_schedule(
+    request: state_service.SaveScheduleRequest,
+    principal: RequiredPrincipal,
+) -> state_service.SavedScheduleDetail:
+    """일정을 저장한다. (SCHEDULE 카드 2)
+
+    **멱등이다.** 같은 (신원, run_id)를 다시 보내면 새로 만들지 않고 이미 있는
+    것을 그대로 돌려준다 — 저장 버튼을 두 번 누르거나 요청이 재시도돼도 목록에
+    두 줄이 생기지 않는다. 화면은 두 경우를 구분할 필요가 없다.
+    """
+    return state_service.save_user_schedule(principal.user_id, request)
+
+
+@router.get("/schedules/{schedule_id}", response_model=state_service.SavedScheduleDetail)
+async def get_schedule(
+    schedule_id: str, principal: RequiredPrincipal
+) -> state_service.SavedScheduleDetail:
+    """저장 일정 하나. 목록에서 한 줄을 눌렀을 때 쓴다.
+
+    payload는 **저장 시점의 값**이다. 도착 시각·이동 시간은 그때 기준이므로
+    화면이 그 사실을 밝혀야 한다.
+    """
+    return state_service.get_user_schedule(schedule_id, principal)
+
+
+@router.patch(
+    "/schedules/{schedule_id}/title",
+    response_model=state_service.SavedScheduleSummary,
+)
+async def rename_schedule(
+    schedule_id: str,
+    request: state_service.RenameScheduleRequest,
+    principal: RequiredPrincipal,
+) -> state_service.SavedScheduleSummary:
+    """저장 일정의 이름을 바꾼다. 대화 이름 바꾸기와 같은 경로 모양이다."""
+    return state_service.rename_user_schedule(schedule_id, request.title, principal)
+
+
+@router.delete("/schedules/{schedule_id}", response_model=state_service.DeleteScheduleResponse)
+async def delete_schedule(
+    schedule_id: str, principal: RequiredPrincipal
+) -> state_service.DeleteScheduleResponse:
+    """저장 일정을 지운다.
+
+    이미 없으면 오류가 아니라 `deleted=False`다. 다만 **남의 것을 지우려는 것은
+    403이다** — 존재하는데 내 것이 아닌 경우는 멱등의 범위가 아니다.
+    """
+    return state_service.delete_user_schedule(schedule_id, principal)
+
+
 @router.get("/state/{session_id}", response_model=state_service.SessionContextResponse)
 async def get_state(
     session_id: str, principal: OptionalPrincipal

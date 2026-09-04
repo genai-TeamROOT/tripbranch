@@ -17,6 +17,8 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 import App from "../../App";
 import { resetChatSessionsCache } from "../../state/chatSessions";
+import { resetFavoritesSync } from "../../state/favoritesSync";
+import { resetSavedSchedulesCache } from "../../state/savedSchedules";
 import { isDetachedRequest } from "../../state/chatAbortController";
 import { GUEST_SESSION, setMockSession } from "../../test/supabaseMock";
 
@@ -27,7 +29,12 @@ const SEED_FAVORITES = [
 
 /** 계정에 쌓인 대화. 서버가 주는 모양 그대로다. */
 const server = vi.hoisted(() => ({
-  sessions: [] as { session_id: string; title: string; location: string | null; last_active_at: string }[],
+  sessions: [] as {
+    session_id: string;
+    title: string;
+    location: string | null;
+    last_active_at: string;
+  }[],
   renamed: [] as { id: string; title: string }[],
   deleted: [] as string[],
   resumed: [] as string[],
@@ -69,6 +76,14 @@ const server = vi.hoisted(() => ({
   chatSessionIds: [] as (string | null)[],
   /** GET /api/sessions를 실제로 부른 횟수. 사이드바 두 벌이 겹쳐 부르는지 본다. */
   listCalls: 0,
+  /** 계정에 저장한 일정(SCHEDULE 카드 2). 대화와 별도 저장소라 따로 심는다. */
+  schedules: [] as {
+    id: string;
+    title: string;
+    session_id: string | null;
+    created_at: string;
+    updated_at: string;
+  }[],
   /*
    * 두 턴짜리 화면 기록. 두 턴 모두 후속 질문을 달아 둔다 — 복원했을 때
    * 마지막 턴에만 버튼이 남아야 한다.
@@ -112,6 +127,7 @@ vi.mock("../../api/trip", async (importOriginal) => {
       server.listCalls += 1;
       return { sessions: server.sessions };
     },
+    fetchSavedSchedules: async () => ({ items: server.schedules }),
     /* 사이드바는 조회가 아니라 resume을 부른다 — 만료된 대화를 되살려야 이어
        물었을 때 같은 세션에 붙는다. resume의 응답은 항상 resumable: true다. */
     resumeChatSession: async (sessionId: string) => {
@@ -123,7 +139,16 @@ vi.mock("../../api/trip", async (importOriginal) => {
         title: found.title,
         /* 추천은 그 턴이 기록되기 전에 남는다(실측 평균 97초 먼저). */
         recommendations: [
-          { place_id: "p1", run_id: "run_1", name: "국립중앙박물관", rank: 1, distance_km: 1.2, environment_type: "indoor", reason: null, shown_at: "2026-09-03T08:58:23+09:00" },
+          {
+            place_id: "p1",
+            run_id: "run_1",
+            name: "국립중앙박물관",
+            rank: 1,
+            distance_km: 1.2,
+            environment_type: "indoor",
+            reason: null,
+            shown_at: "2026-09-03T08:58:23+09:00",
+          },
         ],
         /* 화면 기록. 있으면 화면은 turns/recommendations 대신 이것만 쓴다.
            chat-1에만 둬서 두 경로를 한 파일에서 함께 본다. */
@@ -137,11 +162,29 @@ vi.mock("../../api/trip", async (importOriginal) => {
         messages: sessionId === "chat-1" ? server.transcriptTurns() : [],
         turns: server.partialTranscript
           ? [
-              { user_input: "첫 질문", assistant_message: "첫 답변", intent: "RECOMMEND", place_names: [], at: "2026-09-03T09:00:00+09:00" },
-              { user_input: "빠진 질문", assistant_message: "빠진 답변", intent: "RECOMMEND", place_names: [], at: "2026-09-03T09:05:00+09:00" },
+              {
+                user_input: "첫 질문",
+                assistant_message: "첫 답변",
+                intent: "RECOMMEND",
+                place_names: [],
+                at: "2026-09-03T09:00:00+09:00",
+              },
+              {
+                user_input: "빠진 질문",
+                assistant_message: "빠진 답변",
+                intent: "RECOMMEND",
+                place_names: [],
+                at: "2026-09-03T09:05:00+09:00",
+              },
             ]
           : [
-              { user_input: "비 오는데 어디 갈까", assistant_message: "실내를 찾아볼게요", intent: "RECOMMEND", place_names: [], at: "2026-09-03T09:00:00+09:00" },
+              {
+                user_input: "비 오는데 어디 갈까",
+                assistant_message: "실내를 찾아볼게요",
+                intent: "RECOMMEND",
+                place_names: [],
+                at: "2026-09-03T09:00:00+09:00",
+              },
             ],
         last_active_at: found.last_active_at,
         resumable: true,
@@ -222,6 +265,9 @@ beforeEach(() => {
   localStorage.setItem("tb_favorites", JSON.stringify(SEED_FAVORITES));
   window.history.pushState({}, "", "/");
   resetChatSessionsCache();
+  resetFavoritesSync();
+  resetSavedSchedulesCache();
+  server.schedules = [];
   server.sessions = [
     {
       session_id: "chat-1",
@@ -288,6 +334,32 @@ function sidebar() {
   return screen.getByRole("complementary");
 }
 
+/*
+ * 로그아웃은 이 기기에 남은 값을 전부 지워야 한다 — 같은 브라우저에서 다음 사람이
+ * 앞사람의 취향·즐겨찾기를 이어받으면 안 된다. 화면에서 실제로 눌러 확인한다.
+ */
+test("로그아웃하면 이 기기의 취향·즐겨찾기가 남지 않는다", async () => {
+  const user = userEvent.setup();
+  localStorage.setItem(
+    "tb_preferences",
+    JSON.stringify([{ label: "조용한 곳", source: "preference", codes: ["quiet"] }]),
+  );
+  sessionStorage.setItem(
+    "tb_location_settings",
+    JSON.stringify({ origin: null, center: "안국역" }),
+  );
+  await renderApp();
+
+  await user.click(within(sidebar()).getByRole("button", { name: /로그아웃/ }));
+  /* 게스트는 한 번 더 확인한다 - 돌아올 수단이 없어서다(feature/guest-account-link). */
+  await within(sidebar()).findByText(/돌아올 수 없어요/);
+  await user.click(within(sidebar()).getByRole("button", { name: "로그아웃" }));
+
+  await waitFor(() => expect(localStorage.getItem("tb_preferences")).toBeNull());
+  expect(localStorage.getItem("tb_favorites")).toBeNull();
+  expect(sessionStorage.getItem("tb_location_settings")).toBeNull();
+});
+
 test("저장된 즐겨찾기가 사이드바에 보인다", async () => {
   await renderApp();
 
@@ -295,18 +367,42 @@ test("저장된 즐겨찾기가 사이드바에 보인다", async () => {
   expect(within(sidebar()).getByText("집 (성수동)")).toBeInTheDocument();
 });
 
-test("즐겨찾기를 추가하면 목록에 남는다", async () => {
+/*
+ * 즐겨찾기는 검색해서 담는다. 여기서 이름만 받으면 좌표도 주소도 없어 위치로 쓸 수
+ * 없으므로, "추가"는 검색이 있는 위치 설정 화면으로 보낸다.
+ */
+/*
+ * 사이드바와 위치 설정 화면은 같은 즐겨찾기 목록을 본다. 각자 사본을 들고 있으면
+ * 한쪽에서 지워도 다른 쪽은 새로고침해야 반영된다 - 같은 목록이 두 군데서 다르게
+ * 보이는 셈이다.
+ */
+test("위치 설정 화면에서 지운 즐겨찾기가 사이드바에서도 바로 빠진다", async () => {
+  const user = userEvent.setup();
+  await renderApp();
+  expect(within(sidebar()).getByText("회사 (역삼동)")).toBeInTheDocument();
+
+  await user.click(within(sidebar()).getByRole("button", { name: "추가" }));
+  await screen.findByLabelText("장소 검색");
+
+  /* 위치 설정 화면의 목록에서 지운다. 사이드바에도 같은 이름의 버튼이 있으므로
+     사이드바 밖(나중에 그려진 쪽)을 고른다. */
+  const deleteButtons = screen.getAllByRole("button", { name: "회사 (역삼동) 즐겨찾기 삭제" });
+  const inPage = deleteButtons.filter((button) => !sidebar().contains(button));
+  expect(inPage).toHaveLength(1);
+  await user.click(inPage[0]);
+
+  /* 새로고침 없이 사이드바에서도 빠진다. */
+  expect(within(sidebar()).queryByText("회사 (역삼동)")).not.toBeInTheDocument();
+  expect(within(sidebar()).getByText("집 (성수동)")).toBeInTheDocument();
+});
+
+test("즐겨찾기 추가를 누르면 위치 설정 화면으로 보낸다", async () => {
   const user = userEvent.setup();
   await renderApp();
 
   await user.click(within(sidebar()).getByRole("button", { name: "추가" }));
 
-  // 모달의 제출 버튼과 사이드바의 "+ 추가"가 이름이 같다. 모달 안으로 범위를 좁힌다.
-  const modal = screen.getByRole("dialog", { name: "즐겨찾기 추가" });
-  await user.type(within(modal).getByRole("textbox"), "학교 (신촌)");
-  await user.click(within(modal).getByRole("button", { name: "추가" }));
-
-  expect(within(sidebar()).getByText("학교 (신촌)")).toBeInTheDocument();
+  expect(await screen.findByLabelText("장소 검색")).toBeInTheDocument();
 });
 
 test("즐겨찾기를 삭제하면 목록에서 빠진다", async () => {
@@ -385,7 +481,9 @@ test("이름 바꾸기와 삭제가 서버까지 간다", async () => {
 
   await waitFor(() => expect(server.renamed).toEqual([{ id: "chat-1", title: "새 이름" }]));
 
-  await user.click(within(sidebar()).getByRole("button", { name: "갑자기 뜬 2시간, 카페 추천 메뉴" }));
+  await user.click(
+    within(sidebar()).getByRole("button", { name: "갑자기 뜬 2시간, 카페 추천 메뉴" }),
+  );
   await user.click(screen.getByRole("menuitem", { name: "삭제" }));
 
   await waitFor(() => expect(server.deleted).toEqual(["chat-2"]));
@@ -399,13 +497,14 @@ test("대화의 위치가 목록에 함께 보인다", async () => {
   expect(within(sidebar()).getByText("성수동")).toBeInTheDocument();
 });
 
-
 /* 목록만 만들고 못 열게 두면 "눌러도 아무 일이 없는" 화면이 된다. */
 test("히스토리를 누르면 지난 대화가 채팅 화면에 펼쳐진다", async () => {
   const user = userEvent.setup();
   await renderApp();
 
-  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
+  await user.click(
+    within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }),
+  );
 
   expect(await screen.findByText("비 오는데 어디 갈까")).toBeInTheDocument();
   expect(screen.getByText("실내를 찾아볼게요")).toBeInTheDocument();
@@ -417,7 +516,9 @@ test("옛 대화를 열면 앞부분이 없다고 밝힌다", async () => {
   const user = userEvent.setup();
   await renderApp();
 
-  await user.click(within(sidebar()).getByRole("button", { name: "갑자기 뜬 2시간, 카페 추천 대화 열기" }));
+  await user.click(
+    within(sidebar()).getByRole("button", { name: "갑자기 뜬 2시간, 카페 추천 대화 열기" }),
+  );
 
   expect(await screen.findByText(/앞부분은 남아 있지 않아요/)).toBeInTheDocument();
 });
@@ -431,7 +532,9 @@ test("화면 기록이 있으면 그때 본 화면 그대로 펼쳐진다", asyn
   const user = userEvent.setup();
   await renderApp();
 
-  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
+  await user.click(
+    within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }),
+  );
 
   expect(await screen.findByText("실내를 찾아볼게요")).toBeInTheDocument();
   /* 근사치 카드("그때 추천받은 곳")가 아니라 실제 추천 카드다 — 추천 이유까지 나온다. */
@@ -446,7 +549,9 @@ test("화면 기록이 없는 옛 대화는 저장된 조각으로 펼쳐진다"
   const user = userEvent.setup();
   await renderApp();
 
-  await user.click(within(sidebar()).getByRole("button", { name: "갑자기 뜬 2시간, 카페 추천 대화 열기" }));
+  await user.click(
+    within(sidebar()).getByRole("button", { name: "갑자기 뜬 2시간, 카페 추천 대화 열기" }),
+  );
 
   expect(await screen.findByText("그때 추천받은 곳")).toBeInTheDocument();
   expect(screen.getByText("국립중앙박물관")).toBeInTheDocument();
@@ -460,7 +565,9 @@ test("화면 기록이 온전하면 앞부분이 없다고 말하지 않는다",
   const user = userEvent.setup();
   await renderApp();
 
-  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
+  await user.click(
+    within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }),
+  );
 
   /* 날짜 표기는 오늘·어제면 그렇게 부르므로 실행 날짜에 따라 달라진다.
      이 테스트가 보는 것은 "시각이 뜨고, 빠진 게 있다는 말은 없다"다.
@@ -482,14 +589,18 @@ test("지난 대화를 열고 이어 물으면 같은 세션으로 나간다", a
   const user = userEvent.setup();
   await renderApp();
 
-  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
+  await user.click(
+    within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }),
+  );
   await screen.findByText("비 오는데 어디 갈까");
-  await user.type(screen.getByPlaceholderText("추가 조건을 입력해 주세요"), "그럼 근처 카페는?{Enter}");
+  await user.type(
+    screen.getByPlaceholderText("추가 조건을 입력해 주세요"),
+    "그럼 근처 카페는?{Enter}",
+  );
 
   await waitFor(() => expect(server.chatSessionIds).toEqual(["chat-1"]));
   expect(server.resumed).toEqual(["chat-1"]);
 });
-
 
 /*
  * 새로고침해야 목록에 나타나면 방금 한 대화가 없는 것처럼 보인다.
@@ -510,13 +621,10 @@ test("새 대화를 시작하면 새로고침 없이 목록에 뜬다", async ()
   );
   await user.click(screen.getByRole("button", { name: "추천 시작하기" }));
 
-  await waitFor(() =>
-    expect(within(sidebar()).getByText("방금 시작한 대화")).toBeInTheDocument(),
-  );
+  await waitFor(() => expect(within(sidebar()).getByText("방금 시작한 대화")).toBeInTheDocument());
   /* 두 벌이 동시에 물어도 요청은 하나다. */
   expect(server.listCalls - before).toBe(1);
 });
-
 
 /*
  * 답변을 기다리는 중에 다른 대화를 열면, 오던 답변이 **그 대화에** 붙는 버그가
@@ -537,7 +645,9 @@ test("답변 대기 중에 다른 대화를 열면 그 답변이 따라오지 �
   await user.click(screen.getByRole("button", { name: "추천 시작하기" }));
   await waitFor(() => expect(server.pending).not.toBeNull());
 
-  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
+  await user.click(
+    within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }),
+  );
   await screen.findByText("실내를 찾아볼게요");
 
   /* 뒤늦게 도착한 앞 대화의 답변. 끊긴 요청이라 화면에 닿으면 안 된다. */
@@ -566,7 +676,6 @@ test("답변 대기 중에 다른 대화를 열면 그 답변이 따라오지 �
   expect(screen.getByText("실내를 찾아볼게요")).toBeInTheDocument();
 });
 
-
 /*
  * 목록에 여러 줄이 있는데 어느 것이 열려 있는지 표시가 없으면, 대화를
  * 이어가면서도 자기가 어디 있는지 모른다.
@@ -575,7 +684,9 @@ test("지금 보고 있는 대화가 목록에서 표시된다", async () => {
   const user = userEvent.setup();
   await renderApp();
 
-  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
+  await user.click(
+    within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }),
+  );
   await screen.findByText("실내를 찾아볼게요");
 
   const rows = within(sidebar()).getAllByRole("listitem");
@@ -592,14 +703,15 @@ test("대화를 열기 전에는 켜진 줄이 없다", async () => {
   expect(rows.filter((row) => row.getAttribute("aria-current") === "true")).toEqual([]);
 });
 
-
 /* 실시간에서도 새 발화가 나가면 옛 버튼은 걷힌다. 전부 되살리면 지난 답변
    기준의 문구를 눌러 지금 맥락과 어긋난 요청이 나간다. */
 test("복원한 대화의 후속 질문은 마지막 답변에만 남는다", async () => {
   const user = userEvent.setup();
   await renderApp();
 
-  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
+  await user.click(
+    within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }),
+  );
   await screen.findByText("첫 답변");
 
   expect(screen.getByRole("button", { name: "마지막 턴의 후속 질문" })).toBeInTheDocument();
@@ -614,13 +726,14 @@ test("복원한 대화에서 추천 카드가 답변보다 위에 온다", async
   const user = userEvent.setup();
   await renderApp();
 
-  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
+  await user.click(
+    within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }),
+  );
 
   const card = await screen.findByText("국립중앙박물관");
   const answer = screen.getByText("실내를 찾아볼게요");
   expect(card.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
-
 
 /*
  * 기록 저장이 실패해도 응답은 막지 않는다(그게 맞다). 그래서 턴 하나가 빠진
@@ -632,14 +745,15 @@ test("기록이 온전하지 않으면 예전 방식으로 되돌린다", async 
   server.partialTranscript = true;
   await renderApp();
 
-  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
+  await user.click(
+    within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }),
+  );
 
   /* 기록에 없던 턴까지 나온다 — 저장된 말풍선으로 되돌렸다는 뜻이다. */
   expect(await screen.findByText("빠진 질문")).toBeInTheDocument();
   /* 그리고 전부가 아니라는 것을 화면이 밝힌다. */
   expect(screen.getByText(/앞부분은 남아 있지 않아요/)).toBeInTheDocument();
 });
-
 
 /* 열기가 실패하면 화면은 그대로 남는다. 그런데 오던 답변까지 버리면, 아무 일도
    일어나지 않은 것처럼 보이면서 기다리던 답변만 사라진다. */
@@ -658,7 +772,9 @@ test("지난 대화 열기가 실패하면 오던 답변을 버리지 않는다"
   await waitFor(() => expect(server.pending).not.toBeNull());
 
   server.resumeFails = true;
-  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
+  await user.click(
+    within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }),
+  );
   await waitFor(() => expect(server.listCalls).toBeGreaterThan(1));
 
   /* 열기는 실패했으니 답변은 그대로 도착해야 한다. */
@@ -679,7 +795,6 @@ test("지난 대화 열기가 실패하면 오던 답변을 버리지 않는다"
   expect(await screen.findByText("기다리던 답변")).toBeInTheDocument();
 });
 
-
 /*
  * 보고 있는 대화를 지웠는데 화면에 그대로 두면, 이어 물었을 때 없는 session_id가
  * 나가 백엔드가 조용히 새 세션을 만든다 — 사용자는 같은 대화를 이어간 줄로 안다.
@@ -687,10 +802,14 @@ test("지난 대화 열기가 실패하면 오던 답변을 버리지 않는다"
 test("보고 있는 대화를 지우면 화면도 비운다", async () => {
   const user = userEvent.setup();
   await renderApp();
-  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
+  await user.click(
+    within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }),
+  );
   await screen.findByText("실내를 찾아볼게요");
 
-  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 메뉴" }));
+  await user.click(
+    within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 메뉴" }),
+  );
   await user.click(screen.getByRole("menuitem", { name: "삭제" }));
 
   await waitFor(() => expect(screen.queryByText("실내를 찾아볼게요")).not.toBeInTheDocument());
@@ -700,15 +819,18 @@ test("보고 있는 대화를 지우면 화면도 비운다", async () => {
 test("다른 대화를 지워도 보고 있는 대화는 그대로다", async () => {
   const user = userEvent.setup();
   await renderApp();
-  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
+  await user.click(
+    within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }),
+  );
   await screen.findByText("실내를 찾아볼게요");
 
-  await user.click(within(sidebar()).getByRole("button", { name: "갑자기 뜬 2시간, 카페 추천 메뉴" }));
+  await user.click(
+    within(sidebar()).getByRole("button", { name: "갑자기 뜬 2시간, 카페 추천 메뉴" }),
+  );
   await user.click(screen.getByRole("menuitem", { name: "삭제" }));
 
   expect(screen.getByText("실내를 찾아볼게요")).toBeInTheDocument();
 });
-
 
 /*
  * 자리를 비웠다가 돌아와 이어 묻는 발화 위에는 지금 시각이 뜬다. 위쪽 지난
@@ -717,7 +839,9 @@ test("다른 대화를 지워도 보고 있는 대화는 그대로다", async ()
 test("지난 대화를 이어가면 새 발화 위에 지금 시각이 뜬다", async () => {
   const user = userEvent.setup();
   await renderApp();
-  await user.click(within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }));
+  await user.click(
+    within(sidebar()).getByRole("button", { name: "비 오는 날 아이와 함께 갈 곳 대화 열기" }),
+  );
   await screen.findByText("실내를 찾아볼게요");
   const before = screen.getAllByText(/오전|오후/).length;
 
@@ -795,4 +919,53 @@ test("계정 사용자는 확인 없이 로그아웃된다", async () => {
   await userEvent.click(within(sidebar()).getByRole("button", { name: /로그아웃/ }));
 
   expect(await screen.findByRole("button", { name: "게스트로 시작하기" })).toBeInTheDocument();
+});
+
+/* 저장한 일정 목록. (SCHEDULE 카드 2) */
+
+test("저장한 일정이 없으면 그 사실을 알린다", async () => {
+  await renderApp();
+
+  expect(within(sidebar()).getByText("아직 저장한 일정이 없어요")).toBeInTheDocument();
+});
+
+test("저장한 일정이 목록에 뜨고 누르면 그 일정이 열린다", async () => {
+  server.schedules = [
+    {
+      id: "sched-1",
+      title: "종로 반나절",
+      session_id: "chat-1",
+      created_at: "2026-08-31T14:30:00+09:00",
+      updated_at: "2026-08-31T14:30:00+09:00",
+    },
+  ];
+
+  await renderApp();
+
+  const entry = await within(sidebar()).findByRole("button", { name: /종로 반나절/ });
+  await userEvent.click(entry);
+
+  /* 저장한 일정은 SchedulePage가 ?saved=로 받아 연다 — 대화와 다른 화면이다. */
+  await waitFor(() => expect(window.location.search).toContain("saved=sched-1"));
+});
+
+/* 대화 목록과 별도 저장소다. 세션이 30일 뒤 정리돼도 저장한 일정은 남으므로
+   한쪽이 비어도 다른 쪽은 그려져야 한다. */
+test("대화가 없어도 저장한 일정은 보인다", async () => {
+  server.sessions = [];
+  server.schedules = [
+    {
+      id: "sched-1",
+      title: "종로 반나절",
+      session_id: null,
+      created_at: "2026-08-31T14:30:00+09:00",
+      updated_at: "2026-08-31T14:30:00+09:00",
+    },
+  ];
+
+  render(<App />);
+  await screen.findByRole("button", { name: "추천 시작하기" });
+
+  expect(await within(sidebar()).findByText("종로 반나절")).toBeInTheDocument();
+  expect(within(sidebar()).getByText("아직 대화 기록이 없어요")).toBeInTheDocument();
 });

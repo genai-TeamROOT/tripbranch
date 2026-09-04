@@ -19,12 +19,10 @@ import { ChatComposer } from "../components/chat/ChatComposer";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { AppHeader } from "../components/layout/AppHeader";
 import { usePhotoSimilarSearch } from "../hooks/usePhotoSimilarSearch";
-import {
-  beginChatRequest,
-  endChatRequest,
-  wasCancelledByUser,
-} from "../state/chatAbortController";
+import { beginChatRequest, endChatRequest, wasCancelledByUser } from "../state/chatAbortController";
 import { loadPreferences } from "../state/preferenceStorage";
+import { loadLocationSettings } from "../state/locationSettings";
+import { useLocationSettings } from "../hooks/useLocationSettings";
 import { syncPreferences } from "../state/preferenceSync";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import { buildAgentStageTimings } from "../utils/agentTiming";
@@ -80,6 +78,7 @@ export function HomePage() {
    * 두지 않는 이유는 대부분 둘이 같아 깜빡임만 남기 때문이다. 다른 기기에서 바꾼
    * 경우에만 줄이 바뀌고, 그때는 바뀌는 것이 맞다.
    */
+  const locationSettings = useLocationSettings();
   const [preferences, setPreferences] = useState(loadPreferences);
 
   useEffect(() => {
@@ -156,6 +155,8 @@ export function HomePage() {
           language: state.language,
           session_id: null,
           device_location: deviceLocation,
+          selected_search_center: loadLocationSettings().center,
+          selected_current_location: loadLocationSettings().origin,
         },
         (event) => {
           if (event.type === "progress") {
@@ -262,7 +263,20 @@ export function HomePage() {
    * 아직 해석된 지명이 없으면(첫 진입) 실제 서비스 지원 지역인 "종로구"를
    * 기본값으로 쓴다 — 헤더에 위치 버튼이 항상 보여야 한다.
    */
-  const locationLabel = state.interpreted_conditions?.location_query ?? "종로구";
+  /* 위치 설정 화면의 칩과 같은 사다리를 본다 — 두 화면이 같은 사실을 말해야 한다.
+     검색 기준을 비워두면 출발지가, 그것도 없으면 기기 좌표가 검색 중심이 된다
+     (agent_context/service.py).
+
+     설정이 아무것도 없을 때만 직전 턴이 해석한 위치로 떨어진다 — 대화가 이미
+     있으면 서버가 그 위치를 들고 있어서 다음 발화도 거기서 찾는다.
+
+     예전 기본값이던 "종로구"는 뺐다. 지원 지역이 종로구뿐이던 시절의 값이라
+     지금은 사실이 아니고, 아무것도 모를 때 실제로 쓰이는 것은 기기 좌표다. */
+  const locationLabel =
+    locationSettings.center ??
+    locationSettings.origin ??
+    state.interpreted_conditions?.location_query ??
+    "현재 위치";
 
   return (
     <main className="flex h-full flex-col overflow-y-auto">

@@ -28,14 +28,14 @@ import { useTripDispatch, useTripState } from "../../state/TripContext";
 import type { Language } from "../../types";
 import { deleteChatSession, renameChatSession, resumeChatSession } from "../../api/trip";
 import { loadChatSessions, refreshChatSessions } from "../../state/chatSessions";
+import { clearLocalUserData } from "../../state/localUserData";
+import { useFavorites } from "../../hooks/useFavorites";
 import {
-  createId,
-  loadFavorites,
-  saveFavorites,
-  type ChatHistoryEntry,
-  type FavoritePlace,
-} from "../../state/sidebarStorage";
-import { AddFavoriteModal } from "./AddFavoriteModal";
+  loadSavedSchedules,
+  subscribeSavedSchedules,
+  type SavedScheduleEntry,
+} from "../../state/savedSchedules";
+import { type ChatHistoryEntry } from "../../state/sidebarStorage";
 
 interface SideDrawerContentProps {
   /** 모바일 드로어에서만 넘긴다 — 링크를 누르면 드로어를 닫기 위해서다. */
@@ -62,7 +62,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
   const state = useTripState();
   const { session, status, signOut } = useAuth();
 
-  const [favorites, setFavorites] = useState<FavoritePlace[]>(() => loadFavorites());
+  const [favorites, setFavorites] = useFavorites();
   /*
    * 채팅 히스토리는 계정에서 온다(GET /api/sessions). 예전에는 localStorage
    * 목업이었는데 **항목을 넣는 코드가 아예 없어** 늘 비어 있었다.
@@ -72,7 +72,9 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
    * 서버가 안다. 목록만 로컬에 복사해두면 지운 대화가 되살아나는 쪽이 더 나쁘다.
    */
   const [history, setHistory] = useState<ChatHistoryEntry[]>([]);
-  const [showAddFavorite, setShowAddFavorite] = useState(false);
+  /* 저장한 일정도 계정에서 온다(GET /api/schedules). 대화 목록과 별도 저장소라
+     따로 받는다 — 세션이 30일 뒤 정리돼도 이쪽은 남는다. */
+  const [schedules, setSchedules] = useState<SavedScheduleEntry[]>([]);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
@@ -80,15 +82,21 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
   const [confirmingSignOut, setConfirmingSignOut] = useState(false);
   const renameInputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => saveFavorites(favorites), [favorites]);
 
   useEffect(() => {
     let active = true;
     void loadChatSessions().then((entries) => {
       if (active) setHistory(entries);
     });
+    void loadSavedSchedules().then((entries) => {
+      if (active) setSchedules(entries);
+    });
+    /* 일정을 저장하면 목록이 바로 바뀐다. 대화 목록처럼 TripContext 상태를 볼 수
+       없는 이유는 savedSchedules.subscribeSavedSchedules 주석에 있다. */
+    const unsubscribe = subscribeSavedSchedules(setSchedules);
     return () => {
       active = false;
+      unsubscribe();
     };
   }, [session?.user?.id]);
   /*
@@ -163,7 +171,9 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
     }
     try {
       await signOut();
-      /* 신원만 끊고 대화를 두면 다음 신원의 화면에 이전 대화가 남는다. 함께 비운다. */
+      /* 신원만 끊고 이 기기의 데이터를 두면 다음 신원의 화면에 앞사람의 대화·취향·
+         즐겨찾기·검색 위치가 그대로 남는다. 함께 비운다(state/localUserData.ts). */
+      clearLocalUserData();
       dispatch({ type: "RESET" });
       /* 이동은 따로 시키지 않는다 — 세션이 사라지면 RequireUser가 관문으로 보낸다. */
     } finally {
@@ -298,9 +308,11 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
       <section className="flex flex-col gap-1.5">
         <div className="flex items-center justify-between">
           <h2 className="text-xs font-bold text-label">즐겨찾기</h2>
+          {/* 즐겨찾기는 검색해서 담는다 — 여기서 이름만 받으면 좌표도 주소도 없어
+              위치로 쓸 수 없다. 검색이 있는 위치 설정 화면으로 보낸다. */}
           <button
             type="button"
-            onClick={() => setShowAddFavorite(true)}
+            onClick={() => go("/location", { sheet: true })}
             className="flex items-center gap-0.5 text-xs font-semibold text-brand transition-colors hover:text-brand-deep"
           >
             <Plus size={12} aria-hidden /> 추가
@@ -467,7 +479,41 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
         )}
       </section>
 
-      {/* 5. 신원 라벨 + 계정 만들기(게스트만) + 로그아웃 — 맨 아래 */}
+      {/*
+        5. 저장한 일정 (SCHEDULE 카드 2)
+
+        채팅 히스토리 **아래**에 둔다. 대화가 일정보다 먼저 생기고 개수도 많아,
+        위에 두면 대화 목록이 접힌 화면에서 스크롤 밖으로 밀린다.
+
+        이름 바꾸기·삭제 메뉴는 아직 붙이지 않았다 — 대화 쪽 메뉴(openMenuId)를
+        그대로 쓰면 두 목록이 같은 상태를 공유해 한쪽을 열면 다른 쪽이 닫힌다.
+        분리해서 다음에 붙인다.
+      */}
+      <section className="flex flex-col gap-1.5">
+        <h2 className="text-xs font-bold text-label">저장한 일정</h2>
+        {schedules.length === 0 ? (
+          <p className="py-1 text-xs text-muted">아직 저장한 일정이 없어요</p>
+        ) : (
+          <ul className="flex flex-col gap-0.5">
+            {schedules.map((entry) => (
+              <li key={entry.id}>
+                <button
+                  type="button"
+                  onClick={() => go(`/schedule?saved=${encodeURIComponent(entry.id)}`, { sheet: true })}
+                  className="flex w-full flex-col items-start gap-0.5 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-chip"
+                >
+                  <span className="w-full truncate text-sm font-medium text-ink">
+                    {entry.label}
+                  </span>
+                  {entry.date && <span className="text-[11px] text-muted">{entry.date} 저장</span>}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {/* 6. 신원 라벨 + 계정 만들기(게스트만) + 로그아웃 — 맨 아래 */}
       <div className="mt-auto flex flex-col items-start gap-1">
         {status === "ready" && session && (
           <p className="px-1 text-xs text-muted">{identityLabel(session)}</p>
@@ -528,12 +574,6 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
         )}
       </div>
 
-      {showAddFavorite && (
-        <AddFavoriteModal
-          onAdd={(label) => setFavorites((prev) => [...prev, { id: createId("fav"), label }])}
-          onClose={() => setShowAddFavorite(false)}
-        />
-      )}
     </div>
   );
 }

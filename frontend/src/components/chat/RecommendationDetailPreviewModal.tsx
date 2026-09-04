@@ -13,6 +13,7 @@ import {
   Car,
   Clock,
   CreditCard,
+  Loader2,
   type LucideIcon,
   MapPin,
   Navigation,
@@ -21,13 +22,17 @@ import {
   Wallet,
   X,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { fetchRecommendationPlaceDetails } from "../../api/trip";
 import { useTripState } from "../../state/TripContext";
 import type { InfoPlaceCard, RecommendationItem } from "../../types";
 import { openNaverDirections, openNaverMapSearch } from "../../utils/naverDirections";
-import { groupSubwayArrivals, parseSubwayArrival, subwayLineColor } from "../../utils/subwayDisplay";
+import {
+  groupSubwayArrivals,
+  parseSubwayArrival,
+  subwayLineColor,
+} from "../../utils/subwayDisplay";
 import { travelShortLabel } from "../../utils/travelDisplay";
 import {
   ConcentrationForecastBars,
@@ -168,6 +173,35 @@ function OperatingHoursRows({ rows }: { rows: OperatingHoursRow[] }) {
   );
 }
 
+/** InfoTable 한 줄. 로딩 중 미리보기 행도 같은 모양을 써서 실제 값으로 바뀔 때 자리가 흔들리지 않는다. */
+function InfoRow({
+  icon: Icon,
+  label,
+  emphasized,
+  children,
+}: {
+  icon: LucideIcon;
+  label: string;
+  emphasized?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-3 py-3">
+      <div className="flex shrink-0 items-center gap-2 pt-0.5">
+        <Icon size={15} className="text-muted" />
+        <span className="text-sm text-ink">{label}</span>
+      </div>
+      <div
+        className={`min-w-0 flex-1 text-right text-sm ${
+          emphasized ? "font-bold text-brand" : "text-ink"
+        }`}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
 /** Figma InfoTable(29:203) — 아이콘+라벨 / 값을 한 줄씩, 실선으로 나눈다. */
 function InfoTable({ card, item }: { card: InfoPlaceCard; item?: RecommendationItem }) {
   const visibleEntries = INFO_TABLE_FIELDS.filter(([key]) => {
@@ -184,27 +218,40 @@ function InfoTable({ card, item }: { card: InfoPlaceCard; item?: RecommendationI
         const operatingHours = key === "operating_hours" ? parseOperatingHours(value) : null;
         const statusSuffix = key === "operating_hours" ? operatingStatusSuffix(item) : null;
         return (
-          <div key={key} className="flex items-start justify-between gap-3 py-3">
-            <div className="flex shrink-0 items-center gap-2 pt-0.5">
-              <Icon size={15} className="text-muted" />
-              <span className="text-sm text-ink">{label}</span>
-            </div>
-            <div
-              className={`min-w-0 flex-1 text-right text-sm ${
-                statusSuffix ? "font-bold text-brand" : "text-ink"
-              }`}
-            >
-              {operatingHours ? (
-                <OperatingHoursRows rows={operatingHours} />
-              ) : statusSuffix ? (
-                `${value} · ${statusSuffix}`
-              ) : (
-                <DetailText fieldKey={key} value={value} />
-              )}
-            </div>
-          </div>
+          <InfoRow key={key} icon={Icon} label={label} emphasized={Boolean(statusSuffix)}>
+            {operatingHours ? (
+              <OperatingHoursRows rows={operatingHours} />
+            ) : statusSuffix ? (
+              `${value} · ${statusSuffix}`
+            ) : (
+              <DetailText fieldKey={key} value={value} />
+            )}
+          </InfoRow>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * 상세 조회가 끝나기 전, 이미 아는 값만 먼저 보여준다.
+ *
+ * 운영시간은 추천 카드를 만들 때 D가 이미 계산해 item.operating_hours_display에
+ * 실어 보낸 값이다(PlaceCard가 목록에서 쓰는 것과 같은 값) — 상세 조회
+ * (fetchRecommendationPlaceDetails)가 끝나야만 보이던 것을, 이미 갖고 있던 값으로
+ * 먼저 그린다. 그 값이 없으면(INFO·사진 검색 경로처럼 item 자체가 없는 경우) 아무것도
+ * 그리지 않는다 — 근거 없이 지어내지 않는다는 operatingStatusSuffix와 같은 원칙이다.
+ */
+function QuickInfoPreview({ item }: { item?: RecommendationItem }) {
+  if (!item?.operating_hours_display) return null;
+  const statusSuffix = operatingStatusSuffix(item);
+  return (
+    <div className="flex flex-col divide-y divide-border rounded-xl bg-white px-4 shadow-resting">
+      <InfoRow icon={Clock} label="운영시간" emphasized={Boolean(statusSuffix)}>
+        {statusSuffix
+          ? `${item.operating_hours_display} · ${statusSuffix}`
+          : item.operating_hours_display}
+      </InfoRow>
     </div>
   );
 }
@@ -398,7 +445,10 @@ function RealtimeSubwayEntries({ card }: { card: InfoPlaceCard }) {
                 style={{ backgroundColor: subwayLineColor(group.stationLine) }}
                 aria-hidden="true"
               />
-              <span className="min-w-0 truncate text-sm font-bold text-ink" title={group.stationLine}>
+              <span
+                className="min-w-0 truncate text-sm font-bold text-ink"
+                title={group.stationLine}
+              >
                 {group.stationLine}
               </span>
             </div>
@@ -842,6 +892,111 @@ function RealtimeDetailEntries({ card }: { card: InfoPlaceCard }) {
   );
 }
 
+/*
+ * 같은 사진인지 볼 때 http/https 차이는 무시한다.
+ *
+ * 두 출처가 같은 파일을 스킴만 다르게 가리키는 경우가 있다. `places.first_image_url`은
+ * `http`로 적재됐고 `place_image_embeddings.origin_url`은 `https`인 장소가 108곳이다
+ * (2026-09-03 실측). 문자열로만 비교하면 그 장소들에서 같은 사진이 두 번 나온다.
+ *
+ *   http://tong.visitkorea.or.kr/cms/resource/15/1868115_image2_1.jpg
+ *   https://tong.visitkorea.or.kr/cms/resource/15/1868115_image2_1.jpg
+ */
+function photoKey(url: string): string {
+  return url.replace(/^https?:/, "");
+}
+
+/*
+ * 작은 사진 줄이 차지하는 높이. h-14(56px) + pb-1(4px).
+ *
+ * 이 자리를 **항상 남긴다.** 사진이 두 장 이상인 장소가 38%뿐이라(8,060곳 중
+ * 3,059곳, 2026-09-03 실측) 줄을 있을 때만 그리면 상세를 열 때마다 화면이 68px씩
+ * 밀린다 — 사진이 늦게 도착하는 만큼 그 이동이 눈에 띈다. 한 장뿐인 곳(52%)에서는
+ * 빈 자리가 남지만, 배경 없이 비워 두면 눈에 걸리지 않는다.
+ */
+const PHOTO_STRIP_HEIGHT = "h-[60px]";
+
+/** 사진 영역의 껍데기. 로딩·갤러리·이미지 없음 세 경우가 같은 높이를 쓴다. */
+function PhotoAreaShell({ main, strip }: { main: ReactNode; strip?: ReactNode }) {
+  return (
+    <div className="flex flex-col gap-2">
+      {main}
+      {/* 자리를 항상 남긴다는 것이 이 요소의 존재 이유라, 테스트가 그것을 집을 수
+          있게 표식을 둔다. */}
+      <div data-testid="photo-strip-slot" className={`${PHOTO_STRIP_HEIGHT} shrink-0`}>
+        {strip}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 도착한 사진만 나타나게 하는 이미지.
+ *
+ * 목록은 배열로 한 번에 오지만 이미지 자체는 브라우저가 한 장씩 받아온다. 그동안
+ * 빈 회색 칸으로 두면 다 같이 떠오르는 것처럼 보여서, 각자 도착한 순간에 켜지게
+ * 한다. 실패해도 켠다 — 안 켜면 대체 텍스트조차 보이지 않는다.
+ */
+function FadeInImage({
+  src,
+  alt,
+  className,
+  lazy = false,
+  placeholderSrc,
+}: {
+  src: string;
+  alt: string;
+  className: string;
+  lazy?: boolean;
+  /**
+   * 이미 화면에 떠 있던 작은 사진(카드 썸네일). 상세 조회로 받은 원본이 뜨기
+   * 전까지 흐리게 깔아 둔다.
+   *
+   * 카드 목록은 작은 썸네일을, 상세는 원본 크기를 우선하도록 서로 다르게
+   * 골라 쓴다(카드: recommendation_cards.py, 상세: hybrid_place_details.py) —
+   * 같은 사진이라도 화질·크롭이 달라 그대로 바꿔치우면 사라졌다 나타나는
+   * 것처럼 번쩍인다. 흐린 채로 계속 보여주면 "흐리다가 선명해진다"로 읽혀
+   * 자연스럽다(블러업 패턴).
+   */
+  placeholderSrc?: string;
+}) {
+  const [isLoaded, setIsLoaded] = useState(false);
+
+  const image = (
+    <img
+      src={src}
+      alt={alt}
+      loading={lazy ? "lazy" : undefined}
+      /* 캐시에 이미 있으면 onLoad가 오지 않는다 — 그 경우 여기서 바로 켠다. */
+      ref={(node) => {
+        if (node?.complete) setIsLoaded(true);
+      }}
+      onLoad={() => setIsLoaded(true)}
+      onError={() => setIsLoaded(true)}
+      className={`${className} transition-opacity duration-300 ${
+        isLoaded ? "opacity-100" : "opacity-0"
+      } ${placeholderSrc ? "absolute inset-0" : ""}`}
+    />
+  );
+
+  if (!placeholderSrc) return image;
+
+  return (
+    // overflow-hidden: 흐림 처리로 커진(scale-105) 미리보기가 둥근 모서리 밖으로
+    // 삐져나오지 않게 자른다.
+    <div className="relative overflow-hidden">
+      <img
+        src={placeholderSrc}
+        alt=""
+        aria-hidden
+        data-testid="photo-blur-placeholder"
+        className={`${className} scale-105 blur-md`}
+      />
+      {image}
+    </div>
+  );
+}
+
 /**
  * 상세 모달의 사진 영역. 여러 장이면 갤러리로, 한 장이면 지금까지처럼 한 장만 그린다.
  *
@@ -850,16 +1005,38 @@ function RealtimeDetailEntries({ card }: { card: InfoPlaceCard }) {
  * 전체의 30%뿐이라(2026-08-31 실측) 목록만 보고 그리면 나머지 장소에서 지금
  * 보이던 사진이 사라진다.
  */
-function PlacePhotoGallery({ card, title }: { card: InfoPlaceCard; title: string }) {
+function PlacePhotoGallery({
+  card,
+  title,
+  item,
+}: {
+  card: InfoPlaceCard;
+  title: string;
+  item?: RecommendationItem;
+}) {
   const photos = card.photos ?? [];
-  // 목록이 비었을 때만 대표 이미지로 대체한다. 둘 다 있으면 목록이 이미 그
-  // 장소의 사진들이라 대표 이미지를 덧붙이면 같은 사진이 두 번 나올 수 있다.
-  const urls =
-    photos.length > 0
-      ? photos.map((photo) => photo.url)
-      : card.thumbnail_url
-        ? [card.thumbnail_url]
-        : [];
+  /*
+   * 대표 이미지를 목록 맨 앞에 세우고 중복만 걷어낸다.
+   *
+   * 예전에는 목록이 비었을 때만 대표 이미지를 썼다. "목록이 이미 그 장소의
+   * 사진들이니 덧붙이면 두 번 나온다"는 이유였는데, 실측하면 절반만 맞다 —
+   * 사진 목록이 있는 6,830곳 중 대표 이미지가 목록에도 있는 곳은 3,706곳(54%)이고
+   * 나머지 44%는 목록에 없다(2026-09-03). 그 44%에서는 카드에서 보고 눌러 들어온
+   * 사진이 상세에서 사라졌다.
+   *
+   * 맨 앞에 두는 이유는 카드에서 방금 본 사진이라서다 — 뒤에 붙이면 상세를 열 때
+   * 화면이 다른 사진으로 갈아치워진 것처럼 보인다.
+   */
+  const seen = new Set<string>();
+  const urls = [
+    ...(card.thumbnail_url ? [card.thumbnail_url] : []),
+    ...photos.map((photo) => photo.url),
+  ].filter((url) => {
+    const key = photoKey(url);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
   const [activeIndex, setActiveIndex] = useState(0);
 
   // 모달을 연 채로 다른 장소의 상세가 도착하면 선택을 처음으로 되돌린다. 안 되돌리면
@@ -875,49 +1052,60 @@ function PlacePhotoGallery({ card, title }: { card: InfoPlaceCard; title: string
   const placeName = card.place_name ?? title;
 
   return (
-    <div className="flex flex-col gap-2">
-      <div className="relative">
-        <img
-          src={urls[safeIndex]}
-          alt={urls.length > 1 ? `${placeName} 사진 ${safeIndex + 1}번째` : `${placeName} 이미지`}
-          className="aspect-[5/3] w-full rounded-2xl bg-chip object-cover"
-        />
-        {urls.length > 1 && (
-          <span className="absolute bottom-2 right-2 rounded-full bg-black/60 px-2 py-0.5 text-xs font-medium text-white">
-            {safeIndex + 1} / {urls.length}
-          </span>
-        )}
-      </div>
-      {urls.length > 1 && (
-        <div
-          className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1"
-          role="group"
-          aria-label={`${placeName} 사진 목록`}
-        >
-          {urls.map((url, index) => (
-            <button
-              key={`${url}-${index}`}
-              type="button"
-              onClick={() => setActiveIndex(index)}
-              aria-label={`${placeName} 사진 ${index + 1}번째 보기`}
-              aria-current={index === safeIndex}
-              className={`h-14 w-14 shrink-0 overflow-hidden rounded-lg border-2 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                index === safeIndex
-                  ? "border-blue-600 dark:border-blue-400"
-                  : "border-transparent opacity-70 hover:opacity-100"
-              }`}
-            >
-              <img
-                src={url}
-                alt=""
-                loading="lazy"
-                className="h-full w-full bg-gray-100 object-cover dark:bg-gray-800"
-              />
-            </button>
-          ))}
+    <PhotoAreaShell
+      main={
+        <div className="relative">
+          <FadeInImage
+            /* src가 바뀌면 새로 받아오므로 다시 켜지게 remount한다 — key가 없으면
+               이전 사진의 "도착함" 상태가 그대로 남아 안 온 사진이 보인다. */
+            key={urls[safeIndex]}
+            src={urls[safeIndex]}
+            alt={urls.length > 1 ? `${placeName} 사진 ${safeIndex + 1}번째` : `${placeName} 이미지`}
+            className="aspect-[5/3] w-full rounded-2xl bg-chip object-cover"
+            // 로딩 중 보여주던 카드 썸네일과 이어지는 자리는 첫 번째 사진뿐이다 —
+            // 갤러리 안에서 사용자가 직접 다른 사진으로 넘긴 경우는 "교체됐다"는
+            // 인상이 문제가 아니라 원래 그런 동작이라 흐림 전환을 넣지 않는다.
+            placeholderSrc={safeIndex === 0 ? (item?.image_url ?? undefined) : undefined}
+          />
+          {urls.length > 1 && (
+            <span className="absolute bottom-2 right-2 rounded-full bg-black/60 px-2 py-0.5 text-xs font-medium text-white">
+              {safeIndex + 1} / {urls.length}
+            </span>
+          )}
         </div>
-      )}
-    </div>
+      }
+      strip={
+        urls.length > 1 ? (
+          <div
+            className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1"
+            role="group"
+            aria-label={`${placeName} 사진 목록`}
+          >
+            {urls.map((url, index) => (
+              <button
+                key={`${url}-${index}`}
+                type="button"
+                onClick={() => setActiveIndex(index)}
+                aria-label={`${placeName} 사진 ${index + 1}번째 보기`}
+                aria-current={index === safeIndex}
+                className={`h-14 w-14 shrink-0 overflow-hidden rounded-lg border-2 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                  index === safeIndex
+                    ? "border-blue-600 dark:border-blue-400"
+                    : "border-transparent opacity-70 hover:opacity-100"
+                }`}
+              >
+                <FadeInImage
+                  src={url}
+                  alt=""
+                  lazy
+                  className="h-full w-full bg-gray-100 object-cover dark:bg-gray-800"
+                />
+              </button>
+            ))}
+          </div>
+        ) : undefined
+      }
+    />
   );
 }
 
@@ -1058,18 +1246,69 @@ export function RecommendationDetailPreviewModal({
         </div>
 
         <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4 pb-5">
+          {/* 세 경우 모두 PhotoAreaShell을 써서 같은 높이를 차지한다 — 로딩에서
+              갤러리로 바뀔 때 화면이 밀리지 않게 하려면 자리가 같아야 한다. */}
           {isLoading ? (
-            <div className="flex aspect-[5/3] animate-pulse items-center justify-center rounded-2xl bg-chip text-sm text-muted">
-              상세 정보를 불러오는 중...
-            </div>
+            <PhotoAreaShell
+              main={
+                /*
+                 * item.image_url은 추천 카드를 만들 때 D가 이미 채워 보낸 대표
+                 * 이미지다(QuickInfoPreview의 operating_hours_display와 같은
+                 * 이유) — 상세 조회 응답을 기다리지 않고 카드에서 본 그 사진을
+                 * 바로 보여준다. 응답이 오면 detailCard 기준 갤러리로 바뀐다.
+                 */
+                item?.image_url ? (
+                  <FadeInImage
+                    key={item.image_url}
+                    src={item.image_url}
+                    alt={`${title} 이미지`}
+                    className="aspect-[5/3] w-full rounded-2xl bg-chip object-cover"
+                  />
+                ) : (
+                  <div className="flex aspect-[5/3] animate-pulse items-center justify-center rounded-2xl bg-chip text-sm text-muted">
+                    상세 정보를 불러오는 중...
+                  </div>
+                )
+              }
+              strip={
+                /*
+                 * 사진이 여럿인 장소의 중앙값이 5장이라(실측) 다섯 칸을 잡아 둔다.
+                 *
+                 * 첫 칸에는 회전하는 아이콘을 얹는다. 큰 사진과 운영시간을 카드에서
+                 * 이미 아는 값으로 먼저 채우고 나니(item.image_url·
+                 * operating_hours_display), 정작 상세 조회가 아직 진행 중이라는
+                 * 사실을 알려줄 곳이 이 자리 말고 남지 않았다 — bg-chip 펄스만으로는
+                 * "로딩 중"인지 "빈 자리"인지 구분되지 않는다.
+                 */
+                <div className="-mx-1 flex gap-2 px-1 pb-1" aria-hidden>
+                  <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-lg bg-chip">
+                    <Loader2
+                      size={18}
+                      data-testid="photo-strip-loading-spinner"
+                      className="animate-spin text-muted"
+                    />
+                  </div>
+                  {[1, 2, 3, 4].map((slot) => (
+                    <div
+                      key={slot}
+                      className="h-14 w-14 shrink-0 animate-pulse rounded-lg bg-chip"
+                    />
+                  ))}
+                </div>
+              }
+            />
           ) : detailCard && (detailCard.photos?.length || detailCard.thumbnail_url) ? (
-            <PlacePhotoGallery card={detailCard} title={title} />
+            <PlacePhotoGallery card={detailCard} title={title} item={item} />
           ) : !hasRealtimeDetails ? (
-            <div className="flex aspect-[5/3] items-center justify-center rounded-2xl border border-dashed border-border bg-chip text-sm text-muted">
-              {detailStatus === "unavailable"
-                ? "상세 정보를 불러오지 못했어요."
-                : "등록된 이미지가 없어요."}
-            </div>
+            <PhotoAreaShell
+              main={
+                <div className="flex aspect-[5/3] items-center justify-center rounded-2xl border border-dashed border-border bg-chip text-sm text-muted">
+                  {detailStatus === "unavailable"
+                    ? "상세 정보를 불러오지 못했어요."
+                    : "등록된 이미지가 없어요."}
+                </div>
+              }
+            />
           ) : null}
 
           <div className="flex flex-col gap-1.5">
@@ -1091,7 +1330,16 @@ export function RecommendationDetailPreviewModal({
           </div>
 
           {isLoading ? (
-            <div className="h-44 animate-pulse rounded-xl bg-chip" />
+            <div className="flex flex-col gap-2">
+              <QuickInfoPreview item={item} />
+              {/* 이미 아는 값(운영시간)을 보여줬으면 남은 자리는 좁게, 아무것도
+                  모르면 예전처럼 통짜 스켈레톤으로 채운다. */}
+              <div
+                className={`animate-pulse rounded-xl bg-chip ${
+                  item?.operating_hours_display ? "h-28" : "h-44"
+                }`}
+              />
+            </div>
           ) : (
             detailCard && <InfoTable card={detailCard} item={item} />
           )}
