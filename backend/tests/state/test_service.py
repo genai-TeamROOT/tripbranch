@@ -11,6 +11,7 @@ from datetime import timedelta
 import pytest
 
 from app.auth.principal import Principal
+from app.state import saved_schedules
 from app.state import service as svc
 from app.state.errors import SessionOwnershipError
 from app.state.schema import (
@@ -829,6 +830,41 @@ class TestDeleteSession:
 
         assert res.session_id == "sess_없음"
         assert res.deleted is False
+
+    def test_대화를_지워도_저장한_일정은_남는다(self, store):
+        """저장한 일정은 계정에 딸려 있어 대화 삭제로 사라지지 않는다. (TP-233)
+
+        `delete_session()`이 지우는 목록에 saved_schedules가 **없다는 것으로만**
+        성립하는 규칙이라, 부재를 그대로 두면 누가 거기 한 줄을 더해도 아무
+        테스트도 안 깨진다. 여기서 명시적으로 잠근다.
+
+        보관함(saved_places)은 반대다 — 대화에 딸려 있어 함께 사라진다. 둘을
+        같은 테스트에서 보는 이유가 그것이다. 무엇이 남고 무엇이 사라지는지가
+        이 저장소의 설계 자체다.
+        """
+        user_id = "3f1a9c04-0000-4000-8000-000000000001"
+        principal = Principal(user_id=user_id, is_anonymous=False)
+        first = apply(store, session_id=None, operations=[], principal=principal)
+        sid = first.session_id
+        saved_schedules.save(
+            store,
+            user_id,
+            title="종로 반나절",
+            payload={"items": [], "total_duration_min": 0},
+            session_id=sid,
+            run_id=first.run_id,
+        )
+
+        res = svc.delete_session(sid, store=store, principal=principal)
+
+        assert res.deleted is True
+        # 대조군 — 대화에 딸린 것은 실제로 사라졌다.
+        assert store.get_state(sid) is None
+        assert store.get_history(sid) is None
+        # 사람에 딸린 것은 남는다.
+        remaining = saved_schedules.list_for_user(store, user_id)
+        assert len(remaining) == 1
+        assert remaining[0].title == "종로 반나절"
 
 
 # ================================================================ 6.5
