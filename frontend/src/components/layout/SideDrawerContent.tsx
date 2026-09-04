@@ -306,7 +306,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
   ];
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 pb-5">
+    <div className="scrollbar-none flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 pb-5">
       {/* 1. 내비게이션 */}
       <nav aria-label={state.language === "en" ? "Main menu" : "주요 메뉴"} className="flex flex-col gap-1">
         {navItems.map((item) => (
