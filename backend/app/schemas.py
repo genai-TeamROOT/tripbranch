@@ -169,6 +169,16 @@ class RecommendationItem(BaseModel):
     # (TECH-02: D가 C의 Tool을 직접 부르지 않는다). 채우지 못한 장소는 None이고,
     # 프론트는 그 경우 자리표시 칩을 그린다.
     image_url: str | None = None
+    # image_url이 404일 때 프론트가 대신 그릴 주소(places.first_image_url).
+    #
+    # 주소가 살아 있는지는 여기서 확인하지 않는다 — 추천 한 번에 카드가 5장이라 매
+    # 요청마다 외부 확인이 5~10건 붙고 응답이 그만큼 늦어진다. 두 주소를 다 내려보내고
+    # 실패한 카드에서만 프론트가 두 번째를 부른다(PlaceThumbnail).
+    #
+    # 필요한 이유는 image_url이 가리키는 작은 썸네일(firstimage2)만 관광공사 서버에서
+    # 사라지는 장소가 있어서다 — 아현시장이 그렇다. 그 장소도 원본(firstimage)은 살아
+    # 있고, 상세 카드는 원본을 먼저 고르기 때문에 사진이 나온다. 추천 카드만 비어 보인다.
+    image_url_fallback: str | None = None
 
 
 class TravelOriginToggle(BaseModel):

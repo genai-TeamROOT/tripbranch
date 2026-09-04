@@ -146,3 +146,53 @@ test("이미지를 못 불러오면 자리표시로 바꾸고, 다른 사진이 
   expect(container.querySelector("img")).toHaveAttribute("src", "https://img.test/fresh.jpg");
   expect(screen.queryByTestId("place-thumbnail-placeholder")).not.toBeInTheDocument();
 });
+
+test("썸네일이 죽으면 폴백 주소로 갈아타고, 둘 다 죽어야 자리표시를 보여준다", () => {
+  /*
+   * 작은 썸네일(firstimage2)만 관광공사 서버에서 사라진 장소가 있다 — 아현시장이
+   * 그렇고 원본(firstimage)은 살아 있다. 서버는 살아 있는지 확인하지 않고 두 주소를
+   * 다 내려보낸다(추천 한 번에 확인 요청이 5~10건 붙는다).
+   */
+  const { container } = render(
+    <ul>
+      <PlaceCard
+        item={item({
+          image_url: "https://img.test/thumb_image3.jpg",
+          image_url_fallback: "https://img.test/original_image2.jpg",
+        })}
+      />
+    </ul>,
+  );
+
+  expect(container.querySelector("img")).toHaveAttribute(
+    "src",
+    "https://img.test/thumb_image3.jpg",
+  );
+
+  fireEvent.error(container.querySelector("img") as HTMLImageElement);
+
+  // 자리표시로 가지 않고 두 번째 주소를 부른다.
+  expect(container.querySelector("img")).toHaveAttribute(
+    "src",
+    "https://img.test/original_image2.jpg",
+  );
+  expect(screen.queryByTestId("place-thumbnail-placeholder")).not.toBeInTheDocument();
+
+  fireEvent.error(container.querySelector("img") as HTMLImageElement);
+
+  expect(container.querySelector("img")).not.toBeInTheDocument();
+  expect(screen.getByTestId("place-thumbnail-placeholder")).toBeInTheDocument();
+});
+
+test("폴백 주소가 없으면 한 번 실패에 바로 자리표시로 간다", () => {
+  const { container } = render(
+    <ul>
+      <PlaceCard item={item({ image_url: "https://img.test/gone.jpg" })} />
+    </ul>,
+  );
+
+  fireEvent.error(container.querySelector("img") as HTMLImageElement);
+
+  expect(container.querySelector("img")).not.toBeInTheDocument();
+  expect(screen.getByTestId("place-thumbnail-placeholder")).toBeInTheDocument();
+});

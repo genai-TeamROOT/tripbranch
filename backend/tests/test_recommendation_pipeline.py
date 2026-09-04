@@ -1533,6 +1533,77 @@ async def test_rerank_with_co_visited_preserves_image_url() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reranks_carry_every_recommendation_item_field() -> None:
+    """두 재순위가 RecommendationItem의 **모든** 필드를 이월하는지 필드 목록으로 본다.
+
+    필드별 테스트만 두면 새 필드를 추가할 때 아무것도 실패하지 않는다 —
+    두 rerank가 항목을 필드별로 다시 조립하기 때문에, 조립 목록에 안 적힌 필드는
+    조용히 기본값으로 떨어진다. image_url이 정확히 그렇게 사라졌고
+    (travel_distance_m·taste_evidence·operating_hours_display도 같은 자리에서
+    같은 방식으로 사라진 적이 있다), 그때마다 사후에 한 줄씩 복구했다.
+
+    이 테스트는 필드가 늘어날 때 **자동으로 같이 늘어난다.** 1차 항목의 모든 필드에
+    기본값이 아닌 값을 채우고, 2차를 통과한 뒤에도 값이 그대로인지 본다.
+    """
+    sentinels: dict[str, object] = {
+        "operating_hours_display": "09:00~18:00",
+        "travel_distance_m": 1234,
+        "travel_duration_seconds": 567,
+        "travel_mode": TravelMode.WALKING,
+        "taste_evidence": [TasteEvidenceQuote(text="조용해요", similarity=0.7)],
+        "image_url": "https://example.test/thumb.jpg",
+        "image_url_fallback": "https://example.test/original.jpg",
+    }
+    base = _first_pass_item("place-1", distance_km=0.1, distance_score=0.95)
+    item = base.model_copy(update=sentinels)
+
+    # 채우지 못한 필드가 있으면 그 필드는 이 테스트가 지켜주지 못한다. 목록을
+    # 늘리라고 여기서 먼저 알린다.
+    defaults = {
+        name: getattr(base, name)
+        for name in RecommendationItem.model_fields
+        if getattr(item, name) == getattr(base, name)
+    }
+    unchecked = set(defaults) - {
+        "place_id",
+        "name",
+        "category",
+        "distance_km",
+        "remaining_minutes",
+        "environment_type",
+        "recommendation_reason",
+        "explanations",
+        "warnings",
+        "score",
+        "feature_scores",
+        "weights_used",
+        "preference_tags",
+    }
+    assert not unchecked, f"이 필드에 표식 값을 채워 넣어야 한다: {sorted(unchecked)}"
+
+    first_pass = RecommendationResponse(
+        recommendations=[item],
+        unverified_recommendations=[],
+        elapsed_ms=0,
+    )
+    concentration = CandidateEnrichmentResponse(
+        request_id="req-all-fields",
+        status="success",
+        candidates=[_concentration_result("place-1", rate=50.0)],
+    )
+
+    by_concentration = await rerank_with_concentration(
+        first_pass, None, concentration, seek=True
+    )
+    by_co_visited = await rerank_with_co_visited(first_pass, [], None)
+
+    for label, result in (("concentration", by_concentration), ("co_visited", by_co_visited)):
+        carried = result.recommendations[0]
+        for field, expected in sentinels.items():
+            assert getattr(carried, field) == expected, f"{label} 재순위가 {field}를 잃었다"
+
+
+@pytest.mark.asyncio
 async def test_rerank_with_co_visited_preserves_unverified_split() -> None:
     """1차의 verified/unverified 분리를 2차도 그대로 지켜야 한다."""
     first_pass = RecommendationResponse(

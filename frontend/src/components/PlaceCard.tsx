@@ -133,8 +133,9 @@ export function PlaceCard({
       >
         <div className="group relative overflow-hidden rounded-2xl">
           {/* 배치 조회에서 못 찾은 장소는 image_url이 null/undefined로 온다. 주소가
-              있어도 원본이 사라졌을 수 있어(D-087과 같은 종류) 자리표시는 같다. */}
-          <PlaceThumbnail src={item.image_url} />
+              있어도 원본이 사라졌을 수 있어(D-087과 같은 종류) 자리표시는 같다.
+              작은 썸네일만 죽은 장소는 image_url_fallback으로 갈아탄다. */}
+          <PlaceThumbnail src={item.image_url} fallbackSrc={item.image_url_fallback} />
 
           {onToggleSave && (
             <button

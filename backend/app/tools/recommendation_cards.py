@@ -45,6 +45,7 @@ class RecommendationCard:
     # thumbnail_url(firstimage2)이 없으면 first_image_url(firstimage)로 대체한다.
     # 둘 다 없는 장소가 실측 844건 중 169건(20%)이라 None을 정상 값으로 다룬다.
     thumbnail_url: str | None
+    # 이 주소가 죽었을 때 쓸 대안은 fallback_thumbnail_url에 있다(아래).
     # TourAPI 신분류 중분류명(예: 한식, 역사유적지, 전시시설).
     category_label: str | None
     parking_status: ParkingAvailability
@@ -54,6 +55,19 @@ class RecommendationCard:
     # 있던 값(StoredPlaceDetail)을 그대로 옮기는 것뿐이라 추가 DB 호출은 없다.
     latitude: float | None = None
     longitude: float | None = None
+    # thumbnail_url이 죽었을 때 대신 그릴 주소(firstimage). None이면 대안이 없다.
+    #
+    # **두 컬럼은 한쪽만 채워지지 않는다** — places 8,067건 중 thumbnail_url만 null인
+    # 행이 0건이고, 둘 다 있거나(7,223) 둘 다 없다(844). 그래서 thumbnail_url의 `or`
+    # 폴백은 null만 보는 한 발동한 적이 없다. 정작 실패는 다른 데서 온다: 주소는 남아
+    # 있는데 관광공사 서버에서 파일이 사라진다. 아현시장(2751432)은 firstimage2가
+    # 404인데 firstimage는 200이다(2026-09-05 실측, 무작위 60곳 중 1곳도 같은 상태라
+    # 2% 안팎으로 보인다).
+    #
+    # 여기서 미리 확인해 고르지 않는 이유는 비용이다. 추천 한 번에 카드가 5장이니 매
+    # 요청마다 외부 확인이 5~10건 붙고 그만큼 응답이 늦어진다 — 2%를 잡자고 100%를
+    # 느리게 만드는 거래다. 두 주소를 다 넘기고 실패한 카드에서만 프론트가 갈아탄다.
+    fallback_thumbnail_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -139,10 +153,19 @@ class RecommendationCardTool:
 
     def _to_card(self, row: StoredPlaceDetail) -> RecommendationCard:
         parking = normalize_parking(row.parking_info_raw)
+        thumbnail_url = row.thumbnail_url or row.first_image_url
+        # 이미 primary로 나간 주소는 대안이 아니다. `row.thumbnail_url`이 아니라
+        # **정해진 primary와** 견줘야 한다 — thumbnail_url이 비어 first_image_url이
+        # primary로 올라온 장소에서 둘이 갈리고, 그대로 두면 같은 404를 두 번 부른다.
+        # 두 컬럼이 같은 파일을 가리키는 장소도 있다(실측).
+        fallback_thumbnail_url = (
+            row.first_image_url if row.first_image_url != thumbnail_url else None
+        )
         return RecommendationCard(
             content_id=row.content_id,
             name=row.title,
-            thumbnail_url=row.thumbnail_url or row.first_image_url,
+            thumbnail_url=thumbnail_url,
+            fallback_thumbnail_url=fallback_thumbnail_url,
             category_label=self._category_label(row),
             parking_status=parking.availability,
             parking_note=parking.note,
