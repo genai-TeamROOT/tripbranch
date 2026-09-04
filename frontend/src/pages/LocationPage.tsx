@@ -24,7 +24,6 @@ import {
   MapPin,
   MapPinCheck,
   Navigation,
-  Plus,
   Search,
   Star,
   Trash2,
@@ -33,7 +32,7 @@ import {
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { AppHeader } from "../components/layout/AppHeader";
-import { AddFavoriteModal } from "../components/layout/AddFavoriteModal";
+import { FavoritesLimitModal } from "../components/layout/FavoritesLimitModal";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import { createId, type FavoritePlace } from "../state/sidebarStorage";
 import { getLocationAgeMinutes } from "../utils/locationRefresh";
@@ -49,6 +48,8 @@ import { loadRecentSearches, rememberRecentSearch } from "../state/recentSearche
 import { searchPlaces } from "../api/trip";
 import type { PlaceSearchCandidate } from "../types";
 
+const MAX_FAVORITES = 10;
+
 export function LocationPage() {
   const navigate = useNavigate();
   const state = useTripState();
@@ -57,7 +58,7 @@ export function LocationPage() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [favorites, setFavorites] = useFavorites();
-  const [showAddFavorite, setShowAddFavorite] = useState(false);
+  const [showFavoritesLimit, setShowFavoritesLimit] = useState(false);
   const [query, setQuery] = useState("");
   /* null은 "아직 검색하지 않았다"이고 빈 배열은 "찾았는데 없었다"다. 둘을 하나로
      합치면 화면을 처음 열었을 때부터 "찾은 장소가 없어요"가 뜬다. */
@@ -189,6 +190,10 @@ export function LocationPage() {
 
   /* 같은 곳을 두 번 담아 줄이 두 개 생기지 않게, 이미 있으면 뺀다(누르면 토글). */
   function toggleFavorite(place: PlaceSearchCandidate) {
+    if (!isFavorite(place) && favorites.length >= MAX_FAVORITES) {
+      setShowFavoritesLimit(true);
+      return;
+    }
     setFavorites((prev) =>
       isFavorite(place)
         ? prev.filter((favorite) => (favorite.searchCenterName ?? favorite.label) !== place.name)
@@ -311,7 +316,15 @@ export function LocationPage() {
                         }
                         aria-pressed={isFavorite(place)}
                         onClick={() => toggleFavorite(place)}
-                        className="mt-0.5 shrink-0 text-muted transition-colors hover:text-gold"
+                        /* 한도가 차면 흐리게만 두고 disabled로 막지 않는다 — 눌러야
+                           왜 안 담기는지 모달로 말할 수 있다. aria-disabled도 붙이지
+                           않는다. 누르면 답이 오는 버튼을 "아무 일도 안 함"으로
+                           읽히게 하는 표시라서다. */
+                        className={`mt-0.5 shrink-0 transition-colors ${
+                          !isFavorite(place) && favorites.length >= MAX_FAVORITES
+                            ? "text-border"
+                            : "text-muted hover:text-gold"
+                        }`}
                       >
                         <Star
                           size={15}
@@ -419,13 +432,9 @@ export function LocationPage() {
 
         <div className="mt-2 flex items-center justify-between">
           <h2 className="text-xs font-bold text-label">{isEn ? "Favorites" : "즐겨찾기"}</h2>
-          <button
-            type="button"
-            onClick={() => setShowAddFavorite(true)}
-            className="flex items-center gap-1 text-xs font-bold text-brand"
-          >
-            <Plus size={13} /> {isEn ? "Add" : "추가"}
-          </button>
+          <span className="text-xs font-bold text-muted">
+            {favorites.length}/{MAX_FAVORITES}
+          </span>
         </div>
         <div className="divide-y divide-border border-t border-border">
           {favorites.length === 0 ? (
@@ -563,11 +572,8 @@ export function LocationPage() {
         />
       )}
 
-      {showAddFavorite && (
-        <AddFavoriteModal
-          onAdd={(label) => setFavorites((prev) => [...prev, { id: createId("fav"), label }])}
-          onClose={() => setShowAddFavorite(false)}
-        />
+      {showFavoritesLimit && (
+        <FavoritesLimitModal max={MAX_FAVORITES} onClose={() => setShowFavoritesLimit(false)} />
       )}
     </main>
   );
