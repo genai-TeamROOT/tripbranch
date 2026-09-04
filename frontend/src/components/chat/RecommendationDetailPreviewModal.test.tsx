@@ -421,3 +421,44 @@ it("사진도 대표 이미지도 없으면 안내 문구를 보여준다", asyn
   });
   expect(screen.queryByRole("img", { name: /경복궁/ })).not.toBeInTheDocument();
 });
+
+it("무장애 값이 있으면 편의시설 구획으로 그린다", async () => {
+  renderModal(
+    card({
+      accessible_restroom: "장애인 화장실 있음(1층)",
+      elevator: "엘리베이터 있음",
+      guide_dog: "보조견 동반 가능함",
+    }),
+  );
+
+  const heading = await screen.findByText("편의시설");
+  const section = heading.parentElement as HTMLElement;
+  expect(within(section).getByText("장애인 화장실")).toBeInTheDocument();
+  expect(within(section).getByText("장애인 화장실 있음(1층)")).toBeInTheDocument();
+  expect(within(section).getByText("승강기")).toBeInTheDocument();
+  expect(within(section).getByText("보조견 동반")).toBeInTheDocument();
+  // 값이 없는 항목은 줄 자체가 없다. 빈 값을 "없음"으로 그리면 있는 시설을
+  // 없다고 말하게 된다.
+  expect(within(section).queryByText("휠체어 대여")).not.toBeInTheDocument();
+  expect(within(section).queryByText("수유·기저귀")).not.toBeInTheDocument();
+});
+
+it("무장애 값이 하나도 없으면 편의시설 구획을 숨긴다", async () => {
+  renderModal(card({ parking: "가능 (240대)" }));
+
+  // 상세가 그려진 뒤에 확인한다 — 조회 전이면 아직 아무 구획도 없다.
+  expect(await screen.findByText("주차")).toBeInTheDocument();
+  expect(screen.queryByText("편의시설")).not.toBeInTheDocument();
+});
+
+it("유모차는 무장애 값과 기존 값이 함께 보이지 않는다", async () => {
+  // C가 둘 중 하나만 채워 보낸다(둘 다 있는 34곳 중 21곳에서 서로 반대라서).
+  renderModal(card({ baby_carriage: null, stroller_rental: "대여가능(10대)" }));
+
+  const heading = await screen.findByText("편의시설");
+  const section = heading.parentElement as HTMLElement;
+  expect(within(section).getByText("유모차 대여")).toBeInTheDocument();
+  expect(within(section).getByText("대여가능(10대)")).toBeInTheDocument();
+  // 위 표의 "유모차" 줄은 값이 비어 나오지 않는다.
+  expect(screen.queryByText("유모차")).not.toBeInTheDocument();
+});

@@ -7,18 +7,25 @@
 
 import { motion } from "framer-motion";
 import {
+  Accessibility,
+  Armchair,
   Baby,
   Bath,
   CalendarOff,
   Car,
   Clock,
   CreditCard,
+  Dog,
+  Eye,
   Loader2,
   type LucideIcon,
   MapPin,
+  Milk,
+  MoveVertical,
   Navigation,
   PawPrint,
   Sparkles,
+  SquareParking,
   Wallet,
   X,
 } from "lucide-react";
@@ -76,6 +83,30 @@ const INFO_TABLE_FIELDS: Array<[keyof InfoPlaceCard, string, string, LucideIcon]
   ["pet", "반려동물 동반", "Pets allowed", PawPrint],
   ["credit_card", "카드 결제", "Card payment", CreditCard],
   ["restroom", "화장실", "Restroom", Bath],
+];
+
+/*
+ * 편의시설 구획의 행 순서·아이콘. 출처는 무장애 여행 정보(D-077)지만 화면에는
+ * 그 말을 쓰지 않는다 — 읽는 사람에게는 제도 용어보다 "편의시설"이 바로 읽힌다.
+ * 채움률이 높은 것부터 둔다(원문이 있는 장소 기준: 장애인 화장실 48% → 보조견 9%).
+ *
+ * 접근로·주출입구는 넣지 않는다. 원문이 대부분 단차·경사 서술이라 카드에서
+ * 다루지 않기로 했다 — 그 값은 "휠체어로 들어갈 수 있나요" 질문의 답변
+ * (answer_fields의 wheelchair_access)으로만 나간다.
+ *
+ * 유모차는 두 줄이 아니라 한 줄이다. 무장애 원문이 있으면 stroller_rental이
+ * 차고 위 표의 baby_carriage가 비므로, 두 표에 한 줄씩 두어도 함께 보이지 않는다.
+ */
+const ACCESSIBILITY_FIELDS: Array<[keyof InfoPlaceCard, string, string, LucideIcon]> = [
+  ["accessible_restroom", "장애인 화장실", "Accessible restroom", Bath],
+  ["accessible_parking", "장애인 주차", "Accessible parking", SquareParking],
+  ["elevator", "승강기", "Elevator", MoveVertical],
+  ["visual_guide", "시각 안내", "Visual guidance", Eye],
+  ["wheelchair_rental", "휠체어 대여", "Wheelchair rental", Accessibility],
+  ["nursing_room", "수유·기저귀", "Nursing & diaper", Milk],
+  ["seating", "의자식 좌석", "Chair seating", Armchair],
+  ["stroller_rental", "유모차 대여", "Stroller rental", Baby],
+  ["guide_dog", "보조견 동반", "Guide dogs allowed", Dog],
 ];
 
 /**
@@ -261,6 +292,38 @@ function InfoTable({
         );
       })}
     </div>
+  );
+}
+
+/**
+ * 편의시설 구획. 값이 있는 항목만 그리고, 아홉 개가 모두 비면 제목까지 숨긴다.
+ *
+ * 빈 항목을 "없음"으로 그리지 않는 것이 이 구획의 전제다. 이 데이터는 있으면 적고
+ * 없으면 비우는 식이라(없다고 답한 값은 장애인 화장실 4건뿐), 빈 값을 없음으로
+ * 읽으면 있는 시설을 없다고 말하게 된다.
+ */
+function AccessibilityTable({ card, isEn }: { card: InfoPlaceCard; isEn: boolean }) {
+  const visibleEntries = ACCESSIBILITY_FIELDS.filter(([key]) => {
+    const value = card[key];
+    return typeof value === "string" && value.trim();
+  });
+  if (visibleEntries.length === 0) return null;
+
+  return (
+    <section className="flex flex-col gap-1.5">
+      <h3 className="text-xs font-bold text-label">{isEn ? "Facilities" : "편의시설"}</h3>
+      <div className="flex flex-col divide-y divide-border rounded-xl bg-white px-4 shadow-resting">
+        {visibleEntries.map(([key, labelKo, labelEn, Icon]) => {
+          const value = card[key];
+          if (typeof value !== "string") return null;
+          return (
+            <InfoRow key={key} icon={Icon} label={isEn ? labelEn : labelKo}>
+              <DetailText fieldKey={key} value={value} />
+            </InfoRow>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -1381,7 +1444,12 @@ export function RecommendationDetailPreviewModal({
               />
             </div>
           ) : (
-            detailCard && <InfoTable card={detailCard} item={item} isEn={isEn} />
+            detailCard && (
+              <>
+                <InfoTable card={detailCard} item={item} isEn={isEn} />
+                <AccessibilityTable card={detailCard} isEn={isEn} />
+              </>
+            )
           )}
 
           {item?.recommendation_reason && (
