@@ -1796,30 +1796,52 @@ class Test새로_넣은_장소_안내:
 
 
 class Test상한_안내:
-    """항목 수 상한은 활동 가능 시간에 따라 달라진다. (TP-223)"""
+    """항목 수 상한은 요청마다 다르다. (TP-223, TP-239)
+
+    **화면은 그 수를 계산하지 않고 편성이 실어 보낸 값을 읽는다.** 상한이 활동
+    가능 시간뿐 아니라 후보의 분류(체류 최소값)와 서로의 거리까지 보고 정해지므로
+    (TP-239), 후보를 모르는 이쪽에서는 같은 답을 낼 수 없다.
+    """
 
     @staticmethod
-    def _schedule() -> ScheduleResult:
+    def _schedule(item_capacity: int | None = None) -> ScheduleResult:
         return ScheduleResult(
             items=[_schedule_item()],
             total_duration_min=120,
             route_summary="동선 요약입니다.",
             basis_note="기준 시각 안내",
             over_capacity_place_names=["북촌한옥마을"],
+            item_capacity=item_capacity,
             elapsed_ms=100.0,
         )
 
-    def test_시간_미언급이면_5곳이라고_말한다(self) -> None:
-        message = compose_schedule_message(self._schedule())
-
-        assert "한 번에 5곳까지만 넣을 수 있어서" in message
-
-    def test_짧은_시간이면_그에_맞는_수를_말한다(self) -> None:
-        """숫자를 문자열에 박으면 "2시간 코스"에서 틀린 수를 말하게 된다."""
-
-        message = compose_schedule_message(self._schedule(), time_available_min=100)
+    def test_편성이_실어_보낸_상한을_그대로_말한다(self) -> None:
+        message = compose_schedule_message(self._schedule(2), time_available_min=150)
 
         assert "한 번에 2곳까지만 넣을 수 있어서" in message
+
+    def test_같은_시간이어도_상한이_다르면_다른_수를_말한다(self) -> None:
+        """**활동 가능 시간만 보고 되계산하면 이 둘이 같은 수를 말한다.**
+
+        후보가 박물관뿐이면 3시간에 2곳, 관광지면 3곳이다. 화면이 뺄셈을 다시 하면
+        구분할 수 없어서 한쪽에 틀린 수가 나간다.
+        """
+
+        museums = compose_schedule_message(self._schedule(2), time_available_min=180)
+        attractions = compose_schedule_message(self._schedule(3), time_available_min=180)
+
+        assert "한 번에 2곳까지만 넣을 수 있어서" in museums
+        assert "한 번에 3곳까지만 넣을 수 있어서" in attractions
+
+    def test_상한이_없으면_수를_말하지_않는다(self) -> None:
+        """옛 스냅샷과 부분 재편성에는 이 값이 없다. 틀린 수를 말하는 것보다
+        수를 빼는 것이 낫다."""
+
+        message = compose_schedule_message(self._schedule(None), time_available_min=150)
+
+        assert "한 번에 넣을 수 있는 곳 수를 넘어서" in message
+        assert "곳까지만" not in message
+        assert "북촌한옥마을은 이번엔 빠졌어요" in message
 
 
 def test_schedule_message_reports_omitted_even_without_items() -> None:
