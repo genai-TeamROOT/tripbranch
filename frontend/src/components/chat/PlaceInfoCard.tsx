@@ -15,6 +15,7 @@ import {
   type SubwayLineGroup,
 } from "../../utils/subwayDisplay";
 import { PlaceCardRow } from "./PlaceCardRow";
+import { PlaceThumbnail } from "../PlaceThumbnail";
 import {
   ConcentrationForecastBars,
   PopulationForecastBars,
@@ -294,21 +295,8 @@ function RealtimeEventCard({ item }: { item: RealtimeInfoDetailItem }) {
         }
       >
         <div className="group relative overflow-hidden rounded-2xl">
-          {item.thumbnail_url ? (
-            <img
-              src={item.thumbnail_url}
-              alt=""
-              loading="lazy"
-              className="h-28 w-full rounded-2xl object-cover transition-transform duration-300 group-hover:scale-105"
-              onError={(event) => {
-                event.currentTarget.style.visibility = "hidden";
-              }}
-            />
-          ) : (
-            <span className="flex h-28 w-full items-center justify-center rounded-2xl bg-chip text-xs text-muted">
-              행사
-            </span>
-          )}
+          {/* 서울시 응답에 THUMBNAIL이 비는 경우가 있다. */}
+          <PlaceThumbnail src={item.thumbnail_url} />
         </div>
         <div className="pt-2">
           <p className="line-clamp-2 text-sm font-bold text-ink">{item.title}</p>

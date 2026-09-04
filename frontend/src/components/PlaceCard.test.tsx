@@ -5,7 +5,7 @@
  * 호출 시점: vitest 실행 시.
  */
 
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
 
@@ -99,7 +99,7 @@ test("카드 본문 클릭은 여전히 상세 미리보기를 연다", async ()
   expect(onOpenDetail).toHaveBeenCalledTimes(1);
 });
 
-test("image_url이 있으면 이미지를, 없으면 카테고리 자리표시 칩을 보여준다", () => {
+test("image_url이 있으면 이미지를, 없으면 사진 없음 자리표시를 보여준다", () => {
   // 이미지는 장식용(alt="")이라 role="img"로 접근할 수 없다 — querySelector로 확인한다.
   const { container, rerender } = render(
     <ul>
@@ -108,7 +108,7 @@ test("image_url이 있으면 이미지를, 없으면 카테고리 자리표시 �
   );
 
   expect(container.querySelector("img")).not.toBeInTheDocument();
-  expect(screen.getByText("cafe")).toBeInTheDocument();
+  expect(screen.getByTestId("place-thumbnail-placeholder")).toBeInTheDocument();
 
   rerender(
     <ul>
@@ -117,4 +117,32 @@ test("image_url이 있으면 이미지를, 없으면 카테고리 자리표시 �
   );
 
   expect(container.querySelector("img")).toHaveAttribute("src", "https://img.test/place-1.jpg");
+  expect(screen.queryByTestId("place-thumbnail-placeholder")).not.toBeInTheDocument();
+});
+
+test("이미지를 못 불러오면 자리표시로 바꾸고, 다른 사진이 오면 다시 보여준다", () => {
+  const { container, rerender } = render(
+    <ul>
+      <PlaceCard item={item({ image_url: "https://img.test/gone.jpg" })} />
+    </ul>,
+  );
+
+  fireEvent.error(container.querySelector("img") as HTMLImageElement);
+
+  expect(container.querySelector("img")).not.toBeInTheDocument();
+  expect(screen.getByTestId("place-thumbnail-placeholder")).toBeInTheDocument();
+
+  /*
+   * 실패를 boolean으로 들고 있으면 여기서 자리표시가 그대로 남는다 — 목록은
+   * key={place_id}로 그려져서 같은 장소의 사진만 바뀔 때 이 컴포넌트가 그대로
+   * 살아 있기 때문이다. 실패한 주소 자체를 담아야 새 주소에서 풀린다.
+   */
+  rerender(
+    <ul>
+      <PlaceCard item={item({ image_url: "https://img.test/fresh.jpg" })} />
+    </ul>,
+  );
+
+  expect(container.querySelector("img")).toHaveAttribute("src", "https://img.test/fresh.jpg");
+  expect(screen.queryByTestId("place-thumbnail-placeholder")).not.toBeInTheDocument();
 });
