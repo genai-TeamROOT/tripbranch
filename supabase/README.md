@@ -107,6 +107,16 @@
   칸을 지웠는데, 저장소 파일은 그 결과까지 반영한 최종 형태라 별도 파일이 없다)
   (D-077. 같은 날 `202608250001`을 `create_place_google_profiles`가 먼저 써서
   번호가 겹쳤고, 2026-08-25에 이 파일을 `0002`로 옮겼다)
+- 실행 Trace 지표 컬럼 마이그레이션:
+  `202609040001_add_metrics_to_trace_records.sql`
+  (`trace_records`에 `metrics jsonb null` 추가 — 일정 편성 품질 지표(TP-242)를 담는
+  자리다. 컬럼을 하나씩 늘리지 않고 jsonb 하나로 둔 이유는 Trace 계약이 "호출자가
+  해석한 값을 그대로 저장한다"를 원칙으로 세워 뒀기 때문이다. 기존 행과 지표를
+  싣지 않는 단계는 null로 남는다. **아직 미적용 — 적용 방법을 정해야 한다:** CLI
+  `db push` 또는 MCP `apply_migration`을 쓰면 원격 마이그레이션 이력에 남고,
+  Dashboard SQL Editor로 적용하면 남지 않으므로 그때는 이 항목에 그 사실을 적어야
+  한다. `add column if not exists`라 재실행은 안전하다)
+
 - 장소 보관함 테이블 마이그레이션:
   `202608310001_create_saved_place_lists.sql`
   (아직 미적용 — Dashboard SQL Editor에서 실행 필요)

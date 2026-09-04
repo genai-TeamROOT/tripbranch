@@ -7626,3 +7626,109 @@ async def test_refilled_candidates_are_recorded_with_coordinates(
 
     session = get_session_context(response.state.session_id, store=store)
     assert refilled_ids <= set(_snapshot_coordinates(session))
+
+
+@pytest.mark.asyncio
+async def test_schedule_turn_records_quality_metrics() -> None:
+    """SCHEDULE 턴 한 번에 지표 trace 행이 하나 남는다. (TP-242)
+
+    **기존 단계에 얹지 않는다** — 단계별 지연시간을 보는 화면이 도메인 지표에
+    오염된다. 그래서 step 이름이 따로 있고, 이 테스트가 그 분리를 잠근다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처에서 3시간 코스 짜줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.schedule is not None
+
+    traces = store.get_traces(response.state.session_id)
+    quality = [trace for trace in traces if trace.step == "schedule_quality"]
+    assert len(quality) == 1
+
+    metrics = quality[0].metrics
+    assert metrics is not None
+    assert metrics["item_count"] == len(response.schedule.items)
+    assert metrics["item_capacity"] == response.schedule.item_capacity
+    assert metrics["total_duration_min"] == response.schedule.total_duration_min
+    assert metrics["walkable_within_min"] == 5
+
+    # 다른 단계는 지표를 싣지 않는다.
+    assert all(trace.metrics is None for trace in traces if trace.step != "schedule_quality")
+
+
+@pytest.mark.asyncio
+async def test_schedule_quality_metrics_carry_no_user_text() -> None:
+    """지표에 장소 이름이 들어가지 않는다. (TP-242)
+
+    **trace_records를 대화 삭제 때 안 지우는 근거가 "사용자 텍스트가 없다"는
+    것이다.** 이름을 실으면 그 근거가 무너지고 보관 규칙까지 다시 봐야 한다.
+    단위 테스트는 고정 입력으로 확인하지만, 이 테스트는 실제 편성 결과의
+    이름들이 새어나가지 않는지 본다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처에서 3시간 코스 짜줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.schedule is not None
+    quality = [
+        trace
+        for trace in store.get_traces(response.state.session_id)
+        if trace.step == "schedule_quality"
+    ]
+    rendered = repr(quality[0].metrics)
+
+    for item in response.schedule.items:
+        assert item.place_name not in rendered
+        assert item.place_id not in rendered
+    assert "경복궁" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_schedule_turn_survives_metrics_record_failure() -> None:
+    """지표 기록이 실패해도 사용자 응답은 정상으로 나간다. (TP-242)
+
+    기존 trace 기록이 예외를 흡수하는 것과 같은 규칙이다. 지표는 관측이고,
+    관측이 기능을 막으면 안 된다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    original = store.append_traces
+
+    def _fail_on_quality(records):
+        if any(record.step == "schedule_quality" for record in records):
+            raise RuntimeError("지표 저장 실패(테스트)")
+        original(records)
+
+    store.append_traces = _fail_on_quality  # type: ignore[method-assign]
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처에서 3시간 코스 짜줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.schedule is not None
+    assert "코스를 짜봤어요" in response.message

@@ -15,6 +15,7 @@ from app.schedule.budget import (
     derive_item_range,
     fit_durations_to_budget,
     travel_estimate_minutes,
+    walkable_cluster_size,
 )
 from app.schedule.duration import VisitDurationPolicy
 from app.schedule.schemas import SchedulePlanningRequest
@@ -251,3 +252,29 @@ class TestDeriveItemRange:
 
         assert derive_item_range(_request(360))[0] == 2
         assert derive_item_range(_request(90))[0] == 1
+
+
+class TestWalkableClusterSize:
+    """TP-242 — 근접 묶기(TP-243)의 가치를 미리 재는 값."""
+
+    def test_붙어_있으면_후보_전부가_한_묶음이다(self) -> None:
+        assert walkable_cluster_size(_request(180, km=0.15), within_min=5) == 5
+
+    def test_멀면_묶이지_않는다(self) -> None:
+        """1.5km는 도보로 5분을 한참 넘는다. 1은 "자기 자신뿐"이라는 뜻이다."""
+
+        assert walkable_cluster_size(_request(180, km=1.5), within_min=5) == 1
+
+    def test_기준_분을_바꾸면_결과가_달라진다(self) -> None:
+        """기준이 지표의 의미를 바꾼다 — 그래서 기록에 기준 값을 함께 남긴다."""
+
+        request = _request(180, km=0.5)
+
+        assert walkable_cluster_size(request, within_min=5) < 5
+        assert walkable_cluster_size(request, within_min=30) == 5
+
+    def test_거리_정보가_없으면_0이다(self) -> None:
+        """"묶을 수 없다"가 아니라 "알 수 없다"다. 빈도 추세를 보는 값이라
+        이 구분까지는 필요하지 않다."""
+
+        assert walkable_cluster_size(_request(180), within_min=5) == 0

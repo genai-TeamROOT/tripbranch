@@ -63,6 +63,12 @@ from app.prompts.registry import turn_prompt_version
 from app.providers.protocols import LLMProvider
 from app.repositories.protocols import PlaceDetailsReadRepository
 from app.schedule.associations import fetch_co_visited_hints
+from app.schedule.budget import walkable_cluster_size
+from app.schedule.metrics import (
+    SCHEDULE_QUALITY_STEP,
+    WALKABLE_THRESHOLD_MIN,
+    schedule_quality_metrics,
+)
 from app.schedule.planner import plan_partial_schedule, plan_schedule
 from app.schedule.schemas import SchedulePartialFillRequest, SchedulePlanningRequest
 from app.schemas import (
@@ -271,6 +277,7 @@ def _record_trace_safely(
     prompt_version: str | None = None,
     scoring_version: str | None = None,
     token_usage: int | None = None,
+    metrics: dict[str, Any] | None = None,
     store: StateStore | None,
 ) -> None:
     """실행 단계 1건을 B에 기록한다. (llmops-trace-contract-v1.md AF-12, B-07)
@@ -292,6 +299,7 @@ def _record_trace_safely(
                 prompt_version=prompt_version,
                 scoring_version=scoring_version,
                 token_usage=token_usage,
+                metrics=metrics,
             ),
             store=store,
         )
@@ -4784,6 +4792,13 @@ async def _run_schedule_branch(
                 )
             )
 
+    # 거리 행렬을 한 번만 만든다(TP-242). 예전에는 부분 재편성·전체 편성 두 분기가
+    # 각각 만들었는데, 여기에 지표까지 따로 만들면 같은 요청을 세 번 계산하고
+    # "지표가 본 거리"와 "편성이 쓴 거리"가 갈릴 수 있다.
+    schedule_pairwise_km = _build_pairwise_distances_km(
+        schedule_candidates, places, fallback_coordinates=snapshot_coordinates
+    )
+
     if pinned_items and llm_output.modify is not None:
         partial_request = SchedulePartialFillRequest(
             pinned_items=pinned_items,
@@ -4791,9 +4806,7 @@ async def _run_schedule_branch(
             candidates=schedule_candidates,
             conditions=agent_conditions,
             visit_datetime=None,
-            pairwise_distances_km=_build_pairwise_distances_km(
-                schedule_candidates, places, fallback_coordinates=snapshot_coordinates
-            ),
+            pairwise_distances_km=schedule_pairwise_km,
             travel_candidates=_build_travel_candidates(
                 schedule_candidates, places, fallback_coordinates=snapshot_coordinates
             ),
@@ -4823,9 +4836,7 @@ async def _run_schedule_branch(
             must_include_place_ids=saved_place_ids,
             conditions=agent_conditions,
             visit_datetime=None,
-            pairwise_distances_km=_build_pairwise_distances_km(
-                schedule_candidates, places, fallback_coordinates=snapshot_coordinates
-            ),
+            pairwise_distances_km=schedule_pairwise_km,
             travel_candidates=_build_travel_candidates(
                 schedule_candidates, places, fallback_coordinates=snapshot_coordinates
             ),
@@ -4861,6 +4872,34 @@ async def _run_schedule_branch(
                 "closed_saved_place_names": closed_saved_place_names,
             }
         )
+
+    # 품질 지표를 한 줄 남긴다(TP-242). schedule_result의 모든 필드가 확정된 뒤라야
+    # 누락 사유 건수가 맞는다 — 바로 위에서 absent/closed를 덮어쓴다.
+    #
+    # **기록 실패가 응답을 막지 않는다.** _record_trace_safely()가 예외를 흡수한다.
+    # latency_ms는 편성 파이프라인이 이미 잰 값을 그대로 쓴다 — 여기서 다시 재면
+    # 지표를 만드는 시간까지 섞인다.
+    _record_trace_safely(
+        session_id=state_response.session_id,
+        run_id=state_response.run_id,
+        step=SCHEDULE_QUALITY_STEP,
+        latency_ms=int(schedule_result.elapsed_ms),
+        metrics=schedule_quality_metrics(
+            schedule_result,
+            time_available_min=agent_conditions.time_available,
+            saved_place_count=len(saved_place_ids),
+            walkable_cluster_size=walkable_cluster_size(
+                SchedulePlanningRequest(
+                    candidates=schedule_candidates,
+                    conditions=agent_conditions,
+                    visit_datetime=None,
+                    pairwise_distances_km=schedule_pairwise_km,
+                ),
+                within_min=WALKABLE_THRESHOLD_MIN,
+            ),
+        ),
+        store=store,
+    )
 
     await _emit_progress(
         stream_event_sink,

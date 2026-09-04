@@ -287,3 +287,59 @@ class TestTraceStats:
 
         assert response.since == since
         assert response.until == until
+
+
+class TestTraceMetrics:
+    """도메인 지표를 담는 자리. (TP-242)
+
+    B는 키·값의 의미를 판단하지 않는다 — 계약 1절의 경계 원칙을 지표에도
+    그대로 적용한다.
+    """
+
+    def test_지표를_그대로_저장한다(self, store):
+        record_trace(
+            store,
+            step="schedule_quality",
+            metrics={"time_budget_status": "over", "time_budget_delta_min": 80},
+        )
+
+        saved = trace_module.get_traces(store, "sess_test")[0]
+
+        assert saved.metrics == {
+            "time_budget_status": "over",
+            "time_budget_delta_min": 80,
+        }
+
+    def test_넘기지_않으면_None이다(self, store):
+        """지표를 안 싣는 단계(llm_interpret·tool·scoring)는 계속 None이다.
+        빈 객체로 채우면 "지표가 없는 단계"와 "지표가 비어 있는 턴"을 구분할 수
+        없다."""
+
+        record_trace(store, step="scoring")
+
+        assert trace_module.get_traces(store, "sess_test")[0].metrics is None
+
+    def test_키를_검증하지_않는다(self, store):
+        """무엇을 셀지는 그 기능을 아는 쪽이 정한다 — B가 목록을 들고 있으면
+        지표를 늘릴 때마다 B를 고쳐야 한다."""
+
+        record_trace(store, step="whatever", metrics={"처음_보는_키": [1, 2, 3]})
+
+        assert trace_module.get_traces(store, "sess_test")[0].metrics == {
+            "처음_보는_키": [1, 2, 3]
+        }
+
+    def test_지표가_붙어도_다른_필드는_그대로다(self, store):
+        record_trace(
+            store,
+            step="schedule_quality",
+            latency_ms=120,
+            prompt_version="schedule.plan@2.0.0",
+            metrics={"item_count": 3},
+        )
+
+        saved = trace_module.get_traces(store, "sess_test")[0]
+
+        assert saved.latency_ms == 120
+        assert saved.prompt_version == "schedule.plan@2.0.0"
+        assert saved.metrics == {"item_count": 3}
