@@ -101,8 +101,9 @@ from app.services.runtime.stubs import (
     FakeRecommendationProvider,
     FakeToolProvider,
 )
+from app.state import preferences as state_preferences
 from app.state import service as state_service
-from app.state.schema import now_kst
+from app.state.schema import UserPreference, now_kst
 from app.state.service import (
     SetPendingClarificationRequest,
     StateApplyResponse,
@@ -4697,6 +4698,7 @@ class _RecordingWalkingRoutesRecommendationProvider(RealRecommendationProvider):
         *,
         travel_routes=(),
         limit=5,
+        saved_taste_query=None,
     ):
         self.travel_routes = travel_routes
         return await super().score_prepared(
@@ -4704,6 +4706,7 @@ class _RecordingWalkingRoutesRecommendationProvider(RealRecommendationProvider):
             prepared,
             travel_routes=travel_routes,
             limit=limit,
+            saved_taste_query=saved_taste_query,
         )
 
 
@@ -5396,6 +5399,126 @@ async def test_staged_recommendation_measures_walking_when_transport_is_unstated
     )
 
     assert [query.mode for query in route_tool.queries] == [TravelMode.WALKING]
+
+
+class _RecordingSavedTasteProvider(RealRecommendationProvider):
+    """score_prepared가 받은 saved_taste_query를 전부 기록한다."""
+
+    def __init__(self) -> None:
+        self.saved_taste_queries: list[str | None] = []
+
+    async def score_prepared(
+        self,
+        conditions,
+        prepared,
+        *,
+        travel_routes=(),
+        limit=5,
+        saved_taste_query=None,
+    ):
+        self.saved_taste_queries.append(saved_taste_query)
+        return await super().score_prepared(
+            conditions,
+            prepared,
+            travel_routes=travel_routes,
+            limit=limit,
+            saved_taste_query=saved_taste_query,
+        )
+
+
+@pytest.mark.asyncio
+async def test_saved_preferences_reach_scoring_when_nothing_was_spoken() -> None:
+    """계정에 저장해 둔 취향이 실제로 채점까지 간다.
+
+    `_saved_taste_query()` 단위 테스트만으로는 **호출부 한 줄이 지워져도 안 잡힌다** —
+    되돌려서 확인했다. 1.9.0에서 provider 배선 2줄이 같은 구멍이었다.
+    """
+    store = InMemoryStateStore()
+    state_preferences.replace(
+        store,
+        "user-saved-taste",
+        [
+            UserPreference(label="아늑한 공간", source="preference", codes=["cozy"]),
+            UserPreference(label="전망 좋은", source="preference", codes=["good_view"]),
+            # 분류 칩도 질의에 들어간다 — 고른 것을 버리지 않는다.
+            UserPreference(label="카페", source="place_tag", codes=["카페", "찻집"]),
+        ],
+    )
+    provider = _RecordingSavedTasteProvider()
+
+    await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=_RefillPlacesToolProvider(),
+        recommendation_provider=provider,
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=store,
+        principal=Principal(user_id="user-saved-taste", is_anonymous=False),
+    )
+
+    # 실측 경로 tool이 없어 1차만 도는 구성이라 호출이 1건이다. 2차(실측 반영)까지
+    # 도는 구성은 travel_route_tool을 붙인 아래 테스트가 본다.
+    assert provider.saved_taste_queries == ["아늑한 공간 전망 좋은 카페"]
+
+
+@pytest.mark.asyncio
+async def test_saved_preferences_reach_both_scoring_passes() -> None:
+    """1차(실측 대상 고르기)와 2차(실측 반영)가 **같은 값**을 봐야 한다.
+
+    한쪽만 주면 취향으로 후보를 좁혀 놓고 최종 순위에서는 취향을 빼게 된다 —
+    2026-08-20에 그 계열의 사고가 있었다(`SCORING_VERSION` 1.4.0).
+    """
+    store = InMemoryStateStore()
+    state_preferences.replace(
+        store,
+        "user-two-pass",
+        [UserPreference(label="아늑한 공간", source="preference", codes=["cozy"])],
+    )
+    provider = _RecordingSavedTasteProvider()
+
+    await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=_RefillPlacesToolProvider(),
+        recommendation_provider=provider,
+        enrichment_provider=_CountingEnrichmentProvider(),
+        travel_route_tool=_RecordingTravelRouteTool(),
+        store=store,
+        principal=Principal(user_id="user-two-pass", is_anonymous=False),
+    )
+
+    assert len(provider.saved_taste_queries) >= 2, provider.saved_taste_queries
+    assert set(provider.saved_taste_queries) == {"아늑한 공간"}
+
+
+@pytest.mark.asyncio
+async def test_guest_has_no_saved_preferences_to_apply() -> None:
+    """신원이 없으면 저장할 자리가 없다 — 지금까지와 같이 동작한다."""
+    provider = _RecordingSavedTasteProvider()
+
+    await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=_RefillPlacesToolProvider(),
+        recommendation_provider=provider,
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=InMemoryStateStore(),
+    )
+
+    assert provider.saved_taste_queries
+    assert set(provider.saved_taste_queries) == {None}
 
 
 @pytest.mark.asyncio
