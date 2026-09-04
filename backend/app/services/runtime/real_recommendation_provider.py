@@ -257,9 +257,9 @@ class RealRecommendationProvider:
         *,
         travel_routes: tuple[TravelRoute, ...] = (),
         limit: int = _RECOMMENDATION_LIMIT,
-        # 계정에 저장해 둔 취향으로 만든 질의. 발화에 취향이 없을 때만 값이 있다
-        # (`domain/saved_preference.py`). conditions에 합치지 않는 이유는
-        # protocols.py의 같은 인자 주석 참고.
+        # 계정에 저장해 둔 취향으로 만든 질의. **발화에 취향이 있어도 값이 있다** —
+        # 부딪히는 칩만 빠진 뒤에 온다(`domain/saved_preference.py`). conditions에
+        # 합치지 않는 이유는 protocols.py의 같은 인자 주석 참고.
         saved_taste_query: str | None = None,
     ) -> RecommendationResponse:
         response = await score_prepared_recommendation(

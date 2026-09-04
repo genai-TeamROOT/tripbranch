@@ -4509,9 +4509,11 @@ async def _score_recommendations(
             tool_context = _merge_recommendation_context_places(tool_context, saved_context)
 
         merged_prepared = recommendation_provider.merge_prepared(prepared_batches)
-        # 발화에 취향이 없으면 계정에 저장해 둔 값으로 채운다. 한 번만 읽어 1차·2차
-        # 채점과 보관함 덧붙이기가 같은 값을 쓰게 한다 — 회차 중간에 갈리면 취향으로
-        # 후보를 좁혀 놓고 최종 순위에서 다른 자를 쓰게 된다.
+        # 계정에 저장해 둔 취향에서 발화와 부딪히지 않는 칩을 골라 온다. 발화에
+        # 취향이 있어도 값이 있고, 호출부가 발화 질의 뒤에 이어 붙인다.
+        #
+        # 한 번만 읽어 1차·2차 채점과 보관함 덧붙이기가 같은 값을 쓰게 한다 —
+        # 회차 중간에 갈리면 취향으로 후보를 좁혀 놓고 최종 순위에서 다른 자를 쓴다.
         saved_taste_query = _saved_taste_query(agent_conditions, principal, store)
         recommendations = await _score_with_measured_routes(
             recommendation_provider,
