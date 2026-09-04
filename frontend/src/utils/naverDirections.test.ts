@@ -26,6 +26,32 @@ describe("buildNaverDirections", () => {
     expect(urls?.webUrl).toContain("/-/transit");
   });
 
+  it("도보 모드는 앱·웹 모두 walk로 연다 — 화장실처럼 걸어가는 목적지용", () => {
+    const urls = buildNaverDirections({
+      deviceLocation: "37.5739,126.9852",
+      destLat: 37.5743,
+      destLng: 126.9856,
+      destName: "인사동마루 신관 개방화장실",
+      mode: "walk",
+    });
+
+    expect(urls?.appUrl).toContain("nmap://route/walk");
+    expect(urls?.webUrl).toContain("/-/walk");
+    expect(urls?.webUrl).not.toContain("/-/transit");
+  });
+
+  it("mode를 생략하면 기존 동작인 대중교통을 유지한다", () => {
+    const urls = buildNaverDirections({
+      deviceLocation: "37.5,127.0",
+      destLat: 37.6,
+      destLng: 127.1,
+      destName: "장소",
+    });
+
+    expect(urls?.appUrl).toContain("nmap://route/public");
+    expect(urls?.webUrl).toContain("/-/transit");
+  });
+
   it("장소명을 URL 인코딩해 링크가 깨지지 않게 한다", () => {
     const urls = buildNaverDirections({
       deviceLocation: "37.5,127.0",

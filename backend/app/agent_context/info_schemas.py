@@ -44,6 +44,7 @@ InfoQuestionType = Literal[
     "realtime_bus",
     "realtime_event",
     "realtime_traffic",
+    "public_toilet",
 ]
 
 
@@ -59,6 +60,10 @@ class InfoContextRequest(BaseModel):
     # 사용자 원문 질문. C는 판정에 쓰지 않고 응답 조립 참고용으로 실어 보낸다.
     specific_question: str | None = None
     visit_time: str | None = None
+    # 기기 GPS 좌표. INFO의 다른 유형은 "사용자가 말한 장소"를 지오코딩해 쓰지만,
+    # "근처에 화장실 있어?"는 지명이 아예 없을 수 있어 현재 위치가 유일한 기준점이
+    # 된다. 그래서 이 유형만 좌표를 함께 받는다 — 없으면 기존처럼 지명을 되묻는다.
+    origin_coordinates: Coordinates | None = None
 
     @field_validator("request_id")
     @classmethod
@@ -127,6 +132,10 @@ class RealtimeInfoDetailItem(BaseModel):
     details: dict[str, str] = Field(default_factory=dict)
     thumbnail_url: str | None = None
     external_url: str | None = None
+    # 항목별 길찾기용 좌표. 공중화장실처럼 목록의 각 항목이 곧 목적지인 카드에서
+    # 채운다. 좌표가 없는 항목은 프론트가 주소 검색으로 폴백한다.
+    latitude: float | None = None
+    longitude: float | None = None
 
 
 class RealtimeCommercialInfoResult(BaseModel):
@@ -193,6 +202,7 @@ class RealtimeCityInfoResult(BaseModel):
         "realtime_bus",
         "realtime_event",
         "realtime_traffic",
+        "public_toilet",
     ]
     requested_place_name: str | None = None
     resolved_place_name: str | None = None

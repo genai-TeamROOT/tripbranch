@@ -463,6 +463,8 @@ def compose_realtime_city_info_message(response: InfoContextResponse) -> str:
     place = result.resolved_place_name or result.requested_place_name or "해당 지역"
     if result.question_type == "realtime_traffic":
         return _compose_realtime_traffic_message(place, result)
+    if result.question_type == "public_toilet":
+        return _compose_public_toilet_message(place, result)
     labels = {
         "realtime_parking": "실시간 주차장 정보",
         "realtime_public_parking": "공영주차장 실시간 현황",
@@ -498,6 +500,27 @@ def compose_paired_parking_message(message: str, *, question_type: object) -> st
     if follow_up is None:
         return message
     return f"{message} {follow_up}"
+
+
+def _compose_public_toilet_message(place: str, result: RealtimeCityInfoResult) -> str:
+    """화장실은 카드를 보라고 미루지 않고 말풍선에서 바로 두 곳을 읽어준다.
+
+    급해서 묻는 질문이라 "아래 카드에서 확인해보세요"는 한 단계를 더 요구하는
+    셈이다. 이름과 거리를 문장에 담아 눈으로 바로 집을 수 있게 한다. 대신 길찾기는
+    카드를 눌러야 하므로 그 안내만 마지막에 붙인다.
+    """
+
+    if result.status == "no_data" or not result.fields:
+        return (
+            f"{place} 주변 1km 안에서는 이용할 수 있는 공중화장실을 찾지 못했어요."
+            " 조금 이동한 뒤 다시 물어봐주시면 다시 찾아볼게요."
+        )
+
+    # fields는 {화장실 이름: "도보 50m · 지금 이용 가능 · 24시간"} 형태다.
+    lines = [f"· {name} — {summary}" for name, summary in result.fields.items()]
+    intro = f"{place} 주변에서 가까운 공중화장실을 찾았어요."
+    outro = "카드를 누르면 네이버지도 도보 길찾기로 바로 이어져요."
+    return "\n".join([intro, *lines, outro])
 
 
 def _compose_realtime_traffic_message(place: str, result: RealtimeCityInfoResult) -> str:
