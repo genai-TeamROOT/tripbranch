@@ -271,6 +271,34 @@ class PlaceCard(BaseModel):
     credit_card: str | None = None
     restroom: str | None = None
     homepage: str | None = None
+    # 무장애 여행 정보(D-077). 상세 카드의 별도 구획으로 그린다.
+    #
+    # 값이 없으면 None이고, 소비 측은 None인 항목을 숨긴다 — 이 데이터는 있으면
+    # 적고 없으면 비우는 식이라 빈 값을 "없음"으로 그리면 안 된다. 부정 표현은
+    # 장애인 화장실 4건·수유실 0건뿐이다(2026-09-04 서울 25개 구 실측).
+    #
+    # 아홉 항목뿐인 이유는 원문 15개 중 여섯을 뺐기 때문이다. 접근로·주출입구는
+    # 단차 서술이라 카드에서 다루지 않기로 했고(답변 경로의 wheelchair_access는
+    # 그대로 쓴다), 대중교통 접근은 카드의 이동수단 정보와 겹치며, 점자블록·점자
+    # 안내물·음성 안내는 visual_guide 한 줄로 합쳤다.
+    #
+    # 채움률(무장애 정보가 있는 1,229곳 기준): 장애인 화장실 48% · 장애인 주차
+    # 48% · 승강기 35% · 시각 안내 24% · 휠체어 대여 15% · 수유·기저귀 15% ·
+    # 의자식 좌석 12% · 유모차 대여 11% · 보조견 9%. 아홉 중 하나라도 있는 곳은
+    # 882곳으로, 전체 8,060곳으로 보면 11%다.
+    accessible_restroom: str | None = None
+    accessible_parking: str | None = None
+    elevator: str | None = None
+    visual_guide: str | None = None
+    wheelchair_rental: str | None = None
+    # 수유실과 기저귀교환대를 합친 값. 기저귀 쪽은 원문이 영유아·가족 편의
+    # 필드에 들어 있어 수유실만 보면 48곳에서 사라진다.
+    nursing_room: str | None = None
+    seating: str | None = None
+    # 채워지면 baby_carriage가 비고, 비면 baby_carriage가 남는다. 두 필드가 같은
+    # 사실을 말하는데 62%에서 어긋나 함께 낼 수 없다(resolve_stroller_rental).
+    stroller_rental: str | None = None
+    guide_dog: str | None = None
 
 
 class PlaceInfoResult(BaseModel):

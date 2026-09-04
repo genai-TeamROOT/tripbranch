@@ -163,6 +163,17 @@ def _to_place_info_card(result: PlaceInfoResult) -> InfoPlaceCard:
         credit_card=card.credit_card,
         restroom=card.restroom,
         homepage=card.homepage,
+        # 무장애 아홉 항목(D-077). C가 이미 원문 정리·합성을 끝낸 값이라 여기서는
+        # 그대로 옮기기만 한다 — 손대면 같은 원문이 답변과 카드에서 갈린다.
+        accessible_restroom=card.accessible_restroom,
+        accessible_parking=card.accessible_parking,
+        elevator=card.elevator,
+        visual_guide=card.visual_guide,
+        wheelchair_rental=card.wheelchair_rental,
+        nursing_room=card.nursing_room,
+        seating=card.seating,
+        stroller_rental=card.stroller_rental,
+        guide_dog=card.guide_dog,
     )
 
 

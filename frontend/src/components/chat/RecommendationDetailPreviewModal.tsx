@@ -7,18 +7,25 @@
 
 import { motion } from "framer-motion";
 import {
+  Accessibility,
+  Armchair,
   Baby,
   Bath,
   CalendarOff,
   Car,
   Clock,
   CreditCard,
+  Dog,
+  Eye,
   Loader2,
   type LucideIcon,
   MapPin,
+  Milk,
+  MoveVertical,
   Navigation,
   PawPrint,
   Sparkles,
+  SquareParking,
   Wallet,
   X,
 } from "lucide-react";
@@ -76,6 +83,30 @@ const INFO_TABLE_FIELDS: Array<[keyof InfoPlaceCard, string, string, LucideIcon]
   ["pet", "반려동물 동반", "Pets allowed", PawPrint],
   ["credit_card", "카드 결제", "Card payment", CreditCard],
   ["restroom", "화장실", "Restroom", Bath],
+];
+
+/*
+ * 편의시설 구획의 행 순서·아이콘. 출처는 무장애 여행 정보(D-077)지만 화면에는
+ * 그 말을 쓰지 않는다 — 읽는 사람에게는 제도 용어보다 "편의시설"이 바로 읽힌다.
+ * 채움률이 높은 것부터 둔다(원문이 있는 장소 기준: 장애인 화장실 48% → 보조견 9%).
+ *
+ * 접근로·주출입구는 넣지 않는다. 원문이 대부분 단차·경사 서술이라 카드에서
+ * 다루지 않기로 했다 — 그 값은 "휠체어로 들어갈 수 있나요" 질문의 답변
+ * (answer_fields의 wheelchair_access)으로만 나간다.
+ *
+ * 유모차는 두 줄이 아니라 한 줄이다. 무장애 원문이 있으면 stroller_rental이
+ * 차고 위 표의 baby_carriage가 비므로, 두 표에 한 줄씩 두어도 함께 보이지 않는다.
+ */
+const ACCESSIBILITY_FIELDS: Array<[keyof InfoPlaceCard, string, string, LucideIcon]> = [
+  ["accessible_restroom", "장애인 화장실", "Accessible restroom", Bath],
+  ["accessible_parking", "장애인 주차", "Accessible parking", SquareParking],
+  ["elevator", "승강기", "Elevator", MoveVertical],
+  ["visual_guide", "시각 안내", "Visual guidance", Eye],
+  ["wheelchair_rental", "휠체어 대여", "Wheelchair rental", Accessibility],
+  ["nursing_room", "수유·기저귀", "Nursing & diaper", Milk],
+  ["seating", "의자식 좌석", "Chair seating", Armchair],
+  ["stroller_rental", "유모차 대여", "Stroller rental", Baby],
+  ["guide_dog", "보조견 동반", "Guide dogs allowed", Dog],
 ];
 
 /**
@@ -196,6 +227,38 @@ function OperatingHoursRows({ rows }: { rows: OperatingHoursRow[] }) {
   );
 }
 
+/**
+ * InfoTable 한 줄의 뼈대. 스켈레톤 행도 이것을 쓴다.
+ *
+ * 여백과 정렬을 한 곳에만 두는 것이 요점이다. 두 곳에 따로 적어 두었더니 스켈레톤
+ * 행이 실제 행보다 7px 낮았고(내용 높이 15px 대 22px), 값이 도착할 때 표 전체가
+ * 그만큼 늘어났다.
+ */
+function InfoRowShell({
+  left,
+  right,
+  rightClassName = "text-ink",
+  testId,
+  decorative,
+}: {
+  left: ReactNode;
+  right: ReactNode;
+  rightClassName?: string;
+  testId?: string;
+  decorative?: boolean;
+}) {
+  return (
+    <div
+      data-testid={testId}
+      aria-hidden={decorative}
+      className="flex items-start justify-between gap-3 py-3"
+    >
+      <div className="flex shrink-0 items-center gap-2 pt-0.5">{left}</div>
+      <div className={`min-w-0 flex-1 text-right text-sm ${rightClassName}`}>{right}</div>
+    </div>
+  );
+}
+
 /** InfoTable 한 줄. 로딩 중 미리보기 행도 같은 모양을 써서 실제 값으로 바뀔 때 자리가 흔들리지 않는다. */
 function InfoRow({
   icon: Icon,
@@ -209,19 +272,17 @@ function InfoRow({
   children: ReactNode;
 }) {
   return (
-    <div className="flex items-start justify-between gap-3 py-3">
-      <div className="flex shrink-0 items-center gap-2 pt-0.5">
-        <Icon size={15} className="text-muted" />
-        <span className="text-sm text-ink">{label}</span>
-      </div>
-      <div
-        className={`min-w-0 flex-1 text-right text-sm ${
-          emphasized ? "font-bold text-brand" : "text-ink"
-        }`}
-      >
-        {children}
-      </div>
-    </div>
+    <InfoRowShell
+      testId="info-row"
+      left={
+        <>
+          <Icon size={15} className="text-muted" />
+          <span className="text-sm text-ink">{label}</span>
+        </>
+      }
+      rightClassName={emphasized ? "font-bold text-brand" : "text-ink"}
+      right={children}
+    />
   );
 }
 
@@ -242,24 +303,176 @@ function InfoTable({
   if (visibleEntries.length === 0) return null;
 
   return (
-    <div className="flex flex-col divide-y divide-border rounded-xl bg-white px-4 shadow-resting">
-      {visibleEntries.map(([key, labelKo, labelEn, Icon]) => {
-        const value = card[key];
-        if (typeof value !== "string") return null;
-        const operatingHours = key === "operating_hours" ? parseOperatingHours(value) : null;
-        const statusSuffix = key === "operating_hours" ? operatingStatusSuffix(item, isEn) : null;
-        return (
-          <InfoRow key={key} icon={Icon} label={isEn ? labelEn : labelKo} emphasized={Boolean(statusSuffix)}>
-            {operatingHours ? (
-              <OperatingHoursRows rows={operatingHours} />
-            ) : statusSuffix ? (
-              `${value} · ${statusSuffix}`
-            ) : (
-              <DetailText fieldKey={key} value={value} />
-            )}
-          </InfoRow>
-        );
-      })}
+    <div className={INFO_CARD_BOX}>
+      <div className={INFO_CARD_ROWS}>
+        {visibleEntries.map(([key, labelKo, labelEn, Icon]) => {
+          const value = card[key];
+          if (typeof value !== "string") return null;
+          const operatingHours = key === "operating_hours" ? parseOperatingHours(value) : null;
+          const statusSuffix = key === "operating_hours" ? operatingStatusSuffix(item, isEn) : null;
+          return (
+            <InfoRow
+              key={key}
+              icon={Icon}
+              label={isEn ? labelEn : labelKo}
+              emphasized={Boolean(statusSuffix)}
+            >
+              {operatingHours ? (
+                <OperatingHoursRows rows={operatingHours} />
+              ) : statusSuffix ? (
+                `${value} · ${statusSuffix}`
+              ) : (
+                <DetailText fieldKey={key} value={value} />
+              )}
+            </InfoRow>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 편의시설 구획. 값이 있는 항목만 그리고, 아홉 개가 모두 비면 제목까지 숨긴다.
+ *
+ * 빈 항목을 "없음"으로 그리지 않는 것이 이 구획의 전제다. 이 데이터는 있으면 적고
+ * 없으면 비우는 식이라(없다고 답한 값은 장애인 화장실 4건뿐), 빈 값을 없음으로
+ * 읽으면 있는 시설을 없다고 말하게 된다.
+ */
+function AccessibilityTable({ card, isEn }: { card: InfoPlaceCard; isEn: boolean }) {
+  const visibleEntries = ACCESSIBILITY_FIELDS.filter(([key]) => {
+    const value = card[key];
+    return typeof value === "string" && value.trim();
+  });
+  if (visibleEntries.length === 0) return null;
+
+  return (
+    <section className="flex flex-col gap-1.5">
+      <h3 className="text-xs font-bold text-label">{isEn ? "Facilities" : "편의시설"}</h3>
+      <div className={INFO_CARD_BOX}>
+        <div className={INFO_CARD_ROWS}>
+          {visibleEntries.map(([key, labelKo, labelEn, Icon]) => {
+            const value = card[key];
+            if (typeof value !== "string") return null;
+            return (
+              <InfoRow key={key} icon={Icon} label={isEn ? labelEn : labelKo}>
+                <DetailText fieldKey={key} value={value} />
+              </InfoRow>
+            );
+          })}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * 스켈레톤을 띄울지 정한다. 로딩이 시작돼도 delayMs 동안은 띄우지 않는다.
+ *
+ * 최소 노출 시간은 두지 않는다. 2026-09-05 실측에서 이 조회(/chat/place-details)는
+ * 표본 24건이 모두 0.5초를 넘었고(중앙값 0.73초, p90 1.44초) 200ms 안에 끝난 건이
+ * 하나도 없었다 — "떴다가 곧바로 사라져 번쩍이는" 상황이 지금 분포에서는 생기지
+ * 않는다. 최소 노출을 두면 이득 없이 이미 받은 값을 늦추기만 한다.
+ *
+ * 그래도 지연을 남기는 이유는 이 값이 서버 상태에 달려 있어서다. 나중에 상세를
+ * 캐시하거나 응답이 빨라지면 그때 번쩍임이 생기는데, 그 안전장치를 미리 둔다.
+ */
+function useDelayedSkeleton(isLoading: boolean, delayMs = 200): boolean {
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    if (!isLoading) {
+      setVisible(false);
+      return;
+    }
+    const timer = setTimeout(() => setVisible(true), delayMs);
+    return () => clearTimeout(timer);
+  }, [isLoading, delayMs]);
+
+  return visible;
+}
+
+/* 완성된 표가 몇 줄인지의 실측 분포(8,060곳, 2026-09-05).
+ *
+ *   0줄 1.1% · 1줄 1.0% · 2줄 11.4% · 3줄 22.1% · 4줄 30.0% · 5줄 33.1% ·
+ *   6줄 0.9% · 7줄 0.3%
+ *
+ * 스켈레톤을 중앙값인 4줄로 잡는다. 늘어나든 줄어들든 그만큼 아래 내용이
+ * 움직이므로, 어느 쪽으로도 적게 어긋나는 값이 낫다 — 평균 어긋남이 3줄로 잡으면
+ * 1.17줄, 4줄로 잡으면 0.88줄이다.
+ */
+const INFO_TABLE_SKELETON_ROWS = 4;
+
+/* 상세 정보 표의 겉 상자와 줄 묶음. 스켈레톤과 실제 표가 같은 값을 써야 값이
+ * 도착할 때 상자가 제자리에 그대로 남는다 — 어긋나면 그 차이만큼 화면이 튄다.
+ *
+ * 교체에 페이드를 넣지 않는다. 스켈레톤은 즉시 사라지는데 새 내용이 투명하게
+ * 시작하므로, 무엇을 감싸든 그 사이가 빈다 — 행 사이 가로줄(divide-y)까지 함께
+ * 흐려져 오히려 더 눈에 띄었다. 상자·행 높이·가로줄 위치가 모두 같은 지금은
+ * 회색 바가 글자로 바뀌는 것 말고는 움직이는 것이 없어, 그대로 바꾸는 편이
+ * 조용하다. */
+const INFO_CARD_BOX = "rounded-xl bg-white px-4 shadow-resting";
+const INFO_CARD_ROWS = "flex flex-col divide-y divide-border";
+
+/**
+ * 상세를 기다리는 동안의 InfoTable 자리. 완성됐을 때와 같은 줄 모양으로 둔다.
+ *
+ * 높이만 잡은 회색 덩어리를 쓰지 않는 이유는 중앙값 0.73초·p90 1.44초를 그 상태로
+ * 버텨야 하기 때문이다. 덩어리는 그동안 멈춘 것처럼 보이고, 값이 채워지는 순간
+ * 표가 통째로 나타나 화면이 한 번 튄다.
+ *
+ * 값 자리의 너비를 줄마다 다르게 둔 것도 같은 이유다. 폭이 같으면 글자가 아니라
+ * 표로 읽힌다.
+ *
+ * 이미 아는 운영시간(leadingRow)은 별도 상자가 아니라 이 상자의 첫 줄로 받는다.
+ * 상자를 따로 두면 값이 도착할 때 흰 상자가 둘에서 하나로 줄며 그 사이 간격까지
+ * 사라져, 줄 수를 아무리 맞춰도 화면이 한 번 접힌다.
+ */
+function InfoTableSkeleton({
+  rows,
+  isEn,
+  leadingRow,
+}: {
+  rows: number;
+  isEn: boolean;
+  leadingRow?: ReactNode;
+}) {
+  const valueWidths = ["w-[70%]", "w-[45%]", "w-[60%]"];
+
+  return (
+    <div role="status" className={INFO_CARD_BOX}>
+      <div className={INFO_CARD_ROWS}>
+        {leadingRow}
+        {Array.from({ length: rows }, (_, index) => (
+          /*
+           * 바를 감싼 h-5는 글자 한 줄(text-sm의 줄 높이 20px)이 차지하는 자리다.
+           * 바 자체 높이(14px)만 두면 행이 그만큼 낮아져, 값이 도착할 때 표가 늘어난다.
+           */
+          <InfoRowShell
+            key={index}
+            testId="info-skeleton-row"
+            decorative
+            left={
+              <>
+                <span className="h-[15px] w-[15px] animate-pulse rounded bg-chip" />
+                <span className="flex h-5 items-center">
+                  <span className="h-3.5 w-14 animate-pulse rounded bg-chip" />
+                </span>
+              </>
+            }
+            right={
+              <span className="flex h-5 items-center justify-end">
+                <span
+                  className={`h-3.5 animate-pulse rounded bg-chip ${valueWidths[index % valueWidths.length]}`}
+                />
+              </span>
+            }
+          />
+        ))}
+      </div>
+      <span className="sr-only">
+        {isEn ? "Loading place details" : "장소 상세 정보를 불러오는 중"}
+      </span>
     </div>
   );
 }
@@ -277,13 +490,11 @@ function QuickInfoPreview({ item, isEn }: { item?: RecommendationItem; isEn: boo
   if (!item?.operating_hours_display) return null;
   const statusSuffix = operatingStatusSuffix(item, isEn);
   return (
-    <div className="flex flex-col divide-y divide-border rounded-xl bg-white px-4 shadow-resting">
-      <InfoRow icon={Clock} label={isEn ? "Hours" : "운영시간"} emphasized={Boolean(statusSuffix)}>
-        {statusSuffix
-          ? `${item.operating_hours_display} · ${statusSuffix}`
-          : item.operating_hours_display}
-      </InfoRow>
-    </div>
+    <InfoRow icon={Clock} label={isEn ? "Hours" : "운영시간"} emphasized={Boolean(statusSuffix)}>
+      {statusSuffix
+        ? `${item.operating_hours_display} · ${statusSuffix}`
+        : item.operating_hours_display}
+    </InfoRow>
   );
 }
 
@@ -1168,9 +1379,22 @@ export function RecommendationDetailPreviewModal({
     placeNameProp ??
     (isEn ? "Place details" : "장소 상세 정보");
   const isLoading = detailStatus === "loading" && !detailCard;
+  const showSkeleton = useDelayedSkeleton(isLoading);
   // 목적지 좌표와 현재 위치가 모두 있어야 길찾기 딥링크를 만들 수 있다.
   const canRoute =
     detailCard?.latitude != null && detailCard?.longitude != null && Boolean(device_location);
+  /*
+   * 상세를 기다리는 동안에도 버튼 자리를 잡아 둔다. 이 버튼은 스크롤 영역 바깥의
+   * 하단 고정 바라, 늦게 생기면 그만큼 본문 높이가 줄며 읽던 자리가 밀린다.
+   *
+   * 자리만 잡고 누르지는 못하게 한다 — 목적지 좌표가 상세 응답에 실려 오므로
+   * 그 전에는 열 지도가 없다. 추천 카드에는 좌표가 없어서(RecommendationItem에
+   * 필드 자체가 없다) 미리 채울 수도 없다.
+   *
+   * 현재 위치가 없으면 자리도 잡지 않는다. 그 경우 상세가 와도 버튼은 끝내
+   * 나오지 않으므로, 자리를 잡으면 영영 못 누르는 버튼을 보여주게 된다.
+   */
+  const showRouteFooter = Boolean(device_location) && (canRoute || isLoading);
   // 주소는 제목 바로 아래 전용 줄로 뺐으니 "관련 정보"에서는 뺀다(중복 제거).
   const addressText = detailCard?.answer_fields.address;
   // "관련 정보"(answer_fields)에서 개요는 아래 "개요" 섹션과 내용이 같아 제외한다(중복 제거).
@@ -1369,20 +1593,26 @@ export function RecommendationDetailPreviewModal({
             {addressText && <p className="text-xs text-muted">{addressText}</p>}
           </div>
 
-          {isLoading ? (
-            <div className="flex flex-col gap-2">
-              <QuickInfoPreview item={item} isEn={isEn} />
-              {/* 이미 아는 값(운영시간)을 보여줬으면 남은 자리는 좁게, 아무것도
-                  모르면 예전처럼 통짜 스켈레톤으로 채운다. */}
-              <div
-                className={`animate-pulse rounded-xl bg-chip ${
-                  item?.operating_hours_display ? "h-28" : "h-44"
-                }`}
-              />
-            </div>
-          ) : (
-            detailCard && <InfoTable card={detailCard} item={item} isEn={isEn} />
-          )}
+          {isLoading
+            ? /* 운영시간을 이미 알면 그 줄은 실제 값이므로 스켈레톤을 한 줄 적게
+                 둔다. 지연(200ms) 중에는 아는 값만 있는 한 줄짜리 상자다. */
+              (showSkeleton || item?.operating_hours_display) && (
+                <InfoTableSkeleton
+                  rows={
+                    showSkeleton
+                      ? INFO_TABLE_SKELETON_ROWS - (item?.operating_hours_display ? 1 : 0)
+                      : 0
+                  }
+                  isEn={isEn}
+                  leadingRow={<QuickInfoPreview item={item} isEn={isEn} />}
+                />
+              )
+            : detailCard && (
+                <>
+                  <InfoTable card={detailCard} item={item} isEn={isEn} />
+                  <AccessibilityTable card={detailCard} isEn={isEn} />
+                </>
+              )}
 
           {item?.recommendation_reason && (
             <section className="flex flex-col gap-1.5 rounded-2xl bg-sky-light p-4">
@@ -1452,19 +1682,25 @@ export function RecommendationDetailPreviewModal({
             ))}
         </div>
 
-        {canRoute && detailCard && (
+        {showRouteFooter && (
           <div className="shrink-0 bg-bg px-4 pb-7 pt-4">
             <button
               type="button"
-              onClick={() =>
+              disabled={!canRoute}
+              onClick={() => {
+                if (!canRoute || !detailCard) return;
                 openNaverDirections({
                   deviceLocation: device_location as string,
                   destLat: detailCard.latitude as number,
                   destLng: detailCard.longitude as number,
                   destName: detailCard.place_name ?? title,
-                })
-              }
-              className="flex h-[52px] w-full items-center justify-center gap-2 rounded-full bg-brand text-base font-bold text-white transition-colors hover:bg-brand-deep"
+                });
+              }}
+              className={`flex h-[52px] w-full items-center justify-center gap-2 rounded-full text-base font-bold transition-colors ${
+                canRoute
+                  ? "bg-brand text-white hover:bg-brand-deep"
+                  : "cursor-not-allowed bg-chip text-muted"
+              }`}
             >
               <Navigation size={18} />
               {isEn ? "Get directions on Naver Maps" : "네이버 지도로 길찾기"}

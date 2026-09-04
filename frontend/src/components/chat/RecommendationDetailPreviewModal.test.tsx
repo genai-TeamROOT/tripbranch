@@ -9,6 +9,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 import { fetchRecommendationPlaceDetails } from "../../api/trip";
+import { openNaverDirections } from "../../utils/naverDirections";
 import { TripProvider } from "../../state/TripContext";
 import type {
   InfoPlaceCard,
@@ -27,6 +28,38 @@ vi.mock("../../utils/naverDirections", () => ({
 }));
 
 const mockedFetch = vi.mocked(fetchRecommendationPlaceDetails);
+const mockedDirections = vi.mocked(openNaverDirections);
+
+/* 길찾기 버튼은 현재 위치가 있어야 나온다. TripProvider가 sessionStorage에서
+   복원하므로 저장 형식을 직접 심는다(SchedulePage.test.tsx와 같은 방식). */
+function seedDeviceLocation() {
+  sessionStorage.setItem(
+    "tripbranch_state",
+    JSON.stringify({
+      version: 6,
+      state: {
+        language: "ko",
+        user_input: "",
+        interpreted_conditions: null,
+        recommendations: [],
+        unverified_recommendations: [],
+        shown_place_ids: [],
+        messages: [],
+        auditTurns: [],
+        phase: "ready",
+        error: null,
+        session_id: null,
+        device_location: "37.5665,126.9780",
+        device_location_captured_at: Date.now(),
+        device_location_snoozed_until: null,
+        awaiting_clarification: false,
+        saved_places: [],
+        agentProgress: null,
+        streamingIntent: null,
+      },
+    }),
+  );
+}
 
 function card(overrides: Partial<InfoPlaceCard> = {}): InfoPlaceCard {
   return {
@@ -87,6 +120,8 @@ function recommendationItem(overrides: Partial<RecommendationItem> = {}): Recomm
 
 beforeEach(() => {
   mockedFetch.mockReset();
+  mockedDirections.mockReset();
+  sessionStorage.clear();
 });
 
 /*
@@ -420,4 +455,208 @@ it("사진도 대표 이미지도 없으면 안내 문구를 보여준다", asyn
     expect(screen.getByText("등록된 이미지가 없어요.")).toBeInTheDocument();
   });
   expect(screen.queryByRole("img", { name: /경복궁/ })).not.toBeInTheDocument();
+});
+
+it("무장애 값이 있으면 편의시설 구획으로 그린다", async () => {
+  renderModal(
+    card({
+      accessible_restroom: "장애인 화장실 있음(1층)",
+      elevator: "엘리베이터 있음",
+      guide_dog: "보조견 동반 가능함",
+    }),
+  );
+
+  const heading = await screen.findByText("편의시설");
+  const section = heading.parentElement as HTMLElement;
+  expect(within(section).getByText("장애인 화장실")).toBeInTheDocument();
+  expect(within(section).getByText("장애인 화장실 있음(1층)")).toBeInTheDocument();
+  expect(within(section).getByText("승강기")).toBeInTheDocument();
+  expect(within(section).getByText("보조견 동반")).toBeInTheDocument();
+  // 값이 없는 항목은 줄 자체가 없다. 빈 값을 "없음"으로 그리면 있는 시설을
+  // 없다고 말하게 된다.
+  expect(within(section).queryByText("휠체어 대여")).not.toBeInTheDocument();
+  expect(within(section).queryByText("수유·기저귀")).not.toBeInTheDocument();
+});
+
+it("무장애 값이 하나도 없으면 편의시설 구획을 숨긴다", async () => {
+  renderModal(card({ parking: "가능 (240대)" }));
+
+  // 상세가 그려진 뒤에 확인한다 — 조회 전이면 아직 아무 구획도 없다.
+  expect(await screen.findByText("주차")).toBeInTheDocument();
+  expect(screen.queryByText("편의시설")).not.toBeInTheDocument();
+});
+
+it("유모차는 무장애 값과 기존 값이 함께 보이지 않는다", async () => {
+  // C가 둘 중 하나만 채워 보낸다(둘 다 있는 34곳 중 21곳에서 서로 반대라서).
+  renderModal(card({ baby_carriage: null, stroller_rental: "대여가능(10대)" }));
+
+  const heading = await screen.findByText("편의시설");
+  const section = heading.parentElement as HTMLElement;
+  expect(within(section).getByText("유모차 대여")).toBeInTheDocument();
+  expect(within(section).getByText("대여가능(10대)")).toBeInTheDocument();
+  // 위 표의 "유모차" 줄은 값이 비어 나오지 않는다.
+  expect(screen.queryByText("유모차")).not.toBeInTheDocument();
+});
+
+/*
+ * 로딩 자리를 회색 덩어리 하나로 두면 중앙값 0.73초·p90 1.44초(2026-09-05 실측)를
+ * 그 상태로 버티게 되고, 값이 도착하는 순간 표가 통째로 나타나 화면이 한 번 튄다.
+ * 완성됐을 때와 같은 줄 모양으로 두어 값만 차오르게 한다.
+ */
+it("상세를 기다리는 동안 표와 같은 줄 모양 스켈레톤을 그린다", async () => {
+  mockedFetch.mockReturnValue(new Promise(() => {}));
+  render(
+    <RecommendationDetailPreviewModal placeId="126508" placeName="경복궁" onClose={() => {}} />,
+    { wrapper: TripProvider },
+  );
+
+  // 로딩이 시작된 직후에는 아직 없다. 조회가 빨라지면 번쩍이지 않도록 200ms를
+  // 기다렸다가 띄운다.
+  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+
+  const skeleton = await screen.findByRole("status");
+  expect(within(skeleton).getByText("장소 상세 정보를 불러오는 중")).toBeInTheDocument();
+  // 완성된 표의 중앙값이 4줄이라 그만큼 잡아 둔다(8,060곳 실측).
+  expect(screen.getAllByTestId("info-skeleton-row")).toHaveLength(4);
+});
+
+/* 운영시간은 추천 카드에서 이미 아는 값이라 그 줄만 진짜로 채워져 있다. */
+it("운영시간을 이미 알면 스켈레톤을 한 줄 적게 그린다", async () => {
+  mockedFetch.mockReturnValue(new Promise(() => {}));
+  const { rerender } = render(
+    <RecommendationDetailPreviewModal placeId="126508" placeName="경복궁" onClose={() => {}} />,
+    { wrapper: TripProvider },
+  );
+  await screen.findByRole("status");
+  expect(screen.getAllByTestId("info-skeleton-row")).toHaveLength(4);
+
+  rerender(
+    <RecommendationDetailPreviewModal
+      item={recommendationItem({ operating_hours_display: "09:00~18:00" })}
+      onClose={() => {}}
+    />,
+  );
+
+  await screen.findByText("09:00~18:00 · 영업 중");
+  expect(screen.getAllByTestId("info-skeleton-row")).toHaveLength(3);
+  // 운영시간 줄과 스켈레톤이 같은 상자에 있어야 값이 도착할 때 상자 수가 안 바뀐다.
+  const skeletonBox = screen.getByRole("status");
+  expect(within(skeletonBox).getByText("09:00~18:00 · 영업 중")).toBeInTheDocument();
+});
+
+it("상세가 도착하면 스켈레톤이 사라지고 실제 표가 남는다", async () => {
+  let resolveDetail!: (value: RecommendationPlaceDetailResponse) => void;
+  mockedFetch.mockReturnValue(
+    new Promise((resolve) => {
+      resolveDetail = resolve;
+    }),
+  );
+  render(
+    <RecommendationDetailPreviewModal placeId="126508" placeName="경복궁" onClose={() => {}} />,
+    { wrapper: TripProvider },
+  );
+  expect(await screen.findByRole("status")).toBeInTheDocument();
+
+  resolveDetail({
+    status: "success",
+    requested_place_id: "126508",
+    place_card: card({ parking: "가능 (240대)" }),
+  });
+
+  expect(await screen.findByText("가능 (240대)")).toBeInTheDocument();
+  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+});
+
+/*
+ * 길찾기 버튼은 스크롤 영역 바깥의 하단 고정 바다. 늦게 생기면 그만큼 본문
+ * 높이가 줄며 읽던 자리가 밀린다 — 자리는 먼저 잡되 누르지는 못하게 한다.
+ */
+it("상세를 기다리는 동안 길찾기 버튼 자리를 잡되 누를 수 없다", async () => {
+  seedDeviceLocation();
+  mockedFetch.mockReturnValue(new Promise(() => {}));
+  const user = userEvent.setup();
+  render(
+    <RecommendationDetailPreviewModal placeId="126508" placeName="경복궁" onClose={() => {}} />,
+    { wrapper: TripProvider },
+  );
+
+  const button = await screen.findByRole("button", { name: /네이버 지도로 길찾기/ });
+  expect(button).toBeDisabled();
+
+  // 목적지 좌표가 상세 응답에 실려 오므로 그 전에는 열 지도가 없다.
+  await user.click(button);
+  expect(mockedDirections).not.toHaveBeenCalled();
+});
+
+it("상세가 도착하면 길찾기 버튼이 활성화된다", async () => {
+  seedDeviceLocation();
+  let resolveDetail!: (value: RecommendationPlaceDetailResponse) => void;
+  mockedFetch.mockReturnValue(
+    new Promise((resolve) => {
+      resolveDetail = resolve;
+    }),
+  );
+  const user = userEvent.setup();
+  render(
+    <RecommendationDetailPreviewModal placeId="126508" placeName="경복궁" onClose={() => {}} />,
+    { wrapper: TripProvider },
+  );
+  expect(await screen.findByRole("button", { name: /네이버 지도로 길찾기/ })).toBeDisabled();
+
+  resolveDetail({
+    status: "success",
+    requested_place_id: "126508",
+    place_card: card({ latitude: 37.5796, longitude: 126.977 }),
+  });
+
+  const button = await screen.findByRole("button", { name: /네이버 지도로 길찾기/ });
+  await waitFor(() => expect(button).toBeEnabled());
+  await user.click(button);
+  expect(mockedDirections).toHaveBeenCalledWith(
+    expect.objectContaining({ destLat: 37.5796, destLng: 126.977 }),
+  );
+});
+
+/* 현재 위치가 없으면 상세가 와도 버튼은 끝내 안 나온다 — 자리를 잡으면 영영 못
+   누르는 버튼을 보여주게 된다. */
+it("현재 위치가 없으면 로딩 중에도 버튼 자리를 잡지 않는다", async () => {
+  mockedFetch.mockReturnValue(new Promise(() => {}));
+  render(
+    <RecommendationDetailPreviewModal placeId="126508" placeName="경복궁" onClose={() => {}} />,
+    { wrapper: TripProvider },
+  );
+
+  await screen.findByRole("status");
+  expect(screen.queryByRole("button", { name: /네이버 지도로 길찾기/ })).not.toBeInTheDocument();
+});
+
+/*
+ * 스켈레톤 행과 실제 행이 같은 뼈대(InfoRowShell)에서 나와야 값이 도착할 때 표
+ * 높이가 그대로다. 한때 두 곳에 따로 적혀 있어 스켈레톤이 7px 낮았고, 표가 그만큼
+ * 늘어나며 아래 내용이 밀렸다. jsdom은 실제 높이를 재지 못하므로 뼈대가 같은지로
+ * 지킨다.
+ */
+it("스켈레톤 행과 실제 행이 같은 뼈대를 쓴다", async () => {
+  let resolveDetail!: (value: RecommendationPlaceDetailResponse) => void;
+  mockedFetch.mockReturnValue(
+    new Promise((resolve) => {
+      resolveDetail = resolve;
+    }),
+  );
+  render(
+    <RecommendationDetailPreviewModal placeId="126508" placeName="경복궁" onClose={() => {}} />,
+    { wrapper: TripProvider },
+  );
+
+  await screen.findByRole("status");
+  const skeletonRowClass = screen.getAllByTestId("info-skeleton-row")[0].className;
+
+  resolveDetail({
+    status: "success",
+    requested_place_id: "126508",
+    place_card: card({ parking: "가능 (240대)" }),
+  });
+
+  const realRow = (await screen.findAllByTestId("info-row"))[0];
+  expect(realRow.className).toBe(skeletonRowClass);
 });
