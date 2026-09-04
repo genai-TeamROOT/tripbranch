@@ -88,21 +88,22 @@ def test_발화가_정한_축의_칩은_배선이_빼고_넘긴다() -> None:
             id="혼잡도-모순인 조용한 곳만 빠짐",
         ),
         pytest.param(
-            UserConditions(environment=Environment.INDOOR),
-            "조용한 곳 사진 명소 아이와 함께",
-            id="실내외-야외인 자연·공원만 빠짐",
-        ),
-        pytest.param(
             UserConditions(companion=Companion.SOLO),
             "조용한 곳 사진 명소 자연·공원",
             id="동행-동행 칩만 통째로 빠짐",
         ),
+        pytest.param(
+            UserConditions(environment=Environment.INDOOR),
+            "조용한 곳 사진 명소 자연·공원 아이와 함께",
+            id="실내외-아무것도 안 빠짐(실측으로 판정을 뺐다)",
+        ),
     ],
 )
-def test_세_축을_각각_D에_넘긴다(conditions: UserConditions, expected: str) -> None:
+def test_두_축을_각각_D에_넘긴다(conditions: UserConditions, expected: str) -> None:
     """축 하나라도 안 넘기면 그 축의 칩이 살아서 질의에 섞인다.
 
-    한 축만 보는 테스트는 나머지 두 줄이 빠져도 통과한다 — 세 축을 따로 못 박는다.
+    한 축만 보는 테스트는 나머지 줄이 빠져도 통과한다 — 축을 따로 못 박는다.
+    실내외 건은 **안 빠지는 것**을 못 박는다(`_CONTRADICTIONS` 주석의 실측).
     """
     store = _store_with(
         _chip("조용한 곳", "preference", "quiet"),

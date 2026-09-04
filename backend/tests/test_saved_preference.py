@@ -79,11 +79,13 @@ def test_발화_취향_문구는_보지_않는다() -> None:
 
 
 def test_부딪히지_않는_칩은_전부_남는다() -> None:
-    """발화가 혼잡도만 정하면 나머지 축의 칩은 그대로 붙는다."""
+    """"조용한 곳" 칩이 없으면 혼잡도 발화로 빠지는 칩이 없다.
+
+    동행 칩도 발화에 동행이 없어 남는다.
+    """
     result = to_taste_query(_SAVED_B, concentration_intent="AVOID")
 
-    # "힙한 분위기"만 AVOID와 부딪힌다. 동행 칩은 발화에 동행이 없어 남는다.
-    assert result == "혼자 가기 좋은 사진 명소"
+    assert result == "혼자 가기 좋은 사진 명소 힙한 분위기"
 
 
 def test_place_tag_칩도_질의에_넣는다() -> None:
@@ -187,59 +189,34 @@ def test_동행_발화는_분위기_칩을_건드리지_않는다() -> None:
     assert result == "조용한 곳 자연·공원 사진 명소"
 
 
-# --- 분위기: 부딪히는 값일 때만 뺀다 -------------------------------------------
+# --- 분위기: 혼잡도가 부딪힐 때만 뺀다 ----------------------------------------
+#
+# 표는 한 줄(`quiet × SEEK`)이다. 실내외 5칩분과 trendy_hotspot은 실측으로
+# 걷어냈다 — 이유와 수치는 `_CONTRADICTIONS` 주석에 있다.
 
 
-@pytest.mark.parametrize(
-    ("chip", "kwargs"),
-    [
-        (_QUIET, {"concentration_intent": "SEEK"}),
-        (_TRENDY, {"concentration_intent": "AVOID"}),
-        (_NATURE, {"environment": "indoor"}),
-        (_WALK, {"environment": "indoor"}),
-        (_ANY_WEATHER, {"environment": "outdoor"}),
-    ],
-    ids=["조용한곳×SEEK", "힙한분위기×AVOID", "자연공원×indoor", "산책×indoor", "날씨무관×outdoor"],
-)
-def test_부딪히는_분위기_칩은_뺀다(chip: UserPreference, kwargs: dict[str, str]) -> None:
-    """실측: 모순 칩을 합치면 결과가 뒤집힌다 — "북적이는 활기찬" + 조용한 곳 칩이
-    포장마차·빈대떡을 안국선원·박물관·화랑으로 바꿨다(종로·중구 500곳).
+def test_조용한_곳_칩은_북적이는_발화에서_빠진다() -> None:
+    """실측에서 결과가 통째로 뒤집혔던 유일한 조합이다.
+
+    "북적이는 활기찬" 발화에 "조용한 곳" 칩을 합치면 순희네빈대떡·종로3가
+    포장마차가 안국선원·북촌동양문화박물관·선화랑으로 바뀌었다(종로·중구 500곳).
     """
-    assert to_taste_query([chip, _PHOTO], **kwargs) == "사진 명소"
+    assert to_taste_query([_QUIET, _PHOTO], concentration_intent="SEEK") == "사진 명소"
 
 
-@pytest.mark.parametrize(
-    ("chip", "kwargs"),
-    [
-        (_QUIET, {"concentration_intent": "AVOID"}),
-        (_TRENDY, {"concentration_intent": "SEEK"}),
-        (_NATURE, {"environment": "outdoor"}),
-        (_ANY_WEATHER, {"environment": "indoor"}),
-    ],
-    ids=["조용한곳×AVOID", "힙한분위기×SEEK", "자연공원×outdoor", "날씨무관×indoor"],
-)
-def test_같은_방향인_분위기_칩은_중복이어도_남긴다(
-    chip: UserPreference, kwargs: dict[str, str]
-) -> None:
+def test_조용한_곳_칩은_같은_방향_발화에서는_남는다() -> None:
     """중복 제거는 하지 않는다.
 
     실측 5/5에서 중복을 두는 쪽이 발화를 더 잘 반영했다(모듈 docstring 표).
-    같은 뜻이라 벡터를 발화 쪽으로 당기기 때문이다.
     """
-    assert to_taste_query([chip, _PHOTO], **kwargs) == f"{chip.label} 사진 명소"
+    assert (
+        to_taste_query([_QUIET, _PHOTO], concentration_intent="AVOID") == "조용한 곳 사진 명소"
+    )
 
 
-@pytest.mark.parametrize(
-    "kwargs",
-    [
-        {"concentration_intent": "IGNORE"},
-        {"concentration_intent": None},
-        {"environment": "any"},
-        {"environment": None},
-    ],
-)
-def test_상관없다고_말한_축은_칩을_빼지_않는다(kwargs: dict[str, str | None]) -> None:
-    """IGNORE·any는 "확정"이 아니다.
+@pytest.mark.parametrize("kwargs", [{"concentration_intent": "IGNORE"}, {}])
+def test_상관없다고_말한_축은_칩을_빼지_않는다(kwargs: dict[str, str]) -> None:
+    """`IGNORE`는 "확정"이 아니다.
 
     "사람 많아도 괜찮아"(IGNORE)는 조용한 곳을 원하지 않는다는 말이 아니다
     (`prompts/_shared/rules/concentration_intent.md`).
@@ -247,18 +224,36 @@ def test_상관없다고_말한_축은_칩을_빼지_않는다(kwargs: dict[str,
     assert to_taste_query([_QUIET, _NATURE], **kwargs) == "조용한 곳 자연·공원"
 
 
-def test_place_tag_칩은_코드_하나만_걸려도_빠진다() -> None:
-    """"자연·공원"은 코드가 다섯이다. 하나라도 부딪히면 뺀다.
+@pytest.mark.parametrize(
+    "chip",
+    [_TRENDY, _NATURE, _WALK, _ANY_WEATHER],
+    ids=["힙한분위기", "자연·공원", "산책하기좋은", "날씨상관없는곳"],
+)
+def test_실측으로_걷어낸_칩들은_이제_안_빠진다(chip: UserPreference) -> None:
+    """실내외 칩과 "힙한 분위기"는 판정 대상이 아니다.
 
-    **표에 걸리는 코드가 맨 앞이 아닌 경우까지 본다.** 카탈로그의 "자연·공원"은
-    첫 코드(공원)가 표에 있어서, 첫 코드만 보는 구현으로도 통과해 버린다 —
-    화면이 코드 순서를 바꾸면 그때 조용히 깨진다.
+    - 실내외: 비 오는 날 `environment=indoor` 요청에서 "자연·공원" 칩을 두든
+      빼든 상위 5곳의 야외 비율이 똑같이 4/5(종로)·2/5(중구)였다. 반경 경로는
+      취향 최대폭 0.15 < 환경 축 차이 0.245라 산술로도 불가능하다.
+    - 힙한 분위기: 조용한 힙플레이스가 모순이 아니다(2026-09-04 팀 결정).
+
+    발화가 무엇을 말하든 남는다 — `environment`는 인자로 받지도 않는다.
     """
-    assert contradicts(_NATURE, {"indoor"}) is True
-    assert contradicts(_NATURE, {"outdoor"}) is False
+    result = to_taste_query([chip, _PHOTO], concentration_intent="AVOID")
 
-    tail_match = _chip("어떤 자연 칩", "place_tag", "미술관", "찻집", "수목원")
-    assert contradicts(tail_match, {"indoor"}) is True
+    assert result == f"{chip.label} 사진 명소"
+
+
+def test_place_tag_칩은_코드_하나만_걸려도_빠진다() -> None:
+    """코드가 여럿인 칩은 하나라도 부딪히면 뺀다.
+
+    **표에 걸리는 코드가 맨 앞이 아닌 경우까지 본다** — 첫 코드만 보는 구현으로도
+    통과해 버리면, 화면이 코드 순서를 바꿀 때 조용히 깨진다.
+    """
+    tail_match = _chip("어떤 조용한 칩", "place_tag", "미술관", "찻집", "quiet")
+
+    assert contradicts(tail_match, {"SEEK"}) is True
+    assert contradicts(tail_match, {"AVOID"}) is False
 
 
 def test_동행_칩도_뒤쪽_코드로_걸린다() -> None:
@@ -278,10 +273,8 @@ def test_동행_칩도_뒤쪽_코드로_걸린다() -> None:
     ids=lambda c: c.label,
 )
 def test_대립하는_값이_없는_칩은_절대_안_빠진다(chip: UserPreference) -> None:
-    """표에 없는 칩은 발화가 무엇을 말하든 남는다(모듈 `_CONTRADICTIONS` 주석)."""
-    result = to_taste_query(
-        [chip], concentration_intent="AVOID", environment="indoor", companion="solo"
-    )
+    """표에 없는 칩은 발화가 무엇을 말하든 남는다."""
+    result = to_taste_query([chip], concentration_intent="AVOID", companion="solo")
 
     assert result == chip.label
 
@@ -296,11 +289,9 @@ def test_남는_칩이_없으면_None() -> None:
 
 
 def test_decided_values는_확정된_값만_담는다() -> None:
-    assert decided_values(concentration_intent="IGNORE", environment="any") == set()
-    assert decided_values(concentration_intent="SEEK", environment="indoor") == {
-        "SEEK",
-        "indoor",
-    }
+    assert decided_values(concentration_intent="IGNORE") == set()
+    assert decided_values(concentration_intent="SEEK") == {"SEEK"}
+    assert decided_values() == set()
 
 
 # --- 화면 칩 목록과 판정 표가 어긋나지 않게 -----------------------------------
@@ -356,5 +347,20 @@ _NO_OPPOSITE_ON_PURPOSE = frozenset(
         "시장", "쇼핑몰", "백화점",
         "궁궐", "사찰", "성곽", "전통체험", "마을",
         "experience", "food_exploration", "reading",
+        # 실측으로 판정을 걷어낸 것들(`_CONTRADICTIONS` 주석)
+        "trendy_hotspot",  # 조용한 힙플레이스가 모순이 아니다
+        "indoor", "walk", "공원", "산", "호수", "계곡", "수목원",  # 실내외는 효과 0
     }
 )
+
+
+def test_모순_표에는_혼잡도_값만_넣는다() -> None:
+    """`environment`를 더 이상 안 넘기므로, 실내외 값을 표에 넣으면 조용히 안 걸린다.
+
+    되살릴 때는 `to_taste_query`·`decided_values`에 인자를 다시 붙여야 한다 —
+    표에 한 줄 넣는 것만으로는 동작하지 않는다.
+    """
+    allowed = {"AVOID", "SEEK"}  # app.schemas.ConcentrationIntent - IGNORE
+    used = {value for values in _CONTRADICTIONS.values() for value in values}
+
+    assert used <= allowed, f"혼잡도 아닌 값이 표에 있다: {sorted(used - allowed)}"

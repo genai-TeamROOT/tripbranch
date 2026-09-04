@@ -1317,8 +1317,8 @@ def _saved_taste_query(
 ) -> str | None:
     """계정에 저장해 둔 취향으로 근거 검색 질의를 만든다. 쓸 것이 없으면 None.
 
-    **무엇을 질의에 넣을지는 D가 정한다**(`domain/saved_preference.py`) — 부딪히는
-    분위기 칩을 빼는 것, 발화에 동행이 있으면 동행 칩을 통째로 빼는 것이 거기 있다. 여기는
+    **무엇을 질의에 넣을지는 D가 정한다**(`domain/saved_preference.py`) — 혼잡도가
+    부딪히는 칩을 빼는 것, 발화에 동행이 있으면 동행 칩을 통째로 빼는 것이 거기 있다. 여기는
     읽어서 넘기는 배선이다. 돌려주는 값은 **발화를 뺀 저장 칩만**이라, 발화 질의와
     잇는 것은 provider가 한다(`real_recommendation_provider::_taste_matches_for`).
 
@@ -1343,7 +1343,6 @@ def _saved_taste_query(
     return saved_preference.to_taste_query(
         chips,
         concentration_intent=conditions.concentration_intent,
-        environment=conditions.environment,
         companion=conditions.companion,
     )
 

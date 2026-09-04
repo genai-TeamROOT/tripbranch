@@ -58,8 +58,9 @@
 받아들이는 이유는 동행 칩이 원래 약하기 때문이다(단독 통과율 2.4~10.0%, 좋은
 조합에 붙이면 0.46 → 0.25~0.30).
 
-**분위기(혼잡도·실내외)는 반대로 값을 본다.** 이쪽은 진짜 이항 대립이라
-"다르면 모순"이 정확하고, 축 전체를 빼면 부딪히지 않는 칩까지 잃는다.
+**분위기는 반대로 값을 본다.** 혼잡도는 진짜 이항 대립(조용 ↔ 붐빔)이라
+"다르면 모순"이 정확하고, 축 전체를 빼면 부딪히지 않는 칩까지 잃는다. 실측으로
+남은 것은 `quiet × SEEK` 한 줄뿐이다 — 이유는 `_CONTRADICTIONS` 주석에 있다.
 
 임베딩 유사도로 모순을 거르는 안은 **반대말을 못 잡아서** 기각했다. "조용한
 곳"과 "혼자 조용히 쉴 만한"은 0.694로 붙지만 "조용한 곳"과 "북적이는 활기찬"은
@@ -67,13 +68,13 @@
 
 ## 발화가 그 축을 말했는지는 LLM이 이미 답해 뒀다
 
-`concentration_intent`·`environment`·`companion`은 `recommend.extract`가 매 턴
-뽑는 값이다. 여기서는 **읽기만 한다** — 프롬프트를 건드리지 않으므로 같은 요청에
-항상 같은 결과가 나오고, 프롬프트 버전을 올릴 일도 없다.
+`concentration_intent`와 `companion`은 `recommend.extract`가 매 턴 뽑는 값이다.
+여기서는 **읽기만 한다** — 프롬프트를 건드리지 않으므로 같은 요청에 항상 같은
+결과가 나오고, 프롬프트 버전을 올릴 일도 없다.
 
-`environment`가 날씨로도 채워지는 것(`extract.md`: weather_intent가 AVOID/ENJOY면
-environment도 함께 채운다)은 여기서 이득이다 — 비 오는 날 요청에서 "자연·공원"
-칩이 저절로 빠진다.
+`environment`도 뽑히지만 **받지 않는다.** 실내외로 칩을 빼봐야 결과가 같았다
+(`_CONTRADICTIONS` 주석의 실측). 쓰지 않는 값을 인자로 들고 있으면 "실내외를
+보고 있다"고 읽히므로 시그니처에서 뺐다.
 
 ## 고른 칩은 종류를 가리지 않고 전부 넣는다
 
@@ -133,42 +134,45 @@ _COMPANION_CODES = frozenset(
     {"date", "with_friends", "with_kids", "group_gathering", "with_parents", "alone"}
 )
 
-# 분위기 칩 → 그 칩과 부딪히는 **발화 값**들.
-# 혼잡도 어휘(AVOID/SEEK)와 실내외 어휘(indoor/outdoor)는 겹치지 않아 한 표에 둔다.
+# 분위기 칩 → 그 칩과 부딪히는 **발화 값**들. 지금은 한 줄이다.
 #
-# place_tag 칩은 코드를 여러 개 든다("자연·공원" = 공원·산·호수·계곡·수목원).
+# `place_tag` 칩은 코드를 여러 개 든다("자연·공원" = 공원·산·호수·계곡·수목원).
 # 라벨을 키로 쓰지 않는 것은 문구가 바뀌면 조용히 안 걸리기 때문이다.
 #
-# **11개 칩만 적었다.** 나머지는 대립하는 값이 없어 일부러 비웠다 — 아늑한 공간·
-# 힐링하기 좋은은 조용한 쪽으로 기울 뿐 혼잡도를 말한 칩이 아니고(붐비는 아늑한
-# 카페가 모순은 아니다), 카페·전시·문화는 실내가 많을 뿐 실내외를 말한 칩이
-# 아니다(테라스 카페·전통시장이 야외다). 야경·사진·전망에는 반대말이 없다.
+# **처음에는 8줄이었다. 실측으로 7줄을 걷어냈다**(2026-09-04, 종로·중구 구 단위
+# 요청, 후보 30곳):
 #
-# 아래 둘은 **실측 근거 없이 판단으로 넣었다.** 빼도 나머지는 그대로 동작한다.
-# - trendy_hotspot: "힙하다"가 반드시 붐비는 것은 아니다(조용한 힙플레이스).
-#   코드 이름이 hotspot이라 붐비는 쪽으로 봤다.
-# - indoor("날씨 상관없는 곳"): 라벨만 보면 `any`에 가깝다. 대응 코드가
-#   `indoor`이고 뜻이 "실내라 날씨를 안 탄다"라 실내로 봤다.
+# - **실내외 5칩분**(indoor·walk·공원·산·호수·계곡·수목원)을 뺐다. 비 오는 날
+#   `environment=indoor` 요청에서 "자연·공원" 칩을 두든 빼든 상위 5곳의 야외
+#   비율이 **똑같이 4/5(종로)·2/5(중구)**였다. 반경 경로는 산술로도 불가능하다 —
+#   취향 최대폭 0.15가 환경 축 차이 0.245(1.00 대 0.30)보다 작아 취향이 환경을
+#   이길 수 없다.
+#
+#   **다만 "환경 축이 야외를 걸러준다"는 뜻은 아니다.** 취향 축을 아예 꺼도 야외가
+#   4/5였다 — 공원·산은 `operating_schedule`이 all_day라 잔여시간 만점을 받고,
+#   실내 시설은 운영시간 정보가 없어 낮은 점수를 받는 탓이다. 취향과 무관한 별개
+#   문제라 여기서 고치지 않는다(운영시간 적재 / 환경 가중치 영역).
+#
+# - **trendy_hotspot을 뺐다.** "힙하다"가 반드시 붐비는 것은 아니다 — 조용한
+#   힙플레이스가 모순이 아니다(2026-09-04 팀 결정). 코드 이름이 hotspot이라
+#   붐비는 쪽으로 봤던 것이고, 실측 근거가 없던 줄이다.
+#
+# 남긴 한 줄은 **실측에서 결과가 통째로 뒤집혔던 유일한 조합**이다 — "북적이는
+# 활기찬" 발화에 "조용한 곳" 칩을 합치면 순희네빈대떡·종로3가 포장마차가
+# 안국선원·북촌동양문화박물관·선화랑으로 바뀌었다(종로·중구 500곳).
+#
+# 값 어휘는 `app.schemas.ConcentrationIntent`와 똑같이 맞춘다 — 이름이 같아야
+# 비교가 문자열 하나로 끝난다. **혼잡도 아닌 값을 넣으면 조용히 안 걸린다**
+# (`environment`를 더 이상 넘기지 않으므로) — 테스트가 그걸 막는다.
 _CONTRADICTIONS: dict[str, frozenset[str]] = {
-    # 혼잡도 — concentration_intent
     "quiet": frozenset({"SEEK"}),  # "조용한 곳"
-    "trendy_hotspot": frozenset({"AVOID"}),  # "힙한 분위기"
-    # 실내외 — environment
-    "indoor": frozenset({"outdoor"}),  # "날씨 상관없는 곳"
-    "walk": frozenset({"indoor"}),  # "산책하기 좋은"
-    "공원": frozenset({"indoor"}),  # 아래 다섯은 "자연·공원" 한 칩의 코드다
-    "산": frozenset({"indoor"}),
-    "호수": frozenset({"indoor"}),
-    "계곡": frozenset({"indoor"}),
-    "수목원": frozenset({"indoor"}),
 }
 
-# 발화가 그 축을 **정하지 않은** 값들. null과 같이 취급한다.
-# - concentration_intent=IGNORE는 "사람 많아도 괜찮아"라 SEEK가 아니다
-#   (`prompts/_shared/rules/concentration_intent.md`).
-# - environment="any"는 조건을 좁히지 않는 뜻이다(같은 폴더 `environment.md`).
-# 둘 다 "상관없다"이므로 칩을 뺄 근거가 못 된다.
-_UNDECIDED = frozenset({"IGNORE", "any"})
+# 발화가 혼잡도를 **정하지 않은** 값. null과 같이 취급한다.
+# `IGNORE`는 "사람 많아도 괜찮아"라 SEEK가 아니다
+# (`prompts/_shared/rules/concentration_intent.md`) — 조용한 곳을 저장한 사람에게
+# "사람 많아도 괜찮아"는 조용한 곳을 원하지 않는다는 말이 아니다.
+_UNDECIDED = frozenset({"IGNORE"})
 
 
 class SavedPreferenceChip(Protocol):
@@ -209,22 +213,19 @@ def contradicts(chip: SavedPreferenceChip, spoken_values: Collection[str]) -> bo
     )
 
 
-def decided_values(
-    *, concentration_intent: str | None = None, environment: str | None = None
-) -> set[str]:
-    """발화가 값을 확정한 분위기 축의 값들. "상관없다"는 확정으로 치지 않는다."""
-    return {
-        str(value)
-        for value in (concentration_intent, environment)
-        if value and value not in _UNDECIDED
-    }
+def decided_values(*, concentration_intent: str | None = None) -> set[str]:
+    """발화가 값을 확정한 분위기 축의 값들. "상관없다"는 확정으로 치지 않는다.
+
+    집합으로 돌려주는 이유는 `_CONTRADICTIONS`가 축을 구분하지 않기 때문이다 —
+    축이 늘면 여기에 값을 더 담으면 되고 판정부는 그대로다.
+    """
+    return {str(value) for value in (concentration_intent,) if value and value not in _UNDECIDED}
 
 
 def to_taste_query(
     chips: Sequence[SavedPreferenceChip],
     *,
     concentration_intent: str | None = None,
-    environment: str | None = None,
     companion: str | None = None,
 ) -> str | None:
     """저장된 칩을 취향 근거 검색 질의로 바꾼다. 쓸 것이 없으면 `None`.
@@ -246,9 +247,7 @@ def to_taste_query(
     맞지 않는다 — 종로·중구 500곳 실측에서 `healing` 2.6% 대 "힐링하기 좋은" 52.4%,
     `cozy` 13.8% 대 "아늑한 공간" 53.0%였다. 코드는 칩을 가려내는 데만 쓴다.
     """
-    spoken_values = decided_values(
-        concentration_intent=concentration_intent, environment=environment
-    )
+    spoken_values = decided_values(concentration_intent=concentration_intent)
     said_companion = bool(companion)
 
     labels = [
