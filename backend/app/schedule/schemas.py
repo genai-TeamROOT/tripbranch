@@ -138,29 +138,6 @@ class SchedulePartialLLMPlan(BaseModel):
     # 앞자리가 틀리면 전체가 조용히 틀렸다.
 
 
-def target_item_range(time_available_min: int | None) -> tuple[int, int]:
-    """활동 가능 시간(분)에 맞는 일정 항목 개수의 목표 범위(최소, 최대)를 계산한다.
-    (SCHEDULE-10, "2시간 코스 짜줘"처럼 짧은 시간 요청에서 3~5개 고정 하한이
-    비현실적이라는 문제가 실사용 질문으로 제기돼 발견)
-
-    기준: 프롬프트가 이미 안내하는 장소당 체류시간 예시(카페 60분, 관광지 90분)와
-    구간 사이 이동 15분 내외를 기준 삼았다. 3곳을 채우려면 최소
-    60*3+15*2=210분(3.5시간) 안팎이 필요해, 그보다 짧은 시간에 3개를 강제하면
-    LLM이 체류시간을 비현실적으로 줄이거나(예: 카페 20분), 개수 제약 자체를
-    맞추지 못해 검증 실패 → 재시도 → 502로 이어진다.
-
-    time_available이 없으면(사용자가 시간 제한을 말하지 않음) 기존 정책을 그대로
-    쓴다(3~5개, "3~4시간 내외로 구성").
-    """
-    if time_available_min is None:
-        return 3, 5
-    if time_available_min < 120:
-        return 1, 2
-    if time_available_min < 210:
-        return 2, 4
-    return 3, 5
-
-
 class ScheduleLLMItem(BaseModel):
     """LLM이 만드는 일정 항목 1건. **시각이 들어 있지 않다.** (TP-215)
 
@@ -198,13 +175,15 @@ class ScheduleLLMPlan(BaseModel):
     항목들의 체류·이동 합과 일치하는지 검사하는 곳이 없었다 — 지금은
     app.schedule.timeline이 첫 도착부터 마지막 체류 종료까지로 계산한다.
 
-    items에는 구조적으로 min_length=1/max_length=5만 건다 — "이번 요청에 맞는"
+    items에는 구조적으로 min_length=1/max_length=5만 건다(max_length는
+    budget.MAX_SCHEDULE_ITEMS와 같은 수여야 한다) — "이번 요청에 맞는"
     목표 개수는 사용자의 time_available에 따라 1~5 사이에서 달라져
-    (target_item_range() 참고) Pydantic Field로 고정 범위를 강제할 수 없다.
+    (budget.derive_item_range() 참고) Pydantic Field로 고정 범위를 강제할 수 없다.
     SCHEDULE-07 때는 항상 min_length=3을 걸어 "LLM이 개수 지시를 안 지킨다"는
     문제(9절)를 막았지만, 활동 가능 시간이 짧은 요청(예: "2시간 코스 짜줘")에서는
     이 고정 하한 자체가 비현실적이라는 게 SCHEDULE-10에서 확인됐다. 목표 개수
-    범위는 gemini_prompts.build_schedule_planning_instruction()이
+    범위는 budget.derive_item_range()가 예산 산수로 구하고
+    gemini_prompts.build_schedule_planning_instruction()이
     time_available_min으로 프롬프트에 직접 지시하는 쪽으로 옮기고, 이 모델의
     구조적 제약은 "0개도 6개 이상도 아니다"라는 최소한만 남겼다. 검증 실패 시
     app.providers.gemini.py의 _call_structured()가 이미 한 번 자동 재시도한다.
@@ -220,5 +199,4 @@ __all__ = [
     "ScheduleLLMPlan",
     "SchedulePartialFillRequest",
     "SchedulePartialLLMPlan",
-    "target_item_range",
 ]

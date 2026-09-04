@@ -28,6 +28,7 @@ from app.agent_context.schemas import (
 )
 from app.auth.principal import Principal
 from app.config import settings
+from app.domain import saved_preference
 from app.domain.ranking_origin import resolve_ranking_origin
 from app.domain.schedule_travel import (
     ModeJudgmentContext,
@@ -62,6 +63,12 @@ from app.prompts.registry import turn_prompt_version
 from app.providers.protocols import LLMProvider
 from app.repositories.protocols import PlaceDetailsReadRepository
 from app.schedule.associations import fetch_co_visited_hints
+from app.schedule.budget import walkable_cluster_size
+from app.schedule.metrics import (
+    SCHEDULE_QUALITY_STEP,
+    WALKABLE_THRESHOLD_MIN,
+    schedule_quality_metrics,
+)
 from app.schedule.planner import plan_partial_schedule, plan_schedule
 from app.schedule.schemas import SchedulePartialFillRequest, SchedulePlanningRequest
 from app.schemas import (
@@ -170,6 +177,7 @@ from app.services.runtime.tool_debug import (
     build_info_concentration_execution_debug,
     build_tool_execution_debug,
 )
+from app.state import preferences as state_preferences
 from app.state.schema import (
     ConversationTurn,
     PendingInfoContext,
@@ -269,6 +277,7 @@ def _record_trace_safely(
     prompt_version: str | None = None,
     scoring_version: str | None = None,
     token_usage: int | None = None,
+    metrics: dict[str, Any] | None = None,
     store: StateStore | None,
 ) -> None:
     """실행 단계 1건을 B에 기록한다. (llmops-trace-contract-v1.md AF-12, B-07)
@@ -290,6 +299,7 @@ def _record_trace_safely(
                 prompt_version=prompt_version,
                 scoring_version=scoring_version,
                 token_usage=token_usage,
+                metrics=metrics,
             ),
             store=store,
         )
@@ -1308,6 +1318,43 @@ def _narrow_prepared(
     )
 
 
+def _saved_taste_query(
+    conditions: UserConditions,
+    principal: Principal | None,
+    store: StateStore | None,
+) -> str | None:
+    """계정에 저장해 둔 취향으로 근거 검색 질의를 만든다. 쓸 것이 없으면 None.
+
+    **무엇을 질의에 넣을지는 D가 정한다**(`domain/saved_preference.py`) — 혼잡도가
+    부딪히는 칩을 빼는 것, 발화에 동행이 있으면 동행 칩을 통째로 빼는 것이 거기 있다. 여기는
+    읽어서 넘기는 배선이다. 돌려주는 값은 **발화를 뺀 저장 칩만**이라, 발화 질의와
+    잇는 것은 provider가 한다(`real_recommendation_provider::_taste_matches_for`).
+
+    발화에 취향이 있어도 조회한다. 발화가 정본이고 저장값은 뒤에 덧붙는 값이라,
+    발화가 정하지 않은 축의 칩은 그대로 살아남는다.
+
+    신원이 없으면(게스트) 저장할 자리가 없어 항상 None이다 — 취향은 세션이 아니라
+    사람에게 붙는 값이라 `user_preferences`가 user_id를 필수로 잡는다
+    (`state/preferences.py`).
+
+    조회 실패는 추천을 막지 않는다. 취향은 순위를 다듬는 축이지 후보를 만드는
+    축이 아니라서, 못 읽으면 저장값 없이 채점하는 편이 낫다 — 취향 근거 검색
+    실패를 삼키는 것과 같은 이유다(`real_recommendation_provider`).
+    """
+    if principal is None or store is None:
+        return None
+    try:
+        chips = state_preferences.get_items(store, principal.user_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("저장된 취향 조회 실패 — 저장값 없이 채점합니다.", exc_info=True)
+        return None
+    return saved_preference.to_taste_query(
+        chips,
+        concentration_intent=conditions.concentration_intent,
+        companion=conditions.companion,
+    )
+
+
 async def _score_with_measured_routes(
     recommendation_provider: StagedRecommendationProvider,
     conditions: UserConditions,
@@ -1317,6 +1364,10 @@ async def _score_with_measured_routes(
     travel_route_tool: TravelRouteToolProvider | None,
     recommendation_limit: int,
     llm: LLMProvider | None = None,
+    # 계정에 저장해 둔 취향으로 만든 근거 검색 질의. 1차·2차 채점에 모두 넘긴다 —
+    # 한쪽만 주면 취향으로 후보를 좁혀 놓고 최종 순위에서는 취향을 빼게 된다
+    # (2026-08-20에 그 계열 사고가 있었다, SCORING_VERSION 1.4.0).
+    saved_taste_query: str | None = None,
 ) -> RecommendationResponse:
     """직선거리로 한 번 줄 세운 뒤, 상위 후보에만 실측을 붙여 다시 채점한다.
 
@@ -1340,13 +1391,16 @@ async def _score_with_measured_routes(
     """
     if travel_route_tool is None:
         return await recommendation_provider.score_prepared(
-            conditions, prepared, limit=recommendation_limit
+            conditions,
+            prepared,
+            limit=recommendation_limit,
+            saved_taste_query=saved_taste_query,
         )
 
     # 1차 — 실측 없이 직선거리로 줄을 세워 실측할 후보를 고른다.
     shortlist_limit = max(recommendation_limit, _MEASURED_ROUTE_CANDIDATE_LIMIT)
     first_pass = await recommendation_provider.score_prepared(
-        conditions, prepared, limit=shortlist_limit
+        conditions, prepared, limit=shortlist_limit, saved_taste_query=saved_taste_query
     )
     shortlist_ids = [
         item.place_id
@@ -1370,7 +1424,10 @@ async def _score_with_measured_routes(
     )
     if not travel_routes:
         return await recommendation_provider.score_prepared(
-            conditions, narrowed, limit=recommendation_limit
+            conditions,
+            narrowed,
+            limit=recommendation_limit,
+            saved_taste_query=saved_taste_query,
         )
 
     # 2차 — 실측을 받은 후보끼리 다시 줄을 세운다.
@@ -1379,6 +1436,7 @@ async def _score_with_measured_routes(
         narrowed,
         travel_routes=travel_routes,
         limit=recommendation_limit,
+        saved_taste_query=saved_taste_query,
     )
 
 
@@ -4473,6 +4531,12 @@ async def _score_recommendations(
             tool_context = _merge_recommendation_context_places(tool_context, saved_context)
 
         merged_prepared = recommendation_provider.merge_prepared(prepared_batches)
+        # 계정에 저장해 둔 취향에서 발화와 부딪히지 않는 칩을 골라 온다. 발화에
+        # 취향이 있어도 값이 있고, 호출부가 발화 질의 뒤에 이어 붙인다.
+        #
+        # 한 번만 읽어 1차·2차 채점과 보관함 덧붙이기가 같은 값을 쓰게 한다 —
+        # 회차 중간에 갈리면 취향으로 후보를 좁혀 놓고 최종 순위에서 다른 자를 쓴다.
+        saved_taste_query = _saved_taste_query(agent_conditions, principal, store)
         recommendations = await _score_with_measured_routes(
             recommendation_provider,
             agent_conditions,
@@ -4481,6 +4545,7 @@ async def _score_recommendations(
             travel_route_tool=travel_route_tool,
             recommendation_limit=recommendation_limit,
             llm=llm,
+            saved_taste_query=saved_taste_query,
         )
         # 자르기에서 빠진 보관함 장소만 좁혀서 한 번 더 채점해 붙인다. 점수를
         # 지어내지 않는 것이 핵심이다 — D가 같은 공식으로 실제로 매긴다.
@@ -4492,6 +4557,7 @@ async def _score_recommendations(
                 agent_conditions,
                 _narrow_prepared(merged_prepared, cut_saved_ids),
                 limit=len(cut_saved_ids),
+                saved_taste_query=saved_taste_query,
             )
             recommendations = _with_pinned_recommendations(
                 recommendations, pinned, cut_saved_ids
@@ -4649,14 +4715,32 @@ async def _run_schedule_branch(
     # 순서를 그대로 넘긴다 — 항목 수 상한을 넘으면 planner가 이 순서로 앞에서부터
     # 자르므로 정렬을 바꾸면 "왜 그 곳이 빠졌는지" 설명이 달라진다.
     saved_place_ids = [item.place_id for item in session_context.saved_places]
-    # 후보 목록에 아예 없는 보관함 장소(폐점 하드 필터 등으로 D가 걸러낸 경우).
-    # planner는 이름을 알 방법이 없으므로 여기서 보관함에 저장된 이름으로 채운다.
+    # 후보 목록에 아예 없는 보관함 장소. planner는 이름을 알 방법이 없으므로
+    # 여기서 보관함에 저장된 이름으로 채운다.
+    #
+    # **사유를 둘로 가른다**(TP-236). D가 방문 시각 영업시간으로 걸러낸 것은
+    # 시간대를 바꾸면 실제로 들어가고, 그 밖의 이유(장소 상세 없음·좌표 없음)는
+    # 시간대를 어떻게 바꿔도 결과가 같다. 한 리스트에 두면 화면이 두 경우에 같은
+    # 안내를 하게 되고, 뒤쪽 사용자는 통하지 않는 재시도를 반복한다.
+    #
+    # 판정은 D가 이미 해 둔 것을 그대로 쓴다 — 바로 위 6-1에서 노출 이력에
+    # 기록하는 `recommendations.excluded_closed_place_ids`와 같은 값이다. 여기서
+    # 영업시간을 다시 해석하면 D의 제외 판정과 화면 안내가 갈릴 수 있다.
+    #
+    # `effective_ignore_operating_hours`가 켜진 턴에는 D가 폐점 필터를 돌리지
+    # 않아 이 집합이 비고, 전부 absent 쪽으로 간다 — 그 턴에는 영업시간이 빠진
+    # 이유가 아니므로 그것이 맞다.
     candidate_place_ids = {c.place_id for c in schedule_candidates}
-    absent_saved_place_names = [
-        item.name
-        for item in session_context.saved_places
-        if item.place_id not in candidate_place_ids
-    ]
+    closed_place_ids = set(recommendations.excluded_closed_place_ids)
+    absent_saved_place_names: list[str] = []
+    closed_saved_place_names: list[str] = []
+    for item in session_context.saved_places:
+        if item.place_id in candidate_place_ids:
+            continue
+        if item.place_id in closed_place_ids:
+            closed_saved_place_names.append(item.name)
+        else:
+            absent_saved_place_names.append(item.name)
 
     # 6-2-1) SCHEDULE-09 2단계: REJECT_SPECIFIC으로 재라우팅된 턴이면 통째로
     #        새로 짜지 않고, target_indices가 가리키는 자리만 새로 채운다.
@@ -4708,6 +4792,13 @@ async def _run_schedule_branch(
                 )
             )
 
+    # 거리 행렬을 한 번만 만든다(TP-242). 예전에는 부분 재편성·전체 편성 두 분기가
+    # 각각 만들었는데, 여기에 지표까지 따로 만들면 같은 요청을 세 번 계산하고
+    # "지표가 본 거리"와 "편성이 쓴 거리"가 갈릴 수 있다.
+    schedule_pairwise_km = _build_pairwise_distances_km(
+        schedule_candidates, places, fallback_coordinates=snapshot_coordinates
+    )
+
     if pinned_items and llm_output.modify is not None:
         partial_request = SchedulePartialFillRequest(
             pinned_items=pinned_items,
@@ -4715,9 +4806,7 @@ async def _run_schedule_branch(
             candidates=schedule_candidates,
             conditions=agent_conditions,
             visit_datetime=None,
-            pairwise_distances_km=_build_pairwise_distances_km(
-                schedule_candidates, places, fallback_coordinates=snapshot_coordinates
-            ),
+            pairwise_distances_km=schedule_pairwise_km,
             travel_candidates=_build_travel_candidates(
                 schedule_candidates, places, fallback_coordinates=snapshot_coordinates
             ),
@@ -4747,9 +4836,7 @@ async def _run_schedule_branch(
             must_include_place_ids=saved_place_ids,
             conditions=agent_conditions,
             visit_datetime=None,
-            pairwise_distances_km=_build_pairwise_distances_km(
-                schedule_candidates, places, fallback_coordinates=snapshot_coordinates
-            ),
+            pairwise_distances_km=schedule_pairwise_km,
             travel_candidates=_build_travel_candidates(
                 schedule_candidates, places, fallback_coordinates=snapshot_coordinates
             ),
@@ -4771,13 +4858,48 @@ async def _run_schedule_branch(
             stage="scheduling",
         )
 
-    if absent_saved_place_names:
+    if absent_saved_place_names or closed_saved_place_names:
         # planner가 채운 목록과 합치지 않는다 — 사유가 정반대라, 섞으면 화면이
         # 두 경우에 같은 해결책("시간을 늘려보라")을 안내하게 된다. 후보에 아예
         # 없었던 장소는 시간을 늘려도 들어가지 않는다.
+        #
+        # 두 필드를 한 번에 덮는다(TP-236). 한쪽만 비어 있어도 빈 리스트를 함께
+        # 써서, 이 두 필드의 값이 planner가 아니라 여기서만 정해진다는 것을
+        # 호출부에서 읽을 수 있게 둔다.
         schedule_result = schedule_result.model_copy(
-            update={"absent_saved_place_names": absent_saved_place_names}
+            update={
+                "absent_saved_place_names": absent_saved_place_names,
+                "closed_saved_place_names": closed_saved_place_names,
+            }
         )
+
+    # 품질 지표를 한 줄 남긴다(TP-242). schedule_result의 모든 필드가 확정된 뒤라야
+    # 누락 사유 건수가 맞는다 — 바로 위에서 absent/closed를 덮어쓴다.
+    #
+    # **기록 실패가 응답을 막지 않는다.** _record_trace_safely()가 예외를 흡수한다.
+    # latency_ms는 편성 파이프라인이 이미 잰 값을 그대로 쓴다 — 여기서 다시 재면
+    # 지표를 만드는 시간까지 섞인다.
+    _record_trace_safely(
+        session_id=state_response.session_id,
+        run_id=state_response.run_id,
+        step=SCHEDULE_QUALITY_STEP,
+        latency_ms=int(schedule_result.elapsed_ms),
+        metrics=schedule_quality_metrics(
+            schedule_result,
+            time_available_min=agent_conditions.time_available,
+            saved_place_count=len(saved_place_ids),
+            walkable_cluster_size=walkable_cluster_size(
+                SchedulePlanningRequest(
+                    candidates=schedule_candidates,
+                    conditions=agent_conditions,
+                    visit_datetime=None,
+                    pairwise_distances_km=schedule_pairwise_km,
+                ),
+                within_min=WALKABLE_THRESHOLD_MIN,
+            ),
+        ),
+        store=store,
+    )
 
     await _emit_progress(
         stream_event_sink,

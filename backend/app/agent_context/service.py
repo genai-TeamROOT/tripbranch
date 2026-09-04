@@ -184,6 +184,9 @@ _REALTIME_CITYDATA_QUESTION_TYPES = {
     "realtime_traffic",
 }
 _PUBLIC_PARKING_QUESTION_TYPE = "realtime_public_parking"
+# 행사를 찾는 질의. 지명이 없을 때 되묻는 문장이 다른 유형과 달라야 해서 따로 묶는다
+# — "축제 추천해줘"는 장소를 물은 발화가 아니다(TP-237).
+_EVENT_QUESTION_TYPES = {"event", "realtime_event"}
 _CITYDATA_SOURCE_URL = "https://data.seoul.go.kr/dataList/OA-21285/F/1/datasetView.do"
 _MUNICIPAL_PARKING_SOURCE_URL = "https://data.seoul.go.kr/dataList/OA-21709/S/1/datasetView.do"
 
@@ -554,7 +557,11 @@ class ContextService:
                 request_id=request.request_id,
                 status="needs_clarification",
                 clarification=Clarification(
-                    code="place_required",
+                    code=(
+                        "event_place_required"
+                        if request.question_type in _EVENT_QUESTION_TYPES
+                        else "place_required"
+                    ),
                     missing_fields=["place_name"],
                     candidates=[],
                 ),
@@ -1220,6 +1227,15 @@ class ContextService:
             requested_name=resolved_location.resolved_name,
         )
         if nearest is None:
+            if request.question_type == "realtime_event":
+                # 서울시 실시간이 지원하지 않는 지역이어도 TourAPI에는 그 구 행사가 있다.
+                # 아래 "행사만 두 출처를 잇는다" 주석과 같은 이유다.
+                return await self._fetch_event_info(
+                    request,
+                    place_name=place_name,
+                    resolved_location=resolved_location,
+                    location_metadata=location_metadata,
+                )
             return _realtime_city_info_no_data_response(
                 request,
                 place_name=place_name,
@@ -1379,6 +1395,22 @@ class ContextService:
         result_status: Literal["success", "no_data", "unavailable"] = (
             "success" if fields else "no_data"
         )
+        if not fields and question_type == "realtime_event":
+            # **행사만 두 출처를 잇는다.** 서울시 실시간(citydata `EVENT_STTS`)과 TourAPI
+            # (searchFestival2)가 거의 겹치지 않아서다 — 2026-09-04 실측에서 그날 진행 중인
+            # 행사가 서울시 95건·TourAPI 21건인데 양쪽에 다 있는 것은 3건뿐이었다. 담는
+            # 것도 다르다(서울시는 미술관 기획전·문화재단 프로그램, TourAPI는 왕궁수문장
+            # 교대의식·한강야경투어 같은 관광 콘텐츠). 그래서 서울시가 비었다고 "행사가
+            # 없다"고 답하면 TourAPI에 있는 것을 못 본 채로 끝난다.
+            #
+            # 주차·지하철 같은 다른 realtime 유형에는 이런 두 번째 출처가 없어 이 분기가
+            # 없다. 여기서도 TourAPI가 비면 그 결과(no_data)를 그대로 내보낸다.
+            return await self._fetch_event_info(
+                request,
+                place_name=place_name,
+                resolved_location=resolved_location,
+                location_metadata=location_metadata,
+            )
         return InfoContextResponse(
             request_id=request.request_id,
             status="success" if fields else "no_data",

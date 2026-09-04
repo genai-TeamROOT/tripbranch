@@ -21,6 +21,7 @@ from app.schemas import (
     OutputStatus,
     RecommendationItem,
     RecommendationResponse,
+    ScheduleBudgetStatus,
     ScheduleItem,
     ScheduleResult,
     Severity,
@@ -1576,12 +1577,16 @@ def test_schedule_message_unchanged_when_nothing_omitted() -> None:
 
 
 def test_schedule_message_does_not_suggest_retry_for_absent_saved_places() -> None:
-    """후보에 아예 없던 장소에 무조건적인 재시도를 권하지 않는다. (SCHEDULE-12, D-116)
+    """후보에 아예 없던 장소에 시간대 변경을 권하지 않는다. (SCHEDULE-12, D-116, TP-236)
 
-    "시간을 늘려보라"는 이 경우에 통하지 않는다 — 후보 수집 단계에서 안 잡힌
-    것이라 편성 조건과 무관하기 때문이다. 그런데도 권하면 같은 실패를 반복한다.
-    시간대 변경만은 사유가 영업시간일 때 실제로 통하므로 **조건을 단 채로**
-    제시한다(TP-223).
+    "시간을 늘려보라"도 "시간대를 바꿔보라"도 이 경우에 통하지 않는다 — 장소
+    정보를 못 가져와 후보 수집 단계에서 안 잡힌 것이라 편성 조건과 무관하기
+    때문이다. 그런데도 권하면 같은 실패를 반복한다.
+
+    TP-223 때는 영업시간 건이 이 필드에 섞여 있어서 "문 닫는 시간 때문이라면"
+    조건을 달아 시간대 변경을 제시했다. TP-236에서 영업시간 건을
+    `closed_saved_place_names`로 갈라냈으므로, 이 필드에는 조건부로도 권하지
+    않는다.
     """
 
     schedule = ScheduleResult(
@@ -1597,11 +1602,67 @@ def test_schedule_message_does_not_suggest_retry_for_absent_saved_places() -> No
 
     assert "스태픽스, 아띠인력거" in message
     assert "시간을 늘리거나" not in message
-    # 사유를 한쪽으로 단정하지 않는다 — 둘 다 말한다.
-    assert "문을 닫는 시간이거나 장소 정보를 못 찾은 경우라" in message
-    assert "시간대를 바꾸면 들어갈 수도 있어요" in message
+    # 시간대 변경을 권하는 어떤 표현도 나가지 않는다.
+    assert "시간대를 바꾸면" not in message
+    assert "장소 정보를 못 찾은 경우라, 시간대를 바꿔도 결과는 같아요" in message
+    # 영업시간을 사유로 말하지 않는다 — 그 건은 이 필드에 오지 않는다.
+    assert "문을 닫" not in message
     # 내부 용어를 쓰지 않는다.
     assert "후보" not in message
+
+
+def test_schedule_message_promises_a_time_change_for_closed_saved_places() -> None:
+    """문을 닫아 빠진 장소에는 시간대 변경을 조건 없이 권한다. (TP-236)
+
+    넷 중 유일하게 해결책이 확정적인 경우다 — D가 방문 시각 영업시간으로
+    걸러낸 것이므로 시간대를 바꾸면 실제로 후보에 들어온다. 그래서 absent와
+    달리 "들어갈 수도 있어요"가 아니라 "넣어드릴 수 있어요"로 말한다.
+    """
+
+    schedule = ScheduleResult(
+        items=[_schedule_item()],
+        total_duration_min=120,
+        route_summary="경복궁 근처 코스예요.",
+        basis_note="기준 시각 안내",
+        closed_saved_place_names=["스태픽스"],
+        elapsed_ms=100.0,
+    )
+
+    message = compose_schedule_message(schedule)
+
+    assert "스태픽스는 그 시간에 문을 닫아요" in message
+    assert "시간대를 바꾸면 일정에 넣어드릴 수 있어요" in message
+    # absent 쪽 문장은 나가지 않는다.
+    assert "장소 정보를 못 찾은" not in message
+    assert "후보" not in message
+
+
+def test_schedule_message_separates_closed_from_absent() -> None:
+    """두 사유가 함께 있으면 각각 맞는 문구가 나간다. (TP-236)
+
+    이 카드의 핵심이다. 예전에는 한 필드였고 한 문장이 나가서, 시간대를 바꾸면
+    되는 사람과 바꿔도 소용없는 사람이 같은 안내를 받았다.
+    """
+
+    schedule = ScheduleResult(
+        items=[_schedule_item()],
+        total_duration_min=120,
+        route_summary="경복궁 근처 코스예요.",
+        basis_note="기준 시각 안내",
+        closed_saved_place_names=["스태픽스"],
+        absent_saved_place_names=["아띠인력거"],
+        elapsed_ms=100.0,
+    )
+
+    message = compose_schedule_message(schedule)
+
+    assert "스태픽스는 그 시간에 문을 닫아요. 시간대를 바꾸면 일정에 넣어드릴 수 있어요." in message
+    assert (
+        "아띠인력거는 이번엔 넣지 못했어요. "
+        "장소 정보를 못 찾은 경우라, 시간대를 바꿔도 결과는 같아요."
+    ) in message
+    # 문 닫은 쪽을 먼저 말한다 — 바로 할 수 있는 일이 앞에 온다.
+    assert message.index("문을 닫아요") < message.index("넣지 못했어요")
 
 
 def test_schedule_message_separates_every_omission_reason() -> None:
@@ -1735,30 +1796,52 @@ class Test새로_넣은_장소_안내:
 
 
 class Test상한_안내:
-    """항목 수 상한은 활동 가능 시간에 따라 달라진다. (TP-223)"""
+    """항목 수 상한은 요청마다 다르다. (TP-223, TP-239)
+
+    **화면은 그 수를 계산하지 않고 편성이 실어 보낸 값을 읽는다.** 상한이 활동
+    가능 시간뿐 아니라 후보의 분류(체류 최소값)와 서로의 거리까지 보고 정해지므로
+    (TP-239), 후보를 모르는 이쪽에서는 같은 답을 낼 수 없다.
+    """
 
     @staticmethod
-    def _schedule() -> ScheduleResult:
+    def _schedule(item_capacity: int | None = None) -> ScheduleResult:
         return ScheduleResult(
             items=[_schedule_item()],
             total_duration_min=120,
             route_summary="동선 요약입니다.",
             basis_note="기준 시각 안내",
             over_capacity_place_names=["북촌한옥마을"],
+            item_capacity=item_capacity,
             elapsed_ms=100.0,
         )
 
-    def test_시간_미언급이면_5곳이라고_말한다(self) -> None:
-        message = compose_schedule_message(self._schedule())
-
-        assert "한 번에 5곳까지만 넣을 수 있어서" in message
-
-    def test_짧은_시간이면_그에_맞는_수를_말한다(self) -> None:
-        """숫자를 문자열에 박으면 "2시간 코스"에서 틀린 수를 말하게 된다."""
-
-        message = compose_schedule_message(self._schedule(), time_available_min=100)
+    def test_편성이_실어_보낸_상한을_그대로_말한다(self) -> None:
+        message = compose_schedule_message(self._schedule(2), time_available_min=150)
 
         assert "한 번에 2곳까지만 넣을 수 있어서" in message
+
+    def test_같은_시간이어도_상한이_다르면_다른_수를_말한다(self) -> None:
+        """**활동 가능 시간만 보고 되계산하면 이 둘이 같은 수를 말한다.**
+
+        후보가 박물관뿐이면 3시간에 2곳, 관광지면 3곳이다. 화면이 뺄셈을 다시 하면
+        구분할 수 없어서 한쪽에 틀린 수가 나간다.
+        """
+
+        museums = compose_schedule_message(self._schedule(2), time_available_min=180)
+        attractions = compose_schedule_message(self._schedule(3), time_available_min=180)
+
+        assert "한 번에 2곳까지만 넣을 수 있어서" in museums
+        assert "한 번에 3곳까지만 넣을 수 있어서" in attractions
+
+    def test_상한이_없으면_수를_말하지_않는다(self) -> None:
+        """옛 스냅샷과 부분 재편성에는 이 값이 없다. 틀린 수를 말하는 것보다
+        수를 빼는 것이 낫다."""
+
+        message = compose_schedule_message(self._schedule(None), time_available_min=150)
+
+        assert "한 번에 넣을 수 있는 곳 수를 넘어서" in message
+        assert "곳까지만" not in message
+        assert "북촌한옥마을은 이번엔 빠졌어요" in message
 
 
 def test_schedule_message_reports_omitted_even_without_items() -> None:
@@ -1777,3 +1860,67 @@ def test_schedule_message_reports_omitted_even_without_items() -> None:
 
     assert "조건에 맞는 곳을 충분히 찾지 못했어요." in message
     assert "북촌한옥마을" in message
+
+
+class TestScheduleTimeBudgetStatus:
+    """TP-238 — 시간 준수 판정은 편성이 내리고 화면은 읽기만 한다."""
+
+    def test_판정을_다시_계산하지_않고_실려_온_값을_읽는다(self) -> None:
+        """**두 수만 보면 오차 안(200 - 180 = 20)이지만 판정은 OVER다.**
+
+        일부러 어긋나게 만든 입력이다. 화면이 뺄셈을 다시 하면 "3시간 코스"라고
+        말하고 초과 안내도 빠지므로 이 테스트가 깨진다. 평범한 입력에서는 두
+        방식이 같은 답을 내서 이 결함이 안 잡힌다 — 편성이 조절한 결과와 화면이
+        말하는 것이 갈리는 것이 이 필드를 둔 이유다.
+        """
+
+        schedule = ScheduleResult(
+            items=[_schedule_item()],
+            total_duration_min=200,
+            route_summary="경복궁 근처 코스예요.",
+            basis_note="기준 시각 안내",
+            time_budget_status=ScheduleBudgetStatus.OVER,
+            elapsed_ms=100.0,
+        )
+
+        message = compose_schedule_message(schedule, time_available_min=180)
+
+        assert message.startswith("3시간 20분 코스를 짜봤어요")
+        assert "3시간으로 말씀하셨는데" in message
+
+    def test_오차_안이면_요청한_시간을_그대로_말한다(self) -> None:
+        schedule = ScheduleResult(
+            items=[_schedule_item()],
+            total_duration_min=210,
+            route_summary="경복궁 근처 코스예요.",
+            basis_note="기준 시각 안내",
+            time_budget_status=ScheduleBudgetStatus.WITHIN,
+            elapsed_ms=100.0,
+        )
+
+        message = compose_schedule_message(schedule, time_available_min=180)
+
+        assert message.startswith("3시간 코스를 짜봤어요")
+        assert "길어졌어요" not in message
+
+    def test_판정_필드가_없는_옛_스냅샷도_그대로_읽힌다(self) -> None:
+        """저장한 일정과 지난 대화에는 이 필드가 없던 시절의 스냅샷이 쌓여 있다.
+
+        기본값이 None이라 복원 자체는 되고, 그때는 같은 함수로 판정한다 —
+        같은 함수를 부르는 것과 같은 계산을 다시 적는 것은 다르다.
+        """
+
+        schedule = ScheduleResult(
+            items=[_schedule_item()],
+            total_duration_min=266,
+            route_summary="경복궁 근처 코스예요.",
+            basis_note="기준 시각 안내",
+            elapsed_ms=100.0,
+        )
+
+        assert schedule.time_budget_status is None
+
+        message = compose_schedule_message(schedule, time_available_min=180)
+
+        assert message.startswith("4시간 26분 코스를 짜봤어요")
+        assert "1시간 26분쯤 길어졌어요" in message

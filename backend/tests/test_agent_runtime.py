@@ -101,8 +101,9 @@ from app.services.runtime.stubs import (
     FakeRecommendationProvider,
     FakeToolProvider,
 )
+from app.state import preferences as state_preferences
 from app.state import service as state_service
-from app.state.schema import now_kst
+from app.state.schema import UserPreference, now_kst
 from app.state.service import (
     SetPendingClarificationRequest,
     StateApplyResponse,
@@ -4697,6 +4698,7 @@ class _RecordingWalkingRoutesRecommendationProvider(RealRecommendationProvider):
         *,
         travel_routes=(),
         limit=5,
+        saved_taste_query=None,
     ):
         self.travel_routes = travel_routes
         return await super().score_prepared(
@@ -4704,6 +4706,7 @@ class _RecordingWalkingRoutesRecommendationProvider(RealRecommendationProvider):
             prepared,
             travel_routes=travel_routes,
             limit=limit,
+            saved_taste_query=saved_taste_query,
         )
 
 
@@ -4748,6 +4751,104 @@ async def test_staged_recommendation_refills_candidates_up_to_target(
         response.recommendations.excluded_closed_place_ids
     )
     assert response.recommendations.excluded_closed_place_ids != []
+
+
+@pytest.mark.asyncio
+async def test_saved_place_closed_at_visit_time_is_reported_separately() -> None:
+    """영업시간으로 빠진 보관함 장소는 absent가 아니라 closed로 간다. (TP-236)
+
+    1턴에는 열려 있어 추천에 나가고 보관함에 담긴다. 그 사이 문을 닫은 것으로
+    바꾼 뒤 "이 장소들로 일정 짜기"를 부르면, D의 폐점 하드 필터가 걸러내
+    후보에 못 들어온다. 그때 화면은 "시간대를 바꾸면 넣어드릴 수 있어요"라고
+    확정적으로 말할 수 있어야 하므로 사유가 갈려 있어야 한다.
+
+    `place_details_repository`를 주지 않는다 — 주면 보관함 주입이 이 장소를
+    후보로 되돌려 놓아 애초에 빠지지 않는다(SCHEDULE-12).
+    """
+    store = InMemoryStateStore()
+    tool_provider = _RefillPlacesToolProvider(total=6, page_size=6)
+    # 전부 열어 둔다 — 1턴에서 담을 수 있어야 하고, 닫는 것은 그 다음이다.
+    tool_provider._places = [
+        place.model_copy(update={"operating_schedule": _OPEN_ALL_DAY_SCHEDULE})
+        for place in tool_provider._places
+    ]
+    providers = {
+        "llm": _LLMProviderWithGeneralAnswer(),
+        "tool_provider": tool_provider,
+        "recommendation_provider": RealRecommendationProvider(),
+        "enrichment_provider": _CountingEnrichmentProvider(),
+    }
+
+    session_id, place_id = await _recommend_then_save(store, providers)
+
+    # 담은 뒤에 문을 닫았다. 다음 턴 D는 이 장소를 폐점으로 걸러낸다.
+    tool_provider._places = [
+        place.model_copy(update={"operating_schedule": _CLOSED_ALL_WEEK_SCHEDULE})
+        if place.place_id == place_id
+        else place
+        for place in tool_provider._places
+    ]
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="이 장소들로 일정 짜기",
+            session_id=session_id,
+            device_location=DEVICE_LOCATION,
+            schedule_from_saved=True,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.schedule is not None
+    # 대조군 — 이 장소가 실제로 **폐점 사유로** 걸러졌음을 같은 실행에서 확인한다.
+    # 이게 없으면 D가 다른 이유로 후보를 못 준 경우에도 아래 단정이 통과할 수 있다.
+    # SCHEDULE 턴 응답에는 recommendations가 실리지 않으므로, A가 6-1에서
+    # 기록한 폐점 제외 이력(TP-82)을 저장소에서 읽어 확인한다.
+    history = store.get_history(session_id)
+    assert history is not None
+    assert place_id in {item.place_id for item in history.closed_excluded}
+    saved_name = next(
+        item.name
+        for item in state_service.get_session_context(session_id, store=store).saved_places
+        if item.place_id == place_id
+    )
+    assert saved_name and saved_name != place_id
+    assert response.schedule.closed_saved_place_names == [saved_name]
+    # 사유가 갈렸으므로 absent 쪽은 비어야 한다 — 예전에는 여기로 갔다.
+    assert response.schedule.absent_saved_place_names == []
+
+
+@pytest.mark.asyncio
+async def test_saved_place_absent_for_other_reasons_stays_in_absent() -> None:
+    """폐점이 아닌 이유로 빠진 장소는 그대로 absent에 남는다. (TP-236)
+
+    갈라내기가 한쪽으로 쏠리지 않았는지 잠근다. 위 테스트만 있으면 모든 장소를
+    closed로 보내는 구현도 통과한다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+    tool_provider = _DroppingToolProvider()
+    providers["tool_provider"] = tool_provider
+
+    session_id, place_id = await _recommend_then_save(store, providers)
+    # C가 이 장소를 아예 안 돌려준다 — 폐점이 아니라 장소 정보가 없는 경우다.
+    tool_provider.drop_place_id = place_id
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="이 장소들로 일정 짜기",
+            session_id=session_id,
+            device_location=DEVICE_LOCATION,
+            schedule_from_saved=True,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.schedule is not None
+    assert response.schedule.absent_saved_place_names != []
+    assert response.schedule.closed_saved_place_names == []
 
 
 @pytest.mark.asyncio
@@ -5298,6 +5399,126 @@ async def test_staged_recommendation_measures_walking_when_transport_is_unstated
     )
 
     assert [query.mode for query in route_tool.queries] == [TravelMode.WALKING]
+
+
+class _RecordingSavedTasteProvider(RealRecommendationProvider):
+    """score_prepared가 받은 saved_taste_query를 전부 기록한다."""
+
+    def __init__(self) -> None:
+        self.saved_taste_queries: list[str | None] = []
+
+    async def score_prepared(
+        self,
+        conditions,
+        prepared,
+        *,
+        travel_routes=(),
+        limit=5,
+        saved_taste_query=None,
+    ):
+        self.saved_taste_queries.append(saved_taste_query)
+        return await super().score_prepared(
+            conditions,
+            prepared,
+            travel_routes=travel_routes,
+            limit=limit,
+            saved_taste_query=saved_taste_query,
+        )
+
+
+@pytest.mark.asyncio
+async def test_saved_preferences_reach_scoring_when_nothing_was_spoken() -> None:
+    """계정에 저장해 둔 취향이 실제로 채점까지 간다.
+
+    `_saved_taste_query()` 단위 테스트만으로는 **호출부 한 줄이 지워져도 안 잡힌다** —
+    되돌려서 확인했다. 1.9.0에서 provider 배선 2줄이 같은 구멍이었다.
+    """
+    store = InMemoryStateStore()
+    state_preferences.replace(
+        store,
+        "user-saved-taste",
+        [
+            UserPreference(label="아늑한 공간", source="preference", codes=["cozy"]),
+            UserPreference(label="전망 좋은", source="preference", codes=["good_view"]),
+            # 분류 칩도 질의에 들어간다 — 고른 것을 버리지 않는다.
+            UserPreference(label="카페", source="place_tag", codes=["카페", "찻집"]),
+        ],
+    )
+    provider = _RecordingSavedTasteProvider()
+
+    await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=_RefillPlacesToolProvider(),
+        recommendation_provider=provider,
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=store,
+        principal=Principal(user_id="user-saved-taste", is_anonymous=False),
+    )
+
+    # 실측 경로 tool이 없어 1차만 도는 구성이라 호출이 1건이다. 2차(실측 반영)까지
+    # 도는 구성은 travel_route_tool을 붙인 아래 테스트가 본다.
+    assert provider.saved_taste_queries == ["아늑한 공간 전망 좋은 카페"]
+
+
+@pytest.mark.asyncio
+async def test_saved_preferences_reach_both_scoring_passes() -> None:
+    """1차(실측 대상 고르기)와 2차(실측 반영)가 **같은 값**을 봐야 한다.
+
+    한쪽만 주면 취향으로 후보를 좁혀 놓고 최종 순위에서는 취향을 빼게 된다 —
+    2026-08-20에 그 계열의 사고가 있었다(`SCORING_VERSION` 1.4.0).
+    """
+    store = InMemoryStateStore()
+    state_preferences.replace(
+        store,
+        "user-two-pass",
+        [UserPreference(label="아늑한 공간", source="preference", codes=["cozy"])],
+    )
+    provider = _RecordingSavedTasteProvider()
+
+    await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=_RefillPlacesToolProvider(),
+        recommendation_provider=provider,
+        enrichment_provider=_CountingEnrichmentProvider(),
+        travel_route_tool=_RecordingTravelRouteTool(),
+        store=store,
+        principal=Principal(user_id="user-two-pass", is_anonymous=False),
+    )
+
+    assert len(provider.saved_taste_queries) >= 2, provider.saved_taste_queries
+    assert set(provider.saved_taste_queries) == {"아늑한 공간"}
+
+
+@pytest.mark.asyncio
+async def test_guest_has_no_saved_preferences_to_apply() -> None:
+    """신원이 없으면 저장할 자리가 없다 — 지금까지와 같이 동작한다."""
+    provider = _RecordingSavedTasteProvider()
+
+    await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처 카페 추천해줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        llm=_LLMProviderWithGeneralAnswer(),
+        tool_provider=_RefillPlacesToolProvider(),
+        recommendation_provider=provider,
+        enrichment_provider=_CountingEnrichmentProvider(),
+        store=InMemoryStateStore(),
+    )
+
+    assert provider.saved_taste_queries
+    assert set(provider.saved_taste_queries) == {None}
 
 
 @pytest.mark.asyncio
@@ -7405,3 +7626,109 @@ async def test_refilled_candidates_are_recorded_with_coordinates(
 
     session = get_session_context(response.state.session_id, store=store)
     assert refilled_ids <= set(_snapshot_coordinates(session))
+
+
+@pytest.mark.asyncio
+async def test_schedule_turn_records_quality_metrics() -> None:
+    """SCHEDULE 턴 한 번에 지표 trace 행이 하나 남는다. (TP-242)
+
+    **기존 단계에 얹지 않는다** — 단계별 지연시간을 보는 화면이 도메인 지표에
+    오염된다. 그래서 step 이름이 따로 있고, 이 테스트가 그 분리를 잠근다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처에서 3시간 코스 짜줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.schedule is not None
+
+    traces = store.get_traces(response.state.session_id)
+    quality = [trace for trace in traces if trace.step == "schedule_quality"]
+    assert len(quality) == 1
+
+    metrics = quality[0].metrics
+    assert metrics is not None
+    assert metrics["item_count"] == len(response.schedule.items)
+    assert metrics["item_capacity"] == response.schedule.item_capacity
+    assert metrics["total_duration_min"] == response.schedule.total_duration_min
+    assert metrics["walkable_within_min"] == 5
+
+    # 다른 단계는 지표를 싣지 않는다.
+    assert all(trace.metrics is None for trace in traces if trace.step != "schedule_quality")
+
+
+@pytest.mark.asyncio
+async def test_schedule_quality_metrics_carry_no_user_text() -> None:
+    """지표에 장소 이름이 들어가지 않는다. (TP-242)
+
+    **trace_records를 대화 삭제 때 안 지우는 근거가 "사용자 텍스트가 없다"는
+    것이다.** 이름을 실으면 그 근거가 무너지고 보관 규칙까지 다시 봐야 한다.
+    단위 테스트는 고정 입력으로 확인하지만, 이 테스트는 실제 편성 결과의
+    이름들이 새어나가지 않는지 본다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처에서 3시간 코스 짜줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.schedule is not None
+    quality = [
+        trace
+        for trace in store.get_traces(response.state.session_id)
+        if trace.step == "schedule_quality"
+    ]
+    rendered = repr(quality[0].metrics)
+
+    for item in response.schedule.items:
+        assert item.place_name not in rendered
+        assert item.place_id not in rendered
+    assert "경복궁" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_schedule_turn_survives_metrics_record_failure() -> None:
+    """지표 기록이 실패해도 사용자 응답은 정상으로 나간다. (TP-242)
+
+    기존 trace 기록이 예외를 흡수하는 것과 같은 규칙이다. 지표는 관측이고,
+    관측이 기능을 막으면 안 된다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+
+    original = store.append_traces
+
+    def _fail_on_quality(records):
+        if any(record.step == "schedule_quality" for record in records):
+            raise RuntimeError("지표 저장 실패(테스트)")
+        original(records)
+
+    store.append_traces = _fail_on_quality  # type: ignore[method-assign]
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="경복궁 근처에서 3시간 코스 짜줘",
+            session_id=None,
+            device_location=DEVICE_LOCATION,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.schedule is not None
+    assert "코스를 짜봤어요" in response.message

@@ -26,10 +26,35 @@ _CONTENT_TYPE_TO_CATEGORY = {
     "39": PlaceType.RESTAURANT.value,          # 음식점
 }
 
-# LLM이 요청할 수 없는 유형이라 추천 후보로 쓰지 않는다. 유형·태그 조건이 있으면
+# 추천 후보로 쓰지 않는 유형. 뺀 사유가 둘로 갈리므로 나눠 적는다.
+#
+# 여행코스(25)·숙박(32)은 LLM이 요청할 수 없는 유형이다. 유형·태그 조건이 있으면
 # contentTypeId로 걸러져 애초에 오지 않지만, 조건 없는 무분류 조회에는 섞여 들어온다
 # (0802 종로구 스냅샷 기준 숙박 88건, 여행코스 0건).
-_UNSUPPORTED_CONTENT_TYPE_IDS = frozenset({"25", "32"})
+#
+# 축제공연행사(15)는 사유가 다르다 — **끝난 행사를 거를 수 없어서** 뺀다(D-120).
+# `places`에 행사 시작일·종료일 컬럼이 없어 축제의 `operating_schedule`에는 하루
+# 영업시간(detailIntro2 `playtime`)만 들어가고, `domain/scoring.py::_is_closed()`가
+# 그 스케줄만 보므로 작년에 끝난 축제가 "지금 영업 중"으로 하드 필터를 통과한다.
+# 2026-09-03 실측에서 반경 2km 조회에 걸린 축제 10건이 전부 종료된 행사였고, 활성
+# 축제 189건 중 그날 진행 중인 것은 17건뿐이었다.
+#
+# 행사 발화는 INFO가 답하므로 사용자가 행사를 못 보게 되는 것은 아니다 — `event`는
+# searchFestival2가, `realtime_event`는 서울시 실시간 도시데이터가 각각 기간을 보고
+# 진행 중인 것만 돌려준다.
+#
+# **그래서 라우팅을 함께 고쳤다**(TP-237). 이 제외만 하면 "축제 추천해줘"가 이유 없는
+# 빈 결과가 된다 — 추천 프롬프트에 축제 설명이 없는데도 모델이 `place_types=['festival']`을
+# 내기 때문이다(구조화 출력 스키마 `LLMOutput` → `PlaceType`이 허용 값으로 제시한다).
+# 2026-09-04 실측에서 축제·전시회·콘서트 발화 6건이 전부 RECOMMEND로 갔다. 지금은
+# 라우터가 행사 어휘를 INFO로 보내고(router.classify 2.5.0), info.extract가
+# `realtime_event`를 뽑는다(3.5.0). 같은 실측 13발화가 행사 7건 INFO · 장소 6건
+# RECOMMEND로 갈린다.
+#
+# `PlaceType.FESTIVAL`과 `category_rules.PLACE_TYPE_TO_CONTENT_TYPE_ID`의 축제는 A 소유
+# 계약이라 그대로 뒀다. 라우터가 놓쳐 RECOMMEND로 새면 여전히 후보가 0건이므로,
+# `recommend/place_tag_rules.md`에 "행사를 가리키는 말은 담지 않는다"를 안전망으로 뒀다.
+_UNSUPPORTED_CONTENT_TYPE_IDS = frozenset({"15", "25", "32"})
 
 
 def resolve_place_category(content_type_id: str) -> str | None:

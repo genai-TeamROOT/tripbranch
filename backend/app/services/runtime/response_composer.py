@@ -22,7 +22,7 @@ from app.domain.travel_route import TravelRoute
 from app.errors import AppError
 from app.observability.langfuse_tracing import trace_attributes
 from app.providers.protocols import LLMProvider
-from app.schedule.schemas import target_item_range
+from app.schedule.budget import classify_budget
 from app.schemas import (
     CompareCriteria,
     ComparisonItem,
@@ -34,6 +34,7 @@ from app.schemas import (
     OutputStatus,
     RecommendationItem,
     RecommendationResponse,
+    ScheduleBudgetStatus,
     ScheduleResult,
     UserConditions,
 )
@@ -170,6 +171,11 @@ _CLARIFICATION_TEMPLATES: dict[str, str] = {
         "말씀하신 장소가 여러 곳으로 해석돼요. 어느 곳을 말씀하시는지 조금 더 알려주시겠어요?"
     ),
     "place_required": "어떤 장소에 대해 알고 싶으신가요?",
+    # 행사 질의는 장소를 물은 발화가 아니라 되묻는 말이 달라야 한다(TP-237).
+    # 뒷문장은 유형을 가리지 않는다는 고지다 — 축제를 물어도 공연·전시가 함께 나온다.
+    "event_place_required": (
+        "어느 지역의 행사를 찾아드릴까요? 축제·공연·전시를 모두 모아서 알려드려요."
+    ),
     "place_ambiguous": "여러 장소 중 어느 곳을 말씀하시는 건가요?",
 }
 _CLARIFICATION_FALLBACK_MESSAGE = "조건을 조금 더 자세히 알려주시겠어요?"
@@ -893,7 +899,6 @@ def _format_compare_travel_time(item: ComparisonItem) -> str | None:
 # 그대로 보여준다. 15분이었을 때 "3시간 짜줘"(180분)에 실제 163분(오차 17분)이
 # 편성되는 경계 사례가 실제 계산값을 그대로 노출해 어색했다 — 되도록 요청값을
 # 그대로 보여주는 쪽을 우선하기로 하고 30분으로 넓힘(실사용 피드백, 2026-08-14).
-_DURATION_MATCH_TOLERANCE_MIN = 30
 
 
 def _format_duration_label(total_minutes: int) -> str:
@@ -924,7 +929,7 @@ def _topic_particle(word: str) -> str:
 
 
 def _with_saved_place_notes(
-    message: str, schedule: ScheduleResult, time_available_min: int | None
+    message: str, schedule: ScheduleResult
 ) -> str:
     """보관함과 편성 결과가 어긋난 부분을 사용자 말로 덧붙인다. (SCHEDULE-12, TP-223)
 
@@ -932,12 +937,15 @@ def _with_saved_place_notes(
     상한 초과와 LLM 누락이 한 필드에 합쳐져 "시간을 늘리거나 다른 곳을 빼고"라는
     한 문장으로 나갔고, 자기 경우가 어느 쪽인지 알 수 없었다.
 
-    - `absent_saved_place_names`: 후보 목록에 아예 없었다. 사유는 방문 시각의
-      영업시간 하드 필터이거나 장소 상세를 못 가져온 경우다. **둘 다 말한다** —
-      한쪽으로 단정하면 절반은 틀린 안내가 된다. 해결책도 **사유를 단 채로**
-      제시한다("문 닫는 시간 때문이라면"): D-116이 이 필드를 만든 이유가 "시간을
-      늘려보라"는 무조건적 재시도 권유를 없애는 것이었는데, 시간대 변경은 영업시간이
-      원인일 때 실제로 통하므로 조건을 붙여 말하면 그 결정과 어긋나지 않는다.
+    - `closed_saved_place_names`: 방문 시각에 문을 닫아 D가 걸러냈다. **시간대를
+      바꾸면 실제로 들어간다** — 조건을 달지 않고 그렇게 말할 수 있는 경우다.
+    - `absent_saved_place_names`: 그 밖의 이유로 후보 목록에 없었다(장소 상세를
+      못 가져왔거나 좌표가 없다). **시간대를 권하지 않는다** — 바꿔도 결과가 같다.
+      예전에는 이 둘이 한 필드였고 "문을 닫는 시간이거나 장소 정보를 못 찾은
+      경우라, 시간대를 바꾸면 들어갈 수도 있어요"라는 한 문장이 나갔다. 사유를 단
+      채로 제시한 것이었지만, 자기가 어느 쪽인지 알 수 없는 사용자는 결국 시간대를
+      바꿔가며 같은 실패를 반복했다(TP-236). D-116이 이 필드를 만든 이유가 통하지
+      않는 재시도 권유를 없애는 것이었으므로, 갈라서 말하는 편이 그 결정에 더 맞다.
     - `over_capacity_place_names`: 항목 수 상한을 넘겨 잘렸다. "보관함에서 다른
       곳을 빼면 들어간다"가 확정적으로 참인 유일한 경우다.
     - `omitted_saved_place_names`: 재시도 후에도 LLM이 빠뜨렸다. 확정적인 해결책이
@@ -949,8 +957,8 @@ def _with_saved_place_notes(
       (`_restore_displaced_must_include()`) 이 문구가 나갈 때는 대기 중인 보관함
       장소가 하나도 없다 — "자리가 남았다"가 실제로 참이다.
 
-    두 사유가 같은 말로 시작하지 않게 첫 문장을 다르게 연다("넣지 못했어요" /
-    "자리를 못 잡았어요") — 함께 나갈 수 있어서 같은 말이 두 번 나오면 사용자가
+    사유마다 첫 문장을 다르게 연다("문을 닫아요" / "넣지 못했어요" / "빠졌어요" /
+    "자리를 못 잡았어요") — 넷이 함께 나갈 수 있어서 같은 말이 반복되면 사용자가
     무엇이 다른지 읽어내지 못한다.
 
     "후보"·"편성" 같은 내부 용어를 쓰지 않는다. 순서는 **못 넣은 것 먼저, 새로
@@ -960,20 +968,32 @@ def _with_saved_place_notes(
     """
 
     parts = [message]
+    # 문을 닫은 경우를 먼저 말한다 — 넷 중 유일하게 해결책이 확정적이라,
+    # 여러 사유가 함께 나갈 때 사용자가 바로 할 수 있는 일이 맨 앞에 온다.
+    if schedule.closed_saved_place_names:
+        joined = ", ".join(schedule.closed_saved_place_names)
+        parts.append(
+            f"담아두신 {joined}{_topic_particle(joined)} 그 시간에 문을 닫아요. "
+            "시간대를 바꾸면 일정에 넣어드릴 수 있어요."
+        )
     if schedule.absent_saved_place_names:
         joined = ", ".join(schedule.absent_saved_place_names)
         parts.append(
             f"담아두신 {joined}{_topic_particle(joined)} 이번엔 넣지 못했어요. "
-            "문을 닫는 시간이거나 장소 정보를 못 찾은 경우라, "
-            "시간대를 바꾸면 들어갈 수도 있어요."
+            "장소 정보를 못 찾은 경우라, 시간대를 바꿔도 결과는 같아요."
         )
     if schedule.over_capacity_place_names:
         joined = ", ".join(schedule.over_capacity_place_names)
-        # 상한은 활동 가능 시간에 따라 달라진다(1~2 / 2~4 / 3~5곳). 숫자를 문자열에
-        # 박으면 "2시간 코스"에서 틀린 수를 말하게 되므로 같은 함수를 다시 부른다.
-        _, max_items = target_item_range(time_available_min)
+        # 상한은 요청마다 다르다 — 활동 가능 시간뿐 아니라 후보의 분류(체류 최소값)와
+        # 서로의 거리까지 보고 계산되기 때문이다(TP-239). 후보를 모르는 이쪽에서는
+        # 다시 계산할 수 없어 편성이 실어 보낸 값을 읽는다. 값이 없으면(옛 스냅샷,
+        # 부분 재편성) 수를 말하지 않는다 — 틀린 수를 말하는 것보다 낫다.
+        if schedule.item_capacity is not None:
+            limit_phrase = f"한 번에 {schedule.item_capacity}곳까지만 넣을 수 있어서 "
+        else:
+            limit_phrase = "한 번에 넣을 수 있는 곳 수를 넘어서 "
         parts.append(
-            f"한 번에 {max_items}곳까지만 넣을 수 있어서 "
+            f"{limit_phrase}"
             f"담아두신 {joined}{_topic_particle(joined)} 이번엔 빠졌어요. "
             "보관함에서 다른 곳을 빼면 다음엔 넣어드릴게요."
         )
@@ -991,6 +1011,25 @@ def _with_saved_place_notes(
     return " ".join(parts)
 
 
+def _budget_status(
+    schedule: ScheduleResult, time_available_min: int | None
+) -> ScheduleBudgetStatus | None:
+    """이번 편성의 시간 준수 판정. (TP-238)
+
+    **planner가 실어 보낸 값을 그대로 쓴다.** 화면이 다시 판정하면 편성이 목표로
+    삼은 것과 화면이 말하는 것이 갈릴 수 있다.
+
+    필드가 비어 있는 경우는 둘이다 — 이 필드가 생기기 전에 저장된 스냅샷
+    (`saved_schedules.payload`, `session_messages`)과, 값을 채우지 않는 호출부
+    (테스트 더블). 그때만 같은 함수로 계산한다. **같은 함수를 부르는 것과 같은
+    계산을 다시 적는 것은 다르다** — 상수도 규칙도 한 곳에 있다.
+    """
+
+    if schedule.time_budget_status is not None:
+        return schedule.time_budget_status
+    return classify_budget(schedule.total_duration_min, time_available_min)
+
+
 def _with_over_budget_note(
     message: str, schedule: ScheduleResult, time_available_min: int | None
 ) -> str:
@@ -1001,17 +1040,18 @@ def _with_over_budget_note(
     넘었다는 이유로 장소를 빼면 추정 오차 때문에 멀쩡한 일정이 깎인다. 사용자가
     보고 판단할 수 있게 수치만 밝힌다.
 
-    **문턱은 라벨이 바뀌는 지점과 같은 값이다**(`_DURATION_MATCH_TOLERANCE_MIN`).
-    허용 오차 안이면 위에서 요청 시간을 그대로 라벨로 쓰므로("3시간 코스를
-    짜봤어요"), 거기에 초과 안내가 붙으면 한 문장 안에서 3시간이라고 해놓고
-    3시간을 넘었다고 말하게 된다. 두 판단이 같은 상수를 보게 묶어둔다.
+    **라벨과 이 안내는 같은 판정 하나를 본다**(TP-238). 허용 오차 안이면 위에서
+    요청 시간을 그대로 라벨로 쓰므로("3시간 코스를 짜봤어요"), 거기에 초과 안내가
+    붙으면 한 문장 안에서 3시간이라고 해놓고 3시간을 넘었다고 말하게 된다. 예전에는
+    두 곳이 같은 뺄셈을 따로 해서 묶여 있었고, 지금은 planner가 내린 판정 하나를
+    둘 다 읽는다.
     """
 
     if time_available_min is None:
         return message
-    over_min = schedule.total_duration_min - time_available_min
-    if over_min <= _DURATION_MATCH_TOLERANCE_MIN:
+    if _budget_status(schedule, time_available_min) is not ScheduleBudgetStatus.OVER:
         return message
+    over_min = schedule.total_duration_min - time_available_min
     # `_format_duration_label()`은 항상 "시간"이나 "분"으로 끝나고 둘 다 받침이 있어
     # 조사는 "으로"로 고정해도 된다.
     return (
@@ -1034,10 +1074,10 @@ def compose_schedule_message(
     planner.py가 route_summary를 안내 문구로 정규화해서 넘겨준다) "0분 코스를
     짜봤어요" 같은 어색한 접두사 없이 route_summary만 그대로 반환한다.
 
-    time_available_min(사용자가 요청한 시간, 분)이 주어지고 실제
-    total_duration_min과의 차이가 _DURATION_MATCH_TOLERANCE_MIN 이내면 요청
-    시간을 그대로 보여준다("2시간 짜줘" → "2시간 코스를 짜봤어요"). 차이가 크면
-    실제 편성 결과가 요청과 동떨어졌다는 뜻이므로 실제 계산값을 보여준다.
+    time_available_min(사용자가 요청한 시간, 분)이 주어지고 편성이 허용 오차
+    안에 들어왔으면 요청 시간을 그대로 보여준다("2시간 짜줘" → "2시간 코스를
+    짜봤어요"). 벗어났으면 실제 편성 결과가 요청과 동떨어졌다는 뜻이므로 실제
+    계산값을 보여준다. 그 판정은 planner가 내려 ScheduleResult에 싣는다(TP-238).
 
     총 소요시간이 요청한 활동 가능 시간을 허용 오차 이상으로 넘으면 한 문장을
     덧붙인다(TP-216) — 넘었다는 이유로 장소를 빼지는 않는다.
@@ -1049,13 +1089,11 @@ def compose_schedule_message(
     """
 
     if not schedule.items:
-        return _with_saved_place_notes(
-            schedule.route_summary, schedule, time_available_min
-        )
+        return _with_saved_place_notes(schedule.route_summary, schedule)
 
     if (
         time_available_min is not None
-        and abs(time_available_min - schedule.total_duration_min) <= _DURATION_MATCH_TOLERANCE_MIN
+        and _budget_status(schedule, time_available_min) is ScheduleBudgetStatus.WITHIN
     ):
         duration_label = _format_duration_label(time_available_min)
     else:
@@ -1067,7 +1105,6 @@ def compose_schedule_message(
             time_available_min,
         ),
         schedule,
-        time_available_min,
     )
 
 

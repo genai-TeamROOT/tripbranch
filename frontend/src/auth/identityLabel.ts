@@ -19,7 +19,7 @@ export function isGuestSession(session: Session): boolean {
 /* 계정 표시에 쓸 값. provider마다 채워주는 필드가 달라서 후보를 순서대로 본다 —
    이메일 로그인은 email, 카카오·구글은 user_metadata의 이름 계열만 오는 경우가 있고
    전화번호 로그인은 phone만 온다. 전부 비면 신원이 있다는 사실만 알린다. */
-function accountLabel(session: Session): string {
+function accountLabel(session: Session, isEn: boolean): string {
   const metadata = (session.user?.user_metadata ?? {}) as Record<string, unknown>;
   const candidates = [
     session.user?.email,
@@ -29,9 +29,10 @@ function accountLabel(session: Session): string {
     session.user?.phone,
   ];
   const label = candidates.find((value) => typeof value === "string" && value.trim().length > 0);
-  return (label as string | undefined) ?? "로그인됨";
+  return (label as string | undefined) ?? (isEn ? "Signed in" : "로그인됨");
 }
 
-export function identityLabel(session: Session): string {
-  return isGuestSession(session) ? "게스트로 이용 중" : accountLabel(session);
+export function identityLabel(session: Session, language: "ko" | "en" = "ko"): string {
+  const isEn = language === "en";
+  return isGuestSession(session) ? (isEn ? "Using as guest" : "게스트로 이용 중") : accountLabel(session, isEn);
 }

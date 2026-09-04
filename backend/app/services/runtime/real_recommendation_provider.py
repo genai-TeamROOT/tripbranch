@@ -257,6 +257,10 @@ class RealRecommendationProvider:
         *,
         travel_routes: tuple[TravelRoute, ...] = (),
         limit: int = _RECOMMENDATION_LIMIT,
+        # 계정에 저장해 둔 취향으로 만든 질의. **발화에 취향이 있어도 값이 있다** —
+        # 부딪히는 칩만 빠진 뒤에 온다(`domain/saved_preference.py`). conditions에
+        # 합치지 않는 이유는 protocols.py의 같은 인자 주석 참고.
+        saved_taste_query: str | None = None,
     ) -> RecommendationResponse:
         response = await score_prepared_recommendation(
             prepared,
@@ -269,7 +273,9 @@ class RealRecommendationProvider:
             # 채점된다.
             travel_routes=travel_routes,
             travel_budget_speed_km_per_min=to_search_radius_speed_km_per_min(conditions),
-            taste_matches=await self._taste_matches_for(conditions, prepared),
+            taste_matches=await self._taste_matches_for(
+                conditions, prepared, saved_taste_query=saved_taste_query
+            ),
         )
         response = await self._with_preference_tags(response)
         return await self._with_thumbnails(response)
@@ -346,6 +352,8 @@ class RealRecommendationProvider:
         self,
         conditions: UserConditions,
         prepared: PreparedRecommendationResult,
+        *,
+        saved_taste_query: str | None = None,
     ) -> dict[str, PlaceEvidenceMatch] | None:
         """취향 근거를 하드 필터 통과 후보 범위 안에서만 찾는다.
 
@@ -355,8 +363,16 @@ class RealRecommendationProvider:
 
         검색 실패는 추천 전체를 막지 않는다. 취향은 순위를 다듬는 축이지
         후보를 만드는 축이 아니라서, 실패하면 취향 없이 채점하는 편이 낫다.
+
+        **계정에 저장해 둔 취향은 발화 뒤에 이어 붙인다.** 무엇을 붙일지는
+        `domain/saved_preference.py`가 이미 정해서 `saved_taste_query`에 담아
+        보낸다 — 발화와 겹치거나 부딪히는 칩은 거기서 빠진 뒤에 온다. 발화가
+        없으면 이 값이 질의 전체가 된다.
         """
-        if self._place_evidence is None or not conditions.taste_query:
+        if self._place_evidence is None:
+            return None
+        query_source = conditions.taste_query or saved_taste_query
+        if not query_source:
             return None
 
         place_ids = [
@@ -366,7 +382,17 @@ class RealRecommendationProvider:
         if not place_ids:
             return None
 
-        enriched_query = _enrich_taste_query(conditions)
+        # 저장값은 이미 취향 라벨만 모은 문자열이라 발화 질의처럼 장소 유형을
+        # 덧붙이는 보강(`_enrich_taste_query`)을 태우지 않는다. 그 보강은 "조용한"
+        # 같은 **한 단어 발화**가 임베딩에 안 걸리는 것을 고치려던 것인데(2/45 →
+        # 38/45), 저장값은 보통 칩 3~5개가 이어져 있어 이미 문맥이 있다.
+        #
+        # **발화가 앞이다.** 벡터 하나로 합쳐 검색하므로 순서가 점수를 가르지는
+        # 않지만, 로그에 남는 질의를 읽을 때 사용자가 방금 한 말이 먼저 보인다.
+        spoken_query = _enrich_taste_query(conditions) if conditions.taste_query else None
+        enriched_query = " ".join(
+            part for part in (spoken_query, saved_taste_query) if part
+        )
         try:
             result = await self._place_evidence.search(enriched_query, place_ids)
         except Exception:

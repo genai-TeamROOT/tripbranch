@@ -19,7 +19,6 @@ from app.schedule.associations import CoVisitedHint
 from app.schedule.schemas import (
     SchedulePartialFillRequest,
     SchedulePlanningRequest,
-    target_item_range,
 )
 from app.schemas import (
     CompareCriteria,
@@ -37,7 +36,7 @@ from app.schemas import (
 # 쓰였는지와 무관하게 단일 값으로 취급한다 — 함수별 개별 버전은 만들지 않는다. 판별·추출
 # 규칙에 영향을 주는 변경(6개 함수 중 하나라도) 시 버전을 올린다 — 사소한 문구·주석
 # 변경은 올리지 않는다.
-_BASE_PROMPT_VERSION = "agent-interpret-prompts-1.0.28"
+_BASE_PROMPT_VERSION = "agent-interpret-prompts-1.0.29"
 _ACTIVE_PROMPT_VARIANT = active_variant()
 PROMPT_VERSION = (
     _BASE_PROMPT_VERSION
@@ -589,7 +588,9 @@ def _schedule_candidate_line(candidate: RecommendationItem) -> str:
     )
 
 
-def build_schedule_planning_instruction(time_available_min: int | None = None) -> str:
+def build_schedule_planning_instruction(
+    time_available_min: int | None = None, *, item_range: tuple[int, int]
+) -> str:
     """INT-07 SCHEDULE 일정 편성 system instruction.
     (docs/design/int-07-schedule.md 6.1~6.2절)
 
@@ -597,25 +598,23 @@ def build_schedule_planning_instruction(time_available_min: int | None = None) -
     전달된다는 전제로 규칙만 담는다 — 다른 build_*_instruction()과 달리 원문
     사용자 발화가 아니라 구조화된 후보/조건/거리 데이터가 입력이기 때문이다.
 
-    time_available_min으로 이번 요청에 맞는 목표 개수 범위를 계산해(target_item_range())
-    프롬프트에 직접 반영한다(SCHEDULE-10). 이전에는 항상 "3~5개"로 고정 지시해서,
-    활동 가능 시간이 짧은 요청(예: "2시간 코스 짜줘")에서 LLM이 체류시간을
-    비현실적으로 줄이거나 개수 지시 자체를 못 맞춰 검증 실패로 이어지는 문제가
-    있었다 — 요청마다 실제로 달성 가능한 개수를 알려주는 쪽으로 바꿨다.
+    목표 개수 범위(`item_range`)는 **이 함수가 계산하지 않고 받는다**(TP-239).
+    `budget.derive_item_range()`가 활동 가능 시간·후보 분류별 체류 최소값·후보끼리의
+    실제 거리로 구하는데, 이 함수에는 후보가 없어서 같은 답을 낼 수 없다. 계산을
+    여기서 한 번 더 하면 프롬프트가 말하는 개수와 편성이 실제로 쓰는 상한이 갈린다.
 
-    (2026-08-18 추가) target_item_range()가 계산한 상한(max_items)까지는 실제로
-    채우도록 프롬프트가 명시적으로 유도한다. "6시간 코스 짜줘"처럼 활동 가능
-    시간이 긴 요청에서 목표 개수 범위(예: 3~5개) 안에 들어오는데도 LLM이 훨씬
-    적은 개수·짧은 체류시간만 채우고 일찍 끝내버리는 과소-채움(under-fill)이
-    실사용 테스트에서 확인됐다(docs/design/int-07-schedule.md 9절). 기존
-    duration_rule 문구는 "시간이 짧으면 줄이라"는 하한 방향 지시만 있었고, 시간이
-    넉넉할 때 상한 방향으로 채우라는 지시가 없었던 게 원인이라, 아래 else 분기에
-    상한 지시를 추가했다. target_item_range() 자체의 상한 계산이나
-    ScheduleLLMPlan의 max_length=5 하드 캡은 건드리지 않았다 — 순수 프롬프트
-    문구만 바꾼 변경이다.
+    **(2026-09-04, TP-239) "상한까지 채우라"는 지시를 뺐다.** 그 문구는 2026-08-18에
+    과소-채움을 막으려고 넣은 것이다 — 목표 범위(예: 3~5개) 안에 들어오는데도 LLM이
+    적은 개수·짧은 체류만 채우고 일찍 끝내는 문제였다. 그때는 상한이 버킷 상수라
+    예산과 무관했고, "범위 안에 있는데 덜 채운다"가 실제로 아까운 상황이었다.
+
+    지금은 상한 자체가 예산에서 나오고, 총 소요 시간은
+    `budget.fit_durations_to_budget()`이 체류시간을 조절해 맞춘다. 여기서 "넉넉히
+    잡아 시간을 다 쓰라"고 시키면 **그 조절과 정면으로 싸운다** — LLM이 길게 잡고
+    엔진이 다시 줄이므로, 남는 것은 LLM이 장소마다 매긴 상대적 판단이 뭉개지는 것뿐이다.
     """
 
-    min_items, max_items = target_item_range(time_available_min)
+    min_items, max_items = item_range
     count_phrase = f"{min_items}개" if min_items == max_items else f"{min_items}~{max_items}개"
 
     if time_available_min is None:
@@ -625,12 +624,12 @@ def build_schedule_planning_instruction(time_available_min: int | None = None) -
         )
     else:
         duration_rule = (
-            f"활동 가능 시간이 {time_available_min}분이니 총 소요 시간이 그 안에 "
-            f"최대한 가깝게 차도록 구성하세요 — 목표 개수({count_phrase}) 안에서도 "
-            f"너무 일찍 끝내지 마세요. 시간이 넉넉하면 개수를 {max_items}개에 "
-            "가깝게 채우고 장소별 체류시간도 넉넉히 잡아 실제로 그 시간을 다 "
-            "쓰도록 하세요. 반대로 시간이 짧다면 무리하게 채우려 하지 말고 "
-            "개수를 줄이세요."
+            f"활동 가능 시간은 {time_available_min}분입니다. 목표 개수"
+            f"({count_phrase})는 그 시간에 실제로 들어가는 수로 이미 계산한 값이니 "
+            "그 안에서 고르세요 — 시간을 채우려고 개수를 늘리지 마세요. 장소별 "
+            "체류시간은 장소 성격에 맞는 값을 제안하면 됩니다. 총 소요 시간이 활동 "
+            "가능 시간에 맞도록 시스템이 카테고리별 범위 안에서 조정하므로, 시간을 "
+            "다 쓰려고 체류시간을 늘려 잡지 마세요."
         )
 
     return render_text(

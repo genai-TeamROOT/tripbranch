@@ -34,7 +34,12 @@ from app.schedule.schemas import (
     SchedulePartialLLMPlan,
     SchedulePlanningRequest,
 )
-from app.schemas import RecommendationItem, ScheduleItem, UserConditions
+from app.schemas import (
+    RecommendationItem,
+    ScheduleBudgetStatus,
+    ScheduleItem,
+    UserConditions,
+)
 from app.tools.travel_route import TravelRouteProviders, TravelRouteTool
 
 _KST = ZoneInfo("Asia/Seoul")
@@ -1119,7 +1124,8 @@ async def test_must_include_not_in_candidates_is_dropped_silently() -> None:
 async def test_must_include_over_item_cap_is_trimmed_in_saved_order() -> None:
     """상한을 넘으면 담은 순서대로 앞에서부터만 쓰고, 나머지는 이름으로 알린다.
 
-    time_available=100분이면 target_item_range()가 최대 2개다.
+    time_available=150분이면 derive_item_range()가 최대 2곳이다(관광지 최소 60분,
+    이동 폴백 15분 -> 2곳 135분은 허용 오차 안, 3곳 210분은 밖).
     점수 순이 아니라 담은 순으로 자르는 이유는 "왜 그 곳이 빠졌는지" 설명할 수
     있어야 하기 때문이다.
     """
@@ -1127,7 +1133,7 @@ async def test_must_include_over_item_cap_is_trimmed_in_saved_order() -> None:
     request = SchedulePlanningRequest(
         candidates=_three_candidates(),
         must_include_place_ids=["place-1", "place-2", "place-3"],
-        conditions=UserConditions(time_available=100),
+        conditions=UserConditions(time_available=150),
         pairwise_distances_km={},
     )
 
@@ -1671,7 +1677,7 @@ class Test제외_사유_분리:
     async def test_상한으로_잘린_보관함_장소는_새로_찾은_곳이_아니다(self) -> None:
         """자르기 **전** 목록과 비교해야 한다.
 
-        time_available=100분이면 상한이 2곳이라 must_include는 place-1·place-2로
+        time_available=150분이면 상한이 2곳이라 must_include는 place-1·place-2로
         줄지만, LLM이 잘린 place-3을 고르면 그 곳은 사용자가 담아둔 곳이다.
         줄어든 목록과 비교하면 "새로 찾아 넣었어요"라고 거짓말을 하게 된다.
         """
@@ -1683,7 +1689,7 @@ class Test제외_사유_분리:
         request = SchedulePlanningRequest(
             candidates=_three_candidates(),
             must_include_place_ids=["place-1", "place-2", "place-3"],
-            conditions=UserConditions(time_available=100),
+            conditions=UserConditions(time_available=150),
             pairwise_distances_km={},
         )
 
@@ -1702,7 +1708,7 @@ class Test제외_사유_분리:
         request = SchedulePlanningRequest(
             candidates=_three_candidates(),
             must_include_place_ids=["place-1", "place-2", "place-3"],
-            conditions=UserConditions(time_available=100),
+            conditions=UserConditions(time_available=150),
             pairwise_distances_km={},
         )
 
@@ -1722,7 +1728,7 @@ class Test제외_사유_분리:
         request = SchedulePlanningRequest(
             candidates=_three_candidates(),
             must_include_place_ids=["place-1", "place-2", "place-3"],
-            conditions=UserConditions(time_available=100),
+            conditions=UserConditions(time_available=150),
             pairwise_distances_km={},
         )
 
@@ -1851,3 +1857,269 @@ class Test밀려난_보관함_장소_되돌리기:
         assert [item.place_id for item in result.items] == ["place-1", "place-2"]
         assert result.omitted_saved_place_names == ["장소 place-3"]
         assert result.added_place_names == []
+
+
+class TestFitDurationsToTimeAvailable:
+    """TP-238 완료 조건 — 체류시간이 활동 가능 시간에 맞춰 조절되는지 편성 경로로 확인한다."""
+
+    @pytest.mark.asyncio
+    async def test_초과하던_편성이_정책_최소값까지_줄어든다(self) -> None:
+        """민원 그대로의 모양이다 — 3시간 요청에 관광지 3곳, LLM이 90분씩 제안.
+
+        예전에는 90 x 3 + 이동 30 = 300분이 그대로 나갔다. 이제 곳당 60분까지
+        줄어 210분이 되고, 허용 오차 안이라 곳 수는 셋 그대로 남는다.
+        """
+
+        plan = ScheduleLLMPlan(
+            items=[
+                _sample_item("place-1", 1, estimated_duration_min=90),
+                _sample_item("place-2", 2, estimated_duration_min=90),
+                _sample_item("place-3", 3, estimated_duration_min=90),
+            ],
+            route_summary="테스트 동선 요약",
+        )
+        request = SchedulePlanningRequest(
+            candidates=_three_candidates(),
+            conditions=UserConditions(time_available=180),
+            visit_datetime=datetime(2026, 9, 2, 13, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, _RecordingLLM(plan))
+
+        assert [item.estimated_duration_min for item in result.items] == [60, 60, 60]
+        assert result.total_duration_min == 60 * 3 + 15 * 2
+        assert result.time_budget_status is ScheduleBudgetStatus.WITHIN
+
+    @pytest.mark.asyncio
+    async def test_개장_전_대기가_늘어도_예산_쪽으로_움직인다(self) -> None:
+        """**줄인 만큼 총합이 줄지 않는다.**
+
+        체류를 줄이면 도착이 당겨져 개장까지 기다리는 시간이 그만큼 늘어난다.
+        여기서는 체류를 60분 걷었는데 대기가 30분 늘어 총합은 30분만 줄었다.
+        이걸 모르면 "fit을 넣었는데 총합이 안 줄어든다"로 헤매게 된다.
+
+        수렴할 때까지 반복하지 않는다 — 남는 오차는 판정이 알린다.
+        """
+
+        plan = ScheduleLLMPlan(
+            items=[
+                _sample_item("place-1", 1, estimated_duration_min=90),
+                _sample_item("place-2", 2, estimated_duration_min=90),
+            ],
+            route_summary="테스트 동선 요약",
+        )
+        request = SchedulePlanningRequest(
+            candidates=[
+                _candidate("place-1"),
+                _candidate("place-2", operating_hours_display="15:00~21:00"),
+            ],
+            conditions=UserConditions(time_available=150),
+            visit_datetime=datetime(2026, 9, 2, 13, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, _RecordingLLM(plan))
+
+        # 조절 전: 체류 90+90, 이동 15, 대기 15 => 210분
+        # 조절 후: 체류 60+60, 이동 15, 대기 45 => 180분
+        assert [item.estimated_duration_min for item in result.items] == [60, 60]
+        assert result.total_duration_min == 180
+        assert result.time_budget_status is ScheduleBudgetStatus.WITHIN
+
+    @pytest.mark.asyncio
+    async def test_시간을_말하지_않으면_체류시간을_건드리지_않는다(self) -> None:
+        """맞출 목표가 없다. 판정도 내리지 않는다.
+
+        후보를 셋 두는 이유는 time_available이 없을 때 target_item_range()가
+        최소 3곳을 요구하기 때문이다 — 둘만 주면 편성 자체가 안 되고 이 테스트는
+        빈 items를 보고 통과해 버린다.
+        """
+
+        plan = ScheduleLLMPlan(
+            items=[
+                _sample_item("place-1", 1, estimated_duration_min=90),
+                _sample_item("place-2", 2, estimated_duration_min=90),
+                _sample_item("place-3", 3, estimated_duration_min=90),
+            ],
+            route_summary="테스트 동선 요약",
+        )
+        request = SchedulePlanningRequest(
+            candidates=_three_candidates(),
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 9, 2, 13, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, _RecordingLLM(plan))
+
+        assert [item.estimated_duration_min for item in result.items] == [90, 90, 90]
+        assert result.time_budget_status is None
+
+    @pytest.mark.asyncio
+    async def test_부분_재편성에서_유지한_자리의_체류시간은_변하지_않는다(self) -> None:
+        """사용자가 유지하기로 한 자리를 조용히 줄이면 "그대로 뒀다"는 약속이 깨진다.
+
+        유지 항목은 후보 목록에 없다는 기존 불변식으로 갈라낸다.
+        """
+
+        pinned = [_pinned("place-1", 1)]
+        llm = _RecordingFillLLM(
+            SchedulePartialLLMPlan(
+                new_items=[_sample_item("place-2", 2, estimated_duration_min=90)]
+            )
+        )
+        request = SchedulePartialFillRequest(
+            pinned_items=pinned,
+            target_orders=[2],
+            candidates=[_candidate("place-2")],
+            conditions=UserConditions(time_available=90),
+            visit_datetime=datetime(2026, 9, 2, 13, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_partial_schedule(request, llm)
+
+        # 유지한 자리는 60분 그대로, 새로 채운 자리만 최소값까지 줄어든다.
+        assert [item.estimated_duration_min for item in result.items] == [60, 60]
+
+
+class TestDeriveItemCapacity:
+    """TP-239 완료 조건 — 개수 상한이 예산에서 유도되고 결과에 실려 나간다."""
+
+    @pytest.mark.asyncio
+    async def test_두시간_요청에_네곳이_나오지_않는다(self) -> None:
+        """옛 버킷은 120분에 2~4곳이었다. 관광지 최소 60분·이동 15분이면 4곳은
+        최소 285분이라 애초에 지킬 수 없는 상한이었다."""
+
+        llm = _RecordingLLM(_plan_of("place-1", "place-2"))
+        request = SchedulePlanningRequest(
+            candidates=_three_candidates(),
+            conditions=UserConditions(time_available=120),
+            visit_datetime=datetime(2026, 9, 4, 13, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, llm)
+
+        assert result.item_capacity == 2
+        assert llm.received_request is not None
+
+    @pytest.mark.asyncio
+    async def test_후보가_가까우면_상한이_늘어난다(self) -> None:
+        """**폴백 15분이 아니라 이번 후보들의 실제 거리를 쓴다는 증거다.**
+
+        같은 3시간 요청인데 후보가 서로 2km면 3곳이 안 들어가고, 도보 거리면 들어간다.
+        """
+
+        near = {("place-1", "place-2"): 0.15, ("place-2", "place-3"): 0.15,
+                ("place-1", "place-3"): 0.2}
+        far = {("place-1", "place-2"): 2.0, ("place-2", "place-3"): 2.0,
+               ("place-1", "place-3"): 3.0}
+
+        async def capacity(distances: dict) -> int | None:
+            request = SchedulePlanningRequest(
+                candidates=_three_candidates(),
+                conditions=UserConditions(time_available=180),
+                visit_datetime=datetime(2026, 9, 4, 13, 0, tzinfo=_KST),
+                pairwise_distances_km=distances,
+            )
+            result = await plan_schedule(request, _RecordingLLM(_sample_plan()))
+            return result.item_capacity
+
+        assert await capacity(near) == 3
+        assert await capacity(far) == 2
+
+    @pytest.mark.asyncio
+    async def test_상한이_줄면_보관함_안내가_그_수를_말한다(self) -> None:
+        """**모듈 경계를 넘는 계약이다.** planner가 상한을 실어 보내고
+        response_composer가 그 값으로 문구를 만든다 — 화면은 후보를 몰라서 상한을
+        다시 계산할 수 없다.
+        """
+
+        from app.services.runtime.response_composer import compose_schedule_message
+
+        llm = _RecordingLLM(_plan_of("place-1", "place-2"))
+        request = SchedulePlanningRequest(
+            candidates=_three_candidates(),
+            must_include_place_ids=["place-1", "place-2", "place-3"],
+            conditions=UserConditions(time_available=150),
+            visit_datetime=datetime(2026, 9, 4, 13, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, llm)
+        message = compose_schedule_message(result, time_available_min=150)
+
+        assert result.item_capacity == 2
+        assert result.over_capacity_place_names == ["장소 place-3"]
+        assert "한 번에 2곳까지만 넣을 수 있어서" in message
+
+    @pytest.mark.asyncio
+    async def test_부분_재편성에는_상한이_실리지_않는다(self) -> None:
+        """그때 개수는 유지 항목과 교체 대상이 정한다 — 상한이 관여하지 않는다."""
+
+        llm = _RecordingFillLLM(
+            SchedulePartialLLMPlan(new_items=[_sample_item("place-2", 2)])
+        )
+        request = SchedulePartialFillRequest(
+            pinned_items=[_pinned("place-1", 1)],
+            target_orders=[2],
+            candidates=[_candidate("place-2")],
+            conditions=UserConditions(time_available=180),
+            visit_datetime=datetime(2026, 9, 4, 13, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_partial_schedule(request, llm)
+
+        assert result.item_capacity is None
+
+    @pytest.mark.asyncio
+    async def test_LLM이_상한을_넘겨_주면_잘라낸다(self) -> None:
+        """**프롬프트로 부탁만 하면 안 막힌다** (SCHEDULE-07과 같은 철학).
+
+        고치기 전 실측: 상한 2곳인 120분 요청에 LLM이 4곳을 주면 4곳 285분이
+        그대로 나갔다. ScheduleLLMPlan의 max_length는 하드 캡(5)이라 못 막는다.
+        """
+
+        llm = _RecordingLLM(_plan_of("place-1", "place-2", "place-3", "place-4"))
+        request = SchedulePlanningRequest(
+            candidates=[_candidate(f"place-{i}") for i in range(1, 6)],
+            conditions=UserConditions(time_available=120),
+            visit_datetime=datetime(2026, 9, 4, 13, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, llm)
+
+        assert result.item_capacity == 2
+        assert len(result.items) == 2
+        assert [item.order for item in result.items] == [1, 2]
+        assert result.time_budget_status is ScheduleBudgetStatus.WITHIN
+
+    @pytest.mark.asyncio
+    async def test_잘린_자리에_있던_보관함_장소는_되돌아온다(self) -> None:
+        """자르기와 되돌리기를 따로 만들지 않았다는 확인.
+
+        상한 2곳인데 LLM이 담아둔 place-3을 세 번째에 놓으면, 자르기가 그것을
+        떨어뜨리고 되돌리기가 담지 않은 자리와 맞바꾼다.
+        """
+
+        llm = _SequenceLLM(
+            _plan_of("place-1", "place-2", "place-3"),
+            _plan_of("place-1", "place-2", "place-3"),
+        )
+        request = SchedulePlanningRequest(
+            candidates=[_candidate(f"place-{i}") for i in range(1, 6)],
+            must_include_place_ids=["place-3"],
+            conditions=UserConditions(time_available=120),
+            visit_datetime=datetime(2026, 9, 4, 13, 0, tzinfo=_KST),
+            pairwise_distances_km={},
+        )
+
+        result = await plan_schedule(request, llm)
+
+        assert len(result.items) == 2
+        assert "place-3" in [item.place_id for item in result.items]
+        assert result.omitted_saved_place_names == []

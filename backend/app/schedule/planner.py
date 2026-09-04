@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from time import perf_counter
 from typing import TypeAlias, TypeVar
@@ -25,12 +25,17 @@ from app.domain.schedule_travel import ScheduleTravelEdge
 from app.errors import AppError
 from app.providers.protocols import LLMProvider
 from app.schedule.associations import CoVisitedHint
-from app.schedule.duration import resolve_visit_duration
+from app.schedule.budget import (
+    DurationSlot,
+    classify_budget,
+    derive_item_range,
+    fit_durations_to_budget,
+)
+from app.schedule.duration import policy_for, resolve_visit_duration
 from app.schedule.schemas import (
     ScheduleLLMItem,
     SchedulePartialFillRequest,
     SchedulePlanningRequest,
-    target_item_range,
 )
 from app.schedule.timeline import (
     Timeline,
@@ -64,7 +69,7 @@ _NO_CANDIDATES_ROUTE_SUMMARY = (
 )
 
 # ScheduleLLMPlan.items의 최소 개수가 이번 요청의 time_available에 따라 달라지므로
-# (target_item_range(), SCHEDULE-10) 후보 부족 가드도 고정 3이 아니라 그 최솟값을
+# (budget.derive_item_range(), TP-239) 후보 부족 가드도 고정 3이 아니라 그 최솟값을
 # 쓴다 — 예를 들어 "2시간 코스 짜줘"는 최소 1개면 충분한데, 후보가 2개뿐이라고
 # 무조건 "충분히 찾지 못했다"고 안내하면 실제로는 만들 수 있는 일정도 막힌다.
 # 후보가 이 최솟값보다 적으면 LLM이 애초에 그 개수를 만족시킬 방법이 없다 —
@@ -253,6 +258,63 @@ def _build_schedule_timeline(
             )
         )
     return build_timeline(stops, start_at=start_at, travel_minutes=travel_minutes)
+
+
+def _fit_to_time_available(
+    drafts: Sequence[_ItemDraft],
+    timeline: Timeline,
+    *,
+    time_available_min: int | None,
+    candidates: Sequence[RecommendationItem],
+    start_at: datetime,
+    travel_minutes: TravelMinutes,
+) -> tuple[list[_ItemDraft], Timeline]:
+    """체류시간을 활동 가능 시간에 맞춰 조절하고 시간표를 다시 계산한다. (TP-238)
+
+    **시간표를 한 번만 다시 계산한다.** 체류시간을 줄이면 도착이 당겨져 개장 전
+    대기가 늘어날 수 있어서, 총 소요시간이 줄인 만큼 그대로 줄지는 않는다. 그래서
+    한 번 더 돌려 실제 값을 얻되 거기서 멈춘다 — 대기와 체류가 서로를 밀어내며
+    수렴하지 않을 수 있고, 남는 오차는 감추지 말고 판정으로 알리는 것이 맞다.
+
+    **후보 목록에 없는 항목은 조절하지 않는다.** 그건 부분 재편성에서 사용자가
+    유지하기로 한 자리(pinned)다 — `_compose_items()`가 운영시간 경고를 건너뛸 때
+    쓰는 것과 같은 불변식이고, 근거는 `_draft_from_schedule_item()` 주석에 있다.
+    """
+
+    if time_available_min is None or not drafts:
+        return list(drafts), timeline
+
+    category_by_id = {c.place_id: c.category for c in candidates}
+    slots = [
+        DurationSlot(
+            current_min=draft.visit_duration_min,
+            policy=(
+                policy_for(category_by_id[draft.place_id])
+                if draft.place_id in category_by_id
+                else None
+            ),
+        )
+        for draft in drafts
+    ]
+    overhead_min = timeline.total_duration_min - sum(
+        draft.visit_duration_min for draft in drafts
+    )
+    fitted = fit_durations_to_budget(
+        slots, overhead_min=overhead_min, budget_min=time_available_min
+    )
+    if fitted == [draft.visit_duration_min for draft in drafts]:
+        return list(drafts), timeline
+
+    adjusted = [
+        replace(draft, visit_duration_min=minutes)
+        for draft, minutes in zip(drafts, fitted, strict=True)
+    ]
+    return adjusted, _build_schedule_timeline(
+        adjusted,
+        start_at=start_at,
+        travel_minutes=travel_minutes,
+        candidates=candidates,
+    )
 
 
 def _compose_items(
@@ -557,7 +619,7 @@ def _resolve_must_include(
     1. 후보 목록에 없는 id는 강제할 수 없다(폐점 하드 필터 등으로 D가 걸러낸
        경우). 여기서는 이름도 알 수 없으므로 조용히 빼고, 호출부가 보관함에
        저장된 이름으로 안내를 채운다.
-    2. 남은 것이 항목 수 상한(`target_item_range()`의 max)을 넘으면 **담은
+    2. 남은 것이 항목 수 상한(`derive_item_range()`의 max)을 넘으면 **담은
        순서대로** 앞에서부터 상한까지만 쓴다. 점수 순으로 자르지 않는 이유는
        "왜 그 곳이 빠졌는지" 사용자에게 설명할 수 있어야 하기 때문이다
        (SavedPlaceList.items docstring과 같은 근거).
@@ -574,6 +636,28 @@ def _resolve_must_include(
     if len(present) <= max_items:
         return present, []
     return present[:max_items], _names_of(present[max_items:], request.candidates)
+
+
+def _cap_item_count(
+    items: Sequence[ScheduleLLMItem], max_items: int
+) -> list[ScheduleLLMItem]:
+    """유도한 개수 상한을 넘겨 온 항목을 잘라낸다. (TP-239)
+
+    **프롬프트 지시는 부탁이고 이 자르기가 계약이다**(SCHEDULE-07과 같은 철학).
+    상한을 예산에서 유도해 프롬프트에 적어 줘도 LLM이 더 많이 골라 올 수 있고,
+    그러면 시간이 다시 어긋난다 — 실측으로 2시간 요청(상한 2곳)에 4곳 285분이
+    나왔다. `ScheduleLLMPlan.items`의 `max_length`는 하드 캡(5)이라 이걸 못 막는다.
+
+    **뒤에서부터 자르고 그 뒤는 기존 기계에 맡긴다.** 잘린 자리에 보관함 장소가
+    있었으면 이어지는 `_missing_must_include()`가 빠진 것으로 보고,
+    `_restore_displaced_must_include()`가 남은 자리로 되돌린다. 자르기와 되돌리기를
+    따로 만들면 두 규칙이 서로를 모르게 된다.
+    """
+
+    if len(items) <= max_items:
+        return list(items)
+    logger.info("schedule.item_count_capped from=%d to=%d", len(items), max_items)
+    return list(items[:max_items])
 
 
 def _missing_must_include(
@@ -621,18 +705,20 @@ async def plan_schedule(
     started_at = timer()
     effective_visit_datetime = request.visit_datetime or now_kst()
 
-    # 이번 요청의 time_available에 맞는 개수 범위를 구한다(SCHEDULE-10).
+    # 이번 요청의 예산에 맞는 개수 범위를 구한다(TP-239). 버킷 상수가 아니라
+    # 체류 최소값과 이번 후보들의 실제 거리로 계산한다 — budget.derive_item_range().
     # 후보가 최솟값보다 적으면 LLM을 부르지 않는다 — ScheduleLLMPlan.items가 그
     # 개수를 애초에 만족시킬 수 없어 호출해도 재시도까지 실패로 끝날 뿐이다
     # (SCHEDULE-07의 가드를 동적 최솟값으로 확장). 상한은 보관함 개수 충돌
     # 판정에 쓴다(SCHEDULE-12).
-    min_items, max_items = target_item_range(request.conditions.time_available)
+    min_items, max_items = derive_item_range(request)
     if len(request.candidates) < min_items:
         return ScheduleResult(
             items=[],
             total_duration_min=0,
             route_summary=_NO_CANDIDATES_ROUTE_SUMMARY,
             basis_note=_build_basis_note(effective_visit_datetime),
+            item_capacity=max_items,
             elapsed_ms=round((timer() - started_at) * 1000, 2),
         )
 
@@ -662,6 +748,7 @@ async def plan_schedule(
 
     plan = (await llm.generate_schedule_plan(resolved_request)).data
     llm_items, hallucinated = _drop_unknown_places(plan.items, candidate_ids)
+    llm_items = _cap_item_count(llm_items, max_items)
     missing = _missing_must_include(must_include, llm_items)
     if missing:
         # 프롬프트 지시는 부탁이고 이 검증이 계약이다(SCHEDULE-07과 같은 철학).
@@ -673,6 +760,7 @@ async def plan_schedule(
         )
         plan = (await llm.generate_schedule_plan(resolved_request)).data
         llm_items, hallucinated = _drop_unknown_places(plan.items, candidate_ids)
+        llm_items = _cap_item_count(llm_items, max_items)
         missing = _missing_must_include(must_include, llm_items)
 
     if hallucinated:
@@ -697,6 +785,7 @@ async def plan_schedule(
             # 일정이 나왔든 안 나왔든 사용자가 똑같이 궁금해한다
             # (response_composer.compose_schedule_message docstring과 같은 근거).
             over_capacity_place_names=over_capacity_names,
+            item_capacity=max_items,
             elapsed_ms=round((timer() - started_at) * 1000, 2),
         )
 
@@ -740,11 +829,20 @@ async def plan_schedule(
         # 모델이 갈려 관측·비용이 두 곳으로 흩어진다.
         mode_judge=LlmModeJudge(llm),
     )
+    schedule_start_at = _round_up_start(effective_visit_datetime)
     timeline = _build_schedule_timeline(
         drafts,
-        start_at=_round_up_start(effective_visit_datetime),
+        start_at=schedule_start_at,
         travel_minutes=travel.minutes,
         candidates=resolved_request.candidates,
+    )
+    drafts, timeline = _fit_to_time_available(
+        drafts,
+        timeline,
+        time_available_min=request.conditions.time_available,
+        candidates=resolved_request.candidates,
+        start_at=schedule_start_at,
+        travel_minutes=travel.minutes,
     )
 
     items = _compose_items(drafts, timeline, resolved_request.candidates, travel.edges)
@@ -758,6 +856,10 @@ async def plan_schedule(
         omitted_saved_place_names=omitted_names,
         over_capacity_place_names=over_capacity_names,
         added_place_names=_added_place_names(request, items),
+        item_capacity=max_items,
+        time_budget_status=classify_budget(
+            timeline.total_duration_min, request.conditions.time_available
+        ),
         elapsed_ms=round((timer() - started_at) * 1000, 2),
     )
 
@@ -1008,6 +1110,14 @@ async def plan_partial_schedule(
         travel_minutes=travel.minutes,
         candidates=resolved_request.candidates,
     )
+    drafts, timeline = _fit_to_time_available(
+        drafts,
+        timeline,
+        time_available_min=request.conditions.time_available,
+        candidates=resolved_request.candidates,
+        start_at=start_at,
+        travel_minutes=travel.minutes,
+    )
 
     kept = len(request.pinned_items)
     replaced = len(plan.new_items)
@@ -1018,6 +1128,9 @@ async def plan_partial_schedule(
         total_duration_min=timeline.total_duration_min,
         route_summary=route_summary,
         basis_note=_build_basis_note(effective_visit_datetime),
+        time_budget_status=classify_budget(
+            timeline.total_duration_min, request.conditions.time_available
+        ),
         elapsed_ms=round((timer() - started_at) * 1000, 2),
     )
 
