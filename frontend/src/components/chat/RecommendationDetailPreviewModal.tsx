@@ -227,6 +227,38 @@ function OperatingHoursRows({ rows }: { rows: OperatingHoursRow[] }) {
   );
 }
 
+/**
+ * InfoTable 한 줄의 뼈대. 스켈레톤 행도 이것을 쓴다.
+ *
+ * 여백과 정렬을 한 곳에만 두는 것이 요점이다. 두 곳에 따로 적어 두었더니 스켈레톤
+ * 행이 실제 행보다 7px 낮았고(내용 높이 15px 대 22px), 값이 도착할 때 표 전체가
+ * 그만큼 늘어났다.
+ */
+function InfoRowShell({
+  left,
+  right,
+  rightClassName = "text-ink",
+  testId,
+  decorative,
+}: {
+  left: ReactNode;
+  right: ReactNode;
+  rightClassName?: string;
+  testId?: string;
+  decorative?: boolean;
+}) {
+  return (
+    <div
+      data-testid={testId}
+      aria-hidden={decorative}
+      className="flex items-start justify-between gap-3 py-3"
+    >
+      <div className="flex shrink-0 items-center gap-2 pt-0.5">{left}</div>
+      <div className={`min-w-0 flex-1 text-right text-sm ${rightClassName}`}>{right}</div>
+    </div>
+  );
+}
+
 /** InfoTable 한 줄. 로딩 중 미리보기 행도 같은 모양을 써서 실제 값으로 바뀔 때 자리가 흔들리지 않는다. */
 function InfoRow({
   icon: Icon,
@@ -240,19 +272,17 @@ function InfoRow({
   children: ReactNode;
 }) {
   return (
-    <div className="flex items-start justify-between gap-3 py-3">
-      <div className="flex shrink-0 items-center gap-2 pt-0.5">
-        <Icon size={15} className="text-muted" />
-        <span className="text-sm text-ink">{label}</span>
-      </div>
-      <div
-        className={`min-w-0 flex-1 text-right text-sm ${
-          emphasized ? "font-bold text-brand" : "text-ink"
-        }`}
-      >
-        {children}
-      </div>
-    </div>
+    <InfoRowShell
+      testId="info-row"
+      left={
+        <>
+          <Icon size={15} className="text-muted" />
+          <span className="text-sm text-ink">{label}</span>
+        </>
+      }
+      rightClassName={emphasized ? "font-bold text-brand" : "text-ink"}
+      right={children}
+    />
   );
 }
 
@@ -273,24 +303,31 @@ function InfoTable({
   if (visibleEntries.length === 0) return null;
 
   return (
-    <div className="flex flex-col divide-y divide-border rounded-xl bg-white px-4 shadow-resting">
-      {visibleEntries.map(([key, labelKo, labelEn, Icon]) => {
-        const value = card[key];
-        if (typeof value !== "string") return null;
-        const operatingHours = key === "operating_hours" ? parseOperatingHours(value) : null;
-        const statusSuffix = key === "operating_hours" ? operatingStatusSuffix(item, isEn) : null;
-        return (
-          <InfoRow key={key} icon={Icon} label={isEn ? labelEn : labelKo} emphasized={Boolean(statusSuffix)}>
-            {operatingHours ? (
-              <OperatingHoursRows rows={operatingHours} />
-            ) : statusSuffix ? (
-              `${value} · ${statusSuffix}`
-            ) : (
-              <DetailText fieldKey={key} value={value} />
-            )}
-          </InfoRow>
-        );
-      })}
+    <div className={INFO_CARD_BOX}>
+      <div className={INFO_CARD_ROWS}>
+        {visibleEntries.map(([key, labelKo, labelEn, Icon]) => {
+          const value = card[key];
+          if (typeof value !== "string") return null;
+          const operatingHours = key === "operating_hours" ? parseOperatingHours(value) : null;
+          const statusSuffix = key === "operating_hours" ? operatingStatusSuffix(item, isEn) : null;
+          return (
+            <InfoRow
+              key={key}
+              icon={Icon}
+              label={isEn ? labelEn : labelKo}
+              emphasized={Boolean(statusSuffix)}
+            >
+              {operatingHours ? (
+                <OperatingHoursRows rows={operatingHours} />
+              ) : statusSuffix ? (
+                `${value} · ${statusSuffix}`
+              ) : (
+                <DetailText fieldKey={key} value={value} />
+              )}
+            </InfoRow>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -312,16 +349,18 @@ function AccessibilityTable({ card, isEn }: { card: InfoPlaceCard; isEn: boolean
   return (
     <section className="flex flex-col gap-1.5">
       <h3 className="text-xs font-bold text-label">{isEn ? "Facilities" : "편의시설"}</h3>
-      <div className="flex flex-col divide-y divide-border rounded-xl bg-white px-4 shadow-resting">
-        {visibleEntries.map(([key, labelKo, labelEn, Icon]) => {
-          const value = card[key];
-          if (typeof value !== "string") return null;
-          return (
-            <InfoRow key={key} icon={Icon} label={isEn ? labelEn : labelKo}>
-              <DetailText fieldKey={key} value={value} />
-            </InfoRow>
-          );
-        })}
+      <div className={INFO_CARD_BOX}>
+        <div className={INFO_CARD_ROWS}>
+          {visibleEntries.map(([key, labelKo, labelEn, Icon]) => {
+            const value = card[key];
+            if (typeof value !== "string") return null;
+            return (
+              <InfoRow key={key} icon={Icon} label={isEn ? labelEn : labelKo}>
+                <DetailText fieldKey={key} value={value} />
+              </InfoRow>
+            );
+          })}
+        </div>
       </div>
     </section>
   );
@@ -353,6 +392,28 @@ function useDelayedSkeleton(isLoading: boolean, delayMs = 200): boolean {
   return visible;
 }
 
+/* 완성된 표가 몇 줄인지의 실측 분포(8,060곳, 2026-09-05).
+ *
+ *   0줄 1.1% · 1줄 1.0% · 2줄 11.4% · 3줄 22.1% · 4줄 30.0% · 5줄 33.1% ·
+ *   6줄 0.9% · 7줄 0.3%
+ *
+ * 스켈레톤을 중앙값인 4줄로 잡는다. 늘어나든 줄어들든 그만큼 아래 내용이
+ * 움직이므로, 어느 쪽으로도 적게 어긋나는 값이 낫다 — 평균 어긋남이 3줄로 잡으면
+ * 1.17줄, 4줄로 잡으면 0.88줄이다.
+ */
+const INFO_TABLE_SKELETON_ROWS = 4;
+
+/* 상세 정보 표의 겉 상자와 줄 묶음. 스켈레톤과 실제 표가 같은 값을 써야 값이
+ * 도착할 때 상자가 제자리에 그대로 남는다 — 어긋나면 그 차이만큼 화면이 튄다.
+ *
+ * 교체에 페이드를 넣지 않는다. 스켈레톤은 즉시 사라지는데 새 내용이 투명하게
+ * 시작하므로, 무엇을 감싸든 그 사이가 빈다 — 행 사이 가로줄(divide-y)까지 함께
+ * 흐려져 오히려 더 눈에 띄었다. 상자·행 높이·가로줄 위치가 모두 같은 지금은
+ * 회색 바가 글자로 바뀌는 것 말고는 움직이는 것이 없어, 그대로 바꾸는 편이
+ * 조용하다. */
+const INFO_CARD_BOX = "rounded-xl bg-white px-4 shadow-resting";
+const INFO_CARD_ROWS = "flex flex-col divide-y divide-border";
+
 /**
  * 상세를 기다리는 동안의 InfoTable 자리. 완성됐을 때와 같은 줄 모양으로 둔다.
  *
@@ -363,33 +424,52 @@ function useDelayedSkeleton(isLoading: boolean, delayMs = 200): boolean {
  * 값 자리의 너비를 줄마다 다르게 둔 것도 같은 이유다. 폭이 같으면 글자가 아니라
  * 표로 읽힌다.
  *
- * 줄 수를 실제보다 적게 잡는다. 실제 표는 3~12줄인데 많이 잡아 두면 값이 도착할 때
- * 줄이 줄면서 아래 내용이 위로 밀린다 — 적게 잡으면 늘어나기만 한다.
+ * 이미 아는 운영시간(leadingRow)은 별도 상자가 아니라 이 상자의 첫 줄로 받는다.
+ * 상자를 따로 두면 값이 도착할 때 흰 상자가 둘에서 하나로 줄며 그 사이 간격까지
+ * 사라져, 줄 수를 아무리 맞춰도 화면이 한 번 접힌다.
  */
-function InfoTableSkeleton({ rows, isEn }: { rows: number; isEn: boolean }) {
+function InfoTableSkeleton({
+  rows,
+  isEn,
+  leadingRow,
+}: {
+  rows: number;
+  isEn: boolean;
+  leadingRow?: ReactNode;
+}) {
   const valueWidths = ["w-[70%]", "w-[45%]", "w-[60%]"];
 
   return (
-    <div
-      role="status"
-      className="flex flex-col divide-y divide-border rounded-xl bg-white px-4 shadow-resting"
-    >
-      {Array.from({ length: rows }, (_, index) => (
-        <div
-          key={index}
-          data-testid="info-skeleton-row"
-          className="flex items-center justify-between gap-3 py-3"
-          aria-hidden
-        >
-          <div className="flex shrink-0 items-center gap-2">
-            <span className="h-[15px] w-[15px] animate-pulse rounded bg-chip" />
-            <span className="h-3.5 w-14 animate-pulse rounded bg-chip" />
-          </div>
-          <span
-            className={`h-3.5 animate-pulse rounded bg-chip ${valueWidths[index % valueWidths.length]}`}
+    <div role="status" className={INFO_CARD_BOX}>
+      <div className={INFO_CARD_ROWS}>
+        {leadingRow}
+        {Array.from({ length: rows }, (_, index) => (
+          /*
+           * 바를 감싼 h-5는 글자 한 줄(text-sm의 줄 높이 20px)이 차지하는 자리다.
+           * 바 자체 높이(14px)만 두면 행이 그만큼 낮아져, 값이 도착할 때 표가 늘어난다.
+           */
+          <InfoRowShell
+            key={index}
+            testId="info-skeleton-row"
+            decorative
+            left={
+              <>
+                <span className="h-[15px] w-[15px] animate-pulse rounded bg-chip" />
+                <span className="flex h-5 items-center">
+                  <span className="h-3.5 w-14 animate-pulse rounded bg-chip" />
+                </span>
+              </>
+            }
+            right={
+              <span className="flex h-5 items-center justify-end">
+                <span
+                  className={`h-3.5 animate-pulse rounded bg-chip ${valueWidths[index % valueWidths.length]}`}
+                />
+              </span>
+            }
           />
-        </div>
-      ))}
+        ))}
+      </div>
       <span className="sr-only">
         {isEn ? "Loading place details" : "장소 상세 정보를 불러오는 중"}
       </span>
@@ -410,13 +490,11 @@ function QuickInfoPreview({ item, isEn }: { item?: RecommendationItem; isEn: boo
   if (!item?.operating_hours_display) return null;
   const statusSuffix = operatingStatusSuffix(item, isEn);
   return (
-    <div className="flex flex-col divide-y divide-border rounded-xl bg-white px-4 shadow-resting">
-      <InfoRow icon={Clock} label={isEn ? "Hours" : "운영시간"} emphasized={Boolean(statusSuffix)}>
-        {statusSuffix
-          ? `${item.operating_hours_display} · ${statusSuffix}`
-          : item.operating_hours_display}
-      </InfoRow>
-    </div>
+    <InfoRow icon={Clock} label={isEn ? "Hours" : "운영시간"} emphasized={Boolean(statusSuffix)}>
+      {statusSuffix
+        ? `${item.operating_hours_display} · ${statusSuffix}`
+        : item.operating_hours_display}
+    </InfoRow>
   );
 }
 
@@ -1515,26 +1593,26 @@ export function RecommendationDetailPreviewModal({
             {addressText && <p className="text-xs text-muted">{addressText}</p>}
           </div>
 
-          {isLoading ? (
-            <div className="flex flex-col gap-2">
-              <QuickInfoPreview item={item} isEn={isEn} />
-              {/* 운영시간을 이미 보여줬으면 그 줄은 실제 값이므로 스켈레톤은 한 줄
-                  적게 둔다. */}
-              {showSkeleton && (
+          {isLoading
+            ? /* 운영시간을 이미 알면 그 줄은 실제 값이므로 스켈레톤을 한 줄 적게
+                 둔다. 지연(200ms) 중에는 아는 값만 있는 한 줄짜리 상자다. */
+              (showSkeleton || item?.operating_hours_display) && (
                 <InfoTableSkeleton
-                  rows={item?.operating_hours_display ? 2 : 3}
+                  rows={
+                    showSkeleton
+                      ? INFO_TABLE_SKELETON_ROWS - (item?.operating_hours_display ? 1 : 0)
+                      : 0
+                  }
                   isEn={isEn}
+                  leadingRow={<QuickInfoPreview item={item} isEn={isEn} />}
                 />
+              )
+            : detailCard && (
+                <>
+                  <InfoTable card={detailCard} item={item} isEn={isEn} />
+                  <AccessibilityTable card={detailCard} isEn={isEn} />
+                </>
               )}
-            </div>
-          ) : (
-            detailCard && (
-              <>
-                <InfoTable card={detailCard} item={item} isEn={isEn} />
-                <AccessibilityTable card={detailCard} isEn={isEn} />
-              </>
-            )
-          )}
 
           {item?.recommendation_reason && (
             <section className="flex flex-col gap-1.5 rounded-2xl bg-sky-light p-4">

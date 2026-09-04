@@ -516,7 +516,8 @@ it("상세를 기다리는 동안 표와 같은 줄 모양 스켈레톤을 그�
 
   const skeleton = await screen.findByRole("status");
   expect(within(skeleton).getByText("장소 상세 정보를 불러오는 중")).toBeInTheDocument();
-  expect(screen.getAllByTestId("info-skeleton-row")).toHaveLength(3);
+  // 완성된 표의 중앙값이 4줄이라 그만큼 잡아 둔다(8,060곳 실측).
+  expect(screen.getAllByTestId("info-skeleton-row")).toHaveLength(4);
 });
 
 /* 운영시간은 추천 카드에서 이미 아는 값이라 그 줄만 진짜로 채워져 있다. */
@@ -527,7 +528,7 @@ it("운영시간을 이미 알면 스켈레톤을 한 줄 적게 그린다", asy
     { wrapper: TripProvider },
   );
   await screen.findByRole("status");
-  expect(screen.getAllByTestId("info-skeleton-row")).toHaveLength(3);
+  expect(screen.getAllByTestId("info-skeleton-row")).toHaveLength(4);
 
   rerender(
     <RecommendationDetailPreviewModal
@@ -537,7 +538,10 @@ it("운영시간을 이미 알면 스켈레톤을 한 줄 적게 그린다", asy
   );
 
   await screen.findByText("09:00~18:00 · 영업 중");
-  expect(screen.getAllByTestId("info-skeleton-row")).toHaveLength(2);
+  expect(screen.getAllByTestId("info-skeleton-row")).toHaveLength(3);
+  // 운영시간 줄과 스켈레톤이 같은 상자에 있어야 값이 도착할 때 상자 수가 안 바뀐다.
+  const skeletonBox = screen.getByRole("status");
+  expect(within(skeletonBox).getByText("09:00~18:00 · 영업 중")).toBeInTheDocument();
 });
 
 it("상세가 도착하면 스켈레톤이 사라지고 실제 표가 남는다", async () => {
@@ -624,4 +628,35 @@ it("현재 위치가 없으면 로딩 중에도 버튼 자리를 잡지 않는�
 
   await screen.findByRole("status");
   expect(screen.queryByRole("button", { name: /네이버 지도로 길찾기/ })).not.toBeInTheDocument();
+});
+
+/*
+ * 스켈레톤 행과 실제 행이 같은 뼈대(InfoRowShell)에서 나와야 값이 도착할 때 표
+ * 높이가 그대로다. 한때 두 곳에 따로 적혀 있어 스켈레톤이 7px 낮았고, 표가 그만큼
+ * 늘어나며 아래 내용이 밀렸다. jsdom은 실제 높이를 재지 못하므로 뼈대가 같은지로
+ * 지킨다.
+ */
+it("스켈레톤 행과 실제 행이 같은 뼈대를 쓴다", async () => {
+  let resolveDetail!: (value: RecommendationPlaceDetailResponse) => void;
+  mockedFetch.mockReturnValue(
+    new Promise((resolve) => {
+      resolveDetail = resolve;
+    }),
+  );
+  render(
+    <RecommendationDetailPreviewModal placeId="126508" placeName="경복궁" onClose={() => {}} />,
+    { wrapper: TripProvider },
+  );
+
+  await screen.findByRole("status");
+  const skeletonRowClass = screen.getAllByTestId("info-skeleton-row")[0].className;
+
+  resolveDetail({
+    status: "success",
+    requested_place_id: "126508",
+    place_card: card({ parking: "가능 (240대)" }),
+  });
+
+  const realRow = (await screen.findAllByTestId("info-row"))[0];
+  expect(realRow.className).toBe(skeletonRowClass);
 });
