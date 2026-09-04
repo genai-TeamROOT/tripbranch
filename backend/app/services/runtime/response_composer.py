@@ -22,6 +22,7 @@ from app.domain.travel_route import TravelRoute
 from app.errors import AppError
 from app.observability.langfuse_tracing import trace_attributes
 from app.providers.protocols import LLMProvider
+from app.schedule.budget import classify_budget
 from app.schedule.schemas import target_item_range
 from app.schemas import (
     CompareCriteria,
@@ -34,6 +35,7 @@ from app.schemas import (
     OutputStatus,
     RecommendationItem,
     RecommendationResponse,
+    ScheduleBudgetStatus,
     ScheduleResult,
     UserConditions,
 )
@@ -893,7 +895,6 @@ def _format_compare_travel_time(item: ComparisonItem) -> str | None:
 # 그대로 보여준다. 15분이었을 때 "3시간 짜줘"(180분)에 실제 163분(오차 17분)이
 # 편성되는 경계 사례가 실제 계산값을 그대로 노출해 어색했다 — 되도록 요청값을
 # 그대로 보여주는 쪽을 우선하기로 하고 30분으로 넓힘(실사용 피드백, 2026-08-14).
-_DURATION_MATCH_TOLERANCE_MIN = 30
 
 
 def _format_duration_label(total_minutes: int) -> str:
@@ -1001,6 +1002,25 @@ def _with_saved_place_notes(
     return " ".join(parts)
 
 
+def _budget_status(
+    schedule: ScheduleResult, time_available_min: int | None
+) -> ScheduleBudgetStatus | None:
+    """이번 편성의 시간 준수 판정. (TP-238)
+
+    **planner가 실어 보낸 값을 그대로 쓴다.** 화면이 다시 판정하면 편성이 목표로
+    삼은 것과 화면이 말하는 것이 갈릴 수 있다.
+
+    필드가 비어 있는 경우는 둘이다 — 이 필드가 생기기 전에 저장된 스냅샷
+    (`saved_schedules.payload`, `session_messages`)과, 값을 채우지 않는 호출부
+    (테스트 더블). 그때만 같은 함수로 계산한다. **같은 함수를 부르는 것과 같은
+    계산을 다시 적는 것은 다르다** — 상수도 규칙도 한 곳에 있다.
+    """
+
+    if schedule.time_budget_status is not None:
+        return schedule.time_budget_status
+    return classify_budget(schedule.total_duration_min, time_available_min)
+
+
 def _with_over_budget_note(
     message: str, schedule: ScheduleResult, time_available_min: int | None
 ) -> str:
@@ -1011,17 +1031,18 @@ def _with_over_budget_note(
     넘었다는 이유로 장소를 빼면 추정 오차 때문에 멀쩡한 일정이 깎인다. 사용자가
     보고 판단할 수 있게 수치만 밝힌다.
 
-    **문턱은 라벨이 바뀌는 지점과 같은 값이다**(`_DURATION_MATCH_TOLERANCE_MIN`).
-    허용 오차 안이면 위에서 요청 시간을 그대로 라벨로 쓰므로("3시간 코스를
-    짜봤어요"), 거기에 초과 안내가 붙으면 한 문장 안에서 3시간이라고 해놓고
-    3시간을 넘었다고 말하게 된다. 두 판단이 같은 상수를 보게 묶어둔다.
+    **라벨과 이 안내는 같은 판정 하나를 본다**(TP-238). 허용 오차 안이면 위에서
+    요청 시간을 그대로 라벨로 쓰므로("3시간 코스를 짜봤어요"), 거기에 초과 안내가
+    붙으면 한 문장 안에서 3시간이라고 해놓고 3시간을 넘었다고 말하게 된다. 예전에는
+    두 곳이 같은 뺄셈을 따로 해서 묶여 있었고, 지금은 planner가 내린 판정 하나를
+    둘 다 읽는다.
     """
 
     if time_available_min is None:
         return message
-    over_min = schedule.total_duration_min - time_available_min
-    if over_min <= _DURATION_MATCH_TOLERANCE_MIN:
+    if _budget_status(schedule, time_available_min) is not ScheduleBudgetStatus.OVER:
         return message
+    over_min = schedule.total_duration_min - time_available_min
     # `_format_duration_label()`은 항상 "시간"이나 "분"으로 끝나고 둘 다 받침이 있어
     # 조사는 "으로"로 고정해도 된다.
     return (
@@ -1044,10 +1065,10 @@ def compose_schedule_message(
     planner.py가 route_summary를 안내 문구로 정규화해서 넘겨준다) "0분 코스를
     짜봤어요" 같은 어색한 접두사 없이 route_summary만 그대로 반환한다.
 
-    time_available_min(사용자가 요청한 시간, 분)이 주어지고 실제
-    total_duration_min과의 차이가 _DURATION_MATCH_TOLERANCE_MIN 이내면 요청
-    시간을 그대로 보여준다("2시간 짜줘" → "2시간 코스를 짜봤어요"). 차이가 크면
-    실제 편성 결과가 요청과 동떨어졌다는 뜻이므로 실제 계산값을 보여준다.
+    time_available_min(사용자가 요청한 시간, 분)이 주어지고 편성이 허용 오차
+    안에 들어왔으면 요청 시간을 그대로 보여준다("2시간 짜줘" → "2시간 코스를
+    짜봤어요"). 벗어났으면 실제 편성 결과가 요청과 동떨어졌다는 뜻이므로 실제
+    계산값을 보여준다. 그 판정은 planner가 내려 ScheduleResult에 싣는다(TP-238).
 
     총 소요시간이 요청한 활동 가능 시간을 허용 오차 이상으로 넘으면 한 문장을
     덧붙인다(TP-216) — 넘었다는 이유로 장소를 빼지는 않는다.
@@ -1065,7 +1086,7 @@ def compose_schedule_message(
 
     if (
         time_available_min is not None
-        and abs(time_available_min - schedule.total_duration_min) <= _DURATION_MATCH_TOLERANCE_MIN
+        and _budget_status(schedule, time_available_min) is ScheduleBudgetStatus.WITHIN
     ):
         duration_label = _format_duration_label(time_available_min)
     else:

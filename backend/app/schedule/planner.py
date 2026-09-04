@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from time import perf_counter
 from typing import TypeAlias, TypeVar
@@ -25,7 +25,12 @@ from app.domain.schedule_travel import ScheduleTravelEdge
 from app.errors import AppError
 from app.providers.protocols import LLMProvider
 from app.schedule.associations import CoVisitedHint
-from app.schedule.duration import resolve_visit_duration
+from app.schedule.budget import (
+    DurationSlot,
+    classify_budget,
+    fit_durations_to_budget,
+)
+from app.schedule.duration import policy_for, resolve_visit_duration
 from app.schedule.schemas import (
     ScheduleLLMItem,
     SchedulePartialFillRequest,
@@ -253,6 +258,63 @@ def _build_schedule_timeline(
             )
         )
     return build_timeline(stops, start_at=start_at, travel_minutes=travel_minutes)
+
+
+def _fit_to_time_available(
+    drafts: Sequence[_ItemDraft],
+    timeline: Timeline,
+    *,
+    time_available_min: int | None,
+    candidates: Sequence[RecommendationItem],
+    start_at: datetime,
+    travel_minutes: TravelMinutes,
+) -> tuple[list[_ItemDraft], Timeline]:
+    """체류시간을 활동 가능 시간에 맞춰 조절하고 시간표를 다시 계산한다. (TP-238)
+
+    **시간표를 한 번만 다시 계산한다.** 체류시간을 줄이면 도착이 당겨져 개장 전
+    대기가 늘어날 수 있어서, 총 소요시간이 줄인 만큼 그대로 줄지는 않는다. 그래서
+    한 번 더 돌려 실제 값을 얻되 거기서 멈춘다 — 대기와 체류가 서로를 밀어내며
+    수렴하지 않을 수 있고, 남는 오차는 감추지 말고 판정으로 알리는 것이 맞다.
+
+    **후보 목록에 없는 항목은 조절하지 않는다.** 그건 부분 재편성에서 사용자가
+    유지하기로 한 자리(pinned)다 — `_compose_items()`가 운영시간 경고를 건너뛸 때
+    쓰는 것과 같은 불변식이고, 근거는 `_draft_from_schedule_item()` 주석에 있다.
+    """
+
+    if time_available_min is None or not drafts:
+        return list(drafts), timeline
+
+    category_by_id = {c.place_id: c.category for c in candidates}
+    slots = [
+        DurationSlot(
+            current_min=draft.visit_duration_min,
+            policy=(
+                policy_for(category_by_id[draft.place_id])
+                if draft.place_id in category_by_id
+                else None
+            ),
+        )
+        for draft in drafts
+    ]
+    overhead_min = timeline.total_duration_min - sum(
+        draft.visit_duration_min for draft in drafts
+    )
+    fitted = fit_durations_to_budget(
+        slots, overhead_min=overhead_min, budget_min=time_available_min
+    )
+    if fitted == [draft.visit_duration_min for draft in drafts]:
+        return list(drafts), timeline
+
+    adjusted = [
+        replace(draft, visit_duration_min=minutes)
+        for draft, minutes in zip(drafts, fitted, strict=True)
+    ]
+    return adjusted, _build_schedule_timeline(
+        adjusted,
+        start_at=start_at,
+        travel_minutes=travel_minutes,
+        candidates=candidates,
+    )
 
 
 def _compose_items(
@@ -740,11 +802,20 @@ async def plan_schedule(
         # 모델이 갈려 관측·비용이 두 곳으로 흩어진다.
         mode_judge=LlmModeJudge(llm),
     )
+    schedule_start_at = _round_up_start(effective_visit_datetime)
     timeline = _build_schedule_timeline(
         drafts,
-        start_at=_round_up_start(effective_visit_datetime),
+        start_at=schedule_start_at,
         travel_minutes=travel.minutes,
         candidates=resolved_request.candidates,
+    )
+    drafts, timeline = _fit_to_time_available(
+        drafts,
+        timeline,
+        time_available_min=request.conditions.time_available,
+        candidates=resolved_request.candidates,
+        start_at=schedule_start_at,
+        travel_minutes=travel.minutes,
     )
 
     items = _compose_items(drafts, timeline, resolved_request.candidates, travel.edges)
@@ -758,6 +829,9 @@ async def plan_schedule(
         omitted_saved_place_names=omitted_names,
         over_capacity_place_names=over_capacity_names,
         added_place_names=_added_place_names(request, items),
+        time_budget_status=classify_budget(
+            timeline.total_duration_min, request.conditions.time_available
+        ),
         elapsed_ms=round((timer() - started_at) * 1000, 2),
     )
 
@@ -1008,6 +1082,14 @@ async def plan_partial_schedule(
         travel_minutes=travel.minutes,
         candidates=resolved_request.candidates,
     )
+    drafts, timeline = _fit_to_time_available(
+        drafts,
+        timeline,
+        time_available_min=request.conditions.time_available,
+        candidates=resolved_request.candidates,
+        start_at=start_at,
+        travel_minutes=travel.minutes,
+    )
 
     kept = len(request.pinned_items)
     replaced = len(plan.new_items)
@@ -1018,6 +1100,9 @@ async def plan_partial_schedule(
         total_duration_min=timeline.total_duration_min,
         route_summary=route_summary,
         basis_note=_build_basis_note(effective_visit_datetime),
+        time_budget_status=classify_budget(
+            timeline.total_duration_min, request.conditions.time_available
+        ),
         elapsed_ms=round((timer() - started_at) * 1000, 2),
     )
 
