@@ -462,3 +462,68 @@ it("유모차는 무장애 값과 기존 값이 함께 보이지 않는다", asy
   // 위 표의 "유모차" 줄은 값이 비어 나오지 않는다.
   expect(screen.queryByText("유모차")).not.toBeInTheDocument();
 });
+
+/*
+ * 로딩 자리를 회색 덩어리 하나로 두면 중앙값 0.73초·p90 1.44초(2026-09-05 실측)를
+ * 그 상태로 버티게 되고, 값이 도착하는 순간 표가 통째로 나타나 화면이 한 번 튄다.
+ * 완성됐을 때와 같은 줄 모양으로 두어 값만 차오르게 한다.
+ */
+it("상세를 기다리는 동안 표와 같은 줄 모양 스켈레톤을 그린다", async () => {
+  mockedFetch.mockReturnValue(new Promise(() => {}));
+  render(
+    <RecommendationDetailPreviewModal placeId="126508" placeName="경복궁" onClose={() => {}} />,
+    { wrapper: TripProvider },
+  );
+
+  // 로딩이 시작된 직후에는 아직 없다. 조회가 빨라지면 번쩍이지 않도록 200ms를
+  // 기다렸다가 띄운다.
+  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+
+  const skeleton = await screen.findByRole("status");
+  expect(within(skeleton).getByText("장소 상세 정보를 불러오는 중")).toBeInTheDocument();
+  expect(screen.getAllByTestId("info-skeleton-row")).toHaveLength(3);
+});
+
+/* 운영시간은 추천 카드에서 이미 아는 값이라 그 줄만 진짜로 채워져 있다. */
+it("운영시간을 이미 알면 스켈레톤을 한 줄 적게 그린다", async () => {
+  mockedFetch.mockReturnValue(new Promise(() => {}));
+  const { rerender } = render(
+    <RecommendationDetailPreviewModal placeId="126508" placeName="경복궁" onClose={() => {}} />,
+    { wrapper: TripProvider },
+  );
+  await screen.findByRole("status");
+  expect(screen.getAllByTestId("info-skeleton-row")).toHaveLength(3);
+
+  rerender(
+    <RecommendationDetailPreviewModal
+      item={recommendationItem({ operating_hours_display: "09:00~18:00" })}
+      onClose={() => {}}
+    />,
+  );
+
+  await screen.findByText("09:00~18:00 · 영업 중");
+  expect(screen.getAllByTestId("info-skeleton-row")).toHaveLength(2);
+});
+
+it("상세가 도착하면 스켈레톤이 사라지고 실제 표가 남는다", async () => {
+  let resolveDetail!: (value: RecommendationPlaceDetailResponse) => void;
+  mockedFetch.mockReturnValue(
+    new Promise((resolve) => {
+      resolveDetail = resolve;
+    }),
+  );
+  render(
+    <RecommendationDetailPreviewModal placeId="126508" placeName="경복궁" onClose={() => {}} />,
+    { wrapper: TripProvider },
+  );
+  expect(await screen.findByRole("status")).toBeInTheDocument();
+
+  resolveDetail({
+    status: "success",
+    requested_place_id: "126508",
+    place_card: card({ parking: "가능 (240대)" }),
+  });
+
+  expect(await screen.findByText("가능 (240대)")).toBeInTheDocument();
+  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+});

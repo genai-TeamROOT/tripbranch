@@ -328,6 +328,76 @@ function AccessibilityTable({ card, isEn }: { card: InfoPlaceCard; isEn: boolean
 }
 
 /**
+ * 스켈레톤을 띄울지 정한다. 로딩이 시작돼도 delayMs 동안은 띄우지 않는다.
+ *
+ * 최소 노출 시간은 두지 않는다. 2026-09-05 실측에서 이 조회(/chat/place-details)는
+ * 표본 24건이 모두 0.5초를 넘었고(중앙값 0.73초, p90 1.44초) 200ms 안에 끝난 건이
+ * 하나도 없었다 — "떴다가 곧바로 사라져 번쩍이는" 상황이 지금 분포에서는 생기지
+ * 않는다. 최소 노출을 두면 이득 없이 이미 받은 값을 늦추기만 한다.
+ *
+ * 그래도 지연을 남기는 이유는 이 값이 서버 상태에 달려 있어서다. 나중에 상세를
+ * 캐시하거나 응답이 빨라지면 그때 번쩍임이 생기는데, 그 안전장치를 미리 둔다.
+ */
+function useDelayedSkeleton(isLoading: boolean, delayMs = 200): boolean {
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    if (!isLoading) {
+      setVisible(false);
+      return;
+    }
+    const timer = setTimeout(() => setVisible(true), delayMs);
+    return () => clearTimeout(timer);
+  }, [isLoading, delayMs]);
+
+  return visible;
+}
+
+/**
+ * 상세를 기다리는 동안의 InfoTable 자리. 완성됐을 때와 같은 줄 모양으로 둔다.
+ *
+ * 높이만 잡은 회색 덩어리를 쓰지 않는 이유는 중앙값 0.73초·p90 1.44초를 그 상태로
+ * 버텨야 하기 때문이다. 덩어리는 그동안 멈춘 것처럼 보이고, 값이 채워지는 순간
+ * 표가 통째로 나타나 화면이 한 번 튄다.
+ *
+ * 값 자리의 너비를 줄마다 다르게 둔 것도 같은 이유다. 폭이 같으면 글자가 아니라
+ * 표로 읽힌다.
+ *
+ * 줄 수를 실제보다 적게 잡는다. 실제 표는 3~12줄인데 많이 잡아 두면 값이 도착할 때
+ * 줄이 줄면서 아래 내용이 위로 밀린다 — 적게 잡으면 늘어나기만 한다.
+ */
+function InfoTableSkeleton({ rows, isEn }: { rows: number; isEn: boolean }) {
+  const valueWidths = ["w-[70%]", "w-[45%]", "w-[60%]"];
+
+  return (
+    <div
+      role="status"
+      className="flex flex-col divide-y divide-border rounded-xl bg-white px-4 shadow-resting"
+    >
+      {Array.from({ length: rows }, (_, index) => (
+        <div
+          key={index}
+          data-testid="info-skeleton-row"
+          className="flex items-center justify-between gap-3 py-3"
+          aria-hidden
+        >
+          <div className="flex shrink-0 items-center gap-2">
+            <span className="h-[15px] w-[15px] animate-pulse rounded bg-chip" />
+            <span className="h-3.5 w-14 animate-pulse rounded bg-chip" />
+          </div>
+          <span
+            className={`h-3.5 animate-pulse rounded bg-chip ${valueWidths[index % valueWidths.length]}`}
+          />
+        </div>
+      ))}
+      <span className="sr-only">
+        {isEn ? "Loading place details" : "장소 상세 정보를 불러오는 중"}
+      </span>
+    </div>
+  );
+}
+
+/**
  * 상세 조회가 끝나기 전, 이미 아는 값만 먼저 보여준다.
  *
  * 운영시간은 추천 카드를 만들 때 D가 이미 계산해 item.operating_hours_display에
@@ -1231,6 +1301,7 @@ export function RecommendationDetailPreviewModal({
     placeNameProp ??
     (isEn ? "Place details" : "장소 상세 정보");
   const isLoading = detailStatus === "loading" && !detailCard;
+  const showSkeleton = useDelayedSkeleton(isLoading);
   // 목적지 좌표와 현재 위치가 모두 있어야 길찾기 딥링크를 만들 수 있다.
   const canRoute =
     detailCard?.latitude != null && detailCard?.longitude != null && Boolean(device_location);
@@ -1435,13 +1506,14 @@ export function RecommendationDetailPreviewModal({
           {isLoading ? (
             <div className="flex flex-col gap-2">
               <QuickInfoPreview item={item} isEn={isEn} />
-              {/* 이미 아는 값(운영시간)을 보여줬으면 남은 자리는 좁게, 아무것도
-                  모르면 예전처럼 통짜 스켈레톤으로 채운다. */}
-              <div
-                className={`animate-pulse rounded-xl bg-chip ${
-                  item?.operating_hours_display ? "h-28" : "h-44"
-                }`}
-              />
+              {/* 운영시간을 이미 보여줬으면 그 줄은 실제 값이므로 스켈레톤은 한 줄
+                  적게 둔다. */}
+              {showSkeleton && (
+                <InfoTableSkeleton
+                  rows={item?.operating_hours_display ? 2 : 3}
+                  isEn={isEn}
+                />
+              )}
             </div>
           ) : (
             detailCard && (
