@@ -8,6 +8,7 @@ public_toilet.py 참고). 거리 정렬과 "지금 열림" 판정까지 여기�
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -18,9 +19,18 @@ from app.public_toilet_hours import OpenHours, is_open_at, parse_open_hours
 from app.repositories.protocols import PublicToiletRepository
 from app.tools.contracts import ToolError, ToolStatus
 
-# 바운딩 박스에서 가져올 상한. 최종 노출은 2곳뿐이지만, 박스가 원보다 넓고
-# "지금 열린 곳"만 골라내야 해서 넉넉히 받아 걸러낸다.
-_FETCH_LIMIT = 60
+logger = logging.getLogger(__name__)
+
+# 바운딩 박스에서 가져올 상한.
+#
+# **박스 안 전량을 받아야 한다.** 저장소 질의에는 거리 정렬이 없어(PostGIS를 쓰지
+# 않는다) 상한에 걸리면 임의의 일부만 오고, 그 안에 가장 가까운 곳이 없을 수 있다.
+# 실제로 60으로 뒀을 때 인사동에서 55m 24시간 화장실이 빠지고 230m가 1순위로
+# 나왔다(박스 안 114곳 중 임의의 60곳만 와서 그렇다).
+#
+# 1km 반경 박스 안 화장실 수를 실측 4,447건 전부로 재보면 중앙값 39곳 · 95% 102곳 ·
+# 최대 126곳(왕십리 일대)이다. 자료가 늘 것을 감안해 최대의 약 4배로 둔다.
+_FETCH_LIMIT = 500
 
 
 @dataclass(frozen=True)
@@ -74,6 +84,19 @@ class GetPublicToiletTool:
                     cause="timeout" if exc.code == "provider_timeout" else "upstream_error",
                     retryable=exc.retryable,
                 ),
+            )
+
+        if len(rows) >= _FETCH_LIMIT:
+            # 상한에 닿았다는 것은 박스 안을 다 못 받았을 수 있다는 뜻이고, 저장소
+            # 질의에 거리 정렬이 없어 가장 가까운 곳이 빠졌을 수 있다. 답을 막지는
+            # 않되(있는 것 중 최선은 여전히 유용하다) 상한을 올릴 신호를 남긴다.
+            logger.warning(
+                "공중화장실 조회가 상한 %d건에 닿았습니다 — 가장 가까운 곳이 빠졌을 수 "
+                "있습니다(좌표 %.5f,%.5f 반경 %.1fkm).",
+                _FETCH_LIMIT,
+                query.latitude,
+                query.longitude,
+                query.radius_km,
             )
 
         nearby = _rank_toilets(rows, query)

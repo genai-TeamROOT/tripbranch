@@ -571,16 +571,21 @@ class ContextService:
         # "급한데 근처에 화장실 있어?"는 지명을 말하지 않는 게 자연스럽다. 기기
         # 위치가 있으면 그걸 기준점으로 삼아 되묻지 않고 바로 답한다 — 급한
         # 상황에 "어디 근처요?"를 되묻는 건 답을 안 준 것과 같다.
+        #
+        # **지명을 말했으면 그 지명이 이긴다.** 기기 위치가 있어도 여기서 가로채면
+        # 강남에서 "인사동 화장실 어디야?"를 물었을 때 강남 화장실을 인사동이라고
+        # 답하게 된다. 지명이 있는 경우는 아래 공통 위치 해석을 거친다.
         if (
             request.question_type == _PUBLIC_TOILET_QUESTION_TYPE
+            and place_name is None
             and request.origin_coordinates is not None
         ):
             return await self._fetch_public_toilet_info(
                 request,
                 latitude=request.origin_coordinates.latitude,
                 longitude=request.origin_coordinates.longitude,
-                place_name=place_name,
-                resolved_place_name=place_name or "현재 위치",
+                place_name=None,
+                resolved_place_name="현재 위치",
                 location_metadata=(),
             )
         if place_name is None:
@@ -654,7 +659,15 @@ class ContextService:
                         error_details=(
                             location_result.error.details if location_result.error else {}
                         ),
-                        location_metadata=(location_result.provider_metadata,),
+                        # 한 겹 더 감싸면 안 된다. 받는 쪽 handler들은 평탄한
+                        # tuple[ProviderMetadata, ...]을 기대하고 그대로
+                        # _info_response_metadata()에 넘기는데, 그 함수는 인자 하나를
+                        # 그룹 하나로 보고 한 겹만 벗긴다 — 이중 튜플이면 항목이
+                        # ProviderMetadata가 아니라 튜플이라 AttributeError로 터진다.
+                        # 실제로 "인사동 주차장 자리 있어?"처럼 후보가 갈리는 지명이
+                        # 들어오면 realtime_public_parking·realtime_bus·
+                        # realtime_commercial이 모두 500이었다(2026-09-05 실측).
+                        location_metadata=location_result.provider_metadata,
                     )
                     if fallback_response is not None:
                         return fallback_response
@@ -1738,6 +1751,19 @@ class ContextService:
                 request,
                 place_name=place_name,
                 resolved_location=resolved_location,
+                location_metadata=location_metadata,
+            )
+        if request.question_type == _PUBLIC_TOILET_QUESTION_TYPE:
+            # "인사동"처럼 후보가 여럿으로 갈리는 지명이 화장실 질문에는 흔하다
+            # (동네 이름이라 관광지·역·상호와 겹친다). 대표 좌표로 답하는 편이
+            # 급한 사람에게 "어느 인사동이요?"를 되묻는 것보다 낫다 — 어느 후보든
+            # 반경 1km 안 화장실은 크게 다르지 않다.
+            return await self._fetch_public_toilet_info(
+                request,
+                latitude=latitude,
+                longitude=longitude,
+                place_name=place_name,
+                resolved_place_name=place_name,
                 location_metadata=location_metadata,
             )
         if request.question_type == _PUBLIC_PARKING_QUESTION_TYPE:

@@ -18,7 +18,7 @@ from app.agent_context.info_schemas import (
 )
 from app.agent_context.schemas import Coordinates
 from app.agent_context.service import ContextService, ContextTools
-from app.domain.models import GeocodeResult, PublicToilet
+from app.domain.models import GeocodeResult, LocalSearchPlace, PublicToilet
 from app.providers.contracts import ProviderSource, provider_result
 from app.providers.holiday import FakeHolidayProvider
 from app.providers.stub import FakePlaceProvider, FakeWeatherProvider
@@ -110,10 +110,44 @@ class _FixedGeocodingProvider:
         )
 
 
+class _AmbiguousLocalSearchProvider:
+    """같은 이름의 후보를 둘 이상 돌려줘 ambiguous_location을 만든다.
+
+    "인사동"처럼 동네 이름은 상호와 겹쳐 후보가 갈리는 일이 흔하다. 화장실 질문에는
+    특히 자주 나오는 상황이라 되묻지 않고 대표 좌표로 답해야 한다.
+    """
+
+    async def search_places_by_name(self, query: str, *, display: int = 5):
+        del display
+        latitude, longitude = _INSADONG
+        return provider_result(
+            (
+                LocalSearchPlace(
+                    name=f"{query} 1호점",
+                    address="서울 종로구 인사동길 12",
+                    road_address="서울 종로구 인사동길 12",
+                    category="음식점>카페",
+                    latitude=latitude,
+                    longitude=longitude,
+                ),
+                LocalSearchPlace(
+                    name=f"{query} 2호점",
+                    address="서울 종로구 인사동길 20",
+                    road_address="서울 종로구 인사동길 20",
+                    category="음식점>카페",
+                    latitude=latitude + 0.0006,
+                    longitude=longitude + 0.0008,
+                ),
+            ),
+            source=ProviderSource.FAKE_LOCAL_SEARCH,
+        )
+
+
 def _service(
     *,
     toilets: tuple[PublicToilet, ...] = (_ALWAYS_OPEN, _DAYTIME_ONLY, _FAR_AWAY),
     with_toilet_tool: bool = True,
+    with_ambiguous_local_search: bool = False,
     clock: Callable[[], datetime] | None = None,
 ) -> ContextService:
     place_provider = FakePlaceProvider()
@@ -121,7 +155,10 @@ def _service(
     return ContextService(
         ContextTools(
             location=ResolveLocationTool(
-                _FixedGeocodingProvider(latitude=latitude, longitude=longitude)
+                _FixedGeocodingProvider(latitude=latitude, longitude=longitude),
+                local_search_provider=(
+                    _AmbiguousLocalSearchProvider() if with_ambiguous_local_search else None
+                ),
             ),
             places=NearbyPlaceDetailsTool(place_provider, place_provider),
             weather=GetWeatherForecastTool(FakeWeatherProvider()),
@@ -217,6 +254,62 @@ async def test_device_gps_answers_without_asking_for_a_place_name() -> None:
     assert isinstance(result, RealtimeCityInfoResult)
     assert result.resolved_place_name == "현재 위치"
     assert len(result.detail_items) == 2
+
+
+@pytest.mark.asyncio
+async def test_named_place_wins_over_device_gps() -> None:
+    """지명을 말했으면 기기 위치가 있어도 그 지명이 기준이다.
+
+    강남에 앉아 "인사동 화장실 어디야?"를 물었을 때 강남 화장실을 인사동이라고
+    답하면 안 된다. 실제로 이 순서가 뒤바뀐 채 배포 직전까지 갔다 — GPS 지름길이
+    지명 유무를 보지 않아 이름만 인사동으로 붙고 좌표는 GPS를 썼다.
+    """
+
+    # 기기 위치는 여의도(먼 곳)로 두고, 지명은 인사동으로 묻는다. 지오코더는
+    # 언제나 인사동 좌표를 돌려주므로, 인사동 화장실이 나와야 지명이 이긴 것이다.
+    response = await _service().fetch_info_context(
+        _request(
+            place_name="인사동",
+            origin=Coordinates(latitude=37.5278, longitude=126.9340),
+        )
+    )
+
+    assert response.status == "success"
+    result = response.result
+    assert isinstance(result, RealtimeCityInfoResult)
+    assert result.requested_place_name == "인사동"
+    assert result.resolved_place_name != "현재 위치"
+    titles = [item.title for item in result.detail_items]
+    # 여의도 좌표를 썼다면 반경 안에 인사동 화장실이 없어 이 목록이 비었을 것이다.
+    assert "인사동마루 신관 개방화장실" in titles
+    assert "멀리 있는 화장실" not in titles
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_place_name_answers_with_the_lead_candidate() -> None:
+    """후보가 갈리는 지명은 되묻지 않고 대표 좌표로 답한다.
+
+    "인사동"은 동네 이름이라 상호와 겹쳐 후보가 여럿 잡힌다. 급한 질문에
+    "어느 인사동이요?"를 되묻는 건 답을 안 준 것과 같고, 어느 후보든 반경 1km 안
+    화장실은 크게 다르지 않다.
+
+    이 경로가 메타데이터를 이중 튜플로 넘겨 500이 나던 회귀도 함께 막는다 —
+    같은 버그가 realtime_public_parking·realtime_bus·realtime_commercial에도
+    있었다(2026-09-05 실측).
+    """
+
+    response = await _service(with_ambiguous_local_search=True).fetch_info_context(
+        _request(place_name="인사동")
+    )
+
+    assert response.status == "success"
+    assert response.clarification is None
+    result = response.result
+    assert isinstance(result, RealtimeCityInfoResult)
+    assert len(result.detail_items) == 2
+    # 메타데이터가 평탄한 tuple[ProviderMetadata, ...]로 조립돼야 한다.
+    assert response.metadata.provider_metadata
+    assert all(item.source for item in response.metadata.provider_metadata)
 
 
 @pytest.mark.asyncio
