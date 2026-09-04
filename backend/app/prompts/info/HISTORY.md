@@ -4,11 +4,21 @@
 
 | 슬롯 | 관리 버전 | 템플릿 | 공유 규칙 |
 | --- | --- | --- | --- |
-| info.extract | v3.6.0 | extract.md, question_type_rules.md, place_context_rules.md, visit_time_rules.md, pending_question_block.md | factuality |
+| info.extract | v3.7.0 | extract.md, question_type_rules.md, place_context_rules.md, visit_time_rules.md, pending_question_block.md | factuality |
 | info.answer | v1.1.0 | answer_instruction.md | persona, factuality |
 
 ## Draft
 
+- 2026-09-05(info.extract v3.7.0): **기준점을 현재 위치로 지정하면 앞 지명을 이어받지
+  않습니다**(D-121).
+
+  `place_context_rules.md`에 현재 위치 절을 새로 넣었습니다. "인사동 근처 화장실" 다음에
+  "아니 지금 위치로"라고 고쳐 말했는데도 place_name에 인사동이 그대로 채워지면, 그 지명이
+  기준점이 되어 **사용자가 방금 고친 것을 되돌립니다**(실측 2026-09-05: 세 턴 내내 인사동
+  화장실이 나왔습니다).
+
+  `question_type_rules.md`의 public_toilet 항목에도 기준점만 바꾸는 후속 발화가 같은
+  유형을 유지한다는 한 줄을 덧붙였습니다. 라우팅 쪽 짝은 router.classify v2.6.0입니다.
 - 2026-09-05(info.extract v3.6.0): **`public_toilet` 유형 신설** — 주변 공중화장실
   위치를 찾는 질문을 facility에서 떼어냈습니다.
 

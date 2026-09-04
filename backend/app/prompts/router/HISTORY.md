@@ -4,10 +4,20 @@
 
 | 슬롯 | 관리 버전 | 템플릿 | 공유 규칙 |
 | --- | --- | --- | --- |
-| router.classify | v2.5.0 | intent_definitions.md, intent_priority.md, context_rules.md, boundary_cases.md | service_scope, safety |
+| router.classify | v2.6.0 | intent_definitions.md, intent_priority.md, context_rules.md, boundary_cases.md | service_scope, safety |
 
 ## Draft
 
+- 2026-09-05(v2.6.0): **기준점을 현재 위치로 바꾸는 후속 발화도 INFO를 유지합니다**(D-121).
+
+  `context_rules.md`에 이미 "직전 INFO를 다른 장소로 이어가면 INFO 유지" 규칙이 있는데
+  예시가 전부 지명("인사동은?", "창덕궁은?")이라, 지명 대신 "현재 위치"를 넣은 같은
+  모양의 발화에는 적용되지 않았습니다.
+
+  실측(2026-09-05): "근처에 화장실 있어?" → "아니 지금 위치로"가 **RECOMMEND로 분류돼
+  화장실을 찾던 사람에게 관광지 추천이 나갔습니다**. 급한 상황에서 답을 통째로 잃는
+  실패라 기존 규칙에 현재 위치 표현을 예시로 덧붙였습니다 — 새 규칙을 만들지 않고
+  같은 규칙의 적용 범위만 넓혔습니다.
 - 2026-09-04(v2.5.0): **행사를 찾는 요청을 RECOMMEND가 아니라 INFO로 보냅니다**(TP-237).
   `intent_definitions.md`의 INFO 정의와 `intent_priority.md`의 5번에 "행사를 찾는
   요청은 장소명이 없어도, '추천해줘' 형태여도 INFO"를 넣고, `boundary_cases.md`에
