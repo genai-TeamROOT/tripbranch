@@ -1,7 +1,8 @@
 /*
  * 역할: 취향 설정 화면. Figma "Preferences"(28:2) 화면을 옮긴 것이다.
- *   저장하면 이 기기에 남고(state/preferenceStorage.ts) 홈 화면이 그 값을
- *   다시 보여준다 — 확인하러 이 화면까지 들어오지 않아도 되게.
+ *   저장하면 **계정에 남고**(PUT /api/preferences) 이 기기에도 함께 남는다
+ *   (state/preferenceSync.ts). 홈 화면이 그 값을 다시 보여준다 — 확인하러 이
+ *   화면까지 들어오지 않아도 되게.
  * 호출 시점: 사이드바 "취향 설정"에서 전체 페이지로 연다(시트 아님 — §5.1의
  *   SHEET_PATH_PATTERNS에 /preferences가 없다).
  *
@@ -15,16 +16,13 @@
  */
 
 import { Compass, Plus, Sparkles, Users } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { ErrorBanner } from "../components/ErrorBanner";
 import { AppHeader } from "../components/layout/AppHeader";
 import { AddKeywordModal } from "../components/layout/AddKeywordModal";
-import {
-  clearPreferences,
-  loadPreferences,
-  savePreferences,
-  type SavedPreference,
-} from "../state/preferenceStorage";
+import { loadPreferences, type SavedPreference } from "../state/preferenceStorage";
+import { pushPreferences, syncPreferences } from "../state/preferenceSync";
 import {
   COMPANION_OPTIONS,
   MOOD_OPTIONS,
@@ -98,8 +96,36 @@ export function PreferencesPage() {
   );
   const [showAddKeyword, setShowAddKeyword] = useState(false);
   const [cleared, setCleared] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  /* state가 아니라 ref다 — 아래 effect의 then 콜백이 마운트 시점의 값을 붙잡고
+     있어서, state로 두면 사용자가 칩을 만져도 콜백은 계속 false로 본다. */
+  const touchedRef = useRef(false);
+
+  /*
+   * 이 기기 값으로 먼저 그린 뒤 계정 값으로 맞춘다. 로딩 화면을 두지 않는 이유는
+   * 대부분의 경우 둘이 같아서 깜빡임만 남기 때문이다. 다른 기기에서 바꾼 경우에만
+   * 선택이 바뀌고, 그때는 바뀌는 것이 맞다.
+   *
+   * 사용자가 이미 칩을 만지기 시작했으면 덮어쓰지 않는다 — 서버 응답이 늦게 와서
+   * 방금 고른 것을 지우면 안 된다.
+   */
+  useEffect(() => {
+    let active = true;
+    void syncPreferences().then((synced) => {
+      if (!active || touchedRef.current) return;
+      setSelected(new Set(synced.map((preference) => preference.label)));
+      setCustomKeywords(
+        synced.filter((preference) => preference.source === "custom").map(({ label }) => label),
+      );
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   function toggle(option: string) {
+    touchedRef.current = true;
     setCleared(false);
     setSelected((prev) => {
       const next = new Set(prev);
@@ -117,16 +143,27 @@ export function PreferencesPage() {
    * 없어서다 — 저장 버튼은 3개 미만이면 눌리지 않으므로 "다 빼고 저장"이라는
    * 경로가 존재하지 않는다.
    */
-  function handleReset() {
+  async function handleReset() {
+    touchedRef.current = true;
     setSelected(new Set());
     setCustomKeywords([]);
     const hadSaved = loadPreferences().length > 0;
-    clearPreferences();
-    setCleared(hadSaved);
+    setErrorMessage(null);
+    /* 계정에도 반영한다. 빈 목록을 저장하는 것이지 행을 지우는 게 아니다 —
+       "아직 고른 적 없음"과 "다 지웠음"은 다른 상태다. */
+    try {
+      await pushPreferences([]);
+      setCleared(hadSaved);
+    } catch {
+      /* 이 기기에서는 이미 지워졌다(pushPreferences가 로컬을 먼저 쓴다). */
+      setCleared(hadSaved);
+      setErrorMessage("계정에서 지우지 못했어요. 다른 기기에는 아직 남아 있을 수 있어요.");
+    }
   }
 
   function handleAddKeyword(keyword: string) {
     if (selected.size >= MAX_SELECTED || selected.has(keyword)) return;
+    touchedRef.current = true;
     setCleared(false);
     setCustomKeywords((prev) => (prev.includes(keyword) ? prev : [...prev, keyword]));
     setSelected((prev) => new Set(prev).add(keyword));
@@ -138,9 +175,20 @@ export function PreferencesPage() {
    * 만든 기능이라 여기서 끝내면 앞뒤가 안 맞는다. 홈에 뜬 "내 취향" 줄 자체가
    * 저장됐다는 확인이다.
    */
-  function handleSave() {
-    savePreferences([...selected].map(toSavedPreference));
-    navigate("/");
+  async function handleSave() {
+    if (isSaving) return;
+    setIsSaving(true);
+    setErrorMessage(null);
+    try {
+      await pushPreferences([...selected].map(toSavedPreference));
+      navigate("/");
+    } catch {
+      /* 고른 값은 이 기기에 이미 저장됐다. 다만 계정에 못 올렸으므로 다른
+         기기에서는 안 보인다 — 그 사실을 알리고 화면에 머문다. */
+      setErrorMessage("계정에 저장하지 못했어요. 이 기기에는 남아 있어요.");
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   const remaining = MIN_SELECTED - selected.size;
@@ -241,6 +289,8 @@ export function PreferencesPage() {
             <Plus size={16} /> 키워드 직접 입력
           </button>
 
+          {errorMessage && <ErrorBanner message={errorMessage} />}
+
           {cleared && (
             <p
               role="status"
@@ -254,11 +304,11 @@ export function PreferencesPage() {
         <div className="sticky bottom-0 z-20 mx-auto w-full max-w-2xl bg-gradient-to-t from-bg via-bg to-bg/0 px-4 pb-7 pt-4">
           <button
             type="button"
-            disabled={!canSave}
+            disabled={!canSave || isSaving}
             onClick={handleSave}
             className="flex h-[52px] w-full items-center justify-center rounded-full bg-brand text-base font-bold text-white transition-colors disabled:bg-brand/40"
           >
-            {canSave ? "저장하기" : `${remaining}개 더 골라주세요`}
+            {isSaving ? "저장하는 중이에요…" : canSave ? "저장하기" : `${remaining}개 더 골라주세요`}
           </button>
         </div>
       </div>

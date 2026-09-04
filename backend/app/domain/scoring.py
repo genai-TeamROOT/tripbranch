@@ -43,7 +43,12 @@ from app.place_search_policy import WALKING_SPEED_KM_PER_MINUTE
 # OPERATING_PARSER_VERSION과 동일한 semver 패턴. 점수 산출에 영향을 주는 변경
 # (가중치, Feature 추가/제거, environment_type 판정표 등) 시 버전을 올린다 —
 # 사소한 리팩터링·주석 변경은 올리지 않는다.
-SCORING_VERSION = "recommendation-scoring-1.6.0"
+#
+# **OPTIONAL_FEATURES에 이름을 넣는 것만으로는 올릴 근거가 되지 않는다.** 조립부
+# 두 곳이 전부 실재 여부로 거른다(build_weights는 `in set(requested)`,
+# weights_for_feature_scores는 `in feature_scores`). 올릴 근거는 그 키를
+# feature_scores에 실제로 채우는 **새 경로**다 — 1.7.0이 그 예다.
+SCORING_VERSION = "recommendation-scoring-1.9.0"
 
 WEATHER_FEATURE = "weather"
 ENVIRONMENT_FEATURE = "environment"
@@ -182,6 +187,12 @@ _ENVIRONMENT_PREFERENCES = frozenset({"indoor", "outdoor"})
 
 _UNVERIFIED_WARNING = "방문 전에 운영 여부를 확인해주세요."
 _CLOSED_NOW_WARNING = "지금은 운영시간이 아니에요. 방문 전에 다시 확인해주세요."
+# 주기 휴무인 것은 알지만 몇 번째인지 원문에 없는 후보에 붙인다(`월 1회 월요일`).
+#
+# 그날 닫을 수도 있지만 **확인할 수 없다.** 매주로 치면 안 쉬는 주에 멀쩡한 장소가
+# 사라지고, 무시하면 휴무일에 추천이 나간다. 후보는 살리고 사실만 말한다 —
+# 확인하지 못한 것을 확인한 척하지 않는다(D-042와 같은 원칙).
+_UNCERTAIN_CLOSURE_WARNING = "이곳은 주기적으로 쉬는 날이 있어요. 방문 전에 확인해주세요."
 
 # 무장애 판정이 `partial`인 후보에 붙이는 안내. 어휘마다 막히는 것이 달라
 # 문구도 나눈다 — "일부 구역이 어렵다"만으로는 휠체어가 못 가는 것인지 점자
@@ -639,6 +650,40 @@ def redistribute_weights(
     return {feature: weight / total_remaining for feature, weight in remaining.items()}
 
 
+def equalize_weights(
+    weights: Mapping[str, float], missing_features: Iterable[str]
+) -> dict[str, float]:
+    """결측을 뺀 나머지 축에 가중치를 **균등하게** 나눈다(구 단위 요청, D-119 후속).
+
+    `redistribute_weights()`와 나누는 이유는 **축마다 값이 몇 갈래로 나오는지가
+    다르기 때문이다.** 날씨는 판정표 조회라 한 날씨 조건에서 실내·실외·모름 3갈래
+    밖에 안 나오고, 남은 운영시간은 120분만 넘으면 전부 1.0이다. 반면 취향은
+    유사도 연속값이라 후보 30곳에서 14~16갈래로 갈린다.
+
+    비례 재분배는 그 가장 성긴 축에 가장 큰 몫을 남긴다 — 거리가 빠진 구 단위에서
+    날씨 0.41 / 영업시간 0.41 / 취향 0.18이 되어, 3갈래 축이 1차 정렬을 하고
+    14갈래 축은 그 덩어리 안에서만 미세조정한다. 실측에서 종로구 "야경 보기 좋은
+    곳" 질의의 2위가 서울특별시교육청이었다(실내라 비 오는 날 날씨 만점).
+    균등(1/3씩)으로 옮기면 북악하늘길·창덕궁 달빛기행·인왕산이 올라온다.
+
+    **반경 검색에는 쓰지 않는다.** 거리 축이 살아 있으면 기본 3축 0.35/0.35/0.15가
+    그대로고, 그 비율은 `_OPTIONAL_WEIGHT` 주석대로 기존 세트에서 읽어낸 값이다.
+    축이 2개만 남는 경우(취향이 없는 구 단위 요청)에는 비례 재분배도 0.5/0.5라
+    이 함수와 결과가 같다 — 갈리는 것은 축이 3개 이상일 때뿐이다.
+
+    딸린 대가: 영업시간을 모르는 후보(그 축이 결측)와 아는 후보의 점수 격차가
+    0.1235에서 0.1667로 벌어진다. 방향은 맞지만(미확인은 문이 닫혀 있을 수도
+    있다) 의도해서 고른 값이 아니라 균등 배분의 부산물이고, 영업시간 적재가
+    끝나면 줄어든다.
+    """
+    missing = set(missing_features)
+    remaining = [feature for feature in weights if feature not in missing]
+    if not remaining:
+        return {}
+    share = 1.0 / len(remaining)
+    return {feature: share for feature in remaining}
+
+
 def _is_closed(candidate: ScoringCandidate, now: datetime) -> bool:
     if candidate.operating_hours is None:
         return False  # 운영시간 미확인은 폐점이 아니다.
@@ -692,7 +737,18 @@ def prepare_candidates(
         # 운영시간은 "가서 닫혀 있을 수 있다"이고 무장애는 "가도 못 들어가는 데가
         # 있다"라 무게가 다르다. 뒤에 두면 운영시간 미확인 후보에서 무장애 안내가
         # 통째로 가려진다.
-        warnings = _accessibility_warnings(candidate) + operating_warnings
+        # 주기 휴무 안내는 폐점·미확인 안내와 겹치지 않을 때만 붙인다. 이미
+        # "방문 전에 확인해주세요"라고 말한 후보에 같은 말을 두 번 하지 않는다.
+        uncertain_warnings = (
+            (_UNCERTAIN_CLOSURE_WARNING,)
+            if candidate.operating_hours is not None
+            and candidate.operating_hours.has_uncertain_closure
+            and not is_unverified
+            else ()
+        )
+        warnings = (
+            _accessibility_warnings(candidate) + uncertain_warnings + operating_warnings
+        )
         eligible.append(
             PreparedCandidate(
                 candidate=candidate,
@@ -742,6 +798,11 @@ def score_prepared_candidates(
     *,
     weather_condition: WeatherCondition | None,
     max_distance_km: float,
+    # 안 넘기면 요청에서 켜진 선택 Feature로 조립한다(`build_weights`).
+    #
+    # **`district_scoped=True`와 함께 넘기면 여기 적은 비율은 버려진다** —
+    # 그 모드는 남은 축을 균등하게 나누므로(`equalize_weights`) 키 목록만 쓰인다.
+    # 지금 이 인자를 넘기는 프로덕션 호출부는 없고 테스트뿐이다.
     weights: Mapping[str, float] | None = None,
     weather_reason: WeatherReason = None,
     requested_environment: str | None = None,
@@ -753,6 +814,9 @@ def score_prepared_candidates(
     # 속도가 아니다(D-118, `_travel_minutes_budget()` 참고). 기본값은 도보로,
     # 넘기지 않는 호출부는 기본 반경(도보 기준) 요청과 같은 자를 쓴다.
     travel_budget_speed_km_per_min: float = WALKING_SPEED_KM_PER_MINUTE,
+    # 후보를 구 하나에서 통째로 모은 요청인가(C의 RecommendationContext.district_scope,
+    # D-119). True면 거리 Feature를 **결측으로 다룬다** — 아래 루프 참고.
+    district_scoped: bool = False,
     # 취향 근거 검색 결과(place_id = content_id 기준). 비어 있으면 사용자가
     # 취향을 말하지 않았거나 검색이 실패한 것으로 보고 taste Feature를 아예
     # 쓰지 않는다 — 후보 단위가 아니라 **요청 단위** 판단이다.
@@ -819,8 +883,35 @@ def score_prepared_candidates(
         else:
             remaining_time_score = _remaining_time_score(remaining_minutes)
 
+        # 구 단위 요청은 거리 Feature를 쓰지 않는다(D-119 후속).
+        #
+        # **후보를 모은 방식이 반경 검색이 아니기 때문이다.** C가 구 전량에서
+        # 격자로 흩어 뽑으므로 기준점이 없고, 그 요청의 `location`은 구 이름을 푼
+        # 대표점이라 후보 수집에도 정렬에도 쓰이지 않았다 — 그 좌표와의 거리는
+        # 사용자가 말한 것과 아무 관계가 없다.
+        #
+        # 분모도 맞지 않는다. 실측(2026-09-03, 좌표 정상인 행 기준)으로 구 중심에서
+        # 기본 반경 2km를 넘는 장소가 강남 16.6% · 서초 26.8% · 송파 33.3% ·
+        # 용산 34.2%다. 그 후보들은 전부 0점이 되어 2.1km와 8km가 구분되지 않는다.
+        #
+        # **"축이 없다"가 아니라 "값이 없다"로 다룬다.** 요청 전체가 함께 빠지므로
+        # 한 순위 안에서 자를 두 개 쓰는 문제가 생기지 않는다.
+        #
+        # 다만 나누는 방식은 날씨 조회 실패와 다르다 — 남은 축에 **균등하게**
+        # 나눈다(`equalize_weights`, 1.9.0). 비례 재분배가 가장 성긴 축(날씨,
+        # 3갈래)에 가장 큰 몫을 남기는 문제를 그 함수 주석에 적었다.
+        #
+        # 사용자 위치를 아는 요청에서는 거리 축이 노이즈가 아니다 — 그래도
+        # 구 단위 요청은 "이 구 전체에서 골라 달라"는 뜻이라 가까운 순을 우선하지
+        # 않기로 팀에서 정했다. 카드의 거리 표시(`distance_km`)는 그대로 남는다 —
+        # 점수에서 뺀 것이지 정보를 감춘 것이 아니다.
+        if district_scoped:
+            missing_features.append("distance")
+
         weights_used = (
-            redistribute_weights(base_weights, missing_features)
+            equalize_weights(base_weights, missing_features)
+            if district_scoped
+            else redistribute_weights(base_weights, missing_features)
             if missing_features
             else dict(base_weights)
         )
@@ -828,12 +919,19 @@ def score_prepared_candidates(
         feature_scores: dict[str, float | None] = {
             primary_feature: primary_score,
             "remaining_operating_time": remaining_time_score,
-            "distance": _proximity_score(
-                candidate,
-                routes_by_place_id.get(candidate.place_id),
-                max_distance_km,
-                travel_budget_speed_km_per_min,
-            ),  # 실측 이동시간 우선, 없으면 직선거리
+            # 실측 이동시간 우선, 없으면 직선거리. 구 단위 요청에서는 None이다 —
+            # 점수를 안 쓰는데 값만 채우면 개발자 패널과 근거 문장이 "거리 때문에
+            # 뽑혔다"고 말하게 된다(build_explanations가 score로 고른다).
+            "distance": (
+                None
+                if district_scoped
+                else _proximity_score(
+                    candidate,
+                    routes_by_place_id.get(candidate.place_id),
+                    max_distance_km,
+                    travel_budget_speed_km_per_min,
+                )
+            ),
         }
         taste_match = taste_by_place_id.get(candidate.place_id) if uses_taste else None
         if uses_taste:

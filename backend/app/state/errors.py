@@ -45,6 +45,23 @@ class SessionOwnershipError(AppError):
             status_code=403,
         )
 
+class SessionNotFoundError(AppError):
+    """없는(또는 만료된) 세션을 지목했을 때. (TP-222 후속 — 대화 이름 바꾸기)
+
+    조회·삭제는 없는 세션을 오류로 보지 않는다 — "없다"가 정상적인 답이고
+    멱등이기 때문이다. 반면 이름 바꾸기는 바꿀 대상이 있어야 성립하므로,
+    조용히 성공한 척하면 사용자가 바뀐 줄 알고 넘어간다.
+    """
+
+    def __init__(self, session_id: str) -> None:
+        super().__init__(
+            code="session_not_found",
+            message="그 대화를 찾을 수 없어요. 이미 지워졌을 수 있어요.",
+            status_code=404,
+            details={"session_id": session_id},
+        )
+
+
 class SavedPlaceNotRecommendedError(AppError):
     """보관함에 담으려는 장소가 그 세션에서 노출된 적이 없을 때. (SCHEDULE-12)
 
@@ -66,4 +83,43 @@ class SavedPlaceNotRecommendedError(AppError):
             message="이 대화에서 추천된 적이 없는 장소는 담을 수 없어요.",
             status_code=400,
             details={"place_id": place_id},
+        )
+
+
+class SavedScheduleNotFoundError(AppError):
+    """없는 저장 일정을 지목했을 때. (SCHEDULE 카드 2)
+
+    조회·이름 바꾸기는 대상이 있어야 성립한다. 삭제는 여기에 넣지 않는다 —
+    "그 일정이 없다"가 사용자가 원한 결과와 같아 멱등으로 두는 것이 맞다
+    (saved_places.remove와 같은 판단).
+
+    **남의 것일 때는 403으로 따로 답한다.** 두 경우를 404로 합치면 존재 여부가
+    새지 않지만, id가 uuid라 훑어서 알아낼 수 있는 값이 아니고, 갈라 두는 편이
+    화면과 로그에서 원인을 짚기 쉽다 — 대화 쪽(SessionNotFoundError /
+    SessionOwnershipError)이 이미 같은 방식이다.
+    """
+
+    def __init__(self, schedule_id: str) -> None:
+        super().__init__(
+            code="saved_schedule_not_found",
+            message="그 일정을 찾을 수 없어요. 이미 지워졌을 수 있어요.",
+            status_code=404,
+            details={"schedule_id": schedule_id},
+        )
+
+
+class SavedScheduleOwnershipError(AppError):
+    """저장 일정의 소유자가 인증된 신원과 다를 때. (SCHEDULE 카드 2)
+
+    `SessionOwnershipError`와 성격은 같지만 문구가 다르다 — 그쪽은 "세션"을
+    말하는데 사용자가 보는 것은 저장한 일정이다.
+
+    401(신원 자체가 무효)과 구분해 403을 쓴다.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            code="saved_schedule_ownership_mismatch",
+            message="이 일정에 접근할 권한이 없어요.",
+            status_code=403,
         )

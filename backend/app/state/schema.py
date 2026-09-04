@@ -193,6 +193,21 @@ class AgentState(BaseModel):
     ignore_operating_hours_until: datetime | None = None
     # 최근 대화(오래된 것이 앞). MAX_RECENT_TURNS개를 넘으면 앞에서 버린다 —
     # 자르는 책임은 append_conversation_turn() 한 곳에만 둔다.
+    # 대화 제목. 사이드바 채팅 히스토리가 목록에 쓴다. user_id와 같은 규칙으로
+    # **비어 있으면 채우고 값이 있으면 덮어쓰지 않는다** — 첫 턴의 사용자 발화가
+    # 제목이 되고, 사용자가 이름을 바꾸면 그 값이 남는다.
+    #
+    # recent_turns에서 파생하지 않는 이유는 그 배열이 MAX_RECENT_TURNS개만 남기
+    # 때문이다. 첫 질문이 밀려나면 제목이 저절로 바뀐다.
+    title: str | None = None
+    # 그 대화의 위치(user_conditions.search_center에서 온다). 사이드바가 목록
+    # 한 줄에 날짜와 함께 보여준다. title과 같은 규칙으로 **비어 있으면 채우고
+    # 덮어쓰지 않는다.**
+    #
+    # user_conditions에서 그때그때 읽지 않고 여기 박는 이유는 이어가기(resume)가
+    # 낡은 조건을 버리면서 user_conditions를 비우기 때문이다 — 지난 대화를 한 번
+    # 열면 목록에서 위치가 사라지게 된다.
+    location: str | None = None
     recent_turns: list[ConversationTurn] = Field(default_factory=list)
     # 상황 축이 잡은 현재 상태. 상황이 감지된 적이 없으면 None이다.
     situation_state: SituationState | None = None
@@ -387,6 +402,75 @@ class SavedPlaceList(BaseModel):
     updated_at: datetime = Field(default_factory=now_kst)
 
 
+# ---------------------------------------------------------------- 취향
+
+class UserPreference(BaseModel):
+    """사용자가 취향 설정 화면에서 고른 항목 하나.
+
+    프론트 `state/preferenceStorage.ts`의 SavedPreference와 같은 모양이다.
+    백엔드는 이 값을 해석하지 않고 그대로 보관한다 — 칩과 DB 코드의 대응은
+    화면이 갖고 있고(`pages/preferenceOptions.ts`), 여기서 다시 검증하면
+    칩 목록을 고칠 때마다 두 곳이 갈린다.
+    """
+
+    label: str
+    # preference | place_tag | custom. custom은 사용자가 직접 넣은 키워드라
+    # 대응 코드가 없다(codes가 빈 배열).
+    source: str
+    codes: list[str] = Field(default_factory=list)
+
+
+class UserPreferenceList(BaseModel):
+    """계정 단위 취향. (TP-222 후속)
+
+    **이 모델만 session_id가 아니라 user_id로 키를 잡는다.** 다른 상태
+    엔티티(AgentState·RecommendationHistory·SavedPlaceList)는 전부 세션 단위이고
+    세션 TTL과 함께 사라지지만, 취향은 세션을 넘어 사람에게 붙는 값이다 —
+    세션에 얹으면 대화를 새로 시작할 때마다 다시 골라야 한다.
+
+    그래서 user_id가 `str | None`이 아니라 필수다. 신원이 없으면 저장할 자리가
+    정해지지 않으므로, 라우트도 RequiredPrincipal을 쓴다.
+
+    items의 순서는 사용자가 고른 순서이고 화면이 그대로 보여준다.
+    """
+
+    user_id: str
+    items: list[UserPreference] = Field(default_factory=list)
+    updated_at: datetime = Field(default_factory=now_kst)
+
+
+# ---------------------------------------------------------------- 즐겨찾기
+
+class UserFavorite(BaseModel):
+    """사용자가 즐겨찾기에 담은 장소 하나. (위치 설정 화면)
+
+    프론트 `state/sidebarStorage.ts`의 FavoritePlace와 같은 모양이다. 백엔드는
+    이 값을 해석하지 않고 그대로 보관한다 — UserPreference와 같은 판단이다.
+
+    `label`과 `search_center_name`을 나눠 두는 이유는 사용자가 이름을 바꾸기
+    때문이다. "역삼역"을 담아 "회사"로 고쳐도 검색에는 담을 때의 장소 이름이
+    나가야 한다. 사이드바에서 자유 입력으로 만든 옛 항목에는 이 값이 없어
+    label로 떨어진다.
+    """
+
+    id: str
+    label: str
+    search_center_name: str | None = None
+    address: str | None = None
+
+
+class UserFavoriteList(BaseModel):
+    """계정 단위 즐겨찾기.
+
+    UserPreferenceList와 같은 모양이다 — 세션이 아니라 사람에게 붙는 값이라
+    키가 user_id이고, items의 순서는 담은 순서이며 화면이 그대로 보여준다.
+    """
+
+    user_id: str
+    items: list[UserFavorite] = Field(default_factory=list)
+    updated_at: datetime = Field(default_factory=now_kst)
+
+
 # ---------------------------------------------------------------- 기록
 
 class ConditionChangeLog(BaseModel):
@@ -404,6 +488,71 @@ class ConditionChangeLog(BaseModel):
     after_value: Any = None
     reset_scope: str | None = None
     applied_at: datetime = Field(default_factory=now_kst)
+
+
+class SessionMessage(BaseModel):
+    """한 턴에 화면으로 나갔던 것 전부. append-only. (TP-222 후속 — 화면 기록)
+
+    **recent_turns와 역할이 다르다.** 저것은 모델에 넣을 맥락이라
+    MAX_RECENT_TURNS(=5)에서 잘리고, 이것은 사람이 다시 볼 화면이라 자르지
+    않는다. 추천 이력과도 다르다 — 그것은 "다음 추천에서 뺄 곳"이라 대화를
+    이어갈 때 비워진다. 셋을 한 데이터로 겸하는 동안은 지난 대화를 되돌릴 때
+    손실이 구조적으로 생겼다.
+
+    payload는 A의 AgentResponse를 직렬화한 그대로다. **B는 열어보지 않는다** —
+    파싱하면 A의 스키마가 바뀔 때마다 B가 따라가야 하고, 지금 B는 app.schemas에
+    의존하지 않는다. trace_records의 step 등을 다루는 방식과 같다.
+
+    계약(agent-state-contract-v1.md)의 두 금지를 여는 자리다: 전제의 "사용자
+    원문 발화와 LLM 원문 응답은 저장하지 않는다"와 3.2절의 "B는 place_id만
+    저장한다". 원칙이 지키려던 것("과거 정보가 현재 정보로 오인되는" 상황)은
+    저장이 아니라 표시에서 지킨다 — 운영시간처럼 시간이 지나면 틀리는 값은
+    복원 화면에서 다시 그리지 않는다.
+    """
+
+    session_id: str
+    # 그 턴의 run_id. 같은 턴의 다른 기록과 잇는 열쇠다. 응답이 run_id 없이
+    # 끝나는 경로가 있어 선택이다.
+    run_id: str | None = None
+    user_id: str | None = None
+    # payload 안에도 있지만 밖으로 꺼내 둔다 — 목록을 훑을 때 payload 전체를
+    # 열지 않으려는 것이다.
+    user_input: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+    recorded_at: datetime = Field(default_factory=now_kst)
+
+
+class SavedSchedule(BaseModel):
+    """사용자가 저장한 일정 1건. (SCHEDULE, 카드 2)
+
+    **화면 기록(SessionMessage)과 겸하지 않는다.** 저쪽은 "그때 화면에 나갔던 것"
+    이고 현재 상태로 다시 읽는 소비자를 두지 않는다는 전제 위에 있다. 이것은
+    사용자가 "이 일정을 쓰겠다"고 고른 것이라 이름을 붙이고 나중에 열고 고칠 수
+    있어야 한다 — 스냅샷을 편집 대상으로 겸하게 하면 그 전제가 깨진다. 보관함
+    (SavedPlaceList)을 추천 이력과 분리한 것과 같은 판단이다.
+
+    **UserPreferenceList와 같은 계정 단위 엔티티다.** user_id가 필수이고 세션
+    TTL과 무관하게 남는다. 라우트도 RequiredPrincipal을 쓴다.
+
+    payload는 ScheduleResult를 직렬화한 그대로이며 **B는 열어보지 않는다**
+    (SessionMessage.payload와 같은 취급 — app.schemas에 의존하지 않는다).
+
+    session_id/run_id는 출처 표시일 뿐이다. 세션은 30일 뒤 정리되지만 이 행은
+    남으므로, 이 값으로 원본 대화를 열려는 화면은 **없을 수 있다**를 전제로 다뤄야
+    한다.
+    """
+
+    # 서버(DB 기본값)가 만든다. 저장 요청을 만들 때는 아직 없다.
+    id: str | None = None
+    user_id: str
+    session_id: str | None = None
+    run_id: str | None = None
+    # 목록에 보여줄 이름. payload 안의 route_summary는 LLM이 쓴 문장이고
+    # 이것은 사용자의 것이다.
+    title: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=now_kst)
+    updated_at: datetime = Field(default_factory=now_kst)
 
 
 class TraceRecord(BaseModel):

@@ -417,6 +417,9 @@ class RealRecommendationProvider:
             concentration,
             seek=seek,
             weather_reason=weather_reason,
+            # 날씨 판정과 같은 이유로 context에서 뽑는다 — 안 넘기면 2차가 거리
+            # 결측을 비례 재분배해 1차와 다른 가중치를 쓴다(D-119 후속, 1.9.0).
+            district_scoped=context.district_scope is not None,
             # 날씨 판정과 같은 이유로 여기서 context에서 다시 뽑는다 — 1차와 2차가
             # 같은 기준점 이름을 써야 근거 문장이 갈리지 않는다.
             origin_name=resolve_origin_name(context, conditions),
@@ -441,6 +444,8 @@ class RealRecommendationProvider:
             weather_condition,
             weather_reason=weather_reason,
             origin_name=resolve_origin_name(context, conditions),
+            # `rerank_with_concentration()`과 같은 이유다(D-119 후속, 1.9.0).
+            district_scoped=context.district_scope is not None,
         )
 
 

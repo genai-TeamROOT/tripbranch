@@ -9,6 +9,10 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
+import { setLocationCenter, setLocationOrigin } from "./state/locationSettings";
+import { resetChatSessionsCache } from "./state/chatSessions";
+import { resetSavedSchedulesCache } from "./state/savedSchedules";
+import { resetPreferenceSync } from "./state/preferenceSync";
 
 // 실사용 흐름은 /api/chat 한 번으로 해석과 추천을 함께 받는다(AgentResponse).
 // llm_output.recommend.conditions가 조건 카드 표시에 쓰이고, recommendations가
@@ -133,12 +137,30 @@ function streamResponse(
   return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
 }
 
+/*
+ * 채팅 관련 호출만 센다. 사이드바가 마운트되면 채팅 히스토리(/sessions)를 함께
+ * 받아오는데, 전체 fetch 횟수를 세면 그 부수 요청까지 섞여 "채팅 요청이 몇 번
+ * 나갔나"라는 원래 의도가 흐려진다.
+ */
+function chatCalls() {
+  return vi.mocked(fetch).mock.calls.filter((call) => String(call[0]).includes("/chat"));
+}
+
 function mockFetch() {
   return vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/chat/stream")) return streamResponse();
     if (url.endsWith("/chat")) {
       return Response.json(chatResponse());
+    }
+    /* 사이드바 채팅 히스토리(TP-222 후속). 대화 흐름과 무관하지만 사이드바가
+       마운트되면 항상 나가므로, 404로 두면 콘솔이 오류로 덮인다. */
+    if (url.endsWith("/sessions")) {
+      return Response.json({ sessions: [] });
+    }
+    /* 저장한 일정 목록도 사이드바가 마운트되면 항상 나간다(SCHEDULE 카드 2). */
+    if (url.endsWith("/schedules")) {
+      return Response.json({ items: [] });
     }
     return Response.json({ error: { message: "not found" } }, { status: 404 });
   });
@@ -147,6 +169,8 @@ function mockFetch() {
 beforeEach(() => {
   sessionStorage.clear();
   localStorage.clear();
+  resetChatSessionsCache();
+  resetSavedSchedulesCache();
   window.history.pushState({}, "", "/");
   // 로컬 .env의 Codex 테스트 좌표가 브라우저 권한 회귀 테스트에 영향을 주지 않게 한다.
   vi.stubEnv("VITE_TEST_DEVICE_LOCATION", "");
@@ -235,11 +259,70 @@ test("user chat needs only one chat call", async () => {
   expect(screen.queryByText(/개발용 입력 해석 결과/)).not.toBeInTheDocument();
   expect(await screen.findByText("테스트 박물관")).toBeInTheDocument();
 
-  const fetchMock = vi.mocked(fetch);
-  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-  expect(String(fetchMock.mock.calls[0][0])).toContain("/chat");
-  const requestBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+  await waitFor(() => expect(chatCalls()).toHaveLength(1));
+  expect(String(chatCalls()[0][0])).toContain("/chat");
+  const requestBody = JSON.parse(String(chatCalls()[0][1]?.body));
   expect(requestBody.device_location).toBe("37.5788,126.977");
+});
+
+test("falls back to the current location instead of the old 종로구 default", async () => {
+  /* 위치를 정하지도 않았고 대화도 없다. 그대로 발화하면 기기 좌표를 기준으로
+     찾으므로 "종로구"라고 말하면 사실과 다르다 - 지원 지역이 종로구뿐이던 시절의
+     기본값이다. */
+  await renderApp();
+
+  expect(
+    screen.getByRole("button", { name: "위치 설정으로 이동 (현재: 현재 위치)" }),
+  ).toBeInTheDocument();
+});
+
+test("shows the picked origin in the header pill when no center is set", async () => {
+  /* 검색 기준을 비워두면 출발지가 검색 중심이 된다(agent_context의 사다리).
+     위치 설정 화면의 칩과 헤더가 같은 사실을 말해야 한다. */
+  setLocationOrigin("혜화역");
+  await renderApp();
+
+  expect(
+    screen.getByRole("button", { name: "위치 설정으로 이동 (현재: 혜화역)" }),
+  ).toBeInTheDocument();
+});
+
+test("shows the picked search center in the header location pill", async () => {
+  /* 고른 위치는 위치 설정 화면이 아니라 상단 위치 pill이 보여준다 - 화면을 나가도
+     지금 어디를 기준으로 찾는지가 계속 보여야 한다. */
+  setLocationCenter("안국역");
+  await renderApp();
+
+  expect(
+    screen.getByRole("button", { name: "위치 설정으로 이동 (현재: 안국역)" }),
+  ).toBeInTheDocument();
+});
+
+test("sends the search center picked on the location screen with the chat request", async () => {
+  /* 위치 설정 화면에서 고른 값은 sessionStorage에 남는다(state/searchCenterStorage) —
+     화면을 다시 거치지 않고 저장소에 직접 넣고, 발화 요청에 그 값이 실려 나가는지만
+     본다. 필드 이름이 어긋나면 화면은 멀쩡한데 위치만 조용히 무시되므로 요청
+     본문으로 못 박는다. */
+  setLocationCenter("안국역");
+  await renderApp();
+
+  await userEvent.type(
+    screen.getByPlaceholderText(
+      "예: 경복궁 근처에서 비를 피할 수 있는 박물관이나 카페를 찾고 싶어",
+    ),
+    "카페 추천해줘",
+  );
+  await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
+
+  /* 이 화면은 발화 말고도 다른 요청을 보내므로(취향 조회 등) 순서로 집지 않고
+     /chat 요청을 찾아 본문을 확인한다. */
+  const fetchMock = vi.mocked(fetch);
+  await waitFor(() =>
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("/chat"))).toBe(true),
+  );
+  const chatCall = fetchMock.mock.calls.find((call) => String(call[0]).includes("/chat"));
+  const requestBody = JSON.parse(String(chatCall?.[1]?.body));
+  expect(requestBody.selected_search_center).toBe("안국역");
 });
 
 test("asks whether to refresh a location older than 30 minutes before a follow-up", async () => {
@@ -261,11 +344,11 @@ test("asks whether to refresh a location older than 30 minutes before a follow-u
     ),
   ).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "30분 전 위치로 계속" })).toBeInTheDocument();
-  expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+  expect(chatCalls()).toHaveLength(1);
 
   await userEvent.click(screen.getByRole("button", { name: "30분 전 위치로 계속" }));
-  await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2));
-  const requestBody = JSON.parse(String(vi.mocked(fetch).mock.calls[1][1]?.body));
+  await waitFor(() => expect(chatCalls()).toHaveLength(2));
+  const requestBody = JSON.parse(String(chatCalls()[1][1]?.body));
   expect(requestBody.user_input).toBe("다른 곳 보여줘");
   expect(requestBody.device_location).toBe("37.5788,126.977");
   now.mockRestore();
@@ -289,15 +372,15 @@ test("does not ask again within 30 minutes after continuing with the previous lo
     "현재 위치를 확인한 지 30분이 지났어요. 이번 추천에 사용할 위치를 선택해주세요.",
   );
   await userEvent.click(screen.getByRole("button", { name: "30분 전 위치로 계속" }));
-  await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(chatCalls()).toHaveLength(2));
 
   // 스누즈 구간(30분) 안의 다음 턴 — 재확인 질문 없이 바로 보내져야 한다.
   now.mockReturnValue(30 * 60 * 1000 + 5 * 60 * 1000 + 1_001);
   await userEvent.type(screen.getByPlaceholderText("추가 조건을 입력해 주세요"), "카페도 보여줘");
   await userEvent.click(screen.getByRole("button", { name: "보내기" }));
-  await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3));
+  await waitFor(() => expect(chatCalls()).toHaveLength(3));
   expect(screen.queryByText(/현재 위치를 확인한 지 .*지났어요/)).not.toBeInTheDocument();
-  const secondFollowUpBody = JSON.parse(String(vi.mocked(fetch).mock.calls[2][1]?.body));
+  const secondFollowUpBody = JSON.parse(String(chatCalls()[2][1]?.body));
   expect(secondFollowUpBody.user_input).toBe("카페도 보여줘");
   expect(secondFollowUpBody.device_location).toBe("37.5788,126.977");
 
@@ -330,7 +413,7 @@ test("refreshing a location after 30 minutes requests browser GPS again", async 
 
   await userEvent.click(screen.getByRole("button", { name: "현재 위치 다시 가져오기" }));
 
-  await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(chatCalls()).toHaveLength(2));
   expect(navigator.geolocation.getCurrentPosition).toHaveBeenCalledTimes(2);
   expect(vi.mocked(navigator.geolocation.getCurrentPosition).mock.calls[1][2]).toMatchObject({
     maximumAge: 0,
@@ -364,7 +447,7 @@ test("falls back to the existing chat endpoint when the SSE route is unavailable
   await userEvent.click(screen.getByRole("button", { name: "추천 시작하기" }));
 
   expect(await screen.findByText("테스트 박물관")).toBeInTheDocument();
-  expect(fetch).toHaveBeenCalledTimes(2);
+  expect(chatCalls()).toHaveLength(2);
 });
 
 test("main recommendation requests location permission before opening chat", async () => {
@@ -448,7 +531,9 @@ test("location permission denial stays on home and shows guidance", async () => 
 
   expect(await screen.findByText(/위치 권한이 필요해요/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "추천 시작하기" })).toBeInTheDocument();
-  expect(fetch).not.toHaveBeenCalled();
+  /* 위치 권한이 거부되면 추천 요청 자체가 나가지 않는다. 사이드바 히스토리
+     같은 부수 요청은 이 판단과 무관하므로 채팅 호출만 본다. */
+  expect(chatCalls()).toHaveLength(0);
 });
 
 test("requesting more places sends a follow-up chat turn with the session id", async () => {
@@ -462,9 +547,8 @@ test("requesting more places sends a follow-up chat turn with the session id", a
   await userEvent.click(screen.getByRole("button", { name: "다른 장소 보기" }));
 
   await waitFor(() => expect(screen.getAllByText("테스트 박물관")).toHaveLength(2));
-  const fetchMock = vi.mocked(fetch);
-  expect(fetchMock).toHaveBeenCalledTimes(2);
-  const requestBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+  expect(chatCalls()).toHaveLength(2);
+  const requestBody = JSON.parse(String(chatCalls()[1][1]?.body));
   // 제외 목록은 B가 단일 기준이라 프론트가 보내지 않는다.
   expect(requestBody.session_id).toBe("sess_test");
   expect(requestBody.user_input).toBe("다른 곳 보여줘");
@@ -543,9 +627,8 @@ test("shows follow-up suggestions after an answer and sends the label as the nex
   });
   await userEvent.click(suggestion);
 
-  const fetchMock = vi.mocked(fetch);
-  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-  const secondBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+  await waitFor(() => expect(chatCalls()).toHaveLength(2));
+  const secondBody = JSON.parse(String(chatCalls()[1][1]?.body));
   expect(secondBody.user_input).toBe("테스트 박물관 운영시간 알려줘");
   expect(secondBody.clarification_choice).toBeNull();
 });
@@ -818,6 +901,13 @@ test("홈 화면에서도 사진을 올릴 수 있고, 고르면 /chat으로 넘
  * 와야 했다. 홈에서 한 번 더 보여줘 그 왕복을 없앤다.
  */
 test("저장해 둔 취향을 홈 화면에서 다시 보여준다", async () => {
+  /*
+   * 취향 동기화는 페이지 로드당 한 번만 도는 모듈 캐시다. 앞 테스트들이 이미
+   * 빈 결과로 채워두므로, 여기서 비우지 않으면 심어둔 값이 그 빈 결과로 덮인다.
+   * beforeEach에 넣지 않는 이유는 자기만의 fetch를 세우는 테스트들이 /preferences
+   * 응답까지 흉내 내지 않아, 동기화가 실제로 돌면 그쪽이 깨지기 때문이다.
+   */
+  resetPreferenceSync();
   localStorage.setItem(
     "tb_preferences",
     JSON.stringify([
@@ -842,6 +932,8 @@ test("저장해 둔 취향을 홈 화면에서 다시 보여준다", async () =>
 });
 
 test("저장해 둔 취향이 없으면 홈에 그 줄을 그리지 않는다", async () => {
+  /* 앞 테스트가 심어둔 값이 모듈 캐시에 남는다 — 위와 같은 이유로 여기서도 비운다. */
+  resetPreferenceSync();
   await renderApp();
 
   expect(screen.queryByRole("heading", { name: "내 취향" })).not.toBeInTheDocument();

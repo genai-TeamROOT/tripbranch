@@ -17,6 +17,7 @@ import {
   type ReactNode,
 } from "react";
 import type {
+  ChatSessionDetail,
   PhotoSimilarPlace,
   AgentProgressEvent,
   AgentResponse,
@@ -36,6 +37,10 @@ import type {
   SavedPlaceItem,
   UserConditions,
 } from "../types";
+import { buildAgentMessages, createMessageId } from "./agentMessages";
+import { hasTimeGap } from "./timeSeparator";
+import { findStreamingMessageIndex, freezeStreamingMessage } from "./streamingMessage";
+import { attachRecommendationsToTurns } from "./pastRecommendations";
 import { clearState, loadState, saveState } from "./storage";
 
 export interface TripState {
@@ -52,6 +57,14 @@ export interface TripState {
   error: string | null;
   /* Agent(B)가 발급한 대화 세션. 후속 발화에서 그대로 돌려보낸다. */
   session_id: string | null;
+  /*
+   * 마지막 턴이 오간 시각. 다음 발화 위에 시각 구분선을 넣을지 판단하는 데 쓴다.
+   *
+   * 지난 대화를 열면 그 대화의 마지막 턴 시각이 들어온다 — 몇 시간 뒤에 이어서
+   * 물으면 그 발화 위에 지금 시각이 뜬다. 자리를 비웠다가 돌아온 것을 화면이
+   * 그대로 보여주는 것이고, 메신저에서 늘 보던 모양이다.
+   */
+  last_turn_at: string | null;
   /* 최초 추천 시작 시 허용받은 브라우저 위치. 같은 세션의 후속 요청에도 재사용한다. */
   device_location: string | null;
   /** 브라우저에서 device_location을 마지막으로 받아온 시각(ms). */
@@ -93,6 +106,7 @@ const initialTripState: TripState = {
   phase: "idle",
   error: null,
   session_id: null,
+  last_turn_at: null,
   device_location: null,
   device_location_captured_at: null,
   device_location_snoozed_until: null,
@@ -104,6 +118,7 @@ const initialTripState: TripState = {
 
 type TripAction =
   | { type: "SET_LANGUAGE"; payload: Language }
+  | { type: "RESTORE_SESSION"; payload: ChatSessionDetail }
   | { type: "START_INTERPRETING" }
   | { type: "ADD_INTERPRETATION"; payload: InterpretedPayload }
   | { type: "UPDATE_CONDITIONS"; payload: Partial<InterpretedConditions> }
@@ -204,22 +219,7 @@ interface InterpretedPayload {
   showDebug: boolean;
 }
 
-function createMessageId(prefix: string) {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return `${prefix}-${crypto.randomUUID()}`;
-  }
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
-
 /** 지금 타이프라이터가 채우고 있는 assistant_text 메시지의 인덱스. 없으면 -1. */
-function findStreamingMessageIndex(messages: ChatMessage[]): number {
-  return messages.reduce(
-    (foundIndex, message, index) =>
-      message.type === "assistant_text" && message.streaming ? index : foundIndex,
-    -1,
-  );
-}
-
 function buildInterpretationSummary(conditions: InterpretedConditions) {
   const categories =
     conditions.preferred_categories.length > 0
@@ -333,7 +333,120 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         error: null,
       };
     }
-    case "START_CHAT_TURN":
+    /*
+     * 사이드바 히스토리에서 지난 대화를 불러온다.
+     *
+     * **session_id를 채운다** — 사이드바가 부르는 것은 조회가 아니라
+     * POST /sessions/{id}/resume이고, 그 응답이 온 시점의 세션은 살아 있다.
+     * 그래서 이어 물으면 같은 대화에 붙는다(목록에 줄이 하나 더 생기지 않고,
+     * 저장된 턴이 그대로 맥락으로 넘어간다).
+     *
+     * 그래도 resumable을 확인하고 넣는다. 되살리기가 실패해 조회 응답으로
+     * 물러난 경우에는 false로 오고, 그때 id를 채우면 화면은 "이어진다"고
+     * 말하는데 백엔드는 새 세션을 만드는 상태가 된다.
+     *
+     * **restore_from_messages면 화면 기록만 쓴다.** 그 안에 그 턴의 AgentResponse가
+     * 통째로 들어 있어, 실시간과 같은 buildAgentMessages를 다시 태우면 그때 본
+     * 화면이 그대로 나온다. 지연시간만 0으로 넘긴다 — 복원에는 잴 대상이 없다.
+     *
+     * 아니면 예전 방식으로 되돌린다(말풍선 + 저장된 조각으로 만든 장소 카드).
+     * 기록이 없는 옛 대화와, 저장이 한 번 실패해 턴이 빠진 대화가 여기로 온다.
+     * 손실이 있지만 통째로 안 보이거나 턴이 조용히 빠진 채로 보이는 것보다 낫다.
+     * 온전한지 판정하는 것은 백엔드다 — 같은 계산을 두 군데 두지 않는다.
+     */
+    case "RESTORE_SESSION": {
+      const restored: ChatMessage[] = [];
+
+      /*
+       * 언제 오간 대화인지 맨 위에 한 줄로 밝힌다. 예전에는 "지난 대화예요"라는
+       * 배너였는데, 메신저의 시각 구분선이 읽지 않아도 뜻이 통하고 화면도 덜
+       * 차지한다. 첫 턴의 시각 하나만 둔다 — 턴마다 붙이면 몇 분 간격의 줄이
+       * 계속 끼어들어 대화가 끊겨 보인다.
+       */
+      const startedAt = action.payload.restore_from_messages
+        ? action.payload.messages[0]?.recorded_at
+        : action.payload.turns[0]?.at;
+      if (startedAt) {
+        restored.push({
+          id: createMessageId("time"),
+          type: "time_separator",
+          at: startedAt,
+          /* 옛 대화는 남은 말풍선으로만 되돌아온다. 앞부분이 없다는 사실을
+             배너 대신 이 줄에 붙여 밝힌다. */
+          partial: !action.payload.restore_from_messages,
+        });
+      }
+
+      if (action.payload.restore_from_messages) {
+        const lastIndex = action.payload.messages.length - 1;
+        action.payload.messages.forEach((record, index) => {
+          if (record.user_input) {
+            restored.push({
+              id: createMessageId("user"),
+              type: "user_text",
+              text: record.user_input,
+            });
+          }
+          const turn = buildAgentMessages(record.payload, {
+            userInput: record.user_input ?? "",
+            elapsedMsClient: 0,
+          });
+          /*
+           * 후속 질문 버튼은 마지막 답변에만 남긴다. 실시간에서도 새 발화가
+           * 나가는 순간 옛 버튼을 걷어내므로(START_CHAT_TURN), 대화가 끝난
+           * 모습은 마지막 턴에만 버튼이 붙어 있는 상태다. 전부 되살리면 지난
+           * 답변 기준의 문구를 눌러 지금 맥락과 어긋난 요청이 나간다.
+           */
+          restored.push(
+            ...(index === lastIndex
+              ? turn
+              : turn.filter((item) => item.type !== "follow_up_suggestions")),
+          );
+        });
+      } else {
+        const attached = attachRecommendationsToTurns(
+          action.payload.turns,
+          action.payload.recommendations,
+        );
+
+        action.payload.turns.forEach((turn, index) => {
+          restored.push({
+            id: createMessageId("user"),
+            type: "user_text",
+            text: turn.user_input,
+          });
+          if (turn.assistant_message) {
+            restored.push({
+              id: createMessageId("assistant"),
+              type: "assistant_text",
+              text: turn.assistant_message,
+            });
+          }
+          for (const group of attached[index]) {
+            restored.push({
+              id: createMessageId("past-places"),
+              type: "past_recommendation_result",
+              places: group,
+            });
+          }
+        });
+      }
+
+      return {
+        ...initialTripState,
+        language: state.language,
+        device_location: state.device_location,
+        device_location_captured_at: state.device_location_captured_at,
+        messages: restored,
+        session_id: action.payload.resumable ? action.payload.session_id : null,
+        last_turn_at: action.payload.restore_from_messages
+          ? (action.payload.messages.at(-1)?.recorded_at ?? null)
+          : (action.payload.turns.at(-1)?.at ?? null),
+        phase: "idle",
+      };
+    }
+    case "START_CHAT_TURN": {
+      const nowIso = new Date().toISOString();
       return {
         ...state,
         user_input: action.payload.userInput,
@@ -349,8 +462,17 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         // 옛 턴의 후속 질문 버튼은 새 발화가 나가는 순간 걷어낸다. 남겨두면 대화를
         // 위로 올렸을 때 어느 답변에 대한 제안인지 알 수 없고, 지난 답변 기준의
         // 문구를 눌러 지금 맥락과 어긋난 요청이 나간다.
+        last_turn_at: nowIso,
         messages: [
-          ...state.messages.filter((message) => message.type !== "follow_up_suggestions"),
+          ...freezeStreamingMessage(
+            state.messages.filter((message) => message.type !== "follow_up_suggestions"),
+          ),
+          /* 자리를 비웠다가 돌아와 이어 묻는 발화라면 그 위에 지금 시각을 둔다.
+             바로 이어지는 발화에는 넣지 않는다 — 몇 분 간격의 줄이 계속 끼어들면
+             대화가 끊겨 보인다. */
+          ...(hasTimeGap(state.last_turn_at, nowIso)
+            ? [{ id: createMessageId("time"), type: "time_separator" as const, at: nowIso }]
+            : []),
           { id: createMessageId("user"), type: "user_text", text: action.payload.userInput },
         ],
         phase: "recommending",
@@ -358,6 +480,7 @@ function tripReducer(state: TripState, action: TripAction): TripState {
         agentProgress: null,
         streamingIntent: null,
       };
+    }
     case "SET_AGENT_PROGRESS":
       return { ...state, agentProgress: action.payload };
     case "APPEND_STREAM_RESULT": {
@@ -566,10 +689,6 @@ function tripReducer(state: TripState, action: TripAction): TripState {
     }
     case "APPEND_CHAT_TURN": {
       const { conditions, intent, message, recommendations, schedule, showDebug } = action.payload;
-      const infoPlaceCard = action.payload.agentResponse.info_place_card ?? null;
-      const secondaryInfoPlaceCard =
-        action.payload.agentResponse.secondary_info_place_card ?? null;
-      const comparison = action.payload.agentResponse.comparison ?? null;
       const messages: ChatMessage[] = [];
       // 옵션 A: 조건 카드는 유지하되 확인 버튼은 없다 — Agent가 해석과 추천을 한 번에
       // 끝내므로 중간에 사용자가 진행을 승인할 지점이 없다.
@@ -584,87 +703,12 @@ function tripReducer(state: TripState, action: TripAction): TripState {
           status: "confirmed",
         });
       }
-      const clarificationOptions = action.payload.agentResponse.llm_output.clarification?.options;
-      if (message && clarificationOptions && clarificationOptions.length > 0) {
-        // 인텐트가 모호해 되묻기 버튼이 붙은 턴 — assistant_text 대신 clarification
-        // 메시지로 push해서 같은 문구가 두 번 렌더링되지 않게 한다
-        // (docs/design/clarification-options.md 6절).
-        messages.push({
-          id: createMessageId("clarification"),
-          type: "clarification",
-          text: message,
-          options: clarificationOptions,
-        });
-      } else if (message) {
-        messages.push({
-          id: createMessageId("assistant"),
-          type: "assistant_text",
-          text: message,
-          intent,
-          status: action.payload.status,
-          footnote: action.payload.agentResponse.message_footnote ?? undefined,
-        });
-      }
-      if (recommendations) {
-        messages.push({
-          id: createMessageId("result"),
-          type: "recommendation_result",
-          recommendations: recommendations.recommendations,
-          unverified_recommendations: recommendations.unverified_recommendations,
-          travel_origin_toggle: recommendations.travel_origin_toggle,
-          elapsed_ms: action.payload.elapsedMsClient,
-          server_elapsed_ms: recommendations.elapsed_ms,
-        });
-      }
-      if (schedule) {
-        messages.push({
-          id: createMessageId("schedule"),
-          type: "schedule_result",
-          schedule,
-          elapsed_ms: action.payload.elapsedMsClient,
-        });
-      }
-      if (infoPlaceCard) {
-        messages.push({
-          id: createMessageId("info-place"),
-          type: "place_info_result",
-          card: infoPlaceCard,
-        });
-      }
-      if (secondaryInfoPlaceCard) {
-        // 근처 주차장 → 공영주차장처럼 짝인 실시간 질문의 둘째 카드다(TP-115).
-        messages.push({
-          id: createMessageId("info-place-secondary"),
-          type: "place_info_result",
-          card: secondaryInfoPlaceCard,
-        });
-      }
-      if (comparison) {
-        messages.push({
-          id: createMessageId("compare"),
-          type: "compare_result",
-          comparison,
-        });
-      }
-      if (action.payload.agentResponse.state.run_id) {
-        messages.push({
-          id: createMessageId("feedback"),
-          type: "feedback",
-          sessionId: action.payload.agentResponse.state.session_id,
-          runId: action.payload.agentResponse.state.run_id,
-          intent,
+      messages.push(
+        ...buildAgentMessages(action.payload.agentResponse, {
           userInput: action.payload.userInput,
-          assistantMessage: message,
-        });
-      }
-      const followUps = action.payload.agentResponse.suggested_follow_ups;
-      if (followUps && followUps.length > 0) {
-        messages.push({
-          id: createMessageId("follow-up"),
-          type: "follow_up_suggestions",
-          suggestions: followUps,
-        });
-      }
+          elapsedMsClient: action.payload.elapsedMsClient,
+        }),
+      );
 
       const shownIds = recommendations
         ? [...recommendations.recommendations, ...recommendations.unverified_recommendations].map(

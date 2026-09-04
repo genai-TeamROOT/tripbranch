@@ -1057,6 +1057,49 @@ _TRAVEL_ORIGIN_OVERRIDE_RESOLVABLE_INTENTS = frozenset(
 )
 
 
+def _apply_selected_locations(llm_output: LLMOutput, request: AgentRequest) -> LLMOutput:
+    """위치 설정 화면에서 정한 출발지·검색 기준을 이번 턴 조건에 채운다.
+
+    두 값은 서로 다른 질문의 답이다 — `current_location`은 "사용자가 어디 있는가"
+    (이동시간의 출발점), `search_center`는 "어디 주변을 찾을까"(후보를 모으는 중심)다.
+    D-067이 둘을 분리한 이유가 여기 있다.
+
+    **발화가 이긴다.** 화면에 안국역이 설정돼 있어도 "성수동 카페 알려줘"라고
+    말했으면 성수동이다 — 그 턴에 사용자가 직접 말한 쪽이 더 명확한 의사이기
+    때문이다. 그래서 추출된 값이 이미 있으면 손대지 않는다.
+
+    RECOMMEND에만 적용한다. UserConditions를 직접 들고 있는 payload가 그것뿐이고,
+    이어지는 MODIFY/SCHEDULE 턴은 B가 병합해 둔 세션 조건에서 이 값을 물려받는다.
+
+    검색 기준을 채우면 위치 되묻기(location_required)도 함께 사라진다 — 사용자가
+    이미 화면에서 정했으니 다시 물을 이유가 없다.
+    """
+    if llm_output.recommend is None:
+        return llm_output
+
+    conditions = llm_output.recommend.conditions
+    filled: dict[str, str] = {}
+    for field, selected in (
+        ("current_location", request.selected_current_location),
+        ("search_center", request.selected_search_center),
+    ):
+        if selected is None or getattr(conditions, field) is not None:
+            continue
+        normalized = selected.strip()
+        if normalized:
+            filled[field] = normalized
+    if not filled:
+        return llm_output
+
+    return llm_output.model_copy(
+        update={
+            "recommend": llm_output.recommend.model_copy(
+                update={"conditions": conditions.model_copy(update=filled)}
+            )
+        }
+    )
+
+
 def _resolve_travel_origin_override(
     *, override: TravelOrigin, session_context: SessionContextResponse
 ) -> _ClarificationResolution | None:
@@ -2848,6 +2891,14 @@ async def run_agent_flow(
             # 대화 기억은 응답 자체보다 부가 기능이다. 저장 장애가 이미 완성된 답변을
             # 사용자에게 못 보내게 해서는 안 된다.
             logger.warning("최근 대화 저장 실패(응답 흐름에는 영향 없음)", exc_info=True)
+        # 화면 기록(TP-222 후속)은 **여기서 남기지 않는다.** 이 지점의 response는
+        # 아직 사용자가 볼 모양이 아니다 — 후속 질문은 SSE 경로에서 done 뒤에
+        # 붙고(routes/chat.py), 영어 화면의 번역도 이 함수가 끝난 뒤에 일어난다.
+        # 여기서 저장하면 후속 질문이 빠지고 영어 대화가 한국어로 복원된다
+        # (실측: 저장된 턴 8건 전부 후속 질문 없음).
+        #
+        # 그래서 기록은 화면용 응답을 완성하는 라우트 두 곳이 남긴다. /agent-debug
+        # 같은 개발용 호출이 사용자 대화 기록에 섞이지 않는 효과도 함께 얻는다.
         try:
             summary = summarize_turn(response)
             turn.record(
@@ -2884,6 +2935,12 @@ def _turn_input(request: AgentRequest) -> dict[str, Any]:
         "language": request.language,
         "has_device_location": request.device_location is not None,
     }
+    if request.selected_search_center:
+        # 좌표가 아니라 사용자가 고른 장소 이름이고, 어차피 조건(search_center)으로
+        # 관측에 남는 값이라 여기서도 그대로 싣는다. 출발지도 같다.
+        payload["selected_search_center"] = request.selected_search_center
+    if request.selected_current_location:
+        payload["selected_current_location"] = request.selected_current_location
     if request.conversation_place_name:
         payload["conversation_place_name"] = request.conversation_place_name
     if request.clarification_choice:
@@ -3075,6 +3132,12 @@ async def _run_agent_flow(
             interval_seconds=INTERPRET_HEARTBEAT_INTERVAL_SECONDS,
         )
     llm_latency_ms = int((time.monotonic() - llm_started_at) * 1000)
+
+    # 화면에서 고른 검색 위치는 여기서 채운다 — 조건 병합(B)보다 앞이라 이번 턴의
+    # 위치 판정과 다음 턴이 물려받을 세션 조건에 모두 반영된다. 되묻기 버튼으로
+    # 해소된 턴(clarification_resolution)도 같이 지나가는데, 그때는 세션 조건을
+    # 재사용하므로 search_center가 이미 차 있어 이 함수가 손대지 않는다.
+    llm_output = _apply_selected_locations(llm_output, request)
 
     # 3) A → B: 조건 병합. confirmed=False(= status가 complete가 아님)면 B가 State를
     #    바꾸지 않고 현재 상태만 돌려주도록 이미 구현되어 있다(계약 2.6절) — 따로 걸러서

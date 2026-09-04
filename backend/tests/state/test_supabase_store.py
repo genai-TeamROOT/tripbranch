@@ -14,11 +14,15 @@ from app.state.schema import (
     RecommendationHistory,
     SavedPlaceItem,
     SavedPlaceList,
+    SavedSchedule,
     UserConditions,
+    UserPreference,
+    UserPreferenceList,
 )
 from app.state.supabase_store import SupabaseStateStore
 
 SESSION_ID = "session-1"
+USER_ID = "3f1a9c04-0000-4000-8000-000000000001"
 
 
 def _store(transport: httpx.MockTransport) -> SupabaseStateStore:
@@ -826,3 +830,200 @@ def test_http_error_raises_state_store_error() -> None:
     )
     with pytest.raises(StateStoreError):
         _store(transport).get_state(SESSION_ID)
+
+# ------------------------------------------------------------ UserPreferenceList
+
+
+def test_get_preferences_returns_none_when_not_found() -> None:
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=[]))
+    assert _store(transport).get_preferences(USER_ID) is None
+
+
+def test_get_preferences_queries_by_user_id_not_session_id() -> None:
+    """이 저장소만 키가 user_id다. session_id로 조회하면 남의 취향에 닿는다."""
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json=[])
+
+    _store(httpx.MockTransport(handler)).get_preferences(USER_ID)
+
+    assert "/user_preferences" in seen["url"]
+    assert f"user_id=eq.{USER_ID}" in seen["url"]
+    assert "session_id" not in seen["url"]
+
+
+def test_get_preferences_parses_row() -> None:
+    row = {
+        "user_id": USER_ID,
+        "items": [{"label": "조용한 곳", "source": "preference", "codes": ["quiet"]}],
+        "updated_at": "2026-09-03T00:00:00+09:00",
+    }
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=[row]))
+
+    preferences = _store(transport).get_preferences(USER_ID)
+
+    assert preferences is not None
+    assert preferences.user_id == USER_ID
+    assert preferences.items[0].label == "조용한 곳"
+    assert preferences.items[0].codes == ["quiet"]
+
+
+def test_get_preferences_raises_on_broken_row() -> None:
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=[{"items": "x"}]))
+
+    with pytest.raises(StateStoreError):
+        _store(transport).get_preferences(USER_ID)
+
+
+def test_save_preferences_upserts_on_user_id() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(201, json=[])
+
+    preferences = UserPreferenceList(
+        user_id=USER_ID,
+        items=[UserPreference(label="산책하기 좋은", source="place_tag", codes=["walk"])],
+    )
+    _store(httpx.MockTransport(handler)).save_preferences(preferences)
+
+    assert "on_conflict=user_id" in str(seen["url"])
+    body = seen["body"]
+    assert isinstance(body, dict)
+    assert body["user_id"] == USER_ID
+    assert body["items"][0]["codes"] == ["walk"]
+
+
+# ------------------------------------------------------------ 저장한 일정
+
+SCHEDULE_ROW = {
+    "id": "11111111-2222-4333-8444-555555555555",
+    "user_id": USER_ID,
+    "session_id": "sess_1",
+    "run_id": "run_1",
+    "title": "종로 반나절",
+    "payload": {"items": [], "total_duration_min": 180},
+    "created_at": "2026-09-03T10:00:00+09:00",
+    "updated_at": "2026-09-03T10:00:00+09:00",
+}
+
+
+def _schedule() -> SavedSchedule:
+    return SavedSchedule(
+        user_id=USER_ID, session_id="sess_1", run_id="run_1", title="종로 반나절", payload={}
+    )
+
+
+def test_save_schedule_does_not_send_id() -> None:
+    """id는 DB 기본값(gen_random_uuid)이 만든다. 클라이언트가 보내면 그 값이 그대로
+    키가 되어 남의 id와 충돌시킬 여지가 생긴다."""
+    seen: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json=[])
+        seen.append({"body": json.loads(request.content), "url": str(request.url)})
+        return httpx.Response(201, json=[SCHEDULE_ROW])
+
+    _store(httpx.MockTransport(handler)).save_schedule(_schedule())
+
+    assert "id" not in seen[0]["body"]
+    assert "/saved_schedules" in str(seen[0]["url"])
+
+
+def test_save_schedule_returns_existing_row_for_same_run() -> None:
+    """같은 (user_id, run_id)면 새로 만들지 않는다. 부분 유니크 인덱스를
+    on_conflict로 못 태워서 조회로 가른다 — 그 조회가 실제로 도는지 고정한다."""
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        if request.method == "GET":
+            return httpx.Response(200, json=[SCHEDULE_ROW])
+        return httpx.Response(201, json=[SCHEDULE_ROW])
+
+    saved = _store(httpx.MockTransport(handler)).save_schedule(_schedule())
+
+    assert methods == ["GET"], "이미 있는데 INSERT까지 나갔다"
+    assert saved.id == SCHEDULE_ROW["id"]
+
+
+def test_save_schedule_skips_lookup_without_run_id() -> None:
+    """run_id가 없으면 판정할 근거가 없다. 조회를 건너뛰고 바로 만든다."""
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        return httpx.Response(201, json=[SCHEDULE_ROW])
+
+    schedule = _schedule().model_copy(update={"run_id": None})
+    _store(httpx.MockTransport(handler)).save_schedule(schedule)
+
+    assert methods == ["POST"]
+
+
+def test_list_schedules_orders_by_created_at_desc() -> None:
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json=[SCHEDULE_ROW])
+
+    schedules = _store(httpx.MockTransport(handler)).list_schedules_for_user(USER_ID, 50)
+
+    assert f"user_id=eq.{USER_ID}" in seen["url"]
+    assert "order=created_at.desc" in seen["url"]
+    assert "limit=50" in seen["url"]
+    assert schedules[0].title == "종로 반나절"
+
+
+def test_get_schedule_does_not_filter_by_user() -> None:
+    """저장소는 소유권을 보지 않는다 — service가 principal과 대조한다.
+    여기서 user_id로 좁히면 '없음'과 '남의 것'이 구분되지 않아 404와 403을
+    가를 수 없다."""
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json=[SCHEDULE_ROW])
+
+    _store(httpx.MockTransport(handler)).get_schedule(SCHEDULE_ROW["id"])
+
+    assert "user_id" not in seen["url"]
+
+
+def test_rename_schedule_patches_title_and_updated_at() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=[{**SCHEDULE_ROW, "title": "엄마랑 가는 날"}])
+
+    renamed = _store(httpx.MockTransport(handler)).rename_schedule(
+        SCHEDULE_ROW["id"], "엄마랑 가는 날"
+    )
+
+    assert seen["method"] == "PATCH"
+    assert seen["body"]["title"] == "엄마랑 가는 날"
+    assert "updated_at" in seen["body"]
+    assert renamed is not None and renamed.title == "엄마랑 가는 날"
+
+
+def test_delete_schedule_reports_whether_a_row_was_removed() -> None:
+    hit = httpx.MockTransport(lambda request: httpx.Response(200, json=[SCHEDULE_ROW]))
+    miss = httpx.MockTransport(lambda request: httpx.Response(200, json=[]))
+
+    assert _store(hit).delete_schedule(SCHEDULE_ROW["id"]) is True
+    assert _store(miss).delete_schedule(SCHEDULE_ROW["id"]) is False
+
+
+def test_schedule_row_raises_on_broken_row() -> None:
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=[{"title": 1}]))
+
+    with pytest.raises(StateStoreError):
+        _store(transport).get_schedule(SCHEDULE_ROW["id"])

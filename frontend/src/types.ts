@@ -139,6 +139,25 @@ export interface PhotoSimilarPlacesResponse {
   elapsed_ms: number;
 }
 
+export interface PlaceSearchCandidate {
+  name: string;
+  address: string | null;
+  road_address: string | null;
+  category: string | null;
+  latitude: number;
+  longitude: number;
+}
+
+export interface PlaceSearchResponse {
+  places: PlaceSearchCandidate[];
+  /**
+   * 좌표는 있는데 서울 밖이라 서버가 뺀 수. 0인지 아닌지에 따라 화면 문구가
+   * 갈린다 - 0이면 "찾은 곳이 없어요"이고, 0이 아니면 "서울 지역만 검색할 수
+   * 있어요"다. 사용자가 오타를 고쳐야 할지 지역을 바꿔야 할지가 다르다.
+   */
+  outside_service_area_count: number;
+}
+
 export interface ScheduleItem {
   order: number;
   place_id: string;
@@ -168,6 +187,32 @@ export interface ScheduleResult {
   /* 백엔드가 보고한 일정 편성 파이프라인 처리 시간(ms). RecommendationResult의
      server_elapsed_ms와 같은 역할이다(SCHEDULE-10 후속). */
   elapsed_ms: number;
+}
+
+/*
+ * 저장한 일정. (SCHEDULE 카드 2)
+ *
+ * 화면 기록(session_messages)과 다르다 — 저것은 "그때 화면에 나갔던 것"이고
+ * 이것은 사용자가 "이 일정을 쓰겠다"고 고른 것이라 이름을 붙이고 나중에 연다.
+ */
+export interface SavedScheduleSummary {
+  id: string;
+  title: string;
+  /* 어느 대화에서 나왔는지. 세션은 30일 뒤 정리되지만 이 일정은 남으므로
+   **없을 수 있다**를 전제로 쓴다. */
+  session_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SavedScheduleDetail extends SavedScheduleSummary {
+  /* 저장 시점의 ScheduleResult 그대로다. **지금 기준으로 다시 계산한 값이 아니다** —
+     도착 시각·이동 시간은 그때 기준이라 화면이 그 사실을 밝혀야 한다. */
+  payload: ScheduleResult;
+}
+
+export interface SavedSchedulesResponse {
+  items: SavedScheduleSummary[];
 }
 
 export interface ComparisonItem {
@@ -308,6 +353,20 @@ export type ChatMessage =
       footnote?: string;
     }
   | {
+      /*
+       * 대화가 언제 오간 것인지 알리는 가운데 정렬 한 줄. 지난 대화를 되돌릴 때만
+       * 넣는다 — 실시간 대화는 지금 오가는 중이라 밝힐 것이 없다.
+       *
+       * 배너로 "지난 대화예요"라고 문장을 띄우던 것을 대신한다. 메신저에서 늘
+       * 보던 모양이라 읽지 않아도 뜻이 통하고, 화면을 덜 차지한다.
+       */
+      id: string;
+      type: "time_separator";
+      at: string;
+      /** 앞부분이 남아 있지 않은 대화(화면 기록이 온전하지 않음). */
+      partial?: boolean;
+    }
+  | {
       id: string;
       type: "interpretation_summary";
       text: string;
@@ -369,9 +428,25 @@ export type ChatMessage =
       server_elapsed_ms: number;
     }
   | {
+      /*
+       * 지난 대화를 펼쳤을 때만 나온다. recommendation_result와 구조가 비슷해
+       * 보이지만 합치지 않는다 — 이쪽은 점수·사진·운영시간이 없고, 특히
+       * remaining_minutes로 "지금 영업 중"을 그리면 사흘 전 스냅샷으로 현재를
+       * 말하는 것이 된다.
+       */
+      id: string;
+      type: "past_recommendation_result";
+      places: PastRecommendation[];
+    }
+  | {
       id: string;
       type: "schedule_result";
       schedule: ScheduleResult;
+      /* 이 일정을 저장할 때 함께 보낸다. run_id는 같은 턴을 두 번 저장하지 않기
+         위한 열쇠이고, session_id는 "어느 대화에서 나왔는지"를 남긴다. 응답이
+         run_id 없이 끝나는 경로가 있어 둘 다 선택이다. */
+      run_id?: string;
+      session_id?: string;
       /* 일정 요청 클릭부터 응답 수신까지의 클라이언트 실측 시간(ms).
          recommendation_result의 elapsed_ms와 같은 역할이다. */
       elapsed_ms: number;
@@ -539,6 +614,19 @@ export interface AgentDebugRequest {
   language?: Language;
   session_id?: string | null;
   device_location?: string | null;
+  /*
+   * 위치 설정 화면에서 고른 검색 위치의 이름(예: "안국역"). device_location이
+   * "사용자가 지금 있는 곳"이라면 이쪽은 "어디를 기준으로 찾을지"다. 이번 턴
+   * 발화가 위치를 말하지 않았을 때에만 검색 위치로 쓰인다 - 발화가 이긴다.
+   */
+  selected_search_center?: string | null;
+  /*
+   * 위치 설정 화면에서 정한 출발지의 이름. selected_search_center와 다른 질문의
+   * 답이다 - 이쪽은 "사용자가 어디 있는가"라 이동 시간을 재는 시작점이 되고,
+   * 저쪽은 "어디 주변을 찾을까"다(D-067이 둘을 분리한 이유). 발화가 출발지를
+   * 말했으면 발화가 이긴다.
+   */
+  selected_current_location?: string | null;
   /** 직전 INFO 상세 카드의 장소명. "여기/이곳" 같은 대화 지시어 해소 후보다. */
   conversation_place_name?: string | null;
   /*
@@ -643,6 +731,138 @@ export interface SavedPlacesResponse {
   session_id: string;
   items: SavedPlaceItem[];
   changed: boolean;
+}
+
+/*
+ * 계정 단위 취향(GET·PUT /api/preferences).
+ *
+ * session_id가 없다 — 이 값은 세션에 속하지 않고 사람에게 붙는다.
+ * updated_at이 null이면 **그 계정이 한 번도 저장한 적이 없다는 뜻**이다.
+ * 빈 목록을 저장한 경우("전부 해제")와 구분되며, 로컬 값을 올려보낼지
+ * 판단하는 기준이 된다(state/preferenceSync.ts).
+ */
+export interface PreferencesResponse {
+  items: SavedPreferenceItem[];
+  updated_at: string | null;
+}
+
+/*
+ * 계정 단위 즐겨찾기(GET/PUT /api/favorites). PreferencesResponse와 같은 모양이고,
+ * updated_at이 null이면 "이 계정이 한 번도 저장한 적 없다"는 뜻이다 - 빈 목록을
+ * 저장한 경우("전부 지움")와 구분되며, 이 기기의 값을 올릴지 판단하는 기준이
+ * 된다(state/favoritesSync.ts).
+ */
+export interface FavoritesResponse {
+  items: FavoritePlaceItem[];
+  updated_at: string | null;
+}
+
+export interface FavoritePlaceItem {
+  id: string;
+  label: string;
+  /* 검색에 나가는 장소 이름. 사용자가 label을 바꿔도 이 값은 그대로 둔다. */
+  search_center_name?: string | null;
+  address?: string | null;
+}
+
+export interface SavedPreferenceItem {
+  label: string;
+  source: "preference" | "place_tag" | "custom";
+  /* preferenceStorage의 SavedPreference와 같은 모양을 유지한다 — 두 타입 사이를
+     복사 없이 주고받으려면 codes의 readonly 여부까지 같아야 한다. */
+  codes: readonly string[];
+}
+
+/*
+ * 사이드바 채팅 히스토리의 한 줄(GET /api/sessions).
+ *
+ * 대화 내용은 담기지 않는다 — 목록을 그리는 데 필요한 것만 온다.
+ * title은 첫 턴의 사용자 발화이거나 사용자가 바꾼 이름이고, 대화를 이어가도
+ * 바뀌지 않는다(백엔드가 agent_states.title에 박아둔다).
+ */
+export interface ChatSessionSummary {
+  session_id: string;
+  title: string;
+  /* 그 대화의 위치(처음 잡힌 search_center). 장소 이름이 아니다 — "블루보틀 성수"는
+     그 대화가 무엇이었는지 말해주지 않지만 "성수동"은 말해준다. */
+  location: string | null;
+  last_active_at: string;
+}
+
+/** 저장된 대화 한 턴. 백엔드 app/state/schema.py의 ConversationTurn과 대응. */
+export interface StoredConversationTurn {
+  user_input: string;
+  assistant_message: string | null;
+  intent: string | null;
+  place_names: string[];
+  at: string;
+}
+
+/*
+ * 지난 대화 하나(GET /api/sessions/{id}).
+ *
+ * turns는 **대화 전체가 아니다** — 백엔드가 MAX_RECENT_TURNS개만 보관한다.
+ * resumable이 false면 세션 TTL(30분)이 지나 이어서 대화할 수 없다. 화면이 그
+ * 사실을 밝혀야 한다.
+ */
+/*
+ * 지난 대화에서 화면에 나갔던 장소 하나.
+ *
+ * **그때 본 카드를 그대로 되살릴 수는 없다.** 백엔드가 저장하는 것은 여기 있는
+ * 값뿐이고 점수·근거 문장·사진·카테고리·운영시간은 기록 자체가 없다
+ * (실측 459건: 이름 100%, 거리·실내외 87%, 이유 13%). 그래서 RecommendationItem이
+ * 아니라 별도 타입이다 — 없는 필드를 빈 값으로 채워 넣으면 화면이 "그때 그
+ * 카드"인 척하게 된다.
+ */
+export interface PastRecommendation {
+  place_id: string;
+  /** 같은 턴에 함께 나간 장소를 한 묶음으로 되돌리는 열쇠. */
+  run_id: string;
+  name: string;
+  rank: number;
+  distance_km: number | null;
+  environment_type: string | null;
+  reason: string | null;
+  shown_at: string;
+}
+
+/*
+ * 그 턴에 화면으로 나갔던 것 전부(session_messages 한 행).
+ *
+ * payload는 그 턴의 AgentResponse 그대로다. 백엔드는 이걸 열어보지 않고
+ * 보관만 한다 — 화면이 실시간과 **같은 함수**(buildAgentMessages)로 다시
+ * 그리기 위한 것이라, 해석하는 쪽이 프론트 하나뿐이어야 갈라지지 않는다.
+ */
+export interface StoredSessionMessage {
+  session_id: string;
+  run_id: string | null;
+  user_id: string | null;
+  user_input: string | null;
+  payload: AgentResponse;
+  recorded_at: string;
+}
+
+export interface ChatSessionDetail {
+  session_id: string;
+  title: string;
+  /* 모델 맥락. 최근 5턴만 남는다 — restore_from_messages면 화면은 이걸 쓰지 않는다. */
+  turns: StoredConversationTurn[];
+  /* 저장된 조각으로 만든 근사치. restore_from_messages가 false일 때만 채워진다. */
+  recommendations: PastRecommendation[];
+  /* 화면 기록. 그때 화면에 나갔던 것 그대로다. */
+  messages: StoredSessionMessage[];
+  /*
+   * messages만으로 대화를 그대로 되돌릴 수 있는지. **판정은 백엔드 한 곳에서만
+   * 한다** — 같은 계산을 여기에도 두면 한쪽만 바뀌는 순간 조용히 갈라진다.
+   * false면 turns/recommendations로 되돌리고 "마지막 부분"이라고 밝혀야 한다.
+   */
+  restore_from_messages: boolean;
+  last_active_at: string;
+  resumable: boolean;
+}
+
+export interface ChatSessionsResponse {
+  sessions: ChatSessionSummary[];
 }
 
 export interface SessionContextResponse {

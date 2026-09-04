@@ -25,7 +25,14 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { AppHeader } from "../components/layout/AppHeader";
 import { usePhotoSimilarSearch } from "../hooks/usePhotoSimilarSearch";
 import { useSavedPlaces } from "../hooks/useSavedPlaces";
-import { beginChatRequest, cancelChatRequest, endChatRequest } from "../state/chatAbortController";
+import {
+  beginChatRequest,
+  cancelChatRequest,
+  endChatRequest,
+  wasCancelledByUser,
+} from "../state/chatAbortController";
+import { loadLocationSettings } from "../state/locationSettings";
+import { useLocationSettings } from "../hooks/useLocationSettings";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import type { TravelOrigin } from "../types";
 import { buildAgentStageTimings } from "../utils/agentTiming";
@@ -74,6 +81,7 @@ interface PendingLocationRefresh {
 export function ChatPage() {
   const state = useTripState();
   const dispatch = useTripDispatch();
+  const locationSettings = useLocationSettings();
   const navigate = useNavigate();
   const text = CHAT_TEXT[state.language];
 
@@ -161,6 +169,8 @@ export function ChatPage() {
             language: state.language,
             session_id: state.session_id,
             device_location: deviceLocation,
+            selected_search_center: loadLocationSettings().center,
+            selected_current_location: loadLocationSettings().origin,
             conversation_place_name: conversationPlaceName,
             clarification_choice: clarificationChoice ?? null,
             travel_origin_override: travelOriginOverride ?? null,
@@ -252,8 +262,10 @@ export function ChatPage() {
         );
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") {
-          // 사용자가 "중단"을 눌렀다 — 오류로 취급하지 않는다(§7.2).
-          dispatch({ type: "CANCEL_CHAT_TURN" });
+          // 끊긴 이유가 두 가지다. "중단" 버튼이면 오던 말풍선을 거기까지 얼려
+          // 남기고(§7.2), 지난 대화를 열어 밀려난 것이면 아무것도 건드리지
+          // 않는다 — 화면에는 이미 다른 대화가 그려져 있다.
+          if (wasCancelledByUser(controller)) dispatch({ type: "CANCEL_CHAT_TURN" });
           return;
         }
         dispatch({
@@ -373,7 +385,20 @@ export function ChatPage() {
     await requestSend(text);
   }
 
-  const locationLabel = state.interpreted_conditions?.location_query ?? "종로구";
+  /* 위치 설정 화면의 칩과 같은 사다리를 본다 — 두 화면이 같은 사실을 말해야 한다.
+     검색 기준을 비워두면 출발지가, 그것도 없으면 기기 좌표가 검색 중심이 된다
+     (agent_context/service.py).
+
+     설정이 아무것도 없을 때만 직전 턴이 해석한 위치로 떨어진다 — 대화가 이미
+     있으면 서버가 그 위치를 들고 있어서 다음 발화도 거기서 찾는다.
+
+     예전 기본값이던 "종로구"는 뺐다. 지원 지역이 종로구뿐이던 시절의 값이라
+     지금은 사실이 아니고, 아무것도 모를 때 실제로 쓰이는 것은 기기 좌표다. */
+  const locationLabel =
+    locationSettings.center ??
+    locationSettings.origin ??
+    state.interpreted_conditions?.location_query ??
+    "현재 위치";
 
   return (
     <main className="flex h-full flex-col overflow-y-auto">

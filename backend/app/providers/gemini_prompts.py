@@ -399,6 +399,19 @@ def format_mode_judge_context(
     return "\n".join(lines)
 
 
+def build_closure_extraction_instruction() -> str:
+    """휴무 원문에서 정기 휴무를 뽑는 system instruction. (TP-231)
+
+    적재 배치에서만 부른다 — 읽기 경로는 저장된 결과를 쓴다
+    (`resolve_operating_schedule()`). 그래서 지연이 사용자 요청에 붙지 않는다.
+    """
+
+    return render_text(
+        "closure/extract.md",
+        pattern_rules=load_text("closure/pattern_rules.md"),
+    )
+
+
 def build_mode_judge_instruction() -> str:
     """구간 이동수단을 정하는 system instruction. (TP-227)
 
@@ -454,6 +467,25 @@ _COMPANION_LABELS = {
 }
 _ENVIRONMENT_LABELS = {"indoor": "실내", "outdoor": "실외"}
 _TRANSPORT_LABELS = {"walk": "도보", "public": "대중교통", "car": "자동차"}
+# 무장애 어휘를 말풍선이 읽을 한국어로 옮긴다.
+#
+# **9개를 전부 싣는다.** 이동수단 판정(TP-227)이 셋만 넘기는 것과 다른 판단이다 —
+# 저쪽은 "어떻게 갈까"를 정하는 자리라 장소 조건이 판단을 흐리지만, 말풍선은 사용자가
+# 무엇을 요구했는지를 말투와 강조점에 반영하는 자리라 요구한 것을 다 알아야 한다.
+# 장애인 화장실을 찾는 사람에게 그 요구를 모른 채 답하면 같은 문제가 난다.
+#
+# 어휘가 늘면 여기도 늘린다. 없는 값은 원문을 그대로 쓰므로 조용히 사라지지는 않는다.
+_ACCESSIBILITY_LABELS = {
+    "wheelchair_access": "휠체어 접근",
+    "stroller_access": "유모차 접근",
+    "accessible_restroom": "장애인 화장실",
+    "accessible_parking": "장애인 주차구역",
+    "visual_guide": "점자·음성 안내",
+    "infant_facilities": "유아 시설",
+    "wheelchair_rental": "휠체어 대여",
+    "seating_available": "의자식 좌석",
+    "low_floor_transit": "저상버스·역 엘리베이터",
+}
 
 
 def _stated_conditions_line(conditions: UserConditions | None) -> str:
@@ -463,6 +495,15 @@ def _stated_conditions_line(conditions: UserConditions | None) -> str:
     최근 5턴 창 밖으로 밀려나도 살아 있어서, 원문 이력만 보는 것보다 견고하다.
     말풍선 생성 단계는 지금까지 카드 데이터만 받아서, 동행을 friend로 잡아 놓고도
     "혼자서도 가기 좋고"로 답하는 일이 있었다(2026-08-31 실사용).
+
+    **무장애가 빠져 같은 사고가 한 번 더 났다**(2026-09-03 실사용). "휠체어 타고
+    관광할 수 있는 곳"에 "아이와 함께 걸어서 편하게 이동할 수 있는"이라고 답했다 —
+    조건이 비어 있으니 강조점을 정할 근거가 없어, 남은 재료 중 제일 강한 신호인
+    `review_evidence`("아이와 함께 걷기 좋은")를 잡고 문단 전체를 그쪽으로 썼다.
+    조건 추출과 무장애 검색은 정상이었고 말풍선만 틀렸다.
+
+    **조건을 하나 더할 때는 여기도 함께 본다.** 이 함수가 비면 오류가 아니라 엉뚱한
+    강조점이 나오고, 그건 테스트로도 로그로도 안 잡힌다.
 
     비어 있으면 빈 문자열 — 관련 없는 턴의 프롬프트를 늘리지 않는다.
     """
@@ -486,6 +527,13 @@ def _stated_conditions_line(conditions: UserConditions | None) -> str:
         parts.append(f"이동 {conditions.max_travel_time}분 이내")
     if conditions.time_available:
         parts.append(f"체류 {conditions.time_available}분")
+    if conditions.accessibility_needs:
+        parts.append(
+            ", ".join(
+                _ACCESSIBILITY_LABELS.get(need, need)
+                for need in conditions.accessibility_needs
+            )
+        )
     if conditions.special_requirements:
         parts.append(", ".join(conditions.special_requirements))
 
@@ -716,6 +764,7 @@ __all__ = [
     "build_info_answer_instruction",
     "build_recommendation_summary_instruction",
     "build_follow_up_suggestion_instruction",
+    "build_closure_extraction_instruction",
     "build_mode_judge_instruction",
     "format_mode_judge_context",
     "build_compare_summary_instruction",
