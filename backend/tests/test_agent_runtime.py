@@ -4698,6 +4698,104 @@ async def test_staged_recommendation_refills_candidates_up_to_target(
 
 
 @pytest.mark.asyncio
+async def test_saved_place_closed_at_visit_time_is_reported_separately() -> None:
+    """영업시간으로 빠진 보관함 장소는 absent가 아니라 closed로 간다. (TP-236)
+
+    1턴에는 열려 있어 추천에 나가고 보관함에 담긴다. 그 사이 문을 닫은 것으로
+    바꾼 뒤 "이 장소들로 일정 짜기"를 부르면, D의 폐점 하드 필터가 걸러내
+    후보에 못 들어온다. 그때 화면은 "시간대를 바꾸면 넣어드릴 수 있어요"라고
+    확정적으로 말할 수 있어야 하므로 사유가 갈려 있어야 한다.
+
+    `place_details_repository`를 주지 않는다 — 주면 보관함 주입이 이 장소를
+    후보로 되돌려 놓아 애초에 빠지지 않는다(SCHEDULE-12).
+    """
+    store = InMemoryStateStore()
+    tool_provider = _RefillPlacesToolProvider(total=6, page_size=6)
+    # 전부 열어 둔다 — 1턴에서 담을 수 있어야 하고, 닫는 것은 그 다음이다.
+    tool_provider._places = [
+        place.model_copy(update={"operating_schedule": _OPEN_ALL_DAY_SCHEDULE})
+        for place in tool_provider._places
+    ]
+    providers = {
+        "llm": _LLMProviderWithGeneralAnswer(),
+        "tool_provider": tool_provider,
+        "recommendation_provider": RealRecommendationProvider(),
+        "enrichment_provider": _CountingEnrichmentProvider(),
+    }
+
+    session_id, place_id = await _recommend_then_save(store, providers)
+
+    # 담은 뒤에 문을 닫았다. 다음 턴 D는 이 장소를 폐점으로 걸러낸다.
+    tool_provider._places = [
+        place.model_copy(update={"operating_schedule": _CLOSED_ALL_WEEK_SCHEDULE})
+        if place.place_id == place_id
+        else place
+        for place in tool_provider._places
+    ]
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="이 장소들로 일정 짜기",
+            session_id=session_id,
+            device_location=DEVICE_LOCATION,
+            schedule_from_saved=True,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.schedule is not None
+    # 대조군 — 이 장소가 실제로 **폐점 사유로** 걸러졌음을 같은 실행에서 확인한다.
+    # 이게 없으면 D가 다른 이유로 후보를 못 준 경우에도 아래 단정이 통과할 수 있다.
+    # SCHEDULE 턴 응답에는 recommendations가 실리지 않으므로, A가 6-1에서
+    # 기록한 폐점 제외 이력(TP-82)을 저장소에서 읽어 확인한다.
+    history = store.get_history(session_id)
+    assert history is not None
+    assert place_id in {item.place_id for item in history.closed_excluded}
+    saved_name = next(
+        item.name
+        for item in state_service.get_session_context(session_id, store=store).saved_places
+        if item.place_id == place_id
+    )
+    assert saved_name and saved_name != place_id
+    assert response.schedule.closed_saved_place_names == [saved_name]
+    # 사유가 갈렸으므로 absent 쪽은 비어야 한다 — 예전에는 여기로 갔다.
+    assert response.schedule.absent_saved_place_names == []
+
+
+@pytest.mark.asyncio
+async def test_saved_place_absent_for_other_reasons_stays_in_absent() -> None:
+    """폐점이 아닌 이유로 빠진 장소는 그대로 absent에 남는다. (TP-236)
+
+    갈라내기가 한쪽으로 쏠리지 않았는지 잠근다. 위 테스트만 있으면 모든 장소를
+    closed로 보내는 구현도 통과한다.
+    """
+    store = InMemoryStateStore()
+    providers = _providers()
+    tool_provider = _DroppingToolProvider()
+    providers["tool_provider"] = tool_provider
+
+    session_id, place_id = await _recommend_then_save(store, providers)
+    # C가 이 장소를 아예 안 돌려준다 — 폐점이 아니라 장소 정보가 없는 경우다.
+    tool_provider.drop_place_id = place_id
+
+    response = await run_agent_flow(
+        AgentRequest(
+            user_input="이 장소들로 일정 짜기",
+            session_id=session_id,
+            device_location=DEVICE_LOCATION,
+            schedule_from_saved=True,
+        ),
+        store=store,
+        **providers,
+    )
+
+    assert response.schedule is not None
+    assert response.schedule.absent_saved_place_names != []
+    assert response.schedule.closed_saved_place_names == []
+
+
+@pytest.mark.asyncio
 async def test_repeated_reject_all_does_not_refetch_closed_candidates() -> None:
     """TP-82 완료 조건: 같은 세션에서 "다른 곳 보여줘"를 반복해도, 이전에
     폐점으로 판명된 후보는 다음 회차 C 조회에서 다시 뽑히지 않는다.

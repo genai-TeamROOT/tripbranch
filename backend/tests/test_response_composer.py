@@ -1576,12 +1576,16 @@ def test_schedule_message_unchanged_when_nothing_omitted() -> None:
 
 
 def test_schedule_message_does_not_suggest_retry_for_absent_saved_places() -> None:
-    """후보에 아예 없던 장소에 무조건적인 재시도를 권하지 않는다. (SCHEDULE-12, D-116)
+    """후보에 아예 없던 장소에 시간대 변경을 권하지 않는다. (SCHEDULE-12, D-116, TP-236)
 
-    "시간을 늘려보라"는 이 경우에 통하지 않는다 — 후보 수집 단계에서 안 잡힌
-    것이라 편성 조건과 무관하기 때문이다. 그런데도 권하면 같은 실패를 반복한다.
-    시간대 변경만은 사유가 영업시간일 때 실제로 통하므로 **조건을 단 채로**
-    제시한다(TP-223).
+    "시간을 늘려보라"도 "시간대를 바꿔보라"도 이 경우에 통하지 않는다 — 장소
+    정보를 못 가져와 후보 수집 단계에서 안 잡힌 것이라 편성 조건과 무관하기
+    때문이다. 그런데도 권하면 같은 실패를 반복한다.
+
+    TP-223 때는 영업시간 건이 이 필드에 섞여 있어서 "문 닫는 시간 때문이라면"
+    조건을 달아 시간대 변경을 제시했다. TP-236에서 영업시간 건을
+    `closed_saved_place_names`로 갈라냈으므로, 이 필드에는 조건부로도 권하지
+    않는다.
     """
 
     schedule = ScheduleResult(
@@ -1597,11 +1601,67 @@ def test_schedule_message_does_not_suggest_retry_for_absent_saved_places() -> No
 
     assert "스태픽스, 아띠인력거" in message
     assert "시간을 늘리거나" not in message
-    # 사유를 한쪽으로 단정하지 않는다 — 둘 다 말한다.
-    assert "문을 닫는 시간이거나 장소 정보를 못 찾은 경우라" in message
-    assert "시간대를 바꾸면 들어갈 수도 있어요" in message
+    # 시간대 변경을 권하는 어떤 표현도 나가지 않는다.
+    assert "시간대를 바꾸면" not in message
+    assert "장소 정보를 못 찾은 경우라, 시간대를 바꿔도 결과는 같아요" in message
+    # 영업시간을 사유로 말하지 않는다 — 그 건은 이 필드에 오지 않는다.
+    assert "문을 닫" not in message
     # 내부 용어를 쓰지 않는다.
     assert "후보" not in message
+
+
+def test_schedule_message_promises_a_time_change_for_closed_saved_places() -> None:
+    """문을 닫아 빠진 장소에는 시간대 변경을 조건 없이 권한다. (TP-236)
+
+    넷 중 유일하게 해결책이 확정적인 경우다 — D가 방문 시각 영업시간으로
+    걸러낸 것이므로 시간대를 바꾸면 실제로 후보에 들어온다. 그래서 absent와
+    달리 "들어갈 수도 있어요"가 아니라 "넣어드릴 수 있어요"로 말한다.
+    """
+
+    schedule = ScheduleResult(
+        items=[_schedule_item()],
+        total_duration_min=120,
+        route_summary="경복궁 근처 코스예요.",
+        basis_note="기준 시각 안내",
+        closed_saved_place_names=["스태픽스"],
+        elapsed_ms=100.0,
+    )
+
+    message = compose_schedule_message(schedule)
+
+    assert "스태픽스는 그 시간에 문을 닫아요" in message
+    assert "시간대를 바꾸면 일정에 넣어드릴 수 있어요" in message
+    # absent 쪽 문장은 나가지 않는다.
+    assert "장소 정보를 못 찾은" not in message
+    assert "후보" not in message
+
+
+def test_schedule_message_separates_closed_from_absent() -> None:
+    """두 사유가 함께 있으면 각각 맞는 문구가 나간다. (TP-236)
+
+    이 카드의 핵심이다. 예전에는 한 필드였고 한 문장이 나가서, 시간대를 바꾸면
+    되는 사람과 바꿔도 소용없는 사람이 같은 안내를 받았다.
+    """
+
+    schedule = ScheduleResult(
+        items=[_schedule_item()],
+        total_duration_min=120,
+        route_summary="경복궁 근처 코스예요.",
+        basis_note="기준 시각 안내",
+        closed_saved_place_names=["스태픽스"],
+        absent_saved_place_names=["아띠인력거"],
+        elapsed_ms=100.0,
+    )
+
+    message = compose_schedule_message(schedule)
+
+    assert "스태픽스는 그 시간에 문을 닫아요. 시간대를 바꾸면 일정에 넣어드릴 수 있어요." in message
+    assert (
+        "아띠인력거는 이번엔 넣지 못했어요. "
+        "장소 정보를 못 찾은 경우라, 시간대를 바꿔도 결과는 같아요."
+    ) in message
+    # 문 닫은 쪽을 먼저 말한다 — 바로 할 수 있는 일이 앞에 온다.
+    assert message.index("문을 닫아요") < message.index("넣지 못했어요")
 
 
 def test_schedule_message_separates_every_omission_reason() -> None:
