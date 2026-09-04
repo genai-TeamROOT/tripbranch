@@ -23,6 +23,7 @@ import { AppHeader } from "../components/layout/AppHeader";
 import { AddKeywordModal } from "../components/layout/AddKeywordModal";
 import { loadPreferences, type SavedPreference } from "../state/preferenceStorage";
 import { pushPreferences, syncPreferences } from "../state/preferenceSync";
+import { useTripState } from "../state/TripContext";
 import {
   COMPANION_OPTIONS,
   MOOD_OPTIONS,
@@ -40,12 +41,14 @@ function ChipGroup({
   options,
   selected,
   onToggle,
+  isEn,
 }: {
   icon: typeof Sparkles;
   label: string;
   options: readonly PreferenceOption[];
   selected: Set<string>;
   onToggle: (option: string) => void;
+  isEn: boolean;
 }) {
   return (
     <section className="flex w-full flex-col gap-2.5">
@@ -66,7 +69,7 @@ function ChipGroup({
                 isSelected ? "bg-brand text-white" : "bg-white text-ink shadow-resting"
               }`}
             >
-              {option.label}
+              {isEn ? option.labelEn : option.label}
             </button>
           );
         })}
@@ -85,6 +88,8 @@ function toSavedPreference(label: string): SavedPreference {
 
 export function PreferencesPage() {
   const navigate = useNavigate();
+  const { language } = useTripState();
+  const isEn = language === "en";
 
   /* 저장해 둔 값이 있으면 그 상태로 열린다 — 다시 고르게 하지 않는다. */
   const [restored] = useState(loadPreferences);
@@ -157,7 +162,11 @@ export function PreferencesPage() {
     } catch {
       /* 이 기기에서는 이미 지워졌다(pushPreferences가 로컬을 먼저 쓴다). */
       setCleared(hadSaved);
-      setErrorMessage("계정에서 지우지 못했어요. 다른 기기에는 아직 남아 있을 수 있어요.");
+      setErrorMessage(
+        isEn
+          ? "Couldn't remove this from your account. It may still remain on other devices."
+          : "계정에서 지우지 못했어요. 다른 기기에는 아직 남아 있을 수 있어요.",
+      );
     }
   }
 
@@ -185,7 +194,11 @@ export function PreferencesPage() {
     } catch {
       /* 고른 값은 이 기기에 이미 저장됐다. 다만 계정에 못 올렸으므로 다른
          기기에서는 안 보인다 — 그 사실을 알리고 화면에 머문다. */
-      setErrorMessage("계정에 저장하지 못했어요. 이 기기에는 남아 있어요.");
+      setErrorMessage(
+        isEn
+          ? "Couldn't save this to your account. It's still saved on this device."
+          : "계정에 저장하지 못했어요. 이 기기에는 남아 있어요.",
+      );
     } finally {
       setIsSaving(false);
     }
@@ -214,19 +227,30 @@ export function PreferencesPage() {
         <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-6 px-4 pb-6 pt-6">
           <div>
             <h1 className="text-2xl font-bold leading-snug text-ink">
-              어떤 순간에
-              <br />
-              끌리시나요?
+              {isEn ? (
+                <>
+                  What kind of moments
+                  <br />
+                  draw you in?
+                </>
+              ) : (
+                <>
+                  어떤 순간에
+                  <br />
+                  끌리시나요?
+                </>
+              )}
             </h1>
             <p className="mt-2 text-sm leading-relaxed text-muted">
-              고른 취향은 홈 화면에서 다시 볼 수 있어요. 추천 결과에 반영하는 건 아직 준비 중이에요.
-              최소 {MIN_SELECTED}개, 최대 {MAX_SELECTED}개까지 골라주세요.
+              {isEn
+                ? `You can see your picks again on the home screen. Applying them to recommendations is still in the works. Pick at least ${MIN_SELECTED} and up to ${MAX_SELECTED}.`
+                : `고른 취향은 홈 화면에서 다시 볼 수 있어요. 추천 결과에 반영하는 건 아직 준비 중이에요. 최소 ${MIN_SELECTED}개, 최대 ${MAX_SELECTED}개까지 골라주세요.`}
             </p>
 
             {/* 부제와 Meta 사이만 12다(28:20) — 컨테이너 gap 24를 쓰면 두 배로 벌어진다. */}
             <div className="mt-3 flex items-center justify-between">
               <span className="rounded-full bg-chip px-3 py-1.5 text-xs font-bold text-brand-deep">
-                {selected.size} / {MAX_SELECTED}개 선택됨
+                {isEn ? `${selected.size} / ${MAX_SELECTED} selected` : `${selected.size} / ${MAX_SELECTED}개 선택됨`}
               </span>
               <button
                 type="button"
@@ -234,31 +258,34 @@ export function PreferencesPage() {
                 disabled={selected.size === 0}
                 className="text-xs font-bold text-muted transition-colors hover:text-ink disabled:opacity-40"
               >
-                선택 초기화
+                {isEn ? "Clear selection" : "선택 초기화"}
               </button>
             </div>
           </div>
 
           <ChipGroup
             icon={Sparkles}
-            label="분위기"
+            label={isEn ? "Mood" : "분위기"}
             options={MOOD_OPTIONS}
             selected={selected}
             onToggle={toggle}
+            isEn={isEn}
           />
           <ChipGroup
             icon={Compass}
-            label="테마"
+            label={isEn ? "Theme" : "테마"}
             options={THEME_OPTIONS}
             selected={selected}
             onToggle={toggle}
+            isEn={isEn}
           />
           <ChipGroup
             icon={Users}
-            label="동행"
+            label={isEn ? "Companions" : "동행"}
             options={COMPANION_OPTIONS}
             selected={selected}
             onToggle={toggle}
+            isEn={isEn}
           />
 
           {customKeywords.length > 0 && (
@@ -286,7 +313,7 @@ export function PreferencesPage() {
             onClick={() => setShowAddKeyword(true)}
             className="flex items-center gap-1.5 self-start text-sm font-bold text-brand"
           >
-            <Plus size={16} /> 키워드 직접 입력
+            <Plus size={16} /> {isEn ? "Add your own keyword" : "키워드 직접 입력"}
           </button>
 
           {errorMessage && <ErrorBanner message={errorMessage} />}
@@ -296,7 +323,9 @@ export function PreferencesPage() {
               role="status"
               className="rounded-xl bg-chip px-3.5 py-2.5 text-xs leading-relaxed text-ink"
             >
-              저장해 둔 취향을 지웠어요. 홈 화면에서도 사라져요.
+              {isEn
+                ? "Your saved preferences have been cleared. They'll also disappear from the home screen."
+                : "저장해 둔 취향을 지웠어요. 홈 화면에서도 사라져요."}
             </p>
           )}
         </div>
@@ -308,7 +337,17 @@ export function PreferencesPage() {
             onClick={handleSave}
             className="flex h-[52px] w-full items-center justify-center rounded-full bg-brand text-base font-bold text-white transition-colors disabled:bg-brand/40"
           >
-            {isSaving ? "저장하는 중이에요…" : canSave ? "저장하기" : `${remaining}개 더 골라주세요`}
+            {isEn
+              ? isSaving
+                ? "Saving…"
+                : canSave
+                  ? "Save"
+                  : `Pick ${remaining} more`
+              : isSaving
+                ? "저장하는 중이에요…"
+                : canSave
+                  ? "저장하기"
+                  : `${remaining}개 더 골라주세요`}
           </button>
         </div>
       </div>

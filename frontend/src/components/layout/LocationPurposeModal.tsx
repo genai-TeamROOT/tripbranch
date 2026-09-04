@@ -17,6 +17,7 @@
 import { useId } from "react";
 import { createPortal } from "react-dom";
 import { MapPin, Navigation, X } from "lucide-react";
+import { useTripState } from "../../state/TripContext";
 
 export type LocationPurpose = "origin" | "center";
 
@@ -28,32 +29,48 @@ interface LocationPurposeModalProps {
 
 export function LocationPurposeModal({ placeName, onPick, onClose }: LocationPurposeModalProps) {
   const titleId = useId();
+  const isEn = useTripState().language === "en";
 
   const options: Array<{
     purpose: LocationPurpose;
     icon: typeof MapPin;
     title: string;
     hint: string;
-  }> = [
-    {
-      purpose: "origin",
-      icon: Navigation,
-      title: `${placeName}에서 출발할게요`,
-      hint: "이동 시간을 여기서부터 잽니다",
-    },
-    {
-      purpose: "center",
-      icon: MapPin,
-      title: `${placeName} 주변에서 찾아주세요`,
-      hint: "이 근처의 장소를 모아서 보여줍니다",
-    },
-  ];
+  }> = isEn
+    ? [
+        {
+          purpose: "origin",
+          icon: Navigation,
+          title: `Start from ${placeName}`,
+          hint: "Travel times will be measured from here",
+        },
+        {
+          purpose: "center",
+          icon: MapPin,
+          title: `Find places around ${placeName}`,
+          hint: "Show places near this location",
+        },
+      ]
+    : [
+        {
+          purpose: "origin",
+          icon: Navigation,
+          title: `${placeName}에서 출발할게요`,
+          hint: "이동 시간을 여기서부터 잽니다",
+        },
+        {
+          purpose: "center",
+          icon: MapPin,
+          title: `${placeName} 주변에서 찾아주세요`,
+          hint: "이 근처의 장소를 모아서 보여줍니다",
+        },
+      ];
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-end justify-center p-4 md:items-center">
       <button
         type="button"
-        aria-label="닫기"
+        aria-label={isEn ? "Close" : "닫기"}
         onClick={onClose}
         className="absolute inset-0 bg-ink-strong/40"
       />
@@ -69,7 +86,7 @@ export function LocationPurposeModal({ placeName, onPick, onClose }: LocationPur
           </h2>
           <button
             type="button"
-            aria-label="닫기"
+            aria-label={isEn ? "Close" : "닫기"}
             onClick={onClose}
             className="shrink-0 text-muted transition-colors hover:text-ink"
           >
