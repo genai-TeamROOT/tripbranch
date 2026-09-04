@@ -23,7 +23,6 @@ from app.errors import AppError
 from app.observability.langfuse_tracing import trace_attributes
 from app.providers.protocols import LLMProvider
 from app.schedule.budget import classify_budget
-from app.schedule.schemas import target_item_range
 from app.schemas import (
     CompareCriteria,
     ComparisonItem,
@@ -930,7 +929,7 @@ def _topic_particle(word: str) -> str:
 
 
 def _with_saved_place_notes(
-    message: str, schedule: ScheduleResult, time_available_min: int | None
+    message: str, schedule: ScheduleResult
 ) -> str:
     """보관함과 편성 결과가 어긋난 부분을 사용자 말로 덧붙인다. (SCHEDULE-12, TP-223)
 
@@ -985,11 +984,16 @@ def _with_saved_place_notes(
         )
     if schedule.over_capacity_place_names:
         joined = ", ".join(schedule.over_capacity_place_names)
-        # 상한은 활동 가능 시간에 따라 달라진다(1~2 / 2~4 / 3~5곳). 숫자를 문자열에
-        # 박으면 "2시간 코스"에서 틀린 수를 말하게 되므로 같은 함수를 다시 부른다.
-        _, max_items = target_item_range(time_available_min)
+        # 상한은 요청마다 다르다 — 활동 가능 시간뿐 아니라 후보의 분류(체류 최소값)와
+        # 서로의 거리까지 보고 계산되기 때문이다(TP-239). 후보를 모르는 이쪽에서는
+        # 다시 계산할 수 없어 편성이 실어 보낸 값을 읽는다. 값이 없으면(옛 스냅샷,
+        # 부분 재편성) 수를 말하지 않는다 — 틀린 수를 말하는 것보다 낫다.
+        if schedule.item_capacity is not None:
+            limit_phrase = f"한 번에 {schedule.item_capacity}곳까지만 넣을 수 있어서 "
+        else:
+            limit_phrase = "한 번에 넣을 수 있는 곳 수를 넘어서 "
         parts.append(
-            f"한 번에 {max_items}곳까지만 넣을 수 있어서 "
+            f"{limit_phrase}"
             f"담아두신 {joined}{_topic_particle(joined)} 이번엔 빠졌어요. "
             "보관함에서 다른 곳을 빼면 다음엔 넣어드릴게요."
         )
@@ -1085,9 +1089,7 @@ def compose_schedule_message(
     """
 
     if not schedule.items:
-        return _with_saved_place_notes(
-            schedule.route_summary, schedule, time_available_min
-        )
+        return _with_saved_place_notes(schedule.route_summary, schedule)
 
     if (
         time_available_min is not None
@@ -1103,7 +1105,6 @@ def compose_schedule_message(
             time_available_min,
         ),
         schedule,
-        time_available_min,
     )
 
 

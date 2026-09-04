@@ -272,7 +272,7 @@ class ScheduleResult(BaseModel):
     route_summary: str
     basis_note: str
     # 보관함에 담겨 있었지만 이번 일정에 넣지 못한 장소 이름 (SCHEDULE-12).
-    # 담은 개수가 활동 가능 시간이 허용하는 항목 수 상한(target_item_range())을
+    # 담은 개수가 활동 가능 시간이 허용하는 항목 수 상한(budget.derive_item_range())을
     # 넘었거나, LLM이 재시도 후에도 포함 지시를 지키지 못한 경우에 채워진다.
     # 사용자에게 조용히 빠뜨리지 않고 말풍선으로 알리기 위한 값이라, 화면 문구를
     # 조립하는 쪽(response_composer)이 읽는다. 빈 리스트가 정상이다.
@@ -302,7 +302,7 @@ class ScheduleResult(BaseModel):
     # 확정적이기 때문**이다. 이쪽은 시간대를 바꾸면 실제로 들어간다. 저쪽은
     # 바꿔도 같다. over_capacity_place_names를 따로 둔 것과 같은 기준이다.
     closed_saved_place_names: list[str] = Field(default_factory=list)
-    # 담겨 있었지만 **항목 수 상한**(target_item_range()의 max)을 넘겨 이번 편성 대상에서
+    # 담겨 있었지만 **항목 수 상한**(budget.derive_item_range()의 max)을 넘겨 이번 편성 대상에서
     # 잘린 장소 이름 (TP-223). 담은 순서로 뒤에서부터 잘린다.
     #
     # omitted_saved_place_names와 갈라 둔 이유는 사유가 다르고 사용자가 할 수 있는 일이
@@ -321,6 +321,16 @@ class ScheduleResult(BaseModel):
     # 보관함을 쓰지 않은 턴(must_include가 비어 있음)에는 채우지 않는다 — 그때는 모든
     # 장소가 "새로 찾은 곳"이라 알릴 내용이 아니다.
     added_place_names: list[str] = Field(default_factory=list)
+    # 이번 요청에서 일정에 넣을 수 있었던 항목 수 상한 (TP-239).
+    #
+    # **화면이 이 값을 다시 계산할 수 없어서 실어 보낸다.** 예전에는 버킷 상수라
+    # 활동 가능 시간만 있으면 어디서든 같은 답이 나왔다(1~2 / 2~4 / 3~5곳). 지금은
+    # 체류 최소값과 이번 후보들의 실제 거리로 계산하므로, 후보를 모르는
+    # response_composer는 "한 번에 n곳까지만" 문구의 n을 만들 수 없다.
+    #
+    # 부분 재편성에서는 None이다 — 그때 개수는 유지 항목과 교체 대상이 정하므로
+    # 상한이 관여하지 않는다. 이 필드가 없던 시절의 스냅샷도 None이다.
+    item_capacity: int | None = Field(default=None, ge=1)
     # 요청한 활동 가능 시간을 지켰는지에 대한 판정 (TP-238).
     #
     # **판정을 한 곳에서만 내리기 위한 필드다.** 예전에는 response_composer가

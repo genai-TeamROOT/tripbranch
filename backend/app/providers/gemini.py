@@ -33,6 +33,7 @@ from app.observability.langfuse_tracing import observe_generation
 from app.prompts.registry import operation_entry_template, operation_prompt_version
 from app.providers import gemini_prompts
 from app.providers.contracts import ProviderResult, ProviderSource, provider_result
+from app.schedule.budget import derive_item_range
 from app.schedule.schemas import (
     ScheduleLLMPlan,
     SchedulePartialFillRequest,
@@ -1070,7 +1071,10 @@ class RealGeminiProvider:
         assert request.visit_datetime is not None
         start_time = request.visit_datetime.strftime("%H:%M")
         instruction = gemini_prompts.build_schedule_planning_instruction(
-            time_available_min=request.conditions.time_available
+            time_available_min=request.conditions.time_available,
+            # 상한을 프롬프트가 직접 계산하지 않는다 — planner가 후보 부족 가드와
+            # 보관함 자르기에 쓰는 것과 같은 함수를 부른다(TP-239).
+            item_range=derive_item_range(request),
         )
         context = gemini_prompts.format_schedule_planning_context(request, start_time)
         # thinking_budget=0 — 일정 편성은 구조화 출력이 무거워(3~5개 항목×6개 필드)
