@@ -42,12 +42,15 @@ const CONDITION_LABELS: [keyof UserConditions, string][] = [
   ["concentration_intent", "혼잡도 의도"],
   ["transport", "이동 수단"],
   ["max_travel_time", "최대 이동 시간"],
+  ["travel_origin", "이동시간 출발점"],
   ["time_available", "가용 시간"],
   ["environment", "실내외"],
   ["companion", "동행"],
   ["budget", "예산"],
   ["exclude_tags", "제외 태그"],
   ["special_requirements", "특별 요구사항"],
+  ["accessibility_needs", "무장애 요구"],
+  ["taste_query", "취향 발화"],
 ];
 
 function formatDuration(milliseconds: number | null | undefined) {
@@ -164,6 +167,21 @@ const CONDITION_VALUE_LABELS: Partial<Record<keyof UserConditions, Record<string
     indoor: "실내",
     outdoor: "실외",
     any: "실내외 상관없음",
+  },
+  travel_origin: {
+    user_location: "사용자 위치 기준",
+    search_center: "검색 중심점 기준",
+  },
+  accessibility_needs: {
+    wheelchair_access: "휠체어 접근",
+    stroller_access: "유모차 접근",
+    accessible_restroom: "장애인 화장실",
+    accessible_parking: "장애인 주차",
+    visual_guide: "시각 안내",
+    infant_facilities: "유아 시설",
+    wheelchair_rental: "휠체어 대여",
+    seating_available: "입식 좌석",
+    low_floor_transit: "저상 교통수단",
   },
 };
 
