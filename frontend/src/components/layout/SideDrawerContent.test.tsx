@@ -702,6 +702,30 @@ test("새 채팅을 누르면 대화가 비워지고 첫 화면으로 간다", a
   expect(await screen.findByRole("button", { name: "추천 시작하기" })).toBeInTheDocument();
 });
 
+/*
+ * 접힘 레일의 라벨은 title·aria-label로만 남아 **화면에 글자가 없다.** 그래서
+ * 영어 작업(PR #367)에서 통째로 빠져 한글 고정이었고, 테스트도 한국어로만 돌아
+ * 아무도 못 잡았다(2026-09-04에 발견).
+ *
+ * 문구는 펼침 사이드바와 같아야 한다 — 같은 버튼이 접힘/펼침에 따라 다른 이름을
+ * 가지면 스크린리더 사용자에게 두 버튼으로 들린다.
+ */
+test("영어로 바꾸면 접힘 레일의 이름도 영어가 된다", async () => {
+  const user = userEvent.setup();
+  await renderApp();
+
+  await user.click(within(sidebar()).getByRole("button", { name: "English" }));
+  await user.click(screen.getByRole("button", { name: "Collapse sidebar" }));
+
+  const rail = sidebar();
+  for (const name of ["New chat", "Preferences", "Location", "Schedule"]) {
+    expect(within(rail).getByRole("button", { name })).toBeInTheDocument();
+  }
+  /* 펼침 쪽 문구와 같은지도 본다. */
+  await user.click(screen.getByRole("button", { name: "Expand sidebar" }));
+  expect(within(sidebar()).getByRole("button", { name: "New chat" })).toBeInTheDocument();
+});
+
 /* 홈처럼 세션이 없는 화면에서는 아무 줄도 켜지지 않아야 한다. */
 test("대화를 열기 전에는 켜진 줄이 없다", async () => {
   await renderApp();

@@ -24,6 +24,10 @@ export function DesktopSidebar({ collapsed, onToggle }: DesktopSidebarProps) {
   const location = useLocation();
   const dispatch = useTripDispatch();
   const state = useTripState();
+  /* 레일 라벨은 title·aria-label로만 남아 화면에 글자가 없다 — 그래서 영어 작업
+     (PR #367)에서 통째로 빠져 있었다. 문구는 펼침 사이드바와 같게 맞춘다:
+     같은 버튼이 접힘/펼침에 따라 다른 이름을 가지면 안 된다. */
+  const isEn = state.language === "en";
 
   const hasConversation = state.messages.length > 0;
 
@@ -40,7 +44,7 @@ export function DesktopSidebar({ collapsed, onToggle }: DesktopSidebarProps) {
   }> = [
     {
       key: "home",
-      label: "새 채팅",
+      label: isEn ? "New chat" : "새 채팅",
       icon: Home,
       active: location.pathname === "/" && !hasConversation,
       onClick: () => {
@@ -50,14 +54,14 @@ export function DesktopSidebar({ collapsed, onToggle }: DesktopSidebarProps) {
     },
     {
       key: "preferences",
-      label: "취향 설정",
+      label: isEn ? "Preferences" : "취향 설정",
       icon: Sparkles,
       active: location.pathname === "/preferences",
       onClick: () => navigate("/preferences"),
     },
     {
       key: "location",
-      label: "위치 설정",
+      label: isEn ? "Location" : "위치 설정",
       icon: MapPin,
       active: location.pathname === "/location",
       // 위치·일정은 새 페이지가 아니라 지금 화면 위에 바텀시트로 뜬다(§5).
@@ -65,7 +69,7 @@ export function DesktopSidebar({ collapsed, onToggle }: DesktopSidebarProps) {
     },
     {
       key: "schedule",
-      label: "일정",
+      label: isEn ? "Schedule" : "일정",
       icon: Route,
       active: location.pathname === "/schedule",
       onClick: () => navigate("/schedule", { state: sheetState(location) }),
@@ -79,7 +83,7 @@ export function DesktopSidebar({ collapsed, onToggle }: DesktopSidebarProps) {
           <button
             type="button"
             onClick={onToggle}
-            aria-label="사이드바 펼치기"
+            aria-label={isEn ? "Expand sidebar" : "사이드바 펼치기"}
             className="flex h-8 w-8 items-center justify-center rounded-lg text-muted transition-colors hover:bg-chip hover:text-ink"
           >
             <PanelLeftOpen size={18} />
@@ -107,7 +111,7 @@ export function DesktopSidebar({ collapsed, onToggle }: DesktopSidebarProps) {
             <button
               type="button"
               onClick={onToggle}
-              aria-label="사이드바 접기"
+              aria-label={isEn ? "Collapse sidebar" : "사이드바 접기"}
               aria-expanded={true}
               className="flex h-8 w-8 items-center justify-center rounded-lg text-muted transition-colors hover:bg-chip hover:text-ink"
             >
