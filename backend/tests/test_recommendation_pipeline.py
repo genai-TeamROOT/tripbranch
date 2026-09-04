@@ -869,6 +869,7 @@ def _first_pass_item(
     travel_mode: TravelMode | None = None,
     taste_score: float | None = None,
     taste_evidence: list[TasteEvidenceQuote] | None = None,
+    image_url: str | None = None,
 ) -> RecommendationItem:
     # taste_score가 None이면 1차가 취향을 아예 안 쓴 실행이라 키 자체가 없다 —
     # 결측(None 값)과 구분해야 2차 가중치 조립이 같은 판단을 내린다.
@@ -897,6 +898,7 @@ def _first_pass_item(
         feature_scores=feature_scores,
         weights_used={"distance": 1.0},
         taste_evidence=taste_evidence or [],
+        image_url=image_url,
     )
 
 
@@ -1291,6 +1293,39 @@ async def test_rerank_with_concentration_preserves_travel_measurements() -> None
 
 
 @pytest.mark.asyncio
+async def test_rerank_with_concentration_preserves_image_url() -> None:
+    """썸네일도 옮겨 담는다 — 안 그러면 재순위를 탄 요청만 카드 전체가 사진을 잃는다.
+
+    A가 1차 결과에 붙여둔 값이고(real_recommendation_provider의 _with_thumbnails),
+    2차에는 다시 조회할 경로가 없다. 실제로 이 필드가 빠져 있어서 같은 장소가
+    어떤 요청에는 사진이 나오고 어떤 요청에는 자리표시 칩만 뜨는 일이 있었다 —
+    혼잡도 재순위를 탔는지가 갈랐고, 조회는 성공했으므로 로그에도 안 남았다.
+    travel_distance_m·taste_evidence가 같은 함정에 빠졌던 것과 같은 유형이다.
+    """
+    first_pass = RecommendationResponse(
+        recommendations=[
+            _first_pass_item(
+                "place-1",
+                distance_km=0.1,
+                distance_score=0.95,
+                image_url="https://example.test/thumb.jpg",
+            )
+        ],
+        unverified_recommendations=[],
+        elapsed_ms=0,
+    )
+    concentration = CandidateEnrichmentResponse(
+        request_id="req-image",
+        status="success",
+        candidates=[_concentration_result("place-1", rate=50.0)],
+    )
+
+    result = await rerank_with_concentration(first_pass, None, concentration, seek=True)
+
+    assert result.recommendations[0].image_url == "https://example.test/thumb.jpg"
+
+
+@pytest.mark.asyncio
 async def test_rerank_with_concentration_preserves_taste_evidence() -> None:
     """2차는 RecommendationItem을 새로 만든다 — 취향 근거 인용문도 옮겨 담지
     않으면 혼잡도 재순위를 탄 요청에서만 개발자 디버그 화면의 인용문이 조용히
@@ -1474,6 +1509,27 @@ async def test_rerank_with_co_visited_preserves_travel_measurements() -> None:
     assert item.travel_distance_m == 620
     assert item.travel_duration_seconds == 530
     assert item.travel_mode is TravelMode.WALKING
+
+
+@pytest.mark.asyncio
+async def test_rerank_with_co_visited_preserves_image_url() -> None:
+    """rerank_with_concentration()과 같은 이유로 썸네일도 명시적으로 이월한다."""
+    first_pass = RecommendationResponse(
+        recommendations=[
+            _first_pass_item(
+                "place-1",
+                distance_km=0.1,
+                distance_score=0.95,
+                image_url="https://example.test/thumb.jpg",
+            )
+        ],
+        unverified_recommendations=[],
+        elapsed_ms=0,
+    )
+
+    result = await rerank_with_co_visited(first_pass, [], None)
+
+    assert result.recommendations[0].image_url == "https://example.test/thumb.jpg"
 
 
 @pytest.mark.asyncio

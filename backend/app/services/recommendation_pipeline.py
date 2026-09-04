@@ -590,6 +590,11 @@ async def rerank_with_concentration(
             # 조용히 사라진다(travel_distance_m과 같은 이유, 위 주석 참고).
             taste_evidence=item.taste_evidence,
             preference_tags=item.preference_tags,
+            # 썸네일도 1차 값을 그대로 가져온다. 2차는 후보를 다시 만들지 않고
+            # A가 붙여둔 값을 옮기기만 하면 된다 — 재조회 경로가 여기엔 없다.
+            # 빠뜨리면 혼잡도 재순위를 탄 요청만 추천 카드 전체가 사진을 잃는다
+            # (travel_distance_m·taste_evidence와 같은 유형, 위 주석 참고).
+            image_url=item.image_url,
         )
         (unverified if is_unverified else verified).append(new_item)
 
@@ -776,6 +781,8 @@ async def rerank_with_co_visited(
             },
             taste_evidence=item.taste_evidence,
             preference_tags=item.preference_tags,
+            # 혼잡도 재순위와 같은 이유로 썸네일도 1차 값을 그대로 가져온다.
+            image_url=item.image_url,
         )
         (unverified if is_unverified else verified).append(new_item)
 
