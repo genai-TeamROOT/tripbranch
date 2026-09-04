@@ -85,22 +85,22 @@ def test_발화가_정한_축의_칩은_배선이_빼고_넘긴다() -> None:
         pytest.param(
             UserConditions(concentration_intent=ConcentrationIntent.SEEK),
             "사진 명소 자연·공원 아이와 함께",
-            id="혼잡도",
+            id="혼잡도-모순인 조용한 곳만 빠짐",
         ),
         pytest.param(
             UserConditions(environment=Environment.INDOOR),
             "조용한 곳 사진 명소 아이와 함께",
-            id="실내외",
+            id="실내외-야외인 자연·공원만 빠짐",
         ),
         pytest.param(
             UserConditions(companion=Companion.SOLO),
             "조용한 곳 사진 명소 자연·공원",
-            id="동행",
+            id="동행-동행 칩만 통째로 빠짐",
         ),
     ],
 )
 def test_세_축을_각각_D에_넘긴다(conditions: UserConditions, expected: str) -> None:
-    """축 하나라도 안 넘기면 그 축의 모순 칩이 살아서 질의에 섞인다.
+    """축 하나라도 안 넘기면 그 축의 칩이 살아서 질의에 섞인다.
 
     한 축만 보는 테스트는 나머지 두 줄이 빠져도 통과한다 — 세 축을 따로 못 박는다.
     """
@@ -114,11 +114,11 @@ def test_세_축을_각각_D에_넘긴다(conditions: UserConditions, expected: 
     assert _saved_taste_query(conditions, _principal(), store) == expected
 
 
-def test_발화_취향도_D에_넘긴다() -> None:
-    """발화를 안 넘기면 **중복**이 안 빠진다 — 모순만 보는 테스트는 통과한다.
+def test_중복은_빼지_않는다() -> None:
+    """발화와 같은 뜻인 칩도 그대로 붙는다.
 
-    같은 값인 칩은 발화 취향이 있을 때만 빠지므로, 이 줄이 빠지면 "조용한 곳"이
-    발화 뒤에 한 번 더 붙는다.
+    실측 5/5에서 중복을 두는 쪽이 발화를 더 잘 반영했다 — 같은 뜻이라 벡터를
+    발화 쪽으로 당긴다(`domain/saved_preference.py` docstring 표).
     """
     store = _store_with(
         _chip("조용한 곳", "preference", "quiet"),
@@ -128,7 +128,7 @@ def test_발화_취향도_D에_넘긴다() -> None:
         taste_query="조용한", concentration_intent=ConcentrationIntent.AVOID
     )
 
-    assert _saved_taste_query(conditions, _principal(), store) == "사진 명소"
+    assert _saved_taste_query(conditions, _principal(), store) == "조용한 곳 사진 명소"
 
 
 def test_게스트는_저장할_자리가_없다() -> None:

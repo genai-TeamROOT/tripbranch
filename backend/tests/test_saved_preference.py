@@ -12,9 +12,11 @@ import re
 import pytest
 
 from app.domain.saved_preference import (
-    _CHIP_AXIS_VALUES,
-    chip_axis_value,
-    spoken_axis_values,
+    _COMPANION_CODES,
+    _CONTRADICTIONS,
+    contradicts,
+    decided_values,
+    is_companion_chip,
     to_taste_query,
     usable_chips,
 )
@@ -68,41 +70,20 @@ def test_고른_칩을_하나도_버리지_않는다() -> None:
     assert len(usable_chips(five)) == 5
 
 
-def test_발화에_취향이_있어도_안_겹치는_칩은_남는다() -> None:
-    """발화가 정본이지만 저장값을 통째로 버리지는 않는다.
+def test_발화_취향_문구는_보지_않는다() -> None:
+    """중복을 안 빼므로 `taste_query`가 판정에 안 쓰인다.
 
-    발화 "조용한 카페"는 혼잡도 축만 정한다. 동행·분위기 칩은 부딪히지 않으므로
-    그대로 남아 발화 뒤에 붙는다.
+    발화 취향이 있든 없든 결과가 같다 — 인자로 받지도 않는다.
     """
-    result = to_taste_query(
-        _SAVED_B, spoken_taste_query="조용한 카페", concentration_intent="AVOID"
-    )
+    assert to_taste_query(_SAVED_B) == "혼자 가기 좋은 사진 명소 힙한 분위기"
 
-    # "힙한 분위기"만 혼잡도 축(SEEK)이라 빠진다.
+
+def test_부딪히지_않는_칩은_전부_남는다() -> None:
+    """발화가 혼잡도만 정하면 나머지 축의 칩은 그대로 붙는다."""
+    result = to_taste_query(_SAVED_B, concentration_intent="AVOID")
+
+    # "힙한 분위기"만 AVOID와 부딪힌다. 동행 칩은 발화에 동행이 없어 남는다.
     assert result == "혼자 가기 좋은 사진 명소"
-
-
-@pytest.mark.parametrize("spoken", ["", "   ", None])
-def test_발화_취향이_비어_있으면_저장값을_쓴다(spoken: str | None) -> None:
-    """공백만 있는 값도 "말하지 않음"으로 본다."""
-    result = to_taste_query(_SAVED_B, spoken_taste_query=spoken)
-
-    assert result == "혼자 가기 좋은 사진 명소 힙한 분위기"
-
-
-def test_발화가_정한_축의_칩만_빠진다() -> None:
-    """축이 없는 칩은 발화가 무엇을 정하든 절대 안 빠진다."""
-    result = to_taste_query(
-        _SAVED_B,
-        spoken_taste_query="조용한",
-        concentration_intent="AVOID",
-        environment="indoor",
-        companion="solo",
-    )
-
-    # 혼자 가기 좋은(동행 solo·중복) + 힙한 분위기(혼잡도 SEEK·모순)가 빠지고
-    # 어느 축도 아닌 "사진 명소"만 남는다.
-    assert result == "사진 명소"
 
 
 def test_place_tag_칩도_질의에_넣는다() -> None:
@@ -162,93 +143,127 @@ def test_usable_chips는_칩_객체를_그대로_돌려준다() -> None:
     assert picked[0].codes == ["healing"]
 
 
-# --- 발화와 겹치거나 부딪히는 칩 빼기 ---------------------------------------
+# --- 동행: 발화가 말했으면 통째로 뺀다 ---------------------------------------
 #
-# 규칙 하나로 중복과 모순을 함께 뺀다: 값이 다르면 항상, 같으면 발화 취향이
-# 있을 때만. 아래 표가 그 두 갈래를 각각 못 박는다.
+# 값을 비교하지 않는다. 동행 값 여섯은 서로 배타적이지 않아 "다르면 모순"이
+# 성립하지 않고("부모님이랑"에 "아이와 함께"는 3대가 함께 가는 경우다),
+# "단체 모임"은 `Companion` 어휘에 대응 값이 아예 없다.
 
+_COMPANION_CHIPS = [
+    _chip("데이트 코스", "preference", "date"),
+    _chip("친구와 함께", "preference", "with_friends"),
+    _chip("아이와 함께", "preference", "with_kids"),
+    _chip("단체 모임", "preference", "group_gathering"),
+    _chip("부모님과 함께", "preference", "with_parents"),
+    _chip("혼자 가기 좋은", "preference", "alone"),
+]
+_PHOTO = _chip("사진 명소", "preference", "photo_spot")
 _QUIET = _chip("조용한 곳", "preference", "quiet")
 _TRENDY = _chip("힙한 분위기", "preference", "trendy_hotspot")
 _NATURE = _chip("자연·공원", "place_tag", "공원", "산", "호수", "계곡", "수목원")
 _ANY_WEATHER = _chip("날씨 상관없는 곳", "preference", "indoor")
-_WITH_KIDS = _chip("아이와 함께", "preference", "with_kids")
-_PHOTO = _chip("사진 명소", "preference", "photo_spot")
+_WALK = _chip("산책하기 좋은", "preference", "walk")
+
+
+@pytest.mark.parametrize("chip", _COMPANION_CHIPS, ids=lambda c: c.label)
+@pytest.mark.parametrize("spoken", ["solo", "couple", "friend", "parent", "child", "pet"])
+def test_발화에_동행이_있으면_동행_칩은_값과_무관하게_뺀다(
+    chip: UserPreference, spoken: str
+) -> None:
+    """같은 값이어도 뺀다 — 이번 턴에 말한 동행이 정본이다."""
+    assert to_taste_query([chip, _PHOTO], companion=spoken) == "사진 명소"
+
+
+@pytest.mark.parametrize("chip", _COMPANION_CHIPS, ids=lambda c: c.label)
+def test_발화에_동행이_없으면_동행_칩을_그대로_쓴다(chip: UserPreference) -> None:
+    """저장한 동행 취향은 "말하지 않았을 때의 기본값"이다."""
+    assert to_taste_query([chip, _PHOTO]) == f"{chip.label} 사진 명소"
+
+
+def test_동행_발화는_분위기_칩을_건드리지_않는다() -> None:
+    """축이 다르면 안 뺀다. 동행 한마디로 취향 설정이 통째로 죽으면 안 된다."""
+    result = to_taste_query([_QUIET, _NATURE, _PHOTO, *_COMPANION_CHIPS], companion="solo")
+
+    assert result == "조용한 곳 자연·공원 사진 명소"
+
+
+# --- 분위기: 부딪히는 값일 때만 뺀다 -------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("chip", "axis_kwargs"),
+    ("chip", "kwargs"),
     [
         (_QUIET, {"concentration_intent": "SEEK"}),
         (_TRENDY, {"concentration_intent": "AVOID"}),
         (_NATURE, {"environment": "indoor"}),
+        (_WALK, {"environment": "indoor"}),
         (_ANY_WEATHER, {"environment": "outdoor"}),
-        (_WITH_KIDS, {"companion": "solo"}),
     ],
+    ids=["조용한곳×SEEK", "힙한분위기×AVOID", "자연공원×indoor", "산책×indoor", "날씨무관×outdoor"],
 )
-def test_모순되는_칩은_발화_취향이_없어도_뺀다(
-    chip: UserPreference, axis_kwargs: dict[str, str]
-) -> None:
-    """모순은 항상 뺀다.
-
-    발화 취향이 없어도 뺀다 — "혼자 갈 데"에 "아이와 함께"를 밀어 올릴 이유가
-    어느 경우에도 없다. 실측에서 모순 칩을 합치면 결과가 뒤집혔다: "북적이는
-    활기찬" + 조용한 곳 칩 → 포장마차·빈대떡이 안국선원·박물관·화랑으로 바뀌었다.
+def test_부딪히는_분위기_칩은_뺀다(chip: UserPreference, kwargs: dict[str, str]) -> None:
+    """실측: 모순 칩을 합치면 결과가 뒤집힌다 — "북적이는 활기찬" + 조용한 곳 칩이
+    포장마차·빈대떡을 안국선원·박물관·화랑으로 바꿨다(종로·중구 500곳).
     """
-    assert to_taste_query([chip, _PHOTO], **axis_kwargs) == "사진 명소"
+    assert to_taste_query([chip, _PHOTO], **kwargs) == "사진 명소"
 
 
 @pytest.mark.parametrize(
-    ("chip", "axis_kwargs"),
+    ("chip", "kwargs"),
     [
         (_QUIET, {"concentration_intent": "AVOID"}),
         (_TRENDY, {"concentration_intent": "SEEK"}),
         (_NATURE, {"environment": "outdoor"}),
         (_ANY_WEATHER, {"environment": "indoor"}),
-        (_WITH_KIDS, {"companion": "child"}),
     ],
+    ids=["조용한곳×AVOID", "힙한분위기×SEEK", "자연공원×outdoor", "날씨무관×indoor"],
 )
-def test_같은_값인_칩은_발화_취향이_있을_때만_뺀다(
-    chip: UserPreference, axis_kwargs: dict[str, str]
+def test_같은_방향인_분위기_칩은_중복이어도_남긴다(
+    chip: UserPreference, kwargs: dict[str, str]
 ) -> None:
-    """중복은 발화 질의에 그 말이 이미 있을 때만 뺀다.
+    """중복 제거는 하지 않는다.
 
-    발화 취향이 없으면 남긴다 — "아이랑 갈 데 추천"은 companion=child를 채우지만
-    taste_query가 null이라(`extract.md`: 동행 표현은 취향 서술과 함께 나올 때만
-    남는다), 칩까지 빼면 질의 어디에도 아이가 남지 않는다.
+    실측 5/5에서 중복을 두는 쪽이 발화를 더 잘 반영했다(모듈 docstring 표).
+    같은 뜻이라 벡터를 발화 쪽으로 당기기 때문이다.
     """
-    kept = to_taste_query([chip, _PHOTO], **axis_kwargs)
-    dropped = to_taste_query([chip, _PHOTO], spoken_taste_query="분위기 좋은", **axis_kwargs)
-
-    assert kept == f"{chip.label} 사진 명소"
-    assert dropped == "사진 명소"
+    assert to_taste_query([chip, _PHOTO], **kwargs) == f"{chip.label} 사진 명소"
 
 
 @pytest.mark.parametrize(
-    "axis_kwargs",
+    "kwargs",
     [
         {"concentration_intent": "IGNORE"},
         {"concentration_intent": None},
         {"environment": "any"},
         {"environment": None},
-        {"companion": None},
     ],
 )
-def test_상관없다고_말한_축은_칩을_빼지_않는다(axis_kwargs: dict[str, str | None]) -> None:
+def test_상관없다고_말한_축은_칩을_빼지_않는다(kwargs: dict[str, str | None]) -> None:
     """IGNORE·any는 "확정"이 아니다.
 
     "사람 많아도 괜찮아"(IGNORE)는 조용한 곳을 원하지 않는다는 말이 아니다
     (`prompts/_shared/rules/concentration_intent.md`).
     """
-    chips = [_QUIET, _NATURE, _WITH_KIDS]
-
-    result = to_taste_query(chips, spoken_taste_query="분위기 좋은", **axis_kwargs)
-
-    assert result == "조용한 곳 자연·공원 아이와 함께"
+    assert to_taste_query([_QUIET, _NATURE], **kwargs) == "조용한 곳 자연·공원"
 
 
-def test_place_tag_칩은_코드_하나만_걸려도_축이_잡힌다() -> None:
-    """"자연·공원"은 코드가 다섯이다. 먼저 걸리는 코드로 축을 정한다."""
-    assert chip_axis_value(_NATURE) == ("environment", "outdoor")
+def test_place_tag_칩은_코드_하나만_걸려도_빠진다() -> None:
+    """"자연·공원"은 코드가 다섯이다. 하나라도 부딪히면 뺀다.
+
+    **표에 걸리는 코드가 맨 앞이 아닌 경우까지 본다.** 카탈로그의 "자연·공원"은
+    첫 코드(공원)가 표에 있어서, 첫 코드만 보는 구현으로도 통과해 버린다 —
+    화면이 코드 순서를 바꾸면 그때 조용히 깨진다.
+    """
+    assert contradicts(_NATURE, {"indoor"}) is True
+    assert contradicts(_NATURE, {"outdoor"}) is False
+
+    tail_match = _chip("어떤 자연 칩", "place_tag", "미술관", "찻집", "수목원")
+    assert contradicts(tail_match, {"indoor"}) is True
+
+
+def test_동행_칩도_뒤쪽_코드로_걸린다() -> None:
+    """같은 이유로 동행 판정도 첫 코드만 보면 안 된다."""
+    assert is_companion_chip(_chip("어떤 동행 칩", "place_tag", "카페", "alone"))
 
 
 @pytest.mark.parametrize(
@@ -257,22 +272,15 @@ def test_place_tag_칩은_코드_하나만_걸려도_축이_잡힌다() -> None:
         _PHOTO,
         _chip("아늑한 공간", "preference", "cozy"),
         _chip("카페", "place_tag", "카페", "찻집"),
-        _chip("단체 모임", "preference", "group_gathering"),
+        _chip("야경 명소", "preference", "night_visit"),
         _chip("루프탑", "custom"),
     ],
+    ids=lambda c: c.label,
 )
-def test_축을_안_붙인_칩은_절대_안_빠진다(chip: UserPreference) -> None:
-    """애매한 칩은 일부러 축을 비워 뒀다(모듈 `_CHIP_AXIS_VALUES` 주석).
-
-    "단체 모임"은 `Companion` 어휘에 대응 값이 없어 어느 쪽으로 넣어도 틀리는
-    경우가 생긴다. 재보기 전에는 안 붙인다.
-    """
+def test_대립하는_값이_없는_칩은_절대_안_빠진다(chip: UserPreference) -> None:
+    """표에 없는 칩은 발화가 무엇을 말하든 남는다(모듈 `_CONTRADICTIONS` 주석)."""
     result = to_taste_query(
-        [chip],
-        spoken_taste_query="분위기 좋은",
-        concentration_intent="AVOID",
-        environment="indoor",
-        companion="solo",
+        [chip], concentration_intent="AVOID", environment="indoor", companion="solo"
     )
 
     assert result == chip.label
@@ -287,25 +295,27 @@ def test_남는_칩이_없으면_None() -> None:
     assert to_taste_query([_QUIET], concentration_intent="SEEK") is None
 
 
-def test_spoken_axis_values는_확정된_축만_담는다() -> None:
-    assert spoken_axis_values(
-        concentration_intent="IGNORE", environment="any", companion="solo"
-    ) == {"companion": "solo"}
+def test_decided_values는_확정된_값만_담는다() -> None:
+    assert decided_values(concentration_intent="IGNORE", environment="any") == set()
+    assert decided_values(concentration_intent="SEEK", environment="indoor") == {
+        "SEEK",
+        "indoor",
+    }
 
 
-# --- 화면 칩 목록과 축 표가 어긋나지 않게 ------------------------------------
+# --- 화면 칩 목록과 판정 표가 어긋나지 않게 -----------------------------------
 
 
-def test_화면_칩_코드가_전부_축_표에_판정돼_있다() -> None:
+def test_화면_칩_코드가_전부_판정돼_있다() -> None:
     """칩이 늘면 여기서 깨진다.
 
-    축 표(`_CHIP_AXIS_VALUES`)는 화면 카탈로그
+    두 표(`_CONTRADICTIONS`·`_COMPANION_CODES`)는 화면 카탈로그
     (`frontend/src/pages/preferenceOptions.ts`)의 복제라 어긋날 수 있다. 백엔드가
-    프론트 파일을 읽는 게 흔한 모양은 아니지만, **칩이 축 없이 조용히 늘어나는
-    것**을 잡을 방법이 이것뿐이다 — 축이 없으면 모순 칩이 그대로 질의에 섞인다.
+    프론트 파일을 읽는 게 흔한 모양은 아니지만, **칩이 판정 없이 조용히 늘어나는
+    것**을 잡을 방법이 이것뿐이다 — 판정이 없으면 부딪히는 칩이 그대로 질의에 섞인다.
 
-    새 코드를 추가할 때는 축을 붙이거나, 붙이지 않기로 했으면 그 이유를
-    `_UNTAGGED_ON_PURPOSE`에 적는다.
+    새 코드를 추가할 때는 표에 넣거나, 넣지 않기로 했으면 그 이유를
+    `_NO_OPPOSITE_ON_PURPOSE`에 적는다.
     """
     catalog = (
         pathlib.Path(__file__).resolve().parents[2]
@@ -321,23 +331,30 @@ def test_화면_칩_코드가_전부_축_표에_판정돼_있다() -> None:
     }
     assert codes, "카탈로그에서 코드를 하나도 못 읽었다 — 파싱이 깨졌다"
 
-    unjudged = codes - set(_CHIP_AXIS_VALUES) - _UNTAGGED_ON_PURPOSE
-    assert not unjudged, f"축 판정이 없는 새 칩 코드: {sorted(unjudged)}"
+    judged = set(_CONTRADICTIONS) | set(_COMPANION_CODES)
+    unjudged = codes - judged - _NO_OPPOSITE_ON_PURPOSE
+    assert not unjudged, f"판정이 없는 새 칩 코드: {sorted(unjudged)}"
 
 
-# 축을 **일부러** 안 붙인 코드. 이유는 `_CHIP_AXIS_VALUES` 주석에 있다 —
-# 요약하면 "그 축으로 기울 뿐 그 축을 말하는 칩은 아니다"이다.
-_UNTAGGED_ON_PURPOSE = frozenset(
+def test_동행_칩은_모순_표에_넣지_않는다() -> None:
+    """두 표가 겹치면 같은 칩을 두 규칙이 다르게 다룬다.
+
+    동행은 값을 안 보고 통째로 빼는 쪽이므로 모순 표에 있으면 안 된다.
+    """
+    assert set(_CONTRADICTIONS).isdisjoint(_COMPANION_CODES)
+
+
+# 대립하는 값이 없어 **일부러** 판정을 안 붙인 코드. 이유는 `_CONTRADICTIONS`
+# 주석에 있다 — 요약하면 "그 축으로 기울 뿐 그 축을 말하는 칩은 아니다"이거나,
+# 애초에 반대말이 없다(야경·사진·전망·카페).
+_NO_OPPOSITE_ON_PURPOSE = frozenset(
     {
         # 분위기 — 조용한 쪽으로 기울지만 혼잡도를 말한 칩은 아니다
-        "photo_spot", "healing", "unique", "cozy", "good_view", "night_visit",
-        "spacious", "reading",
+        "photo_spot", "healing", "unique", "cozy", "good_view", "night_visit", "spacious",
         # 테마 — 실내가 많을 뿐 실내외를 말한 칩이 아니다(테라스 카페·전통시장)
         "박물관", "미술관", "전시관", "전시회", "카페", "찻집",
         "시장", "쇼핑몰", "백화점",
         "궁궐", "사찰", "성곽", "전통체험", "마을",
-        "experience", "food_exploration",
-        # 동행 — `Companion` 어휘에 대응 값이 없다
-        "group_gathering",
+        "experience", "food_exploration", "reading",
     }
 )

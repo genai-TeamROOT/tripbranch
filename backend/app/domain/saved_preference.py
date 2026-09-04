@@ -22,22 +22,50 @@
 
 아래 축 표가 그 거르는 방법이라, 이제는 합친다.
 
-## 중복과 모순은 같은 규칙 하나로 뺀다
+## 모순만 뺀다 — 중복은 그대로 둔다
 
-둘 다 "발화가 이미 정한 축을 칩이 또 건드리는 것"이다.
+처음에는 중복(발화와 같은 뜻인 칩)도 뺐다. 실측으로 걷어냈다 — 후보 500곳
+5개 사례에서 **중복을 두는 쪽이 발화를 더 잘 반영했다.** 같은 뜻이라 벡터를
+발화 쪽으로 당기기 때문이다(순위상관, 중복 둠 → 뺌):
 
-    발화 "조용한 곳"   + 칩 조용한 곳  →  같은 값  →  중복
-    발화 "북적이는 곳" + 칩 조용한 곳  →  반대 값  →  모순
+| 사례 | 발화 반영 | 나머지 칩 반영 |
+| --- | --- | --- |
+| 야경 | 0.932 → 0.913 | 0.833 → 0.848 |
+| 조용 | 0.936 → 0.918 | 0.724 → 0.761 |
+| 아늑 | 0.928 → 0.883 | 0.750 → 0.810 |
+| 힐링 | 0.921 → 0.906 | 0.911 → 0.921 |
+| 사진 | 0.928 → 0.919 | 0.833 → 0.841 |
 
-**둘 다 답이 "칩을 뺀다"로 같다.** 중복이면 발화에 이미 그 말이 있으니 빼도
-손해가 없고, 모순이면 빼야 한다. 그래서 임계값도 임베딩 비교도 쓰지 않는다 —
-칩이 어느 축인지만 알면 된다.
+5/5 일관되게, 빼면 발화가 덜 반영되고 나머지 칩이 조금 더 반영된다. 발화 우선이
+목표이므로 두는 쪽을 고른다. 두 질의의 전체 순위상관은 0.984~0.998로 어차피
+거의 같아서, 이걸 잡자고 임계값과 인코딩 경로를 새로 들일 값어치가 없었다.
 
-임베딩 유사도로 거르는 안은 **반대말을 못 잡아서** 기각했다. "조용한 곳"과
-"혼자 조용히 쉴 만한"은 0.694로 붙지만 "조용한 곳"과 "북적이는 활기찬"은
+## 동행과 분위기는 규칙이 다르다
+
+**동행은 모순을 따지지 않고, 발화에 동행이 있으면 동행 칩을 통째로 뺀다.**
+동행 값 여섯(solo·couple·friend·parent·child·pet)은 서로 배타적이지 않아
+"다르면 모순"이 성립하지 않는다 — "부모님이랑"에 "아이와 함께"는 3대가 함께
+가는 경우라 모순이 아닌데, 값만 비교하면 모순으로 잡힌다. 반대로 "단체 모임"은
+`Companion` 어휘에 대응 값이 아예 없어 값 비교로는 판정 자체가 안 된다.
+
+축 소속만 보면 둘 다 해결된다. 이번 턴에 누구와 가는지 말했으면 그게 정본이고,
+저장해 둔 동행 취향은 "말하지 않았을 때의 기본값"이다.
+
+잃는 것도 있다. `companion`은 채점에도 하드 필터에도 쓰이지 않으므로
+(`agent_runtime`의 이동수단 판정에만 쓴다), 발화가 `taste_query`에 동행 표현을
+남기지 않은 요청은 동행 신호가 **어디에도 안 남는다** — "아이랑 갈 데 추천"은
+`companion=child`만 채우고 취향 서술이 없어 `taste_query`가 null이다. 그래도
+받아들이는 이유는 동행 칩이 원래 약하기 때문이다(단독 통과율 2.4~10.0%, 좋은
+조합에 붙이면 0.46 → 0.25~0.30).
+
+**분위기(혼잡도·실내외)는 반대로 값을 본다.** 이쪽은 진짜 이항 대립이라
+"다르면 모순"이 정확하고, 축 전체를 빼면 부딪히지 않는 칩까지 잃는다.
+
+임베딩 유사도로 모순을 거르는 안은 **반대말을 못 잡아서** 기각했다. "조용한
+곳"과 "혼자 조용히 쉴 만한"은 0.694로 붙지만 "조용한 곳"과 "북적이는 활기찬"은
 0.186으로 오히려 **멀다** — 모순일수록 유사도가 낮아 임계값으로는 안 걸린다.
 
-## 발화가 그 축을 정했는지는 LLM이 이미 답해 뒀다
+## 발화가 그 축을 말했는지는 LLM이 이미 답해 뒀다
 
 `concentration_intent`·`environment`·`companion`은 `recommend.extract`가 매 턴
 뽑는 값이다. 여기서는 **읽기만 한다** — 프롬프트를 건드리지 않으므로 같은 요청에
@@ -46,17 +74,6 @@
 `environment`가 날씨로도 채워지는 것(`extract.md`: weather_intent가 AVOID/ENJOY면
 environment도 함께 채운다)은 여기서 이득이다 — 비 오는 날 요청에서 "자연·공원"
 칩이 저절로 빠진다.
-
-## 모순은 항상 빼고, 중복은 발화에 취향이 있을 때만 뺀다
-
-같은 값인 칩을 언제나 빼면 **발화 질의가 비어 있을 때 신호가 통째로 사라진다.**
-"아이랑 갈 데 추천"은 `companion=child`를 채우지만 취향 서술이 없어
-`taste_query`가 null이다(`extract.md`: 동행 표현은 *취향 서술과 함께 나올 때*
-taste_query에 남는다). 여기서 "아이와 함께" 칩까지 빼면 질의에 아이가 사라진다.
-
-그래서 같은 값은 **발화 취향이 있을 때만** 뺀다. 그때는 그 말이 이미 발화 질의
-안에 있다. 다른 값(모순)은 발화 취향 유무와 무관하게 뺀다 — "혼자 갈 데"에
-"단체 모임"을 밀어 올릴 이유는 어느 경우에도 없다.
 
 ## 고른 칩은 종류를 가리지 않고 전부 넣는다
 
@@ -98,7 +115,7 @@ taste_query에 남는다). 여기서 "아이와 함께" 칩까지 빼면 질의�
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from typing import Protocol
 
 # 화면 칩의 출처(`frontend/src/pages/preferenceOptions.ts`).
@@ -110,55 +127,48 @@ from typing import Protocol
 # 순위가 달라졌는지 로그로 못 찾는다.
 _QUERY_SOURCES = frozenset({"preference", "place_tag", "custom"})
 
-CONCENTRATION_AXIS = "concentration"
-ENVIRONMENT_AXIS = "environment"
-COMPANION_AXIS = "companion"
+# 동행 칩(`frontend/src/pages/preferenceOptions.ts`의 COMPANION_OPTIONS).
+# **값을 적지 않는다** — 발화가 동행을 말했으면 어느 값이든 통째로 뺀다.
+_COMPANION_CODES = frozenset(
+    {"date", "with_friends", "with_kids", "group_gathering", "with_parents", "alone"}
+)
 
-# 칩 코드 → (축, 그 축에서의 값). 값 어휘는 **발화 쪽과 똑같이 맞춘다**
-# (`app.schemas`의 ConcentrationIntent/Environment/Companion) — 이름이 같아야
-# 비교가 문자열 하나로 끝나고, 어휘가 갈리면 매핑 표가 하나 더 생긴다.
+# 분위기 칩 → 그 칩과 부딪히는 **발화 값**들.
+# 혼잡도 어휘(AVOID/SEEK)와 실내외 어휘(indoor/outdoor)는 겹치지 않아 한 표에 둔다.
 #
-# 코드 단위로 잡는 이유는 place_tag 칩이 코드를 여러 개 들기 때문이다
-# ("자연·공원" = 공원·산·호수·계곡·수목원). 칩의 축은 **먼저 걸리는 코드**로 정한다.
+# place_tag 칩은 코드를 여러 개 든다("자연·공원" = 공원·산·호수·계곡·수목원).
 # 라벨을 키로 쓰지 않는 것은 문구가 바뀌면 조용히 안 걸리기 때문이다.
 #
-# **25개 칩 중 13개 코드만 붙였다.** 나머지는 축이 애매해서 일부러 비워 뒀다:
-# - 아늑한 공간·힐링하기 좋은·넓고 쾌적한·책 읽기 좋은 — 조용한 쪽으로 기울지만
-#   "혼잡도를 말한 칩"은 아니다. 붐비는 아늑한 카페가 모순은 아니다.
-# - 카페·전시·문화·시장·쇼핑 — 실내가 많을 뿐 실내외를 말한 칩이 아니다.
-#   테라스 카페·전통시장이 야외라서 environment=outdoor와 부딪히지 않는다.
-# - 단체 모임(group_gathering) — `Companion` 어휘에 대응 값이 없다. `solo`와는
-#   분명히 모순이지만 `friend`·`couple`과는 애매해서, 어느 쪽으로 넣어도 틀리는
-#   경우가 생긴다. 재보기 전에는 안 붙인다.
-# 넓힐 때는 실측으로 근거를 만든 뒤에 한 줄씩 추가한다.
-_CHIP_AXIS_VALUES: dict[str, tuple[str, str]] = {
+# **11개 칩만 적었다.** 나머지는 대립하는 값이 없어 일부러 비웠다 — 아늑한 공간·
+# 힐링하기 좋은은 조용한 쪽으로 기울 뿐 혼잡도를 말한 칩이 아니고(붐비는 아늑한
+# 카페가 모순은 아니다), 카페·전시·문화는 실내가 많을 뿐 실내외를 말한 칩이
+# 아니다(테라스 카페·전통시장이 야외다). 야경·사진·전망에는 반대말이 없다.
+#
+# 아래 둘은 **실측 근거 없이 판단으로 넣었다.** 빼도 나머지는 그대로 동작한다.
+# - trendy_hotspot: "힙하다"가 반드시 붐비는 것은 아니다(조용한 힙플레이스).
+#   코드 이름이 hotspot이라 붐비는 쪽으로 봤다.
+# - indoor("날씨 상관없는 곳"): 라벨만 보면 `any`에 가깝다. 대응 코드가
+#   `indoor`이고 뜻이 "실내라 날씨를 안 탄다"라 실내로 봤다.
+_CONTRADICTIONS: dict[str, frozenset[str]] = {
     # 혼잡도 — concentration_intent
-    "quiet": (CONCENTRATION_AXIS, "AVOID"),
-    "trendy_hotspot": (CONCENTRATION_AXIS, "SEEK"),
+    "quiet": frozenset({"SEEK"}),  # "조용한 곳"
+    "trendy_hotspot": frozenset({"AVOID"}),  # "힙한 분위기"
     # 실내외 — environment
-    "indoor": (ENVIRONMENT_AXIS, "indoor"),  # "날씨 상관없는 곳"
-    "walk": (ENVIRONMENT_AXIS, "outdoor"),  # "산책하기 좋은"
-    "공원": (ENVIRONMENT_AXIS, "outdoor"),  # 아래 다섯은 "자연·공원" 한 칩의 코드다
-    "산": (ENVIRONMENT_AXIS, "outdoor"),
-    "호수": (ENVIRONMENT_AXIS, "outdoor"),
-    "계곡": (ENVIRONMENT_AXIS, "outdoor"),
-    "수목원": (ENVIRONMENT_AXIS, "outdoor"),
-    # 동행 — companion
-    "date": (COMPANION_AXIS, "couple"),
-    "with_friends": (COMPANION_AXIS, "friend"),
-    "with_kids": (COMPANION_AXIS, "child"),
-    "with_parents": (COMPANION_AXIS, "parent"),
-    "alone": (COMPANION_AXIS, "solo"),
+    "indoor": frozenset({"outdoor"}),  # "날씨 상관없는 곳"
+    "walk": frozenset({"indoor"}),  # "산책하기 좋은"
+    "공원": frozenset({"indoor"}),  # 아래 다섯은 "자연·공원" 한 칩의 코드다
+    "산": frozenset({"indoor"}),
+    "호수": frozenset({"indoor"}),
+    "계곡": frozenset({"indoor"}),
+    "수목원": frozenset({"indoor"}),
 }
 
 # 발화가 그 축을 **정하지 않은** 값들. null과 같이 취급한다.
 # - concentration_intent=IGNORE는 "사람 많아도 괜찮아"라 SEEK가 아니다
 #   (`prompts/_shared/rules/concentration_intent.md`).
 # - environment="any"는 조건을 좁히지 않는 뜻이다(같은 폴더 `environment.md`).
-# 둘 다 "상관없다"이므로 칩을 뺄 근거가 못 된다 — 조용한 곳을 저장한 사람에게
-# "사람 많아도 괜찮아"는 조용한 곳을 원하지 않는다는 말이 아니다.
-_UNDECIDED_CONCENTRATION = frozenset({"IGNORE"})
-_UNDECIDED_ENVIRONMENT = frozenset({"any"})
+# 둘 다 "상관없다"이므로 칩을 뺄 근거가 못 된다.
+_UNDECIDED = frozenset({"IGNORE", "any"})
 
 
 class SavedPreferenceChip(Protocol):
@@ -183,47 +193,50 @@ def usable_chips(chips: Iterable[SavedPreferenceChip]) -> list[SavedPreferenceCh
     return [chip for chip in chips if chip.source in _QUERY_SOURCES and chip.label.strip()]
 
 
-def chip_axis_value(chip: SavedPreferenceChip) -> tuple[str, str] | None:
-    """칩이 속한 (축, 값). 어느 축도 아니면 `None`이라 절대 빠지지 않는다."""
-    for code in chip.codes:
-        axis_value = _CHIP_AXIS_VALUES.get(code)
-        if axis_value is not None:
-            return axis_value
-    return None
+def is_companion_chip(chip: SavedPreferenceChip) -> bool:
+    """동행 칩인가. 값은 보지 않는다 — 발화가 동행을 말했으면 통째로 뺀다."""
+    return any(code in _COMPANION_CODES for code in chip.codes)
 
 
-def spoken_axis_values(
-    *,
-    concentration_intent: str | None = None,
-    environment: str | None = None,
-    companion: str | None = None,
-) -> dict[str, str]:
-    """발화가 값을 확정한 축만 담는다. "상관없다"는 확정으로 치지 않는다."""
-    decided: dict[str, str] = {}
-    if concentration_intent and concentration_intent not in _UNDECIDED_CONCENTRATION:
-        decided[CONCENTRATION_AXIS] = str(concentration_intent)
-    if environment and environment not in _UNDECIDED_ENVIRONMENT:
-        decided[ENVIRONMENT_AXIS] = str(environment)
-    if companion:
-        decided[COMPANION_AXIS] = str(companion)
-    return decided
+def contradicts(chip: SavedPreferenceChip, spoken_values: Collection[str]) -> bool:
+    """분위기 칩이 발화가 확정한 값과 부딪히는가.
+
+    칩의 코드 중 **하나라도** 부딪히면 부딪히는 것으로 본다. place_tag 칩이
+    코드를 여럿 들기 때문이다("자연·공원" = 공원·산·호수·계곡·수목원).
+    """
+    return any(
+        not _CONTRADICTIONS.get(code, frozenset()).isdisjoint(spoken_values) for code in chip.codes
+    )
+
+
+def decided_values(
+    *, concentration_intent: str | None = None, environment: str | None = None
+) -> set[str]:
+    """발화가 값을 확정한 분위기 축의 값들. "상관없다"는 확정으로 치지 않는다."""
+    return {
+        str(value)
+        for value in (concentration_intent, environment)
+        if value and value not in _UNDECIDED
+    }
 
 
 def to_taste_query(
     chips: Sequence[SavedPreferenceChip],
     *,
-    spoken_taste_query: str | None = None,
     concentration_intent: str | None = None,
     environment: str | None = None,
     companion: str | None = None,
 ) -> str | None:
     """저장된 칩을 취향 근거 검색 질의로 바꾼다. 쓸 것이 없으면 `None`.
 
-    발화와 겹치거나 부딪히는 칩을 뺀 나머지만 남긴다. **발화 문구는 여기에 넣지
-    않는다** — 호출부가 발화 질의 뒤에 이 값을 이어 붙인다
+    발화와 부딪히는 칩만 뺀 나머지를 남긴다. **발화 문구는 여기에 넣지 않는다** —
+    호출부가 발화 질의 뒤에 이 값을 이어 붙인다
     (`real_recommendation_provider::_taste_matches_for`). 발화 질의는 장소 유형을
     덧붙이는 보강(`_enrich_taste_query`)을 따로 태우기 때문에, 두 문자열을 여기서
     합치면 그 보강이 저장값에까지 걸린다.
+
+    **발화 취향(`taste_query`) 자체는 보지 않는다.** 중복을 빼지 않기로 했으므로
+    "이번 턴에 취향을 말했는지"가 판정에 안 쓰인다(모듈 docstring).
 
     `None`과 빈 문자열을 구분한다. `None`은 "저장값으로 보탤 것이 없다"이고,
     빈 문자열을 돌려주면 호출부가 취향 축을 켜서 전 후보가 0점인 축이 다른 축의
@@ -231,39 +244,28 @@ def to_taste_query(
 
     라벨을 그대로 쓰고 `codes`는 질의에 넣지 않는다. 코드는 영어라 한국어 임베딩과
     맞지 않는다 — 종로·중구 500곳 실측에서 `healing` 2.6% 대 "힐링하기 좋은" 52.4%,
-    `cozy` 13.8% 대 "아늑한 공간" 53.0%였다. 코드는 축을 찾는 데만 쓴다.
+    `cozy` 13.8% 대 "아늑한 공간" 53.0%였다. 코드는 칩을 가려내는 데만 쓴다.
     """
-    spoken = bool((spoken_taste_query or "").strip())
-    decided = spoken_axis_values(
-        concentration_intent=concentration_intent,
-        environment=environment,
-        companion=companion,
+    spoken_values = decided_values(
+        concentration_intent=concentration_intent, environment=environment
     )
+    said_companion = bool(companion)
 
-    labels: list[str] = []
-    for chip in usable_chips(chips):
-        axis_value = chip_axis_value(chip)
-        if axis_value is not None:
-            axis, value = axis_value
-            spoken_value = decided.get(axis)
-            # 값이 다르면 모순이라 항상 뺀다. 같으면 중복인데, 발화 취향이 있을
-            # 때만 뺀다 — 없으면 그 말이 질의 어디에도 안 남는다(모듈 docstring).
-            if spoken_value is not None and (spoken_value != value or spoken):
-                continue
-        labels.append(chip.label.strip())
-
+    labels = [
+        chip.label.strip()
+        for chip in usable_chips(chips)
+        if not (said_companion and is_companion_chip(chip)) and not contradicts(chip, spoken_values)
+    ]
     if not labels:
         return None
     return " ".join(labels)
 
 
 __all__ = [
-    "COMPANION_AXIS",
-    "CONCENTRATION_AXIS",
-    "ENVIRONMENT_AXIS",
     "SavedPreferenceChip",
-    "chip_axis_value",
-    "spoken_axis_values",
+    "contradicts",
+    "decided_values",
+    "is_companion_chip",
     "to_taste_query",
     "usable_chips",
 ]
