@@ -243,6 +243,21 @@ class ScheduleItem(BaseModel):
     travel_to_next_measured: bool = False
 
 
+class ScheduleBudgetStatus(StrEnum):
+    """편성 결과가 사용자가 말한 활동 가능 시간을 지켰는지. (TP-238)
+
+    판정 자체는 app.schedule.budget.classify_budget()이 내린다. **이 열거형이
+    app.schedule이 아니라 여기 있는 이유**는 ScheduleResult가 이 타입을 직접
+    참조하기 때문이다 — app.schemas가 app.schedule을 import하면 순환이 된다
+    (app.schedule.duration이 이미 app.schemas.PlaceType을 읽는다). SCHEDULE-02가
+    ScheduleItem을 app.schemas에 둔 것과 같은 이유다.
+    """
+
+    WITHIN = "within"
+    OVER = "over"
+    UNDER = "under"
+
+
 class ScheduleResult(BaseModel):
     """일정 편성 모듈(app.schedule)의 최종 출력. AgentResponse.schedule에 실린다.
 
@@ -267,7 +282,26 @@ class ScheduleResult(BaseModel):
     # 시간을 늘리거나 다른 곳을 빼도 들어가지 않는다. 후보 수집(C) 단계에서
     # 안 잡힌 것이라 편성 조건을 바꿔도 결과가 같기 때문이다. 두 사유를 한
     # 리스트에 섞으면 화면이 "시간을 늘려보라"는 잘못된 안내를 하게 된다.
+    #
+    # **영업시간으로 걸러진 것은 여기 넣지 않는다**(TP-236) — 그쪽은
+    # closed_saved_place_names로 간다. 예전에는 둘이 합쳐져 있어서 화면이
+    # "문을 닫는 시간이거나 장소 정보를 못 찾은 경우"라는 한 문장으로 뭉갰고,
+    # 뒤에 붙는 "시간대를 바꾸면 들어갈 수도 있어요"가 절반에게는 통하지 않는
+    # 안내였다. 여기 남는 것은 장소 상세를 못 가져왔거나 좌표가 없는 경우이고,
+    # 그쪽은 시간대를 어떻게 바꿔도 결과가 같다.
     absent_saved_place_names: list[str] = Field(default_factory=list)
+    # 담겨 있었지만 **방문 시각에 영업하지 않아** D의 하드 필터(_is_closed)가
+    # 걸러내서 후보에 못 들어온 장소 이름 (TP-236).
+    #
+    # A가 RecommendationResponse.excluded_closed_place_ids와 보관함 id를
+    # 교집합해 채운다 — D가 이미 결정적으로 계산해 둔 값이라 B가 영업시간을
+    # 다시 해석하지 않는다. 다시 해석하면 같은 장소를 두고 D의 판정과 화면의
+    # 안내가 갈릴 수 있다.
+    #
+    # absent_saved_place_names에서 갈라 둔 이유는 **사용자가 할 수 있는 일이
+    # 확정적이기 때문**이다. 이쪽은 시간대를 바꾸면 실제로 들어간다. 저쪽은
+    # 바꿔도 같다. over_capacity_place_names를 따로 둔 것과 같은 기준이다.
+    closed_saved_place_names: list[str] = Field(default_factory=list)
     # 담겨 있었지만 **항목 수 상한**(target_item_range()의 max)을 넘겨 이번 편성 대상에서
     # 잘린 장소 이름 (TP-223). 담은 순서로 뒤에서부터 잘린다.
     #
@@ -287,6 +321,19 @@ class ScheduleResult(BaseModel):
     # 보관함을 쓰지 않은 턴(must_include가 비어 있음)에는 채우지 않는다 — 그때는 모든
     # 장소가 "새로 찾은 곳"이라 알릴 내용이 아니다.
     added_place_names: list[str] = Field(default_factory=list)
+    # 요청한 활동 가능 시간을 지켰는지에 대한 판정 (TP-238).
+    #
+    # **판정을 한 곳에서만 내리기 위한 필드다.** 예전에는 response_composer가
+    # total_duration_min과 요청 시간을 직접 빼서 두 번 판정했다 — 라벨을 요청값으로
+    # 쓸지 한 번, 초과 안내를 붙일지 또 한 번. 편성 쪽에는 목표가 아예 없었다.
+    # 지금은 planner가 체류시간을 예산에 맞춘 뒤 그 결과를 판정해 여기 싣고,
+    # 화면과 지표가 같은 값을 읽는다.
+    #
+    # 사용자가 시간을 말하지 않은 턴에서는 None이다 — 판정할 것이 없다.
+    # **기본값이 None인 이유는 그것만이 아니다**: saved_schedules.payload와
+    # session_messages에 이 필드가 없던 시절의 스냅샷이 쌓여 있어서, 기본값이
+    # 없으면 지난 대화·저장한 일정을 여는 복원 경로가 통째로 깨진다.
+    time_budget_status: ScheduleBudgetStatus | None = None
     elapsed_ms: float = Field(
         ge=0,
         description="일정 편성 파이프라인 시작부터 응답 조립 완료까지의 총 처리시간(ms)",

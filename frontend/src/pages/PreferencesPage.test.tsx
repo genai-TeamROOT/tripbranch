@@ -8,6 +8,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { AppShellProvider } from "../components/layout/AppShellContext";
+import { TripProvider } from "../state/TripContext";
 import { loadPreferences } from "../state/preferenceStorage";
 import { resetPreferenceSync } from "../state/preferenceSync";
 import { PreferencesPage } from "./PreferencesPage";
@@ -57,10 +58,12 @@ function LocationProbe() {
 function renderPage() {
   return render(
     <MemoryRouter initialEntries={["/preferences"]}>
-      <AppShellProvider>
-        <PreferencesPage />
-        <LocationProbe />
-      </AppShellProvider>
+      <TripProvider>
+        <AppShellProvider>
+          <PreferencesPage />
+          <LocationProbe />
+        </AppShellProvider>
+      </TripProvider>
     </MemoryRouter>,
   );
 }

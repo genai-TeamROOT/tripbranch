@@ -119,24 +119,56 @@ test("위치를 가져오지 못하면 오류 문구를 보여준다", async () 
   await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
 });
 
-test("즐겨찾기가 없으면 안내 문구를, 추가하면 목록에 보여준다", async () => {
+test("즐겨찾기가 없으면 안내 문구와 0/10을, 별을 눌러 담으면 목록과 개수를 함께 보여준다", async () => {
   const user = userEvent.setup();
+  searchPlacesMock.mockResolvedValue({ places: [ANGUK], outside_service_area_count: 0 });
   renderPage();
 
   expect(screen.getByText("등록된 즐겨찾기가 없어요")).toBeInTheDocument();
+  expect(screen.getByText("0/10")).toBeInTheDocument();
 
-  await user.click(screen.getByRole("button", { name: "추가" }));
-  await user.type(screen.getByPlaceholderText("예: 회사 (역삼동)"), "회사 (역삼동)");
-  // 헤더의 "+ 추가"와 모달 제출 버튼이 같은 이름이라, 나중에 열린(=마지막) 쪽을 누른다.
-  const addButtons = screen.getAllByRole("button", { name: "추가" });
-  await user.click(addButtons[addButtons.length - 1]);
+  await user.type(screen.getByLabelText("장소 검색"), "안국역");
+  await user.click(screen.getByRole("button", { name: "검색" }));
+  await user.click(await screen.findByRole("button", { name: "안국역 즐겨찾기 추가" }));
 
-  expect(await screen.findByText("회사 (역삼동)")).toBeInTheDocument();
+  expect(await screen.findByRole("button", { name: "안국역 이름 바꾸기" })).toBeInTheDocument();
+  expect(screen.getByText("1/10")).toBeInTheDocument();
 
-  await user.click(screen.getByRole("button", { name: "회사 (역삼동) 즐겨찾기 삭제" }));
+  await user.click(screen.getByRole("button", { name: "안국역 즐겨찾기 삭제" }));
 
-  expect(screen.queryByText("회사 (역삼동)")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "안국역 이름 바꾸기" })).not.toBeInTheDocument();
   expect(screen.getByText("등록된 즐겨찾기가 없어요")).toBeInTheDocument();
+  expect(screen.getByText("0/10")).toBeInTheDocument();
+});
+
+test("즐겨찾기가 10개면 별을 눌러도 담기지 않고 모달로 알린다", async () => {
+  const user = userEvent.setup();
+  saveFavorites(
+    Array.from({ length: 10 }, (_, index) => ({
+      id: `fav-${index}`,
+      label: `장소${index}`,
+      searchCenterName: `장소${index}`,
+    })),
+  );
+  searchPlacesMock.mockResolvedValue({ places: [ANGUK], outside_service_area_count: 0 });
+  renderPage();
+
+  expect(screen.getByText("10/10")).toBeInTheDocument();
+
+  await user.type(screen.getByLabelText("장소 검색"), "안국역");
+  await user.click(screen.getByRole("button", { name: "검색" }));
+  await user.click(await screen.findByRole("button", { name: "안국역 즐겨찾기 추가" }));
+
+  const dialog = await screen.findByRole("dialog");
+  expect(dialog).toHaveTextContent("즐겨찾기가 가득 찼어요");
+  // 한도 숫자는 모달이 따로 갖지 않고 화면에서 받는다 — 두 곳이 어긋나지 않게.
+  expect(dialog).toHaveTextContent("즐겨찾기는 10개까지 담을 수 있어요");
+  expect(loadFavorites()).toHaveLength(10);
+  expect(screen.getByText("10/10")).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "확인" }));
+
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 });
 
 test("검색하면 찾은 장소의 이름과 주소를 목록으로 보여준다", async () => {

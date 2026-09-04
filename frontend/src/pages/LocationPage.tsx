@@ -24,7 +24,6 @@ import {
   MapPin,
   MapPinCheck,
   Navigation,
-  Plus,
   Search,
   Star,
   Trash2,
@@ -33,7 +32,7 @@ import {
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { AppHeader } from "../components/layout/AppHeader";
-import { AddFavoriteModal } from "../components/layout/AddFavoriteModal";
+import { FavoritesLimitModal } from "../components/layout/FavoritesLimitModal";
 import { useTripDispatch, useTripState } from "../state/TripContext";
 import { createId, type FavoritePlace } from "../state/sidebarStorage";
 import { getLocationAgeMinutes } from "../utils/locationRefresh";
@@ -49,14 +48,17 @@ import { loadRecentSearches, rememberRecentSearch } from "../state/recentSearche
 import { searchPlaces } from "../api/trip";
 import type { PlaceSearchCandidate } from "../types";
 
+const MAX_FAVORITES = 10;
+
 export function LocationPage() {
   const navigate = useNavigate();
   const state = useTripState();
   const dispatch = useTripDispatch();
+  const isEn = state.language === "en";
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [favorites, setFavorites] = useFavorites();
-  const [showAddFavorite, setShowAddFavorite] = useState(false);
+  const [showFavoritesLimit, setShowFavoritesLimit] = useState(false);
   const [query, setQuery] = useState("");
   /* null은 "아직 검색하지 않았다"이고 빈 배열은 "찾았는데 없었다"다. 둘을 하나로
      합치면 화면을 처음 열었을 때부터 "찾은 장소가 없어요"가 뜬다. */
@@ -104,7 +106,7 @@ export function LocationPage() {
     setIsRefreshing(true);
     setErrorMessage(null);
     try {
-      const deviceLocation = await getBrowserDeviceLocation({ forceFresh: true });
+      const deviceLocation = await getBrowserDeviceLocation({ forceFresh: true, language: state.language });
       dispatch({
         type: "SET_DEVICE_LOCATION",
         payload: { deviceLocation, capturedAt: Date.now() },
@@ -113,7 +115,9 @@ export function LocationPage() {
          않고 출발지만 되돌린다. 검색 기준까지 비우려면 칩의 ✕로 따로 푼다. */
       setLocationOrigin(null);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "위치를 가져오지 못했어요.");
+      setErrorMessage(
+        error instanceof Error ? error.message : isEn ? "Couldn't get your location." : "위치를 가져오지 못했어요.",
+      );
     } finally {
       setIsRefreshing(false);
     }
@@ -168,6 +172,11 @@ export function LocationPage() {
 
   function favoriteLabel(favorite: FavoritePlace) {
     const role = favoriteRole(favorite);
+    if (isEn) {
+      if (role === "center") return `${favorite.label} is the current search center`;
+      if (role === "origin") return `${favorite.label} is the current starting point`;
+      return `Set ${favorite.label} as search location`;
+    }
     if (role === "center") return `${favorite.label}이 지금 검색 기준이에요`;
     if (role === "origin") return `${favorite.label}이 지금 출발지예요`;
     return `${favorite.label}을 검색 위치로 설정`;
@@ -181,6 +190,10 @@ export function LocationPage() {
 
   /* 같은 곳을 두 번 담아 줄이 두 개 생기지 않게, 이미 있으면 뺀다(누르면 토글). */
   function toggleFavorite(place: PlaceSearchCandidate) {
+    if (!isFavorite(place) && favorites.length >= MAX_FAVORITES) {
+      setShowFavoritesLimit(true);
+      return;
+    }
     setFavorites((prev) =>
       isFavorite(place)
         ? prev.filter((favorite) => (favorite.searchCenterName ?? favorite.label) !== place.name)
@@ -215,7 +228,9 @@ export function LocationPage() {
       setOutsideServiceAreaCount(response.outside_service_area_count);
     } catch (error) {
       setSearchResults(null);
-      setSearchError(error instanceof Error ? error.message : "장소를 찾지 못했어요.");
+      setSearchError(
+        error instanceof Error ? error.message : isEn ? "Couldn't find the place." : "장소를 찾지 못했어요.",
+      );
     } finally {
       setIsSearching(false);
     }
@@ -236,8 +251,8 @@ export function LocationPage() {
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              aria-label="장소 검색"
-              placeholder="장소, 지하철역, 주소 검색"
+              aria-label={isEn ? "Search places" : "장소 검색"}
+              placeholder={isEn ? "Search places, subway stations, addresses" : "장소, 지하철역, 주소 검색"}
               className="min-w-0 flex-1 bg-transparent text-base text-ink outline-none placeholder:text-muted"
             />
             <button
@@ -245,21 +260,25 @@ export function LocationPage() {
               disabled={!query.trim() || isSearching}
               className="shrink-0 text-xs font-bold text-brand transition-opacity disabled:opacity-40"
             >
-              {isSearching ? "검색 중" : "검색"}
+              {isEn ? (isSearching ? "Searching" : "Search") : isSearching ? "검색 중" : "검색"}
             </button>
           </form>
 
           {searchResults !== null && (
             <div className="absolute inset-x-0 top-full z-20 mt-1 max-h-80 overflow-y-auto rounded-xl border border-border bg-white px-3.5 shadow-card">
-              <h2 className="sr-only">검색 결과</h2>
+              <h2 className="sr-only">{isEn ? "Search results" : "검색 결과"}</h2>
               <div className="divide-y divide-border">
                 {searchResults.length === 0 ? (
                   /* 서울 밖이라 걸러진 것과 아예 못 찾은 것은 다음에 할 일이
                    다르다 — 앞은 지역을 바꿔야 하고 뒤는 검색어를 고쳐야 한다. */
                   <p className="py-3 text-sm text-muted">
-                    {outsideServiceAreaCount > 0
-                      ? "서울 지역만 검색할 수 있어요"
-                      : "찾은 장소가 없어요"}
+                    {isEn
+                      ? outsideServiceAreaCount > 0
+                        ? "We can only search within Seoul"
+                        : "No places found"
+                      : outsideServiceAreaCount > 0
+                        ? "서울 지역만 검색할 수 있어요"
+                        : "찾은 장소가 없어요"}
                   </p>
                 ) : (
                   searchResults.map((place) => (
@@ -269,7 +288,7 @@ export function LocationPage() {
                     >
                       <button
                         type="button"
-                        aria-label={`${place.name} 검색 위치로 설정`}
+                        aria-label={isEn ? `Set ${place.name} as search location` : `${place.name} 검색 위치로 설정`}
                         onClick={() => handleSelect(place)}
                         className="flex min-w-0 flex-1 items-start gap-2.5 text-left"
                       >
@@ -287,13 +306,25 @@ export function LocationPage() {
                       <button
                         type="button"
                         aria-label={
-                          isFavorite(place)
-                            ? `${place.name} 즐겨찾기 해제`
-                            : `${place.name} 즐겨찾기 추가`
+                          isEn
+                            ? isFavorite(place)
+                              ? `Remove ${place.name} from favorites`
+                              : `Add ${place.name} to favorites`
+                            : isFavorite(place)
+                              ? `${place.name} 즐겨찾기 해제`
+                              : `${place.name} 즐겨찾기 추가`
                         }
                         aria-pressed={isFavorite(place)}
                         onClick={() => toggleFavorite(place)}
-                        className="mt-0.5 shrink-0 text-muted transition-colors hover:text-gold"
+                        /* 한도가 차면 흐리게만 두고 disabled로 막지 않는다 — 눌러야
+                           왜 안 담기는지 모달로 말할 수 있다. aria-disabled도 붙이지
+                           않는다. 누르면 답이 오는 버튼을 "아무 일도 안 함"으로
+                           읽히게 하는 표시라서다. */
+                        className={`mt-0.5 shrink-0 transition-colors ${
+                          !isFavorite(place) && favorites.length >= MAX_FAVORITES
+                            ? "text-border"
+                            : "text-muted hover:text-gold"
+                        }`}
                       >
                         <Star
                           size={15}
@@ -325,7 +356,13 @@ export function LocationPage() {
             className={`shrink-0 text-brand ${isRefreshing ? "animate-pulse" : ""}`}
           />
           <span className="text-sm font-bold text-brand">
-            {isRefreshing ? "위치를 가져오는 중이에요…" : "현재 위치 사용"}
+            {isEn
+              ? isRefreshing
+                ? "Getting your location…"
+                : "Use current location"
+              : isRefreshing
+                ? "위치를 가져오는 중이에요…"
+                : "현재 위치 사용"}
           </span>
         </button>
         {/* 지금 정해져 있는 두 값. 서로 다른 질문의 답이라 한 줄에 뭉치지 않고
@@ -333,11 +370,13 @@ export function LocationPage() {
         <div className="flex flex-wrap items-center gap-2">
           <span className="flex items-center gap-1.5 rounded-full bg-chip px-3 py-1.5 text-xs text-ink">
             <Navigation size={13} className="shrink-0 text-brand" aria-hidden />
-            {locationSettings.origin ?? "현재 위치"}에서 출발
+            {isEn
+              ? `From ${locationSettings.origin ?? "current location"}`
+              : `${locationSettings.origin ?? "현재 위치"}에서 출발`}
             {locationSettings.origin && (
               <button
                 type="button"
-                aria-label="출발지를 현재 위치로 되돌리기"
+                aria-label={isEn ? "Reset starting point to current location" : "출발지를 현재 위치로 되돌리기"}
                 onClick={() => setLocationOrigin(null)}
                 className="shrink-0 text-muted transition-colors hover:text-rust"
               >
@@ -350,11 +389,13 @@ export function LocationPage() {
             {/* 비어 있다고 기준이 없는 게 아니다 — 그때는 출발지가, 출발지도 없으면
                 기기 좌표가 검색 기준이 된다(agent_context/service.py). 그래서 실제로
                 어디를 뒤지는지를 그대로 쓴다. */}
-            {`${locationSettings.center ?? locationSettings.origin ?? "현재 위치"} 주변`}
+            {isEn
+              ? `Around ${locationSettings.center ?? locationSettings.origin ?? "current location"}`
+              : `${locationSettings.center ?? locationSettings.origin ?? "현재 위치"} 주변`}
             {locationSettings.center && (
               <button
                 type="button"
-                aria-label="검색 기준 되돌리기"
+                aria-label={isEn ? "Reset search center" : "검색 기준 되돌리기"}
                 onClick={() => setLocationCenter(null)}
                 className="shrink-0 text-muted transition-colors hover:text-rust"
               >
@@ -368,8 +409,12 @@ export function LocationPage() {
           /* 좌표를 그대로 보여주면 사용자에게는 숫자 두 개일 뿐이다. 주소로 바꾸는
              역지오코딩은 아직 없으므로 "현재 위치"라고만 말한다. */
           <p className="px-1 text-xs text-muted">
-            현재 위치
-            {ageMinutes === null ? "" : ` · ${ageMinutes}분 전에 확인했어요`}
+            {isEn ? "Current location" : "현재 위치"}
+            {ageMinutes === null
+              ? ""
+              : isEn
+                ? ` · checked ${ageMinutes} min ago`
+                : ` · ${ageMinutes}분 전에 확인했어요`}
           </p>
         )}
         {errorMessage && (
@@ -381,23 +426,21 @@ export function LocationPage() {
         <div className="flex items-start gap-2 rounded-xl bg-sky-light px-3.5 py-2.5">
           <Info size={14} className="mt-0.5 shrink-0 text-brand-deep" />
           <p className="text-xs leading-relaxed text-brand-deep">
-            현재 서울 지역 장소만 추천해 드리고 있어요
+            {isEn ? "We currently only recommend places in Seoul" : "현재 서울 지역 장소만 추천해 드리고 있어요"}
           </p>
         </div>
 
         <div className="mt-2 flex items-center justify-between">
-          <h2 className="text-xs font-bold text-label">즐겨찾기</h2>
-          <button
-            type="button"
-            onClick={() => setShowAddFavorite(true)}
-            className="flex items-center gap-1 text-xs font-bold text-brand"
-          >
-            <Plus size={13} /> 추가
-          </button>
+          <h2 className="text-xs font-bold text-label">{isEn ? "Favorites" : "즐겨찾기"}</h2>
+          <span className="text-xs font-bold text-muted">
+            {favorites.length}/{MAX_FAVORITES}
+          </span>
         </div>
         <div className="divide-y divide-border border-t border-border">
           {favorites.length === 0 ? (
-            <p className="py-3 text-sm text-muted">등록된 즐겨찾기가 없어요</p>
+            <p className="py-3 text-sm text-muted">
+              {isEn ? "No favorites yet" : "등록된 즐겨찾기가 없어요"}
+            </p>
           ) : (
             favorites.map((favorite) => (
               /* 줄 전체가 "이 장소를 쓰겠다"는 버튼이다 — 글자는 이름 바꾸기,
@@ -437,7 +480,7 @@ export function LocationPage() {
                   <input
                     autoFocus
                     value={renameDraft}
-                    aria-label={`${favorite.label} 이름 바꾸기`}
+                    aria-label={isEn ? `Rename ${favorite.label}` : `${favorite.label} 이름 바꾸기`}
                     onChange={(event) => setRenameDraft(event.target.value)}
                     onClick={(event) => event.stopPropagation()}
                     onBlur={commitRename}
@@ -452,7 +495,7 @@ export function LocationPage() {
                 ) : (
                   <button
                     type="button"
-                    aria-label={`${favorite.label} 이름 바꾸기`}
+                    aria-label={isEn ? `Rename ${favorite.label}` : `${favorite.label} 이름 바꾸기`}
                     onClick={(event) => {
                       event.stopPropagation();
                       startRename(favorite.id, favorite.label);
@@ -471,7 +514,7 @@ export function LocationPage() {
                 {renamingId === favorite.id ? (
                   <button
                     type="button"
-                    aria-label="이름 저장"
+                    aria-label={isEn ? "Save name" : "이름 저장"}
                     onMouseDown={(event) => event.preventDefault()}
                     onClick={(event) => {
                       event.stopPropagation();
@@ -484,7 +527,7 @@ export function LocationPage() {
                 ) : (
                   <button
                     type="button"
-                    aria-label={`${favorite.label} 즐겨찾기 삭제`}
+                    aria-label={isEn ? `Delete ${favorite.label} from favorites` : `${favorite.label} 즐겨찾기 삭제`}
                     onClick={(event) => {
                       event.stopPropagation();
                       setFavorites((prev) => prev.filter((item) => item.id !== favorite.id));
@@ -499,10 +542,12 @@ export function LocationPage() {
           )}
         </div>
 
-        <h2 className="mt-2 text-xs font-bold text-label">최근 검색</h2>
+        <h2 className="mt-2 text-xs font-bold text-label">{isEn ? "Recent searches" : "최근 검색"}</h2>
         <div className="divide-y divide-border border-t border-border">
           {recentSearches.length === 0 ? (
-            <p className="py-3 text-sm text-muted">아직 검색한 장소가 없어요</p>
+            <p className="py-3 text-sm text-muted">
+              {isEn ? "No searches yet" : "아직 검색한 장소가 없어요"}
+            </p>
           ) : (
             recentSearches.map((keyword) => (
               <button
@@ -527,11 +572,8 @@ export function LocationPage() {
         />
       )}
 
-      {showAddFavorite && (
-        <AddFavoriteModal
-          onAdd={(label) => setFavorites((prev) => [...prev, { id: createId("fav"), label }])}
-          onClose={() => setShowAddFavorite(false)}
-        />
+      {showFavoritesLimit && (
+        <FavoritesLimitModal max={MAX_FAVORITES} onClose={() => setShowFavoritesLimit(false)} />
       )}
     </main>
   );

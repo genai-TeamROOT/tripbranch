@@ -3094,6 +3094,20 @@ async def _run_agent_flow(
             choice_id=request.clarification_choice,
             session_context=session_context,
         )
+        if clarification_resolution is None:
+            # TP-182: 버튼 클릭인데도 결정적 해소를 못 타면 발화가 다시 LLM으로
+            # 흘러가 행정구역이 잘리는 등 재해석 손실이 생긴다(예: "종로구 익선동"
+            # → "익선동"). pending_clarification/last_intent 둘 중 어느 조건이
+            # 안 맞았는지가 원인 특정의 핵심인데 재현이 안 돼 실측으로만 확인
+            # 가능하므로, 폴백이 실제로 일어나는 순간을 여기서 반드시 남긴다.
+            logger.warning(
+                "되묻기 버튼 클릭이 결정적 해소를 못 타 재해석 경로로 폴백함: "
+                "session_id=%s choice_id=%r pending_clarification=%r last_intent=%r",
+                session_context.session_id,
+                request.clarification_choice,
+                session_context.pending_clarification,
+                session_context.last_intent,
+            )
     elif request.schedule_from_saved:
         clarification_resolution = _resolve_schedule_from_saved(
             session_context=session_context,
@@ -4693,14 +4707,32 @@ async def _run_schedule_branch(
     # 순서를 그대로 넘긴다 — 항목 수 상한을 넘으면 planner가 이 순서로 앞에서부터
     # 자르므로 정렬을 바꾸면 "왜 그 곳이 빠졌는지" 설명이 달라진다.
     saved_place_ids = [item.place_id for item in session_context.saved_places]
-    # 후보 목록에 아예 없는 보관함 장소(폐점 하드 필터 등으로 D가 걸러낸 경우).
-    # planner는 이름을 알 방법이 없으므로 여기서 보관함에 저장된 이름으로 채운다.
+    # 후보 목록에 아예 없는 보관함 장소. planner는 이름을 알 방법이 없으므로
+    # 여기서 보관함에 저장된 이름으로 채운다.
+    #
+    # **사유를 둘로 가른다**(TP-236). D가 방문 시각 영업시간으로 걸러낸 것은
+    # 시간대를 바꾸면 실제로 들어가고, 그 밖의 이유(장소 상세 없음·좌표 없음)는
+    # 시간대를 어떻게 바꿔도 결과가 같다. 한 리스트에 두면 화면이 두 경우에 같은
+    # 안내를 하게 되고, 뒤쪽 사용자는 통하지 않는 재시도를 반복한다.
+    #
+    # 판정은 D가 이미 해 둔 것을 그대로 쓴다 — 바로 위 6-1에서 노출 이력에
+    # 기록하는 `recommendations.excluded_closed_place_ids`와 같은 값이다. 여기서
+    # 영업시간을 다시 해석하면 D의 제외 판정과 화면 안내가 갈릴 수 있다.
+    #
+    # `effective_ignore_operating_hours`가 켜진 턴에는 D가 폐점 필터를 돌리지
+    # 않아 이 집합이 비고, 전부 absent 쪽으로 간다 — 그 턴에는 영업시간이 빠진
+    # 이유가 아니므로 그것이 맞다.
     candidate_place_ids = {c.place_id for c in schedule_candidates}
-    absent_saved_place_names = [
-        item.name
-        for item in session_context.saved_places
-        if item.place_id not in candidate_place_ids
-    ]
+    closed_place_ids = set(recommendations.excluded_closed_place_ids)
+    absent_saved_place_names: list[str] = []
+    closed_saved_place_names: list[str] = []
+    for item in session_context.saved_places:
+        if item.place_id in candidate_place_ids:
+            continue
+        if item.place_id in closed_place_ids:
+            closed_saved_place_names.append(item.name)
+        else:
+            absent_saved_place_names.append(item.name)
 
     # 6-2-1) SCHEDULE-09 2단계: REJECT_SPECIFIC으로 재라우팅된 턴이면 통째로
     #        새로 짜지 않고, target_indices가 가리키는 자리만 새로 채운다.
@@ -4815,12 +4847,19 @@ async def _run_schedule_branch(
             stage="scheduling",
         )
 
-    if absent_saved_place_names:
+    if absent_saved_place_names or closed_saved_place_names:
         # planner가 채운 목록과 합치지 않는다 — 사유가 정반대라, 섞으면 화면이
         # 두 경우에 같은 해결책("시간을 늘려보라")을 안내하게 된다. 후보에 아예
         # 없었던 장소는 시간을 늘려도 들어가지 않는다.
+        #
+        # 두 필드를 한 번에 덮는다(TP-236). 한쪽만 비어 있어도 빈 리스트를 함께
+        # 써서, 이 두 필드의 값이 planner가 아니라 여기서만 정해진다는 것을
+        # 호출부에서 읽을 수 있게 둔다.
         schedule_result = schedule_result.model_copy(
-            update={"absent_saved_place_names": absent_saved_place_names}
+            update={
+                "absent_saved_place_names": absent_saved_place_names,
+                "closed_saved_place_names": closed_saved_place_names,
+            }
         )
 
     await _emit_progress(

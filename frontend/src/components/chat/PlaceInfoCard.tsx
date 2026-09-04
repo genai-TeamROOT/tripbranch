@@ -7,6 +7,7 @@
 
 import { useState } from "react";
 import type { InfoPlaceCard as InfoPlaceCardData, RealtimeInfoDetailItem } from "../../types";
+import { useTripState } from "../../state/TripContext";
 import {
   groupSubwayArrivals,
   parseSubwayArrival,
@@ -58,6 +59,39 @@ const FIELD_LABELS: Record<string, string> = {
   "실시간 활동": "실시간 활동",
   "기준 시각": "기준 시각",
   안내: "안내",
+};
+
+/* 이 목록에 있는 필드는 백엔드 계약 키라 항상 같은 항목만 나온다. 그 외
+   자유 텍스트 키(상권 지역 등)는 영어 화면에서도 한글 그대로 둔다. */
+const FIELD_LABELS_EN: Record<string, string> = {
+  operating_hours: "Hours",
+  rest_date: "Closed on",
+  fee: "Admission",
+  parking: "Parking",
+  parking_fee: "Parking fee",
+  baby_carriage: "Stroller rental",
+  pet: "Pets allowed",
+  credit_card: "Card payment",
+  restroom: "Restroom",
+  address: "Address",
+  telephone: "Phone",
+  wheelchair_access: "Wheelchair access",
+  accessible_restroom: "Accessible restroom",
+  accessible_parking: "Accessible parking",
+  wheelchair_rental: "Wheelchair rental",
+  stroller_rental: "Stroller rental",
+  nursing_room: "Nursing room",
+  guide_dog: "Guide dogs allowed",
+  braille_block: "Braille blocks",
+  braille_promotion: "Braille guides",
+  audio_guide: "Audio guide",
+  public_transport: "Public transport",
+  infant_family_etc: "Family amenities",
+  disability_etc: "Other accessibility",
+  overview: "Overview",
+  homepage: "Website",
+  concentration: "Crowd level",
+  event: "Event",
 };
 
 interface PlaceInfoCardProps {
@@ -378,6 +412,7 @@ function SubwayArrivalList({ items }: { items: RealtimeInfoDetailItem[] }) {
 
 export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
   const [showDetail, setShowDetail] = useState(false);
+  const isEn = useTripState().language === "en";
   const answers = Object.entries(card.answer_fields);
 
   return (
@@ -388,7 +423,7 @@ export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
         <div className="flex h-44 w-full items-center justify-center overflow-hidden bg-chip">
           <img
             src={card.thumbnail_url}
-            alt={`${card.place_name ?? "장소"} 이미지`}
+            alt={isEn ? `${card.place_name ?? "Place"} image` : `${card.place_name ?? "장소"} 이미지`}
             loading="lazy"
             className="h-full w-full object-cover"
           />
@@ -398,14 +433,16 @@ export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
         type="button"
         className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
         aria-haspopup="dialog"
-        aria-label={`${card.place_name ?? "장소"} 상세 보기`}
+        aria-label={
+          isEn ? `View details for ${card.place_name ?? "place"}` : `${card.place_name ?? "장소"} 상세 보기`
+        }
         onClick={() => setShowDetail(true)}
       >
         <span className="min-w-0 text-sm font-bold text-ink">
-          {card.place_name ?? "장소 상세 정보"}
+          {card.place_name ?? (isEn ? "Place details" : "장소 상세 정보")}
         </span>
         <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-sky-light px-3 py-1 text-xs font-semibold text-brand-deep">
-          상세 보기
+          {isEn ? "View details" : "상세 보기"}
           <span aria-hidden="true">↗</span>
         </span>
       </button>
@@ -420,7 +457,9 @@ export function PlaceInfoCard({ card }: PlaceInfoCardProps) {
         <dl className="px-4 py-3 text-sm">
           {answers.map(([key, value]) => (
             <div key={key} className="flex gap-2">
-              <dt className="shrink-0 text-muted">{FIELD_LABELS[key] ?? key}</dt>
+              <dt className="shrink-0 text-muted">
+                {isEn ? (FIELD_LABELS_EN[key] ?? FIELD_LABELS[key] ?? key) : (FIELD_LABELS[key] ?? key)}
+              </dt>
               <dd className="min-w-0 flex-1 whitespace-pre-line text-ink">
                 {key === "operating_hours" && parseOperatingHours(value) ? (
                   <OperatingHoursRows rows={parseOperatingHours(value) ?? []} />

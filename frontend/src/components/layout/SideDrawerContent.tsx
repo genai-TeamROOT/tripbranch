@@ -26,16 +26,34 @@ import { detachChatRequest } from "../../state/chatAbortController";
 import { sheetState } from "../../state/sheetNav";
 import { useTripDispatch, useTripState } from "../../state/TripContext";
 import type { Language } from "../../types";
-import { deleteChatSession, renameChatSession, resumeChatSession } from "../../api/trip";
+import {
+  deleteChatSession,
+  deleteSavedSchedule,
+  renameChatSession,
+  renameSavedSchedule,
+  resumeChatSession,
+} from "../../api/trip";
 import { loadChatSessions, refreshChatSessions } from "../../state/chatSessions";
 import { clearLocalUserData } from "../../state/localUserData";
 import { useFavorites } from "../../hooks/useFavorites";
 import {
   loadSavedSchedules,
+  refreshSavedSchedules,
   subscribeSavedSchedules,
   type SavedScheduleEntry,
 } from "../../state/savedSchedules";
 import { type ChatHistoryEntry } from "../../state/sidebarStorage";
+
+/*
+ * 사이드바에는 줄마다 메뉴가 붙는 목록이 둘이다 — 대화와 저장한 일정. 어느
+ * 목록의 어느 줄인지를 함께 들고 있어야 한쪽을 열 때 다른 쪽이 닫힌다.
+ * `openMenu` 주석 참고.
+ */
+type MenuTarget = { kind: "chat" | "schedule"; id: string };
+
+function isTarget(target: MenuTarget | null, kind: MenuTarget["kind"], id: string): boolean {
+  return target !== null && target.kind === kind && target.id === id;
+}
 
 interface SideDrawerContentProps {
   /** 모바일 드로어에서만 넘긴다 — 링크를 누르면 드로어를 닫기 위해서다. */
@@ -60,6 +78,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
   const location = useLocation();
   const dispatch = useTripDispatch();
   const state = useTripState();
+  const isEn = state.language === "en";
   const { session, status, signOut } = useAuth();
 
   const [favorites, setFavorites] = useFavorites();
@@ -75,8 +94,20 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
   /* 저장한 일정도 계정에서 온다(GET /api/schedules). 대화 목록과 별도 저장소라
      따로 받는다 — 세션이 30일 뒤 정리돼도 이쪽은 남는다. */
   const [schedules, setSchedules] = useState<SavedScheduleEntry[]>([]);
-  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
-  const [renamingId, setRenamingId] = useState<string | null>(null);
+  /*
+   * 메뉴와 이름 바꾸기는 **어느 목록의 어느 줄인지**를 함께 들고 있다.
+   *
+   * 예전에는 id 문자열만 들고 있었는데, 대화와 저장한 일정 두 목록이 그 하나를
+   * 나눠 쓰면 한쪽 메뉴를 열 때 다른 쪽이 닫힌다 — 두 목록에 같은 id가 있으면
+   * 양쪽이 동시에 열리기까지 한다(대화 id와 일정 id는 다른 체계라 실제로 겹칠
+   * 일은 없지만, 겹치지 않는다는 것에 기대는 코드는 두지 않는다).
+   *
+   * 목록별로 상태를 두 벌 만들지 않은 이유는 **한 번에 하나만 열려야** 하기
+   * 때문이다. 두 벌이면 대화 메뉴를 열어둔 채 일정 메뉴도 열려 메뉴 두 개가
+   * 동시에 떠 있게 된다.
+   */
+  const [openMenu, setOpenMenu] = useState<MenuTarget | null>(null);
+  const [renaming, setRenaming] = useState<MenuTarget | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   /* 게스트 로그아웃은 되돌릴 수 없어 한 번 끊는다 — handleSignOut 주석 참고. */
   const [confirmingSignOut, setConfirmingSignOut] = useState(false);
@@ -127,8 +158,8 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
   }, [state.phase, state.session_id]);
 
   useEffect(() => {
-    if (renamingId) renameInputRef.current?.focus();
-  }, [renamingId]);
+    if (renaming) renameInputRef.current?.focus();
+  }, [renaming]);
 
   const hasConversation = state.messages.length > 0;
   const isGuest = status === "ready" && session ? isGuestSession(session) : false;
@@ -207,22 +238,34 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
     }
   }
 
-  function commitRename(id: string) {
+  function commitRename(target: MenuTarget) {
     const trimmed = renameDraft.trim();
     if (trimmed) {
       /* 화면을 먼저 바꾸고 서버에 보낸다 — 이름 바꾸기는 되돌릴 수 있는 동작이라
-         응답을 기다리는 동안 입력칸을 붙잡아 둘 이유가 없다. */
-      setHistory((prev) =>
-        prev.map((item) => (item.id === id ? { ...item, label: trimmed } : item)),
-      );
-      void renameChatSession(id, trimmed).catch(() => {
-        /* 실패하면 서버 값으로 되돌린다 — 바뀐 척 남겨두면 다음에 열었을 때
-           예전 이름이 돌아와 있어 더 혼란스럽다. */
-        void refreshChatSessions().then(setHistory);
-      });
+         응답을 기다리는 동안 입력칸을 붙잡아 둘 이유가 없다. 실패하면 서버 값으로
+         되돌린다 — 바뀐 척 남겨두면 다음에 열었을 때 예전 이름이 돌아와 있어 더
+         혼란스럽다. 두 목록이 같은 규칙을 쓴다. */
+      if (target.kind === "chat") {
+        setHistory((prev) =>
+          prev.map((item) => (item.id === target.id ? { ...item, label: trimmed } : item)),
+        );
+        void renameChatSession(target.id, trimmed).catch(() => {
+          void refreshChatSessions().then(setHistory);
+        });
+      } else {
+        setSchedules((prev) =>
+          prev.map((item) => (item.id === target.id ? { ...item, label: trimmed } : item)),
+        );
+        void renameSavedSchedule(target.id, trimmed).catch(() => {
+          void refreshSavedSchedules();
+        });
+      }
     }
-    setRenamingId(null);
+    setRenaming(null);
   }
+
+  /* 빈 제목은 이름 바꾸기를 취소한 것으로 친다(commitRename의 `if (trimmed)`).
+     서버도 빈 제목을 거부하므로 보내봐야 400이다. */
 
   const pathname = location.pathname;
   const navItems: Array<{
@@ -234,28 +277,28 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
   }> = [
     {
       key: "home",
-      label: "홈",
+      label: state.language === "en" ? "Home" : "홈",
       icon: Home,
       active: pathname === "/" && !hasConversation,
       onClick: goHome,
     },
     {
       key: "preferences",
-      label: "취향 설정",
+      label: state.language === "en" ? "Preferences" : "취향 설정",
       icon: Sparkles,
       active: pathname === "/preferences",
       onClick: () => go("/preferences"),
     },
     {
       key: "location",
-      label: "위치 설정",
+      label: state.language === "en" ? "Location" : "위치 설정",
       icon: MapPin,
       active: pathname === "/location",
       onClick: () => go("/location", { sheet: true }),
     },
     {
       key: "schedule",
-      label: "일정",
+      label: state.language === "en" ? "Schedule" : "일정",
       icon: Route,
       active: pathname === "/schedule",
       onClick: () => go("/schedule", { sheet: true }),
@@ -265,7 +308,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 pb-5">
       {/* 1. 내비게이션 */}
-      <nav aria-label="주요 메뉴" className="flex flex-col gap-1">
+      <nav aria-label={state.language === "en" ? "Main menu" : "주요 메뉴"} className="flex flex-col gap-1">
         {navItems.map((item) => (
           <button
             key={item.key}
@@ -284,7 +327,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
 
       {/* 2. 언어 */}
       <section className="flex flex-col gap-1.5">
-        <h2 className="text-xs font-bold text-label">언어</h2>
+        <h2 className="text-xs font-bold text-label">{state.language === "en" ? "Language" : "언어"}</h2>
         <div className="grid grid-cols-2 gap-1.5">
           {LANGUAGES.map((lang) => (
             <button
@@ -307,7 +350,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
       {/* 3. 즐겨찾기 */}
       <section className="flex flex-col gap-1.5">
         <div className="flex items-center justify-between">
-          <h2 className="text-xs font-bold text-label">즐겨찾기</h2>
+          <h2 className="text-xs font-bold text-label">{state.language === "en" ? "Favorites" : "즐겨찾기"}</h2>
           {/* 즐겨찾기는 검색해서 담는다 — 여기서 이름만 받으면 좌표도 주소도 없어
               위치로 쓸 수 없다. 검색이 있는 위치 설정 화면으로 보낸다. */}
           <button
@@ -315,11 +358,13 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
             onClick={() => go("/location", { sheet: true })}
             className="flex items-center gap-0.5 text-xs font-semibold text-brand transition-colors hover:text-brand-deep"
           >
-            <Plus size={12} aria-hidden /> 추가
+            <Plus size={12} aria-hidden /> {state.language === "en" ? "Add" : "추가"}
           </button>
         </div>
         {favorites.length === 0 ? (
-          <p className="py-1 text-xs text-muted">등록된 즐겨찾기가 없어요</p>
+          <p className="py-1 text-xs text-muted">
+            {state.language === "en" ? "No favorites yet" : "등록된 즐겨찾기가 없어요"}
+          </p>
         ) : (
           <ul className="flex flex-col gap-0.5">
             {favorites.map((favorite) => (
@@ -347,9 +392,11 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
 
       {/* 4. 채팅 히스토리 */}
       <section className="flex flex-col gap-1.5">
-        <h2 className="text-xs font-bold text-label">채팅 히스토리</h2>
+        <h2 className="text-xs font-bold text-label">{isEn ? "Chat history" : "채팅 히스토리"}</h2>
         {history.length === 0 ? (
-          <p className="py-1 text-xs text-muted">아직 대화 기록이 없어요</p>
+          <p className="py-1 text-xs text-muted">
+            {isEn ? "No conversations yet" : "아직 대화 기록이 없어요"}
+          </p>
         ) : (
           <ul className="flex flex-col gap-0.5">
             {history.map((entry) => {
@@ -367,16 +414,16 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                     isCurrent ? "bg-chip" : "hover:bg-chip"
                   }`}
                 >
-                  {renamingId === entry.id ? (
+                  {isTarget(renaming, "chat", entry.id) ? (
                     <input
                       ref={renameInputRef}
-                      aria-label="대화 이름"
+                      aria-label={isEn ? "Conversation name" : "대화 이름"}
                       value={renameDraft}
                       onChange={(event) => setRenameDraft(event.target.value)}
-                      onBlur={() => commitRename(entry.id)}
+                      onBlur={() => commitRename({ kind: "chat", id: entry.id })}
                       onKeyDown={(event) => {
-                        if (event.key === "Enter") commitRename(entry.id);
-                        if (event.key === "Escape") setRenamingId(null);
+                        if (event.key === "Enter") commitRename({ kind: "chat", id: entry.id });
+                        if (event.key === "Escape") setRenaming(null);
                       }}
                       className="w-full rounded-md border border-border px-2 py-1 text-sm"
                     />
@@ -386,7 +433,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                         쪽을 눌렀을 때 아무 일도 안 나 고장으로 보인다. */}
                       <button
                         type="button"
-                        aria-label={`${entry.label} 대화 열기`}
+                        aria-label={isEn ? `Open conversation ${entry.label}` : `${entry.label} 대화 열기`}
                         onClick={() => openConversation(entry.id)}
                         className="min-w-0 flex-1 text-left"
                       >
@@ -409,8 +456,12 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                       </button>
                       <button
                         type="button"
-                        aria-label={`${entry.label} 메뉴`}
-                        onClick={() => setOpenMenuId((id) => (id === entry.id ? null : entry.id))}
+                        aria-label={isEn ? `${entry.label} menu` : `${entry.label} 메뉴`}
+                        onClick={() =>
+                          setOpenMenu((open) =>
+                            isTarget(open, "chat", entry.id) ? null : { kind: "chat", id: entry.id },
+                          )
+                        }
                         className="shrink-0 text-muted hover:text-ink"
                       >
                         <MoreHorizontal size={15} />
@@ -418,12 +469,12 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                     </div>
                   )}
 
-                  {openMenuId === entry.id && (
+                  {isTarget(openMenu, "chat", entry.id) && (
                     <>
                       <button
                         type="button"
-                        aria-label="메뉴 닫기"
-                        onClick={() => setOpenMenuId(null)}
+                        aria-label={isEn ? "Close menu" : "메뉴 닫기"}
+                        onClick={() => setOpenMenu(null)}
                         className="fixed inset-0 z-20 cursor-default"
                       />
                       <div
@@ -435,12 +486,12 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                           role="menuitem"
                           onClick={() => {
                             setRenameDraft(entry.label);
-                            setRenamingId(entry.id);
-                            setOpenMenuId(null);
+                            setRenaming({ kind: "chat", id: entry.id });
+                            setOpenMenu(null);
                           }}
                           className="rounded-xl px-3 py-2 text-left text-sm font-medium text-ink transition-colors hover:bg-chip"
                         >
-                          이름 바꾸기
+                          {isEn ? "Rename" : "이름 바꾸기"}
                         </button>
                         <button
                           type="button"
@@ -449,7 +500,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                             /* 목록에서 한 줄을 지우는 것이 곧 그 대화를 지우는
                              것이다. 화면에서 먼저 빼고 서버에 보낸다. */
                             setHistory((prev) => prev.filter((item) => item.id !== entry.id));
-                            setOpenMenuId(null);
+                            setOpenMenu(null);
                             /*
                              * 지금 보고 있는 대화를 지웠으면 화면도 비운다.
                              * 두지 않으면 지운 대화가 그대로 남아 있고, 이어
@@ -467,7 +518,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                           }}
                           className="rounded-xl px-3 py-2 text-left text-sm font-medium text-rust transition-colors hover:bg-chip"
                         >
-                          삭제
+                          {isEn ? "Delete" : "삭제"}
                         </button>
                       </div>
                     </>
@@ -485,28 +536,111 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
         채팅 히스토리 **아래**에 둔다. 대화가 일정보다 먼저 생기고 개수도 많아,
         위에 두면 대화 목록이 접힌 화면에서 스크롤 밖으로 밀린다.
 
-        이름 바꾸기·삭제 메뉴는 아직 붙이지 않았다 — 대화 쪽 메뉴(openMenuId)를
-        그대로 쓰면 두 목록이 같은 상태를 공유해 한쪽을 열면 다른 쪽이 닫힌다.
-        분리해서 다음에 붙인다.
+        이름 바꾸기·삭제 메뉴는 대화 쪽과 **같은 상태를 공유하되 목록을 구분한다**
+        (`MenuTarget`). 상태를 두 벌 만들지 않은 이유는 openMenu 주석에 있다.
       */}
       <section className="flex flex-col gap-1.5">
-        <h2 className="text-xs font-bold text-label">저장한 일정</h2>
+        <h2 className="text-xs font-bold text-label">{isEn ? "Saved schedules" : "저장한 일정"}</h2>
         {schedules.length === 0 ? (
-          <p className="py-1 text-xs text-muted">아직 저장한 일정이 없어요</p>
+          <p className="py-1 text-xs text-muted">
+            {isEn ? "No saved schedules yet" : "아직 저장한 일정이 없어요"}
+          </p>
         ) : (
           <ul className="flex flex-col gap-0.5">
             {schedules.map((entry) => (
-              <li key={entry.id}>
-                <button
-                  type="button"
-                  onClick={() => go(`/schedule?saved=${encodeURIComponent(entry.id)}`, { sheet: true })}
-                  className="flex w-full flex-col items-start gap-0.5 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-chip"
-                >
-                  <span className="w-full truncate text-sm font-medium text-ink">
-                    {entry.label}
-                  </span>
-                  {entry.date && <span className="text-[11px] text-muted">{entry.date} 저장</span>}
-                </button>
+              <li key={entry.id} className="relative rounded-xl px-2.5 py-2 hover:bg-chip">
+                {isTarget(renaming, "schedule", entry.id) ? (
+                  <input
+                    ref={renameInputRef}
+                    aria-label={isEn ? "Schedule name" : "일정 이름"}
+                    value={renameDraft}
+                    onChange={(event) => setRenameDraft(event.target.value)}
+                    onBlur={() => commitRename({ kind: "schedule", id: entry.id })}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") commitRename({ kind: "schedule", id: entry.id });
+                      if (event.key === "Escape") setRenaming(null);
+                    }}
+                    className="w-full rounded-md border border-border px-2 py-1 text-sm"
+                  />
+                ) : (
+                  <div className="flex items-start justify-between gap-2">
+                    {/* 대화 목록과 같은 이유로 한 줄 전체가 버튼이다 — 날짜 쪽을
+                      눌렀을 때 아무 일도 안 나면 고장으로 보인다. */}
+                    <button
+                      type="button"
+                      aria-label={isEn ? `Open schedule ${entry.label}` : `${entry.label} 일정 열기`}
+                      onClick={() =>
+                        go(`/schedule?saved=${encodeURIComponent(entry.id)}`, { sheet: true })
+                      }
+                      className="min-w-0 flex-1 text-left"
+                    >
+                      <p className="truncate text-sm font-medium text-ink">{entry.label}</p>
+                      {entry.date && (
+                        <p className="truncate text-[11px] text-muted">
+                          {isEn ? `Saved ${entry.date}` : `${entry.date} 저장`}
+                        </p>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={isEn ? `${entry.label} menu` : `${entry.label} 메뉴`}
+                      onClick={() =>
+                        setOpenMenu((open) =>
+                          isTarget(open, "schedule", entry.id)
+                            ? null
+                            : { kind: "schedule", id: entry.id },
+                        )
+                      }
+                      className="shrink-0 text-muted hover:text-ink"
+                    >
+                      <MoreHorizontal size={15} />
+                    </button>
+                  </div>
+                )}
+
+                {isTarget(openMenu, "schedule", entry.id) && (
+                  <>
+                    <button
+                      type="button"
+                      aria-label={isEn ? "Close menu" : "메뉴 닫기"}
+                      onClick={() => setOpenMenu(null)}
+                      className="fixed inset-0 z-20 cursor-default"
+                    />
+                    <div
+                      role="menu"
+                      className="absolute right-0 top-full z-30 flex w-36 flex-col gap-0.5 rounded-2xl bg-white p-1.5 shadow-card"
+                    >
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setRenameDraft(entry.label);
+                          setRenaming({ kind: "schedule", id: entry.id });
+                          setOpenMenu(null);
+                        }}
+                        className="rounded-xl px-3 py-2 text-left text-sm font-medium text-ink transition-colors hover:bg-chip"
+                      >
+                        {isEn ? "Rename" : "이름 바꾸기"}
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          /* 화면에서 먼저 빼고 서버에 보낸다(대화 삭제와 같은 규칙).
+                             실패하면 서버 목록으로 되돌린다. */
+                          setSchedules((prev) => prev.filter((item) => item.id !== entry.id));
+                          setOpenMenu(null);
+                          void deleteSavedSchedule(entry.id).catch(() => {
+                            void refreshSavedSchedules();
+                          });
+                        }}
+                        className="rounded-xl px-3 py-2 text-left text-sm font-medium text-rust transition-colors hover:bg-chip"
+                      >
+                        {isEn ? "Delete" : "삭제"}
+                      </button>
+                    </div>
+                  </>
+                )}
               </li>
             ))}
           </ul>
@@ -516,7 +650,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
       {/* 6. 신원 라벨 + 계정 만들기(게스트만) + 로그아웃 — 맨 아래 */}
       <div className="mt-auto flex flex-col items-start gap-1">
         {status === "ready" && session && (
-          <p className="px-1 text-xs text-muted">{identityLabel(session)}</p>
+          <p className="px-1 text-xs text-muted">{identityLabel(session, state.language)}</p>
         )}
         {/*
           게스트에게만 보인다. **이 버튼이 없으면 승계 경로에 닿을 방법이 없었다** —
@@ -535,7 +669,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
             onClick={() => go("/signup")}
             className="flex items-center gap-2 self-start px-1 py-2 text-sm font-medium text-muted transition-colors hover:text-brand"
           >
-            <UserPlus size={15} aria-hidden /> 계정 만들기
+            <UserPlus size={15} aria-hidden /> {isEn ? "Create account" : "계정 만들기"}
           </button>
         )}
         {confirmingSignOut ? (
@@ -543,8 +677,9 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
              사용자는 무엇을 잃는지 모른 채 고른다. */
           <div className="flex flex-col items-start gap-2 px-1 py-2">
             <p role="alert" className="text-xs text-rust">
-              로그아웃하면 지금까지의 대화로 돌아올 수 없어요. 계정을 만들면 그대로
-              이어서 쓸 수 있어요.
+              {isEn
+                ? "Signing out means you won't be able to return to your past conversations. Create an account to keep using them."
+                : "로그아웃하면 지금까지의 대화로 돌아올 수 없어요. 계정을 만들면 그대로 이어서 쓸 수 있어요."}
             </p>
             <div className="flex gap-2">
               <button
@@ -552,14 +687,14 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                 onClick={() => void handleSignOut()}
                 className="rounded px-2 py-1 text-sm font-medium text-rust"
               >
-                로그아웃
+                {isEn ? "Sign out" : "로그아웃"}
               </button>
               <button
                 type="button"
                 onClick={() => setConfirmingSignOut(false)}
                 className="rounded px-2 py-1 text-sm font-medium text-muted"
               >
-                취소
+                {isEn ? "Cancel" : "취소"}
               </button>
             </div>
           </div>
@@ -569,7 +704,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
             onClick={() => void handleSignOut()}
             className="flex items-center gap-2 self-start px-1 py-2 text-sm font-medium text-muted transition-colors hover:text-rust"
           >
-            <LogOut size={15} aria-hidden /> 로그아웃
+            <LogOut size={15} aria-hidden /> {isEn ? "Sign out" : "로그아웃"}
           </button>
         )}
       </div>

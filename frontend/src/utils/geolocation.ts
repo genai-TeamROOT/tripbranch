@@ -16,6 +16,8 @@ interface BrowserLocationOptions {
    * 직전 캐시를 돌려주지 않도록 maximumAge를 0으로 낮춘다.
    */
   forceFresh?: boolean;
+  /** 오류 메시지를 어느 언어로 돌려줄지. 기본값은 한국어다. */
+  language?: "ko" | "en";
 }
 
 /**
@@ -44,25 +46,30 @@ function testDeviceLocation(): string | null {
   return `${latitude},${longitude}`;
 }
 
-function locationErrorMessage(error: GeolocationPositionError) {
+function locationErrorMessage(error: GeolocationPositionError, isEn: boolean) {
   if (error.code === error.TIMEOUT) {
-    return (
-      "위치 조회 시간이 초과됐어요. macOS 설정 > 개인정보 보호 및 보안 > 위치 서비스에서 " +
-      "브라우저 권한이 켜져 있는지 확인해주세요."
-    );
+    return isEn
+      ? "The location request timed out. Please check that browser location permission is on in macOS Settings > Privacy & Security > Location Services."
+      : "위치 조회 시간이 초과됐어요. macOS 설정 > 개인정보 보호 및 보안 > 위치 서비스에서 " +
+          "브라우저 권한이 켜져 있는지 확인해주세요.";
   }
   if (error.code === error.PERMISSION_DENIED) {
-    return "위치 권한이 필요해요. 브라우저 주소창의 위치 권한을 허용한 뒤 다시 시도해주세요.";
+    return isEn
+      ? "Location permission is required. Please allow location access in your browser's address bar and try again."
+      : "위치 권한이 필요해요. 브라우저 주소창의 위치 권한을 허용한 뒤 다시 시도해주세요.";
   }
-  return `위치를 가져오지 못했어요: ${error.message}`;
+  return isEn ? `Couldn't get your location: ${error.message}` : `위치를 가져오지 못했어요: ${error.message}`;
 }
 
 export function getBrowserDeviceLocation(options: BrowserLocationOptions = {}): Promise<string> {
+  const isEn = options.language === "en";
   const testLocation = testDeviceLocation();
   if (testLocation) return Promise.resolve(testLocation);
 
   if (!("geolocation" in navigator)) {
-    return Promise.reject(new Error("이 브라우저는 위치 조회를 지원하지 않아요."));
+    return Promise.reject(
+      new Error(isEn ? "This browser doesn't support location lookup." : "이 브라우저는 위치 조회를 지원하지 않아요."),
+    );
   }
 
   return new Promise((resolve, reject) => {
@@ -71,7 +78,7 @@ export function getBrowserDeviceLocation(options: BrowserLocationOptions = {}): 
         const { latitude, longitude } = position.coords;
         resolve(`${latitude},${longitude}`);
       },
-      (error) => reject(new Error(locationErrorMessage(error))),
+      (error) => reject(new Error(locationErrorMessage(error, isEn))),
       options.forceFresh ? { ...GEOLOCATION_OPTIONS, maximumAge: 0 } : GEOLOCATION_OPTIONS,
     );
   });
