@@ -4,9 +4,66 @@
 
 | 슬롯 | 관리 버전 | 템플릿 | 공유 규칙 |
 | --- | --- | --- | --- |
-| router.classify | v2.4.0 | intent_definitions.md, intent_priority.md, context_rules.md, boundary_cases.md | service_scope, safety |
+| router.classify | v2.5.0 | intent_definitions.md, intent_priority.md, context_rules.md, boundary_cases.md | service_scope, safety |
 
 ## Draft
+
+- 2026-09-04(v2.5.0): **행사를 찾는 요청을 RECOMMEND가 아니라 INFO로 보냅니다**(TP-237).
+  `intent_definitions.md`의 INFO 정의와 `intent_priority.md`의 5번에 "행사를 찾는
+  요청은 장소명이 없어도, '추천해줘' 형태여도 INFO"를 넣고, `boundary_cases.md`에
+  경계 예시 넷을 추가했습니다.
+
+  배경은 TP-201입니다. 축제공연행사(contentTypeId=15)를 추천 후보에서 뺐는데
+  (D-120 — `places`에 행사 기간 컬럼이 없어 끝난 행사를 거를 수 없습니다),
+  모델은 여전히 `place_types=['festival']`을 냈습니다. `prompts/recommend/extract.md`가
+  축제를 설명하지 않는데도 그런 이유는 구조화 출력 스키마(`LLMOutput` → `PlaceType`)가
+  허용 값으로 제시하기 때문입니다. 그대로 두면 "축제 추천해줘"가 이유 없는 빈 결과로
+  끝납니다.
+
+  가른 기준은 **찾는 대상이 장소냐 행사냐**입니다. TourAPI가 이미 그 선을 긋고 있어
+  공연장(VE060100)·전시관(VE070300)·미술관(VE070600)·박물관(VE070100)은 문화시설(14)이고,
+  그 안에서 열리는 축제·공연·전시가 15입니다. 유형 15 활성 189건의 중분류 분포는
+  축제 96·행사 74·공연 19라 "축제만"의 문제가 아닙니다.
+
+  **A 소유 슬롯을 C가 수정했습니다**(@kiminlim 리뷰 요청). TP-201 후속이라 한 PR로
+  묶었습니다 — 세 슬롯 중 하나만 바뀌면 여전히 빈 결과가 나갑니다.
+
+  실측(2026-09-04, Gemini 실호출 13발화. Langfuse 프롬프트 관리를 끄고 레포 프롬프트로 확인):
+
+  | 발화 | 전 | 후 |
+  | --- | --- | --- |
+  | 축제 추천해줘 | RECOMMEND, place_types=['festival'] → 후보 0건 | INFO, realtime_event |
+  | 서울에서 축제 갈 만한 곳 추천해줘 | RECOMMEND → 0건 | INFO, realtime_event (place_name='서울') |
+  | 강남구 축제 추천해줘 | RECOMMEND → 0건 | INFO, realtime_event (place_name='강남구') |
+  | 전시회 추천해줘 | RECOMMEND → 0건(태그 상충) | INFO, realtime_event |
+  | 콘서트 갈 만한 곳 알려줘 | RECOMMEND → 0건(태그 상충) | INFO, realtime_event |
+  | 공연 볼 만한 데 추천해줘 | RECOMMEND → 공연장만 | INFO, realtime_event |
+  | 종로 전시회 뭐 있어? | INFO, realtime_event | INFO, realtime_event |
+  | 미술관 추천해줘 | RECOMMEND | RECOMMEND (그대로) |
+  | 박물관 추천해줘 | RECOMMEND | RECOMMEND (그대로) |
+  | 전시관 추천해줘 | RECOMMEND | RECOMMEND (그대로) |
+  | 공연장 어디 있어? | RECOMMEND | RECOMMEND (그대로) |
+  | 경복궁 근처 카페 추천해줘 | RECOMMEND | RECOMMEND (그대로) |
+  | 오늘 갈 만한 곳 추천해줘 | RECOMMEND | RECOMMEND (그대로) |
+
+  회귀(2026-09-04):
+
+  - `scripts.evaluate_info_question_type --repeat 5` — 30건 전부 정확·전부 안정입니다
+    (`accuracy 1.0`, `stable_cases 30`). 이번에 넣은 `realtime_event` 5건도 5회 모두
+    같은 답이었습니다. 케이스는 `info/evals/question_type_cases.csv`의 RE-001~RE-005입니다.
+  - `scripts.evaluate_agent_quality --split dev` — Intent 94.0% · Macro F1 0.972 ·
+    조건 필드 정확도 96.6%. 직전 동일 골드셋 대비 Intent −4.0%p·Macro F1 −0.019인 반면
+    조건 필드 정확도 +2.25%p·케이스 통과율 +5.71%p로 방향이 엇갈립니다.
+    **이 변경이 겨냥한 칸인 `RECOMMEND × INFO`는 0을 유지했습니다** — 기존 추천 발화
+    26건 중 INFO로 샌 것이 없습니다.
+  - 실패 2건은 **MODIFY ↔ RECOMMEND 축**이라 이 변경이 가른 경계가 아닙니다. 두 케이스의
+    턴을 `classify_intent`로 7회씩 다시 돌려 확인했습니다.
+    DEV-025는 재현되지 않았고(7/7 기대대로), DEV-030 첫 턴 "비 와서 실내로 바꿔줘"가
+    RECOMMEND 4 · MODIFY 3으로 갈리는 원래 흔들리는 케이스였습니다 — 첫 턴이 뒤집히면
+    둘째 턴까지 연쇄로 무너져 조건 4개가 함께 실패합니다. 골드셋의 알려진 약점으로
+    보이며, 라벨·구성은 팀 합의 영역이라 이 PR에서 건드리지 않았습니다.
+  - `--split final`은 돌리지 않았습니다. `test_results/agent_quality/README.md`가 정한
+    대로 프롬프트가 확정된 뒤 1회만 돌립니다.
 
 - 2026-08-31(v2.4.0): `_shared/rules/conversation_history.md`를 bundle에 넣고,
   `context_rules.md`의 "이전 추천 있음 + 지명 단독 → MODIFY" 규칙에 단서를 달았습니다 —

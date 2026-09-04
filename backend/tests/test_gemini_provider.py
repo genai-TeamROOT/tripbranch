@@ -26,7 +26,13 @@ from app.providers.gemini import (
     _GeneralAnswer,
     _RecommendationSummary,
 )
-from app.schedule.schemas import ScheduleLLMPlan, SchedulePlanningRequest
+from app.schedule.budget import derive_item_range
+from app.schedule.planner import plan_schedule
+from app.schedule.schemas import (
+    ScheduleLLMItem,
+    ScheduleLLMPlan,
+    SchedulePlanningRequest,
+)
 from app.schemas import (
     Companion,
     CompareCriteria,
@@ -1451,3 +1457,178 @@ def test_summary_instruction_joins_multiple_stated_conditions() -> None:
     assert "부모님과" in instruction
     assert "조용히 쉴 만한" in instruction
     assert "이동 15분 이내" in instruction
+
+
+class TestSchedulePlanInstructionMatchesPlannerCapacity:
+    """프롬프트가 planner와 **같은 개수 상한**을 본다. (TP-239)
+
+    상한은 활동 가능 시간뿐 아니라 후보의 분류와 서로의 거리까지 보고 정해지므로,
+    두 곳이 각각 계산하면 갈릴 수 있다. `gemini.py`가 planner와 같은
+    `derive_item_range()`를 부르는 것이 계약이고, 이 테스트가 그 계약을 잠근다.
+
+    **이 테스트만 잡는 결함이 있다.** 돌연변이 둘로 확인했다.
+
+    * 빌더가 `item_range`를 무시하고 옛 버킷으로 되계산 → 이 테스트 5건과
+      빌더 단위 테스트 2건이 함께 깨진다. 이건 단위 테스트로도 잡힌다
+    * **`gemini.py`가 planner와 다른 범위를 넘긴다**(예: `(3, 5)` 고정) → 저장소
+      전체에서 **이 테스트 4건만** 깨진다. 빌더 단위 테스트는 범위를 직접 주입해
+      문구만 보므로 배선이 틀린 것을 알 수 없다
+
+    두 번째가 이 클래스를 둔 이유다 — 함정 18("안전한 쪽으로 실패하는가")이
+    경고하는 자리다.
+    """
+
+    @staticmethod
+    def _candidates(count: int, category: str) -> list[RecommendationItem]:
+        return [
+            _recommendation_item().model_copy(
+                update={
+                    "place_id": f"place-{index}",
+                    "name": f"장소 {index}",
+                    "category": category,
+                }
+            )
+            for index in range(count)
+        ]
+
+    @staticmethod
+    def _request(
+        time_available_min: int, category: str, km: float | None = None
+    ) -> SchedulePlanningRequest:
+        count = 5
+        distances = (
+            {}
+            if km is None
+            else {
+                (f"place-{i}", f"place-{j}"): km
+                for i in range(count)
+                for j in range(i + 1, count)
+            }
+        )
+        return SchedulePlanningRequest(
+            candidates=(
+                TestSchedulePlanInstructionMatchesPlannerCapacity._candidates(count, category)
+            ),
+            conditions=UserConditions(time_available=time_available_min),
+            visit_datetime=datetime(2026, 9, 4, 13, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+            pairwise_distances_km=distances,
+        )
+
+    class _CapturingLLM:
+        """planner가 부를 LLM 이중체. 상한만큼 항목을 돌려준다."""
+
+        def __init__(self, count: int) -> None:
+            self._count = count
+
+        async def judge_travel_modes(self, segments, context):
+            del context
+            from app.providers.contracts import ProviderSource, provider_result
+
+            return provider_result(
+                tuple("walking" for _ in segments), source=ProviderSource.FAKE_LLM
+            )
+
+        async def generate_schedule_plan(self, request):
+            from app.providers.contracts import ProviderSource, provider_result
+
+            return provider_result(
+                ScheduleLLMPlan(
+                    items=[
+                        ScheduleLLMItem(
+                            order=index,
+                            place_id=f"place-{index - 1}",
+                            place_name=f"장소 {index - 1}",
+                            estimated_duration_min=90,
+                            reason="테스트 이유",
+                        )
+                        for index in range(1, self._count + 1)
+                    ],
+                    route_summary="테스트 동선 요약",
+                ),
+                source=ProviderSource.FAKE_LLM,
+            )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("time_available_min", "category", "km"),
+        [
+            (180, "attraction", None),
+            (180, "cultural_facility", None),
+            (180, "shopping", None),
+            (180, "attraction", 2.0),
+            (120, "attraction", None),
+            (360, "attraction", None),
+        ],
+    )
+    async def test_프롬프트의_상한이_편성_결과의_상한과_같다(
+        self, time_available_min: int, category: str, km: float | None
+    ) -> None:
+        request = self._request(time_available_min, category, km)
+        provider = RealGeminiProvider(
+            api_key="dummy", model_names=["dummy"], timeout_seconds=1.0
+        )
+
+        captured: dict[str, str] = {}
+
+        # patch.object가 클래스 속성을 바꾸므로 self가 첫 인자로 들어온다.
+        async def _capture(_self, system_instruction: str, *args, **kwargs) -> ScheduleLLMPlan:
+            captured["instruction"] = system_instruction
+            return ScheduleLLMPlan(
+                items=[
+                    ScheduleLLMItem(
+                        order=1,
+                        place_id="place-0",
+                        place_name="장소 0",
+                        estimated_duration_min=90,
+                        reason="테스트 이유",
+                    )
+                ],
+                route_summary="테스트 동선 요약",
+            )
+
+        with patch.object(RealGeminiProvider, "_call_structured", _capture):
+            await provider.generate_schedule_plan(request)
+
+        _, max_items = derive_item_range(request)
+        result = await plan_schedule(request, self._CapturingLLM(max_items))
+
+        # 편성이 실어 보낸 상한과 프롬프트가 LLM에게 말한 상한이 같은 수여야 한다.
+        assert result.item_capacity == max_items
+        assert f"{max_items}개 이하" in captured["instruction"]
+        assert len(result.items) <= max_items
+
+    @pytest.mark.asyncio
+    async def test_시간을_말하지_않으면_기존_문구를_쓴다(self) -> None:
+        request = SchedulePlanningRequest(
+            candidates=self._candidates(5, "attraction"),
+            conditions=UserConditions(),
+            visit_datetime=datetime(2026, 9, 4, 13, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+            pairwise_distances_km={},
+        )
+        provider = RealGeminiProvider(
+            api_key="dummy", model_names=["dummy"], timeout_seconds=1.0
+        )
+
+        captured: dict[str, str] = {}
+
+        # patch.object가 클래스 속성을 바꾸므로 self가 첫 인자로 들어온다.
+        async def _capture(_self, system_instruction: str, *args, **kwargs) -> ScheduleLLMPlan:
+            captured["instruction"] = system_instruction
+            return ScheduleLLMPlan(
+                items=[
+                    ScheduleLLMItem(
+                        order=1,
+                        place_id="place-0",
+                        place_name="장소 0",
+                        estimated_duration_min=90,
+                        reason="테스트 이유",
+                    )
+                ],
+                route_summary="테스트 동선 요약",
+            )
+
+        with patch.object(RealGeminiProvider, "_call_structured", _capture):
+            await provider.generate_schedule_plan(request)
+
+        assert "3개 이상 5개 이하" in captured["instruction"]
+        assert "3~4시간 내외로 구성" in captured["instruction"]

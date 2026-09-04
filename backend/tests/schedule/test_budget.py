@@ -8,13 +8,18 @@
 from __future__ import annotations
 
 from app.schedule.budget import (
+    MAX_SCHEDULE_ITEMS,
     SCHEDULE_TIME_TOLERANCE_MIN,
     DurationSlot,
     classify_budget,
+    derive_item_range,
     fit_durations_to_budget,
+    travel_estimate_minutes,
+    walkable_cluster_size,
 )
 from app.schedule.duration import VisitDurationPolicy
-from app.schemas import ScheduleBudgetStatus
+from app.schedule.schemas import SchedulePlanningRequest
+from app.schemas import RecommendationItem, ScheduleBudgetStatus, UserConditions
 
 _ATTRACTION = VisitDurationPolicy(60, 90, 120)
 
@@ -133,3 +138,143 @@ class TestFitDurationsToBudget:
 
     def test_조절할_자리가_없으면_그대로_둔다(self) -> None:
         assert fit_durations_to_budget([], overhead_min=0, budget_min=180) == []
+
+
+def _candidate(place_id: str, category: str) -> RecommendationItem:
+    return RecommendationItem(
+        place_id=place_id, name=f"장소 {place_id}", category=category, distance_km=0.3,
+        remaining_minutes=120, operating_hours_display=None, environment_type="indoor",
+        recommendation_reason="고정 후보", explanations=[], warnings=[], score=0.5,
+        feature_scores={}, weights_used={},
+    )
+
+
+def _request(
+    budget: int | None, *, count: int = 5, category: str = "attraction", km: float | None = None
+) -> SchedulePlanningRequest:
+    distances = (
+        {}
+        if km is None
+        else {
+            (f"place-{i}", f"place-{j}"): km
+            for i in range(count)
+            for j in range(i + 1, count)
+        }
+    )
+    return SchedulePlanningRequest(
+        candidates=[_candidate(f"place-{i}", category) for i in range(count)],
+        conditions=UserConditions(time_available=budget),
+        pairwise_distances_km=distances,
+    )
+
+
+class TestTravelEstimateMinutes:
+    def test_짧은_구간부터_고른다(self) -> None:
+        """좋은 동선은 가까운 구간을 쓰므로 하한에 가깝게 잡는다."""
+
+        assert travel_estimate_minutes([3, 5, 20, 40], hops=2) == 8
+
+    def test_구간이_없으면_0분이다(self) -> None:
+        assert travel_estimate_minutes([3, 5], hops=0) == 0
+
+    def test_거리_정보가_없으면_폴백을_구간수만큼_쓴다(self) -> None:
+        """과거 세션 재생과 단위 테스트 경로다."""
+
+        assert travel_estimate_minutes([], hops=2) == 30
+
+    def test_쌍이_구간수보다_적으면_가장_짧은_값으로_메운다(self) -> None:
+        assert travel_estimate_minutes([4], hops=3) == 12
+
+
+class TestDeriveItemRange:
+    """TP-239 — 곳 수 상한을 예산 산수로 구한다."""
+
+    def test_예산에서_유도한_상한이_버킷_상수를_대신한다(self) -> None:
+        """옛 버킷은 2시간에 4곳까지 허용했다. 관광지 최소 60분·이동 15분이면
+        2시간에 4곳은 최소 285분이라 애초에 불가능한 상한이었다."""
+
+        assert derive_item_range(_request(90))[1] == 1
+        assert derive_item_range(_request(120))[1] == 2
+        assert derive_item_range(_request(150))[1] == 2
+        assert derive_item_range(_request(180))[1] == 3
+        assert derive_item_range(_request(240))[1] == 3
+        assert derive_item_range(_request(300))[1] == 4
+        assert derive_item_range(_request(360))[1] == 5
+
+    def test_허용_오차가_곳_수를_가른다(self) -> None:
+        """3시간에 3곳은 최소 210분이라 오차 30분에 딱 걸쳐 통과한다.
+
+        **이 문턱이 허용 오차 값의 근거다.** 오차가 30분보다 작으면 3시간이 2곳으로
+        떨어지고, 45분이면 4시간에 4곳까지 열려 "짧게 많이"로 새어나간다.
+        """
+
+        assert 60 * 3 + 15 * 2 - 180 == SCHEDULE_TIME_TOLERANCE_MIN
+        assert derive_item_range(_request(180))[1] == 3
+        assert derive_item_range(_request(180), hard_cap=2)[1] == 2
+
+    def test_분류가_다르면_상한도_다르다(self) -> None:
+        """체류 최소값을 60분 상수로 박으면 박물관과 쇼핑이 같은 취급을 받는다."""
+
+        assert derive_item_range(_request(180, category="cultural_facility"))[1] == 2
+        assert derive_item_range(_request(180, category="attraction"))[1] == 3
+        assert derive_item_range(_request(180, category="shopping"))[1] == 5
+
+    def test_후보가_멀면_상한이_줄어든다(self) -> None:
+        """**폴백 15분이 아니라 이번 후보들의 실제 거리를 쓴다는 증거다.**
+
+        2km씩 떨어져 있으면 도보 환산 이동이 커져 3시간에 3곳이 안 들어간다.
+        """
+
+        assert derive_item_range(_request(180, km=0.15))[1] == 3
+        assert derive_item_range(_request(180, km=2.0))[1] == 2
+
+    def test_후보_수가_상한을_넘지_못한다(self) -> None:
+        assert derive_item_range(_request(360, count=2))[1] == 2
+
+    def test_하드_캡을_넘지_않는다(self) -> None:
+        """ScheduleLLMPlan.items의 max_length와 같은 수여야 검증에서 안 거부된다."""
+
+        assert derive_item_range(_request(1000))[1] == MAX_SCHEDULE_ITEMS
+
+    def test_예산이_아무리_짧아도_한_곳은_남긴다(self) -> None:
+        """0곳을 돌려주면 편성 자체가 불가능해진다. 부족은 판정이 알린다."""
+
+        assert derive_item_range(_request(10))[1] == 1
+
+    def test_시간을_말하지_않으면_기존_정책을_쓴다(self) -> None:
+        """유도할 근거가 없다. 프롬프트도 "3~4시간 내외"로 안내한다."""
+
+        assert derive_item_range(_request(None)) == (3, MAX_SCHEDULE_ITEMS)
+
+    def test_최솟값은_후보_부족_가드용이라_2를_넘지_않는다(self) -> None:
+        """예전에는 예산이 길수록 최솟값도 3까지 올라가서, 4시간 요청에 후보가
+        2곳이면 편성을 아예 포기했다. 2곳을 보여주는 것보다 나쁘다."""
+
+        assert derive_item_range(_request(360))[0] == 2
+        assert derive_item_range(_request(90))[0] == 1
+
+
+class TestWalkableClusterSize:
+    """TP-242 — 근접 묶기(TP-243)의 가치를 미리 재는 값."""
+
+    def test_붙어_있으면_후보_전부가_한_묶음이다(self) -> None:
+        assert walkable_cluster_size(_request(180, km=0.15), within_min=5) == 5
+
+    def test_멀면_묶이지_않는다(self) -> None:
+        """1.5km는 도보로 5분을 한참 넘는다. 1은 "자기 자신뿐"이라는 뜻이다."""
+
+        assert walkable_cluster_size(_request(180, km=1.5), within_min=5) == 1
+
+    def test_기준_분을_바꾸면_결과가_달라진다(self) -> None:
+        """기준이 지표의 의미를 바꾼다 — 그래서 기록에 기준 값을 함께 남긴다."""
+
+        request = _request(180, km=0.5)
+
+        assert walkable_cluster_size(request, within_min=5) < 5
+        assert walkable_cluster_size(request, within_min=30) == 5
+
+    def test_거리_정보가_없으면_0이다(self) -> None:
+        """"묶을 수 없다"가 아니라 "알 수 없다"다. 빈도 추세를 보는 값이라
+        이 구분까지는 필요하지 않다."""
+
+        assert walkable_cluster_size(_request(180), within_min=5) == 0
