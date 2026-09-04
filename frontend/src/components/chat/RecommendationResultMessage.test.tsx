@@ -74,10 +74,12 @@ it("장소별 취향 태그와 문서 단위 언급 수를 표로 표시한다",
     screen.getByText("네이버 블로그 후기와 구글 지도 리뷰 약 30건에서 언급된 태그입니다."),
   ).toBeInTheDocument();
   expect(within(table).getByText("아키비스트 서촌")).toBeInTheDocument();
-  expect(within(table).getByText("조용히 머물기 좋은 (7)")).toBeInTheDocument();
-  expect(within(table).getByText("데이트하기 좋은 (4)")).toBeInTheDocument();
-  expect(within(table).getByText("산책하기 좋은 (3)")).toBeInTheDocument();
-  expect(within(table).queryByText("자연을 즐기기 좋은 (2)")).not.toBeInTheDocument();
+  expect(within(table).getByText("조용히 머물기 좋은")).toBeInTheDocument();
+  expect(within(table).getByText("(7)")).toBeInTheDocument();
+  expect(within(table).getByText("데이트하기 좋은")).toBeInTheDocument();
+  expect(within(table).getByText("(4)")).toBeInTheDocument();
+  expect(within(table).queryByText("산책하기 좋은")).not.toBeInTheDocument();
+  expect(within(table).queryByText("자연을 즐기기 좋은")).not.toBeInTheDocument();
 });
 
 it("추천 카드를 클릭하면 C PlaceDetails가 채워진 상세 창을 연다", async () => {
