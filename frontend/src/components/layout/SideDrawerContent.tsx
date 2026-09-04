@@ -1,6 +1,12 @@
 /*
- * 역할: 사이드바/드로어 안에 들어가는 내용. 내비게이션·언어·즐겨찾기·히스토리·로그아웃.
- * 입력: 현재 라우트, TripContext 언어/메시지 상태, localStorage의 즐겨찾기·히스토리.
+ * 역할: 사이드바/드로어 안에 들어가는 내용. 내비게이션·언어·대화 기록·계정.
+ * 입력: 현재 라우트, TripContext 언어/메시지 상태, 계정의 대화 목록.
+ *
+ * **즐겨찾기와 저장한 일정은 여기 없다**(2026-09-04). 각자 제 화면이 이미 있고
+ * 그쪽이 더 많은 일을 한다 — 즐겨찾기는 위치 설정 화면(검색으로 추가·이름 바꾸기·
+ * 출발지/검색기준 지정·10개 제한), 저장한 일정은 일정 화면
+ * (`components/schedule/SavedScheduleList`). 사이드바 쪽은 목록과 삭제만 있는
+ * 축소판이었고, 즐겨찾기는 "추가" 버튼이 어차피 위치 설정 화면으로 보냈다.
  * 출력: 라우트 이동, 언어 변경, 목록 편집, 로그아웃.
  * 호출 시점: DesktopSidebar(768px 이상 상시 패널)와 모바일 드로어가 공유한다.
  *   컨테이너만 다르고 내용은 하나다 — 두 번 만들지 않는다(DESIGN_SYSTEM.md 6.17).
@@ -14,10 +20,8 @@ import {
   LogOut,
   MapPin,
   MoreHorizontal,
-  Plus,
   Route,
   Sparkles,
-  Trash2,
   UserPlus,
 } from "lucide-react";
 import { useAuth } from "../../auth/AuthContext";
@@ -33,7 +37,6 @@ import {
 } from "../../api/trip";
 import { loadChatSessions, refreshChatSessions } from "../../state/chatSessions";
 import { clearLocalUserData } from "../../state/localUserData";
-import { useFavorites } from "../../hooks/useFavorites";
 import { type ChatHistoryEntry } from "../../state/sidebarStorage";
 
 /*
@@ -69,7 +72,6 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
   const isEn = state.language === "en";
   const { session, status, signOut } = useAuth();
 
-  const [favorites, setFavorites] = useFavorites();
   /*
    * 채팅 히스토리는 계정에서 온다(GET /api/sessions). 예전에는 localStorage
    * 목업이었는데 **항목을 넣는 코드가 아예 없어** 늘 비어 있었다.
@@ -314,49 +316,6 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
             </button>
           ))}
         </div>
-      </section>
-
-      {/* 3. 즐겨찾기 */}
-      <section className="flex flex-col gap-1.5">
-        <div className="flex items-center justify-between">
-          <h2 className="text-xs font-bold text-label">{state.language === "en" ? "Favorites" : "즐겨찾기"}</h2>
-          {/* 즐겨찾기는 검색해서 담는다 — 여기서 이름만 받으면 좌표도 주소도 없어
-              위치로 쓸 수 없다. 검색이 있는 위치 설정 화면으로 보낸다. */}
-          <button
-            type="button"
-            onClick={() => go("/location", { sheet: true })}
-            className="flex items-center gap-0.5 text-xs font-semibold text-brand transition-colors hover:text-brand-deep"
-          >
-            <Plus size={12} aria-hidden /> {state.language === "en" ? "Add" : "추가"}
-          </button>
-        </div>
-        {favorites.length === 0 ? (
-          <p className="py-1 text-xs text-muted">
-            {state.language === "en" ? "No favorites yet" : "등록된 즐겨찾기가 없어요"}
-          </p>
-        ) : (
-          <ul className="flex flex-col gap-0.5">
-            {favorites.map((favorite) => (
-              <li
-                key={favorite.id}
-                className="group flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-chip"
-              >
-                <MapPin size={14} className="shrink-0 text-gold" aria-hidden />
-                <span className="min-w-0 flex-1 truncate text-sm text-ink">{favorite.label}</span>
-                <button
-                  type="button"
-                  aria-label={`${favorite.label} 즐겨찾기 삭제`}
-                  onClick={() =>
-                    setFavorites((prev) => prev.filter((item) => item.id !== favorite.id))
-                  }
-                  className="shrink-0 text-muted opacity-0 transition-opacity hover:text-rust group-hover:opacity-100"
-                >
-                  <Trash2 size={13} />
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
       </section>
 
       {/* 4. 채팅 히스토리 */}

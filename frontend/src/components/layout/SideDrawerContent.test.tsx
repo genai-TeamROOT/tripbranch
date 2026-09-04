@@ -378,60 +378,20 @@ test("로그아웃하면 이 기기의 취향·즐겨찾기가 남지 않는다"
   expect(sessionStorage.getItem("tb_location_settings")).toBeNull();
 });
 
-test("저장된 즐겨찾기가 사이드바에 보인다", async () => {
-  await renderApp();
-
-  expect(within(sidebar()).getByText("회사 (역삼동)")).toBeInTheDocument();
-  expect(within(sidebar()).getByText("집 (성수동)")).toBeInTheDocument();
-});
-
 /*
- * 즐겨찾기는 검색해서 담는다. 여기서 이름만 받으면 좌표도 주소도 없어 위치로 쓸 수
- * 없으므로, "추가"는 검색이 있는 위치 설정 화면으로 보낸다.
+ * 즐겨찾기 테스트 4개를 지웠다(2026-09-04) — 목록이 사이드바에서 빠졌다. 옮기지
+ * 않은 이유는 **위치 설정 화면이 이미 같은 일을 더 많이 하고 그쪽 테스트가 있기**
+ * 때문이다(`pages/LocationPage.test.tsx`).
+ *
+ * 그중 "위치 설정 화면에서 지운 즐겨찾기가 사이드바에서도 바로 빠진다"는 두 화면이
+ * `useFavorites`로 저장소를 공유하는 것을 잠근 가드였다(jjinsword,
+ * `fix: 즐겨찾기를 두 화면이 함께 보게 한다`). 소비자가 위치 화면 하나만 남아
+ * 검증 대상이 없어졌다 — **훅의 동기화 자체는 남겨 뒀다.** 지우면 나중에 다른
+ * 화면이 즐겨찾기를 쓸 때 같은 버그가 다시 난다.
+ *
+ * "로그아웃하면 이 기기의 취향·즐겨찾기가 남지 않는다"는 남겼다 —
+ * localStorage만 보므로 사이드바 UI와 무관하다.
  */
-/*
- * 사이드바와 위치 설정 화면은 같은 즐겨찾기 목록을 본다. 각자 사본을 들고 있으면
- * 한쪽에서 지워도 다른 쪽은 새로고침해야 반영된다 - 같은 목록이 두 군데서 다르게
- * 보이는 셈이다.
- */
-test("위치 설정 화면에서 지운 즐겨찾기가 사이드바에서도 바로 빠진다", async () => {
-  const user = userEvent.setup();
-  await renderApp();
-  expect(within(sidebar()).getByText("회사 (역삼동)")).toBeInTheDocument();
-
-  await user.click(within(sidebar()).getByRole("button", { name: "추가" }));
-  await screen.findByLabelText("장소 검색");
-
-  /* 위치 설정 화면의 목록에서 지운다. 사이드바에도 같은 이름의 버튼이 있으므로
-     사이드바 밖(나중에 그려진 쪽)을 고른다. */
-  const deleteButtons = screen.getAllByRole("button", { name: "회사 (역삼동) 즐겨찾기 삭제" });
-  const inPage = deleteButtons.filter((button) => !sidebar().contains(button));
-  expect(inPage).toHaveLength(1);
-  await user.click(inPage[0]);
-
-  /* 새로고침 없이 사이드바에서도 빠진다. */
-  expect(within(sidebar()).queryByText("회사 (역삼동)")).not.toBeInTheDocument();
-  expect(within(sidebar()).getByText("집 (성수동)")).toBeInTheDocument();
-});
-
-test("즐겨찾기 추가를 누르면 위치 설정 화면으로 보낸다", async () => {
-  const user = userEvent.setup();
-  await renderApp();
-
-  await user.click(within(sidebar()).getByRole("button", { name: "추가" }));
-
-  expect(await screen.findByLabelText("장소 검색")).toBeInTheDocument();
-});
-
-test("즐겨찾기를 삭제하면 목록에서 빠진다", async () => {
-  const user = userEvent.setup();
-  await renderApp();
-
-  await user.click(within(sidebar()).getByRole("button", { name: "회사 (역삼동) 즐겨찾기 삭제" }));
-
-  expect(within(sidebar()).queryByText("회사 (역삼동)")).not.toBeInTheDocument();
-  expect(within(sidebar()).getByText("집 (성수동)")).toBeInTheDocument();
-});
 
 test("채팅 히스토리 이름을 바꾸면 새 이름이 남는다", async () => {
   const user = userEvent.setup();
@@ -468,11 +428,12 @@ test("사이드바를 접으면 레일만 남고 다시 펼칠 수 있다", asyn
 
   await user.click(screen.getByRole("button", { name: "사이드바 접기" }));
 
-  // 접힘 레일에는 아이콘만 남는다 — 목록 제목이 사라진다.
-  expect(within(sidebar()).queryByText("즐겨찾기")).not.toBeInTheDocument();
+  /* 접힘 레일에는 아이콘만 남는다 — 목록 제목이 사라진다. 지표로 쓰던 "즐겨찾기"
+     제목이 사이드바에서 빠져(2026-09-04) "채팅 히스토리"로 바꿨다. */
+  expect(within(sidebar()).queryByText("채팅 히스토리")).not.toBeInTheDocument();
 
   await user.click(screen.getByRole("button", { name: "사이드바 펼치기" }));
-  expect(within(sidebar()).getByText("즐겨찾기")).toBeInTheDocument();
+  expect(within(sidebar()).getByText("채팅 히스토리")).toBeInTheDocument();
 });
 
 test("취향 설정으로 이동하면 취향 선택 화면이 뜬다", async () => {
