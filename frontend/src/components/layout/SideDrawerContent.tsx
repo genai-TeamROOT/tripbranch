@@ -60,6 +60,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
   const location = useLocation();
   const dispatch = useTripDispatch();
   const state = useTripState();
+  const isEn = state.language === "en";
   const { session, status, signOut } = useAuth();
 
   const [favorites, setFavorites] = useFavorites();
@@ -234,28 +235,28 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
   }> = [
     {
       key: "home",
-      label: "홈",
+      label: state.language === "en" ? "Home" : "홈",
       icon: Home,
       active: pathname === "/" && !hasConversation,
       onClick: goHome,
     },
     {
       key: "preferences",
-      label: "취향 설정",
+      label: state.language === "en" ? "Preferences" : "취향 설정",
       icon: Sparkles,
       active: pathname === "/preferences",
       onClick: () => go("/preferences"),
     },
     {
       key: "location",
-      label: "위치 설정",
+      label: state.language === "en" ? "Location" : "위치 설정",
       icon: MapPin,
       active: pathname === "/location",
       onClick: () => go("/location", { sheet: true }),
     },
     {
       key: "schedule",
-      label: "일정",
+      label: state.language === "en" ? "Schedule" : "일정",
       icon: Route,
       active: pathname === "/schedule",
       onClick: () => go("/schedule", { sheet: true }),
@@ -265,7 +266,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 pb-5">
       {/* 1. 내비게이션 */}
-      <nav aria-label="주요 메뉴" className="flex flex-col gap-1">
+      <nav aria-label={state.language === "en" ? "Main menu" : "주요 메뉴"} className="flex flex-col gap-1">
         {navItems.map((item) => (
           <button
             key={item.key}
@@ -284,7 +285,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
 
       {/* 2. 언어 */}
       <section className="flex flex-col gap-1.5">
-        <h2 className="text-xs font-bold text-label">언어</h2>
+        <h2 className="text-xs font-bold text-label">{state.language === "en" ? "Language" : "언어"}</h2>
         <div className="grid grid-cols-2 gap-1.5">
           {LANGUAGES.map((lang) => (
             <button
@@ -307,7 +308,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
       {/* 3. 즐겨찾기 */}
       <section className="flex flex-col gap-1.5">
         <div className="flex items-center justify-between">
-          <h2 className="text-xs font-bold text-label">즐겨찾기</h2>
+          <h2 className="text-xs font-bold text-label">{state.language === "en" ? "Favorites" : "즐겨찾기"}</h2>
           {/* 즐겨찾기는 검색해서 담는다 — 여기서 이름만 받으면 좌표도 주소도 없어
               위치로 쓸 수 없다. 검색이 있는 위치 설정 화면으로 보낸다. */}
           <button
@@ -315,11 +316,13 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
             onClick={() => go("/location", { sheet: true })}
             className="flex items-center gap-0.5 text-xs font-semibold text-brand transition-colors hover:text-brand-deep"
           >
-            <Plus size={12} aria-hidden /> 추가
+            <Plus size={12} aria-hidden /> {state.language === "en" ? "Add" : "추가"}
           </button>
         </div>
         {favorites.length === 0 ? (
-          <p className="py-1 text-xs text-muted">등록된 즐겨찾기가 없어요</p>
+          <p className="py-1 text-xs text-muted">
+            {state.language === "en" ? "No favorites yet" : "등록된 즐겨찾기가 없어요"}
+          </p>
         ) : (
           <ul className="flex flex-col gap-0.5">
             {favorites.map((favorite) => (
@@ -347,9 +350,11 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
 
       {/* 4. 채팅 히스토리 */}
       <section className="flex flex-col gap-1.5">
-        <h2 className="text-xs font-bold text-label">채팅 히스토리</h2>
+        <h2 className="text-xs font-bold text-label">{isEn ? "Chat history" : "채팅 히스토리"}</h2>
         {history.length === 0 ? (
-          <p className="py-1 text-xs text-muted">아직 대화 기록이 없어요</p>
+          <p className="py-1 text-xs text-muted">
+            {isEn ? "No conversations yet" : "아직 대화 기록이 없어요"}
+          </p>
         ) : (
           <ul className="flex flex-col gap-0.5">
             {history.map((entry) => {
@@ -370,7 +375,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                   {renamingId === entry.id ? (
                     <input
                       ref={renameInputRef}
-                      aria-label="대화 이름"
+                      aria-label={isEn ? "Conversation name" : "대화 이름"}
                       value={renameDraft}
                       onChange={(event) => setRenameDraft(event.target.value)}
                       onBlur={() => commitRename(entry.id)}
@@ -386,7 +391,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                         쪽을 눌렀을 때 아무 일도 안 나 고장으로 보인다. */}
                       <button
                         type="button"
-                        aria-label={`${entry.label} 대화 열기`}
+                        aria-label={isEn ? `Open conversation ${entry.label}` : `${entry.label} 대화 열기`}
                         onClick={() => openConversation(entry.id)}
                         className="min-w-0 flex-1 text-left"
                       >
@@ -409,7 +414,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                       </button>
                       <button
                         type="button"
-                        aria-label={`${entry.label} 메뉴`}
+                        aria-label={isEn ? `${entry.label} menu` : `${entry.label} 메뉴`}
                         onClick={() => setOpenMenuId((id) => (id === entry.id ? null : entry.id))}
                         className="shrink-0 text-muted hover:text-ink"
                       >
@@ -422,7 +427,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                     <>
                       <button
                         type="button"
-                        aria-label="메뉴 닫기"
+                        aria-label={isEn ? "Close menu" : "메뉴 닫기"}
                         onClick={() => setOpenMenuId(null)}
                         className="fixed inset-0 z-20 cursor-default"
                       />
@@ -440,7 +445,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                           }}
                           className="rounded-xl px-3 py-2 text-left text-sm font-medium text-ink transition-colors hover:bg-chip"
                         >
-                          이름 바꾸기
+                          {isEn ? "Rename" : "이름 바꾸기"}
                         </button>
                         <button
                           type="button"
@@ -467,7 +472,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                           }}
                           className="rounded-xl px-3 py-2 text-left text-sm font-medium text-rust transition-colors hover:bg-chip"
                         >
-                          삭제
+                          {isEn ? "Delete" : "삭제"}
                         </button>
                       </div>
                     </>
@@ -490,9 +495,11 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
         분리해서 다음에 붙인다.
       */}
       <section className="flex flex-col gap-1.5">
-        <h2 className="text-xs font-bold text-label">저장한 일정</h2>
+        <h2 className="text-xs font-bold text-label">{isEn ? "Saved schedules" : "저장한 일정"}</h2>
         {schedules.length === 0 ? (
-          <p className="py-1 text-xs text-muted">아직 저장한 일정이 없어요</p>
+          <p className="py-1 text-xs text-muted">
+            {isEn ? "No saved schedules yet" : "아직 저장한 일정이 없어요"}
+          </p>
         ) : (
           <ul className="flex flex-col gap-0.5">
             {schedules.map((entry) => (
@@ -505,7 +512,11 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                   <span className="w-full truncate text-sm font-medium text-ink">
                     {entry.label}
                   </span>
-                  {entry.date && <span className="text-[11px] text-muted">{entry.date} 저장</span>}
+                  {entry.date && (
+                    <span className="text-[11px] text-muted">
+                      {isEn ? `Saved ${entry.date}` : `${entry.date} 저장`}
+                    </span>
+                  )}
                 </button>
               </li>
             ))}
@@ -516,7 +527,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
       {/* 6. 신원 라벨 + 계정 만들기(게스트만) + 로그아웃 — 맨 아래 */}
       <div className="mt-auto flex flex-col items-start gap-1">
         {status === "ready" && session && (
-          <p className="px-1 text-xs text-muted">{identityLabel(session)}</p>
+          <p className="px-1 text-xs text-muted">{identityLabel(session, state.language)}</p>
         )}
         {/*
           게스트에게만 보인다. **이 버튼이 없으면 승계 경로에 닿을 방법이 없었다** —
@@ -535,7 +546,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
             onClick={() => go("/signup")}
             className="flex items-center gap-2 self-start px-1 py-2 text-sm font-medium text-muted transition-colors hover:text-brand"
           >
-            <UserPlus size={15} aria-hidden /> 계정 만들기
+            <UserPlus size={15} aria-hidden /> {isEn ? "Create account" : "계정 만들기"}
           </button>
         )}
         {confirmingSignOut ? (
@@ -543,8 +554,9 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
              사용자는 무엇을 잃는지 모른 채 고른다. */
           <div className="flex flex-col items-start gap-2 px-1 py-2">
             <p role="alert" className="text-xs text-rust">
-              로그아웃하면 지금까지의 대화로 돌아올 수 없어요. 계정을 만들면 그대로
-              이어서 쓸 수 있어요.
+              {isEn
+                ? "Signing out means you won't be able to return to your past conversations. Create an account to keep using them."
+                : "로그아웃하면 지금까지의 대화로 돌아올 수 없어요. 계정을 만들면 그대로 이어서 쓸 수 있어요."}
             </p>
             <div className="flex gap-2">
               <button
@@ -552,14 +564,14 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
                 onClick={() => void handleSignOut()}
                 className="rounded px-2 py-1 text-sm font-medium text-rust"
               >
-                로그아웃
+                {isEn ? "Sign out" : "로그아웃"}
               </button>
               <button
                 type="button"
                 onClick={() => setConfirmingSignOut(false)}
                 className="rounded px-2 py-1 text-sm font-medium text-muted"
               >
-                취소
+                {isEn ? "Cancel" : "취소"}
               </button>
             </div>
           </div>
@@ -569,7 +581,7 @@ export function SideDrawerContent({ onNavigate }: SideDrawerContentProps) {
             onClick={() => void handleSignOut()}
             className="flex items-center gap-2 self-start px-1 py-2 text-sm font-medium text-muted transition-colors hover:text-rust"
           >
-            <LogOut size={15} aria-hidden /> 로그아웃
+            <LogOut size={15} aria-hidden /> {isEn ? "Sign out" : "로그아웃"}
           </button>
         )}
       </div>

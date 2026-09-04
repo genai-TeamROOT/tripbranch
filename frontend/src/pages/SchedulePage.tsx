@@ -26,6 +26,7 @@ import { scheduleTravelLabel } from "../utils/scheduleTravel";
 
 function ScheduleStop({ item, isLast }: { item: ScheduleItem; isLast: boolean }) {
   const [showDetail, setShowDetail] = useState(false);
+  const isEn = useTripState().language === "en";
 
   return (
     <li className="flex gap-3">
@@ -44,7 +45,7 @@ function ScheduleStop({ item, isLast }: { item: ScheduleItem; isLast: boolean })
             <RouteIcon size={20} />
           </span>
           <span className="rounded-full bg-chip px-2 py-0.5 text-[11px] font-bold text-brand">
-            {item.estimated_arrival} 도착
+            {isEn ? `Arrive ${item.estimated_arrival}` : `${item.estimated_arrival} 도착`}
           </span>
           {/* break-keep — 이 칸이 w-20(80px)이라 "대중교통 이동 17분 · 추정"이 두 줄로
               접히는데, 그대로 두면 "17" / "분"이나 "추" / "정" 사이가 끊긴다(TP-216). */}
@@ -62,7 +63,15 @@ function ScheduleStop({ item, isLast }: { item: ScheduleItem; isLast: boolean })
           <p className="truncate text-sm font-bold text-ink">{item.place_name}</p>
           <p className="text-xs leading-relaxed text-muted">{item.reason}</p>
           <p className="text-xs text-ink">
-            머무는 시간 <span className="font-medium">{item.estimated_duration_min}분</span>
+            {isEn ? (
+              <>
+                Stay <span className="font-medium">{item.estimated_duration_min} min</span>
+              </>
+            ) : (
+              <>
+                머무는 시간 <span className="font-medium">{item.estimated_duration_min}분</span>
+              </>
+            )}
           </p>
           {item.warnings != null && item.warnings.length > 0 && (
             <p className="text-[11px] text-gold">{item.warnings.join(" / ")}</p>
@@ -72,7 +81,7 @@ function ScheduleStop({ item, isLast }: { item: ScheduleItem; isLast: boolean })
             onClick={() => setShowDetail(true)}
             className="mt-0.5 flex items-center gap-0.5 text-[11px] font-bold text-brand"
           >
-            장소 상세보기 <ChevronRight size={11} />
+            {isEn ? "View place details" : "장소 상세보기"} <ChevronRight size={11} />
           </button>
         </div>
       </div>
@@ -91,6 +100,7 @@ function ScheduleStop({ item, isLast }: { item: ScheduleItem; isLast: boolean })
 export function SchedulePage() {
   const navigate = useNavigate();
   const state = useTripState();
+  const isEn = state.language === "en";
   const [searchParams] = useSearchParams();
   const [feedback, setFeedback] = useState<"up" | "down" | null>(null);
 
@@ -145,39 +155,58 @@ export function SchedulePage() {
       <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-5 px-4 pb-10">
         {savedError ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
-            <p className="text-sm text-muted">그 일정을 불러오지 못했어요.</p>
-            <p className="text-xs text-muted">이미 지워졌거나 접근 권한이 없을 수 있어요.</p>
+            <p className="text-sm text-muted">
+              {isEn ? "Couldn't load that schedule." : "그 일정을 불러오지 못했어요."}
+            </p>
+            <p className="text-xs text-muted">
+              {isEn
+                ? "It may have been deleted, or you may not have access."
+                : "이미 지워졌거나 접근 권한이 없을 수 있어요."}
+            </p>
           </div>
         ) : !schedule || schedule.items.length === 0 ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
             <span className="flex h-12 w-12 items-center justify-center rounded-full bg-chip text-brand">
               <RouteIcon size={22} />
             </span>
-            <p className="text-sm text-muted">아직 짠 일정이 없어요.</p>
+            <p className="text-sm text-muted">{isEn ? "No schedule yet." : "아직 짠 일정이 없어요."}</p>
             <button
               type="button"
               onClick={() => navigate("/")}
               className="rounded-full bg-brand px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-brand-deep active:scale-[0.98]"
             >
-              홈에서 일정 짜기
+              {isEn ? "Plan a schedule from home" : "홈에서 일정 짜기"}
             </button>
           </div>
         ) : (
           <>
             <div className="flex flex-col gap-1.5 rounded-2xl bg-sky-light p-4">
               <p className="text-xs font-bold text-brand-deep">
-                {saved
-                  ? `${basisAt.toLocaleDateString("ko-KR", {
-                      month: "long",
-                      day: "numeric",
-                    })} ${basisAt.toLocaleTimeString("ko-KR", {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}에 저장한 일정이에요`
-                  : `${basisAt.toLocaleTimeString("ko-KR", {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })} 기준으로 짠 동선이에요`}
+                {isEn
+                  ? saved
+                    ? `Saved on ${basisAt.toLocaleDateString("en-US", {
+                        month: "long",
+                        day: "numeric",
+                      })} at ${basisAt.toLocaleTimeString("en-US", {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}`
+                    : `Route planned as of ${basisAt.toLocaleTimeString("en-US", {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}`
+                  : saved
+                    ? `${basisAt.toLocaleDateString("ko-KR", {
+                        month: "long",
+                        day: "numeric",
+                      })} ${basisAt.toLocaleTimeString("ko-KR", {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}에 저장한 일정이에요`
+                    : `${basisAt.toLocaleTimeString("ko-KR", {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })} 기준으로 짠 동선이에요`}
               </p>
               <p className="text-sm leading-relaxed text-ink">{schedule.route_summary}</p>
             </div>
@@ -193,10 +222,12 @@ export function SchedulePage() {
             </ul>
 
             <div className="flex items-center gap-2">
-              <p className="text-[11px] text-muted">이 일정이 도움이 됐나요?</p>
+              <p className="text-[11px] text-muted">
+                {isEn ? "Was this schedule helpful?" : "이 일정이 도움이 됐나요?"}
+              </p>
               <button
                 type="button"
-                aria-label="도움이 됐어요"
+                aria-label={isEn ? "Helpful" : "도움이 됐어요"}
                 aria-pressed={feedback === "up"}
                 onClick={() => setFeedback((prev) => (prev === "up" ? null : "up"))}
                 className={`flex h-7 w-7 items-center justify-center rounded-full transition-colors ${
@@ -207,7 +238,7 @@ export function SchedulePage() {
               </button>
               <button
                 type="button"
-                aria-label="도움이 안 됐어요"
+                aria-label={isEn ? "Not helpful" : "도움이 안 됐어요"}
                 aria-pressed={feedback === "down"}
                 onClick={() => setFeedback((prev) => (prev === "down" ? null : "down"))}
                 className={`flex h-7 w-7 items-center justify-center rounded-full transition-colors ${
@@ -229,7 +260,7 @@ export function SchedulePage() {
               onClick={() => navigate("/")}
               className="flex h-12 w-full items-center justify-center rounded-full bg-white text-sm font-bold text-brand shadow-resting"
             >
-              홈에서 다시 물어보기
+              {isEn ? "Ask again from home" : "홈에서 다시 물어보기"}
             </button>
           </>
         )}

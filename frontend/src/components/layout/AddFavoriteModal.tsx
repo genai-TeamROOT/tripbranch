@@ -9,6 +9,7 @@
 import { useId, useState } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
+import { useTripState } from "../../state/TripContext";
 
 interface AddFavoriteModalProps {
   onAdd: (label: string) => void;
@@ -18,6 +19,7 @@ interface AddFavoriteModalProps {
 export function AddFavoriteModal({ onAdd, onClose }: AddFavoriteModalProps) {
   const [label, setLabel] = useState("");
   const titleId = useId();
+  const isEn = useTripState().language === "en";
 
   function handleSubmit() {
     const trimmed = label.trim();
@@ -30,7 +32,7 @@ export function AddFavoriteModal({ onAdd, onClose }: AddFavoriteModalProps) {
     <div className="fixed inset-0 z-50 flex items-end justify-center p-4 md:items-center">
       <button
         type="button"
-        aria-label="닫기"
+        aria-label={isEn ? "Close" : "닫기"}
         onClick={onClose}
         className="absolute inset-0 bg-ink-strong/40"
       />
@@ -42,11 +44,11 @@ export function AddFavoriteModal({ onAdd, onClose }: AddFavoriteModalProps) {
       >
         <div className="mb-4 flex items-center justify-between">
           <h2 id={titleId} className="text-base font-bold text-ink">
-            즐겨찾기 추가
+            {isEn ? "Add favorite" : "즐겨찾기 추가"}
           </h2>
           <button
             type="button"
-            aria-label="닫기"
+            aria-label={isEn ? "Close" : "닫기"}
             onClick={onClose}
             className="text-muted transition-colors hover:text-ink"
           >
@@ -60,7 +62,7 @@ export function AddFavoriteModal({ onAdd, onClose }: AddFavoriteModalProps) {
           onKeyDown={(event) => {
             if (event.key === "Enter") handleSubmit();
           }}
-          placeholder="예: 회사 (역삼동)"
+          placeholder={isEn ? "e.g. Work (Yeoksam-dong)" : "예: 회사 (역삼동)"}
           className="w-full rounded-xl border border-border px-3.5 py-3 text-base text-ink outline-none focus:border-brand"
         />
         <button
@@ -69,7 +71,7 @@ export function AddFavoriteModal({ onAdd, onClose }: AddFavoriteModalProps) {
           onClick={handleSubmit}
           className="mt-4 flex h-12 w-full items-center justify-center rounded-full bg-brand text-sm font-bold text-white transition-colors hover:enabled:bg-brand-deep disabled:opacity-40"
         >
-          추가
+          {isEn ? "Add" : "추가"}
         </button>
       </div>
     </div>,

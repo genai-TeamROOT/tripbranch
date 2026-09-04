@@ -66,16 +66,16 @@ function needsDetailEnrichment(card: InfoPlaceCard | undefined): boolean {
 }
 
 /** Figma "PlaceDetail (Sheet)"(29:180)의 InfoTable 행 순서·아이콘. */
-const INFO_TABLE_FIELDS: Array<[keyof InfoPlaceCard, string, LucideIcon]> = [
-  ["operating_hours", "운영시간", Clock],
-  ["rest_date", "휴무일", CalendarOff],
-  ["fee", "요금", Wallet],
-  ["parking", "주차", Car],
-  ["parking_fee", "주차 요금", Wallet],
-  ["baby_carriage", "유모차", Baby],
-  ["pet", "반려동물 동반", PawPrint],
-  ["credit_card", "카드 결제", CreditCard],
-  ["restroom", "화장실", Bath],
+const INFO_TABLE_FIELDS: Array<[keyof InfoPlaceCard, string, string, LucideIcon]> = [
+  ["operating_hours", "운영시간", "Hours", Clock],
+  ["rest_date", "휴무일", "Closed on", CalendarOff],
+  ["fee", "요금", "Admission", Wallet],
+  ["parking", "주차", "Parking", Car],
+  ["parking_fee", "주차 요금", "Parking fee", Wallet],
+  ["baby_carriage", "유모차", "Stroller rental", Baby],
+  ["pet", "반려동물 동반", "Pets allowed", PawPrint],
+  ["credit_card", "카드 결제", "Card payment", CreditCard],
+  ["restroom", "화장실", "Restroom", Bath],
 ];
 
 /**
@@ -84,8 +84,9 @@ const INFO_TABLE_FIELDS: Array<[keyof InfoPlaceCard, string, LucideIcon]> = [
  * 그 판정은 item.remaining_minutes(D가 계산)로만 할 수 있다. item 없이 연
  * INFO·사진 검색 경로에서는 근거 없이 "영업 중"을 지어내지 않는다.
  */
-function operatingStatusSuffix(item: RecommendationItem | undefined): string | null {
+function operatingStatusSuffix(item: RecommendationItem | undefined, isEn: boolean): string | null {
   if (!item) return null;
+  if (isEn) return item.remaining_minutes === null ? "Closed" : "Open";
   return item.remaining_minutes === null ? "운영 종료" : "영업 중";
 }
 
@@ -111,6 +112,28 @@ const ANSWER_FIELD_LABELS: Record<string, string> = {
   pet: "반려동물 동반",
   credit_card: "카드 결제",
   restroom: "화장실",
+};
+
+/*
+ * 서버가 내려주는 필드는 대부분 한국어 자유 텍스트라 전부 옮길 수 없다. 다만
+ * 필드 "이름"(키) 자체는 백엔드 스키마에 고정돼 있어 항상 같은 항목만 나온다 —
+ * 이 목록에 있는 것만 영어 라벨로 바꾸고, 나머지(상권 지역 등 자유 키)는
+ * 한국어 그대로 둔다.
+ */
+const ANSWER_FIELD_LABELS_EN: Record<string, string> = {
+  address: "Address",
+  concentration: "Crowd level",
+  event: "Event",
+  homepage: "Website",
+  operating_hours: "Hours",
+  rest_date: "Closed on",
+  parking: "Parking",
+  parking_fee: "Parking fee",
+  fee: "Admission",
+  baby_carriage: "Stroller rental",
+  pet: "Pets allowed",
+  credit_card: "Card payment",
+  restroom: "Restroom",
 };
 
 function formatDetailValue(key: keyof InfoPlaceCard, value: string): string {
@@ -203,7 +226,15 @@ function InfoRow({
 }
 
 /** Figma InfoTable(29:203) — 아이콘+라벨 / 값을 한 줄씩, 실선으로 나눈다. */
-function InfoTable({ card, item }: { card: InfoPlaceCard; item?: RecommendationItem }) {
+function InfoTable({
+  card,
+  item,
+  isEn,
+}: {
+  card: InfoPlaceCard;
+  item?: RecommendationItem;
+  isEn: boolean;
+}) {
   const visibleEntries = INFO_TABLE_FIELDS.filter(([key]) => {
     const value = card[key];
     return typeof value === "string" && value.trim();
@@ -212,13 +243,13 @@ function InfoTable({ card, item }: { card: InfoPlaceCard; item?: RecommendationI
 
   return (
     <div className="flex flex-col divide-y divide-border rounded-xl bg-white px-4 shadow-resting">
-      {visibleEntries.map(([key, label, Icon]) => {
+      {visibleEntries.map(([key, labelKo, labelEn, Icon]) => {
         const value = card[key];
         if (typeof value !== "string") return null;
         const operatingHours = key === "operating_hours" ? parseOperatingHours(value) : null;
-        const statusSuffix = key === "operating_hours" ? operatingStatusSuffix(item) : null;
+        const statusSuffix = key === "operating_hours" ? operatingStatusSuffix(item, isEn) : null;
         return (
-          <InfoRow key={key} icon={Icon} label={label} emphasized={Boolean(statusSuffix)}>
+          <InfoRow key={key} icon={Icon} label={isEn ? labelEn : labelKo} emphasized={Boolean(statusSuffix)}>
             {operatingHours ? (
               <OperatingHoursRows rows={operatingHours} />
             ) : statusSuffix ? (
@@ -242,12 +273,12 @@ function InfoTable({ card, item }: { card: InfoPlaceCard; item?: RecommendationI
  * 먼저 그린다. 그 값이 없으면(INFO·사진 검색 경로처럼 item 자체가 없는 경우) 아무것도
  * 그리지 않는다 — 근거 없이 지어내지 않는다는 operatingStatusSuffix와 같은 원칙이다.
  */
-function QuickInfoPreview({ item }: { item?: RecommendationItem }) {
+function QuickInfoPreview({ item, isEn }: { item?: RecommendationItem; isEn: boolean }) {
   if (!item?.operating_hours_display) return null;
-  const statusSuffix = operatingStatusSuffix(item);
+  const statusSuffix = operatingStatusSuffix(item, isEn);
   return (
     <div className="flex flex-col divide-y divide-border rounded-xl bg-white px-4 shadow-resting">
-      <InfoRow icon={Clock} label="운영시간" emphasized={Boolean(statusSuffix)}>
+      <InfoRow icon={Clock} label={isEn ? "Hours" : "운영시간"} emphasized={Boolean(statusSuffix)}>
         {statusSuffix
           ? `${item.operating_hours_display} · ${statusSuffix}`
           : item.operating_hours_display}
@@ -1117,7 +1148,8 @@ export function RecommendationDetailPreviewModal({
   placeName: placeNameProp,
   onClose,
 }: RecommendationDetailPreviewModalProps) {
-  const { device_location } = useTripState();
+  const { device_location, language } = useTripState();
+  const isEn = language === "en";
   const [detailCard, setDetailCard] = useState<InfoPlaceCard | null>(card ?? null);
   const [detailStatus, setDetailStatus] = useState<"loading" | "no_data" | "unavailable">(
     "loading",
@@ -1130,7 +1162,11 @@ export function RecommendationDetailPreviewModal({
   const placeId = card?.place_id ?? item?.place_id ?? placeIdProp;
   const placeName = card?.place_name ?? item?.name ?? placeNameProp;
   const title =
-    detailCard?.place_name ?? card?.place_name ?? item?.name ?? placeNameProp ?? "장소 상세 정보";
+    detailCard?.place_name ??
+    card?.place_name ??
+    item?.name ??
+    placeNameProp ??
+    (isEn ? "Place details" : "장소 상세 정보");
   const isLoading = detailStatus === "loading" && !detailCard;
   // 목적지 좌표와 현재 위치가 모두 있어야 길찾기 딥링크를 만들 수 있다.
   const canRoute =
@@ -1213,7 +1249,7 @@ export function RecommendationDetailPreviewModal({
     <div className="fixed inset-0 z-50 flex flex-col items-center justify-end" role="presentation">
       <motion.button
         type="button"
-        aria-label="닫기"
+        aria-label={isEn ? "Close" : "닫기"}
         onClick={handleClose}
         className="absolute inset-0 bg-ink-strong/35"
         initial={{ opacity: 0 }}
@@ -1239,7 +1275,7 @@ export function RecommendationDetailPreviewModal({
             type="button"
             onClick={handleClose}
             className="flex h-10 w-10 items-center justify-center rounded-full bg-white text-ink shadow-resting transition-colors hover:bg-chip focus:outline-none focus:ring-2 focus:ring-brand"
-            aria-label="상세 창 닫기"
+            aria-label={isEn ? "Close details" : "상세 창 닫기"}
           >
             <X size={20} />
           </button>
@@ -1266,7 +1302,7 @@ export function RecommendationDetailPreviewModal({
                   />
                 ) : (
                   <div className="flex aspect-[5/3] animate-pulse items-center justify-center rounded-2xl bg-chip text-sm text-muted">
-                    상세 정보를 불러오는 중...
+                    {isEn ? "Loading details..." : "상세 정보를 불러오는 중..."}
                   </div>
                 )
               }
@@ -1303,9 +1339,13 @@ export function RecommendationDetailPreviewModal({
             <PhotoAreaShell
               main={
                 <div className="flex aspect-[5/3] items-center justify-center rounded-2xl border border-dashed border-border bg-chip text-sm text-muted">
-                  {detailStatus === "unavailable"
-                    ? "상세 정보를 불러오지 못했어요."
-                    : "등록된 이미지가 없어요."}
+                  {isEn
+                    ? detailStatus === "unavailable"
+                      ? "Couldn't load details."
+                      : "No image available."
+                    : detailStatus === "unavailable"
+                      ? "상세 정보를 불러오지 못했어요."
+                      : "등록된 이미지가 없어요."}
                 </div>
               }
             />
@@ -1331,7 +1371,7 @@ export function RecommendationDetailPreviewModal({
 
           {isLoading ? (
             <div className="flex flex-col gap-2">
-              <QuickInfoPreview item={item} />
+              <QuickInfoPreview item={item} isEn={isEn} />
               {/* 이미 아는 값(운영시간)을 보여줬으면 남은 자리는 좁게, 아무것도
                   모르면 예전처럼 통짜 스켈레톤으로 채운다. */}
               <div
@@ -1341,14 +1381,16 @@ export function RecommendationDetailPreviewModal({
               />
             </div>
           ) : (
-            detailCard && <InfoTable card={detailCard} item={item} />
+            detailCard && <InfoTable card={detailCard} item={item} isEn={isEn} />
           )}
 
           {item?.recommendation_reason && (
             <section className="flex flex-col gap-1.5 rounded-2xl bg-sky-light p-4">
               <div className="flex items-center gap-1.5">
                 <Sparkles size={14} className="text-brand-deep" />
-                <p className="text-xs font-bold text-brand-deep">AI가 추천하는 이유</p>
+                <p className="text-xs font-bold text-brand-deep">
+                  {isEn ? "Why AI recommends this" : "AI가 추천하는 이유"}
+                </p>
               </div>
               <p className="text-sm leading-relaxed text-ink">{item.recommendation_reason}</p>
             </section>
@@ -1356,7 +1398,7 @@ export function RecommendationDetailPreviewModal({
 
           {detailCard?.overview && (
             <section className="flex flex-col gap-1.5">
-              <h3 className="text-xs font-bold text-label">개요</h3>
+              <h3 className="text-xs font-bold text-label">{isEn ? "Overview" : "개요"}</h3>
               <p className="whitespace-pre-line text-sm leading-relaxed text-ink">
                 {detailCard.overview}
               </p>
@@ -1368,11 +1410,17 @@ export function RecommendationDetailPreviewModal({
               <>
                 {answerEntries.length > 0 && (
                   <section className="rounded-xl bg-sky-light p-3">
-                    <h3 className="text-sm font-semibold text-ink">관련 정보</h3>
+                    <h3 className="text-sm font-semibold text-ink">
+                      {isEn ? "Related info" : "관련 정보"}
+                    </h3>
                     <dl className="mt-2 space-y-2 text-sm">
                       {answerEntries.map(([key, value]) => (
                         <div key={key} className="flex gap-2">
-                          <dt className="shrink-0 text-muted">{ANSWER_FIELD_LABELS[key] ?? key}</dt>
+                          <dt className="shrink-0 text-muted">
+                            {isEn
+                              ? (ANSWER_FIELD_LABELS_EN[key] ?? ANSWER_FIELD_LABELS[key] ?? key)
+                              : (ANSWER_FIELD_LABELS[key] ?? key)}
+                          </dt>
                           <AnswerValue value={value} />
                         </div>
                       ))}
@@ -1393,9 +1441,13 @@ export function RecommendationDetailPreviewModal({
               </>
             ) : (
               <p className="rounded-xl border border-dashed border-border p-4 text-sm text-muted">
-                {detailStatus === "unavailable"
-                  ? "상세 정보를 불러오지 못했어요. 잠시 후 다시 시도해주세요."
-                  : "이 장소의 상세 정보는 아직 제공되지 않아요."}
+                {isEn
+                  ? detailStatus === "unavailable"
+                    ? "Couldn't load details. Please try again shortly."
+                    : "Details for this place aren't available yet."
+                  : detailStatus === "unavailable"
+                    ? "상세 정보를 불러오지 못했어요. 잠시 후 다시 시도해주세요."
+                    : "이 장소의 상세 정보는 아직 제공되지 않아요."}
               </p>
             ))}
         </div>
@@ -1415,7 +1467,7 @@ export function RecommendationDetailPreviewModal({
               className="flex h-[52px] w-full items-center justify-center gap-2 rounded-full bg-brand text-base font-bold text-white transition-colors hover:bg-brand-deep"
             >
               <Navigation size={18} />
-              네이버 지도로 길찾기
+              {isEn ? "Get directions on Naver Maps" : "네이버 지도로 길찾기"}
             </button>
           </div>
         )}

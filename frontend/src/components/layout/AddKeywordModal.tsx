@@ -9,6 +9,7 @@
 import { useId, useState } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
+import { useTripState } from "../../state/TripContext";
 
 interface AddKeywordModalProps {
   onAdd: (keyword: string) => void;
@@ -18,6 +19,7 @@ interface AddKeywordModalProps {
 export function AddKeywordModal({ onAdd, onClose }: AddKeywordModalProps) {
   const [keyword, setKeyword] = useState("");
   const titleId = useId();
+  const isEn = useTripState().language === "en";
 
   function handleSubmit() {
     const trimmed = keyword.trim();
@@ -30,7 +32,7 @@ export function AddKeywordModal({ onAdd, onClose }: AddKeywordModalProps) {
     <div className="fixed inset-0 z-50 flex items-end justify-center p-4 md:items-center">
       <button
         type="button"
-        aria-label="닫기"
+        aria-label={isEn ? "Close" : "닫기"}
         onClick={onClose}
         className="absolute inset-0 bg-ink-strong/40"
       />
@@ -42,11 +44,11 @@ export function AddKeywordModal({ onAdd, onClose }: AddKeywordModalProps) {
       >
         <div className="mb-4 flex items-center justify-between">
           <h2 id={titleId} className="text-base font-bold text-ink">
-            키워드 직접 입력
+            {isEn ? "Add your own keyword" : "키워드 직접 입력"}
           </h2>
           <button
             type="button"
-            aria-label="닫기"
+            aria-label={isEn ? "Close" : "닫기"}
             onClick={onClose}
             className="text-muted transition-colors hover:text-ink"
           >
@@ -60,7 +62,7 @@ export function AddKeywordModal({ onAdd, onClose }: AddKeywordModalProps) {
           onKeyDown={(event) => {
             if (event.key === "Enter") handleSubmit();
           }}
-          placeholder="예: 조용한 서점"
+          placeholder={isEn ? "e.g. quiet bookstore" : "예: 조용한 서점"}
           className="w-full rounded-xl border border-border px-3.5 py-3 text-base text-ink outline-none focus:border-brand"
         />
         <button
@@ -69,7 +71,7 @@ export function AddKeywordModal({ onAdd, onClose }: AddKeywordModalProps) {
           onClick={handleSubmit}
           className="mt-4 flex h-12 w-full items-center justify-center rounded-full bg-brand text-sm font-bold text-white transition-colors hover:enabled:bg-brand-deep disabled:opacity-40"
         >
-          추가
+          {isEn ? "Add" : "추가"}
         </button>
       </div>
     </div>,
