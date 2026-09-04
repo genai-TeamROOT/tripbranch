@@ -353,6 +353,23 @@ function sidebar() {
 }
 
 /*
+ * 계정 항목(계정 만들기·로그아웃)은 사이드바 바닥의 계정 버튼을 눌러야 나온다(§6).
+ *
+ * 이름으로 찾지 않는다 — 그 버튼의 이름은 신원 표시 자체라(게스트면 "게스트",
+ * 계정이면 이름·이메일) 표시가 바뀔 때마다 테스트가 같이 흔들린다. 사이드바에서
+ * 메뉴를 여는 버튼은 이것 하나다.
+ */
+function accountButton() {
+  return within(sidebar()).getByRole("button", { expanded: false });
+}
+
+/* setup()으로 만든 인스턴스와 전역 userEvent를 둘 다 받는다 — 이 파일은 두 방식을
+   섞어 쓴다. 필요한 것은 click 하나뿐이라 그만 받는다. */
+async function openAccountMenu(user: { click: (element: Element) => Promise<void> }) {
+  await user.click(accountButton());
+}
+
+/*
  * 로그아웃은 이 기기에 남은 값을 전부 지워야 한다 — 같은 브라우저에서 다음 사람이
  * 앞사람의 취향·즐겨찾기를 이어받으면 안 된다. 화면에서 실제로 눌러 확인한다.
  */
@@ -368,7 +385,8 @@ test("로그아웃하면 이 기기의 취향·즐겨찾기가 남지 않는다"
   );
   await renderApp();
 
-  await user.click(within(sidebar()).getByRole("button", { name: /로그아웃/ }));
+  await openAccountMenu(user);
+  await user.click(within(sidebar()).getByRole("menuitem", { name: /로그아웃/ }));
   /* 게스트는 한 번 더 확인한다 - 돌아올 수단이 없어서다(feature/guest-account-link). */
   await within(sidebar()).findByText(/돌아올 수 없어요/);
   await user.click(within(sidebar()).getByRole("button", { name: "로그아웃" }));
@@ -893,7 +911,8 @@ test("지난 대화를 이어가면 새 발화 위에 지금 시각이 뜬다", 
 test("게스트에게는 계정 만들기 입구가 보이고 가입 화면으로 간다", async () => {
   await renderApp();
 
-  const enter = within(sidebar()).getByRole("button", { name: /계정 만들기/ });
+  await openAccountMenu(userEvent);
+  const enter = within(sidebar()).getByRole("menuitem", { name: /계정 만들기/ });
   await userEvent.click(enter);
 
   /* 가입 화면이 열려야 승계가 시작된다. */
@@ -908,8 +927,13 @@ test("이미 계정이 있으면 계정 만들기 입구를 보여주지 않는�
 
   await renderApp();
 
-  expect(within(sidebar()).queryByRole("button", { name: /계정 만들기/ })).not.toBeInTheDocument();
-  expect(within(sidebar()).getByText("trip@example.com")).toBeInTheDocument();
+  /* 팝업을 열고도 없어야 한다 — 안 열고 확인하면 "팝업 안에 있어서 안 보이는 것"과
+     구분되지 않는다. */
+  await openAccountMenu(userEvent);
+  expect(
+    within(sidebar()).queryByRole("menuitem", { name: /계정 만들기/ }),
+  ).not.toBeInTheDocument();
+  expect(within(sidebar()).getAllByText("trip@example.com").length).toBeGreaterThan(0);
 });
 
 /*
@@ -921,7 +945,8 @@ test("이미 계정이 있으면 계정 만들기 입구를 보여주지 않는�
 test("게스트가 로그아웃을 누르면 바로 나가지 않고 무엇을 잃는지 알려준다", async () => {
   await renderApp();
 
-  await userEvent.click(within(sidebar()).getByRole("button", { name: /로그아웃/ }));
+  await openAccountMenu(userEvent);
+  await userEvent.click(within(sidebar()).getByRole("menuitem", { name: /로그아웃/ }));
 
   expect(await within(sidebar()).findByRole("alert")).toHaveTextContent("돌아올 수 없어요");
   /* 아직 나가지 않았다 — 관문으로 넘어갔으면 사이드바 자체가 사라진다. */
@@ -931,11 +956,13 @@ test("게스트가 로그아웃을 누르면 바로 나가지 않고 무엇을 �
 test("확인에서 취소하면 로그아웃하지 않는다", async () => {
   await renderApp();
 
-  await userEvent.click(within(sidebar()).getByRole("button", { name: /로그아웃/ }));
+  await openAccountMenu(userEvent);
+  await userEvent.click(within(sidebar()).getByRole("menuitem", { name: /로그아웃/ }));
   await userEvent.click(await within(sidebar()).findByRole("button", { name: "취소" }));
 
   expect(within(sidebar()).queryByRole("alert")).not.toBeInTheDocument();
-  expect(within(sidebar()).getByRole("button", { name: /로그아웃/ })).toBeInTheDocument();
+  /* 취소는 팝업을 닫지 않는다 — 로그아웃 말고 다른 것을 누르려던 것일 수 있다. */
+  expect(within(sidebar()).getByRole("menuitem", { name: /로그아웃/ })).toBeInTheDocument();
 });
 
 /* 계정 사용자는 다시 로그인하면 그대로 돌아온다. 되돌릴 수 있는 동작에까지 확인을
@@ -947,9 +974,82 @@ test("계정 사용자는 확인 없이 로그아웃된다", async () => {
   } as typeof GUEST_SESSION);
   await renderApp();
 
-  await userEvent.click(within(sidebar()).getByRole("button", { name: /로그아웃/ }));
+  await openAccountMenu(userEvent);
+  await userEvent.click(within(sidebar()).getByRole("menuitem", { name: /로그아웃/ }));
 
   expect(await screen.findByRole("button", { name: "게스트로 시작하기" })).toBeInTheDocument();
+});
+
+/*
+ * 사이드바 바닥은 **이메일이 아니라 이름**을 낸다.
+ *
+ * 가입 화면이 이름을 받는데도(`SignupPage`: "AI가 추천할 때 이 이름으로 불러드려요")
+ * 여기에는 늘 이메일이 떴다 — `identityLabel`의 후보 순서가 email 먼저라서다.
+ * 그 함수는 `AuthStatusBadge`도 쓰므로 순서를 뒤집는 대신 `identityDisplay`를
+ * 따로 만들었고, 이 테스트가 사이드바가 그쪽을 쓰는 것을 잠근다.
+ */
+test("계정 이름이 있으면 이메일 대신 이름을 크게 낸다", async () => {
+  setMockSession({
+    ...GUEST_SESSION,
+    user: {
+      ...GUEST_SESSION.user,
+      is_anonymous: false,
+      email: "trip@example.com",
+      user_metadata: { name: "나종원" },
+    },
+  } as typeof GUEST_SESSION);
+  await renderApp();
+
+  const account = accountButton();
+  expect(within(account).getByText("나종원")).toBeInTheDocument();
+  /* 이메일을 지운 게 아니라 작은 줄로 내렸다 — 어느 계정으로 들어와 있는지는
+     여전히 확인할 수 있어야 한다. */
+  expect(within(account).getByText("trip@example.com")).toBeInTheDocument();
+});
+
+/* 게스트에게는 이름이 없다. 이메일 앞부분도 없으니 "로그인됨" 같은 말이 이름
+   자리에 오면 안 된다 — 계정이 없다는 사실이 그 자리에서 읽혀야 한다. */
+test("게스트는 이름 자리에도 게스트라고 낸다", async () => {
+  await renderApp();
+
+  const account = accountButton();
+  expect(within(account).getByText("게스트")).toBeInTheDocument();
+  expect(within(account).getByText("게스트로 이용 중")).toBeInTheDocument();
+});
+
+/* 로그아웃은 되돌릴 수 없다(게스트는 특히). 상시 눌리는 자리에 두지 않는다. */
+test("로그아웃은 계정 팝업을 열기 전에는 보이지 않는다", async () => {
+  await renderApp();
+
+  expect(within(sidebar()).queryByRole("menuitem", { name: /로그아웃/ })).not.toBeInTheDocument();
+
+  await openAccountMenu(userEvent);
+
+  expect(within(sidebar()).getByRole("menuitem", { name: /로그아웃/ })).toBeInTheDocument();
+});
+
+test("팝업 바깥을 누르면 닫힌다", async () => {
+  await renderApp();
+  await openAccountMenu(userEvent);
+
+  await userEvent.click(within(sidebar()).getByRole("button", { name: "계정 메뉴 닫기" }));
+
+  expect(within(sidebar()).queryByRole("menuitem", { name: /로그아웃/ })).not.toBeInTheDocument();
+});
+
+/* 확인 화면을 띄운 채 닫았다가 다시 열면 그것이 그대로 남아 있으면 안 된다 —
+   무엇을 누르려던 것인지 잊은 채 빨간 "로그아웃"만 보게 된다. */
+test("확인 화면을 띄운 채 닫으면 다시 열었을 때 남아 있지 않다", async () => {
+  await renderApp();
+  await openAccountMenu(userEvent);
+  await userEvent.click(within(sidebar()).getByRole("menuitem", { name: /로그아웃/ }));
+  await within(sidebar()).findByRole("alert");
+
+  await userEvent.click(within(sidebar()).getByRole("button", { name: "계정 메뉴 닫기" }));
+  await openAccountMenu(userEvent);
+
+  expect(within(sidebar()).queryByRole("alert")).not.toBeInTheDocument();
+  expect(within(sidebar()).getByRole("menuitem", { name: /로그아웃/ })).toBeInTheDocument();
 });
 
 /*

@@ -93,11 +93,14 @@ test("계정으로 승격되면 게스트 표시가 사라진다", async () => {
   expect(within(sidebar()).queryByText("게스트로 이용 중")).not.toBeInTheDocument();
 });
 
-/* 계정 메뉴(게스트 라벨 클릭 → 확인 → 해제, Esc 취소)는 이 라벨을 쓰는
-   AuthStatusBadge 자체의 동작이라 AuthStatusBadge.test.tsx로 옮겼다 — 사이드바
-   쪽은 클릭할 수 없는 순수 라벨이고(로그아웃 버튼과 나란히 있어 배지 드롭다운까지
-   열리면 "로그아웃"이 두 개로 보인다), 배지 자체는 사이드바가 없는
-   DeveloperChatPage에서만 쓰인다. */
+/* 배지의 계정 메뉴(라벨 클릭 → 확인 → 해제, Esc 취소)는 AuthStatusBadge 자체의
+   동작이라 AuthStatusBadge.test.tsx로 옮겼다 — 그 배지는 사이드바가 없는
+   DeveloperChatPage에서만 쓰인다.
+
+   사이드바에도 2026-09-04부터 계정 팝업이 있지만 **별개다.** 표시를 두 줄
+   (이름 + 부제)로 내고 계정 만들기까지 담으며, 담는 함수도 다르다
+   (`identityDisplay` vs `identityLabel`). 그쪽 동작은 SideDrawerContent.test.tsx가
+   잠근다. 여기서는 이 파일의 관심사인 **신원 표시가 세션 전환을 따라가는지**만 본다. */
 
 /* 조용한 통과 금지(D-042와 같은 방향). 설정이 없을 때 "비로그인 상태"로 넘어가면
    프론트가 토큰 없이 도는 걸 아무도 모른 채 계속 쓰게 된다. */
